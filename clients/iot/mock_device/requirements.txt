@@ -1,0 +1,9 @@
+# Mock IoT Device Dependencies
+
+# Dapr Python SDK (choose one)
+dapr-ext-grpc>=1.11.0  # Recommended: gRPC client
+# or
+# dapr>=1.11.0  # Alternative: HTTP client
+
+# Pydantic (for protocol models)
+pydantic>=2.5.0

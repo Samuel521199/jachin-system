@@ -1,0 +1,49 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: jachin-config
+  namespace: default
+spec:
+  # Enable scheduler reminders to eliminate connection errors
+  # Scheduler service is now configured in docker-compose.dev.yml
+  features:
+    - name: SchedulerReminders
+      enabled: true
+  # Tracing disabled - Zipkin container fails to start (port 9411 already allocated)
+  # Uncomment below if you need tracing and fix Zipkin port conflict
+  # tracing:
+  #   samplingRate: "1"
+  #   zipkin:
+  #     endpointAddress: "http://zipkin:9411/api/v2/spans"
+  metric:
+    enabled: true
+  accessControl:
+    defaultAction: allow
+    trustDomain: "public"
+    policies:
+      - appId: jachin-brain
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "default"
+        operations:
+          - name: /v1.0/invoke/*
+            httpVerb: ["*"]
+            action: allow
+          - name: /v1.0/state/*
+            httpVerb: ["*"]
+            action: allow
+          - name: /v1.0/pubsub/*
+            httpVerb: ["*"]
+            action: allow
+      - appId: desktop-client
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "default"
+      - appId: mobile-client
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "default"
+      - appId: iot-client
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "default"

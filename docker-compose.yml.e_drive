@@ -1,0 +1,51 @@
+# Docker Compose配置 - 使用E盘volumes
+# Docker Compose Configuration - Using E: drive volumes
+# 
+# 使用方法: 将此文件重命名为 docker-compose.yml 或合并到现有配置
+# Usage: Rename this file to docker-compose.yml or merge into existing config
+
+services:
+  # ... 其他服务配置保持不变 ...
+  
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\postgres_data
+  
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\qdrant_data
+  
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\redis_data
+  
+  mqtt_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\mqtt_data
+  
+  mqtt_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\mqtt_logs
+  
+  ray_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\ray_data

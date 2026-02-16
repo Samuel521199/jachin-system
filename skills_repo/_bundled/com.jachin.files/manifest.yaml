@@ -1,0 +1,61 @@
+id: com.jachin.files
+version: 1.0.0
+name: 文件指挥官
+description: 文件管理功能：列出文件、搜索文件
+author: Jachin Team
+
+capabilities:
+  - name: list_files
+    description: 列出指定目录的文件
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 目录路径
+          default: "."
+        recursive:
+          type: boolean
+          description: 是否递归列出子目录
+          default: false
+        pattern:
+          type: string
+          description: 文件名匹配模式（glob）
+          default: "*"
+      required: []
+  
+  - name: search_files
+    description: 搜索文件
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 搜索根目录
+          default: "."
+        pattern:
+          type: string
+          description: 文件名匹配模式（glob）
+        content_pattern:
+          type: string
+          description: 文件内容匹配模式（正则表达式）
+        recursive:
+          type: boolean
+          description: 是否递归搜索
+          default: true
+      required:
+        - pattern
+
+permissions:
+  - id: file
+    label: 文件
+    scope: file.read
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

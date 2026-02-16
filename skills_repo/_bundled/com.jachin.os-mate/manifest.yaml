@@ -1,0 +1,74 @@
+id: com.jachin.os-mate
+version: 1.0.0
+name: 系统管家
+description: 系统管理功能：关机、重启、音量控制
+author: Jachin Team
+
+capabilities:
+  - name: shutdown
+    description: 关闭系统
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        delay_seconds:
+          type: integer
+          description: 延迟秒数（默认立即执行）
+          default: 0
+      required: []
+  
+  - name: reboot
+    description: 重启系统
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        delay_seconds:
+          type: integer
+          description: 延迟秒数（默认立即执行）
+          default: 0
+      required: []
+  
+  - name: volume_set
+    description: 设置系统音量
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        volume:
+          type: integer
+          description: 音量值（0-100）
+          minimum: 0
+          maximum: 100
+      required:
+        - volume
+
+  - name: desktop_notify
+    description: 桌面通知（Sentinel Level 1 触达用户）
+    tag: user.reach
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        title:
+          type: string
+          description: 通知标题
+        message:
+          type: string
+          description: 通知内容
+      required: []
+
+permissions:
+  - id: system.power
+    label: 电源
+    scope: system.power
+  - id: system.control
+    label: 系统控制
+    scope: system.control
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

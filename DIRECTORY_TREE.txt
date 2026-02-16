@@ -1,0 +1,100 @@
+jachin-system/
+├── .cursor/
+│   └── rules/
+│       ├── 000-structure.mdc
+│       ├── 050-distributed.mdc
+│       ├── 050-ray-actor.mdc
+│       ├── 070-visual-aesthetic.mdc
+│       ├── 100-jachin-link.mdc
+│       └── 200-plugin-economy.mdc
+│
+├── .github/
+│   └── workflows/
+│
+├── clients/
+│   ├── desktop/
+│   │   ├── docs/
+│   │   ├── public/
+│   │   ├── scripts/
+│   │   ├── src/
+│   │   │   ├── components/
+│   │   │   ├── console/
+│   │   │   ├── lib/
+│   │   │   ├── store/
+│   │   │   ├── styles/
+│   │   │   └── utils/
+│   │   └── src-tauri/
+│   └── lib/
+│       ├── edge_brain/
+│       └── jachin_link_client/
+│
+├── common/
+│   ├── crypto/
+│   ├── protocols/
+│   └── schemas/
+│
+├── config/
+│
+├── core/
+│   ├── api/
+│   │   └── routes/
+│   ├── app/
+│   ├── brain/
+│   │   ├── llm/
+│   │   ├── llm_engine/
+│   │   ├── planner/
+│   │   ├── ray_actors/
+│   │   └── ray_cluster/
+│   ├── calendar/
+│   ├── config/
+│   ├── dapr/
+│   ├── examples/
+│   ├── memory/
+│   │   └── schema/
+│   │       └── migrations/
+│   ├── monitoring/
+│   ├── registry/
+│   ├── runtime/
+│   │   └── sandbox/
+│   ├── security/
+│   ├── skills/
+│   ├── swarm/
+│   ├── system/
+│   ├── transport/
+│   ├── utils/
+│   ├── voice/
+│   ├── web_ui/
+│   ├── exceptions.py
+│   ├── logger.py
+│   ├── main.py
+│   ├── main_simple.py
+│   └── test_mvp.py
+│
+├── docs/
+│   └── archive/
+│
+├── logs/
+│
+├── scripts/
+│
+├── skills_repo/
+│   ├── _bundled/
+│   │   ├── com.jachin.calendar/
+│   │   ├── com.jachin.files/
+│   │   ├── com.jachin.os-mate/
+│   │   └── com.jachin.voip/
+│   ├── apps/
+│   │   └── com.jachin.web-surfer/
+│   └── drivers/
+│       └── com.jachin.sys-monitor/
+│
+├── .env
+├── .env.example
+├── .gitignore
+├── CHANGELOG.md
+├── docker-compose.yml
+├── environment.yml
+├── pytest.ini
+├── QUICKSTART.md
+├── README.md
+└── ...

@@ -1,0 +1,51 @@
+# Jachin-System v3.2 集群配置
+# Cluster Configuration
+
+# 集群模式
+mode: "single"  # single, cluster
+
+# 节点信息
+node:
+  id: ""  # 自动生成UUID，或手动指定
+  name: ""  # 节点名称，如 "hive-01"
+  role: "head"  # head, worker
+  region: "local"  # local, cn-beijing, ap-singapore, us-virginia
+
+# 集群发现
+discovery:
+  method: "mdns"  # mdns, manual, dapr
+  mdns:
+    service_name: "_jachin-hive._tcp.local"
+    port: 1420
+  manual:
+    head_nodes:
+      - "192.168.1.100:10001"
+      - "192.168.1.101:10001"
+  dapr:
+    pubsub: "jachin-cluster"
+    topic: "discovery"
+
+# 网络配置
+network:
+  bind_address: "0.0.0.0"
+  advertise_address: ""  # 自动检测，或手动指定
+  port_range: "10001-10100"
+
+# 安全配置
+security:
+  enable_tls: false
+  tls_cert_path: ""
+  tls_key_path: ""
+  shared_secret: ""  # 集群共享密钥
+
+# 资源限制
+resources:
+  max_workers: 10
+  max_memory_gb: 32
+  max_cpu_cores: 8
+  max_gpus: 0
+
+# 心跳配置
+heartbeat:
+  interval_seconds: 30
+  timeout_seconds: 90

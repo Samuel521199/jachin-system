@@ -1,0 +1,31 @@
+id: com.jachin.voip
+version: 1.0.0
+name: 网络电话
+description: 触达用户（Mock 版）- Sentinel Level 2
+author: Jachin Team
+
+capabilities:
+  - name: voip_call
+    description: 拨打电话触达用户
+    tag: user.reach
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        title:
+          type: string
+        message:
+          type: string
+      required: []
+
+permissions:
+  - id: network
+    label: 网络
+    scope: network
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

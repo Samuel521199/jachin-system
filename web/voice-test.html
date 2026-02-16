@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>语音测试 - Jachin System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+            font-size: 28px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .section h2 {
+            color: #555;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #718096;
+            color: white;
+        }
+
+        .recording {
+            background: #f56565 !important;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .status {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            min-height: 40px;
+        }
+
+        .status.info {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+
+        .status.success {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .status.error {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            min-height: 60px;
+        }
+
+        .result-label {
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 8px;
+        }
+
+        .result-text {
+            color: #333;
+            line-height: 1.6;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .file-input-wrapper {
+            margin-bottom: 15px;
+        }
+
+        input[type="file"] {
+            padding: 8px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            width: 100%;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 语音功能测试</h1>
+
+        <!-- 语音识别测试 -->
+        <div class="section">
+            <h2>1. 语音识别 (STT)</h2>
+            <div class="file-input-wrapper">
+                <input type="file" id="sttFileInput" accept="audio/*">
+            </div>
+            <div class="button-group">
+                <button class="btn-primary" onclick="startRecording('stt')">🎤 开始录音</button>
+                <button class="btn-danger" id="stopSttBtn" onclick="stopRecording('stt')" disabled>⏹ 停止录音</button>
+                <button class="btn-success" onclick="recognizeAudio()">🔍 识别音频</button>
+            </div>
+            <div id="sttStatus" class="status info" style="display: none;"></div>
+            <div id="sttResult" class="result" style="display: none;">
+                <div class="result-label">识别结果：</div>
+                <div class="result-text" id="sttText"></div>
+            </div>
+        </div>
+
+        <!-- 语音合成测试 -->
+        <div class="section">
+            <h2>2. 语音合成 (TTS)</h2>
+            <div class="input-group">
+                <label>要合成的文本：</label>
+                <input type="text" id="ttsText" placeholder="输入要合成的文本..." value="你好，我是Jachin助手">
+            </div>
+            <div class="input-group">
+                <label>选择语音：</label>
+                <select id="ttsVoice">
+                    <option value="zh-CN-XiaoxiaoNeural">晓晓（女声）</option>
+                    <option value="zh-CN-YunyangNeural">云扬（男声）</option>
+                    <option value="zh-CN-YunxiNeural">云希（男声）</option>
+                </select>
+            </div>
+            <div class="button-group">
+                <button class="btn-primary" onclick="synthesizeSpeech()">🔊 合成语音</button>
+                <button class="btn-secondary" onclick="loadVoices()">📋 加载语音列表</button>
+            </div>
+            <div id="ttsStatus" class="status info" style="display: none;"></div>
+            <audio id="ttsAudio" controls style="display: none;"></audio>
+        </div>
+
+        <!-- 语音聊天测试 -->
+        <div class="section">
+            <h2>3. 语音聊天（完整流程）</h2>
+            <div class="file-input-wrapper">
+                <input type="file" id="chatFileInput" accept="audio/*">
+            </div>
+            <div class="button-group">
+                <button class="btn-primary" onclick="startRecording('chat')">🎤 开始录音</button>
+                <button class="btn-danger" id="stopChatBtn" onclick="stopRecording('chat')" disabled>⏹ 停止录音</button>
+                <button class="btn-success" onclick="voiceChat()">💬 语音聊天</button>
+            </div>
+            <div id="chatStatus" class="status info" style="display: none;"></div>
+            <div id="chatResult" class="result" style="display: none;">
+                <div class="result-label">AI回复：</div>
+                <div class="result-text" id="chatText"></div>
+            </div>
+            <audio id="chatAudio" controls style="display: none;"></audio>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api/v2/voice';
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let currentRecordingType = null;
+
+        // 显示状态消息
+        function showStatus(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = `status ${type}`;
+            element.style.display = 'block';
+        }
+
+        // 隐藏状态消息
+        function hideStatus(elementId) {
+            document.getElementById(elementId).style.display = 'none';
+        }
+
+        // 开始录音
+        async function startRecording(type) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                currentRecordingType = type;
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    
+                    // 创建隐藏的audio元素用于播放
+                    const audio = document.createElement('audio');
+                    audio.src = audioUrl;
+                    audio.controls = true;
+                    
+                    // 保存到对应的文件输入（模拟）
+                    const fileInput = type === 'stt' ? 
+                        document.getElementById('sttFileInput') : 
+                        document.getElementById('chatFileInput');
+                    
+                    // 创建File对象
+                    const file = new File([audioBlob], `recording-${Date.now()}.wav`, { type: 'audio/wav' });
+                    const dataTransfer = new DataTransfer();
+                    dataTransfer.items.add(file);
+                    fileInput.files = dataTransfer.files;
+
+                    showStatus(`${type}Status`, '✅ 录音完成！', 'success');
+                };
+
+                mediaRecorder.start();
+                
+                const stopBtn = type === 'stt' ? 
+                    document.getElementById('stopSttBtn') : 
+                    document.getElementById('stopChatBtn');
+                stopBtn.disabled = false;
+                stopBtn.classList.add('recording');
+
+                showStatus(`${type}Status`, '🔴 正在录音...', 'info');
+            } catch (error) {
+                showStatus(`${type}Status`, `❌ 无法访问麦克风: ${error.message}`, 'error');
+            }
+        }
+
+        // 停止录音
+        function stopRecording(type) {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                
+                const stopBtn = type === 'stt' ? 
+                    document.getElementById('stopSttBtn') : 
+                    document.getElementById('stopChatBtn');
+                stopBtn.disabled = true;
+                stopBtn.classList.remove('recording');
+            }
+        }
+
+        // 语音识别
+        async function recognizeAudio() {
+            const fileInput = document.getElementById('sttFileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showStatus('sttStatus', '❌ 请先选择或录制音频文件', 'error');
+                return;
+            }
+
+            showStatus('sttStatus', '⏳ 正在识别...', 'info');
+
+            try {
+                const formData = new FormData();
+                formData.append('audio_file', file);
+                formData.append('format', 'wav');
+                formData.append('language', 'zh-CN');
+
+                const response = await fetch(`${API_BASE}/recognize`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(error);
+                }
+
+                const result = await response.json();
+                
+                document.getElementById('sttText').textContent = result.text;
+                document.getElementById('sttResult').style.display = 'block';
+                showStatus('sttStatus', '✅ 识别成功！', 'success');
+            } catch (error) {
+                showStatus('sttStatus', `❌ 识别失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 语音合成
+        async function synthesizeSpeech() {
+            const text = document.getElementById('ttsText').value;
+            const voice = document.getElementById('ttsVoice').value;
+
+            if (!text.trim()) {
+                showStatus('ttsStatus', '❌ 请输入要合成的文本', 'error');
+                return;
+            }
+
+            showStatus('ttsStatus', '⏳ 正在合成...', 'info');
+
+            try {
+                const response = await fetch(`${API_BASE}/synthesize`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        voice: voice,
+                        language: 'zh-CN',
+                        speed: 1.0,
+                        pitch: 1.0
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(error);
+                }
+
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                
+                const audioElement = document.getElementById('ttsAudio');
+                audioElement.src = audioUrl;
+                audioElement.style.display = 'block';
+                
+                showStatus('ttsStatus', '✅ 合成成功！', 'success');
+            } catch (error) {
+                showStatus('ttsStatus', `❌ 合成失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 语音聊天
+        async function voiceChat() {
+            const fileInput = document.getElementById('chatFileInput');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showStatus('chatStatus', '❌ 请先选择或录制音频文件', 'error');
+                return;
+            }
+
+            showStatus('chatStatus', '⏳ 正在处理（识别→LLM→合成）...', 'info');
+
+            try {
+                const formData = new FormData();
+                formData.append('audio_file', file);
+                formData.append('format', 'wav');
+                formData.append('language', 'zh-CN');
+                formData.append('return_audio', 'true');
+                formData.append('voice', 'zh-CN-XiaoxiaoNeural');
+                formData.append('speed', '1.0');
+                formData.append('pitch', '1.0');
+
+                const response = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.text();
+                    throw new Error(error);
+                }
+
+                const result = await response.json();
+                
+                // 显示文本回复
+                document.getElementById('chatText').textContent = result.text;
+                document.getElementById('chatResult').style.display = 'block';
+                
+                // 播放音频回复
+                if (result.audio_base64) {
+                    const audioBytes = Uint8Array.from(atob(result.audio_base64), c => c.charCodeAt(0));
+                    const audioBlob = new Blob([audioBytes], { type: 'audio/wav' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    
+                    const audioElement = document.getElementById('chatAudio');
+                    audioElement.src = audioUrl;
+                    audioElement.style.display = 'block';
+                }
+                
+                showStatus('chatStatus', '✅ 语音聊天完成！', 'success');
+            } catch (error) {
+                showStatus('chatStatus', `❌ 聊天失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 加载语音列表
+        async function loadVoices() {
+            showStatus('ttsStatus', '⏳ 正在加载语音列表...', 'info');
+
+            try {
+                const response = await fetch(`${API_BASE}/voices?language=zh-CN`);
+                const result = await response.json();
+                
+                const select = document.getElementById('ttsVoice');
+                select.innerHTML = '';
+                
+                result.voices.forEach(voice => {
+                    const option = document.createElement('option');
+                    option.value = voice.id || voice.Name || voice;
+                    option.textContent = voice.name || voice.FriendlyName || voice;
+                    select.appendChild(option);
+                });
+                
+                showStatus('ttsStatus', `✅ 已加载 ${result.voices.length} 个语音`, 'success');
+            } catch (error) {
+                showStatus('ttsStatus', `❌ 加载失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 页面加载时自动加载语音列表
+        window.addEventListener('load', () => {
+            loadVoices();
+        });
+    </script>
+</body>
+</html>

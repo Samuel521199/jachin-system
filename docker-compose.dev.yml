@@ -1,0 +1,141 @@
+# 开发环境 Docker Compose 配置
+# 注意：Docker Compose v2+ 不再需要 version 字段
+# 仅包含基础设施服务，后端代码在本地 Conda 环境中运行
+# 
+# 注意：PostgreSQL 和 Qdrant 使用本地安装的版本，不在 Docker 中运行
+# 请确保本地已安装并运行：
+#   - PostgreSQL 15+ (端口 5432)
+#   - Qdrant (端口 6333/6334)
+# 参考 docs/LOCAL_DATABASE_SETUP.md 了解本地数据库配置说明
+#
+# 项目名称：使用环境变量 COMPOSE_PROJECT_NAME=jachin-dev 或通过 -p 参数指定
+
+services:
+  # PostgreSQL 数据库 - 已禁用，使用本地 PostgreSQL
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: jachin-postgres-dev
+  #   environment:
+  #     POSTGRES_DB: jachin_brain
+  #     POSTGRES_USER: jachin
+  #     POSTGRES_PASSWORD: secure_password
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U jachin"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - jachin-network
+
+  # 向量数据库：Qdrant - 已禁用，使用本地 Qdrant
+  # qdrant:
+  #   image: qdrant/qdrant:latest
+  #   container_name: jachin-qdrant-dev
+  #   ports:
+  #     - "6333:6333"  # REST API
+  #     - "6334:6334"  # gRPC API
+  #   volumes:
+  #     - qdrant_data:/qdrant/storage
+  #   restart: always
+  #   environment:
+  #     - QDRANT__SERVICE__GRPC_PORT=6334
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #   networks:
+  #     - jachin-network
+
+  # Redis (用于缓存和消息队列)
+  redis:
+    image: redis:7-alpine
+    container_name: jachin-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-network
+
+  # MQTT Broker (用于 IoT 通信)
+  mqtt:
+    image: eclipse-mosquitto:2.0
+    container_name: jachin-mqtt-dev
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./communication/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mqtt_data:/mosquitto/data
+      - mqtt_logs:/mosquitto/log
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-t", "$$SYS/broker/uptime", "-C", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - jachin-network
+
+  # Dapr Placement (用于 Actor 模式)
+  # 注意：Windows 上 Dapr 默认使用端口 6050
+  dapr-placement:
+    image: "daprio/dapr:latest"
+    container_name: jachin-dapr-placement-dev
+    command: ["./placement", "-port", "6050"]
+    ports:
+      - "6050:6050"
+    networks:
+      - jachin-network
+
+  # Dapr Scheduler (用于 Actor Reminders 和定时任务)
+  # 配置此服务可以彻底消除 scheduler 连接错误
+  # 注意：Scheduler 在 standalone 模式下需要额外的配置
+  dapr-scheduler:
+    image: "daprio/dapr:latest"
+    container_name: jachin-dapr-scheduler-dev
+    command: ["/scheduler", "--port", "6060", "--mode", "standalone", "--listen-address", "0.0.0.0", "--healthz-port", "8080", "--etcd-data-dir", "/data/scheduler"]
+    ports:
+      - "6060:6060"
+      - "8080:8080"  # Health check port
+    volumes:
+      - dapr_scheduler_data:/data
+    networks:
+      - jachin-network
+    restart: unless-stopped
+    # 使用 root 用户运行以避免权限问题（开发环境）
+    user: "0:0"
+
+  # Zipkin (用于分布式追踪，可选)
+  # Disabled by default - port 9411 is often already allocated
+  # Uncomment below if you need tracing and fix port conflict
+  # zipkin:
+  #   image: openzipkin/zipkin:latest
+  #   container_name: jachin-zipkin-dev
+  #   ports:
+  #     - "9412:9411"  # Use alternative port 9412 to avoid conflicts
+  #   networks:
+  #     - jachin-network
+
+volumes:
+  # postgres_data:  # 已禁用，使用本地 PostgreSQL
+  # qdrant_data:    # 已禁用，使用本地 Qdrant
+  redis_data:
+  mqtt_data:
+  mqtt_logs:
+  dapr_scheduler_data:  # Dapr Scheduler 数据存储
+
+networks:
+  jachin-network:
+    name: jachin-network-dev
+    driver: bridge
