@@ -1,18 +1,19 @@
 /**
  * Chat Window - 全息风格对话窗口（MIND STREAM）
- * 
- * 独立 chat 窗口入口，使用 ChatWindow 全息 UI。
+ *
+ * 独立 chat 窗口入口，使用 ChatUI 全息 UI。
  */
 
 import React, { useState, useRef, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { sendChatMessage, streamChatMessage, voiceChat, synthesizeSpeech } from "./lib/api";
+import { sendChatMessage, streamChatMessage, voiceChat, synthesizeSpeech, routeIntent, checkHealth } from "./lib/api";
+import { useAppStore } from "./store/appStore";
 import { useSpriteStore } from "./store/spriteStore";
 import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
-import { ChatWindow, ChatMessage } from "./components/Chat/ChatWindow";
+import { ChatUI } from "./components/Chat/ChatUI";
 import "./styles/globals.css";
 
 function ChatApp() {
@@ -21,13 +22,43 @@ function ChatApp() {
   const [isLoading, setIsLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState<string>("");
+  /** 录音过程中流式语音识别结果（Web Speech API 实时转写） */
+  const [listeningText, setListeningText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const typewriterCancelRef = useRef<(() => void) | null>(null);
+  const { isConnected, setConnected } = useAppStore();
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
+  /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
+  const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
+  const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
+
+  // Chat 为独立窗口，需自行轮询后端连接状态（与主窗口共享 Zustand 但各自挂载，此处主动检测）
+  useEffect(() => {
+    let mounted = true;
+    const check = async () => {
+      try {
+        await checkHealth();
+        if (mounted) setConnected(true);
+      } catch {
+        if (mounted) setConnected(false);
+      }
+    };
+    check();
+    const interval = setInterval(check, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [setConnected]);
+
+  // 窗口显示时请求焦点，便于左键点击能落到输入区
+  useEffect(() => {
+    getCurrentWindow().setFocus().catch(() => {});
+  }, []);
 
   // 加载保存的消息历史
   useEffect(() => {
@@ -44,23 +75,19 @@ function ChatApp() {
     }
   }, [messages]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  // 滚动由 HolographicChat 内部的 messagesEndRef 处理，此处不重复
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading || isTyping) return;
-
+  /** 实际发送消息（在意图路由与高风险确认之后调用） */
+  const doActualSend = async (content: string) => {
     const userMessage: StoredMessage = {
       role: "user",
-      content: input.trim(),
+      content,
       timestamp: Date.now(),
     };
     setMessages((prev) => addMessage(prev, userMessage));
     setInput("");
     setIsLoading(true);
-
-    // 更新精灵状态为思考
+    setRiskLevel("safe");
     setState("thinking");
 
     try {
@@ -163,13 +190,50 @@ function ChatApp() {
     } finally {
       setIsLoading(false);
       setIsTyping(false);
+      setRiskLevel("safe");
     }
   };
 
-  // 注意：handleClearMessages, handleClose, handleKeyPress 已移至 ChatWindow 组件
+  const handleSend = async () => {
+    if (!input.trim() || isLoading || isTyping) return;
+    const trimmed = input.trim();
 
-  // 开始录音
+    try {
+      const routed = await routeIntent(trimmed);
+      if (routed.intent_type === "COMMAND") {
+        if (routed.risk_level === "high") {
+          setRiskLevel("danger");
+          setPendingHighRisk({ text: trimmed, strippedText: routed.stripped_text });
+          return;
+        }
+        setRiskLevel("warning");
+      } else {
+        setRiskLevel("safe");
+      }
+    } catch {
+      setRiskLevel("safe");
+    }
+    await doActualSend(trimmed);
+  };
+
+  const handleConfirmHighRisk = () => {
+    const pending = pendingHighRisk;
+    setPendingHighRisk(null);
+    setRiskLevel("safe");
+    if (pending) doActualSend(pending.text);
+  };
+
+  const handleCancelHighRisk = () => {
+    setPendingHighRisk(null);
+    setRiskLevel("safe");
+  };
+
+  // 注意：清空/关闭等由 HolographicChat 或窗口控制
+
+  // 开始录音（同时启动浏览器流式语音识别，实时显示转写）
   const startRecording = async () => {
+    getCurrentWindow().setFocus().catch(() => {});
+    setListeningText("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
@@ -177,9 +241,6 @@ function ChatApp() {
       audioChunksRef.current = [];
       setIsRecording(true);
       setRecordingStatus("正在录音...");
-      
-      // 更新精灵状态为监听
-      setState("listening");
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -188,19 +249,50 @@ function ChatApp() {
       };
 
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
         (window as any).recordedAudioBlob = audioBlob;
-        stream.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach((track) => track.stop());
+        if (speechRecognitionRef.current) {
+          try {
+            speechRecognitionRef.current.abort();
+          } catch {}
+          speechRecognitionRef.current = null;
+        }
         setIsRecording(false);
         setRecordingStatus("录音完成");
-        
-        // 自动发送语音消息
+        setListeningText("");
         handleVoiceChat(audioBlob);
       };
 
       mediaRecorder.start();
+
+      const SpeechRecognitionCtor =
+        typeof SpeechRecognition !== "undefined"
+          ? SpeechRecognition
+          : typeof webkitSpeechRecognition !== "undefined"
+            ? webkitSpeechRecognition
+            : null;
+      if (SpeechRecognitionCtor) {
+        const recognition = new SpeechRecognitionCtor();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "zh-CN";
+        recognition.onresult = (e: SpeechRecognitionEvent) => {
+          let text = "";
+          for (let i = 0; i < e.results.length; i++) {
+            text += e.results[i][0].transcript;
+          }
+          if (text) setListeningText(text);
+        };
+        recognition.onerror = () => {};
+        recognition.onend = () => {};
+        speechRecognitionRef.current = recognition;
+        recognition.start();
+      }
+      setState("listening");
     } catch (error: any) {
       setIsRecording(false);
+      setListeningText("");
       setRecordingStatus(`无法访问麦克风: ${error.message}`);
       setState("idle");
     }
@@ -208,7 +300,14 @@ function ChatApp() {
 
   // 停止录音
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.abort();
+      } catch {}
+      speechRecognitionRef.current = null;
+    }
+    setListeningText("");
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
   };
@@ -308,19 +407,10 @@ function ChatApp() {
     }
   };
 
-  // 转换消息格式（过滤 system，ChatWindow 仅支持 user | assistant）
-  const chatMessages: ChatMessage[] = messages
-    .filter((msg) => msg.role !== "system")
-    .map((msg) => ({
-      role: msg.role as "user" | "assistant",
-      content: msg.content,
-      timestamp: msg.timestamp ?? 0,
-    }));
-
   return (
-    <>
-      <ChatWindow
-        messages={chatMessages}
+    <div className="w-full h-full min-h-0 flex flex-col bg-transparent border-0 relative" style={{ height: "100vh", background: "transparent" }}>
+      <ChatUI
+        messages={messages}
         input={input}
         onInputChange={setInput}
         onSend={handleSend}
@@ -329,18 +419,42 @@ function ChatApp() {
         isLoading={isLoading}
         isTyping={isTyping}
         isRecording={isRecording}
-        placeholder="Type a message..."
+        recordingStatus={recordingStatus}
+        listeningText={listeningText}
+        placeholder={isConnected ? "输入指令..." : "等待连接..."}
+        riskLevel={riskLevel}
+        disabled={!isConnected}
       />
-      {/* 隐藏的音频元素，用于播放 TTS（语音回复 + 文本回复朗读） */}
+      {/* 高风险操作二次确认弹窗 */}
+      {pendingHighRisk && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 rounded-2xl" onClick={handleCancelHighRisk}>
+          <div className="bg-slate-900 border-2 border-red-500/80 rounded-xl p-4 max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <p className="text-red-200 text-sm font-medium mb-2">⚠️ 检测到高风险操作</p>
+            <p className="text-slate-300 text-xs mb-4">{pendingHighRisk.strippedText || "系统指令"}</p>
+            <p className="text-slate-400 text-xs mb-4">请确认或口述确认码 <span className="text-cyan-400 font-mono">Alpha-9</span> 以继续。</p>
+            <div className="flex gap-2 justify-end">
+              <button type="button" onClick={handleCancelHighRisk} className="px-3 py-1.5 rounded-lg bg-white/10 text-slate-300 text-sm hover:bg-white/20">取消</button>
+              <button type="button" onClick={handleConfirmHighRisk} className="px-3 py-1.5 rounded-lg bg-red-500/30 text-red-200 text-sm hover:bg-red-500/50 border border-red-400/50">确认</button>
+            </div>
+          </div>
+        </div>
+      )}
       <audio ref={chatAudioRef} style={{ display: "none" }} />
-    </>
+    </div>
   );
 }
 
-// 初始化
-const root = document.getElementById("chat-root");
-if (root) {
-  ReactDOM.createRoot(root).render(
+// 初始化：只 createRoot 一次，热更新时只调用 render，避免 “container already passed to createRoot” 警告
+const rootEl = document.getElementById("chat-root");
+if (rootEl) {
+  const root =
+    (window as Window & { __chatReactRoot?: ReturnType<typeof ReactDOM.createRoot> }).__chatReactRoot ??
+    (() => {
+      const r = ReactDOM.createRoot(rootEl);
+      (window as Window & { __chatReactRoot?: typeof r }).__chatReactRoot = r;
+      return r;
+    })();
+  root.render(
     <React.StrictMode>
       <ChatApp />
     </React.StrictMode>

@@ -570,10 +570,18 @@ $daprRunArgs += "--resources-path", $componentsPath, "--config", $configPath, "-
         $line = $_
         $now = [DateTimeOffset]::Now.ToUnixTimeSeconds()
         
-        # 过滤 scheduler 连接错误（已知的 Dapr 1.16.5 限制）
-        if ($line -match "Failed to connect to scheduler host" -or $line -match "scheduler.watchhosts") {
+        # 过滤 scheduler 连接错误（Scheduler 在 Docker 内网，宿主机 daprd 无法访问 172.x.x.x:6060，已知限制）
+        $isSchedulerError = (
+            $line -match "Failed to connect to scheduler host" -or
+            $line -match "scheduler\.watchhosts" -or
+            $line -match "Failed to watch scheduler jobs" -or
+            $line -match "error watching scheduler jobs" -or
+            $line -match "failed to run scheduler cluster" -or
+            ($line -match "scheduler" -and $line -match "dial tcp 172\.\d+\.\d+\.\d+:6060")
+        )
+        if ($isSchedulerError) {
             if (($now - $script:schedulerErrorLastShown) -ge 60) {
-                Write-Host "[WARN] Scheduler connection retrying (harmless, known Dapr limitation)" -ForegroundColor DarkYellow
+                Write-Host "[WARN] Dapr Scheduler unreachable (Scheduler in Docker, sidecar on host - harmless for dev)" -ForegroundColor DarkYellow
                 $script:schedulerErrorLastShown = $now
             }
             return

@@ -6,8 +6,13 @@
 
 import React, { useRef, useCallback, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { CHAT_DRAG_DEBUG, chatDragLog } from "@/config";
 
 const DRAG_THRESHOLD_PX = 3;
+
+function dragLog(...args: unknown[]) {
+  if (CHAT_DRAG_DEBUG) chatDragLog("DraggableRegion", ...args);
+}
 
 export interface DraggableRegionProps {
   children?: React.ReactNode;
@@ -33,6 +38,7 @@ export const DraggableRegion: React.FC<DraggableRegionProps> = ({
       const dy = e.clientY - d.y;
       if (dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
         d.started = true;
+        dragLog("startDragging()");
         onDragStart?.();
         void getCurrentWindow().startDragging();
       }
@@ -49,6 +55,20 @@ export const DraggableRegion: React.FC<DraggableRegionProps> = ({
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (e.button !== 0) return;
+      const target = e.target as Node;
+      if (target && target instanceof HTMLElement) {
+        const interactive = target.closest?.("input, button, textarea, label, [contenteditable=true]");
+        if (interactive) {
+          dragLog("skip (interactive)", (interactive as HTMLElement).tagName, (interactive as HTMLElement).id || "");
+          return;
+        }
+        const noDrag = target.closest?.("[data-no-drag]") || target.closest?.("[data-chat-interactive]");
+        if (noDrag) {
+          dragLog("skip (no-drag/chat-interactive)", (noDrag as HTMLElement).tagName);
+          return;
+        }
+      }
+      dragLog("start tracking drag", e.clientX, e.clientY);
       downRef.current = { x: e.clientX, y: e.clientY, started: false };
       document.addEventListener("mousemove", handleMove);
       document.addEventListener("mouseup", handleUp);

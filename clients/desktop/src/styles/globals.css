@@ -78,6 +78,12 @@
     box-shadow: none !important;
   }
 
+  /* Chat 窗口：去掉外层细边框，避免 * { border-border } 等形成一圈线 */
+  #chat-root,
+  #chat-root > * {
+    border: none !important;
+  }
+
   /* 深空背景 (Deep Space): 中心午夜蓝 #0f172a → 边缘纯黑 #000，叠加 0.05 透明度网格 */
   /* 主题变体：cyber-heart 默认深色，cyber-light 浅色，cyber-neon 霓虹强调 */
   .console-deep-space[data-theme="cyber-heart"] {
@@ -124,8 +130,16 @@
     font-family: ui-monospace, "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
   }
 
+  /* 极低不透明，避免 OS 对透明窗口点击穿透，视觉仍为透明 */
   #chat-root {
-    background: transparent;
+    background: rgba(0,0,0,0.02) !important;
+    pointer-events: auto !important;
+  }
+  /* Chat 窗口：强制输入/按钮可点击，避免透明窗口或父层影响 */
+  #chat-root input,
+  #chat-root button,
+  #chat-root [data-chat-interactive] {
+    pointer-events: auto !important;
   }
 }
 

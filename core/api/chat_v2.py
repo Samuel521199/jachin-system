@@ -43,6 +43,31 @@ async def list_personalities():
     }
 
 
+@router.get("/llm-status")
+async def llm_status():
+    """
+    检查当前 LLM（本地/云端）是否可用，供前端决定是否使用流式直连等。
+    Returns:
+        available: 是否可用
+        provider: 类型，如 local / qwen
+        model: 当前模型名
+    """
+    provider = await _resolve_provider()
+    if not provider:
+        return {"available": False, "provider": None, "model": None}
+    try:
+        healthy = await provider.health_check()
+        info = provider.get_model_info() or {}
+        return {
+            "available": bool(healthy),
+            "provider": info.get("provider") or getattr(provider, "model", ""),
+            "model": info.get("model") or getattr(provider, "model", ""),
+        }
+    except Exception as e:
+        logger.debug("llm_status check failed: %s", e)
+        return {"available": False, "provider": None, "model": None}
+
+
 class ChatMessage(BaseModel):
     """聊天消息模型"""
     role: str = Field(..., description="角色: user, assistant, system")
@@ -240,7 +265,8 @@ async def chat_text(request: TextChatRequest):
             
             return StreamingResponse(
                 generate(),
-                media_type="text/event-stream"
+                media_type="text/event-stream; charset=utf-8",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         else:
             # 同步响应
@@ -334,7 +360,8 @@ async def chat_image(
             
             return StreamingResponse(
                 generate(),
-                media_type="text/event-stream"
+                media_type="text/event-stream; charset=utf-8",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         else:
             response_text = await provider.chat_with_image(messages, images, **kwargs)

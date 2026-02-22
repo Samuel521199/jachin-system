@@ -72,7 +72,8 @@ class StateStore:
             if not self._use_dapr:
                 # 使用内存存储
                 self._memory_store[key] = value
-                logger.debug(f"Saved state to memory: {key}")
+                if not key.startswith("device:"):
+                    logger.debug(f"Saved state to memory: {key}")
                 return True
             
             # 序列化值
@@ -90,8 +91,9 @@ class StateStore:
                 etag=etag,
                 metadata=metadata or {},
             )
-            
-            logger.debug(f"Saved state: {key}")
+            # 避免 device:* 高频保存时 DEBUG 刷屏（如桌面心跳/重注册）
+            if not key.startswith("device:"):
+                logger.debug(f"Saved state: {key}")
             return True
         
         except Exception as e:

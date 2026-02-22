@@ -1,4 +1,4 @@
-﻿# 语音系统完整指南
+# 语音系统完整指南
 
 ## 目录
 
@@ -16,6 +16,7 @@ Jachin-System 现在支持完整的语音交互功能，包括：
 - **语音识别（STT）**：将语音转换为文本
 - **语音合成（TTS）**：将文本转换为语音
 - **语音聊天**：完整的语音对话流程
+- **三种语音模式**：录音 (Push-to-Talk)、唤醒 (Wake-Up)、识别 (Continuous)，以及**安全指令协议**（命令前缀、二次确认、Alert Mode）→ 详见 [VOICE_MODES_AND_SAFETY_PROTOCOL.md](./VOICE_MODES_AND_SAFETY_PROTOCOL.md) 与 [TTS_RULES_AND_ARCHITECTURE.md](./TTS_RULES_AND_ARCHITECTURE.md)。
 
 ### 架构设计
 

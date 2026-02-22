@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any
 import logging
 import base64
 
-from core.voice import SpeechToText, STTProvider, TextToSpeech, TTSProvider
+from core.voice import SpeechToText, STTProvider, TextToSpeech, TTSProvider, IntentRouter
 from core.brain.llm.factory import LLMProviderFactory
 from core.brain.llm.call_types import AudioInput
 from core.config import settings
@@ -67,6 +67,9 @@ except Exception as e:
     logger.error(f"Failed to initialize LLM provider: {e}")
     llm_provider = None
 
+# 语义路由器（安全指令协议）
+intent_router = IntentRouter()
+
 
 class RecognizeRequest(BaseModel):
     """语音识别请求"""
@@ -97,6 +100,30 @@ class PhonemizeRequest(BaseModel):
     style: str = Field(default="zm", description="语音风格，如 zm 用于中英混合")
 
 
+class IntentRouteRequest(BaseModel):
+    """语义路由请求（安全指令协议）"""
+    text: str = Field(..., description="用户输入文本")
+
+
+class IntentRouteResponse(BaseModel):
+    """语义路由响应"""
+    intent_type: str = Field(..., description="CHAT | COMMAND")
+    risk_level: str = Field(..., description="low | medium | high")
+    stripped_text: str = Field(..., description="去掉命令前缀后的文本")
+
+
+class IntentRouteRequest(BaseModel):
+    """语义路由请求（安全指令协议）"""
+    text: str = Field(..., description="用户输入文本")
+
+
+class IntentRouteResponse(BaseModel):
+    """语义路由响应"""
+    intent_type: str = Field(..., description="CHAT | COMMAND")
+    risk_level: str = Field(..., description="low | medium | high")
+    stripped_text: str = Field(..., description="去掉命令前缀后的文本")
+
+
 class VoiceChatRequest(BaseModel):
     """语音聊天请求"""
     audio_base64: Optional[str] = None
@@ -114,6 +141,20 @@ class VoiceChatResponse(BaseModel):
     text: str = Field(description="AI的回复文本")
     audio_base64: Optional[str] = None
     audio_format: Optional[str] = None
+
+
+@router.post("/intent", response_model=IntentRouteResponse)
+async def route_intent(request: IntentRouteRequest):
+    """
+    语义路由：将用户文本分类为 CHAT（闲聊）或 COMMAND（系统指令）。
+    前端可根据 intent_type 切换 UI（如 Alert Mode），根据 risk_level 决定是否二次确认。
+    """
+    routed = intent_router.route(request.text)
+    return IntentRouteResponse(
+        intent_type=routed.intent_type,
+        risk_level=routed.risk_level,
+        stripped_text=routed.stripped_text,
+    )
 
 
 @router.post("/recognize", response_model=RecognizeResponse)

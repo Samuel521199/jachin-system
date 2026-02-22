@@ -3,18 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%230c4a6e' width='32' height='32' rx='6'/><path fill='%2322d3ee' d='M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z'/></svg>" />
     <title>Jachin Chat</title>
     <style>
-      body {
+      /* 极低不透明背景：避免 Windows 透明窗口对“全透明”区域做点击穿透，左键须进入 WebView */
+      html, body {
         margin: 0;
         padding: 0;
-        background-color: #0f172a;
+        background: rgba(0,0,0,0.02) !important;
         overflow: hidden;
+        pointer-events: auto;
       }
       #chat-root {
         width: 100vw;
         height: 100vh;
-        background-color: #0f172a;
+        background: rgba(0,0,0,0.02) !important;
+        pointer-events: auto !important;
+      }
+      #chat-root input,
+      #chat-root button,
+      #chat-root label,
+      #chat-root [data-chat-interactive] {
+        pointer-events: auto !important;
+      }
+      #chat-root input {
+        user-select: text;
       }
     </style>
   </head>

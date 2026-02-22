@@ -4,12 +4,13 @@
 mod commands;
 mod config;
 mod dapr;
-mod kernel;
 mod device;
 mod device_registry;
+mod kernel;
 mod pubsub;
-mod window;
+mod stt;
 mod tts;
+mod window;
 
 use sysinfo::System;
 
@@ -277,6 +278,10 @@ fn main() {
             commands::settings::get_current_config,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
+            stt_start_wake_listener,
+            stt_stop_wake_listener,
+            stt_wake_listener_running,
+            stt_emit_wake_up,
             invoke_backend,
             control_device,
             get_system_info,
@@ -509,6 +514,33 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// 启动唤醒词监听（模式 B：Wake-Up）。检测到 "Jachin" 时发出 WAKE_UP 事件。
+#[tauri::command]
+async fn stt_start_wake_listener(app: tauri::AppHandle) -> Result<(), String> {
+    stt::WakeWordDetector::start(app);
+    Ok(())
+}
+
+/// 停止唤醒词监听
+#[tauri::command]
+fn stt_stop_wake_listener() -> Result<(), String> {
+    stt::WakeWordDetector::stop();
+    Ok(())
+}
+
+/// 是否正在监听唤醒词
+#[tauri::command]
+fn stt_wake_listener_running() -> Result<bool, String> {
+    Ok(stt::WakeWordDetector::is_running())
+}
+
+/// 模拟唤醒（测试用）：向前端发送 WAKE_UP 事件
+#[tauri::command]
+async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
+    stt::WakeWordDetector::emit_wake_up(&app);
+    Ok(())
 }
 
 /// 显示对话窗口

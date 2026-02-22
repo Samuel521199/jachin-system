@@ -3,6 +3,7 @@ Unified logging - 统一日志配置
 
 支持控制台与文件输出，可配置日志级别（INFO/DEBUG）。
 应用启动时应调用 setup_logging() 初始化。
+Windows 下控制台输出强制 UTF-8，避免 dashscope 等库的 DEBUG 中文乱码。
 """
 
 import logging
@@ -11,6 +12,17 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import settings
+
+
+def _utf8_console_stream():
+    """Windows 下返回强制 UTF-8 的控制台流，供 logging 使用，避免中文乱码。"""
+    if sys.platform != "win32":
+        return sys.stdout
+    try:
+        import codecs
+        return codecs.getwriter("utf-8")(sys.stdout.buffer, "strict")
+    except Exception:
+        return sys.stdout
 
 
 def setup_logging(
@@ -39,8 +51,8 @@ def setup_logging(
     fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     formatter = logging.Formatter(fmt)
 
-    # 控制台
-    console_handler = logging.StreamHandler(sys.stdout)
+    # 控制台（Windows 下使用 UTF-8 流，避免第三方库如 dashscope 的 DEBUG 中文乱码）
+    console_handler = logging.StreamHandler(_utf8_console_stream())
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     root.addHandler(console_handler)

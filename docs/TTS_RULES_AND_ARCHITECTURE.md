@@ -1,4 +1,9 @@
-# Jachin TTS 规则与架构总结
+# Jachin 语音规则与架构总结（TTS + 语音模式与安全协议）
+
+本文档覆盖：**TTS 合成规则与分层架构**、**语音交互三种模式**、**安全指令协议**。  
+语音模式与安全协议详细设计见 → [VOICE_MODES_AND_SAFETY_PROTOCOL.md](./VOICE_MODES_AND_SAFETY_PROTOCOL.md)。
+
+---
 
 ## 一、规则概览 (`.cursor/rules/055-tts-service.mdc`)
 
@@ -35,7 +40,31 @@
 
 ---
 
-## 二、架构
+## 二、语音交互设计（三种模式与安全指令协议）
+
+### 1. 三种语音模式
+
+| 模式 | 技术难度 | 资源消耗 | 误触风险 | 适用场景 |
+|------|----------|----------|----------|----------|
+| **A. 录音模式 (Push-to-Talk)** | ⭐ 低 | 低 | 极低 | 隐私高、环境嘈杂、长文本 |
+| **B. 唤醒模式 (Wake-Up)** | ⭐⭐ 中 | 中 (常驻 KWS) | 低 | 远场、双手占用 (做饭、打字) |
+| **C. 识别模式 (Continuous)** | ⭐⭐⭐ 高 | 高 (VAD+STT 常驻) | **高** | 沉浸式闲聊、头脑风暴、陪伴 |
+
+- **模式 A**：当前 Chat 已支持（按住/点击麦克风录音 → 送 Layer 2 STT → 对话）。
+- **模式 B**：Layer 3 轻量 KWS（唤醒词如 "Jachin"）→ 检测到后发 `WAKE_UP` 事件 → 播放「叮」→ 开启约 5 秒录音 → 送 Layer 2。
+- **模式 C**：Layer 3 VAD 有人说话即推流；Layer 2 实时 STT + **语义路由器** 区分 CHAT / COMMAND。
+
+### 2. 安全指令协议（原则：闲聊随意，执行命令必须「带刺」）
+
+- **命令前缀**：系统级操作须带触发短语，如 `"系统指令"`、`"Jachin Execute"`；无前缀仅 LLM 回复，**禁止** FileTool/ShellTool。
+- **二次确认**：高风险操作（删除、格式化、关机等）须弹窗确认或口述确认码（如 Alpha-9）后再执行。
+- **UI 反馈 (Alert Mode)**：检测到系统指令时 UI 切为橙/红边框；高风险待确认时红色边框 + 确认弹窗。
+
+实现状态与 API 见下文「四、实现状态」与「五、API 端点」；完整设计见 [VOICE_MODES_AND_SAFETY_PROTOCOL.md](./VOICE_MODES_AND_SAFETY_PROTOCOL.md)。
+
+---
+
+## 三、架构
 
 ### 分层结构
 
@@ -81,7 +110,7 @@ decide_provider(text):
 
 ---
 
-## 三、性能分析
+## 四、性能分析
 
 ### 1. 本地 Kokoro
 
@@ -137,7 +166,7 @@ sequenceDiagram
 
 ---
 
-## 四、实现状态
+## 五、实现状态
 
 | 功能 | 状态 |
 |------|------|
@@ -158,21 +187,30 @@ sequenceDiagram
 | Tier 2 TTS models 静态服务 | ✅ 已实现 |
 | 一键部署 (deploy.ps1) | ✅ 已实现 |
 | 前端优先本地 TTS | ✅ 已实现 |
+| **语音模式与安全协议** | |
+| 唤醒词骨架 (STT KWS) | ✅ 已实现（`stt/keyword_spotting.rs`，WAKE_UP 事件 + Tauri 命令） |
+| 语义路由器 IntentRouter | ✅ 已实现（`core/voice/intent_router.py`，COMMAND/CHAT + risk_level） |
+| 意图路由 API `/api/v2/voice/intent` | ✅ 已实现 |
+| 前端 riskLevel + Alert Mode 边框 | ✅ 已实现 |
+| 高风险二次确认弹窗 | ✅ 已实现 |
 
 ---
 
-## 五、API 端点 (Tier 2)
+## 六、API 端点 (Tier 2)
 
 | 端点 | 方法 | 用途 |
 |------|------|------|
 | `/api/v2/voice/synthesize` | POST | 文本合成语音 |
 | `/api/v2/voice/phonemize` | POST | 文本→音素（Split-Inference） |
 | `/api/v2/voice/voices` | GET | 语音列表 |
+| `/api/v2/voice/intent` | POST | 语义路由（安全指令协议）：请求 `{ "text" }`，返回 `intent_type`(CHAT/COMMAND)、`risk_level`、`stripped_text` |
 | `/api/v2/tts/models/{filename}` | GET | 模型下载（kokoro-v0_19.onnx, voices.json） |
+
+**Tauri 命令（语音/唤醒）**：`stt_start_wake_listener`、`stt_stop_wake_listener`、`stt_wake_listener_running`、`stt_emit_wake_up`（测试）；事件 `WAKE_UP`。
 
 ---
 
-## 六、需要注意的工程细节 (Action Items)
+## 七、需要注意的工程细节 (Action Items)
 
 落地时需注意以下事项：
 
