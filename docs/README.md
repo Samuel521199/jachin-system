@@ -8,9 +8,15 @@
 
 | 文档 | 说明 |
 |------|------|
+| [VISION.md](./VISION.md) | **产品愿景与身份**（贾维斯/电子宠物/伙伴/智能体生态） |
 | [whitepaper_v4.0_swarm.md](./whitepaper_v4.0_swarm.md) | 架构白皮书（v4.0 蜂群智能） |
-| [V3.2_ARCHITECTURE_DIAGRAMS.md](./V3.2_ARCHITECTURE_DIAGRAMS.md) | 架构图与流程图 |
-| [DIRECTORY_STRUCTURE_TREE.md](./DIRECTORY_STRUCTURE_TREE.md) | 目录结构树 |
+| [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md) | **Layer 1 架构与设计总览**（Jachin Nexus、模块、风格、流程、实施状态） |
+| [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md) | **微内核生态深度融合升级**（指挥权/执行权剥离、JMP 2.0、环境透镜、GitOps 握手） |
+| [MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md](./MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md) | **微内核生态战术战役规划**（P0/P1/P2 优先级、实施顺序、现有映射） |
+| [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) | **第四章：RAG 架构**（有机记忆管线、Core Memory、Edge L1 缓存） |
+| [PROJECT_JACHIN_1.0_ARCHITECTURE_PPT.md](./PROJECT_JACHIN_1.0_ARCHITECTURE_PPT.md) | **Project Jachin 1.0 架构汇报 PPT 大纲**（完成阶段存档） |
+| [V3.2_ARCHITECTURE_DIAGRAMS.md](./archive/V3.2_ARCHITECTURE_DIAGRAMS.md) | 架构图与流程图（归档） |
+| [DIRECTORY_STRUCTURE_V4.md](./DIRECTORY_STRUCTURE_V4.md) | 目录结构树（v4.0） |
 | [architecture.md](./architecture.md) | 架构设计补充 |
 
 ---
@@ -49,18 +55,15 @@
 | [QWEN_ARCHITECTURE.md](./QWEN_ARCHITECTURE.md) | Qwen API 架构 |
 | [SENTINEL_DESIGN.md](./SENTINEL_DESIGN.md) | Sentinel 哨兵设计 |
 | [TECHNICAL_SPECIFICATIONS.md](./TECHNICAL_SPECIFICATIONS.md) | 技术规格 |
-
----
-
-## 实施状态
-
-| 文档 | 说明 |
-|------|------|
-| [V3.2_IMPLEMENTATION_STATUS_CONSOLIDATED.md](./V3.2_IMPLEMENTATION_STATUS_CONSOLIDATED.md) | 实施状态汇总 |
-| [V3.2_TECH_STACK_UPGRADE.md](./V3.2_TECH_STACK_UPGRADE.md) | 技术栈升级 |
+| [JMP_SPEC.md](./JMP_SPEC.md) | JMP 2.0 协议规范 |
+| [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱安全设计 |
+| [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) | **混合动力沙箱**（WASM + UDS 划时代方案） |
+| [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | **P0 信任链与心跳**（JMP 签名、防篡改、端云心跳） |
+| [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) | **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包） |
+| [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | **设备配对协议**（6 位码、端云三次握手、RFC 8628） |
 
 ---
 
 ## 归档
 
-历史与一次性报告已移至 `docs/archive/`，包括：PHASE_*、*COMPLETE、*SUCCESS、各类修复报告等。
+历史文档已移至 [docs/archive/](./archive/)，包括：V3.2 架构图、实施状态、技术栈升级报告，以及 PHASE_*、*COMPLETE、*SUCCESS 等一次性报告。

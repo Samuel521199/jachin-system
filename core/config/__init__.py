@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_GRPC_URL: str = "http://localhost:6334"
 
+    # LanceDB（RAG 战役一、Edge L1 本地向量库）
+    LANCEDB_PATH: str = "data/lancedb"
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
@@ -56,8 +59,9 @@ class Settings(BaseSettings):
     LOCAL_LLM_MODEL: str = "qwen-7b-chat"
     LOCAL_LLM_API_KEY: Optional[str] = None
 
-    # Layer 1 Cloud (Jachin Market)
+    # Layer 1 Cloud (Jachin Nexus)
     CLOUD_MARKET_URL: str = "https://market.jachin.io"  # 技能市场 API 基地址
+    NEXUS_BASE_URL: str = "http://localhost:3000"     # Nexus 本地开发地址
     CLOUD_AUTH_URL: str = "https://auth.jachin.io"      # OAuth2 认证端点
     CLOUD_CLIENT_ID: Optional[str] = None               # OAuth2 client_id
     CLOUD_CLIENT_SECRET: Optional[str] = None           # OAuth2 client_secret
@@ -151,3 +155,17 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
+
+
+def get_effective_qwen_api_key() -> Optional[str]:
+    """获取有效的 Qwen API Key：用户保存的覆盖 > 环境变量"""
+    from core.config.api_key_override import get_qwen_api_key_override
+
+    override = get_qwen_api_key_override()
+    if override:
+        return override
+    return (
+        settings.QWEN_AI_API_KEY
+        or settings.DASHSCOPE_API_KEY
+        or settings.QWEN_API_KEY
+    )

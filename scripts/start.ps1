@@ -547,6 +547,30 @@ $placementHost = if ($env:DAPR_PLACEMENT_HOST_ADDRESS) { $env:DAPR_PLACEMENT_HOS
 $schedulerHost = if ($env:DAPR_SCHEDULER_HOST_ADDRESS) { $env:DAPR_SCHEDULER_HOST_ADDRESS.Trim() } else { "localhost:6060" }
 $skipPlacement = $placementHost -in @("skip", "mdns", "")
 $skipScheduler = $schedulerHost -in @("skip", "mdns", "")
+
+# 若使用 Scheduler（非 skip），等待其就绪再启动 daprd
+$script:schedulerWasReady = $false
+if (-not $skipScheduler) {
+    $schedulerHostOnly = ($schedulerHost -split ":")[0]
+    $schedulerPort = if (($schedulerHost -split ":").Count -gt 1) { [int]($schedulerHost -split ":")[1] } else { 6060 }
+    Write-Info "Waiting for Dapr Scheduler at ${schedulerHostOnly}:${schedulerPort}..."
+    for ($i = 1; $i -le 12; $i++) {
+        try {
+            $client = New-Object System.Net.Sockets.TcpClient
+            $client.ReceiveTimeout = 2000
+            $client.SendTimeout = 2000
+            $client.Connect($schedulerHostOnly, $schedulerPort)
+            $client.Close()
+            $script:schedulerWasReady = $true
+            Write-Success "Dapr Scheduler is ready"
+            break
+        } catch { }
+        if ($i -lt 12) { Start-Sleep -Seconds 2 }
+    }
+    if (-not $script:schedulerWasReady) {
+        Write-Warning "Dapr Scheduler not ready after 24s - set DAPR_SCHEDULER_HOST_ADDRESS=skip to avoid connection errors"
+    }
+}
 if (-not $skipPlacement) { Write-Host "  Placement:  $placementHost" -ForegroundColor DarkGray }
 if (-not $skipScheduler) { Write-Host "  Scheduler:  $schedulerHost" -ForegroundColor DarkGray }
 
@@ -580,10 +604,18 @@ $daprRunArgs += "--resources-path", $componentsPath, "--config", $configPath, "-
             ($line -match "scheduler" -and $line -match "dial tcp 172\.\d+\.\d+\.\d+:6060")
         )
         if ($isSchedulerError) {
-            if (($now - $script:schedulerErrorLastShown) -ge 60) {
-                Write-Host "[WARN] Dapr Scheduler unreachable (Scheduler in Docker, sidecar on host - harmless for dev)" -ForegroundColor DarkYellow
-                $script:schedulerErrorLastShown = $now
+            # 若已确认 Scheduler 就绪，仅静默过滤（daprd 可能短暂重试后成功）
+            if (-not $script:schedulerWasReady) {
+                if (($now - $script:schedulerErrorLastShown) -ge 60) {
+                    Write-Host "[WARN] Dapr Scheduler unreachable - set DAPR_SCHEDULER_HOST_ADDRESS=localhost:6060 in .env (harmless for dev)" -ForegroundColor DarkYellow
+                    $script:schedulerErrorLastShown = $now
+                }
             }
+            return
+        }
+
+        # 过滤 Ray metrics exporter 错误（开发模式无 Prometheus 时无害）
+        if ($line -match "metrics exporter agent" -or $line -match "Metrics will not be exported") {
             return
         }
         

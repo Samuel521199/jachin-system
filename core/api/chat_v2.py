@@ -534,7 +534,7 @@ async def get_capabilities():
     return {
         "model": model_info.get("model"),
         "provider": model_info.get("provider"),
-        "region": model_info.get("region_name"),
+        "region": model_info.get("region"),
         "capabilities": {
             "text": capabilities.get("text", False),
             "stream": capabilities.get("stream", False),

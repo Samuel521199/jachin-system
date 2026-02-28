@@ -42,6 +42,36 @@ try:
 except Exception:
     pass
 
+
+class _AccessLogFilter(logging.Filter):
+    """过滤 uvicorn 访问日志：不打印高频轮询请求，减少控制台噪音。"""
+    _NOISY_PATTERNS = (
+        "GET /health ",
+        "GET /api/v3/gpu/stats",
+        "GET /api/v3/cluster/stats",
+        "GET /api/v3/cluster/nodes",
+        "GET /api/v3/cluster/tasks",
+        "GET /api/v3/logs/recent",
+        "GET /api/v3/memory/count",
+        "GET /api/v3/config ",
+        "GET /api/v2/devices ",
+        "GET /api/v3/suggestions",
+        "OPTIONS /api/v3/logs/recent",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            for p in self._NOISY_PATTERNS:
+                if p in msg:
+                    return False
+            return True
+        except Exception:
+            return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
+
 # 导入 API 路由
 try:
     from core.api.chat import router as chat_router, simple_router as chat_simple_router
@@ -131,6 +161,13 @@ async def lifespan(app: FastAPI):
         app.state.plugin_manager = plugin_mgr
         app.state.skill_registry = plugin_mgr  # 兼容旧 API
         logger.info("Skills: %d loaded", n_skills)
+        # 开发环境：预加载 Local Time & Weather 沙箱插件，供 Commander 测试
+        if settings.DEBUG:
+            from pathlib import Path
+            from core.updater.agent import load_sandbox_plugin_from_dir
+            dev_plugin = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "plugins" / "local_time_weather"
+            if dev_plugin.exists():
+                load_sandbox_plugin_from_dir(dev_plugin)
         from core.registry.registry import DeviceRegistry
         device_registry = DeviceRegistry()
         app.state.device_registry = device_registry

@@ -35,14 +35,15 @@ Write-Host "   Jachin-System API Test" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 
-$baseUrl = 'http://localhost:8000'
+$backendPort = if ($env:APP_PORT) { $env:APP_PORT } elseif ($env:SERVER_PORT) { $env:SERVER_PORT } else { "18888" }
+$baseUrl = "http://localhost:$backendPort"
 $allTestsPassed = $true
 
 # Step 1: 健康检查
 Write-Step "Step 1: Health Check"
 
 try {
-    $healthUrl = 'http://localhost:8000/health'
+    $healthUrl = "$baseUrl/health"
     Write-Info "Checking health endpoint: $healthUrl"
     $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 5
     Write-Success "Service is healthy"
@@ -61,7 +62,7 @@ Write-Step "Step 2: Testing API Endpoints"
 # 2.1 测试根端点
 Write-Info "Testing root endpoint..."
 try {
-    $rootUrl = 'http://localhost:8000/'
+    $rootUrl = "$baseUrl/"
     $response = Invoke-RestMethod -Uri $rootUrl -Method Get -TimeoutSec 5
     Write-Success "Root endpoint OK"
     Write-Host "  Message: $($response.message)" -ForegroundColor Gray
@@ -73,7 +74,7 @@ try {
 # 2.2 测试路由列表
 Write-Info "Testing routes endpoint..."
 try {
-    $routesUrl = 'http://localhost:8000/routes'
+    $routesUrl = "$baseUrl/routes"
     $response = Invoke-RestMethod -Uri $routesUrl -Method Get -TimeoutSec 5
     $routeCount = ($response.routes | Measure-Object).Count
     $routesMsg = "Routes endpoint OK - " + $routeCount + " routes found"
@@ -90,7 +91,7 @@ try {
         message = 'Hello, this is a test message'
     } | ConvertTo-Json -Compress
     
-    $chatUrl = 'http://localhost:8000/api/chat'
+    $chatUrl = "$baseUrl/api/chat"
     $response = Invoke-RestMethod -Uri $chatUrl -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 30
     
     Write-Success "Chat API OK"
@@ -110,7 +111,7 @@ catch {
 # 2.4 测试设备注册表 API (v2.0)
 Write-Info "Testing device registry API (v2.0)..."
 try {
-    $devicesUrl = 'http://localhost:8000/api/v2/devices'
+    $devicesUrl = "$baseUrl/api/v2/devices"
     $response = Invoke-RestMethod -Uri $devicesUrl -Method Get -TimeoutSec 5
     
     if ($response.devices) {

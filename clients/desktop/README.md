@@ -57,14 +57,31 @@ npm run tauri:dev
 或使用一键脚本（同时启动中间件 + 后端）：
 ```powershell
 cd E:\jachin-system
-.\scripts\start_all.ps1   # 会启动后端，保持运行
+.\scripts\start.ps1   # 会启动后端，保持运行
 # 另开终端
 cd clients\desktop; npm run tauri:dev
 ```
 
 这将启动：
-- Vite 开发服务器（端口 1420）
+- Vite 开发服务器（端口 31421）
 - Tauri 应用窗口
+
+### 语音采集（VAD / 连续监听）
+
+需要**启用 `ambient` 特性**才能使用端侧语音采集（Silero VAD、按键录音 PTT 等）。
+
+**开发：**
+```powershell
+cd clients\desktop
+npm run tauri:dev:ambient
+```
+
+**构建（启用语音采集的生产包）：**
+```powershell
+npm run tauri:build:ambient
+```
+
+构建产物在 `src-tauri/target/release/` 目录。未带 `ambient` 的构建不包含 VAD/语音采集功能。
 
 ### 使用 Dapr 启动（推荐，用于接收设备指令）
 
@@ -99,7 +116,11 @@ dapr run \
 ### 构建生产版本
 
 ```bash
+# 默认构建（无语音采集）
 npm run tauri:build
+
+# 启用语音采集（VAD/PTT）的构建
+npm run tauri:build:ambient
 ```
 
 构建产物在 `src-tauri/target/release/` 目录。

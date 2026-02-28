@@ -7,7 +7,7 @@ LLMProviderFactory - LLM Provider 工厂类
 import logging
 from typing import Optional, Dict, Any
 
-from core.config import settings
+from core.config import settings, get_effective_qwen_api_key
 from .base import BaseLLMProvider
 from .qwen_adapter import QwenAdapter
 from .qwen_adapter_v2 import QwenAdapterV2
@@ -50,12 +50,10 @@ class LLMProviderFactory:
         provider: Optional[BaseLLMProvider] = None
         
         if provider_type == "qwen" or provider_type == "qwen-v2":
-            # Qwen Provider (支持V2增强版)
+            # Qwen Provider (支持V2增强版)：优先使用用户保存的覆盖
             api_key = (
                 kwargs.pop("api_key", None)
-                or settings.QWEN_API_KEY
-                or settings.DASHSCOPE_API_KEY
-                or settings.QWEN_AI_API_KEY
+                or get_effective_qwen_api_key()
             )
             model = kwargs.pop("model", None) or settings.LLM_MODEL
             
@@ -136,7 +134,7 @@ class LLMProviderFactory:
                     qwen_adapter = LLMProviderFactory.create_provider("qwen", **qwen_config)
                 else:
                     # 尝试从配置创建
-                    if settings.QWEN_API_KEY:
+                    if get_effective_qwen_api_key():
                         qwen_adapter = LLMProviderFactory.create_provider("qwen")
             except Exception as e:
                 logger.warning(f"Failed to create Qwen adapter: {e}")

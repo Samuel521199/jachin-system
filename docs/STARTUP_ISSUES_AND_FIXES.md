@@ -118,13 +118,15 @@ Stopping container... Removing container...
 ### 现象
 ```
 Failed to watch scheduler jobs, retrying: dial tcp 172.19.0.3:6060: i/o timeout
+[WARN] Dapr Scheduler unreachable
 ```
 
 ### 原因
-Dapr Scheduler 在 Docker 网络内（172.x），宿主机无法直接访问。
+Dapr Scheduler 在 Docker 内，mDNS 可能返回容器内网 IP（172.x），宿主机无法访问。
 
 ### 解决方案
-`.env` 中已设置 `DAPR_SCHEDULER_HOST_ADDRESS=skip`，可跳过 Scheduler 连接。若需完整 Dapr 调度，需调整网络或部署方式。
+1. **推荐**：`.env` 中设置 `DAPR_SCHEDULER_HOST_ADDRESS=localhost:6060`（Docker 已映射 6060 端口），启动脚本会等待 Scheduler 就绪后再启动 daprd。
+2. **备用**：设为 `DAPR_SCHEDULER_HOST_ADDRESS=skip` 可跳过连接（开发模式无 Actor Reminders 时无害）。
 
 ---
 

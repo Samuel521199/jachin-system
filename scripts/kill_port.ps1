@@ -1,6 +1,6 @@
-# 通用端口关闭脚本
+# 通用端口关闭脚本（若权限不足请以管理员运行）
 # 用法: .\scripts\kill_port.ps1 [端口号]
-# 示例: .\scripts\kill_port.ps1 18888
+# 示例: .\scripts\kill_port.ps1 18888  或  .\scripts\kill_port.ps1 8000
 
 param(
     [Parameter(Mandatory=$false)]
@@ -44,8 +44,8 @@ foreach ($processId in $processIds) {
                     $killed += $processId
                 } else {
                     Write-Host "  [FAILED] Could not stop process $processId" -ForegroundColor Red
-                    Write-Host "    Access denied. Try running as Administrator:" -ForegroundColor Yellow
-                    Write-Host "    taskkill /F /PID $processId" -ForegroundColor Cyan
+                    Write-Host "    Access denied. Try: .\scripts\kill_port.ps1 $Port (as Administrator)" -ForegroundColor Yellow
+                    Write-Host "    Or: taskkill /F /PID $processId" -ForegroundColor Cyan
                     $failed += $processId
                 }
             }

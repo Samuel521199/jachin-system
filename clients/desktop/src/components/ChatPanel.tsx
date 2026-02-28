@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, Mic, Square, Trash2 } from "lucide-react";
+import { Send, Loader2, Mic, Square, Trash2, MicOff } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { sendChatMessage, streamChatMessage, voiceChat } from "../lib/api";
 import { useAppStore } from "../store/appStore";
+import { useSttAudioReady } from "../hooks/useSttAudioReady";
 import { cn } from "../utils/cn";
 import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "../utils/messageStorage";
 import { typewriterAnimation } from "../utils/typewriter";
@@ -18,6 +20,10 @@ export default function ChatPanel() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const { isConnected } = useAppStore();
+  const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
+
+  // VAD 截断事件：收到后自动播放以验证截断效果
+  useSttAudioReady({ playOnReady: true });
 
   // 加载保存的消息历史
   useEffect(() => {
@@ -246,6 +252,39 @@ export default function ChatPanel() {
     }
   };
 
+  // VAD 语音采集：开始/停止
+  const startVoiceCapture = async () => {
+    try {
+      await invoke("start_voice_capture");
+      setIsVoiceCaptureRunning(true);
+    } catch (e) {
+      setRecordingStatus(String(e));
+    }
+  };
+  const stopVoiceCapture = async () => {
+    try {
+      await invoke("stop_voice_capture");
+      setIsVoiceCaptureRunning(false);
+    } catch (e) {
+      setRecordingStatus(String(e));
+    }
+  };
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const running = await invoke<boolean>("is_voice_capture_running");
+        if (!cancelled) setIsVoiceCaptureRunning(running);
+      } catch {
+        if (!cancelled) setIsVoiceCaptureRunning(false);
+      }
+    };
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 自动调整输入框高度
   useEffect(() => {
     const textarea = document.querySelector("textarea");
@@ -344,6 +383,25 @@ export default function ChatPanel() {
         
         <div className="flex gap-2">
           {/* 语音录制按钮 */}
+          {/* VAD 语音采集（智能截断）测试按钮 */}
+          <button
+            onClick={isVoiceCaptureRunning ? stopVoiceCapture : startVoiceCapture}
+            className={cn(
+              "px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 text-xs",
+              isVoiceCaptureRunning
+                ? "bg-amber-600 hover:bg-amber-700 text-white"
+                : "bg-slate-600 hover:bg-slate-500 text-slate-200"
+            )}
+            title={isVoiceCaptureRunning ? "停止 VAD 采集" : "开始 VAD 采集（说完自动截断）"}
+          >
+            {isVoiceCaptureRunning ? (
+              <MicOff className="w-3.5 h-3.5" />
+            ) : (
+              <Mic className="w-3.5 h-3.5" />
+            )}
+            <span>VAD</span>
+          </button>
+          {/* 原有语音录制按钮 */}
           <button
             onClick={isRecording ? stopRecording : startRecording}
             disabled={!isConnected || isLoading}

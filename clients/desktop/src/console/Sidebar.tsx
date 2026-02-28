@@ -12,6 +12,7 @@ import {
   Palette,
   Settings,
   Calendar as CalIcon,
+  Mic,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -22,6 +23,7 @@ const navItems = [
   { path: "/calendar", label: "日历", icon: CalIcon, title: "事件、提醒、待办，支持循环" },
   { path: "/skills", label: "Skill Matrix", icon: AppWindow, title: "插件与技能，自然语言执行与能力调用" },
   { path: "/network", label: "Jachin Link", icon: Network, title: "网络拓扑与已连接设备列表" },
+  { path: "/wake", label: "唤醒模式", icon: Mic, title: "设置唤醒词/名字，启动唤醒监听（模式 B）" },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
   { path: "/preferences", label: "设置", icon: Settings, title: "AI 模式与运行模式" },
 ] as const;

@@ -96,6 +96,10 @@ cd clients\desktop
 
 ### 4. 语音功能测试
 
+**前置**：语音采集（麦克风、VAD）需使用 **`ambient` 特性** 启动或构建：
+- 开发：`npm run tauri:dev:ambient`
+- 构建：`npm run tauri:build:ambient`
+
 #### 测试步骤：
 1. ✅ 点击麦克风按钮
 2. ✅ 说话（例如："你好"）

@@ -29,6 +29,18 @@ pub struct UserSettings {
 
     /// 自定义模型路径（额外模型文件夹）
     pub custom_model_path: Option<String>,
+
+    /// 聊天流式请求是否直连后端（true=本地流式推荐，false=经 Dapr）。None 视为 true
+    pub chat_stream_via_direct: Option<bool>,
+
+    /// 桌面精灵语音模式：push_to_talk | wake_up | continuous。None 视为 push_to_talk
+    pub sprite_voice_mode: Option<String>,
+
+    /// 唤醒词/名字（模式 B）：说此词或名字时激活 AI 助手。None 或空时使用默认 "Jachin"
+    pub wake_word: Option<String>,
+
+    /// Qwen/通义千问 API Key（桌面端保存，会同步到后端覆盖文件）
+    pub qwen_api_key: Option<String>,
 }
 
 /// 获取应用数据根目录（与 TTS 路径策略一致）

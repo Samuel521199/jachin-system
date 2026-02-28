@@ -466,12 +466,14 @@ class QwenAdapterV2(BaseLLMProvider):
             raise
     
     def get_model_info(self) -> Dict[str, Any]:
-        """获取模型信息"""
+        """获取模型信息（region_label 使用 ASCII 避免 Windows 控制台乱码）"""
+        # region.value 如 cn-beijing；region_display 为 ASCII 显示名，避免 PowerShell 等非 UTF-8 环境乱码
+        region_display = {"cn-beijing": "Beijing", "ap-singapore": "Singapore", "us-virginia": "Virginia"}.get(self.region.value, self.region.value)
         return {
             "provider": "qwen",
             "model": self.model,
             "region": self.region.value,
-            "region_name": self.region_config.name,
+            "region_label": region_display,
             "api_key_set": bool(self.api_key),
             "dashscope_available": DASHSCOPE_AVAILABLE,
             "capabilities": {

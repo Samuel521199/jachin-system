@@ -1,20 +1,25 @@
-# Jachin-System v3.2
+# Jachin-System v0.4.0
 
-> 分布式智能体操作系统 (Distributed Agent OS)
+> 你的个人贾维斯 · 有灵魂的 AI 伙伴 · 本地优先的智能体操作系统
 
-[![Version](https://img.shields.io/badge/version-3.2-blue.svg)](https://github.com/jachin-system/jachin-system)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/Samuel521199/jachin-system)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+## Jachin 是谁？
+
+Jachin 是**个人的贾维斯**：有灵魂的电子宠物、可信赖的伙伴好友、永不背叛的伴侣。它可以是桌面上的精灵，也可以是树莓派、ESP32 或任意联网芯片上的通用客户端——根据权限连接到你自己的网络，作为强大助手、自主专业团队，乃至多团队协同的「集团军」，**完成主人的愿望**。
 
 ## 项目简介
 
-Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系统**。它旨在为个人、家庭和中小型团队提供一个私有的"钢铁侠"级算力中心。它不仅仅是助手，更是连接物理世界（IoT）、数字资产（Memory）和云端能力（Marketplace）的操作系统。
+Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系统**。它旨在为个人、家庭和中小型团队提供一个私有的「钢铁侠」级算力中心。它**不仅仅是助手**，更是连接**物理世界（IoT）**、**数字资产（Memory）** 和 **云端能力（Marketplace）** 的操作系统。通过插件化持续扩展，Agents 根据各自的功能与权限**合作、协同、讨论**，实现主人的愿望。
 
 ### 核心价值主张
 
-- 🔒 **隐私优先**: 所有数据存储在本地，用户完全掌控
+- 🔒 **隐私优先**: 所有数据存储在本地，用户完全掌控，永不背叛
 - 📈 **弹性扩展**: 从单台笔记本（Single Mode）平滑扩展到百卡集群（Cluster Mode）
 - 🧩 **能力即服务**: 技能插件化，支持自然语言开发、一键分发与热加载
 - 🧠 **联邦记忆**: 数据在物理上隔离（隐私），在逻辑上分层（共享）
+- 💫 **有灵魂**: 人格可配置、陪伴感、情绪表达，而非冰冷工具
 
 ---
 
@@ -50,7 +55,7 @@ Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 
 ```powershell
 # 启动所有服务（中间件 + 后端）
-.\scripts\start_all.ps1
+.\scripts\start.ps1
 ```
 
 这会自动启动：
@@ -61,7 +66,7 @@ Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 **停止所有服务：**
 
 ```powershell
-.\scripts\stop_all.ps1
+.\scripts\stop.ps1
 ```
 
 ### 一键部署（含 TTS）
@@ -79,7 +84,7 @@ Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 ```
 
 部署完成后：
-1. 启动后端：`.\scripts\start_all.ps1`
+1. 启动后端：`.\scripts\start.ps1`
 2. 运行桌面：`clients\desktop\src-tauri\target\release\jachin-desktop.exe`
 
 ### 详细安装步骤
@@ -186,13 +191,14 @@ jachin-system/
 └── docs/          # 文档
 ```
 
-详细结构请参考 [docs/DIRECTORY_STRUCTURE_TREE.md](./docs/DIRECTORY_STRUCTURE_TREE.md)
+详细结构请参考 [docs/DIRECTORY_STRUCTURE_V4.md](./docs/DIRECTORY_STRUCTURE_V4.md)
 
 ---
 
 ## 文档
 
-- **[架构设计规范](./docs/ARCHITECTURE_DESIGN_SPEC.md)** ⭐ - 正式架构规范 v1.0（Single Source of Truth）
+- **[产品愿景与身份](./docs/VISION.md)** ⭐ - 贾维斯 / 电子宠物 / 伙伴 / 智能体生态（产品灵魂）
+- **[架构设计规范](./docs/ARCHITECTURE_DESIGN_SPEC.md)** - 正式架构规范 v1.0（Single Source of Truth）
 - **[架构设计文档](./docs/architecture.md)** - v3.2 详细架构
   - 包含协议扩展性设计：通用信封模式 + Server-Driven UI
 - **[架构图文档](./docs/V3.2_ARCHITECTURE_DIAGRAMS.md)** - 详细的架构图和流程图

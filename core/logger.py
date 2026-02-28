@@ -69,10 +69,13 @@ def setup_logging(
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
-    # 降低第三方库日志
+    # 降低第三方库日志，减少控制台噪音
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("filelock").setLevel(logging.WARNING)
+    logging.getLogger("ray._private").setLevel(logging.WARNING)
+    logging.getLogger("ray._private.worker").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -114,7 +114,7 @@ Write-Host "   Deploy Complete" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Info "Next:"
-Write-Host "  1. Start backend: .\scripts\start_all.ps1" -ForegroundColor Cyan
+Write-Host "  1. Start backend: .\scripts\start.ps1" -ForegroundColor Cyan
 Write-Host "  2. Run desktop: clients\desktop\src-tauri\target\release\jachin-desktop.exe" -ForegroundColor Cyan
 Write-Host "  Or dev: cd clients\desktop; npm run tauri:dev:tts" -ForegroundColor Cyan
 Write-Host ""

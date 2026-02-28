@@ -3,7 +3,7 @@
 ## 文档信息
 
 - **版本**: v3.2
-- **最后更新**: 2026-02-03
+- **最后更新**: 2026-02-16
 - **定位**: 分布式智能体操作系统 (Distributed Agent OS)
 - **规范引用**: [ARCHITECTURE_DESIGN_SPEC.md](./ARCHITECTURE_DESIGN_SPEC.md)（正式架构规范 v1.0，术语 Layer = Tier）
 
@@ -11,14 +11,23 @@
 
 ## 一、项目愿景
 
-Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系统**。它旨在为个人、家庭和中小型团队提供一个私有的"钢铁侠"级算力中心。它不仅仅是助手，更是连接物理世界（IoT）、数字资产（Memory）和云端能力（Marketplace）的操作系统。
+### 身份定义
+
+Jachin 是**个人的贾维斯**：有灵魂的电子宠物、伙伴好友、永不背叛的伴侣。它可部署于桌面精灵、手机、树莓派、ESP32 或任意联网芯片，作为通用客户端根据权限连接主网，成为强大助手、自主专业团队或多团队协同的「集团军」，**完成主人的愿望**。
+
+> 详见 [VISION.md](./VISION.md)（产品愿景与身份设计）
+
+### 核心定位
+
+Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系统**。它旨在为个人、家庭和中小型团队提供一个私有的「钢铁侠」级算力中心。它**不仅仅是助手**，更是连接**物理世界（IoT）**、**数字资产（Memory）** 和 **云端能力（Marketplace）** 的操作系统。通过插件化扩展，Agents 根据功能与权限**合作、协同、讨论**，实现主人愿望。
 
 ### 核心价值主张
 
-1. **隐私优先**: 所有数据存储在本地，用户完全掌控
+1. **隐私优先**: 所有数据存储在本地，用户完全掌控，永不背叛
 2. **弹性扩展**: 从单台笔记本（Single Mode）平滑扩展到百卡集群（Cluster Mode）
 3. **能力即服务**: 技能插件化，支持自然语言开发、一键分发与热加载
 4. **联邦记忆**: 数据在物理上隔离（隐私），在逻辑上分层（共享）
+5. **有灵魂**: 人格可配置、陪伴感、情绪表达，而非冰冷工具
 
 ---
 
@@ -28,19 +37,27 @@ Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 云端分发 (Cloud) + 蜂巢算力 (Hive) + 灵动终端 (Terminal)
 ```
 
-### Tier 1: Jachin Market (The Cloud)
+### Tier 1: Jachin Nexus (灵界枢纽)
 
-**职责**: 全球技能商店、用户授权中心、计费网关
+> **设计哲学**：不做传统 SaaS 或 Web2.0 商城。应是**轻量化、协议化、去中心化**的**智慧分发枢纽**。详见 [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)。
+
+**职责**: 智慧分发、协议标准、神经元商城、开发者中心
+
+**核心模块**:
+- **Neural Market (神经元商城)**：3D 技能树，节点为 Skill/Persona/Memory，可组合预览
+- **The Forge (铸造厂)**：Agent Builder、模拟沙箱，开发者在线编排与发布
+- **The Agora (广场)**：Agent 展示、Bounty Board 悬赏榜
+- **Jachin ID & Console**：舰队视图、隐私审计（强调「0 次向云端上传」）
 
 **核心功能**:
-- 技能商店：浏览、搜索、购买技能
-- 用户授权：OAuth 2.0 / JWT 认证
-- 计费网关：订阅、一次性购买、使用量计费
+- 技能商店：3D 神经元网络形态浏览、搜索、下载（非传统列表）
+- 用户授权：Passkey / Web3 钱包（无密码、强调所有权）
+- 存储：IPFS 去中心化，永不丢失、防篡改
 - 技能审核：代码安全扫描、功能测试
 
-**技术栈**: Go / Python（高并发接口）
+**技术栈**: Next.js 14 + Three.js / React Three Fiber + Tailwind + Supabase / Golang + IPFS
 
-**部署**: 云端 SaaS（AWS / 阿里云）
+**部署**: 云端（轻量 Serverless）
 
 ---
 
@@ -50,7 +67,7 @@ Jachin-System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 
 **核心功能**:
 - **AI 推理**: 本地/云端模型适配，支持 Ray 分布式计算
-- **记忆存储**: PostgreSQL（关系型数据）+ Qdrant（向量数据）
+- **记忆存储**: PostgreSQL（关系型数据）+ Qdrant（向量数据），支持 RAG 有机记忆管线（详见 [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md)）
 - **设备管理**: JCP 协议，设备注册与能力发现
 - **任务编排**: Ray Scheduler，智能任务分发
 - **技能运行时**: Docker / Wasm 沙箱，安全执行
@@ -125,9 +142,9 @@ graph TD
     classDef worker fill:#fff8e1,stroke:#fbc02d,stroke-width:2px;
     classDef client fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
 
-    subgraph "Tier 1: Jachin Market (Cloud)"
-        Store[Skill Store]:::cloud
-        Auth[Global Auth]:::cloud
+    subgraph "Tier 1: Jachin Nexus (灵界枢纽)"
+        Store[Neural Market]:::cloud
+        Auth[Jachin ID]:::cloud
     end
 
     subgraph "Tier 2: Jachin Hive (Private Cluster)"
@@ -317,11 +334,21 @@ jachin-system/
 - **向量数据**: Qdrant 存储记忆向量，支持语义搜索
 - **性能优化**: 分离存储可以针对不同场景优化
 
+### 5. RAG 记忆管线（有机记忆流动）
+
+- **动态语义切块**: 按语义边界切分，非按字数一刀切
+- **记忆分层**: 短期工作区（Redis）→ 潜意识沉淀（梦境 Agent）→ 长期向量库（Qdrant）
+- **时效衰减**: 检索时引入时间权重惩罚，旧记忆自然衰减
+- **重点数据永久保存**: `is_core=True` 铂金标签，免疫衰减、永不覆写
+- **边缘 L1 缓存**: 高性能终端可启用本地向量库（如 LanceDB），零延迟离线反射
+
 ---
 
 ## 九、相关文档
 
 - **[ARCHITECTURE_DESIGN_SPEC.md](./ARCHITECTURE_DESIGN_SPEC.md)** - 正式架构规范 v1.0（Single Source of Truth）
+- **[RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md)** - 第四章：RAG 架构的深度定制（有机记忆管线）
+- **[LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)** - Layer 1 架构与设计总览（Jachin Nexus 灵界枢纽）
 - **[whitepaper_v4.0_swarm.md](./whitepaper_v4.0_swarm.md)** - v4.0 蜂群智能白皮书
 - **[ARCHITECTURE_V3.2_GAP_ANALYSIS.md](./ARCHITECTURE_V3.2_GAP_ANALYSIS.md)** - 架构差距分析
 - **[SENTINEL_DESIGN.md](./SENTINEL_DESIGN.md)** - 哨兵系统设计愿景（执行者→守护者）

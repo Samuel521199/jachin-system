@@ -113,10 +113,7 @@ netstat -an | grep 18888
 
 ```powershell
 # Windows
-.\scripts\check_dev_services.ps1
-
-# Linux/macOS
-./scripts/check_dev_services.sh
+.\scripts\docker_diagnose.ps1
 ```
 
 ## 自定义端口示例
@@ -209,7 +206,7 @@ Get-Content .env.instance2 | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { 
 **A**: 
 1. 启动服务后，检查日志中的端口信息
 2. 访问健康检查端点: `http://localhost:<端口>/health`
-3. 使用检查脚本: `.\scripts\check_dev_services.ps1`
+3. 使用检查脚本: `.\scripts\docker_diagnose.ps1`
 
 ## 相关文档
 

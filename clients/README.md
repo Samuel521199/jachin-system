@@ -1,6 +1,16 @@
-# Clients (Limbs Layer)
+# Clients (Layer 3 / Terminal)
 
-多形态客户端代码，负责数据采集和指令执行。
+多形态客户端代码，负责数据采集和指令执行。属于 **Jachin 三层架构** 中的 **Layer 3（灵动终端）**。
+
+## 三层架构定位
+
+| Layer | 名称 | 职责 | 本仓库 |
+|-------|------|------|--------|
+| **Layer 1** | Jachin Nexus (灵界枢纽) | 智慧分发、协议标准、神经元商城 | `cloud/`（待建） |
+| **Layer 2** | Jachin Hive (私有大脑) | 本地推理、记忆、技能运行时 | `core/` |
+| **Layer 3** | Jachin Terminal (灵动终端) | 用户交互、I/O、边缘反射 | **`clients/`** |
+
+> Layer 1 设计理念：**轻量化、协议化、去中心化**。不做传统 SaaS 或 Web2.0 商城，而是「分发智慧」的枢纽。详见 [docs/LAYER1_ARCHITECTURE_AND_DESIGN.md](../docs/LAYER1_ARCHITECTURE_AND_DESIGN.md)。
 
 ## 目录结构
 

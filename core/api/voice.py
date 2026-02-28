@@ -67,6 +67,18 @@ except Exception as e:
     logger.error(f"Failed to initialize LLM provider: {e}")
     llm_provider = None
 
+# Commander Agent（智能意图路由 + Tool Calling，优先用于语音闭环）
+try:
+    from core.brain.commander import get_commander_agent
+    commander_agent = get_commander_agent()
+    if commander_agent:
+        logger.info("Commander Agent 已就绪，将用于语音意图路由与工具调度")
+    else:
+        commander_agent = None
+except Exception as e:
+    logger.warning(f"Commander Agent 未就绪: {e}，将使用传统 LLM 闲聊")
+    commander_agent = None
+
 # 语义路由器（安全指令协议）
 intent_router = IntentRouter()
 
@@ -284,6 +296,81 @@ async def synthesize_speech_stream(request: SynthesizeRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+async def _mock_tts(text: str) -> str:
+    """TTS 占位：当真实 TTS 不可用时返回空 base64"""
+    return ""
+
+
+@router.post("/process", response_model=VoiceChatResponse)
+async def voice_process(
+    audio_file: Optional[UploadFile] = File(None),
+    audio_base64: Optional[str] = Form(None),
+    format: str = Form("wav"),
+    language: str = Form("zh-CN"),
+    return_audio: bool = Form(True),
+    voice: str = Form("default"),
+    speed: float = Form(1.0),
+    pitch: float = Form(1.0),
+):
+    """
+    全链路语音闭环：STT -> Commander 意图路由与工具调度 -> TTS
+
+    与 /chat 的区别：强制使用 Commander Agent（Function Calling），
+    可调度沙箱插件（如时间、天气）并生成拟人化回复。
+    """
+    if not stt:
+        raise HTTPException(status_code=503, detail="Speech-to-Text service is not available.")
+    if not commander_agent:
+        raise HTTPException(
+            status_code=503,
+            detail="Commander Agent is not available. Install openai: pip install openai, and configure LLM.",
+        )
+
+    try:
+        audio_data = None
+        if audio_file:
+            audio_data = await audio_file.read()
+            format = format or (audio_file.filename.split(".")[-1] if audio_file.filename else "wav")
+        elif audio_base64:
+            audio_data = base64.b64decode(audio_base64)
+        else:
+            raise HTTPException(status_code=400, detail="Either audio_file or audio_base64 must be provided")
+        if not audio_data:
+            raise HTTPException(status_code=400, detail="Audio data is empty")
+
+        user_text = await stt.recognize(audio_data, format=format, language=language)
+        logger.info(f"[Process] Recognized: {user_text}")
+
+        reply_text = await commander_agent.process_request(user_text)
+        logger.info(f"[Process] Reply: {reply_text}")
+
+        audio_base64_result = None
+        audio_format_result = None
+        if return_audio and tts:
+            try:
+                reply_audio = await tts.synthesize(
+                    text=reply_text, voice=voice, language=language, speed=speed, pitch=pitch
+                )
+                audio_base64_result = base64.b64encode(reply_audio).decode("utf-8")
+                audio_format_result = "wav"
+            except Exception as e:
+                logger.warning(f"TTS failed: {e}")
+        elif return_audio and not tts:
+            audio_base64_result = (await _mock_tts(reply_text)) or None
+
+        return VoiceChatResponse(
+            user_text=user_text,
+            text=reply_text,
+            audio_base64=audio_base64_result,
+            audio_format=audio_format_result,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Voice process error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/chat", response_model=VoiceChatResponse)
 async def voice_chat(
     audio_file: Optional[UploadFile] = File(None),
@@ -336,31 +423,38 @@ async def voice_chat(
         # 2. 语音识别（STT）
         user_text = await stt.recognize(audio_data, format=format, language=language)
         logger.info(f"Recognized text: {user_text}")
-        
-        # 3. 调用 LLM 生成回复（支持人格配置）
-        messages = [{"role": "user", "content": user_text}]
-        
-        # 如果指定了人格，添加系统提示词
-        if personality_id:
+
+        # 3. 生成回复：优先 Commander（Tool Calling），否则 LLM 闲聊
+        reply_text = ""
+        if commander_agent:
             try:
-                from core.brain.llm.personality import get_personality_manager
-                personality_manager = get_personality_manager()
-                system_prompt = personality_manager.get_system_message(personality_id)
-                if system_prompt:
-                    messages.insert(0, {"role": "system", "content": system_prompt})
-                
-                # 使用人格的temperature和max_tokens
-                personality = personality_manager.get_personality(personality_id)
-                reply_text = await llm_provider.chat(
-                    messages,
-                    temperature=personality.temperature,
-                    max_tokens=personality.max_tokens
-                )
+                reply_text = await commander_agent.process_request(user_text)
             except Exception as e:
-                logger.warning(f"Failed to apply personality {personality_id}: {e}, using default")
+                logger.warning(f"Commander fallback to LLM: {e}")
+
+        if not reply_text and llm_provider:
+            messages = [{"role": "user", "content": user_text}]
+            if personality_id:
+                try:
+                    from core.brain.llm.personality import get_personality_manager
+                    personality_manager = get_personality_manager()
+                    system_prompt = personality_manager.get_system_message(personality_id)
+                    if system_prompt:
+                        messages.insert(0, {"role": "system", "content": system_prompt})
+                    personality = personality_manager.get_personality(personality_id)
+                    reply_text = await llm_provider.chat(
+                        messages,
+                        temperature=personality.temperature,
+                        max_tokens=personality.max_tokens
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to apply personality {personality_id}: {e}")
+                    reply_text = await llm_provider.chat(messages)
+            else:
                 reply_text = await llm_provider.chat(messages)
-        else:
-            reply_text = await llm_provider.chat(messages)
+
+        if not reply_text:
+            reply_text = "主人，我在呢。有什么可以帮你的吗？"
         
         logger.info(f"Generated reply: {reply_text}")
         

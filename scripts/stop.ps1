@@ -1,68 +1,66 @@
-# Stop script - 停止所有服务
+# Stop script - 一键停止所有服务
+# 停止 Dapr 应用、后端进程(18888)、Docker 中间件；可选移除容器
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
-Write-Host "Stopping all services..." -ForegroundColor Cyan
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "   停止所有服务" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host ""
 
-$hasErrors = $false
-
-# Stop Docker services and remove orphan containers
-# 忽略错误，因为服务可能不存在
-Write-Host "  Stopping Docker services..." -ForegroundColor Gray
-docker-compose -f docker-compose.dev.yml down --remove-orphans 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
-    # 退出码 1 通常表示没有找到文件，这是可以接受的
-    $hasErrors = $true
+# 1) 停止 Dapr 应用
+Write-Host "[1/3] 停止后端服务..." -ForegroundColor Cyan
+$daprCmd = Get-Command dapr -ErrorAction SilentlyContinue
+if ($daprCmd) {
+    Write-Host "  停止 Dapr 应用..." -ForegroundColor Gray
+    dapr stop --app-id jachin-brain 2>&1 | Out-Null
+    Write-Host "  [OK] Dapr 应用已停止" -ForegroundColor Green
+} else {
+    Write-Host "  [INFO] Dapr 未安装，跳过" -ForegroundColor Gray
 }
 
-docker-compose down --remove-orphans 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
-    $hasErrors = $true
-}
-
-# Stop backend process
-Write-Host "  Stopping backend process..." -ForegroundColor Gray
-$backendProcess = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue
+$appPort = if ($env:APP_PORT) { $env:APP_PORT } elseif ($env:SERVER_PORT) { $env:SERVER_PORT } else { "18888" }
+$backendProcess = Get-NetTCPConnection -LocalPort $appPort -ErrorAction SilentlyContinue
 if ($backendProcess) {
     $processId = ($backendProcess | Select-Object -First 1).OwningProcess
     if ($processId) {
         Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        Write-Host "    Backend process stopped (PID: $processId)" -ForegroundColor DarkGray
+        Write-Host "  已停止端口 $appPort 上的后端进程 (PID: $processId)" -ForegroundColor Green
     }
 } else {
-    Write-Host "    No backend process found on port 8000" -ForegroundColor DarkGray
+    Write-Host "  [OK] 后端服务未运行" -ForegroundColor Green
 }
 
-# Stop Dapr sidecar
-Write-Host "  Stopping Dapr sidecar..." -ForegroundColor Gray
-$daprProcess = Get-NetTCPConnection -LocalPort 3500 -ErrorAction SilentlyContinue
-if ($daprProcess) {
-    $processId = ($daprProcess | Select-Object -First 1).OwningProcess
-    if ($processId) {
-        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        Write-Host "    Dapr sidecar stopped (PID: $processId)" -ForegroundColor DarkGray
-    }
+# 2) 停止 Docker 中间件
+Write-Host ""
+Write-Host "[2/3] 停止 Docker 中间件服务..." -ForegroundColor Cyan
+$composeFile = Join-Path $ProjectRoot "docker-compose.dev.yml"
+$projectName = "jachin-dev"
+if (Test-Path $composeFile) {
+    Write-Host "  停止 Docker Compose 服务..." -ForegroundColor Gray
+    docker-compose -f $composeFile -p $projectName down --remove-orphans 2>$null | Out-Null
+    Write-Host "  [OK] Docker 服务已停止" -ForegroundColor Green
 } else {
-    Write-Host "    No Dapr sidecar found on port 3500" -ForegroundColor DarkGray
+    Write-Host "  [WARN] docker-compose.dev.yml 不存在" -ForegroundColor Yellow
 }
 
-# Stop Dapr applications
-Write-Host "  Stopping Dapr applications..." -ForegroundColor Gray
-$daprApps = dapr list --output json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-if ($daprApps) {
-    foreach ($app in $daprApps) {
-        if ($app.'APP ID') {
-            Write-Host "    Stopping $($app.'APP ID')..." -ForegroundColor DarkGray
-            dapr stop --app-id $app.'APP ID' 2>$null | Out-Null
-        }
-    }
+# 3) 可选移除容器（默认不删，保留数据）
+Write-Host ""
+$remove = Read-Host "是否移除 Docker 容器？(y/N)"
+if ($remove -eq "y" -or $remove -eq "Y") {
+    Write-Host "[3/3] 移除 Docker 容器..." -ForegroundColor Cyan
+    docker-compose -f $composeFile -p $projectName rm -f 2>$null | Out-Null
+    Write-Host "  [OK] 容器已移除（数据卷保留）" -ForegroundColor Green
 } else {
-    Write-Host "    No Dapr applications found" -ForegroundColor DarkGray
+    Write-Host "[3/3] 保留 Docker 容器" -ForegroundColor Cyan
 }
 
-Write-Host "[OK] All services stopped" -ForegroundColor Green
-
-# 显式返回成功退出码
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "   所有服务已停止" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
 exit 0

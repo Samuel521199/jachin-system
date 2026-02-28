@@ -7,28 +7,35 @@
 
 ## 1. System Overview (系统概览)
 
-Jachin 是一个三层架构的分布式 AI 蜂群系统，支持从单机（Super Node）到家庭数据中心（Cluster）的弹性扩展。系统以「技能（Skill）」为核心资产，实现云端分发、边缘管控、端侧执行。
+Jachin 是**个人的贾维斯**：有灵魂的 AI 伙伴、电子宠物、永不背叛的伴侣。作为**本地优先、可无限扩展的智能体生态系统**，它可部署于桌面、手机、树莓派、ESP32 或联网芯片，根据权限形成助手、团队或集团军，**完成主人的愿望**。
+
+技术架构上，Jachin 是三层架构的分布式 AI 蜂群系统，支持从单机（Super Node）到家庭数据中心（Cluster）的弹性扩展。系统以「技能（Skill）」为核心资产，实现云端分发、边缘管控、端侧执行。产品愿景详见 [VISION.md](./VISION.md)。
 
 ---
 
 ## 2. Architecture Layers (架构分层)
 
-### Layer 1: Cloud (The Soul) - 云端
+### Layer 1: Jachin Nexus (The Soul) - 灵界枢纽
 
-* **Role**: 全局管理、市场、鉴权中心。
+> **设计哲学**：轻量化、协议化、去中心化。不做传统 SaaS 或 Web2.0 商城，而是**智慧分发枢纽**。详见 [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)。
+
+* **Role**: 智慧分发、协议标准、神经元商城、鉴权中心。
 * **Key Responsibilities**:
-    * **Account & Auth**: 统一身份认证 (OAuth2/OIDC)，管理用户与家庭域 (Home Domain) 的绑定关系。
-    * **Skill Store**: 技能市场，存储技能元数据、代码包、模型权重。
+    * **Account & Auth (Jachin ID)**: Passkey / Web3 钱包，舰队视图、隐私审计。
+    * **Neural Market**: 3D 技能树商城，存储技能元数据、代码包、模型权重（IPFS 去中心化）。
+    * **The Forge**: 开发者中心，Agent Builder、模拟沙箱。
+    * **The Agora**: 社区展示、Bounty Board。
     * **License Authority**: 颁发数字证书，管理技能的购买记录和授权范围（Site License）。
 
 ### Layer 2: Brain / Edge (The Mind) - 边缘/家庭服务器
 
-* **Role**: 局域网控制中心、算力枢纽、技能仓库。
+* **Role**: 局域网控制中心、算力枢纽、技能仓库、**全局记忆总汇**。
 * **Topology**: 支持单机部署，也支持 **Ray Cluster** (Head + Workers) 多机分布式部署。
 * **Key Responsibilities**:
     * **Skill Management**: 负责从 L1 下载、安装、卸载、更新技能包。
     * **Task Dispatcher**: 接收 L3 请求，根据算力需求调度任务（本地执行 or 远程分发）。
     * **Context Holder**: 维护家庭全局状态 (Redis)，确保多设备间上下文同步。
+    * **Memory Pipeline**: RAG 有机记忆管线（短期 Redis → 梦境沉淀 → Qdrant 向量库），支持时效衰减与 Core Memory 永久保存。详见 [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md)。
 
 ### Layer 3: Agent (The Body) - 端侧执行器
 
@@ -38,6 +45,7 @@ Jachin 是一个三层架构的分布式 AI 蜂群系统，支持从单机（Sup
     * **Runtime**: 运行轻量级执行切片 (Wasm/Python Script)。
     * **I/O Handling**: 语音采集 (STT 前端)、TTS 播放、UI 渲染。
     * **Cache Manager**: 智能缓存技能资产，减少网络传输。
+    * **Edge L1 Cache (可选)**: 高性能终端（如 RTX PC）可启用本地嵌入式向量库（LanceDB 等），同步本机高频记忆，实现零延迟离线反射。弱设备（ESP32、树莓派 Zero）保持瘦客户端形态，依赖 Layer 2。详见 [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md)。
 
 ---
 
@@ -104,7 +112,7 @@ Layer 3 的技能运行遵循以下三种模式：
 
 | 本规范 | 项目内常用 | 说明 |
 |--------|------------|------|
-| Layer 1 | Tier 1 / Jachin Market | 云端 |
+| Layer 1 | Tier 1 / Jachin Nexus | 灵界枢纽 |
 | Layer 2 | Tier 2 / Jachin Hive | 边缘/蜂巢 |
 | Layer 3 | Tier 3 / Jachin Terminal | 端侧/终端 |
 | Brain/Edge | Hive / Core | 控制中心 |
@@ -115,5 +123,7 @@ Layer 3 的技能运行遵循以下三种模式：
 ## 6. 相关文档
 
 - [architecture.md](./architecture.md) - v3.2 架构设计（详细版）
+- [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) - 第四章：RAG 架构的深度定制（有机记忆管线）
+- [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md) - Layer 1 架构与设计总览（Jachin Nexus）
 - [whitepaper_v4.0_swarm.md](./whitepaper_v4.0_swarm.md) - v4.0 蜂群智能白皮书
 - [TECHNICAL_SPECIFICATIONS.md](./TECHNICAL_SPECIFICATIONS.md) - 技术规范（DB Schema 等）

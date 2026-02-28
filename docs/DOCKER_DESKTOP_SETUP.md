@@ -138,7 +138,7 @@ docker-compose logs -f
 .\scripts\start.ps1
 
 # 或使用一键启动脚本
-.\一键启动.bat
+.\start.bat
 ```
 
 ### 验证中间件运行状态

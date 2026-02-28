@@ -24,9 +24,22 @@ Jachin-System v4.0 在 v3.2 基础上演进为**蜂群智能 (Swarm Intelligence
 
 ## 3. 三层架构与混合编排
 
-### 3.1 Tier 1: Jachin Market (The Cloud)
+### 3.1 Tier 1: Jachin Nexus (灵界枢纽) — 智慧分发
 
-（同 v3.2，略）
+> **设计哲学**：Layer 1 绝不能做成传统「SaaS 后台」或「Web2.0 商城」。它应是**轻量化、协议化、去中心化**的**智慧分发枢纽**。详见 [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)。
+
+* **核心原则**：
+  - **轻量化**：不存储用户数据，只存储代码、模型权重、配置清单（像 GitHub，不像 iCloud）。
+  - **协议至上**：JMP (Jachin Module Protocol) 标准制定者与分发者。
+  - **可视化**：抛弃列表，拥抱 3D 神经元网络形态的技能树。
+
+* **核心模块**：
+  - **Neural Market (神经元商城)**：3D 技能树，节点为 Skill/Persona/Memory，可组合预览。
+  - **The Forge (铸造厂)**：Agent Builder、模拟沙箱，开发者在线编排与发布。
+  - **The Agora (广场)**：Agent 展示、Bounty Board 悬赏榜。
+  - **Jachin ID & Console**：舰队视图、隐私审计（强调「0 次向云端上传」）。
+
+* **技术栈**：Next.js 14 + Three.js / React Three Fiber + Tailwind + Supabase / Golang + IPFS + Passkey / Web3。
 
 ### 3.2 Tier 2: Jachin Hive (The Core) — 蜂群架构
 
@@ -45,6 +58,7 @@ Jachin-System v4.0 在 v3.2 基础上演进为**蜂群智能 (Swarm Intelligence
 
 * **边缘反射 (Edge Reflex)**: 极简指令（音量调大、开灯）本地处理，不转发 Tier 2。
 * **复杂意图**: 转发 Primary Node，经 Model Router 分流。
+* **Edge L1 记忆缓存 (可选)**: 高性能终端（PC/Mac）可启用本地嵌入式向量库（LanceDB），同步本机高频记忆，实现零延迟离线问答；弱设备（ESP32、树莓派 Zero）保持瘦客户端，依赖 Tier 2。详见 [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md)。
 
 ### 3.4 Big-Little Brain 路由机制
 
@@ -73,10 +87,10 @@ Jachin-System v4.0 在 v3.2 基础上演进为**蜂群智能 (Swarm Intelligence
 
 ```mermaid
 graph TD
-    subgraph Tier1_Cloud [Tier 1: Cloud Market]
-        Auth[Auth Center]
-        Relay[Global Relay]
-        Market[Skill Store]
+    subgraph Tier1_Cloud [Tier 1: Jachin Nexus]
+        Auth[Jachin ID]
+        Market[Neural Market]
+        Forge[The Forge]
     end
 
     subgraph Tier2_Hive [Tier 2: The Hive Cluster]
@@ -134,6 +148,20 @@ sequenceDiagram
 * **core/security/trust_zone.py**: TrustZone 枚举，跨域策略。
 * **core/security/acl_manager.py**: 按 UserRole 控制技能访问。
 * **BaseSkillActor**: 执行前检查 `zone_restricted`，不匹配则 `AccessDenied`。
+
+---
+
+## 4.1 第四章：RAG 架构的深度定制 (The Memory Pipeline)
+
+Jachin 的记忆系统采用**有机记忆流动管线**，详见 [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md)。核心要点：
+
+| 机制 | 说明 |
+|------|------|
+| **动态语义切块** | 按语义边界切分，非按字数一刀切 |
+| **记忆分层** | 短期 (Redis) → 梦境沉淀 → 长期 (Qdrant) |
+| **时效衰减** | 检索时引入时间权重惩罚 |
+| **Core Memory** | `is_core=True` 铂金标签，永不覆写、绝对召回 |
+| **Edge L1 缓存** | 高性能终端可启用本地向量库，零延迟离线反射 |
 
 ---
 
@@ -198,4 +226,4 @@ v4.0 在 [ARCHITECTURE_DESIGN_SPEC.md](./ARCHITECTURE_DESIGN_SPEC.md) 基础上�
 
 ---
 
-**相关文档**: [architecture.md](./architecture.md) | [ARCHITECTURE_DESIGN_SPEC.md](./ARCHITECTURE_DESIGN_SPEC.md)
+**相关文档**: [architecture.md](./architecture.md) | [ARCHITECTURE_DESIGN_SPEC.md](./ARCHITECTURE_DESIGN_SPEC.md) | [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) | [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)

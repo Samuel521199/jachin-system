@@ -11,6 +11,7 @@ import { SkillMatrix } from "./pages/SkillMatrix";
 import { JachinLink } from "./pages/JachinLink";
 import { Persona } from "./pages/Persona";
 import { SettingsPanel } from "./pages/SettingsPanel";
+import { WakeModePanel } from "./pages/WakeModePanel";
 
 export const consoleRoutes = [
   {
@@ -23,6 +24,7 @@ export const consoleRoutes = [
       { path: "calendar", element: <Calendar /> },
       { path: "skills", element: <SkillMatrix /> },
       { path: "network", element: <JachinLink /> },
+      { path: "wake", element: <WakeModePanel /> },
       { path: "settings", element: <Persona /> },
       { path: "preferences", element: <SettingsPanel /> },
     ],

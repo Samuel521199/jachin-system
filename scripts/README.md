@@ -1,5 +1,7 @@
 # Scripts 使用指南
 
+**脚本清单与一键入口见 [README_SCRIPTS.md](./README_SCRIPTS.md)。**
+
 ## 系统架构图
 
 ### Jachin-System v2.0 三层架构

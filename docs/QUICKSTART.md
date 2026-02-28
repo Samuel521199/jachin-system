@@ -19,7 +19,7 @@
 **方式 A：一键启动（推荐）**
 
 ```powershell
-.\scripts\start_all.ps1
+.\scripts\start.ps1
 ```
 
 自动启动：Docker、Redis、MQTT、Dapr、后端 API。

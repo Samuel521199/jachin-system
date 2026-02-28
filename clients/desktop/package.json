@@ -10,9 +10,13 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "kill-port-dev": "powershell -ExecutionPolicy Bypass -File ../../scripts/kill_port.ps1 31421",
+    "tauri:dev:fresh": "npm run kill-port-dev && npm run tauri:dev",
     "tauri:build": "tauri build",
     "tauri:build:tts": "tauri build --features tts-local",
-    "tauri:dev:tts": "tauri dev --features tts-local"
+    "tauri:dev:tts": "tauri dev --features tts-local",
+    "tauri:dev:ambient": "tauri dev --features ambient",
+    "tauri:build:ambient": "tauri build --features ambient"
   },
   "dependencies": {
     "@react-three/drei": "^9.122.0",

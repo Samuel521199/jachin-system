@@ -7,14 +7,29 @@
 import React, { useState, useRef, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { sendChatMessage, streamChatMessage, voiceChat, synthesizeSpeech, routeIntent, checkHealth } from "./lib/api";
+import { invoke } from "@tauri-apps/api/core";
+import { sendChatMessage, streamChatMessage, voiceChat, synthesizeSpeech, routeIntent, checkHealth, voiceProcess, type VoiceProcessResponse } from "./lib/api";
 import { useAppStore } from "./store/appStore";
 import { useSpriteStore } from "./store/spriteStore";
+import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { ChatUI } from "./components/Chat/ChatUI";
 import "./styles/globals.css";
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const dataUrl = r.result as string;
+      const base64 = dataUrl.split(",")[1];
+      resolve(base64 ?? "");
+    };
+    r.onerror = () => reject(new Error("Blob read failed"));
+    r.readAsDataURL(blob);
+  });
+}
 
 function ChatApp() {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
@@ -35,6 +50,12 @@ function ChatApp() {
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
+  /** VAD 监听模式（双轨输入）：与 Rust 引擎 start_voice_capture / stop_voice_capture 联动 */
+  const [isVadActive, setIsVadActive] = useState(false);
+  const isRecordingRef = useRef(false);
+  const isVadActiveRef = useRef(false);
+  isRecordingRef.current = isRecording;
+  isVadActiveRef.current = isVadActive;
 
   // Chat 为独立窗口，需自行轮询后端连接状态（与主窗口共享 Zustand 但各自挂载，此处主动检测）
   useEffect(() => {
@@ -228,6 +249,85 @@ function ChatApp() {
     setRiskLevel("safe");
   };
 
+  // 同步 VAD 状态与 Rust 引擎
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const running = await invoke<boolean>("is_voice_capture_running");
+        if (!cancelled) setIsVadActive(running);
+      } catch {
+        if (!cancelled) setIsVadActive(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleVadToggle = async () => {
+    try {
+      if (isVadActive) {
+        await invoke("stop_voice_capture");
+        setIsVadActive(false);
+        setRecordingStatus("");
+      } else {
+        await invoke("start_voice_capture");
+        setIsVadActive(true);
+        setRecordingStatus("VAD 已开启，正在监听…");
+      }
+    } catch (e) {
+      setRecordingStatus(String(e));
+    }
+  };
+
+  /** 处理 /api/v1/voice/process 响应：IGNORE 仅提示已截取，ENGAGE 展示回复，REQUIRE_CONFIRMATION 红框 */
+  const handleVoiceProcessResponse = (res: VoiceProcessResponse) => {
+    if (res.intent_routing === "IGNORE") {
+      setRecordingStatus("已截取一段（未触发回复）");
+      setTimeout(() => setRecordingStatus(""), 2000);
+      return;
+    }
+    if (res.security_action === "REQUIRE_CONFIRMATION" && res.reply_text) {
+      setRiskLevel("danger");
+      setPendingHighRisk({ text: res.recognized_text ?? "", strippedText: res.reply_text });
+      return;
+    }
+    if (res.recognized_text) {
+      setMessages((prev) => addMessage(prev, { role: "user", content: `🎤 ${res.recognized_text}`, timestamp: Date.now() }));
+    }
+    if (res.reply_text) {
+      setMessages((prev) => addMessage(prev, { role: "assistant", content: res.reply_text ?? "", timestamp: Date.now() }));
+    }
+    if (res.reply_audio_base64 && chatAudioRef.current) {
+      const bytes = Uint8Array.from(atob(res.reply_audio_base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+      chatAudioRef.current.src = url;
+      setState("speaking");
+      chatAudioRef.current.onended = () => { setState("idle"); URL.revokeObjectURL(url); };
+      chatAudioRef.current.play().catch(() => setState("idle"));
+    } else {
+      setState("idle");
+    }
+  };
+
+  useSttAudioReady({
+    playOnReady: false,
+    onReady: (payload) => {
+      if (isRecordingRef.current || !isVadActiveRef.current || !payload?.wav_base64) return;
+      setRecordingStatus("已截断一段，正在识别…");
+      const ts = Math.floor(Date.now() / 1000);
+      voiceProcess(payload.wav_base64, "vad", ts)
+        .then((res) => {
+          setRecordingStatus("");
+          handleVoiceProcessResponse(res);
+        })
+        .catch(() => {
+          setRecordingStatus("已截取一段，但后端语音处理暂未就绪");
+          setTimeout(() => setRecordingStatus(""), 3000);
+        });
+    },
+  });
+
   // 注意：清空/关闭等由 HolographicChat 或窗口控制
 
   // 开始录音（同时启动浏览器流式语音识别，实时显示转写）
@@ -312,49 +412,38 @@ function ChatApp() {
     }
   };
 
-  // 语音聊天处理
+  // 语音聊天处理：优先走契约 /api/v1/voice/process (input_mode: manual)，失败则回退到旧 voiceChat
   const handleVoiceChat = async (audioBlob: Blob) => {
     setIsLoading(true);
     setRecordingStatus("正在处理语音...");
     setState("thinking");
 
     try {
-      // 将 Blob 转换为 File
-      const audioFile = new File([audioBlob], 'recording.wav', { type: 'audio/wav' });
-      
-      // 调用语音聊天API
-      const response = await voiceChat(audioFile, 'wav', 'zh-CN', true, 'zh-CN-XiaoxiaoNeural');
-      
-      // 添加用户消息（显示识别出的文本）
-      const userMessage: StoredMessage = {
-        role: "user",
-        content: `🎤 [语音] ${response.user_text || response.text || '已发送语音消息'}`,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, userMessage));
-      
-      // 添加AI回复（使用打字机效果）
-      const assistantMessage: StoredMessage = {
-        role: "assistant",
-        content: "",
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, assistantMessage));
-      
-      // 使用打字机效果显示回复
+      const ts = Math.floor(Date.now() / 1000);
+      const wavBase64 = await blobToBase64(audioBlob);
+      try {
+        const res = await voiceProcess(wavBase64, "manual", ts);
+        handleVoiceProcessResponse(res);
+        setRecordingStatus("");
+        return;
+      } catch (_) {
+        // 后端尚未实现 /api/v1/voice/process 时回退到旧接口
+      }
+
+      const audioFile = new File([audioBlob], "recording.wav", { type: "audio/wav" });
+      const response = await voiceChat(audioFile, "wav", "zh-CN", true, "zh-CN-XiaoxiaoNeural");
+
+      setMessages((prev) => addMessage(prev, { role: "user", content: `🎤 [语音] ${response.user_text || response.text || "已发送语音消息"}`, timestamp: Date.now() }));
+      setMessages((prev) => addMessage(prev, { role: "assistant", content: "", timestamp: Date.now() }));
       setIsTyping(true);
       let currentContent = "";
-      
       await typewriterAnimation(response.text, {
         speed: 20,
         onUpdate: (text) => {
           currentContent = text;
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = {
-              ...updated[updated.length - 1],
-              content: currentContent,
-            };
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: currentContent };
             return updated;
           });
         },
@@ -362,43 +451,26 @@ function ChatApp() {
           setIsTyping(false);
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = {
-              ...updated[updated.length - 1],
-              content: response.text,
-            };
+            updated[updated.length - 1] = { ...updated[updated.length - 1], content: response.text };
             saveMessages(updated);
             return updated;
           });
         },
       });
-      
-      // 播放语音回复
       if (response.audio_base64 && chatAudioRef.current) {
-        const audioBytes = Uint8Array.from(atob(response.audio_base64), c => c.charCodeAt(0));
-        const audioBlob = new Blob([audioBytes], { type: 'audio/wav' });
-        const audioUrl = URL.createObjectURL(audioBlob);
-        
+        const audioBytes = Uint8Array.from(atob(response.audio_base64), (c) => c.charCodeAt(0));
+        const blob = new Blob([audioBytes], { type: "audio/wav" });
+        const audioUrl = URL.createObjectURL(blob);
         chatAudioRef.current.src = audioUrl;
         setState("speaking");
-        
-        // 播放完成后恢复待机状态
-        chatAudioRef.current.onended = () => {
-          setState("idle");
-        };
-        
+        chatAudioRef.current.onended = () => { setState("idle"); URL.revokeObjectURL(audioUrl); };
         await chatAudioRef.current.play();
       } else {
         setState("idle");
       }
-      
       setRecordingStatus("");
     } catch (error) {
-      const errorMessage: StoredMessage = {
-        role: "assistant",
-        content: `错误: ${error instanceof Error ? error.message : "语音处理失败"}`,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, errorMessage));
+      setMessages((prev) => addMessage(prev, { role: "assistant", content: `错误: ${error instanceof Error ? error.message : "语音处理失败"}`, timestamp: Date.now() }));
       setRecordingStatus(`错误: ${error instanceof Error ? error.message : "未知错误"}`);
       setState("idle");
     } finally {
@@ -416,6 +488,8 @@ function ChatApp() {
         onSend={handleSend}
         onVoiceStart={startRecording}
         onVoiceStop={stopRecording}
+        isVadActive={isVadActive}
+        onVadToggle={handleVadToggle}
         isLoading={isLoading}
         isTyping={isTyping}
         isRecording={isRecording}

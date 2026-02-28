@@ -12,6 +12,23 @@ mod stt;
 mod tts;
 mod window;
 
+/// 未启用 ambient 时的占位命令，返回明确错误或 false。
+#[cfg(not(feature = "ambient"))]
+mod stt_voice_stub {
+    #[tauri::command]
+    pub fn start_voice_capture() -> Result<(), String> {
+        Err("请使用 --features ambient 构建以启用语音采集".to_string())
+    }
+    #[tauri::command]
+    pub fn stop_voice_capture() -> Result<(), String> {
+        Err("请使用 --features ambient 构建以启用语音采集".to_string())
+    }
+    #[tauri::command]
+    pub fn is_voice_capture_running() -> bool {
+        false
+    }
+}
+
 use sysinfo::System;
 
 use dapr::DaprClient;
@@ -302,6 +319,18 @@ fn main() {
             quick_action_eagle_eye,
             quick_action_hibernate,
             handle_device_command,
+            #[cfg(feature = "ambient")]
+            stt::commands::start_voice_capture,
+            #[cfg(feature = "ambient")]
+            stt::commands::stop_voice_capture,
+            #[cfg(feature = "ambient")]
+            stt::commands::is_voice_capture_running,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::start_voice_capture,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::stop_voice_capture,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::is_voice_capture_running,
         ])
         .setup(|app| {
             // 初始化设备注册
@@ -310,6 +339,9 @@ fn main() {
             
             // 存储 registry 到应用状态（在 setup 中）
             app.manage(registry.clone());
+
+            #[cfg(feature = "ambient")]
+            app.manage(stt::SttState::new());
             
             // 启动 Pub/Sub HTTP 服务器（用于接收 Dapr 推送的命令）
             let app_handle_clone = app.app_handle().clone();
@@ -516,10 +548,19 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-/// 启动唤醒词监听（模式 B：Wake-Up）。检测到 "Jachin" 时发出 WAKE_UP 事件。
+/// 启动唤醒词监听（模式 B：Wake-Up）。检测到配置的唤醒词/名字时发出 WAKE_UP 事件。
+/// wake_word: 可选，为空时从 UserSettings 读取，再空则用 "Jachin"
 #[tauri::command]
-async fn stt_start_wake_listener(app: tauri::AppHandle) -> Result<(), String> {
-    stt::WakeWordDetector::start(app);
+async fn stt_start_wake_listener(
+    app: tauri::AppHandle,
+    wake_word: Option<String>,
+) -> Result<(), String> {
+    let word = wake_word.or_else(|| {
+        crate::config::UserSettings::load()
+            .wake_word
+            .filter(|s| !s.trim().is_empty())
+    });
+    stt::WakeWordDetector::start(app, word);
     Ok(())
 }
 

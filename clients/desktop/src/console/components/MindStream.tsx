@@ -122,7 +122,9 @@ export function MindStream({
 
   const displayLines = liveLogLines.length > 0
     ? liveLogLines.slice(-maxLines)
-    : lines;
+    : lines.length > 0
+      ? lines
+      : ["等待连接...", "请确保后端已启动 (scripts\\start.ps1)"];
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -140,8 +142,19 @@ export function MindStream({
     >
       <div className="flex-shrink-0 px-4 py-2 border-b border-white/10 flex items-center gap-2">
         <span
-          className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"
-          title="Live"
+          className={cn(
+            "w-2 h-2 rounded-full animate-pulse",
+            displayLines.some((l) => l.includes("连接失败") || l.includes("未连接")) ||
+            liveStatsLines.some((l) => l.includes("未连接"))
+              ? "bg-amber-500"
+              : "bg-emerald-500"
+          )}
+          title={
+            displayLines.some((l) => l.includes("连接失败") || l.includes("未连接")) ||
+            liveStatsLines.some((l) => l.includes("未连接"))
+              ? "连接异常"
+              : "Live"
+          }
         />
         <span
           className="text-xs font-semibold uppercase tracking-wider text-slate-400"

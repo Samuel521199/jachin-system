@@ -6,7 +6,8 @@ pydantic-settings>=2.1.0
 
 # LLM Providers
 dashscope>=1.17.0  # 阿里云 Qwen
-httpx>=0.25.0      # Local LLM (OpenAI-compatible)
+openai>=1.0.0      # OpenAI SDK（Commander Function Calling，兼容 DeepSeek/本地 vLLM）
+httpx>=0.25.0     # Local LLM (OpenAI-compatible)
 tiktoken>=0.5.0    # Token 精确统计（Context 显示，可选）
 
 # Voice Services
@@ -25,6 +26,7 @@ psycopg2-binary>=2.9.9  # PostgreSQL sync driver (for migrations)
 
 # Vector Database
 qdrant-client>=1.7.0  # Qdrant vector database client
+lancedb>=0.4.0       # LanceDB 本地嵌入式向量库（RAG 战役一、Edge L1 缓存）
 
 # Redis
 redis>=5.0.1

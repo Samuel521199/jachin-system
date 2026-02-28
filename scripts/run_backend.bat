@@ -7,6 +7,9 @@ chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
+REM Reduce Ray log noise (metrics exporter errors in dev are harmless)
+if not defined RAY_BACKEND_LOG_LEVEL set RAY_BACKEND_LOG_LEVEL=error
+
 cd /d "%~dp0\.."
 
 REM Set PYTHONPATH (project root only - do NOT add core, or core/dapr shadows pip dapr package)

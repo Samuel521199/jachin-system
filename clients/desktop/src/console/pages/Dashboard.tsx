@@ -54,6 +54,7 @@ export function Dashboard({
   const [gpuStats, setGpuStats] = useState<{ gpus: GpuStatsItem[] } | null>(null);
   const [clusterNodes, setClusterNodes] = useState<ClusterNodeInfo[]>([]);
   const [clusterTasks, setClusterTasks] = useState<ClusterTaskInfo[]>([]);
+  const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
 
   const fetchClusterStats = useCallback(async () => {
     try {
@@ -180,6 +181,7 @@ export function Dashboard({
     invoke<boolean>("get_privacy_mode").then(setPrivacyMode).catch(() => setPrivacyMode(false));
     invoke<boolean>("get_eagle_eye_mode").then(setEagleEyeOn).catch(() => setEagleEyeOn(false));
     invoke<boolean>("get_hibernate_mode").then(setHibernateOn).catch(() => setHibernateOn(false));
+    invoke<boolean>("is_voice_capture_running").then(setIsVoiceCaptureRunning).catch(() => setIsVoiceCaptureRunning(false));
   }, []);
 
   const cpuPercent = stats ? Math.round(stats.cpu_usage_percent) : 0;
@@ -263,6 +265,48 @@ export function Dashboard({
                 </motion.button>
               );
             })}
+          </div>
+          <div className="mt-4 pt-4 border-t border-white/10">
+            <p className="text-xs text-slate-500 mb-2">VAD 语音采集</p>
+            <div className="flex items-center gap-2">
+              {!isVoiceCaptureRunning ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await invoke("start_voice_capture");
+                      setIsVoiceCaptureRunning(true);
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 flex items-center gap-1.5"
+                >
+                  <span>🎤</span> 开始 VAD
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await invoke("stop_voice_capture");
+                      setIsVoiceCaptureRunning(false);
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/15 text-rose-300 text-xs font-medium hover:bg-rose-500/25 flex items-center gap-1.5"
+                >
+                  <span>⏹</span> 停止 VAD
+                </button>
+              )}
+              {isVoiceCaptureRunning && (
+                <span className="text-xs text-amber-400 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  采集中
+                </span>
+              )}
+            </div>
           </div>
         </motion.div>
       </section>

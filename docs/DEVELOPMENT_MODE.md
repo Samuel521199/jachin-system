@@ -35,25 +35,16 @@
 ### 方式 1: 一键启动（推荐）
 
 ```powershell
-.\scripts\start_dev.ps1
+.\scripts\start.ps1
 ```
 
-这会：
-1. 检查环境（Conda、依赖）
-2. 启动中间件服务（Docker）
-3. 检查本地数据库（PostgreSQL、Qdrant）
-4. 加载环境变量
-5. 启动后端服务（控制台）
+这会：检查 Conda/Docker、启动 Docker 中间件、启动后端（Dapr），端口 18888。
 
 ### 方式 2: 分步启动
 
 #### 步骤 1: 启动中间件服务
 
-```powershell
-.\scripts\start_dev_services.ps1
-```
-
-或手动：
+手动：
 ```powershell
 docker-compose -f docker-compose.dev.yml -p jachin-dev up -d
 ```
@@ -61,7 +52,7 @@ docker-compose -f docker-compose.dev.yml -p jachin-dev up -d
 #### 步骤 2: 启动后端服务
 
 ```powershell
-.\scripts\start_backend_dev.ps1
+.\scripts\start.ps1
 ```
 
 ### 方式 3: 不使用 Dapr（纯控制台）
@@ -164,7 +155,7 @@ LLM_PROVIDER=qwen-v2
 ```powershell
 # 设置自定义端口
 $env:APP_PORT = "19999"
-.\scripts\start_backend_dev.ps1
+.\scripts\start.ps1
 ```
 
 详细端口配置说明请参考 [端口配置文档](PORT_CONFIGURATION.md)。
@@ -201,11 +192,11 @@ taskkill /PID <PID> /F
 
 **解决**:
 ```powershell
-# 检查 Docker 服务
-.\scripts\check_dev_services.ps1
+# 诊断 Docker 服务
+.\scripts\docker_diagnose.ps1
 
 # 启动服务
-.\scripts\start_dev_services.ps1
+.\scripts\start.ps1
 ```
 
 ### 问题 4: 代码修改不生效
@@ -242,8 +233,6 @@ taskkill /PID <PID> /F
 
 ## 相关脚本
 
-- `scripts/start_dev.ps1` - 一键启动开发环境
-- `scripts/start_backend_dev.ps1` - 仅启动后端（控制台）
-- `scripts/start_dev_services.ps1` - 仅启动中间件（Docker）
-- `scripts/check_dev_services.ps1` - 检查服务状态
-- `scripts/check_local_databases.ps1` - 检查本地数据库
+- `scripts/start.ps1` - 一键启动（Docker 中间件 + 后端）
+- `scripts/docker_diagnose.ps1` - 诊断服务状态
+- `scripts/verify_system.ps1` - 系统验证（端口、数据库等）

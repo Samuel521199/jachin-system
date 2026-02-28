@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 import logging
 
 from core.brain.llm.factory import LLMProviderFactory
-from core.config import settings
+from core.config import settings, get_effective_qwen_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,10 @@ try:
         "model": settings.LLM_MODEL,
     }
     
-    # 传递 API key（如果可用）
-    if settings.QWEN_API_KEY:
-        provider_kwargs["api_key"] = settings.QWEN_API_KEY
+    # 传递 API key（如果可用，优先用户保存的覆盖）
+    api_key = get_effective_qwen_api_key()
+    if api_key:
+        provider_kwargs["api_key"] = api_key
     
     # 传递地域配置（如果使用 qwen-v2）
     if settings.LLM_PROVIDER == "qwen-v2" and hasattr(settings, "QWEN_REGION"):

@@ -158,9 +158,9 @@ docker start qdrant-local
 2. **健康检查**：应用启动时会尝试连接 Qdrant，如果失败会记录警告但不会崩溃
 3. **功能降级**：如果 Qdrant 不可用，向量存储相关功能会抛出 `RuntimeError`，提示需要启动服务
 
-## 快速启动脚本
+## 快速启动 Qdrant（可选）
 
-创建 `scripts/start_qdrant.ps1`:
+需要单独启动 Qdrant 时，可在项目根目录执行以下 PowerShell 片段，或保存为脚本运行：
 
 ```powershell
 # 检查 Qdrant 是否运行
