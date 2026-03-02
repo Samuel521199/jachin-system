@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
     "@react-three/fiber": "^8.18.0",
     "@supabase/supabase-js": "^2.98.0",
     "framer-motion": "^12.34.3",

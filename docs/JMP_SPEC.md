@@ -86,9 +86,13 @@ JMP 是 Jachin 生态的「宪法」。Layer 2 从 Layer 1 下载的必须是一
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `execution_model` | string | `wasm`（默认，轻量沙箱）或 `heavy_process`（重型独立进程） |
+| `execution_model` | string | `wasm`（默认）、`heavy_process`（重型进程）或 `resource_mount`（静态资源挂载） |
 | `permissions.network` | string[] | WASI 允许的域名，如 `["api.github.com"]` |
 | `permissions.filesystem` | string[] | WASI 允许的目录，如 `["/tmp/plugin_a"]` |
+
+**resource_mount 说明**：Persona 语音包、Memory 向量库等重型静态资产，无需作为进程运行。Layer 2 解压到只读目录，施加只读保护，通过环境变量 `JACHIN_VOL_{PLUGIN_ID}`（如 `JACHIN_VOL_COM_JACHIN_MEMORY_LEGAL`）挂载给 VAD/RAG 等 Skill 读取。生产环境可配合 `mount --bind -o ro` 实现内核级锁死。
+
+**wasm 插件 ABI**：WASM 模块需导出 `memory` 和 `execute(ptr, len) -> out_len`。宿主将 JSON payload 写入 memory 起始处，调用 execute，从 memory 读取 out_len 字节作为 JSON 结果。
 
 ### 3.4 防篡改与防降级（信任链）
 
@@ -120,6 +124,17 @@ JMP 是 Jachin 生态的「宪法」。Layer 2 从 Layer 1 下载的必须是一
   "permissions": ["internet.access"]
 }
 ```
+
+### 3.5 智能版税扩展（规划）
+
+> 详见 [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md)、[ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md)
+
+复合蓝图 (Workflow) 需声明依赖与版税，供 Layer 1 分润引擎自动分账：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `price_usd` | number | 蓝图售价（美元） |
+| `royalty_dependencies` | array | 依赖的原子插件及各自版税，如 `[{"plugin_id":"core-vad","amount_usd":1},{"plugin_id":"persona-butler","amount_usd":5}]` |
 
 **权限示例** (需在 manifest 中声明):
 

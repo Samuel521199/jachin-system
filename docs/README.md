@@ -8,9 +8,12 @@
 
 | 文档 | 说明 |
 |------|------|
+| [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md) | **全球生态与商业化白皮书**（五阶层、智能版税、共创飞轮、GTM） |
 | [VISION.md](./VISION.md) | **产品愿景与身份**（贾维斯/电子宠物/伙伴/智能体生态） |
 | [whitepaper_v4.0_swarm.md](./whitepaper_v4.0_swarm.md) | 架构白皮书（v4.0 蜂群智能） |
 | [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md) | **Layer 1 架构与设计总览**（Jachin Nexus、模块、风格、流程、实施状态） |
+| [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md) | **盈利模型与智能版税分润规范** |
+| [GTM_STRATEGY.md](./GTM_STRATEGY.md) | **Go-to-Market 市场推演与阶段落地** |
 | [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md) | **微内核生态深度融合升级**（指挥权/执行权剥离、JMP 2.0、环境透镜、GitOps 握手） |
 | [MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md](./MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md) | **微内核生态战术战役规划**（P0/P1/P2 优先级、实施顺序、现有映射） |
 | [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) | **第四章：RAG 架构**（有机记忆管线、Core Memory、Edge L1 缓存） |

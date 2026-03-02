@@ -1,0 +1,17 @@
+{
+  "name": "@jachin/edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "core/PluginManager.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "unzipper": "^0.12.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5"
+  }
+}

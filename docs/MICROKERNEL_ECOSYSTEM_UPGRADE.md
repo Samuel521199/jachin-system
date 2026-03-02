@@ -13,7 +13,7 @@
 | 层级 | 角色 | 职责 | 状态 |
 |------|------|------|------|
 | **Layer 1 (Jachin Nexus)** | 指挥部 & 兵工厂 | 协议制定 (JMP)、武器研发 (Forge)、武器分发 (Market)、舰队大盘 (Console) | **无状态**，无用户对话记忆 |
-| **Layer 2 (Microkernel Node)** | 前线机甲 | 加载 JMP 包、RAG 检索、多级权限管控、VAD 语音 I/O、私密对话上下文 | **有状态**，本地执行 |
+| **Layer 2 (Microkernel Node)** | 前线边缘智能体 | 加载 JMP 包、RAG 检索、多级权限管控、VAD 语音 I/O、私密对话上下文、Proof-of-Execution 心跳 | **有状态**，本地执行 |
 
 **设计红利**：Layer 1 永不触碰用户隐私数据；Layer 2 永不丢失执行权归属。
 

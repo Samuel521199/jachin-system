@@ -10,5 +10,5 @@ echo ""
 bash "$SCRIPT_DIR/stop.sh"
 sleep 2
 
-# Start
-bash "$SCRIPT_DIR/start.sh"
+# Start 完整栈
+bash "$SCRIPT_DIR/start-full.sh"

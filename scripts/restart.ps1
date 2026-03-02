@@ -22,5 +22,5 @@ Write-Host ""
 Write-Host "[STEP 2/2] Starting services..." -ForegroundColor Yellow
 Write-Host ""
 
-# Start (这会启动长时间运行的服务，窗口会保持打开)
-& "$ScriptDir\start.ps1"
+# Start 完整栈 (Docker + Dapr + 后端)
+& "$ScriptDir\start-full.ps1"

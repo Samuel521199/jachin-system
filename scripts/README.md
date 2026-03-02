@@ -1,187 +1,134 @@
-# Scripts 使用指南
+# Scripts 脚本说明
 
-**脚本清单与一键入口见 [README_SCRIPTS.md](./README_SCRIPTS.md)。**
+Jachin 各层独立安装/启动，以及特殊用途脚本说明。
 
-## 系统架构图
+**原则**：所有安装、启动、配对均通过 scripts/ 统一入口，实现超简单、无脑化使用。详见 `.cursor/rules/060-scripts-one-click.mdc`。
 
-### Jachin-System v2.0 三层架构
+---
 
-```mermaid
-graph TD
-    classDef brain fill:#ffecb3,stroke:#ff6f00,stroke-width:2px;
-    classDef nerve fill:#e1f5fe,stroke:#0277bd,stroke-width:2px;
-    classDef limb fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+## 前置依赖（一键安装前需满足）
 
-    subgraph "Brain Layer (Python/GPU)"
-        Agent[<b>AI Agent</b><br/>Qwen/Planner]:::brain
-        Registry[<b>Device Registry</b><br/>Redis Store]:::brain
-        Protocol[<b>JCP Protocol</b><br/>Parser]:::brain
-    end
-
-    subgraph "Nerve Layer (Dapr & Infra)"
-        PubSub(<b>Dapr Pub/Sub</b><br/>Event Bus):::nerve
-        Tailscale(<b>Tailscale</b><br/>Secure Tunnel):::nerve
-        Redis[(<b>Redis</b><br/>State Store)]:::nerve
-    end
-
-    subgraph "Limb Layer (Clients)"
-        Desktop[<b>Desktop Sprite</b><br/>Tauri/Rust]:::limb
-        Pi[<b>Raspberry Pi</b><br/>Python Node]:::limb
-        ESP[<b>ESP32</b><br/>MicroPython]:::limb
-    end
-
-    Desktop & Pi & ESP -->|1. Announce| PubSub
-    PubSub -->|2. Register| Registry
-    Registry -->|3. Store| Redis
-    Agent -->|4. Query Tools| Registry
-    Registry -->|5. Return Devices| Agent
-    Agent -->|6. Route Command| PubSub
-    PubSub -->|7. Execute Action| Pi
-```
-
-### 组件说明
-
-- **Brain Layer（大脑层）**: AI 推理、设备管理、协议解析
-- **Nerve Layer（神经层）**: 消息总线、状态存储、安全隧道
-- **Limb Layer（肢体层）**: 各种客户端和设备节点
-
-## 核心流程
-
-### 能力发现流程
-
-```mermaid
-sequenceDiagram
-    participant Device as 设备节点
-    participant PubSub as Dapr Pub/Sub
-    participant Registry as Device Registry
-    participant Redis as Redis Store
-
-    Device->>PubSub: 1. 广播能力 (system/announce)
-    Note over Device: DeviceAnnounce<br/>device_id, capabilities, location
-    
-    PubSub->>Registry: 2. 接收广播消息
-    Registry->>Registry: 3. 验证数据格式
-    Registry->>Redis: 4. 存储设备信息
-    Redis-->>Registry: 5. 确认存储成功
-    Registry->>Registry: 6. 更新内存缓存
-    
-    Note over Registry: 设备已注册<br/>能力可用
-```
-
-### 指令执行流程
-
-```mermaid
-sequenceDiagram
-    participant User as 用户
-    participant Agent as AI Agent
-    participant Registry as Device Registry
-    participant PubSub as Dapr Pub/Sub
-    participant Device as 目标设备
-
-    User->>Agent: 1. 发送指令
-    Note over User: "打开客厅的灯"
-    
-    Agent->>Registry: 2. 查询可用工具
-    Registry-->>Agent: 3. 返回设备列表
-    Note over Agent: 发现: raspi-living-room-001<br/>能力: light.control
-    
-    Agent->>Agent: 4. 选择目标设备
-    Agent->>PubSub: 5. 发布指令 (device/{id}/command)
-    Note over Agent: DeviceCommand<br/>device_id, capability, params
-    
-    PubSub->>Device: 6. 推送指令到设备
-    Device->>Device: 7. 执行操作
-    Device->>PubSub: 8. 返回结果 (device/{id}/response)
-    PubSub->>Agent: 9. 接收执行结果
-    Agent->>User: 10. 反馈结果
-```
-
-### 脚本执行流程
-
-```mermaid
-flowchart TD
-    Start([开始]) --> Setup{首次运行?}
-    Setup -->|是| RunSetup[执行 setup.ps1/sh]
-    Setup -->|否| CheckDocker{检查 Docker}
-    
-    RunSetup --> InstallConda[安装/激活 Conda]
-    InstallConda --> InstallDeps[安装依赖]
-    InstallDeps --> SetupDapr[配置 Dapr]
-    SetupDapr --> CheckDocker
-    
-    CheckDocker -->|未运行| StartDocker[启动 Docker Desktop]
-    CheckDocker -->|已运行| StartServices[执行 start.ps1/sh]
-    
-    StartDocker --> StartServices
-    
-    StartServices --> ActivateEnv[激活 jachin-dev 环境]
-    ActivateEnv --> StartInfra[启动基础设施<br/>docker-compose up]
-    StartInfra --> StartBackend[启动后端<br/>dapr run backend]
-    StartBackend --> Ready([服务就绪])
-    
-    Ready --> Test{需要测试?}
-    Test -->|是| RunTest[执行 test.ps1/sh]
-    Test -->|否| End([结束])
-    
-    RunTest --> CheckHealth[检查健康状态]
-    CheckHealth --> TestAPI[测试 API 端点]
-    TestAPI --> End
-```
-
-## 核心脚本（简化版）
-
-### Windows (PowerShell)
-
-| 脚本 | 功能 | 使用 |
+| 层 | 必需 | 可选 |
 |------|------|------|
-| `setup.ps1` | 初始设置（Conda、依赖、Dapr） | `.\scripts\setup.ps1` |
-| `start.ps1` | 启动所有服务（自动激活环境） | `.\scripts\start.ps1` |
-| `stop.ps1` | 停止所有服务 | `.\scripts\stop.ps1` |
-| `restart.ps1` | 重启所有服务（自动激活环境） | `.\scripts\restart.ps1` |
-| `test.ps1` | 测试 API | `.\scripts\test.ps1` |
+| **Cloud** | Node.js + npm | - |
+| **Layer2** | Python 3.10+ | Docker（Qdrant）、Conda（Python 3.13 时推荐，Ray 需 3.10–3.12） |
+| **Layer3** | Node.js + npm | Rust + Tauri CLI（完整桌面端） |
 
-### Linux/macOS (Bash)
-
-| 脚本 | 功能 | 使用 |
-|------|------|------|
-| `setup.sh` | 初始设置 | `chmod +x scripts/setup.sh`<br>`./scripts/setup.sh` |
-| `start.sh` | 启动所有服务（自动激活环境） | `./scripts/start.sh` |
-| `stop.sh` | 停止所有服务 | `./scripts/stop.sh` |
-| `restart.sh` | 重启所有服务（自动激活环境） | `./scripts/restart.sh` |
-| `test.sh` | 测试 API | `./scripts/test.sh` |
-
-## 快速开始
-
-### Windows
-
+**快速安装（Windows 管理员 PowerShell）：**
 ```powershell
-# 1. 首次设置
-.\scripts\setup.ps1
-
-# 2. 启动服务（自动激活环境，无需手动激活）
-.\scripts\start.ps1
-
-# 3. 测试（在另一个终端）
-.\scripts\test.ps1
+winget install OpenJS.NodeJS.LTS    # Cloud / Layer3
+winget install Python.Python.3.11    # Layer2
+winget install Docker.DockerDesktop  # Layer2 Qdrant（可选）
 ```
 
-### Linux/macOS
+**检查依赖：** `.\scripts\check-prerequisites.ps1 [cloud|layer2|layer3]`（无参数检查全部）
 
-```bash
-# 1. 首次设置
-chmod +x scripts/*.sh
-./scripts/setup.sh
+---
 
-# 2. 启动服务（自动激活环境，无需手动激活）
-./scripts/start.sh
+## 一、各层安装与启动
 
-# 3. 测试（在另一个终端）
-./scripts/test.sh
+Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
+
+| 层 | 角色 | Windows 安装 | Windows 启动 | Linux/macOS 安装 | Linux/macOS 启动 |
+|------|------|--------------|--------------|------------------|------------------|
+| **Cloud** | 平台商 | `install-cloud.ps1` | `start-cloud.ps1` | `install-cloud.sh` | `start-cloud.sh` |
+| **Layer2** | 用户 | `install-layer2.ps1` | `start-layer2.ps1` | `install-layer2.sh` | `start-layer2.sh` |
+| **Layer3** | 用户 | `install-layer3.ps1` | `start-layer3.ps1` | `install-layer3.sh` | `start-layer3.sh` |
+
+### 根目录快捷方式
+
+- `start.bat [cloud|layer2|layer3|full|pair]` — 默认 layer2；`pair` 为边缘智能体配对
+- `restart.bat` — 重启完整栈
+
+---
+
+## 二、完整栈（开发环境）
+
+| 脚本 | 说明 |
+|------|------|
+| `setup.ps1` / `setup.sh` | 一键安装：Conda 环境、依赖、Dapr、.env |
+| `start-full.ps1` / `start-full.sh` | 启动完整栈：Docker + Dapr + 后端 (端口 18888) |
+| `stop.ps1` / `stop.sh` | 停止完整栈 |
+| `restart.ps1` / `restart.sh` | 先 stop 再 start-full |
+| `deploy.ps1` | 一键部署：环境、依赖、TTS 模型、桌面端构建（可 `-SkipTts` / `-SkipDesktop` / `-SkipBackend`） |
+
+---
+
+## 三、模型下载（特殊用途）
+
+| 脚本 | 说明 |
+|------|------|
+| `download_models.bat` | 一键下载 VAD / TTS / Whisper 模型。用法：`download_models.bat [vad|tts|whisper|all]`，无参数=全部 |
+| `download_vad_model.py` | 下载 Silero VAD 模型 (silero_vad.onnx) |
+| `download_tts_models.py` | 下载 TTS Kokoro 模型 |
+| `download_whisper_model.py` | 下载 Whisper 语音识别模型 |
+
+---
+
+## 四、端口与进程
+
+| 脚本 | 说明 |
+|------|------|
+| `check_port.ps1 [端口]` | 查看端口占用，默认 18888 |
+| `kill_port.ps1 [端口]` | 释放占用端口的进程（必要时需管理员权限） |
+
+---
+
+## 五、Docker / Dapr 排障
+
+| 脚本 | 说明 |
+|------|------|
+| `docker_fix_conflicts.ps1` | 修复 Docker 容器名冲突 |
+| `docker_diagnose.ps1` | 诊断 Docker 服务未运行原因 |
+| `dapr_restart_scheduler.ps1` | 重启 Dapr Scheduler 容器 |
+
+---
+
+## 六、配对与 CLI
+
+| 脚本 | 说明 |
+|------|------|
+| `run-pair.ps1` / `run-pair.sh` | 边缘智能体配对（6 位码，极客终端版） |
+| `start.bat pair` | 同上，根目录快捷方式 |
+
+---
+
+## 七、测试与验证
+
+| 脚本 | 说明 |
+|------|------|
+| `test.ps1` / `test.sh` | 测试 API：健康、路由、聊天、Dapr |
+| `run_tests.ps1` | 运行 pytest 单元/集成测试 |
+| `verify_system.ps1` | 系统验证：Conda、端口、数据库、Dapr |
+
+---
+
+## 八、内部脚本（一般无需单独运行）
+
+| 脚本 | 说明 |
+|------|------|
+| `run_backend_uvicorn_conda.bat` | 启动 uvicorn 后端（Conda jachin-dev），被 start-full.ps1 通过 dapr run 调用 |
+
+---
+
+## 推荐流程
+
+**纯 Nexus 用户：**
+```
+install-layer2.ps1  →  start-layer2.ps1
+```
+（install 自动执行首次配对，已配对则跳过）
+
+**平台商部署 Cloud：**
+```
+install-cloud.ps1   →  start-cloud.ps1
+```
+（install-cloud 会自动尝试执行 Supabase 迁移）
+
+**完整开发环境：**
+```
+setup.ps1  →  编辑 .env  →  可选 download_models.bat  →  start-full.ps1
 ```
 
-## 注意事项
-
-- **脚本会自动激活 jachin-dev 环境**，无需手动激活
-- 确保 Docker Desktop/Docker 正在运行
-- 确保已配置 API Key（`.env` 文件中的 `QWEN_API_KEY`）
-- 首次运行需要运行 `setup` 脚本
+**端口占用时：** `kill_port.ps1 18888`  
+**容器冲突时：** `docker_fix_conflicts.ps1`

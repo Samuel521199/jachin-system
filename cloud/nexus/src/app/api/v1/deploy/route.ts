@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
         layer2_instance_id: instanceId,
         resource_type: "plugin",
         resource_id: resourceId,
+        plugin_id: plugin_id,
         download_url: downloadUrl,
         temp_token: tempToken,
         token_expires_at: tokenExpiresAt.toISOString(),

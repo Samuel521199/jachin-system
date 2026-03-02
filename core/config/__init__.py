@@ -104,6 +104,7 @@ class Settings(BaseSettings):
 
     # Skills
     SKILLS_REPO_PATH: str = "./skills_repo"
+    RESOURCES_REPO_PATH: str = "./resources_repo"  # resource_mount 型 Persona/Memory 只读挂载点
     SKILL_RUNTIME: str = "docker"
     SKILL_AUTO_ENABLE: bool = True
     SKILL_MAX_CONCURRENT: int = 10

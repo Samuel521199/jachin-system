@@ -20,7 +20,7 @@ import httpx
 
 from core.config import settings
 from core.plugin.validator import extract_and_validate, SecurityViolationError
-from core.plugin.sandbox import PluginSandbox
+from core.plugin.sandbox_engine import SandboxEngine
 
 logger = logging.getLogger(__name__)
 
@@ -175,15 +175,39 @@ class UpdaterAgent:
                 logger.warning("插件格式校验失败: %s", e)
                 return False
 
-            # 3. 沙箱加载
-            perms = manifest.get("permissions", [])
-            perm_strs = [p.get("scope", p) if isinstance(p, dict) else p for p in perms]
-            allow_file = "file.read" in perm_strs or "file.write" in perm_strs
+            # 3. 沙箱装载（含 resource_mount 分流，统一由 SandboxEngine 处理）
+            try:
+                entry_point = SandboxEngine.load(str(extract_dir), manifest)
+            except NotImplementedError as e:
+                logger.warning("沙箱装载跳过（未实现）: %s", e)
+                return False
 
-            sandbox = PluginSandbox(allow_file_ops=allow_file)
-            entry_point = sandbox.load_plugin(str(extract_dir), manifest)
+            plugin_id_from_manifest = manifest.get("id", plugin_id)
+            perm_strs = [p.get("scope", p) if isinstance(p, dict) else p for p in manifest.get("permissions", [])]
 
-            # 4. 注册到 PluginManager（复制到 skills_repo）
+            # 3a. resource_mount：SandboxEngine 已挂载，仅注册 manifest，不复制到 skills_repo
+            if getattr(entry_point, "_IS_RESOURCE_MOUNT", False):
+                from core.system.plugin_manager import get_plugin_manager
+                from common.schemas.manifest import PluginManifest, PriceInfo, PriceType, Permission
+
+                pm = get_plugin_manager()
+                pm.installed_plugins[plugin_id_from_manifest] = PluginManifest(
+                    id=plugin_id_from_manifest,
+                    version=manifest.get("version", "1.0.0"),
+                    name=manifest.get("name", "Unknown"),
+                    description=manifest.get("description"),
+                    author=manifest.get("author"),
+                    price=PriceInfo(amount=0, type=PriceType.FREE),
+                    permissions=[Permission(scope=p) for p in perm_strs],
+                    requirements=manifest.get("requirements", []),
+                )
+                logger.info(
+                    "Resource '%s' 已挂载。core-llm-intent 等 Skill 可通过 JACHIN_VOL_* 环境变量读取。",
+                    plugin_id_from_manifest,
+                )
+                return True
+
+            # 4. 可执行插件：注册到 PluginManager（复制到 skills_repo）
             from core.system.plugin_manager import get_plugin_manager
 
             pm = get_plugin_manager()
@@ -254,12 +278,11 @@ class UpdaterAgent:
                     pass
 
     async def _download_package(self, url: str, token: str) -> Optional[Path]:
-        """下载 .jmp 包到临时文件"""
+        """下载 .jmp 包到临时文件（支持 ipfs://{cid}，CIDv0/Qm 与 CIDv1/bafy 均可）"""
         if url.startswith("ipfs://"):
-            gateway = "https://ipfs.io/ipfs/"
+            import os
+            gateway = os.environ.get("IPFS_GATEWAY", "https://ipfs.io/ipfs/").rstrip("/") + "/"
             cid = url.replace("ipfs://", "").strip()
-            if not cid.startswith("Qm"):
-                cid = "Qm" + cid
             url = gateway + cid
 
         try:

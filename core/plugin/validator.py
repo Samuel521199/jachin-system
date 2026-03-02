@@ -70,36 +70,33 @@ def extract_and_validate(jmp_filepath: str, extract_dir: str) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(jmp_path, "r") as zf:
             namelist = zf.namelist()
-
             if "manifest.json" not in namelist:
                 raise ValueError("JMP 包必须包含 manifest.json")
 
-            if "main.py" not in namelist:
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            is_resource_mount = manifest.get("execution_model") == "resource_mount"
+
+            if not is_resource_mount and "main.py" not in namelist:
                 raise ValueError("JMP 包必须包含 main.py")
 
-            # 解压
             out_dir.mkdir(parents=True, exist_ok=True)
             zf.extractall(out_dir)
 
-        manifest_path = out_dir / "manifest.json"
-        main_path = out_dir / "main.py"
-
-        with open(manifest_path, encoding="utf-8") as f:
-            manifest = json.load(f)
-
-        permissions = manifest.get("permissions", [])
-        if permissions and isinstance(permissions[0], dict):
-            allowed = [p.get("scope", p) for p in permissions if isinstance(p, dict)]
+        if is_resource_mount:
+            logger.info("resource_mount 包，跳过 main.py 代码审查")
         else:
-            allowed = [p for p in permissions if isinstance(p, str)]
-
-        main_code = main_path.read_text(encoding="utf-8")
-
-        if not scan_python_code(main_code, allowed):
-            raise SecurityViolationError(
-                "main.py 静态扫描发现未授权的高危模块导入",
-                module="(见日志)",
-            )
+            main_path = out_dir / "main.py"
+            permissions = manifest.get("permissions", [])
+            if permissions and isinstance(permissions[0], dict):
+                allowed = [p.get("scope", p) for p in permissions if isinstance(p, dict)]
+            else:
+                allowed = [p for p in permissions if isinstance(p, str)]
+            main_code = main_path.read_text(encoding="utf-8")
+            if not scan_python_code(main_code, allowed):
+                raise SecurityViolationError(
+                    "main.py 静态扫描发现未授权的高危模块导入",
+                    module="(见日志)",
+                )
 
         logger.info(f"插件 {manifest.get('id', 'unknown')} 静态审查通过")
         return manifest

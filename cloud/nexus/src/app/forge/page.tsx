@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -141,6 +141,32 @@ const TOOL_ITEMS = [
 export default function ForgePage() {
   const [nodes, , onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [publishStatus, setPublishStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [publishResult, setPublishResult] = useState<string>("");
+
+  const onPublish = useCallback(async () => {
+    setPublishStatus("loading");
+    setPublishResult("");
+    try {
+      const res = await fetch("/api/v1/forge/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nodes,
+          edges,
+          name: "Forge 工作流",
+          plugin_id: `com.jachin.forge-${Date.now()}`,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "发布失败");
+      setPublishStatus("success");
+      setPublishResult(data.jmp_url ?? JSON.stringify(data));
+    } catch (e) {
+      setPublishStatus("error");
+      setPublishResult((e as Error).message);
+    }
+  }, [nodes, edges]);
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => addEdge(params, eds)),
@@ -193,6 +219,23 @@ export default function ForgePage() {
             <p className="text-[10px] text-white/30 mt-4">
               拖拽到画布（UI 展示）
             </p>
+            <button
+              onClick={onPublish}
+              disabled={publishStatus === "loading"}
+              className="mt-4 w-full py-2.5 px-4 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+            >
+              {publishStatus === "loading" ? "锻造中..." : "🔥 锻造并发布"}
+            </button>
+            {publishStatus === "success" && (
+              <p className="mt-2 text-xs text-green-400 truncate" title={publishResult}>
+                ✓ {publishResult}
+              </p>
+            )}
+            {publishStatus === "error" && (
+              <p className="mt-2 text-xs text-red-400" title={publishResult}>
+                ✗ {publishResult}
+              </p>
+            )}
           </div>
         </div>
 

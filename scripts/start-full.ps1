@@ -448,9 +448,9 @@ Write-Warning "Press Ctrl+C to stop"
 Write-Host ""
 
 # 使用 wrapper script 或直接运行
-$wrapperScript = Join-Path $ScriptDir "run_backend.bat"
+$wrapperScript = Join-Path $ScriptDir "run_backend_uvicorn_conda.bat"
 if (Test-Path $wrapperScript) {
-    Write-Info "Using wrapper script: run_backend.bat"
+    Write-Info "Using wrapper script: run_backend_uvicorn_conda.bat"
     $backendCmd = $wrapperScript
 } else {
     if ($condaActivated) {

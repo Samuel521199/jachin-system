@@ -1,9 +1,9 @@
 # Layer 1 (Jachin Nexus) 架构与界面设计总览
 
-**版本**: 2.0  
+**版本**: 2.1  
 **创建日期**: 2026-02-16  
 **定位**: 灵界枢纽的架构、界面分类、风格与流程说明  
-**升级**: 微内核生态深度融合，详见 [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md)
+**升级**: 微内核生态深度融合；生态与商业化白皮书对齐，详见 [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md)
 
 ---
 
@@ -13,8 +13,18 @@
 
 | 层级 | 角色 | 职责 | 状态 |
 |------|------|------|------|
-| **Layer 1 (Jachin Nexus)** | 指挥部 & 兵工厂 | 协议制定 (JMP)、武器研发 (Forge)、武器分发 (Market)、舰队大盘 (Console) | **无状态**，无用户对话记忆 |
-| **Layer 2 (Microkernel Node)** | 前线机甲 | 加载 JMP 包、RAG 检索、多级权限管控、VAD 语音 I/O、私密对话上下文 | **有状态**，本地执行 |
+| **Layer 1 (Jachin Nexus)** | 指挥部 & 兵工厂 | 协议制定 (JMP)、武器研发 (Forge)、武器分发 (Market)、舰队大盘 (Console)、智能版税路由 | **无状态**，无用户对话记忆 |
+| **Layer 2 (Microkernel Node)** | 前线边缘智能体 | 加载 JMP 包、RAG 检索、多级权限管控、VAD 语音 I/O、私密对话上下文 | **有状态**，本地执行 |
+
+### 1.1b 五阶层生态角色（白皮书对齐）
+
+| 阶层 | 角色 | 对应界面 |
+|------|------|----------|
+| **阶层一** | 底层铸造者 (极客) | CLI、开发者文档、API 密钥管理台 |
+| **阶层二** | 蓝图架构师 (魔法师) | The Forge、参数配置表 |
+| **阶层三** | 布道者联盟 | 推广返佣仪表盘（待建） |
+| **阶层四** | 企业领主 | Console 舰队指挥台、SaaS 账单 |
+| **阶层五** | 普通用户 | 精简 App、消费端页面、「切换大脑」 |
 
 ### 1.2 定位与职责
 
@@ -56,7 +66,7 @@
 | **Neural Market（神经元商城）** | 技能树形态，非传统货架 | `/market` | ✅ 已实现（SVG 节点图） |
 | **The Forge（铸造厂）** | Web 版「钢铁侠实验室」 | `/forge` | ✅ 已实现（React Flow 编排） |
 | **Jachin ID & Console（指挥台）** | 极简「舰队管理」 | `/console` | ✅ 已实现（舰队拓扑 + 隐私审计） |
-| **The Agora（广场）** | Agent 展示、Bounty Board | — | ❌ 待建 |
+| **The Agora（广场）** | Agent 展示、悬赏大厅 (Bounty Board) | — | ❌ 待建 |
 | **Auth Center** | Jachin ID 登录 | — | ❌ 待建（当前无登录） |
 
 ### 2.2 内容分类（Neural Market）
@@ -77,8 +87,8 @@
 |------|----------|----------|
 | **Neural Market** | 技能树形态，非传统货架 | 3D 神经元网络球体，节点为 Skill/Persona，支持组合预览 |
 | **The Forge** | Web 版「钢铁侠实验室」 | Agent Builder 拖拽编排、模拟沙箱在线测试、一键发布 |
-| **The Agora** | Agent 与 Agent 社交展示台 | Showcase 视频、Bounty Board 悬赏榜 |
-| **Jachin ID & Console** | 极简舰队管理 | 地图显示 L2/L3 在线、绿色盾牌隐私审计「0 次上传」、6 位码添加机甲 |
+| **The Agora** | Agent 与 Agent 社交展示台 | Showcase 视频、悬赏大厅 (Bounty Board) 去中心化撮合 |
+| **Jachin ID & Console** | 极简舰队管理 | 地图显示 L2/L3 在线、绿色盾牌隐私审计「0 次上传」、6 位码添加边缘智能体 |
 
 ---
 
@@ -174,12 +184,14 @@ deploy_commands (Supabase)
 
 | 表 | 说明 |
 |------|------|
-| `nexus_users` | RBAC 用户（super_admin / developer / consumer） |
+| `nexus_users` | RBAC 用户（super_admin / developer / consumer / promoter） |
 | `plugins_registry` | 技能插件（plugin_id, download_url, manifest_json, category, status） |
 | `personas_library` | 人设（persona_id UUID 全局唯一） |
 | `transactions` | 交易记录 |
 | `deploy_commands` | 部署指令（端云握手） |
 | `layer2_instances` | Layer 2 实例状态（instance_id, environment_type, core_version, active_plugins, last_heartbeat） |
+| `promoters`（规划） | 布道者（affiliate_code, payout_address） |
+| `transactions` 扩展（规划） | 分润明细（promoter_id, split_json） |
 
 ---
 
@@ -227,6 +239,9 @@ Navbar (固定顶部)
 ---
 
 **相关文档**:
+- [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md) - 全球生态与商业化白皮书（五阶层、智能版税、GTM）
+- [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md) - 盈利模型与智能版税分润规范
+- [GTM_STRATEGY.md](./GTM_STRATEGY.md) - Go-to-Market 市场推演与阶段落地
 - [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) - 无感安全与渐进式授权（傻瓜式配对、权限大白话、云端无感打包）
 - [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md) - 微内核生态深度融合升级方案
 - [MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md](./MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md) - 战术战役规划（含 Layer 1 已完成战役）

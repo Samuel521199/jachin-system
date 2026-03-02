@@ -39,7 +39,7 @@ jmp_package = extract_and_verify_signature(downloaded_file, public_key)
 | 角色 | 持有 | 用途 |
 |------|------|------|
 | **Layer 1 (Nexus)** | 私钥 (Private Key) | 给插件盖戳，生成 `signature.sig` |
-| **Layer 2 (前线机甲)** | 公钥 (Public Key)，**首次配对时无感下发** | 验真，拒绝未签名或签名无效的 .jmp |
+| **Layer 2 (前线边缘智能体)** | 公钥 (Public Key)，**首次配对时无感下发** | 验真，拒绝未签名或签名无效的 .jmp |
 
 **安全原则**：私钥永不离开 Layer 1；公钥通过**端云三次握手**（6 位码，RFC 8628）在用户点击「授权绑定」后自动下发。详见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)。
 

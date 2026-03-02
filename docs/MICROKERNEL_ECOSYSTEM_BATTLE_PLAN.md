@@ -55,6 +55,19 @@
 
 ---
 
+## 商业化战役（白皮书对齐）
+
+> 详见 [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md)、[REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md)
+
+| 任务模块 | 具体内容 | 优先级 |
+|----------|----------|--------|
+| **智能版税分润引擎** | 交易发生时解析蓝图依赖树，按 manifest 声明自动分账（平台 20%、布道者 5%、底层极客、蓝图架构师） | P1+ |
+| **布道者 / 推广链接** | promoters 表、affiliate_code、URL `?ref=xxx` 识别、返佣仪表盘 | P1+ |
+| **Proof-of-Execution 打分** | 只有 Layer 2 心跳证明「已跑通该 .jmp」的设备才能打分，防刷单 | P1+ |
+| **悬赏大厅 (Bounty Board)** | The Agora 内，企业发布需求、极客接单、资金托管、自动释放赏金 | P2 |
+
+---
+
 ## 实施顺序建议
 
 ```
