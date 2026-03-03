@@ -92,31 +92,32 @@ weapon-vad.jmp  (ZIP 归档)
 
 # 📡 方向二：点亮指挥台 — 端云心跳与状态同步
 
-在 `layer2_instances` 表中已预留 `last_heartbeat`、`active_plugins`。需设计 Layer 2 如何定期向 Layer 1 汇报。
+**当前实现**：`edge_agents` 表 + `POST /api/v1/agents/heartbeat`（轻量版 daemon 使用）。  
+`layer2_instances` 为旧版，`instances/heartbeat` 仍存在，但 **agents/heartbeat** 为 Nexus 主路径。
 
-## 2.1 心跳协议设计
+## 2.1 心跳协议设计（agents/heartbeat — 已实现）
 
-**频率**：Layer 2 每隔 **30 秒** 发送一次 `POST /api/v1/instances/heartbeat`。
+**频率**：Layer 2 轻量版 daemon 每隔 **10 秒** 发送一次 `POST /api/v1/agents/heartbeat`。
 
 **请求体**：
 
 ```json
 {
   "instance_id": "dev-layer2-001",
-  "core_version": "1.2.0",
-  "environment_type": "docker",
-  "active_plugins": ["com.jachin.weather", "com.jachin.vad"],
-  "metrics": {
-    "cpu_percent": 12.5,
-    "memory_mb": 512,
-    "gpu_utilization": 0
-  }
+  "core_version": "1.0.0",
+  "metrics": {},
+  "active_plugins": {}
 }
 ```
 
-**响应**：`200 OK`，可选返回 `{ "next_poll_interval": 30 }` 用于动态调整间隔。
+**Headers**：`Authorization: Bearer <access_token>`（配对后获得）
 
-**Layer 1 侧**：更新 `layer2_instances` 的 `last_heartbeat`、`active_plugins`、`core_version`；可选扩展字段存储 `metrics`。
+**响应**：`200 OK`，可包含：
+- `blueprint`：当前分配的蓝图（name, ast_json）
+- `task`：IM 网关待下发消息（用户通过 TG/飞书发来的指令）
+- `pending_message_ids`：对应队列 ID，供 result API 标记已处理
+
+**Layer 1 侧**：更新 `edge_agents.last_heartbeat`；若有 pending inbound 消息则打包返回。详见 [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)。
 
 ## 2.2 连接保活策略
 
@@ -140,9 +141,10 @@ weapon-vad.jmp  (ZIP 归档)
 
 | 组件 | 位置 | 职责 |
 |------|------|------|
-| **心跳客户端** | Layer 2 `core/updater/` 或新建 `core/heartbeat/` | 定时 POST 到 Layer 1，携带 instance_id、metrics、active_plugins |
-| **心跳 API** | Layer 1 `cloud/nexus/src/app/api/v1/instances/heartbeat/route.ts` | 接收 POST，更新 `layer2_instances` |
-| **Console 前端** | `cloud/nexus/src/app/console/page.tsx` | 轮询或订阅 instances 数据，根据 last_heartbeat 渲染绿/灰 |
+| **心跳客户端** | Layer 2 `core/daemon.py`（轻量版） | 每 10 秒 POST `/api/v1/agents/heartbeat`，拉取 blueprint + task |
+| **心跳 API** | Layer 1 `cloud/nexus/src/app/api/v1/agents/heartbeat/route.ts` | 校验 token，更新 last_heartbeat，返回 blueprint、task、pending_message_ids |
+| **Console 前端** | `cloud/nexus/src/app/console/page.tsx` | 根据 last_heartbeat 渲染绿/灰 |
+| **结果回传** | Layer 1 `cloud/nexus/src/app/api/v1/agents/result/route.ts` | Agent 执行完成后 POST 结果，推回 TG/飞书 |
 
 ---
 
@@ -154,16 +156,19 @@ weapon-vad.jmp  (ZIP 归档)
    → Layer 1 签名生成管线
    → Layer 2 validator 验签逻辑
 
-2. 方向二：心跳 (P0-4)
-   → Layer 1 POST /api/v1/instances/heartbeat
-   → Layer 2 心跳客户端
+2. 方向二：心跳 (P0-4) ✅ 已实现
+   → Layer 1 POST /api/v1/agents/heartbeat
+   → Layer 2 core/daemon.py 心跳循环
    → Console 绿/灰状态展示
+   → IM 网关扩展：task、pending_message_ids、result API
 ```
 
 ---
 
 **相关文档**:
 - [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) - **设备配对协议**（6 位码、端云三次握手、pairing_sessions）
+- [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) - **IM 网关**（TG/飞书 Webhook、消息队列、心跳扩展 task、result API）
+- [NEXUS_DAEMON.md](./NEXUS_DAEMON.md) - 守护进程总览（轻量版 daemon 心跳 + Agent Loop）
 - [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) - **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包）
 - [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) - 沙箱装载流程
 - [MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md](./MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md) - P0 战役总览

@@ -13,8 +13,31 @@
 | **Layer3** | 用户 | `install-layer3.ps1` / `install-layer3.sh` | `start-layer3.ps1` / `start-layer3.sh` |
 
 - **Cloud**：Nexus Console (Next.js)，`http://localhost:3000`
-- **Layer2**：nexus_daemon + Local Ingress，`http://127.0.0.1:9000`
+- **Layer2**：nexus_daemon（完整版）或 **daemon（轻量版）** + Local Ingress，`http://127.0.0.1:9000`
 - **Layer3**：Desktop Terminal (Tauri + React)
+
+## Layer 2 两种守护进程
+
+| 模式 | 入口 | 说明 |
+|------|------|------|
+| **完整版** | `python -m core.nexus_daemon` | Event Bus、Telemetry、Updater、Ingress，适合开发/生产 |
+| **轻量版** | `python -m core.daemon` | 心跳 + **Agent Loop**，蓝图作为 Persona & Skillset，ReAct 自主执行 |
+
+轻量版详见 [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md)。
+
+### 轻量版 daemon 执行流程
+
+1. 读取 `~/.jachin/nexus_config.json`，校验配对状态
+2. 每 10 秒向 Layer 1 发送 `POST /api/v1/agents/heartbeat`
+3. 若响应含 `blueprint`：将蓝图 AST 与可选 `task`、`pending_message_ids` 喂给 `AgentLoop.run()`
+4. 若仅有 `task`（IM 消息）：无新蓝图时仍启动 Agent，用空技能集执行
+5. Agent 通过 ReAct 循环（Thought → Action → Observation）自主执行，直至输出 `Answer:`
+6. Wasm 技能由 `core/wasm_runner.py` 在沙箱中执行，燃料熔断保护。支持 Pure Compute（run() -> i32）与 WASI（stdin/stdout，Python py2wasm 插件）
+7. 若有 `pending_message_ids`：执行完成后 `POST /api/v1/agents/result`，Layer 1 将结果推回用户手机（TG/飞书）
+
+**IM 网关**：用户通过 Telegram/飞书发消息 → Webhook 入队 → 心跳拉取 task → Agent 执行 → result API 回传。详见 [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)。
+
+---
 
 ## 一、点火总控 (nexus_daemon)
 
@@ -124,8 +147,10 @@ jachin pair
 | 命令 | 说明 |
 |------|------|
 | `jachin pair` | OOBE 配对 |
-| `jachin daemon` | 启动 nexus_daemon |
+| `jachin daemon` | 启动**轻量版**守护进程（core.daemon，心跳 + Agent Loop） |
 | `jachin status` | 查看配对状态 |
+
+> 注：`jachin daemon` 启动的是轻量版（core.daemon），非 nexus_daemon。完整版需直接 `python -m core.nexus_daemon`。
 
 ---
 

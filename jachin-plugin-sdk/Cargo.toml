@@ -1,0 +1,13 @@
+[package]
+name = "jachin-plugin-example"
+version = "1.0.0"
+edition = "2021"
+description = "JPP 智能灯泡示例插件 - 5 分钟上架神经元商城"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true

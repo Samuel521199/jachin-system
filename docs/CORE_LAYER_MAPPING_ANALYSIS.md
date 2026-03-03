@@ -5,13 +5,10 @@
 
 ---
 
-## 1. 关于 MASTER_DESIGN.md
+## 1. 依据文档
 
-**`docs/architecture/MASTER_DESIGN.md` 不存在。**
-
-当前项目中没有 `docs/architecture/` 目录。若您有该文档，请贴出内容，以便按 MASTER_DESIGN 做更精确的映射。
-
-本分析基于 `docs/ARCHITECTURE_DESIGN_SPEC.md` 进行。
+本分析基于 `docs/ARCHITECTURE_DESIGN_SPEC.md`、`docs/DIRECTORY_STRUCTURE_V4.md` 及现有 core/ 结构。  
+Nexus (Layer 1) 架构见 [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)，Agent Loop 见 [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md)。
 
 ---
 

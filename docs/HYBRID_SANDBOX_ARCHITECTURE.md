@@ -40,7 +40,18 @@ WASM 模块的加载和执行是**微秒级**。Layer 2 可实现真正的「即
 
 ### 2.3 跨语言
 
-开发者可用 **Rust、Go、C++** 甚至 **Python (通过 RustPython)** 编写插件，编译成统一的 `.wasm` 字节码。
+开发者可用 **Rust、Go、C++** 甚至 **Python (py2wasm)** 编写插件，编译成统一的 `.wasm` 字节码。
+
+### 2.4 WASI 模式（已实现）
+
+`core/wasm_runner.py` 支持 **WASI stdin/stdout** 协议，用于 Python (py2wasm) 插件：
+
+```python
+sandbox = JachinWasmSandbox()
+result = sandbox.run_plugin(wasm_path, stdin_json={"ticker": "BTC"})  # WASI 模式
+# 或
+result = sandbox.run_plugin_wasi(wasm_path, stdin_str='{"ticker":"BTC"}')
+```
 
 ---
 

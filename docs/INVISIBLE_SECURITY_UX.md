@@ -29,7 +29,7 @@
 | 阶段 | 用户所见 | 背后发生 |
 |------|----------|----------|
 | **1. 边缘智能体请求** | Layer 2 终端打印 `👉 J8K2X9 👈`，提示访问 `nexus.jachin/pair` | `POST /api/v1/pairing/request` → 云端生成 6 位码 + session_id（5 分钟有效） |
-| **2. 指挥官授权** | 用户在 Console 输入 `J8K2X9`，点击「授权绑定」 | `POST /api/v1/pairing/confirm` → 绑定 user_id，注册 layer2_instances |
+| **2. 指挥官授权** | 用户在 Console 输入 `J8K2X9`，点击「授权绑定」 | `POST /api/v1/pairing/confirm` → 绑定 user_id，创建 edge_agents 记录 |
 | **3. 密钥下发** | 边缘智能体终端显示 `✅ 授权成功，边缘智能体已连接至指挥部` | Layer 2 轮询 `GET /api/v1/pairing/status` → 拿到 access_token + layer1_public_key，写入本地 |
 
 **用户操作**：仅输入 6 个字符。

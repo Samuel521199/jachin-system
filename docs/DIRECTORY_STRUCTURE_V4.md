@@ -103,6 +103,15 @@ jachin-system/
 │   └── apps/                        # 纯软件应用 (v4.0)
 │       └── com.jachin.web-surfer/
 │
+├── jachin-plugin-sdk/               # JPP Rust 脚手架（Wasm、版税、5 分钟上架）
+│   ├── src/lib.rs
+│   ├── plugin.json
+│   └── dist/main.wasm
+├── jachin-plugin-sdk-python/        # JPP Python 脚手架（py2wasm、@jachin_plugin）
+│   ├── src/main.py, jachin_sdk.py
+│   ├── plugin.json
+│   └── dist/plugin.wasm
+│
 ├── clients/
 │   ├── desktop/
 │   └── lib/

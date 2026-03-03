@@ -48,6 +48,9 @@ jachin-system/
 │
 ├── skills_repo/              # [Local] 已安装技能存储库
 │
+├── jachin-plugin-sdk/        # [Dev] JPP 开发者脚手架（Rust Wasm、版税、5 分钟上架）
+├── jachin-plugin-sdk-python/ # [Dev] JPP Python 脚手架（py2wasm、@jachin_plugin、分润）
+│
 ├── installer/                # [Deploy] 一键安装/集群配对脚本
 │
 ├── dapr/                     # Dapr 配置
@@ -165,8 +168,9 @@ Ray 集群管理与调度
 1. **后端开发**: 在 `core/` 目录下进行
 2. **客户端开发**: 在 `clients/` 对应子目录下进行
 3. **技能开发**: 在 `skills_repo/` 目录下创建新技能
-4. **云端开发**: 在 `cloud/` 目录下进行（可选）
-5. **文档更新**: 在 `docs/` 目录下维护
+4. **Wasm 插件开发**: 使用 `jachin-plugin-sdk/` 脚手架，`make build` 生成 `dist/main.wasm`，控制台上传
+5. **云端开发**: 在 `cloud/` 目录下进行（可选）
+6. **文档更新**: 在 `docs/` 目录下维护
 
 ---
 

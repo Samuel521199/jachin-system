@@ -1,0 +1,20 @@
+{
+  "id": "com.example.smart-bulb",
+  "version": "1.0.0",
+  "name": "智能灯泡控制器",
+  "description": "控制智能灯泡开关与亮度，演示 JPP 插件开发",
+  "author": "Your Name",
+  "jmp_version": "2.0",
+  "type": "skill",
+  "category": "IO_Enhancement",
+  "entry": "main.wasm",
+  "permissions": [],
+  "royalty": {
+    "percentage": 30,
+    "description": "每次调用分润 30% 给插件作者"
+  },
+  "compatibility": {
+    "os": ["linux", "windows", "docker"],
+    "min_core_version": "1.0.0"
+  }
+}

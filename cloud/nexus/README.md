@@ -1,4 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Jachin Nexus (Layer 1)
+
+灵界枢纽：智慧分发、协议标准、神经元商城、舰队大盘、IM 网关。
+
+## 核心 API
+
+| 路径 | 说明 |
+|------|------|
+| `POST /api/v1/agents/heartbeat` | 边缘 Agent 心跳，返回 blueprint、task（IM 消息） |
+| `POST /api/v1/agents/result` | Agent 执行结果回传，推回 TG/飞书 |
+| `POST /api/v1/webhooks/telegram` | Telegram 机器人 Webhook |
+| `POST /api/v1/agents/bind-im` | 绑定 Agent 与 Telegram chat_id |
+
+详见 [docs/IM_GATEWAY_SPEC.md](../../docs/IM_GATEWAY_SPEC.md)、[docs/NEXUS_DAEMON.md](../../docs/NEXUS_DAEMON.md)。
+
+## 环境变量
+
+见 `.env.example`。IM 网关需 `TELEGRAM_BOT_TOKEN`（从 @BotFather 获取）。**战役 2 物理基建**（Ngrok、setWebhook、绑定 Chat ID）见 [docs/TELEGRAM_TUNNEL_SETUP.md](../docs/TELEGRAM_TUNNEL_SETUP.md)。
+
+---
 
 ## Getting Started
 

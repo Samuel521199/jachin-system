@@ -87,11 +87,30 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 查询待下发的 inbound 消息（IM 网关：用户通过 TG/飞书发来的指令）
+    const { data: pendingMessages } = await sb
+      .from("agent_message_queue")
+      .select("id, message_text, source_meta")
+      .eq("agent_id", agentId)
+      .eq("direction", "inbound")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(10);
+
+    const task =
+      pendingMessages && pendingMessages.length > 0
+        ? pendingMessages.map((m) => m.message_text).join("\n")
+        : null;
+
     return NextResponse.json({
       success: true,
       timestamp: Date.now(),
       status: "ok",
       ...(blueprint && { blueprint }),
+      ...(task && {
+        task,
+        pending_message_ids: pendingMessages!.map((m) => m.id),
+      }),
     });
   } catch (e) {
     console.error("[agents/heartbeat] Error:", e);

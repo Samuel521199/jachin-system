@@ -18,7 +18,7 @@ Jachin Nexus 的核心商业定位并非「造大模型」，而是**「造基�
 
 | 阶层 | 角色 | 英文 | 他们是谁 | 他们做什么 | 利益驱动 | 他们看什么 |
 |------|------|------|----------|------------|----------|------------|
-| **阶层一** | 底层铸造者 | The Hardcore Geeks | 懂 C/Rust/Python 的极客、大模型微调专家 | 开发 WASM 沙箱、封装 VITS 语音权重、训练 RAG 向量库 | 一次硬核开发 → 持续版税订阅 | CLI、开发者文档、沙箱调试、API 密钥管理台 |
+| **阶层一** | 底层铸造者 | The Hardcore Geeks | 懂 C/Rust/Python 的极客、大模型微调专家 | 开发 WASM 沙箱、封装 VITS 语音权重、训练 RAG 向量库 | 一次硬核开发 → 持续版税订阅 | [jachin-plugin-sdk](../jachin-plugin-sdk/README.md)、[jachin-plugin-sdk-python](../jachin-plugin-sdk-python/README.md)、CLI、沙箱调试 |
 | **阶层二** | 蓝图架构师 | The Prompt Mages | 懂业务逻辑、Prompt、工作流的产品经理/效率达人 | 在 /forge 兵工厂里组合插件，形成复合蓝图 (Workflow) | 极低门槛实现创意，赚取蓝图售卖费 | The Forge React Flow 界面、参数配置表 |
 | **阶层三** | 布道者联盟 | The Evangelists | B站/YouTube 科技 UP 主、博主、社区群主 | 制作教程，附带专属推广链接 | 流量和教程 → 终身管道抽成 | 推广返佣仪表盘、转化率、分润提现 |
 | **阶层四** | 企业领主 | The Fleet Commanders | 连锁店老板、安防公司、医疗机构 | 批量部署 Layer 2 边缘智能体，采购商业蓝图，统一下发 | 数据隐私、极低 AI 部署成本 | 心跳大屏、SaaS 账单结算中心 |
@@ -157,7 +157,8 @@ Jachin Nexus 的核心商业定位并非「造大模型」，而是**「造基�
 | Neural Market | ✅ | `/market`，SVG 技能树、部署到边缘智能体 |
 | The Forge | ✅ | `/forge`，React Flow 编排、发布 |
 | Jachin ID & Console | ⚠️ | `/console` 舰队视图，无登录 |
-| 智能版税 / 分润 | ❌ 待建 | 需计费引擎、推广 Tag、分账路由 |
+| JPP 开发者脚手架 | ✅ | [Rust](../jachin-plugin-sdk/README.md)、[Python](../jachin-plugin-sdk-python/README.md)，5 分钟上架、plugin.json 版税、WASI 支持 |
+| 智能版税 / 分润 | ⚠️ 部分 | 单插件 `royalty.percentage` 已支持；复合蓝图、推广 Tag 待建 |
 | 布道者 / 推广链接 | ❌ 待建 | 需 promoters 表、affiliate API |
 | 悬赏大厅 | ❌ 待建 | The Agora 中的 Bounty Board |
 | Proof-of-Execution | ⚠️ | 心跳已有，打分资格逻辑待实现 |
@@ -167,6 +168,8 @@ Jachin Nexus 的核心商业定位并非「造大模型」，而是**「造基�
 ---
 
 **相关文档**:
+- [jachin-plugin-sdk](../jachin-plugin-sdk/README.md) - JPP Rust 脚手架
+- [jachin-plugin-sdk-python](../jachin-plugin-sdk-python/README.md) - JPP Python SDK（WASI）
 - [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)
 - [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md)
 - [GTM_STRATEGY.md](./GTM_STRATEGY.md)

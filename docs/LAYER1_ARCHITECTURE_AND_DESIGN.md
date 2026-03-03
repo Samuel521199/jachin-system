@@ -148,7 +148,7 @@
 2. 生成清单：点击发布 → Layer 1 生成「目标状态清单 (Desired State Manifest)」写入 deploy_commands
 3. 拉取与比对：Layer 2 拉取清单 → 微内核与本地 current state 做 Diff
 4. 智能热插拔：新增→下载校验挂载；移除→优雅关闭卸载
-5. 状态回传：Layer 2 → POST /api/v1/instances/heartbeat → /console 节点亮绿
+5. 状态回传：Layer 2 → POST /api/v1/agents/heartbeat → /console 节点亮绿（含 blueprint、task、IM 消息）
 ```
 
 ### 4.2 API 接口
@@ -159,7 +159,9 @@
 | `POST /api/v1/deploy` | POST | 生成部署指令与 temp_token |
 | `GET /api/v1/deploy/poll?instance_id=xxx` | GET | Layer 2 轮询拉取指令 |
 | `POST /api/v1/forge/publish` | POST | Forge 画布发布为 JMP（骨架已建） |
-| `POST /api/v1/instances/heartbeat` | POST | Layer 2 心跳与状态回传（规划） |
+| `POST /api/v1/agents/heartbeat` | POST | Layer 2 心跳与状态回传（✅ 已实现，含 blueprint、task、pending_message_ids） |
+| `POST /api/v1/agents/result` | POST | 边缘 Agent 执行结果回传，推回 TG/飞书（✅ 已实现） |
+| `POST /api/v1/webhooks/telegram` | POST | Telegram 机器人 Webhook（✅ 已实现） |
 
 ### 4.3 数据流
 
@@ -169,9 +171,9 @@ plugins_registry (Supabase)
     → 映射为 PluginRecord (含 x, y, color, connections, compatibility)
     → 前端渲染 SVG 节点图（含环境透镜过滤）
 
-layer2_instances (Supabase)
-    ← POST /api/v1/instances/heartbeat 写入/更新
-    → /console 舰队视图、Market 兼容性过滤
+edge_agents (Supabase)
+    ← POST /api/v1/agents/heartbeat 更新 last_heartbeat
+    → /console 舰队视图、心跳返回 blueprint + task（IM 消息队列）
 
 deploy_commands (Supabase)
     ← POST /api/v1/deploy 写入
@@ -189,7 +191,9 @@ deploy_commands (Supabase)
 | `personas_library` | 人设（persona_id UUID 全局唯一） |
 | `transactions` | 交易记录 |
 | `deploy_commands` | 部署指令（端云握手） |
-| `layer2_instances` | Layer 2 实例状态（instance_id, environment_type, core_version, active_plugins, last_heartbeat） |
+| `edge_agents` | 边缘智能体（pairing_code, auth_token, last_heartbeat, current_blueprint_id, im_binding_id, im_platform） |
+| `blueprints` | 蓝图资产（name, ast_json，Forge 画布持久化） |
+| `agent_message_queue` | IM 消息队列（agent_id, message_text, direction, status） |
 | `promoters`（规划） | 布道者（affiliate_code, payout_address） |
 | `transactions` 扩展（规划） | 分润明细（promoter_id, split_json） |
 
@@ -206,6 +210,11 @@ deploy_commands (Supabase)
 | JMP 协议 | ✅ `docs/JMP_SPEC.md`，`.jmp` 包结构，**JMP 2.0** 环境感知与依赖树 |
 | IPFS 存储 | ❌ 当前用 mock URL |
 | Passkey / Web3 | ❌ 待建 |
+
+### 蓝图语义升级（Layer 2 Agent Loop）
+
+**蓝图** 不再仅是流程图，而是 **岗位说明书 (Persona & Skillset)**：  
+Forge 中的 Processor 节点 = Wasm 技能武器，下发到 Layer 2 后由 **ReAct Agent** 自主决定调用顺序与时机。详见 [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md)。
 
 ---
 
@@ -232,13 +241,16 @@ Navbar (固定顶部)
 | Supabase 接入 | 🔄 | 可配置，未配置时用 fallback |
 | 3D 神经元 | 🔄 | 当前为 2D SVG，规划为 Three.js |
 | The Agora | ❌ | 待建 |
-| layer2_instances | ✅ | 迁移已建 |
+| edge_agents / blueprints | ✅ | 迁移已建 |
 | 环境透镜 / 冲突检测 | 🔄 | 规划中 |
-| 心跳 API | 🔄 | 规划中 |
+| 心跳 API | ✅ | POST /api/v1/agents/heartbeat，含 blueprint、task、IM 扩展 |
+| IM 网关 | ✅ | Telegram Webhook、消息队列、result API，详见 [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) |
 
 ---
 
 **相关文档**:
+- [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md) - Layer 2 Agent Loop、蓝图 Persona & Skillset
+- [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) - IM 网关（TG/飞书、消息队列、NAT 穿透）
 - [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md) - 全球生态与商业化白皮书（五阶层、智能版税、GTM）
 - [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md) - 盈利模型与智能版税分润规范
 - [GTM_STRATEGY.md](./GTM_STRATEGY.md) - Go-to-Market 市场推演与阶段落地

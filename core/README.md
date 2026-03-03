@@ -1,4 +1,4 @@
-﻿# Core (Tier 2 - Jachin Hive)
+# Core (Tier 2 - Jachin Hive)
 
 服务端核心代码，负责复杂推理、长期记忆、任务编排和模型调度。
 
@@ -6,14 +6,13 @@
 
 ```
 core/
+├── agent_memory.py   # Agent 持久化记忆（add_memory, get_context），供 ReAct 循环
+├── agent_loop.py     # ReAct 代理循环（Thought→Action→Observation），蓝图 Persona & Skillset
+├── daemon.py         # 轻量版守护进程（心跳 + Agent Loop）
+├── wasm_runner.py    # WASM 物理沙箱（Pure Compute + WASI stdin/stdout）
 ├── core/              # 核心模块
-│   ├── llm/          # 模型抽象层 (MAL)
-│   │   ├── base.py   # BaseLLMProvider 接口
-│   │   ├── qwen_adapter.py
-│   │   ├── local_adapter.py
-│   │   ├── router.py # ModelRouter
-│   │   └── factory.py
-│   ├── memory/       # 记忆管理
+│   ├── brain/llm/    # 模型抽象层 (MAL)
+│   ├── memory/       # 向量记忆、RAG（与 agent_memory 区分：后者为 Agent 对话上下文）
 │   ├── planner/      # 任务编排
 │   └── auth/         # 认证授权
 ├── services/         # 业务服务

@@ -4,7 +4,7 @@
 
 - ✅ Git 仓库已初始化
 - ✅ 首次提交已完成（commit message 为系统白皮书与说明）
-- ✅ 标签 `v0.2.0` 已创建
+- ✅ 标签已创建（见 CHANGELOG.md 当前版本）
 
 ## 推送到 GitHub
 
@@ -27,10 +27,10 @@
 git remote add origin https://github.com/你的用户名/jachin-system.git
 
 # 强制推送 - 使远程与本地完全一致，清理 GitHub 上旧的无用文件
-git push -u origin master --force
+git push -u origin main --force
 
-# 推送标签
-git push origin v0.2.0 --force
+# 推送标签（替换为 CHANGELOG 中的当前版本）
+git push origin v0.5.6 --force
 ```
 
 ### 3. 使用脚本（已配置默认 Samuel521199）
@@ -51,6 +51,6 @@ git push origin v0.2.0 --force
 
 ## 版本信息
 
-- **标签**: v0.2.0
-- **白皮书**: docs/whitepaper_v3.2_final.md
+- **分支**: main（若远程为 master 则需先迁移）
+- **标签**: 见 CHANGELOG.md（当前 v0.5.x）
 - **更新日志**: CHANGELOG.md

@@ -51,7 +51,7 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 
 - `start.bat [cloud|layer2|daemon|layer3|full|pair]` — 默认 layer2；`pair` 为边缘智能体配对
 - `start.bat layer2` — 启动时展示选项菜单（nexus_daemon 完整版 / daemon 轻量版）
-- `start.bat daemon` — 直接启动轻量版守护进程（心跳 + 蓝图执行）
+- `start.bat daemon` — 直接启动轻量版守护进程（心跳 + Agent Loop 自主执行）
 - `restart.bat` — 重启完整栈
 
 ---
@@ -134,6 +134,7 @@ install-layer2.ps1  →  start-layer2.ps1
 （install 自动执行首次配对，已配对则跳过）
 - `start-layer2.ps1` 启动时展示选项：`[1] nexus_daemon (完整版)` / `[2] daemon (轻量版)`
 - 快捷启动轻量版：`start.bat daemon` 或 `.\scripts\start-layer2.ps1 -Mode daemon`
+- **轻量版 daemon**：心跳拉取蓝图后，由 **Agent Loop (ReAct)** 自主执行，不再机械跑 Trigger→Processor→Action。详见 [docs/LAYER2_AGENT_LOOP_DESIGN.md](../docs/LAYER2_AGENT_LOOP_DESIGN.md)
 
 **平台商部署 Cloud：**
 ```

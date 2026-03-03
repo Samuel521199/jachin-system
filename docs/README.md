@@ -1,6 +1,6 @@
 # Jachin-System v4.0 文档
 
-**版本**: v4.0 Swarm | **最后更新**: 2026-02
+**版本**: v4.0 Swarm | **最后更新**: 2026-03
 
 ---
 
@@ -12,6 +12,10 @@
 | [VISION.md](./VISION.md) | **产品愿景与身份**（贾维斯/电子宠物/伙伴/智能体生态） |
 | [whitepaper_v4.0_swarm.md](./whitepaper_v4.0_swarm.md) | 架构白皮书（v4.0 蜂群智能） |
 | [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md) | **Layer 1 架构与设计总览**（Jachin Nexus、模块、风格、流程、实施状态） |
+| [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md) | **Layer 2 Agent Loop**（蓝图 Persona & Skillset、ReAct 自主执行、持久化记忆） |
+| [NEXUS_DAEMON.md](./NEXUS_DAEMON.md) | **守护进程总览**（nexus_daemon 完整版、daemon 轻量版、配对、CLI） |
+| [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) | **IM 网关**（Telegram/飞书 Webhook、消息队列、NAT 穿透） |
+| [TELEGRAM_TUNNEL_SETUP.md](./TELEGRAM_TUNNEL_SETUP.md) | **战役 2 物理基建**（BotFather、Ngrok、setWebhook、绑定 Chat ID） |
 | [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md) | **盈利模型与智能版税分润规范** |
 | [GTM_STRATEGY.md](./GTM_STRATEGY.md) | **Go-to-Market 市场推演与阶段落地** |
 | [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md) | **微内核生态深度融合升级**（指挥权/执行权剥离、JMP 2.0、环境透镜、GitOps 握手） |
@@ -59,8 +63,10 @@
 | [SENTINEL_DESIGN.md](./SENTINEL_DESIGN.md) | Sentinel 哨兵设计 |
 | [TECHNICAL_SPECIFICATIONS.md](./TECHNICAL_SPECIFICATIONS.md) | 技术规格 |
 | [JMP_SPEC.md](./JMP_SPEC.md) | JMP 2.0 协议规范 |
+| [jachin-plugin-sdk/](../jachin-plugin-sdk/README.md) | **JPP Rust 脚手架**（5 分钟上架、分润） |
+| [jachin-plugin-sdk-python/](../jachin-plugin-sdk-python/README.md) | **JPP Python SDK**（@jachin_plugin、py2wasm） |
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱安全设计 |
-| [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) | **混合动力沙箱**（WASM + UDS 划时代方案） |
+| [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) | **混合动力沙箱**（WASM + WASI + UDS） |
 | [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | **P0 信任链与心跳**（JMP 签名、防篡改、端云心跳） |
 | [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md) | **零摩擦体验设计**（免密登录、数字孪生、扫码/WiFi/ZTP 配对、配置隐形化） |
 | [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) | **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包） |

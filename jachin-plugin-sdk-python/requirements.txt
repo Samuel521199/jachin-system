@@ -1,0 +1,4 @@
+# Jachin Plugin SDK (Python) - 编译依赖
+# 用于将 Python 插件编译为 Wasm
+
+py2wasm>=2.6.0

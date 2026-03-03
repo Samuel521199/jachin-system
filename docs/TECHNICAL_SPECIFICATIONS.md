@@ -9,6 +9,18 @@
 
 ---
 
+## Nexus (Layer 1) Schema 补充
+
+Jachin Nexus 使用 Supabase，Schema 见 `cloud/nexus/supabase/migrations/`：
+
+- **edge_agents**：边缘智能体（pairing_code, auth_token, last_heartbeat, current_blueprint_id, **im_binding_id**, **im_platform**）
+- **blueprints**：蓝图资产（name, ast_json）
+- **agent_message_queue**：IM 消息队列（agent_id, message_text, direction, status）
+
+详见 [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)、[LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)。
+
+---
+
 ## 一、数据库 Schema 设计
 
 ### 1.1 PostgreSQL 表结构
@@ -865,7 +877,7 @@ asyncpg>=0.29.0
 # Docker 客户端（技能运行时）
 docker>=6.1.0
 
-# Wasm 运行时（可选）
+# Wasm 运行时（core/wasm_runner.py：Pure Compute + WASI stdin/stdout）
 wasmtime>=15.0.0
 
 # 配置管理

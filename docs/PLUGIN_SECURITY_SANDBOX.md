@@ -56,4 +56,4 @@
 
 ## 5. 演进方向：混合动力沙箱
 
-当前 Python AST + __builtins__ 沙箱为过渡方案。划时代目标为 **WASM + WASI**（轻量插件）与 **UDS/gRPC 独立进程**（重型算力）的混合架构。详见 [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md)。
+当前 Python AST + __builtins__ 沙箱为过渡方案。**WASM + WASI** 已实现：`core/wasm_runner.py` 支持 Pure Compute（run() -> i32）与 WASI stdin/stdout（Python py2wasm 插件）。重型算力仍规划 UDS/gRPC 独立进程。详见 [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md)。

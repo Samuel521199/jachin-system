@@ -26,7 +26,7 @@
 | **1. JMP 封装与签名机制** | Layer 1 端：将插件代码/配置打包为 .jmp，并生成哈希签名（如 SHA-256 / Ed25519）。 | 密码学签名验证、压缩算法 | 如果没有防篡改机制，下发的插件就是定时炸弹，生态毫无信任可言。 |
 | **2. Layer 2 PluginManager** | Layer 2 端：解析 .jmp 协议，下载资源，校验签名。 | 文件 I/O、Hash 校验逻辑 | 负责接收云端武器的「前线装卸工」。 |
 | **3. Layer 2 沙箱与热插拔** | Layer 2 端：**混合动力沙箱** — WASM+WASI（轻量）+ UDS/gRPC 独立进程（重型）。详见 [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md)。 | 进程间通信 (IPC)、沙箱隔离、动态路由代理 | 核心难点。必须保证烂插件弄不死微内核。 |
-| **4. 端云心跳与状态同步** | Layer 2 定时向 Layer 1 API 发送存活状态、资源消耗以及当前激活的插件列表（同步至 layer2_instances 表）。 | 轮询机制 / WebSocket 长连接 | 没有心跳，Console 指挥台的大盘就是盲的。 |
+| **4. 端云心跳与状态同步** | Layer 2 定时向 Layer 1 API 发送存活状态（同步至 edge_agents 表），拉取 blueprint、task（IM 消息）。 | 轮询机制 / WebSocket 长连接 | ✅ 已实现 agents/heartbeat |
 
 ---
 
@@ -93,6 +93,7 @@ P2-1 (IPFS) → P2-2 (3D 图谱) → P2-3 (Agora) → P2-4 (Passkey/Web3)
 |------|------|------|
 | **战役一：数据字典** | nexus_users、plugins_registry、personas_library、deploy_commands | `cloud/nexus/supabase/migrations/` |
 | **战役二：JMP 协议** | manifest.json、main.py、prompt.txt 包结构 | `docs/JMP_SPEC.md` |
+| **进化战役三：JPP SDK** | jachin-plugin-sdk（Rust）、jachin-plugin-sdk-python（Python/WASI）、plugin.json、版税 | `jachin-plugin-sdk/`、`jachin-plugin-sdk-python/` |
 | **战役三：API 血管** | GET /plugins、POST /deploy、GET /deploy/poll、POST /forge/publish | `cloud/nexus/src/app/api/` |
 | **战役四：端云握手** | UpdaterAgent 轮询、下载 .jmp、热加载 | `core/updater/agent.py` |
 
@@ -107,7 +108,7 @@ P2-1 (IPFS) → P2-2 (3D 图谱) → P2-3 (Agora) → P2-4 (Passkey/Web3)
 | P0-1 JMP 签名 | `signature.sig` 可选字段已定义 | Ed25519 签名、.jmp 结构、content_hashes、防降级，详见 [P0_TRUST_AND_HEARTBEAT_SPEC](./P0_TRUST_AND_HEARTBEAT_SPEC.md) |
 | P0-2 PluginManager | `core/plugin/` 已有加载逻辑 | 增加 .jmp 解析与签名校验 |
 | P0-3 沙箱热插拔 | `core/plugin/sandbox.py` 已实现 AST+__builtins__ | 完善冲突检测、优雅卸载 |
-| P0-4 心跳 | `layer2_instances` 表已建 | 实装 `POST /api/v1/instances/heartbeat` + Layer 2 客户端 |
+| P0-4 心跳 | ✅ 已实现 | `POST /api/v1/agents/heartbeat`、edge_agents 表、IM 扩展（task、result API） |
 | P0-0 配对 | `pairing_sessions` 表已建 | 6 位码端云三次握手、access_token + 公钥下发，详见 [PAIRING_PROTOCOL_SPEC](./PAIRING_PROTOCOL_SPEC.md) |
 | P1-1 Auth | `nexus_users` 表已建 | Supabase Auth 集成、RBAC 中间件 |
 | P1-2 Forge 编译 | React Flow 画布已实现 | 画布 → manifest.json → .jmp 编译管线 |

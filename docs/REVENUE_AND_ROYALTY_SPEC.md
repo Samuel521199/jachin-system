@@ -40,7 +40,15 @@
 | 极客 B | $15 | 标价 |
 | 魔法师 C | $55 | 100 - 20 - 5 - 5 - 15 |
 
-### 2.3 技术实现要点（待建）
+### 2.3 单插件版税（已支持）
+
+使用 JPP SDK 开发的 Wasm 插件，在 `plugin.json` 中声明版税：
+- **Rust**：`royalty.percentage`（0–100），见 [jachin-plugin-sdk](../jachin-plugin-sdk/README.md)
+- **Python**：`royalty_fee`（单次 USDC 金额）、`royalty_currency`，见 [jachin-plugin-sdk-python](../jachin-plugin-sdk-python/README.md)
+
+详见 [JMP_SPEC.md §3.5](./JMP_SPEC.md#35-智能版税扩展)。
+
+### 2.4 技术实现要点（待建）
 
 | 组件 | 说明 |
 |------|------|
@@ -60,4 +68,8 @@
 
 ---
 
-**相关文档**: [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md)
+**相关文档**:
+- [jachin-plugin-sdk](../jachin-plugin-sdk/README.md) - JPP Rust 脚手架
+- [jachin-plugin-sdk-python](../jachin-plugin-sdk-python/README.md) - JPP Python SDK
+- [JMP_SPEC.md §3.5](./JMP_SPEC.md#35-智能版税扩展) - manifest / plugin.json 版税字段
+- [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md)

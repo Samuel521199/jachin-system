@@ -144,7 +144,7 @@
 **技术要点**：
 - 镜像预置：`/etc/jachin/enterprise_id` 或环境变量 `JACHIN_ENTERPRISE_ID`
 - 设备启动：`POST /api/v1/ztp/register`，携带 `enterprise_id`、`mac_address`、`device_fingerprint`
-- 云端：校验 `enterprise_id` 有效性，自动创建 `layer2_instances`，下发 `access_token`
+- 云端：校验 `enterprise_id` 有效性，自动创建 `edge_agents` 记录，下发 `access_token`
 - 可选：企业管理员在 Console 预置「设备白名单」（MAC 列表）
 
 **ZTP API 契约**（待实装）：
@@ -186,7 +186,7 @@ Response 200: {
 | **用户体验** | 无服务中断感 |
 
 **技术要点**：
-- 心跳响应扩展：`GET /api/v1/instances/heartbeat` 返回 `config_version`，若与本地不一致则拉取全量配置
+- 心跳响应扩展：`POST /api/v1/agents/heartbeat` 返回 blueprint、task（IM 消息），若与本地不一致则执行
 - 或：WebSocket 推送 `config_update` 事件
 - 热重载：`nexus_daemon` 收到新配置后，fork 新进程加载新配置，旧进程退出
 
@@ -200,7 +200,7 @@ Response 200: {
 |------|--------|------|
 | Supabase Auth Magic Link / OAuth 集成 | P1 | auth.users |
 | 登录页 + 受保护路由 | P1 | - |
-| 数字孪生大盘：设备卡片网格化 | P1 | layer2_instances |
+| 数字孪生大盘：设备卡片网格化 | ✅ | edge_agents，/console 舰队视图 |
 | 拖拽部署蓝图到设备 | P1+ | deploy_commands、WebSocket |
 
 ### Phase 2：配对协议升级（P1）
@@ -215,7 +215,7 @@ Response 200: {
 
 | 任务 | 优先级 | 依赖 |
 |------|--------|------|
-| 心跳返回 config_version | P1 | heartbeat API |
+| 心跳返回 blueprint + task | ✅ | agents/heartbeat API，含 IM 网关扩展 |
 | 配置拉取 API | P1 | - |
 | 边缘端热重载逻辑 | P1 | nexus_daemon |
 
@@ -228,7 +228,7 @@ Response 200: {
 | [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | 6 位码为方案 A 的备用；方案 B/C 为扩展协议 |
 | [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) | 权限大白话、一键授权，与本设计互补 |
 | [MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md](./MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md) | Phase 1–3 对应 P1 级战役 |
-| [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | 心跳扩展 config_version |
+| [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | 心跳与 IM 扩展 |
 
 ---
 

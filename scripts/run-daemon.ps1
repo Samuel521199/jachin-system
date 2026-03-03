@@ -25,8 +25,13 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[WARN] Conda create failed (try: conda tos accept), using system Python" -ForegroundColor Yellow
         } else {
-            Write-Host "  Installing deps (httpx, rich, click, wasmtime)..." -ForegroundColor DarkGray
-            conda run -n $EnvName pip install httpx rich click wasmtime
+            Write-Host "  Installing deps (core/requirements.txt for Agent Loop + LLM)..." -ForegroundColor DarkGray
+            $CoreReq = Join-Path $ProjectRoot "core\requirements.txt"
+            if (Test-Path $CoreReq) {
+                conda run -n $EnvName pip install -r $CoreReq
+            } else {
+                conda run -n $EnvName pip install httpx rich click wasmtime
+            }
             $null = conda run -n $EnvName python -c "import httpx, rich, click" 2>$null
             if ($LASTEXITCODE -eq 0) { $UseConda = $true }
         }

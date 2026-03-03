@@ -1,0 +1,38 @@
+{
+  "id": "com.example.crypto-price",
+  "name": "Jachin Crypto Price",
+  "version": "1.0.0",
+  "description": "查询加密货币价格，演示 JPP Python SDK 插件开发",
+  "author": "Your Name",
+  "royalty_fee": 0.01,
+  "royalty_currency": "USDC",
+  "entry_point": "dist/plugin.wasm",
+  "jmp_version": "2.0",
+  "type": "skill",
+  "category": "Data_Enhancement",
+  "schema": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "description": "加密货币代码，如 BTC、ETH"
+        }
+      },
+      "required": ["ticker"]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "ticker": { "type": "string" },
+        "price_usd": { "type": "number" },
+        "change_24h": { "type": "number" },
+        "timestamp": { "type": "string" }
+      }
+    }
+  },
+  "compatibility": {
+    "os": ["linux", "windows", "docker"],
+    "min_core_version": "1.0.0"
+  }
+}

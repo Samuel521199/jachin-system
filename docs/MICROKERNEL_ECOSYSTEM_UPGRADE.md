@@ -98,8 +98,8 @@
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 5. 状态回传                                                               │
-│    Layer 2 → POST /api/v1/instances/heartbeat                             │
-│    → Layer 1 更新 layer2_instances (active_plugins, last_heartbeat)       │
+│    Layer 2 → POST /api/v1/agents/heartbeat                                 │
+│    → Layer 1 更新 edge_agents (last_heartbeat)，返回 blueprint、task      │
 │    → /console 拓扑图节点亮起绿色在线指示灯                                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -145,21 +145,20 @@
 
 ## 五、数据模型补充
 
-### 5.1 layer2_instances 表
+### 5.1 edge_agents 表（Nexus 主表）
 
-用于追踪 Layer 2 实例状态，支撑舰队视图与兼容性过滤。
+用于追踪边缘智能体状态，支撑舰队视图、心跳、IM 绑定。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | UUID | 主键 |
-| `instance_id` | TEXT UNIQUE | 实例标识（对应 target_instance_id） |
-| `owner_id` | UUID FK | 关联 nexus_users |
-| `environment_type` | ENUM | k8s / docker / bare_metal / raspberry_pi |
-| `core_version` | TEXT | 当前微内核版本 |
-| `active_plugins` | JSONB | 当前运行中的插件 ID 列表 |
-| `last_heartbeat` | TIMESTAMPTZ | 最后心跳时间，用于判定在线 |
-| `created_at` | TIMESTAMPTZ | 创建时间 |
-| `updated_at` | TIMESTAMPTZ | 更新时间 |
+| `pairing_code` | VARCHAR(6) | 配对码 |
+| `auth_token` | TEXT | 心跳/API 通行证 |
+| `current_blueprint_id` | UUID FK | 当前蓝图 |
+| `last_heartbeat` | TIMESTAMPTZ | 最后心跳时间 |
+| `im_binding_id` | TEXT | IM 绑定 ID（如 Telegram chat_id） |
+| `im_platform` | TEXT | telegram \| lark |
+| `status` | ENUM | pending / active / offline |
 
 ### 5.2 deploy_manifests 表（可选，GitOps 模式）
 
@@ -180,7 +179,7 @@
 
 | 阶段 | 内容 | 优先级 |
 |------|------|--------|
-| **P0** | layer2_instances 表 + 心跳 API | 高 |
+| **P0** | edge_agents 表 + 心跳 API + IM 网关 | ✅ 已实现 |
 | **P0** | JMP 2.0 manifest 扩展（compatibility, resource_footprint） | 高 |
 | **P1** | Market 环境透镜 UI | 中 |
 | **P1** | Forge 冲突检测与红线提示 | 中 |
@@ -191,5 +190,6 @@
 
 **相关文档**:
 - [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md)
+- [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) - IM 网关（TG/飞书、消息队列）
 - [JMP_SPEC.md](./JMP_SPEC.md)
 - [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) - 混合动力沙箱（WASM + UDS）

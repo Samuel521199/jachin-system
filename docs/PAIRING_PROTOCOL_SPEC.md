@@ -44,7 +44,7 @@
 | **用户** | 在浏览器打开 Layer 1 Jachin Console，登录账号 |
 | **用户** | 在毛玻璃输入框中输入 `J8K2X9`，点击「授权绑定」 |
 | **前端调用** | `POST /api/v1/pairing/confirm` `{ "code": "J8K2X9" }` |
-| **Layer 1 动作** | 验证配对码有效 → 将 session 与 `user_id` 绑定 → 在 `layer2_instances` 中注册边缘智能体身份 |
+| **Layer 1 动作** | 验证配对码有效 → 将 session 与 `user_id` 绑定 → 在 `edge_agents` 中创建/更新边缘智能体记录 |
 
 ---
 
@@ -161,7 +161,7 @@ CREATE INDEX idx_pairing_expires_at ON pairing_sessions(expires_at);
 
 | 输出 | 用途 |
 |------|------|
-| `access_token` | 后续 `GET /api/v1/deploy/poll`、`POST /api/v1/instances/heartbeat` 的 Authorization 头 |
+| `access_token` | 后续 `GET /api/v1/deploy/poll`、`POST /api/v1/agents/heartbeat`、`POST /api/v1/agents/result` 的 Authorization 头 |
 | `layer1_public_key` | `extract_and_verify_signature(downloaded_file, public_key)` 中的公钥 |
 
 ---
