@@ -1,9 +1,11 @@
 # 设备配对协议 (Device Authorization Grant)
 
-**版本**: 1.0  
+**版本**: 1.1  
 **状态**: 设计规范  
 **定位**: 端云身份信任基石 — 6 位码傻瓜式绑定  
 **行业标准**: OAuth 2.0 RFC 8628 (Device Authorization Grant)，常用于 Apple TV、智能电视、IoT 网关
+
+**扩展协议**：扫码即连（Layer 3）、Wi-Fi 热点配对（无头设备）、ZTP 零触控（企业 B 端）详见 [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md)。
 
 ---
 

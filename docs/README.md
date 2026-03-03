@@ -62,8 +62,10 @@
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱安全设计 |
 | [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) | **混合动力沙箱**（WASM + UDS 划时代方案） |
 | [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | **P0 信任链与心跳**（JMP 签名、防篡改、端云心跳） |
+| [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md) | **零摩擦体验设计**（免密登录、数字孪生、扫码/WiFi/ZTP 配对、配置隐形化） |
 | [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) | **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包） |
 | [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | **设备配对协议**（6 位码、端云三次握手、RFC 8628） |
+| [OAUTH_SETUP.md](./OAUTH_SETUP.md) | **GitHub / Google OAuth 登录配置**（Supabase 提供商设置） |
 
 ---
 

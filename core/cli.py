@@ -189,5 +189,31 @@ def pair(base_url: str) -> None:
     )
 
 
+@cli.command()
+@click.option(
+    "--base-url",
+    default=None,
+    envvar="NEXUS_BASE_URL",
+    help="Layer 1 地址（覆盖 nexus_config.json 中的 nexus_base_url）",
+)
+def daemon(base_url: str | None) -> None:
+    """启动边缘智能体守护进程（心跳 + 蓝图执行）"""
+    from core.daemon import start_daemon
+
+    if base_url:
+        cfg = {}
+        if CONFIG_PATH.exists():
+            try:
+                cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        cfg["nexus_base_url"] = base_url.rstrip("/")
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(
+            json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    start_daemon()
+
+
 if __name__ == "__main__":
     cli()

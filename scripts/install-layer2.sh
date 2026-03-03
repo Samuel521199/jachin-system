@@ -120,5 +120,6 @@ fi
 
 echo ""
 echo "[OK] Layer2 安装完成"
-echo "  启动: ./scripts/start-layer2.sh"
+echo "  启动: ./scripts/start-layer2.sh  (启动时可选 nexus_daemon 或 daemon)"
+echo "  轻量版: ./scripts/run-daemon.sh"
 echo ""

@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase-auth/server";
+import { pairingStoreGetByCode, pairingStoreApproveByCode } from "@/lib/pairing-store";
 
 const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * POST /api/v1/pairing/confirm
  * 阶段 2：用户在 Web Console 输入 6 位码，授权绑定
- * 需登录态，body 可传 user_id；未配置时使用默认用户
- * 详见 docs/PAIRING_PROTOCOL_SPEC.md
+ * Supabase 直连：更新 edge_agents 为 active，绑定当前登录用户
  */
 export async function POST(req: NextRequest) {
   try {
@@ -22,23 +23,54 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const shortCode = String(code).trim().toUpperCase();
+    const shortCode = String(code).trim().toUpperCase().replace(/-/g, "");
 
     if (!isSupabaseConfigured()) {
+      const session = pairingStoreGetByCode(shortCode);
+      if (!session) {
+        return NextResponse.json(
+          { success: false, error: "配对码无效或已过期" },
+          { status: 404 }
+        );
+      }
+      if (new Date(session.expires_at) < new Date()) {
+        return NextResponse.json(
+          { success: false, error: "配对码已过期" },
+          { status: 410 }
+        );
+      }
+      if (session.status === "approved") {
+        return NextResponse.json({
+          success: true,
+          instance_id: session.instance_id ?? "dev-layer2-001",
+          message: "Edge Agent successfully paired!",
+        });
+      }
+      const instanceId = `jachin-${randomUUID().slice(0, 8)}`;
+      pairingStoreApproveByCode(shortCode, instanceId);
       return NextResponse.json({
         success: true,
-        instance_id: "dev-layer2-001",
-        message: "Dev mode: pairing simulated",
+        instance_id: instanceId,
+        message: "Edge Agent successfully paired!",
       });
     }
 
     const sb = getSupabase()!;
-    const userId = bodyUserId ?? DEFAULT_USER_ID;
 
-    const { data: session, error: findErr } = await sb
-      .from("pairing_sessions")
-      .select("session_id, status, expires_at, layer2_instance_id")
-      .eq("short_code", shortCode)
+    // 获取当前登录用户（Supabase Auth）
+    let userId = bodyUserId ?? DEFAULT_USER_ID;
+    const authClient = await createClient();
+    if (authClient) {
+      const { data: { user } } = await authClient.getUser();
+      if (user?.id) {
+        userId = user.id;
+      }
+    }
+
+    const { data: agent, error: findErr } = await sb
+      .from("edge_agents")
+      .select("id, status, pairing_expires_at")
+      .eq("pairing_code", shortCode)
       .maybeSingle();
 
     if (findErr) {
@@ -49,68 +81,46 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!session) {
+    if (!agent) {
       return NextResponse.json(
         { success: false, error: "配对码无效或已过期" },
         { status: 404 }
       );
     }
 
-    if (session.status === "approved") {
-      const { data: linked } = await sb
-        .from("layer2_instances")
-        .select("instance_id")
-        .eq("id", session.layer2_instance_id)
-        .maybeSingle();
+    if (agent.status === "active") {
       return NextResponse.json({
         success: true,
-        instance_id: linked?.instance_id ?? "dev-layer2-001",
+        instance_id: agent.id,
+        message: "Edge Agent successfully paired!",
       });
     }
 
-    if (new Date(session.expires_at) < new Date()) {
+    if (agent.pairing_expires_at && new Date(agent.pairing_expires_at) < new Date()) {
       await sb
-        .from("pairing_sessions")
-        .update({ status: "expired" })
-        .eq("session_id", session.session_id);
+        .from("edge_agents")
+        .update({ status: "offline" })
+        .eq("id", agent.id);
       return NextResponse.json(
         { success: false, error: "配对码已过期" },
         { status: 410 }
       );
     }
 
-    const instanceId = `jachin-${randomUUID().slice(0, 8)}`;
-
-    const { data: newInstance, error: insertErr } = await sb
-      .from("layer2_instances")
-      .insert({
-        instance_id: instanceId,
-        owner_id: userId,
-        environment_type: "bare_metal",
-        core_version: "1.0.0",
-      })
-      .select("id")
-      .single();
-
-    if (insertErr) {
-      console.error("[pairing/confirm] layer2_instances insert:", insertErr);
-      return NextResponse.json(
-        { success: false, error: "注册边缘智能体失败" },
-        { status: 500 }
-      );
-    }
+    const authToken = `jch-${randomUUID().replace(/-/g, "")}`;
 
     const { error: updateErr } = await sb
-      .from("pairing_sessions")
+      .from("edge_agents")
       .update({
-        status: "approved",
+        status: "active",
         user_id: userId,
-        layer2_instance_id: newInstance.id,
+        auth_token: authToken,
+        pairing_expires_at: null,
       })
-      .eq("session_id", session.session_id);
+      .eq("id", agent.id);
 
     if (updateErr) {
-      console.error("[pairing/confirm] pairing_sessions update:", updateErr);
+      console.error("[pairing/confirm] edge_agents update:", updateErr);
       return NextResponse.json(
         { success: false, error: "授权更新失败" },
         { status: 500 }
@@ -119,7 +129,8 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      instance_id: instanceId,
+      instance_id: agent.id,
+      message: "Edge Agent successfully paired!",
     });
   } catch (e) {
     console.error("[pairing/confirm] Error:", e);

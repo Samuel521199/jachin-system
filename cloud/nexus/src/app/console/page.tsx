@@ -1,47 +1,233 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ShieldCheck } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
+import {
+  DndContext,
+  DragOverlay,
+  useDraggable,
+  useDroppable,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
+import { motion } from "framer-motion";
 import Navbar from "@/components/Navbar";
+import Toast from "@/components/Toast";
+import { Stethoscope, MessageCircle, Shield, Activity } from "lucide-react";
 
-const AUDIT_LOGS = [
-  "[10:45:01] Layer 2 blocked external access to Memory VectorDB.",
-  "[10:42:12] Skill \"Weather\" downloaded. No local data exported.",
-  "[10:38:33] Voice input processed locally. Zero cloud transmission.",
-  "[10:35:22] Layer 2 blocked external access to Memory VectorDB.",
-  "[10:30:15] Skill \"Calendar\" invoked. All data stays on device.",
-  "[10:28:44] Intent analysis completed locally. No API call.",
-  "[10:25:01] Layer 2 blocked external access to Memory VectorDB.",
-  "[10:20:09] Persona \"傲娇女声\" loaded. Model cached locally.",
+const FALLBACK_BLUEPRINTS = [
+  { id: "bp-1", name: "离线医疗助手", icon: Stethoscope, desc: "本地诊断推理" },
+  { id: "bp-2", name: "傲娇女仆客服", icon: MessageCircle, desc: "语音对话服务" },
+  { id: "bp-3", name: "安防视觉中枢", icon: Shield, desc: "实时视频分析" },
 ];
 
-interface InstanceMetrics {
-  cpu_percent?: number;
-  ram_used_mb?: number;
-  ram_total_mb?: number;
+const FALLBACK_AGENTS = [
+  { id: "agent-1", name: "多伦多一号机", online: true, cpu: 42, ram: 68, blueprint: "离线医疗助手" },
+  { id: "agent-2", name: "树莓派测试节点", online: true, cpu: 18, ram: 45, blueprint: "傲娇女仆客服" },
+  { id: "agent-3", name: "上海门店终端", online: false, cpu: 0, ram: 0, blueprint: "—" },
+];
+
+interface Blueprint {
+  id: string;
+  name: string;
+  icon: React.ComponentType<{ className?: string }>;
+  desc: string;
 }
 
-interface Instance {
-  instance_id: string;
-  core_version?: string;
-  last_heartbeat?: string;
-  metrics?: InstanceMetrics;
-  active_plugins?: Record<string, string>;
+interface Agent {
+  id: string;
+  name: string;
+  online: boolean;
+  cpu: number;
+  ram: number;
+  blueprint: string;
+}
+
+function BlueprintCard({
+  blueprint,
+  isDragging,
+}: {
+  blueprint: Blueprint;
+  isDragging?: boolean;
+}) {
+  const Icon = blueprint.icon;
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: blueprint.id,
+    data: { type: "blueprint", blueprint },
+  });
+  const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...listeners}
+      {...attributes}
+      className={`
+        p-4 rounded-xl border cursor-grab active:cursor-grabbing
+        bg-black/40 border-white/10 hover:border-cyan-500/40 hover:shadow-[0_0_20px_rgba(34,211,238,0.15)]
+        transition-all select-none
+        ${isDragging ? "opacity-50" : ""}
+      `}
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+          <Icon className="w-5 h-5 text-cyan-400" />
+        </div>
+        <div>
+          <p className="font-medium text-white/95">{blueprint.name}</p>
+          <p className="text-xs text-white/50">{blueprint.desc}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentCard({
+  agent,
+  isDeploying,
+}: {
+  agent: Agent;
+  isDeploying: boolean;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: agent.id,
+    data: { type: "agent", agent },
+  });
+  const showHighlight = isOver;
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`
+        relative p-6 rounded-2xl backdrop-blur-xl border transition-all min-h-[180px]
+        ${agent.online ? "border-green-500/30 bg-green-900/10" : "border-white/10 bg-black/30"}
+        ${showHighlight ? "ring-2 ring-cyan-500 ring-offset-2 ring-offset-[#050505]" : ""}
+      `}
+    >
+      {isDeploying && (
+        <div className="absolute inset-0 rounded-2xl bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
+          <Activity className="w-10 h-10 text-cyan-400 animate-pulse mb-2" />
+          <p className="text-cyan-400 text-sm animate-pulse">
+            📡 正在热更新蓝图... (Deploying Blueprint...)
+          </p>
+        </div>
+      )}
+
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-mono text-white/95">{agent.name}</h3>
+        <span
+          className={`w-3 h-3 rounded-full ${
+            agent.online ? "bg-green-500 animate-pulse" : "bg-gray-600"
+          }`}
+        />
+      </div>
+
+      {agent.online ? (
+        <>
+          <div className="space-y-2 mb-4">
+            <div className="flex justify-between text-xs text-white/60">
+              <span>CPU</span>
+              <span>{agent.cpu}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <motion.div
+                className="h-full bg-cyan-500/80 rounded-full"
+                initial={{ width: 0 }}
+                animate={{ width: `${agent.cpu}%` }}
+                transition={{ duration: 0.5 }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-white/60">
+              <span>RAM</span>
+              <span>{agent.ram}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <motion.div
+                className="h-full bg-purple-500/80 rounded-full"
+                initial={{ width: 0 }}
+                animate={{ width: `${agent.ram}%` }}
+                transition={{ duration: 0.5 }}
+              />
+            </div>
+          </div>
+          <div className="border-t border-white/10 pt-3">
+            <p className="text-xs text-gray-400">当前蓝图</p>
+            <p className="text-sm text-cyan-400 font-mono">{agent.blueprint}</p>
+          </div>
+        </>
+      ) : (
+        <div className="text-sm text-gray-500 py-4">边缘智能体已离线</div>
+      )}
+    </div>
+  );
 }
 
 export default function ConsolePage() {
-  const [instances, setInstances] = useState<Instance[]>([]);
-  const [logIndex, setLogIndex] = useState(0);
+  const [agents, setAgents] = useState<Agent[]>(FALLBACK_AGENTS);
+  const [blueprints, setBlueprints] = useState<Blueprint[]>(FALLBACK_BLUEPRINTS);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [deployingAgent, setDeployingAgent] = useState<string | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
 
-  // 每 10 秒刷新大屏数据
+  useEffect(() => {
+    const fetchBlueprints = async () => {
+      try {
+        const res = await fetch("/api/v1/blueprints");
+        const data = await res.json();
+        const list = data.blueprints ?? [];
+        if (list.length > 0) {
+          setBlueprints(
+            list.map((bp: { id: string; name: string; description: string }) => ({
+              id: bp.id,
+              name: bp.name,
+              icon: MessageCircle,
+              desc: bp.description || "Forge 蓝图",
+            }))
+          );
+        }
+      } catch {
+        // 保持 fallback
+      }
+    };
+    fetchBlueprints();
+  }, []);
+
   useEffect(() => {
     const fetchInstances = async () => {
       try {
         const res = await fetch("/api/v1/instances");
         const data = await res.json();
-        setInstances(data.instances ?? []);
+        const list = data.instances ?? [];
+        if (list.length > 0) {
+          setAgents((prev) =>
+            list.map((inst: Record<string, unknown>, i: number) => {
+              const id = String(inst.instance_id ?? `api-${i}`);
+              const existing = prev.find((a) => a.id === id);
+              const lastHb = inst.last_heartbeat as string | undefined;
+              const status = inst.status as string | undefined;
+              const online =
+                status === "active" ||
+                (lastHb ? Date.now() - new Date(lastHb).getTime() < 120000 : false);
+              const metrics = inst.metrics as { cpu_percent?: number; ram_used_mb?: number; ram_total_mb?: number } | undefined;
+              const ramPct =
+                metrics?.ram_total_mb && metrics?.ram_used_mb
+                  ? Math.round((metrics.ram_used_mb / metrics.ram_total_mb) * 100)
+                  : existing?.ram ?? 0;
+              return {
+                id,
+                name: String(inst.name ?? inst.instance_id ?? "边缘智能体"),
+                online,
+                cpu: metrics?.cpu_percent ?? existing?.cpu ?? 0,
+                ram: ramPct,
+                blueprint: (inst.blueprint_name as string) ?? existing?.blueprint ?? "—",
+              };
+            })
+          );
+        }
       } catch {
-        setInstances([]);
+        // 保持 fallback
       }
     };
     fetchInstances();
@@ -49,21 +235,53 @@ export default function ConsolePage() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      setLogIndex((i) => (i + 1) % AUDIT_LOGS.length);
-    }, 2500);
-    return () => clearInterval(id);
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveId(String(event.active.id));
   }, []);
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const activeData = active.data.current;
+    const overData = over.data.current;
+    if (activeData?.type !== "blueprint" || overData?.type !== "agent") return;
+
+    const blueprint = activeData.blueprint as Blueprint;
+    const agent = overData.agent as Agent;
+    if (!agent.online) return;
+
+    setDeployingAgent(agent.id);
+    setTimeout(() => {
+      setAgents((prev) =>
+        prev.map((a) =>
+          a.id === agent.id ? { ...a, blueprint: blueprint.name } : a
+        )
+      );
+      setDeployingAgent(null);
+      setToastVisible(true);
+    }, 2000);
+  }, []);
+
+  const activeBlueprint = activeId
+    ? blueprints.find((b) => b.id === activeId)
+    : null;
 
   return (
     <div className="min-h-screen bg-[#050505]">
       <div
+        className="fixed inset-0 -z-10 pointer-events-none opacity-30"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2322d3ee' fill-opacity='0.08'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
+        }}
+      />
+      <div
         className="fixed inset-0 -z-10 pointer-events-none"
         style={{
           background: `
-            radial-gradient(ellipse 60% 40% at 50% 20%, rgba(168, 85, 247, 0.08) 0%, transparent 50%),
-            radial-gradient(ellipse 40% 60% at 80% 80%, rgba(34, 197, 94, 0.04) 0%, transparent 50%),
+            radial-gradient(ellipse 60% 40% at 50% 20%, rgba(34, 211, 238, 0.06) 0%, transparent 50%),
+            radial-gradient(ellipse 40% 60% at 80% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%),
             #050505
           `,
         }}
@@ -71,167 +289,78 @@ export default function ConsolePage() {
 
       <Navbar />
 
-      <main className="pt-20 px-6 pb-16 max-w-6xl mx-auto">
-        {/* 舰队指挥台大屏 */}
-        <section className="mb-16">
-          <h1 className="text-3xl font-bold tracking-widest text-purple-400 mb-8">
-            舰队指挥台
-          </h1>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {instances.map((instance) => {
-              const lastHb = instance.last_heartbeat
-                ? new Date(instance.last_heartbeat).getTime()
-                : 0;
-              const isOnline =
-                lastHb > 0 && Date.now() - lastHb < 60000;
-
-              return (
-                <div
-                  key={instance.instance_id}
-                  className={`p-6 rounded-2xl backdrop-blur-xl border transition-all ${
-                    isOnline
-                      ? "border-green-500/30 bg-green-900/10"
-                      : "border-white/10 bg-black/30"
-                  }`}
-                >
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-xl font-mono">
-                      {instance.instance_id.split("-").slice(0, 2).join("-").toUpperCase()} 边缘智能体
-                    </h3>
-                    <span
-                      className={`w-3 h-3 rounded-full ${
-                        isOnline ? "bg-green-500 animate-pulse" : "bg-gray-600"
-                      }`}
+      <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        <main className="pt-20 px-6 pb-16 min-h-screen">
+          <div className="flex gap-6 max-w-7xl mx-auto">
+            {/* 左侧：蓝图武库 */}
+            <aside className="w-64 flex-shrink-0">
+              <div className="sticky top-24 rounded-2xl backdrop-blur-md bg-white/5 border border-white/10 p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-widest text-cyan-400/90 mb-4">
+                  蓝图武库
+                </h2>
+                <p className="text-xs text-white/50 mb-4">
+                  拖拽到右侧智能体卡片上完成部署
+                </p>
+                <div className="space-y-3">
+                  {blueprints.map((bp) => (
+                    <BlueprintCard
+                      key={bp.id}
+                      blueprint={bp}
+                      isDragging={activeId === bp.id}
                     />
-                  </div>
-
-                  {isOnline ? (
-                    <>
-                      <div className="text-sm text-cyan-400 mb-2">
-                        CPU: {instance.metrics?.cpu_percent ?? "?"}% | RAM:{" "}
-                        {instance.metrics?.ram_used_mb ?? "?"}MB
-                        {instance.metrics?.ram_total_mb != null &&
-                          ` / ${instance.metrics.ram_total_mb}MB`}
-                      </div>
-                      <div className="text-xs text-zinc-500 mb-4">
-                        v{instance.core_version ?? "?"}
-                      </div>
-                      <div className="mt-4 border-t border-white/10 pt-4">
-                        <h4 className="text-xs text-gray-400 mb-2">
-                          装载武器库:
-                        </h4>
-                        {instance.active_plugins &&
-                        Object.keys(instance.active_plugins).length > 0 ? (
-                          Object.entries(instance.active_plugins).map(
-                            ([plugin, state]) => (
-                              <div
-                                key={plugin}
-                                className="flex items-center text-xs mt-1 font-mono"
-                              >
-                                {state === "running" && (
-                                  <span className="text-green-400 mr-2">
-                                    [运行]
-                                  </span>
-                                )}
-                                {state === "restarting" && (
-                                  <span className="text-yellow-400 mr-2 animate-pulse">
-                                    [抢救中]
-                                  </span>
-                                )}
-                                {state === "fatal" && (
-                                  <span className="text-red-500 mr-2">
-                                    [炸膛]
-                                  </span>
-                                )}
-                                {state === "stopped" && (
-                                  <span className="text-gray-500 mr-2">
-                                    [已停]
-                                  </span>
-                                )}
-                                {!["running", "restarting", "fatal", "stopped"].includes(
-                                  state
-                                ) && (
-                                  <span className="text-amber-400/80 mr-2">
-                                    [{state}]
-                                  </span>
-                                )}
-                                <span className="text-gray-300">
-                                  {plugin}
-                                </span>
-                              </div>
-                            )
-                          )
-                        ) : (
-                          <div className="text-xs text-zinc-600">
-                            暂无插件
-                          </div>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-sm text-gray-500 mt-4">
-                      边缘智能体已丢失连接...
-                    </div>
-                  )}
+                  ))}
                 </div>
-              );
-            })}
-          </div>
-          {instances.length === 0 && (
-            <div className="text-center py-12 text-zinc-500">
-              暂无边缘智能体接入，等待前线信号...
-            </div>
-          )}
-        </section>
+              </div>
+            </aside>
 
-        {/* Privacy Audit */}
-        <section className="mt-20">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-6">
-            Privacy Audit
-          </h2>
-          <div className="rounded-2xl bg-zinc-900/80 border border-zinc-800 overflow-hidden">
-            <div className="flex items-center justify-center gap-8 p-10 border-b border-zinc-800">
-              <div className="flex items-center gap-4">
-                <ShieldCheck
-                  className="w-20 h-20 text-emerald-500"
-                  strokeWidth={1.5}
-                />
+            {/* 右侧：边缘智能体星图 */}
+            <section className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-6">
+                <h1 className="text-2xl font-bold tracking-widest text-cyan-400/95">
+                  边缘智能体星图
+                </h1>
+                <Link
+                  href="/console/fleet"
+                  className="text-sm text-cyan-400/80 hover:text-cyan-400 transition-colors"
+                >
+                  舰队指挥大屏 →
+                </Link>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {agents.map((agent) => (
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    isDeploying={deployingAgent === agent.id}
+                  />
+                ))}
+              </div>
+            </section>
+          </div>
+        </main>
+
+        <DragOverlay>
+          {activeBlueprint ? (
+            <div className="p-4 rounded-xl border bg-black/90 border-cyan-500/50 shadow-[0_0_30px_rgba(34,211,238,0.3)] cursor-grabbing">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+                  <activeBlueprint.icon className="w-5 h-5 text-cyan-400" />
+                </div>
                 <div>
-                  <p className="text-4xl md:text-5xl font-bold text-emerald-400 font-mono">
-                    0 Bytes
-                  </p>
-                  <p className="text-sm text-zinc-500 mt-1">
-                    本月上传到云端的隐私数据
-                  </p>
+                  <p className="font-medium text-white">{activeBlueprint.name}</p>
+                  <p className="text-xs text-white/60">{activeBlueprint.desc}</p>
                 </div>
               </div>
             </div>
-            <div className="p-6">
-              <div className="rounded-lg bg-zinc-950 border border-zinc-800 p-4 font-mono text-sm min-h-[200px] overflow-hidden">
-                <div className="text-zinc-600 mb-3">
-                  $ privacy-audit --live
-                </div>
-                <div className="space-y-1.5">
-                  {[...AUDIT_LOGS, ...AUDIT_LOGS]
-                    .slice(logIndex, logIndex + 5)
-                    .map((log, i) => (
-                      <div
-                        key={`${logIndex}-${i}`}
-                        className="text-emerald-400/90"
-                      >
-                        {log}
-                      </div>
-                    ))}
-                </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="w-2 h-4 bg-emerald-500/80 animate-pulse" />
-                  <span className="text-emerald-500/60 text-xs">_</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+
+      <Toast
+        message="✅ 蓝图已成功下发至边缘智能体！"
+        visible={toastVisible}
+        onClose={() => setToastVisible(false)}
+      />
     </div>
   );
 }

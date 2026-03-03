@@ -67,6 +67,19 @@ async def _handle_health(request: "aiohttp.Request") -> "aiohttp.Response":
     return _json_response({"status": "ok", "service": "nexus-ingress"})
 
 
+async def _handle_root(request: "aiohttp.Request") -> "aiohttp.Response":
+    """GET / - service info and API links"""
+    return _json_response({
+        "service": "Jachin Nexus Daemon",
+        "ingress": "http://127.0.0.1:9000",
+        "endpoints": {
+            "health": "GET /health",
+            "events": "POST /api/events - send event to Event Bus",
+        },
+        "docs": "POST /api/events with JSON: {\"type\": \"audio.input\", \"payload\": {...}}",
+    })
+
+
 def _json_response(data: dict[str, Any], status: int = 200) -> "aiohttp.Response":
     from aiohttp import web
     return web.json_response(data, status=status)
@@ -82,6 +95,7 @@ async def start_ingress_server(host: str = "127.0.0.1", port: int = 9000) -> "ai
     from aiohttp import web
 
     app = web.Application()
+    app.router.add_get("/", _handle_root)
     app.router.add_post("/api/events", _handle_events)
     app.router.add_get("/health", _handle_health)
 

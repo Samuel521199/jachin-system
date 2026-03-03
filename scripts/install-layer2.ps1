@@ -96,5 +96,6 @@ if ($AlreadyPaired) {
 
 Write-Host ""
 Write-Host '[OK] Layer2 install done' -ForegroundColor Green
-Write-Host '  Start: .\scripts\start-layer2.ps1'
+Write-Host '  Start: .\scripts\start-layer2.ps1  (启动时可选 nexus_daemon 或 daemon)'
+Write-Host '  轻量版: start.bat daemon 或 .\scripts\run-daemon.ps1'
 Write-Host ""

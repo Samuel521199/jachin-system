@@ -1,31 +1,45 @@
-# Plugins
+# WASM 插件目录
 
-可插拔的功能模块，每个插件代表一个设备能力。
+Processor 节点可在此目录放置 `.wasm` 插件，由守护进程在受限沙箱中执行。
 
-## 插件列表
+## 测试用 dummy.wasm
 
-- `camera/` - 摄像头控制和图像采集
-- `gpio/` - GPIO 引脚控制（树莓派）
-- `file_system/` - 文件系统操作（Desktop）
-- `screen/` - 屏幕捕获（Desktop）
-- `speaker/` - 音频播放
-- `temperature/` - 温度传感器
-- `relay/` - 继电器控制（IoT）
+```bash
+python scripts/gen_dummy_wasm.py
+```
 
-## 插件结构
+会生成 `plugins/dummy.wasm`，导出 `run` 函数，返回 42。
 
-每个插件必须包含：
-- `manifest.json` - 插件元数据
-- `actions.py` - 可执行指令
-- `sensors.py` - 数据上报（可选）
-- `__init__.py` - 插件初始化
+## 自编译 WASM（Rust 示例）
 
-## 开发新插件
+```rust
+// src/lib.rs
+#[no_mangle]
+pub extern "C" fn run() -> i32 {
+    42
+}
+```
 
-1. 在 `plugins/` 目录下创建新目录
-2. 创建 `manifest.json` 定义插件元数据
-3. 实现 `BaseAction` 和 `BaseSensor` 接口
-4. 编写测试用例
-5. 更新文档
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown --release
+# 输出: target/wasm32-unknown-unknown/release/xxx.wasm
+```
 
-详细规范请参考 `.cursor/rules/020-client-plugins.mdc`。
+## 自编译 WASM（C 示例，需 Emscripten）
+
+```c
+// hello.c
+int run(void) { return 42; }
+```
+
+```bash
+emcc -o hello.wasm hello.c -s EXPORTED_FUNCTIONS='["_run"]' -s STANDALONE_WASM
+```
+
+## 节点配置
+
+在 Forge 画布的 Processor 节点 `data` 中可设置：
+
+- `wasm_path`: 插件路径（相对或绝对）
+- `fuel_limit`: 燃料上限，默认 100000

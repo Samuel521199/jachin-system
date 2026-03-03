@@ -36,9 +36,10 @@
 
 | 任务模块 | 具体内容 | 核心技术点 | 为什么是 P1 |
 |----------|----------|------------|--------------|
-| **1. Auth Center (鉴权中心)** | 实现 Jachin ID 登录，严格区分 Super Admin (系统主宰)、Developer (开发者)、Consumer (终端客户)。 | Supabase Auth、JWT 令牌、RBAC 权限中间件 | 商业化的基础，决定了谁能发布插件，谁能安装插件。 |
-| **2. Forge 到 JMP 的编译引擎** | 将 /forge 中 React Flow 画布里的节点连线，自动编译转换为 manifest.json 和结构化的 .jmp 包结构。 | AST (抽象语法树) 解析、JSON Schema 校验 | 让「拖拽造武器」变成现实，打通界面到协议的最后一步。 |
-| **3. API 血管实装 (去 Mock 化)** | 完成 deploy 和 poll 接口的真实数据库读写；实装商城的智能分类与环境过滤。 | Next.js Route Handlers、Supabase 查询优化 | 让整个前端 UI 活起来，跑真实数据。 |
+| **1. Auth Center (鉴权中心)** | **极简免密登录**：Magic Link / GitHub / Google OAuth，彻底消灭密码。详见 [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md)。 | Supabase Auth、JWT 令牌、RBAC 权限中间件 | 商业化的基础，决定了谁能发布插件，谁能安装插件。 |
+| **2. 数字孪生大盘** | 登录后可视化网格：每个边缘智能体一张卡片，绿色呼吸灯、拖拽部署蓝图。 | WebSocket/MQTT、拖拽目标、deploy 实时推送 | 用户不知道设备在干嘛的痛点，意图驱动控制。 |
+| **3. Forge 到 JMP 的编译引擎** | 将 /forge 中 React Flow 画布里的节点连线，自动编译转换为 manifest.json 和结构化的 .jmp 包结构。 | AST (抽象语法树) 解析、JSON Schema 校验 | 让「拖拽造武器」变成现实，打通界面到协议的最后一步。 |
+| **4. API 血管实装 (去 Mock 化)** | 完成 deploy 和 poll 接口的真实数据库读写；实装商城的智能分类与环境过滤。 | Next.js Route Handlers、Supabase 查询优化 | 让整个前端 UI 活起来，跑真实数据。 |
 
 ---
 
@@ -73,7 +74,11 @@
 ```
 P0-0 (配对) → P0-1 (JMP 签名) → P0-2 (PluginManager 解析) → P0-3 (沙箱热插拔) → P0-4 (心跳同步)
         ↓
-P1-1 (Auth) → P1-2 (Forge 编译) → P1-3 (API 去 Mock)
+P1-1 (Auth 免密) → P1-2 (数字孪生大盘) → P1-3 (Forge 编译) → P1-4 (API 去 Mock)
+        ↓
+配对协议升级：方案 A 扫码即连 / 方案 B Wi-Fi 热点 / 方案 C ZTP 零触控
+        ↓
+配置隐形化：config_version 心跳、热重载
         ↓
 P2-1 (IPFS) → P2-2 (3D 图谱) → P2-3 (Agora) → P2-4 (Passkey/Web3)
 ```
@@ -111,7 +116,23 @@ P2-1 (IPFS) → P2-2 (3D 图谱) → P2-3 (Agora) → P2-4 (Passkey/Web3)
 
 ---
 
+---
+
+## 战役 C：扫码即连桌面端（已启动）
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 规格文档 | ✅ | [BATTLE_C_DESKTOP_SCAN_TO_CONNECT.md](./BATTLE_C_DESKTOP_SCAN_TO_CONNECT.md) |
+| 配对页 URL 预填 | ✅ | `?code=XXX` 自动填入 6 位码 |
+| PairingScreen 组件 | ✅ | 二维码 + 6 位码 + 轮询 |
+| Tauri 配对命令 | ✅ | pairing_request, pairing_status, write_nexus_config |
+| 配置持久化 | ✅ | ~/.jachin/nexus_config.json（与 Layer 2 共享） |
+
+---
+
 **相关文档**:
+- [BATTLE_C_DESKTOP_SCAN_TO_CONNECT.md](./BATTLE_C_DESKTOP_SCAN_TO_CONNECT.md) - **战役 C：扫码即连桌面端**（Tauri + 二维码 + 极简体验）
+- [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md) - **零摩擦体验设计**（免密登录、数字孪生、三种配对协议、配置隐形化）
 - [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) - **设备配对协议**（6 位码、端云三次握手）
 - [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) - **P0 信任链与心跳战术规格**
 - [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) - **无感安全与渐进式授权**（安全又傻瓜）

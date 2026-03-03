@@ -28,7 +28,7 @@ if (-not $CondaEnv -and -not (Get-Command $Python -ErrorAction SilentlyContinue)
 # CLI deps (when not using conda)
 if (-not $CondaEnv) {
     $env:PYTHONUTF8 = 1
-    & $Python -m pip install -q click rich 2>$null | Out-Null
+    & $Python -m pip install -q httpx click rich 2>$null | Out-Null
 }
 
 if ($CondaEnv) {

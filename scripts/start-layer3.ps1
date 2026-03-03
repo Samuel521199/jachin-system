@@ -28,10 +28,13 @@ Write-Host "  Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $DesktopDir
-if (Get-Command tauri -ErrorAction SilentlyContinue) {
-    npm run tauri:dev
-} else {
-    Write-Host "[INFO] Tauri 未安装，使用 Vite 开发模式" -ForegroundColor Yellow
-    npm run dev
+try {
+    if (Get-Command tauri -ErrorAction SilentlyContinue) {
+        npm run tauri:dev
+    } else {
+        Write-Host "[INFO] Tauri 未安装，使用 Vite 开发模式" -ForegroundColor Yellow
+        npm run dev
+    }
+} finally {
+    Pop-Location
 }
-Pop-Location

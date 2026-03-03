@@ -80,7 +80,7 @@ function inferPermissions(node: FlowNode): string[] {
     perms.push(...node.data.permissions);
   }
 
-  return [...new Set(perms)];
+  return Array.from(new Set(perms));
 }
 
 /** 节点标签 → 插件依赖 */
@@ -102,14 +102,7 @@ export class ForgeCompiler {
   ): CompileResult {
     const routes = this.parseTopology(edges);
     const { dependencies, permissions } = this.aggregateDependencies(nodes);
-    const manifest = this.generateManifest(
-      nodes,
-      edges,
-      name,
-      pluginId,
-      permissions,
-      routes
-    );
+    const manifest = this.generateManifest(nodes, edges, name, pluginId, permissions);
 
     return { manifest, routes, dependencies, permissions };
   }
@@ -133,8 +126,8 @@ export class ForgeCompiler {
     }
 
     return {
-      dependencies: [...deps],
-      permissions: perms.size > 0 ? [...perms] : ["sandbox.execute"],
+      dependencies: Array.from(deps),
+      permissions: perms.size > 0 ? Array.from(perms) : ["sandbox.execute"],
     };
   }
 
@@ -144,8 +137,7 @@ export class ForgeCompiler {
     edges: FlowEdge[],
     name: string,
     pluginId: string,
-    permissions: string[],
-    routes: Route[]
+    permissions: string[]
   ): JMP20Manifest {
     const capabilities = (nodes as FlowNode[])
       .filter((n) => n.type === "action" || n.type === "llm")

@@ -1,37 +1,74 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { pairingStoreGetBySession, pairingStoreGetByCode } from "@/lib/pairing-store";
+
+export const dynamic = "force-dynamic";
 
 /**
- * GET /api/v1/pairing/status?session_id=xxx
- * 阶段 3：Layer 2 轮询配对状态，获取 access_token 与 instance_id
- * 详见 docs/PAIRING_PROTOCOL_SPEC.md
+ * GET /api/v1/pairing/status?code=XXX 或 ?session_id=XXX
+ * 阶段 3：Layer 2 轮询配对状态
+ * Supabase 直连：查询 edge_agents，status=active 时返回 auth_token
  */
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
+    const code = searchParams.get("code");
     const sessionId = searchParams.get("session_id");
 
-    if (!sessionId) {
+    if (!code && !sessionId) {
       return NextResponse.json(
-        { error: "Missing session_id" },
+        { error: "Missing code or session_id" },
         { status: 400 }
       );
     }
 
     if (!isSupabaseConfigured()) {
+      const session = code
+        ? pairingStoreGetByCode(code)
+        : pairingStoreGetBySession(sessionId ?? "");
+      if (!session) {
+        return NextResponse.json(
+          { status: "expired", error: "会话不存在或已失效" },
+          { status: 404 }
+        );
+      }
+      if (new Date(session.expires_at) < new Date()) {
+        return NextResponse.json({
+          status: "expired",
+          error: "配对码已过期",
+        });
+      }
+      if (session.status !== "approved") {
+        return NextResponse.json({
+          status: "pending",
+          message: "Waiting for Web confirmation...",
+        });
+      }
+      const baseUrl =
+        process.env.NEXUS_PUBLIC_URL ||
+        (process.env.NEXT_PUBLIC_VERCEL_URL
+          ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
+          : "http://localhost:3000");
       return NextResponse.json({
-        status: "pending",
-        message: "Dev mode: configure Supabase for real pairing",
+        status: "success",
+        access_token: `jch-mock-${(session?.session_id ?? sessionId ?? "").slice(0, 8)}`,
+        layer1_public_key: null,
+        instance_id: session.instance_id ?? "dev-layer2-001",
+        nexus_base_url: baseUrl,
       });
     }
 
     const sb = getSupabase()!;
 
-    const { data: session, error } = await sb
-      .from("pairing_sessions")
-      .select("session_id, status, expires_at, layer2_instance_id")
-      .eq("session_id", sessionId)
-      .maybeSingle();
+    let query = sb.from("edge_agents").select("id, status, auth_token, pairing_expires_at, name");
+
+    if (code) {
+      query = query.eq("pairing_code", String(code).trim().toUpperCase().replace(/-/g, ""));
+    } else {
+      query = query.eq("id", sessionId);
+    }
+
+    const { data: agent, error } = await query.maybeSingle();
 
     if (error) {
       console.error("[pairing/status] Query error:", error);
@@ -41,36 +78,29 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    if (!session) {
+    if (!agent) {
       return NextResponse.json(
         { status: "expired", error: "会话不存在或已失效" },
         { status: 404 }
       );
     }
 
-    if (new Date(session.expires_at) < new Date()) {
+    if (agent.pairing_expires_at && new Date(agent.pairing_expires_at) < new Date()) {
       await sb
-        .from("pairing_sessions")
-        .update({ status: "expired" })
-        .eq("session_id", sessionId);
+        .from("edge_agents")
+        .update({ status: "offline" })
+        .eq("id", agent.id);
       return NextResponse.json({
         status: "expired",
         error: "配对码已过期",
       });
     }
 
-    if (session.status !== "approved") {
-      return NextResponse.json({ status: "pending" });
-    }
-
-    let instanceId = "dev-layer2-001";
-    if (session.layer2_instance_id) {
-      const { data: inst } = await sb
-        .from("layer2_instances")
-        .select("instance_id")
-        .eq("id", session.layer2_instance_id)
-        .maybeSingle();
-      if (inst) instanceId = inst.instance_id;
+    if (agent.status !== "active") {
+      return NextResponse.json({
+        status: "pending",
+        message: "Waiting for Web confirmation...",
+      });
     }
 
     const baseUrl =
@@ -81,9 +111,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       status: "success",
-      access_token: sessionId,
+      access_token: agent.auth_token ?? agent.id,
       layer1_public_key: null,
-      instance_id: instanceId,
+      instance_id: agent.id,
       nexus_base_url: baseUrl,
     });
   } catch (e) {
