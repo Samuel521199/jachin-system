@@ -28,7 +28,7 @@ pub struct NexusConfig {
     pub nexus_base_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingRequestResponse {
     pub session_id: String,
     pub short_code: String,
@@ -36,7 +36,7 @@ pub struct PairingRequestResponse {
     pub pair_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairingStatusResponse {
     pub status: String,
     #[serde(default)]

@@ -51,20 +51,6 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
     loadBaseUrl();
   }, [loadBaseUrl]);
 
-  const saveBaseUrl = useCallback(async () => {
-    const url = settingsInput.trim() || DEFAULT_BASE;
-    try {
-      await invoke("write_nexus_base_url", { url });
-      setBaseUrl(url);
-      setShowSettings(false);
-      if (step === "waiting" || step === "error") {
-        startPairing(url);
-      }
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [settingsInput, step, startPairing]);
-
   const startPairing = useCallback(async (overrideUrl?: string) => {
     const url = overrideUrl ?? baseUrl;
     setStep("request");
@@ -84,6 +70,20 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
       setStep("error");
     }
   }, [baseUrl]);
+
+  const saveBaseUrl = useCallback(async () => {
+    const url = settingsInput.trim() || DEFAULT_BASE;
+    try {
+      await invoke("write_nexus_base_url", { url });
+      setBaseUrl(url);
+      setShowSettings(false);
+      if (step === "waiting" || step === "error") {
+        startPairing(url);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [settingsInput, step, startPairing]);
 
   useEffect(() => {
     if (baseUrlLoaded) startPairing();

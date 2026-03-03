@@ -1,5 +1,5 @@
 # =============================================================================
-# Layer3 (用户) - 一键启动 (Windows)
+# Layer3 (Desktop) - One-click start (Windows)
 # clients/desktop - Jachin Terminal
 # =============================================================================
 
@@ -9,11 +9,11 @@ Set-Location $ProjectRoot
 
 $DesktopDir = Join-Path $ProjectRoot "clients\desktop"
 if (-not (Test-Path $DesktopDir)) {
-    Write-Host "[ERROR] 未找到 clients\desktop，请先执行: .\scripts\install-layer3.ps1" -ForegroundColor Red
+    Write-Host "[ERROR] clients\desktop not found. Run: .\scripts\install-layer3.ps1" -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path (Join-Path $DesktopDir "node_modules"))) {
-    Write-Host "[INFO] 依赖未安装，正在安装..." -ForegroundColor Yellow
+    Write-Host "[INFO] Installing dependencies..." -ForegroundColor Yellow
     Push-Location $DesktopDir
     npm install
     Pop-Location
@@ -21,20 +21,17 @@ if (-not (Test-Path (Join-Path $DesktopDir "node_modules"))) {
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Layer3 (Desktop) 启动" -ForegroundColor Cyan
+Write-Host "  Layer3 (Desktop)" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Tauri 需 Rust 环境，若无则尝试 Vite 开发模式"
+Write-Host "  Tauri requires Rust. Falls back to Vite dev if not found."
 Write-Host "  Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $DesktopDir
-try {
-    if (Get-Command tauri -ErrorAction SilentlyContinue) {
-        npm run tauri:dev
-    } else {
-        Write-Host "[INFO] Tauri 未安装，使用 Vite 开发模式" -ForegroundColor Yellow
-        npm run dev
-    }
-} finally {
-    Pop-Location
+if (Get-Command tauri -ErrorAction SilentlyContinue) {
+    npm run tauri:dev
+} else {
+    Write-Host "[INFO] Tauri not found, using Vite dev mode" -ForegroundColor Yellow
+    npm run dev
 }
+Pop-Location
