@@ -7,6 +7,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 const DEFAULT_BASE_URL: &str = "http://localhost:3000";
 
 fn jachin_dir() -> Result<PathBuf, String> {
@@ -108,6 +111,9 @@ fn find_project_root() -> Result<PathBuf, String> {
     Err("Project root not found (no core/cli.py or scripts/run-daemon.ps1)".to_string())
 }
 
+/// CREATE_NO_WINDOW - 彻底静默，不弹出黑色控制台
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Spawn daemon in background after pairing success (silent, no terminal)
 #[tauri::command]
 pub fn spawn_daemon() -> Result<bool, String> {
@@ -119,18 +125,18 @@ pub fn spawn_daemon() -> Result<bool, String> {
         if !ps1.exists() {
             return Err("scripts/run-daemon.ps1 not found".to_string());
         }
-        Command::new("powershell")
-            .args([
-                "-ExecutionPolicy", "Bypass",
-                "-WindowStyle", "Hidden",
-                "-NoProfile",
-                "-File", ps1.to_str().ok_or("Invalid path")?,
-            ])
-            .current_dir(&root)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-NoProfile",
+            "-File", ps1.to_str().ok_or("Invalid path")?,
+        ])
+        .current_dir(&root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.spawn().map_err(|e| e.to_string())?;
     }
     #[cfg(not(target_os = "windows"))]
     {

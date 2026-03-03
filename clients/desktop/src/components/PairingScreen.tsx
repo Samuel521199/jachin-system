@@ -114,7 +114,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
           } catch {
             setDaemonSpawned(false);
           }
-          setTimeout(() => onPaired(), 1800);
+          setTimeout(() => onPaired(), 1500);
         } else if (status.status === "expired") {
           setError("Pairing code expired");
           setStep("error");
@@ -214,7 +214,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
             <p className="text-white/50 text-sm">Neural link established</p>
             {daemonSpawned && (
               <p className="text-cyan-400/80 text-xs text-center max-w-xs">
-                边缘守护进程已在后台静默运行
+                边缘引擎静默轰鸣中...
               </p>
             )}
           </div>
