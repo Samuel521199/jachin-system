@@ -29,6 +29,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **生物学记忆管线 (Biological Memory Pipeline)**
+  - `core/biological_memory.py`：海马体 (short_term_logs) + 大脑皮层 (core_memory)，SQLite 极简存储
+  - `core/dreamer.py`：梦境引擎，凌晨 3 点对短期日志执行 LLM 提纯，遗忘无用内容
+  - Agent Loop 集成：每次交互写入短期记忆，System Prompt 注入核心记忆
+  - Daemon 调度：dream_scheduler_loop 与心跳并行，每日 3:00 触发梦境
 - **进化战役三：JPP 开发者脚手架**
   - `jachin-plugin-sdk/`：Rust 模板，plugin.json、Makefile、标准 ABI
   - 示例：智能灯泡、数据清洗

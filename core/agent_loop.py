@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.agent_memory import add_memory, get_context
+from core.biological_memory import add_short_term, get_core_memory_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,10 @@ def _extract_skills_from_blueprint(ast_json: dict) -> list[dict[str, Any]]:
 
 
 def _build_system_prompt(skills: list[dict[str, Any]], use_mock: bool = False) -> str:
-    """动态组装系统 Prompt：人设 + 技能武器列表（无技能时用 Mock 工具）"""
+    """动态组装系统 Prompt：核心记忆 + 人设 + 技能武器列表（无技能时用 Mock 工具）"""
+    core_mem = get_core_memory_for_prompt(limit=20)
+    core_prefix = f"{core_mem}\n\n" if core_mem else ""
+
     if use_mock or not skills:
         lines = []
         for i, t in enumerate(MOCK_TOOLS, 1):
@@ -85,7 +89,7 @@ def _build_system_prompt(skills: list[dict[str, Any]], use_mock: bool = False) -
         skills_desc += "\n\n当需要执行技能时，请输出：Action: run <技能名称或序号>"
     skills_desc += "\n任务完成时，请输出：Final Answer: <最终回复>"
 
-    return f"""你是一个高智商的 Jachin 边缘智能体。你可以自主思考。{skills_desc}
+    return f"""{core_prefix}你是一个高智商的 Jachin 边缘智能体。你可以自主思考。{skills_desc}
 
 请严格使用 Thought, Action, Action Input, Observation 的格式进行思考和调用：
 1. Thought: 分析当前情况，决定下一步
@@ -235,6 +239,7 @@ async def run(
     system_prompt = _build_system_prompt(skills, use_mock=use_mock)
 
     add_memory("user", user_input)
+    add_short_term("user", user_input, meta={"source": "agent_loop"})
     messages = get_context(limit=20)
     if not messages:
         messages = [{"role": "user", "content": user_input}]
@@ -242,6 +247,7 @@ async def run(
     for iteration in range(max_iterations):
         response = await _get_llm_response(messages, system_prompt)
         add_memory("assistant", response)
+        add_short_term("assistant", response, meta={"iteration": iteration})
 
         # 打印 Thought（若有）
         thought = _extract_thought(response)
@@ -279,6 +285,7 @@ async def run(
             observation = _run_mock_tool(tool, inp)
             _emit("observation", observation)
             add_memory("system", f"Observation: {observation}")
+            add_short_term("system", f"Observation: {observation}", meta={"tool": tool})
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
@@ -300,6 +307,7 @@ async def run(
             )
             _emit("observation", observation)
             add_memory("system", f"Observation: {observation}")
+            add_short_term("system", f"Observation: {observation}", meta={"skill": label})
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",

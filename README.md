@@ -4,7 +4,7 @@
 
 Jachin Nexus 是一个支持极速部署、具备**物理级算力熔断机制**的分布式边缘 AI 底座。我们提供极简的「扫码即连」体验，并允许你通过云端舰队大盘，对全球成千上万个物理节点进行 AI 算法的热更新与分发。
 
-[![Version](https://img.shields.io/badge/version-0.5.5-blue.svg)](https://github.com/Samuel521199/jachin-system)
+[![Version](https://img.shields.io/badge/version-0.5.6-blue.svg)](https://github.com/Samuel521199/jachin-system)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ---
@@ -81,4 +81,4 @@ jachin-system/
 
 ---
 
-**版本**: v0.5.5 | **最后更新**: 2026-03
+**版本**: v0.5.6 | **最后更新**: 2026-03

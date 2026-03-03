@@ -1,12 +1,13 @@
 """
 Jachin Nexus Layer 2 - 核心守护进程
 
-边缘智能体中枢神经：规律心跳、拉取蓝图、降维执行。
+边缘智能体中枢神经：规律心跳、拉取蓝图、降维执行、梦境调度。
 入口: python -m core.daemon
 """
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import time
 from pathlib import Path
@@ -162,6 +163,39 @@ async def heartbeat_loop(
 
 
 # -----------------------------------------------------------------------------
+# 梦境引擎调度：凌晨 3 点执行生物学记忆提纯
+# -----------------------------------------------------------------------------
+
+DREAM_HOUR = 3  # 凌晨 3 点
+
+
+def _seconds_until_3am() -> float:
+    """计算距离下次凌晨 3 点的秒数"""
+    now = datetime.datetime.now()
+    next_3am = now.replace(hour=DREAM_HOUR, minute=0, second=0, microsecond=0)
+    if now >= next_3am:
+        next_3am += datetime.timedelta(days=1)
+    return (next_3am - now).total_seconds()
+
+
+async def dream_scheduler_loop() -> None:
+    """梦境调度循环：每天凌晨 3 点执行梦境回放"""
+    while True:
+        wait_sec = _seconds_until_3am()
+        console.print(f"[dim][Dream] 下次梦境: {datetime.timedelta(seconds=int(wait_sec))} 后[/dim]")
+        await asyncio.sleep(wait_sec)
+
+        try:
+            from core.dreamer import run_dream_sequence
+
+            console.print("[magenta][Dream] 🌙 梦境引擎启动，正在提纯今日记忆...[/magenta]")
+            count = await run_dream_sequence(limit=500)
+            console.print(f"[magenta][Dream] ✅ 梦境完成，写入 {count} 条核心记忆[/magenta]")
+        except Exception as e:
+            console.print(f"[red][Dream] ❌ 梦境异常: {e}[/red]")
+
+
+# -----------------------------------------------------------------------------
 # Agent Loop 驱动：蓝图作为岗位说明书，ReAct 自主执行
 # -----------------------------------------------------------------------------
 
@@ -261,11 +295,15 @@ def start_daemon() -> None:
     console.print()
 
     async def _main() -> None:
-        await heartbeat_loop(
-            access_token=access_token,
-            layer1_url=layer1_url,
-            instance_id=instance_id,
-            execute_blueprint_fn=execute_blueprint,
+        # 心跳循环 + 梦境调度 并行运行
+        await asyncio.gather(
+            heartbeat_loop(
+                access_token=access_token,
+                layer1_url=layer1_url,
+                instance_id=instance_id,
+                execute_blueprint_fn=execute_blueprint,
+            ),
+            dream_scheduler_loop(),
         )
 
     try:
