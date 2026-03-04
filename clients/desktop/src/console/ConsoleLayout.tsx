@@ -12,6 +12,7 @@ import { useSpriteStore } from "../store/spriteStore";
 import { Sidebar } from "./Sidebar";
 import { Horizon } from "./components/Horizon";
 import { VoidBackground } from "./components/VoidBackground";
+import { SensoryOverlay } from "./components/SensoryOverlay";
 
 export function ConsoleLayout() {
   const themeId = useSpriteStore((s) => s.themeId);
@@ -84,6 +85,7 @@ export function ConsoleLayout() {
         deviceCount={voidData?.deviceCount}
       />
       <Sidebar />
+      <SensoryOverlay />
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
         <Horizon
           environment={config?.environment ?? import.meta.env.VITE_ENVIRONMENT ?? undefined}

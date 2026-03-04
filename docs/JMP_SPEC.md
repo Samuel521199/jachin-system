@@ -156,7 +156,7 @@ JMP 是 Jachin 生态的「宪法」。Layer 2 从 Layer 1 下载的必须是一
 
 ## 4. main.py
 
-- 必须导出可被 WASM 沙箱加载的插件类（v5.0 已废弃 Ray）
+- 必须导出可被 WASM 沙箱加载的插件类（v8.0 已废弃 Ray）
 - 继承 `BaseSkillActor`（或兼容基类）
 - 实现 `execute(capability, params)` 或等价方法
 

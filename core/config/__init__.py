@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "qwen-max"
     QWEN_REGION: str = "cn-beijing"
 
-    # Local LLM
-    LOCAL_LLM_URL: str = "http://localhost:8000"
-    LOCAL_LLM_MODEL: str = "qwen-7b-chat"
+    # Local LLM (小脑 / Edge - Ollama 默认)
+    LOCAL_LLM_URL: str = "http://localhost:11434"
+    LOCAL_LLM_MODEL: str = "qwen2.5:0.5b"
     LOCAL_LLM_API_KEY: Optional[str] = None
 
     # Layer 1 Cloud (Jachin Nexus)
@@ -159,9 +159,18 @@ settings = Settings()
 
 
 def get_effective_qwen_api_key() -> Optional[str]:
-    """获取有效的 Qwen API Key：用户保存的覆盖 > 环境变量"""
-    from core.config.api_key_override import get_qwen_api_key_override
+    """
+    获取有效的 Qwen/DashScope API Key（瀑布流降级读取）。
 
+    优先级：env > nexus_config.json llm_keys.dashscope > .qwen_api_key > settings
+    详见 docs/whitepaper/PLUGGABLE_COGNITIVE_ENGINES.md
+    """
+    try:
+        from core.brain.llm.credential_loader import get_dashscope_key
+        return get_dashscope_key(required=False)
+    except (ImportError, ValueError):
+        pass
+    from core.config.api_key_override import get_qwen_api_key_override
     override = get_qwen_api_key_override()
     if override:
         return override

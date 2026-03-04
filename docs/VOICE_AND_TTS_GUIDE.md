@@ -1,6 +1,6 @@
 # 语音与 TTS 指南 (Jarvis 协议)
 
-**版本**: v6.0
+**版本**: v8.0 (The Singularity OS)
 
 ---
 
@@ -10,7 +10,7 @@
 - **TTS**：文本 → 语音（Kokoro 本地 / Edge TTS / 云端）
 - **三种模式**：录音 (Push-to-Talk)、唤醒 (Wake-Up)、连续识别 (Continuous)
 
-## 全息听觉流 (v6.0 新增)
+## 全息听觉流 (v8.0)
 
 **Hey Jachin** — 复刻钢铁侠 Jarvis 体验：
 

@@ -1,6 +1,6 @@
 # MCP 接入规范 (Model Context Protocol)
 
-**版本**: v6.0  
+**版本**: v8.0 (The Singularity OS)  
 **定位**: Layer 2 双轨制引擎 — 轨道 A
 
 ---

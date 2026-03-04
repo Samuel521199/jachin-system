@@ -1,7 +1,7 @@
 # 05 — Layer 1: Jachin Nexus (云端指挥中枢)
 
 **文档类型**: 白皮书 · Layer 1 详细说明  
-**版本**: v6.0 (The Neural Bus Edition)
+**版本**: v8.0 (The Singularity OS)
 
 ---
 
@@ -65,7 +65,7 @@ Layer 1 的核心表结构（精简示意）：
 
 ---
 
-## 五、 v6.0 废弃声明 (Deprecation in v6.0)
+## 五、 v8.0 废弃声明 (Deprecation in v8.0)
 
 1. **废弃复杂的私有化身份认证系统**：不再自行维护复杂的 JWT 签发与密码哈希，全面托付给高可用、高安全的 Supabase Auth。
 2. **废弃 Dapr Pub/Sub 中继**：在广域网（WAN）环境下，Pub/Sub 的穿透与稳定性维护成本极高，现已全面替换为更坚固的**HTTP 心跳拉取 (Polling) + 数据库队列**模型。

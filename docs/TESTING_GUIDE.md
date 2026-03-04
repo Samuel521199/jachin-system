@@ -201,7 +201,7 @@ def test_with_executor(plugin_executor):
     # 使用插件执行器
 ```
 
-**v5.0 说明**：已废弃 Ray，测试使用 WASM 沙箱与 Agent Loop。
+**v8.0 说明**：已废弃 Ray，测试使用 WASM 沙箱与 Agent Loop。
 
 ## 性能监控
 
@@ -323,7 +323,7 @@ pytest tests/ --cov=core --cov-report=html --cov-report=term
 
 **错误**: `无法连接到数据库`
 
-**解决**: v5.0 使用 SQLite (memory.db)，无需 PostgreSQL
+**解决**: v8.0 使用 SQLite (memory.db)，无需 PostgreSQL
 
 ### 2. Mock LLM 不工作
 

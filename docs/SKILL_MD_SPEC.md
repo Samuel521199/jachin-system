@@ -1,6 +1,6 @@
 # SKILL.md 声明式技能规范
 
-**版本**: v6.0  
+**版本**: v8.0 (The Singularity OS)  
 **定位**: Layer 2 双轨制引擎 — 轨道 B
 
 ---
@@ -35,8 +35,15 @@ name: github-pr-reviewer
 description: Review GitHub pull requests and post feedback
 persona: 专业、 constructive、区分 blocking 与 suggestion
 mcp_tools: ["web_fetch", "github_api"]   # 关联的 MCP 工具
+tools:                                    # Native Core Fallback（防止 MCP 瘫痪导致技能失效）
+  - prefer: "mcp:web_fetch"
+    fallback: "core:fs_read"
+  - prefer: "mcp:github_api"
+    fallback: "core:shell_exec"
 ---
 ```
+
+**Native Core Fallback (原生降级路由)**：为防止 MCP 瘫痪导致技能失效，系统内置安全的宿主原生标准库（如 `core:fs_read`、`core:shell_exec`），权限死锁在 `~/.jachin/workspace/` 目录下。当 `prefer` 工具调用失败时，自动无缝降级至 `fallback`。
 
 ### 3.2 正文：自然语言指令
 
@@ -80,9 +87,19 @@ mcp_tools: ["web_fetch", "github_api"]   # 关联的 MCP 工具
 - 若 MCP 未启用或工具不存在，该技能在注册时标记为不可用
 - Agent 可组合多个 SKILL.md + MCP 工具完成复杂任务
 
+## 六、 Native Core Fallback (原生降级路由)
+
+| 工具标识 | 说明 | 权限边界 |
+|----------|------|----------|
+| `core:fs_read` | 文件读取 | 仅限 `~/.jachin/workspace/` |
+| `core:fs_write` | 文件写入 | 仅限 `~/.jachin/workspace/` |
+| `core:shell_exec` | Shell 执行 | 工作目录死锁在 `~/.jachin/workspace/` |
+
+当 MCP 工具调用失败（超时、连接断开、服务不可用）时，Agent 自动 catch 异常并路由至 `fallback` 指定的 Native Core 工具，确保技能不因 MCP 瘫痪而失效。
+
 ---
 
-## 六、 参考
+## 七、 参考
 
 - OpenClaw SKILL.md 设计（借鉴）
 - `docs/whitepaper/06_LAYER2_EDGE.md` — 轨道 B 实现

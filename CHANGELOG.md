@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v8.0] - 2026-02 (The Singularity OS)
+
+### Added
+
+- **全链路 runId 追踪 (Distributed Tracing)**：每次用户请求注入唯一 run_id，贯穿 SensoryInputEvent → PipelineContext → SensoryOutputEvent，日志染色 `[RunID: xxx]`
+- **流式神经 (Streaming Chunk)**：LLM 逐 token 流式输出，`generate_response_stream` + `on_chunk` 回调，caps 含 `stream_chunk` 的客户端实时接收
+- **Session Multiplexing**：按 session_id 隔离 Agent Actor，多用户/多路输入零串话
+- **Nexus Hook Pipeline**：Koa.js 风格洋葱中间件，5 个生命周期 Hook
+- **Dream Weaver Consolidation**：LanceDB 记忆聚类/去重/融合，is_consolidated + 冲突消解
+- **Capability Negotiation**：Layer 3 Manifest 握手，按 caps 动态推送
+- **Edge Mesh Swarm**：同网设备算力协同，heavy_tools 外包至虫群节点
+
+### Changed
+
+- 白皮书、规格、`.cursor/rules` 全面统一至 v8.0 架构
+- 移除所有 v3/v5/v6/v7 版本引用，项目完全统一到 v8.0
+
+---
+
 ## [v0.6.1] - 2026-02-28
 
 ### Removed

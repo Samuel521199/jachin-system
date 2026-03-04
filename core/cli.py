@@ -8,6 +8,22 @@ import json
 import time
 from pathlib import Path
 
+# 尽早将 .env 转为 UTF-8（Windows 可能产生 UTF-16），避免 pydantic-settings 等读取失败
+def _ensure_env_utf8() -> None:
+    for _p in [Path.cwd(), Path(__file__).resolve().parent.parent]:
+        _e = _p / ".env"
+        if _e.exists():
+            try:
+                _e.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                try:
+                    _e.write_text(_e.read_text(encoding="utf-16"), encoding="utf-8")
+                except Exception:
+                    pass
+            break
+
+_ensure_env_utf8()
+
 import click
 import httpx
 from rich.console import Console
@@ -187,6 +203,104 @@ def pair(base_url: str) -> None:
             padding=(1, 2),
         )
     )
+
+
+@cli.command()
+@click.argument("user_input", required=False, default="")
+@click.option(
+    "--daemon",
+    "use_daemon",
+    is_flag=True,
+    help="使用已运行的 Daemon 处理（打通 HITL 沙箱：桌面精灵弹窗授权）",
+)
+def shell(user_input: str, use_daemon: bool) -> None:
+    """极客模式：注入全息感官总线，brain_worker 处理。--daemon 时由 Daemon 处理并支持 HITL 弹窗"""
+    import asyncio
+    from core.event_bus import (
+        get_bus,
+        emit_omni_input,
+        SensoryInputEvent,
+        SensoryOutputEvent,
+    )
+
+    inp = user_input or "帮我瞅瞅 workspace 里的 target.txt 写了啥"
+    console.print(f"[cyan][Ignition][/cyan] 输入: [yellow]{inp}[/yellow]")
+    if use_daemon:
+        console.print("[dim]  → 注入总线，由 Daemon 处理（Tauri 可弹 HITL 授权）...[/dim]")
+    else:
+        console.print("[dim]  → 注入全息感官总线，brain_worker 处理中...[/dim]")
+    console.print()
+
+    def _react_step_printer(step_type: str, content: str, run_id: str = "") -> None:
+        c = (content or "")[:200] + ("..." if len(content or "") > 200 else "")
+        prefix = f"[RunID:{run_id[:8]}] " if run_id else ""
+        if step_type == "thought":
+            console.print(f"  {prefix}[dim][Thought][/dim] {c}")
+        elif step_type == "action":
+            console.print(f"  {prefix}[purple][Action][/purple] {c}")
+        elif step_type == "observation":
+            console.print(f"  {prefix}[cyan][Observation][/cyan] {c}")
+
+    async def _go_standalone() -> None:
+        """ standalone：本进程启动 brain_worker（无 HITL 弹窗，core:shell_exec 会挂起）"""
+        bus = get_bus()
+        bus.set_step_callback(_react_step_printer)
+        bus.start_brain_worker()
+
+        done = asyncio.Event()
+
+        async def output_handler(ev: SensoryOutputEvent) -> None:
+            if ev.source_ref != "cli":
+                return
+            if ev.action_type == "text":
+                console.print(Panel(ev.content, title="[green]Final Answer[/green]", border_style="green"))
+            done.set()
+
+        bus.subscribe("output.cli", output_handler)
+
+        await bus.publish_input(SensoryInputEvent(source="cli", intent=inp, metadata={}))
+
+        try:
+            await asyncio.wait_for(done.wait(), timeout=120.0)
+        except asyncio.TimeoutError:
+            console.print("[red]⚠ 超时：brain_worker 未在 120 秒内返回[/red]")
+
+    async def _go_daemon() -> None:
+        """ --daemon：仅注入 SQLite，连接 ws://localhost:8080/sensory 等待 Daemon 广播结果 """
+        emit_omni_input("cli", inp, {})
+        try:
+            import websockets
+            async with websockets.connect(
+                "ws://localhost:8080/sensory",
+                open_timeout=5.0,
+                close_timeout=2.0,
+            ) as ws:
+                console.print("[dim] 已连接 Daemon 全息通道，等待推理与 HITL...[/dim]")
+                while True:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=180.0)
+                    try:
+                        data = json.loads(msg)
+                        st = (data.get("step_type") or "").lower()
+                        content = data.get("content", "")
+                        if st in ("answer", "rejected", "error"):
+                            title = "[green]Final Answer[/green]" if st == "answer" else f"[red]{st}[/red]"
+                            console.print(Panel(content, title=title, border_style="green" if st == "answer" else "red"))
+                            return
+                        elif st == "hitl_required":
+                            console.print("[yellow]  ⏳ 桌面精灵已弹出授权框，请点击【授权】或【拒绝】[/yellow]")
+                    except json.JSONDecodeError:
+                        pass
+        except (ConnectionRefusedError, OSError) as e:
+            console.print(f"[red]❌ 无法连接 Daemon (ws://localhost:8080/sensory): {e}[/red]")
+            console.print("[dim]请先运行: python -m core.cli daemon[/dim]")
+            raise SystemExit(1)
+        except asyncio.TimeoutError:
+            console.print("[red]⚠ 超时：Daemon 未在 180 秒内返回[/red]")
+
+    if use_daemon:
+        asyncio.run(_go_daemon())
+    else:
+        asyncio.run(_go_standalone())
 
 
 @cli.command()

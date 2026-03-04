@@ -2,9 +2,9 @@
 
 > 如果说 OpenClaw 是黑客的超级单兵武器，那么 **Jachin Nexus 就是企业的航母战斗群**。
 
-Jachin Nexus v6.0 是一个支持极速部署、具备**双轨制引擎 + 量子记忆 + 全息感知**的分布式边缘 AI 底座。我们提供极简的「扫码即连」体验、**Hey Jachin** 语音唤醒、**jachin-cli** 极客终端，并允许你通过云端舰队大盘，对全球成千上万个物理节点进行 AI 算法的热更新与分发。
+Jachin Nexus **v8.0 (The Singularity OS)** 是支持极速部署的分布式数字生命操作系统，具备**双轨制引擎 + 量子记忆 + 全息感知 + Session Multiplexing + Nexus Hook Pipeline + Dream Weaver + Edge Mesh Swarm + 全链路 runId 追踪 + 流式神经**。我们提供极简的「扫码即连」体验、**Hey Jachin** 语音唤醒、**jachin-cli** 极客终端，并允许你通过云端舰队大盘，对全球成千上万个物理节点进行 AI 算法的热更新与分发。
 
-[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/Samuel521199/jachin-system)
+[![Version](https://img.shields.io/badge/version-8.0-blue.svg)](https://github.com/Samuel521199/jachin-system)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ---
@@ -82,4 +82,4 @@ jachin-system/
 
 ---
 
-**版本**: v0.5.6 | **最后更新**: 2026-03
+**版本**: v8.0 (The Singularity OS) | **最后更新**: 2026-02

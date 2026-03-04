@@ -48,91 +48,13 @@ class SkillLoader:
     
     def discover_skills(self) -> List[str]:
         """
-        发现所有已安装的技能（包括 _bundled 目录中的预装技能）
-        
-        Returns:
-            List[str]: 技能ID列表
+        发现所有已安装的技能。
+        TODO: v6.0 Semantic Vector Router will take over skill matching here.
+        已移除遍历本地目录查找 manifest 的旧逻辑，由 vector_router.match_local_skill 接管。
         """
-        skills = []
-        
-        logger.debug(f"Starting skill discovery in: {self.repo_path.absolute()}")
-        
-        if not self.repo_path.exists():
-            logger.warning(f"Skills repo path does not exist: {self.repo_path.absolute()}")
-            return skills
-        
-        def scan_directory(directory: Path, skip_underscore: bool = True) -> None:
-            """
-            递归扫描目录查找技能
-            
-            Args:
-                directory: 要扫描的目录
-                skip_underscore: 是否跳过以 _ 开头的目录（用于根目录扫描）
-            """
-            if not directory.exists():
-                logger.warning(f"Directory does not exist: {directory.absolute()}")
-                return
-            
-            if not directory.is_dir():
-                logger.warning(f"Path is not a directory: {directory.absolute()}")
-                return
-            
-            logger.debug(f"Scanning directory: {directory.absolute()}")
-            items = list(directory.iterdir())
-            logger.debug(f"Found {len(items)} items in {directory.name}")
-            
-            # 遍历目录
-            for skill_dir in items:
-                if not skill_dir.is_dir():
-                    logger.debug(f"Skipping non-directory: {skill_dir.name}")
-                    continue
-                
-                # 只在根目录扫描时跳过特殊目录
-                if skip_underscore and (skill_dir.name.startswith('_') or skill_dir.name.startswith('.')):
-                    logger.debug(f"Skipping special directory: {skill_dir.name}")
-                    continue
-                
-                logger.debug(f"Checking skill directory: {skill_dir.name}")
-                
-                # 检查是否有manifest文件
-                manifest_files = [
-                    skill_dir / "manifest.yaml",
-                    skill_dir / "manifest.yml",
-                    skill_dir / "manifest.json",
-                ]
-                
-                found_manifest = False
-                for manifest_file in manifest_files:
-                    if manifest_file.exists():
-                        logger.debug(f"Found manifest: {manifest_file}")
-                        try:
-                            manifest = ManifestParser.load_from_file(str(manifest_file))
-                            skill_id = manifest.skill_id
-                            if skill_id not in skills:  # 避免重复
-                                skills.append(skill_id)
-                                logger.debug(f"Discovered skill: {skill_id}")
-                            else:
-                                logger.debug(f"Skill {skill_id} already in list, skipping duplicate")
-                            found_manifest = True
-                            break
-                        except ManifestError as e:
-                            logger.warning(f"Failed to load manifest from {manifest_file}: {e}")
-                        except Exception as e:
-                            logger.error(f"Unexpected error loading manifest from {manifest_file}: {e}", exc_info=True)
-                
-                if not found_manifest:
-                    logger.warning(f"No valid manifest found in {skill_dir.name}")
-        
-        scan_directory(self.repo_path, skip_underscore=True)
-        bundled_dir = self.repo_path / "_bundled"
-        if bundled_dir.exists():
-            scan_directory(bundled_dir, skip_underscore=False)
-        else:
-            logger.warning(f"_bundled directory does not exist: {bundled_dir.absolute()}")
-        
-        if skills:
-            logger.info("Skills: %s", ", ".join(skills))
-        return skills
+        # TODO: v6.0 Semantic Vector Router will take over skill matching here.
+        logger.debug("discover_skills: 已由 Vector Router 接管，返回空列表占位")
+        return []
     
     def load_skill_manifest(self, skill_id: str) -> Optional[Any]:
         """

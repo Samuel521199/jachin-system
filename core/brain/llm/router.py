@@ -1,12 +1,13 @@
 """
-ModelRouter - 模型路由器
+ModelRouter - 动态认知路由 (Dynamic Cognitive Routing)
 
-根据任务类型和复杂度自动选择最合适的模型 Provider。
+大小脑动态切换：小脑 (Edge/Ollama) 处理简单任务，大脑 (Cloud/Qwen) 处理复杂推理。
+详见 docs/whitepaper/PLUGGABLE_COGNITIVE_ENGINES.md
 """
 
-import os
-import re
+import json
 from enum import Enum
+from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
 
@@ -16,12 +17,25 @@ from .local_adapter import LocalAdapter
 
 logger = logging.getLogger(__name__)
 
+_NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
+
+
+def _load_cognitive_config() -> dict[str, Any]:
+    """从 nexus_config.json 读取 llm.cognitive_mode 等"""
+    if not _NEXUS_CONFIG.exists():
+        return {}
+    try:
+        data = json.loads(_NEXUS_CONFIG.read_text(encoding="utf-8"))
+        return data.get("llm") or {}
+    except Exception:
+        return {}
+
 
 class TaskComplexity(Enum):
-    """任务复杂度枚举"""
-    SIMPLE = "simple"      # 简单指令，如 IoT 控制
-    MEDIUM = "medium"      # 中等复杂度对话
-    COMPLEX = "complex"    # 复杂推理、代码生成、计划制定
+    """任务复杂度枚举 — 小脑 vs 大脑"""
+    SIMPLE = "simple"      # 简单指令：意图分类、开灯、查询、闲聊
+    MEDIUM = "medium"      # 中等对话
+    COMPLEX = "complex"    # 复杂推理、代码生成、财务分析、Wasm 插件
 
 
 class ModelRouter:
@@ -48,17 +62,17 @@ class ModelRouter:
         self.prefer_local_for_simple = prefer_local_for_simple
         self.prefer_local_for_medium = prefer_local_for_medium
         
-        # 简单指令关键词（中文）
+        # 小脑：简单指令关键词
         self.simple_keywords = [
-            "开灯", "关灯", "打开", "关闭", "查询", "获取",
-            "开启", "关闭", "启动", "停止", "读取", "显示",
+            "开灯", "关灯", "打开", "关闭", "查询", "获取", "瞅瞅", "看看",
+            "开启", "关闭", "启动", "停止", "读取", "显示", "帮我",
             "turn on", "turn off", "open", "close", "get", "read", "show"
         ]
         
-        # 复杂任务关键词（中文）
+        # 大脑：复杂任务关键词（需云端大模型）
         self.complex_keywords = [
-            "编写", "生成", "计划", "分析", "设计", "优化",
-            "创建", "构建", "开发", "实现", "解释", "推理",
+            "编写", "生成", "计划", "分析", "设计", "优化", "财务", "Excel",
+            "创建", "构建", "开发", "实现", "解释", "推理", "Wasm", "插件",
             "write", "generate", "plan", "analyze", "design", "optimize",
             "create", "build", "develop", "implement", "explain", "reason"
         ]
@@ -81,14 +95,20 @@ class ModelRouter:
         Raises:
             ValueError: 当没有可用的 Provider 时
         """
-        # 强制指定 Provider（用于测试或特殊场景）
+        # 强制指定 Provider 或 cognitive_mode 覆盖
         force_provider = kwargs.get("force_provider")
+        cfg = _load_cognitive_config()
+        mode = (cfg.get("cognitive_mode") or "dual").lower()
+        if mode == "edge" and self.local_adapter:
+            return self.local_adapter
+        if mode == "cloud" and self.qwen_adapter:
+            return self.qwen_adapter
         if force_provider == "qwen" and self.qwen_adapter:
             return self.qwen_adapter
         if force_provider == "local" and self.local_adapter:
             return self.local_adapter
         
-        # 根据任务复杂度路由
+        # 大小脑动态路由（dual 模式）
         if task_type == TaskComplexity.SIMPLE:
             # 简单任务：优先使用本地小模型（7B/14B）
             if self.prefer_local_for_simple and self.local_adapter:

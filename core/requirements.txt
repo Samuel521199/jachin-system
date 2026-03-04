@@ -1,4 +1,4 @@
-# Jachin Nexus Layer 2 - v5.0 极简依赖 (The Zero-Friction Edition)
+# Jachin Nexus Layer 2 - v8.0 极简依赖 (The Singularity OS)
 # 仅保留契合轻量边缘计算的核心包，已废弃 Dapr/Ray/Qdrant/PostgreSQL
 
 # HTTP
@@ -8,6 +8,7 @@ httpx>=0.25.0
 openai>=1.0.0
 
 # CLI & 终端
+click>=8.0.0
 rich>=13.0.0
 
 # WASM 物理沙箱
@@ -24,3 +25,21 @@ dashscope>=1.17.0
 # 工具
 pyyaml>=6.0.1
 aiofiles>=23.2.1
+
+# v8.0 向量检索 (Quantum Memory + Semantic Router)
+lancedb>=0.3.0
+pyarrow>=14.0.0
+sentence-transformers>=2.2.0
+
+# v8.0 语音感官 (Jachin Voice - STT & TTS)
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.14
+edge-tts>=6.1.0
+pygame>=2.5.0
+
+# v8.0 The Singularity OS
+litellm>=1.0.0
+websockets>=12.0
+pvporcupine>=3.0.0
+opentelemetry-api>=1.20.0
+aiosqlite>=0.19.0

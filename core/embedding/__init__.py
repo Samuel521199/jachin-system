@@ -1,0 +1,160 @@
+"""
+Jachin Nexus v8.0 - 可插拔向量引擎 (Pluggable Vector Engine)
+
+策略模式双引擎：Cloud (OpenAI) / Edge (ONNX Local)
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
+
+from rich.console import Console
+
+logger = logging.getLogger(__name__)
+console = Console()
+
+_CONFIG_PATH = Path.home() / ".jachin" / "nexus_config.json"
+_DEFAULT_EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 / text-embedding-3-small
+
+
+def _load_embedding_config() -> dict[str, Any]:
+    """从 ~/.jachin/nexus_config.json 读取 embedding 配置"""
+    if not _CONFIG_PATH.exists():
+        return {"embedding_mode": "cloud"}
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        emb = data.get("embedding")
+        if isinstance(emb, dict):
+            return {"embedding_mode": emb.get("embedding_mode", "cloud"), **emb}
+        mode = data.get("embedding_mode", "cloud")
+        return {"embedding_mode": mode}
+    except Exception as e:
+        logger.warning("读取 nexus_config.json 失败: %s，使用默认 cloud 模式", e)
+        return {"embedding_mode": "cloud"}
+
+
+class BaseEmbedder(ABC):
+    """Embedding 抽象基类"""
+
+    @abstractmethod
+    async def embed_text(self, text: str) -> list[float]:
+        """将文本转换为向量。"""
+        ...
+
+    @property
+    def dimension(self) -> int:
+        """向量维度"""
+        return _DEFAULT_EMBEDDING_DIM
+
+
+class OpenAIEmbedder(BaseEmbedder):
+    """极速云端核：调用 OpenAI / 兼容 API 生成向量"""
+
+    def __init__(self, model: str = "text-embedding-3-small", api_key: str | None = None) -> None:
+        self.model = model
+        self._client = None
+        self._api_key = api_key
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            from openai import OpenAI
+            self._client = OpenAI(api_key=self._api_key)
+        return self._client
+
+    async def embed_text(self, text: str) -> list[float]:
+        """调用 OpenAI Embeddings API"""
+        try:
+            client = self._get_client()
+            loop = asyncio.get_event_loop()
+            r = await loop.run_in_executor(
+                None,
+                lambda: client.embeddings.create(model=self.model, input=text),
+            )
+            return r.data[0].embedding
+        except Exception as e:
+            logger.warning("OpenAI Embedding 失败: %s", e)
+            return []
+
+    @property
+    def dimension(self) -> int:
+        if self.model == "text-embedding-3-small":
+            return 1536
+        if self.model == "text-embedding-3-large":
+            return 3072
+        return 1536
+
+
+class ONNXEmbedder(BaseEmbedder):
+    """深渊边缘核：本地 sentence-transformers / ONNX，断网可用"""
+
+    DEFAULT_MODEL = "all-MiniLM-L6-v2"  # ~90MB，384 维，可离线
+
+    def __init__(self, model_path: str | Path | None = None) -> None:
+        self.model_path = Path(model_path) if model_path else None
+        self._model = None
+
+    def _ensure_loaded(self) -> bool:
+        """懒加载：sentence-transformers（支持 ONNX 后端若已安装 onnxruntime）"""
+        if self._model is not None:
+            return True
+        try:
+            import onnxruntime
+        except ImportError:
+            logger.info("onnxruntime 未安装。可选: pip install onnxruntime 获得更轻量推理")
+            console.print("[dim]💡 安装 onnxruntime 可获得更轻量推理: pip install onnxruntime[/dim]")
+
+        try:
+            from sentence_transformers import SentenceTransformer
+            model_name = str(self.model_path) if self.model_path and self.model_path.exists() else self.DEFAULT_MODEL
+            self._model = SentenceTransformer(model_name)
+            return True
+        except ImportError:
+            console.print(
+                "[red]⚠ Edge 引擎需要 sentence-transformers。请执行: pip install sentence-transformers[/red]"
+            )
+            return False
+
+    async def embed_text(self, text: str) -> list[float]:
+        """本地推理"""
+        if not self._ensure_loaded():
+            return []
+        try:
+            loop = asyncio.get_event_loop()
+            emb = await loop.run_in_executor(None, lambda: self._model.encode(text))
+            return emb.tolist() if hasattr(emb, "tolist") else list(emb)
+        except Exception as e:
+            logger.exception("Edge Embedding 失败: %s", e)
+            return []
+
+    @property
+    def dimension(self) -> int:
+        return 384  # all-MiniLM-L6-v2
+
+
+def get_embedder(config: dict[str, Any] | None = None) -> BaseEmbedder:
+    """
+    工厂函数：根据配置返回对应 Embedder 实例。
+
+    Args:
+        config: 若为 None，则从 ~/.jachin/nexus_config.json 读取
+
+    Returns:
+        OpenAIEmbedder 或 ONNXEmbedder
+    """
+    if config is None:
+        cfg = _load_embedding_config()
+    else:
+        cfg = config
+
+    mode = (cfg.get("embedding_mode") or "cloud").lower()
+    if mode == "local" or mode == "edge":
+        return ONNXEmbedder(model_path=cfg.get("onnx_model_path"))
+    # 默认 cloud
+    return OpenAIEmbedder(
+        model=cfg.get("openai_model", "text-embedding-3-small"),
+        api_key=cfg.get("openai_api_key"),
+    )

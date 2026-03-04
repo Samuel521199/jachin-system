@@ -1,6 +1,6 @@
 # Jachin Nexus 文档
 
-**版本**: v5.0 (The Zero-Friction Edition)
+**版本**: v8.0 (The Singularity OS)
 
 ---
 

@@ -1,5 +1,8 @@
 # Qwen API 架构设计文档
 
+> **v8.0 统一**：本设计已并入 **可插拔认知引擎 (Pluggable Cognitive Engines)**。  
+> 详见 `docs/whitepaper/PLUGGABLE_COGNITIVE_ENGINES.md`。以下为历史实现细节，供扩展参考。
+
 ## 概述
 
 本文档描述了 Jachin-System 中 Qwen API 的架构设计，包括多地域支持、多模态调用、工具调用等功能。

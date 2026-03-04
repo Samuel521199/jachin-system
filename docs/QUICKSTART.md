@@ -1,6 +1,6 @@
-# Jachin Nexus v5.0 快速开始
+# Jachin Nexus v8.0 快速开始
 
-**版本**: v5.0 | **最后更新**: 2026-03
+**版本**: v8.0 (The Singularity OS) | **最后更新**: 2026-02
 
 ---
 
@@ -30,7 +30,7 @@
 
 - Python 3.10+
 - Node.js 18+（桌面端）
-- 环境变量：`QWEN_API_KEY` 或 `LOCAL_LLM_URL`（LLM 可选）
+- 环境变量：`DASHSCOPE_API_KEY`（优先）或 `QWEN_API_KEY`；`~/.jachin/nexus_config.json` 中 `llm_keys.dashscope`；LLM 默认 Ollama `localhost:11434`
 
 ---
 

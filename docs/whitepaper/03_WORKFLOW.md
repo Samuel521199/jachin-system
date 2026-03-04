@@ -1,7 +1,7 @@
 # 03 — 业务流程 (The Workflow)
 
 **文档类型**: 白皮书 · 业务流程  
-**版本**: v6.0 (The Neural Bus Edition)
+**版本**: v8.0 (The Singularity OS)
 
 ---
 

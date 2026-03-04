@@ -1,7 +1,7 @@
 # IM 网关规格 — 进化战役 2：无处不在的躯体
 
-**版本**: 2.0 (v6.0 Universal Message Adapter)  
-**状态**: 已实现 (Telegram/飞书)；v6.0 扩展全渠道  
+**版本**: v8.0 (The Singularity OS)
+**状态**: 已实现 (Telegram/飞书)；v8.0 全渠道 Universal Message Adapter
 **定位**: Universal Message Adapter — 全渠道统一适配，让用户随时随地发消息即可让内网边缘机器干活
 
 ---

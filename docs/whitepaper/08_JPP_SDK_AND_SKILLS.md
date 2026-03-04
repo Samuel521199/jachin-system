@@ -1,7 +1,7 @@
 # 08 — JPP 与技能生态 (三轨道技能体系)
 
 **文档类型**: 白皮书 · 技能生态规范  
-**版本**: v6.0 (The Neural Bus Edition)
+**版本**: v8.0 (The Singularity OS)
 
 ---
 
@@ -9,7 +9,7 @@
 
 **“Write Once, Run Everywhere, Earn Crypto.”**
 
-Jachin Nexus v6.0 采用**三轨道技能体系**，彻底打破“万物皆需编译 Wasm”的傲慢设定：
+Jachin Nexus v8.0 采用**三轨道技能体系**，彻底打破“万物皆需编译 Wasm”的傲慢设定：
 
 | 轨道 | 形态 | 信任级别 | 用途 |
 |------|------|----------|------|
@@ -70,9 +70,19 @@ Jachin Nexus v6.0 采用**三轨道技能体系**，彻底打破“万物皆需�
 * **jachin-plugin-sdk-python**: `@jachin_plugin` 装饰器，`make build` 一键编译为 Wasm。
 * **上传**: 将 `plugin.wasm` + `plugin.json` 上传至云端商城。
 
+### 4.4 去中心化编译器技能 (The Forge Compiler)
+
+**`core:forge_compiler`** 是一个特殊的官方重型技能，允许边缘节点**消耗本地 CPU** 将 Python 脚本一键编译为 Wasm，减轻 Layer 1 云端压力。
+
+* **定位**: 边缘侧编译，无需云端算力。
+* **输入**: Python 源码路径（位于 `~/.jachin/workspace/` 内）。
+* **输出**: 编译后的 `.wasm` 与 `plugin.json`，可直接写入 `skills_repo/`。
+
+企业部署时，可在边缘节点本地完成技能编译与热加载，无需依赖云端 Forge 服务。
+
 ---
 
-## 五、 v6.0 废弃声明
+## 五、 v8.0 废弃声明
 
 1. **❌ 废弃“万物皆 Wasm”**: 轨道 A/B 与轨道 C 并存。
 2. **❌ 废弃原生脚本裸跑**: 不受信任的第三方代码仍必须通过 Wasm 沙箱；MCP 与 SKILL.md 为用户可控的高信任扩展。

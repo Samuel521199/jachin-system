@@ -14,7 +14,7 @@ from .call_types import (
 
 
 class BaseLLMProvider(ABC):
-    """LLM Provider 抽象基类"""
+    """LLM Provider 抽象基类（v6.0 可插拔认知引擎 BaseCognitiveEngine）"""
     
     @abstractmethod
     async def chat(
@@ -317,3 +317,7 @@ class BaseLLMProvider(ABC):
             CallType.DOCUMENT: False,
         }
         return support_map.get(call_type, False)
+
+
+# v6.0 类型别名：可插拔认知引擎
+BaseCognitiveEngine = BaseLLMProvider

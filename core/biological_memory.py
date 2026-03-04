@@ -1,7 +1,7 @@
 """
 Jachin Nexus Layer 2 - 生物学记忆管线 (Biological Memory Pipeline)
 
-v5.0 划时代设计：像人一样睡觉、遗忘和成长。
+v8.0 划时代设计：像人一样睡觉、遗忘和成长。
 三层记忆：海马体（短期）→ 梦境引擎（压缩提纯）→ 大脑皮层（核心标识）。
 """
 from __future__ import annotations
@@ -62,6 +62,7 @@ def add_short_term(role: str, content: str, meta: dict[str, Any] | None = None) 
     """
     海马体：无损记录一次交互。
     存活周期 24 小时，供梦境引擎提纯。
+    v8.0 双写：同时写入 LanceDB memories（is_consolidated=False），供 Dream Weaver 重塑。
     """
     import json
     content = (content or "").strip()
@@ -80,6 +81,14 @@ def add_short_term(role: str, content: str, meta: dict[str, Any] | None = None) 
         )
         conn.commit()
         conn.close()
+    except Exception:
+        pass
+
+    # v8.0 Dream Weaver：双写至 LanceDB 记忆碎片（异步不阻塞）
+    try:
+        from core.memory_store import add_memory_fragment
+        fragment_text = f"[{role}] {content}"
+        add_memory_fragment(fragment_text, is_consolidated=False)
     except Exception:
         pass
 

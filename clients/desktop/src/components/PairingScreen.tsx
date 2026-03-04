@@ -227,7 +227,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
               Ensure Nexus Console is running at {baseUrl}
             </p>
             <button
-              onClick={startPairing}
+              onClick={() => void startPairing()}
               className="px-6 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 transition-colors"
             >
               Retry
@@ -237,7 +237,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
 
         {step === "request" && (
           <button
-            onClick={startPairing}
+            onClick={() => void startPairing()}
             className="mt-8 px-6 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 transition-colors text-sm"
           >
             Start pairing

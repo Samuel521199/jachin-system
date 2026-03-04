@@ -1,7 +1,7 @@
 """
 Jachin Nexus Layer 2 - 梦境引擎 (The Dream Sequence)
 
-v5.0 划时代设计：在凌晨 3 点或设备闲置时，对海马体短期日志执行「梦境回放」，
+v8.0 划时代设计：在凌晨 3 点或设备闲置时，对海马体短期日志执行「梦境回放」，
 提纯出高密度核心记忆，写入大脑皮层。像人一样睡觉、遗忘和成长。
 """
 from __future__ import annotations

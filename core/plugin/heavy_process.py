@@ -247,6 +247,18 @@ class HeavyProcessRunner:
             [str(_project_root)] + env.get("PYTHONPATH", "").split(os.pathsep)
         )
 
+        # v6.0 安全红线：插件入口必须位于 ~/.jachin/workspace/ 或 skills_repo/ 下
+        workspace = (Path.home() / ".jachin" / "workspace").resolve()
+        skills_repo = (_project_root / "skills_repo").resolve()
+        entry_resolved = entry_path.resolve()
+        if not (
+            str(entry_resolved).startswith(str(workspace))
+            or str(entry_resolved).startswith(str(skills_repo))
+        ):
+            raise RuntimeError(
+                f"SecurityException: Wasm/Native Core sandbox violation. "
+                f"Plugin entry {entry_path} must be under ~/.jachin/workspace/ or skills_repo/"
+            )
         cwd = str(entry_path.parent)
         cmd = [sys.executable, str(entry_path), "--socket", self._socket_path]
 
