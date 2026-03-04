@@ -59,6 +59,8 @@ core/
 ├── daemon.py                 # 守护进程主循环 (心跳 + dream_scheduler + Layer 3 WS)
 ├── cron_thinker.py           # 生物钟：每 30min 主动环顾
 ├── agent_loop.py             # ReAct 循环 (v8.0 Nexus Hook Pipeline)
+├── compaction_hook.py        # v8.0 神盾：Token 超载时时空折叠
+├── personas.py               # v8.0 Cognitive Swarm：Persona 注册表（Handoff 接力）
 ├── event_bus.py              # 全息感官总线 (Session Multiplexing)
 ├── session_manager.py        # v8.0 会话隔离器 (session_id → Actor)
 ├── hooks_pipeline.py         # v8.0 洋葱中间件 (pre_intent/pre_llm/post_tool/pre_response)
@@ -170,7 +172,12 @@ skills_repo/
   "llm": {
     "cognitive_mode": "dual",
     "edge_model": "qwen2.5:0.5b",
-    "cloud_model": "qwen-max"
+    "cloud_model": "qwen-max",
+    "max_attempts": 2,
+    "fallback_models": ["ollama/qwen2.5"],
+    "timeout_seconds": 60,
+    "compaction_threshold": 6000,
+    "compaction_model": "ollama/qwen2.5"
   },
   "llm_keys": {
     "dashscope": "sk-xxx",
@@ -186,6 +193,11 @@ skills_repo/
 |------|------|
 | `embedding.embedding_mode` | `"cloud"` = ☁️ OpenAI API（默认）；`"local"` / `"edge"` = 🛡️ 本地 ONNX 断网可用 |
 | `llm.cognitive_mode` | `"dual"` = 大小脑动态路由；`"edge"` = 仅小脑；`"cloud"` = 仅大脑 |
+| `llm.max_attempts` | 神盾：LLM 调用重试次数（默认 2） |
+| `llm.fallback_models` | 神盾：降级模型列表，主模型失败时依次尝试 |
+| `llm.timeout_seconds` | 神盾：单次 LLM 调用超时（秒） |
+| `llm.compaction_threshold` | 神盾：超此 token 数触发时空折叠（默认 6000） |
+| `llm.compaction_model` | 神盾：摘要生成用模型（默认 ollama/qwen2.5） |
 | `llm_keys.dashscope` | 阿里云 DashScope API Key（瀑布流第 2 优先级） |
 | `llm_keys.openai` | OpenAI API Key（可选） |
 | `swarm.heavy_tools` | v8.0 Edge Mesh 重载工具列表，需外包至虫群节点 |

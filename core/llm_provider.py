@@ -149,6 +149,25 @@ def _model_needs_key(model: str) -> tuple[bool, str | None]:
     return True, "OPENAI_API_KEY"
 
 
+def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[str], float]:
+    """
+    读取重试与降级配置。
+    返回 (max_attempts, fallback_models, timeout_seconds)
+    """
+    cfg = config or _load_nexus_config()
+    llm = (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
+    max_attempts = int(llm.get("max_attempts", 2))
+    fallback = llm.get("fallback_models")
+    if isinstance(fallback, list):
+        fallback_models = [str(m).strip() for m in fallback if m]
+    elif isinstance(fallback, str) and fallback.strip():
+        fallback_models = [fallback.strip()]
+    else:
+        fallback_models = [_OLLAMA_FALLBACK]
+    timeout = float(llm.get("timeout_seconds", 60.0))
+    return max_attempts, fallback_models, timeout
+
+
 def _resolve_model_with_fallback(model: str) -> str:
     """若云模型无 Key，回退到 ollama/qwen2.5。使用 _get_openai_key_from_sources 多源检测"""
     needs, env_key = _model_needs_key(model)
@@ -198,30 +217,47 @@ class LiteLLMEngine:
     ) -> str | dict[str, Any]:
         """
         调用 litellm.acompletion，返回纯文本或 tool_calls 字典。
+        v8.0 神盾：for attempt 重试 + fallback_models 降级灾备。
         """
         _inject_api_keys()
-        try:
-            kwargs_chat: dict[str, Any] = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            if tools:
-                kwargs_chat["tools"] = tools
+        max_attempts, fallback_models, timeout = _get_retry_config()
+        models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
+        last_error: Exception | None = None
 
-            response = await litellm.acompletion(**kwargs_chat)
-            choice = response.choices[0] if response.choices else None
-            if not choice:
-                return ""
+        for attempt in range(max_attempts):
+            model = models_to_try[min(attempt, len(models_to_try) - 1)]
+            try:
+                kwargs_chat: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "timeout": timeout,
+                }
+                if tools:
+                    kwargs_chat["tools"] = tools
 
-            msg = choice.message
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                return {"content": msg.content or "", "tool_calls": msg.tool_calls}
-            return (msg.content or "").strip()
-        except Exception as e:
-            logger.exception("[LiteLLM] 调用异常 model=%s: %s", self.model_name, e)
-            raise
+                response = await litellm.acompletion(**kwargs_chat)
+                choice = response.choices[0] if response.choices else None
+                if not choice:
+                    return ""
+
+                msg = choice.message
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    return {"content": msg.content or "", "tool_calls": msg.tool_calls}
+                return (msg.content or "").strip()
+            except Exception as e:
+                last_error = e
+                if attempt < max_attempts - 1 and len(models_to_try) > 1:
+                    next_model = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                    console.print(
+                        f"[yellow][⚠ 降级策略][/yellow] 主模型异常，尝试第 {attempt + 2} 次呼叫备用算力: [cyan]{next_model}[/cyan]"
+                    )
+                    logger.warning("[LiteLLM] attempt=%s model=%s 失败: %s，降级至 %s", attempt + 1, model, e, next_model)
+                else:
+                    logger.exception("[LiteLLM] 调用异常 model=%s: %s", model, e)
+                    raise last_error
+        raise last_error or RuntimeError("LLM 调用失败")
 
     async def generate_response_stream(
         self,
@@ -233,33 +269,49 @@ class LiteLLMEngine:
     ) -> str:
         """
         v8.0 流式神经：stream=True 调用 litellm.acompletion，逐 token 回调并返回完整响应。
-        ReAct 需完整输出解析 Action，故内存拼接后返回；chunk_callback 用于实时推送到 UI。
+        v8.0 神盾：for attempt 重试 + fallback_models 降级灾备。
         """
         _inject_api_keys()
-        full_content: list[str] = []
-        try:
-            kwargs_chat: dict[str, Any] = {
-                "model": self.model_name,
-                "messages": messages,
-                "stream": True,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
+        max_attempts, fallback_models, timeout = _get_retry_config()
+        models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
+        last_error: Exception | None = None
 
-            response = await litellm.acompletion(**kwargs_chat)
-            async for chunk in response:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice or not hasattr(choice, "delta"):
-                    continue
-                delta = getattr(choice.delta, "content", None) or ""
-                if delta:
-                    full_content.append(delta)
-                    if chunk_callback:
-                        await chunk_callback(delta)
-            return "".join(full_content).strip()
-        except Exception as e:
-            logger.exception("[LiteLLM] 流式调用异常 model=%s: %s", self.model_name, e)
-            raise
+        for attempt in range(max_attempts):
+            model = models_to_try[min(attempt, len(models_to_try) - 1)]
+            full_content: list[str] = []
+            try:
+                kwargs_chat: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "timeout": timeout,
+                }
+
+                response = await litellm.acompletion(**kwargs_chat)
+                async for chunk in response:
+                    choice = chunk.choices[0] if chunk.choices else None
+                    if not choice or not hasattr(choice, "delta"):
+                        continue
+                    delta = getattr(choice.delta, "content", None) or ""
+                    if delta:
+                        full_content.append(delta)
+                        if chunk_callback:
+                            await chunk_callback(delta)
+                return "".join(full_content).strip()
+            except Exception as e:
+                last_error = e
+                if attempt < max_attempts - 1 and len(models_to_try) > 1:
+                    next_model = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                    console.print(
+                        f"[yellow][⚠ 降级策略][/yellow] 主模型异常，尝试第 {attempt + 2} 次呼叫备用算力: [cyan]{next_model}[/cyan]"
+                    )
+                    logger.warning("[LiteLLM] 流式 attempt=%s model=%s 失败: %s，降级至 %s", attempt + 1, model, e, next_model)
+                else:
+                    logger.exception("[LiteLLM] 流式调用异常 model=%s: %s", model, e)
+                    raise last_error
+        raise last_error or RuntimeError("LLM 流式调用失败")
 
 
 class CognitiveEngineFactory:

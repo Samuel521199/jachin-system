@@ -501,7 +501,7 @@
 |------|------|------|
 | 唤醒词 | 🟡 | Porcupine 设计完成，未与 voice_organ 打通 |
 | 桌面精灵 | 🟡 | SensoryOverlay 已打通 HITL，思考光环可增强 |
-| Compaction | 🟡 | 未实现 |
+| Compaction | ✅ | compaction_hook，HOOK_BEFORE_LLM_THINK 时空折叠 |
 | IM 渠道扩展 | 🟡 | Discord/Slack/WhatsApp 待实现 |
 
 ---

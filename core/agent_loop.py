@@ -29,6 +29,7 @@ from core.hooks_pipeline import (
     global_hooks,
 )
 import core.swarm_hook  # noqa: F401 — 注册 Edge Mesh Swarm Hook
+import core.compaction_hook  # noqa: F401 — 注册神盾 Compaction Hook
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -47,6 +48,7 @@ MOCK_TOOLS = [
     {"label": "get_weather", "type": "mock", "desc": "查询天气"},
     {"label": "read_local_file", "type": "mock", "desc": "读取本地文件"},
     {"label": "video_encode", "type": "mock", "desc": "视频转码（重载任务，由 Edge Mesh 虫群节点执行）"},
+    {"label": "core:handoff", "type": "handoff", "desc": "当遇到超出当前人设专业领域的问题时，移交控制权给更专业的专家。可选: architect, researcher, default"},
 ]
 
 
@@ -85,10 +87,17 @@ def _extract_skills_from_blueprint(ast_json: dict) -> list[dict[str, Any]]:
     return skills
 
 
-def _build_system_prompt(skills: list[dict[str, Any]], use_mock: bool = False) -> str:
-    """动态组装系统 Prompt：核心记忆 + 人设 + 技能武器列表（无技能时用 Mock 工具）"""
+def _build_system_prompt(
+    skills: list[dict[str, Any]],
+    use_mock: bool = False,
+    persona_name: str = "default",
+) -> str:
+    """动态组装系统 Prompt：核心记忆 + 人设 + 技能武器列表。persona_name 供 Handoff 切换。"""
     core_mem = get_core_memory_for_prompt(limit=20)
     core_prefix = f"{core_mem}\n\n" if core_mem else ""
+
+    from core.personas import get_persona
+    persona_text = get_persona(persona_name)
 
     skill_md_list = [s for s in skills if s.get("type") == "skill_md"]
     wasm_list = [s for s in skills if s.get("type") != "skill_md"]
@@ -111,6 +120,10 @@ Action Input: target.txt
 或
 Action: core:shell_exec
 Action Input: ls -la
+
+或（当遇到硬核代码/架构问题超出能力时）
+Action: core:handoff
+Action Input: architect
 """
     elif use_mock or not skills:
         lines = []
@@ -126,6 +139,11 @@ Action Input: ls -la
 
 当需要列出目录、执行 ls 等命令时，使用：Action: core:shell_exec   Action Input: ls -la
 当需要读取文件时，使用：Action: core:fs_read   Action Input: <文件路径>"""
+        skills_desc += """
+
+## Cognitive Swarm 接力（Handoff）
+- core:handoff(expert_name) — 当遇到超出当前专业领域的问题时，移交控制权。可选: architect, researcher, default
+  示例：Action: core:handoff   Action Input: architect"""
         skills_desc += "\n\n当需要执行工具时，请输出：Action: <工具名>   Action Input: <参数>"
     else:
         lines = []
@@ -135,7 +153,7 @@ Action Input: ls -la
         skills_desc += "\n\n当需要执行技能时，请输出：Action: run <技能名称或序号>"
     skills_desc += "\n任务完成时，请输出：Final Answer: <最终回复>"
 
-    return f"""{core_prefix}你是一个高智商的 Jachin 边缘智能体。你可以自主思考。{skills_desc}
+    return f"""{core_prefix}{persona_text}{skills_desc}
 
 请严格使用 Thought, Action, Action Input, Observation 的格式进行思考和调用：
 1. Thought: 分析当前情况，决定下一步
@@ -212,6 +230,14 @@ def _parse_action(
             tool, inp = m.group(1).strip().lower(), (m.group(2) or "").strip()
             if tool in ("get_weather", "read_local_file", "video_encode"):
                 return {"type": "mock", "tool": tool, "input": inp}
+
+    # Action: core:handoff（Cognitive Swarm 接力）
+    if re.search(r"Action:\s*core:handoff\s*(?:\n|$)", text, re.IGNORECASE):
+        inp = ""
+        mi = re.search(r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))", text, re.DOTALL | re.IGNORECASE)
+        if mi:
+            inp = mi.group(1).strip()
+        return {"type": "handoff", "tool": "core:handoff", "input": inp or "architect"}
 
     # Action: core:fs_read / core:shell_exec（SKILL.md Native Core）
     for tool_id in ("core:fs_read", "core:shell_exec"):
@@ -299,7 +325,6 @@ async def _run_react_core(ctx: PipelineContext) -> None:
     on_step: Callable[[str, str, str], None] | None = ctx.metadata.get("_on_step")
     on_hitl_request: Callable[[str, str], None] | None = ctx.metadata.get("_on_hitl_request")
     messages = ctx.messages
-    system_prompt = ctx.system_prompt
 
     def _emit(step_type: str, content: str) -> None:
         _emit_step(step_type, content, on_step, ctx.run_id)
@@ -314,7 +339,7 @@ async def _run_react_core(ctx: PipelineContext) -> None:
             return
 
         on_chunk = ctx.metadata.get("_on_chunk")
-        response = await _get_llm_response(messages, system_prompt, chunk_callback=on_chunk)
+        response = await _get_llm_response(messages, ctx.system_prompt, chunk_callback=on_chunk)
         ctx.current_response = response
         add_memory("assistant", response)
         add_short_term("assistant", response, meta={"iteration": iteration})
@@ -345,6 +370,34 @@ async def _run_react_core(ctx: PipelineContext) -> None:
             add_memory("assistant", ans)
             ctx.final_answer = ans
             return
+
+        if parsed["type"] == "handoff":
+            expert_name = (parsed.get("input") or "architect").strip().lower() or "architect"
+            _emit("action", f"core:handoff {expert_name}")
+
+            from core.personas import PERSONA_REGISTRY, get_persona
+
+            if expert_name not in PERSONA_REGISTRY:
+                expert_name = "architect"
+            ctx.system_prompt = _build_system_prompt(skills, use_mock, persona_name=expert_name)
+            ctx.metadata["_current_persona"] = expert_name
+
+            display_name = {"architect": "资深架构师", "researcher": "情报分析师", "default": "全能助理"}.get(expert_name, expert_name)
+            observation = f"[System] 灵魂传输完成。你现在是 {display_name}。请以新身份继续完成用户的原始请求。"
+            console.print(
+                f"[bold magenta][🔄 Handoff][/bold magenta] 虫群接力触发！"
+                f"当前人格已剥离，【{display_name}】已接管大脑控制权。"
+            )
+            ctx.observation = observation
+            _emit("observation", observation)
+            add_memory("system", f"Observation: {observation}")
+            add_short_term("system", f"Observation: {observation}", meta={"handoff": expert_name})
+            messages.append({"role": "assistant", "content": response})
+            messages.append({
+                "role": "user",
+                "content": f"Observation: {observation}\n\n请以【{display_name}】的身份继续思考，或给出 Final Answer:",
+            })
+            continue
 
         if parsed["type"] == "native":
             tool = parsed.get("tool", "")

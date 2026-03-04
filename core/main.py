@@ -160,13 +160,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("Shutting down Jachin-System v5.0...")
+    logger.info("Shutting down Jachin Nexus v0.8.0 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="3.2.0",
+    version="0.8.0",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码
