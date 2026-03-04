@@ -30,7 +30,7 @@ git remote add origin https://github.com/你的用户名/jachin-system.git
 git push -u origin main --force
 
 # 推送标签（替换为 CHANGELOG 中的当前版本）
-git push origin v0.5.6 --force
+git push origin v0.6.1 --force
 ```
 
 ### 3. 使用脚本（已配置默认 Samuel521199）
@@ -52,5 +52,5 @@ git push origin v0.2.0 --force
 ## 版本信息
 
 - **分支**: main（若远程为 master 则需先迁移）
-- **标签**: 见 CHANGELOG.md（当前 v0.5.x）
+- **标签**: 见 CHANGELOG.md（当前 v0.6.1）
 - **更新日志**: CHANGELOG.md

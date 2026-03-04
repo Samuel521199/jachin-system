@@ -15,7 +15,20 @@ import asyncio
 import json
 
 from core.config import settings
-from core.dapr.state_store import StateStore
+
+# v5.0: Dapr StateStore 已废弃，使用极简内存存储
+_console_state: dict = {}
+
+
+class _StateStoreStub:
+    """v5.0 极简状态存储（替代 Dapr StateStore）"""
+
+    async def get(self, key: str):
+        return _console_state.get(key)
+
+    async def save(self, key: str, value):
+        _console_state[key] = value
+
 
 logger = logging.getLogger(__name__)
 
@@ -299,28 +312,8 @@ class MemorySearchResult(BaseModel):
 
 @router.get("/memory/search")
 async def search_memory(q: str = Query(..., min_length=1)):
-    """记忆搜索（需 Qdrant + Embedding）"""
-    try:
-        from core.memory import vector_store
-        from core.brain.llm.factory import LLMProviderFactory
-
-        if vector_store is None or not vector_store.client:
-            return {"results": [], "message": "Qdrant 未就绪"}
-
-        llm = LLMProviderFactory.create_provider(settings.LLM_PROVIDER)
-        emb = await llm.embed([q])
-        if not emb:
-            return {"results": []}
-        results = await vector_store.search(query_embedding=emb[0], limit=10)
-        return {
-            "results": [
-                {"id": r["id"], "text": r["text"], "score": r["score"], "metadata": r.get("metadata")}
-                for r in results
-            ]
-        }
-    except Exception as e:
-        logger.warning("Memory search failed: %s", e)
-        return {"results": [], "message": str(e)}
+    """v5.0: Qdrant 已废弃，记忆由 SQLite 生物学记忆管线接管"""
+    return {"results": [], "message": "v5.0 已废弃 Qdrant，请使用 Layer 2 生物学记忆 (core/biological_memory)"}
 
 
 class BatchDeleteRequest(BaseModel):
@@ -329,46 +322,20 @@ class BatchDeleteRequest(BaseModel):
 
 @router.delete("/memory/{memory_id}")
 async def delete_memory(memory_id: str):
-    """删除指定记忆（单条遗忘）"""
-    try:
-        from core.memory import vector_store
-        if vector_store is None or not vector_store.client:
-            return {"ok": False, "message": "Qdrant 未就绪"}
-        await vector_store.delete(point_id=memory_id)
-        return {"ok": True}
-    except Exception as e:
-        logger.warning("Memory delete failed: %s", e)
-        return {"ok": False, "message": str(e)}
+    """v5.0: Qdrant 已废弃"""
+    return {"ok": False, "message": "v5.0 已废弃 Qdrant 向量记忆"}
 
 
 @router.post("/memory/batch-delete")
 async def batch_delete_memory(body: BatchDeleteRequest):
-    """批量删除记忆（框选遗忘）"""
-    if not body.ids:
-        return {"ok": True, "deleted": 0}
-    try:
-        from core.memory import vector_store
-        if vector_store is None or not vector_store.client:
-            return {"ok": False, "message": "Qdrant 未就绪", "deleted": 0}
-        for mid in body.ids:
-            await vector_store.delete(point_id=mid)
-        return {"ok": True, "deleted": len(body.ids)}
-    except Exception as e:
-        logger.warning("Memory batch delete failed: %s", e)
-        return {"ok": False, "message": str(e), "deleted": 0}
+    """v5.0: Qdrant 已废弃"""
+    return {"ok": False, "message": "v5.0 已废弃 Qdrant 向量记忆", "deleted": 0}
 
 
 @router.get("/memory/count")
 async def get_memory_count():
-    """获取记忆数量（供 Void 节点数）"""
-    try:
-        from core.memory import vector_store
-        if vector_store is None or not vector_store.client:
-            return {"count": 0}
-        info = vector_store.client.get_collection(vector_store.default_collection)
-        return {"count": info.points_count or 0}
-    except Exception:
-        return {"count": 0}
+    """v5.0: Qdrant 已废弃，返回 0"""
+    return {"count": 0}
 
 
 # --- 模型列表与切换 ---
@@ -380,7 +347,7 @@ async def list_models():
         ModelItem(id="qwen-plus", name="Qwen-Plus", description="速度快"),
         ModelItem(id=settings.LLM_MODEL, name=settings.LLM_MODEL, description="当前"),
     ]
-    store = StateStore()
+    store = _StateStoreStub()
     current = await store.get("console/current_model") or settings.LLM_MODEL
     return ModelsResponse(models=models, current=current)
 
@@ -391,8 +358,8 @@ class SetModelRequest(BaseModel):
 
 @router.post("/models/current")
 async def set_current_model(body: SetModelRequest):
-    """切换当前模型（存到 StateStore，实际切换需与 LLM 模块联动）"""
-    store = StateStore()
+    """切换当前模型（存到本地状态，实际切换需与 LLM 模块联动）"""
+    store = _StateStoreStub()
     await store.save("console/current_model", body.model_id)
     return {"ok": True, "current": body.model_id}
 
@@ -409,7 +376,7 @@ class SetStrategyRequest(BaseModel):
 @router.get("/inference/strategy")
 async def get_inference_strategy():
     """获取当前推理策略（节能/默认/高性能/上帝模式）"""
-    store = StateStore()
+    store = _StateStoreStub()
     mode = await store.get(INFERENCE_STRATEGY_KEY) or "default"
     if mode not in VALID_STRATEGIES:
         mode = "default"
@@ -422,7 +389,7 @@ async def set_inference_strategy(body: SetStrategyRequest):
     mode = (body.mode or "default").lower()
     if mode not in VALID_STRATEGIES:
         mode = "default"
-    store = StateStore()
+    store = _StateStoreStub()
     await store.save(INFERENCE_STRATEGY_KEY, mode)
     return {"ok": True, "mode": mode, "label": _strategy_label(mode)}
 

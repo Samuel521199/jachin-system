@@ -201,15 +201,7 @@ def test_with_executor(plugin_executor):
     # 使用插件执行器
 ```
 
-**`ray_init`**: 初始化 Ray（模块级别）
-```python
-@pytest.fixture(scope="module", autouse=True)
-def ray_init():
-    if not ray.is_initialized():
-        ray.init(local_mode=True)
-    yield
-    ray.shutdown()
-```
+**v5.0 说明**：已废弃 Ray，测试使用 WASM 沙箱与 Agent Loop。
 
 ## 性能监控
 
@@ -276,8 +268,7 @@ async def test_async_function():
 
 ```python
 @pytest.mark.asyncio
-@pytest.mark.requires_ray
-async def test_integration(plugin_executor, temp_plugin_dirs, ray_init):
+async def test_integration(plugin_executor, temp_plugin_dirs):
     """集成测试"""
     # 1. 准备测试数据
     plugin_id = "com.test.plugin"
@@ -294,7 +285,6 @@ async def test_integration(plugin_executor, temp_plugin_dirs, ray_init):
 ### 常用标记
 
 - `@pytest.mark.asyncio`: 异步测试
-- `@pytest.mark.requires_ray`: 需要 Ray 集群
 - `@pytest.mark.slow`: 慢速测试（可选）
 
 ### 运行特定标记的测试
@@ -303,8 +293,6 @@ async def test_integration(plugin_executor, temp_plugin_dirs, ray_init):
 # 只运行快速测试
 pytest tests/ -v -m "not slow"
 
-# 只运行需要 Ray 的测试
-pytest tests/ -v -m "requires_ray"
 ```
 
 ## 测试覆盖率
@@ -331,36 +319,26 @@ pytest tests/ --cov=core --cov-report=html --cov-report=term
 
 ## 常见问题
 
-### 1. Ray 未初始化
-
-**错误**: `Ray is not initialized`
-
-**解决**:
-```python
-import ray
-ray.init(local_mode=True)
-```
-
-### 2. 测试数据库连接失败
+### 1. 测试数据库连接失败
 
 **错误**: `无法连接到数据库`
 
-**解决**: 确保 PostgreSQL 服务已启动
+**解决**: v5.0 使用 SQLite (memory.db)，无需 PostgreSQL
 
-### 3. Mock LLM 不工作
+### 2. Mock LLM 不工作
 
 **错误**: `Mock LLM 返回 None`
 
 **解决**: 检查是否正确使用了 `@patch` 装饰器
 
-### 4. 性能测试失败
+### 3. 性能测试失败
 
 **错误**: `性能测试超时`
 
 **解决**: 
 - 检查系统资源
 - 增加超时时间
-- 检查 Ray 集群状态
+- 检查 Layer 2 守护进程
 
 ## 持续集成
 

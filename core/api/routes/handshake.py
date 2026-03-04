@@ -12,7 +12,8 @@ import json
 
 from core.registry.protocol import DeviceAnnounce
 from core.registry.registry import DeviceRegistry
-from core.dapr import PubSub
+
+# v5.0: Dapr PubSub 已废弃，设备握手改为 HTTP 直连
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ device_router = APIRouter(prefix="/api/v2/devices", tags=["devices"])
 
 # 初始化 DeviceRegistry
 registry = DeviceRegistry()
-pubsub = PubSub(pubsub_name="pubsub")
 
 
 @router.post("/announce")

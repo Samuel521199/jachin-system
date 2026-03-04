@@ -300,25 +300,5 @@ class SkillRunner(SkillRuntime):
             return False
     
     async def _update_usage_stats(self, skill_id: str) -> None:
-        """更新技能使用统计"""
-        try:
-            from sqlalchemy.ext.asyncio import AsyncSession
-            from sqlalchemy import select, update
-            from datetime import datetime
-            from core.memory.schema import get_db, Skill
-            
-            async for db in get_db():
-                try:
-                    result = await db.execute(
-                        select(Skill).where(Skill.skill_id == skill_id)
-                    )
-                    skill = result.scalar_one_or_none()
-                    
-                    if skill:
-                        skill.usage_count += 1
-                        skill.last_used_at = datetime.now()
-                        await db.commit()
-                finally:
-                    break
-        except Exception as e:
-            logger.warning(f"Failed to update usage stats for skill {skill_id}: {e}")
+        """v5.0: PostgreSQL 已废弃，使用统计改为内存或 SQLite（此处暂不实现）"""
+        pass

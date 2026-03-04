@@ -183,8 +183,10 @@ async def _resolve_provider():
     if not llm_provider:
         return None
     try:
-        from core.dapr.state_store import StateStore
-        store = StateStore()
+        # v5.0: Dapr StateStore 已废弃
+        class _Store:
+            async def get(self, k): return None
+        store = _Store()
         current_model = await store.get("console/current_model")
         if not current_model:
             current_model = getattr(settings, "LLM_MODEL", None) or "qwen-turbo"

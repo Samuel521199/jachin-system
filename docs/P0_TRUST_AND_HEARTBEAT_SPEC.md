@@ -1,9 +1,9 @@
 # P0 战役：信任链与心跳 — 战术规格
 
-**版本**: 1.0  
+**版本**: 2.0 (v6.0 生物钟扩展)  
 **状态**: 设计规范  
-**定位**: 补齐 P0 核心闭环中缺失的关键拼图  
-**推荐顺序**: 方向一（信任链）→ 方向二（心跳）
+**定位**: 补齐 P0 核心闭环；v6.0 增加生物钟 cron_thinker  
+**推荐顺序**: 方向一（信任链）→ 方向二（心跳）→ 方向三（生物钟）
 
 ---
 
@@ -145,6 +145,43 @@ weapon-vad.jmp  (ZIP 归档)
 | **心跳 API** | Layer 1 `cloud/nexus/src/app/api/v1/agents/heartbeat/route.ts` | 校验 token，更新 last_heartbeat，返回 blueprint、task、pending_message_ids |
 | **Console 前端** | `cloud/nexus/src/app/console/page.tsx` | 根据 last_heartbeat 渲染绿/灰 |
 | **结果回传** | Layer 1 `cloud/nexus/src/app/api/v1/agents/result/route.ts` | Agent 执行完成后 POST 结果，推回 TG/飞书 |
+
+---
+
+---
+
+# 📡 方向三：生物钟主动心跳 (cron_thinker) — v6.0 新增
+
+**当前实现**：Layer 2 每 10 秒云端心跳拉取，纯被动。
+
+**v6.0 增强**：增加**脱离云端的独立 cron_thinker 异步线程**，每 30 分钟主动环顾。
+
+## 3.1 设计目标
+
+- 扫描系统日志、读取未读邮件、发现异常时主动通过 IM 推送报警。
+- 可配置 `HEARTBEAT.md` 式任务清单，Agent 按清单检查。
+- 与 10s 云端心跳并行，互为补充。
+
+## 3.2 实现要点
+
+| 组件 | 位置 | 职责 |
+|------|------|------|
+| **cron_thinker** | Layer 2 `core/cron_thinker.py` | 每 30min 触发，读取 HEARTBEAT.md，调用 MCP/SKILL 工具扫描 |
+| **HEARTBEAT.md** | `~/.jachin/HEARTBEAT.md` | 用户可编辑的检查清单 |
+| **主动推送** | 通过 Layer 1 IM Callback | 发现异常时 POST 结果至用户绑定 IM |
+
+## 3.3 配置示例
+
+```yaml
+# ~/.jachin/cron_thinker_config.yaml (可选)
+interval_minutes: 30
+checks:
+  - type: log_scan
+    path: /var/log/syslog
+    pattern: "ERROR|CRITICAL"
+  - type: email_unread
+    mcp_tool: imap_unread
+```
 
 ---
 

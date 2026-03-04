@@ -1,7 +1,7 @@
-# 02 — 框架架构 (The Trinity)
+# 02 — 框架架构 (The Trinity + Neural Bus)
 
 **文档类型**: 白皮书 · 框架架构  
-**版本**: v5.0
+**版本**: v6.0
 
 ---
 
@@ -10,71 +10,101 @@
 Jachin Nexus 采用严格的“重云轻端”三位一体设计，彻底摒弃了上一代笨重的微服务网格。
 
 ```text
-Layer 1 (云端调度枢纽) ↔ Layer 2 (本地算力/沙箱引擎) ↔ Layer 3 (零感交互外壳)
+Layer 1 (云端调度枢纽) ↔ Layer 2 (神经中枢总线) ↔ Layer 3 (全息感知外壳)
 
 1. Layer 1: Jachin Nexus (数字孪生云端)
 定位: 免密、可视化、主导资产确权与指令下发的全局指挥大盘。
 
 特性: 绝对不存储边缘节点隐私记忆。它是边缘节点的“DNA 库”与“调度室”。
 
-核心组件: The Forge (图形化编排)、Fleet Management (舰队批量下发)、IM Gateway (跨网通信网关)。
+核心组件: The Forge (图形化编排)、Fleet Management (舰队批量下发)、Universal Message Adapter (全渠道 Webhook 统一适配)。
 
-数据底座: 依托 Supabase (Managed PostgreSQL)，负责统管全网设备心跳、AST 蓝图文件、JPP 插件元数据及跨网指令队列。
+数据底座: Supabase (Managed PostgreSQL)，统管全网设备心跳、AST 蓝图、JPP 插件元数据及跨网指令队列。
 
-2. Layer 2: Edge Agent (边缘守护引擎)
-定位: 极致轻量、具备自我意识与物理隔离防线的核心执行实体。
+2. Layer 2: Edge Agent (神经中枢总线)
+定位: 极度稳定、极度轻量的执行引擎。90% 能力下放给 Skills，自身永不崩溃。
 
-特性: 在后台静默运行，无需公网 IP。负责维持心跳、运行 ReAct 思考循环，并在 WASI 沙箱中狂飙算力。
+特性: 双轨制执行引擎 (MCP + SKILL.md + Wasm)、量子记忆 (Vector SQLite + 梦境)、自我修复、生物钟主动心跳。
 
-数据底座: 彻底废弃本地 Redis/PostgreSQL。采用极简单文件 SQLite (memory.db)，拔电即走，零安装成本。
+数据底座: SQLite (memory.db) + sqlite-vss/lancedb 扩展，单文件百万级 Token 语义检索。
 
-技术栈: 纯 Python 3.10+ (asyncio, httpx, openai) + wasmtime (底层沙箱) + sqlite3。
+技术栈: Python 3.10+ (asyncio, httpx, openai) + wasmtime + sqlite3 + MCP Client。
 
-3. Layer 3: Jachin Terminal (灵动终端)
-定位: 零摩擦的外壳，负责配对与权限接管，把最硬核的技术完美隐藏。
+3. Layer 3: Jachin Terminal (全息感知外壳)
+定位: 零摩擦外壳 + 全息感官。扫码配对、Voice Wake (Hey Jachin)、jachin-cli。
 
-特性: 启动即展示动态二维码，手机扫码免密授权；授权后，底层 Rust 直接接管 OS 级权限，静默拉起后方的 Layer 2 进程。
+特性: Tauri 桌面端 + 唤醒词监听 (Porcupine/Snowboy) + Whisper STT + TTS 播报。极客可用 `jachin-cli pair`、`jachin-cli shell` 获得终端级控制。
 
-技术栈: Tauri v2 + Rust (系统级进程管理 std::process::Command) + React。
+技术栈: Tauri v2 + Rust + React。语音: Porcupine/Snowboy + Whisper + Kokoro/XTTS。
+```
 
-二、 核心通信与调度拓扑 (Topology & Routing)
-为穿透极其复杂的企业内网与 NAT 防火墙，我们废弃了长连接，采用极致稳定的“心跳拉取”与“跨网桥接”模型。
+---
 
-1. 边缘心跳驱动 (Edge-Polling)
-所有指令（蓝图更新、IM 聊天指令）统一暂存在 Layer 1 的 Supabase 队列中。
+## 二、 双轨制执行引擎 (Dual-Track Engine)
 
-Layer 2 每 10 秒发起一次 POST /api/v1/agents/heartbeat 从云端拉取 pending_task。网络恢复后自动追齐积压任务。
+Layer 2 打破“万物皆需编译 Wasm”的设定，升级为三轨道：
 
-2. IM 跨网直达 (IM Gateway)
-链路：手机端 (Telegram/飞书) ➡️ Layer 1 Webhook ➡️ Supabase 队列 ➡️ Layer 2 心跳获取 ➡️ 本地 Agent Loop 执行 ➡️ Layer 1 Callback ➡️ 手机接收结果。
+| 轨道 | 形态 | 信任级别 | 用途 |
+|------|------|----------|------|
+| **A** | MCP (Model Context Protocol) | 高信任 | 文件、Shell、PostgreSQL、Git 等开箱工具 |
+| **B** | SKILL.md 声明式技能 | 用户可控 | skills_repo/ 下 Markdown，热加载 |
+| **C** | The Abyss Wasm 沙箱 | 零信任 | 商城第三方付费插件，燃料熔断 |
 
-三、 划时代的记忆与认知架构 (Biological Memory Pipeline)
-Jachin Nexus v5.0 不再是机械的流水线，而是拥有“睡觉、遗忘和成长”能力的数字生命体。
+详见 `docs/MCP_SPEC.md`、`docs/SKILL_MD_SPEC.md`、`docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`。
 
-1. Agent Loop (ReAct 自主代理循环)
-接收自然语言指令后，Agent 依据所拥有的 Wasm 技能进行 [Thought] (思考) -> [Action] (调用 Wasm) -> [Observation] (观察沙箱结果) -> [Final Answer] 的循环。
+---
 
-2. 生物学梦境引擎 (The Dream Sequence)
-海马体 (Short-term Cache)：白天所有的高频对话、沙箱日志无损记录在 SQLite short_term_logs 表中，存活周期 24 小时。
+## 三、 量子记忆与自我进化 (Quantum Memory)
 
-梦境压缩 (Dreaming)：每日凌晨 3 点，Layer 2 守护进程自动触发 core/dreamer.py，利用本地/云端 LLM 对短期日志进行“梦境回放”，提取出核心信息并遗忘无用内容。
+### 3.1 轻量化向量
 
-大脑皮层 (Core Memory)：梦境提纯出的高密度偏好标识（Tag），永久存入 SQLite 的 core_memory 表中，并在每次 Agent 思考前自动拼接到 System Prompt，实现“越用越懂你”的零成本进化。
+- 不引入 Redis/Pinecone。在 SQLite 中加载 **sqlite-vss** 或 **lancedb** 扩展。
+- 单文件，百万级 Token 极速语义检索。
 
-3. 实现细节 (Implementation)
-- 核心模块：core/biological_memory.py（短/长期记忆表）、core/dreamer.py（梦境引擎）
-- 数据表：short_term_logs（短）、core_memory（长），均位于 ~/.jachin/memory.db
-- 调度：core/daemon.py 中的 dream_scheduler_loop() 与心跳并行运行，每日 3:00 触发
-- 集成：agent_loop 在每次交互时写入 short_term，在 _build_system_prompt 中注入 core_memory
+### 3.2 自我修复 (Self-Healing)
 
-四、 物理沙箱与信任隔离 (Zero-Trust Execution)
-WASI 物理沙箱 (core/wasm_runner.py)：所有第三方 Plugin 必须编译为 .wasm，支持 stdin/stdout 协议。
+- Agent 调用工具报错时，ReAct 循环捕获 Exception，将错误日志作为 Observation 喂给大脑。
+- Agent 自动调整参数、重试。
+- 梦境阶段可生成 `bug_fix.md` 规则写入长期记忆，确保同样错误不再犯。
 
-燃料熔断机制 (Fuel Limit)：执行插件时注入定量“算力燃料”。发生死循环或恶意占用时，燃料耗尽，Wasm 实例当场物理超度。
+### 3.3 生物钟主动心跳 (Bio-Rhythm Proactivity)
 
-五、 废弃清单 (Architectural Purge)
-❌ 废弃 Dapr & Ray Cluster：被 Python 原生异步和极简 HTTP 心跳取代。
+- 脱离云端的 **cron_thinker** 异步线程，每 30 分钟主动环顾。
+- 扫描系统日志、读取未读邮件，发现异常时通过 IM 推送报警。
+- 与 10s 云端心跳拉取并行，互为补充。
 
-❌ 废弃本地重量级数据库：Redis 与本地 PGSQL 全面下线，云边切分为 Supabase + SQLite。
+---
 
-❌ 废弃繁杂启动脚本：被 Layer 3 Tauri 的单文件分发与“静默接管”所取代。
+## 四、 全息感知器官 (Jarvis Protocol)
+
+### 4.1 视觉与文本流 (Omni-Channel)
+
+- Layer 1 **Universal Message Adapter**：Discord、Slack、WhatsApp、iMessage 等 Webhook 统一清洗成 Jachin Message 格式入队。
+- 核心逻辑只写一次，渠道无限扩展。
+
+### 4.2 听觉流 (Voice & Wake-word)
+
+- Layer 3 集成 Porcupine/Snowboy 唤醒词。
+- “Hey Jachin” → 录音 → Whisper STT → Layer 2 Agent → TTS 播报。复刻钢铁侠 Jarvis 体验。
+
+### 4.3 极客视觉流 (Cyber-CLI)
+
+- `jachin-cli pair`：配对授权
+- `jachin-cli shell`：终端流光溢彩，满足顶尖黑客控制欲
+
+---
+
+## 五、 核心通信与调度拓扑
+
+1. **边缘心跳驱动 (10s)**：Layer 2 POST `/api/v1/agents/heartbeat` 拉取 blueprint、task。
+2. **生物钟 cron_thinker (30min)**：本地主动环顾，无需云端。
+3. **IM 跨网直达**：手机 → Layer 1 Webhook (Universal Adapter) → 队列 → Layer 2 心跳 → Agent Loop → Callback → 手机。
+
+---
+
+## 六、 废弃清单 (Architectural Purge)
+
+❌ Dapr & Ray Cluster  
+❌ 本地 Redis / PostgreSQL  
+❌ Qdrant（已由 Vector SQLite 取代）  
+❌ “万物皆 Wasm”的单一形态（现为双轨制）

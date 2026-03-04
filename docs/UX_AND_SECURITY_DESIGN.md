@@ -1,0 +1,47 @@
+# 零摩擦与无感安全 — UX 设计规范
+
+**版本**: v5.0  
+**定位**: 从「极客玩具」到「魔法师与企业家买单」的体验降维打击
+
+---
+
+## 设计哲学
+
+> **任何需要用户手动修改 .json 或敲冗长命令的设计，都是反人性的。**
+
+- **零摩擦**：用户无需理解 API、Token、公钥
+- **开箱即用**：通电即完成配置
+- **隐形化**：`nexus_config.json` 对用户绝对隐藏，配置由云端推送
+- **无感安全**：密码学在水下静默运行，仅篡改时显性提示
+
+---
+
+## 一、Layer 1 云端
+
+### 1.1 免密登录
+- Magic Link / GitHub / Google OAuth
+- 技术栈：Supabase Auth
+
+### 1.2 数字孪生大盘
+- 设备卡片网格、在线状态、拖拽部署蓝图
+- 详见 [whitepaper/05_LAYER1_NEXUS.md](./whitepaper/05_LAYER1_NEXUS.md)
+
+---
+
+## 二、配对协议（三种方案）
+
+| 方案 | 适用 | 操作 |
+|------|------|------|
+| **A 扫码即连** | 桌面端 | 动态二维码，手机扫码确认 |
+| **B Wi-Fi 热点** | 无屏设备 | Captive Portal 输入 Wi-Fi + 邮箱 |
+| **C ZTP** | 企业批量 | 预烧录 enterprise_id，通电即注册 |
+
+**详细协议**：[PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)
+
+---
+
+## 三、权限大白话
+
+部署插件时，将底层权限翻译成用户可理解的描述，一键安全安装。篡改检测时弹出拦截提示。
+
+**信任链**：[P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md)

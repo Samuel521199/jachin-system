@@ -1,80 +1,64 @@
-# Jachin-System v4.0 文档
+# Jachin Nexus 文档
 
-**版本**: v4.0 Swarm | **最后更新**: 2026-03
+**版本**: v5.0 (The Zero-Friction Edition)
 
 ---
 
-## 核心文档
+## 基石：白皮书 (Single Source of Truth)
 
-| 文档 | 说明 |
-|------|------|
-| [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md) | **全球生态与商业化白皮书**（五阶层、智能版税、共创飞轮、GTM） |
-| [VISION.md](./VISION.md) | **产品愿景与身份**（贾维斯/电子宠物/伙伴/智能体生态） |
-| [whitepaper_v4.0_swarm.md](./whitepaper_v4.0_swarm.md) | 架构白皮书（v4.0 蜂群智能） |
-| [LAYER1_ARCHITECTURE_AND_DESIGN.md](./LAYER1_ARCHITECTURE_AND_DESIGN.md) | **Layer 1 架构与设计总览**（Jachin Nexus、模块、风格、流程、实施状态） |
-| [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md) | **Layer 2 Agent Loop**（蓝图 Persona & Skillset、ReAct 自主执行、持久化记忆） |
-| [NEXUS_DAEMON.md](./NEXUS_DAEMON.md) | **守护进程总览**（nexus_daemon 完整版、daemon 轻量版、配对、CLI） |
-| [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) | **IM 网关**（Telegram/飞书 Webhook、消息队列、NAT 穿透） |
-| [TELEGRAM_TUNNEL_SETUP.md](./TELEGRAM_TUNNEL_SETUP.md) | **战役 2 物理基建**（BotFather、Ngrok、setWebhook、绑定 Chat ID） |
-| [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md) | **盈利模型与智能版税分润规范** |
-| [GTM_STRATEGY.md](./GTM_STRATEGY.md) | **Go-to-Market 市场推演与阶段落地** |
-| [MICROKERNEL_ECOSYSTEM_UPGRADE.md](./MICROKERNEL_ECOSYSTEM_UPGRADE.md) | **微内核生态深度融合升级**（指挥权/执行权剥离、JMP 2.0、环境透镜、GitOps 握手） |
-| [MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md](./MICROKERNEL_ECOSYSTEM_BATTLE_PLAN.md) | **微内核生态战术战役规划**（P0/P1/P2 优先级、实施顺序、现有映射） |
-| [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) | **第四章：RAG 架构**（有机记忆管线、Core Memory、Edge L1 缓存） |
-| [PROJECT_JACHIN_1.0_ARCHITECTURE_PPT.md](./PROJECT_JACHIN_1.0_ARCHITECTURE_PPT.md) | **Project Jachin 1.0 架构汇报 PPT 大纲**（完成阶段存档） |
-| [V3.2_ARCHITECTURE_DIAGRAMS.md](./archive/V3.2_ARCHITECTURE_DIAGRAMS.md) | 架构图与流程图（归档） |
-| [DIRECTORY_STRUCTURE_V4.md](./DIRECTORY_STRUCTURE_V4.md) | 目录结构树（v4.0） |
-| [architecture.md](./architecture.md) | 架构设计补充 |
+**[docs/whitepaper/](./whitepaper/)** 为项目架构宪法，共 9 份：
+
+| 序号 | 文档 | 内容 |
+|------|------|------|
+| 00 | [INDEX](./whitepaper/00_INDEX.md) | 文档索引与架构宪法 |
+| 01 | [设计目的](./whitepaper/01_DESIGN_PURPOSE.md) | B2B/B2C 定位 |
+| 02 | [框架架构](./whitepaper/02_FRAMEWORK.md) | Layer 1-3、生物学记忆 |
+| 03 | [业务流程](./whitepaper/03_WORKFLOW.md) | 扫码、心跳、ReAct |
+| 04 | [文件结构](./whitepaper/04_FILE_STRUCTURE.md) | 纯净目录树 |
+| 05 | [Layer 1](./whitepaper/05_LAYER1_NEXUS.md) | 云端中枢 |
+| 06 | [Layer 2](./whitepaper/06_LAYER2_EDGE.md) | 边缘引擎 |
+| 07 | [Layer 3](./whitepaper/07_LAYER3_TERMINAL.md) | 灵动终端 |
+| 08 | [JPP 插件](./whitepaper/08_JPP_SDK_AND_SKILLS.md) | 插件协议与生态 |
 
 ---
 
 ## 快速开始
 
-| 文档 | 说明 |
-|------|------|
-| [QUICKSTART.md](./QUICKSTART.md) | 快速启动与首次安装 |
+- [QUICKSTART.md](./QUICKSTART.md) — 3 分钟启动
 
 ---
 
-## 指南
+## 规范与指南
 
 | 文档 | 说明 |
 |------|------|
-| [DEVELOPMENT.md](./DEVELOPMENT.md) | 开发指南 |
-| [DEVELOPMENT_MODE.md](./DEVELOPMENT_MODE.md) | 开发模式（控制台 vs Docker） |
-| [DAPR_GUIDE.md](./DAPR_GUIDE.md) | Dapr 配置 |
-| [VOICE_GUIDE.md](./VOICE_GUIDE.md) | 语音系统 |
-| [WHISPER_GUIDE.md](./WHISPER_GUIDE.md) | Whisper 模型 |
-| [LOCAL_DATABASE_SETUP.md](./LOCAL_DATABASE_SETUP.md) | 本地数据库 |
-| [LOCAL_QDRANT_SETUP.md](./LOCAL_QDRANT_SETUP.md) | 本地 Qdrant |
-| [PORT_CONFIGURATION.md](./PORT_CONFIGURATION.md) | 端口配置 |
-| [DOCKER_DESKTOP_SETUP.md](./DOCKER_DESKTOP_SETUP.md) | Docker 安装 |
+| [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) | Telegram/飞书 IM 网关 |
+| [TELEGRAM_TUNNEL_SETUP.md](./TELEGRAM_TUNNEL_SETUP.md) | Bot 配置与 Webhook |
+| [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | 设备配对协议 |
+| [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | 信任链与心跳 |
+| [UX_AND_SECURITY_DESIGN.md](./UX_AND_SECURITY_DESIGN.md) | 零摩擦与无感安全 |
+| [JMP_SPEC.md](./JMP_SPEC.md) | JMP 2.0 协议 |
+| [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱安全 |
+| [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) | WASM/WASI 沙箱 |
+| [VOICE_AND_TTS_GUIDE.md](./VOICE_AND_TTS_GUIDE.md) | 语音与 TTS |
 | [TESTING_GUIDE.md](./TESTING_GUIDE.md) | 测试指南 |
+| [OAUTH_SETUP.md](./OAUTH_SETUP.md) | OAuth 登录配置 |
 
 ---
 
-## 设计与规范
+## 商业与生态
 
 | 文档 | 说明 |
 |------|------|
-| [CONSOLE_HUD_DESIGN_VISION.md](./CONSOLE_HUD_DESIGN_VISION.md) | 控制台 HUD 设计 |
-| [DESKTOP_CLIENT.md](./DESKTOP_CLIENT.md) | 桌面客户端开发 |
-| [QWEN_ARCHITECTURE.md](./QWEN_ARCHITECTURE.md) | Qwen API 架构 |
-| [SENTINEL_DESIGN.md](./SENTINEL_DESIGN.md) | Sentinel 哨兵设计 |
-| [TECHNICAL_SPECIFICATIONS.md](./TECHNICAL_SPECIFICATIONS.md) | 技术规格 |
-| [JMP_SPEC.md](./JMP_SPEC.md) | JMP 2.0 协议规范 |
-| [jachin-plugin-sdk/](../jachin-plugin-sdk/README.md) | **JPP Rust 脚手架**（5 分钟上架、分润） |
-| [jachin-plugin-sdk-python/](../jachin-plugin-sdk-python/README.md) | **JPP Python SDK**（@jachin_plugin、py2wasm） |
-| [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱安全设计 |
-| [HYBRID_SANDBOX_ARCHITECTURE.md](./HYBRID_SANDBOX_ARCHITECTURE.md) | **混合动力沙箱**（WASM + WASI + UDS） |
-| [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | **P0 信任链与心跳**（JMP 签名、防篡改、端云心跳） |
-| [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md) | **零摩擦体验设计**（免密登录、数字孪生、扫码/WiFi/ZTP 配对、配置隐形化） |
-| [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) | **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包） |
-| [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | **设备配对协议**（6 位码、端云三次握手、RFC 8628） |
-| [OAUTH_SETUP.md](./OAUTH_SETUP.md) | **GitHub / Google OAuth 登录配置**（Supabase 提供商设置） |
+| [VISION.md](./VISION.md) | 产品愿景 |
+| [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md) | 生态与商业化 |
+| [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md) | 版税分润 |
+| [GTM_STRATEGY.md](./GTM_STRATEGY.md) | 市场策略 |
 
 ---
 
-## 归档
+## 技术参考
 
-历史文档已移至 [docs/archive/](./archive/)，包括：V3.2 架构图、实施状态、技术栈升级报告，以及 PHASE_*、*COMPLETE、*SUCCESS 等一次性报告。
+| 文档 | 说明 |
+|------|------|
+| [QWEN_ARCHITECTURE.md](./QWEN_ARCHITECTURE.md) | Qwen LLM 架构 |

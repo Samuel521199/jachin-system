@@ -113,12 +113,12 @@ Jachin System 是一个**本地优先、可无限扩展的 AI 智能体生态系
 |----------|----------|
 | 个人贾维斯 / 电子宠物 | Tier 3 桌面精灵、手机 App |
 | IoT 通用客户端 | Tier 3 树莓派、ESP32、联网芯片 |
-| 强大助手 / 团队 / 集团军 | Tier 2 Brain + Ray Cluster + 多 Agent |
+| 强大助手 / 团队 / 集团军 | Layer 2 Agent Loop + 多技能 |
 | 物理世界 | JCP 设备发现、技能控制 IoT |
-| 数字资产 | PostgreSQL + Qdrant 记忆系统 |
-| 云端能力 | Tier 1 Jachin Market、技能商店 |
-| 插件化扩展 | 技能系统、热加载、Docker/Wasm 沙箱 |
-| Agent 协同 | Brain Orchestrator、Ray 任务调度、Pub/Sub 通信 |
+| 数字资产 | SQLite 生物学记忆（v5.0 已废弃 PostgreSQL/Qdrant） |
+| 云端能力 | Layer 1 Jachin Market、技能商店 |
+| 插件化扩展 | JPP 技能、WASM 沙箱 |
+| Agent 协同 | ReAct 循环、HTTP 心跳拉取 |
 
 ---
 

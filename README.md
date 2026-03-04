@@ -2,9 +2,9 @@
 
 > 如果说 OpenClaw 是黑客的超级单兵武器，那么 **Jachin Nexus 就是企业的航母战斗群**。
 
-Jachin Nexus 是一个支持极速部署、具备**物理级算力熔断机制**的分布式边缘 AI 底座。我们提供极简的「扫码即连」体验，并允许你通过云端舰队大盘，对全球成千上万个物理节点进行 AI 算法的热更新与分发。
+Jachin Nexus v6.0 是一个支持极速部署、具备**双轨制引擎 + 量子记忆 + 全息感知**的分布式边缘 AI 底座。我们提供极简的「扫码即连」体验、**Hey Jachin** 语音唤醒、**jachin-cli** 极客终端，并允许你通过云端舰队大盘，对全球成千上万个物理节点进行 AI 算法的热更新与分发。
 
-[![Version](https://img.shields.io/badge/version-0.5.6-blue.svg)](https://github.com/Samuel521199/jachin-system)
+[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/Samuel521199/jachin-system)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ---
@@ -13,10 +13,11 @@ Jachin Nexus 是一个支持极速部署、具备**物理级算力熔断机制**
 
 | 杀器 | 说明 |
 |------|------|
-| **🧠 拥有直觉的数字生命** | ReAct Agent Loop：告别死板流水线。内置持久化记忆与自主代理循环，赋予边缘智能体「思考-行动-观察」的自由意志。 |
-| **🛡️ 零信任物理沙箱** | The Abyss Wasm Sandbox：第三方技能一律编译为 WebAssembly。燃料熔断 (Fuel Limit) + 完全内存隔离。插件崩溃或恶意越界，宿主毫发无损。支持 Pure Compute 与 WASI stdin/stdout（Python py2wasm）。 |
-| **📱 跨越物理网关** | Anywhere IM Trigger：内置 Telegram / Webhook 隧道。掏出手机发一句，内网深处的边缘算力瞬间为你轰鸣。 |
-| **🌍 零摩擦部署** | 桌面端 Tauri 扫码授权后，底层引擎静默唤醒。没有丑陋的黑框框。 |
+| **🧠 双轨制引擎** | 轨道 A (MCP) 开箱即用、轨道 B (SKILL.md) 热加载、轨道 C (Wasm) 零信任沙箱。打破「万物皆 Wasm」的傲慢设定。 |
+| **🛡️ 量子记忆** | 生物学梦境 + Vector SQLite + 自我修复。工具报错时自动重试，梦境阶段生成 bug_fix 规则。 |
+| **⏰ 生物钟主动** | cron_thinker 每 30 分钟主动环顾，扫描日志、未读邮件，异常时 IM 推送报警。 |
+| **📱 全息感知** | Universal Message Adapter 全渠道；Voice Wake (Hey Jachin)；jachin-cli pair/shell。 |
+| **🌍 零摩擦部署** | 桌面端 Tauri 扫码授权后，底层引擎静默唤醒。极客可用 jachin-cli。 |
 
 ---
 

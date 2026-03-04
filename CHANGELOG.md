@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.6.1] - 2026-02-28
+
+### Removed
+
+- **废弃 Dapr**：移除 `core/dapr/`、`dapr/`、`clients/desktop/src-tauri/src/dapr.rs` 及 Dapr 相关脚本
+- **废弃 Ray Cluster**：移除 `core/brain/ray_cluster/` 全部模块
+- **废弃旧 memory 架构**：移除 `core/memory/`（schema、lancedb_store、embedding 等），由 SQLite + 生物学记忆取代
+- **废弃过时文档**：移除 ARCHITECTURE_DESIGN_SPEC、DAPR_GUIDE、LAYER1/LAYER2 旧设计、MICROKERNEL、NEXUS_DAEMON、RAG_ARCHITECTURE、VOICE_GUIDE 等 30+ 旧文档
+- **废弃臃肿脚本**：移除 setup.ps1/sh、start-full.ps1/sh、dapr_restart_scheduler.ps1
+
+### Changed
+
+- 以当前版本为准，远程与本地完全同步
+- 白皮书、规格、rules 已全面更新至 v6.0 架构
+
+---
+
+## [v0.6.0] - 2026-02-28
+
+### Added
+
+- **双轨制执行引擎 (Dual-Track Engine)**
+  - 轨道 A：MCP (Model Context Protocol) 宿主，继承全球 AI 工具生态，开箱即用
+  - 轨道 B：SKILL.md 声明式技能，`skills_repo/` 热加载，零编译
+  - 轨道 C：The Abyss Wasm 沙箱，商城第三方付费插件，零信任
+- **量子记忆 (Quantum Memory)**
+  - Vector SQLite (sqlite-vss/lancedb) 扩展，百万级 Token 语义检索
+  - 自我修复 (Self-Healing)：工具报错时自动重试，梦境阶段生成 bug_fix 规则
+- **生物钟主动心跳 (cron_thinker)**
+  - 脱离云端，每 30 分钟主动环顾
+  - 扫描系统日志、未读邮件，异常时 IM 推送报警
+  - 支持 HEARTBEAT.md 式任务清单
+- **全息感知器官 (Jarvis Protocol)**
+  - Universal Message Adapter：全渠道 Webhook 统一适配（Discord、Slack、WhatsApp、iMessage 等）
+  - Voice Wake (Hey Jachin)：Porcupine/Snowboy 唤醒词 → Whisper STT → Agent → TTS 播报
+  - jachin-cli：`pair`、`shell` 极客终端入口
+- **文档与规范**
+  - 白皮书升级至 v6.0 (The Neural Bus Edition)
+  - 新增 `docs/MCP_SPEC.md`、`docs/SKILL_MD_SPEC.md`
+  - 更新 `docs/JACHIN_VS_OPENCLAW_ANALYSIS.md`、P0、VOICE、IM_GATEWAY 等规格
+  - `.cursor/rules/*.mdc` 全面同步 v6.0 架构
+
+### Changed
+
+- Layer 2 定位由「边缘守护引擎」升级为「神经中枢总线 (Neural Bus)」
+- 技能体系由单一 JPP Wasm 扩展为三轨道（MCP + SKILL.md + Wasm）
+- 记忆系统由生物学梦境扩展为量子记忆（向量 + 自我修复）
+- 主动能力由纯 10s 心跳拉取扩展为 cron_thinker 生物钟 + 云端心跳
+
+---
+
 ## [v0.5.7] - 2026-03-03
 
 ### Added

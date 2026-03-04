@@ -142,68 +142,25 @@ except ImportError as e:
     console_router = None
     logger.warning(f"Console API router not available: {e}")
 
-# Lifespan管理
+# Lifespan管理 - v5.0 已废弃 Ray/Dapr/PostgreSQL，仅保留轻量初始化
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
+    """应用生命周期管理 - v5.0 极简模式"""
     try:
-        from core.memory.schema import init_database
-        await init_database()
-        logger.info("DB ready")
-        from core.brain.ray_cluster import RayClusterManager
-        ray_manager = RayClusterManager()
-        await ray_manager.initialize()
-        app.state.ray_manager = ray_manager
-        logger.info("Ray ready")
-        from core.system.plugin_manager import get_plugin_manager
-        plugin_mgr = get_plugin_manager()
-        n_skills = plugin_mgr.load_skills()
-        app.state.plugin_manager = plugin_mgr
-        app.state.skill_registry = plugin_mgr  # 兼容旧 API
-        logger.info("Skills: %d loaded", n_skills)
-        # 开发环境：预加载 Local Time & Weather 沙箱插件，供 Commander 测试
-        if settings.DEBUG:
-            from pathlib import Path
-            from core.updater.agent import load_sandbox_plugin_from_dir
-            dev_plugin = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "plugins" / "local_time_weather"
-            if dev_plugin.exists():
-                load_sandbox_plugin_from_dir(dev_plugin)
-        from core.registry.registry import DeviceRegistry
-        device_registry = DeviceRegistry()
-        app.state.device_registry = device_registry
-        from core.brain.planner import TaskPlanner, IntentParser, ResourceAllocator
-        intent_parser = IntentParser()
-        resource_allocator = ResourceAllocator(ray_manager)
-        task_planner = TaskPlanner(
-            intent_parser=intent_parser,
-            resource_allocator=resource_allocator,
-            plugin_manager=plugin_mgr,
-            device_registry=device_registry,
-        )
-        app.state.task_planner = task_planner
-        logger.info("Jachin-System v3.2 started")
-        
+        # v5.0: 记忆系统已迁移至 core/agent_memory + core/biological_memory (SQLite)
+        # v5.0: Ray 集群已废弃，任务调度由 Layer 2 daemon + agent_loop 接管
+        app.state.ray_manager = None
+        app.state.plugin_manager = None
+        app.state.skill_registry = None
+        app.state.device_registry = None
+        app.state.task_planner = None
+        logger.info("Jachin-System v5.0 (legacy API mode) - Ray/Dapr/PostgreSQL 已废弃")
     except Exception as e:
-        logger.error(f"Failed to initialize Jachin-System v3.2: {e}", exc_info=True)
-        # 继续启动，但某些功能可能不可用
-    
+        logger.error(f"Failed to initialize: {e}", exc_info=True)
+
     yield
-    
-    # 关闭时执行
-    logger.info("Shutting down Jachin-System v3.2...")
-    
-    try:
-        # 关闭Ray集群
-        if hasattr(app.state, "ray_manager") and app.state.ray_manager:
-            await app.state.ray_manager.shutdown()
-        
-        # 关闭数据库连接
-        from core.memory.schema import close_database
-        await close_database()
-        
-        logger.info("Jachin-System v3.2 shutdown complete")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}", exc_info=True)
+
+    logger.info("Shutting down Jachin-System v5.0...")
 
 
 # 创建 FastAPI 应用
@@ -374,14 +331,10 @@ if os.path.exists(web_ui_dir):
     logger.info("Hive Dashboard: /hive/")
 
 # 推理策略 API（运行模式切换：节能/默认/高性能/上帝模式）
-# 使用 Dapr 状态存储持久化；Dapr 不可用时 StateStore 自动降级为进程内内存
+# v5.0: Dapr 已废弃，使用进程内默认值
 INFERENCE_STRATEGY_KEY = "inference/strategy"
 INFERENCE_STRATEGY_DEFAULT = {"mode": "default"}
-
-try:
-    from core.dapr.state_store import state_store as _state_store
-except Exception:
-    _state_store = None
+_state_store = None
 
 @app.get("/api/v3/inference/strategy")
 async def get_inference_strategy():

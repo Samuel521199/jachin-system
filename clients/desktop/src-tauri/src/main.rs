@@ -3,7 +3,6 @@
 
 mod commands;
 mod config;
-mod dapr;
 mod device;
 mod device_registry;
 mod kernel;
@@ -31,7 +30,6 @@ mod stt_voice_stub {
 
 use sysinfo::System;
 
-use dapr::DaprClient;
 use device::DeviceController;
 use device_registry::{DeviceRegistry, DeviceCommand, DeviceResponse};
 use pubsub::start_pubsub_server;
@@ -42,20 +40,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// 通过 Dapr 调用后端服务
+/// [v5.0 已废弃] 原 Dapr 调用，现由 Layer 1 HTTP 心跳与云端 API 取代
 #[tauri::command]
 async fn invoke_backend(
-    method: String,
-    data: Option<serde_json::Value>,
-    http_verb: Option<String>,
+    _method: String,
+    _data: Option<serde_json::Value>,
+    _http_verb: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let client = DaprClient::new();
-    let verb = http_verb.unwrap_or_else(|| "POST".to_string());
-    
-    client
-        .invoke("jachin-brain", &method, data, &verb)
-        .await
-        .map_err(|e| e.to_string())
+    Err("Dapr 已废弃。v5.0 请使用 Layer 1 云端 API 或扫码配对后的 HTTP 心跳链路。".to_string())
 }
 
 /// 控制设备

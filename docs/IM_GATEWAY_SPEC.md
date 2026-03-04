@@ -1,8 +1,8 @@
 # IM 网关规格 — 进化战役 2：无处不在的躯体
 
-**版本**: 1.0  
-**状态**: 已实现  
-**定位**: 绑定 Telegram / 飞书，让用户随时随地发消息即可让内网边缘机器干活
+**版本**: 2.0 (v6.0 Universal Message Adapter)  
+**状态**: 已实现 (Telegram/飞书)；v6.0 扩展全渠道  
+**定位**: Universal Message Adapter — 全渠道统一适配，让用户随时随地发消息即可让内网边缘机器干活
 
 ---
 
@@ -118,7 +118,7 @@ Layer 1 调用 Telegram API
 
 ---
 
-## 六、相关文档
+## 七、相关文档
 
 - [TELEGRAM_TUNNEL_SETUP.md](./TELEGRAM_TUNNEL_SETUP.md) - **战役 2 物理基建**（BotFather、Ngrok、setWebhook、绑定 Chat ID）
 - [LAYER2_AGENT_LOOP_DESIGN.md](./LAYER2_AGENT_LOOP_DESIGN.md) - Agent Loop 与任务执行
