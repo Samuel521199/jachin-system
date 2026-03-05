@@ -20,6 +20,7 @@
 10. **Cognitive Swarm**：LiteLLM 抹平大模型差异，支持 100+ 模型；**Aegis**：OpenTelemetry 遥测 + Prompt 注入拦截墙。
 11. 设备鉴权、配对通过 Layer 3 Tauri 扫码或 `jachin-cli pair` 完成。
 12. **v8.0 升维**：**Session Multiplexing**（按 session_id 隔离 Agent Actor）；**Nexus Hook Pipeline**（洋葱中间件，pre_tool_exec/post_tool_exec）；**Dream Weaver**（梦境重塑、记忆去重、冲突消解）；**Capability Negotiation**（Layer 3 多态，接入时发送 Manifest）；**Edge Mesh Swarm**（同网设备算力协同、任务认领）；**全链路 runId 追踪**（Distributed Tracing，贯穿 SensoryInputEvent → PipelineContext → SensoryOutputEvent，日志染色）；**流式神经**（Streaming Chunk，LLM 逐 token 推送到 caps 含 `stream_chunk` 的客户端）。
+13. **控制面与数据面分离**（规划）：Layer 1 仅负责鉴权、计费、信令；感官数据优先 P2P 直连。局域网 mDNS 零配置发现，广域网 WebRTC 打洞。能直连绝不绕路。详见 [10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)。
 
 ---
 
@@ -38,6 +39,8 @@
 | — | [全息感官总线](./OMNI_SENSORY_BUS.md) | 端口-适配器、Voice/Sprite/IM 归一化、输出多路分发 |
 | 07 | [Layer 3 灵动终端](./07_LAYER3_TERMINAL.md) | Tauri、Voice Wake、jachin-cli、扫码配对 |
 | 08 | [JPP 与技能生态](./08_JPP_SDK_AND_SKILLS.md) | JPP (轨道 C)、MCP (轨道 A)、SKILL.md (轨道 B) |
+| 09 | [**去 BaaS 化战役**](./09_DE_BAASIFICATION.md) | Auth.js、Drizzle ORM、Redis、MinIO、Helm — Layer 1 绝对主权架构 |
+| 10 | [**控制面与数据面分离**](./10_CONTROL_DATA_PLANE.md) | mDNS 局域网直连、WebRTC P2P 打洞、信令分离 — 能直连绝不绕路 |
 | — | [**v8.0 架构升维**](./V8_SINGULARITY_OS.md) | Session Multiplexing、Nexus Hook、Dream Weaver、能力协商、Edge Mesh、runId 追踪、流式神经 |
 | — | [MCP 接入规范](../MCP_SPEC.md) | MCP Client 实现、工具发现与调用 |
 | — | [SKILL.md 规范](../SKILL_MD_SPEC.md) | 声明式技能格式、Persona、热加载 |

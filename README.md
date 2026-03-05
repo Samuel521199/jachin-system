@@ -1,85 +1,120 @@
-# 🌌 Jachin Nexus: The Enterprise-Grade Edge AI OS
-
-> 如果说 OpenClaw 是黑客的超级单兵武器，那么 **Jachin Nexus 就是企业的航母战斗群**。
-
-Jachin Nexus **v8.0 (The Singularity OS)** 是支持极速部署的分布式数字生命操作系统，具备**双轨制引擎 + 量子记忆 + 全息感知 + Session Multiplexing + Nexus Hook Pipeline + Dream Weaver + Edge Mesh Swarm + 全链路 runId 追踪 + 流式神经**。我们提供极简的「扫码即连」体验、**Hey Jachin** 语音唤醒、**jachin-cli** 极客终端，并允许你通过云端舰队大盘，对全球成千上万个物理节点进行 AI 算法的热更新与分发。
-
-[![Version](https://img.shields.io/badge/version-8.0-blue.svg)](https://github.com/Samuel521199/jachin-system)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-
----
-
-## ✨ 核心杀器 (Why Jachin?)
-
-| 杀器 | 说明 |
-|------|------|
-| **🧠 双轨制引擎** | 轨道 A (MCP) 开箱即用、轨道 B (SKILL.md) 热加载、轨道 C (Wasm) 零信任沙箱。打破「万物皆 Wasm」的傲慢设定。 |
-| **🛡️ 量子记忆** | 生物学梦境 + Vector SQLite + 自我修复。工具报错时自动重试，梦境阶段生成 bug_fix 规则。 |
-| **⏰ 生物钟主动** | cron_thinker 每 30 分钟主动环顾，扫描日志、未读邮件，异常时 IM 推送报警。 |
-| **📱 全息感知** | Universal Message Adapter 全渠道；Voice Wake (Hey Jachin)；jachin-cli pair/shell。 |
-| **🌍 零摩擦部署** | 桌面端 Tauri 扫码授权后，底层引擎静默唤醒。极客可用 jachin-cli。 |
-
----
-
-## 🚀 3 分钟接入星图 (Quickstart)
-
-1. **启动控制台**：`.\start.bat`（或 `.\scripts\start.ps1`）
-2. **扫码配对**：打开桌面端，用手机扫码，见证底层引擎静默轰鸣
-3. **唤醒 Telegram**：在手机上对你的专属机器人发号施令
-
-```powershell
-# Windows
-.\start.bat
-
-# 或分步启动
-.\scripts\start-layer2.ps1   # 选择 [2] Light 启动边缘守护进程
+```
+ ██╗ █████╗  ██████╗██╗  ██╗██╗███╗   ██╗    ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗
+ ██║██╔══██╗██╔════╝██║  ██║██║████╗  ██║    ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝
+ ██║███████║██║     ███████║██║██╔██╗ ██║    ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗
+ ██║██╔══██║██║     ██╔══██║██║██║╚██╗██║    ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║
+ ██║██║  ██║╚██████╗██║  ██║██║██║ ╚████║    ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║
+ ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝    ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
 ```
 
-详见 [QUICKSTART.md](./QUICKSTART.md)、[TELEGRAM_TUNNEL_SETUP.md](./docs/TELEGRAM_TUNNEL_SETUP.md)。
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-00ff88?style=flat-square" alt="License MIT" />
+  <img src="https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Tauri-FFC131?style=flat-square&logo=tauri&logoColor=black" alt="Tauri" />
+  <img src="https://img.shields.io/badge/Drizzle%20ORM-2F4F4F?style=flat-square" alt="Drizzle ORM" />
+  <img src="https://img.shields.io/badge/Multi--Agent%20Swarm-8B5CF6?style=flat-square" alt="Multi-Agent Swarm" />
+</p>
+
+<p align="center">
+  <strong>The First Distributed AI OS.</strong><br/>
+  <em>真正的全息感知、多态神经与边缘算力虫群底座。</em>
+</p>
 
 ---
 
-## 📚 文档与生态
+## Why Jachin Nexus?
 
-| 链接 | 说明 |
-|------|------|
-| [📖 完整白皮书与文档](./docs/README.md) | 架构、协议、商业化、GTM |
-| [⚡ 成为神经元铸造师](./jachin-plugin-sdk-python/README.md) | 编写 Python 插件，5 分钟上架赚钱 |
-| [🦀 Rust 插件脚手架](./jachin-plugin-sdk/README.md) | 极轻量 Wasm，KB 级体积 |
+> **Enough with chatbots.** Enough with expensive, black-box BaaS that locks you in and bleeds your budget.
+
+| Pain | Jachin Nexus |
+|------|--------------|
+| Monolithic Chat UI | **Omni-Sensory Bus** — UI decoupled, capability negotiation, streaming typewriter |
+| Centralized compute | **Edge Mesh Swarm** — P2P task bounty, any device becomes a compute node |
+| Vendor lock-in | **De-BaaSification** — Drizzle ORM, PostgreSQL, Redis. Zero-friction Kubernetes deployment |
+| Single-agent bottleneck | **Cognitive Handoff** — Multi-persona, memory-preserving soul transfer in milliseconds |
+
+**De-BaaSification (绝对主权)** — We reclaimed Layer 1. No Supabase black box. No Firebase tax. Your data, your rules. One `helm install` and you own the stack.
 
 ---
 
-## 🏗️ 三层架构
+## The Singularity Architecture
 
+| Kill Switch | Description |
+|-------------|-------------|
+| 🛡️ **Aegis Shield (神盾高可用)** | Token Compaction when context overflows. LLM failover with millisecond retry. Your agent never dies mid-thought. |
+| 🐝 **Edge Mesh Swarm (算力虫群)** | Break physical boundaries. P2P LAN task bounty. Heavy tools offloaded to idle nodes. All devices, one brain. |
+| 📡 **P2P Routing (能直连绝不绕路)** | mDNS LAN discovery, WebRTC hole-punching. Control plane vs data plane separation. |
+| 🎭 **Cognitive Handoff (认知接力)** | Millisecond multi-agent soul transfer. Architect → Researcher → Default. Memory preserved, persona switched. |
+| 🌙 **Dream Weaver (梦境重塑)** | Idle-time memory consolidation. Conflict resolution. Short-term → core memory. Your agent dreams. |
+| ⚡ **Omni-Sensory Bus (全息感官)** | UI fully decoupled. Streaming typewriter, HITL popups, Swarm radar. Capability negotiation per device. |
+
+---
+
+## SaaS-Ready (企业级多租户)
+
+Layer 1 defaults to **Platform First** — B2B2C multi-tenancy out of the box.
+
+| Entity | Isolation |
+|--------|-----------|
+| **Organizations** | Fleet ownership, billing plans |
+| **Organization Users** | owner / admin / member roles |
+| **Edge Agents** | `organization_id` — personal or enterprise fleet |
+| **Blueprints** | Shared within org, licensed per fleet |
+| **Transactions** | Enterprise procurement, license keys |
+
+One platform. Millions of tenants. Zero cross-leak.
+
+---
+
+## Quick Start (造物主点火指南)
+
+```bash
+# 1. Layer 1 — Database (cloud/nexus)
+cd cloud/nexus && npm run db:push
+
+# 2. Layer 2 — Edge Brain
+python -m core.daemon
+
+# 3. Layer 3 — Desktop Console
+cd clients/desktop && npm run tauri dev
 ```
-云端分发 (Cloud) + 蜂巢算力 (Hive) + 灵动终端 (Terminal)
-```
 
-- **Tier 1**：Jachin Market — 全球技能商店、舰队大盘、IM Webhook
-- **Tier 2**：Jachin Hive — AI 推理、持久化记忆、Wasm 沙箱、Agent Loop
-- **Tier 3**：Jachin Terminal — 桌面精灵 (Tauri)、手机 App、IoT 节点
+**Or one-shot (Windows):** `.\start.bat`
 
 ---
 
-## 📁 项目结构
+## Project Structure
 
 ```
 jachin-system/
-├── cloud/                  # [Tier 1] 云端控制台 (Next.js)
-├── core/                   # [Tier 2] 核心蜂巢（Agent Loop、Wasm 沙箱、记忆）
-├── clients/                # [Tier 3] 桌面精灵、移动端
-├── jachin-plugin-sdk/      # JPP Rust 脚手架
-├── jachin-plugin-sdk-python/ # JPP Python SDK（@jachin_plugin + py2wasm）
-└── docs/                   # 完整文档
+├── cloud/nexus/          # Layer 1 — Next.js + Drizzle ORM + Auth.js
+├── core/                 # Layer 2 — Agent Loop, Swarm, Dream Weaver
+├── clients/desktop/      # Layer 3 — Tauri + React (全息指挥台)
+├── jachin-plugin-sdk/    # JPP Rust (Wasm)
+├── jachin-plugin-sdk-python/  # JPP Python
+└── docs/                 # Whitepapers, GTM, Architecture
 ```
 
 ---
 
-## 🤝 贡献与安全
+## Documentation
 
-- [CONTRIBUTING.md](./CONTRIBUTING.md) — 代码提交规范
-- [SECURITY.md](./SECURITY.md) — 安全策略与漏洞报告
+| Link | Description |
+|------|-------------|
+| [📖 Whitepapers & Architecture](./docs/README.md) | Full spec, protocols, commercialization |
+| [⚡ Neuron Forge (Plugin SDK)](./jachin-plugin-sdk-python/README.md) | Build Python plugins, monetize in 5 min |
+| [🦀 Rust Plugin Scaffold](./jachin-plugin-sdk/README.md) | KB-sized Wasm, zero-trust sandbox |
 
 ---
 
-**版本**: v8.0 (The Singularity OS) | **最后更新**: 2026-02
+## Contributing & Security
+
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — Code style, PR flow
+- [SECURITY.md](./SECURITY.md) — Vulnerability reporting
+
+---
+
+<p align="center">
+  <strong>v8.0 The Singularity OS</strong> · Last updated 2026-02
+</p>

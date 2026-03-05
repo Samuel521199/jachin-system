@@ -5,6 +5,14 @@
 
 ---
 
+## 〇、 Platform First（平台优先原则）
+
+**Layer 1 默认为官方托管的多租户 SaaS 平台。** 个人、家庭和企业用户开箱即用，只需在边缘端拉起 Layer 2/3 并连接到云端即可。用户账户、技能订阅、付费账单均在 Layer 1 平台统一管理。
+
+**私有化部署（Self-Hosted Layer 1）** 仅作为强合规（政企、金融等）场景的 fallback 方案，不作为代码和默认设计的出发点。
+
+---
+
 ## 一、 三位一体架构 (The Trinity Architecture)
 
 Jachin Nexus 采用严格的“重云轻端”三位一体设计，彻底摒弃了上一代笨重的微服务网格。
@@ -19,7 +27,7 @@ Layer 1 (云端调度枢纽) ↔ Layer 2 (神经中枢总线) ↔ Layer 3 (全�
 
 核心组件: The Forge (图形化编排)、Fleet Management (舰队批量下发)、Universal Message Adapter (全渠道 Webhook 统一适配)。
 
-数据底座: Supabase (Managed PostgreSQL)，统管全网设备心跳、AST 蓝图、JPP 插件元数据及跨网指令队列。
+数据底座: Drizzle ORM + PostgreSQL（去 BaaS 化 P0 已落地），Auth.js 身份认证，统管全网设备心跳、AST 蓝图、JPP 插件元数据及跨网指令队列。详见 [09_DE_BAASIFICATION.md](./09_DE_BAASIFICATION.md)。
 
 2. Layer 2: Edge Agent (神经中枢总线)
 定位: 极度稳定、极度轻量的执行引擎。90% 能力下放给 Skills，自身永不崩溃。
@@ -38,6 +46,8 @@ Layer 1 (云端调度枢纽) ↔ Layer 2 (神经中枢总线) ↔ Layer 3 (全�
 
 技术栈: Tauri v2 + Rust + React。语音: Porcupine/Snowboy + Whisper + Kokoro/XTTS。
 ```
+
+**未来升维**：控制面与数据面分离。局域网 mDNS 零配置直连、广域网 WebRTC P2P 打洞，Layer 1 仅作信令。详见 [10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)。
 
 ---
 

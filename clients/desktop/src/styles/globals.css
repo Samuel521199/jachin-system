@@ -141,6 +141,17 @@
   #chat-root [data-chat-interactive] {
     pointer-events: auto !important;
   }
+
+  /* v8.0 人格色彩突变：Handoff 时主题色切换 */
+  #chat-root[data-persona="default"] {
+    --persona-accent: 34 211 238; /* 科技蓝 cyan */
+  }
+  #chat-root[data-persona="architect"] {
+    --persona-accent: 139 92 246; /* 赛博紫 violet */
+  }
+  #chat-root[data-persona="researcher"] {
+    --persona-accent: 34 197 94; /* 矩阵绿 emerald */
+  }
 }
 
 /* 全局隐藏滚动条，保留滚动功能 */
@@ -352,6 +363,37 @@
   animation: blink-cursor 1s infinite;
   margin-left: 2px;
   color: currentColor;
+}
+
+/* v8.0 流式神经：极客光标，呼吸发光 */
+@keyframes stream-cursor-breathe {
+  0%, 100% {
+    opacity: 1;
+    text-shadow: 0 0 8px currentColor;
+  }
+  50% {
+    opacity: 0.6;
+    text-shadow: 0 0 4px currentColor;
+  }
+}
+
+.stream-cursor::after {
+  content: "█";
+  animation: blink-cursor 0.8s step-end infinite, stream-cursor-breathe 1.5s ease-in-out infinite;
+  margin-left: 1px;
+  color: rgb(34 211 238);
+  font-size: 0.9em;
+  vertical-align: 0.05em;
+}
+
+/* v8.0 蜂巢雷达 3D 旋转扫描 */
+@keyframes swarm-radar-scan {
+  0% {
+    transform: rotateY(0deg) rotateZ(0deg);
+  }
+  100% {
+    transform: rotateY(360deg) rotateZ(360deg);
+  }
 }
 
 /* HUD / Commander's Deck: 深空背景网格动画 */

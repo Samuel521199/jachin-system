@@ -140,7 +140,7 @@ install-layer2.ps1  →  start-layer2.ps1
 ```
 install-cloud.ps1   →  start-cloud.ps1
 ```
-（install-cloud 会自动尝试执行 Supabase 迁移）
+（install-cloud 会执行数据库迁移：Supabase 或 Drizzle `db:push`）
 
 **完整开发环境：**
 ```

@@ -4,14 +4,31 @@
  * - thought: 黄色「思考中」光环
  * - core:shell_exec: 红色「物理授权」警告
  * - HITL_REQUIRED: 霸气拦截框「指挥官，是否授权执行？」
+ * - v8.0 Handoff: 虫群接力人格切换 Toast
+ * - v8.0 Swarm: 蜂巢雷达
  */
 
 import { motion, AnimatePresence } from "framer-motion";
 import { useSensoryWebSocket } from "../../hooks/useSensoryWebSocket";
+import { HandoffToast } from "../../components/HandoffToast";
+import { SwarmRadar } from "../../components/SwarmRadar";
 import { cn } from "../../utils/cn";
 
-export function SensoryOverlay() {
-  const { connected, lastPayload, hitlPending, resolveHitl } = useSensoryWebSocket();
+export interface SensoryOverlayProps {
+  /** 可选：传入外部 hook 结果以复用连接（如 Chat 窗口） */
+  sensory?: ReturnType<typeof useSensoryWebSocket>;
+}
+
+export function SensoryOverlay({ sensory: sensoryProp }: SensoryOverlayProps = {}) {
+  const internal = useSensoryWebSocket();
+  const {
+    connected,
+    lastPayload,
+    hitlPending,
+    resolveHitl,
+    handoffEvent,
+    swarmEvent,
+  } = sensoryProp ?? internal;
 
   const isThinking = connected && lastPayload?.step_type === "thought";
   const isShellExec =
@@ -104,6 +121,26 @@ export function SensoryOverlay() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* v8.0 Handoff - 虫群接力人格切换 Toast */}
+      {handoffEvent?.displayName && (
+        <HandoffToast
+          displayName={handoffEvent.displayName}
+          persona={handoffEvent.persona}
+        />
+      )}
+
+      {/* v8.0 Swarm - 蜂巢雷达 */}
+      <SwarmRadar
+        state={
+          swarmEvent?.type === "completed"
+            ? "completed"
+            : swarmEvent?.type === "offer" || swarmEvent?.type === "assigned"
+              ? "offer"
+              : "idle"
+        }
+        tool={swarmEvent?.tool}
+      />
 
       {/* HITL_REQUIRED - 霸气拦截框 */}
       <AnimatePresence>

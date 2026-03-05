@@ -410,7 +410,7 @@
 |------|----------|------|
 | **JPP 商城为 0** | 高 | 无付费技能生态，开发者无变现路径 |
 | **社区冷启动** | 高 | GitHub 影响力小，问题难搜到答案 |
-| **无官方托管** | 中 | 需自建 Layer 1，无 SaaS 开箱即用 |
+| **无官方托管** | 中 | 目标架构为官方托管 Layer 1 平台；开源社区版可提供简易自建脚本，核心商业逻辑围绕 SaaS 平台展开 |
 
 ### 10.5 与 OpenClaw 的客观差距（本系统落后项）
 
@@ -537,7 +537,7 @@
 - **产品成熟度**：安装、文档、体验显著落后 OpenClaw
 - **生态冷启动**：IM 渠道 2 vs 50+，技能 0 vs 10,700+
 
-**已补齐**：Compaction、retry 机制、Handoff 人格接力、runId 追踪、流式神经。Cognitive Swarm 横向接力（Handoff）已落地；纵向委派、共享黑板待扩展。
+**已补齐**：Compaction、retry 机制、Handoff 人格接力、runId 追踪、流式神经。Cognitive Swarm 横向接力（Handoff）已落地；纵向委派、共享黑板待扩展。**Platform First 与多租户**：02/05/07 白皮书已定调，Schema 已引入 organizations、organization_id。
 
 ---
 
@@ -644,3 +644,56 @@ Agent 平级接力，不嵌套调用，直接切换「大脑人设」。
 ---
 
 **实施优先级建议**：横向接力（Handoff）✅ 已落地；纵向委派（Sub-Agent）复用现有 agent_loop，待扩展；共享黑板需与 Dream Weaver 深度集成，待扩展。
+
+---
+
+## 十五、Layer 1 平台角色架构分析（设计符合性审查）
+
+> **审查目标**：验证 Layer 1 是否被设计为「所有企业和用户共享的单一平台/服务商」，而非「每个企业自建 Layer 1」。
+
+### 15.1 期望的架构定位
+
+| 角色 | 部署内容 | 使用 Layer 1 的方式 |
+|------|----------|----------------------|
+| **平台/服务商** | 运营**唯一** Layer 1 | 托管用户账户、技能订阅、付费、IM 网关、舰队大盘 |
+| **个人用户** | 仅部署 Layer 2-3 | 扫码配对，连接平台 Layer 1，在 Layer 1 有账户、订阅、账单 |
+| **家庭用户** | 仅部署 Layer 2-3 | 同上 |
+| **企业用户** | 仅部署 Layer 2（多台） | 舰队管理、批量下发蓝图，在 Layer 1 有企业账户、采购记录 |
+
+**核心原则**：Layer 1 = 平台方运营的 SaaS 中枢；用户/企业**不**自建 Layer 1。
+
+---
+
+### 15.2 当前设计符合性分析
+
+#### ✅ 已符合的部分
+
+| 维度 | 设计/实现 | 说明 |
+|------|-----------|------|
+| **平台定位** | ECOSYSTEM 白皮书：「去中心化执行、中心化确权」 | Layer 1 作为确权与交易中枢，用户执行在 Layer 2 |
+| **用户信息** | `nexus_users` + Supabase `auth.users` | 用户账户、角色 (super_admin/developer/consumer) |
+| **技能订阅** | `transactions` 表 (acquire/renew/revoke, license_key) | 记录用户购买的插件/人设及 License |
+| **付费与版税** | `transactions`、`bounties`、`escrow_transactions` | 购买记录、悬赏赏金、托管结算 |
+| **设备注册** | `edge_agents` (user_id, pairing_code, current_blueprint_id) | 用户/企业的 Layer 2 设备在平台侧注册 |
+| **蓝图与插件** | `blueprints`、`plugins_registry`、`personas_library` | 平台侧资产确权，用户购买后下发至 Layer 2 |
+| **IM 网关** | Universal Message Adapter、`agent_message_queue` | 平台统一接收 Webhook，心跳下发至用户 Layer 2 |
+| **舰队管理** | 舰队大屏、批量下发 AST | 企业多台 Layer 2 由**同一** Layer 1 管理 |
+
+#### ⚠️ 需澄清或补充的部分
+
+| 维度 | 现状 | 建议 |
+|------|------|------|
+| **私有化部署** | 07_LAYER3、02_FRAMEWORK | ✅ 已明确为**强合规 fallback**；默认连接官方托管 Layer 1 |
+| **无官方托管** | 竞品分析 | ✅ 已纠正：目标架构为官方托管，开源社区版可自建 |
+| **多租户/企业隔离** | Schema | ✅ 已引入 `organizations`、`organization_users`，`edge_agents`/`transactions`/`blueprints` 增加 `organization_id` |
+| **订阅与账单** | `transactions` 有 acquire/renew，但无显式订阅周期、续费提醒 | 可扩展 `subscriptions` 表或 `transactions` 字段支持订阅制 |
+
+---
+
+### 15.3 结论
+
+**结论**：当前设计**整体符合**「Layer 1 = 平台/服务商，用户与企业共享同一 Layer 1」的定位。
+
+- **数据层**：`nexus_users`、`transactions`、`edge_agents`、`blueprints`、`plugins_registry` 等已支撑用户信息、技能订阅、付费、设备注册。
+- **业务层**：ECOSYSTEM 白皮书、05_LAYER1_NEXUS 明确 Layer 1 为「航母指挥室」「神经元商城」；用户和企业部署 Layer 2-3，通过心跳与 Layer 1 通信。
+- **已完善**：02/05/07 白皮书已写入 Platform First；私有化部署明确为强合规 fallback；多租户 Schema（organizations、organization_id）已落地；.cursor/rules/070-layer1-platform.mdc 已建立。

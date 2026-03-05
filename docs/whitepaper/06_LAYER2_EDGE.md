@@ -45,7 +45,7 @@ Layer 2 的唯一使命：**通过 Jachin Mesh 接收指令、运行双轨制执
 
 * **组件**: `core/daemon.py` + `core/event_bus.py`
 * **职责**: 维持系统的基础生命体征。通过 **Jachin Mesh** (WebSocket) 与 Layer 1 双向长连，毫秒级接收 blueprint、task。
-* **全息感官总线**: Jachin Mesh 推送的 task 通过 `emit_omni_input("telegram", ...)` 注入总线；消费循环调用 Agent Loop，输出按 source 多路分发（IM → HTTP Callback，Sprite → 本地 WebSocket 广播）。**持久化**：OmniSensoryBus 底层挂载 SQLite 队列，进程重启不丢事件。详见 `docs/whitepaper/OMNI_SENSORY_BUS.md`。
+* **全息感官总线**: Jachin Mesh 推送的 task 通过 `emit_omni_input("telegram", ...)` 注入总线；消费循环调用 Agent Loop，输出按 source 多路分发（IM → HTTP Callback，layer3_broadcast → 本地 WebSocket 广播至 Layer 3 客户端）。**持久化**：OmniSensoryBus 底层挂载 SQLite 队列，进程重启不丢事件。详见 `docs/whitepaper/OMNI_SENSORY_BUS.md`。
 * **并行**: 与 `cron_thinker` 生物钟线程并行运行。
 
 ### 3.2 生物钟 (cron_thinker)

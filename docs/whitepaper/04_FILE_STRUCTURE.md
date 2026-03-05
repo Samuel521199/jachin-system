@@ -10,7 +10,7 @@
 在 v8.0 中，Jachin Nexus 采用**双轨制引擎 + 量子记忆 + 全息感知 + Dream Weaver**。
 **严禁再次引入**：`core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`、臃肿部署脚本。
 
-**文件结构变更规范**：新增 `core/` 模块或 `~/.jachin/` 数据文件时，必须同步更新本文档、`.cursor/rules/000-structure.mdc` 及 `060-v8-singularity.mdc`（若涉及 v8.0 特性），避免乱写。
+**文件结构变更规范**：新增 `core/` 模块或 `~/.jachin/` 数据文件时，必须同步更新本文档及 `.cursor/rules/070-layer1-platform.mdc`（若涉及 Layer 1 多租户），避免乱写。
 
 ---
 
@@ -18,7 +18,7 @@
 
 ```text
 jachin-system/
-├── cloud/                    # [Layer 1] 云端大盘 (Next.js + Supabase)
+├── cloud/                    # [Layer 1] 云端大盘 (Next.js + Drizzle ORM + Auth.js)
 ├── core/                     # [Layer 2] 神经中枢总线 (双轨制 + 量子记忆)
 ├── clients/                  # [Layer 3] 全息感知外壳 (Tauri + Voice Wake + jachin-cli)
 ├── jachin-plugin-sdk-python/ # [JPP] 轨道 C Wasm 插件脚手架
@@ -35,7 +35,11 @@ jachin-system/
 
 ```text
 cloud/nexus/
-├── src/app/
+├── src/
+│   ├── db/                    # v8.0+ 去 BaaS 化：Drizzle ORM 数据层
+│   │   ├── index.ts           # 数据库连接实例 (postgres.js)
+│   │   └── schema.ts          # Auth.js + 多租户 + 舰队资产 Schema
+│   ├── app/
 │   ├── console/              # Jachin ID 控制台
 │   ├── fleet/                # 舰队指挥大屏
 │   ├── forge/                # 造物厂 (React Flow 蓝图编排)
@@ -46,6 +50,7 @@ cloud/nexus/
 │       ├── agents/callback/  # 执行结果回传
 │       ├── fleet/deploy/     # 舰队批量下发
 │       └── webhooks/         # Universal Message Adapter (telegram, discord, slack, ...)
+├── drizzle.config.ts         # Drizzle Kit 配置 (schema: src/db/schema.ts, out: drizzle/)
 ├── .env.local
 └── package.json
 ```

@@ -1,6 +1,7 @@
 /**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:8080/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
+ * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -8,19 +9,51 @@ import { useState, useEffect, useCallback, useRef } from "react";
 const SENSORY_WS_URL = "ws://localhost:8080/sensory";
 const RECONNECT_DELAY_MS = 3000;
 
+/** v8.0 能力协商：声明 stream_chunk 以接收逐 token 推送 */
+const MANIFEST_CAPS = ["ui_render", "hitl_popup", "stream_chunk"];
+
 export interface SensoryPayload {
   step_type: string;
   content: string;
   source?: string;
   task_id?: string;
+  run_id?: string;
+  tool?: string;
+  payload?: Record<string, unknown>;
+}
+
+/** Handoff 人格切换事件 */
+export interface HandoffEvent {
+  persona: string;
+  displayName: string;
+}
+
+/** Swarm 任务分发/完成事件 */
+export interface SwarmEvent {
+  taskId: string;
+  type: "offer" | "assigned" | "completed";
+  tool?: string;
 }
 
 export function useSensoryWebSocket() {
   const [connected, setConnected] = useState(false);
   const [lastPayload, setLastPayload] = useState<SensoryPayload | null>(null);
   const [hitlPending, setHitlPending] = useState<SensoryPayload | null>(null);
+  /** v8.0 流式神经：当前 run 的累积内容，收到 answer 时清空 */
+  const [streamingContent, setStreamingContent] = useState("");
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  /** Handoff 人格切换：供 UI 触发主题色突变 */
+  const [handoffEvent, setHandoffEvent] = useState<HandoffEvent | null>(null);
+  /** Swarm 算力雷达：task_offer 时显示扫描，task_completed 时爆发 */
+  const [swarmEvent, setSwarmEvent] = useState<SwarmEvent | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onChunkRef = useRef<((chunk: string, runId: string) => void) | null>(null);
+
+  /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
+  const registerChunkHandler = useCallback((fn: ((chunk: string, runId: string) => void) | null) => {
+    onChunkRef.current = fn;
+  }, []);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -31,6 +64,8 @@ export function useSensoryWebSocket() {
 
       ws.onopen = () => {
         setConnected(true);
+        // v8.0 能力协商：声明 stream_chunk 以接收逐 token 推送
+        ws.send(JSON.stringify({ type: "manifest", caps: MANIFEST_CAPS }));
       };
 
       ws.onmessage = (event) => {
@@ -40,6 +75,42 @@ export function useSensoryWebSocket() {
 
           if (data.step_type === "HITL_REQUIRED") {
             setHitlPending(data);
+          }
+
+          // v8.0 流式神经：chunk 追加到当前消息，不创建新气泡
+          if (data.step_type === "chunk" && data.content != null) {
+            const runId = data.run_id ?? "";
+            setStreamingContent((prev) => prev + data.content);
+            setCurrentRunId(runId);
+            onChunkRef.current?.(data.content, runId);
+          }
+
+          // answer 结束时清空流式状态
+          if (data.step_type === "answer") {
+            setStreamingContent("");
+            setCurrentRunId(null);
+          }
+
+          // v8.0 Handoff：解析 [System] 灵魂传输完成... 触发人格色彩突变（持久至下次切换）
+          if (data.step_type === "observation" && data.content?.includes("[System] 灵魂传输完成")) {
+            const m = data.content.match(/你现在是\s*([^。]+)/);
+            const displayName = m?.[1]?.trim() ?? "全能助理";
+            const persona =
+              displayName.includes("架构师") ? "architect" :
+              displayName.includes("分析师") ? "researcher" : "default";
+            setHandoffEvent({ persona, displayName });
+          }
+
+          // v8.0 Swarm：task_offer 显示雷达扫描
+          if (data.step_type === "task_offer" && data.task_id) {
+            setSwarmEvent({ taskId: data.task_id, type: "offer", tool: data.tool });
+          }
+          if (data.step_type === "task_assigned" && data.task_id) {
+            setSwarmEvent({ taskId: data.task_id, type: "assigned", tool: data.tool });
+          }
+          if (data.step_type === "task_completed" && data.task_id) {
+            setSwarmEvent({ taskId: data.task_id, type: "completed" });
+            setTimeout(() => setSwarmEvent(null), 3000);
           }
         } catch {
           // 忽略非 JSON 消息
@@ -98,5 +169,11 @@ export function useSensoryWebSocket() {
     resolveHitl,
     sendHitlResponse,
     reconnect: connect,
+    // v8.0 视觉觉醒
+    streamingContent,
+    currentRunId,
+    handoffEvent,
+    swarmEvent,
+    registerChunkHandler,
   };
 }

@@ -12,10 +12,12 @@ import { sendChatMessage, streamChatMessage, voiceChat, synthesizeSpeech, routeI
 import { useAppStore } from "./store/appStore";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
+import { useSensoryWebSocket } from "./hooks/useSensoryWebSocket";
 import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { ChatUI } from "./components/Chat/ChatUI";
+import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import "./styles/globals.css";
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -47,6 +49,8 @@ function ChatApp() {
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { isConnected, setConnected } = useAppStore();
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
+  const sensory = useSensoryWebSocket();
+  const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler } = sensory;
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
@@ -479,8 +483,41 @@ function ChatApp() {
     }
   };
 
+  // v8.0 流式神经：WebSocket chunk 追加到当前 Assistant 消息
+  const appendChunkRef = useRef<(chunk: string) => void>(() => {});
+  const isLoadingRef = useRef(false);
+  isLoadingRef.current = isLoading;
+  appendChunkRef.current = (chunk: string) => {
+    if (!isLoadingRef.current) return;
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant") {
+        return prev.map((m, i) =>
+          i === prev.length - 1 ? { ...m, content: m.content + chunk } : m
+        );
+      }
+      return prev;
+    });
+  };
+  useEffect(() => {
+    registerChunkHandler((chunk) => appendChunkRef.current(chunk));
+    return () => registerChunkHandler(null);
+  }, [registerChunkHandler]);
+
+  // v8.0 人格色彩：Handoff 时全局主题突变（default 科技蓝 / architect 赛博紫 / researcher 矩阵绿）
+  const personaTheme = handoffEvent?.persona ?? "default";
+  useEffect(() => {
+    const root = document.getElementById("chat-root");
+    if (root) root.setAttribute("data-persona", personaTheme);
+  }, [personaTheme]);
+
   return (
-    <div className="w-full h-full min-h-0 flex flex-col bg-transparent border-0 relative" style={{ height: "100vh", background: "transparent" }}>
+    <div
+      className="w-full h-full min-h-0 flex flex-col bg-transparent border-0 relative"
+      style={{ height: "100vh", background: "transparent" }}
+    >
+      {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
+      <SensoryOverlay sensory={sensory} />
       <ChatUI
         messages={messages}
         input={input}
@@ -498,6 +535,7 @@ function ChatApp() {
         placeholder={isConnected ? "输入指令..." : "等待连接..."}
         riskLevel={riskLevel}
         disabled={!isConnected}
+        streamingFromWs={!!(isTyping && wsStreamingContent)}
       />
       {/* 高风险操作二次确认弹窗 */}
       {pendingHighRisk && (

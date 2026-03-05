@@ -6,7 +6,7 @@
 
 ## 基石：白皮书 (Single Source of Truth)
 
-**[docs/whitepaper/](./whitepaper/)** 为项目架构宪法，共 9 份：
+**[docs/whitepaper/](./whitepaper/)** 为项目架构宪法，共 10 份：
 
 | 序号 | 文档 | 内容 |
 |------|------|------|
@@ -19,6 +19,8 @@
 | 06 | [Layer 2](./whitepaper/06_LAYER2_EDGE.md) | 边缘引擎 |
 | 07 | [Layer 3](./whitepaper/07_LAYER3_TERMINAL.md) | 灵动终端 |
 | 08 | [JPP 插件](./whitepaper/08_JPP_SDK_AND_SKILLS.md) | 插件协议与生态 |
+| 09 | [去 BaaS 化](./whitepaper/09_DE_BAASIFICATION.md) | Drizzle、Auth.js、绝对主权 |
+| 10 | [控制面与数据面分离](./whitepaper/10_CONTROL_DATA_PLANE.md) | mDNS、WebRTC P2P、能直连绝不绕路 |
 
 ---
 
@@ -36,6 +38,7 @@
 | [TELEGRAM_TUNNEL_SETUP.md](./TELEGRAM_TUNNEL_SETUP.md) | Bot 配置与 Webhook |
 | [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | 设备配对协议 |
 | [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | 信任链与心跳 |
+| [LAYER3_L2_WAN_ARCHITECTURE.md](./LAYER3_L2_WAN_ARCHITECTURE.md) | Layer 3 与 Layer 2 通信架构 |
 | [UX_AND_SECURITY_DESIGN.md](./UX_AND_SECURITY_DESIGN.md) | 零摩擦与无感安全 |
 | [JMP_SPEC.md](./JMP_SPEC.md) | JMP 2.0 协议 |
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱安全 |

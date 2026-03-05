@@ -144,6 +144,8 @@ async def _handle_sensory_inbound(msg: str, websocket=None) -> tuple[bool, list[
             result_data = data.get("data", "")
             resolve_task(task_id, result_data)
             console.print(f"[magenta][🐝 Swarm] 任务 {task_id[:12]} 完成！[/magenta]")
+            # v8.0 视觉觉醒：广播 task_completed 供 UI 蜂巢雷达爆发
+            await _broadcast_task_completed(task_id)
             return (False, None)
 
         if task_id and action in ("HITL_APPROVE", "HITL_REJECT"):
@@ -199,6 +201,25 @@ async def _sensory_ws_handler(websocket) -> None:
         console.print("[dim][Layer3] 客户端已断开[/dim]")
 
 
+async def _broadcast_task_completed(task_id: str) -> None:
+    """v8.0 广播 task_completed 至所有 ui_render 客户端，触发蜂巢雷达爆发"""
+    out = {"step_type": "task_completed", "content": "", "task_id": task_id}
+    payload = json.dumps(out, ensure_ascii=False)
+    dead = []
+    for ws, caps in list(_sensory_clients.items()):
+        if _CAP_UI_RENDER not in caps:
+            continue
+        try:
+            await ws.send(payload)
+        except websockets.exceptions.ConnectionClosed:
+            dead.append(ws)
+        except Exception as e:
+            logger.debug("[Layer3] task_completed 广播失败: %s", e)
+            dead.append(ws)
+    for ws in dead:
+        _sensory_clients.pop(ws, None)
+
+
 def _has_worker_cap(caps: list[str]) -> bool:
     """是否有任一 worker_* 能力（可接单虫群任务）"""
     return any(str(c).startswith("worker_") for c in caps)
@@ -206,7 +227,7 @@ def _has_worker_cap(caps: list[str]) -> bool:
 
 def _should_send_to_client(step_type: str, caps: list[str]) -> bool:
     """v8.0 能力过滤：按 caps 决定是否向该客户端广播"""
-    if _CAP_UI_RENDER in caps and step_type in ("thought", "action", "observation", "answer"):
+    if _CAP_UI_RENDER in caps and step_type in ("thought", "action", "observation", "answer", "task_completed"):
         return True
     if _CAP_HITL_POPUP in caps and step_type == "HITL_REQUIRED":
         return True

@@ -81,7 +81,7 @@ def _extract_skills_from_blueprint(ast_json: dict) -> list[dict[str, Any]]:
                     "fuel_limit": fuel,
                 })
         else:
-            # TODO: v6.0 Semantic Vector Router will take over skill matching here.
+            # v8.0: vector_router.match_local_skill() 可接管意图→技能匹配，此处保留 fallback
             # 已移除死板的默认路径遍历 (plugins/dummy.wasm, plugins/hello.wasm)
             pass
     return skills

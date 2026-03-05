@@ -89,7 +89,7 @@ Jachin Nexus 的三大交互形态（Voice、GUI/Sprite、IM）不是互相割�
 ```python
 @dataclass
 class SensoryInputEvent:
-    source: str   # "cli" | "voice" | "gui" | "webhook" | "telegram" | "sprite" | "lark"
+    source: str   # "cli" | "voice" | "gui" | "webhook" | "telegram" | "layer3" | "lark"
     intent: str   # 用户输入的文本
     metadata: dict # 扩展数据 (ast_json, pending_message_ids, session_id, run_id, ...)
     # v8.0 Session Multiplexing: metadata 中可携带 session_id（Telegram Chat ID、设备 UUID、CLI 会话 ID）

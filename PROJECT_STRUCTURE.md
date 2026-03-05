@@ -26,7 +26,7 @@ jachin-system/
 │       ├── 060-v8-singularity.mdc # v8.0 升维特性
 │       └── ...
 │
-├── cloud/                    # [Layer 1] 云端代码 (Next.js + Supabase)
+├── cloud/                    # [Layer 1] 云端代码 (Next.js + Drizzle ORM + Auth.js)
 │   └── nexus/                # 控制台、舰队、Forge、IM Webhook、心跳 API
 │
 ├── core/                     # [Layer 2] 神经中枢总线 (Python)
@@ -82,7 +82,7 @@ jachin-system/
 - 资产确权：蓝图、JPP 插件元数据
 - 心跳 API：指令下发、结果回传
 
-**技术栈**: Next.js + Supabase
+**技术栈**: Next.js + Drizzle ORM + Auth.js（去 BaaS 化 P0 已落地）
 
 ---
 

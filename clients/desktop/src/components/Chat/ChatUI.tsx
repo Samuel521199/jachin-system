@@ -35,6 +35,8 @@ export interface ChatUIProps {
   placeholder?: string;
   riskLevel?: RiskLevel;
   disabled?: boolean;
+  /** v8.0 流式神经：来自 WebSocket 的逐 token 推送，使用极客光标 █ */
+  streamingFromWs?: boolean;
 }
 
 const displayMessages = (messages: StoredMessage[]) =>
@@ -57,6 +59,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
   placeholder = "输入指令...",
   riskLevel = "safe",
   disabled = false,
+  streamingFromWs = false,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -139,7 +142,10 @@ export const ChatUI: React.FC<ChatUIProps> = ({
                 <span>
                   {msg.content}
                   {isTyping && idx === list.length - 1 && msg.role === "assistant" && (
-                    <span className="inline-block w-2 h-4 ml-1 bg-cyan-400/80 animate-pulse rounded-sm" />
+                    <span
+                      className={streamingFromWs ? "stream-cursor" : "inline-block w-2 h-4 ml-1 bg-cyan-400/80 animate-pulse rounded-sm"}
+                      aria-hidden
+                    />
                   )}
                 </span>
               </div>
