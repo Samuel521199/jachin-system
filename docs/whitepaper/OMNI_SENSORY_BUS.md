@@ -77,7 +77,7 @@ Jachin Nexus 的三大交互形态（Voice、GUI/Sprite、IM）不是互相割�
 | **定位** | 跨越物理网关的异步远程统治 |
 | **目标用户** | 数字游牧民、DevOps、连锁店长 |
 | **UMA** | Universal Message Adapter，Telegram/飞书/Slack 统一清洗 |
-| **异步投递** | Layer 1 入队 → Layer 2 心跳拉取 → Agent Loop |
+| **异步投递** | Layer 1 入队 → Layer 2 拉取（过渡期：心跳；P0：WS 长连推送）→ Agent Loop |
 | **形态** | 算力永远跟随手机 |
 
 ---
@@ -146,7 +146,7 @@ bus = get_bus()
 | 全息感官总线 | `core/event_bus.py` | OmniSensoryBus、SensoryInputEvent、SensoryOutputEvent |
 | brain_worker | `_brain_worker()` | 消费 SensoryInputEvent → agent_loop.run() → publish_output |
 | Daemon 挂载 | `core/daemon.py` | start_omni_consumer() + subscribe_omni_output("telegram", ...) |
-| IM 输入注入 | 心跳拉取 task | `emit_omni_input("telegram", task, {...})` |
+| IM 输入注入 | 拉取 task（过渡期：心跳；P0：WS 推送） | `emit_omni_input("telegram", task, {...})` |
 | **CLI 感官插件** | `core/cli.py` shell | 构造 SensoryInputEvent(source='cli') → publish_input；订阅 output.cli → Rich 打印 |
 | **Voice 感官插件** | `core/senses/voice_organ.py` | STT (SpeechRecognition+Whisper) → emit → TTS (edge-tts+pygame)；入口 `python -m core.voice_cli` |
 

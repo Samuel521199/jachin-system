@@ -1,49 +1,69 @@
-# Layer 3 与 Layer 2 广域网通信架构
+# Layer 3 与 Layer 2 通信架构
 
 **版本**: v8.0 (The Singularity OS)  
-**定位**: 广域网中 Layer 3（用户端）与 Layer 2（边缘大脑）的匹配方式、通信架构与数据流
+**定位**: 控制面与数据面分离 — 能直连绝不绕路
 
 ---
 
-## 一、核心结论：Layer 3 不直连 Layer 2
+## 一、 核心原则：智能路由模式
 
-在广域网 (WAN) 中，**Layer 3 与 Layer 2 不建立直接连接**。二者均通过 **Layer 1 云端枢纽** 中转，实现 NAT 穿透与身份匹配。
+**Layer 1 仅负责鉴权、计费、信令**。感官数据（Streaming Chunk、图像、语音）优先 **P2P 或局域网直连**，能直连绝不绕路。
+
+| 通信场景 | 发起端 (Layer 3) | 接收端 (Layer 2) | 通信路径 | Layer 1 角色 |
+|----------|------------------|------------------|----------|--------------|
+| **同机部署** | Tauri 桌面端 | 本地 Daemon | `localhost` 直连 | 仅开机鉴权一次 |
+| **同局域网** | 手机 App | 家中主机 | mDNS 发现，内网 IP 直连 | 仅开机鉴权一次 |
+| **广域网原生** | 手机 App (4G) | 家中主机 (宽带) | WebRTC P2P 打洞直连 | 信令交换（极低负载） |
+| **广域网打洞失败** | 手机 App (严格内网) | 家中主机 | TURN 服务器中继 | 流量中转（中等负载） |
+| **第三方 IM** | Telegram 服务器 | 家中主机 | Layer 1 Webhook → WS 长连推送 | 网关中转（较高负载） |
+
+---
+
+## 二、 架构拓扑图
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           广域网 (WAN) 通信拓扑                                    │
+│                    智能路由：控制面与数据面分离                                     │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│   用户手机 (Telegram)              公网                   用户家中内网              │
-│   ┌──────────────┐              ┌──────────────┐       ┌──────────────────┐ │
-│   │  Layer 3     │   Webhook    │   Layer 1    │ 心跳  │   Layer 2        │ │
-│   │  (Telegram   │ ──────────►  │   (Nexus     │ ◄──── │   (daemon.py)    │ │
-│   │   App)       │   POST       │   Cloud)     │       │   边缘大脑        │ │
-│   │              │              │              │ ────► │   (内网/NAT后)   │ │
-│   │  发消息 →    │              │  匹配+队列    │ 回调  │   执行+回传      │ │
-│   └──────────────┘              └──────────────┘       └──────────────────┘ │
-│         │                                │                      │           │
-│         │                                │                      │           │
-│         └────────────────────────────────┼──────────────────────┘           │
-│                                          │                                   │
-│                                    Layer 1 作为唯一                          │
-│                                    匹配中枢与中转                             │
+│  【同机】Tauri ──────────────── ws://localhost:8080/sensory ─── Layer 2         │
+│              │                                                                    │
+│              └── Layer 1 仅配对鉴权一次                                            │
+│                                                                                 │
+│  【同局域网】手机 App ── mDNS 发现 _jachin-nexus._tcp.local ── ws://192.168.x.x:8080 │
+│              │                                                                    │
+│              └── Layer 1 仅配对鉴权一次，数据面零经手                               │
+│                                                                                 │
+│  【广域网】手机 App ◄══════════ WebRTC P2P 隧道 ══════════► 家中 Layer 2          │
+│              │                        │                        │                │
+│              └── Layer 1 信令交换 (SDP/ICE) ────────────────────┘                │
+│                  数据面完全绕过 Layer 1                                            │
+│                                                                                 │
+│  【第三方 IM】Telegram ──► Layer 1 Webhook ──► agent_message_queue               │
+│                    │              │                                              │
+│                    │              └── WS 长连推送 ──► Layer 2 (事件驱动)          │
+│                    │                        │                                     │
+│                    └── 回调 Telegram API ◄───┘ 结果回传                            │
+│                    ※ 过渡期：仍为心跳拉取，P0 将改为 WS 长连推送                    │
+│                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 二、匹配方式：三层绑定关系
+## 三、 匹配方式：三层绑定关系
+
+Layer 1 作为**控制面**，负责身份匹配与信令。数据面直连时，匹配在配对阶段完成。
 
 | 绑定链 | 用途 | 数据来源 |
 |--------|------|----------|
-| **1. access_token ↔ edge_agents** | Layer 2 心跳鉴权 | 配对后 `pairing/status` 返回，写入 `~/.jachin/nexus_config.json` |
-| **2. im_binding_id ↔ edge_agents** | Layer 3 (IM) 消息路由 | 用户通过 `bind-im` API 将 Telegram chat_id 绑定到 agent |
-| **3. agent_id ↔ agent_message_queue** | 任务队列归属 | 消息插入时 `agent_id`，心跳拉取时按 `agent_id` 过滤 |
+| **1. access_token ↔ edge_agents** | Layer 2 鉴权、信令 | 配对后 `pairing/status` 返回，写入 `~/.jachin/nexus_config.json` |
+| **2. im_binding_id ↔ edge_agents** | 第三方 IM 消息路由 | 用户通过 `bind-im` API 将 Telegram chat_id 绑定到 agent |
+| **3. agent_id ↔ agent_message_queue** | 第三方 IM 任务队列 | 消息插入时 `agent_id`，WS 推送或心跳拉取时按 `agent_id` 过滤 |
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           匹配关系 (Layer 1 数据库)                                 │
+│                    匹配关系 (Layer 1 控制面)                                       │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │   edge_agents 表                                                                 │
@@ -53,17 +73,14 @@
 │   │ uuid-xxx      │ jch-abc123  │ 123456789     │ telegram    │ active     │  │
 │   └─────────────────────────────────────────────────────────────────────────┘  │
 │          │                    │                    │                            │
-│          │                    │                    │                            │
 │          ▼                    ▼                    ▼                            │
 │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                      │
-│   │ 心跳鉴权      │    │ 配对下发     │    │ Webhook 路由  │                      │
-│   │ Bearer token │    │ 写入 nexus_  │    │ chat_id →    │                      │
-│   │ → agent_id   │    │ config.json │    │ agent_id     │                      │
+│   │ 鉴权/信令     │    │ 配对下发     │    │ 第三方 IM    │                      │
+│   │ Bearer token │    │ 写入 nexus_  │    │ chat_id →   │                      │
+│   │ → agent_id   │    │ config.json │    │ agent_id    │                      │
 │   └──────────────┘    └──────────────┘    └──────────────┘                      │
-│          │                    │                    │                            │
-│          └────────────────────┼────────────────────┘                            │
-│                               ▼                                                 │
-│   agent_message_queue 表                                                         │
+│                                                                                 │
+│   agent_message_queue（仅第三方 IM 使用）                                         │
 │   ┌─────────────────────────────────────────────────────────────────────────┐  │
 │   │ agent_id │ message_text │ direction │ status                              │  │
 │   │ uuid-xxx │ "查天气"     │ inbound   │ pending → processed                 │  │
@@ -74,105 +91,90 @@
 
 ---
 
-## 三、完整流程：从用户发消息到结果回传
+## 四、 各场景通信流程
+
+### 4.1 同机 / 同局域网：直连，Layer 1 零数据面
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                    跨网通讯流程 (IM Gateway + 心跳拉取)                             │
+│                    同机 / 同网直连流程                                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  ① 用户 (Telegram) 发消息 "查北京天气"                                            │
-│         │                                                                       │
-│         ▼                                                                       │
-│  ② Telegram 服务器 → POST /api/v1/webhooks/telegram                              │
-│         │         Body: { message: { chat: { id: 123456789 }, text: "..." } }   │
-│         ▼                                                                       │
-│  ③ Layer 1: chat_id 123456789 → 查 edge_agents (im_binding_id=123456789)        │
-│         │         → agent_id = uuid-xxx                                          │
-│         │         → INSERT agent_message_queue (agent_id, "查北京天气", pending) │
-│         ▼                                                                       │
-│  ④ Layer 2 (daemon) 每 10 秒: POST /api/v1/agents/heartbeat                      │
-│         │         Headers: Authorization: Bearer <access_token>                 │
-│         │         Body: { instance_id: "dev-001" }                               │
-│         ▼                                                                       │
-│  ⑤ Layer 1: access_token → 查 edge_agents (auth_token 或 id) → agent_id        │
-│         │         → SELECT agent_message_queue WHERE agent_id AND status=pending│
-│         │         → 返回 { task: "查北京天气", pending_message_ids: [...] }      │
-│         ▼                                                                       │
-│  ⑥ Layer 2: 注入 event_bus → Agent Loop 执行 → 得到 Final Answer                │
-│         │                                                                       │
-│         ▼                                                                       │
-│  ⑦ Layer 2: POST /api/v1/agents/result                                          │
-│         │         Body: { result: "北京晴 25°C", message_ids: [...] }           │
-│         ▼                                                                       │
-│  ⑧ Layer 1: UPDATE agent_message_queue SET status=processed                      │
-│         │         → 调用 Telegram Bot API 将 result 推送到 chat_id 123456789     │
-│         ▼                                                                       │
-│  ⑨ 用户手机收到 "北京晴 25°C"                                                    │
+│  【同机】Tauri 与 Layer 2 同进程/同机                                              │
+│     Tauri ── ws://localhost:8080/sensory ── Layer 2 daemon                       │
+│     layer3_broadcast: thought/action/chunk/HITL/task_offer 全量直连               │
+│     Layer 1 不参与数据面                                                          │
+│                                                                                 │
+│  【同网】手机 App 与 Layer 2 同 Wi-Fi                                              │
+│     ① Layer 2 启动时 mDNS 广播 _jachin-nexus._tcp.local                          │
+│     ② 手机 App 扫描 → 发现 192.168.1.100:8080                                     │
+│     ③ 直连 ws://192.168.1.100:8080/sensory                                       │
+│     ④ 流式 Chunk、Swarm 雷达等全部内网直传，Layer 1 零压力                         │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 广域网原生：P2P 打洞，Layer 1 仅信令
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    广域网 P2P 流程（目标架构）                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ① Layer 3 与 Layer 2 均连 Layer 1 信令通道                                       │
+│  ② Layer 1 交换 SDP / ICE 候选者（数据量极小）                                      │
+│  ③ Layer 3 ↔ Layer 2 建立 WebRTC Data Channel 或 Libp2p 隧道                      │
+│  ④ 流式 Chunk、图像、语音全部经 P2P 直传，完全绕过 Layer 1                          │
+│  ⑤ 打洞失败时 Fallback：TURN 中继                                                  │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 第三方 IM（Telegram）：Webhook + WS 长连推送
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    第三方 IM 流程（目标：WS 长连推送）                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ① 用户 (Telegram) 发消息 "查北京天气"                                             │
+│  ② Telegram → POST /api/v1/webhooks/telegram                                     │
+│  ③ Layer 1: chat_id → edge_agents → agent_id → INSERT agent_message_queue        │
+│  ④ Layer 1 经 WS 长连**立即推送** task 给 Layer 2（事件驱动）                      │
+│     ※ 过渡期：Layer 2 仍为 HTTP 心跳拉取，P0 将改为 WS 长连                        │
+│  ⑤ Layer 2 执行 → 经同一管道回传 result                                           │
+│  ⑥ Layer 1 调用 Telegram API → 用户收到结果                                       │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 四、Layer 3 的两种形态
+## 五、 Layer 3 形态与路径
 
-| 形态 | 网络位置 | 与 Layer 2 的通信方式 |
-|------|----------|------------------------|
-| **IM 客户端 (Telegram/飞书)** | 广域网任意位置 | 经 Layer 1 中转：Webhook → 队列 → 心跳拉取 → 回调 |
-| **Tauri 桌面端 (同机)** | 与 Layer 2 同机 | **直连** `ws://localhost:8080/sensory`：流式 chunk、HITL、Swarm 雷达 |
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                    Layer 3 双形态通信路径                                          │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  【形态 A】Telegram 手机 (广域网)                                                  │
-│                                                                                 │
-│     用户手机 ──► Telegram ──► Layer 1 Webhook ──► agent_message_queue            │
-│                                                          │                      │
-│     用户手机 ◄── Telegram ◄── Layer 1 回调 ◄──────────────┘                      │
-│                          ▲                                                      │
-│                          │ 心跳拉取 + result 回传                                │
-│                          │                                                      │
-│                    Layer 2 (内网)                                                │
-│                                                                                 │
-│  ─────────────────────────────────────────────────────────────────────────────  │
-│                                                                                 │
-│  【形态 B】Tauri 桌面 (与 Layer 2 同机)                                           │
-│                                                                                 │
-│     Tauri Chat 窗口 ──► ws://localhost:8080/sensory ◄── Layer 2 daemon            │
-│                              │                                                    │
-│                              │ layer3_broadcast: thought/action/chunk/HITL       │
-│                              │ 能力协商 (manifest: ui_render, stream_chunk, ...)  │
-│                              ▼                                                    │
-│                        全息感官投射 (流式打字机、Handoff、Swarm 雷达)               │
-│                                                                                 │
-│     ※ 配对流程：Tauri 扫码 → Layer 1 pairing/confirm → access_token             │
-│        → 写入 ~/.jachin/nexus_config.json → Tauri 静默拉起 Layer 2 daemon         │
-│        → Layer 2 读取同一 config，用 access_token 连 Layer 1                     │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+| 形态 | 网络位置 | 数据面路径 | Layer 1 参与 |
+|------|----------|------------|--------------|
+| **Tauri 桌面 (同机)** | 与 Layer 2 同机 | `localhost` 直连 | 仅配对鉴权 |
+| **原生 App (同网)** | 与 Layer 2 同 Wi-Fi | mDNS → 内网 IP 直连 | 仅配对鉴权 |
+| **原生 App (广域网)** | 4G/5G vs 家中宽带 | WebRTC P2P 直连 | 信令交换 |
+| **第三方 IM** | Telegram 服务器 | Webhook → WS 推送 → Layer 2 | 网关中转 |
 
 ---
 
-## 五、Jachin Mesh：Layer 2 连 Layer 1 的双通道
+## 六、 Jachin Mesh：Layer 2 连 Layer 1（控制面）
 
-Layer 2 连接 Layer 1 有两种方式（优先 WebSocket，失败则 HTTP 心跳）：
+Layer 2 连接 Layer 1 用于**鉴权、信令、第三方 IM 任务**：
 
 | 通道 | 端点 | 说明 |
 |------|------|------|
 | **WebSocket (量子隧道)** | `wss://<layer1>/api/v1/agents/stream` | 长连，毫秒级下发 task/blueprint；断线指数退避重连 |
-| **HTTP 心跳兜底** | `POST /api/v1/agents/heartbeat` | 每 5 秒轮询，无 WebSocket 时启用 |
-
-两种通道均携带 `Authorization: Bearer <access_token>`，Layer 1 据此解析 `agent_id` 并返回该 agent 的待办任务。
+| **HTTP 心跳兜底** | `POST /api/v1/agents/heartbeat` | 无 WebSocket 时启用；P0 将演进为 WS 长连替代轮询 |
 
 ---
 
-## 六、配对流程：Layer 3 与 Layer 2 的「结婚证」
+## 七、 配对流程：建立 edge_agent 绑定
 
-Tauri 桌面端与 Layer 2 的匹配，通过**配对**建立同一 `edge_agent` 记录：
+配对建立 `edge_agent` 记录，供控制面鉴权与第三方 IM 路由。**同机/同网/P2P 直连时，配对后数据面不再经 Layer 1**。
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -180,53 +182,36 @@ Tauri 桌面端与 Layer 2 的匹配，通过**配对**建立同一 `edge_agent`
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  ① Tauri 启动，未检测到 ~/.jachin/nexus_config.json                              │
-│         │                                                                       │
-│         ▼                                                                       │
-│  ② Tauri (Rust) → POST /api/v1/pairing/request                                   │
-│         │         Layer 1 返回 { session_id, short_code, pair_url }             │
-│         │         生成二维码 (含 pair_url + code)                                  │
-│         ▼                                                                       │
-│  ③ 用户手机扫码 → 打开 Layer 1 /pair 页面 → 输入 6 位码 → 点击「授权」             │
-│         │                                                                       │
-│         ▼                                                                       │
-│  ④ Layer 1: POST /api/v1/pairing/confirm { code }                               │
-│         │         创建/更新 edge_agents，status=active，生成 auth_token          │
-│         ▼                                                                       │
-│  ⑤ Tauri 轮询 GET /api/v1/pairing/status?session_id=...                          │
-│         │         收到 { status: "success", access_token, instance_id }         │
-│         ▼                                                                       │
-│  ⑥ Tauri 写入 ~/.jachin/nexus_config.json                                        │
-│         │         { access_token, instance_id, nexus_base_url }                 │
-│         ▼                                                                       │
-│  ⑦ Tauri 静默拉起 core/daemon.py (OS 级无黑框启动)                               │
-│         │                                                                       │
-│         ▼                                                                       │
-│  ⑧ Layer 2 daemon 读取 nexus_config.json → 用 access_token 连 Layer 1           │
-│         │         → 心跳/WebSocket 建立，与 edge_agents 记录绑定                  │
-│         ▼                                                                       │
-│  ⑨ Tauri 与 Layer 2 共享同一 edge_agent，匹配完成                                │
+│  ② Tauri → POST /api/v1/pairing/request → Layer 1 返回 session_id, short_code   │
+│  ③ 用户扫码 → Layer 1 /pair 页面 → 输入 6 位码 → 授权                            │
+│  ④ Layer 1: pairing/confirm → 创建 edge_agents，生成 auth_token                  │
+│  ⑤ Tauri 轮询 pairing/status → 收到 access_token, instance_id                   │
+│  ⑥ Tauri 写入 nexus_config.json → 静默拉起 Layer 2 daemon                       │
+│  ⑦ Layer 2 用 access_token 连 Layer 1（控制面）                                  │
+│  ⑧ Tauri 直连 ws://localhost:8080/sensory（数据面，同机）                         │
+│     ※ 同网时：Layer 2 mDNS 广播，手机 App 嗅探直连                                │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 七、 未来升维：控制面与数据面分离
+## 八、 过渡期实现说明
 
-当前架构为**中心化中转**。规划中的升维方案将实现**控制面/数据面分离**：
-
-- **局域网**：mDNS 零配置发现，内网 IP 直连，Layer 1 零压力
-- **广域网原生**：WebRTC P2P 打洞，Layer 1 仅作信令交换
-- **第三方 IM**：HTTP 轮询 → WebSocket 长连推送，事件驱动
+| 场景 | 目标架构 | 当前实现 |
+|------|----------|----------|
+| 同机 | localhost 直连 | ✅ 已实现 |
+| 同局域网 | mDNS 直连 | ⏳ P1 规划 |
+| 广域网原生 | WebRTC P2P | ⏳ P2 规划 |
+| 第三方 IM | WS 长连推送 | HTTP 心跳拉取（P0 将改造） |
 
 详见 [10_CONTROL_DATA_PLANE.md](./whitepaper/10_CONTROL_DATA_PLANE.md)。
 
 ---
 
-## 八、 相关文档
+## 九、 相关文档
 
+- [10_CONTROL_DATA_PLANE.md](./whitepaper/10_CONTROL_DATA_PLANE.md) — 控制面/数据面分离白皮书
 - [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) — IM 网关与消息队列
 - [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) — 配对协议
-- [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) — 心跳与鉴权
-- [03_WORKFLOW.md](./whitepaper/03_WORKFLOW.md) — 业务流程白皮书
-- [10_CONTROL_DATA_PLANE.md](./whitepaper/10_CONTROL_DATA_PLANE.md) — 控制面/数据面分离（未来升维）
+- [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) — 信任链与鉴权

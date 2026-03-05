@@ -121,6 +121,6 @@ Telegram 等闭源第三方 IM 无法支持自定义 P2P 协议，**必须**经 
 
 ## 八、 相关文档
 
-- [LAYER3_L2_WAN_ARCHITECTURE.md](../LAYER3_L2_WAN_ARCHITECTURE.md) — 当前广域网通信架构（中心化）
+- [LAYER3_L2_WAN_ARCHITECTURE.md](../LAYER3_L2_WAN_ARCHITECTURE.md) — Layer 3 与 Layer 2 通信架构（智能路由）
 - [07_LAYER3_TERMINAL.md](./07_LAYER3_TERMINAL.md) — Layer 3 终端规范
 - [OMNI_SENSORY_BUS.md](./OMNI_SENSORY_BUS.md) — 全息感官总线

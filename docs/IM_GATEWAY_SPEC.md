@@ -17,7 +17,7 @@ Layer 1 (Nexus)  Webhook 路由
     │
     │ 插入 agent_message_queue (inbound, pending)
     ▼
-边缘 Agent 心跳拉取
+边缘 Agent 拉取（过渡期：心跳；P0：WS 长连推送）
     │
     │ task + pending_message_ids
     ▼

@@ -117,7 +117,7 @@ Layer 2 打破“万物皆需编译 Wasm”的设定，升级为三轨道：
 
 1. **Jachin Mesh**：基于 WebSocket 的双向长连通道，实现 Layer 1 到 Layer 2 的**毫秒级指令下发**，替代 10 秒 HTTP 轮询。
 2. **生物钟 cron_thinker (30min)**：本地主动环顾，无需云端。
-3. **IM 跨网直达**：手机 → Layer 1 Webhook (Universal Adapter) → 队列 → Jachin Mesh 推送 → Agent Loop → Callback → 手机。
+3. **IM 跨网直达**：手机 → Layer 1 Webhook (Universal Adapter) → 队列 → Jachin Mesh 推送（过渡期：心跳拉取；P0：WS 长连）→ Agent Loop → Callback → 手机。同机/同网/广域网原生客户端则直连 Layer 2，详见 [LAYER3_L2_WAN_ARCHITECTURE.md](../LAYER3_L2_WAN_ARCHITECTURE.md)。
 4. **持久化感官总线**：OmniSensoryBus 底层挂载 SQLite 队列，确保进程重启不丢事件。
 5. **v8.0 边缘网格计算 (Edge Mesh Swarm)**：同 Layer 2 网络下的多个 Layer 3 设备可形成**算力集群**。高负载任务（如 4K 视频压缩）由 Layer 2 向局域网内设备广播「谁空闲？」，空闲设备认领任务、执行 WASM 技能、回传结果。Jachin 升级为家庭/企业级私有云计算集群。
 

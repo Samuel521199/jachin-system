@@ -53,11 +53,11 @@ Layer 1 是 Jachin 系统的**最高权限调度枢纽与数字孪生大盘**。
 
 - **统一格式**：Discord、Slack、WhatsApp、iMessage、飞书、钉钉等 Webhook 进入后，全部清洗成标准 **Jachin Message** 格式入队。
 - **核心逻辑只写一次**：渠道无限扩展，无需为每个平台重写业务逻辑。
-- **路由**：`/api/v1/webhooks/{platform}` → 解析 → 写入 `agent_messages` → 心跳下发。
+- **路由**：`/api/v1/webhooks/{platform}` → 解析 → 写入 `agent_messages` → 下发（过渡期：心跳拉取；P0：WS 长连推送）。
 
 ### 3.2 跨网通信链路 (以 Telegram 为例)
 1. **Webhook 捕获**：接收用户消息，解析 Chat ID，写入队列。
-2. **心跳下发**：Layer 2 拉取 `pending` 任务。
+2. **任务下发**：Layer 2 拉取 `pending` 任务（过渡期：心跳；P0：WS 长连推送）。
 3. **结果回传**：Layer 1 调用平台 API 将结果推回用户。
 
 ---
