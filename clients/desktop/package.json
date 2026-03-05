@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:l3-sidecar": "python ../../scripts/build_l3_sidecar.py",
+    "prebuild": "npm run build:l3-sidecar",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -22,7 +24,7 @@
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.18.0",
     "@rive-app/react-canvas": "^4.26.1",
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "~2.10.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "@tauri-apps/plugin-window-state": "^2.0.0",
     "clsx": "^2.1.0",

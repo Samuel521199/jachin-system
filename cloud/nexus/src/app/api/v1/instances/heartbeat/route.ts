@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents } from "@/db/schema";
+import { eq, or, and } from "drizzle-orm";
 
 /**
  * POST /api/v1/instances/heartbeat
- * P0-4 端云心跳 - 前线边缘智能体向指挥部汇报生命体征
+ * 端云心跳 - 使用 edge_agents 表（与 agents/heartbeat 共用鉴权逻辑）
  *
  * Body: { instance_id, core_version, metrics, active_plugins }
  * Headers: Authorization: Bearer <access_token>
@@ -19,106 +21,56 @@ export async function POST(req: Request) {
     }
     const token = authHeader.slice(7).trim();
 
-    const body = await req.json();
-    const { instance_id, core_version, metrics, active_plugins } = body;
+    const body = await req.json().catch(() => ({}));
+    const { instance_id, metrics, active_plugins } = body;
 
-    if (!instance_id) {
-      return NextResponse.json(
-        { error: "Missing instance_id" },
-        { status: 400 }
-      );
+    if (!isDatabaseConfigured()) {
+      return NextResponse.json({ success: true, timestamp: Date.now() });
     }
 
-    // 鉴权：校验 Token 是否属于该边缘智能体（pairing_sessions + layer2_instances）
-    if (isSupabaseConfigured()) {
-      const sb = getSupabase()!;
-      const { data: session, error: authError } = await sb
-        .from("pairing_sessions")
-        .select("session_id, status, layer2_instance_id")
-        .eq("session_id", token)
-        .maybeSingle();
+    const db = getDb()!;
 
-      if (authError) {
-        console.error("Heartbeat auth query error:", authError);
-        return NextResponse.json(
-          { error: "防线拦截：身份校验异常" },
-          { status: 500 }
-        );
-      }
+    // 鉴权：auth_token 或 id 匹配
+    const [agent] = await db
+      .select({ id: edgeAgents.id })
+      .from(edgeAgents)
+      .where(
+        or(
+          and(eq(edgeAgents.authToken, token), eq(edgeAgents.status, "active")),
+          and(eq(edgeAgents.id, token), eq(edgeAgents.status, "active"))
+        )
+      )
+      .limit(1);
 
-      if (!session || session.status !== "approved") {
-        console.warn(
-          `🚨 警告：截获到伪造的心跳包！来源边缘智能体 ID: ${instance_id}`
-        );
+    let agentId = agent?.id;
+    if (!agent) {
+      const [offlineAgent] = await db
+        .select({ id: edgeAgents.id })
+        .from(edgeAgents)
+        .where(or(eq(edgeAgents.authToken, token), eq(edgeAgents.id, token)))
+        .limit(1);
+
+      if (!offlineAgent) {
         return NextResponse.json(
-          {
-            error:
-              "防线拦截：边缘智能体身份验证失败，拒绝接入大盘！",
-          },
+          { error: "防线拦截：边缘智能体身份验证失败，拒绝接入大盘！" },
           { status: 403 }
         );
       }
 
-      // 若已绑定 layer2_instance，校验 instance_id 一致性
-      if (session.layer2_instance_id) {
-        const { data: linkedInstance } = await sb
-          .from("layer2_instances")
-          .select("instance_id")
-          .eq("id", session.layer2_instance_id)
-          .maybeSingle();
-
-        if (
-          linkedInstance &&
-          linkedInstance.instance_id &&
-          linkedInstance.instance_id !== instance_id
-        ) {
-          console.warn(
-            `🚨 警告：Token 与边缘智能体 ID 不匹配！期望: ${linkedInstance.instance_id}, 收到: ${instance_id}`
-          );
-          return NextResponse.json(
-            {
-              error:
-                "防线拦截：边缘智能体身份验证失败，拒绝接入大盘！",
-            },
-            { status: 403 }
-          );
-        }
-      }
+      agentId = offlineAgent.id;
+      await db
+        .update(edgeAgents)
+        .set({ lastHeartbeat: new Date(), status: "active" })
+        .where(eq(edgeAgents.id, offlineAgent.id));
+    } else {
+      await db
+        .update(edgeAgents)
+        .set({ lastHeartbeat: new Date() })
+        .where(eq(edgeAgents.id, agent.id));
     }
 
-    const updatePayload = {
-      core_version: core_version ?? null,
-      active_plugins: active_plugins ?? {},
-      metrics: metrics ?? {},
-      last_heartbeat: new Date().toISOString(),
-    };
-
-    if (isSupabaseConfigured()) {
-      const sb = getSupabase()!;
-      const { error } = await sb
-        .from("layer2_instances")
-        .upsert(
-          {
-            instance_id,
-            ...updatePayload,
-            environment_type: "bare_metal",
-          },
-          { onConflict: "instance_id" }
-        );
-
-      if (error) {
-        console.error("Heartbeat DB error:", error);
-        return NextResponse.json(
-          { error: "心跳写入失败" },
-          { status: 500 }
-        );
-      }
-    }
-
-    console.log(`\n🛸 收到边缘智能体 [${String(instance_id).slice(0, 8)}] 心跳:`);
-    console.log(
-      `   💻 CPU: ${metrics?.cpu_percent ?? "?"}% | RAM: ${metrics?.ram_used_mb ?? "?"}MB`
-    );
+    console.log(`\n🛸 收到边缘智能体 [${String(instance_id ?? agentId ?? "?").slice(0, 8)}] 心跳:`);
+    console.log(`   💻 CPU: ${metrics?.cpu_percent ?? "?"}% | RAM: ${metrics?.ram_used_mb ?? "?"}MB`);
     console.log(`   📦 武器状态:`, active_plugins ?? {});
 
     return NextResponse.json({ success: true, timestamp: Date.now() });

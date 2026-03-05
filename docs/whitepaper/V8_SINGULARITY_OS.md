@@ -1,8 +1,9 @@
 # Jachin Nexus v8.0 — The Singularity OS 架构升维白皮书
 
-**文档类型**: 架构宪法 · v8.0 升维设计  
+**文档类型**: 架构宪法 · v8.0 升维设计（历史参考）  
 **版本**: v8.0 (The Singularity OS)  
-**更新日期**: 2026-02
+**更新日期**: 2026-02  
+**状态**: ⚠️ **历史文档** — V2 架构已迁移：执行引擎在 **Layer 3**，L2 为控制面。详见 [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
 ---
 
@@ -221,6 +222,6 @@ LLM 推理由「一次性憋大招」改为**逐 token 流式输出**，实现�
 ## 十、 参考文档
 
 - [02_FRAMEWORK.md](./02_FRAMEWORK.md) — 框架架构
-- [06_LAYER2_EDGE.md](./06_LAYER2_EDGE.md) — Layer 2 边缘引擎
+- [06_LAYER2_EDGE.md](./06_LAYER2_EDGE.md) — Layer 2 控制面 (V2)
 - [07_LAYER3_TERMINAL.md](./07_LAYER3_TERMINAL.md) — Layer 3 灵动终端
 - [OMNI_SENSORY_BUS.md](./OMNI_SENSORY_BUS.md) — 全息感官总线

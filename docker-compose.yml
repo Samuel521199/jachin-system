@@ -1,5 +1,7 @@
+# V2 架构说明：L2 使用 SQLite，无需 PostgreSQL/Qdrant/Redis/Dapr/Ray。
+# 以下服务为可选（L1 Cloud 或旧版开发环境）。
 services:
-  # PostgreSQL 数据库
+  # PostgreSQL 数据库（L1 Cloud 使用；L2 用 SQLite）
   postgres:
     image: postgres:15-alpine
     container_name: jachin-postgres

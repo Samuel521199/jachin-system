@@ -29,8 +29,8 @@ CAP_WORKER_FFMPEG = "worker_ffmpeg"
 CAP_WORKER_PYTHON = "worker_python"
 
 
-type Middleware = Callable[["PipelineContext", Callable[[], Awaitable[None]]], Awaitable[None]]
-type HookHandler = Callable[["PipelineContext"], Awaitable[None]]
+Middleware = Callable[["PipelineContext", Callable[[], Awaitable[None]]], Awaitable[None]]
+HookHandler = Callable[["PipelineContext"], Awaitable[None]]
 
 
 class HookRegistry:

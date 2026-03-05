@@ -1,14 +1,14 @@
 # 04 — 文件结构 (The Purged Structure)
 
 **文档类型**: 白皮书 · 文件结构  
-**版本**: v8.0 (The Singularity OS)
+**版本**: V2  
+**基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
 ---
 
 ## ⚠️ 架构师宣告 (The Great Purge)
 
-在 v8.0 中，Jachin Nexus 采用**双轨制引擎 + 量子记忆 + 全息感知 + Dream Weaver**。
-**严禁再次引入**：`core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`、臃肿部署脚本。
+**V2**：L2 控制面、L3 单体执行。**严禁再次引入**：`core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`、臃肿部署脚本。
 
 **文件结构变更规范**：新增 `core/` 模块或 `~/.jachin/` 数据文件时，必须同步更新本文档及 `.cursor/rules/070-layer1-platform.mdc`（若涉及 Layer 1 多租户），避免乱写。
 
@@ -18,15 +18,15 @@
 
 ```text
 jachin-system/
-├── cloud/                    # [Layer 1] 云端大盘 (Next.js + Drizzle ORM + Auth.js)
-├── core/                     # [Layer 2] 神经中枢总线 (双轨制 + 量子记忆)
-├── clients/                  # [Layer 3] 全息感知外壳 (Tauri + Voice Wake + jachin-cli)
+├── cloud/                    # [Layer 1] 平台 (Next.js + Drizzle ORM + Auth.js)
+├── core/                     # [Layer 2] 控制面 (子账号、权限、记忆、L3 调度；不代理推理)
+├── clients/                  # [Layer 3] 终端 (Tauri + Voice Wake + jachin-cli)
+├── l3_node/                  # [Layer 3] 单体执行引擎 (Agent + Skill + 直连 LLM)
 ├── jachin-plugin-sdk-python/ # [JPP] 轨道 C Wasm 插件脚手架
 ├── skills_repo/              # 轨道 B SKILL.md + 轨道 C Wasm 插件
 ├── scripts/                  # 极简启动脚本
-│   └── mock_worker.py        # v8.0 Edge Mesh 工蜂测试（连接 8080，声明 worker_video_encode，接单回传）
-├── docs/                     # v8.0 核心白皮书
-└── .cursor/rules/            # Cursor AI 规则 (v8.0)
+├── docs/                     # 核心白皮书
+└── .cursor/rules/            # Cursor AI 规则
 ```
 
 ---
@@ -44,7 +44,7 @@ cloud/nexus/
 │   ├── fleet/                # 舰队指挥大屏
 │   ├── forge/                # 造物厂 (React Flow 蓝图编排)
 │   ├── market/               # 神经元商城
-│   ├── pair/                 # 扫码配对承接页
+│   ├── pair/                 # L1 6 位码配对承接页（Legacy，仅 Layer 2 daemon 使用）
 │   └── api/v1/
 │       ├── agents/heartbeat/ # 边缘心跳与指令下发
 │       ├── agents/callback/  # 执行结果回传
@@ -57,7 +57,7 @@ cloud/nexus/
 
 ---
 
-## 三、 Layer 2: 神经中枢总线 (core/)
+## 三、 Layer 2: 控制面 (core/)
 
 ```text
 core/
@@ -91,23 +91,33 @@ core/
 
 ---
 
-## 四、 Layer 3: 全息感知外壳 (clients/desktop/)
+## 四、 Layer 3: 单体执行节点 (clients/desktop + l3_node/)
 
 ```text
 clients/desktop/
 ├── src/
 │   ├── components/
-│   │   ├── PairingScreen.tsx # 扫码即连
+│   │   ├── GatewayConnectScreen.tsx # V2 L2 网关神经接驳
 │   │   └── ConsoleApp.tsx   # 控制面板
 │   └── main.tsx
 ├── src-tauri/
 │   ├── src/
 │   │   ├── commands/
-│   │   │   ├── pairing.rs
+│   │   │   ├── pairing.rs    # V2 网关配对（read_l2_gateway_url, gateway_connect, is_l3_engine_ready）
 │   │   │   └── daemon.rs
 │   │   └── stt/              # Voice Wake: Porcupine/Snowboy, VAD, Whisper
 │   └── tauri.conf.json
 └── package.json
+```
+
+```text
+l3_node/                       # V2 单体执行引擎
+├── llm_client.py             # SecurityContext + LiteLLMEngine 直连
+├── agent_core.py              # ReAct Agent + MemorySyncDaemon
+├── bootstrap.py               # 引导：注册、拉 Key
+├── crypto.py                  # RSA 加解密
+├── ws_server.py               # 本地 WebSocket (127.0.0.1:18881)
+└── engine/hooks_pipeline.py   # 洋葱中间件
 ```
 
 ---
@@ -129,7 +139,7 @@ scripts/
 ```text
 clients/cli/                  # 或 core/cli.py
 ├── jachin-cli
-│   ├── pair                  # 配对授权
+│   ├── pair                  # L1 配对授权（Legacy，Layer 2 daemon）
 │   └── shell                 # 终端流光溢彩，ReAct 日志流
 ```
 

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { pluginsRegistry } from "@/db/schema";
+import { eq, and, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -35,40 +37,40 @@ export async function GET(request: NextRequest) {
     const category = searchParams.get("category");
     const sort = searchParams.get("sort") || "downloads";
 
-    if (!isSupabaseConfigured()) {
+    if (!isDatabaseConfigured()) {
       return NextResponse.json(
         { success: true, data: getFallbackPlugins(category, sort), meta: { total: 5, source: "fallback" } },
         { status: 200 }
       );
     }
 
-    const sb = getSupabase()!;
-    let query = sb
-      .from("plugins_registry")
-      .select("id, plugin_id, name, category, description, download_count, download_url, manifest_json")
-      .eq("status", "approved");
+    const db = getDb()!;
 
-    if (category) {
-      query = query.eq("category", category);
-    }
+    const whereClause = category
+      ? and(eq(pluginsRegistry.status, "approved"), eq(pluginsRegistry.category, category))
+      : eq(pluginsRegistry.status, "approved");
 
-    if (sort === "downloads") {
-      query = query.order("download_count", { ascending: false });
-    } else if (sort === "recent") {
-      query = query.order("created_at", { ascending: false });
-    }
+    const orderByClause =
+      sort === "recent"
+        ? desc(pluginsRegistry.createdAt)
+        : desc(pluginsRegistry.downloadCount);
 
-    const { data, error } = await query;
+    const data = await db
+      .select({
+        id: pluginsRegistry.id,
+        pluginId: pluginsRegistry.pluginId,
+        name: pluginsRegistry.name,
+        category: pluginsRegistry.category,
+        description: pluginsRegistry.description,
+        downloadCount: pluginsRegistry.downloadCount,
+        downloadUrl: pluginsRegistry.downloadUrl,
+        manifestJson: pluginsRegistry.manifestJson,
+      })
+      .from(pluginsRegistry)
+      .where(whereClause)
+      .orderBy(orderByClause);
 
-    if (error) {
-      console.error("[plugins] Supabase error:", error);
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
-      );
-    }
-
-    const plugins = mapToPluginRecords(data || []);
+    const plugins = mapToPluginRecords(data);
     return NextResponse.json({
       success: true,
       data: plugins,
@@ -83,26 +85,35 @@ export async function GET(request: NextRequest) {
   }
 }
 
-function mapToPluginRecords(rows: Record<string, unknown>[]): PluginRecord[] {
-  const pluginIds = rows.map((r) => r.plugin_id as string);
+function mapToPluginRecords(rows: {
+  id: string;
+  pluginId: string;
+  name: string;
+  category: string;
+  description: string | null;
+  downloadCount: number | null;
+  downloadUrl: string;
+  manifestJson: unknown;
+}[]): PluginRecord[] {
+  const pluginIds = rows.map((r) => r.pluginId);
   const n = rows.length;
   return rows.map((row, i) => {
-    const category = (row.category as string) || "skill";
+    const category = row.category || "skill";
     const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
     const radius = 35 + (i % 3) * 8;
     return {
-      id: (row.id as string) || (row.plugin_id as string),
-      plugin_id: row.plugin_id as string,
-      name: row.name as string,
+      id: row.id || row.pluginId,
+      plugin_id: row.pluginId,
+      name: row.name,
       category,
-      description: (row.description as string) || null,
-      download_count: (row.download_count as number) ?? 0,
-      download_url: (row.download_url as string) || "",
-      manifest_json: (row.manifest_json as Record<string, unknown>) ?? null,
+      description: row.description || null,
+      download_count: row.downloadCount ?? 0,
+      download_url: row.downloadUrl || "",
+      manifest_json: (row.manifestJson as Record<string, unknown>) ?? null,
       x: 50 + radius * Math.cos(angle) + (i % 2 ? 5 : -5),
       y: 50 + radius * Math.sin(angle) + (i % 3 === 1 ? 3 : 0),
       color: CATEGORY_COLORS[category] || CATEGORY_COLORS.default,
-      connections: pluginIds.filter((id) => id !== row.plugin_id).slice(0, 2),
+      connections: pluginIds.filter((id) => id !== row.pluginId).slice(0, 2),
     };
   });
 }

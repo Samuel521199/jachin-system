@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents } from "@/db/schema";
 import {
   pairingStoreSet,
   pairingStoreCleanup,
@@ -21,24 +22,18 @@ function generateShortCode(): string {
 /**
  * POST /api/v1/pairing/request
  * 阶段 1：Layer 2 发起配对请求，获取 6 位码
- * Supabase 直连：写入 edge_agents 表
+ * Drizzle ORM：写入 edge_agents 表
  */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const {
-      device_fingerprint,
-      temp_public_key,
-      environment_type = "bare_metal",
-      core_version = "1.0.0",
-      name,
-    } = body;
+    const { name } = body;
 
     const shortCode = generateShortCode();
     const expiresAt = new Date(Date.now() + EXPIRE_SEC * 1000);
 
-    if (isSupabaseConfigured()) {
-      const sb = getSupabase()!;
+    if (isDatabaseConfigured()) {
+      const db = getDb()!;
 
       // 确保 pairing_code 唯一（极小概率冲突则重试）
       let inserted = false;
@@ -46,27 +41,27 @@ export async function POST(req: NextRequest) {
       let finalCode = shortCode;
       for (let retry = 0; retry < 3 && !inserted; retry++) {
         finalCode = retry > 0 ? generateShortCode() : shortCode;
-        const { data, error } = await sb
-          .from("edge_agents")
-          .insert({
-            pairing_code: finalCode,
-            status: "pending",
-            name: name ?? `边缘智能体-${finalCode}`,
-            pairing_expires_at: expiresAt.toISOString(),
-          })
-          .select("id")
-          .single();
-
-        if (error?.code === "23505") continue; // unique violation
-        if (error) {
-          console.error("[pairing/request] DB error:", error);
+        try {
+          const [row] = await db
+            .insert(edgeAgents)
+            .values({
+              pairingCode: finalCode,
+              status: "pending",
+              name: name ?? `边缘智能体-${finalCode}`,
+              pairingExpiresAt: expiresAt,
+            })
+            .returning({ id: edgeAgents.id });
+          agentId = row?.id ?? "";
+          inserted = true;
+        } catch (e: unknown) {
+          const err = e as { code?: string };
+          if (err?.code === "23505") continue; // unique violation
+          console.error("[pairing/request] DB error:", e);
           return NextResponse.json(
             { error: "配对请求失败" },
             { status: 500 }
           );
         }
-        agentId = data?.id ?? "";
-        inserted = true;
       }
 
       const baseUrl =
@@ -82,7 +77,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Mock 回退
+    // 内存回退（无 DATABASE_URL 时）
     const sessionId = randomUUID();
     pairingStoreCleanup();
     pairingStoreSet({

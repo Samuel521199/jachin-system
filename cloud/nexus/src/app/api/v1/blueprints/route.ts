@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { blueprints } from "@/db/schema";
+import { desc } from "drizzle-orm";
 
 /**
  * GET /api/v1/blueprints
@@ -7,27 +9,19 @@ import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
  */
 export async function GET() {
   try {
-    if (!isSupabaseConfigured()) {
+    if (!isDatabaseConfigured()) {
       return NextResponse.json({ blueprints: [] });
     }
 
-    const sb = getSupabase()!;
-    const { data, error } = await sb
-      .from("blueprints")
-      .select("id, name, description, created_at")
-      .order("created_at", { ascending: false })
+    const db = getDb()!;
+    const data = await db
+      .select({ id: blueprints.id, name: blueprints.name, description: blueprints.description })
+      .from(blueprints)
+      .orderBy(desc(blueprints.createdAt))
       .limit(50);
 
-    if (error) {
-      console.error("[blueprints] Fetch error:", error);
-      return NextResponse.json(
-        { error: error.message },
-        { status: 500 }
-      );
-    }
-
     return NextResponse.json({
-      blueprints: (data ?? []).map((b) => ({
+      blueprints: data.map((b) => ({
         id: b.id,
         name: b.name,
         description: b.description ?? "",

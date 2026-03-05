@@ -7,11 +7,15 @@
   2. 配对 Demo 还需 Python 3.10+（无则先安装）
   3. 等待安装完成
 
-【配对 Demo】
+【配对 Demo】（Layer 2 daemon，L1 6 位码）
   双击「启动配对Demo.bat」
   → 自动打开 3 个窗口：控制台、配对终端、浏览器
   → 在配对窗口查看 6 位码
   → 在浏览器输入 6 位码，点击「建立神经连接」
+
+【V2 L3 桌面端】
+  启动 start-layer3.ps1，在 GatewayConnectScreen 输入 L2 地址发起神经接驳
+  详见 docs\PAIRING_PROTOCOL_SPEC.md
 
 【仅启动控制台】
   双击「启动控制台.bat」

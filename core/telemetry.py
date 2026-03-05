@@ -111,7 +111,7 @@ class TelemetryAgent:
 
             payload = {
                 "instance_id": self.instance_id,
-                "core_version": "0.8.0",
+                "core_version": "0.8.5",
                 "metrics": metrics,
                 "active_plugins": active_plugins,
             }

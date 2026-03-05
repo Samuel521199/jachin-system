@@ -38,9 +38,9 @@ class DaemonConfig:
 
     @property
     def heartbeat_url(self) -> str:
-        """Layer 1 心跳 API 地址"""
+        """Layer 1 心跳 API 地址（agents/heartbeat 与 edge_agents 配对流程兼容）"""
         base = self.nexus_base_url.rstrip("/")
-        return f"{base}/api/v1/instances/heartbeat"
+        return f"{base}/api/v1/agents/heartbeat"
 
     def save(self, path: Path | None = None) -> None:
         """持久化配置到文件（仅保存敏感字段）"""

@@ -28,13 +28,14 @@
 
 ---
 
-## 二、配对协议（三种方案）
+## 二、配对协议
 
 | 方案 | 适用 | 操作 |
 |------|------|------|
-| **A 扫码即连** | 桌面端 | 动态二维码，手机扫码确认 |
-| **B Wi-Fi 热点** | 无屏设备 | Captive Portal 输入 Wi-Fi + 邮箱 |
-| **C ZTP** | 企业批量 | 预烧录 enterprise_id，通电即注册 |
+| **A V2 L2 网关零信任** | L3 桌面端 | 输入 L2 地址，发起神经接驳，管理员审批后密文 Key 下发 |
+| **B L1 6 位码** | Layer 2 daemon | 扫码/输入 6 位码，写入 nexus_config.json（Legacy） |
+| **C Wi-Fi 热点** | 无屏设备 | Captive Portal 输入 Wi-Fi + 邮箱（规划） |
+| **D ZTP** | 企业批量 | 预烧录 enterprise_id，通电即注册（规划） |
 
 **详细协议**：[PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)
 

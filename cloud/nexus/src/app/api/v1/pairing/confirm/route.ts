@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { createClient } from "@/lib/supabase-auth/server";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents, users } from "@/db/schema";
 import { pairingStoreGetByCode, pairingStoreApproveByCode } from "@/lib/pairing-store";
+import { eq } from "drizzle-orm";
 
 const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * POST /api/v1/pairing/confirm
  * 阶段 2：用户在 Web Console 输入 6 位码，授权绑定
- * Supabase 直连：更新 edge_agents 为 active，绑定当前登录用户
+ * Drizzle ORM：更新 edge_agents 为 active
  */
 export async function POST(req: NextRequest) {
   try {
@@ -23,9 +24,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const shortCode = String(code).trim().toUpperCase().replace(/-/g, "");
+    const shortCode = String(code).trim().toUpperCase().replace(/[-_\s]/g, "");
 
-    if (!isSupabaseConfigured()) {
+    if (!isDatabaseConfigured()) {
       const session = pairingStoreGetByCode(shortCode);
       if (!session) {
         return NextResponse.json(
@@ -55,31 +56,25 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const sb = getSupabase()!;
-
-    // 获取当前登录用户（Supabase Auth）
-    let userId = bodyUserId ?? DEFAULT_USER_ID;
-    const authClient = await createClient();
-    if (authClient) {
-      const { data: { user } } = await authClient.getUser();
-      if (user?.id) {
-        userId = user.id;
-      }
+    const db = getDb()!;
+    let userId: string | null = bodyUserId ?? null;
+    if (userId === DEFAULT_USER_ID || !userId) {
+      // 确保默认用户存在，否则外键约束会失败
+      await db
+        .insert(users)
+        .values({
+          id: DEFAULT_USER_ID,
+          name: "默认用户",
+        })
+        .onConflictDoNothing({ target: users.id });
+      userId = DEFAULT_USER_ID;
     }
 
-    const { data: agent, error: findErr } = await sb
-      .from("edge_agents")
-      .select("id, status, pairing_expires_at")
-      .eq("pairing_code", shortCode)
-      .maybeSingle();
-
-    if (findErr) {
-      console.error("[pairing/confirm] Query error:", findErr);
-      return NextResponse.json(
-        { success: false, error: "配对验证失败" },
-        { status: 500 }
-      );
-    }
+    const [agent] = await db
+      .select({ id: edgeAgents.id, status: edgeAgents.status, pairingExpiresAt: edgeAgents.pairingExpiresAt })
+      .from(edgeAgents)
+      .where(eq(edgeAgents.pairingCode, shortCode))
+      .limit(1);
 
     if (!agent) {
       return NextResponse.json(
@@ -96,11 +91,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (agent.pairing_expires_at && new Date(agent.pairing_expires_at) < new Date()) {
-      await sb
-        .from("edge_agents")
-        .update({ status: "offline" })
-        .eq("id", agent.id);
+    if (agent.pairingExpiresAt && new Date(agent.pairingExpiresAt) < new Date()) {
+      await db
+        .update(edgeAgents)
+        .set({ status: "offline" })
+        .where(eq(edgeAgents.id, agent.id));
       return NextResponse.json(
         { success: false, error: "配对码已过期" },
         { status: 410 }
@@ -109,23 +104,15 @@ export async function POST(req: NextRequest) {
 
     const authToken = `jch-${randomUUID().replace(/-/g, "")}`;
 
-    const { error: updateErr } = await sb
-      .from("edge_agents")
-      .update({
+    await db
+      .update(edgeAgents)
+      .set({
         status: "active",
-        user_id: userId,
-        auth_token: authToken,
-        pairing_expires_at: null,
+        userId,
+        authToken,
+        pairingExpiresAt: null,
       })
-      .eq("id", agent.id);
-
-    if (updateErr) {
-      console.error("[pairing/confirm] edge_agents update:", updateErr);
-      return NextResponse.json(
-        { success: false, error: "授权更新失败" },
-        { status: 500 }
-      );
-    }
+      .where(eq(edgeAgents.id, agent.id));
 
     return NextResponse.json({
       success: true,

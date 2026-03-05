@@ -1,69 +1,59 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents, agentMessageQueue } from "@/db/schema";
+import { eq, and } from "drizzle-orm";
 
 /**
  * POST /api/v1/webhooks/telegram
  * Telegram 机器人 Webhook 入口
- *
- * 配置：在 BotFather 设置 setWebhook 指向 https://your-domain/api/v1/webhooks/telegram
- * 环境变量：TELEGRAM_BOT_TOKEN（可选，用于验证来源）
- *
- * 流程：
- * 1. 解析 Telegram 发来的 message，提取 chat_id、text
- * 2. 根据 chat_id 查 edge_agents.im_binding_id，找到绑定的 agent_id
- * 3. 将消息插入 agent_message_queue (direction: inbound, status: pending)
- * 4. 边缘 Agent 下次心跳时会拉取该消息并执行
  */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const message = body.message ?? body.edited_message;
     if (!message?.chat?.id || !message.text) {
-      return NextResponse.json({ ok: true }); // Telegram 要求 200，否则会重试
+      return NextResponse.json({ ok: true });
     }
 
     const chatId = String(message.chat.id);
     const text = (message.text || "").trim();
     if (!text) return NextResponse.json({ ok: true });
 
-    if (!isSupabaseConfigured()) {
-      console.warn("[webhooks/telegram] Supabase not configured, message dropped");
+    if (!isDatabaseConfigured()) {
+      console.warn("[webhooks/telegram] Database not configured, message dropped");
       return NextResponse.json({ ok: true });
     }
 
-    const sb = getSupabase()!;
+    const db = getDb()!;
 
-    // 根据 chat_id 查找绑定的 agent
-    const { data: agent, error: agentErr } = await sb
-      .from("edge_agents")
-      .select("id")
-      .eq("im_binding_id", chatId)
-      .eq("im_platform", "telegram")
-      .eq("status", "active")
-      .maybeSingle();
+    const [agent] = await db
+      .select({ id: edgeAgents.id })
+      .from(edgeAgents)
+      .where(
+        and(
+          eq(edgeAgents.imBindingId, chatId),
+          eq(edgeAgents.imPlatform, "telegram"),
+          eq(edgeAgents.status, "active")
+        )
+      )
+      .limit(1);
 
-    if (agentErr || !agent) {
+    if (!agent) {
       console.warn("[webhooks/telegram] No agent bound to chat_id:", chatId);
       return NextResponse.json({ ok: true });
     }
 
-    // 插入消息队列
-    const { error: insertErr } = await sb.from("agent_message_queue").insert({
-      agent_id: agent.id,
-      message_text: text,
+    await db.insert(agentMessageQueue).values({
+      agentId: agent.id,
+      messageText: text,
       direction: "inbound",
       status: "pending",
-      source_meta: {
+      sourceMeta: {
         telegram_chat_id: chatId,
         message_id: message.message_id,
         from: message.from?.id,
       },
     });
-
-    if (insertErr) {
-      console.error("[webhooks/telegram] Insert error:", insertErr);
-      return NextResponse.json({ ok: true });
-    }
 
     return NextResponse.json({ ok: true });
   } catch (e) {

@@ -10,6 +10,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
+    "db:reset": "tsx scripts/reset-db.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
@@ -17,9 +18,8 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/utilities": "^3.2.2",
     "@react-three/fiber": "^8.18.0",
-    "@supabase/ssr": "^0.8.0",
-    "@supabase/supabase-js": "^2.98.0",
     "archiver": "^7.0.1",
+    "dotenv": "^17.3.1",
     "drizzle-orm": "^0.45.1",
     "framer-motion": "^12.34.3",
     "lucide-react": "^0.575.0",
@@ -31,16 +31,16 @@
     "three": "^0.183.1"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.30.0",
-    "tsx": "^4.19.0",
     "@types/archiver": "^7.0.0",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "drizzle-kit": "^0.30.0",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
+    "tsx": "^4.19.0",
     "typescript": "^5"
   }
 }

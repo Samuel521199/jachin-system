@@ -55,8 +55,12 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
 @pytest.fixture(scope="function")
 async def init_test_db():
-    """初始化测试数据库"""
-    from core.memory.schema.database import Base
+    """初始化测试数据库。V2: core.memory.schema 已废弃，此 fixture 跳过。"""
+    try:
+        from core.memory.schema.database import Base
+    except ImportError:
+        pytest.skip("core.memory.schema 已废弃 (V2)")
+        return
     
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

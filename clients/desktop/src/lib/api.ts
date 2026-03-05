@@ -1,13 +1,10 @@
 /**
  * API Client - 与后端通信
- * 
- * 通过 Dapr 调用后端服务（如果可用），否则直接调用后端 API
+ *
+ * V2: Dapr 已废弃，统一直连后端 API。
  */
 
-// 优先使用环境变量；默认 3500（与 start.bat 后端 Dapr 一致），桌面独立 Dapr 时用 3502
-const DAPR_PORT = parseInt(import.meta.env.VITE_DAPR_HTTP_PORT || "3500", 10);
-const BACKEND_APP_ID = "jachin-brain";
-/** 后端 base URL，供组件直接请求语音等接口时使用 */
+/** 后端 base URL */
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:18888";
 
 /** 保存 API Key 到后端（持久化到 ~/.jachin/.qwen_api_key，覆盖 .env） */
@@ -20,21 +17,6 @@ export async function saveApiKey(qwenApiKey: string | null): Promise<{ ok: boole
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, message: data?.message ?? (res.ok ? "已保存" : "保存失败") };
 }
-const USE_DAPR = import.meta.env.VITE_USE_DAPR !== "false"; // 默认使用 Dapr
-/** 流式聊天是否直连后端（构建时默认）：主界面设置可覆盖并持久化 */
-const CHAT_STREAM_VIA_DIRECT_ENV = import.meta.env.VITE_CHAT_STREAM_VIA_DIRECT === "true";
-
-/** 从主界面设置读取「聊天流式直连」：Tauri 下读 settings.json，否则用环境变量。默认 true（本地流式） */
-async function getChatStreamViaDirect(): Promise<boolean> {
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const s = await invoke<{ chat_stream_via_direct?: boolean }>("get_user_settings");
-    return s?.chat_stream_via_direct !== false;
-  } catch {
-    return CHAT_STREAM_VIA_DIRECT_ENV || !USE_DAPR;
-  }
-}
-
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
@@ -72,70 +54,13 @@ export interface SkillInfo {
   last_executed_at?: string | null;
 }
 
-/**
- * 通过 Dapr 调用后端服务
- * 
- * 注意：在 Tauri 应用中，可以直接调用 Dapr，因为 Tauri 的 WebView 可以访问 localhost
- * 如果需要更安全的方式，可以通过 Tauri 命令调用 Rust 后端
- */
+/** V2: 统一直连后端 API（Dapr 已废弃） */
 async function invokeBackend<T>(
   method: string,
   data?: any,
   httpVerb: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" = "POST"
 ): Promise<T> {
-  // 如果使用 Dapr，通过 Dapr sidecar 调用
-  if (USE_DAPR) {
-    return invokeViaDapr<T>(method, data, httpVerb);
-  } else {
-    // 直接调用后端 API
-    return invokeDirectly<T>(method, data, httpVerb);
-  }
-}
-
-async function invokeViaDapr<T>(
-  method: string,
-  data?: any,
-  httpVerb: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" = "POST"
-): Promise<T> {
-  // Dapr method 路径不应该以 / 开头
-  const normalizedMethod = method.startsWith("/") ? method.slice(1) : method;
-  const url = `http://localhost:${DAPR_PORT}/v1.0/invoke/${BACKEND_APP_ID}/method/${normalizedMethod}`;
-
-  // 调试日志
-  console.log(`[Dapr] Calling: ${url}`);
-  console.log(`[Dapr] Method: ${httpVerb}, Data:`, data);
-
-  const options: RequestInit = {
-    method: httpVerb,
-    headers: {
-      "Content-Type": "application/json",
-    },
-  };
-
-  if (data && httpVerb !== "GET") {
-    options.body = JSON.stringify(data);
-  }
-
-  try {
-    const response = await fetch(url, options);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Dapr] Error ${response.status}:`, errorText);
-      throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
-    }
-
-    const result = await response.json();
-    console.log(`[Dapr] Success:`, result);
-    return result;
-  } catch (error) {
-    if (error instanceof TypeError && error.message.includes("fetch")) {
-      console.warn(`[Dapr] Failed to connect to Dapr sidecar (port ${DAPR_PORT}), falling back to direct API call`);
-      // 回退到直接调用后端 API
-      return invokeDirectly<T>(method, data, httpVerb);
-    }
-    throw error;
-  }
+  return invokeDirectly<T>(method, data, httpVerb);
 }
 
 async function invokeDirectly<T>(
@@ -198,16 +123,13 @@ export async function sendChatMessage(message: string): Promise<ChatResponse> {
 
 /**
  * 流式聊天（SSE），逐字返回，供打字机效果。
- * 优先使用主界面「设置」中保存的「Chat 流式」；默认本地流式直连后端。
+ * V2: 统一直连后端（Dapr 已废弃）。
  */
 export async function streamChatMessage(
   message: string,
   onChunk: (text: string) => void
 ): Promise<string> {
-  const useDirect = await getChatStreamViaDirect();
-  const url = useDirect
-    ? `${BACKEND_URL}/api/v2/chat/text`
-    : `http://localhost:${DAPR_PORT}/v1.0/invoke/${BACKEND_APP_ID}/method/api/v2/chat/text`;
+  const url = `${BACKEND_URL}/api/v2/chat/text`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },

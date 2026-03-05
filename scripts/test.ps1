@@ -130,7 +130,7 @@ try {
         }
     } else {
         Write-Success "Device Registry API OK - 0 devices registered"
-        Write-Info "Run mock device to register: cd clients\iot\mock_device && .\run.bat"
+        Write-Info "Run mock device to register: (mock_device 已废弃，V2 使用 L2 网关流程)"
     }
 } catch {
     $errorDetail = $_.Exception.Message

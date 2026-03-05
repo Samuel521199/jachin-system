@@ -1,23 +1,19 @@
 """
 Brain Orchestrator API
-Brain Orchestrator API
+
+V2 架构：已移除 Ray Cluster 依赖。保留 /invoke、/intent 端点。
+/plan、/execute 已废弃（原依赖 ray_cluster）。
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from pathlib import Path
-from core.brain.planner.task_planner import TaskPlanner
 from core.brain.planner.intent_parser import IntentParser
-from core.brain.planner.resource_allocator import ResourceAllocator
-from core.brain.ray_cluster.cluster_manager import RayClusterManager
-from core.brain.ray_cluster.task_scheduler import TaskScheduler
-from core.brain.ray_cluster.task_types import RayTask
-from core.registry.registry import DeviceRegistry
 from core.system.plugin_manager import PluginManager
 from core.system.plugin_executor import PluginExecutor
-from core.brain.planner.intent_planner import IntentPlanner, ExecutionPlan
-from core.monitoring import get_performance_monitor, PerformanceContext
+from core.brain.planner.intent_planner import IntentPlanner
+from core.monitoring import get_performance_monitor
 import logging
 import time
 
@@ -75,41 +71,10 @@ class PluginInvokeResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-# 依赖注入 - 创建全局实例（在实际应用中应该使用依赖注入容器）
-_planner: Optional[TaskPlanner] = None
-_scheduler: Optional[TaskScheduler] = None
+# 依赖注入 - 创建全局实例
+# V2: TaskPlanner、TaskScheduler 已废弃（依赖已删除的 ray_cluster）
 _plugin_executor: Optional[PluginExecutor] = None
 _intent_planner: Optional[IntentPlanner] = None
-
-
-def get_task_planner() -> TaskPlanner:
-    """获取任务规划器实例"""
-    global _planner
-    if _planner is None:
-        # 创建组件
-        intent_parser = IntentParser()
-        cluster_manager = RayClusterManager()
-        resource_allocator = ResourceAllocator(cluster_manager)
-        from core.system.plugin_manager import get_plugin_manager
-        plugin_manager = get_plugin_manager()
-        device_registry = DeviceRegistry()
-        
-        _planner = TaskPlanner(
-            intent_parser=intent_parser,
-            resource_allocator=resource_allocator,
-            plugin_manager=plugin_manager,
-            device_registry=device_registry,
-        )
-    return _planner
-
-
-def get_task_scheduler() -> TaskScheduler:
-    """获取任务调度器实例"""
-    global _scheduler
-    if _scheduler is None:
-        cluster_manager = RayClusterManager()
-        _scheduler = TaskScheduler(cluster_manager)
-    return _scheduler
 
 
 def get_plugin_executor() -> PluginExecutor:
@@ -135,130 +100,21 @@ def get_intent_planner() -> IntentPlanner:
 
 
 @router.post("/plan", response_model=TaskPlanResponse)
-async def plan_task(
-    request: TaskPlanRequest,
-    planner: TaskPlanner = Depends(get_task_planner)
-):
-    """
-    规划任务
-    
-    Args:
-        request: 任务规划请求
-    
-    Returns:
-        TaskPlanResponse: 任务规划结果
-    """
-    try:
-        # 规划任务
-        tasks = await planner.plan_task(
-            user_input=request.user_input,
-            user_id=request.user_id
-        )
-        
-        # 转换为字典格式
-        task_dicts = []
-        for task in tasks:
-            task_dicts.append({
-                "task_id": task.task_id,
-                "task_type": task.task_type.value,
-                "status": task.status.value,
-                "skill_id": task.skill_id,
-                "capability_name": task.capability_name,
-                "worker_node": task.worker_node,
-                "priority": task.priority,
-            })
-        
-        return TaskPlanResponse(
-            success=True,
-            tasks=task_dicts,
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to plan task: {e}", exc_info=True)
-        return TaskPlanResponse(
-            success=False,
-            error=str(e),
-        )
+async def plan_task(request: TaskPlanRequest):
+    """已废弃：原依赖 Ray Cluster。V2 架构请使用 agent_loop 或 L3 本地执行。"""
+    raise HTTPException(
+        status_code=410,
+        detail="DEPRECATED: /plan 已废弃（Ray Cluster 已移除）。请使用 agent_loop 或 L3 本地执行。",
+    )
 
 
 @router.post("/execute", response_model=TaskExecutionResponse)
-async def execute_task(
-    request: TaskExecutionRequest,
-    planner: TaskPlanner = Depends(get_task_planner),
-    scheduler: TaskScheduler = Depends(get_task_scheduler)
-):
-    """
-    执行任务（规划并执行）
-    
-    Args:
-        request: 任务执行请求
-    
-    Returns:
-        TaskExecutionResponse: 执行结果
-    """
-    try:
-        # 规划任务
-        tasks = await planner.plan_task(
-            user_input=request.user_input,
-            user_id=request.user_id
-        )
-        
-        if not tasks:
-            return TaskExecutionResponse(
-                success=False,
-                error="No tasks generated",
-            )
-        
-        task_ids = []
-        results = []
-        
-        if request.execute:
-            # 初始化Ray集群（如果需要）
-            cluster_manager = RayClusterManager()
-            if not cluster_manager.is_connected():
-                await cluster_manager.initialize()
-            
-            # 提交并执行任务
-            for task in tasks:
-                try:
-                    task_id = await scheduler.submit_task(task)
-                    task_ids.append(task_id)
-                    
-                    # 等待任务完成
-                    completed_task = await scheduler.wait_for_task(
-                        task_id,
-                        timeout=300  # 5分钟超时
-                    )
-                    
-                    results.append({
-                        "task_id": task_id,
-                        "status": completed_task.status.value,
-                        "result": completed_task.result,
-                        "error": completed_task.error_message,
-                    })
-                except Exception as e:
-                    logger.error(f"Failed to execute task {task.task_id}: {e}", exc_info=True)
-                    results.append({
-                        "task_id": task.task_id,
-                        "status": "failed",
-                        "error": str(e),
-                    })
-        else:
-            # 只规划，不执行
-            task_ids = [task.task_id for task in tasks]
-        
-        return TaskExecutionResponse(
-            success=True,
-            task_ids=task_ids,
-            results=results,
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to execute task: {e}", exc_info=True)
-        return TaskExecutionResponse(
-            success=False,
-            error=str(e),
-        )
+async def execute_task(request: TaskExecutionRequest):
+    """已废弃：原依赖 Ray Cluster。V2 架构请使用 agent_loop 或 L3 本地执行。"""
+    raise HTTPException(
+        status_code=410,
+        detail="DEPRECATED: /execute 已废弃（Ray Cluster 已移除）。请使用 agent_loop 或 L3 本地执行。",
+    )
 
 
 @router.get("/intent")

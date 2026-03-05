@@ -17,7 +17,7 @@ jmp_package = extract_and_verify_signature(downloaded_file, public_key)
 
 **没有签名验证，沙箱再安全也是形同虚设** — 恶意开发者可在网络传输中途替换插件代码。
 
-**UX 原则**：所有密码学对用户**无感**。公钥通过 6 位配对码（Device Authorization Grant）自动下发，权限用大白话展示，打包一键完成。详见 [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md)、[PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)。
+**UX 原则**：所有密码学对用户**无感**。V2 L3 使用 L2 网关零信任配对（RSA 双盲），管理员审批后密文 Key 自动下发。详见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)、[INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md)。
 
 ---
 
@@ -41,7 +41,7 @@ jmp_package = extract_and_verify_signature(downloaded_file, public_key)
 | **Layer 1 (Nexus)** | 私钥 (Private Key) | 给插件盖戳，生成 `signature.sig` |
 | **Layer 2 (前线边缘智能体)** | 公钥 (Public Key)，**首次配对时无感下发** | 验真，拒绝未签名或签名无效的 .jmp |
 
-**安全原则**：私钥永不离开 Layer 1；公钥通过**端云三次握手**（6 位码，RFC 8628）在用户点击「授权绑定」后自动下发。详见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)。
+**安全原则**：V2 L3 持本地 RSA 私钥，公钥向 L2 注册；L2 用 L3 公钥加密 Key 下发，仅 L3 私钥可解密。详见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)。
 
 ## 1.3 .jmp 物理结构
 
@@ -203,7 +203,7 @@ checks:
 ---
 
 **相关文档**:
-- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) - **设备配对协议**（6 位码、端云三次握手、pairing_sessions）
+- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) - **V2 L3-L2 零信任配对**（RSA 双盲、auth/poll 轮询；Legacy L1 6 位码）
 - [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) - **IM 网关**（TG/飞书 Webhook、消息队列、心跳扩展 task、result API）
 - [NEXUS_DAEMON.md](./NEXUS_DAEMON.md) - 守护进程总览（轻量版 daemon 心跳 + Agent Loop）
 - [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) - **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包）

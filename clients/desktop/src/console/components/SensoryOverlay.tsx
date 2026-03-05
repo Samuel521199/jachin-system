@@ -1,6 +1,6 @@
 /**
  * SensoryOverlay - Layer 3 全息感官投射
- * 连接 ws://localhost:8080/sensory，将大脑脑电波具象化为赛博朋克视觉
+ * 连接 ws://localhost:18881/sensory，将大脑脑电波具象化为赛博朋克视觉
  * - thought: 黄色「思考中」光环
  * - core:shell_exec: 红色「物理授权」警告
  * - HITL_REQUIRED: 霸气拦截框「指挥官，是否授权执行？」

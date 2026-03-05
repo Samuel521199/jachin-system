@@ -1,15 +1,4 @@
-# Mock IoT Device - 从项目根目录运行的包装脚本
-
-$scriptPath = Join-Path $PSScriptRoot "clients\iot\mock_device\run_with_heartbeat.ps1"
-
-if (-not (Test-Path $scriptPath)) {
-    Write-Host "[ERROR] Script not found: $scriptPath" -ForegroundColor Red
-    Write-Host "Please ensure you're in the project root directory." -ForegroundColor Yellow
-    exit 1
-}
-
-Write-Host "Running Mock IoT Device from: $scriptPath" -ForegroundColor Gray
-Write-Host ""
-
-# 运行实际的脚本
-& $scriptPath
+# Mock IoT Device - V2 已废弃（依赖 Dapr Pub/Sub，与 V2 架构不符）
+# 原 clients/iot/mock_device 已删除
+Write-Host "[DEPRECATED] mock_device 已废弃。V2 架构不再使用 Dapr。如需 IoT 测试，请使用 L2 网关 + L3 节点流程。" -ForegroundColor Yellow
+exit 1

@@ -1,9 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase-auth/client";
-import { LogOut, LogIn } from "lucide-react";
 
 const navLinks = [
   { href: "/market", label: "Market" },
@@ -14,27 +11,11 @@ const navLinks = [
   { href: "/console/pair", label: "Add Agent" },
 ];
 
+/**
+ * 已脱离 Supabase Auth，展示演示模式。
+ * 后续可接入 Auth.js 实现登录/登出。
+ */
 export default function Navbar() {
-  const [user, setUser] = useState<{ email?: string; user_metadata?: { email?: string } } | null>(null);
-
-  useEffect(() => {
-    const supabase = createClient();
-    if (!supabase) return;
-    supabase.auth.getUser().then(({ data: { user: u } }) => setUser(u ?? null));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) =>
-      setUser(session?.user ?? null)
-    );
-    return () => subscription.unsubscribe();
-  }, []);
-
-  const handleLogout = async () => {
-    const supabase = createClient();
-    if (supabase) {
-      await supabase.auth.signOut();
-      window.location.href = "/login";
-    }
-  };
-
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 backdrop-blur-md bg-black/20 border-b border-white/5">
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -54,28 +35,7 @@ export default function Navbar() {
               {link.label}
             </Link>
           ))}
-          {user ? (
-            <div className="flex items-center gap-4">
-              <span className="text-sm text-white/60 truncate max-w-[160px]" title={user.email}>
-                {user.email ?? user.user_metadata?.email ?? "已登录"}
-              </span>
-              <button
-                onClick={handleLogout}
-                className="flex items-center gap-2 text-sm text-white/60 hover:text-cyan-400 transition-colors"
-              >
-                <LogOut className="w-4 h-4" />
-                登出
-              </button>
-            </div>
-          ) : (
-            <Link
-              href="/login"
-              className="flex items-center gap-2 text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
-            >
-              <LogIn className="w-4 h-4" />
-              登录
-            </Link>
-          )}
+          <span className="text-sm text-white/60">演示模式</span>
         </div>
       </div>
     </nav>

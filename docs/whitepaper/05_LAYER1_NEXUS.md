@@ -1,7 +1,8 @@
-# 05 — Layer 1: Jachin Nexus (云端指挥中枢)
+# 05 — Layer 1: Jachin Nexus (平台)
 
 **文档类型**: 白皮书 · Layer 1 详细说明  
-**版本**: v8.0 (The Singularity OS)
+**版本**: V2  
+**基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
 ---
 
@@ -15,7 +16,7 @@
 
 ## 一、 定位与哲学 (Positioning & Philosophy)
 
-Layer 1 是 Jachin 系统的**最高权限调度枢纽与数字孪生大盘**。
+Layer 1 是 Jachin 系统的**平台**：用户主账号注册/登录，平台主账号管理平台内部。**与 L2/L3 无直接耦合**。
 
 * **核心戒律：绝对不存储边缘节点的隐私记忆。** 用户的聊天记录、梦境反思、本地文件数据均隔离在 Layer 2 的 SQLite 中。
 * **主要职责：** 资产确权（蓝图与插件）、设备状态监控（心跳呼吸灯）、跨网指令路由（IM 网关）、舰队级批量下发。
@@ -26,7 +27,7 @@ Layer 1 是 Jachin 系统的**最高权限调度枢纽与数字孪生大盘**。
 ## 二、 核心模块全景 (Core Modules)
 
 ### 2.1 极简免密之门 (Jachin ID & Magic Auth)
-* **废弃密码与强 Web3 绑定**：基于 Auth.js（去 BaaS 化目标）或 Supabase Auth（过渡期），支持 Magic Link（邮箱/手机验证码）与主流 OAuth 免密登录。
+* **废弃密码与强 Web3 绑定**：基于 Auth.js（去 BaaS 化目标），支持 Magic Link（邮箱/手机验证码）与主流 OAuth 免密登录。
 * **权限降维**：消除用户的注册摩擦，登录即进入上帝视角。
 
 ### 2.2 舰队指挥大屏 (Fleet Management) - B端杀器

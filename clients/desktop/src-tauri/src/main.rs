@@ -6,6 +6,7 @@ mod config;
 mod device;
 mod device_registry;
 mod kernel;
+mod l3_spawn;
 mod pubsub;
 mod stt;
 mod tts;
@@ -287,13 +288,12 @@ fn main() {
             commands::settings::get_current_config,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
-            commands::pairing::is_nexus_paired,
-            commands::pairing::write_nexus_config,
-            commands::pairing::pairing_request,
-            commands::pairing::pairing_status,
-            commands::pairing::read_nexus_base_url,
-            commands::pairing::write_nexus_base_url,
-            commands::pairing::spawn_daemon,
+            commands::pairing::is_gateway_paired,
+            commands::pairing::read_l2_gateway_url,
+            commands::pairing::write_l2_gateway_url,
+            commands::pairing::gateway_connect,
+            commands::pairing::is_l3_engine_ready,
+            commands::pairing::set_use_local_mode,
             stt_start_wake_listener,
             stt_stop_wake_listener,
             stt_wake_listener_running,
@@ -332,6 +332,18 @@ fn main() {
             stt_voice_stub::is_voice_capture_running,
         ])
         .setup(|app| {
+            // L3 引擎生命周期：静默启动 l3_node Sidecar（--ws-only），退出时 kill
+            match l3_spawn::spawn_l3_node(&*app) {
+                Ok(child) => {
+                    app.manage(l3_spawn::L3Handle::new(child));
+                    println!("[L3] 引擎已启动 ws://127.0.0.1:18881");
+                }
+                Err(e) => {
+                    eprintln!("[L3] 启动失败: {}", e);
+                    // 不阻塞启动，前端 useSensoryWebSocket 会显示未连接
+                }
+            }
+
             // 初始化设备注册
             let device_id = format!("desktop-{}", whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
             let registry = Arc::new(Mutex::new(DeviceRegistry::new(device_id.clone())));

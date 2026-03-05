@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { deployCommands } from "@/db/schema";
+import { eq, gt, asc, and } from "drizzle-orm";
 
 /**
  * GET /api/v1/deploy/poll?instance_id=xxx
  * Layer 2 Updater Agent 轮询接口
- * 返回该实例的待执行部署指令
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -26,39 +27,42 @@ export async function GET(request: NextRequest) {
 }
 
 async function getPendingCommands(instanceId: string): Promise<unknown[]> {
-  if (!isSupabaseConfigured()) {
-    return [];
-  }
+  if (!isDatabaseConfigured()) return [];
 
-  const sb = getSupabase()!;
+  const db = getDb()!;
 
-  const { data: rows, error } = await sb
-    .from("deploy_commands")
-    .select("id, download_url, temp_token, plugin_id, resource_type")
-    .eq("layer2_instance_id", instanceId)
-    .eq("status", "pending")
-    .gt("token_expires_at", new Date().toISOString())
-    .order("created_at", { ascending: true });
+  const rows = await db
+    .select({
+      id: deployCommands.id,
+      downloadUrl: deployCommands.downloadUrl,
+      tempToken: deployCommands.tempToken,
+      pluginId: deployCommands.pluginId,
+      resourceType: deployCommands.resourceType,
+    })
+    .from(deployCommands)
+    .where(
+      and(
+        eq(deployCommands.layer2InstanceId, instanceId),
+        eq(deployCommands.status, "pending"),
+        gt(deployCommands.tokenExpiresAt, new Date())
+      )
+    )
+    .orderBy(asc(deployCommands.createdAt));
 
-  if (error) {
-    console.error("[deploy/poll] query error:", error);
-    return [];
-  }
-
-  if (!rows?.length) return [];
+  if (rows.length === 0) return [];
 
   const commands = rows.map((r) => ({
-    temp_token: r.temp_token,
-    download_url: r.download_url,
-    plugin_id: r.plugin_id ?? "unknown",
-    resource_type: r.resource_type ?? "plugin",
+    temp_token: r.tempToken,
+    download_url: r.downloadUrl,
+    plugin_id: r.pluginId ?? "unknown",
+    resource_type: r.resourceType ?? "plugin",
   }));
 
   for (const r of rows) {
-    await sb
-      .from("deploy_commands")
-      .update({ status: "delivered" })
-      .eq("id", r.id);
+    await db
+      .update(deployCommands)
+      .set({ status: "delivered" })
+      .where(eq(deployCommands.id, r.id));
   }
 
   return commands;

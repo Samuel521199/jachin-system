@@ -74,7 +74,7 @@ tools:                                    # Native Core Fallback（防止 MCP �
 
 ## 四、 热加载机制
 
-- **文件监听**: `core/skill_loader.py` 监听 `skills_repo/**/SKILL.md` 变化
+- **文件监听**: `core/runtime/skill_loader.py` 监听 `skills_repo/**/SKILL.md` 变化
 - **解析**: 读取 YAML + Markdown，提取 name、description、persona、mcp_tools、指令正文
 - **注入**: 将技能摘要（name、description、path）加入 Agent 的可用技能列表
 - **按需加载**: Agent 决定调用某技能时，读取完整 `SKILL.md` 内容注入当前 Prompt

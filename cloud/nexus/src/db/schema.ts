@@ -183,6 +183,56 @@ export const transactions = pgTable("transactions", {
 });
 
 // =============================================================================
+// 消息队列与部署（去 Supabase 后使用）
+// =============================================================================
+
+export const agentMessageQueue = pgTable("agent_message_queue", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id")
+    .notNull()
+    .references(() => edgeAgents.id, { onDelete: "cascade" }),
+  messageText: text("message_text").notNull(),
+  direction: text("direction").notNull().default("inbound"),
+  status: text("status").notNull().default("pending"),
+  sourceMeta: jsonb("source_meta"),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const deployCommands = pgTable("deploy_commands", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: text("user_id").notNull(),
+  layer2InstanceId: text("layer2_instance_id").notNull(),
+  resourceType: text("resource_type").notNull().default("plugin"),
+  resourceId: uuid("resource_id").notNull(),
+  pluginId: text("plugin_id"),
+  downloadUrl: text("download_url").notNull(),
+  tempToken: text("temp_token").notNull(),
+  tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const pluginsRegistry = pgTable("plugins_registry", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  pluginId: text("plugin_id").notNull().unique(),
+  name: text("name").notNull(),
+  category: text("category").notNull().default("skill"),
+  description: text("description"),
+  downloadCount: integer("download_count").default(0),
+  downloadUrl: text("download_url").notNull(),
+  status: text("status").notNull().default("approved"),
+  manifestJson: jsonb("manifest_json"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// =============================================================================
 // Drizzle Relations（关系映射）
 // =============================================================================
 

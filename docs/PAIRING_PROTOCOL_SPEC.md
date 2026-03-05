@@ -1,171 +1,148 @@
-# 设备配对协议 (Device Authorization Grant)
+# 配对协议 (V2 L3-L2 零信任)
 
-**版本**: 1.1  
+**版本**: 2.0  
 **状态**: 设计规范  
-**定位**: 端云身份信任基石 — 6 位码傻瓜式绑定  
-**行业标准**: OAuth 2.0 RFC 8628 (Device Authorization Grant)，常用于 Apple TV、智能电视、IoT 网关
-
-**扩展协议**：扫码即连（Layer 3）、Wi-Fi 热点配对（无头设备）、ZTP 零触控（企业 B 端）详见 [ZERO_FRICTION_DESIGN.md](./ZERO_FRICTION_DESIGN.md)。
+**定位**: L3 节点向 L2 网关宣誓效忠 — RSA 双盲零信任  
+**已废弃**: L1 6 位码配对（仅 Layer 2 daemon 保留兼容）
 
 ---
 
-## 一、核心流程：端云三次握手
+## 一、V2 L3-L2 零信任配对（主流程）
 
-用户**仅参与第 2 阶段**，其余全自动。
+L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2 网关发起注册，管理员审批后获取加密的 API Key。
 
-### 阶段 1：前线边缘智能体请求配对 (Layer 2 自动发起)
-
-当全新 Layer 2 微内核启动且**未找到配置文件**时，自动向云端发起请求。
+### 阶段 1：L3 向 L2 注册
 
 | 动作 | 说明 |
 |------|------|
-| **Layer 2 发送** | `POST /api/v1/pairing/request`，附带设备指纹 / 临时公钥 |
-| **Layer 1 响应** | 生成 6 位短码（如 `J8K2X9`，有效期 5 分钟）、长 UUID 作为 `session_id` |
-| **边缘智能体终端显示** | 见下方 |
+| **L3** | 检查 `~/.jachin/l3_identity.json`，无则生成 RSA 密钥对并持久化 |
+| **L3 发送** | `POST /api/v2/auth/sync` `{ device_fingerprint, public_key_pem }` |
+| **L2 响应** | `{ node_id }`，登记到 `l3_nodes` 表（sub_account_id 为空，待审批） |
 
-**终端输出示例**：
-
-```
-[ Jachin Core ] 初始化完毕。未检测到指挥部授权。
-请在浏览器访问: https://nexus.jachin/pair
-并输入以下 6 位配对码:
-
-👉  J8K2X9  👈
-
-(该验证码将在 04:59 后失效...)
-```
-
----
-
-### 阶段 2：指挥官授权 (用户唯一需要做的)
+### 阶段 2：L2 管理员审批
 
 | 动作 | 说明 |
 |------|------|
-| **用户** | 在浏览器打开 Layer 1 Jachin Console，登录账号 |
-| **用户** | 在毛玻璃输入框中输入 `J8K2X9`，点击「授权绑定」 |
-| **前端调用** | `POST /api/v1/pairing/confirm` `{ "code": "J8K2X9" }` |
-| **Layer 1 动作** | 验证配对码有效 → 将 session 与 `user_id` 绑定 → 在 `edge_agents` 中创建/更新边缘智能体记录 |
+| **管理员** | 在 L2 后台将节点分配给子账号 |
+| **API** | `POST /api/v2/admin/nodes/assign` `{ node_id, sub_account_id }` |
+| **Header** | `X-Admin-Token`（环境变量 `JACHIN_L2_ADMIN_TOKEN`） |
 
----
-
-### 阶段 3：密钥与令牌下发 (水下静默完成)
-
-在用户输入的同时，Layer 2 一直在后台**静默轮询**。
+### 阶段 3：L3 轮询获取 Key
 
 | 动作 | 说明 |
 |------|------|
-| **Layer 2 轮询** | `GET /api/v1/pairing/status?session_id=...` |
-| **用户点击确认后** | 接口返回 `status: "success"`，并附带： |
-| | • `access_token` — 边缘智能体拉取插件、发送心跳的专属通行证 |
-| | • `layer1_public_key` — 验证 .jmp 插件包签名的公钥 |
-| **边缘智能体保存** | 写入本地 `.env` 或加密 `config.yaml` |
-| **终端反馈** | `✅ 授权成功，边缘智能体已连接至指挥部。` |
+| **L3 轮询** | `GET /api/v2/auth/poll?node_id=xxx` |
+| **pending** | 返回 `{ status: "pending" }` |
+| **approved** | 返回 `{ status: "approved", encrypted_api_keys: [...] }` |
+| **L3** | 用本地私钥解密，实例化 LiteLLMEngine，启动 WebSocket 18881 |
 
 ---
 
 ## 二、API 契约
 
-### POST /api/v1/pairing/request
+### POST /api/v2/auth/sync
 
 **请求体**：
 ```json
 {
   "device_fingerprint": "sha256:...",
-  "temp_public_key": "base64...",
-  "environment_type": "docker",
-  "core_version": "1.2.0"
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "capabilities": []
 }
 ```
 
 **响应**：
 ```json
 {
-  "session_id": "uuid",
-  "short_code": "J8K2X9",
-  "expires_in": 300,
-  "pair_url": "https://nexus.jachin/pair"
+  "node_id": "l3-abc123",
+  "status": "registered",
+  "message": "L3 node registered. Use GET /api/v2/auth/poll to fetch encrypted API keys."
 }
 ```
 
-### POST /api/v1/pairing/confirm
-
-**请求体**（需登录态）：
-```json
-{
-  "code": "J8K2X9"
-}
-```
-
-**响应**：
-```json
-{
-  "success": true,
-  "instance_id": "dev-layer2-001"
-}
-```
-
-### GET /api/v1/pairing/status?session_id=...
+### GET /api/v2/auth/poll?node_id=xxx
 
 **响应（pending）**：
 ```json
 {
-  "status": "pending"
+  "status": "pending",
+  "message": "Waiting for L2 admin to assign sub-account"
 }
 ```
 
-**响应（success）**：
+**响应（approved）**：
 ```json
 {
-  "status": "success",
-  "access_token": "jwt...",
-  "layer1_public_key": "base64...",
-  "instance_id": "dev-layer2-001",
-  "nexus_base_url": "https://nexus.jachin"
+  "status": "approved",
+  "node_id": "l3-abc123",
+  "sub_account_id": "sub-xxx",
+  "encrypted_api_keys": [
+    { "id": "key-xxx", "provider": "openai", "encrypted_key": "base64..." }
+  ]
+}
+```
+
+### POST /api/v2/admin/nodes/assign
+
+**请求体**（需 X-Admin-Token）：
+```json
+{
+  "node_id": "l3-abc123",
+  "sub_account_id": "sub-xxx"
 }
 ```
 
 ---
 
-## 三、数据模型：pairing_sessions
+## 三、数据模型：l3_nodes
 
 ```sql
-CREATE TABLE pairing_sessions (
-    session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    short_code VARCHAR(6) NOT NULL UNIQUE,
-    status VARCHAR(20) DEFAULT 'pending',  -- pending | approved | expired
-    device_info JSONB,
-    user_id UUID REFERENCES nexus_users(id),
-    layer2_instance_id UUID REFERENCES layer2_instances(id),
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE l3_nodes (
+    id TEXT PRIMARY KEY,
+    device_fingerprint TEXT,
+    public_key_pem TEXT NOT NULL,
+    sub_account_id TEXT,  -- NULL = 待审批
+    capabilities_json TEXT DEFAULT '{}',
+    last_seen_at REAL,
+    created_at REAL
 );
-
-CREATE INDEX idx_pairing_short_code ON pairing_sessions(short_code);
-CREATE INDEX idx_pairing_expires_at ON pairing_sessions(expires_at);
 ```
 
 ---
 
-## 四、安全防线
+## 四、本地配置
+
+| 路径 | 用途 |
+|------|------|
+| `~/.jachin/l3_identity.json` | RSA 私钥/公钥（严禁泄露私钥） |
+| `~/.jachin/l2_gateway_config.json` | L2 地址、node_id、paired 状态 |
+
+---
+
+## 五、安全防线
 
 | 机制 | 说明 |
 |------|------|
-| **短生命周期** | 6 位码仅 5 分钟有效，过期即失效或硬删除，降低暴力破解窗口 |
-| **防暴破限流** | `/confirm` 接口：同一 IP 连续输错 5 次 → 封禁 1 小时 |
-| **一次性消费** | Layer 2 拿到 Token 和公钥后，`session_id` 与 6 位码**立即作废**，防重放 |
-| **用户无感** | 用户无需理解 API Key、公钥证书，只输入类似验证码的 6 位字符 |
+| **双盲** | L2 不持有 L3 私钥；L3 不持有明文 API Key 直至解密 |
+| **密文下发** | L2 用 L3 公钥加密 Key，仅 L3 私钥可解密 |
+| **审批门控** | 管理员显式分配节点到子账号，防止未授权接入 |
 
 ---
 
-## 五、与信任链的衔接
+## 六、Legacy：L1 6 位码配对（仅 Layer 2 daemon）
 
-| 输出 | 用途 |
-|------|------|
-| `access_token` | 后续 `GET /api/v1/deploy/poll`、`POST /api/v1/agents/heartbeat`、`POST /api/v1/agents/result` 的 Authorization 头 |
-| `layer1_public_key` | `extract_and_verify_signature(downloaded_file, public_key)` 中的公钥 |
+Layer 2 daemon（nexus_daemon）、jachin-cli、run-pair 仍使用 L1 配对：
+
+- `POST /api/v1/pairing/request` → 6 位 short_code
+- 用户去 Nexus Console 输入 → `POST /api/v1/pairing/confirm`
+- 轮询 `GET /api/v1/pairing/status` → access_token
+- 写入 `~/.jachin/nexus_config.json`
+
+**Tauri 桌面端已不再使用此流程**，统一走 V2 L2 网关配对。
 
 ---
 
 **相关文档**:
-- [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) - 无感安全 UX
-- [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) - 信任链与心跳
+- [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 架构
+- [V2_ARCHITECTURE_DIAGRAM.md](./V2_ARCHITECTURE_DIAGRAM.md) — 架构图
+- [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) — 信任链与心跳

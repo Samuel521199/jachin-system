@@ -1,7 +1,7 @@
 # Jachin Nexus v8.0 vs OpenClaw 全方位对比分析
 
 **文档类型**: 竞品分析  
-**项目版本**: v0.8.0  
+**项目版本**: v0.8.5  
 **系统设计版本**: V8.0 (The Singularity OS)  
 **基准**: OpenClaw 2026 年 2 月状态（ClawHub 10,700+ skills、234k+ stars、ClawHavoc 供应链攻击后）  
 **更新日期**: 2026-02

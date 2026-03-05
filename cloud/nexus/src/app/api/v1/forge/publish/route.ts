@@ -4,7 +4,8 @@ import fs from "fs";
 import { randomUUID } from "crypto";
 import { JmpPacker } from "@/core/JmpPacker";
 import { ForgeCompiler } from "@/core/ForgeCompiler";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { deployCommands } from "@/db/schema";
 import { isIpfsConfigured, uploadToIpfs } from "@/lib/ipfs";
 
 const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
@@ -85,11 +86,11 @@ async function handleDirectPublish(body: {
     );
     if (ipfsResult) downloadUrl = ipfsResult.url;
   }
-  if (!downloadUrl.startsWith("ipfs://") && isSupabaseConfigured()) {
-    const url = await uploadJmpToStorage(outputPath, pluginId);
+  if (!downloadUrl.startsWith("ipfs://")) {
+    const url = await saveJmpLocally(outputPath, pluginId);
     if (url) downloadUrl = url;
   }
-  if (target_instance_id && isSupabaseConfigured()) {
+  if (target_instance_id && isDatabaseConfigured()) {
     await insertDeployCommand(downloadUrl, pluginId, target_instance_id);
   }
   try {
@@ -185,11 +186,11 @@ async function handleWorkflowPublish(body: {
     );
     if (ipfsResult) downloadUrl = ipfsResult.url;
   }
-  if (!downloadUrl.startsWith("ipfs://") && isSupabaseConfigured()) {
-    const url = await uploadJmpToStorage(outputPath, plugin_id);
+  if (!downloadUrl.startsWith("ipfs://")) {
+    const url = await saveJmpLocally(outputPath, plugin_id);
     if (url) downloadUrl = url;
   }
-  if (target_instance_id && isSupabaseConfigured()) {
+  if (target_instance_id && isDatabaseConfigured()) {
     await insertDeployCommand(downloadUrl, plugin_id, target_instance_id);
   }
   try {
@@ -270,64 +271,50 @@ def handle_workflow(params: dict) -> dict:
 `;
 }
 
-/** 上传 .jmp 至 Supabase Storage (jmp-packages bucket) */
-async function uploadJmpToStorage(
+/** 保存 .jmp 至本地 public/downloads 目录 */
+async function saveJmpLocally(
   outputPath: string,
   pluginId: string
 ): Promise<string | null> {
-  const sb = getSupabase();
-  if (!sb) return null;
-
-  const fileBuffer = fs.readFileSync(outputPath);
-  const fileName = `${pluginId.replace(/\./g, "-")}_${Date.now()}.jmp`;
-
-  const { error: uploadError } = await sb.storage
-    .from("jmp-packages")
-    .upload(fileName, fileBuffer, {
-      contentType: "application/zip",
-      upsert: true,
-    });
-
-  if (uploadError) {
-    console.error("☁️ 上传存储失败:", uploadError.message);
+  try {
+    const downloadsDir = path.join(process.cwd(), "public", "downloads");
+    fs.mkdirSync(downloadsDir, { recursive: true });
+    const fileName = `${pluginId.replace(/\./g, "-")}_${Date.now()}.jmp`;
+    const destPath = path.join(downloadsDir, fileName);
+    fs.copyFileSync(outputPath, destPath);
+    const baseUrl = process.env.NEXUS_PUBLIC_URL || "https://nexus.jachin";
+    const url = `${baseUrl.replace(/\/$/, "")}/downloads/${fileName}`;
+    console.log(`✅ 武器包已保存至本地: ${url}`);
+    return url;
+  } catch (e) {
+    console.error("☁️ 本地保存失败:", e);
     return null;
   }
-
-  const { data: publicUrlData } = sb.storage
-    .from("jmp-packages")
-    .getPublicUrl(fileName);
-
-  console.log(`✅ 武器包已上传至云端弹药库: ${publicUrlData.publicUrl}`);
-  return publicUrlData.publicUrl;
 }
 
-/** 向目标边缘智能体下发部署指令 (deploy_commands) */
+/** 向目标边缘智能体下发部署指令 */
 async function insertDeployCommand(
   downloadUrl: string,
   pluginId: string,
   targetInstanceId: string
 ): Promise<void> {
-  const sb = getSupabase();
-  if (!sb) return;
+  const db = getDb();
+  if (!db) return;
 
   const tempToken = randomUUID();
   const tokenExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
-  const { error } = await sb.from("deploy_commands").insert({
-    user_id: DEFAULT_USER_ID,
-    layer2_instance_id: targetInstanceId,
-    resource_type: "plugin",
-    resource_id: randomUUID(),
-    plugin_id: pluginId,
-    download_url: downloadUrl,
-    temp_token: tempToken,
-    token_expires_at: tokenExpiresAt.toISOString(),
+  await db.insert(deployCommands).values({
+    userId: DEFAULT_USER_ID,
+    layer2InstanceId: targetInstanceId,
+    resourceType: "plugin",
+    resourceId: randomUUID(),
+    pluginId,
+    downloadUrl,
+    tempToken,
+    tokenExpiresAt,
     status: "pending",
   });
 
-  if (error) {
-    console.error("📡 部署指令下发失败:", error.message);
-    throw new Error(`指令下发失败: ${error.message}`);
-  }
   console.log(`📡 已向边缘智能体 [${targetInstanceId}] 下发部署指令，plugin_id=${pluginId}`);
 }

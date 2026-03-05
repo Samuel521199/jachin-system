@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { createClient } from "@/lib/supabase-auth/server";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents, blueprints } from "@/db/schema";
+import { eq, inArray, and } from "drizzle-orm";
+
+const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * POST /api/v1/fleet/deploy
@@ -9,7 +12,7 @@ import { createClient } from "@/lib/supabase-auth/server";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { agent_ids, blueprint_id } = body;
+    const { agent_ids, blueprint_id, user_id } = body;
 
     if (!Array.isArray(agent_ids) || agent_ids.length === 0) {
       return NextResponse.json(
@@ -24,62 +27,46 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isSupabaseConfigured()) {
-      // Mock: simulate success for demo
+    if (!isDatabaseConfigured()) {
       return NextResponse.json({
         success: true,
         updated_count: agent_ids.length,
       });
     }
 
-    const authClient = await createClient();
-    const { data: { user } } = await authClient?.getUser() ?? { data: { user: null } };
-    const userId = user?.id;
+    const db = getDb()!;
+    const userId = user_id ?? DEFAULT_USER_ID;
 
-    const sb = getSupabase()!;
+    const [bp] = await db
+      .select({ id: blueprints.id })
+      .from(blueprints)
+      .where(eq(blueprints.id, blueprint_id))
+      .limit(1);
 
-    // Verify blueprint exists
-    const { data: bp, error: bpErr } = await sb
-      .from("blueprints")
-      .select("id")
-      .eq("id", blueprint_id)
-      .maybeSingle();
-
-    if (bpErr || !bp) {
+    if (!bp) {
       return NextResponse.json(
         { success: false, error: "Blueprint not found" },
         { status: 404 }
       );
     }
 
-    // Build query: update agents that belong to current user (or all if no auth)
-    let query = sb
-      .from("edge_agents")
-      .update({
-        current_blueprint_id: blueprint_id,
-        updated_at: new Date().toISOString(),
+    const result = await db
+      .update(edgeAgents)
+      .set({
+        currentBlueprintId: blueprint_id,
+        updatedAt: new Date(),
       })
-      .in("id", agent_ids);
-
-    if (userId) {
-      query = query.eq("user_id", userId);
-    }
-
-    const { data, error } = await query.select("id");
-
-    if (error) {
-      console.error("[fleet/deploy] Update error:", error);
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
-      );
-    }
-
-    const updatedCount = data?.length ?? 0;
+      .where(
+        and(
+          inArray(edgeAgents.id, agent_ids),
+          eq(edgeAgents.userId, userId)
+        )
+      )
+      .returning({ id: edgeAgents.id });
 
     return NextResponse.json({
       success: true,
-      updated_count: updatedCount,
+      updated_count: result.length,
     });
   } catch (e) {
     console.error("[fleet/deploy] Error:", e);

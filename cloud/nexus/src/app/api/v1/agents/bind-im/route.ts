@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { createClient } from "@/lib/supabase-auth/server";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents } from "@/db/schema";
+import { eq, and } from "drizzle-orm";
+
+const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * POST /api/v1/agents/bind-im
  * 绑定 IM（Telegram / 飞书）到边缘智能体
  *
  * Body: { agent_id: string, im_binding_id: string, im_platform?: 'telegram' | 'lark' }
- *
- * 用户需已登录，且 agent 属于当前用户。
- * im_binding_id: Telegram 为 chat_id（与 @userinfobot 对话获取），飞书为 chat_id
  */
 export async function POST(req: NextRequest) {
   try {
@@ -31,39 +31,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isSupabaseConfigured()) {
+    if (!isDatabaseConfigured()) {
       return NextResponse.json(
-        { success: false, error: "Supabase not configured" },
+        { success: false, error: "数据库未配置" },
         { status: 503 }
       );
     }
 
-    const authClient = await createClient();
-    const { data: { user } } = (await authClient?.getUser()) ?? { data: { user: null } };
-    const userId = user?.id;
+    const db = getDb()!;
+    const userId = body.user_id ?? DEFAULT_USER_ID;
 
-    const sb = getSupabase()!;
-
-    let query = sb
-      .from("edge_agents")
-      .update({
-        im_binding_id: String(im_binding_id).trim(),
-        im_platform: platform,
-        updated_at: new Date().toISOString(),
+    const result = await db
+      .update(edgeAgents)
+      .set({
+        imBindingId: String(im_binding_id).trim(),
+        imPlatform: platform,
+        updatedAt: new Date(),
       })
-      .eq("id", agent_id);
+      .where(and(eq(edgeAgents.id, agent_id), eq(edgeAgents.userId, userId)))
+      .returning({ id: edgeAgents.id });
 
-    if (userId) {
-      query = query.eq("user_id", userId);
-    }
-
-    const { error } = await query;
-
-    if (error) {
-      console.error("[agents/bind-im] Update error:", error);
+    if (result.length === 0) {
       return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
+        { success: false, error: "智能体不存在或无权操作" },
+        { status: 404 }
       );
     }
 

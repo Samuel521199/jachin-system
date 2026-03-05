@@ -1,7 +1,8 @@
 # Layer 3 与 Layer 2 通信架构
 
-**版本**: v8.0 (The Singularity OS)  
-**定位**: 控制面与数据面分离 — 能直连绝不绕路
+**版本**: V2  
+**定位**: 控制面与数据面分离 — 能直连绝不绕路  
+**基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) — L3 单体执行，L2 控制面
 
 ---
 
@@ -53,39 +54,39 @@
 
 ## 三、 匹配方式：三层绑定关系
 
-Layer 1 作为**控制面**，负责身份匹配与信令。数据面直连时，匹配在配对阶段完成。
+**V2 L3 桌面端**：配对走 L2 网关零信任（RSA 双盲），配置在 `~/.jachin/l2_gateway_config.json`。  
+**Layer 2 daemon / 第三方 IM**：仍使用 Layer 1 `edge_agents` 与 `nexus_config.json`。
 
 | 绑定链 | 用途 | 数据来源 |
 |--------|------|----------|
-| **1. access_token ↔ edge_agents** | Layer 2 鉴权、信令 | 配对后 `pairing/status` 返回，写入 `~/.jachin/nexus_config.json` |
-| **2. im_binding_id ↔ edge_agents** | 第三方 IM 消息路由 | 用户通过 `bind-im` API 将 Telegram chat_id 绑定到 agent |
-| **3. agent_id ↔ agent_message_queue** | 第三方 IM 任务队列 | 消息插入时 `agent_id`，WS 推送或心跳拉取时按 `agent_id` 过滤 |
+| **1. l3_nodes ↔ sub_accounts** | L3 零信任配对 | L2 `POST /auth/sync`、`GET /auth/poll`，写入 `~/.jachin/l2_gateway_config.json` |
+| **2. access_token ↔ edge_agents** | Layer 2 daemon 鉴权 | L1 6 位码配对，写入 `~/.jachin/nexus_config.json` |
+| **3. im_binding_id ↔ edge_agents** | 第三方 IM 消息路由 | 用户通过 `bind-im` API 将 Telegram chat_id 绑定到 agent |
+| **4. agent_id ↔ agent_message_queue** | 第三方 IM 任务队列 | 消息插入时 `agent_id`，WS 推送或心跳拉取时按 `agent_id` 过滤 |
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                    匹配关系 (Layer 1 控制面)                                       │
+│                    V2 L3 配对 (L2 控制面)                                         │
 ├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│   edge_agents 表                                                                 │
+│   l3_nodes 表                                                                     │
+│   ┌─────────────────────────────────────────────────────────────────────────┐  │
+│   │ id (node_id) │ public_key_pem │ sub_account_id │ device_fingerprint       │  │
+│   └─────────────────────────────────────────────────────────────────────────┘  │
+│          │                    │                                                  │
+│          ▼                    ▼                                                  │
+│   ┌──────────────┐    ┌──────────────┐                                           │
+│   │ 密文 Key 下发 │    │ 管理员审批   │                                           │
+│   │ 用 L3 公钥加密│    │ 分配子账号   │                                           │
+│   └──────────────┘    └──────────────┘                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    匹配关系 (Layer 1 控制面，Legacy)                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│   edge_agents 表（Layer 2 daemon、第三方 IM 使用）                                  │
 │   ┌─────────────────────────────────────────────────────────────────────────┐  │
 │   │ id (agent_id)  │ auth_token  │ im_binding_id │ im_platform │ status     │  │
-│   │─────────────────────────────────────────────────────────────────────────│  │
-│   │ uuid-xxx      │ jch-abc123  │ 123456789     │ telegram    │ active     │  │
 │   └─────────────────────────────────────────────────────────────────────────┘  │
-│          │                    │                    │                            │
-│          ▼                    ▼                    ▼                            │
-│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                      │
-│   │ 鉴权/信令     │    │ 配对下发     │    │ 第三方 IM    │                      │
-│   │ Bearer token │    │ 写入 nexus_  │    │ chat_id →   │                      │
-│   │ → agent_id   │    │ config.json │    │ agent_id    │                      │
-│   └──────────────┘    └──────────────┘    └──────────────┘                      │
-│                                                                                 │
-│   agent_message_queue（仅第三方 IM 使用）                                         │
-│   ┌─────────────────────────────────────────────────────────────────────────┐  │
-│   │ agent_id │ message_text │ direction │ status                              │  │
-│   │ uuid-xxx │ "查天气"     │ inbound   │ pending → processed                 │  │
-│   └─────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,27 +173,30 @@ Layer 2 连接 Layer 1 用于**鉴权、信令、第三方 IM 任务**：
 
 ---
 
-## 七、 配对流程：建立 edge_agent 绑定
+## 七、 配对流程
 
-配对建立 `edge_agent` 记录，供控制面鉴权与第三方 IM 路由。**同机/同网/P2P 直连时，配对后数据面不再经 Layer 1**。
+### 7.1 V2 L3 桌面端：L2 网关零信任（主流程）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                    配对流程 (扫码即连)                                              │
+│                    V2 L3-L2 零信任配对                                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  ① Tauri 启动，未检测到 ~/.jachin/nexus_config.json                              │
-│  ② Tauri → POST /api/v1/pairing/request → Layer 1 返回 session_id, short_code   │
-│  ③ 用户扫码 → Layer 1 /pair 页面 → 输入 6 位码 → 授权                            │
-│  ④ Layer 1: pairing/confirm → 创建 edge_agents，生成 auth_token                  │
-│  ⑤ Tauri 轮询 pairing/status → 收到 access_token, instance_id                   │
-│  ⑥ Tauri 写入 nexus_config.json → 静默拉起 Layer 2 daemon                       │
-│  ⑦ Layer 2 用 access_token 连 Layer 1（控制面）                                  │
-│  ⑧ Tauri 直连 ws://localhost:8080/sensory（数据面，同机）                         │
-│     ※ 同网时：Layer 2 mDNS 广播，手机 App 嗅探直连                                │
+│  ① Tauri 启动，未检测到 ~/.jachin/l2_gateway_config.json (paired)               │
+│  ② 显示 GatewayConnectScreen，用户输入 L2 网关地址（如 http://192.168.1.100:18888）│
+│  ③ 点击「发起神经接驳」→ L3 以 --gateway 模式启动                                 │
+│  ④ L3 → POST /api/v2/auth/sync（公钥+指纹）→ L2 登记 l3_nodes                    │
+│  ⑤ L3 轮询 GET /api/v2/auth/poll?node_id=xxx → 等待审批                           │
+│  ⑥ L2 管理员 POST /api/v2/admin/nodes/assign 将节点分配给子账号                   │
+│  ⑦ L3 收到 encrypted_api_keys，私钥解密 → 引擎点火 → ws://127.0.0.1:18881        │
+│  ⑧ Tauri 检测 L3 就绪 → 进入主控制台                                              │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 7.2 Legacy：Layer 2 daemon（L1 6 位码）
+
+Layer 2 daemon、jachin-cli、run-pair 仍使用 L1 配对：`pairing/request` → 6 位码 → `pairing/confirm` → `pairing/status` → 写入 `nexus_config.json`。详见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)。
 
 ---
 

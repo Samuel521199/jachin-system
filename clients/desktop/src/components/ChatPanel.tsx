@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, Mic, Square, Trash2, MicOff } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { sendChatMessage, streamChatMessage, voiceChat } from "../lib/api";
+import { voiceChat } from "../lib/api";
 import { useAppStore } from "../store/appStore";
 import { useSttAudioReady } from "../hooks/useSttAudioReady";
+import { useSensoryWebSocket } from "../hooks/useSensoryWebSocket";
 import { cn } from "../utils/cn";
 import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "../utils/messageStorage";
 import { typewriterAnimation } from "../utils/typewriter";
@@ -20,6 +21,8 @@ export default function ChatPanel() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const { isConnected } = useAppStore();
+  const sensory = useSensoryWebSocket();
+  const { connected: sensoryConnected, sendInput, registerChunkHandler, registerAnswerHandler } = sensory;
   const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
 
   // VAD 截断事件：收到后自动播放以验证截断效果
@@ -49,62 +52,88 @@ export default function ChatPanel() {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || !isConnected || isTyping) return;
+    if (!input.trim() || isLoading || isTyping) return;
+    if (!sensoryConnected) {
+      setMessages((prev) => addMessage(prev, {
+        role: "assistant",
+        content: "未连接 L3 引擎。请确认桌面端已启动（Tauri 会自动拉起 L3）。",
+        timestamp: Date.now(),
+      }));
+      return;
+    }
 
     const userMessage: StoredMessage = {
       role: "user",
       content: input.trim(),
       timestamp: Date.now(),
     };
-
     setMessages((prev) => addMessage(prev, userMessage));
     setInput("");
     setIsLoading(true);
 
-    try {
-      const assistantMessage: StoredMessage = {
-        role: "assistant",
-        content: "",
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, assistantMessage));
-      setIsTyping(true);
+    const assistantMessage: StoredMessage = {
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+    };
+    setMessages((prev) => addMessage(prev, assistantMessage));
+    setIsTyping(true);
 
-      try {
-        const fullReply = await streamChatMessage(userMessage.content, (chunk) => {
-          setMessages((prev) => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
-            if (last?.role === "assistant") {
-              updated[updated.length - 1] = { ...last, content: last.content + chunk };
-            }
-            return updated;
-          });
-        });
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullReply };
-          saveMessages(updated);
-          return updated;
-        });
-      } catch {
-        const response = await sendChatMessage(userMessage.content);
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], content: response.reply };
-          saveMessages(updated);
-          return updated;
-        });
-      }
+    const timeoutId = setTimeout(() => {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant" && !last.content) {
+          return [...prev.slice(0, -1), { ...last, content: "响应超时（120 秒）" }];
+        }
+        return prev;
+      });
+      setIsLoading(false);
       setIsTyping(false);
-    } catch (error) {
-      const errorMessage: StoredMessage = {
+    }, 120000);
+
+    const cleanup = (finalContent: string) => {
+      clearTimeout(timeoutId);
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant") {
+          updated[updated.length - 1] = { ...last, content: finalContent || last.content };
+        }
+        saveMessages(updated);
+        return updated;
+      });
+      setIsLoading(false);
+      setIsTyping(false);
+    };
+
+    const chunkHandler = (chunk: string) => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant") {
+          updated[updated.length - 1] = { ...last, content: last.content + chunk };
+        }
+        return updated;
+      });
+    };
+
+    registerChunkHandler(chunkHandler);
+    registerAnswerHandler((answerContent) => cleanup(answerContent));
+
+    const sent = sendInput(userMessage.content);
+    if (!sent) {
+      clearTimeout(timeoutId);
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      setMessages((prev) => addMessage(prev, {
         role: "assistant",
-        content: `错误: ${error instanceof Error ? error.message : "未知错误"}`,
+        content: "发送失败：L3 未连接",
         timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, errorMessage));
-    } finally {
+      }));
       setIsLoading(false);
       setIsTyping(false);
     }

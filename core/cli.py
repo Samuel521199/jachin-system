@@ -66,7 +66,7 @@ def _format_short_code(code: str) -> str:
 
 
 @click.group()
-@click.version_option(version="0.8.0", prog_name="Jachin Nexus CLI")
+@click.version_option(version="0.8.5", prog_name="Jachin Nexus CLI")
 def cli() -> None:
     """Jachin Nexus Layer 2 极客终端工具"""
     pass
@@ -79,9 +79,67 @@ def cli() -> None:
     envvar="NEXUS_BASE_URL",
     help="Layer 1 Nexus Console 地址",
 )
-def pair(base_url: str) -> None:
+@click.option(
+    "--recover",
+    is_flag=True,
+    help="恢复模式：云端已配对成功但本地未保存时，用 6 位码取回凭证",
+)
+@click.option("--code", default="", help="恢复时使用的 6 位配对码（与 --recover 配合）")
+def pair(base_url: str, recover: bool, code: str) -> None:
     """边缘智能体配对 - 6 位码连接指挥部"""
     base_url = base_url.rstrip("/")
+
+    # 恢复模式：云端已确认但 CLI 未写入配置时，用码取回凭证
+    if recover and code:
+        code_clean = code.strip().upper().replace("-", "").replace(" ", "")[:6]
+        if len(code_clean) != 6:
+            console.print("[red][ERROR][/red] 恢复码必须为 6 位")
+            raise SystemExit(1)
+        console.print(ASCII_ART)
+        console.print()
+        console.print("[cyan]恢复模式：从云端取回配对凭证...[/cyan]")
+        try:
+            r = httpx.get(
+                f"{base_url}/api/v1/pairing/status",
+                params={"code": code_clean},
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except httpx.RequestError as e:
+            console.print(f"[red][ERROR][/red] 无法连接 Layer 1: {e}")
+            raise SystemExit(1)
+        except httpx.HTTPStatusError as e:
+            console.print(f"[red][ERROR][/red] 请求失败: HTTP {e.response.status_code}")
+            raise SystemExit(1)
+
+        st = data.get("status")
+        if st != "success":
+            console.print(f"[red][ERROR][/red] 恢复失败: {data.get('error', st)}")
+            console.print("  可能原因：配对码已过期、未在云端确认、或码错误")
+            raise SystemExit(1)
+
+        access_token = data.get("access_token")
+        instance_id = data.get("instance_id", "dev-layer2-001")
+        nexus_base_url = (data.get("nexus_base_url") or base_url).rstrip("/")
+        if not access_token:
+            console.print("[red][ERROR][/red] 云端未返回 access_token")
+            raise SystemExit(1)
+
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "instance_id": instance_id,
+            "access_token": access_token,
+            "nexus_base_url": nexus_base_url,
+            "pairing_code": code_clean,
+        }
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        console.print(Panel("[green]✅ 凭证已恢复并写入本地配置[/green]", border_style="green"))
+        console.print(f"  配置路径: [cyan]{CONFIG_PATH}[/cyan]")
+        console.print(f"  instance_id: [dim]{instance_id}[/dim]")
+        console.print()
+        console.print("[bold cyan]🚀 可重新运行 start-layer2.ps1 启动 daemon[/bold cyan]")
+        return
 
     # 1. 赛博朋克 Logo
     console.print(ASCII_ART)
@@ -94,7 +152,7 @@ def pair(base_url: str) -> None:
             json={
                 "device_fingerprint": None,
                 "environment_type": "bare_metal",
-                "core_version": "0.8.0",
+                "core_version": "0.8.5",
             },
             timeout=10.0,
         )
@@ -179,12 +237,13 @@ def pair(base_url: str) -> None:
         border_style="green",
     ))
 
-    # 6. 写入配置
+    # 6. 写入配置（含 pairing_code 用于 L2 子账号溯源）
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     cfg = {
         "instance_id": instance_id,
         "access_token": access_token,
         "nexus_base_url": nexus_base_url.rstrip("/"),
+        "pairing_code": short_code,
     }
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -266,12 +325,12 @@ def shell(user_input: str, use_daemon: bool) -> None:
             console.print("[red]⚠ 超时：brain_worker 未在 120 秒内返回[/red]")
 
     async def _go_daemon() -> None:
-        """ --daemon：仅注入 SQLite，连接 ws://localhost:8080/sensory 等待 Daemon 广播结果 """
+        """ --daemon：仅注入 SQLite，连接 ws://localhost:18881/sensory 等待 Daemon 广播结果 """
         emit_omni_input("cli", inp, {})
         try:
             import websockets
             async with websockets.connect(
-                "ws://localhost:8080/sensory",
+                "ws://localhost:18881/sensory",
                 open_timeout=5.0,
                 close_timeout=2.0,
             ) as ws:
@@ -291,7 +350,7 @@ def shell(user_input: str, use_daemon: bool) -> None:
                     except json.JSONDecodeError:
                         pass
         except (ConnectionRefusedError, OSError) as e:
-            console.print(f"[red]❌ 无法连接 Daemon (ws://localhost:8080/sensory): {e}[/red]")
+            console.print(f"[red]❌ 无法连接 Daemon (ws://localhost:18881/sensory): {e}[/red]")
             console.print("[dim]请先运行: python -m core.cli daemon[/dim]")
             raise SystemExit(1)
         except asyncio.TimeoutError:

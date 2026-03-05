@@ -8,7 +8,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from core.brain.planner.intent_parser import IntentParser, Intent
 from core.brain.planner.resource_allocator import ResourceAllocator
-from core.brain.ray_cluster.task_types import RayTask, TaskType, create_skill_task, create_llm_task
+from core.brain.planner.task_types import RayTask, TaskType, create_skill_task, create_llm_task
 from core.system.plugin_manager import PluginManager
 from core.registry.registry import DeviceRegistry
 

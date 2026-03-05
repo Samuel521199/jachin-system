@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { createClient } from "@/lib/supabase-auth/server";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { blueprints } from "@/db/schema";
+
+const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * POST /api/v1/blueprints/mint
@@ -26,41 +28,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isSupabaseConfigured()) {
+    if (!isDatabaseConfigured()) {
       return NextResponse.json(
-        { success: false, error: "Supabase 未配置，无法写入数据库" },
+        { success: false, error: "数据库未配置，无法写入" },
         { status: 503 }
       );
     }
 
-    const sb = getSupabase()!;
+    const db = getDb()!;
+    const creatorId = body.creator_id ?? DEFAULT_USER_ID;
 
-    // 获取当前登录用户
-    let creatorId: string | null = null;
-    const authClient = await createClient();
-    if (authClient) {
-      const { data: { user } } = await authClient.getUser();
-      if (user?.id) {
-        creatorId = user.id;
-      }
-    }
-
-    const { data: blueprint, error } = await sb
-      .from("blueprints")
-      .insert({
-        creator_id: creatorId,
+    const [blueprint] = await db
+      .insert(blueprints)
+      .values({
+        creatorId,
         name: String(name).trim(),
         description: description ? String(description).trim() : null,
-        ast_json,
-        price: typeof price === "number" ? price : 0,
+        astJson: ast_json,
+        price: typeof price === "number" ? String(price) : "0",
       })
-      .select("id, name, created_at")
-      .single();
+      .returning({ id: blueprints.id, name: blueprints.name, createdAt: blueprints.createdAt });
 
-    if (error) {
-      console.error("[blueprints/mint] Insert error:", error);
+    if (!blueprint) {
       return NextResponse.json(
-        { success: false, error: error.message },
+        { success: false, error: "插入失败" },
         { status: 500 }
       );
     }
@@ -71,7 +62,7 @@ export async function POST(req: NextRequest) {
       blueprint: {
         id: blueprint.id,
         name: blueprint.name,
-        created_at: blueprint.created_at,
+        created_at: blueprint.createdAt,
       },
     });
   } catch (e) {

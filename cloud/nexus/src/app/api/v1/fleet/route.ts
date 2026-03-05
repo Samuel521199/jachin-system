@@ -1,15 +1,15 @@
-import { NextResponse } from "next/server";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
-import { createClient } from "@/lib/supabase-auth/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { edgeAgents, blueprints } from "@/db/schema";
+import { eq, inArray, desc, and } from "drizzle-orm";
 
 /**
  * GET /api/v1/fleet
- * 舰队指挥大屏 - 拉取当前用户的 edge_agents，含蓝图名称
+ * 舰队指挥大屏 - 拉取 edge_agents，含蓝图名称
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    if (!isSupabaseConfigured()) {
-      // Mock for demo
+    if (!isDatabaseConfigured()) {
       const mockAgents = [
         { id: "dev-001", name: "dev-layer2-instance-001", status: "active", last_heartbeat: new Date().toISOString(), current_blueprint_id: null, blueprint_name: "—" },
         { id: "prod-002", name: "prod-layer2-002", status: "offline", last_heartbeat: new Date(Date.now() - 120000).toISOString(), current_blueprint_id: null, blueprint_name: "—" },
@@ -21,59 +21,49 @@ export async function GET() {
       });
     }
 
-    const authClient = await createClient();
-    const { data: { user } } = await authClient?.getUser() ?? { data: { user: null } };
-    const userId = user?.id;
+    const db = getDb()!;
+    const userId = req.nextUrl.searchParams.get("user_id");
 
-    const sb = getSupabase()!;
+    const whereClause = userId
+      ? and(inArray(edgeAgents.status, ["active", "offline", "pending"]), eq(edgeAgents.userId, userId))
+      : inArray(edgeAgents.status, ["active", "offline", "pending"]);
 
-    // Fetch agents (optionally filter by user)
-    let agentsQuery = sb
-      .from("edge_agents")
-      .select("id, name, status, last_heartbeat, current_blueprint_id, user_id")
-      .in("status", ["active", "offline", "pending"])
-      .order("last_heartbeat", { ascending: false, nullsFirst: false });
+    const agents = await db
+      .select({
+        id: edgeAgents.id,
+        name: edgeAgents.name,
+        status: edgeAgents.status,
+        lastHeartbeat: edgeAgents.lastHeartbeat,
+        currentBlueprintId: edgeAgents.currentBlueprintId,
+      })
+      .from(edgeAgents)
+      .where(whereClause)
+      .orderBy(desc(edgeAgents.lastHeartbeat));
 
-    if (userId) {
-      agentsQuery = agentsQuery.eq("user_id", userId);
-    }
-
-    const { data: agents, error: agentsErr } = await agentsQuery;
-
-    if (agentsErr) {
-      console.error("[fleet] Agents fetch error:", agentsErr);
-      return NextResponse.json(
-        { error: agentsErr.message },
-        { status: 500 }
-      );
-    }
-
-    // Fetch blueprints for name lookup
-    const bpIds = [...new Set((agents ?? []).map((a) => a.current_blueprint_id).filter(Boolean))];
+    const bpIds = [...new Set(agents.map((a) => a.currentBlueprintId).filter(Boolean))] as string[];
     let blueprintMap: Record<string, string> = {};
     if (bpIds.length > 0) {
-      const { data: bps } = await sb
-        .from("blueprints")
-        .select("id, name")
-        .in("id", bpIds);
-      blueprintMap = Object.fromEntries((bps ?? []).map((b) => [b.id, b.name ?? ""]));
+      const bps = await db
+        .select({ id: blueprints.id, name: blueprints.name })
+        .from(blueprints)
+        .where(inArray(blueprints.id, bpIds));
+      blueprintMap = Object.fromEntries(bps.map((b) => [b.id, b.name ?? ""]));
     }
 
-    // Fetch all blueprints for deploy dropdown
-    const { data: allBps } = await sb
-      .from("blueprints")
-      .select("id, name")
-      .order("created_at", { ascending: false })
+    const allBps = await db
+      .select({ id: blueprints.id, name: blueprints.name })
+      .from(blueprints)
+      .orderBy(desc(blueprints.createdAt))
       .limit(50);
 
-    const agentsWithBlueprint = (agents ?? []).map((a) => ({
+    const agentsWithBlueprint = agents.map((a) => ({
       id: a.id,
       name: a.name ?? `边缘智能体-${a.id.slice(0, 8)}`,
       status: a.status,
-      last_heartbeat: a.last_heartbeat,
-      current_blueprint_id: a.current_blueprint_id,
-      blueprint_name: a.current_blueprint_id
-        ? blueprintMap[a.current_blueprint_id] ?? "—"
+      last_heartbeat: a.lastHeartbeat?.toISOString() ?? null,
+      current_blueprint_id: a.currentBlueprintId,
+      blueprint_name: a.currentBlueprintId
+        ? blueprintMap[a.currentBlueprintId] ?? "—"
         : "—",
     }));
 
@@ -82,12 +72,12 @@ export async function GET() {
     const staleCount = agentsWithBlueprint.filter((a) => {
       if (a.status !== "active") return false;
       const hb = a.last_heartbeat ? new Date(a.last_heartbeat).getTime() : 0;
-      return Date.now() - hb > 120000; // 2 min
+      return Date.now() - hb > 120000;
     }).length;
 
     return NextResponse.json({
       agents: agentsWithBlueprint,
-      blueprints: (allBps ?? []).map((b) => ({ id: b.id, name: b.name })),
+      blueprints: allBps.map((b) => ({ id: b.id, name: b.name })),
       stats: {
         online: onlineCount,
         offline: offlineCount,

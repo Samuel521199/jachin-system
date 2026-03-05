@@ -2,14 +2,14 @@
  * ConsoleApp - 控制台应用入口
  * 使用 HashRouter 适配 Tauri 单页与本地加载
  * 含 ErrorBoundary，出错时显示错误信息而非空白
- * Battle C: 未配对时显示扫码即连 PairingScreen
+ * V2: 未配对时显示 L2 网关接驳 GatewayConnectScreen
  */
 
 import React, { Component, ErrorInfo, ReactNode, useState, useEffect } from "react";
 import { RouterProvider } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { consoleRouter } from "./routes";
-import { PairingScreen } from "../components/PairingScreen";
+import { GatewayConnectScreen } from "../components/GatewayConnectScreen";
 
 class ConsoleErrorBoundary extends Component<
   { children: ReactNode },
@@ -49,7 +49,7 @@ export function ConsoleApp() {
   const [paired, setPaired] = useState<boolean | null>(null);
 
   useEffect(() => {
-    invoke<boolean>("is_nexus_paired")
+    invoke<boolean>("is_gateway_paired")
       .then(setPaired)
       .catch(() => setPaired(false));
   }, []);
@@ -65,7 +65,7 @@ export function ConsoleApp() {
   if (!paired) {
     return (
       <ConsoleErrorBoundary>
-        <PairingScreen onPaired={() => setPaired(true)} />
+        <GatewayConnectScreen onPaired={() => setPaired(true)} />
       </ConsoleErrorBoundary>
     );
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import Navbar from "@/components/Navbar";
@@ -14,11 +14,12 @@ function parseCodeFromUrl(searchParams: URLSearchParams | null): string | null {
   return code && code.length === CODE_LEN ? code : null;
 }
 
-export default function ConsolePairPage() {
+function PairForm() {
   const searchParams = useSearchParams();
   const [digits, setDigits] = useState<string[]>(Array(CODE_LEN).fill(""));
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [usedCode, setUsedCode] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
@@ -97,6 +98,7 @@ export default function ConsolePairPage() {
       const data = await res.json();
       if (res.ok && data.success) {
         setSuccess(true);
+        setUsedCode(raw); // 保存用于恢复提示
         setDigits(Array(CODE_LEN).fill(""));
       } else {
         setError(data.error || "授权失败");
@@ -151,6 +153,13 @@ export default function ConsolePairPage() {
                 <p className="text-white/50 text-sm mt-2">
                   Neural link established. Terminal will respond shortly.
                 </p>
+                {usedCode && (
+                  <p className="mt-4 px-4 py-2 rounded-lg bg-black/30 border border-white/10 text-white/70 text-xs font-mono text-center max-w-full break-all">
+                    若终端未保存凭证，请运行恢复命令：
+                    <br />
+                    <code className="text-cyan-400">.\scripts\run-pair.ps1 -Recover -Code &quot;{usedCode}&quot;</code>
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={() => setSuccess(false)}
@@ -217,5 +226,17 @@ export default function ConsolePairPage() {
         </p>
       </main>
     </div>
+  );
+}
+
+export default function ConsolePairPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#030303] flex items-center justify-center">
+        <span className="text-cyan-400 animate-pulse">加载中...</span>
+      </div>
+    }>
+      <PairForm />
+    </Suspense>
   );
 }

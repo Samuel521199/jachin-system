@@ -23,14 +23,13 @@ Jachin 各层独立安装/启动，以及特殊用途脚本说明。
 | 层 | 必需 | 可选 |
 |------|------|------|
 | **Cloud** | Node.js + npm | - |
-| **Layer2** | Python 3.10+ | Docker（Qdrant）、Conda（Python 3.13 时推荐，Ray 需 3.10–3.12） |
+| **Layer2** | Python 3.10+ | Conda（Python 3.13 时推荐） |
 | **Layer3** | Node.js + npm | Rust + Tauri CLI（完整桌面端） |
 
 **快速安装（Windows 管理员 PowerShell）：**
 ```powershell
 winget install OpenJS.NodeJS.LTS    # Cloud / Layer3
-winget install Python.Python.3.11    # Layer2
-winget install Docker.DockerDesktop  # Layer2 Qdrant（可选）
+winget install Python.Python.3.11  # Layer2
 ```
 
 **检查依赖：** `.\scripts\check-prerequisites.ps1 [cloud|layer2|layer3]`（无参数检查全部）
@@ -49,26 +48,14 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 
 ### 根目录快捷方式
 
-- `start.bat [cloud|layer2|daemon|layer3|full|pair]` — 默认 layer2；`pair` 为边缘智能体配对
-- `start.bat layer2` — 启动时展示选项菜单（nexus_daemon 完整版 / daemon 轻量版）
+- `start.bat [cloud|layer2|daemon|layer3|pair]` — 默认 layer2；`pair` 为边缘智能体配对
+- `start.bat layer2` — 启动时展示选项菜单（nexus_daemon 完整版 / daemon 轻量版 / Gateway 模式）
 - `start.bat daemon` — 直接启动轻量版守护进程（心跳 + Agent Loop 自主执行）
 - `restart.bat` — 重启完整栈
 
 ---
 
-## 二、完整栈（开发环境）
-
-| 脚本 | 说明 |
-|------|------|
-| `setup.ps1` / `setup.sh` | 一键安装：Conda 环境、依赖、Dapr、.env |
-| `start-full.ps1` / `start-full.sh` | 启动完整栈：Docker + Dapr + 后端 (端口 18888) |
-| `stop.ps1` / `stop.sh` | 停止完整栈 |
-| `restart.ps1` / `restart.sh` | 先 stop 再 start-full |
-| `deploy.ps1` | 一键部署：环境、依赖、TTS 模型、桌面端构建（可 `-SkipTts` / `-SkipDesktop` / `-SkipBackend`） |
-
----
-
-## 三、模型下载（特殊用途）
+## 二、模型下载（特殊用途）
 
 | 脚本 | 说明 |
 |------|------|
@@ -79,7 +66,7 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 
 ---
 
-## 四、端口与进程
+## 三、端口与进程
 
 | 脚本 | 说明 |
 |------|------|
@@ -88,40 +75,33 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 
 ---
 
-## 五、Docker / Dapr 排障
+## 四、Docker 排障（可选）
 
 | 脚本 | 说明 |
 |------|------|
 | `docker_fix_conflicts.ps1` | 修复 Docker 容器名冲突 |
 | `docker_diagnose.ps1` | 诊断 Docker 服务未运行原因 |
-| `dapr_restart_scheduler.ps1` | 重启 Dapr Scheduler 容器 |
 
 ---
 
-## 六、配对与 CLI
+## 五、配对与 CLI
 
 | 脚本 | 说明 |
 |------|------|
-| `run-pair.ps1` / `run-pair.sh` | 边缘智能体配对（6 位码，极客终端版） |
+| `run-pair.ps1` / `run-pair.sh` | Layer 2 daemon 配对（L1 6 位码，Legacy） |
 | `start.bat pair` | 同上，根目录快捷方式 |
 
+**V2 L3 桌面端**：使用 L2 网关零信任配对，见 [PAIRING_PROTOCOL_SPEC.md](../docs/PAIRING_PROTOCOL_SPEC.md)。启动 `start-layer3.ps1` 后，在 GatewayConnectScreen 输入 L2 地址发起神经接驳。
+
 ---
 
-## 七、测试与验证
+## 六、测试与验证
 
 | 脚本 | 说明 |
 |------|------|
-| `test.ps1` / `test.sh` | 测试 API：健康、路由、聊天、Dapr |
+| `test.ps1` / `test.sh` | 测试 API：健康、路由、聊天 |
 | `run_tests.ps1` | 运行 pytest 单元/集成测试 |
-| `verify_system.ps1` | 系统验证：Conda、端口、数据库、Dapr |
-
----
-
-## 八、内部脚本（一般无需单独运行）
-
-| 脚本 | 说明 |
-|------|------|
-| `run_backend_uvicorn_conda.bat` | 启动 uvicorn 后端（Conda jachin-dev），被 start-full.ps1 通过 dapr run 调用 |
+| `verify_system.ps1` | 系统验证：Conda、端口、数据库 |
 
 ---
 
@@ -132,20 +112,14 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 install-layer2.ps1  →  start-layer2.ps1
 ```
 （install 自动执行首次配对，已配对则跳过）
-- `start-layer2.ps1` 启动时展示选项：`[1] nexus_daemon (完整版)` / `[2] daemon (轻量版)`
+- `start-layer2.ps1` 启动时展示选项：`[1] nexus_daemon (完整版)` / `[2] daemon (轻量版)` / `[3] Gateway 模式`
 - 快捷启动轻量版：`start.bat daemon` 或 `.\scripts\start-layer2.ps1 -Mode daemon`
-- **轻量版 daemon**：心跳拉取蓝图后，由 **Agent Loop (ReAct)** 自主执行，不再机械跑 Trigger→Processor→Action。详见 [docs/LAYER2_AGENT_LOOP_DESIGN.md](../docs/LAYER2_AGENT_LOOP_DESIGN.md)
+- **轻量版 daemon**：心跳拉取蓝图后，由 **Agent Loop (ReAct)** 自主执行
 
 **平台商部署 Cloud：**
 ```
-install-cloud.ps1   →  start-cloud.ps1
+install-cloud.ps1   →   start-cloud.ps1
 ```
-（install-cloud 会执行数据库迁移：Supabase 或 Drizzle `db:push`）
+（install-cloud 会执行数据库迁移：Drizzle `db:push`）
 
-**完整开发环境：**
-```
-setup.ps1  →  编辑 .env  →  可选 download_models.bat  →  start-full.ps1
-```
-
-**端口占用时：** `kill_port.ps1 18888`  
-**容器冲突时：** `docker_fix_conflicts.ps1`
+**端口占用时：** `kill_port.ps1 18888`

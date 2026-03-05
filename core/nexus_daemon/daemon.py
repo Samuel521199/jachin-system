@@ -35,12 +35,24 @@ def _setup_logging() -> None:
 
 async def _run_daemon(config: DaemonConfig) -> None:
     """主运行逻辑"""
-    from core.event_bus import start_consumer, stop_consumer
+    from core.event_bus import start_consumer, stop_consumer, start_omni_consumer, stop_omni_consumer
+    from core.event_bus import subscribe_omni_output
     from core.nexus_daemon.ingress import start_ingress_server
+    from core.sensory_server import _broadcast_to_ui, start_sensory_server
 
     # 1. Event Bus 消费者（核心，必须最先启动）
     start_consumer()
     logger.info("[Event Bus] 消费者已启动")
+
+    # 1b. 全息感官总线 + brain_worker（供 Layer 3 聊天、Sensory 广播）
+    subscribe_omni_output("layer3_broadcast", _broadcast_to_ui)
+    subscribe_omni_output("swarm_broadcast", _broadcast_to_ui)
+    start_omni_consumer()
+    logger.info("[OmniSensoryBus] brain_worker 已启动")
+
+    # 1c. Sensory WebSocket（ws://localhost:18881/sensory）
+    await start_sensory_server()
+    logger.info("[Sensory] 全息共振通道已启动 ws://localhost:18881/sensory")
 
     # 2. Local Ingress API（始终启动，确立边缘中枢地位）
     ingress_runner = await start_ingress_server(
@@ -94,6 +106,7 @@ async def _run_daemon(config: DaemonConfig) -> None:
         if updater_agent:
             updater_agent.stop()
 
+        stop_omni_consumer()
         stop_consumer()
 
         if ingress_runner:

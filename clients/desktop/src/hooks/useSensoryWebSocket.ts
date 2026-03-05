@@ -1,12 +1,13 @@
 /**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
- * 连接 ws://localhost:8080/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
+ * 连接 ws://localhost:18881/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const SENSORY_WS_URL = "ws://localhost:8080/sensory";
+const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18881";
+const SENSORY_WS_URL = `ws://localhost:${SENSORY_WS_PORT}/sensory`;
 const RECONNECT_DELAY_MS = 3000;
 
 /** v8.0 能力协商：声明 stream_chunk 以接收逐 token 推送 */
@@ -49,10 +50,16 @@ export function useSensoryWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChunkRef = useRef<((chunk: string, runId: string) => void) | null>(null);
+  const onAnswerRef = useRef<((content: string) => void) | null>(null);
 
   /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
   const registerChunkHandler = useCallback((fn: ((chunk: string, runId: string) => void) | null) => {
     onChunkRef.current = fn;
+  }, []);
+
+  /** 注册 answer 回调：收到最终回复时调用（含完整内容，用于无 chunk 时的兜底） */
+  const registerAnswerHandler = useCallback((fn: ((content: string) => void) | null) => {
+    onAnswerRef.current = fn;
   }, []);
 
   const connect = useCallback(() => {
@@ -85,8 +92,10 @@ export function useSensoryWebSocket() {
             onChunkRef.current?.(data.content, runId);
           }
 
-          // answer 结束时清空流式状态
-          if (data.step_type === "answer") {
+          // answer/rejected/error 结束时：通知回调（兜底完整内容），再清空流式状态
+          if (["answer", "rejected", "error"].includes(data.step_type)) {
+            const content = data.content ?? "";
+            onAnswerRef.current?.(content);
             setStreamingContent("");
             setCurrentRunId(null);
           }
@@ -157,6 +166,13 @@ export function useSensoryWebSocket() {
     sendHitlResponse(approved, tid);
   }, [sendHitlResponse, hitlPending?.task_id]);
 
+  /** 发送聊天输入到 Layer 2（通过 Sensory WebSocket，注入全息感官总线） */
+  const sendInput = useCallback((text: string) => {
+    if (!text.trim() || wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    wsRef.current.send(JSON.stringify({ type: "input", intent: text.trim() }));
+    return true;
+  }, []);
+
   useEffect(() => {
     connect();
     return () => disconnect();
@@ -169,11 +185,14 @@ export function useSensoryWebSocket() {
     resolveHitl,
     sendHitlResponse,
     reconnect: connect,
+    /** 发送聊天输入到 Layer 2 */
+    sendInput,
     // v8.0 视觉觉醒
     streamingContent,
     currentRunId,
     handoffEvent,
     swarmEvent,
     registerChunkHandler,
+    registerAnswerHandler,
   };
 }

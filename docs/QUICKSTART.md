@@ -14,11 +14,13 @@
 .\scripts\start-layer2.ps1
 ```
 
-### 2. 扫码配对
+### 2. 网关配对（V2 L3）
 
-1. 打开桌面端：`cd clients\desktop && npm run tauri:dev`
-2. 手机扫码，完成授权
-3. 底层 Layer 2 守护进程自动唤醒
+1. 启动 L2：`python core/main.py`（端口 18888）
+2. 打开桌面端：`cd clients\desktop && npm run tauri:dev`
+3. 在 GatewayConnectScreen 输入 L2 地址（如 `http://localhost:18888`），点击「发起神经接驳」
+4. L2 管理员审批：`POST /api/v2/admin/nodes/assign` 将节点分配给子账号
+5. 或点击「使用本地 Key (跳过 L2)」直接使用 OPENAI_API_KEY
 
 ### 3. 唤醒 Telegram（可选）
 
@@ -47,5 +49,5 @@
 ## 四、下一步
 
 - 架构：[whitepaper/](./whitepaper/)
-- 配对：`python -m core.cli pair`
+- 配对：V2 桌面端见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)；Layer 2 daemon 用 `python -m core.cli pair`
 - IM 网关：[IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)

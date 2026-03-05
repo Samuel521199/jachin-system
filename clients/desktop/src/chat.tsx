@@ -8,8 +8,7 @@ import React, { useState, useRef, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { sendChatMessage, streamChatMessage, voiceChat, synthesizeSpeech, routeIntent, checkHealth, voiceProcess, type VoiceProcessResponse } from "./lib/api";
-import { useAppStore } from "./store/appStore";
+import { voiceChat, synthesizeSpeech, voiceProcess, type VoiceProcessResponse } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { useSensoryWebSocket } from "./hooks/useSensoryWebSocket";
@@ -47,10 +46,9 @@ function ChatApp() {
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const typewriterCancelRef = useRef<(() => void) | null>(null);
-  const { isConnected, setConnected } = useAppStore();
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
   const sensory = useSensoryWebSocket();
-  const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler } = sensory;
+  const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler, registerAnswerHandler, sendInput } = sensory;
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
@@ -60,25 +58,6 @@ function ChatApp() {
   const isVadActiveRef = useRef(false);
   isRecordingRef.current = isRecording;
   isVadActiveRef.current = isVadActive;
-
-  // Chat 为独立窗口，需自行轮询后端连接状态（与主窗口共享 Zustand 但各自挂载，此处主动检测）
-  useEffect(() => {
-    let mounted = true;
-    const check = async () => {
-      try {
-        await checkHealth();
-        if (mounted) setConnected(true);
-      } catch {
-        if (mounted) setConnected(false);
-      }
-    };
-    check();
-    const interval = setInterval(check, 5000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [setConnected]);
 
   // 窗口显示时请求焦点，便于左键点击能落到输入区
   useEffect(() => {
@@ -102,143 +81,116 @@ function ChatApp() {
 
   // 滚动由 HolographicChat 内部的 messagesEndRef 处理，此处不重复
 
-  /** 实际发送消息（在意图路由与高风险确认之后调用） */
+  /** 实际发送消息（通过 Layer 2 Sensory WebSocket，注入全息感官总线） */
   const doActualSend = async (content: string) => {
-    const userMessage: StoredMessage = {
-      role: "user",
-      content,
-      timestamp: Date.now(),
-    };
+    if (!sensory.connected) {
+      setMessages((prev) => addMessage(prev, {
+        role: "assistant",
+        content: "未连接 L3 引擎。请确认桌面端已启动（Tauri 会自动拉起 L3），或检查 ws://127.0.0.1:18881 是否可达。",
+        timestamp: Date.now(),
+      }));
+      return;
+    }
+
+    const userMessage: StoredMessage = { role: "user", content, timestamp: Date.now() };
     setMessages((prev) => addMessage(prev, userMessage));
     setInput("");
     setIsLoading(true);
     setRiskLevel("safe");
     setState("thinking");
 
-    try {
-      const assistantMessage: StoredMessage = {
-        role: "assistant",
-        content: "",
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, assistantMessage));
-      setState("speaking");
-      setIsTyping(true);
+    const assistantMessage: StoredMessage = { role: "assistant", content: "", timestamp: Date.now() };
+    setMessages((prev) => addMessage(prev, assistantMessage));
+    setIsTyping(true);
 
-      let finalReply: string | null = null;
-      let accumulatedForTts = "";
+    const audioEl = chatAudioRef.current;
+    const ttsQueue = ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
+    let accumulatedForTts = "";
 
-      const audioEl = chatAudioRef.current;
-      const ttsQueue =
-        ttsEnabled && audioEl
-          ? createAudioQueue(audioEl, () => setState("idle"))
-          : null;
+    const enqueueSentence = (sentence: string) => {
+      if (!sentence.trim() || !ttsQueue) return;
+      synthesizeSpeech(sentence.trim(), ttsVoice)
+        .then((blob) => { ttsQueue.enqueue(blob); setState("speaking"); })
+        .catch(() => {});
+    };
 
-      const pendingSynths: Promise<void>[] = [];
-      const enqueueSentence = (sentence: string) => {
-        if (!sentence.trim() || !ttsQueue) return;
-        const p = synthesizeSpeech(sentence.trim(), ttsVoice)
-          .then((blob) => {
-            ttsQueue.enqueue(blob);
-            setState("speaking");
-          })
-          .catch(() => {});
-        pendingSynths.push(p);
-      };
-
-      try {
-        finalReply = await streamChatMessage(userMessage.content, (chunk) => {
-          accumulatedForTts += chunk;
-          setMessages((prev) => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
-            if (last?.role === "assistant") {
-              updated[updated.length - 1] = { ...last, content: last.content + chunk };
-            }
-            return updated;
-          });
-          const { complete, remainder } = extractCompleteSentences(accumulatedForTts);
-          accumulatedForTts = remainder;
-          for (const sentence of complete) {
-            enqueueSentence(sentence);
-          }
-        });
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], content: finalReply ?? "" };
-          saveMessages(updated);
-          return updated;
-        });
-        if (accumulatedForTts.trim()) {
-          enqueueSentence(accumulatedForTts);
+    let timeoutCleared = false;
+    const cleanup = (finalContent: string) => {
+      if (timeoutCleared) return;
+      timeoutCleared = true;
+      clearTimeout(timeoutId);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant") {
+          updated[updated.length - 1] = { ...last, content: finalContent || last.content };
         }
-        Promise.all(pendingSynths).finally(() => ttsQueue?.ensureIdle());
-      } catch {
-        const response = await sendChatMessage(userMessage.content);
-        finalReply = response.reply;
-        setMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], content: response.reply };
-          saveMessages(updated);
-          return updated;
-        });
-        if (ttsEnabled && finalReply && audioEl) {
-          try {
-            const audioBlob = await synthesizeSpeech(finalReply, ttsVoice);
-            const audioUrl = URL.createObjectURL(audioBlob);
-            audioEl.src = audioUrl;
-            setState("speaking");
-            audioEl.onended = () => {
-              setState("idle");
-              URL.revokeObjectURL(audioUrl);
-            };
-            await audioEl.play();
-          } catch {
-            setState("idle");
-          }
-        }
+        saveMessages(updated);
+        return updated;
+      });
+      if (ttsQueue && finalContent) {
+        const { complete, remainder } = extractCompleteSentences(accumulatedForTts + finalContent);
+        complete.forEach(enqueueSentence);
+        if (remainder.trim()) enqueueSentence(remainder);
+        ttsQueue.ensureIdle();
       }
-
-      setIsTyping(false);
-
-      if (!ttsQueue && !(ttsEnabled && finalReply && audioEl)) {
-        setTimeout(() => setState("idle"), 3000);
-      }
-    } catch (error) {
-      const errorMessage: StoredMessage = {
-        role: "assistant",
-        content: `错误: ${error instanceof Error ? error.message : "未知错误"}`,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => addMessage(prev, errorMessage));
-      setState("idle");
-    } finally {
       setIsLoading(false);
       setIsTyping(false);
       setRiskLevel("safe");
+      if (!ttsQueue) setTimeout(() => setState("idle"), 2000);
+    };
+
+    const chunkHandler = (chunk: string) => {
+      accumulatedForTts += chunk;
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant") {
+          updated[updated.length - 1] = { ...last, content: last.content + chunk };
+        }
+        return updated;
+      });
+    };
+
+    const timeoutId = setTimeout(() => {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant" && !last.content) {
+          return [...prev.slice(0, -1), { ...last, content: "响应超时（120 秒），请检查 Layer 2 是否正常运行" }];
+        }
+        return prev;
+      });
+      setIsLoading(false);
+      setIsTyping(false);
+    }, 120000);
+
+    registerChunkHandler(chunkHandler);
+    registerAnswerHandler((answerContent) => {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      cleanup(answerContent);
+    });
+
+    const sent = sendInput(content);
+    if (!sent) {
+      clearTimeout(timeoutId);
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      setMessages((prev) => addMessage(prev, {
+        role: "assistant",
+        content: "发送失败：Sensory 未连接",
+        timestamp: Date.now(),
+      }));
+      setIsLoading(false);
+      setIsTyping(false);
     }
   };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading || isTyping) return;
-    const trimmed = input.trim();
-
-    try {
-      const routed = await routeIntent(trimmed);
-      if (routed.intent_type === "COMMAND") {
-        if (routed.risk_level === "high") {
-          setRiskLevel("danger");
-          setPendingHighRisk({ text: trimmed, strippedText: routed.stripped_text });
-          return;
-        }
-        setRiskLevel("warning");
-      } else {
-        setRiskLevel("safe");
-      }
-    } catch {
-      setRiskLevel("safe");
-    }
-    await doActualSend(trimmed);
+    await doActualSend(input.trim());
   };
 
   const handleConfirmHighRisk = () => {
@@ -474,8 +426,12 @@ function ChatApp() {
       }
       setRecordingStatus("");
     } catch (error) {
-      setMessages((prev) => addMessage(prev, { role: "assistant", content: `错误: ${error instanceof Error ? error.message : "语音处理失败"}`, timestamp: Date.now() }));
-      setRecordingStatus(`错误: ${error instanceof Error ? error.message : "未知错误"}`);
+      const msg = error instanceof Error ? error.message : "语音处理失败";
+      const friendly = msg.toLowerCase().includes("fetch") || msg.toLowerCase().includes("network")
+        ? "语音服务暂不可用（后端未启动，请运行 start.bat 或确保端口 18888 可达）"
+        : msg;
+      setMessages((prev) => addMessage(prev, { role: "assistant", content: `错误: ${friendly}`, timestamp: Date.now() }));
+      setRecordingStatus(`错误: ${friendly}`);
       setState("idle");
     } finally {
       setIsLoading(false);
@@ -532,9 +488,9 @@ function ChatApp() {
         isRecording={isRecording}
         recordingStatus={recordingStatus}
         listeningText={listeningText}
-        placeholder={isConnected ? "输入指令..." : "等待连接..."}
+        placeholder={sensory.connected ? "输入指令..." : "等待 Layer 2 连接 (ws://localhost:18881/sensory)..."}
         riskLevel={riskLevel}
-        disabled={!isConnected}
+        disabled={!sensory.connected}
         streamingFromWs={!!(isTyping && wsStreamingContent)}
       />
       {/* 高风险操作二次确认弹窗 */}

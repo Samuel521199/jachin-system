@@ -17,16 +17,17 @@ from typing import Any, Awaitable, Callable
 # 尽早加载 .env，确保 OPENAI_API_KEY 等被注入（IDE/子进程可能未继承系统环境变量）
 # Windows 下 echo > .env 或记事本可能产生 UTF-16，需尝试多种编码；加载成功后转为 UTF-8 供 pydantic-settings 使用
 def _load_dotenv_safe() -> None:
+    """加载项目根目录 .env，确保 Layer2 daemon 无论从何目录启动都能读到 DASHSCOPE_API_KEY 等"""
     try:
         from dotenv import load_dotenv
-        for _p in [Path.cwd(), Path(__file__).resolve().parent.parent]:
+        # 优先从 core 的父目录（项目根）加载，再尝试 cwd
+        for _p in [Path(__file__).resolve().parent.parent, Path.cwd()]:
             _e = _p / ".env"
             if _e.exists():
                 try:
                     load_dotenv(_e, encoding="utf-8")
                 except UnicodeDecodeError:
                     load_dotenv(_e, encoding="utf-16")
-                    # 转为 UTF-8，避免 pydantic-settings 等后续读取失败
                     try:
                         _e.write_text(_e.read_text(encoding="utf-16"), encoding="utf-8")
                     except Exception:
@@ -86,6 +87,25 @@ def _get_model_name(config: dict[str, Any] | None = None) -> str:
         use_for_qwen = llm_cfg.get("use_openai_key_for_qwen", False)
     if use_for_qwen:
         return "dashscope/qwen-max"  # LiteLLM 要求 dashscope/ 前缀
+    # 若已配置 DASHSCOPE/QWEN API Key，默认用通义千问，避免回退到未启动的 Ollama
+    if os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or os.environ.get("QWEN_AI_API_KEY"):
+        return "dashscope/qwen-max"
+    try:
+        from core.config import settings
+        if getattr(settings, "DASHSCOPE_API_KEY", None) or getattr(settings, "QWEN_API_KEY", None):
+            return "dashscope/qwen-max"
+    except ImportError:
+        pass
+    # 兜底：检查 nexus_config / credential_loader（可能尚未注入到 os.environ）
+    try:
+        from core.brain.llm.credential_loader import get_dashscope_key
+        if get_dashscope_key():
+            return "dashscope/qwen-max"
+    except ImportError:
+        pass
+    llm_keys = (cfg.get("llm_keys") or {}) if isinstance(cfg.get("llm_keys"), dict) else {}
+    if llm_keys.get("dashscope"):
+        return "dashscope/qwen-max"
     return "gpt-4o-mini"  # LiteLLM 默认兜底
 
 
@@ -143,10 +163,23 @@ def _model_needs_key(model: str) -> tuple[bool, str | None]:
         return False, None
     if m.startswith("openai/") or m.startswith("gpt-"):
         return True, "OPENAI_API_KEY"
-    if m.startswith("qwen/") or m.startswith("dashscope/"):
+    if m.startswith("qwen/") or m.startswith("dashscope/") or m.startswith("qwen-"):
         return True, "DASHSCOPE_API_KEY"
     # 默认按 OpenAI 处理（gpt-4o-mini 等）
     return True, "OPENAI_API_KEY"
+
+
+def _normalize_model_for_litellm(model: str) -> str:
+    """将裸模型名转为 LiteLLM 所需格式，如 qwen-max -> dashscope/qwen-max"""
+    m = (model or "").strip()
+    if not m:
+        return m
+    ml = m.lower()
+    if ml.startswith("ollama/") or ml.startswith("ollama:"):
+        return m
+    if ml.startswith("qwen-") and not ml.startswith("qwen/"):
+        return f"dashscope/{m}"
+    return m
 
 
 def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[str], float]:
@@ -205,7 +238,8 @@ class LiteLLMEngine:
     def __init__(self, model_name: str | None = None) -> None:
         _inject_api_keys()
         raw = model_name or _get_model_name()
-        self.model_name = _resolve_model_with_fallback(raw)
+        resolved = _resolve_model_with_fallback(raw)
+        self.model_name = _normalize_model_for_litellm(resolved)
 
     async def generate_response(
         self,
@@ -225,7 +259,7 @@ class LiteLLMEngine:
         last_error: Exception | None = None
 
         for attempt in range(max_attempts):
-            model = models_to_try[min(attempt, len(models_to_try) - 1)]
+            model = _normalize_model_for_litellm(models_to_try[min(attempt, len(models_to_try) - 1)])
             try:
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
@@ -277,7 +311,7 @@ class LiteLLMEngine:
         last_error: Exception | None = None
 
         for attempt in range(max_attempts):
-            model = models_to_try[min(attempt, len(models_to_try) - 1)]
+            model = _normalize_model_for_litellm(models_to_try[min(attempt, len(models_to_try) - 1)])
             full_content: list[str] = []
             try:
                 kwargs_chat: dict[str, Any] = {
@@ -328,6 +362,7 @@ class CognitiveEngineFactory:
         config.llm.model_name: 如 gpt-4o, qwen/qwen-max, ollama/qwen2.5
         """
         global _IGNITION_EMITTED
+        _inject_api_keys()  # 先注入 key，确保 _get_model_name 能检测到 nexus_config/credential_loader 中的 DASHSCOPE_API_KEY
         model_name = _get_model_name(config)
         engine = LiteLLMEngine(model_name=model_name)
         cls._engine = engine

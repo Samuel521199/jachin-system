@@ -1,6 +1,8 @@
 # =============================================================================
 # Cloud (Layer 1) - One-click start (Windows)
 # cloud/nexus - Nexus Console @ http://localhost:3000
+# 使用 Drizzle ORM + PostgreSQL，已脱离 Supabase
+# 首次运行会创建 .env.local；若项目根 .env 有 DATABASE_URL 则自动继承
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
@@ -29,13 +31,26 @@ if (-not $NextInstalled) {
     Pop-Location
 }
 
-# .env.local optional: copy from .env.example if missing (SKIP_AUTH for quick dev)
+# .env.local: copy from .env.example if missing (Drizzle + PostgreSQL，无 Supabase)
 $EnvLocal = Join-Path $NexusDir ".env.local"
 $EnvExample = Join-Path $NexusDir ".env.example"
-if (-not (Test-Path $EnvLocal) -and (Test-Path $EnvExample)) {
-    Copy-Item $EnvExample $EnvLocal
-    Add-Content $EnvLocal "`n# Auto-added for first run`nSKIP_AUTH=true"
-    Write-Host "(INFO) Created .env.local with SKIP_AUTH=true" -ForegroundColor Gray
+$RootEnv = Join-Path $ProjectRoot ".env"
+if (-not (Test-Path $EnvLocal)) {
+    if (Test-Path $EnvExample) {
+        Copy-Item $EnvExample $EnvLocal
+        Add-Content $EnvLocal "`n# Auto-added for first run`nSKIP_AUTH=true"
+        Write-Host "(INFO) Created .env.local from .env.example (SKIP_AUTH=true)" -ForegroundColor Gray
+        # 若项目根 .env 有 DATABASE_URL 且 nexus 未配置，则继承（便于共用 PostgreSQL）
+        if (Test-Path $RootEnv) {
+            $DbLine = Get-Content $RootEnv | Where-Object { $_ -match "^\s*DATABASE_URL=" } | Select-Object -First 1
+            if ($DbLine -and -not (Select-String -Path $EnvLocal -Pattern "^\s*DATABASE_URL=" -Quiet)) {
+                Add-Content $EnvLocal "`n# Inherited from project root .env`n$DbLine"
+                Write-Host "(INFO) Inherited DATABASE_URL from project root" -ForegroundColor Gray
+            }
+        }
+    } else {
+        Write-Host "(WARN) .env.example not found. Create .env.local manually." -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
@@ -43,6 +58,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  Cloud (Layer 1) - Nexus Console" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  http://localhost:3000"
+Write-Host "  Drizzle + PostgreSQL (无 Supabase)"
 Write-Host "  Press Ctrl+C to stop"
 Write-Host ""
 

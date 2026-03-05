@@ -57,7 +57,7 @@ class TestSentinelEscalation:
     def test_sentinel_add_and_ack_task(self):
         """测试添加任务与确认"""
         import ray
-        from core.brain.ray_actors.sentinel import SentinelActor
+        from core.skills.sentinel import SentinelActor
 
         actor = SentinelActor.remote()
         task_id = ray.get(actor.add_task.remote({
@@ -83,7 +83,7 @@ class TestSentinelEscalation:
         验证 Sentinel 自动升级并调用 VoIP 技能。
         """
         import ray
-        from core.brain.ray_actors.sentinel import SentinelActor
+        from core.skills.sentinel import SentinelActor
 
         actor = SentinelActor.remote()
         ray.get(actor.clear_test_invokes.remote())
@@ -114,7 +114,7 @@ class TestSentinelEscalation:
 
     def test_escalation_chain_constants(self):
         """验证升级链常量定义"""
-        from core.brain.ray_actors.sentinel import REACH_ESCALATION_CHAIN, ESCALATION_TIMEOUTS
+        from core.skills.sentinel import REACH_ESCALATION_CHAIN, ESCALATION_TIMEOUTS
 
         assert "desktop_notify" in REACH_ESCALATION_CHAIN
         assert "mobile_push" in REACH_ESCALATION_CHAIN

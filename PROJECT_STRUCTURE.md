@@ -1,18 +1,18 @@
-# Jachin-System v8.0 项目结构
+# Jachin-System V2 项目结构
 
 ## 文档信息
 
-- **版本**: v8.0 (The Singularity OS)
-- **最后更新**: 2026-02
-- **架构**: 分布式数字生命操作系统 (Distributed Digital Life OS)
+- **版本**: V2 (L2 控制面 + L3 单体)
+- **最后更新**: 2026-03
+- **架构**: L1 平台 / L2 零信任控制面 / L3 边缘单体执行面
 
 ---
 
 ## ⚠️ 架构宪法 (The Constitution)
 
 1. **全面弃用** Dapr、Ray 集群、本地 PostgreSQL、Qdrant、Redis、复杂 Docker 编排。
-2. Layer 2 执行引擎为**双轨制**：轨道 A (MCP)、轨道 B (SKILL.md)、轨道 C (Wasm 沙箱)。
-3. **v8.0 升维**：Session Multiplexing、Nexus Hook Pipeline、Dream Weaver、Capability Negotiation、Edge Mesh Swarm、全链路 runId 追踪、流式神经 (Streaming Chunk)。
+2. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key 保险箱/记忆）、L3 单体（对标 OpenClaw，持密文 Key 直连 API）。
+3. **L2 不代理推理**：L3 持密文 Key，请求时解密后自行调用外部 LLM API。
 
 ---
 
@@ -22,22 +22,25 @@
 jachin-system/
 ├── .cursor/                  # Cursor IDE 规则配置
 │   └── rules/
-│       ├── 000-structure.mdc      # v8.0 三层架构目录规范
-│       ├── 060-v8-singularity.mdc # v8.0 升维特性
+│       ├── 000-structure.mdc      # V2 三层架构目录规范
+│       ├── 065-v2-layer3-standalone.mdc # V2 L3 单体架构
 │       └── ...
 │
 ├── cloud/                    # [Layer 1] 云端代码 (Next.js + Drizzle ORM + Auth.js)
 │   └── nexus/                # 控制台、舰队、Forge、IM Webhook、心跳 API
 │
-├── core/                     # [Layer 2] 神经中枢总线 (Python)
-│   ├── daemon.py             # 守护进程主循环 (心跳 + dream_scheduler + Layer 3 WS)
-│   ├── cron_thinker.py       # 生物钟：每 30min 主动环顾
-│   ├── agent_loop.py         # ReAct 循环 (v8.0 Nexus Hook Pipeline)
-│   ├── event_bus.py          # 全息感官总线 (Session Multiplexing)
-│   ├── session_manager.py    # v8.0 会话隔离器 (session_id → Actor)
-│   ├── hooks_pipeline.py     # v8.0 洋葱中间件
+├── core/                     # [Layer 2] 控制面 (Python)
+│   ├── db/                   # L2 数据库 (sub_accounts, api_keys_vault, l3_nodes)
+│   ├── security/             # crypto_manager 零信任密钥
+│   ├── api/routes/
+│   │   ├── v2_auth.py        # POST /auth/sync, GET /auth/poll, GET /keys
+│   │   └── v2_admin.py       # POST /admin/sub-accounts, /admin/keys, /admin/nodes/assign
+│   ├── daemon.py             # 守护进程主循环
+│   ├── agent_loop.py         # ReAct 循环（过渡期，未来迁移至 L3）
+│   ├── event_bus.py          # 全息感官总线
+│   ├── hooks_pipeline.py     # 洋葱中间件
 │   ├── mcp_client.py         # 轨道 A：MCP 宿主
-│   ├── skill_loader.py       # 轨道 B：SKILL.md 热加载
+│   ├── runtime/skill_loader.py  # 轨道 B：SKILL.md 热加载
 │   ├── wasm_runner.py        # 轨道 C：The Abyss Wasm 沙箱
 │   ├── biological_memory.py # 海马体 + 大脑皮层
 │   ├── memory_store.py       # v8.0 LanceDB 记忆碎片 (Dream Weaver 数据层)
@@ -52,6 +55,10 @@ jachin-system/
 ├── clients/                  # [Layer 3] 客户端
 │   ├── desktop/              # Tauri v2 桌面精灵
 │   └── iot/                  # 树莓派/IoT 脚本
+├── l3_node/                  # [Layer 3] 单体执行引擎
+│   ├── llm_client.py         # 本地解密 + 直连 LLM
+│   ├── agent_core.py         # ReAct + MemorySyncDaemon
+│   └── bootstrap.py         # 引导
 │
 ├── skills_repo/              # 轨道 B SKILL.md + 轨道 C Wasm 插件
 │
@@ -86,33 +93,33 @@ jachin-system/
 
 ---
 
-### Layer 2: Edge Agent (The Core)
+### Layer 2: 控制面 (The Control Plane)
 
 **目录**: `core/`
 
 **职责**:
-- **神经中枢总线**：双轨制 (MCP + SKILL.md + Wasm)、量子记忆、自我修复
-- **v8.0 升维**：Session Multiplexing、Nexus Hook Pipeline、Dream Weaver、Edge Mesh Swarm、全链路 runId 追踪、流式神经
-- **Jachin Mesh**：WebSocket 双向长连，毫秒级指令下发
-- **生物钟**：cron_thinker 每 30min 主动环顾
+- **子账号与权限**：在 L2 创建子账号，定义 L3 节点、Skill 白名单
+- **API Key 保险箱**：Master Key 加密存储，用 L3 公钥加密下发，**不代理推理请求**
+- **记忆与梦境**：接收 L3 同步记忆，梦境优化后回传
+- **L3 协同调度**：多 L3 节点任务分配
 
-**技术栈**: Python 3.10+ (asyncio, httpx) + wasmtime + sqlite3 + MCP Client
+**技术栈**: Python 3.10+ + SQLite (~/.jachin/l2_control.db) + cryptography
 
-**数据底座**: SQLite (memory.db, event_queue.db) + LanceDB (vector_db/)
+**V2 API**: `/api/v2/auth/sync`, `/api/v2/keys`, `/api/v2/admin/*`
 
 ---
 
-### Layer 3: Jachin Terminal (The Edge)
+### Layer 3: 单体执行面 (The Execution Plane)
 
-**目录**: `clients/`
+**目录**: `clients/desktop`（未来 `l3_node/`）
 
-**职责**: 全息感知外壳，零摩擦体验
+**职责**: 单体 OpenClaw 对标，多 Agent、多 Skill、本地记忆
 
 **核心功能**:
-- **桌面精灵**: Tauri v2 + React，扫码即连、静默拉起 Layer 2
-- **Voice Wake**: Hey Jachin 唤醒词 + Whisper STT + TTS
-- **jachin-cli**: pair、shell 极客终端
-- **Capability Negotiation**: 连接时发送 Manifest，按 caps 接收推送
+- **持密文 Key**：从 L2 拉取，本地私钥解密后直连外部 API
+- **桌面精灵**: Tauri v2 + React
+- **Voice Wake**: Hey Jachin 唤醒词 + STT + TTS
+- **可与 L2 同机部署**
 
 **技术栈**: Tauri v2 + React
 
@@ -127,6 +134,6 @@ jachin-system/
 
 ## 参考文档
 
+- [docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 架构规范
+- [docs/V2_ARCHITECTURE_DIAGRAM.md](docs/V2_ARCHITECTURE_DIAGRAM.md) — V2 架构图与流程图
 - [docs/whitepaper/00_INDEX.md](docs/whitepaper/00_INDEX.md) — 白皮书索引
-- [docs/whitepaper/V8_SINGULARITY_OS.md](docs/whitepaper/V8_SINGULARITY_OS.md) — v8.0 架构升维
-- [docs/whitepaper/04_FILE_STRUCTURE.md](docs/whitepaper/04_FILE_STRUCTURE.md) — 详细文件结构

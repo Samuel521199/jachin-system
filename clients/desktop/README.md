@@ -133,9 +133,7 @@ npm run tauri:build:ambient
 
 - `VITE_ENVIRONMENT` — 顶栏环境描述，如 `Home Network (Secure)`
 - `VITE_MODEL_NAME` — 顶栏当前模型名，如 `Qwen-72B (Int4)`
-- `VITE_BACKEND_URL` — 后端 API 地址，默认 `http://localhost:18888`
-- `VITE_DAPR_HTTP_PORT` — Dapr 侧栏 HTTP 端口，默认 `3502`
-- `VITE_USE_DAPR` — 是否经 Dapr 调用后端，默认 `true`（设为 `false` 则直连后端）
+- `VITE_BACKEND_URL` — 后端 API 地址，默认 `http://localhost:18888`（V2 统一直连，Dapr 已废弃）
 
 ## 项目结构
 
@@ -171,12 +169,12 @@ clients/desktop/
 
 ## 与后端通信
 
-### 通过 Dapr 调用后端
+### V2 直连后端（Dapr 已废弃）
 
-前端通过 Rust 后端调用 Dapr，然后 Dapr 路由到后端服务：
+前端通过 Tauri 或 fetch 直连后端 API（默认 `http://localhost:18888`）：
 
 ```
-React UI → Tauri Command → Rust Dapr Client → Dapr Sidecar → Backend Service
+React UI → fetch(BACKEND_URL/api/...) 或 Tauri invoke
 ```
 
 ### API 调用示例
@@ -217,13 +215,6 @@ async fn send_serial_command(port: String, command: String) -> Result<(), String
 
 ## 配置
 
-### Dapr 配置
-
-默认 Dapr HTTP 端口：`3500`
-后端 App ID：`jachin-brain`
-
-可以在 `src-tauri/src/dapr.rs` 中修改。
-
 ### Tauri 配置
 
 窗口大小、标题等配置在 `src-tauri/tauri.conf.json` 中。
@@ -242,5 +233,4 @@ async fn send_serial_command(port: String, command: String) -> Result<(), String
 ## 相关文档
 
 - [Tauri v2 文档](https://v2.tauri.app/)
-- [Dapr 文档](https://docs.dapr.io/)
-- [项目架构文档](../../docs/architecture.md)
+- [V2 架构文档](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)

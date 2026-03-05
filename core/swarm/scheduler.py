@@ -1,10 +1,7 @@
 """
-Swarm Scheduler - 分布式任务调度
+Swarm Scheduler - 分布式任务调度 (V2)
 
-v4.0 蜂群：根据 compute 标签（cpu_light | gpu_heavy）将任务分配给合适节点。
-与 core/brain/ray_cluster/task_scheduler.py 协同：
-- TaskScheduler: Ray 任务提交
-- SwarmScheduler: 节点选择与 placement 策略
+V2: Ray Cluster 已废弃。根据 compute 标签选择节点，供 L2 协同调度使用。
 """
 
 import logging

@@ -123,6 +123,18 @@ def insert_consolidated_memory(text: str) -> str | None:
     return mem_id
 
 
+def _run_embed_sync(embedder: "BaseEmbedder", text: str) -> list[float] | None:
+    """同步运行 embed_text，兼容已有事件循环（agent_loop 等异步上下文）"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(embedder.embed_text(text))
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, embedder.embed_text(text))
+        return future.result()
+
+
 def add_memory_fragment(text: str, *, is_consolidated: bool = False) -> str | None:
     """
     写入一条记忆碎片（默认未整合）。
@@ -138,7 +150,7 @@ def add_memory_fragment(text: str, *, is_consolidated: bool = False) -> str | No
     if not emb:
         return None
     try:
-        vec = asyncio.run(emb.embed_text(text))
+        vec = _run_embed_sync(emb, text)
         if not vec:
             return None
         _MEMORIES_DB_PATH.parent.mkdir(parents=True, exist_ok=True)

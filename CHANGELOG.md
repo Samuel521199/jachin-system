@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.5] - 2026-03
+
+### Added
+
+- **L1-L2 配对码溯源**：配对成功后，将 6 位配对码写入 L2 默认子账号 `l1_pairing_code`，实现审计溯源
+
+### Changed
+
+- 版本号统一更新至 v0.8.5
+
+---
+
 ## [v8.0] - 2026-02 (The Singularity OS)
 
 ### Added

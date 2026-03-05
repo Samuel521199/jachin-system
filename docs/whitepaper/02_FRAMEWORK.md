@@ -1,7 +1,8 @@
 # 02 — 框架架构 (The Trinity + Neural Bus)
 
 **文档类型**: 白皮书 · 框架架构  
-**版本**: v8.0 (The Singularity OS)
+**版本**: V2  
+**基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
 ---
 
@@ -18,31 +19,28 @@
 Jachin Nexus 采用严格的“重云轻端”三位一体设计，彻底摒弃了上一代笨重的微服务网格。
 
 ```text
-Layer 1 (云端调度枢纽) ↔ Layer 2 (神经中枢总线) ↔ Layer 3 (全息感知外壳)
+Layer 1 (平台) ↔ Layer 2 (控制面) ↔ Layer 3 (单体执行节点)
 
-1. Layer 1: Jachin Nexus (数字孪生云端)
-定位: 免密、可视化、主导资产确权与指令下发的全局指挥大盘。
+1. Layer 1: Jachin Nexus (平台)
+定位: 用户主账号注册/登录，平台主账号管理平台内部。与 L2/L3 无直接耦合。
 
-特性: 绝对不存储边缘节点隐私记忆。它是边缘节点的“DNA 库”与“调度室”。
+特性: 绝对不存储边缘节点隐私记忆。用户主账号在平台注册后，管理其自己的 L2 + L3 系统。
 
 核心组件: The Forge (图形化编排)、Fleet Management (舰队批量下发)、Universal Message Adapter (全渠道 Webhook 统一适配)。
 
 数据底座: Drizzle ORM + PostgreSQL（去 BaaS 化 P0 已落地），Auth.js 身份认证，统管全网设备心跳、AST 蓝图、JPP 插件元数据及跨网指令队列。详见 [09_DE_BAASIFICATION.md](./09_DE_BAASIFICATION.md)。
 
-2. Layer 2: Edge Agent (神经中枢总线)
-定位: 极度稳定、极度轻量的执行引擎。90% 能力下放给 Skills，自身永不崩溃。
+2. Layer 2: 控制面 (V2)
+定位: 子账号（在 L2 创建）、权限、API Key 管理（密文下发）、记忆、梦境、L3 协同调度。**不代理 L3 的推理请求**。
 
-特性: 双轨制执行引擎 (MCP + SKILL.md + Wasm)、量子记忆 (LanceDB + 可插拔向量引擎 + 梦境)、自我修复、生物钟主动心跳。
+特性: SQLite (~/.jachin/l2_control.db)、零信任密钥流转、梦境优化、L3 协同。
 
-数据底座: SQLite (memory.db) + LanceDB (vector_db/) + 可插拔向量引擎 (Cloud/Edge)，单文件百万级 Token 语义检索。
+技术栈: Python 3.10+、FastAPI、cryptography。
 
-技术栈: Python 3.10+ (asyncio, httpx, openai) + wasmtime + sqlite3 + MCP Client。  
-认知引擎: **Cognitive Swarm (虫群心智)** — LiteLLM 抹平大模型差异，支持 100+ 模型无缝切换；Router Agent 多意图分发。
+3. Layer 3: 单体执行节点 (V2) — **对标 OpenClaw**
+定位: 完整执行节点。持密文 Key，解密后直连外部 API；多 Agent、多 Skill、本地记忆。
 
-3. Layer 3: Jachin Terminal (全息感知外壳) — **多态客户端**
-定位: 零摩擦外壳 + 全息感官。扫码配对、Voice Wake (Hey Jachin)、jachin-cli。
-
-特性: **Layer 3 是多态的**，涵盖 PC 桌面端、移动端、树莓派、无屏设备。客户端接入 WebSocket 时必须进行 **能力协商 (Capability Negotiation)**：发送 Manifest 声明自身能力（如 `ui_render`、`hitl_popup`、`gpio_control`、`audio_play`）。桌面精灵只是一种可选的视觉 Skill/Client。Layer 2 根据客户端能力标签，动态决定推送什么消息（UI 动画只推给有屏设备，HITL 只推给能弹窗的设备）。
+特性: **L3 单体** = Agent + Skill + 直连 LLM。入口：Tauri 桌面端、IM、CLI。可与 L2 同机部署。
 
 技术栈: Tauri v2 + Rust + React。语音: Porcupine/Snowboy + Whisper + Kokoro/XTTS。
 ```
@@ -53,7 +51,7 @@ Layer 1 (云端调度枢纽) ↔ Layer 2 (神经中枢总线) ↔ Layer 3 (全�
 
 ## 二、 双轨制执行引擎 (Dual-Track Engine)
 
-Layer 2 打破“万物皆需编译 Wasm”的设定，升级为三轨道：
+**V2**：执行引擎在 **Layer 3**。L3 打破“万物皆需编译 Wasm”的设定，升级为三轨道：
 
 | 轨道 | 形态 | 信任级别 | 用途 |
 |------|------|----------|------|

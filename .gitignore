@@ -41,6 +41,9 @@ ENV/
 .env.local
 .env.*.local
 
+# Nexus pairing (memory mode fallback)
+.nexus-pairing.json
+
 # Logs
 *.log
 logs/

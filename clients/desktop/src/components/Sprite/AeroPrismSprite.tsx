@@ -23,13 +23,15 @@ import { InputBar } from "../Input/InputBar";
 import { FloatingMenu, defaultMenuActions } from "../Menu/FloatingMenu";
 import { SDUICard } from "../SDRenderer/SDUICard";
 import { useSpriteStore } from "../../store/spriteStore";
-import { sendChatMessage, voiceChat, invokePlugin } from "../../lib/api";
+import { voiceChat, invokePlugin } from "../../lib/api";
+import { useSensoryWebSocket } from "../../hooks/useSensoryWebSocket";
 import "../../styles/globals.css";
 
 const MAGNETIC_THRESHOLD = 80; // 磁吸阈值（像素）
 
 export const AeroPrismSprite: React.FC = () => {
   const { state, setState, avatarId } = useSpriteStore();
+  const sensory = useSensoryWebSocket();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [isInputSnapped, setIsInputSnapped] = useState(false);
@@ -173,12 +175,19 @@ export const AeroPrismSprite: React.FC = () => {
         return;
       }
       
-      // 普通聊天消息
-      const response = await sendChatMessage(message);
-      setState("speaking");
-      
-      // 使用打字机效果（如果需要显示在聊天窗口）
-      setTimeout(() => setState("idle"), 3000);
+      // 普通聊天消息：通过 L3 本地 WebSocket 发送
+      if (sensory.connected && sensory.sendInput(message)) {
+        setState("speaking");
+        setTimeout(() => setState("idle"), 3000);
+      } else {
+        setSduiError({
+          message: "未连接 L3 引擎，请确认桌面端已启动",
+          code: "L3_DISCONNECTED",
+          retryable: true,
+        });
+        setSduiCardOpen(true);
+        setState("idle");
+      }
     } catch (error) {
       console.error("Failed to send message:", error);
       // 显示错误

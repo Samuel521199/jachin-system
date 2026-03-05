@@ -2,7 +2,7 @@
 """
 Jachin Nexus v8.0 — 工蜂 (Worker Drone) 极简测试脚本
 
-模拟局域网空闲 Mac Mini / 树莓派：连接 ws://localhost:8080/sensory，
+模拟局域网空闲 Mac Mini / 树莓派：连接 ws://localhost:18881/sensory，
 声明 worker_video_encode 能力，接单后模拟 10 秒转码并回传结果。
 
 用法: python scripts/mock_worker.py
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import websockets
 
-WS_URL = "ws://localhost:8080/sensory"
+WS_URL = "ws://localhost:18881/sensory"
 WORKER_ID = "Node-MockDrone"
 
 

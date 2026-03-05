@@ -5,17 +5,23 @@
 
 ---
 
-## 一、 新设备觉醒流 (零摩擦配对与静默拉起)
+## 一、 新设备觉醒流 (V2 L3-L2 零信任配对)
 
-这是 C 端用户和 B 端员工接入 Jachin Nexus 星图的方式。**极客**亦可使用 `jachin-cli pair` 完成配对。
+这是 C 端用户和 B 端员工接入 Jachin Nexus 星图的方式。**极客**亦可使用 `jachin-cli pair` 完成 L1 配对（Layer 2 daemon）。
+
+### V2 L3 桌面端（主流程）
 
 | 步骤 | 动作主体 | 行为描述 |
 |------|----------|----------|
-| 1 | **Layer 3 (Tauri)** | 用户双击运行桌面端程序，界面居中显示动态二维码及 6 位配对短码。 |
-| 2 | **用户手机/Web** | 扫描二维码，跳转至 Layer 1 控制台，一键确认设备授权。 |
-| 3 | **Layer 3 (Rust)** | Rust 后端轮询 `pairing/status`，获取成功状态及 `access_token`，写入 `~/.jachin/nexus_config.json`。 |
-| 4 | **Layer 3 (Rust)** | **静默拉起 (Silent Spawn)**：调用 OS 级 API，在后台无黑框启动 Layer 2 `core/daemon.py`。 |
-| 5 | **Layer 3 (React)** | UI 丝滑过渡为主大盘，提示“✅ 边缘引擎静默轰鸣中”。 |
+| 1 | **Layer 3 (Tauri)** | 用户双击运行桌面端，显示 GatewayConnectScreen，输入 L2 网关地址，点击「发起神经接驳」。 |
+| 2 | **L3 (l3_node)** | 生成 RSA 密钥对，`POST /api/v2/auth/sync` 向 L2 注册，轮询 `GET /api/v2/auth/poll` 等待审批。 |
+| 3 | **L2 管理员** | 在 L2 后台 `POST /api/v2/admin/nodes/assign` 将节点分配给子账号。 |
+| 4 | **L3 (l3_node)** | 收到加密 Key，私钥解密，引擎点火，启动 ws://127.0.0.1:18881。 |
+| 5 | **Layer 3 (React)** | 检测 L3 就绪，UI 丝滑过渡为主大盘。 |
+
+### Legacy：Layer 2 daemon（L1 6 位码）
+
+Layer 2 daemon、jachin-cli、run-pair 仍使用 L1 配对：`pairing/request` → 6 位码 → `pairing/confirm` → `pairing/status` → 写入 `nexus_config.json`。
 
 ---
 

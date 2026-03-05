@@ -91,209 +91,6 @@ def validate_config() -> tuple[str, str, str]:
 
 
 # -----------------------------------------------------------------------------
-# Layer 3 视觉投射 — 本地 WebSocket 广播 (ws://localhost:8080/sensory)
-# v8.0 Capability Negotiation：客户端必须先发 manifest 握手，按 caps 过滤广播
-# -----------------------------------------------------------------------------
-
-SENSORY_WS_PORT = 8080
-SENSORY_WS_PATH = "/sensory"
-# ws -> caps: 仅已发送 manifest 的客户端参与广播；无 manifest 的仅处理 HITL
-_sensory_clients: dict = {}  # type: dict[Any, list[str]]
-_sensory_server = None
-
-# v8.0 能力标识：与 hooks_pipeline.CAP_* 对齐
-_CAP_UI_RENDER = "ui_render"  # thought/action/observation/answer 动画
-_CAP_HITL_POPUP = "hitl_popup"  # HITL_REQUIRED 弹窗
-_CAP_STREAM_CHUNK = "stream_chunk"  # v8.0 流式神经：逐 token 推送
-
-
-async def _handle_sensory_inbound(msg: str, websocket=None) -> tuple[bool, list[str] | None]:
-    """
-    处理 Layer 3 入站消息。返回 (is_manifest, caps)。
-    - 若为 manifest 握手，返回 (True, caps)
-    - 若为 HITL_APPROVE/REJECT，处理并返回 (False, None)
-    - 若为 TASK_CLAIM/TASK_RESULT（Edge Mesh Swarm），处理并返回 (False, None)
-    """
-    try:
-        data = json.loads(msg)
-        msg_type = (data.get("type") or "").lower()
-
-        if msg_type == "manifest":
-            caps = data.get("caps") or []
-            return (True, [str(c) for c in caps] if isinstance(caps, list) else [])
-
-        action = (data.get("action") or "").upper()
-        task_id = data.get("task_id") or ""
-        worker_id = data.get("worker_id") or ""
-
-        if task_id and action == "TASK_CLAIM" and websocket:
-            from core.swarm_registry import claim_task, get_task_payload
-            if claim_task(task_id, worker_id or "unknown"):
-                payload = get_task_payload(task_id) or {}
-                task_msg = json.dumps({
-                    "step_type": "task_assigned",
-                    "task_id": task_id,
-                    "payload": payload,
-                }, ensure_ascii=False)
-                await websocket.send(task_msg)
-                console.print(f"[magenta][🐝 Swarm] 节点 {worker_id or 'unknown'} 已接单 {task_id}，等待算力回传...[/magenta]")
-            return (False, None)
-
-        if task_id and action == "TASK_RESULT":
-            from core.swarm_registry import resolve_task
-            result_data = data.get("data", "")
-            resolve_task(task_id, result_data)
-            console.print(f"[magenta][🐝 Swarm] 任务 {task_id[:12]} 完成！[/magenta]")
-            # v8.0 视觉觉醒：广播 task_completed 供 UI 蜂巢雷达爆发
-            await _broadcast_task_completed(task_id)
-            return (False, None)
-
-        if task_id and action in ("HITL_APPROVE", "HITL_REJECT"):
-            if action == "HITL_APPROVE":
-                from core.hitl_registry import resolve
-                resolve(task_id, True)
-                from core.event_bus import emit_omni_input
-                emit_omni_input("sprite", "HITL_RESPONSE", {"action": "APPROVE", "task_id": task_id})
-                console.print("[green][Sprite] ⚡ 指挥官已授权 task_id=%s[/green]", task_id[:8])
-            elif action == "HITL_REJECT":
-                from core.hitl_registry import resolve
-                resolve(task_id, False)
-                from core.event_bus import emit_omni_input
-                emit_omni_input("sprite", "HITL_RESPONSE", {"action": "REJECT", "task_id": task_id})
-                console.print("[red][Sprite] 🛑 指挥官已拒绝 task_id=%s[/red]", task_id[:8])
-    except json.JSONDecodeError:
-        pass
-    except Exception as e:
-        logger.warning("[Sprite] 逆向授权处理异常: %s", e)
-    return (False, None)
-
-
-async def _sensory_ws_handler(websocket) -> None:
-    """
-    v8.0 Capability Negotiation：客户端必须先发 {"type":"manifest","caps":["ui_render",...]}。
-    未发 manifest 的客户端仅处理 HITL，不参与广播。兼容旧客户端：首条非 manifest 则默认全能力。
-    """
-    manifest_received = False
-    try:
-        console.print("[dim cyan][Layer3] 客户端已连接 ws://localhost:%d%s[/dim cyan]", SENSORY_WS_PORT, SENSORY_WS_PATH)
-        while True:
-            try:
-                msg = await asyncio.wait_for(websocket.recv(), timeout=60.0)
-                is_manifest, caps = await _handle_sensory_inbound(msg, websocket)
-                if is_manifest and caps is not None:
-                    _sensory_clients[websocket] = caps
-                    manifest_received = True
-                    console.print("[dim][Layer3] 能力协商: %s[/dim]", caps)
-                elif not manifest_received:
-                    _sensory_clients[websocket] = [_CAP_UI_RENDER, _CAP_HITL_POPUP]
-                    manifest_received = True
-                    console.print("[dim][Layer3] 兼容模式: 未发 manifest，默认全能力[/dim]")
-            except asyncio.TimeoutError:
-                continue
-            except websockets.exceptions.ConnectionClosed:
-                break
-    except websockets.exceptions.ConnectionClosed:
-        pass
-    except Exception as e:
-        logger.warning("[Layer3] WebSocket 连接异常: %s", e)
-    finally:
-        _sensory_clients.pop(websocket, None)
-        console.print("[dim][Layer3] 客户端已断开[/dim]")
-
-
-async def _broadcast_task_completed(task_id: str) -> None:
-    """v8.0 广播 task_completed 至所有 ui_render 客户端，触发蜂巢雷达爆发"""
-    out = {"step_type": "task_completed", "content": "", "task_id": task_id}
-    payload = json.dumps(out, ensure_ascii=False)
-    dead = []
-    for ws, caps in list(_sensory_clients.items()):
-        if _CAP_UI_RENDER not in caps:
-            continue
-        try:
-            await ws.send(payload)
-        except websockets.exceptions.ConnectionClosed:
-            dead.append(ws)
-        except Exception as e:
-            logger.debug("[Layer3] task_completed 广播失败: %s", e)
-            dead.append(ws)
-    for ws in dead:
-        _sensory_clients.pop(ws, None)
-
-
-def _has_worker_cap(caps: list[str]) -> bool:
-    """是否有任一 worker_* 能力（可接单虫群任务）"""
-    return any(str(c).startswith("worker_") for c in caps)
-
-
-def _should_send_to_client(step_type: str, caps: list[str]) -> bool:
-    """v8.0 能力过滤：按 caps 决定是否向该客户端广播"""
-    if _CAP_UI_RENDER in caps and step_type in ("thought", "action", "observation", "answer", "task_completed"):
-        return True
-    if _CAP_HITL_POPUP in caps and step_type == "HITL_REQUIRED":
-        return True
-    if _CAP_STREAM_CHUNK in caps and step_type == "chunk":
-        return True
-    if step_type == "task_offer" and _has_worker_cap(caps):
-        return True
-    return False
-
-
-async def _broadcast_to_ui(ev) -> None:
-    """
-    v8.0 订阅 layer3_broadcast：按客户端 caps 过滤，仅向具备能力的设备推送。
-    无 ui_render 的树莓派等不接收 thought/action 动画；无 hitl_popup 的不收 HITL 弹窗。
-    """
-    meta = getattr(ev, "payload", None) or {}
-    step_type = meta.get("step_type") or "unknown"
-    content = getattr(ev, "result", "") or getattr(ev, "content", "")
-    # v8.0 流式神经：chunk 不截断，完整推送；其余类型截断至 500 字符
-    content_out = content if step_type == "chunk" else content[:500]
-    out = {
-        "step_type": step_type,
-        "content": content_out,
-        "source": getattr(ev, "source", "layer3_broadcast"),
-        "task_id": meta.get("task_id"),
-    }
-    if step_type == "chunk":
-        out["run_id"] = meta.get("run_id", "")
-    if step_type == "task_offer":
-        out["tool"] = meta.get("tool", "")
-        out["payload"] = meta.get("payload", {})
-    payload = json.dumps(out, ensure_ascii=False)
-    dead = []
-    for ws, caps in list(_sensory_clients.items()):
-        if not _should_send_to_client(step_type, caps):
-            continue
-        try:
-            await ws.send(payload)
-        except websockets.exceptions.ConnectionClosed:
-            dead.append(ws)
-        except Exception as e:
-            logger.debug("[Layer3] 广播失败: %s", e)
-            dead.append(ws)
-    for ws in dead:
-        _sensory_clients.pop(ws, None)
-
-
-async def _start_sensory_ws_server() -> None:
-    """启动 Layer 3 WebSocket Server，供 PC/树莓派等客户端连接 ws://localhost:8080/sensory"""
-    global _sensory_server
-    try:
-        _sensory_server = await websockets.serve(
-            _sensory_ws_handler,
-            "localhost",
-            SENSORY_WS_PORT,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-        )
-        console.print(f"[green][Sprite] 全息共振通道已启动 ws://localhost:{SENSORY_WS_PORT}{SENSORY_WS_PATH}[/green]")
-    except OSError as e:
-        console.print(f"[yellow][Sprite] 端口 {SENSORY_WS_PORT} 占用，跳过: {e}[/yellow]")
-        logger.warning("[Sprite] WebSocket 服务启动失败: %s", e)
-
-
-# -----------------------------------------------------------------------------
 # Jachin Mesh (v8.0) — 量子隧道贯通：WebSocket 优先，HTTP 心跳兜底
 # -----------------------------------------------------------------------------
 
@@ -633,6 +430,7 @@ def start_daemon() -> None:
                 await _report_result(result=ev.result, message_ids=pid, access_token=token, layer1_url=url)
 
         subscribe_omni_output("telegram", _im_output_handler)
+        from core.sensory_server import _broadcast_to_ui, start_sensory_server
         subscribe_omni_output("layer3_broadcast", _broadcast_to_ui)
         subscribe_omni_output("swarm_broadcast", _broadcast_to_ui)
         from core.event_bus import set_omni_step_callback
@@ -641,7 +439,7 @@ def start_daemon() -> None:
         start_omni_consumer()
 
         # Layer 3 视觉投射：启动本地 WS Server
-        await _start_sensory_ws_server()
+        await start_sensory_server()
 
         # Jachin Mesh (WebSocket 占位) + 梦境调度 并行运行
         await asyncio.gather(

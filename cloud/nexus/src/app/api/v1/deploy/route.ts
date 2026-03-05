@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { getDb, isDatabaseConfigured } from "@/db";
+import { pluginsRegistry, deployCommands } from "@/db/schema";
+import { eq, and } from "drizzle-orm";
 
 const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
@@ -31,41 +33,37 @@ export async function POST(request: NextRequest) {
     const tokenExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
     let downloadUrl = `ipfs://QmMock${plugin_id.replace(/\./g, "-")}`;
-    let resourceId = randomUUID();
+    let resourceId = randomUUID() as `${string}-${string}-${string}-${string}-${string}`;
 
-    if (isSupabaseConfigured()) {
-      const sb = getSupabase()!;
-      const { data: plugin } = await sb
-        .from("plugins_registry")
-        .select("id, download_url")
-        .eq("plugin_id", plugin_id)
-        .eq("status", "approved")
-        .maybeSingle();
+    if (isDatabaseConfigured()) {
+      const db = getDb()!;
+      const [plugin] = await db
+        .select({ id: pluginsRegistry.id, downloadUrl: pluginsRegistry.downloadUrl })
+        .from(pluginsRegistry)
+        .where(
+          and(
+            eq(pluginsRegistry.pluginId, plugin_id),
+            eq(pluginsRegistry.status, "approved")
+          )
+        )
+        .limit(1);
 
       if (plugin) {
-        downloadUrl = plugin.download_url;
-        resourceId = plugin.id;
+        downloadUrl = plugin.downloadUrl;
+        resourceId = plugin.id as `${string}-${string}-${string}-${string}-${string}`;
       }
 
-      const { error } = await sb.from("deploy_commands").insert({
-        user_id: user_id ?? DEFAULT_USER_ID,
-        layer2_instance_id: instanceId,
-        resource_type: "plugin",
-        resource_id: resourceId,
-        plugin_id: plugin_id,
-        download_url: downloadUrl,
-        temp_token: tempToken,
-        token_expires_at: tokenExpiresAt.toISOString(),
+      await db.insert(deployCommands).values({
+        userId: user_id ?? DEFAULT_USER_ID,
+        layer2InstanceId: instanceId,
+        resourceType: "plugin",
+        resourceId,
+        pluginId: plugin_id,
+        downloadUrl,
+        tempToken,
+        tokenExpiresAt,
         status: "pending",
       });
-
-      if (error) {
-        console.error("[deploy] Supabase insert error:", error);
-        return NextResponse.json(
-          { success: false, error: error.message },
-          { status: 500 }
-        );
-      }
     }
 
     return NextResponse.json({
