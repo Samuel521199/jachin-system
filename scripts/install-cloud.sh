@@ -21,11 +21,17 @@ NEXUS_DIR="$PROJECT_ROOT/cloud/nexus"
 [ ! -d "$NEXUS_DIR" ] && { echo "[ERROR] 未找到 cloud/nexus"; exit 1; }
 command -v node &>/dev/null || { echo "[ERROR] 未找到 Node.js"; exit 1; }
 
-(cd "$NEXUS_DIR" && npm install --silent)
+# 已安装则跳过（node_modules/next 存在表示依赖已就绪）
+if [ -d "$NEXUS_DIR/node_modules/next" ]; then
+    echo "[OK] cloud/nexus 依赖已安装，跳过 npm install"
+else
+    (cd "$NEXUS_DIR" && npm install --silent)
+fi
 
 # 可选：Supabase 迁移（悬赏大厅等表）
 if command -v npx &>/dev/null; then
-    (cd "$NEXUS_DIR" && npx supabase db push 2>/dev/null) && echo "[OK] Supabase migrations applied" || true
+    echo "> Supabase 迁移（首次运行会下载 supabase CLI，请稍候）..."
+    (cd "$NEXUS_DIR" && npx -y supabase db push) && echo "[OK] Supabase migrations applied" || echo "[SKIP] Supabase 未配置或未 link，跳过迁移"
 fi
 
 echo "[OK] Cloud (Nexus Console) 已安装"

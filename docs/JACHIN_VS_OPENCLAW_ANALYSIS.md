@@ -1,7 +1,8 @@
 # Jachin Nexus v8.0 vs OpenClaw 全方位对比分析
 
 **文档类型**: 竞品分析  
-**版本**: v8.0 (The Singularity OS)  
+**项目版本**: v0.8.0  
+**系统设计版本**: V8.0 (The Singularity OS)  
 **基准**: OpenClaw 2026 年 2 月状态（ClawHub 10,700+ skills、234k+ stars、ClawHavoc 供应链攻击后）  
 **更新日期**: 2026-02
 
@@ -34,14 +35,16 @@
 - **Layer 2**：边缘神经中枢（全息感官总线、Session Multiplexing、Nexus Hook Pipeline、Dream Weaver、Edge Mesh Swarm）
 - **Layer 3**：终端感官外壳（Tauri 桌面精灵、Capability Negotiation、按 caps 投射）
 
-**v8.0 五维升维**：
+**v8.0 五维升维 + 神盾 + 虫群心智**：
 1. **Session Multiplexing** — session_id → 独立 Actor，多用户/多路输入零串话
 2. **Nexus Hook Pipeline** — Koa 洋葱中间件，pre_intent/pre_llm/post_tool/pre_response
 3. **Dream Weaver** — LanceDB 记忆聚类/去重/融合，is_consolidated + needs_clarification
 4. **Capability Negotiation** — Layer 3 Manifest 握手，ui_render/hitl_popup/worker_* 按需投射
 5. **Edge Mesh Swarm** — task_offer → TASK_CLAIM → task_assigned → TASK_RESULT 四步握手
+6. **神盾 (Compaction & Retry)** — 上下文超载时时空折叠（HOOK_BEFORE_LLM_THINK）+ LLM 失败时 attempt 重试与 fallback 模型
+7. **Cognitive Swarm (Handoff)** — core:handoff 工具，人格动态接力，Persona 注册表（default/architect/researcher）
 
-**结论**：OpenClaw 是单机「个人助理」，Jachin v8.0 是「云边协同 + 局域网算力虫群的分布式数字生命底座」。Jachin 的端口-适配器架构、Session 隔离、Hook 体系、能力协商、算力外包在架构深度上已超越 OpenClaw 的单机范式。
+**结论**：OpenClaw 是单机「个人助理」，Jachin v8.0 是「云边协同 + 局域网算力虫群的分布式数字生命底座」。Jachin 的端口-适配器架构、Session 隔离、Hook 体系、能力协商、算力外包、神盾高可用、虫群心智在架构深度上已超越 OpenClaw 的单机范式。
 
 ---
 
@@ -68,10 +71,11 @@
 | **Hook 体系** | Plugin + Gateway hooks | Nexus Hook Pipeline，Koa 洋葱模型 |
 | **工具外包** | 无 | Edge Mesh Swarm，heavy_tools 可外包至局域网节点 |
 | **超时** | agents.defaults.timeoutSeconds (默认 600s) | 120s (CLI) / 300s (HITL) / 300s (Swarm) |
-| **重试** | Compaction + retry，buffer 重置 | 无显式 retry，依赖 LLM 下一轮 |
+| **重试** | Compaction + retry，buffer 重置 | ✅ Retry + Fallback（max_attempts、fallback_models、timeout_seconds） |
+| **Compaction** | 有，可配置 | ✅ 神盾 compaction_hook，超阈值时空折叠，tiktoken 估算 |
 
 **OpenClaw 优势**：Compaction 机制成熟，retry 可配置。  
-**Jachin 优势**：Session 隔离、Hook 体系、Swarm 算力外包；v8.0 已支持流式神经 (stream_chunk) 与全链路 runId 追踪。
+**Jachin 优势**：Session 隔离、Hook 体系、Swarm 算力外包、神盾高可用；v8.0 已支持流式神经 (stream_chunk)、全链路 runId 追踪、Compaction、Retry、Handoff 人格接力。
 
 ---
 
@@ -197,7 +201,7 @@
 | **多节点管理** | 无，单机单账号 | 舰队指挥大屏，批量下发 AST |
 | **热更新** | 手动更新技能/配置 | 云端 AST 蓝图 + 心跳拉取 |
 | **权限与审计** | 渠道级 allowlist | 舰队级 + 设备级（规划） |
-| **多 Agent 路由** | 支持（按 channel/contact 映射） | 单 Agent 为主，Cognitive Swarm 设计已就绪（14.6） |
+| **多 Agent 路由** | 支持（按 channel/contact 映射） | ✅ Cognitive Swarm Handoff 已实现，Persona 动态接力 |
 | **算力协同** | 无 | Edge Mesh Swarm，局域网设备组成虫群 |
 
 **结论**：Jachin 的舰队管理、批量部署、AST 热更新、Edge Mesh Swarm 为企业级独有；OpenClaw 无多节点管控、无算力协同。
@@ -299,6 +303,8 @@
 | **算力协同** | 无，单机算力上限 | Edge Mesh Swarm，局域网设备组成虫群 |
 | **多节点管理** | 无 | 舰队指挥大屏，批量下发 AST |
 | **记忆心智** | 工程降级（fallback） | Dream Weaver 认知提纯、冲突消解 |
+| **人格切换** | 无 | Cognitive Swarm Handoff，Persona 动态接力 |
+| **高可用** | Compaction + retry | 神盾 Compaction + Retry/Fallback |
 
 **Jachin 优势**：架构深度超越单机范式，企业级扩展空间大。
 
@@ -352,6 +358,9 @@
 | **NAT 穿透** | 心跳拉取，边缘无公网 IP 亦可接入 IM |
 | **全链路 runId** | v8.0 贯穿 SensoryInputEvent → PipelineContext → SensoryOutputEvent，日志染色 |
 | **流式神经** | v8.0 支持 stream_chunk，caps 含 stream_chunk 时逐 token 推送 |
+| **神盾 (Compaction)** | 上下文超载时 compaction_hook 时空折叠，保留首尾 + 中间摘要 |
+| **Retry & Fallback** | max_attempts、fallback_models、timeout_seconds，主模型失败自动降级 |
+| **Cognitive Swarm (Handoff)** | core:handoff 工具，Persona 注册表（default/architect/researcher），人格无缝切换 |
 
 ### 9.4 Jachin Nexus v8.0 缺点与不足
 
@@ -360,9 +369,6 @@
 | **IM 渠道少** | 仅 Telegram、飞书，Discord/Slack/WhatsApp 待扩展 |
 | **生态冷启动** | JPP 商城为 0，MCP/SKILL 可先行 |
 | **实时性依赖** | WebSocket 已贯通，但 Mesh 失败时仍 10s 心跳兜底 |
-| **单 Agent 为主** | 多 Agent 路由弱，但有 Cognitive Swarm 三维度设计（见 14.6） |
-| **无 Compaction** | 上下文无 token 压缩，长对话易超限 |
-| **无 retry 机制** | LLM 失败或超时直接丢弃，无 attempt 重试 |
 | **产品化程度低** | 社区小、文档少、安装步骤多，上手门槛高 |
 | **运维复杂度高** | 需部署 Layer 1/2/3，conda 环境、依赖多 |
 
@@ -387,9 +393,6 @@
 
 | 不足 | 严重程度 | 说明 |
 |------|----------|------|
-| **无 Compaction** | 高 | 长对话易超 token 限制，无上下文压缩，OpenClaw 已成熟 |
-| **无 retry 机制** | 高 | LLM 失败或超时直接丢弃，无 attempt 重试、无 fallback 模型 |
-| **多 Agent 路由弱** | 中 | 单 Agent 为主，Cognitive Swarm 三维度设计已就绪（14.6），待实现 |
 | **审批流程单一** | 中 | 仅 core:shell_exec 有 HITL，其他危险工具可扩展审批 |
 | **运维复杂度高** | 中 | 三层架构，健康检查、日志、遥测分散 |
 
@@ -416,9 +419,9 @@
 | IM 渠道数量 | 50+ | 2 | **显著落后** |
 | 产品成熟度 | 安装即用 | 多步部署 | **显著落后** |
 | 社区与生态 | 234k stars，10,700+ skills | 冷启动 | **显著落后** |
-| Compaction | 有，可配置 retry | 无 | **落后** |
-| retry 机制 | 有，Provider failover | 无 | **落后** |
-| 多 Agent 路由 | 支持 | 设计已就绪（14.6 Cognitive Swarm），待实现 | **可补齐** |
+| Compaction | 有，可配置 retry | ✅ 神盾 compaction_hook 已实现 | **已补齐** |
+| retry 机制 | 有，Provider failover | ✅ Retry + Fallback 已实现 | **已补齐** |
+| 多 Agent 路由 | 支持 | ✅ Handoff 人格接力已实现 | **已补齐** |
 
 ---
 
@@ -433,12 +436,14 @@
 | Memory 自愈弱 | ✅ Dream Weaver，聚类/去重/融合 + needs_clarification |
 | 设备泛化不足 | ✅ Capability Negotiation，按 caps 投射 |
 | 单机算力限制 | ✅ Edge Mesh Swarm，heavy_tools 外包 |
+| 无 Compaction | ✅ 神盾 compaction_hook，HOOK_BEFORE_LLM_THINK 时空折叠 |
+| 无 retry 机制 | ✅ Retry + Fallback，max_attempts、fallback_models、timeout_seconds |
+| 多 Agent 路由弱 | ✅ Cognitive Swarm Handoff，core:handoff + Persona 注册表 |
 
 ### 11.2 架构层面仍存不足
 
 | 不足 | 影响 | 改进建议 |
 |------|------|----------|
-| **无 Compaction** | 长对话易超 token 限制 | 参考 OpenClaw 的 compaction 流程，token 超限时压缩摘要 |
 | **CLI/daemon 双模式割裂** | 用户需理解 --daemon 才能打通 HITL | 自动检测 daemon 存活，默认走 daemon 模式 |
 
 ### 11.3 功能层面仍存不足
@@ -447,9 +452,8 @@
 |------|------|----------|
 | **IM 渠道少** | 仅 Telegram、飞书 | 扩展 Discord/Slack/WhatsApp |
 | **Voice 唤醒词未接入** | voice_cli 需手动触发 | 接入 Porcupine 离线唤醒，与 voice_organ 打通 |
-| **无 retry 机制** | LLM 失败或超时直接丢弃 | 引入 attempt 重试，失败时 fallback 模型 |
 
-**注**：runId 追踪、流式神经 (stream_chunk) 已在 v8.0 实现。
+**注**：runId 追踪、流式神经 (stream_chunk)、Compaction、Retry、Handoff 已在 v8.0 实现。
 
 ### 11.4 安全层面仍存不足
 
@@ -472,10 +476,11 @@
 | 能力 | OpenClaw | Jachin v8.0 | 差距 |
 |------|----------|-------------|------|
 | **IM 渠道** | 50+ | 2 | 需扩展 Discord/Slack/WhatsApp |
-| **Compaction** | 有 | 无 | 长对话需考虑 |
-| **retry 机制** | 有 | 无 | 需引入 attempt 重试 |
+| **Compaction** | 有 | ✅ 神盾 compaction_hook | 已补齐 |
+| **retry 机制** | 有 | ✅ Retry + Fallback | 已补齐 |
 | **流式粒度** | chunk 级 | chunk 级（stream_chunk 已实现） | 已补齐 |
 | **runId 追踪** | 有 | 有（v8.0 全链路） | 已补齐 |
+| **多 Agent 人格** | 无 | ✅ Handoff 人格接力 | Jachin 领先 |
 | **审批流程** | 两阶段状态机 | 仅 HITL | 可扩展更多工具审批 |
 
 ---
@@ -494,6 +499,11 @@
 | 全息感官总线 | ✅ | OmniSensoryBus、SQLite 持久化、layer3_broadcast |
 | HITL 闭环 | ✅ | core:shell_exec → Layer 3 弹窗 → APPROVE/REJECT |
 | mock_worker | ✅ | scripts/mock_worker.py，工蜂测试脚本 |
+| **神盾 Compaction** | ✅ | compaction_hook，HOOK_BEFORE_LLM_THINK，超阈值时空折叠 |
+| **Retry & Fallback** | ✅ | llm_provider max_attempts、fallback_models、timeout_seconds |
+| **Cognitive Swarm (Handoff)** | ✅ | core:handoff 工具，personas.py 注册表，人格无缝切换 |
+| 全链路 runId | ✅ | emit_omni_input → PipelineContext → SensoryOutputEvent |
+| 流式神经 | ✅ | stream_chunk + on_chunk，逐 token 推送 |
 
 ### 12.2 部分实现 / 待完善
 
@@ -501,7 +511,6 @@
 |------|------|------|
 | 唤醒词 | 🟡 | Porcupine 设计完成，未与 voice_organ 打通 |
 | 桌面精灵 | 🟡 | SensoryOverlay 已打通 HITL，思考光环可增强 |
-| Compaction | ✅ | compaction_hook，HOOK_BEFORE_LLM_THINK 时空折叠 |
 | IM 渠道扩展 | 🟡 | Discord/Slack/WhatsApp 待实现 |
 
 ---
@@ -511,8 +520,8 @@
 |  | OpenClaw | Jachin Nexus v8.0 |
 |---|----------|-------------------|
 | **定位** | 极客单兵，个人助理 | 分布式数字生命底座，企业航母 |
-| **最大优势** | 渠道多、生态大、Compaction/retry 工程化 | 分轨制安全、舰队、量子记忆、Dream Weaver、Swarm、Capability Negotiation |
-| **最大短板** | 技能供应链风险、无企业管控、无算力协同 | 生态冷启动、IM 渠道待扩展、无 Compaction |
+| **最大优势** | 渠道多、生态大、Compaction/retry 工程化 | 分轨制安全、舰队、量子记忆、Dream Weaver、Swarm、Capability Negotiation、神盾、Handoff |
+| **最大短板** | 技能供应链风险、无企业管控、无算力协同 | 生态冷启动、IM 渠道待扩展 |
 | **适用场景** | 个人自动化、隐私优先、快速试错 | 企业多节点、安全合规、舰队管控、局域网算力协同 |
 
 **Jachin v8.0 的护城河**：
@@ -521,49 +530,52 @@
 - **心智**：Dream Weaver 记忆自愈 + 冲突消解
 - **算力**：Edge Mesh Swarm 打破单机限制
 - **企业**：舰队管理、AST 热更新、批量下发
+- **神盾**：Compaction 时空折叠 + Retry/Fallback 高可用
+- **虫群心智**：Cognitive Swarm Handoff，Persona 人格动态接力
 
 **Jachin 需正视的短板**：
 - **产品成熟度**：安装、文档、体验显著落后 OpenClaw
 - **生态冷启动**：IM 渠道 2 vs 50+，技能 0 vs 10,700+
-- **工程化**：无 Compaction、无 retry，长对话与失败场景体验差
 
-**补齐方向**：Compaction、retry 机制、IM 渠道扩展、Cognitive Swarm 多 Agent。runId 追踪、流式神经已在 v8.0 实现。Cognitive Swarm 三维度设计（纵向委派、横向接力、共享黑板）已就绪，实施成本低于 OpenClaw/AutoGen。
+**已补齐**：Compaction、retry 机制、Handoff 人格接力、runId 追踪、流式神经。Cognitive Swarm 横向接力（Handoff）已落地；纵向委派、共享黑板待扩展。
 
 ---
 
 ## 十四、补齐建议（实施路线图）
 
-> **架构评价**：14.1 Compaction 与 14.2 Retry 是**企业级大模型网关**的标准解法。利用现成的 `HOOK_BEFORE_LLM_THINK` 做无损截断和摘要，利用 `for attempt` 做跨模型 Failover 灾备，证明 V8.0 架构底座的强韧与可扩展性。
+> **架构评价**：14.1 Compaction 与 14.2 Retry 是**企业级大模型网关**的标准解法。V8.0 已实现，利用 `HOOK_BEFORE_LLM_THINK` 做无损截断和摘要，利用 `for attempt` 做跨模型 Failover 灾备，证明架构底座的强韧与可扩展性。
 
-### 14.1 Compaction（上下文压缩）
+### 14.1 Compaction（上下文压缩）✅ 已实现
 
-**问题**：长对话 messages 超 token 限制，LLM 截断或报错。
-
-**建议**：
-1. **触发条件**：在 `_get_llm_response` 前计算 token 数（tiktoken 或 `len(str(messages))//4` 估算），超阈值（如 8k）时触发 compaction。
-2. **压缩策略**：保留首条 system、最近 N 轮 user/assistant、中间轮次用 LLM 摘要合并为一条「历史摘要」。
-3. **挂载点**：在 `HOOK_BEFORE_LLM_THINK` 中注册 compaction 中间件，修改 `ctx.messages`。
-4. **配置**：`nexus_config.json` 增加 `llm.compaction_threshold`、`llm.summary_prompt`。
-
-**参考**：OpenClaw 的 compaction reserve + buffer 重置。
+**实现**：`core/compaction_hook.py` 注册到 `HOOK_BEFORE_LLM_THINK`，token 超 `llm.compaction_threshold`（默认 6000）时触发时空折叠，保留首条 system + 最近 2 轮，中间摘要合并。配置 `nexus_config.json` 的 `llm.compaction_threshold`、`llm.compaction_model`。Rich 日志：`[🛡️ 神盾] 上下文超载... 已触发时空折叠`。
 
 ---
 
-### 14.2 Retry 机制（attempt 重试）
+### 14.2 Retry 机制（attempt 重试）✅ 已实现
 
-**问题**：LLM 调用失败或超时直接丢弃，无 fallback。
-
-**建议**：
-1. **attempt 包装**：在 `LiteLLMEngine.generate_response` 外层增加 `for attempt in range(max_attempts)`，失败时切换 fallback 模型（如 cloud → ollama）。
-2. **配置**：`nexus_config.json` 增加 `llm.max_attempts`（默认 2）、`llm.fallback_models`（如 `["ollama/qwen2.5"]`）。
-3. **超时**：litellm 支持 `timeout` 参数，可配置 `llm.timeout_seconds`。
-4. **日志**：记录 attempt 次数与 fallback 触发，便于排查。
-
-**参考**：OpenClaw 的 Provider-level failover、Model failover。
+**实现**：`core/llm_provider.py` 的 `generate_response` / `generate_response_stream` 外层 `for attempt in range(max_attempts)`，失败时切换 `llm.fallback_models`（如 `ollama/qwen2.5`）。配置 `llm.max_attempts`、`llm.fallback_models`、`llm.timeout_seconds`。Rich 日志：`[⚠ 降级策略] 主模型异常，尝试第 N 次呼叫备用算力`。
 
 ---
 
-### 14.3 IM 渠道扩展
+### 14.3 神盾与 Handoff 配置参考
+
+`~/.jachin/nexus_config.json` 中 `llm` 节点示例：
+
+```json
+"llm": {
+  "max_attempts": 2,
+  "fallback_models": ["ollama/qwen2.5"],
+  "timeout_seconds": 60,
+  "compaction_threshold": 6000,
+  "compaction_model": "ollama/qwen2.5"
+}
+```
+
+Persona 注册表位于 `core/personas.py`，可扩展 `PERSONA_REGISTRY` 添加新人格。
+
+---
+
+### 14.4 IM 渠道扩展
 
 **问题**：仅 Telegram、飞书，Discord/Slack/WhatsApp 待扩展。
 
@@ -577,19 +589,19 @@
 
 ---
 
-### 14.4 runId 追踪（✅ v8.0 已实现）
+### 14.5 runId 追踪（✅ v8.0 已实现）
 
 已实现：`emit_omni_input` / `_persist_omni_input_sync` 自动注入 run_id，贯穿 PipelineContext → SensoryOutputEvent，日志染色 `[RunID: xxx]`。
 
 ---
 
-### 14.5 流式粒度增强（✅ v8.0 已实现）
+### 14.6 流式粒度增强（✅ v8.0 已实现）
 
 已实现：`generate_response_stream` + `on_chunk` 回调，Manifest 含 `stream_chunk` 时逐 token 推送。参考 `docs/whitepaper/V8_SINGULARITY_OS.md` 第八节。
 
 ---
 
-### 14.6 多 Agent 升维方案（Cognitive Swarm）
+### 14.7 多 Agent 升维方案（Cognitive Swarm）
 
 **核心结论**：在 V8.0 架构下，多 Agent 支持**不仅可以实现，而且比 OpenClaw 或 AutoGen 更加优雅和轻量**。我们已有物理设备层面的 **Edge Mesh Swarm（算力虫群）**，现需补齐认知层面的 **Cognitive Swarm（多 Agent 虫群心智）**。基于现有 Pipeline 与总线，提供三个维度的升维方案：
 
@@ -607,14 +619,14 @@
 
 ---
 
-#### 二、横向接力：Handoff Protocol（动态灵魂切换）
+#### 二、横向接力：Handoff Protocol（动态灵魂切换）✅ 已实现
 
 Agent 平级接力，不嵌套调用，直接切换「大脑人设」。
 
 | 项目 | 说明 |
 |------|------|
-| **设计** | 接待员 Agent → 用户问技术细节 → 输出 `Action: handoff_to(agent="architect")` |
-| **执行链路** | Nexus Hook Pipeline 截获该动作 → **不挂起** → 直接修改当前 `SessionActor` 的 `system_prompt` 与可用工具列表 → 下一循环以架构师身份无缝承接上下文 |
+| **设计** | 接待员 Agent → 用户问技术细节 → 输出 `Action: core:handoff`，`Action Input: architect` |
+| **实现** | `core/personas.py` 定义 PERSONA_REGISTRY（default/architect/researcher）；`core/agent_loop.py` 注入 `core:handoff` 工具，解析 `Action: core:handoff` 时从注册表获取新 System Prompt，替换 `ctx.system_prompt`，注入伪造 Observation 并继续循环；Rich 日志：`[🔄 Handoff] 虫群接力触发！...` |
 | **优势** | 避免多 Agent 互相调用死锁与 Token 浪费，实现成本极低，Hook 中做变量替换即可 |
 
 ---
@@ -631,4 +643,4 @@ Agent 平级接力，不嵌套调用，直接切换「大脑人设」。
 
 ---
 
-**实施优先级建议**：横向接力（Handoff）实现成本最低，可先落地；纵向委派（Sub-Agent）复用现有 agent_loop；共享黑板需与 Dream Weaver 深度集成。
+**实施优先级建议**：横向接力（Handoff）✅ 已落地；纵向委派（Sub-Agent）复用现有 agent_loop，待扩展；共享黑板需与 Dream Weaver 深度集成，待扩展。
