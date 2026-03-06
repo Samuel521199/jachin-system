@@ -90,10 +90,20 @@ function PairForm() {
     setError(null);
     setSuccess(false);
     try {
+      const payload: { code: string; user_id?: string } = { code: raw };
+      try {
+        const sessionRes = await fetch("/api/auth/session");
+        if (sessionRes.ok) {
+          const session = await sessionRes.json();
+          if (session?.user?.id) payload.user_id = session.user.id;
+        }
+      } catch {
+        /* Auth.js 未配置时忽略 */
+      }
       const res = await fetch("/api/v1/pairing/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: raw }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok && data.success) {

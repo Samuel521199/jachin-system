@@ -1,0 +1,7 @@
+{
+  "id": "com.example.my-plugin",
+  "name": "我的 JPP 插件",
+  "description": "插件功能描述，供 LLM 理解何时调用。参数: input",
+  "parameters": ["input"],
+  "entry": "main.wasm"
+}

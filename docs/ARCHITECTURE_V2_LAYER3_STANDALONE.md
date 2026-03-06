@@ -93,7 +93,7 @@ Layer 1 是**平台**，负责注册和管理若干**用户主账号**。平台�
 | 权限维度 | 说明 | 示例 |
 |----------|------|------|
 | **L3 节点** | 子账号可使用的 L3 节点列表 | 子账号 A 只能使用 L3-1、L3-2 |
-| **L2 记忆** | 可访问的 L2 上部分记忆范围 | 子账号 B 只能读部门共享记忆 |
+| **L2 记忆** | 可访问的 L2 上部分记忆范围（按 **namespace** 隔离） | 子账号 B 只能读 `customer_service_kb` 命名空间 |
 | **L2 资源** | 可使用的 L2 资源（如存储配额） | 子账号 C 限制 10GB 记忆 |
 | **Skill 白名单** | 可安装、可调用的 Skill 列表 | 子账号 D 只能用办公类 Skill |
 | **任务发布** | 是否可向 L2 发布协同任务 | 子账号 E 只能单机执行 |
@@ -114,8 +114,24 @@ sub_accounts (子账号，在 L2 创建，归属用户主账号)
 
 sub_account_permissions
   sub_account_id, resource_type, resource_id, action (read/write/execute/...)
-  -- resource_type: l3_node, l2_memory, l2_resource, skill, ...
+  -- resource_type 枚举见下节
 ```
+
+### 1.5 sub_account_permissions 的 resource_type 枚举
+
+| resource_type | resource_id 示例 | action | 说明 |
+|---------------|------------------|--------|------|
+| **service_switch** | `can_coordinate` | allow/deny | 是否允许发布协同任务 |
+| **service_switch** | `can_memory_read` | allow/deny | 是否允许读取 L2 记忆 |
+| **service_switch** | `can_memory_write` | allow/deny | 是否允许写入 L2 记忆 |
+| **service_switch** | `can_keys_read` | allow/deny | 是否允许获取 API Key |
+| **service_switch** | `service:coder` | delegate | 服务角色白名单（delegate 时） |
+| **l3_node** | `l3-node-id` | keys:read | 该节点可获取 Key（l3_node_ids 白名单） |
+| **skill** | `core:fs_read` | execute | 允许调用的 Skill（空=全开，`__none__`=全禁） |
+| **skill** | `*` | allow | 技能通配符，允许全部 |
+| **memory_namespace** | `customer_service_kb` | read | 允许访问的记忆命名空间（allowed_memory_namespaces） |
+
+**说明**：`memory_namespace` 实现细粒度记忆隔离，子账号仅能读写其 `allowed_memory_namespaces` 列表内的命名空间；未配置时默认允许全部。
 
 ---
 
@@ -174,6 +190,19 @@ Layer 2 是**控制平面 + 记忆平面 + 调度平面 + API Key 管理**，可
 │       └────────────────────────┴────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.4.1 记忆 Namespace 隔离（细粒度权限）
+
+L2 记忆支持 **namespace**（命名空间）实现物理隔断，杜绝数据越权穿透：
+
+| 机制 | 说明 |
+|------|------|
+| **写入** | `POST /memory/sync` 请求体可声明 `namespace`（默认 `default`），记忆按 `(sub_account_id, node_id, namespace)` 存储 |
+| **检索** | `GET /memory/search` 支持 `namespaces` 参数，仅在子账号 `allowed_memory_namespaces` 范围内检索 |
+| **RBAC** | 子账号配置 `allowed_memory_namespaces`（如 `["customer_service_kb", "default"]`），请求的 namespace 必须在其列表中，否则 403 |
+| **LanceDB** | `memories` 表含 `namespace` 列，插入与检索时作为核心过滤维度 |
+
+**示例**：客服部子账号仅配置 `allowed_memory_namespaces: ["customer_service_kb"]`，则无法读写 `finance_dept` 等其它命名空间。
 
 ### 2.5 L2 节点与 Agent
 
@@ -396,6 +425,16 @@ L2 聚合结果
      │                      │                      │
 ```
 
+### 4.3.1 子任务状态流转
+
+| 状态 | 说明 |
+|------|------|
+| **pending** | 子任务已创建、待 L3 拉取 |
+| **in_progress** | L3 已从队列取到任务，正在执行（取到即标记，避免重复下发） |
+| **done** | L3 已提交结果，L2 聚合完成 |
+
+**流程**：L2 创建子任务 → 推入 Redis 队列 `l3_task_queue:{node_id}` → L3 通过 `GET /coordinate/poll` RPOP 取任务 → 取到后 DB 标记 `in_progress` → L3 执行完毕 `POST /coordinate/result` → DB 标记 `done` → 当该主任务下所有子任务均为 `done` 时，L2 聚合结果并更新主任务状态。
+
 ### 4.4 子任务分配策略
 
 | 策略 | 说明 |
@@ -415,7 +454,20 @@ L2 聚合结果
 - 对外呈现为**统一 Layer 2**，内部通过协调 Agent 或网关通信
 - 记忆可集中存储（如共享 DB）或分片存储
 
-### 5.2 每 L2 节点的 Agent
+### 5.2 L2 无状态集群（Stateless）
+
+为实现 Kubernetes 横向扩缩容，L2 支持**无状态化**改造：
+
+| 组件 | 实现方式 |
+|------|----------|
+| **L3 在线状态** | 迁移至 Redis `l3_node_status:{node_id}`，TTL 60 秒；L3 调用 `poll` 或心跳时写入 |
+| **协同任务队列** | 迁移至 Redis `l3_task_queue:{node_id}`；子任务创建时 LPUSH，L3 poll 时 RPOP |
+| **调度器** | 从 Redis 读取全网存活 L3 节点列表，进行能力匹配与打分 |
+| **L1 心跳** | 仅 Leader 执行（Redis 锁 `l2_cluster_leader_lock` 选举） |
+
+**效果**：任意 L2 节点均可处理任意 L3 的请求；L3 连接到 L2 节点 A 拉取任务，任务可能由节点 B 创建并推入 Redis，节点 A 直接 RPOP 即可返回。Redis 不可用时自动回退 SQLite/本地逻辑（单节点模式）。
+
+### 5.3 每 L2 节点的 Agent
 
 - 每个 L2 节点可有**协调 Agent**
 - 职责：
@@ -424,10 +476,11 @@ L2 聚合结果
   - 与 Layer 1 同步策略、上报状态
 - 协调 Agent 不执行用户级 ReAct，只做元操作
 
-### 5.3 统一层入口
+### 5.4 统一层入口
 
 - 类似 L2 Gateway 设计：L3 只连统一入口（网关或主节点）
 - 网关负责：认证、路由、任务分发、结果聚合
+- **部署示例**：`docker-compose.l2-cluster.yml` 启动 3 个 L2 实例 + Nginx，单一入口 18888 端口，`least_conn` 负载均衡
 
 ---
 
@@ -479,8 +532,8 @@ L2 聚合结果
 | 类型 | 说明 | 协议 |
 |------|------|------|
 | **Key 获取** | L3 向 L2 获取密文 Key（L2 只管理，不下发明文） | `GET /keys`（返回密文） |
-| **记忆检索** | L3 向 L2 查询记忆 | `GET /memory/search?q=...` |
-| **记忆同步** | L3 将本地记忆（文档/JSON）同步至 L2 | `POST /memory/sync` |
+| **记忆检索** | L3 向 L2 查询记忆（支持 `namespaces` 参数，按 allowed_memory_namespaces 过滤） | `GET /memory/search?q=...&namespaces=...` |
+| **记忆同步** | L3 将本地记忆（文档/JSON）同步至 L2（请求体可声明 `namespace`，默认 `default`） | `POST /memory/sync` |
 | **协同请求** | L3 请求 L2 调度多节点 | `POST /coordinate/task` |
 | **权限校验** | L3 执行前校验子账号权限 | `POST /auth/check` |
 | **策略同步** | L2 从 L1 拉取策略，下发给 L3 | 心跳 + 推送 |
@@ -780,3 +833,4 @@ L3 节点收到用户任务（如「帮我分析这 100 份 PDF」）
 - [JACHIN_VS_OPENCLAW_ANALYSIS.md](./JACHIN_VS_OPENCLAW_ANALYSIS.md) — 与 OpenClaw 全方位对比
 - [L2_GATEWAY_CLUSTER_ARCHITECTURE.md](./L2_GATEWAY_CLUSTER_ARCHITECTURE.md) — L2 网关集群（可与此架构结合）
 - [LAYER3_L2_WAN_ARCHITECTURE.md](./LAYER3_L2_WAN_ARCHITECTURE.md) — L3 与 L2 通信架构
+- 项目根目录 `docker-compose.l2-cluster.yml` — L2 无状态集群部署示例（3 节点 + Redis + Nginx 统一入口 18888）

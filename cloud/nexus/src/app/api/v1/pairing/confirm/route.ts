@@ -44,14 +44,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
           success: true,
           instance_id: session.instance_id ?? "dev-layer2-001",
+          l1_user_id: session.user_id ?? null,
           message: "Edge Agent successfully paired!",
         });
       }
       const instanceId = `jachin-${randomUUID().slice(0, 8)}`;
-      pairingStoreApproveByCode(shortCode, instanceId);
+      const memUserId = bodyUserId ?? null;
+      pairingStoreApproveByCode(shortCode, instanceId, memUserId ?? undefined);
       return NextResponse.json({
         success: true,
         instance_id: instanceId,
+        l1_user_id: memUserId,
         message: "Edge Agent successfully paired!",
       });
     }
@@ -84,9 +87,15 @@ export async function POST(req: NextRequest) {
     }
 
     if (agent.status === "active") {
+      const [activeAgent] = await db
+        .select({ userId: edgeAgents.userId })
+        .from(edgeAgents)
+        .where(eq(edgeAgents.id, agent.id))
+        .limit(1);
       return NextResponse.json({
         success: true,
         instance_id: agent.id,
+        l1_user_id: activeAgent?.userId ?? null,
         message: "Edge Agent successfully paired!",
       });
     }
@@ -117,6 +126,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       instance_id: agent.id,
+      l1_user_id: userId,
       message: "Edge Agent successfully paired!",
     });
   } catch (e) {

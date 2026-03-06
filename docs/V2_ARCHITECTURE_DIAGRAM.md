@@ -78,28 +78,42 @@ flowchart TB
     subgraph L2["Layer 2 控制面"]
         SA[子账号管理]
         PK[API Key 保险箱]
-        MEM[记忆存储]
+        MEM[记忆存储 + namespace]
         DREAM[梦境优化]
         SCHED[L3 协同调度]
+        REDIS[Redis 状态/队列]
     end
 
     subgraph L2_API["L2 API"]
-        AUTH["POST /api/v2/auth/sync"]
-        POLL["GET /api/v2/auth/poll"]
-        KEYS["GET /api/v2/keys"]
-        ADMIN_SA["POST /api/v2/admin/sub-accounts"]
-        ADMIN_KEY["POST /api/v2/admin/keys"]
-        ADMIN_NODE["POST /api/v2/admin/nodes/assign"]
+        AUTH["POST /auth/sync"]
+        POLL["GET /auth/poll"]
+        KEYS["GET /keys"]
+        MEM_SYNC["POST /memory/sync"]
+        MEM_SEARCH["GET /memory/search"]
+        COORD_TASK["POST /coordinate/task"]
+        COORD_POLL["GET /coordinate/poll"]
+        ADMIN_SA["POST /admin/sub-accounts"]
+        ADMIN_KEY["POST /admin/keys"]
+        ADMIN_NODE["POST /admin/nodes/assign"]
     end
 
     L3_REG[L3 注册] --> AUTH
     L3_POLL[L3 轮询审批] --> POLL
     L3_KEYS[L3 拉取 Key] --> KEYS
+    L3_MEM[L3 记忆同步/检索] --> MEM_SYNC
+    L3_MEM --> MEM_SEARCH
+    L3_COORD[L3 协同请求/拉取] --> COORD_TASK
+    L3_COORD --> COORD_POLL
     ADMIN_SA --> SA
     ADMIN_KEY --> PK
     SA --> PK
+    MEM_SYNC --> MEM
+    MEM_SEARCH --> MEM
     MEM --> DREAM
     DREAM --> MEM
+    COORD_TASK --> SCHED
+    COORD_POLL --> REDIS
+    SCHED --> REDIS
 ```
 
 ---
@@ -132,37 +146,48 @@ flowchart LR
 ```
 jachin-system/
 ├── core/                    # Layer 2 控制面
-│   ├── db/                  # L2 数据库 (sub_accounts, api_keys_vault, l3_nodes)
+│   ├── db/                  # schema, l2_memory_lancedb (namespace), dream_weaver
 │   ├── security/            # crypto_manager
 │   ├── api/routes/
 │   │   ├── v2_auth.py       # POST /auth/sync, GET /auth/poll, GET /keys
-│   │   ├── v2_admin.py      # POST /admin/sub-accounts, /admin/keys
-│   │   └── v2_memory.py     # POST /memory/sync
-│   └── ...
+│   │   ├── v2_admin.py      # POST /admin/sub-accounts, /admin/keys, /admin/nodes/assign
+│   │   ├── v2_memory.py     # POST /memory/sync, GET /memory/search (namespace)
+│   │   └── v2_coordinate.py # POST /coordinate/task, GET /coordinate/poll
+│   ├── l3_redis_state.py    # L2 无状态集群：L3 状态、任务队列
+│   ├── redis_manager.py     # Redis 客户端、Leader 锁
+│   └── permissions.py      # RBAC（allowed_memory_namespaces）
 ├── cloud/nexus/             # Layer 1 平台
 ├── clients/desktop/         # Layer 3 终端 (Tauri)
-├── l3_node/                 # L3 单体执行引擎 ✅
+├── l3_node/                 # L3 单体执行引擎
 │   ├── llm_client.py        # SecurityContext + LiteLLMEngine 直连
-│   ├── agent_core.py        # ReAct Agent + MemorySyncDaemon
-│   ├── bootstrap.py        # 引导：注册、拉 Key、创建引擎
-│   └── engine/hooks_pipeline.py
+│   ├── agent_core.py        # ReAct + SubAgent 分身 + MemorySyncDaemon
+│   ├── bootstrap.py         # 引导：注册、拉 Key、创建引擎
+│   └── skills/              # MCP + SKILL.md + JPP .wasm
 └── docs/
 ```
 
 ---
 
-## 六、已废弃组件
+## 六、L2 无状态集群
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  L2 无状态化（K8s 横向扩缩容）                                                 │
+│                                                                             │
+│  Redis: l3_node_status:{node_id} (TTL 60s)  ← L3 poll 时写入                 │
+│         l3_task_queue:{node_id}             ← 子任务 LPUSH，poll 时 RPOP     │
+│         l2_cluster_leader_lock              ← 仅 Leader 执行 L1 心跳         │
+│                                                                             │
+│  任意 L2 节点均可处理任意 L3 请求；Redis 不可用时回退 SQLite 单节点模式。        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## 七、已废弃组件
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `core/api/cluster.py` | 已删除 | 依赖 ray_cluster |
-| `config/ray_config.yaml` | 已删除 | Ray 配置 |
 | **Dapr** | 已弃用 | clients/desktop 已统一直连后端 |
 | **Ray Cluster** | 已弃用 | task_planner/resource_allocator 已用占位类型 |
 | **PostgreSQL** (L2) | 已弃用 | L2 使用 SQLite |
 | `/api/v3/orchestrator/plan` | 410 | 原依赖 Ray |
 | `/api/v3/orchestrator/execute` | 410 | 原依赖 Ray |
-
-## 七、合规报告
-
-详见 [V2_ARCHITECTURE_COMPLIANCE_REPORT.md](V2_ARCHITECTURE_COMPLIANCE_REPORT.md)

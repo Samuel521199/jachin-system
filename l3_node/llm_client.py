@@ -68,10 +68,12 @@ async def fetch_and_decrypt_keys(
     sub_account_id: str,
     private_key_pem: str,
     decrypt_fn: Callable[[str, str], str],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str]]:
     """
-    从 L2 拉取密文 Key，用私钥解密，返回 {provider: plain_key}。
-    仅内存使用，禁止落盘或日志。
+    从 L2 拉取密文 Key，用私钥解密。
+    返回 (keys_dict, model_endpoints)。
+    keys_dict: {provider: plain_key}，仅内存使用，禁止落盘或日志。
+    model_endpoints: {"api-1": "gpt-4o", ...}，L2 下发的模型通道配置。
     """
     import httpx
 
@@ -99,7 +101,10 @@ async def fetch_and_decrypt_keys(
                 result[provider] = plain  # 保留原始 key 便于查找
         except Exception as e:
             logger.warning("[SecurityContext] 解密 %s 失败: %s", provider, type(e).__name__)
-    return result
+    model_endpoints = data.get("model_endpoints") or {}
+    if not isinstance(model_endpoints, dict):
+        model_endpoints = {}
+    return result, model_endpoints
 
 
 class LiteLLMEngine:

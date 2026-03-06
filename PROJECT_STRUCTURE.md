@@ -10,9 +10,10 @@
 
 ## ⚠️ 架构宪法 (The Constitution)
 
-1. **全面弃用** Dapr、Ray 集群、本地 PostgreSQL、Qdrant、Redis、复杂 Docker 编排。
-2. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key 保险箱/记忆）、L3 单体（对标 OpenClaw，持密文 Key 直连 API）。
-3. **L2 不代理推理**：L3 持密文 Key，请求时解密后自行调用外部 LLM API。
+1. **全面弃用** Dapr、Ray 集群、本地 PostgreSQL（L2）、Qdrant、复杂 Docker 编排。
+2. **Redis**：L2 集群化时可选使用（L3 在线状态、任务队列、Leader 选举）；单节点模式无需 Redis。
+3. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key 保险箱/记忆/梦境/L3 协同调度）、L3 单体（对标 OpenClaw，持密文 Key 直连 API）。
+4. **L2 不代理推理**：L3 持密文 Key，请求时解密后自行调用外部 LLM API。
 
 ---
 
@@ -20,36 +21,29 @@
 
 ```
 jachin-system/
-├── .cursor/                  # Cursor IDE 规则配置
-│   └── rules/
-│       ├── 000-structure.mdc      # V2 三层架构目录规范
-│       ├── 065-v2-layer3-standalone.mdc # V2 L3 单体架构
-│       └── ...
+├── .cursor/rules/            # Cursor IDE 规则（可选）
 │
 ├── cloud/                    # [Layer 1] 云端代码 (Next.js + Drizzle ORM + Auth.js)
 │   └── nexus/                # 控制台、舰队、Forge、IM Webhook、心跳 API
 │
 ├── core/                     # [Layer 2] 控制面 (Python)
-│   ├── db/                   # L2 数据库 (sub_accounts, api_keys_vault, l3_nodes)
+│   ├── db/                   # L2 数据库
+│   │   ├── schema.py         # sub_accounts, l3_nodes, api_keys_vault, coordinate_tasks
+│   │   ├── l2_memory_lancedb.py  # LanceDB 记忆（含 namespace 隔离）
+│   │   └── dream_weaver.py   # 梦境优化（聚类/融合/升维）
 │   ├── security/             # crypto_manager 零信任密钥
 │   ├── api/routes/
 │   │   ├── v2_auth.py        # POST /auth/sync, GET /auth/poll, GET /keys
-│   │   └── v2_admin.py       # POST /admin/sub-accounts, /admin/keys, /admin/nodes/assign
-│   ├── daemon.py             # 守护进程主循环
-│   ├── agent_loop.py         # ReAct 循环（过渡期，未来迁移至 L3）
-│   ├── event_bus.py          # 全息感官总线
-│   ├── hooks_pipeline.py     # 洋葱中间件
-│   ├── mcp_client.py         # 轨道 A：MCP 宿主
-│   ├── runtime/skill_loader.py  # 轨道 B：SKILL.md 热加载
-│   ├── wasm_runner.py        # 轨道 C：The Abyss Wasm 沙箱
-│   ├── biological_memory.py # 海马体 + 大脑皮层
-│   ├── memory_store.py       # v8.0 LanceDB 记忆碎片 (Dream Weaver 数据层)
-│   ├── dreamer.py            # 梦境引擎 (short_term → core_memory)
-│   ├── dream_weaver.py       # v8.0 Dream Weaver 梦境重塑
-│   ├── swarm_registry.py     # v8.0 Edge Mesh 虫群任务注册表
-│   ├── swarm_hook.py         # v8.0 虫群 Hook (heavy_tools 外包)
-│   ├── llm_provider.py       # LiteLLM 认知引擎 (含流式神经)
-│   ├── embedding/            # 可插拔向量引擎 (Cloud/Edge)
+│   │   ├── v2_admin.py       # POST /admin/sub-accounts, /admin/keys, /admin/nodes/assign
+│   │   ├── v2_memory.py      # POST /memory/sync, GET /memory/search（namespace）
+│   │   └── v2_coordinate.py  # POST /coordinate/task, GET /coordinate/poll
+│   ├── l3_redis_state.py     # L2 无状态集群：L3 状态、任务队列（Redis）
+│   ├── redis_manager.py      # Redis 客户端、分布式锁
+│   ├── permissions.py        # 子账号 RBAC（含 allowed_memory_namespaces）
+│   ├── resource_quota.py     # 存储/任务配额
+│   ├── sync_daemon.py        # L1 心跳（仅 Leader 执行）
+│   ├── wasm_runner.py        # 轨道 C：Wasm 沙箱
+│   ├── embedding/            # 可插拔向量引擎
 │   └── config/               # 配置管理
 │
 ├── clients/                  # [Layer 3] 客户端
@@ -57,8 +51,9 @@ jachin-system/
 │   └── iot/                  # 树莓派/IoT 脚本
 ├── l3_node/                  # [Layer 3] 单体执行引擎
 │   ├── llm_client.py         # 本地解密 + 直连 LLM
-│   ├── agent_core.py         # ReAct + MemorySyncDaemon
-│   └── bootstrap.py         # 引导
+│   ├── agent_core.py         # ReAct + SubAgent 分身 + MemorySyncDaemon
+│   ├── bootstrap.py          # 引导
+│   └── skills/               # MCP + SKILL.md + JPP .wasm
 │
 ├── skills_repo/              # 轨道 B SKILL.md + 轨道 C Wasm 插件
 │
@@ -68,7 +63,9 @@ jachin-system/
 ├── scripts/                  # 极简启动脚本
 │   └── mock_worker.py        # v8.0 Edge Mesh 工蜂测试
 │
-├── docs/                     # v8.0 核心白皮书
+├── docs/                     # V2 架构文档与白皮书
+│   ├── ARCHITECTURE_V2_LAYER3_STANDALONE.md
+│   ├── V2_ARCHITECTURE_DIAGRAM.md
 │   └── whitepaper/
 │
 ├── .env.example              # 环境变量示例
@@ -98,20 +95,20 @@ jachin-system/
 **目录**: `core/`
 
 **职责**:
-- **子账号与权限**：在 L2 创建子账号，定义 L3 节点、Skill 白名单
+- **子账号与权限**：在 L2 创建子账号，定义 L3 节点、Skill 白名单、**记忆 namespace**（allowed_memory_namespaces）
 - **API Key 保险箱**：Master Key 加密存储，用 L3 公钥加密下发，**不代理推理请求**
-- **记忆与梦境**：接收 L3 同步记忆，梦境优化后回传
-- **L3 协同调度**：多 L3 节点任务分配
+- **记忆与梦境**：接收 L3 同步记忆（支持 namespace），梦境优化后回传；检索时按 allowed_memory_namespaces 过滤
+- **L3 协同调度**：多 L3 节点任务分配；L2 无状态集群时，L3 状态与任务队列存 Redis
 
-**技术栈**: Python 3.10+ + SQLite (~/.jachin/l2_control.db) + cryptography
+**技术栈**: Python 3.10+ + SQLite (~/.jachin/l2_control.db) + LanceDB + cryptography；Redis（L2 集群可选）
 
-**V2 API**: `/api/v2/auth/sync`, `/api/v2/keys`, `/api/v2/admin/*`
+**V2 API**: `/api/v2/auth/sync`, `/api/v2/auth/poll`, `/api/v2/keys`, `/api/v2/memory/sync`, `/api/v2/memory/search`, `/api/v2/coordinate/task`, `/api/v2/coordinate/poll`, `/api/v2/admin/*`
 
 ---
 
 ### Layer 3: 单体执行面 (The Execution Plane)
 
-**目录**: `clients/desktop`（未来 `l3_node/`）
+**目录**: `clients/desktop` + `l3_node/`
 
 **职责**: 单体 OpenClaw 对标，多 Agent、多 Skill、本地记忆
 

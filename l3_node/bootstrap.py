@@ -17,7 +17,7 @@ import os
 import platform
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from l3_node.agent_core import MemorySyncDaemon, run_agent
 from l3_node.llm_client import (
@@ -103,16 +103,33 @@ async def bootstrap_l3_gateway_pending(
     sync_url = f"{base}/api/v2/auth/sync"
     poll_url = f"{base}/api/v2/auth/poll"
 
+    # 设备名与 node_id：从配置文件读取，避免同一设备重复注册产生多个待审批节点
+    display_name = (os.environ.get("JACHIN_DEVICE_NAME") or "").strip()[:64]
+    existing_node_id: Optional[str] = None
+    if _GATEWAY_CONFIG_PATH.exists():
+        try:
+            cfg_load = json.loads(_GATEWAY_CONFIG_PATH.read_text(encoding="utf-8"))
+            if not display_name:
+                display_name = (cfg_load.get("display_name") or "").strip()[:64]
+            nid = cfg_load.get("node_id")
+            if isinstance(nid, str) and nid.strip().startswith("l3-"):
+                existing_node_id = nid.strip()
+        except Exception:
+            pass
+
+    sync_body: dict[str, Any] = {
+        "device_fingerprint": device_fp,
+        "public_key_pem": public_pem,
+        "capabilities": [],
+    }
+    if display_name:
+        sync_body["display_name"] = display_name
+    if existing_node_id:
+        sync_body["node_id"] = existing_node_id  # 复用已有节点，避免 L2 出现多个待审批
+
     # 1. POST /auth/sync（无 sub_account_id，待审批）
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            sync_url,
-            json={
-                "device_fingerprint": device_fp,
-                "public_key_pem": public_pem,
-                "capabilities": [],
-            },
-        )
+        resp = await client.post(sync_url, json=sync_body)
         resp.raise_for_status()
         data = resp.json()
     node_id = data.get("node_id") or "l3-unknown"
@@ -155,6 +172,7 @@ async def bootstrap_l3_gateway_pending(
 
         if st == "approved":
             encrypted_keys = poll_data.get("encrypted_api_keys", [])
+            sub_account_id = poll_data.get("sub_account_id", "")
             break
         logger.warning("[L3 Gateway] 未知状态: %s", st)
     else:
@@ -177,6 +195,12 @@ async def bootstrap_l3_gateway_pending(
         except Exception as e:
             logger.warning("[L3 Gateway] 解密 %s 失败: %s", provider, e)
 
+    model_endpoints = poll_data.get("model_endpoints") or {}
+    if isinstance(model_endpoints, dict) and model_endpoints:
+        first_model = next(iter(model_endpoints.values()), None)
+        if first_model and isinstance(first_model, str):
+            model_name = first_model
+
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=model_name,
@@ -186,6 +210,11 @@ async def bootstrap_l3_gateway_pending(
     )
 
     cfg["paired"] = True
+    cfg["sub_account_id"] = sub_account_id
+    cfg["permissions_snapshot"] = poll_data.get("permissions_snapshot") or {}
+    cfg["model_endpoints"] = model_endpoints
+    if display_name:
+        cfg["display_name"] = display_name
     _GATEWAY_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     if on_status:
@@ -230,12 +259,17 @@ async def bootstrap_l3_node(
     resolved_node_id = data.get("node_id") or node_id or "l3-unknown"
     logger.info("[L3 Bootstrap] 已注册 node_id=%s", resolved_node_id)
 
-    keys = await fetch_and_decrypt_keys(
+    keys, model_endpoints = await fetch_and_decrypt_keys(
         l2_base_url, resolved_node_id, sub_account_id,
         private_pem, _decrypt_fn,
     )
     if not keys:
         logger.warning("[L3 Bootstrap] 未获取到任何 API Key，将使用环境变量兜底")
+
+    if isinstance(model_endpoints, dict) and model_endpoints:
+        first_model = next(iter(model_endpoints.values()), None)
+        if first_model and isinstance(first_model, str):
+            model_name = first_model
 
     ctx = SecurityContext()
     for provider, plain in keys.items():

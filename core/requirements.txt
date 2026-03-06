@@ -4,6 +4,9 @@
 # HTTP
 httpx>=0.25.0
 
+# Redis (L2 集群共享状态、Leader 选举)
+redis>=5.0.0
+
 # LLM (OpenAI-compatible, 本地或云端)
 openai>=1.0.0
 
@@ -39,6 +42,10 @@ pygame>=2.5.0
 
 # V2 零信任密钥流转
 cryptography>=42.0.0
+
+# V2 L2 Admin JWT 登录
+PyJWT>=2.8.0
+bcrypt>=4.0.0
 
 # v8.0 The Singularity OS
 litellm>=1.0.0

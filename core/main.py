@@ -168,10 +168,17 @@ except ImportError as e:
     v2_memory_router = None
     logger.warning(f"V2 Memory API router not available: {e}")
 
+try:
+    from core.api.routes.v2_coordinate import router as v2_coordinate_router
+except ImportError as e:
+    v2_coordinate_router = None
+    logger.warning(f"V2 Coordinate API router not available: {e}")
+
 # Lifespan管理 - v5.0 已废弃 Ray/Dapr/PostgreSQL，仅保留轻量初始化
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - v5.0 极简模式"""
+    heartbeat_task = None
     try:
         # V2: Ray/Dapr/PostgreSQL 已废弃；L2 控制面 + L3 单体
         app.state.plugin_manager = None
@@ -181,15 +188,40 @@ async def lifespan(app: FastAPI):
         logger.info("Jachin-System V2 - L2 控制面 (Ray/Dapr 已废弃)")
         # L1-L2 创世溯源：若已配对，确保默认子账号存在并写入 pairing_code
         try:
-            from core.bootstrap import ensure_default_sub_account
+            from core.bootstrap import ensure_default_sub_account, sync_api_keys_from_env
             ensure_default_sub_account()
+            n = sync_api_keys_from_env()
+            if n > 0:
+                logger.info("单机模式：已从环境变量同步 %d 个 API Key 到默认子账号", n)
         except Exception as e:
-            logger.warning("ensure_default_sub_account 跳过: %s", e)
+            logger.warning("ensure_default_sub_account/sync_api_keys 跳过: %s", e)
+        # L2 向量梦境引擎：初始化 LanceDB (~/.jachin/lancedb_data)
+        try:
+            from core.db.l2_memory_lancedb import init_l2_lancedb
+            if init_l2_lancedb():
+                logger.info("L2 LanceDB 向量梦境引擎已初始化")
+            else:
+                logger.warning("L2 LanceDB 初始化跳过（Embedder 或 lancedb 不可用）")
+        except Exception as e:
+            logger.warning("init_l2_lancedb 跳过: %s", e)
+        # L1-L2 策略同步心跳：启动后台守护进程
+        try:
+            from core.sync_daemon import start_l1_heartbeat_background
+            heartbeat_task = start_l1_heartbeat_background()
+        except Exception as e:
+            logger.warning("L1 心跳守护进程启动跳过: %s", e)
     except Exception as e:
         logger.error(f"Failed to initialize: {e}", exc_info=True)
 
     yield
 
+    if heartbeat_task and not heartbeat_task.done():
+        heartbeat_task.cancel()
+        try:
+            import asyncio
+            await asyncio.wait_for(asyncio.shield(heartbeat_task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
     logger.info("Shutting down Jachin Nexus v0.8.5 (Singularity OS)...")
 
 
@@ -211,6 +243,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# L1 订阅欠费拦截：挂起 L3 请求，返回 402
+try:
+    from core.middleware.l1_subscription import L1SubscriptionMiddleware
+    app.add_middleware(L1SubscriptionMiddleware)
+except ImportError as e:
+    logger.warning("L1SubscriptionMiddleware 未加载: %s", e)
 
 # 注册路由
 if chat_router:
@@ -245,7 +283,9 @@ if v2_admin_router:
     app.include_router(v2_admin_router)
 if v2_memory_router:
     app.include_router(v2_memory_router)
-logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/keys, /api/v2/memory/sync, /api/v2/admin/*, /api/v3/*")
+if v2_coordinate_router:
+    app.include_router(v2_coordinate_router)
+logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/memory/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")
 
 # 健康检查端点
 @app.get("/health")

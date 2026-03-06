@@ -12,7 +12,7 @@
       theme: {
         extend: {
           colors: {
-            cyber: { green: '#00ff88', blue: '#00d4ff', purple: '#a855f7' }
+            cyber: { green: '#00ff88', blue: '#00d4ff', purple: '#a855f7', red: '#ff3366' }
           }
         }
       }
@@ -21,39 +21,88 @@
   <style>
     body { @apply bg-slate-950 text-slate-100; }
     .glow { text-shadow: 0 0 12px rgba(0, 255, 136, 0.5); }
+    .glow-red { text-shadow: 0 0 12px rgba(255, 51, 102, 0.6); }
     .border-cyber { border-color: rgba(0, 255, 136, 0.3); }
+    .scanline { background: linear-gradient(transparent 50%, rgba(0,0,0,0.03) 50%); background-size: 100% 4px; }
+    @keyframes pulse-border { 0%, 100% { border-color: rgba(0, 255, 136, 0.3); } 50% { border-color: rgba(0, 255, 136, 0.8); } }
+    @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+    .shake { animation: shake 0.4s ease-in-out; }
+    .login-box { animation: pulse-border 2s ease-in-out infinite; }
   </style>
 </head>
-<body class="min-h-screen">
+<body class="min-h-screen scanline">
   <div id="app">
-    <div class="max-w-5xl mx-auto px-6 py-8">
-      <!-- 标题 -->
-      <header class="mb-10">
-        <h1 class="text-2xl font-bold text-cyan-400 glow tracking-wider">L2 Admin — 神经接驳审批</h1>
-        <p class="text-slate-500 text-sm mt-1">Zero-Trust · 节点审批 · 子账号管理</p>
-      </header>
-
-      <!-- 全局鉴权区：本地自动绑定时折叠显示 -->
-      <section v-if="!tokenAutoBound" class="mb-10 p-5 rounded-xl bg-slate-900/80 border border-slate-700">
-        <h2 class="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-3">Admin Token</h2>
-        <div class="flex gap-3 items-center">
-          <input
-            v-model="adminToken"
-            type="password"
-            placeholder="输入 JACHIN_L2_ADMIN_TOKEN"
-            class="flex-1 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"
-          />
-          <button
-            @click="saveToken"
-            class="px-5 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 transition-colors text-sm font-medium"
-          >
-            保存
-          </button>
+    <!-- 登录视图：全屏暗黑极客风 -->
+    <div v-if="!loggedIn" class="min-h-screen flex items-center justify-center p-6">
+      <div class="login-box w-full max-w-md p-8 rounded-2xl bg-slate-900/90 border-2 border-cyber shadow-2xl shadow-cyan-500/10">
+        <div class="text-center mb-8">
+          <h1 class="text-2xl font-bold text-cyan-400 glow tracking-widest">L2 GATEWAY</h1>
+          <p class="text-slate-500 text-sm mt-2 tracking-wider">神经接驳 · 零信任鉴权</p>
         </div>
-      </section>
-      <section v-else class="mb-6 py-2 px-4 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm">
-        ✓ Token 已自动绑定（本地模式），可直接审批节点
-      </section>
+        <form @submit.prevent="login" class="space-y-5">
+          <div>
+            <label class="block text-xs text-cyan-400/80 uppercase tracking-wider mb-2">用户名</label>
+            <input
+              v-model="loginForm.username"
+              type="text"
+              placeholder="admin"
+              autocomplete="username"
+              class="w-full px-4 py-3 rounded-lg bg-slate-800/80 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
+              :class="{ 'border-cyber-red': loginError }"
+            />
+          </div>
+          <div>
+            <label class="block text-xs text-cyan-400/80 uppercase tracking-wider mb-2">密码</label>
+            <input
+              v-model="loginForm.password"
+              type="password"
+              placeholder="••••••••"
+              autocomplete="current-password"
+              class="w-full px-4 py-3 rounded-lg bg-slate-800/80 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
+              :class="{ 'border-red-500': loginError }"
+            />
+          </div>
+          <div v-if="loginError" class="py-2 px-3 rounded-lg bg-red-500/20 border border-red-500/50 text-red-400 text-sm glow-red" :class="{ shake: loginError }">
+            {{ loginError }}
+          </div>
+          <button
+            type="submit"
+            :disabled="loginLoading"
+            class="w-full py-3 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-medium tracking-wider"
+          >
+            {{ loginLoading ? '验证中...' : '登录' }}
+          </button>
+          <div class="relative my-4">
+            <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-600"></div></div>
+            <div class="relative flex justify-center text-xs"><span class="px-2 bg-slate-900 text-slate-500">或</span></div>
+          </div>
+          <button
+            type="button"
+            @click="loginWithL1"
+            :disabled="loginLoading"
+            class="w-full py-3 rounded-lg bg-purple-500/10 border border-purple-500/40 text-purple-300 hover:bg-purple-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-medium tracking-wider text-sm"
+          >
+            {{ loginLoading ? '验证中...' : '云端授权登录 (L1 配对)' }}
+          </button>
+        </form>
+        <p class="mt-6 text-slate-600 text-xs text-center">默认 admin / admin123 · 已配对可点「云端授权登录」</p>
+      </div>
+    </div>
+
+    <!-- 主内容：登录后展示 -->
+    <div v-else class="max-w-5xl mx-auto px-6 py-8">
+      <header class="mb-10 flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-cyan-400 glow tracking-wider">L2 Admin — 神经接驳审批</h1>
+          <p class="text-slate-500 text-sm mt-1">Zero-Trust · 节点审批 · 子账号管理 · {{ currentAdmin?.username }}</p>
+        </div>
+        <button
+          @click="logout"
+          class="px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/50 text-sm transition-colors"
+        >
+          退出
+        </button>
+      </header>
 
       <!-- 子账号管理区 -->
       <section class="mb-10 p-5 rounded-xl bg-slate-900/80 border border-slate-700">
@@ -62,12 +111,12 @@
           <div>
             <h3 class="text-slate-400 text-xs mb-2">创建子账号</h3>
             <div class="space-y-3">
-              <input v-model="newSub.main_user_id" placeholder="main_user_id" class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-sm" />
               <input v-model="newSub.name" placeholder="name" class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-600 text-sm" />
               <button @click="createSubAccount" class="w-full py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 text-sm">
                 创建
               </button>
             </div>
+            <p class="text-slate-500 text-xs mt-1">main_user_id 由当前登录自动绑定</p>
           </div>
           <div>
             <h3 class="text-slate-400 text-xs mb-2">添加 API Key</h3>
@@ -103,7 +152,8 @@
 
       <!-- 节点审批区 -->
       <section class="p-5 rounded-xl bg-slate-900/80 border border-slate-700">
-        <h2 class="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-4">节点审批 (Pending)</h2>
+        <h2 class="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-1">节点审批 (Pending)</h2>
+        <p class="text-slate-500 text-xs mb-4">仅显示 5 分钟内活跃的待审批节点，离线设备不展示</p>
         <button @click="fetchNodes" class="mb-4 px-4 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 text-sm">
           刷新
         </button>
@@ -111,11 +161,14 @@
           <div
             v-for="node in pendingNodes"
             :key="node.id"
-            class="flex flex-wrap items-center gap-3 p-4 rounded-lg bg-slate-800/50 border border-slate-700"
+            class="flex flex-wrap items-center gap-3 p-4 rounded-lg border transition-opacity"
+            :class="node.is_online ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-800/30 border-slate-600 opacity-60'"
           >
             <div class="flex-1 min-w-0">
-              <span class="font-mono text-cyan-400">{{ node.id }}</span>
+              <span v-if="node.display_name" class="text-white font-medium">{{ node.display_name }}</span>
+              <span class="font-mono text-cyan-400" :class="{ 'ml-2': node.display_name }">{{ node.id }}</span>
               <span v-if="node.device_fingerprint" class="text-slate-500 text-xs ml-2">fp: {{ node.device_fingerprint.slice(0,8) }}...</span>
+              <span v-if="!node.is_online" class="ml-2 text-xs px-1.5 py-0.5 rounded bg-slate-600 text-slate-400">离线</span>
             </div>
             <select
               v-model="assignMap[node.id]"
@@ -139,10 +192,13 @@
         <div class="mt-4 pt-4 border-t border-slate-700">
           <h3 class="text-slate-400 text-xs mb-2">已分配节点</h3>
           <ul class="space-y-1 text-sm">
-            <li v-for="node in assignedNodes" :key="node.id" class="text-slate-400">
+            <li v-for="node in assignedNodes" :key="node.id" class="flex items-center gap-2" :class="node.is_online ? 'text-slate-400' : 'text-slate-500 opacity-60'">
+              <span v-if="node.display_name" class="text-slate-300">{{ node.display_name }}</span>
               <span class="font-mono text-cyan-400">{{ node.id }}</span>
-              <span class="mx-2">→</span>
+              <span class="mx-1">→</span>
               <span class="text-green-400">{{ node.sub_account_id || '-' }}</span>
+              <span class="text-slate-500 text-xs">· {{ formatLastSeen(node.last_seen_at) }}</span>
+              <span v-if="!node.is_online" class="text-xs px-1.5 py-0.5 rounded bg-slate-600 text-slate-400">离线</span>
             </li>
             <li v-if="assignedNodes.length === 0" class="text-slate-500">暂无</li>
           </ul>
@@ -154,20 +210,27 @@
   <script>
     const { createApp } = Vue;
     const API_BASE = '/api/v2/admin';
+    const STORAGE_KEY = 'l2_admin_jwt';
 
     createApp({
       data() {
         return {
-          adminToken: localStorage.getItem('l2_admin_token') || '',
-          tokenAutoBound: false,
+          jwt: localStorage.getItem(STORAGE_KEY) || '',
+          currentAdmin: null,
+          loginForm: { username: 'admin', password: '' },
+          loginError: '',
+          loginLoading: false,
           subAccounts: [],
           nodes: [],
-          newSub: { main_user_id: 'main-1', name: '' },
+          newSub: { name: '' },
           newKey: { sub_account_id: '', provider: 'openai', api_key: '' },
           assignMap: {}
         };
       },
       computed: {
+        loggedIn() {
+          return !!this.jwt;
+        },
         pendingNodes() {
           return this.nodes.filter(n => !n.sub_account_id);
         },
@@ -176,31 +239,86 @@
         }
       },
       async mounted() {
-        if (this.adminToken) {
-          this.fetchAll();
-          return;
+        if (this.jwt) {
+          const ok = await this.verifyToken();
+          if (ok) this.fetchAll();
+          else this.logout();
         }
-        // 本地模式：尝试自动获取 token（仅 localhost 可访问该接口）
-        try {
-          const r = await fetch(API_BASE + '/local-token');
-          if (r.ok) {
-            const { token } = await r.json();
-            this.adminToken = token;
-            localStorage.setItem('l2_admin_token', token);
-            this.tokenAutoBound = true;
-            this.fetchAll();
-          }
-        } catch (_) {}
       },
       methods: {
+        formatLastSeen(ts) {
+          if (!ts) return '—';
+          const t = typeof ts === 'number' ? ts : parseFloat(ts);
+          if (!t || isNaN(t)) return '—';
+          const sec = Math.floor(Date.now() / 1000 - t);
+          if (sec < 60) return '刚刚';
+          if (sec < 3600) return Math.floor(sec / 60) + ' 分钟前';
+          if (sec < 86400) return Math.floor(sec / 3600) + ' 小时前';
+          return Math.floor(sec / 86400) + ' 天前';
+        },
         headers() {
           const h = { 'Content-Type': 'application/json' };
-          if (this.adminToken) h['X-Admin-Token'] = this.adminToken;
+          if (this.jwt) h['Authorization'] = 'Bearer ' + this.jwt;
           return h;
         },
-        saveToken() {
-          localStorage.setItem('l2_admin_token', this.adminToken);
-          this.fetchAll();
+        async verifyToken() {
+          try {
+            const r = await fetch(API_BASE + '/me', { headers: this.headers() });
+            if (!r.ok) return false;
+            const data = await r.json();
+            this.currentAdmin = data.admin;
+            return true;
+          } catch (_) { return false; }
+        },
+        async login() {
+          this.loginError = '';
+          this.loginLoading = true;
+          try {
+            const r = await fetch(API_BASE + '/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.loginForm)
+            });
+            const data = await r.json();
+            if (!r.ok) {
+              this.loginError = (data.detail?.message || data.detail) || '登录失败';
+              return;
+            }
+            this.jwt = data.token;
+            this.currentAdmin = data.admin;
+            localStorage.setItem(STORAGE_KEY, data.token);
+            this.loginForm.password = '';
+            this.fetchAll();
+          } catch (e) {
+            this.loginError = '网络错误，请重试';
+          } finally {
+            this.loginLoading = false;
+          }
+        },
+        async loginWithL1() {
+          this.loginError = '';
+          this.loginLoading = true;
+          try {
+            const r = await fetch(API_BASE + '/login-with-l1', { method: 'POST' });
+            const data = await r.json();
+            if (!r.ok) {
+              this.loginError = (data.detail?.message || data.detail) || 'L1 授权登录失败';
+              return;
+            }
+            this.jwt = data.token;
+            this.currentAdmin = data.admin;
+            localStorage.setItem(STORAGE_KEY, data.token);
+            this.fetchAll();
+          } catch (e) {
+            this.loginError = '网络错误，请重试';
+          } finally {
+            this.loginLoading = false;
+          }
+        },
+        logout() {
+          this.jwt = '';
+          this.currentAdmin = null;
+          localStorage.removeItem(STORAGE_KEY);
         },
         async fetchAll() {
           await Promise.all([this.fetchSubAccounts(), this.fetchNodes()]);
@@ -211,9 +329,11 @@
             if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
             this.subAccounts = await r.json();
           } catch (e) {
-            if (e.message.includes('503') || e.message.includes('Admin API disabled')) alert('L2 未配置 Admin Token。请在启动 L2 前设置环境变量 JACHIN_L2_ADMIN_TOKEN，或在项目根 .env 中配置');
-            else if (e.message.includes('403')) alert('Admin Token 无效');
-            else alert('获取子账号失败: ' + e.message);
+            if (e.message.includes('401')) {
+              this.logout();
+              return;
+            }
+            alert('获取子账号失败: ' + e.message);
           }
         },
         async fetchNodes() {
@@ -224,23 +344,25 @@
             this.assignMap = {};
             this.pendingNodes.forEach(n => { this.assignMap[n.id] = ''; });
           } catch (e) {
-            if (e.message.includes('503') || e.message.includes('Admin API disabled')) alert('L2 未配置 Admin Token。请在启动 L2 前设置环境变量 JACHIN_L2_ADMIN_TOKEN，或在项目根 .env 中配置');
-            else if (e.message.includes('403')) alert('Admin Token 无效');
-            else alert('获取节点失败: ' + e.message);
+            if (e.message.includes('401')) {
+              this.logout();
+              return;
+            }
+            alert('获取节点失败: ' + e.message);
           }
         },
         async createSubAccount() {
-          if (!this.newSub.main_user_id || !this.newSub.name) {
-            alert('请填写 main_user_id 和 name');
+          if (!this.newSub.name) {
+            alert('请填写 name');
             return;
           }
           try {
             const r = await fetch(API_BASE + '/sub-accounts', {
               method: 'POST',
               headers: this.headers(),
-              body: JSON.stringify(this.newSub)
+              body: JSON.stringify({ name: this.newSub.name })
             });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) throw new Error((await r.json()).detail || await r.text());
             const data = await r.json();
             alert('创建成功: ' + data.id);
             this.newSub.name = '';
@@ -260,7 +382,7 @@
               headers: this.headers(),
               body: JSON.stringify(this.newKey)
             });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) throw new Error((await r.json()).detail || await r.text());
             alert('添加成功');
             this.newKey.api_key = '';
           } catch (e) {
@@ -279,7 +401,7 @@
               headers: this.headers(),
               body: JSON.stringify({ node_id: nodeId, sub_account_id: subId })
             });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) throw new Error((await r.json()).detail || await r.text());
             alert('分配成功');
             this.fetchNodes();
           } catch (e) {

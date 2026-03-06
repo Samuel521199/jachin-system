@@ -57,7 +57,7 @@ export function ConsoleApp() {
   if (paired === null) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-slate-950 text-white">
-        <div className="animate-pulse text-cyan-400/80">Loading...</div>
+        <div className="animate-pulse text-cyan-400/80">Resuming...</div>
       </div>
     );
   }

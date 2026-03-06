@@ -39,7 +39,10 @@ Layer 2 是**控制平面 + 记忆平面 + 调度平面 + API Key 管理**。**�
 | `POST /api/v2/auth/sync` | L3 注册，携带公钥 |
 | `GET /api/v2/auth/poll?node_id=xxx` | L3 轮询审批状态（pending/approved + encrypted_api_keys） |
 | `GET /api/v2/keys` | L3 拉取密文 Key（按 node_id + sub_account_id） |
-| `POST /api/v2/memory/sync` | L3 同步本地记忆，L2 梦境优化后回传 |
+| `POST /api/v2/memory/sync` | L3 同步本地记忆（请求体可声明 `namespace`），L2 梦境优化后回传 |
+| `GET /api/v2/memory/search` | L3 检索记忆（`namespaces` 参数，按 allowed_memory_namespaces 过滤） |
+| `POST /api/v2/coordinate/task` | L3 请求协同，L2 按 skill 匹配节点并分配子任务 |
+| `GET /api/v2/coordinate/poll` | L3 拉取分配给自己的子任务 |
 | `POST /api/v2/admin/sub-accounts` | 创建子账号 |
 | `POST /api/v2/admin/keys` | 向保险箱添加 API Key |
 | `POST /api/v2/admin/nodes/assign` | 将 L3 节点分配给子账号 |
@@ -49,12 +52,21 @@ Layer 2 是**控制平面 + 记忆平面 + 调度平面 + API Key 管理**。**�
 ## 四、数据存储
 
 - **SQLite**: `~/.jachin/l2_control.db`
-- **表**: `sub_accounts`, `l3_nodes`, `api_keys_vault`
+- **表**: `sub_accounts`, `sub_account_permissions`, `l3_nodes`, `api_keys_vault`, `coordinate_tasks`, `coordinate_subtasks`
+- **LanceDB**: 记忆向量存储，含 `namespace` 列（细粒度隔离）
+- **Redis**（L2 集群可选）: L3 在线状态、任务队列、Leader 选举锁
 - **加密**: L2 用 Master Key 对称加密存储 Key；下发给 L3 时用 L3 公钥加密
 
 ---
 
-## 五、参考
+## 五、记忆 Namespace 与 L2 无状态集群
+
+- **Namespace 隔离**：子账号可配置 `allowed_memory_namespaces`，仅能读写指定命名空间；未配置时默认允许全部。
+- **L2 无状态**：L3 状态与任务队列存 Redis，任意 L2 节点均可处理任意 L3 请求；Redis 不可用时回退 SQLite 单节点模式。
+
+---
+
+## 六、参考
 
 - [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 - [V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)

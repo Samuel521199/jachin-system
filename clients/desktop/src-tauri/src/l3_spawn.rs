@@ -89,11 +89,18 @@ pub fn spawn_l3_via_python(
     app: &impl tauri::Manager<tauri::Wry>,
     args: &[&str],
     env_l2_url: Option<&str>,
+    env_device_name: Option<&str>,
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let root = project_root().ok_or("无法定位项目根目录 (l3_node)")?;
     let mut cmd = app.shell().command("python").args(["-m", "l3_node"]).args(args);
     if let Some(url) = env_l2_url {
         cmd = cmd.env("L2_BASE_URL", url);
+    }
+    if let Some(name) = env_device_name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            cmd = cmd.env("JACHIN_DEVICE_NAME", trimmed.chars().take(64).collect::<String>());
+        }
     }
     cmd = cmd.current_dir(&root);
     let (mut _rx, child) = cmd.spawn().map_err(|e| format!("Python L3 启动失败: {}", e))?;
@@ -123,7 +130,7 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
                     let err_msg = e.to_string();
                     if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 3") {
                         println!("[L3] Sidecar 不可用，回退到 python -m l3_node");
-                        spawn_l3_via_python(app, args, env_url.as_deref())?
+                        spawn_l3_via_python(app, args, env_url.as_deref(), None)?
                     } else {
                         return Err(format!("L3 启动失败: {}", err_msg));
                     }
@@ -132,7 +139,7 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
         }
         Err(_) => {
             println!("[L3] Sidecar 未找到，使用 python -m l3_node");
-            spawn_l3_via_python(app, args, env_url.as_deref())?
+            spawn_l3_via_python(app, args, env_url.as_deref(), None)?
         }
     };
 

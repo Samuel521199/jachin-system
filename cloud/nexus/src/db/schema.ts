@@ -18,7 +18,27 @@ import {
 import { relations } from "drizzle-orm";
 
 // =============================================================================
+// Layer 1 平台身份体系
+// =============================================================================
+
+export const platformAdmins = pgTable("platform_admins", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").notNull().default("super_admin"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// =============================================================================
 // Auth.js 基础表（Drizzle Adapter 标准规范）
+// users 支持 OAuth；password_hash 可选，用于 Credentials 密码登录
 // =============================================================================
 
 export const users = pgTable("users", {
@@ -29,6 +49,7 @@ export const users = pgTable("users", {
   email: text("email").unique(),
   emailVerified: timestamp("email_verified", { mode: "date" }),
   image: text("image"),
+  passwordHash: text("password_hash"),
 });
 
 export const accounts = pgTable(

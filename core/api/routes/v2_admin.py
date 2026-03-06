@@ -2,71 +2,168 @@
 Jachin Nexus V2 - L2 控制面管理 API（内部/Admin）
 
 用于创建子账号、向保险箱写入 API Key。
-受 X-Admin-Token 保护，Token 从环境变量 JACHIN_L2_ADMIN_TOKEN 读取。
+废弃 JACHIN_L2_ADMIN_TOKEN，改为 username/password + JWT 登录。
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from core.admin_auth import (
+    create_admin_token,
+    get_current_admin,
+    verify_password,
+)
 from core.db import get_connection
+from core.errors import (
+    ERR_AUTH_005,
+    ERR_BAD_REQUEST_001,
+    ERR_BAD_REQUEST_002,
+    ERR_INTERNAL_001,
+    ERR_NOT_FOUND_001,
+    ERR_NOT_FOUND_002,
+    api_error,
+)
 from core.security.crypto_manager import encrypt_for_storage, hash_key_for_audit
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2/admin", tags=["v2-admin"])
-_ADMIN_TOKEN_ENV = "JACHIN_L2_ADMIN_TOKEN"
 
 
-def _verify_admin(request: Request) -> None:
-    token = os.environ.get(_ADMIN_TOKEN_ENV)
-    if not token:
-        raise HTTPException(status_code=503, detail="Admin API disabled: JACHIN_L2_ADMIN_TOKEN not set")
-    provided = request.headers.get("X-Admin-Token")
-    if provided != token:
-        raise HTTPException(status_code=403, detail="Invalid admin token")
+def _load_nexus_config() -> dict:
+    """读取 nexus_config.json（L1 配对透传）"""
+    from pathlib import Path
+    path = Path.home() / ".jachin" / "nexus_config.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
-def _is_localhost(request: Request) -> bool:
-    """仅 localhost 可获取 token，避免泄露"""
-    client = getattr(request, "client", None)
-    if client:
-        host = client.host if hasattr(client, "host") else str(client)
-        if host in ("127.0.0.1", "localhost", "::1"):
-            return True
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded and forwarded.split(",")[0].strip() in ("127.0.0.1", "localhost"):
-        return True
-    return False
-
-
-@router.get("/local-token")
-async def get_local_token(request: Request) -> dict[str, str]:
+@router.post("/login-with-l1")
+async def admin_login_with_l1(request: Request) -> dict[str, Any]:
     """
-    本地开发：仅当请求来自 localhost 时返回 token，供 Admin 面板自动绑定。
-    生产环境应禁用或限制此接口。
+    L1 授权登录：使用配对时 L1 下发的凭证，换取 L2 JWT。
+    需已配对（nexus_config 含 access_token、l1_user_id）。
+    实现「云端一套账号，统御所有边缘机房」。
     """
-    token = os.environ.get(_ADMIN_TOKEN_ENV)
-    if not token:
-        raise HTTPException(status_code=503, detail="Admin API disabled: JACHIN_L2_ADMIN_TOKEN not set")
-    if not _is_localhost(request):
-        raise HTTPException(status_code=403, detail="Only localhost can access local-token")
-    return {"token": token}
+    cfg = _load_nexus_config()
+    access_token = cfg.get("access_token") or ""
+    l1_user_id = cfg.get("l1_user_id") or cfg.get("instance_id") or ""
+    if not access_token or not l1_user_id:
+        raise api_error(
+            401,
+            ERR_AUTH_005,
+            "未完成 L1 配对，请先执行 python -m core.cli pair",
+        )
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, username, main_user_id, role FROM gateway_admins WHERE main_user_id = ? LIMIT 1",
+            (l1_user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise api_error(
+            401,
+            ERR_AUTH_005,
+            "网关管理员未绑定 L1 用户，请使用本地账号登录",
+        )
+    admin_id, uname, main_user_id, role = row[0], row[1], row[2], row[3]
+    token = create_admin_token(admin_id, uname or "admin", main_user_id, role or "admin")
+    import os
+    expires_hours = int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
+    return {
+        "token": token,
+        "expires_in_hours": expires_hours,
+        "admin": {
+            "id": admin_id,
+            "username": uname or "admin",
+            "main_user_id": main_user_id,
+            "role": role or "admin",
+        },
+        "source": "l1_pairing",
+    }
+
+
+@router.post("/login")
+async def admin_login(request: Request) -> dict[str, Any]:
+    """
+    网关管理员登录。body: { username, password }
+    成功返回 { token, expires_in_hours, admin: { id, username, main_user_id } }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise api_error(400, ERR_BAD_REQUEST_001, "Invalid JSON")
+
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
+    if not username or not password:
+        raise api_error(400, ERR_BAD_REQUEST_002, "username and password are required")
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, username, password_hash, main_user_id, role FROM gateway_admins WHERE username = ?",
+            (username.lower(),),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        raise api_error(401, ERR_AUTH_005, "用户名或密码错误")
+
+    admin_id, uname, pw_hash, main_user_id, role = row[0], row[1], row[2], row[3], row[4]
+    if not verify_password(password, pw_hash):
+        raise api_error(401, ERR_AUTH_005, "用户名或密码错误")
+
+    token = create_admin_token(admin_id, uname, main_user_id, role or "admin")
+    import os
+    expires_hours = int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
+
+    return {
+        "token": token,
+        "expires_in_hours": expires_hours,
+        "admin": {
+            "id": admin_id,
+            "username": uname,
+            "main_user_id": main_user_id,
+            "role": role or "admin",
+        },
+    }
+
+
+@router.get("/me")
+async def admin_me(admin: dict = Depends(get_current_admin)) -> dict[str, Any]:
+    """获取当前登录管理员信息（用于前端校验 token 有效性）"""
+    return {"admin": admin}
 
 
 @router.get("/sub-accounts")
-async def list_sub_accounts(request: Request) -> list[dict[str, Any]]:
-    """返回所有子账号列表。"""
-    _verify_admin(request)
+async def list_sub_accounts(
+    request: Request,
+    admin: dict = Depends(get_current_admin),
+) -> list[dict[str, Any]]:
+    """返回当前管理员 main_user_id 下的子账号列表（租户隔离）"""
+    main_user_id = admin.get("main_user_id") or ""
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, main_user_id, name, role, permissions_json, l1_pairing_code, created_at FROM sub_accounts ORDER BY created_at DESC"
+            """
+            SELECT id, main_user_id, name, role, permissions_json, l1_pairing_code, created_at
+            FROM sub_accounts WHERE main_user_id = ? ORDER BY created_at DESC
+            """,
+            (main_user_id,),
         ).fetchall()
         return [
             {
@@ -84,46 +181,81 @@ async def list_sub_accounts(request: Request) -> list[dict[str, Any]]:
         conn.close()
 
 
+_OFFLINE_THRESHOLD_SEC = 300  # 5 分钟内无心跳视为离线
+
+
 @router.get("/nodes")
-async def list_nodes(request: Request) -> list[dict[str, Any]]:
-    """返回所有 L3 节点列表（含 node_id、status/sub_account_id 等）。"""
-    _verify_admin(request)
+async def list_nodes(
+    request: Request,
+    admin: dict = Depends(get_current_admin),
+) -> list[dict[str, Any]]:
+    """
+    返回 L3 节点列表。
+    待审批：仅展示 last_seen_at 在 5 分钟内的节点（超时视为离线，不展示）。
+    已分配：展示全部，含 last_seen_at 与 is_online。
+    """
+    import time
+    main_user_id = admin.get("main_user_id") or ""
+    now = time.time()
+    cutoff = now - _OFFLINE_THRESHOLD_SEC
+
     conn = get_connection()
     try:
         rows = conn.execute(
             """
-            SELECT id, device_fingerprint, sub_account_id, capabilities_json, last_seen_at, created_at
-            FROM l3_nodes ORDER BY created_at DESC
-            """
+            SELECT n.id, n.device_fingerprint, n.sub_account_id, n.capabilities_json, n.model_endpoints, n.last_seen_at, n.created_at, n.display_name
+            FROM l3_nodes n
+            LEFT JOIN sub_accounts s ON n.sub_account_id = s.id
+            WHERE (n.sub_account_id IS NULL AND n.last_seen_at > ?)
+               OR (s.main_user_id = ?)
+            ORDER BY n.created_at DESC
+            """,
+            (cutoff, main_user_id),
         ).fetchall()
-        return [
-            {
+        result = []
+        for r in rows:
+            me = r[4] if len(r) > 4 else "{}"
+            try:
+                model_endpoints = json.loads(me) if me else {}
+            except json.JSONDecodeError:
+                model_endpoints = {}
+            last_seen = r[5]
+            last_seen_float = float(last_seen) if last_seen is not None else 0
+            is_online = last_seen_float > cutoff
+            result.append({
                 "id": r[0],
                 "device_fingerprint": r[1],
                 "sub_account_id": r[2],
                 "capabilities_json": r[3],
-                "last_seen_at": r[4],
-                "created_at": r[5],
-            }
-            for r in rows
-        ]
+                "model_endpoints": model_endpoints,
+                "last_seen_at": last_seen,
+                "created_at": r[6],
+                "display_name": r[7] if len(r) > 7 else "",
+                "is_online": is_online,
+            })
+        return result
     finally:
         conn.close()
 
 
 @router.post("/sub-accounts")
-async def create_sub_account(request: Request) -> dict[str, Any]:
-    """创建子账号。body: main_user_id, name, role?, permissions_json?"""
-    _verify_admin(request)
+async def create_sub_account(
+    request: Request,
+    admin: dict = Depends(get_current_admin),
+) -> dict[str, Any]:
+    """创建子账号。main_user_id 强制为当前登录管理员的 main_user_id。"""
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    main_user_id = body.get("main_user_id")
+    main_user_id = admin.get("main_user_id") or ""
+    if not main_user_id:
+        raise api_error(403, ERR_AUTH_005, "管理员无 main_user_id")
+
     name = body.get("name")
-    if not main_user_id or not name:
-        raise HTTPException(status_code=400, detail="main_user_id and name are required")
+    if not name or not str(name).strip():
+        raise api_error(400, ERR_BAD_REQUEST_002, "name is required")
 
     role = body.get("role") or "member"
     perms = body.get("permissions_json")
@@ -150,7 +282,7 @@ async def create_sub_account(request: Request) -> dict[str, Any]:
         conn.commit()
     except Exception as e:
         logger.exception("[v2/admin] create sub_account: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to create sub-account")
+        raise api_error(500, ERR_INTERNAL_001, "Failed to create sub-account", detail=str(e))
     finally:
         conn.close()
 
@@ -158,13 +290,15 @@ async def create_sub_account(request: Request) -> dict[str, Any]:
 
 
 @router.post("/keys")
-async def add_api_key(request: Request) -> dict[str, Any]:
+async def add_api_key(
+    request: Request,
+    admin: dict = Depends(get_current_admin),
+) -> dict[str, Any]:
     """
     向保险箱添加 API Key。
     body: sub_account_id, provider (openai|qwen|...), api_key (明文)。
-    L2 用 Master Key 加密存储，绝不落盘明文。
+    仅允许为当前 main_user_id 下的子账号添加。
     """
-    _verify_admin(request)
     try:
         body = await request.json()
     except Exception:
@@ -174,14 +308,24 @@ async def add_api_key(request: Request) -> dict[str, Any]:
     provider = body.get("provider")
     api_key = body.get("api_key")
     if not sub_account_id or not provider or not api_key:
-        raise HTTPException(status_code=400, detail="sub_account_id, provider, api_key are required")
+        raise api_error(400, ERR_BAD_REQUEST_002, "sub_account_id, provider, api_key are required")
 
-    key_hash = hash_key_for_audit(api_key)
-    encrypted = encrypt_for_storage(api_key)
-    key_id = body.get("id") or f"key-{secrets.token_hex(8)}"
-
+    main_user_id = admin.get("main_user_id") or ""
     conn = get_connection()
     try:
+        sub_row = conn.execute(
+            "SELECT id, main_user_id FROM sub_accounts WHERE id = ?",
+            (sub_account_id,),
+        ).fetchone()
+        if not sub_row:
+            raise api_error(404, ERR_NOT_FOUND_001, "Sub-account not found")
+        if sub_row[1] != main_user_id:
+            raise api_error(403, ERR_AUTH_005, "无权为该子账号添加 Key")
+
+        key_hash = hash_key_for_audit(api_key)
+        encrypted = encrypt_for_storage(api_key)
+        key_id = body.get("id") or f"key-{secrets.token_hex(8)}"
+
         conn.execute(
             """
             INSERT INTO api_keys_vault (id, sub_account_id, provider, encrypted_key, key_hash)
@@ -190,9 +334,11 @@ async def add_api_key(request: Request) -> dict[str, Any]:
             (key_id, sub_account_id, provider, encrypted, key_hash),
         )
         conn.commit()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("[v2/admin] add key: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to add API key")
+        raise api_error(500, ERR_INTERNAL_001, "Failed to add API key", detail=str(e))
     finally:
         conn.close()
 
@@ -200,13 +346,15 @@ async def add_api_key(request: Request) -> dict[str, Any]:
 
 
 @router.post("/nodes/assign")
-async def assign_node_to_sub_account(request: Request) -> dict[str, Any]:
+async def assign_node_to_sub_account(
+    request: Request,
+    admin: dict = Depends(get_current_admin),
+) -> dict[str, Any]:
     """
     将 L3 节点分配给子账号。
     body: { node_id, sub_account_id }
-    L2 管理员在后台审批后调用此接口。
+    仅允许分配给当前 main_user_id 下的子账号。
     """
-    _verify_admin(request)
     try:
         body = await request.json()
     except Exception:
@@ -214,37 +362,46 @@ async def assign_node_to_sub_account(request: Request) -> dict[str, Any]:
 
     node_id = body.get("node_id")
     sub_account_id = body.get("sub_account_id")
+    model_endpoints = body.get("model_endpoints")
     if not node_id or not sub_account_id:
-        raise HTTPException(status_code=400, detail="node_id and sub_account_id are required")
+        raise api_error(400, ERR_BAD_REQUEST_002, "node_id and sub_account_id are required")
 
+    main_user_id = admin.get("main_user_id") or ""
     conn = get_connection()
     try:
-        # 验证 sub_account 存在
         sub_row = conn.execute(
-            "SELECT id FROM sub_accounts WHERE id = ?",
+            "SELECT id, main_user_id FROM sub_accounts WHERE id = ?",
             (sub_account_id,),
         ).fetchone()
         if not sub_row:
-            raise HTTPException(status_code=404, detail="Sub-account not found")
+            raise api_error(404, ERR_NOT_FOUND_001, "Sub-account not found")
+        if sub_row[1] != main_user_id:
+            raise api_error(403, ERR_AUTH_005, "无权分配至该子账号")
 
-        # 验证 node 存在
         node_row = conn.execute(
             "SELECT id FROM l3_nodes WHERE id = ?",
             (node_id,),
         ).fetchone()
         if not node_row:
-            raise HTTPException(status_code=404, detail="L3 node not found")
+            raise api_error(404, ERR_NOT_FOUND_002, "L3 node not found")
 
-        conn.execute(
-            "UPDATE l3_nodes SET sub_account_id = ?, last_seen_at = strftime('%s', 'now') WHERE id = ?",
-            (sub_account_id, node_id),
-        )
+        if model_endpoints is not None:
+            me_json = json.dumps(model_endpoints) if isinstance(model_endpoints, dict) else str(model_endpoints or "{}")
+            conn.execute(
+                "UPDATE l3_nodes SET sub_account_id = ?, model_endpoints = ?, last_seen_at = strftime('%s', 'now') WHERE id = ?",
+                (sub_account_id, me_json, node_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE l3_nodes SET sub_account_id = ?, last_seen_at = strftime('%s', 'now') WHERE id = ?",
+                (sub_account_id, node_id),
+            )
         conn.commit()
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("[v2/admin] assign node: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to assign node")
+        raise api_error(500, ERR_INTERNAL_001, "Failed to assign node", detail=str(e))
     finally:
         conn.close()
 

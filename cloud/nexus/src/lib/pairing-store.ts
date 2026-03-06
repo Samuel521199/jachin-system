@@ -10,6 +10,7 @@ export interface PairingSession {
   status: "pending" | "approved" | "expired";
   expires_at: string;
   instance_id?: string;
+  user_id?: string;
 }
 
 const store = new Map<string, PairingSession>();
@@ -72,19 +73,28 @@ export function pairingStoreGetByCode(code: string): PairingSession | undefined 
   return sid ? store.get(sid) : undefined;
 }
 
-export function pairingStoreApprove(sessionId: string, instanceId: string): void {
+export function pairingStoreApprove(
+  sessionId: string,
+  instanceId: string,
+  userId?: string
+): void {
   const s = store.get(sessionId);
   if (s) {
     s.status = "approved";
     s.instance_id = instanceId;
+    if (userId) s.user_id = userId;
     persistToFile();
   }
 }
 
-export function pairingStoreApproveByCode(code: string, instanceId: string): boolean {
+export function pairingStoreApproveByCode(
+  code: string,
+  instanceId: string,
+  userId?: string
+): boolean {
   const s = pairingStoreGetByCode(code);
   if (!s) return false;
-  pairingStoreApprove(s.session_id, instanceId);
+  pairingStoreApprove(s.session_id, instanceId, userId);
   return true;
 }
 

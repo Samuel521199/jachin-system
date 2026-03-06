@@ -16,6 +16,7 @@ interface GatewayConnectScreenProps {
 
 export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
   const [l2Url, setL2Url] = useState(DEFAULT_L2);
+  const [deviceName, setDeviceName] = useState("");
   const [step, setStep] = useState<"idle" | "connecting" | "waiting" | "success" | "error">("idle");
   const [error, setError] = useState("");
 
@@ -32,20 +33,35 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
     loadSavedUrl();
   }, [loadSavedUrl]);
 
+  // 已审批节点：L3 可能已被 setup 自动启动，轮询 is_gateway_paired 自动进入主界面
+  useEffect(() => {
+    if (step !== "idle") return;
+    const timer = setInterval(async () => {
+      try {
+        const p = await invoke<boolean>("is_gateway_paired");
+        if (p) onPaired();
+      } catch {
+        // ignore
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [step, onPaired]);
+
   const startConnect = useCallback(async () => {
     const url = l2Url.trim().replace(/\/+$/, "") || DEFAULT_L2;
+    const name = deviceName.trim() || undefined;
     setStep("connecting");
     setError("");
 
     try {
-      await invoke("write_l2_gateway_url", { url });
-      await invoke("gateway_connect", { l2Url: url });
+      await invoke("write_l2_gateway_config", { input: { url, displayName: name || undefined } });
+      await invoke("gateway_connect", { input: { l2Url: url, displayName: name ?? null } });
       setStep("waiting");
-      // 轮询检测 L3 是否就绪（WebSocket 已启动）
+      // 轮询检测 L2 是否已审批（paired=true），而非仅检测 WebSocket 端口
       const checkReady = async () => {
         try {
-          const ready = await invoke<boolean>("is_l3_engine_ready");
-          if (ready) {
+          const paired = await invoke<boolean>("is_gateway_paired");
+          if (paired) {
             setStep("success");
             setTimeout(() => onPaired(), 1200);
             return true;
@@ -69,7 +85,7 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
       setError(String(e));
       setStep("error");
     }
-  }, [l2Url, onPaired]);
+  }, [l2Url, deviceName, onPaired]);
 
   return (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white overflow-hidden">
@@ -103,6 +119,19 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
                 onChange={(e) => setL2Url(e.target.value)}
                 placeholder="http://192.168.1.100:18888"
                 className="w-full px-4 py-3 rounded-xl bg-black/40 border border-cyan-500/30 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 font-mono text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-cyan-400/80 uppercase tracking-wider mb-2">
+                设备名称（可选，便于 L2 审批识别）
+              </label>
+              <input
+                type="text"
+                value={deviceName}
+                onChange={(e) => setDeviceName(e.target.value)}
+                placeholder="如：客厅电脑、书房笔记本"
+                maxLength={64}
+                className="w-full px-4 py-3 rounded-xl bg-black/40 border border-cyan-500/30 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 text-sm"
               />
             </div>
             <button

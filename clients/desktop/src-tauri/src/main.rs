@@ -290,7 +290,7 @@ fn main() {
             commands::settings::update_user_settings,
             commands::pairing::is_gateway_paired,
             commands::pairing::read_l2_gateway_url,
-            commands::pairing::write_l2_gateway_url,
+            commands::pairing::write_l2_gateway_config,
             commands::pairing::gateway_connect,
             commands::pairing::is_l3_engine_ready,
             commands::pairing::set_use_local_mode,

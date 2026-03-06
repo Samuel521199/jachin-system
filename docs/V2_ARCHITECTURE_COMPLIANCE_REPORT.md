@@ -1,9 +1,9 @@
 # Jachin V2 架构合规性扫描报告
 
-**版本**: 1.0  
+**版本**: 1.1  
 **基准文档**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md)  
 **扫描日期**: 2026-03-05  
-**扫描范围**: docs/, .cursor/rules/, core/, cloud/, clients/, l3_node/
+**2026-03 更新**: 本文档为历史合规扫描快照。V2 核心已落地：v2_coordinate、v2_memory（namespace）、L2 无状态集群（Redis）、SubAgent 分身、JPP .wasm。**以 [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) 与 [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md) 为权威参考。**
 
 ---
 
@@ -15,7 +15,8 @@
 | **L2 控制面** | 子账号、权限、API Key 管理（密文下发）、记忆、梦境、L3 协同调度；**不代理推理** |
 | **L3 单体** | 对标 OpenClaw：多 Agent、多 Skill、本地记忆，持密文 Key 解密后直连外部 API |
 
-**禁止/已弃用**：Ray、Dapr、PostgreSQL（L2）、L2 代理推理、中心化执行引擎（Agent 在 L2）
+**禁止/已弃用**：Ray、Dapr、PostgreSQL（L2）、L2 代理推理、中心化执行引擎（Agent 在 L2）  
+**Redis**：L2 集群化时可选（L3 状态、任务队列、Leader 选举）
 
 ---
 
@@ -37,7 +38,7 @@
 | **whitepaper/02_FRAMEWORK.md** | ❌ 旧 | Dapr & Ray Cluster 已弃用；L2 执行引擎描述 |
 | **whitepaper/04_FILE_STRUCTURE.md** | ✅ V2 | 禁止 dapr/ray_cluster |
 | **whitepaper/05_LAYER1_NEXUS.md** | ⚠️ 部分 | L1 为「云端指挥中枢」— V2 为「平台」；含 Dapr 废弃说明 |
-| **whitepaper/06_LAYER2_EDGE.md** | ❌ 旧 | **L2 双轨制执行引擎** — V2 执行在 L3；Agent 在 L2 |
+| **whitepaper/06_LAYER2_EDGE.md** | ✅ V2 | 已更新：L2 控制面、namespace、L2 无状态集群 |
 | **whitepaper/07_LAYER3_TERMINAL.md** | ❌ 旧 | L3 为「零摩擦体验外壳」— V2 为「单体 OpenClaw」执行节点 |
 | **whitepaper/08_JPP_SDK_AND_SKILLS.md** | - | 技能生态，与分层无关 |
 | **whitepaper/09_DE_BAASIFICATION.md** | ⚠️ 部分 | PostgreSQL 用于 L1，符合；L2 应 SQLite |
@@ -82,7 +83,9 @@
 | **db/schema.py** | ✅ V2 | sub_accounts, l3_nodes, api_keys_vault |
 | **api/routes/v2_auth.py** | ✅ V2 | POST /auth/sync, GET /auth/poll, GET /keys |
 | **api/routes/v2_admin.py** | ✅ V2 | 子账号、API Key 管理 |
-| **api/routes/v2_memory.py** | ✅ V2 | 记忆同步 |
+| **api/routes/v2_memory.py** | ✅ V2 | 记忆同步、检索（namespace） |
+| **api/routes/v2_coordinate.py** | ✅ V2 | 协同任务、poll |
+| **l3_redis_state.py** | ✅ V2 | L2 无状态：L3 状态、任务队列 |
 | **security/crypto_manager.py** | ✅ V2 | 零信任密钥 |
 | **nexus_daemon/daemon.py** | ✅ V2 | L2 点火总控 |
 | **sensory_server.py** | ✅ V2 | 感官 WebSocket |

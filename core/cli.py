@@ -121,6 +121,7 @@ def pair(base_url: str, recover: bool, code: str) -> None:
 
         access_token = data.get("access_token")
         instance_id = data.get("instance_id", "dev-layer2-001")
+        l1_user_id = data.get("l1_user_id")
         nexus_base_url = (data.get("nexus_base_url") or base_url).rstrip("/")
         if not access_token:
             console.print("[red][ERROR][/red] 云端未返回 access_token")
@@ -133,6 +134,8 @@ def pair(base_url: str, recover: bool, code: str) -> None:
             "nexus_base_url": nexus_base_url,
             "pairing_code": code_clean,
         }
+        if l1_user_id:
+            cfg["l1_user_id"] = l1_user_id
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
         console.print(Panel("[green]✅ 凭证已恢复并写入本地配置[/green]", border_style="green"))
         console.print(f"  配置路径: [cyan]{CONFIG_PATH}[/cyan]")
@@ -229,6 +232,7 @@ def pair(base_url: str, recover: bool, code: str) -> None:
     # 5. 成功 - 绿色提示
     access_token = status_data.get("access_token")
     instance_id = status_data.get("instance_id", "dev-layer2-001")
+    l1_user_id = status_data.get("l1_user_id")
     nexus_base_url = status_data.get("nexus_base_url", base_url)
 
     console.print()
@@ -237,7 +241,7 @@ def pair(base_url: str, recover: bool, code: str) -> None:
         border_style="green",
     ))
 
-    # 6. 写入配置（含 pairing_code 用于 L2 子账号溯源）
+    # 6. 写入配置（含 pairing_code、l1_user_id 用于 L2 创世管理员绑定）
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     cfg = {
         "instance_id": instance_id,
@@ -245,6 +249,8 @@ def pair(base_url: str, recover: bool, code: str) -> None:
         "nexus_base_url": nexus_base_url.rstrip("/"),
         "pairing_code": short_code,
     }
+    if l1_user_id:
+        cfg["l1_user_id"] = l1_user_id
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # 7. 炫酷退出
@@ -262,6 +268,53 @@ def pair(base_url: str, recover: bool, code: str) -> None:
             padding=(1, 2),
         )
     )
+
+
+@cli.command()
+@click.option("--password", default="admin123", help="新密码（默认 admin123）")
+def reset_admin(password: str) -> None:
+    """重置 L2 网关管理员密码为 admin/<password>（登录 401 时使用）"""
+    import secrets
+    import bcrypt
+    from core.db import get_connection
+
+    conn = get_connection()
+    pw_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+    try:
+        row = conn.execute(
+            "SELECT id FROM gateway_admins WHERE username = 'admin' LIMIT 1"
+        ).fetchone()
+        if not row:
+            # 加载 nexus_config 以获取 l1_user_id（若已配对）
+            cfg = {}
+            if CONFIG_PATH.exists():
+                try:
+                    cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            main_user_id = cfg.get("l1_user_id") or cfg.get("instance_id") or f"gw-admin-{secrets.token_hex(4)}"
+            conn.execute(
+                """
+                INSERT INTO gateway_admins (id, username, password_hash, main_user_id, role)
+                VALUES (?, 'admin', ?, ?, 'admin')
+                """,
+                (f"gw-admin-{secrets.token_hex(4)}", pw_hash, main_user_id),
+            )
+            conn.commit()
+            console.print("[green]✅ 已创建 admin 账号，密码: %s[/green]" % password)
+        else:
+            conn.execute(
+                "UPDATE gateway_admins SET password_hash = ? WHERE username = 'admin'",
+                (pw_hash,),
+            )
+            conn.commit()
+            console.print("[green]✅ 已重置 admin 密码为: %s[/green]" % password)
+        console.print("  登录: http://localhost:18888/admin")
+    except Exception as e:
+        console.print("[red][ERROR][/red] %s" % e)
+        raise SystemExit(1)
+    finally:
+        conn.close()
 
 
 @cli.command()

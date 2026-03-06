@@ -56,6 +56,7 @@ export async function GET(req: NextRequest) {
         access_token: `jch-mock-${(session?.session_id ?? sessionId ?? "").slice(0, 8)}`,
         layer1_public_key: null,
         instance_id: session.instance_id ?? "dev-layer2-001",
+        l1_user_id: session.user_id ?? null,
         nexus_base_url: baseUrl,
       });
     }
@@ -68,6 +69,7 @@ export async function GET(req: NextRequest) {
         id: edgeAgents.id,
         status: edgeAgents.status,
         authToken: edgeAgents.authToken,
+        userId: edgeAgents.userId,
         pairingExpiresAt: edgeAgents.pairingExpiresAt,
       })
       .from(edgeAgents)
@@ -114,6 +116,7 @@ export async function GET(req: NextRequest) {
       access_token: agent.authToken ?? agent.id,
       layer1_public_key: null,
       instance_id: agent.id,
+      l1_user_id: agent.userId ?? null,
       nexus_base_url: baseUrl,
     });
   } catch (e) {

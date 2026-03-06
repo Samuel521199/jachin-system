@@ -2,19 +2,27 @@
 Jachin Nexus V2 - Layer 2 控制面数据库
 
 L2 零信任控制面：子账号、API Key 保险箱、L3 节点注册。
-使用 SQLite 存储，路径 ~/.jachin/l2_control.db
+使用 SQLite 存储，默认 ~/.jachin/l2_control.db。
+K8s 部署：设置 JACHIN_L2_DB_PATH 指向共享卷，确保多 Pod 共享同一数据。
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
+def _get_db_path() -> Path:
+    env_path = os.environ.get("JACHIN_L2_DB_PATH")
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".jachin" / "l2_control.db"
+
 _JACHIN_DIR = Path.home() / ".jachin"
-_DB_PATH = _JACHIN_DIR / "l2_control.db"
+_DB_PATH = _get_db_path()
 
 
 def _ensure_dir() -> None:
-    _JACHIN_DIR.mkdir(parents=True, exist_ok=True)
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_db_path() -> Path:

@@ -120,8 +120,10 @@ async def get_recent_logs(
 ):
     """获取最近日志行，供思维流展示"""
     buf = _get_log_buffer()
-    lines = [line for line in list(buf)[-limit * 2]]  # 多取一些以便过滤后仍有足够条数
-    lines = [line for line in lines if not _should_skip_log_line(line)][-limit]
+    lst = list(buf)
+    take = min(limit * 2, len(lst))
+    lines = lst[-take:] if take else []
+    lines = [line for line in lines if not _should_skip_log_line(line)][-limit:]
     if naturalize:
         lines = [_naturalize_log_line(line) for line in lines]
     return {"lines": lines}
