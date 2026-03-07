@@ -26,7 +26,7 @@ npm install
 
 ```powershell
 cd clients\desktop
-.\run_with_dapr.ps1
+npm run tauri:dev
 ```
 
 ---
@@ -259,7 +259,7 @@ cd clients\desktop
 
 # 2. 启动桌面精灵（新终端）
 cd clients\desktop
-.\run_with_dapr.ps1
+npm run tauri:dev
 
 # 3. 测试消息持久化
 # - 发送几条消息

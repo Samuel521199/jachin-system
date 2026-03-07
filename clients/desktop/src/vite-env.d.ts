@@ -39,6 +39,7 @@ declare const webkitSpeechRecognition: SpeechRecognitionConstructor | undefined;
 
 interface ImportMetaEnv {
   readonly VITE_BACKEND_URL?: string;
+  readonly VITE_L3_SKILLS_URL?: string;
   readonly VITE_ENVIRONMENT?: string;
   readonly VITE_MODEL_NAME?: string;
 }

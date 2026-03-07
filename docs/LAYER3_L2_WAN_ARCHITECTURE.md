@@ -188,7 +188,7 @@ Layer 2 连接 Layer 1 用于**鉴权、信令、第三方 IM 任务**：
 │  ④ L3 → POST /api/v2/auth/sync（公钥+指纹）→ L2 登记 l3_nodes                    │
 │  ⑤ L3 轮询 GET /api/v2/auth/poll?node_id=xxx → 等待审批                           │
 │  ⑥ L2 管理员 POST /api/v2/admin/nodes/assign 将节点分配给子账号                   │
-│  ⑦ L3 收到 encrypted_api_keys，私钥解密 → 引擎点火 → ws://127.0.0.1:18881        │
+│  ⑦ L3 收到 encrypted_api_keys，私钥解密 → 引擎点火 → ws://127.0.0.1:18981        │
 │  ⑧ Tauri 检测 L3 就绪 → 进入主控制台                                              │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘

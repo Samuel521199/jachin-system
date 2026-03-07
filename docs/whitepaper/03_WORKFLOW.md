@@ -16,7 +16,7 @@
 | 1 | **Layer 3 (Tauri)** | 用户双击运行桌面端，显示 GatewayConnectScreen，输入 L2 网关地址，点击「发起神经接驳」。 |
 | 2 | **L3 (l3_node)** | 生成 RSA 密钥对，`POST /api/v2/auth/sync` 向 L2 注册，轮询 `GET /api/v2/auth/poll` 等待审批。 |
 | 3 | **L2 管理员** | 在 L2 后台 `POST /api/v2/admin/nodes/assign` 将节点分配给子账号。 |
-| 4 | **L3 (l3_node)** | 收到加密 Key，私钥解密，引擎点火，启动 ws://127.0.0.1:18881。 |
+| 4 | **L3 (l3_node)** | 收到加密 Key，私钥解密，引擎点火，启动 ws://127.0.0.1:18981。 |
 | 5 | **Layer 3 (React)** | 检测 L3 就绪，UI 丝滑过渡为主大盘。 |
 
 ### Legacy：Layer 2 daemon（L1 6 位码）

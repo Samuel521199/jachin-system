@@ -138,12 +138,13 @@ export function JachinLink() {
   const [devices, setDevices] = useState<DeviceStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showOffline, setShowOffline] = useState(false);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const list = await getDevices();
+      const list = await getDevices(!showOffline);
       setDevices(list);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -156,7 +157,7 @@ export function JachinLink() {
     load();
     const t = setInterval(load, 15000);
     return () => clearInterval(t);
-  }, []);
+  }, [showOffline]);
 
   return (
     <div className="h-full flex flex-col p-6 overflow-auto">
@@ -189,11 +190,20 @@ export function JachinLink() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <div className="flex-shrink-0 px-4 py-3 border-b border-white/10 flex items-center gap-2">
-          <Network className="w-4 h-4 text-rose-400/80" />
-          <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
-            已连接设备
-          </span>
+        <div className="flex-shrink-0 px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Network className="w-4 h-4 text-rose-400/80" />
+            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
+              已连接设备
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowOffline((v) => !v)}
+            className="text-xs text-slate-500 hover:text-slate-400 font-mono"
+          >
+            {showOffline ? "仅在线" : "含离线"}
+          </button>
         </div>
         <div className="flex-1 overflow-auto p-4 min-h-0">
           {error && (

@@ -2,15 +2,13 @@
 
 **文档类型**: 白皮书 · 文件结构  
 **版本**: V2  
-**基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+**基准**: [ARCHITECTURE.md](../ARCHITECTURE.md) | [FILE_STRUCTURE.md](../FILE_STRUCTURE.md)
 
 ---
 
-## ⚠️ 架构师宣告 (The Great Purge)
+## 架构宪法
 
-**V2**：L2 控制面、L3 单体执行。**严禁再次引入**：`core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`、臃肿部署脚本。
-
-**文件结构变更规范**：新增 `core/` 模块或 `~/.jachin/` 数据文件时，必须同步更新本文档及 `.cursor/rules/070-layer1-platform.mdc`（若涉及 Layer 1 多租户），避免乱写。
+**V2**：L2 控制面、L3 单体执行。**严禁再次引入**：`core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`。
 
 ---
 
@@ -116,7 +114,7 @@ l3_node/                       # V2 单体执行引擎
 ├── agent_core.py              # ReAct Agent + MemorySyncDaemon
 ├── bootstrap.py               # 引导：注册、拉 Key
 ├── crypto.py                  # RSA 加解密
-├── ws_server.py               # 本地 WebSocket (127.0.0.1:18881)
+├── ws_server.py               # 本地 WebSocket (127.0.0.1:18981)
 └── engine/hooks_pipeline.py   # 洋葱中间件
 ```
 

@@ -1,0 +1,7 @@
+{
+  "id": "hr-analyzer",
+  "name": "HR 简历透视镜",
+  "description": "根据岗位要求对候选人简历进行严苛评估，输出 Markdown 报告（含综合评分、优劣势、录用建议）。target_role 可为 backend_engineer 等预设 key，将自动加载 config/hr_jds/ 下对应 JD。需 L2 MCP local-hr-fs 与 LLM。",
+  "parameters": ["target_role", "resume_filename"],
+  "entry": "main.wasm"
+}

@@ -38,6 +38,57 @@ from .qwen_models import (
 logger = logging.getLogger(__name__)
 
 
+def _requires_multimodal_endpoint(model: str) -> bool:
+    """qwen3.5-flash、qwen3.5-plus 等原生多模态模型需走 MultiModalConversation 端点，否则报 url error"""
+    m = (model or "").lower()
+    return m.startswith("qwen3.5-") or m.startswith("qwen3-vl-") or "qwen3-vl" in m
+
+
+def _to_multimodal_text_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """将标准 messages 转为 MultiModalConversation 所需格式（纯文本）"""
+    out = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            out.append({"role": role, "content": [{"text": content}]})
+        elif isinstance(content, list):
+            items = []
+            for c in content:
+                if isinstance(c, dict):
+                    if "text" in c:
+                        items.append({"text": c["text"]})
+                    elif "type" in c and c.get("type") == "text":
+                        items.append({"text": c.get("text", "")})
+                    else:
+                        items.append(c)
+                else:
+                    items.append({"text": str(c)})
+            out.append({"role": role, "content": items})
+        else:
+            out.append({"role": role, "content": [{"text": str(content)}]})
+    return out
+
+
+def _extract_text_from_content(content: Any) -> str:
+    """从 content（可能为 str 或 MultiModal 的 [{"text":"..."}] 列表）提取纯文本"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, bytes):
+        return content.decode("utf-8")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(content)
+
+
 def _extract_response_content(response) -> str:
     """安全地从 Qwen API 响应中提取内容"""
     if not response or response.status_code != 200:
@@ -52,24 +103,13 @@ def _extract_response_content(response) -> str:
     
     # 支持新版本的响应格式：直接包含 text 字段
     if hasattr(response.output, 'text') and response.output.text:
-        content = response.output.text
-        # 确保返回的是字符串类型，并且是 UTF-8 编码
-        if isinstance(content, bytes):
-            content = content.decode('utf-8')
-        elif not isinstance(content, str):
-            content = str(content)
-        return content
+        return _extract_text_from_content(response.output.text)
     
     # 支持旧版本的响应格式：output.choices[0].message.content
     if hasattr(response.output, 'choices') and response.output.choices:
         if response.output.choices[0].message:
             content = response.output.choices[0].message.content
-            # 确保返回的是字符串类型，并且是 UTF-8 编码
-            if isinstance(content, bytes):
-                content = content.decode('utf-8')
-            elif not isinstance(content, str):
-                content = str(content)
-            return content
+            return _extract_text_from_content(content)
     
     # 如果都不匹配，记录详细信息以便调试
     error_msg = f"Qwen API returned unsupported response format: {response.output}"
@@ -123,9 +163,13 @@ class QwenAdapterV2(BaseLLMProvider):
         
         # 设置API Key和地域
         dashscope.api_key = self.api_key
-        # 注意：dashscope SDK会自动处理地域，但我们可以通过base_url覆盖
-        if hasattr(dashscope, 'api_base'):
-            dashscope.api_base = self.region_config.base_url
+        # 非默认地域需设置 base_http_api_url；华北2（北京）默认即可，勿覆盖
+        if self.region != get_default_region():
+            url = getattr(self.region_config, 'api_endpoint', None) or f"{self.region_config.base_url}/compatible-mode/v1"
+            if hasattr(dashscope, 'base_http_api_url'):
+                dashscope.base_http_api_url = url
+            elif hasattr(dashscope, 'api_base'):
+                dashscope.api_base = url
         
         # 默认参数
         self.default_temperature = kwargs.get("temperature", 0.7)
@@ -150,14 +194,18 @@ class QwenAdapterV2(BaseLLMProvider):
             return full_response
         
         try:
+            prepared = self._prepare_messages(messages, context)
             call_params = {
                 "model": self.model,
-                "messages": self._prepare_messages(messages, context),
+                "messages": _to_multimodal_text_messages(prepared) if _requires_multimodal_endpoint(self.model) else prepared,
                 "temperature": kwargs.get("temperature", self.default_temperature),
                 "max_tokens": kwargs.get("max_tokens", self.default_max_tokens),
             }
             
-            response = Generation.call(**call_params)
+            if _requires_multimodal_endpoint(self.model):
+                response = MultiModalConversation.call(**call_params)
+            else:
+                response = Generation.call(**call_params)
             return _extract_response_content(response)
         
         except Exception as e:
@@ -172,22 +220,27 @@ class QwenAdapterV2(BaseLLMProvider):
     ) -> AsyncIterator[str]:
         """流式聊天接口"""
         try:
+            prepared = self._prepare_messages(messages, context)
             call_params = {
                 "model": self.model,
-                "messages": self._prepare_messages(messages, context),
+                "messages": _to_multimodal_text_messages(prepared) if _requires_multimodal_endpoint(self.model) else prepared,
                 "stream": True,
                 "temperature": kwargs.get("temperature", self.default_temperature),
                 "max_tokens": kwargs.get("max_tokens", self.default_max_tokens),
             }
             
-            responses = Generation.call(**call_params)
+            if _requires_multimodal_endpoint(self.model):
+                responses = MultiModalConversation.call(**call_params)
+            else:
+                responses = Generation.call(**call_params)
             
             for response in responses:
                 if response.status_code == 200:
                     if response.output and response.output.choices:
                         content = response.output.choices[0].message.content
-                        if content:
-                            yield content
+                        text = _extract_text_from_content(content)
+                        if text:
+                            yield text
                 else:
                     error_msg = f"Qwen API error: {response.message}"
                     logger.error(error_msg)
@@ -262,8 +315,9 @@ class QwenAdapterV2(BaseLLMProvider):
                 if response.status_code == 200:
                     if response.output and response.output.choices:
                         content = response.output.choices[0].message.content
-                        if content:
-                            yield content
+                        text = _extract_text_from_content(content)
+                        if text:
+                            yield text
                 else:
                     error_msg = f"Qwen Multimodal API error: {response.message}"
                     logger.error(error_msg)

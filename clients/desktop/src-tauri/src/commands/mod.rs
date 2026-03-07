@@ -2,3 +2,4 @@
 
 pub mod pairing;
 pub mod settings;
+pub mod skill_sync;

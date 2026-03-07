@@ -1,0 +1,10 @@
+{
+  "id": "com.jachin.test",
+  "name": "Jachi Test",
+  "version": "1.0.0",
+  "description": "全链路测试 Skill (jachi-test)：返回系统状态与时间戳，用于验证 L1→L2→L3 分发与 Wasm 沙箱执行",
+  "type": "skill",
+  "entry": "main.wasm",
+  "permissions": ["system:read_basic"],
+  "parameters": ["input"]
+}

@@ -2,10 +2,12 @@
  * Skill Matrix - 军械库：网格磁贴 + 自然语言执行 + 悬停 Permission X-Ray
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Play, Loader2 } from "lucide-react";
-import { listSkills, executeSkill, invokePlugin, SkillInfo } from "../../lib/api";
+import { Play, Loader2, RefreshCw } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { listSkills, executeSkill, invokePlugin, SkillInfo, BACKEND_URL } from "../../lib/api";
+import { INVENTORY_UPDATED_EVENT } from "../../hooks/useUISyncEventSource";
 import { LiveTile } from "../components/LiveTile";
 import { SkillDetailModal } from "../components/SkillDetailModal";
 import { SkillChainView, type ChainStep } from "../components/SkillChainView";
@@ -20,22 +22,44 @@ export function SkillMatrix() {
   const [executing, setExecuting] = useState<{ skillId: string; cap: string } | null>(null);
   const [lastResultBySkill, setLastResultBySkill] = useState<Record<string, { text: string; status: "success" | "error" }>>({});
   const [lastChainSteps, setLastChainSteps] = useState<ChainStep[]>([]);
+  const [syncing, setSyncing] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const list = await listSkills();
+      setSkills(list);
+    } catch (e) {
+      console.error("Failed to load skills:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const list = await listSkills();
-        setSkills(list);
-      } catch (e) {
-        console.error("Failed to load skills:", e);
-      } finally {
-        setLoading(false);
-      }
-    };
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
-  }, []);
+  }, [load]);
+
+  // L2 云边同步：收到 INVENTORY_UPDATED 时立即刷新技能列表，平滑展示新技能
+  useEffect(() => {
+    const handler = () => void load();
+    window.addEventListener(INVENTORY_UPDATED_EVENT, handler);
+    return () => window.removeEventListener(INVENTORY_UPDATED_EVENT, handler);
+  }, [load]);
+
+  const handleSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await invoke("perform_startup_sync", { baseUrl: BACKEND_URL });
+      await load();
+    } catch (e) {
+      console.error("[SkillMatrix] 同步失败:", e);
+    } finally {
+      setSyncing(false);
+    }
+  }, [syncing, load]);
 
   const handleInvoke = async () => {
     const q = query.trim();
@@ -85,7 +109,7 @@ export function SkillMatrix() {
     setLastResultBySkill((prev) => ({ ...prev, [skillId]: { text: "", status: "success" } }));
     try {
       const res = await executeSkill(skillId, capabilityName, {});
-      const text =
+      const baseText =
         res.error != null
           ? res.error
           : res.result != null
@@ -93,6 +117,10 @@ export function SkillMatrix() {
             : res.success
               ? "执行成功"
               : "无返回";
+      const text =
+        res.error != null && res.wasm_details
+          ? `${baseText}\n\n--- WASM 详情 ---\n${res.wasm_details}`
+          : baseText;
       const status = res.error != null ? "error" : "success";
       setLastResultBySkill((prev) => ({ ...prev, [skillId]: { text, status } }));
     } catch (e: unknown) {
@@ -107,14 +135,30 @@ export function SkillMatrix() {
 
   return (
     <div className="h-full flex flex-col p-6 overflow-auto">
-      <header className="flex-shrink-0 mb-6">
-        <h1
-          className="font-sci-fi text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-rose-400 to-rose-600"
-          style={{ fontFamily: "Orbitron, sans-serif" }}
+      <header className="flex-shrink-0 mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1
+            className="font-sci-fi text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-rose-400 to-rose-600"
+            style={{ fontFamily: "Orbitron, sans-serif" }}
+          >
+            Skill Matrix
+          </h1>
+          <p className="text-slate-500 text-sm mt-0.5">插件与权限 · 军械库</p>
+        </div>
+        <button
+          type="button"
+          onClick={handleSync}
+          disabled={syncing}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-700/80 hover:bg-slate-600/80 disabled:opacity-50 text-slate-300 hover:text-white text-sm font-mono transition-colors"
+          title="从 L2 拉取最新技能"
         >
-          Skill Matrix
-        </h1>
-        <p className="text-slate-500 text-sm mt-0.5">插件与权限 · 军械库</p>
+          {syncing ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          立即同步
+        </button>
       </header>
 
       <motion.section

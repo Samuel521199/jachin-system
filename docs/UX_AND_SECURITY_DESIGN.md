@@ -20,7 +20,7 @@
 
 ### 1.1 免密登录
 - Magic Link / GitHub / Google OAuth
-- 技术栈：Supabase Auth
+- 技术栈：Auth.js
 
 ### 1.2 数字孪生大盘
 - 设备卡片网格、在线状态、拖拽部署蓝图

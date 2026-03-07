@@ -34,7 +34,7 @@
 | Vendor lock-in | **De-BaaSification** — Drizzle ORM, PostgreSQL, Redis. Zero-friction Kubernetes deployment |
 | Single-agent bottleneck | **Cognitive Handoff** — Multi-persona, memory-preserving soul transfer in milliseconds |
 
-**De-BaaSification (绝对主权)** — We reclaimed Layer 1. No Supabase black box. No Firebase tax. Your data, your rules. One `helm install` and you own the stack.
+**De-BaaSification (绝对主权)** — We reclaimed Layer 1. PostgreSQL + Drizzle ORM. No BaaS lock-in. Your data, your rules. One `helm install` and you own the stack.
 
 ---
 
@@ -69,12 +69,14 @@ One platform. Millions of tenants. Zero cross-leak.
 
 ## Quick Start (造物主点火指南)
 
+详见 [docs/QUICKSTART.md](docs/QUICKSTART.md)
+
 ```bash
 # 1. Layer 1 — Database (cloud/nexus)
 cd cloud/nexus && npm run db:push
 
-# 2. Layer 2 — Edge Brain
-python -m core.daemon
+# 2. Layer 2 — 控制面
+python -m core.main
 
 # 3. Layer 3 — Desktop Console
 cd clients/desktop && npm run tauri dev

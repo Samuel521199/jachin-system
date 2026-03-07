@@ -86,26 +86,26 @@ def _get_model_name(config: dict[str, Any] | None = None) -> str:
     if not use_for_qwen and isinstance(llm_cfg, dict):
         use_for_qwen = llm_cfg.get("use_openai_key_for_qwen", False)
     if use_for_qwen:
-        return "dashscope/qwen-max"  # LiteLLM 要求 dashscope/ 前缀
+        return "dashscope/qwen3.5-flash"  # LiteLLM 要求 dashscope/ 前缀
     # 若已配置 DASHSCOPE/QWEN API Key，默认用通义千问，避免回退到未启动的 Ollama
     if os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or os.environ.get("QWEN_AI_API_KEY"):
-        return "dashscope/qwen-max"
+        return "dashscope/qwen3.5-flash"
     try:
         from core.config import settings
         if getattr(settings, "DASHSCOPE_API_KEY", None) or getattr(settings, "QWEN_API_KEY", None):
-            return "dashscope/qwen-max"
+            return "dashscope/qwen3.5-flash"
     except ImportError:
         pass
     # 兜底：检查 nexus_config / credential_loader（可能尚未注入到 os.environ）
     try:
         from core.brain.llm.credential_loader import get_dashscope_key
         if get_dashscope_key():
-            return "dashscope/qwen-max"
+            return "dashscope/qwen3.5-flash"
     except ImportError:
         pass
     llm_keys = (cfg.get("llm_keys") or {}) if isinstance(cfg.get("llm_keys"), dict) else {}
     if llm_keys.get("dashscope"):
-        return "dashscope/qwen-max"
+        return "dashscope/qwen3.5-flash"
     return "gpt-4o-mini"  # LiteLLM 默认兜底
 
 
@@ -127,6 +127,27 @@ def _get_openai_key_from_sources() -> str | None:
     if val and str(val).strip():
         return str(val).strip()
     return None
+
+
+def _has_dashscope_key() -> bool:
+    """检测是否已配置通义千问 API Key（env / credential_loader / nexus_config）"""
+    if os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or os.environ.get("QWEN_AI_API_KEY"):
+        return True
+    try:
+        from core.config import settings
+        if getattr(settings, "DASHSCOPE_API_KEY", None) or getattr(settings, "QWEN_API_KEY", None):
+            return True
+    except ImportError:
+        pass
+    try:
+        from core.brain.llm.credential_loader import get_dashscope_key
+        if get_dashscope_key():
+            return True
+    except ImportError:
+        pass
+    cfg = _load_nexus_config()
+    llm_keys = (cfg.get("llm_keys") or {}) if isinstance(cfg.get("llm_keys"), dict) else {}
+    return bool(llm_keys.get("dashscope"))
 
 
 def _inject_api_keys() -> None:
@@ -177,7 +198,7 @@ def _normalize_model_for_litellm(model: str) -> str:
     ml = m.lower()
     if ml.startswith("ollama/") or ml.startswith("ollama:"):
         return m
-    if ml.startswith("qwen-") and not ml.startswith("qwen/"):
+    if ml.startswith("qwen") and not ml.startswith("qwen/") and not ml.startswith("dashscope/"):
         return f"dashscope/{m}"
     return m
 
@@ -186,6 +207,7 @@ def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[s
     """
     读取重试与降级配置。
     返回 (max_attempts, fallback_models, timeout_seconds)
+    有 DASHSCOPE_API_KEY 时默认用 dashscope 兜底，避免回退到未启动的 Ollama。
     """
     cfg = config or _load_nexus_config()
     llm = (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
@@ -196,7 +218,13 @@ def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[s
     elif isinstance(fallback, str) and fallback.strip():
         fallback_models = [fallback.strip()]
     else:
-        fallback_models = [_OLLAMA_FALLBACK]
+        env_fallback = os.environ.get("LITELLM_FALLBACK_MODELS", "").strip()
+        if env_fallback:
+            fallback_models = [m.strip() for m in env_fallback.split(",") if m.strip()]
+        elif _has_dashscope_key():
+            fallback_models = ["dashscope/qwen3.5-flash"]
+        else:
+            fallback_models = [_OLLAMA_FALLBACK]
     timeout = float(llm.get("timeout_seconds", 60.0))
     return max_attempts, fallback_models, timeout
 

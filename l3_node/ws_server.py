@@ -1,8 +1,8 @@
 """
 L3 本地 WebSocket 服务
 
-监听 127.0.0.1:18881，接收前端 JSON 消息，交给 run_agent 执行，
-流式回传 chunk、thought、action、observation、answer。
+监听 127.0.0.1:18981（189xx 系列，与 L2 18888、Sensory 18881 互不冲突），
+接收前端 JSON 消息，交给 run_agent 执行，流式回传 chunk、thought、action、observation、answer。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 WS_HOST = "127.0.0.1"
-WS_PORT = 18881
+WS_PORT = 18981  # 189xx 系列，与 L2(18888)、Sensory(18881) 分离
 
 
 async def _send_safe(websocket, payload: dict) -> None:
@@ -53,6 +53,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             if not intent:
                 continue
 
+            logger.debug("[L3 WS] 收到输入 intent_len=%d run_agent", len(intent))
             run_id = str(uuid.uuid4())[:8]
             on_step = _make_on_step(websocket, run_id)
 
@@ -73,6 +74,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     "run_id": run_id,
                 })
             except Exception as e:
+                logger.debug("[L3 WS] run_agent 异常 intent_len=%d err=%s", len(intent), type(e).__name__)
                 logger.exception("run_agent failed: %s", e)
                 await _send_safe(websocket, {
                     "step_type": "error",
@@ -85,13 +87,21 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
         await websocket.close()
 
 
+def _is_port_in_use_error(e: BaseException) -> bool:
+    """判断是否为端口占用错误（Windows 10048, Linux 98）"""
+    if isinstance(e, OSError):
+        # Windows: 10048 = WSAEADDRINUSE; Linux: 98 = EADDRINUSE
+        return getattr(e, "errno", None) in (10048, 98)
+    return False
+
+
 async def run_ws_server(
     engine: "LiteLLMEngine",
     run_agent_fn,
     host: str = WS_HOST,
     port: int = WS_PORT,
 ) -> None:
-    """启动 WebSocket 服务，异步非阻塞。"""
+    """启动 WebSocket 服务，异步非阻塞。端口被占用时自动尝试 18982、18983..."""
     try:
         import websockets
     except ImportError:
@@ -100,13 +110,36 @@ async def run_ws_server(
     async def handler(websocket):
         await _handle_client(websocket, engine, run_agent_fn)
 
-    server = await websockets.serve(
-        handler,
-        host,
-        port,
-        ping_interval=20,
-        ping_timeout=10,
-        close_timeout=5,
-    )
-    logger.info("L3 WebSocket 服务已启动 ws://%s:%d/sensory", host, port)
-    await server.wait_closed()
+    # 189xx 系列，跳过 18888（L2）、18990（L3 HTTP）
+    skip_ports = {18888, 18990}
+    ports_to_try = [p for p in range(port, port + 15) if p not in skip_ports][:12]
+    last_err: BaseException | None = None
+    for i, try_port in enumerate(ports_to_try):
+        try:
+            server = await websockets.serve(
+                handler,
+                host,
+                try_port,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5,
+            )
+            if i > 0:
+                logger.warning(
+                    "端口 %d 被占用，已改用 %d。前端需 VITE_SENSORY_WS_PORT=%d 或关闭占用进程",
+                    port, try_port, try_port,
+                )
+            logger.info("L3 WebSocket 服务已启动 ws://%s:%d/sensory", host, try_port)
+            await server.wait_closed()
+            return
+        except OSError as e:
+            last_err = e
+            if _is_port_in_use_error(e):
+                logger.warning("端口 %d 已被占用 (errno=%s)，尝试下一端口...", try_port, getattr(e, "errno", "?"))
+                continue
+            raise
+
+    # 所有端口均失败
+    raise RuntimeError(
+        f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
+    ) from last_err

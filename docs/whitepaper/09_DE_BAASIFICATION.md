@@ -9,12 +9,12 @@
 
 ## 一、 战役背景：为何必须去 BaaS 化
 
-当 Jachin Nexus 进化到 **V8.0 The Singularity OS** 维度时，若其心脏（Layer 1 数据中枢）仍依赖第三方商业 BaaS（Supabase），将面临：
+当 Jachin Nexus 进化到 **V8.0 The Singularity OS** 维度时，若其心脏（Layer 1 数据中枢）仍依赖第三方商业 BaaS，将面临：
 
 | 枷锁 | 影响 |
 |------|------|
 | **数据主权** | 合规审计过不去，政企/金融客户无法接受数据在第三方云 |
-| **私有化部署** | 让客户自配 Supabase 项目 = 灾难级交付成本 |
+| **私有化部署** | 让客户自配第三方 BaaS 项目 = 灾难级交付成本 |
 | **厂商锁定** | Vendor Lock-in 定价风险，随时面临涨价或条款变更 |
 | **架构割裂** | 曲率引擎级的技术栈，却依赖别人的加油站 |
 
@@ -24,15 +24,15 @@
 
 ## 二、 四大改造支柱
 
-### 2.1 身份认证：Supabase Auth → Auth.js (NextAuth)
+### 2.1 身份认证：Auth.js (NextAuth)
 
-| 维度 | 现状 (Supabase Auth) | 目标 (Auth.js) |
-|------|----------------------|----------------|
-| **数据归属** | 黑盒，存于 Supabase 云 | 完全开源，数据存自有 PostgreSQL |
-| **表结构** | auth.users（不可控） | users, accounts, sessions（自建表） |
-| **OAuth** | Supabase 配置 | GitHub/Google 直连，标准 OAuth 2.0 |
-| **Magic Link** | Supabase 内置 | Resend 或自建 SMTP 发信 |
-| **鉴权逻辑** | 依赖 Supabase RLS | 中间件 + RBAC 拦截器，逻辑收口自控 |
+| 维度 | 目标 (Auth.js) |
+|------|----------------|
+| **数据归属** | 完全开源，数据存自有 PostgreSQL |
+| **表结构** | users, accounts, sessions（自建表） |
+| **OAuth** | GitHub/Google 直连，标准 OAuth 2.0 |
+| **Magic Link** | Resend 或自建 SMTP 发信 |
+| **鉴权逻辑** | 中间件 + RBAC 拦截器，逻辑收口自控 |
 
 **实施要点**：
 - 引入 `authjs` / `next-auth`，适配 Next.js App Router
@@ -41,23 +41,23 @@
 
 ---
 
-### 2.2 数据中枢：PostgREST/supabase-js → Drizzle ORM + 原生 PostgreSQL
+### 2.2 数据中枢：Drizzle ORM + 原生 PostgreSQL
 
-| 维度 | 现状 | 目标 |
-|------|------|------|
-| **客户端** | @supabase/supabase-js | Drizzle ORM |
-| **类型安全** | 部分推导 | 完整 TypeScript 推导 |
-| **迁移工具** | supabase db push | drizzle-kit generate + migrate |
-| **部署兼容** | 仅 Supabase 托管 | 任意 PostgreSQL（AWS RDS、自建、裸金属） |
+| 维度 | 目标 |
+|------|------|
+| **客户端** | Drizzle ORM |
+| **类型安全** | 完整 TypeScript 推导 |
+| **迁移工具** | drizzle-kit generate + migrate |
+| **部署兼容** | 任意 PostgreSQL（本地、AWS RDS、自建、裸金属） |
 
 **实施要点**：
 - 15+ 核心业务表用 Drizzle Schema 重写
 - `drizzle-kit push` 或 `drizzle-kit migrate` 生成原生 SQL
-- 一条命令完成数据库初始化，无 Supabase 依赖
+- 一条命令完成数据库初始化
 
 ---
 
-### 2.3 神经突触与队列：Supabase Realtime/轮询 → Redis
+### 2.3 神经突触与队列：数据库轮询 → Redis
 
 | 维度 | 现状 | 目标 |
 |------|------|------|
@@ -74,14 +74,14 @@
 
 ---
 
-### 2.4 物资库：Supabase Storage → MinIO (S3 兼容)
+### 2.4 物资库：MinIO (S3 兼容)
 
-| 维度 | 现状 | 目标 |
-|------|------|------|
-| **.jmp 武器包** | Supabase Storage (jmp-packages) | MinIO Bucket |
-| **API** | Supabase SDK | AWS S3 SDK (aws-sdk-js / @aws-sdk/client-s3) |
-| **冷备份** | 可选 IPFS | MinIO 热数据 + IPFS 去中心化冷备份 |
-| **部署** | 绑定 Supabase 项目 | 自建 MinIO 或任意 S3 兼容存储 |
+| 维度 | 目标 |
+|------|------|
+| **.jmp 武器包** | MinIO Bucket |
+| **API** | AWS S3 SDK (aws-sdk-js / @aws-sdk/client-s3) |
+| **冷备份** | MinIO 热数据 + IPFS 去中心化冷备份 |
+| **部署** | 自建 MinIO 或任意 S3 兼容存储 |
 
 **实施要点**：
 - MinIO 提供 S3 兼容 API，代码仅需切换 SDK
@@ -99,7 +99,7 @@ helm install jachin-nexus ./charts/layer1
 
 **Helm Chart 包含**：
 - Next.js 控制台 (Layer 1 前端 + API)
-- PostgreSQL（原生，非 Supabase）
+- PostgreSQL
 - Redis
 - MinIO
 - 可选：Ingress、TLS、备份 Job
@@ -115,10 +115,10 @@ helm install jachin-nexus ./charts/layer1
 | **P0** | Drizzle ORM 体系初始化 | ✅ 已完成：src/db/index.ts、schema.ts、drizzle.config.ts |
 | **P0** | Auth.js 表 + 多租户 Schema | ✅ 已完成：users, accounts, sessions, verification_tokens, organizations, organization_users, edge_agents, blueprints, transactions |
 | **P0** | Drizzle Relations 定义 | ✅ 已完成 |
-| **P0** | Auth.js 替换 Supabase Auth | 待实施：接入 NextAuth + DrizzleAdapter |
-| **P0** | 迁移现有 API 至 Drizzle | 待实施：逐步替换 getSupabase() 调用 |
-| **P1** | drizzle-kit 迁移，废弃 supabase db push | 待实施：`npm run db:push` 或 `db:migrate` |
-| **P1** | MinIO 替换 Supabase Storage | S3 SDK 接入 |
+| **P0** | Auth.js 接入 | 待实施：接入 NextAuth + DrizzleAdapter |
+| **P0** | 迁移现有 API 至 Drizzle | ✅ 已完成 |
+| **P1** | drizzle-kit 迁移 | ✅ 已完成：`npm run db:migrate` |
+| **P1** | MinIO 存储 | S3 SDK 接入 |
 | **P2** | Redis 承接 agent_message_queue | 需评估现有轮询逻辑改造量 |
 | **P2** | Redis 承接 deploy_commands 下发 | 与 Layer 2 心跳拉取协议协同 |
 | **P3** | Helm Chart 打包 | 上述全部完成后 |
@@ -129,7 +129,7 @@ helm install jachin-nexus ./charts/layer1
 
 - **Layer 2 / Layer 3**：无需改动。心跳、配对、IM 网关等协议保持不变，仅 Layer 1 内部实现切换。
 - **多租户**：organizations、organization_users、organization_id 等设计完全保留，Drizzle Schema 直接映射。
-- **IPFS**：已有「IPFS 优先于 Supabase Storage」设计，MinIO 作为热数据层，IPFS 作为冷备份，双模并存。
+- **IPFS**：MinIO 作为热数据层，IPFS 作为冷备份，双模并存。
 
 ---
 

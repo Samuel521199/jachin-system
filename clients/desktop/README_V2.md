@@ -24,7 +24,7 @@ npm install
 
 ```powershell
 # 方式 1: 使用启动脚本（推荐）
-.\run_with_dapr.ps1
+npm run tauri:dev
 
 # 方式 2: 手动启动
 dapr run `

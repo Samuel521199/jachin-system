@@ -40,6 +40,10 @@ ERR_NOT_FOUND_003 = "ERR_NOT_FOUND_003"  # 任务/子任务不存在
 # 内部 (INTERNAL)
 ERR_INTERNAL_001 = "ERR_INTERNAL_001"  # 数据库/内部错误
 
+# MCP (Model Context Protocol)
+ERR_MCP_001 = "ERR_MCP_001"  # 工具未找到
+ERR_MCP_002 = "ERR_MCP_002"  # MCP 连接/执行超时或失败
+
 
 def api_error(
     status_code: int,

@@ -62,6 +62,21 @@ def _migrate_l3_nodes_display_name(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _migrate_sub_accounts_iam(conn: sqlite3.Connection) -> None:
+    """迁移：为 sub_accounts 添加 department, role_id, is_active（IAM 层级化）"""
+    cur = conn.execute("PRAGMA table_info(sub_accounts)")
+    cols = [row[1] for row in cur.fetchall()]
+    if "department" not in cols:
+        conn.execute("ALTER TABLE sub_accounts ADD COLUMN department TEXT DEFAULT ''")
+        conn.commit()
+    if "role_id" not in cols:
+        conn.execute("ALTER TABLE sub_accounts ADD COLUMN role_id TEXT DEFAULT ''")
+        conn.commit()
+    if "is_active" not in cols:
+        conn.execute("ALTER TABLE sub_accounts ADD COLUMN is_active INTEGER DEFAULT 1")
+        conn.commit()
+
+
 def _migrate_coordinate_subtasks_timeout(conn: sqlite3.Connection) -> None:
     """迁移：为 coordinate_subtasks 添加 timeout_seconds 列"""
     cur = conn.execute("PRAGMA table_info(coordinate_subtasks)")
@@ -199,6 +214,7 @@ def init_all(conn: sqlite3.Connection) -> None:
     """初始化所有 L2 控制面表"""
     conn.executescript(_SCHEMA_SQL)
     _migrate_sub_accounts_pairing_code(conn)
+    _migrate_sub_accounts_iam(conn)
     _migrate_sub_accounts_resource_quota(conn)
     _migrate_l3_nodes_model_endpoints(conn)
     _migrate_l3_nodes_api_key_id(conn)
@@ -353,4 +369,50 @@ CREATE INDEX IF NOT EXISTS idx_coordinate_tasks_status ON coordinate_tasks(statu
 CREATE INDEX IF NOT EXISTS idx_coordinate_subtasks_task ON coordinate_subtasks(task_id);
 CREATE INDEX IF NOT EXISTS idx_coordinate_subtasks_assignee ON coordinate_subtasks(assignee_node_id);
 CREATE INDEX IF NOT EXISTS idx_coordinate_subtasks_status ON coordinate_subtasks(status);
+
+-- =============================================================================
+-- L2 IAM - 角色与权限矩阵（与 L1 同步，极速 RBAC 拦截）
+-- roles: 企业内角色定义（财务、研发、高管）
+-- role_permissions: role_id -> item_id（mcp:xxx, skill:xxx）
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
+    updated_at REAL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_tenant_role ON roles(tenant_id, role_id);
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+    id TEXT PRIMARY KEY,
+    role_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    created_at REAL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_role_permissions_role_item ON role_permissions(role_id, item_id);
+CREATE INDEX IF NOT EXISTS idx_role_permissions_item ON role_permissions(item_id);
+
+-- =============================================================================
+-- L2 本地审计与用量记录 (usage_telemetry)
+-- 供 L1 遥测上报、用量计费、安全审计
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS usage_telemetry (
+    id TEXT PRIMARY KEY,
+    sub_account_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    action_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    latency_ms REAL,
+    timestamp REAL DEFAULT (strftime('%s', 'now')),
+    reported INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_telemetry_sub_account ON usage_telemetry(sub_account_id);
+CREATE INDEX IF NOT EXISTS idx_usage_telemetry_item ON usage_telemetry(item_id);
+CREATE INDEX IF NOT EXISTS idx_usage_telemetry_timestamp ON usage_telemetry(timestamp);
+CREATE INDEX IF NOT EXISTS idx_usage_telemetry_reported ON usage_telemetry(reported);
 """

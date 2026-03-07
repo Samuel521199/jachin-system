@@ -1,6 +1,6 @@
-# Jachin Nexus v8.0 快速开始
+# Jachin Nexus 快速开始
 
-**版本**: v8.0 (The Singularity OS) | **最后更新**: 2026-02
+**版本**: V2 (2026-03) | **架构**: [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
@@ -16,7 +16,7 @@
 
 ### 2. 网关配对（V2 L3）
 
-1. 启动 L2：`python core/main.py`（端口 18888）
+1. 启动 L2：`python -m core.main` 或 `uvicorn core.main:app --host 0.0.0.0 --port 18888`
 2. 打开桌面端：`cd clients\desktop && npm run tauri:dev`
 3. 在 GatewayConnectScreen 输入 L2 地址（如 `http://localhost:18888`），点击「发起神经接驳」
 4. L2 管理员审批：`POST /api/v2/admin/nodes/assign` 将节点分配给子账号
@@ -48,6 +48,6 @@
 
 ## 四、下一步
 
-- 架构：[whitepaper/](./whitepaper/)
+- 架构：[ARCHITECTURE.md](./ARCHITECTURE.md) | [docs/](./README.md)
 - 配对：V2 桌面端见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)；Layer 2 daemon 用 `python -m core.cli pair`
 - IM 网关：[IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)

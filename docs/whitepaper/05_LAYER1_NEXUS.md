@@ -36,7 +36,7 @@ Layer 1 是 Jachin 系统的**平台**：用户主账号注册/登录，平台�
 
 ### 2.3 造物厂 (The Forge) - 逻辑铸造中心
 * **可视化编排**：基于 React Flow 打造的极客工作台。通过拖拽 `Trigger` (触发器)、`Processor` (ReAct 思考/WASI 沙箱) 和 `Action` (输出)。
-* **AST 编译**：前端将连线逻辑一键编译为标准 AST JSON（抽象语法树），固化至 Supabase `blueprints` 表，成为边缘节点可执行的“岗位说明书”。
+* **AST 编译**：前端将连线逻辑一键编译为标准 AST JSON（抽象语法树），固化至 `blueprints` 表，成为边缘节点可执行的“岗位说明书”。
 
 ### 2.4 神经元商城与悬赏榜 (Market & Bounty Board)
 * **JPP 生态大厅**：全球极客上传 `.wasm` 插件与 `plugin.json` 版税清单的集散地。
@@ -79,21 +79,21 @@ Layer 1 的核心表结构（`cloud/nexus/src/db/schema.ts`，**多租户**）�
 
 ## 五、 v8.0 废弃声明 (Deprecation in v8.0)
 
-1. **废弃复杂的私有化身份认证系统**：不再自行维护复杂的 JWT 签发与密码哈希，全面托付给 Auth.js（去 BaaS 化后）或 Supabase Auth（过渡期）。
+1. **废弃复杂的私有化身份认证系统**：不再自行维护复杂的 JWT 签发与密码哈希，全面托付给 Auth.js。
 2. **废弃 Dapr Pub/Sub 中继**：在广域网（WAN）环境下，Pub/Sub 的穿透与稳定性维护成本极高，现已全面替换为**Jachin Mesh (WebSocket 优先) + HTTP 心跳兜底**。未来将演进为控制面/数据面分离（WS 长连推送、mDNS/P2P 直连），详见 [10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)。
 
 ---
 
 ## 六、 去 BaaS 化 (De-BaaSification) — P0 已落地
 
-Layer 1 去 BaaS 化 P0 已完成：Drizzle ORM + Auth.js Schema 已就绪，`src/db/schema.ts` 定义 users/accounts/sessions、organizations、organization_users、edge_agents、blueprints、transactions。**过渡期**仍可复用 Supabase 作为数据源，逐步迁移 API 至 Drizzle。详见 [09_DE_BAASIFICATION.md](./09_DE_BAASIFICATION.md)。
+Layer 1 去 BaaS 化已完成：Drizzle ORM + Auth.js Schema，`src/db/schema.ts` 定义 users/accounts/sessions、organizations、organization_users、edge_agents、blueprints、transactions。使用 PostgreSQL + Drizzle，无第三方 BaaS 依赖。详见 [09_DE_BAASIFICATION.md](./09_DE_BAASIFICATION.md)。
 
 规划中的后续阶段：
 
-- **Auth**：Supabase Auth → Auth.js 接入（Schema 已就绪）
-- **ORM**：supabase-js → Drizzle ORM（Schema 已就绪，API 迁移进行中）
+- **Auth**：Auth.js（Schema 已就绪）
+- **ORM**：Drizzle ORM（已就绪）
 - **队列**：数据库轮询 → Redis Streams/Pub/Sub
-- **存储**：Supabase Storage → MinIO (S3 兼容)
+- **存储**：MinIO (S3 兼容) 或 IPFS
 - **交付**：Helm Chart 一键部署，客户私有集群 100% 数据主权
 
 详见 [09_DE_BAASIFICATION.md](./09_DE_BAASIFICATION.md)。

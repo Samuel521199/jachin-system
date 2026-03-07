@@ -24,6 +24,7 @@ from l3_node.llm_client import (
     LiteLLMEngine,
     SecurityContext,
     fetch_and_decrypt_keys,
+    _inject_env_keys_into_ctx,
 )
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,7 @@ async def bootstrap_l3_gateway_pending(
         if st == "approved":
             encrypted_keys = poll_data.get("encrypted_api_keys", [])
             sub_account_id = poll_data.get("sub_account_id", "")
+            logger.info("[L3 Gateway] auth/poll 返回 approved encrypted_keys=%d sub_account_id=%s", len(encrypted_keys), (sub_account_id or "")[:20] + ("..." if len(sub_account_id or "") > 20 else ""))
             break
         logger.warning("[L3 Gateway] 未知状态: %s", st)
     else:
@@ -192,8 +194,18 @@ async def bootstrap_l3_gateway_pending(
             ctx.set_key(norm, plain)
             if norm != provider:
                 ctx.set_key(provider, plain)
+            logger.debug("[L3 Gateway] 解密 Key 成功 provider=%s", provider)
         except Exception as e:
             logger.warning("[L3 Gateway] 解密 %s 失败: %s", provider, e)
+
+    # 若 L2 未分配 Key 或解密失败，从 .env 兜底注入
+    if not ctx.has_any_key():
+        logger.info("[L3 Gateway] L2 未分配 Key 或解密失败，尝试从 .env 兜底注入")
+        _inject_env_keys_into_ctx(ctx)
+    if ctx.has_any_key():
+        logger.info("[L3 Gateway] 已分配到 API Key providers=%s", list(ctx._keys.keys()))
+    else:
+        logger.warning("[L3 Gateway] 未获取到 API Key，聊天将不可用。请检查 L2 控制台或 .env 中的 DASHSCOPE_API_KEY")
 
     model_endpoints = poll_data.get("model_endpoints") or {}
     if isinstance(model_endpoints, dict) and model_endpoints:
@@ -201,13 +213,24 @@ async def bootstrap_l3_gateway_pending(
         if first_model and isinstance(first_model, str):
             model_name = first_model
 
+    # 有 dashscope（L2 或 .env）时用 qwen，避免回退到未启动的 Ollama
+    has_dashscope = ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")
+    if has_dashscope:
+        fallback = ["dashscope/qwen3.5-flash"]
+        if "gpt" in (model_name or "").lower() or "openai" in (model_name or "").lower():
+            model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash")
+    else:
+        fallback = None
+    logger.debug("[L3 Gateway] 创建引擎 model=%s fallback=%s ctx_has_key=%s", model_name, fallback, ctx.has_any_key())
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=model_name,
-        fallback_models=["ollama/qwen2.5"],
+        fallback_models=fallback,
         timeout=60.0,
         max_attempts=2,
     )
+    from core.wasm_runner import register_host_services
+    register_host_services(llm_engine=engine, l2_base_url=base)
 
     cfg["paired"] = True
     cfg["sub_account_id"] = sub_account_id
@@ -216,6 +239,18 @@ async def bootstrap_l3_gateway_pending(
     if display_name:
         cfg["display_name"] = display_name
     _GATEWAY_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+    # L3 获批后立即从 L2 同步技能到 l3_skill_cache（不依赖 Desktop perform_startup_sync）
+    try:
+        from l3_node.skill_sync import sync_skills_from_l2
+        logger.info("[L3 Gateway] 开始技能同步...")
+        synced, skipped, failed_list = sync_skills_from_l2()
+        logger.info("[L3 Gateway] 技能同步结果 synced=%d skipped=%d failed=%d", synced, skipped, len(failed_list))
+        if failed_list:
+            for f in failed_list[:5]:
+                logger.warning("[L3 Gateway] 同步失败: %s", f)
+    except Exception as e:
+        logger.warning("[L3 Gateway] 技能同步异常: %s", e, exc_info=True)
 
     if on_status:
         on_status("approved", "神经接驳成功，引擎已点火")
@@ -263,6 +298,7 @@ async def bootstrap_l3_node(
         l2_base_url, resolved_node_id, sub_account_id,
         private_pem, _decrypt_fn,
     )
+    logger.debug("[L3 Bootstrap] 拉取 Key 结果 providers=%s model_endpoints=%s", list(keys.keys()), model_endpoints)
     if not keys:
         logger.warning("[L3 Bootstrap] 未获取到任何 API Key，将使用环境变量兜底")
 
@@ -275,13 +311,17 @@ async def bootstrap_l3_node(
     for provider, plain in keys.items():
         ctx.set_key(provider, plain)
 
+    fallback = ["dashscope/qwen3.5-flash"] if ctx.get_key("dashscope") else None
+    logger.debug("[L3 Bootstrap] 创建引擎 model=%s fallback=%s ctx_has_key=%s", model_name, fallback, ctx.has_any_key())
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=model_name,
-        fallback_models=["ollama/qwen2.5"],
+        fallback_models=fallback,
         timeout=60.0,
         max_attempts=2,
     )
+    from core.wasm_runner import register_host_services
+    register_host_services(llm_engine=engine, l2_base_url=l2_base_url)
 
     memory_daemon: Optional[MemorySyncDaemon] = None
     if start_memory_sync:
@@ -303,3 +343,33 @@ async def run_l3_agent(
 ) -> str:
     """运行 L3 单体 Agent。"""
     return await run_agent(user_input, engine, **kwargs)
+
+
+async def heartbeat_loop(
+    l2_base_url: str,
+    node_id: str,
+    *,
+    interval_sec: float = 60.0,
+) -> None:
+    """
+    L3 心跳后台任务：定期调用 L2 /api/v2/auth/heartbeat 更新 last_seen_at，
+    使 JachinLink 等能正确展示在线状态。
+    """
+    import httpx
+
+    base = l2_base_url.rstrip("/")
+    url = f"{base}/api/v2/auth/heartbeat"
+    first = True
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, params={"node_id": node_id})
+                if r.is_success:
+                    if first:
+                        logger.info("[L3 Heartbeat] 心跳已发送，JachinLink 将显示在线")
+                        first = False
+                else:
+                    logger.warning("[L3 Heartbeat] %s %s", r.status_code, r.text[:100])
+        except Exception as e:
+            logger.warning("[L3 Heartbeat] %s", e)
+        await asyncio.sleep(interval_sec)

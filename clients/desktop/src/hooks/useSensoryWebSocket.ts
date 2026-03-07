@@ -1,12 +1,12 @@
 /**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
- * 连接 ws://localhost:18881/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
+ * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18881";
+const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18981";
 const SENSORY_WS_URL = `ws://localhost:${SENSORY_WS_PORT}/sensory`;
 const RECONNECT_DELAY_MS = 3000;
 
@@ -166,10 +166,18 @@ export function useSensoryWebSocket() {
     sendHitlResponse(approved, tid);
   }, [sendHitlResponse, hitlPending?.task_id]);
 
-  /** 发送聊天输入到 Layer 2（通过 Sensory WebSocket，注入全息感官总线） */
+  /** 发送聊天输入到 Layer 3（通过 Sensory WebSocket，注入全息感官总线） */
   const sendInput = useCallback((text: string) => {
-    if (!text.trim() || wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    if (!text.trim()) {
+      console.debug("[Sensory] sendInput 跳过: 空文本");
+      return false;
+    }
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      console.debug("[Sensory] sendInput 失败: ws 未连接 readyState=%s", wsRef.current?.readyState ?? "null");
+      return false;
+    }
     wsRef.current.send(JSON.stringify({ type: "input", intent: text.trim() }));
+    console.debug("[Sensory] sendInput 已发送 len=%d", text.trim().length);
     return true;
   }, []);
 

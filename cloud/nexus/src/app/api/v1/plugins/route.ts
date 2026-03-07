@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
         category: pluginsRegistry.category,
         description: pluginsRegistry.description,
         downloadCount: pluginsRegistry.downloadCount,
-        downloadUrl: pluginsRegistry.downloadUrl,
+        downloadUrl: pluginsRegistry.packageUrl,
         manifestJson: pluginsRegistry.manifestJson,
       })
       .from(pluginsRegistry)
@@ -89,10 +89,10 @@ function mapToPluginRecords(rows: {
   id: string;
   pluginId: string;
   name: string;
-  category: string;
+  category: string | null;
   description: string | null;
   downloadCount: number | null;
-  downloadUrl: string;
+  downloadUrl: string | null;
   manifestJson: unknown;
 }[]): PluginRecord[] {
   const pluginIds = rows.map((r) => r.pluginId);
@@ -108,7 +108,7 @@ function mapToPluginRecords(rows: {
       category,
       description: row.description || null,
       download_count: row.downloadCount ?? 0,
-      download_url: row.downloadUrl || "",
+      download_url: row.downloadUrl ?? "",
       manifest_json: (row.manifestJson as Record<string, unknown>) ?? null,
       x: 50 + radius * Math.cos(angle) + (i % 2 ? 5 : -5),
       y: 50 + radius * Math.sin(angle) + (i % 3 === 1 ? 3 : 0),

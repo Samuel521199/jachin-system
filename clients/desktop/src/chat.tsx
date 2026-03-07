@@ -8,7 +8,7 @@ import React, { useState, useRef, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { voiceChat, synthesizeSpeech, voiceProcess, type VoiceProcessResponse } from "./lib/api";
+import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, checkHealth, type VoiceProcessResponse } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { useSensoryWebSocket } from "./hooks/useSensoryWebSocket";
@@ -54,10 +54,31 @@ function ChatApp() {
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
   /** VAD 监听模式（双轨输入）：与 Rust 引擎 start_voice_capture / stop_voice_capture 联动 */
   const [isVadActive, setIsVadActive] = useState(false);
+  /** L2 可用：打字与语音均直连 L2，不依赖 L3 Sensory */
+  const [l2Available, setL2Available] = useState(true);
   const isRecordingRef = useRef(false);
   const isVadActiveRef = useRef(false);
   isRecordingRef.current = isRecording;
   isVadActiveRef.current = isVadActive;
+
+  // L2 健康检查：打字和语音都走 L2，只需 L2 可用即可
+  useEffect(() => {
+    let mounted = true;
+    const check = async () => {
+      try {
+        await checkHealth();
+        if (mounted) setL2Available(true);
+      } catch {
+        if (mounted) setL2Available(false);
+      }
+    };
+    check();
+    const interval = setInterval(check, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   // 窗口显示时请求焦点，便于左键点击能落到输入区
   useEffect(() => {
@@ -81,17 +102,8 @@ function ChatApp() {
 
   // 滚动由 HolographicChat 内部的 messagesEndRef 处理，此处不重复
 
-  /** 实际发送消息（通过 Layer 2 Sensory WebSocket，注入全息感官总线） */
+  /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
   const doActualSend = async (content: string) => {
-    if (!sensory.connected) {
-      setMessages((prev) => addMessage(prev, {
-        role: "assistant",
-        content: "未连接 L3 引擎。请确认桌面端已启动（Tauri 会自动拉起 L3），或检查 ws://127.0.0.1:18881 是否可达。",
-        timestamp: Date.now(),
-      }));
-      return;
-    }
-
     const userMessage: StoredMessage = { role: "user", content, timestamp: Date.now() };
     setMessages((prev) => addMessage(prev, userMessage));
     setInput("");
@@ -115,7 +127,7 @@ function ChatApp() {
     };
 
     let timeoutCleared = false;
-    const cleanup = (finalContent: string) => {
+    const cleanup = (finalContent: string, source?: "L3" | "L2") => {
       if (timeoutCleared) return;
       timeoutCleared = true;
       clearTimeout(timeoutId);
@@ -123,7 +135,7 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          updated[updated.length - 1] = { ...last, content: finalContent || last.content };
+          updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
         }
         saveMessages(updated);
         return updated;
@@ -158,7 +170,7 @@ function ChatApp() {
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && !last.content) {
-          return [...prev.slice(0, -1), { ...last, content: "响应超时（120 秒），请检查 Layer 2 是否正常运行" }];
+          return [...prev.slice(0, -1), { ...last, content: "响应超时（120 秒），请检查 Layer 3 或 Layer 2 是否正常运行" }];
         }
         return prev;
       });
@@ -166,23 +178,64 @@ function ChatApp() {
       setIsTyping(false);
     }, 120000);
 
+    const pendingL3InputRef = { current: content };
     registerChunkHandler(chunkHandler);
     registerAnswerHandler((answerContent) => {
       registerChunkHandler(null);
       registerAnswerHandler(null);
-      cleanup(answerContent);
+      const isL3Error = typeof answerContent === "string" && (
+        answerContent.includes("Ollama") || answerContent.includes("APIConnectionError") ||
+        answerContent.includes("RuntimeError") || answerContent.includes("未配置 API Key")
+      );
+      if (isL3Error && pendingL3InputRef.current && l2Available) {
+        console.debug("[Chat] L3 返回错误，兜底 L2:", answerContent.slice(0, 80));
+        streamChatMessage(pendingL3InputRef.current, (chunk) => chunkHandler(chunk))
+          .then((fullText) => {
+            registerChunkHandler(null);
+            registerAnswerHandler(null);
+            cleanup(fullText, "L2");
+          })
+          .catch((e) => {
+            registerChunkHandler(null);
+            registerAnswerHandler(null);
+            cleanup(`L2 兜底也失败：${(e as Error).message}`, "L2");
+          });
+      } else {
+        cleanup(answerContent, "L3");
+      }
     });
 
-    const sent = sendInput(content);
-    if (!sent) {
+    // 优先 L3（L3 直连大模型，自有 API Key），未连接时兜底 L2
+    if (sensory.connected && sendInput(content)) {
+      console.debug("[Chat] L3 直连发送成功 sensory.connected=true");
+      return; // L3 已接收，将通过 WebSocket 流式返回
+    }
+    if (sensory.connected && !sendInput(content)) {
+      console.debug("[Chat] L3 发送失败（可能 ws 未就绪），fallback L2");
+    } else if (!sensory.connected) {
+      console.debug("[Chat] L2 兜底 sensory.connected=false");
+    }
+
+    // L2 兜底
+    try {
+      console.debug("[Chat] L2 streamChatMessage 开始");
+      const fullText = await streamChatMessage(content, (chunk) => chunkHandler(chunk));
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      cleanup(fullText, "L2");
+    } catch (e) {
+      console.debug("[Chat] L2 streamChatMessage 失败:", (e as Error).message);
       clearTimeout(timeoutId);
       registerChunkHandler(null);
       registerAnswerHandler(null);
-      setMessages((prev) => addMessage(prev, {
-        role: "assistant",
-        content: "发送失败：Sensory 未连接",
-        timestamp: Date.now(),
-      }));
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant" && !last.content) {
+          updated[updated.length - 1] = { ...last, content: `打字请求失败：${(e as Error).message}。请确认 Layer 3 (ws://localhost:18981) 或 Layer 2 (http://localhost:18888) 已启动。` };
+        }
+        return updated;
+      });
       setIsLoading(false);
       setIsTyping(false);
     }
@@ -488,9 +541,13 @@ function ChatApp() {
         isRecording={isRecording}
         recordingStatus={recordingStatus}
         listeningText={listeningText}
-        placeholder={sensory.connected ? "输入指令..." : "等待 Layer 2 连接 (ws://localhost:18881/sensory)..."}
+        placeholder={
+          sensory.connected ? "输入指令或语音（L3 直连）..." :
+          l2Available ? "输入指令或语音（L2 兜底）..." :
+          "等待 L3 (ws://localhost:18981) 或 L2 连接..."
+        }
         riskLevel={riskLevel}
-        disabled={!sensory.connected}
+        disabled={!sensory.connected && !l2Available}
         streamingFromWs={!!(isTyping && wsStreamingContent)}
       />
       {/* 高风险操作二次确认弹窗 */}

@@ -45,6 +45,8 @@ Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  Layer3 (Desktop)" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "  前置: L2 必须先启动! 终端1运行: .\scripts\run-gateway.ps1" -ForegroundColor Yellow
+Write-Host "  技能为空? 运行诊断: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
 Write-Host "  Tauri requires Rust. Falls back to Vite dev if not found."
 Write-Host "  Press Ctrl+C to stop"
 Write-Host ""

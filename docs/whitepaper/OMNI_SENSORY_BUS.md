@@ -166,7 +166,7 @@ bus = get_bus()
 - 支持同一用户开多个并行任务线程，互不干扰
 - 实现千万级并发下的记忆隔离
 
-**实现约束**：`SensoryInputEvent` 应携带 `session_id`（缺省时使用 `source` 作为 fallback）。详见 `docs/whitepaper/V8_SINGULARITY_OS.md`。
+**实现约束**：`SensoryInputEvent` 应携带 `session_id`（缺省时使用 `source` 作为 fallback）。
 
 ---
 

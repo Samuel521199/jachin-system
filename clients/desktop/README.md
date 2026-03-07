@@ -8,14 +8,14 @@ Jachin-System 的桌面控制台应用，使用 Tauri v2 + React + TypeScript �
 - **后端**: Rust (Tauri v2)
 - **状态管理**: Zustand
 - **UI组件**: 自定义组件（未来可集成 shadcn/ui）
-- **通信**: Dapr (通过 Rust HTTP 客户端)
+- **通信**: HTTP 直连 L2 后端
 
 ## 功能特性
 
 - ✅ 与后端 AI 助手对话
 - ✅ 实时连接状态监控
 - ✅ 设备列表显示（待实现）
-- ✅ 通过 Dapr 调用后端服务
+- ✅ 通过 HTTP 调用 L2 后端
 - ✅ Rust 后端支持硬件控制（待扩展）
 
 ## 开发环境设置
@@ -83,35 +83,14 @@ npm run tauri:build:ambient
 
 构建产物在 `src-tauri/target/release/` 目录。未带 `ambient` 的构建不包含 VAD/语音采集功能。
 
-### 使用 Dapr 启动（推荐，用于接收设备指令）
-
-桌面客户端需要 Dapr sidecar 才能接收来自大脑的设备指令（如精灵状态、通知等）。
-
-```powershell
-# Windows (PowerShell)
-.\run_with_dapr.ps1
-```
-
-```bash
-# macOS / Linux
-chmod +x run_with_dapr.sh
-./run_with_dapr.sh
-```
-
-或手动运行：
+### 开发模式启动
 
 ```bash
 cd clients/desktop
-dapr run \
-  --app-id desktop-client \
-  --app-port 8002 \
-  --dapr-http-port 3502 \
-  --resources-path ../../dapr/components \
-  --config ../../dapr/config/config.yaml \
-  -- npm run tauri:dev
+npm run tauri:dev
 ```
 
-**前置条件**：已安装 [Dapr CLI](https://docs.dapr.io/getting-started/install-dapr-cli/)，且 `dapr/components`、`dapr/config` 目录存在。
+**前置条件**：L2 后端已启动（`python -m core.main`，默认端口 18888）。
 
 ### 构建生产版本
 

@@ -3,12 +3,24 @@ Voice API - 语音相关接口
 
 提供语音识别、语音合成和语音聊天功能
 """
+# 尽早加载 .env，确保 TTS_PROVIDER 被读取（L2 可能从不同目录启动）
+try:
+    from dotenv import load_dotenv
+    from pathlib import Path as _P
+    for _d in [_P(__file__).resolve().parent.parent.parent, _P.cwd()]:
+        _env = _d / ".env"
+        if _env.exists():
+            load_dotenv(_env, encoding="utf-8")
+            break
+except ImportError:
+    pass
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import logging
+import os
 import base64
 
 from core.voice import SpeechToText, STTProvider, TextToSpeech, TTSProvider, IntentRouter
@@ -23,7 +35,10 @@ router = APIRouter(prefix="/api/v2/voice", tags=["voice"])
 # 初始化语音服务
 # 默认使用 Whisper（免费，开源），如果需要使用阿里云，可以改为 STTProvider.ALIYUN
 stt_provider = STTProvider.OPENAI_WHISPER  # 默认使用 Whisper（免费）
-tts_provider = TTSProvider.EDGE_TTS  # 默认使用 Edge TTS（免费）
+# TTS_PROVIDER：优先 env（确保 .env 生效），再 settings
+_prov = (os.environ.get("TTS_PROVIDER") or getattr(settings, "TTS_PROVIDER", None) or "edge_tts").lower().strip()
+tts_provider = TTSProvider.ALIYUN if _prov == "aliyun" else TTSProvider.EDGE_TTS
+logger.info("[Voice] TTS_PROVIDER=%s (env=%s)", tts_provider, os.environ.get("TTS_PROVIDER", ""))
 
 try:
     # 如果使用 Whisper，传递自定义模型路径
@@ -244,7 +259,8 @@ async def synthesize_speech(request: SynthesizeRequest):
             speed=request.speed,
             pitch=request.pitch
         )
-        
+        if not audio_data:
+            raise HTTPException(status_code=400, detail="Text too short or invalid for synthesis")
         # 返回音频数据
         return Response(
             content=audio_data,
@@ -254,9 +270,17 @@ async def synthesize_speech(request: SynthesizeRequest):
             }
         )
     
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        err_msg = str(e)
+        if "No audio" in err_msg or "NoAudioReceived" in type(e).__name__:
+            raise HTTPException(
+                status_code=503,
+                detail="TTS service temporarily unavailable. Please try again or check network connectivity."
+            )
         logger.error(f"Error in speech synthesis: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {err_msg}")
 
 
 @router.post("/synthesize-stream")

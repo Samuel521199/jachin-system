@@ -28,7 +28,7 @@ export async function POST(req: Request) {
     const token = authHeader.slice(7).trim();
 
     const body = await req.json().catch(() => ({}));
-    const { instance_id } = body;
+    void body; // instance_id, core_version reserved for future use
 
     if (!isDatabaseConfigured()) {
       return NextResponse.json({

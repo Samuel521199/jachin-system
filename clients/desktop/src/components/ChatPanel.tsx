@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, Mic, Square, Trash2, MicOff } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { voiceChat } from "../lib/api";
+import { voiceChat, streamChatMessage } from "../lib/api";
 import { useAppStore } from "../store/appStore";
 import { useSttAudioReady } from "../hooks/useSttAudioReady";
 import { useSensoryWebSocket } from "../hooks/useSensoryWebSocket";
@@ -53,18 +53,11 @@ export default function ChatPanel() {
 
   const handleSend = async () => {
     if (!input.trim() || isLoading || isTyping) return;
-    if (!sensoryConnected) {
-      setMessages((prev) => addMessage(prev, {
-        role: "assistant",
-        content: "未连接 L3 引擎。请确认桌面端已启动（Tauri 会自动拉起 L3）。",
-        timestamp: Date.now(),
-      }));
-      return;
-    }
 
+    const content = input.trim();
     const userMessage: StoredMessage = {
       role: "user",
-      content: input.trim(),
+      content,
       timestamp: Date.now(),
     };
     setMessages((prev) => addMessage(prev, userMessage));
@@ -93,7 +86,7 @@ export default function ChatPanel() {
       setIsTyping(false);
     }, 120000);
 
-    const cleanup = (finalContent: string) => {
+    const cleanup = (finalContent: string, source?: "L3" | "L2") => {
       clearTimeout(timeoutId);
       registerChunkHandler(null);
       registerAnswerHandler(null);
@@ -101,7 +94,7 @@ export default function ChatPanel() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          updated[updated.length - 1] = { ...last, content: finalContent || last.content };
+          updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
         }
         saveMessages(updated);
         return updated;
@@ -122,18 +115,31 @@ export default function ChatPanel() {
     };
 
     registerChunkHandler(chunkHandler);
-    registerAnswerHandler((answerContent) => cleanup(answerContent));
+    registerAnswerHandler((answerContent) => cleanup(answerContent, "L3"));
 
-    const sent = sendInput(userMessage.content);
-    if (!sent) {
+    // 优先 L3（L3 直连大模型），未连接时兜底 L2
+    if (sensoryConnected && sendInput(content)) {
+      return; // L3 已接收，将通过 WebSocket 流式返回
+    }
+
+    // L2 兜底
+    try {
+      const fullText = await streamChatMessage(content, chunkHandler);
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      cleanup(fullText, "L2");
+    } catch (e) {
       clearTimeout(timeoutId);
       registerChunkHandler(null);
       registerAnswerHandler(null);
-      setMessages((prev) => addMessage(prev, {
-        role: "assistant",
-        content: "发送失败：L3 未连接",
-        timestamp: Date.now(),
-      }));
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant" && !last.content) {
+          updated[updated.length - 1] = { ...last, content: `打字失败：${(e as Error).message}。请确认 Layer 3 (ws://localhost:18981) 或 Layer 2 (http://localhost:18888) 已启动。` };
+        }
+        return updated;
+      });
       setIsLoading(false);
       setIsTyping(false);
     }
@@ -153,10 +159,10 @@ export default function ChatPanel() {
     }
   };
 
-  // 开始录音
+  // 开始录音（语音走 L2，需 L2 连接）
   const startRecording = async () => {
     if (!isConnected) {
-      setRecordingStatus("请先连接后端服务");
+      setRecordingStatus("请先连接 L2 服务（语音需 L2）");
       return;
     }
 
@@ -333,9 +339,11 @@ export default function ChatPanel() {
               <div className="text-4xl mb-4">🤖</div>
               <p>开始与 Jachin AI 助手对话</p>
               <p className="text-sm mt-2 text-slate-500">
-                {isConnected
-                  ? "已连接到后端服务"
-                  : "等待连接后端服务..."}
+                {sensoryConnected
+                  ? "已连接 L3（直连大模型）"
+                  : isConnected
+                    ? "已连接 L2（兜底）"
+                    : "等待 L3 或 L2 连接..."}
               </p>
             </div>
           </div>
@@ -362,9 +370,16 @@ export default function ChatPanel() {
                       <span className="typewriter-cursor" />
                     )}
                   </p>
-                  <p className="text-xs mt-1 opacity-70">
-                    {new Date(msg.timestamp).toLocaleTimeString()}
-                  </p>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <p className="text-xs opacity-70">
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </p>
+                    {msg.role === "assistant" && msg.source && (
+                      <span className="text-[10px] text-slate-500" title={msg.source === "L3" ? "Layer 3 直连大模型" : "Layer 2 兜底"}>
+                        via {msg.source}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -456,16 +471,17 @@ export default function ChatPanel() {
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder={
-              isConnected ? "输入消息..." : "等待连接..."
+              sensoryConnected ? "输入消息（L3 直连）..." :
+              isConnected ? "输入消息（L2 兜底）..." : "等待 L3 或 L2 连接..."
             }
-            disabled={!isConnected || isLoading || isRecording || isTyping}
+            disabled={(!sensoryConnected && !isConnected) || isLoading || isRecording || isTyping}
             className="flex-1 bg-slate-700/50 border border-purple-500/20 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none disabled:opacity-50"
             rows={1}
             style={{ minHeight: "40px", maxHeight: "120px" }}
           />
           <button
             onClick={handleSend}
-            disabled={!isConnected || isLoading || isRecording || isTyping || !input.trim()}
+            disabled={(!sensoryConnected && !isConnected) || isLoading || isRecording || isTyping || !input.trim()}
             className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
           >
             {isLoading ? (

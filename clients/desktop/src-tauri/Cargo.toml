@@ -36,6 +36,8 @@ directories = "5.0"
 async-trait = "0.1"
 futures-util = "0.3"
 base64 = "0.22"
+sha2 = "0.10"
+ctrlc = "3.4"
 
 [features]
 default = []

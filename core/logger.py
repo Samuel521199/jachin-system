@@ -4,6 +4,11 @@ Unified logging - 统一日志配置
 支持控制台与文件输出，可配置日志级别（INFO/DEBUG）。
 应用启动时应调用 setup_logging() 初始化。
 Windows 下控制台输出强制 UTF-8，避免 dashscope 等库的 DEBUG 中文乱码。
+
+日志等级划分（生产环境鲁棒性）：
+- INFO: 正常心跳、同步成功、热重载完成
+- WARN: 校验失败（如 SHA-256 不匹配）、限流触发、L1 返回异常
+- ERROR: 崩溃报警、下载/解压失败、数据库异常
 """
 
 import logging
@@ -38,7 +43,7 @@ def setup_logging(
         log_file: 日志文件路径。若为 None 则使用 log_dir/jachin.log。
         log_dir: 日志目录，当 log_file 为 None 时使用。
     """
-    log_level = level or ("DEBUG" if settings.DEBUG else "INFO")
+    log_level = level or ("DEBUG" if settings.DEBUG else (settings.LOG_LEVEL or "INFO"))
     numeric_level = getattr(logging, log_level.upper(), logging.INFO)
 
     root = logging.getLogger()

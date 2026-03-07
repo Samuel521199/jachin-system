@@ -1,10 +1,15 @@
 //! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
 
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+
+/// 供 Ctrl+C 时 kill 使用
+static L3_FOR_CTRLC: OnceLock<Arc<L3Handle>> = OnceLock::new();
 
 /// 持有 L3 子进程句柄，Drop 时 kill 避免僵尸进程
 pub struct L3Handle(pub Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
@@ -32,6 +37,18 @@ impl L3Handle {
             *guard = Some(child);
         }
     }
+}
+
+/// 注册 Ctrl+C 时 kill L3，确保端口释放
+pub fn register_ctrlc_kill(handle: &Arc<L3Handle>) {
+    let _ = L3_FOR_CTRLC.set(handle.clone());
+    let _ = ctrlc::set_handler(move || {
+        if let Some(l3) = L3_FOR_CTRLC.get() {
+            l3.kill();
+            eprintln!("[L3] Ctrl+C 已结束 L3 子进程，端口已释放");
+        }
+        std::process::exit(0);
+    });
 }
 
 impl Drop for L3Handle {
@@ -84,6 +101,30 @@ fn project_root() -> Option<PathBuf> {
     None
 }
 
+/// 从项目根 .env 读取关键变量（DASHSCOPE_API_KEY 等），供 L3 子进程使用
+fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    let env_path = root.join(".env");
+    if let Ok(content) = fs::read_to_string(&env_path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim().to_string();
+                let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+                if !v.is_empty()
+                    && matches!(k.as_str(), "DASHSCOPE_API_KEY" | "OPENAI_API_KEY" | "LITELLM_FALLBACK_MODELS" | "LLM_MODEL")
+                {
+                    vars.push((k, v));
+                }
+            }
+        }
+    }
+    vars
+}
+
 /// 使用 Python 回退启动 l3_node（Sidecar 不可用时）
 pub fn spawn_l3_via_python(
     app: &impl tauri::Manager<tauri::Wry>,
@@ -93,6 +134,10 @@ pub fn spawn_l3_via_python(
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let root = project_root().ok_or("无法定位项目根目录 (l3_node)")?;
     let mut cmd = app.shell().command("python").args(["-m", "l3_node"]).args(args);
+    cmd = cmd.env("PYTHONUNBUFFERED", "1");
+    for (k, v) in load_l3_env_vars(&root) {
+        cmd = cmd.env(&k, &v);
+    }
     if let Some(url) = env_l2_url {
         cmd = cmd.env("L2_BASE_URL", url);
     }
@@ -103,29 +148,68 @@ pub fn spawn_l3_via_python(
         }
     }
     cmd = cmd.current_dir(&root);
-    let (mut _rx, child) = cmd.spawn().map_err(|e| format!("Python L3 启动失败: {}", e))?;
+    let (mut rx, child) = cmd.spawn().map_err(|e| format!("Python L3 启动失败: {}", e))?;
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    let _ = std::io::stdout().write_all(&bytes);
+                    let _ = std::io::stdout().flush();
+                }
+                CommandEvent::Stderr(bytes) => {
+                    let _ = std::io::stderr().write_all(&bytes);
+                    let _ = std::io::stderr().flush();
+                }
+                _ => {}
+            }
+        }
+    });
     Ok(child)
 }
 
 /// 静默启动 l3_node：优先 Sidecar，失败则回退到 python -m l3_node
 /// 若有 l2_gateway_config 则用 --gateway 模式，否则 --ws-only
+/// 若环境变量 JACHIN_SKIP_L3_SPAWN=1，则不启动（用户可手动运行 scripts/run_l3.ps1 查看完整日志）
 pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plugin_shell::process::CommandChild, String> {
+    if std::env::var("JACHIN_SKIP_L3_SPAWN").as_deref() == Ok("1") {
+        return Err("JACHIN_SKIP_L3_SPAWN=1，跳过 L3 自动启动。请手动运行: .\\scripts\\run_l3.ps1".to_string());
+    }
     let (args, env_url, mode) = if let Some(url) = should_use_gateway_mode() {
         (["--gateway"].as_slice(), Some(url), "gateway")
     } else {
         (["--ws-only"].as_slice(), None, "ws-only")
     };
 
+    let root = project_root().unwrap_or_else(|| PathBuf::new());
     let child = match app.shell().sidecar("bin/l3_node") {
         Ok(sidecar) => {
-            let sidecar = sidecar.args(args);
-            let sidecar = if let Some(ref url) = env_url {
-                sidecar.env("L2_BASE_URL", url.as_str())
-            } else {
-                sidecar
-            };
+            let mut sidecar = sidecar.args(args);
+            if let Some(ref url) = env_url {
+                sidecar = sidecar.env("L2_BASE_URL", url.as_str());
+            }
+            for (k, v) in load_l3_env_vars(&root) {
+                sidecar = sidecar.env(&k, &v);
+            }
             match sidecar.spawn() {
-                Ok((mut _rx, c)) => c,
+                Ok((mut rx, c)) => {
+                    let child = c;
+                    tauri::async_runtime::spawn(async move {
+                        while let Some(event) = rx.recv().await {
+                            match event {
+                                CommandEvent::Stdout(bytes) => {
+                                    let _ = std::io::stdout().write_all(&bytes);
+                                    let _ = std::io::stdout().flush();
+                                }
+                                CommandEvent::Stderr(bytes) => {
+                                    let _ = std::io::stderr().write_all(&bytes);
+                                    let _ = std::io::stderr().flush();
+                                }
+                                _ => {}
+                            }
+                        }
+                    });
+                    child
+                }
                 Err(e) => {
                     let err_msg = e.to_string();
                     if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 3") {
@@ -143,6 +227,6 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
         }
     };
 
-    println!("[L3] 引擎已启动 ws://127.0.0.1:18881 (mode={})", mode);
+    println!("[L3] 引擎已启动 ws://127.0.0.1:18981 (mode={})", mode);
     Ok(child)
 }

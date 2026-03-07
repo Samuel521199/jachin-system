@@ -1,0 +1,6 @@
+{
+  "id": "inventory-filesystem",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/.jachin/workspace"],
+  "env": null
+}

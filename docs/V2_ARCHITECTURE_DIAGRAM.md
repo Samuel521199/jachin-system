@@ -2,7 +2,7 @@
 
 **版本**: 2.0  
 **状态**: 设计规范  
-**关联**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+**关联**: [ARCHITECTURE.md](ARCHITECTURE.md) | [ARCHITECTURE_V2_LAYER3_STANDALONE.md](ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
 ---
 
@@ -80,6 +80,8 @@ flowchart TB
         PK[API Key 保险箱]
         MEM[记忆存储 + namespace]
         DREAM[梦境优化]
+        INV[数字仓库 inventory]
+        MCP[MCP 代理]
         SCHED[L3 协同调度]
         REDIS[Redis 状态/队列]
     end
@@ -90,6 +92,9 @@ flowchart TB
         KEYS["GET /keys"]
         MEM_SYNC["POST /memory/sync"]
         MEM_SEARCH["GET /memory/search"]
+        INV_SKILLS["GET /inventory/skills"]
+        INV_DL["GET /inventory/skills/{id}/download"]
+        MCP_INVOKE["POST /mcp/invoke"]
         COORD_TASK["POST /coordinate/task"]
         COORD_POLL["GET /coordinate/poll"]
         ADMIN_SA["POST /admin/sub-accounts"]
@@ -100,6 +105,11 @@ flowchart TB
     L3_REG[L3 注册] --> AUTH
     L3_POLL[L3 轮询审批] --> POLL
     L3_KEYS[L3 拉取 Key] --> KEYS
+    L3_SKILLS[L3 技能同步] --> INV_SKILLS
+    L3_SKILLS --> INV_DL
+    INV_SKILLS --> INV
+    INV_DL --> INV
+    MCP_INVOKE --> MCP
     L3_MEM[L3 记忆同步/检索] --> MEM_SYNC
     L3_MEM --> MEM_SEARCH
     L3_COORD[L3 协同请求/拉取] --> COORD_TASK

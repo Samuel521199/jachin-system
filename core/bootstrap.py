@@ -96,6 +96,7 @@ def _get_default_sub_account_ids() -> list[str]:
     """
     获取应同步 API Key 的子账号 ID 列表。
     优先：已配对的 default-{instance_id}；否则首个 sub_account（本地 Gateway 无 L1 时）。
+    额外：已分配 L3 节点但无 Key 的子账号（避免 L3 收不到 Key）。
     """
     cfg = _load_nexus_config()
     instance_id = cfg.get("instance_id") or ""
@@ -104,6 +105,8 @@ def _get_default_sub_account_ids() -> list[str]:
     from core.db import get_connection
 
     conn = get_connection()
+    seen: set[str] = set()
+    result: list[str] = []
     try:
         if instance_id and access_token:
             default_id = f"default-{instance_id}"
@@ -112,16 +115,83 @@ def _get_default_sub_account_ids() -> list[str]:
                 (default_id,),
             ).fetchone()
             if row:
-                return [default_id]
-        # 无配对：取首个 sub_account（本地 Gateway 场景）
-        row = conn.execute(
-            "SELECT id FROM sub_accounts ORDER BY created_at ASC LIMIT 1"
-        ).fetchone()
-        if row:
-            return [row[0]]
-        return []
+                result.append(default_id)
+                seen.add(default_id)
+        if not result:
+            # 无配对：取首个 sub_account（本地 Gateway 场景）
+            row = conn.execute(
+                "SELECT id FROM sub_accounts ORDER BY created_at ASC LIMIT 1"
+            ).fetchone()
+            if row:
+                result.append(row[0])
+                seen.add(row[0])
+        # 已分配 L3 但无 Key 的子账号，确保 L3 能收到 Key
+        for row in conn.execute(
+            """
+            SELECT DISTINCT n.sub_account_id FROM l3_nodes n
+            WHERE n.sub_account_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM api_keys_vault k WHERE k.sub_account_id = n.sub_account_id)
+            """
+        ).fetchall():
+            sid = row[0]
+            if sid and sid not in seen:
+                result.append(sid)
+                seen.add(sid)
+        return result
     finally:
         conn.close()
+
+
+def sync_api_keys_for_sub_account(sub_account_id: str) -> int:
+    """
+    按需同步：将环境变量 API Key 同步到指定子账号。
+    用于 auth/poll 发现已配对但无 Key 时，立即补充，确保 L3 能拿到 Key。
+    """
+    if os.environ.get("JACHIN_SYNC_API_KEYS_FROM_ENV", "1").lower() in ("0", "false", "off"):
+        return 0
+
+    from core.db import get_connection
+    from core.security.crypto_manager import encrypt_for_storage, hash_key_for_audit
+
+    conn = get_connection()
+    added = 0
+    try:
+        for provider, env_names in _ENV_TO_PROVIDER:
+            api_key = None
+            for name in env_names:
+                api_key = os.environ.get(name)
+                if api_key and str(api_key).strip():
+                    api_key = str(api_key).strip()
+                    break
+            if not api_key:
+                continue
+
+            existing = conn.execute(
+                "SELECT 1 FROM api_keys_vault WHERE sub_account_id = ? AND provider = ?",
+                (sub_account_id, provider),
+            ).fetchone()
+            if existing:
+                continue
+
+            key_id = f"env-{provider}-{secrets.token_hex(4)}"
+            key_hash = hash_key_for_audit(api_key)
+            encrypted = encrypt_for_storage(api_key)
+            conn.execute(
+                """
+                INSERT INTO api_keys_vault (id, sub_account_id, provider, encrypted_key, key_hash)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (key_id, sub_account_id, provider, encrypted, key_hash),
+            )
+            added += 1
+            logger.info("[sync] 按需同步 API Key 到子账号 %s (provider=%s)", sub_account_id[:16] + "..." if len(sub_account_id) > 16 else sub_account_id, provider)
+        if added:
+            conn.commit()
+    except Exception as e:
+        logger.warning("sync_api_keys_for_sub_account 失败: %s", e)
+    finally:
+        conn.close()
+    return added
 
 
 def sync_api_keys_from_env() -> int:

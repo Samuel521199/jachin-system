@@ -98,18 +98,53 @@ async def get_skill_status(skill_id: str):
     return {"skill_id": skill_id, "executions": 0, "last_executed_at": None}
 
 
+def _inventory_skill_to_info(inv: dict) -> dict:
+    """将 inventory 技能格式转为 SkillInfo 兼容格式"""
+    perms = inv.get("permissions", [])
+    if isinstance(perms, list):
+        perm_items = [
+            {"id": p.get("scope", p) if isinstance(p, dict) else str(p),
+             "label": p.get("scope", p) if isinstance(p, dict) else str(p)}
+            for p in perms
+        ]
+    else:
+        perm_items = []
+    params = inv.get("params", [])
+    caps = [{"name": p if isinstance(p, str) else p.get("name", ""), "description": ""} for p in params] if params else [{"name": "execute", "description": inv.get("description", "")}]
+    return {
+        "skill_id": inv.get("id", inv.get("item_id", "")),
+        "name": inv.get("name", ""),
+        "version": inv.get("version", "1.0.0"),
+        "description": inv.get("description"),
+        "status": "installed",
+        "capabilities": caps,
+        "permissions": perm_items,
+    }
+
+
 @router.get("", response_model=List[SkillInfo])
 async def list_skills(
     registry: PluginManager = Depends(get_skill_registry)
 ):
     """
-    列出所有已安装的技能
-    
-    Returns:
-        List[SkillInfo]: 技能列表
+    列出所有已安装的技能。
+    合并 skills_repo（PluginManager）与 ~/.jachin/inventory/skills/（L1 同步 + 侧载），
+    确保 Skill Matrix 能展示 L1 商店同步下来的技能。
     """
     try:
         skills = await registry.list_skills()
+        # 合并 inventory 技能（L1 同步、侧载）
+        try:
+            from core.inventory_scanner import registered_local_skills
+            for inv in registered_local_skills.values():
+                sid = inv.get("id", inv.get("item_id", ""))
+                if not sid:
+                    continue
+                if any(s.get("skill_id") == sid for s in skills):
+                    continue
+                skills.append(_inventory_skill_to_info(inv))
+        except Exception as e:
+            logger.debug("合并 inventory 技能时跳过: %s", e)
         for s in skills:
             sid = s.get("skill_id", "")
             if sid in _skill_stats:

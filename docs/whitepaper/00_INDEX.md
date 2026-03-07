@@ -4,8 +4,8 @@
 **更新日期**: 2026-03  
 **核心基调**: L1 平台 / L2 零信任控制面 / L3 单体执行面（对标 OpenClaw）
 
-> **V2 架构规范**：[ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) — L2 不代理推理，L3 持密文 Key 直连 API  
-> **架构图**：[V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)
+> **当前架构规范**：[ARCHITECTURE.md](../ARCHITECTURE.md) — 云边协同数字发行操作系统  
+> **详细设计**：[ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) | **架构图**：[V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)
 
 ---
 
@@ -46,6 +46,5 @@
 | 08 | [JPP 与技能生态](./08_JPP_SDK_AND_SKILLS.md) | JPP (轨道 C)、MCP (轨道 A)、SKILL.md (轨道 B) |
 | 09 | [**去 BaaS 化战役**](./09_DE_BAASIFICATION.md) | Auth.js、Drizzle ORM、Redis、MinIO、Helm — Layer 1 绝对主权架构 |
 | 10 | [**控制面与数据面分离**](./10_CONTROL_DATA_PLANE.md) | mDNS 局域网直连、WebRTC P2P 打洞、信令分离 — 能直连绝不绕路 |
-| — | [**v8.0 架构升维**](./V8_SINGULARITY_OS.md) | ⚠️ 历史参考。Session Multiplexing、Nexus Hook、Dream Weaver 等已迁移至 V2 L3 |
 | — | [MCP 接入规范](../MCP_SPEC.md) | MCP Client 实现、工具发现与调用 |
 | — | [SKILL.md 规范](../SKILL_MD_SPEC.md) | 声明式技能格式、Persona、热加载 |

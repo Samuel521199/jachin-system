@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     if (isDatabaseConfigured()) {
       const db = getDb()!;
       const [plugin] = await db
-        .select({ id: pluginsRegistry.id, downloadUrl: pluginsRegistry.downloadUrl })
+        .select({ id: pluginsRegistry.id, packageUrl: pluginsRegistry.packageUrl })
         .from(pluginsRegistry)
         .where(
           and(
@@ -48,8 +48,8 @@ export async function POST(request: NextRequest) {
         )
         .limit(1);
 
-      if (plugin) {
-        downloadUrl = plugin.downloadUrl;
+      if (plugin?.packageUrl) {
+        downloadUrl = plugin.packageUrl;
         resourceId = plugin.id as `${string}-${string}-${string}-${string}-${string}`;
       }
 

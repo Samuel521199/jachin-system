@@ -4,8 +4,14 @@
  * V2: Dapr 已废弃，统一直连后端 API。
  */
 
-/** 后端 base URL */
+/** 后端 base URL（L2） */
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:18888";
+
+/** L3 技能 API 默认端口（与 l3_node/http_server.py 端口回退一致） */
+const L3_SKILLS_PORTS = [18990, 18991, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999];
+
+/** L3 技能 API base URL（若 VITE_L3_SKILLS_URL 含端口则只用该 URL，否则会尝试多端口） */
+const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://localhost";
 
 /** 保存 API Key 到后端（持久化到 ~/.jachin/.qwen_api_key，覆盖 .env） */
 export async function saveApiKey(qwenApiKey: string | null): Promise<{ ok: boolean; message: string }> {
@@ -523,8 +529,10 @@ export async function deleteMemory(memoryId: string): Promise<{ ok: boolean; mes
 
 /**
  * 获取设备列表（GET /api/v2/devices）
+ * @param onlineOnly 默认 true，仅返回在线设备；false 时返回全部已审批设备（含离线）
  */
-export async function getDevices(): Promise<DeviceStatus[]> {
+export async function getDevices(onlineOnly = true): Promise<DeviceStatus[]> {
+  const q = `online_only=${onlineOnly}`;
   const res = await invokeBackend<{ devices: Array<{
     device_id: string;
     device_type?: string;
@@ -533,7 +541,7 @@ export async function getDevices(): Promise<DeviceStatus[]> {
     metadata?: Record<string, unknown>;
     timestamp?: number;
     online: boolean;
-  }> }>("/api/v2/devices", undefined, "GET");
+  }> }>(`/api/v2/devices?${q}`, undefined, "GET");
   const list = res?.devices ?? [];
   return list.map((d) => ({
     deviceId: d.device_id,
@@ -560,25 +568,82 @@ export async function controlDevice(
 }
 
 /**
- * 获取技能列表（GET /api/v3/skills）
+ * 技能 API 调用（执行在 L3 进行）
+ * 若默认端口 18990 被占用，L3 会绑定 18991-18995，此处依次尝试
  */
-export async function listSkills(): Promise<SkillInfo[]> {
-  const list = await invokeBackend<SkillInfo[]>("/api/v3/skills", undefined, "GET");
-  return Array.isArray(list) ? list : [];
+async function invokeL3Skills<T>(
+  method: string,
+  data?: unknown,
+  httpVerb: "GET" | "POST" = "GET"
+): Promise<T> {
+  const path = method.startsWith("/") ? method : `/${method}`;
+  const options: RequestInit = {
+    method: httpVerb,
+    headers: { "Content-Type": "application/json" },
+  };
+  if (data && httpVerb !== "GET") options.body = JSON.stringify(data);
+
+  // 若 VITE_L3_SKILLS_URL 为完整 URL（含端口），则只试该地址
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    const res = await fetch(`${envUrl.replace(/\/$/, "")}${path}`, options);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    return res.json();
+  }
+
+  // 否则依次尝试 18990-18995（与 l3_node/http_server.py 端口回退一致）
+  let lastErr: Error | null = null;
+  for (const port of L3_SKILLS_PORTS) {
+    try {
+      const url = `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}${path}`;
+      const res = await fetch(url, options);
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      return res.json();
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      if ((e as Error)?.message?.includes("Failed to fetch") || (e as Error)?.message?.includes("NetworkError")) {
+        continue; // 连接失败，尝试下一端口
+      }
+      throw e; // 非连接错误（如 4xx/5xx）直接抛出
+    }
+  }
+  throw lastErr ?? new Error("L3 技能 API 不可达");
 }
 
 /**
- * 执行技能能力（POST /api/v3/skills/{skill_id}/execute）
+ * 获取技能列表（GET /api/v3/skills，从 L3 读取）
+ */
+export async function listSkills(): Promise<SkillInfo[]> {
+  try {
+    const list = await invokeL3Skills<SkillInfo[]>("/api/v3/skills", undefined, "GET");
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    console.warn("[Skills] L3 不可用，回退 L2:", e);
+    const list = await invokeBackend<SkillInfo[]>("/api/v3/skills", undefined, "GET");
+    return Array.isArray(list) ? list : [];
+  }
+}
+
+/**
+ * 执行技能能力（POST /api/v3/skills/{skill_id}/execute，在 L3 执行）
  */
 export async function executeSkill(
   skillId: string,
   capabilityName: string,
   inputData: Record<string, unknown> = {}
-): Promise<{ success: boolean; result?: unknown; error?: string }> {
-  return invokeBackend(`/api/v3/skills/${encodeURIComponent(skillId)}/execute`, {
-    capability_name: capabilityName,
-    input_data: inputData,
-  });
+): Promise<{ success: boolean; result?: unknown; error?: string; wasm_details?: string }> {
+  try {
+    return await invokeL3Skills(`/api/v3/skills/${encodeURIComponent(skillId)}/execute`, {
+      capability_name: capabilityName,
+      input_data: inputData,
+    }, "POST");
+  } catch (e) {
+    console.warn("[Skills] L3 执行不可用，回退 L2:", e);
+    return invokeBackend(`/api/v3/skills/${encodeURIComponent(skillId)}/execute`, {
+      capability_name: capabilityName,
+      input_data: inputData,
+    });
+  }
 }
 
 /**

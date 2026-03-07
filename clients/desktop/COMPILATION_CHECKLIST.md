@@ -8,8 +8,7 @@
 - ✅ 修复了 `start_heartbeat_loop` 中未使用的变量
 
 ### 2. 启动脚本
-- ✅ `run_with_dapr.ps1` - PowerShell 启动脚本
-- ✅ `run_with_dapr.bat` - 批处理启动脚本
+- ✅ `npm run tauri:dev` - 开发模式启动
 
 ### 3. 事件处理
 - ✅ Pub/Sub 服务器正确发送 Tauri 事件

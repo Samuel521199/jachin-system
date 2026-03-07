@@ -41,19 +41,15 @@ if ($NextInstalled) {
     Pop-Location
 }
 
-# 可选：Supabase 迁移（悬赏大厅等表）
-if (Get-Command npx -ErrorAction SilentlyContinue) {
-    Write-Host "> Supabase migration (first run may download CLI, please wait)..." -ForegroundColor Gray
-    Push-Location $NexusDir
-    try {
-        npx -y supabase db push
-        if ($LASTEXITCODE -eq 0) { Write-Host "(OK) Supabase migrations applied" -ForegroundColor Green }
-        else { Write-Host "(SKIP) Supabase not configured or not linked, skip migration" -ForegroundColor DarkGray }
-    } catch {
-        Write-Host "(SKIP) Supabase migration skipped" -ForegroundColor DarkGray
-    }
-    Pop-Location
+# Drizzle 迁移（PostgreSQL，需 DATABASE_URL）
+Push-Location $NexusDir
+if (Test-Path "drizzle") {
+    Write-Host "> Drizzle migration..." -ForegroundColor Gray
+    npm run db:migrate 2>$null
+    if ($LASTEXITCODE -eq 0) { Write-Host "(OK) Drizzle migrations applied" -ForegroundColor Green }
+    else { Write-Host "(SKIP) DATABASE_URL 未配置或迁移失败，跳过" -ForegroundColor DarkGray }
 }
+Pop-Location
 
 Write-Host "(OK) Cloud (Nexus Console) installed" -ForegroundColor Green
 Write-Host '  Start: .\scripts\start-cloud.ps1'

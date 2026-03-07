@@ -13,10 +13,27 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _record_wasm_telemetry(
+    sub_account_id: str,
+    item_id: str,
+    action_name: str,
+    status: str,
+    latency_ms: float,
+) -> None:
+    """异步写入 Wasm 执行用量遥测（fire-and-forget）"""
+    try:
+        from core.usage_telemetry import record_usage
+
+        record_usage(sub_account_id, item_id, action_name, status, latency_ms)
+    except Exception as e:
+        logger.debug("[Wasm Telemetry] 写入失败（可忽略）: %s", e)
 
 
 def _create_wasm_handle(
@@ -90,19 +107,24 @@ class _WasmSandboxHandle:
         capability: str,
         payload: dict[str, Any] | bytes | None = None,
     ) -> dict[str, Any]:
+        item_id = f"skill:{self._plugin_id}"
+        payload_dict = dict(payload) if isinstance(payload, dict) else {}
+        sub_account_id = str(payload_dict.pop("_telemetry_sub_account_id", "system"))
+
         if self._execute_fn is None:
             return {
                 "status_code": 200,
                 "payload": {"success": True, "text": "WASM 插件已加载（无 execute 导出）"},
             }
 
-        payload_dict = payload if isinstance(payload, dict) else {}
         payload_dict["capability"] = capability
         input_bytes = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
 
+        t0 = time.perf_counter()
         try:
             mem_size = self._memory.data_len(self._store)
             if mem_size < len(input_bytes) + 256:
+                _record_wasm_telemetry(sub_account_id, item_id, capability, "failure", (time.perf_counter() - t0) * 1000)
                 return {
                     "status_code": 500,
                     "error_message": "WASM memory 不足",
@@ -115,20 +137,25 @@ class _WasmSandboxHandle:
             result = self._execute_fn(self._store, ptr, length)
 
             if result is None:
+                _record_wasm_telemetry(sub_account_id, item_id, capability, "success", (time.perf_counter() - t0) * 1000)
                 return {"status_code": 200, "payload": {"success": True}}
 
             out_len = int(result)
             if out_len <= 0:
+                _record_wasm_telemetry(sub_account_id, item_id, capability, "success", (time.perf_counter() - t0) * 1000)
                 return {"status_code": 200, "payload": {"success": True}}
 
             out_bytes = self._memory.read(self._store, 0, out_len)
             try:
                 out_obj = json.loads(out_bytes.decode("utf-8"))
+                _record_wasm_telemetry(sub_account_id, item_id, capability, "success", (time.perf_counter() - t0) * 1000)
                 return {"status_code": 200, "payload": out_obj}
             except (json.JSONDecodeError, UnicodeDecodeError):
+                _record_wasm_telemetry(sub_account_id, item_id, capability, "success", (time.perf_counter() - t0) * 1000)
                 return {"status_code": 200, "payload": {"raw": out_bytes.decode("utf-8", errors="replace")}}
 
         except Exception as e:
+            _record_wasm_telemetry(sub_account_id, item_id, capability, "failure", (time.perf_counter() - t0) * 1000)
             logger.warning("WASM execute failed: %s", e)
             return {"status_code": 500, "error_message": str(e)}
 

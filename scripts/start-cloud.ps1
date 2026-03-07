@@ -1,7 +1,7 @@
 # =============================================================================
 # Cloud (Layer 1) - One-click start (Windows)
 # cloud/nexus - Nexus Console @ http://localhost:3000
-# 使用 Drizzle ORM + PostgreSQL，已脱离 Supabase
+# 使用 Drizzle ORM + PostgreSQL
 # 首次运行会创建 .env.local；若项目根 .env 有 DATABASE_URL 则自动继承
 # =============================================================================
 
@@ -31,7 +31,7 @@ if (-not $NextInstalled) {
     Pop-Location
 }
 
-# .env.local: copy from .env.example if missing (Drizzle + PostgreSQL，无 Supabase)
+# .env.local: copy from .env.example if missing (Drizzle + PostgreSQL)
 $EnvLocal = Join-Path $NexusDir ".env.local"
 $EnvExample = Join-Path $NexusDir ".env.example"
 $RootEnv = Join-Path $ProjectRoot ".env"
@@ -58,10 +58,13 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  Cloud (Layer 1) - Nexus Console" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  http://localhost:3000"
-Write-Host "  Drizzle + PostgreSQL (无 Supabase)"
+Write-Host "  Drizzle + PostgreSQL"
 Write-Host "  Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $NexusDir
+# 确保 schema 与 app 使用同一 DATABASE_URL：先迁移，再 init-store 补齐
+npm run db:migrate 2>$null
+npm run db:init-store
 npm run dev
 Pop-Location

@@ -1,6 +1,6 @@
 /**
  * Jachin Nexus Layer 1 - Drizzle ORM 数据库连接
- * 去 BaaS 化：完全脱离 Supabase，使用任意 PostgreSQL
+ * 使用任意 PostgreSQL（本地默认 postgres/postgres）
  */
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -8,7 +8,7 @@ import * as schema from "./schema";
 
 const connectionString = process.env.DATABASE_URL ?? "";
 
-/** 是否已配置数据库（有 DATABASE_URL 即可，无需 Supabase） */
+/** 是否已配置数据库（有 DATABASE_URL 即可） */
 export function isDatabaseConfigured(): boolean {
   return Boolean(connectionString && connectionString.length > 3);
 }

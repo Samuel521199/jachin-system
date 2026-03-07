@@ -26,7 +26,7 @@ from l3_node.engine.hooks_pipeline import (
     global_hooks,
 )
 from l3_node.llm_client import LiteLLMEngine, SecurityContext
-from l3_node.skills import build_tools_description, load_tools, run_tool
+from l3_node.skills import build_tools_description, get_mcp_registry, load_tools, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -529,6 +529,7 @@ async def _run_react_core(
             return
 
         full_messages = [{"role": "system", "content": ctx.system_prompt}] + messages
+        logger.debug("[L3 Agent] ReAct iter=%d 调用 LLM stream=%s", iteration + 1, bool(on_chunk))
         if on_chunk:
             response = await engine.generate_response_stream(
                 full_messages, chunk_callback=on_chunk,
@@ -650,7 +651,12 @@ async def _run_react_core(
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
-            observation = run_tool(tool, inp, allowed_skills=allowed_skills)
+            # 工具执行路由器：MCP 工具走 L2 代理，本地工具走 run_tool
+            mcp_registry = get_mcp_registry()
+            if tool in mcp_registry.known_mcp_tools:
+                observation = await mcp_registry.invoke_via_l2(tool, inp)
+            else:
+                observation = run_tool(tool, inp, allowed_skills=allowed_skills)
             ctx.observation = observation
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
@@ -679,8 +685,18 @@ async def run_agent(
     支持 _system_prompt_override 供子 Agent 使用。
     """
     run_id = str(uuid.uuid4())
+    logger.debug("[L3 Agent] run_agent 开始 input_len=%d", len(user_input or ""))
     allowed = _get_allowed_skills()
     tools = load_tools(allowed_skills=allowed)
+    # 神经桥接：从 L2 拉取 MCP 工具并合并（强容错，L2 不可用时仅用本地工具）
+    try:
+        mcp_registry = get_mcp_registry()
+        mcp_tools = await mcp_registry.fetch_tools_from_l2()
+        if mcp_tools:
+            tools = list(tools) + mcp_tools
+            logger.info("[L3 Agent] 已合并 %d 个 MCP 工具，总计 %d", len(mcp_tools), len(tools))
+    except Exception as e:
+        logger.debug("[L3 Agent] MCP 工具拉取跳过（L2 可能未启动）: %s", e)
     system_prompt = _system_prompt_override or _build_system_prompt(tools=tools, allow_delegate=True)
     messages = list(_initial_messages) if _initial_messages else []
     messages.append({"role": "user", "content": user_input})

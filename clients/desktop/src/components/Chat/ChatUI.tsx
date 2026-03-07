@@ -148,6 +148,14 @@ export const ChatUI: React.FC<ChatUIProps> = ({
                     />
                   )}
                 </span>
+                {msg.role === "assistant" && msg.source && (
+                  <span
+                    className="block mt-1.5 text-[10px] text-slate-500"
+                    title={msg.source === "L3" ? "Layer 3 直连大模型" : "Layer 2 兜底"}
+                  >
+                    via {msg.source}
+                  </span>
+                )}
               </div>
             </div>
           ))}

@@ -1,0 +1,16 @@
+{
+  "mcp_servers": [
+    {
+      "id": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/.jachin/workspace"],
+      "env": null
+    },
+    {
+      "id": "shell",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-shell"],
+      "env": null
+    }
+  ]
+}

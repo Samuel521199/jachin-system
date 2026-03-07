@@ -5,12 +5,16 @@ import DevicePanel from "./components/DevicePanel";
 import SkillsPanel from "./components/SkillsPanel";
 import VoiceTest from "./components/VoiceTest";
 import { PerformanceDashboard } from "./components/Monitoring/PerformanceDashboard";
+import { UISyncProvider } from "./components/UISyncProvider";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppStore } from "./store/appStore";
 
 function App() {
   const { isConnected } = useAppStore();
 
   return (
+    <ErrorBoundary>
+    <UISyncProvider>
     <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white overflow-hidden">
       {/* 顶部状态栏 */}
       <StatusBar />
@@ -70,6 +74,8 @@ function App() {
         </div>
       </div>
     </div>
+    </UISyncProvider>
+    </ErrorBoundary>
   );
 }
 

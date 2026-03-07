@@ -1,6 +1,6 @@
 /**
  * SensoryOverlay - Layer 3 全息感官投射
- * 连接 ws://localhost:18881/sensory，将大脑脑电波具象化为赛博朋克视觉
+ * 连接 ws://localhost:18981/sensory，将大脑脑电波具象化为赛博朋克视觉
  * - thought: 黄色「思考中」光环
  * - core:shell_exec: 红色「物理授权」警告
  * - HITL_REQUIRED: 霸气拦截框「指挥官，是否授权执行？」
@@ -12,7 +12,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useSensoryWebSocket } from "../../hooks/useSensoryWebSocket";
 import { HandoffToast } from "../../components/HandoffToast";
 import { SwarmRadar } from "../../components/SwarmRadar";
-import { cn } from "../../utils/cn";
 
 export interface SensoryOverlayProps {
   /** 可选：传入外部 hook 结果以复用连接（如 Chat 窗口） */
@@ -38,25 +37,6 @@ export function SensoryOverlay({ sensory: sensoryProp }: SensoryOverlayProps = {
 
   return (
     <>
-      {/* 连接状态指示器 - 右下角小圆点 */}
-      <div
-        className={cn(
-          "fixed bottom-4 right-4 z-40 flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono",
-          connected
-            ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-            : "bg-amber-500/15 border-amber-500/40 text-amber-300"
-        )}
-        style={{ fontFamily: "'JetBrains Mono', monospace" }}
-      >
-        <span
-          className={cn(
-            "w-2 h-2 rounded-full",
-            connected ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-          )}
-        />
-        {connected ? "Sensory · Live" : "Sensory · 未连接"}
-      </div>
-
       {/* 思考中 - 黄色光环 */}
       <AnimatePresence>
         {isThinking && (

@@ -1,0 +1,13 @@
+[package]
+name = "jachin-system-pilot"
+version = "1.0.0"
+edition = "2021"
+description = "Jachin 全链路测试 Skill - 系统状态与时间戳"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true

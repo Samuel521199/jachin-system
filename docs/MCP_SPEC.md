@@ -45,22 +45,28 @@
 
 ### 3.4 配置示例
 
+将 `config/mcp_servers.json.example` 复制为 `~/.jachin/mcp_servers.json`，按需修改路径：
+
 ```json
 {
   "mcp_servers": [
     {
       "id": "filesystem",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/.jachin/workspace"],
+      "env": null
     },
     {
       "id": "shell",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-shell"]
+      "args": ["-y", "@modelcontextprotocol/server-shell"],
+      "env": null
     }
   ]
 }
 ```
+
+**注意**：`server-filesystem` 的路径参数需为绝对路径，Windows 下请使用 `C:\\Users\\YourUser\\.jachin\\workspace` 等形式。
 
 ---
 

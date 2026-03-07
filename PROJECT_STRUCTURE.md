@@ -2,18 +2,17 @@
 
 ## 文档信息
 
-- **版本**: V2 (L2 控制面 + L3 单体)
-- **最后更新**: 2026-03
-- **架构**: L1 平台 / L2 零信任控制面 / L3 边缘单体执行面
+- **版本**: V2 (2026-03)
+- **架构**: 云边协同数字发行操作系统 — L1 商城 / L2 控制面 / L3 执行面
+- **规范**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md)
 
 ---
 
-## ⚠️ 架构宪法 (The Constitution)
+## 架构宪法
 
-1. **全面弃用** Dapr、Ray 集群、本地 PostgreSQL（L2）、Qdrant、复杂 Docker 编排。
-2. **Redis**：L2 集群化时可选使用（L3 在线状态、任务队列、Leader 选举）；单节点模式无需 Redis。
-3. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key 保险箱/记忆/梦境/L3 协同调度）、L3 单体（对标 OpenClaw，持密文 Key 直连 API）。
-4. **L2 不代理推理**：L3 持密文 Key，请求时解密后自行调用外部 LLM API。
+1. **已废弃**：Dapr、Ray、Qdrant、L2 本地 PostgreSQL。
+2. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key/记忆/仓库/MCP）、L3 单体（Agent + Skill，持密文 Key 直连 API）。
+3. **L2 不代理推理**：L3 持密文 Key 自行调用 LLM。
 
 ---
 

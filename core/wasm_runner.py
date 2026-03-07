@@ -7,16 +7,39 @@ Jachin Nexus - WASM 物理沙箱引擎
 双模式支持：
 - Pure Compute：run() -> i32，Rust 等直接导出
 - WASI：stdin/stdout JSON 协议，Python (py2wasm) 等系统接口型插件
+
+Host Functions（供 hr-analyzer 等技能）：
+- env.http_post(url_ptr, url_len, body_ptr, body_len) -> response_len：发起 HTTP POST，响应写入 OUTPUT_OFFSET
+- env.llm_complete(prompt_ptr, prompt_len) -> response_len：调用 LLM，结果写入 OUTPUT_OFFSET
 """
 from __future__ import annotations
 
 import json
 import logging
 import tempfile
+import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Host 服务注册（L3 bootstrap 时注入，供 http_post/llm_complete 使用）
+_host_services: dict[str, Any] = {}
+
+# 当前执行上下文（run_plugin_execute_abi 调用前设置，供 host 函数访问 memory/store）
+_run_context: dict[str, Any] = {}
+
+
+def register_host_services(
+    *,
+    llm_engine: Optional[Any] = None,
+    l2_base_url: Optional[str] = None,
+) -> None:
+    """注册 LLM 引擎与 L2 地址，供 Wasm 技能 Host 函数使用。"""
+    if llm_engine is not None:
+        _host_services["llm_engine"] = llm_engine
+    if l2_base_url is not None:
+        _host_services["l2_base_url"] = l2_base_url.rstrip("/")
 
 try:
     from wasmtime import Config, Engine, Instance, Linker, Module, Store, WasiConfig
@@ -26,6 +49,23 @@ except ImportError:
     HAS_WASMTIME = False
     Linker = None  # type: ignore
     WasiConfig = None  # type: ignore
+
+
+class WasmExecutionError(Exception):
+    """WASM 执行异常，携带完整 wasm 栈与错误详情供前端排查"""
+
+    def __init__(self, message: str, wasm_details: str | None = None):
+        super().__init__(message)
+        self.wasm_details = wasm_details or ""
+
+
+def _format_wasm_error(exc: BaseException) -> str:
+    """将 WasmtimeError / trap 格式化为可读的 wasm 详情（含 backtrace）"""
+    parts = [str(exc)]
+    if hasattr(exc, "__traceback__") and exc.__traceback__:
+        tb = "".join(traceback.format_tb(exc.__traceback__))
+        parts.append(f"Python traceback:\n{tb}")
+    return "\n---\n".join(parts)
 
 
 class JachinWasmSandbox:
@@ -68,19 +108,31 @@ class JachinWasmSandbox:
             Pure Compute 模式：导出函数的返回值
             WASI 模式：stdout 字符串（通常为 JSON）
         """
+        import sys
         if stdin_json is not None:
-            if not HAS_WASMTIME or Linker is None or WasiConfig is None:
-                raise ImportError("WASI 模式需要 wasmtime。请安装: pip install wasmtime")
             stdin_str = (
-                json.dumps(stdin_json, ensure_ascii=False)
+                json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
                 if isinstance(stdin_json, dict)
                 else str(stdin_json)
             )
+            # 先尝试 execute(ptr, len) ABI（Rust JPP 插件如 jachin-system-pilot）
+            print(f"[Skill Execute] [WASM] 尝试 execute ABI wasm={wasm_file_path}", file=sys.stderr, flush=True)
+            try:
+                out = self.run_plugin_execute_abi(wasm_file_path, stdin_str, fuel_limit)
+                if out is not None:
+                    return out
+            except Exception as e:
+                print(f"[Skill Execute] [WASM] execute ABI 不可用，回退 WASI: {e}", file=sys.stderr, flush=True)
+                logger.debug("[WASM] execute ABI 不可用，回退 WASI: %s", e)
+            if not HAS_WASMTIME or Linker is None or WasiConfig is None:
+                raise ImportError("WASI 模式需要 wasmtime。请安装: pip install wasmtime")
+            print(f"[Skill Execute] [WASM] WASI 模式 wasm={wasm_file_path} stdin_len={len(stdin_str)}", file=sys.stderr, flush=True)
             return self.run_plugin_wasi(wasm_file_path, stdin_str, fuel_limit)
         path = Path(wasm_file_path)
         if not path.exists():
             raise FileNotFoundError(f"找不到 WASM 插件: {wasm_file_path}")
 
+        print(f"[Skill Execute] [WASM] Pure Compute 模式 wasm={wasm_file_path} func={function_name}", file=sys.stderr, flush=True)
         bytecode = path.read_bytes()
         store = Store(self._engine)
         store.set_fuel(fuel_limit)
@@ -97,6 +149,7 @@ class JachinWasmSandbox:
                 if func is not None:
                     break
         if func is None:
+            print(f"[Skill Execute] [WASM] 未找到导出函数 wasm={wasm_file_path} func={function_name}", file=sys.stderr, flush=True)
             raise ValueError(
                 f"WASM 模块未导出函数 '{function_name}'。"
                 " 需导出 run/execute/_start 之一。"
@@ -104,12 +157,268 @@ class JachinWasmSandbox:
 
         try:
             result = func(store)
+            print(f"[Skill Execute] [WASM] 返回 wasm={wasm_file_path} result={result!r}", file=sys.stderr, flush=True)
             return result
         except WasmtimeError as e:
             msg = str(e).lower()
             if "out of fuel" in msg or "fuel" in msg or "trap" in msg:
                 self._log_meltdown(wasm_file_path, e)
-            raise
+            raise WasmExecutionError(str(e), _format_wasm_error(e))
+
+    def _make_execute_linker(self) -> "Linker | None":
+        """创建带 alloc/dealloc host 函数的 Linker，供 execute ABI 使用"""
+        if not HAS_WASMTIME or Linker is None:
+            return None
+        try:
+            from wasmtime import FuncType, ValType
+        except ImportError:
+            return None
+        # 每 store 的 bump 分配器状态：heap_ptr
+        heap_state: dict[int, int] = {}
+        HEAP_START = 0x10000  # 64KB 偏移，避免覆盖 wasm 静态数据
+
+        def _store_id() -> int:
+            """wasmtime-py 不传 caller，用 _run_context 的 store 作为 heap 键"""
+            s = _run_context.get("store")
+            return id(s) if s else 0
+
+        def _rust_alloc(size: int, align: int) -> int:
+            if size <= 0:
+                return 0
+            store_id = _store_id()
+            ptr = heap_state.get(store_id, HEAP_START)
+            align = max(align, 1)
+            ptr = (ptr + align - 1) & ~(align - 1)
+            heap_state[store_id] = ptr + size
+            return ptr
+
+        def _rust_dealloc(_ptr: int, _size: int, _align: int) -> None:
+            pass  # bump 分配器不回收
+
+        def _rust_realloc(ptr: int, old_size: int, align: int, new_size: int) -> int:
+            if new_size <= old_size:
+                return ptr
+            return _rust_alloc(new_size, align)
+
+        def _rust_alloc_zeroed(size: int, align: int) -> int:
+            return _rust_alloc(size, align)
+
+        OUTPUT_OFFSET = 0x8000  # 与 execute ABI 约定
+
+        def _get_mem_store() -> tuple[Any, Any]:
+            """从 _run_context 获取 memory 与 store（host 函数无 Caller 时使用）"""
+            mem = _run_context.get("memory")
+            store = _run_context.get("store")
+            return mem, store
+
+        def _http_post(url_ptr: int, url_len: int, body_ptr: int, body_len: int) -> int:
+            """Host: HTTP POST，响应写入 OUTPUT_OFFSET，返回响应字节数。"""
+            mem, store = _get_mem_store()
+            if not mem or not store:
+                return _write_err_fallback(OUTPUT_OFFSET, "⚠️ 无法连接 L2 机房或读取文件失败")
+            try:
+                url = bytes(mem.read(store, url_ptr, url_ptr + url_len)).decode("utf-8", errors="replace")
+                body = bytes(mem.read(store, body_ptr, body_ptr + body_len)).decode("utf-8", errors="replace") if body_len > 0 else ""
+                import httpx
+                l2 = _host_services.get("l2_base_url", "http://localhost:18888")
+                full_url = url if url.startswith("http") else f"{l2.rstrip('/')}{url}"
+                with httpx.Client(timeout=30.0) as client:
+                    resp = client.post(full_url, content=body.encode("utf-8") if body else b"", headers={"Content-Type": "application/json"})
+                    resp.raise_for_status()
+                    out = resp.content
+                out_str = out.decode("utf-8", errors="replace")
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, out_str)
+            except Exception as e:
+                err = f"⚠️ 无法连接 L2 机房或读取文件失败: {e}"
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, err)
+
+        def _mcp_read_file(path_ptr: int, path_len: int) -> int:
+            """Host: 调用 L2 MCP read_file，直接返回文件内容（纯文本），写入 OUTPUT_OFFSET。
+            本地绝对路径且存在时优先直读（绕过 MCP，兼容 L2 未重启）；否则走 MCP。"""
+            mem, store = _get_mem_store()
+            if not mem or not store:
+                return _write_err_fallback(OUTPUT_OFFSET, "⚠️ 无法连接 L2 机房或读取文件失败")
+            try:
+                raw = bytes(mem.read(store, path_ptr, path_ptr + path_len)).decode("utf-8", errors="replace").strip()
+                p = Path(raw)
+                # 本地绝对路径且存在：直读，避免 MCP 未加载 config/hr_jds 时失败
+                if p.is_absolute() and p.exists():
+                    content = p.read_text(encoding="utf-8", errors="replace")
+                    return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+                filename = (p.name or "zhangsan_resume.md").strip()
+                if not filename or not filename.endswith((".md", ".txt")):
+                    filename = "zhangsan_resume.md"
+                # 本地同机：传绝对路径（MCP server-filesystem 需绝对路径，test_hr_fs_mcp 已验证）
+                if p.is_absolute() and p.exists():
+                    path = str(p.resolve())
+                else:
+                    _proj = Path(__file__).resolve().parent.parent
+                    # 优先 data/hr_resumes，其次 config/hr_jds（JD 文件）
+                    for parts in [("data", "hr_resumes"), ("config", "hr_jds")]:
+                        cand = (_proj / parts[0] / parts[1] / filename).resolve()
+                        if cand.exists():
+                            path = str(cand)
+                            break
+                    else:
+                        path = str((_proj / "data" / "hr_resumes" / filename).resolve())
+                import httpx
+                l2 = _host_services.get("l2_base_url", "http://localhost:18888")
+                url = f"{l2.rstrip('/')}/api/v2/mcp/invoke"
+                body = json.dumps({"tool_name": "read_file", "arguments": {"path": path}})
+                with httpx.Client(timeout=30.0) as client:
+                    resp = client.post(url, content=body, headers={"Content-Type": "application/json"})
+                    resp.raise_for_status()
+                    data = resp.json()
+                content = data.get("result", "")
+                if not isinstance(content, str):
+                    content = str(content) if content is not None else ""
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+            except Exception as e:
+                err = f"⚠️ 无法连接 L2 机房或读取文件失败: {e}"
+                logger.warning("[WASM Host] mcp_read_file 异常: %s", e)
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, err)
+
+        def _llm_complete(prompt_ptr: int, prompt_len: int) -> int:
+            """Host: LLM 推理，结果写入 OUTPUT_OFFSET，返回字节数。"""
+            mem, store = _get_mem_store()
+            if not mem or not store:
+                return _write_err_fallback(OUTPUT_OFFSET, "⚠️ LLM 引擎未注册")
+            try:
+                prompt = bytes(mem.read(store, prompt_ptr, prompt_ptr + prompt_len)).decode("utf-8", errors="replace")
+                engine = _host_services.get("llm_engine")
+                if not engine:
+                    return _write_to_mem(mem, store, OUTPUT_OFFSET, "⚠️ LLM 引擎未注册，请确保 L3 已配对并启动")
+                import litellm
+                # LiteLLM 需要 provider 前缀（如 dashscope/qwen3.5-flash），L2 可能只返回 qwen3.5-flash
+                model = engine.model_name or "dashscope/qwen3.5-flash"
+                if hasattr(engine, "_normalize_model"):
+                    model = engine._normalize_model(model) or model
+                engine._inject_key(model)
+                resp = litellm.completion(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=engine.timeout,
+                )
+                text = (resp.choices[0].message.content or "").strip()
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, text)
+            except Exception as e:
+                err = f"⚠️ LLM 调用失败: {e}"
+                logger.warning("[WASM Host] llm_complete 异常: %s", e)
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, err)
+
+        def _write_to_mem(mem: Any, store: Any, offset: int, text: str) -> int:
+            data = text.encode("utf-8")
+            n = len(data)
+            if n == 0:
+                return 0
+            try:
+                size = mem.data_len(store) if hasattr(mem, "data_len") else 65536
+                if offset + n > size and hasattr(mem, "grow"):
+                    mem.grow(store, max(1, (offset + n - size + 65535) // 65536))
+            except (TypeError, AttributeError):
+                pass
+            mem.write(store, data, offset)
+            return n
+
+        def _write_err_fallback(offset: int, msg: str) -> int:
+            mem, store = _get_mem_store()
+            if mem and store:
+                return _write_to_mem(mem, store, offset, msg)
+            return -1
+
+        try:
+            linker = Linker(self._engine)
+            alloc_ty = FuncType([ValType.i32(), ValType.i32()], [ValType.i32()])
+            dealloc_ty = FuncType([ValType.i32(), ValType.i32(), ValType.i32()], [])
+            realloc_ty = FuncType([ValType.i32(), ValType.i32(), ValType.i32(), ValType.i32()], [ValType.i32()])
+            linker.define_func("env", "__rust_alloc", alloc_ty, _rust_alloc)
+            linker.define_func("env", "__rust_dealloc", dealloc_ty, _rust_dealloc)
+            linker.define_func("env", "__rust_realloc", realloc_ty, _rust_realloc)
+            linker.define_func("env", "__rust_alloc_zeroed", alloc_ty, _rust_alloc_zeroed)
+            http_post_ty = FuncType([ValType.i32(), ValType.i32(), ValType.i32(), ValType.i32()], [ValType.i32()])
+            mcp_read_ty = FuncType([ValType.i32(), ValType.i32()], [ValType.i32()])
+            llm_ty = FuncType([ValType.i32(), ValType.i32()], [ValType.i32()])
+            linker.define_func("env", "http_post", http_post_ty, _http_post)
+            linker.define_func("env", "mcp_read_file", mcp_read_ty, _mcp_read_file)
+            linker.define_func("env", "llm_complete", llm_ty, _llm_complete)
+            return linker
+        except (TypeError, AttributeError):
+            return None
+
+    def run_plugin_execute_abi(
+        self,
+        wasm_file_path: str,
+        stdin_str: str = "{}",
+        fuel_limit: int = 100_000,
+    ) -> str | None:
+        """
+        JPP execute(ptr, len) -> i32 ABI：宿主写输入到 memory[ptr..ptr+len]，
+        调用后从 memory[0..return_value] 读取输出。适用于 Rust wasm32-unknown-unknown 插件（如 jachin-system-pilot）。
+        支持 env.__rust_alloc/dealloc 等 host 函数，供需要堆分配的插件使用。
+        """
+        import sys
+        path = Path(wasm_file_path)
+        if not path.exists():
+            return None
+        try:
+            bytecode = path.read_bytes()
+            store = Store(self._engine)
+            store.set_fuel(fuel_limit)
+            module = Module(self._engine, bytecode)
+
+            # 先尝试带 alloc/dealloc 的 Linker，失败则用裸 Instance（无 import 的模块）
+            instance = None
+            try:
+                linker = self._make_execute_linker()
+                if linker is not None:
+                    instance = linker.instantiate(store, module)
+            except (WasmtimeError, TypeError, AttributeError) as e:
+                print(f"[Skill Execute] [WASM] execute linker 实例化失败: {e}", file=sys.stderr, flush=True)
+                logger.debug("[WASM] execute linker 实例化失败 %s: %s", wasm_file_path, e)
+            if instance is None:
+                try:
+                    instance = Instance(store, module, [])
+                except (WasmtimeError, TypeError, AttributeError):
+                    return None
+
+            exports = instance.exports(store)
+            func = exports.get("execute")
+            memory = exports.get("memory")
+            if func is None or memory is None:
+                return None
+            # 设置 run context 供 http_post/llm_complete 等 host 函数使用
+            _run_context["memory"] = memory
+            _run_context["store"] = store
+            try:
+                # JPP 约定：宿主写输入到 memory[ptr..ptr+len]，插件写输出到 memory[OUTPUT_OFFSET..]
+                INPUT_OFFSET = 0x8000
+                OUTPUT_OFFSET = 0x8000  # 与 jachin-system-pilot 等 Rust 插件约定
+                data = stdin_str.encode("utf-8")
+                len_i = len(data)
+                if len_i == 0:
+                    ptr = 0
+                else:
+                    ptr = INPUT_OFFSET
+                    try:
+                        mem_size = memory.data_len(store) if hasattr(memory, "data_len") else 65536
+                        if ptr + len_i > mem_size and hasattr(memory, "grow"):
+                            memory.grow(store, max(1, (ptr + len_i - mem_size + 65535) // 65536))
+                    except (TypeError, AttributeError):
+                        pass
+                    memory.write(store, data, ptr)
+                out_len = func(store, ptr, len_i)
+                if out_len <= 0:
+                    print(f"[Skill Execute] [WASM] execute ABI 返回空 out_len={out_len} wasm={wasm_file_path}", file=sys.stderr, flush=True)
+                    return ""
+                out_bytes = memory.read(store, OUTPUT_OFFSET, OUTPUT_OFFSET + out_len)
+                result = bytes(out_bytes).decode("utf-8", errors="replace")
+                print(f"[Skill Execute] [WASM] execute ABI 返回 wasm={wasm_file_path} len={len(result)} preview={result[:150]}...", file=sys.stderr, flush=True)
+                return result
+            finally:
+                _run_context.clear()
+        except (WasmtimeError, TypeError, AttributeError) as e:
+            logger.debug("[WASM] execute ABI 失败 %s: %s", wasm_file_path, e)
+            return None
 
     def run_plugin_wasi(
         self,
@@ -130,10 +439,12 @@ class JachinWasmSandbox:
         Returns:
             stdout 内容（通常为 JSON 字符串）
         """
+        import sys
         path = Path(wasm_file_path)
         if not path.exists():
             raise FileNotFoundError(f"找不到 WASM 插件: {wasm_file_path}")
 
+        print(f"[Skill Execute] [WASM] WASI 执行中 wasm={wasm_file_path} stdin_preview={stdin_str[:150]}...", file=sys.stderr, flush=True)
         bytecode = path.read_bytes()
 
         with tempfile.NamedTemporaryFile(
@@ -153,38 +464,109 @@ class JachinWasmSandbox:
             stdout_path = f_out.name
 
         try:
-            wasi = WasiConfig()
-            wasi.stdin_file = stdin_path
-            wasi.stdout_file = stdout_path
-
             store = Store(self._engine)
             store.set_fuel(fuel_limit)
-            store.set_wasi(wasi)
 
-            linker = Linker(self._engine)
-            linker.define_wasi()
+            # 优先尝试 execute ABI 的 linker（含 __rust_alloc 等），适用于 hr-analyzer 等 Rust 插件
+            execute_linker = self._make_execute_linker()
+            instance = None
+            execute_err: BaseException | None = None
+            if execute_linker is not None:
+                try:
+                    module = Module(self._engine, bytecode)
+                    instance = execute_linker.instantiate(store, module)
+                except (WasmtimeError, TypeError, AttributeError) as e:
+                    execute_err = e
+                    logger.debug("[WASM] execute linker 实例化失败 (WASI 路径): %s", e)
 
-            module = Module(self._engine, bytecode)
-            instance = linker.instantiate(store, module)
+            # Rust 插件需 __rust_alloc，若 execute linker 失败则不应回退纯 WASI（纯 WASI 无 alloc）
+            if instance is None and execute_err is not None:
+                err_msg = str(execute_err).lower()
+                if "__rust_dealloc" in err_msg or "__rust_alloc" in err_msg or "unknown import" in err_msg:
+                    raise WasmExecutionError(
+                        f"Rust Wasm 需要 execute ABI，instantiate 失败: {execute_err}",
+                        _format_wasm_error(execute_err),
+                    )
 
-            exports = instance.exports(store)
-            start = exports.get("_start")
-            if start is not None:
-                start(store)
-            else:
-                for name in ("run", "main", "_initialize"):
-                    fn = exports.get(name)
-                    if fn is not None:
-                        fn(store)
-                        break
+            if instance is not None:
+                exports = instance.exports(store)
+                func = exports.get("execute")
+                memory = exports.get("memory")
+                if func is not None and memory is not None:
+                    _run_context["memory"] = memory
+                    _run_context["store"] = store
+                    try:
+                        INPUT_OFFSET = 0x8000
+                        OUTPUT_OFFSET = 0x8000
+                        data = stdin_str.encode("utf-8")
+                        len_i = len(data)
+                        ptr = INPUT_OFFSET if len_i > 0 else 0
+                        if len_i > 0:
+                            try:
+                                mem_size = memory.data_len(store) if hasattr(memory, "data_len") else 65536
+                                if ptr + len_i > mem_size and hasattr(memory, "grow"):
+                                    memory.grow(store, max(1, (ptr + len_i - mem_size + 65535) // 65536))
+                            except (TypeError, AttributeError):
+                                pass
+                            memory.write(store, data, ptr)
+                        out_len = func(store, ptr, len_i)
+                        if out_len > 0:
+                            out_bytes = memory.read(store, OUTPUT_OFFSET, OUTPUT_OFFSET + out_len)
+                            out = bytes(out_bytes).decode("utf-8", errors="replace")
+                        else:
+                            out = ""
+                    finally:
+                        _run_context.clear()
+                else:
+                    instance = None
 
-            with open(stdout_path, encoding="utf-8") as f:
-                return f.read()
+            if instance is None:
+                # 回退到纯 WASI（Python py2wasm 插件），需新 Store
+                wasi = WasiConfig()
+                wasi.stdin_file = stdin_path
+                wasi.stdout_file = stdout_path
+                store = Store(self._engine)
+                store.set_fuel(fuel_limit)
+                store.set_wasi(wasi)
+                linker = Linker(self._engine)
+                linker.define_wasi()
+                module = Module(self._engine, bytecode)
+                try:
+                    instance = linker.instantiate(store, module)
+                except WasmtimeError as e:
+                    msg = str(e).lower()
+                    if "__rust_dealloc" in msg or "__rust_alloc" in msg:
+                        raise WasmExecutionError(
+                            "此技能为 Rust Wasm，需要 execute ABI（__rust_alloc 等）。"
+                            "请确保 L3 与 core 使用最新 wasm_runner，或从 l3_node/skills/wasm_plugins 侧载。",
+                            _format_wasm_error(e),
+                        )
+                    raise
+                exports = instance.exports(store)
+                start = exports.get("_start")
+                if start is not None:
+                    start(store)
+                else:
+                    for name in ("run", "main", "_initialize"):
+                        fn = exports.get(name)
+                        if fn is not None:
+                            fn(store)
+                            break
+                with open(stdout_path, encoding="utf-8") as f:
+                    out = f.read()
+            print(f"[Skill Execute] [WASM] WASI 返回 wasm={wasm_file_path} stdout_len={len(out)} preview={out[:200]}...", file=sys.stderr, flush=True)
+            return out
         except WasmtimeError as e:
+            print(f"[Skill Execute] [WASM] WasmtimeError wasm={wasm_file_path} error={e}", file=sys.stderr, flush=True)
             msg = str(e).lower()
             if "out of fuel" in msg or "fuel" in msg or "trap" in msg:
                 self._log_meltdown(wasm_file_path, e)
-            raise
+            raise WasmExecutionError(str(e), _format_wasm_error(e))
+        except Exception as e:
+            print(f"[Skill Execute] [WASM] 执行异常 wasm={wasm_file_path} error={e}", file=sys.stderr, flush=True)
+            if isinstance(e, WasmExecutionError):
+                raise
+            raise WasmExecutionError(str(e), _format_wasm_error(e))
         finally:
             Path(stdin_path).unlink(missing_ok=True)
             Path(stdout_path).unlink(missing_ok=True)
@@ -219,11 +601,16 @@ def run_wasm_plugin(
 
     若 wasm_path 不存在，返回 None（优雅跳过）。
     stdin_json 有值时使用 WASI 模式（Python py2wasm 插件）。
+    执行失败时抛出 WasmExecutionError，携带 wasm_details 供 API 返回前端。
     """
     if not Path(wasm_path).exists():
         return None
     if not HAS_WASMTIME:
-        return None
+        raise WasmExecutionError(
+            "WASM 沙箱不可用：未安装 wasmtime。请 pip install wasmtime。"
+            "若使用 Desktop Sidecar 模式，需重新打包：python scripts/build_l3_sidecar.py --force",
+            None,
+        )
     try:
         sandbox = JachinWasmSandbox()
         return sandbox.run_plugin(
@@ -232,6 +619,8 @@ def run_wasm_plugin(
             fuel_limit,
             stdin_json=stdin_json,
         )
+    except WasmExecutionError:
+        raise
     except Exception as e:
         logger.warning("WASM 执行失败 %s: %s", wasm_path, e)
-        raise
+        raise WasmExecutionError(str(e), _format_wasm_error(e))

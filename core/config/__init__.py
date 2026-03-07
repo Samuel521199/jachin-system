@@ -5,9 +5,14 @@ Configuration management - 配置管理
 所有配置应通过 settings 单例访问，禁止在业务代码中直接使用 os.getenv。
 """
 
+from pathlib import Path
 from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 项目根目录 .env，确保无论从何目录启动都能加载
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_ENV_PATHS = [_PROJECT_ROOT / ".env", Path(".env")]
 
 
 class Settings(BaseSettings):
@@ -18,7 +23,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=[str(p) for p in _ENV_PATHS if p.exists()] or ".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
@@ -51,7 +56,7 @@ class Settings(BaseSettings):
     QWEN_API_KEY: Optional[str] = None
     DASHSCOPE_API_KEY: Optional[str] = None
     QWEN_AI_API_KEY: Optional[str] = None
-    LLM_MODEL: str = "qwen-max"
+    LLM_MODEL: str = "qwen3.5-flash"
     QWEN_REGION: str = "cn-beijing"
 
     # Local LLM (小脑 / Edge - Ollama 默认)
@@ -77,6 +82,7 @@ class Settings(BaseSettings):
     DEVICE_ID: Optional[str] = None
 
     # Whisper / Voice
+    TTS_PROVIDER: str = "edge_tts"  # edge_tts | aliyun
     WHISPER_MODEL_PATH: Optional[str] = None
     ALIYUN_APP_KEY: Optional[str] = None
     XDG_CACHE_HOME: Optional[str] = None

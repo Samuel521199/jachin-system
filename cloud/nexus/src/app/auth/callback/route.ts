@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 /**
- * 已脱离 Supabase Auth，OAuth/OTP 回调直接重定向到控制台。
+ * OAuth/OTP 回调直接重定向到控制台。
  * 后续可接入 Auth.js 实现回调处理。
  */
 export async function GET(request: Request) {

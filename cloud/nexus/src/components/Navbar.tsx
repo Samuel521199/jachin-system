@@ -3,6 +3,10 @@
 import Link from "next/link";
 
 const navLinks = [
+  { href: "/store", label: "Store" },
+  { href: "/dashboard/analytics", label: "审计大屏" },
+  { href: "/developer/payouts", label: "收益中心" },
+  { href: "/dashboard/admin/review", label: "法律审核" },
   { href: "/market", label: "Market" },
   { href: "/forge", label: "The Forge" },
   { href: "/plaza", label: "Plaza" },
@@ -12,7 +16,7 @@ const navLinks = [
 ];
 
 /**
- * 已脱离 Supabase Auth，展示演示模式。
+ * 演示模式。
  * 后续可接入 Auth.js 实现登录/登出。
  */
 export default function Navbar() {

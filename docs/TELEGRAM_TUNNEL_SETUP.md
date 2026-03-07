@@ -74,7 +74,7 @@ https://api.telegram.org/bot123456789:ABCdefGHIjklMNOpqrsTUVwxyz/setWebhook?url=
 
 ### 4.2 写入 edge_agents
 
-在 Supabase 的 **edge_agents** 表中：
+在数据库 **edge_agents** 表中（Nexus Console 或 Drizzle Studio）：
 
 1. 找到一台 `status = active` 的设备（即已配对的 Layer 2）
 2. 编辑该行，填入：

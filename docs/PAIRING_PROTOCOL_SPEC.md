@@ -34,7 +34,7 @@ L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2
 | **L3 轮询** | `GET /api/v2/auth/poll?node_id=xxx` |
 | **pending** | 返回 `{ status: "pending" }` |
 | **approved** | 返回 `{ status: "approved", encrypted_api_keys: [...] }` |
-| **L3** | 用本地私钥解密，实例化 LiteLLMEngine，启动 WebSocket 18881 |
+| **L3** | 用本地私钥解密，实例化 LiteLLMEngine，启动 WebSocket 18981 |
 
 ---
 

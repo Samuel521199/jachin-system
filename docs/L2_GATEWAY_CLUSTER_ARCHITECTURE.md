@@ -342,7 +342,7 @@ L3                    Gateway                    队列              L2-1, L2-2,
 
 | 现有 | 网关架构下 |
 |------|------------|
-| L3 连 `ws://localhost:18881/sensory` | L3 连 `ws://gateway-ip:18882/sensory` |
+| L3 连 `ws://localhost:18981/sensory` | L3 连 `ws://gateway-ip:18882/sensory` |
 | 首包 `{type:"manifest", caps:[...]}` | 网关透传，或网关校验后转发 |
 | `{type:"input", intent:"..."}` | 网关按策略路由到 L2，透传 |
 | `{step_type:"chunk", content}` | L2 → Gateway → L3，透传 |

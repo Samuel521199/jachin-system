@@ -396,6 +396,45 @@ async def assign_node_to_sub_account(
                 "UPDATE l3_nodes SET sub_account_id = ?, last_seen_at = strftime('%s', 'now') WHERE id = ?",
                 (sub_account_id, node_id),
             )
+
+        # 若目标子账号无 Key，从同 main_user 下其他子账号复制，确保 L3 能分到 Key
+        target_has_keys = conn.execute(
+            "SELECT 1 FROM api_keys_vault WHERE sub_account_id = ? LIMIT 1",
+            (sub_account_id,),
+        ).fetchone()
+        logger.info("[v2/admin] nodes/assign L2 分配节点 node_id=%s sub_account_id=%s target_has_keys=%s",
+            node_id, sub_account_id[:16] + ("..." if len(sub_account_id) > 16 else ""), bool(target_has_keys))
+        if not target_has_keys:
+            from core.security.crypto_manager import decrypt_from_storage, encrypt_for_storage
+
+            siblings = conn.execute(
+                """
+                SELECT k.id, k.provider, k.encrypted_key, k.key_hash FROM api_keys_vault k
+                JOIN sub_accounts s ON k.sub_account_id = s.id
+                WHERE s.main_user_id = ?
+                """,
+                (main_user_id,),
+            ).fetchall()
+            seen_providers = set()
+            copied = 0
+            for r in siblings:
+                if r["provider"] in seen_providers:
+                    continue
+                seen_providers.add(r["provider"])
+                try:
+                    plain = decrypt_from_storage(r["encrypted_key"])
+                    key_id = f"copy-{r['provider']}-{secrets.token_hex(4)}"
+                    enc = encrypt_for_storage(plain)
+                    conn.execute(
+                        "INSERT INTO api_keys_vault (id, sub_account_id, provider, encrypted_key, key_hash) VALUES (?, ?, ?, ?, ?)",
+                        (key_id, sub_account_id, r["provider"], enc, r["key_hash"]),
+                    )
+                    copied += 1
+                except Exception as e:
+                    logger.warning("[v2/admin] 复制 Key %s 到子账号 %s 失败: %s", r["id"], sub_account_id, e)
+            if copied:
+                logger.info("[v2/admin] 子账号 %s 无 Key，已从同 main_user 复制 %d 个 providers=%s", sub_account_id, copied, list(seen_providers))
+
         conn.commit()
     except HTTPException:
         raise
@@ -410,3 +449,77 @@ async def assign_node_to_sub_account(
         "sub_account_id": sub_account_id,
         "message": "Node assigned to sub-account. L3 can now poll GET /api/v2/auth/poll for keys.",
     }
+
+
+@router.get("/nodes/stale")
+async def list_stale_nodes(
+    admin: dict = Depends(get_current_admin),
+) -> dict[str, Any]:
+    """
+    返回未审批的历史节点（sub_account_id 为空），供清理前预览。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, device_fingerprint, last_seen_at, created_at, display_name
+            FROM l3_nodes
+            WHERE sub_account_id IS NULL
+            ORDER BY last_seen_at DESC
+            """,
+        ).fetchall()
+        nodes = []
+        for r in rows:
+            nodes.append({
+                "id": r[0],
+                "device_fingerprint": r[1],
+                "last_seen_at": r[2],
+                "created_at": r[3],
+                "display_name": (r[4] or "").strip() if len(r) > 4 else "",
+            })
+        return {"count": len(nodes), "nodes": nodes}
+    finally:
+        conn.close()
+
+
+@router.post("/nodes/cleanup")
+async def cleanup_stale_nodes(
+    admin: dict = Depends(get_current_admin),
+) -> dict[str, Any]:
+    """
+    清理未审批的历史节点（sub_account_id 为空）。
+    返回删除数量。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM l3_nodes WHERE sub_account_id IS NULL",
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        logger.info("[v2/admin] cleanup: deleted %d stale nodes", deleted)
+        return {"deleted": deleted, "message": f"已清理 {deleted} 个历史节点"}
+    finally:
+        conn.close()
+
+
+@router.delete("/nodes/{node_id}")
+async def delete_node(
+    node_id: str,
+    admin: dict = Depends(get_current_admin),
+) -> dict[str, Any]:
+    """
+    删除单个 L3 节点（需管理员权限）。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute("DELETE FROM l3_nodes WHERE id = ?", (node_id,))
+        if cur.rowcount == 0:
+            raise api_error(404, ERR_NOT_FOUND_002, "L3 node not found")
+        conn.commit()
+        logger.info("[v2/admin] deleted node %s", node_id)
+        return {"deleted": node_id, "message": "节点已删除"}
+    except HTTPException:
+        raise
+    finally:
+        conn.close()

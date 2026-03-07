@@ -18,6 +18,7 @@ except ImportError:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 
 class UTF8JSONResponse(JSONResponse):
@@ -121,7 +122,7 @@ try:
     from core.api.skills import router as skills_router
 except ImportError as e:
     skills_router = None
-    logger.warning(f"Skills API router not available: {e}")
+    logger.warning(f"Skills API router not available (Ray/PluginManager): %s，使用 inventory 降级路由", e)
 
 try:
     from core.api.orchestrator import router as orchestrator_router
@@ -163,6 +164,12 @@ except ImportError as e:
     logger.warning(f"V2 Admin API router not available: {e}")
 
 try:
+    from core.api.routes.v2_local_admin import router as v2_local_admin_router
+except ImportError as e:
+    v2_local_admin_router = None
+    logger.warning(f"V2 Local Admin API router not available: {e}")
+
+try:
     from core.api.routes.v2_memory import router as v2_memory_router
 except ImportError as e:
     v2_memory_router = None
@@ -174,11 +181,36 @@ except ImportError as e:
     v2_coordinate_router = None
     logger.warning(f"V2 Coordinate API router not available: {e}")
 
+try:
+    from core.api.routes.v2_devices import router as v2_devices_router
+except ImportError as e:
+    v2_devices_router = None
+    logger.warning(f"V2 Devices API router not available: {e}")
+
+try:
+    from core.api.routes.v2_mcp import router as v2_mcp_router
+except ImportError as e:
+    v2_mcp_router = None
+    logger.warning(f"V2 MCP API router not available: {e}")
+
+try:
+    from core.api.routes.v2_inventory import router as v2_inventory_router
+except ImportError as e:
+    v2_inventory_router = None
+    logger.warning(f"V2 Inventory API router not available: {e}")
+
+try:
+    from core.api.routes.v2_events import router as v2_events_router
+except ImportError as e:
+    v2_events_router = None
+    logger.warning(f"V2 Events SSE router not available: {e}")
+
 # Lifespan管理 - v5.0 已废弃 Ray/Dapr/PostgreSQL，仅保留轻量初始化
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - v5.0 极简模式"""
     heartbeat_task = None
+    cloud_sync_task = None
     try:
         # V2: Ray/Dapr/PostgreSQL 已废弃；L2 控制面 + L3 单体
         app.state.plugin_manager = None
@@ -210,16 +242,65 @@ async def lifespan(app: FastAPI):
             heartbeat_task = start_l1_heartbeat_background()
         except Exception as e:
             logger.warning("L1 心跳守护进程启动跳过: %s", e)
+        # L1-L2 云边同步：神谕 manifest 拉取 + 技能/MCP 空投
+        try:
+            from core.sync_daemon import start_cloud_sync_background
+            cloud_sync_task = start_cloud_sync_background(interval_seconds=60)
+        except Exception as e:
+            logger.warning("云边同步守护进程启动跳过: %s", e)
+        # 本地数字仓库：确保目录存在
+        try:
+            from core.inventory_scanner import ensure_inventory_dirs
+            ensure_inventory_dirs()
+        except Exception as e:
+            logger.warning("Inventory 目录初始化跳过: %s", e)
+        # MCP 客户端代理：读取 ~/.jachin/mcp_servers.json，并发拉起所有 Server
+        try:
+            from core.mcp_client import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            await mcp_manager.start()
+            logger.info("MCP 管理器已启动 servers=%d tools=%d", mcp_manager.server_count, mcp_manager.tool_count)
+        except Exception as e:
+            logger.warning("MCP 管理器启动跳过: %s", e)
+        # 本地仓库扫描：侧载 MCP 与 Wasm 技能
+        try:
+            from core.inventory_scanner import scan_local_mcps, scan_local_skills
+            mcp_injected = await scan_local_mcps()
+            skills_found = await scan_local_skills()
+            if mcp_injected or skills_found:
+                logger.info("Inventory 扫描完成 mcps=%d skills=%d", mcp_injected, skills_found)
+        except Exception as e:
+            logger.warning("Inventory 扫描跳过: %s", e)
+        # 断网自治：从本地 role_permissions 预加载 RBAC 策略（L1 同步前或断网时作为真理来源）
+        try:
+            from core.policy_enforcer import load_from_local_db
+            if load_from_local_db():
+                logger.info("PolicyEnforcer 已从本地策略加载（断网自治就绪）")
+        except Exception as e:
+            logger.debug("PolicyEnforcer 本地预加载跳过: %s", e)
     except Exception as e:
         logger.error(f"Failed to initialize: {e}", exc_info=True)
 
     yield
 
+    # MCP 优雅关闭
+    try:
+        from core.mcp_client import get_mcp_manager
+        await get_mcp_manager().stop()
+    except Exception as e:
+        logger.warning("MCP 管理器关闭异常: %s", e)
     if heartbeat_task and not heartbeat_task.done():
         heartbeat_task.cancel()
         try:
             import asyncio
             await asyncio.wait_for(asyncio.shield(heartbeat_task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+    if cloud_sync_task and not cloud_sync_task.done():
+        cloud_sync_task.cancel()
+        try:
+            import asyncio
+            await asyncio.wait_for(asyncio.shield(cloud_sync_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
     logger.info("Shutting down Jachin Nexus v0.8.5 (Singularity OS)...")
@@ -250,6 +331,12 @@ try:
 except ImportError as e:
     logger.warning("L1SubscriptionMiddleware 未加载: %s", e)
 
+# L2 本地管理控制台静态资源
+_static_admin = Path(__file__).resolve().parent.parent / "static" / "admin"
+if _static_admin.exists():
+    app.mount("/admin", StaticFiles(directory=str(_static_admin), html=True), name="admin")
+    logger.info("Admin console: /admin")
+
 # 注册路由
 if chat_router:
     app.include_router(chat_router)
@@ -263,12 +350,14 @@ if tts_models_router:
     app.include_router(tts_models_router)
 if handshake_router:
     app.include_router(handshake_router)
-    if device_router:
-        app.include_router(device_router)
+    # device_router 依赖 Dapr，已废弃；/api/v2/devices 由 v2_devices_router 提供
     if create_subscription_router:
         app.include_router(create_subscription_router())
 if skills_router:
     app.include_router(skills_router)
+else:
+    from core.api.skills_fallback import router as skills_fallback_router
+    app.include_router(skills_fallback_router)
 if orchestrator_router:
     app.include_router(orchestrator_router)
 if monitoring_router:
@@ -281,11 +370,21 @@ if v2_auth_router:
     app.include_router(v2_auth_router)
 if v2_admin_router:
     app.include_router(v2_admin_router)
+if v2_local_admin_router:
+    app.include_router(v2_local_admin_router)
 if v2_memory_router:
     app.include_router(v2_memory_router)
 if v2_coordinate_router:
     app.include_router(v2_coordinate_router)
-logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/memory/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")
+if v2_devices_router:
+    app.include_router(v2_devices_router)
+if v2_mcp_router:
+    app.include_router(v2_mcp_router)
+if v2_inventory_router:
+    app.include_router(v2_inventory_router)
+if v2_events_router:
+    app.include_router(v2_events_router)
+logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/devices, /api/v2/memory/*, /api/v2/mcp/*, /api/v2/inventory/*, /api/v2/events/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")
 
 # 健康检查端点
 @app.get("/health")
@@ -372,12 +471,13 @@ if os.path.exists(web_ui_dir):
     app.mount("/hive", StaticFiles(directory=web_ui_dir, html=True), name="hive")
     logger.info("Hive Dashboard: /hive/")
 
-# L2 极简 Web 审批面板（零构建、极速挂载）
+# L2 审批面板（神经接驳、节点分配）：/gateway
+# static/admin（武库大盘）已挂载于 /admin，此处挂载到 /gateway 避免覆盖
 admin_ui_dir = os.path.join(os.path.dirname(__file__), "admin_ui")
 if os.path.exists(admin_ui_dir):
     from fastapi.staticfiles import StaticFiles
-    app.mount("/admin", StaticFiles(directory=admin_ui_dir, html=True), name="admin_ui")
-    logger.info("L2 Admin Panel: /admin/")
+    app.mount("/gateway", StaticFiles(directory=admin_ui_dir, html=True), name="admin_ui")
+    logger.info("L2 审批面板: /gateway/")
 
 # 推理策略 API（运行模式切换：节能/默认/高性能/上帝模式）
 # V2: 使用进程内默认值（Dapr 已废弃）

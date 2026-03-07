@@ -96,12 +96,17 @@
           <h1 class="text-2xl font-bold text-cyan-400 glow tracking-wider">L2 Admin — 神经接驳审批</h1>
           <p class="text-slate-500 text-sm mt-1">Zero-Trust · 节点审批 · 子账号管理 · {{ currentAdmin?.username }}</p>
         </div>
-        <button
-          @click="logout"
-          class="px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/50 text-sm transition-colors"
-        >
-          退出
-        </button>
+        <div class="flex items-center gap-3">
+          <a href="/admin/" class="px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/50 text-sm transition-colors">
+            武库大盘
+          </a>
+          <button
+            @click="logout"
+            class="px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-400 hover:text-cyan-400 hover:border-cyan-500/50 text-sm transition-colors"
+          >
+            退出
+          </button>
+        </div>
       </header>
 
       <!-- 子账号管理区 -->
@@ -199,9 +204,35 @@
               <span class="text-green-400">{{ node.sub_account_id || '-' }}</span>
               <span class="text-slate-500 text-xs">· {{ formatLastSeen(node.last_seen_at) }}</span>
               <span v-if="!node.is_online" class="text-xs px-1.5 py-0.5 rounded bg-slate-600 text-slate-400">离线</span>
+              <button
+                @click="deleteNode(node.id)"
+                class="ml-auto px-2 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30 text-xs"
+                title="删除节点"
+              >删除</button>
             </li>
             <li v-if="assignedNodes.length === 0" class="text-slate-500">暂无</li>
           </ul>
+        </div>
+        <div class="mt-4 pt-4 border-t border-slate-700">
+          <h3 class="text-slate-400 text-xs mb-2">历史节点清理</h3>
+          <p class="text-slate-500 text-xs mb-2">未审批的重复/历史节点会占用数据库，可一键清理</p>
+          <div class="flex items-center gap-3">
+            <span v-if="staleCount >= 0" class="text-slate-400 text-sm">发现 <span class="text-amber-400 font-mono">{{ staleCount }}</span> 个可清理</span>
+            <span v-else class="text-slate-500 text-sm">—</span>
+            <button
+              @click="fetchStaleCount"
+              class="px-3 py-1.5 rounded-lg bg-slate-700 border border-slate-600 text-slate-400 hover:border-slate-500 text-sm"
+            >
+              刷新
+            </button>
+            <button
+              @click="cleanupStaleNodes"
+              :disabled="staleCount <= 0 || cleanupLoading"
+              class="px-4 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/50 text-amber-400 hover:bg-amber-500/30 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium"
+            >
+              {{ cleanupLoading ? '清理中...' : '清理历史节点' }}
+            </button>
+          </div>
         </div>
       </section>
     </div>
@@ -224,7 +255,9 @@
           nodes: [],
           newSub: { name: '' },
           newKey: { sub_account_id: '', provider: 'openai', api_key: '' },
-          assignMap: {}
+          assignMap: {},
+          staleCount: -1,
+          cleanupLoading: false
         };
       },
       computed: {
@@ -321,7 +354,7 @@
           localStorage.removeItem(STORAGE_KEY);
         },
         async fetchAll() {
-          await Promise.all([this.fetchSubAccounts(), this.fetchNodes()]);
+          await Promise.all([this.fetchSubAccounts(), this.fetchNodes(), this.fetchStaleCount()]);
         },
         async fetchSubAccounts() {
           try {
@@ -406,6 +439,53 @@
             this.fetchNodes();
           } catch (e) {
             alert('分配失败: ' + e.message);
+          }
+        },
+        async fetchStaleCount() {
+          try {
+            const r = await fetch(API_BASE + '/nodes/stale', { headers: this.headers() });
+            if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
+            const data = await r.json();
+            this.staleCount = data.count ?? 0;
+          } catch (e) {
+            if (e.message.includes('401')) {
+              this.logout();
+              return;
+            }
+            this.staleCount = 0;
+          }
+        },
+        async cleanupStaleNodes() {
+          if (this.staleCount <= 0) return;
+          if (!confirm('确定要清理 ' + this.staleCount + ' 个未审批历史节点？此操作不可恢复。')) return;
+          this.cleanupLoading = true;
+          try {
+            const r = await fetch(API_BASE + '/nodes/cleanup', {
+              method: 'POST',
+              headers: this.headers()
+            });
+            if (!r.ok) throw new Error((await r.json()).detail?.message || await r.text());
+            const data = await r.json();
+            alert(data.message || '已清理 ' + data.deleted + ' 个历史节点');
+            this.staleCount = 0;
+          } catch (e) {
+            alert('清理失败: ' + e.message);
+          } finally {
+            this.cleanupLoading = false;
+          }
+        },
+        async deleteNode(nodeId) {
+          if (!confirm('确定要删除节点 ' + nodeId + '？此操作不可恢复。')) return;
+          try {
+            const r = await fetch(API_BASE + '/nodes/' + encodeURIComponent(nodeId), {
+              method: 'DELETE',
+              headers: this.headers()
+            });
+            if (!r.ok) throw new Error((await r.json()).detail?.message || await r.text());
+            alert('节点已删除');
+            this.fetchNodes();
+          } catch (e) {
+            alert('删除失败: ' + e.message);
           }
         }
       }

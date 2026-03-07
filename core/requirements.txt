@@ -3,6 +3,7 @@
 
 # HTTP
 httpx>=0.25.0
+aiohttp>=3.9.0  # L3 技能 HTTP API
 
 # Redis (L2 集群共享状态、Leader 选举)
 redis>=5.0.0
@@ -42,6 +43,9 @@ pygame>=2.5.0
 
 # V2 零信任密钥流转
 cryptography>=42.0.0
+
+# MCP (Model Context Protocol) 轨道 A
+mcp>=1.0.0
 
 # V2 L2 Admin JWT 登录
 PyJWT>=2.8.0

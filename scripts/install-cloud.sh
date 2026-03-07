@@ -28,10 +28,10 @@ else
     (cd "$NEXUS_DIR" && npm install --silent)
 fi
 
-# 可选：Supabase 迁移（悬赏大厅等表）
-if command -v npx &>/dev/null; then
-    echo "> Supabase 迁移（首次运行会下载 supabase CLI，请稍候）..."
-    (cd "$NEXUS_DIR" && npx -y supabase db push) && echo "[OK] Supabase migrations applied" || echo "[SKIP] Supabase 未配置或未 link，跳过迁移"
+# Drizzle 迁移（PostgreSQL，需 DATABASE_URL）
+if [ -d "$NEXUS_DIR/drizzle" ]; then
+    echo "> Drizzle 迁移..."
+    (cd "$NEXUS_DIR" && npm run db:migrate) && echo "[OK] Drizzle migrations applied" || echo "[SKIP] DATABASE_URL 未配置或迁移失败，跳过"
 fi
 
 echo "[OK] Cloud (Nexus Console) 已安装"

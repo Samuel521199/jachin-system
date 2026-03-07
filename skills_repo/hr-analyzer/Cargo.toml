@@ -1,0 +1,15 @@
+[package]
+name = "hr-analyzer"
+version = "1.0.0"
+edition = "2021"
+description = "HR 简历透视镜 - 基于 L2 MCP + LLM 的智能简历评估 Skill"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true

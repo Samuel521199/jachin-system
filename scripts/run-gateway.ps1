@@ -41,8 +41,9 @@ Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  L2 Gateway - 神经接驳审批" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Admin:  http://localhost:18888/admin/" -ForegroundColor Green
-Write-Host "  打开后 Token 已自动绑定，直接审批 L3 节点即可" -ForegroundColor Gray
+Write-Host "  武库大盘:  http://localhost:18888/admin/" -ForegroundColor Green
+Write-Host "  审批 L3:  http://localhost:18888/gateway/" -ForegroundColor Green
+Write-Host "  Token 已自动绑定，审批节点请打开 /gateway/" -ForegroundColor Gray
 Write-Host "  Press Ctrl+C to stop" -ForegroundColor DarkGray
 Write-Host ""
 

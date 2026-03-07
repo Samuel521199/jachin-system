@@ -8,6 +8,8 @@ export interface StoredMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: number;
+  /** 回复来源：L3 直连大模型 / L2 兜底 */
+  source?: "L3" | "L2";
 }
 
 const STORAGE_KEY = "jachin_chat_messages";

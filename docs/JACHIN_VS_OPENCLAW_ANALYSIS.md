@@ -15,7 +15,7 @@
 | 维度 | OpenClaw | Jachin Nexus v8.0 |
 |------|----------|-------------------|
 | **设计理念** | Multi-ingress, Single-kernel（多入口单内核） | 三位一体 + 分布式数字生命 OS |
-| **控制平面** | Gateway (WebSocket 127.0.0.1:18789) | Layer 1 Supabase + Next.js + Daemon WebSocket |
+| **控制平面** | Gateway (WebSocket 127.0.0.1:18789) | Layer 1 PostgreSQL + Next.js + Daemon WebSocket |
 | **执行平面** | Agent Runtime (pi-agent-core, Node.js) | Layer 2 daemon + agent_loop + SessionManager |
 | **通信协议** | WebSocket 实时双向 | Jachin Mesh：WebSocket 优先 + HTTP 心跳兜底 |
 | **输入系统** | Channels → Routing → Session | 全息感官总线：Voice/CLI/IM 归一化 → Session 隔离 |
@@ -597,7 +597,7 @@ Persona 注册表位于 `core/personas.py`，可扩展 `PERSONA_REGISTRY` 添加
 
 ### 14.6 流式粒度增强（✅ v8.0 已实现）
 
-已实现：`generate_response_stream` + `on_chunk` 回调，Manifest 含 `stream_chunk` 时逐 token 推送。参考 `docs/whitepaper/V8_SINGULARITY_OS.md` 第八节。
+已实现：`generate_response_stream` + `on_chunk` 回调，Manifest 含 `stream_chunk` 时逐 token 推送。
 
 ---
 
@@ -671,7 +671,7 @@ Agent 平级接力，不嵌套调用，直接切换「大脑人设」。
 | 维度 | 设计/实现 | 说明 |
 |------|-----------|------|
 | **平台定位** | ECOSYSTEM 白皮书：「去中心化执行、中心化确权」 | Layer 1 作为确权与交易中枢，用户执行在 Layer 2 |
-| **用户信息** | `nexus_users` + Supabase `auth.users` | 用户账户、角色 (super_admin/developer/consumer) |
+| **用户信息** | `users` + Auth.js | 用户账户、角色 (super_admin/developer/consumer) |
 | **技能订阅** | `transactions` 表 (acquire/renew/revoke, license_key) | 记录用户购买的插件/人设及 License |
 | **付费与版税** | `transactions`、`bounties`、`escrow_transactions` | 购买记录、悬赏赏金、托管结算 |
 | **设备注册** | `edge_agents` (user_id, pairing_code, current_blueprint_id) | 用户/企业的 Layer 2 设备在平台侧注册 |

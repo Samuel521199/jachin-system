@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Loader2 } from "lucide-react";
 
 /**
- * 已脱离 Supabase Auth，登录页直接跳转到控制台。
+ * 登录页直接跳转到控制台。
  * 后续可接入 Auth.js 实现登录。
  */
 function LoginForm() {

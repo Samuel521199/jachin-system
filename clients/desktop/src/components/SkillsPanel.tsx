@@ -2,9 +2,10 @@
  * 技能面板 - 列出已注册技能，支持自然语言调用与直接执行能力
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Zap, Play, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { listSkills, executeSkill, invokePlugin, SkillInfo } from "../lib/api";
+import { INVENTORY_UPDATED_EVENT } from "../hooks/useUISyncEventSource";
 
 export default function SkillsPanel() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -16,21 +17,29 @@ export default function SkillsPanel() {
   const [executing, setExecuting] = useState<{ skillId: string; cap: string } | null>(null);
   const [execResult, setExecResult] = useState<string | null>(null);
 
+  const load = useCallback(async () => {
+    try {
+      const list = await listSkills();
+      setSkills(list);
+    } catch (e) {
+      console.error("Failed to load skills:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    const load = async () => {
-      try {
-        const list = await listSkills();
-        setSkills(list);
-      } catch (e) {
-        console.error("Failed to load skills:", e);
-      } finally {
-        setLoading(false);
-      }
-    };
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
-  }, []);
+  }, [load]);
+
+  // L2 云边同步：收到 INVENTORY_UPDATED 时立即刷新技能列表
+  useEffect(() => {
+    const handler = () => void load();
+    window.addEventListener(INVENTORY_UPDATED_EVENT, handler);
+    return () => window.removeEventListener(INVENTORY_UPDATED_EVENT, handler);
+  }, [load]);
 
   const handleOrchestratorInvoke = async () => {
     const query = orchestratorInput.trim();
@@ -58,13 +67,17 @@ export default function SkillsPanel() {
     setExecResult(null);
     try {
       const res = await executeSkill(skillId, capabilityName, {});
-      const text = res.error
+      const baseText = res.error
         ? res.error
         : res.result != null
           ? JSON.stringify(res.result, null, 2)
           : res.success
             ? "执行成功"
             : "无返回";
+      const text =
+        res.error && res.wasm_details
+          ? `${baseText}\n\n--- WASM 详情 ---\n${res.wasm_details}`
+          : baseText;
       setExecResult(text);
     } catch (e: unknown) {
       setExecResult("执行失败: " + (e instanceof Error ? e.message : String(e)));

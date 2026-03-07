@@ -294,6 +294,8 @@ fn main() {
             commands::pairing::gateway_connect,
             commands::pairing::is_l3_engine_ready,
             commands::pairing::set_use_local_mode,
+            commands::skill_sync::perform_startup_sync,
+            commands::skill_sync::is_skill_sync_in_progress,
             stt_start_wake_listener,
             stt_stop_wake_listener,
             stt_wake_listener_running,
@@ -332,11 +334,13 @@ fn main() {
             stt_voice_stub::is_voice_capture_running,
         ])
         .setup(|app| {
-            // L3 引擎生命周期：静默启动 l3_node Sidecar（--ws-only），退出时 kill
+            // L3 引擎生命周期：静默启动 l3_node Sidecar（--ws-only），Ctrl+C 时 kill 释放端口
             match l3_spawn::spawn_l3_node(&*app) {
                 Ok(child) => {
-                    app.manage(l3_spawn::L3Handle::new(child));
-                    println!("[L3] 引擎已启动 ws://127.0.0.1:18881");
+                    let l3 = std::sync::Arc::new(l3_spawn::L3Handle::new(child));
+                    l3_spawn::register_ctrlc_kill(&l3);
+                    app.manage(l3);
+                    println!("[L3] 引擎已启动 ws://127.0.0.1:18981");
                 }
                 Err(e) => {
                     eprintln!("[L3] 启动失败: {}", e);
@@ -623,9 +627,12 @@ async fn hide_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 退出应用
+/// 退出应用（先 kill L3 释放端口）
 #[tauri::command]
 fn app_exit(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(l3) = app.try_state::<std::sync::Arc<l3_spawn::L3Handle>>() {
+        l3.kill();
+    }
     app.exit(0);
     Ok(())
 }
