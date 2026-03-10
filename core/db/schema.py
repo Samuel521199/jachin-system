@@ -415,4 +415,34 @@ CREATE INDEX IF NOT EXISTS idx_usage_telemetry_sub_account ON usage_telemetry(su
 CREATE INDEX IF NOT EXISTS idx_usage_telemetry_item ON usage_telemetry(item_id);
 CREATE INDEX IF NOT EXISTS idx_usage_telemetry_timestamp ON usage_telemetry(timestamp);
 CREATE INDEX IF NOT EXISTS idx_usage_telemetry_reported ON usage_telemetry(reported);
+
+-- =============================================================================
+-- Jachin 注册表 (K-V 配置) - 技能级动态提示词、JD_template 等
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS skill_registry (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'string',
+    created_at REAL DEFAULT (strftime('%s', 'now')),
+    updated_at REAL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_registry_skill_key ON skill_registry(skill_id, key);
+CREATE INDEX IF NOT EXISTS idx_skill_registry_skill ON skill_registry(skill_id);
+
+-- =============================================================================
+-- 动态数据卷绑定 - 技能与 VFS 卷的映射，引用计数用于 GC
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS volume_bindings (
+    id TEXT PRIMARY KEY,
+    volume_name TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    access_mode TEXT NOT NULL DEFAULT 'rw',
+    created_at REAL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_volume_bindings_skill ON volume_bindings(skill_id);
+CREATE INDEX IF NOT EXISTS idx_volume_bindings_volume ON volume_bindings(volume_name);
 """

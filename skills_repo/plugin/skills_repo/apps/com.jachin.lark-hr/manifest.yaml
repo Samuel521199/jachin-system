@@ -1,0 +1,49 @@
+# Lark 多维表单 HR 集成
+# 对应图1功能2、3：候选人面试流程 Track + 招聘数据报表
+
+id: com.jachin.lark-hr
+version: 1.0.0
+name: Lark HR 多维表单
+description: 基于 Lark 多维表单实现面试流程智能化跟踪与招聘数据报表
+author: HR Plugin Team
+
+capabilities:
+  - name: sync_interview_track
+    description: 同步 Lark 多维表单中的候选人面试流程 track 数据
+    compute: cpu_medium
+    input_schema:
+      type: object
+      properties:
+        sheet_token:
+          type: string
+        range:
+          type: string
+          default: ""
+      required:
+        - sheet_token
+  - name: get_recruitment_report
+    description: 基于 Lark 多维表单生成智能化招聘数据报表
+    compute: cpu_medium
+    input_schema:
+      type: object
+      properties:
+        sheet_token:
+          type: string
+        report_type:
+          type: string
+          enum: [pipeline, funnel, timeline]
+          default: pipeline
+      required:
+        - sheet_token
+
+permissions:
+  - id: network
+    label: 网络
+    scope: network
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

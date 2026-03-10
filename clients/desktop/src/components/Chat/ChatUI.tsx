@@ -11,6 +11,7 @@
 import React, { useRef, useEffect } from "react";
 import { Send, Mic, Sparkles, Loader2, Square, Radio } from "lucide-react";
 import { WindowControls } from "./WindowControls";
+import { MarkdownMessage } from "./MarkdownMessage";
 import type { StoredMessage } from "../../utils/messageStorage";
 
 export type RiskLevel = "safe" | "warning" | "danger";
@@ -139,13 +140,19 @@ export const ChatUI: React.FC<ChatUIProps> = ({
                     : "rounded-tl-md bg-gradient-to-br from-white/8 to-slate-500/10 border border-white/10"
                 }`}
               >
-                <span>
-                  {msg.content}
-                  {isTyping && idx === list.length - 1 && msg.role === "assistant" && (
-                    <span
-                      className={streamingFromWs ? "stream-cursor" : "inline-block w-2 h-4 ml-1 bg-cyan-400/80 animate-pulse rounded-sm"}
-                      aria-hidden
-                    />
+                <span className="contents">
+                  {msg.role === "assistant" ? (
+                    <>
+                      <MarkdownMessage content={msg.content} />
+                      {isTyping && idx === list.length - 1 && (
+                        <span
+                          className={streamingFromWs ? "stream-cursor" : "inline-block w-2 h-4 ml-1 bg-cyan-400/80 animate-pulse rounded-sm"}
+                          aria-hidden
+                        />
+                      )}
+                    </>
+                  ) : (
+                    msg.content
                   )}
                 </span>
                 {msg.role === "assistant" && msg.source && (

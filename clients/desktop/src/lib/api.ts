@@ -13,6 +13,9 @@ const L3_SKILLS_PORTS = [18990, 18991, 18992, 18993, 18994, 18995, 18996, 18997,
 /** L3 技能 API base URL（若 VITE_L3_SKILLS_URL 含端口则只用该 URL，否则会尝试多端口） */
 const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://localhost";
 
+/** 开发模式下使用 Vite 代理 /l3 -> L3，避免跨域 Failed to fetch */
+const L3_DEV_PROXY = import.meta.env.DEV ? "/l3" : "";
+
 /** 保存 API Key 到后端（持久化到 ~/.jachin/.qwen_api_key，覆盖 .env） */
 export async function saveApiKey(qwenApiKey: string | null): Promise<{ ok: boolean; message: string }> {
   const res = await fetch(`${BACKEND_URL}/api/v3/config/apikey`, {
@@ -58,6 +61,8 @@ export interface SkillInfo {
   execution_count?: number;
   /** 上次执行时间 */
   last_executed_at?: string | null;
+  /** L2 inventory 目录名，卸载时使用 */
+  item_id?: string;
 }
 
 /** V2: 统一直连后端 API（Dapr 已废弃） */
@@ -212,9 +217,19 @@ export interface ClusterStats {
 
 /**
  * 获取集群统计（GET /api/v3/cluster/stats）
+ * 404 时返回单机占位（后端可能未实现 cluster 路由）
  */
 export async function getClusterStats(): Promise<ClusterStats> {
-  return invokeBackend<ClusterStats>("/api/v3/cluster/stats", undefined, "GET");
+  try {
+    return await invokeBackend<ClusterStats>("/api/v3/cluster/stats", undefined, "GET");
+  } catch {
+    return {
+      nodes: { online: 1, offline: 0, total: 1 },
+      tasks: { pending: 0, running: 0, completed: 0, failed: 0, total: 0 },
+      resources: {},
+      utilization: {},
+    };
+  }
 }
 
 /** 集群节点信息 */
@@ -574,14 +589,14 @@ export async function controlDevice(
 async function invokeL3Skills<T>(
   method: string,
   data?: unknown,
-  httpVerb: "GET" | "POST" = "GET"
+  httpVerb: "GET" | "POST" | "PUT" | "DELETE" = "GET"
 ): Promise<T> {
   const path = method.startsWith("/") ? method : `/${method}`;
   const options: RequestInit = {
     method: httpVerb,
     headers: { "Content-Type": "application/json" },
   };
-  if (data && httpVerb !== "GET") options.body = JSON.stringify(data);
+  if (data && !["GET", "DELETE"].includes(httpVerb)) options.body = JSON.stringify(data);
 
   // 若 VITE_L3_SKILLS_URL 为完整 URL（含端口），则只试该地址
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
@@ -589,6 +604,21 @@ async function invokeL3Skills<T>(
     const res = await fetch(`${envUrl.replace(/\/$/, "")}${path}`, options);
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     return res.json();
+  }
+
+  // 开发模式：优先走 Vite 代理，避免跨域
+  if (L3_DEV_PROXY) {
+    try {
+      const res = await fetch(`${L3_DEV_PROXY}${path}`, options);
+      if (res.ok) return res.json();
+      throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    } catch (e) {
+      if ((e as Error)?.message?.includes("Failed to fetch") || (e as Error)?.message?.includes("NetworkError")) {
+        /* fall through to direct */
+      } else {
+        throw e;
+      }
+    }
   }
 
   // 否则依次尝试 18990-18995（与 l3_node/http_server.py 端口回退一致）
@@ -610,6 +640,70 @@ async function invokeL3Skills<T>(
   throw lastErr ?? new Error("L3 技能 API 不可达");
 }
 
+/** 回收站项 */
+export interface RecycleBinItem {
+  recycle_id: string;
+  item_id: string;
+  skill_id: string;
+  name: string;
+  source: string;
+  deleted_at: string;
+}
+
+/** 回收站 API 走 L2（与 move_to_recycle_bin 同进程，路径一致） */
+async function fetchRecycleBin<T>(
+  path: string,
+  options: { method?: string; body?: string } = {}
+): Promise<T> {
+  const sub = await getSubAccountId();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (sub) headers["X-Sub-Account-Id"] = sub;
+  const res = await fetch(`${BACKEND_URL}${path}`, {
+    method: options.method ?? "GET",
+    headers,
+    body: options.body,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+/** 列出回收站技能 */
+export async function listRecycleBinSkills(): Promise<RecycleBinItem[]> {
+  try {
+    const res = await fetchRecycleBin<{ items?: RecycleBinItem[] }>("/api/v2/recycle-bin/skills");
+    return Array.isArray(res?.items) ? res.items : [];
+  } catch (e) {
+    console.warn("[RecycleBin] list failed:", e);
+    return [];
+  }
+}
+
+/** 从回收站恢复技能 */
+export async function restoreRecycleBinSkill(recycleId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetchRecycleBin<{ ok?: boolean; error?: string }>(
+      `/api/v2/recycle-bin/skills/${encodeURIComponent(recycleId)}/restore`,
+      { method: "POST" }
+    );
+    return { ok: res?.ok !== false, error: res?.error };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 从回收站彻底删除 */
+export async function permanentDeleteRecycleBinSkill(recycleId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetchRecycleBin<{ ok?: boolean; error?: string }>(
+      `/api/v2/recycle-bin/skills/${encodeURIComponent(recycleId)}`,
+      { method: "DELETE" }
+    );
+    return { ok: res?.ok !== false, error: res?.error };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /**
  * 获取技能列表（GET /api/v3/skills，从 L3 读取）
  */
@@ -621,6 +715,201 @@ export async function listSkills(): Promise<SkillInfo[]> {
     console.warn("[Skills] L3 不可用，回退 L2:", e);
     const list = await invokeBackend<SkillInfo[]>("/api/v3/skills", undefined, "GET");
     return Array.isArray(list) ? list : [];
+  }
+}
+
+/** HR 透析镜技能 ID（支持流式进度） */
+export const HR_SKILL_IDS = [
+  "jpp:com.jachin.hr.analyzer",
+  "jpp:com.jachin.hr.analyzer2",
+  "jpp:com.jachin.hr.analyzer3",
+  "jpp:com.jachin.hr.analyzer4",
+];
+
+/** 流式进度事件 */
+export interface SkillStreamEvent {
+  status: "progress" | "done" | "error";
+  filename?: string;
+  current?: number;
+  total?: number;
+  error?: string;
+}
+
+const _STEM_TO_NAME: Record<string, string> = {
+  zhangsan: "张三",
+  lisi: "李四",
+  wangwu: "王五",
+  zhaoliu: "赵六",
+};
+
+/** 解析 filename 为显示名（如 zhangsan_resume.md -> 张三.md） */
+export function displayNameFromFilename(filename: string): string {
+  const stem = filename.replace(/_resume\.(md|txt)$/i, "").replace(/\.(md|txt)$/i, "");
+  if (/^resume_\d+$/.test(stem)) return filename;
+  const display = _STEM_TO_NAME[stem.toLowerCase()] ?? stem;
+  return display ? `${display}.md` : filename;
+}
+
+/**
+ * 获取 L3 技能 API 的 base URL（与 invokeL3Skills 逻辑一致，供流式等复用）
+ */
+async function getL3SkillsBaseUrl(): Promise<string> {
+  const path = "/api/v3/skills";
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return envUrl.replace(/\/$/, "");
+  }
+  if (L3_DEV_PROXY) {
+    try {
+      const url = `${L3_DEV_PROXY}${path}`;
+      const r = await fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } });
+      if (r.ok) return L3_DEV_PROXY;
+    } catch {
+      /* fall through to direct */
+    }
+  }
+  for (const port of L3_SKILLS_PORTS) {
+    try {
+      const url = `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}${path}`;
+      const r = await fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } });
+      if (r.ok) return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}`;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error("L3 技能 API 不可达，请确认 L3 已启动（端口 18990 等）");
+}
+
+/**
+ * 流式执行 HR 透析镜（POST /api/v3/skills/{skill_id}/execute/stream）
+ * 返回 SSE 事件异步迭代器，供 BatchProgressBar 消费
+ * 若流式不可达则抛出，调用方可回退到 executeSkill
+ */
+export async function* executeSkillStream(
+  skillId: string,
+  capabilityName: string,
+  inputData: Record<string, unknown> = {}
+): AsyncGenerator<SkillStreamEvent> {
+  const baseUrl = await getL3SkillsBaseUrl();
+  const path = `/api/v3/skills/${encodeURIComponent(skillId)}/execute/stream`;
+  const url = `${baseUrl}${path}`;
+  const body = JSON.stringify({
+    capability_name: capabilityName,
+    input_data: inputData,
+  });
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`流式接口 HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
+  if (!res.body) throw new Error("L3 流式 API 返回无 body，请检查服务端");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop() ?? "";
+      for (const block of lines) {
+        const m = block.match(/^data:\s*(.+)/);
+        if (!m) continue;
+        try {
+          const ev = JSON.parse(m[1]) as SkillStreamEvent;
+          yield ev;
+          if (ev.status === "done" || ev.status === "error") return;
+        } catch {
+          /* ignore parse */
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** 判断是否为 HR 透析镜技能（支持流式） */
+export function isHrSkill(skillId: string): boolean {
+  return HR_SKILL_IDS.includes((skillId || "").trim());
+}
+
+/** 招聘全链路任务 SSE 事件 */
+export interface RecruitmentStreamEvent {
+  step?: number;
+  msg?: string;
+  status?: "progress" | "done" | "error";
+  filename?: string;
+  current?: number;
+  total?: number;
+}
+
+/**
+ * 一键式全链路招聘（POST /api/recruitment/start_task）
+ * 收网 → HR 透析镜，SSE 流式进度
+ */
+export async function* startRecruitmentTask(payload: {
+  job_name: string;
+  max_count?: number;
+  filter_tab?: string;
+  request_resume?: boolean;
+  output_dir?: string;
+  force_reanalyze?: boolean;
+  jd_content?: string;
+  focus_keywords?: string;
+  strictness?: string;
+}): AsyncGenerator<RecruitmentStreamEvent> {
+  const baseUrl = await getL3SkillsBaseUrl();
+  const url = `${baseUrl}/api/recruitment/start_task`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      job_name: payload.job_name,
+      max_count: payload.max_count ?? 20,
+      filter_tab: payload.filter_tab ?? "全部",
+      request_resume: payload.request_resume ?? true,
+      output_dir: payload.output_dir ?? "",
+      force_reanalyze: payload.force_reanalyze ?? false,
+      jd_content: payload.jd_content ?? "",
+      focus_keywords: payload.focus_keywords ?? "",
+      strictness: payload.strictness ?? "standard",
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`招聘任务 HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
+  if (!res.body) throw new Error("招聘任务 API 返回无 body");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop() ?? "";
+      for (const block of lines) {
+        const m = block.match(/^data:\s*(.+)/);
+        if (!m) continue;
+        try {
+          const ev = JSON.parse(m[1]) as RecruitmentStreamEvent;
+          yield ev;
+          if (ev.status === "done" || ev.status === "error") return;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
 
@@ -862,7 +1151,83 @@ export interface PluginResponse {
 }
 
 /**
+ * 卸载技能：优先 Tauri invoke，不可用时走 L3 HTTP DELETE（供浏览器控制台使用）。
+ */
+export async function uninstallSkill(
+  itemId: string,
+  purgeData: boolean
+): Promise<{ ok: boolean; error?: string }> {
+  // 1. 尝试 Tauri invoke（桌面应用内）
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const res = await invoke<{ ok?: boolean; error?: string }>("uninstall_skill", {
+      baseUrl: BACKEND_URL,
+      itemId,
+      purgeData,
+    });
+    return { ok: res?.ok !== false, error: res?.error };
+  } catch (e) {
+    const tauriErr = e instanceof Error ? e.message : String(e);
+    // 2. Tauri 不可用（如浏览器打开控制台）时，走 L3 HTTP DELETE
+    try {
+      const path = `/api/v3/skills/${encodeURIComponent(itemId)}?purge_data=${purgeData}`;
+      const res = await invokeL3Skills<{ ok?: boolean; error?: string }>(path, undefined, "DELETE");
+      return { ok: res?.ok !== false, error: res?.error };
+    } catch (httpErr) {
+      return { ok: false, error: tauriErr || (httpErr instanceof Error ? httpErr.message : String(httpErr)) };
+    }
+  }
+}
+
+/**
+ * 获取技能配置（GET /api/v2/skills/{skill_id}/config）
+ */
+export async function getSkillConfig(skillId: string): Promise<Record<string, unknown>> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/skills/${encodeURIComponent(skillId)}/config`, {
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  if (!res.ok) return {};
+  const data = await res.json();
+  return data?.config ?? {};
+}
+
+/**
+ * 更新技能配置（PUT /api/v2/skills/{skill_id}/config）
+ */
+export async function updateSkillConfig(
+  skillId: string,
+  configData: Record<string, unknown>
+): Promise<{ ok: boolean; updated?: number; inserted?: number; error?: string }> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/skills/${encodeURIComponent(skillId)}/config`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...(sub ? { "X-Sub-Account-Id": sub } : {}),
+    },
+    body: JSON.stringify(configData),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data?.detail ?? data?.error ?? "更新失败" };
+  return { ok: true, updated: data?.updated ?? 0, inserted: data?.inserted ?? 0 };
+}
+
+async function getSubAccountId(): Promise<string | null> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const cfg = await invoke<{ sub_account_id?: string }>("read_l2_gateway_config");
+    const id = cfg?.sub_account_id;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 调用插件（简化版，通过 HTTP API）
+ * 自然语言查询时，若 L2 编排器返回 404（无匹配插件），自动回退到 L3 Agent，
+ * 使 HR 透析镜等 Wasm 技能也能通过控制台自然语言执行并生成输出文档。
  * TODO: 实现 gRPC 客户端连接 Jachin Link Gateway
  */
 export async function invokePlugin(
@@ -872,17 +1237,80 @@ export async function invokePlugin(
 ): Promise<PluginResponse> {
   // 如果 methodName 未提供，则视为自然语言查询
   const isNaturalLanguage = !methodName;
-  
-  // 目前通过 HTTP API 调用，后续可以改为 gRPC
+
+  // 自然语言：先尝试 L2 编排器
+  if (isNaturalLanguage) {
+    const response = await fetch(`${BACKEND_URL}/api/v3/orchestrator/invoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_query: pluginIdOrQuery,
+        payload: payload || undefined,
+        trace_id: `trace-${Date.now()}`,
+      }),
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      return {
+        status_code: result.status_code || 200,
+        error_message: result.error_message,
+        ui_render_schema: result.ui_render_schema,
+        data_payload: result.data_payload ? (() => {
+          const binary = atob(result.data_payload);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          return bytes;
+        })() : undefined,
+        trace_id: result.trace_id,
+        metadata: result.metadata,
+      };
+    }
+
+    // 404：L2 无匹配插件，回退到 L3 Agent（会触发 run_tool 持久化，如 HR 透析镜）
+    if (response.status === 404) {
+      try {
+        const agentRes = await invokeL3Skills<{ answer?: string; saved_path?: string; error?: string }>(
+          "/api/v3/agent/run",
+          { user_input: pluginIdOrQuery },
+          "POST"
+        );
+        const answer = agentRes.answer ?? agentRes.error ?? "";
+        const savedPath = agentRes.saved_path;
+        return {
+          status_code: 200,
+          error_message: agentRes.error && !agentRes.answer ? agentRes.error : undefined,
+          trace_id: `trace-${Date.now()}`,
+          metadata: {
+            result: answer,
+            saved_path: savedPath,
+            chain: [
+              { id: "1", label: "用户输入", type: "input" },
+              { id: "2", label: "L3 Agent 执行（编排器无匹配，已回退）", type: "skill" },
+              { id: "3", label: savedPath ? `完成 · 报告已保存至 ${savedPath}` : "完成", type: "done" },
+            ],
+          },
+        };
+      } catch (l3Err) {
+        const msg = l3Err instanceof Error ? l3Err.message : String(l3Err);
+        if (msg.includes("503") || msg.includes("Agent 尚未就绪")) {
+          throw new Error("L3 Agent 尚未就绪，请确保 L3 已启动。若使用 --ws-only 模式，请先启动 L3 节点。");
+        }
+        throw new Error(`编排器无匹配插件，L3 回退失败: ${msg}`);
+      }
+    }
+
+    const error = await response.text();
+    throw new Error(`Plugin invocation failed: ${error}`);
+  }
+
+  // 指定 plugin_id + method_name：直接走 L2
   const response = await fetch(`${BACKEND_URL}/api/v3/orchestrator/invoke`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      ...(isNaturalLanguage
-        ? { user_query: pluginIdOrQuery }
-        : { plugin_id: pluginIdOrQuery, method_name: methodName }),
+      plugin_id: pluginIdOrQuery,
+      method_name: methodName,
       payload: payload || undefined,
       trace_id: `trace-${Date.now()}`,
     }),
@@ -894,18 +1322,16 @@ export async function invokePlugin(
   }
 
   const result = await response.json();
-  
-  // 转换响应格式
   return {
     status_code: result.status_code || 200,
     error_message: result.error_message,
     ui_render_schema: result.ui_render_schema,
     data_payload: result.data_payload ? (() => {
-        const binary = atob(result.data_payload);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return bytes;
-      })() : undefined,
+      const binary = atob(result.data_payload);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    })() : undefined,
     trace_id: result.trace_id,
     metadata: result.metadata,
   };

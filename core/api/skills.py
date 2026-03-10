@@ -48,6 +48,7 @@ class SkillInfo(BaseModel):
     permissions: List[Dict[str, str]] = []
     execution_count: Optional[int] = None
     last_executed_at: Optional[str] = None
+    item_id: Optional[str] = None  # L2 inventory 目录名，卸载时使用
 
 
 class SkillExecutionRequest(BaseModel):
@@ -113,6 +114,7 @@ def _inventory_skill_to_info(inv: dict) -> dict:
     caps = [{"name": p if isinstance(p, str) else p.get("name", ""), "description": ""} for p in params] if params else [{"name": "execute", "description": inv.get("description", "")}]
     return {
         "skill_id": inv.get("id", inv.get("item_id", "")),
+        "item_id": inv.get("item_id"),
         "name": inv.get("name", ""),
         "version": inv.get("version", "1.0.0"),
         "description": inv.get("description"),

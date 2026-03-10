@@ -1,0 +1,59 @@
+id: com.jachin.resume-memory
+version: 1.0.0
+name: 简历核心记忆与 RAG
+description: 将优秀员工简历存入 LanceDB 核心记忆，支持 RAG 检索「历史成功画像」辅助筛选决策
+author: HR Plugin Team
+
+capabilities:
+  - name: store_core_resume
+    description: 将优秀员工简历标记 is_core=True 存入 LanceDB
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        resume_text:
+          type: string
+        resume_struct:
+          type: object
+        department:
+          type: string
+      required:
+        - resume_text
+  - name: rag_retrieve_success_profile
+    description: RAG 检索：根据当前部门的历史成功画像评估候选人
+    compute: cpu_medium
+    input_schema:
+      type: object
+      properties:
+        candidate_text:
+          type: string
+        department:
+          type: string
+        top_k:
+          type: integer
+          default: 5
+      required:
+        - candidate_text
+    output_schema:
+      type: object
+      properties:
+        profiles:
+          type: array
+        query_embedding_used:
+          type: boolean
+
+permissions:
+  - id: file
+    label: 文件
+    scope: file.read
+  - id: file
+    label: 文件
+    scope: file.write
+
+requirements:
+  - lancedb
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

@@ -1,0 +1,44 @@
+id: com.jachin.resume-extractor
+version: 1.0.0
+name: 简历结构化提取
+description: 从简历文本中提取姓名、学历、工作经历、技能等结构化信息
+author: HR Plugin Team
+
+capabilities:
+  - name: extract_resume
+    description: 从文本中提取简历结构化字段
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        text:
+          type: string
+          description: 简历原始文本（来自 PDF/Word 解析）
+      required:
+        - text
+    output_schema:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        education:
+          type: array
+        work_experience:
+          type: array
+        skills:
+          type: array
+        summary:
+          type: string
+
+permissions: []
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

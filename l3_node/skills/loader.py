@@ -9,10 +9,28 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_stem_from_hr_report(report: str) -> str:
+    """从 HR 报告提取候选人姓名作为 stem。支持多种 LLM 输出格式。"""
+    # 格式1: 候选人姓名：张三
+    m = re.search(r"候选人姓名[：:]\s*([^\s\n\-—]+)", report)
+    if m:
+        return m.group(1).strip()
+    # 格式2: 候选人评估报告：张三 - 后端架构师
+    m = re.search(r"候选人评估报告[：:]\s*([^\s\-—]+)", report)
+    if m:
+        return m.group(1).strip()
+    # 格式3: # 张三 - 后端架构师（附录原始简历标题）
+    m = re.search(r"#\s*[📋🧾]?\s*([^\s\-—]+)\s*[-—]\s*后端", report)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 # JPP Wasm 插件目录（相对 l3_node/skills）
 _WASM_PLUGINS_DIR = Path(__file__).resolve().parent / "wasm_plugins"
@@ -42,6 +60,106 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
+    """
+    从 L2 拉取技能配置（skill_registry）。
+    优先直接调用 core.skill_registry（同进程），否则 HTTP GET。
+    """
+    try:
+        from core.skill_registry import get_skill_config
+        return get_skill_config(skill_id)
+    except ImportError:
+        pass
+    try:
+        import httpx
+        cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+        l2_url = "http://localhost:18888"
+        sub_account_id = ""
+        if cfg_path.exists():
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                l2_url = (data.get("l2_base_url") or l2_url).rstrip("/")
+                sub_account_id = data.get("sub_account_id") or ""
+            except Exception:
+                pass
+        url = f"{l2_url}/api/v2/skills/{skill_id}/config"
+        headers = {}
+        if sub_account_id:
+            headers["X-Sub-Account-Id"] = sub_account_id
+        with httpx.Client(timeout=5.0, trust_env=False) as client:
+            r = client.get(url, headers=headers or None)
+            if r.is_success:
+                data = r.json()
+                return data.get("config") or {}
+    except Exception as e:
+        logger.debug("[Skills] HTTP 拉取配置失败: %s", e)
+    return {}
+
+
+def _get_hr_plugin_config_defaults(lookup_id: str) -> dict[str, Any]:
+    """从 plugin.json 直接读取 HR 技能默认配置（L2 不可用时兜底，确保 output_dir 等可用）"""
+    _HR_ITEM_MAP = {
+        "jpp:com.jachin.hr.analyzer": "hr-analyzer",
+        "jpp:com.jachin.hr.analyzer2": "hr-analyzer2",
+        "jpp:com.jachin.hr.analyzer3": "hr-analyzer3",
+        "jpp:com.jachin.hr.analyzer4": "hr-analyzer4",
+    }
+    item_id = _HR_ITEM_MAP.get(lookup_id)
+    if not item_id:
+        return {}
+    for base in (_WASM_PLUGINS_DIR, _L3_SKILL_CACHE_DIR):
+        plugin_path = base / item_id / "plugin.json"
+        if plugin_path.exists():
+            try:
+                data = json.loads(plugin_path.read_text(encoding="utf-8"))
+                cfg = data.get("configs") or data.get("config")
+                if isinstance(cfg, dict):
+                    return {k: v for k, v in cfg.items() if not (k and str(k).startswith("_"))}
+            except Exception as e:
+                logger.debug("[Skills] 读取 plugin.json 失败 path=%s err=%s", plugin_path, e)
+    return {}
+
+
+def get_hr_invoke_defaults(skill_id: str = "com.jachin.hr.analyzer4") -> dict[str, Any]:
+    """
+    从技能配置（plugin.json + skill_registry）读取 HR 透析镜的默认调用参数，
+    供 Agent 系统提示词与空参数兜底使用。智能关联技能配置，避免硬编码。
+    """
+    lookup_id = f"jpp:{skill_id}" if not skill_id.startswith("jpp:") else skill_id
+    config_id = lookup_id.replace("jpp:", "")
+    proj = Path(__file__).resolve().parent.parent.parent
+    cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(_fetch_skill_config(config_id) or {})}
+    use_abs = cfg.get("resume_input_dir_use_absolute") in (True, "true", "1", "yes") or cfg.get("use_absolute_path") in (True, "true", "1", "yes")
+    try:
+        from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
+        resume_dir = _resolve_safe_dir(cfg.get("resume_input_dir") or "data/hr_resumes", _PROJ_ROOT, use_absolute_path=use_abs)
+    except ImportError:
+        resume_dir = None
+    resume_dir = resume_dir or (proj / "data" / "hr_resumes")
+    target_role = (cfg.get("default_target_role") or "").strip()
+    if not target_role:
+        jd_dir = proj / "config" / "hr_jds"
+        if jd_dir.exists():
+            for p in sorted(jd_dir.glob("*.md")):
+                target_role = p.stem
+                break
+    if not target_role:
+        target_role = "backend_engineer"
+    resume_filename = (cfg.get("default_resume") or "").strip()
+    if not resume_filename and resume_dir.exists():
+        for p in sorted(resume_dir.glob("*.md")) + sorted(resume_dir.glob("*.txt")):
+            resume_filename = p.name
+            break
+    if not resume_filename:
+        resume_filename = "zhangsan_resume.md"
+    return {
+        "target_role": target_role,
+        "resume_filename": resume_filename,
+        "resume_input_dir": cfg.get("resume_input_dir") or "data/hr_resumes",
+        "output_dir": cfg.get("output_dir") or "data/hr_analysis",
+    }
+
+
 def _invoke_native(tool_id: str, **kwargs: Any) -> Any:
     """调用 Native Core 工具。"""
     try:
@@ -54,20 +172,56 @@ def _invoke_native(tool_id: str, **kwargs: Any) -> Any:
 
 
 def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
-    """L3 独立运行时的 Native 兜底实现。"""
+    """L3 独立运行时的 Native 兜底实现。HR 白名单：client_volumes、data/hr_resumes、config/hr_jds。"""
     workspace = Path.home() / ".jachin" / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+    proj = Path(__file__).resolve().parent.parent.parent
+    _l3_volume = (Path.home() / ".jachin" / "client_volumes").resolve()
+    _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), (proj / "config" / "hr_jds").resolve()]
+
+    def _under_hr(p: Path) -> bool:
+        try:
+            abs_p = p.resolve()
+            return any(str(abs_p).startswith(str(a)) for a in _hr_allowed)
+        except (OSError, RuntimeError):
+            return False
 
     def _assert_under(p: Path) -> None:
+        if _under_hr(p):
+            return
         if not str(p.resolve()).startswith(str(workspace.resolve())):
-            raise ValueError(f"路径越界: {p} 必须在 ~/.jachin/workspace/ 下")
+            raise ValueError(f"路径越界: {p} 必须在 ~/.jachin/workspace/ 或 client_volumes、data/hr_resumes、config/hr_jds 下")
+
+    def _read_file_content(p: Path) -> str:
+        """读取文件，PDF 使用 core.pdf_extractor 提取纯文本（与 MCP read_file 复用）。"""
+        if p.suffix.lower() == ".pdf":
+            try:
+                from core.pdf_extractor import extract_pdf_text
+                return extract_pdf_text(p) or ""
+            except ImportError:
+                return ""
+        return p.read_text(encoding="utf-8", errors="replace")
 
     if tool_id == "core:fs_read":
-        fp = Path(kwargs.get("file_path", "")).expanduser()
+        raw = (kwargs.get("file_path", "") or "").strip().replace("\\", "/")
+        fp = Path(raw).expanduser()
         if not fp.is_absolute():
-            fp = (workspace / fp).resolve()
+            # L3 数据卷相对路径：global_resume_pool/Java_杭州 4-6K/xxx.pdf
+            cand_vol = (_l3_volume / raw.lstrip("/")).resolve()
+            if cand_vol.exists() and cand_vol.is_file() and _under_hr(cand_vol):
+                return _read_file_content(cand_vol)
+            for base in _hr_allowed:
+                cand = (base / fp.name).resolve()
+                if cand.exists() and _under_hr(cand):
+                    return _read_file_content(cand)
+            cand = (proj / raw.lstrip("/")).resolve()
+            if cand.exists() and _under_hr(cand):
+                return _read_file_content(cand)
+            fp = (workspace / raw).resolve()
+        if _under_hr(fp):
+            return _read_file_content(fp)
         _assert_under(fp)
-        return fp.read_text(encoding="utf-8", errors="replace")
+        return _read_file_content(fp)
     if tool_id == "core:fs_write":
         fp = Path(kwargs.get("file_path", "")).expanduser()
         if not fp.is_absolute():
@@ -170,12 +324,32 @@ def _scan_wasm_dir_nested(scan_dir: Path) -> list[dict[str, Any]]:
     return tools
 
 
+def _get_uninstalled_builtin_skills() -> set[str]:
+    """读取用户已卸载的内置技能（从 ~/.jachin/uninstalled_builtin_skills.json）"""
+    try:
+        from core.skill_registry import get_uninstalled_builtin_skills
+        return get_uninstalled_builtin_skills()
+    except Exception:
+        return set()
+
+
+def _get_permanently_uninstalled_skills() -> set[str]:
+    """读取永久卸载黑名单（回收站彻底删除后，防止 L2 同步重新拉取）"""
+    try:
+        from core.skill_registry import get_permanently_uninstalled_skills
+        return get_permanently_uninstalled_skills()
+    except Exception:
+        return set()
+
+
 def _scan_wasm_plugins() -> list[dict[str, Any]]:
     """
     扫描 l3_node/skills/wasm_plugins/ 与 ~/.jachin/l3_skill_cache/ 下的 JPP .wasm 插件。
     后者为 L3 冷启动从 L2 拉取的技能缓存。
     内置 hr-analyzer 统一用 jpp:com.jachin.hr.analyzer（L1 发布 id），避免与 L1 同步重复展示。
+    已卸载的内置技能（uninstalled_builtin_skills.json）、永久卸载技能（permanently_uninstalled_skills.json）将被过滤。
     """
+    uninstalled = _get_uninstalled_builtin_skills() | _get_permanently_uninstalled_skills()
     tools: list[dict[str, Any]] = []
     seen: set[str] = set()
     for t in _scan_wasm_dir_flat(_WASM_PLUGINS_DIR) + _scan_wasm_dir_nested(_WASM_PLUGINS_DIR) + _scan_wasm_dir_nested(_L3_SKILL_CACHE_DIR):
@@ -184,6 +358,9 @@ def _scan_wasm_plugins() -> list[dict[str, Any]]:
         if tid == "jpp:hr-analyzer" and _WASM_PLUGINS_DIR in Path(t.get("_wasm_path", "")).parents:
             tid = "jpp:com.jachin.hr.analyzer"
             t = {**t, "id": tid}
+        item_id = t.get("_item_id") or tid.replace("jpp:", "")
+        if item_id in uninstalled:
+            continue
         if tid not in seen:
             seen.add(tid)
             tools.append(t)
@@ -204,7 +381,68 @@ def load_skills_for_ui(allowed_skills: Optional[list[str]] = None) -> list[dict[
     return tools
 
 
-def _invoke_wasm(tool_id: str, params: dict[str, Any]) -> str:
+def build_hr_stdin_for_debug(
+    params: dict[str, Any],
+    lookup_id: str = "jpp:com.jachin.hr.analyzer4",
+) -> tuple[str, dict[str, Any]]:
+    """
+    构建 HR 透析镜的 stdin 字符串，供调试脚本使用（不执行 Wasm）。
+    返回 (stdin_str, debug_info)，debug_info 含 jd_src, jd_path, jd_preview, has_jd 等。
+    """
+    import tempfile
+    stdin_json = dict(params) if params else {}
+    debug: dict[str, Any] = {"jd_src": None, "jd_path": None, "jd_preview": "", "has_jd": False, "caller_jd_len": 0}
+    config_id = lookup_id.replace("jpp:", "")
+    proj = Path(__file__).resolve().parent.parent.parent
+    defaults = get_hr_invoke_defaults(config_id)
+    if not stdin_json.get("target_role"):
+        stdin_json["target_role"] = defaults.get("target_role", "backend_engineer")
+    if not stdin_json.get("target_dir"):
+        stdin_json["target_dir"] = "data/hr_resumes"
+    cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(_fetch_skill_config(config_id) or {})}
+    caller_jd = (stdin_json.get("jd_template") or stdin_json.get("jd_content") or "").strip()
+    if not caller_jd:
+        caller_jd = (cfg.get("JD_template") or cfg.get("jd_template") or "").strip()
+    debug["caller_jd_len"] = len(caller_jd)
+    if caller_jd:
+        stdin_json["jd_template"] = caller_jd
+        stdin_json.pop("jd_content", None)
+        try:
+            _jd_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+            _jd_file.write(caller_jd)
+            _jd_file.close()
+            _jd_path = str(Path(_jd_file.name).resolve()).replace("\\", "/")
+            stdin_json["jd_path"] = _jd_path
+            # 保留 jd_template 作为 fallback
+            debug["jd_src"] = "jd_path"
+            debug["jd_path"] = _jd_path
+            debug["jd_preview"] = caller_jd[:80] + ("…" if len(caller_jd) > 80 else "")
+            debug["has_jd"] = True
+        except Exception as e:
+            debug["jd_src"] = "jd_template"
+            debug["jd_preview"] = caller_jd[:80] + ("…" if len(caller_jd) > 80 else "")
+            debug["has_jd"] = True
+    else:
+        stdin_json.pop("jd_template", None)
+        stdin_json.pop("jd_content", None)
+        stdin_json.pop("jd_path", None)
+    for k, v in cfg.items():
+        if k and not k.startswith("_") and k not in ("JD_template", "jd_template", "jd_path"):
+            stdin_json[k] = v
+    _hr_files_val = stdin_json.pop("_hr_files", None)
+    if _hr_files_val:
+        _stdin_str = _hr_files_val + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+    else:
+        _stdin_str = json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+    if not debug["has_jd"]:
+        debug["has_jd"] = bool((stdin_json.get("jd_template") or "").strip()) or bool((stdin_json.get("jd_path") or "").strip())
+        if stdin_json.get("jd_path"):
+            debug["jd_src"] = "jd_path"
+            debug["jd_path"] = stdin_json["jd_path"]
+    return _stdin_str, debug
+
+
+def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[Any] = None) -> str:
     """调用 JPP Wasm 插件，通过 core.wasm_runner 执行。"""
     import sys
     tools = _scan_wasm_plugins()
@@ -216,55 +454,273 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any]) -> str:
         return f"[未知 Wasm 技能: {tool_id}]"
     wasm_path = t.get("_wasm_path", "")
     # L1 同步的 com.jachin.hr.analyzer 与内置 hr-analyzer 为同一技能，优先用 wasm_plugins 的（与 execute ABI 兼容，避免 cache 版 __rust_dealloc 不兼容）
-    if lookup_id == "jpp:com.jachin.hr.analyzer":
+    _HR_BUILTIN_MAP = {
+        "jpp:com.jachin.hr.analyzer": "hr-analyzer",
+        "jpp:com.jachin.hr.analyzer2": "hr-analyzer2",
+        "jpp:com.jachin.hr.analyzer3": "hr-analyzer3",
+        "jpp:com.jachin.hr.analyzer4": "hr-analyzer4",
+    }
+    if lookup_id in _HR_BUILTIN_MAP:
+        plugin_dir = _HR_BUILTIN_MAP[lookup_id]
         proj_root = Path(__file__).resolve().parent.parent.parent
         candidates = [
-            _WASM_PLUGINS_DIR / "hr-analyzer" / "main.wasm",
-            proj_root / "l3_node" / "skills" / "wasm_plugins" / "hr-analyzer" / "main.wasm",
-            Path.cwd() / "l3_node" / "skills" / "wasm_plugins" / "hr-analyzer" / "main.wasm",
+            _WASM_PLUGINS_DIR / plugin_dir / "main.wasm",
+            proj_root / "l3_node" / "skills" / "wasm_plugins" / plugin_dir / "main.wasm",
+            Path.cwd() / "l3_node" / "skills" / "wasm_plugins" / plugin_dir / "main.wasm",
         ]
         for builtin in candidates:
             if builtin.exists():
                 wasm_path = str(builtin.resolve())
-                print(f"[Skill Execute] [Wasm] 使用内置 hr-analyzer wasm_path={wasm_path}", file=sys.stderr, flush=True)
+                print(f"[Skill Execute] [Wasm] 使用内置 {plugin_dir} wasm_path={wasm_path}", file=sys.stderr, flush=True)
                 break
         else:
-            print(f"[Skill Execute] [Wasm] 内置 hr-analyzer 未找到，candidates={[str(p) for p in candidates]}", file=sys.stderr, flush=True)
+            print(f"[Skill Execute] [Wasm] 内置 {plugin_dir} 未找到，candidates={[str(p) for p in candidates]}", file=sys.stderr, flush=True)
     if not wasm_path or not Path(wasm_path).exists():
         print(f"[Skill Execute] [Wasm] 文件不存在 tool_id={tool_id} path={wasm_path}", file=sys.stderr, flush=True)
         return f"[Wasm 文件不存在: {tool_id}]"
     stdin_json = dict(params) if params else {}
-    # HR 简历透视镜：注入 resume_path、jd_path
-    if lookup_id == "jpp:com.jachin.hr.analyzer":
+    # HR 简历透视镜 / 透析镜：从技能配置读取默认值，空参数时自动注入
+    if lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4"):
+        config_id = lookup_id.replace("jpp:", "")
         proj = Path(__file__).resolve().parent.parent.parent
-        if "resume_filename" in stdin_json and "resume_path" not in stdin_json:
-            data_dir = proj / "data" / "hr_resumes"
-            if data_dir.exists():
-                fn = stdin_json.get("resume_filename", "zhangsan_resume.md")
-                stdin_json["resume_path"] = str((data_dir / fn).resolve())
-        # 注入 JD：target_role 为预设 key 时传 jd_path（Wasm 通过 MCP 读取，避免 JSON 转义）
-        _HR_JD_KEYS = ("backend_engineer",)
-        target = (stdin_json.get("target_role") or "").strip()
-        if target in _HR_JD_KEYS:
-            jd_file = proj / "config" / "hr_jds" / f"{target}.md"
-            if jd_file.exists():
-                stdin_json["jd_path"] = str(jd_file.resolve())
-    print(f"[Skill Execute] [Wasm] 调用 tool_id={tool_id} wasm_path={wasm_path} stdin={json.dumps(stdin_json, ensure_ascii=False)[:200]}", file=sys.stderr, flush=True)
+        defaults = get_hr_invoke_defaults(config_id)
+        if not stdin_json.get("target_role"):
+            stdin_json["target_role"] = defaults.get("target_role", "backend_engineer")
+        if not stdin_json.get("resume_filename") and not stdin_json.get("target_dir"):
+            stdin_json["target_dir"] = "data/hr_resumes"
+        config = _fetch_skill_config(config_id)
+        cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(config or {})}
+        # 岗位 JD 仅从招聘大盘传入（jd_template/jd_content），不再从 config/hr_jds、技能配置等读取
+        # 批量模式：传了 target_dir 则处理目录下所有简历；否则单文件模式
+        if stdin_json.get("target_dir"):
+            stdin_json.pop("resume_filename", None)
+            stdin_json.pop("resume_path", None)
+            # 调用方已传入 _hr_files（如 recruitment_task 收网后的 pdf_paths），直接使用
+            paths: list[str] = []
+            if stdin_json.get("_hr_files"):
+                paths = [p.strip() for p in stdin_json["_hr_files"].split("|||") if p.strip()]
+                if paths:
+                    logger.info("[Skill Execute] HR 使用调用方传入的 _hr_files count=%d", len(paths))
+                    print(f"[Skill Execute] HR _hr_files from caller count={len(paths)}", file=sys.stderr, flush=True)
+            # 本地列举目录，注入 resume_paths（绝对路径数组），绕过 MCP list_directory
+            if not paths:
+                tdir = stdin_json.get("target_dir") or "data/hr_resumes"
+                if tdir == "data/hr_resumes":
+                    tdir = cfg.get("resume_input_dir") or "data/hr_resumes"
+                stdin_json["target_dir"] = tdir
+                try:
+                    from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
+                    _l3_vol = Path.home() / ".jachin" / "client_volumes"
+                    # L3 数据卷：auto_xxx 或 global_resume_pool/JobFolder
+                    if tdir.startswith("auto_") or tdir.startswith("global_resume_pool"):
+                        vol_dir = (_l3_vol / tdir.replace("\\", "/").lstrip("/")).resolve()
+                        if vol_dir.is_dir() and str(vol_dir).startswith(str(_l3_vol.resolve())):
+                            resume_dir = vol_dir
+                        else:
+                            resume_dir = None
+                    else:
+                        resume_dir = _resolve_safe_dir(tdir, _PROJ_ROOT, use_absolute_path=False)
+                    if not resume_dir:
+                        resume_dir = (proj / tdir.replace("\\", "/").lstrip("/")).resolve()
+                    # 兜底：__file__ 解析的 proj 可能不对（如 Desktop  bundled 时），尝试 cwd
+                    if not resume_dir.is_dir():
+                        alt = (Path.cwd() / tdir.replace("\\", "/").lstrip("/")).resolve()
+                        if alt.is_dir():
+                            resume_dir = alt
+                            logger.info("[Skill Execute] HR 使用 cwd 解析 resume_dir=%s", resume_dir)
+                    if resume_dir.is_dir():
+                        paths = [
+                            str(f.resolve()).replace("\\", "/") for f in sorted(resume_dir.iterdir())
+                            if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf")
+                        ]
+                        if paths:
+                            rp_val = "|||".join(paths)
+                            stdin_json["_hr_files"] = rp_val
+                            logger.info("[Skill Execute] HR 本地列举 target_dir=%s count=%d paths=%s", tdir, len(paths), paths[:2])
+                            print(f"[Skill Execute] HR _hr_files OK count={len(paths)} len={len(rp_val)}", file=sys.stderr, flush=True)
+                        else:
+                            logger.warning("[Skill Execute] HR 目录 %s 下无 .md/.txt/.pdf 文件", resume_dir)
+                    else:
+                        logger.warning("[Skill Execute] HR 简历目录不存在: %s (proj=%s cwd=%s)", resume_dir, proj, Path.cwd())
+                except Exception as e:
+                    logger.warning("[Skill Execute] HR 本地列举失败: %s", e)
+            # _hr_files 为空时直接返回，不调用 Wasm（避免 list_directory 返回项目根）
+            if stdin_json.get("target_dir") and not stdin_json.get("_hr_files"):
+                print("[Skill Execute] HR EARLY RETURN: resume_paths empty", file=sys.stderr, flush=True)
+                return (
+                    f"⚠️ 无法列举简历目录：{tdir}\n"
+                    f"请确认 data/hr_resumes 存在且包含 .md、.txt 或 .pdf 文件。\n"
+                    f"当前工作目录: {Path.cwd()}\n"
+                    f"项目根(proj): {proj}"
+                )
+        else:
+            if not stdin_json.get("resume_filename"):
+                stdin_json["resume_filename"] = defaults.get("resume_filename", "zhangsan_resume.md")
+        # 岗位 JD：优先招聘大盘传入，空时兜底 skill_registry/config
+        caller_jd = (stdin_json.get("jd_template") or stdin_json.get("jd_content") or "").strip()
+        if not caller_jd:
+            caller_jd = (cfg.get("JD_template") or cfg.get("jd_template") or "").strip()
+        if caller_jd:
+            stdin_json["jd_template"] = caller_jd
+            stdin_json.pop("jd_content", None)
+            # 写入临时文件传 jd_path，同时保留 jd_template 作为 fallback（mcp_read_file 失败时 Rust 可回退）
+            import tempfile
+            try:
+                _jd_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+                _jd_file.write(caller_jd)
+                _jd_file.close()
+                _jd_path = str(Path(_jd_file.name).resolve()).replace("\\", "/")
+                stdin_json["jd_path"] = _jd_path
+                # 不 pop jd_template！保留为 fallback，避免 mcp_read_file 失败时回退到 DEFAULT_ROLE
+                logger.info("[Skill Execute] HR 岗位 JD 已写入临时文件 jd_path=%s len=%d", _jd_path, len(caller_jd))
+                print(f"[Loader] 岗位 JD 完整内容 (len={len(caller_jd)}):\n{caller_jd}\n", file=sys.stderr, flush=True)
+            except Exception as e:
+                logger.warning("[Skill Execute] HR jd_path 写入失败，回退 jd_template: %s", e)
+                stdin_json.pop("jd_path", None)
+        else:
+            stdin_json.pop("jd_template", None)
+            stdin_json.pop("jd_content", None)
+            stdin_json.pop("jd_path", None)
+        _has_jd = bool((stdin_json.get("jd_template") or "").strip()) or bool((stdin_json.get("jd_path") or "").strip())
+        if not _has_jd:
+            logger.warning("[Skill Execute] HR 岗位 JD 为空，请从招聘大盘填写「岗位 JD」")
+            print("[Skill Execute] HR 警告: 岗位 JD 为空，分析将缺少【岗位要求】", file=sys.stderr, flush=True)
+        for k, v in cfg.items():
+            if k and not k.startswith("_") and k not in ("JD_template", "jd_template", "jd_path"):
+                stdin_json[k] = v
+        # resume_path 依赖 cfg，需在 cfg 合并后解析（批量模式 target_dir 时跳过）
+        if "resume_path" not in stdin_json and stdin_json.get("resume_filename") and not stdin_json.get("target_dir"):
+            fn = stdin_json.get("resume_filename", "zhangsan_resume.md")
+            resume_dir_cfg = (cfg.get("resume_input_dir") or "data/hr_resumes").strip()
+            use_abs = cfg.get("resume_input_dir_use_absolute") in (True, "true", "1", "yes") or cfg.get("use_absolute_path") in (True, "true", "1", "yes")
+            try:
+                from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
+                resume_dir = _resolve_safe_dir(resume_dir_cfg, _PROJ_ROOT, use_absolute_path=use_abs)
+                if resume_dir and (resume_dir / fn).exists():
+                    stdin_json["resume_path"] = str((resume_dir / fn).resolve())
+                elif (proj / "data" / "hr_resumes" / fn).exists():
+                    stdin_json["resume_path"] = str((proj / "data" / "hr_resumes" / fn).resolve())
+            except Exception:
+                if (proj / "data" / "hr_resumes" / fn).exists():
+                    stdin_json["resume_path"] = str((proj / "data" / "hr_resumes" / fn).resolve())
+    # HR 技能需 LLM，执行前校验
+    if lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4"):
+        try:
+            from core.wasm_runner import _host_services
+            if not _host_services.get("llm_engine"):
+                return "⚠️ LLM 引擎未注册，无法执行 HR 透析镜。请确保 L3 已正确启动并完成与 L2 的配对。"
+        except Exception:
+            pass
+    # 批量模式：文件列表放 stdin 首行，绕过 Wasm JSON extract（易误匹配 jd_template）
+    _hr_files_val = stdin_json.pop("_hr_files", None)
+    if _hr_files_val:
+        _stdin_str = _hr_files_val + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+    else:
+        _stdin_str = json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+    _jd_in = (
+        ("jd_template" in stdin_json and bool((stdin_json.get("jd_template") or "").strip()))
+        or ("jd_path" in stdin_json and bool((stdin_json.get("jd_path") or "").strip()))
+    )
+    _jd_src = "jd_path" if stdin_json.get("jd_path") else "jd_template"
+    print(f"[Skill Execute] WASM_IN jd_ok={_jd_in} jd_src={_jd_src} stdin_len={len(_stdin_str)}", file=sys.stderr, flush=True)
+    # 调试：DEBUG_HR_JD=1 时写入 stdin 到临时文件，便于排查 JD 传入问题
+    if _jd_in and __import__("os").environ.get("DEBUG_HR_JD") == "1":
+        import tempfile
+        _f = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        _f.write(_stdin_str)
+        _f.close()
+        print(f"[Skill Execute] DEBUG_HR_JD stdin 已写入 {_f.name}", file=sys.stderr, flush=True)
     try:
         from core.wasm_runner import run_wasm_plugin
+        # 批量模式 3 份简历需 3 次 LLM 调用，燃料需更高
+        _fuel = 50_000_000 if lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4") else 200_000
         result = run_wasm_plugin(
             wasm_path,
             function_name="run",
-            fuel_limit=200_000,
-            stdin_json=stdin_json,
+            fuel_limit=_fuel,
+            stdin_json=_stdin_str,
+            ndjson_queue=ndjson_queue,
         )
         if result is None:
             print(f"[Skill Execute] [Wasm] 无返回 tool_id={tool_id}", file=sys.stderr, flush=True)
             return "[Wasm 执行未返回结果]"
         result_str = result if isinstance(result, str) else str(result)
-        print(f"[Skill Execute] [Wasm] 返回 tool_id={tool_id} len={len(result_str)} preview={result_str[:200]}...", file=sys.stderr, flush=True)
+        _rpreview = result_str[:500] if len(result_str) <= 500 else result_str[:500] + "..."
+        print(f"[Skill Execute] [Wasm] RETURN len={len(result_str)} full={_rpreview!r}", file=sys.stderr, flush=True)
+        # HR 透析镜：分析完成后立即写入（在返回给前端/TTS 之前），自动读取技能默认配置
+        # 流式模式（ndjson_queue 非空）时由流式 handler 负责持久化，此处跳过
+        if ndjson_queue is None and lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4"):
+            _err_prefixes = ("⚠️", "[权限", "[未知", "[Wasm", "[执行")
+            try:
+                from l3_node.hr_analysis_persist import persist_hr_analysis_result, persist_hr_analysis_batch_item
+                from core.wasm_runner import get_last_ndjson_lines
+                cfg = _fetch_skill_config(lookup_id.replace("jpp:", ""))
+                cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(cfg or {})}
+                ndjson_lines = get_last_ndjson_lines()
+                count = 0
+                if ndjson_lines:
+                    for line in ndjson_lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("status") == "done":
+                            continue
+                        if item.get("status") != "progress":
+                            continue
+                        report = item.get("report_content")
+                        if not report or not isinstance(report, str):
+                            continue
+                        fn = item.get("filename") or ""
+                        stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
+                        if not stem or re.match(r"^resume_\d+$", stem):
+                            stem = _extract_stem_from_hr_report(report) or stem or "unknown"
+                        persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
+                        count += 1
+                    if count > 0:
+                        result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
+                        logger.info("[Skill Execute] HR NDJSON 批量持久化完成 count=%d", count)
+                elif result_str and len(result_str.strip()) > 20 and not any(result_str.strip().startswith(p) for p in _err_prefixes):
+                    # 回退：解析 JSON 数组（旧版 Wasm 输出）
+                    parsed = None
+                    raw = result_str.strip()
+                    try:
+                        parsed = json.loads(raw)
+                    except json.JSONDecodeError:
+                        if raw.startswith("["):
+                            try:
+                                end = raw.rfind("]")
+                                if end > 0:
+                                    parsed = json.loads(raw[: end + 1])
+                            except json.JSONDecodeError:
+                                pass
+                    if isinstance(parsed, list) and parsed:
+                        for item in parsed:
+                            if not isinstance(item, dict):
+                                continue
+                            report = item.get("report")
+                            if not report or not isinstance(report, str):
+                                continue
+                            fn = item.get("filename") or ""
+                            stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
+                            if not stem or re.match(r"^resume_\d+$", stem):
+                                stem = _extract_stem_from_hr_report(report) or stem or "unknown"
+                            persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
+                            count += 1
+                        if count > 0:
+                            result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
+                    else:
+                        persist_hr_analysis_result(lookup_id, result_str, stdin_json, config=cfg)
+                        result_str = f"✅ 执行成功，本次分析了 1 份简历。报告已保存至 data/hr_analysis/ 目录。\n\n--- 分析报告 ---\n\n{result_str}"
+            except Exception as pe:
+                logger.warning("[Skills] HR 报告持久化失败: %s", pe)
         if isinstance(result, str):
-            return result
+            return result_str
         if isinstance(result, int):
             return f"[exit {result}]"
         return str(result)
@@ -278,6 +734,7 @@ def run_tool(
     tool_id: str,
     action_input: str,
     allowed_skills: Optional[list[str]] = None,
+    ndjson_queue: Optional[Any] = None,
 ) -> str:
     """
     根据工具 ID 和输入字符串执行工具，返回可读结果。
@@ -294,14 +751,16 @@ def run_tool(
         return "[权限拒绝: 当前子账号未开启该技能]"
 
     # JPP Wasm 插件：JSON 参数序列化后传入 wasm_runner
-    if tool_id.startswith("jpp:"):
+    # 兼容 skill_id 无 jpp: 前缀（如 API 传入 com.jachin.hr.analyzer4）
+    _jpp_id = tool_id if tool_id.startswith("jpp:") else (f"jpp:{tool_id}" if tool_id.startswith("com.jachin.") else "")
+    if _jpp_id:
         params: dict[str, Any] = {}
         if inp:
             try:
                 params = json.loads(inp) if inp.strip().startswith("{") else {"input": inp}
             except json.JSONDecodeError:
                 params = {"input": inp}
-        return _invoke_wasm(tool_id, params)
+        return _invoke_wasm(_jpp_id, params, ndjson_queue=ndjson_queue)
 
     params = {}
     if tool_id == "core:fs_read":
@@ -413,6 +872,13 @@ def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
 
 
 def build_tools_description(tools: list[dict[str, Any]]) -> str:
-    """生成 Agent system prompt 中的工具描述段落。"""
-    lines = [f"- {t['label']}: {t['desc']}" for t in tools]
+    """生成 Agent system prompt 中的工具描述段落。含 id 供 Action 精确匹配。"""
+    _HR_IDS = ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4")
+    lines = []
+    for t in tools:
+        tid = t.get("id", "")
+        desc = t.get("desc", t.get("label", tid))
+        if tid in _HR_IDS:
+            desc = f"{desc} 【简历分析时直接调用，参数可从技能配置自动读取，可传空对象 {{}}】"
+        lines.append(f"- {tid} ({t.get('label', tid)}): {desc}")
     return "\n".join(lines) if lines else "（无可用工具）"

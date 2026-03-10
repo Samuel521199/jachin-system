@@ -148,7 +148,7 @@ async def _broadcast_to_ui(ev: Any) -> None:
     meta = getattr(ev, "payload", None) or {}
     step_type = meta.get("step_type") or "unknown"
     content = getattr(ev, "result", "") or getattr(ev, "content", "")
-    content_out = content if step_type == "chunk" else content[:500]
+    content_out = content  # 禁止截断，完整输出（如 HR 透析镜报告）
     out = {
         "step_type": step_type,
         "content": content_out,

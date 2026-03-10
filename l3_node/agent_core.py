@@ -26,11 +26,11 @@ from l3_node.engine.hooks_pipeline import (
     global_hooks,
 )
 from l3_node.llm_client import LiteLLMEngine, SecurityContext
-from l3_node.skills import build_tools_description, get_mcp_registry, load_tools, run_tool
+from l3_node.skills import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
 
 logger = logging.getLogger(__name__)
 
-MAX_REACT_ITERATIONS = 5
+MAX_REACT_ITERATIONS = 8  # 多轮工具调用场景需更多迭代，5 易触发「循环达到上限」
 NATIVE_TOOL_IDS = ("core:fs_read", "core:fs_write", "core:shell_exec")
 RECALL_MEMORY_TOOL_ID = "recall_memory"
 COORDINATE_TOOL_ID = "coordinate"
@@ -62,7 +62,7 @@ def _parse_action(
     allowed_skills: Optional[list[str]] = None,
 ) -> dict[str, Any] | None:
     text = (llm_output or "").strip()
-    for pattern in (r"Final\s+Answer:\s*(.+?)(?:\n|$)", r"Answer:\s*(.+?)(?:\n|$)"):
+    for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
         m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
         if m:
             return {"type": "answer", "content": m.group(1).strip()}
@@ -369,6 +369,19 @@ def _build_system_prompt(
 Action: delegate
 Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "writer", "task": "撰写文档"}]}
 将子任务交给专业子 Agent 并行执行。"""
+    hr_hint = ""
+    hr_ids = [t.get("id", "") for t in tools if "hr.analyzer" in (t.get("id") or "")]
+    hr_preferred = (next((x for x in hr_ids if "analyzer4" in x), None) or next((x for x in hr_ids if "analyzer3" in x), None) or next((x for x in hr_ids if "analyzer2" in x), None) or (hr_ids[0] if hr_ids else None)) if hr_ids else None
+    if hr_ids:
+        try:
+            defaults = get_hr_invoke_defaults(hr_preferred.replace("jpp:", ""))
+            hr_hint = f"""
+【重要】当用户要求「简历分析」「HR 透析镜」等时：直接调用 {hr_preferred}（优先透析镜 4），Action Input 可传 {{}} 或 {{"target_role":"{defaults.get('target_role','backend_engineer')}","resume_filename":"{defaults.get('resume_filename','zhangsan_resume.md')}"}}，系统会从技能配置自动读取 resume_input_dir、JD 等。禁止用 list_directory 探索，禁止仅回复描述性文字。
+【强制】当用户说「再分析」「重新分析」「再去分析」「再跑一次」「再执行一次透析镜」等时：必须重新调用 {hr_preferred}，不得复用上一轮的 Observation，不得用 fs_read 或 recall_memory 代替。"""
+        except Exception:
+            hr_hint = f"""
+【重要】当用户要求「简历分析」「HR 透析镜」等时：直接调用 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}，Action Input 可传 {{}}，系统会从技能配置自动注入默认参数。禁止用 list_directory 探索。
+【强制】当用户说「再分析」「重新分析」「再去分析」「再跑一次」等时：必须重新调用 HR 透析镜工具，不得复用上一轮 Observation，不得用 fs_read 或 recall_memory 代替。"""
     return f"""你是一个智能助手，使用 ReAct 格式思考。
 可用工具：
 {tools_desc}
@@ -378,11 +391,13 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 
 输出格式：
 Thought: <你的思考>
-Action: <工具名>
+Action: <工具名，必须与上方「可用工具」中的 id 完全一致，如 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}>
 Action Input: <参数>
 Observation: <工具返回>
 ...（可多轮）
 Final Answer: <最终回复>
+{hr_hint}
+注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。
 """
 
 
@@ -533,11 +548,11 @@ async def _run_react_core(
         if on_chunk:
             response = await engine.generate_response_stream(
                 full_messages, chunk_callback=on_chunk,
-                temperature=0.7, max_tokens=1024,
+                temperature=0.7, max_tokens=16384,
             )
         else:
             result = await engine.generate_response(
-                full_messages, temperature=0.7, max_tokens=1024,
+                full_messages, temperature=0.7, max_tokens=16384,
             )
             response = result.get("content", result) if isinstance(result, dict) else str(result)
 
@@ -556,9 +571,10 @@ async def _run_react_core(
         if parsed is None:
             if "Final Answer:" in response or "Answer:" in response:
                 for prefix in ("Final Answer:", "Answer:"):
-                    for line in response.split("\n"):
-                        if line.strip().lower().startswith(prefix.lower()):
-                            ans = line.split(":", 1)[1].strip()
+                    idx = response.lower().find(prefix.lower())
+                    if idx >= 0:
+                        ans = response[idx + len(prefix):].strip()
+                        if ans:
                             _emit("answer", ans)
                             ctx.final_answer = ans
                             return
@@ -651,22 +667,64 @@ async def _run_react_core(
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
-            # 工具执行路由器：MCP 工具走 L2 代理，本地工具走 run_tool
+            # 工具执行路由器：MCP 工具（L3 本地 read_file 或 L2 代理），本地工具走 run_tool
             mcp_registry = get_mcp_registry()
             if tool in mcp_registry.known_mcp_tools:
-                observation = await mcp_registry.invoke_via_l2(tool, inp)
+                observation = await mcp_registry.invoke(tool, inp)
             else:
                 observation = run_tool(tool, inp, allowed_skills=allowed_skills)
             ctx.observation = observation
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
+            # 工具返回已是完整报告（如 HR 透析镜）时直接作为最终答案，禁止 LLM 二次总结导致截断
+            obs = (observation or "").strip()
+            if len(obs) > 500 and ("## " in obs or "**" in obs or "综合评分" in obs or "录用建议" in obs or "评估" in obs):
+                ctx.final_answer = obs
+                if on_step:
+                    on_step("answer", ctx.final_answer, ctx.run_id)
+                return
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
-                "content": f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer:",
+                "content": f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:",
             })
             continue
 
+    # 循环结束仍未产出：最后一轮兜底
+    if ctx.observation:
+        obs = (ctx.observation or "").strip()
+        # Observation 已是完整报告（如 HR 透析镜输出）时直接使用，避免 LLM 二次总结导致截断
+        if len(obs) > 800 and ("## " in obs or "**" in obs or "综合评分" in obs or "录用建议" in obs):
+            ctx.final_answer = obs
+            if on_step:
+                on_step("answer", ctx.final_answer, ctx.run_id)
+            return
+        # 否则强制再要一次 Final Answer
+        messages.append({
+            "role": "user",
+            "content": "这是最后一轮，请根据上述 Observation 直接给出 Final Answer（可完整引用 Observation 内容）:",
+        })
+        try:
+            full_m = [{"role": "system", "content": ctx.system_prompt}] + messages
+            result = await engine.generate_response(full_m, temperature=0.3, max_tokens=16384)
+            resp = result.get("content", result) if isinstance(result, dict) else str(result)
+            for pat in (r"Final\s+Answer:\s*(.+?)(?:\n\n|$)", r"Answer:\s*(.+?)(?:\n\n|$)"):
+                m = re.search(pat, resp, re.DOTALL | re.IGNORECASE)
+                if m:
+                    ctx.final_answer = m.group(1).strip()
+                    if on_step:
+                        on_step("answer", ctx.final_answer, ctx.run_id)
+                    return
+        except Exception as e:
+            logger.debug("[L3 Agent] 最后一轮兜底 LLM 调用失败: %s", e)
+    # 尝试从最后回复中提取任意有效内容（不再截断，完整输出）
+    last = (ctx.current_response or "").strip()
+    if len(last) > 50:
+        for pat in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)", r"总结[：:]\s*(.+)"):
+            m = re.search(pat, last, re.DOTALL | re.IGNORECASE)
+            if m:
+                ctx.final_answer = m.group(1).strip()
+                return
     ctx.final_answer = "[ReAct 循环达到上限]"
 
 

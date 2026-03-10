@@ -200,6 +200,18 @@ except ImportError as e:
     logger.warning(f"V2 Inventory API router not available: {e}")
 
 try:
+    from core.api.routes.v2_recycle_bin import router as v2_recycle_bin_router
+except ImportError as e:
+    v2_recycle_bin_router = None
+    logger.warning(f"V2 RecycleBin API router not available: {e}")
+
+try:
+    from core.api.routes.v2_skills import router as v2_skills_router
+except ImportError as e:
+    v2_skills_router = None
+    logger.warning(f"V2 Skills API router not available: {e}")
+
+try:
     from core.api.routes.v2_events import router as v2_events_router
 except ImportError as e:
     v2_events_router = None
@@ -382,6 +394,10 @@ if v2_mcp_router:
     app.include_router(v2_mcp_router)
 if v2_inventory_router:
     app.include_router(v2_inventory_router)
+if v2_recycle_bin_router:
+    app.include_router(v2_recycle_bin_router)
+if v2_skills_router:
+    app.include_router(v2_skills_router)
 if v2_events_router:
     app.include_router(v2_events_router)
 logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/devices, /api/v2/memory/*, /api/v2/mcp/*, /api/v2/inventory/*, /api/v2/events/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")

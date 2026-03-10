@@ -70,6 +70,17 @@ pub fn is_gateway_paired() -> Result<bool, String> {
     Ok(paired && has_node)
 }
 
+/// 读取 L2 网关配置（含 sub_account_id，供 L2 API 鉴权）
+#[tauri::command]
+pub fn read_l2_gateway_config() -> Result<serde_json::Value, String> {
+    let path = gateway_config_path()?;
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str(&content).unwrap_or(serde_json::json!({})))
+}
+
 /// 读取保存的 L2 网关地址
 #[tauri::command]
 pub fn read_l2_gateway_url() -> Result<String, String> {

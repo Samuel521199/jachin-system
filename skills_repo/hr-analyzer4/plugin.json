@@ -1,0 +1,21 @@
+{
+  "id": "com.jachin.hr.analyzer4",
+  "name": "HR 透析镜 4",
+  "version": "1.0.0",
+  "description": "根据岗位要求对候选人简历进行严苛评估，输出 Markdown 报告。回收站功能测试。",
+  "type": "skill",
+  "entry": "main.wasm",
+  "parameters": ["target_role", "resume_filename", "target_dir", "focus_keywords", "strictness"],
+  "configs": {
+    "JD_template": "云边协同后端架构师：精通 Rust/Go，具备百万级设备接入、高可用分布式系统经验。熟悉 Kubernetes、消息队列、时序数据库。",
+    "strictness": "standard",
+    "strict_mode": true,
+    "resume_input_dir": "data/hr_resumes",
+    "output_dir": "data/hr_analysis",
+    "default_target_role": "backend_engineer",
+    "default_resume": "zhangsan_resume.md"
+  },
+  "volumes": [
+    { "name": "hr_analysis_output_4", "access_mode": "rw" }
+  ]
+}

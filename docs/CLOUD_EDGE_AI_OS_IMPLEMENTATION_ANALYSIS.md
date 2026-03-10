@@ -12,18 +12,19 @@
 
 | 设计定位 | 实现状态 | 证据与说明 |
 |----------|----------|------------|
-| 只面向老板和采购者 | ✅ 已实现 | L1 Nexus 提供商城 UI、IAM 控制台、Admin 审核台 |
+| 只面向老板和采购者 | ✅ 已实现 | L1 Nexus 提供商城 UI、Admin 审核台；IAM（子账号、角色、权限）在 L2 管理 |
 | 展示 Skill 与 MCP | ✅ 已实现 | `plugins_registry` 支持 `item_type: SKILL | MCP`，catalog 按 visibility/status 过滤 |
 | 处理支付 | ⏸️ 排除 | 按需求不分析 |
 | 颁发 License 凭证 | ✅ 已实现 | `user_licenses` 表，`POST /api/v1/store/subscribe` 0 元购授权 |
 | 平台不接触企业明文密码 | ✅ 已实现 | API Key 存 L2，L1 仅存 License 与元数据 |
-| 服务器压力趋零 | ✅ 已实现 | 算力在 L3/L2，L1 只做 manifest、policies、catalog 等轻量接口 |
+| 服务器压力趋零 | ✅ 已实现 | 算力在 L3/L2，L1 只做 manifest、catalog 等轻量接口 |
 
 **关键接口**:
 - `GET /api/v1/store/catalog` — 公开商品目录
 - `GET /api/v1/sync/manifest` — 租户已购清单（含 package_url）
 - `POST /api/v1/store/subscribe` — 订阅/0 元购
-- `GET /api/v1/iam/policies/sync` — RBAC 策略下发
+
+**RBAC**：已下放 L2，由 `core/policy_enforcer.py` 从本地 `role_permissions` 读取，`v2_local_admin` 管理。
 
 ---
 
@@ -37,7 +38,7 @@
 | 下载并囤积压缩包 | ✅ 已实现 | SKILL → `skills/{item_id}/`，MCP → `mcps/` |
 | 常驻运行高敏 MCP 驱动 | ✅ 已实现 | `core/mcp_client.py` MCPManager，`scan_local_mcps()` 注入 |
 | 数据库密码锁在本地 | ✅ 已实现 | MCP 配置在 `~/.jachin/inventory/mcps/`，L2 本地执行 |
-| 动态向 L3 下发权限和 Skill | ✅ 已实现 | `poll_policies()` → `role_permissions`；`GET /api/v2/inventory/skills` + `/download` |
+| 动态向 L3 下发权限和 Skill | ✅ 已实现 | 本地 `role_permissions`（L2 数据主权，由 v2_local_admin 管理）；`GET /api/v2/inventory/skills` + `/download` |
 
 **关键组件**:
 - `core/sync_daemon.py` — CloudSyncDaemon
@@ -73,7 +74,7 @@
 |------|------|----------|------|
 | 老板在 L1 一键购买并授权 | 商城订阅 | ✅ 已实现 | `POST /api/v1/store/subscribe`（0 元购），`user_licenses` 写入 |
 | 员工第二天打开电脑，新技能即点即用 | L2 同步 → L3 拉取 | ✅ 已实现 | L2 sync_daemon 下载；L3 `perform_startup_sync` 拉清单、下载缺失、SHA256 校验 |
-| L2 sync_daemon 暗中完成下载、解压、点火 | 自动化 | ✅ 已实现 | `run_sync_cycle()`：manifest → diff → download → reload → policies |
+| L2 sync_daemon 暗中完成下载、解压、点火 | 自动化 | ✅ 已实现 | `run_sync_cycle()`：manifest → diff → download → reload |
 | 精准投递给有权限的 L3 | RBAC | ✅ 已实现 | L2 `/skills`、`/download` 需 X-Sub-Account-Id，经 PolicyEnforcer 按 role_permissions 过滤；L3 同步携带身份 |
 
 ### 3.2 场景二：内网极客 — 暗黑工坊极速开发
@@ -126,7 +127,7 @@
 
 | 层级 | 实现度 | 备注 |
 |------|--------|------|
-| **L1** | 95%+ | 商城、manifest、publish、licenses、IAM、PRIVATE 影子上传、PUBLIC 审核均就绪；支付除外 |
+| **L1** | 95%+ | 商城、manifest、publish、licenses、PRIVATE 影子上传、PUBLIC 审核均就绪；IAM 已下放 L2；支付除外 |
 | **L2** | 95%+ | 同步、侧载、MCP、PolicyEnforcer、断网降级、inventory API 完整 |
 | **L3** | 85% | 技能同步、下载、缓存完整；MCP 调用缺 `X-Sub-Account-Id` 导致 401 |
 
@@ -154,7 +155,7 @@
 | L1 manifest | `cloud/nexus/src/app/api/v1/sync/manifest/route.ts` |
 | L1 publish (含 shadow_only) | `cloud/nexus/src/app/api/v1/store/publish/route.ts` |
 | L1 subscribe | `cloud/nexus/src/app/api/v1/store/subscribe/route.ts` |
-| L1 IAM policies sync | `cloud/nexus/src/app/api/v1/iam/policies/sync/route.ts` |
+| L2 RBAC（本地 role_permissions） | `core/policy_enforcer.py`、`core/api/routes/v2_local_admin.py` |
 | L2 sync daemon | `core/sync_daemon.py` |
 | L2 inventory scanner | `core/inventory_scanner.py` |
 | L2 policy enforcer | `core/policy_enforcer.py` |

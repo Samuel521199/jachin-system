@@ -2,7 +2,8 @@
 Jachin Nexus v8.0 - Native Core 内置标准库
 
 权限死锁在 ~/.jachin/workspace/ 下，供 MCP 瘫痪时的 Fallback 使用。
-任何越界访问直接抛出 SecurityException。
+HR 透析镜白名单：允许读取项目 data/hr_resumes、config/hr_jds（解决工作目录与配置文件路径冲突）。
+任何其他越界访问直接抛出 SecurityException。
 """
 from __future__ import annotations
 
@@ -13,9 +14,31 @@ from typing import Any
 # 工作目录根，绝对不可越界
 _WORKSPACE_ROOT = Path.home() / ".jachin" / "workspace"
 
+# 项目根（core 位于 project/core/）
+_PROJ_ROOT = Path(__file__).resolve().parent.parent
+# L3 本地数据卷（Boss 收网 PDF 蓄水池）
+_L3_VOLUME_ROOT = Path.home() / ".jachin" / "client_volumes"
+_HR_READ_ALLOWED = [
+    _L3_VOLUME_ROOT.resolve(),
+    (_PROJ_ROOT / "data" / "hr_resumes").resolve(),
+    (_PROJ_ROOT / "config" / "hr_jds").resolve(),
+]
+
 
 class SecurityException(Exception):
     """Wasm/Native Core sandbox violation"""
+
+
+def _is_under_hr_whitelist(path: Path) -> bool:
+    """路径是否在 HR 透析镜白名单（data/hr_resumes、config/hr_jds）下"""
+    try:
+        abs_path = path.resolve()
+        for allowed in _HR_READ_ALLOWED:
+            if str(abs_path).startswith(str(allowed)):
+                return True
+    except (OSError, RuntimeError):
+        pass
+    return False
 
 
 def _assert_under_workspace(path: Path) -> None:
@@ -30,10 +53,12 @@ def _assert_under_workspace(path: Path) -> None:
 
 def core_fs_read(file_path: str) -> str:
     """
-    读取文件内容。路径必须位于 ~/.jachin/workspace/ 下。
+    读取文件内容。路径必须位于 ~/.jachin/workspace/ 下，
+    或 HR 透析镜白名单（data/hr_resumes、config/hr_jds）下。
+    PDF 文件自动提取纯文本，与 mcp_read_file 行为一致。
 
     Args:
-        file_path: 相对或绝对路径，必须解析后在 workspace 内
+        file_path: 相对或绝对路径
 
     Returns:
         文件内容
@@ -41,10 +66,33 @@ def core_fs_read(file_path: str) -> str:
     Raises:
         SecurityException: 路径越界
     """
-    p = Path(file_path).expanduser()
+    raw = (file_path or "").strip().replace("\\", "/")
+    p = Path(raw).expanduser()
     if not p.is_absolute():
-        p = (_WORKSPACE_ROOT / p).resolve()
+        # 先尝试项目 HR 路径（供 Agent 读取简历/JD，解决工作目录与配置文件路径冲突）
+        for base in _HR_READ_ALLOWED:
+            cand = (base / p.name).resolve()
+        if cand.exists() and _is_under_hr_whitelist(cand):
+            if cand.suffix.lower() == ".pdf":
+                from core.pdf_extractor import extract_pdf_text
+                return extract_pdf_text(cand) or ""
+            return cand.read_text(encoding="utf-8", errors="replace")
+        cand = (_PROJ_ROOT / raw.lstrip("/")).resolve()
+        if cand.exists() and _is_under_hr_whitelist(cand):
+            if cand.suffix.lower() == ".pdf":
+                from core.pdf_extractor import extract_pdf_text
+                return extract_pdf_text(cand) or ""
+            return cand.read_text(encoding="utf-8", errors="replace")
+        p = (_WORKSPACE_ROOT / raw).resolve()
+    if _is_under_hr_whitelist(p):
+        if p.suffix.lower() == ".pdf":
+            from core.pdf_extractor import extract_pdf_text
+            return extract_pdf_text(p) or ""
+        return p.read_text(encoding="utf-8", errors="replace")
     _assert_under_workspace(p)
+    if p.suffix.lower() == ".pdf":
+        from core.pdf_extractor import extract_pdf_text
+        return extract_pdf_text(p) or ""
     return p.read_text(encoding="utf-8", errors="replace")
 
 

@@ -3,17 +3,30 @@ L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
 端口 18990 系列，与 L2(18888)、WebSocket(18981) 分离。
+HR 透析镜执行成功后，分析报告写入 data/hr_analysis/ 及 ~/.jachin/volumes/ 对应数据卷。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import queue
+import threading
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("l3_node")
 
 L3_HTTP_PORT = 18990
+
+
+_HR_SKILL_IDS = (
+    "jpp:com.jachin.hr.analyzer",
+    "jpp:com.jachin.hr.analyzer2",
+    "jpp:com.jachin.hr.analyzer3",
+    "jpp:com.jachin.hr.analyzer4",
+)
 
 
 def _tools_to_skill_infos(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -23,7 +36,11 @@ def _tools_to_skill_infos(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for t in tools:
         tid = t.get("id", "")
         params = t.get("params", ["input"])
-        caps = [{"name": p if isinstance(p, str) else p.get("name", ""), "description": ""} for p in params]
+        # HR 透析镜：参数为 target_role/resume_filename/target_dir，统一为单一 execute 能力
+        if tid in _HR_SKILL_IDS:
+            caps = [{"name": "execute", "description": t.get("desc", "根据岗位要求分析简历，输出 Markdown 报告")}]
+        else:
+            caps = [{"name": p if isinstance(p, str) else p.get("name", ""), "description": ""} for p in params]
         name = t.get("_name") or t.get("label") or tid
         version = "1.0.0"
         dedup_key = (name, version)
@@ -57,6 +74,126 @@ async def _handle_skills_list(request) -> "aiohttp.web.Response":
         return _json_response([], status=500)
 
 
+async def _handle_skills_uninstall(request) -> "aiohttp.web.Response":
+    """DELETE /api/v3/skills/{item_id} - 卸载技能（代理到 L2，供浏览器控制台在无 Tauri 时使用）"""
+    import sys
+    from pathlib import Path
+
+    item_id = request.match_info.get("item_id", "").strip()
+    if not item_id:
+        return _json_response({"ok": False, "error": "item_id required"}, status=400)
+
+    purge_data = "true" in (request.query.get("purge_data") or "").lower()
+
+    # 读取 L2 网关配置获取 sub_account_id
+    cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+    sub_account_id = ""
+    l2_url = "http://localhost:18888"
+    if cfg_path.exists():
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            sub_account_id = (data.get("sub_account_id") or "").strip()
+            l2_url = (data.get("l2_base_url") or l2_url).rstrip("/")
+        except Exception:
+            pass
+
+    if not sub_account_id:
+        return _json_response(
+            {"ok": False, "error": "未找到 sub_account_id，请先完成 L2 网关配对"},
+            status=401,
+        )
+
+    print(f"[L3 HTTP] DELETE /api/v3/skills/{item_id} purge_data={purge_data} -> L2", file=sys.stderr, flush=True)
+    try:
+        import httpx
+        delete_url = f"{l2_url}/api/v2/inventory/skills/{item_id}?purge_data={purge_data}"
+        with httpx.Client(timeout=30.0) as client:
+            r = client.delete(
+                delete_url,
+                headers={"X-Sub-Account-Id": sub_account_id},
+            )
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if not body:
+            body = {"ok": r.is_success, "error": r.text or "未知错误"}
+
+        if not r.is_success:
+            return _json_response(
+                {"ok": False, "error": body.get("error") or body.get("detail") or r.text or "卸载失败"},
+                status=r.status_code,
+            )
+
+        # L2 已将技能移入回收站（含 inventory/cache/builtin），无需再删 cache
+        if body.get("ok") is False:
+            return _json_response(body, status=400)
+        return _json_response(body)
+    except Exception as e:
+        logger.warning("[L3 HTTP] uninstall %s failed: %s", item_id, e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_recycle_bin_list(request) -> "aiohttp.web.Response":
+    """GET /api/v3/recycle-bin/skills - 列出回收站中的技能"""
+    try:
+        from core.recycle_bin import list_recycle_bin
+        items = list_recycle_bin()
+        return _json_response({"items": items, "count": len(items)})
+    except Exception as e:
+        logger.warning("[L3 HTTP] recycle bin list failed: %s", e)
+        return _json_response({"items": [], "count": 0}, status=500)
+
+
+async def _handle_recycle_bin_restore(request) -> "aiohttp.web.Response":
+    """POST /api/v3/recycle-bin/skills/{recycle_id}/restore - 从回收站恢复"""
+    recycle_id = request.match_info.get("recycle_id", "").strip()
+    if not recycle_id:
+        return _json_response({"ok": False, "error": "recycle_id required"}, status=400)
+    try:
+        from core.recycle_bin import restore_from_recycle_bin
+        result = restore_from_recycle_bin(recycle_id)
+        if not result.get("ok"):
+            return _json_response(result, status=400)
+        # 触发 L2 热重载
+        cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+        l2_url = "http://localhost:18888"
+        if cfg_path.exists():
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                l2_url = (data.get("l2_base_url") or l2_url).rstrip("/")
+            except Exception:
+                pass
+            try:
+                import httpx
+                with httpx.Client(timeout=5.0) as client:
+                    client.post(f"{l2_url}/api/v2/inventory/reload")
+            except Exception:
+                pass  # L2 可能未启动
+            try:
+                from l3_node.skill_sync import sync_skills_from_l2
+                sync_skills_from_l2()  # 拉取恢复的技能到 L3 缓存
+            except Exception:
+                pass
+        return _json_response(result)
+    except Exception as e:
+        logger.warning("[L3 HTTP] recycle bin restore failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_recycle_bin_delete(request) -> "aiohttp.web.Response":
+    """DELETE /api/v3/recycle-bin/skills/{recycle_id} - 彻底删除"""
+    recycle_id = request.match_info.get("recycle_id", "").strip()
+    if not recycle_id:
+        return _json_response({"ok": False, "error": "recycle_id required"}, status=400)
+    try:
+        from core.recycle_bin import permanent_delete_from_recycle_bin
+        result = permanent_delete_from_recycle_bin(recycle_id)
+        if not result.get("ok"):
+            return _json_response(result, status=400)
+        return _json_response(result)
+    except Exception as e:
+        logger.warning("[L3 HTTP] recycle bin delete failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def _handle_skills_execute(request) -> "aiohttp.web.Response":
     """POST /api/v3/skills/{skill_id}/execute"""
     import sys
@@ -71,7 +208,13 @@ async def _handle_skills_execute(request) -> "aiohttp.web.Response":
         body = {}
         print(f"[Skill Execute] 解析请求体失败: {e}", file=sys.stderr, flush=True)
     capability_name = body.get("capability_name", "execute")
-    input_data = body.get("input_data", {})
+    input_data = body.get("input_data", {}) or {}
+    # 控制面板直接执行 HR 透析镜时，若未传参则注入默认值
+    # 默认批量模式：分析 target_dir 下所有简历（张三李四王五等），而非仅单份
+    if skill_id.strip() in _HR_SKILL_IDS and not input_data.get("target_role"):
+        input_data = {**input_data, "target_role": "backend_engineer"}
+    if skill_id.strip() in _HR_SKILL_IDS and not input_data.get("resume_filename") and not input_data.get("target_dir"):
+        input_data = {**input_data, "target_dir": "data/hr_resumes"}
     print(f"[Skill Execute] 开始 skill_id={skill_id} capability={capability_name} input={json.dumps(input_data, ensure_ascii=False)[:200]}", file=sys.stderr, flush=True)
     try:
         from l3_node.skills import run_tool
@@ -84,7 +227,14 @@ async def _handle_skills_execute(request) -> "aiohttp.web.Response":
                 return _json_response({"success": False, "result": None, "error": result})
         if isinstance(result, str) and not result.strip():
             result = "[执行完成但无输出，请检查 Wasm 插件或 execute ABI 返回值]"
-        return _json_response({"success": True, "result": {"text": result}, "error": None})
+        # HR 透析镜：loader 已写入 data/hr_analysis/ 及 volume，取路径供响应
+        from l3_node.hr_analysis_persist import get_last_saved_path
+        resp = {"success": True, "result": {"text": result}, "error": None}
+        if skill_id.strip() in _HR_SKILL_IDS:
+            saved_path = get_last_saved_path()
+            if saved_path:
+                resp["result"]["saved_path"] = saved_path
+        return _json_response(resp)
     except WasmExecutionError as e:
         print(f"[Skill Execute] WASM 异常 skill_id={skill_id} error={e}", file=sys.stderr, flush=True)
         logger.warning("[L3 HTTP] execute %s WASM failed: %s", skill_id, e)
@@ -98,6 +248,212 @@ async def _handle_skills_execute(request) -> "aiohttp.web.Response":
         print(f"[Skill Execute] 异常 skill_id={skill_id} error={e}", file=sys.stderr, flush=True)
         logger.warning("[L3 HTTP] execute %s failed: %s", skill_id, e)
         return _json_response({"success": False, "result": None, "error": str(e)}, status=500)
+
+
+async def _handle_skills_execute_stream(request) -> "aiohttp.web.Response":
+    """POST /api/v3/skills/{skill_id}/execute/stream - SSE 流式进度，供 HR 透析镜批量模式实时展示"""
+    import sys
+    from core.wasm_runner import WasmExecutionError
+
+    skill_id = request.match_info.get("skill_id", "")
+    if not skill_id:
+        return _json_response({"success": False, "error": "skill_id required"}, status=400)
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        body = {}
+    capability_name = body.get("capability_name", "execute")
+    input_data = body.get("input_data", {}) or {}
+    if skill_id.strip() in _HR_SKILL_IDS and not input_data.get("target_role"):
+        input_data = {**input_data, "target_role": "backend_engineer"}
+    if skill_id.strip() in _HR_SKILL_IDS and not input_data.get("resume_filename") and not input_data.get("target_dir"):
+        input_data = {**input_data, "target_dir": "data/hr_resumes"}
+
+    if skill_id.strip() not in _HR_SKILL_IDS:
+        return _json_response({"success": False, "error": "流式接口仅支持 HR 透析镜技能"}, status=400)
+
+    ndjson_queue: queue.Queue[str] = queue.Queue()
+    thread_result: dict[str, Any] = {"done": False, "error": None, "result": None}
+
+    def _run_in_thread() -> None:
+        try:
+            from l3_node.skills import run_tool
+            inp = json.dumps({**input_data, "capability": capability_name}, ensure_ascii=False)
+            r = run_tool(skill_id, inp, allowed_skills=None, ndjson_queue=ndjson_queue)
+            thread_result["result"] = r
+        except Exception as e:
+            thread_result["error"] = str(e)
+        finally:
+            thread_result["done"] = True
+            ndjson_queue.put(json.dumps({"status": "thread_done"}))
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+
+    from l3_node.skills.loader import _extract_stem_from_hr_report, _fetch_skill_config, _get_hr_plugin_config_defaults
+    from l3_node.hr_analysis_persist import persist_hr_analysis_batch_item
+
+    cfg = {}
+    try:
+        cfg = _fetch_skill_config(skill_id.replace("jpp:", ""))
+        cfg = {**_get_hr_plugin_config_defaults(skill_id), **(cfg or {})}
+    except Exception:
+        pass
+
+    response = _stream_response()
+    await response.prepare(request)
+
+    async def _sse_generator():
+        seen_done = False
+        while not seen_done:
+            try:
+                line = ndjson_queue.get(timeout=0.3)
+            except queue.Empty:
+                if thread_result["done"]:
+                    break
+                await asyncio.sleep(0.05)
+                continue
+            line = (line or "").strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            status = item.get("status")
+            if status == "thread_done":
+                break
+            if status == "done":
+                seen_done = True
+                payload = {"status": "done"}
+                await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                break
+            if status == "progress":
+                report = item.get("report_content")
+                fn = item.get("filename") or ""
+                stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
+                import re
+                if not stem or re.match(r"^resume_\d+$", stem):
+                    stem = _extract_stem_from_hr_report(report or "") or stem or "unknown"
+                if report and stem:
+                    persist_hr_analysis_batch_item(skill_id, report, stem, config=cfg)
+                payload = {"status": "progress", "filename": fn, "current": item.get("current"), "total": item.get("total")}
+                await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+        thread.join(timeout=2.0)
+        if thread_result["error"]:
+            await response.write(f"data: {json.dumps({'status': 'error', 'error': thread_result['error']}, ensure_ascii=False)}\n\n".encode("utf-8"))
+
+    await _sse_generator()
+    return response
+
+
+def _stream_response() -> "aiohttp.web.StreamResponse":
+    """创建 SSE 流式响应"""
+    import aiohttp.web
+    r = aiohttp.web.StreamResponse()
+    r.headers["Content-Type"] = "text/event-stream"
+    r.headers["Cache-Control"] = "no-cache"
+    r.headers["Connection"] = "keep-alive"
+    return r
+
+
+async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse":
+    """POST /api/recruitment/start_task - 一键式全链路招聘，SSE 流式进度"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"error": f"请求体解析失败: {e}"}, status=400)
+    job_name = (body.get("job_name") or "").strip()
+    if not job_name:
+        return _json_response({"error": "job_name 不能为空"}, status=400)
+    max_count = int(body.get("max_count") or 20)
+    filter_tab = (body.get("filter_tab") or "全部").strip()
+    request_resume = body.get("request_resume", True)
+    if isinstance(request_resume, str):
+        request_resume = request_resume.lower() in ("true", "1", "yes", "on")
+    elif request_resume is None:
+        request_resume = True
+    logger.info("[L3 HTTP] recruitment start_task request_resume=%s filter_tab=%s", request_resume, filter_tab)
+    jd_content = (body.get("jd_content") or "").strip()
+    if not jd_content:
+        logger.warning("[L3 HTTP] recruitment 未提供岗位 JD（jd_content 为空），将使用数据库兜底或默认「云边协同架构师」，分析报告可能出现岗位错位")
+        print("\n[岗位 JD] 为空，将使用兜底\n", flush=True)
+    else:
+        logger.info("[L3 HTTP] recruitment 收到岗位 JD len=%d preview=%s", len(jd_content), (jd_content[:80] + "…") if len(jd_content) > 80 else jd_content)
+        print(f"\n{'='*60}\n[岗位 JD] 已收到 (len={len(jd_content)})\n{jd_content}\n{'='*60}\n", flush=True)
+    focus_keywords = (body.get("focus_keywords") or "").strip()
+    strictness = (body.get("strictness") or "standard").strip()
+    output_dir = (body.get("output_dir") or "").strip()
+    force_reanalyze = body.get("force_reanalyze", False)
+    if isinstance(force_reanalyze, str):
+        force_reanalyze = force_reanalyze.lower() in ("true", "1", "yes", "on")
+
+    response = _stream_response()
+    await response.prepare(request)
+
+    async def _sse_gen():
+        try:
+            from l3_node.recruitment_task import run_recruitment_task_stream
+            async for ev in run_recruitment_task_stream(
+                job_name=job_name,
+                max_count=max_count,
+                filter_tab=filter_tab,
+                request_resume=request_resume,
+                output_dir=output_dir,
+                force_reanalyze=force_reanalyze,
+                jd_content=jd_content,
+                focus_keywords=focus_keywords,
+                strictness=strictness,
+            ):
+                await response.write(
+                    f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8")
+                )
+        except Exception as e:
+            logger.warning("[L3 HTTP] recruitment start_task failed: %s", e)
+            await response.write(
+                f"data: {json.dumps({'step': 0, 'msg': f'⚠️ 任务异常: {e}', 'status': 'error'}, ensure_ascii=False)}\n\n".encode("utf-8")
+            )
+
+    await _sse_gen()
+    return response
+
+
+async def _handle_agent_run(request) -> "aiohttp.web.Response":
+    """POST /api/v3/agent/run - 同步执行 L3 Agent，供控制台自然语言 404 回退使用。会触发 run_tool 持久化（如 HR 透析镜）"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"error": f"请求体解析失败: {e}"}, status=400)
+    user_input = (body.get("user_input") or body.get("user_query") or "").strip()
+    if not user_input:
+        return _json_response({"error": "user_input 或 user_query 不能为空"}, status=400)
+    try:
+        from l3_node.agent_ref import engine_ref
+        engine = engine_ref.get("engine")
+    except ImportError:
+        engine = None
+    if not engine:
+        return _json_response(
+            {"error": "Agent 尚未就绪，请确保 L3 已启动且 WebSocket 已连接"},
+            status=503,
+        )
+    try:
+        from l3_node.agent_core import run_agent
+        answer = await run_agent(user_input, engine, max_iterations=5)
+        resp = {"answer": answer or ""}
+        try:
+            from l3_node.hr_analysis_persist import get_last_saved_path
+            saved = get_last_saved_path()
+            if saved:
+                resp["saved_path"] = saved
+        except ImportError:
+            pass
+        return _json_response(resp)
+    except Exception as e:
+        logger.warning("[L3 HTTP] agent/run 失败: %s", e)
+        return _json_response({"error": str(e)}, status=500)
 
 
 def _json_response(data: Any, status: int = 200) -> "aiohttp.web.Response":
@@ -120,13 +476,20 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         else:
             r = await handler(request)
         r.headers["Access-Control-Allow-Origin"] = "*"
-        r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        r.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
         r.headers["Access-Control-Allow-Headers"] = "Content-Type"
         return r
 
     app = aiohttp.web.Application(middlewares=[cors_middleware])
     app.router.add_get("/api/v3/skills", _handle_skills_list)
+    app.router.add_delete("/api/v3/skills/{item_id}", _handle_skills_uninstall)
     app.router.add_post("/api/v3/skills/{skill_id}/execute", _handle_skills_execute)
+    app.router.add_post("/api/recruitment/start_task", _handle_recruitment_start_task)
+    app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
+    app.router.add_post("/api/v3/agent/run", _handle_agent_run)
+    app.router.add_get("/api/v3/recycle-bin/skills", _handle_recycle_bin_list)
+    app.router.add_post("/api/v3/recycle-bin/skills/{recycle_id}/restore", _handle_recycle_bin_restore)
+    app.router.add_delete("/api/v3/recycle-bin/skills/{recycle_id}", _handle_recycle_bin_delete)
 
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):

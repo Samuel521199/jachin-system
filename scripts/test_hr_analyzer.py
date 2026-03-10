@@ -40,7 +40,7 @@ def main() -> int:
         if os.environ.get("OPENAI_API_KEY"):
             ctx.set_key("openai", os.environ["OPENAI_API_KEY"])
         # 有 dashscope 用通义千问，否则用 gpt-4o-mini
-        model = "dashscope/qwen3.5-flash" if ctx.get_key("dashscope") else "gpt-4o-mini"
+        model = "dashscope/qwen3.5-flash-2026-02-23" if ctx.get_key("dashscope") else "gpt-4o-mini"
         engine = LiteLLMEngine(security_context=ctx, model_name=model)
         register_host_services(llm_engine=engine, l2_base_url="http://localhost:18888")
     except Exception as e:

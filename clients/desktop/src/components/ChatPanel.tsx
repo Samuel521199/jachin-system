@@ -8,6 +8,7 @@ import { useSensoryWebSocket } from "../hooks/useSensoryWebSocket";
 import { cn } from "../utils/cn";
 import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "../utils/messageStorage";
 import { typewriterAnimation } from "../utils/typewriter";
+import { MarkdownMessage } from "./Chat/MarkdownMessage";
 
 export default function ChatPanel() {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
@@ -364,12 +365,23 @@ export default function ChatPanel() {
                       : "bg-slate-700 text-slate-100"
                   )}
                 >
-                  <p className="whitespace-pre-wrap">
-                    {msg.content}
-                    {isTyping && idx === messages.length - 1 && (
-                      <span className="typewriter-cursor" />
+                  <div className="whitespace-pre-wrap">
+                    {msg.role === "assistant" ? (
+                      <>
+                        <MarkdownMessage content={msg.content} />
+                        {isTyping && idx === messages.length - 1 && (
+                          <span className="typewriter-cursor" />
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {msg.content}
+                        {isTyping && idx === messages.length - 1 && (
+                          <span className="typewriter-cursor" />
+                        )}
+                      </>
                     )}
-                  </p>
+                  </div>
                   <div className="flex items-center justify-between gap-2 mt-1">
                     <p className="text-xs opacity-70">
                       {new Date(msg.timestamp).toLocaleTimeString()}

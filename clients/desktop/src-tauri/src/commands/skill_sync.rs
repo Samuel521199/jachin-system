@@ -234,3 +234,68 @@ pub async fn perform_startup_sync(
         total,
     })
 }
+
+/// 卸载技能：调用 L2 DELETE API，删除 L3 本地缓存。
+/// item_id: 技能目录名（与 L2 inventory 一致）；purge_data: 是否清理注册表与数据卷
+#[tauri::command]
+pub async fn uninstall_skill(
+    app: tauri::AppHandle,
+    base_url: String,
+    item_id: String,
+    purge_data: bool,
+) -> Result<serde_json::Value, String> {
+    let sub_account_id = sub_account_id_from_config()
+        .ok_or_else(|| "未找到 sub_account_id，请先完成 L2 网关配对".to_string())?;
+
+    let url = base_url.trim_end_matches('/');
+    let delete_url = format!(
+        "{}/api/v2/inventory/skills/{}?purge_data={}",
+        url,
+        item_id,
+        purge_data
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .delete(&delete_url)
+        .header("X-Sub-Account-Id", &sub_account_id)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::json!({}));
+
+    // L2 返回 404：技能可能为 L3 内置或仅存在于 L3 缓存，仍清理 L3 本地缓存
+    if status.as_u16() == 404 {
+        let cache_dir = l3_skill_cache_dir();
+        let skill_cache_path = cache_dir.join(&item_id);
+        if skill_cache_path.exists() {
+            let _ = std::fs::remove_dir_all(&skill_cache_path);
+        }
+        let _ = app.emit("inventory-sync-complete", ());
+        return Ok(serde_json::json!({"ok": true, "message": "已从本地缓存移除（L2 无此技能）"}));
+    }
+
+    if !status.is_success() {
+        let err = body
+            .get("detail")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| body.get("error").and_then(|v| v.as_str()).unwrap_or("卸载失败"));
+        return Err(err.to_string());
+    }
+
+    // 删除 L3 本地缓存
+    let cache_dir = l3_skill_cache_dir();
+    let skill_cache_path = cache_dir.join(&item_id);
+    if skill_cache_path.exists() {
+        let _ = std::fs::remove_dir_all(&skill_cache_path);
+    }
+
+    let _ = app.emit("inventory-sync-complete", ());
+    Ok(body)
+}

@@ -69,7 +69,7 @@ else:
 
 
 def _create_engine_standalone():
-    """仅用环境变量创建引擎，不连接 L2。有 DASHSCOPE 时用 qwen3.5-flash，避免连未启动的 Ollama。"""
+    """仅用环境变量创建引擎，不连接 L2。有 DASHSCOPE 时用 qwen3.5-flash-2026-02-23，避免连未启动的 Ollama。"""
     from l3_node.llm_client import LiteLLMEngine, SecurityContext
 
     ctx = SecurityContext()
@@ -80,13 +80,14 @@ def _create_engine_standalone():
     fallback = None
     default_model = "gpt-4o-mini"
     if ctx.get_key("dashscope"):
-        fallback = ["dashscope/qwen3.5-flash"]
-        default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash")
+        fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+        default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+    _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=os.environ.get("L3_MODEL", default_model),
         fallback_models=fallback,
-        timeout=60.0,
+        timeout=_timeout,
         max_attempts=2,
     )
     from core.wasm_runner import register_host_services
@@ -106,6 +107,8 @@ async def main() -> None:
 
     if args.ws_only:
         engine = _create_engine_standalone()
+        from l3_node.agent_ref import engine_ref
+        engine_ref["engine"] = engine
         from l3_node.bootstrap import run_l3_agent
         from l3_node.ws_server import run_ws_server
         from l3_node.http_server import run_http_server, L3_HTTP_PORT
@@ -125,6 +128,8 @@ async def main() -> None:
             l2_base_url=l2_url,
             on_status=lambda s, m: logger.info("[L3 Gateway] %s: %s", s, m),
         )
+        from l3_node.agent_ref import engine_ref
+        engine_ref["engine"] = engine
         logger.info("L3 节点已就绪 node_id=%s，WebSocket 端口 %d", node_id, args.port)
         heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
         try:
@@ -149,6 +154,8 @@ async def main() -> None:
 
     await run_http_server(port=L3_HTTP_PORT)
     engine, node_id = await bootstrap_l3_gateway_pending(l2_base_url=l2_url)
+    from l3_node.agent_ref import engine_ref
+    engine_ref["engine"] = engine
     logger.info("L3 节点已就绪 node_id=%s，WebSocket 端口 %d", node_id, args.port)
     heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
     try:

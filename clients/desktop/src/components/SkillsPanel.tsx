@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Zap, Play, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { listSkills, executeSkill, invokePlugin, SkillInfo } from "../lib/api";
+import { MarkdownMessage } from "./Chat/MarkdownMessage";
 import { INVENTORY_UPDATED_EVENT } from "../hooks/useUISyncEventSource";
 
 export default function SkillsPanel() {
@@ -70,7 +71,9 @@ export default function SkillsPanel() {
       const baseText = res.error
         ? res.error
         : res.result != null
-          ? JSON.stringify(res.result, null, 2)
+          ? (typeof res.result === "object" && res.result !== null && "text" in res.result
+              ? String((res.result as { text?: string }).text ?? JSON.stringify(res.result, null, 2))
+              : JSON.stringify(res.result, null, 2))
           : res.success
             ? "执行成功"
             : "无返回";
@@ -119,7 +122,7 @@ export default function SkillsPanel() {
           </button>
         </div>
         {orchestratorResult != null && (
-          <pre className="mt-2 p-2 rounded bg-slate-700/50 text-xs overflow-x-auto max-h-24 overflow-y-auto">
+          <pre className="mt-2 p-2 rounded bg-slate-700/50 text-xs overflow-x-auto max-h-[60vh] overflow-y-auto">
             {orchestratorResult}
           </pre>
         )}
@@ -220,9 +223,9 @@ export default function SkillsPanel() {
       {execResult != null && (
         <div className="mt-4 p-3 rounded-lg bg-slate-700/50 border border-purple-500/20">
           <div className="text-xs text-slate-400 mb-1">上次执行结果</div>
-          <pre className="text-xs overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap">
-            {execResult}
-          </pre>
+          <div className="text-xs overflow-x-auto max-h-64 overflow-y-auto custom-scrollbar">
+            <MarkdownMessage content={execResult} />
+          </div>
         </div>
       )}
     </div>

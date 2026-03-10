@@ -1,0 +1,24 @@
+# HR 招聘插件 - 依赖（独立运行 + 集成 jachin 均可）
+
+# MCP (轨道 A)
+mcp>=1.0.0
+
+# PDF 解析
+pypdf2>=3.0.0
+pdfplumber>=0.10.0
+
+# Word 文档
+python-docx>=1.0.0
+
+# 向量数据库
+lancedb>=0.3.0
+
+# 浏览器自动化（Boss 直聘搜索）
+playwright>=1.40.0
+
+# LLM（多 Agent 辩论筛选：阿里百炼 + Gemini 回退）
+openai>=1.0.0
+google-genai>=1.0.0
+
+# 环境变量加载
+python-dotenv>=1.0.0

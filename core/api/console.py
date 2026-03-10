@@ -491,6 +491,30 @@ async def get_gpu_overheat_status():
     return {"overheated": is_gpu_overheated()}
 
 
+# --- 集群统计（V2: Ray 已废弃，返回单机占位）---
+@router.get("/cluster/stats")
+async def get_cluster_stats():
+    """集群统计（V2: Ray 已废弃，返回单机占位）"""
+    return {
+        "nodes": {"online": 1, "offline": 0, "total": 1},
+        "tasks": {"pending": 0, "running": 0, "completed": 0, "failed": 0, "total": 0},
+        "resources": {},
+        "utilization": {},
+    }
+
+
+@router.get("/cluster/nodes")
+async def get_cluster_nodes():
+    """集群节点列表（V2: Ray 已废弃，返回空）"""
+    return []
+
+
+@router.get("/cluster/tasks")
+async def get_cluster_tasks():
+    """集群任务列表（V2: Ray 已废弃，返回空）"""
+    return []
+
+
 @router.get("/gpu/stats")
 async def get_gpu_stats():
     """GPU 统计（温度、利用率、显存），通过 NVML 采集"""

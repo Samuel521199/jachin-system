@@ -3,6 +3,8 @@ Jachin Nexus V2 - L3 MCP 工具桥接器
 
 从 L2 拉取 MCP 工具列表，维护 known_mcp_tools 避免与本地 Wasm 重名冲突，
 提供 OpenAI/Anthropic 标准 tools 格式，供大模型使用。
+
+read_file（含 PDF 提取）已下放 L3 本地执行，不依赖 L2。
 """
 from __future__ import annotations
 
@@ -16,6 +18,57 @@ logger = logging.getLogger(__name__)
 # 默认 L2 地址（可从 l2_gateway_config.json 读取）
 DEFAULT_L2_BASE_URL = "http://localhost:18888"
 MCP_TOOLS_PREFIX = "mcp:"
+
+# L3 本地 MCP 工具（不依赖 L2，下放至 L3 执行）
+L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
+    {
+        "id": "mcp:read_file",
+        "label": "mcp:read_file",
+        "desc": "[L3 本地] 读取文件内容。支持 .md/.txt 及 .pdf 文本提取。路径需在 workspace、client_volumes、data/hr_resumes、config/hr_jds 下。",
+        "params": ["path"],
+    },
+]
+
+
+def _invoke_read_file_local(path_raw: str) -> str:
+    """L3 本地执行 read_file，使用 core.pdf_extractor。"""
+    from core.pdf_extractor import extract_pdf_text, SCAN_PLACEHOLDER
+    _proj = Path(__file__).resolve().parent.parent.parent
+    _l3_vol = Path.home() / ".jachin" / "client_volumes"
+    raw = (path_raw or "").strip().replace("\\", "/")
+    if not raw or "\n" in raw or len(raw) > 1200:
+        return "[read_file] 路径无效"
+    p = Path(raw)
+    if p.is_absolute() and not p.exists() and "/" in raw and "\\" not in raw:
+        p_alt = Path(raw.replace("/", "\\"))
+        if p_alt.exists():
+            p = p_alt
+    path_obj = None
+    if p.is_absolute() and p.exists():
+        path_obj = p.resolve()
+    else:
+        raw_norm = raw.lstrip("/")
+        for base, sub in [
+            (_l3_vol, raw_norm),
+            (_proj / "data" / "hr_resumes", p.name or raw_norm),
+            (_proj / "config" / "hr_jds", p.name or raw_norm),
+        ]:
+            cand = (base / sub).resolve()
+            if cand.exists() and cand.is_file():
+                path_obj = cand
+                break
+    if not path_obj or not path_obj.exists():
+        return f"[read_file] 路径无效或越界: {path_raw[:100]}"
+    try:
+        if path_obj.suffix.lower() == ".pdf":
+            content = extract_pdf_text(path_obj)
+            if not content.strip():
+                return SCAN_PLACEHOLDER
+            return content
+        return path_obj.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        logger.warning("[MCP Registry] read_file 本地执行失败 path=%s err=%s", path_obj, e)
+        return f"[read_file] 读取失败: {e}"
 
 
 def _get_l2_base_url() -> str:
@@ -41,10 +94,11 @@ class MCPToolRegistry:
         self._l2_base_url = (l2_base_url or _get_l2_base_url()).rstrip("/")
         self._known_mcp_tools: set[str] = set()
         self._tools_cache: list[dict[str, Any]] = []
+        self._local_mcp_tools: set[str] = {t["id"] for t in L3_LOCAL_MCP_TOOLS}
 
     @property
     def known_mcp_tools(self) -> set[str]:
-        """属于 L2 的 MCP 工具名集合（含 mcp: 前缀），避免与本地 Wasm 重名。"""
+        """MCP 工具名集合（含 L3 本地 + L2 拉取），避免与本地 Wasm 重名。"""
         return self._known_mcp_tools.copy()
 
     def _mcp_id(self, name: str) -> str:
@@ -65,12 +119,15 @@ class MCPToolRegistry:
 
     async def fetch_tools_from_l2(self) -> list[dict[str, Any]]:
         """
-        调用 L2 GET /api/v2/mcp/tools，获取可用工具列表。
-        更新 known_mcp_tools 与 _tools_cache。
+        获取 MCP 工具列表。L3 本地 read_file 优先注入，L2 工具合并（read_file 已下放 L3，不重复）。
         Returns:
             合并后的工具列表，格式与 load_tools 一致：{id, label, desc, params}
         """
         import httpx
+
+        tools: list[dict[str, Any]] = list(L3_LOCAL_MCP_TOOLS)
+        self._known_mcp_tools = set(self._local_mcp_tools)
+        local_names = {"read_file"}
 
         url = f"{self._l2_base_url}/api/v2/mcp/tools"
         logger.info("[MCP Registry] 从 L2 拉取工具 url=%s", url)
@@ -81,28 +138,25 @@ class MCPToolRegistry:
                 data = resp.json()
         except httpx.TimeoutException as e:
             logger.warning("[MCP Registry] L2 请求超时 url=%s err=%s", url, e)
-            return []
+            self._tools_cache = tools
+            logger.info("[MCP Registry] 使用 L3 本地工具 %d 个（L2 不可用）", len(tools))
+            return tools
         except httpx.HTTPStatusError as e:
             logger.warning("[MCP Registry] L2 返回错误 url=%s status=%s", url, e.response.status_code)
-            return []
+            self._tools_cache = tools
+            return tools
         except Exception as e:
             logger.warning("[MCP Registry] 拉取工具失败 url=%s err=%s", url, e)
-            return []
+            self._tools_cache = tools
+            return tools
 
         raw_tools = data.get("tools", [])
-        if not raw_tools:
-            logger.debug("[MCP Registry] L2 未返回任何 MCP 工具")
-            return []
-
-        tools: list[dict[str, Any]] = []
-        self._known_mcp_tools.clear()
         for t in raw_tools:
             name = t.get("name", "").strip()
-            if not name:
+            if not name or name in local_names:
                 continue
             mcp_id = self._mcp_id(name)
             self._known_mcp_tools.add(mcp_id)
-            # 解析 params 从 inputSchema
             params: list[str] = []
             schema = t.get("inputSchema") or {}
             if isinstance(schema, dict):
@@ -116,7 +170,7 @@ class MCPToolRegistry:
                 "params": params,
             })
         self._tools_cache = tools
-        logger.info("[MCP Registry] 已拉取 %d 个 MCP 工具 names=%s", len(tools), list(self._known_mcp_tools))
+        logger.info("[MCP Registry] 已合并 %d 个 MCP 工具（含 L3 本地 read_file）", len(tools))
         return tools
 
     def to_openai_tools_schema(self, tools: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
@@ -151,6 +205,29 @@ class MCPToolRegistry:
         若未拉取过则返回空。
         """
         return list(self._tools_cache)
+
+    async def invoke(self, tool_id: str, action_input: str, *, timeout: float = 30.0) -> str:
+        """
+        执行 MCP 工具。L3 本地工具（如 read_file）直接执行，其余走 L2。
+        """
+        if tool_id in self._local_mcp_tools:
+            raw_name = self._raw_name(tool_id)
+            if raw_name == "read_file":
+                arguments = {}
+                inp = (action_input or "").strip()
+                if inp:
+                    if inp.strip().startswith("{") and "}" in inp:
+                        try:
+                            arguments = json.loads(inp)
+                            if not isinstance(arguments, dict):
+                                arguments = {"path": inp}
+                        except json.JSONDecodeError:
+                            arguments = {"path": inp}
+                    else:
+                        arguments = {"path": inp}
+                path_val = arguments.get("path", arguments.get("input", inp))
+                return _invoke_read_file_local(str(path_val) if path_val else "")
+        return await self.invoke_via_l2(tool_id, action_input, timeout=timeout)
 
     async def invoke_via_l2(
         self,

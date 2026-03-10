@@ -2,7 +2,7 @@
 Jachin Nexus V2 - L2 本地数字仓库 API
 
 暴露仓库管理接口，供 L2 面板或 L3 查阅侧载技能、触发热重载。
-MVP: 权限分配已隐藏，有 X-Sub-Account-Id 即全量下发所有技能。
+支持技能卸载与 GC（垃圾回收）：DELETE /skills/{item_id}?purge_data=true/false
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import FileResponse
 
 from core.errors import ERR_AUTH_001, ERR_AUTH_002, ERR_AUTH_003, ERR_NOT_FOUND_003, api_error
@@ -156,6 +156,35 @@ async def trigger_sync_from_l1(request: Request) -> dict[str, Any]:
     except Exception as e:
         logger.exception("[Inventory API] trigger-sync 失败: %s", e)
         return {"ok": False, "error": str(e)}
+
+
+@router.delete("/skills/{item_id}")
+async def uninstall_skill(
+    request: Request,
+    item_id: str,
+    purge_data: bool = Query(False, description="是否清理业务数据（注册表、数据卷）"),
+) -> dict[str, Any]:
+    """
+    卸载技能：移入回收站（软删除），非彻底删除。
+    - 技能在 inventory/cache/builtin：移入 ~/.jachin/recycle_bin/
+    - 回收站中可恢复或彻底删除
+    需 X-Sub-Account-Id。
+    """
+    sub_account_id = _get_sub_account_id(request)
+    if not sub_account_id:
+        return {"ok": False, "error": "需要 X-Sub-Account-Id"}
+
+    try:
+        from core.recycle_bin import move_to_recycle_bin
+        result = move_to_recycle_bin(item_id, purge_data)
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error", "移入回收站失败"), "item_id": item_id}
+        if result.get("source") == "inventory":
+            await reload_inventory()
+        return {**result, "message": "已移入回收站"}
+    except Exception as e:
+        logger.exception("[Inventory API] 移入回收站失败 item_id=%s err=%s", item_id, e)
+        return {"ok": False, "error": str(e), "item_id": item_id}
 
 
 @router.post("/reload")

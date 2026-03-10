@@ -84,6 +84,11 @@ def ensure_inventory_dirs() -> None:
     """确保仓库目录存在。"""
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     MCPS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        from core.skill_registry import ensure_volumes_root
+        ensure_volumes_root()
+    except Exception:
+        pass
     logger.debug("[Inventory] 目录已就绪 skills=%s mcps=%s", SKILLS_DIR, MCPS_DIR)
 
 
@@ -292,6 +297,15 @@ async def scan_local_skills() -> int:
             "origin": "SIDE_LOAD" if is_side_load else "L1_SYNC",
             "is_private": is_side_load,
         }
+        # Jachin 注册表 + 数据卷：解析 configs/volumes 声明，写入默认值并创建卷
+        configs = desc.get("configs")
+        volumes = desc.get("volumes")
+        if configs or volumes:
+            try:
+                from core.skill_registry import setup_skill_registry_and_volumes
+                setup_skill_registry_and_volumes(skill_id, item_id, configs, volumes)
+            except Exception as e:
+                logger.warning("[Inventory] 注册表/数据卷设置失败 skill=%s err=%s", item_id, e)
         logger.debug("[Inventory] 发现技能 id=%s path=%s", skill_id, subdir.name)
 
     registered_local_skills.clear()

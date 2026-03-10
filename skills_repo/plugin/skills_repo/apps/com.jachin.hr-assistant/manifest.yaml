@@ -1,0 +1,59 @@
+# HR 主编排技能 - 入口
+# 编排各子技能完成：简历搜索 → 解析 → RAG 检索 → Tribunal 辩论 → 输出
+
+id: com.jachin.hr-assistant
+version: 1.0.0
+name: HR 模拟助手
+description: 模拟 HR 三大功能：搜索简历、多 Agent 辩论筛选、Lark 面试跟踪与报表
+author: HR Plugin Team
+
+capabilities:
+  - name: full_pipeline
+    description: 完整流程：岗位 → 获取简历 → RAG 检索 → Tribunal 辩论筛选 → 输出通过名单
+    compute: cpu_heavy
+    input_schema:
+      type: object
+      properties:
+        job_title:
+          type: string
+        job_desc:
+          type: string
+        department:
+          type: string
+        max_resumes:
+          type: integer
+          default: 5
+      required:
+        - job_title
+  - name: screen_local_resumes
+    description: 对本地简历文件（PDF/Word）进行 Tribunal 辩论筛选
+    compute: cpu_heavy
+    input_schema:
+      type: object
+      properties:
+        file_paths:
+          type: array
+          items:
+            type: string
+        job_desc:
+          type: string
+        department:
+          type: string
+      required:
+        - file_paths
+
+permissions:
+  - id: file
+    label: 文件
+    scope: file.read
+  - id: network
+    label: 网络
+    scope: network
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources:
+    memory_mb: 512

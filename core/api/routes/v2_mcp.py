@@ -113,10 +113,11 @@ async def invoke_mcp_tool(request: Request, body: InvokeRequest) -> dict[str, An
     logger.info("[MCP API] POST /invoke tool_name=%s sub=%s item_id=%s", tool_name, eff_sub[:16], item_id)
 
     t0 = time.perf_counter()
+    timeout_sec = 60.0
     try:
         result = await asyncio.wait_for(
             manager.invoke_tool(tool_name, arguments),
-            timeout=60.0,
+            timeout=timeout_sec,
         )
         latency_ms = (time.perf_counter() - t0) * 1000
         record_usage_async(eff_sub, item_id, tool_name, "success", latency_ms)

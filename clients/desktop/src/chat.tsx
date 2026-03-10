@@ -48,7 +48,7 @@ function ChatApp() {
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
   const sensory = useSensoryWebSocket();
-  const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler, registerAnswerHandler, sendInput } = sensory;
+  const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler, registerAnswerHandler, registerStepHandler, sendInput } = sensory;
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
@@ -127,15 +127,17 @@ function ChatApp() {
     };
 
     let timeoutCleared = false;
-    const cleanup = (finalContent: string, source?: "L3" | "L2") => {
+    const cleanup = (finalContent: string, source?: "L3" | "L2", opts?: { skipContentUpdate?: boolean }) => {
       if (timeoutCleared) return;
       timeoutCleared = true;
       clearTimeout(timeoutId);
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
-        if (last?.role === "assistant") {
+        if (last?.role === "assistant" && !opts?.skipContentUpdate) {
           updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
+        } else if (last?.role === "assistant" && opts?.skipContentUpdate) {
+          updated[updated.length - 1] = { ...last, source };
         }
         saveMessages(updated);
         return updated;
@@ -164,9 +166,21 @@ function ChatApp() {
       });
     };
 
+    const stepHandler = (stepType: string, content: string) => {
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant") {
+          updated[updated.length - 1] = { ...last, content: last.content + content };
+        }
+        return updated;
+      });
+    };
+
     const timeoutId = setTimeout(() => {
       registerChunkHandler(null);
       registerAnswerHandler(null);
+      registerStepHandler(null);
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && !last.content) {
@@ -180,9 +194,11 @@ function ChatApp() {
 
     const pendingL3InputRef = { current: content };
     registerChunkHandler(chunkHandler);
+    registerStepHandler(stepHandler);
     registerAnswerHandler((answerContent) => {
       registerChunkHandler(null);
       registerAnswerHandler(null);
+      registerStepHandler(null);
       const isL3Error = typeof answerContent === "string" && (
         answerContent.includes("Ollama") || answerContent.includes("APIConnectionError") ||
         answerContent.includes("RuntimeError") || answerContent.includes("未配置 API Key")
@@ -193,15 +209,17 @@ function ChatApp() {
           .then((fullText) => {
             registerChunkHandler(null);
             registerAnswerHandler(null);
+            registerStepHandler(null);
             cleanup(fullText, "L2");
           })
           .catch((e) => {
             registerChunkHandler(null);
             registerAnswerHandler(null);
+            registerStepHandler(null);
             cleanup(`L2 兜底也失败：${(e as Error).message}`, "L2");
           });
       } else {
-        cleanup(answerContent, "L3");
+        cleanup(answerContent, "L3", { skipContentUpdate: true });
       }
     });
 

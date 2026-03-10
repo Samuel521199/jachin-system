@@ -73,6 +73,7 @@ dapr/secrets/secrets.json
 tmp/
 temp/
 *.tmp
+temp_invoke_body.json
 
 # Node (for frontend)
 node_modules/
@@ -121,3 +122,10 @@ qdrant_storage/
 data/tts/*.onnx
 data/tts/voices.json
 data/tts/*.bin
+
+# HR analysis reports and resumes (user-specific runtime data)
+data/hr_analysis/*.md
+data/hr_resumes/*.pdf
+
+# Build artifacts
+skills_repo/*.zip

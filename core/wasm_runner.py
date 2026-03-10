@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import sys
 import tempfile
 import traceback
 from pathlib import Path
@@ -23,11 +25,24 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# L3 本地数据卷根（Boss 收网 PDF 蓄水池）
+_L3_VOLUME_ROOT = Path.home() / ".jachin" / "client_volumes"
+
 # Host 服务注册（L3 bootstrap 时注入，供 http_post/llm_complete 使用）
 _host_services: dict[str, Any] = {}
 
 # 当前执行上下文（run_plugin_execute_abi 调用前设置，供 host 函数访问 memory/store）
 _run_context: dict[str, Any] = {}
+
+# NDJSON 流式输出（host_stream_ndjson 写入，execute 完成后可读取）
+_last_ndjson_lines: list[str] = []
+
+
+def get_last_ndjson_lines() -> list[str]:
+    """获取并清空上次 Wasm 执行的 NDJSON 流式输出。"""
+    global _last_ndjson_lines
+    lines, _last_ndjson_lines = _last_ndjson_lines, []
+    return lines
 
 
 def register_host_services(
@@ -118,7 +133,8 @@ class JachinWasmSandbox:
             # 先尝试 execute(ptr, len) ABI（Rust JPP 插件如 jachin-system-pilot）
             print(f"[Skill Execute] [WASM] 尝试 execute ABI wasm={wasm_file_path}", file=sys.stderr, flush=True)
             try:
-                out = self.run_plugin_execute_abi(wasm_file_path, stdin_str, fuel_limit)
+                ndjson_q = kwargs.get("ndjson_queue")
+                out = self.run_plugin_execute_abi(wasm_file_path, stdin_str, fuel_limit, ndjson_queue=ndjson_q)
                 if out is not None:
                     return out
             except Exception as e:
@@ -233,50 +249,161 @@ class JachinWasmSandbox:
                 return _write_to_mem(mem, store, OUTPUT_OFFSET, err)
 
         def _mcp_read_file(path_ptr: int, path_len: int) -> int:
-            """Host: 调用 L2 MCP read_file，直接返回文件内容（纯文本），写入 OUTPUT_OFFSET。
-            本地绝对路径且存在时优先直读（绕过 MCP，兼容 L2 未重启）；否则走 MCP。"""
+            """Host: L3 本地读取文件（含 PDF 提取），不依赖 L2。L2 仅作回退。
+            路径白名单：client_volumes、data/hr_resumes、config/hr_jds。"""
             mem, store = _get_mem_store()
             if not mem or not store:
                 return _write_err_fallback(OUTPUT_OFFSET, "⚠️ 无法连接 L2 机房或读取文件失败")
             try:
                 raw = bytes(mem.read(store, path_ptr, path_ptr + path_len)).decode("utf-8", errors="replace").strip()
+                if "\n" in raw or len(raw) > 1200:
+                    logger.warning("[WASM Host] mcp_read_file 路径异常（含换行或过长）: len=%d", len(raw))
+                    return -1
                 p = Path(raw)
-                # 本地绝对路径且存在：直读，避免 MCP 未加载 config/hr_jds 时失败
-                if p.is_absolute() and p.exists():
-                    content = p.read_text(encoding="utf-8", errors="replace")
-                    return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+                if p.is_absolute() and not p.exists() and "/" in raw and "\\" not in raw:
+                    p_alt = Path(raw.replace("/", "\\"))
+                    if p_alt.exists():
+                        p = p_alt
+                _proj = Path(__file__).resolve().parent.parent
+                raw_norm = raw.strip().replace("\\", "/").lstrip("/")
                 filename = (p.name or "zhangsan_resume.md").strip()
-                if not filename or not filename.endswith((".md", ".txt")):
+                if not filename.lower().endswith((".md", ".txt", ".pdf")):
                     filename = "zhangsan_resume.md"
-                # 本地同机：传绝对路径（MCP server-filesystem 需绝对路径，test_hr_fs_mcp 已验证）
+                path_obj = None
                 if p.is_absolute() and p.exists():
-                    path = str(p.resolve())
+                    path_obj = p.resolve()
                 else:
-                    _proj = Path(__file__).resolve().parent.parent
-                    # 优先 data/hr_resumes，其次 config/hr_jds（JD 文件）
-                    for parts in [("data", "hr_resumes"), ("config", "hr_jds")]:
-                        cand = (_proj / parts[0] / parts[1] / filename).resolve()
-                        if cand.exists():
-                            path = str(cand)
+                    # 岗位 JD 临时文件：Loader 写入 %TEMP%/tmp*.txt，需显式支持（Windows 下 Path 可能因斜杠格式导致 exists() 误判）
+                    try:
+                        _tmp = Path(tempfile.gettempdir()).resolve()
+                        _tmp_str = str(_tmp).replace("\\", "/")
+                        for _p in (p, Path(raw.replace("/", "\\")), Path(raw.replace("\\", "/")), Path(raw)):
+                            try:
+                                _resolved = _p.resolve()
+                                _res_str = str(_resolved).replace("\\", "/")
+                                if (_res_str.startswith(_tmp_str) or str(_resolved).startswith(str(_tmp))) and _resolved.is_file():
+                                    path_obj = _resolved
+                                    logger.info("[WASM Host] mcp_read_file 岗位 JD 临时文件已解析 path=%s", _resolved)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                if path_obj is None:
+                    for base, sub in [(_L3_VOLUME_ROOT, raw_norm), (_proj / "data" / "hr_resumes", filename), (_proj / "config" / "hr_jds", filename)]:
+                        cand = (base / sub).resolve()
+                        if cand.exists() and cand.is_file():
+                            path_obj = cand
                             break
-                    else:
-                        path = str((_proj / "data" / "hr_resumes" / filename).resolve())
+                if path_obj and path_obj.exists():
+                    if path_obj.suffix.lower() == ".pdf":
+                        from core.pdf_extractor import extract_pdf_text, SCAN_PLACEHOLDER
+                        content = extract_pdf_text(path_obj)
+                        # 水印/无效内容（如单字符 ~）视为扫描件
+                        s = (content or "").strip()
+                        if not s or (len(s) < 30 and not any("\u4e00" <= c <= "\u9fff" for c in s)):
+                            return _write_to_mem(mem, store, OUTPUT_OFFSET, SCAN_PLACEHOLDER)
+                        return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+                    content = path_obj.read_text(encoding="utf-8", errors="replace")
+                    # 岗位 JD 临时文件：打印完整内容便于排查
+                    if path_obj.suffix.lower() == ".txt" and ("Temp" in raw or "tmp" in raw):
+                        logger.info("[WASM Host] mcp_read_file 岗位 JD 已读取 path=%s len=%d", path_obj, len(content))
+                        print(f"[mcp_read_file] 岗位 JD 完整内容 (len={len(content)}):\n{content}\n", file=sys.stderr, flush=True)
+                    return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+                # 岗位 JD 临时文件：本地读取失败时返回 -1，Rust 将回退到 jd_template
+                if ("Temp" in raw or "tmp" in raw) and (".txt" in raw or raw.lower().endswith(".txt")):
+                    logger.warning("[WASM Host] mcp_read_file 岗位 JD 临时文件读取失败 path=%s (Rust 将回退 jd_template)", raw[:100])
+                    print(f"[mcp_read_file] 失败：无法读取 JD 临时文件 path={raw[:80]}...", file=sys.stderr, flush=True)
+                    return -1
+                path_for_l2 = str((path_obj or (_proj / "data" / "hr_resumes" / filename)).resolve()).replace("\\", "/")
+                # 回退路径不存在时，跳过 L2 调用，避免 L2 报 ENOENT 噪音
+                if path_obj is None and not Path(path_for_l2).exists():
+                    logger.debug("[WASM Host] mcp_read_file 本地未找到且回退路径不存在，跳过 L2 path=%s", path_for_l2[:100])
+                    return -1
+                try:
+                    import httpx
+                    l2 = _host_services.get("l2_base_url", "http://localhost:18888")
+                    url = f"{l2.rstrip('/')}/api/v2/mcp/invoke"
+                    body = json.dumps({"tool_name": "read_file", "arguments": {"path": path_for_l2}})
+                    with httpx.Client(timeout=30.0) as client:
+                        resp = client.post(url, content=body, headers={"Content-Type": "application/json"})
+                        resp.raise_for_status()
+                        data = resp.json()
+                    content = data.get("result", "")
+                    if not isinstance(content, str):
+                        content = str(content) if content is not None else ""
+                    if content.strip().upper().startswith(("ENOENT", "ERROR", "EXCEPTION")) or "no such file" in content.lower():
+                        logger.warning("[WASM Host] mcp_read_file L2 返回错误: %s", content[:200])
+                        return -1
+                    return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+                except Exception as l2_err:
+                    logger.debug("[WASM Host] mcp_read_file L2 不可用（L3 本地读取已优先）: %s", l2_err)
+                    return -1
+            except Exception as e:
+                logger.warning("[WASM Host] mcp_read_file 异常 path=%s: %s", raw, e)
+                return -1
+
+        def _mcp_list_directory(path_ptr: int, path_len: int) -> int:
+            """Host: 列出目录下 .md/.txt/.pdf 文件。支持 L3 数据卷、data/hr_resumes、config/hr_jds 本地直读。"""
+            mem, store = _get_mem_store()
+            if not mem or not store:
+                return -1
+            try:
+                raw = bytes(mem.read(store, path_ptr, path_ptr + path_len)).decode("utf-8", errors="replace").strip()
+                raw_clean = raw.strip().replace("\\", "/").lstrip("/")
+                _proj = Path(__file__).resolve().parent.parent
+                # L3 数据卷：global_resume_pool 或 global_resume_pool/Java_杭州 4-6K
+                p_vol = (_L3_VOLUME_ROOT / raw_clean).resolve()
+                if p_vol.is_dir() and str(p_vol).startswith(str(_L3_VOLUME_ROOT.resolve())):
+                    try:
+                        files = [f.name for f in sorted(p_vol.iterdir()) if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf")]
+                        result = "\n".join(f"[FILE] {f}" for f in files)
+                        logger.info("[WASM Host] mcp_list_directory L3 数据卷 path=%s files=%s", p_vol, files)
+                        return _write_to_mem(mem, store, OUTPUT_OFFSET, result)
+                    except (OSError, RuntimeError) as e:
+                        logger.debug("[WASM Host] mcp_list_directory L3 数据卷异常: %s", e)
+                if not raw_clean.startswith("/") and (len(raw_clean) < 2 or raw_clean[1] != ":"):
+                    p = (_proj / raw_clean).resolve()
+                else:
+                    p = Path(raw).resolve()
+                p_norm = str(p).replace("\\", "/").lower()
+                if "hr_resumes" in p_norm or "hr_jds" in p_norm or "client_volumes" in p_norm:
+                    try:
+                        if p.is_dir():
+                            files = [
+                                f.name for f in sorted(p.iterdir())
+                                if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf")
+                            ]
+                            result = "\n".join(f"[FILE] {f}" for f in files)
+                            logger.info("[WASM Host] mcp_list_directory 本地直读 path=%s files=%s", p, files)
+                            return _write_to_mem(mem, store, OUTPUT_OFFSET, result)
+                    except (OSError, RuntimeError) as e:
+                        logger.debug("[WASM Host] mcp_list_directory 本地直读异常: %s", e)
+                path_for_mcp = str(p).replace("\\", "/")
                 import httpx
                 l2 = _host_services.get("l2_base_url", "http://localhost:18888")
                 url = f"{l2.rstrip('/')}/api/v2/mcp/invoke"
-                body = json.dumps({"tool_name": "read_file", "arguments": {"path": path}})
-                with httpx.Client(timeout=30.0) as client:
+                body = json.dumps({"tool_name": "list_directory", "arguments": {"path": path_for_mcp}})
+                with httpx.Client(timeout=30.0, trust_env=False) as client:
                     resp = client.post(url, content=body, headers={"Content-Type": "application/json"})
                     resp.raise_for_status()
                     data = resp.json()
-                content = data.get("result", "")
-                if not isinstance(content, str):
-                    content = str(content) if content is not None else ""
-                return _write_to_mem(mem, store, OUTPUT_OFFSET, content)
+                result = data.get("result", "")
+                if not isinstance(result, str):
+                    result = json.dumps(result) if result is not None else ""
+                if "[DIR] .git" in result or "[DIR] .cursor" in result:
+                    logger.warning("[WASM Host] mcp_list_directory MCP 返回了项目根目录，非 data/hr_resumes，回退本地直读")
+                    try:
+                        p_fallback = p.resolve()
+                        if p_fallback.is_dir() and ("hr_resumes" in str(p_fallback) or "hr_jds" in str(p_fallback)):
+                            files = [f.name for f in sorted(p_fallback.iterdir()) if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf")]
+                            result = "\n".join(f"[FILE] {f}" for f in files)
+                    except (OSError, RuntimeError):
+                        pass
+                return _write_to_mem(mem, store, OUTPUT_OFFSET, result)
             except Exception as e:
-                err = f"⚠️ 无法连接 L2 机房或读取文件失败: {e}"
-                logger.warning("[WASM Host] mcp_read_file 异常: %s", e)
-                return _write_to_mem(mem, store, OUTPUT_OFFSET, err)
+                logger.warning("[WASM Host] mcp_list_directory 异常: %s", e)
+                return -1
 
         def _llm_complete(prompt_ptr: int, prompt_len: int) -> int:
             """Host: LLM 推理，结果写入 OUTPUT_OFFSET，返回字节数。"""
@@ -289,8 +416,8 @@ class JachinWasmSandbox:
                 if not engine:
                     return _write_to_mem(mem, store, OUTPUT_OFFSET, "⚠️ LLM 引擎未注册，请确保 L3 已配对并启动")
                 import litellm
-                # LiteLLM 需要 provider 前缀（如 dashscope/qwen3.5-flash），L2 可能只返回 qwen3.5-flash
-                model = engine.model_name or "dashscope/qwen3.5-flash"
+                # LiteLLM 需要 provider 前缀（如 dashscope/qwen3.5-flash-2026-02-23），L2 可能只返回 qwen3.5-flash-2026-02-23
+                model = engine.model_name or "dashscope/qwen3.5-flash-2026-02-23"
                 if hasattr(engine, "_normalize_model"):
                     model = engine._normalize_model(model) or model
                 engine._inject_key(model)
@@ -337,10 +464,26 @@ class JachinWasmSandbox:
             linker.define_func("env", "__rust_alloc_zeroed", alloc_ty, _rust_alloc_zeroed)
             http_post_ty = FuncType([ValType.i32(), ValType.i32(), ValType.i32(), ValType.i32()], [ValType.i32()])
             mcp_read_ty = FuncType([ValType.i32(), ValType.i32()], [ValType.i32()])
+            mcp_list_dir_ty = FuncType([ValType.i32(), ValType.i32()], [ValType.i32()])
             llm_ty = FuncType([ValType.i32(), ValType.i32()], [ValType.i32()])
             linker.define_func("env", "http_post", http_post_ty, _http_post)
             linker.define_func("env", "mcp_read_file", mcp_read_ty, _mcp_read_file)
+            linker.define_func("env", "mcp_list_directory", mcp_list_dir_ty, _mcp_list_directory)
             linker.define_func("env", "llm_complete", llm_ty, _llm_complete)
+
+            def _host_stream_ndjson(ptr: int, length: int) -> None:
+                mem, store = _get_mem_store()
+                if mem and store and ptr >= 0 and length > 0:
+                    try:
+                        raw = bytes(mem.read(store, ptr, ptr + length)).decode("utf-8", errors="replace")
+                        q = _run_context.get("ndjson_queue")
+                        if q is not None:
+                            q.put(raw)
+                    except Exception as e:
+                        logger.debug("[WASM Host] host_stream_ndjson: %s", e)
+
+            stream_ty = FuncType([ValType.i32(), ValType.i32()], [])
+            linker.define_func("env", "host_stream_ndjson", stream_ty, _host_stream_ndjson)
             return linker
         except (TypeError, AttributeError):
             return None
@@ -350,6 +493,7 @@ class JachinWasmSandbox:
         wasm_file_path: str,
         stdin_str: str = "{}",
         fuel_limit: int = 100_000,
+        ndjson_queue: "queue.Queue[str] | None" = None,
     ) -> str | None:
         """
         JPP execute(ptr, len) -> i32 ABI：宿主写输入到 memory[ptr..ptr+len]，
@@ -386,15 +530,21 @@ class JachinWasmSandbox:
             memory = exports.get("memory")
             if func is None or memory is None:
                 return None
-            # 设置 run context 供 http_post/llm_complete 等 host 函数使用
+            # 设置 run context 供 http_post/llm_complete/host_stream_ndjson 等 host 函数使用
             _run_context["memory"] = memory
             _run_context["store"] = store
+            _run_context["ndjson_queue"] = ndjson_queue if ndjson_queue is not None else queue.Queue()
             try:
                 # JPP 约定：宿主写输入到 memory[ptr..ptr+len]，插件写输出到 memory[OUTPUT_OFFSET..]
                 INPUT_OFFSET = 0x8000
                 OUTPUT_OFFSET = 0x8000  # 与 jachin-system-pilot 等 Rust 插件约定
                 data = stdin_str.encode("utf-8")
                 len_i = len(data)
+                print(f"[WASM] execute ABI stdin_len={len_i} has_hr_files={'_hr_files' in stdin_str} has_delim={'|||' in stdin_str}", file=sys.stderr, flush=True)
+                if len_i > 0 and len_i < 800:
+                    print(f"[WASM] execute ABI stdin_full={stdin_str!r}", file=sys.stderr, flush=True)
+                elif len_i > 0:
+                    print(f"[WASM] execute ABI stdin_preview={stdin_str[:350]!r}...", file=sys.stderr, flush=True)
                 if len_i == 0:
                     ptr = 0
                 else:
@@ -407,12 +557,30 @@ class JachinWasmSandbox:
                         pass
                     memory.write(store, data, ptr)
                 out_len = func(store, ptr, len_i)
+                # 收集 NDJSON 流式输出（host_stream_ndjson 写入）
+                # 若使用外部 ndjson_queue（流式模式），不 drain 到 _last_ndjson_lines
+                ndjson_lines: list[str] = []
+                try:
+                    q = _run_context.get("ndjson_queue")
+                    if q is not None and ndjson_queue is None:
+                        while True:
+                            try:
+                                ndjson_lines.append(q.get_nowait())
+                            except queue.Empty:
+                                break
+                        _last_ndjson_lines[:] = ndjson_lines
+                except Exception:
+                    pass
                 if out_len <= 0:
-                    print(f"[Skill Execute] [WASM] execute ABI 返回空 out_len={out_len} wasm={wasm_file_path}", file=sys.stderr, flush=True)
-                    return ""
-                out_bytes = memory.read(store, OUTPUT_OFFSET, OUTPUT_OFFSET + out_len)
-                result = bytes(out_bytes).decode("utf-8", errors="replace")
-                print(f"[Skill Execute] [WASM] execute ABI 返回 wasm={wasm_file_path} len={len(result)} preview={result[:150]}...", file=sys.stderr, flush=True)
+                    if ndjson_lines:
+                        result = ndjson_lines[-1] if ndjson_lines else ""
+                    else:
+                        print(f"[Skill Execute] [WASM] execute ABI 返回空 out_len={out_len} wasm={wasm_file_path}", file=sys.stderr, flush=True)
+                        return ""
+                else:
+                    out_bytes = memory.read(store, OUTPUT_OFFSET, OUTPUT_OFFSET + out_len)
+                    result = bytes(out_bytes).decode("utf-8", errors="replace")
+                print(f"[Skill Execute] [WASM] execute ABI 返回 wasm={wasm_file_path} len={len(result)} ndjson_lines={len(ndjson_lines)}", file=sys.stderr, flush=True)
                 return result
             finally:
                 _run_context.clear()
@@ -595,6 +763,7 @@ def run_wasm_plugin(
     function_name: str = "run",
     fuel_limit: int = 100_000,
     stdin_json: dict | str | None = None,
+    ndjson_queue: "queue.Queue[str] | None" = None,
 ) -> Any:
     """
     便捷函数：在沙箱中执行 WASM 插件。
@@ -618,6 +787,7 @@ def run_wasm_plugin(
             function_name,
             fuel_limit,
             stdin_json=stdin_json,
+            ndjson_queue=ndjson_queue,
         )
     except WasmExecutionError:
         raise

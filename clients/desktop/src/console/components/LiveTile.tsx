@@ -4,7 +4,7 @@
 
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { AppWindow, Play, Loader2, FileText, Globe, Cpu, Shield } from "lucide-react";
+import { AppWindow, Play, Loader2, FileText, Globe, Cpu, Shield, Trash2, Settings } from "lucide-react";
 import { cn } from "../../utils/cn";
 
 /** 占位：后端暂无权限数据时使用的 mock 权限类型 */
@@ -27,6 +27,8 @@ export interface LiveTileSkill {
   name: string;
   version?: string;
   capabilities?: Array<{ name?: string; description?: string }>;
+  /** L2 inventory 目录名，卸载时使用 */
+  item_id?: string;
 }
 
 export function LiveTile({
@@ -36,6 +38,8 @@ export function LiveTile({
   isExecuting,
   onExecute,
   onExpand,
+  onUninstall,
+  onSettings,
   permissions,
   liveStatus,
   className,
@@ -46,6 +50,8 @@ export function LiveTile({
   isExecuting?: boolean;
   onExecute?: (capName: string) => void;
   onExpand?: () => void;
+  onUninstall?: () => void;
+  onSettings?: () => void;
   /** 后端下发的权限列表，有则替代 mock 占位 */
   permissions?: Array<{ id: string; label: string }>;
   /** 实时状态文案，如「已执行 3 次」「上次 12:30」 */
@@ -91,8 +97,7 @@ export function LiveTile({
                 <span className="text-cyan-400/90">已执行</span>
               )}
               {" · "}
-              {lastResult.slice(0, 60)}
-              {lastResult.length > 60 ? "…" : ""}
+              {lastResult.length > 200 ? `${lastResult.slice(0, 200)}…` : lastResult}
             </p>
           ) : (
             <p className="text-[11px] text-slate-500 font-mono">
@@ -108,22 +113,50 @@ export function LiveTile({
         </div>
       </button>
 
-      {/* 底部：执行按钮 + Permission X-Ray 占位 */}
-      <div className="flex-shrink-0 flex items-center justify-between gap-2 px-4 py-2 border-t border-white/10 bg-black/20">
-        {capNames.length > 0 && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onExecute?.(capNames[0]);
-            }}
-            disabled={isExecuting}
-            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono bg-rose-600/80 hover:bg-rose-500 text-white disabled:opacity-50"
-          >
-            {isExecuting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-            执行
-          </button>
-        )}
+      {/* 底部：执行按钮 + 卸载 + Permission X-Ray 占位（relative z-10 确保可点击） */}
+      <div className="relative z-10 flex-shrink-0 flex items-center justify-between gap-2 px-4 py-2 border-t border-white/10 bg-black/20" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2">
+          {capNames.length > 0 && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onExecute?.(capNames[0]);
+              }}
+              disabled={isExecuting}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono bg-rose-600/80 hover:bg-rose-500 text-white disabled:opacity-50"
+            >
+              {isExecuting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+              执行
+            </button>
+          )}
+          {onSettings && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSettings();
+              }}
+              className="p-1.5 rounded text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/20 transition-colors"
+              title="技能设置"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {onUninstall && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onUninstall();
+              }}
+              className="p-1.5 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/20 transition-colors"
+              title="卸载技能"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
         <div className="relative flex items-center gap-1">
           <AnimatePresence>
             {showPermissions && (

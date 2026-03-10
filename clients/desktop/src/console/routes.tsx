@@ -12,6 +12,7 @@ import { JachinLink } from "./pages/JachinLink";
 import { Persona } from "./pages/Persona";
 import { SettingsPanel } from "./pages/SettingsPanel";
 import { WakeModePanel } from "./pages/WakeModePanel";
+import { RecruitmentDashboard } from "./pages/RecruitmentDashboard";
 
 export const consoleRoutes = [
   {
@@ -23,6 +24,7 @@ export const consoleRoutes = [
       { path: "brain", element: <NeuralNexus /> },
       { path: "calendar", element: <Calendar /> },
       { path: "skills", element: <SkillMatrix /> },
+      { path: "recruitment", element: <RecruitmentDashboard /> },
       { path: "network", element: <JachinLink /> },
       { path: "wake", element: <WakeModePanel /> },
       { path: "settings", element: <Persona /> },

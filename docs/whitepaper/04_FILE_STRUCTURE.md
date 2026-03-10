@@ -135,10 +135,14 @@ scripts/
 ## 六、 jachin-cli (极客终端)
 
 ```text
-clients/cli/                  # 或 core/cli.py
-├── jachin-cli
-│   ├── pair                  # L1 配对授权（Legacy，Layer 2 daemon）
-│   └── shell                 # 终端流光溢彩，ReAct 日志流
+tools/jachin-cli/             # 插件发布 CLI (Python)
+├── jachin_cli/
+│   ├── commands/
+│   │   ├── publish           # 发布到 L1 商城
+│   │   ├── pack              # 打包 Skill/MCP
+│   │   └── init              # 初始化项目
+│   └── main.py
+└── pyproject.toml
 ```
 
 ---

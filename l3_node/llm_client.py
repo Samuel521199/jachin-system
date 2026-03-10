@@ -220,18 +220,18 @@ class LiteLLMEngine:
             if env_fb:
                 self.fallback_models = [m.strip() for m in env_fb.split(",") if m.strip()]
             elif self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY"):
-                self.fallback_models = ["dashscope/qwen3.5-flash"]
+                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
             else:
                 self.fallback_models = ["ollama/qwen2.5"]
         # 有 dashscope 时绝不使用 ollama
         if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")) and "ollama" in str(self.fallback_models).lower():
             self.fallback_models = [m for m in self.fallback_models if "ollama" not in m.lower()]
             if not self.fallback_models:
-                self.fallback_models = ["dashscope/qwen3.5-flash"]
+                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
         if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")) and "ollama" in (self.model_name or "").lower():
-            self.model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash")
+            self.model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
             if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash"
+                self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash-2026-02-23"
         self.timeout = timeout
         self.max_attempts = max_attempts
 
@@ -290,11 +290,11 @@ class LiteLLMEngine:
         if has_dashscope:
             self.fallback_models = [m for m in (self.fallback_models or []) if "ollama" not in (m or "").lower()]
             if not self.fallback_models:
-                self.fallback_models = ["dashscope/qwen3.5-flash"]
+                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
             if "ollama" in (self.model_name or "").lower():
-                self.model_name = _os.environ.get("LLM_MODEL", "qwen3.5-flash")
+                self.model_name = _os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
                 if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash"
+                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash-2026-02-23"
 
         models_to_try = [self.model_name] + [m for m in (self.fallback_models or []) if m != self.model_name]
         last_error: Optional[Exception] = None
@@ -358,11 +358,11 @@ class LiteLLMEngine:
         if has_dashscope:
             self.fallback_models = [m for m in (self.fallback_models or []) if "ollama" not in (m or "").lower()]
             if not self.fallback_models:
-                self.fallback_models = ["dashscope/qwen3.5-flash"]
+                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
             if "ollama" in (self.model_name or "").lower():
-                self.model_name = _os.environ.get("LLM_MODEL", "qwen3.5-flash")
+                self.model_name = _os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
                 if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash"
+                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash-2026-02-23"
 
         models_to_try = [self.model_name] + [
             m for m in self.fallback_models if m != self.model_name

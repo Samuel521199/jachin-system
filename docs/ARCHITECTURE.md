@@ -34,7 +34,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  L1 (cloud/nexus) — 平台                                         │
-│  用户主账号、商城、IAM、manifest、policies、licenses              │
+│  用户主账号、商城、manifest、licenses；IAM 已下放 L2              │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -59,8 +59,7 @@
 |------|------|------|
 | L1 商城 | `cloud/nexus/src/app/api/v1/store/` | catalog、publish、subscribe、licenses |
 | L1 同步 | `cloud/nexus/src/app/api/v1/sync/` | manifest |
-| L1 IAM | `cloud/nexus/src/app/api/v1/iam/` | policies/sync、inventory、roles |
-| L2 同步 | `core/sync_daemon.py` | CloudSyncDaemon：manifest → 下载 → policies |
+| L2 同步 | `core/sync_daemon.py` | CloudSyncDaemon：manifest → 下载；RBAC 本地管理 |
 | L2 仓库 | `core/inventory_scanner.py` | 侧载扫描、`.local_meta` |
 | L2 权限 | `core/policy_enforcer.py` | RBAC、断网降级、role_permissions |
 | L2 清单 | `core/api/routes/v2_inventory.py` | `/skills`、`/download`（需 X-Sub-Account-Id） |
@@ -76,7 +75,7 @@
 
 1. L1 订阅 → `user_licenses`
 2. L2 `poll_manifest` → `download_and_extract` → `~/.jachin/inventory/`
-3. L2 `poll_policies` → `role_permissions`
+3. L2 本地 `role_permissions`（RBAC 由 L2 管理，不依赖 L1；见 `v2_local_admin`）
 4. L3 `perform_startup_sync` → `GET /skills`（带 X-Sub-Account-Id）→ `GET /download` → `~/.jachin/l3_skill_cache/`
 
 ### 4.2 内网极客（侧载）
@@ -97,7 +96,7 @@
 
 | 存储 | 用途 |
 |------|------|
-|  PostgreSQL | L1：plugins_registry、user_licenses、iam_* |
+|  PostgreSQL | L1：plugins_registry、user_licenses（IAM 已下放 L2） |
 | SQLite | L2：sub_accounts、role_permissions、api_keys_vault、l3_nodes |
 | LanceDB | L2：向量记忆 |
 | 文件系统 | `~/.jachin/inventory/`、`~/.jachin/l3_skill_cache/`、`~/.jachin/l2_control.db` |
@@ -118,7 +117,7 @@
 | `GET /api/v1/store/catalog` | 公开商品 |
 | `GET /api/v1/sync/manifest` | 租户已购清单 |
 | `POST /api/v1/store/subscribe` | 订阅 |
-| `GET /api/v1/iam/policies/sync` | RBAC 策略 |
+| `POST /api/v2/local-admin/roles/assign` | L2 本地 RBAC 角色权限（L2 数据主权） |
 | `GET /api/v2/inventory/skills` | 技能清单（需 X-Sub-Account-Id） |
 | `GET /api/v2/inventory/skills/{id}/download` | 下载（需 X-Sub-Account-Id） |
 | `POST /api/v2/mcp/invoke` | MCP 调用（需 X-Sub-Account-Id） |

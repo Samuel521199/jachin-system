@@ -3,6 +3,7 @@ Jachin Nexus V2 - L2 MCP 客户端代理引擎 (轨道 A)
 
 连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
 使用官方 mcp Python SDK，全异步实现。
+本地 RPA 已迁至 L3 伴生 MCP，L2 仅代理外部 MCP Server。
 """
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+
+# 内置工具 server_id（用于 IAM item_id）
+BUILTIN_SERVER_ID = "l2-builtin"
 
 # 默认配置路径
 DEFAULT_MCP_CONFIG_PATH = Path.home() / ".jachin" / "mcp_servers.json"
@@ -148,6 +152,7 @@ class MCPManager:
         self._instances: dict[str, MCPServerInstance] = {}
         self._tool_route: dict[str, MCPServerInstance] = {}  # tool_name -> instance
         self._tools_cache: dict[str, dict[str, Any]] = {}  # tool_name -> {name, description, inputSchema}
+        self._builtin_tool_names: set[str] = set()  # 内置工具名，优先路由
 
     def _load_config(self) -> list[dict[str, Any]]:
         """读取 mcp_servers.json 配置。"""
@@ -168,10 +173,25 @@ class MCPManager:
             logger.warning("[MCP] 读取配置失败 path=%s err=%s", self._config_path, e)
             return []
 
+    def _register_builtin_tools(self) -> None:
+        """注册内置 MCP 工具（atom_inbox_harvester 等）。"""
+        try:
+            from core.mcp_builtin_tools import get_builtin_tools
+            for t in get_builtin_tools():
+                name = t.get("name", "")
+                if name:
+                    self._tools_cache[name] = t
+                    self._builtin_tool_names.add(name)
+                    logger.info("[MCP] 内置工具已注册 name=%s", name)
+        except ImportError as e:
+            logger.debug("[MCP] 内置工具未加载: %s", e)
+
     async def start(self) -> None:
         """
         读取配置，并发拉起所有 MCP Server，构建工具路由表。
+        内置工具优先注册，外部 Server 工具不覆盖同名内置工具。
         """
+        self._register_builtin_tools()
         servers = self._load_config()
         if not servers:
             return
@@ -196,10 +216,15 @@ class MCPManager:
                 self._instances[server_id] = instance
                 for t in tools:
                     name = t.get("name", "")
-                    if name and name not in self._tool_route:
+                    if not name:
+                        continue
+                    if name in self._builtin_tool_names:
+                        logger.debug("[MCP] 工具名与内置冲突 name=%s，保留内置实现", name)
+                        continue
+                    if name not in self._tool_route:
                         self._tool_route[name] = instance
                         self._tools_cache[name] = t
-                    elif name and name in self._tool_route:
+                    else:
                         logger.debug("[MCP] 工具名冲突 name=%s 已由 %s 提供，跳过 %s", name, self._tool_route[name].server_id, server_id)
             except MCPConnectionError as e:
                 logger.warning("[MCP] Server 启动失败 server_id=%s err=%s", server_id, e)
@@ -216,7 +241,10 @@ class MCPManager:
                 logger.warning("[MCP] 关闭 Server 异常 server_id=%s err=%s", server_id, e)
         self._instances.clear()
         self._tool_route.clear()
-        self._tools_cache.clear()
+        # 保留内置工具缓存，stop 后 get_all_tools 仍可返回内置工具
+        for name in list(self._tools_cache.keys()):
+            if name not in self._builtin_tool_names:
+                del self._tools_cache[name]
         logger.info("[MCP] 已关闭所有 Server")
 
     def get_all_tools(self) -> list[dict[str, Any]]:
@@ -228,9 +256,13 @@ class MCPManager:
     async def list_tools_async(self) -> list[dict[str, Any]]:
         """
         异步获取所有工具列表（重新从各 Server 拉取，保证最新）。
+        内置工具始终包含在列表中。
         """
         tools: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        seen: set[str] = set(self._builtin_tool_names)
+        for name in self._builtin_tool_names:
+            if name in self._tools_cache:
+                tools.append(self._tools_cache[name])
         for instance in self._instances.values():
             try:
                 lst = await instance.list_tools()
@@ -246,7 +278,11 @@ class MCPManager:
     async def invoke_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """
         根据路由表将工具调用转发到对应 Server 执行。
+        内置工具优先本地执行，无需外部 MCP Server。
         """
+        if tool_name in self._builtin_tool_names:
+            from core.mcp_builtin_tools import invoke_builtin_tool
+            return await invoke_builtin_tool(tool_name, arguments or {})
         instance = self._tool_route.get(tool_name)
         if not instance:
             raise MCPToolNotFoundError(f"工具 '{tool_name}' 未找到或未挂载")
@@ -279,7 +315,7 @@ class MCPManager:
             self._instances[server_id] = instance
             for t in tools:
                 name = t.get("name", "")
-                if name and name not in self._tool_route:
+                if name and name not in self._builtin_tool_names and name not in self._tool_route:
                     self._tool_route[name] = instance
                     self._tools_cache[name] = t
             logger.info("[MCP] 侧载 Server 已注入 server_id=%s tools=%d", server_id, len(tools))
@@ -293,12 +329,14 @@ class MCPManager:
 
     def get_server_id_for_tool(self, tool_name: str) -> Optional[str]:
         """获取工具所属的 MCP server_id，用于 IAM 鉴权 item_id = mcp:{server_id}"""
+        if tool_name in self._builtin_tool_names:
+            return BUILTIN_SERVER_ID
         instance = self._tool_route.get(tool_name)
         return instance.server_id if instance else None
 
     @property
     def tool_count(self) -> int:
-        return len(self._tool_route)
+        return len(self._tools_cache)
 
     @property
     def server_count(self) -> int:

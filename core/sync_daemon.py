@@ -159,13 +159,23 @@ class CloudSyncDaemon:
         """
         对比 manifest 与本地 ~/.jachin/inventory/，找出新增或需更新的项。
         简化策略：若本地无对应 item_id 目录，或 package_url 变更（通过 .sync_meta 记录），则需下载。
+        用户已永久卸载的技能（回收站彻底删除）将被跳过，不再从 L1 重新拉取。
         """
+        permanently_uninstalled: set[str] = set()
+        try:
+            from core.skill_registry import get_permanently_uninstalled_skills
+            permanently_uninstalled = get_permanently_uninstalled_skills()
+        except Exception:
+            pass
+
         to_download: list[dict[str, Any]] = []
         for item in manifest:
             item_id = item.get("id")
             package_url = item.get("package_url")
             item_type = item.get("item_type", "SKILL")
             if not item_id or not package_url:
+                continue
+            if item_id in permanently_uninstalled:
                 continue
 
             if item_type == "SKILL":

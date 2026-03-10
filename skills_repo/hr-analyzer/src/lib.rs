@@ -158,8 +158,10 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         "{}"
     };
 
-    // job_desc：优先 jd_path（MCP 读取，避免 JSON 转义），其次 jd，再次 target_role
-    let job_desc = if let Some(jd_path) = extract_json_str_unescaped(input, "jd_path") {
+    // job_desc：优先 jd_template（L2 动态配置），其次 jd_path（MCP 读取），再次 jd/target_role
+    let job_desc = if let Some(jd_template) = extract_json_str_unescaped(input, "jd_template") {
+        jd_template
+    } else if let Some(jd_path) = extract_json_str_unescaped(input, "jd_path") {
         let pb = jd_path.as_bytes();
         let len = unsafe { mcp_read_file(pb.as_ptr() as i32, pb.len() as i32) };
         if len > 0 {
@@ -169,9 +171,10 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         } else {
             alloc::string::String::from(DEFAULT_ROLE)
         }
+    } else if let Some(jd) = extract_json_str_unescaped(input, "jd") {
+        jd
     } else {
-        extract_json_str_unescaped(input, "jd")
-            .or_else(|| extract_json_str(input, "target_role").map(|s| alloc::string::String::from(s)))
+        extract_json_str(input, "target_role").map(|s| alloc::string::String::from(s))
             .unwrap_or_else(|| alloc::string::String::from(DEFAULT_ROLE))
     };
 

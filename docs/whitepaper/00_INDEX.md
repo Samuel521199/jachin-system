@@ -18,7 +18,7 @@
 5. **轨道 C (Wasm)**：商城下载的第三方付费插件，必须在 The Abyss 沙箱中运行。
 6. 记忆系统：**量子记忆** = 生物学梦境 + LanceDB + **可插拔向量引擎** (Cloud/Edge)，支持自我修复 (Self-Healing)。
 7. **Jachin Mesh**：基于 WebSocket 的双向长连，实现 Layer 1 到 Layer 2 的**毫秒级指令下发**。**废弃 10 秒 HTTP 轮询**。
-8. **生物钟 cron_thinker**：脱离云端，每 30 分钟主动环顾（系统日志、未读邮件、异常报警）。
+8. **生物钟 cron_thinker**：脱离云端，每 30 分钟主动环顾（系统日志、未读邮件、异常报警）— **规划中**。
 9. 全息感知：**全息感官总线 (Omni-Sensory Bus)** 端口-适配器架构，**持久化 SQLite 队列**；**Animus Protocol** (pvporcupine 唤醒词)；**Layer 3 视觉投射** (Daemon WebSocket 广播)；Layer 1 **Universal Message Adapter**；**jachin-cli**。
 10. **Cognitive Swarm**：LiteLLM 抹平大模型差异，支持 100+ 模型；**Aegis**：OpenTelemetry 遥测 + Prompt 注入拦截墙。
 11. 设备鉴权、配对：V2 L3 桌面端走 L2 网关零信任（RSA 双盲）；Layer 2 daemon 走 L1 6 位码或 `jachin-cli pair`。

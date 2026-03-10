@@ -2,21 +2,24 @@
  * SkillDetailModal - 技能详情弹层：描述、能力列表、逐项执行、上次结果
  */
 
-import { Play, Loader2, X } from "lucide-react";
+import { Play, Loader2, X, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SkillInfo } from "../../lib/api";
 import { cn } from "../../utils/cn";
+import { MarkdownMessage } from "../../components/Chat/MarkdownMessage";
 
 export function SkillDetailModal({
   skill,
   onClose,
   onExecute,
+  onUninstall,
   executing,
   lastResult,
 }: {
   skill: SkillInfo;
   onClose: () => void;
   onExecute: (skillId: string, capName: string) => void;
+  onUninstall?: () => void;
   executing: { skillId: string; cap: string } | null;
   lastResult?: string | null;
 }) {
@@ -46,14 +49,30 @@ export function SkillDetailModal({
         >
           <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
             <h3 className="font-mono font-semibold text-white">{skill.name}</h3>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-              aria-label="关闭"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              {onUninstall && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUninstall(); // 会关闭详情并打开卸载确认
+                    onClose();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-rose-400 hover:bg-rose-500/20 hover:text-rose-300 transition-colors font-mono text-sm"
+                  title="卸载技能"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  卸载
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                aria-label="关闭"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
           <div className="p-4 overflow-y-auto flex-1 min-h-0 custom-scrollbar">
             {skill.description && (
@@ -94,9 +113,9 @@ export function SkillDetailModal({
                 <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 font-mono">
                   上次执行结果
                 </div>
-                <pre className="text-xs overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap font-mono custom-scrollbar">
-                  {lastResult}
-                </pre>
+                <div className="text-xs overflow-x-auto max-h-[60vh] overflow-y-auto custom-scrollbar">
+                  <MarkdownMessage content={lastResult} />
+                </div>
               </div>
             )}
           </div>

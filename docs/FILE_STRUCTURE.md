@@ -29,9 +29,8 @@ cloud/nexus/
 │   ├── app/api/v1/       # API 路由
 │   │   ├── store/        # catalog, publish, subscribe, licenses
 │   │   ├── sync/         # manifest
-│   │   ├── iam/          # policies/sync, inventory, roles
-│   │   └── ...
-│   ├── app/dashboard/    # IAM、Admin 审核
+│   │   └── ...           # IAM 已下放 L2，见 core/v2_local_admin
+│   ├── app/dashboard/    # Admin 审核（插件审核）；IAM 在 L2
 │   ├── app/store/        # 商城页
 │   ├── db/               # Drizzle schema
 │   └── lib/              # tenant, admin-auth, ratelimit

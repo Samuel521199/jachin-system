@@ -31,7 +31,7 @@
 
 | 变更 | 说明 |
 |------|------|
-| **llm_complete 模型规范化** | L2 可能返回 `qwen3.5-flash`，LiteLLM 需 `dashscope/qwen3.5-flash`。调用前使用 `engine._normalize_model(model)` 补全 provider 前缀。 |
+| **llm_complete 模型规范化** | L2 可能返回 `qwen3.5-flash-2026-02-23`，LiteLLM 需 `dashscope/qwen3.5-flash-2026-02-23`。调用前使用 `engine._normalize_model(model)` 补全 provider 前缀。 |
 | **mcp_read_file 本地直读** | 本地绝对路径且文件存在时直接读取，否则解析为 `project_root/data/hr_resumes` 或 `project_root/config/hr_jds`，再走 L2 MCP。 |
 | **execute ABI** | 支持 Rust JPP 插件的 `execute(ptr, len) -> i32`，提供 `__rust_alloc`/`__rust_dealloc` 等 host 函数。 |
 | **WASI 回退** | execute ABI 不可用时回退 WASI；若错误含 `__rust_dealloc`，抛出明确提示，避免误用纯 WASI。 |
@@ -64,7 +64,18 @@
 | `config/hr_jds/backend_engineer.md` | 后端工程师 JD |
 | `config/local-hr-fs/config.json` | MCP `local-hr-fs`，允许 `data/hr_resumes`、`config/hr_jds` |
 | `data/hr_resumes/` | 简历目录 |
-| `data/hr_analysis/` | 分析报告输出目录 |
+| `data/hr_analysis/` | 分析报告输出目录（HR 透析镜执行后自动写入） |
+| `~/.jachin/volumes/hr_analysis_output_4/` | HR 透析镜 4 数据卷，分析报告同时写入 |
+
+### 1.6 控制台自然语言与持久化（已支持回退）
+
+| 入口 | 调用路径 | 是否持久化 |
+|------|----------|------------|
+| **控制台军械库自然语言输入框** | `invokePlugin(q)` → L2 编排器；若 404 则回退 L3 `POST /api/v3/agent/run` → `run_agent` → `run_tool` → `persist_hr_analysis_result` | ✅ 回退后生成文件 |
+| **直接点击技能执行按钮** | `executeSkill(id)` → L3 `POST /api/v3/skills/{id}/execute` → `run_tool` → `persist_hr_analysis_result` | ✅ 生成文件 |
+| **主 Chat 界面**（连接 L3 WebSocket） | `run_agent` → `run_tool` → `persist_hr_analysis_result` | ✅ 生成文件 |
+
+**实现**：当 L2 编排器返回 404（无匹配插件）时，前端自动调用 L3 `POST /api/v3/agent/run`，由 L3 Agent 理解自然语言并调用 HR 透析镜等 Wasm 技能，执行 `run_tool` 后触发 `persist_hr_analysis_result`，报告写入 `data/hr_analysis/` 和 `~/.jachin/volumes/hr_analysis_output_4/`。
 
 ---
 

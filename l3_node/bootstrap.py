@@ -129,10 +129,42 @@ async def bootstrap_l3_gateway_pending(
         sync_body["node_id"] = existing_node_id  # 复用已有节点，避免 L2 出现多个待审批
 
     # 1. POST /auth/sync（无 sub_account_id，待审批）
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(sync_url, json=sync_body)
-        resp.raise_for_status()
-        data = resp.json()
+    # trust_env=False：绕过系统代理，避免 localhost 请求被错误转发导致 ReadTimeout
+    # 503 时重试（L2 启动中或依赖未就绪）；ReadTimeout 时重试（代理/网络慢）
+    data: Optional[dict] = None
+    for attempt in range(1, 5):
+        try:
+            async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
+                resp = await client.post(sync_url, json=sync_body)
+                if resp.status_code == 503:
+                    if attempt < 4:
+                        wait = 2.0 * attempt
+                        logger.info("[L3 Gateway] L2 返回 503，%ds 后重试 (%d/4)", int(wait), attempt)
+                        await asyncio.sleep(wait)
+                        continue
+                    resp.raise_for_status()
+                resp.raise_for_status()
+                data = resp.json()
+                break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 503 and attempt < 4:
+                wait = 2.0 * attempt
+                logger.info("[L3 Gateway] L2 返回 503，%ds 后重试 (%d/4)", int(wait), attempt)
+                await asyncio.sleep(wait)
+                continue
+            raise
+        except httpx.TimeoutException as e:
+            if attempt < 4:
+                wait = 3.0 * attempt
+                logger.warning("[L3 Gateway] 连接 L2 超时 (%s)，%ds 后重试 (%d/4)", type(e).__name__, int(wait), attempt)
+                await asyncio.sleep(wait)
+                continue
+            raise RuntimeError(
+                f"连接 L2 超时（{type(e).__name__}），请确认 L2 已启动且网络可达。"
+                " 若使用代理，可尝试关闭代理或增加超时。"
+            ) from e
+    if not data:
+        raise RuntimeError("L2 持续返回 503，请确保 L2 已启动（运行 启动后端.bat 或 python -m core.main）")
     node_id = data.get("node_id") or "l3-unknown"
     logger.info("[L3 Gateway] 已向 L2 宣誓效忠 node_id=%s，等待管理员审批", node_id)
 
@@ -152,12 +184,12 @@ async def bootstrap_l3_gateway_pending(
     if on_status:
         on_status("pending", "请求已发送，等待 L2 节点管理员审批...")
 
-    # 2. 轮询 /auth/poll
+    # 2. 轮询 /auth/poll（trust_env=False 绕过代理）
     deadline = time.monotonic() + poll_timeout
     while time.monotonic() < deadline:
         await asyncio.sleep(poll_interval)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 r = await client.get(poll_url, params={"node_id": node_id})
                 r.raise_for_status()
                 poll_data = r.json()
@@ -216,17 +248,18 @@ async def bootstrap_l3_gateway_pending(
     # 有 dashscope（L2 或 .env）时用 qwen，避免回退到未启动的 Ollama
     has_dashscope = ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")
     if has_dashscope:
-        fallback = ["dashscope/qwen3.5-flash"]
+        fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
         if "gpt" in (model_name or "").lower() or "openai" in (model_name or "").lower():
-            model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash")
+            model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
     else:
         fallback = None
-    logger.debug("[L3 Gateway] 创建引擎 model=%s fallback=%s ctx_has_key=%s", model_name, fallback, ctx.has_any_key())
+    _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
+    logger.debug("[L3 Gateway] 创建引擎 model=%s fallback=%s timeout=%s ctx_has_key=%s", model_name, fallback, _timeout, ctx.has_any_key())
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=model_name,
         fallback_models=fallback,
-        timeout=60.0,
+        timeout=_timeout,
         max_attempts=2,
     )
     from core.wasm_runner import register_host_services
@@ -287,7 +320,7 @@ async def bootstrap_l3_node(
         "node_id": node_id,
         "capabilities": [],
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
         resp = await client.post(auth_url, json=body)
         resp.raise_for_status()
         data = resp.json()
@@ -311,13 +344,14 @@ async def bootstrap_l3_node(
     for provider, plain in keys.items():
         ctx.set_key(provider, plain)
 
-    fallback = ["dashscope/qwen3.5-flash"] if ctx.get_key("dashscope") else None
-    logger.debug("[L3 Bootstrap] 创建引擎 model=%s fallback=%s ctx_has_key=%s", model_name, fallback, ctx.has_any_key())
+    fallback = ["dashscope/qwen3.5-flash-2026-02-23"] if ctx.get_key("dashscope") else None
+    _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
+    logger.debug("[L3 Bootstrap] 创建引擎 model=%s fallback=%s timeout=%s ctx_has_key=%s", model_name, fallback, _timeout, ctx.has_any_key())
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=model_name,
         fallback_models=fallback,
-        timeout=60.0,
+        timeout=_timeout,
         max_attempts=2,
     )
     from core.wasm_runner import register_host_services
@@ -362,7 +396,7 @@ async def heartbeat_loop(
     first = True
     while True:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
                 r = await client.get(url, params={"node_id": node_id})
                 if r.is_success:
                     if first:

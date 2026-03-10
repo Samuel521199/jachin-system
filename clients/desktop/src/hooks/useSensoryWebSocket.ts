@@ -51,6 +51,7 @@ export function useSensoryWebSocket() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChunkRef = useRef<((chunk: string, runId: string) => void) | null>(null);
   const onAnswerRef = useRef<((content: string) => void) | null>(null);
+  const onStepRef = useRef<((stepType: string, content: string) => void) | null>(null);
 
   /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
   const registerChunkHandler = useCallback((fn: ((chunk: string, runId: string) => void) | null) => {
@@ -60,6 +61,11 @@ export function useSensoryWebSocket() {
   /** 注册 answer 回调：收到最终回复时调用（含完整内容，用于无 chunk 时的兜底） */
   const registerAnswerHandler = useCallback((fn: ((content: string) => void) | null) => {
     onAnswerRef.current = fn;
+  }, []);
+
+  /** 注册 step 回调：thought/action/observation 等思考过程，供 Chat 完整展示 */
+  const registerStepHandler = useCallback((fn: ((stepType: string, content: string) => void) | null) => {
+    onStepRef.current = fn;
   }, []);
 
   const connect = useCallback(() => {
@@ -92,9 +98,17 @@ export function useSensoryWebSocket() {
             onChunkRef.current?.(data.content, runId);
           }
 
-          // answer/rejected/error 结束时：通知回调（兜底完整内容），再清空流式状态
+          // thought/action/observation：完整展示思考过程，禁止总结
+          if (["thought", "action", "observation"].includes(data.step_type) && data.content != null) {
+            const labels: Record<string, string> = { thought: "思考", action: "动作", observation: "观察" };
+            const label = labels[data.step_type] ?? data.step_type;
+            onStepRef.current?.(data.step_type, `### ${label}\n\n${data.content}\n\n`);
+          }
+
+          // answer/rejected/error 结束时：先追加到思考过程，再通知回调
           if (["answer", "rejected", "error"].includes(data.step_type)) {
             const content = data.content ?? "";
+            onStepRef.current?.("answer", `### 回复\n\n${content}\n\n`);
             onAnswerRef.current?.(content);
             setStreamingContent("");
             setCurrentRunId(null);
@@ -202,5 +216,6 @@ export function useSensoryWebSocket() {
     swarmEvent,
     registerChunkHandler,
     registerAnswerHandler,
+    registerStepHandler,
   };
 }
