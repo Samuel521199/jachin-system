@@ -13,15 +13,17 @@ COOKIE_PATHS = [
     Path.home() / ".hr_plugin" / "config" / "boss_zhipin_cookies.json",
 ]
 
-# 职位筛选：Boss 新 UI 为搜索框，老 UI 为下拉
+# 职位筛选：Boss 新 UI 为搜索框，老 UI 为下拉。优先主内容区选择器，避免匹配右上角用户菜单
 BOSS_JOB_TRIGGER_SELECTORS = [
     "input.chat-job-search",
     "span.chat-select-job",
     "div.ui-dropmenu-label span.chat-select-job",
+    "div.ui-dropmenu-label:has(span.chat-select-job)",
     "div.ui-dropmenu-label",
     ".chat-select-job",
     "[class*='chat-select-job']",
     "[class*='job-select']",
+    "div[class*='dropmenu']:has(span.chat-select-job)",
     "div[class*='dropmenu']:has(span)",
 ]
 # 兼容旧变量名
@@ -143,9 +145,21 @@ def select_job(page, job_text: str) -> bool:
     job_trigger = None
     for sel in BOSS_JOB_TRIGGER_SELECTORS:
         try:
-            loc = page.locator(sel).first
-            if loc.count() > 0:
-                job_trigger = loc
+            loc = page.locator(sel)
+            if loc.count() == 0:
+                continue
+            # 若为 div.ui-dropmenu-label（无 chat-select-job 限定），遍历排除右上角用户菜单
+            if sel == "div.ui-dropmenu-label":
+                for i in range(loc.count()):
+                    el = loc.nth(i)
+                    txt = (el.inner_text() or "").strip()
+                    if "周" in txt or "个人中心" in txt or "退出" in txt or "账号" in txt or "钱包" in txt:
+                        continue
+                    job_trigger = el
+                    break
+            else:
+                job_trigger = loc.first
+            if job_trigger:
                 break
         except Exception:
             pass

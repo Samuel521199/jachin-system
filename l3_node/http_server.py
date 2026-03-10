@@ -2,7 +2,7 @@
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
-端口 18990 系列，与 L2(18888)、WebSocket(18981) 分离。
+端口 18991 系列，与 L2(18888)、WebSocket(18981) 分离。
 HR 透析镜执行成功后，分析报告写入 data/hr_analysis/ 及 ~/.jachin/volumes/ 对应数据卷。
 """
 
@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger("l3_node")
 
-L3_HTTP_PORT = 18990
+L3_HTTP_PORT = 18991
 
 
 _HR_SKILL_IDS = (
@@ -359,6 +359,90 @@ def _stream_response() -> "aiohttp.web.StreamResponse":
     return r
 
 
+async def _handle_scheduler_add_job(request) -> "aiohttp.web.Response":
+    """POST /api/scheduler/add_job - 添加自动化招聘定时任务"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"请求体解析失败: {e}"}, status=400)
+    job_name = (body.get("job_name") or "").strip()
+    if not job_name:
+        return _json_response({"ok": False, "error": "job_name 不能为空"}, status=400)
+    job_config = {
+        "job_name": job_name,
+        "jd_config_path": (body.get("jd_config_path") or "").strip(),
+        "jd_content": (body.get("jd_content") or "").strip(),
+        "cdp_url": body.get("cdp_url", "http://127.0.0.1:9222"),
+        "max_count": int(body.get("max_count", 50)),
+        "filter_tab": (body.get("filter_tab") or "全部").strip(),
+        "request_resume": body.get("request_resume", True),
+        "analyze_threshold": int(body.get("analyze_threshold", 2)),
+        "analyze_interval_hours": float(body.get("analyze_interval_hours", 0.05)),
+        "output_dir": (body.get("output_dir") or "").strip(),
+        "focus_keywords": (body.get("focus_keywords") or "").strip(),
+        "strictness": (body.get("strictness") or "standard").strip(),
+    }
+    try:
+        from l3_node.recruitment_scheduler import add_scheduled_job
+        result = add_scheduled_job(job_config)
+        return _json_response(result)
+    except Exception as e:
+        logger.warning("[L3 HTTP] scheduler add_job failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_scheduler_remove_job(request) -> "aiohttp.web.Response":
+    """POST /api/scheduler/remove_job - 移除自动化招聘定时任务"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception:
+        body = {}
+    job_name = (body.get("job_name") or "").strip()
+    if not job_name:
+        return _json_response({"ok": False, "error": "job_name 不能为空"}, status=400)
+    try:
+        from l3_node.recruitment_scheduler import remove_scheduled_job
+        result = remove_scheduled_job(job_name)
+        return _json_response(result)
+    except Exception as e:
+        logger.warning("[L3 HTTP] scheduler remove_job failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
+    """GET /api/system/logs/stream - SSE 实时日志流，供前端控制台订阅"""
+    from l3_node.log_broadcaster import consume_logs, format_sse_event
+    response = _stream_response()
+    await response.prepare(request)
+    try:
+        # 连接建立后立即发送欢迎消息，让前端确认已连接
+        import time
+        welcome = format_sse_event("[L3 全息监控] 已连接，等待日志流…", "INFO", time.time())
+        await response.write(welcome.encode("utf-8"))
+        while True:
+            item = await asyncio.to_thread(consume_logs)
+            if item:
+                msg, level, ts = item
+                await response.write(format_sse_event(msg, level, ts).encode("utf-8"))
+            # 无日志时保持连接，继续轮询
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    except Exception as e:
+        logger.debug("[L3 HTTP] logs stream closed: %s", e)
+    return response
+
+
+async def _handle_scheduler_list_jobs(request) -> "aiohttp.web.Response":
+    """GET /api/scheduler/list_jobs - 返回当前后台运行的自动化招聘任务列表"""
+    try:
+        from l3_node.recruitment_scheduler import list_scheduled_jobs
+        jobs = list_scheduled_jobs()
+        return _json_response({"jobs": jobs, "count": len(jobs)})
+    except Exception as e:
+        logger.warning("[L3 HTTP] scheduler list_jobs failed: %s", e)
+        return _json_response({"jobs": [], "count": 0, "error": str(e)}, status=500)
+
+
 async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse":
     """POST /api/recruitment/start_task - 一键式全链路招聘，SSE 流式进度"""
     try:
@@ -441,7 +525,7 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         )
     try:
         from l3_node.agent_core import run_agent
-        answer = await run_agent(user_input, engine, max_iterations=5)
+        answer = await run_agent(user_input, engine, max_iterations=8)
         resp = {"answer": answer or ""}
         try:
             from l3_node.hr_analysis_persist import get_last_saved_path
@@ -469,6 +553,12 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         logger.warning("[L3 HTTP] aiohttp 未安装，技能 HTTP API 不可用。pip install aiohttp")
         return None
 
+    # 预加载招聘心脏起搏器（APScheduler），确保 scheduler 线程就绪
+    try:
+        import l3_node.recruitment_scheduler  # noqa: F401
+    except Exception as e:
+        logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
+
     @aiohttp.web.middleware
     async def cors_middleware(request, handler):
         if request.method == "OPTIONS":
@@ -485,6 +575,10 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_delete("/api/v3/skills/{item_id}", _handle_skills_uninstall)
     app.router.add_post("/api/v3/skills/{skill_id}/execute", _handle_skills_execute)
     app.router.add_post("/api/recruitment/start_task", _handle_recruitment_start_task)
+    app.router.add_post("/api/scheduler/add_job", _handle_scheduler_add_job)
+    app.router.add_post("/api/scheduler/remove_job", _handle_scheduler_remove_job)
+    app.router.add_get("/api/scheduler/list_jobs", _handle_scheduler_list_jobs)
+    app.router.add_get("/api/system/logs/stream", _handle_system_logs_stream)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
     app.router.add_get("/api/v3/recycle-bin/skills", _handle_recycle_bin_list)
@@ -499,7 +593,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
     last_err: BaseException | None = None
-    ports_to_try = [port, 18991, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999]
+    ports_to_try = [port, 18990, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999]
     for try_port in ports_to_try:
         try:
             site = aiohttp.web.TCPSite(runner, host, try_port)

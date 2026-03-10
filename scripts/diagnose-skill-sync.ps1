@@ -124,5 +124,5 @@ Write-Host "  1) Terminal 1: .\scripts\run-gateway.ps1" -ForegroundColor White
 Write-Host "  2) Terminal 2: .\scripts\start-layer3.ps1" -ForegroundColor White
 Write-Host ""
 Write-Host "  If L2 returns 0 skills: restart L2 (run-gateway.ps1) to load permission bypass" -ForegroundColor Yellow
-Write-Host "  If port conflict: .\scripts\kill_port.ps1 18981  or  .\scripts\kill_port.ps1 18990" -ForegroundColor Yellow
+Write-Host "  If port conflict: .\scripts\kill_port.ps1 18981  or  .\scripts\kill_port.ps1 18991" -ForegroundColor Yellow
 Write-Host ""

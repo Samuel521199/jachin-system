@@ -3,6 +3,8 @@
 # 自动配置 JACHIN_L2_ADMIN_TOKEN，启动 Admin 面板，打开即可审批
 # 用法: .\scripts\run-gateway.ps1  或  start-layer2.ps1 选 [3]
 # =============================================================================
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

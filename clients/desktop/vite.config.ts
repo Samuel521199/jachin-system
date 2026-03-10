@@ -20,7 +20,7 @@ export default defineConfig(async () => ({
     // 开发时代理 L3 技能 API，避免跨域 Failed to fetch
     proxy: {
       "/l3": {
-        target: "http://127.0.0.1:18990",
+        target: "http://127.0.0.1:18991",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/l3/, ""),
       },

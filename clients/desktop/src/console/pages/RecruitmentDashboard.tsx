@@ -208,7 +208,7 @@ export function RecruitmentDashboard() {
           </div>
           <div className="space-y-4">
             <div>
-              <label className="block text-xs text-slate-400 mb-1">岗位 JD（留空将使用默认云边协同，导致报告与岗位不符）</label>
+              <label className="block text-xs text-slate-400 mb-1">岗位 JD（留空将用岗位名兜底，建议填写完整 JD 以获得精准分析）</label>
               <textarea
                 ref={jdTextareaRef}
                 value={config.jdContent}

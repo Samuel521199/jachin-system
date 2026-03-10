@@ -116,16 +116,33 @@ def _parse_action(
         from l3_node.skills import load_tools
         tools_fallback = load_tools(allowed_skills=allowed_skills)
         tool_ids = [t.get("id", "") for t in tools_fallback if t.get("id")]
+
+    def _extract_input_after_action(action_pattern: str) -> str:
+        """提取紧跟在当前 Action 后的 Action Input，避免多 Action 时取错"""
+        m = re.search(action_pattern, text, re.IGNORECASE)
+        if not m:
+            return ""
+        search_start = m.end()
+        rest = text[search_start:]
+        mi = re.search(
+            r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))",
+            rest, re.DOTALL | re.IGNORECASE,
+        )
+        return (mi.group(1).strip() if mi else "")
+
+    # 匹配 Action 行（含同行 Action Input 情形）
+    action_suffix = r"(?:\s|\n|$)"
     for tool_id in tool_ids:
-        if re.search(rf"Action:\s*{re.escape(tool_id)}\s*(?:\n|$)", text, re.IGNORECASE):
-            inp = ""
-            mi = re.search(
-                r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))",
-                text, re.DOTALL | re.IGNORECASE,
-            )
-            if mi:
-                inp = mi.group(1).strip()
-            return {"type": "native", "tool": tool_id, "input": inp}
+        pat = rf"Action:\s*{re.escape(tool_id)}{action_suffix}"
+        if re.search(pat, text, re.IGNORECASE):
+            return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
+    # 兼容：LLM 可能输出无 mcp: 前缀的 Action（如 Action: atom_post_job_boss）
+    for tool_id in tool_ids:
+        raw = tool_id.replace("mcp:", "").strip()
+        if raw:
+            pat = rf"Action:\s*{re.escape(raw)}{action_suffix}"
+            if re.search(pat, text, re.IGNORECASE):
+                return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
     return None
 
 
@@ -382,7 +399,24 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
             hr_hint = f"""
 【重要】当用户要求「简历分析」「HR 透析镜」等时：直接调用 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}，Action Input 可传 {{}}，系统会从技能配置自动注入默认参数。禁止用 list_directory 探索。
 【强制】当用户说「再分析」「重新分析」「再去分析」「再跑一次」等时：必须重新调用 HR 透析镜工具，不得复用上一轮 Observation，不得用 fs_read 或 recall_memory 代替。"""
+
+    hr_recruitment_hint = """
+【HR 招聘总监 SOP】你是 Jachin OS 的首席 AI 招聘总监，拥有直接操作 Boss 直聘后台和开启无人值守招聘流的最高权限。
+当用户要求发布职位或招聘某类人才时，你必须严格遵循以下 SOP：
+
+第一步【智能草拟配置】：当用户表达招聘意图（如「帮我招个 Golang」）但信息不全时，**绝对不要**生硬地追问每一个缺失字段！你必须发挥你的专业 HR 知识，根据用户的零星线索，直接为他/她【脑补并生成】一份极其专业、完整的 JSON 配置单草案。草案必须严格包含以下字段，并填入你认为最合理、最专业的行业默认值：recruitment_type（如 社招全职）、job_title、jd_full（必须包含岗位职责和任职要求，排版清晰）、job_category_path（严格匹配 Boss 系统的三级目录）、experience（如 3-5年）、education（如 本科）、salary_min、salary_max（单位 K，默认 19-20）、job_keywords（数组）。
+
+第二步【展示与请示】：将这份生成的 JSON 草案以代码块的形式漂亮地展示给用户，并极其礼貌地询问：「长官，这是我为您智能草拟的岗位配置单。您看我们是直接按照这个配置发布，还是您需要修改薪资、经验或 JD 中的某些细节？」
+
+第三步【结合上下文与执行】：在任何时候，你都必须结合历史对话上下文来理解用户的简短指令（如「确认」「执行」「就按这个发」「直接发布」「没问题」「直接发」等）。当用户给出这类确认指令时，你必须**直接提取你上一轮回复中生成的 JSON 配置单**作为参数，立刻连续调用 `mcp:atom_post_job_boss` 和 `mcp:add_automated_recruitment_task`！
+🚨【绝对红线】：当用户给出确认指令时，你必须**直接提取你上一轮回复中生成的 JSON 配置单**作为参数，立刻连续调用 `mcp:atom_post_job_boss` 和 `mcp:add_automated_recruitment_task`！绝对、绝对不允许因为用户的指令简短就判定为「模糊」，也不允许重新生成一份新的草案，更不允许再次反问！
+【工具链连续调用】必须支持：先调 mcp:atom_post_job_boss（jd_config 参数请直接从你上一次 Assistant 回答中的 JSON 代码块 Copy，原样塞进工具请求）→ 成功后再调 mcp:add_automated_recruitment_task，不得在一次回复中只给出 Final Answer 而跳过工具调用。
+🚫【严禁幻觉】绝对禁止在未实际调用 mcp:atom_post_job_boss 和 mcp:add_automated_recruitment_task 的情况下，直接给出 Final Answer 声称「职位已发布」「极速测试模式」「已启动」等。系统会校验：若你声称已发布但未调用工具，将被强制要求先执行工具。
+⚠️【必须连续调用】atom_post_job_boss 成功后，必须紧接着调用 add_automated_recruitment_task（job_name 从 JSON 的 job_title 提取），否则无人值守招聘流不会启动。不得在只调了 atom_post_job_boss 后就给出 Final Answer。
+发布成功后（即两个工具 Observation 均返回成功），方可告知用户：「报告长官！职位已发布，【极速测试模式】已启动！满2份简历或3分钟后，立刻为您生成排行榜战报！」
+"""
     return f"""你是一个智能助手，使用 ReAct 格式思考。
+{hr_recruitment_hint}
 可用工具：
 {tools_desc}
 {recall_hint}
@@ -534,6 +568,9 @@ async def _run_react_core(
         if on_step:
             on_step(step_type, content, ctx.run_id)
 
+    # 追踪本轮已执行的招聘相关工具，用于拒绝「未调用工具却声称已发布」的幻觉回复
+    ctx._executed_tools_this_run = set()
+
     for iteration in range(max_iterations):
         ctx.current_response = ""
         ctx.parsed_action = None
@@ -575,8 +612,33 @@ async def _run_react_core(
                     if idx >= 0:
                         ans = response[idx + len(prefix):].strip()
                         if ans:
+                            # 校验：招聘工具链必须完整调用
+                            has_success = "职位已发布" in ans or "JOB_" in ans or "TASK_AUTO" in ans or "极速测试模式" in ans or "已启动" in ans
+                            no_post = "atom_post_job_boss" not in ctx._executed_tools_this_run
+                            no_task = "add_automated_recruitment_task" not in ctx._executed_tools_this_run
+                            if has_success and no_post:
+                                logger.warning(
+                                    "[L3 Agent] 拒绝幻觉回复：声称职位已发布但未调用 atom_post_job_boss，强制要求先执行工具"
+                                )
+                                messages.append({"role": "assistant", "content": response})
+                                messages.append({
+                                    "role": "user",
+                                    "content": "【系统校验】你声称职位已发布，但未实际调用 mcp:atom_post_job_boss。请立即输出 Action: mcp:atom_post_job_boss，Action Input 为上一轮 JSON 配置单（从你之前的 Assistant 回复中提取），不得直接给出 Final Answer。",
+                                })
+                                continue
+                            if has_success and no_task:
+                                logger.warning(
+                                    "[L3 Agent] 招聘工具链不完整：已调用 atom_post_job_boss 但未调用 add_automated_recruitment_task，强制要求开启无人值守"
+                                )
+                                messages.append({"role": "assistant", "content": response})
+                                messages.append({
+                                    "role": "user",
+                                    "content": "【系统校验】你已发布职位但未开启无人值守招聘流。请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 为 {\"job_name\": \"岗位名称\"}（从上一轮 JSON 配置单的 job_title 提取），不得直接给出 Final Answer。",
+                                })
+                                continue
                             _emit("answer", ans)
                             ctx.final_answer = ans
+                            messages.append({"role": "assistant", "content": response})
                             return
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content": "请给出最终回复，以 Final Answer: 开头。"})
@@ -584,8 +646,35 @@ async def _run_react_core(
 
         if parsed["type"] == "answer":
             ans = parsed.get("content", response)
+            # 校验：招聘工具链必须完整调用
+            has_success = any(
+                k in (ans or "") for k in ("职位已发布", "JOB_", "TASK_AUTO", "极速测试模式", "已启动")
+            )
+            no_post = "atom_post_job_boss" not in ctx._executed_tools_this_run
+            no_task = "add_automated_recruitment_task" not in ctx._executed_tools_this_run
+            if has_success and no_post:
+                logger.warning(
+                    "[L3 Agent] 拒绝幻觉回复：声称职位已发布但未调用 atom_post_job_boss，强制要求先执行工具"
+                )
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": "【系统校验】你声称职位已发布，但未实际调用 mcp:atom_post_job_boss。请立即输出 Action: mcp:atom_post_job_boss，Action Input 为上一轮 JSON 配置单（从你之前的 Assistant 回复中提取），不得直接给出 Final Answer。",
+                })
+                continue
+            if has_success and no_task:
+                logger.warning(
+                    "[L3 Agent] 招聘工具链不完整：已调用 atom_post_job_boss 但未调用 add_automated_recruitment_task，强制要求开启无人值守"
+                )
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": "【系统校验】你已发布职位但未开启无人值守招聘流。请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 为 {\"job_name\": \"岗位名称\"}（从上一轮 JSON 配置单的 job_title 提取），不得直接给出 Final Answer。",
+                })
+                continue
             _emit("answer", ans)
             ctx.final_answer = ans
+            messages.append({"role": "assistant", "content": response})
             return
 
         # delegate：分身子 Agent 并行执行
@@ -667,6 +756,10 @@ async def _run_react_core(
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
+            # 记录已执行的招聘工具，用于校验幻觉回复
+            base_tool = (tool or "").replace("mcp:", "").strip()
+            if base_tool in ("atom_post_job_boss", "add_automated_recruitment_task"):
+                ctx._executed_tools_this_run.add(base_tool)
             # 工具执行路由器：MCP 工具（L3 本地 read_file 或 L2 代理），本地工具走 run_tool
             mcp_registry = get_mcp_registry()
             if tool in mcp_registry.known_mcp_tools:
@@ -737,13 +830,15 @@ async def run_agent(
     on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
     _system_prompt_override: Optional[str] = None,
     _initial_messages: Optional[list[dict[str, Any]]] = None,
+    _session_messages: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """
     运行 L3 单体 ReAct 循环。
     支持 _system_prompt_override 供子 Agent 使用。
+    _session_messages: 若提供，将作为历史上下文并在调用结束后被更新为完整对话（含本轮），供多轮对话复用。
     """
     run_id = str(uuid.uuid4())
-    logger.debug("[L3 Agent] run_agent 开始 input_len=%d", len(user_input or ""))
+    logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
     allowed = _get_allowed_skills()
     tools = load_tools(allowed_skills=allowed)
     # 神经桥接：从 L2 拉取 MCP 工具并合并（强容错，L2 不可用时仅用本地工具）
@@ -756,7 +851,13 @@ async def run_agent(
     except Exception as e:
         logger.debug("[L3 Agent] MCP 工具拉取跳过（L2 可能未启动）: %s", e)
     system_prompt = _system_prompt_override or _build_system_prompt(tools=tools, allow_delegate=True)
-    messages = list(_initial_messages) if _initial_messages else []
+    # 优先使用 _session_messages（多轮对话），否则用 _initial_messages
+    if _session_messages is not None:
+        messages = list(_session_messages)
+    elif _initial_messages:
+        messages = list(_initial_messages)
+    else:
+        messages = []
     messages.append({"role": "user", "content": user_input})
 
     ctx = PipelineContext(
@@ -792,6 +893,13 @@ async def run_agent(
 
     pipeline.use(on_intent_mw).use(react_mw).use(pre_resp_mw)
     await pipeline.execute(ctx)
+
+    # 多轮对话：将完整对话写回 _session_messages，供下一轮复用（含上一轮 Assistant 的 JSON 草案等）
+    if _session_messages is not None:
+        _session_messages.clear()
+        # 保留最近 30 条消息，避免 token 溢出，同时确保「确认」等上下文可追溯
+        recent = ctx.messages[-30:] if len(ctx.messages) > 30 else ctx.messages
+        _session_messages.extend(recent)
 
     return ctx.final_answer or "[未产出回复]"
 

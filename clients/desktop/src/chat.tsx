@@ -17,6 +17,7 @@ import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts
 import { typewriterAnimation } from "./utils/typewriter";
 import { ChatUI } from "./components/Chat/ChatUI";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
+import { SystemLogPanel } from "./console/components/SystemLogPanel";
 import "./styles/globals.css";
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -545,29 +546,36 @@ function ChatApp() {
     >
       {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
       <SensoryOverlay sensory={sensory} />
-      <ChatUI
-        messages={messages}
-        input={input}
-        onInputChange={setInput}
-        onSend={handleSend}
-        onVoiceStart={startRecording}
-        onVoiceStop={stopRecording}
-        isVadActive={isVadActive}
-        onVadToggle={handleVadToggle}
-        isLoading={isLoading}
-        isTyping={isTyping}
-        isRecording={isRecording}
-        recordingStatus={recordingStatus}
-        listeningText={listeningText}
-        placeholder={
-          sensory.connected ? "输入指令或语音（L3 直连）..." :
-          l2Available ? "输入指令或语音（L2 兜底）..." :
-          "等待 L3 (ws://localhost:18981) 或 L2 连接..."
-        }
-        riskLevel={riskLevel}
-        disabled={!sensory.connected && !l2Available}
-        streamingFromWs={!!(isTyping && wsStreamingContent)}
-      />
+      <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+        <div className="flex-1 min-h-0 min-w-0">
+          <ChatUI
+            messages={messages}
+            input={input}
+            onInputChange={setInput}
+            onSend={handleSend}
+            onVoiceStart={startRecording}
+            onVoiceStop={stopRecording}
+            isVadActive={isVadActive}
+            onVadToggle={handleVadToggle}
+            isLoading={isLoading}
+            isTyping={isTyping}
+            isRecording={isRecording}
+            recordingStatus={recordingStatus}
+            listeningText={listeningText}
+            placeholder={
+              sensory.connected ? "输入指令或语音（L3 直连）..." :
+              l2Available ? "输入指令或语音（L2 兜底）..." :
+              "等待 L3 (ws://localhost:18981) 或 L2 连接..."
+            }
+            riskLevel={riskLevel}
+            disabled={!sensory.connected && !l2Available}
+            streamingFromWs={!!(isTyping && wsStreamingContent)}
+          />
+        </div>
+        <div className="flex-shrink-0 px-4 pb-2">
+          <SystemLogPanel />
+        </div>
+      </div>
       {/* 高风险操作二次确认弹窗 */}
       {pendingHighRisk && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 rounded-2xl" onClick={handleCancelHighRisk}>

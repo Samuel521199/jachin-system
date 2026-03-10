@@ -2,6 +2,8 @@
 # Layer3 (Desktop) - One-click start (Windows)
 # clients/desktop - Jachin Terminal
 # =============================================================================
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir

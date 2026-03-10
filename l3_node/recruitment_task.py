@@ -13,6 +13,7 @@ import os
 import queue
 import re
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -111,6 +112,14 @@ def _save_jd_to_db(jd_content: str) -> None:
         logger.debug("[Recruitment] L2 保存 JD 失败: %s", e)
 
 
+def _job_name_fallback_jd(job_name: str) -> str:
+    """当表单未传 JD 时，用岗位名生成兜底 JD，避免错误使用云边协同"""
+    jn = (job_name or "").strip()
+    if not jn:
+        return ""
+    return f"岗位：{jn}\n\n请根据岗位名称评估候选人匹配度，重点考察与岗位相关的技能与经验。"
+
+
 def _to_file_link(path: str) -> str:
     """将绝对路径转为 Markdown 兼容的 file:// 链接"""
     if not path or not path.strip():
@@ -124,8 +133,9 @@ def _write_summary_md(
     passed_list: list[dict[str, Any]],
     eliminated_list: list[dict[str, Any]],
     use_absolute_path: bool = False,
+    job_folder: str = "",
 ) -> None:
-    """生成终极排行榜 排行榜_Summary.md"""
+    """生成终极排行榜：{岗位名}_排行榜_Summary_{时间戳}.md，避免多份覆盖"""
     passed_sorted = sorted(passed_list, key=lambda x: x.get("score", 0), reverse=True)
     eliminated_sorted = sorted(eliminated_list, key=lambda x: x.get("score", 0), reverse=True)
 
@@ -158,7 +168,10 @@ def _write_summary_md(
         reason_show = (reason[:80] + "…") if len(reason) > 80 else reason
         lines.append(f"| {row.get('name', '-')} | {row.get('score', 0):.1f} | {reason_show} | {md_link} | {pdf_link} |")
 
-    summary_path = output_dir / "排行榜_Summary.md"
+    # 文件名：岗位名_排行榜_Summary_时间戳，优先用 job_folder（岗位名），否则用 output_dir 目录名
+    job_prefix = (job_folder or output_dir.name or "未分类").strip()
+    ts = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d_%H%M%S")
+    summary_path = output_dir / f"{job_prefix}_排行榜_Summary_{ts}.md"
     try:
         summary_path.write_text("\n".join(lines), encoding="utf-8")
         logger.info("[Recruitment] 终极排行榜已写入 %s passed=%d eliminated=%d", summary_path, len(passed_sorted), len(eliminated_sorted))
@@ -269,12 +282,16 @@ async def run_recruitment_task_stream(
     pdf_paths = harvester_result.get("pdf_paths") or []
     paths_str = "|||".join(str(p).replace("\\", "/") for p in pdf_paths if p)
 
-    jd_final = (jd_content or "").strip() or _fetch_jd_from_db() or DEFAULT_JD
+    # 表单未传 JD 时优先用岗位名兜底，避免错误使用 skill_registry 中的云边协同
+    jd_final = (jd_content or "").strip() or _job_name_fallback_jd(job_name) or _fetch_jd_from_db() or DEFAULT_JD
     if jd_content and jd_content.strip():
         logger.info("[Recruitment] 岗位 JD 已从表单传入 len=%d preview=%s", len(jd_content), (jd_content[:80] + "…") if len(jd_content) > 80 else jd_content)
         _save_jd_to_db(jd_content)
     else:
-        logger.warning("[Recruitment] 未从表单传入岗位 JD，使用兜底 len=%d（若为云边协同则说明 JD 未正确传入）", len(jd_final))
+        if "云边" in jd_final or "云边协同" in jd_final:
+            logger.warning("[Recruitment] 未从表单传入岗位 JD，当前兜底为云边协同。请务必在招聘大盘填写「岗位 JD」，否则分析报告将与岗位不符")
+        else:
+            logger.info("[Recruitment] 未从表单传入岗位 JD，使用岗位名兜底 len=%d", len(jd_final))
     print(f"\n[Recruitment] 实际传入 Wasm 的岗位 JD (len={len(jd_final)}):\n{jd_final}\n", flush=True)
     input_data: dict[str, Any] = {
         "target_dir": f"{target_volume}/{job_folder}",
@@ -395,8 +412,8 @@ async def run_recruitment_task_stream(
             }
 
     tw.join(timeout=2.0)
-    # 流式处理结束后，生成终极排行榜
+    # 流式处理结束后，生成终极排行榜（传入 job_folder 确保以岗位名命名）
     if passed_list or eliminated_list:
-        _write_summary_md(resolved_output, passed_list, eliminated_list, output_dir_use_absolute)
+        _write_summary_md(resolved_output, passed_list, eliminated_list, output_dir_use_absolute, job_folder=job_folder)
     if thread_result.get("error"):
         yield {"step": 3, "msg": f"⚠️ HR 透析镜异常: {thread_result['error']}", "status": "error"}

@@ -46,7 +46,14 @@ BOSS_DOWNLOAD_SELECTORS = [
     '[aria-label*="download"]',
 ]
 
+# 优先匹配弹窗/预览区内的关闭按钮，避免误点右上角头像下拉的 icon-close
 BOSS_PREVIEW_CLOSE_SELECTORS = [
+    "[class*='boss-dialog'] i.icon-close",
+    "[class*='boss-dialog'] [class*='icon-close']",
+    "[class*='preview'] i.icon-close",
+    "[class*='dialog'] [class*='close']",
+    "[class*='drawer'] i.icon-close",
+    "[class*='modal'] i.icon-close",
     "i.icon-close",
     ".icon-close",
     "[class*='icon-close']",

@@ -389,7 +389,6 @@ def build_hr_stdin_for_debug(
     构建 HR 透析镜的 stdin 字符串，供调试脚本使用（不执行 Wasm）。
     返回 (stdin_str, debug_info)，debug_info 含 jd_src, jd_path, jd_preview, has_jd 等。
     """
-    import tempfile
     stdin_json = dict(params) if params else {}
     debug: dict[str, Any] = {"jd_src": None, "jd_path": None, "jd_preview": "", "has_jd": False, "caller_jd_len": 0}
     config_id = lookup_id.replace("jpp:", "")
@@ -399,6 +398,12 @@ def build_hr_stdin_for_debug(
         stdin_json["target_role"] = defaults.get("target_role", "backend_engineer")
     if not stdin_json.get("target_dir"):
         stdin_json["target_dir"] = "data/hr_resumes"
+    try:
+        from datetime import datetime, timezone, timedelta
+        _cn_tz = timezone(timedelta(hours=8))
+        stdin_json["reference_date"] = datetime.now(_cn_tz).strftime("%Y-%m-%d")
+    except Exception:
+        pass
     cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(_fetch_skill_config(config_id) or {})}
     caller_jd = (stdin_json.get("jd_template") or stdin_json.get("jd_content") or "").strip()
     if not caller_jd:
@@ -407,21 +412,10 @@ def build_hr_stdin_for_debug(
     if caller_jd:
         stdin_json["jd_template"] = caller_jd
         stdin_json.pop("jd_content", None)
-        try:
-            _jd_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-            _jd_file.write(caller_jd)
-            _jd_file.close()
-            _jd_path = str(Path(_jd_file.name).resolve()).replace("\\", "/")
-            stdin_json["jd_path"] = _jd_path
-            # 保留 jd_template 作为 fallback
-            debug["jd_src"] = "jd_path"
-            debug["jd_path"] = _jd_path
-            debug["jd_preview"] = caller_jd[:80] + ("…" if len(caller_jd) > 80 else "")
-            debug["has_jd"] = True
-        except Exception as e:
-            debug["jd_src"] = "jd_template"
-            debug["jd_preview"] = caller_jd[:80] + ("…" if len(caller_jd) > 80 else "")
-            debug["has_jd"] = True
+        stdin_json.pop("jd_path", None)
+        debug["jd_src"] = "jd_template"
+        debug["jd_preview"] = caller_jd[:80] + ("…" if len(caller_jd) > 80 else "")
+        debug["has_jd"] = True
     else:
         stdin_json.pop("jd_template", None)
         stdin_json.pop("jd_content", None)
@@ -435,10 +429,7 @@ def build_hr_stdin_for_debug(
     else:
         _stdin_str = json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
     if not debug["has_jd"]:
-        debug["has_jd"] = bool((stdin_json.get("jd_template") or "").strip()) or bool((stdin_json.get("jd_path") or "").strip())
-        if stdin_json.get("jd_path"):
-            debug["jd_src"] = "jd_path"
-            debug["jd_path"] = stdin_json["jd_path"]
+        debug["has_jd"] = bool((stdin_json.get("jd_template") or "").strip())
     return _stdin_str, debug
 
 
@@ -486,7 +477,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         defaults = get_hr_invoke_defaults(config_id)
         if not stdin_json.get("target_role"):
             stdin_json["target_role"] = defaults.get("target_role", "backend_engineer")
-        if not stdin_json.get("resume_filename") and not stdin_json.get("target_dir"):
+        if not stdin_json.get("resume_filename") and not stdin_json.get("target_dir") and not stdin_json.get("resume_path"):
             stdin_json["target_dir"] = "data/hr_resumes"
         config = _fetch_skill_config(config_id)
         cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(config or {})}
@@ -511,8 +502,8 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                 try:
                     from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
                     _l3_vol = Path.home() / ".jachin" / "client_volumes"
-                    # L3 数据卷：auto_xxx 或 global_resume_pool/JobFolder
-                    if tdir.startswith("auto_") or tdir.startswith("global_resume_pool"):
+                    # L3 数据卷：pool_X/X（收网）、auto_xxx、global_resume_pool/JobFolder
+                    if tdir.startswith("pool_") or tdir.startswith("auto_") or tdir.startswith("global_resume_pool"):
                         vol_dir = (_l3_vol / tdir.replace("\\", "/").lstrip("/")).resolve()
                         if vol_dir.is_dir() and str(vol_dir).startswith(str(_l3_vol.resolve())):
                             resume_dir = vol_dir
@@ -556,27 +547,22 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         else:
             if not stdin_json.get("resume_filename"):
                 stdin_json["resume_filename"] = defaults.get("resume_filename", "zhangsan_resume.md")
-        # 岗位 JD：优先招聘大盘传入，空时兜底 skill_registry/config
+        # 参考日期：中国时区，供 LLM 判断应届生毕业年份、工作经历时间等，避免未来日期误判
+        try:
+            from datetime import datetime, timezone, timedelta
+            _cn_tz = timezone(timedelta(hours=8))
+            stdin_json["reference_date"] = datetime.now(_cn_tz).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        # 岗位 JD：直接当参数传 jd_template，最简单可靠（不依赖临时文件/mcp_read_file）
         caller_jd = (stdin_json.get("jd_template") or stdin_json.get("jd_content") or "").strip()
         if not caller_jd:
             caller_jd = (cfg.get("JD_template") or cfg.get("jd_template") or "").strip()
         if caller_jd:
             stdin_json["jd_template"] = caller_jd
             stdin_json.pop("jd_content", None)
-            # 写入临时文件传 jd_path，同时保留 jd_template 作为 fallback（mcp_read_file 失败时 Rust 可回退）
-            import tempfile
-            try:
-                _jd_file = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-                _jd_file.write(caller_jd)
-                _jd_file.close()
-                _jd_path = str(Path(_jd_file.name).resolve()).replace("\\", "/")
-                stdin_json["jd_path"] = _jd_path
-                # 不 pop jd_template！保留为 fallback，避免 mcp_read_file 失败时回退到 DEFAULT_ROLE
-                logger.info("[Skill Execute] HR 岗位 JD 已写入临时文件 jd_path=%s len=%d", _jd_path, len(caller_jd))
-                print(f"[Loader] 岗位 JD 完整内容 (len={len(caller_jd)}):\n{caller_jd}\n", file=sys.stderr, flush=True)
-            except Exception as e:
-                logger.warning("[Skill Execute] HR jd_path 写入失败，回退 jd_template: %s", e)
-                stdin_json.pop("jd_path", None)
+            stdin_json.pop("jd_path", None)
+            logger.info("[Skill Execute] HR 岗位 JD 已传入 jd_template len=%d", len(caller_jd))
         else:
             stdin_json.pop("jd_template", None)
             stdin_json.pop("jd_content", None)
@@ -612,16 +598,23 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         except Exception:
             pass
     # 批量模式：文件列表放 stdin 首行，绕过 Wasm JSON extract（易误匹配 jd_template）
+    # 当有 jd_template 时，首行放 JD_START:::content:::JD_END，Rust 优先从此解析，避免 JSON 转义导致提取失败
     _hr_files_val = stdin_json.pop("_hr_files", None)
+    _jd_first_line = ""
+    if stdin_json.get("jd_template") and (stdin_json.get("jd_template") or "").strip():
+        _jd_raw = (stdin_json.get("jd_template") or "").strip().replace("\r\n", "\r").replace("\n", "\r")
+        _jd_first_line = "JD_START:::" + _jd_raw + ":::JD_END"
     if _hr_files_val:
-        _stdin_str = _hr_files_val + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+        if _jd_first_line:
+            _stdin_str = _hr_files_val + "\n" + _jd_first_line + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+        else:
+            _stdin_str = _hr_files_val + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
+    elif _jd_first_line:
+        _stdin_str = _jd_first_line + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
     else:
         _stdin_str = json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
-    _jd_in = (
-        ("jd_template" in stdin_json and bool((stdin_json.get("jd_template") or "").strip()))
-        or ("jd_path" in stdin_json and bool((stdin_json.get("jd_path") or "").strip()))
-    )
-    _jd_src = "jd_path" if stdin_json.get("jd_path") else "jd_template"
+    _jd_in = "jd_template" in stdin_json and bool((stdin_json.get("jd_template") or "").strip())
+    _jd_src = "jd_template"
     print(f"[Skill Execute] WASM_IN jd_ok={_jd_in} jd_src={_jd_src} stdin_len={len(_stdin_str)}", file=sys.stderr, flush=True)
     # 调试：DEBUG_HR_JD=1 时写入 stdin 到临时文件，便于排查 JD 传入问题
     if _jd_in and __import__("os").environ.get("DEBUG_HR_JD") == "1":

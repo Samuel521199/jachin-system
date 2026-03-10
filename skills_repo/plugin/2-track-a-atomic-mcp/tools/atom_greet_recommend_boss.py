@@ -99,11 +99,15 @@ def atom_greet_recommend_boss(
             if not pages:
                 return {"success": False, "greeted_count": 0, "skipped_chat_history": 0, "skipped_low_score": 0, "error": "未找到页面"}
 
+            def _is_recommend_page(url: str) -> bool:
+                """Boss 推荐牛人页面：geek/recommend 或 chat/recommend"""
+                u = (url or "").lower()
+                return ("zhipin.com" in u or "zhpin.com" in u) and ("geek/recommend" in u or "chat/recommend" in u)
+
             page = None
             for p in pages:
                 try:
-                    url = p.url or ""
-                    if "geek/recommend" in url and ("zhipin.com" in url or "zhpin.com" in url):
+                    if _is_recommend_page(p.url or ""):
                         page = p
                         break
                 except Exception:
@@ -120,28 +124,37 @@ def atom_greet_recommend_boss(
             if not page:
                 page = pages[0]
 
+            page.bring_to_front()
             page.wait_for_load_state("domcontentloaded", timeout=5000)
 
-            # 1. 进入推荐牛人页面（仅点左侧菜单，避免误触右上角头像）
+            # 1. 进入推荐牛人页面（优先点左侧菜单，避免多次 goto 导致刷新循环）
             current_url = page.url or ""
-            if "geek/recommend" not in current_url:
+            if not _is_recommend_page(current_url):
                 rec_btn = page.locator('a[ka="menu-geek-recommend"]').first
                 if rec_btn.count() > 0:
                     rec_btn.click()
-                    page.wait_for_timeout(2000)
-                if "geek/recommend" not in (page.url or ""):
-                    page.goto("https://www.zhipin.com/web/geek/recommend", wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_timeout(2000)
-            if "geek/recommend" not in (page.url or ""):
-                page.goto("https://www.zhipin.com/web/geek/recommend", wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(1500)
+                    page.wait_for_timeout(2500)
+                if not _is_recommend_page(page.url or ""):
+                    # Boss 新版本可能用 chat/recommend，先试新 URL 再兜底旧 URL
+                    for target_url in [
+                        "https://www.zhipin.com/web/chat/recommend",
+                        "https://www.zhipin.com/web/geek/recommend",
+                    ]:
+                        try:
+                            page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+                            page.wait_for_timeout(3000)
+                            if _is_recommend_page(page.url or ""):
+                                break
+                        except Exception:
+                            continue
 
             # 2. 点击职位下拉框（仅选含职位/薪资的主内容区下拉，排除右上角用户菜单）
             job_title = jd.get("job_title", "")
             if job_title:
                 job_dropdown = None
+                # 优先用 span.chat-select-job 定位（主内容区职位选择），避免匹配到右上角用户菜单
                 for f in [page] + list(page.frames):
-                    for label in f.locator("div.ui-dropmenu-label").all():
+                    for label in f.locator("div.ui-dropmenu-label:has(span.chat-select-job), span.chat-select-job").all():
                         try:
                             txt = (label.inner_text() or "").strip()
                             if job_title in txt or (len(job_title) >= 4 and job_title[:4] in txt) or ("K" in txt and "周" not in txt):
@@ -151,6 +164,21 @@ def atom_greet_recommend_boss(
                             pass
                     if job_dropdown:
                         break
+                # 兜底：若主内容区选择器无匹配，再用全页 ui-dropmenu-label 并严格排除用户菜单（含「周」「个人中心」「退出」等）
+                if job_dropdown is None:
+                    for f in [page] + list(page.frames):
+                        for label in f.locator("div.ui-dropmenu-label").all():
+                            try:
+                                txt = (label.inner_text() or "").strip()
+                                if ("周" in txt or "个人中心" in txt or "退出" in txt or "账号" in txt or "钱包" in txt):
+                                    continue  # 跳过右上角用户菜单
+                                if job_title in txt or (len(job_title) >= 4 and job_title[:4] in txt) or ("K" in txt and "周" not in txt):
+                                    job_dropdown = label
+                                    break
+                            except Exception:
+                                pass
+                        if job_dropdown:
+                            break
                 if job_dropdown:
                     job_dropdown.click()
                     page.wait_for_timeout(800)
@@ -165,13 +193,14 @@ def atom_greet_recommend_boss(
                                 txt = (el.inner_text() or "").strip()
                                 if job_title in txt or (len(job_title) >= 4 and job_title[:4] in txt):
                                     el.click()
-                                    page.wait_for_timeout(1500)
+                                    # 职位切换后列表会刷新，需等待加载完成，避免后续找不到卡片
+                                    page.wait_for_timeout(3500)
                                     selected = True
                                     break
                         except Exception:
                             pass
 
-            # 3. 定位候选人卡片（主页面或 iframe；Boss 可能将列表放在 iframe 中）
+            # 3. 定位候选人卡片（主页面或 iframe；Boss chat/recommend 与 geek/recommend 结构可能不同）
             def _collect_frames():
                 """收集主页面及所有 frame（含嵌套）"""
                 seen = set()
@@ -191,6 +220,10 @@ def atom_greet_recommend_boss(
                 "[class*='geek-card']",
                 "[class*='recommend-card']",
                 "[data-geek-id]",
+                # chat/recommend 页面可能使用的选择器
+                "[class*='recommend-list'] > div",
+                "[class*='geek-list'] [class*='item']",
+                "div[class*='job-card']",
             ]
 
             def _get_cards():
@@ -209,12 +242,13 @@ def atom_greet_recommend_boss(
                         pass
                 return None, None
 
-            page.wait_for_timeout(2000)
+            # 等待列表加载稳定，避免页面仍在刷新时查找卡片（减少重试次数，防止「一直刷新」感）
+            page.wait_for_timeout(3000)
             frame, cards_loc = _get_cards()
-            for _ in range(3):
-                if frame and cards_loc:
+            for attempt in range(2):
+                if frame and cards_loc and cards_loc.count() > 0:
                     break
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(2500)
                 frame, cards_loc = _get_cards()
 
             if not frame or not cards_loc:
@@ -245,13 +279,13 @@ def atom_greet_recommend_boss(
                         skipped_chat += 1
                         continue
 
-                    # 4. 点击卡片主体进入简历详情（避免点到打招呼按钮）
+                    # 4. 点击卡片主体进入简历详情（避免点到打招呼按钮；点击后等待详情加载）
                     click_area = card.locator("div.card-inner, div.col-2, span.name").first
                     if click_area.count() > 0:
                         click_area.click()
                     else:
                         card.click()
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(1800)
 
                     # 5. 提取详情页简历文本（可能在主页面或弹窗）
                     resume_text = ""
@@ -353,7 +387,27 @@ def _dismiss_greet_popup(page):
 
 
 def _close_detail(page):
-    """点击 × 关闭候选人详情"""
+    """点击 × 关闭候选人详情。优先匹配详情区/弹窗内的关闭按钮，避免误点右上角头像下拉。"""
+    # 优先在详情区/弹窗内查找，排除 header 区域
+    scoped_selectors = [
+        "[class*='geek-detail'] i.icon-close",
+        "[class*='detail-drawer'] i.icon-close",
+        "[class*='chat-content'] i.icon-close",
+        "[class*='boss-dialog'] i.icon-close",
+        "[class*='drawer'] i.icon-close",
+        "[class*='dialog'] [class*='close']",
+    ]
+    for f in [page] + list(page.frames):
+        try:
+            for sel in scoped_selectors:
+                b = f.locator(sel).first
+                if b.count() > 0:
+                    b.click()
+                    page.wait_for_timeout(500)
+                    return
+        except Exception:
+            pass
+    # 兜底：全局查找（可能误点，但总比不关闭好）
     for f in [page] + list(page.frames):
         try:
             b = f.locator("i.icon-close").first

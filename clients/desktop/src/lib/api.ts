@@ -8,7 +8,7 @@
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:18888";
 
 /** L3 技能 API 默认端口（与 l3_node/http_server.py 端口回退一致） */
-const L3_SKILLS_PORTS = [18990, 18991, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999];
+const L3_SKILLS_PORTS = [18991, 18990, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999];
 
 /** L3 技能 API base URL（若 VITE_L3_SKILLS_URL 含端口则只用该 URL，否则会尝试多端口） */
 const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://localhost";
@@ -584,7 +584,7 @@ export async function controlDevice(
 
 /**
  * 技能 API 调用（执行在 L3 进行）
- * 若默认端口 18990 被占用，L3 会绑定 18991-18995，此处依次尝试
+ * 若默认端口 18991 被占用，L3 会绑定 18990/18992 等，此处依次尝试
  */
 async function invokeL3Skills<T>(
   method: string,
@@ -621,7 +621,7 @@ async function invokeL3Skills<T>(
     }
   }
 
-  // 否则依次尝试 18990-18995（与 l3_node/http_server.py 端口回退一致）
+  // 否则依次尝试 18991/18990 等（与 l3_node/http_server.py 端口回退一致）
   let lastErr: Error | null = null;
   for (const port of L3_SKILLS_PORTS) {
     try {
@@ -750,6 +750,35 @@ export function displayNameFromFilename(filename: string): string {
   return display ? `${display}.md` : filename;
 }
 
+/** L3 系统日志 SSE 流 URL（供 EventSource 订阅） */
+export function getL3LogsStreamUrl(): string {
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return `${envUrl.replace(/\/$/, "")}/api/system/logs/stream`;
+  }
+  if (L3_DEV_PROXY) {
+    return `${L3_DEV_PROXY}/api/system/logs/stream`;
+  }
+  return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}/api/system/logs/stream`;
+}
+
+/** 多端口回退：L3 HTTP 可能在 18991-18999 启动，依次尝试 */
+export function getL3LogsStreamUrls(): string[] {
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return [`${envUrl.replace(/\/$/, "")}/api/system/logs/stream`];
+  }
+  const base = L3_SKILLS_BASE.replace(/:\d+$/, "");
+  const urls: string[] = [];
+  if (L3_DEV_PROXY) {
+    urls.push(`${L3_DEV_PROXY}/api/system/logs/stream`);
+  }
+  for (const port of L3_SKILLS_PORTS) {
+    urls.push(`${base}:${port}/api/system/logs/stream`);
+  }
+  return [...new Set(urls)];
+}
+
 /**
  * 获取 L3 技能 API 的 base URL（与 invokeL3Skills 逻辑一致，供流式等复用）
  */
@@ -777,7 +806,7 @@ async function getL3SkillsBaseUrl(): Promise<string> {
       continue;
     }
   }
-  throw new Error("L3 技能 API 不可达，请确认 L3 已启动（端口 18990 等）");
+  throw new Error("L3 技能 API 不可达，请确认 L3 已启动（端口 18991 等）");
 }
 
 /**

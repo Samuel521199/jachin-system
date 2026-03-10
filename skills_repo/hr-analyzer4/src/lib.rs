@@ -254,24 +254,56 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         "{}"
     };
 
-    // Loader 批量模式：首行为文件列表 path1|||path2|||path3，后续为 JSON
-    let (files_first_line, input) = if let Some(nl) = raw_input.find('\n') {
+    // Loader：首行为 path1|||path2 或 JD_START:::content:::JD_END，可能第二行为 JD 或 JSON
+    let (files_first_line, input, jd_first_line) = if let Some(nl) = raw_input.find('\n') {
         let first = raw_input[..nl].trim();
-        let rest = raw_input[nl + 1..].trim();
-        (
-            if first.contains("|||") && !first.starts_with('{') {
-                Some(String::from(first))
+        let after_first = raw_input[nl + 1..].trim();
+        let (files, jd_line, rest) = if first.starts_with("JD_START:::") && first.contains(":::JD_END") {
+            let jd = if let Some(end) = first.find(":::JD_END") {
+                let raw = first[10..end].trim();
+                Some(raw.replace('\r', "\n"))
             } else {
                 None
-            },
-            if rest.is_empty() { "{}" } else { rest },
-        )
+            };
+            (None, jd, after_first)
+        } else if first.contains("|||") && !first.starts_with('{') {
+            // 批量模式：首行 paths，第二行可能为 JD_START 或直接 JSON
+            let (jd, rest) = if let Some(nl2) = after_first.find('\n') {
+                let second = after_first[..nl2].trim();
+                let after_second = after_first[nl2 + 1..].trim();
+                if second.starts_with("JD_START:::") && second.contains(":::JD_END") {
+                    let jd = if let Some(end) = second.find(":::JD_END") {
+                        Some(second[10..end].trim().replace('\r', "\n"))
+                    } else {
+                        None
+                    };
+                    (jd, after_second)
+                } else {
+                    (None, after_first)
+                }
+            } else {
+                (None, after_first)
+            };
+            (Some(String::from(first)), jd, rest)
+        } else {
+            (None, None, after_first)
+        };
+        (files, if rest.is_empty() { "{}" } else { rest }, jd_line)
     } else {
-        (None, raw_input)
+        (None, raw_input, None)
     };
 
-    // 优先 jd_path：通过 mcp_read_file 直读文件，绕过 JSON 解析（避免 jd_template 提取失败）
-    let job_desc = if let Some(jd_path) = extract_json_str_unescaped(input, "jd_path") {
+    // 优先 jd_first_line（Loader 首行 JD_START:::），其次 jd_template（JSON），避免 JSON 转义导致提取失败
+    let jd_template_value = jd_first_line
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            extract_json_str_unescaped(input, "jd_template")
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| extract_json_str(input, "jd_template").map(|s| String::from(s)))
+        });
+    let job_desc = if let Some(jd) = jd_template_value {
+        jd
+    } else if let Some(jd_path) = extract_json_str_unescaped(input, "jd_path") {
         let pb = jd_path.as_bytes();
         let n = unsafe { mcp_read_file(pb.as_ptr() as i32, pb.len() as i32) };
         if n > 0 {
@@ -284,15 +316,11 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
             if !s.is_empty() {
                 s
             } else {
-                extract_json_str_unescaped(input, "jd_template")
-                    .unwrap_or_else(|| String::from(DEFAULT_ROLE))
+                String::from(DEFAULT_ROLE)
             }
         } else {
-            extract_json_str_unescaped(input, "jd_template")
-                .unwrap_or_else(|| String::from(DEFAULT_ROLE))
+            String::from(DEFAULT_ROLE)
         }
-    } else if let Some(jd) = extract_json_str_unescaped(input, "jd_template") {
-        jd
     } else if let Some(jd) = extract_json_str_unescaped(input, "jd") {
         jd
     } else {
@@ -308,12 +336,18 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         job_desc
     };
 
-    // 调试：流式输出 jd_len 便于排查岗位 JD 传入问题
+    // 调试：流式输出 jd_len、extract 原始结果，便于排查岗位 JD 传入问题
     let jd_preview: String = job_desc.chars().take(60).collect();
+    let extracted_raw = extract_json_str_unescaped(input, "jd_template");
+    let extracted_preview: String = extracted_raw
+        .as_ref()
+        .map(|s| s.chars().take(80).collect())
+        .unwrap_or_else(|| String::from("(extract returned None)"));
     let debug_ndjson = format!(
-        r#"{{"status":"debug","jd_len":{},"jd_preview":"{}"}}"#,
+        r#"{{"status":"debug","jd_len":{},"jd_preview":"{}","extracted_preview":"{}"}}"#,
         job_desc.len(),
         json_escape(&jd_preview),
+        json_escape(&extracted_preview),
     );
     unsafe { host_stream_ndjson(debug_ndjson.as_ptr() as i32, debug_ndjson.len() as i32) };
 
@@ -334,6 +368,9 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
                 .collect()
         })
         .unwrap_or_else(alloc::vec::Vec::new);
+    // 参考日期：中国时区，供判断应届生、工作经历时间
+    let reference_date = extract_json_str_unescaped(input, "reference_date")
+        .or_else(|| extract_json_str(input, "reference_date").map(String::from));
     // 动态配置：L3 UI 注入
     let focus_keywords = extract_json_str_unescaped(input, "focus_keywords")
         .or_else(|| extract_json_str(input, "focus_keywords").map(String::from));
@@ -432,9 +469,14 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         })
         .into_owned();
 
+        let date_hint = reference_date
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|d| format!("\n\n【参考日期】当前为中国北京时间 {}，请据此判断应届生毕业年份、工作经历起止时间等，避免将未来日期误判。", d.trim()))
+            .unwrap_or_else(|| String::new());
         let user_prompt = format!(
-            "【岗位要求】\n{}\n\n【原始简历】\n{}\n\n请按 System Prompt 要求输出 Markdown 报告。",
-            job_desc, resume_text
+            "【岗位要求】\n{}\n\n【原始简历】\n{}{}\n\n请按 System Prompt 要求输出 Markdown 报告。",
+            job_desc, resume_text, date_hint
         );
 
         // 动态 Prompt 注入：focus_keywords + strictness（在每份简历循环内生效）
@@ -453,6 +495,14 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
             system_extra.push_str("\n\n[评判标准]：请以伯乐眼光审视，重点挖掘潜力和亮点，给予积极评价。");
         }
         let full_prompt = format!("{}{}\n\n---\n\n{}", SYSTEM_PROMPT, system_extra, user_prompt);
+        // 调试：流式输出 user_prompt 前 300 字符，验证【岗位要求】已正确传入模型
+        let prompt_preview: String = full_prompt.chars().skip(full_prompt.find("【岗位要求】").unwrap_or(0)).take(300).collect();
+        let debug_prompt = format!(
+            r#"{{"status":"debug_prompt","job_desc_len":{},"prompt_preview":"{}"}}"#,
+            job_desc.len(),
+            json_escape(&prompt_preview),
+        );
+        unsafe { host_stream_ndjson(debug_prompt.as_ptr() as i32, debug_prompt.len() as i32) };
         let prompt_bytes = full_prompt.as_bytes();
         let prompt_ptr = prompt_bytes.as_ptr() as i32;
         let prompt_len = prompt_bytes.len() as i32;

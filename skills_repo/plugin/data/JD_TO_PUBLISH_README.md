@@ -20,8 +20,8 @@
 | job_category_path | 职位类型路径（左栏→右栏依次点击） | ["互联网/AI", "后端开发", "Go开发工程师"] |
 | experience | 经验要求 | 不限、1年以内、1-3年、3-5年、5-10年、10年以上 |
 | education | 学历要求 | 不限、大专、本科、硕士、博士 |
-| salary_min | 最低月薪（K） | 25 |
-| salary_max | 最高月薪（K） | 40 |
+| salary_min | 最低月薪（K） | 19 |
+| salary_max | 最高月薪（K） | 20 |
 | job_keywords | 职位关键词（多选） | ["Go", "Golang", "微服务", "Redis"] |
 
 ## 未来扩展

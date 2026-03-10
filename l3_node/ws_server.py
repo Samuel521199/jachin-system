@@ -38,7 +38,8 @@ def _make_on_step(websocket, run_id: str):
 
 
 async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
-    """处理单客户端连接。"""
+    """处理单客户端连接。维护 per-connection 对话历史，供多轮「确认」等上下文理解。"""
+    session_messages: list[dict] = []
     try:
         async for raw in websocket:
             try:
@@ -53,7 +54,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             if not intent:
                 continue
 
-            logger.debug("[L3 WS] 收到输入 intent_len=%d run_agent", len(intent))
+            logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent", len(intent), len(session_messages))
             run_id = str(uuid.uuid4())[:8]
             on_step = _make_on_step(websocket, run_id)
 
@@ -67,6 +68,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     engine,
                     on_step=on_step,
                     on_chunk=on_chunk,
+                    _session_messages=session_messages,
                 )
                 await _send_safe(websocket, {
                     "step_type": "answer",
@@ -110,8 +112,8 @@ async def run_ws_server(
     async def handler(websocket):
         await _handle_client(websocket, engine, run_agent_fn)
 
-    # 189xx 系列，跳过 18888（L2）、18990（L3 HTTP）
-    skip_ports = {18888, 18990}
+    # 189xx 系列，跳过 18888（L2）、18991（L3 HTTP）
+    skip_ports = {18888, 18991}
     ports_to_try = [p for p in range(port, port + 15) if p not in skip_ports][:12]
     last_err: BaseException | None = None
     for i, try_port in enumerate(ports_to_try):

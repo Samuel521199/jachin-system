@@ -51,13 +51,21 @@ except ImportError:
     pass
 
 _log_level = getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
+# 强制输出到 PowerShell 控制台（stdout），便于复制日志
 logging.basicConfig(
     level=_log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stderr,
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("l3_node")
-print("[L3] 启动中...", file=sys.stderr, flush=True)
+# 将 l3_node 日志转发到全息监控 SSE，供前端 L3 全息监控面板订阅
+try:
+    from l3_node.log_broadcaster import install_broadcast_handler
+    install_broadcast_handler()
+except Exception as e:
+    logger.debug("[L3] 全息监控 handler 安装跳过: %s", e)
+print("[L3] 启动中...", file=sys.stdout, flush=True)
 
 # 启动时打印 env 状态，便于排查 Key 分配问题
 if os.environ.get("DASHSCOPE_API_KEY"):

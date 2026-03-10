@@ -5,6 +5,7 @@
 """
 import json
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,30 @@ def load_jd_config(config_path: str = "") -> dict:
     except Exception:
         pass
     return {}
+
+
+def _close_review_passed_modal(page) -> None:
+    """关闭「审核通过」弹窗（曝光刷新卡/支付弹窗）。优先弹窗内关闭按钮，避免误点右上角头像。"""
+    close_selectors = [
+        ".boss-dialog i[class*='close']",
+        "[class*='dialog'] [class*='close']",
+        "[class*='boss-dialog'] [class*='icon-close']",
+        "button[aria-label='关闭']",
+        "i.icon-close",
+        "[class*='icon-close']",
+        "span[class*='close']",
+    ]
+    for f in [page] + list(page.frames):
+        try:
+            for sel in close_selectors:
+                loc = f.locator(sel).first
+                if loc.count() > 0:
+                    loc.click(timeout=2000)
+                    page.wait_for_timeout(500)
+                    logger.debug("已关闭审核通过弹窗")
+                    return
+        except Exception:
+            pass
 
 
 def atom_post_job_boss(
@@ -241,14 +266,15 @@ def atom_post_job_boss(
 
             page.wait_for_timeout(300)
 
-            # 9. 薪资（选项格式为 2k/19k/23k 等；无精确档时用最近整档如 20k、25k）
+            # 9. 薪资（Boss 选项格式可能为 15K/20K/25K 或 15-16K；需先点击下拉再选）
             def _match_salary_opt(value):
                 v = int(value)
-                candidates = [str(v), f"{v}k", f"{v}K"]
-                fallback = [str(v + 1), f"{v + 1}k", str(v + 2), f"{v + 2}k", str(v - 1), f"{v - 1}k"] if v < 30 else []
+                # Boss 选项格式：20K、25K、20-25K、15-16K 等
+                candidates = [str(v), f"{v}k", f"{v}K", f"{v}-{v+5}K", f"{v}-{v+5}k"]
+                fallback = [str(v + 1), f"{v + 1}k", str(v + 2), f"{v + 2}k", str(v - 1), f"{v - 1}k"] if v < 50 else []
                 for scope in [page, form_frame]:
                     for c in candidates + fallback:
-                        loc = scope.locator("li.ui-select-item, li[class*='option']").filter(has_text=c)
+                        loc = scope.locator("li.ui-select-item, li[class*='option'], div[class*='option']").filter(has_text=c)
                         if loc.count() > 0:
                             try:
                                 loc.first.click(timeout=3000)
@@ -264,24 +290,51 @@ def atom_post_job_boss(
             sal_min = jd.get("salary_min")
             sal_max = jd.get("salary_max")
             if sal_min is not None or sal_max is not None:
-                # 最低月薪：占位符为「最低月薪」
-                min_sal_btn = form_frame.locator("div.ui-select-inner").filter(has_text="最低月薪").first
-                if min_sal_btn.count() > 0:
+                # 最低薪资：Boss 可能用「最低月薪」或「最低薪资」；用 filter(has_text) 更稳
+                min_sal_btn = None
+                for label in ("最低月薪", "最低薪资", "最低"):
+                    try:
+                        loc = form_frame.locator("div.ui-select-inner").filter(has_text=label).first
+                        if loc.count() > 0:
+                            min_sal_btn = loc
+                            break
+                    except Exception:
+                        pass
+                if min_sal_btn is None:
+                    # 兜底：遍历所有 ui-select-inner，找含「薪资」或「薪」的
+                    for i in range(form_frame.locator("div.ui-select-inner").count()):
+                        el = form_frame.locator("div.ui-select-inner").nth(i)
+                        txt = (el.inner_text() or "") + (el.get_attribute("placeholder") or "")
+                        if "最低" in txt or ("薪资" in txt and "最高" not in txt):
+                            min_sal_btn = el
+                            break
+                if min_sal_btn and min_sal_btn.count() > 0:
                     min_sal_btn.click()
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(800)
                     target_min = sal_min if sal_min is not None else sal_max
-                    _match_salary_opt(target_min)
-                    page.wait_for_timeout(400)
+                    if not _match_salary_opt(target_min):
+                        logger.warning("最低薪资选项未匹配到 %s，尝试就近档位", target_min)
+                    # Boss 需先选最低薪资，最高薪资字段才会出现；等待下拉关闭 + 第二字段渲染
+                    page.wait_for_timeout(1200)
 
-                # 最高月薪：选完最低后出现，placeholder 或 selected-value 含「最高」
+                # 最高月薪（仅当最低已选后才会出现，需等待）
                 if sal_max is not None and sal_min != sal_max:
-                    page.wait_for_timeout(300)
-                    max_sal_btn = form_frame.locator("div.ui-select-inner").filter(has_text="最高月薪").first
-                    if max_sal_btn.count() == 0:
+                    # 轮询等待最高月薪字段出现（Boss 动态渲染）
+                    max_sal_btn = None
+                    for _ in range(5):
+                        page.wait_for_timeout(600)
+                        try:
+                            loc = form_frame.locator("div.ui-select-inner").filter(has_text="最高").first
+                            if loc.count() > 0:
+                                max_sal_btn = loc
+                                break
+                        except Exception:
+                            pass
+                    if max_sal_btn is None:
                         max_sal_btn = form_frame.locator("span.ui-select-placeholder").filter(has_text="最高").locator("..").locator("..").first
                     if max_sal_btn.count() > 0:
                         max_sal_btn.click()
-                        page.wait_for_timeout(500)
+                        page.wait_for_timeout(600)
                         _match_salary_opt(sal_max)
 
             # 10. 职位关键词：跳过不填
@@ -291,6 +344,11 @@ def atom_post_job_boss(
             if publish_btn.count() > 0:
                 publish_btn.click()
                 page.wait_for_timeout(3000)
+
+                # 12. 审核通过后弹窗（曝光刷新卡等）：约 10s 后自动关闭
+                page.wait_for_timeout(10000)  # 等待约 10 秒
+                _close_review_passed_modal(page)
+
                 return {"success": True, "posted": True, "error": ""}
             return {"success": False, "posted": False, "error": "未找到发布按钮"}
     except Exception as e:

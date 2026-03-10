@@ -3,6 +3,7 @@
 轨道 A - 原子 MCP Server
 暴露原子工具：atom_post_job_boss, atom_greet_recommend_boss, harvest_resume_full_flow, atom_request_resume_batch, local_archiver, brain_filter
 """
+import asyncio
 import sys
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from tools.atom_post_job_boss import atom_post_job_boss as _atom_post_job_boss
 from tools.atom_greet_recommend_boss import atom_greet_recommend_boss as _atom_greet_recommend_boss
 from tools.recruitment_status import load_status, refresh_unprocessed_count
 
-mcp = FastMCP("hr-atomic-tools", description="HR 招聘原子工具箱：发布、打招呼、收网、求简历、归档、粗筛、进度查询")
+mcp = FastMCP("hr-atomic-tools")
 
 
 @mcp.tool()
@@ -52,14 +53,15 @@ def local_archiver(pdf_path: str = "", pdf_bytes: str = "", candidate_name: str 
 
 
 @mcp.tool()
-def atom_inbox_harvester(
+async def atom_inbox_harvester(
     cdp_url: str = "http://127.0.0.1:9222",
     job_text: str = "资深Golang语言开发_杭州 25-40K",
     download_to_pending: bool = True,
     max_items: int = 50,
 ) -> dict:
     """遍历左侧求职者对话，对有「点击预览附件简历」的自动下载 PDF。需 Chrome 以 --remote-debugging-port 启动。"""
-    return _harvest_full(
+    return await asyncio.to_thread(
+        _harvest_full,
         cdp_url=cdp_url,
         job_text=job_text,
         download_to_pending=download_to_pending,
@@ -68,14 +70,15 @@ def atom_inbox_harvester(
 
 
 @mcp.tool()
-def atom_request_resume(
+async def atom_request_resume(
     cdp_url: str = "http://127.0.0.1:9222",
     job_keyword: str = "java",
     candidate_name: str = "付华斌",
     candidate_skill: str = "Java",
 ) -> dict:
     """点击求简历按钮：选择职位 → 进入候选人对话 → 若未发简历则点击求简历。需 Chrome 以调试模式启动。"""
-    return _atom_request_resume(
+    return await asyncio.to_thread(
+        _atom_request_resume,
         cdp_url=cdp_url,
         job_keyword=job_keyword,
         candidate_name=candidate_name,
@@ -84,13 +87,14 @@ def atom_request_resume(
 
 
 @mcp.tool()
-def atom_request_resume_batch(
+async def atom_request_resume_batch(
     cdp_url: str = "http://127.0.0.1:9222",
     job_text: str = "资深Golang语言开发_杭州 25-40K",
     max_items: int = 50,
 ) -> dict:
     """遍历沟通页左侧对话列表，对每个未发简历的对话点击求简历。需 Chrome 以调试模式启动，并停留在 Boss 沟通页。"""
-    return _atom_request_resume_batch(
+    return await asyncio.to_thread(
+        _atom_request_resume_batch,
         cdp_url=cdp_url,
         job_text=job_text,
         max_items=max_items,
@@ -98,14 +102,15 @@ def atom_request_resume_batch(
 
 
 @mcp.tool()
-def harvest_resume_full_flow(
+async def harvest_resume_full_flow(
     cdp_url: str = "http://127.0.0.1:9222",
     job_text: str = "资深Golang语言开发_杭州 25-40K",
     download_to_pending: bool = True,
     max_items: int = 50,
 ) -> dict:
     """选择职位→遍历左侧求职者→若有「点击预览附件简历」则下载 PDF。需 Chrome 以调试模式启动，停留在 Boss 沟通页。"""
-    return _harvest_full(
+    return await asyncio.to_thread(
+        _harvest_full,
         cdp_url=cdp_url,
         job_text=job_text,
         download_to_pending=download_to_pending,
@@ -114,15 +119,15 @@ def harvest_resume_full_flow(
 
 
 @mcp.tool()
-def atom_post_job_boss(cdp_url: str = "http://127.0.0.1:9222", jd_config_path: str = "") -> dict:
+async def atom_post_job_boss(cdp_url: str = "http://127.0.0.1:9222", jd_config_path: str = "") -> dict:
     """在 Boss 直聘自动填写并发布职位。读取 data/jd_to_publish.json。需 Chrome 以调试模式启动。"""
-    return _atom_post_job_boss(cdp_url=cdp_url, jd_config_path=jd_config_path)
+    return await asyncio.to_thread(_atom_post_job_boss, cdp_url=cdp_url, jd_config_path=jd_config_path)
 
 
 @mcp.tool()
-def atom_greet_recommend_boss(cdp_url: str = "http://127.0.0.1:9222", jd_config_path: str = "") -> dict:
+async def atom_greet_recommend_boss(cdp_url: str = "http://127.0.0.1:9222", jd_config_path: str = "") -> dict:
     """在推荐牛人页面自动筛选并打招呼：读 JD → 遍历卡片 → 跳过已沟通 → 小模型初筛(≥30%) → 打招呼，最多2人。需 Chrome 调试模式。"""
-    return _atom_greet_recommend_boss(cdp_url=cdp_url, jd_config_path=jd_config_path)
+    return await asyncio.to_thread(_atom_greet_recommend_boss, cdp_url=cdp_url, jd_config_path=jd_config_path)
 
 
 @mcp.tool()

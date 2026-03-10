@@ -59,6 +59,9 @@ Pillow>=9.0.0
 # Test PDF (scripts/create_test_resume_pdf.py)
 fpdf2>=2.7.0
 
+# 定时任务（招聘心脏起搏器）
+apscheduler>=3.10.4
+
 # V2 L2 Admin JWT
 PyJWT>=2.8.0
 bcrypt>=4.0.0
