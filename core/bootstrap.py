@@ -24,20 +24,29 @@ _NEXUS_CONFIG_PATH = Path.home() / ".jachin" / "nexus_config.json"
 
 
 def _load_nexus_config() -> dict:
-    """读取 nexus_config.json，兼容旧版无 pairing_code，容错不抛错"""
-    if not _NEXUS_CONFIG_PATH.exists():
-        return {}
-    try:
-        raw = _NEXUS_CONFIG_PATH.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    """读取 nexus_config.json，兼容 env 覆盖（Docker 部署用 NEXUS_* 环境变量）"""
+    cfg: dict = {}
+    if _NEXUS_CONFIG_PATH.exists():
         try:
-            raw = _NEXUS_CONFIG_PATH.read_text(encoding="utf-16")
-        except Exception:
-            return {}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
+            raw = _NEXUS_CONFIG_PATH.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                raw = _NEXUS_CONFIG_PATH.read_text(encoding="utf-16")
+            except Exception:
+                raw = ""
+        try:
+            cfg = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            pass
+    if os.environ.get("NEXUS_INSTANCE_ID"):
+        cfg["instance_id"] = os.environ["NEXUS_INSTANCE_ID"]
+    if os.environ.get("NEXUS_ACCESS_TOKEN"):
+        cfg["access_token"] = os.environ["NEXUS_ACCESS_TOKEN"]
+    if os.environ.get("NEXUS_BASE_URL"):
+        cfg["nexus_base_url"] = os.environ["NEXUS_BASE_URL"].rstrip("/")
+    if os.environ.get("NEXUS_L1_USER_ID"):
+        cfg["l1_user_id"] = os.environ["NEXUS_L1_USER_ID"]
+    return cfg
 
 
 def ensure_default_sub_account() -> None:

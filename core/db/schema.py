@@ -168,16 +168,24 @@ def _migrate_permissions_to_structured(conn: sqlite3.Connection) -> None:
 
 
 def _load_nexus_config() -> dict:
-    """读取 nexus_config.json，获取 l1_user_id（L1 配对透传）"""
+    """读取 nexus_config.json，获取 l1_user_id（L1 配对透传）。支持 env 覆盖（Docker 部署）"""
     import json
+    import os
     from pathlib import Path
+    cfg = {}
     path = Path.home() / ".jachin" / "nexus_config.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    if path.exists():
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if os.environ.get("NEXUS_INSTANCE_ID"):
+        cfg["instance_id"] = os.environ["NEXUS_INSTANCE_ID"]
+    if os.environ.get("NEXUS_L1_USER_ID"):
+        cfg["l1_user_id"] = os.environ["NEXUS_L1_USER_ID"]
+    elif os.environ.get("NEXUS_INSTANCE_ID"):
+        cfg["l1_user_id"] = os.environ["NEXUS_INSTANCE_ID"]
+    return cfg
 
 
 def _ensure_default_gateway_admin(conn: sqlite3.Connection) -> None:

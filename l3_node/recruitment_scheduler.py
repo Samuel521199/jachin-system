@@ -136,9 +136,11 @@ def job_harvest_resumes(job_config: dict[str, Any]) -> dict[str, Any]:
             plugin_root = _PROJ_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
             sys.path.insert(0, str(plugin_root))
             from tools.atom_inbox_harvester import atom_inbox_harvester_full_flow
+            from tools.boss_utils import resolve_job_text_for_boss
+            job_text = resolve_job_text_for_boss(job_name, job_config.get("jd_config_path"))
             result = atom_inbox_harvester_full_flow(
                 cdp_url=cdp_url,
-                job_text=job_name,
+                job_text=job_text,
                 download_to_pending=True,
                 max_items=max_items,
                 save_dir=str(save_dir),
@@ -305,7 +307,7 @@ def job_check_and_analyze(job_config: dict[str, Any]) -> dict[str, Any]:
     output_dir = resolved or (_PROJ_ROOT / "data" / "hr_analysis" / job_folder)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    analyze_threshold = int(job_config.get("analyze_threshold", 2))
+    analyze_threshold = int(job_config.get("analyze_threshold", 1))
     analyze_interval_hours = float(job_config.get("analyze_interval_hours", 0.05))
 
     unprocessed = _count_unprocessed_pdfs(job_folder, output_dir)
@@ -346,7 +348,6 @@ def job_check_and_analyze(job_config: dict[str, Any]) -> dict[str, Any]:
     try:
         passed_list, eliminated_list = _run_wasm_analysis_sync(job_config, pdf_paths, output_dir, job_folder)
         _write_summary_md(output_dir, passed_list, eliminated_list, job_folder)
-        broadcast_log("[规则引擎] 🏆 琅琊榜战报生成完毕！", "SUCCESS")
 
         state = _load_task_state()
         if job_key not in state:
@@ -354,12 +355,31 @@ def job_check_and_analyze(job_config: dict[str, Any]) -> dict[str, Any]:
         state[job_key]["last_analyze_time"] = now.isoformat()
         _save_task_state(state)
 
+        # 分析完成：打印结果并结束调度
+        analysis_files = sorted(output_dir.glob("*_analysis.md")) + sorted(output_dir.glob("*_排行榜_Summary_*.md"))
+        analysis_paths = [str(p.resolve()) for p in analysis_files]
+        output_dir_abs = str(output_dir.resolve())
+        broadcast_log("[规则引擎] 🏆 分析已完成！", "SUCCESS")
+        logger.info(
+            "[Scheduler] 分析已完成 job=%s passed=%d eliminated=%d output_dir=%s",
+            job_folder, len(passed_list), len(eliminated_list), output_dir_abs,
+        )
+        logger.info("[Scheduler] 分析文件列表: %s", analysis_paths)
+        broadcast_log(f"[规则引擎] 分析输出目录: {output_dir_abs}", "INFO")
+        for p in analysis_paths:
+            broadcast_log(f"[规则引擎] 分析文件: {p}", "INFO")
+
+        remove_scheduled_job(job_name)
+        broadcast_log(f"[规则引擎] 已结束岗位「{job_name}」的调度任务。", "INFO")
+
         return {
             "fired": True,
             "unprocessed": unprocessed,
             "passed": len(passed_list),
             "eliminated": len(eliminated_list),
             "last_analyze_time": now.isoformat(),
+            "output_dir": output_dir_abs,
+            "analysis_files": analysis_paths,
         }
     except Exception as e:
         logger.warning("[Scheduler] job_check_and_analyze Wasm 分析失败: %s", e)
@@ -387,20 +407,20 @@ def add_scheduled_job(job_config: dict[str, Any]) -> dict[str, Any]:
     remove_scheduled_job(job_name)
 
     try:
-        # 极速测试模式：recommend 1分钟、harvest 2分钟、check 1分钟
+        # 抓取简历 1 分钟、推荐牛人打招呼 2 分钟、check 1 分钟
         scheduler.add_job(
-            job_recommend_candidates,
+            job_harvest_resumes,
             "interval",
             minutes=1,
-            id=job_id_recommend,
+            id=job_id_harvest,
             args=[job_config],
             replace_existing=True,
         )
         scheduler.add_job(
-            job_harvest_resumes,
+            job_recommend_candidates,
             "interval",
             minutes=2,
-            id=job_id_harvest,
+            id=job_id_recommend,
             args=[job_config],
             replace_existing=True,
         )

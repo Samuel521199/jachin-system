@@ -1,0 +1,113 @@
+# Jachin L1 + L2 一键部署
+# 用法: docker compose -f docker-compose.deploy-l1-l2.yml up -d
+# L1 平台: http://localhost:3000
+# L2 控制面: http://localhost:18888
+#
+# 依赖: Docker + Docker Compose（无需预装 Node/Python/PostgreSQL）
+
+services:
+  # ========== L1 依赖 ==========
+  postgres:
+    image: postgres:15-alpine
+    container_name: jachin-l1-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - l1_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-deploy
+
+  # L1 数据库迁移（首次启动时执行，完成后退出）
+  l1-db-init:
+    image: jachin/l1-db-init:latest
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.l1-init
+    container_name: jachin-l1-db-init
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - jachin-deploy
+    restart: "no"
+
+  # ========== L2 依赖（可选，单机模式可不连 Redis）==========
+  redis:
+    image: redis:7-alpine
+    container_name: jachin-l2-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-deploy
+
+  # ========== L1 平台 (Nexus) ==========
+  l1-nexus:
+    image: jachin/l1-nexus:latest
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.l1
+    container_name: jachin-l1-nexus
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      SKIP_AUTH: "true"
+      NEXUS_ADMIN_SECRET: ${NEXUS_ADMIN_SECRET:-NeilCloud}
+      JACHIN_DEV_TOKEN: ${JACHIN_DEV_TOKEN:-Neil}
+      JACHIN_DEV_ID: ${JACHIN_DEV_ID:-Neil}
+    depends_on:
+      l1-db-init:
+        condition: service_completed_successfully
+    networks:
+      - jachin-deploy
+
+  # ========== L2 控制面 ==========
+  l2-control:
+    image: jachin/l2-control:latest
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.l2
+    container_name: jachin-l2-control
+    ports:
+      - "18888:18888"
+    environment:
+      REDIS_URL: redis://redis:6379
+      JACHIN_L2_DB_PATH: /data/l2_control.db
+      JACHIN_LANCEDB_PATH: /data/lancedb_data
+      SERVER_PORT: "18888"
+      APP_PORT: "18888"
+    volumes:
+      - l2_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn core.main:app --host 0.0.0.0 --port 18888
+    networks:
+      - jachin-deploy
+
+volumes:
+  l1_postgres_data:
+  l2_data:
+
+networks:
+  jachin-deploy:
+    driver: bridge

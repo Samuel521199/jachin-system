@@ -1,0 +1,59 @@
+# L2 独立部署（控制面 + Redis）
+# 运行: .\启动.ps1
+# 端口冲突: $env:L2_PORT=18889; .\启动.ps1
+#
+# 与 L1 配对：设置 NEXUS_BASE_URL 指向 L1 地址，见 README.txt
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: jachin-l2-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-l2
+
+  l2-control:
+    image: jachin/l2-control:patched
+    container_name: jachin-l2-control
+    ports:
+      - "${L2_PORT:-18888}:18888"
+    environment:
+      REDIS_URL: redis://redis:6379
+      JACHIN_L2_DB_PATH: /data/l2_control.db
+      JACHIN_LANCEDB_PATH: /data/lancedb_data
+      SERVER_PORT: "18888"
+      APP_PORT: "18888"
+      NEXUS_BASE_URL: ${NEXUS_BASE_URL:-http://localhost:3000}
+      NEXUS_INSTANCE_ID: ${NEXUS_INSTANCE_ID:-}
+      NEXUS_ACCESS_TOKEN: ${NEXUS_ACCESS_TOKEN:-}
+      NEXUS_L1_USER_ID: ${NEXUS_L1_USER_ID:-}
+      JACHIN_L2_ADMIN_TOKEN: ${JACHIN_L2_ADMIN_TOKEN:-}
+      JACHIN_L2_MASTER_KEY: ${JACHIN_L2_MASTER_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-qwen-v2}
+      LLM_MODEL: ${LLM_MODEL:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-}
+    volumes:
+      - l2_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn core.main:app --host 0.0.0.0 --port 18888
+    networks:
+      - jachin-l2
+
+volumes:
+  l2_data:
+
+networks:
+  jachin-l2:
+    driver: bridge

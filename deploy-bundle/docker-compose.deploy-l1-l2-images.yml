@@ -1,0 +1,95 @@
+# L1 + L2 无代码部署
+# 目标机器只需本文件夹内所有文件，无需项目源码
+# 运行: 启动.bat (Windows) 或 ./启动.sh (Linux/Mac)
+# 端口冲突时: $env:L1_PORT=3001; $env:L2_PORT=18889; .\启动.ps1
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: jachin-l1-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - l1_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-deploy
+
+  l1-db-init:
+    image: jachin/l1-db-init:latest
+    container_name: jachin-l1-db-init
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - jachin-deploy
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: jachin-l2-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-deploy
+
+  l1-nexus:
+    image: jachin/l1-nexus:latest
+    container_name: jachin-l1-nexus
+    ports:
+      - "${L1_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      SKIP_AUTH: "true"
+      NEXUS_ADMIN_SECRET: ${NEXUS_ADMIN_SECRET:-NeilCloud}
+      JACHIN_DEV_TOKEN: ${JACHIN_DEV_TOKEN:-Neil}
+      JACHIN_DEV_ID: ${JACHIN_DEV_ID:-Neil}
+    depends_on:
+      l1-db-init:
+        condition: service_completed_successfully
+    networks:
+      - jachin-deploy
+
+  l2-control:
+    image: jachin/l2-control:latest
+    container_name: jachin-l2-control
+    ports:
+      - "${L2_PORT:-18888}:18888"
+    environment:
+      REDIS_URL: redis://redis:6379
+      JACHIN_L2_DB_PATH: /data/l2_control.db
+      JACHIN_LANCEDB_PATH: /data/lancedb_data
+      SERVER_PORT: "18888"
+      APP_PORT: "18888"
+    volumes:
+      - l2_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn core.main:app --host 0.0.0.0 --port 18888
+    networks:
+      - jachin-deploy
+
+volumes:
+  l1_postgres_data:
+  l2_data:
+
+networks:
+  jachin-deploy:
+    driver: bridge

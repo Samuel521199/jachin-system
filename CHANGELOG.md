@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.9.1] - 2026-03
+
+### Added
+
+- **deploy-bundle-l2**: Standalone L2 deploy package with Docker (patched image: fastapi, uvicorn, static/admin)
+- **L1-L2 pairing via env**: sync_daemon, v2_admin, bootstrap support NEXUS_* env vars for Docker deployment
+
+### Changed
+
+- core/requirements.txt: Add fastapi, uvicorn for L2 Docker image
+- deploy/Dockerfile.l2: Copy static/ for /admin UI
+- Version bump to v0.8.9.1
+
+---
+
 ## [v0.8.5] - 2026-03
 
 ### Added

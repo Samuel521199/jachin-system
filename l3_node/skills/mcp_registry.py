@@ -43,7 +43,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:add_automated_recruitment_task",
         "label": "mcp:add_automated_recruitment_task",
-        "desc": "[L3 本地] 将岗位加入无人值守招聘调度引擎。【极速测试】每1分钟推荐、每2分钟收网、每1分钟检查。analyze_threshold 默认2（满2份即分析），analyze_interval_hours 默认0.05（3分钟兜底）。",
+        "desc": "[L3 本地] 将岗位加入无人值守招聘调度引擎。每1分钟抓取简历、每2分钟推荐牛人打招呼、每1分钟检查。analyze_threshold 默认1（抓取1份即分析），分析完成后自动结束调度。",
         "params": ["job_name", "analyze_threshold", "analyze_interval_hours", "jd_config_path"],
     },
 ]
@@ -69,6 +69,20 @@ def _invoke_atom_post_job_boss_local(
             except json.JSONDecodeError:
                 return json.dumps({"success": False, "posted": False, "error": "jd_config 不是有效 JSON"}, ensure_ascii=False)
         if isinstance(cfg, dict) and (cfg.get("job_title") or cfg.get("jd_full")):
+            # 规范化薪资字段，确保 salary_min/salary_max 为整数（支持 salary_range、字符串等）
+            _sal_min, _sal_max = cfg.get("salary_min"), cfg.get("salary_max")
+            if _sal_min is None or _sal_max is None:
+                import re
+                _sr = cfg.get("salary_range", "")
+                if _sr:
+                    _m = re.search(r"(\d+)[^\d]*(\d+)?", str(_sr))
+                    if _m:
+                        _sal_min = int(_m.group(1))
+                        _sal_max = int(_m.group(2)) if _m.group(2) else _sal_min
+            if _sal_min is not None:
+                cfg["salary_min"] = int(_sal_min)
+            if _sal_max is not None:
+                cfg["salary_max"] = int(_sal_max)
             default_jd_path.parent.mkdir(parents=True, exist_ok=True)
             default_jd_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
             jd_config_path = str(default_jd_path)
@@ -110,18 +124,18 @@ def _invoke_atom_greet_recommend_boss_local(cdp_url: str = "", jd_config_path: s
 
 def _invoke_add_automated_recruitment_task_local(
     job_name: str = "",
-    analyze_threshold: int = 2,
+    analyze_threshold: int = 1,
     analyze_interval_hours: float = 0.05,
     jd_config_path: str = "",
 ) -> str:
-    """L3 本地执行 add_automated_recruitment_task，向调度器添加岗位。极速模式：threshold=2，interval=0.05(3分钟)。"""
+    """L3 本地执行 add_automated_recruitment_task，向调度器添加岗位。抓取1份即分析，分析完成后结束调度。"""
     if not (job_name or "").strip():
         return json.dumps({"ok": False, "error": "job_name 不能为空"}, ensure_ascii=False)
     _proj = Path(__file__).resolve().parent.parent.parent
     default_jd_path = str(_proj / "skills_repo" / "plugin" / "data" / "jd_to_publish.json")
     job_config = {
         "job_name": (job_name or "").strip(),
-        "analyze_threshold": int(analyze_threshold) if analyze_threshold is not None else 2,
+        "analyze_threshold": int(analyze_threshold) if analyze_threshold is not None else 1,
         "analyze_interval_hours": float(analyze_interval_hours) if analyze_interval_hours is not None else 0.05,
         "jd_config_path": (jd_config_path or "").strip() or default_jd_path,
         "cdp_url": "http://127.0.0.1:9222",
@@ -324,6 +338,12 @@ class MCPToolRegistry:
         for prefix in ("Action Input:", "Action Input：", "input:", "参数:"):
             if inp.lower().startswith(prefix.lower()):
                 inp = inp[len(prefix):].strip()
+        # 去除 ```json 等代码块包裹（LLM 可能输出 JSON 代码块）
+        if "```" in inp:
+            import re as _re
+            _m = _re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", inp)
+            if _m:
+                inp = _m.group(1).strip()
         if inp.strip().startswith("{") and "}" in inp:
             try:
                 arguments = json.loads(inp)
@@ -372,6 +392,19 @@ class MCPToolRegistry:
                 cdp_url = arguments.get("cdp_url", "http://127.0.0.1:9222")
                 jd_config_path = arguments.get("jd_config_path", "")
                 jd_config = arguments.get("jd_config")
+                # 兼容：LLM 可能直接传顶层 JSON 即 JD 配置（含 job_title、jd_full 等）
+                if jd_config is None and (arguments.get("job_title") or arguments.get("jd_full")):
+                    jd_config = arguments
+                # 兼容：input 字段为 JSON 字符串
+                if jd_config is None:
+                    raw_inp = arguments.get("input", "")
+                    if isinstance(raw_inp, str) and raw_inp.strip().startswith("{"):
+                        try:
+                            parsed = json.loads(raw_inp)
+                            if isinstance(parsed, dict) and (parsed.get("job_title") or parsed.get("jd_full")):
+                                jd_config = parsed
+                        except json.JSONDecodeError:
+                            pass
                 if isinstance(jd_config, dict):
                     jd_config = json.dumps(jd_config, ensure_ascii=False)
                 logger.info("[MCP Registry] L3 本地执行 atom_post_job_boss cdp=%s jd_config=%s", cdp_url, "有" if jd_config else "无")
@@ -409,13 +442,13 @@ class MCPToolRegistry:
                                 logger.info("[MCP Registry] add_automated_recruitment_task job_name 从 jd_to_publish.json 兜底: %s", job_name)
                         except Exception as e:
                             logger.debug("[MCP Registry] 读取 jd_to_publish.json 兜底失败: %s", e)
-                analyze_threshold = arguments.get("analyze_threshold", 2)
+                analyze_threshold = arguments.get("analyze_threshold", 1)
                 analyze_interval_hours = arguments.get("analyze_interval_hours", 0.05)
                 jd_config_path = arguments.get("jd_config_path", "")
                 logger.info("[MCP Registry] L3 本地执行 add_automated_recruitment_task job_name=%s", job_name or "(空)")
                 return _invoke_add_automated_recruitment_task_local(
                     job_name=str(job_name).strip() if job_name else "",
-                    analyze_threshold=int(analyze_threshold) if analyze_threshold is not None else 2,
+                    analyze_threshold=int(analyze_threshold) if analyze_threshold is not None else 1,
                     analyze_interval_hours=float(analyze_interval_hours) if analyze_interval_hours is not None else 0.05,
                     jd_config_path=str(jd_config_path) if jd_config_path else "",
                 )

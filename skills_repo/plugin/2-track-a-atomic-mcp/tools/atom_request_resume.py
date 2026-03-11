@@ -4,7 +4,7 @@
 """
 import logging
 
-from .boss_utils import navigate_to_candidate_chat, select_job
+from .boss_utils import navigate_to_candidate_chat, select_job, navigate_to_chat_page
 from .human_utils import human_wait
 
 logger = logging.getLogger(__name__)
@@ -370,6 +370,10 @@ def atom_request_resume_batch(
                 human_wait(page, 0.3, 0.7)
             except Exception:
                 pass
+
+            # 先进入沟通页（点击左侧「沟通」菜单，绝不点右上角头像）
+            navigate_to_chat_page(page)
+            human_wait(page, 0.5, 1.0)
 
             if not select_job(page, job_text):
                 return {

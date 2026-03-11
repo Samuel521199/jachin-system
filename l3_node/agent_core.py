@@ -62,11 +62,7 @@ def _parse_action(
     allowed_skills: Optional[list[str]] = None,
 ) -> dict[str, Any] | None:
     text = (llm_output or "").strip()
-    for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if m:
-            return {"type": "answer", "content": m.group(1).strip()}
-
+    # 优先解析 Action：若 LLM 同时输出 Action 与 Final Answer，必须先执行工具，避免误判为幻觉
     # Action: delegate — 分身子 Agent
     if re.search(r"Action:\s*delegate\s*(?:\n|$)", text, re.IGNORECASE):
         mi = re.search(
@@ -143,6 +139,11 @@ def _parse_action(
             pat = rf"Action:\s*{re.escape(raw)}{action_suffix}"
             if re.search(pat, text, re.IGNORECASE):
                 return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
+    # 最后解析 Final Answer（无 Action 时）
+    for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
+        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if m:
+            return {"type": "answer", "content": m.group(1).strip()}
     return None
 
 
@@ -404,11 +405,13 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 【HR 招聘总监 SOP】你是 Jachin OS 的首席 AI 招聘总监，拥有直接操作 Boss 直聘后台和开启无人值守招聘流的最高权限。
 当用户要求发布职位或招聘某类人才时，你必须严格遵循以下 SOP：
 
-第一步【智能草拟配置】：当用户表达招聘意图（如「帮我招个 Golang」）但信息不全时，**绝对不要**生硬地追问每一个缺失字段！你必须发挥你的专业 HR 知识，根据用户的零星线索，直接为他/她【脑补并生成】一份极其专业、完整的 JSON 配置单草案。草案必须严格包含以下字段，并填入你认为最合理、最专业的行业默认值：recruitment_type（如 社招全职）、job_title、jd_full（必须包含岗位职责和任职要求，排版清晰）、job_category_path（严格匹配 Boss 系统的三级目录）、experience（如 3-5年）、education（如 本科）、salary_min、salary_max（单位 K，默认 19-20）、job_keywords（数组）。
+第一步【智能草拟配置】：当用户表达招聘意图（如「帮我招个 Golang」「你帮我发布一个职位」「帮我发一个职位」「发布职位」「我要招聘」等）时，**绝对不要**生硬地追问每一个缺失字段！你必须发挥你的专业 HR 知识，根据用户的零星线索，直接为他/她【脑补并生成】一份极其专业、完整的 JSON 配置单草案。草案必须严格包含以下字段，并填入你认为最合理、最专业的行业默认值：recruitment_type（如 社招全职）、job_title、jd_full（必须包含岗位职责和任职要求，排版清晰）、job_category_path（严格匹配 Boss 系统的三级目录）、experience（如 3-5年）、education（如 本科）、salary_min、salary_max（单位 K，默认 19-20）、job_keywords（数组）。
 
-第二步【展示与请示】：将这份生成的 JSON 草案以代码块的形式漂亮地展示给用户，并极其礼貌地询问：「长官，这是我为您智能草拟的岗位配置单。您看我们是直接按照这个配置发布，还是您需要修改薪资、经验或 JD 中的某些细节？」
+第二步【展示与请示，强制必经】：无论用户如何表述（包括「你帮我发布一个职位」「帮我发」「直接发布」等），你**必须**先将 JSON 草案以代码块形式展示给用户，并询问：「长官，这是我为您智能草拟的岗位配置单。您看我们是直接按照这个配置发布，还是您需要修改薪资、经验或 JD 中的某些细节？」**严禁**在未展示草案、未得到用户确认前直接调用 atom_post_job_boss！
 
-第三步【结合上下文与执行】：在任何时候，你都必须结合历史对话上下文来理解用户的简短指令（如「确认」「执行」「就按这个发」「直接发布」「没问题」「直接发」等）。当用户给出这类确认指令时，你必须**直接提取你上一轮回复中生成的 JSON 配置单**作为参数，立刻连续调用 `mcp:atom_post_job_boss` 和 `mcp:add_automated_recruitment_task`！
+🚨【确认指令的判定】：只有当**上一轮对话中你已展示过 JSON 草案**，且用户在本轮回复中给出确认类指令（如「确认」「执行」「就按这个发」「直接发布」「没问题」「直接发」「发吧」「可以」）时，才视为确认，方可调用工具。若用户首次说「你帮我发布一个职位」「帮我发个职位」，这是**请求**而非**确认**，必须先生成并展示草案，等待用户确认。
+
+第三步【结合上下文与执行】：当用户给出确认指令时，你必须**直接提取你上一轮回复中生成的 JSON 配置单**作为参数，立刻连续调用 `mcp:atom_post_job_boss` 和 `mcp:add_automated_recruitment_task`！
 🚨【绝对红线】：当用户给出确认指令时，你必须**直接提取你上一轮回复中生成的 JSON 配置单**作为参数，立刻连续调用 `mcp:atom_post_job_boss` 和 `mcp:add_automated_recruitment_task`！绝对、绝对不允许因为用户的指令简短就判定为「模糊」，也不允许重新生成一份新的草案，更不允许再次反问！
 【工具链连续调用】必须支持：先调 mcp:atom_post_job_boss（jd_config 参数请直接从你上一次 Assistant 回答中的 JSON 代码块 Copy，原样塞进工具请求）→ 成功后再调 mcp:add_automated_recruitment_task，不得在一次回复中只给出 Final Answer 而跳过工具调用。
 🚫【严禁幻觉】绝对禁止在未实际调用 mcp:atom_post_job_boss 和 mcp:add_automated_recruitment_task 的情况下，直接给出 Final Answer 声称「职位已发布」「极速测试模式」「已启动」等。系统会校验：若你声称已发布但未调用工具，将被强制要求先执行工具。
@@ -425,11 +428,12 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 
 输出格式：
 Thought: <你的思考>
-Action: <工具名，必须与上方「可用工具」中的 id 完全一致，如 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}>
-Action Input: <参数>
+Action: <工具名，必须与上方「可用工具」中的 id 完全一致，如 mcp:atom_post_job_boss 或 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}>
+Action Input: <参数，发布职位时传 jd_config JSON>
 Observation: <工具返回>
 ...（可多轮）
 Final Answer: <最终回复>
+【强制】确认发布时：必须先输出 Action: mcp:atom_post_job_boss，再根据 Observation 输出 Final Answer。禁止跳过 Action 直接 Final Answer。
 {hr_hint}
 注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。
 """

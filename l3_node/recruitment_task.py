@@ -218,11 +218,15 @@ async def run_recruitment_task_stream(
         nonlocal harvester_result
         try:
             import sys
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"))
+            _plugin = Path(__file__).resolve().parent.parent / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+            sys.path.insert(0, str(_plugin))
             from tools.atom_inbox_harvester import atom_inbox_harvester_full_flow
-            logger.info("[Recruitment] 收网参数 request_if_no_resume=%s filter_tab=%s", request_resume, filter_tab or "全部")
+            from tools.boss_utils import resolve_job_text_for_boss
+            _jd_path = str(_plugin.parent / "data" / "jd_to_publish.json")
+            job_text = resolve_job_text_for_boss(job_name, _jd_path)
+            logger.info("[Recruitment] 收网参数 request_if_no_resume=%s filter_tab=%s job_text=%s", request_resume, filter_tab or "全部", job_text)
             harvester_result = atom_inbox_harvester_full_flow(
-                job_text=job_name,
+                job_text=job_text,
                 max_items=max_count,
                 save_dir=str(save_dir),
                 filter_tab=filter_tab or "全部",

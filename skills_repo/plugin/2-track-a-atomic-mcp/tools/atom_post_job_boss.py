@@ -14,6 +14,24 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 JD_CONFIG_PATH = _ROOT / "data" / "jd_to_publish.json"
 
 
+def _normalize_salary(jd: dict) -> dict:
+    """从 jd 中解析 salary_min/salary_max，支持 salary_range、字符串等格式"""
+    sal_min = jd.get("salary_min")
+    sal_max = jd.get("salary_max")
+    if sal_min is None or sal_max is None:
+        sal_range = jd.get("salary_range", "")
+        if sal_range:
+            m = re.search(r"(\d+)[^\d]*(\d+)?", str(sal_range))
+            if m:
+                sal_min = int(m.group(1))
+                sal_max = int(m.group(2)) if m.group(2) else sal_min
+    if sal_min is not None:
+        jd["salary_min"] = int(sal_min) if not isinstance(sal_min, int) else sal_min
+    if sal_max is not None:
+        jd["salary_max"] = int(sal_max) if not isinstance(sal_max, int) else sal_max
+    return jd
+
+
 def load_jd_config(config_path: str = "") -> dict:
     """
     加载 JD 配置。优先 config_path，其次 data/jd_to_publish.json，最后 recruitment_status。
@@ -21,7 +39,8 @@ def load_jd_config(config_path: str = "") -> dict:
     path = Path(config_path) if config_path else JD_CONFIG_PATH
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            jd = json.loads(path.read_text(encoding="utf-8"))
+            return _normalize_salary(jd)
         except Exception as e:
             logger.warning(f"load_jd_config failed {path}: {e}")
 
@@ -266,76 +285,201 @@ def atom_post_job_boss(
 
             page.wait_for_timeout(300)
 
-            # 9. 薪资（Boss 选项格式可能为 15K/20K/25K 或 15-16K；需先点击下拉再选）
+            # 9. 薪资（Boss 仅支持下拉选择；必须先选最低月薪，最高月薪字段才会出现）
             def _match_salary_opt(value):
-                v = int(value)
-                # Boss 选项格式：20K、25K、20-25K、15-16K 等
-                candidates = [str(v), f"{v}k", f"{v}K", f"{v}-{v+5}K", f"{v}-{v+5}k"]
-                fallback = [str(v + 1), f"{v + 1}k", str(v + 2), f"{v + 2}k", str(v - 1), f"{v - 1}k"] if v < 50 else []
-                for scope in [page, form_frame]:
-                    for c in candidates + fallback:
-                        loc = scope.locator("li.ui-select-item, li[class*='option'], div[class*='option']").filter(has_text=c)
-                        if loc.count() > 0:
+                """从下拉列表中点击匹配的薪资选项。Boss 选项格式：1k、2k、…、10k、15k（需滚动才能看到高位选项）"""
+                try:
+                    v = int(value)
+                except (TypeError, ValueError):
+                    return False
+                candidates = [f"{v}k", f"{v}K", str(v)] + (
+                    [f"{v}-{v+5}K", f"{v}-{v+5}k", f"{v}K以下", f"{v}k以下"] if v <= 30 else []
+                )
+                fallback = [f"{v+1}k", f"{v-1}k"] if 0 < v < 50 else []
+                for c in candidates + fallback:
+                    for scope in [page, form_frame]:
+                        for opt_sel in [
+                            "li.ui-select-item", "li[class*='option']", "div[class*='option']",
+                            "[role='option']", "li", "div[class*='item']",
+                        ]:
                             try:
-                                loc.first.click(timeout=3000)
-                                return True
-                            except Exception:
-                                try:
-                                    loc.first.evaluate("el => el.click()")
+                                loc = scope.locator(opt_sel).filter(has_text=c)
+                                if loc.count() > 0:
+                                    el = loc.first
+                                    el.scroll_into_view_if_needed(timeout=2000)
+                                    page.wait_for_timeout(150)
+                                    el.click(timeout=3000)
                                     return True
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
+                        try:
+                            loc = scope.get_by_text(c, exact=True)
+                            if loc.count() > 0:
+                                el = loc.first
+                                el.scroll_into_view_if_needed(timeout=2000)
+                                el.click(timeout=3000)
+                                return True
+                        except Exception:
+                            pass
+                    # 兜底：JS 查找并点击文本完全匹配的下拉项（Boss 可能用自定义 DOM 结构）
+                    try:
+                        clicked = scope.evaluate("""
+                            (text) => {
+                                const sel = 'li, [role=option], [class*="option"], [class*="item"]';
+                                for (const el of document.querySelectorAll(sel)) {
+                                    const t = (el.textContent || '').trim();
+                                    if (t === text) { el.click(); return true; }
+                                }
+                                return false;
+                            }
+                        """, c)
+                        if clicked:
+                            page.wait_for_timeout(200)
+                            return True
+                    except Exception:
+                        pass
                 return False
 
             sal_min = jd.get("salary_min")
             sal_max = jd.get("salary_max")
             if sal_min is not None or sal_max is not None:
-                # 最低薪资：Boss 可能用「最低月薪」或「最低薪资」；用 filter(has_text) 更稳
+                target_min = sal_min if sal_min is not None else sal_max
+                target_max = sal_max if sal_max is not None else sal_min
+
+                # 策略 1：定位「最低月薪」下拉/输入，必须先填此项，最高月薪才会出现
                 min_sal_btn = None
                 for label in ("最低月薪", "最低薪资", "最低"):
                     try:
-                        loc = form_frame.locator("div.ui-select-inner").filter(has_text=label).first
+                        loc = form_frame.locator("div.ui-select-inner, span.ui-select-placeholder").filter(has_text=label).first
                         if loc.count() > 0:
                             min_sal_btn = loc
                             break
                     except Exception:
                         pass
                 if min_sal_btn is None:
-                    # 兜底：遍历所有 ui-select-inner，找含「薪资」或「薪」的
-                    for i in range(form_frame.locator("div.ui-select-inner").count()):
-                        el = form_frame.locator("div.ui-select-inner").nth(i)
-                        txt = (el.inner_text() or "") + (el.get_attribute("placeholder") or "")
-                        if "最低" in txt or ("薪资" in txt and "最高" not in txt):
-                            min_sal_btn = el
-                            break
-                if min_sal_btn and min_sal_btn.count() > 0:
-                    min_sal_btn.click()
-                    page.wait_for_timeout(800)
-                    target_min = sal_min if sal_min is not None else sal_max
-                    if not _match_salary_opt(target_min):
-                        logger.warning("最低薪资选项未匹配到 %s，尝试就近档位", target_min)
-                    # Boss 需先选最低薪资，最高薪资字段才会出现；等待下拉关闭 + 第二字段渲染
-                    page.wait_for_timeout(1200)
-
-                # 最高月薪（仅当最低已选后才会出现，需等待）
-                if sal_max is not None and sal_min != sal_max:
-                    # 轮询等待最高月薪字段出现（Boss 动态渲染）
-                    max_sal_btn = None
-                    for _ in range(5):
-                        page.wait_for_timeout(600)
+                    for sel in ["div.ui-select-inner", "[class*='salary']", "[class*='Salary']"]:
                         try:
-                            loc = form_frame.locator("div.ui-select-inner").filter(has_text="最高").first
-                            if loc.count() > 0:
-                                max_sal_btn = loc
+                            for i in range(min(8, form_frame.locator(sel).count())):
+                                el = form_frame.locator(sel).nth(i)
+                                txt = (el.inner_text() or "") + (el.get_attribute("placeholder") or "")
+                                if "最低" in txt or ("月薪" in txt and "最高" not in txt):
+                                    min_sal_btn = el
+                                    break
+                            if min_sal_btn is not None:
                                 break
                         except Exception:
                             pass
+
+                if min_sal_btn and min_sal_btn.count() > 0:
+                    min_sal_btn.first.click()
+                    page.wait_for_timeout(1000)  # 等待下拉展开
+                    # 若目标薪资较大（如 10k+），下拉可能需滚动才能看到；先尝试滚动下拉面板
+                    if target_min and int(target_min) > 5:
+                        try:
+                            for scope in [page, form_frame]:
+                                panel = scope.locator("[class*='dropdown'] [class*='list'], [class*='select'] [class*='list'], .ui-select-dropdown, [class*='option-list']").first
+                                if panel.count() > 0:
+                                    # 按目标值估算滚动位置（每项约 32px）
+                                    panel.evaluate("(el, v) => { el.scrollTop = Math.min(v * 32, el.scrollHeight); }", int(target_min))
+                                    page.wait_for_timeout(400)
+                                    break
+                        except Exception:
+                            pass
+                    if not _match_salary_opt(target_min):
+                        logger.warning("最低薪资未匹配到 %s，请检查 jd_to_publish.json 中的 salary_min", target_min)
+                    page.wait_for_timeout(1200)  # 选完后等待最高月薪字段渲染
+
+                # 策略 2：最高月薪（仅当最低已选后才会出现；支持 min=max 如 10-10k，便于后续修改）
+                if target_max is not None and min_sal_btn and min_sal_btn.count() > 0:
+                    max_sal_btn = None
+                    # 策略 A：用「1k=1千元」锚定薪资区（仅此区有此文案），取该区内第 2 个 数字+k 的 select 即最高月薪
+                    try:
+                        for anchor_text in ["1k=1千元", "10k=1万", "1千元"]:
+                            salary_anchor = form_frame.get_by_text(anchor_text, exact=False).first
+                            if salary_anchor.count() > 0:
+                                row = salary_anchor.locator("xpath=ancestor::*[.//div[contains(@class,'ui-select-inner')]][1]")
+                                if row.count() > 0:
+                                    selects = row.locator("div.ui-select-inner, span.ui-select-placeholder").filter(has_text=re.compile(r"\d+k", re.I))
+                                    if selects.count() >= 2:
+                                        max_sal_btn = selects.nth(1)
+                                        break
+                            if max_sal_btn is not None:
+                                break
+                    except Exception:
+                        pass
+                    # 策略 B：从最低月薪向上找 ui-select 容器，取其下一个兄弟
                     if max_sal_btn is None:
-                        max_sal_btn = form_frame.locator("span.ui-select-placeholder").filter(has_text="最高").locator("..").locator("..").first
-                    if max_sal_btn.count() > 0:
-                        max_sal_btn.click()
-                        page.wait_for_timeout(600)
-                        _match_salary_opt(sal_max)
+                        for level in ["ancestor::div[contains(@class,'ui-select')][1]", "ancestor::*[contains(@class,'select')][1]", "..", "../.."]:
+                            try:
+                                min_parent = min_sal_btn.locator(f"xpath={level}")
+                                if min_parent.count() > 0:
+                                    for i in range(1, 5):
+                                        next_el = min_parent.locator(f"xpath=following-sibling::*[{i}]")
+                                        if next_el.count() == 0:
+                                            break
+                                        inner = next_el.locator("div.ui-select-inner, span.ui-select-placeholder").first
+                                        if inner.count() > 0:
+                                            txt = (inner.inner_text() or "").strip()
+                                            if "12个月" in txt:
+                                                continue
+                                            if "本科" not in txt and "学历" not in txt:
+                                                max_sal_btn = inner
+                                                break
+                                    if max_sal_btn is not None:
+                                        break
+                            except Exception:
+                                pass
+                    # 策略 C：JS 从最低元素遍历找下一个薪资 select
+                    if max_sal_btn is None:
+                        try:
+                            found = form_frame.evaluate("""
+                                (minVal) => {
+                                    const inners = document.querySelectorAll('div.ui-select-inner, span.ui-select-placeholder');
+                                    let foundMin = false;
+                                    for (const el of inners) {
+                                        const t = (el.textContent || '').trim();
+                                        if (t === String(minVal) + 'k' || t === String(minVal) + 'K') { foundMin = true; continue; }
+                                        if (foundMin && /\\d+k/i.test(t) && !t.includes('12个月') && !t.includes('本科')) {
+                                            el.click(); return true;
+                                        }
+                                    }
+                                    return false;
+                                }
+                            """, target_min)
+                            if found:
+                                max_sal_btn = "js_clicked"
+                        except Exception:
+                            pass
+                    if max_sal_btn is None:
+                        # 策略 D：文本含「最高月薪」或「最高」且排除学历
+                        for label in ("最高月薪", "最高薪资"):
+                            try:
+                                loc = form_frame.locator("div.ui-select-inner, span.ui-select-placeholder").filter(has_text=label).first
+                                if loc.count() > 0:
+                                    cur = (loc.inner_text() or "").strip()
+                                    if "本科" not in cur and "学历" not in cur and "不限" not in cur:
+                                        max_sal_btn = loc
+                                        break
+                            except Exception:
+                                pass
+                    if max_sal_btn == "js_clicked":
+                        page.wait_for_timeout(800)
+                    elif max_sal_btn and hasattr(max_sal_btn, "count") and max_sal_btn.count() > 0:
+                        max_sal_btn.first.click()
+                        page.wait_for_timeout(800)
+                    if max_sal_btn:
+                        if target_max and int(target_max) > 5:
+                            try:
+                                for scope in [page, form_frame]:
+                                    panel = scope.locator("[class*='dropdown'] [class*='list'], .ui-select-dropdown, [class*='option-list']").first
+                                    if panel.count() > 0:
+                                        panel.evaluate("(el, v) => { el.scrollTop = Math.min(v * 32, el.scrollHeight); }", int(target_max))
+                                        page.wait_for_timeout(400)
+                                        break
+                            except Exception:
+                                pass
+                        if not _match_salary_opt(target_max):
+                            logger.warning("最高薪资未匹配到 %s，请检查 jd_to_publish.json 中的 salary_max", target_max)
 
             # 10. 职位关键词：跳过不填
 

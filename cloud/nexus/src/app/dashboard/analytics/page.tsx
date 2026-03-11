@@ -241,7 +241,7 @@ export default function AnalyticsDashboardPage() {
                             borderRadius: "8px",
                           }}
                           labelStyle={{ color: "#22d3ee" }}
-                          formatter={(value: number) => [value.toLocaleString(), "调用量"]}
+                          formatter={(value) => [(Number(value ?? 0)).toLocaleString(), "调用量"]}
                         />
                         <Line
                           type="monotone"
@@ -295,7 +295,7 @@ export default function AnalyticsDashboardPage() {
                             border: "1px solid rgba(255,255,255,0.1)",
                             borderRadius: "8px",
                           }}
-                          formatter={(value: number) => [value.toLocaleString(), "调用"]}
+                          formatter={(value) => [(Number(value ?? 0)).toLocaleString(), "调用"]}
                         />
                         <Bar dataKey="calls" fill="#a78bfa" radius={[0, 4, 4, 0]} />
                       </BarChart>

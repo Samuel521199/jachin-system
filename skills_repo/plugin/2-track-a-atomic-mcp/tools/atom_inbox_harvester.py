@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .boss_utils import select_job, _get_current_job_label
+from .boss_utils import select_job, _get_current_job_label, navigate_to_chat_page
 from .local_archiver import local_archiver
 from .human_utils import human_wait
 
@@ -27,11 +27,13 @@ BOSS_CHAT_ITEM_SELECTORS = [
 ZHIPIN_BASE = "https://www.zhipin.com"
 
 BOSS_DOWNLOAD_SELECTORS = [
+    'use[xlink\\:href="#icon-attachment-download"]',
+    'use[href="#icon-attachment-download"]',
     'use[xlink\\:href="#icon-attacthment-download"]',
     'use[href="#icon-attacthment-download"]',
-    'svg use[xlink\\:href="#icon-attacthment-download"]',
-    'svg.boss-svg.svg-icon use[xlink\\:href="#icon-attacthment-download"]',
-    'svg use[href="#icon-attacthment-download"]',
+    'svg use[xlink\\:href="#icon-attachment-download"]',
+    'svg.boss-svg.svg-icon use[xlink\\:href="#icon-attachment-download"]',
+    'svg use[href="#icon-attachment-download"]',
     '[class*="download"] svg',
     '#download',
     'button#download',
@@ -145,7 +147,8 @@ def _extract_pdf_url_from_viewer(pages) -> str | None:
                 if not file_param:
                     continue
                 path = unquote(file_param)
-                if "preview4boss" in path or "download" in path or "attachment" in path:
+                # 放宽：含 preview4boss/download/attachment/resume 或 .pdf 结尾
+                if any(k in path.lower() for k in ("preview4boss", "download", "attachment", "resume")) or path.endswith(".pdf"):
                     if path.startswith("http://") or path.startswith("https://"):
                         url = path
                     else:
@@ -177,27 +180,13 @@ def _fetch_pdf_by_url(request_api, url: str, timeout: int = 15000) -> bytes | No
     return None
 
 
-def _do_download(context, pages, page_for_request) -> tuple[bytes | None, str]:
+def _capture_pdf_responses(pages) -> tuple[list[str], callable]:
     """
-    执行 PDF 下载，多级降级策略：
-    1. 从 viewer iframe 提取 URL → 直接 GET
-    2. 拦截网络 response（attachment/download）→ 用拦截到的 URL 直接 GET
-    3. 点击下载图标 → expect_download
+    注册 response 监听器，在预览加载 PDF 时捕获 URL。
+    必须在点击「点击预览附件简历」之前调用，否则会错过 PDF 请求。
     Returns:
-        (content, error_msg)
+        (captured_urls_list, remove_listener_func)
     """
-    content = None
-    request_api = page_for_request.request
-
-    # 策略 1：viewer iframe 提取 URL
-    pdf_url = _extract_pdf_url_from_viewer(pages)
-    if pdf_url:
-        content = _fetch_pdf_by_url(request_api, pdf_url)
-        if content:
-            logger.info("策略1 viewer URL：下载成功，%d 字节", len(content))
-            return content, ""
-
-    # 策略 2 + 3：先设 response 拦截，再尝试点击下载
     captured_urls: list[str] = []
 
     def on_response(response):
@@ -207,19 +196,59 @@ def _do_download(context, pages, page_for_request) -> tuple[bytes | None, str]:
                 return
             ct = (response.headers.get("content-type") or "").lower()
             is_pdf = "pdf" in ct or url.endswith(".pdf") or "application/octet-stream" in ct
-            is_download = "attachment" in url or "download" in url or "preview4boss" in url
-            if is_download and (is_pdf or "download" in url):
+            is_download = any(k in url.lower() for k in ("attachment", "download", "preview4boss", "resume"))
+            if is_pdf or (is_download and (".pdf" in url or "download" in url)):
                 captured_urls.append(url)
                 logger.info("网络拦截到 PDF 下载 URL: %s...", url[:90])
         except Exception:
             pass
+
+    def remove():
+        for p in pages:
+            try:
+                p.remove_listener("response", on_response)
+            except Exception:
+                pass
 
     for p in pages:
         try:
             p.on("response", on_response)
         except Exception:
             pass
+    return captured_urls, remove
 
+
+def _do_download(context, pages, page_for_request, pre_captured_urls: list[str] | None = None) -> tuple[bytes | None, str]:
+    """
+    执行 PDF 下载，多级降级策略：
+    1. 从 viewer iframe 提取 URL → 直接 GET
+    2. 用预捕获或拦截到的 URL 直接 GET
+    3. 点击下载图标 → expect_download
+    pre_captured_urls: 在点击预览前已捕获的 URL（关键：PDF 在预览打开时加载，须提前监听）
+    Returns:
+        (content, error_msg)
+    """
+    content = None
+    request_api = page_for_request.request
+    captured_urls: list[str] = list(pre_captured_urls) if pre_captured_urls else []
+
+    # 策略 1：viewer iframe 提取 URL
+    pdf_url = _extract_pdf_url_from_viewer(pages)
+    if pdf_url:
+        content = _fetch_pdf_by_url(request_api, pdf_url)
+        if content:
+            logger.info("策略1 viewer URL：下载成功，%d 字节", len(content))
+            return content, ""
+
+    # 策略 2：先用预捕获的 URL（在点击预览前已监听）
+    for url in captured_urls:
+        content = _fetch_pdf_by_url(request_api, url)
+        if content:
+            logger.info("策略2 预捕获 URL：下载成功，%d 字节", len(content))
+            return content, ""
+
+    # 策略 2b + 3：补充 response 监听，再尝试点击下载
+    captured_urls, remove_listener = _capture_pdf_responses(pages)
     try:
         human_wait(page_for_request, 0.3, 0.8)
 
@@ -245,19 +274,15 @@ def _do_download(context, pages, page_for_request) -> tuple[bytes | None, str]:
 
         human_wait(page_for_request, 2.0, 3.5)
 
-        # 策略 2：用拦截到的 URL 直接下载（绕过点击失效）
+        # 策略 2b：用本次监听到的 URL 直接下载（点击下载按钮可能触发新请求）
         if not content or len(content) < 100:
             for url in captured_urls:
                 content = _fetch_pdf_by_url(request_api, url)
                 if content:
-                    logger.info("策略2 网络拦截 URL：下载成功，%d 字节", len(content))
+                    logger.info("策略2b 网络拦截 URL：下载成功，%d 字节", len(content))
                     return content, ""
     finally:
-        for p in pages:
-            try:
-                p.remove_listener("response", on_response)
-            except Exception:
-                pass
+        remove_listener()
 
     if not content or len(content) < 100:
         return None, "下载 PDF 失败（已进入预览页但无法获取文件，点击或 URL 均未成功）"
@@ -372,10 +397,15 @@ def click_preview_and_download(
 
     preview_btn.scroll_into_view_if_needed()
     human_wait(page, 0.2, 0.6)
-    preview_btn.click()
-    human_wait(page, 1.5, 2.8)
+    # 必须在点击前注册监听，否则会错过预览加载时的 PDF 请求
+    captured_urls, remove_listener = _capture_pdf_responses(pages)
+    try:
+        preview_btn.click()
+        human_wait(page, 2.0, 3.5)  # 等待预览弹窗及 PDF 加载完成
 
-    content, err = _do_download(context, pages, page)
+        content, err = _do_download(context, pages, page, pre_captured_urls=captured_urls)
+    finally:
+        remove_listener()
     if err:
         _close_preview_dialog(page, pages)
         return {"success": False, "pdf_path": "", "error": err}
@@ -400,15 +430,41 @@ def click_preview_and_download(
 
 
 def _select_filter_tab(page, filter_tab: str) -> bool:
-    """点击消息列表筛选 Tab（如「新招呼」「全部」）。"""
+    """点击消息列表筛选 Tab（如「新招呼」「全部」）。仅匹配左侧/主内容区，排除右上角头像。"""
     if not filter_tab or not filter_tab.strip():
         return True
+    txt = filter_tab.strip()
+    # 优先在筛选 Tab 区域查找，排除右侧头像区（x > 75% 视口宽）
+    for scope in [
+        "[class*='filter']",
+        "[class*='tab']",
+        "[class*='chat-list']",
+        "[class*='geek-list']",
+        "main",
+    ]:
+        try:
+            loc = page.locator(scope).get_by_text(txt, exact=False).first
+            if loc.count() > 0:
+                box = loc.bounding_box()
+                if box and page.viewport_size:
+                    vw = page.viewport_size.get("width") or 1920
+                    if box["x"] > vw * 0.75:
+                        continue  # 排除右侧（头像区）
+                loc.click()
+                human_wait(page, 0.5, 1.2)
+                return True
+        except Exception:
+            pass
     try:
-        hit = page.get_by_text(filter_tab.strip(), exact=False).first
+        hit = page.get_by_text(txt, exact=False).first
         if hit.count() > 0:
-            hit.click()
-            human_wait(page, 0.5, 1.2)
-            return True
+            box = hit.bounding_box()
+            if box and page.viewport_size:
+                vw = page.viewport_size.get("width") or 1920
+                if box["x"] <= vw * 0.75:  # 仅当不在右侧时点击
+                    hit.click()
+                    human_wait(page, 0.5, 1.2)
+                    return True
     except Exception:
         pass
     return False
@@ -479,6 +535,11 @@ def atom_inbox_harvester_full_flow(
                 human_wait(page, 0.3, 0.7)
             except Exception:
                 pass
+
+            # 先进入沟通页（点击左侧「沟通」菜单，绝不点右上角头像）
+            if not navigate_to_chat_page(page):
+                logger.warning("未能进入沟通页，继续尝试（可能已在沟通页）")
+            human_wait(page, 0.5, 1.0)
 
             if not select_job(page, job_text):
                 return {

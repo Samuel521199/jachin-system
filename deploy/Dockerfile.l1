@@ -1,0 +1,32 @@
+# Jachin Nexus Layer 1 - 平台镜像
+# 多阶段构建：构建 Next.js standalone + 运行
+# 使用 1ms 镜像（dockerproxy 超时时可换此源）
+FROM docker.1ms.run/library/node:20-alpine AS builder
+
+WORKDIR /app
+
+# 复制依赖
+COPY cloud/nexus/package.json cloud/nexus/package-lock.json* ./
+RUN npm ci
+
+# 复制源码并构建
+COPY cloud/nexus/ ./
+RUN npm run build
+
+# ========== 运行阶段 ==========
+FROM docker.1ms.run/library/node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# 复制 standalone 输出（Next.js output: standalone 时 server.js 在根目录）
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+
+EXPOSE 3000
+
+# standalone 模式启动命令
+CMD ["node", "server.js"]

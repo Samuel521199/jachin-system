@@ -1,0 +1,59 @@
+# L1 独立部署（平台 Nexus + PostgreSQL）
+# 运行: .\启动.ps1
+# 端口冲突: $env:L1_PORT=3001; .\启动.ps1
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: jachin-l1-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - l1_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-l1
+
+  l1-db-init:
+    image: jachin/l1-db-init:latest
+    container_name: jachin-l1-db-init
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - jachin-l1
+    restart: "no"
+
+  l1-nexus:
+    image: jachin/l1-nexus:latest
+    container_name: jachin-l1-nexus
+    ports:
+      - "${L1_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      SKIP_AUTH: "true"
+      NEXUS_ADMIN_SECRET: ${NEXUS_ADMIN_SECRET:-NeilCloud}
+      JACHIN_DEV_TOKEN: ${JACHIN_DEV_TOKEN:-Neil}
+      JACHIN_DEV_ID: ${JACHIN_DEV_ID:-Neil}
+    depends_on:
+      l1-db-init:
+        condition: service_completed_successfully
+    networks:
+      - jachin-l1
+
+volumes:
+  l1_postgres_data:
+
+networks:
+  jachin-l1:
+    driver: bridge

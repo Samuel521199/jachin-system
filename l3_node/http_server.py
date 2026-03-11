@@ -376,7 +376,7 @@ async def _handle_scheduler_add_job(request) -> "aiohttp.web.Response":
         "max_count": int(body.get("max_count", 50)),
         "filter_tab": (body.get("filter_tab") or "全部").strip(),
         "request_resume": body.get("request_resume", True),
-        "analyze_threshold": int(body.get("analyze_threshold", 2)),
+        "analyze_threshold": int(body.get("analyze_threshold", 1)),
         "analyze_interval_hours": float(body.get("analyze_interval_hours", 0.05)),
         "output_dir": (body.get("output_dir") or "").strip(),
         "focus_keywords": (body.get("focus_keywords") or "").strip(),

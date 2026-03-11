@@ -35,20 +35,29 @@ L2_PROCESS_ID = str(uuid.uuid4())[:8]
 
 
 def _load_nexus_config() -> dict[str, Any]:
-    """读取 nexus_config.json"""
-    if not _CONFIG_PATH.exists():
-        return {}
-    try:
-        raw = _CONFIG_PATH.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    """读取 nexus_config.json，兼容 env 覆盖（Docker 部署用 NEXUS_*）"""
+    cfg: dict[str, Any] = {}
+    if _CONFIG_PATH.exists():
         try:
-            raw = _CONFIG_PATH.read_text(encoding="utf-16")
-        except Exception:
-            return {}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
+            raw = _CONFIG_PATH.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                raw = _CONFIG_PATH.read_text(encoding="utf-16")
+            except Exception:
+                raw = ""
+        try:
+            cfg = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            pass
+    if os.environ.get("NEXUS_INSTANCE_ID"):
+        cfg["instance_id"] = os.environ["NEXUS_INSTANCE_ID"]
+    if os.environ.get("NEXUS_ACCESS_TOKEN"):
+        cfg["access_token"] = os.environ["NEXUS_ACCESS_TOKEN"]
+    if os.environ.get("NEXUS_BASE_URL"):
+        cfg["nexus_base_url"] = os.environ["NEXUS_BASE_URL"].rstrip("/")
+    if os.environ.get("NEXUS_L1_USER_ID"):
+        cfg["l1_user_id"] = os.environ["NEXUS_L1_USER_ID"]
+    return cfg
 
 
 # =============================================================================
@@ -541,7 +550,7 @@ async def l1_heartbeat_sync() -> dict[str, Any] | None:
     }
     payload = {
         "instance_id": instance_id,
-        "core_version": "0.8.5",
+        "core_version": "0.8.9.1",
     }
 
     try:
