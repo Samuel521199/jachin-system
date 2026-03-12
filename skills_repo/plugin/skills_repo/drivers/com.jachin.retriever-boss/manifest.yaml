@@ -1,0 +1,67 @@
+# The Retriever (猎犬引擎) - Boss直聘简历获取
+# 系统级驱动：需突破 Wasm 沙箱，调用宿主机 Playwright 执行浏览器自动化
+# 放置于 skills_repo/drivers/
+
+id: com.jachin.retriever-boss
+version: 1.0.0
+name: The Retriever - Boss直聘简历获取
+description: 在 Boss 直聘上根据岗位说明搜索并获取匹配简历。需扫码登录，Cookie 本地存储，零密码上云
+author: HR Plugin Team
+
+# 驱动级权限声明（突破 Wasm 沙箱）
+execution_model: heavy_process
+permissions:
+  - id: network
+    label: 网络
+    scope: network
+  - id: browser
+    label: 浏览器
+    scope: sandbox.execute  # 需执行 Playwright/Selenium
+
+capabilities:
+  - name: fetch_resumes_by_job
+    description: 根据岗位描述在 Boss 直聘搜索并获取匹配的简历列表
+    compute: cpu_heavy
+    input_schema:
+      type: object
+      properties:
+        job_title:
+          type: string
+          description: 岗位名称
+        job_desc:
+          type: string
+          description: 岗位描述/要求
+        max_count:
+          type: integer
+          default: 10
+      required:
+        - job_title
+    output_schema:
+      type: object
+      properties:
+        resumes:
+          type: array
+        count:
+          type: integer
+  - name: check_cookie_status
+    description: 检查本地 Cookie 是否有效，无效则需用户扫码登录
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties: {}
+    output_schema:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        message:
+          type: string
+
+requirements:
+  - playwright
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources:
+    memory_mb: 512

@@ -1,0 +1,96 @@
+"""
+Unified logging - 统一日志配置
+
+支持控制台与文件输出，可配置日志级别（INFO/DEBUG）。
+应用启动时应调用 setup_logging() 初始化。
+Windows 下控制台输出强制 UTF-8，避免 dashscope 等库的 DEBUG 中文乱码。
+
+日志等级划分（生产环境鲁棒性）：
+- INFO: 正常心跳、同步成功、热重载完成
+- WARN: 校验失败（如 SHA-256 不匹配）、限流触发、L1 返回异常
+- ERROR: 崩溃报警、下载/解压失败、数据库异常
+"""
+
+import logging
+import sys
+from pathlib import Path
+from typing import Optional
+
+from core.config import settings
+
+
+def _utf8_console_stream():
+    """Windows 下返回强制 UTF-8 的控制台流，供 logging 使用，避免中文乱码。"""
+    if sys.platform != "win32":
+        return sys.stdout
+    try:
+        import codecs
+        return codecs.getwriter("utf-8")(sys.stdout.buffer, "strict")
+    except Exception:
+        return sys.stdout
+
+
+def setup_logging(
+    level: Optional[str] = None,
+    log_file: Optional[Path] = None,
+    log_dir: str = "./logs",
+) -> None:
+    """
+    配置统一日志：控制台 + 文件，支持 INFO/DEBUG。
+
+    Args:
+        level: 日志级别，如 "INFO", "DEBUG"。默认从 settings.DEBUG 推导。
+        log_file: 日志文件路径。若为 None 则使用 log_dir/jachin.log。
+        log_dir: 日志目录，当 log_file 为 None 时使用。
+    """
+    log_level = level or ("DEBUG" if settings.DEBUG else (settings.LOG_LEVEL or "INFO"))
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(numeric_level)
+
+    # 清除已有 handlers，避免重复
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+
+    fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    formatter = logging.Formatter(fmt)
+
+    # 控制台（Windows 下使用 UTF-8 流，避免第三方库如 dashscope 的 DEBUG 中文乱码）
+    console_handler = logging.StreamHandler(_utf8_console_stream())
+    console_handler.setLevel(numeric_level)
+    console_handler.setFormatter(formatter)
+    root.addHandler(console_handler)
+
+    # 文件
+    if log_file is None:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        log_file = Path(log_dir) / "jachin.log"
+    log_file = Path(log_file)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(numeric_level)
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+
+    # 降低第三方库日志，减少控制台噪音
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("filelock").setLevel(logging.WARNING)
+    logging.getLogger("ray._private").setLevel(logging.WARNING)
+    logging.getLogger("ray._private.worker").setLevel(logging.WARNING)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    获取模块 logger。
+
+    Args:
+        name: 通常使用 __name__。
+
+    Returns:
+        配置好的 Logger 实例。
+    """
+    return logging.getLogger(name)

@@ -1,0 +1,7 @@
+{
+  "plugin_id": "com.jachin.wasm-minimal",
+  "execution_model": "wasm",
+  "version": "1.0.0",
+  "name": "Minimal WASM",
+  "resource_footprint": { "ram_estimate_mb": 64 }
+}

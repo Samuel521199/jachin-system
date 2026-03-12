@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package jachin.swarm;
+
+// Swarm Discovery Protocol - 节点自发现与集群拓扑
+// v4.0 蜂群智能：多设备算力网络
+
+// 节点能力标签（硬件资源）
+message NodeCapabilities {
+    bool has_gpu = 1;
+    int32 gpu_count = 2;
+    bool has_npu = 3;
+    bool has_camera = 4;
+    bool has_mic = 5;
+    repeated string tags = 6;  // 如 "iot", "edge", "head"
+}
+
+// 节点注册请求（Worker 向 Primary 注册）
+message NodeRegisterRequest {
+    string node_id = 1;
+    string host = 2;
+    int32 ray_port = 3;
+    string node_type = 4;  // "primary" | "worker" | "edge"
+    NodeCapabilities capabilities = 5;
+    string trust_zone = 6;  // "home" | "office"
+}
+
+message NodeRegisterResponse {
+    bool success = 1;
+    string message = 2;
+    string cluster_id = 3;
+}
+
+// 节点心跳
+message NodeHeartbeat {
+    string node_id = 1;
+    int64 timestamp = 2;
+    float cpu_percent = 3;
+    float memory_percent = 4;
+    float gpu_utilization = 5;
+}
+
+message NodeHeartbeatResponse {
+    bool success = 1;
+    int64 server_timestamp = 2;
+}
+
+// 任务分配请求（Scheduler 向 Worker 下发）
+message TaskAllocateRequest {
+    string task_id = 1;
+    string skill_id = 2;
+    string capability = 3;
+    string compute_tag = 4;  // "cpu_light" | "gpu_heavy"
+    bytes params = 5;
+}
+
+message TaskAllocateResponse {
+    bool accepted = 1;
+    string message = 2;
+}
+
+service SwarmDiscovery {
+    rpc RegisterNode(NodeRegisterRequest) returns (NodeRegisterResponse);
+    rpc Heartbeat(NodeHeartbeat) returns (NodeHeartbeatResponse);
+    rpc AllocateTask(TaskAllocateRequest) returns (TaskAllocateResponse);
+}

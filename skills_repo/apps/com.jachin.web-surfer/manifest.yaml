@@ -1,0 +1,43 @@
+id: com.jachin.web-surfer
+version: 1.0.0
+name: 联网冲浪
+description: 网页搜索与内容抓取，使用 duckduckgo-search 和 requests
+author: Jachin Team
+
+capabilities:
+  - name: web_search
+    description: 搜索互联网
+    compute: cpu_medium
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          description: 搜索关键词
+      required:
+        - query
+  - name: read_url
+    description: 读取网页内容
+    compute: cpu_medium
+    input_schema:
+      type: object
+      properties:
+        url:
+          type: string
+          description: 网页 URL
+      required:
+        - url
+
+permissions:
+  - id: network
+    label: 网络
+    scope: network
+
+requirements:
+  - duckduckgo-search
+  - requests
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

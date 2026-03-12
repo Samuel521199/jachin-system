@@ -1,0 +1,260 @@
+/**
+ * useSensoryWebSocket - Layer 3 全息感官总线连接
+ * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
+ * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
+ */
+
+import { useState, useEffect, useCallback, useRef } from "react";
+
+const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18981";
+const SENSORY_WS_URL = `ws://localhost:${SENSORY_WS_PORT}/sensory`;
+const RECONNECT_DELAY_MS = 3000;
+
+/** Lark 镜像模式：从 VITE_LARK_CHAT_ID 或参数传入，终端作为主屏、Lark 为副屏同步显示 */
+const DEFAULT_LARK_CHAT_ID = import.meta.env.VITE_LARK_CHAT_ID || "";
+
+/** v8.0 能力协商：声明 stream_chunk 以接收逐 token 推送 */
+const MANIFEST_CAPS = ["ui_render", "hitl_popup", "stream_chunk"];
+
+export interface UseSensoryOptions {
+  /** Lark chat_id：启用镜像模式，Lark 消息同步到终端，终端回复同步到 Lark */
+  larkChatId?: string;
+}
+
+export interface SensoryPayload {
+  step_type: string;
+  content: string;
+  source?: string;
+  task_id?: string;
+  run_id?: string;
+  tool?: string;
+  payload?: Record<string, unknown>;
+}
+
+/** Handoff 人格切换事件 */
+export interface HandoffEvent {
+  persona: string;
+  displayName: string;
+}
+
+/** Swarm 任务分发/完成事件 */
+export interface SwarmEvent {
+  taskId: string;
+  type: "offer" | "assigned" | "completed";
+  tool?: string;
+}
+
+export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
+  const larkChatId = (options.larkChatId ?? DEFAULT_LARK_CHAT_ID).trim();
+  const [connected, setConnected] = useState(false);
+  const [lastPayload, setLastPayload] = useState<SensoryPayload | null>(null);
+  const [hitlPending, setHitlPending] = useState<SensoryPayload | null>(null);
+  /** v8.0 流式神经：当前 run 的累积内容，收到 answer 时清空 */
+  const [streamingContent, setStreamingContent] = useState("");
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  /** Handoff 人格切换：供 UI 触发主题色突变 */
+  const [handoffEvent, setHandoffEvent] = useState<HandoffEvent | null>(null);
+  /** Swarm 算力雷达：task_offer 时显示扫描，task_completed 时爆发 */
+  const [swarmEvent, setSwarmEvent] = useState<SwarmEvent | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onChunkRef = useRef<((chunk: string, runId: string) => void) | null>(null);
+  const onAnswerRef = useRef<((content: string) => void) | null>(null);
+  const onStepRef = useRef<((stepType: string, content: string) => void) | null>(null);
+  const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
+
+  /** 注册 Lark 镜像输入回调：Lark 用户发消息时，终端同步显示 */
+  const registerMirrorInputHandler = useCallback((fn: ((content: string) => void) | null) => {
+    onMirrorInputRef.current = fn;
+  }, []);
+
+  /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
+  const registerChunkHandler = useCallback((fn: ((chunk: string, runId: string) => void) | null) => {
+    onChunkRef.current = fn;
+  }, []);
+
+  /** 注册 answer 回调：收到最终回复时调用（含完整内容，用于无 chunk 时的兜底） */
+  const registerAnswerHandler = useCallback((fn: ((content: string) => void) | null) => {
+    onAnswerRef.current = fn;
+  }, []);
+
+  /** 注册 step 回调：thought/action/observation 等思考过程，供 Chat 完整展示 */
+  const registerStepHandler = useCallback((fn: ((stepType: string, content: string) => void) | null) => {
+    onStepRef.current = fn;
+  }, []);
+
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    try {
+      const ws = new WebSocket(SENSORY_WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        // v8.0 能力协商：声明 stream_chunk 以接收逐 token 推送
+        ws.send(JSON.stringify({ type: "manifest", caps: MANIFEST_CAPS }));
+        // Lark 镜像：订阅后，Lark 消息会以 mirror_input 推送到此终端
+        if (larkChatId) {
+          ws.send(JSON.stringify({ type: "subscribe_mirror", lark_chat_id: larkChatId }));
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as SensoryPayload;
+          setLastPayload(data);
+
+          // Lark 镜像：Lark 用户发消息时同步到终端显示
+          if (data.step_type === "mirror_input" && data.content != null) {
+            onMirrorInputRef.current?.(data.content);
+          }
+
+          if (data.step_type === "HITL_REQUIRED") {
+            setHitlPending(data);
+          }
+
+          // v8.0 流式神经：chunk 追加到当前消息，不创建新气泡
+          if (data.step_type === "chunk" && data.content != null) {
+            const runId = data.run_id ?? "";
+            setStreamingContent((prev) => prev + data.content);
+            setCurrentRunId(runId);
+            onChunkRef.current?.(data.content, runId);
+          }
+
+          // thought/action/observation：完整展示思考过程，禁止总结
+          if (["thought", "action", "observation"].includes(data.step_type) && data.content != null) {
+            const labels: Record<string, string> = { thought: "思考", action: "动作", observation: "观察" };
+            const label = labels[data.step_type] ?? data.step_type;
+            onStepRef.current?.(data.step_type, `### ${label}\n\n${data.content}\n\n`);
+          }
+
+          // answer/rejected/error 结束时：先追加到思考过程，再通知回调
+          if (["answer", "rejected", "error"].includes(data.step_type)) {
+            const content = data.content ?? "";
+            onStepRef.current?.("answer", `### 回复\n\n${content}\n\n`);
+            onAnswerRef.current?.(content);
+            setStreamingContent("");
+            setCurrentRunId(null);
+          }
+
+          // v8.0 Handoff：解析 [System] 灵魂传输完成... 触发人格色彩突变（持久至下次切换）
+          if (data.step_type === "observation" && data.content?.includes("[System] 灵魂传输完成")) {
+            const m = data.content.match(/你现在是\s*([^。]+)/);
+            const displayName = m?.[1]?.trim() ?? "全能助理";
+            const persona =
+              displayName.includes("架构师") ? "architect" :
+              displayName.includes("分析师") ? "researcher" : "default";
+            setHandoffEvent({ persona, displayName });
+          }
+
+          // v8.0 Swarm：task_offer 显示雷达扫描
+          if (data.step_type === "task_offer" && data.task_id) {
+            setSwarmEvent({ taskId: data.task_id, type: "offer", tool: data.tool });
+          }
+          if (data.step_type === "task_assigned" && data.task_id) {
+            setSwarmEvent({ taskId: data.task_id, type: "assigned", tool: data.tool });
+          }
+          if (data.step_type === "task_completed" && data.task_id) {
+            setSwarmEvent({ taskId: data.task_id, type: "completed" });
+            setTimeout(() => setSwarmEvent(null), 3000);
+          }
+        } catch {
+          // 忽略非 JSON 消息
+        }
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        wsRef.current = null;
+        reconnectTimerRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    } catch {
+      setConnected(false);
+      reconnectTimerRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+    }
+  }, []);
+
+  const disconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    wsRef.current?.close();
+    wsRef.current = null;
+    setConnected(false);
+    setLastPayload(null);
+    setHitlPending(null);
+  }, []);
+
+  const sendHitlResponse = useCallback((approved: boolean, taskId?: string) => {
+    const tid = taskId ?? hitlPending?.task_id;
+    if (!tid || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    const action = approved ? "HITL_APPROVE" : "HITL_REJECT";
+    wsRef.current.send(JSON.stringify({ action, task_id: tid }));
+    setHitlPending(null);
+  }, [hitlPending?.task_id]);
+
+  const resolveHitl = useCallback((approved: boolean) => {
+    const tid = hitlPending?.task_id;
+    sendHitlResponse(approved, tid);
+  }, [sendHitlResponse, hitlPending?.task_id]);
+
+  /** 发送聊天输入到 Layer 3（通过 Sensory WebSocket，注入全息感官总线） */
+  const sendInput = useCallback((text: string) => {
+    if (!text.trim()) {
+      console.debug("[Sensory] sendInput 跳过: 空文本");
+      return false;
+    }
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      console.debug("[Sensory] sendInput 失败: ws 未连接 readyState=%s", wsRef.current?.readyState ?? "null");
+      return false;
+    }
+    const payload: Record<string, string> = { intent: text.trim() };
+    if (larkChatId) {
+      payload.chat_id = larkChatId;
+      payload.origin = "terminal";
+    }
+    wsRef.current.send(JSON.stringify(payload));
+    console.debug("[Sensory] sendInput 已发送 len=%d mirror=%s", text.trim().length, !!larkChatId);
+    return true;
+  }, [larkChatId]);
+
+  useEffect(() => {
+    connect();
+    return () => disconnect();
+  }, [connect, disconnect]);
+
+  // Lark 镜像：连接后若 larkChatId 有值则订阅；larkChatId 变化时若已连接则更新订阅
+  useEffect(() => {
+    if (!larkChatId || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "subscribe_mirror", lark_chat_id: larkChatId }));
+  }, [larkChatId, connected]);
+
+  return {
+    connected,
+    lastPayload,
+    hitlPending,
+    resolveHitl,
+    sendHitlResponse,
+    reconnect: connect,
+    /** 发送聊天输入到 Layer 3 */
+    sendInput,
+    /** Lark 镜像：注册回调，Lark 用户发消息时终端同步显示 */
+    registerMirrorInputHandler,
+    /** 是否处于 Lark 镜像模式 */
+    larkMirrorMode: !!larkChatId,
+    // v8.0 视觉觉醒
+    streamingContent,
+    currentRunId,
+    handoffEvent,
+    swarmEvent,
+    registerChunkHandler,
+    registerAnswerHandler,
+    registerStepHandler,
+  };
+}

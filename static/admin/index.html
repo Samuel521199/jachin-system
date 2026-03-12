@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JACHIN L2 | 本地战略武库</title>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            bunker: { 950: '#0a0c0d', 900: '#0d1117', 800: '#161b22', 700: '#21262d', 600: '#30363d' },
+            neon: { green: '#39ff14', cyan: '#00fff5', amber: '#ffbf00' }
+          },
+          fontFamily: { mono: ['JetBrains Mono', 'Fira Code', 'monospace'] }
+        }
+      }
+    }
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'JetBrains Mono', monospace; }
+    .scanline { background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px); }
+    .glow { text-shadow: 0 0 8px rgba(57, 255, 20, 0.4); }
+    .card-glow:hover { box-shadow: 0 0 20px rgba(0, 255, 245, 0.15); }
+  </style>
+</head>
+<body class="bg-bunker-950 text-slate-300 min-h-screen overflow-x-hidden">
+  <div id="app" class="min-h-screen flex flex-col">
+    <!-- 登录页 -->
+    <div v-if="!token" class="flex-1 flex items-center justify-center p-8">
+      <div class="w-full max-w-sm border border-bunker-600 rounded-lg p-8 bg-bunker-900/80 backdrop-blur scanline">
+        <div class="text-center mb-6">
+          <h1 class="text-xl font-semibold text-neon-green glow">JACHIN L2</h1>
+          <p class="text-xs text-slate-500 mt-1">本地战略武库 · 控制台</p>
+        </div>
+        <form @submit.prevent="login" class="space-y-4">
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">用户名</label>
+            <input v-model="loginForm.username" type="text" required
+              class="w-full px-3 py-2 bg-bunker-800 border border-bunker-600 rounded text-sm focus:border-neon-green focus:outline-none"
+              placeholder="admin">
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">密码</label>
+            <input v-model="loginForm.password" type="password" required
+              class="w-full px-3 py-2 bg-bunker-800 border border-bunker-600 rounded text-sm focus:border-neon-green focus:outline-none"
+              placeholder="••••••••">
+          </div>
+          <p v-if="loginError" class="text-red-400 text-xs">{{ loginError }}</p>
+          <button type="submit" class="w-full py-2 bg-neon-green/20 border border-neon-green/50 rounded text-neon-green hover:bg-neon-green/30 transition">
+            登录
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 主控制台：纯展示型武库大盘 -->
+    <template v-else>
+      <header class="border-b border-bunker-700 bg-bunker-900/90 backdrop-blur sticky top-0 z-10">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="text-neon-green font-semibold glow">JACHIN L2</span>
+            <span class="text-slate-500 text-xs">|</span>
+            <span class="text-slate-400 text-sm">本地战略武库</span>
+          </div>
+          <div class="flex items-center gap-4">
+            <button @click="syncNow" :disabled="syncing" class="text-xs px-2 py-1 rounded bg-neon-cyan/20 border border-neon-cyan/50 text-neon-cyan hover:bg-neon-cyan/30 disabled:opacity-50 transition">
+              {{ syncing ? '同步中...' : '立即同步' }}
+            </button>
+            <a href="/gateway/" class="text-xs text-neon-cyan hover:text-neon-cyan/80 transition">审批 L3</a>
+            <span class="text-xs text-slate-500">{{ admin?.username || '-' }}</span>
+            <button @click="logout" class="text-xs text-slate-500 hover:text-red-400 transition">登出</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="flex-1 overflow-y-auto p-6">
+        <div class="max-w-7xl mx-auto space-y-8">
+          <!-- 区域一：轻量级技能 (Skills - Wasm) -->
+          <section>
+            <h2 class="text-sm font-medium text-neon-cyan mb-4 flex items-center gap-2">
+              <span class="inline-block w-2 h-2 rounded-full bg-neon-cyan animate-pulse"></span>
+              轻量级技能 (Skills - Wasm)
+            </h2>
+            <div v-if="loadingInventory" class="text-slate-500 text-sm">扫描中...</div>
+            <div v-else-if="inventory.skills?.length === 0" class="text-slate-500 text-sm py-8 border border-dashed border-bunker-600 rounded-lg text-center">
+              暂无技能，请先同步或侧载
+            </div>
+            <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              <div v-for="s in inventory.skills" :key="s.item_id"
+                class="border border-bunker-600 rounded-lg p-4 bg-bunker-900/60 backdrop-blur card-glow transition-all hover:border-neon-cyan/40">
+                <div class="flex items-start gap-3">
+                  <div class="w-10 h-10 rounded-lg bg-neon-cyan/20 border border-neon-cyan/40 flex items-center justify-center text-neon-cyan font-bold text-lg shrink-0">
+                    {{ (s.name || s.item_id || '?')[0].toUpperCase() }}
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium text-white truncate">{{ s.name || s.item_id }}</div>
+                    <div class="text-xs text-slate-500 font-mono truncate mt-0.5">{{ s.item_id }}</div>
+                    <div class="flex items-center gap-2 mt-2 flex-wrap">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-bunker-700 text-slate-400">v{{ s.version || '1.0.0' }}</span>
+                      <span :class="['text-[10px] px-1.5 py-0.5 rounded', s.is_private ? 'bg-violet-500/20 text-violet-400 border border-violet-400/30' : 'bg-sky-500/20 text-sky-400 border border-sky-400/30']">
+                        {{ s.is_private ? 'PRIVATE' : 'PUBLIC' }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 区域二：高敏连接器 (MCP - 代理服务) -->
+          <section>
+            <h2 class="text-sm font-medium text-neon-cyan mb-4 flex items-center gap-2">
+              <span class="inline-block w-2 h-2 rounded-full bg-neon-cyan animate-pulse"></span>
+              高敏连接器 (MCP - 代理服务)
+            </h2>
+            <div v-if="inventory.mcps?.length === 0 && !loadingInventory" class="text-slate-500 text-sm py-8 border border-dashed border-bunker-600 rounded-lg text-center">
+              暂无 MCP 连接器
+            </div>
+            <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              <div v-for="m in inventory.mcps" :key="m.item_id"
+                class="border border-bunker-600 rounded-lg p-4 bg-bunker-900/60 backdrop-blur card-glow transition-all hover:border-neon-cyan/40">
+                <div class="flex items-start gap-3">
+                  <div class="w-10 h-10 rounded-lg bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 font-bold text-lg shrink-0">
+                    {{ (m.name || m.item_id || 'M')[0].toUpperCase() }}
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium text-white truncate">{{ m.name || m.item_id }}</div>
+                    <div class="text-xs text-slate-500 font-mono truncate mt-0.5">{{ m.item_id }}</div>
+                    <div class="flex items-center gap-2 mt-2 flex-wrap">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-bunker-700 text-slate-400">v{{ m.version || '1.0.0' }}</span>
+                      <span :class="['text-[10px] px-1.5 py-0.5 rounded', m.is_private ? 'bg-violet-500/20 text-violet-400 border border-violet-400/30' : 'bg-sky-500/20 text-sky-400 border border-sky-400/30']">
+                        {{ m.is_private ? 'PRIVATE' : 'PUBLIC' }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <footer class="border-t border-bunker-700 py-2 px-4 text-xs text-slate-500">
+        L2 数据主权 · 本地武库唯一真相来源 · Jachin Nexus
+      </footer>
+    </template>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+    createApp({
+      data() {
+        return {
+          token: localStorage.getItem('l2_admin_token') || '',
+          admin: null,
+          loginForm: { username: '', password: '' },
+          loginError: '',
+          inventory: { skills: [], mcps: [] },
+          loadingInventory: false,
+          syncing: false
+        };
+      },
+      watch: {
+        token(v) {
+          if (v) localStorage.setItem('l2_admin_token', v);
+          else localStorage.removeItem('l2_admin_token');
+        }
+      },
+      mounted() {
+        if (this.token) this.init();
+      },
+      methods: {
+        async init() {
+          try {
+            const r = await fetch('/api/v2/admin/me', { headers: { Authorization: `Bearer ${this.token}` } });
+            if (!r.ok) throw new Error('Token 无效');
+            const j = await r.json();
+            this.admin = j.admin;
+            await this.fetchInventory();
+          } catch (e) {
+            this.token = '';
+          }
+        },
+        async login() {
+          this.loginError = '';
+          try {
+            const r = await fetch('/api/v2/admin/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.loginForm)
+            });
+            const j = await r.json();
+            if (j.token) {
+              this.token = j.token;
+              this.admin = j.admin;
+              await this.init();
+            } else {
+              this.loginError = j.detail || j.message || '登录失败';
+            }
+          } catch (e) {
+            this.loginError = '网络错误';
+          }
+        },
+        logout() {
+          this.token = '';
+          this.admin = null;
+          this.inventory = { skills: [], mcps: [] };
+        },
+        async fetchInventory() {
+          this.loadingInventory = true;
+          try {
+            const r = await fetch('/api/v2/admin/inventory', { headers: { Authorization: `Bearer ${this.token}` } });
+            const j = await r.json();
+            this.inventory = { skills: j.skills || [], mcps: j.mcps || [] };
+          } catch (e) {
+            this.inventory = { skills: [], mcps: [] };
+          }
+          this.loadingInventory = false;
+        },
+        async syncNow() {
+          this.syncing = true;
+          try {
+            const r = await fetch('/api/v2/admin/sync-now', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${this.token}` }
+            });
+            const j = await r.json();
+            if (j.ok) {
+              await this.fetchInventory();
+            }
+          } catch (e) {}
+          this.syncing = false;
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

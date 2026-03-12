@@ -1,0 +1,74 @@
+# The Tribunal (仲裁庭) - 多智能体辩论筛选
+# 基于图3设计：Agent A/B 各自表态 → 若分歧则辩论 → Agent C 裁决
+
+id: com.jachin.tribunal
+version: 1.0.0
+name: The Tribunal - 多智能体辩论筛选
+description: 三权分立式简历筛选，Tech Assessor + Culture Fit 辩论，Judge 最终裁决
+author: HR Plugin Team
+
+capabilities:
+  - name: screen_resume_debate
+    description: 对单份简历进行多 Agent 辩论筛选，输出 Pass/Reject 及结构化简报
+    compute: cpu_heavy
+    input_schema:
+      type: object
+      properties:
+        resume_text:
+          type: string
+        resume_struct:
+          type: object
+        job_desc:
+          type: string
+        department:
+          type: string
+        rag_context:
+          type: string
+          description: 来自 resume-memory 的历史成功画像 RAG 检索结果
+      required:
+        - resume_text
+    output_schema:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [Pass, Reject]
+        brief:
+          type: string
+        agent_a_opinion:
+          type: string
+        agent_b_opinion:
+          type: string
+        debate_rounds:
+          type: integer
+  - name: batch_screen_resumes
+    description: 批量对多份简历进行辩论筛选
+    compute: cpu_heavy
+    input_schema:
+      type: object
+      properties:
+        resumes:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              struct:
+                type: object
+        job_desc:
+          type: string
+        department:
+          type: string
+      required:
+        - resumes
+
+permissions: []
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources:
+    memory_mb: 512

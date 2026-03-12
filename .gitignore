@@ -1,0 +1,131 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+env/
+ENV/
+.venv
+
+# Conda
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# Environment variables
+.env
+.env.txt
+.env.local
+.env.*.local
+
+# Nexus pairing (memory mode fallback)
+.nexus-pairing.json
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+docker-compose.override.yml
+
+# Secrets
+secrets/
+*.pem
+*.key
+*.crt
+dapr/secrets/secrets.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+temp_invoke_body.json
+
+# Node (for frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Rust (for Tauri)
+target/
+Cargo.lock
+
+# Build outputs
+dist/
+build/
+*.exe
+*.dmg
+*.app
+
+# ChromaDB data
+chroma_data/
+
+# MQTT data
+mqtt_data/
+mqtt_logs/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Archived documentation (do not track in git)
+docs/archive/
+
+# Qdrant vector storage (runtime data)
+qdrant_storage/
+
+# Coverage
+.coverage
+
+# TTS models (download via scripts/download_tts_models.py, exceed GitHub 100MB limit)
+data/tts/*.onnx
+data/tts/voices.json
+data/tts/*.bin
+
+# HR analysis reports and resumes (user-specific runtime data)
+data/hr_analysis/*.md
+data/hr_resumes/*.pdf
+
+# Build artifacts
+skills_repo/*.zip

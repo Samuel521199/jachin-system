@@ -1,0 +1,13 @@
+{
+  "jmp_version": "2.0",
+  "plugin_id": "com.jachin.heavy-demo",
+  "version": "1.0.0",
+  "name": "Heavy Process Demo",
+  "execution_model": "heavy_process",
+  "entrypoint": "server.py",
+  "permissions": ["sandbox.execute"],
+  "resource_footprint": {
+    "ram_estimate_mb": 128,
+    "gpu_required": false
+  }
+}

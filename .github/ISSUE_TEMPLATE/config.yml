@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 文档与白皮书
+    url: https://github.com/Samuel521199/jachin-system/blob/main/docs/README.md
+    about: 查看完整架构与协议文档

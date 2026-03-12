@@ -1,0 +1,98 @@
+# Jachin Skill Package Manifest v3.2
+# 插件清单文件示例
+
+# 插件唯一标识（反向域名格式）
+id: "com.developer.deep-research"
+
+# 版本号（遵循语义化版本）
+version: "2.1.0"
+
+# 插件显示名称
+name: "深度研报助手"
+
+# 插件描述
+description: "基于 AI 的深度研究报告生成工具，支持多数据源分析和可视化"
+
+# 开发者信息
+author: "Developer Name"
+author_email: "developer@example.com"
+
+# 价格信息
+price:
+  amount: 9.99          # 价格金额
+  currency: "USD"       # 货币单位
+  type: "subscription_monthly"  # 价格类型：
+                                # - "free": 免费
+                                # - "one_time": 一次性付费
+                                # - "subscription_monthly": 月度订阅
+                                # - "subscription_yearly": 年度订阅
+
+# 开发者签名（Base64 编码）
+# 由 Tier 1 Market 审核后添加，用于防篡改验证
+developer_signature: "base64_signature_here..."
+
+# 权限申请
+permissions:
+  - scope: "internet.access"      # 访问互联网
+  - scope: "file.write"            # 写入文件
+  - scope: "file.read"              # 读取文件
+  - scope: "database.query"        # 查询数据库
+  - scope: "llm.call"              # 调用 LLM API
+
+# Python 依赖（requirements.txt 格式）
+requirements:
+  - "pandas>=2.0"
+  - "numpy>=1.24.0"
+  - "matplotlib>=3.7.0"
+  - "requests>=2.31.0"
+
+# 运行时配置
+runtime:
+  type: "ray"           # 运行时类型：ray (Ray RuntimeEnv)
+  python_version: "3.10" # Python 版本要求
+  resources:
+    cpu: 2               # CPU 核心数
+    memory: "4Gi"        # 内存需求
+    gpu: false           # 是否需要 GPU
+
+# 能力定义（插件提供的功能）
+capabilities:
+  - name: "generate_report"
+    type: "action"
+    description: "生成深度研究报告"
+    input_schema:
+      type: "object"
+      properties:
+        topic:
+          type: "string"
+          description: "研究主题"
+        depth:
+          type: "string"
+          enum: ["basic", "deep", "comprehensive"]
+          default: "deep"
+    output_schema:
+      type: "object"
+      properties:
+        report:
+          type: "string"
+        charts:
+          type: "array"
+          items:
+            type: "string"
+
+# 生命周期钩子
+lifecycle:
+  install: "scripts/install.sh"      # 安装时执行
+  uninstall: "scripts/uninstall.sh"  # 卸载时执行
+  activate: "scripts/activate.sh"    # 激活时执行
+  deactivate: "scripts/deactivate.sh" # 停用时执行
+
+# 元数据
+metadata:
+  category: "productivity"           # 分类
+  tags:
+    - "research"
+    - "ai"
+    - "analysis"
+  homepage: "https://example.com/plugin"
+  repository: "https://github.com/developer/plugin"

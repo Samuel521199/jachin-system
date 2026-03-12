@@ -1,0 +1,50 @@
+id: com.jachin.calendar
+version: 1.0.0
+name: 日历管家
+description: 本地日历与提醒管理（add_event, check_schedule）
+author: Jachin Team
+
+capabilities:
+  - name: add_event
+    description: 添加事件/提醒
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        title:
+          type: string
+        start_at:
+          type: string
+          description: ISO 时间
+        item_type:
+          type: string
+          enum: [event, reminder, todo]
+          default: reminder
+      required:
+        - title
+        - start_at
+  - name: check_schedule
+    description: 查看日程
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties:
+        days:
+          type: integer
+          default: 7
+      required: []
+
+permissions:
+  - id: file
+    label: 文件
+    scope: file.read
+  - id: file
+    label: 文件
+    scope: file.write
+
+requirements: []
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}

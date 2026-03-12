@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jachin-cli"
+version = "0.1.0"
+description = "Jachin Nexus 开发者生态命令行工具 - 插件脚手架、打包与上云"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Jachin" }]
+keywords = ["jachin", "cli", "plugin", "wasm", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "httpx>=0.25.0",
+]
+
+[project.scripts]
+jachin = "jachin_cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

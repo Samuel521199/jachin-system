@@ -1,0 +1,102 @@
+# Jachin Nexus V2 - L2 无状态集群 + 统一网关
+#
+# 3 个 L2 实例 + Nginx 轮询负载均衡，单一入口 18888。
+# L3 在线状态与任务队列已迁移至 Redis，任意 L2 节点均可处理任意请求。
+#
+# 启动: docker compose -f docker-compose.l2-cluster.yml up -d
+# 入口: http://localhost:18888
+#
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: jachin-l2-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - l2-cluster
+
+  l2-1:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.l2
+    container_name: jachin-l2-1
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - JACHIN_L2_DB_PATH=/data/l2_control.db
+      - JACHIN_LANCEDB_PATH=/data/lancedb_data
+      - APP_PORT=18880
+    volumes:
+      - l2_shared_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn core.main:app --host 0.0.0.0 --port 18880
+    networks:
+      - l2-cluster
+
+  l2-2:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.l2
+    container_name: jachin-l2-2
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - JACHIN_L2_DB_PATH=/data/l2_control.db
+      - JACHIN_LANCEDB_PATH=/data/lancedb_data
+      - APP_PORT=18881
+    volumes:
+      - l2_shared_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn core.main:app --host 0.0.0.0 --port 18881
+    networks:
+      - l2-cluster
+
+  l2-3:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.l2
+    container_name: jachin-l2-3
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - JACHIN_L2_DB_PATH=/data/l2_control.db
+      - JACHIN_LANCEDB_PATH=/data/lancedb_data
+      - APP_PORT=18882
+    volumes:
+      - l2_shared_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: uvicorn core.main:app --host 0.0.0.0 --port 18882
+    networks:
+      - l2-cluster
+
+  nginx:
+    image: nginx:alpine
+    container_name: jachin-l2-gateway
+    ports:
+      - "18888:18888"
+    volumes:
+      - ./deploy/nginx-l2-cluster.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - l2-1
+      - l2-2
+      - l2-3
+    networks:
+      - l2-cluster
+
+volumes:
+  l2_shared_data:
+
+networks:
+  l2-cluster:
+    driver: bridge

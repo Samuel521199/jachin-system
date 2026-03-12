@@ -1,0 +1,18 @@
+{
+  "id": "com.jachin.hr.analyzer",
+  "name": "HR 简历透视镜",
+  "version": "1.0.0",
+  "description": "根据岗位要求对候选人简历进行严苛评估，输出 Markdown 报告（含综合评分、优劣势、录用建议）。target_role 可为 backend_engineer 等预设 key，将自动加载 config/hr_jds/ 下对应 JD。需 L2 MCP local-hr-fs 与 LLM。",
+  "type": "skill",
+  "entry": "main.wasm",
+  "parameters": ["target_role", "resume_filename"],
+  "configs": {
+    "JD_template": "云边协同后端架构师：精通 Rust/Go，具备百万级设备接入、高可用分布式系统经验。熟悉 Kubernetes、消息队列、时序数据库。",
+    "strict_mode": true,
+    "resume_input_dir": "data/hr_resumes",
+    "output_dir": "data/hr_analysis"
+  },
+  "volumes": [
+    { "name": "hr_analysis_output", "access_mode": "rw" }
+  ]
+}

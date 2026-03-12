@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jachin Hive Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0D0D0D;
+      --alert: #FF0032;
+      --command: #00F0FF;
+      --border: rgba(255,255,255,0.1);
+      --glow: inset 0 0 0 1px rgba(255,255,255,0.05);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg);
+      color: #e2e8f0;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .layout {
+      display: flex;
+      height: 100vh;
+    }
+    .sidebar {
+      width: 72px;
+      flex-shrink: 0;
+      background: rgba(15,23,42,0.6);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 24px;
+      gap: 16px;
+    }
+    .sidebar .icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--command);
+      font-size: 18px;
+      cursor: pointer;
+      transition: box-shadow 0.2s, border-color 0.2s;
+    }
+    .sidebar .icon:hover, .sidebar .icon.active {
+      border-color: var(--command);
+      box-shadow: 0 0 12px rgba(0,240,255,0.25);
+    }
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .top {
+      flex-shrink: 0;
+      height: 120px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+    .top .card {
+      flex: 1;
+      max-width: 280px;
+      height: 100%;
+      background: rgba(15,23,42,0.5);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      box-shadow: var(--glow);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+    .top .card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; }
+    .top .card .value { font-size: 24px; font-weight: 500; color: var(--command); }
+    .top .card .value.alert { color: var(--alert); }
+    .middle {
+      flex: 1;
+      padding: 24px;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      align-content: start;
+    }
+    .card-panel {
+      background: rgba(15,23,42,0.5);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      box-shadow: var(--glow);
+      padding: 16px;
+      min-height: 180px;
+    }
+    .card-panel h3 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #64748b;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-panel .node-list, .card-panel .skill-list, .card-panel .stream-placeholder {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    .card-panel .node-item, .card-panel .skill-item {
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .card-panel .node-item:last-child, .card-panel .skill-item:last-child { border-bottom: none; }
+    .card-panel .status { color: var(--command); }
+    .card-panel .status.offline { color: #64748b; }
+    .bottom {
+      flex-shrink: 0;
+      height: 64px;
+      padding: 0 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .bottom .mode-btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(15,23,42,0.8);
+      color: #94a3b8;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
+    }
+    .bottom .mode-btn:hover { border-color: var(--command); color: var(--command); }
+    .bottom .mode-btn.active {
+      border-color: var(--command);
+      color: var(--command);
+      box-shadow: 0 0 12px rgba(0,240,255,0.2);
+    }
+    .bottom .mode-btn.alert.active { border-color: var(--alert); color: var(--alert); box-shadow: 0 0 12px rgba(255,0,50,0.2); }
+    .pulse { animation: pulse 1.5s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{ opacity:1 } 50%{ opacity:0.6 } }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="icon active" title="概览">▣</div>
+      <div class="icon" title="节点">◇</div>
+      <div class="icon" title="技能">◆</div>
+      <div class="icon" title="对话">◈</div>
+    </aside>
+    <main class="main">
+      <header class="top">
+        <div class="card">
+          <span class="label">Cluster CPU</span>
+          <span class="value pulse" id="cpu">--%</span>
+        </div>
+        <div class="card">
+          <span class="label">Inference Latency</span>
+          <span class="value" id="latency">-- ms</span>
+        </div>
+        <div class="card">
+          <span class="label">Nodes</span>
+          <span class="value" id="nodes">--</span>
+        </div>
+      </header>
+      <section class="middle">
+        <div class="card-panel">
+          <h3>节点管理 (Workers)</h3>
+          <div class="node-list" id="node-list">加载中…</div>
+        </div>
+        <div class="card-panel">
+          <h3>技能市场预览</h3>
+          <div class="skill-list" id="skill-list">加载中…</div>
+        </div>
+        <div class="card-panel">
+          <h3>实时对话流</h3>
+          <div class="stream-placeholder" id="stream-placeholder">最近会话将在此显示</div>
+        </div>
+      </section>
+      <footer class="bottom">
+        <button class="mode-btn" data-mode="eco">节能</button>
+        <button class="mode-btn active" data-mode="default">默认</button>
+        <button class="mode-btn" data-mode="performance">高性能</button>
+        <button class="mode-btn alert" data-mode="god">上帝模式</button>
+      </footer>
+    </main>
+  </div>
+  <script>
+    (function () {
+      const API = '/api/v3';
+      function fetchJson(path) {
+        return fetch(API + path).then(r => r.ok ? r.json() : null).catch(() => null);
+      }
+      function renderNodes(listEl, data) {
+        if (!data || !Array.isArray(data)) {
+          listEl.textContent = '暂无节点数据';
+          return;
+        }
+        listEl.innerHTML = data.slice(0, 8).map(function (n) {
+          const status = (n.status || '').toLowerCase();
+          const isAlive = status === 'alive' || status === 'running';
+          return '<div class="node-item"><span>' + (n.host || n.node_id || 'unknown') + '</span><span class="status ' + (isAlive ? '' : 'offline') + '">' + (n.status || '--') + '</span></div>';
+        }).join('');
+      }
+      function renderSkills(listEl, data) {
+        if (!data || !Array.isArray(data)) {
+          listEl.innerHTML = '<div class="skill-item">暂无技能数据</div>';
+          return;
+        }
+        listEl.innerHTML = data.slice(0, 5).map(function (s) {
+          return '<div class="skill-item"><span>' + (s.name || s.skill_id || s.id || 'Skill') + '</span><span>' + (s.version || '') + '</span></div>';
+        }).join('');
+      }
+      function tick() {
+        fetchJson('/cluster/nodes').then(function (nodes) {
+          if (nodes && document.getElementById('node-list')) {
+            renderNodes(document.getElementById('node-list'), nodes);
+            var el = document.getElementById('nodes');
+            if (el) el.textContent = (nodes.length || 0) + '';
+          }
+        });
+        fetchJson('/cluster/stats').then(function (stats) {
+          if (stats && stats.utilization) {
+            var cpuEl = document.getElementById('cpu');
+            if (cpuEl) {
+              var pct = (stats.utilization.cpu * 100) || 0;
+              cpuEl.textContent = Math.round(pct) + '%';
+              cpuEl.classList.toggle('alert', pct > 80);
+            }
+          }
+        });
+        fetchJson('/monitoring/stats').then(function (stats) {
+          var latencyEl = document.getElementById('latency');
+          if (latencyEl && stats && typeof stats.inference !== 'undefined' && stats.inference.avg_time != null) {
+            latencyEl.textContent = Math.round(stats.inference.avg_time * 1000) + ' ms';
+          }
+        });
+        fetchJson('/skills').then(function (res) {
+          var skills = res && (Array.isArray(res) ? res : res.skills || res.items || []);
+          if (document.getElementById('skill-list')) renderSkills(document.getElementById('skill-list'), skills);
+        }).catch(function () {
+          if (document.getElementById('skill-list')) document.getElementById('skill-list').innerHTML = '<div class="skill-item">API 未就绪</div>';
+        });
+      }
+      function setStrategy(mode) {
+        fetch(API + '/inference/strategy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: mode })
+        }).then(function (r) { return r.json(); }).then(function (data) {
+          if (data && data.ok) console.log('Strategy:', data.mode);
+        }).catch(function (e) { console.warn('Strategy update failed', e); });
+      }
+      fetchJson('/inference/strategy').then(function (data) {
+        if (data && data.mode) {
+          document.querySelectorAll('.mode-btn').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-mode') === data.mode);
+          });
+        }
+      });
+      tick();
+      setInterval(tick, 3000);
+      document.querySelectorAll('.mode-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var mode = this.getAttribute('data-mode');
+          document.querySelectorAll('.mode-btn').forEach(function (b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          setStrategy(mode);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

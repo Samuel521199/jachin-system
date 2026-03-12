@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/capabilities.json",
+  "identifier": "default",
+  "description": "Default capabilities for Jachin Desktop Sprite",
+  "windows": ["main", "sprite", "chat"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "shell:allow-spawn"
+  ]
+}

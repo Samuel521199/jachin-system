@@ -1,0 +1,8 @@
+{
+  "id": "com.blueteam.local-time-weather",
+  "version": "1.0.0",
+  "name": "Local Time & Weather",
+  "description": "蓝队业务闭环测试 - 获取当前时间与天气",
+  "entry": "main.py",
+  "permissions": ["internet.access"]
+}

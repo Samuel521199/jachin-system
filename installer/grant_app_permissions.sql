@@ -1,0 +1,11 @@
+-- Grant application user permissions on all app tables (run by grant_app_permissions.ps1)
+-- Placeholder APP_USER will be replaced by the script.
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO APP_USER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON skills TO APP_USER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON skill_capabilities TO APP_USER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON memories TO APP_USER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON memory_permissions TO APP_USER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks TO APP_USER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON cluster_nodes TO APP_USER;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO APP_USER;

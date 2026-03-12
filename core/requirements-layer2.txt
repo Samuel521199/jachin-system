@@ -1,0 +1,27 @@
+# Layer2 minimal - nexus_daemon + pair + updater
+# Python 3.10-3.13 compatible (excludes Ray, Dapr, etc.)
+
+# Config
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# CLI (core/cli.py)
+click>=8.1.0
+rich>=13.0.0
+
+# Utils
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+pyyaml>=6.0.1
+jsonschema>=4.20.0
+
+# Logging
+structlog>=23.2.0
+
+# WASM (optional, for wasm plugins - install separately if needed)
+# wasmtime>=32.0.0

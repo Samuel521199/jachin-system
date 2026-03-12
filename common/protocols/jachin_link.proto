@@ -1,0 +1,186 @@
+syntax = "proto3";
+
+package jachin.link;
+
+// Jachin Link Protocol Definition
+// gRPC over HTTPS (HTTP/2) 通信协议
+
+// 连接请求（首次建立连接）
+message ConnectRequest {
+    string device_id = 1;
+    string device_info = 2;  // JSON 字符串：设备类型、操作系统等
+    bytes client_certificate = 3;  // PEM 格式的客户端证书（如果已配对）
+}
+
+message ConnectResponse {
+    bool success = 1;
+    string server_id = 2;
+    string message = 3;
+    bool requires_pairing = 4;  // 是否需要配对
+    string error = 5;
+}
+
+// 心跳消息
+message Heartbeat {
+    string device_id = 1;
+    int64 timestamp = 2;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    string message = 2;
+    int64 server_timestamp = 3;
+}
+
+// 执行命令请求
+message ExecuteCommand {
+    string request_id = 1;
+    string device_id = 2;
+    string command = 3;
+    map<string, string> parameters = 4;
+    bytes payload = 5;  // 可选：语音、图片等二进制数据
+}
+
+message ExecuteCommandResponse {
+    string request_id = 1;
+    bool success = 2;
+    string result = 3;
+    bytes payload = 4;  // 可选：响应数据
+    string error = 5;   // 错误信息（如果失败）
+}
+
+// AI 指令请求（兼容旧版本）
+message AIRequest {
+    string request_id = 1;
+    string device_id = 2;
+    string command = 3;
+    map<string, string> parameters = 4;
+    bytes payload = 5;  // 可选：语音、图片等二进制数据
+}
+
+message AIResponse {
+    string request_id = 1;
+    bool success = 2;
+    string result = 3;
+    bytes payload = 4;  // 可选：响应数据
+    string error = 5;   // 错误信息（如果失败）
+}
+
+// 配对请求（扫码后）
+message PairingRequest {
+    string server_id = 1;
+    string token = 2;
+    string device_info = 3;  // JSON 字符串：设备类型、操作系统等
+    bytes csr = 4;  // 客户端证书签名请求（PEM 格式）
+}
+
+message PairingResponse {
+    bool success = 1;
+    bytes client_certificate = 2;  // PEM 格式的客户端证书
+    bytes client_key = 3;           // PEM 格式的客户端私钥（可选，如果 CSR 由客户端生成）
+    string error = 4;
+}
+
+// ============================================================================
+// 通用插件调用协议 (Envelope Pattern)
+// ============================================================================
+// 核心设计理念：协议与业务彻底剥离
+// - Cloud (Tier 1) 只负责路由，不关心 payload 内容
+// - Core (Tier 2) 根据 plugin_id 动态分发到对应的 Ray Actor
+// - Client (Tier 3) 使用 Server-Driven UI 动态渲染界面
+// 
+// 优势：
+// - 新增插件无需修改 .proto 文件
+// - 客户端无需更新 App 即可支持新插件
+// - 真正的"插件热加载"和"一次开发，全端运行"
+
+// 插件调用请求（通用信封）
+message PluginRequest {
+    // 插件标识（反向域名格式，例如 "com.user.stock"）
+    string plugin_id = 1;
+    
+    // 方法名（插件内部的方法，例如 "buy", "sell", "query_price"）
+    string method_name = 2;
+    
+    // 链路追踪 ID（用于日志追踪和调试）
+    string trace_id = 3;
+    
+    // 用户意图（自然语言，例如 "帮我买入100股苹果股票"）
+    // 可选：如果插件支持自然语言理解，可以使用此字段
+    string intent = 4;
+    
+    // 核心载荷：插件自定义的数据（JSON 字符串或二进制）
+    // Cloud 看不懂也不需要看懂，直接透传给 Core
+    bytes payload = 5;
+    
+    // 元数据（可选，例如用户ID、会话ID等）
+    map<string, string> metadata = 6;
+}
+
+// 插件调用响应（通用信封）
+message PluginResponse {
+    // HTTP 风格的状态码（200=成功，400=客户端错误，500=服务器错误）
+    int32 status_code = 1;
+    
+    // 错误信息（如果 status_code != 200）
+    string error_message = 2;
+    
+    // 核心返回数据：插件自定义的数据（JSON 字符串或二进制）
+    bytes payload = 3;
+    
+    // [关键] 服务端驱动 UI 数据 (Adaptive Cards JSON)
+    // 告诉客户端如何把这个结果画出来
+    // 格式：符合 Microsoft Adaptive Cards 1.6 标准
+    // 示例：{"type": "AdaptiveCard", "body": [{"type": "TextBlock", "text": "当前股价: $120"}]}
+    string ui_render_schema = 4;
+    
+    // 链路追踪 ID（与请求中的 trace_id 对应）
+    string trace_id = 5;
+    
+    // [新增] 原始数据载荷（用于存储结构化数据，如 JSON、CSV 等）
+    // 与 payload 的区别：
+    // - payload: 用于传输二进制数据（图片、音频、视频等）
+    // - data_payload: 用于传输结构化数据（JSON、CSV、XML 等文本格式）
+    // 客户端可以根据需要选择使用 payload 或 data_payload
+    bytes data_payload = 6;
+    
+    // 响应元数据（例如：是否需要用户输入、是否需要确认等）
+    map<string, string> metadata = 7;
+}
+
+// ============================================================================
+// Jachin Link Gateway Service
+// ============================================================================
+service JachinLinkGateway {
+    // ========== 基础设施协议（连接、心跳、配对）==========
+    
+    // 连接（首次建立连接）
+    rpc Connect(ConnectRequest) returns (ConnectResponse);
+    
+    // 心跳检测
+    rpc SendHeartbeat(Heartbeat) returns (HeartbeatResponse);
+    
+    // 配对（仅首次连接）
+    rpc Pair(PairingRequest) returns (PairingResponse);
+    
+    // ========== 通用插件调用协议（Envelope Pattern）==========
+    
+    // 调用插件（通用接口，支持所有插件）
+    // 这是核心接口：无论插件如何扩展，这个接口永远不变
+    rpc InvokePlugin(PluginRequest) returns (PluginResponse);
+    
+    // 流式调用插件（用于实时对话、流式输出）
+    // 例如：插件返回股票价格实时更新、AI 对话流式输出
+    rpc StreamPlugin(PluginRequest) returns (stream PluginResponse);
+    
+    // ========== 兼容旧版本协议（已废弃，建议迁移到 InvokePlugin）==========
+    
+    // 执行命令（已废弃：请使用 InvokePlugin）
+    rpc ExecuteCommandRequest(ExecuteCommand) returns (ExecuteCommandResponse);
+    
+    // AI 指令处理（已废弃：请使用 InvokePlugin）
+    rpc ProcessAI(AIRequest) returns (AIResponse);
+    
+    // 流式 AI 响应（已废弃：请使用 StreamPlugin）
+    rpc StreamAI(AIRequest) returns (stream AIResponse);
+}

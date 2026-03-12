@@ -1,0 +1,122 @@
+# Minimal Docker Compose Configuration
+# 最小化配置 - 只包含必需的服务
+
+services:
+  # PostgreSQL 数据库 - 必需
+  postgres:
+    image: postgres:15-alpine
+    container_name: jachin-postgres
+    environment:
+      POSTGRES_DB: jachin_brain
+      POSTGRES_USER: jachin
+      POSTGRES_PASSWORD: secure_password
+    ports:
+      - "5433:5432"  # Changed to 5433 to avoid conflict with local PostgreSQL on 5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jachin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jachin-network
+
+  # 向量数据库：Qdrant - 必需
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: jachin-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: always
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - jachin-network
+
+  # Redis (用于缓存和消息队列) - 必需
+  redis:
+    image: redis:7-alpine
+    container_name: jachin-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - jachin-network
+
+  # Dapr Placement (用于 Actor 模式) - 必需（Dapr依赖）
+  dapr-placement:
+    image: "daprio/dapr:latest"
+    container_name: jachin-dapr-placement
+    command: ["./placement", "-port", "50005"]
+    ports:
+      - "50005:50005"
+    networks:
+      - jachin-network
+
+  # Ray Head (分布式计算集群头节点) - 必需
+  ray-head:
+    image: rayproject/ray:latest
+    container_name: jachin-ray-head
+    command: sh -c "ray start --head --dashboard-port=8265 --disable-usage-stats && tail -f /dev/null"
+    ports:
+      - "10001:10001"  # Ray client port (auto-assigned by Ray)
+      - "8265:8265"    # Ray Dashboard
+    volumes:
+      - ray_data:/tmp/ray
+    shm_size: 4gb  # 增加共享内存以提升性能（Ray 建议至少 4.74GB，设置为 4GB 以获得最佳性能）
+    restart: always  # 容器退出时自动重启
+    networks:
+      - jachin-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8265"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  # 使用E盘存储volumes数据
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\postgres_data
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\qdrant_data
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\redis_data
+  ray_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: E:\docker\volumes\ray_data
+
+networks:
+  jachin-network:
+    name: jachin-network
+    driver: bridge

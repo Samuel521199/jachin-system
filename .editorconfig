@@ -1,0 +1,24 @@
+# Jachin System - EditorConfig
+# https://editorconfig.org
+
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Windows CMD 批处理：必须 GBK + CRLF，否则会报错 'cho'、'cutionPolicy' 等
+# 编辑后请运行: powershell -File scripts\fix-bat-encoding.ps1
+[*.bat]
+charset = gbk
+
+# PowerShell：UTF-8 with BOM（PowerShell 5.1 解析含中文需要 BOM）
+[*.ps1]
+charset = utf-8-bom
+
+# 其他代码文件：UTF-8
+[*.{py,ts,tsx,js,jsx,json,md,yml,yaml}]
+charset = utf-8

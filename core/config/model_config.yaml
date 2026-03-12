@@ -1,0 +1,72 @@
+# Model Strategy Configuration
+# 模型策略配置
+
+model_strategy:
+  # 开发阶段配置
+  development:
+    default_provider: "qwen"
+    default_model: "qwen-max"
+    temperature: 0.7
+    max_tokens: 2000
+  
+  # 生产环境配置
+  production:
+    # 简单任务配置（IoT 指令等）
+    simple_tasks:
+      provider: "local"
+      model: "qwen-7b-chat"  # 或 llama-2-7b
+      max_tokens: 512
+      temperature: 0.3
+      prefer_local: true
+    
+    # 中等复杂度任务
+    medium_tasks:
+      provider: "qwen"
+      model: "qwen-turbo"
+      max_tokens: 1500
+      temperature: 0.6
+      prefer_local: false
+    
+    # 复杂任务配置（代码生成、计划制定等）
+    complex_tasks:
+      provider: "qwen"
+      model: "qwen-max"
+      max_tokens: 4096
+      temperature: 0.7
+      prefer_local: false
+    
+    # 降级策略
+    fallback:
+      # 如果本地模型不可用，降级到 Qwen-Turbo
+      provider: "qwen"
+      model: "qwen-turbo"
+      max_tokens: 2000
+      temperature: 0.7
+
+# 任务复杂度关键词配置
+complexity_keywords:
+  simple:
+    - "开灯"
+    - "关灯"
+    - "打开"
+    - "关闭"
+    - "查询"
+    - "获取"
+    - "turn on"
+    - "turn off"
+    - "open"
+    - "close"
+  
+  complex:
+    - "编写"
+    - "生成"
+    - "计划"
+    - "分析"
+    - "设计"
+    - "优化"
+    - "write"
+    - "generate"
+    - "plan"
+    - "analyze"
+    - "design"
+    - "optimize"

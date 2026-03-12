@@ -1,0 +1,45 @@
+id: com.jachin.sys-monitor
+version: 1.0.0
+name: 系统仪表盘
+description: 系统性能监控：获取性能快照
+author: Jachin Team
+
+capabilities:
+  - name: get_performance_snapshot
+    description: 获取系统性能快照
+    compute: cpu_light
+    input_schema:
+      type: object
+      properties: {}
+      required: []
+    output_schema:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          description: 时间戳
+        cpu:
+          type: object
+          description: CPU信息
+        memory:
+          type: object
+          description: 内存信息
+        disk:
+          type: object
+          description: 磁盘信息
+        temperature:
+          type: object
+          description: 温度信息
+
+permissions:
+  - id: system
+    label: 系统
+    scope: system.telemetry
+
+requirements:
+  - psutil
+
+runtime:
+  type: ray
+  python_version: "3.10"
+  resources: {}
