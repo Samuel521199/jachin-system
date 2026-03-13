@@ -1123,6 +1123,27 @@ async def run_agent(
         messages = []
     messages.append({"role": "user", "content": user_input})
 
+    # 预检0：用户说「停止招聘」等时，直接执行 stop_automated_recruitment，不经过 LLM（保证立即生效）
+    _stop_intent = re.search(
+        r"(关闭|停止|取消|不要|结束|暂停)(?:所有|全部)?(?:的)?(?:招聘|无人值守|自动化)(?:流程)?|"
+        r"(停止|取消)(?:所有|全部)?(?:的)?(?:招聘)?(?:流程)?|"
+        r"招聘(?:流程)?(?:要)?(?:停止|关闭|取消)",
+        (user_input or "").strip(),
+    )
+    if _stop_intent:
+        try:
+            from l3_node.skills.mcp_registry import _invoke_stop_automated_recruitment_local
+            result_str = await asyncio.to_thread(_invoke_stop_automated_recruitment_local, "")
+            result = json.loads(result_str)
+            if result.get("ok"):
+                removed = result.get("removed", [])
+                msg = f"已停止所有招聘流程，已移除 {len(removed)} 个定时任务。"
+                if removed:
+                    msg += " 后续将不再执行打招呼、抓简历、Agent 讨论或 Lark 同步。"
+                return msg
+        except Exception as e:
+            logger.warning("[Agent] 直接执行 stop_automated_recruitment 失败: %s", e)
+
     # 预检1：用户说「我要招聘」等模糊指令且对话中尚无 JD 配置时，强制依次询问所有硬性字段
     _vague_recruitment = re.search(
         r"我要(?:招聘|发布|招人?)|发布(?:一个)?职位|招聘",

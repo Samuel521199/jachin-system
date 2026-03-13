@@ -287,11 +287,13 @@ def _invoke_atom_greet_recommend_boss_local(cdp_url: str = "", jd_config_path: s
 def _invoke_stop_automated_recruitment_local(job_name: str = "") -> str:
     """L3 本地执行 stop_automated_recruitment，移除无人值守招聘定时任务。job_name 为空则停止所有岗位。"""
     try:
-        from l3_node.recruitment_scheduler import remove_scheduled_job, list_scheduled_jobs
+        from l3_node.recruitment_scheduler import remove_scheduled_job, list_scheduled_jobs, set_recruitment_stopped
         jn = (job_name or "").strip()
         if jn:
             result = remove_scheduled_job(jn)
             return json.dumps(result, ensure_ascii=False)
+        # 停止所有：先设全局停止标志，再移除各岗位任务，阻止后续定时任务执行
+        set_recruitment_stopped(True)
         jobs = list_scheduled_jobs()
         removed = []
         for j in jobs:

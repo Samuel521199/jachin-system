@@ -399,10 +399,11 @@ async def _handle_scheduler_remove_job(request) -> "aiohttp.web.Response":
         body = {}
     job_name = (body.get("job_name") or "").strip()
     try:
-        from l3_node.recruitment_scheduler import remove_scheduled_job, list_scheduled_jobs
+        from l3_node.recruitment_scheduler import remove_scheduled_job, list_scheduled_jobs, set_recruitment_stopped
         if job_name:
             result = remove_scheduled_job(job_name)
         else:
+            set_recruitment_stopped(True)
             jobs = list_scheduled_jobs()
             removed = []
             for j in jobs:

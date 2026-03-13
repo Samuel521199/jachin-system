@@ -235,9 +235,10 @@ def atom_post_job_boss(
                     desc.fill(jd_full)
                     page.wait_for_timeout(500)
 
-            # 6. 职位类型：点击选择按钮 → 选第一项（通常带「推荐」）→ 关闭弹窗
-            def _fill_job_category(page_or_frame, main_page):
-                """填写职位类型：偏门岗位系统不会自动填，需手动选择第一项（推荐）"""
+            # 6. 职位类型：脚本多为图1「请选择职类」，图2「请选择职位类型」仅手动出现
+            # 图2：选带推荐的列表项；图1：在弹窗内点「Java」「全栈工程师」等
+            def _fill_job_category(page_or_frame, main_page, jd: dict):
+                """填写职位类型。图2 选推荐项；图1 在弹窗内点具体职位名。"""
                 for scope in [page_or_frame, main_page]:
                     job_cat_inp = scope.locator(
                         "input[name='jobCategory'][placeholder='选择职位类型'], "
@@ -246,44 +247,115 @@ def atom_post_job_boss(
                     ).first
                     if job_cat_inp.count() > 0:
                         try:
-                            job_cat_inp.click(timeout=3000)
-                            main_page.wait_for_timeout(800)
-                            # 弹窗：优先点带「推荐」图标的行，否则点列表第一项
+                            # 脚本 click() 会弹出「请选择职类」图1，手动点击会弹出「请选择职位类型」图2。
+                            # 用 page.mouse 在元素中心模拟真实鼠标点击，触发与手动相同的弹窗。
+                            try:
+                                job_cat_inp.wait_for(state="visible", timeout=2000)
+                                box = job_cat_inp.bounding_box()
+                                if box:
+                                    cx = box["x"] + box["width"] / 2
+                                    cy = box["y"] + box["height"] / 2
+                                    main_page.mouse.click(cx, cy)
+                                else:
+                                    job_cat_inp.click(timeout=3000)
+                            except Exception:
+                                job_cat_inp.click(timeout=3000)
+                            # 图4：增加等待，确保弹窗渲染
+                            main_page.wait_for_timeout(2000)
                             clicked = False
-                            for s in [main_page, page_or_frame]:
-                                rec_row = s.locator("span.job-recommend-content_title-icon").locator("..").locator("..").first
-                                if rec_row.count() > 0:
+                            clicked_scope = ""
+                            # 调试证明：选项弹窗由 Vue Portal 渲染到 main_page。必须只点列表项，不能点底部「查看全部职位类型」链接（会 404）
+                            opts_scope = main_page
+                            # 列表项有 div.radio-box，「查看全部职位类型」无；用 :has(div.radio-box) 排除底部链接
+                            rec_row = opts_scope.locator(
+                                "div.job-recommend-content_item:has(div.radio-box):has(span.job-recommend-content_title-icon)"
+                            ).first
+                            fallback = opts_scope.locator(
+                                "div.job-recommend-content_item:has(div.radio-box)"
+                            ).filter(has=opts_scope.get_by_text("推荐", exact=False)).first
+                            for loc, lbl in [(rec_row, "div_item_radio"), (fallback, "div_item_filter")]:
+                                if loc.count() > 0:
                                     try:
-                                        rec_row.click(timeout=3000)
+                                        loc.wait_for(state="visible", timeout=3000)
+                                        loc.click(timeout=3000)
                                         clicked = True
+                                        clicked_scope = f"main_page:{lbl}"
                                         break
                                     except Exception:
                                         pass
                             if not clicked:
-                                first_opt = main_page.locator(
-                                    "[class*='job-recommend-content']:has(span.job-recommend-content_title-icon), "
-                                    "div:has(span.job-recommend-content_title-icon), "
-                                    "li[class*='job-type'], div[class*='job-type-item'], [class*='job-recommend'] li, "
-                                    "[class*='job-type'] li"
-                                ).first
-                                if first_opt.count() > 0:
-                                    first_opt.click(timeout=3000)
-                            main_page.wait_for_timeout(500)
-                            for close_scope in [main_page, page_or_frame]:
-                                close_btn = close_scope.locator("i.icon-close, .icon-close, [class*='icon-close']").first
-                                if close_btn.count() > 0:
+                                # 兜底：通过 推荐 span 找父行
+                                try:
+                                    icon_span = opts_scope.locator("span.job-recommend-content_title-icon").first
+                                    if icon_span.count() > 0:
+                                        parent_row = icon_span.locator("..").locator("..")
+                                        if parent_row.locator("div.radio-box").count() > 0:
+                                            parent_row.click(timeout=3000)
+                                            clicked = True
+                                except Exception:
+                                    pass
+                            # 图1「请选择职类」：先点左侧「互联网/AI」确保右侧为技术岗，再点 Java/全栈工程师等
+                            if not clicked:
+                                try:
+                                    left_cat = opts_scope.get_by_text("互联网/AI", exact=True).first
+                                    if left_cat.count() > 0 and left_cat.is_visible():
+                                        left_cat.click(timeout=2000)
+                                        main_page.wait_for_timeout(600)
+                                except Exception:
+                                    pass
+                                job_title = (jd.get("job_title") or "").strip()
+                                path = jd.get("job_category_path") or []
+                                candidates = []
+                                if "Java" in job_title or "java" in job_title:
+                                    candidates = ["Java", "Java开发工程师"]
+                                elif "Go" in job_title or "Golang" in job_title or "golang" in job_title:
+                                    candidates = ["Golang", "Go"]
+                                elif "Python" in job_title or "python" in job_title:
+                                    candidates = ["Python"]
+                                elif "Node" in job_title or "node" in job_title:
+                                    candidates = ["Node.js"]
+                                elif path:
+                                    candidates = [p for p in path if p and "互联网" not in p and "AI" not in p][:3]
+                                if not candidates:
+                                    candidates = ["全栈工程师", "Java", "后端开发"]
+                                for name in candidates:
                                     try:
-                                        close_btn.click(timeout=2000)
-                                        break
+                                        el = opts_scope.get_by_text(name, exact=False).first
+                                        if el.count() > 0 and el.is_visible():
+                                            txt = el.inner_text() or ""
+                                            if "查看全部" not in txt and "职位类型" not in txt:
+                                                el.click(timeout=2000)
+                                                clicked = True
+                                                break
                                     except Exception:
                                         pass
-                            main_page.wait_for_timeout(500)
+                            main_page.wait_for_timeout(1000)
+                            if not clicked:
+                                for s in [main_page, page_or_frame]:
+                                    try:
+                                        close_btn = s.locator("i.icon-close").first
+                                        if close_btn.count() > 0 and close_btn.is_visible():
+                                            box = close_btn.bounding_box()
+                                            if box:
+                                                cx = box["x"] + box["width"] / 2
+                                                cy = box["y"] + box["height"] / 2
+                                                main_page.mouse.click(cx, cy)
+                                            else:
+                                                close_btn.click(timeout=2000)
+                                            main_page.wait_for_timeout(500)
+                                            logger.debug("已关闭「请选择职类」弹窗 (i.icon-close)")
+                                            break
+                                    except Exception:
+                                        pass
                             return True
                         except Exception as ex:
-                            logger.debug("职位类型选择异常（将继续后续步骤）: %s", ex)
+                            logger.warning("职位类型选择异常（将继续后续步骤）: %s", ex)
                 return False
 
-            _fill_job_category(form_frame, page)
+            ok = _fill_job_category(form_frame, page, jd)
+            # 图4：检查返回值，失败时记录明确错误
+            if not ok:
+                logger.warning("职位类型未成功选择，发布时可能被 Boss 校验拦截（请选择职位类型）")
 
             def _click_dropdown_option(page_or_frame, opt_locator, label: str):
                 """点击下拉选项，选项可能被 portal 到 body，优先用 page 查找；不可见时用 JS 点击"""

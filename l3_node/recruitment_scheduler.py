@@ -91,6 +91,24 @@ chrome_lock = threading.Lock()
 DATA_HR = _PROJ_ROOT / "data" / "hr_analysis"
 TASK_STATE_FILE = DATA_HR / "scheduler_state.json"
 
+# 全局招聘停止标志：HR 说「停止招聘」后设为 True，所有定时任务在开始时检查并立即退出
+_recruitment_stopped_global = False
+_recruitment_stopped_lock = threading.Lock()
+
+
+def set_recruitment_stopped(stopped: bool = True) -> None:
+    """设置/清除招聘全局停止标志。HR 说停止时设为 True，阻止后续定时任务执行。"""
+    global _recruitment_stopped_global
+    with _recruitment_stopped_lock:
+        _recruitment_stopped_global = stopped
+    logger.info("[Scheduler] 招聘停止标志已%s", "开启" if stopped else "清除")
+
+
+def is_recruitment_stopped() -> bool:
+    """检查招聘是否已被 HR 要求停止。定时任务在入口处调用，若为 True 则立即返回。"""
+    with _recruitment_stopped_lock:
+        return _recruitment_stopped_global
+
 
 def _ensure_data_dir() -> None:
     DATA_HR.mkdir(parents=True, exist_ok=True)
@@ -126,6 +144,9 @@ def _sanitize_job_folder(job_name: str, max_len: int = 60) -> str:
 # ---------------------------------------------------------------------------
 def job_recommend_candidates(job_config: dict[str, Any]) -> dict[str, Any]:
     """调用 atom_greet_recommend_boss 在推荐牛人页面自动打招呼。满 3 人即停，20 秒后启动抓简历。"""
+    if is_recruitment_stopped():
+        logger.info("[Scheduler] 招聘已停止，跳过推荐牛人任务")
+        return {"success": False, "greeted_count": 0, "skipped": "recruitment_stopped"}
     job_name = job_config.get("job_name", "")
     job_folder = _sanitize_job_folder(job_name)
     greet_target = int(job_config.get("greet_target", 3))
@@ -195,6 +216,9 @@ def _job_text_for_harvest(job_config: dict[str, Any]) -> str:
 def job_harvest_resumes(job_config: dict[str, Any]) -> dict[str, Any]:
     """调用 atom_inbox_harvester_full_flow，从上往下依次遍历整个列表，直至简历满或处理完毕。
     在「全部职位」中选择 jd_select 对应岗位，仅抓取该岗位简历。"""
+    if is_recruitment_stopped():
+        logger.info("[Scheduler] 招聘已停止，跳过收网抓取任务")
+        return {"success": False, "downloaded": 0, "skipped": "recruitment_stopped"}
     job_name = job_config.get("job_name", "")
     job_text = _job_text_for_harvest(job_config)
     job_folder = _sanitize_job_folder(job_name)
@@ -434,6 +458,9 @@ def job_check_and_analyze(job_config: dict[str, Any]) -> dict[str, Any]:
     规则：(未处理数量 >= threshold) OR (距上次分析 >= interval_hours) 且 未处理 > 0
     满足后：分析 → 排行榜 → remove_scheduled_job，无人值守流程结束。
     """
+    if is_recruitment_stopped():
+        logger.info("[Scheduler] 招聘已停止，跳过规则引擎检查")
+        return {"fired": False, "skipped": "recruitment_stopped"}
     job_name = job_config.get("job_name", "")
     job_folder = _sanitize_job_folder(job_name)
     output_dir = PLUGIN_DATA_ROOT / job_folder / "result"
@@ -551,6 +578,8 @@ def add_scheduled_job(job_config: dict[str, Any]) -> dict[str, Any]:
 
     # 移除已存在的同岗位任务
     remove_scheduled_job(job_name)
+    # 新启动岗位时清除停止标志，允许该岗位的定时任务执行（用户停止后再次发布时需此逻辑）
+    set_recruitment_stopped(False)
 
     try:
         _now = datetime.now()
