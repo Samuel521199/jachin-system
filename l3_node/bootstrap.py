@@ -403,7 +403,11 @@ async def heartbeat_loop(
                         logger.info("[L3 Heartbeat] 心跳已发送，JachinLink 将显示在线")
                         first = False
                 else:
-                    logger.warning("[L3 Heartbeat] %s %s", r.status_code, r.text[:100])
+                    logger.warning(
+                        "[L3 Heartbeat] L2 心跳失败 HTTP %s %s (与全息监控无关，为 L3->L2 认证)",
+                        r.status_code,
+                        r.text[:80] if r.text else "",
+                    )
         except Exception as e:
-            logger.warning("[L3 Heartbeat] %s", e)
+            logger.warning("[L3 Heartbeat] L2 不可达 %s (与全息监控无关，为 L3->L2 认证)", e)
         await asyncio.sleep(interval_sec)

@@ -1,0 +1,4 @@
+# LLD 替代 link.exe，可规避 LNK1105（错误 1224）
+# 若仍失败，可注释掉以下配置恢复默认
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

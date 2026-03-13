@@ -1,9 +1,10 @@
-﻿# =============================================================================
+# =============================================================================
 # Layer3 (Desktop) - One-click start (Windows)
 # clients/desktop - Jachin Terminal
 # =============================================================================
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONUTF8 = "1"
 
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $ProjectRoot = Split-Path -Parent $ScriptDir
@@ -44,14 +45,15 @@ if (-not $L3Exe) {
     Write-Host ""
 }
 
+$UtcNow = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Layer3 (Desktop)" -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  前置: L2 必须先启动! 终端1运行: .\scripts\run-gateway.ps1" -ForegroundColor Yellow
-Write-Host "  技能为空? 运行诊断: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
-Write-Host "  Tauri requires Rust. Falls back to Vite dev if not found."
-Write-Host "  Press Ctrl+C to stop"
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   Layer3 (Desktop)" -ForegroundColor Cyan
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]  Prereq: Start L2 first! Run in terminal 1: .\scripts\run-gateway.ps1" -ForegroundColor Yellow
+Write-Host "[$UtcNow]  Skills empty? Run diagnose: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
+Write-Host "[$UtcNow]  Tauri requires Rust. Falls back to Vite dev if not found."
+Write-Host "[$UtcNow]  Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $DesktopDir

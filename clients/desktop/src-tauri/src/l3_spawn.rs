@@ -134,7 +134,7 @@ pub fn spawn_l3_via_python(
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let root = project_root().ok_or("无法定位项目根目录 (l3_node)")?;
     let mut cmd = app.shell().command("python").args(["-m", "l3_node"]).args(args);
-    cmd = cmd.env("PYTHONUNBUFFERED", "1");
+    cmd = cmd.env("PYTHONUNBUFFERED", "1").env("PYTHONUTF8", "1");
     for (k, v) in load_l3_env_vars(&root) {
         cmd = cmd.env(&k, &v);
     }
@@ -183,7 +183,7 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
     let root = project_root().unwrap_or_else(|| PathBuf::new());
     let child = match app.shell().sidecar("bin/l3_node") {
         Ok(sidecar) => {
-            let mut sidecar = sidecar.args(args);
+            let mut sidecar = sidecar.args(args).env("PYTHONUTF8", "1");
             if let Some(ref url) = env_url {
                 sidecar = sidecar.env("L2_BASE_URL", url.as_str());
             }

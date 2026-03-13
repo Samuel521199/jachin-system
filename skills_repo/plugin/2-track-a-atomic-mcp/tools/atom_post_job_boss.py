@@ -121,8 +121,17 @@ def atom_post_job_boss(
                 return {"success": False, "posted": False, "error": "未找到浏览器上下文"}
             context = contexts[0]
             pages = context.pages
+            # 兜底：无标签页时新建并导航到 Boss 职位管理页（Chrome 刚启动或用户关闭了所有标签）
             if not pages:
-                return {"success": False, "posted": False, "error": "未找到页面"}
+                try:
+                    page = context.new_page()
+                    page.goto("https://www.zhipin.com/web/chat/job/list?ka=menu-manager-job", wait_until="domcontentloaded", timeout=20000)
+                    page.wait_for_timeout(2000)
+                    pages = context.pages
+                except Exception as e:
+                    return {"success": False, "posted": False, "error": f"未找到页面，且新建标签失败: {e}"}
+            if not pages:
+                return {"success": False, "posted": False, "error": "未找到页面。请确保 Chrome 至少有一个 Boss 直聘标签页打开，或重新运行 launch_chrome_debug.ps1 后重试"}
 
             # 优先选用已在职位管理页的标签页
             page = None

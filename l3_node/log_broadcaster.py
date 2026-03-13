@@ -10,7 +10,7 @@ import logging
 import queue
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger("l3_node")
@@ -42,12 +42,13 @@ def broadcast_log(message: str, level: str = "INFO", *, console: bool = True) ->
     if level not in _COLORS:
         level = "INFO"
     ts = datetime.now().timestamp()
-    # 1. 打印到 PowerShell（带颜色），仅当 console=True
+    # 1. 打印到 PowerShell（带颜色 + UTC 时间），仅当 console=True
     if console:
+        utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         color = _COLORS.get(level, _COLORS["INFO"])
         reset = _COLORS["RESET"]
         try:
-            print(f"{color}[{level}] {message}{reset}", file=sys.stderr, flush=True)
+            print(f"{utc} {color}[{level}] {message}{reset}", file=sys.stderr, flush=True)
         except Exception:
             pass
     # 2. 放入队列（非阻塞，满则丢弃最旧）

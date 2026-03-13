@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # Cloud (Layer 1) - One-click start (Windows)
 # cloud/nexus - Nexus Console @ http://localhost:3000
 # 使用 Drizzle ORM + PostgreSQL
@@ -53,13 +53,14 @@ if (-not (Test-Path $EnvLocal)) {
     }
 }
 
+$UtcNow = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Cloud (Layer 1) - Nexus Console" -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  http://localhost:3000"
-Write-Host "  Drizzle + PostgreSQL"
-Write-Host "  Press Ctrl+C to stop"
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   Cloud (Layer 1) - Nexus Console" -ForegroundColor Cyan
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   http://localhost:3000"
+Write-Host "[$UtcNow]   Drizzle + PostgreSQL"
+Write-Host "[$UtcNow]   Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $NexusDir
@@ -67,8 +68,8 @@ Push-Location $NexusDir
 $ErrBackup = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
 npm run db:migrate 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "(WARN) db:migrate 失败，请确认 PostgreSQL 已启动 (localhost:5432)" -ForegroundColor Yellow
-    Write-Host "  可忽略此警告继续启动，部分功能可能不可用。" -ForegroundColor Gray
+    Write-Host "(WARN) db:migrate failed. Ensure PostgreSQL is running (localhost:5432)" -ForegroundColor Yellow
+    Write-Host "  Ignore to continue; some features may be unavailable." -ForegroundColor Gray
 }
 npm run db:init-store 2>$null
 $ErrorActionPreference = $ErrBackup

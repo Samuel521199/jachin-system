@@ -157,6 +157,19 @@ def persist_hr_analysis_batch_item(
     output_dir_cfg = (config.get("output_dir") or "data/hr_analysis").strip()
     out_dirs: list[Path] = []
     custom_dir = _resolve_safe_dir(output_dir_cfg, _PROJ_ROOT, use_absolute_path=use_abs)
+    if not custom_dir and "skills_repo" in output_dir_cfg and "plugin" in output_dir_cfg:
+        # 收网调度器传入的 result 路径可能因编码/斜杠导致解析失败，显式按项目相对路径解析
+        try:
+            raw_norm = output_dir_cfg.replace("\\", "/").strip()
+            idx = raw_norm.find("skills_repo")
+            if idx >= 0:
+                rel = raw_norm[idx:]
+                cand = (_PROJ_ROOT / rel).resolve()
+                if _resolve_safe_dir(str(cand), _PROJ_ROOT, use_absolute_path=False):
+                    custom_dir = cand
+                    logger.info("[HR Persist] 批量项使用 plugin 相对路径 output_dir=%s", cand)
+        except Exception as e:
+            logger.debug("[HR Persist] plugin 路径解析失败: %s", e)
     if custom_dir:
         out_dirs.append(custom_dir)
     out_dirs.append(_PROJ_ROOT / "data" / "hr_analysis")

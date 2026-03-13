@@ -27,6 +27,7 @@ BOSS_CHAT_ITEM_SELECTORS = [
 ZHIPIN_BASE = "https://www.zhipin.com"
 
 # 下载按钮选择器（含 icon-attacthment 拼写变体，Boss 可能已修正为 attachment）
+# Boss 直聘 UI 常更新，多选器兜底
 BOSS_DOWNLOAD_SELECTORS = [
     'use[xlink\\:href="#icon-attacthment-download"]',
     'use[href="#icon-attacthment-download"]',
@@ -38,21 +39,32 @@ BOSS_DOWNLOAD_SELECTORS = [
     'svg use[href="#icon-attachment-download"]',
     'svg.boss-svg.svg-icon use[xlink\\:href="#icon-attacthment-download"]',
     'svg.boss-svg.svg-icon use[href="#icon-attachment-download"]',
-    '[class*="download"] svg',
+    '[class*="download"]',
     '[class*="icon-download"]',
+    '[class*="download"] svg',
+    '[class*="icon-download"] svg',
+    '[data-testid*="download"]',
+    '[data-testid*="Download"]',
     '#download',
     'button#download',
     '[id="download"]',
     'button:has-text("保存简历")',
     'a:has-text("保存简历")',
     'span:has-text("保存简历")',
+    'div:has-text("保存简历")',
     'button:has-text("下载")',
     'a:has-text("下载")',
+    'span:has-text("下载")',
+    'div:has-text("下载")',
     'a[download]',
     '[title*="下载"]',
     '[title*="Download"]',
     '[aria-label*="下载"]',
     '[aria-label*="download"]',
+    '[class*="dialog"] button:has-text("下载")',
+    '[class*="dialog"] a:has-text("下载")',
+    '[class*="preview"] button:has-text("下载")',
+    '[class*="modal"] [class*="download"]',
 ]
 
 # 优先匹配弹窗/预览区内的关闭按钮，避免误点右上角头像下拉的 icon-close
@@ -117,7 +129,8 @@ def _close_preview_dialog(page, pages) -> bool:
 
 
 def has_preview_attachment_btn(page) -> bool:
-    """当前页面是否存在「点击预览附件简历」按钮（对方已发简历时会显示）"""
+    """当前页面是否存在「点击预览附件简历」按钮（对方已发简历时会显示）。
+    不匹配「附件简历-暂无」等空状态（该文案表示未发简历，会导致误判为有简历而跳过求简历）。"""
     for sel in BOSS_PREVIEW_BTN_SELECTORS:
         try:
             loc = page.locator(sel).first
@@ -130,11 +143,8 @@ def has_preview_attachment_btn(page) -> bool:
             return True
     except Exception:
         pass
-    try:
-        if page.get_by_text("附件简历-", exact=False).count() > 0:
-            return True
-    except Exception:
-        pass
+    # 移除「附件简历-」：该文案会匹配「附件简历-暂无」等空状态，导致无简历时误判为有简历，
+    # 进而走下载流程失败并跳过求简历。仅「点击预览附件简历」按钮可可靠表示已发简历。
     return False
 
 
@@ -148,7 +158,7 @@ def _extract_pdf_url_from_viewer(pages) -> str | None:
                 'iframe[src*="preview4boss"]',
                 'iframe[src*="pdf"]',
             ]:
-                iframes = page.locator(iframe_sel)
+                iframes = page.locator(iframe_sel, timeout=5000)
                 cnt = iframes.count()
                 for i in range(cnt):
                     src = iframes.nth(i).get_attribute("src")
@@ -180,7 +190,7 @@ def _is_valid_pdf(body: bytes) -> bool:
     return body[:4] == b"%PDF" or b"%PDF" in body[:1024]
 
 
-def _fetch_pdf_by_url(request_api, url: str, timeout: int = 15000) -> bytes | None:
+def _fetch_pdf_by_url(request_api, url: str, timeout: int = 10000) -> bytes | None:
     """使用 Playwright request（带 cookie）直接 GET 下载 PDF。"""
     try:
         resp = request_api.get(url, timeout=timeout)
@@ -243,17 +253,19 @@ def _do_download(
             pass
 
     try:
-        human_wait(page_for_request, 0.5, 1.2)
+        # 预览弹窗内 PDF 需完全加载后再提取/下载，等待 2.5~4.5 秒确保简历完全显示
+        human_wait(page_for_request, 2.5, 4.5)
 
-        # 策略 4：点击下载/保存简历（优先 dialog 内）
+        # 策略 4：点击下载/保存简历（优先 dialog 内），单次超时 6s 防止无限卡住
+        _DL_TIMEOUT = 6000
         for p in pages:
             for frame in p.frames:
                 for sel in BOSS_DOWNLOAD_SELECTORS:
                     try:
-                        loc = frame.locator(sel)
+                        loc = frame.locator(sel, timeout=3000)
                         if loc.count() > 0:
-                            with context.expect_download(timeout=15000) as download_info:
-                                loc.first.click(force=True)
+                            with context.expect_download(timeout=_DL_TIMEOUT) as download_info:
+                                loc.first.click(force=True, timeout=3000)
                             download = download_info.value
                             path = download.path()
                             if path and Path(path).exists():
@@ -264,24 +276,44 @@ def _do_download(
                                 return content, ""
                     except Exception:
                         pass
-        # 兜底：按文本查找「保存简历」
+        # 兜底：按文本查找「保存简历」「下载」
         for p in pages:
             for frame in p.frames:
-                try:
-                    btn = frame.get_by_text("保存简历", exact=False).first
-                    if btn.count() > 0:
-                        with context.expect_download(timeout=15000) as download_info:
-                            btn.click(force=True)
-                        download = download_info.value
-                        path = download.path()
-                        if path and Path(path).exists():
-                            content = Path(path).read_bytes()
-                            download.delete()
-                        if content and len(content) >= 100:
-                            logger.info("策略4 保存简历：成功，%d 字节", len(content))
-                            return content, ""
-                except Exception:
-                    pass
+                for text in ("保存简历", "下载"):
+                    try:
+                        btn = frame.get_by_text(text, exact=False).first
+                        if btn.count() > 0:
+                            with context.expect_download(timeout=_DL_TIMEOUT) as download_info:
+                                btn.click(force=True, timeout=3000)
+                            download = download_info.value
+                            path = download.path()
+                            if path and Path(path).exists():
+                                content = Path(path).read_bytes()
+                                download.delete()
+                            if content and len(content) >= 100:
+                                logger.info("策略4 点击 %s：成功，%d 字节", text, len(content))
+                                return content, ""
+                    except Exception:
+                        pass
+        # 兜底：role=button/link 匹配下载
+        for p in pages:
+            for frame in p.frames:
+                for role, name in [("button", "下载"), ("link", "下载"), ("button", "保存简历")]:
+                    try:
+                        btn = frame.get_by_role(role, name=name)
+                        if btn.count() > 0:
+                            with context.expect_download(timeout=_DL_TIMEOUT) as download_info:
+                                btn.first.click(force=True, timeout=3000)
+                            download = download_info.value
+                            path = download.path()
+                            if path and Path(path).exists():
+                                content = Path(path).read_bytes()
+                                download.delete()
+                            if content and len(content) >= 100:
+                                logger.info("策略4 role=%s name=%s：成功，%d 字节", role, name, len(content))
+                                return content, ""
+                    except Exception:
+                        pass
 
         human_wait(page_for_request, 1.5, 2.5)
 
@@ -370,6 +402,27 @@ def download_resume_from_preview_page(
         return {"success": False, "pdf_path": "", "error": err_msg}
 
 
+def _wait_for_viewer_or_capture(pages, page_for_wait, captured_urls: list, max_wait_ms: int = 6000) -> None:
+    """显式等待 PDF viewer iframe 出现，或已有捕获 URL，避免过早进入下载逻辑导致卡住。"""
+    try:
+        if captured_urls:
+            return
+        # 优先在主页面等待（预览多为同页 modal），单页 4s 避免多页累加过长
+        per_page_timeout = min(4.0, max_wait_ms / 1000)
+        for p in pages:
+            try:
+                p.wait_for_selector(
+                    'iframe[src*="viewer.html"], iframe[src*="file="], iframe[src*="preview4boss"]',
+                    timeout=per_page_timeout,
+                )
+                logger.debug("viewer iframe 已出现")
+                return
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug("等待 viewer 超时或跳过: %s", e)
+
+
 def click_preview_and_download(
     page,
     context,
@@ -433,20 +486,25 @@ def click_preview_and_download(
         except Exception:
             pass
 
-    preview_btn.scroll_into_view_if_needed()
+    preview_btn.scroll_into_view_if_needed(timeout=8000)
     human_wait(page, 0.2, 0.6)
-    preview_btn.click()
-    # 预览弹窗加载 PDF 需时，延长等待
-    human_wait(page, 2.5, 4.0)
+    preview_btn.click(timeout=5000)
+    # 预览弹窗/新标签页加载需时：显式等待 viewer iframe 或短时轮询
+    human_wait(page, 1.0, 2.0)
+    # 刷新 pages 以包含点击后可能新打开的 PDF 预览标签页
+    pages = list(context.pages)
+    _wait_for_viewer_or_capture(pages, page, captured_urls, max_wait_ms=6000)
+    # 简历需完全渲染后再下载：PDF.js 加载、网络较慢时需额外等待，避免未显示完就关闭导致下载失败
+    human_wait(page, 3.0, 5.0)
 
-    try:
-        content, err = _do_download(context, pages, page, pre_captured_urls=captured_urls)
-    finally:
-        for p in pages:
-            try:
-                p.remove_listener("response", on_response)
-            except Exception:
-                pass
+    # 主线程执行：Playwright sync API 使用 greenlet，不能跨线程调用，否则会报 "Cannot switch to a different thread"
+    content, err = _do_download(context, pages, page, pre_captured_urls=captured_urls)
+
+    for p in pages:
+        try:
+            p.remove_listener("response", on_response)
+        except Exception:
+            pass
     if err:
         _close_preview_dialog(page, pages)
         return {"success": False, "pdf_path": "", "error": err}
@@ -640,13 +698,17 @@ def atom_inbox_harvester_full_flow(
                 from .atom_request_resume import _click_request_resume_btn
 
             def _random_wait_after_op():
-                """每次聊天/下载后进行随机等待（3~8秒），模拟人类操作"""
-                human_wait(page, 3.0, 8.0)
+                """每次聊天/下载后进行随机等待（2~4秒），模拟人类操作，避免过长阻塞导致控制台卡住感"""
+                human_wait(page, 2.0, 4.0)
                 logger.info("[Anti-Bot] 操作后已等待，继续下一个")
             for i in range(n):
                 try:
                     item = chat_items_loc.nth(i)
-                    item.scroll_into_view_if_needed()
+                    try:
+                        item.scroll_into_view_if_needed(timeout=10000)
+                    except Exception as scroll_err:
+                        logger.warning("第 %d 项 scroll 超时或失败，跳过: %s", i + 1, scroll_err)
+                        continue
                     human_wait(page, 0.2, 0.6)
 
                     name_el = item.locator("span.geek-name").first

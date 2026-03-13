@@ -209,19 +209,26 @@ def run_webhook_server(port: int = 5000):
                 "详见 docs/LARK_BOT_CONVERSATION.md"
             )
             chat_id = os.environ.get("LARK_CHAT_ID", "")  # 仅作为兜底，不推荐
+        # 若配置了 LARK_CHAT_ID，所有回复统一发往该会话（本机主会话）
+        reply_chat_id = (os.environ.get("LARK_CHAT_ID") or "").strip() or chat_id
         chat_type = msg.get("chat_type", "") if isinstance(msg, dict) else ""
         logger.info("收到: chat_id=%s chat_type=%s text=%s", chat_id, chat_type, text[:50])
+
+        # 招聘/任务类消息：先发「正在处理」避免用户久等无反馈
+        _recruitment_keywords = ("招聘", "发布", "招人", "职位", "发职位", "post", "java", "python", "工程师")
+        if any(kw in text for kw in _recruitment_keywords) and reply_chat_id and os.environ.get("L3_WS_URL"):
+            _send_reply(reply_chat_id, "正在处理招聘需求，请稍候…（通常需 1–3 分钟）")
 
         # 先返回 200，避免 Lark 超时重试导致重复回复；实际处理在后台线程
         def _do_process_and_reply():
             try:
                 from tools.atom_lark_chat import process_lark_message
-                out = process_lark_message(text, chat_id=chat_id, user_id=user_id)
+                out = process_lark_message(text, chat_id=reply_chat_id, user_id=user_id)
                 reply = out["reply"]
-                if chat_id and reply:
-                    ok = _send_reply(chat_id, reply)
-                    logger.info("Lark 回复已发送 chat_id=%s len=%d ok=%s", chat_id[:20], len(reply), ok)
-                elif reply and not chat_id:
+                if reply_chat_id and reply:
+                    ok = _send_reply(reply_chat_id, reply)
+                    logger.info("Lark 回复已发送 chat_id=%s len=%d ok=%s", reply_chat_id[:20], len(reply), ok)
+                elif reply and not reply_chat_id:
                     logger.warning("无 chat_id，无法回复（请在事件中传递或配置 LARK_CHAT_ID）")
             except Exception as e:
                 logger.exception("后台处理异常: %s", e)

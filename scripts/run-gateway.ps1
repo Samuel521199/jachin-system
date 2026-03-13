@@ -39,14 +39,15 @@ if (-not $env:JACHIN_L2_ADMIN_TOKEN) {
     }
 }
 
+$UtcNow = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  L2 Gateway - 神经接驳审批" -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  武库大盘:  http://localhost:18888/admin/" -ForegroundColor Green
-Write-Host "  审批 L3:  http://localhost:18888/gateway/" -ForegroundColor Green
-Write-Host "  Token 已自动绑定，审批节点请打开 /gateway/" -ForegroundColor Gray
-Write-Host "  Press Ctrl+C to stop" -ForegroundColor DarkGray
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   L2 Gateway - 神经接驳审批" -ForegroundColor Cyan
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   武库大盘:  http://localhost:18888/admin/" -ForegroundColor Green
+Write-Host "[$UtcNow]   审批 L3:  http://localhost:18888/gateway/" -ForegroundColor Green
+Write-Host "[$UtcNow]   Token 已自动绑定，审批节点请打开 /gateway/" -ForegroundColor Gray
+Write-Host "[$UtcNow]   Press Ctrl+C to stop" -ForegroundColor DarkGray
 Write-Host ""
 
 & (Join-Path $ScriptDir "run-backend.ps1")

@@ -528,6 +528,9 @@ async def set_inference_strategy(body: dict):
     return {"ok": True, "mode": mode}
 
 if __name__ == "__main__":
+    from core.single_instance import acquire_single_instance_lock
+    acquire_single_instance_lock("l2", kill_previous=True)  # 同设备仅允许一个 L2，启动时杀死旧实例
+
     import uvicorn
     from core.config import settings
 

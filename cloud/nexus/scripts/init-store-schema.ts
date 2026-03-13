@@ -10,12 +10,13 @@ config({ path: ".env.local" });
 config({ path: ".env" });
 
 import postgres from "postgres";
+import { log, error } from "../src/lib/console-utc";
 
 const url = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/postgres";
 
 async function main() {
   const sql = postgres(url);
-  console.log("[init-store-schema] Connecting to DB...");
+  log("[init-store-schema] Connecting to DB...");
 
   try {
     // 1. 枚举
@@ -43,7 +44,7 @@ async function main() {
       EXCEPTION WHEN duplicate_object THEN NULL;
       END $$;
     `);
-    console.log("[init-store-schema] Enums OK");
+    log("[init-store-schema] Enums OK");
 
     // 2. plugins_registry 列（需表已存在）
     await sql.unsafe(`
@@ -90,7 +91,7 @@ async function main() {
         END IF;
       END $$;
     `);
-    console.log("[init-store-schema] plugins_registry columns OK");
+    log("[init-store-schema] plugins_registry columns OK");
 
     // 3. user_licenses
     await sql.unsafe(`
@@ -107,7 +108,7 @@ async function main() {
       CREATE UNIQUE INDEX IF NOT EXISTS user_licenses_tenant_item_unique
         ON public.user_licenses (tenant_id, item_id);
     `);
-    console.log("[init-store-schema] user_licenses OK");
+    log("[init-store-schema] user_licenses OK");
 
     // 4. telemetry_logs, developer_payouts（IAM 已下放 L2，不再创建 iam_roles/iam_role_permissions）
     await sql.unsafe(`
@@ -141,14 +142,23 @@ async function main() {
     await sql.unsafe(`
       CREATE UNIQUE INDEX IF NOT EXISTS developer_payouts_dev_item ON public.developer_payouts (developer_id, item_id);
     `);
-    console.log("[init-store-schema] telemetry_logs, developer_payouts OK");
+    log("[init-store-schema] telemetry_logs, developer_payouts OK");
+
+    // 5. users 表补齐 tenant_id、is_root（配对确认插入默认用户需要，与 schema.ts 对齐）
+    await sql.unsafe(`
+      ALTER TABLE public.users ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+    `);
+    await sql.unsafe(`
+      ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_root BOOLEAN NOT NULL DEFAULT false;
+    `);
+    log("[init-store-schema] users columns OK");
 
     // 打印连接信息（脱敏）便于排查 DB 不一致
     const masked = url.replace(/:([^:@]+)@/, ":****@");
-    console.log("[init-store-schema] DATABASE_URL:", masked);
-    console.log("[init-store-schema] Done. Restart Nexus.");
+    log("[init-store-schema] DATABASE_URL:", masked);
+    log("[init-store-schema] Done. Restart Nexus.");
   } catch (e) {
-    console.error("[init-store-schema] Error:", e);
+    error("[init-store-schema] Error:", e);
     process.exit(1);
   } finally {
     await sql.end();

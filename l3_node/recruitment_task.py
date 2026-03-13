@@ -18,13 +18,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-# 双通道正则：录用 / 淘汰
+# 双通道正则：录用 / 淘汰（兼容全角/半角冒号）
 RE_SUMMARY_PASS = re.compile(
-    r"---SUMMARY_PASS---\s*姓名：(.*?)\s*得分：(.*?)\s*核心优势：(.*?)\s*---SUMMARY_PASS---",
+    r"---SUMMARY_PASS---\s*姓名[：:]\s*(.*?)\s*得分[：:]\s*(.*?)\s*核心优势[：:]\s*(.*?)\s*---SUMMARY_PASS---",
     re.DOTALL,
 )
 RE_SUMMARY_REJECT = re.compile(
-    r"---SUMMARY_REJECT---\s*姓名：(.*?)\s*得分：(.*?)\s*淘汰原因：(.*?)\s*---SUMMARY_REJECT---",
+    r"---SUMMARY_REJECT---\s*姓名[：:]\s*(.*?)\s*得分[：:]\s*(.*?)\s*淘汰原因[：:]\s*(.*?)\s*---SUMMARY_REJECT---",
     re.DOTALL,
 )
 

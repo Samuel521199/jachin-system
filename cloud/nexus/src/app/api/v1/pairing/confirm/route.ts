@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { error as logError } from "@/lib/console-utc";
 import { edgeAgents, users } from "@/db/schema";
 import { pairingStoreGetByCode, pairingStoreApproveByCode } from "@/lib/pairing-store";
 import { eq } from "drizzle-orm";
@@ -130,7 +131,7 @@ export async function POST(req: NextRequest) {
       message: "Edge Agent successfully paired!",
     });
   } catch (e) {
-    console.error("[pairing/confirm] Error:", e);
+    logError("[pairing/confirm] Error:", e);
     return NextResponse.json(
       { success: false, error: "配对确认失败" },
       { status: 500 }

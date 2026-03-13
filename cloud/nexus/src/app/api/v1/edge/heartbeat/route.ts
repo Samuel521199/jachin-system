@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { error as logError } from "@/lib/console-utc";
 import { edgeAgents } from "@/db/schema";
 import { eq, or, and } from "drizzle-orm";
 
@@ -102,7 +103,7 @@ export async function POST(req: Request) {
       });
     } catch (dbError) {
       // 表不存在或 schema 不匹配时：降级返回成功，避免阻塞 L2 心跳
-      console.error("[edge/heartbeat] DB error (fallback to mock):", dbError);
+      logError("[edge/heartbeat] DB error (fallback to mock):", dbError);
       return NextResponse.json({
         success: true,
         timestamp: Date.now(),
@@ -111,7 +112,7 @@ export async function POST(req: Request) {
       });
     }
   } catch (e) {
-    console.error("[edge/heartbeat] Error:", e);
+    logError("[edge/heartbeat] Error:", e);
     return NextResponse.json(
       { error: "心跳处理失败" },
       { status: 500 }

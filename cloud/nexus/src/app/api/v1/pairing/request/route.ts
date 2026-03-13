@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { error as logError } from "@/lib/console-utc";
 import { edgeAgents } from "@/db/schema";
 import {
   pairingStoreSet,
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
         } catch (e: unknown) {
           const err = e as { code?: string };
           if (err?.code === "23505") continue; // unique violation
-          console.error("[pairing/request] DB error:", e);
+          logError("[pairing/request] DB error:", e);
           return NextResponse.json(
             { error: "配对请求失败" },
             { status: 500 }
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
       pair_url: pairUrl,
     });
   } catch (e) {
-    console.error("[pairing/request] Error:", e);
+    logError("[pairing/request] Error:", e);
     return NextResponse.json(
       { error: "配对请求失败" },
       { status: 500 }

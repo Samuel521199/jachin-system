@@ -100,6 +100,7 @@ def main() -> int:
         "--hidden-import", "l3_node.engine.hooks_pipeline",
         "--hidden-import", "l3_node.skills.loader",
         "--hidden-import", "core.wasm_runner",
+        "--hidden-import", "core.single_instance",
         "--hidden-import", "wasmtime",
         "--collect-all", "wasmtime",
         "--hidden-import", "websockets",

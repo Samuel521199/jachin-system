@@ -22,6 +22,16 @@ import os
 import sys
 from pathlib import Path
 
+# Windows 下强制 UTF-8 输出，避免日志乱码（PowerShell/终端显示）
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 # 确保项目根在 path 中
 _root = __file__.rsplit("l3_node", 1)[0].rstrip("/\\")
 if _root and _root not in sys.path:
@@ -51,13 +61,22 @@ except ImportError:
     pass
 
 _log_level = getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
+
+
+class _UTCFormatter(logging.Formatter):
+    """使用 UTC 时间的日志格式化器"""
+    def formatTime(self, record, datefmt=None):
+        from datetime import datetime, timezone
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 # 强制输出到 PowerShell 控制台（stdout），便于复制日志
-logging.basicConfig(
-    level=_log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-    force=True,
-)
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(_UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.basicConfig(level=_log_level, handlers=[_handler], force=True)
 logger = logging.getLogger("l3_node")
 # 将 l3_node 日志转发到全息监控 SSE，供前端 L3 全息监控面板订阅
 try:
@@ -65,7 +84,10 @@ try:
     install_broadcast_handler()
 except Exception as e:
     logger.debug("[L3] 全息监控 handler 安装跳过: %s", e)
-print("[L3] 启动中...", file=sys.stdout, flush=True)
+# 抑制 websockets 客户端断开时的 ConnectionClosedError 堆栈（刷新/关闭页面时常见）
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
+from core.log_utc import log_utc
+log_utc("[L3] 启动中...", file=sys.stdout)
 
 # 启动时打印 env 状态，便于排查 Key 分配问题
 if os.environ.get("DASHSCOPE_API_KEY"):
@@ -104,6 +126,32 @@ def _create_engine_standalone():
 
 
 async def main() -> None:
+    # 抑制客户端断开时的 ConnectionResetError（刷新/关闭页面时常见，非异常）
+    _loop = asyncio.get_running_loop()
+    _orig = _loop.get_exception_handler()
+    if _orig is None:
+        _orig = getattr(asyncio, "default_exception_handler", None)
+    if _orig is None:
+        # Python 3.9 及以下可能无 default_exception_handler，用 logging 兜底
+        import logging
+        _log = logging.getLogger("asyncio")
+
+        def _fallback(loop, ctx):
+            _log.exception("Unhandled exception: %s", ctx.get("message", ctx))
+
+        _orig = _fallback
+
+    def _quiet_handler(loop, ctx):
+        exc = ctx.get("exception")
+        if exc is not None and isinstance(exc, ConnectionResetError):
+            return
+        _orig(loop, ctx)
+
+    _loop.set_exception_handler(_quiet_handler)
+
+    from core.single_instance import acquire_single_instance_lock
+    acquire_single_instance_lock("l3", kill_previous=True)  # 同设备仅允许一个 L3，启动时杀死旧实例
+
     parser = argparse.ArgumentParser(description="L3 节点")
     parser.add_argument("--ws-only", action="store_true", help="仅启动 WebSocket，不连接 L2")
     parser.add_argument("--gateway", action="store_true", help="L2 零信任配对：注册后等待审批")

@@ -32,14 +32,18 @@ _PROJ_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DATA_ROOT = _PROJ_ROOT / "skills_repo" / "plugin" / "data"
 _PLUGIN_TOOLS = _PROJ_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
 HR_SKILL_ID = "jpp:com.jachin.hr.analyzer4"
+# 兼容全角/半角冒号、多余空白；LLM 有时输出 姓名: 或 姓名：
 RE_SUMMARY_PASS = re.compile(
-    r"---SUMMARY_PASS---\s*姓名：(.*?)\s*得分：(.*?)\s*核心优势：(.*?)\s*---SUMMARY_PASS---",
+    r"---SUMMARY_PASS---\s*姓名[：:]\s*(.*?)\s*得分[：:]\s*(.*?)\s*核心优势[：:]\s*(.*?)\s*---SUMMARY_PASS---",
     re.DOTALL,
 )
 RE_SUMMARY_REJECT = re.compile(
-    r"---SUMMARY_REJECT---\s*姓名：(.*?)\s*得分：(.*?)\s*淘汰原因：(.*?)\s*---SUMMARY_REJECT---",
+    r"---SUMMARY_REJECT---\s*姓名[：:]\s*(.*?)\s*得分[：:]\s*(.*?)\s*淘汰原因[：:]\s*(.*?)\s*---SUMMARY_REJECT---",
     re.DOTALL,
 )
+# 兜底：从报告标题或正文提取候选人姓名（当 LLM 未输出 SUMMARY 块时）
+RE_REPORT_TITLE = re.compile(r"(?:候选人评估报告|评估报告)[：:]\s*([^\n]+)", re.IGNORECASE)
+RE_SCORE_IN_REPORT = re.compile(r"(?:总计|综合得分|得分)[：:]\s*[^\d]*(\d+\.?\d*)", re.IGNORECASE)
 
 
 def _extract_candidate_fields(report: str) -> dict:
@@ -182,6 +186,8 @@ def job_recommend_candidates(job_config: dict[str, Any]) -> dict[str, Any]:
                         next_run_time=_now + timedelta(seconds=harvest_delay_seconds),
                         args=[job_config],
                         replace_existing=True,
+                        max_instances=1,
+                        misfire_grace_time=120,
                     )
                 except Exception as ex:
                     logger.warning("[Scheduler] 切换到抓简历阶段失败: %s", ex)
@@ -397,9 +403,11 @@ def _run_wasm_analysis_sync(
             stem = _extract_stem_from_hr_report(report or "") or stem or "unknown"
         md_path = ""
         if report:
+            # 使用 resolve() 与正斜杠，确保 skills_repo/plugin/data/{职位}/result 正确解析
+            out_dir_str = str(output_dir.resolve()).replace("\\", "/")
             md_path = persist_hr_analysis_batch_item(
                 HR_SKILL_ID, report, stem,
-                config={"output_dir": str(output_dir), "output_dir_use_absolute": False},
+                config={"output_dir": out_dir_str, "output_dir_use_absolute": False},
             ) or ""
         pass_match = RE_SUMMARY_PASS.search(report or "") if report else None
         fields = _extract_candidate_fields(report or "") if report else {}
@@ -437,6 +445,42 @@ def _run_wasm_analysis_sync(
                     "salary": fields.get("salary", "-"),
                     "stars": _score_to_stars(score),
                 })
+            elif report and not report.strip().startswith("⚠️"):
+                # 兜底：LLM 未输出 SUMMARY 块时，从报告/文件名提取基本信息，确保排行榜有内容
+                fallback_name = ""
+                for m in RE_REPORT_TITLE.finditer(report):
+                    fallback_name = (m.group(1) or "").strip()
+                    if fallback_name and len(fallback_name) < 20:
+                        break
+                if not fallback_name and stem:
+                    # 从文件名提取：【职位】姓名_id -> 姓名
+                    for pat in [r"】([^_]+)_", r"】(.+?)(?:_\d+[a-f0-9]*)?$", r"^(.+?)_"]:
+                        m = re.search(pat, stem)
+                        if m:
+                            fallback_name = (m.group(1) or "").strip()
+                            if fallback_name and len(fallback_name) < 30:
+                                break
+                if not fallback_name:
+                    fallback_name = stem or fn or "未知"
+                score = 0.0
+                for m in RE_SCORE_IN_REPORT.finditer(report):
+                    try:
+                        score = float(m.group(1))
+                        break
+                    except (ValueError, TypeError):
+                        pass
+                eliminated_list.append({
+                    "name": fallback_name[:30],
+                    "score": score,
+                    "reason": "报告格式未包含标准 SUMMARY 块，需人工复核",
+                    "pdf_path": pdf_path,
+                    "md_path": md_path,
+                    "education": fields.get("education", "-"),
+                    "experience": fields.get("experience", "-"),
+                    "salary": fields.get("salary", "-"),
+                    "stars": _score_to_stars(score),
+                })
+                logger.info("[Scheduler] 透析镜兜底：从报告提取 name=%s score=%.1f（无 SUMMARY 块）", fallback_name, score)
 
     t.join(timeout=2.0)
     if thread_result.get("error"):
@@ -594,6 +638,8 @@ def add_scheduled_job(job_config: dict[str, Any]) -> dict[str, Any]:
             next_run_time=_now + timedelta(seconds=30),  # 30 秒后首次执行，留时间给 Chrome 准备
             args=[job_config],
             replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=180,
         )
         # 2. 抓简历：由推荐牛人满 3 人后动态添加，不在此处添加
         # 3. 规则引擎：每 1 分钟检查；pending≥4 份时触发分析→排行榜（前2名）→Lark 同步→结束
@@ -605,6 +651,8 @@ def add_scheduled_job(job_config: dict[str, Any]) -> dict[str, Any]:
             next_run_time=_now + timedelta(seconds=45),
             args=[job_config],
             replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=300,
         )
         logger.info(
             "[Scheduler] 已添加岗位任务: %s (推荐每%dmin，满%d人后20s启动抓简历，满%d份简历触发分析)",

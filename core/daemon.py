@@ -401,15 +401,17 @@ async def _report_result(
 
 def start_daemon() -> None:
     """启动守护进程"""
-    console.print("[cyan]⚙️ Jachin Nexus Layer 2 - 边缘觉醒[/cyan]")
-    console.print("[dim]正在读取配置...[/dim]")
+    from core.log_utc import utc_prefix
+    _u = utc_prefix
+    console.print(f"[dim]{_u()}[/dim] [cyan]⚙️ Jachin Nexus Layer 2 - 边缘觉醒[/cyan]")
+    console.print(f"[dim]{_u()}[/dim] [dim]正在读取配置...[/dim]")
 
     access_token, layer1_url, instance_id = validate_config()
 
-    console.print(f"[dim]  Layer 1: {layer1_url}[/dim]")
-    console.print(f"[dim]  Instance: {instance_id or '(未设置)'}[/dim]")
+    console.print(f"[dim]{_u()}[/dim] [dim]  Layer 1: {layer1_url}[/dim]")
+    console.print(f"[dim]{_u()}[/dim] [dim]  Instance: {instance_id or '(未设置)'}[/dim]")
     console.print()
-    console.print("[green]🚀 守护进程已启动，按 Ctrl+C 优雅退出[/green]")
+    console.print(f"[dim]{_u()}[/dim] [green]🚀 守护进程已启动，按 Ctrl+C 优雅退出[/green]")
     console.print()
 
     async def _main() -> None:

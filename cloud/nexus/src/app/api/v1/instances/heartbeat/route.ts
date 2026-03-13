@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { log, error as logError } from "@/lib/console-utc";
 import { edgeAgents } from "@/db/schema";
 import { eq, or, and } from "drizzle-orm";
 
@@ -69,13 +70,13 @@ export async function POST(req: Request) {
         .where(eq(edgeAgents.id, agent.id));
     }
 
-    console.log(`\n🛸 收到边缘智能体 [${String(instance_id ?? agentId ?? "?").slice(0, 8)}] 心跳:`);
-    console.log(`   💻 CPU: ${metrics?.cpu_percent ?? "?"}% | RAM: ${metrics?.ram_used_mb ?? "?"}MB`);
-    console.log(`   📦 武器状态:`, active_plugins ?? {});
+    log(`\n🛸 收到边缘智能体 [${String(instance_id ?? agentId ?? "?").slice(0, 8)}] 心跳:`);
+    log(`   💻 CPU: ${metrics?.cpu_percent ?? "?"}% | RAM: ${metrics?.ram_used_mb ?? "?"}MB`);
+    log(`   📦 武器状态:`, active_plugins ?? {});
 
     return NextResponse.json({ success: true, timestamp: Date.now() });
   } catch (e) {
-    console.error("Heartbeat Error:", e);
+    logError("Heartbeat Error:", e);
     return NextResponse.json(
       { error: "心跳处理失败" },
       { status: 500 }

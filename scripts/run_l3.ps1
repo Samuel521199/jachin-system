@@ -15,6 +15,7 @@ if (-not $root) { Write-Error "未找到项目根目录 (l3_node)" }
 
 Set-Location $root
 $env:PYTHONUNBUFFERED = "1"
+$env:PYTHONUTF8 = "1"
 $env:LOG_LEVEL = "DEBUG"
 
 $mode = "--gateway"

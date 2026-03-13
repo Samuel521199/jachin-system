@@ -71,6 +71,13 @@
       "when": 1741340800000,
       "tag": "0009_add_version_and_updated_at",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1741340900000,
+      "tag": "0010_users_tenant_id_is_root",
+      "breakpoints": true
     }
   ]
 }

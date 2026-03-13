@@ -129,13 +129,14 @@ if (-not $AlreadyPaired) {
     Write-Host ""
 }
 
+$UtcNow = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Layer2 (nexus_daemon) - Starting" -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  Ingress API: http://127.0.0.1:9000"
-Write-Host "  Web UI: http://localhost:3000"
-Write-Host "  Press Ctrl+C to stop"
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   Layer2 (nexus_daemon) - Starting" -ForegroundColor Cyan
+Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+Write-Host "[$UtcNow]   Ingress API: http://127.0.0.1:9000"
+Write-Host "[$UtcNow]   Web UI: http://localhost:3000"
+Write-Host "[$UtcNow]   Press Ctrl+C to stop"
 Write-Host ""
 Write-Host "[Layer2] Launching nexus_daemon (logs below)..." -ForegroundColor Green
 Write-Host ""

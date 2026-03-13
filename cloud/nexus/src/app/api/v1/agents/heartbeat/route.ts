@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { error as logError } from "@/lib/console-utc";
 import { edgeAgents, blueprints, agentMessageQueue } from "@/db/schema";
 import { eq, and, asc } from "drizzle-orm";
 
@@ -143,7 +144,7 @@ export async function POST(req: NextRequest) {
       }),
     });
   } catch (e) {
-    console.error("[agents/heartbeat] Error:", e);
+    logError("[agents/heartbeat] Error:", e);
     return NextResponse.json(
       { error: "心跳处理失败" },
       { status: 500 }

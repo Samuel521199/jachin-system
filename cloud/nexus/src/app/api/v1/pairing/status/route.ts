@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { error as logError } from "@/lib/console-utc";
 import { edgeAgents } from "@/db/schema";
 import { pairingStoreGetBySession, pairingStoreGetByCode } from "@/lib/pairing-store";
 import { eq } from "drizzle-orm";
@@ -120,7 +121,7 @@ export async function GET(req: NextRequest) {
       nexus_base_url: baseUrl,
     });
   } catch (e) {
-    console.error("[pairing/status] Error:", e);
+    logError("[pairing/status] Error:", e);
     return NextResponse.json(
       { error: "配对状态查询失败" },
       { status: 500 }
