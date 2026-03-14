@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+from l3_node.paths import get_app_root
+
 logger = logging.getLogger(__name__)
 
 # 默认 L2 地址（可从 l2_gateway_config.json 读取）
@@ -171,7 +173,7 @@ def _invoke_atom_post_job_boss_local(
     发布前自动检测 Chrome：未连接则启动 Chrome + 打开 Boss 登录页，提示 HR 扫码后回复「已登录」再发布。"""
     import time
 
-    _proj = Path(__file__).resolve().parent.parent.parent
+    _proj = get_app_root()
     plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
     cdp = (cdp_url or "http://127.0.0.1:9222").rstrip("/")
     if not plugin_root.exists():
@@ -238,6 +240,8 @@ def _invoke_atom_post_job_boss_local(
             cdp_url=cdp,
             jd_config_path=_jd_path,
         )
+        if not result.get("posted", False):
+            logger.warning("[MCP Registry] atom_post_job_boss 返回未发布: %s", result.get("error", "未知"))
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         err_str = str(e)
@@ -265,7 +269,7 @@ def _invoke_atom_post_job_boss_local(
 
 def _invoke_atom_greet_recommend_boss_local(cdp_url: str = "", jd_config_path: str = "") -> str:
     """L3 本地执行 atom_greet_recommend_boss，直接调用 plugin 工具。"""
-    _proj = Path(__file__).resolve().parent.parent.parent
+    _proj = get_app_root()
     plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
     if not plugin_root.exists():
         return json.dumps({"success": False, "greeted_count": 0, "error": f"plugin 路径不存在: {plugin_root}"}, ensure_ascii=False)
@@ -319,7 +323,7 @@ def _invoke_add_automated_recruitment_task_local(
     流程：推荐牛人每15分钟，满3人打招呼→20秒后抓简历，满3份简历→Agent讨论并结束。"""
     if not (job_name or "").strip():
         return json.dumps({"ok": False, "error": "job_name 不能为空"}, ensure_ascii=False)
-    _proj = Path(__file__).resolve().parent.parent.parent
+    _proj = get_app_root()
     plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
     if plugin_root.exists() and str(plugin_root) not in __import__("sys").path:
         __import__("sys").path.insert(0, str(plugin_root))
@@ -353,7 +357,7 @@ def _invoke_add_automated_recruitment_task_local(
 def _invoke_read_file_local(path_raw: str) -> str:
     """L3 本地执行 read_file，使用 core.pdf_extractor。"""
     from core.pdf_extractor import extract_pdf_text, SCAN_PLACEHOLDER
-    _proj = Path(__file__).resolve().parent.parent.parent
+    _proj = get_app_root()
     _l3_vol = Path.home() / ".jachin" / "client_volumes"
     raw = (path_raw or "").strip().replace("\\", "/")
     if not raw or "\n" in raw or len(raw) > 1200:
@@ -614,7 +618,7 @@ class MCPToolRegistry:
                         job_name = str(jd_cfg["job_title"]).strip()
                 # 兜底：职位发布后 LLM 可能未传 job_name，从 data/*/jd.json 读取 job_title（按修改时间取最新）
                 if not (job_name or "").strip():
-                    _proj = Path(__file__).resolve().parent.parent.parent
+                    _proj = get_app_root()
                     data_root = _proj / "skills_repo" / "plugin" / "data"
                     if data_root.exists():
                         candidates = [(d / "jd.json", (d / "jd.json").stat().st_mtime) for d in data_root.iterdir() if d.is_dir() and (d / "jd.json").exists()]

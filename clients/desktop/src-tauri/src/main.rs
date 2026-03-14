@@ -345,7 +345,9 @@ fn main() {
                     println!("[L3] 引擎已启动 ws://127.0.0.1:18981");
                 }
                 Err(e) => {
-                    eprintln!("[L3] 启动失败: {}", e);
+                    let msg = format!("[L3] 启动失败: {}", e);
+                    eprintln!("{}", msg);
+                    l3_spawn::write_l3_debug(&msg);
                     // 不阻塞启动，前端 useSensoryWebSocket 会显示未连接
                 }
             }

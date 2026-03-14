@@ -30,7 +30,8 @@ RE_SUMMARY_REJECT = re.compile(
 
 logger = logging.getLogger("l3_node")
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent
+from l3_node.paths import get_app_root
+_PROJ_ROOT = get_app_root()
 PLUGIN_DATA_ROOT = _PROJ_ROOT / "skills_repo" / "plugin" / "data"
 HR_SKILL_ID = "jpp:com.jachin.hr.analyzer4"
 HR_SKILL_CONFIG_ID = "hr-analyzer4"
@@ -256,7 +257,7 @@ async def run_recruitment_task_stream(
     try:
         jd_path = PLUGIN_DATA_ROOT / job_folder / "jd.json"
         if jd_path.exists():
-            plugin_tools = Path(__file__).resolve().parent.parent / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+            plugin_tools = _PROJ_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
             if str(plugin_tools) not in sys.path:
                 sys.path.insert(0, str(plugin_tools))
             from tools.atom_post_job_boss import load_jd_config, get_jd_select
@@ -275,7 +276,7 @@ async def run_recruitment_task_stream(
         nonlocal harvester_result
         try:
             import sys
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"))
+            sys.path.insert(0, str(_PROJ_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"))
             from tools.atom_inbox_harvester import atom_inbox_harvester_full_flow
             logger.info("[Recruitment] 收网参数 request_if_no_resume=%s filter_tab=%s", request_resume, filter_tab or "全部")
             harvester_result = atom_inbox_harvester_full_flow(
@@ -501,7 +502,7 @@ async def run_recruitment_task_stream(
         summary_path = summary_dir / "排行榜_Summary.md"
         if summary_path.exists():
             try:
-                plugin_tools = Path(__file__).resolve().parent.parent / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+                plugin_tools = _PROJ_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
                 if str(plugin_tools) not in sys.path:
                     sys.path.insert(0, str(plugin_tools))
                 from tools.atom_lark_bitable_sync import atom_lark_bitable_sync

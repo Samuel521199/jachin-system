@@ -288,7 +288,11 @@ async def _execute_publish_bypass(jd_config: dict) -> str | None:
         if not result.get("posted", False) and "需要登录" in str(result.get("error", "")):
             return "已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。"
         if not result.get("posted", False):
-            logger.warning("[Agent] 直接发布未成功: %s", result.get("error", obs)[:200])
+            err = result.get("error", obs) or ""
+            err_preview = (err[:200] + "…") if len(str(err)) > 200 else err
+            logger.warning("[Agent] 直接发布未成功: %s", err_preview)
+            if "playwright" in str(err).lower():
+                return "发布失败：缺少 playwright 组件。若使用 exe：请重新执行 `python scripts/build_l3_sidecar.py --force` 后重启。若使用 Python：请执行 `pip install playwright` 后重启 L3。"
             return None
         _clear_last_jd_pending()
         task_inp = json.dumps({"job_name": job_title}, ensure_ascii=False)
@@ -310,7 +314,8 @@ def _persist_jd_config_before_publish(jd_config: dict) -> str | None:
     if not job_title:
         return None
     try:
-        _proj = Path(__file__).resolve().parent.parent
+        from l3_node.paths import get_app_root
+        _proj = get_app_root()
         plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
         if not plugin_root.exists():
             logger.warning("[Agent] plugin 路径不存在，无法持久化 JD 配置")

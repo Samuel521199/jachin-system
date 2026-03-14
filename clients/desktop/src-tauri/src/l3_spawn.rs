@@ -8,6 +8,30 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+/// 主程序 exe 所在目录（dist_jachin_desktop 或 target/release）
+pub fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
+}
+
+/// 将 L3 启动失败信息写入 l3_debug.log（Release 无控制台时用户可查看）
+pub fn write_l3_debug(msg: &str) {
+    if let Some(dir) = exe_dir() {
+        let log_path = dir.join("l3_debug.log");
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(f, "[{}] {}", timestamp(), msg);
+            let _ = f.flush();
+        }
+    }
+}
+
+fn timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| format!("{}.{:03}", d.as_secs(), d.subsec_millis()))
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 /// 供 Ctrl+C 时 kill 使用
 static L3_FOR_CTRLC: OnceLock<Arc<L3Handle>> = OnceLock::new();
 
@@ -102,7 +126,7 @@ fn project_root() -> Option<PathBuf> {
 }
 
 /// 从项目根 .env 读取关键变量（DASHSCOPE_API_KEY 等），供 L3 子进程使用
-fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
+pub fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
     let mut vars = Vec::new();
     let env_path = root.join(".env");
     if let Ok(content) = fs::read_to_string(&env_path) {
@@ -123,6 +147,58 @@ fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
         }
     }
     vars
+}
+
+/// 直接通过 exe 路径启动（绕过 Tauri Sidecar 路径解析，解决 bundle.active:false 时 Tauri 找不到 bin 的问题）
+pub fn spawn_l3_via_direct_exe(
+    app: &impl tauri::Manager<tauri::Wry>,
+    args: &[&str],
+    env_url: Option<&str>,
+    env_vars: &[(String, String)],
+    env_device_name: Option<&str>,
+) -> Result<tauri_plugin_shell::process::CommandChild, String> {
+    let dir = exe_dir().ok_or("无法获取 exe 目录")?;
+    let bin_dir = dir.join("bin");
+    let exe_name = if cfg!(target_os = "windows") {
+        "l3_node-x86_64-pc-windows-msvc.exe"
+    } else {
+        "l3_node-x86_64-unknown-linux-gnu"
+    };
+    let exe_path = bin_dir.join(exe_name);
+    if !exe_path.exists() {
+        return Err(format!("L3 exe 不存在: {}，请运行 .\\scripts\\build_full.ps1", exe_path.display()));
+    }
+    let mut cmd = app.shell().command(exe_path.to_string_lossy().as_ref()).args(args).env("PYTHONUTF8", "1");
+    if let Some(url) = env_url {
+        cmd = cmd.env("L2_BASE_URL", url);
+    }
+    for (k, v) in env_vars {
+        cmd = cmd.env(k, v);
+    }
+    if let Some(name) = env_device_name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            cmd = cmd.env("JACHIN_DEVICE_NAME", trimmed.chars().take(64).collect::<String>());
+        }
+    }
+    cmd = cmd.current_dir(&dir);
+    let (mut rx, child) = cmd.spawn().map_err(|e| format!("直接启动 L3 exe 失败: {}", e))?;
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    let _ = std::io::stdout().write_all(&bytes);
+                    let _ = std::io::stdout().flush();
+                }
+                CommandEvent::Stderr(bytes) => {
+                    let _ = std::io::stderr().write_all(&bytes);
+                    let _ = std::io::stderr().flush();
+                }
+                _ => {}
+            }
+        }
+    });
+    Ok(child)
 }
 
 /// 使用 Python 回退启动 l3_node（Sidecar 不可用时）
@@ -172,7 +248,9 @@ pub fn spawn_l3_via_python(
 /// 若环境变量 JACHIN_SKIP_L3_SPAWN=1，则不启动（用户可手动运行 scripts/run_l3.ps1 查看完整日志）
 pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     if std::env::var("JACHIN_SKIP_L3_SPAWN").as_deref() == Ok("1") {
-        return Err("JACHIN_SKIP_L3_SPAWN=1，跳过 L3 自动启动。请手动运行: .\\scripts\\run_l3.ps1".to_string());
+        let msg = "JACHIN_SKIP_L3_SPAWN=1，跳过 L3 自动启动。请手动运行: .\\scripts\\run_l3.ps1";
+        write_l3_debug(msg);
+        return Err(msg.to_string());
     }
     let (args, env_url, mode) = if let Some(url) = should_use_gateway_mode() {
         (["--gateway"].as_slice(), Some(url), "gateway")
@@ -180,15 +258,25 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
         (["--ws-only"].as_slice(), None, "ws-only")
     };
 
-    let root = project_root().unwrap_or_else(|| PathBuf::new());
+    let root = project_root().unwrap_or_else(PathBuf::new);
+    let env_root = if root.as_os_str().is_empty() {
+        exe_dir().unwrap_or_else(PathBuf::new)
+    } else {
+        root.clone()
+    };
+    let env_vars = load_l3_env_vars(&env_root);
+
     let child = match app.shell().sidecar("bin/l3_node") {
         Ok(sidecar) => {
             let mut sidecar = sidecar.args(args).env("PYTHONUTF8", "1");
             if let Some(ref url) = env_url {
                 sidecar = sidecar.env("L2_BASE_URL", url.as_str());
             }
-            for (k, v) in load_l3_env_vars(&root) {
-                sidecar = sidecar.env(&k, &v);
+            for (k, v) in &env_vars {
+                sidecar = sidecar.env(k, v);
+            }
+            if let Some(ref dir) = exe_dir() {
+                sidecar = sidecar.current_dir(dir);
             }
             match sidecar.spawn() {
                 Ok((mut rx, c)) => {
@@ -212,21 +300,55 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 3") {
-                        println!("[L3] Sidecar 不可用，回退到 python -m l3_node");
-                        spawn_l3_via_python(app, args, env_url.as_deref(), None)?
+                    let expected = exe_dir()
+                        .map(|d| format!("{}", d.join("bin").join("l3_node-x86_64-pc-windows-msvc.exe").display()))
+                        .unwrap_or_else(|| "bin/l3_node-*.exe".to_string());
+                    write_l3_debug(&format!("Sidecar spawn 失败: {} (期望路径: {})", err_msg, expected));
+                    if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 3") || err_msg.contains("os error 2") || err_msg.contains("not found") {
+                        write_l3_debug("尝试直接启动 exe_dir/bin/l3_node-*.exe");
+                        match spawn_l3_via_direct_exe(app, args, env_url.as_deref(), &env_vars, None) {
+                            Ok(c) => c,
+                            Err(direct_err) => {
+                                write_l3_debug(&format!("直接 exe 启动失败: {}", direct_err));
+                                if project_root().is_some() {
+                                    write_l3_debug("回退到 python -m l3_node");
+                                    spawn_l3_via_python(app, args, env_url.as_deref(), None)?
+                                } else {
+                                    return Err(format!("L3 启动失败: {}；直接 exe: {}", err_msg, direct_err));
+                                }
+                            }
+                        }
                     } else {
-                        return Err(format!("L3 启动失败: {}", err_msg));
+                        let msg = format!("L3 启动失败: {}", err_msg);
+                        write_l3_debug(&msg);
+                        return Err(msg);
                     }
                 }
             }
         }
-        Err(_) => {
-            println!("[L3] Sidecar 未找到，使用 python -m l3_node");
-            spawn_l3_via_python(app, args, env_url.as_deref(), None)?
+        Err(e) => {
+            let err_msg = e.to_string();
+            write_l3_debug(&format!("Sidecar 未找到: {}，尝试直接启动 exe_dir/bin/l3_node-*.exe", err_msg));
+            match spawn_l3_via_direct_exe(app, args, env_url.as_deref(), &env_vars, None) {
+                Ok(c) => c,
+                Err(direct_err) => {
+                    write_l3_debug(&format!("直接 exe 启动失败: {}", direct_err));
+                    if project_root().is_some() {
+                        write_l3_debug("回退到 python -m l3_node");
+                        spawn_l3_via_python(app, args, env_url.as_deref(), None)?
+                    } else {
+                        let msg = format!(
+                            "L3 启动失败: {}。便携包需确保 bin/l3_node-x86_64-pc-windows-msvc.exe 存在，请运行: .\\scripts\\build_full.ps1",
+                            direct_err
+                        );
+                        write_l3_debug(&msg);
+                        return Err(msg);
+                    }
+                }
+            }
         }
     };
 
-    println!("[L3] 引擎已启动 ws://127.0.0.1:18981 (mode={})", mode);
+    write_l3_debug(&format!("L3 引擎已启动 ws://127.0.0.1:18981 (mode={})", mode));
     Ok(child)
 }

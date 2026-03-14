@@ -28,7 +28,8 @@ except ImportError:
     def broadcast_log(msg: str, level: str = "INFO") -> None:
         pass
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent
+from l3_node.paths import get_app_root
+_PROJ_ROOT = get_app_root()
 PLUGIN_DATA_ROOT = _PROJ_ROOT / "skills_repo" / "plugin" / "data"
 _PLUGIN_TOOLS = _PROJ_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
 HR_SKILL_ID = "jpp:com.jachin.hr.analyzer4"

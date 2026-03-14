@@ -11,11 +11,12 @@ import { getSkillConfig, updateSkillConfig } from "../../lib/api";
 
 const HR_SKILL_IDS = ["hr.analyzer", "hr-analyzer"];
 /** HR 展示项：岗位 JD + 两个路径（各带独立绝对路径开关） */
-const HR_FIELDS = [
+type HrField = { key: string; label: string; isLongText?: boolean; absoluteKey?: string };
+const HR_FIELDS: HrField[] = [
   { key: "JD_template", label: "岗位 JD", isLongText: true },
   { key: "resume_input_dir", label: "简历路径", absoluteKey: "resume_input_dir_use_absolute" },
   { key: "output_dir", label: "输出分析结果的路径", absoluteKey: "output_dir_use_absolute" },
-] as const;
+];
 
 function isHrSkill(skillId: string): boolean {
   const id = (skillId || "").toLowerCase();

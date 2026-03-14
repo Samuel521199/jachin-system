@@ -14,7 +14,8 @@ from typing import Any
 
 logger = logging.getLogger("l3_node")
 
-_PROJ_ROOT = Path(__file__).resolve().parent.parent
+from l3_node.paths import get_app_root
+_PROJ_ROOT = get_app_root()
 _JACHIN_ROOT = Path.home() / ".jachin"
 
 _last_saved_path: str | None = None

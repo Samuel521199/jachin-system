@@ -15,6 +15,11 @@ L3 节点独立运行入口
 """
 from __future__ import annotations
 
+# 最早抑制 httpcore/httpx DEBUG 刷屏（必须在 import httpx 之前）
+import logging
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.INFO)
+
 import argparse
 import asyncio
 import logging
@@ -32,20 +37,41 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# 确保项目根在 path 中
-_root = __file__.rsplit("l3_node", 1)[0].rstrip("/\\")
+# 确保项目根在 path 中。PyInstaller 时 __file__ 为 _MEIPASS/__main__.py 不含 l3_node，需用 cwd
+if getattr(sys, "frozen", False):
+    _root = str(Path.cwd())
+else:
+    _root = __file__.rsplit("l3_node", 1)[0].rstrip("/\\")
 if _root and _root not in sys.path:
     sys.path.insert(0, _root)
 
+# 最早阶段：启动调试日志（在加载 dotenv 等之前，便于排查 exe 打包问题）
+from l3_node.early_log import setup_early_logging, trace, get_log_path
+_log_path = setup_early_logging()
+trace("early_log ready, log_path=%s", _log_path)
+
 # 尽早加载项目根 .env，确保 DASHSCOPE_API_KEY 等被 L3 继承（桌面端 spawn 时可能未继承）
-# 路径优先级：1) __file__ 推导的项目根 2) cwd 3) 从 cwd 向上查找（PyInstaller/Sidecar 兼容）
+# PyInstaller 时 __file__ 为 _MEIPASS/__main__.py 不含 l3_node，_root 推导会错，故 frozen 时仅用 cwd
 try:
+    trace("loading dotenv...")
     from dotenv import load_dotenv
     _env_loaded = False
-    for _p in [Path(_root) / ".env", Path.cwd() / ".env"]:
+    if getattr(sys, "frozen", False):
+        _env_candidates = [Path.cwd() / ".env"]
+    else:
+        _pr = Path(_root) / ".env"
+        _pc = Path.cwd() / ".env"
+        _env_candidates = [_pr, _pc] if _pr != _pc else [_pr]
+        # 排除 PyInstaller 错误推导（__file__ 为 _MEIPASS/__main__.py 时 _root 会错）
+        _env_candidates = [p for p in _env_candidates if "_MEIPASS" not in str(p) and "__main__.py" not in str(p)]
+        if not _env_candidates:
+            _env_candidates = [Path.cwd() / ".env"]
+    for _p in _env_candidates:
+        trace(".env path=%s exists=%s", _p, _p.exists())
         if _p.exists():
             load_dotenv(_p, encoding="utf-8")
             _env_loaded = True
+            trace(".env loaded from %s", _p)
             break
     if not _env_loaded:
         _cwd = Path.cwd()
@@ -53,12 +79,28 @@ try:
             _p = _cwd / ".env"
             if _p.exists():
                 load_dotenv(_p, encoding="utf-8")
+                trace(".env loaded from %s (cwd search)", _p)
                 break
             _cwd = _cwd.parent if _cwd.parent != _cwd else _cwd
             if not _cwd or str(_cwd) == "/":
                 break
-except ImportError:
-    pass
+    trace("dotenv done, env_loaded=%s", _env_loaded)
+except ImportError as e:
+    trace("dotenv ImportError: %s", e)
+except Exception as e:
+    trace("dotenv Exception: %s", e)
+
+# 立即打印 API Key 状态到调试日志（脱敏：前8+后4字符，便于确认是否加载）
+def _mask_key(val: str) -> str:
+    if not val or len(val) < 12:
+        return "***" if val else "(空)"
+    return f"{val[:8]}...{val[-4:]} (len={len(val)})"
+_dash = os.environ.get("DASHSCOPE_API_KEY", "")
+_openai = os.environ.get("OPENAI_API_KEY", "")
+trace("DASHSCOPE_API_KEY=%s", _mask_key(_dash))
+trace("OPENAI_API_KEY=%s", _mask_key(_openai))
+if not _dash and not _openai:
+    trace("WARNING: 未检测到任何 API Key，大模型将不可用")
 
 _log_level = getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
 
@@ -74,55 +116,81 @@ class _UTCFormatter(logging.Formatter):
 
 
 # 强制输出到 PowerShell 控制台（stdout），便于复制日志
+trace("configuring logging, level=%s", _log_level)
 _handler = logging.StreamHandler(sys.stdout)
 _handler.setFormatter(_UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logging.basicConfig(level=_log_level, handlers=[_handler], force=True)
+from l3_node.early_log import reattach_file_handler
+reattach_file_handler()  # basicConfig 会清除 file handler，需重新挂载
 logger = logging.getLogger("l3_node")
+trace("logger ready, debug_log=%s", get_log_path())
 # 将 l3_node 日志转发到全息监控 SSE，供前端 L3 全息监控面板订阅
 try:
+    trace("importing log_broadcaster...")
     from l3_node.log_broadcaster import install_broadcast_handler
     install_broadcast_handler()
+    trace("log_broadcaster installed")
 except Exception as e:
+    trace("log_broadcaster failed: %s", e)
     logger.debug("[L3] 全息监控 handler 安装跳过: %s", e)
 # 抑制 websockets 客户端断开时的 ConnectionClosedError 堆栈（刷新/关闭页面时常见）
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
-from core.log_utc import log_utc
-log_utc("[L3] 启动中...", file=sys.stdout)
+# 抑制 httpcore/httpx 的 DEBUG 刷屏（connect_tcp/receive_response 等），保留 httpx INFO 请求日志
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.INFO)
+try:
+    trace("importing core.log_utc...")
+    from core.log_utc import log_utc
+    log_utc("[L3] 启动中...", file=sys.stdout)
+    trace("core.log_utc done")
+except Exception as e:
+    trace("core.log_utc failed: %s", e)
 
-# 启动时打印 env 状态，便于排查 Key 分配问题
-if os.environ.get("DASHSCOPE_API_KEY"):
-    logger.info("[L3] 环境变量 DASHSCOPE_API_KEY 已加载")
-elif os.environ.get("OPENAI_API_KEY"):
-    logger.info("[L3] 环境变量 OPENAI_API_KEY 已加载")
-else:
-    logger.warning("[L3] 未检测到 DASHSCOPE_API_KEY 或 OPENAI_API_KEY，将依赖 L2 下发 Key")
+# 启动时打印 env 状态，便于排查 Key 分配问题（脱敏显示前8+后4字符）
+if _log_path:
+    logger.info("[L3] 调试日志: %s", _log_path)
+_dash_key = os.environ.get("DASHSCOPE_API_KEY", "")
+_openai_key = os.environ.get("OPENAI_API_KEY", "")
+if _dash_key:
+    logger.info("[L3] DASHSCOPE_API_KEY 已加载: %s", _mask_key(_dash_key))
+if _openai_key:
+    logger.info("[L3] OPENAI_API_KEY 已加载: %s", _mask_key(_openai_key))
+if not _dash_key and not _openai_key:
+    logger.warning("[L3] 未检测到 DASHSCOPE_API_KEY 或 OPENAI_API_KEY，大模型不可用，将依赖 L2 下发 Key")
 
 
 def _create_engine_standalone():
     """仅用环境变量创建引擎，不连接 L2。有 DASHSCOPE 时用 qwen3.5-flash-2026-02-23，避免连未启动的 Ollama。"""
-    from l3_node.llm_client import LiteLLMEngine, SecurityContext
+    try:
+        trace("_create_engine_standalone: importing LiteLLMEngine...")
+        from l3_node.llm_client import LiteLLMEngine, SecurityContext
 
-    ctx = SecurityContext()
-    if os.environ.get("OPENAI_API_KEY"):
-        ctx.set_key("openai", os.environ["OPENAI_API_KEY"])
-    if os.environ.get("DASHSCOPE_API_KEY"):
-        ctx.set_key("dashscope", os.environ["DASHSCOPE_API_KEY"])
-    fallback = None
-    default_model = "gpt-4o-mini"
-    if ctx.get_key("dashscope"):
-        fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
-        default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
-    _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
-    engine = LiteLLMEngine(
-        security_context=ctx,
-        model_name=os.environ.get("L3_MODEL", default_model),
-        fallback_models=fallback,
-        timeout=_timeout,
-        max_attempts=2,
-    )
-    from core.wasm_runner import register_host_services
-    register_host_services(llm_engine=engine, l2_base_url=os.environ.get("L2_BASE_URL", "http://localhost:18888"))
-    return engine
+        ctx = SecurityContext()
+        if os.environ.get("OPENAI_API_KEY"):
+            ctx.set_key("openai", os.environ["OPENAI_API_KEY"])
+        if os.environ.get("DASHSCOPE_API_KEY"):
+            ctx.set_key("dashscope", os.environ["DASHSCOPE_API_KEY"])
+        fallback = None
+        default_model = "gpt-4o-mini"
+        if ctx.get_key("dashscope"):
+            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+            default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+        _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
+        engine = LiteLLMEngine(
+            security_context=ctx,
+            model_name=os.environ.get("L3_MODEL", default_model),
+            fallback_models=fallback,
+            timeout=_timeout,
+            max_attempts=2,
+        )
+        trace("_create_engine_standalone: importing register_host_services...")
+        from core.wasm_runner import register_host_services
+        register_host_services(llm_engine=engine, l2_base_url=os.environ.get("L2_BASE_URL", "http://localhost:18888"))
+        trace("_create_engine_standalone: done")
+        return engine
+    except Exception as e:
+        trace("_create_engine_standalone FAILED: %s", e)
+        raise
 
 
 async def main() -> None:
@@ -162,7 +230,9 @@ async def main() -> None:
     sub_id = os.environ.get("SUB_ACCOUNT_ID", "")
 
     if args.ws_only:
+        trace("main: ws-only mode, creating engine...")
         engine = _create_engine_standalone()
+        trace("main: engine created, loading agent_ref...")
         from l3_node.agent_ref import engine_ref
         engine_ref["engine"] = engine
         from l3_node.bootstrap import run_l3_agent
@@ -175,10 +245,11 @@ async def main() -> None:
         return
 
     if args.gateway:
+        trace("main: gateway mode, importing bootstrap...")
         from l3_node.bootstrap import bootstrap_l3_gateway_pending, heartbeat_loop, run_l3_agent
         from l3_node.ws_server import run_ws_server
         from l3_node.http_server import run_http_server, L3_HTTP_PORT
-
+        trace("main: starting HTTP server...")
         await run_http_server(port=L3_HTTP_PORT)
         engine, node_id = await bootstrap_l3_gateway_pending(
             l2_base_url=l2_url,
@@ -227,4 +298,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        trace("FATAL: %s", e)
+        if get_log_path():
+            import traceback
+            trace("traceback: %s", traceback.format_exc())
+        raise

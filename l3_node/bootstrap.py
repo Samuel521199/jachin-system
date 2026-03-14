@@ -9,10 +9,15 @@ Jachin Nexus V2 - L3 节点引导
 """
 from __future__ import annotations
 
+import logging
+
+# 在首次 import httpx 前抑制 DEBUG 刷屏（connect_tcp/receive_response 等）
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.INFO)
+
 import asyncio
 import hashlib
 import json
-import logging
 import os
 import platform
 import time
@@ -51,6 +56,11 @@ def ensure_identity() -> tuple[str, str]:
     Returns:
         (private_key_pem, public_key_pem)
     """
+    try:
+        from l3_node.early_log import trace
+        trace("bootstrap ensure_identity: JACHIN_DIR=%s IDENTITY_PATH=%s exists=%s", _JACHIN_DIR, _IDENTITY_PATH, _IDENTITY_PATH.exists())
+    except ImportError:
+        pass
     from l3_node.crypto import generate_rsa_keypair, public_key_from_private
 
     _JACHIN_DIR.mkdir(parents=True, exist_ok=True)
@@ -105,6 +115,11 @@ async def bootstrap_l3_gateway_pending(
     poll_url = f"{base}/api/v2/auth/poll"
 
     # 设备名与 node_id：从配置文件读取，避免同一设备重复注册产生多个待审批节点
+    try:
+        from l3_node.early_log import trace
+        trace("bootstrap: GATEWAY_CONFIG_PATH=%s exists=%s", _GATEWAY_CONFIG_PATH, _GATEWAY_CONFIG_PATH.exists())
+    except ImportError:
+        pass
     display_name = (os.environ.get("JACHIN_DEVICE_NAME") or "").strip()[:64]
     existing_node_id: Optional[str] = None
     if _GATEWAY_CONFIG_PATH.exists():
@@ -255,6 +270,11 @@ async def bootstrap_l3_gateway_pending(
         fallback = None
     _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
     logger.debug("[L3 Gateway] 创建引擎 model=%s fallback=%s timeout=%s ctx_has_key=%s", model_name, fallback, _timeout, ctx.has_any_key())
+    try:
+        from l3_node.early_log import trace
+        trace("bootstrap: creating LiteLLMEngine model=%s", model_name)
+    except ImportError:
+        pass
     engine = LiteLLMEngine(
         security_context=ctx,
         model_name=model_name,

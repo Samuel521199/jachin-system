@@ -1,0 +1,39 @@
+# L3 招聘功能统一配置（示例）
+# 复制为 l3_recruitment.yaml 并填入实际值
+# 参考: docs/L3_RECRUITMENT_BUILD_SPEC.md
+
+# ========== Chrome 浏览器（招聘 RPA 前置） ==========
+chrome:
+  executable_path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+  cdp_port: 9222
+  user_data_dir: "${TEMP}/chrome-debug-boss"
+
+# ========== 简历数据存储（用户可配置到任意盘） ==========
+data:
+  resume_root: "./skills_repo/plugin/data"
+
+# ========== Lark 机器人 ==========
+lark:
+  app_id: ""
+  app_secret: ""
+  chat_id: ""
+  app_token: ""
+  table_id: ""
+  log_table_id: ""
+  replace_entire_table: true
+
+# ========== L3 与 Webhook ==========
+l3:
+  ws_url: "ws://127.0.0.1:18981/sensory"
+  mirror_push_url: "http://127.0.0.1:5000/api/mirror-push"
+
+# ========== Webhook 与 ngrok ==========
+webhook:
+  port: 5000
+  ngrok_enabled: false
+
+# ========== HR 透析镜（简历分析）输出 ==========
+# output_dir 留空：分析报告写入 data/{职位}/result/，排行榜写入 data/{职位}/，便于排行榜与 Lark 多维表同步
+hr_analysis:
+  output_dir: ""
+  output_dir_use_absolute: false

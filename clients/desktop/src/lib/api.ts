@@ -10,8 +10,8 @@ export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost
 /** L3 技能 API 默认端口（与 l3_node/http_server.py 端口回退一致） */
 const L3_SKILLS_PORTS = [18991, 18990, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999];
 
-/** L3 技能 API base URL（若 VITE_L3_SKILLS_URL 含端口则只用该 URL，否则会尝试多端口） */
-const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://localhost";
+/** L3 技能 API base URL（若 VITE_L3_SKILLS_URL 含端口则只用该 URL，否则会尝试多端口。用 127.0.0.1 避免 localhost 解析到 IPv6 导致连接失败） */
+const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://127.0.0.1";
 
 /** 开发模式下使用 Vite 代理 /l3 -> L3，避免跨域 Failed to fetch */
 const L3_DEV_PROXY = import.meta.env.DEV ? "/l3" : "";
@@ -1176,7 +1176,7 @@ export interface PluginResponse {
   ui_render_schema?: string;
   data_payload?: Uint8Array;
   trace_id?: string;
-  metadata?: Record<string, string>;
+  metadata?: Record<string, unknown>;
 }
 
 /**

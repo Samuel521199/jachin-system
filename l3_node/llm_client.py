@@ -272,6 +272,15 @@ class LiteLLMEngine:
         **kwargs: Any,
     ) -> str | dict[str, Any]:
         """同步风格调用，带重试与 Fallback。无 Key 时自动向 L2 请求。"""
+        try:
+            from l3_node.early_log import trace
+            trace("llm_client: importing litellm (may need model_prices json)...")
+        except ImportError:
+            pass
+        try:
+            import tiktoken_ext.openai_public  # noqa: F401 - PyInstaller 需预加载
+        except ImportError:
+            pass
         import litellm
 
         # 优先从 env 注入，确保有 DASHSCOPE 时绝不走 Ollama
@@ -343,6 +352,11 @@ class LiteLLMEngine:
         **kwargs: Any,
     ) -> str:
         """流式调用，带重试与 Fallback。无 Key 时自动向 L2 请求。"""
+        # PyInstaller 打包需预加载 tiktoken_ext，否则 litellm 流式 token 统计会报 Unknown encoding cl100k_base
+        try:
+            import tiktoken_ext.openai_public  # noqa: F401
+        except ImportError:
+            pass
         import litellm
 
         _inject_env_keys_into_ctx(self.ctx)

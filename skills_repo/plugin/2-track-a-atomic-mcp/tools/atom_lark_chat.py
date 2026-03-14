@@ -132,38 +132,56 @@ def _call_l3_ws(intent: str, chat_id: str = "") -> str:
         answer = ""
         terminal_lines = []  # 终端输出：thought/action/observation，同步到 Lark
 
-        for try_url in urls_to_try:
-            try:
-                logger.info("L3 连接尝试: %s", try_url)
-                async with websockets.connect(try_url, open_timeout=8, close_timeout=5) as ws:
-                    logger.info("L3 已连接，发送 intent chat_id=%s", (chat_id or "")[:20] if chat_id else "无")
-                    await ws.send(json.dumps({"type": "manifest", "caps": ["stream_chunk"]}, ensure_ascii=False))
-                    payload = {"intent": intent, "origin": "lark"}
-                    if chat_id and str(chat_id).strip():
-                        payload["chat_id"] = str(chat_id).strip()
-                    await ws.send(json.dumps(payload, ensure_ascii=False))
-                    async for raw in ws:
-                        try:
-                            msg = json.loads(raw) if isinstance(raw, str) else {}
-                        except json.JSONDecodeError:
-                            continue
-                        st = msg.get("step_type", "")
-                        content = (msg.get("content") or "").strip()
-                        if st == "answer":
-                            answer = content
-                            break
-                        if st == "error":
-                            return f"L3 执行出错：{content}" if content else "L3 执行出错，请稍后重试"
-                        if st == "chunk":
-                            answer += content
-                        if st in ("thought", "action", "observation") and content:
-                            terminal_lines.append(f"【{st}】{content[:200]}{'...' if len(content) > 200 else ''}")
+        # L3 启动需网关审批约 5–8 秒，首次连接失败时重试（最多 4 次，间隔 3 秒）
+        max_retries = 4
+        retry_delay = 3.0
+
+        for attempt in range(max_retries):
+            for try_url in urls_to_try:
+                try:
+                    logger.info("L3 连接尝试 [%d/%d]: %s", attempt + 1, max_retries, try_url)
+                    async with websockets.connect(try_url, open_timeout=10, close_timeout=5) as ws:
+                        logger.info("L3 已连接，发送 intent chat_id=%s", (chat_id or "")[:20] if chat_id else "无")
+                        await ws.send(json.dumps({"type": "manifest", "caps": ["stream_chunk"]}, ensure_ascii=False))
+                        payload = {"intent": intent, "origin": "lark"}
+                        if chat_id and str(chat_id).strip():
+                            payload["chat_id"] = str(chat_id).strip()
+                        await ws.send(json.dumps(payload, ensure_ascii=False))
+                        async for raw in ws:
+                            try:
+                                msg = json.loads(raw) if isinstance(raw, str) else {}
+                            except json.JSONDecodeError:
+                                continue
+                            st = msg.get("step_type", "")
+                            content = (msg.get("content") or "").strip()
+                            if st == "answer":
+                                answer = content
+                                break
+                            if st == "error":
+                                return f"L3 执行出错：{content}" if content else "L3 执行出错，请稍后重试"
+                            if st == "chunk":
+                                answer += content
+                            if st in ("thought", "action", "observation") and content:
+                                terminal_lines.append(f"【{st}】{content[:200]}{'...' if len(content) > 200 else ''}")
                     break  # 成功则跳出端口重试
-            except Exception as e:
-                logger.warning("L3 连接失败 %s: %s", try_url, e)
-                if try_url == urls_to_try[-1]:
-                    return f"无法连接 L3 服务（{e}），请确认 L3 终端已启动且端口 18981 正确"
+                except Exception as e:
+                    logger.warning("L3 连接失败 %s: %s", try_url, e)
+                    if try_url == urls_to_try[-1] and attempt == max_retries - 1:
+                        return (
+                            f"无法连接 L3 服务（{e}），请确认：\n"
+                            "1) Jachin 桌面端已打开（L3 由桌面端启动）\n"
+                            "2) 或已运行 scripts/run_l3.ps1\n"
+                            "3) 端口 18981 未被占用\n"
+                            "4) MCP 与 L3 同机运行（127.0.0.1 仅限本机；云上 MCP 无法连本机 L3）"
+                        )
+                    continue
+            else:
+                # 所有 URL 均失败，等待后重试
+                if attempt < max_retries - 1:
+                    logger.info("L3 未就绪，%s 秒后重试...", retry_delay)
+                    await asyncio.sleep(retry_delay)
                 continue
+            break  # 成功则跳出重试
 
         if not answer:
             return "[L3 未返回有效回复]"

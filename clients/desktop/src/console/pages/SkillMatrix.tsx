@@ -277,7 +277,7 @@ export function SkillMatrix() {
           text: err
             ? `流式执行失败: ${err}`
             : "⚡ 批量分析完成！报告已保存至 data/hr_analysis/ 目录。",
-          status: (err ? "error" : "success") as const,
+          status: err ? ("error" as const) : ("success" as const),
         },
       }));
       setStreamProgress(null);

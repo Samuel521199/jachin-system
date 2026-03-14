@@ -350,12 +350,13 @@ async def _handle_skills_execute_stream(request) -> "aiohttp.web.Response":
 
 
 def _stream_response() -> "aiohttp.web.StreamResponse":
-    """创建 SSE 流式响应"""
+    """创建 SSE 流式响应（含 CORS，供 Tauri WebView 跨域 fetch）"""
     import aiohttp.web
     r = aiohttp.web.StreamResponse()
     r.headers["Content-Type"] = "text/event-stream"
     r.headers["Cache-Control"] = "no-cache"
     r.headers["Connection"] = "keep-alive"
+    r.headers["Access-Control-Allow-Origin"] = "*"
     return r
 
 
@@ -425,10 +426,12 @@ async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
     response = _stream_response()
     await response.prepare(request)
     try:
-        # 连接建立后立即发送欢迎消息，让前端确认已连接
+        # 连接建立后立即发送欢迎消息，让前端确认已连接（避免 200 0 导致前端认为无数据）
         import time
         welcome = format_sse_event("[L3 全息监控] 已连接，等待日志流…", "INFO", time.time())
         await response.write(welcome.encode("utf-8"))
+        if hasattr(response, "drain"):
+            await response.drain()
         while True:
             item = await asyncio.to_thread(consume_logs)
             if item:
@@ -440,6 +443,38 @@ async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
     except Exception as e:
         logger.debug("[L3 HTTP] logs stream closed: %s", e)
     return response
+
+
+async def _handle_health(request) -> "aiohttp.web.Response":
+    """GET /api/health - 健康检查，含 L2 连接状态（供 run_l3.ps1 等轮询）"""
+    import os
+    cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+    l2_paired = False
+    l2_base_url = os.environ.get("L2_BASE_URL", "http://localhost:18888")
+    node_id = ""
+    if cfg_path.exists():
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            l2_paired = data.get("paired") is True
+            l2_base_url = (data.get("l2_base_url") or l2_base_url).rstrip("/")
+            node_id = (data.get("node_id") or "").strip()
+        except Exception:
+            pass
+    l2_reachable = False
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3.0) as c:
+            r = await c.get(f"{l2_base_url}/health")
+            l2_reachable = r.status_code == 200
+    except Exception:
+        pass
+    return _json_response({
+        "ok": True,
+        "l2_paired": l2_paired,
+        "l2_base_url": l2_base_url,
+        "l2_reachable": l2_reachable,
+        "node_id": node_id or None,
+    })
 
 
 async def _handle_scheduler_list_jobs(request) -> "aiohttp.web.Response":
@@ -565,7 +600,17 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
 
     # 预加载招聘心脏起搏器（APScheduler），确保 scheduler 线程就绪
     try:
+        try:
+            from l3_node.early_log import trace
+            trace("http_server: importing recruitment_scheduler...")
+        except ImportError:
+            pass
         import l3_node.recruitment_scheduler  # noqa: F401
+        try:
+            from l3_node.early_log import trace
+            trace("http_server: recruitment_scheduler loaded")
+        except ImportError:
+            pass
     except Exception as e:
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
 
@@ -588,6 +633,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/scheduler/add_job", _handle_scheduler_add_job)
     app.router.add_post("/api/scheduler/remove_job", _handle_scheduler_remove_job)
     app.router.add_get("/api/scheduler/list_jobs", _handle_scheduler_list_jobs)
+    app.router.add_get("/api/health", _handle_health)
     app.router.add_get("/api/system/logs/stream", _handle_system_logs_stream)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)

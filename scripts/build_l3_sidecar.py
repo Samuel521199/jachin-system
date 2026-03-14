@@ -81,7 +81,18 @@ def main() -> int:
             print(f"[跳过] 二进制已存在且比源码新: {dst}")
             return 0
 
-    # PyInstaller 参数：单文件、无控制台
+    # PyInstaller 参数：单文件、无控制台（按 L3_RECRUITMENT_BUILD_SPEC）
+    wasm_plugins = ROOT / "l3_node" / "skills" / "wasm_plugins"
+    add_data_sep = ";" if sys.platform == "win32" else ":"
+    add_data_arg = f"{wasm_plugins}{add_data_sep}l3_node/skills/wasm_plugins" if wasm_plugins.exists() else None
+
+    # 排除 Anaconda 中 L3 不需要的重型包（torch/transformers 等会触发 DLL 错误、pandas 等会拖慢构建）
+    exclude_modules = [
+        "torch", "torchvision", "transformers",  # WinError 1114 DLL 初始化失败
+        "pandas", "scipy", "sklearn", "dask", "distributed",  # 非 L3 依赖
+        "bokeh", "matplotlib", "PIL", "cv2", "h5py", "tables",  # 非 L3 依赖
+        "PyQt5", "qtpy", "onnxruntime", "numba", "llvmlite",  # 非 L3 依赖
+    ]
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
@@ -91,7 +102,13 @@ def main() -> int:
         "--distpath", str(ROOT / "dist_l3"),
         "--workpath", str(ROOT / "build_l3"),
         "--specpath", str(ROOT),
+    ]
+    for mod in exclude_modules:
+        cmd.extend(["--exclude-module", mod])
+    cmd += [
         "--hidden-import", "l3_node",
+        "--hidden-import", "l3_node.paths",
+        "--hidden-import", "l3_node.early_log",
         "--hidden-import", "l3_node.bootstrap",
         "--hidden-import", "l3_node.agent_core",
         "--hidden-import", "l3_node.llm_client",
@@ -99,17 +116,41 @@ def main() -> int:
         "--hidden-import", "l3_node.crypto",
         "--hidden-import", "l3_node.engine.hooks_pipeline",
         "--hidden-import", "l3_node.skills.loader",
+        "--hidden-import", "l3_node.recruitment_scheduler",
+        "--hidden-import", "l3_node.recruitment_task",
+        "--hidden-import", "l3_node.hr_analysis_persist",
+        "--hidden-import", "l3_node.http_server",
         "--hidden-import", "core.wasm_runner",
         "--hidden-import", "core.single_instance",
         "--hidden-import", "wasmtime",
         "--collect-all", "wasmtime",
         "--hidden-import", "websockets",
         "--hidden-import", "litellm",
+        "--hidden-import", "litellm.litellm_core_utils",
+        "--collect-all", "litellm",
+        "--collect-data", "litellm",  # 显式收集 model_prices_and_context_window_backup.json 等，避免 frozen 下 FileNotFoundError
+        "--hidden-import", "tiktoken",
+        "--hidden-import", "tiktoken_ext",
+        "--hidden-import", "tiktoken_ext.openai_public",
+        "--collect-all", "tiktoken",
+        "--collect-all", "tiktoken_ext",
         "--hidden-import", "openai",
         "--hidden-import", "httpx",
         "--hidden-import", "cryptography",
+        "--hidden-import", "playwright",
+        "--hidden-import", "playwright.sync_api",
         str(l3_main),
     ]
+    if add_data_arg:
+        cmd = cmd[:-1] + ["--add-data", add_data_arg, cmd[-1]]
+
+    # 彻底清理并预创建构建目录，避免 FileNotFoundError: base_library.zip（父目录不存在）
+    for d in ["dist_l3", "build_l3"]:
+        p = ROOT / d
+        if p.exists():
+            shutil.rmtree(p)
+    (ROOT / "build_l3" / SIDECAR_NAME).mkdir(parents=True, exist_ok=True)
+    (ROOT / "dist_l3").mkdir(parents=True, exist_ok=True)
 
     print("[1/3] 运行 PyInstaller...")
     r = subprocess.run(cmd, cwd=str(ROOT))
@@ -126,6 +167,13 @@ def main() -> int:
     dst = BIN_DIR / f"{SIDECAR_NAME}-{target}{ext}"
     shutil.copy2(src, dst)
     print(f"[2/3] 已复制到 {dst}")
+
+    # 同时复制到 dist_jachin_desktop/bin（便携包最终运行目录）
+    dist_bin = ROOT / "dist_jachin_desktop" / "bin"
+    dist_bin.mkdir(parents=True, exist_ok=True)
+    dst_dist = dist_bin / f"{SIDECAR_NAME}-{target}{ext}"
+    shutil.copy2(src, dst_dist)
+    print(f"      已复制到 {dst_dist}")
 
     # 清理临时目录
     for d in ["dist_l3", "build_l3"]:

@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
@@ -146,31 +147,84 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
         display_name: display_name.clone(),
     })?;
 
-    let sidecar = app.shell().sidecar("bin/l3_node").map_err(|e| e.to_string())?;
-    let sidecar = sidecar.args(["--gateway"]).env("L2_BASE_URL", url);
-    let sidecar = if let Some(ref name) = display_name {
+    let env_root = crate::l3_spawn::exe_dir().unwrap_or_else(PathBuf::new);
+    let env_vars = crate::l3_spawn::load_l3_env_vars(&env_root);
+
+    let sidecar = match app.shell().sidecar("bin/l3_node") {
+        Ok(s) => s,
+        Err(e) => {
+            println!("[L3] Sidecar 未找到，尝试直接启动 exe: {}", e);
+            let child = crate::l3_spawn::spawn_l3_via_direct_exe(
+                &app,
+                &["--gateway"],
+                Some(url),
+                &env_vars,
+                display_name.as_deref(),
+            )?;
+            if let Some(handle) = app.try_state::<std::sync::Arc<crate::l3_spawn::L3Handle>>() {
+                handle.replace(child);
+            } else {
+                let l3 = std::sync::Arc::new(crate::l3_spawn::L3Handle::new(child));
+                crate::l3_spawn::register_ctrlc_kill(&l3);
+                app.manage(l3);
+            }
+            println!("[L3] 已以 --gateway 模式启动，等待 L2 审批");
+            return Ok(());
+        }
+    };
+    let mut sidecar = sidecar.args(["--gateway"]).env("L2_BASE_URL", url);
+    if let Some(ref name) = display_name {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
-            sidecar.env("JACHIN_DEVICE_NAME", trimmed.chars().take(64).collect::<String>())
-        } else {
-            sidecar
+            sidecar = sidecar.env("JACHIN_DEVICE_NAME", trimmed.chars().take(64).collect::<String>());
         }
-    } else {
-        sidecar
-    };
-
+    }
+    if let Some(ref dir) = crate::l3_spawn::exe_dir() {
+        sidecar = sidecar.current_dir(dir);
+    }
+    for (k, v) in &env_vars {
+        sidecar = sidecar.env(k, v);
+    }
     let child = match sidecar.spawn() {
-        Ok((_rx, c)) => c,
+        Ok((mut rx, c)) => {
+            let child = c;
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        tauri_plugin_shell::process::CommandEvent::Stdout(ref b) => {
+                            let _ = std::io::stdout().write_all(b);
+                        }
+                        tauri_plugin_shell::process::CommandEvent::Stderr(ref b) => {
+                            let _ = std::io::stderr().write_all(b);
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            child
+        }
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 3") {
-                println!("[L3] Sidecar 不可用，回退到 python -m l3_node");
-                crate::l3_spawn::spawn_l3_via_python(
+            if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 2") || err_msg.contains("os error 3") {
+                println!("[L3] Sidecar 不可用，尝试直接启动 exe");
+                match crate::l3_spawn::spawn_l3_via_direct_exe(
                     &app,
                     &["--gateway"],
                     Some(url),
+                    &env_vars,
                     display_name.as_deref(),
-                )?
+                ) {
+                    Ok(c) => c,
+                    Err(_direct_err) => {
+                        println!("[L3] 直接 exe 失败，回退到 python -m l3_node");
+                        crate::l3_spawn::spawn_l3_via_python(
+                            &app,
+                            &["--gateway"],
+                            Some(url),
+                            display_name.as_deref(),
+                        )?
+                    }
+                }
             } else {
                 return Err(format!("L3 启动失败: {}。请运行: python scripts/build_l3_sidecar.py", err_msg));
             }

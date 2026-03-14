@@ -69,6 +69,8 @@ bcrypt>=4.0.0
 # v8.0 The Singularity OS
 litellm>=1.0.0
 websockets>=12.0
+# 招聘插件 atom_post_job_boss 等需 CDP 连接 Chrome（无需 playwright install chromium）
+playwright>=1.40.0
 pvporcupine>=3.0.0
 opentelemetry-api>=1.20.0
 aiosqlite>=0.19.0
