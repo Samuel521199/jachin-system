@@ -1,0 +1,52 @@
+# 技能系统配置
+# Skills System Configuration
+
+# 技能存储库路径
+repo_path: "./skills_repo"
+
+# 技能运行时
+runtime:
+  default: "docker"  # docker, wasm, native
+  docker:
+    image_prefix: "jachin-skill"
+    network: "jachin-network"
+    memory_limit: "512m"
+    cpu_limit: "0.5"
+    timeout: 300  # 秒
+  wasm:
+    engine: "wasmtime"
+    memory_limit: 128  # MB
+    timeout: 60  # 秒
+  native:
+    timeout: 30  # 秒
+
+# 技能安装配置
+install:
+  auto_enable: true  # 安装后自动启用
+  verify_signature: false  # 验证签名（未来功能）
+  allow_overwrite: false  # 允许覆盖已安装技能
+
+# 技能执行配置
+execution:
+  max_concurrent: 10  # 最大并发执行数
+  default_timeout: 300  # 秒
+  retry_on_failure: true
+  max_retries: 3
+
+# 技能权限
+permissions:
+  require_user_approval: false  # 是否需要用户批准
+  allowed_capabilities: []  # 允许的能力列表（空表示全部允许）
+  blocked_capabilities: []  # 阻止的能力列表
+
+# 技能市场
+marketplace:
+  enabled: true
+  url: "https://marketplace.jachin.ai"  # 技能市场URL
+  sync_interval: 3600  # 同步间隔（秒）
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_executions: true
+  log_errors: true
