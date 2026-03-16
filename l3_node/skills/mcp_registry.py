@@ -54,6 +54,25 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "desc": "[L3 本地] 停止无人值守招聘流程。当 HR 说「关闭」「停止」「取消」招聘时调用。job_name 为空则停止所有岗位的定时任务。",
         "params": ["job_name"],
     },
+    # BI 战报通用 MCP 工具（docs/bi_daily_report/）
+    {
+        "id": "mcp:atom_web_scraper",
+        "label": "mcp:atom_web_scraper",
+        "desc": "[L3 本地] 通用网页抓取器。传入 url、output_path、config，抓取表格/JSON 并保存到 client_volumes/bi_data/raw/。",
+        "params": ["url", "output_path", "config"],
+    },
+    {
+        "id": "mcp:atom_lark_notifier",
+        "label": "mcp:atom_lark_notifier",
+        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url、markdown_content、title，发送 Markdown 消息。",
+        "params": ["webhook_url", "markdown_content", "title"],
+    },
+    {
+        "id": "mcp:atom_email_sender",
+        "label": "mcp:atom_email_sender",
+        "desc": "[L3 本地] 通用邮件发射器。传入 smtp_config、to_addrs、subject、body、attachment_paths，发送邮件。",
+        "params": ["smtp_config", "to_addrs", "subject", "body", "attachment_paths"],
+    },
 ]
 
 
@@ -310,6 +329,65 @@ def _invoke_stop_automated_recruitment_local(job_name: str = "") -> str:
     except Exception as e:
         logger.warning("[MCP Registry] stop_automated_recruitment 失败: %s", e)
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _invoke_atom_web_scraper_local(
+    url: str = "",
+    output_path: str = "",
+    config: dict | None = None,
+) -> str:
+    """L3 本地执行 atom_web_scraper，路由到 l3_node.mcp_tools.tool_web_scraper。"""
+    try:
+        from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
+        from l3_node.bi_paths import get_bi_raw_dir
+        _path = output_path.strip() if output_path else str(get_bi_raw_dir() / "placeholder.csv")
+        result = harvest_table_data(url=url or "", output_path=_path, config=config or {})
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("[MCP Registry] atom_web_scraper 失败: %s", e)
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+def _invoke_atom_lark_notifier_local(
+    webhook_url: str = "",
+    markdown_content: str = "",
+    title: str = "",
+) -> str:
+    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.tool_broadcaster。"""
+    try:
+        from l3_node.mcp_tools.tool_broadcaster import send_lark_markdown
+        result = send_lark_markdown(
+            webhook_url=webhook_url or "",
+            markdown_content=markdown_content or "",
+            title=title or None,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("[MCP Registry] atom_lark_notifier 失败: %s", e)
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
+def _invoke_atom_email_sender_local(
+    smtp_config: dict | None = None,
+    to_addrs: list | None = None,
+    subject: str = "",
+    body: str = "",
+    attachment_paths: list | None = None,
+) -> str:
+    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.tool_broadcaster。"""
+    try:
+        from l3_node.mcp_tools.tool_broadcaster import send_email_with_attachment
+        result = send_email_with_attachment(
+            smtp_config=smtp_config or {},
+            to_addrs=to_addrs or [],
+            subject=subject or "",
+            body=body or "",
+            attachment_paths=attachment_paths or [],
+        )
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("[MCP Registry] atom_email_sender 失败: %s", e)
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
 def _invoke_add_automated_recruitment_task_local(
@@ -645,6 +723,31 @@ class MCPToolRegistry:
             if raw_name == "stop_automated_recruitment":
                 job_name = (arguments.get("job_name", arguments.get("input", "")) or "").strip()
                 return _invoke_stop_automated_recruitment_local(job_name=job_name)
+
+            # BI 战报 MCP 工具（docs/bi_daily_report/）
+            if raw_name == "atom_web_scraper":
+                return await asyncio.to_thread(
+                    _invoke_atom_web_scraper_local,
+                    url=arguments.get("url", ""),
+                    output_path=arguments.get("output_path", ""),
+                    config=arguments.get("config"),
+                )
+            if raw_name == "atom_lark_notifier":
+                return await asyncio.to_thread(
+                    _invoke_atom_lark_notifier_local,
+                    webhook_url=arguments.get("webhook_url", ""),
+                    markdown_content=arguments.get("markdown_content", ""),
+                    title=arguments.get("title", ""),
+                )
+            if raw_name == "atom_email_sender":
+                return await asyncio.to_thread(
+                    _invoke_atom_email_sender_local,
+                    smtp_config=arguments.get("smtp_config"),
+                    to_addrs=arguments.get("to_addrs", []),
+                    subject=arguments.get("subject", ""),
+                    body=arguments.get("body", ""),
+                    attachment_paths=arguments.get("attachment_paths"),
+                )
 
         logger.info("[MCP Registry] 工具 %s 不在 L3 本地，转发 L2", tool_id)
         return await self.invoke_via_l2(tool_id, action_input, timeout=timeout)

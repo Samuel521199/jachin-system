@@ -1,0 +1,9 @@
+# BI 战报 MCP 工具依赖（可选）
+# 开发者 A/B 本地开发时可 pip install -r l3_node/requirements-bi.txt
+# 统帅在组装阶段会合并到 core/requirements.txt
+
+# 网页抓取（开发者 A - tool_web_scraper）
+requests>=2.28.0
+beautifulsoup4>=4.12.0
+
+# 邮件与 HTTP 已有：smtplib 内置，httpx 在 core/requirements.txt

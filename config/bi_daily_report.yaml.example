@@ -1,0 +1,29 @@
+# BI 每日战报配置（示例）
+# 复制为 bi_daily_report.yaml 并填入实际值
+# 设计规范: docs/bi_daily_report/03_SKILL_DESIGN.md
+
+# ========== 数据源 ==========
+data_source:
+  url: "https://your-backend.com/api/daily-report"
+  extract_rules: {}
+  headers: {}
+
+# ========== 存储路径 ==========
+# 基准: ~/.jachin/client_volumes/bi_data
+storage:
+  base_path: "client_volumes/bi_data"
+
+# ========== LLM ==========
+llm:
+  model: "dashscope/qwen3.5-flash-2026-02-23"
+
+# ========== 分发 ==========
+distribution:
+  lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+  email:
+    smtp_host: "${BI_SMTP_HOST}"
+    smtp_port: 587
+    smtp_user: "${BI_SMTP_USER}"
+    smtp_password: "${BI_SMTP_PASSWORD}"
+    to_addrs:
+      - "exec@company.com"
