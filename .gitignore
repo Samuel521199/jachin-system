@@ -134,3 +134,4 @@ skills_repo/*.zip
 commit_msg.txt
 .git_commit_msg.txt
 .git_tag_msg.txt
+.git_commit_msg2.txt
