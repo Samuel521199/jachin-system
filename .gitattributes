@@ -1,0 +1,8 @@
+# 确保文本文件使用 UTF-8 编码，避免 GitHub 中文乱码
+* text=auto eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.json text eol=lf

@@ -129,3 +129,8 @@ data/hr_resumes/*.pdf
 
 # Build artifacts
 skills_repo/*.zip
+
+# Temporary commit messages
+commit_msg.txt
+.git_commit_msg.txt
+.git_tag_msg.txt
