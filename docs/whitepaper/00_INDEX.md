@@ -46,5 +46,6 @@
 | 08 | [JPP 与技能生态](./08_JPP_SDK_AND_SKILLS.md) | JPP (轨道 C)、MCP (轨道 A)、SKILL.md (轨道 B) |
 | 09 | [**去 BaaS 化战役**](./09_DE_BAASIFICATION.md) | Auth.js、Drizzle ORM、Redis、MinIO、Helm — Layer 1 绝对主权架构 |
 | 10 | [**控制面与数据面分离**](./10_CONTROL_DATA_PLANE.md) | mDNS 局域网直连、WebRTC P2P 打洞、信令分离 — 能直连绝不绕路 |
+| 11 | [**每日 BI 深度分析战报**](../bi_daily_report/04_WHITEPAPER.md) | 通用 MCP 工具 + 独立 Skill + 调度挂载 — 数据增长官自动化心脏 |
 | — | [MCP 接入规范](../MCP_SPEC.md) | MCP Client 实现、工具发现与调用 |
 | — | [SKILL.md 规范](../SKILL_MD_SPEC.md) | 声明式技能格式、Persona、热加载 |

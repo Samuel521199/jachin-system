@@ -27,7 +27,6 @@
 |------|------|
 | [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | V2 L3-L2 零信任配对 |
 | [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | 信任链与心跳 |
-| [L2_GATEWAY_CLUSTER_ARCHITECTURE.md](./L2_GATEWAY_CLUSTER_ARCHITECTURE.md) | L2 集群 |
 | [LAYER3_L2_WAN_ARCHITECTURE.md](./LAYER3_L2_WAN_ARCHITECTURE.md) | L3-L2 广域网 |
 | [MCP_SPEC.md](./MCP_SPEC.md) | MCP 协议 |
 | [SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md) | Skill 规范 |
@@ -35,6 +34,14 @@
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱 |
 | [VOICE_AND_TTS_GUIDE.md](./VOICE_AND_TTS_GUIDE.md) | 语音与 TTS |
 | [TESTING_GUIDE.md](./TESTING_GUIDE.md) | 测试指南 |
+
+---
+
+## 业务模块文档（独立 Skill）
+
+| 文档 | 说明 |
+|------|------|
+| [bi_daily_report/](./bi_daily_report/) | **每日 BI 深度分析战报** — 契约、设计、并行开发指南、白皮书 |
 
 ---
 
