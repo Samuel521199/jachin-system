@@ -1,0 +1,202 @@
+---
+description: Jachin Link 零信任网络、mTLS 与 gRPC 通信规范
+globs: core/transport/**, cloud/global_relay/**, common/protocols/**
+---
+# Jachin Link Rules
+
+## 1. Zero Trust Security
+
+### mTLS Mandatory
+- **Mutual Authentication:** All connections between Tier 2 (Hive) and Tier 3 (Terminal) MUST be mutually authenticated.
+- **No Trust by Default:** Never trust any connection without valid certificates.
+- **Certificate Chain:** Both client and server MUST present valid certificates signed by the same CA.
+
+### Certificate Authority (CA)
+- **Tier 2 as CA:** Tier 2 (Hive) acts as the local Certificate Authority.
+- **CA Generation:** Use `core/transport/mtls_manager.py` to generate self-signed CA certificate.
+- **CA Storage:** CA certificate and private key stored in `data/certs/ca.crt` and `data/certs/ca.key`.
+- **CA Lifetime:** CA certificate valid for 10 years (long-term trust anchor).
+
+### Certificate Verification
+- **Server (Tier 2) Verification:**
+  - MUST verify Client Certificate signature (CA signed)
+  - MUST check certificate expiration
+  - MUST extract device ID from certificate extension
+  - MUST use `ssl.CERT_REQUIRED` (no optional client certs)
+- **Client (Tier 3) Verification:**
+  - MUST verify Server Certificate signature (CA signed)
+  - MUST check certificate expiration
+  - MUST verify server hostname matches certificate SAN
+
+### Certificate Lifecycle
+- **Pairing (One-Time):**
+  1. Tier 3 scans QR code (contains Server ID + Token)
+  2. Tier 3 generates RSA keypair (hardware-bound)
+  3. Tier 3 sends CSR (Certificate Signing Request) to Tier 2
+  4. Tier 2 validates Token and signs CSR
+  5. Tier 2 returns Client Certificate (permanent, no expiration)
+- **Daily Connection:**
+  1. Tier 3 presents Client Certificate in TLS handshake
+  2. Tier 2 verifies certificate and extracts device ID
+  3. Connection established (no user interaction needed)
+
+## 2. The Envelope Pattern
+
+### Generic Protocol Design
+- **DO NOT** define business-specific RPCs (e.g., `BuyStock`, `GetWeather`, `CallTaxi`).
+- **DO** use the universal `InvokePlugin` interface for all plugin invocations.
+- **Rationale:** Adding new plugins should NEVER require protocol changes or client App updates.
+
+### Standard RPC Interface
+- **Core Method:** `InvokePlugin(PluginRequest) returns (PluginResponse)`
+- **Defined in:** `common/protocols/jachin_link.proto`
+- **Streaming:** `StreamPlugin(PluginRequest) returns (stream PluginResponse)` for real-time data
+
+### PluginRequest Structure
+```protobuf
+message PluginRequest {
+    string plugin_id = 1;       // Routing address (e.g., "com.user.stock")
+    string method_name = 2;     // Method to call (e.g., "buy", "sell")
+    string trace_id = 3;        // Request tracing ID
+    string intent = 4;          // Optional: Natural language intent
+    bytes payload = 5;          // Business data (JSON/Bytes) - Cloud doesn't care
+    map<string, string> metadata = 6;  // Optional metadata
+}
+```
+
+### PluginResponse Structure
+```protobuf
+message PluginResponse {
+    int32 status_code = 1;     // HTTP-style status (200, 400, 500)
+    string error_message = 2;    // Error message if status_code != 200
+    bytes payload = 3;          // Business response data
+    string ui_render_schema = 4; // Server-Driven UI (Adaptive Cards JSON)
+    string trace_id = 5;        // Request tracing ID (echo)
+    map<string, string> metadata = 6;  // Response metadata
+}
+```
+
+### Payload Serialization
+- **Format:** Business data MUST be serialized as JSON string or binary.
+- **Cloud Blindness:** Cloud (Tier 1) and Gateway (Tier 2) do NOT parse payload content.
+- **Routing:** Routing is done solely based on `plugin_id` field in the header.
+- **Example:**
+  ```python
+  # Plugin developer serializes business data
+  payload_data = {"symbol": "AAPL", "quantity": 100, "action": "buy"}
+  payload_bytes = json.dumps(payload_data).encode('utf-8')
+  
+  request = PluginRequest(
+      plugin_id="com.user.stock",
+      method_name="buy",
+      payload=payload_bytes
+  )
+  ```
+
+### Server-Driven UI (SDUI)
+- **UI Schema:** Plugins return `ui_render_schema` field containing Adaptive Cards JSON.
+- **Client Rendering:** Client (Tier 3) uses generic renderer to display UI.
+- **No App Updates:** Adding new plugin UIs does NOT require client App updates.
+- **SDUI Schema:** Use `common/schemas/sdui.py` to build UI programmatically:
+  ```python
+  from common.schemas.sdui import AdaptiveCard, TextBlock, SubmitAction, FontSize
+  
+  card = AdaptiveCard(
+      body=[TextBlock(text="Stock Price: $120", size=FontSize.LARGE)],
+      actions=[SubmitAction(title="Buy", id="buy_action")]
+  )
+  response.ui_render_schema = card.to_json()
+  ```
+
+## 3. Connectivity Strategy
+
+### Priority 1: Direct P2P Connection
+- **LAN Detection:** Use mDNS/Zeroconf to discover Tier 2 on local network.
+- **Direct gRPC:** Establish direct gRPC connection over LAN (low latency).
+- **WAN Hole Punching:** Attempt NAT traversal for WAN connections.
+- **Benefits:** Low latency, no relay overhead, direct communication.
+
+### Priority 2: Relay Fallback
+- **When to Use:** P2P connection fails (firewall, NAT, network restrictions).
+- **Relay Service:** Fallback to Tier 1 Relay Service (`cloud/global_relay/`).
+- **Blind Forwarding:** Relay forwards encrypted traffic without decryption.
+- **Stealth Mode:** Traffic mimics standard HTTPS/2 to pass firewalls.
+
+### Connection Flow
+```
+Client (Tier 3) -> Detect network environment
+  ├─> LAN/P2P Success -> Direct gRPC (mTLS) -> Server (Tier 2)
+  └─> P2P Failed -> Relay (Tier 1) -> Forward encrypted -> Server (Tier 2)
+```
+
+### Stealth Requirements
+- **Traffic Mimicking:** All traffic MUST look like standard HTTPS/2.
+- **Firewall Friendly:** Must pass through corporate firewalls and DPI.
+- **No VPN Detection:** Should not trigger VPN detection systems.
+- **Implementation:** Use gRPC over HTTP/2 (standard port 443 or custom port).
+
+## 4. Implementation Guidelines
+
+### Gateway Implementation (Tier 2)
+- **File:** `core/transport/gateway.py`
+- **SSL Context:** Use `mtls_manager.get_server_ssl_context()` with `verify_mode=ssl.CERT_REQUIRED`.
+- **Service Handler:** Implement `InvokePlugin` and `StreamPlugin` methods.
+- **Dynamic Dispatch:** Extract `plugin_id`, find MCP 工具/SKILL/WASM 插件或本地处理器，调用 `method_name`。（v8.0 主链路为 Jachin Mesh WebSocket + 双轨制，gRPC 为可选扩展）
+
+### Client Implementation (Tier 3)
+- **File:** `clients/lib/jachin_link_client/`
+- **Certificate Storage:** Store client certificate securely (hardware-bound if possible).
+- **Connection Logic:** Implement P2P detection and relay fallback.
+- **UI Renderer:** Implement Adaptive Cards renderer for `ui_render_schema`.
+
+### Relay Implementation (Tier 1)
+- **File:** `cloud/global_relay/` (Go implementation recommended)
+- **Blind Forwarding:** Forward encrypted bytes without decryption.
+- **High Performance:** Use Goroutines for concurrent connection handling.
+- **K8s Deployment:** Deploy on Kubernetes for global availability.
+
+## 5. Error Handling
+
+### Certificate Errors
+- **Invalid Certificate:** Return `ConnectResponse` with `success=false` and `error` message.
+- **Expired Certificate:** Reject connection, require re-pairing.
+- **Missing Certificate:** Return `requires_pairing=true` in `ConnectResponse`.
+
+### Connection Errors
+- **P2P Failed:** Automatically fallback to Relay.
+- **Relay Failed:** Return error to client, suggest network troubleshooting.
+- **Timeout:** Implement retry logic with exponential backoff.
+
+### Protocol Errors
+- **Invalid Plugin ID:** Return `PluginResponse` with `status_code=404`.
+- **Plugin Not Found:** Return `PluginResponse` with `status_code=404` and error message.
+- **Plugin Error:** Return `PluginResponse` with `status_code=500` and error message.
+
+## 6. Legacy Protocol Migration
+
+### Deprecated Methods
+- ❌ `ExecuteCommand` → Use `InvokePlugin`
+- ❌ `ProcessAI` → Use `InvokePlugin`
+- ❌ `StreamAI` → Use `StreamPlugin`
+
+### Migration Path
+1. Update client to use `InvokePlugin` instead of deprecated methods.
+2. Update server to handle both old and new protocols (during transition).
+3. Remove deprecated methods after all clients migrated.
+
+## 7. Testing Requirements
+
+### mTLS Testing
+- Test certificate generation and signing.
+- Test certificate verification (valid, expired, invalid signature).
+- Test connection with valid/invalid certificates.
+
+### Envelope Pattern Testing
+- Test routing based on `plugin_id`.
+- Test payload serialization/deserialization.
+- Test SDUI rendering in client.
+
+### Connectivity Testing
+- Test P2P connection (LAN).
+- Test relay fallback (simulated P2P failure).
+- Test connection timeout and retry logic.

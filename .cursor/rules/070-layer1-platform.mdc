@@ -1,0 +1,46 @@
+---
+description: Layer 1 平台化定调与多租户架构 — Platform First、B2B2C 多租户、organization_id 强制隔离
+globs: cloud/nexus/**/*.ts, cloud/nexus/**/*.tsx, cloud/nexus/supabase/migrations/*.sql, cloud/nexus/src/db/**/*.ts, docs/whitepaper/05_LAYER1_NEXUS.md
+---
+# Layer 1 平台化与多租户宪法
+
+## 1. Platform First（平台优先原则）
+
+- **Layer 1 默认为官方托管的多租户 SaaS 平台。** 个人、家庭和企业用户开箱即用，只需在边缘端拉起 Layer 2/3 并连接到云端即可。
+- **私有化部署（Self-Hosted Layer 1）** 仅作为政企、金融等强合规场景的 fallback 方案，不作为代码和默认设计的出发点。
+
+## 2. B2B2C 多租户架构（强制）
+
+在编写任何涉及 Layer 1（Drizzle ORM + PostgreSQL）的**数据模型、API 或业务逻辑**时，必须默认遵循 **B2B2C 多租户 (Multi-tenancy)** 架构。
+
+### 2.1 企业级实体隔离
+
+- **强制要求**：企业级实体必须通过 `organization_id`（或 `tenant_id`）隔离。
+- **绝不允许**：仅使用 `user_id` 来管理企业舰队 (Fleets)。企业舰队必须归属 `organizations` 表，通过 `organization_id` 关联。
+
+### 2.2 数据模型约束
+
+| 实体 | 必须字段 | 说明 |
+|------|----------|------|
+| `edge_agents` | `organization_id` (nullable) | 为空=个人用户设备，非空=企业舰队设备 |
+| `transactions` | `organization_id` (nullable) | 个人购买 vs 企业采购的技能订阅 |
+| `blueprints` | `organization_id` (nullable) | 个人蓝图 vs 企业共享蓝图 |
+| `organizations` | id, name, billing_plan, created_at | 组织表 |
+| `organization_users` | org_id, user_id, role | 用户与组织的关联，role: owner/admin/member |
+
+### 2.3 技能订阅共享
+
+企业购买的技能订阅 (`license_key`) 必须绑定到 `organization_id`，使该组织下的所有 `edge_agents` 都能共享该技能。
+
+## 3. Drizzle ORM 体系（P0 已落地）
+
+- **src/db/index.ts**：postgres.js 连接，`db` 导出
+- **src/db/schema.ts**：Auth.js 表 + organizations + organization_users + edge_agents + blueprints + transactions
+- **drizzle.config.ts**：迁移输出 `./drizzle`，`npm run db:push` / `db:generate`
+- **Relations**：organizations ↔ organization_users ↔ edge_agents ↔ blueprints 已定义
+
+## 4. 实现检查清单
+
+- [ ] 新增/修改表时，企业相关实体必须包含 `organization_id`
+- [ ] 舰队管理 API 必须按 `organization_id` 过滤，禁止跨组织访问
+- [ ] 技能下发逻辑必须校验：设备所属组织是否拥有该技能的 License

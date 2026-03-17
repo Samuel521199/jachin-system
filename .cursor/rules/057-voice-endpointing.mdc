@@ -1,0 +1,26 @@
+---
+description: Voice Capture & VAD Endpointing Standards
+globs: clients/desktop/src-tauri/src/stt/**/*.rs
+alwaysApply: false
+---
+# Jachin Voice Endpointing & Audio Capture Rules
+
+## 1. Architectural Constraints (Strict)
+- **Audio Thread Isolation**: `cpal` audio input streams run in a real-time OS thread. **NEVER** run ONNX inference, heavy allocation, or blocking network I/O inside the `cpal` data callback.
+- **Data Passing**: Use a lock-free queue (e.g., `crossbeam-channel` or `flume`) to pass `f32` PCM audio chunks from the `cpal` thread to a dedicated `VAD Worker Thread`.
+
+## 2. VAD & Model Configuration
+- **Model**: `silero_vad.onnx`.
+- **Target Sample Rate**: MUST resample all microphone input to **16,000 Hz** before feeding into the VAD model.
+- **Chunk Size**: Feed audio to Silero VAD in chunks of 512 samples (32ms at 16kHz).
+
+## 3. The State Machine Parameters
+- `VAD_THRESHOLD`: `0.5` (Probability > 0.5 is considered speech).
+- `TRAILING_SILENCE_MS`: `800` (Stop recording after 800ms of continuous silence).
+- `MAX_RECORDING_MS`: `15000` (Failsafe: absolute maximum recording length is 15 seconds).
+- `MIN_SPEECH_MS`: `300` (Ignore audio chunks if the total speech duration was less than 300ms, usually just a cough or noise).
+
+## 4. Code Structure
+- `audio_capture.rs`: Handles `cpal` device selection, stream building, and resampling.
+- `vad_engine.rs`: Wraps `ort` Session for `silero_vad.onnx`.
+- `endpointing.rs`: Contains the State Machine logic (Listening -> Speaking -> Timeout).

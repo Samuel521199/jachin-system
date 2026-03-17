@@ -33,7 +33,8 @@ ENV/
 *.swp
 *.swo
 *~
-.cursor/
+.cursor/*
+!.cursor/rules/
 
 # Environment variables
 .env

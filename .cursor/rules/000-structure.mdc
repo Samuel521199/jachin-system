@@ -1,0 +1,30 @@
+---
+description: V2 项目结构与 Key Components 宪法
+globs: core/**/*.py, cloud/nexus/**/*.ts, clients/**/*.tsx, l3_node/**/*.py, docs/*.md
+---
+# V2 项目结构宪法
+
+**规范**: docs/ARCHITECTURE.md | docs/FILE_STRUCTURE.md
+
+## V2 分层
+
+| 层级 | 职责 |
+|------|------|
+| **Layer 1** | 平台：商城、IAM、manifest、licenses；与 L2/L3 无直接耦合 |
+| **Layer 2** | 控制面：子账号、权限、API Key、记忆、数字仓库、MCP、L3 调度；**不代理推理** |
+| **Layer 3** | 执行面：单体 Agent，持密文 Key 直连 API，技能从 L2 拉取 |
+
+## Key Components
+
+| 名词 | 说明 |
+|------|------|
+| **API Key 零信任** | L2 用 L3 公钥加密下发，L3 私钥解密后直连 API |
+| **数字仓库** | L2 inventory：L1 同步 + 侧载；/skills、/download 需 X-Sub-Account-Id |
+| **MCP 执行模型** | L3 优先执行；本机无则 L2 委托其他 L3。详见 `docs/MCP_EXECUTION_MODEL.md` |
+| **PolicyEnforcer** | RBAC 鉴权，断网时从 role_permissions 降级 |
+| **Dream Weaver** | LanceDB 记忆聚类/去重/融合 |
+| **Omni-Sensory Bus** | layer3_broadcast、能力协商 |
+
+## 禁止目录
+
+- `core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`（已移除）

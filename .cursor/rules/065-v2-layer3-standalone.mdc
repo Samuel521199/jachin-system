@@ -1,0 +1,35 @@
+---
+description: V2 架构 — L3 单体对标 OpenClaw，L2 控制面不代理推理
+globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
+---
+# Jachin Nexus V2 — L3 单体架构
+
+## 基准文档
+
+[docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+
+## 核心原则
+
+1. **L2 不代理推理**：L2 只管理 API Key（密文下发）、记忆、权限、L3 协同调度
+2. **L3 直连 LLM**：L3 持密文 Key，请求时解密后自行调用 api.openai.com 等
+3. **L3 单体 = OpenClaw**：多 Agent、多 Skill、本地记忆、ReAct 循环
+
+## L2 API (V2)
+
+- `POST /api/v2/auth/sync` — L3 注册（公钥）
+- `GET /api/v2/auth/poll?node_id=xxx` — L3 轮询审批状态（pending/approved + encrypted_api_keys）
+- `GET /api/v2/keys` — L3 拉取密文 Key（需 sub_account_id）
+- `POST /api/v2/admin/nodes/assign` — 管理员将节点分配给子账号
+- `POST /api/v2/memory/sync` — L3 记忆同步
+- `POST /api/v2/admin/*` — 子账号、Key 管理
+
+## L3 目录 (l3_node/)
+
+- `llm_client.py` — SecurityContext + LiteLLMEngine
+- `agent_core.py` — ReAct Agent + MemorySyncDaemon
+- `bootstrap.py` — 注册、拉 Key、创建引擎
+
+## 禁止
+
+- L2 代理 L3 的推理请求
+- L3 明文存储 API Key（仅密文 + 内存解密）

@@ -24,6 +24,22 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path.home() / ".jachin" / "nexus_config.json"
+
+# 503 提示仅打印一次，避免刷屏
+_L1_503_HINT_LOGGED = False
+
+
+def _log_l1_503_hint_once(api: str, err: Exception | None) -> None:
+    """L1 返回 503 时，仅一次打印排查提示。"""
+    global _L1_503_HINT_LOGGED
+    if _L1_503_HINT_LOGGED or not err or "503" not in str(err):
+        return
+    _L1_503_HINT_LOGGED = True
+    logger.warning(
+        "[L1] 持续返回 503（%s）。请确保：1) 已运行 .\\scripts\\start-cloud.ps1 启动 L1 (Nexus)；"
+        "2) L1 已完全启动（Next.js 编译完成）；3) 若使用 PostgreSQL，确保服务已启动。",
+        api,
+    )
 _HEARTBEAT_PATH = "/api/v1/edge/heartbeat"
 _DEFAULT_INTERVAL_SEC = 60
 _LEADER_LOCK_KEY = "l2_cluster_leader_lock"
@@ -61,6 +77,7 @@ _TELEMETRY_UPLOAD_INTERVAL_SEC = 300  # 5 分钟
 _INVENTORY_ROOT = Path.home() / ".jachin" / "inventory"
 _SKILLS_DIR = _INVENTORY_ROOT / "skills"
 _MCPS_DIR = _INVENTORY_ROOT / "mcps"
+_L3_MCPS_DIR = _INVENTORY_ROOT / "l3_mcps"  # 路径 3：L3_LOCAL MCP，L3 拉取后动态加载
 
 
 class CloudSyncDaemon:
@@ -83,6 +100,7 @@ class CloudSyncDaemon:
         )
         self._skills_dir = _SKILLS_DIR
         self._mcps_dir = _MCPS_DIR
+        self._l3_mcps_dir = _L3_MCPS_DIR
 
     def _is_configured(self) -> bool:
         return bool(self._base_url and self._access_token and self._tenant_id)
@@ -112,24 +130,35 @@ class CloudSyncDaemon:
         return package_url
 
     async def _fetch_manifest_with_tenant(self, tenant_id: str) -> list[dict[str, Any]]:
-        """用指定 tenant_id 请求 manifest，失败返回 []"""
+        """用指定 tenant_id 请求 manifest，失败返回 []。503 时重试（L1 可能正在启动/编译）。"""
         url = f"{self._base_url}{_MANIFEST_PATH}"
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "X-Tenant-Id": tenant_id,
         }
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                if not data.get("success"):
-                    return []
-                return data.get("manifest") or []
-        except Exception as e:
-            logger.warning("[SyncDaemon] manifest 拉取失败 tenant=%s err=%s", tenant_id[:24], e)
-            return []
+        last_err = None
+        for attempt in range(3):
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code == 503 and attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if not data.get("success"):
+                        return []
+                    return data.get("manifest") or []
+            except Exception as e:
+                last_err = e
+                if "503" in str(e) and attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                break
+        _log_l1_503_hint_once("manifest", last_err)
+        logger.warning("[SyncDaemon] manifest 拉取失败 tenant=%s err=%s", tenant_id[:24], last_err)
+        return []
 
     async def poll_manifest(self) -> list[dict[str, Any]]:
         """
@@ -199,22 +228,42 @@ class CloudSyncDaemon:
                     to_download.append(item)
 
             elif item_type == "MCP":
-                # MCP 通常按 item_id 存为 mcps/{item_id}.json 或 mcps/{item_id}/config.json
-                local_path = self._mcps_dir / f"{item_id}.json"
-                local_dir = self._mcps_dir / str(item_id)
-                meta_file = (local_dir / ".sync_meta") if local_dir.exists() else (self._mcps_dir / f".{item_id}.sync_meta")
+                runtime_tier = (item.get("runtime_tier") or "L2_GATEWAY").upper()
+                # 路径 3：L3_LOCAL 下载到 l3_mcps/，L3 拉取后动态加载
+                if runtime_tier == "L3_LOCAL":
+                    local_dir = self._l3_mcps_dir / str(item_id)
+                else:
+                    local_path = self._mcps_dir / f"{item_id}.json"
+                    local_dir = self._mcps_dir / str(item_id)
+                meta_file = (local_dir / ".sync_meta") if local_dir.exists() else (
+                    (self._l3_mcps_dir / str(item_id) / ".sync_meta") if runtime_tier == "L3_LOCAL"
+                    else (self._mcps_dir / f".{item_id}.sync_meta")
+                )
                 need_download = False
-                if not local_path.exists() and not local_dir.exists():
-                    need_download = True
-                elif meta_file.exists():
-                    try:
-                        meta = json.loads(meta_file.read_text(encoding="utf-8"))
-                        if meta.get("package_url") != package_url:
+                if runtime_tier == "L3_LOCAL":
+                    if not local_dir.exists():
+                        need_download = True
+                    elif meta_file.exists():
+                        try:
+                            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                            if meta.get("package_url") != package_url:
+                                need_download = True
+                        except Exception:
                             need_download = True
-                    except Exception:
+                    else:
                         need_download = True
                 else:
-                    need_download = True
+                    if not local_path.exists() and not local_dir.exists():
+                        need_download = True
+                    elif meta_file.exists():
+                        try:
+                            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                            if meta.get("package_url") != package_url:
+                                need_download = True
+                        except Exception:
+                            need_download = True
+                    else:
+                        need_download = True
 
                 if need_download:
                     to_download.append(item)
@@ -258,6 +307,7 @@ class CloudSyncDaemon:
         package_sha256: Optional[str] = None,
         *,
         bypass_proxy: bool = False,
+        runtime_tier: Optional[str] = None,
     ) -> bool:
         """
         流式下载并解压到本地仓库。
@@ -318,32 +368,44 @@ class CloudSyncDaemon:
                 meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
             elif item_type == "MCP":
-                self._mcps_dir.mkdir(parents=True, exist_ok=True)
-                # MCP 可能是 .json 配置或压缩包，按后缀处理
-                if temp_path.lower().endswith(".zip"):
-                    dest = self._mcps_dir / str(item_id)
+                rt = (runtime_tier or "L2_GATEWAY").upper()
+                # 路径 3：L3_LOCAL 解压到 l3_mcps/，含 Python 源码，L3 拉取后动态加载
+                if rt == "L3_LOCAL":
+                    self._l3_mcps_dir.mkdir(parents=True, exist_ok=True)
+                    dest = self._l3_mcps_dir / str(item_id)
                     dest.mkdir(parents=True, exist_ok=True)
-
-                    def _extract_mcp() -> None:
-                        with zipfile.ZipFile(temp_path, "r") as zf:
-                            zf.extractall(dest)
-
-                    await loop.run_in_executor(None, _extract_mcp)
-                    # 扫描器只读 mcps/*.json，需将主配置复制到 mcps/{item_id}.json
-                    config_candidates = list(dest.glob("*.json")) + list(dest.glob("**/*.json"))
-                    primary = None
-                    for c in config_candidates:
-                        if c.name in ("config.json", "mcp_config.json"):
-                            primary = c
-                            break
-                    if not primary and config_candidates:
-                        primary = config_candidates[0]
-                    if primary:
-                        shutil.copy(primary, self._mcps_dir / f"{item_id}.json")
+                    if temp_path.lower().endswith(".zip"):
+                        def _extract_l3_mcp() -> None:
+                            with zipfile.ZipFile(temp_path, "r") as zf:
+                                zf.extractall(dest)
+                        await loop.run_in_executor(None, _extract_l3_mcp)
+                    else:
+                        # 非 zip 时复制到 dest 目录
+                        shutil.copy(temp_path, dest / os.path.basename(temp_path))
+                    meta_path = dest / ".sync_meta"
                 else:
-                    dest_file = self._mcps_dir / f"{item_id}.json"
-                    shutil.copy(temp_path, dest_file)
-                meta_path = self._mcps_dir / f".{item_id}.sync_meta"
+                    self._mcps_dir.mkdir(parents=True, exist_ok=True)
+                    if temp_path.lower().endswith(".zip"):
+                        dest = self._mcps_dir / str(item_id)
+                        dest.mkdir(parents=True, exist_ok=True)
+                        def _extract_mcp() -> None:
+                            with zipfile.ZipFile(temp_path, "r") as zf:
+                                zf.extractall(dest)
+                        await loop.run_in_executor(None, _extract_mcp)
+                        config_candidates = list(dest.glob("*.json")) + list(dest.glob("**/*.json"))
+                        primary = None
+                        for c in config_candidates:
+                            if c.name in ("config.json", "mcp_config.json"):
+                                primary = c
+                                break
+                        if not primary and config_candidates:
+                            primary = config_candidates[0]
+                        if primary:
+                            shutil.copy(primary, self._mcps_dir / f"{item_id}.json")
+                    else:
+                        dest_file = self._mcps_dir / f"{item_id}.json"
+                        shutil.copy(temp_path, dest_file)
+                    meta_path = self._mcps_dir / f".{item_id}.sync_meta"
                 meta_path.write_text(
                     json.dumps({"package_url": package_url, "item_id": item_id}, ensure_ascii=False),
                     encoding="utf-8",
@@ -396,24 +458,45 @@ class CloudSyncDaemon:
             }
 
             import httpx
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, content=compressed, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            last_err = None
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        resp = await client.post(url, content=compressed, headers=headers)
+                        if resp.status_code == 503 and attempt < 2:
+                            await asyncio.sleep(2 * (attempt + 1))
+                            continue
+                        resp.raise_for_status()
+                        data = resp.json()
 
-            if data.get("success"):
-                mark_reported(ids)
-                logger.info(
-                    "[SyncDaemon] 遥测上报成功 count=%d inserted=%d",
-                    len(ids),
-                    data.get("inserted", 0),
-                )
-            else:
+                    if data.get("success"):
+                        mark_reported(ids)
+                        logger.info(
+                            "[SyncDaemon] 遥测上报成功 count=%d inserted=%d",
+                            len(ids),
+                            data.get("inserted", 0),
+                        )
+                    else:
+                        logger.warning(
+                            "[SyncDaemon] L1 遥测接口返回 success=false，本地数据保留待重试: %s",
+                            data.get("error", "unknown"),
+                        )
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if "503" in str(e) and attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+            if last_err:
+                _log_l1_503_hint_once("telemetry", last_err)
                 logger.warning(
-                    "[SyncDaemon] L1 遥测接口返回 success=false，本地数据保留待重试: %s",
-                    data.get("error", "unknown"),
+                    "[SyncDaemon] 遥测上报失败（下周期重试）: %s",
+                    last_err,
+                    exc_info=False,
                 )
         except Exception as e:
+            _log_l1_503_hint_once("telemetry", e)
             logger.warning(
                 "[SyncDaemon] 遥测上报失败（下周期重试）: %s",
                 e,
@@ -437,8 +520,10 @@ class CloudSyncDaemon:
                     "[SyncDaemon] 发现新战略物资: %s, 正在空投...",
                     item_id,
                 )
+                runtime_tier = item.get("runtime_tier") if item_type == "MCP" else None
                 ok = await self.download_and_extract(
-                    item_type, package_url, str(item_id), package_sha256, bypass_proxy=bypass_proxy
+                    item_type, package_url, str(item_id), package_sha256,
+                    bypass_proxy=bypass_proxy, runtime_tier=runtime_tier
                 )
                 if ok:
                     logger.info("[SyncDaemon] 空投成功: %s ✓", item_id)
@@ -491,7 +576,7 @@ class CloudSyncDaemon:
         return asyncio.create_task(_loop())
 
 
-def start_cloud_sync_background(interval_seconds: float = 60) -> asyncio.Task | None:
+async def start_cloud_sync_background(interval_seconds: float = 60) -> asyncio.Task | None:
     """
     启动 CloudSyncDaemon 后台同步任务。
     返回 Task 供 lifespan 在 shutdown 时 cancel；未配置时返回 None。
@@ -501,7 +586,7 @@ def start_cloud_sync_background(interval_seconds: float = 60) -> asyncio.Task | 
         logger.info("[SyncDaemon] 未配对 L1 或缺少 tenant_id，云边同步守护进程不启动")
         return None
 
-    task = daemon.start_background_sync(interval_seconds=interval_seconds)
+    task = await daemon.start_background_sync(interval_seconds=interval_seconds)
     logger.info("[SyncDaemon] 云边同步守护进程已启动，间隔 %ds，tenant=%s base=%s", interval_seconds, daemon._tenant_id, daemon._base_url)
     # 启动后立即执行一次同步，不等待首个 interval
     try:
@@ -541,19 +626,30 @@ async def l1_heartbeat_sync() -> dict[str, Any] | None:
     }
     payload = {
         "instance_id": instance_id,
-        "core_version": "0.8.5",
+        "core_version": "0.8.32",
     }
 
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            return data
-    except Exception as e:
-        logger.warning("[L1Heartbeat] 心跳失败: %s", e)
-        return None
+    last_err = None
+    for attempt in range(3):
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code == 503 and attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                return data
+        except Exception as e:
+            last_err = e
+            if "503" in str(e) and attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            break
+    _log_l1_503_hint_once("heartbeat", last_err)
+    logger.warning("[L1Heartbeat] 心跳失败: %s", last_err)
+    return None
 
 
 async def _heartbeat_loop(stop_event: asyncio.Event, interval_sec: float) -> None:
