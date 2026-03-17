@@ -48,7 +48,7 @@ core/
 │   ├── v2_auth.py        # sync, poll, keys
 │   ├── v2_admin.py       # 子账号、Key、节点分配
 │   ├── v2_inventory.py   # /skills, /download
-│   ├── v2_mcp.py         # /invoke
+│   ├── v2_mcp.py         # /invoke（L2 委托其他 L3，不执行 MCP）
 │   ├── v2_memory.py      # sync, search
 │   └── v2_coordinate.py  # task, poll, result
 ├── db/                   # LanceDB, dream_weaver
@@ -81,12 +81,14 @@ clients/desktop/
 
 l3_node/
 ├── agent_core.py         # ReAct Agent
-├── bootstrap.py          # 注册、拉 Key
+├── bootstrap.py          # 注册、拉 Key、skill_sync、mcp_sync
 ├── llm_client.py         # LiteLLM 直连
+├── skill_sync.py         # 从 L2 拉取技能到 l3_skill_cache
+├── mcp_sync.py           # 从 L2 拉取 L3_LOCAL MCP 到 l3_mcp_cache
 ├── ws_server.py          # WebSocket 18981
 ├── skills/
 │   ├── loader.py         # Wasm 加载
-│   └── mcp_registry.py   # MCP 代理
+│   └── mcp_registry.py   # MCP 路由：本机有则本地执行，无则 L2 委托；l3_mcp_cache 动态加载
 └── engine/hooks_pipeline.py
 ```
 
@@ -99,8 +101,10 @@ l3_node/
 | `l2_control.db` | L2 SQLite |
 | `lancedb_data/` | 向量记忆 |
 | `inventory/skills/` | L2 技能（L1 同步 + 侧载） |
-| `inventory/mcps/` | MCP 配置 |
+| `inventory/mcps/` | MCP 配置（L2_GATEWAY 侧载） |
+| `inventory/l3_mcps/` | L3_LOCAL MCP（L2 从 L1 同步，供 L3 拉取） |
 | `l3_skill_cache/` | L3 技能缓存 |
+| `l3_mcp_cache/` | L3 MCP 缓存（mcp_sync 从 L2 拉取，mcp_registry 动态加载） |
 | `l2_gateway_config.json` | L3-L2 配对配置 |
 | `nexus_config.json` | L2-L1 配对配置 |
 

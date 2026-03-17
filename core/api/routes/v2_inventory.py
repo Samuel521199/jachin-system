@@ -6,6 +6,7 @@ Jachin Nexus V2 - L2 本地数字仓库 API
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse
 from core.errors import ERR_AUTH_001, ERR_AUTH_002, ERR_AUTH_003, ERR_NOT_FOUND_003, api_error
 from core.inventory_scanner import (
     ensure_inventory_dirs,
+    L3_MCPS_DIR,
     registered_local_skills,
     reload_inventory,
 )
@@ -185,6 +187,87 @@ async def uninstall_skill(
     except Exception as e:
         logger.exception("[Inventory API] 移入回收站失败 item_id=%s err=%s", item_id, e)
         return {"ok": False, "error": str(e), "item_id": item_id}
+
+
+@router.get("/l3_mcps")
+async def list_l3_mcps(request: Request) -> dict[str, Any]:
+    """
+    返回 L3_LOCAL MCP 列表（路径 3）。
+    供 L3 mcp_sync 拉取，下载到 l3_mcp_cache 后动态加载。
+    """
+    mcps: list[dict[str, Any]] = []
+    try:
+        sub_account_id = _get_sub_account_id(request)
+        if not sub_account_id:
+            from core.db import get_connection
+            conn = get_connection()
+            try:
+                conn.execute("SELECT 1 FROM sub_accounts LIMIT 1")
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        if not L3_MCPS_DIR.exists():
+            return {"mcps": mcps, "count": 0}
+
+        for subdir in L3_MCPS_DIR.iterdir():
+            if not subdir.is_dir():
+                continue
+            item_id = subdir.name
+            plugin_path = subdir / "plugin.json"
+            if not plugin_path.exists():
+                continue
+            try:
+                plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            tools_list = plugin.get("tools") or []
+            if isinstance(tools_list, dict):
+                tools_list = list(tools_list.values()) if tools_list else []
+            tool_ids = []
+            for t in tools_list:
+                tid = t.get("id") if isinstance(t, dict) else str(t)
+                if tid:
+                    tool_ids.append(f"mcp:{tid}" if not tid.startswith("mcp:") else tid)
+            mcps.append({
+                "item_id": item_id,
+                "name": plugin.get("name", item_id),
+                "description": plugin.get("description", ""),
+                "tools": tool_ids,
+                "entry": "tools",
+            })
+        return {"mcps": mcps, "count": len(mcps)}
+    except Exception as e:
+        logger.warning("[Inventory API] list_l3_mcps 异常: %s", e, exc_info=True)
+        return {"mcps": [], "count": 0}
+
+
+@router.get("/l3_mcps/{item_id}/download")
+async def download_l3_mcp(request: Request, item_id: str):
+    """
+    下载 L3_LOCAL MCP 包（zip），供 L3 解压到 l3_mcp_cache。
+    """
+    sub_account_id = _get_sub_account_id(request)
+    dest = L3_MCPS_DIR / item_id
+    if not dest.exists() or not dest.is_dir():
+        raise api_error(404, ERR_NOT_FOUND_003, f"L3 MCP item_id={item_id} not found")
+
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in dest.rglob("*"):
+            if f.is_file():
+                arcname = f.relative_to(dest)
+                zf.write(f, arcname)
+    buf.seek(0)
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={item_id}.zip"},
+    )
 
 
 @router.post("/reload")

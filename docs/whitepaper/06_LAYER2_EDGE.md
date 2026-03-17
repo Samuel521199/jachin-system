@@ -18,6 +18,7 @@ Layer 2 是**控制平面 + 记忆平面 + 调度平面 + API Key 管理**。**�
 | **数据记忆** | 接收 L3 同步的记忆，经梦境优化后存储，供 L3 检索 |
 | **梦境系统** | 对记忆进行聚类、去重、融合、冲突消解 |
 | **L3 调度** | 当 L3 需要协同时，发布任务、选择节点、分配子任务 |
+| **MCP 委托** | 本机无技能时，L2 委托其他有权限且空闲的 L3 执行 MCP，结果转发（L2 不执行 MCP） |
 
 ---
 
@@ -43,6 +44,7 @@ Layer 2 是**控制平面 + 记忆平面 + 调度平面 + API Key 管理**。**�
 | `GET /api/v2/memory/search` | L3 检索记忆（`namespaces` 参数，按 allowed_memory_namespaces 过滤） |
 | `POST /api/v2/coordinate/task` | L3 请求协同，L2 按 skill 匹配节点并分配子任务 |
 | `GET /api/v2/coordinate/poll` | L3 拉取分配给自己的子任务 |
+| `POST /api/v2/mcp/invoke` | 本机无 MCP 时，L2 委托其他 L3 执行并返回结果 |
 | `POST /api/v2/admin/sub-accounts` | 创建子账号 |
 | `POST /api/v2/admin/keys` | 向保险箱添加 API Key |
 | `POST /api/v2/admin/nodes/assign` | 将 L3 节点分配给子账号 |

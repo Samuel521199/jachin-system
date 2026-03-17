@@ -1,0 +1,55 @@
+---
+description: Layer 1 Jachin Nexus 灵界枢纽设计规范
+globs: cloud/**
+alwaysApply: false
+---
+# Layer 1: Jachin Nexus (平台)
+
+**V2**：L1 为平台，用户主账号注册/管理，与 L2/L3 无直接耦合。详见 [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)。
+
+## 设计哲学
+
+Layer 1 **绝不能做成传统 SaaS 或 Web2.0 商城**（如淘宝、App Store 那种沉重、复杂的列表页）。
+
+符合「划时代」与「未来趋势」的 Layer 1 应是：
+
+- **轻量化 (Lightweight)**：不存储用户数据，只存储代码、模型权重、配置清单。像 GitHub，不像 iCloud。
+- **协议至上 (Protocol First)**：JMP (Jachin Module Protocol) 标准制定者与分发者。
+- **去中心化**：拥抱 IPFS 等去中心化存储，智慧永不丢失、防篡改。
+- **可视化**：抛弃列表，拥抱 3D 神经元网络形态的技能树。
+
+## 核心模块
+
+| 模块 | 说明 |
+|------|------|
+| **Neural Market** | 3D 神经元商城，节点为 Skill/Persona/Memory，可组合预览 |
+| **The Forge** | Agent Builder、模拟沙箱，开发者在线编排与发布 |
+| **The Agora** | Agent 展示、Bounty Board 悬赏榜 |
+| **Jachin ID & Console** | 舰队视图、隐私审计（强调「0 次向云端上传」） |
+| **Universal Message Adapter** | 全渠道 Webhook 统一适配（Discord、Slack、WhatsApp、iMessage 等） |
+
+## 技术栈
+
+- **前端**: Next.js 14 + Three.js / React Three Fiber + Tailwind CSS
+- **后端**: Next.js API Routes + Drizzle ORM + Auth.js
+- **存储**: PostgreSQL (Drizzle)、IPFS（可选）
+- **身份**: 免密登录 / Passkey / Web3 钱包
+
+## 核心页面
+
+1. **Landing Page**：赛博朋克风格，全屏 3D 演示 Jachin 能力
+2. **Neural Market**：基于 Three.js 的 3D 技能节点图，支持搜索和点击下载
+3. **Developer Studio (The Forge)**：基于 React Flow 的可视化 Agent 编排界面
+4. **User Console**：仪表盘，显示 Layer 2 在线状态和隐私审计日志
+
+## 与现有架构映射
+
+- Neural Market ↔ Jachin Market (技能商店)
+- The Forge ↔ 待建（开发者中心）
+- The Agora ↔ 待建（社区）
+- Jachin ID & Console ↔ Auth Center + 用户后台
+- JMP 协议 ↔ common/protocols, manifest 规范
+
+## 参考文档
+
+- [docs/whitepaper/05_LAYER1_NEXUS.md](../docs/whitepaper/05_LAYER1_NEXUS.md)

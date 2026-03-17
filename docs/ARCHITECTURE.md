@@ -13,14 +13,16 @@
 | 层级 | 定位 | 职责 |
 |------|------|------|
 | **L1 全球商城** | 商业收银台 | 展示 Skill/MCP、处理订阅、颁发 License；不接触企业明文密码，不提供推理算力 |
-| **L2 本地数字仓库** | 企业数字金库 | L1 在企业内网的物理投影；静默同步已购订单、下载囤积包、运行 MCP、向 L3 下发权限与 Skill |
+| **L2 本地数字仓库** | 企业数字金库 | L1 在企业内网的物理投影；静默同步已购订单、下载囤积包、向 L3 下发权限与 Skill；MCP 同步与委托协调（L2 不执行 MCP） |
 
-### 1.2 双轨制
+### 1.2 双轨制与执行模型
 
-| 商品形态 | 流转 |
-|----------|------|
-| **Skill (.wasm)** | 轻量，L2 发放给 L3，员工电脑沙箱运行 |
-| **MCP** | 重，死锁 L2 网关，绝不下发 L3；L3 通过 HTTP 代理调用 |
+| 商品形态 | 流转 | 执行策略 |
+|----------|------|----------|
+| **Skill (.wasm)** | 轻量，L2 发放给 L3，员工电脑沙箱运行 | L3 本地执行 |
+| **MCP** | L2 同步到 inventory，L3 拉取到 l3_mcp_cache 动态加载 | **L3 优先**：本机已安装则本地执行；本机未安装则 L2 委托其他 L3 执行 |
+
+详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)。
 
 | 可见性 | 流转 |
 |--------|------|
@@ -62,9 +64,9 @@
 | L2 同步 | `core/sync_daemon.py` | CloudSyncDaemon：manifest → 下载；RBAC 本地管理 |
 | L2 仓库 | `core/inventory_scanner.py` | 侧载扫描、`.local_meta` |
 | L2 权限 | `core/policy_enforcer.py` | RBAC、断网降级、role_permissions |
-| L2 清单 | `core/api/routes/v2_inventory.py` | `/skills`、`/download`（需 X-Sub-Account-Id） |
-| L2 MCP | `core/api/routes/v2_mcp.py` | `/invoke`（需 X-Sub-Account-Id） |
-| L3 同步 | `clients/desktop/src-tauri/src/commands/skill_sync.rs` | 从 L2 拉取技能 |
+| L2 清单 | `core/api/routes/v2_inventory.py` | `/skills`、`/download`、`/l3_mcps`、`/l3_mcps/{id}/download`（需 X-Sub-Account-Id） |
+| L2 MCP 委托 | `core/api/routes/v2_mcp.py` | 本机无技能时委托其他 L3 执行；L2 不执行 MCP |
+| L3 同步 | `clients/desktop/src-tauri/src/commands/skill_sync.rs`、`l3_node/mcp_sync.py` | 从 L2 拉取技能与 MCP |
 | L3 Agent | `l3_node/agent_core.py` | ReAct、工具调用 |
 
 ---
@@ -77,6 +79,7 @@
 2. L2 `poll_manifest` → `download_and_extract` → `~/.jachin/inventory/`
 3. L2 本地 `role_permissions`（RBAC 由 L2 管理，不依赖 L1；见 `v2_local_admin`）
 4. L3 `perform_startup_sync` → `GET /skills`（带 X-Sub-Account-Id）→ `GET /download` → `~/.jachin/l3_skill_cache/`
+5. L3 `sync_mcps_from_l2` → `GET /l3_mcps` → `GET /l3_mcps/{id}/download` → `~/.jachin/l3_mcp_cache/`（mcp_registry 动态加载）
 
 ### 4.2 内网极客（侧载）
 
@@ -99,7 +102,7 @@
 |  PostgreSQL | L1：plugins_registry、user_licenses（IAM 已下放 L2） |
 | SQLite | L2：sub_accounts、role_permissions、api_keys_vault、l3_nodes |
 | LanceDB | L2：向量记忆 |
-| 文件系统 | `~/.jachin/inventory/`、`~/.jachin/l3_skill_cache/`、`~/.jachin/l2_control.db` |
+| 文件系统 | `~/.jachin/inventory/`、`~/.jachin/l3_skill_cache/`、`~/.jachin/l3_mcp_cache/`、`~/.jachin/l2_control.db` |
 
 ---
 
@@ -120,4 +123,6 @@
 | `POST /api/v2/local-admin/roles/assign` | L2 本地 RBAC 角色权限（L2 数据主权） |
 | `GET /api/v2/inventory/skills` | 技能清单（需 X-Sub-Account-Id） |
 | `GET /api/v2/inventory/skills/{id}/download` | 下载（需 X-Sub-Account-Id） |
-| `POST /api/v2/mcp/invoke` | MCP 调用（需 X-Sub-Account-Id） |
+| `GET /api/v2/inventory/l3_mcps` | L3_LOCAL MCP 清单（供 L3 mcp_sync 拉取） |
+| `GET /api/v2/inventory/l3_mcps/{id}/download` | 下载 L3_LOCAL MCP 包 |
+| `POST /api/v2/mcp/invoke` | MCP 委托（本机无技能时，L2 委托其他 L3 执行；X-Sub-Account-Id 可选） |

@@ -20,10 +20,10 @@
 **参数**：`target_role`（如 `backend_engineer`）、`resume_filename`（如 `zhangsan_resume.md`）。
 
 **Host 函数**：
-- `mcp_read_file(path_ptr, path_len)`：通过 L2 MCP 读取简历/JD
+- `mcp_read_file(path_ptr, path_len)`：L3 本地有则直读，否则经 L2 委托其他 L3 或 L2 MCP 读取简历/JD
 - `llm_complete(prompt_ptr, prompt_len)`：调用 L3 本地 LLM
 
-**依赖**：L2 MCP `local-hr-fs`（`config/local-hr-fs/config.json`）、L3 已配对并持有 API Key。
+**依赖**：L3 已配对并持有 API Key；简历/JD 读取优先 L3 本地，无则 L2 委托。
 
 ---
 
@@ -32,7 +32,7 @@
 | 变更 | 说明 |
 |------|------|
 | **llm_complete 模型规范化** | L2 可能返回 `qwen3.5-flash-2026-02-23`，LiteLLM 需 `dashscope/qwen3.5-flash-2026-02-23`。调用前使用 `engine._normalize_model(model)` 补全 provider 前缀。 |
-| **mcp_read_file 本地直读** | 本地绝对路径且文件存在时直接读取，否则解析为 `project_root/data/hr_resumes` 或 `project_root/config/hr_jds`，再走 L2 MCP。 |
+| **mcp_read_file 本地直读** | 本地绝对路径且文件存在时直接读取，否则解析为 `project_root/data/hr_resumes` 或 `project_root/config/hr_jds`，再经 L2 委托或 L2 MCP。 |
 | **execute ABI** | 支持 Rust JPP 插件的 `execute(ptr, len) -> i32`，提供 `__rust_alloc`/`__rust_dealloc` 等 host 函数。 |
 | **WASI 回退** | execute ABI 不可用时回退 WASI；若错误含 `__rust_dealloc`，抛出明确提示，避免误用纯 WASI。 |
 
@@ -143,13 +143,12 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 │  ~/.jachin/inventory/skills/、role_permissions、API Key 保险箱               │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
-                                    │ L3 skill_sync / perform_startup_sync
-                                    │ GET /api/v2/inventory/skills
-                                    │ GET /api/v2/inventory/skills/{id}/download
+                                    │ L3 skill_sync / mcp_sync / perform_startup_sync
+                                    │ GET /skills、GET /l3_mcps、GET /download
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  L3 (l3_node/ + clients/desktop) — 执行面                                    │
-│  ~/.jachin/l3_skill_cache/、l3_node/skills/wasm_plugins/                     │
+│  ~/.jachin/l3_skill_cache/、~/.jachin/l3_mcp_cache/、wasm_plugins/          │
 │  core.wasm_runner、loader.run_tool                                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -173,6 +172,8 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | `GET /api/v1/sync/manifest` | L1 返回租户已购清单 |
 | `GET /api/v2/inventory/skills` | L2 技能清单（需 X-Sub-Account-Id） |
 | `GET /api/v2/inventory/skills/{id}/download` | L2 下载技能包 |
+| `GET /api/v2/inventory/l3_mcps` | L2 L3_LOCAL MCP 清单（供 L3 mcp_sync 拉取） |
+| `GET /api/v2/inventory/l3_mcps/{id}/download` | L2 下载 L3_LOCAL MCP 包 |
 | `POST /api/v2/inventory/trigger-sync` | L3 触发 L2 从 L1 同步 |
 | `GET /api/v3/skills` | L3 技能列表（供 Skill Matrix） |
 | `POST /api/v3/skills/{skill_id}/execute` | L3 执行技能 |
@@ -182,65 +183,67 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | 路径 | 说明 |
 |------|------|
 | `~/.jachin/inventory/skills/` | L2 从 L1 同步的技能 |
+| `~/.jachin/inventory/l3_mcps/` | L2 从 L1 同步的 L3_LOCAL MCP |
 | `~/.jachin/l3_skill_cache/` | L3 从 L2 下载的技能 |
+| `~/.jachin/l3_mcp_cache/` | L3 从 L2 拉取的 MCP（mcp_sync 同步，mcp_registry 动态加载） |
 | `l3_node/skills/wasm_plugins/` | 内置技能（如 hr-analyzer） |
 
 ---
 
 ## 四、三层架构 MCP 流转
 
-### 4.1 总览
+### 4.1 总览（L3 优先执行模型）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  L2 — MCP 宿主                                                                │
-│  ~/.jachin/mcp_servers.json、core/mcp_client.py、core/api/routes/v2_mcp.py   │
-│  MCP 服务器（如 server-filesystem）运行在 L2 进程内                            │
+│  L3 — MCP 执行主体                                                             │
+│  本机已安装 → 本地直接执行；本机未安装 → 请求 L2 委托其他 L3                      │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ POST /api/v2/mcp/invoke
-                                    │ { tool_name, arguments }
-                                    │ X-Sub-Account-Id
+                                    │ 本机无技能时
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  L3 — Wasm 技能                                                               │
-│  Wasm 通过 host 函数 mcp_read_file(path_ptr, path_len) 间接调用 L2 MCP       │
-│  core/wasm_runner._mcp_read_file → httpx.post(L2 /api/v2/mcp/invoke)         │
+│  L2 — 委托协调（不执行 MCP）                                                     │
+│  查找有权限且空闲的 L3，委托执行，结果转发回发起方                                 │
+│  core/api/routes/v2_mcp.py、core/mcp_client.py（L2 侧载 MCP 时兼容）           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 MCP 双轨制
+### 4.2 MCP 执行策略
 
-| 轨道 | 形态 | 信任级别 | 流转 |
-|------|------|----------|------|
-| **A** | MCP 宿主 | 高信任 | 死锁 L2，绝不下发 L3；L3 通过 HTTP 代理调用 |
-| **B** | Skill (.wasm) | 零信任 | L2 发放给 L3，沙箱运行；Wasm 内可调用 MCP（经 host 函数） |
+| 场景 | 执行位置 | 说明 |
+|------|----------|------|
+| **本机有技能** | L3 本地 | 直接执行，压力在 L3 |
+| **本机无技能** | 其他 L3 | L2 委托有权限且空闲的 L3 执行 |
+| **复杂任务** | 多 L3 协同 | L2 coordinate 拆分分配 |
 
-### 4.3 L2 MCP 配置
+详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)。
+
+### 4.3 L2 MCP 配置（侧载兼容）
 
 - 配置：`~/.jachin/mcp_servers.json`（参考 `config/mcp_servers.json.example`）
-- HR 简历透视镜依赖：`config/local-hr-fs/config.json` 中的 `local-hr-fs`
-  - `server-filesystem` 允许：`__PROJECT_ROOT__`、`data/hr_resumes`、`config/hr_jds`
+- L3_LOCAL MCP 优先：L2 同步到 `inventory/l3_mcps/`，L3 拉取到 `l3_mcp_cache/` 动态加载
+- 侧载 MCP（L2_GATEWAY）：仍可配置于 L2，供本机无技能时 L2 委托其他 L3 或兼容旧流程
 
 ### 4.4 L3 调用 MCP 的两种方式
 
 | 方式 | 说明 |
 |------|------|
-| **Agent 直接调用** | `l3_node/agent_core.py`：若 `action_name` 在 `mcp_registry.known_mcp_tools`，则 `mcp_registry.invoke_via_l2()` |
-| **Wasm host 函数** | `mcp_read_file`：Wasm 内声明 `extern "C" { fn mcp_read_file(...) }`，宿主实现为 `POST /api/v2/mcp/invoke` |
+| **Agent 直接调用** | `l3_node/agent_core.py`：本机有则 `mcp_registry.invoke` 本地执行；无则 `invoke_via_l2` 请求 L2 委托 |
+| **Wasm host 函数** | `mcp_read_file`：本地直读优先；否则经 L2 委托或 `POST /api/v2/mcp/invoke` |
 
 ### 4.5 MCP 关键 API
 
 | 接口 | 说明 |
 |------|------|
-| `GET /api/v2/mcp/tools` | L2 返回 MCP 工具列表 |
-| `POST /api/v2/mcp/invoke` | L2 执行 MCP 工具（需 X-Sub-Account-Id） |
+| `GET /api/v2/mcp/tools` | L2 返回 MCP 工具列表（含 L3 已同步 + L2 侧载） |
+| `POST /api/v2/mcp/invoke` | 本机无技能时，L2 委托其他 L3 执行并返回结果（X-Sub-Account-Id 可选） |
+| `POST /api/v3/mcp/execute` | L3 暴露给 L2 委托调用的 MCP 执行接口 |
 
 ### 4.6 mcp_read_file 实现逻辑（wasm_runner）
 
 1. 本地绝对路径且存在 → 直接读取
 2. 否则解析为 `project_root/data/hr_resumes/{filename}` 或 `config/hr_jds/{filename}`
-3. 调用 `POST /api/v2/mcp/invoke`，`tool_name=read_file`，`arguments={path}`
+3. L3 本地有 read_file 则本地执行；否则调用 `POST /api/v2/mcp/invoke` 请求 L2 委托
 
 ---
 
@@ -251,6 +254,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | `core/wasm_runner.py` | Wasm 沙箱、execute ABI、host 函数（mcp_read_file、llm_complete） |
 | `l3_node/skills/loader.py` | 技能扫描、ID 统一、路径覆盖、resume/jd 注入 |
 | `l3_node/skill_sync.py` | L3 从 L2 同步技能到 l3_skill_cache |
+| `l3_node/mcp_sync.py` | L3 从 L2 同步 L3_LOCAL MCP 到 l3_mcp_cache |
 | `l3_node/http_server.py` | GET /api/v3/skills、POST /execute，技能去重 |
 | `l3_node/llm_client.py` | LiteLLMEngine、_normalize_model |
 | `core/api/routes/v2_mcp.py` | L2 MCP invoke |

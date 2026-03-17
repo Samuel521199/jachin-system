@@ -12,7 +12,7 @@
 ## ⚠️ 架构宪法 (The Constitution)
 致所有阅读此文档的开发者与 AI 编程助手（如 Cursor）：
 1. 本项目已**全面弃用** Dapr、Ray 集群、本地 PostgreSQL（L2）和复杂 Docker 编排。**Redis** 仅 L2 集群化时可选使用。
-2. **V2**：L2 为**控制面**（子账号、权限、记忆、API Key 管理）；**执行引擎在 L3**（MCP + SKILL.md + Wasm）。
+2. **V2**：L2 为**控制面**（子账号、权限、记忆、API Key 管理、MCP 委托协调）；**执行引擎在 L3**（MCP + SKILL.md + Wasm），L3 优先执行，本机无则 L2 委托其他 L3。
 3. **轨道 A (MCP)**：供高信任本地环境，继承全球 AI 工具生态，开箱即用。
 4. **轨道 B (SKILL.md)**：`skills_repo/` 下声明式 Markdown 技能，热加载，零编译。
 5. **轨道 C (Wasm)**：商城下载的第三方付费插件，必须在 The Abyss 沙箱中运行。

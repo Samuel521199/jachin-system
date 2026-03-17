@@ -1,0 +1,78 @@
+---
+description: v8.0 全息感官总线 — 端口-适配器、Session Multiplexing、Capability Negotiation、全链路 runId、流式神经、持久化
+globs: core/event_bus.py, core/daemon.py, core/agent_loop.py
+---
+# 全息感官总线 (Omni-Sensory Bus) v8.0
+
+## 1. 设计理念
+
+- **端口-适配器架构**：Voice、Sprite、IM 作为外接感官器官，不直接耦合 `agent_loop.py`。
+- **输入归一化**：麦克风、Telegram、桌面精灵点击 → 统一 `OmniInputEvent(source, intent, payload)`。
+- **输出多路分发**：大脑结论 → 按 `source` 分发：voice→TTS、telegram→HTTP Callback、*→WebSocket（精灵动画）。
+- **持久化**：OmniSensoryBus 底层挂载 SQLite 队列，进程重启不丢事件。
+
+## 2. 事件结构
+
+### OmniInputEvent
+```python
+source: str   # "voice" | "telegram" | "sprite" | "lark" | "cli"
+intent: str   # 用户意图文本
+payload: dict # ast_json, pending_message_ids, access_token, layer1_url 等
+```
+
+### OmniOutputEvent
+```python
+source: str    # 回显输入来源
+result: str    # 大脑结论
+step_type: str # "thought" | "action" | "observation" | "answer"
+payload: dict  # 透传输入 payload（IM 回传需 pending_message_ids 等）
+```
+
+## 3. 核心 API
+
+| 函数 | 用途 |
+|------|------|
+| `emit_omni_input(source, intent, payload)` | 感官器官发射输入 |
+| `subscribe_omni_output(source, handler)` | 订阅输出（source 或 `"*"` 全局） |
+| `start_omni_consumer()` | 启动消费循环 |
+| `stop_omni_consumer()` | 停止消费 |
+
+## 4. 实现约束
+
+- **不污染 agent_loop**：Agent Loop 只接收 `intent` 和 `ast_json`，不感知 source。
+- **IM 路径**：Jachin Mesh 推送 task → `emit_omni_input("telegram", task, {...})` → 消费循环 → Agent → `subscribe_omni_output("telegram", ...)` 调用 `_report_result`。
+- **Voice/Sprite**：未来接入时调用 `emit_omni_input`，并注册对应 `subscribe_omni_output` 处理器。
+- **兼容**：`core/event_bus.py` 同时承载全息感官总线与原有 Workflow `BusEvent`，互不干扰。
+
+## 5. Animus Protocol (灵魂联动)
+
+- 接入 **pvporcupine** 离线唤醒词引擎，实现 "Hey Jachin" **极低功耗监听**。
+
+## 6. Layer 3 视觉投射
+
+- Daemon 需启动**本地 WebSocket Server**，将 OmniOutputEvent（思考状态、HITL 授权请求等）**实时广播**给 Tauri 桌面精灵，驱动动画。
+
+## 7. v8.0 Session Multiplexing（会话多路复用）
+
+- OmniSensoryBus 必须支持基于 `session_id` 的上下文隔离。按 session_id 动态拉起独立的 Agent Actor 协程，实现高并发下的记忆隔离。`SensoryInputEvent` 应携带 `session_id`（缺省时使用 `source`）。
+
+## 8. v8.0 Capability Negotiation（能力协商）
+
+- Layer 3 客户端连接 WebSocket 时必须先发送 Manifest（能力清单），如 `{"device": "pc", "caps": ["ui_render", "hitl_popup"]}`。Layer 2 根据 `caps` 动态决定推送内容。桌面精灵降级为一种普通的视觉 Skill/Client。
+
+## 9. v8.0 全链路 runId 追踪
+
+- `SensoryInputEvent` / `SensoryOutputEvent` 的 metadata 强制支持 `run_id`
+- `emit_omni_input` / `_persist_omni_input_sync` 无 run_id 时自动生成 uuid
+- 所有 on_step、on_hitl_request、chunk 广播携带 run_id
+- 日志输出带 `[RunID: {run_id[:8]}]` 短前缀
+
+## 10. v8.0 流式神经 (Streaming Chunk)
+
+- LLM 逐 token 流式输出，`action_type="chunk"` 事件
+- 仅当客户端 caps 含 `stream_chunk` 时转发 chunk 事件
+- Manifest 示例：`{"caps": ["ui_render", "hitl_popup", "stream_chunk"]}`
+
+## 11. 参考文档
+
+- `docs/whitepaper/OMNI_SENSORY_BUS.md`

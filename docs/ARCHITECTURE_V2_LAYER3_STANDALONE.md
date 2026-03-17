@@ -830,7 +830,5 @@ L3 节点收到用户任务（如「帮我分析这 100 份 PDF」）
 
 ## 十四、相关文档
 
-- [JACHIN_VS_OPENCLAW_ANALYSIS.md](./JACHIN_VS_OPENCLAW_ANALYSIS.md) — 与 OpenClaw 全方位对比
-- [L2_GATEWAY_CLUSTER_ARCHITECTURE.md](./L2_GATEWAY_CLUSTER_ARCHITECTURE.md) — L2 网关集群（可与此架构结合）
 - [LAYER3_L2_WAN_ARCHITECTURE.md](./LAYER3_L2_WAN_ARCHITECTURE.md) — L3 与 L2 通信架构
 - 项目根目录 `docker-compose.l2-cluster.yml` — L2 无状态集群部署示例（3 节点 + Redis + Nginx 统一入口 18888）

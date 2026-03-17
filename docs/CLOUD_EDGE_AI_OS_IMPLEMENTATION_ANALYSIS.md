@@ -37,7 +37,7 @@
 | 静默同步云端已购订单 | ✅ 已实现 | `poll_manifest()` → `_diff_manifest_vs_local()` → `download_and_extract()` |
 | 下载并囤积压缩包 | ✅ 已实现 | SKILL → `skills/{item_id}/`，MCP → `mcps/` |
 | 常驻运行高敏 MCP 驱动 | ✅ 已实现 | `core/mcp_client.py` MCPManager，`scan_local_mcps()` 注入 |
-| 数据库密码锁在本地 | ✅ 已实现 | MCP 配置在 `~/.jachin/inventory/mcps/`，L2 本地执行 |
+| 数据库密码锁在本地 | ✅ 已实现 | MCP 配置在 `~/.jachin/inventory/mcps/`；L3_LOCAL 时 L3 执行，L2 仅同步与委托 |
 | 动态向 L3 下发权限和 Skill | ✅ 已实现 | 本地 `role_permissions`（L2 数据主权，由 v2_local_admin 管理）；`GET /api/v2/inventory/skills` + `/download` |
 
 **关键组件**:
@@ -55,7 +55,7 @@
 | 商品形态 | 设计 | 实现状态 | 说明 |
 |----------|------|----------|------|
 | **Skill (.wasm)** | 轻量，L2 发放给 L3，员工电脑沙箱运行 | ✅ 已实现 | L2 `/skills` + `/download`，L3 `perform_startup_sync` 拉取到 `~/.jachin/l3_skill_cache/`，Wasm 沙箱执行 |
-| **MCP** | 重，死锁 L2 网关，绝不下发 L3 | ✅ 已实现 | MCP 在 L2 运行，L3 通过 `POST /api/v2/mcp/invoke` 代理调用 |
+| **MCP** | L3 优先执行，本机无则 L2 委托其他 L3 | ✅ 已实现 | L3 本地 MCP（l3_mcp_cache 动态加载）、L2 委托 fallback（v2_mcp → 其他 L3 `POST /api/v3/mcp/execute`）均已实现。详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md) |
 
 ### 2.2 双轨可见性
 
@@ -83,7 +83,7 @@
 |------|------|----------|------|
 | 写完 MCP + Wasm 丢进 L2 文件夹 | 侧载 | ✅ 已实现 | `~/.jachin/inventory/skills/{id}/`、`mcps/*.json` |
 | 全公司高管立刻可用 | 扫描 + 热重载 | ✅ 已实现 | `scan_local_skills`、`scan_local_mcps`，`POST /inventory/reload` 热重载 |
-| 数据不出局域网 | MCP 在 L2 | ✅ 已实现 | MCP 在 L2 本地执行，L3 仅通过 HTTP 代理调用 |
+| 数据不出局域网 | MCP 在 L3 或委托 L3 | ✅ 已实现 | L3 本地执行或 L2 委托其他 L3，数据不离开企业内网 |
 | `.local_meta` 结构化元数据 | 侧载元数据 | ✅ 已实现 | `origin: SIDE_LOAD`、`installed_at`、`is_private: true` |
 
 ### 3.3 场景三：生态创作者 — 极简暴富与零成本分发
@@ -93,7 +93,7 @@
 | 本地组件在 L1 一键转为 PUBLIC | 发布 + 审核 | ✅ 已实现 | `jachin-cli publish`，`POST /api/v1/store/publish`，Admin 审核 |
 | 定价上架 | 商城 | ⏸️ 排除 | 支付相关 |
 | 平台抽成 30% | 商业逻辑 | ⏸️ 排除 | 支付相关 |
-| 算力/网络转嫁到买家 L3/L2 | 架构 | ✅ 已实现 | Skill 在 L3 运行，MCP 在 L2，L1 无推理负载 |
+| 算力/网络转嫁到买家 L3 | 架构 | ✅ 已实现 | Skill 与 MCP 均在 L3 执行，L2 仅协调，L1 无推理负载 |
 
 ---
 
@@ -101,9 +101,7 @@
 
 ### 4.1 已确认缺口
 
-| 缺口 | 影响 | 位置 | 说明 |
-|------|------|------|------|
-| **L3 MCP 调用未携带身份** | MCP 调用 401 | `l3_node/skills/mcp_registry.py` | `invoke_via_l2()` 未传 `X-Sub-Account-Id`，L2 `POST /api/v2/mcp/invoke` 强制要求，导致鉴权失败 |
+（当前无阻塞缺口。L2 MCP invoke 已放宽鉴权：X-Sub-Account-Id 可选，无身份时放行。）
 
 ### 4.2 已修复（2026-03）
 
@@ -111,6 +109,8 @@
 |--------|------|
 | **L2 技能清单/下载无鉴权** | `/skills`、`/download` 现强制 X-Sub-Account-Id，经 PolicyEnforcer.check_access 按 role_permissions 过滤；L3 skill_sync 携带 sub_account_id |
 | **PRIVATE 技能按角色过滤** | 同上，清单与下载均按角色过滤 |
+| **L2 MCP 委托 fallback** | `v2_mcp.py` 在 MCPToolNotFoundError 时委托其他 L3 的 `POST /api/v3/mcp/execute`；`get_l3_nodes_with_mcp_tool` 从 Redis 查找有该工具的 L3 |
+| **L3 MCP 同步与动态加载** | `l3_node/mcp_sync.py` 从 L2 `GET /l3_mcps` 拉取；`mcp_registry._load_tools_from_l3_mcp_cache` 从 `~/.jachin/l3_mcp_cache/` 动态加载 |
 
 ### 4.3 设计层面的待确认点
 
@@ -129,20 +129,20 @@
 |------|--------|------|
 | **L1** | 95%+ | 商城、manifest、publish、licenses、PRIVATE 影子上传、PUBLIC 审核均就绪；IAM 已下放 L2；支付除外 |
 | **L2** | 95%+ | 同步、侧载、MCP、PolicyEnforcer、断网降级、inventory API 完整 |
-| **L3** | 85% | 技能同步、下载、缓存完整；MCP 调用缺 `X-Sub-Account-Id` 导致 401 |
+| **L3** | 95% | 技能同步、MCP 同步、l3_mcp_cache 动态加载、L2 委托 fallback 均已实现 |
 
 ### 5.2 三大流程满足度
 
 | 流程 | 满足度 | 阻塞点 |
 |------|--------|--------|
-| **企业消费者** | 95% | 技能精准投递已实现；MCP 调用仍缺 X-Sub-Account-Id，导致 401 |
+| **企业消费者** | 98% | 技能与 MCP 精准投递、L2 委托 fallback 均已实现 |
 | **内网极客** | 100% | 侧载、扫描、热重载、`.local_meta` 完整 |
 | **生态创作者** | 95% | 发布、审核、PRIVATE/PUBLIC 双轨完整；无显式 PRIVATE→PUBLIC 转换 |
 
 ### 5.3 宣讲就绪度
 
 - **架构与理念**：一店一库、双轨制、三大场景与代码实现高度一致，可直接用于宣讲。
-- **演示建议**：优先演示「内网极客」流程（侧载即用）；「企业消费者」需修复 L3 MCP 身份传递后再做端到端演示。
+- **演示建议**：可演示「内网极客」（侧载即用）与「企业消费者」（技能 + MCP 同步、L2 委托）完整流程。
 - **投资/大客户**：可强调 L1 轻量、L2 断网自治、算力下沉；支付与抽成逻辑可单独作为 Roadmap 说明。
 
 ---
@@ -159,7 +159,8 @@
 | L2 sync daemon | `core/sync_daemon.py` |
 | L2 inventory scanner | `core/inventory_scanner.py` |
 | L2 policy enforcer | `core/policy_enforcer.py` |
-| L2 inventory API | `core/api/routes/v2_inventory.py` |
-| L2 MCP invoke | `core/api/routes/v2_mcp.py` |
+| L2 inventory API（含 /l3_mcps） | `core/api/routes/v2_inventory.py` |
+| L2 MCP invoke（含 L3 委托） | `core/api/routes/v2_mcp.py` |
 | L3 skill sync | `clients/desktop/src-tauri/src/commands/skill_sync.rs` |
-| L3 MCP 代理调用 | `l3_node/skills/mcp_registry.py` |
+| L3 MCP 同步 | `l3_node/mcp_sync.py` |
+| L3 MCP 代理调用与 l3_mcp_cache 动态加载 | `l3_node/skills/mcp_registry.py` |

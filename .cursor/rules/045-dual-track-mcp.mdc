@@ -1,0 +1,57 @@
+---
+description: v8.0 双轨制引擎 — MCP、SKILL.md、Wasm 三轨道；Cognitive Swarm；Aegis
+globs: core/mcp_client.py, core/skill_loader.py, core/wasm_runner.py, core/agent_loop.py
+---
+# Dual-Track Engine Rules (v8.0 The Singularity OS)
+
+## 三轨道
+
+| 轨道 | 形态 | 信任级别 | 组件 |
+|------|------|----------|------|
+| **A** | MCP | 高信任 | `core/mcp_client.py` |
+| **B** | SKILL.md | 用户可控 | `core/skill_loader.py` |
+| **C** | JPP Wasm | 零信任 | `core/wasm_runner.py` |
+
+## 轨道 A: MCP（L3 优先执行模型）
+
+- **L3 本机已安装**：L3 本地直接执行，压力在 L3。
+- **L3 本机未安装**：L2 委托其他有权限且空闲的 L3 执行，结果经 L2 返回。
+- **L2 不执行 MCP**：L2 仅做同步、分配、委托协调。
+- 配置：`~/.jachin/mcp_servers.json`（侧载 L2_GATEWAY 兼容）；L3_LOCAL 由 `l3_mcp_cache/` 动态加载。
+- 参考：`docs/MCP_EXECUTION_MODEL.md`、`docs/MCP_SPEC.md`
+
+## 轨道 B: SKILL.md
+- 监听 `skills_repo/**/SKILL.md`，热加载。
+- 格式：YAML Frontmatter (name, description, persona, mcp_tools) + 自然语言指令。
+- 按需读取 SKILL.md 内容注入 Prompt。
+- 参考：`docs/SKILL_MD_SPEC.md`
+
+## 轨道 C: Wasm 沙箱
+- 商城第三方付费插件，WASI 物理隔离 + 燃料熔断。
+- 无法访问宿主机，无法窃取权限。
+- 参考：`docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`
+
+## Native Core Fallback (原生降级路由)
+
+为防止 MCP 瘫痪导致技能失效，系统内置安全的宿主原生标准库（`core:fs_read`、`core:fs_write`、`core:shell_exec`），**权限死锁在 `~/.jachin/workspace/` 目录下**。SKILL.md 可声明：
+
+```yaml
+tools:
+  - prefer: "mcp:local_env"
+    fallback: "core:fs_read"
+  - prefer: "mcp:shell"
+    fallback: "core:shell_exec"
+```
+
+当 `prefer` 工具调用失败时，自动 catch 异常并路由至 `fallback`。实现：`core/native_tools.py`。
+
+## 路由规则
+Agent 在 `[Action]` 阶段：若 action_name 在 MCP 工具列表 → 走 MCP；若对应 SKILL.md → 走 SKILL；否则 → 走 Wasm。MCP 失败时按 `tools.fallback` 降级至 Native Core。
+
+## Cognitive Swarm (虫群心智)
+- 引入 **LiteLLM** 抹平大模型差异，支持 100+ 模型无缝切换。
+- 核心引入 **Router Agent** 进行多意图分发，打破仅支持 Qwen/OpenAI 的死板绑定。
+
+## Aegis 子系统
+- 引入 **OpenTelemetry** 进行全链路遥测日志记录。
+- 增加 **Prompt 注入拦截墙**，防护恶意输入。

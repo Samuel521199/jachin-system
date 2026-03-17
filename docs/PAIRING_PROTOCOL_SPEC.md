@@ -25,7 +25,7 @@ L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2
 |------|------|
 | **管理员** | 在 L2 后台将节点分配给子账号 |
 | **API** | `POST /api/v2/admin/nodes/assign` `{ node_id, sub_account_id }` |
-| **Header** | `X-Admin-Token`（环境变量 `JACHIN_L2_ADMIN_TOKEN`） |
+| **Header** | `Authorization: Bearer <JWT>`（需先 `POST /api/v2/admin/login` 获取 JWT） |
 
 ### 阶段 3：L3 轮询获取 Key
 
@@ -84,7 +84,7 @@ L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2
 
 ### POST /api/v2/admin/nodes/assign
 
-**请求体**（需 X-Admin-Token）：
+**请求体**（需 Bearer JWT，先 `POST /api/v2/admin/login` 登录）：
 ```json
 {
   "node_id": "l3-abc123",

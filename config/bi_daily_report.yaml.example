@@ -3,10 +3,45 @@
 # 设计规范: docs/bi_daily_report/03_SKILL_DESIGN.md
 
 # ========== 数据源 ==========
+# 模式一：API 接口（直接请求 JSON）
+# data_source:
+#   url: "https://your-backend.com/api/daily-report"
+#   extract_rules: {}
+#   headers: {}
+
+# 模式二：SPA 页面 + 全自动（无需手点）
+# 工具会自动：导航、点击菜单、填写日期筛选、点击查询、抓取表格
 data_source:
-  url: "https://your-backend.com/api/daily-report"
-  extract_rules: {}
-  headers: {}
+  url: "https://bi-admin-web.heronpro.xin/#/layout/person"  # 入口页（已登录后任意页）
+  cdp_url: "http://127.0.0.1:9222"
+  extract_rules: "table, .el-table, .ant-table"
+  output_format: "csv"
+  timeout: 30
+  # 全自动配置：按顺序执行操作
+  automation:
+    start_url: "https://bi-admin-web.heronpro.xin/#/layout/person"
+    # 操作步骤：点击菜单进入数据页、填写筛选、点击查询（按顺序执行）
+    actions:
+      - type: click
+        selector: "text=平台数据"   # 或 .el-menu-item:has-text('平台数据')
+      - type: wait
+        ms: 500
+      - type: click
+        selector: "text=某子菜单"   # 替换为实际子菜单项文本
+      - type: wait
+        selector: ".el-date-editor"
+        timeout: 5
+    # 筛选条件（自动填写日期并点击查询）
+    filters:
+      date_range: ["2026-03-01", "2026-03-09"]       # 开始日期、结束日期
+      date_range_selectors:                          # 若默认选择器不匹配，可指定
+        start: ".el-date-editor input:first-of-type"
+        end: ".el-date-editor input:last-of-type"
+      query_selector: "button:has-text('查询')"      # 或 "button:has-text('搜索')"
+      # 等待数据加载完成（弱网环境可调大）
+      wait_for_loading_hidden: ".el-loading-mask"   # 等待加载遮罩消失，表示数据就绪
+      wait_after_query_ms: 5000                      # 无遮罩时的固定等待毫秒，默认 5000
+      wait_for_data_timeout: 30                      # 等待数据就绪的最大秒数，默认 30
 
 # ========== 存储路径 ==========
 # 基准: ~/.jachin/client_volumes/bi_data

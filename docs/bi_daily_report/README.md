@@ -12,6 +12,7 @@
 | [02_PARALLEL_DEVELOPMENT_ANALYSIS.md](./02_PARALLEL_DEVELOPMENT_ANALYSIS.md) | **深度分析与风险控制** — 冲突、流程、规范 |
 | [03_SKILL_DESIGN.md](./03_SKILL_DESIGN.md) | **Skill 设计文档** — 接口、参数、流程 |
 | [04_WHITEPAPER.md](./04_WHITEPAPER.md) | **白皮书** — 业务价值、架构定位、部署配置 |
+| [05_DATA_CAPTURE_GUIDE.md](./05_DATA_CAPTURE_GUIDE.md) | **数据抓取使用指南** — SPA/API 模式、Chrome 调试、MCP 调用 |
 
 ---
 
