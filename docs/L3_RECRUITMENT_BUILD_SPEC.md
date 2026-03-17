@@ -159,7 +159,7 @@ hr_analysis:
 | `recruitment_task.py` | 同上 | 从配置读取 |
 | `atom_lark_bitable_sync.py` | `DEFAULT_APP_TOKEN`, `DEFAULT_TABLE_ID` | 从 `lark.app_token`、`lark.table_id` 读取 |
 | `atom_lark_send_message.py` | `LARK_APP_ID` 等环境变量 | 优先 YAML，其次 .env |
-| `lark_bot_conversation.py` | `L3_WS_URL` 等 | 优先 YAML，其次 .env |
+| `lark_bot.py` | `L3_WS_URL` 等 | 优先 YAML，其次 .env |
 
 ### 3.3 简历下载路径可配置的实现要点
 
@@ -227,7 +227,7 @@ hr_analysis:
 | 无人值守调度 | `recruitment_scheduler` | 定时推荐、收网、分析 |
 | **简历分析** | **HR 透析镜 Wasm (hr-analyzer4)** | 多 Agent 评审，输出排行榜 |
 | **写入 Lark** | **atom_lark_bitable_sync** | 排行榜写入飞书多维表 |
-| Lark 机器人 | `lark_bot_conversation` | Webhook 接收消息，转发 L3 |
+| Lark 机器人 | `lark_bot` | Webhook 接收消息，转发 L3 |
 
 ### 5.2 MCP 与插件依赖
 
@@ -298,7 +298,7 @@ else:
 
 1. **启动 Chrome 调试模式**：`.\scripts\launch_chrome_debug.ps1`，在 Chrome 中登录 Boss 直聘
 2. **启动 L3**：Desktop 自动拉起，或手动 `.\scripts\run_l3.ps1 --ws-only`
-3. **（可选）启动 Lark Webhook**：`cd skills_repo\plugin; python scripts\lark_bot_conversation.py --webhook --port 5000`
+3. **（可选）启动 Lark Webhook**：`cd skills_repo\plugin; python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000`
 4. **（可选）ngrok**：`ngrok http 5000`，在 Lark 后台配置回调地址
 
 ### 6.4 日志排查

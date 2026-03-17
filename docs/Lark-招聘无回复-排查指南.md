@@ -32,7 +32,7 @@ L3_WS_URL=ws://127.0.0.1:18981
 
 ```powershell
 cd skills_repo\plugin
-python scripts\lark_bot_conversation.py --webhook --port 5000
+python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000
 ```
 
 启动成功时应看到：
@@ -83,7 +83,7 @@ Lark Webhook 会先返回 200，在后台线程中处理并异步发回复。若
 
 1. **L2**：`.\scripts\start-layer2.ps1`（或 run-gateway）
 2. **L3**：`.\scripts\start-layer3.ps1` 或 `python -m l3_node`
-3. **Lark Webhook**：`cd skills_repo\plugin; python scripts\lark_bot_conversation.py --webhook --port 5000`
+3. **Lark Webhook**：`cd skills_repo\plugin; python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000`
 4. **ngrok**（公网）：`ngrok http 5000`，并在 Lark 后台配置回调地址
 
 ---

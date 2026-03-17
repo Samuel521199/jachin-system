@@ -14,7 +14,8 @@
 无需配置 Webhook，在终端模拟对话，回复会同步到 Lark：
 
 ```bash
-python scripts\lark_bot_conversation.py --interactive
+cd skills_repo/plugin
+python 2-track-a-atomic-mcp/lark_bot.py --interactive
 ```
 
 - 输入普通问题 → AI 回复并发送到 Lark
@@ -24,7 +25,8 @@ python scripts\lark_bot_conversation.py --interactive
 
 1. **启动 Webhook 服务**（先启动，再配置）：
    ```bash
-   python scripts\lark_bot_conversation.py --webhook --port 5000
+   cd skills_repo/plugin
+   python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000
    ```
 
 2. **暴露公网**（新开终端）：
@@ -78,7 +80,7 @@ python scripts\lark_bot_conversation.py --interactive
 - **原因**：Lark 验证 URL 时，服务端返回了非 JSON（如 HTML 或纯文本）
 - **处理**：
   1. 确认请求地址是**真实 ngrok 地址**，不是 `https://xxx.ngrok-free.app` 占位符
-  2. 启动脚本后再在 Lark 保存：`python scripts\lark_bot_conversation.py --webhook --port 5000`
+  2. 启动脚本后再在 Lark 保存：`python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000`
   3. ngrok 和 Flask 都正常时再点击「保存」
   4. 若仍失败，可尝试 [localtunnel](https://localtunnel.github.io/www/) 或 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps) 代替 ngrok
 

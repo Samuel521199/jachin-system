@@ -32,6 +32,21 @@ DEFAULT_TABLE_ID = "tblzQatxI7op9oBp"
 # Lark 国际版 API 域名（sg.larksuite.com 对应国际版）
 LARK_API_BASE = "https://open.larksuite.com/open-apis"
 
+# 确保 l3_node 可导入（plugin 脚本可能从 plugin 目录启动）
+def _ensure_l3_importable() -> None:
+    import sys
+    if "l3_node" in sys.modules:
+        return
+    from pathlib import Path
+    _p = Path(__file__).resolve()
+    for _ in range(6):
+        _p = _p.parent
+        if (_p / "l3_node").is_dir():
+            _s = str(_p)
+            if _s not in sys.path:
+                sys.path.insert(0, _s)
+            break
+
 # 默认列定义：列名 -> type (1=文本, 2=数字)
 DEFAULT_COLUMNS = {
     "候选人": 1,
@@ -60,33 +75,17 @@ MAX_CANDIDATES_PER_JOB = 10
 
 
 def _send_lark_chat_notify(token: str, chat_id: str, text: str) -> bool:
-    """向 Lark 群聊发送文本消息。返回是否成功。"""
-    if not chat_id or not text:
-        return False
-    try:
-        import requests
-        url = f"{LARK_API_BASE}/im/v1/messages"
-        params = {"receive_id_type": "chat_id"}
-        payload = {
-            "receive_id": chat_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": text}),
-        }
-        resp = requests.post(
-            url,
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.warning("Lark 群通知发送失败: %s", data.get("msg", data))
-            return False
-        return True
-    except Exception as e:
-        logger.warning("Lark 群通知发送异常: %s", e)
-        return False
+    """向 Lark 群聊发送文本消息。返回是否成功。委托 channels.lark。"""
+    _ensure_l3_importable()
+    from l3_node.channels.lark import send_im_text
+
+    result = send_im_text(
+        receive_id=chat_id,
+        text=text,
+        receive_id_type="chat_id",
+        token=token,
+    )
+    return result.get("status") == "success"
 
 
 def _ensure_dotenv_loaded() -> None:
@@ -107,26 +106,12 @@ def _ensure_dotenv_loaded() -> None:
 
 
 def _get_tenant_access_token() -> str:
-    """获取 Lark tenant_access_token"""
+    """获取 Lark tenant_access_token。委托 channels.lark。"""
     _ensure_dotenv_loaded()
-    app_id = os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID")
-    app_secret = os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET")
-    if not app_id or not app_secret:
-        raise ValueError(
-            "请配置环境变量 LARK_APP_ID 和 LARK_APP_SECRET，并在项目根 .env 中填写；"
-            "或设置系统环境变量。"
-        )
+    _ensure_l3_importable()
+    from l3_node.channels.lark import get_tenant_access_token
 
-    url = f"{LARK_API_BASE}/auth/v3/tenant_access_token/internal"
-    try:
-        import requests
-        resp = requests.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10)
-        data = resp.json()
-        if data.get("code") != 0:
-            raise RuntimeError(f"Lark token 失败: {data}")
-        return data["tenant_access_token"]
-    except ImportError:
-        raise RuntimeError("请安装 requests: pip install requests")
+    return get_tenant_access_token()
 
 
 def list_bitable_fields(app_token: str = "", table_id: str = "") -> dict[str, Any]:

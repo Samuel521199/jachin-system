@@ -5,7 +5,7 @@
 ```
 Lark 用户消息
     ↓
-Lark Webhook (plugin/lark_bot_conversation)
+Lark Webhook (plugin/2-track-a-atomic-mcp/lark_bot)
     ↓
 atom_lark_chat.process_lark_message
     ↓
@@ -70,7 +70,7 @@ L3_WS_URL=ws://127.0.0.1:18981/sensory
 
 ```bash
 cd D:\project\jachin-system-main\skills_repo\plugin
-python scripts\lark_bot_conversation.py --webhook --port 5000
+python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000
 ```
 
 ngrok 暴露后，Lark 用户消息会进入 Webhook，再由 `atom_lark_chat` 转发到 L3。
@@ -80,7 +80,7 @@ ngrok 暴露后，Lark 用户消息会进入 Webhook，再由 `atom_lark_chat` �
 ## 四、运行顺序
 
 1. **先启动 L3**：`python -m l3_node --ws-only`（jachin-system-main）
-2. **再启动 Webhook**：`python scripts\lark_bot_conversation.py --webhook`（plugin）
+2. **再启动 Webhook**：`python 2-track-a-atomic-mcp/lark_bot.py --webhook`（plugin）
 3. **可选**：`ngrok http 5000`（若需公网接收 Lark 回调）
 
 ---

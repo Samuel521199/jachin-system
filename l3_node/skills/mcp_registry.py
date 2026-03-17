@@ -353,9 +353,9 @@ def _invoke_atom_lark_notifier_local(
     markdown_content: str = "",
     title: str = "",
 ) -> str:
-    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.tool_broadcaster。"""
+    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.tool_lark_notifier。"""
     try:
-        from l3_node.mcp_tools.tool_broadcaster import send_lark_markdown
+        from l3_node.mcp_tools.tool_lark_notifier import send_lark_markdown
         result = send_lark_markdown(
             webhook_url=webhook_url or "",
             markdown_content=markdown_content or "",
@@ -374,9 +374,9 @@ def _invoke_atom_email_sender_local(
     body: str = "",
     attachment_paths: list | None = None,
 ) -> str:
-    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.tool_broadcaster。"""
+    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.tool_email_sender。"""
     try:
-        from l3_node.mcp_tools.tool_broadcaster import send_email_with_attachment
+        from l3_node.mcp_tools.tool_email_sender import send_email_with_attachment
         result = send_email_with_attachment(
             smtp_config=smtp_config or {},
             to_addrs=to_addrs or [],

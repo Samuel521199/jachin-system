@@ -2,7 +2,7 @@
 """
 BI MCP 工具契约验收测试
 
-验证 tool_web_scraper 与 tool_broadcaster 的返回值符合《最高接口契约》。
+验证 tool_web_scraper、tool_lark_notifier、tool_email_sender 的返回值符合《最高接口契约》。
 开发者 A、B 完成实现后运行此脚本，确保通过后再提交 PR。
 
 用法: python scripts/test_bi_mcp_contract.py
@@ -40,7 +40,7 @@ def test_atom_web_scraper_contract() -> tuple[bool, str]:
 
 def test_atom_lark_notifier_contract() -> tuple[bool, str]:
     """验证 atom_lark_notifier 返回值包含 status、msg/error"""
-    from l3_node.mcp_tools.tool_broadcaster import send_lark_markdown
+    from l3_node.mcp_tools.tool_lark_notifier import send_lark_markdown
 
     result = send_lark_markdown("https://open.feishu.cn/xxx", "# test", "title")
     if not isinstance(result, dict):
@@ -58,7 +58,7 @@ def test_atom_lark_notifier_contract() -> tuple[bool, str]:
 
 def test_atom_email_sender_contract() -> tuple[bool, str]:
     """验证 atom_email_sender 返回值包含 status、msg/error"""
-    from l3_node.mcp_tools.tool_broadcaster import send_email_with_attachment
+    from l3_node.mcp_tools.tool_email_sender import send_email_with_attachment
 
     result = send_email_with_attachment(
         {"host": "smtp.example.com", "user": "x", "password": "x"},
