@@ -81,7 +81,7 @@ flowchart TB
         MEM[记忆存储 + namespace]
         DREAM[梦境优化]
         INV[数字仓库 inventory]
-        MCP[MCP 代理]
+        MCP[MCP 委托协调]
         SCHED[L3 协同调度]
         REDIS[Redis 状态/队列]
     end
@@ -94,7 +94,7 @@ flowchart TB
         MEM_SEARCH["GET /memory/search"]
         INV_SKILLS["GET /inventory/skills"]
         INV_DL["GET /inventory/skills/{id}/download"]
-        MCP_INVOKE["POST /mcp/invoke"]
+        MCP_INVOKE["POST /mcp/invoke<br/>(L2 委托其他 L3)"]
         COORD_TASK["POST /coordinate/task"]
         COORD_POLL["GET /coordinate/poll"]
         ADMIN_SA["POST /admin/sub-accounts"]
@@ -151,7 +151,40 @@ flowchart LR
 
 ---
 
-## 五、V2 文件结构
+## 五、MCP 执行流程（L3 优先）
+
+```mermaid
+flowchart TB
+    subgraph L3_REQ["发起方 L3"]
+        A[需要调用 MCP]
+        B{本机已安装?}
+        C[本地直接执行]
+    end
+
+    subgraph L2_DELEGATE["L2 委托"]
+        D[查找有权限且空闲的 L3]
+        E[委托执行]
+        F[结果转发]
+    end
+
+    subgraph L3_EXEC["被委托 L3"]
+        G[执行 MCP]
+    end
+
+    A --> B
+    B -->|是| C
+    B -->|否| D
+    D --> E
+    E --> G
+    G --> F
+    F --> A
+```
+
+详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)。
+
+---
+
+## 六、V2 文件结构
 
 ```
 jachin-system/
@@ -178,7 +211,7 @@ jachin-system/
 
 ---
 
-## 六、L2 无状态集群
+## 七、L2 无状态集群
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -192,7 +225,7 @@ jachin-system/
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 七、已废弃组件
+## 八、已废弃组件
 
 | 组件 | 状态 | 说明 |
 |------|------|------|

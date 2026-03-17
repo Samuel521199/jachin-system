@@ -1,6 +1,7 @@
 # =============================================================================
 # Layer3 (Desktop) - One-click start (Windows)
 # clients/desktop - Jachin Terminal
+# 单实例：启动前清理已有 L3 进程与端口，确保一台机器仅一个 L3 实例
 # =============================================================================
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -11,6 +12,10 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
 try {
+# 单实例：清理已有 L3 进程与端口，确保一台机器仅一个 L3 实例
+Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
+& (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause 2>&1 | Out-Host
+
 $DesktopDir = Join-Path $ProjectRoot "clients\desktop"
 if (-not (Test-Path $DesktopDir)) {
     Write-Host "[ERROR] clients\desktop not found. Run: .\scripts\install-layer3.ps1" -ForegroundColor Red

@@ -13,7 +13,7 @@ node:
 
 # 集群发现
 discovery:
-  method: "mdns"  # mdns, manual (dapr 已废弃 V2)
+  method: "mdns"  # mdns, manual
   mdns:
     service_name: "_jachin-hive._tcp.local"
     port: 1420
@@ -21,7 +21,6 @@ discovery:
     head_nodes:
       - "192.168.1.100:10001"
       - "192.168.1.101:10001"
-  # dapr 已废弃 V2，不再使用
 
 # 网络配置
 network:

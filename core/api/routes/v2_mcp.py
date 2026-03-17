@@ -2,7 +2,7 @@
 Jachin Nexus V2 - L2 MCP 代理 API
 
 暴露给 L3 调用的 HTTP 接口，将 MCP 工具调用路由到 L2 本地 MCP 服务器。
-IAM 铁血拦截：L3 需携带 X-Sub-Account-Id，经 PolicyEnforcer 鉴权后放行。
+本机无技能时委托其他 L3 执行（路径 3：L3_LOCAL MCP 委托）。
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,7 @@ from core.mcp_client import (
     MCPToolNotFoundError,
     get_mcp_manager,
 )
+from core.l3_redis_state import get_l3_nodes_with_mcp_tool
 
 logger = logging.getLogger(__name__)
 
@@ -128,10 +130,35 @@ async def invoke_mcp_tool(request: Request, body: InvokeRequest) -> dict[str, An
             "result": result,
         }
     except MCPToolNotFoundError as e:
-        latency_ms = (time.perf_counter() - t0) * 1000
-        record_usage_async(eff_sub, item_id, tool_name, "failure", latency_ms)
-        logger.warning("[MCP API] 工具未找到 tool_name=%s", tool_name)
-        raise api_error(404, ERR_MCP_001, str(e))
+        delegate_ok = False
+        if sub_account_id:
+            nodes = get_l3_nodes_with_mcp_tool(sub_account_id, tool_name)
+            if nodes:
+                l3_url = (nodes[0].get("l3_http_url") or "").strip().rstrip("/")
+                if l3_url:
+                    execute_url = f"{l3_url}/api/v3/mcp/execute"
+                    logger.info("[MCP API] 本机无工具，委托 L3 tool=%s url=%s", tool_name, execute_url)
+                    try:
+                        async with httpx.AsyncClient(timeout=timeout_sec) as client:
+                            r = await client.post(
+                                execute_url,
+                                json={"tool_name": tool_name, "arguments": arguments},
+                            )
+                            r.raise_for_status()
+                            data = r.json()
+                            if data.get("ok"):
+                                result = data.get("result", "")
+                                latency_ms = (time.perf_counter() - t0) * 1000
+                                record_usage_async(eff_sub, f"mcp:delegate:{nodes[0].get('node_id','')}", tool_name, "success", latency_ms)
+                                return {"ok": True, "tool_name": tool_name, "result": result, "delegated": True}
+                            delegate_ok = False
+                    except Exception as delegate_e:
+                        logger.warning("[MCP API] 委托 L3 失败 tool=%s err=%s", tool_name, delegate_e)
+        if not delegate_ok:
+            latency_ms = (time.perf_counter() - t0) * 1000
+            record_usage_async(eff_sub, item_id, tool_name, "failure", latency_ms)
+            logger.warning("[MCP API] 工具未找到 tool_name=%s", tool_name)
+            raise api_error(404, ERR_MCP_001, str(e))
     except asyncio.TimeoutError:
         latency_ms = (time.perf_counter() - t0) * 1000
         record_usage_async(eff_sub, item_id, tool_name, "failure", latency_ms)

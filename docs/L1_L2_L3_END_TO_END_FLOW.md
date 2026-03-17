@@ -255,6 +255,12 @@ L2 数据主权：权限由 L2 本地管理，不依赖 L1 下发。
 - 审批通过后，返回 `encrypted_api_keys` 和 `allowed_skills`（来自子账号的 role_permissions）
 - L3 用本地私钥解密 API Key，并根据 `allowed_skills` 过滤可调用的技能
 
+**6.5 L3 同步 MCP（L3_LOCAL）**
+
+- L3 获批后，`l3_node/bootstrap.py` 调用 `sync_mcps_from_l2()`（`l3_node/mcp_sync.py`）
+- 请求 `GET /api/v2/inventory/l3_mcps` 获取清单，下载缺失/变更的包到 `~/.jachin/l3_mcp_cache/`
+- `mcp_registry` 从 l3_mcp_cache 动态加载工具；本机无技能时，L2 委托其他 L3 执行
+
 ---
 
 ## 四、数据流与关键表
@@ -266,9 +272,12 @@ L2 数据主权：权限由 L2 本地管理，不依赖 L1 下发。
 | **L1** | `edge_agents` | id(=instance_id), pairing_code, auth_token, status |
 | **L2** | `~/.jachin/nexus_config.json` | instance_id, access_token, tenant_id, nexus_base_url |
 | **L2** | `~/.jachin/inventory/skills/` | 同步的 Wasm 技能目录 |
+| **L2** | `~/.jachin/inventory/l3_mcps/` | 同步的 L3_LOCAL MCP 目录 |
 | **L2** | `roles`, `role_permissions` | role_id, item_id |
 | **L2** | `sub_accounts` | id, role_id |
 | **L2** | `l3_nodes` | id, sub_account_id |
+| **L3** | `~/.jachin/l3_skill_cache/` | 从 L2 拉取的 Wasm 技能 |
+| **L3** | `~/.jachin/l3_mcp_cache/` | 从 L2 拉取的 L3_LOCAL MCP（mcp_sync 同步） |
 
 ---
 
@@ -295,6 +304,21 @@ L2 数据主权：权限由 L2 本地管理，不依赖 L1 下发。
 - 可先用 API 直接调用 `POST /api/v1/store/subscribe`
 - 或通过 SQL 手动插入 `user_licenses`（需知道 `plugins_registry.id` 的 UUID）
 
+### Q5: L2 日志报 503 Service Unavailable（heartbeat / manifest / telemetry）
+
+**现象**：`[L1Heartbeat] 心跳失败: Server error '503 Service Unavailable' for url 'http://localhost:3000/api/v1/...'`
+
+**根因**：L1 (Nexus) 在 localhost:3000 返回 503，常见于：
+1. **L1 未启动** — 若 L1 未运行，通常为 Connection Refused；503 表示有服务在 3000 端口响应
+2. **Next.js 冷启动/编译中** — `npm run dev` 首次请求或热重载时，Next.js 可能返回 "Server is temporarily busy"
+3. **PostgreSQL 未启动** — 若 `DATABASE_URL` 已配置但数据库不可用，部分 L1 接口可能异常
+
+**处理**：
+1. 确保 L1 已启动：`.\scripts\start-cloud.ps1` 或 `cd cloud/nexus && npm run dev`
+2. 等待 L1 完全就绪（浏览器访问 http://localhost:3000 可打开）
+3. 若使用 PostgreSQL，确保服务已启动（默认 localhost:5432）
+4. L2 已内置 503 重试（最多 3 次），短暂 503 会自动恢复
+
 ---
 
 ## 六、快速自检清单
@@ -309,6 +333,7 @@ L2 数据主权：权限由 L2 本地管理，不依赖 L1 下发。
 - [ ] L2 已创建子账号并绑定角色
 - [ ] L3 已连接 L2 并完成审批
 - [ ] L3 可正常调用已分配技能
+- [ ] L3 获批后已同步 MCP（`~/.jachin/l3_mcp_cache/` 有内容，或 L2 委托其他 L3 执行）
 
 ---
 

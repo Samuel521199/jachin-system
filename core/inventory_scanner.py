@@ -72,6 +72,7 @@ def _ensure_local_meta(subdir: Path, plugin_id: str, wasm_sha256: str | None = N
 INVENTORY_ROOT = Path.home() / ".jachin" / "inventory"
 SKILLS_DIR = INVENTORY_ROOT / "skills"
 MCPS_DIR = INVENTORY_ROOT / "mcps"
+L3_MCPS_DIR = INVENTORY_ROOT / "l3_mcps"  # 路径 3：L3_LOCAL MCP，L3 拉取后动态加载
 
 # 项目根目录（用于 MCP config 中 __PROJECT_ROOT__ 占位符替换）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -84,6 +85,7 @@ def ensure_inventory_dirs() -> None:
     """确保仓库目录存在。"""
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     MCPS_DIR.mkdir(parents=True, exist_ok=True)
+    L3_MCPS_DIR.mkdir(parents=True, exist_ok=True)
     try:
         from core.skill_registry import ensure_volumes_root
         ensure_volumes_root()

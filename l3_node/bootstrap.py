@@ -291,6 +291,8 @@ async def bootstrap_l3_gateway_pending(
     cfg["model_endpoints"] = model_endpoints
     if display_name:
         cfg["display_name"] = display_name
+    if not cfg.get("l3_http_url"):
+        cfg["l3_http_url"] = "http://127.0.0.1:18991"
     _GATEWAY_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     # L3 获批后立即从 L2 同步技能到 l3_skill_cache（不依赖 Desktop perform_startup_sync）
@@ -304,6 +306,14 @@ async def bootstrap_l3_gateway_pending(
                 logger.warning("[L3 Gateway] 同步失败: %s", f)
     except Exception as e:
         logger.warning("[L3 Gateway] 技能同步异常: %s", e, exc_info=True)
+
+    # L3 获批后从 L2 同步 L3_LOCAL MCP 到 l3_mcp_cache
+    try:
+        from l3_node.mcp_sync import sync_mcps_from_l2
+        mcp_synced, mcp_skipped, mcp_failed = sync_mcps_from_l2()
+        logger.info("[L3 Gateway] MCP 同步结果 synced=%d skipped=%d failed=%d", mcp_synced, mcp_skipped, len(mcp_failed))
+    except Exception as e:
+        logger.warning("[L3 Gateway] MCP 同步异常: %s", e, exc_info=True)
 
     if on_status:
         on_status("approved", "神经接驳成功，引擎已点火")

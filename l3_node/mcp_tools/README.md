@@ -29,3 +29,8 @@ python scripts/test_bi_mcp_contract.py
 
 - 抓取输出: `l3_node.bi_paths.get_bi_raw_dir()`
 - 设计文档: `docs/bi_daily_report/`
+
+## 生命周期与审批流程
+
+本目录 MCP 为 **L3 本地执行**，开发期可直接使用，无需 L1/L2。  
+若需走「上传→L1 审核→L2 下载→L3」完整流程，需扩展实现。详见 [MCP_LIFECYCLE_AND_APPROVAL_FLOW.md](./MCP_LIFECYCLE_AND_APPROVAL_FLOW.md)。
