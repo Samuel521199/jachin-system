@@ -130,8 +130,6 @@ JMP 是 Jachin 生态的「宪法」。Layer 2 从 Layer 1 下载的必须是一
 
 ### 3.5 智能版税扩展
 
-> 详见 [REVENUE_AND_ROYALTY_SPEC.md](./REVENUE_AND_ROYALTY_SPEC.md)、[ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md)
-
 **单插件版税**（JPP 脚手架 `plugin.json` 已支持）：
 
 | 字段 | 类型 | 说明 |

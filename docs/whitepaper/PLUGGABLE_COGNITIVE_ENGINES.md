@@ -112,5 +112,4 @@ core/
 ## 五、 参考
 
 - `docs/whitepaper/06_LAYER2_EDGE.md` 3.3 前额叶皮层
-- `docs/QWEN_ARCHITECTURE.md`（已由本设计统一）
 - `.cursor/rules/042-pluggable-cognitive-engines.mdc`

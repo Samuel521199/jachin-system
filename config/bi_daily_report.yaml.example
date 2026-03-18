@@ -1,0 +1,86 @@
+# BI 每日战报配置（示例）
+# 复制为 bi_daily_report.yaml 并填入实际值
+# 设计规范: docs/bi_daily_report/03_SKILL_DESIGN.md
+
+# ========== 数据收集 ==========
+# skip_collect: true（默认）时跳过 Step A，直接使用 DuckDB 已有数据（需先运行 run_bi_scraper_spa + import_raw_to_duckdb）
+# skip_collect: false 时调用 atom_web_scraper 抓取，需配置 data_source
+skip_collect: true
+
+# ========== 数据源（仅当 skip_collect=false 时生效）==========
+# 模式一：API 接口（直接请求 JSON）
+# data_source:
+#   url: "https://your-backend.com/api/daily-report"
+#   extract_rules: {}
+#   headers: {}
+
+# 模式二：SPA 页面 + 全自动（无需手点）
+# 工具会自动：导航、点击菜单、填写日期筛选、点击查询、抓取表格
+data_source:
+  url: "https://bi-admin-web.heronpro.xin/#/layout/person"  # 入口页（已登录后任意页）
+  cdp_url: "http://127.0.0.1:9222"
+  extract_rules: "table, .el-table, .ant-table"
+  output_format: "csv"
+  timeout: 30
+  # 全自动配置：按顺序执行操作
+  automation:
+    start_url: "https://bi-admin-web.heronpro.xin/#/layout/person"
+    # 操作步骤：点击菜单进入数据页、填写筛选、点击查询（按顺序执行）
+    actions:
+      - type: click
+        selector: "text=平台数据"   # 或 .el-menu-item:has-text('平台数据')
+      - type: wait
+        ms: 500
+      - type: click
+        selector: "text=某子菜单"   # 替换为实际子菜单项文本
+      - type: wait
+        selector: ".el-date-editor"
+        timeout: 5
+    # 筛选条件（自动填写日期并点击查询）
+    filters:
+      date_range: ["2026-03-01", "2026-03-09"]       # 开始日期、结束日期
+      date_range_selectors:                          # 若默认选择器不匹配，可指定
+        start: ".el-date-editor input:first-of-type"
+        end: ".el-date-editor input:last-of-type"
+      query_selector: "button:has-text('查询')"      # 或 "button:has-text('搜索')"
+      # 等待数据加载完成（弱网环境可调大）
+      wait_for_loading_hidden: ".el-loading-mask"   # 等待加载遮罩消失，表示数据就绪
+      wait_after_query_ms: 5000                      # 无遮罩时的固定等待毫秒，默认 5000
+      wait_for_data_timeout: 30                      # 等待数据就绪的最大秒数，默认 30
+
+# ========== 调度配置 ==========
+# enabled: false 时禁用定时任务，仅支持手动触发
+# 模式一：cron — 每天固定时间（UTC+8）
+schedule:
+  enabled: true
+  mode: cron
+  hour: 8
+  minute: 0
+  timezone: Asia/Shanghai
+
+# 模式二：interval — 按间隔执行（二选一）
+# schedule:
+#   enabled: true
+#   mode: interval
+#   minutes: 30    # 每 30 分钟
+#   # 或 hours: 2  # 每 2 小时
+
+# ========== 存储路径 ==========
+# 基准: ~/.jachin/client_volumes/bi_data
+storage:
+  base_path: "client_volumes/bi_data"
+
+# ========== LLM ==========
+llm:
+  model: "dashscope/qwen3.5-flash-2026-02-23"
+
+# ========== 分发 ==========
+distribution:
+  lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+  email:
+    smtp_host: "${BI_SMTP_HOST}"
+    smtp_port: 587
+    smtp_user: "${BI_SMTP_USER}"
+    smtp_password: "${BI_SMTP_PASSWORD}"
+    to_addrs:
+      - "exec@company.com"

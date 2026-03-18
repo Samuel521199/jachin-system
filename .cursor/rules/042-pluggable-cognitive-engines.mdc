@@ -1,0 +1,38 @@
+---
+description: v8.0 可插拔认知引擎 (Pluggable Cognitive Engines) — 动态认知路由、流式神经
+globs: core/brain/llm/, core/agent_loop.py, core/llm_provider.py
+---
+# Pluggable Cognitive Engines (v8.0)
+
+## 概念纠偏
+
+- **Skill** = 手脚（文件、爬虫、MCP 工具）
+- **LLM** = 大脑皮层，驱动 ReAct 循环，**不可作为 Skill**
+
+模型抽象为 `BaseCognitiveEngine`（即 `BaseLLMProvider`），与 Wasm 沙箱平级，作为守护进程核心驱动。
+
+## 瀑布流密钥 (Waterfall Credentialing)
+
+1. `os.environ["DASHSCOPE_API_KEY"]`
+2. `~/.jachin/nexus_config.json` → `llm_keys.dashscope`
+3. `~/.jachin/.qwen_api_key`
+4. `.env` / settings
+
+若全部为空且 required=True，红色警告并 raise ValueError。
+
+## 大小脑动态路由 (Dual-Brain)
+
+| 层级 | 实现 | 适用 |
+|------|------|------|
+| **小脑** | LocalAdapter (Ollama) | 意图分类、简单任务、断网 |
+| **大脑** | QwenAdapter / OpenAI | 复杂推理、代码生成 |
+
+`llm.cognitive_mode`: `"dual"` | `"edge"` | `"cloud"`。
+
+## 统一接口
+
+所有引擎实现 `chat()` / `stream_chat()`，抛给 ReAct 的永远是统一文本流。
+
+## 参考
+
+- `docs/whitepaper/PLUGGABLE_COGNITIVE_ENGINES.md`

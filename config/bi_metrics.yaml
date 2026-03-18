@@ -1,0 +1,86 @@
+# BI 核心指标查询配置
+# 插件架构：数据源、指标、输出器均可扩展
+# 环比：与上一日/周/月对比，计算 (当前-上期)/上期*100%
+# 文档: docs/bi_daily_report/06_DATA_STORE_D.md
+
+data_source: duckdb
+date_column: null  # 自动推断
+
+metrics:
+  # === 每日运营汇总 (daily_ops_summary) ===
+  - key: dau
+    table: daily_ops_summary
+    column_candidates: ["日活(DAU)", "日活", "DAU", "dau"]
+
+  - key: dnu
+    table: daily_ops_summary
+    column_candidates: ["新增用户(DNU)", "新增用户", "DNU", "dnu"]
+
+  - key: new_devices
+    table: daily_ops_summary
+    column_candidates: ["新增设备数", "新增设备", "设备数"]
+
+  - key: dnu_per_device
+    formula: "dnu / new_devices if new_devices else dnu"
+
+  - key: paid_count
+    table: daily_ops_summary
+    column_candidates: ["付费人数", "付费"]
+
+  - key: paid_amount
+    table: daily_ops_summary
+    column_candidates: ["付费总金额", "充值", "金额"]
+
+  - key: arpu
+    table: daily_ops_summary
+    column_candidates: ["Arpu", "ARPU"]
+
+  - key: arppu
+    table: daily_ops_summary
+    column_candidates: ["Arppu", "ARPPU"]
+
+  - key: game_rounds
+    table: daily_ops_summary
+    column_candidates: ["游戏局数", "局数"]
+
+  - key: game_rounds_per_user
+    table: daily_ops_summary
+    column_candidates: ["人均游戏局数"]
+
+  # === 游戏数据 (stats_game_daily) ===
+  - key: win_count
+    table: stats_game_daily
+    column_candidates: ["用户获胜次数", "获胜次数", "胜次"]
+
+  - key: win_rate
+    table: stats_game_daily
+    column_candidates: ["胜率", "用户胜率"]
+
+  - key: rtp
+    table: stats_game_daily
+    column_candidates: ["返币率", "RTP", "GameRTP"]
+
+  - key: ggr
+    table: stats_game_daily
+    column_candidates: ["GGR"]
+
+output:
+  plugin: console
+  console:
+    layout:
+      - - { key: dau, label: "DAU", compare: dau_pct, format: ".0f" }
+        - { key: dnu, label: "DNU", compare: dnu_pct, format: ".0f" }
+      - - { key: new_devices, label: "新增设备数", compare: new_devices_pct, format: ".0f" }
+        - { key: dnu_per_device, label: "新增用户/设备数", compare: dnu_per_device_pct, format: ".2f" }
+      - - { key: paid_count, label: "付费人数", compare: paid_count_pct, format: ".0f" }
+        - { key: paid_amount, label: "付费总金额", compare: paid_amount_pct, format: ".2f" }
+      - - { key: arpu, label: "ARPU", compare: arpu_pct, format: ".2f" }
+        - { key: arppu, label: "ARPPU", compare: arppu_pct, format: ".2f" }
+      - - { key: game_rounds, label: "完成游戏局数", compare: game_rounds_pct, format: ".0f" }
+        - { key: game_rounds_per_user, label: "人均游戏局数", compare: game_rounds_per_user_pct, format: ".2f" }
+      - - { key: win_count, label: "用户获胜次数", compare: win_count_pct, format: ".0f" }
+        - { key: win_rate, label: "胜率", compare: win_rate_pct, format: ".2f" }
+      - - { key: rtp, label: "GameRTP", compare: rtp_pct, format: ".2f" }
+        - { key: ggr, label: "GGR", compare: ggr_pct, format: ".2f" }
+  markdown:
+    layout: []  # 同上，可继承或覆盖

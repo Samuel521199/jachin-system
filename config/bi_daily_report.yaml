@@ -1,0 +1,16 @@
+# BI 每日战报配置
+# 设计规范: docs/bi_daily_report/03_SKILL_DESIGN.md
+
+skip_collect: true
+
+# ========== 调度配置 ==========
+# mode: cron — 每天固定时间（UTC+8）；mode: interval — 按间隔执行
+schedule:
+  enabled: true
+  mode: cron
+  hour: 8
+  minute: 0
+  timezone: Asia/Shanghai
+
+distribution:
+  lark_webhook_url: "https://open.larksuite.com/open-apis/bot/v2/hook/bdb86a38-6ce7-4bb3-ae42-3f6c0f7535ac"

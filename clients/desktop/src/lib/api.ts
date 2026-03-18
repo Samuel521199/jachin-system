@@ -719,12 +719,7 @@ export async function listSkills(): Promise<SkillInfo[]> {
 }
 
 /** HR 透析镜技能 ID（支持流式进度） */
-export const HR_SKILL_IDS = [
-  "jpp:com.jachin.hr.analyzer",
-  "jpp:com.jachin.hr.analyzer2",
-  "jpp:com.jachin.hr.analyzer3",
-  "jpp:com.jachin.hr.analyzer4",
-];
+export const HR_SKILL_IDS = ["jpp:com.jachin.hr.analyzer4"];
 
 /** 流式进度事件 */
 export interface SkillStreamEvent {

@@ -22,9 +22,6 @@ L3_HTTP_PORT = 18991
 
 
 _HR_SKILL_IDS = (
-    "jpp:com.jachin.hr.analyzer",
-    "jpp:com.jachin.hr.analyzer2",
-    "jpp:com.jachin.hr.analyzer3",
     "jpp:com.jachin.hr.analyzer4",
 )
 
@@ -549,6 +546,48 @@ async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse
     return response
 
 
+async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
+    """POST /api/v3/mcp/execute - L2 委托执行 MCP 工具，供本机无技能时由其他 L3 执行"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"请求体解析失败: {e}"}, status=400)
+    tool_name = (body.get("tool_name") or "").strip()
+    arguments = body.get("arguments") or {}
+    if not tool_name:
+        return _json_response({"ok": False, "error": "tool_name 不能为空"}, status=400)
+    try:
+        from l3_node.skills.mcp_registry import get_mcp_registry
+        registry = get_mcp_registry()
+        action_input = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
+        result = await registry.invoke(f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name, action_input)
+        return _json_response({"ok": True, "tool_name": tool_name, "result": result})
+    except Exception as e:
+        logger.warning("[L3 HTTP] mcp/execute 失败 tool=%s: %s", tool_name, e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
+    """POST /api/v3/mcp/execute - L2 委托执行 MCP 工具，供本机无技能时由其他 L3 执行"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"请求体解析失败: {e}"}, status=400)
+    tool_name = (body.get("tool_name") or "").strip()
+    arguments = body.get("arguments") or {}
+    if not tool_name:
+        return _json_response({"ok": False, "error": "tool_name 不能为空"}, status=400)
+    try:
+        from l3_node.skills.mcp_registry import get_mcp_registry
+        registry = get_mcp_registry()
+        action_input = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
+        result = await registry.invoke(f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name, action_input)
+        return _json_response({"ok": True, "tool_name": tool_name, "result": result})
+    except Exception as e:
+        logger.warning("[L3 HTTP] mcp/execute 失败 tool=%s: %s", tool_name, e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def _handle_agent_run(request) -> "aiohttp.web.Response":
     """POST /api/v3/agent/run - 同步执行 L3 Agent，供控制台自然语言 404 回退使用。会触发 run_tool 持久化（如 HR 透析镜）"""
     try:
@@ -611,6 +650,11 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
             trace("http_server: recruitment_scheduler loaded")
         except ImportError:
             pass
+        try:
+            from l3_node.skills.bi.scheduler import register_bi_daily_report_job
+            register_bi_daily_report_job()
+        except Exception as e:
+            logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
     except Exception as e:
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
 
@@ -636,7 +680,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/health", _handle_health)
     app.router.add_get("/api/system/logs/stream", _handle_system_logs_stream)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
+    app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
+    app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_get("/api/v3/recycle-bin/skills", _handle_recycle_bin_list)
     app.router.add_post("/api/v3/recycle-bin/skills/{recycle_id}/restore", _handle_recycle_bin_restore)
     app.router.add_delete("/api/v3/recycle-bin/skills/{recycle_id}", _handle_recycle_bin_delete)

@@ -65,12 +65,7 @@ async def list_skills_fallback() -> List[Dict[str, Any]]:
         return []
 
 
-_HR_SKILL_IDS_FALLBACK = (
-    "jpp:com.jachin.hr.analyzer", "com.jachin.hr.analyzer",
-    "jpp:com.jachin.hr.analyzer2", "com.jachin.hr.analyzer2",
-    "jpp:com.jachin.hr.analyzer3", "com.jachin.hr.analyzer3",
-    "jpp:com.jachin.hr.analyzer4", "com.jachin.hr.analyzer4",
-)
+_HR_SKILL_IDS_FALLBACK = ("jpp:com.jachin.hr.analyzer4", "com.jachin.hr.analyzer4")
 
 
 @router.post("/{skill_id}/execute")
@@ -122,8 +117,8 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
                     _hr_files_val = "|||".join(paths)
                     print(f"[Skill Execute] [L2 Fallback] HR _hr_files count={len(paths)}", file=sys.stderr, flush=True)
         if skill_id in _HR_SKILL_IDS_FALLBACK:
-            config_id = "com.jachin.hr.analyzer4" if "analyzer4" in skill_id else "com.jachin.hr.analyzer3" if "analyzer3" in skill_id else "com.jachin.hr.analyzer2" if "analyzer2" in skill_id else "com.jachin.hr.analyzer"
-            item_id = "hr-analyzer4" if "analyzer4" in skill_id else "hr-analyzer3" if "analyzer3" in skill_id else "hr-analyzer2" if "analyzer2" in skill_id else "hr-analyzer"
+            config_id = "com.jachin.hr.analyzer4"
+            item_id = "hr-analyzer4"
             try:
                 from core.skill_registry import get_skill_config
                 config = get_skill_config(config_id)
@@ -165,7 +160,7 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
                 cfg = {}
                 try:
                     from core.skill_registry import get_skill_config
-                    config_id = "com.jachin.hr.analyzer4" if "analyzer4" in skill_id else "com.jachin.hr.analyzer3" if "analyzer3" in skill_id else "com.jachin.hr.analyzer2" if "analyzer2" in skill_id else "com.jachin.hr.analyzer"
+                    config_id = "com.jachin.hr.analyzer4"
                     cfg = {**_get_hr_plugin_config_defaults(f"jpp:{config_id}"), **(get_skill_config(config_id) or {})}
                 except Exception:
                     cfg = _get_hr_plugin_config_defaults(f"jpp:com.jachin.hr.analyzer4")

@@ -8,7 +8,7 @@ Jachin Nexus - WASM 物理沙箱引擎
 - Pure Compute：run() -> i32，Rust 等直接导出
 - WASI：stdin/stdout JSON 协议，Python (py2wasm) 等系统接口型插件
 
-Host Functions（供 hr-analyzer 等技能）：
+Host Functions（供 hr-analyzer4 等技能）：
 - env.http_post(url_ptr, url_len, body_ptr, body_len) -> response_len：发起 HTTP POST，响应写入 OUTPUT_OFFSET
 - env.llm_complete(prompt_ptr, prompt_len) -> response_len：调用 LLM，结果写入 OUTPUT_OFFSET
 """
@@ -649,7 +649,7 @@ class JachinWasmSandbox:
             store = Store(self._engine)
             store.set_fuel(fuel_limit)
 
-            # 优先尝试 execute ABI 的 linker（含 __rust_alloc 等），适用于 hr-analyzer 等 Rust 插件
+            # 优先尝试 execute ABI 的 linker（含 __rust_alloc 等），适用于 hr-analyzer4 等 Rust 插件
             execute_linker = self._make_execute_linker()
             instance = None
             execute_err: BaseException | None = None

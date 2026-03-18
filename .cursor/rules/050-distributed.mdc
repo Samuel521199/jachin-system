@@ -1,0 +1,41 @@
+---
+description: v8.0 Layer 2 通信、Jachin Mesh、双轨制、cron_thinker、持久化感官总线、全链路 runId、流式神经
+globs: core/transport/**, core/system/**, core/daemon.py, core/agent_loop.py, core/cron_thinker.py
+---
+# Layer 2 Communication Rules (V2)
+
+## 通信模型
+
+- **Jachin Mesh:** 基于 WebSocket 的双向长连通道，实现 Layer 1 到 Layer 2 的**毫秒级指令下发**。替代 10 秒 HTTP 轮询。
+- **生物钟:** `core/cron_thinker.py` 每 30 分钟主动环顾，读取 HEARTBEAT.md，异常时通过 IM 推送。
+- **结果回传:** 执行完成后 POST `/api/v1/agents/result` 将结果推回用户（TG/飞书等）。
+- **持久化感官总线:** OmniSensoryBus 底层挂载 SQLite 队列，确保进程重启不丢事件。
+- **无 Dapr/Ray:** 已废弃。V2：**L3 单体执行**（Agent + Skill + 直连 LLM），**L2 控制面**（子账号、权限、记忆、L3 协同调度）不代理推理。
+
+---
+
+## 双轨制插件调用
+
+### 轨道 A: MCP
+- **执行入口:** `core/mcp_client.py`。
+- **协议:** Model Context Protocol 标准。
+- **适用:** 高信任本地环境，开箱即用。
+
+### 轨道 B: SKILL.md
+- **执行入口:** `core/runtime/skill_loader.py` — 热加载 `skills_repo/**/SKILL.md`。
+- **适用:** 用户可控，零编译。
+
+### 轨道 C: JPP / WASM
+- **执行入口:** `core/wasm_runner.py` — `run_plugin(wasm_path, fuel_limit, stdin_json)`。
+- **协议:** WASI stdin/stdout JSON，详见 `docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`。
+- **沙箱:** wasmtime，燃料熔断防死循环。
+- **适用:** 商城第三方付费插件，零信任。
+
+---
+
+## Envelope Pattern (可选，gRPC 场景)
+
+若使用 Jachin Link (gRPC)：
+- `InvokePlugin(PluginRequest) -> PluginResponse`
+- 路由基于 `plugin_id`，payload 为业务数据。
+- v8.0 主链路为 Jachin Mesh (WebSocket) + 双轨制，gRPC 为可选扩展。

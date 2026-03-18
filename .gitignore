@@ -136,7 +136,3 @@ commit_msg.txt
 .git_commit_msg.txt
 .git_tag_msg.txt
 .git_commit_msg2.txt
-
-# 团队共享配置（含凭证，不提交。同事可用 config.yaml.example 复制）
-config/mcps/atom_lark_notifier/config.yaml
-config/mcps/atom_email_sender/config.yaml

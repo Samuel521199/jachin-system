@@ -1,0 +1,35 @@
+---
+description: 全天候无感陪伴（Ambient Audio）模块的架构约束与实现规范
+globs: 
+  - "**/ambient_audio*.rs"
+  - "**/stt/**/*.rs"
+  - "**/AMBIENT_AUDIO*.md"
+---
+
+# Ambient Audio / VAD 实现规范
+
+## 核心技术栈（与 Cargo.toml ambient feature 一致）
+
+- **语言层**：Rust，`clients/desktop/src-tauri/src/`
+- **音频采集**：cpal（跨平台原生音频 I/O）
+- **重采样**：rubato 或 daspmix（麦克风 48kHz/44.1kHz → 16kHz 实时转换）
+- **AI 推理**：ort（ONNX Runtime Rust 绑定）
+- **VAD 模型**：silero_vad.onnx（轻量端侧 VAD）
+- **线程通信**：crossbeam-channel 或 tokio::sync::mpsc（保证音频线程不卡顿）
+
+## 架构原则（必须遵守）
+
+1. **采样率**：麦克风可能是 44.1kHz/48kHz，VAD 与后端只接受 16kHz。**必须在 Rust 中用 rubato/daspmix 做实时重采样**后再送入 VAD 与 Buffer，不得假定设备为 16kHz。
+
+2. **音频回调禁止阻塞**：cpal 的音频回调运行在实时高优先级线程。
+   - **禁止**在回调内：网络 I/O、大内存分配、ONNX 推理、文件 I/O。
+   - **仅允许**：重采样后的样本通过 **crossbeam-channel / tokio mpsc** 发给 Worker。
+   - VAD、Buffer 逻辑、编码、`emit_all` 必须在**独立 Worker 线程**中完成。
+
+3. **数据流**：麦克风(cpal) → 回调内重采样(rubato/daspmix)到 16kHz → channel → Worker 取 512 样本 → Silero-VAD(ort) → 按状态机更新 Buffer/计时 → ENDPOINTING 时截断并发送。
+
+4. **状态机（必须实现）**：IDLE → (WAKE_UP 或录音键) → LISTENING → (VAD>0.5 持续几帧) → SPEAKING → (VAD<0.5 启动静音计时，VAD>0.5 重置) → 静音>800ms 或 满 15 秒 → ENDPOINTING → 截断音频送 Layer2/STT，再回到 IDLE。
+
+## 参考文档
+
+- `clients/desktop/docs/AMBIENT_AUDIO_ARCHITECTURE.md`：架构评估、技术栈与排雷说明。

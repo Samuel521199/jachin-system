@@ -1,0 +1,50 @@
+---
+description: Tier 3 TTS 服务与 Voice Wake (Hey Jachin) 规范
+alwaysApply: false
+---
+# TTS Service Rules (v8.0 Jarvis Protocol)
+
+## Voice Wake 链路 (Hey Jachin)
+- **唤醒词:** Porcupine 或 Snowboy，监听“Hey Jachin”
+- **录音:** VAD 检测结束（静音 800ms 或满 15 秒）
+- **STT:** Whisper 转文本 → Layer 2 Agent
+- **TTS:** Kokoro/XTTS 播报结果
+- **参考:** `docs/VOICE_AND_TTS_GUIDE.md`、`ambient-audio.mdc`
+
+## Tier 3 Adaptive TTS Strategy
+
+### 1. Capability Check (自检机制)
+
+Client start-up must perform a `TTS_SelfCheck`:
+
+- **Architecture:** Is it x86_64 or ARM64?
+- **Memory:** Is free RAM > 1GB?
+- **Compute:** Run a small inference benchmark. If `RealTimeFactor` > 0.8 (too slow), disable local TTS.
+
+### 2. Fallback Chain (故障转移)
+
+`speak(text)` must follow this order:
+
+1. **Local (Kokoro ONNX):** Default for Desktop/High-end Mobile. Use `zm` style for Chinese-English mix.
+2. **Edge (Layer 2 XTTS):** Fallback if Local is disabled or text length > 500 chars.
+3. **Cloud (Aliyun Qwen/CosyVoice):** Last resort if Layer 2 is unreachable.
+
+### 3. Model Management
+
+- Do not bundle the `.onnx` file (~100MB) in the installer if possible.
+- Implement a `ModelManager` that downloads `kokoro-v0_19.onnx` and `voices.json` from Layer 2 or Cloud on first launch.
+
+### 4. 中英混合优化
+
+- 调用 Kokoro 时**强制** Language Code 为 `z` (Chinese)，自动处理夹杂的英文单词。
+- **不切换模型**，只切换 Style 向量（如 `zm`）。
+
+### 5. 树莓派兼容性
+
+- 使用 `#[cfg(target_arch = "aarch64")]` 宏，针对 ARM 架构降低线程数配置（如 `with_intra_threads(2)`）。
+
+### 6. 工程细节 (Action Items)
+
+- **ONNX 动态库**：在 `build.rs` 或 ModelManager 中处理 `onnxruntime.dll` / `libonnxruntime.so` 的下载与链接。
+- **Layer 2 静态文件**：FastAPI 需挂载 StaticFiles，提供 `kokoro-v0_19.onnx`、`voices.json`。
+- **Android 权限**：部署到 Android 时，在 `AndroidManifest.xml` 中检查文件读取等权限。

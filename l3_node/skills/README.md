@@ -24,3 +24,7 @@ result = run_tool("core:fs_read", "target.txt")
 ## 扩展
 
 后续可在此目录下添加 Python 脚本或 JSON 配置，由 loader 扫描并注册为新工具。
+
+## BI 技能
+
+`bi/` 目录：BI 每日战报 Skill 与调度。详见 [docs/bi_daily_report/08_BI_MCP_AND_SKILL_LAYOUT.md](../../docs/bi_daily_report/08_BI_MCP_AND_SKILL_LAYOUT.md)。

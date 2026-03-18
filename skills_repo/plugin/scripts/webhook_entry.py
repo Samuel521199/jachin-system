@@ -21,10 +21,10 @@ else:
     _plugin_root = Path(__file__).resolve().parent.parent
     _app_root = _plugin_root.parent.parent
 
-# 路径与 dotenv
+# 路径：project root (l3_node)、plugin、2-track-a-atomic-mcp
+sys.path.insert(0, str(_app_root))
 sys.path.insert(0, str(_plugin_root))
 sys.path.insert(0, str(_plugin_root / "2-track-a-atomic-mcp"))
-sys.path.insert(0, str(_plugin_root / "scripts"))
 
 for _env in [_plugin_root / ".env", _app_root / ".env"]:
     if _env.exists():
@@ -51,7 +51,7 @@ def main() -> None:
     logger = logging.getLogger("webhook")
     logger.info("Webhook 启动 app_root=%s plugin_root=%s log=%s", _app_root, _plugin_root, _log_path)
     try:
-        mod = importlib.import_module("lark_bot_conversation")
+        mod = importlib.import_module("lark_bot")
         run_webhook_server = getattr(mod, "run_webhook_server")
     except ImportError as e:
         logger.exception("导入失败，请确认 skills_repo/plugin 与 exe 同目录: %s", e)

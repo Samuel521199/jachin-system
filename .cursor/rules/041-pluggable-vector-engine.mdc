@@ -1,0 +1,32 @@
+---
+description: v8.0 可插拔向量引擎 (Pluggable Vector Engine) — Cloud/Edge 双核策略模式
+globs: core/embedding/, core/vector_router.py
+---
+# Pluggable Vector Engine (v8.0)
+
+## 设计哲学
+
+**由用户按需自选**：不做选择题，提供「全都要」的包容性。Layer 3 设置界面 "Local AI Mode" 开关即可切换。
+
+## 双核架构
+
+| 引擎 | 类 | 场景 |
+|------|-----|------|
+| **☁️ Cloud** | `OpenAIEmbedder` | 零本地负担、极致速度 |
+| **🛡️ Edge** | `ONNXEmbedder` | 断网隔离、军工/医疗/金融 |
+
+## 接口
+
+- **基类**: `BaseEmbedder`，`async def embed_text(text: str) -> list[float]`
+- **工厂**: `get_embedder(config)` 从 `~/.jachin/nexus_config.json` 读取 `embedding_mode`
+- **配置**: `"cloud"` → OpenAI；`"local"` / `"edge"` → ONNX
+
+## 实现约束
+
+1. **不破坏** LanceDB / SQLite-VSS 存储逻辑，仅解耦「生成向量」。
+2. **ONNXEmbedder** 未安装 onnxruntime 时，优雅日志提示。
+3. **启动时** Rich 打印当前引擎：`Engine: ☁️ Cloud (OpenAI)` 或 `Engine: 🛡️ Edge (ONNX Local)`。
+
+## 参考
+
+- `docs/whitepaper/PLUGGABLE_VECTOR_ENGINE.md`

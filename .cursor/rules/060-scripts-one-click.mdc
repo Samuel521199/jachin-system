@@ -1,0 +1,68 @@
+---
+description: 脚本与批处理一键安装/启动原则 - 超简单无脑化
+globs: scripts/**/*.ps1,scripts/**/*.sh,scripts/**/*.bat,**/install*.ps1,**/install*.sh,**/start*.ps1,**/start*.sh,start.bat,restart.bat
+alwaysApply: false
+---
+# 脚本与批处理：一键安装 / 一键启动原则
+
+## 核心原则
+
+**所有安装、启动、配对等操作必须通过 scripts/ 下的批处理统一入口，实现超简单、无脑化使用。**
+
+- 用户只需记住：`install-*.ps1` → `start-*.ps1`，或根目录 `start.bat`
+- 禁止要求用户手动执行 `pip install`、`npm install`、`cd 某目录` 等分散命令
+- 新增功能必须**自动纳入**现有 install/start 流程，或新增对应脚本并挂到统一入口
+
+---
+
+## 规则
+
+### 1. 安装脚本 (install-*.ps1 / install-*.sh)
+
+- 必须先调用 `check-prerequisites.ps1/sh` 做前置检查
+- 安装内容必须包含该层**全部**运行时依赖（npm 包、pip 包、数据库迁移等）
+- 安装完成后输出明确提示：`启动: .\scripts\start-xxx.ps1`
+- 若有「首次配对」「首次迁移」等一次性步骤，在安装脚本末尾**自动执行**；已完成的则跳过
+
+### 2. 启动脚本 (start-*.ps1 / start-*.sh)
+
+- 若依赖未安装（如 node_modules 缺失、Python 包缺失），**自动**执行安装再启动
+- 不要求用户先 `install` 再 `start`，支持「直接 start 也能跑」
+
+### 3. 根目录入口 (start.bat)
+
+- 必须支持：`start.bat [cloud|layer2|daemon|layer3|full|pair]`
+- v8.0：`jachin-cli pair`、`jachin-cli shell` 极客终端入口
+- `layer2` 启动时展示选项菜单（nexus_daemon 完整版 / daemon 轻量版），选项必须有提示
+- `daemon` 直接启动轻量版守护进程（心跳 + 蓝图执行）
+- 新增层或新命令时，同步更新 start.bat 和 scripts/README.md
+
+### 4. 新增功能
+
+- 新增 CLI、新页面、新迁移：必须提供对应的 `scripts/run-xxx.ps1` 或 `scripts/run-xxx.sh`
+- 若属于某层（如 pair 属于 Layer2），在 install 中**自动执行**；已配对则跳过
+
+### 5. 文档
+
+- scripts/README.md 必须与脚本行为一致
+- 推荐流程使用「install → start」或「install → run-pair → start」
+
+---
+
+## 示例
+
+| 新增内容 | 必须纳入 |
+|----------|----------|
+| core/cli.py pair | install-layer2 自动执行 run-pair；已配对则跳过 |
+| core/daemon.py | run-daemon.ps1/sh、start-layer2 选项菜单、start.bat daemon |
+| Drizzle 迁移 | install-cloud 执行 `npx drizzle-kit push` |
+| 新页面 /plaza | 随 start-cloud 自动可用，无需额外脚本 |
+| 新层 X | install-x.ps1、start-x.ps1、start.bat 增加 x |
+
+---
+
+## 禁止
+
+- 在 README 或文档中写「请手动执行 pip install xxx」而不提供脚本
+- 新增功能只写文档不写脚本
+- start.bat 与 scripts 行为不一致

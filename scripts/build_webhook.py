@@ -52,10 +52,10 @@ def main() -> int:
     (build_dir / NAME).mkdir(parents=True, exist_ok=True)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
-    # 限制 PYTHONPATH，避免拉入 jachin-cli/sagot-cli 等（含 IPython/matplotlib）
+    # PYTHONPATH：project root (l3_node)、plugin、2-track-a-atomic-mcp
     plugin_root = ROOT / "skills_repo" / "plugin"
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(plugin_root)
+    env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(plugin_root), str(plugin_root / "2-track-a-atomic-mcp")])
 
     excludes = [
         "IPython", "matplotlib", "PIL", "PyQt5", "tkinter", "sphinx", "black",
@@ -76,6 +76,8 @@ def main() -> int:
         "--hidden-import", "websockets",
         "--hidden-import", "openai",
         "--hidden-import", "google.genai",
+        "--hidden-import", "lark_bot",
+        "--hidden-import", "l3_node.channels.lark.inbound_webhook",
         *[x for m in excludes for x in ("--exclude-module", m)],
         str(ENTRY),
     ]

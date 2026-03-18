@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Settings, Loader2, Save, X } from "lucide-react";
 import { getSkillConfig, updateSkillConfig } from "../../lib/api";
 
-const HR_SKILL_IDS = ["hr.analyzer", "hr-analyzer"];
+const HR_SKILL_IDS = ["hr.analyzer4", "hr-analyzer4"];
 /** HR 展示项：岗位 JD + 两个路径（各带独立绝对路径开关） */
 type HrField = { key: string; label: string; isLongText?: boolean; absoluteKey?: string };
 const HR_FIELDS: HrField[] = [

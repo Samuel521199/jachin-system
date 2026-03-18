@@ -1,0 +1,12 @@
+{
+  "_comment": "复制为 jd_to_publish.json 并填写。发布岗位时会读取此配置。",
+  "recruitment_type": "社招全职",
+  "job_title": "java",
+  "jd_full": "岗位职责、任职要求等完整描述，填入职位描述框",
+  "job_category_path": ["互联网/AI", "后端开发", "Go开发工程师"],
+  "experience": "5-10年",
+  "education": "本科",
+  "salary_min": 10,
+  "salary_max": 15,
+  "job_keywords": ["Go", "Golang", "微服务"]
+}

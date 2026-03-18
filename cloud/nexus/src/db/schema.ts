@@ -441,7 +441,8 @@ export const telemetryLogs = pgTable("telemetry_logs", {
   actionName: text("action_name").notNull(),
   status: text("status").notNull(),
   latencyMs: numeric("latency_ms", { precision: 12, scale: 2 }),
-  timestamp: numeric("timestamp", { precision: 12, scale: 4 }).notNull(),
+  /** Unix 秒时间戳，需容纳 10 位（~2286 年前） */
+  timestamp: numeric("timestamp", { precision: 15, scale: 4 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -127,10 +127,6 @@ def sync_mcps_from_l2() -> tuple[int, int, list[str]]:
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 with zipfile.ZipFile(BytesIO(zip_data), "r") as zf:
                     zf.extractall(cache_dir)
-                # L3 单机部署：解压后自行写出配置，保证下载即用（目标机无 L2）
-                from l3_node.config_manifest import write_config_from_manifest
-                if write_config_from_manifest(cache_dir):
-                    _log(f"已写出 {item_id} 配置到 ~/.jachin/config/")
                 synced += 1
                 _log(f"已同步 {item_id} ({mcp.get('name', '')})")
         except Exception as e:

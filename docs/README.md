@@ -28,7 +28,9 @@
 | [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) | V2 L3-L2 零信任配对 |
 | [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) | 信任链与心跳 |
 | [LAYER3_L2_WAN_ARCHITECTURE.md](./LAYER3_L2_WAN_ARCHITECTURE.md) | L3-L2 广域网 |
+| [L1_L2_L3_END_TO_END_FLOW.md](./L1_L2_L3_END_TO_END_FLOW.md) | 端到端流程与 503 排查 |
 | [MCP_SPEC.md](./MCP_SPEC.md) | MCP 协议 |
+| [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) | MCP 执行模型 |
 | [SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md) | Skill 规范 |
 | [SKILL_MCP_FLOW_AND_RECENT_CHANGES.md](./SKILL_MCP_FLOW_AND_RECENT_CHANGES.md) | **Skill/MCP 流转与近期变更** — 云端上传、三层流转、最新代码说明 |
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱 |
@@ -45,12 +47,11 @@
 
 ---
 
-## 商业与生态
+## 愿景
 
 | 文档 | 说明 |
 |------|------|
 | [VISION.md](./VISION.md) | 产品愿景 |
-| [ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md](./ECOSYSTEM_AND_COMMERCIALIZATION_WHITEPAPER.md) | 生态与商业化 |
 
 ---
 

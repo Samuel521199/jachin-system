@@ -11,8 +11,10 @@
 ## 架构宪法
 
 1. **已废弃**：Dapr、Ray、Qdrant、L2 本地 PostgreSQL。
-2. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key/记忆/仓库/MCP）、L3 单体（Agent + Skill，持密文 Key 直连 API）。
-3. **L2 不代理推理**：L3 持密文 Key 自行调用 LLM。
+2. **V2 分层**：L1 平台、L2 控制面（子账号/权限/API Key/记忆/仓库/MCP 委托协调）、L3 单体（Agent + Skill + MCP 执行，持密文 Key 直连 API）。
+
+3. **MCP 执行模型**：L3 优先执行；本机无则 L2 委托其他 L3。详见 `docs/MCP_EXECUTION_MODEL.md`。
+4. **L2 不代理推理**：L3 持密文 Key 自行调用 LLM。
 
 ---
 

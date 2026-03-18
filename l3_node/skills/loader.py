@@ -98,12 +98,7 @@ def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
 
 def _get_hr_plugin_config_defaults(lookup_id: str) -> dict[str, Any]:
     """从 plugin.json 直接读取 HR 技能默认配置（L2 不可用时兜底，确保 output_dir 等可用）"""
-    _HR_ITEM_MAP = {
-        "jpp:com.jachin.hr.analyzer": "hr-analyzer",
-        "jpp:com.jachin.hr.analyzer2": "hr-analyzer2",
-        "jpp:com.jachin.hr.analyzer3": "hr-analyzer3",
-        "jpp:com.jachin.hr.analyzer4": "hr-analyzer4",
-    }
+    _HR_ITEM_MAP = {"jpp:com.jachin.hr.analyzer4": "hr-analyzer4"}
     item_id = _HR_ITEM_MAP.get(lookup_id)
     if not item_id:
         return {}
@@ -348,7 +343,7 @@ def _scan_wasm_plugins() -> list[dict[str, Any]]:
     """
     扫描 l3_node/skills/wasm_plugins/ 与 ~/.jachin/l3_skill_cache/ 下的 JPP .wasm 插件。
     后者为 L3 冷启动从 L2 拉取的技能缓存。
-    内置 hr-analyzer 统一用 jpp:com.jachin.hr.analyzer（L1 发布 id），避免与 L1 同步重复展示。
+    仅保留 hr-analyzer4。
     已卸载的内置技能（uninstalled_builtin_skills.json）、永久卸载技能（permanently_uninstalled_skills.json）将被过滤。
     """
     uninstalled = _get_uninstalled_builtin_skills() | _get_permanently_uninstalled_skills()
@@ -356,10 +351,6 @@ def _scan_wasm_plugins() -> list[dict[str, Any]]:
     seen: set[str] = set()
     for t in _scan_wasm_dir_flat(_WASM_PLUGINS_DIR) + _scan_wasm_dir_nested(_WASM_PLUGINS_DIR) + _scan_wasm_dir_nested(_L3_SKILL_CACHE_DIR):
         tid = t["id"]
-        # 内置 hr-analyzer 统一用 L1 id，避免 jpp:hr-analyzer 与 jpp:com.jachin.hr.analyzer 重复
-        if tid == "jpp:hr-analyzer" and _WASM_PLUGINS_DIR in Path(t.get("_wasm_path", "")).parents:
-            tid = "jpp:com.jachin.hr.analyzer"
-            t = {**t, "id": tid}
         item_id = t.get("_item_id") or tid.replace("jpp:", "")
         if item_id in uninstalled:
             continue
@@ -439,20 +430,13 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
     """调用 JPP Wasm 插件，通过 core.wasm_runner 执行。"""
     import sys
     tools = _scan_wasm_plugins()
-    # jpp:hr-analyzer 已统一为 jpp:com.jachin.hr.analyzer，兼容旧调用
-    lookup_id = "jpp:com.jachin.hr.analyzer" if tool_id == "jpp:hr-analyzer" else tool_id
+    lookup_id = tool_id
     t = next((x for x in tools if x["id"] == lookup_id), None)
     if not t:
         print(f"[Skill Execute] [Wasm] 未找到技能 tool_id={tool_id}", file=sys.stderr, flush=True)
         return f"[未知 Wasm 技能: {tool_id}]"
     wasm_path = t.get("_wasm_path", "")
-    # L1 同步的 com.jachin.hr.analyzer 与内置 hr-analyzer 为同一技能，优先用 wasm_plugins 的（与 execute ABI 兼容，避免 cache 版 __rust_dealloc 不兼容）
-    _HR_BUILTIN_MAP = {
-        "jpp:com.jachin.hr.analyzer": "hr-analyzer",
-        "jpp:com.jachin.hr.analyzer2": "hr-analyzer2",
-        "jpp:com.jachin.hr.analyzer3": "hr-analyzer3",
-        "jpp:com.jachin.hr.analyzer4": "hr-analyzer4",
-    }
+    _HR_BUILTIN_MAP = {"jpp:com.jachin.hr.analyzer4": "hr-analyzer4"}
     if lookup_id in _HR_BUILTIN_MAP:
         plugin_dir = _HR_BUILTIN_MAP[lookup_id]
         proj_root = Path(__file__).resolve().parent.parent.parent
@@ -473,7 +457,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         return f"[Wasm 文件不存在: {tool_id}]"
     stdin_json = dict(params) if params else {}
     # HR 简历透视镜 / 透析镜：从技能配置读取默认值，空参数时自动注入
-    if lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4"):
+    if lookup_id == "jpp:com.jachin.hr.analyzer4":
         config_id = lookup_id.replace("jpp:", "")
         proj = Path(__file__).resolve().parent.parent.parent
         defaults = get_hr_invoke_defaults(config_id)
@@ -592,7 +576,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                 if (proj / "data" / "hr_resumes" / fn).exists():
                     stdin_json["resume_path"] = str((proj / "data" / "hr_resumes" / fn).resolve())
     # HR 技能需 LLM，执行前校验
-    if lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4"):
+    if lookup_id == "jpp:com.jachin.hr.analyzer4":
         try:
             from core.wasm_runner import _host_services
             if not _host_services.get("llm_engine"):
@@ -628,7 +612,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
     try:
         from core.wasm_runner import run_wasm_plugin
         # 批量模式 3 份简历需 3 次 LLM 调用，燃料需更高
-        _fuel = 50_000_000 if lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4") else 200_000
+        _fuel = 50_000_000 if lookup_id == "jpp:com.jachin.hr.analyzer4" else 200_000
         result = run_wasm_plugin(
             wasm_path,
             function_name="run",
@@ -644,7 +628,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         print(f"[Skill Execute] [Wasm] RETURN len={len(result_str)} full={_rpreview!r}", file=sys.stderr, flush=True)
         # HR 透析镜：分析完成后立即写入（在返回给前端/TTS 之前），自动读取技能默认配置
         # 流式模式（ndjson_queue 非空）时由流式 handler 负责持久化，此处跳过
-        if ndjson_queue is None and lookup_id in ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4"):
+        if ndjson_queue is None and lookup_id == "jpp:com.jachin.hr.analyzer4":
             _err_prefixes = ("⚠️", "[权限", "[未知", "[Wasm", "[执行")
             try:
                 from l3_node.hr_analysis_persist import persist_hr_analysis_result, persist_hr_analysis_batch_item
@@ -868,7 +852,7 @@ def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
 
 def build_tools_description(tools: list[dict[str, Any]]) -> str:
     """生成 Agent system prompt 中的工具描述段落。含 id 供 Action 精确匹配。"""
-    _HR_IDS = ("jpp:com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer4")
+    _HR_IDS = ("jpp:com.jachin.hr.analyzer4",)
     lines = []
     for t in tools:
         tid = t.get("id", "")

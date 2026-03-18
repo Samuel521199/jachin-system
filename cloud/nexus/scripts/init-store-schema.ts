@@ -121,7 +121,7 @@ async function main() {
         action_name text NOT NULL,
         status text NOT NULL,
         latency_ms numeric(12, 2),
-        timestamp numeric(12, 4) NOT NULL,
+        timestamp numeric(15, 4) NOT NULL,
         created_at timestamp with time zone NOT NULL DEFAULT now()
       );
     `);

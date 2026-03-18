@@ -62,7 +62,6 @@ jachin-system/
 ├── docs/
 │   ├── ARCHITECTURE_V2_LAYER3_STANDALONE.md
 │   ├── V2_ARCHITECTURE_DIAGRAM.md
-│   ├── L2_GATEWAY_CLUSTER_ARCHITECTURE.md
 │   ├── PAIRING_PROTOCOL_SPEC.md
 │   └── whitepaper/
 │

@@ -6,6 +6,8 @@
   - LARK_APP_ID、LARK_APP_SECRET、LARK_CHAT_ID（目标群/单聊 ID）
   - 若 use_llm=True：DASHSCOPE_API_KEY
   - Lark 应用需有 im:message 权限，机器人需已加入目标群/单聊
+
+使用 l3_node.channels.lark 通道层实现。
 """
 from __future__ import annotations
 
@@ -13,18 +15,32 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-LARK_API_BASE = "https://open.larksuite.com/open-apis"
+# 确保 l3_node 可导入（plugin 脚本可能从 plugin 目录启动）
+def _ensure_l3_importable() -> None:
+    if "l3_node" in sys.modules:
+        return
+    _p = Path(__file__).resolve()
+    for _ in range(5):
+        _p = _p.parent
+        if (_p / "l3_node").is_dir():
+            _s = str(_p)
+            if _s not in sys.path:
+                sys.path.insert(0, _s)
+            break
 
 
 def _ensure_dotenv_loaded() -> None:
+    """确保加载 .env（channels.lark.client 会按需加载，此处提前加载以便 LARK_CHAT_ID 等生效）"""
     if os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID"):
         return
     try:
         from dotenv import load_dotenv
+
         plugin_root = Path(__file__).resolve().parent.parent.parent
         env_path = plugin_root / ".env"
         if env_path.exists():
@@ -36,49 +52,28 @@ def _ensure_dotenv_loaded() -> None:
 
 
 def _get_tenant_access_token() -> str:
+    """供 atom_lark_send_message、lark_bot 等调用。委托 channels.lark。"""
+    _ensure_l3_importable()
+    from l3_node.channels.lark import get_tenant_access_token
+
     _ensure_dotenv_loaded()
-    app_id = os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID")
-    app_secret = os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET")
-    if not app_id or not app_secret:
-        raise ValueError("请配置 LARK_APP_ID 和 LARK_APP_SECRET")
-
-    import requests
-    url = f"{LARK_API_BASE}/auth/v3/tenant_access_token/internal"
-    resp = requests.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10)
-    data = resp.json()
-    if data.get("code") != 0:
-        raise RuntimeError(f"Lark token 失败: {data}")
-    return data["tenant_access_token"]
+    return get_tenant_access_token()
 
 
-def _send_lark_message(token: str, receive_id: str, text: str, receive_id_type: str = "chat_id") -> bool:
-    """向 Lark 发送文本消息。供 atom_lark_send_message 和 lark_bot_conversation 调用"""
-    if not receive_id or not text:
-        return False
-    try:
-        import requests
-        url = f"{LARK_API_BASE}/im/v1/messages"
-        params = {"receive_id_type": receive_id_type}
-        payload = {
-            "receive_id": receive_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": text}),
-        }
-        resp = requests.post(
-            url,
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.warning("Lark 消息发送失败: %s", data.get("msg", data))
-            return False
-        return True
-    except Exception as e:
-        logger.warning("Lark 消息发送异常: %s", e)
-        return False
+def _send_lark_message(
+    token: str, receive_id: str, text: str, receive_id_type: str = "chat_id"
+) -> bool:
+    """向 Lark 发送文本消息。供 atom_lark_send_message、lark_bot 调用。委托 channels.lark。"""
+    _ensure_l3_importable()
+    from l3_node.channels.lark import send_im_text
+
+    result = send_im_text(
+        receive_id=receive_id,
+        text=text,
+        receive_id_type=receive_id_type,
+        token=token,
+    )
+    return result.get("status") == "success"
 
 
 def _call_bailian(prompt: str, system: str = "") -> str:

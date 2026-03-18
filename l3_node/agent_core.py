@@ -267,7 +267,11 @@ def _clear_last_jd_pending() -> None:
         pass
 
 
-async def _execute_publish_bypass(jd_config: dict) -> str | None:
+async def _execute_publish_bypass(
+    jd_config: dict,
+    *,
+    allowed_skills: list[str] | None = None,
+) -> str | None:
     """
     当「同意」但会话丢失时，直接执行发布，不经过 LLM。
     返回成功文案，失败返回 None 交给正常流程处理。
@@ -283,7 +287,7 @@ async def _execute_publish_bypass(jd_config: dict) -> str | None:
             return None
         mcp_registry = get_mcp_registry()
         inp = json.dumps({"jd_config_path": path, "cdp_url": "http://127.0.0.1:9222"}, ensure_ascii=False)
-        obs = await mcp_registry.invoke("mcp:atom_post_job_boss", inp)
+        obs = await mcp_registry.invoke("mcp:atom_post_job_boss", inp, allowed_skills=allowed_skills)
         result = json.loads(obs) if (obs or "").strip().startswith("{") else {}
         if not result.get("posted", False) and "需要登录" in str(result.get("error", "")):
             return "已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。"
@@ -296,7 +300,7 @@ async def _execute_publish_bypass(jd_config: dict) -> str | None:
             return None
         _clear_last_jd_pending()
         task_inp = json.dumps({"job_name": job_title}, ensure_ascii=False)
-        await mcp_registry.invoke("mcp:add_automated_recruitment_task", task_inp)
+        await mcp_registry.invoke("mcp:add_automated_recruitment_task", task_inp, allowed_skills=allowed_skills)
         return "职位发布成功！【无人值守流程】已启动：推荐牛人每15分钟（满3人打招呼即停）→20秒后自动抓简历→满4份简历触发 Agent 讨论简历，输出前2名排行榜和 Lark 多维表，达标后停止该岗位招聘。"
     except Exception as e:
         logger.warning("[Agent] 直接发布异常: %s", e)
@@ -475,6 +479,25 @@ async def _coordinate_task(
                 params["memory_free"] = telemetry["memory_free"]
             if telemetry.get("has_gpu") is not None:
                 params["has_gpu"] = telemetry["has_gpu"]
+            cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+            l3_url = "http://127.0.0.1:18991"
+            if cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    l3_url = (cfg.get("l3_http_url") or l3_url).strip()
+                except Exception:
+                    pass
+            if l3_url:
+                params["l3_http_url"] = l3_url
+            try:
+                reg = get_mcp_registry()
+                known = list(reg.known_mcp_tools)
+                if known:
+                    raw = [t.replace("mcp:", "", 1).strip() for t in known if t]
+                    if raw:
+                        params["mcp_tools"] = ",".join(raw)
+            except Exception:
+                pass
             async with httpx.AsyncClient(timeout=15.0) as client:
                 poll_r = await client.get(
                     f"{base}/api/v2/coordinate/poll",
@@ -574,7 +597,7 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 将子任务交给专业子 Agent 并行执行。"""
     hr_hint = ""
     hr_ids = [t.get("id", "") for t in tools if "hr.analyzer" in (t.get("id") or "")]
-    hr_preferred = (next((x for x in hr_ids if "analyzer4" in x), None) or next((x for x in hr_ids if "analyzer3" in x), None) or next((x for x in hr_ids if "analyzer2" in x), None) or (hr_ids[0] if hr_ids else None)) if hr_ids else None
+    hr_preferred = next((x for x in hr_ids if "analyzer4" in x), None) or (hr_ids[0] if hr_ids else None)
     if hr_ids:
         try:
             defaults = get_hr_invoke_defaults(hr_preferred.replace("jpp:", ""))
@@ -1021,7 +1044,7 @@ async def _run_react_core(
             # 工具执行路由器：MCP 工具（L3 本地 read_file 或 L2 代理），本地工具走 run_tool
             mcp_registry = get_mcp_registry()
             if tool in mcp_registry.known_mcp_tools:
-                observation = await mcp_registry.invoke(tool, inp)
+                observation = await mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills)
             else:
                 observation = run_tool(tool, inp, allowed_skills=allowed_skills)
             ctx.observation = observation
@@ -1110,10 +1133,14 @@ async def run_agent(
     allowed = _get_allowed_skills()
     tools = load_tools(allowed_skills=allowed)
     # 神经桥接：从 L2 拉取 MCP 工具并合并（强容错，L2 不可用时仅用本地工具）
+    # 双模式：allowed=None 时不过滤（开发即用）；allowed 非 None 时按白名单过滤（测试/生产闭环）
     try:
         mcp_registry = get_mcp_registry()
         mcp_tools = await mcp_registry.fetch_tools_from_l2()
         if mcp_tools:
+            if allowed is not None:
+                from l3_node.skills.loader import is_tool_allowed
+                mcp_tools = [t for t in mcp_tools if is_tool_allowed(t["id"], allowed)]
             tools = list(tools) + mcp_tools
             logger.info("[L3 Agent] 已合并 %d 个 MCP 工具，总计 %d", len(mcp_tools), len(tools))
     except Exception as e:
@@ -1183,7 +1210,7 @@ async def run_agent(
                 logger.info("[Agent] 同意但无会话，从 fallback 恢复 JD job_title=%s，直接执行发布", _agree_jd_cfg.get("job_title"))
         # 只要拿到 JD，一律直接发布，不再交给 LLM（防止误判「新对话」导致循环）
         if _agree_jd_cfg:
-            _direct_publish = await _execute_publish_bypass(_agree_jd_cfg)
+            _direct_publish = await _execute_publish_bypass(_agree_jd_cfg, allowed_skills=allowed)
             if _direct_publish:
                 return _direct_publish
             # 直接发布失败时，注入 JD 让 LLM 兜底调用 atom_post_job_boss

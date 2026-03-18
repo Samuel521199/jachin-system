@@ -504,6 +504,8 @@ async def coordinate_poll(
     cpu_load: Optional[float] = Query(None),
     memory_free: Optional[float] = Query(None),
     has_gpu: Optional[bool] = Query(None),
+    l3_http_url: Optional[str] = Query(None, description="L3 HTTP API 地址，供 L2 委托 MCP 执行"),
+    mcp_tools: Optional[str] = Query(None, description="该 L3 可执行的 MCP 工具列表，逗号分隔"),
 ) -> dict[str, Any]:
     """
     L3 长轮询拉取分配给自己的待执行子任务。
@@ -526,7 +528,7 @@ async def coordinate_poll(
         if row:
             caps_json = row.get("capabilities_json") or "{}"
             trust_zone = str(row.get("trust_zone") or "")
-            if cpu_load is not None or memory_free is not None or has_gpu is not None:
+            if cpu_load is not None or memory_free is not None or has_gpu is not None or l3_http_url or mcp_tools:
                 try:
                     caps = json.loads(caps_json) if isinstance(caps_json, str) else (caps_json or {})
                     if not isinstance(caps, dict):
@@ -537,6 +539,10 @@ async def coordinate_poll(
                         caps["memory_free"] = float(memory_free)
                     if has_gpu is not None:
                         caps["has_gpu"] = bool(has_gpu)
+                    if l3_http_url:
+                        caps["l3_http_url"] = l3_http_url.strip()
+                    if mcp_tools:
+                        caps["mcp_tools"] = [t.strip() for t in mcp_tools.split(",") if t.strip()]
                     caps_json = json.dumps(caps, ensure_ascii=False)
                     conn.execute(
                         "UPDATE l3_nodes SET last_seen_at = ?, capabilities_json = ? WHERE id = ?",
@@ -550,8 +556,17 @@ async def coordinate_poll(
     finally:
         conn.close()
 
-    # 无状态集群：L3 在线状态写入 Redis，调度器从 Redis 读取
-    write_l3_node_status(node_id, sub_account_id, caps_json, trust_zone)
+    mcp_tools_json = "[]"
+    if mcp_tools:
+        try:
+            mcp_tools_json = json.dumps([t.strip() for t in mcp_tools.split(",") if t.strip()], ensure_ascii=False)
+        except Exception:
+            pass
+    write_l3_node_status(
+        node_id, sub_account_id, caps_json, trust_zone,
+        l3_http_url=(l3_http_url or "").strip(),
+        mcp_tools_json=mcp_tools_json,
+    )
 
     # 优先从 Redis 队列拉取（任意 L2 节点均可 RPOP）
     tasks = pop_subtasks_from_queue(node_id, limit=limit)
