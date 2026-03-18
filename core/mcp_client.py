@@ -133,9 +133,18 @@ class MCPServerInstance:
     async def close(self) -> None:
         """优雅关闭进程与连接。"""
         logger.debug("[MCP] 关闭 Server server_id=%s", self.server_id)
-        await self._exit_stack.aclose()
-        self._session = None
-        self._tool_names = []
+        try:
+            await self._exit_stack.aclose()
+        except RuntimeError as e:
+            # MCP SDK 已知问题：stdio_client 的 anyio cancel scope 在跨 task 退出时抛错
+            # 见 https://github.com/modelcontextprotocol/python-sdk/issues/521
+            if "cancel scope" in str(e).lower():
+                logger.debug("[MCP] 关闭时 anyio 跨 task 退出（已知问题，可忽略）server_id=%s", self.server_id)
+            else:
+                raise
+        finally:
+            self._session = None
+            self._tool_names = []
 
     def has_tool(self, name: str) -> bool:
         """检查该 Server 是否提供指定工具。"""

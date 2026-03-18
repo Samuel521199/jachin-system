@@ -597,7 +597,7 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 将子任务交给专业子 Agent 并行执行。"""
     hr_hint = ""
     hr_ids = [t.get("id", "") for t in tools if "hr.analyzer" in (t.get("id") or "")]
-    hr_preferred = (next((x for x in hr_ids if "analyzer4" in x), None) or next((x for x in hr_ids if "analyzer3" in x), None) or next((x for x in hr_ids if "analyzer2" in x), None) or (hr_ids[0] if hr_ids else None)) if hr_ids else None
+    hr_preferred = next((x for x in hr_ids if "analyzer4" in x), None) or (hr_ids[0] if hr_ids else None)
     if hr_ids:
         try:
             defaults = get_hr_invoke_defaults(hr_preferred.replace("jpp:", ""))

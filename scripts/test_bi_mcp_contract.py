@@ -21,8 +21,8 @@ if str(_root) not in sys.path:
 
 def test_atom_web_scraper_contract() -> tuple[bool, str]:
     """验证 atom_web_scraper 返回值包含 status、file_path/error"""
-    from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-    from l3_node.bi_paths import get_bi_raw_dir
+    from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+    from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
 
     result = harvest_table_data("https://example.com", str(get_bi_raw_dir() / "test.csv"), {})
     if not isinstance(result, dict):
@@ -40,7 +40,7 @@ def test_atom_web_scraper_contract() -> tuple[bool, str]:
 
 def test_atom_lark_notifier_contract() -> tuple[bool, str]:
     """验证 atom_lark_notifier 返回值包含 status、msg/error"""
-    from l3_node.mcp_tools.tool_lark_notifier import send_lark_markdown
+    from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
 
     result = send_lark_markdown("https://open.feishu.cn/xxx", "# test", "title")
     if not isinstance(result, dict):
@@ -58,7 +58,7 @@ def test_atom_lark_notifier_contract() -> tuple[bool, str]:
 
 def test_atom_email_sender_contract() -> tuple[bool, str]:
     """验证 atom_email_sender 返回值包含 status、msg/error"""
-    from l3_node.mcp_tools.tool_email_sender import send_email_with_attachment
+    from l3_node.mcp_tools.bi.tool_email_sender import send_email_with_attachment
 
     result = send_email_with_attachment(
         {"host": "smtp.example.com", "user": "x", "password": "x"},

@@ -17,7 +17,7 @@
 | **输出器** | 格式化输出 | `console`、`markdown` |
 
 **配置**: `config/bi_metrics.yaml`  
-**扩展**: 在 `l3_node/bi_metrics/plugins/` 新增插件并注册到 `registry.py`
+**扩展**: 在 `l3_node/bi/metrics/plugins/` 新增插件并注册到 `registry.py`
 
 ---
 
@@ -45,8 +45,8 @@ C (分析)  ←  D.get_table(slug)  ←  按 _ingested_date 过滤
 
 | 文件 | 说明 |
 |------|------|
-| `l3_node/bi_data_store.py` | D 模块主实现 |
-| `l3_node/bi_paths.py` | `get_bi_duckdb_path()`、`get_bi_duckdb_dir()` |
+| `l3_node/bi/data_store.py` | D 模块主实现 |
+| `l3_node/bi/paths.py` | `get_bi_duckdb_path()`、`get_bi_duckdb_dir()` |
 | `scripts/run_bi_scraper_spa.py` | 抓取成功后调用 `ingest_csv()` |
 
 ---
@@ -56,7 +56,7 @@ C (分析)  ←  D.get_table(slug)  ←  按 _ingested_date 过滤
 ### 4.1 ingest_csv(file_path, slug, captured_at?)
 
 ```python
-from l3_node.bi_data_store import ingest_csv
+from l3_node.mcp_tools.bi.data_store import ingest_csv
 
 r = ingest_csv("/path/to/daily_ops_summary.csv", "daily_ops_summary")
 # {"status": "success", "slug": "daily_ops_summary", "rows": 100, "table": "bi_daily_ops_summary"}
@@ -65,7 +65,7 @@ r = ingest_csv("/path/to/daily_ops_summary.csv", "daily_ops_summary")
 ### 4.2 get_table(slug, date_from?, date_to?)
 
 ```python
-from l3_node.bi_data_store import get_table
+from l3_node.mcp_tools.bi.data_store import get_table
 
 df = get_table("daily_ops_summary", date_from="2026-03-01", date_to="2026-03-09")
 # pandas.DataFrame
@@ -100,7 +100,7 @@ python scripts/inspect_bi_schema.py daily_ops_summary  # 查看某表列名
 ### 4.5 list_available_slugs() / list_available_dates(slug)
 
 ```python
-from l3_node.bi_data_store import list_available_slugs, list_available_dates
+from l3_node.mcp_tools.bi.data_store import list_available_slugs, list_available_dates
 
 slugs = list_available_slugs()
 dates = list_available_dates("daily_ops_summary")

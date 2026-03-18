@@ -54,8 +54,8 @@ Heron-Bi-Admin 左侧菜单结构：
 配置 `automation` 后，工具自动完成：点击菜单进入数据页 → 填写日期范围 → 点击查询 → 抓取表格。
 
 ```python
-from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-from l3_node.bi_paths import get_bi_raw_dir, ensure_bi_dirs
+from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 from datetime import datetime, timedelta
 
 ensure_bi_dirs()
@@ -102,8 +102,8 @@ print(result)
 **单页抓取**（传入具体数据页 URL，无 automation）：
 
 ```python
-from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-from l3_node.bi_paths import get_bi_raw_dir, ensure_bi_dirs
+from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 
 ensure_bi_dirs()
 # 使用平台数据/统计分析/明细页的实际 URL，而非 #/layout/person
@@ -121,8 +121,8 @@ result = harvest_table_data(
 **多页抓取**（平台数据 + 统计分析 + 明细）：
 
 ```python
-from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-from l3_node.bi_paths import get_bi_raw_dir, ensure_bi_dirs
+from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 from datetime import datetime
 
 ensure_bi_dirs()
@@ -159,8 +159,8 @@ for url, name in urls:
 # 2. 点击「平台数据」等菜单，复制当前页 URL
 # 3. 将下方 URL 替换为实际数据页地址后执行
 python -c "
-from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-from l3_node.bi_paths import get_bi_raw_dir, ensure_bi_dirs
+from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 ensure_bi_dirs()
 r = harvest_table_data(
     'https://bi-admin-web.heronpro.xin/#/layout/xxx',  # 替换为点击「平台数据」后地址栏的实际路径

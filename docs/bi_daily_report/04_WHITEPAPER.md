@@ -32,7 +32,7 @@
 │  Layer 3 单体执行节点 (L3 Node)                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐ │
-│  │ recruitment_scheduler│   │ bi_scheduler        │   │ 其他调度器...       │ │
+│  │ recruitment_scheduler│   │ bi.scheduler        │   │ 其他调度器...       │ │
 │  │ (HR 招聘定时任务)    │   │ (BI 战报定时任务)   │   │                     │ │
 │  └──────────┬──────────┘   └──────────┬──────────┘   └─────────────────────┘ │
 │             │                         │                                       │
@@ -44,7 +44,7 @@
 │             │                         │                                       │
 │             ▼                         ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │ 通用 MCP 工具层 (l3_node/mcp_tools/)                                     │ │
+│  │ 通用 MCP 工具层 (l3_node/mcp_tools/bi/)                                  │ │
 │  │ atom_web_scraper | atom_lark_notifier | atom_email_sender                │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -56,7 +56,7 @@
 |------|------|
 | **不修改 HR 逻辑** | `recruitment_task.py`、`recruitment_scheduler.py` 及其依赖的 MCP 工具，一律不触碰 |
 | **MCP 工具通用化** | `atom_lark_notifier` 等工具仅负责「发什么、发到哪」，严禁硬编码 BI 战报格式 |
-| **调度隔离** | `bi_scheduler.py` 与 `recruitment_scheduler.py` 互不 import，可独立启停 |
+| **调度隔离** | `bi/scheduler.py` 与 `recruitment_scheduler.py` 互不 import，可独立启停 |
 | **配置分离** | BI 配置独立于 HR 配置，如 `config/bi_daily_report.yaml` |
 
 ---
@@ -88,7 +88,7 @@
 
 | 项目 | 说明 |
 |------|------|
-| **文件** | `l3_node/bi_scheduler.py`（与 recruitment_scheduler 同级） |
+| **文件** | `l3_node/bi/scheduler.py`（与 recruitment_scheduler 同级） |
 | **触发** | CronTrigger，每天 8:00 |
 | **入口** | `run_bi_daily_report(config)` |
 | **启动** | 由 L3 主进程在启动时 import 并注册 |
@@ -179,7 +179,7 @@ distribution:
 
 | 规范 | 衔接方式 |
 |------|----------|
-| [MCP_SPEC.md](../MCP_SPEC.md) | 三个 atom 工具按 MCP 规范注册，invoke 时路由到 `l3_node/mcp_tools/` |
+| [MCP_SPEC.md](../MCP_SPEC.md) | 三个 atom 工具按 MCP 规范注册，invoke 时路由到 `l3_node/mcp_tools/bi/` |
 | [SKILL_MD_SPEC.md](../SKILL_MD_SPEC.md) | 可选：为 skill_bi_daily_report 编写 SKILL.md 声明，供 Agent 发现与触发 |
 | [07_LAYER3_TERMINAL.md](../whitepaper/07_LAYER3_TERMINAL.md) | BI 战报作为 L3 单体上的独立 Skill，复用 MCP + LiteLLM 能力 |
 | [08_JPP_SDK_AND_SKILLS.md](../whitepaper/08_JPP_SDK_AND_SKILLS.md) | 轨道 A (MCP) 提供原子工具，BI Skill 为轨道 A 之上的业务编排 |

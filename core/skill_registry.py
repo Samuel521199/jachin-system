@@ -41,12 +41,6 @@ def _get_plugin_config_defaults(skill_id: str) -> dict[str, Any]:
     item_ids = [raw]
     if "com.jachin.hr.analyzer4" in raw or raw == "com.jachin.hr.analyzer4":
         item_ids.append("hr-analyzer4")
-    elif "com.jachin.hr.analyzer3" in raw or raw == "com.jachin.hr.analyzer3":
-        item_ids.append("hr-analyzer3")
-    elif "com.jachin.hr.analyzer2" in raw or raw == "com.jachin.hr.analyzer2":
-        item_ids.append("hr-analyzer2")
-    elif "com.jachin.hr.analyzer" in raw or raw == "com.jachin.hr.analyzer":
-        item_ids.append("hr-analyzer")
     proj_root = Path(__file__).resolve().parent.parent
     search_dirs = [
         proj_root / "l3_node" / "skills" / "wasm_plugins",
@@ -137,12 +131,6 @@ def _resolve_registry_key(skill_id: str) -> str:
     raw = _skill_id_to_item_id(skill_id)
     if "com.jachin.hr.analyzer4" in raw or raw == "com.jachin.hr.analyzer4":
         return "hr-analyzer4"
-    if "com.jachin.hr.analyzer3" in raw or raw == "com.jachin.hr.analyzer3":
-        return "hr-analyzer3"
-    if "com.jachin.hr.analyzer2" in raw or raw == "com.jachin.hr.analyzer2":
-        return "hr-analyzer2"
-    if "com.jachin.hr.analyzer" in raw or raw == "com.jachin.hr.analyzer":
-        return "hr-analyzer"
     return raw
 
 
@@ -151,7 +139,7 @@ def _sync_jd_template_to_file(skill_id: str, jd_content: str) -> None:
     if not jd_content or not isinstance(jd_content, str):
         return
     item_id = _resolve_registry_key(skill_id)
-    if item_id not in ("hr-analyzer", "hr-analyzer2", "hr-analyzer3", "hr-analyzer4"):
+    if item_id != "hr-analyzer4":
         return
     proj_root = Path(__file__).resolve().parent.parent
     jd_dir = proj_root / "config" / "hr_jds"
@@ -258,7 +246,7 @@ def get_skill_config(skill_id: str) -> dict[str, Any]:
         if not result:
             result = _get_plugin_config_defaults(skill_id)
             item_id = _resolve_registry_key(skill_id)
-            if item_id in ("hr-analyzer", "hr-analyzer2", "hr-analyzer3", "hr-analyzer4"):
+            if item_id == "hr-analyzer4":
                 proj_root = Path(__file__).resolve().parent.parent
                 jd_file = proj_root / "config" / "hr_jds" / f"{item_id}.md"
                 if jd_file.exists():
@@ -279,7 +267,7 @@ def get_skill_config(skill_id: str) -> dict[str, Any]:
                     result[k] = v
             # HR 技能兜底：若 plugin 未找到或缺少路径项，显式补全
             item_id = _resolve_registry_key(skill_id)
-            if item_id in ("hr-analyzer", "hr-analyzer2", "hr-analyzer3", "hr-analyzer4"):
+            if item_id == "hr-analyzer4":
                 if "resume_input_dir" not in result:
                     result["resume_input_dir"] = "data/hr_resumes"
                 if "output_dir" not in result:
@@ -296,7 +284,7 @@ def cleanup_builtin_skill_artifacts(item_id: str) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"ok": True, "item_id": item_id, "jd_deleted": False, "registry_cleaned": False}
     proj_root = Path(__file__).resolve().parent.parent
-    # 1. 删除 config/hr_jds/ 下相关 JD 文件（兼容 hr-analyzer2 与 hr_analyzer2 命名）
+    # 1. 删除 config/hr_jds/ 下相关 JD 文件（兼容 hr-analyzer4 与 hr_analyzer4 命名）
     jd_dir = proj_root / "config" / "hr_jds"
     for name in (f"{item_id}.md", f"{item_id.replace('-', '_')}.md"):
         jd_file = jd_dir / name
@@ -313,12 +301,6 @@ def cleanup_builtin_skill_artifacts(item_id: str) -> dict[str, Any]:
         plugin_ids = [item_id, f"jpp:{item_id}"]
         if item_id == "hr-analyzer4":
             plugin_ids.extend(["com.jachin.hr.analyzer4", "jpp:com.jachin.hr.analyzer4"])
-        elif item_id == "hr-analyzer3":
-            plugin_ids.extend(["com.jachin.hr.analyzer3", "jpp:com.jachin.hr.analyzer3"])
-        elif item_id == "hr-analyzer2":
-            plugin_ids.extend(["com.jachin.hr.analyzer2", "jpp:com.jachin.hr.analyzer2"])
-        elif item_id == "hr-analyzer":
-            plugin_ids.extend(["com.jachin.hr.analyzer", "jpp:com.jachin.hr.analyzer"])
         for sid in plugin_ids:
             cur = conn.execute("DELETE FROM skill_registry WHERE skill_id = ?", (sid,))
             if cur.rowcount > 0:

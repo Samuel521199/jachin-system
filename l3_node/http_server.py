@@ -22,9 +22,6 @@ L3_HTTP_PORT = 18991
 
 
 _HR_SKILL_IDS = (
-    "jpp:com.jachin.hr.analyzer",
-    "jpp:com.jachin.hr.analyzer2",
-    "jpp:com.jachin.hr.analyzer3",
     "jpp:com.jachin.hr.analyzer4",
 )
 
@@ -654,10 +651,10 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except ImportError:
             pass
         try:
-            from l3_node.bi_scheduler import register_bi_daily_report_job
+            from l3_node.skills.bi.scheduler import register_bi_daily_report_job
             register_bi_daily_report_job()
         except Exception as e:
-            logger.debug("[L3 HTTP] bi_scheduler 注册跳过: %s", e)
+            logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
     except Exception as e:
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
 

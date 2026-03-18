@@ -14,7 +14,7 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from l3_node.bi_data_store import _get_conn
+from l3_node.mcp_tools.bi.data_store import _get_conn
 
 
 def main() -> int:

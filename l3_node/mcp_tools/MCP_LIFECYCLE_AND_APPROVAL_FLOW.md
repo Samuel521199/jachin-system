@@ -88,7 +88,7 @@ agent_core._run_react_core (约 1022–1026 行):
 
 | 场景 | 预期 | 实际 |
 |------|------|------|
-| L2 仅分配 `jpp:com.jachin.hr.analyzer` | 仅 HR 透析镜可用 | Agent 仍可见并可调用 atom_web_scraper 等 |
+| L2 仅分配 `jpp:com.jachin.hr.analyzer4` | 仅 HR 透析镜可用 | Agent 仍可见并可调用 atom_web_scraper 等 |
 | L1 全局封禁某技能 | 该技能不可用 | 仅对 `allowed_skills` 内项生效，MCP 不受影响 |
 | 多租户/子账号隔离 | 按角色限制工具 | MCP 工具对所有子账号开放 |
 
@@ -300,7 +300,7 @@ L2 启动 / reload
 **思路**：将 Python 逻辑包装成 MCP Server（stdio 进程），按现有 MCP 流程发布。
 
 ```
-l3_node/mcp_tools/tool_web_scraper.py
+l3_node/mcp_tools/bi/tool_web_scraper.py
     → 封装为 MCP Server：python -m l3_node.mcp_tools.scraper_server
     → 实现 MCP 协议：tools/list、tools/call
     → 打包：plugin.json (item_type: MCP) + config.json (command: python ...)

@@ -215,8 +215,8 @@ def _setup_logging(raw_dir: Path) -> logging.Logger:
 
 
 def main() -> int:
-    from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-    from l3_node.bi_paths import get_bi_raw_dir, ensure_bi_dirs
+    from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+    from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 
     use_discover = "--no-discover" not in sys.argv
     ensure_bi_dirs()

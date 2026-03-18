@@ -21,18 +21,18 @@
 
 ```
 A 分支 feat/bi-scraper 仅包含：
-  l3_node/mcp_tools/tool_web_scraper.py  （新建）
+  l3_node/mcp_tools/bi/tool_web_scraper.py  （新建）
 
 B 分支 feat/bi-broadcaster 仅包含：
-  l3_node/mcp_tools/tool_broadcaster.py   （新建）
+  l3_node/mcp_tools/bi/tool_lark_notifier.py、tool_email_sender.py  （新建）
 
 C 分支 feat/bi-skill 仅包含：
-  l3_node/skills/bi_daily_report/main_skill.py  （新建）
-  l3_node/bi_scheduler.py                       （新建）
+  l3_node/skills/bi/bi_daily_report/main_skill.py
+  l3_node/bi/scheduler.py                       （新建）
 
 统帅分支（组装）修改：
   l3_node/skills/mcp_registry.py  （追加路由与注册）
-  l3_node/__main__.py 或 http_server.py  （可选：import bi_scheduler）
+  l3_node/__main__.py 或 http_server.py  （可选：import l3_node.skills.bi.scheduler）
 ```
 
 **结论**：A、B、C 三者的文件集合**无交集**，Git 三路合并不会产生 `<<<<<<<` 冲突。
@@ -99,7 +99,7 @@ C 用 Mock 开发时，若 Mock 的入参/出参与真实 A、B 不一致，对�
 阶段 3：统帅组装
   ├─ 合并 C 的 feat/bi-skill
   ├─ 在 mcp_registry 中添加路由与 L3_LOCAL_MCP_TOOLS 注册
-  ├─ 在 __main__.py 或 http_server 中 import bi_scheduler
+  ├─ 在 __main__.py 或 http_server 中 import l3_node.skills.bi.scheduler
   ├─ 统一路径：在 BiReportConfig 或常量中指定 storage.base_path
   └─ 追加依赖（若有）：core/requirements.txt 或 l3_node/requirements-bi.txt
 

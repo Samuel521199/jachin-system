@@ -21,9 +21,6 @@ _JACHIN_ROOT = Path.home() / ".jachin"
 _last_saved_path: str | None = None
 
 _HR_ANALYZER_MAP = {
-    "jpp:com.jachin.hr.analyzer": ("hr-analyzer", "hr_analysis_output"),
-    "jpp:com.jachin.hr.analyzer2": ("hr-analyzer2", "hr_analysis_output_2"),
-    "jpp:com.jachin.hr.analyzer3": ("hr-analyzer3", "hr_analysis_output_3"),
     "jpp:com.jachin.hr.analyzer4": ("hr-analyzer4", "hr_analysis_output_4"),
 }
 

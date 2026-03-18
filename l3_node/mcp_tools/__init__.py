@@ -1,11 +1,9 @@
 """
-L3 通用 MCP 工具包 — BI 战报及可复用原子能力
+L3 通用 MCP 工具包 — 按业务系列分目录
 
-本目录存放与业务解耦的通用 MCP 工具，供 BI 战报、周报、告警等 Skill 复用。
-设计规范见: docs/bi_daily_report/
+各系列 MCP 工具放在独立子目录下：
+  - bi/  BI 战报：atom_web_scraper、atom_lark_notifier、atom_email_sender
+  - （其他系列待扩展）
 
-通道实现已抽离至 l3_node/channels/，本目录为薄封装：
-  - mcp:atom_web_scraper   (tool_web_scraper.py)
-  - mcp:atom_lark_notifier (tool_lark_notifier.py) -> channels.lark
-  - mcp:atom_email_sender  (tool_email_sender.py)  -> channels.email
+设计规范: docs/bi_daily_report/
 """

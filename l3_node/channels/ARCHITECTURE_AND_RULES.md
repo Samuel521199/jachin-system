@@ -10,7 +10,7 @@
 
 在引入 channels 之前，Lark 与邮件的发送能力分散在：
 
-- `l3_node/mcp_tools/`：BI 战报推送（Webhook、SMTP）
+- `l3_node/mcp_tools/bi/`：BI 战报推送（Webhook、SMTP）
 - `skills_repo/plugin/2-track-a-atomic-mcp/tools/`：HR 场景（IM 发消息、多维表群通知）
 
 这些实现**各自封装** Lark API、Token 获取、邮件发送逻辑，导致：

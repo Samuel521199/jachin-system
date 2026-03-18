@@ -21,14 +21,14 @@ DataSource  Metrics     Outputter
 
 ## 二、新增数据源插件
 
-1. 在 `l3_node/bi_metrics/plugins/` 新建 `data_source_xxx.py`
+1. 在 `l3_node/bi/metrics/plugins/` 新建 `data_source_xxx.py`
 2. 继承 `DataSource`，实现 `fetch(tables, date_col, date_value, config)`
 3. 在 `plugins/__init__.py` 中 `register_data_source("xxx", XxxDataSource)`
 
 ```python
 # data_source_api.py 示例
-from l3_node.bi_metrics.plugins.base import DataSource
-from l3_node.bi_metrics.registry import register_data_source
+from l3_node.mcp_tools.bi.metrics.plugins.base import DataSource
+from l3_node.mcp_tools.bi.metrics.registry import register_data_source
 
 class APIDataSource(DataSource):
     def fetch(self, tables, date_col, date_value, config):
@@ -47,8 +47,8 @@ register_data_source("api", APIDataSource)
 
 ```python
 # output_lark.py 示例
-from l3_node.bi_metrics.plugins.base import Outputter
-from l3_node.bi_metrics.registry import register_outputter
+from l3_node.mcp_tools.bi.metrics.plugins.base import Outputter
+from l3_node.mcp_tools.bi.metrics.registry import register_outputter
 
 class LarkOutputter(Outputter):
     def format(self, metrics, config):

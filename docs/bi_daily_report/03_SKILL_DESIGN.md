@@ -19,8 +19,9 @@
 
 ## 二、阶段一：通用 MCP 工具
 
-**存放路径**: `l3_node/mcp_tools/`  
-**注册前缀**: `mcp:`
+**存放路径**: `l3_node/mcp_tools/bi/`  
+**注册前缀**: `mcp:`  
+**目录规范**: 详见 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md)
 
 ### 2.1 atom_web_scraper（通用网页抓取器）
 
@@ -103,8 +104,9 @@
 
 ## 三、阶段二：业务 Skill
 
-**存放路径**: `l3_node/skills/skill_bi_daily_report.py`  
-**定位**: 统筹全局的「技能大脑」，编排 MCP 调用与 LLM 洞察
+**存放路径**: `l3_node/skills/bi/bi_daily_report/main_skill.py`  
+**定位**: 统筹全局的「技能大脑」，编排 MCP 调用与 LLM 洞察  
+**目录规范**: 详见 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md)
 
 ### 3.1 主流程
 
@@ -191,7 +193,7 @@ BiReportConfig = {
 
 ### 4.1 新建 bi_scheduler.py
 
-**路径**: `l3_node/bi_scheduler.py`（与 `recruitment_scheduler.py` 同级）
+**路径**: `l3_node/bi/scheduler.py`（与 `recruitment_scheduler.py` 同级）
 
 **职责**:
 - 独立模块，不 import recruitment_scheduler 内部逻辑
@@ -225,6 +227,20 @@ scheduler.add_job(
 - 优先从 `config/bi_daily_report.yaml` 读取
 - 支持环境变量覆盖：`BI_LARK_WEBHOOK_URL`、`BI_SMTP_*`、`BI_DATA_URL` 等
 
+### 4.4 调度配置（schedule）
+
+| 字段 | 说明 | 默认 |
+|------|------|------|
+| `enabled` | 是否启用定时任务，`false` 时仅支持手动触发 | `true` |
+| `mode` | `cron` 固定时间 / `interval` 间隔执行 | `cron` |
+| `hour` | cron 模式：小时 (0-23) | `8` |
+| `minute` | cron 模式：分钟 (0-59) | `0` |
+| `timezone` | cron 模式：时区，如 `Asia/Shanghai`（UTC+8） | `Asia/Shanghai` |
+| `minutes` | interval 模式：每 N 分钟 | - |
+| `hours` | interval 模式：每 N 小时 | - |
+
+**示例**：每天 8:00 UTC+8 发日报；或每 30 分钟 / 每 2 小时发一次。
+
 ---
 
 ## 五、MCP 工具注册
@@ -252,7 +268,7 @@ scheduler.add_job(
 },
 ```
 
-**路由**: 在 `mcp_registry` 的 `invoke_mcp_tool` 分支中，根据 `tool_id` 分发到 `l3_node/mcp_tools/` 下对应模块。
+**路由**: 在 `mcp_registry` 的 `invoke_mcp_tool` 分支中，根据 `tool_id` 分发到 `l3_node/mcp_tools/bi/` 下对应模块。
 
 ---
 

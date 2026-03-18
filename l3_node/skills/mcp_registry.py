@@ -337,10 +337,10 @@ def _invoke_atom_web_scraper_local(
     output_path: str = "",
     config: dict | None = None,
 ) -> str:
-    """L3 本地执行 atom_web_scraper，路由到 l3_node.mcp_tools.tool_web_scraper。"""
+    """L3 本地执行 atom_web_scraper，路由到 l3_node.mcp_tools.bi.tool_web_scraper。"""
     try:
-        from l3_node.mcp_tools.tool_web_scraper import harvest_table_data
-        from l3_node.bi_paths import get_bi_raw_dir
+        from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
+        from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
         _path = output_path.strip() if output_path else str(get_bi_raw_dir() / "placeholder.csv")
         result = harvest_table_data(url=url or "", output_path=_path, config=config or {})
         return json.dumps(result, ensure_ascii=False)
@@ -354,9 +354,9 @@ def _invoke_atom_lark_notifier_local(
     markdown_content: str = "",
     title: str = "",
 ) -> str:
-    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.tool_lark_notifier。"""
+    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.bi.tool_lark_notifier。"""
     try:
-        from l3_node.mcp_tools.tool_lark_notifier import send_lark_markdown
+        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
         result = send_lark_markdown(
             webhook_url=webhook_url or "",
             markdown_content=markdown_content or "",
@@ -375,9 +375,9 @@ def _invoke_atom_email_sender_local(
     body: str = "",
     attachment_paths: list | None = None,
 ) -> str:
-    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.tool_email_sender。"""
+    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.bi.tool_email_sender。"""
     try:
-        from l3_node.mcp_tools.tool_email_sender import send_email_with_attachment
+        from l3_node.mcp_tools.bi.tool_email_sender import send_email_with_attachment
         result = send_email_with_attachment(
             smtp_config=smtp_config or {},
             to_addrs=to_addrs or [],

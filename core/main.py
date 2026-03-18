@@ -25,6 +25,7 @@ class UTF8JSONResponse(JSONResponse):
     """JSON 响应强制 UTF-8，避免 PowerShell 等客户端按 Latin-1 解码导致中文乱码"""
     media_type = "application/json; charset=utf-8"
 from contextlib import asynccontextmanager
+import asyncio
 import os
 import logging
 import sys
@@ -218,12 +219,27 @@ except ImportError as e:
     logger.warning(f"V2 Events SSE router not available: {e}")
 
 # Lifespan管理 - v5.0 已废弃 Ray/Dapr/PostgreSQL，仅保留轻量初始化
+def _asyncio_task_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    """捕获 MCP stdio anyio 跨 task 退出的已知问题，避免 'Task exception was never retrieved'"""
+    exc = context.get("exception")
+    if exc and "cancel scope" in str(exc).lower():
+        logger.debug("[Asyncio] MCP stdio anyio 跨 task 退出（已知问题，可忽略）")
+        return
+    asyncio.default_exception_handler(loop, context)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - v5.0 极简模式"""
     heartbeat_task = None
     cloud_sync_task = None
     try:
+        # 抑制 MCP SDK anyio cancel scope 跨 task 退出的误报
+        try:
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(_asyncio_task_exception_handler)
+        except Exception:
+            pass
         # V2: Ray/Dapr/PostgreSQL 已废弃；L2 控制面 + L3 单体
         app.state.plugin_manager = None
         app.state.skill_registry = None
@@ -315,13 +331,13 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(asyncio.shield(cloud_sync_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-    logger.info("Shutting down Jachin Nexus v0.8.34 (Singularity OS)...")
+    logger.info("Shutting down Jachin Nexus v0.8.35 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="0.8.34",
+    version="0.8.35",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码

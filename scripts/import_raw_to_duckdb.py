@@ -17,8 +17,8 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from l3_node.bi_paths import get_bi_raw_dir, ensure_bi_dirs
-from l3_node.bi_data_store import ingest_csv
+from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
+from l3_node.mcp_tools.bi.data_store import ingest_csv
 
 
 def main() -> int:

@@ -66,9 +66,9 @@
 
 | 战区 | 负责人 | 唯一可修改的文件/目录 | Git 分支建议 |
 |------|--------|------------------------|--------------|
-| **A：数据收割** | 开发者 A | `l3_node/mcp_tools/tool_web_scraper.py` | `feat/bi-scraper` |
-| **B：全息广播** | 开发者 B | `l3_node/mcp_tools/tool_broadcaster.py` | `feat/bi-broadcaster` |
-| **C：BI 智库** | 开发者 C / 统帅 | `l3_node/skills/bi_daily_report/`、`l3_node/bi_scheduler.py` | `feat/bi-skill` |
+| **A：数据收割** | 开发者 A | `l3_node/mcp_tools/bi/tool_web_scraper.py` | `feat/bi-scraper` |
+| **B：全息广播** | 开发者 B | `l3_node/mcp_tools/bi/tool_lark_notifier.py`、`tool_email_sender.py` | `feat/bi-broadcaster` |
+| **C：BI 智库** | 开发者 C / 统帅 | `l3_node/skills/bi/`、`l3_node/mcp_tools/bi/` | `feat/bi-skill` |
 
 **合并顺序**：A、B 可任意顺序合并；C 依赖 A、B 的 MCP 注册与路由，建议 A、B 合并后再合并 C，或 C 用 Mock 先行开发。
 
@@ -101,7 +101,7 @@
 > **【代号：收割者 MCP】**
 > 我们正在并行开发。你的任务是实现一个纯粹的网页/后台数据抓取工具，并注册为 MCP。
 >
-> 1. **创建文件**：在 `l3_node/mcp_tools/` 下新建 `tool_web_scraper.py`。绝对不要修改其他文件。
+> 1. **创建文件**：在 `l3_node/mcp_tools/bi/` 下新建 `tool_web_scraper.py`。绝对不要修改其他文件。
 > 2. **核心功能**：使用 requests/BeautifulSoup 或 Playwright 编写一个通用的抓取函数 `harvest_table_data(url, config)`。
 > 3. **落地存储**：将抓取到的数据以 CSV 或 JSON 格式统一存入 `client_volumes/bi_data/raw/`（或统帅指定的 `storage.base_path`），文件名格式 `YYYYMMDD.csv`。目录不存在则创建。
 > 4. **MCP 暴露**：在 `tool_web_scraper.py` 内实现可被调用的函数（如 `harvest_table_data(url, output_path, config)`），**不**修改 `mcp_registry.py`。MCP 注册由统帅在组装阶段完成。返回值格式：`{"status": "success", "file_path": "client_volumes/bi_data/raw/20260316.csv"}` 或 `{"status": "error", "error": "..."}`。
@@ -119,7 +119,7 @@
 > **【代号：广播者 MCP】**
 > 我们正在并行开发。你的任务是实现两个纯粹的通知发送工具，并注册为 MCP。
 >
-> 1. **创建文件**：在 `l3_node/mcp_tools/` 下新建 `tool_broadcaster.py`。绝对不要修改其他文件。
+> 1. **创建文件**：在 `l3_node/mcp_tools/bi/` 下新建 `tool_lark_notifier.py`、`tool_email_sender.py`。绝对不要修改其他文件。
 > 2. **飞书功能**：编写 `send_lark_markdown(webhook_url, title, markdown_content)`，通过 HTTP POST 请求飞书机器人的 Webhook。实现为 `mcp:atom_lark_notifier` 的底层函数（注册由统帅完成）。
 > 3. **邮件功能**：编写 `send_email_with_attachment(smtp_config, to_addrs, subject, body, attachment_paths)`，使用 Python `smtplib` 发送带附件的邮件。实现为 `mcp:atom_email_sender` 的底层函数（注册由统帅完成）。
 > 4. **异常处理**：做好网络超时和报错的 `try-except`，确保 MCP 返回标准的错误 JSON 而不是直接崩溃。
@@ -136,11 +136,11 @@
 > **【代号：战略脑 Skill】**
 > 我们正在并行开发。你的任务是编写一个独立的 BI 分析技能。底层的抓取和发送 MCP 由其他同事开发，你可以假设 `mcp:atom_web_scraper` 和 `mcp:atom_lark_notifier` 已经存在。
 >
-> 1. **创建隔离目录**：在 `l3_node/skills/` 下新建一个独立目录 `bi_daily_report/`，里面包含 `main_skill.py`。
+> 1. **创建隔离目录**：在 `l3_node/skills/bi/` 下新建 `bi_daily_report/`，里面包含 `main_skill.py`。
 > 2. **数据对比引擎**：编写纯 Python 逻辑，读取 `client_volumes/bi_data/raw/`（或配置的 `storage.base_path`）下的今日和昨日 CSV 文件，计算出同环比、转化率等核心 `metrics` 字典。
 > 3. **LLM 洞察引擎**：组装极其专业的商业分析 System Prompt（要求输出 📊核心盘面、🔍深度归因、💡行动建议的 Markdown）。把算好的 `metrics` 喂给大模型获取分析战报。
 > 4. **技能串联编排**：编写主函数 `run_bi_daily_report()`，按顺序执行：读数据 -> 算指标 -> 调 LLM 生成战报 -> 调用 `mcp:atom_lark_notifier` 推送。
-> 5. **心跳挂载**：在 `l3_node/bi_scheduler.py` 中（新建此文件），引入 APScheduler，将 `run_bi_daily_report` 设置为每天早上 8:00 定时执行的任务。
+> 5. **心跳挂载**：在 `l3_node/skills/bi/scheduler.py` 中，引入 APScheduler，将 `run_bi_daily_report` 设置为每天早上 8:00 定时执行的任务。
 >
 > **Mock 策略**：若 MCP 尚未就绪，可在本地伪造 `client_volumes/bi_data/raw/` 下的 CSV，以及 Mock `mcp_registry.invoke` 的返回值（严格按契约 JSON 格式），直接调测 LLM Prompt 与编排逻辑。
 
@@ -200,9 +200,9 @@ run_bi_daily_report()
 
 | 步骤 | 说明 |
 |------|------|
-| **1. MCP 路由** | 在 `mcp_registry.py` 的 `invoke()` 中，为 `atom_web_scraper`、`atom_lark_notifier`、`atom_email_sender` 添加分支，路由到 `l3_node/mcp_tools/` 下对应函数 |
+| **1. MCP 路由** | 在 `mcp_registry.py` 的 `invoke()` 中，为 `atom_web_scraper`、`atom_lark_notifier`、`atom_email_sender` 添加分支，路由到 `l3_node/mcp_tools/bi/` 下对应函数 |
 | **2. 工具注册** | 在 `L3_LOCAL_MCP_TOOLS` 中追加三个工具的 id、desc、params |
-| **3. 调度启动** | 在 L3 主进程启动逻辑中，`import bi_scheduler` 以注册定时任务 |
+| **3. 调度启动** | 在 L3 主进程启动逻辑中，`from l3_node.skills.bi.scheduler import register_bi_daily_report_job` 以注册定时任务 |
 | **4. 路径统一** | 统一使用 `client_volumes/bi_data/raw/`，在 `BiReportConfig.storage.base_path` 或常量中指定 |
 
 **注意**：A、B 开发者**禁止**修改 `mcp_registry.py`，以避免与 HR 逻辑冲突；路由与注册由统帅在组装阶段完成。

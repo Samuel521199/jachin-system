@@ -48,6 +48,23 @@ data_source:
       wait_after_query_ms: 5000                      # 无遮罩时的固定等待毫秒，默认 5000
       wait_for_data_timeout: 30                      # 等待数据就绪的最大秒数，默认 30
 
+# ========== 调度配置 ==========
+# enabled: false 时禁用定时任务，仅支持手动触发
+# 模式一：cron — 每天固定时间（UTC+8）
+schedule:
+  enabled: true
+  mode: cron
+  hour: 8
+  minute: 0
+  timezone: Asia/Shanghai
+
+# 模式二：interval — 按间隔执行（二选一）
+# schedule:
+#   enabled: true
+#   mode: interval
+#   minutes: 30    # 每 30 分钟
+#   # 或 hours: 2  # 每 2 小时
+
 # ========== 存储路径 ==========
 # 基准: ~/.jachin/client_volumes/bi_data
 storage:

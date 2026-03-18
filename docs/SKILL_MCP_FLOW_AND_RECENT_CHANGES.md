@@ -8,12 +8,12 @@
 
 ## 一、近期修改摘要
 
-### 1.1 HR 简历透视镜技能 (hr-analyzer)
+### 1.1 HR 简历透视镜技能 (hr-analyzer4)
 
 | 路径 | 说明 |
 |------|------|
-| `skills_repo/hr-analyzer/` | Rust Wasm 源码、plugin.json、main.wasm |
-| `l3_node/skills/wasm_plugins/hr-analyzer/` | 内置版本，与 execute ABI 兼容 |
+| `skills_repo/hr-analyzer4/` | Rust Wasm 源码、plugin.json、main.wasm |
+| `l3_node/skills/wasm_plugins/hr-analyzer4/` | 内置版本，与 execute ABI 兼容 |
 
 **功能**：根据岗位 JD 对候选人简历进行严苛评估，输出 Markdown 报告（综合评分、优劣势、录用建议）。
 
@@ -42,9 +42,8 @@
 
 | 变更 | 说明 |
 |------|------|
-| **技能 ID 统一** | 内置 `hr-analyzer` 统一用 `jpp:com.jachin.hr.analyzer`（L1 发布 id），不再同时展示 `jpp:hr-analyzer`，避免重复。 |
-| **jpp:hr-analyzer 兼容** | `run_tool("jpp:hr-analyzer")` 自动映射到 `jpp:com.jachin.hr.analyzer`。 |
-| **wasm 路径覆盖** | `jpp:com.jachin.hr.analyzer` 优先使用 `l3_node/skills/wasm_plugins/hr-analyzer/main.wasm`，避免 L1 cache 版 `__rust_dealloc` 不兼容。 |
+| **技能 ID 统一** | 内置 `hr-analyzer4` 统一用 `jpp:com.jachin.hr.analyzer4`（L1 发布 id）。 |
+| **wasm 路径** | `jpp:com.jachin.hr.analyzer4` 使用 `l3_node/skills/wasm_plugins/hr-analyzer4/main.wasm`。 |
 | **resume_path / jd_path 注入** | `target_role` 为 `backend_engineer` 时注入 `jd_path`，由 Wasm 通过 MCP 读取，避免 JSON 转义问题。 |
 
 ---
@@ -90,15 +89,15 @@
 
 ```powershell
 # 1. 进入技能目录
-cd skills_repo/hr-analyzer
+cd skills_repo/hr-analyzer4
 
 # 2. 编译 Wasm（Rust）
 cargo build --target wasm32-unknown-unknown --release
-Copy-Item target\wasm32-unknown-unknown\release\hr_analyzer.wasm main.wasm
+Copy-Item target\wasm32-unknown-unknown\release\hr_analyzer4.wasm main.wasm
 
 # 3. 打包
 jachin pack
-# 输出: dist/com.jachin.hr.analyzer_v1.0.0.zip
+# 输出: dist/com.jachin.hr.analyzer4_v1.0.0.zip
 
 # 4. 发布
 jachin publish --visibility PUBLIC --price 0   # 完整上传
@@ -108,7 +107,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 ### 2.3 jachin pack 校验
 
 - `plugin.json` 必含：`id`、`name`、`description`、`version`
-- `id` 格式：反向域名，如 `com.jachin.hr.analyzer`
+- `id` 格式：反向域名，如 `com.jachin.hr.analyzer4`
 - Skill 类型需存在 `entry`（默认 `main.wasm`）
 
 ### 2.4 jachin publish 行为
@@ -186,7 +185,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | `~/.jachin/inventory/l3_mcps/` | L2 从 L1 同步的 L3_LOCAL MCP |
 | `~/.jachin/l3_skill_cache/` | L3 从 L2 下载的技能 |
 | `~/.jachin/l3_mcp_cache/` | L3 从 L2 拉取的 MCP（mcp_sync 同步，mcp_registry 动态加载） |
-| `l3_node/skills/wasm_plugins/` | 内置技能（如 hr-analyzer） |
+| `l3_node/skills/wasm_plugins/` | 内置技能（如 hr-analyzer4） |
 
 ---
 
@@ -261,7 +260,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | `core/api/routes/v2_inventory.py` | L2 技能清单与下载 |
 | `tools/jachin-cli/src/jachin_cli/commands/pack.py` | jachin pack |
 | `tools/jachin-cli/src/jachin_cli/commands/publish.py` | jachin publish |
-| `skills_repo/hr-analyzer/` | HR 简历透视镜源码 |
+| `skills_repo/hr-analyzer4/` | HR 简历透视镜源码 |
 | `config/local-hr-fs/config.json` | MCP local-hr-fs 配置 |
 | `config/hr_jds/` | JD 配置目录 |
 
