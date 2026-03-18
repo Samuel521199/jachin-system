@@ -2,7 +2,12 @@
 # 复制为 bi_daily_report.yaml 并填入实际值
 # 设计规范: docs/bi_daily_report/03_SKILL_DESIGN.md
 
-# ========== 数据源 ==========
+# ========== 数据收集 ==========
+# skip_collect: true（默认）时跳过 Step A，直接使用 DuckDB 已有数据（需先运行 run_bi_scraper_spa + import_raw_to_duckdb）
+# skip_collect: false 时调用 atom_web_scraper 抓取，需配置 data_source
+skip_collect: true
+
+# ========== 数据源（仅当 skip_collect=false 时生效）==========
 # 模式一：API 接口（直接请求 JSON）
 # data_source:
 #   url: "https://your-backend.com/api/daily-report"

@@ -1,0 +1,22 @@
+# BI 核心指标查询配置（示例）
+# 复制为 bi_metrics.yaml 并按需修改
+# 插件架构：数据源(duckdb)、输出器(console/markdown) 可扩展
+
+data_source: duckdb
+
+metrics:
+  - key: dau
+    table: daily_ops_summary
+    column_candidates: ["日活(DAU)", "日活", "DAU"]
+    compare_table: daily_ops_compare
+    compare_column_candidates: ["日活(DAU)", "日活", "DAU"]
+
+  - key: dnu_per_device
+    formula: "dnu / new_devices if new_devices else dnu"
+
+output:
+  plugin: console
+  console:
+    layout:
+      - - { key: dau, label: "DAU", compare: dau_pct, format: ".0f" }
+        - { key: dnu, label: "DNU", compare: dnu_pct, format: ".0f" }

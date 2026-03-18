@@ -44,7 +44,8 @@ def send_lark_markdown(
 
 
 if __name__ == "__main__":
-    WEBHOOK_URL = "https://open.larksuite.com/open-apis/bot/v2/hook/18d26de9-8b28-4327-8ed2-2d4ed3b30513"
+    # 与 config/bi_daily_report.yaml 保持一致，控制变量
+    WEBHOOK_URL = "https://open.larksuite.com/open-apis/bot/v2/hook/bdb86a38-6ce7-4bb3-ae42-3f6c0f7535ac"
 
     SAMPLE_MD = """# 📊 每日 BI 深度分析战报 — Lark 通道测试
 

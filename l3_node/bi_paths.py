@@ -29,7 +29,18 @@ def get_bi_metrics_dir() -> Path:
     return get_bi_data_root() / "metrics"
 
 
+def get_bi_duckdb_dir() -> Path:
+    """DuckDB 文件所在目录 (~/.jachin/client_volumes/bi_data/duckdb)"""
+    return get_bi_data_root() / "duckdb"
+
+
+def get_bi_duckdb_path() -> Path:
+    """DuckDB 文件路径 (~/.jachin/client_volumes/bi_data/duckdb/bi.duckdb)"""
+    return get_bi_duckdb_dir() / "bi.duckdb"
+
+
 def ensure_bi_dirs() -> None:
     """确保 BI 数据目录存在"""
     get_bi_raw_dir().mkdir(parents=True, exist_ok=True)
     get_bi_metrics_dir().mkdir(parents=True, exist_ok=True)
+    get_bi_duckdb_dir().mkdir(parents=True, exist_ok=True)
