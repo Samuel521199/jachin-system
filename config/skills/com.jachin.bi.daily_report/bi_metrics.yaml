@@ -1,6 +1,6 @@
 # BI 核心指标查询配置
-# 插件架构：数据源、指标、输出器均可扩展
-# 环比：与上一日/周/月对比，计算 (当前-上期)/上期*100%
+# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# 路径: config/skills/com.jachin.bi.daily_report/
 # 文档: docs/bi_daily_report/06_DATA_STORE_D.md
 
 data_source: duckdb

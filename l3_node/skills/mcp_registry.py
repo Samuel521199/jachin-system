@@ -65,8 +65,8 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:atom_lark_notifier",
         "label": "mcp:atom_lark_notifier",
-        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url、markdown_content、title，发送 Markdown 消息。",
-        "params": ["webhook_url", "markdown_content", "title"],
+        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title，发送 Markdown 消息。",
+        "params": ["webhook_url", "markdown_content", "title", "chat_id"],
     },
     {
         "id": "mcp:atom_email_sender",
@@ -353,6 +353,7 @@ def _invoke_atom_lark_notifier_local(
     webhook_url: str = "",
     markdown_content: str = "",
     title: str = "",
+    chat_id: str = "",
 ) -> str:
     """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.bi.tool_lark_notifier。"""
     try:
@@ -361,6 +362,7 @@ def _invoke_atom_lark_notifier_local(
             webhook_url=webhook_url or "",
             markdown_content=markdown_content or "",
             title=title or None,
+            chat_id=chat_id or None,
         )
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
@@ -848,6 +850,7 @@ class MCPToolRegistry:
                     webhook_url=arguments.get("webhook_url", ""),
                     markdown_content=arguments.get("markdown_content", ""),
                     title=arguments.get("title", ""),
+                    chat_id=arguments.get("chat_id", ""),
                 )
             if raw_name == "atom_email_sender":
                 return await asyncio.to_thread(

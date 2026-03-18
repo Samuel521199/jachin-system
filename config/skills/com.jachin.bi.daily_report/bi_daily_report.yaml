@@ -2,6 +2,20 @@
 # 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
 # 实际配置: ~/.jachin/config/skills/com.jachin.bi.daily_report/
 
+skip_collect: true
+
+# 是否运行数据提纯，生成 Lark 多维表格可导入的 CSV（~/.jachin/client_volumes/bi_data/output/）
+run_refiner: false
+
+# ========== 调度配置 ==========
+schedule:
+  enabled: true
+  mode: cron
+  hour: 8
+  minute: 0
+  timezone: Asia/Shanghai
+
+# ========== 数据源 ==========
 data_source:
   url: "${BI_DATA_URL}"
   extract_rules: {}
@@ -9,9 +23,44 @@ data_source:
 
 storage:
   base_path: "client_volumes/bi_data"
+  # 提纯 CSV 输出目录，供 Lark 多维表格导入
+  # 留空或未配置：默认 ~/.jachin/client_volumes/bi_data/output
+  # 可填绝对路径（如 /data/bi_output 或 D:\\bi_output），或相对 ~/.jachin 的路径
+  refiner_output_path: ""
+
+# Lark 多维表格同步（与 Lark 侧栏结构一一对应）
+# app_id/app_secret 优先；未配置时从 .env 的 BI_LARK_APP_ID/LARK_APP_ID 读取；应用需 base:record 权限
+# ensure_columns: false 表示不自动建列（表已在 Lark 中预建好，避免 Forbidden）
+lark_bitable:
+  enabled: true
+  lark_use_feishu: true   # BI助手为飞书中国版，使用 open.feishu.cn
+  app_id: "cli_a930e0054ecf5ed1"
+  app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
+  app_token: "HCvubvsubak2WPs2GbClYq68gjh"
+  ensure_columns: false
+  replace_table: false   # 不先清空表，直接追加（避免 delete 权限 Forbidden）
+  # CSV 文件 -> table_id（在 Lark 中打开子表，URL ?table=tblXXX 即 table_id）
+  # 表名与 Lark 多维表格侧栏一一对应，填对应子表的 table_id
+  tables:
+    # === 用户登录活跃情况 ===
+    "01_用户活跃_增幅表.csv": "tblG2nF2Uu4vmtnU"      # Lark 表名: DAU和DNU
+    "03a_用户活跃_DAU渠道来源.csv": "tblXTientR8Pkd5x"  # Lark 表名: DAU渠道来源
+    "02_用户活跃_日期数量表.csv": "tblflaMe457ML81v"   # Lark 表名: 周统计DAU和DNU数量
+    "03b_用户活跃_DNU渠道来源.csv": "tblSXaeym4v83wH2"  # Lark 表名: DNU渠道来源
+    # === 平台留存情况 ===
+    "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留表
+    "06_留存_周环比表.csv": "tblMZ2XUYURKID3r"        # Lark 表名: 周环比
+    "12_留存_月环比表.csv": "tblYMxDilOzhkT6K"        # Lark 表名: 月环比
+    # === 平台消耗情况 ===
+    "08_消耗_每日表.csv": "tbl094S7AAZ0ZcoN"          # Lark 表名: 每日金币产出、消耗
+    "09_消耗_按游戏表.csv": "tblasHRF6rV4VQRu"        # Lark 表名: 每个游戏的产出、消耗
+    "10_充值_付费人数按SKU.csv": "tblY7p1sHL6iRT4c"   # Lark 表名: 付费人数表格（不同充值金人数）
+    "11_充值_付费金额按SKU.csv": "tblk1u7w34guUa8k"   # Lark 表名: 付费金额表格（不同充值金金额）
 
 distribution:
   lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+  # 机器人所在群 chat_id（无 Webhook 时用 IM API；可在 .env 设 BI_LARK_CHAT_ID）
+  lark_chat_id: "${BI_LARK_CHAT_ID}"
   email:
     smtp_host: "smtp.qq.com"
     smtp_port: 587

@@ -8,7 +8,7 @@ Usage: python scripts/query_bi_metrics.py [--date YYYY-MM-DD] [--no-compare] [--
   --compare-period: 对比周期，day(上一日，默认)|week(一周前)|month(一月前)
   --format: 输出格式，console(默认) 或 markdown
 
-Config: config/bi_metrics.yaml
+Config: config/skills/com.jachin.bi.daily_report/bi_metrics.yaml（规范 075）
 """
 from __future__ import annotations
 

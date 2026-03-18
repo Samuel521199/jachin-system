@@ -18,6 +18,10 @@
 | [06_DATA_STORE_D.md](./06_DATA_STORE_D.md) | **DuckDB 数据层设计** — ingest、schema、查询 |
 | [07_BI_METRICS_PLUGINS.md](./07_BI_METRICS_PLUGINS.md) | **指标插件开发指南** — DataSource、Outputter |
 | [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md) | **MCP 与 Skill 目录布局** — 归属规范、新增文件约定 |
+| [09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md](./09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md) | **run_bi_scraper_spa 归属分析** — spa_collector 集成、collect_mode |
+| [10_BI_PLUGIN_TEST_GUIDE.md](./10_BI_PLUGIN_TEST_GUIDE.md) | **BI 日报插件完整测试指引** — 抓取、提纯、Lark 同步、常见问题 |
+| [11_LARK_TABLE_SCHEMA.md](./11_LARK_TABLE_SCHEMA.md) | **Lark 多维表格字段结构规范** — 各子表字段名、类型、常见错误速查 |
+| [12_PRODUCT_REQUIREMENTS.md](./12_PRODUCT_REQUIREMENTS.md) | **BI 数据日报产品需求** — 日报接收人、用户活跃、留存、消耗、充值需求 |
 
 ---
 

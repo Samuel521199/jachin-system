@@ -31,9 +31,10 @@ def _load_schedule_config() -> dict[str, Any]:
 
     jachin_root = Path.home() / ".jachin"
     project_root = get_app_root()
+    # 规范 075：优先 ~/.jachin/config/skills/，开发期回退项目 config/skills/
     candidates = [
-        project_root / "config" / "bi_daily_report.yaml",
         jachin_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_daily_report.yaml",
+        project_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_daily_report.yaml",
     ]
     for path in candidates:
         if path.exists():

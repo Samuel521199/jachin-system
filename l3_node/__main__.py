@@ -57,7 +57,7 @@ try:
     from dotenv import load_dotenv
     _env_loaded = False
     if getattr(sys, "frozen", False):
-        _env_candidates = [Path.cwd() / ".env"]
+        _env_candidates = [Path.cwd() / ".env", Path.home() / ".jachin" / ".env"]
     else:
         _pr = Path(_root) / ".env"
         _pc = Path.cwd() / ".env"
@@ -79,11 +79,19 @@ try:
             _p = _cwd / ".env"
             if _p.exists():
                 load_dotenv(_p, encoding="utf-8")
+                _env_loaded = True
                 trace(".env loaded from %s (cwd search)", _p)
                 break
             _cwd = _cwd.parent if _cwd.parent != _cwd else _cwd
             if not _cwd or str(_cwd) == "/":
                 break
+    # 兜底：~/.jachin/.env（桌面端打包/便携运行时，项目 .env 可能不可用）
+    if not _env_loaded:
+        _home_env = Path.home() / ".jachin" / ".env"
+        if _home_env.exists():
+            load_dotenv(_home_env, encoding="utf-8")
+            _env_loaded = True
+            trace(".env loaded from %s (home fallback)", _home_env)
     trace("dotenv done, env_loaded=%s", _env_loaded)
 except ImportError as e:
     trace("dotenv ImportError: %s", e)

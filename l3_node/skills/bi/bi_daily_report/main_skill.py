@@ -1,8 +1,78 @@
 """
-BI 每日战报 — 主技能逻辑
+BI 每日战报 — 主技能逻辑（L3 Agent 的 MCP 编排层）
 
-流程: 收集(A) -> 对比提炼(B) -> LLM洞察(C) -> 分发(D)
+本 Skill 负责编排 BI 战报全流程，调度以下 MCP 与模块：
+- mcp:atom_web_scraper — BI 页面抓取
+- mcp:atom_lark_notifier — 飞书消息推送
+- mcp:atom_email_sender — 邮件发送
+- run_refiner + sync_refiner_to_lark — 数据提纯并同步到 Lark 多维表格（非 MCP，本地调用）
+
+流程: 收集(A) -> 提纯(A.5) -> 对比提炼(B) -> LLM洞察(C) -> 分发(D)
 设计规范: docs/bi_daily_report/03_SKILL_DESIGN.md
+
+---
+
+## L3 Agent MCP 调用指南
+
+当 L3 Agent 需要执行 BI 战报或相关操作时，按以下契约调用：
+
+### 1. 抓取 BI 数据 (Step A)
+MCP: `mcp:atom_web_scraper`
+输入 JSON:
+```json
+{
+  "url": "BI 后台入口 URL",
+  "output_path": "~/.jachin/client_volumes/bi_data/raw/{slug}.csv",
+  "config": {
+    "output_format": "csv",
+    "timeout": 30,
+    "cdp_url": "http://127.0.0.1:9222",
+    "automation": {"start_url": "...", "actions": [...], "filters": {"date_range": ["YYYY-MM-DD", "YYYY-MM-DD"]}}
+  }
+}
+```
+输出: `{"status": "success", "file_path": "..."}` 或 `{"status": "error", "error": "..."}`
+
+### 2. 数据提纯 (Step A.5，非 MCP)
+直接调用 `l3_node.mcp_tools.bi.report_refiner.run_refiner()`，输出 11 个 CSV 到
+`~/.jachin/client_volumes/bi_data/output/`。需先执行 `import_raw_to_duckdb` 将 raw CSV 导入 DuckDB。
+
+### 3. Lark 多维表同步
+由 `sync_refiner_to_lark(written_paths, lark_bitable_config)` 内部调用
+`atom_lark_bitable_sync.sync_csv_to_bitable`，需配置 `bi_daily_report.yaml` 的 `lark_bitable.tables`。
+
+### 4. 飞书战报推送 (Step D)
+MCP: `mcp:atom_lark_notifier`
+输入 JSON:
+```json
+{
+  "webhook_url": "飞书 Webhook URL",
+  "markdown_content": "战报 Markdown 内容",
+  "title": "每日 BI 深度分析战报 — YYYY-MM-DD"
+}
+```
+
+### 5. 邮件推送 (Step D)
+MCP: `mcp:atom_email_sender`
+输入 JSON:
+```json
+{
+  "smtp_config": {"host", "port", "user", "password"},
+  "to_addrs": ["email@example.com"],
+  "subject": "每日 BI 深度分析战报 — YYYY-MM-DD",
+  "body": "HTML 正文",
+  "attachment_paths": ["path/to/01_xxx.csv", ...]
+}
+```
+
+### 一键执行
+调用 `run_bi_daily_report(config)` 将按配置自动执行上述步骤。
+
+### Lark 同步失败排查（供 Agent 参考）
+- `FieldNameNotFound`：CSV 列名与 Lark 表列名不一致，需调整 report_refiner 输出列
+- `DatetimeFieldConvFail`：日期列需输出毫秒时间戳，非 "YYYY-MM-DD" 字符串
+- `TextFieldConvFail`：纯数字值被误转为 float，文本列需保留字符串类型
+- 同步错误会写入 `result["lark_bitable_sync_errors"]`，Agent 可根据错误类型决定重试或人工介入
 """
 from __future__ import annotations
 
@@ -58,14 +128,13 @@ def _load_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     if config and isinstance(config, dict):
         return _resolve_config_values(config)
 
-    # 配置路径优先级：项目 config/ > ~/.jachin/config/skills/...
-    # 使用 get_app_root() 确保打包/不同运行目录下路径正确
+    # 规范 075：优先 ~/.jachin/config/skills/，开发期回退项目 config/skills/
     from l3_node.paths import get_app_root
     jachin_root = Path.home() / ".jachin"
     project_root = get_app_root()
     candidates = [
-        project_root / "config" / "bi_daily_report.yaml",
         jachin_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_daily_report.yaml",
+        project_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_daily_report.yaml",
     ]
     for path in candidates:
         if path.exists():
@@ -101,63 +170,135 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         "lark_ok": False,
         "email_ok": False,
         "error": "",
+        "lark_bitable_sync_errors": [],  # Lark 多维表同步失败明细，供 agent 排查
     }
 
     # Step A: 收集（可选）
+    # collect_mode: single=单表(atom_web_scraper) | full_spa=批量(spa_collector)
     skip_collect = cfg.get("skip_collect", True)
+    collect_mode = (cfg.get("collect_mode") or "single").strip().lower()
     data_source = cfg.get("data_source") or {}
     raw_file_paths: list[str] = []
 
-    if not skip_collect and data_source.get("url"):
-        from l3_node.skills.mcp_registry import get_mcp_registry
-        from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
-        from l3_node.mcp_tools.bi.data_store import ingest_csv
+    if not skip_collect:
+        if collect_mode == "full_spa":
+            # 批量抓取：调用 spa_collector（需 Chrome 已登录）
+            try:
+                from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect
+                from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
 
-        ensure_bi_dirs()
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        today = datetime.now().strftime("%Y-%m-%d")
-        slug = data_source.get("slug", "daily_ops_summary")
-        output_path = str(get_bi_raw_dir() / f"{slug}.csv")
+                full_spa_cfg = cfg.get("full_spa") or {}
+                base_url = full_spa_cfg.get("base_url") or data_source.get("url") or "https://bi-admin-web.heronpro.xin/#/layout/person"
+                cdp_url = full_spa_cfg.get("cdp_url") or data_source.get("cdp_url") or "http://127.0.0.1:9222"
+                slugs = full_spa_cfg.get("slugs") or []
 
-        automation = dict(data_source.get("automation") or {})
-        filters = automation.get("filters") or {}
-        filters["date_range"] = [yesterday, today]
-        automation["filters"] = filters
-
-        scraper_config = {
-            "output_format": data_source.get("output_format", "csv"),
-            "timeout": int(data_source.get("timeout", 30)),
-            "extract_rules": data_source.get("extract_rules"),
-            "headers": data_source.get("headers"),
-            "cdp_url": data_source.get("cdp_url", "http://127.0.0.1:9222"),
-            "automation": automation,
-        }
-
-        inp = json.dumps({
-            "url": data_source["url"],
-            "output_path": output_path,
-            "config": scraper_config,
-        }, ensure_ascii=False)
-
-        try:
-            registry = get_mcp_registry()
-            obs = await registry.invoke("mcp:atom_web_scraper", inp, timeout=90.0)
-            scraped = json.loads(obs) if (obs or "").strip().startswith("{") else {}
-            if scraped.get("status") != "success":
+                ok, fail, failed = await asyncio.to_thread(
+                    run_full_spa_collect,
+                    slugs=slugs if slugs else None,
+                    base_url=base_url,
+                    cdp_url=cdp_url,
+                    use_discover=False,
+                    auto_ingest=True,
+                    raw_dir=get_bi_raw_dir(),
+                )
+                if fail > 0 and ok == 0:
+                    result["stage"] = "collect"
+                    result["error"] = f"full_spa 全部失败，failed={failed[:5]}"
+                    return result
+                raw_dir = get_bi_raw_dir()
+                if slugs:
+                    successful = [s for s in slugs if s not in failed]
+                    raw_file_paths = [str(raw_dir / f"{s}.csv") for s in successful]
+                else:
+                    raw_file_paths = [str(p) for p in sorted(raw_dir.glob("*.csv"))]
+            except Exception as e:
+                logger.exception("[BI Daily Report] Step A full_spa 异常: %s", e)
                 result["stage"] = "collect"
-                result["error"] = scraped.get("error", obs or "抓取失败")
+                result["error"] = str(e)
+                return result
+        elif data_source.get("url"):
+            # 单表抓取：调用 atom_web_scraper
+            from l3_node.skills.mcp_registry import get_mcp_registry
+            from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
+            from l3_node.mcp_tools.bi.data_store import ingest_csv
+
+            ensure_bi_dirs()
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            today = datetime.now().strftime("%Y-%m-%d")
+            slug = data_source.get("slug", "daily_ops_summary")
+            output_path = str(get_bi_raw_dir() / f"{slug}.csv")
+
+            automation = dict(data_source.get("automation") or {})
+            filters = automation.get("filters") or {}
+            filters["date_range"] = [yesterday, today]
+            automation["filters"] = filters
+
+            scraper_config = {
+                "output_format": data_source.get("output_format", "csv"),
+                "timeout": int(data_source.get("timeout", 30)),
+                "extract_rules": data_source.get("extract_rules"),
+                "headers": data_source.get("headers"),
+                "cdp_url": data_source.get("cdp_url", "http://127.0.0.1:9222"),
+                "automation": automation,
+            }
+
+            inp = json.dumps({
+                "url": data_source["url"],
+                "output_path": output_path,
+                "config": scraper_config,
+            }, ensure_ascii=False)
+
+            try:
+                registry = get_mcp_registry()
+                obs = await registry.invoke("mcp:atom_web_scraper", inp, timeout=90.0)
+                scraped = json.loads(obs) if (obs or "").strip().startswith("{") else {}
+                if scraped.get("status") != "success":
+                    result["stage"] = "collect"
+                    result["error"] = scraped.get("error", obs or "抓取失败")
+                    return result
+
+                fp = scraped.get("file_path", output_path)
+                raw_file_paths.append(fp)
+                ingest_r = ingest_csv(fp, slug)
+                if ingest_r.get("status") != "success":
+                    logger.warning("[BI Daily Report] ingest_csv 失败: %s", ingest_r.get("error"))
+            except Exception as e:
+                logger.exception("[BI Daily Report] Step A 异常: %s", e)
+                result["stage"] = "collect"
+                result["error"] = str(e)
                 return result
 
-            fp = scraped.get("file_path", output_path)
-            raw_file_paths.append(fp)
-            ingest_r = ingest_csv(fp, slug)
-            if ingest_r.get("status") != "success":
-                logger.warning("[BI Daily Report] ingest_csv 失败: %s", ingest_r.get("error"))
+    # Step A.5: 数据提纯（可选）— 输出 Lark 多维表格可导入的 CSV
+    refiner_paths: list[str] = []
+    if cfg.get("run_refiner", False):
+        try:
+            from l3_node.mcp_tools.bi.report_refiner import run_refiner, sync_refiner_to_lark
+            from l3_node.mcp_tools.bi.paths import get_bi_output_dir
+
+            storage = cfg.get("storage") or {}
+            output_override = storage.get("refiner_output_path") or ""
+            output_dir = get_bi_output_dir(output_override)
+
+            date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            written, errs = run_refiner(date_str=date_str, output_dir=output_dir)
+            refiner_paths = [str(p) for p in written]
+            if errs:
+                logger.warning("[BI Daily Report] Refiner 部分失败: %s", errs)
+
+            # 同步到 Lark 多维表格（若配置了 lark_bitable.enabled）
+            lark_bitable = cfg.get("lark_bitable") or {}
+            if lark_bitable.get("enabled") and written:
+                sync_ok, sync_errs = sync_refiner_to_lark(
+                    [Path(p) for p in refiner_paths],
+                    lark_bitable,
+                )
+                if sync_errs:
+                    result["lark_bitable_sync_errors"] = sync_errs
+                    logger.warning("[BI Daily Report] Lark 多维表同步部分失败: %s", sync_errs)
+                elif sync_ok:
+                    logger.info("[BI Daily Report] Lark 多维表已同步 %d 个表", sync_ok)
         except Exception as e:
-            logger.exception("[BI Daily Report] Step A 异常: %s", e)
-            result["stage"] = "collect"
-            result["error"] = str(e)
-            return result
+            logger.warning("[BI Daily Report] Refiner 异常: %s", e)
 
     # Step B: 对比提炼（bi_metrics 引擎）
     try:
@@ -168,7 +309,17 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         config_path = bi_metrics_config if isinstance(bi_metrics_config, (str, Path)) else None
         if not config_path:
             from l3_node.paths import get_app_root
-            config_path = get_app_root() / "config" / "bi_metrics.yaml"
+            project_root = get_app_root()
+            jachin_root = Path.home() / ".jachin"
+            for p in [
+                jachin_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_metrics.yaml",
+                project_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_metrics.yaml",
+            ]:
+                if p.exists():
+                    config_path = p
+                    break
+            if not config_path:
+                config_path = project_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_metrics.yaml"
 
         date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         metrics_data, _ = run_bi_metrics(
@@ -231,16 +382,21 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     # Step D: 分发
     dist = cfg.get("distribution") or {}
     lark_url = (dist.get("lark_webhook_url") or "").strip() or (os.environ.get("BI_LARK_WEBHOOK_URL") or "").strip()
+    lark_chat_id = (dist.get("lark_chat_id") or "").strip() or (os.environ.get("BI_LARK_CHAT_ID") or "").strip()
+    # 有效 Webhook：非空且非占位符
+    has_webhook = lark_url and not lark_url.startswith("${")
+    has_chat_id = bool(lark_chat_id)
     email_cfg = dist.get("email") or {}
 
-    if lark_url and report_md:
+    if (has_webhook or has_chat_id) and report_md:
         try:
             from l3_node.skills.mcp_registry import get_mcp_registry
             registry = get_mcp_registry()
             inp = json.dumps({
-                "webhook_url": lark_url,
+                "webhook_url": lark_url or "",
                 "markdown_content": report_md,
                 "title": f"每日 BI 深度分析战报 — {datetime.now().strftime('%Y-%m-%d')}",
+                "chat_id": lark_chat_id or "",
             }, ensure_ascii=False)
             obs = await registry.invoke("mcp:atom_lark_notifier", inp, timeout=15.0)
             lark_res = json.loads(obs) if (obs or "").strip().startswith("{") else {}
@@ -264,12 +420,13 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 "password": email_cfg.get("smtp_password") or os.environ.get("BI_SMTP_PASSWORD", ""),
             }
             body_html = _markdown_to_html(report_md)
+            attachments = refiner_paths[:11] if refiner_paths else raw_file_paths[:3]
             inp = json.dumps({
                 "smtp_config": smtp_config,
                 "to_addrs": to_addrs,
                 "subject": f"每日 BI 深度分析战报 — {datetime.now().strftime('%Y-%m-%d')}",
                 "body": body_html,
-                "attachment_paths": raw_file_paths[:3],
+                "attachment_paths": attachments,
             }, ensure_ascii=False)
             registry = get_mcp_registry()
             obs = await registry.invoke("mcp:atom_email_sender", inp, timeout=30.0)
@@ -283,6 +440,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     result["success"] = True
     result["stage"] = "done"
     result["report_sent"] = result["lark_ok"] or result["email_ok"]
+    result["refiner_csv_paths"] = refiner_paths
     return result
 
 

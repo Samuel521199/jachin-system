@@ -53,10 +53,16 @@ def _safe_float(v: Any) -> float:
 
 
 def _load_config(config_path: str | Path | None = None) -> dict[str, Any]:
-    """加载配置，支持项目 config/ 或环境变量"""
+    """加载配置。规范 075：优先 config/skills/com.jachin.bi.daily_report/bi_metrics.yaml"""
     if config_path is None:
         root = Path(__file__).resolve().parent.parent.parent.parent.parent
-        config_path = root / "config" / "bi_metrics.yaml"
+        jachin_root = Path.home() / ".jachin"
+        candidates = [
+            jachin_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_metrics.yaml",
+            root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_metrics.yaml",
+            root / "config" / "mcps" / "atom_bi_metrics" / "bi_metrics.yaml",
+        ]
+        config_path = next((p for p in candidates if p.exists()), candidates[1])
     path = Path(config_path)
     if not path.exists():
         return {"error": f"配置文件不存在: {path}"}

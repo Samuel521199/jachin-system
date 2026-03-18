@@ -1,6 +1,6 @@
 # BI 核心指标查询配置（示例）
 # 复制为 bi_metrics.yaml 并按需修改
-# 插件架构：数据源(duckdb)、输出器(console/markdown) 可扩展
+# 规范: config/skills/com.jachin.bi.daily_report/
 
 data_source: duckdb
 

@@ -36,6 +36,7 @@ l3_node/mcp_tools/bi/
 │       ├── data_source_duckdb.py
 │       ├── output_console.py
 │       └── output_markdown.py
+├── spa_collector.py         # BI 批量 SPA 抓取（供 scripts + main_skill 复用）
 ├── tool_web_scraper.py      # mcp:atom_web_scraper
 ├── tool_lark_notifier.py    # mcp:atom_lark_notifier
 └── tool_email_sender.py    # mcp:atom_email_sender
@@ -45,6 +46,7 @@ l3_node/mcp_tools/bi/
 
 | 文件 | 职责 | 导入路径 |
 |------|------|----------|
+| `spa_collector.py` | BI 后台批量 SPA 抓取，MENU_ITEMS、run_full_spa_collect | `l3_node.mcp_tools.bi.spa_collector` |
 | `paths.py` | BI 数据目录、DuckDB 路径、ensure_bi_dirs | `l3_node.mcp_tools.bi.paths` |
 | `data_store.py` | CSV 导入、表查询、schema 管理 | `l3_node.mcp_tools.bi.data_store` |
 | `metrics/` | 指标配置加载、插件调度、同环比计算 | `l3_node.mcp_tools.bi.metrics` |
@@ -106,6 +108,7 @@ register_bi_daily_report_job()
 | [06_DATA_STORE_D.md](./06_DATA_STORE_D.md) | DuckDB 数据层设计 |
 | [07_BI_METRICS_PLUGINS.md](./07_BI_METRICS_PLUGINS.md) | 指标插件开发指南 |
 | [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md) | **本文档** — 目录布局与归属规范 |
+| [09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md](./09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md) | run_bi_scraper_spa 归属分析、spa_collector 集成方案 |
 
 ---
 

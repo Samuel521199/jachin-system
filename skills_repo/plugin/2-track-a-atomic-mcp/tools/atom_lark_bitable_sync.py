@@ -29,8 +29,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_APP_TOKEN = "RJgcbE9LtaBPILsnttmlS8iHgbf"
 DEFAULT_TABLE_ID = "tblzQatxI7op9oBp"
 
-# Lark 国际版 API 域名（sg.larksuite.com 对应国际版）
+# Lark 国际版 API 域名；飞书中国版需设置 LARK_USE_FEISHU=1
 LARK_API_BASE = "https://open.larksuite.com/open-apis"
+
+
+def _get_api_base() -> str:
+    """根据 LARK_USE_FEISHU 返回飞书中国版或 Lark 国际版 API 地址"""
+    if os.environ.get("LARK_USE_FEISHU", "").lower() in ("1", "true", "yes"):
+        return "https://open.feishu.cn/open-apis"
+    return LARK_API_BASE
 
 # 确保 l3_node 可导入（plugin 脚本可能从 plugin 目录启动）
 def _ensure_l3_importable() -> None:
@@ -186,8 +193,9 @@ def _list_all_records(
     import requests
     records: list[dict[str, Any]] = []
     page_token = None
+    base = _get_api_base()
     while True:
-        url = f"{LARK_API_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+        url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
         params = {"page_size": 100}
         if page_token:
             params["page_token"] = page_token
@@ -212,10 +220,11 @@ def _list_records_for_job(
 ) -> list[dict[str, Any]]:
     """列出主表中 职位=job_name 的所有记录（用于更新前删除）"""
     import requests
+    base = _get_api_base()
     records: list[dict] = []
     page_token = None
     while True:
-        url = f"{LARK_API_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+        url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
         params = {"page_size": 100}
         if page_token:
             params["page_token"] = page_token
@@ -244,7 +253,8 @@ def _batch_delete_records(
     if not record_ids:
         return True
     import requests
-    url = f"{LARK_API_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete"
+    base = _get_api_base()
+    url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete"
     for i in range(0, len(record_ids), 500):
         chunk = record_ids[i : i + 500]
         payload = {"records": chunk}
@@ -258,6 +268,142 @@ def _batch_delete_records(
         if data.get("code") != 0:
             raise RuntimeError(f"批量删除失败: {data.get('msg', data)}")
     return True
+
+
+def _ensure_bitable_columns_from_csv(
+    token: str,
+    app_token: str,
+    table_id: str,
+    column_names: list[str],
+    sample_row: dict[str, Any] | None = None,
+) -> list[str]:
+    """
+    根据 CSV 列名确保多维表有所需列，不存在则创建。
+    返回创建的新列名列表。
+    """
+    import requests
+    if not column_names:
+        return []
+    # 推断类型：1=文本, 2=数字
+    def _guess_type(col: str, val: Any) -> int:
+        v = val if sample_row is None else (sample_row.get(col) if isinstance(sample_row, dict) else None)
+        if v is not None:
+            if isinstance(v, (int, float)):
+                return 2
+            s = str(v).strip()
+            if s.replace(".", "").replace("-", "").replace("%", "").replace(",", "").isdigit():
+                return 2
+        return 1
+
+    cols_to_ensure = [(c, _guess_type(c, sample_row.get(c) if sample_row else None)) for c in column_names]
+
+    base = _get_api_base()
+    url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"获取列列表失败: {data.get('msg', data)}")
+    existing = {f.get("field_name") for f in data.get("data", {}).get("items", []) if f.get("field_name")}
+
+    created: list[str] = []
+    create_url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+    for col_name, ftype in cols_to_ensure:
+        if col_name in existing:
+            continue
+        payload = {"field_name": col_name, "type": ftype}
+        cre = requests.post(create_url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=payload, timeout=10)
+        cr_data = cre.json()
+        if cr_data.get("code") != 0:
+            raise RuntimeError(f"创建列「{col_name}」失败: {cr_data.get('msg', cr_data)}")
+        created.append(col_name)
+        existing.add(col_name)
+        logger.info("已创建列: %s (type=%s)", col_name, ftype)
+    return created
+
+
+def sync_csv_to_bitable(
+    csv_path: str,
+    app_token: str = "",
+    table_id: str = "",
+    replace_table: bool = True,
+    ensure_columns: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    将 CSV 文件同步到 Lark 多维表格。供 BI 日报等场景使用。
+
+    :param csv_path: CSV 文件路径
+    :param app_token: 多维表 app_token（base ID），空则从 LARK_APP_TOKEN 读取
+    :param table_id: 目标表 ID，必填
+    :param replace_table: 是否先清空表再写入，默认 True
+    :param ensure_columns: 是否根据 CSV 表头自动创建列，默认 True
+    :param dry_run: 仅解析不写入
+    :return: {"success": bool, "count": int, "error": str|None}
+    """
+    import csv as csv_module
+    app_token = app_token or os.environ.get("LARK_APP_TOKEN") or os.environ.get("BI_LARK_APP_TOKEN")
+    table_id = table_id or os.environ.get("LARK_TABLE_ID")
+
+    if not app_token or not table_id:
+        return {"success": False, "count": 0, "error": "app_token 与 table_id 必填，或设置 LARK_APP_TOKEN/LARK_TABLE_ID / BI_LARK_APP_TOKEN"}
+
+    path = Path(csv_path)
+    if not path.exists():
+        return {"success": False, "count": 0, "error": f"CSV 文件不存在: {csv_path}"}
+
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            reader = csv_module.DictReader(f)
+            rows = list(reader)
+        if not rows:
+            return {"success": True, "count": 0, "message": "CSV 无数据行"}
+
+        fieldnames = list(rows[0].keys())
+        if dry_run:
+            return {"success": True, "count": len(rows), "fields_preview": fieldnames, "message": f"[dry_run] 解析到 {len(rows)} 行，未写入"}
+
+        _ensure_dotenv_loaded()
+        token = _get_tenant_access_token()
+
+        if ensure_columns:
+            _ensure_bitable_columns_from_csv(token, app_token, table_id, fieldnames, rows[0] if rows else None)
+
+        import requests
+        if replace_table:
+            existing = _list_all_records(token, app_token, table_id)
+            if existing:
+                ids = [r.get("record_id") for r in existing if r.get("record_id")]
+                _batch_delete_records(token, app_token, table_id, ids)
+                logger.info("已清空表 %s，删除 %d 条", table_id, len(ids))
+
+        base = _get_api_base()
+        url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        record_ids: list[str] = []
+        for row in rows:
+            fields = {}
+            for k, v in row.items():
+                if k not in fieldnames:
+                    continue
+                s = (v or "").strip()
+                if s.replace(".", "").replace("-", "").replace("%", "").replace(",", "").isdigit() or (s and s[-1] == "%" and s[:-1].replace(".", "").replace("-", "").replace(",", "").isdigit()):
+                    try:
+                        fields[k] = float(s.replace("%", "").replace(",", ""))
+                    except ValueError:
+                        fields[k] = s
+                else:
+                    fields[k] = s
+            resp = requests.post(url, headers=headers, json={"fields": fields}, timeout=15)
+            data = resp.json()
+            if resp.status_code != 200 or data.get("code") != 0:
+                return {"success": False, "count": len(record_ids), "error": f"Lark API: {data.get('msg', str(data))}"}
+            rec = data.get("data", {}).get("record", {})
+            record_ids.append(rec.get("record_id", ""))
+
+        return {"success": True, "count": len(record_ids), "record_ids": record_ids}
+    except Exception as e:
+        logger.exception("sync_csv_to_bitable failed")
+        return {"success": False, "count": 0, "error": str(e)}
 
 
 def _append_log_record(

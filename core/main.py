@@ -331,13 +331,13 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(asyncio.shield(cloud_sync_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-    logger.info("Shutting down Jachin Nexus v0.8.35 (Singularity OS)...")
+    logger.info("Shutting down Jachin Nexus v0.8.36 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="0.8.35",
+    version="0.8.36",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码

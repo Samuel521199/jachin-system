@@ -6,7 +6,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-LARK_API_BASE = "https://open.larksuite.com/open-apis"
+LARK_API_BASE_DEFAULT = "https://open.larksuite.com/open-apis"
+FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
+
+
+def get_lark_api_base() -> str:
+    """根据 LARK_USE_FEISHU 返回飞书中国版或 Lark 国际版 API 地址"""
+    if os.environ.get("LARK_USE_FEISHU", "").lower() in ("1", "true", "yes"):
+        return FEISHU_API_BASE
+    return LARK_API_BASE_DEFAULT
+
+
+LARK_API_BASE = "https://open.larksuite.com/open-apis"  # 兼容旧代码，新逻辑用 get_lark_api_base()
 
 
 def _ensure_dotenv_loaded() -> None:
@@ -49,7 +60,7 @@ def get_tenant_access_token() -> str:
     except ImportError:
         raise RuntimeError("请安装 requests: pip install requests")
 
-    url = f"{LARK_API_BASE}/auth/v3/tenant_access_token/internal"
+    url = f"{get_lark_api_base()}/auth/v3/tenant_access_token/internal"
     resp = requests.post(
         url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10
     )

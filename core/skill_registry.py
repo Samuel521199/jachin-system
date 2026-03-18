@@ -286,14 +286,9 @@ def cleanup_builtin_skill_artifacts(item_id: str) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"ok": True, "item_id": item_id, "jd_deleted": False, "registry_cleaned": False}
     proj_root = Path(__file__).resolve().parent.parent
-<<<<<<< HEAD
-    # 1. 删除 config/skills/.../hr_jds/ 下相关 JD 文件（兼容 hr-analyzer2 与 hr_analyzer2 命名）
+    # 1. 删除 config/skills/.../hr_jds/ 下相关 JD 文件（兼容 hr-analyzer4 与 hr_analyzer4 命名）
     from l3_node.jachin_config import get_hr_jds_dir
     jd_dir = get_hr_jds_dir(proj_root)
-=======
-    # 1. 删除 config/hr_jds/ 下相关 JD 文件（兼容 hr-analyzer4 与 hr_analyzer4 命名）
-    jd_dir = proj_root / "config" / "hr_jds"
->>>>>>> v0.8.35
     for name in (f"{item_id}.md", f"{item_id.replace('-', '_')}.md"):
         jd_file = jd_dir / name
         if jd_file.exists():
