@@ -147,14 +147,15 @@ def _resolve_registry_key(skill_id: str) -> str:
 
 
 def _sync_jd_template_to_file(skill_id: str, jd_content: str) -> None:
-    """将 JD_template 同步写入 config/hr_jds/ 下对应文件，便于用户直接编辑"""
+    """将 JD_template 同步写入 config/skills/.../hr_jds/ 下对应文件（规范 075）"""
     if not jd_content or not isinstance(jd_content, str):
         return
     item_id = _resolve_registry_key(skill_id)
     if item_id not in ("hr-analyzer", "hr-analyzer2", "hr-analyzer3", "hr-analyzer4"):
         return
     proj_root = Path(__file__).resolve().parent.parent
-    jd_dir = proj_root / "config" / "hr_jds"
+    from l3_node.jachin_config import get_hr_jds_dir
+    jd_dir = get_hr_jds_dir(proj_root)
     jd_dir.mkdir(parents=True, exist_ok=True)
     jd_file = jd_dir / f"{item_id}.md"
     try:
@@ -168,7 +169,7 @@ def update_skill_config(skill_id: str, config_data: dict[str, Any]) -> dict[str,
     """
     更新技能在 skill_registry 中的键值对。
     返回 {"updated": N, "inserted": M}。
-    HR 技能：JD_template 会同步写入 config/hr_jds/{item_id}.md
+    HR 技能：JD_template 会同步写入 config/skills/.../hr_jds/{item_id}.md
     """
     item_id = _resolve_registry_key(skill_id)
     conn = get_connection()
@@ -213,7 +214,7 @@ def update_skill_config(skill_id: str, config_data: dict[str, Any]) -> dict[str,
                 )
                 inserted += 1
         conn.commit()
-        # HR 技能：JD_template 同步到 config/hr_jds/{item_id}.md
+        # HR 技能：JD_template 同步到 config/skills/.../hr_jds/{item_id}.md
         jd_val = config_data.get("JD_template") or config_data.get("jd_template")
         if jd_val and isinstance(jd_val, str):
             _sync_jd_template_to_file(skill_id, jd_val)
@@ -254,13 +255,14 @@ def get_skill_config(skill_id: str) -> dict[str, Any]:
                     result[key] = value
             else:
                 result[key] = value
-        # 内置/缓存技能未入 registry 时，优先从 config/hr_jds/{item_id}.md 读取 JD，再兜底 plugin.json
+        # 内置/缓存技能未入 registry 时，优先从 config/skills/.../hr_jds/{item_id}.md 读取 JD
         if not result:
             result = _get_plugin_config_defaults(skill_id)
             item_id = _resolve_registry_key(skill_id)
             if item_id in ("hr-analyzer", "hr-analyzer2", "hr-analyzer3", "hr-analyzer4"):
+                from l3_node.jachin_config import get_hr_jds_dir
                 proj_root = Path(__file__).resolve().parent.parent
-                jd_file = proj_root / "config" / "hr_jds" / f"{item_id}.md"
+                jd_file = get_hr_jds_dir(proj_root) / f"{item_id}.md"
                 if jd_file.exists():
                     try:
                         result["JD_template"] = jd_file.read_text(encoding="utf-8").strip()
@@ -296,8 +298,9 @@ def cleanup_builtin_skill_artifacts(item_id: str) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"ok": True, "item_id": item_id, "jd_deleted": False, "registry_cleaned": False}
     proj_root = Path(__file__).resolve().parent.parent
-    # 1. 删除 config/hr_jds/ 下相关 JD 文件（兼容 hr-analyzer2 与 hr_analyzer2 命名）
-    jd_dir = proj_root / "config" / "hr_jds"
+    # 1. 删除 config/skills/.../hr_jds/ 下相关 JD 文件（兼容 hr-analyzer2 与 hr_analyzer2 命名）
+    from l3_node.jachin_config import get_hr_jds_dir
+    jd_dir = get_hr_jds_dir(proj_root)
     for name in (f"{item_id}.md", f"{item_id.replace('-', '_')}.md"):
         jd_file = jd_dir / name
         if jd_file.exists():

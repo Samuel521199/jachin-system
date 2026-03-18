@@ -1,0 +1,12 @@
+# atom_email_sender MCP 配置模板
+# 复制为 config.yaml 并填入实际值（config.yaml 已加入 .gitignore）
+# 支持环境变量占位: ${BI_SMTP_USER}、${BI_SMTP_PASSWORD}、${BI_SMTP_TO}
+
+smtp:
+  host: "smtp.qq.com"
+  port: 587
+  user: "${BI_SMTP_USER}"
+  password: "${BI_SMTP_PASSWORD}"
+
+default_to_addrs:
+  - "${BI_SMTP_TO}"

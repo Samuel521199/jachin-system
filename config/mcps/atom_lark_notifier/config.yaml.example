@@ -1,0 +1,5 @@
+# atom_lark_notifier MCP 配置模板
+# 复制为 config.yaml 并填入实际值（config.yaml 已加入 .gitignore）
+# 支持环境变量占位: ${BI_LARK_WEBHOOK_URL}
+
+default_webhook_url: "${BI_LARK_WEBHOOK_URL}"

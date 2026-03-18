@@ -257,7 +257,7 @@ async def lifespan(app: FastAPI):
         # L1-L2 云边同步：神谕 manifest 拉取 + 技能/MCP 空投
         try:
             from core.sync_daemon import start_cloud_sync_background
-            cloud_sync_task = start_cloud_sync_background(interval_seconds=60)
+            cloud_sync_task = await start_cloud_sync_background(interval_seconds=60)
         except Exception as e:
             logger.warning("云边同步守护进程启动跳过: %s", e)
         # 本地数字仓库：确保目录存在
@@ -315,13 +315,13 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(asyncio.shield(cloud_sync_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-    logger.info("Shutting down Jachin Nexus v0.8.5 (Singularity OS)...")
+    logger.info("Shutting down Jachin Nexus v0.8.33_1 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="0.8.5",
+    version="0.8.33_1",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码

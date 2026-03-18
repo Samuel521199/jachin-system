@@ -3,6 +3,10 @@ L3 启动时从 L2 同步技能到 ~/.jachin/l3_skill_cache/
 
 当 l2_gateway_config.json 含 sub_account_id 时，在 L3 获批后自动执行。
 不依赖 Desktop 的 perform_startup_sync，确保 L3 独立启动时也能拿到技能。
+
+注意：当前 L2 /skills/{item_id}/download 仅返回单个 wasm 文件，不包含完整 JSP 包及 config。
+若将来 L2 改为下发完整技能 zip，可在此处解压后调用 config_manifest.write_config_from_manifest()
+实现技能配置随包写出，与 MCP 路径一致。
 """
 from __future__ import annotations
 

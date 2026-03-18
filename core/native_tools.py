@@ -18,11 +18,26 @@ _WORKSPACE_ROOT = Path.home() / ".jachin" / "workspace"
 _PROJ_ROOT = Path(__file__).resolve().parent.parent
 # L3 本地数据卷（Boss 收网 PDF 蓄水池）
 _L3_VOLUME_ROOT = Path.home() / ".jachin" / "client_volumes"
-_HR_READ_ALLOWED = [
-    _L3_VOLUME_ROOT.resolve(),
-    (_PROJ_ROOT / "data" / "hr_resumes").resolve(),
-    (_PROJ_ROOT / "config" / "hr_jds").resolve(),
-]
+
+
+def _get_hr_read_allowed() -> list[Path]:
+    """HR 透析镜白名单（规范 075: config/skills/.../hr_jds）"""
+    from l3_node.jachin_config import get_hr_jds_dir
+    return [
+        _L3_VOLUME_ROOT.resolve(),
+        (_PROJ_ROOT / "data" / "hr_resumes").resolve(),
+        get_hr_jds_dir(_PROJ_ROOT).resolve(),
+    ]
+
+
+_HR_READ_ALLOWED = None  # 延迟初始化避免循环导入
+
+
+def _hr_allowed() -> list[Path]:
+    global _HR_READ_ALLOWED
+    if _HR_READ_ALLOWED is None:
+        _HR_READ_ALLOWED = _get_hr_read_allowed()
+    return _HR_READ_ALLOWED
 
 
 class SecurityException(Exception):
@@ -30,10 +45,10 @@ class SecurityException(Exception):
 
 
 def _is_under_hr_whitelist(path: Path) -> bool:
-    """路径是否在 HR 透析镜白名单（data/hr_resumes、config/hr_jds）下"""
+    """路径是否在 HR 透析镜白名单（data/hr_resumes、config/skills/.../hr_jds）下"""
     try:
         abs_path = path.resolve()
-        for allowed in _HR_READ_ALLOWED:
+        for allowed in _hr_allowed():
             if str(abs_path).startswith(str(allowed)):
                 return True
     except (OSError, RuntimeError):
@@ -54,7 +69,7 @@ def _assert_under_workspace(path: Path) -> None:
 def core_fs_read(file_path: str) -> str:
     """
     读取文件内容。路径必须位于 ~/.jachin/workspace/ 下，
-    或 HR 透析镜白名单（data/hr_resumes、config/hr_jds）下。
+    或 HR 透析镜白名单（data/hr_resumes、config/skills/.../hr_jds）下。
     PDF 文件自动提取纯文本，与 mcp_read_file 行为一致。
 
     Args:

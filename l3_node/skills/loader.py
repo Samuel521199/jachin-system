@@ -138,7 +138,8 @@ def get_hr_invoke_defaults(skill_id: str = "com.jachin.hr.analyzer4") -> dict[st
     resume_dir = resume_dir or (proj / "data" / "hr_resumes")
     target_role = (cfg.get("default_target_role") or "").strip()
     if not target_role:
-        jd_dir = proj / "config" / "hr_jds"
+        from l3_node.jachin_config import get_hr_jds_dir
+        jd_dir = get_hr_jds_dir(proj)
         if jd_dir.exists():
             for p in sorted(jd_dir.glob("*.md")):
                 target_role = p.stem
@@ -172,12 +173,13 @@ def _invoke_native(tool_id: str, **kwargs: Any) -> Any:
 
 
 def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
-    """L3 独立运行时的 Native 兜底实现。HR 白名单：client_volumes、data/hr_resumes、config/hr_jds。"""
+    """L3 独立运行时的 Native 兜底实现。HR 白名单：client_volumes、data/hr_resumes、config/skills/.../hr_jds。"""
     workspace = Path.home() / ".jachin" / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     proj = Path(__file__).resolve().parent.parent.parent
+    from l3_node.jachin_config import get_hr_jds_dir
     _l3_volume = (Path.home() / ".jachin" / "client_volumes").resolve()
-    _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), (proj / "config" / "hr_jds").resolve()]
+    _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), get_hr_jds_dir(proj).resolve()]
 
     def _under_hr(p: Path) -> bool:
         try:
@@ -190,7 +192,7 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
         if _under_hr(p):
             return
         if not str(p.resolve()).startswith(str(workspace.resolve())):
-            raise ValueError(f"路径越界: {p} 必须在 ~/.jachin/workspace/ 或 client_volumes、data/hr_resumes、config/hr_jds 下")
+            raise ValueError(f"路径越界: {p} 必须在 ~/.jachin/workspace/ 或 client_volumes、data/hr_resumes、config/skills/.../hr_jds 下")
 
     def _read_file_content(p: Path) -> str:
         """读取文件，PDF 使用 core.pdf_extractor 提取纯文本（与 MCP read_file 复用）。"""

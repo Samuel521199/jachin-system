@@ -90,23 +90,12 @@ class Settings(BaseSettings):
     # TTS Kokoro 模型目录（供 Tier 3 下载 kokoro-v0_19.onnx, voices.json）
     TTS_MODELS_DIR: Optional[str] = None  # 默认 ./data/tts
 
-    # Dapr
-    DAPR_HTTP_PORT: str = "3500"
-    DAPR_GRPC_PORT: str = "50001"
-
     # Project
     JACHIN_PROJECT_ROOT: Optional[str] = None
     JACHIN_DATA_DIR: Optional[str] = None  # 技能数据目录，默认 ~/.jachin
 
     # Sentinel
     SENTINEL_TEST_MODE: str = "0"
-
-    # Ray
-    RAY_MODE: str = "single"
-    RAY_HEAD_HOST: str = "localhost"
-    RAY_HEAD_PORT: int = 10001
-    RAY_DASHBOARD_PORT: int = 8265
-    RAY_DISABLE_USAGE_STATS: bool = True
 
     # Skills
     SKILLS_REPO_PATH: str = "./skills_repo"
@@ -129,10 +118,9 @@ class Settings(BaseSettings):
     CLUSTER_NODE_NAME: Optional[str] = None
     CLUSTER_NODE_ROLE: str = "head"
 
-    # Config paths
-    CLUSTER_CONFIG_PATH: str = "./config/cluster.yaml"
-    RAY_CONFIG_PATH: str = "./config/ray_config.yaml"
-    SKILLS_CONFIG_PATH: str = "./config/skills_config.yaml"
+    # Config paths（L2 配置随代码就近，位于 core/config/）
+    CLUSTER_CONFIG_PATH: str = "core/config/cluster.yaml"
+    SKILLS_CONFIG_PATH: str = "core/config/skills_config.yaml"
 
     # Logging Configuration
     LOG_LEVEL: str = "INFO"

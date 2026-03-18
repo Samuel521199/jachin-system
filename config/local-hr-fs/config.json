@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "local-hr-fs": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "__PROJECT_ROOT__", "__PROJECT_ROOT__/data/hr_resumes", "__PROJECT_ROOT__/config/hr_jds"]
-    }
-  }
-}

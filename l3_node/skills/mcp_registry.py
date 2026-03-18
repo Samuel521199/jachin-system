@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 # 默认 L2 地址（可从 l2_gateway_config.json 读取）
 DEFAULT_L2_BASE_URL = "http://localhost:18888"
 MCP_TOOLS_PREFIX = "mcp:"
+L3_MCP_CACHE = Path.home() / ".jachin" / "l3_mcp_cache"
 
 # L3 本地 MCP 工具（不依赖 L2，下放至 L3 执行）
 L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:read_file",
         "label": "mcp:read_file",
-        "desc": "[L3 本地] 读取文件内容。支持 .md/.txt 及 .pdf 文本提取。路径需在 workspace、client_volumes、data/hr_resumes、config/hr_jds 下。",
+        "desc": "[L3 本地] 读取文件内容。支持 .md/.txt 及 .pdf 文本提取。路径需在 workspace、client_volumes、data/hr_resumes、config/skills/.../hr_jds 下。",
         "params": ["path"],
     },
     {
@@ -59,7 +60,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "id": "mcp:atom_web_scraper",
         "label": "mcp:atom_web_scraper",
         "desc": "[L3 本地] 通用网页抓取器。传入 url、output_path、config，抓取表格/JSON 并保存到 client_volumes/bi_data/raw/。",
-        "params": ["url", "output_path", "config"],
+        "params": ["url", "output_path", "config", "cdp_url"],
     },
     {
         "id": "mcp:atom_lark_notifier",
@@ -353,11 +354,12 @@ def _invoke_atom_lark_notifier_local(
     markdown_content: str = "",
     title: str = "",
 ) -> str:
-    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.tool_broadcaster。"""
+    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.tool_lark_notifier。"""
     try:
-        from l3_node.mcp_tools.tool_broadcaster import send_lark_markdown
+        from l3_node.mcp_tools.tool_lark_notifier import send_lark_markdown, _get_default_webhook_url
+        _url = (webhook_url or "").strip() or _get_default_webhook_url()
         result = send_lark_markdown(
-            webhook_url=webhook_url or "",
+            webhook_url=_url,
             markdown_content=markdown_content or "",
             title=title or None,
         )
@@ -374,12 +376,18 @@ def _invoke_atom_email_sender_local(
     body: str = "",
     attachment_paths: list | None = None,
 ) -> str:
-    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.tool_broadcaster。"""
+    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.tool_email_sender。"""
     try:
-        from l3_node.mcp_tools.tool_broadcaster import send_email_with_attachment
+        from l3_node.mcp_tools.tool_email_sender import send_email_with_attachment, _get_default_smtp_config
+        _smtp = smtp_config or {}
+        _to = to_addrs or []
+        if not _smtp or not _smtp.get("user") or not _smtp.get("password"):
+            _smtp, _def_to = _get_default_smtp_config()
+            if not _to and _def_to:
+                _to = _def_to
         result = send_email_with_attachment(
-            smtp_config=smtp_config or {},
-            to_addrs=to_addrs or [],
+            smtp_config=_smtp,
+            to_addrs=_to,
             subject=subject or "",
             body=body or "",
             attachment_paths=attachment_paths or [],
@@ -449,6 +457,7 @@ def _invoke_read_file_local(path_raw: str) -> str:
     if p.is_absolute() and p.exists():
         path_obj = p.resolve()
     else:
+        from l3_node.jachin_config import get_hr_jds_dir
         raw_norm = raw.lstrip("/")
         plugin_data = _proj / "skills_repo" / "plugin" / "data"
         for base, sub in [
@@ -456,7 +465,7 @@ def _invoke_read_file_local(path_raw: str) -> str:
             (plugin_data, raw_norm),
             (plugin_data, p.name or raw_norm),
             (_proj / "data" / "hr_resumes", p.name or raw_norm),
-            (_proj / "config" / "hr_jds", p.name or raw_norm),
+            (get_hr_jds_dir(_proj), p.name or raw_norm),
         ]:
             cand = (base / sub).resolve()
             if cand.exists() and cand.is_file():
@@ -474,6 +483,87 @@ def _invoke_read_file_local(path_raw: str) -> str:
     except Exception as e:
         logger.warning("[MCP Registry] read_file 本地执行失败 path=%s err=%s", path_obj, e)
         return f"[read_file] 读取失败: {e}"
+
+
+def _load_tools_from_l3_mcp_cache() -> tuple[list[dict[str, Any]], dict[str, tuple[Path, str, str]]]:
+    """
+    从 ~/.jachin/l3_mcp_cache/ 扫描 L3_LOCAL MCP，动态加载工具定义。
+    Returns:
+        (tools_list, invoke_map): tools_list 为 {id, label, desc, params} 列表；
+        invoke_map 为 tool_id -> (cache_dir, module_path, function_name) 供 invoke 调用。
+    """
+    tools_out: list[dict[str, Any]] = []
+    invoke_map: dict[str, tuple[Path, str, str]] = {}
+    if not L3_MCP_CACHE.exists():
+        return tools_out, invoke_map
+    import sys
+    for subdir in L3_MCP_CACHE.iterdir():
+        if not subdir.is_dir():
+            continue
+        plugin_path = subdir / "plugin.json"
+        if not plugin_path.exists():
+            continue
+        try:
+            plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug("[MCP Registry] 解析 plugin.json 失败 %s: %s", subdir.name, e)
+            continue
+        tools_list = plugin.get("tools") or []
+        if isinstance(tools_list, dict):
+            tools_list = list(tools_list.values()) if tools_list else []
+        for t in tools_list:
+            tid = t.get("id") if isinstance(t, dict) else str(t)
+            if not tid:
+                continue
+            tid = tid.replace("mcp:", "").strip() if tid.startswith("mcp:") else tid.strip()
+            mcp_id = f"{MCP_TOOLS_PREFIX}{tid}"
+            module_path = (t.get("module", "") or "").strip() if isinstance(t, dict) else ""
+            func_name = (t.get("function", "") or "").strip() if isinstance(t, dict) else ""
+            if not module_path or not func_name:
+                logger.debug("[MCP Registry] %s 缺少 module/function，跳过", tid)
+                continue
+            params = t.get("params", ["input"]) if isinstance(t, dict) else ["input"]
+            desc = (t.get("desc", "") or t.get("description", "") or mcp_id) if isinstance(t, dict) else mcp_id
+            tools_out.append({
+                "id": mcp_id,
+                "label": mcp_id,
+                "desc": f"[L3 缓存] {desc}",
+                "params": params if isinstance(params, list) else ["input"],
+            })
+            invoke_map[mcp_id] = (subdir, module_path, func_name)
+            invoke_map[tid] = (subdir, module_path, func_name)
+    return tools_out, invoke_map
+
+
+def _invoke_cached_mcp_tool(
+    cache_dir: Path,
+    module_path: str,
+    func_name: str,
+    arguments: dict[str, Any],
+) -> str:
+    """动态加载 l3_mcp_cache 中的 Python 模块并执行。"""
+    import sys
+    cache_str = str(cache_dir.resolve())
+    prev_path = sys.path.copy()
+    try:
+        if cache_str not in sys.path:
+            sys.path.insert(0, cache_str)
+        mod = __import__(module_path, fromlist=[func_name])
+        func = getattr(mod, func_name, None)
+        if not callable(func):
+            return json.dumps({"status": "error", "error": f"未找到可调用函数 {func_name}"}, ensure_ascii=False)
+        kwargs = {k: v for k, v in arguments.items() if k != "input"}
+        if "input" in arguments and not kwargs:
+            kwargs["input"] = arguments["input"]
+        result = func(**kwargs)
+        if isinstance(result, dict):
+            return json.dumps(result, ensure_ascii=False)
+        return str(result)
+    except Exception as e:
+        logger.warning("[MCP Registry] 缓存 MCP 执行失败 %s.%s: %s", module_path, func_name, e)
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+    finally:
+        sys.path = prev_path
 
 
 def _get_l2_base_url() -> str:
@@ -500,6 +590,7 @@ class MCPToolRegistry:
         self._known_mcp_tools: set[str] = set()
         self._tools_cache: list[dict[str, Any]] = []
         self._local_mcp_tools: set[str] = {t["id"] for t in L3_LOCAL_MCP_TOOLS}
+        self._cache_invoke_map: dict[str, tuple[Path, str, str]] = {}
 
     @property
     def known_mcp_tools(self) -> set[str]:
@@ -529,10 +620,21 @@ class MCPToolRegistry:
             合并后的工具列表，格式与 load_tools 一致：{id, label, desc, params}
         """
         import httpx
+        import sys
 
         tools: list[dict[str, Any]] = list(L3_LOCAL_MCP_TOOLS)
         self._known_mcp_tools = set(self._local_mcp_tools)
         local_names = {"read_file", "atom_post_job_boss", "atom_greet_recommend_boss", "add_automated_recruitment_task", "stop_automated_recruitment"}
+
+        cached_tools, self._cache_invoke_map = _load_tools_from_l3_mcp_cache()
+        for ct in cached_tools:
+            ct_id = ct.get("id", "")
+            if ct_id and ct_id not in self._known_mcp_tools:
+                raw = ct_id.replace(MCP_TOOLS_PREFIX, "", 1).strip()
+                if raw not in local_names:
+                    tools.append(ct)
+                    self._known_mcp_tools.add(ct_id)
+                    self._local_mcp_tools.add(ct_id)
 
         url = f"{self._l2_base_url}/api/v2/mcp/tools"
         logger.info("[MCP Registry] 从 L2 拉取工具 url=%s", url)
@@ -653,10 +755,22 @@ class MCPToolRegistry:
             arguments = {"input": inp}
         return arguments
 
-    async def invoke(self, tool_id: str, action_input: str, *, timeout: float = 30.0) -> str:
+    async def invoke(
+        self,
+        tool_id: str,
+        action_input: str,
+        *,
+        timeout: float = 30.0,
+        allowed_skills: list[str] | None = None,
+    ) -> str:
         """
         执行 MCP 工具。L3 本地工具（read_file、atom_post_job_boss、atom_greet_recommend_boss）直接执行，其余走 L2。
+        allowed_skills: None=开发模式全开；非 None 时执行前校验白名单，未分配则拒绝。
         """
+        if allowed_skills is not None:
+            from l3_node.skills.loader import is_tool_allowed
+            if not is_tool_allowed(tool_id, allowed_skills):
+                return "[权限拒绝: 当前子账号未开启该技能]"
         if tool_id in self._local_mcp_tools:
             raw_name = self._raw_name(tool_id)
             arguments = self._parse_action_input(action_input)
@@ -726,11 +840,14 @@ class MCPToolRegistry:
 
             # BI 战报 MCP 工具（docs/bi_daily_report/）
             if raw_name == "atom_web_scraper":
+                cfg = arguments.get("config") or {}
+                if isinstance(cfg, dict) and arguments.get("cdp_url"):
+                    cfg = {**cfg, "cdp_url": arguments.get("cdp_url")}
                 return await asyncio.to_thread(
                     _invoke_atom_web_scraper_local,
                     url=arguments.get("url", ""),
                     output_path=arguments.get("output_path", ""),
-                    config=arguments.get("config"),
+                    config=cfg,
                 )
             if raw_name == "atom_lark_notifier":
                 return await asyncio.to_thread(
@@ -747,6 +864,16 @@ class MCPToolRegistry:
                     subject=arguments.get("subject", ""),
                     body=arguments.get("body", ""),
                     attachment_paths=arguments.get("attachment_paths"),
+                )
+
+        if tool_id in self._cache_invoke_map or self._raw_name(tool_id) in self._cache_invoke_map:
+            cache_dir, module_path, func_name = self._cache_invoke_map.get(
+                tool_id
+            ) or self._cache_invoke_map.get(self._raw_name(tool_id), (None, "", ""))
+            if cache_dir and module_path and func_name:
+                return await asyncio.to_thread(
+                    _invoke_cached_mcp_tool,
+                    cache_dir, module_path, func_name, self._parse_action_input(action_input),
                 )
 
         logger.info("[MCP Registry] 工具 %s 不在 L3 本地，转发 L2", tool_id)
