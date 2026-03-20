@@ -6,9 +6,11 @@ BI SPA 批量抓取 — CLI 入口
 设计: docs/bi_daily_report/09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md
 
 Prereq: 1) .\scripts\launch_chrome_debug_bi.ps1  2) Login in Chrome
-Usage: python scripts/run_bi_scraper_spa.py [--no-discover]
+Usage: python scripts/run_bi_scraper_spa.py [--no-discover] [--output-dir DIR] [slug1 slug2 ...]
   --no-discover: 使用硬编码 MENU_ITEMS，跳过菜单自动发现
-Output: ~/.jachin/client_volumes/bi_data/raw/{slug}.csv
+  --output-dir DIR: 输出目录（默认 ~/.jachin/client_volumes/bi_data/raw），权限受限时用 .\bi_data\raw
+  slug1 slug2: 仅抓取指定 slug（如 prod_sales recharge_status），不传则抓取全部
+Output: {output_dir}/{slug}.csv
 """
 from __future__ import annotations
 
@@ -53,9 +55,25 @@ def main() -> int:
     from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect
     from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 
-    use_discover = "--no-discover" not in sys.argv
+    argv = sys.argv[1:]
+    use_discover = "--no-discover" not in argv
+    out_dir_arg = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--output-dir" and i + 1 < len(argv):
+            out_dir_arg = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--output-dir="):
+            out_dir_arg = a.split("=", 1)[1].strip()
+            i += 1
+            continue
+        i += 1
+    slugs = [a for a in argv if not a.startswith("--") and a != out_dir_arg] or None
     ensure_bi_dirs()
-    raw_dir = get_bi_raw_dir()
+    raw_dir = Path(out_dir_arg).resolve() if out_dir_arg else get_bi_raw_dir()
+    raw_dir.mkdir(parents=True, exist_ok=True)
     _setup_logging(raw_dir)
 
     # 提前检测 Chrome 调试模式，避免 34 次无意义重试
@@ -82,7 +100,7 @@ def main() -> int:
             print(f"[{idx}/{total}] {slug} ... FAIL: {result.get('error', result)}")
 
     ok, fail, failed_slugs = run_full_spa_collect(
-        slugs=None,
+        slugs=slugs,
         use_discover=use_discover,
         auto_ingest=False,
         raw_dir=raw_dir,

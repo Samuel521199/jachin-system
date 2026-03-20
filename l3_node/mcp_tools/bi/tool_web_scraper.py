@@ -82,6 +82,8 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                 if sel or txt:
                     loc = page.locator(sel).first if sel else page.locator(f".el-menu >> text={txt}").first
                     try:
+                        loc.scroll_into_view_if_needed(timeout=5000)
+                        page.wait_for_timeout(150)
                         is_expanded = loc.evaluate("""
                             el => {
                                 const li = el.closest('li[class*="sub-menu"], li[aria-expanded]');
@@ -93,12 +95,16 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                             if txt:
                                 title_loc = page.locator(f".el-menu .el-submenu__title:has-text('{txt}')").first
                                 try:
+                                    title_loc.scroll_into_view_if_needed(timeout=5000)
+                                    page.wait_for_timeout(100)
                                     title_loc.click(timeout=sel_timeout, force=True)
                                 except Exception:
+                                    loc.scroll_into_view_if_needed(timeout=5000)
                                     loc.click(timeout=sel_timeout, force=True)
                             else:
                                 loc.click(timeout=sel_timeout, force=True)
                     except Exception:
+                        loc.scroll_into_view_if_needed(timeout=5000)
                         loc.click(timeout=sel_timeout, force=True)
                 else:
                     return f"action[{i}] click_expand 缺少 selector 或 text"
@@ -139,10 +145,20 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                 end_val = act.get("end", "")
                 start_sel = act.get("start_selector") or sel
                 end_sel = act.get("end_selector") or ""
-                if start_sel and start_val:
-                    page.locator(start_sel).first.fill(str(start_val), timeout=sel_timeout)
-                if end_sel and end_val:
-                    page.locator(end_sel).first.fill(str(end_val), timeout=sel_timeout)
+                optional = act.get("optional", False)
+                try:
+                    if start_sel and start_val:
+                        page.locator(start_sel).first.fill(str(start_val), timeout=sel_timeout)
+                    if end_sel and end_val:
+                        page.locator(end_sel).first.fill(str(end_val), timeout=sel_timeout)
+                    # 关闭可能打开的日期选择器弹窗，避免遮挡后续点击
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(200)
+                except Exception as fill_err:
+                    if optional:
+                        logger.debug("[Automation] fill_date_range optional 失败，继续: %s", fill_err)
+                    else:
+                        raise
             elif typ == "wait_for_data_ready":
                 # 等待数据完全加载：优先等待加载遮罩消失，否则固定等待
                 wait_ms = int(act.get("wait_after_query_ms") or 5000)
@@ -176,25 +192,67 @@ def _expand_all_table_rows(
 
     支持两种模式：
     1. Element UI 标准：.el-table__expand-icon:not(.el-table__expand-icon--expanded)
-    2. 自定义树形（平台产销等）：.el-table .cell span[style*="cursor: pointer"]，仅点击未展开行
+    2. 自定义树形（平台产销等）：div[style*="cursor"] + getIndent，按行序展开，避免反复点同一图标
     """
+    # 平台产销/平台产销情况：有 div[style*="cursor"] 时用自定义路径（按行序+缩进），避免反复点「全部汇总」
+    # 游戏数据统计等：仅有 .el-table__expand-icon 时走标准 Playwright 路径，逐行展开
+    has_cursor = page.locator(".el-table__body-wrapper div[style*='cursor']").count() > 0
+    has_std_icon = page.locator(".el-table__body-wrapper .el-table__expand-icon").count() > 0
+    use_custom_first = has_cursor and not has_std_icon  # 仅平台产销用自定义；游戏数据用标准
+
+    # 标准路径（游戏数据、平台产销等）：逐行点击未展开图标
     for round_idx in range(max_rounds):
-        icons = page.locator(expand_selector)
-        count = icons.count()
+        if use_custom_first:
+            count = 0  # 强制走自定义路径
+        else:
+            icons = page.locator(expand_selector)
+            count = icons.count()
         if count == 0:
-            # 标准选择器无结果时，尝试自定义树形（平台产销情况等：span[style*="cursor: pointer"]）
+            # 标准选择器无结果时，尝试自定义树形（平台产销情况对比等）
             clicked = page.evaluate(
                 """
                 () => {
                     const rows = document.querySelectorAll('.el-table__body-wrapper tbody tr');
+                    const getIndent = (r) => {
+                        const cells = r.querySelectorAll('td');
+                        for (const c of cells) {
+                            const div = c.querySelector('div[style*="padding-left"]');
+                            if (div && div.style) {
+                                const m = (div.style.paddingLeft || '').match(/(\d+)/);
+                                if (m) return parseInt(m[1], 10);
+                            }
+                        }
+                        return 0;
+                    };
+                    const isChildRow = (r, prev) => {
+                        if (getIndent(r) > getIndent(prev)) return true;
+                        const c0 = r.querySelector('td:first-child');
+                        const t0 = c0 ? (c0.innerText || '').trim() : '';
+                        const dateLike = /^\\d{4}-\\d{2}-\\d{2}/.test(t0) || /\\d{4}-\\d{2}-\\d{2}/.test(t0);
+                        if (!dateLike && prev) return true;
+                        return false;
+                    };
                     for (const row of rows) {
-                        const span = row.querySelector('.cell span[style*="cursor: pointer"]');
-                        if (!span) continue;
                         const next = row.nextElementSibling;
-                        if (next && /el-table__row--level-1|level-1/.test(next.className || '')) continue;
-                        span.scrollIntoView({ block: 'center', behavior: 'instant' });
-                        span.click();
-                        return 1;
+                        if (next) {
+                            if (/el-table__row--level-1|level-1/.test(next.className || '')) continue;
+                            if (getIndent(next) > getIndent(row)) continue;
+                            if (isChildRow(next, row)) continue;
+                        }
+                        const cells = row.querySelectorAll('td');
+                        for (const cell of cells) {
+                            let target = cell.querySelector('.cell div[style*="cursor"]');
+                            if (!target) target = cell.querySelector('.cell span[style*="cursor"]');
+                            if (!target) target = cell.querySelector('div[style*="cursor"]');
+                            if (!target) target = cell.querySelector('span[style*="cursor"]');
+                            if (!target) target = cell.querySelector('.el-table__expand-icon:not(.el-table__expand-icon--expanded)');
+                            if (!target) target = cell.querySelector('.caret-wrapper .el-table__expand-icon:not(.el-table__expand-icon--expanded)');
+                            if (!target) target = cell.querySelector('[class*="expand-icon"]:not([class*="expanded"])');
+                            if (!target) continue;
+                            target.scrollIntoView({ block: 'center', behavior: 'instant' });
+                            target.click();
+                            return 1;
+                        }
                     }
                     return 0;
                 }
@@ -203,13 +261,24 @@ def _expand_all_table_rows(
             if clicked:
                 page.wait_for_timeout(min(wait_ms, 2000))
                 continue
+            if has_std_icon and round_idx == 0:
+                try:
+                    icons_loc = page.locator(expand_selector)
+                    if icons_loc.count() > 0:
+                        icons_loc.first.scroll_into_view_if_needed(timeout=3000)
+                        page.wait_for_timeout(100)
+                        icons_loc.first.click(timeout=3000, force=True)
+                        page.wait_for_timeout(min(wait_ms, 2000))
+                        continue
+                except Exception:
+                    pass
             if round_idx > 0:
                 logger.debug("[Expand Table] 已全部展开，共 %d 轮", round_idx)
             return
         try:
             first = icons.first
             first.scroll_into_view_if_needed(timeout=5000)
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(200)
             first.click(timeout=5000, force=True)
             page.wait_for_timeout(min(wait_ms, 2000))
         except Exception as e:
@@ -236,6 +305,182 @@ def _expand_all_table_rows(
                 return
 
 
+def _harvest_expand_extract_collapse_loop(
+    page: Any,
+    automation: dict,
+) -> tuple[list[dict[str, Any]], str]:
+    """
+    逐行「展开→提取→折叠→下一行」抓取。适用于 stats_game_daily、stats_game_compare 等页面：
+    展开一行会占满整页，无法点击其他日期行，必须折叠后再展开下一行。
+
+    automation 可选：
+      expand_target_column: 0=首列(默认), 1=第二列(对比页统计范围)
+      expand_parent_full_cell: True 时用首列完整文本作父级标识(如 "2026-03-13 VS 2026-03-06")
+      expand_capture_first_rows: 展开循环前先抓取的首行数（如汇总行）
+    """
+    import re as _re
+    _date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}")
+    expand_wait = int(automation.get("expand_wait_ms") or 1500)
+    expand_wait = max(500, min(expand_wait, 3000))
+    collapse_wait = 600
+    max_rounds = int(automation.get("expand_max_rounds") or 20)
+    skip_first = int(automation.get("expand_skip_first_rows") or 0)
+    capture_first = int(automation.get("expand_capture_first_rows") or 0)
+    split_merged = automation.get("split_merged_cells", True)
+    expand_target_col = int(automation.get("expand_target_column") or 0)
+    parent_full_cell = automation.get("expand_parent_full_cell", False)
+
+    # 取表头
+    header_cells = [
+        h.strip()
+        for h in page.locator(
+            ".el-table__header-wrapper thead th, .el-table__header-wrapper thead td"
+        ).all_text_contents()
+        if h.strip()
+    ]
+    if not header_cells:
+        header_cells = [
+            h.strip()
+            for h in page.locator("table thead th, table thead td").all_text_contents()
+            if h.strip()
+        ]
+    if not header_cells:
+        return [], "未找到表头"
+
+    all_rows: list[dict[str, Any]] = []
+
+    # 展开循环前先抓取首行（如汇总行）
+    if capture_first > 0:
+        first_rows = page.evaluate(
+            """
+            (n) => {
+                const w = Array.from(document.querySelectorAll('.el-table__body-wrapper')).find(x => !x.closest('.el-picker-panel'));
+                if (!w) return null;
+                const trs = w.querySelectorAll('tbody tr');
+                const rows = [];
+                for (let i = 0; i < Math.min(n, trs.length); i++) {
+                    const tds = trs[i].querySelectorAll('td');
+                    rows.push(Array.from(tds).map(t => (t.innerText || '').trim()));
+                }
+                return rows.length ? rows : null;
+            }
+            """,
+            capture_first,
+        )
+        if first_rows:
+            for ncells in first_rows:
+                if split_merged:
+                    ncells = [_split_merged_cell_value(c) for c in ncells]
+                if len(ncells) >= len(header_cells):
+                    all_rows.append(dict(zip(header_cells, ncells[: len(header_cells)])))
+                elif ncells:
+                    pad = [""] * (len(header_cells) - len(ncells))
+                    all_rows.append(dict(zip(header_cells, ncells + pad)))
+
+    rounds_done = 0
+    for round_i in range(max_rounds):
+        # 1. 点击第 skip_first+round_i+1 行展开（可跳过首行如总计行）
+        row_idx = skip_first + round_i + 1
+        clicked = page.evaluate(
+            """
+            (args) => {
+                const idx = args.idx, targetCol = args.targetCol;
+                const w = Array.from(document.querySelectorAll('.el-table__body-wrapper')).find(x => !x.closest('.el-picker-panel'));
+                if (!w) return 0;
+                const trs = w.querySelectorAll('tbody tr');
+                const tr = trs[idx - 1];
+                if (!tr) return 0;
+                const tds = tr.querySelectorAll('td');
+                const cell = tds[targetCol] || tds[0];
+                if (!cell) return 0;
+                const target = cell.querySelector('.date-expand-label') || cell.querySelector('.expand-btn') || cell.querySelector('.el-table__expand-icon') || cell.querySelector('.cell') || cell;
+                target.scrollIntoView({ block: 'center', behavior: 'instant' });
+                target.click();
+                return 1;
+            }
+            """,
+            {"idx": row_idx, "targetCol": expand_target_col},
+        )
+        if not clicked:
+            break
+        rounds_done += 1
+        page.wait_for_timeout(expand_wait)
+
+        # 2. 提取当前展开行的子行（stats_game_daily 为同级 tr，展开行在 trs[row_idx-1]）
+        extracted = page.evaluate(
+            """
+            (args) => {
+                const expandedRowIdx = args.expandedRowIdx, useFullParent = args.useFullParent;
+                const wrapper = document.querySelector('.el-table__body-wrapper');
+                if (!wrapper || wrapper.closest('.el-picker-panel')) return null;
+                const trs = wrapper.querySelectorAll('tbody tr');
+                const parentTr = trs[expandedRowIdx - 1];
+                if (!parentTr) return null;
+                const dateTd = parentTr.querySelector('td:first-child');
+                const c0raw = dateTd ? (dateTd.innerText || '').trim() : '';
+                let parentDate = c0raw.match(/^\\d{4}-\\d{2}-\\d{2}/)?.[0] || '';
+                if (useFullParent && /\\d{4}-\\d{2}-\\d{2}.*VS.*\\d{4}-\\d{2}-\\d{2}/.test(c0raw)) parentDate = c0raw;
+                if (!parentDate && useFullParent) {
+                    const c1raw = parentTr.querySelector('td:nth-child(2)') ? (parentTr.querySelector('td:nth-child(2)').innerText || '').trim() : '';
+                    if (/\\d{4}-\\d{2}-\\d{2}.*VS.*\\d{4}-\\d{2}-\\d{2}/.test(c1raw)) parentDate = c1raw;
+                }
+                if (!parentDate) return null;
+                const rows = [];
+                for (let i = expandedRowIdx; i < trs.length; i++) {
+                    const tr = trs[i];
+                    const tds = tr.querySelectorAll('td');
+                    const c0 = tds[0] ? (tds[0].innerText || '').trim() : '';
+                    if (/^\\d{4}-\\d{2}-\\d{2}/.test(c0) || (c0.indexOf('VS') >= 0 && /\\d{4}-\\d{2}-\\d{2}/.test(c0))) break;
+                    rows.push({
+                        cells: Array.from(tds).map(t => (t.innerText || '').trim()),
+                        parentDate,
+                    });
+                }
+                return rows.length ? rows : null;
+            }
+            """,
+            {"expandedRowIdx": row_idx, "useFullParent": parent_full_cell},
+        )
+        if extracted:
+            for item in extracted:
+                ncells = item.get("cells") or []
+                parent_date = item.get("parentDate") or ""
+                if split_merged:
+                    ncells = [_split_merged_cell_value(c) for c in ncells]
+                if ncells and parent_date and not _date_re.match(ncells[0] if ncells else ""):
+                    # 子行首列空或非日期：插入父级标识到首列
+                    ncells = [parent_date] + (ncells[1:] if ncells and not (ncells[0] or "").strip() else ncells)
+                if len(ncells) >= len(header_cells):
+                    all_rows.append(dict(zip(header_cells, ncells[: len(header_cells)])))
+                elif len(ncells) == len(header_cells) - 1 and parent_date:
+                    all_rows.append(dict(zip(header_cells, [parent_date] + ncells)))
+
+        # 3. 折叠当前行（点被展开的那一行的图标）
+        page.evaluate(
+            """
+            (args) => {
+                const idx = args.idx, targetCol = args.targetCol;
+                const w = Array.from(document.querySelectorAll('.el-table__body-wrapper')).find(x => !x.closest('.el-picker-panel'));
+                if (!w) return;
+                const trs = w.querySelectorAll('tbody tr');
+                const tr = trs[idx - 1];
+                if (!tr) return;
+                const tds = tr.querySelectorAll('td');
+                const cell = tds[targetCol] || tds[0];
+                if (!cell) return;
+                const target = cell.querySelector('.el-table__expand-icon--expanded') || cell.querySelector('.expand-btn') || cell.querySelector('.date-expand-label') || cell.querySelector('.el-table__expand-icon') || cell.querySelector('.cell') || cell;
+                target.scrollIntoView({ block: 'center', behavior: 'instant' });
+                target.click();
+            }
+            """,
+            {"idx": row_idx, "targetCol": expand_target_col},
+        )
+        page.wait_for_timeout(collapse_wait)
+
+    logger.debug("[Scraper] expand_extract_collapse 共 %d 轮，提取 %d 行", rounds_done, len(all_rows))
+    return all_rows, ""
+
+
 def _expand_filters_to_actions(filters: dict) -> list[dict]:
     """
     将 filters 配置展开为 automation actions。
@@ -250,7 +495,24 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
     if not filters:
         return actions
     dr = filters.get("date_range")
-    if isinstance(dr, (list, tuple)) and len(dr) >= 2:
+    dr_compare = filters.get("date_range_compare")  # [[start1,end1],[start2,end2]] 对比页两时间段
+    if isinstance(dr_compare, (list, tuple)) and len(dr_compare) >= 2:
+        # 对比页：填写两个时间段。第 0 个用通用选择器；第 1 个可选（部分页面 DOM 不同）
+        sels_list = filters.get("date_range_compare_selectors") or [{}, {}]
+        for i, pr in enumerate(dr_compare[:2]):
+            if isinstance(pr, (list, tuple)) and len(pr) >= 2:
+                s = sels_list[i] if i < len(sels_list) else {}
+                start_sel = s.get("start") or (".el-date-editor input:first-of-type" if i == 0 else ".el-date-editor:nth-of-type(2) input:first-of-type")
+                end_sel = s.get("end") or (".el-date-editor input:last-of-type" if i == 0 else ".el-date-editor:nth-of-type(2) input:last-of-type")
+                actions.append({
+                    "type": "fill_date_range",
+                    "start_selector": start_sel,
+                    "end_selector": end_sel,
+                    "start": str(pr[0]),
+                    "end": str(pr[1]),
+                    "optional": i > 0,  # 第二时间段可选，失败时继续
+                })
+    elif isinstance(dr, (list, tuple)) and len(dr) >= 2:
         sels = filters.get("date_range_selectors") or {}
         start_sel = sels.get("start") or ".el-date-editor input:first-of-type"
         end_sel = sels.get("end") or ".el-date-editor input:last-of-type"
@@ -390,9 +652,16 @@ def _harvest_via_playwright(
             except Exception:
                 pass
 
+            # stats_game_daily 等：展开会占满整页，无法点其他行 → 逐行「展开→提取→折叠→下一行」
+            if automation.get("expand_extract_collapse_loop", False):
+                rows, err = _harvest_expand_extract_collapse_loop(target_page, automation)
+                if err:
+                    return None, err
+                browser.close()
+                return rows if rows else None, "未提取到表格数据" if not rows else ""
             # 可选：展开所有树形行，抓取子项（渠道明细、各游戏数据等）
-            if automation.get("expand_table_rows", False):
-                expand_sel = automation.get("expand_selector") or ".el-table__expand-icon:not(.el-table__expand-icon--expanded)"
+            elif automation.get("expand_table_rows", False):
+                expand_sel = automation.get("expand_selector") or ".el-table__body-wrapper .el-table__expand-icon:not(.el-table__expand-icon--expanded)"
                 expand_wait = int(automation.get("expand_wait_ms") or 600)
                 expand_wait = max(200, min(expand_wait, 2000))
                 try:
@@ -401,8 +670,28 @@ def _harvest_via_playwright(
                         expand_selector=expand_sel,
                         wait_ms=expand_wait,
                     )
+                    post_wait = int(automation.get("expand_post_wait_ms") or 500)
+                    post_wait = max(200, min(post_wait, 3000))
+                    target_page.wait_for_timeout(post_wait)
                 except Exception as e:
                     logger.warning("[Scraper] 展开表格行时异常（继续抓取）: %s", e)
+                try:
+                    target_page.evaluate(
+                        """
+                        () => {
+                            const wrappers = document.querySelectorAll('.el-table__body-wrapper');
+                            for (const w of wrappers) {
+                                if (!w.closest('.el-picker-panel')) {
+                                    w.scrollTop = w.scrollHeight;
+                                    break;
+                                }
+                            }
+                        }
+                        """
+                    )
+                    target_page.wait_for_timeout(800)
+                except Exception:
+                    pass
 
             # 提取表格：Element UI 表头/表体分离，需分别取
             rows = []
@@ -415,12 +704,51 @@ def _harvest_via_playwright(
                 if not body_trs:
                     body_trs = target_page.locator("table:not(.el-date-table) tbody tr").all()
                 split_merged = automation.get("split_merged_cells", True)
+                _date_re = re.compile(r"^\d{4}-\d{2}-\d{2}")
+                last_date = ""
                 if header_cells and body_trs:
                     for tr in body_trs:
+                        # 跳过 Element UI 展开行：单 td 含 colspan，内容在 slot 内；需从嵌套表提取
+                        tds = tr.locator("td").all()
+                        expanded_td = None
+                        if len(tds) == 1:
+                            expanded_td = tds[0]
+                        elif len(tds) > 1:
+                            for td in tds:
+                                if "expanded-cell" in (td.get_attribute("class") or ""):
+                                    expanded_td = td
+                                    break
+                        if expanded_td is not None:
+                            try:
+                                nested_table = expanded_td.locator("table").first
+                                if nested_table.count() > 0:
+                                    nested_trs = nested_table.locator("tbody tr").all()
+                                    for ntr in nested_trs:
+                                        ncells = ntr.locator("td").all_text_contents()
+                                        ncells = [c.strip() for c in ncells]
+                                        if split_merged:
+                                            ncells = [_split_merged_cell_value(c) for c in ncells]
+                                        if ncells and last_date:
+                                            if len(ncells) == len(header_cells) - 1:
+                                                ncells = [last_date] + ncells
+                                            elif not _date_re.match(ncells[0] if ncells else ""):
+                                                ncells = [last_date] + ncells
+                                        if len(ncells) >= len(header_cells):
+                                            rows.append(dict(zip(header_cells, ncells[: len(header_cells)])))
+                                    continue
+                            except Exception:
+                                pass
+                        # 单 td 且无嵌套表：视为展开行占位，跳过（避免误当普通行）
+                        if len(tds) == 1 and expanded_td is not None:
+                            continue
                         cells = tr.locator("td").all_text_contents()
                         cells = [c.strip() for c in cells]
                         if split_merged:
                             cells = [_split_merged_cell_value(c) for c in cells]
+                        if len(cells) == len(header_cells) - 1 and len(header_cells) >= 2:
+                            cells = [last_date] + cells
+                        if cells and len(cells) >= len(header_cells) and _date_re.match(cells[0]):
+                            last_date = cells[0]
                         if len(cells) >= len(header_cells):
                             rows.append(dict(zip(header_cells, cells[: len(header_cells)])))
                         elif cells:
@@ -501,19 +829,31 @@ def harvest_table_data(
     if not rows:
         return {"status": "error", "error": "未获取到数据"}
 
-    try:
+    def _write_rows(target: Path) -> None:
         if output_format == "csv":
-            with open(out_path, "w", newline="", encoding="utf-8") as f:
+            with open(target, "w", newline="", encoding="utf-8") as f:
                 if rows:
                     writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), extrasaction="ignore")
                     writer.writeheader()
                     writer.writerows(rows)
         else:
-            with open(out_path, "w", encoding="utf-8") as f:
+            with open(target, "w", encoding="utf-8") as f:
                 json.dump(rows, f, ensure_ascii=False, indent=2)
 
-        # 返回完整路径供调用方读取；契约约定 file_path
+    try:
+        _write_rows(out_path)
         return {"status": "success", "file_path": str(out_path), "rows_count": len(rows)}
+    except OSError as e:
+        if e.errno == 13:  # Permission denied
+            fallback = Path.cwd() / "bi_data" / "raw" / out_path.name
+            try:
+                fallback.parent.mkdir(parents=True, exist_ok=True)
+                _write_rows(fallback)
+                logger.info("[Scraper] ~/.jachin 无写权限，已回退至 %s", fallback)
+                return {"status": "success", "file_path": str(fallback), "rows_count": len(rows)}
+            except Exception as e2:
+                return {"status": "error", "error": f"{e}; 回退路径也失败: {e2}"}
+        return {"status": "error", "error": str(e)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

@@ -699,7 +699,7 @@ async def l1_heartbeat_sync() -> dict[str, Any] | None:
     }
     payload = {
         "instance_id": instance_id,
-        "core_version": "0.8.36",
+        "core_version": "0.8.45",
     }
 
     last_err = None

@@ -85,6 +85,7 @@ _REQUIRED_SLUGS = [
     "stats_user_dau",         # 日活统计：03a DAU 渠道来源（点击日期展开渠道）
     "stats_user_new",         # 日新用户统计：03b DNU 渠道来源（点击渠道展开）
     "prod_sales",
+    "recharge_status",        # 平台充值情况：日期+统计范围展开，_refine_recharge 备用数据源
     "stats_recharge",
     "stats_retention_user",
     "stats_retention_paid",   # 付费用户次留

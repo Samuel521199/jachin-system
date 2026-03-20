@@ -68,6 +68,8 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                 if sel or txt:
                     loc = page.locator(sel).first if sel else page.locator(f".el-menu >> text={txt}").first
                     try:
+                        loc.scroll_into_view_if_needed(timeout=5000)
+                        page.wait_for_timeout(150)
                         is_expanded = loc.evaluate("""
                             el => {
                                 const li = el.closest('li[class*="sub-menu"], li[aria-expanded]');
@@ -78,12 +80,16 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                             if txt:
                                 title_loc = page.locator(f".el-menu .el-submenu__title:has-text('{txt}')").first
                                 try:
+                                    title_loc.scroll_into_view_if_needed(timeout=5000)
+                                    page.wait_for_timeout(100)
                                     title_loc.click(timeout=sel_timeout, force=True)
                                 except Exception:
+                                    loc.scroll_into_view_if_needed(timeout=5000)
                                     loc.click(timeout=sel_timeout, force=True)
                             else:
                                 loc.click(timeout=sel_timeout, force=True)
                     except Exception:
+                        loc.scroll_into_view_if_needed(timeout=5000)
                         loc.click(timeout=sel_timeout, force=True)
                 else:
                     return f"action[{i}] click_expand 缺少 selector 或 text"
@@ -178,22 +184,57 @@ def _expand_all_table_rows(
     wait_ms: int = 400,
     max_rounds: int = 100,
 ) -> None:
-    """抓取前展开表格内所有可展开的树形行。支持 Element UI 标准及自定义 span[style*='cursor: pointer']。"""
+    """抓取前展开表格内所有可展开的树形行。有可展开图标时用自定义路径（按行序+首列日期）。"""
+    has_cursor = page.locator(".el-table__body-wrapper div[style*='cursor']").count() > 0
+    has_std_icon = page.locator(".el-table__body-wrapper .el-table__expand-icon").count() > 0
+    use_custom_first = has_cursor or has_std_icon
     for round_idx in range(max_rounds):
-        icons = page.locator(expand_selector)
-        count = icons.count()
+        if use_custom_first:
+            count = 0
+        else:
+            icons = page.locator(expand_selector)
+            count = icons.count()
         if count == 0:
             clicked = page.evaluate(
                 """
                 () => {
                     const rows = document.querySelectorAll('.el-table__body-wrapper tbody tr');
+                    const getIndent = (r) => {
+                        const cells = r.querySelectorAll('td');
+                        for (const c of cells) {
+                            const div = c.querySelector('div[style*="padding-left"]');
+                            if (div && div.style) {
+                                const m = (div.style.paddingLeft || '').match(/(\d+)/);
+                                if (m) return parseInt(m[1], 10);
+                            }
+                        }
+                        return 0;
+                    };
+                    const isChildRow = (r, prev) => {
+                        if (getIndent(r) > getIndent(prev)) return true;
+                        const c0 = r.querySelector('td:first-child');
+                        const t0 = c0 ? (c0.innerText || '').trim() : '';
+                        const dateLike = /^\\d{4}-\\d{2}-\\d{2}/.test(t0) || /\\d{4}-\\d{2}-\\d{2}/.test(t0);
+                        if (!dateLike && prev) return true;
+                        return false;
+                    };
                     for (const row of rows) {
-                        const span = row.querySelector('.cell span[style*="cursor: pointer"]');
-                        if (!span) continue;
                         const next = row.nextElementSibling;
-                        if (next && /el-table__row--level-1|level-1/.test(next.className || '')) continue;
-                        span.scrollIntoView({ block: 'center', behavior: 'instant' });
-                        span.click();
+                        if (next) {
+                            if (/el-table__row--level-1|level-1/.test(next.className || '')) continue;
+                            if (getIndent(next) > getIndent(row)) continue;
+                            if (isChildRow(next, row)) continue;
+                        }
+                        let target = row.querySelector('.cell div[style*="cursor"]');
+                        if (!target) target = row.querySelector('.cell span[style*="cursor"]');
+                        if (!target) target = row.querySelector('div[style*="cursor"]');
+                        if (!target) target = row.querySelector('span[style*="cursor"]');
+                        if (!target) target = row.querySelector('.el-table__expand-icon:not(.el-table__expand-icon--expanded)');
+                        if (!target) target = row.querySelector('.caret-wrapper .el-table__expand-icon:not(.el-table__expand-icon--expanded)');
+                        if (!target) target = row.querySelector('.cell [class*="expand-icon"]:not([class*="expanded"])');
+                        if (!target) continue;
+                        target.scrollIntoView({ block: 'center', behavior: 'instant' });
+                        target.click();
                         return 1;
                     }
                     return 0;
@@ -328,6 +369,8 @@ def _harvest_via_playwright(
                 expand_wait = max(200, min(int(automation.get("expand_wait_ms") or 600), 2000))
                 try:
                     _expand_all_table_rows(target_page, expand_selector=expand_sel, wait_ms=expand_wait)
+                    post_wait = max(200, min(int(automation.get("expand_post_wait_ms") or 500), 3000))
+                    target_page.wait_for_timeout(post_wait)
                 except Exception:
                     pass
 
@@ -340,12 +383,17 @@ def _harvest_via_playwright(
                 if not body_trs:
                     body_trs = target_page.locator("table:not(.el-date-table) tbody tr").all()
                 split_merged = automation.get("split_merged_cells", True)
+                last_date = ""
                 if header_cells and body_trs:
                     for tr in body_trs:
                         cells = tr.locator("td").all_text_contents()
                         cells = [c.strip() for c in cells]
                         if split_merged:
                             cells = [_split_merged_cell_value(c) for c in cells]
+                        if len(cells) == len(header_cells) - 1 and len(header_cells) >= 2:
+                            cells = [last_date] + cells
+                        if cells and len(cells) >= len(header_cells) and re.match(r"^\d{4}-\d{2}-\d{2}", cells[0]):
+                            last_date = cells[0]
                         if len(cells) >= len(header_cells):
                             rows.append(dict(zip(header_cells, cells[: len(header_cells)])))
                         elif cells:

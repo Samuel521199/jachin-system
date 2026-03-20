@@ -44,7 +44,8 @@ def _build_leaf_actions(
     actions.append({"type": "click", "selector": leaf_sel})
     actions.append({"type": "wait_ms", "ms": 1500})
     if click_query:
-        actions.append({"type": "click_if_exists", "selector": "button:has-text('查询'), .el-button:has-text('查询')", "force": True})
+        # 对比页用「对比查询」，普通页用「查询」
+        actions.append({"type": "click_if_exists", "selector": "button:has-text('对比查询'), button:has-text('查询'), .el-button:has-text('查询')", "force": True})
         actions.append({"type": "wait_ms", "ms": 3000})
     actions.append({"type": "wait", "selector": table_sel, "timeout": 20})
     return actions
@@ -90,6 +91,49 @@ MENU_ITEMS: list[tuple[str, str, list[dict[str, Any]]]] = [
     ("detail_game_start", "游戏开局明细", _build_leaf_actions(["数据明细", "游戏明细"], "游戏开局明细")),
     ("detail_tracking", "数据埋点明细", _build_leaf_actions(["数据明细"], "数据埋点明细")),
 ]
+
+
+def get_automation_for_direct_url(slug: str, direct_url: str, cdp_url: str = DEFAULT_CDP_URL) -> dict[str, Any]:
+    """
+    返回某 slug 直接打开 URL 时的 automation 配置，供单页测试脚本复用。
+    与 run_full_spa_collect 内 expand 配置保持一致，避免重复造轮子。
+    """
+    recharge_expand_slugs = ("recharge_status", "recharge_compare")
+    prod_sales_slugs = ("prod_sales", "prod_sales_compare")
+    is_expand_heavy = slug in prod_sales_slugs or slug in recharge_expand_slugs
+    expand_wait = 800 if (slug in prod_sales_slugs or slug in recharge_expand_slugs) else 600
+    expand_post = 1500 if is_expand_heavy else 500
+
+    if slug == "stats_game_compare":
+        t_end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        t_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        t_end2 = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
+        t_start2 = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+        return {
+            "start_url": direct_url,
+            "actions": [],
+            "expand_table_rows": False,
+            "expand_extract_collapse_loop": True,
+            "expand_target_column": 1,
+            "expand_parent_full_cell": True,
+                "expand_skip_first_rows": 1,
+                "expand_capture_first_rows": 1,
+                "expand_wait_ms": 2000,
+            "filters": {
+                "date_range_compare": [[t_start, t_end], [t_start2, t_end2]],
+                "query_selector": "button:has-text('对比查询'), .el-button:has-text('对比查询')",
+                "wait_after_query_ms": 3000,
+                "expand_first_row": False,
+            },
+        }
+
+    return {
+        "start_url": direct_url,
+        "actions": [],
+        "expand_table_rows": True,
+        "expand_wait_ms": expand_wait,
+        "expand_post_wait_ms": expand_post,
+    }
 
 
 def _slug(text: str, prefix: str = "") -> str:
@@ -222,24 +266,78 @@ def run_full_spa_collect(
     failed_slugs: list[str] = []
     total = len(all_items)
 
-    # 日活/日新统计需筛选前一日并展开首行以获取渠道明细
-    t1 = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # 日活/日新统计：抓取最近 7 天（含昨日），展开每行获取渠道明细
+    t_end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    t_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     dau_dnu_filters = {
-        "date_range": [t1, t1],
+        "date_range": [t_start, t_end],
         "query_selector": "button:has-text('查询'), .el-button:has-text('查询')",
         "wait_after_query_ms": 3000,
         "expand_first_row": True,
     }
+    # stats_game_daily：展开占满整页无法点其他行，用逐行「展开→提取→折叠」循环
+    stats_game_daily_filters = {**dau_dnu_filters, "expand_first_row": False}
+
+    # stats_game_compare：游戏数据统计对比，两时间段 + 对比查询，展开在「统计范围」列
+    t_end2 = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
+    t_start2 = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+    stats_game_compare_filters = {
+        "date_range_compare": [[t_start, t_end], [t_start2, t_end2]],
+        "query_selector": "button:has-text('对比查询'), .el-button:has-text('对比查询')",
+        "wait_after_query_ms": 3000,
+        "expand_first_row": False,
+    }
+
+    # 有展开的页面：需更长等待，确保抓取完再进入下一页
+    prod_sales_slugs = ("prod_sales", "prod_sales_compare")  # 多级树形，展开轮次多
+    recharge_expand_slugs = ("recharge_status", "recharge_compare")  # 日期+统计范围展开，同 prod_sales 结构
+    # 游戏数据统计：业务日期可展开 -> 当日总计 + 各游戏明细，需日期筛选 + 首行展开
+    game_stats_expand_slugs = (
+        "stats_game_daily",
+        "stats_game_compare",
+        "stats_game_core",
+        "stats_game_active",
+        "stats_game_new",
+    )
+    expand_pages = ("stats_user_dau", "stats_user_new") + game_stats_expand_slugs + prod_sales_slugs + recharge_expand_slugs
 
     for idx, (slug_name, display_name, actions) in enumerate(all_items):
         out_path = str(out_dir / f"{slug_name}.csv")
+        is_expand_heavy = slug_name in prod_sales_slugs or slug_name in recharge_expand_slugs
+        needs_longer_expand = slug_name in expand_pages or slug_name in prod_sales_slugs or slug_name in recharge_expand_slugs
+        # 游戏数据统计可能懒加载子行，需更长等待；逐行展开时每轮等待需足够
+        game_stats_wait = 2000 if slug_name in game_stats_expand_slugs else 800
         automation = {
             "start_url": base_url,
             "actions": actions,
-            "expand_table_rows": True,  # 展开树形行，抓取子项（渠道明细、各游戏数据等）
-            "expand_wait_ms": 600,  # 展开后等待，弱网可调大至 800
+            "expand_table_rows": True,
+            "expand_wait_ms": game_stats_wait if slug_name in game_stats_expand_slugs else (800 if needs_longer_expand else 600),
+            "expand_post_wait_ms": 3000 if slug_name in game_stats_expand_slugs else (1500 if is_expand_heavy else (800 if slug_name in expand_pages else 500)),
+            "split_merged_cells": True,
         }
-        if slug_name in ("stats_user_dau", "stats_user_new", "stats_game_daily"):
+        if slug_name == "stats_game_daily":
+            automation["filters"] = stats_game_daily_filters
+            automation["expand_extract_collapse_loop"] = True
+            automation["expand_table_rows"] = False
+        elif slug_name == "stats_game_compare":
+            automation["filters"] = stats_game_compare_filters
+            automation["expand_extract_collapse_loop"] = True
+            automation["expand_table_rows"] = False
+            automation["expand_target_column"] = 1  # 统计范围列展开
+            automation["expand_parent_full_cell"] = True  # 日期对比 "YYYY-MM-DD VS YYYY-MM-DD"
+            automation["expand_skip_first_rows"] = 1  # 跳过首行总计
+            automation["expand_capture_first_rows"] = 1  # 展开前先抓取首行汇总
+        elif slug_name == "stats_game_active":
+            # 游戏活跃留存：与 stats_game_daily 同结构，展开占满整页，需逐行展开→提取→折叠
+            automation["filters"] = stats_game_daily_filters
+            automation["expand_extract_collapse_loop"] = True
+            automation["expand_table_rows"] = False
+        elif slug_name == "stats_game_new":
+            # 游戏新增留存：同 stats_game_active 结构
+            automation["filters"] = stats_game_daily_filters
+            automation["expand_extract_collapse_loop"] = True
+            automation["expand_table_rows"] = False
+        elif slug_name in ("stats_user_dau", "stats_user_new") or slug_name in game_stats_expand_slugs:
             automation["filters"] = dau_dnu_filters
         try:
             r = harvest_table_data(
@@ -261,7 +359,8 @@ def run_full_spa_collect(
                 if auto_ingest:
                     from l3_node.mcp_tools.bi.data_store import ingest_csv
 
-                    ingest_r = ingest_csv(out_path, slug_name)
+                    actual_path = r.get("file_path", out_path)
+                    ingest_r = ingest_csv(actual_path, slug_name)
                     if ingest_r.get("status") != "success":
                         logger.warning("[SPACollector] ingest_csv %s: %s", slug_name, ingest_r.get("error"))
             else:
