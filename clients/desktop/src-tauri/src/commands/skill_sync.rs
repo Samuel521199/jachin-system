@@ -92,6 +92,7 @@ pub async fn perform_startup_sync(
     let url = base_url.trim_end_matches('/');
     let list_url = format!("{}/api/v2/inventory/skills", url);
     let cache_dir = l3_skill_cache_dir();
+    eprintln!("[SkillSync] 开始检查 L2 技能同步 list_url={} cache={:?}", list_url, cache_dir);
 
     let sub_account_id = sub_account_id_from_config();
     if sub_account_id.is_none() {
@@ -120,6 +121,7 @@ pub async fn perform_startup_sync(
     let data: L2SkillsResponse = resp.json().await.map_err(|e| e.to_string())?;
     let skills = data.skills;
     let total = skills.len();
+    eprintln!("[SkillSync] 清单拉取完成 count={} 即将同步到 cache={:?}", total, cache_dir);
 
     let mut synced = 0usize;
     let mut skipped = 0usize;
@@ -164,6 +166,7 @@ pub async fn perform_startup_sync(
         }
 
         let download_url = format!("{}/api/v2/inventory/skills/{}/download", url, skill.item_id);
+        eprintln!("[SkillSync] 即将下载 item_id={} name={} url={}", skill.item_id, skill.name, download_url);
         match client
             .get(&download_url)
             .header("X-Sub-Account-Id", &sub_account_id)
@@ -182,8 +185,10 @@ pub async fn perform_startup_sync(
                     }
                 }
 
+                eprintln!("[SkillSync] 即将写入 item_id={} path={:?}", skill.item_id, wasm_path);
                 std::fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
                 std::fs::write(&wasm_path, bytes.as_ref()).map_err(|e| e.to_string())?;
+                eprintln!("[SkillSync] 拉取成功 item_id={} name={}", skill.item_id, skill.name);
 
                 let plugin_json = serde_json::json!({
                     "id": skill.id.strip_prefix("jpp:").unwrap_or(&skill.id),
@@ -204,15 +209,18 @@ pub async fn perform_startup_sync(
                 synced += 1;
             }
             Ok(r) => {
+                eprintln!("[SkillSync] 下载失败 item_id={} HTTP {}", skill.item_id, r.status());
                 failed.push(format!("{}: HTTP {}", skill.item_id, r.status()));
             }
             Err(e) => {
+                eprintln!("[SkillSync] 下载失败 item_id={} err={}", skill.item_id, e);
                 failed.push(format!("{}: {}", skill.item_id, e));
             }
         }
     }
 
     SYNC_IN_PROGRESS.store(false, Ordering::Relaxed);
+    eprintln!("[SkillSync] 同步完成 synced={} skipped={} failed={} total={}", synced, skipped, failed.len(), total);
 
     let _ = app.emit(
         "inventory-sync-progress",
@@ -275,6 +283,7 @@ pub async fn uninstall_skill(
         let cache_dir = l3_skill_cache_dir();
         let skill_cache_path = cache_dir.join(&item_id);
         if skill_cache_path.exists() {
+            eprintln!("[SkillSync] 即将删除 L3 缓存 item_id={} path={:?}", item_id, skill_cache_path);
             let _ = std::fs::remove_dir_all(&skill_cache_path);
         }
         let _ = app.emit("inventory-sync-complete", ());
@@ -293,6 +302,7 @@ pub async fn uninstall_skill(
     let cache_dir = l3_skill_cache_dir();
     let skill_cache_path = cache_dir.join(&item_id);
     if skill_cache_path.exists() {
+        eprintln!("[SkillSync] 即将删除 L3 缓存 item_id={} path={:?}", item_id, skill_cache_path);
         let _ = std::fs::remove_dir_all(&skill_cache_path);
     }
 

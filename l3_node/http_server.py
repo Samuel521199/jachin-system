@@ -225,10 +225,10 @@ async def _handle_skills_execute(request) -> "aiohttp.web.Response":
         if isinstance(result, str) and not result.strip():
             result = "[执行完成但无输出，请检查 Wasm 插件或 execute ABI 返回值]"
         # HR 透析镜：loader 已写入 data/hr_analysis/ 及 volume，取路径供响应
-        from l3_node.hr_analysis_persist import get_last_saved_path
         resp = {"success": True, "result": {"text": result}, "error": None}
         if skill_id.strip() in _HR_SKILL_IDS:
-            saved_path = get_last_saved_path()
+            persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+            saved_path = persist_mod.get_last_saved_path() if persist_mod else None
             if saved_path:
                 resp["result"]["saved_path"] = saved_path
         return _json_response(resp)
@@ -288,7 +288,11 @@ async def _handle_skills_execute_stream(request) -> "aiohttp.web.Response":
     thread.start()
 
     from l3_node.skills.loader import _extract_stem_from_hr_report, _fetch_skill_config, _get_hr_plugin_config_defaults
-    from l3_node.hr_analysis_persist import persist_hr_analysis_batch_item
+    persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+    if not persist_mod:
+        persist_hr_analysis_batch_item = lambda *a, **k: None
+    else:
+        persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item
 
     cfg = {}
     try:
@@ -381,8 +385,11 @@ async def _handle_scheduler_add_job(request) -> "aiohttp.web.Response":
         "strictness": (body.get("strictness") or "standard").strip(),
     }
     try:
-        from l3_node.recruitment_scheduler import add_scheduled_job
-        result = add_scheduled_job(job_config)
+        from l3_node.hr_loader import get_recruitment_scheduler
+        sched = get_recruitment_scheduler()
+        if not sched:
+            return _json_response({"ok": False, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, status=503)
+        result = sched.add_scheduled_job(job_config)
         return _json_response(result)
     except Exception as e:
         logger.warning("[L3 HTTP] scheduler add_job failed: %s", e)
@@ -397,7 +404,11 @@ async def _handle_scheduler_remove_job(request) -> "aiohttp.web.Response":
         body = {}
     job_name = (body.get("job_name") or "").strip()
     try:
-        from l3_node.recruitment_scheduler import remove_scheduled_job, list_scheduled_jobs, set_recruitment_stopped
+        from l3_node.hr_loader import get_recruitment_scheduler
+        sched = get_recruitment_scheduler()
+        if not sched:
+            return _json_response({"ok": False, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, status=503)
+        remove_scheduled_job, list_scheduled_jobs, set_recruitment_stopped = sched.remove_scheduled_job, sched.list_scheduled_jobs, sched.set_recruitment_stopped
         if job_name:
             result = remove_scheduled_job(job_name)
         else:
@@ -477,8 +488,11 @@ async def _handle_health(request) -> "aiohttp.web.Response":
 async def _handle_scheduler_list_jobs(request) -> "aiohttp.web.Response":
     """GET /api/scheduler/list_jobs - 返回当前后台运行的自动化招聘任务列表"""
     try:
-        from l3_node.recruitment_scheduler import list_scheduled_jobs
-        jobs = list_scheduled_jobs()
+        from l3_node.hr_loader import get_recruitment_scheduler
+        sched = get_recruitment_scheduler()
+        if not sched:
+            return _json_response({"jobs": [], "count": 0})
+        jobs = sched.list_scheduled_jobs()
         return _json_response({"jobs": jobs, "count": len(jobs)})
     except Exception as e:
         logger.warning("[L3 HTTP] scheduler list_jobs failed: %s", e)
@@ -521,8 +535,14 @@ async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse
 
     async def _sse_gen():
         try:
-            from l3_node.recruitment_task import run_recruitment_task_stream
-            async for ev in run_recruitment_task_stream(
+            from l3_node.hr_loader import get_recruitment_task
+            task_mod = get_recruitment_task()
+            if not task_mod:
+                await response.write(
+                    f"data: {json.dumps({'step': 0, 'msg': 'HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment', 'status': 'error'}, ensure_ascii=False)}\n\n".encode("utf-8")
+                )
+                return
+            async for ev in task_mod.run_recruitment_task_stream(
                 job_name=job_name,
                 max_count=max_count,
                 filter_tab=filter_tab,
@@ -612,11 +632,12 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         answer = await run_agent(user_input, engine, max_iterations=8)
         resp = {"answer": answer or ""}
         try:
-            from l3_node.hr_analysis_persist import get_last_saved_path
-            saved = get_last_saved_path()
-            if saved:
-                resp["saved_path"] = saved
-        except ImportError:
+            persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+            if persist_mod:
+                saved = persist_mod.get_last_saved_path()
+                if saved:
+                    resp["saved_path"] = saved
+        except Exception:
             pass
         return _json_response(resp)
     except Exception as e:
@@ -637,19 +658,21 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         logger.warning("[L3 HTTP] aiohttp 未安装，技能 HTTP API 不可用。pip install aiohttp")
         return None
 
-    # 预加载招聘心脏起搏器（APScheduler），确保 scheduler 线程就绪
+    # 预加载招聘心脏起搏器（APScheduler），HR 包存在时加载
     try:
         try:
             from l3_node.early_log import trace
             trace("http_server: importing recruitment_scheduler...")
         except ImportError:
             pass
-        import l3_node.recruitment_scheduler  # noqa: F401
-        try:
-            from l3_node.early_log import trace
-            trace("http_server: recruitment_scheduler loaded")
-        except ImportError:
-            pass
+        from l3_node.hr_loader import get_recruitment_scheduler
+        sched = get_recruitment_scheduler()
+        if sched:
+            try:
+                from l3_node.early_log import trace
+                trace("http_server: recruitment_scheduler loaded")
+            except ImportError:
+                pass
         try:
             from l3_node.skills.bi.scheduler import register_bi_daily_report_job
             register_bi_daily_report_job()

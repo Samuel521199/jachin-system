@@ -3,9 +3,13 @@
 """
 HR Lark 机器人 — 入口脚本
 
-核心逻辑在 tools/atom_lark_chat.py，本脚本负责：
+【推荐】L3 已内置 Lark 长连接：配置 ~/.jachin/config/im_channels.yaml 后，
+直接启动 L3（python -m l3_node --ws-only）即可，无需单独运行本脚本。
+
+本脚本仍可用于：
   - 本地交互模式：终端输入 → process_lark_message → 可选发到 Lark
   - Webhook 模式：channels 入站 → handle_message → process_lark_message + 发回复
+  - 长连接模式：python lark_bot.py --long-connection（与 L3 内置等价）
 
 使用方式：
   python lark_bot.py --interactive

@@ -333,6 +333,13 @@ class LiteLLMEngine:
                 return (msg.content or "").strip()
             except Exception as e:
                 last_error = e
+                err_msg = str(e)
+                is_connect_err = "ConnectError" in type(e).__name__ or "connect" in err_msg.lower()
+                if is_connect_err:
+                    logger.warning(
+                        "[L3 LLM] 网络不可达 model=%s: %s。请检查本机能否访问 dashscope.aliyuncs.com，或配置 HTTP_PROXY/HTTPS_PROXY",
+                        model, e,
+                    )
                 if attempt < self.max_attempts - 1 and len(models_to_try) > 1:
                     logger.warning(
                         "[L3 LLM] attempt=%s model=%s 失败，降级: %s",
@@ -412,6 +419,13 @@ class LiteLLMEngine:
                 return "".join(full_content).strip()
             except Exception as e:
                 last_error = e
+                err_msg = str(e)
+                is_connect_err = "ConnectError" in type(e).__name__ or "connect" in err_msg.lower()
+                if is_connect_err:
+                    logger.warning(
+                        "[L3 LLM] 网络不可达 model=%s: %s。请检查本机能否访问 dashscope.aliyuncs.com，或配置 HTTP_PROXY/HTTPS_PROXY",
+                        model, e,
+                    )
                 if attempt < self.max_attempts - 1 and len(models_to_try) > 1:
                     logger.warning(
                         "[L3 LLM] 流式 attempt=%s model=%s 失败，降级: %s",

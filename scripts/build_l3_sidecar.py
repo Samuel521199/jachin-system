@@ -81,11 +81,7 @@ def main() -> int:
             print(f"[跳过] 二进制已存在且比源码新: {dst}")
             return 0
 
-    # PyInstaller 参数：单文件、无控制台（按 L3_RECRUITMENT_BUILD_SPEC）
-    wasm_plugins = ROOT / "l3_node" / "skills" / "wasm_plugins"
-    add_data_sep = ";" if sys.platform == "win32" else ":"
-    add_data_arg = f"{wasm_plugins}{add_data_sep}l3_node/skills/wasm_plugins" if wasm_plugins.exists() else None
-
+    # exe 仅含 agent+im 核心，MCP/Skill 通过订阅下载到 l3_mcp_cache/l3_skill_cache 使用
     # 排除 Anaconda 中 L3 不需要的重型包（torch/transformers 等会触发 DLL 错误、pandas 等会拖慢构建）
     exclude_modules = [
         "torch", "torchvision", "transformers",  # WinError 1114 DLL 初始化失败
@@ -105,6 +101,7 @@ def main() -> int:
     ]
     for mod in exclude_modules:
         cmd.extend(["--exclude-module", mod])
+    cmd.extend(["--exclude-module", "l3_node.mcp_tools"])
     cmd += [
         "--hidden-import", "l3_node",
         "--hidden-import", "l3_node.paths",
@@ -116,10 +113,14 @@ def main() -> int:
         "--hidden-import", "l3_node.crypto",
         "--hidden-import", "l3_node.engine.hooks_pipeline",
         "--hidden-import", "l3_node.skills.loader",
-        "--hidden-import", "l3_node.recruitment_scheduler",
-        "--hidden-import", "l3_node.recruitment_task",
-        "--hidden-import", "l3_node.hr_analysis_persist",
+        "--hidden-import", "l3_node.hr_loader",
         "--hidden-import", "l3_node.http_server",
+        "--hidden-import", "l3_node.config_writeout",
+        "--hidden-import", "l3_node.im_channels",
+        "--hidden-import", "l3_node.im_channels.lark_channel",
+        "--hidden-import", "l3_node.channels.lark.long_connection",
+        "--hidden-import", "lark_oapi",
+        "--hidden-import", "yaml",
         "--hidden-import", "core.wasm_runner",
         "--hidden-import", "core.single_instance",
         "--hidden-import", "wasmtime",
@@ -141,8 +142,6 @@ def main() -> int:
         "--hidden-import", "playwright.sync_api",
         str(l3_main),
     ]
-    if add_data_arg:
-        cmd = cmd[:-1] + ["--add-data", add_data_arg, cmd[-1]]
 
     # 彻底清理并预创建构建目录，避免 FileNotFoundError: base_library.zip（父目录不存在）
     for d in ["dist_l3", "build_l3"]:
@@ -172,8 +171,19 @@ def main() -> int:
     dist_bin = ROOT / "dist_jachin_desktop" / "bin"
     dist_bin.mkdir(parents=True, exist_ok=True)
     dst_dist = dist_bin / f"{SIDECAR_NAME}-{target}{ext}"
-    shutil.copy2(src, dst_dist)
-    print(f"      已复制到 {dst_dist}")
+    dst_new = dist_bin / f"{SIDECAR_NAME}-{target}.new{ext}"
+    try:
+        shutil.copy2(src, dst_new)
+        try:
+            dst_dist.unlink(missing_ok=True)
+            shutil.move(str(dst_new), str(dst_dist))
+            print(f"      已复制到 {dst_dist}")
+        except (PermissionError, OSError) as e:
+            print(f"      [WARN] 无法覆盖 {dst_dist}（可能 L3 正在运行）: {e}")
+            print(f"      新 exe 已保存为 {dst_new}")
+            print("      请关闭 L3 后执行: ren 或 move 将 .new 替换为正式文件")
+    except Exception as e:
+        print(f"      [ERR] 复制到 dist_jachin_desktop 失败: {e}")
 
     # 清理临时目录
     for d in ["dist_l3", "build_l3"]:

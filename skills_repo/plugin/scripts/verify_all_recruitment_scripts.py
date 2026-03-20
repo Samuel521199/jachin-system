@@ -121,7 +121,13 @@ def test_add_automated_recruitment_task() -> tuple[bool, str]:
     """通过 L3 调度器添加岗位（不依赖 Chrome）"""
     sys.path.insert(0, str(PROJ_ROOT))
     try:
-        from l3_node.recruitment_scheduler import add_scheduled_job, remove_scheduled_job
+        from l3_node.hr_loader import get_recruitment_scheduler
+
+        sched = get_recruitment_scheduler()
+        if not sched:
+            raise ImportError("HR 招聘包未加载")
+        add_scheduled_job = sched.add_scheduled_job
+        remove_scheduled_job = sched.remove_scheduled_job
         job_name = "验证测试岗位_verify"
         remove_scheduled_job(job_name)
         result = add_scheduled_job({

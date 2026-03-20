@@ -153,7 +153,10 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
         if skill_id in _HR_SKILL_IDS_FALLBACK and result_str:
             try:
                 from core.wasm_runner import get_last_ndjson_lines
-                from l3_node.hr_analysis_persist import persist_hr_analysis_result, persist_hr_analysis_batch_item
+                persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+                persist_hr_analysis_result = persist_mod.persist_hr_analysis_result if persist_mod else None
+                persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item if persist_mod else None
+                _lookup_id = f"jpp:{skill_id}" if not (skill_id or "").startswith("jpp:") else skill_id
                 from l3_node.skills.loader import _extract_stem_from_hr_report, _get_hr_plugin_config_defaults
                 import re as _re
                 cfg = {}
@@ -183,7 +186,8 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
                         stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
                         if not stem or _re.match(r"^resume_\d+$", stem):
                             stem = _extract_stem_from_hr_report(report) or stem or "unknown"
-                        persist_hr_analysis_batch_item(skill_id, report, stem, config=cfg)
+                        if persist_hr_analysis_batch_item:
+                            persist_hr_analysis_batch_item(_lookup_id, report, stem, config=cfg)
                         count += 1
                     if count > 0:
                         result_str = f"⚡ 批量分析完成！本次分析 {count} 份简历，报告已保存至 data/hr_analysis/ 目录。"
@@ -211,12 +215,14 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
                             stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
                             if not stem or _re.match(r"^resume_\d+$", stem):
                                 stem = _extract_stem_from_hr_report(report) or stem or "unknown"
-                            persist_hr_analysis_batch_item(skill_id, report, stem, config=cfg)
+                            if persist_hr_analysis_batch_item:
+                                persist_hr_analysis_batch_item(_lookup_id, report, stem, config=cfg)
                             count += 1
                         if count > 0:
                             result_str = f"⚡ 批量分析完成！本次分析 {count} 份简历，报告已保存至 data/hr_analysis/ 目录。"
                     else:
-                        persist_hr_analysis_result(skill_id, result_str, input_data, config=cfg)
+                        if persist_hr_analysis_result:
+                            persist_hr_analysis_result(_lookup_id, result_str, input_data, config=cfg)
             except ImportError:
                 print("[Skill Execute] [L2 Fallback] l3_node 不可用，跳过 HR 报告持久化", file=sys.stderr, flush=True)
             except Exception as pe:

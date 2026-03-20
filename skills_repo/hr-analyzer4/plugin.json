@@ -2,8 +2,9 @@
   "id": "com.jachin.hr.analyzer4",
   "name": "HR 透析镜 4",
   "version": "1.0.0",
-  "description": "根据岗位要求对候选人简历进行严苛评估，输出 Markdown 报告。回收站功能测试。",
+  "description": "根据岗位要求对候选人简历进行严苛评估，输出 Markdown 报告。",
   "type": "skill",
+  "required_mcps": ["mcp:com.jachin.hr.filesystem"],
   "entry": "main.wasm",
   "parameters": ["target_role", "resume_filename", "target_dir", "focus_keywords", "strictness"],
   "configs": {

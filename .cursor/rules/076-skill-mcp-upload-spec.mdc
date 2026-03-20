@@ -1,0 +1,149 @@
+---
+description: Skill 与 MCP 上传规范 — 配置随包、订阅下载后可安装到目标机
+globs: tools/jachin-cli/**/*, cloud/nexus/**/publish/**/*, skills_repo/**/*, l3_node/config_writeout.py, core/sync_daemon.py, l3_node/mcp_sync.py
+alwaysApply: false
+---
+
+# Skill / MCP 上传规范
+
+**目标**：上传 MCP 和 Skill 时配置必须一同打包；订阅下载后配置自动写出到目标机 `~/.jachin/config/`，立即可用。
+
+**关联**：075-config-root-and-cloud-sync.mdc（配置根与写出逻辑）、077-skill-mcp-dependency.mdc（Skill 依赖 MCP）、docs/SKILL_MCP_UPLOAD_SPEC.md
+
+---
+
+## 一、上传时必须包含配置
+
+### 1.1 原则
+
+**依赖配置的 Skill/MCP 在发布时，包内必须包含 `config/` 目录及 `config/manifest.yaml`。**
+
+- 无配置即可运行的插件（如纯计算型 Wasm）可不含 config
+- 依赖 webhook、API Key、调度时间等配置的，**必须**随包提供配置模板
+
+### 1.2 包结构（两种格式均支持）
+
+**格式 A：根目录含 config（推荐，jachin pack 默认）**
+
+```
+{plugin_id}_v{version}.zip
+├── plugin.json
+├── main.wasm          # Skill 入口；MCP 则为 tools/*.py
+├── tools/             # L3_LOCAL MCP 的 Python 模块
+│   └── *.py
+└── config/            # 必需：配置模板
+    ├── manifest.yaml  # 写出清单，必需
+    ├── skills/        # 或 mcps/
+    │   └── {plugin_id}/
+    │       └── *.yaml | *.json
+```
+
+**格式 B：payload 嵌套（JMP/JSP 规范）**
+
+```
+{plugin_id}.jsp (ZIP)
+├── manifest.json
+├── signature.sig
+└── payload/
+    ├── plugin.json
+    ├── main.wasm / tools/
+    └── config/
+        ├── manifest.yaml
+        └── ...
+```
+
+### 1.3 config/manifest.yaml 约定
+
+```yaml
+version: "1"
+output_root: "~/.jachin"
+
+writes:
+  - path: "config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml"
+    type: "file"
+    merge: "overwrite_if_missing"
+  - path: "config/mcps/com.example.my_mcp/config.json"
+    type: "file"
+    merge: "overwrite_if_missing"
+  - path: "config/skills/com.jachin.hr.analyzer4/hr_jds"
+    type: "directory"
+    merge: "copy_missing"
+```
+
+| 字段 | 说明 |
+|------|------|
+| `path` | 写出到 `~/.jachin/` 下的相对路径，必须落在 `config/skills/{id}/` 或 `config/mcps/{id}/` |
+| `type` | `file` 或 `directory` |
+| `merge` | `copy_missing` / `overwrite_if_missing` 不覆盖已有；`never_overwrite` 已有则跳过 |
+
+### 1.4 敏感信息
+
+- 配置模板使用占位符：`${BI_LARK_WEBHOOK_URL}`、`${BI_SMTP_PASSWORD}` 等
+- **禁止**将真实密钥、Token 写入包内
+
+---
+
+## 二、jachin pack 校验
+
+- 若项目根存在 `config/` 目录，则 **必须** 存在 `config/manifest.yaml`
+- 若 `config/manifest.yaml` 存在，则 `writes` 中 `path` 必须指向包内存在的文件/目录
+- 校验失败时 `jachin pack` 报错，禁止打包
+
+---
+
+## 三、L1 publish 校验
+
+- 解压 zip 后，若存在 `config/` 或 `payload/config/`，则 **必须** 存在 `config/manifest.yaml` 或 `payload/config/manifest.yaml`
+- 校验失败时返回 400，提示「包内含 config 目录但缺少 manifest.yaml」
+
+---
+
+## 四、下载后自动写出
+
+**L2 sync_daemon** 和 **L3 mcp_sync** 在解压包后，调用 `l3_node.config_writeout.write_config_from_package()` 按 manifest 写出到 `~/.jachin/config/`。
+
+- 支持 `config/manifest.yaml` 与 `payload/config/manifest.yaml` 两种路径
+- 按 merge 策略写入，不覆盖用户已修改
+- 保证单机 L3 订阅后即可获得完整配置
+
+---
+
+## 五、Skill 依赖 MCP（077 规范）
+
+- Skill 的 `plugin.json` 可声明 `required_mcps`，如 `["mcp:com.jachin.boss.atom"]`
+- **上传 Skill 前**：依赖的 MCP 必须已发布且审核通过
+- **订阅后**：L1 manifest 自动包含依赖 MCP，L2 一并同步，L3 拉取即可用
+- 详见 077-skill-mcp-dependency.mdc
+
+---
+
+## 六、L1 必须显式指定
+
+- **上传 Skill/MCP 时不能使用 localhost 默认**，必须由开发者自己指定目标 L1 地址
+- 支持任意可达地址：公网域名、内网 IP（如 `192.168.110.x`）、本机 `localhost`（若显式传入）
+- 指定方式（优先级从高到低）：
+  1. 命令行：`jachin publish --nexus http://192.168.110.10:3000` 或 `-n`
+  2. 环境变量：`JACHIN_NEXUS_URL=http://192.168.110.10:3000`
+  3. 配置文件：`~/.jachin-cli/config.json` 中 `nexus_url`
+- 若三者均未配置，`jachin publish` 报错并提示必须指定
+
+---
+
+## 七、检查清单（开发/发布时）
+
+- [ ] 依赖配置的 Skill/MCP 包内包含 `config/` 及 `manifest.yaml`
+- [ ] `writes.path` 与 `plugin.json` 的 `id` 对应（如 `config/skills/{id}/`）
+- [ ] 敏感项使用占位符，不写真实密钥
+- [ ] `jachin pack` 通过后再 `jachin publish`
+- [ ] Skill 若有 `required_mcps`，确保依赖 MCP 已先发布（077 规范）
+- [ ] 发布前显式指定 L1 地址（`--nexus` / `JACHIN_NEXUS_URL` / config）
+
+---
+
+## 八、L1 下架后 L2 保留策略
+
+- **L1 下架（archive）后，L2 已下载的 Skill/MCP 仍可继续使用**，除非 L2 自行删除或隐藏
+- L2 sync_daemon 仅做增量下载，不删除本地已有内容
+- L2 前端（Skill Matrix）提供：
+  - **隐藏**：技能/MCP 从列表排除，L3 不可见，可随时取消隐藏
+  - **删除**：技能移入回收站，MCP 从 inventory 移除

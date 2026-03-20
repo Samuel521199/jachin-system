@@ -18,6 +18,28 @@ _L3_CACHE = Path.home() / ".jachin" / "l3_skill_cache"
 _GATEWAY_CONFIG = Path.home() / ".jachin" / "l2_gateway_config.json"
 
 
+def _parse_version(v: str) -> tuple[int, ...]:
+    """解析语义化版本为元组。1.2.3 -> (1, 2, 3)"""
+    if not v or not isinstance(v, str):
+        return (0, 0, 0)
+    parts = (v.strip().split("-")[0].split("."))[:3]
+    out = []
+    for p in parts:
+        try:
+            out.append(int(p.strip()))
+        except ValueError:
+            out.append(0)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out[:3])
+
+
+def _version_compare(remote: str, local: str) -> int:
+    """remote > local 返回 1，相等 0，remote < local 返回 -1"""
+    r, l = _parse_version(remote or "0.0.0"), _parse_version(local or "0.0.0")
+    return 1 if r > l else (-1 if r < l else 0)
+
+
 def _log(msg: str, err: bool = False) -> None:
     """同时输出到 logger 和控制台，确保 PowerShell 可见"""
     out = sys.stderr if err else sys.stdout
@@ -36,6 +58,7 @@ def sync_skills_from_l2() -> tuple[int, int, list[str]]:
         (synced, skipped, failed)
     """
     _log("开始检查 L2 技能同步...")
+    _log(f"即将读取 l2_gateway_config path={_GATEWAY_CONFIG}")
     if not _GATEWAY_CONFIG.exists():
         _log("无 l2_gateway_config.json，跳过同步", err=True)
         return 0, 0, []
@@ -104,7 +127,7 @@ def sync_skills_from_l2() -> tuple[int, int, list[str]]:
         _log("Fix: 1) L2 admin http://localhost:18888/admin/ click Sync 2) Or run .\\scripts\\diagnose-skill-sync.ps1", err=True)
         return 0, 0, []
 
-    _log(f"开始同步 {len(skills)} 项技能到 {_L3_CACHE}")
+    _log(f"清单拉取完成 count={len(skills)} 即将同步到 cache={_L3_CACHE}")
     _L3_CACHE.mkdir(parents=True, exist_ok=True)
 
     for skill in skills:
@@ -116,9 +139,22 @@ def sync_skills_from_l2() -> tuple[int, int, list[str]]:
         wasm_path = skill_dir / entry
         expected_sha = (skill.get("sha256") or skill.get("wasm_sha256") or "").strip().lower()
 
+        remote_version = skill.get("version") or "1.0.0"
+        local_version = None
+        plugin_path = skill_dir / "plugin.json"
+        if plugin_path.exists():
+            _log(f"即将读取 item_id={item_id} 本地版本 path={plugin_path}")
+            try:
+                pj = json.loads(plugin_path.read_text(encoding="utf-8"))
+                local_version = pj.get("version")
+            except Exception:
+                pass
         need_download = True
         if wasm_path.exists():
-            if expected_sha:
+            if _version_compare(remote_version, local_version or "0") > 0:
+                need_download = True
+            elif expected_sha:
+                _log(f"即将校验 SHA256 item_id={item_id} path={wasm_path}")
                 actual = _sha256_hex(wasm_path.read_bytes())
                 if actual == expected_sha:
                     need_download = False
@@ -131,11 +167,12 @@ def sync_skills_from_l2() -> tuple[int, int, list[str]]:
             continue
 
         download_url = f"{l2_url}/api/v2/inventory/skills/{item_id}/download"
-        _log(f"下载 {item_id} ({skill.get('name', '')})...")
+        _log(f"即将下载 item_id={item_id} name={skill.get('name', '')} url={download_url}")
         try:
             with httpx.Client(timeout=120.0) as client:
                 r = client.get(download_url, headers=headers)
                 if not r.is_success:
+                    _log(f"下载失败 item_id={item_id} HTTP {r.status_code}", err=True)
                     failed.append(f"{item_id}: HTTP {r.status_code}")
                     continue
                 bytes_data = r.content
@@ -144,6 +181,10 @@ def sync_skills_from_l2() -> tuple[int, int, list[str]]:
                     if actual != expected_sha:
                         failed.append(f"{item_id}: SHA256 mismatch")
                         continue
+                if skill_dir.exists():
+                    import shutil
+                    _log(f"即将删除旧版本 item_id={item_id} skill_dir={skill_dir}")
+                    shutil.rmtree(skill_dir, ignore_errors=True)
                 skill_dir.mkdir(parents=True, exist_ok=True)
                 wasm_path.write_bytes(bytes_data)
                 plugin_id = skill.get("id", "").replace("jpp:", "") or item_id
@@ -152,16 +193,17 @@ def sync_skills_from_l2() -> tuple[int, int, list[str]]:
                     "name": skill.get("name", plugin_id),
                     "description": skill.get("description", ""),
                     "entry": entry,
+                    "version": remote_version,
                     "parameters": [{"name": p} for p in (skill.get("params") or ["input"])],
                 }
                 (skill_dir / "plugin.json").write_text(
                     json.dumps(plugin_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 synced += 1
-                _log(f"已同步 {item_id} ({skill.get('name', '')})")
+                _log(f"拉取成功 item_id={item_id} name={skill.get('name', '')}")
         except Exception as e:
             failed.append(f"{item_id}: {e}")
-            _log(f"下载失败 {item_id}: {e}", err=True)
+            _log(f"下载失败 item_id={item_id} err={e}", err=True)
 
     _log(f"同步完成: synced={synced} skipped={skipped} failed={len(failed)}")
     if failed:

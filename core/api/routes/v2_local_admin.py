@@ -23,7 +23,6 @@ from core.inventory_scanner import (
     SKILLS_DIR,
     ensure_inventory_dirs,
     registered_local_skills,
-    reload_inventory,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,7 +101,8 @@ async def get_local_inventory(
     ensure_inventory_dirs()
     # 确保使用最新缓存（可选热重载，避免冷启动未扫描）
     try:
-        await reload_inventory()
+        from core.inventory_reloader import request_reload
+        await request_reload()
     except Exception as e:
         logger.warning("[LocalAdmin] reload_inventory 失败，使用缓存: %s", e)
 

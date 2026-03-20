@@ -142,6 +142,10 @@ async function main() {
     await sql.unsafe(`
       CREATE UNIQUE INDEX IF NOT EXISTS developer_payouts_dev_item ON public.developer_payouts (developer_id, item_id);
     `);
+    // 修复：若表由旧迁移 0001 创建，timestamp 为 numeric(12,4)，Unix 10 位时间戳溢出
+    await sql.unsafe(`
+      ALTER TABLE public.telemetry_logs ALTER COLUMN timestamp TYPE numeric(15, 4);
+    `);
     log("[init-store-schema] telemetry_logs, developer_payouts OK");
 
     // 5. users 表补齐 tenant_id、is_root（配对确认插入默认用户需要，与 schema.ts 对齐）

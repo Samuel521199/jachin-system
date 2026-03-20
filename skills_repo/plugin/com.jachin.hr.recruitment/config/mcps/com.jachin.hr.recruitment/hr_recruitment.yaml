@@ -1,0 +1,8 @@
+# HR 招聘 MCP 配置
+# 订阅后写出到 ~/.jachin/config/mcps/com.jachin.hr.recruitment/
+
+# 数据根目录（可选，默认 ~/.jachin/workspace/hr_recruitment）
+# data_root: "~/.jachin/workspace/hr_recruitment"
+
+# 简历根目录（可选，默认 ~/.jachin/workspace/hr_resumes）
+# resume_root: "~/.jachin/workspace/hr_resumes"

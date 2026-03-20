@@ -9,7 +9,11 @@ import json
 import logging
 from typing import Any
 
-from l3_node.channels.lark.client import LARK_API_BASE, get_tenant_access_token
+from l3_node.channels.lark.client import (
+    LARK_API_BASE,
+    _api_base_from_domain,
+    get_tenant_access_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,10 @@ def send_text(
     text: str,
     receive_id_type: str = "chat_id",
     token: str | None = None,
+    *,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    api_base: str | None = None,
 ) -> dict[str, Any]:
     """
     向 Lark 发送文本消息。
@@ -38,13 +46,16 @@ def send_text(
         return {"status": "error", "error": "text 不能为空"}
 
     try:
-        tkn = token or get_tenant_access_token()
+        base = api_base or _api_base_from_domain(None) or LARK_API_BASE
+        tkn = token or get_tenant_access_token(
+            app_id=app_id, app_secret=app_secret, api_base=base
+        )
         try:
             import requests
         except ImportError:
             return {"status": "error", "error": "请安装 requests: pip install requests"}
 
-        url = f"{LARK_API_BASE}/im/v1/messages"
+        url = f"{base}/im/v1/messages"
         params = {"receive_id_type": receive_id_type or "chat_id"}
         payload = {
             "receive_id": receive_id.strip(),

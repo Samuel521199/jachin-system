@@ -152,6 +152,8 @@ writes:
 ### 检查清单（开发时）
 
 - [ ] 新配置写入 `~/.jachin/config/skills/{skill_id}/` 或 `config/mcps/{mcp_id}/`，不散落于 config 根目录
-- [ ] 打包时包含 `payload/config/` 及 `manifest.yaml`，writes 路径与包 id 对应
+- [ ] 打包时包含 `config/` 及 `manifest.yaml`，writes 路径与包 id 对应（规范 076）
 - [ ] SyncDaemon / mcp_sync 解压后执行配置写出
 - [ ] 敏感项使用占位符
+
+**关联**：076-skill-mcp-upload-spec.mdc（上传规范）、docs/SKILL_MCP_UPLOAD_SPEC.md

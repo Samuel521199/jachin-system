@@ -290,8 +290,19 @@ class JachinWasmSandbox:
                     except Exception:
                         pass
                 if path_obj is None:
+                    # 支持 ~/.jachin/workspace/hr_recruitment/{岗位}/pending 下的简历（Boss 收网路径，exe 模式下 p.exists() 可能因斜杠/编码误判）
+                    if ".jachin" in raw and "workspace" in raw and "hr_recruitment" in raw:
+                        for raw_alt in [raw, raw.replace("/", "\\"), raw.replace("\\", "/")]:
+                            try:
+                                p_ws = Path(raw_alt)
+                                if p_ws.exists() and p_ws.is_file():
+                                    path_obj = p_ws.resolve()
+                                    logger.info("[WASM Host] mcp_read_file workspace 路径已解析 path=%s", path_obj)
+                                    break
+                            except Exception:
+                                continue
                     # 支持 skills_repo/plugin/data/{岗位}/pending 下的简历（收网保存路径，Windows 绝对路径可能因编码/斜杠无法 exists）
-                    if "skills_repo" in raw_norm:
+                    if path_obj is None and "skills_repo" in raw_norm:
                         try:
                             idx = raw_norm.find("skills_repo")
                             rel = raw_norm[idx:]

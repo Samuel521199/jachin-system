@@ -36,6 +36,9 @@ data_source:
       - type: wait
         selector: ".el-date-editor"
         timeout: 5
+    # 抓取前展开树形表格行，纳入子项（渠道明细、各游戏数据等）
+    expand_table_rows: true
+    expand_wait_ms: 400
     # 筛选条件（自动填写日期并点击查询）
     filters:
       date_range: ["2026-03-01", "2026-03-09"]       # 开始日期、结束日期

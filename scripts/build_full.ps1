@@ -53,7 +53,7 @@ if (-not $SkipTauri) {
     Write-Host "`n[3/4] Skip Tauri (-SkipTauri)" -ForegroundColor Gray
 }
 
-# 4. Assemble portable output (L3_RECRUITMENT_BUILD_SPEC)
+# 4. Assemble portable output (L3 轻量架构：仅 exe + 脚本 + 最小配置，MCP/Skill 通过 L1 订阅下载)
 Write-Host "`n[4/4] Assembling portable output..." -ForegroundColor Cyan
 $tauriTarget = Join-Path $root "clients\desktop\src-tauri\target\release"
 $outDir = Join-Path $root "dist_jachin_desktop"
@@ -64,7 +64,6 @@ if (-not (Test-Path $tauriTarget)) {
 $null = New-Item -ItemType Directory -Force -Path $outDir
 $outScripts = Join-Path $outDir "scripts"
 $outBin = Join-Path $outDir "bin"
-$outSkills = Join-Path $outDir "skills_repo\plugin"
 $outConfig = Join-Path $outDir "config"
 
 # Copy main exe (if Tauri built)
@@ -92,37 +91,31 @@ if (Test-Path $chromeScript) {
     Copy-Item $chromeScript -Destination $outScripts -Force
 }
 Copy-Item (Join-Path $root "scripts\run_l3.ps1") -Destination $outScripts -Force
+if (Test-Path (Join-Path $root "scripts\run_l3.bat")) {
+    Copy-Item (Join-Path $root "scripts\run_l3.bat") -Destination $outDir -Force
+    Write-Host "  Copied run_l3.bat (double-click to start L3)" -ForegroundColor Gray
+}
+if (Test-Path (Join-Path $root "scripts\run_l3_standalone.bat")) {
+    Copy-Item (Join-Path $root "scripts\run_l3_standalone.bat") -Destination $outDir -Force
+    Write-Host "  Copied run_l3_standalone.bat (L2 未启动时使用)" -ForegroundColor Gray
+}
 Write-Host "  Copied scripts: launch_chrome_debug.ps1, run_l3.ps1" -ForegroundColor Gray
 
-# Copy skills_repo/plugin
-$pluginSrc = Join-Path $root "skills_repo\plugin"
-if (Test-Path $pluginSrc) {
-    $null = New-Item -ItemType Directory -Force -Path $outSkills
-    if (Test-Path (Join-Path $pluginSrc "2-track-a-atomic-mcp")) {
-        Copy-Item (Join-Path $pluginSrc "2-track-a-atomic-mcp") -Destination $outSkills -Recurse -Force
-    }
-    if (Test-Path (Join-Path $pluginSrc "data")) {
-        Copy-Item (Join-Path $pluginSrc "data") -Destination $outSkills -Recurse -Force
-    }
-    if (Test-Path (Join-Path $pluginSrc "scripts")) {
-        Copy-Item (Join-Path $pluginSrc "scripts") -Destination $outSkills -Recurse -Force
-    }
-    if (Test-Path (Join-Path $pluginSrc "src")) {
-        Copy-Item (Join-Path $pluginSrc "src") -Destination $outSkills -Recurse -Force
-    }
-    if (Test-Path (Join-Path $pluginSrc ".env.example")) {
-        Copy-Item (Join-Path $pluginSrc ".env.example") -Destination $outSkills -Force
-    }
-    Write-Host "  Copied skills_repo/plugin/" -ForegroundColor Gray
-}
+# 不复制 MCP/Skill：按架构 L3 轻量，MCP 与 Skill 通过 L1 订阅 → L2 同步 → L3 拉取到 ~/.jachin/l3_mcp_cache / l3_skill_cache
 
 # Copy config
 $null = New-Item -ItemType Directory -Force -Path $outConfig
+# 创建 logs 目录（便携包日志落盘）
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $outDir "logs")
+Write-Host "  Created logs/" -ForegroundColor Gray
 if (Test-Path (Join-Path $root "config\skills_config.yaml")) {
     Copy-Item (Join-Path $root "config\skills_config.yaml") -Destination $outConfig -Force
 }
 if (Test-Path (Join-Path $root "config\l3_recruitment.yaml.example")) {
     Copy-Item (Join-Path $root "config\l3_recruitment.yaml.example") -Destination (Join-Path $outConfig "l3_recruitment.yaml.example") -Force
+}
+if (Test-Path (Join-Path $root "config\im_channels.yaml.example")) {
+    Copy-Item (Join-Path $root "config\im_channels.yaml.example") -Destination (Join-Path $outConfig "im_channels.yaml.example") -Force
 }
 Write-Host "  Copied config/" -ForegroundColor Gray
 

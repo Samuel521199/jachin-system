@@ -4,7 +4,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Play, Loader2, RefreshCw, Trash2, RotateCcw } from "lucide-react";
+import { Play, Loader2, RefreshCw, Trash2, RotateCcw, EyeOff, Plug } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   listSkills,
@@ -13,11 +13,20 @@ import {
   isHrSkill,
   invokePlugin,
   uninstallSkill,
+  hideSkill,
+  unhideSkill,
+  listHiddenSkills,
+  listL3Mcps,
+  hideMcp,
+  unhideMcp,
+  deleteMcp,
+  listHiddenMcps,
   listRecycleBinSkills,
   restoreRecycleBinSkill,
   permanentDeleteRecycleBinSkill,
   SkillInfo,
   RecycleBinItem,
+  L3McpInfo,
   BACKEND_URL,
 } from "../../lib/api";
 import { INVENTORY_UPDATED_EVENT } from "../../hooks/useUISyncEventSource";
@@ -28,6 +37,7 @@ import { SkillChainView, type ChainStep } from "../components/SkillChainView";
 import { UninstallSkillModal } from "../components/UninstallSkillModal";
 import { SkillSettingsDrawer } from "../components/SkillSettingsDrawer";
 import { BatchProgressBar } from "../components/BatchProgressBar";
+import { AnimatePresence } from "framer-motion";
 
 export function SkillMatrix() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -42,10 +52,22 @@ export function SkillMatrix() {
   const [syncing, setSyncing] = useState(false);
   const [uninstallTarget, setUninstallTarget] = useState<{ skill: SkillInfo } | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<{ skill: SkillInfo } | null>(null);
-  const [activeTab, setActiveTab] = useState<"skills" | "recycle">("skills");
+  const [activeTab, setActiveTab] = useState<"skills" | "mcps" | "hidden" | "recycle">("skills");
   const [recycleItems, setRecycleItems] = useState<RecycleBinItem[]>([]);
   const [recycleLoading, setRecycleLoading] = useState(false);
   const [recycleError, setRecycleError] = useState<string | null>(null);
+  const [mcps, setMcps] = useState<L3McpInfo[]>([]);
+  const [mcpsLoading, setMcpsLoading] = useState(false);
+  const [hiddenSkills, setHiddenSkills] = useState<string[]>([]);
+  const [hiddenMcps, setHiddenMcps] = useState<string[]>([]);
+  const [hiddenLoading, setHiddenLoading] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
   const [streamProgress, setStreamProgress] = useState<{
     skillId: string;
     skillName: string;
@@ -81,9 +103,39 @@ export function SkillMatrix() {
     return () => clearInterval(t);
   }, [load]);
 
+  const loadMcps = useCallback(async () => {
+    setMcpsLoading(true);
+    try {
+      const list = await listL3Mcps();
+      setMcps(list);
+    } catch (e) {
+      console.error("Failed to load MCPs:", e);
+      setMcps([]);
+    } finally {
+      setMcpsLoading(false);
+    }
+  }, []);
+
+  const loadHidden = useCallback(async () => {
+    setHiddenLoading(true);
+    try {
+      const [skills, mcpsList] = await Promise.all([listHiddenSkills(), listHiddenMcps()]);
+      setHiddenSkills(skills);
+      setHiddenMcps(mcpsList);
+    } catch (e) {
+      console.error("Failed to load hidden:", e);
+      setHiddenSkills([]);
+      setHiddenMcps([]);
+    } finally {
+      setHiddenLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === "recycle") void loadRecycleBin();
-  }, [activeTab, loadRecycleBin]);
+    if (activeTab === "mcps") void loadMcps();
+    if (activeTab === "hidden") void loadHidden();
+  }, [activeTab, loadRecycleBin, loadMcps, loadHidden]);
 
   // L2 云边同步：收到 INVENTORY_UPDATED 时立即刷新技能列表，平滑展示新技能
   useEffect(() => {
@@ -154,6 +206,82 @@ export function SkillMatrix() {
 
   const handleSettings = (skill: SkillInfo) => {
     setSettingsTarget({ skill });
+  };
+
+  const handleHide = async (skill: SkillInfo) => {
+    const itemId = skill.item_id ?? skill.skill_id.replace(/^jpp:/, "");
+    try {
+      const res = await hideSkill(itemId);
+      if (res.ok) {
+        setToast({ message: "技能已隐藏", type: "success" });
+        await load();
+        await loadHidden();
+      } else {
+        setToast({ message: res.error ?? "隐藏失败", type: "error" });
+      }
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "隐藏失败", type: "error" });
+    }
+  };
+
+  const handleUnhideSkill = async (itemId: string) => {
+    try {
+      const res = await unhideSkill(itemId);
+      if (res.ok) {
+        setToast({ message: "已取消隐藏", type: "success" });
+        await load();
+        await loadHidden();
+      } else {
+        setToast({ message: res.error ?? "取消隐藏失败", type: "error" });
+      }
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "取消隐藏失败", type: "error" });
+    }
+  };
+
+  const handleHideMcp = async (itemId: string) => {
+    try {
+      const res = await hideMcp(itemId);
+      if (res.ok) {
+        setToast({ message: "MCP 已隐藏", type: "success" });
+        await loadMcps();
+        await loadHidden();
+      } else {
+        setToast({ message: res.error ?? "隐藏失败", type: "error" });
+      }
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "隐藏失败", type: "error" });
+    }
+  };
+
+  const handleUnhideMcp = async (itemId: string) => {
+    try {
+      const res = await unhideMcp(itemId);
+      if (res.ok) {
+        setToast({ message: "已取消隐藏", type: "success" });
+        await loadMcps();
+        await loadHidden();
+      } else {
+        setToast({ message: res.error ?? "取消隐藏失败", type: "error" });
+      }
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "取消隐藏失败", type: "error" });
+    }
+  };
+
+  const handleDeleteMcp = async (itemId: string) => {
+    if (!confirm(`确定删除 MCP「${itemId}」？`)) return;
+    try {
+      const res = await deleteMcp(itemId);
+      if (res.ok) {
+        setToast({ message: "MCP 已删除", type: "success" });
+        await loadMcps();
+      } else {
+        setToast({ message: res.error ?? "删除失败", type: "error" });
+      }
+    } catch (e) {
+      setToast({ message: e instanceof Error ? e.message : "删除失败", type: "error" });
+    }
   };
 
   const handleUninstallConfirm = async (purgeData: boolean) => {
@@ -371,6 +499,30 @@ export function SkillMatrix() {
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab("mcps")}
+              className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors flex items-center gap-1.5 ${
+                activeTab === "mcps"
+                  ? "bg-violet-500/30 text-violet-400"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Plug className="w-3.5 h-3.5" />
+              MCP {mcps.length > 0 && `(${mcps.length})`}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("hidden")}
+              className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors flex items-center gap-1.5 ${
+                activeTab === "hidden"
+                  ? "bg-amber-500/30 text-amber-400"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <EyeOff className="w-3.5 h-3.5" />
+              已隐藏 {(hiddenSkills.length + hiddenMcps.length) > 0 && `(${hiddenSkills.length + hiddenMcps.length})`}
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab("recycle")}
               className={`px-3 py-1.5 rounded-md text-sm font-mono transition-colors flex items-center gap-1.5 ${
                 activeTab === "recycle"
@@ -383,6 +535,22 @@ export function SkillMatrix() {
             </button>
           </div>
         </div>
+
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className={`fixed top-20 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-lg text-sm ${
+                toast.type === "success" ? "bg-emerald-500/90 text-white" : "bg-rose-500/90 text-white"
+              }`}
+              onClick={() => setToast(null)}
+            >
+              {toast.message}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {activeTab === "skills" && (
           <>
@@ -407,6 +575,7 @@ export function SkillMatrix() {
                       onExecute={(capName) => handleExecute(skill.skill_id, capName)}
                       onExpand={() => setExpandedId(skill.skill_id)}
                       onSettings={() => handleSettings(skill)}
+                      onHide={() => handleHide(skill)}
                       onUninstall={() => handleUninstall(skill)}
                       permissions={skill.permissions}
                       liveStatus={
@@ -417,6 +586,114 @@ export function SkillMatrix() {
                     />
                   );
                 })}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === "mcps" && (
+          <>
+            {mcpsLoading ? (
+              <div className="flex items-center gap-2 text-slate-400 py-12">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                加载中...
+              </div>
+            ) : mcps.length === 0 ? (
+              <p className="text-slate-400 py-12 font-mono text-sm">暂无 L3 MCP</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {mcps.map((mcp) => (
+                  <motion.div
+                    key={mcp.item_id}
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="glass-panel rounded-xl p-4 border border-white/10 flex flex-col gap-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Plug className="w-4 h-4 text-violet-400 flex-shrink-0" />
+                      <span className="font-mono text-sm font-medium text-white truncate">{mcp.name}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-mono truncate">{mcp.item_id}</p>
+                    <div className="flex gap-2 mt-auto">
+                      <button
+                        type="button"
+                        onClick={() => handleHideMcp(mcp.item_id)}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-amber-600/80 hover:bg-amber-500 text-white text-xs font-mono"
+                      >
+                        <EyeOff className="w-3.5 h-3.5" />
+                        隐藏
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMcp(mcp.item_id)}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-rose-600/80 hover:bg-rose-500 text-white text-xs font-mono"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        删除
+                      </button>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === "hidden" && (
+          <>
+            {hiddenLoading ? (
+              <div className="flex items-center gap-2 text-slate-400 py-12">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                加载中...
+              </div>
+            ) : hiddenSkills.length === 0 && hiddenMcps.length === 0 ? (
+              <p className="text-slate-400 py-12 font-mono text-sm">暂无已隐藏项</p>
+            ) : (
+              <div className="space-y-4">
+                {hiddenSkills.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-mono text-slate-400 mb-2">已隐藏技能</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {hiddenSkills.map((itemId) => (
+                        <div
+                          key={itemId}
+                          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10"
+                        >
+                          <span className="font-mono text-sm text-white">{itemId}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleUnhideSkill(itemId)}
+                            className="px-2 py-1 rounded bg-cyan-600/80 hover:bg-cyan-500 text-white text-xs"
+                          >
+                            取消隐藏
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {hiddenMcps.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-mono text-slate-400 mb-2">已隐藏 MCP</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {hiddenMcps.map((itemId) => (
+                        <div
+                          key={itemId}
+                          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10"
+                        >
+                          <span className="font-mono text-sm text-white">{itemId}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleUnhideMcp(itemId)}
+                            className="px-2 py-1 rounded bg-cyan-600/80 hover:bg-cyan-500 text-white text-xs"
+                          >
+                            取消隐藏
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -485,6 +762,10 @@ export function SkillMatrix() {
             skill={detailSkill}
             onClose={() => setExpandedId(null)}
             onExecute={handleExecute}
+            onHide={() => {
+              setExpandedId(null);
+              handleHide(detailSkill);
+            }}
             onUninstall={() => {
               setExpandedId(null);
               setUninstallTarget({ skill: detailSkill });

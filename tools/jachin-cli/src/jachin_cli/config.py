@@ -8,7 +8,6 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".jachin-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-DEFAULT_NEXUS_URL = "http://localhost:3000"
 
 
 def get_token() -> str | None:
@@ -25,18 +24,20 @@ def get_token() -> str | None:
     return None
 
 
-def get_nexus_url() -> str:
-    """获取 Nexus 商城 base URL"""
+def get_nexus_url() -> str | None:
+    """获取 Nexus 商城 base URL。未配置时返回 None，必须由调用方显式指定。"""
     url = os.environ.get("JACHIN_NEXUS_URL", "").strip()
     if url:
         return url.rstrip("/")
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
-            return (data.get("nexus_url") or DEFAULT_NEXUS_URL).rstrip("/")
+            u = (data.get("nexus_url") or "").strip()
+            if u:
+                return u.rstrip("/")
         except Exception:
             pass
-    return DEFAULT_NEXUS_URL
+    return None
 
 
 def save_config(token: str | None = None, nexus_url: str | None = None) -> None:

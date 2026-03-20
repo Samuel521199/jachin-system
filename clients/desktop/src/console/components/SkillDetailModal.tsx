@@ -2,7 +2,7 @@
  * SkillDetailModal - 技能详情弹层：描述、能力列表、逐项执行、上次结果
  */
 
-import { Play, Loader2, X, Trash2 } from "lucide-react";
+import { Play, Loader2, X, Trash2, EyeOff } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SkillInfo } from "../../lib/api";
 import { cn } from "../../utils/cn";
@@ -13,6 +13,7 @@ export function SkillDetailModal({
   onClose,
   onExecute,
   onUninstall,
+  onHide,
   executing,
   lastResult,
 }: {
@@ -20,6 +21,7 @@ export function SkillDetailModal({
   onClose: () => void;
   onExecute: (skillId: string, capName: string) => void;
   onUninstall?: () => void;
+  onHide?: () => void;
   executing: { skillId: string; cap: string } | null;
   lastResult?: string | null;
 }) {
@@ -50,6 +52,20 @@ export function SkillDetailModal({
           <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
             <h3 className="font-mono font-semibold text-white">{skill.name}</h3>
             <div className="flex items-center gap-2">
+              {onHide && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onHide();
+                    onClose();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-amber-400 hover:bg-amber-500/20 hover:text-amber-300 transition-colors font-mono text-sm"
+                  title="隐藏技能"
+                >
+                  <EyeOff className="w-4 h-4" />
+                  隐藏
+                </button>
+              )}
               {onUninstall && (
                 <button
                   type="button"

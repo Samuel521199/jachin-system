@@ -251,7 +251,12 @@ def main() -> int:
                     "output_format": "csv",
                     "timeout": 45,
                     "extract_rules": TABLE_SEL,
-                    "automation": {"start_url": BASE_URL, "actions": actions},
+                    "automation": {
+                        "start_url": BASE_URL,
+                        "actions": actions,
+                        "expand_table_rows": True,  # 展开树形行，抓取子项（渠道明细、各游戏数据等）
+                        "expand_wait_ms": 600,  # 展开后等待，弱网可调大至 800
+                    },
                 },
             )
             if r.get("status") == "success":

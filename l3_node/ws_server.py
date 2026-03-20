@@ -17,7 +17,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -27,57 +26,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LARK_SESSIONS_PATH = Path.home() / ".jachin" / "l3_lark_sessions.json"
+from l3_node.lark_session import load_lark_session as _load_lark_session, save_lark_session as _save_lark_session
 
 # 终端-Lark 镜像：chat_id -> 订阅该会话的 WebSocket 集合（终端连接）
 _mirror_subscribers: dict[str, set] = {}
 _mirror_subscribers_lock = asyncio.Lock()
 # LARK_MIRROR_PUSH_URL：终端发消息后，L3 将回复推送到该 URL，由 webhook 转发到 Lark
 _LARK_MIRROR_PUSH_URL = os.environ.get("LARK_MIRROR_PUSH_URL", "http://127.0.0.1:5000/api/mirror-push")
-_MAX_SESSION_MESSAGES = 30
-_SESSION_TTL_HOURS = 24
-
-
-def _load_lark_session(chat_id: str) -> list[dict[str, Any]]:
-    """从文件加载 Lark chat 的对话历史"""
-    if not chat_id or not str(chat_id).strip():
-        return []
-    chat_id = str(chat_id).strip()
-    try:
-        if not _LARK_SESSIONS_PATH.exists():
-            return []
-        data = json.loads(_LARK_SESSIONS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return []
-        entry = data.get(chat_id)
-        if not isinstance(entry, dict):
-            return []
-        msgs = entry.get("messages", [])
-        if isinstance(msgs, list):
-            return msgs[-_MAX_SESSION_MESSAGES:]
-    except Exception as e:
-        logger.debug("[L3 WS] 加载 Lark 会话失败 chat_id=%s: %s", chat_id[:20], e)
-    return []
-
-
-def _save_lark_session(chat_id: str, messages: list[dict[str, Any]]) -> None:
-    """将会话历史持久化到文件"""
-    if not chat_id or not str(chat_id).strip():
-        return
-    chat_id = str(chat_id).strip()
-    try:
-        _LARK_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if _LARK_SESSIONS_PATH.exists():
-            try:
-                data = json.loads(_LARK_SESSIONS_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        recent = messages[-_MAX_SESSION_MESSAGES:] if len(messages) > _MAX_SESSION_MESSAGES else messages
-        data[chat_id] = {"messages": recent, "updated_at": time.time()}
-        _LARK_SESSIONS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.debug("[L3 WS] 保存 Lark 会话失败 chat_id=%s: %s", chat_id[:20], e)
 
 WS_HOST = "127.0.0.1"
 WS_PORT = 18981  # 189xx 系列，与 L2(18888)、Sensory(18881) 分离

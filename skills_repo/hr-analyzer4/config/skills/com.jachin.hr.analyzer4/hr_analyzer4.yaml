@@ -1,0 +1,9 @@
+# HR 透析镜 4 技能配置（订阅后写出到 ~/.jachin/config/skills/com.jachin.hr.analyzer4/）
+# 可覆盖 plugin.json 中的 configs 默认值
+
+strictness: standard
+strict_mode: true
+resume_input_dir: "data/hr_resumes"
+output_dir: "data/hr_analysis"
+default_target_role: backend_engineer
+default_resume: zhangsan_resume.md

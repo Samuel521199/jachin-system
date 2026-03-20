@@ -1,5 +1,15 @@
 {
-  "id": "local-hr-fs",
+  "id": "com.jachin.hr.filesystem",
   "name": "HR 简历文件系统 MCP",
-  "description": "只读访问 data/hr_resumes 目录，供 HR 简历透视镜技能读取简历"
+  "description": "只读访问 data/hr_resumes、config/hr_jds 目录，供 HR 简历透视镜技能读取简历",
+  "version": "1.0.0",
+  "item_type": "MCP",
+  "runtime_tier": "L2_GATEWAY",
+  "mcp_servers": [
+    {
+      "id": "local-hr-fs",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "__PROJECT_ROOT__", "__PROJECT_ROOT__/data/hr_resumes", "__PROJECT_ROOT__/config/hr_jds"]
+    }
+  ]
 }

@@ -1,0 +1,20 @@
+# IM 通道配置 — L3 独立使用 Lark/Telegram 等，无需 Layer 1
+# 复制到 ~/.jachin/config/im_channels.yaml 后修改（支持 JACHIN_HOME 覆盖）
+# 打包后可随意修改，无需重新打包
+
+im_channels:
+  lark:
+    enabled: true
+    mode: long_connection   # long_connection | webhook（当前仅支持 long_connection）
+    app_id: ""              # 飞书应用 App ID (cli_xxx)，可从环境变量 LARK_APP_ID 覆盖
+    app_secret: ""          # 飞书应用 App Secret，可从 LARK_APP_SECRET 覆盖
+    # 多机共享同一飞书应用：本节点只处理这些 chat_id，空则处理全部
+    # 非空时，仅处理列表中的会话，避免回复到其他机器
+    # 各节点 chat_ids 应互斥，否则消息可能被忽略
+    chat_ids: []
+    # 必须与飞书应用创建地一致，否则会报 Incorrect domain name
+    domain: "https://open.feishu.cn"   # 飞书中国版；国际版用 https://open.larksuite.com
+  telegram:
+    enabled: false
+    # bot_token: ""
+    # future

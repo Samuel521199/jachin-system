@@ -191,6 +191,10 @@ print(r)
 | `start_url` | string | 入口页 URL，默认与 url 相同 |
 | `actions` | array | 操作序列：`{type, selector?, value?, ms?, timeout?}` |
 | `filters` | object | 筛选条件：`date_range`, `query_selector`, `wait_for_loading_hidden` 等 |
+| `expand_table_rows` | bool | 抓取前展开所有树形行，纳入子项（渠道明细、各游戏数据等）。默认 false |
+| `expand_selector` | string | 未展开图标选择器，默认 Element UI：`.el-table__expand-icon:not(.el-table__expand-icon--expanded)` |
+| `expand_wait_ms` | int | 每次展开后等待毫秒，默认 600，弱网可调大至 800 |
+| `split_merged_cells` | bool | 拆分「当前值 (+X%) 上期值」合并单元格为「当前值 \| 环比 \| 上期值」。默认 true |
 
 **filters 等待相关**（确保数据完全加载，弱网环境可调大）：
 - `wait_for_loading_hidden`：加载遮罩选择器（如 `.el-loading-mask`），等待其隐藏表示数据就绪
@@ -218,4 +222,5 @@ print(r)
 | 未提取到表格数据 | 检查页面是否已加载完成；可调整 `extract_rules` 或 `table_selector` |
 | 日期填写无效 | Element UI 日期选择器若为弹窗日历，`fill` 可能无效；可改用 `actions` 中先 `click` 打开面板再 `click` 选择日期 |
 | 抓取到部分数据 | 增大 `wait_after_query_ms`（如 10000）、`wait_for_data_timeout`（如 30）；配置 `wait_for_loading_hidden` 等待加载遮罩消失 |
+| 渠道/汇总只有 ALL，缺子项 | 配置 `expand_table_rows: true`，抓取前自动展开树形行；弱网可调大 `expand_wait_ms`（如 600） |
 | `playwright 未安装` | 执行 `pip install playwright && playwright install chromium` |

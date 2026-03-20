@@ -4,7 +4,7 @@
 
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { AppWindow, Play, Loader2, FileText, Globe, Cpu, Shield, Trash2, Settings } from "lucide-react";
+import { AppWindow, Play, Loader2, FileText, Globe, Cpu, Shield, Trash2, Settings, EyeOff } from "lucide-react";
 import { cn } from "../../utils/cn";
 
 /** 占位：后端暂无权限数据时使用的 mock 权限类型 */
@@ -39,6 +39,7 @@ export function LiveTile({
   onExecute,
   onExpand,
   onUninstall,
+  onHide,
   onSettings,
   permissions,
   liveStatus,
@@ -51,6 +52,7 @@ export function LiveTile({
   onExecute?: (capName: string) => void;
   onExpand?: () => void;
   onUninstall?: () => void;
+  onHide?: () => void;
   onSettings?: () => void;
   /** 后端下发的权限列表，有则替代 mock 占位 */
   permissions?: Array<{ id: string; label: string }>;
@@ -141,6 +143,19 @@ export function LiveTile({
               title="技能设置"
             >
               <Settings className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {onHide && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onHide();
+              }}
+              className="p-1.5 rounded text-slate-500 hover:text-amber-400 hover:bg-amber-500/20 transition-colors"
+              title="隐藏"
+            >
+              <EyeOff className="w-3.5 h-3.5" />
             </button>
           )}
           {onUninstall && (

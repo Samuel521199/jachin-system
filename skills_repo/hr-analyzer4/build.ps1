@@ -1,7 +1,9 @@
 # HR 透析镜 4 - Windows 编译脚本
 # 用法: .\build.ps1
 # 使用 cargo + wasm32-unknown-unknown（无需 wasm-pack）
-# 输出: target/wasm32-unknown-unknown/release/hr_analyzer4.wasm -> l3_node/skills/wasm_plugins/hr-analyzer4/main.wasm
+# 输出:
+#   - l3_node/skills/wasm_plugins/hr-analyzer4/main.wasm（L3 运行时）
+#   - skills_repo/hr-analyzer4/main.wasm（jachin pack 用）
 
 $ErrorActionPreference = "Stop"
 $projRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -18,3 +20,7 @@ $destDir = Split-Path $dest -Parent
 if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 Copy-Item $src $dest -Force
 Write-Host ">>> Done: $dest"
+
+$packDest = Join-Path $PSScriptRoot "main.wasm"
+Copy-Item $src $packDest -Force
+Write-Host ">>> Pack dest: $packDest"

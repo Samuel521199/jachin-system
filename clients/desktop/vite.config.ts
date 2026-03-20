@@ -16,6 +16,10 @@ function viteL3Proxy() {
           next();
           return;
         }
+        if (req.aborted) {
+          next();
+          return;
+        }
         const pathname = req.url.replace(/^\/l3/, "");
         for (const port of L3_PORTS) {
           try {
@@ -32,7 +36,10 @@ function viteL3Proxy() {
             res.setHeader("Access-Control-Allow-Origin", "*");
             const body = resp.body;
             if (body && resp.headers.get("content-type")?.includes("text/event-stream")) {
-              Readable.fromWeb(body as import("stream").WebReadableStream<any>).pipe(res);
+              const stream = Readable.fromWeb(body as import("stream").WebReadableStream<any>);
+              stream.on("error", () => {}); // L3 断开或客户端断开时 pipe 可能抛错，避免 ECONNRESET 导致 Vite 崩溃
+              res.on("close", () => stream.destroy()); // 客户端断开时销毁源流，避免泄漏
+              stream.pipe(res);
             } else if (body) {
               const buf = await resp.arrayBuffer();
               res.end(Buffer.from(buf));

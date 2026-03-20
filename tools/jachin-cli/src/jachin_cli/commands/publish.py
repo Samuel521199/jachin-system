@@ -21,6 +21,13 @@ console = Console()
 def publish_cmd(
     visibility: str = typer.Option("PUBLIC", "--visibility", "-v", help="PUBLIC 或 PRIVATE"),
     price: int = typer.Option(0, "--price", "-p", help="月付价格(分)，0=免费"),
+    nexus: str | None = typer.Option(
+        None,
+        "--nexus",
+        "--l1",
+        "-n",
+        help="L1 Nexus 地址，必须显式指定。如 http://192.168.110.10:3000 或 https://nexus.example.com",
+    ),
 ) -> None:
     """读取配置与 dist 包，向 L1 Nexus 发起发布请求"""
     console.print()
@@ -75,7 +82,23 @@ def publish_cmd(
             raise typer.Exit(1)
         latest_zip = zips[0]
 
-    nexus_url = get_nexus_url()
+    nexus_url = (nexus or "").strip().rstrip("/") or get_nexus_url()
+    if not nexus_url:
+        console.print(Panel.fit(
+            "[bold red]未指定 L1 Nexus 地址[/]\n\n"
+            "上传 Skill/MCP 时必须显式指定目标 L1，不能使用 localhost 默认。\n\n"
+            "方式一（推荐）：命令行参数\n"
+            "  [cyan]jachin publish --nexus http://192.168.110.10:3000[/]\n"
+            "  [cyan]jachin publish -n https://nexus.example.com[/]\n\n"
+            "方式二：环境变量\n"
+            "  [cyan]JACHIN_NEXUS_URL=http://192.168.110.10:3000 jachin publish[/]\n\n"
+            "方式三：配置文件 ~/.jachin-cli/config.json\n"
+            "  [cyan]{\"nexus_url\": \"http://192.168.110.10:3000\"}[/]",
+            border_style="red",
+            title="[bold red]Error[/]",
+        ))
+        raise typer.Exit(1)
+
     publish_url = f"{nexus_url}/api/v1/store/publish"
 
     console.print()
@@ -89,12 +112,12 @@ def publish_cmd(
     success = _do_publish(publish_url, token, plugin_data, latest_zip, visibility, price, shadow_only)
 
     if success:
-        _print_success(plugin_data.get("name", "Plugin"), shadow_only)
+        _print_success(plugin_data.get("name", "Plugin"), shadow_only, nexus_url)
     else:
         console.print(Panel.fit(
             "[bold red]发布失败[/]\n\n"
             "请检查：\n"
-            "1. Nexus 是否已启动 (localhost:3000)\n"
+            "1. --nexus 指定的 L1 地址是否可达（如 http://192.168.110.x:3000）\n"
             "2. JACHIN_DEV_TOKEN 是否有效\n"
             "3. /api/v1/store/publish 接口是否已实现",
             border_style="red",
@@ -150,14 +173,15 @@ def _do_publish(
         return False
 
 
-def _print_success(name: str, shadow_only: bool = False) -> None:
+def _print_success(name: str, shadow_only: bool = False, nexus_url: str | None = None) -> None:
     """撒花 Emoji 和大字报祝贺"""
+    store_hint = f"[dim]前往 {nexus_url}/store 查看[/]" if nexus_url else "[dim]前往 L1 商城查看[/]"
     msg = (
         f"[bold white]{name}[/] 已上架 Nexus 商城\n\n"
         + (
             "[dim]影子上传完成，实体包请侧载到 L2 ~/.jachin/inventory/[/]"
             if shadow_only
-            else "[dim]前往 http://localhost:3000/store 查看[/]"
+            else store_hint
         )
     )
     console.print()

@@ -3,6 +3,8 @@ Jachin Nexus V2 - L2 本地数字仓库 API
 
 暴露仓库管理接口，供 L2 面板或 L3 查阅侧载技能、触发热重载。
 支持技能卸载与 GC（垃圾回收）：DELETE /skills/{item_id}?purge_data=true/false
+支持技能/MCP 隐藏：POST /skills/{id}/hide、/unhide；POST /l3_mcps/{id}/hide、/unhide
+支持 MCP 删除：DELETE /l3_mcps/{item_id}
 """
 from __future__ import annotations
 
@@ -19,7 +21,6 @@ from core.inventory_scanner import (
     ensure_inventory_dirs,
     L3_MCPS_DIR,
     registered_local_skills,
-    reload_inventory,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,11 +66,18 @@ async def list_inventory_skills(request: Request) -> dict[str, Any]:
     返回本地 Wasm 技能列表。
     MVP: X-Sub-Account-Id 可选；无身份时直接返回全部技能，不再按角色过滤。
     """
+    logger.info("[Inventory API] L3 请求技能清单 sub=%s", (_get_sub_account_id(request) or "")[:16])
     sub_account_id = _get_sub_account_id(request)
     if not sub_account_id:
-        # TODO(MVP): 无身份时全量返回，后续版本再开启鉴权过滤
-        allowed = [_normalize_skill_for_api(s) for s in registered_local_skills.values()]
-        logger.debug("[Inventory API] GET /skills 无身份，全量返回 count=%d", len(allowed))
+        # TODO(MVP): 无身份时全量返回，后续版本再开启鉴权过滤（排除已隐藏）
+        from core.hidden_inventory import get_hidden_skills
+        hidden = get_hidden_skills()
+        allowed = [
+            _normalize_skill_for_api(s)
+            for s in registered_local_skills.values()
+            if s.get("item_id") not in hidden
+        ]
+        logger.debug("[Inventory API] GET /skills 无身份，返回 count=%d", len(allowed))
         return {"skills": allowed, "count": len(allowed)}
 
     from core.db import get_connection
@@ -92,10 +100,24 @@ async def list_inventory_skills(request: Request) -> dict[str, Any]:
     finally:
         conn.close()
 
-    # MVP: 权限分配已隐藏，直接全量下发所有技能
-    allowed = [_normalize_skill_for_api(s) for s in registered_local_skills.values()]
-    logger.debug("[Inventory API] GET /skills sub=%s 全量返回 count=%d", sub_account_id[:16], len(allowed))
+    # MVP: 权限分配已隐藏，直接全量下发所有技能（排除已隐藏）
+    from core.hidden_inventory import get_hidden_skills
+    hidden = get_hidden_skills()
+    allowed = [
+        _normalize_skill_for_api(s)
+        for s in registered_local_skills.values()
+        if s.get("item_id") not in hidden
+    ]
+    logger.debug("[Inventory API] GET /skills sub=%s 返回 count=%d (hidden=%d)", sub_account_id[:16], len(allowed), len(hidden))
     return {"skills": allowed, "count": len(allowed)}
+
+
+@router.get("/skills/hidden")
+async def list_hidden_skills(request: Request) -> dict[str, Any]:
+    """列出已隐藏的技能 item_id，供前端「已隐藏」Tab 展示与取消隐藏。"""
+    from core.hidden_inventory import get_hidden_skills
+    hidden = list(get_hidden_skills())
+    return {"item_ids": hidden, "count": len(hidden)}
 
 
 @router.get("/skills/{item_id}/download")
@@ -105,17 +127,29 @@ async def download_skill_wasm(request: Request, item_id: str) -> FileResponse:
     MVP: X-Sub-Account-Id 可选；无身份时直接放行。
     响应头 X-SHA256 携带校验值。
     """
+    logger.info("[Inventory API] L3 请求下载技能 item_id=%s sub=%s", item_id, (_get_sub_account_id(request) or "")[:16])
     sub_account_id = _get_sub_account_id(request)
     skill = _skill_by_item_id(item_id)
     if not skill:
         raise api_error(404, ERR_NOT_FOUND_003, f"Skill item_id={item_id} not found")
 
+    from core.hidden_inventory import is_hidden_skill
+    if is_hidden_skill(item_id):
+        raise api_error(404, ERR_NOT_FOUND_003, f"Skill item_id={item_id} not found")
+
     # MVP: 权限分配已隐藏，有身份即放行
     wasm_path = Path(skill["wasm_path"])
+    logger.info("[Inventory API] 即将读取 Wasm 文件 item_id=%s path=%s", item_id, wasm_path)
     if not wasm_path.exists():
+        logger.warning("[Inventory API] Wasm 不存在 item_id=%s path=%s", item_id, wasm_path)
         raise api_error(404, ERR_NOT_FOUND_003, "Wasm file not found on L2")
 
     sha256_val = skill.get("sha256", "")
+    try:
+        size = wasm_path.stat().st_size
+    except OSError:
+        size = 0
+    logger.info("[Inventory API] 技能下载成功 item_id=%s size=%d", item_id, size)
     return FileResponse(
         path=wasm_path,
         media_type="application/wasm",
@@ -150,7 +184,8 @@ async def trigger_sync_from_l1(request: Request) -> dict[str, Any]:
         daemon = CloudSyncDaemon()
         if not daemon._is_configured():
             logger.info("[Inventory API] trigger-sync: L2 未配对 L1，跳过")
-            await reload_inventory()
+            from core.inventory_reloader import request_reload
+            await request_reload()
             return {"ok": True, "synced_from_l1": False, "message": "L2 未配对 L1，仅重载本地"}
         await daemon.run_sync_cycle()
         logger.info("[Inventory API] trigger-sync: L1 同步完成，L3 可拉取技能")
@@ -158,6 +193,36 @@ async def trigger_sync_from_l1(request: Request) -> dict[str, Any]:
     except Exception as e:
         logger.exception("[Inventory API] trigger-sync 失败: %s", e)
         return {"ok": False, "error": str(e)}
+
+
+@router.post("/skills/{item_id}/hide")
+async def hide_skill(request: Request, item_id: str) -> dict[str, Any]:
+    """隐藏技能：从列表中排除，L3 不可见。需 X-Sub-Account-Id 或管理员。"""
+    sub_account_id = _get_sub_account_id(request)
+    if not sub_account_id:
+        return {"ok": False, "error": "需要 X-Sub-Account-Id"}
+
+    skill = _skill_by_item_id(item_id)
+    if not skill:
+        return {"ok": False, "error": f"Skill item_id={item_id} not found", "item_id": item_id}
+
+    from core.hidden_inventory import hide_skill as do_hide
+    if do_hide(item_id):
+        return {"ok": True, "message": "技能已隐藏", "item_id": item_id}
+    return {"ok": True, "message": "技能已处于隐藏状态", "item_id": item_id}
+
+
+@router.post("/skills/{item_id}/unhide")
+async def unhide_skill(request: Request, item_id: str) -> dict[str, Any]:
+    """取消隐藏技能。需 X-Sub-Account-Id。"""
+    sub_account_id = _get_sub_account_id(request)
+    if not sub_account_id:
+        return {"ok": False, "error": "需要 X-Sub-Account-Id"}
+
+    from core.hidden_inventory import unhide_skill as do_unhide
+    if do_unhide(item_id):
+        return {"ok": True, "message": "技能已取消隐藏", "item_id": item_id}
+    return {"ok": True, "message": "技能未在隐藏列表中", "item_id": item_id}
 
 
 @router.delete("/skills/{item_id}")
@@ -182,7 +247,8 @@ async def uninstall_skill(
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error", "移入回收站失败"), "item_id": item_id}
         if result.get("source") == "inventory":
-            await reload_inventory()
+            from core.inventory_reloader import request_reload
+            await request_reload()
         return {**result, "message": "已移入回收站"}
     except Exception as e:
         logger.exception("[Inventory API] 移入回收站失败 item_id=%s err=%s", item_id, e)
@@ -195,6 +261,7 @@ async def list_l3_mcps(request: Request) -> dict[str, Any]:
     返回 L3_LOCAL MCP 列表（路径 3）。
     供 L3 mcp_sync 拉取，下载到 l3_mcp_cache 后动态加载。
     """
+    logger.info("[Inventory API] L3 请求 MCP 清单 sub=%s", (_get_sub_account_id(request) or "")[:16])
     mcps: list[dict[str, Any]] = []
     try:
         sub_account_id = _get_sub_account_id(request)
@@ -211,10 +278,15 @@ async def list_l3_mcps(request: Request) -> dict[str, Any]:
         if not L3_MCPS_DIR.exists():
             return {"mcps": mcps, "count": 0}
 
+        from core.hidden_inventory import get_hidden_l3_mcps
+        hidden_mcps = get_hidden_l3_mcps()
+
         for subdir in L3_MCPS_DIR.iterdir():
             if not subdir.is_dir():
                 continue
             item_id = subdir.name
+            if item_id in hidden_mcps:
+                continue
             plugin_path = subdir / "plugin.json"
             if not plugin_path.exists():
                 continue
@@ -236,6 +308,7 @@ async def list_l3_mcps(request: Request) -> dict[str, Any]:
                 "description": plugin.get("description", ""),
                 "tools": tool_ids,
                 "entry": "tools",
+                "version": plugin.get("version", "1.0.0"),
             })
         return {"mcps": mcps, "count": len(mcps)}
     except Exception as e:
@@ -243,14 +316,83 @@ async def list_l3_mcps(request: Request) -> dict[str, Any]:
         return {"mcps": [], "count": 0}
 
 
+@router.get("/l3_mcps/hidden")
+async def list_hidden_l3_mcps(request: Request) -> dict[str, Any]:
+    """列出已隐藏的 L3 MCP item_id，供前端「已隐藏」Tab 展示与取消隐藏。"""
+    from core.hidden_inventory import get_hidden_l3_mcps
+    hidden = list(get_hidden_l3_mcps())
+    return {"item_ids": hidden, "count": len(hidden)}
+
+
+@router.delete("/l3_mcps/{item_id}")
+async def delete_l3_mcp(request: Request, item_id: str) -> dict[str, Any]:
+    """删除 L3_LOCAL MCP：从 inventory/l3_mcps 移除。需 X-Sub-Account-Id。"""
+    sub_account_id = _get_sub_account_id(request)
+    if not sub_account_id:
+        return {"ok": False, "error": "需要 X-Sub-Account-Id"}
+
+    import shutil
+    dest = L3_MCPS_DIR / item_id
+    if not dest.exists() or not dest.is_dir():
+        return {"ok": False, "error": f"L3 MCP item_id={item_id} not found", "item_id": item_id}
+
+    try:
+        logger.info("[Inventory API] 即将删除 L3 MCP item_id=%s dest=%s", item_id, dest)
+        shutil.rmtree(dest)
+        from core.hidden_inventory import unhide_l3_mcp
+        unhide_l3_mcp(item_id)  # 若在隐藏列表则移除
+        from core.inventory_reloader import request_reload
+        await request_reload()
+        return {"ok": True, "message": "MCP 已删除", "item_id": item_id}
+    except Exception as e:
+        logger.exception("[Inventory API] 删除 MCP 失败 item_id=%s err=%s", item_id, e)
+        return {"ok": False, "error": str(e), "item_id": item_id}
+
+
+@router.post("/l3_mcps/{item_id}/hide")
+async def hide_l3_mcp(request: Request, item_id: str) -> dict[str, Any]:
+    """隐藏 L3_LOCAL MCP：从列表中排除，L3 不可见。需 X-Sub-Account-Id。"""
+    sub_account_id = _get_sub_account_id(request)
+    if not sub_account_id:
+        return {"ok": False, "error": "需要 X-Sub-Account-Id"}
+
+    dest = L3_MCPS_DIR / item_id
+    if not dest.exists() or not dest.is_dir():
+        return {"ok": False, "error": f"L3 MCP item_id={item_id} not found", "item_id": item_id}
+
+    from core.hidden_inventory import hide_l3_mcp as do_hide
+    if do_hide(item_id):
+        return {"ok": True, "message": "MCP 已隐藏", "item_id": item_id}
+    return {"ok": True, "message": "MCP 已处于隐藏状态", "item_id": item_id}
+
+
+@router.post("/l3_mcps/{item_id}/unhide")
+async def unhide_l3_mcp(request: Request, item_id: str) -> dict[str, Any]:
+    """取消隐藏 L3_LOCAL MCP。需 X-Sub-Account-Id。"""
+    sub_account_id = _get_sub_account_id(request)
+    if not sub_account_id:
+        return {"ok": False, "error": "需要 X-Sub-Account-Id"}
+
+    from core.hidden_inventory import unhide_l3_mcp as do_unhide
+    if do_unhide(item_id):
+        return {"ok": True, "message": "MCP 已取消隐藏", "item_id": item_id}
+    return {"ok": True, "message": "MCP 未在隐藏列表中", "item_id": item_id}
+
+
 @router.get("/l3_mcps/{item_id}/download")
 async def download_l3_mcp(request: Request, item_id: str):
     """
     下载 L3_LOCAL MCP 包（zip），供 L3 解压到 l3_mcp_cache。
     """
+    logger.info("[Inventory API] L3 请求下载 MCP item_id=%s sub=%s", item_id, (_get_sub_account_id(request) or "")[:16])
     sub_account_id = _get_sub_account_id(request)
     dest = L3_MCPS_DIR / item_id
+    logger.info("[Inventory API] 即将打包 MCP item_id=%s dest=%s", item_id, dest)
     if not dest.exists() or not dest.is_dir():
+        raise api_error(404, ERR_NOT_FOUND_003, f"L3 MCP item_id={item_id} not found")
+
+    from core.hidden_inventory import is_hidden_l3_mcp
+    if is_hidden_l3_mcp(item_id):
         raise api_error(404, ERR_NOT_FOUND_003, f"L3 MCP item_id={item_id} not found")
 
     import io
@@ -262,6 +404,7 @@ async def download_l3_mcp(request: Request, item_id: str):
                 arcname = f.relative_to(dest)
                 zf.write(f, arcname)
     buf.seek(0)
+    logger.info("[Inventory API] MCP 打包完成 item_id=%s size=%d", item_id, len(buf.getvalue()))
     from fastapi.responses import StreamingResponse
     return StreamingResponse(
         iter([buf.getvalue()]),
@@ -278,7 +421,8 @@ async def trigger_reload() -> dict[str, Any]:
     """
     logger.info("[Inventory API] 收到热重载请求")
     try:
-        result = await reload_inventory()
+        from core.inventory_reloader import request_reload
+        result = await request_reload()
         logger.info("[Inventory API] 热重载完成 %s", result)
         return result
     except Exception as e:

@@ -5,7 +5,7 @@ import crypto from "crypto";
 import AdmZip from "adm-zip";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { pluginsRegistry } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { isIpfsConfigured, uploadToIpfs } from "@/lib/ipfs";
 
 export const dynamic = "force-dynamic";
@@ -135,7 +135,97 @@ function parseAndValidateZip(zipBuffer: Buffer): {
     required_mcps: requiredMcps,
   };
 
+  // 076: 若包内含 config/ 则必须含 manifest.yaml
+  validateConfigInZip(zip);
+
   return { pluginJson, raw };
+}
+
+/**
+ * 076 规范：若 zip 内含 config/ 或 payload/config/，则必须含 manifest.yaml
+ * 文档: docs/SKILL_MCP_UPLOAD_SPEC.md
+ */
+function validateConfigInZip(zip: AdmZip): void {
+  const entries = zip.getEntries();
+  const hasConfigDir = entries.some(
+    (e) =>
+      !e.isDirectory &&
+      (e.entryName.startsWith("config/") || e.entryName.startsWith("payload/config/"))
+  );
+  if (!hasConfigDir) return;
+
+  const hasManifest = entries.some(
+    (e) =>
+      !e.isDirectory &&
+      (e.entryName === "config/manifest.yaml" ||
+        e.entryName === "payload/config/manifest.yaml")
+  );
+
+  if (!hasManifest) {
+    throw new PublishError(
+      400,
+      "MISSING_CONFIG_MANIFEST",
+      "包内含 config 目录但缺少 config/manifest.yaml。依赖配置的 Skill/MCP 必须随包提供配置模板。规范: docs/SKILL_MCP_UPLOAD_SPEC.md"
+    );
+  }
+}
+
+/**
+ * 077 规范：Skill 依赖的 MCP 必须已发布且审核通过
+ * 文档: .cursor/rules/077-skill-mcp-dependency.mdc
+ */
+async function validateRequiredMcpsForSkill(
+  db: ReturnType<typeof getDb>,
+  requiredMcps: string[]
+): Promise<void> {
+  if (!requiredMcps || requiredMcps.length === 0) return;
+
+  const pluginIdsLower = new Set(
+    requiredMcps
+      .filter((x) => typeof x === "string" && x.trim())
+      .map((x) => x.replace(/^mcp:/i, "").trim().toLowerCase())
+      .filter((x) => x)
+  );
+
+  if (pluginIdsLower.size === 0) return;
+
+  const mcps = await db
+    .select({
+      pluginId: pluginsRegistry.pluginId,
+      status: pluginsRegistry.status,
+    })
+    .from(pluginsRegistry)
+    .where(and(eq(pluginsRegistry.itemType, "MCP")));
+
+  const foundLower = new Set<string>();
+  const notApproved: string[] = [];
+  for (const m of mcps) {
+    const pid = (m.pluginId ?? "").toLowerCase();
+    if (pluginIdsLower.has(pid)) {
+      foundLower.add(pid);
+      if (m.status !== "approved") {
+        notApproved.push(m.pluginId ?? pid);
+      }
+    }
+  }
+
+  for (const pid of pluginIdsLower) {
+    if (!foundLower.has(pid)) {
+      throw new PublishError(
+        400,
+        "REQUIRED_MCP_NOT_FOUND",
+        `Skill 依赖的 MCP 必须先发布：mcp:${pid} 未在 L1 注册。请先发布该 MCP 后再发布 Skill。规范: .cursor/rules/077-skill-mcp-dependency.mdc`
+      );
+    }
+  }
+
+  if (notApproved.length > 0) {
+    throw new PublishError(
+      400,
+      "REQUIRED_MCP_NOT_APPROVED",
+      `Skill 依赖的 MCP 必须已审核通过：${notApproved.join(", ")} 尚未审核。请先在 L1 管理后台审核通过后再发布 Skill。规范: .cursor/rules/077-skill-mcp-dependency.mdc`
+    );
+  }
 }
 
 class PublishError extends Error {
@@ -363,6 +453,12 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb()!;
+
+    // 077 规范：Skill 依赖的 MCP 必须已发布且审核通过
+    if (pluginJson.item_type === "SKILL" && (pluginJson.required_mcps?.length ?? 0) > 0) {
+      await validateRequiredMcpsForSkill(db, pluginJson.required_mcps);
+    }
+
     const existing = await db
       .select({ id: pluginsRegistry.id })
       .from(pluginsRegistry)
@@ -387,7 +483,7 @@ export async function POST(request: NextRequest) {
       packageSha256: packageSha256 ?? null,
       manifestJson: manifestJsonRaw,
       category: "skill",
-      status: shadowOnly ? "approved" : "pending",
+      status: shadowOnly || process.env.NEXUS_AUTO_APPROVE === "1" ? "approved" : "pending",
       updatedAt: new Date(),
     };
 

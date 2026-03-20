@@ -266,8 +266,10 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
                 None
             };
             (None, jd, after_first)
-        } else if first.contains("|||") && !first.starts_with('{') {
-            // 批量模式：首行 paths，第二行可能为 JD_START 或直接 JSON
+        } else if (!first.starts_with('{') && first.contains("|||"))
+            || (!first.starts_with('{') && (first.ends_with(".pdf") || first.ends_with(".md") || first.ends_with(".txt")) && (first.contains('/') || first.contains('\\')))
+        {
+            // 批量模式：首行 paths（多文件 path1|||path2 或单文件 path），第二行可能为 JD_START 或直接 JSON
             let (jd, rest) = if let Some(nl2) = after_first.find('\n') {
                 let second = after_first[..nl2].trim();
                 let after_second = after_first[nl2 + 1..].trim();

@@ -7,9 +7,10 @@ skip_collect: true
 # mode: cron — 每天固定时间（UTC+8）；mode: interval — 按间隔执行
 schedule:
   enabled: true
-  mode: cron
-  hour: 8
-  minute: 0
+  mode: interval
+  minutes: 10
+  # hour: 8
+  # minute: 0
   timezone: Asia/Shanghai
 
 distribution:

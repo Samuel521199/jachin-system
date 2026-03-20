@@ -8,25 +8,48 @@ $ErrorActionPreference = "Stop"
 try { chcp 65001 | Out-Null } catch {}
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$appRoot = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-Path $appRoot "bin"))) {
-    $appRoot = $PSScriptRoot
+# 推断应用根：脚本在 scripts/ 下，appRoot 为父目录；若脚本被复制到 Temp 执行，则用当前目录
+$scriptPath = $PSCommandPath
+if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+$scriptDir = if ($scriptPath) { Split-Path -Parent $scriptPath } else { $PSScriptRoot }
+$appRoot = if ($scriptDir) { Split-Path -Parent $scriptDir } else { $null }
+if (-not $appRoot -or (-not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-Path $appRoot "bin")))) {
+    $appRoot = $scriptDir
     while ($appRoot -and -not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-Path $appRoot "bin"))) {
         $appRoot = Split-Path -Parent $appRoot
     }
 }
-if (-not $appRoot) { Write-Error "Project root (l3_node or bin) not found" }
+# 便携包：当前目录或父目录含 bin 时优先使用（避免脚本被复制到 Temp 时路径错误）
+$cwd = (Get-Location).Path
+foreach ($candidate in @($cwd, (Split-Path $cwd -Parent), (Split-Path (Split-Path $cwd -Parent) -Parent))) {
+    if ($candidate -and (Test-Path (Join-Path $candidate "bin"))) { $appRoot = $candidate; break }
+}
+if (-not $appRoot -or -not (Test-Path (Join-Path $appRoot "bin"))) { $appRoot = $cwd }
+if (-not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-Path $appRoot "bin"))) {
+    Write-Error "Project root (l3_node or bin) not found. Current appRoot=$appRoot"
+}
 
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONUTF8 = "1"
 $env:LOG_LEVEL = "DEBUG"
 
+# 便携包模式：日志写入 logs/，应用根目录明确，便于移植
+$binDir = Join-Path $appRoot "bin"
+if ($binDir -and (Test-Path $binDir)) {
+    $logsDir = Join-Path $appRoot "logs"
+    if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
+    $env:JACHIN_LOG_DIR = $logsDir
+    $env:JACHIN_APP_ROOT = $appRoot
+}
+
 $mode = "--gateway"
 if ($args -contains "--ws-only") { $mode = "--ws-only" }
 
 # 优先 Python，否则用 exe（打包模式）
-$binDir = Join-Path $appRoot "bin"
-$l3Exe = Get-ChildItem -Path $binDir -Filter "l3_node*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+$l3Exe = $null
+if ($binDir -and (Test-Path $binDir)) {
+    $l3Exe = Get-ChildItem -Path $binDir -Filter "l3_node*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+}
 $hasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 
 if ($hasPython -and (Test-Path (Join-Path $appRoot "l3_node"))) {
@@ -45,7 +68,7 @@ if ($hasPython -and (Test-Path (Join-Path $appRoot "l3_node"))) {
     try {
         while (-not $p.HasExited) {
             if (-not $logChecked) {
-                $logPath = Join-Path $appRoot "l3_debug.log"
+                $logPath = if ($env:JACHIN_LOG_DIR) { Join-Path $env:JACHIN_LOG_DIR "l3_debug.log" } else { Join-Path $appRoot "l3_debug.log" }
                 if (Test-Path $logPath) {
                     $logChecked = $true
                     Write-Host "[L3] Debug log: $logPath" -ForegroundColor Gray

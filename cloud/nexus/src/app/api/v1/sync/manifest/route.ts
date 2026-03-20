@@ -16,6 +16,8 @@ export interface ManifestItem {
   package_url: string | null;
   package_sha256: string | null;
   required_mcps: string[];
+  version: string;
+  changelog?: string | null;
 }
 
 /**
@@ -29,6 +31,7 @@ export interface ManifestItem {
  * 逻辑：
  * - 查 user_licenses 表，找出该 tenant_id 下 status = 'ACTIVE' 且未过期的 item_id
  * - JOIN plugins_registry 获取详情，仅拉取 status = 'approved' 的插件
+ * - Skill 依赖解析：遍历 SKILL 的 required_mcps，将缺失的 MCP 自动加入 manifest（即使用户未单独订阅）
  * - 返回 Manifest：id、类型、runtime_tier、package_url、required_mcps
  *
  * L2 网关据此下载 Wasm 包、拉起 MCP 驱动。
@@ -95,10 +98,11 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 2. JOIN plugins_registry 获取详情，仅拉取 status = 'approved' 的公共插件
+    // 2. JOIN plugins_registry 获取详情，仅拉取 status = 'approved' 且 visibility = 'PUBLIC' 的公共插件（排除已隐藏、已归档）
     const items = await db
       .select({
         id: pluginsRegistry.id,
+        pluginId: pluginsRegistry.pluginId,
         itemType: pluginsRegistry.itemType,
         name: pluginsRegistry.name,
         description: pluginsRegistry.description,
@@ -106,10 +110,15 @@ export async function GET(request: NextRequest) {
         packageUrl: pluginsRegistry.packageUrl,
         packageSha256: pluginsRegistry.packageSha256,
         requiredMcps: pluginsRegistry.requiredMcps,
+        version: pluginsRegistry.version,
       })
       .from(pluginsRegistry)
       .where(
-        and(inArray(pluginsRegistry.id, itemIds), eq(pluginsRegistry.status, "approved"))
+        and(
+          inArray(pluginsRegistry.id, itemIds),
+          eq(pluginsRegistry.status, "approved"),
+          eq(pluginsRegistry.visibility, "PUBLIC")
+        )
       );
 
     const manifest: ManifestItem[] = items.map((r) => ({
@@ -121,7 +130,71 @@ export async function GET(request: NextRequest) {
       package_url: r.packageUrl ?? null,
       package_sha256: r.packageSha256 ?? null,
       required_mcps: (r.requiredMcps as string[]) ?? [],
+      version: r.version ?? "1.0.0",
     }));
+
+    // 3. Skill 依赖解析：收集 required_mcps，将缺失的 L3_LOCAL MCP 加入 manifest
+    const existingPluginIds = new Set(
+      items.map((r) => (r.pluginId ?? "").toLowerCase()).filter(Boolean)
+    );
+    const requiredMcpPluginIds = new Set<string>();
+    for (const item of items) {
+      if (item.itemType !== "SKILL") continue;
+      const rmcps = (item.requiredMcps as string[]) ?? [];
+      for (const rm of rmcps) {
+        if (typeof rm !== "string" || !rm.trim()) continue;
+        const pid = rm.replace(/^mcp:/i, "").trim().toLowerCase();
+        if (pid && !existingPluginIds.has(pid)) {
+          requiredMcpPluginIds.add(pid);
+        }
+      }
+    }
+
+    if (requiredMcpPluginIds.size > 0) {
+      const depMcps = await db
+        .select({
+          id: pluginsRegistry.id,
+          pluginId: pluginsRegistry.pluginId,
+          itemType: pluginsRegistry.itemType,
+          name: pluginsRegistry.name,
+          description: pluginsRegistry.description,
+          runtimeTier: pluginsRegistry.runtimeTier,
+          packageUrl: pluginsRegistry.packageUrl,
+          packageSha256: pluginsRegistry.packageSha256,
+          requiredMcps: pluginsRegistry.requiredMcps,
+          version: pluginsRegistry.version,
+        })
+        .from(pluginsRegistry)
+        .where(
+          and(
+            eq(pluginsRegistry.itemType, "MCP"),
+            eq(pluginsRegistry.status, "approved"),
+            eq(pluginsRegistry.visibility, "PUBLIC")
+          )
+        );
+
+      const manifestIds = new Set(manifest.map((m) => m.id));
+      for (const mcp of depMcps) {
+        const pid = mcp.pluginId;
+        const pluginIdLower = (pid ?? "").toLowerCase();
+        if (!requiredMcpPluginIds.has(pluginIdLower)) continue;
+        if (!mcp.packageUrl) continue;
+        if (manifestIds.has(mcp.id!)) continue;
+
+        manifest.push({
+          id: mcp.id!,
+          item_type: mcp.itemType,
+          name: mcp.name,
+          description: mcp.description ?? null,
+          runtime_tier: mcp.runtimeTier,
+          package_url: mcp.packageUrl ?? null,
+          package_sha256: mcp.packageSha256 ?? null,
+          required_mcps: (mcp.requiredMcps as string[]) ?? [],
+          version: mcp.version ?? "1.0.0",
+        });
+        manifestIds.add(mcp.id!);
+      }
+    }
 
     return NextResponse.json({
       success: true,

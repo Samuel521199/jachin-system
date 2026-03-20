@@ -102,7 +102,11 @@ def _get_hr_plugin_config_defaults(lookup_id: str) -> dict[str, Any]:
     item_id = _HR_ITEM_MAP.get(lookup_id)
     if not item_id:
         return {}
-    for base in (_WASM_PLUGINS_DIR, _L3_SKILL_CACHE_DIR):
+    import sys
+    bases = [_L3_SKILL_CACHE_DIR]
+    if not getattr(sys, "frozen", False):
+        bases.append(_WASM_PLUGINS_DIR)
+    for base in bases:
         plugin_path = base / item_id / "plugin.json"
         if plugin_path.exists():
             try:
@@ -126,7 +130,9 @@ def get_hr_invoke_defaults(skill_id: str = "com.jachin.hr.analyzer4") -> dict[st
     cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(_fetch_skill_config(config_id) or {})}
     use_abs = cfg.get("resume_input_dir_use_absolute") in (True, "true", "1", "yes") or cfg.get("use_absolute_path") in (True, "true", "1", "yes")
     try:
-        from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
+        persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+        _resolve_safe_dir = persist_mod._resolve_safe_dir if persist_mod else (lambda *a, **k: None)
+        _PROJ_ROOT = __import__("l3_node.paths", fromlist=["get_app_root"]).get_app_root()
         resume_dir = _resolve_safe_dir(cfg.get("resume_input_dir") or "data/hr_resumes", _PROJ_ROOT, use_absolute_path=use_abs)
     except ImportError:
         resume_dir = None
@@ -339,15 +345,24 @@ def _get_permanently_uninstalled_skills() -> set[str]:
 
 def _scan_wasm_plugins() -> list[dict[str, Any]]:
     """
-    扫描 l3_node/skills/wasm_plugins/ 与 ~/.jachin/l3_skill_cache/ 下的 JPP .wasm 插件。
-    后者为 L3 冷启动从 L2 拉取的技能缓存。
-    仅保留 hr-analyzer4。
-    已卸载的内置技能（uninstalled_builtin_skills.json）、永久卸载技能（permanently_uninstalled_skills.json）将被过滤。
+    扫描 JPP .wasm 插件。
+    frozen 模式：仅扫描 ~/.jachin/l3_skill_cache/（订阅下载）。
+    开发模式：同时扫描 wasm_plugins/ 与 l3_skill_cache/。
+    已卸载的内置技能、永久卸载技能将被过滤。
     """
+    import sys
+
     uninstalled = _get_uninstalled_builtin_skills() | _get_permanently_uninstalled_skills()
     tools: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for t in _scan_wasm_dir_flat(_WASM_PLUGINS_DIR) + _scan_wasm_dir_nested(_WASM_PLUGINS_DIR) + _scan_wasm_dir_nested(_L3_SKILL_CACHE_DIR):
+
+    wasm_sources: list[dict[str, Any]] = []
+    wasm_sources.extend(_scan_wasm_dir_nested(_L3_SKILL_CACHE_DIR))
+    if not getattr(sys, "frozen", False):
+        wasm_sources.extend(_scan_wasm_dir_flat(_WASM_PLUGINS_DIR))
+        wasm_sources.extend(_scan_wasm_dir_nested(_WASM_PLUGINS_DIR))
+
+    for t in wasm_sources:
         tid = t["id"]
         item_id = t.get("_item_id") or tid.replace("jpp:", "")
         if item_id in uninstalled:
@@ -435,10 +450,12 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         return f"[未知 Wasm 技能: {tool_id}]"
     wasm_path = t.get("_wasm_path", "")
     _HR_BUILTIN_MAP = {"jpp:com.jachin.hr.analyzer4": "hr-analyzer4"}
-    if lookup_id in _HR_BUILTIN_MAP:
+    if lookup_id in _HR_BUILTIN_MAP and (not wasm_path or not Path(wasm_path).exists()):
         plugin_dir = _HR_BUILTIN_MAP[lookup_id]
         proj_root = Path(__file__).resolve().parent.parent.parent
         candidates = [
+            _L3_SKILL_CACHE_DIR / plugin_dir / "main.wasm",
+            _L3_SKILL_CACHE_DIR / "hr-analyzer4" / "main.wasm",
             _WASM_PLUGINS_DIR / plugin_dir / "main.wasm",
             proj_root / "l3_node" / "skills" / "wasm_plugins" / plugin_dir / "main.wasm",
             Path.cwd() / "l3_node" / "skills" / "wasm_plugins" / plugin_dir / "main.wasm",
@@ -484,7 +501,9 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                     tdir = cfg.get("resume_input_dir") or "data/hr_resumes"
                 stdin_json["target_dir"] = tdir
                 try:
-                    from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
+                    persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+                    _resolve_safe_dir = persist_mod._resolve_safe_dir if persist_mod else (lambda *a, **k: None)
+                    _PROJ_ROOT = __import__("l3_node.paths", fromlist=["get_app_root"]).get_app_root()
                     _l3_vol = Path.home() / ".jachin" / "client_volumes"
                     # L3 数据卷：pool_X/X（收网）、auto_xxx、global_resume_pool/JobFolder
                     if tdir.startswith("pool_") or tdir.startswith("auto_") or tdir.startswith("global_resume_pool"):
@@ -564,7 +583,9 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
             resume_dir_cfg = (cfg.get("resume_input_dir") or "data/hr_resumes").strip()
             use_abs = cfg.get("resume_input_dir_use_absolute") in (True, "true", "1", "yes") or cfg.get("use_absolute_path") in (True, "true", "1", "yes")
             try:
-                from l3_node.hr_analysis_persist import _resolve_safe_dir, _PROJ_ROOT
+                persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+                _resolve_safe_dir = persist_mod._resolve_safe_dir if persist_mod else (lambda *a, **k: None)
+                _PROJ_ROOT = __import__("l3_node.paths", fromlist=["get_app_root"]).get_app_root()
                 resume_dir = _resolve_safe_dir(resume_dir_cfg, _PROJ_ROOT, use_absolute_path=use_abs)
                 if resume_dir and (resume_dir / fn).exists():
                     stdin_json["resume_path"] = str((resume_dir / fn).resolve())
@@ -629,7 +650,9 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         if ndjson_queue is None and lookup_id == "jpp:com.jachin.hr.analyzer4":
             _err_prefixes = ("⚠️", "[权限", "[未知", "[Wasm", "[执行")
             try:
-                from l3_node.hr_analysis_persist import persist_hr_analysis_result, persist_hr_analysis_batch_item
+                persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+                persist_hr_analysis_result = persist_mod.persist_hr_analysis_result if persist_mod else None
+                persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item if persist_mod else None
                 from core.wasm_runner import get_last_ndjson_lines
                 cfg = _fetch_skill_config(lookup_id.replace("jpp:", ""))
                 cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(cfg or {})}
@@ -657,7 +680,8 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                         stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
                         if not stem or re.match(r"^resume_\d+$", stem):
                             stem = _extract_stem_from_hr_report(report) or stem or "unknown"
-                        persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
+                        if persist_hr_analysis_batch_item:
+                            persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
                         count += 1
                     if count > 0:
                         result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
@@ -687,12 +711,14 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                             stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
                             if not stem or re.match(r"^resume_\d+$", stem):
                                 stem = _extract_stem_from_hr_report(report) or stem or "unknown"
-                            persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
+                            if persist_hr_analysis_batch_item:
+                                persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
                             count += 1
                         if count > 0:
                             result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
                     else:
-                        persist_hr_analysis_result(lookup_id, result_str, stdin_json, config=cfg)
+                        if persist_hr_analysis_result:
+                            persist_hr_analysis_result(lookup_id, result_str, stdin_json, config=cfg)
                         result_str = f"✅ 执行成功，本次分析了 1 份简历。报告已保存至 data/hr_analysis/ 目录。\n\n--- 分析报告 ---\n\n{result_str}"
             except Exception as pe:
                 logger.warning("[Skills] HR 报告持久化失败: %s", pe)

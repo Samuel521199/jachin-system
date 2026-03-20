@@ -318,11 +318,10 @@ def _persist_jd_config_before_publish(jd_config: dict) -> str | None:
     if not job_title:
         return None
     try:
-        from l3_node.paths import get_app_root
-        _proj = get_app_root()
-        plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
-        if not plugin_root.exists():
-            logger.warning("[Agent] plugin 路径不存在，无法持久化 JD 配置")
+        from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+        plugin_root = _get_hr_recruitment_plugin_root()
+        if not plugin_root or not (plugin_root / "tools" / "hr_data_paths.py").exists():
+            logger.warning("[Agent] HR 招聘 plugin 路径不存在，无法持久化 JD 配置")
             return None
         import sys
         if str(plugin_root) not in sys.path:
@@ -334,6 +333,53 @@ def _persist_jd_config_before_publish(jd_config: dict) -> str | None:
     except Exception as e:
         logger.warning("[Agent] 持久化 JD 配置失败: %s", e)
         return None
+
+
+def _load_hr_recruitment_skill_content() -> str | None:
+    """
+    加载 HR 招聘 Skill 内容（SKILL.md）。
+    架构：Skill 包 (hr-recruitment/) 含 SKILL.md 定义流程；MCP 包 (com.jachin.hr.recruitment) 含工具。
+    优先 Skill 包，其次 MCP 包（向后兼容，支持 l3_mcp_cache 的 UUID 目录名）。
+    """
+    import os
+    root = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
+    proj = Path(__file__).resolve().parent.parent
+    hr_plugin_root = None
+    try:
+        from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+        hr_plugin_root = _get_hr_recruitment_plugin_root()
+    except Exception:
+        pass
+    candidates = [
+        proj / "skills_repo" / "hr-recruitment" / "SKILL.md",  # Skill 包：纯流程定义
+        root / "l3_skill_cache" / "hr-recruitment" / "SKILL.md",  # 订阅拉取后的 Skill 包
+    ]
+    if hr_plugin_root:
+        candidates.append(hr_plugin_root / "SKILL.md")  # MCP 包内 SKILL.md（支持 UUID 目录）
+    candidates.extend([
+        root / "l3_mcp_cache" / "com.jachin.hr.recruitment" / "SKILL.md",  # 精确路径
+        proj / "skills_repo" / "plugin" / "com.jachin.hr.recruitment" / "SKILL.md",
+    ])
+    try:
+        from l3_node.paths import get_app_root
+        app_proj = get_app_root()
+        if app_proj and app_proj != proj:
+            candidates.insert(0, app_proj / "skills_repo" / "hr-recruitment" / "SKILL.md")
+    except Exception:
+        pass
+    for p in candidates:
+        if p.exists() and p.is_file():
+            try:
+                raw = p.read_text(encoding="utf-8")
+                # 去掉 YAML frontmatter，只保留 Markdown 正文
+                if raw.strip().startswith("---"):
+                    parts = raw.split("---", 2)
+                    if len(parts) >= 3:
+                        raw = parts[2].strip()
+                return raw
+            except Exception as e:
+                logger.debug("[Agent] 读取 HR Skill 失败 %s: %s", p, e)
+    return None
 
 
 def _get_l2_config() -> dict[str, Any] | None:
@@ -609,38 +655,27 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 【重要】当用户要求「简历分析」「HR 透析镜」等时：直接调用 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}，Action Input 可传 {{}}，系统会从技能配置自动注入默认参数。禁止用 list_directory 探索。
 【强制】当用户说「再分析」「重新分析」「再去分析」「再跑一次」等时：必须重新调用 HR 透析镜工具，不得复用上一轮 Observation，不得用 fs_read 或 recall_memory 代替。"""
 
-    hr_recruitment_hint = """
-【HR 招聘总监 SOP】你是 Jachin OS 的首席 AI 招聘总监。**触发**：当用户说「我要发布职位」「招聘」「我要招」「发布一个XXX工程师职位」等时，一律走本 SOP。
+    # 招聘意图：当工具列表含招聘相关 MCP 时，从 Skill 注入 SOP（OpenClaw 风格）
+    tool_ids = [str(t.get("id") or "").lower() for t in tools]
+    _hr_has_recruitment_tools = any(
+        x in " ".join(tool_ids)
+        for x in ("atom_post_job_boss", "add_automated_recruitment_task", "stop_automated_recruitment")
+    )
+    hr_recruitment_hint = ""
+    if _hr_has_recruitment_tools:
+        skill_content = _load_hr_recruitment_skill_content()
+        if skill_content:
+            hr_recruitment_hint = f"""
+【当前激活技能：HR 招聘总监】按以下 SOP 执行，禁止臆想、禁止在 HR 明确同意前调用发布工具。
 
-🚨【绝对红线·严禁违反】禁止臆想、禁止杜撰、禁止在未从 HR 处获取到明确回复前自行填充任何配置。所有硬性字段必须由 HR 明确告知，你不得凭空填写。**在 HR 明确回复「同意」或点击确认之前，绝对禁止调用 atom_post_job_boss 与 add_automated_recruitment_task。**
+{skill_content}
 
-【第一步：首次综合询问】当 HR 只说「我要招聘」「发布职位」「我要招人」等模糊指令时，**第一轮必须纯询问，禁止调用任何发布工具**。统一询问：
-1. **岗位名称**是什么？
-2. **招聘类型**：社招全职 / 应届生校园招聘 / 实习生招聘 / 兼职招聘？
-3. **薪资待遇**大概多少？（例如：20-35K/月）
-4. **学历要求**？（本科/硕士等）
-5. **经验要求**？（不限/1年以内/1-3年/3-5年等）
-若 HR 第一轮未给出某项，**必须单独再发一条**追问该项，例如：「您是要社招、校招、实习还是兼职呀？」「薪资范围大概多少？」直到收集齐全部硬性字段。
-
-【第二步：硬性字段与选项映射】HR 可用模糊自然语言，你需认真解析为合规配置值。**若解析不确定，单独再问 HR**。
-- **recruitment_type**：只能选其一填入 `社招全职` | `应届生校园招聘` | `实习生招聘` | `兼职招聘`。映射：正式工/全职/社招→社招全职；校招/应届生→应届生校园招聘；实习→实习生招聘；兼职→兼职招聘。
-- **job_title**：必须询问 HR 后如实填入。
-- **jd_full**：根据 job_title 与已收集信息用 AI 生成完整 JD（岗位职责+任职要求+薪资待遇），**发给 HR 检查**，问是否可行；如有修改，**按 HR 说的改**。
-- **experience**：只能选其一填入 `不限` | `1年以内` | `1-3年` | `3-5年` | `5-10年` | `10年以上`。映射：应届/无经验→1年以内；1到3年/1-3年→1-3年。
-- **education**：只能选其一填入 `高中` | `大专` | `本科` | `硕士` | `博士`。映射：本科及以上→本科；研究生→硕士。
-- **salary_min、salary_max**：询问 HR 薪资范围，解析为数字（单位 K）。若未给，**单独追问**：「薪资范围大概多少？」
-- **job_keywords**：你可根据 job_title 与 jd_full 自行填写关键词数组。
-- **job_category_path**：根据 job_title 解析为 Boss 三级目录，如 `["互联网/AI", "后端开发", "Java开发工程师"]`。
-
-【第三步：统一输出与确认】收集齐所有硬性信息并完成 jd_full、job_keywords、job_category_path 的 AI 补充后，**将完整 JD 配置以 ```json ... ``` 代码块形式统一输出**给 HR，附上「请您确认以上配置无误。确认后请回复「同意」或点击确认，我将立即为您发布。」**在 HR 明确同意前，禁止调用发布工具。**
-
-【第四步：同意后自动执行】当 HR 回复「同意」「确认」「确认发布」「就按这个发」「直接发布」时，**立即**输出 Action: mcp:atom_post_job_boss，Action Input 填 {\"jd_config\": {...}}。系统将**自动**执行：① 在 data/ 下新建以岗位名为名的文件夹；② 复制 jd_to_publish.example.json 为 jd.json 并填入 HR 确认内容；③ 创建 pending、processed、result 子目录；④ 打开 Chrome 发布职位。**无需 HR 额外操作，你不得等待、不得再询问。**
-
-【Chrome 与登录】若 Observation 返回「需要登录」「请扫码登录」，原样告知 HR：「已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。」当 HR 回复「已登录」「继续发布」后，**再次调用** atom_post_job_boss，传入上一轮展示的 JSON。
-
-【发布成功提醒】职位发布成功后，给 HR 发送：「职位发布成功！【无人值守流程】已启动：推荐牛人每15分钟（满3人打招呼即停）→20秒后自动抓简历→满4份简历触发 Agent 讨论简历，输出前2名排行榜和 Lark 多维表，达标后停止该岗位招聘。」
-
-【关闭流程】当 HR 说「关闭」「停止」「取消」招聘、无人值守、自动化流程时，**必须立即**输出 Action: mcp:stop_automated_recruitment，Action Input 为 {\"job_name\": \"\"}。**禁止**仅回复「已关闭」却不实际调用工具。
+---
+"""
+        else:
+            # 兜底：Skill 未找到时保留简短提示，避免完全无招聘能力
+            hr_recruitment_hint = f"""
+【HR 招聘】当用户说「我要招聘」「发布职位」等时：依次询问岗位名称、招聘类型、薪资、学历、经验；收集齐后输出完整 JD JSON 供确认；用户回复「同意」后立即调用 mcp:atom_post_job_boss。关闭流程时调用 mcp:stop_automated_recruitment。
 """
     return f"""你是一个智能助手，使用 ReAct 格式思考。
 {hr_recruitment_hint}

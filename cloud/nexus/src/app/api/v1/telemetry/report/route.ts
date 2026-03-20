@@ -131,16 +131,22 @@ export async function POST(request: NextRequest) {
 
     const db = getDb()!;
 
-    const logsToInsert = records.map((r) => ({
-      tenantId,
-      originalId: String(r.id ?? ""),
-      subAccountId: r.sub_account_id != null && r.sub_account_id !== "" ? String(r.sub_account_id) : null,
-      itemId: String(r.item_id ?? ""),
-      actionName: String(r.action_name ?? ""),
-      status: String(r.status ?? "unknown"),
-      latencyMs: r.latency_ms != null ? String(r.latency_ms) : null,
-      timestamp: String(r.timestamp ?? Date.now() / 1000),
-    }));
+    // 四舍五入避免 numeric 溢出：latency_ms(12,2)、timestamp(15,4)
+    const logsToInsert = records.map((r) => {
+      const ts = r.timestamp ?? Date.now() / 1000;
+      const tsNum = typeof ts === "number" ? ts : parseFloat(String(ts)) || 0;
+      const latency = r.latency_ms != null ? (typeof r.latency_ms === "number" ? r.latency_ms : parseFloat(String(r.latency_ms))) : null;
+      return {
+        tenantId,
+        originalId: String(r.id ?? ""),
+        subAccountId: r.sub_account_id != null && r.sub_account_id !== "" ? String(r.sub_account_id) : null,
+        itemId: String(r.item_id ?? ""),
+        actionName: String(r.action_name ?? ""),
+        status: String(r.status ?? "unknown"),
+        latencyMs: latency != null ? String(Number(latency.toFixed(2))) : null,
+        timestamp: String(Number(tsNum.toFixed(4))),
+      };
+    });
 
     await db.insert(telemetryLogs).values(logsToInsert);
 

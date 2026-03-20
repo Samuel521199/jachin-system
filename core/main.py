@@ -270,35 +270,29 @@ async def lifespan(app: FastAPI):
             heartbeat_task = start_l1_heartbeat_background()
         except Exception as e:
             logger.warning("L1 心跳守护进程启动跳过: %s", e)
-        # L1-L2 云边同步：神谕 manifest 拉取 + 技能/MCP 空投
-        try:
-            from core.sync_daemon import start_cloud_sync_background
-            cloud_sync_task = await start_cloud_sync_background(interval_seconds=60)
-        except Exception as e:
-            logger.warning("云边同步守护进程启动跳过: %s", e)
         # 本地数字仓库：确保目录存在
         try:
             from core.inventory_scanner import ensure_inventory_dirs
             ensure_inventory_dirs()
         except Exception as e:
             logger.warning("Inventory 目录初始化跳过: %s", e)
-        # MCP 客户端代理：读取 ~/.jachin/mcp_servers.json，并发拉起所有 Server
+        # MCP + Inventory：由专用 reloader task 串行化，避免 anyio cancel scope 跨 task 退出
         try:
-            from core.mcp_client import get_mcp_manager
-            mcp_manager = get_mcp_manager()
-            await mcp_manager.start()
-            logger.info("MCP 管理器已启动 servers=%d tools=%d", mcp_manager.server_count, mcp_manager.tool_count)
+            from core.inventory_reloader import request_initial_reload
+            result = await request_initial_reload()
+            logger.info(
+                "Inventory 扫描完成 mcps=%d skills=%d",
+                result.get("mcps_injected", 0),
+                result.get("skills_found", 0),
+            )
         except Exception as e:
-            logger.warning("MCP 管理器启动跳过: %s", e)
-        # 本地仓库扫描：侧载 MCP 与 Wasm 技能
+            logger.warning("Inventory 初始化跳过: %s", e)
+        # L1-L2 云边同步：神谕 manifest 拉取 + 技能/MCP 空投（必须在 initial_reload 之后）
         try:
-            from core.inventory_scanner import scan_local_mcps, scan_local_skills
-            mcp_injected = await scan_local_mcps()
-            skills_found = await scan_local_skills()
-            if mcp_injected or skills_found:
-                logger.info("Inventory 扫描完成 mcps=%d skills=%d", mcp_injected, skills_found)
+            from core.sync_daemon import start_cloud_sync_background
+            cloud_sync_task = await start_cloud_sync_background(interval_seconds=60)
         except Exception as e:
-            logger.warning("Inventory 扫描跳过: %s", e)
+            logger.warning("云边同步守护进程启动跳过: %s", e)
         # 断网自治：从本地 role_permissions 预加载 RBAC 策略（L1 同步前或断网时作为真理来源）
         try:
             from core.policy_enforcer import load_from_local_db
@@ -311,12 +305,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # MCP 优雅关闭
-    try:
-        from core.mcp_client import get_mcp_manager
-        await get_mcp_manager().stop()
-    except Exception as e:
-        logger.warning("MCP 管理器关闭异常: %s", e)
+    # 先停止 sync/heartbeat，再通过 reloader 关闭 MCP（同 task 退出，避免 anyio 报错）
     if heartbeat_task and not heartbeat_task.done():
         heartbeat_task.cancel()
         try:
@@ -327,10 +316,14 @@ async def lifespan(app: FastAPI):
     if cloud_sync_task and not cloud_sync_task.done():
         cloud_sync_task.cancel()
         try:
-            import asyncio
             await asyncio.wait_for(asyncio.shield(cloud_sync_task), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+    try:
+        from core.inventory_reloader import request_shutdown_and_wait
+        await request_shutdown_and_wait()
+    except Exception as e:
+        logger.warning("InventoryReloader 关闭异常: %s", e)
     logger.info("Shutting down Jachin Nexus v0.8.35 (Singularity OS)...")
 
 

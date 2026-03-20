@@ -1,0 +1,10 @@
+version: "1"
+output_root: "~/.jachin"
+
+writes:
+  - path: "config/mcps/com.jachin.hr.recruitment/hr_recruitment.yaml"
+    type: "file"
+    merge: "overwrite_if_missing"
+  - path: "config/mcps/com.jachin.hr.recruitment/hr_jds"
+    type: "directory"
+    merge: "copy_missing"

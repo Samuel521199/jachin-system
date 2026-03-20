@@ -178,6 +178,13 @@ async def bootstrap_l3_gateway_pending(
                 f"连接 L2 超时（{type(e).__name__}），请确认 L2 已启动且网络可达。"
                 " 若使用代理，可尝试关闭代理或增加超时。"
             ) from e
+        except httpx.ConnectError as e:
+            raise RuntimeError(
+                f"无法连接 L2（{base}）。新机器或 L2 未启动时，请使用独立模式：\n"
+                f"  .\\scripts\\run_l3.ps1 --ws-only\n"
+                f"  或  python -m l3_node --ws-only\n"
+                f"（需 .env 配置 DASHSCOPE_API_KEY，无 MCP/Skill 订阅能力）"
+            ) from e
     if not data:
         raise RuntimeError("L2 持续返回 503，请确保 L2 已启动（运行 启动后端.bat 或 python -m core.main）")
     node_id = data.get("node_id") or "l3-unknown"

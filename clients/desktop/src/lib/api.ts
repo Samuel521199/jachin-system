@@ -704,6 +704,99 @@ export async function permanentDeleteRecycleBinSkill(recycleId: string): Promise
   }
 }
 
+/** 列出已隐藏的技能 item_id */
+export async function listHiddenSkills(): Promise<string[]> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/skills/hidden`, {
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { item_ids?: string[] };
+  return Array.isArray(data?.item_ids) ? data.item_ids : [];
+}
+
+/** 列出已隐藏的 L3 MCP item_id */
+export async function listHiddenMcps(): Promise<string[]> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/l3_mcps/hidden`, {
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { item_ids?: string[] };
+  return Array.isArray(data?.item_ids) ? data.item_ids : [];
+}
+
+/** 隐藏技能：L2 列表中排除，L3 不可见 */
+export async function hideSkill(itemId: string): Promise<{ ok: boolean; error?: string }> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/skills/${encodeURIComponent(itemId)}/hide`, {
+    method: "POST",
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: res.ok && data?.ok !== false, error: data?.error };
+}
+
+/** 取消隐藏技能 */
+export async function unhideSkill(itemId: string): Promise<{ ok: boolean; error?: string }> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/skills/${encodeURIComponent(itemId)}/unhide`, {
+    method: "POST",
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: res.ok && data?.ok !== false, error: data?.error };
+}
+
+/** L3_LOCAL MCP 信息 */
+export interface L3McpInfo {
+  item_id: string;
+  name: string;
+  description?: string;
+  tools?: string[];
+}
+
+/** 列出 L2 的 L3_LOCAL MCP */
+export async function listL3Mcps(): Promise<L3McpInfo[]> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/l3_mcps`, {
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { mcps?: L3McpInfo[] };
+  return Array.isArray(data?.mcps) ? data.mcps : [];
+}
+
+/** 隐藏 L3_LOCAL MCP */
+export async function hideMcp(itemId: string): Promise<{ ok: boolean; error?: string }> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/l3_mcps/${encodeURIComponent(itemId)}/hide`, {
+    method: "POST",
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: res.ok && data?.ok !== false, error: data?.error };
+}
+
+/** 取消隐藏 L3_LOCAL MCP */
+export async function unhideMcp(itemId: string): Promise<{ ok: boolean; error?: string }> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/l3_mcps/${encodeURIComponent(itemId)}/unhide`, {
+    method: "POST",
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: res.ok && data?.ok !== false, error: data?.error };
+}
+
+/** 删除 L3_LOCAL MCP（从 inventory 移除） */
+export async function deleteMcp(itemId: string): Promise<{ ok: boolean; error?: string }> {
+  const sub = await getSubAccountId();
+  const res = await fetch(`${BACKEND_URL}/api/v2/inventory/l3_mcps/${encodeURIComponent(itemId)}`, {
+    method: "DELETE",
+    headers: sub ? { "X-Sub-Account-Id": sub } : {},
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  return { ok: res.ok && data?.ok !== false, error: data?.error };
+}
+
 /**
  * 获取技能列表（GET /api/v3/skills，从 L3 读取）
  */

@@ -33,6 +33,8 @@
 | [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) | MCP 执行模型 |
 | [SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md) | Skill 规范 |
 | [SKILL_MCP_FLOW_AND_RECENT_CHANGES.md](./SKILL_MCP_FLOW_AND_RECENT_CHANGES.md) | **Skill/MCP 流转与近期变更** — 云端上传、三层流转、最新代码说明 |
+| [SKILL_MCP_UPLOAD_SPEC.md](./SKILL_MCP_UPLOAD_SPEC.md) | **Skill/MCP 上传规范** — 配置随包、订阅下载后可安装到目标机 |
+| [ADMIN_PLUGIN_MANAGEMENT_API.md](./ADMIN_PLUGIN_MANAGEMENT_API.md) | **插件管理 API** — L1/L2 删除与隐藏 |
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱 |
 | [VOICE_AND_TTS_GUIDE.md](./VOICE_AND_TTS_GUIDE.md) | 语音与 TTS |
 | [TESTING_GUIDE.md](./TESTING_GUIDE.md) | 测试指南 |

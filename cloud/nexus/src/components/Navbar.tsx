@@ -6,6 +6,7 @@ const navLinks = [
   { href: "/store", label: "Store" },
   { href: "/dashboard/analytics", label: "审计大屏" },
   { href: "/developer/payouts", label: "收益中心" },
+  { href: "/developer/plugins", label: "我的作品" },
   { href: "/dashboard/admin/review", label: "法律审核" },
   { href: "/market", label: "Market" },
   { href: "/forge", label: "The Forge" },

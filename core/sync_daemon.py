@@ -52,7 +52,9 @@ L2_PROCESS_ID = str(uuid.uuid4())[:8]
 
 def _load_nexus_config() -> dict[str, Any]:
     """读取 nexus_config.json"""
+    logger.info("[SyncDaemon] 即将读取 nexus_config path=%s", _CONFIG_PATH)
     if not _CONFIG_PATH.exists():
+        logger.info("[SyncDaemon] nexus_config 不存在，跳过")
         return {}
     try:
         raw = _CONFIG_PATH.read_text(encoding="utf-8")
@@ -78,6 +80,35 @@ _INVENTORY_ROOT = Path.home() / ".jachin" / "inventory"
 _SKILLS_DIR = _INVENTORY_ROOT / "skills"
 _MCPS_DIR = _INVENTORY_ROOT / "mcps"
 _L3_MCPS_DIR = _INVENTORY_ROOT / "l3_mcps"  # 路径 3：L3_LOCAL MCP，L3 拉取后动态加载
+
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """解析语义化版本为元组，便于比较。1.2.3 -> (1, 2, 3)，1.2.3-beta -> (1, 2, 3)"""
+    if not v or not isinstance(v, str):
+        return (0, 0, 0)
+    parts = v.strip().split("-")[0].split(".")
+    out = []
+    for p in parts[:4]:  # 最多 major.minor.patch
+        try:
+            out.append(int(p.strip()))
+        except ValueError:
+            out.append(0)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out[:3])
+
+
+def _version_compare(v_remote: str, v_local: str) -> int:
+    """
+    比较版本：remote > local 返回 1，相等返回 0，remote < local 返回 -1。
+    """
+    r = _parse_version(v_remote or "0.0.0")
+    l = _parse_version(v_local or "0.0.0")
+    if r > l:
+        return 1
+    if r < l:
+        return -1
+    return 0
 
 
 class CloudSyncDaemon:
@@ -132,6 +163,7 @@ class CloudSyncDaemon:
     async def _fetch_manifest_with_tenant(self, tenant_id: str) -> list[dict[str, Any]]:
         """用指定 tenant_id 请求 manifest，失败返回 []。503 时重试（L1 可能正在启动/编译）。"""
         url = f"{self._base_url}{_MANIFEST_PATH}"
+        logger.info("[SyncDaemon] 即将拉取 manifest url=%s tenant=%s", url, tenant_id[:24] if tenant_id else "")
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "X-Tenant-Id": tenant_id,
@@ -187,15 +219,25 @@ class CloudSyncDaemon:
     def _diff_manifest_vs_local(self, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         对比 manifest 与本地 ~/.jachin/inventory/，找出新增或需更新的项。
-        简化策略：若本地无对应 item_id 目录，或 package_url 变更（通过 .sync_meta 记录），则需下载。
+        版本化策略：manifest.version > local .sync_meta.version 时需更新；package_url 变更也需更新。
         用户已永久卸载的技能（回收站彻底删除）将被跳过，不再从 L1 重新拉取。
         """
+        logger.info("[SyncDaemon] 即将对比 manifest 与本地 inventory manifest_count=%d skills_dir=%s l3_mcps_dir=%s",
+                    len(manifest), self._skills_dir, self._l3_mcps_dir)
         permanently_uninstalled: set[str] = set()
         try:
             from core.skill_registry import get_permanently_uninstalled_skills
             permanently_uninstalled = get_permanently_uninstalled_skills()
         except Exception:
             pass
+
+        def _need_update(item: dict, local_version: str | None, package_url_changed: bool) -> bool:
+            mv = item.get("version") or "1.0.0"
+            if package_url_changed:
+                return True
+            if not local_version:
+                return True
+            return _version_compare(mv, local_version) > 0
 
         to_download: list[dict[str, Any]] = []
         for item in manifest:
@@ -210,60 +252,49 @@ class CloudSyncDaemon:
             if item_type == "SKILL":
                 local_dir = self._skills_dir / str(item_id)
                 meta_file = local_dir / ".sync_meta"
-                need_download = False
-                if not local_dir.exists():
-                    need_download = True
-                elif meta_file.exists():
+                local_version = None
+                url_changed = True
+                if meta_file.exists():
+                    logger.debug("[SyncDaemon] 即将读取 SKILL 本地版本 item_id=%s path=%s", item_id, meta_file)
                     try:
                         meta = json.loads(meta_file.read_text(encoding="utf-8"))
-                        if meta.get("package_url") != package_url:
-                            need_download = True
+                        local_version = meta.get("version")
+                        url_changed = meta.get("package_url") != package_url
                     except Exception:
-                        need_download = True
-                else:
-                    # 有目录但无 meta，视为需更新
+                        pass
+                if not local_dir.exists():
                     need_download = True
+                else:
+                    need_download = _need_update(item, local_version, url_changed)
 
                 if need_download:
                     to_download.append(item)
 
             elif item_type == "MCP":
                 runtime_tier = (item.get("runtime_tier") or "L2_GATEWAY").upper()
-                # 路径 3：L3_LOCAL 下载到 l3_mcps/，L3 拉取后动态加载
                 if runtime_tier == "L3_LOCAL":
                     local_dir = self._l3_mcps_dir / str(item_id)
+                    meta_file = local_dir / ".sync_meta"
                 else:
                     local_path = self._mcps_dir / f"{item_id}.json"
                     local_dir = self._mcps_dir / str(item_id)
-                meta_file = (local_dir / ".sync_meta") if local_dir.exists() else (
-                    (self._l3_mcps_dir / str(item_id) / ".sync_meta") if runtime_tier == "L3_LOCAL"
-                    else (self._mcps_dir / f".{item_id}.sync_meta")
-                )
-                need_download = False
+                    meta_file = self._mcps_dir / f".{item_id}.sync_meta"
+
+                local_version = None
+                url_changed = True
+                if meta_file.exists():
+                    logger.debug("[SyncDaemon] 即将读取 MCP 本地版本 item_id=%s path=%s", item_id, meta_file)
+                    try:
+                        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                        local_version = meta.get("version")
+                        url_changed = meta.get("package_url") != package_url
+                    except Exception:
+                        pass
+
                 if runtime_tier == "L3_LOCAL":
-                    if not local_dir.exists():
-                        need_download = True
-                    elif meta_file.exists():
-                        try:
-                            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-                            if meta.get("package_url") != package_url:
-                                need_download = True
-                        except Exception:
-                            need_download = True
-                    else:
-                        need_download = True
+                    need_download = not local_dir.exists() or _need_update(item, local_version, url_changed)
                 else:
-                    if not local_path.exists() and not local_dir.exists():
-                        need_download = True
-                    elif meta_file.exists():
-                        try:
-                            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-                            if meta.get("package_url") != package_url:
-                                need_download = True
-                        except Exception:
-                            need_download = True
-                    else:
-                        need_download = True
+                    need_download = (not local_path.exists() and not local_dir.exists()) or _need_update(item, local_version, url_changed)
 
                 if need_download:
                     to_download.append(item)
@@ -308,6 +339,7 @@ class CloudSyncDaemon:
         *,
         bypass_proxy: bool = False,
         runtime_tier: Optional[str] = None,
+        version: Optional[str] = None,
     ) -> bool:
         """
         流式下载并解压到本地仓库。
@@ -324,6 +356,7 @@ class CloudSyncDaemon:
         suffix = ".zip" if url_path.endswith(".zip") else ""
         temp_fd, temp_path = tempfile.mkstemp(suffix=suffix or ".bin")
         try:
+            logger.info("[SyncDaemon] 即将下载 item_id=%s item_type=%s url=%s", item_id, item_type, package_url[:80] + "..." if len(package_url) > 80 else package_url)
             # 本地 URL 时禁用代理，避免 ConnectError（代理无法处理 localhost）
             async with httpx.AsyncClient(timeout=120.0, trust_env=not bypass_proxy) as client:
                 async with client.stream("GET", package_url) as resp:
@@ -345,13 +378,16 @@ class CloudSyncDaemon:
 
             if item_type == "SKILL":
                 dest = self._skills_dir / str(item_id)
-                dest.mkdir(parents=True, exist_ok=True)
-                # zipfile 为同步 I/O，放入 executor 避免阻塞 Event Loop
-                def _extract() -> None:
+                # 原子性更新：先删旧再解压，避免残留
+                def _extract_skill() -> None:
+                    if dest.exists():
+                        logger.info("[SyncDaemon] 即将删除旧版本 SKILL item_id=%s dest=%s", item_id, dest)
+                        shutil.rmtree(dest, ignore_errors=True)
+                    dest.mkdir(parents=True, exist_ok=True)
                     with zipfile.ZipFile(temp_path, "r") as zf:
                         zf.extractall(dest)
 
-                await loop.run_in_executor(None, _extract)
+                await loop.run_in_executor(None, _extract_skill)
                 has_plugin = (dest / "plugin.json").exists()
                 wasm_files = list(dest.glob("*.wasm"))
                 has_wasm = bool(wasm_files)
@@ -360,12 +396,22 @@ class CloudSyncDaemon:
                         "[SyncDaemon] SKILL %s 解压后缺少 plugin.json 或 .wasm，请检查包格式",
                         item_id,
                     )
-                meta = {"package_url": package_url, "item_id": item_id}
+                meta = {
+                    "package_url": package_url,
+                    "item_id": item_id,
+                    "version": version or "1.0.0",
+                }
                 if wasm_files:
                     primary_wasm = wasm_files[0]
                     meta["wasm_sha256"] = self._compute_wasm_sha256(str(primary_wasm))
                 meta_path = dest / ".sync_meta"
                 meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+                # 075: 按 config/manifest.yaml 写出配置到 ~/.jachin/config/
+                try:
+                    from l3_node.config_writeout import write_config_from_package
+                    write_config_from_package(dest, str(item_id))
+                except Exception as cfg_err:
+                    logger.warning("[SyncDaemon] 配置写出失败 item_id=%s: %s", item_id, cfg_err)
 
             elif item_type == "MCP":
                 rt = (runtime_tier or "L2_GATEWAY").upper()
@@ -373,22 +419,38 @@ class CloudSyncDaemon:
                 if rt == "L3_LOCAL":
                     self._l3_mcps_dir.mkdir(parents=True, exist_ok=True)
                     dest = self._l3_mcps_dir / str(item_id)
-                    dest.mkdir(parents=True, exist_ok=True)
                     if temp_path.lower().endswith(".zip"):
                         def _extract_l3_mcp() -> None:
+                            if dest.exists():
+                                logger.info("[SyncDaemon] 即将删除旧版本 L3_LOCAL MCP item_id=%s dest=%s", item_id, dest)
+                                shutil.rmtree(dest, ignore_errors=True)
+                            dest.mkdir(parents=True, exist_ok=True)
                             with zipfile.ZipFile(temp_path, "r") as zf:
                                 zf.extractall(dest)
                         await loop.run_in_executor(None, _extract_l3_mcp)
                     else:
                         # 非 zip 时复制到 dest 目录
+                        if dest.exists():
+                            logger.info("[SyncDaemon] 即将删除旧版本 L3_LOCAL MCP(非zip) item_id=%s dest=%s", item_id, dest)
+                            shutil.rmtree(dest, ignore_errors=True)
+                        dest.mkdir(parents=True, exist_ok=True)
                         shutil.copy(temp_path, dest / os.path.basename(temp_path))
                     meta_path = dest / ".sync_meta"
+                    # 075: 按 config/manifest.yaml 写出配置到 ~/.jachin/config/
+                    try:
+                        from l3_node.config_writeout import write_config_from_package
+                        write_config_from_package(dest, str(item_id))
+                    except Exception as cfg_err:
+                        logger.warning("[SyncDaemon] L3_LOCAL MCP 配置写出失败 item_id=%s: %s", item_id, cfg_err)
                 else:
                     self._mcps_dir.mkdir(parents=True, exist_ok=True)
                     if temp_path.lower().endswith(".zip"):
                         dest = self._mcps_dir / str(item_id)
-                        dest.mkdir(parents=True, exist_ok=True)
                         def _extract_mcp() -> None:
+                            if dest.exists():
+                                logger.info("[SyncDaemon] 即将删除旧版本 L2_GATEWAY MCP item_id=%s dest=%s", item_id, dest)
+                                shutil.rmtree(dest, ignore_errors=True)
+                            dest.mkdir(parents=True, exist_ok=True)
                             with zipfile.ZipFile(temp_path, "r") as zf:
                                 zf.extractall(dest)
                         await loop.run_in_executor(None, _extract_mcp)
@@ -405,9 +467,21 @@ class CloudSyncDaemon:
                     else:
                         dest_file = self._mcps_dir / f"{item_id}.json"
                         shutil.copy(temp_path, dest_file)
+                    # 075: L2_GATEWAY MCP 解压到 dest 时，按 config/manifest.yaml 写出配置
+                    if temp_path.lower().endswith(".zip"):
+                        try:
+                            from l3_node.config_writeout import write_config_from_package
+                            write_config_from_package(dest, str(item_id))
+                        except Exception as cfg_err:
+                            logger.warning("[SyncDaemon] L2_GATEWAY MCP 配置写出失败 item_id=%s: %s", item_id, cfg_err)
                     meta_path = self._mcps_dir / f".{item_id}.sync_meta"
+                meta_content = {
+                    "package_url": package_url,
+                    "item_id": item_id,
+                    "version": version or "1.0.0",
+                }
                 meta_path.write_text(
-                    json.dumps({"package_url": package_url, "item_id": item_id}, ensure_ascii=False),
+                    json.dumps(meta_content, ensure_ascii=False),
                     encoding="utf-8",
                 )
             else:
@@ -426,10 +500,11 @@ class CloudSyncDaemon:
                 pass
 
     async def _trigger_reload(self) -> None:
-        """热重载：调用 InventoryScanner.reload_inventory() 让新技能瞬间生效"""
+        """热重载：通过 InventoryReloader 队列触发，确保 MCP 创建/关闭同 task"""
         try:
-            from core.inventory_scanner import reload_inventory
-            result = await reload_inventory()
+            from core.inventory_reloader import request_reload
+            future = request_reload()
+            result = await future
             logger.info("[SyncDaemon] 热重载完成 mcps=%d skills=%d", result.get("mcps_injected", 0), result.get("skills_found", 0))
         except Exception as e:
             logger.error("[SyncDaemon] 热重载失败: %s", e, exc_info=True)
@@ -506,8 +581,10 @@ class CloudSyncDaemon:
     async def run_sync_cycle(self) -> None:
         """执行一次完整同步周期：拉 manifest → diff → 下载 → 热重载 → 拉 policies"""
         manifest = await self.poll_manifest()
+        logger.info("[SyncDaemon] manifest 拉取完成 count=%d", len(manifest) if manifest else 0)
         # 物资下载
         to_download = self._diff_manifest_vs_local(manifest) if manifest else []
+        logger.info("[SyncDaemon] diff 完成 待下载=%d 项", len(to_download))
         if to_download:
             for item in to_download:
                 item_id = item.get("id", "unknown")
@@ -523,7 +600,8 @@ class CloudSyncDaemon:
                 runtime_tier = item.get("runtime_tier") if item_type == "MCP" else None
                 ok = await self.download_and_extract(
                     item_type, package_url, str(item_id), package_sha256,
-                    bypass_proxy=bypass_proxy, runtime_tier=runtime_tier
+                    bypass_proxy=bypass_proxy, runtime_tier=runtime_tier,
+                    version=item.get("version"),
                 )
                 if ok:
                     logger.info("[SyncDaemon] 空投成功: %s ✓", item_id)
@@ -531,7 +609,7 @@ class CloudSyncDaemon:
                     logger.warning("[SyncDaemon] 空投失败: %s ✗", item_id)
             await self._trigger_reload()
         else:
-            logger.debug("[SyncDaemon] 清单无变更，跳过下载")
+            logger.info("[SyncDaemon] 清单无变更，跳过下载")
 
         # L2 数据主权：RBAC 策略仅从本地 DB 读取，不再同步云端
 
@@ -588,12 +666,7 @@ async def start_cloud_sync_background(interval_seconds: float = 60) -> asyncio.T
 
     task = await daemon.start_background_sync(interval_seconds=interval_seconds)
     logger.info("[SyncDaemon] 云边同步守护进程已启动，间隔 %ds，tenant=%s base=%s", interval_seconds, daemon._tenant_id, daemon._base_url)
-    # 启动后立即执行一次同步，不等待首个 interval
-    try:
-        import asyncio
-        asyncio.create_task(daemon.run_sync_cycle())
-    except Exception as e:
-        logger.warning("[SyncDaemon] 首次同步触发失败: %s", e)
+    # _loop 首次迭代会立即执行 run_sync_cycle，无需额外 create_task（避免并发触发多次 reload）
     return task
 
 

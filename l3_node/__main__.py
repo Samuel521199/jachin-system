@@ -240,6 +240,16 @@ async def main() -> None:
         from l3_node.http_server import run_http_server, L3_HTTP_PORT
 
         logger.info("L3 WebSocket 独立模式，端口 %d", args.port)
+        # IM 通道（Lark 长连接等）— 按 ~/.jachin/config/im_channels.yaml 启动
+        try:
+            from l3_node.im_channels import start_im_channels
+            from l3_node.im_channels.config import ensure_config_dir
+            ensure_config_dir()
+            _loop = asyncio.get_running_loop()
+            start_im_channels(run_l3_agent, engine, _loop)
+            logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
+        except Exception as e:
+            logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml 的 app_id/app_secret", e)
         await run_http_server(port=L3_HTTP_PORT)
         await run_ws_server(engine, run_l3_agent, port=args.port)
         return
@@ -258,6 +268,16 @@ async def main() -> None:
         from l3_node.agent_ref import engine_ref
         engine_ref["engine"] = engine
         logger.info("L3 节点已就绪 node_id=%s，WebSocket 端口 %d", node_id, args.port)
+        # IM 通道（Lark 长连接等）
+        try:
+            from l3_node.im_channels import start_im_channels
+            from l3_node.im_channels.config import ensure_config_dir
+            ensure_config_dir()
+            _loop = asyncio.get_running_loop()
+            start_im_channels(run_l3_agent, engine, _loop)
+            logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
+        except Exception as e:
+            logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml", e)
         heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
         try:
             await run_ws_server(engine, run_l3_agent, port=args.port)
@@ -284,6 +304,16 @@ async def main() -> None:
     from l3_node.agent_ref import engine_ref
     engine_ref["engine"] = engine
     logger.info("L3 节点已就绪 node_id=%s，WebSocket 端口 %d", node_id, args.port)
+    # IM 通道（Lark 长连接等）— 招聘测试优先使用长连接
+    try:
+        from l3_node.im_channels import start_im_channels
+        from l3_node.im_channels.config import ensure_config_dir
+        ensure_config_dir()
+        _loop = asyncio.get_running_loop()
+        start_im_channels(run_l3_agent, engine, _loop)
+        logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
+    except Exception as e:
+        logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml", e)
     heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
     try:
         await run_ws_server(engine, run_l3_agent, port=args.port)

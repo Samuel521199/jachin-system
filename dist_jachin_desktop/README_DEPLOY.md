@@ -1,0 +1,92 @@
+# L3 便携包部署说明
+
+将 `dist_jachin_desktop` 整个文件夹拷贝到目标机器即可使用 L3。**L3 为轻量架构**：不包含任何 MCP 与 Skill，均通过 L1 订阅下载到 `~/.jachin/l3_mcp_cache` / `l3_skill_cache`。
+
+## 目录结构
+
+```
+dist_jachin_desktop/
+├── bin/                    # L3 可执行文件 l3_node-*.exe
+├── scripts/                # 启动脚本
+│   ├── run_l3.ps1          # 主启动脚本
+│   └── launch_chrome_debug.ps1
+├── config/                 # 最小配置模板（含 im_channels.yaml.example、l3_recruitment.yaml.example）
+├── logs/                   # 日志目录（运行后生成）
+│   ├── l3_debug.log        # 调试日志（每次启动清空）
+│   └── l3_broadcast.log    # 全息监控日志（调度、任务状态）
+├── .env.example            # 环境变量示例
+└── README_DEPLOY.md        # 本说明
+```
+
+**无 skills_repo**：MCP 与 Skill 由 L2 从 L1 同步，L3 启动后自动拉取到 `~/.jachin/`。
+
+## 部署步骤
+
+### 1. 拷贝整个文件夹
+
+将 `dist_jachin_desktop` 完整拷贝到目标机器任意目录，例如 `D:\Jachin\`。
+
+### 2. 配置环境变量
+
+在便携包根目录创建 `.env` 文件：
+
+```powershell
+cd D:\Jachin\dist_jachin_desktop
+copy .env.example .env
+# 编辑 .env，填入必要配置
+```
+
+**必填项：**
+
+- `DASHSCOPE_API_KEY`：阿里百炼 API Key（LLM）
+- L2 配对后 Key 由 L2 下发；未配对时需本地配置
+
+**可选（Lark / 飞书）：**
+
+- 方式一：在 `.env` 中配置 `LARK_APP_ID`、`LARK_APP_SECRET`、`LARK_CHAT_ID`
+- 方式二：复制 `config/im_channels.yaml.example` 到 `~/.jachin/config/im_channels.yaml` 并填写
+
+### 3. 配对 L2 并订阅 MCP/Skill
+
+- 首次使用需通过 L2 配对 L1，在 L2 控制台订阅所需 MCP、Skill
+- L3 启动后自动从 L2 拉取到 `~/.jachin/`
+
+### 4. 启动 L3
+
+```powershell
+.\scripts\run_l3.ps1
+```
+
+- 已配对 L2：使用 `--gateway`（默认），MCP/Skill 自动拉取
+- 未配对：`.\scripts\run_l3.ps1 --ws-only`（需 .env 有 DASHSCOPE_API_KEY，无订阅能力）
+
+### 5. 验证
+
+- 健康检查：`http://127.0.0.1:18991/api/health`
+- 全息监控：前端 SSE 订阅或查看 `logs/l3_broadcast.log`
+
+## 日志说明
+
+| 文件 | 说明 |
+|------|------|
+| `logs/l3_debug.log` | 调试日志，每次启动清空，含启动信息、错误堆栈 |
+| `logs/l3_broadcast.log` | 全息监控日志，调度器、任务成败、推荐牛人、收网抓取等实时状态 |
+
+排查错误时优先查看 `logs/l3_debug.log`，业务状态查看 `logs/l3_broadcast.log`。
+
+## MCP / Skill 订阅
+
+- L3 启动后通过 L2 从 L1 拉取已订阅的 MCP 与 Skill 到 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
+- Lark、HR、BI 等能力均以 MCP/Skill 形式从 L1 订阅，不在便携包内
+
+## 依赖说明
+
+- **无需 Python**：L3 以 exe 形式运行
+- **无需 Node**：若仅用 L3 独立模式（`run_l3.ps1`）
+- **首次配对**：需能访问 L2（Nexus）完成设备注册
+
+## 故障排查
+
+1. **exe 启动后无响应**：查看 `logs/l3_debug.log` 是否有异常
+2. **MCP/Skill 不可用**：确认 L2 已配对 L1，且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
+3. **Lark 等 MCP 配置**：订阅下载后配置在 `~/.jachin/config/mcps/{plugin_id}/`，按包内 manifest 写出

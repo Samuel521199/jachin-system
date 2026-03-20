@@ -2,7 +2,12 @@
 L3 最早阶段调试日志 - 仅用 stdlib，不依赖 dotenv
 
 每次 exe 启动时清空日志，便于排查打包问题。
-日志路径：~/.jachin/l3_debug.log（优先）→ cwd/l3_debug.log → TEMP/l3_debug.log
+日志路径（按优先级）:
+  - JACHIN_LOG_DIR/l3_debug.log（便携包内 logs/ 子目录）
+  - PyInstaller 时 cwd/logs/l3_debug.log 或 cwd/l3_debug.log
+  - ~/.jachin/l3_debug.log
+  - cwd/l3_debug.log
+  - TEMP/l3_debug.log
 """
 from __future__ import annotations
 
@@ -17,11 +22,17 @@ _FILE_HANDLER: logging.FileHandler | None = None
 
 
 def _resolve_log_path() -> str:
-    """解析日志路径。PyInstaller 时优先 cwd（exe 同目录），否则 ~/.jachin"""
+    """解析日志路径。JACHIN_LOG_DIR 优先（便携包 logs/），否则 PyInstaller 时 cwd"""
     candidates = []
+    log_dir = os.environ.get("JACHIN_LOG_DIR")
+    if log_dir:
+        p = Path(log_dir) / "l3_debug.log"
+        candidates.append(p)
     if getattr(sys, "frozen", False):
-        # 打包 exe：日志放 cwd（dist_jachin_desktop），便于用户查看
-        candidates.append(Path.cwd() / "l3_debug.log")
+        cwd = Path.cwd()
+        # 便携包：优先 logs/ 子目录
+        candidates.append(cwd / "logs" / "l3_debug.log")
+        candidates.append(cwd / "l3_debug.log")
     jachin = Path.home() / ".jachin"
     candidates.append(jachin / "l3_debug.log")
     candidates.append(Path.cwd() / "l3_debug.log")

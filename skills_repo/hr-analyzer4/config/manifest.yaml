@@ -1,0 +1,10 @@
+version: "1"
+output_root: "~/.jachin"
+
+writes:
+  - path: "config/skills/com.jachin.hr.analyzer4/hr_jds"
+    type: "directory"
+    merge: "copy_missing"
+  - path: "config/skills/com.jachin.hr.analyzer4/hr_analyzer4.yaml"
+    type: "file"
+    merge: "overwrite_if_missing"

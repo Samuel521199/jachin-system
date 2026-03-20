@@ -75,6 +75,7 @@ def move_to_recycle_bin(item_id: str, purge_data: bool = False) -> dict[str, Any
     将技能移入回收站（软删除）。
     返回 { ok, item_id, recycle_id, source, error? }
     """
+    logger.info("[RecycleBin] 即将移入回收站 item_id=%s purge_data=%s", item_id, purge_data)
     _ensure_recycle_bin()
     source, src_path = _find_skill_source(item_id)
     if not src_path or not src_path.exists():
@@ -108,9 +109,11 @@ def move_to_recycle_bin(item_id: str, purge_data: bool = False) -> dict[str, Any
 
         if source in ("inventory", "cache"):
             # 移动整个目录
+            logger.info("[RecycleBin] 即将移动技能目录 item_id=%s src=%s dest=%s", item_id, src_path, dest_dir / "skill")
             shutil.move(str(src_path), str(dest_dir / "skill"))
         else:
             # builtin: 复制（项目目录只读）
+            logger.info("[RecycleBin] 即将复制 builtin 技能 item_id=%s src=%s dest=%s", item_id, src_path, dest_dir / "skill")
             shutil.copytree(str(src_path), str(dest_dir / "skill"))
             # 复制 JD 配置文件（若有，与 registry 互为备份）
             for jd_name in (f"{item_id}.md", f"{item_id.replace('-', '_')}.md"):
@@ -129,6 +132,7 @@ def move_to_recycle_bin(item_id: str, purge_data: bool = False) -> dict[str, Any
         cache_path = _L3_CACHE_DIR / item_id
         if cache_path.exists() and cache_path.is_dir():
             try:
+                logger.info("[RecycleBin] 即将删除 L3 缓存 item_id=%s path=%s", item_id, cache_path)
                 shutil.rmtree(cache_path)
                 logger.info("[RecycleBin] 已清理 L3 缓存 item_id=%s", item_id)
             except Exception as e:

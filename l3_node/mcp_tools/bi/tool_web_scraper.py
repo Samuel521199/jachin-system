@@ -13,11 +13,30 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 合并单元格模式：当前值 (+/-X%) 上期值，如 "3,383 (+50.09%) 2,254" 或 "120.00 (+300.00%) 30.00"
+_MERGED_CELL_RE = re.compile(
+    r"^(.+?)\s*\(([+-]?[\d.]+%)\)\s*(.+)$",
+    re.DOTALL,
+)
+
+
+def _split_merged_cell_value(val: str) -> str:
+    """
+    若单元格为「当前值 (+X%) 上期值」合并格式，拆分为「当前值 | 环比 | 上期值」便于下游解析。
+    否则返回原值。
+    """
+    val = (val or "").strip()
+    m = _MERGED_CELL_RE.match(val)
+    if m:
+        return f"{m.group(1).strip()} | {m.group(2)} | {m.group(3).strip()}"
+    return val
 
 
 def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> str:
@@ -135,6 +154,78 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
             logger.warning("[Automation] action[%d] %s failed: %s", i, typ, e)
             return f"action[{i}] {typ} 失败: {e}"
     return ""
+
+
+def _expand_all_table_rows(
+    page: Any,
+    *,
+    expand_selector: str = ".el-table__expand-icon:not(.el-table__expand-icon--expanded)",
+    wait_ms: int = 400,
+    max_rounds: int = 100,
+) -> None:
+    """
+    抓取前展开表格内所有可展开的树形行，确保子项（子渠道、各游戏明细等）被纳入抓取。
+
+    支持两种模式：
+    1. Element UI 标准：.el-table__expand-icon:not(.el-table__expand-icon--expanded)
+    2. 自定义树形（平台产销等）：.el-table .cell span[style*="cursor: pointer"]，仅点击未展开行
+    """
+    for round_idx in range(max_rounds):
+        icons = page.locator(expand_selector)
+        count = icons.count()
+        if count == 0:
+            # 标准选择器无结果时，尝试自定义树形（平台产销情况等：span[style*="cursor: pointer"]）
+            clicked = page.evaluate(
+                """
+                () => {
+                    const rows = document.querySelectorAll('.el-table__body-wrapper tbody tr');
+                    for (const row of rows) {
+                        const span = row.querySelector('.cell span[style*="cursor: pointer"]');
+                        if (!span) continue;
+                        const next = row.nextElementSibling;
+                        if (next && /el-table__row--level-1|level-1/.test(next.className || '')) continue;
+                        span.scrollIntoView({ block: 'center', behavior: 'instant' });
+                        span.click();
+                        return 1;
+                    }
+                    return 0;
+                }
+                """
+            )
+            if clicked:
+                page.wait_for_timeout(min(wait_ms, 2000))
+                continue
+            if round_idx > 0:
+                logger.debug("[Expand Table] 已全部展开，共 %d 轮", round_idx)
+            return
+        try:
+            first = icons.first
+            first.scroll_into_view_if_needed(timeout=5000)
+            page.wait_for_timeout(100)
+            first.click(timeout=5000, force=True)
+            page.wait_for_timeout(min(wait_ms, 2000))
+        except Exception as e:
+            try:
+                expanded = page.evaluate(
+                    """
+                    (sel) => {
+                        const icons = document.querySelectorAll(sel);
+                        if (icons.length === 0) return 0;
+                        icons[0].scrollIntoView({ block: 'center', behavior: 'instant' });
+                        icons[0].click();
+                        return 1;
+                    }
+                    """,
+                    expand_selector,
+                )
+                if expanded:
+                    page.wait_for_timeout(min(wait_ms, 2000))
+                else:
+                    logger.debug("[Expand Table] 第 %d 轮点击异常: %s", round_idx + 1, e)
+                    return
+            except Exception as e2:
+                logger.debug("[Expand Table] 第 %d 轮点击异常: %s", round_idx + 1, e2)
+                return
 
 
 def _expand_filters_to_actions(filters: dict) -> list[dict]:
@@ -287,6 +378,20 @@ def _harvest_via_playwright(
             except Exception:
                 pass
 
+            # 可选：展开所有树形行，抓取子项（渠道明细、各游戏数据等）
+            if automation.get("expand_table_rows", False):
+                expand_sel = automation.get("expand_selector") or ".el-table__expand-icon:not(.el-table__expand-icon--expanded)"
+                expand_wait = int(automation.get("expand_wait_ms") or 600)
+                expand_wait = max(200, min(expand_wait, 2000))
+                try:
+                    _expand_all_table_rows(
+                        target_page,
+                        expand_selector=expand_sel,
+                        wait_ms=expand_wait,
+                    )
+                except Exception as e:
+                    logger.warning("[Scraper] 展开表格行时异常（继续抓取）: %s", e)
+
             # 提取表格：Element UI 表头/表体分离，需分别取
             rows = []
             try:
@@ -297,10 +402,13 @@ def _harvest_via_playwright(
                 body_trs = target_page.locator(".el-table__body-wrapper table tbody tr, .el-table__body-wrapper tbody tr, .el-table tbody tr").all()
                 if not body_trs:
                     body_trs = target_page.locator("table:not(.el-date-table) tbody tr").all()
+                split_merged = automation.get("split_merged_cells", True)
                 if header_cells and body_trs:
                     for tr in body_trs:
                         cells = tr.locator("td").all_text_contents()
                         cells = [c.strip() for c in cells]
+                        if split_merged:
+                            cells = [_split_merged_cell_value(c) for c in cells]
                         if len(cells) >= len(header_cells):
                             rows.append(dict(zip(header_cells, cells[: len(header_cells)])))
                         elif cells:
@@ -309,6 +417,8 @@ def _harvest_via_playwright(
                     for tr in body_trs:
                         cells = tr.locator("td").all_text_contents()
                         cells = [c.strip() for c in cells if c]
+                        if split_merged:
+                            cells = [_split_merged_cell_value(c) for c in cells]
                         if cells:
                             rows.append({f"col_{i}": v for i, v in enumerate(cells)})
             except Exception as e:

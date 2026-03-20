@@ -47,11 +47,11 @@ async def restore_recycle_bin_skill(request: Request, recycle_id: str) -> dict[s
         raise api_error(401, ERR_AUTH_002, "需要 X-Sub-Account-Id")
     try:
         from core.recycle_bin import restore_from_recycle_bin
-        from core.inventory_scanner import reload_inventory
+        from core.inventory_reloader import request_reload
         result = restore_from_recycle_bin(recycle_id)
         if not result.get("ok"):
             return result
-        await reload_inventory()
+        await request_reload()
         return result
     except Exception as e:
         logger.warning("[RecycleBin] restore failed: %s", e)

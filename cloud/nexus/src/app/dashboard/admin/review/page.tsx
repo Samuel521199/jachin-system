@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
-import { Scale, CheckCircle2, XCircle, FileJson, Package, Shield } from "lucide-react";
+import { Scale, CheckCircle2, XCircle, FileJson, Package, Shield, Archive, RotateCcw } from "lucide-react";
 
 type PendingPlugin = {
   id: string;
@@ -68,7 +68,10 @@ function Toast({
   );
 }
 
+type TabType = "pending" | "approved" | "archived";
+
 export default function AdminReviewDashboardPage() {
+  const [tab, setTab] = useState<TabType>("pending");
   const [plugins, setPlugins] = useState<PendingPlugin[]>([]);
   const [selected, setSelected] = useState<PendingPlugin | null>(null);
   const [loading, setLoading] = useState(true);
@@ -82,7 +85,11 @@ export default function AdminReviewDashboardPage() {
   const fetchList = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/v1/admin/review", {
+      const url =
+        tab === "pending"
+          ? "/api/v1/admin/review"
+          : `/api/v1/admin/plugins/list?status=${tab}`;
+      const res = await fetch(url, {
         credentials: "include",
         headers: getAdminHeaders(),
       });
@@ -106,7 +113,7 @@ export default function AdminReviewDashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [selected]);
+  }, [tab, selected]);
 
   const checkUnlock = useCallback(async () => {
     const res = await fetch("/api/v1/admin/check", {
@@ -131,6 +138,50 @@ export default function AdminReviewDashboardPage() {
       setLoading(false);
     }
   }, [fetchList]);
+
+  const handleArchive = async (plugin: PendingPlugin) => {
+    setActioning(plugin.id);
+    try {
+      const res = await fetch(`/api/v1/admin/plugins/${plugin.id}/archive`, {
+        method: "POST",
+        headers: getAdminHeaders(),
+        credentials: "include",
+      });
+      const json = await res.json();
+      if (json.success) {
+        setToast({ message: "插件已下架归档，商城与 manifest 均不再展示", variant: "success" });
+        await fetchList();
+      } else {
+        setToast({ message: `下架失败：${json.error ?? "未知错误"}` });
+      }
+    } catch (e) {
+      setToast({ message: `下架失败：${e instanceof Error ? e.message : "网络错误"}` });
+    } finally {
+      setActioning(null);
+    }
+  };
+
+  const handleRestore = async (plugin: PendingPlugin) => {
+    setActioning(plugin.id);
+    try {
+      const res = await fetch(`/api/v1/admin/plugins/${plugin.id}/restore`, {
+        method: "POST",
+        headers: getAdminHeaders(),
+        credentials: "include",
+      });
+      const json = await res.json();
+      if (json.success) {
+        setToast({ message: "插件已恢复上架", variant: "success" });
+        await fetchList();
+      } else {
+        setToast({ message: `恢复失败：${json.error ?? "未知错误"}` });
+      }
+    } catch (e) {
+      setToast({ message: `恢复失败：${e instanceof Error ? e.message : "网络错误"}` });
+    } finally {
+      setActioning(null);
+    }
+  };
 
   const handleApprove = async (plugin: PendingPlugin) => {
     setActioning(plugin.id);
@@ -260,9 +311,24 @@ export default function AdminReviewDashboardPage() {
             <Scale className="h-8 w-8 text-amber-400" />
             法律审核中心
           </h1>
-          <p className="text-white/50 text-sm font-mono">
-            待审插件 · 批准入驻 · 驳回申请 · 仅 isRoot
+          <p className="text-white/50 text-sm font-mono mb-4">
+            待审插件 · 已上架管理 · 已归档恢复 · 仅 isRoot
           </p>
+          <div className="flex gap-2">
+            {(["pending", "approved", "archived"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  tab === t
+                    ? "bg-cyan-500/20 text-cyan-300 border border-cyan-400/50"
+                    : "bg-white/5 text-white/60 border border-white/10 hover:bg-white/10 hover:text-white/80"
+                }`}
+              >
+                {t === "pending" ? "待审" : t === "approved" ? "已上架" : "已归档"}
+              </button>
+            ))}
+          </div>
         </header>
 
         <AnimatePresence>
@@ -289,8 +355,20 @@ export default function AdminReviewDashboardPage() {
         ) : plugins.length === 0 ? (
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-16 text-center">
             <Scale className="h-16 w-16 text-white/20 mx-auto mb-4" />
-            <p className="text-white/50 text-lg">暂无待审插件</p>
-            <p className="text-white/30 text-sm mt-2">开发者发布 PUBLIC 插件后将在此排队</p>
+            <p className="text-white/50 text-lg">
+              {tab === "pending"
+                ? "暂无待审插件"
+                : tab === "approved"
+                  ? "暂无已上架插件"
+                  : "暂无已归档插件"}
+            </p>
+            <p className="text-white/30 text-sm mt-2">
+              {tab === "pending"
+                ? "开发者发布 PUBLIC 插件后将在此排队"
+                : tab === "approved"
+                  ? "批准后的插件将在此展示，可下架归档"
+                  : "下架后的插件将在此展示，可恢复上架"}
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -356,22 +434,44 @@ export default function AdminReviewDashboardPage() {
                         </div>
                       </div>
                       <div className="flex gap-3 shrink-0">
-                        <button
-                          onClick={() => handleApprove(selected)}
-                          disabled={!!actioning}
-                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 hover:bg-cyan-500/30 disabled:opacity-50 transition-colors font-medium"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          批准入驻
-                        </button>
-                        <button
-                          onClick={() => setRejectModal({ plugin: selected, reason: "" })}
-                          disabled={!!actioning}
-                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-400/40 hover:bg-red-500/30 disabled:opacity-50 transition-colors font-medium"
-                        >
-                          <XCircle className="h-4 w-4" />
-                          驳回申请
-                        </button>
+                        {tab === "pending" ? (
+                          <>
+                            <button
+                              onClick={() => handleApprove(selected)}
+                              disabled={!!actioning}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 hover:bg-cyan-500/30 disabled:opacity-50 transition-colors font-medium"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              批准入驻
+                            </button>
+                            <button
+                              onClick={() => setRejectModal({ plugin: selected, reason: "" })}
+                              disabled={!!actioning}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-400/40 hover:bg-red-500/30 disabled:opacity-50 transition-colors font-medium"
+                            >
+                              <XCircle className="h-4 w-4" />
+                              驳回申请
+                            </button>
+                          </>
+                        ) : tab === "approved" ? (
+                          <button
+                            onClick={() => handleArchive(selected)}
+                            disabled={!!actioning}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30 disabled:opacity-50 transition-colors font-medium"
+                          >
+                            <Archive className="h-4 w-4" />
+                            下架归档
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleRestore(selected)}
+                            disabled={!!actioning}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 hover:bg-emerald-500/30 disabled:opacity-50 transition-colors font-medium"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                            恢复上架
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

@@ -183,7 +183,7 @@ class MCPManager:
             return []
 
     def _register_builtin_tools(self) -> None:
-        """注册内置 MCP 工具（atom_inbox_harvester 等）。"""
+        """注册内置 MCP 工具（HR 招聘等）。"""
         try:
             from core.mcp_builtin_tools import get_builtin_tools
             for t in get_builtin_tools():

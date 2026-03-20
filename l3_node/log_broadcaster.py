@@ -2,15 +2,18 @@
 L3 全息监控 - 全局实时日志广播中心
 
 将调度器、锁竞争、任务成败等状态实时打印到 PowerShell，并广播到前端 SSE 订阅。
+便携包模式下（JACHIN_LOG_DIR 已设置）同时写入 logs/l3_broadcast.log 便于排查。
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import sys
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("l3_node")
@@ -62,6 +65,18 @@ def broadcast_log(message: str, level: str = "INFO", *, console: bool = True) ->
             _log_queue.put_nowait((message, level, ts))
     except Exception as e:
         logger.debug("[LogBroadcaster] 入队失败: %s", e)
+
+    # 3. 便携包模式：写入 logs/l3_broadcast.log
+    log_dir = os.environ.get("JACHIN_LOG_DIR")
+    if log_dir:
+        try:
+            p = Path(log_dir) / "l3_broadcast.log"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(f"{utc} [{level}] {message}\n")
+        except OSError:
+            pass
 
 
 def consume_logs() -> Optional[tuple[str, str, float]]:

@@ -1,0 +1,102 @@
+---
+description: Skill 依赖 MCP 规范 — 声明、上传校验、订阅自动拉取
+globs: tools/jachin-cli/**/*, cloud/nexus/**/publish/**/*, cloud/nexus/**/sync/manifest/**/*, skills_repo/**/*, core/sync_daemon.py, l3_node/mcp_sync.py
+alwaysApply: false
+---
+
+# Skill 依赖 MCP 规范
+
+**目标**：Skill 声明所依赖的 MCP，上传时校验必须已存在，订阅时自动一并拉取。
+
+**关联**：076-skill-mcp-upload-spec.mdc、docs/SKILL_MCP_UPLOAD_SPEC.md
+
+---
+
+## 一、依赖声明
+
+### 1.1 plugin.json 声明
+
+Skill 的 `plugin.json` 必须声明 `required_mcps`：
+
+```json
+{
+  "id": "com.jachin.hr.recruiter",
+  "name": "招聘全链路",
+  "item_type": "SKILL",
+  "required_mcps": ["mcp:com.jachin.boss.atom"]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `required_mcps` | string[] | 依赖的 MCP 列表。格式：`mcp:{pluginId}` 或 `{pluginId}`，如 `mcp:com.jachin.boss.atom` |
+
+### 1.2 原则
+
+- **Skill 依赖的 MCP 必须先于 Skill 发布**：上传 Skill 时，`required_mcps` 中的每个 MCP 必须已在 L1 存在且 `status=approved`
+- **MCP 无需单独订阅**：用户订阅 Skill 后，L1 manifest 会包含该 Skill 及其依赖 MCP，L2 一并同步，L3 拉取后即可使用
+
+---
+
+## 二、上传校验
+
+### 2.1 jachin pack 校验
+
+- 若 Skill 声明 `required_mcps`，则必须为非空字符串数组
+- 格式校验：每项为 `mcp:xxx` 或 `xxx`（反向域名格式），如 `mcp:com.jachin.boss.atom`
+- 本地 pack 无法校验 MCP 是否已发布，仅校验格式；上传时由 L1 校验
+
+### 2.2 L1 publish 校验
+
+**上传 Skill 时**，若 `required_mcps` 非空：
+
+1. 遍历 `required_mcps`，提取 pluginId（去掉 `mcp:` 前缀）
+2. 查询 `plugins_registry`：`item_type='MCP'` 且 `plugin_id` 匹配
+3. **必须**：每个依赖 MCP 必须存在且 `status='approved'`
+4. 校验失败：返回 400，提示「Skill 依赖的 MCP 必须先发布：`mcp:xxx` 未找到或未审核」或「请先发布 MCP: `xxx`」
+
+**上传 MCP 时**：不校验 `required_mcps`（MCP 无此字段或可忽略）
+
+---
+
+## 三、订阅与拉取
+
+### 3.1 L1 manifest 扩展
+
+- 用户订阅 Skill 后，L1 manifest 会**自动**将 Skill 的 `required_mcps` 加入下发清单
+- 即使用户未单独订阅依赖 MCP，L1 也会将其加入 manifest
+- 保证 L2 同步时 Skill 与依赖 MCP 一并拉取
+
+### 3.2 L2 同步
+
+- L2 sync_daemon 按 manifest 逐项下载，无需额外逻辑
+- L3_LOCAL MCP → `inventory/l3_mcps/`
+- L2_GATEWAY MCP → `inventory/mcps/`
+
+### 3.3 L3 拉取
+
+- L3 mcp_sync 从 L2 拉取到 `~/.jachin/l3_mcp_cache/`
+- Skill 依赖的 MCP 会随 L2 一并同步，L3 拉取后即可使用
+
+---
+
+## 四、检查清单
+
+**开发 Skill 时**：
+
+- [ ] 在 `plugin.json` 中声明 `required_mcps`，列出所有依赖的 MCP
+- [ ] 确保依赖 MCP 已先于 Skill 发布到 L1 且审核通过
+- [ ] `jachin pack` 通过后再 `jachin publish`
+
+**发布 MCP 时**：
+
+- [ ] 若该 MCP 为某 Skill 的依赖，需先发布 MCP，再发布 Skill
+
+---
+
+## 五、错误码
+
+| 错误码 | 说明 |
+|--------|------|
+| `REQUIRED_MCP_NOT_FOUND` | Skill 依赖的 MCP 未在 L1 注册 |
+| `REQUIRED_MCP_NOT_APPROVED` | Skill 依赖的 MCP 存在但未审核通过 |

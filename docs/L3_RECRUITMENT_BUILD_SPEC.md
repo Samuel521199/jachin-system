@@ -246,7 +246,7 @@ hr_analysis:
 | 缺口 | 现状 | 补齐方式 |
 |------|------|----------|
 | **HR 透析镜 Wasm** | `build_l3_sidecar.py` 未打包 `l3_node/skills/wasm_plugins/` | PyInstaller 增加 `--add-data "l3_node/skills/wasm_plugins;l3_node/skills/wasm_plugins"`（Windows 用 `;`），确保 `hr-analyzer4/main.wasm` 和 `plugin.json` 随 exe 解压 |
-| **招聘模块隐式导入** | 未显式 `--hidden-import` 招聘相关模块 | 增加 `--hidden-import l3_node.recruitment_scheduler`、`l3_node.recruitment_task`、`l3_node.hr_analysis_persist` 等，避免动态导入缺失 |
+| **招聘模块动态加载** | HR 模块已迁入 com.jachin.hr.recruitment 包 | 使用 `--hidden-import l3_node.hr_loader`，通过 hr_loader 从 l3_mcp_cache 或 skills_repo 动态加载 recruitment_scheduler、recruitment_task、hr_analysis_persist |
 | **skills_repo/plugin 分发** | Tauri 打包不自动包含 | 在 Tauri 的 `tauri.conf.json` 或 `resources` 配置中，将 `skills_repo/plugin/2-track-a-atomic-mcp/`、`skills_repo/plugin/data/` 等复制到安装目录 |
 | **项目根解析** | exe 运行时 `__file__` 指向解压临时目录，skills_repo 不在其中 | 用 `sys.executable` 推导 app 根：`Path(sys.executable).parent.parent`（exe 在 bin/ 下）；或支持 `JACHIN_APP_ROOT` 环境变量 |
 
@@ -315,7 +315,7 @@ else:
 
 - 保持 `--noconsole` 作为默认，供 Desktop Sidecar 使用。
 - 可选：增加 `--console` 产出 `l3_node_console-xxx.exe`，供排查用。
-- 确保 `--hidden-import` 包含招聘相关模块：`l3_node.recruitment_scheduler`、`l3_node.recruitment_task`、`l3_node.hr_analysis_persist` 等。
+- 确保 `--hidden-import` 包含 `l3_node.hr_loader`，HR 招聘模块通过 hr_loader 从订阅包动态加载。
 
 ### 7.2 Tauri 打包配置
 

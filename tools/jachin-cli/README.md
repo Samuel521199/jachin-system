@@ -53,8 +53,11 @@ jachin publish
 ## 配置
 
 - `JACHIN_DEV_TOKEN`: 开发者 Token
-- `JACHIN_NEXUS_URL`: Nexus 地址，默认 `http://localhost:3000`
-- 或写入 `~/.jachin-cli/config.json`:
-  ```json
-  { "token": "xxx", "nexus_url": "http://localhost:3000" }
-  ```
+- **L1 Nexus 地址必须显式指定**，不支持 localhost 默认：
+  - 命令行：`jachin publish --nexus http://192.168.110.10:3000` 或 `-n`
+  - 环境变量：`JACHIN_NEXUS_URL=http://192.168.110.10:3000`
+  - 配置文件 `~/.jachin-cli/config.json`:
+    ```json
+    { "token": "xxx", "nexus_url": "http://192.168.110.10:3000" }
+    ```
+  - 支持内网 IP（如 `192.168.110.x`）、公网域名、或显式传入的 `localhost`

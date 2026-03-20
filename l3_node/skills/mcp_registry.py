@@ -55,25 +55,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "desc": "[L3 本地] 停止无人值守招聘流程。当 HR 说「关闭」「停止」「取消」招聘时调用。job_name 为空则停止所有岗位的定时任务。",
         "params": ["job_name"],
     },
-    # BI 战报通用 MCP 工具（docs/bi_daily_report/）
-    {
-        "id": "mcp:atom_web_scraper",
-        "label": "mcp:atom_web_scraper",
-        "desc": "[L3 本地] 通用网页抓取器。传入 url、output_path、config，抓取表格/JSON 并保存到 client_volumes/bi_data/raw/。",
-        "params": ["url", "output_path", "config", "cdp_url"],
-    },
-    {
-        "id": "mcp:atom_lark_notifier",
-        "label": "mcp:atom_lark_notifier",
-        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url、markdown_content、title，发送 Markdown 消息。",
-        "params": ["webhook_url", "markdown_content", "title"],
-    },
-    {
-        "id": "mcp:atom_email_sender",
-        "label": "mcp:atom_email_sender",
-        "desc": "[L3 本地] 通用邮件发射器。传入 smtp_config、to_addrs、subject、body、attachment_paths，发送邮件。",
-        "params": ["smtp_config", "to_addrs", "subject", "body", "attachment_paths"],
-    },
+    # BI 战报 MCP（atom_web_scraper、atom_lark_notifier、atom_email_sender）从 l3_mcp_cache 加载，见 com.jachin.bi.daily_report
 ]
 
 
@@ -194,10 +176,11 @@ def _invoke_atom_post_job_boss_local(
     import time
 
     _proj = get_app_root()
-    plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+    from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+    plugin_root = _get_hr_recruitment_plugin_root()
     cdp = (cdp_url or "http://127.0.0.1:9222").rstrip("/")
-    if not plugin_root.exists():
-        return json.dumps({"success": False, "posted": False, "error": f"plugin 路径不存在: {plugin_root}"}, ensure_ascii=False)
+    if not plugin_root or not plugin_root.exists():
+        return json.dumps({"success": False, "posted": False, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, ensure_ascii=False)
 
     # ========== 步骤1（必须最先执行，HR 同意后自动立即执行）：存储配置、创建文件夹 ==========
     # 不打开 Chrome，先完成：data/{岗位名}/、复制 jd_to_publish.example.json → jd.json 并填写、pending/processed/result、排行榜_Summary.md
@@ -288,11 +271,11 @@ def _invoke_atom_post_job_boss_local(
 
 
 def _invoke_atom_greet_recommend_boss_local(cdp_url: str = "", jd_config_path: str = "") -> str:
-    """L3 本地执行 atom_greet_recommend_boss，直接调用 plugin 工具。"""
-    _proj = get_app_root()
-    plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
-    if not plugin_root.exists():
-        return json.dumps({"success": False, "greeted_count": 0, "error": f"plugin 路径不存在: {plugin_root}"}, ensure_ascii=False)
+    """L3 本地执行 atom_greet_recommend_boss，直接调用 HR 招聘包工具。"""
+    from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+    plugin_root = _get_hr_recruitment_plugin_root()
+    if not plugin_root or not plugin_root.exists():
+        return json.dumps({"success": False, "greeted_count": 0, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, ensure_ascii=False)
     import sys
     if str(plugin_root) not in sys.path:
         sys.path.insert(0, str(plugin_root))
@@ -311,7 +294,10 @@ def _invoke_atom_greet_recommend_boss_local(cdp_url: str = "", jd_config_path: s
 def _invoke_stop_automated_recruitment_local(job_name: str = "") -> str:
     """L3 本地执行 stop_automated_recruitment，移除无人值守招聘定时任务。job_name 为空则停止所有岗位。"""
     try:
-        from l3_node.recruitment_scheduler import remove_scheduled_job, list_scheduled_jobs, set_recruitment_stopped
+        sched = __import__("l3_node.hr_loader", fromlist=["get_recruitment_scheduler"]).get_recruitment_scheduler()
+        if not sched:
+            return json.dumps({"ok": False, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, ensure_ascii=False)
+        remove_scheduled_job, list_scheduled_jobs, set_recruitment_stopped = sched.remove_scheduled_job, sched.list_scheduled_jobs, sched.set_recruitment_stopped
         jn = (job_name or "").strip()
         if jn:
             result = remove_scheduled_job(jn)
@@ -332,65 +318,6 @@ def _invoke_stop_automated_recruitment_local(job_name: str = "") -> str:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
-def _invoke_atom_web_scraper_local(
-    url: str = "",
-    output_path: str = "",
-    config: dict | None = None,
-) -> str:
-    """L3 本地执行 atom_web_scraper，路由到 l3_node.mcp_tools.bi.tool_web_scraper。"""
-    try:
-        from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
-        from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
-        _path = output_path.strip() if output_path else str(get_bi_raw_dir() / "placeholder.csv")
-        result = harvest_table_data(url=url or "", output_path=_path, config=config or {})
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        logger.warning("[MCP Registry] atom_web_scraper 失败: %s", e)
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
-
-
-def _invoke_atom_lark_notifier_local(
-    webhook_url: str = "",
-    markdown_content: str = "",
-    title: str = "",
-) -> str:
-    """L3 本地执行 atom_lark_notifier，路由到 l3_node.mcp_tools.bi.tool_lark_notifier。"""
-    try:
-        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
-        result = send_lark_markdown(
-            webhook_url=webhook_url or "",
-            markdown_content=markdown_content or "",
-            title=title or None,
-        )
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        logger.warning("[MCP Registry] atom_lark_notifier 失败: %s", e)
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
-
-
-def _invoke_atom_email_sender_local(
-    smtp_config: dict | None = None,
-    to_addrs: list | None = None,
-    subject: str = "",
-    body: str = "",
-    attachment_paths: list | None = None,
-) -> str:
-    """L3 本地执行 atom_email_sender，路由到 l3_node.mcp_tools.bi.tool_email_sender。"""
-    try:
-        from l3_node.mcp_tools.bi.tool_email_sender import send_email_with_attachment
-        result = send_email_with_attachment(
-            smtp_config=smtp_config or {},
-            to_addrs=to_addrs or [],
-            subject=subject or "",
-            body=body or "",
-            attachment_paths=attachment_paths or [],
-        )
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        logger.warning("[MCP Registry] atom_email_sender 失败: %s", e)
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
-
-
 def _invoke_add_automated_recruitment_task_local(
     job_name: str = "",
     analyze_threshold: int = 4,
@@ -402,9 +329,11 @@ def _invoke_add_automated_recruitment_task_local(
     流程：推荐牛人每15分钟，满3人打招呼→20秒后抓简历，满3份简历→Agent讨论并结束。"""
     if not (job_name or "").strip():
         return json.dumps({"ok": False, "error": "job_name 不能为空"}, ensure_ascii=False)
-    _proj = get_app_root()
-    plugin_root = _proj / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
-    if plugin_root.exists() and str(plugin_root) not in __import__("sys").path:
+    from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+    plugin_root = _get_hr_recruitment_plugin_root()
+    if not plugin_root or not plugin_root.exists():
+        return json.dumps({"ok": False, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, ensure_ascii=False)
+    if str(plugin_root) not in __import__("sys").path:
         __import__("sys").path.insert(0, str(plugin_root))
     from tools.hr_data_paths import get_job_jd_path, ensure_job_dirs, init_job_jd_from_template
     jn = (job_name or "").strip()
@@ -425,8 +354,11 @@ def _invoke_add_automated_recruitment_task_local(
         "use_all_positions": True,
     }
     try:
-        from l3_node.recruitment_scheduler import add_scheduled_job
-        result = add_scheduled_job(job_config)
+        from l3_node.hr_loader import get_recruitment_scheduler
+        sched = get_recruitment_scheduler()
+        if not sched:
+            return json.dumps({"ok": False, "error": "HR 招聘 MCP 包未找到，请从 L1 订阅 com.jachin.hr.recruitment"}, ensure_ascii=False)
+        result = sched.add_scheduled_job(job_config)
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         logger.warning("[MCP Registry] add_automated_recruitment_task 失败: %s", e)
@@ -480,16 +412,38 @@ def _invoke_read_file_local(path_raw: str) -> str:
 def _load_tools_from_l3_mcp_cache() -> tuple[list[dict[str, Any]], dict[str, tuple[Path, str, str]]]:
     """
     从 ~/.jachin/l3_mcp_cache/ 扫描 L3_LOCAL MCP，动态加载工具定义。
+    开发模式（非 frozen）下同时扫描 skills_repo/plugin/ 下的 L3_LOCAL 包，便于本地开发。
     Returns:
         (tools_list, invoke_map): tools_list 为 {id, label, desc, params} 列表；
         invoke_map 为 tool_id -> (cache_dir, module_path, function_name) 供 invoke 调用。
     """
+    import sys
+
     tools_out: list[dict[str, Any]] = []
     invoke_map: dict[str, tuple[Path, str, str]] = {}
-    if not L3_MCP_CACHE.exists():
-        return tools_out, invoke_map
-    import sys
-    for subdir in L3_MCP_CACHE.iterdir():
+
+    scan_dirs: list[Path] = []
+    if L3_MCP_CACHE.exists():
+        for d in L3_MCP_CACHE.iterdir():
+            if d.is_dir():
+                scan_dirs.append(d)
+    if not getattr(sys, "frozen", False):
+        try:
+            root = get_app_root()
+            plugin_root = root / "skills_repo" / "plugin"
+            if plugin_root.exists():
+                for p in plugin_root.iterdir():
+                    if p.is_dir() and (p / "plugin.json").exists():
+                        try:
+                            pl = json.loads((p / "plugin.json").read_text(encoding="utf-8"))
+                            if pl.get("runtime_tier") == "L3_LOCAL":
+                                scan_dirs.append(p)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    for subdir in scan_dirs:
         if not subdir.is_dir():
             continue
         plugin_path = subdir / "plugin.json"
@@ -607,12 +561,14 @@ class MCPToolRegistry:
 
     async def fetch_tools_from_l2(self) -> list[dict[str, Any]]:
         """
-        获取 MCP 工具列表。L3 本地 read_file 优先注入，L2 工具合并（read_file 已下放 L3，不重复）。
+        获取 MCP 工具列表。L3 本地优先（L3_LOCAL_MCP_TOOLS + l3_mcp_cache），
+        L2 仅作补充；本地开发时可设 JACHIN_L3_LOCAL_ONLY=1 跳过 L2。
         Returns:
             合并后的工具列表，格式与 load_tools 一致：{id, label, desc, params}
         """
+        import os
+
         import httpx
-        import sys
 
         tools: list[dict[str, Any]] = list(L3_LOCAL_MCP_TOOLS)
         self._known_mcp_tools = set(self._local_mcp_tools)
@@ -628,8 +584,13 @@ class MCPToolRegistry:
                     self._known_mcp_tools.add(ct_id)
                     self._local_mcp_tools.add(ct_id)
 
+        if os.environ.get("JACHIN_L3_LOCAL_ONLY", "").strip().lower() in ("1", "true", "yes"):
+            self._tools_cache = tools
+            logger.info("[MCP Registry] L3 本地优先模式，仅用本地工具 %d 个（JACHIN_L3_LOCAL_ONLY=1，跳过 L2）", len(tools))
+            return tools
+
         url = f"{self._l2_base_url}/api/v2/mcp/tools"
-        logger.info("[MCP Registry] 从 L2 拉取工具 url=%s", url)
+        logger.info("[MCP Registry] L3 本地优先，L2 补充 url=%s", url)
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
@@ -830,33 +791,7 @@ class MCPToolRegistry:
                 job_name = (arguments.get("job_name", arguments.get("input", "")) or "").strip()
                 return _invoke_stop_automated_recruitment_local(job_name=job_name)
 
-            # BI 战报 MCP 工具（docs/bi_daily_report/）
-            if raw_name == "atom_web_scraper":
-                cfg = arguments.get("config") or {}
-                if isinstance(cfg, dict) and arguments.get("cdp_url"):
-                    cfg = {**cfg, "cdp_url": arguments.get("cdp_url")}
-                return await asyncio.to_thread(
-                    _invoke_atom_web_scraper_local,
-                    url=arguments.get("url", ""),
-                    output_path=arguments.get("output_path", ""),
-                    config=cfg,
-                )
-            if raw_name == "atom_lark_notifier":
-                return await asyncio.to_thread(
-                    _invoke_atom_lark_notifier_local,
-                    webhook_url=arguments.get("webhook_url", ""),
-                    markdown_content=arguments.get("markdown_content", ""),
-                    title=arguments.get("title", ""),
-                )
-            if raw_name == "atom_email_sender":
-                return await asyncio.to_thread(
-                    _invoke_atom_email_sender_local,
-                    smtp_config=arguments.get("smtp_config"),
-                    to_addrs=arguments.get("to_addrs", []),
-                    subject=arguments.get("subject", ""),
-                    body=arguments.get("body", ""),
-                    attachment_paths=arguments.get("attachment_paths"),
-                )
+            # BI 战报 MCP（atom_web_scraper、atom_lark_notifier、atom_email_sender）从 cache 加载，见下方 _cache_invoke_map 分支
 
         if tool_id in self._cache_invoke_map or self._raw_name(tool_id) in self._cache_invoke_map:
             cache_dir, module_path, func_name = self._cache_invoke_map.get(
