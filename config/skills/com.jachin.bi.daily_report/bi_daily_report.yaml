@@ -47,27 +47,27 @@ lark_bitable:
   replace_table: false    # 不先清空表，直接追加（避免 delete 权限 Forbidden）
   # CSV 文件 -> table_id（在 Lark 中打开子表，URL ?table=tblXXX 即 table_id）
   # 表名与 Lark 多维表格侧栏一一对应，填对应子表的 table_id
-  # 当 Lark 表字段名与 CSV 不一致时，可配置 field_mapping，例如付费表用「角色类型/周留存率」：
-  #   field_mapping:
-  #     "05_留存_付费用户次留表.csv": {"类型":"角色类型","留存率":"周留存率"}
-  #     "07_留存_付费用户周环比表.csv": {"类型":"角色类型","留存率":"周留存率"}
+  # 当 Lark 表字段名与 CSV 不一致时，可配置 field_mapping。05 表 CSV 列为「文本, 留存率」；06 表为「类型, 留存率（%）」；07 表为「类型, 留存率」
   tables:
     # === 用户登录活跃情况 ===
     "01_用户活跃_增幅表.csv": "tblG2nF2Uu4vmtnU"      # Lark 表名: DAU和DNU
     "03a_用户活跃_DAU渠道来源.csv": "tblXTientR8Pkd5x"  # Lark 表名: DAU渠道来源
     "02_用户活跃_日期数量表.csv": "tblflaMe457ML81v"   # Lark 表名: 周统计DAU和DNU数量
     "03b_用户活跃_DNU渠道来源.csv": "tblSXaeym4v83wH2"  # Lark 表名: DNU渠道来源
+    "13_用户活跃_新增设备表.csv": ""                   # Lark 表名: 新增设备数、增幅、占比（在 Lark 打开子表，URL ?table=tblXXX 填入）
     # === 平台留存情况 ===
     "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留率（留存类型, 留存率）
     "05_留存_付费用户次留表.csv": ""                   # 付费用户次留表：在 Lark 打开该子表，URL 中 ?table=tblXXX 即 table_id，填入后生效
     "06_留存_周环比表.csv": "tblMZ2XUYURKID3r"        # Lark 表名: 周环比（类型, 留存率）
     "07_留存_付费用户周环比表.csv": ""                 # 付费用户周环比：同上，填 table_id 后生效。若 Lark 列为「角色类型/周留存率」需配置 field_mapping
-    "12_留存_月环比表.csv": "tblYMxDilOzhkT6K"        # Lark 表名: 月环比（这月留存率, 上月留存率）
     # === 平台消耗情况 ===
     "08_消耗_每日表.csv": "tbl094S7AAZ0ZcoN"          # Lark 表名: 每日金币产出、消耗
     "09_消耗_按游戏表.csv": "tblasHRF6rV4VQRu"        # Lark 表名: 每个游戏的产出、消耗
     "10_充值_付费人数按SKU.csv": "tblY7p1sHL6iRT4c"   # Lark 表名: 付费人数表格（不同充值金人数）
     "11_充值_付费金额按SKU.csv": "tblk1u7w34guUa8k"   # Lark 表名: 付费金额表格（不同充值金金额）
+    "14_充值_付费人数金额增幅表.csv": ""              # Lark 表名: 付费人数、金额、增幅
+    "15_充值_ARPU表.csv": ""                          # Lark 表名: ARPU
+    "16_充值_ARPPU表.csv": ""                         # Lark 表名: ARPPU
 
 # 战略深度分析（金字塔原则 + 四维度：资本效率、系统性脆弱度、商业护城河、预测雷达）
 # 结合菲律宾社交游戏市场，基于 DuckDB 指标与 CSV 提纯数据调用 LLM 生成战报
@@ -98,7 +98,7 @@ dashboard_automation:
 distribution:
   lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
   # BI 机器人所在会话 chat_id（无 Webhook 时用 IM API；Lark↔终端镜像也使用此 ID）
-  lark_chat_id: "oc_d4d18b6c05b6b1974c3198294f45653a"
+  lark_chat_id: "oc_bb2b468cb04acb709c2e7aa5683f8f08"
   # 邮件通知（Step 3.6，调用 mcp:atom_email_sender 一次性发送给所有收件人）
   email:
     enabled: true

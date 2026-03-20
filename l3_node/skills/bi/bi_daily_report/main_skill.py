@@ -10,11 +10,13 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 1. **数据新鲜度**：检查 bi.duckdb 是否含今日 _ingested_date；若无则执行 SPA 抓取（spa_collector）并 ingest_csv
 2. **数据提纯**：从 DuckDB 按产品需求（12_PRODUCT_REQUIREMENTS.md）与 Lark 表结构（11_LARK_TABLE_SCHEMA.md）
-   提炼 11 个 CSV：用户活跃(增幅/日期数量/渠道)、留存(次留/周环比/月环比)、消耗(每日/按游戏)、充值(付费人数/付费金额按SKU)
+   提炼 14 个 CSV：用户活跃(增幅/日期数量/渠道/新增设备)、留存(次留/周环比)、消耗(每日/按游戏)、充值(付费人数/付费金额按SKU/付费人数金额增幅/ARPU/ARPPU)
 3. **Lark 同步**：将 output 下 CSV 同步到飞书多维表格（atom_lark_bitable_sync）
 4. **战略深度分析**：基于 DuckDB 指标与 CSV，调用 LLM 生成金字塔原则战报，可选推送 Lark
-5. **邮件通知**：调用 mcp:atom_email_sender 将战报发送至 distribution.email.to_addrs
-6. **仪表盘自动化**（Step 4）：对每个仪表盘调用 LLM 分析统计图数据 → 保存到 output（~/.jachin/client_volumes/bi_data/output）→ 打开 Lark 仪表盘 → 点击「设置自动化发送」→「更多配置」→ 填入分析、设置定时（config.dashboard_automation.scheduled_time，可动态调整）→「保存并启用」。前置：Chrome --remote-debugging-port=9222 已登录 Lark，或 Playwright 自动启动浏览器首次登录。
+5. **邮件通知**：调用 mcp:atom_email_sender（路由到 l3_node.mcp_tools.bi.tool_email_sender → channels.email.smtp）将战报发送至 distribution.email.to_addrs
+6. **仪表盘分析**（Step 4a）：对每个仪表盘调用 LLM 分析统计图数据 → 保存到 output → 通过 Lark 机器人推送消息卡片（分析+仪表盘链接）。不再使用浏览器配置「设置自动化发送」。
+
+配置项 `verbose_log`（默认 true）：控制是否在终端打印执行进度；false 时仅写日志文件。
 
 ## BI 平台 → bi.duckdb 数据源映射（供 L3 Agent 理解数据来源）
 
@@ -79,13 +81,14 @@ def is_bi_analysis_intent(text: str) -> bool:
 _BI_LOG_DIR_DEFAULT = Path(r"D:\zzz\bi\bi日志")
 _BI_LOG_DIR: Path = _BI_LOG_DIR_DEFAULT
 _BI_LOG_RUN_FILE: Path | None = None
+# 执行日志开关：True=打印详细进度到终端，False=不打印（默认 True）
+_BI_VERBOSE: bool = True
 
 _REQUIRED_SLUGS = [
     "daily_ops_summary",
     "stats_user_dau",         # 日活统计：03a DAU 渠道来源（点击日期展开渠道）
     "stats_user_new",         # 日新用户统计：03b DNU 渠道来源（点击渠道展开）
     "prod_sales",
-    "recharge_status",        # 平台充值情况：日期+统计范围展开，_refine_recharge 备用数据源
     "stats_recharge",
     "stats_retention_user",
     "stats_retention_paid",   # 付费用户次留
@@ -119,7 +122,7 @@ def _get_bi_log_dir(cfg: dict[str, Any] | None = None) -> Path:
 
 
 def _bi_log(msg: str, *, detail: str = "", progress: bool = False) -> None:
-    """写日志到文件；progress=True 时同时打印到终端（run_bi_analysis 等可见进度）"""
+    """写日志到文件；progress=True 且 _BI_VERBOSE=True 时同时打印到终端"""
     global _BI_LOG_RUN_FILE
     try:
         _BI_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -132,7 +135,7 @@ def _bi_log(msg: str, *, detail: str = "", progress: bool = False) -> None:
         line += "\n"
         with open(_BI_LOG_RUN_FILE, "a", encoding="utf-8") as f:
             f.write(line)
-        if progress:
+        if progress and _BI_VERBOSE:
             print(f"[BI] {msg}" + (f" — {detail}" if detail and len(detail) < 80 else ""))
     except Exception as e:
         logger.warning("[BI Log] 写入失败 dir=%s: %s", _BI_LOG_DIR, e)
@@ -421,11 +424,11 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
     dau_pct = round((dau1 - dau0) / dau0, 4) if dau0 else 0.0
     dnu_pct = round((dnu1 - dnu0) / dnu0, 4) if dnu0 else 0.0
 
-    # 增幅以「百分点」写入（4.13 表示 4.13%），避免 Lark 数字列 formatter="0" 整数格式将 0.0413 截断为 0
+    # 增幅以「百分点」写入（4.13 表示 4.13%），列名与 Lark 统一为「增幅（%）」
     dau_pct_points = round(dau_pct * 100, 2) if dau_pct is not None else 0.0
     dnu_pct_points = round(dnu_pct * 100, 2) if dnu_pct is not None else 0.0
-    increase_rows = [{"类型": "DAU", "增幅": dau_pct_points}, {"类型": "DNU", "增幅": dnu_pct_points}]
-    _write_csv(output_dir / "01_用户活跃_增幅表.csv", increase_rows, ["类型", "增幅"])
+    increase_rows = [{"类型": "DAU", "增幅（%）": dau_pct_points}, {"类型": "DNU", "增幅（%）": dnu_pct_points}]
+    _write_csv(output_dir / "01_用户活跃_增幅表.csv", increase_rows, ["类型", "增幅（%）"])
     written.append(output_dir / "01_用户活跃_增幅表.csv")
 
     daily_rows = []
@@ -559,13 +562,45 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
     _write_csv(output_dir / "03a_用户活跃_DAU渠道来源.csv", dau_rows if dau_rows else [{"DAU渠道来源": "（需抓取 stats_user_dau/日活统计）", "数量": 0}], ["DAU渠道来源", "数量"])
     _write_csv(output_dir / "03b_用户活跃_DNU渠道来源.csv", dnu_rows if dnu_rows else [{"DNU渠道来源": "（需抓取 stats_user_new/日新用户统计）", "数量": 0}], ["DNU渠道来源", "数量"])
     written.extend([output_dir / "03a_用户活跃_DAU渠道来源.csv", output_dir / "03b_用户活跃_DNU渠道来源.csv"])
+
+    # 13 新增设备数、增幅、占比：来自 daily_ops_summary
+    dev_rows = _query_table(conn, "daily_ops_summary", date_from=t0, date_to=t1)
+    dev_val, dev_pct, dnu_dev_ratio = 0, 0.0, "-"
+    if dev_rows:
+        cols = list(dev_rows[0].keys())
+        dev_col = _find_col(cols, "新增设备数", "新增设备", "设备数")
+        dnu_col_dev = _find_col(cols, "当日新增用户（DNU）", "当日新增用户", "新增用户(DNU)", "DNU", "dnu")
+        date_col_dev = _find_col(cols, "日期", "date") or ""
+        by_date_dev: dict[str, Any] = {}
+        for r in dev_rows:
+            d = str(r.get(date_col_dev, ""))[:10]
+            if len(d) == 10 and d.replace("-", "").isdigit():
+                by_date_dev[d] = r
+        dates_dev = sorted([d for d in by_date_dev if len(d) == 10 and d.replace("-", "").isdigit()], reverse=True)[:2]
+        if len(dates_dev) >= 1:
+            r1 = by_date_dev.get(dates_dev[0], {})
+            dev_val = int(_safe_float(r1.get(dev_col)))
+            dnu1 = _safe_float(r1.get(dnu_col_dev))
+            dnu_dev_ratio = round(dnu1 / dev_val, 2) if dev_val else "-"
+            if len(dates_dev) >= 2:
+                r0 = by_date_dev.get(dates_dev[1], {})
+                dev0 = _safe_float(r0.get(dev_col))
+                dev_pct = round((dev_val - dev0) / dev0 * 100, 2) if dev0 else 0.0
+    dev_table = [{"新增设备数值": dev_val, "新增设备增幅": dev_pct, "新增用户/新增设备": dnu_dev_ratio}]
+    _write_csv(output_dir / "13_用户活跃_新增设备表.csv", dev_table, ["新增设备数值", "新增设备增幅", "新增用户/新增设备"])
+    written.append(output_dir / "13_用户活跃_新增设备表.csv")
+
     return written
 
 
-# 次留表/付费用户次留表：类型 T-2、T-4、T-7（对应 BI 次日/第四日/第七日留存）
-# 周环比/付费用户周环比：类型 T-2、T-4、T-6
+# 次留表：类型 T-2、T-4、T-7（对应 BI 次日/第四日/第七日留存）
+# 付费用户次留表：文本列 T+1、T+3、T+6（对应 BI 次日/第四日/第七日留存）
+# 周环比：类型 T+1、T+3、T+5（对应 BI T+1/T+4/T+6 留存率）
+# 付费用户周环比：类型 T+1、T+2、T+3（对应 BI T+1/T+3/T+7 留存率）
 _RETENTION_TYPE_NEXT = {"t2": "T-2", "t4": "T-4", "t7": "T-7"}
-_RETENTION_TYPE_WOW = {"t2": "T-2", "t4": "T-4", "t6": "T-6"}
+_RETENTION_TYPE_PAID_NEXT = {"t2": "T+1", "t4": "T+3", "t7": "T+6"}  # 付费用户次留表：文本列
+_RETENTION_TYPE_WOW = {"t2": "T+1", "t4": "T+3", "t6": "T+5"}       # 周环比
+_RETENTION_TYPE_PAID_WOW = {"t2": "T+1", "t4": "T+2", "t6": "T+3"}  # 付费用户周环比
 
 
 def _parse_retention_val(s: str) -> tuple[int, float]:
@@ -641,19 +676,8 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str) -> list[Path]:
     paid_ret_rows = []
     for k in ("t2", "t4", "t7"):
         n, p = paid_by_type.get(k, (0, 0.0))
-        paid_ret_rows.append({"类型": _RETENTION_TYPE_NEXT[k], "留存率": round(p * 100, 1)})
-    _write_csv(output_dir / "05_留存_付费用户次留表.csv", paid_ret_rows, ["类型", "留存率"])
-
-    def _parse_compare_pct(s: str) -> tuple[str, str]:
-        """解析 '7.30%-22.5458%9.43%' 类格式，取第一个和最后一个百分数"""
-        import re
-        s = (s or "").strip()
-        nums = re.findall(r"[\d.]+", s)
-        if len(nums) >= 2:
-            return (f"{nums[0]}%", f"{nums[-1]}%")
-        if len(nums) == 1:
-            return (f"{nums[0]}%", "-")
-        return ("-", "-")
+        paid_ret_rows.append({"文本": _RETENTION_TYPE_PAID_NEXT[k], "留存率": round(p * 100, 1)})
+    _write_csv(output_dir / "05_留存_付费用户次留表.csv", paid_ret_rows, ["文本", "留存率"])
 
     def _parse_pct_to_num(s: str) -> float:
         """解析 '9.43%' 或 '9.43' 为数值"""
@@ -664,7 +688,6 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str) -> list[Path]:
             return 0.0
 
     wow_t2, wow_t4, wow_t6 = 0.0, 0.0, 0.0
-    mom_this, mom_last = "-", "-"
     # 06 周环比：来源 stats_retention_user_compare（新增用户留存对比）第一行
     # 列名：T+1 留存率、T+2 留存率、T+4 留存率、T+6 留存率 等
     user_compare = _query_table(conn, "stats_retention_user_compare", date_from=None, date_to=None)
@@ -688,40 +711,9 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str) -> list[Path]:
                     wow_t4 = num
                 else:
                     wow_t6 = num
-    # 月环比：遍历 compare slugs 查找
-    for slug in _RETENTION_COMPARE_SLUGS:
-        compare_rows = _query_table(conn, slug, date_from=None, date_to=None)
-        if not compare_rows:
-            compare_rows = _query_table(conn, slug, date_from=t1, date_to=t1)
-        if not compare_rows:
-            continue
-        cols = list(compare_rows[0].keys())
-        r = compare_rows[0]
-        if mom_this == "-":
-            m1 = _find_col(cols, "这月留存率", "本月留存率", "这月", "本月", "T+14 留存率", "T+29 留存率", "第十五日(T+14)留存", "第三十日(T+29)留存")
-            if m1:
-                val = str(r.get(m1, "") or "")
-                if "这月" in str(m1) or "本月" in str(m1):
-                    mom_this = val.strip() or "-"
-                    m2 = _find_col(cols, "上月留存率", "上月", "上月留存")
-                    mom_last = str(r.get(m2, "") or "").strip() or "-" if m2 else "-"
-                else:
-                    mom_this, mom_last = _parse_compare_pct(val)
-    # 月环比 Fallback：stats_retention_user_compare 无数据时，从 stats_retention_user 取最新日期的 T+14/T+29
-    if mom_this == "-" and mom_last == "-":
-        ur = _query_table(conn, "stats_retention_user", date_from=t1, date_to=t1)
-        if ur:
-            cols = list(ur[0].keys())
-            t14 = _find_col(cols, "第十五日(T+14)留存", "第十五日", "T+14")
-            t29 = _find_col(cols, "第三十日(T+29)留存", "第三十日", "T+29")
-            r0 = ur[0]
-            if t14:
-                mom_this = str(r0.get(t14, "") or "").strip() or "-"
-            if t29:
-                mom_last = str(r0.get(t29, "") or "").strip() or "-"
-    # 06 周环比：类型 T-2/T-4/T-6，留存率。数据来源：新增用户留存对比第一行
-    wow_rows = [{"类型": _RETENTION_TYPE_WOW["t2"], "留存率": wow_t2}, {"类型": _RETENTION_TYPE_WOW["t4"], "留存率": wow_t4}, {"类型": _RETENTION_TYPE_WOW["t6"], "留存率": wow_t6}]
-    _write_csv(output_dir / "06_留存_周环比表.csv", wow_rows, ["类型", "留存率"])
+    # 06 周环比：类型 T+1/T+3/T+5，留存率（%）。Lark 表「周环比」固定三行
+    wow_rows = [{"类型": _RETENTION_TYPE_WOW["t2"], "留存率（%）": wow_t2}, {"类型": _RETENTION_TYPE_WOW["t4"], "留存率（%）": wow_t4}, {"类型": _RETENTION_TYPE_WOW["t6"], "留存率（%）": wow_t6}]
+    _write_csv(output_dir / "06_留存_周环比表.csv", wow_rows, ["类型", "留存率（%）"])
     # 07 付费用户周环比：来源 stats_retention_paid_compare（新增付费留存对比）第一行
     # 图5 列名：T+1 留存率、T+2 留存率、T+3 留存率、T+7 留存率（无 T+4/T+6，用 T+3/T+7）
     paid_wow_t2, paid_wow_t4, paid_wow_t6 = 0.0, 0.0, 0.0
@@ -746,11 +738,10 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str) -> list[Path]:
                     paid_wow_t4 = num
                 else:
                     paid_wow_t6 = num
-    # 07 付费用户周环比：类型 T-2/T-4/T-6，数据来源：新增付费留存对比第一行
-    paid_wow_rows = [{"类型": _RETENTION_TYPE_WOW["t2"], "留存率": paid_wow_t2}, {"类型": _RETENTION_TYPE_WOW["t4"], "留存率": paid_wow_t4}, {"类型": _RETENTION_TYPE_WOW["t6"], "留存率": paid_wow_t6}]
+    # 07 付费用户周环比：类型 T+1/T+2/T+3，Lark 表「付费用户周环比」固定三行
+    paid_wow_rows = [{"类型": _RETENTION_TYPE_PAID_WOW["t2"], "留存率": paid_wow_t2}, {"类型": _RETENTION_TYPE_PAID_WOW["t4"], "留存率": paid_wow_t4}, {"类型": _RETENTION_TYPE_PAID_WOW["t6"], "留存率": paid_wow_t6}]
     _write_csv(output_dir / "07_留存_付费用户周环比表.csv", paid_wow_rows, ["类型", "留存率"])
-    _write_csv(output_dir / "12_留存_月环比表.csv", [{"这月留存率": mom_this, "上月留存率": mom_last}], ["这月留存率", "上月留存率"])
-    written.extend([output_dir / "04_留存_次留表.csv", output_dir / "05_留存_付费用户次留表.csv", output_dir / "06_留存_周环比表.csv", output_dir / "07_留存_付费用户周环比表.csv", output_dir / "12_留存_月环比表.csv"])
+    written.extend([output_dir / "04_留存_次留表.csv", output_dir / "05_留存_付费用户次留表.csv", output_dir / "06_留存_周环比表.csv", output_dir / "07_留存_付费用户周环比表.csv"])
     return written
 
 
@@ -840,6 +831,56 @@ def _refine_consumption(conn: Any, output_dir: Path, t1: str, t7: str) -> list[P
         _bi_log("09表仅含汇总行，无按游戏明细", detail="请确保 skip_collect=false 且 stats_game_daily 抓取时已展开首行日期")
     _write_csv(output_dir / "09_消耗_按游戏表.csv", game_rows, ["游戏名称", "产出", "消耗"])
     written.append(output_dir / "09_消耗_按游戏表.csv")
+    return written
+
+
+def _refine_daily_metrics(conn: Any, output_dir: Path, t1: str, t0: str) -> list[Path]:
+    """14 付费人数金额增幅、15 ARPU、16 ARPPU — 来自 daily_ops_summary"""
+    written: list[Path] = []
+    rows = _query_table(conn, "daily_ops_summary", date_from=t0, date_to=t1)
+    if not rows:
+        _write_csv(output_dir / "14_充值_付费人数金额增幅表.csv", [{"当天付费人数": 0, "付费总金额": 0.0, "增幅": 0.0}], ["当天付费人数", "付费总金额", "增幅"])
+        _write_csv(output_dir / "15_充值_ARPU表.csv", [{"ARPU数值": 0.0, "ARPU增幅": 0.0}], ["ARPU数值", "ARPU增幅"])
+        _write_csv(output_dir / "16_充值_ARPPU表.csv", [{"ARPPU数值": 0.0, "ARPPU涨幅": 0.0}], ["ARPPU数值", "ARPPU涨幅"])
+        return [output_dir / "14_充值_付费人数金额增幅表.csv", output_dir / "15_充值_ARPU表.csv", output_dir / "16_充值_ARPPU表.csv"]
+
+    cols = list(rows[0].keys())
+    date_col = _find_col(cols, "日期", "date", "统计日期") or "_ingested_date"
+    paid_count_col = _find_col(cols, "付费人数", "付费", "充值人数")
+    paid_amt_col = _find_col(cols, "付费总金额", "充值", "金额", "总金额")
+    arpu_col = _find_col(cols, "Arpu", "ARPU", "arpu")
+    arppu_col = _find_col(cols, "Arppu", "ARPPU", "arppu")
+
+    by_date = {str(r.get(date_col, ""))[:10]: r for r in rows if str(r.get(date_col, ""))[:10]}
+    dates_sorted = sorted([d for d in by_date if len(d) == 10 and d.replace("-", "").isdigit()], reverse=True)[:2]
+    r1 = by_date.get(dates_sorted[0], {}) if dates_sorted else {}
+    r0 = by_date.get(dates_sorted[1], {}) if len(dates_sorted) >= 2 else {}
+
+    def _pct(cur: float, prev: float) -> float:
+        return round((cur - prev) / prev * 100, 2) if prev else 0.0
+
+    # 14 付费人数、金额、增幅
+    pc1, pc0 = _safe_float(r1.get(paid_count_col)), _safe_float(r0.get(paid_count_col))
+    pa1, pa0 = _safe_float(r1.get(paid_amt_col)), _safe_float(r0.get(paid_amt_col))
+    paid_pct = _pct(pc1, pc0) if paid_count_col else (_pct(pa1, pa0) if paid_amt_col else 0.0)
+    row14 = [{"当天付费人数": int(pc1), "付费总金额": round(pa1, 2), "增幅": paid_pct}]
+    _write_csv(output_dir / "14_充值_付费人数金额增幅表.csv", row14, ["当天付费人数", "付费总金额", "增幅"])
+    written.append(output_dir / "14_充值_付费人数金额增幅表.csv")
+
+    # 15 ARPU
+    arpu1, arpu0 = _safe_float(r1.get(arpu_col)), _safe_float(r0.get(arpu_col))
+    arpu_pct = _pct(arpu1, arpu0)
+    row15 = [{"ARPU数值": round(arpu1, 2), "ARPU增幅": arpu_pct}]
+    _write_csv(output_dir / "15_充值_ARPU表.csv", row15, ["ARPU数值", "ARPU增幅"])
+    written.append(output_dir / "15_充值_ARPU表.csv")
+
+    # 16 ARPPU（Lark 表字段为 ARPPU涨幅）
+    arppu1, arppu0 = _safe_float(r1.get(arppu_col)), _safe_float(r0.get(arppu_col))
+    arppu_pct = _pct(arppu1, arppu0)
+    row16 = [{"ARPPU数值": round(arppu1, 2), "ARPPU涨幅": arppu_pct}]
+    _write_csv(output_dir / "16_充值_ARPPU表.csv", row16, ["ARPPU数值", "ARPPU涨幅"])
+    written.append(output_dir / "16_充值_ARPPU表.csv")
+
     return written
 
 
@@ -1020,6 +1061,7 @@ def _run_refiner(date_str: str | None = None, output_dir: Path | None = None) ->
         written += _refine_user_activity(conn, out, t1, t0, t7)
         written += _refine_retention(conn, out, t1)
         written += _refine_consumption(conn, out, t1, t7)
+        written += _refine_daily_metrics(conn, out, t1, t0)
         written += _refine_recharge(conn, out, t1, days=7)
     except Exception as e:
         errors.append(str(e))
@@ -1033,9 +1075,10 @@ def _sync_refiner_to_lark(
     written_paths: list[Path],
     lark_bitable_config: dict[str, Any],
     on_table: None | Any = None,
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], list[tuple[str, str]]]:
+    """返回 (成功数, 错误列表, 跳过列表[(表名, 原因)])"""
     if not lark_bitable_config.get("enabled"):
-        return (0, [])
+        return (0, [], [])
     _cid = (lark_bitable_config.get("app_id") or "").strip()
     _csec = (lark_bitable_config.get("app_secret") or "").strip()
     if _cid and _csec:
@@ -1047,7 +1090,7 @@ def _sync_refiner_to_lark(
     app_token = (lark_bitable_config.get("app_token") or "").strip() or None
     tables_map = lark_bitable_config.get("tables") or {}
     if not app_token or not tables_map:
-        return (0, ["lark_bitable.app_token 或 tables 未配置"])
+        return (0, ["lark_bitable.app_token 或 tables 未配置"], [])
 
     try:
         import sys
@@ -1057,14 +1100,15 @@ def _sync_refiner_to_lark(
             sys.path.insert(0, str(plugin_root))
         from tools.atom_lark_bitable_sync import sync_csv_to_bitable  # type: ignore[import-untyped]
     except ImportError as e:
-        return (0, [f"无法导入 atom_lark_bitable_sync: {e}"])
+        return (0, [f"无法导入 atom_lark_bitable_sync: {e}"], [])
 
     ok_count = 0
     errors: list[str] = []
+    skipped: list[tuple[str, str]] = []
     default_text_columns = {"10_充值_付费人数按SKU.csv": ["不同充值金额分等级"], "11_充值_付费金额按SKU.csv": ["不同充值金额分等级"]}
     text_cols_per_table = lark_bitable_config.get("text_columns") or {}
     field_mapping_per_table = dict(lark_bitable_config.get("field_mapping") or {})
-    # 若 Lark 表用「增量」而非「增幅」，可在 config 中配置 field_mapping: {"01_用户活跃_增幅表.csv": {"增幅":"增量"}}
+    # 01 表列名已与 Lark 统一为「增幅（%）」；06 表为「留存率（%）」。若 Lark 表用其他字段名，可在 field_mapping 中配置
 
     replace_table_default = lark_bitable_config.get("replace_table", False)
     replace_tables = lark_bitable_config.get("replace_tables")
@@ -1078,6 +1122,7 @@ def _sync_refiner_to_lark(
         name = p.name
         table_id = (tables_map.get(name) or "").strip()
         if not table_id:
+            skipped.append((name, "未配置 table_id"))
             if on_table:
                 on_table("skip", name, "未配置 table_id")
             continue
@@ -1101,7 +1146,7 @@ def _sync_refiner_to_lark(
             errors.append(f"{name}: {err}")
             if on_table:
                 on_table("fail", name, err)
-    return (ok_count, errors)
+    return (ok_count, errors, skipped)
 
 
 # =============================================================================
@@ -1132,12 +1177,13 @@ def _is_duckdb_fresh_for_today() -> bool:
 
 
 async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    global _BI_LOG_DIR
+    global _BI_LOG_DIR, _BI_VERBOSE
     _bi_debug("_run_bi_daily_report_async", "entry", data={"config_keys": list((config or {}).keys())})
     cfg = _load_config(config)
     _BI_LOG_DIR = _get_bi_log_dir(cfg)
+    _BI_VERBOSE = cfg.get("verbose_log", True)
     _bi_log_reset()
-    _bi_log("========== BI 每日战报流程开始 ==========", progress=True)
+    _bi_log("========== BI 每日战报流程开始 ==========", detail=f"verbose_log={_BI_VERBOSE}", progress=True)
     _bi_log("日志目录", detail=str(_BI_LOG_DIR))
     _bi_debug("init", "config_loaded", data={"output_refiner": str((cfg.get("storage") or {}).get("refiner_output_path", "")), "skip_collect": cfg.get("skip_collect"), "lark_enabled": (cfg.get("lark_bitable") or {}).get("enabled")})
     result: dict[str, Any] = {"success": False, "stage": "init", "data_updated": False, "output_paths": [], "lark_sync_ok": 0, "lark_sync_errors": [], "strategic_report_sent": False, "dashboard_analysis_sent": False, "email_ok": False, "email_error": "", "error": ""}
@@ -1147,17 +1193,17 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     ensure_bi_dirs()
     output_dir = get_bi_output_dir((cfg.get("storage") or {}).get("refiner_output_path") or "")
     output_dir.mkdir(parents=True, exist_ok=True)
-    _bi_log("Step 0: 配置加载完成", detail=f"output_dir={output_dir}", progress=True)
+    _bi_log("Step 0: 配置加载完成，输出目录已就绪", detail=f"output_dir={output_dir}", progress=True)
 
     _bi_debug("Step 1", "entry", detail="检查 DuckDB 今日数据")
-    _bi_log("Step 1: 检查 DuckDB 数据是否为今日最新...", progress=True)
+    _bi_log("Step 1: 正在检查 DuckDB 数据新鲜度（是否含今日 _ingested_date）...", progress=True)
     duckdb_fresh = _is_duckdb_fresh_for_today()
     _bi_debug("Step 1", "exit", data={"duckdb_fresh": duckdb_fresh})
     if not duckdb_fresh:
         _bi_log("Step 1 结果: DuckDB 无今日数据，需要抓取更新")
         _bi_debug("Step 1.1", "branch", data={"skip_collect": cfg.get("skip_collect")})
         if not cfg.get("skip_collect", False):
-            _bi_log("Step 1.1: 开始执行 SPA 抓取...")
+            _bi_log("Step 1.1: 开始执行 SPA 抓取（Chrome CDP 连接 BI 平台，抓取各统计表）...", progress=True)
             _bi_debug("Step 1.1", "entry", detail="run_full_spa_collect")
             try:
                 from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect
@@ -1188,7 +1234,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         _bi_log("Step 1 结果: DuckDB 已有今日数据，跳过抓取")
 
     _bi_debug("Step 2", "entry", detail="运行提纯 _run_refiner")
-    _bi_log("Step 2: 运行提纯，输出 CSV 到 output 目录...", progress=True)
+    _bi_log("Step 2: 正在运行 Refiner 提纯（从 DuckDB 提炼 11 个 CSV 到 output 目录）...", progress=True)
     try:
         date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         written, errs = _run_refiner(date_str=date_str, output_dir=output_dir)
@@ -1208,7 +1254,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     _bi_debug("Step 3", "branch", data={"lark_enabled": lark_bitable.get("enabled"), "has_output_paths": bool(result["output_paths"])})
     if lark_bitable.get("enabled") and result["output_paths"]:
         _bi_debug("Step 3", "entry", data={"paths_count": len(result["output_paths"])})
-        _bi_log("Step 3: 同步到 Lark 多维表格...", progress=True)
+        _bi_log("Step 3: 正在将 CSV 同步到 Lark 多维表格（atom_lark_bitable_sync）...", progress=True)
         _bi_log("Step 3: 待同步文件列表", detail=", ".join(Path(p).name for p in result["output_paths"]))
 
         def _on_table(status: str, name: str, detail: str) -> None:
@@ -1220,12 +1266,19 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 _bi_log("Step 3: 表同步成功", detail=name)
             elif status == "fail":
                 _bi_log("Step 3: 表同步失败", detail=f"{name}: {detail}")
+                if "FieldNameNotFound" in detail:
+                    _bi_log("Step 3 提示", detail=f"FieldNameNotFound 表示 Lark 表字段名与 CSV 列名不一致。01 表列名「增幅（%）」、06 表「留存率（%）」。请在 bi_daily_report.yaml 的 lark_bitable.field_mapping 中配置映射（按 11_LARK_TABLE_SCHEMA.md 对照）")
+                elif "TableIdNotFound" in detail:
+                    _bi_log("Step 3 提示", detail=f"TableIdNotFound 表示 table_id 不存在。请在 Lark 多维表中打开对应子表，从 URL 的 ?table=tblXXX 获取正确 table_id，更新到 bi_daily_report.yaml 的 lark_bitable.tables")
 
         try:
-            sync_ok, sync_errs = _sync_refiner_to_lark([Path(p) for p in result["output_paths"]], lark_bitable, on_table=_on_table)
+            sync_ok, sync_errs, sync_skipped = _sync_refiner_to_lark([Path(p) for p in result["output_paths"]], lark_bitable, on_table=_on_table)
             result["lark_sync_ok"] = sync_ok
             result["lark_sync_errors"] = sync_errs
-            _bi_debug("Step 3", "exit", data={"sync_ok": sync_ok, "sync_errs_count": len(sync_errs)})
+            result["lark_sync_skipped"] = sync_skipped
+            _bi_debug("Step 3", "exit", data={"sync_ok": sync_ok, "sync_errs_count": len(sync_errs), "sync_skipped_count": len(sync_skipped)})
+            if sync_skipped:
+                _bi_log("Step 3 跳过汇总", detail="; ".join(f"{n}: {r}" for n, r in sync_skipped) + " — 请在 bi_daily_report.yaml 的 lark_bitable.tables 中为对应 CSV 配置 table_id（从 Lark 子表 URL 的 ?table=tblXXX 获取）")
             if sync_errs:
                 _bi_log("Step 3 结果: 部分成功", detail=f"成功={sync_ok} 错误={sync_errs}")
             else:
@@ -1245,7 +1298,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     _bi_debug("Step 3.5", "branch", data={"enabled": strategic_cfg.get("enabled", True)})
     if strategic_cfg.get("enabled", True):
         _bi_debug("Step 3.5", "entry", detail="generate_bi_strategic_report_async")
-        _bi_log("Step 3.5: 开始数据分析，调用 LLM 生成战略深度分析战报...", progress=True)
+        _bi_log("Step 3.5: 正在调用 LLM 生成战略深度分析战报（金字塔原则）...", progress=True)
         try:
             from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
             strategic_md = await generate_bi_strategic_report_async(
@@ -1259,13 +1312,15 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             if strategic_cfg.get("push_to_lark", True) and strategic_md:
                 dist = cfg.get("distribution") or {}
                 webhook = (dist.get("lark_webhook_url") or "").strip()
-                chat_id = (dist.get("lark_chat_id") or "").strip()
+                chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
+                if not chat_id:
+                    chat_id = (dist.get("lark_chat_id") or "").strip()
+                elif dist.get("lark_chat_id") and dist.get("lark_chat_id") != chat_id:
+                    _bi_log("Step 3.5: 使用环境变量 BI_LARK_CHAT_ID 覆盖 config 中的 lark_chat_id", detail=f"chat_id={chat_id[:20]}...", progress=True)
                 if str(webhook).startswith("${"):
                     webhook = ""
                 if str(chat_id).startswith("${"):
                     chat_id = ""
-                if not chat_id and not webhook:
-                    chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
                 if not chat_id and not webhook:
                     try:
                         from l3_node.jachin_config import load_mcp_config
@@ -1279,7 +1334,8 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                     except Exception:
                         pass
                 if webhook or chat_id:
-                    _bi_log("Step 3.5: 正在将战略报告推送到 Lark 机器人...", detail=f"chat_id={'已配置' if chat_id else '无'}, webhook={'已配置' if webhook else '无'}")
+                    _bi_log("Step 3.5: 正在将战略报告推送到 Lark 机器人...", detail=f"chat_id={chat_id or '(无)'}, webhook={'已配置' if webhook else '无'}")
+                    _bi_debug("Step 3.5", "lark_target", data={"chat_id": chat_id or "", "webhook": bool(webhook)})
                     try:
                         lark_cfg = cfg.get("lark_bitable") or {}
                         if lark_cfg.get("app_id") and lark_cfg.get("app_secret"):
@@ -1294,7 +1350,12 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                             result["strategic_report_sent"] = True
                         else:
                             result["strategic_report_sent"] = False
-                            _bi_log("Step 3.5 警告: Lark 推送失败", detail=r.get("error", ""))
+                            err_msg = r.get("error", "")
+                            _bi_log("Step 3.5 警告: Lark 推送失败", detail=err_msg)
+                            if "can NOT be out of the chat" in str(err_msg):
+                                _bi_log("Step 3.5 提示", detail=f"当前 chat_id={chat_id or '(无)'}。若 BI 助手已加入其他群，请设置 BI_LARK_CHAT_ID=该群会话ID 后重试")
+                            elif "already been dissolved" in str(err_msg):
+                                _bi_log("Step 3.5 提示", detail=f"当前 chat_id={chat_id or '(无)'} 对应的群聊已解散。请将 BI_LARK_CHAT_ID 改为一个仍存在的群聊会话 ID（如 oc_bb2b468cb04acb709c2e7aa5683f8f08）")
                     except Exception as e:
                         result["strategic_report_sent"] = False
                         _bi_log("Step 3.5 警告: Lark 推送异常", detail=str(e))
@@ -1319,7 +1380,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         analysis_output_subdir = str(da_cfg.get("analysis_output_subdir") or "统计分析").strip() or "统计分析"
         analysis_output_dir = output_dir / analysis_output_subdir
         analysis_output_dir.mkdir(parents=True, exist_ok=True)
-        _bi_log("Step 4a: 生成仪表盘 LLM 分析（供邮件 + Lark 定时）...", progress=True)
+        _bi_log("Step 4a: 生成仪表盘 LLM 分析（供邮件 + Lark 消息卡片）...", progress=True)
         for i, dash in enumerate(dashboards):
             if not isinstance(dash, dict):
                 continue
@@ -1336,7 +1397,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 saved_path = _save_analysis_to_file(analysis_output_dir, name, analysis)
                 dashboard_analyses.append((name, analysis))
                 _bi_debug("Step 4a", "dashboard_done", data={"name": name, "saved": str(saved_path.name)})
-                _bi_log("Step 4a: 仪表盘分析已生成", detail=f"[{i + 1}/{len(dashboards)}] {name} → {saved_path.name}")
+                _bi_log("Step 4a: 仪表盘分析已生成", detail=f"[{i + 1}/{len(dashboards)}] {name} → {saved_path.name}", progress=True)
             except Exception as e:
                 _bi_debug("Step 4a", "dashboard_fail", exc=e, data={"name": name})
                 _bi_log("Step 4a 警告: 仪表盘分析失败", detail=f"{name}: {e}")
@@ -1346,13 +1407,15 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         elif da_cfg.get("push_dashboard_to_lark", True):
             # 将仪表盘分析作为 Lark 卡片消息发送到同一会话（与战略报告同一 chat_id）
             _lark_webhook = (dist.get("lark_webhook_url") or "").strip()
-            _lark_chat_id = (dist.get("lark_chat_id") or "").strip()
+            _lark_chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
+            if not _lark_chat_id:
+                _lark_chat_id = (dist.get("lark_chat_id") or "").strip()
+            elif dist.get("lark_chat_id") and dist.get("lark_chat_id") != _lark_chat_id:
+                _bi_log("Step 4a: 使用环境变量 BI_LARK_CHAT_ID 覆盖 config", detail=f"chat_id={_lark_chat_id[:20]}...")
             if str(_lark_webhook).startswith("${"):
                 _lark_webhook = ""
             if str(_lark_chat_id).startswith("${"):
                 _lark_chat_id = ""
-            if not _lark_chat_id and not _lark_webhook:
-                _lark_chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
             if not _lark_chat_id and not _lark_webhook:
                 try:
                     from l3_node.jachin_config import load_mcp_config
@@ -1385,9 +1448,14 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                         _r = send_lark_markdown(_lark_webhook or "", _card_md[:6000], title=f"📊 {_name}", chat_id=_lark_chat_id or None)
                         if _r.get("status") == "success":
                             sent_ok += 1
-                            _bi_log("Step 4a: 仪表盘卡片已推送", detail=f"{_name}")
+                            _bi_log("Step 4a: 仪表盘卡片已推送至 Lark", detail=f"{_name}", progress=True)
                         else:
-                            _bi_log("Step 4a 警告: 仪表盘卡片推送失败", detail=f"{_name}: {_r.get('error', '')}")
+                            err4 = _r.get("error", "")
+                            _bi_log("Step 4a 警告: 仪表盘卡片推送失败", detail=f"{_name}: {err4}")
+                            if "can NOT be out of the chat" in str(err4):
+                                _bi_log("Step 4a 提示", detail=f"当前 chat_id={_lark_chat_id or '(无)'}。若 BI 助手已加入其他群，请设置 BI_LARK_CHAT_ID=该群会话ID 后重试")
+                            elif "already been dissolved" in str(err4):
+                                _bi_log("Step 4a 提示", detail=f"当前 chat_id 对应的群聊已解散，请将 BI_LARK_CHAT_ID 改为仍存在的群聊 ID")
                     if sent_ok:
                         result["dashboard_analysis_sent"] = True
                         _bi_log("Step 4a: 仪表盘分析已推送至 Lark", detail=f"共 {sent_ok}/{len(dashboard_analyses)} 条", progress=True)
@@ -1396,7 +1464,9 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             else:
                 _bi_log("Step 4a: 未配置 Lark chat_id/webhook，跳过仪表盘分析推送")
 
-    # Step 3.6: 数据分析完成后马上发送邮件（战略分析 + 仪表盘分析）
+    # Step 3.6: 仪表盘推送完成后发送邮件（战略分析 + 仪表盘分析）
+    _bi_log("接下来执行 Step 3.6 发送 BI 战报邮件（含战略分析 + 仪表盘分析）", progress=True)
+
     email_cfg = dist.get("email") or {}
     _bi_debug("Step 3.6", "branch", data={"email_enabled": email_cfg.get("enabled", True), "is_dict": isinstance(email_cfg, dict)})
     if email_cfg.get("enabled", True) and isinstance(email_cfg, dict):
@@ -1438,12 +1508,14 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 else:
                     expanded.append(a)
             to_addrs = expanded
+            from_config = len(to_addrs)
             if not to_addrs:
                 to_addrs = (os.environ.get("BI_SMTP_TO") or os.environ.get("BI_EMAIL_TO") or "").strip().split(",")
                 to_addrs = [a.strip() for a in to_addrs if a.strip()]
-            _bi_debug("Step 3.6", "to_addrs_final", data={"count": len(to_addrs)})
+                _bi_log("Step 3.6: 收件人来自环境变量", detail=f"BI_SMTP_TO/BI_EMAIL_TO 共 {len(to_addrs)} 人（config 中 to_addrs 为空或仅占位符）")
+            _bi_debug("Step 3.6", "to_addrs_final", data={"count": len(to_addrs), "from_config": from_config})
             if len(to_addrs) == 1:
-                _bi_log("Step 3.6: 当前收件人为 1 人", detail="若需多人收件，请在 ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml 的 distribution.email.to_addrs 中配置多行邮箱，或设置环境变量 BI_SMTP_TO=邮箱1,邮箱2（逗号分隔）")
+                _bi_log("Step 3.6: 当前收件人为 1 人", detail="若需多人收件，请在 ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml 的 distribution.email.to_addrs 中配置多行邮箱（如 vivian@herontech.net、1807301549@qq.com），或设置 BI_SMTP_TO=邮箱1,邮箱2")
             if not smtp_config.get("user") or str(smtp_config.get("user", "")).startswith("${"):
                 smtp_config["user"] = (os.environ.get("BI_SMTP_USER") or os.environ.get("SMTP_USER") or "").strip()
             if not smtp_config.get("password") or str(smtp_config.get("password", "")).startswith("${"):
@@ -1533,12 +1605,12 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
 <p style="color:#999; font-size:12px;">— Jachin OS BI 战报系统 · 自动发送</p>
 </body></html>"""
                 action_input = json.dumps({
-                    "smtp_config": smtp_config,
-                    "to_addrs": to_addrs,
+                "smtp_config": smtp_config,
+                "to_addrs": to_addrs,
                     "subject": subject,
                     "body": body,
                     "attachment_paths": [],
-                }, ensure_ascii=False)
+            }, ensure_ascii=False)
                 from l3_node.skills.mcp_registry import get_mcp_registry
                 mcp_registry = get_mcp_registry()
                 _bi_debug("Step 3.6", "mcp_invoke", data={"to_count": len(to_addrs)})
@@ -1550,7 +1622,8 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 _bi_debug("Step 3.6", "mcp_result", data={"status": r.get("status"), "error": str(r.get("error", ""))[:200]})
                 if r.get("status") == "success":
                     result["email_ok"] = True
-                    _bi_log("Step 3.6: 邮件已发送", detail=f"收件人共 {len(to_addrs)} 人", progress=True)
+                    _bi_log("Step 3.6: 邮件已发送", detail=f"收件人共 {len(to_addrs)} 人（mcp:atom_email_sender → tool_email_sender）", progress=True)
+                    _bi_debug("Step 3.6", "email_sent", data={"to_count": len(to_addrs)})
                 else:
                     result["email_ok"] = False
                     result["email_error"] = r.get("error", "未知错误")
@@ -1566,65 +1639,6 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     elif isinstance(email_cfg, dict) and email_cfg.get("enabled") is False:
         _bi_log("Step 3.6: 已跳过 (distribution.email.enabled=false)")
 
-    # Step 4b: 打开每个 Lark 仪表盘，填入分析、设置定时，通过「设置自动化发送」配置定时推送（非直接发消息）
-    _bi_debug("Step 4b", "branch", data={"da_enabled": da_cfg.get("enabled"), "has_analyses": bool(dashboard_analyses)})
-    if da_cfg.get("enabled", False) and dashboard_analyses:
-        dashboards = da_cfg.get("dashboards") or []
-        scheduled_time = str(da_cfg.get("scheduled_time") or "").strip()
-        _bi_debug("Step 4b", "entry", data={"scheduled_time": scheduled_time, "dashboards_count": len(dashboards)})
-        if not scheduled_time or ":" not in scheduled_time or len(scheduled_time) < 4:
-            _bi_log("Step 4b: 已跳过", detail="dashboard_automation.scheduled_time 未配置或格式无效，请在 config 中设置 HH:MM 如 18:05", progress=True)
-        else:
-            cdp_url = str(da_cfg.get("cdp_url") or "").strip()
-            _bi_log("Step 4b: 开始配置 Lark 仪表盘定时发送", detail=f"定时时间（来自 config）={scheduled_time}", progress=True)
-            result["dashboard_automation"] = {"done": 0, "failed": 0, "errors": []}
-            analyses_by_name = {n: t for n, t in dashboard_analyses}
-            for i, dash in enumerate(dashboards):
-                if not isinstance(dash, dict):
-                    continue
-                name = (dash.get("name") or "").strip()
-                url = (dash.get("url") or "").strip()
-                if not url or str(url).startswith("${"):
-                    url = ""
-                if not name:
-                    continue
-                if not url:
-                    _bi_log("Step 4b: 跳过仪表盘", detail=f"{name} — 未配置 URL")
-                    continue
-                analysis = analyses_by_name.get(name, "")
-                if not analysis:
-                    _bi_log("Step 4b: 跳过仪表盘", detail=f"{name} — 无对应分析")
-                    continue
-                _bi_debug("Step 4b", "dashboard_start", data={"index": i + 1, "name": name})
-                _bi_log("Step 4b: 配置仪表盘", detail=f"[{i + 1}/{len(dashboards)}] {name}，URL={url[:50]}...", progress=True)
-                try:
-                    from l3_node.skills.bi.bi_daily_report.dashboard_automation import setup_lark_dashboard_automation_via_browser
-                    r = await asyncio.to_thread(
-                        setup_lark_dashboard_automation_via_browser,
-                        dashboard_url=url,
-                        analysis_text=analysis,
-                        scheduled_time=scheduled_time,
-                        cdp_url=cdp_url,
-                    )
-                    _bi_debug("Step 4b", "dashboard_result", data={"name": name, "status": r.get("status"), "error": str(r.get("error", ""))[:150]})
-                    if r.get("status") == "success":
-                        result["dashboard_automation"]["done"] += 1
-                        _bi_log("Step 4b: 仪表盘自动化已配置", detail=f"{name}，定时={scheduled_time}")
-                    else:
-                        result["dashboard_automation"]["failed"] += 1
-                        err_msg = r.get("error", "未知错误")
-                        result["dashboard_automation"]["errors"].append(f"{name}: {err_msg}")
-                        _bi_log("Step 4b 警告: 自动化配置失败", detail=f"{name}: {err_msg}", progress=True)
-                except Exception as e:
-                    result["dashboard_automation"]["failed"] += 1
-                    result["dashboard_automation"]["errors"].append(f"{name}: {e}")
-                    _bi_debug("Step 4b", "dashboard_exception", exc=e, data={"name": name})
-                    _bi_log("Step 4b 警告: 仪表盘处理异常", detail=f"{name}: {e}", progress=True)
-            _bi_debug("Step 4b", "exit", data={"done": result["dashboard_automation"]["done"], "failed": result["dashboard_automation"]["failed"]})
-            _bi_log("Step 4b 完成", detail=f"成功={result['dashboard_automation']['done']} 失败={result['dashboard_automation']['failed']}", progress=True)
-    elif da_cfg.get("enabled", False):
-        _bi_log("Step 4b: 已跳过", detail="无仪表盘分析或未配置 dashboards")
-
     result["success"] = True
     result["stage"] = "done"
     result["report_sent"] = result["lark_sync_ok"] > 0
@@ -1633,8 +1647,6 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     _bi_debug("_run_bi_daily_report_async", "exit", data={"stage": result["stage"], "success": result["success"], "output_count": len(result["output_paths"])})
     _bi_log("========== BI 流程完成 ==========", progress=True)
     summary = {"success": result["success"], "stage": result["stage"], "output_count": len(result["output_paths"]), "lark_sync_ok": result["lark_sync_ok"], "lark_sync_errors": result["lark_sync_errors"], "strategic_report_sent": result.get("strategic_report_sent", False), "dashboard_analysis_sent": result.get("dashboard_analysis_sent", False), "email_ok": result.get("email_ok", False)}
-    if "dashboard_automation" in result:
-        summary["dashboard_automation"] = result["dashboard_automation"]
     _bi_log("最终结果", detail=json.dumps(summary, ensure_ascii=False, indent=2))
     _bi_log("日志文件", detail=str(_BI_LOG_RUN_FILE or ""))
     return result

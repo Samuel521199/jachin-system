@@ -80,7 +80,10 @@ def main():
             print("[WARN] 未配置 lark_bitable.tables（或全部 table_id 为空），跳过 Lark 同步", file=sys.stderr)
             print("      请在 bi_daily_report.yaml 的 lark_bitable.tables 中填入各 CSV 对应的 table_id", file=sys.stderr)
         else:
-            sync_ok, sync_errs = sync_refiner_to_lark(written, lark_bitable)
+            sync_ok, sync_errs, sync_skipped = sync_refiner_to_lark(written, lark_bitable)
+            if sync_skipped:
+                for n, r in sync_skipped:
+                    print(f"[Lark] 跳过: {n} — {r}", file=sys.stderr)
             if sync_errs:
                 for e in sync_errs:
                     print(f"[Lark] 同步失败: {e}", file=sys.stderr)

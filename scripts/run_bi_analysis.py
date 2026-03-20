@@ -54,6 +54,9 @@ def _run_bi_flow() -> int:
             print(f"  - 仪表盘自动化: 成功 {da.get('done', 0)} / 失败 {da.get('failed', 0)}")
         if result.get("lark_sync_errors"):
             print(f"  - 同步错误: {result['lark_sync_errors']}")
+        if result.get("lark_sync_skipped"):
+            skipped = result["lark_sync_skipped"]
+            print(f"  - 跳过表: {len(skipped)} 个（未配置 table_id）— {', '.join(n for n, _ in skipped)}")
     else:
         print(f"[BI分析] ❌ 失败: {result.get('error', '未知错误')}")
         return 1

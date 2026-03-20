@@ -11,7 +11,7 @@ robot_name: "BI助手"
 app_id: "cli_a930e0054ecf5ed1"
 app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
 # BI 助手所在会话 chat_id，用于推送战报及 Lark↔终端镜像
-default_chat_id: "oc_d4d18b6c05b6b1974c3198294f45653a"
+default_chat_id: "oc_bb2b468cb04acb709c2e7aa5683f8f08"
 # 飞书中国版（open.feishu.cn），BI 助手为 true
 lark_use_feishu: true
 

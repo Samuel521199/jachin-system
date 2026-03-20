@@ -57,7 +57,7 @@ python scripts/run_bi_report_refiner.py
 
 ### 步骤 4：同步到 Lark 多维表格
 
-1. 在 Lark 中创建多维表，按产品需求建好各子表（DAU和DNU、渠道来源、周统计、次留表、周环比、月环比、消耗、游戏、付费人数、付费金额等）
+1. 在 Lark 中创建多维表，按产品需求建好各子表（DAU和DNU、渠道来源、周统计、次留表、周环比、消耗、游戏、付费人数、付费金额、新增设备、ARPU、ARPPU 等）
 2. 打开每个子表，从 URL 复制 `table=tblXXX` 中的 `tblXXX`
 3. 编辑 `config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml`（或 `~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml`）：
    - `lark_bitable.enabled: true`
@@ -113,15 +113,18 @@ print(r)
 | 03a_用户活跃_DAU渠道来源.csv | DAU渠道来源 |
 | 02_用户活跃_日期数量表.csv | 周统计DAU和DNU数量 |
 | 03b_用户活跃_DNU渠道来源.csv | DNU渠道来源 |
+| 13_用户活跃_新增设备表.csv | 新增设备数、增幅、占比 |
 | **平台留存情况** | |
 | 04_留存_次留表.csv | 次留表 |
 | 06_留存_周环比表.csv | 周环比 |
-| 12_留存_月环比表.csv | 月环比 |
 | **平台消耗情况** | |
 | 08_消耗_每日表.csv | 每日金币产出、消耗 |
 | 09_消耗_按游戏表.csv | 每个游戏的产出、消耗 |
 | 10_充值_付费人数按SKU.csv | 付费人数表格（不同充值金人数） |
 | 11_充值_付费金额按SKU.csv | 付费金额表格（不同充值金金额） |
+| 14_充值_付费人数金额增幅表.csv | 付费人数、金额、增幅 |
+| 15_充值_ARPU表.csv | ARPU |
+| 16_充值_ARPPU表.csv | ARPPU |
 
 ---
 

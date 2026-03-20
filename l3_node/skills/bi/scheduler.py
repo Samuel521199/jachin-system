@@ -122,11 +122,20 @@ def register_bi_daily_report_job() -> bool:
         True 表示注册成功，False 表示 APScheduler 不可用或注册失败
     """
     try:
-        from l3_node.hr_loader import get_recruitment_scheduler
-
-        scheduler = get_recruitment_scheduler()
-    except ImportError:
-        logger.debug("[BI Scheduler] hr_loader 未加载，跳过 BI 任务注册")
+        from l3_node.recruitment_scheduler import scheduler
+    except ImportError as e:
+        # #region agent log
+        try:
+            import json, time
+            from pathlib import Path
+            p = Path(__file__).resolve().parents[3] / "debug-ead14b.log"
+            line = json.dumps({"sessionId":"ead14b","location":"scheduler.register","message":"import_failed","data":{"error": str(e)},"timestamp":int(time.time()*1000),"hypothesisId":"H5"}, ensure_ascii=False) + "\n"
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+        # #endregion
+        logger.debug("[BI Scheduler] recruitment_scheduler 未加载，跳过 BI 任务注册")
         return False
 
     if scheduler is None:
