@@ -132,13 +132,14 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
             except Exception:
                 pass
             if not stdin_json.get("jd_template"):
-                jd_file = proj / "config" / "hr_jds" / f"{item_id}.md"
+                from l3_node.jachin_config import get_hr_jds_dir
+                jd_file = get_hr_jds_dir(proj) / f"{item_id}.md"
                 if jd_file.exists():
                     try:
                         jd_local = jd_file.read_text(encoding="utf-8", errors="replace").strip()
                         if jd_local:
                             stdin_json["jd_template"] = jd_local
-                            print(f"[Skill Execute] [L2 Fallback] 从 config/hr_jds/{item_id}.md 读取 JD", file=sys.stderr, flush=True)
+                            print(f"[Skill Execute] [L2 Fallback] 从 config/skills/.../hr_jds/{item_id}.md 读取 JD", file=sys.stderr, flush=True)
                     except Exception:
                         pass
         if _hr_files_val:

@@ -125,22 +125,37 @@ fn project_root() -> Option<PathBuf> {
     None
 }
 
-/// 从项目根 .env 读取关键变量（DASHSCOPE_API_KEY 等），供 L3 子进程使用
-pub fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
+const L3_ENV_KEYS: &[&str] = &["DASHSCOPE_API_KEY", "OPENAI_API_KEY", "LITELLM_FALLBACK_MODELS", "LLM_MODEL"];
+
+fn parse_env_file(path: &PathBuf) -> Vec<(String, String)> {
     let mut vars = Vec::new();
-    let env_path = root.join(".env");
-    if let Ok(content) = fs::read_to_string(&env_path) {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
+    let Ok(content) = fs::read_to_string(path) else { return vars };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim().to_string();
+            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !v.is_empty() && L3_ENV_KEYS.contains(&k.as_str()) {
+                vars.push((k, v));
             }
-            if let Some((k, v)) = line.split_once('=') {
-                let k = k.trim().to_string();
-                let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
-                if !v.is_empty()
-                    && matches!(k.as_str(), "DASHSCOPE_API_KEY" | "OPENAI_API_KEY" | "LITELLM_FALLBACK_MODELS" | "LLM_MODEL")
-                {
+        }
+    }
+    vars
+}
+
+/// 从项目根及 ~/.jachin/.env 读取关键变量（DASHSCOPE_API_KEY 等），供 L3 子进程使用
+pub fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
+    let mut vars = parse_env_file(&root.join(".env"));
+    let has_key = vars.iter().any(|(k, _)| k == "DASHSCOPE_API_KEY" || k == "OPENAI_API_KEY");
+    if !has_key {
+        let home = std::env::var("USERPROFILE").ok().or_else(|| std::env::var("HOME").ok());
+        if let Some(ref h) = home {
+            let home_env = PathBuf::from(h).join(".jachin").join(".env");
+            for (k, v) in parse_env_file(&home_env) {
+                if !vars.iter().any(|(ek, _)| ek == &k) {
                     vars.push((k, v));
                 }
             }

@@ -1211,6 +1211,38 @@ async def run_agent(
         except Exception as e:
             logger.warning("[Agent] 直接执行 stop_automated_recruitment 失败: %s", e)
 
+    # 预检0.5：用户说「BI分析」「帮我开始今天的BI分析」「生成战报」等时，直接执行 BI 每日战报流程
+    # 意图逻辑集中在 main_skill.is_bi_analysis_intent
+    try:
+        from l3_node.skills.bi.bi_daily_report import is_bi_analysis_intent
+        _bi_intent = is_bi_analysis_intent(user_input or "")
+    except ImportError:
+        _bi_intent = re.search(
+            r"BI\s*分析|bi\s*分析|帮我开始.*BI|今天的BI分析|开始BI分析|执行BI分析",
+            (user_input or "").strip(),
+            re.IGNORECASE,
+        )
+    if _bi_intent:
+        try:
+            from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
+
+            result = await asyncio.to_thread(run_bi_daily_report)
+            if result.get("success"):
+                lines = ["✅ BI 分析已完成"]
+                lines.append(f"输出文件: {len(result.get('output_paths', []))} 个")
+                lines.append(f"Lark 同步: {result.get('lark_sync_ok', 0)} 个表")
+                if result.get("lark_sync_errors"):
+                    lines.append(f"同步警告: {', '.join(str(e)[:50] for e in result['lark_sync_errors'][:3])}")
+                if result.get("strategic_report_sent"):
+                    lines.append("战略分析战报: 已推送到 Lark")
+                elif result.get("strategic_report_error"):
+                    lines.append(f"战略分析: 生成或推送异常 ({str(result['strategic_report_error'])[:40]}...)")
+                return "\n".join(lines)
+            return f"❌ BI 分析失败: {result.get('error', '未知错误')}"
+        except Exception as e:
+            logger.warning("[Agent] 直接执行 BI 分析失败: %s", e)
+            return f"❌ BI 分析异常: {e}"
+
     # 预检1：用户说「我要招聘」等模糊指令且对话中尚无 JD 配置时，强制依次询问所有硬性字段
     _vague_recruitment = re.search(
         r"我要(?:招聘|发布|招人?)|发布(?:一个)?职位|招聘",

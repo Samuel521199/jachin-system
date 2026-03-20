@@ -29,6 +29,21 @@ def get_bi_metrics_dir() -> Path:
     return get_bi_data_root() / "metrics"
 
 
+def get_bi_output_dir(override: str | Path | None = None) -> Path:
+    """
+    提纯输出目录，供 Lark 多维表格导入。
+
+    默认: ~/.jachin/client_volumes/bi_data/output
+    override: 配置项 storage.refiner_output_path；空则用默认
+    """
+    if override and str(override).strip():
+        p = Path(str(override).strip())
+        if p.is_absolute():
+            return p
+        return get_jachin_root() / p
+    return get_bi_data_root() / "output"
+
+
 def get_bi_duckdb_dir() -> Path:
     """DuckDB 文件所在目录 (~/.jachin/client_volumes/bi_data/duckdb)"""
     return get_bi_data_root() / "duckdb"
@@ -44,3 +59,4 @@ def ensure_bi_dirs() -> None:
     get_bi_raw_dir().mkdir(parents=True, exist_ok=True)
     get_bi_metrics_dir().mkdir(parents=True, exist_ok=True)
     get_bi_duckdb_dir().mkdir(parents=True, exist_ok=True)
+    get_bi_output_dir().mkdir(parents=True, exist_ok=True)

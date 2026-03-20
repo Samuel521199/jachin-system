@@ -250,7 +250,7 @@ class JachinWasmSandbox:
 
         def _mcp_read_file(path_ptr: int, path_len: int) -> int:
             """Host: L3 本地读取文件（含 PDF 提取），不依赖 L2。L2 仅作回退。
-            路径白名单：client_volumes、data/hr_resumes、config/hr_jds。"""
+            路径白名单：client_volumes、data/hr_resumes、config/skills/.../hr_jds。"""
             mem, store = _get_mem_store()
             if not mem or not store:
                 return _write_err_fallback(OUTPUT_OFFSET, "⚠️ 无法连接 L2 机房或读取文件失败")
@@ -313,7 +313,9 @@ class JachinWasmSandbox:
                         except Exception:
                             pass
                     if path_obj is None:
-                        for base, sub in [(_L3_VOLUME_ROOT, raw_norm), (_proj / "data" / "hr_resumes", filename), (_proj / "config" / "hr_jds", filename)]:
+                        from l3_node.jachin_config import get_hr_jds_dir
+                        _hr_jds = get_hr_jds_dir(_proj)
+                        for base, sub in [(_L3_VOLUME_ROOT, raw_norm), (_proj / "data" / "hr_resumes", filename), (_hr_jds, filename)]:
                             cand = (base / sub).resolve()
                             if cand.exists() and cand.is_file():
                                 path_obj = cand
@@ -367,7 +369,7 @@ class JachinWasmSandbox:
                 return -1
 
         def _mcp_list_directory(path_ptr: int, path_len: int) -> int:
-            """Host: 列出目录下 .md/.txt/.pdf 文件。支持 L3 数据卷、data/hr_resumes、config/hr_jds 本地直读。"""
+            """Host: 列出目录下 .md/.txt/.pdf 文件。支持 L3 数据卷、data/hr_resumes、config/skills/.../hr_jds 本地直读。"""
             mem, store = _get_mem_store()
             if not mem or not store:
                 return -1

@@ -28,25 +28,44 @@ _DEFAULT_SCHEDULE = {
 def _load_schedule_config() -> dict[str, Any]:
     """从 bi_daily_report.yaml 加载 schedule 配置"""
     from l3_node.paths import get_app_root
+    # #region agent log
+    _dbg = lambda msg, d: _dbg_write("scheduler._load_schedule_config", msg, d)
+    def _dbg_write(loc, msg, d):
+        try:
+            import json, time
+            from pathlib import Path
+            p = Path(__file__).resolve().parents[3] / "debug-ead14b.log"
+            line = json.dumps({"sessionId":"ead14b","location":loc,"message":msg,"data":d,"timestamp":int(time.time()*1000),"hypothesisId":"H2"}, ensure_ascii=False) + "\n"
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+    # #endregion
 
     jachin_root = Path.home() / ".jachin"
     project_root = get_app_root()
     candidates = [
-        project_root / "config" / "bi_daily_report.yaml",
         jachin_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_daily_report.yaml",
+        project_root / "config" / "skills" / "com.jachin.bi.daily_report" / "bi_daily_report.yaml",
     ]
     for path in candidates:
         if path.exists():
             try:
                 import yaml
-
                 with open(path, encoding="utf-8") as f:
                     raw = yaml.safe_load(f) or {}
                 sched = raw.get("schedule") or {}
                 if isinstance(sched, dict):
-                    return {**_DEFAULT_SCHEDULE, **sched}
+                    out = {**_DEFAULT_SCHEDULE, **sched}
+                    # #region agent log
+                    _dbg("config_loaded", {"path": str(path), "mode": out.get("mode"), "run_at": f"{out.get('run_at_hour')}:{out.get('run_at_minute')}", "enabled": out.get("enabled")})
+                    # #endregion
+                    return out
             except Exception as e:
                 logger.warning("[BI Scheduler] 配置加载失败 %s: %s", path, e)
+    # #region agent log
+    _dbg("config_default", {"reason": "no_file"})
+    # #endregion
     return dict(_DEFAULT_SCHEDULE)
 
 
@@ -111,6 +130,17 @@ def register_bi_daily_report_job() -> bool:
         return False
 
     if scheduler is None:
+        # #region agent log
+        try:
+            import json, time
+            from pathlib import Path
+            p = Path(__file__).resolve().parents[3] / "debug-ead14b.log"
+            line = json.dumps({"sessionId":"ead14b","location":"scheduler.register","message":"scheduler_none","data":{},"timestamp":int(time.time()*1000),"hypothesisId":"H5"}, ensure_ascii=False) + "\n"
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+        # #endregion
         logger.debug("[BI Scheduler] APScheduler 不可用，跳过 BI 任务注册")
         return False
 
@@ -122,6 +152,39 @@ def register_bi_daily_report_job() -> bool:
     mode = (cfg.get("mode") or "cron").lower()
 
     try:
+        # #region agent log
+        try:
+            import json, time
+            from pathlib import Path
+            p = Path(__file__).resolve().parents[3] / "debug-ead14b.log"
+            line = json.dumps({"sessionId":"ead14b","location":"scheduler.register","message":"mode_check","data":{"mode":mode,"enabled":cfg.get("enabled")},"timestamp":int(time.time()*1000),"hypothesisId":"H1"}, ensure_ascii=False) + "\n"
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+        # #endregion
+        if mode == "loop":
+            from l3_node.skills.bi.bi_daily_report.main_skill import start_bi_scheduled_loop
+            started = start_bi_scheduled_loop()
+            # #region agent log
+            try:
+                import json, time
+                from pathlib import Path
+                p = Path(__file__).resolve().parents[3] / "debug-ead14b.log"
+                line = json.dumps({"sessionId":"ead14b","location":"scheduler.register","message":"loop_started","data":{"started":started},"timestamp":int(time.time()*1000),"hypothesisId":"H3"}, ensure_ascii=False) + "\n"
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(line)
+            except Exception:
+                pass
+            # #endregion
+            if started:
+                logger.info(
+                    "[BI Scheduler] 已启动 BI 定时循环 run_at=%s:%s 间隔=%ds",
+                    cfg.get("run_at_hour", 15),
+                    str(cfg.get("run_at_minute", 8)).zfill(2),
+                    cfg.get("interval_seconds", 30),
+                )
+            return True
         if mode == "interval":
             minutes = cfg.get("minutes")
             hours = cfg.get("hours")

@@ -1,0 +1,114 @@
+# BI 每日战报配置
+# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# 实际配置: ~/.jachin/config/skills/com.jachin.bi.daily_report/
+
+skip_collect: true
+
+# 是否运行数据提纯，生成 Lark 多维表格可导入的 CSV（~/.jachin/client_volumes/bi_data/output/）
+run_refiner: false
+
+# ========== 调度配置 ==========
+# mode: cron — 每天固定时间执行一次；interval — 按分钟/小时间隔；loop — 指定时间开始，每轮间隔 N 秒循环
+schedule:
+  enabled: true
+  mode: loop
+  # loop 模式：首次执行时间（今日）
+  run_at_hour: 15
+  run_at_minute: 49
+  interval_seconds: 60   # 每轮结束后间隔 30 秒执行下一轮
+  timezone: Asia/Shanghai
+
+# ========== 数据源 ==========
+data_source:
+  url: "${BI_DATA_URL}"
+  extract_rules: {}
+  headers: {}
+
+storage:
+  base_path: "client_volumes/bi_data"
+  # 提纯 CSV 输出目录，供 Lark 多维表格导入
+  # 留空或未配置：默认 ~/.jachin/client_volumes/bi_data/output
+  # 可填绝对路径（如 /data/bi_output 或 D:\\bi_output），或相对 ~/.jachin 的路径
+  refiner_output_path: ""
+
+# Lark 多维表格同步（与 Lark 侧栏结构一一对应）
+# app_id/app_secret 优先；未配置时从 .env 的 BI_LARK_APP_ID/LARK_APP_ID 读取；应用需 base:record 权限
+# ensure_columns: true 时自动创建缺失列，解决 FieldNameNotFound；false 时表需预建且字段名与 CSV 完全一致
+# text_columns: 指定必须按文本发送的列，避免纯数字 SKU 导致 TextFieldConvFail（11/10 表已内置）
+# field_mapping: 当 Lark 表字段名与 CSV 不一致时，可配置列名映射
+# 若 DAU和DNU 表使用「增量」而非「增幅」: field_mapping: {"01_用户活跃_增幅表.csv": {"增幅":"增量"}}
+lark_bitable:
+  enabled: true
+  lark_use_feishu: true   # BI助手为飞书中国版，使用 open.feishu.cn
+  app_id: "cli_a930e0054ecf5ed1"
+  app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
+  app_token: "HCvubvsubak2WPs2GbClYq68gjh"
+  ensure_columns: true    # 改为 true 可自动建列，解决 01_用户活跃_增幅表 FieldNameNotFound
+  replace_table: false    # 不先清空表，直接追加（避免 delete 权限 Forbidden）
+  # CSV 文件 -> table_id（在 Lark 中打开子表，URL ?table=tblXXX 即 table_id）
+  # 表名与 Lark 多维表格侧栏一一对应，填对应子表的 table_id
+  # 当 Lark 表字段名与 CSV 不一致时，可配置 field_mapping，例如付费表用「角色类型/周留存率」：
+  #   field_mapping:
+  #     "05_留存_付费用户次留表.csv": {"类型":"角色类型","留存率":"周留存率"}
+  #     "07_留存_付费用户周环比表.csv": {"类型":"角色类型","留存率":"周留存率"}
+  tables:
+    # === 用户登录活跃情况 ===
+    "01_用户活跃_增幅表.csv": "tblG2nF2Uu4vmtnU"      # Lark 表名: DAU和DNU
+    "03a_用户活跃_DAU渠道来源.csv": "tblXTientR8Pkd5x"  # Lark 表名: DAU渠道来源
+    "02_用户活跃_日期数量表.csv": "tblflaMe457ML81v"   # Lark 表名: 周统计DAU和DNU数量
+    "03b_用户活跃_DNU渠道来源.csv": "tblSXaeym4v83wH2"  # Lark 表名: DNU渠道来源
+    # === 平台留存情况 ===
+    "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留率（留存类型, 留存率）
+    "05_留存_付费用户次留表.csv": ""                   # 付费用户次留表：在 Lark 打开该子表，URL 中 ?table=tblXXX 即 table_id，填入后生效
+    "06_留存_周环比表.csv": "tblMZ2XUYURKID3r"        # Lark 表名: 周环比（类型, 留存率）
+    "07_留存_付费用户周环比表.csv": ""                 # 付费用户周环比：同上，填 table_id 后生效。若 Lark 列为「角色类型/周留存率」需配置 field_mapping
+    "12_留存_月环比表.csv": "tblYMxDilOzhkT6K"        # Lark 表名: 月环比（这月留存率, 上月留存率）
+    # === 平台消耗情况 ===
+    "08_消耗_每日表.csv": "tbl094S7AAZ0ZcoN"          # Lark 表名: 每日金币产出、消耗
+    "09_消耗_按游戏表.csv": "tblasHRF6rV4VQRu"        # Lark 表名: 每个游戏的产出、消耗
+    "10_充值_付费人数按SKU.csv": "tblY7p1sHL6iRT4c"   # Lark 表名: 付费人数表格（不同充值金人数）
+    "11_充值_付费金额按SKU.csv": "tblk1u7w34guUa8k"   # Lark 表名: 付费金额表格（不同充值金金额）
+
+# 战略深度分析（金字塔原则 + 四维度：资本效率、系统性脆弱度、商业护城河、预测雷达）
+# 结合菲律宾社交游戏市场，基于 DuckDB 指标与 CSV 提纯数据调用 LLM 生成战报
+strategic_report:
+  enabled: true
+  push_to_lark: true   # 生成后推送到 distribution.lark_chat_id 或 lark_webhook_url
+
+# 仪表盘自动化：分析统计图 + 设置 Lark 定时发送（Step 4）
+# 数据分析发送结束后马上开始 Playwright 配置，填入的定时时间由此配置读取（可手动修改）
+# cdp_url 留空时自动启动 Playwright 浏览器（首次需手动登录 Lark，之后复用会话）；填 127.0.0.1:9222 则连接已有 Chrome
+dashboard_automation:
+  enabled: true
+  # 仪表盘定时发送时间（HH:MM），填入 Lark「设置自动化发送」的定时触发，可手动修改
+  scheduled_time: "20:00"
+  timezone: Asia/Shanghai
+  cdp_url: ""   # 留空=自动启动浏览器；填 http://127.0.0.1:9222 则连接已有 Chrome
+  # 分析 MD 文档保存子目录，相对于 output（如 统计分析 → output/统计分析）
+  analysis_output_subdir: "统计分析"
+  # 三个仪表盘的完整 URL（在 Lark 中打开对应仪表盘后从地址栏复制）
+  dashboards:
+    - name: "仪表盘_用户登录活跃情况"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blkGTGJFC566IaO6"
+    - name: "仪表盘_平台留存情况"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blkVkFVeGiIlOtwd"
+    - name: "仪表盘_平台消耗情况"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blknCLFXiQZD6otD"
+
+distribution:
+  lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+  # BI 机器人所在会话 chat_id（无 Webhook 时用 IM API；Lark↔终端镜像也使用此 ID）
+  lark_chat_id: "oc_d4d18b6c05b6b1974c3198294f45653a"
+  # 邮件通知（Step 3.6，调用 mcp:atom_email_sender 一次性发送给所有收件人）
+  email:
+    enabled: true
+    # 定时发送时间（HH:MM），留空则生成后立即发送；填写则等到该时刻再发（可手动修改）
+    scheduled_time: ""
+    smtp_host: "smtp.qq.com"
+    smtp_port: 587
+    smtp_user: "2105582473@qq.com"
+    smtp_password: "grchforahkyzcfab"
+    # 收件人列表，写几个就发给几个人（一次性发送给列表内所有邮箱）
+    to_addrs:
+      - "vivian@herontech.net"
+      - "1807301549@qq.com"

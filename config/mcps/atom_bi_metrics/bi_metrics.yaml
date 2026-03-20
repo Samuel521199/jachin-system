@@ -1,13 +1,12 @@
-# BI 核心指标查询配置
-# 插件架构：数据源、指标、输出器均可扩展
-# 环比：与上一日/周/月对比，计算 (当前-上期)/上期*100%
-# 文档: docs/bi_daily_report/06_DATA_STORE_D.md
+# atom_bi_metrics MCP 配置
+# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# 路径: config/mcps/atom_bi_metrics/
+# 与 com.jachin.bi.daily_report 技能共享同一指标引擎，可引用技能目录配置
 
 data_source: duckdb
-date_column: null  # 自动推断
+date_column: null
 
 metrics:
-  # === 每日运营汇总 (daily_ops_summary) ===
   - key: dau
     table: daily_ops_summary
     column_candidates: ["日活(DAU)", "日活", "DAU", "dau"]
@@ -47,7 +46,6 @@ metrics:
     table: daily_ops_summary
     column_candidates: ["人均游戏局数"]
 
-  # === 游戏数据 (stats_game_daily) ===
   - key: win_count
     table: stats_game_daily
     column_candidates: ["用户获胜次数", "获胜次数", "胜次"]
@@ -83,4 +81,4 @@ output:
       - - { key: rtp, label: "GameRTP", compare: rtp_pct, format: ".2f" }
         - { key: ggr, label: "GGR", compare: ggr_pct, format: ".2f" }
   markdown:
-    layout: []  # 同上，可继承或覆盖
+    layout: []

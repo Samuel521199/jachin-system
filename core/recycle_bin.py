@@ -28,7 +28,12 @@ RECYCLE_BIN_ROOT = Path.home() / ".jachin" / "recycle_bin"
 _L3_CACHE_DIR = Path.home() / ".jachin" / "l3_skill_cache"
 _WASM_PLUGINS_DIR = Path(__file__).resolve().parent.parent / "l3_node" / "skills" / "wasm_plugins"
 _PROJ_ROOT = Path(__file__).resolve().parent.parent
-_JD_DIR = _PROJ_ROOT / "config" / "hr_jds"
+
+
+def _get_jd_dir() -> Path:
+    """HR JD 目录（规范 075: config/skills/com.jachin.hr.analyzer4/hr_jds）"""
+    from l3_node.jachin_config import get_hr_jds_dir
+    return get_hr_jds_dir(_PROJ_ROOT)
 
 
 def _ensure_recycle_bin() -> None:
@@ -117,7 +122,7 @@ def move_to_recycle_bin(item_id: str, purge_data: bool = False) -> dict[str, Any
             shutil.copytree(str(src_path), str(dest_dir / "skill"))
             # 复制 JD 配置文件（若有，与 registry 互为备份）
             for jd_name in (f"{item_id}.md", f"{item_id.replace('-', '_')}.md"):
-                jd_file = _JD_DIR / jd_name
+                jd_file = _get_jd_dir() / jd_name
                 if jd_file.exists():
                     (dest_dir / "jd_config.md").write_text(jd_file.read_text(encoding="utf-8"), encoding="utf-8")
                     break
@@ -241,8 +246,9 @@ def restore_from_recycle_bin(recycle_id: str) -> dict[str, Any]:
     # 恢复 JD 配置文件到 config/hr_jds（若有）
     jd_src = item_dir / "jd_config.md"
     if jd_src.exists():
-        _JD_DIR.mkdir(parents=True, exist_ok=True)
-        jd_dest = _JD_DIR / f"{item_id}.md"
+        jd_dir = _get_jd_dir()
+        jd_dir.mkdir(parents=True, exist_ok=True)
+        jd_dest = jd_dir / f"{item_id}.md"
         try:
             jd_dest.write_text(jd_src.read_text(encoding="utf-8"), encoding="utf-8")
             logger.info("[RecycleBin] 已恢复 JD 文件 item_id=%s", item_id)

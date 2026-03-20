@@ -1,0 +1,19 @@
+# atom_lark_notifier MCP 配置（团队共享，已加入 .gitignore）
+# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# BI 助手机器人：在飞书中对话完成 BI 分析流程
+
+# 默认 Webhook URL（飞书群机器人 incoming webhook，BI 消息推送；无则用 app_id + chat_id）
+default_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+
+# BI 助手应用凭证（app_id: cli_a930e0054ecf5ed1）
+# 无 Webhook 时用 IM API 发消息；长连接接收 Lark 消息也需此凭证
+robot_name: "BI助手"
+app_id: "cli_a930e0054ecf5ed1"
+app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
+# BI 助手所在会话 chat_id，用于推送战报及 Lark↔终端镜像
+default_chat_id: "oc_d4d18b6c05b6b1974c3198294f45653a"
+# 飞书中国版（open.feishu.cn），BI 助手为 true
+lark_use_feishu: true
+
+# Lark 消息转发目标：L3 WebSocket 地址（长连接/Webhook 收到消息后转发到此）
+l3_ws_url: "ws://127.0.0.1:18981/sensory"

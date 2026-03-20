@@ -8,7 +8,7 @@ import React, { useState, useRef, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, checkHealth, type VoiceProcessResponse } from "./lib/api";
+import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3AgentForIntent, checkHealth, type VoiceProcessResponse } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { useSensoryWebSocket } from "./hooks/useSensoryWebSocket";
@@ -281,6 +281,18 @@ function ChatApp() {
       console.debug("[Chat] L3 发送失败（可能 ws 未就绪），fallback L2");
     } else if (!sensory.connected) {
       console.debug("[Chat] L2 兜底 sensory.connected=false");
+    }
+
+    // L2 兜底前：若为 BI 等 L3 专用意图，优先尝试 L3 HTTP agent/run（Sensory WS 未连时也能触发）
+    const l3Answer = await tryL3AgentForIntent(content);
+    if (l3Answer != null && l3Answer.trim()) {
+      console.debug("[Chat] L3 agent/run 命中 BI 意图，使用 L3 回复");
+      clearTimeout(timeoutId);
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      registerStepHandler(null);
+      cleanup(l3Answer, "L3");
+      return;
     }
 
     // L2 兜底

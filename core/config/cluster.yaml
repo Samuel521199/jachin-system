@@ -1,5 +1,5 @@
 # Jachin-System v3.2 集群配置
-# Cluster Configuration
+# 规范 075：L2 配置随代码就近，位于 core/config/
 
 # 集群模式
 mode: "single"  # single, cluster

@@ -1,0 +1,12 @@
+# atom_email_sender MCP 配置（团队共享，已加入 .gitignore）
+# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+
+smtp:
+  host: "smtp.qq.com"
+  port: 587
+  user: "2105582473@qq.com"
+  password: "grchforahkyzcfab"
+
+# 默认收件人列表
+default_to_addrs:
+  - "vivian@herontech.net"

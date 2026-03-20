@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -57,7 +58,7 @@ try:
     from dotenv import load_dotenv
     _env_loaded = False
     if getattr(sys, "frozen", False):
-        _env_candidates = [Path.cwd() / ".env"]
+        _env_candidates = [Path.cwd() / ".env", Path.home() / ".jachin" / ".env"]
     else:
         _pr = Path(_root) / ".env"
         _pc = Path.cwd() / ".env"
@@ -79,11 +80,19 @@ try:
             _p = _cwd / ".env"
             if _p.exists():
                 load_dotenv(_p, encoding="utf-8")
+                _env_loaded = True
                 trace(".env loaded from %s (cwd search)", _p)
                 break
             _cwd = _cwd.parent if _cwd.parent != _cwd else _cwd
             if not _cwd or str(_cwd) == "/":
                 break
+    # 兜底：~/.jachin/.env（桌面端打包/便携运行时，项目 .env 可能不可用）
+    if not _env_loaded:
+        _home_env = Path.home() / ".jachin" / ".env"
+        if _home_env.exists():
+            load_dotenv(_home_env, encoding="utf-8")
+            _env_loaded = True
+            trace(".env loaded from %s (home fallback)", _home_env)
     trace("dotenv done, env_loaded=%s", _env_loaded)
 except ImportError as e:
     trace("dotenv ImportError: %s", e)
@@ -224,7 +233,20 @@ async def main() -> None:
     parser.add_argument("--ws-only", action="store_true", help="仅启动 WebSocket，不连接 L2")
     parser.add_argument("--gateway", action="store_true", help="L2 零信任配对：注册后等待审批")
     parser.add_argument("--port", type=int, default=18981, help="WebSocket 端口 (189xx 系列)")
+    parser.add_argument("bi_cmd", nargs="?", default=None, help="输入「BI分析」或「bi分析」执行 BI 每日战报并退出")
     args = parser.parse_args()
+
+    # 终端快捷入口：python -m l3_node BI分析
+    if args.bi_cmd and re.search(r"BI分析|bi分析|BI 分析|bi\s*分析", args.bi_cmd.strip(), re.IGNORECASE):
+        from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
+
+        logger.info("[L3] 执行 BI 分析...")
+        result = run_bi_daily_report()
+        if result.get("success"):
+            logger.info("[L3] BI 分析完成 output=%d lark=%d", len(result.get("output_paths", [])), result.get("lark_sync_ok", 0))
+        else:
+            logger.warning("[L3] BI 分析失败: %s", result.get("error"))
+        return
 
     l2_url = os.environ.get("L2_BASE_URL", "http://localhost:18888")
     sub_id = os.environ.get("SUB_ACCOUNT_ID", "")

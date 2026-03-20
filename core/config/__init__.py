@@ -118,8 +118,8 @@ class Settings(BaseSettings):
     CLUSTER_NODE_NAME: Optional[str] = None
     CLUSTER_NODE_ROLE: str = "head"
 
-    # Config paths
-    CLUSTER_CONFIG_PATH: str = "./config/cluster.yaml"
+    # Config paths（规范 075：L2 配置随代码就近）
+    CLUSTER_CONFIG_PATH: str = "core/config/cluster.yaml"
     SKILLS_CONFIG_PATH: str = "./config/skills_config.yaml"
 
     # Logging Configuration
