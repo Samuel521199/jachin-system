@@ -30,18 +30,20 @@ def _build_leaf_actions(
 ) -> list[dict[str, Any]]:
     """
     构建「等待页面就绪 -> 展开父级 -> 点击叶子 -> 点查询 -> 等表格」的 action 序列。
+    侧栏折叠时（el-menu--collapse）菜单文字 hidden，需先 expand_sidebar_if_collapsed。
     """
     actions: list[dict[str, Any]] = []
-    actions.append({"type": "wait_visible", "selector": f"{menu_sel} >> text={parents[0]}", "timeout": 15})
+    actions.append({"type": "expand_sidebar_if_collapsed"})
+    actions.append({"type": "wait_attached", "selector": f"{menu_sel} >> text={parents[0]}", "timeout": 15})
     actions.append({"type": "wait_ms", "ms": 500})
     for i, p in enumerate(parents):
         actions.append({"type": "click_expand", "selector": f"{menu_sel} >> text={p}", "text": p})
         next_item = parents[i + 1] if i + 1 < len(parents) else leaf
         next_sel = f"{menu_sel} >> .el-menu-item >> text={next_item}" if next_item == p else f"{menu_sel} >> text={next_item}"
-        actions.append({"type": "wait_visible", "selector": next_sel, "timeout": 5})
+        actions.append({"type": "wait_attached", "selector": next_sel, "timeout": 5})
         actions.append({"type": "wait_ms", "ms": 400})
     leaf_sel = f"{menu_sel} >> .el-menu-item >> text={leaf}" if leaf in parents else f"{menu_sel} >> text={leaf}"
-    actions.append({"type": "click", "selector": leaf_sel})
+    actions.append({"type": "click", "selector": leaf_sel, "force": True})
     actions.append({"type": "wait_ms", "ms": 1500})
     if click_query:
         # 对比页用「对比查询」，普通页用「查询」

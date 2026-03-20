@@ -129,6 +129,44 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                     page.locator(sel).first.wait_for(state="visible", timeout=sel_timeout)
                 else:
                     return f"action[{i}] wait_visible 缺少 selector"
+            elif typ == "wait_attached":
+                if sel:
+                    page.locator(sel).first.wait_for(state="attached", timeout=sel_timeout)
+                else:
+                    return f"action[{i}] wait_attached 缺少 selector"
+            elif typ == "expand_sidebar_if_collapsed":
+                # 侧栏折叠时菜单文字 visibility:hidden，需展开或强制显示（同事侧栏默认展开故无此问题）
+                try:
+                    if page.locator(".el-menu.el-menu--collapse").count() > 0:
+                        clicked = page.evaluate("""
+                            () => {
+                                const icons = document.querySelectorAll('[class*="el-icon-s-unfold"]');
+                                for (const el of icons) {
+                                    if (el.closest('.el-menu')) continue;
+                                    el.click();
+                                    return true;
+                                }
+                                const btns = document.querySelectorAll('div.fixed.top-0 button:not(.reset-btn), .el-aside button:not(.reset-btn)');
+                                for (const btn of btns) {
+                                    if (btn.offsetParent !== null) { btn.click(); return true; }
+                                }
+                                return false;
+                            }
+                        """)
+                        if not clicked:
+                            page.evaluate("() => { document.querySelectorAll('.el-menu.el-menu--collapse').forEach(m => m.classList.remove('el-menu--collapse')); }")
+                        page.evaluate("""
+                            () => {
+                                if (document.getElementById('bi-scraper-menu-visible')) return;
+                                const s = document.createElement('style');
+                                s.id = 'bi-scraper-menu-visible';
+                                s.textContent = '.el-menu--collapse .el-submenu__title span, .el-menu--collapse .el-menu-item span { visibility: visible !important; }';
+                                document.head.appendChild(s);
+                            }
+                        """)
+                        page.wait_for_timeout(500)
+                except Exception as e:
+                    logger.debug("[Automation] expand_sidebar_if_collapsed: %s, continuing", e)
             elif typ == "wait_ms":
                 page.wait_for_timeout(min(int(act.get("ms", 500)), 10000))
             elif typ == "click_expand_first_row":

@@ -105,4 +105,16 @@ def start_long_connection(
         domain=dom,
     )
     logger.info("Lark 长连接启动中，连接成功后可在 Lark 后台切换订阅方式为「使用长连接接收回调」")
-    cli.start()
+    try:
+        cli.start()
+    except Exception as e:
+        err_msg = str(e)
+        if "1000040351" in err_msg or "Incorrect domain name" in err_msg:
+            other = LARK_DOMAIN if "feishu.cn" in (dom or "") else FEISHU_DOMAIN
+            logger.error(
+                "[Lark] 1000040351 Incorrect domain name：应用创建平台与 domain 不匹配。"
+                "当前 domain=%s，请尝试改为 %s（在 im_channels.yaml 的 domain 或环境变量 LARK_DOMAIN 中设置）",
+                dom,
+                other,
+            )
+        raise

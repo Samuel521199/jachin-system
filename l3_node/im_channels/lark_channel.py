@@ -55,7 +55,12 @@ class LarkInboundChannel(InboundIMChannel):
             except Exception:
                 logger.exception("[IM Lark] on_message 异常")
 
-        domain = (config.get("domain") or "").strip() or "https://open.larksuite.com"
+        domain = (
+            (config.get("domain") or "").strip()
+            or os.environ.get("LARK_DOMAIN", "").strip()
+            or os.environ.get("FEISHU_DOMAIN", "").strip()
+            or "https://open.larksuite.com"
+        )
         try:
             from l3_node.channels.lark.long_connection import start_long_connection
         except ImportError as e:
@@ -63,8 +68,9 @@ class LarkInboundChannel(InboundIMChannel):
             return
 
         logger.info(
-            "[IM Lark] 长连接启动中 app_id=%s chat_ids=%s",
+            "[IM Lark] 长连接启动中 app_id=%s domain=%s chat_ids=%s",
             app_id[:12] + "..." if len(app_id) > 12 else app_id,
+            domain,
             allowed[:5] if len(allowed) > 5 else allowed,
         )
         start_long_connection(
@@ -81,7 +87,12 @@ def create_lark_send_reply(config: dict[str, Any]) -> Callable[[str, str], bool]
     import os
     app_id = (config.get("app_id") or os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID") or "").strip()
     app_secret = (config.get("app_secret") or os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET") or "").strip()
-    domain = (config.get("domain") or "").strip() or "https://open.larksuite.com"
+    domain = (
+        (config.get("domain") or "").strip()
+        or os.environ.get("LARK_DOMAIN", "").strip()
+        or os.environ.get("FEISHU_DOMAIN", "").strip()
+        or "https://open.larksuite.com"
+    )
     api_base = _api_base_from_domain(domain)
 
     def send(chat_id: str, text: str) -> bool:
