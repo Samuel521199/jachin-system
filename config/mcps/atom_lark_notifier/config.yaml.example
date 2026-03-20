@@ -1,5 +1,15 @@
 # atom_lark_notifier MCP 配置模板
 # 复制为 config.yaml 并填入实际值（config.yaml 已加入 .gitignore）
-# 支持环境变量占位: ${BI_LARK_WEBHOOK_URL}
+# 支持环境变量占位: ${BI_LARK_WEBHOOK_URL}、${BI_LARK_CHAT_ID} 等
 
 default_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+
+# 无 Webhook 时用 IM API；长连接/Webhook 接收 Lark 消息也需此凭证
+app_id: "${BI_LARK_APP_ID}"
+app_secret: "${BI_LARK_APP_SECRET}"
+default_chat_id: "${BI_LARK_CHAT_ID}"
+# 飞书中国版（open.feishu.cn），BI 助手通常为 true
+lark_use_feishu: true
+
+# Lark 消息转发目标：L3 WebSocket 地址（长连接/Webhook 收到消息后转发到此）
+l3_ws_url: "${L3_WS_URL}"

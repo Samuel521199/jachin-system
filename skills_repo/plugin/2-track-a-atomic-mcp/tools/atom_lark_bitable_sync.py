@@ -121,6 +121,20 @@ def _get_tenant_access_token() -> str:
     return get_tenant_access_token()
 
 
+def _list_bitable_fields_internal(
+    token: str, app_token: str, table_id: str
+) -> list[dict[str, Any]]:
+    """内部：获取多维表字段列表（含 type），供 sync 按类型格式化写入。"""
+    base = _get_api_base()
+    url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+    import requests
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    data = resp.json()
+    if data.get("code") != 0:
+        return []
+    return data.get("data", {}).get("items", [])
+
+
 def list_bitable_fields(app_token: str = "", table_id: str = "") -> dict[str, Any]:
     """列出多维表的所有列名，用于对照 field_mapping。"""
     _ensure_dotenv_loaded()
@@ -128,7 +142,8 @@ def list_bitable_fields(app_token: str = "", table_id: str = "") -> dict[str, An
     table_id = table_id or os.environ.get("LARK_TABLE_ID") or DEFAULT_TABLE_ID
     try:
         token = _get_tenant_access_token()
-        url = f"{LARK_API_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+        base = _get_api_base()
+        url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
         import requests
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
         data = resp.json()
@@ -328,6 +343,8 @@ def sync_csv_to_bitable(
     replace_table: bool = True,
     ensure_columns: bool = True,
     dry_run: bool = False,
+    text_columns: list[str] | None = None,
+    field_mapping: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     将 CSV 文件同步到 Lark 多维表格。供 BI 日报等场景使用。
@@ -338,6 +355,8 @@ def sync_csv_to_bitable(
     :param replace_table: 是否先清空表再写入，默认 True
     :param ensure_columns: 是否根据 CSV 表头自动创建列，默认 True
     :param dry_run: 仅解析不写入
+    :param text_columns: 必须按文本发送的列名列表，避免纯数字被误转 float 导致 TextFieldConvFail
+    :param field_mapping: CSV 列名 -> Lark 字段名映射，用于 FieldNameNotFound（Lark 表字段名与 CSV 不一致时）
     :return: {"success": bool, "count": int, "error": str|None}
     """
     import csv as csv_module
@@ -365,8 +384,27 @@ def sync_csv_to_bitable(
         _ensure_dotenv_loaded()
         token = _get_tenant_access_token()
 
+        text_cols = set((text_columns or []))
+        col_map = field_mapping or {}
+
         if ensure_columns:
-            _ensure_bitable_columns_from_csv(token, app_token, table_id, fieldnames, rows[0] if rows else None)
+            cols_to_ensure = [col_map.get(c, c) for c in fieldnames]
+            # 样本行键名需与创建列名一致（Lark 侧）
+            sample = None
+            if rows:
+                sample = {col_map.get(k, k): v for k, v in rows[0].items() if k in fieldnames}
+            _ensure_bitable_columns_from_csv(token, app_token, table_id, cols_to_ensure, sample)
+
+        # 获取 Lark 字段类型，按类型格式化写入值（解决 TextFieldConvFail：数字列误传 float 到文本列等）
+        lark_items = _list_bitable_fields_internal(token, app_token, table_id)
+        lark_field_types: dict[str, int] = {}
+        for f in lark_items:
+            fn = f.get("field_name")
+            if fn:
+                try:
+                    lark_field_types[fn] = int(f.get("type") or 1)
+                except (TypeError, ValueError):
+                    lark_field_types[fn] = 1
 
         import requests
         if replace_table:
@@ -385,14 +423,43 @@ def sync_csv_to_bitable(
             for k, v in row.items():
                 if k not in fieldnames:
                     continue
+                lark_key = col_map.get(k, k)  # 使用映射后的 Lark 字段名
                 s = (v or "").strip()
-                if s.replace(".", "").replace("-", "").replace("%", "").replace(",", "").isdigit() or (s and s[-1] == "%" and s[:-1].replace(".", "").replace("-", "").replace(",", "").isdigit()):
+                ft = lark_field_types.get(lark_key, 1)  # 1=文本, 2=数字, 5=日期
+                # 日期类型(5)：必须发毫秒时间戳(整数)，否则 DatetimeFieldConvFail
+                if ft == 5 and s:
+                    ts_val = None
                     try:
-                        fields[k] = float(s.replace("%", "").replace(",", ""))
+                        if s.replace(".", "").replace("-", "").replace("/", "").replace(":", "").replace(" ", "").isdigit():
+                            raw = int(float(s))
+                            if 1000000000000 <= raw <= 9999999999999:
+                                ts_val = raw
+                            elif 1e9 <= raw < 1e10:
+                                ts_val = raw * 1000
+                        if ts_val is None:
+                            from datetime import datetime
+                            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
+                                try:
+                                    dt = datetime.strptime(s[:19], fmt)
+                                    ts_val = int(dt.timestamp() * 1000)
+                                    break
+                                except ValueError:
+                                    pass
+                        if ts_val is not None:
+                            fields[lark_key] = ts_val
+                        else:
+                            fields[lark_key] = s
+                    except (ValueError, OverflowError):
+                        fields[lark_key] = s
+                elif k in text_cols or ft != 2:
+                    fields[lark_key] = s
+                elif s.replace(".", "").replace("-", "").replace("%", "").replace(",", "").isdigit() or (s and s[-1] == "%" and s[:-1].replace(".", "").replace("-", "").replace(",", "").isdigit()):
+                    try:
+                        fields[lark_key] = float(s.replace("%", "").replace(",", ""))
                     except ValueError:
-                        fields[k] = s
+                        fields[lark_key] = s
                 else:
-                    fields[k] = s
+                    fields[lark_key] = s
             resp = requests.post(url, headers=headers, json={"fields": fields}, timeout=15)
             data = resp.json()
             if resp.status_code != 200 or data.get("code") != 0:

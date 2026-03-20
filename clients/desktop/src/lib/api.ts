@@ -640,6 +640,55 @@ async function invokeL3Skills<T>(
   throw lastErr ?? new Error("L3 技能 API 不可达");
 }
 
+/** BI 等 L3 专用意图：在 L2 兜底前优先尝试 L3 agent/run（当 Sensory WebSocket 未连接时） */
+const BI_INTENT_REGEX = /BI\s*分析|bi\s*分析|帮我开始.*BI|今天的BI分析|开始BI分析|执行BI分析/i;
+
+export async function tryL3AgentForIntent(userInput: string): Promise<string | null> {
+  const t = (userInput || "").trim();
+  if (!t || !BI_INTENT_REGEX.test(t)) return null;
+  const path = "/api/v3/agent/run";
+  const options: RequestInit = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_input: userInput }),
+  };
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    try {
+      const base = envUrl.replace(/\/$/, "");
+      const res = await fetch(`${base}${path}`, options);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.answer ?? data?.error ?? null;
+    } catch {
+      return null;
+    }
+  }
+  if (L3_DEV_PROXY) {
+    try {
+      const res = await fetch(`${L3_DEV_PROXY}${path}`, options);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.answer ?? data?.error ?? null;
+    } catch {
+      /* fall through */
+    }
+  }
+  for (const port of L3_SKILLS_PORTS) {
+    try {
+      const base = L3_SKILLS_BASE.replace(/:\d+$/, "").replace(/\/$/, "");
+      const url = `${base}:${port}${path}`;
+      const res = await fetch(url, options);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return data?.answer ?? data?.error ?? null;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 /** 回收站项 */
 export interface RecycleBinItem {
   recycle_id: string;

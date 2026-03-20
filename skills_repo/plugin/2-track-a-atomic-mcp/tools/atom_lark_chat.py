@@ -255,6 +255,10 @@ def process_lark_message(user_text: str, chat_id: str = "", user_id: str = "") -
     if l3_url:
         logger.info("L3 壳模式: 转发到 %s chat_id=%s", l3_url, (chat_id or "")[:20] if chat_id else "无")
         reply = _call_l3_ws(user_text.strip(), chat_id=chat_id or "")
+        # L3 不可用时 Fallback：用百炼生成回复，避免用户收不到任何消息
+        if reply and ("无法连接 L3" in reply or "远程计算机拒绝" in reply or "L3 未返回" in reply):
+            logger.info("L3 不可用，Fallback 到百炼")
+            reply = _call_bailian(user_text.strip())
         return {"reply": reply or "L3 未返回回复", "is_task": False}
 
     # 独立模式：任务记录，普通问题百炼

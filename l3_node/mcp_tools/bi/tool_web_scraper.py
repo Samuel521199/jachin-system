@@ -106,6 +106,14 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                     return f"action[{i}] wait_visible 缺少 selector"
             elif typ == "wait_ms":
                 page.wait_for_timeout(min(int(act.get("ms", 500)), 10000))
+            elif typ == "click_expand_first_row":
+                # 日活/日新统计表：点击首行日期或展开图标，展开渠道明细
+                # 优先点 .el-table__expand-icon，否则点首行首列（日期）
+                sel = ".el-table__body-wrapper tbody tr:first-child .el-table__expand-icon, .el-table__body-wrapper tbody tr:first-child td:first-child .el-table__expand-icon"
+                try:
+                    page.locator(sel).first.click(timeout=3000)
+                except Exception:
+                    page.locator(".el-table__body-wrapper tbody tr:first-child td:first-child").first.click(timeout=3000)
             elif typ == "fill_date_range":
                 # 日期范围：填写开始、结束两个输入框
                 start_val = act.get("start") or act.get("value", "")
@@ -177,6 +185,10 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
             "wait_for_loading_hidden": loading_sel,
             "timeout": data_timeout,
         })
+    # 日活/日新统计表需点击首行展开渠道明细
+    if filters.get("expand_first_row"):
+        actions.append({"type": "click_expand_first_row"})
+        actions.append({"type": "wait_ms", "ms": 800})
     return actions
 
 

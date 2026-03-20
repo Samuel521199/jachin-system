@@ -7,6 +7,7 @@ BI SPA 批量抓取 — 供 scripts 与 main_skill 复用
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -221,8 +222,20 @@ def run_full_spa_collect(
     failed_slugs: list[str] = []
     total = len(all_items)
 
+    # 日活/日新统计需筛选前一日并展开首行以获取渠道明细
+    t1 = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    dau_dnu_filters = {
+        "date_range": [t1, t1],
+        "query_selector": "button:has-text('查询'), .el-button:has-text('查询')",
+        "wait_after_query_ms": 3000,
+        "expand_first_row": True,
+    }
+
     for idx, (slug_name, display_name, actions) in enumerate(all_items):
         out_path = str(out_dir / f"{slug_name}.csv")
+        automation = {"start_url": base_url, "actions": actions}
+        if slug_name in ("stats_user_dau", "stats_user_new", "stats_game_daily"):
+            automation["filters"] = dau_dnu_filters
         try:
             r = harvest_table_data(
                 url=base_url,
@@ -232,7 +245,7 @@ def run_full_spa_collect(
                     "output_format": "csv",
                     "timeout": 45,
                     "extract_rules": TABLE_SEL,
-                    "automation": {"start_url": base_url, "actions": actions},
+                    "automation": automation,
                 },
             )
             if progress_cb:

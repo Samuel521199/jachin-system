@@ -420,11 +420,12 @@ async def _handle_scheduler_remove_job(request) -> "aiohttp.web.Response":
 async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
     """GET /api/system/logs/stream - SSE 实时日志流，供前端控制台订阅"""
     from l3_node.log_broadcaster import consume_logs, format_sse_event
+    import time
     response = _stream_response()
     await response.prepare(request)
+    last_keepalive = time.monotonic()
+    KEEPALIVE_INTERVAL = 15  # 秒，避免 Node undici BodyTimeoutError（静默流被判定超时）
     try:
-        # 连接建立后立即发送欢迎消息，让前端确认已连接（避免 200 0 导致前端认为无数据）
-        import time
         welcome = format_sse_event("[L3 全息监控] 已连接，等待日志流…", "INFO", time.time())
         await response.write(welcome.encode("utf-8"))
         if hasattr(response, "drain"):
@@ -434,7 +435,10 @@ async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
             if item:
                 msg, level, ts = item
                 await response.write(format_sse_event(msg, level, ts).encode("utf-8"))
-            # 无日志时保持连接，继续轮询
+                last_keepalive = time.monotonic()
+            elif time.monotonic() - last_keepalive >= KEEPALIVE_INTERVAL:
+                await response.write(b": keepalive\n\n")
+                last_keepalive = time.monotonic()
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     except Exception as e:
@@ -652,9 +656,29 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
             pass
         try:
             from l3_node.skills.bi.scheduler import register_bi_daily_report_job
+            # #region agent log
+            try:
+                import json, time
+                _p = Path(__file__).resolve().parents[1] / "debug-ead14b.log"
+                _line = json.dumps({"sessionId":"ead14b","location":"http_server.pre_register_bi","message":"about_to_call","data":{},"timestamp":int(time.time()*1000),"hypothesisId":"H0"}, ensure_ascii=False) + "\n"
+                with open(_p, "a", encoding="utf-8") as _f:
+                    _f.write(_line)
+            except Exception:
+                pass
+            # #endregion
             register_bi_daily_report_job()
         except Exception as e:
             logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
+            # #region agent log
+            try:
+                import json, time
+                _p = Path(__file__).resolve().parents[1] / "debug-ead14b.log"
+                _line = json.dumps({"sessionId":"ead14b","location":"http_server.register_bi_failed","message":"exception","data":{"error": str(e)},"timestamp":int(time.time()*1000),"hypothesisId":"H0"}, ensure_ascii=False) + "\n"
+                with open(_p, "a", encoding="utf-8") as _f:
+                    _f.write(_line)
+            except Exception:
+                pass
+            # #endregion
     except Exception as e:
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
 

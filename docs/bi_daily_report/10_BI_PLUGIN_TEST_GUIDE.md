@@ -136,4 +136,4 @@ print(r)
 
 **Q: 提纯 CSV 为空或列名不符**
 - 用 `python scripts/inspect_bi_schema.py <slug>` 查看 BI 表结构
-- 在 `report_refiner.py` 中按需调整列名候选（`_find_col`）
+- 在 `main_skill.py` 中按需调整列名候选（`_find_col`）

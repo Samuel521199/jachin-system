@@ -63,6 +63,10 @@ def _expand_env_placeholder(val: str) -> str:
 _MCP_DEFAULTS: dict[str, str] = {
     "atom_lark_notifier": """# atom_lark_notifier MCP 配置
 default_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+app_id: "${BI_LARK_APP_ID}"
+app_secret: "${BI_LARK_APP_SECRET}"
+default_chat_id: "${BI_LARK_CHAT_ID}"
+lark_use_feishu: true
 """,
     "atom_email_sender": """# atom_email_sender MCP 配置
 smtp:

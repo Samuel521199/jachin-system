@@ -68,12 +68,21 @@ schedule:
   minute: 0
   timezone: Asia/Shanghai
 
-# 模式二：interval — 按间隔执行（二选一）
+# 模式二：interval — 按间隔执行
 # schedule:
 #   enabled: true
 #   mode: interval
 #   minutes: 30    # 每 30 分钟
 #   # 或 hours: 2  # 每 2 小时
+
+# 模式三：loop — 指定时间开始，每轮结束间隔 N 秒循环
+# schedule:
+#   enabled: true
+#   mode: loop
+#   run_at_hour: 15
+#   run_at_minute: 8
+#   interval_seconds: 30
+#   timezone: Asia/Shanghai
 
 # ========== 存储路径 ==========
 # 基准: ~/.jachin/client_volumes/bi_data
@@ -86,6 +95,12 @@ storage:
 # ========== LLM ==========
 llm:
   model: "dashscope/qwen3.5-flash-2026-02-23"
+
+# ========== 战略深度分析 ==========
+# 金字塔原则 + 四维度（资本效率、系统性脆弱度、商业护城河、预测雷达），结合菲律宾社交游戏
+strategic_report:
+  enabled: true
+  push_to_lark: true
 
 # ========== 分发 ==========
 distribution:
