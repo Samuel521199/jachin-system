@@ -3,7 +3,7 @@ Jachin Nexus V2 - L3 单体 Agent 与记忆同步
 
 单机闭环：Thought -> Action -> Observation。
 支持 Agent 分身（delegate）：主 Agent 可将复杂任务拆给子 Agent 并行执行。
-真实技能：core:fs_read、core:shell_exec、core:fs_write（权限限于 ~/.jachin/workspace/）。
+真实技能：core:fs_read、core:shell_exec、core:shell_job_status、core:shell_job_cancel、core:fs_write（权限限于 ~/.jachin/workspace/）。
 """
 from __future__ import annotations
 
@@ -31,7 +31,18 @@ from l3_node.skills import build_tools_description, get_hr_invoke_defaults, get_
 logger = logging.getLogger(__name__)
 
 MAX_REACT_ITERATIONS = 8  # 多轮工具调用场景需更多迭代，5 易触发「循环达到上限」
-NATIVE_TOOL_IDS = ("core:fs_read", "core:fs_write", "core:shell_exec")
+NATIVE_TOOL_IDS = (
+    "core:fs_read",
+    "core:fs_write",
+    "core:shell_exec",
+    "core:shell_job_status",
+    "core:shell_job_cancel",
+    "core:apply_patch",
+    "core:apply_patch_rollback",
+    "core:workflow_run",
+    "core:shell_hitl_approve",
+    "core:local_memory_search",
+)
 RECALL_MEMORY_TOOL_ID = "recall_memory"
 COORDINATE_TOOL_ID = "coordinate"
 
@@ -40,15 +51,15 @@ SUB_AGENT_PROMPTS: dict[str, str] = {
     "coder": "你是资深程序员，只负责编写代码。使用 core:fs_read 读取文件，core:fs_write 写入代码。",
     "writer": "你是技术文档工程师，只负责撰写文档。使用 core:fs_read 读取参考，core:fs_write 写入文档。",
     "researcher": "你是研究员，负责查阅和分析。使用 core:fs_read 读取文件，core:shell_exec 执行查询命令。",
-    "default": "你是专业助手，完成指定子任务。可用工具：core:fs_read、core:fs_write、core:shell_exec。",
+    "default": "你是专业助手，完成指定子任务。可用工具：core:fs_read、core:fs_write、core:shell_exec、core:shell_job_status（查后台任务）。",
 }
 
 # 子 Agent 独立工具集（按角色裁剪，绝不给发邮件等敏感技能）
 SUB_AGENT_ALLOWED_SKILLS: dict[str, list[str]] = {
-    "coder": ["core:fs_read", "core:fs_write", "core:shell_exec"],
+    "coder": ["core:fs_read", "core:fs_write", "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel"],
     "writer": ["core:fs_read", "core:fs_write"],
-    "researcher": ["core:fs_read", "core:shell_exec"],
-    "default": ["core:fs_read", "core:fs_write", "core:shell_exec"],
+    "researcher": ["core:fs_read", "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel"],
+    "default": ["core:fs_read", "core:fs_write", "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel"],
 }
 
 # 子 Agent 注册表：sub_agent_id -> SubAgent 实例，供复用
@@ -309,8 +320,8 @@ async def _execute_publish_bypass(
 
 def _persist_jd_config_before_publish(jd_config: dict) -> str | None:
     """
-    HR 同意后、打开 Chrome 发布前【必须自动先执行】：创建 data/{岗位名}/、复制模板填 jd.json、
-    创建 pending/processed/result、排行榜_Summary.md。完成后返回 jd_config_path 供后续发布使用。
+    HR 同意后、打开 Chrome 发布前【必须自动先执行】：在 ~/.jachin/workspace/hr_recruitment/{岗位名}/ 下
+    复制模板填 jd.json，创建 pending/processed/result、排行榜_Summary.md。完成后返回 jd_config_path 供后续发布使用。
     """
     if not jd_config or not isinstance(jd_config, dict):
         return None
@@ -328,7 +339,10 @@ def _persist_jd_config_before_publish(jd_config: dict) -> str | None:
             sys.path.insert(0, str(plugin_root))
         from tools.hr_data_paths import init_job_jd_from_template
         jd_path = init_job_jd_from_template(job_title, overrides=jd_config)
-        logger.info("[Agent] HR 已确认，已自动创建 data/%s/、复制模板填 jd.json、创建 pending/processed/result", job_title)
+        logger.info(
+            "[Agent] HR 已确认，已在 hr_recruitment/%s/ 复制模板填 jd.json、创建 pending/processed/result",
+            job_title,
+        )
         return str(jd_path)
     except Exception as e:
         logger.warning("[Agent] 持久化 JD 配置失败: %s", e)
@@ -435,7 +449,18 @@ def _get_service_switches() -> list[str] | None:
 
 async def _recall_memory_search(query: str, config: dict[str, str]) -> str:
     """向 L2 检索记忆。"""
+    import json
+
     import httpx
+
+    from l3_node.tool_call_cache import store_if_cacheable, try_get_cached
+
+    qn = (query or "").strip()
+    cache_inp = json.dumps({"q": qn, "node_id": config.get("node_id", "")}, sort_keys=True, ensure_ascii=False)
+    hit = try_get_cached("recall_memory", cache_inp)
+    if hit is not None:
+        return hit
+
     url = f"{config['l2_base_url']}/api/v2/memory/search"
     params = {"q": query, "limit": 10}
     if config.get("node_id"):
@@ -448,9 +473,9 @@ async def _recall_memory_search(query: str, config: dict[str, str]) -> str:
             data = r.json()
         results = data.get("results", [])
         if not results:
-            return "[未找到相关记忆]"
+            return store_if_cacheable("recall_memory", cache_inp, "[未找到相关记忆]")
         parts = [f"- {r.get('content', '')[:300]}..." for r in results[:5]]
-        return "\n".join(parts)
+        return store_if_cacheable("recall_memory", cache_inp, "\n".join(parts))
     except Exception as e:
         return f"[记忆检索失败: {e}]"
 
@@ -561,10 +586,41 @@ async def _coordinate_task(
             if timeout_sec is None or timeout_sec <= 0:
                 timeout_sec = 60.0
             try:
-                result = await asyncio.wait_for(
-                    run_agent(t["intent"], engine, max_iterations=3),
-                    timeout=float(timeout_sec),
-                )
+                raw_in = t.get("input_data", "")
+                inp_dict: dict[str, Any] = {}
+                if isinstance(raw_in, dict):
+                    inp_dict = raw_in
+                elif isinstance(raw_in, str) and raw_in.strip().startswith("{"):
+                    try:
+                        parsed = json.loads(raw_in)
+                        if isinstance(parsed, dict):
+                            inp_dict = parsed
+                    except json.JSONDecodeError:
+                        inp_dict = {}
+
+                use_native = False
+                try:
+                    from l3_node.intelligence_p1 import get_intel_p1_config
+
+                    if get_intel_p1_config().get("coordinate_native_tool_dispatch") is not False:
+                        use_native = inp_dict.get("type") == "native_tool"
+                except ImportError:
+                    use_native = inp_dict.get("type") == "native_tool"
+
+                if use_native:
+                    tid = (inp_dict.get("tool_id") or "").strip()
+                    ai = inp_dict.get("action_input", "")
+                    if isinstance(ai, dict):
+                        ai = json.dumps(ai, ensure_ascii=False)
+                    else:
+                        ai = str(ai or "")
+                    allowed_coord = _get_allowed_skills()
+                    result = run_tool(tid, ai, allowed_skills=allowed_coord)
+                else:
+                    result = await asyncio.wait_for(
+                        run_agent(t["intent"], engine, max_iterations=3),
+                        timeout=float(timeout_sec),
+                    )
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     await client.post(
                         f"{base}/api/v2/coordinate/result",
@@ -628,12 +684,24 @@ def _build_system_prompt(
     tools_desc = build_tools_description(tools)
     recall_hint = ""
     if allow_recall and _get_l2_config():
-        recall_hint = "\n- recall_memory: 向 L2 检索历史记忆。参数: 查询关键词。当需要回忆过往对话或上下文时使用。"
+        recall_hint = (
+            "\n- recall_memory: 向 L2 检索历史记忆。参数: 查询关键词。当需要回忆过往对话或上下文时使用。"
+            "\n- core:local_memory_search: L3 本地记忆检索（断网/无 L2 时优先）。Action Input JSON："
+            '{"query":"关键词","top_k":8}；可选 mmr_lambda、half_life_days、include_memory_md。'
+        )
+    else:
+        recall_hint = (
+            "\n- core:local_memory_search: 本地记忆检索（l3_local + 可选 MEMORY.md，含衰减与 MMR）。"
+            ' JSON：{"query":"..."}，可选 top_k、mmr_lambda。'
+        )
     coordinate_hint = ""
     if allow_coordinate and _get_l2_config():
         coordinate_hint = """
 - coordinate: 向 L2 请求多节点协同。当任务需拆分给多台 L3 并行执行时使用。
-  Action Input: {"parent_node_id": "本节点ID", "intent": "主任务描述", "sub_tasks": [{"intent": "子任务1"}, {"intent": "子任务2"}]}"""
+  Action Input: {"parent_node_id": "本节点ID", "intent": "主任务描述", "sub_tasks": [{"intent": "子任务1"}, {"intent": "子任务2"}]}
+- P1+ 远程原生工具：若要在**其他 L3 节点**直接执行 shell（不经子 Agent LLM），sub_tasks 中 skill_required 填 core:shell_exec，input_data 示例：
+  {"type":"native_tool","tool_id":"core:shell_exec","action_input":{"command":"git status","timeout":60}}
+  执行节点拉取子任务时将直接 run_tool。"""
     delegate_hint = ""
     if allow_delegate:
         delegate_hint = """
@@ -677,7 +745,62 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
             hr_recruitment_hint = f"""
 【HR 招聘】当用户说「我要招聘」「发布职位」等时：依次询问岗位名称、招聘类型、薪资、学历、经验；收集齐后输出完整 JD JSON 供确认；用户回复「同意」后立即调用 mcp:atom_post_job_boss。关闭流程时调用 mcp:stop_automated_recruitment。
 """
+    # L3 本地记忆注入（智能化升级 P0：断网/无 L2 时仍可用）
+    local_mem = ""
+    try:
+        from l3_node.local_memory import get_local_memory_for_prompt
+        local_mem = get_local_memory_for_prompt(limit=12)
+    except ImportError:
+        pass
+    local_prefix = f"\n{local_mem}\n" if local_mem else ""
+
+    # 智能化 P0：跨会话任务规划上下文（task_plan.md / progress.md）
+    plan_ctx = ""
+    try:
+        from l3_node.task_planning import get_planning_context_for_prompt
+        plan_ctx = get_planning_context_for_prompt()
+    except ImportError:
+        pass
+    plan_prefix = f"\n{plan_ctx}\n" if plan_ctx else ""
+    plan_hint = """
+【任务规划】复杂多步任务（3+ 步骤）可先用 core:fs_write 将计划写入 task_plan.md，再按计划执行。完成后可更新 progress.md。新会话会加载既有计划继续执行。""" if not plan_ctx else ""
+
+    p1_inject = ""
+    try:
+        from l3_node.intelligence_p1 import get_p1_prompt_injections
+
+        _pp, _pc = get_p1_prompt_injections()
+        p1_inject = f"{_pp}{_pc}"
+    except ImportError:
+        pass
+
+    intel_b = ""
+    try:
+        from l3_node.intelligence_b_execution import get_execution_mode, get_require_brainstorm_card
+
+        _eb = get_execution_mode()
+        _bs = ""
+        if get_require_brainstorm_card() and _eb in ("planned", "strict"):
+            _bs = (
+                "\n须 **先** 输出 brainstorm 卡 JSON（可 ```json 包裹）："
+                '{"jachin_brainstorm_card":{"angles":["思路1","思路2"],"constraints":"约束","open_questions":"待澄清"}}，'
+                "再输出下方计划卡。"
+            )
+        if _eb == "planned":
+            intel_b = f"""
+【执行范式 planned】在首次调用任何 Action 工具前，须在本轮或此前 assistant 消息中输出可解析 JSON 计划卡，Schema：
+{{"jachin_plan_card":{{"goal":"目标一句话","steps":["步骤1","步骤2"],"risks":"主要风险","rollback_point":"可回退点"}}}}{_bs}"""
+        elif _eb == "strict":
+            intel_b = f"""
+【执行范式 strict】同 planned；若已执行 core:fs_write / core:shell_exec / core:apply_patch，进入 **只读 verify 轮**（系统可能仅展示只读工具），须先用只读工具复核，再在回复中包含 **VERIFY_PASS**（大写）后方可 Final Answer。{_bs}"""
+    except ImportError:
+        pass
+
     return f"""你是一个智能助手，使用 ReAct 格式思考。
+{local_prefix}
+{plan_prefix}
+{p1_inject}
+{intel_b}
 {hr_recruitment_hint}
 可用工具：
 {tools_desc}
@@ -692,6 +815,7 @@ Action Input: <参数>
 Observation: <工具返回>
 ...（可多轮）
 Final Answer: <最终回复>
+{plan_hint}
 {hr_hint}
 注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。
 """
@@ -735,6 +859,7 @@ class SubAgent:
             max_iterations=max_iterations,
             _system_prompt_override=system,
             _initial_messages=self.messages,
+            implicit_attribution={"channel": "delegate_sub_agent", "sub_agent_id": self.sub_agent_id},
         )
         self.messages.append({"role": "user", "content": task})
         self.messages.append({"role": "assistant", "content": result})
@@ -812,12 +937,21 @@ async def _spawn_sub_agent_async(
     return result, sid
 
 
+def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: str) -> None:
+    """P2-8：记录意图→工具结果统计（失败为启发式判断）。"""
+    try:
+        from l3_node.intent_skill_stats import record_tool_outcome
+
+        record_tool_outcome(ctx.intent or "", skill_id, observation or "")
+    except ImportError:
+        pass
+
+
 async def _run_react_core(
     ctx: PipelineContext,
     engine: LiteLLMEngine,
     on_step: Optional[Callable[[str, str, str], None]] = None,
 ) -> None:
-    skills = ctx.metadata.get("_skills") or []
     allowed_skills = ctx.metadata.get("_allowed_skills")
     if allowed_skills is None:
         allowed_skills = _get_allowed_skills()
@@ -833,10 +967,38 @@ async def _run_react_core(
     # 追踪本轮已执行的招聘相关工具，用于拒绝「未调用工具却声称已发布」的幻觉回复
     ctx._executed_tools_this_run = set()
 
+    if not ctx.metadata.get("_skills_unfiltered"):
+        ctx.metadata["_skills_unfiltered"] = list(ctx.metadata.get("_skills") or [])
+
     for iteration in range(max_iterations):
         ctx.current_response = ""
         ctx.parsed_action = None
         ctx.observation = ""
+
+        # strict 写后 verify：硬只读轮 —— 重载 system 与可见工具列表
+        if ctx.metadata.get("_react_system_prompt_full") is None:
+            ctx.metadata["_react_system_prompt_full"] = ctx.system_prompt
+        base_skills = ctx.metadata.get("_skills_unfiltered") or []
+        skills = base_skills
+        try:
+            from l3_node.intelligence_b_execution import (
+                filter_tools_for_verify_round,
+                get_enforce_readonly_verify_round,
+            )
+
+            if ctx.metadata.get("_intel_strict_pending_verify") and get_enforce_readonly_verify_round():
+                skills = filter_tools_for_verify_round(base_skills)
+                ctx.system_prompt = _build_system_prompt(
+                    tools=skills,
+                    allow_delegate=False,
+                    allow_recall=True,
+                    allow_coordinate=False,
+                )
+            else:
+                ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
+        except ImportError:
+            pass
+        ctx.metadata["_skills"] = skills
 
         await global_hooks.run(HOOK_BEFORE_LLM_THINK, ctx)
         if ctx.aborted:
@@ -878,6 +1040,92 @@ async def _run_react_core(
 
         parsed = _parse_action(response, skills, use_mock=use_mock, allowed_skills=allowed_skills)
         ctx.parsed_action = parsed
+
+        try:
+            from l3_node.intelligence_b_execution import get_execution_mode, scan_messages_for_valid_plan
+
+            _eb_mode = get_execution_mode()
+        except ImportError:
+            _eb_mode = "react"
+
+        if (
+            _eb_mode in ("planned", "strict")
+            and parsed is not None
+            and parsed.get("type") not in ("answer",)
+        ):
+            try:
+                from l3_node.intelligence_b_execution import (
+                    get_require_brainstorm_card,
+                    parse_types_allowed_before_plan_gates,
+                    scan_messages_for_valid_brainstorm,
+                    scan_messages_for_valid_plan,
+                )
+
+                _pre = parse_types_allowed_before_plan_gates()
+                if parsed.get("type") not in _pre:
+                    _combined = messages + [{"role": "assistant", "content": response}]
+                    if get_require_brainstorm_card() and not scan_messages_for_valid_brainstorm(_combined):
+                        messages.append({"role": "assistant", "content": response})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "【系统 · intelligence_b】当前为 %s 模式：请先输出 brainstorm 卡 JSON（jachin_brainstorm_card："
+                                "angles 非空数组、constraints、open_questions），再输出计划卡。"
+                            )
+                            % _eb_mode,
+                        })
+                        try:
+                            from core.intelligence_workspace import emit_intelligence_event
+
+                            emit_intelligence_event("brainstorm_gate_blocked", {"mode": _eb_mode})
+                        except Exception:
+                            pass
+                        continue
+                    if not scan_messages_for_valid_plan(_combined):
+                        messages.append({"role": "assistant", "content": response})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "【系统 · intelligence_b】当前为 %s 模式：请先输出完整计划卡 JSON（jachin_plan_card："
+                                "goal、steps 非空数组、risks、rollback_point），通过校验后才会执行工具。"
+                            )
+                            % _eb_mode,
+                        })
+                        try:
+                            from core.intelligence_workspace import emit_intelligence_event
+
+                            emit_intelligence_event("plan_gate_blocked", {"mode": _eb_mode})
+                        except Exception:
+                            pass
+                        continue
+            except ImportError:
+                pass
+
+        if (
+            parsed is not None
+            and parsed.get("type") not in ("answer", None)
+        ):
+            try:
+                from l3_node.task_plan_policy import task_plan_gate_blocks_action
+
+                if task_plan_gate_blocks_action(parsed, ctx.intent or ""):
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "【系统 · task_plan】当前任务需要先在工作区根目录创建/完善 task_plan.md（至少概述目标与步骤）。"
+                            "请使用 Action: core:fs_write，将内容写入 task_plan.md；完成后再执行写操作、Shell 或 delegate/coordinate。"
+                        ),
+                    })
+                    try:
+                        from core.intelligence_workspace import emit_intelligence_event
+
+                        emit_intelligence_event("task_plan_gate_blocked", {})
+                    except Exception:
+                        pass
+                    continue
+            except ImportError:
+                pass
 
         if parsed is None:
             # 兜底：用户回复「同意」但 LLM 误判为「没有配置」时，从对话中提取 JD 并强制要求调用发布工具
@@ -929,6 +1177,20 @@ async def _run_react_core(
                                     "content": "【系统校验】你已发布职位但未开启无人值守招聘流。请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 为 {\"job_name\": \"岗位名称\"}（从上一轮 JSON 配置单的 job_title 提取），不得直接给出 Final Answer。",
                                 })
                                 continue
+                            try:
+                                from l3_node.intelligence_b_execution import get_execution_mode
+
+                                if get_execution_mode() == "strict" and ctx.metadata.get("_intel_strict_pending_verify"):
+                                    if "VERIFY_PASS" not in (response or "").upper():
+                                        messages.append({"role": "assistant", "content": response})
+                                        messages.append({
+                                            "role": "user",
+                                            "content": "【strict】已执行写操作/Shell/apply_patch。请先只用只读工具复核，再在回复中包含 VERIFY_PASS 后给出 Final Answer。",
+                                        })
+                                        continue
+                                    ctx.metadata["_intel_strict_pending_verify"] = False
+                            except ImportError:
+                                pass
                             _emit("answer", ans)
                             ctx.final_answer = ans
                             messages.append({"role": "assistant", "content": response})
@@ -965,6 +1227,20 @@ async def _run_react_core(
                     "content": "【系统校验】你已发布职位但未开启无人值守招聘流。请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 为 {\"job_name\": \"岗位名称\"}（从上一轮 JSON 配置单的 job_title 提取），不得直接给出 Final Answer。",
                 })
                 continue
+            try:
+                from l3_node.intelligence_b_execution import get_execution_mode
+
+                if get_execution_mode() == "strict" and ctx.metadata.get("_intel_strict_pending_verify"):
+                    if "VERIFY_PASS" not in (response or "").upper():
+                        messages.append({"role": "assistant", "content": response})
+                        messages.append({
+                            "role": "user",
+                            "content": "【strict】已执行写操作/Shell/apply_patch。请先只用只读工具复核，再在回复中包含 VERIFY_PASS 后给出 Final Answer。",
+                        })
+                        continue
+                    ctx.metadata["_intel_strict_pending_verify"] = False
+            except ImportError:
+                pass
             _emit("answer", ans)
             ctx.final_answer = ans
             messages.append({"role": "assistant", "content": response})
@@ -972,6 +1248,20 @@ async def _run_react_core(
 
         # delegate：分身子 Agent 并行执行
         if parsed["type"] == "delegate":
+            try:
+                from l3_node.intelligence_b_execution import get_enforce_readonly_verify_round
+
+                if ctx.metadata.get("_intel_strict_pending_verify") and get_enforce_readonly_verify_round():
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "【strict·只读 verify 轮】禁止 delegate；请仅用只读工具复核，再在 Final Answer 中含 VERIFY_PASS。"
+                        ),
+                    })
+                    continue
+            except ImportError:
+                pass
             sub_tasks = parsed.get("sub_tasks", [])
             _emit("action", f"delegate {len(sub_tasks)} 个子任务")
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
@@ -989,6 +1279,7 @@ async def _run_react_core(
                     parts.append(f"[子任务 {i+1}]\n{r}")
             observation = "\n\n---\n\n".join(parts)
             ctx.observation = observation
+            _p2_record_skill_outcome(ctx, "delegate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
             messages.append({"role": "assistant", "content": response})
@@ -1010,7 +1301,17 @@ async def _run_react_core(
                 observation = "[recall_memory 不可用：未连接 L2 或未配对]"
             else:
                 observation = await _recall_memory_search(query, config)
+                # 智能化 P0：L2 检索结果合并到本地，断网时可用
+                if observation and "[未找到" not in observation:
+                    try:
+                        from l3_node.local_memory import merge_from_l2
+                        items = [{"content": ln.lstrip("- ").strip(), "tag": "l2_recall"} for ln in observation.split("\n") if ln.strip().startswith("-")]
+                        if items:
+                            merge_from_l2(items)
+                    except ImportError:
+                        pass
             ctx.observation = observation
+            _p2_record_skill_outcome(ctx, "recall_memory", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
             messages.append({"role": "assistant", "content": response})
@@ -1022,6 +1323,20 @@ async def _run_react_core(
 
         # coordinate：向 L2 请求多节点协同
         if parsed["type"] == "coordinate":
+            try:
+                from l3_node.intelligence_b_execution import get_enforce_readonly_verify_round
+
+                if ctx.metadata.get("_intel_strict_pending_verify") and get_enforce_readonly_verify_round():
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "【strict·只读 verify 轮】禁止 coordinate；请仅用只读工具复核，再在 Final Answer 中含 VERIFY_PASS。"
+                        ),
+                    })
+                    continue
+            except ImportError:
+                pass
             payload = parsed.get("payload", {})
             config = _get_l2_config()
             _emit("action", "coordinate 多节点协同")
@@ -1033,6 +1348,7 @@ async def _run_react_core(
             else:
                 observation = await _coordinate_task(payload, config, engine)
             ctx.observation = observation
+            _p2_record_skill_outcome(ctx, "coordinate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
             messages.append({"role": "assistant", "content": response})
@@ -1045,6 +1361,29 @@ async def _run_react_core(
         if parsed["type"] == "native":
             tool = parsed.get("tool", "")
             inp = parsed.get("input", "")
+            tl_full = (tool or "").strip().lower()
+            try:
+                from l3_node.intelligence_b_execution import (
+                    get_enforce_readonly_verify_round,
+                    verify_round_allowed_tool_ids,
+                )
+
+                if (
+                    ctx.metadata.get("_intel_strict_pending_verify")
+                    and get_enforce_readonly_verify_round()
+                    and tl_full not in verify_round_allowed_tool_ids()
+                ):
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "【strict·只读 verify 轮】当前仅允许白名单只读工具（如 core:fs_read、core:shell_job_status）复核工作区；"
+                            "完成后在 Final Answer 中含 VERIFY_PASS。"
+                        ),
+                    })
+                    continue
+            except ImportError:
+                pass
             base_tool = (tool or "").replace("mcp:", "").strip()
             # 兜底：atom_post_job_boss 未传 jd_config 时，从对话历史提取 HR 确认的 JSON
             if base_tool == "atom_post_job_boss" and not (inp or "").strip():
@@ -1083,8 +1422,18 @@ async def _run_react_core(
             else:
                 observation = run_tool(tool, inp, allowed_skills=allowed_skills)
             ctx.observation = observation
+            _p2_record_skill_outcome(ctx, (tool or "native").strip(), observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
+            tl = (tool or "").lower()
+            if tl in ("core:fs_write", "core:shell_exec", "core:apply_patch"):
+                try:
+                    from l3_node.intelligence_b_execution import get_execution_mode
+
+                    if get_execution_mode() == "strict":
+                        ctx.metadata["_intel_strict_pending_verify"] = True
+                except ImportError:
+                    pass
             # atom_post_job_boss 发布成功后清除 fallback，避免下次误用
             if base_tool == "atom_post_job_boss":
                 try:
@@ -1157,11 +1506,15 @@ async def run_agent(
     _system_prompt_override: Optional[str] = None,
     _initial_messages: Optional[list[dict[str, Any]]] = None,
     _session_messages: Optional[list[dict[str, Any]]] = None,
+    implicit_signals: Optional[dict[str, Any]] = None,
+    implicit_attribution: Optional[dict[str, Any]] = None,
 ) -> str:
     """
     运行 L3 单体 ReAct 循环。
     支持 _system_prompt_override 供子 Agent 使用。
     _session_messages: 若提供，将作为历史上下文并在调用结束后被更新为完整对话（含本轮），供多轮对话复用。
+    implicit_signals: 可选 {"skip": true, "dwell_sec"|"dwell_ms": n, "assistant_echo": "...", "source": "lark"} → 见 docs/IMPLICIT_SIGNALS.md。
+    implicit_attribution: 可选 {"channel": "lark_im"|"websocket"|"http_agent_run", ...} → 每轮写 implicit_turn_attribution（全端覆盖埋点）。
     """
     run_id = str(uuid.uuid4())
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
@@ -1188,7 +1541,98 @@ async def run_agent(
         messages = list(_initial_messages)
     else:
         messages = []
+    prior_messages = list(messages)
     messages.append({"role": "user", "content": user_input})
+
+    text_implicit_types: set[str] = set()
+    # 隐式信号 → intelligence_events（§4.3；见 docs/IMPLICIT_SIGNALS.md）
+    try:
+        from core.intelligence_implicit import (
+            SIGNAL_DWELL,
+            SIGNAL_SKIP,
+            apply_session_implicit_events,
+            emit_implicit_signal,
+        )
+        from core.intelligence_workspace import emit_intelligence_event
+
+        if implicit_attribution and isinstance(implicit_attribution, dict):
+            emit_intelligence_event(
+                "implicit_turn_attribution",
+                {
+                    **implicit_attribution,
+                    "input_chars": len(user_input or ""),
+                    "run_id": run_id,
+                },
+            )
+
+        _, text_implicit_types = apply_session_implicit_events(
+            user_input or "", prior_messages, source="agent_core"
+        )
+
+        if implicit_signals and isinstance(implicit_signals, dict):
+            src = str(implicit_signals.get("source", "ui"))
+            if implicit_signals.get("skip"):
+                emit_implicit_signal(
+                    SIGNAL_SKIP,
+                    {"reason": str(implicit_signals.get("reason", "") or "")},
+                    source=src,
+                )
+            dm = implicit_signals.get("dwell_ms")
+            if dm is not None:
+                try:
+                    emit_implicit_signal(SIGNAL_DWELL, {"dwell_ms": float(dm)}, source=src)
+                except (TypeError, ValueError):
+                    pass
+            else:
+                ds = implicit_signals.get("dwell_sec")
+                if ds is not None:
+                    try:
+                        emit_implicit_signal(SIGNAL_DWELL, {"seconds": float(ds)}, source=src)
+                    except (TypeError, ValueError):
+                        pass
+            if implicit_signals.get("assistant_echo"):
+                emit_intelligence_event(
+                    "user_rephrased_assistant",
+                    {
+                        "len": len(str(implicit_signals.get("assistant_echo", ""))),
+                        "source": src,
+                    },
+                )
+    except Exception:
+        pass
+
+    try:
+        from core.intelligence_implicit_embedding import emit_embedding_implicit_signals
+
+        _emb_src = "agent_core"
+        if implicit_attribution and isinstance(implicit_attribution, dict):
+            ch = implicit_attribution.get("channel")
+            if ch:
+                _emb_src = str(ch)
+        await emit_embedding_implicit_signals(
+            user_input or "",
+            prior_messages,
+            source=_emb_src,
+            text_emitted_types=text_implicit_types,
+        )
+    except Exception:
+        pass
+
+    # P2-7：修正意图 → 本地 / 向量碎片 / l3_memory 同步队列
+    try:
+        from l3_node.intelligence_p2 import maybe_record_user_correction
+
+        maybe_record_user_correction(user_input or "")
+    except ImportError:
+        pass
+
+    # 阶段 E：事件 → reinforce 侧车（可配置节流）
+    try:
+        from core.intelligence_e_consumer import maybe_consume_intelligence_events
+
+        maybe_consume_intelligence_events()
+    except Exception:
+        pass
 
     # 预检0：用户说「停止招聘」等时，直接执行 stop_automated_recruitment，不经过 LLM（保证立即生效）
     _stop_intent = re.search(
@@ -1291,6 +1735,7 @@ async def run_agent(
         run_id=run_id,
         metadata={
             "_skills": tools,
+            "_skills_unfiltered": list(tools),
             "_use_mock": False,
             "_max_iterations": max_iterations,
             "_on_step": on_step,
@@ -1438,3 +1883,10 @@ class MemorySyncDaemon:
         self._stop.set()
         if self._task and not self._task.done():
             self._task.cancel()
+
+
+# 注册 L3 神盾 Compaction（阶段 A：锚点/审计与 L3 共用）
+try:
+    import l3_node.l3_compaction_bridge  # noqa: F401
+except Exception:
+    pass

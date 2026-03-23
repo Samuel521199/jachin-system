@@ -3,6 +3,8 @@
 基于 **Jachin 三轨道体系** 与 **原子架构** 的 HR 招聘筛选插件。  
 独立工程结构，规范对齐 jachin-system v8.0 `docs/PLUGIN_DEVELOPMENT_GUIDE.md` v2.0（技能发现：SemanticRouter 向量检索）。
 
+> **主仓（jachin-system）当前招聘执行架构**（`com.jachin.hr.recruitment` MCP、`hr_recruitment_dag`、调度走 DAG、`task_planning` HR 路径等）以仓库根目录 **`docs/HR_RECRUITMENT.md`** 为单一事实来源；本文档侧重插件包内轨道与历史目录结构。
+
 ## 分发模型
 
 本插件采用 **Wasm 为主体 + 轨道 A/B 为依赖** 的分发策略：

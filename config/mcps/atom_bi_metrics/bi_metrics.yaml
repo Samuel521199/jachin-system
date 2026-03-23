@@ -1,5 +1,5 @@
 # atom_bi_metrics MCP 配置
-# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 # 路径: config/mcps/atom_bi_metrics/
 # 与 com.jachin.bi.daily_report 技能共享同一指标引擎，可引用技能目录配置
 

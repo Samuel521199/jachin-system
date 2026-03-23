@@ -1,5 +1,5 @@
 ---
-description: V2 架构 — L3 单体对标 OpenClaw，L2 控制面不代理推理
+description: V2 架构 — L3 执行面与 OpenClaw 对标（差异化见对标文档），L2 控制面不代理推理
 globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 ---
 # Jachin Nexus V2 — L3 单体架构
@@ -12,7 +12,7 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 
 1. **L2 不代理推理**：L2 只管理 API Key（密文下发）、记忆、权限、L3 协同调度
 2. **L3 直连 LLM**：L3 持密文 Key，请求时解密后自行调用 api.openai.com 等
-3. **L3 单体 = OpenClaw**：多 Agent、多 Skill、本地记忆、ReAct 循环
+3. **L3 执行面**：多 Agent、多 Skill、本地记忆、ReAct、YAML 工作流与 **领域子图委托**（`l3_node/orchestration/`、`core:domain_workflow_run`）；与 OpenClaw **对标与差异化**见 `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` §五、**`docs/ORCHESTRATION_ARCHITECTURE.md`**
 
 ## L2 API (V2)
 

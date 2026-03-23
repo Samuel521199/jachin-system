@@ -95,7 +95,7 @@ copy .env.example .env
 2. **exe 启动后无响应**：查看 `logs/l3_debug.log` 是否有异常
 3. **MCP/Skill 不可用**：确认 L2 已配对 L1，且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
 4. **Lark 等 MCP 配置**：订阅下载后配置在 `~/.jachin/config/mcps/{plugin_id}/`，按包内 manifest 写出
-5. **Lark「我要招聘」无回复**：见下方「Lark 无回复排查」
+5. **Lark「我要招聘」无回复**：见下方「Lark 无回复排查」；架构与数据路径见 [HR_RECRUITMENT.md](./HR_RECRUITMENT.md)
 
 ### Lark 无回复排查
 

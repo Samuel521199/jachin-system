@@ -1,6 +1,6 @@
 # BI 每日战报配置（示例）
 # 复制为 bi_daily_report.yaml 并填入实际值
-# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 # 路径: config/skills/com.jachin.bi.daily_report/
 
 # ========== 数据收集 ==========

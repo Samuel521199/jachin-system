@@ -43,7 +43,7 @@ tools:                                    # Native Core Fallback（防止 MCP �
 ---
 ```
 
-**Native Core Fallback (原生降级路由)**：为防止 MCP 瘫痪导致技能失效，系统内置安全的宿主原生标准库（如 `core:fs_read`、`core:shell_exec`），权限死锁在 `~/.jachin/workspace/` 目录下。当 `prefer` 工具调用失败时，自动无缝降级至 `fallback`。
+**Native Core Fallback (原生降级路由)**：为防止 MCP 瘫痪导致技能失效，系统内置安全的宿主原生标准库（如 `core:fs_read`、`core:shell_exec`），权限死锁在 `~/.jachin/workspace/` 目录下。`core:shell_exec` 受 **P1** 策略约束（`nexus_config.json` → `intelligence_p1`：黑名单/可选受限前缀白名单；**P1+** 支持后台执行与 `core:shell_job_status` / `core:shell_job_cancel`）。当 `prefer` 工具调用失败时，自动无缝降级至 `fallback`。
 
 ### 3.2 正文：自然语言指令
 
@@ -91,9 +91,11 @@ tools:                                    # Native Core Fallback（防止 MCP �
 
 | 工具标识 | 说明 | 权限边界 |
 |----------|------|----------|
-| `core:fs_read` | 文件读取 | 仅限 `~/.jachin/workspace/` |
+| `core:fs_read` | 文件读取 | 仅限 `~/.jachin/workspace/`（及 HR 白名单路径） |
 | `core:fs_write` | 文件写入 | 仅限 `~/.jachin/workspace/` |
-| `core:shell_exec` | Shell 执行 | 工作目录死锁在 `~/.jachin/workspace/` |
+| `core:shell_exec` | Shell 执行（可 JSON：`background`） | cwd=`workspace`；**P1** `intelligence_p1` 黑名单/受限前缀；**P1+** 后台日志见 `workspace/.shell_jobs/` |
+| `core:shell_job_status` | 后台任务状态与日志尾 | 与 `core:shell_exec` 白名单联动 |
+| `core:shell_job_cancel` | 取消后台任务 | 需配置开启取消；白名单联动同上 |
 
 当 MCP 工具调用失败（超时、连接断开、服务不可用）时，Agent 自动 catch 异常并路由至 `fallback` 指定的 Native Core 工具，确保技能不因 MCP 瘫痪而失效。
 

@@ -23,34 +23,6 @@ router = APIRouter(prefix="/api/v3/orchestrator", tags=["orchestrator"])
 
 
 # Pydantic模型
-class TaskPlanRequest(BaseModel):
-    """任务规划请求"""
-    user_input: str
-    user_id: Optional[str] = None
-
-
-class TaskPlanResponse(BaseModel):
-    """任务规划响应"""
-    success: bool
-    tasks: List[Dict[str, Any]] = []
-    error: Optional[str] = None
-
-
-class TaskExecutionRequest(BaseModel):
-    """任务执行请求"""
-    user_input: str
-    user_id: Optional[str] = None
-    execute: bool = True  # 是否立即执行
-
-
-class TaskExecutionResponse(BaseModel):
-    """任务执行响应"""
-    success: bool
-    task_ids: List[str] = []
-    results: List[Dict[str, Any]] = []
-    error: Optional[str] = None
-
-
 class PluginInvokeRequest(BaseModel):
     """插件调用请求"""
     plugin_id: Optional[str] = None  # 如果为 None，则使用自然语言查询
@@ -97,24 +69,6 @@ def get_intent_planner() -> IntentPlanner:
         plugin_manager = PluginManager(plugins_dir, skills_repo_dir)
         _intent_planner = IntentPlanner(plugin_manager)
     return _intent_planner
-
-
-@router.post("/plan", response_model=TaskPlanResponse)
-async def plan_task(request: TaskPlanRequest):
-    """已废弃：原依赖 Ray Cluster。V2 架构请使用 agent_loop 或 L3 本地执行。"""
-    raise HTTPException(
-        status_code=410,
-        detail="DEPRECATED: /plan 已废弃（Ray Cluster 已移除）。请使用 agent_loop 或 L3 本地执行。",
-    )
-
-
-@router.post("/execute", response_model=TaskExecutionResponse)
-async def execute_task(request: TaskExecutionRequest):
-    """已废弃：原依赖 Ray Cluster。V2 架构请使用 agent_loop 或 L3 本地执行。"""
-    raise HTTPException(
-        status_code=410,
-        detail="DEPRECATED: /execute 已废弃（Ray Cluster 已移除）。请使用 agent_loop 或 L3 本地执行。",
-    )
 
 
 @router.get("/intent")

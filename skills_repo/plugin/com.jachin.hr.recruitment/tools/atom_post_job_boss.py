@@ -88,11 +88,15 @@ def atom_post_job_boss(
     cdp_url: str = "http://127.0.0.1:9222",
     jd_config_path: str = "",
     jd_config: dict | str | None = None,
+    os_context: dict | None = None,
 ) -> dict:
     """
     在 Boss 直聘自动填写并发布职位。
     若传 jd_config，先写入 data/{职位}/jd.json 再发布。
+
+    os_context: 可选 Workflow/DAG 上下文；与 Harvest 工具对齐，发布流程内可按需扩展 STOP 探针。
     """
+    _ = os_context  # 预留与 try_consume_stop_harvest 联动
     if jd_config:
         cfg = jd_config
         if isinstance(cfg, str):

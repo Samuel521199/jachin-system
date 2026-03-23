@@ -232,5 +232,5 @@ jachin-system/
 | **Dapr** | 已弃用 | clients/desktop 已统一直连后端 |
 | **Ray Cluster** | 已弃用 | task_planner/resource_allocator 已用占位类型 |
 | **PostgreSQL** (L2) | 已弃用 | L2 使用 SQLite |
-| `/api/v3/orchestrator/plan` | 410 | 原依赖 Ray |
-| `/api/v3/orchestrator/execute` | 410 | 原依赖 Ray |
+| `/api/v3/orchestrator/plan` | 已移除 | 原依赖 Ray |
+| `/api/v3/orchestrator/execute` | 已移除 | 原依赖 Ray |

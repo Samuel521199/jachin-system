@@ -1,6 +1,6 @@
 # =============================================================================
 # Layer2 (用户) - 一键安装 (Windows)
-# nexus_daemon + Qdrant (Docker)
+# nexus_daemon（V2：记忆用 LanceDB，无需 Qdrant）
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
@@ -18,26 +18,10 @@ Write-Host '  Layer2 - Install' -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Qdrant
-Write-Host "[1/5] Qdrant (Docker)..." -ForegroundColor Blue
-if (Get-Command docker -ErrorAction SilentlyContinue) {
-    docker ps 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        $QdrantData = $env:JACHIN_QDRANT_DATA
-        if (-not $QdrantData) {
-            if (Test-Path "E:\") { $QdrantData = "E:\docker\volumes\qdrant_data" }
-            elseif (Test-Path "D:\") { $QdrantData = "D:\docker\volumes\qdrant_data" }
-            else { $QdrantData = (Join-Path $ProjectRoot "qdrant_storage") }
-        }
-        if (-not (Test-Path $QdrantData)) { New-Item -ItemType Directory -Path $QdrantData -Force | Out-Null }
-        $env:JACHIN_QDRANT_DATA = $QdrantData
-        docker-compose -f (Join-Path $ProjectRoot "docker-compose.qdrant.yml") up -d
-        Write-Host '  [OK] Qdrant started' -ForegroundColor Green
-    } else { Write-Host '  [WARN] Docker not running, skip' -ForegroundColor Yellow }
-} else { Write-Host '  [WARN] Docker not installed, skip' -ForegroundColor Yellow }
+# V2: Qdrant 已废弃，记忆由 LanceDB 管理，跳过
 
-# nexus_daemon (Conda env for Python 3.11 compatibility with Ray, etc.)
-Write-Host "[2/5] nexus_daemon (Python)..." -ForegroundColor Blue
+# nexus_daemon (Conda env for Python 3.11)
+Write-Host "[1/4] nexus_daemon (Python)..." -ForegroundColor Blue
 $CoreReq = Join-Path $ProjectRoot "core\requirements.txt"
 $UseConda = $false
 if (Get-Command conda -ErrorAction SilentlyContinue) {
@@ -65,7 +49,7 @@ if (-not $UseConda) {
     $env:PYTHONUTF8 = 1
     & $Python -m pip install -q -r $CoreReq
     if ($LASTEXITCODE -ne 0) {
-        Write-Host '[ERROR] pip install failed (Ray needs Python 3.10-3.12). Install conda and retry.' -ForegroundColor Red
+        Write-Host '[ERROR] pip install failed. Install conda and retry.' -ForegroundColor Red
         exit 1
     }
 }
@@ -82,11 +66,11 @@ if (Test-Path $ConfigPath) {
 }
 if ($AlreadyPaired) {
     Write-Host ""
-    Write-Host '[3/5] Pairing...' -ForegroundColor Blue
+    Write-Host '[2/4] Pairing...' -ForegroundColor Blue
     Write-Host '  [SKIP] Already paired' -ForegroundColor DarkGray
 } else {
     Write-Host ""
-    Write-Host '[3/5] Pairing (first time)...' -ForegroundColor Blue
+    Write-Host '[2/4] Pairing (first time)...' -ForegroundColor Blue
     & (Join-Path $ScriptDir "run-pair.ps1")
     if ($LASTEXITCODE -ne 0) {
         Write-Host '  [WARN] Pairing incomplete, run: .\scripts\run-pair.ps1 later' -ForegroundColor Yellow
@@ -96,7 +80,7 @@ if ($AlreadyPaired) {
 # Edge Embedding 模型预下载 (sentence-transformers all-MiniLM-L6-v2, ~90MB)
 # L2 记忆向量检索在 edge 模式下首次使用时会自动下载，此处预下载避免首次启动卡顿
 Write-Host ""
-Write-Host '[4/5] Edge Embedding (all-MiniLM-L6-v2)...' -ForegroundColor Blue
+Write-Host '[3/4] Edge Embedding (all-MiniLM-L6-v2)...' -ForegroundColor Blue
 $env:PYTHONPATH = "$ProjectRoot;$ProjectRoot\core"
 if ($UseConda) {
     $null = conda run -n jachin-layer2 python (Join-Path $ScriptDir "download_embedding_model.py") 2>&1
@@ -111,7 +95,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # TTS 模型预下载 (Kokoro ~326MB) - L2 为 L3 桌面端提供模型下载服务
 Write-Host ""
-Write-Host '[5/5] TTS model (Kokoro)...' -ForegroundColor Blue
+Write-Host '[4/4] TTS model (Kokoro)...' -ForegroundColor Blue
 $ttsModelFile = Join-Path $ProjectRoot "data\tts\kokoro-v0_19.onnx"
 if (Test-Path $ttsModelFile) {
     Write-Host '  [SKIP] TTS model exists' -ForegroundColor DarkGray

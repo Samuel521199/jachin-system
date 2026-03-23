@@ -271,6 +271,16 @@ def process_lark_message(
     if not user_text or not user_text.strip():
         return {"reply": "", "is_task": False}
 
+    # 高优遥控指令：停止收网 / 触发透析镜 — 不经过 LLM
+    try:
+        from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
+
+        cmd_reply = try_lark_workflow_command_intercept(user_text.strip())
+        if cmd_reply:
+            return {"reply": cmd_reply, "is_task": False, "command_intercepted": True}
+    except Exception as e:
+        logger.debug("[Lark] workflow command intercept 跳过: %s", e)
+
     # L3 内联模式：im_channels 直接调用，不走 WS
     if run_agent_fn and engine and loop:
         import asyncio
@@ -278,7 +288,10 @@ def process_lark_message(
         sess = session_messages if isinstance(session_messages, list) else []
         async def _do():
             return await run_agent_fn(
-                user_text.strip(), engine, _session_messages=sess
+                user_text.strip(),
+                engine,
+                _session_messages=sess,
+                implicit_attribution={"channel": "lark_hr_recruitment"},
             )
 
         future = asyncio.run_coroutine_threadsafe(_do(), loop)

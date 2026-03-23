@@ -633,7 +633,20 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         )
     try:
         from l3_node.agent_core import run_agent
-        answer = await run_agent(user_input, engine, max_iterations=8)
+
+        _isig = body.get("implicit_signals")
+        _isig = _isig if isinstance(_isig, dict) else None
+        _iatt = body.get("implicit_attribution")
+        _iatt = _iatt if isinstance(_iatt, dict) else None
+        if _iatt is None:
+            _iatt = {"channel": "http_agent_run"}
+        answer = await run_agent(
+            user_input,
+            engine,
+            max_iterations=8,
+            implicit_signals=_isig,
+            implicit_attribution=_iatt,
+        )
         resp = {"answer": answer or ""}
         try:
             persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()

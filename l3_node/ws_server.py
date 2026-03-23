@@ -149,6 +149,12 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                 if broadcast and chat_id:
                     await _broadcast_to_mirror_subscribers(chat_id, p)
 
+            _imp_sig = msg.get("implicit_signals")
+            _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
+            _imp_attr = {
+                "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
+                "has_chat_id": bool(chat_id),
+            }
             try:
                 reply = await run_agent_fn(
                     intent,
@@ -156,6 +162,8 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     on_step=on_step,
                     on_chunk=on_chunk,
                     _session_messages=session_messages,
+                    implicit_signals=_imp_sig,
+                    implicit_attribution=_imp_attr,
                 )
                 if chat_id and session_messages:
                     _save_lark_session(chat_id, session_messages)

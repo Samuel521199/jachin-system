@@ -41,6 +41,16 @@
 
 ---
 
+## 智能化与招聘
+
+| 文档 | 说明 |
+|------|------|
+| [JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md](./JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md) | **OpenClaw 对比** — 记忆、任务执行、路线图 |
+| [INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md) | **P0 智能化落地** — L3 本地记忆、pre-reset flush、梦境阈值、task_plan 三文件 |
+| [HR_RECRUITMENT.md](./HR_RECRUITMENT.md) | **HR 招聘当前架构** — MCP 包、DAG、调度、数据路径（单一事实来源） |
+
+---
+
 ## 业务模块文档（独立 Skill）
 
 | 文档 | 说明 |

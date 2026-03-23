@@ -1,5 +1,5 @@
 # BI 每日战报配置
-# 规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+# 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 # 实际配置: ~/.jachin/config/skills/com.jachin.bi.daily_report/
 
 skip_collect: true

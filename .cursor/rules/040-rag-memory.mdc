@@ -1,6 +1,6 @@
 ---
 description: v8.0 量子记忆 (Quantum Memory) — 生物学 + 向量 + 自我修复 + Dream Weaver 梦境重塑
-globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/vector_store.py, core/vector_router.py, core/embedding/
+globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/vector_store.py, core/vector_router.py, core/embedding/, core/intelligence_implicit.py, core/intelligence_implicit_embedding.py, l3_node/local_memory_search.py, docs/MEMORY_SCORING.md, docs/IMPLICIT_SIGNALS.md
 ---
 # Quantum Memory Pipeline (v8.0)
 
@@ -27,11 +27,19 @@ globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/ve
 
 1. **短期写入**：`add_short_term(role, content, meta)` — Agent Loop 每次交互调用。
 2. **向量写入**：`vector_store.embed_and_store()` — 可选，用于长对话检索。
-3. **梦境引擎**：`core/dreamer.py` 凌晨 3 点（或可配置）触发，LLM 提纯 → 写入 `core_memory`。
+3. **梦境引擎**：`core/dreamer.py` 默认凌晨 3 点 / 设备空闲触发；**另**：`dream_weaver.fragment_threshold`（`nexus_config.json`）未整合碎片达阈值 **立即** 触发 Dream Weaver，不必等凌晨 — 见 `docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` §1.3、`core/dream_weaver.py`。
 4. **自我修复**：梦境阶段可生成 `bug_fix.md` 规则，写入 core_memory。
 5. **Prompt 注入**：`get_core_memory_for_prompt(limit=20)` + 向量检索结果拼接到 System Prompt。
 6. **清理**：`prune_short_term_older_than_24h()`、`delete_short_term_after_dream()`。
 7. **v8.0 Dream Weaver Consolidation（梦境重塑与记忆自愈）**：设备空闲时，利用边缘轻量级 LLM 对 LanceDB 中的近期记忆进行聚类、去重、时间线衰减（忘却机制）和逻辑压缩。若发现记忆冲突，打上「需用户澄清」标签。详见 `docs/whitepaper/V8_SINGULARITY_OS.md`。
+8. **混合检索（Hybrid Search）**：L2 记忆检索支持向量 + BM25 + 可选 **MMR**；权重与 MMR 见 `nexus_config.json` → **`memory_scoring`**，公式见 **`docs/MEMORY_SCORING.md`**。`GET /api/v2/memory/search?hybrid=true`；**可解释分量**：`GET /api/v2/memory/search?explain=true`（与 hybrid 可同用）。
+9. **主动记忆刷新（Memory Flush）**：神盾 Compaction 前，当 token 接近上限时静默 LLM 回合，提醒模型写入 core_memory。配置 `llm.memory_flush.enabled`、`llm.memory_flush.soft_threshold`。
+10. **Markdown 导出**：`export_core_memory_to_markdown()` 将 core_memory 导出至 `~/.jachin/memory/MEMORY.md`，梦境完成后自动执行；`GET /api/v3/memory/export-markdown` 手动触发。
+11. **L3 本地记忆（P0）**：`l3_node/local_memory.py` → `~/.jachin/memory/l3_local.json`，断网/无 L2 时注入 System Prompt；recall 后与 L2 `merge_from_l2`。**检索工具**：`core:local_memory_search`（`l3_node/local_memory_search.py`，半衰 + MMR，可选 `MEMORY.md` 分块）。
+12. **Pre-reset 刷新（P0）**：`POST /api/v3/llm/context/reset` 前 `run_pre_reset_memory_flush()`（`core/compaction_hook.py`）。
+13. **阶段 A（MVP）**：`llm.memory_flush.workspace_must_update` 锚点校验、`post_compaction_audit`、compaction 后 `findings` checkpoint + `l3_local`；L3 与 core 共用 `compaction_before_llm_think`（`l3_node/l3_compaction_bridge.py`）。见总览 §5.2、**078**。
+14. **P1 / P2（摘要）**：用户偏好与澄清队列、只读工具 TTL 缓存（`intelligence_p1.py`、`tool_call_cache.py`）；修正意图、意图-技能统计、检索强化分 + `POST /api/v2/memory/reinforce`（`intelligence_p2.py`）。**总表**：`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`。
+15. **§4.3 隐式学习（越用越聪明）**：`core/intelligence_implicit.py`、`intelligence_implicit_embedding.py`；全端 **`implicit_turn_attribution`** + `POST /api/v2/intelligence/implicit-signal`；消费侧 **`intelligence_e`**。权威说明 **`docs/IMPLICIT_SIGNALS.md`**；与总览 **v1.9**、规则 **078** 一致。
 
 ---
 
@@ -43,12 +51,17 @@ globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/ve
   - **🛡️ Edge (ONNXEmbedder)**: 本地 sentence-transformers (all-MiniLM-L6-v2)，断网可用。
 - **配置**: `~/.jachin/nexus_config.json` → `embedding_mode: "cloud"` | `"local"`，Layer 3 设置界面 "Local AI Mode" 开关。
 - **机制**: `match_local_skill(intent: str)` 经可插拔 Embedder 转为向量，LanceDB `skills` 表余弦相似度检索，按相似度返回最匹配技能。
+- **编排 L1（长期架构）**: `l3_node/orchestration/skill_routing.py` 的 `suggest_skills_from_intent()` 封装上述能力，配置键 `nexus_config.orchestration`（`skill_routing_enabled`、`vector_router_threshold`）；与「上万 skill 只收窄候选、不一次性注入全量工具」策略一致 — 见 `docs/ORCHESTRATION_ARCHITECTURE.md`。
 - **安全性（红线）**: 若本地未命中，向云端商城请求的“意念下载”**必须经过 Human-in-the-Loop (HITL) 强授权**（桌面弹窗或 IM 确认），**严禁静默下载执行未知云端逻辑**。
 
 ---
 
 ## 参考
 
+- `docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`（智能化落地与路线图，**v1.9**）
+- `docs/IMPLICIT_SIGNALS.md`（§4.3 隐式信号与埋点）
+- `docs/MEMORY_SCORING.md`（hybrid + reinforce + explain）
+- `docs/ORCHESTRATION_ARCHITECTURE.md`（L1 技能路由与编排分层）
 - `docs/whitepaper/02_FRAMEWORK.md` 第三节（量子记忆）
 - `docs/whitepaper/06_LAYER2_EDGE.md` 3.5 全域向量路由、3.6 Dream Weaver
 - `docs/whitepaper/PLUGGABLE_VECTOR_ENGINE.md` 可插拔向量引擎设计

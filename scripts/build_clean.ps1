@@ -1,4 +1,4 @@
-# 清除所有 Build 产物 - 按 L3_RECRUITMENT_BUILD_SPEC 规范
+# 清除所有 Build 产物（参见 docs/HR_RECRUITMENT.md）
 # 用法: .\scripts\build_clean.ps1
 # 可选: .\scripts\build_clean.ps1 -Root "D:\path\to\project"
 

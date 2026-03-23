@@ -173,6 +173,11 @@ def _write_summary_md(
     job_folder: str = "",
 ) -> None:
     """生成终极排行榜：每个职位永远只有一份 {岗位名}_排行榜_Summary.md，只输出符合要求的前 N 名，每次筛选输出覆盖旧文件。"""
+    if not passed_list and not eliminated_list:
+        _skip = "跳过写入排行榜_Summary.md：透析镜未产出任何录用/淘汰记录"
+        logger.warning("[Recruitment] %s job_folder=%s", _skip, job_folder or output_dir.name)
+        print(f"\n[Recruitment] ⚠️ {_skip} output_dir={output_dir}\n", flush=True)
+        return
     passed_sorted = sorted(passed_list, key=lambda x: x.get("score", 0), reverse=True)[:TOP_N_PASSED]
     eliminated_sorted = sorted(eliminated_list, key=lambda x: x.get("score", 0), reverse=True)
 
@@ -251,18 +256,20 @@ async def run_recruitment_task_stream(
     job_folder = _sanitize_job_folder(job_name)
     save_dir = PLUGIN_DATA_ROOT / job_folder / "pending"
     save_dir.mkdir(parents=True, exist_ok=True)
+    jd_path = PLUGIN_DATA_ROOT / job_folder / "jd.json"
 
     # 从 data/{职位}/jd.json 获取 jd_select 用于 Boss「全部职位」精确匹配（格式：岗位名称 _ 杭州 最低-最高K）
     job_text = job_name
     import sys
     try:
         from recruitment_scheduler import _get_hr_recruitment_plugin_root
-        jd_path = PLUGIN_DATA_ROOT / job_folder / "jd.json"
+
         if jd_path.exists():
             _hr = _get_hr_recruitment_plugin_root()
             if _hr and str(_hr) not in sys.path:
                 sys.path.insert(0, str(_hr))
             from tools.atom_post_job_boss import load_jd_config, get_jd_select
+
             jd_data = load_jd_config(str(jd_path), job_name)
             job_text = get_jd_select(jd_data) or job_text
     except Exception:
@@ -277,17 +284,24 @@ async def run_recruitment_task_stream(
     def _run_harvester() -> None:
         nonlocal harvester_result
         try:
-            from recruitment_scheduler import _load_atom_inbox_harvester_full_flow
-            atom_inbox_harvester_full_flow = _load_atom_inbox_harvester_full_flow()
-            logger.info("[Recruitment] 收网参数 request_if_no_resume=%s filter_tab=%s", request_resume, filter_tab or "全部")
-            harvester_result = atom_inbox_harvester_full_flow(
-                job_text=job_text,
-                max_items=max_count,
-                save_dir=str(save_dir),
-                filter_tab=filter_tab or "全部",
-                request_if_no_resume=request_resume,
-                job_folder=job_folder,
-            )
+            from recruitment_scheduler import _run_hr_recruitment_dag_tick
+
+            logger.info("[Recruitment] 经 HR DAG 收网 tick request_if_no_resume=%s filter_tab=%s", request_resume, filter_tab or "全部")
+            jc = {
+                "job_name": job_name,
+                "job_folder": job_folder,
+                "jd_config_path": str(jd_path) if jd_path.exists() else "",
+                "max_count": max_count,
+                "analyze_threshold": 10**6,
+                "filter_tab": filter_tab or "全部",
+                "request_resume": request_resume,
+                "use_all_positions": True,
+                "_dag_harvest_always_run": True,
+                "skip_hr_plan_init_node": True,
+                "skip_hr_progress_restore": True,
+            }
+            harvester_result = _run_hr_recruitment_dag_tick(jc, tick_mode="harvest")
+            harvester_result["downloaded"] = int(harvester_result.get("downloaded", 0) or 0)
         except Exception as e:
             harvester_result = {"success": False, "error": str(e)}
         finally:
@@ -338,22 +352,53 @@ async def run_recruitment_task_stream(
 
     yield {"step": 2, "msg": "正在唤醒 HR 透析镜..."}
 
-    # 直接传入收网得到的 PDF 绝对路径，避免 target_dir 与 actual 子目录名不一致导致列举失败
-    pdf_paths = harvester_result.get("pdf_paths") or []
-    # 兜底：收网返回 downloaded>0 但 pdf_paths 为空时，或 force_reanalyze 时扫 pending 目录，确保透析镜有简历可分析
-    if not pdf_paths and downloaded > 0:
+    try:
+        from recruitment_scheduler import _get_hr_recruitment_plugin_root
+
+        _hrp = _get_hr_recruitment_plugin_root()
+        if _hrp and str(_hrp) not in sys.path:
+            sys.path.insert(0, str(_hrp))
+        from tools.hr_data_paths import collect_resume_paths_for_analysis
+    except ImportError as e:
+        logger.warning("[Recruitment] 无法加载 collect_resume_paths_for_analysis: %s", e)
+        collect_resume_paths_for_analysis = None  # type: ignore[misc, assignment]
+
+    # 直接传入 PDF 绝对路径；pending 无文件时在同职位 processed/副本 中兜底
+    pdf_paths = [Path(p).resolve() for p in (harvester_result.get("pdf_paths") or []) if p]
+    _pdf_ext = frozenset({".pdf"})
+    if collect_resume_paths_for_analysis:
+        if force_reanalyze:
+            pdf_paths, _ = collect_resume_paths_for_analysis(
+                primary_dir=save_dir, max_files=50, extensions=_pdf_ext
+            )
+            if pdf_paths:
+                logger.info(
+                    "[Recruitment] force_reanalyze：pending/processed/副本 合并 %d 份简历",
+                    len(pdf_paths),
+                )
+        elif not pdf_paths:
+            pdf_paths, _ = collect_resume_paths_for_analysis(
+                primary_dir=save_dir, max_files=50, extensions=_pdf_ext
+            )
+            if pdf_paths:
+                logger.info(
+                    "[Recruitment] pdf_paths 兜底：收网列表为空，已从 pending/processed/副本 合并 %d 份",
+                    len(pdf_paths),
+                )
+    if not pdf_paths:
         pending_pdfs = list(save_dir.rglob("*.pdf")) if save_dir.exists() else []
         pdf_paths = [p.resolve() for p in pending_pdfs if p.is_file()]
         if pdf_paths:
-            logger.info("[Recruitment] pdf_paths 兜底：从 pending 目录补充 %d 份", len(pdf_paths))
-    elif force_reanalyze:
-        pending_pdfs = list(save_dir.rglob("*.pdf")) if save_dir.exists() else []
-        if pending_pdfs:
-            pdf_paths = [p.resolve() for p in pending_pdfs if p.is_file()]
-            logger.info("[Recruitment] force_reanalyze：使用 pending 全部 %d 份简历", len(pdf_paths))
+            logger.info("[Recruitment] pdf_paths 兜底：仅从 pending rglob %d 份", len(pdf_paths))
     paths_str = "|||".join(str(p).replace("\\", "/") for p in pdf_paths if p)
     if not paths_str:
-        yield {"step": 3, "msg": "⚠️ 无法获取简历路径，透析镜无法启动。请检查 pending 目录或收网日志。", "status": "error"}
+        _msg = (
+            "⚠️ 无法获取简历路径，透析镜无法启动。"
+            "请检查 pending / processed / 副本 目录或收网日志。"
+        )
+        logger.warning("[Recruitment] %s job_folder=%s save_dir=%s", _msg, job_folder, save_dir)
+        print(f"\n[Recruitment] {_msg}\n  job_folder={job_folder}\n  save_dir={save_dir}\n", flush=True)
+        yield {"step": 3, "msg": _msg, "status": "error"}
         return
 
     # 表单未传 JD 时优先用岗位名兜底，避免错误使用 skill_registry 中的云边协同
@@ -429,7 +474,7 @@ async def run_recruitment_task_stream(
             continue
         if status == "done":
             seen_done = True
-            yield {"step": 3, "msg": "✅ 终极战报已全部生成！", "status": "done", "total": item.get("total", 0)}
+            # 不在此处宣称成功；结束后根据是否真有分析结果再决定是否写排行榜 / Lark / 文案
             break
         if status == "progress":
             report = item.get("report_content")
@@ -495,28 +540,47 @@ async def run_recruitment_task_stream(
             }
 
     tw.join(timeout=2.0)
-    # 流式处理结束后，生成终极排行榜到 data/{职位}/排行榜_Summary.md，并同步到 Lark 多维表
-    if passed_list or eliminated_list:
+    # 仅在有录用/淘汰记录时写排行榜并同步 Lark；否则视为「未找到可分析简历」并结束，避免空榜与误通知
+    if thread_result.get("error"):
+        err = thread_result["error"]
+        _em = f"⚠️ HR 透析镜异常: {err}"
+        logger.error("[Recruitment] %s job_folder=%s", _em, job_folder)
+        print(f"\n[Recruitment] {_em}\n  job_folder={job_folder}\n", flush=True)
+        yield {"step": 3, "msg": _em, "status": "error"}
+    elif not passed_list and not eliminated_list:
+        r = thread_result.get("result")
+        detail = ""
+        if isinstance(r, str) and r.strip():
+            detail = f" {r.strip()[:280]}"
+        _nm = (
+            "⚠️ 未找到可分析的简历：透析镜未返回任何录用/淘汰结果。"
+            "请确认 pending / processed / 副本 中有有效 PDF，且未被 skip。"
+            "本流程已结束，未更新排行榜与 Lark。"
+            f"{detail}"
+        )
+        logger.warning("[Recruitment] %s job_folder=%s", _nm, job_folder)
+        print(f"\n[Recruitment] {_nm}\n  job_folder={job_folder}\n", flush=True)
+        yield {"step": 3, "msg": _nm, "status": "error"}
+    else:
         summary_dir = PLUGIN_DATA_ROOT / job_folder
         _write_summary_md(summary_dir, passed_list, eliminated_list, output_dir_use_absolute, job_folder=job_folder)
-        # 同步到 Lark 多维表（从第一行开始写入，覆盖式更新，完成后通知 HR）
         summary_path = summary_dir / "排行榜_Summary.md"
         if summary_path.exists():
             try:
                 from l3_node.channels.lark import sync_bitable_from_md
-                # 默认从第一行开始写入；一表多职位时可设 LARK_REPLACE_ENTIRE_TABLE=false 保留其他职位
                 replace_from_first = os.environ.get("LARK_REPLACE_ENTIRE_TABLE", "true").lower() in ("1", "true", "yes")
-                sync_result = sync_bitable_from_md(md_path=str(summary_path), notify_group=True, replace_entire_table=replace_from_first)
+                sync_result = sync_bitable_from_md(
+                    md_path=str(summary_path), notify_group=True, replace_entire_table=replace_from_first
+                )
                 if sync_result.get("success"):
                     logger.info("[Recruitment] Lark 多维表已同步 job=%s count=%d", job_folder, sync_result.get("count", 0))
                 else:
                     logger.warning("[Recruitment] Lark 同步失败: %s", sync_result.get("error", ""))
             except Exception as e:
                 logger.warning("[Recruitment] Lark 同步异常: %s", e)
-    if thread_result.get("error"):
-        yield {"step": 3, "msg": f"⚠️ HR 透析镜异常: {thread_result['error']}", "status": "error"}
-    elif not passed_list and not eliminated_list:
-        # 透析镜未产出任何分析时，展示技能返回内容（如「无法列举简历目录」「LLM 未注册」等）
-        r = thread_result.get("result")
-        if isinstance(r, str) and r.strip() and ("⚠️" in r or "失败" in r or "无法" in r or "未" in r):
-            yield {"step": 3, "msg": f"⚠️ HR 透析镜: {r.strip()[:300]}", "status": "error"}
+        yield {
+            "step": 3,
+            "msg": "✅ 终极战报已全部生成！已更新排行榜并同步 Lark。",
+            "status": "done",
+            "total": len(passed_list) + len(eliminated_list),
+        }

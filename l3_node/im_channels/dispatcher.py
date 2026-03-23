@@ -129,23 +129,45 @@ def _do_agent_work(
         intent = (text or "").strip()
         reply = ""
         try:
-            if _is_hr_package_available() and _is_recruitment_message(intent):
-                logger.debug("[IM Dispatcher] 招聘类消息，走 HR process_lark_message chat_id=%s", cid[:20] if cid else "")
-                reply = _process_via_hr_package(
-                    intent, cid, user_id, run_agent_fn, engine, loop, timeout, session_messages
-                )
-            else:
-                future = asyncio.run_coroutine_threadsafe(
-                    run_agent_fn(intent, engine, _session_messages=session_messages),
-                    loop,
-                )
-                reply = future.result(timeout=timeout)
-        except TimeoutError:
-            reply = "处理超时，请稍后重试。"
-            logger.warning("[IM Dispatcher] Agent 超时 chat_id=%s", cid[:20] if cid else "")
-        except Exception as e:
-            logger.exception("[IM Dispatcher] Agent 异常: %s", e)
-            reply = "抱歉，处理时发生错误，请稍后重试。"
+            from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
+
+            cmd_reply = try_lark_workflow_command_intercept(intent)
+        except Exception as ex:
+            logger.debug("[IM Dispatcher] workflow command intercept 不可用: %s", ex)
+            cmd_reply = None
+
+        if cmd_reply:
+            reply = cmd_reply
+            if cid:
+                session_messages.append({"role": "user", "content": intent})
+                session_messages.append({"role": "assistant", "content": cmd_reply})
+        else:
+            try:
+                if _is_hr_package_available() and _is_recruitment_message(intent):
+                    logger.debug(
+                        "[IM Dispatcher] 招聘类消息，走 HR process_lark_message chat_id=%s",
+                        cid[:20] if cid else "",
+                    )
+                    reply = _process_via_hr_package(
+                        intent, cid, user_id, run_agent_fn, engine, loop, timeout, session_messages
+                    )
+                else:
+                    future = asyncio.run_coroutine_threadsafe(
+                        run_agent_fn(
+                            intent,
+                            engine,
+                            _session_messages=session_messages,
+                            implicit_attribution={"channel": "lark_im_dispatcher"},
+                        ),
+                        loop,
+                    )
+                    reply = future.result(timeout=timeout)
+            except TimeoutError:
+                reply = "处理超时，请稍后重试。"
+                logger.warning("[IM Dispatcher] Agent 超时 chat_id=%s", cid[:20] if cid else "")
+            except Exception as e:
+                logger.exception("[IM Dispatcher] Agent 异常: %s", e)
+                reply = "抱歉，处理时发生错误，请稍后重试。"
         if cid and session_messages:
             save_lark_session(cid, session_messages)
             logger.debug("[IM Dispatcher] chat_id=%s 已保存会话 %d 条", cid[:20], len(session_messages))

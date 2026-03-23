@@ -347,10 +347,10 @@ export async function getGpuStats(): Promise<{
 }
 
 /**
- * 获取记忆数量（GET /api/v3/memory/count，供 Void 节点数）
+ * 获取记忆数量（V2：记忆由 L2 生物学记忆 + LanceDB 管理，本地控制台返回 0）
  */
 export async function getMemoryCount(): Promise<{ count: number }> {
-  return invokeBackend<{ count: number }>("/api/v3/memory/count", undefined, "GET");
+  return { count: 0 };
 }
 
 /**
@@ -400,16 +400,12 @@ export interface MemorySearchResult {
 }
 
 /**
- * 记忆搜索（GET /api/v3/memory/search）
+ * 记忆搜索（V2：记忆检索由 L2 GET /api/v2/memory/search 提供，需 X-Sub-Account-Id）
  */
 export async function searchMemory(
-  q: string
+  _q: string
 ): Promise<{ results: MemorySearchResult[]; message?: string }> {
-  return invokeBackend<{ results: MemorySearchResult[]; message?: string }>(
-    `/api/v3/memory/search?q=${encodeURIComponent(q)}`,
-    undefined,
-    "GET"
-  );
+  return { results: [], message: "记忆检索请使用 L2 API (X-Sub-Account-Id)" };
 }
 
 /** 模型项 */
@@ -523,23 +519,19 @@ export async function deleteCalendarItem(itemId: string): Promise<{ ok: boolean 
 }
 
 /**
- * 批量删除记忆（POST /api/v3/memory/batch-delete，框选遗忘）
+ * 批量删除记忆（V2 已废弃，记忆由 L2 管理）
  */
 export async function batchDeleteMemory(
-  memoryIds: string[]
+  _memoryIds: string[]
 ): Promise<{ ok: boolean; deleted?: number; message?: string }> {
-  return invokeBackend("/api/v3/memory/batch-delete", { ids: memoryIds });
+  return { ok: false, deleted: 0, message: "记忆由 L2 管理" };
 }
 
 /**
- * 删除记忆（DELETE /api/v3/memory/{id}，单条遗忘）
+ * 删除记忆（V2 已废弃，记忆由 L2 管理）
  */
-export async function deleteMemory(memoryId: string): Promise<{ ok: boolean; message?: string }> {
-  return invokeBackend<{ ok: boolean; message?: string }>(
-    `/api/v3/memory/${encodeURIComponent(memoryId)}`,
-    undefined,
-    "DELETE"
-  );
+export async function deleteMemory(_memoryId: string): Promise<{ ok: boolean; message?: string }> {
+  return { ok: false, message: "记忆由 L2 管理" };
 }
 
 /**

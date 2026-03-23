@@ -8,7 +8,7 @@ alwaysApply: false
 
 **目标**：Skill 声明所依赖的 MCP，上传时校验必须已存在，订阅时自动一并拉取。
 
-**关联**：076-skill-mcp-upload-spec.mdc、docs/SKILL_MCP_UPLOAD_SPEC.md
+**关联**：076-skill-mcp-upload-spec.mdc、docs/SKILL_MCP_UPLOAD_SPEC.md；招聘 MCP/Skill 与主仓 DAG 关系见 **docs/HR_RECRUITMENT.md**；招聘**业务数据目录红线**与智能化路线图见 **078**、**docs/INTELLIGENCE_UPGRADE_OVERVIEW.md** §五、**docs/ORCHESTRATION_ARCHITECTURE.md**（L2 `domain_ref` / `hr_recruitment`）
 
 ---
 

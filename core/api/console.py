@@ -91,9 +91,7 @@ def _naturalize_log_line(raw: str) -> str:
         m = re.search(r"['\"]?([\w\-\.]+\.pdf|[\w\-\.]+\.docx?)['\"]?", s, re.I)
         name = m.group(1) if m else "文档"
         return f"正在后台索引「{name}」…"
-    if "ray" in lower and "node" in lower:
-        return "Ray 集群节点状态已更新。"
-    if "qdrant" in lower or "vector" in lower:
+    if "vector" in lower or "lancedb" in lower:
         return "向量记忆库已同步。"
     if "skill" in lower and ("invoke" in lower or "call" in lower):
         m = re.search(r"\[?([\w\.]+)\]?", s)
@@ -304,40 +302,19 @@ async def delete_calendar_item(item_id: str):
     return {"ok": True}
 
 
-# --- 记忆搜索 ---
-class MemorySearchResult(BaseModel):
-    id: str
-    text: str
-    score: float
-    metadata: Optional[dict] = None
-
-
-@router.get("/memory/search")
-async def search_memory(q: str = Query(..., min_length=1)):
-    """v5.0: Qdrant 已废弃，记忆由 SQLite 生物学记忆管线接管"""
-    return {"results": [], "message": "v5.0 已废弃 Qdrant，请使用 Layer 2 生物学记忆 (core/biological_memory)"}
-
-
-class BatchDeleteRequest(BaseModel):
-    ids: List[str]
-
-
-@router.delete("/memory/{memory_id}")
-async def delete_memory(memory_id: str):
-    """v5.0: Qdrant 已废弃"""
-    return {"ok": False, "message": "v5.0 已废弃 Qdrant 向量记忆"}
-
-
-@router.post("/memory/batch-delete")
-async def batch_delete_memory(body: BatchDeleteRequest):
-    """v5.0: Qdrant 已废弃"""
-    return {"ok": False, "message": "v5.0 已废弃 Qdrant 向量记忆", "deleted": 0}
-
-
-@router.get("/memory/count")
-async def get_memory_count():
-    """v5.0: Qdrant 已废弃，返回 0"""
-    return {"count": 0}
+# --- 记忆（V2 生物学记忆 + L2 向量）---
+@router.get("/memory/export-markdown")
+async def export_memory_markdown():
+    """
+    将 core_memory 导出为 Markdown 文件（~/.jachin/memory/MEMORY.md）。
+    便于人类查看和版本控制，与 OpenClaw MEMORY.md 风格一致。
+    """
+    try:
+        from core.biological_memory import export_core_memory_to_markdown
+        path = export_core_memory_to_markdown()
+        return {"ok": True, "path": path, "message": "核心记忆已导出"}
+    except Exception as e:
+        return {"ok": False, "path": "", "message": str(e)}
 
 
 # --- 模型列表与切换 ---
@@ -471,7 +448,14 @@ def reset_context_used() -> None:
 
 @router.post("/llm/context/reset")
 async def reset_llm_context():
-    """重置上下文 Token 计数（新会话时调用）"""
+    """重置上下文 Token 计数（新会话时调用）。智能化 P0：重置前执行记忆刷新。"""
+    try:
+        from core.compaction_hook import run_pre_reset_memory_flush
+        flushed = await run_pre_reset_memory_flush()
+        if flushed:
+            logger.info("[Console] pre_reset memory_flush: %d 条", flushed)
+    except Exception as e:
+        logger.debug("[Console] pre_reset flush 跳过: %s", e)
     reset_context_used()
     return {"ok": True}
 

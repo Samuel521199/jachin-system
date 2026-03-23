@@ -68,6 +68,9 @@
 | L2 MCP 委托 | `core/api/routes/v2_mcp.py` | 本机无技能时委托其他 L3 执行；L2 不执行 MCP |
 | L3 同步 | `clients/desktop/src-tauri/src/commands/skill_sync.rs`、`l3_node/mcp_sync.py` | 从 L2 拉取技能与 MCP |
 | L3 Agent | `l3_node/agent_core.py` | ReAct、工具调用 |
+| 跨会话规划文件 | `l3_node/task_planning.py` | `~/.jachin/workspace/task_plan.md`、`progress.md`、`findings.md`；Prompt 注入「继续执行计划」 |
+| HR 招聘（DAG + 物理进度） | `l3_node/skills/hr_recruitment_dag.py` + `skills_repo/plugin/com.jachin.hr.recruitment/` | `hr_plan_init` → `harvest_loop` → 可选分析；`STOP_HARVEST`；`~/.jachin/workspace/hr_recruitment/` 下宏图与战况 — 详见 [HR_RECRUITMENT.md](HR_RECRUITMENT.md) |
+| 智能化与编排 | `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`、`docs/ORCHESTRATION_ARCHITECTURE.md` | OpenClaw 对比、记忆/梦境/规划、**三层编排（L1 路由 / L2 领域子图 / L3 YAML glue）** |
 
 ---
 
@@ -102,7 +105,7 @@
 |  PostgreSQL | L1：plugins_registry、user_licenses（IAM 已下放 L2） |
 | SQLite | L2：sub_accounts、role_permissions、api_keys_vault、l3_nodes |
 | LanceDB | L2：向量记忆 |
-| 文件系统 | `~/.jachin/inventory/`、`~/.jachin/l3_skill_cache/`、`~/.jachin/l3_mcp_cache/`、`~/.jachin/l2_control.db` |
+| 文件系统 | `~/.jachin/inventory/`、`~/.jachin/l3_skill_cache/`、`~/.jachin/l3_mcp_cache/`、`~/.jachin/l2_control.db`、`~/.jachin/workspace/`（任务规划、HR 招聘数据，见 [HR_RECRUITMENT.md](HR_RECRUITMENT.md)） |
 
 ---
 

@@ -30,12 +30,14 @@ _WEAVE_THRESHOLD = 3  # 至少 3 条碎片才触发融合
 _L2_DREAM_SYSTEM_PROMPT = """你是一个 Jachin 边缘智能体的「长期记忆整理器」。请分析以下记忆碎片，完成以下任务：
 
 1. **去除冗余**：将语义相同或高度重叠的内容合并，避免重复表述。
-2. **冲突消解**：若存在逻辑冲突（如「喜欢茶」与「只喝咖啡」），保留**最新时间戳**对应的结论，并标注已按时间优先消解。
+2. **冲突消解**：若存在逻辑冲突（如「喜欢茶」与「只喝咖啡」），保留**最新时间戳**对应的结论，并标注已按时间优先消解；若冲突仍无法自动消解、必须由用户确认，在正文之后**另起一行**输出：`CLARIFICATION: <一句中文说明>`。
 3. **提炼核心**：输出一段连贯、高密度的长期记忆，可直接用于后续检索与推理。
+4. **偏好**（可选）：若可提取稳定偏好，在全文**最后另起一行**输出：`PREFERENCE_JSON: {"键":"值"}`（单行合法 JSON 对象）。
+5. **用户修正（P2）**：若碎片含「【用户修正】【p2】」或「【用户修正】」，表示用户在纠正助手；融合时必须优先采纳其「期望」语义，不得忽略。
 
 每条碎片格式为：`[timestamp=xxx] content`，timestamp 为 Unix 秒，越大越新。
 
-输出格式：仅输出一段自然段文字，作为融合后的长期记忆。不要输出 JSON、不要输出列表，只输出这一段连贯文字。"""
+输出格式：先输出一段自然段正文；如需澄清或偏好行，严格按上述前缀另起行追加。不要输出 JSON 数组或 Markdown 列表作为正文。"""
 
 
 def _cluster_memories(
@@ -93,9 +95,17 @@ def _cluster_memories(
 
 
 def _build_cluster_text(cluster: list[dict[str, Any]]) -> str:
-    """将簇内记忆格式化为 LLM 输入：`[timestamp=xxx] content`"""
+    """将簇内记忆格式化为 LLM 输入：`[timestamp=xxx] content`（修正碎片优先）"""
+
+    def _is_corr(m: dict[str, Any]) -> bool:
+        tx = str(m.get("text", ""))
+        return "【用户修正】【p2】" in tx or "【用户修正】" in tx
+
     lines = []
-    for m in sorted(cluster, key=lambda x: float(x.get("timestamp", 0))):
+    for m in sorted(
+        cluster,
+        key=lambda x: (0 if _is_corr(x) else 1, float(x.get("timestamp", 0))),
+    ):
         ts = m.get("timestamp", 0)
         text = (m.get("text") or "").strip()
         if text:
@@ -157,8 +167,19 @@ async def weave_dreams_for_sub_account(sub_account_id: str) -> int:
         if not fused_text or len(fused_text) < 10:
             continue
 
+        try:
+            from l3_node.intelligence_p1 import ingest_dream_auxiliary_lines, strip_dream_auxiliary_lines
+
+            ingest_dream_auxiliary_lines(fused_text)
+            fused_text = strip_dream_auxiliary_lines(fused_text)
+        except ImportError:
+            pass
+
         node_ids = list({m.get("node_id", "") for m in cluster if m.get("node_id")})
         node_id = node_ids[0] if node_ids else ""
+
+        if not fused_text or len(fused_text) < 10:
+            continue
 
         if insert_long_term_memory(sub_account_id, fused_text, node_id):
             inserted += 1

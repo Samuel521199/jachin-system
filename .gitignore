@@ -113,7 +113,7 @@ mqtt_logs/
 # Archived documentation (do not track in git)
 docs/archive/
 
-# Qdrant vector storage (runtime data)
+# Qdrant (V2 已废弃，记忆用 LanceDB)
 qdrant_storage/
 
 # Coverage

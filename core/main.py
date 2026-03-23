@@ -65,7 +65,6 @@ class _AccessLogFilter(logging.Filter):
         "GET /api/v3/cluster/nodes",
         "GET /api/v3/cluster/tasks",
         "GET /api/v3/logs/recent",
-        "GET /api/v3/memory/count",
         "GET /api/v3/config ",
         "GET /api/v2/devices ",
         "GET /api/v3/suggestions",
@@ -112,11 +111,9 @@ except ImportError as e:
     logger.warning(f"TTS models router not available: {e}")
 
 try:
-    from core.api.routes.handshake import router as handshake_router, device_router, create_subscription_router
+    from core.api.routes.handshake import router as handshake_router
 except ImportError as e:
     handshake_router = None
-    device_router = None
-    create_subscription_router = None
     logger.warning(f"Handshake API router not available: {e}")
 
 try:
@@ -324,13 +321,13 @@ async def lifespan(app: FastAPI):
         await request_shutdown_and_wait()
     except Exception as e:
         logger.warning("InventoryReloader 关闭异常: %s", e)
-    logger.info("Shutting down Jachin Nexus v0.8.45 (Singularity OS)...")
+    logger.info("Shutting down Jachin Nexus v0.8.50 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="0.8.45",
+    version="0.8.50",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码
@@ -371,9 +368,6 @@ if tts_models_router:
     app.include_router(tts_models_router)
 if handshake_router:
     app.include_router(handshake_router)
-    # device_router 依赖 Dapr，已废弃；/api/v2/devices 由 v2_devices_router 提供
-    if create_subscription_router:
-        app.include_router(create_subscription_router())
 if skills_router:
     app.include_router(skills_router)
 else:

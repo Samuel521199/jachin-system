@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Layer2 (用户) - 一键安装 (Linux / macOS)
-# nexus_daemon + Qdrant (Docker)
+# nexus_daemon（V2：记忆用 LanceDB，无需 Qdrant）
 #
 # 用法: ./scripts/install-layer2.sh [--systemd]
 # =============================================================================
@@ -22,21 +22,10 @@ echo "  Layer2 (用户) - 一键安装"
 echo "=========================================="
 echo ""
 
-# Qdrant
-echo "[1/3] Qdrant (Docker)..."
-if command -v docker &>/dev/null && docker ps &>/dev/null; then
-    QDRANT_DATA="${JACHIN_QDRANT_DATA:-}"
-    [ -z "$QDRANT_DATA" ] && QDRANT_DATA="$([ -d /data ] && echo /data/qdrant || echo $PROJECT_ROOT/qdrant_storage)"
-    mkdir -p "$QDRANT_DATA"
-    export JACHIN_QDRANT_DATA="$QDRANT_DATA"
-    docker-compose -f docker-compose.qdrant.yml up -d
-    echo "  [OK] Qdrant 已启动"
-else
-    echo "  [WARN] Docker 未运行，跳过"
-fi
+# V2: Qdrant 已废弃，记忆由 LanceDB 管理，跳过
 
-# nexus_daemon (Conda preferred for Ray/Python 3.11 compatibility)
-echo "[2/3] nexus_daemon (Python)..."
+# nexus_daemon (Conda preferred for Python 3.11)
+echo "[1/3] nexus_daemon (Python)..."
 REQ="$PROJECT_ROOT/core/requirements.txt"
 USE_CONDA=false
 if command -v conda &>/dev/null; then
@@ -56,7 +45,7 @@ if ! $USE_CONDA; then
     [ ! -f "$REQ_ALT" ] && { echo "[ERROR] core requirements not found"; exit 1; }
     PYTHON="${JACHIN_PYTHON:-python3}"
     command -v "$PYTHON" &>/dev/null || PYTHON="python"
-    PYTHONUTF8=1 "$PYTHON" -m pip install -q -r "$REQ_ALT" || { echo "[ERROR] pip install failed (Ray needs Python 3.10-3.12). Install conda and retry."; exit 1; }
+    PYTHONUTF8=1 "$PYTHON" -m pip install -q -r "$REQ_ALT" || { echo "[ERROR] pip install failed. Install conda and retry."; exit 1; }
 fi
 echo "  [OK] nexus_daemon installed"
 

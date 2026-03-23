@@ -1,6 +1,8 @@
 # HR 招聘插件 - 核心文档（Jachin 整合打包）
 
 > 本文档为 jachin-system 大项目整合提供：核心代码清单、核心流程、功能架构、打包说明。
+>
+> **主仓最新招聘架构**（DAG、调度、数据目录、智能化绑定）请以 **`docs/HR_RECRUITMENT.md`**（jachin-system 根）为准；下文若与主仓 `com.jachin.hr.recruitment` 单包实现不一致，以主仓代码与 `HR_RECRUITMENT.md` 为准。
 
 ---
 

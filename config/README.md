@@ -1,6 +1,6 @@
 # 配置目录（规范 075）
 
-配置仅分 `skills/` 与 `mcps/` 两类，与 `.cursor/rules/075-config-root-and-cloud-sync(1).mdc` 完全一致。
+配置仅分 `skills/` 与 `mcps/` 两类，与 `.cursor/rules/075-config-root-and-cloud-sync.mdc` 完全一致。
 **禁止在 config 根目录散落独立配置文件**，必须归入对应技能或 MCP 目录。
 
 ```

@@ -301,7 +301,7 @@ class JachinWasmSandbox:
                                     break
                             except Exception:
                                 continue
-                    # 支持 skills_repo/plugin/data/{岗位}/pending 下的简历（收网保存路径，Windows 绝对路径可能因编码/斜杠无法 exists）
+                    # 支持 ~/.jachin/workspace/hr_recruitment/{岗位}/pending 下的简历（收网保存路径，Windows 绝对路径可能因编码/斜杠无法 exists）
                     if path_obj is None and "skills_repo" in raw_norm:
                         try:
                             idx = raw_norm.find("skills_repo")

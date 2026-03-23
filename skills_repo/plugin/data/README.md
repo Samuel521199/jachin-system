@@ -1,24 +1,22 @@
-# HR 插件数据目录 - 按职位分目录存储
+# HR 插件 — 仓库内仅保留 JD 模板（只读）
 
-一级文件夹为每个职位，结构如下：
+**候选人简历、jd.json 副本、pending/result 等业务数据已统一落在用户目录，不再写入本仓库：**
+
+- 默认根目录：`~/.jachin/workspace/hr_recruitment/`
+- 可通过环境变量 `JACHIN_HR_DATA_ROOT` 覆盖（仍建议不要指向项目仓库内路径）
+- 每个职位：`hr_recruitment/{职位文件夹}/pending`、`processed`、`副本`（可选备份）、`result`、`jd.json`、`排行榜_Summary.md`；透析镜在 `pending` 为空时会继续读 `processed`/`副本`。
+
+本目录（`skills_repo/plugin/data/`）仅保留：
 
 ```
 data/
-├── jd_to_publish.example.json   # 全局 JD 模板（复制到各职位 jd.json 后填写）
-├── {职位名}/                    # 如 Java工程师、Golang开发
-│   ├── pending/                # 刚抓取未对比的简历 PDF
-│   ├── processed/              # 对比完成的简历
-│   ├── result/                 # 每个简历的 AI 分析报告 (*_analysis.md)
-│   ├── jd.json                 # 专属于该职位的 JD 配置（从模板复制并填写）
-│   └── 排行榜_Summary.md       # 专属于该职位的输出 MD 文档
-├── {职位名2}/
-│   └── ...
+└── jd_to_publish.example.json   # 全局 JD 模板（复制到 ~/.jachin/.../hr_recruitment/{职位}/jd.json 后填写）
 ```
 
 ## 配置逻辑
 
-- **jd_to_publish.example.json**：每次与 HR 沟通得到的职位描述配置均以此为模版，复制到 `data/{职位}/jd.json` 后根据实际内容填写。
-- **jd.json**：发布职位、推荐牛人、抓简历时均从此文件读取；执行前需先点击「全部职位」/职位下拉展开，再选中该职位。
-- **pending**：收网抓取的 PDF 先存于此。
-- **result**：HR 透析镜分析报告输出。
-- **排行榜_Summary.md**：每次筛选覆盖更新，每个职位固定一份。
+- **jd_to_publish.example.json**：与 HR 沟通得到的职位描述以此为模版，复制到 **`~/.jachin/workspace/hr_recruitment/{职位}/jd.json`** 后填写。
+- **jd.json**：发布职位、推荐牛人、抓简历时从上述用户目录下的 `jd.json` 读取。
+- **pending**：收网抓取的 PDF 存于用户目录对应职位的 `pending/`。
+- **result**：HR 透析镜分析报告输出到用户目录对应职位的 `result/`。
+- **排行榜_Summary.md**：每个职位在用户目录下固定一份。

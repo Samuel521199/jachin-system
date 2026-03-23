@@ -15,6 +15,7 @@ from typing import Any
 from core.biological_memory import (
     add_core_memory,
     delete_short_term_after_dream,
+    export_core_memory_to_markdown,
     get_short_term_for_dream,
     prune_short_term_older_than_24h,
 )
@@ -134,6 +135,14 @@ async def run_dream_sequence(limit: int = 500) -> int:
     ids = [log["id"] for log in logs]
     delete_short_term_after_dream(ids)
     prune_short_term_older_than_24h()
+
+    # 定期导出 core_memory 为 Markdown，便于人类查看和版本控制
+    try:
+        path = export_core_memory_to_markdown()
+        if path:
+            logger.info("[Dreamer] 核心记忆已导出至 %s", path)
+    except Exception as e:
+        logger.debug("[Dreamer] Markdown 导出跳过: %s", e)
 
     logger.info("[Dreamer] 梦境完成，提纯 %d 条核心记忆，已遗忘 %d 条短期日志", count, len(ids))
     return count

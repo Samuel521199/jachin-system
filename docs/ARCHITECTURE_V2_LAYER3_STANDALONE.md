@@ -566,6 +566,18 @@ L2 聚合结果
 }
 ```
 
+**P1+（多节点原生派发）**：当 `input_data` 为 JSON 且包含 `"type": "native_tool"` 时，执行节点 **直接 `run_tool`**，不再对该子任务启动子 Agent LLM。示例：
+
+```json
+{
+  "type": "native_tool",
+  "tool_id": "core:shell_exec",
+  "action_input": { "command": "git status", "timeout": 60 }
+}
+```
+
+开关：`~/.jachin/nexus_config.json` → `intelligence_p1.coordinate_native_tool_dispatch`（默认启用）。详见 [INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md) §二。
+
 ---
 
 ## 八、配置与部署
@@ -825,10 +837,14 @@ L3 节点收到用户任务（如「帮我分析这 100 份 PDF」）
 | **HITL** | 有 | 保留 |
 | **Compaction** | 有 | 保留 |
 | **供应链安全** | ClawHavoc 风险 | JPP Wasm 零信任 |
+| **智能化 P1/P1+** | 社区各插件自行其是 | 偏好文件 + 澄清队列 + 只读工具缓存 + shell 策略；后台 shell 与协同 `native_tool`（见 `l3_node/intelligence_p1.py` 等） |
 
 ---
 
 ## 十四、相关文档
 
+- [INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md) — P0 / P1 / P1+ 与阶段 A～E 总览（**v1.9**）
+- [ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md) — 长期三层编排（技能路由 / 领域子图 / YAML+`domain_ref`）
+- [JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md](./JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md) — 与 OpenClaw 对标及路线图状态（现行）
 - [LAYER3_L2_WAN_ARCHITECTURE.md](./LAYER3_L2_WAN_ARCHITECTURE.md) — L3 与 L2 通信架构
 - 项目根目录 `docker-compose.l2-cluster.yml` — L2 无状态集群部署示例（3 节点 + Redis + Nginx 统一入口 18888）

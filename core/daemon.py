@@ -293,6 +293,18 @@ async def dream_scheduler_loop() -> None:
         if await _run_dream_weaver_if_idle():
             console.print("[dim][Dream Weaver] 系统空闲，已完成潜意识重塑[/dim]")
 
+        # 智能化 P0：碎片阈值触发，不等 3am/空闲
+        try:
+            from core.memory_store import get_unconsolidated_memories
+            from core.dream_weaver import get_dream_thresholds, run_weave_dreams
+            _, frag_threshold = get_dream_thresholds()
+            frags = get_unconsolidated_memories(limit=frag_threshold + 10)
+            if len(frags) >= frag_threshold:
+                console.print(f"[dim][Dream Weaver] 碎片达 {len(frags)} 条，阈值触发重塑[/dim]")
+                await run_weave_dreams()
+        except Exception as e:
+            logger.debug("[Dream] fragment_threshold 触发跳过: %s", e)
+
         # 凌晨 3 点窗口（误差 2 分钟内）：梦境引擎 + Dream Weaver
         wait_until_3am = _seconds_until_3am()
         if wait_until_3am <= 120:

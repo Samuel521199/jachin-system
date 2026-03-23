@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 _JACHIN_DIR = Path.home() / ".jachin"
 _DB_PATH = _JACHIN_DIR / "memory.db"
@@ -193,3 +193,54 @@ def get_core_memory_for_prompt(limit: int = 20) -> str:
         return "\n".join(lines)
     except Exception:
         return ""
+
+
+def export_core_memory_to_markdown(output_path: Union[Path, str, None] = None) -> str:
+    """
+    将 core_memory 导出为 Markdown 文件，便于人类查看和版本控制。
+    默认输出到 ~/.jachin/memory/MEMORY.md，与 OpenClaw 风格一致。
+
+    Returns:
+        实际写入的文件路径
+    """
+    from datetime import datetime
+
+    if output_path is None:
+        output_path = _JACHIN_DIR / "memory" / "MEMORY.md"
+    else:
+        output_path = Path(output_path)
+    output_path = Path(output_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT tag, content, source_summary, created_at FROM core_memory ORDER BY created_at DESC",
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return ""
+
+    lines = [
+        "# Jachin 核心记忆 (Core Memory)",
+        "",
+        f"> 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "以下为梦境引擎提纯与主动记忆刷新写入的持久记忆。",
+        "",
+        "---",
+        "",
+    ]
+    for tag, content, source, created in rows:
+        ts = datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M") if created else ""
+        lines.append(f"## [{tag}] {ts}")
+        if source:
+            lines.append(f"*来源：{source}*")
+        lines.append("")
+        lines.append(content.strip())
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    return str(output_path)

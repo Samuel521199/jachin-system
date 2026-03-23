@@ -30,3 +30,4 @@ globs: core/embedding/, core/vector_router.py
 ## 参考
 
 - `docs/whitepaper/PLUGGABLE_VECTOR_ENGINE.md`
+- `docs/ORCHESTRATION_ARCHITECTURE.md`（向量路由作为 **编排 L1** 的底座）

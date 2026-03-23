@@ -111,7 +111,7 @@ jachin-system/
 
 **目录**: `clients/desktop` + `l3_node/`
 
-**职责**: 单体 OpenClaw 对标，多 Agent、多 Skill、本地记忆
+**职责**: 单体 OpenClaw 对标，多 Agent、多 Skill、本地记忆；跨会话规划（`task_planning.py`）、HR 招聘 DAG（`skills/hr_recruitment_dag.py`）
 
 **核心功能**:
 - **持密文 Key**：从 L2 拉取，本地私钥解密后直连外部 API
@@ -132,6 +132,9 @@ jachin-system/
 
 ## 参考文档
 
-- [docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 架构规范
-- [docs/V2_ARCHITECTURE_DIAGRAM.md](docs/V2_ARCHITECTURE_DIAGRAM.md) — V2 架构图与流程图
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 当前架构规范（含智能化与 HR 组件索引）
+- [docs/HR_RECRUITMENT.md](docs/HR_RECRUITMENT.md) — HR 招聘 DAG、调度、数据与规划文件
+- [docs/README.md](docs/README.md) — 文档索引（含「智能化与招聘」）
+- [docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 L3 详细设计（历史参考）
+- [docs/V2_ARCHITECTURE_DIAGRAM.md](docs/V2_ARCHITECTURE_DIAGRAM.md) — 架构图
 - [docs/whitepaper/00_INDEX.md](docs/whitepaper/00_INDEX.md) — 白皮书索引

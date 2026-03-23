@@ -105,6 +105,7 @@ jachin-system/
 | Link | Description |
 |------|-------------|
 | [📖 Whitepapers & Architecture](./docs/README.md) | Full spec, protocols, commercialization |
+| [🧠 Intelligence & HR](./docs/README.md#智能化与招聘) | OpenClaw 对标、P0 智能化、`HR_RECRUITMENT.md` 招聘 DAG/调度 |
 | [⚡ Neuron Forge (Plugin SDK)](./jachin-plugin-sdk-python/README.md) | Build Python plugins, monetize in 5 min |
 | [🦀 Rust Plugin Scaffold](./jachin-plugin-sdk/README.md) | KB-sized Wasm, zero-trust sandbox |
 

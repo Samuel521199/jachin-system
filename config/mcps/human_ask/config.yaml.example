@@ -1,0 +1,5 @@
+# human_ask MCP 配置 — Human-in-the-Loop 人工劫持
+# 当 ask_human_for_decision 被调用时，将待决策信息推送到飞书供统帅审批
+# 复制为 config.yaml 并填入实际值；不配置时仅输出到日志
+
+webhook_url: "${HUMAN_ASK_LARK_WEBHOOK}"

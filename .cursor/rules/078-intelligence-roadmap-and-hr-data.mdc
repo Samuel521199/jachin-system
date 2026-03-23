@@ -1,0 +1,61 @@
+---
+description: 智能化阶段编排（P0～E / Milestone）+ HR 招聘数据目录红线 + 关键代码入口
+globs: l3_node/**/*.py, l3_node/orchestration/**/*.py, l3_node/lark_workflow_command_interceptor.py, skills_repo/plugin/com.jachin.hr.recruitment/**/*.py, core/compaction_hook.py, core/intelligence_workspace.py, core/intelligence_implicit.py, core/intelligence_implicit_embedding.py, core/intelligence_e_consumer.py, core/apply_patch_unified.py, docs/INTELLIGENCE*.md, docs/JACHIN_VS_OPENCLAW*.md, docs/ORCHESTRATION_ARCHITECTURE.md, docs/HR_RECRUITMENT.md, docs/IMPLICIT_SIGNALS.md, docs/MEMORY_SCORING.md, docs/MEMORY_WRITE_AND_SCORE_NARRATIVE.md
+alwaysApply: false
+---
+
+# Jachin 智能化基线与 HR 数据（现行架构）
+
+修改 **记忆 / 任务持久化 / 招聘收网与分析 / 飞书指令拦截** 相关代码或文档时，须与下列 **权威文档** 一致，避免沿用已废弃路径或错误阶段描述。
+
+## 一、权威文档（单一事实来源）
+
+| 文档 | 用途 |
+|------|------|
+| `docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` | **P0～P2 已实现**、**§5.0 Jachin OS 演进路线图**（基线 **v0.8.46 / Vanguard**，阶段 A～E 与 Milestone v0.8.50～v0.8.90）、并行策略与验收 |
+| `docs/ORCHESTRATION_ARCHITECTURE.md` | **长期三层编排**（L1 技能路由 / L2 领域子图注册与 HR 委托 / L3 YAML `domain_ref` + `core:domain_workflow_run`） |
+| `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md` | 对标 OpenClaw（现行）、**§九** 深度设计；**§9.10** 后续优先级与总览 / ORCHESTRATION 对齐 |
+| `docs/IMPLICIT_SIGNALS.md` | §4.3 隐式事件 type + **`POST /api/v2/intelligence/implicit-signal`** |
+| `docs/MEMORY_WRITE_AND_SCORE_NARRATIVE.md` | 记忆写入节奏 × **统一 memory_score** 对外叙事 |
+| `docs/MEMORY_SCORING.md` | L2 hybrid + reinforce **公式与 explain API** |
+| `docs/HR_RECRUITMENT.md` | 招聘 DAG、调度、与主仓关系 |
+
+## 二、智能化：已实现 vs 规划中
+
+### 阶段 0（当前生产能力，≈ v0.8.46）
+
+- **P0**：`l3_node/local_memory.py`（`~/.jachin/memory/l3_local.json`）、`core/compaction_hook.py`（memory flush + **pre-reset** `run_pre_reset_memory_flush`）、梦境 **`dream_weaver.fragment_threshold`**、`l3_node/task_planning.py`（`task_plan.md` / `progress.md` / `findings.md` + HR 子目录）
+- **P1 / P1+**：`l3_node/intelligence_p1.py`、`l3_node/tool_call_cache.py`、澄清队列、`core:shell_exec` 策略、后台 shell、`shell_job_*`、coordinate **`native_tool`** 直派
+- **P2 MVP**：`l3_node/intelligence_p2.py`（修正意图）、意图-技能 JSONL、检索强化 + `POST /api/v2/memory/reinforce`
+
+### 阶段 A～E（MVP 完整闭环，见总览 **v1.9** §5.2 🟢）
+
+- **A**：锚点 `anchor_remediate`（`second_llm` / `touch_workspace_anchors`）、`post_compaction_audit.remediation` 含 `memory_flush_retry`；`progress.md` 未完成项注入 compaction 摘要
+- **B**：`planned` 计划卡；**`strict` + `VERIFY_PASS`**；可选 **`require_brainstorm_card`**、**`enforce_readonly_verify_round`**（strict 下默认 true，硬只读工具白名单）；可选 **`force_task_plan_file`** + `l3_node/task_plan_policy.py`（**HR 话术豁免**）
+- **C**：`core:apply_patch`（备份+回滚）、`core:apply_patch_rollback`；`core:workflow_run`：**`depends_on` DAG** + **持久化运行时**（`workspace/.workflow_state/`、`on_failure` / `retry` / `resume`）；与 **HR `DAGWorkflow`** 并存、互不替换
+- **D**：`sandbox_profile`、`intelligence_d`、`core:shell_hitl_approve`
+- **E**：`intelligence_e` → `core/intelligence_e_consumer.py` 消费事件写 **reinforce 侧车**；**§4.3** `core/intelligence_implicit.py` + **`intelligence_implicit_embedding.py`** + **`/intelligence/implicit-signal`** + **`implicit_turn_attribution`**
+
+### 长期三层编排（与 A～E 正交，代码已落地）
+
+| 层 | 入口 | 说明 |
+|----|------|------|
+| **L1** | `l3_node/orchestration/skill_routing.py` | `suggest_skills_from_intent`；配置 `nexus_config.orchestration` |
+| **L2** | `l3_node/orchestration/domain_registry.py` | `register_domain` / `run_domain`；内置 **`hr_recruitment`** → `domain_hr.py` |
+| **L3** | `workflow_spec_runner` + `core:domain_workflow_run` | YAML 步骤 **`domain_ref`** 嵌入领域；通用 **tool** 步骤不变 |
+
+**禁止**：在文档中写「YAML 已替代 HR DAG」— HR 执行真相仍为 `hr_recruitment_dag` / 调度器；YAML 仅 **胶水**。
+
+企业级 OS 沙箱 / Lark 审批 UI / 统一 memory_score 公式等仍以总览 **§5.0** 为路线图。
+
+## 三、HR 招聘数据目录（红线）
+
+- **候选人 PDF、jd.json、pending / processed / 副本 / result、排行榜** 等业务数据 **必须** 落在 **`~/.jachin/workspace/hr_recruitment/{职位文件夹}/`**（或 `JACHIN_HR_DATA_ROOT` 解析结果）。**禁止**将 HR 收网/分析落盘到 **仓库内** `skills_repo/**/data/{职位}/` 或任意 `get_app_root()` 下业务目录。
+- **包内** `skills_repo/plugin/data/` **仅保留只读模板**（如 `jd_to_publish.example.json`），不堆积候选人文件。
+- **分析列举**：`tools/hr_data_paths.py` — `collect_resume_paths_for_analysis` 按 **pending → processed → 副本** 兜底；`tools/local_archiver.py` 对落在项目仓库内的 `target_dir` **拒绝**并改写到 `hr_recruitment`。
+- **无分析结果**：不得写排行榜、不得 Lark 多维表同步（`recruitment_task.py`、`recruitment_scheduler.py`）；控制台须 `logger` + `print(..., flush=True)` 可见。
+- **飞书高优指令**：`l3_node/lark_workflow_command_interceptor.py` — 停止收网 vs 停止招聘 歧义、分析类短语；勿把「停止招聘」误 inject 为仅 STOP_HARVEST。
+
+## 四、调度器回退
+
+`recruitment_scheduler._get_hr_data_root()` **禁止**回退到仓库 `skills_repo/plugin/data`；失败时与 `tools.config.get_data_root()` 一致，指向 **`~/.jachin/workspace/hr_recruitment`**（或 `JACHIN_HR_DATA_ROOT`）。

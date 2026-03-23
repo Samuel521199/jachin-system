@@ -19,8 +19,9 @@ def _get_jachin_root() -> Path:
 
 def get_data_root() -> Path:
     """
-    招聘数据根目录：data/{岗位}/pending|processed|result
-    默认 ~/.jachin/workspace/hr_recruitment/
+    招聘数据根目录（业务数据 **仅** 落盘于此，不在仓库内）：
+    ~/.jachin/workspace/hr_recruitment/{岗位文件夹}/pending|processed|result
+    可通过环境变量 JACHIN_HR_DATA_ROOT 覆盖根路径。
     """
     root = _get_jachin_root()
     custom = os.environ.get("JACHIN_HR_DATA_ROOT", "").strip()

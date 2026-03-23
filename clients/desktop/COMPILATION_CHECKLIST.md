@@ -84,14 +84,13 @@ npm run tauri:build
 - **状态**: 已正确处理
 - **说明**: Tauri 会自动序列化 `serde_json::Value` 为 JSON 字符串
 
-### 问题 3: Dapr 端口配置
+### 问题 3: 端口配置
 - **状态**: 已通过环境变量支持
-- **说明**: 默认使用 3500，可通过 `DAPR_HTTP_PORT` 覆盖
+- **说明**: V2 已废弃 Dapr，直连后端 API
 
 ## 📚 相关文档
 
 - [Tauri 2.0 文档](https://tauri.app/v2/)
-- [Dapr Rust SDK](https://docs.dapr.io/developing-applications/sdks/rust/)
 - [Axum 文档](https://docs.rs/axum/)
 
 ## ✅ 下一步

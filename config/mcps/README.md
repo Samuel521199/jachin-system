@@ -1,6 +1,6 @@
 # MCP 配置
 
-规范: `.cursor/rules/075-config-root-and-cloud-sync(1).mdc`
+规范: `.cursor/rules/075-config-root-and-cloud-sync.mdc`
 
 **读取顺序**：优先 `~/.jachin/config/mcps/`，若不存在则从本目录读取（团队共享）。
 

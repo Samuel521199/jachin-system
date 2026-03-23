@@ -1,4 +1,4 @@
-# Full Build Script - L3_RECRUITMENT_BUILD_SPEC
+# Full Build Script（招聘/打包约定见 docs/HR_RECRUITMENT.md）
 # Usage: .\scripts\build_full.ps1
 # Options: -SkipTauri (L3 only), -NoClean (skip clean, incremental), -Force (force L3+Tauri rebuild)
 

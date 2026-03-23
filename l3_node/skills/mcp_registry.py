@@ -804,6 +804,23 @@ class MCPToolRegistry:
             from l3_node.skills.loader import is_tool_allowed
             if not is_tool_allowed(tool_id, allowed_skills):
                 return "[权限拒绝: 当前子账号未开启该技能]"
+        from l3_node.tool_call_cache import try_get_cached, store_if_cacheable
+
+        _cached = try_get_cached(tool_id, action_input)
+        if _cached is not None:
+            return _cached
+
+        out = await self._invoke_impl(tool_id, action_input, timeout=timeout)
+        return store_if_cacheable(tool_id, action_input, out)
+
+    async def _invoke_impl(
+        self,
+        tool_id: str,
+        action_input: str,
+        *,
+        timeout: float = 30.0,
+    ) -> str:
+        """MCP 实际执行（不含权限与 P1 缓存包装）。"""
         if tool_id in self._local_mcp_tools:
             raw_name = self._raw_name(tool_id)
             arguments = self._parse_action_input(action_input)

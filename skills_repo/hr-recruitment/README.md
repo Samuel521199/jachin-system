@@ -4,8 +4,11 @@
 
 ## 架构
 
-- **Skill 包**（本目录）：`SKILL.md` 定义流程
-- **MCP 包**：`skills_repo/plugin/com.jachin.hr.recruitment/` 提供工具
+- **Skill 包**（本目录）：`SKILL.md` 定义 **Agent 对话层** SOP（多轮问 JD、发布、停止等）
+- **MCP 包**：`skills_repo/plugin/com.jachin.hr.recruitment/` 提供工具与调度
+- **DAG 编排**（主仓）：`l3_node/skills/hr_recruitment_dag.py` — 无人值守打招呼/收网走 **状态机 + 信号 + 物理 progress**，与 Skill 互补
+
+**主仓单一事实文档**：`docs/HR_RECRUITMENT.md`（含路径、STOP、规划文件说明）。
 
 ```
 Skill 包 (hr-recruitment/)

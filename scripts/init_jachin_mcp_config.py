@@ -2,7 +2,7 @@
 """
 将项目 config/skills/ 和 config/mcps/ 模板初始化到 ~/.jachin/config/
 
-规范: .cursor/rules/075-config-root-and-cloud-sync(1).mdc
+规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 用法: python scripts/init_jachin_mcp_config.py
 """
 from __future__ import annotations

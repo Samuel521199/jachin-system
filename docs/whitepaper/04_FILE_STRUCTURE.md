@@ -82,7 +82,7 @@ core/
 ├── hitl_registry.py          # HITL 授权挂起 (core:shell_exec 等人机确认)
 ├── agent_memory.py           # Agent 对话上下文 (add_memory, get_context)
 ├── llm_provider.py           # LiteLLM 认知引擎 (CognitiveEngineFactory)
-├── native_tools.py           # Native Core (core:fs_read, core:shell_exec)
+├── native_tools.py           # Native Core（含 P1+ shell 后台分支、shell_job_*）
 ├── config/
 └── requirements.txt
 ```
@@ -111,10 +111,16 @@ clients/desktop/
 ```text
 l3_node/                       # V2 单体执行引擎
 ├── llm_client.py             # SecurityContext + LiteLLMEngine 直连
-├── agent_core.py              # ReAct Agent + MemorySyncDaemon
-├── bootstrap.py               # 引导：注册、拉 Key
-├── crypto.py                  # RSA 加解密
-├── ws_server.py               # 本地 WebSocket (127.0.0.1:18981)
+├── agent_core.py             # ReAct Agent；P1 Prompt 注入；协同子任务 native_tool 直派发
+├── intelligence_p1.py        # P1：用户偏好、待澄清队列、shell 策略（读 nexus_config）
+├── tool_call_cache.py        # P1：只读类工具调用短期缓存
+├── shell_jobs.py             # P1+：后台 shell 任务注册、日志、状态查询
+├── bootstrap.py              # 引导：注册、拉 Key
+├── crypto.py                 # RSA 加解密
+├── ws_server.py              # 本地 WebSocket (127.0.0.1:18981)
+├── skills/
+│   ├── loader.py             # Native + Wasm；run_tool；shell JSON 解析
+│   └── mcp_registry.py       # MCP 桥接（invoke 外包裹 P1 缓存）
 └── engine/hooks_pipeline.py   # 洋葱中间件
 ```
 

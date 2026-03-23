@@ -54,8 +54,56 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:shell_exec",
         "label": "core:shell_exec",
-        "desc": "执行 Shell 命令，工作目录死锁在 ~/.jachin/workspace/。参数: command, timeout(可选,默认30)",
+        "desc": "执行 Shell，cwd=~/.jachin/workspace。JSON：command, timeout, background, sandbox_profile(isolated|sandbox 时 cwd 为 workspace/sandboxes/<id>/)。background=true 时用 core:shell_job_status 查询。",
         "params": ["command"],
+    },
+    {
+        "id": "core:shell_job_status",
+        "label": "core:shell_job_status",
+        "desc": "查询后台 shell 任务状态与日志尾部。参数: job_id 或 JSON {\"job_id\":\"...\"}",
+        "params": ["job_id"],
+    },
+    {
+        "id": "core:shell_job_cancel",
+        "label": "core:shell_job_cancel",
+        "desc": "取消后台 shell（需 nexus_config intelligence_p1.shell_job_cancel_enabled=true）。参数: job_id",
+        "params": ["job_id"],
+    },
+    {
+        "id": "core:apply_patch",
+        "label": "core:apply_patch",
+        "desc": "阶段 C：将 unified diff 应用到 ~/.jachin/workspace/。参数 JSON：patch_text（或 unified_diff），可选 session_hint、python_ast_validate（true 时对 .py 做 ast.parse 预检）",
+        "params": ["patch_text"],
+    },
+    {
+        "id": "core:local_memory_search",
+        "label": "core:local_memory_search",
+        "desc": "L3 断网检索：本地 l3_local.json + 可选 MEMORY.md，关键词+时间衰减+MMR。JSON：query；可选 top_k、mmr_lambda、half_life_days、include_memory_md",
+        "params": ["query"],
+    },
+    {
+        "id": "core:workflow_run",
+        "label": "core:workflow_run",
+        "desc": "阶段 C：执行 workspace 下 YAML 工作流（DAG + 可选持久化）。JSON：yaml_path；可选 persistent, run_id, resume, reset, keep_completed_state；步骤 on_failure: abort|continue|retry，max_retries，retry_delay_sec；或与 tool_id 二选一写 domain_ref 调用 L2 子图",
+        "params": ["yaml_path"],
+    },
+    {
+        "id": "core:domain_workflow_run",
+        "label": "core:domain_workflow_run",
+        "desc": "长期架构 L2：执行已注册领域子图。JSON：domain_id（或 domain）+ 领域参数，如 HR：workflow_id, include_analyze, context",
+        "params": ["domain_id"],
+    },
+    {
+        "id": "core:apply_patch_rollback",
+        "label": "core:apply_patch_rollback",
+        "desc": "回滚 core:apply_patch。JSON：backup_id 可选（缺省用 last_success.json）",
+        "params": ["backup_id"],
+    },
+    {
+        "id": "core:shell_hitl_approve",
+        "label": "core:shell_hitl_approve",
+        "desc": "批准 Shell HITL。JSON：hash_hex 或 command 或 pending_id",
+        "params": ["hash_hex"],
     },
 ]
 
@@ -235,13 +283,87 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
         return {"ok": True}
     if tool_id == "core:shell_exec":
         import subprocess
+        import uuid as _uuid
+
         cmd = kwargs.get("command", "")
         timeout = kwargs.get("timeout", 30)
+        prof = str(kwargs.get("sandbox_profile") or "").lower()
+        cwd = workspace
+        if prof in ("isolated", "sandbox", "jachin_sandbox"):
+            cwd = (workspace / "sandboxes" / _uuid.uuid4().hex[:12]).resolve()
+            cwd.mkdir(parents=True, exist_ok=True)
+        if kwargs.get("background"):
+            from l3_node.shell_jobs import start_background_shell
+
+            return start_background_shell(str(cmd), cwd, int(timeout) if timeout else 30)
         r = subprocess.run(
-            cmd, shell=True, cwd=str(workspace),
+            cmd, shell=True, cwd=str(cwd),
             capture_output=True, text=True, timeout=timeout,
         )
         return {"returncode": r.returncode, "stdout": r.stdout or "", "stderr": r.stderr or ""}
+    if tool_id == "core:shell_job_status":
+        from l3_node.shell_jobs import format_job_status_report
+
+        return format_job_status_report(str(kwargs.get("job_id", "") or ""))
+    if tool_id == "core:shell_job_cancel":
+        from l3_node.shell_jobs import cancel_shell_job
+
+        return cancel_shell_job(str(kwargs.get("job_id", "") or ""))
+    if tool_id == "core:apply_patch":
+        try:
+            from core.apply_patch_unified import apply_unified_diff_to_workspace
+
+            return apply_unified_diff_to_workspace(
+                str(kwargs.get("patch_text", "") or ""),
+                session_hint=str(kwargs.get("session_hint", "") or ""),
+            )
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+    if tool_id == "core:domain_workflow_run":
+        try:
+            from l3_node.orchestration.glue import dispatch_domain_workflow
+
+            did = str(kwargs.get("domain_id") or "").strip()
+            p = kwargs.get("params")
+            if not isinstance(p, dict):
+                p = {}
+            return dispatch_domain_workflow(did, p)
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+    if tool_id == "core:workflow_run":
+        try:
+            from l3_node.workflow_spec_runner import run_workflow_yaml
+
+            return run_workflow_yaml(
+                str(kwargs.get("yaml_path", "") or ""),
+                allowed_skills=kwargs.get("allowed_skills"),
+                persistent=bool(kwargs.get("persistent", False)),
+                run_id=str(kwargs.get("run_id") or "default"),
+                resume=bool(kwargs.get("resume", False)),
+                reset=bool(kwargs.get("reset", False)),
+                keep_completed_state=bool(kwargs.get("keep_completed_state", False)),
+            )
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+    if tool_id == "core:apply_patch_rollback":
+        try:
+            from core.apply_patch_unified import rollback_patch_backup
+
+            bid = kwargs.get("backup_id")
+            return rollback_patch_backup(str(bid).strip() if bid else None)
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+    if tool_id == "core:shell_hitl_approve":
+        try:
+            from l3_node.shell_hitl import approve_shell_hitl
+
+            return approve_shell_hitl(
+                hash_hex=kwargs.get("hash_hex"),
+                command=kwargs.get("command"),
+                pending_id=kwargs.get("pending_id"),
+            )
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
     raise ValueError(f"未知工具: {tool_id}")
 
 
@@ -771,8 +893,118 @@ def run_tool(
     if tool_id == "core:fs_read":
         params["file_path"] = inp or "target.txt"
     elif tool_id == "core:shell_exec":
-        params["command"] = inp
+        params["background"] = False
         params["timeout"] = 30
+        if inp.strip().startswith("{"):
+            try:
+                obj = json.loads(inp)
+                if isinstance(obj, dict):
+                    params["command"] = str(obj.get("command", "") or "")
+                    if obj.get("timeout") is not None:
+                        try:
+                            params["timeout"] = int(obj["timeout"])
+                        except (TypeError, ValueError):
+                            params["timeout"] = 30
+                    params["background"] = bool(obj.get("background", False))
+                    if obj.get("sandbox_profile") is not None:
+                        params["sandbox_profile"] = str(obj.get("sandbox_profile") or "")
+                else:
+                    params["command"] = inp
+            except json.JSONDecodeError:
+                params["command"] = inp
+        else:
+            params["command"] = inp
+    elif tool_id == "core:shell_job_status":
+        jid = inp.strip()
+        if jid.startswith("{"):
+            try:
+                o = json.loads(jid)
+                if isinstance(o, dict):
+                    jid = str(o.get("job_id", "") or "").strip()
+            except json.JSONDecodeError:
+                pass
+        params["job_id"] = jid
+    elif tool_id == "core:shell_job_cancel":
+        jid = inp.strip()
+        if jid.startswith("{"):
+            try:
+                o = json.loads(jid)
+                if isinstance(o, dict):
+                    jid = str(o.get("job_id", "") or "").strip()
+            except json.JSONDecodeError:
+                pass
+        params["job_id"] = jid
+    elif tool_id == "core:apply_patch":
+        params["patch_text"] = inp
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["patch_text"] = str(o.get("patch_text") or o.get("unified_diff") or "")
+                    if o.get("session_hint") is not None:
+                        params["session_hint"] = str(o.get("session_hint", ""))
+            except json.JSONDecodeError:
+                pass
+    elif tool_id == "core:domain_workflow_run":
+        body: dict[str, Any] = {}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    body = dict(o)
+            except json.JSONDecodeError:
+                pass
+        dom = str(body.pop("domain_id", "") or body.pop("domain", "") or "").strip()
+        params = {"domain_id": dom, "params": body if body else {}}
+    elif tool_id == "core:workflow_run":
+        params["yaml_path"] = inp.strip()
+        params["persistent"] = False
+        params["run_id"] = "default"
+        params["resume"] = False
+        params["reset"] = False
+        params["keep_completed_state"] = False
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["yaml_path"] = str(o.get("yaml_path") or o.get("workflow_yaml") or "")
+                    if "persistent" in o:
+                        params["persistent"] = bool(o.get("persistent"))
+                    if o.get("run_id") is not None:
+                        params["run_id"] = str(o.get("run_id") or "default")
+                    if "resume" in o:
+                        params["resume"] = bool(o.get("resume"))
+                    if "reset" in o:
+                        params["reset"] = bool(o.get("reset"))
+                    if "keep_completed_state" in o:
+                        params["keep_completed_state"] = bool(o.get("keep_completed_state"))
+            except json.JSONDecodeError:
+                pass
+    elif tool_id == "core:apply_patch_rollback":
+        params["backup_id"] = None
+        s = inp.strip()
+        if s.startswith("{"):
+            try:
+                o = json.loads(s)
+                if isinstance(o, dict) and o.get("backup_id") is not None:
+                    params["backup_id"] = str(o.get("backup_id") or "").strip() or None
+            except json.JSONDecodeError:
+                pass
+        elif s:
+            params["backup_id"] = s
+    elif tool_id == "core:shell_hitl_approve":
+        params["hash_hex"] = None
+        params["command"] = None
+        params["pending_id"] = None
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["hash_hex"] = o.get("hash_hex") or o.get("hash")
+                    params["command"] = o.get("command")
+                    params["pending_id"] = o.get("pending_id")
+            except json.JSONDecodeError:
+                pass
     elif tool_id == "core:fs_write":
         if "," in inp and "=" in inp:
             for part in inp.split(","):
@@ -789,17 +1021,65 @@ def run_tool(
 
     print(f"[Skill Execute] [Native] 调用 tool_id={tool_id} params={params}", file=sys.stderr, flush=True)
     try:
+        if tool_id == "core:shell_exec":
+            from l3_node.intelligence_p1 import assert_shell_exec_allowed
+            from l3_node.shell_hitl import assert_shell_hitl_approved
+
+            assert_shell_exec_allowed(str(params.get("command", "") or ""))
+            assert_shell_hitl_approved(str(params.get("command", "") or ""))
+
+        fs_cache_inp = ""
+        if tool_id == "core:fs_read":
+            from l3_node.tool_call_cache import try_get_cached, store_if_cacheable
+
+            fs_cache_inp = json.dumps(
+                {"file_path": str(params.get("file_path", "") or "")},
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            _hit = try_get_cached("core:fs_read", fs_cache_inp)
+            if _hit is not None:
+                return _hit
+
         result = _invoke_native(tool_id, **params)
         out_str = str(result)[:200] if result else ""
         print(f"[Skill Execute] [Native] 返回 tool_id={tool_id} result_preview={out_str}...", file=sys.stderr, flush=True)
         if isinstance(result, dict):
+            if tool_id == "core:fs_write" and result.get("ok") is True:
+                return "ok"
+            if tool_id in (
+                "core:apply_patch",
+                "core:apply_patch_rollback",
+                "core:workflow_run",
+                "core:domain_workflow_run",
+                "core:shell_hitl_approve",
+            ):
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            if result.get("background") and result.get("job_id"):
+                jid = result.get("job_id")
+                return (
+                    f"[后台 shell 已启动] job_id={jid} pid={result.get('pid')} log={result.get('log_path')}\n"
+                    f"查询状态请使用 Action: core:shell_job_status，Action Input: "
+                    f"{json.dumps({'job_id': jid}, ensure_ascii=False)}"
+                )
             out = result.get("stdout", "")
             err = result.get("stderr", "")
             code = result.get("returncode", 0)
             if err:
-                return f"[exit {code}]\nstdout: {out}\nstderr: {err}"
-            return out or f"[exit {code}]"
-        return str(result)
+                msg = f"[exit {code}]\nstdout: {out}\nstderr: {err}"
+            else:
+                msg = out or f"[exit {code}]"
+            if tool_id == "core:fs_read" and fs_cache_inp:
+                from l3_node.tool_call_cache import store_if_cacheable
+
+                return store_if_cacheable("core:fs_read", fs_cache_inp, msg)
+            return msg
+        text_result = str(result)
+        if tool_id == "core:fs_read" and fs_cache_inp:
+            from l3_node.tool_call_cache import store_if_cacheable
+
+            return store_if_cacheable("core:fs_read", fs_cache_inp, text_result)
+        return text_result
     except Exception as e:
         print(f"[Skill Execute] [Native] 异常 tool_id={tool_id} error={e}", file=sys.stderr, flush=True)
         return f"[执行失败: {e}]"
@@ -873,7 +1153,15 @@ def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
     if not allowed_skills:
         return False
     allowed_ids = _build_allowed_ids(allowed_skills)
-    return (tool_id or "").strip().lower() in allowed_ids
+    tid = (tool_id or "").strip().lower()
+    if tid in allowed_ids:
+        return True
+    # P1+：状态/取消与 shell_exec 绑定，避免白名单漏配导致后台任务无法查询
+    if tid in ("core:shell_job_status", "core:shell_job_cancel") and (
+        "core:shell_exec" in allowed_ids or "shell_exec" in allowed_ids
+    ):
+        return True
+    return False
 
 
 def build_tools_description(tools: list[dict[str, Any]]) -> str:

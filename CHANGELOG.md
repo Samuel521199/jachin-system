@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.50] - 2026-03-16
+
+**Milestone: DeepBrain（深脑）** — 产品基线与 Git 标签 `v0.8.50` 对齐。
+
+### Added
+
+- **智能化 / 记忆**：L3 本地记忆与 `core:local_memory_search`；混合检索 **MMR**、`memory_scoring`、`GET /api/v2/memory/search?explain=true`；隐式学习（`intelligence_implicit` / `intelligence_implicit_embedding`、`implicit_turn_attribution`、`POST /api/v2/intelligence/implicit-signal`）、`intelligence_e` 消费；文档 `INTELLIGENCE_UPGRADE_OVERVIEW`、`JACHIN_VS_OPENCLAW_*`、`IMPLICIT_SIGNALS`、`MEMORY_SCORING`、`ORCHESTRATION_ARCHITECTURE` 等
+- **任务范式与编排**：`intelligence_b_execution`、`task_plan_policy`、`workflow_spec_runner`（持久化 DAG / resume）、`l3_node/orchestration/`、`core:apply_patch` / 回滚、`shell_hitl` 等
+- **规则**：`.cursor/rules/078-intelligence-roadmap-and-hr-data.mdc` 等；配置规范统一为 `075-config-root-and-cloud-sync.mdc`（移除旧 `(1)` 文件名）
+
+### Changed
+
+- **版本号**：`core/main.py`（FastAPI）、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli` 统一为 **0.8.50**
+- **文档与仓库**：HR 单一事实来源 `docs/HR_RECRUITMENT.md`；多份架构 / 部署 / 技能文档与插件路径对齐
+
+---
+
 ## [v0.8.5] - 2026-03
 
 ### Added
@@ -11,6 +28,8 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - 版本号统一更新至 v0.8.5
+- **文档整理**：移除过时智能化/招聘长文（`MEMORY_IMPROVEMENTS_*`、`HR_RECRUITMENT_DECOUPLE_*`、`hr_decouple_inventory`、`L3_RECRUITMENT_BUILD_SPEC`、`WEEKLY_DEV_LOG_20260317`）；新增单一事实来源 [docs/HR_RECRUITMENT.md](docs/HR_RECRUITMENT.md)，`docs/README.md` 增加「智能化与招聘」索引
+- **文档对齐（智能化 + HR）**：更新 `JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`（P0/DAG/任务持久现状）、`ARCHITECTURE.md`、`INTELLIGENCE_UPGRADE_OVERVIEW.md`（§1.5 HR 物理绑定）、`README_DEPLOY.md`、`LARK_NO_REPLY_TROUBLESHOOTING.md`、`l3_node/README.md`、`PROJECT_STRUCTURE.md`、根 `README.md`；插件侧 `skills_repo/plugin/README.md`、`INTEGRATION_CORE.md`；`skills_repo/hr-recruitment/README.md`；`.cursor/rules/077-skill-mcp-dependency.mdc`
 
 ---
 
@@ -72,7 +91,7 @@ All notable changes to this project will be documented in this file.
 - **文档与规范**
   - 白皮书升级至 v6.0 (The Neural Bus Edition)
   - 新增 `docs/MCP_SPEC.md`、`docs/SKILL_MD_SPEC.md`
-  - 更新 `docs/JACHIN_VS_OPENCLAW_ANALYSIS.md`、P0、VOICE、IM_GATEWAY 等规格
+  - 更新 `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、P0、VOICE、IM_GATEWAY 等规格
   - `.cursor/rules/*.mdc` 全面同步 v6.0 架构
 
 ### Changed

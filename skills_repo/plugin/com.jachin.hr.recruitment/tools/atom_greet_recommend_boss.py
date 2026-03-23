@@ -9,8 +9,10 @@ import re
 # from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError  # 小模型初筛暂注释
 from pathlib import Path
 
+from .anti_bot_guardian import check_and_bypass_anti_bot, should_reraise_hitl
 from .atom_post_job_boss import load_jd_config, get_jd_select
 from .boss_utils import select_job
+from .os_signal_probe import os_stop_requested as _os_stop_requested
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +55,20 @@ def atom_greet_recommend_boss(
     cdp_url: str = "http://127.0.0.1:9222",
     jd_config_path: str = "",
     max_greet_per_run: int = 0,
+    workflow_hitl_context: dict | None = None,
+    os_context: dict | None = None,
 ) -> dict:
     """
     在推荐牛人页面自动筛选并打招呼。
     前置：Chrome 以 --remote-debugging-port 启动，已登录 Boss。
     流程：读 data/{岗位名}/jd.json（jd_config_path）→ 点击「全部职位」/职位下拉展开 → 选中该职位 → 点推荐牛人 → 遍历卡片 → 初筛 → 打招呼。
+
+    workflow_hitl_context:
+        可选 DAG 上下文，可含 ``_human_decision``，供反爬检测时 ask_human 续跑注入。
+    os_context:
+        可选 OS/Workflow 上下文，遍历卡片时探针 STOP_HARVEST。
     """
+    _hitl = workflow_hitl_context if workflow_hitl_context is not None else os_context
     job_name = ""
     if jd_config_path and Path(jd_config_path).exists():
         p = Path(jd_config_path)
@@ -135,6 +145,7 @@ def atom_greet_recommend_boss(
 
             page.bring_to_front()
             page.wait_for_load_state("domcontentloaded", timeout=5000)
+            check_and_bypass_anti_bot(page, _hitl)
 
             # 1. 进入推荐牛人页面（优先点左侧菜单，避免多次 goto 导致刷新循环）
             current_url = page.url or ""
@@ -156,6 +167,7 @@ def atom_greet_recommend_boss(
                                 break
                         except Exception:
                             continue
+            check_and_bypass_anti_bot(page, _hitl)
 
             # 2. 在「全部职位」中选择与 jd_select 匹配的职位（推荐牛人页：div.ui-dropmenu-label）
             jd_select = get_jd_select(jd)
@@ -169,6 +181,7 @@ def atom_greet_recommend_boss(
                 }
             if jd_select:
                 page.wait_for_timeout(2500)  # 职位切换后列表会刷新，等待加载
+            check_and_bypass_anti_bot(page, _hitl)
 
             # 3. 定位候选人卡片（主页面或 iframe；Boss chat/recommend 与 geek/recommend 结构可能不同）
             def _collect_frames():
@@ -220,6 +233,7 @@ def atom_greet_recommend_boss(
                     break
                 page.wait_for_timeout(2500)
                 frame, cards_loc = _get_cards()
+            check_and_bypass_anti_bot(page, _hitl)
 
             if not frame or not cards_loc:
                 curr_url = (page.url or "")[:120]
@@ -237,6 +251,15 @@ def atom_greet_recommend_boss(
             skipped_score = 0
 
             for i in range(min(n_cards, 20)):
+                if _os_stop_requested(os_context):
+                    return {
+                        "success": True,
+                        "greeted_count": greeted,
+                        "skipped_chat_history": skipped_chat,
+                        "skipped_low_score": skipped_score,
+                        "error": "",
+                        "stopped_by_os": True,
+                    }
                 if greeted >= limit:
                     break
                 try:
@@ -260,6 +283,16 @@ def atom_greet_recommend_boss(
                         logger.debug("点击卡片失败(跳过): %s", click_err)
                         continue
                     page.wait_for_timeout(1800)
+                    check_and_bypass_anti_bot(page, _hitl)
+                    if _os_stop_requested(os_context):
+                        return {
+                            "success": True,
+                            "greeted_count": greeted,
+                            "skipped_chat_history": skipped_chat,
+                            "skipped_low_score": skipped_score,
+                            "error": "",
+                            "stopped_by_os": True,
+                        }
 
                     # 5. 提取详情页简历文本（可能在主页面或弹窗）
                     resume_text = ""
@@ -326,6 +359,8 @@ def atom_greet_recommend_boss(
                         break
 
                 except Exception as e:
+                    if should_reraise_hitl(e):
+                        raise
                     logger.warning(f"atom_greet_recommend_boss card {i} failed: {e}")
                     try:
                         _close_detail(page)
@@ -341,6 +376,8 @@ def atom_greet_recommend_boss(
             }
 
     except Exception as e:
+        if should_reraise_hitl(e):
+            raise
         logger.error(f"atom_greet_recommend_boss failed: {e}", exc_info=True)
         return {
             "success": False,

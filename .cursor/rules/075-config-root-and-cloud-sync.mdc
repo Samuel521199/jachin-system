@@ -1,6 +1,6 @@
 ---
 description: 配置根 ~/.jachin/ 与云端配置随包下发规范
-globs: config/**/*, l3_node/**/*.py, core/sync_daemon.py, core/inventory_scanner.py, l3_node/mcp_sync.py
+globs: config/**/*, l3_node/**/*.py, core/sync_daemon.py, core/inventory_scanner.py, l3_node/mcp_sync.py, l3_node/config_manifest.py
 alwaysApply: false
 ---
 
@@ -30,6 +30,7 @@ alwaysApply: false
 │       └── atom_bi_metrics/
 │           └── bi_metrics.yaml
 ├── data/                     # 运行时数据
+├── workspace/                # 任务与业务工作区（含 hr_recruitment/，与 config 分离）
 ├── inventory/                # L2 同步的包
 ├── l3_mcp_cache/            # L3 拉取的 MCP
 └── l3_skill_cache/           # L3 拉取的技能
@@ -39,6 +40,10 @@ alwaysApply: false
 
 - 新增配置读取逻辑：优先 `Path.home() / ".jachin" / "config" / ...`，支持 `JACHIN_HOME` 环境变量覆盖
 - 路径解析：`__PROJECT_ROOT__` 占位符替换为 `~/.jachin`，不再使用项目根
+
+### 与 `workspace/` 的区分（招聘）
+
+- **招聘业务数据**（每职位 `pending` / `processed` / `副本` / `result`、候选人 PDF、`jd.json`）在 **`~/.jachin/workspace/hr_recruitment/`**，**不是** `~/.jachin/config/`。禁止将此类数据写入仓库内 `skills_repo/**/data/{职位}/`。详见 **`.cursor/rules/078-intelligence-roadmap-and-hr-data.mdc`**。
 
 ---
 

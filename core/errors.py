@@ -44,6 +44,33 @@ ERR_INTERNAL_001 = "ERR_INTERNAL_001"  # 数据库/内部错误
 ERR_MCP_001 = "ERR_MCP_001"  # 工具未找到
 ERR_MCP_002 = "ERR_MCP_002"  # MCP 连接/执行超时或失败
 
+# -----------------------------------------------------------------------------
+# Human-in-the-Loop 人工劫持
+# -----------------------------------------------------------------------------
+
+
+class SuspendForHumanException(Exception):
+    """
+    当 MCP 工具 ask_human_for_decision 被调用且无预注入决策时抛出。
+    Workflow 引擎捕获后会将状态标记为 SUSPENDED_WAITING_HUMAN，持久化并安全退出。
+    """
+
+    def __init__(self, prompt_msg: str, options: list[str]) -> None:
+        self.prompt_msg = prompt_msg
+        self.options = options
+        super().__init__(f"SUSPENDED_WAITING_HUMAN: {prompt_msg[:80]}...")
+
+
+class AntiBotTerminateException(Exception):
+    """
+    Boss 反爬/滑块验证场景下，统帅选择「终止任务」时抛出。
+    与 SuspendForHumanException 区分：本异常表示明确放弃本次抓取，由上层停止流程。
+    """
+
+    def __init__(self, message: str = "环境危险，终止任务") -> None:
+        self.message = message
+        super().__init__(message)
+
 
 def api_error(
     status_code: int,
