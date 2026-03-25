@@ -37,9 +37,28 @@ if sys.platform == "win32":
 
 def _run_bi_flow() -> int:
     """执行 BI 完整流程"""
-    from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
+    from datetime import datetime, timedelta
 
-    print("\n[BI分析] 正在执行 BI 每日战报流程...")
+    from l3_node.mcp_tools.bi.paths import get_bi_output_dir, get_bi_raw_dir
+    from l3_node.skills.bi.bi_daily_report.main_skill import _load_config, run_bi_daily_report
+
+    cfg = _load_config(None)
+    storage = cfg.get("storage") or {}
+    raw_override = (storage.get("analysis_raw_dir") or "").strip()
+    raw_path = Path(raw_override).expanduser().resolve() if raw_override else get_bi_raw_dir()
+    out_path = get_bi_output_dir(storage.get("refiner_output_path"))
+    now = datetime.now()
+    t1 = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    print("\n[BI分析] ========== 运行前环境 ==========")
+    print(f"  analysis_data_source: {cfg.get('analysis_data_source', '(未配置)')}")
+    print(f"  提纯基准日 t1(昨日): {t1}  （以本机当前时间推算）")
+    print(f"  raw 目录(提纯读入): {raw_path}")
+    print(f"  output 目录(提纯写出): {out_path}")
+    print(f"  skip_collect: {cfg.get('skip_collect')}")
+    print(f"  run_refiner: {cfg.get('run_refiner')}")
+    print(f"  lark_bitable.enabled: {(cfg.get('lark_bitable') or {}).get('enabled')}")
+    print("[BI分析] ==================================\n")
+    print("[BI分析] 正在执行 BI 每日战报流程...")
     result = run_bi_daily_report()
     if result.get("success"):
         print("[BI分析] ✅ 完成")

@@ -25,11 +25,12 @@ if str(root) not in sys.path:
 from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
 
 
-def main() -> None:
+def main() -> int:
     print("执行 BI 每日战报...")
     result = run_bi_daily_report()
     print(result)
+    return 0 if result.get("success") else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

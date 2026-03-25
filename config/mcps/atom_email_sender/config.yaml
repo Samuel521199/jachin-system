@@ -1,13 +1,5 @@
-# atom_email_sender MCP 配置（团队共享，已加入 .gitignore）
-# 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
-
-smtp:
-  host: "smtp.qq.com"
-  port: 587
-  user: "2105582473@qq.com"
-  password: "grchforahkyzcfab"
-
-# 默认收件人列表（BI 战报等）
-default_to_addrs:
-  - "vivian@herontech.net"
-  - "1807301549@qq.com"
+# atom_email_sender MCP — 不在此存放账号/密码/默认收件人
+# BI 战报 Step 3.6 由 main_skill 从 bi_daily_report.yaml（distribution.email）与 .env（BI_SMTP_*、BI_SMTP_TO）读取；
+# 此处仅保留占位；若 YAML/.env 均未配置，skill 才会尝试读本文件中的 smtp / default_to_addrs（可为空）。
+smtp: {}
+default_to_addrs: []

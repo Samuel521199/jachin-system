@@ -261,8 +261,11 @@ def _run_analysis_flow() -> int:
                     dashboard_section_parts.append(f'<div style="margin:12px 0; padding:12px; background:#f8f9fa; border-radius:8px; border-left:4px solid #1890ff;"><h4 style="margin:0 0 8px 0;">{i + 1}. {html.escape(dname)}</h4><p style="margin:4px 0; color:#666; font-size:13px;">📊 {html.escape(chart_list)} {link_html}</p><p style="margin:8px 0 0 0; white-space: pre-wrap;">{analysis_escaped}</p></div>')
                 dashboard_section = f'<h3>三、仪表盘统计图与分析</h3>{"".join(dashboard_section_parts)}' if dashboard_section_parts else ""
                 body = f"""<html><body style="font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size:14px; line-height:1.6; color:#333;">
+<div style="background:#e6f7ff; padding:12px 16px; border-radius:8px; margin-bottom:16px; border-left:4px solid #1890ff;">
+<p style="margin:0 0 8px 0; font-weight:600;">本邮件由 jachin 系统自动发送</p>
+<p style="margin:0; color:#c41d7f; font-size:13px;">⚠ 注意将此账号放入白名单，以防被当垃圾邮件误删！</p>
+</div>
 <h2 style="color:#1890ff;">📊 BI 每日战报 ({report_date})</h2>
-<p>本邮件由「从多维表格同步后开始」流程生成，含战略分析、仪表盘统计图分析。</p>
 <h3>一、战略深度分析</h3>
 <div style="background:#f5f5f5; padding:16px; border-radius:8px; white-space: pre-wrap;">{strategic_html}</div>
 {lark_section}
