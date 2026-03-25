@@ -2,9 +2,10 @@
 仪表盘分析 + Lark 自动化发送配置
 
 在数据同步到 Lark 多维表格后，对每个仪表盘：
-1. 基于对应 CSV 调用 LLM 生成图表级小分析
-2. 保存分析到 output 目录
-3. 通过 Playwright 打开 Lark 仪表盘，点击「设置自动化发送」→「更多配置」→ 填入分析、设置定时时间 →「保存并启用」
+1. 优先从 Lark 多维表（同 base 下各子表）拉取数据；若无则从 output 目录 CSV 读取
+2. 调用 LLM 生成图表级小分析
+3. 保存分析到 output 目录
+4. 通过 Playwright 打开 Lark 仪表盘，点击「设置自动化发送」→「更多配置」→ 填入分析、设置定时时间 →「保存并启用」
 
 依赖：Chrome 调试模式已启动且已登录 Lark/飞书。
 """
@@ -13,11 +14,19 @@ from __future__ import annotations
 import csv as csv_module
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _get_bi_raw_dir() -> Path:
+    """延迟导入避免循环依赖"""
+    from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
+    return get_bi_raw_dir()
+
 
 # 仪表盘名称 → 图表列表（图表名, 对应 CSV）
 _DASHBOARD_CHARTS: dict[str, list[tuple[str, str]]] = {
@@ -45,9 +54,30 @@ _DASHBOARD_CHARTS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
-_DASHBOARD_SYSTEM_PROMPT = """你是 BI 数据分析师。用户将提供某个仪表盘下多个图表的 CSV 数据摘要。
-请用 2～5 句话给出该仪表盘的整体洞察，聚焦：趋势、异常、建议。
+_DASHBOARD_SYSTEM_PROMPT = """你是 BI 数据分析师。用户将提供某个仪表盘下多个图表的数据摘要（来自 Lark 多维表或 CSV）。
+请用 2～5 句话给出该仪表盘的整体洞察，聚焦：趋势、异常、建议。严格依据数据内容，勿臆测。
 输出直接可粘贴到 Lark 消息内容中，无需标题，禁止 Markdown 代码块。"""
+
+
+# 仪表盘 CSV 与 raw slug 映射
+_DASHBOARD_CSV_TO_RAW: dict[str, str] = {
+    "01_用户活跃_增幅表.csv": "stats_user_dau",
+    "02_用户活跃_日期数量表.csv": "stats_user_dau",
+    "03a_用户活跃_DAU渠道来源.csv": "stats_user_dau",
+    "03b_用户活跃_DNU渠道来源.csv": "stats_user_new",
+    "13_用户活跃_新增设备表.csv": "stats_user_dau",
+    "04_留存_次留表.csv": "stats_retention_user",
+    "05_留存_付费用户次留表.csv": "stats_retention_paid",
+    "06_留存_周环比表.csv": "stats_retention_user_compare",
+    "07_留存_付费用户周环比表.csv": "stats_retention_paid_compare",
+    "08_消耗_每日表.csv": "prod_sales",
+    "09_消耗_按游戏表.csv": "prod_sales",
+    "10_充值_付费人数按SKU.csv": "recharge_status",
+    "11_充值_付费金额按SKU.csv": "recharge_status",
+    "14_充值_付费人数金额增幅表.csv": "stats_recharge",
+    "15_充值_ARPU表.csv": "stats_recharge",
+    "16_充值_ARPPU表.csv": "stats_recharge",
+}
 
 
 def _load_csv_summary_for_dashboard(output_dir: Path, csv_files: list[str]) -> str:
@@ -72,6 +102,133 @@ def _load_csv_summary_for_dashboard(output_dir: Path, csv_files: list[str]) -> s
     return "\n".join(lines) if lines else "（无数据）"
 
 
+def _load_raw_summary_for_dashboard(raw_dir: Path, csv_files: list[str]) -> str:
+    """从 raw 目录 CSV 读取仪表盘所需数据摘要（替代 Lark 多维表）"""
+    lines: list[str] = []
+    seen_slugs: set[str] = set()
+    for csv_name in csv_files:
+        slug = _DASHBOARD_CSV_TO_RAW.get(csv_name)
+        if not slug or slug in seen_slugs:
+            continue
+        p = raw_dir / f"{slug}.csv"
+        if not p.exists():
+            continue
+        seen_slugs.add(slug)
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                reader = csv_module.DictReader(f)
+                rows = list(reader)[:8]
+            if rows:
+                cols = list(rows[0].keys())
+                lines.append(f"\n### {csv_name}（raw/{slug}.csv）")
+                for r in rows[:5]:
+                    line = " | ".join(f"{k}: {str(r.get(k, ''))[:30]}" for k in cols[:5])
+                    lines.append(f"  {line}")
+        except Exception as e:
+            logger.debug("[Dashboard] 读取 raw %s 失败: %s", slug, e)
+    return "\n".join(lines) if lines else "（无数据）"
+
+
+def _lark_bitable_list_params(
+    lark_config: dict[str, Any], csv_filename: str, page_token: str | None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"page_size": 100}
+    if page_token:
+        params["page_token"] = page_token
+    vm = lark_config.get("list_records_view_by_csv") or {}
+    vid = str(vm.get(csv_filename) or "").strip()
+    if vid:
+        params["view_id"] = vid
+    return params
+
+
+def _cell_to_str(val: Any) -> str:
+    """将 Lark 多维表 cell 值转为可读字符串（支持日期、多选等格式）"""
+    if val is None:
+        return ""
+    if isinstance(val, dict):
+        # 日期: {"type":"date","date":"2026-03-20"} 或 timestamp
+        if val.get("type") == "date":
+            return str(val.get("date", val.get("timestamp", "")))
+        return str(val)
+    return str(val)
+
+
+def _fetch_bitable_summary_for_dashboard(
+    lark_config: dict[str, Any],
+    charts: list[tuple[str, str]],
+) -> str:
+    """从 Lark 多维表拉取数据摘要，供 LLM 分析。charts: [(图表名, csv_filename), ...]"""
+    app_token = (lark_config.get("app_token") or "").strip()
+    tables_map = lark_config.get("tables") or {}
+    if not app_token or not tables_map:
+        return "（无配置）"
+
+    app_id = (lark_config.get("app_id") or "").strip()
+    app_secret = (lark_config.get("app_secret") or "").strip()
+    use_feishu = lark_config.get("lark_use_feishu", False)
+
+    if app_id and app_secret:
+        os.environ.setdefault("LARK_APP_ID", app_id)
+        os.environ.setdefault("LARK_APP_SECRET", app_secret)
+    if use_feishu:
+        os.environ["LARK_USE_FEISHU"] = "1"
+
+    try:
+        from l3_node.channels.lark.client import get_tenant_access_token, get_lark_api_base
+        import requests
+    except ImportError as e:
+        logger.debug("[Dashboard] Lark 依赖未就绪: %s", e)
+        return "（无配置）"
+
+    try:
+        token = get_tenant_access_token()
+        api_base = get_lark_api_base()
+    except Exception as e:
+        logger.warning("[Dashboard] Lark token 获取失败: %s", e)
+        return "（无配置）"
+
+    lines: list[str] = []
+    for _chart_name, csv_name in charts:
+        table_id = (tables_map.get(csv_name) or "").strip()
+        if not table_id or table_id.startswith("${"):
+            continue
+        try:
+            records: list[dict] = []
+            page_token = None
+            while True:
+                url = f"{api_base}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+                params = _lark_bitable_list_params(lark_config, csv_name, page_token)
+                resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params, timeout=15)
+                data = resp.json()
+                if data.get("code") != 0:
+                    logger.debug("[Dashboard] Lark 表 %s 拉取失败: %s", csv_name, data.get("msg", data))
+                    break
+                items = data.get("data", {}).get("items", [])
+                records.extend(items)
+                page_token = data.get("data", {}).get("page_token")
+                if not page_token or not items:
+                    break
+            if records:
+                # 取前 5 条，格式与 CSV 摘要一致
+                cols: list[str] = []
+                for r in records[:1]:
+                    fields = r.get("fields", {})
+                    cols = list(fields.keys())[:8]
+                    break
+                if not cols and records:
+                    fields = records[0].get("fields", {})
+                    cols = list(fields.keys())[:8]
+                lines.append(f"\n### {csv_name}（Lark 多维表）")
+                for r in records[:5]:
+                    fields = r.get("fields", {})
+                    line = " | ".join(f"{k}: {_cell_to_str(fields.get(k))}" for k in cols[:5])
+                    lines.append(f"  {line}")
+        except Exception as e:
+            logger.debug("[Dashboard] Lark 表 %s 拉取异常: %s", csv_name, e)
+    return "\n".join(lines) if lines else "（无数据）"
+
+
 async def generate_dashboard_analysis_async(
     dashboard_name: str,
     output_dir: Path,
@@ -79,6 +236,9 @@ async def generate_dashboard_analysis_async(
 ) -> str:
     """
     为指定仪表盘生成 LLM 分析，保存到 output 目录。
+
+    数据来源优先级：Lark 多维表 > 本地 output CSV。
+    配置 lark_bitable（app_token、tables、app_id、app_secret）时，从多维表拉取最新数据。
 
     Returns:
         分析文本；失败时返回降级文案
@@ -88,9 +248,30 @@ async def generate_dashboard_analysis_async(
         return f"仪表盘 {dashboard_name} 未配置图表映射"
 
     csv_files = [c[1] for c in charts]
-    csv_summary = _load_csv_summary_for_dashboard(output_dir, csv_files)
+    csv_summary = "（无数据）"
+
+    # analysis_data_source=raw 时从 raw CSV 读取；否则优先 Lark 多维表，无则 output CSV
+    analysis_src = (str((config or {}).get("analysis_data_source") or "lark")).strip().lower()
+    raw_dir: Path | None = None
+    if analysis_src == "raw":
+        raw_dir_cfg = ((config or {}).get("storage") or {}).get("analysis_raw_dir") or ""
+        raw_dir = Path(raw_dir_cfg) if raw_dir_cfg and str(raw_dir_cfg).strip() else _get_bi_raw_dir()
+    if raw_dir and raw_dir.exists():
+        csv_summary = _load_raw_summary_for_dashboard(raw_dir, csv_files)
+        if csv_summary not in ("（无数据）",):
+            logger.info("[Dashboard] 使用 raw 目录 CSV 数据: %s", dashboard_name)
+    if csv_summary == "（无数据）" and analysis_src != "raw":
+        lark_cfg = (config or {}).get("lark_bitable") or {}
+        if lark_cfg.get("enabled", True) and lark_cfg.get("app_token"):
+            lark_summary = _fetch_bitable_summary_for_dashboard(lark_cfg, charts)
+            if lark_summary not in ("（无数据）", "（无配置）"):
+                csv_summary = lark_summary
+                logger.info("[Dashboard] 使用 Lark 多维表数据: %s", dashboard_name)
     if csv_summary == "（无数据）":
-        return f"仪表盘 {dashboard_name}：当前无对应 CSV 数据"
+        csv_summary = _load_csv_summary_for_dashboard(output_dir, csv_files)
+
+    if csv_summary == "（无数据）":
+        return f"仪表盘 {dashboard_name}：当前无对应数据（Lark 多维表或本地 CSV 均无）"
 
     user_prompt = f"""仪表盘：{dashboard_name}
 图表及数据摘要：

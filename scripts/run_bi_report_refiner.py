@@ -17,7 +17,7 @@ if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
 from l3_node.mcp_tools.bi.report_refiner import run_refiner, sync_refiner_to_lark
-from l3_node.mcp_tools.bi.paths import get_bi_output_dir
+from l3_node.mcp_tools.bi.paths import get_bi_output_dir, get_bi_raw_dir
 
 
 def _load_config() -> dict:
@@ -38,7 +38,11 @@ def _load_config() -> dict:
 
 def main():
     ap = argparse.ArgumentParser(description="BI 日报提纯 — 输出 Lark 多维表格可导入 CSV")
-    ap.add_argument("--date", default=None, help="目标日期 YYYY-MM-DD，默认昨日")
+    ap.add_argument(
+        "--date",
+        default=None,
+        help="报表数据日 YYYY-MM-DD（= 提纯基准 t1，通常为昨日）；默认由程序按本机日期推算昨日",
+    )
     ap.add_argument("--output-dir", default=None, help="输出目录；未指定时从配置读取，空则用默认")
     ap.add_argument("--sync-lark", action="store_true", help="提纯后同步到 Lark 多维表格（需配置 lark_bitable.enabled 或 tables）")
     args = ap.parse_args()
@@ -52,7 +56,14 @@ def main():
     else:
         output_dir = get_bi_output_dir(output_override)
 
-    written, errors = run_refiner(date_str=args.date, output_dir=output_dir)
+    raw_cfg = str(storage.get("analysis_raw_dir") or "").strip()
+    if raw_cfg:
+        _rawp = Path(raw_cfg).expanduser().resolve()
+        raw_dir = _rawp if _rawp.exists() else get_bi_raw_dir()
+    else:
+        raw_dir = get_bi_raw_dir()
+
+    written, errors = run_refiner(date_str=args.date, output_dir=output_dir, raw_dir=raw_dir)
 
     if errors:
         for e in errors:
@@ -67,8 +78,8 @@ def main():
         print("[提示] 仅生成部分 CSV，多数表无数据。请先执行：", file=sys.stderr)
         print("  1) .\\scripts\\launch_chrome_debug_bi.ps1  （Chrome 调试模式）", file=sys.stderr)
         print("  2) 在 Chrome 中登录 BI 后台", file=sys.stderr)
-        print("  3) python scripts/run_bi_scraper_spa.py     （抓取数据）", file=sys.stderr)
-        print("  4) python scripts/import_raw_to_duckdb.py   （导入 DuckDB）", file=sys.stderr)
+        print("  3) python scripts/run_bi_scraper_spa.py     （抓取到 raw/*.csv，提纯优先用 raw）", file=sys.stderr)
+        print("  4) 可选: python scripts/import_raw_to_duckdb.py （导入 DuckDB 作兜底）", file=sys.stderr)
         print("  5) 再次运行本脚本", file=sys.stderr)
 
     # 同步到 Lark 多维表格

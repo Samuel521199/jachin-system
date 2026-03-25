@@ -14,11 +14,143 @@ import csv
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+_DIFF_PREFIX = "[DIFF-LOG] | "
+
+
+def _diff_log(msg: str) -> None:
+    """终端 + 日志双写，便于 Beyond Compare 比对两台机器输出。"""
+    line = f"{_DIFF_PREFIX}{msg}"
+    print(line, flush=True)
+    logger.info("%s", line)
+
+
+def _safe_page_url(page: Any) -> str:
+    try:
+        u = (page.url or "").strip()
+        return u if u else "(empty)"
+    except Exception:
+        return "(url_unavailable)"
+
+
+def _cdp_route_identity(u: str) -> str | None:
+    """
+    用于在 CDP 多标签下选对页：按「主机 + hash 路由」归一化。
+    禁止再用 `target in page.url`：例如 biUserDailySummary 会误匹配 biUserDailySummaryCompare。
+    """
+    u = (u or "").strip()
+    if not u.lower().startswith("http"):
+        return None
+    try:
+        p = urlparse(u)
+        host = (p.netloc or "").lower()
+        if not host:
+            return None
+        frag = (p.fragment or "").split("?")[0].rstrip("/")
+        path = (p.path or "").rstrip("/")
+        route = frag if frag else path
+        return f"{host}|{route}"
+    except Exception:
+        return None
+
+
+def _same_cdp_route(url_a: str, url_b: str) -> bool:
+    """两 URL 是否同一 BI hash 路由（避免 substring 误判）。"""
+    ia, ib = _cdp_route_identity(url_a), _cdp_route_identity(url_b)
+    if ia and ib:
+        return ia == ib
+    return (url_a or "").strip().rstrip("/") == (url_b or "").strip().rstrip("/")
+
+
+def _pick_cdp_target_page(pages: list[Any], url: str, start_url: str) -> Any | None:
+    """在 connect_over_cdp 的 context.pages 里选要操作的 Page；优先与目标 URL 路由完全一致。"""
+    if not pages:
+        return None
+    want = {_cdp_route_identity(url), _cdp_route_identity(start_url)}
+    want.discard(None)
+    for p in pages:
+        try:
+            pu = (p.url or "").strip()
+        except Exception:
+            continue
+        rid = _cdp_route_identity(pu)
+        if rid and rid in want:
+            return p
+    # 无路由级命中：选与目标同主机的标签（优先最后一个，常见为最近打开的 BI 页）
+    ref = start_url or url
+    try:
+        host = urlparse(ref).netloc.lower() if ref.lower().startswith("http") else ""
+    except Exception:
+        host = ""
+    same_host: list[Any] = []
+    if host:
+        for p in pages:
+            try:
+                pu = (p.url or "").strip()
+            except Exception:
+                continue
+            try:
+                if urlparse(pu).netloc.lower() == host:
+                    same_host.append(p)
+            except Exception:
+                continue
+    return same_host[-1] if same_host else pages[0]
+
+
+def _spa_anti_ghost_settle(page: Any, diff_label: str, phase: str) -> None:
+    """
+    Hash 路由 SPA 反残影：避免 page.goto 后旧页表格仍在 DOM，wait_for_selector(table) 误匹配上一路由的数据。
+    1) 固定缓冲，让 Vue 拆掉旧视图、挂上 loading
+    2) 等待所有 .el-loading-mask 在布局上不可见（多遮罩时用 JS 判断，比单 selector 可靠）
+    """
+    label = diff_label or "—"
+    _diff_log(f"[{label}] | SPA 反残影({phase}): 缓冲 1500ms …")
+    page.wait_for_timeout(1500)
+    try:
+        page.wait_for_function(
+            """() => {
+                const nodes = document.querySelectorAll('.el-loading-mask');
+                for (const n of nodes) {
+                    const r = n.getBoundingClientRect();
+                    const s = window.getComputedStyle(n);
+                    const shown = s.display !== 'none' && s.visibility !== 'hidden'
+                        && parseFloat(s.opacity || '1') > 0.01;
+                    if (shown && r.width > 0 && r.height > 0) return false;
+                }
+                return true;
+            }""",
+            timeout=15000,
+        )
+        _diff_log(f"[{label}] | SPA 反残影({phase}): 已无可见 Element UI loading 遮罩")
+    except Exception as e:
+        _diff_log(f"[{label}] | SPA 反残影({phase}): loading 等待结束(超时或忽略): {type(e).__name__}: {e}")
+
+
+def _log_locator_diag(page: Any, selector: str, ctx: str) -> None:
+    """打印 locator.count() 与第一个匹配可见性（不改动 DOM）。"""
+    sel = (selector or "").strip()
+    if not sel:
+        _diff_log(f"[{ctx}] | Selector [(无)] 跳过 count/可见性诊断")
+        return
+    try:
+        loc = page.locator(sel)
+        cnt = loc.count()
+        first_vis = "N/A"
+        if cnt > 0:
+            try:
+                first_vis = str(loc.first.is_visible())
+            except Exception as ve:
+                first_vis = f"(is_visible异常:{type(ve).__name__}:{ve})"
+        _diff_log(f"[{ctx}] | Selector [{sel}] 找到元素数量: {cnt}, 第一个元素可见状态: {first_vis}")
+    except Exception as e:
+        _diff_log(f"[{ctx}] | Selector [{sel}] 诊断异常: {type(e).__name__}: {e}")
 
 # 合并单元格模式：当前值 (+/-X%) 上期值，如 "3,383 (+50.09%) 2,254" 或 "120.00 (+300.00%) 30.00"
 _MERGED_CELL_RE = re.compile(
@@ -39,24 +171,42 @@ def _split_merged_cell_value(val: str) -> str:
     return val
 
 
-def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> str:
+def _diff_action_done(step_i: int, t0: float, ctx: str) -> None:
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    _diff_log(f"[{ctx}] | 动作执行完毕: 步骤序号[{step_i}] 耗时: {elapsed} ms")
+
+
+def _run_automation_actions(
+    page: Any,
+    actions: list[dict],
+    timeout_ms: int,
+    context_label: str = "",
+) -> str:
     """
     按顺序执行自动化操作。失败时返回错误信息，成功返回空串。
     actions 每项: {type: "click"|"fill"|"press"|"wait"|"wait_selector", selector?: str, value?: str, ms?: int, timeout?: int}
     """
+    ctx = (context_label or "").strip() or "—"
     for i, act in enumerate(actions):
         if not isinstance(act, dict):
+            _diff_log(f"[{ctx}] | 跳过非 dict 动作: 索引[{i}]")
             continue
         typ = (act.get("type") or "").strip().lower()
         sel = act.get("selector", "").strip()
+        error_diag_sel = sel  # 异常时 locator 诊断用（部分动作实际点击的选择器与 selector 字段不同）
         logger.debug("[Automation] action[%d] %s selector=%r", i, typ, sel[:80] if sel else "")
         val = act.get("value", "")
         ms = int(act.get("ms") or act.get("timeout") or 500)
         sel_timeout = int(act.get("timeout") or act.get("ms") or 5) * 1000
+        sel_disp = (sel[:400] + "…") if len(sel) > 400 else sel
+        t0 = time.perf_counter()
+        _diff_log(f"[{ctx}] | 准备执行动作: 步骤序号[{i}] - 类型[{typ}] - Selector:[{sel_disp or '(无)'}]")
 
         try:
             if typ == "click":
                 if sel:
+                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                    _log_locator_diag(page, sel, ctx)
                     force = bool(act.get("force", False))
                     loc = page.locator(sel).first
                     if force:
@@ -64,9 +214,13 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                     else:
                         loc.click(timeout=sel_timeout)
                 else:
+                    _diff_log(f"[{ctx}] | 动作提前结束(参数错误): 步骤[{i}] click 缺少 selector")
+                    _diff_action_done(i, t0, ctx)
                     return f"action[{i}] click 缺少 selector"
             elif typ == "click_if_exists":
                 if sel:
+                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                    _log_locator_diag(page, sel, ctx)
                     try:
                         force = bool(act.get("force", False))
                         t = min(int(act.get("timeout") or 3) * 1000, 5000)
@@ -74,16 +228,25 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                         loc.click(timeout=t, force=force)
                     except Exception as e:
                         logger.debug("[Automation] action[%d] click_if_exists: %s, continuing", i, e)
+                        _diff_log(f"[{ctx}] | click_if_exists 内层捕获(按设计忽略): {type(e).__name__}: {e}")
                 else:
+                    _diff_log(f"[{ctx}] | 动作提前结束(参数错误): 步骤[{i}] click_if_exists 缺少 selector")
+                    _diff_action_done(i, t0, ctx)
                     return f"action[{i}] click_if_exists 缺少 selector"
             elif typ == "click_expand":
                 # Element UI 子菜单：仅当折叠时点击，避免误折叠已展开项（刷新后侧栏状态会保持）
                 txt = (act.get("text") or "").strip()
                 if sel or txt:
+                    diag_sel = sel if sel else f".el-menu >> text={txt}"
+                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                    _log_locator_diag(page, diag_sel, ctx)
                     loc = page.locator(sel).first if sel else page.locator(f".el-menu >> text={txt}").first
                     try:
                         loc.scroll_into_view_if_needed(timeout=5000)
+                        _diff_log(f"强制等待开始: 150ms (click_expand 滚动后缓冲) ...")
                         page.wait_for_timeout(150)
+                        _diff_log(f"强制等待结束: 150ms")
+                        _diff_log(f"[{ctx}] | (click_expand) 即将 evaluate 检查 aria-expanded")
                         is_expanded = loc.evaluate("""
                             el => {
                                 const li = el.closest('li[class*="sub-menu"], li[aria-expanded]');
@@ -96,46 +259,75 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                                 title_loc = page.locator(f".el-menu .el-submenu__title:has-text('{txt}')").first
                                 try:
                                     title_loc.scroll_into_view_if_needed(timeout=5000)
+                                    _diff_log(f"强制等待开始: 100ms (click_expand title 前) ...")
                                     page.wait_for_timeout(100)
+                                    _diff_log(f"强制等待结束: 100ms")
+                                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                                    _log_locator_diag(page, f".el-menu .el-submenu__title:has-text('{txt}')", ctx)
                                     title_loc.click(timeout=sel_timeout, force=True)
                                 except Exception:
                                     loc.scroll_into_view_if_needed(timeout=5000)
+                                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                                    _log_locator_diag(page, diag_sel, ctx)
                                     loc.click(timeout=sel_timeout, force=True)
                             else:
+                                _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                                _log_locator_diag(page, diag_sel, ctx)
                                 loc.click(timeout=sel_timeout, force=True)
                     except Exception:
                         loc.scroll_into_view_if_needed(timeout=5000)
+                        _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                        _log_locator_diag(page, diag_sel, ctx)
                         loc.click(timeout=sel_timeout, force=True)
                 else:
+                    _diff_log(f"[{ctx}] | 动作提前结束(参数错误): 步骤[{i}] click_expand 缺少 selector 或 text")
+                    _diff_action_done(i, t0, ctx)
                     return f"action[{i}] click_expand 缺少 selector 或 text"
             elif typ == "fill":
                 if sel and val is not None:
+                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                    _log_locator_diag(page, sel, ctx)
                     page.locator(sel).first.fill(str(val), timeout=sel_timeout)
                 else:
+                    _diff_log(f"[{ctx}] | 动作提前结束(参数错误): 步骤[{i}] fill 缺少 selector 或 value")
+                    _diff_action_done(i, t0, ctx)
                     return f"action[{i}] fill 缺少 selector 或 value"
             elif typ == "press":
                 key = act.get("key") or val or "Enter"
                 if sel:
+                    _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                    _log_locator_diag(page, sel, ctx)
                     page.locator(sel).first.press(key, timeout=sel_timeout)
                 else:
                     page.keyboard.press(key)
             elif typ == "wait":
                 if sel:
+                    _log_locator_diag(page, sel, ctx)
                     page.wait_for_selector(sel, timeout=sel_timeout)
                 if ms and ms > 0:
-                    page.wait_for_timeout(min(ms, 10000))
+                    wm = min(ms, 10000)
+                    _diff_log(f"强制等待开始: {wm}ms (wait 附带) ...")
+                    page.wait_for_timeout(wm)
+                    _diff_log(f"强制等待结束: {wm}ms")
             elif typ == "wait_visible":
                 if sel:
+                    _log_locator_diag(page, sel, ctx)
                     page.locator(sel).first.wait_for(state="visible", timeout=sel_timeout)
                 else:
+                    _diff_log(f"[{ctx}] | 动作提前结束(参数错误): 步骤[{i}] wait_visible 缺少 selector")
+                    _diff_action_done(i, t0, ctx)
                     return f"action[{i}] wait_visible 缺少 selector"
             elif typ == "wait_attached":
                 if sel:
+                    _log_locator_diag(page, sel, ctx)
                     page.locator(sel).first.wait_for(state="attached", timeout=sel_timeout)
                 else:
+                    _diff_log(f"[{ctx}] | 动作提前结束(参数错误): 步骤[{i}] wait_attached 缺少 selector")
+                    _diff_action_done(i, t0, ctx)
                     return f"action[{i}] wait_attached 缺少 selector"
             elif typ == "expand_sidebar_if_collapsed":
                 # 侧栏折叠时菜单文字 visibility:hidden，需展开或强制显示（同事侧栏默认展开故无此问题）
+                _log_locator_diag(page, ".el-menu.el-menu--collapse", ctx)
                 try:
                     if page.locator(".el-menu.el-menu--collapse").count() > 0:
                         clicked = page.evaluate("""
@@ -164,19 +356,30 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                                 document.head.appendChild(s);
                             }
                         """)
+                        _diff_log(f"强制等待开始: 500ms (expand_sidebar 后) ...")
                         page.wait_for_timeout(500)
+                        _diff_log(f"强制等待结束: 500ms")
                 except Exception as e:
                     logger.debug("[Automation] expand_sidebar_if_collapsed: %s, continuing", e)
+                    _diff_log(f"[{ctx}] | expand_sidebar_if_collapsed 内层异常(按设计继续): {type(e).__name__}: {e}")
             elif typ == "wait_ms":
-                page.wait_for_timeout(min(int(act.get("ms", 500)), 10000))
+                wms = min(int(act.get("ms", 500)), 10000)
+                _diff_log(f"强制等待开始: {wms}ms ...")
+                page.wait_for_timeout(wms)
+                _diff_log(f"强制等待结束: {wms}ms")
             elif typ == "click_expand_first_row":
                 # 日活/日新统计表：点击首行日期或展开图标，展开渠道明细
                 # 优先点 .el-table__expand-icon，否则点首行首列（日期）
-                sel = ".el-table__body-wrapper tbody tr:first-child .el-table__expand-icon, .el-table__body-wrapper tbody tr:first-child td:first-child .el-table__expand-icon"
+                er_sel = ".el-table__body-wrapper tbody tr:first-child .el-table__expand-icon, .el-table__body-wrapper tbody tr:first-child td:first-child .el-table__expand-icon"
+                error_diag_sel = er_sel
+                fb_sel = ".el-table__body-wrapper tbody tr:first-child td:first-child"
+                _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                _log_locator_diag(page, er_sel, ctx)
                 try:
-                    page.locator(sel).first.click(timeout=3000)
+                    page.locator(er_sel).first.click(timeout=3000)
                 except Exception:
-                    page.locator(".el-table__body-wrapper tbody tr:first-child td:first-child").first.click(timeout=3000)
+                    _log_locator_diag(page, fb_sel, ctx)
+                    page.locator(fb_sel).first.click(timeout=3000)
             elif typ == "fill_date_range":
                 # 日期范围：填写开始、结束两个输入框
                 start_val = act.get("start") or act.get("value", "")
@@ -184,6 +387,11 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                 start_sel = act.get("start_selector") or sel
                 end_sel = act.get("end_selector") or ""
                 optional = act.get("optional", False)
+                _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+                if start_sel:
+                    _log_locator_diag(page, str(start_sel), ctx)
+                if end_sel:
+                    _log_locator_diag(page, str(end_sel), ctx)
                 try:
                     if start_sel and start_val:
                         page.locator(start_sel).first.fill(str(start_val), timeout=sel_timeout)
@@ -191,10 +399,13 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                         page.locator(end_sel).first.fill(str(end_val), timeout=sel_timeout)
                     # 关闭可能打开的日期选择器弹窗，避免遮挡后续点击
                     page.keyboard.press("Escape")
+                    _diff_log(f"强制等待开始: 200ms (fill_date_range Escape 后) ...")
                     page.wait_for_timeout(200)
+                    _diff_log(f"强制等待结束: 200ms")
                 except Exception as fill_err:
                     if optional:
                         logger.debug("[Automation] fill_date_range optional 失败，继续: %s", fill_err)
+                        _diff_log(f"[{ctx}] | fill_date_range optional 失败(按设计继续): {type(fill_err).__name__}: {fill_err}")
                     else:
                         raise
             elif typ == "wait_for_data_ready":
@@ -202,17 +413,38 @@ def _run_automation_actions(page: Any, actions: list[dict], timeout_ms: int) -> 
                 wait_ms = int(act.get("wait_after_query_ms") or 5000)
                 loading_sel = (act.get("wait_for_loading_hidden") or "").strip()
                 t_sec = int(act.get("timeout") or 30) * 1000
+                if loading_sel:
+                    _log_locator_diag(page, loading_sel, ctx)
+                cap = min(wait_ms, 120000)
+                _diff_log(f"强制等待开始: wait_for_data_ready 最长约 {cap}ms (遮罩或固定) ...")
                 try:
                     if loading_sel:
                         # 等待加载遮罩隐藏（Element UI: .el-loading-mask）
                         page.locator(loading_sel).first.wait_for(state="hidden", timeout=t_sec)
-                        page.wait_for_timeout(min(wait_ms, 3000))  # 额外缓冲
+                        extra = min(wait_ms, 3000)
+                        _diff_log(f"强制等待开始: {extra}ms (遮罩隐藏后缓冲) ...")
+                        page.wait_for_timeout(extra)
+                        _diff_log(f"强制等待结束: {extra}ms")
                     else:
                         page.wait_for_timeout(min(wait_ms, 120000))
                 except Exception:
                     # 无加载遮罩或超时：回退到固定等待
                     page.wait_for_timeout(min(wait_ms, 120000))
+                _diff_log(f"强制等待结束: wait_for_data_ready")
+            else:
+                _diff_log(f"[{ctx}] | 未知动作类型(跳过): [{typ}]")
+            _diff_action_done(i, t0, ctx)
         except Exception as e:
+            elapsed = int((time.perf_counter() - t0) * 1000)
+            _diff_log(
+                f"🚨 致命卡点: 步骤[{i}] 执行失败，错误类型: {type(e).__name__}，错误详情: {e}"
+            )
+            _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
+            if error_diag_sel:
+                _log_locator_diag(page, error_diag_sel, ctx)
+            elif sel:
+                _log_locator_diag(page, sel, ctx)
+            _diff_log(f"[{ctx}] | 步骤[{i}] 已耗时(至异常): {elapsed} ms")
             logger.warning("[Automation] action[%d] %s failed: %s", i, typ, e)
             return f"action[{i}] {typ} 失败: {e}"
     return ""
@@ -563,7 +795,8 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
         })
     qs = filters.get("query_selector")
     if qs:
-        actions.append({"type": "click", "selector": qs})
+        # BI 顶栏 fixed + z-10 常挡住表单区「查询」按钮的真实命中；force 与侧栏模式 click_if_exists 一致
+        actions.append({"type": "click", "selector": qs, "force": True})
         # 等待数据加载完成：优先等待加载遮罩消失，否则使用可配置的固定等待
         wait_ms = int(filters.get("wait_after_query_ms") or 5000)
         wait_ms = max(1000, min(wait_ms, 120000))  # 1s~120s
@@ -623,6 +856,7 @@ def _harvest_via_playwright(
     table_selector: str,
     timeout: int,
     automation: dict | None = None,
+    diff_log_context: str = "",
 ) -> tuple[list[dict[str, Any]] | None, str]:
     """SPA 模式：Playwright 连接已登录 Chrome，可选执行 automation 后抓取表格"""
     try:
@@ -631,6 +865,7 @@ def _harvest_via_playwright(
         return None, "playwright 未安装，请执行 pip install playwright && playwright install chromium"
 
     automation = automation or {}
+    diff_label = (diff_log_context or automation.get("_diff_log_context") or "").strip()
     start_url = automation.get("start_url") or url
     actions: list[dict] = list(automation.get("actions") or [])
     filters = automation.get("filters") or {}
@@ -646,49 +881,73 @@ def _harvest_via_playwright(
             pages = context.pages
             if not pages:
                 return None, "未找到页面"
+            _diff_log(
+                f"[{diff_label or '—'}] | Playwright CDP 已连接: cdp_url={cdp_url} context_pages={len(pages)}"
+            )
 
-            # 查找包含目标 URL 的页面，或使用第一个已登录页
-            target_page = None
-            for p in pages:
-                try:
-                    if url in (p.url or "") or start_url in (p.url or ""):
-                        target_page = p
-                        break
-                except Exception:
-                    pass
-            if not target_page and pages:
-                target_page = pages[0]
-
+            target_page = _pick_cdp_target_page(pages, url, start_url)
             if not target_page:
                 target_page = context.new_page()
+            else:
+                try:
+                    _diff_log(
+                        f"[{diff_label or '—'}] | CDP 操作标签页: {_safe_page_url(target_page)} "
+                        f"(目标路由: {_cdp_route_identity(start_url) or _cdp_route_identity(url) or '—'})"
+                    )
+                except Exception:
+                    pass
 
             # 导航到入口页（start_url 或 url）
             nav_url = automation.get("start_url") or url
+            # 直链/菜单模式均需严格等网络空闲，避免 hash 已变而旧表 DOM 仍在
+            nav_timeout_ms = max(15000, int(timeout * 1000))
+            navigated = False
             try:
                 target_page.bring_to_front()
                 # 有 automation 时强制导航，确保每次从入口页开始（避免上一项展开的菜单被误点折叠）
                 if actions:
-                    target_page.goto(nav_url, wait_until="domcontentloaded", timeout=timeout * 1000)
-                    target_page.wait_for_load_state("networkidle", timeout=timeout * 1000)
-                elif nav_url not in (target_page.url or ""):
-                    target_page.goto(nav_url, wait_until="domcontentloaded", timeout=timeout * 1000)
-                    target_page.wait_for_load_state("networkidle", timeout=timeout * 1000)
-                target_page.wait_for_timeout(1000)  # SPA 挂载缓冲
+                    target_page.goto(nav_url, wait_until="networkidle", timeout=nav_timeout_ms)
+                    navigated = True
+                elif not _same_cdp_route(nav_url, target_page.url or ""):
+                    target_page.goto(nav_url, wait_until="networkidle", timeout=nav_timeout_ms)
+                    navigated = True
+                if navigated:
+                    _spa_anti_ghost_settle(target_page, diff_label, "post_goto")
+                else:
+                    _diff_log(f"[{diff_label or '—'}] | 导航跳过(URL 已匹配)，轻量缓冲 500ms")
+                    target_page.wait_for_timeout(500)
             except Exception:
                 pass
+
+            _diff_log(
+                f"[{diff_label or '—'}] | 导航阶段结束 当前真实 URL: {_safe_page_url(target_page)}"
+            )
 
             # 执行自动化操作（点击菜单、填写筛选等）
             if actions:
-                err = _run_automation_actions(target_page, actions, timeout * 1000)
+                _diff_log(
+                    f"[{diff_label or '—'}] | 即将执行 automation 共 {len(actions)} 步 | URL: {_safe_page_url(target_page)}"
+                )
+                err = _run_automation_actions(
+                    target_page, actions, timeout * 1000, context_label=diff_label
+                )
                 if err:
                     return None, f"自动化步骤失败: {err}"
 
+            # 查询/填表动作后再次反残影，再匹配表格（避免点到查询后仍短暂残留旧表）
+            _spa_anti_ghost_settle(target_page, diff_label, "pre_table")
+
             # 等待表格加载（排除日期选择器 el-date-table）
             sel = table_selector or "table:not(.el-date-table)"
+            sel_short = (sel[:200] + "…") if len(sel) > 200 else sel
+            _diff_log(f"[{diff_label or '—'}] | 等待表格选择器: [{sel_short}]")
             try:
                 target_page.wait_for_selector(sel, timeout=timeout * 1000)
-            except Exception:
-                pass
+                _diff_log(f"[{diff_label or '—'}] | 表格选择器已出现 (wait_for_selector 返回)")
+            except Exception as wse:
+                _diff_log(
+                    f"[{diff_label or '—'}] | 表格选择器等待未成功(按设计继续): {type(wse).__name__}: {wse}"
+                )
 
             # stats_game_daily 等：展开会占满整页，无法点其他行 → 逐行「展开→提取→折叠→下一行」
             if automation.get("expand_extract_collapse_loop", False):
@@ -828,7 +1087,8 @@ def harvest_table_data(
             headers: dict HTTP 请求头（API 模式）,
             timeout: int 秒,
             cdp_url: str Chrome 调试地址（SPA 模式，默认 http://127.0.0.1:9222）,
-            automation: dict 自动化配置 {start_url, actions: [{type,selector,value}], filters: {date_range,query_selector}}
+            automation: dict 自动化配置 {start_url, actions: [{type,selector,value}], filters: {date_range,query_selector}},
+            diff_log_context: str 可选，终端 [DIFF-LOG] 中的表名/批次标签（便于两台机器 diff）
         }
 
     Returns:
@@ -854,12 +1114,18 @@ def harvest_table_data(
     # 优先 API 模式：url 含 /api/ 或显式指定 headers
     use_api = "/api/" in url or "api." in url or headers
     automation = config.get("automation")
+    diff_ctx = str(config.get("diff_log_context") or "").strip()
     if use_api and not config.get("cdp_url"):
         rows, err = _harvest_via_api(url, headers, timeout)
     else:
         # SPA 模式：连接已登录 Chrome，可选执行 automation
         rows, err = _harvest_via_playwright(
-            url, cdp_url, table_selector, timeout, automation=automation
+            url,
+            cdp_url,
+            table_selector,
+            timeout,
+            automation=automation,
+            diff_log_context=diff_ctx,
         )
 
     if err:

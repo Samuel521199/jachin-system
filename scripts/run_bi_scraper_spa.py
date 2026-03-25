@@ -52,8 +52,9 @@ def _check_chrome_cdp(cdp_url: str = "http://127.0.0.1:9222") -> bool:
 
 
 def main() -> int:
-    from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect
+    from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect, parse_direct_url_map_from_full_spa
     from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
+    from l3_node.skills.bi.bi_daily_report.main_skill import _load_config
 
     argv = sys.argv[1:]
     use_discover = "--no-discover" not in argv
@@ -99,12 +100,23 @@ def main() -> int:
         else:
             print(f"[{idx}/{total}] {slug} ... FAIL: {result.get('error', result)}")
 
+    cfg = _load_config(None)
+    full_spa = cfg.get("full_spa") or {}
+    _bu = str(full_spa.get("base_url") or "").strip() or "https://bi-admin-web.heronpro.xin/#/layout/person"
+    base_url = _bu if _bu.lower().startswith("http") else "https://bi-admin-web.heronpro.xin/#/layout/person"
+    _cdp = str(full_spa.get("cdp_url") or "").strip() or "http://127.0.0.1:9222"
+    cdp_url = _cdp if _cdp.lower().startswith("http") else "http://127.0.0.1:9222"
+    dm = parse_direct_url_map_from_full_spa(full_spa)
+
     ok, fail, failed_slugs = run_full_spa_collect(
         slugs=slugs,
+        base_url=base_url,
+        cdp_url=cdp_url,
         use_discover=use_discover,
         auto_ingest=False,
         raw_dir=raw_dir,
         progress_cb=on_progress,
+        direct_url_map=dm,
     )
 
     print()

@@ -2,21 +2,40 @@
 # 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 # 实际配置: ~/.jachin/config/skills/com.jachin.bi.daily_report/
 
-skip_collect: true
+# skip_collect: 仅在 DuckDB+raw 已「今日新鲜」时跳过 SPA 抓取；不新鲜时仍会抓。完整流程建议 false。
+skip_collect: false
 
-# 是否运行数据提纯，生成 Lark 多维表格可导入的 CSV（~/.jachin/client_volumes/bi_data/output/）
-run_refiner: false
+# 数据分析数据来源: "raw"=从 raw 目录 slug CSV（战略分析、仪表盘 LLM 摘要）；lark"=从 Lark 多维表拉取
+# 战略分析 strategic_report、仪表盘大数据分析 dashboard_automation 均读此开关
+analysis_data_source: "raw"
+
+# run_refiner: false 时跳过 Step2 提纯，不生成 output CSV（Lark 同步无新文件）。完整流程须 true。
+run_refiner: true
+
+# ========== 定时开关（可随意调节） ==========
+# schedule_enabled: 顶层开关，false 时完全关闭 BI 定时任务（不注册、不启动）
+# 也可在下方 schedule.enabled 中设置，两者任一为 false 即关闭
+# 配置路径（优先 ~/.jachin，再到项目 config）:
+#   bi_daily_report.yaml — 主配置（本段 + schedule）
+#   bi_scheduler.yaml — 可选，仅覆盖 schedule_enabled / schedule，见同目录 bi_scheduler.yaml.example
+# 环境变量（可选）: BI_DAILY_REPORT_SCHEDULE=off — 强制关定时，不改 YAML
+# 定时排查日志: ~/.jachin/client_volumes/bi_data/logs/bi_scheduler_audit.log
+schedule_enabled: false
 
 # ========== 调度配置 ==========
-# mode: cron — 每天固定时间执行一次；interval — 按分钟/小时间隔；loop — 指定时间开始，每轮间隔 N 秒循环
+# 改每天触发时间：cron 模式下改 hour / minute（24 小时制，上海时区见 timezone）
+# mode: cron — 每天固定时刻一次；interval — 每 N 分/小时；loop — 调试用循环
+# 定时触发时 Windows 会弹出新控制台窗口跑完整战报（等同 python scripts/run_bi_daily_report.py）
 schedule:
-  enabled: true
-  mode: loop
-  # loop 模式：首次执行时间（今日）
-  run_at_hour: 15
-  run_at_minute: 49
-  interval_seconds: 60   # 每轮结束后间隔 30 秒执行下一轮
+  enabled: false
+  mode: cron
+  hour: 14
+  minute: 13
   timezone: Asia/Shanghai
+  # —— 仅 mode: loop 时生效（一般不用）——
+  # run_at_hour: 15
+  # run_at_minute: 30
+  # interval_seconds: 3600
 
 # ========== 数据源 ==========
 data_source:
@@ -24,12 +43,59 @@ data_source:
   extract_rules: {}
   headers: {}
 
+# ========== SPA 批量抓取（Chrome CDP）==========
+# use_direct_urls: true 且 direct_urls 非空时，按 slug 直链打开页面，避免侧栏菜单不可见导致失败
+# base_url / cdp_url 可用 .env 的 BI_DATA_URL、BI_SPA_CDP_URL（需在 .env 中配置）
+# report_date_end: "2026-03-24"  # 可选；不填则默认昨天。各表「统计日期」结束日与此一致后点查询/对比查询
+# 实际生效配置请同步: ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml
+full_spa:
+  base_url: "${BI_DATA_URL}"
+  cdp_url: "${BI_SPA_CDP_URL}"
+  use_direct_urls: true
+  direct_urls:
+    daily_ops_summary: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/platformOpData/biUserDailySummary"
+    daily_ops_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/platformOpData/biUserDailySummaryCompare"
+    daily_acquisition: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/platformOpData/biBuyLinkDailySummary"
+    prod_sales: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformAsset/biGameDailyAssetSummary"
+    prod_sales_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformAsset/biGameDailyAssetSummaryCompare"
+    recharge_history: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformRecharge/biUserRechargeHistorySummarySnap"
+    recharge_daily: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformRecharge/biUserDailyRechargeBase"
+    recharge_status: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformRecharge/biRechargeTierDailySummary"
+    recharge_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformRecharge/biRechargeTierDailySummaryCompare"
+    alert_gold: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformNotice/biUserDailyCoinBase"
+    alert_traffic: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/PlatformNotice/userFlowSource"
+    stats_user_dau: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/UserDataS/biUserChannelDailySummary"
+    stats_user_dau_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/UserDataS/biUserChannelDailySummaryCompare"
+    stats_user_new: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/UserDataS/biUserChannelDnuDailySummary"
+    stats_user_new_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/UserDataS/biUserChannelDnuDailySummaryCompare"
+    stats_retention_user: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RetentionDataS/biUserChannelRetentionSummary"
+    stats_retention_user_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RetentionDataS/biUserChannelRetentionSummaryCompare"
+    stats_retention_paid: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RetentionDataS/biUserChannelPayRetentionSummary"
+    stats_retention_paid_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RetentionDataS/biUserChannelPayRetentionSummaryCompare"
+    stats_recharge: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RechargeDataS/biUserChannelRechargeDailySummary"
+    stats_recharge_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RechargeDataS/biUserChannelRechargeDailySummaryCompare"
+    stats_game_daily: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/GameDataS/biGameDailySummary"
+    stats_game_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/GameDataS/biGameDailySummaryCompare"
+    stats_game_core: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/GameDataS/biDailyGameUserAnalysis"
+    stats_game_active: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/GameDataS/dailyUserGameRetentionStats"
+    stats_game_new: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/GameDataS/dailyNewUserGameRetentionStats"
+    detail_page_access: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/PageD/pvStats"
+    detail_user_register: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/LoginD/userRegisterDetail"
+    detail_user_active: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/LoginD/userLoginDetail"
+    detail_recharge_daily: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/RechargeDetail/dailyRechargeDetail"
+    detail_game_room: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/GameDetail/dailyEnterGameDetail"
+    detail_game_room_actual: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/GameDetail/dailyRealEnterGameDetail"
+    detail_game_start: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/GameDetail/dailyStartGameDetail"
+    detail_tracking: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/dataDetail/eventLog"
+
 storage:
   base_path: "client_volumes/bi_data"
   # 提纯 CSV 输出目录，供 Lark 多维表格导入
   # 留空或未配置：默认 ~/.jachin/client_volumes/bi_data/output
   # 可填绝对路径（如 /data/bi_output 或 D:\\bi_output），或相对 ~/.jachin 的路径
   refiner_output_path: ""
+  # analysis_data_source=raw 时：从此目录读 {slug}.csv；留空则 ~/.jachin/client_volumes/bi_data/raw（Windows 本机常为 C:\Users\<用户名>\.jachin\client_volumes\bi_data\raw）
+  analysis_raw_dir: ""
 
 # Lark 多维表格同步（与 Lark 侧栏结构一一对应）
 # app_id/app_secret 优先；未配置时从 .env 的 BI_LARK_APP_ID/LARK_APP_ID 读取；应用需 base:record 权限
@@ -39,7 +105,11 @@ storage:
 # 若 DAU和DNU 表使用「增量」而非「增幅」: field_mapping: {"01_用户活跃_增幅表.csv": {"增幅":"增量"}}
 lark_bitable:
   enabled: true
-  lark_use_feishu: true   # BI助手为飞书中国版，使用 open.feishu.cn
+  # sg.larksuite.com 等国际域名用 Lark 开放平台 open.larksuite.com；飞书中国版才设为 true
+  lark_use_feishu: false
+  # 列表记录 API 可选视图（与浏览器 ?view= 一致）；按 CSV 文件名配置
+  list_records_view_by_csv:
+    "11_充值_付费金额按SKU.csv": "vewwkBfksC"
   app_id: "cli_a930e0054ecf5ed1"
   app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
   app_token: "HCvubvsubak2WPs2GbClYq68gjh"
@@ -57,9 +127,9 @@ lark_bitable:
     "13_用户活跃_新增设备表.csv": ""                   # Lark 表名: 新增设备数、增幅、占比（在 Lark 打开子表，URL ?table=tblXXX 填入）
     # === 平台留存情况 ===
     "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留率（留存类型, 留存率）
-    "05_留存_付费用户次留表.csv": ""                   # 付费用户次留表：在 Lark 打开该子表，URL 中 ?table=tblXXX 即 table_id，填入后生效
+    "05_留存_付费用户次留表.csv": "tblc8C8Qs3CjWxpG"   # 付费用户次留表
     "06_留存_周环比表.csv": "tblMZ2XUYURKID3r"        # Lark 表名: 周环比（类型, 留存率）
-    "07_留存_付费用户周环比表.csv": ""                 # 付费用户周环比：同上，填 table_id 后生效。若 Lark 列为「角色类型/周留存率」需配置 field_mapping
+    "07_留存_付费用户周环比表.csv": "tblVqFqEvDeJ2N7f"  # 付费用户周环比
     # === 平台消耗情况 ===
     "08_消耗_每日表.csv": "tbl094S7AAZ0ZcoN"          # Lark 表名: 每日金币产出、消耗
     "09_消耗_按游戏表.csv": "tblasHRF6rV4VQRu"        # Lark 表名: 每个游戏的产出、消耗
@@ -97,7 +167,7 @@ dashboard_automation:
 
 distribution:
   lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
-  # BI 机器人所在会话 chat_id（无 Webhook 时用 IM API；Lark↔终端镜像也使用此 ID）
+  # BI 机器人所在会话 chat_id（接收 BI 战报和仪表盘推送消息卡片；与 .env BI_LARK_CHAT_ID、~/.jachin 配置同步）
   lark_chat_id: "oc_bb2b468cb04acb709c2e7aa5683f8f08"
   # 邮件通知（Step 3.6，调用 mcp:atom_email_sender 一次性发送给所有收件人）
   email:
@@ -106,9 +176,10 @@ distribution:
     scheduled_time: ""
     smtp_host: "smtp.qq.com"
     smtp_port: 587
+    # 与 .env BI_SMTP_USER / BI_SMTP_PASSWORD、~/.jachin 同名文件三处同步
     smtp_user: "2105582473@qq.com"
     smtp_password: "grchforahkyzcfab"
-    # 收件人列表，写几个就发给几个人（一次性发送给列表内所有邮箱）
+    # 收件人列表，写几个就发给几个人（一次性发送给列表内所有邮箱；与 .env BI_SMTP_TO、~/.jachin 同步）
     to_addrs:
-      - "vivian@herontech.net"
       - "1807301549@qq.com"
+      - "vivian@herontech.net"

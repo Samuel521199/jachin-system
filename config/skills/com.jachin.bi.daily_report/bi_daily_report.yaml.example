@@ -12,10 +12,11 @@ skip_collect: true
 # single: 单表抓取，使用 data_source 配置，调用 atom_web_scraper
 # full_spa: 批量抓取 MENU_ITEMS，调用 spa_collector（需 Chrome 已登录）
 # collect_mode: full_spa
-# full_spa:
+# full_spa（菜单模式）:
 #   base_url: "https://bi-admin-web.heronpro.xin/#/layout/person"
 #   cdp_url: "http://127.0.0.1:9222"
 #   slugs: []  # 空则全量，或指定如 [daily_ops_summary, stats_retention_user]
+# full_spa（直链模式，推荐）：.env 设 BI_DATA_URL、BI_SPA_CDP_URL；use_direct_urls: true 且配置 direct_urls（slug -> 完整 #/layout/... URL），与仓库 bi_daily_report.yaml 中 34 条一致
 
 # ========== 数据源（仅当 skip_collect=false 时生效）==========
 # 模式一：API 接口（直接请求 JSON）
@@ -61,9 +62,11 @@ data_source:
       wait_after_query_ms: 5000                      # 无遮罩时的固定等待毫秒，默认 5000
       wait_for_data_timeout: 30                      # 等待数据就绪的最大秒数，默认 30
 
-# ========== 调度配置 ==========
-# enabled: false 时禁用定时任务，仅支持手动触发
+# ========== 定时开关与调度配置 ==========
+# schedule_enabled: 顶层开关，false 时完全关闭 BI 定时任务
+# schedule.enabled: 同上，任一为 false 即关闭，仅支持手动触发
 # 模式一：cron — 每天固定时间（UTC+8）
+schedule_enabled: true
 schedule:
   enabled: true
   mode: cron
