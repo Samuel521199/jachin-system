@@ -8,7 +8,7 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 当用户发起「BI分析」「帮我开始今天的BI分析」等意图时，按以下步骤执行：
 
-1. **数据新鲜度**：检查 bi.duckdb 是否含今日 _ingested_date；若无则执行 SPA 抓取（spa_collector）并 ingest_csv
+1. **数据新鲜度**：检查 bi.duckdb 是否含今日 _ingested_date；若无则执行 SPA 抓取（spa_collector）并 ingest_csv。抓取前按 `full_spa.report_date_end`（默认昨天）写入统计日期并点「查询/对比查询」，与战报「最新完整日」一致
 2. **数据提纯**：从 DuckDB 按产品需求（12_PRODUCT_REQUIREMENTS.md）与 Lark 表结构（11_LARK_TABLE_SCHEMA.md）
    提炼 14 个 CSV：用户活跃(增幅/日期数量/渠道/新增设备)、留存(次留/周环比)、消耗(每日/按游戏)、充值(付费人数/付费金额按SKU/付费人数金额增幅/ARPU/ARPPU)
 3. **Lark 同步**：将 output 下 CSV 同步到飞书多维表格（atom_lark_bitable_sync）
@@ -46,7 +46,7 @@ import logging
 import os
 import re
 import socket
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +115,24 @@ _DASHBOARD_DISPLAY_URLS = {
     "仪表盘_平台留存情况": "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlgr00stzCWoJ2cySEAy4Ryie",
     "仪表盘_平台消耗情况": "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlg77U8jQvTTodea2ZQifK8ab",
 }
+
+
+def _bi_spa_report_date_end(cfg: dict[str, Any]) -> date:
+    """
+    SPA 在 BI 后台填「统计日期」时使用的区间结束日（通常为昨天）。
+    可选 full_spa.report_date_end: \"YYYY-MM-DD\"，或顶层 spa_report_date_end。
+    """
+    fs = cfg.get("full_spa") if isinstance(cfg.get("full_spa"), dict) else {}
+    raw = fs.get("report_date_end") or cfg.get("spa_report_date_end")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parts = raw.strip()[:10].split("-")
+            if len(parts) == 3:
+                y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                return date(y, m, d)
+        except (ValueError, TypeError):
+            pass
+    return (datetime.now() - timedelta(days=1)).date()
 
 
 def _get_bi_log_dir(cfg: dict[str, Any] | None = None) -> Path:
@@ -1927,6 +1945,12 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             _cfg_slugs = full_spa.get("slugs")
             slugs = _cfg_slugs if isinstance(_cfg_slugs, list) and len(_cfg_slugs) > 0 else None
             dm = parse_direct_url_map_from_full_spa(full_spa)
+            spa_end = _bi_spa_report_date_end(cfg)
+            _bi_log(
+                "Step 1.1: SPA 统计日期区间结束日",
+                detail=spa_end.isoformat(),
+                progress=True,
+            )
 
             def _spa_collect_progress_cb(idx: int, total: int, slug: str, result: dict) -> None:
                 st = result.get("status", "")
@@ -1945,6 +1969,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 raw_dir=raw_dir_collect,
                 direct_url_map=dm,
                 progress_cb=_spa_collect_progress_cb,
+                report_date_end=spa_end,
             )
             if ok > 0:
                 result["data_updated"] = True

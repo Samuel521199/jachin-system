@@ -15,7 +15,10 @@ run_refiner: true
 # ========== 定时开关（可随意调节） ==========
 # schedule_enabled: 顶层开关，false 时完全关闭 BI 定时任务（不注册、不启动）
 # 也可在下方 schedule.enabled 中设置，两者任一为 false 即关闭
-# 须与 ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml 同步（本机优先读 ~/.jachin 那份）
+# 配置路径（优先 ~/.jachin，再到项目 config）:
+#   bi_daily_report.yaml — 主配置（本段 + schedule）
+#   bi_scheduler.yaml — 可选，仅覆盖 schedule_enabled / schedule，见同目录 bi_scheduler.yaml.example
+# 环境变量（可选）: BI_DAILY_REPORT_SCHEDULE=off — 强制关定时，不改 YAML
 # 定时排查日志: ~/.jachin/client_volumes/bi_data/logs/bi_scheduler_audit.log
 schedule_enabled: false
 
@@ -26,8 +29,8 @@ schedule_enabled: false
 schedule:
   enabled: false
   mode: cron
-  hour: 22
-  minute: 55
+  hour: 14
+  minute: 13
   timezone: Asia/Shanghai
   # —— 仅 mode: loop 时生效（一般不用）——
   # run_at_hour: 15
@@ -43,6 +46,7 @@ data_source:
 # ========== SPA 批量抓取（Chrome CDP）==========
 # use_direct_urls: true 且 direct_urls 非空时，按 slug 直链打开页面，避免侧栏菜单不可见导致失败
 # base_url / cdp_url 可用 .env 的 BI_DATA_URL、BI_SPA_CDP_URL（需在 .env 中配置）
+# report_date_end: "2026-03-24"  # 可选；不填则默认昨天。各表「统计日期」结束日与此一致后点查询/对比查询
 # 实际生效配置请同步: ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml
 full_spa:
   base_url: "${BI_DATA_URL}"
