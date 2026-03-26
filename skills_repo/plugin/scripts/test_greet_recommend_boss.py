@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
 
 from tools.atom_greet_recommend_boss import atom_greet_recommend_boss, load_jd_config
 

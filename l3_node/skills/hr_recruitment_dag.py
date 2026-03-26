@@ -29,6 +29,29 @@ def _append_hr_progress_line(line: str) -> None:
         logger.debug("[HR-DAG] append_hr_progress 跳过: %s", e)
 
 
+def _derive_hr_data_folder_key(ctx: dict[str, Any]) -> str:
+    """
+    磁盘岗位目录键（须与 ``jd.json`` 所在目录一致，如 ``Python工程师_杭州15-25K``）。
+
+    优先 ``job_folder``；缺省且存在 ``jd_config_path`` 时从路径父目录解析。
+    **不得**用 ``job_name``（显示名如「Python 工程师」）拼 pending 路径，否则会与 canonical 目录分裂。
+    """
+    jf = str(ctx.get("job_folder") or "").strip()
+    if jf:
+        return jf
+    jdp = str(ctx.get("jd_config_path") or "").strip()
+    if jdp:
+        try:
+            from pathlib import Path
+
+            p = Path(jdp).resolve()
+            if p.is_file() and p.name.lower() == "jd.json":
+                return p.parent.name
+        except OSError:
+            pass
+    return str(ctx.get("job_name") or "").strip()
+
+
 def _maybe_restore_hr_counts_from_progress(context: dict[str, Any], workflow_id: str) -> None:
     """当 context 中计数仍为 0 时，从 progress.md 当前 workflow 段落恢复，避免跨会话重复从 0 计数。"""
     if context.get("skip_hr_progress_restore"):
@@ -128,7 +151,12 @@ def _mock_atom_inbox_harvester_full_flow(context: dict[str, Any], *, round_tag: 
     remaining = int(context.get(key, 5))
     batch = int(context.get("_mock_harvest_batch", 2))
     got = min(batch, max(0, remaining))
-    context[key] = remaining - got
+    after = remaining - got
+    context[key] = after
+    context["_last_inbox_chat_list_count"] = max(after, 8) if after > 0 else 0
+    context["_last_inbox_no_chats"] = after <= 0
+    context["_last_inbox_harvest_error"] = ""
+    context["_last_inbox_harvest_success"] = True
     logger.info(
         "[HarvestLoop] MOCK atom_inbox_harvester_full_flow %s downloaded=%s remaining=%s",
         round_tag,
@@ -192,9 +220,16 @@ def _run_inbox_via_mcp(ctx: dict[str, Any], *, round_tag: str = "") -> int:
         from tools.atom_post_job_boss import get_jd_select, load_jd_config
 
         jd_path = str(ctx.get("jd_config_path") or "")
-        job_folder = str(ctx.get("job_folder") or ctx.get("job_name") or "")
-        jd = load_jd_config(jd_path, job_folder)
+        job_folder = _derive_hr_data_folder_key(ctx)
+        jd = load_jd_config(jd_path, job_folder or str(ctx.get("job_name") or ""))
         job_text = get_jd_select(jd) or job_folder or "职位"
+        logger.info(
+            "[HarvestLoop] inbox job_text=%r jd_config_path=%r job_folder=%r jd_has_select=%s",
+            job_text,
+            jd_path,
+            job_folder,
+            bool((jd or {}).get("jd_select")),
+        )
         save_dir = str(ctx.get("inbox_save_dir") or "").strip()
         if not save_dir and job_folder:
             save_dir = str(Path.home() / ".jachin" / "workspace" / "hr_recruitment" / job_folder / "pending")
@@ -210,12 +245,19 @@ def _run_inbox_via_mcp(ctx: dict[str, Any], *, round_tag: str = "") -> int:
             filter_tab=str(ctx.get("inbox_filter_tab") or ""),
             request_if_no_resume=bool(ctx.get("request_if_no_resume", True)),
             stop_when_downloaded=sw,
-            use_all_positions=bool(ctx.get("use_all_positions", True)),
+            use_all_positions=bool(ctx.get("use_all_positions", False)),
             workflow_hitl_context=ctx,
             os_context=ctx,
         )
-        if r.get("stopped_by_os"):
+        if r.get("stopped_by_os") or r.get("stopped_by_boss_verify_slider"):
             ctx["_os_playwright_stop"] = True
+        try:
+            ctx["_last_inbox_chat_list_count"] = int(r.get("chat_list_count", -1))
+        except (TypeError, ValueError):
+            ctx["_last_inbox_chat_list_count"] = -1
+        ctx["_last_inbox_no_chats"] = bool(r.get("inbox_no_chats", False))
+        ctx["_last_inbox_harvest_error"] = str(r.get("error") or "").strip()
+        ctx["_last_inbox_harvest_success"] = bool(r.get("success", True))
         return int(r.get("downloaded", 0))
     except Exception as e:
         logger.warning("[HarvestLoop] inbox 真实 MCP 不可用，回退 mock: %s", e)
@@ -309,7 +351,7 @@ class HarvestLoopNode(WorkflowNode):
         try:
             from l3_node.local_memory import set_hr_recruitment_workflow_pointer
 
-            job_folder = str(context.get("job_folder") or context.get("job_name") or "").strip()
+            job_folder = _derive_hr_data_folder_key(context).strip()
             jd_cfg = str(context.get("jd_config_path") or "").strip()
             pending_guess = str(context.get("resume_pending_dir") or "").strip()
             if not pending_guess and job_folder:
@@ -318,9 +360,11 @@ class HarvestLoopNode(WorkflowNode):
                 pending_guess = str(
                     Path.home() / ".jachin" / "workspace" / "hr_recruitment" / job_folder / "pending"
                 )
+            disp = (context.get("job_name") or "").strip() or job_folder
             set_hr_recruitment_workflow_pointer(
                 wid,
-                job_name=job_folder,
+                job_name=disp,
+                job_folder=job_folder,
                 jd_config_path=jd_cfg,
                 resume_pending_dir=pending_guess,
             )
@@ -559,6 +603,28 @@ class AnalyzeResumeNode(WorkflowNode):
         jd_template = (context.get("jd_template") or context.get("jd_full") or "").strip()
         jd_path = str(context.get("jd_config_path") or "").strip()
 
+        if jd_path:
+            try:
+                from pathlib import Path
+
+                if Path(jd_path).is_file():
+                    from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+                    root = _get_hr_recruitment_plugin_root()
+                    if root:
+                        import sys
+
+                        s = str(root.resolve())
+                        if s not in sys.path:
+                            sys.path.insert(0, s)
+                        from tools.jd_full_llm import ensure_jd_full_via_llm_sync
+
+                        jn = str(context.get("job_name") or context.get("job_folder") or "").strip()
+                        extra = str(context.get("jd_llm_extra_context") or "").strip()
+                        ensure_jd_full_via_llm_sync(jd_path, jn, extra_context=extra)
+            except Exception as e:
+                logger.debug("[AnalyzeResumeNode] ensure_jd_full_via_llm 跳过: %s", e)
+
         if not jd_template and jd_path:
             try:
                 import json
@@ -574,7 +640,7 @@ class AnalyzeResumeNode(WorkflowNode):
         if not target_dir:
             from pathlib import Path
 
-            job = str(context.get("job_folder") or context.get("job_name") or "").strip()
+            job = _derive_hr_data_folder_key(context).strip()
             if job:
                 target_dir = str(Path.home() / ".jachin" / "workspace" / "hr_recruitment" / job / "pending")
 

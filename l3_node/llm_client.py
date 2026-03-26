@@ -15,6 +15,49 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _dashscope_econ_fallback() -> str:
+    """与 core 一致：主模型失败时的低成本 DashScope 降级。"""
+    try:
+        from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
+
+        return DASHSCOPE_ECON_FALLBACK_MODEL
+    except ImportError:
+        return "dashscope/qwen3.5-flash-2026-02-23"
+
+
+_L3_DEFAULT_REASONING_MODEL = "qwen3.5-plus"
+
+
+def _brief_llm_context(
+    messages: list[dict[str, Any]],
+    tools: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    """供调度日志使用：消息规模、角色计数、最后一条 user 预览、工具数。"""
+    n = len(messages)
+    roles: dict[str, int] = {}
+    for m in messages:
+        r = (m.get("role") or "?").strip()
+        roles[r] = roles.get(r, 0) + 1
+    last_user = ""
+    for m in reversed(messages):
+        if (m.get("role") or "").strip() == "user":
+            c = m.get("content") or ""
+            if not isinstance(c, str):
+                c = str(c)
+            last_user = c[:120].replace("\n", " ")
+            break
+    tc = len(tools) if tools else 0
+    return f"msgs={n} roles={roles} tools={tc} last_user_preview={last_user!r}"
+
+
+def _pop_l3_call_purpose(kwargs: dict[str, Any], default: str = "unspecified") -> str:
+    p = kwargs.pop("l3_call_purpose", None)
+    if p is None:
+        p = kwargs.pop("call_purpose", None)
+    s = str(p or "").strip()
+    return s if s else default
+
 import os as _os
 _JACHIN_DIR = Path(_os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
 _GATEWAY_CONFIG = _JACHIN_DIR / "l2_gateway_config.json"
@@ -220,18 +263,19 @@ class LiteLLMEngine:
             if env_fb:
                 self.fallback_models = [m.strip() for m in env_fb.split(",") if m.strip()]
             elif self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY"):
-                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
+                self.fallback_models = [_dashscope_econ_fallback()]
             else:
                 self.fallback_models = ["ollama/qwen2.5"]
         # 有 dashscope 时绝不使用 ollama
         if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")) and "ollama" in str(self.fallback_models).lower():
             self.fallback_models = [m for m in self.fallback_models if "ollama" not in m.lower()]
             if not self.fallback_models:
-                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
+                self.fallback_models = [_dashscope_econ_fallback()]
         if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")) and "ollama" in (self.model_name or "").lower():
-            self.model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+            self.model_name = os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
             if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash-2026-02-23"
+                fb = _dashscope_econ_fallback()
+                self.model_name = f"dashscope/{self.model_name}" if self.model_name else fb
         self.timeout = timeout
         self.max_attempts = max_attempts
 
@@ -283,10 +327,17 @@ class LiteLLMEngine:
             pass
         import litellm
 
+        purpose = _pop_l3_call_purpose(kwargs)
+
         # 优先从 env 注入，确保有 DASHSCOPE 时绝不走 Ollama
         _inject_env_keys_into_ctx(self.ctx)
         has_keys = self.ctx.has_any_key()
-        logger.info("[L3 LLM] generate_response 调用 ctx.has_key=%s", has_keys)
+        logger.info(
+            "[L3 LLM][调度] purpose=%s action=chat_completion has_key=%s %s",
+            purpose,
+            has_keys,
+            _brief_llm_context(messages, tools),
+        )
         if not has_keys:
             logger.info("[L3] 从 L2 兜底拉取 API Key...")
             await try_fetch_keys_from_l2(self.ctx)
@@ -299,11 +350,12 @@ class LiteLLMEngine:
         if has_dashscope:
             self.fallback_models = [m for m in (self.fallback_models or []) if "ollama" not in (m or "").lower()]
             if not self.fallback_models:
-                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
+                self.fallback_models = [_dashscope_econ_fallback()]
             if "ollama" in (self.model_name or "").lower():
-                self.model_name = _os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+                self.model_name = _os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
                 if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash-2026-02-23"
+                    fb = _dashscope_econ_fallback()
+                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else fb
 
         models_to_try = [self.model_name] + [m for m in (self.fallback_models or []) if m != self.model_name]
         last_error: Optional[Exception] = None
@@ -311,7 +363,21 @@ class LiteLLMEngine:
         for attempt in range(self.max_attempts):
             model = self._normalize_model(models_to_try[min(attempt, len(models_to_try) - 1)])
             self._inject_key(model)
-            logger.info("[L3] 直连大模型请求 model=%s (L3 自有 API Key)", model)
+            phase = "primary" if attempt == 0 else "fallback_resilience"
+            next_if_fail = (
+                models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                if attempt + 1 < len(models_to_try)
+                else None
+            )
+            logger.info(
+                "[L3 LLM][调度] purpose=%s phase=%s attempt=%d/%d model=%s next_if_fail=%s",
+                purpose,
+                phase,
+                attempt + 1,
+                self.max_attempts,
+                model,
+                next_if_fail or "-",
+            )
             try:
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
@@ -326,11 +392,29 @@ class LiteLLMEngine:
                 response = await litellm.acompletion(**kwargs_chat)
                 choice = response.choices[0] if response.choices else None
                 if not choice:
+                    logger.info(
+                        "[L3 LLM][调度] purpose=%s result=empty model_used=%s",
+                        purpose,
+                        model,
+                    )
                     return ""
                 msg = choice.message
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    logger.info(
+                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls n=%d",
+                        purpose,
+                        model,
+                        len(msg.tool_calls),
+                    )
                     return {"content": msg.content or "", "tool_calls": msg.tool_calls}
-                return (msg.content or "").strip()
+                text = (msg.content or "").strip()
+                logger.info(
+                    "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=text chars=%d",
+                    purpose,
+                    model,
+                    len(text),
+                )
+                return text
             except Exception as e:
                 last_error = e
                 err_msg = str(e)
@@ -341,6 +425,15 @@ class LiteLLMEngine:
                         model, e,
                     )
                 if attempt < self.max_attempts - 1 and len(models_to_try) > 1:
+                    nxt = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                    logger.info(
+                        "[L3 LLM][调度] purpose=%s phase=fallback_chain from=%s to=%s err=%s: %s",
+                        purpose,
+                        model,
+                        nxt,
+                        type(e).__name__,
+                        str(e)[:320],
+                    )
                     logger.warning(
                         "[L3 LLM] attempt=%s model=%s 失败，降级: %s",
                         attempt + 1, model, e,
@@ -366,9 +459,16 @@ class LiteLLMEngine:
             pass
         import litellm
 
+        purpose = _pop_l3_call_purpose(kwargs)
+
         _inject_env_keys_into_ctx(self.ctx)
         has_keys = self.ctx.has_any_key()
-        logger.info("[L3 LLM] generate_response_stream ctx.has_key=%s", has_keys)
+        logger.info(
+            "[L3 LLM][调度] purpose=%s action=chat_completion_stream has_key=%s %s",
+            purpose,
+            has_keys,
+            _brief_llm_context(messages, None),
+        )
         if not has_keys:
             await try_fetch_keys_from_l2(self.ctx)
         if not self.ctx.has_any_key():
@@ -379,11 +479,12 @@ class LiteLLMEngine:
         if has_dashscope:
             self.fallback_models = [m for m in (self.fallback_models or []) if "ollama" not in (m or "").lower()]
             if not self.fallback_models:
-                self.fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
+                self.fallback_models = [_dashscope_econ_fallback()]
             if "ollama" in (self.model_name or "").lower():
-                self.model_name = _os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+                self.model_name = _os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
                 if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else "dashscope/qwen3.5-flash-2026-02-23"
+                    fb = _dashscope_econ_fallback()
+                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else fb
 
         models_to_try = [self.model_name] + [
             m for m in self.fallback_models if m != self.model_name
@@ -395,7 +496,21 @@ class LiteLLMEngine:
                 models_to_try[min(attempt, len(models_to_try) - 1)]
             )
             self._inject_key(model)
-            logger.info("[L3] 直连大模型流式请求 model=%s (L3 自有 API Key)", model)
+            phase = "primary" if attempt == 0 else "fallback_resilience"
+            next_if_fail = (
+                models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                if attempt + 1 < len(models_to_try)
+                else None
+            )
+            logger.info(
+                "[L3 LLM][调度] purpose=%s phase=%s attempt=%d/%d model=%s stream=1 next_if_fail=%s",
+                purpose,
+                phase,
+                attempt + 1,
+                self.max_attempts,
+                model,
+                next_if_fail or "-",
+            )
             full_content: list[str] = []
             try:
                 kwargs_chat: dict[str, Any] = {
@@ -416,7 +531,14 @@ class LiteLLMEngine:
                         full_content.append(delta)
                         if chunk_callback:
                             await chunk_callback(delta)
-                return "".join(full_content).strip()
+                out = "".join(full_content).strip()
+                logger.info(
+                    "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",
+                    purpose,
+                    model,
+                    len(out),
+                )
+                return out
             except Exception as e:
                 last_error = e
                 err_msg = str(e)
@@ -427,6 +549,15 @@ class LiteLLMEngine:
                         model, e,
                     )
                 if attempt < self.max_attempts - 1 and len(models_to_try) > 1:
+                    nxt = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                    logger.info(
+                        "[L3 LLM][调度] purpose=%s phase=fallback_chain stream=1 from=%s to=%s err=%s: %s",
+                        purpose,
+                        model,
+                        nxt,
+                        type(e).__name__,
+                        str(e)[:320],
+                    )
                     logger.warning(
                         "[L3 LLM] 流式 attempt=%s model=%s 失败，降级: %s",
                         attempt + 1, model, e,

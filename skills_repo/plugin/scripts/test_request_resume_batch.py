@@ -21,7 +21,7 @@ if sys.platform == "win32":
         pass
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
 
 from tools.atom_request_resume import atom_request_resume_batch
 

@@ -149,6 +149,7 @@ async def _run_memory_flush(messages: list[dict[str, Any]], summary_model: str) 
             [{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=512,
+            call_purpose="compaction_memory_flush",
         )
         if isinstance(result, dict):
             result = result.get("content", "") or ""
@@ -254,6 +255,7 @@ async def _run_silent_anchor_file_round(
             [{"role": "user", "content": prompt}],
             temperature=0.15,
             max_tokens=4096,
+            call_purpose="compaction_silent_anchor_file_round",
         )
         if isinstance(result, dict):
             result = result.get("content", "") or ""
@@ -316,6 +318,7 @@ async def _run_anchor_focused_second_flush(
             [{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=512,
+            call_purpose="compaction_anchor_second_flush",
         )
         if isinstance(result, dict):
             result = result.get("content", "") or ""
@@ -353,6 +356,7 @@ async def _generate_summary(middle_messages: list[dict[str, str]], summary_model
         [{"role": "user", "content": summary_prompt}],
         temperature=0.3,
         max_tokens=256,
+        call_purpose="compaction_context_summary",
     )
     if isinstance(summary, dict):
         summary = summary.get("content", "") or ""

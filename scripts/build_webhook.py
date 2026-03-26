@@ -52,10 +52,10 @@ def main() -> int:
     (build_dir / NAME).mkdir(parents=True, exist_ok=True)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
-    # PYTHONPATH：project root (l3_node)、plugin、2-track-a-atomic-mcp
+    # PYTHONPATH：project root (l3_node)、plugin、com.jachin.hr.recruitment
     plugin_root = ROOT / "skills_repo" / "plugin"
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(plugin_root), str(plugin_root / "2-track-a-atomic-mcp")])
+    env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(plugin_root), str(plugin_root / "com.jachin.hr.recruitment")])
 
     excludes = [
         "IPython", "matplotlib", "PIL", "PyQt5", "tkinter", "sphinx", "black",

@@ -67,7 +67,7 @@ def ensure_l3_running() -> bool:
 
 def ensure_jd_config(job_name: str, jd_full: str, job_title: str = None, salary_min: int = 19, salary_max: int = 25) -> Path:
     """确保 data/{岗位名}/jd.json 存在"""
-    sys.path.insert(0, str(ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"))
+    sys.path.insert(0, str(ROOT / "skills_repo" / "plugin" / "com.jachin.hr.recruitment"))
     from tools.hr_data_paths import init_job_jd_from_template, get_job_jd_path
 
     title = job_title or job_name

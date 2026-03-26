@@ -19,7 +19,7 @@ if sys.platform == "win32":
         pass
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
 
 def main():
     from playwright.sync_api import sync_playwright

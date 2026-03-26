@@ -101,7 +101,7 @@ def _ensure_dotenv_loaded() -> None:
         return
     try:
         from dotenv import load_dotenv
-        # 插件根目录：tools/ -> 2-track-a-atomic-mcp/ -> plugin/
+        # tools/ -> com.jachin.hr.recruitment/ -> plugin/
         plugin_root = Path(__file__).resolve().parent.parent.parent
         env_path = plugin_root / ".env"
         if env_path.exists():

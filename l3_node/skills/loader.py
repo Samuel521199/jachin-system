@@ -144,6 +144,33 @@ def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
     return {}
 
 
+def _sync_hr_caller_jd_to_skill_jds_files(jd_text: str, target_role: str) -> None:
+    """
+    Wasm 内 mcp_read_file 常按 target_role 或 hr-analyzer4 读取 ~/.jachin/config/skills/.../hr_jds/*.md。
+    若仓库/缓存里残留「云边协同」等测试 JD，会覆盖 stdin 中的 jd_template。
+    在每次带 jd_template 调用透析镜前，把本次 JD 写入 hr-analyzer4.md 与 {target_role}.md。
+    """
+    jd_text = (jd_text or "").strip()
+    if not jd_text:
+        return
+    try:
+        from l3_node.jachin_config import get_hr_jds_dir
+        from l3_node.paths import get_app_root
+
+        jd_dir = get_hr_jds_dir(get_app_root())
+        jd_dir.mkdir(parents=True, exist_ok=True)
+        role = (target_role or "backend_engineer").strip() or "backend_engineer"
+        for fname in (f"{role}.md", "hr-analyzer4.md"):
+            (jd_dir / fname).write_text(jd_text, encoding="utf-8")
+        logger.info(
+            "[Skill Execute] HR 已将本调用 jd_template 同步至 hr_jds（%s.md + hr-analyzer4.md）len=%d",
+            role,
+            len(jd_text),
+        )
+    except Exception as e:
+        logger.warning("[Skill Execute] HR 同步 hr_jds JD 文件失败: %s", e)
+
+
 def _get_hr_plugin_config_defaults(lookup_id: str) -> dict[str, Any]:
     """从 plugin.json 直接读取 HR 技能默认配置（L2 不可用时兜底，确保 output_dir 等可用）"""
     _HR_ITEM_MAP = {"jpp:com.jachin.hr.analyzer4": "hr-analyzer4"}
@@ -208,6 +235,63 @@ def get_hr_invoke_defaults(skill_id: str = "com.jachin.hr.analyzer4") -> dict[st
         "resume_input_dir": cfg.get("resume_input_dir") or "data/hr_resumes",
         "output_dir": cfg.get("output_dir") or "data/hr_analysis",
     }
+
+
+def _persist_hr_analyzer_ndjson_batch(stdin_json: dict[str, Any], lookup_id: str) -> int:
+    """
+    从 get_last_ndjson_lines() 读取 Wasm 已推送的 progress 行并写入 *_analysis.md。
+    正常返回与 Wasm 中途失败（trap）后均可调用：execute_abi 在 func finally 里会 drain 队列。
+    """
+    if lookup_id != "jpp:com.jachin.hr.analyzer4":
+        return 0
+    try:
+        from core.wasm_runner import get_last_ndjson_lines
+
+        persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
+        persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item if persist_mod else None
+        if not persist_hr_analysis_batch_item:
+            return 0
+        cfg = _fetch_skill_config(lookup_id.replace("jpp:", ""))
+        cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(cfg or {})}
+        _caller_out = (stdin_json.get("output_dir") or "").strip()
+        if _caller_out:
+            cfg = {
+                **cfg,
+                "output_dir": _caller_out,
+                "output_dir_use_absolute": True,
+                "use_absolute_path": True,
+            }
+        ndjson_lines = get_last_ndjson_lines()
+        count = 0
+        for line in ndjson_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") == "done":
+                continue
+            if item.get("status") != "progress":
+                continue
+            report = item.get("report_content")
+            if not report or not isinstance(report, str):
+                continue
+            fn = item.get("filename") or ""
+            stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
+            if not stem or re.match(r"^resume_\d+$", stem):
+                stem = _extract_stem_from_hr_report(report) or stem or "unknown"
+            persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
+            count += 1
+        if count > 0:
+            logger.info("[Skill Execute] HR NDJSON 批量持久化 count=%d", count)
+        return count
+    except Exception as e:
+        logger.warning("[Skills] HR NDJSON 落盘失败: %s", e)
+        return 0
 
 
 def _invoke_native(tool_id: str, **kwargs: Any) -> Any:
@@ -480,11 +564,14 @@ def _scan_wasm_plugins() -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    # 开发模式：先扫仓库内 wasm_plugins，再扫 ~/.jachin/l3_skill_cache。
+    # 否则缓存里过期的 hr-analyzer4（体积小、无 NDJSON 批量落盘）会覆盖同 id 的新版，
+    # 表现为 ndjson_lines=0、只回传一段演示 Markdown、result/*_analysis.md 永不更新。
     wasm_sources: list[dict[str, Any]] = []
-    wasm_sources.extend(_scan_wasm_dir_nested(_L3_SKILL_CACHE_DIR))
     if not getattr(sys, "frozen", False):
-        wasm_sources.extend(_scan_wasm_dir_flat(_WASM_PLUGINS_DIR))
         wasm_sources.extend(_scan_wasm_dir_nested(_WASM_PLUGINS_DIR))
+        wasm_sources.extend(_scan_wasm_dir_flat(_WASM_PLUGINS_DIR))
+    wasm_sources.extend(_scan_wasm_dir_nested(_L3_SKILL_CACHE_DIR))
 
     for t in wasm_sources:
         tid = t["id"]
@@ -528,12 +615,6 @@ def build_hr_stdin_for_debug(
         stdin_json["target_role"] = defaults.get("target_role", "backend_engineer")
     if not stdin_json.get("target_dir"):
         stdin_json["target_dir"] = "data/hr_resumes"
-    try:
-        from datetime import datetime, timezone, timedelta
-        _cn_tz = timezone(timedelta(hours=8))
-        stdin_json["reference_date"] = datetime.now(_cn_tz).strftime("%Y-%m-%d")
-    except Exception:
-        pass
     cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(_fetch_skill_config(config_id) or {})}
     caller_jd = (stdin_json.get("jd_template") or stdin_json.get("jd_content") or "").strip()
     if not caller_jd:
@@ -550,9 +631,19 @@ def build_hr_stdin_for_debug(
         stdin_json.pop("jd_template", None)
         stdin_json.pop("jd_content", None)
         stdin_json.pop("jd_path", None)
+    _caller_output_dir_dbg = (stdin_json.get("output_dir") or "").strip()
+    _skip_out_keys_dbg = frozenset({"output_dir", "output_dir_use_absolute", "use_absolute_path"})
     for k, v in cfg.items():
         if k and not k.startswith("_") and k not in ("JD_template", "jd_template", "jd_path"):
+            if _caller_output_dir_dbg and k in _skip_out_keys_dbg:
+                continue
             stdin_json[k] = v
+    try:
+        from l3_node.hr_reference_time import apply_hr_analysis_reference_time
+
+        apply_hr_analysis_reference_time(stdin_json)
+    except Exception:
+        pass
     _hr_files_val = stdin_json.pop("_hr_files", None)
     if _hr_files_val:
         _stdin_str = _hr_files_val + "\n" + json.dumps(stdin_json, ensure_ascii=False, separators=(",", ":"))
@@ -674,13 +765,6 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         else:
             if not stdin_json.get("resume_filename"):
                 stdin_json["resume_filename"] = defaults.get("resume_filename", "zhangsan_resume.md")
-        # 参考日期：中国时区，供 LLM 判断应届生毕业年份、工作经历时间等，避免未来日期误判
-        try:
-            from datetime import datetime, timezone, timedelta
-            _cn_tz = timezone(timedelta(hours=8))
-            stdin_json["reference_date"] = datetime.now(_cn_tz).strftime("%Y-%m-%d")
-        except Exception:
-            pass
         # 岗位 JD：直接当参数传 jd_template，最简单可靠（不依赖临时文件/mcp_read_file）
         caller_jd = (stdin_json.get("jd_template") or stdin_json.get("jd_content") or "").strip()
         if not caller_jd:
@@ -698,9 +782,21 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
         if not _has_jd:
             logger.warning("[Skill Execute] HR 岗位 JD 为空，请从招聘大盘填写「岗位 JD」")
             print("[Skill Execute] HR 警告: 岗位 JD 为空，分析将缺少【岗位要求】", file=sys.stderr, flush=True)
+        # 调用方已传 output_dir（如 …/hr_recruitment/<岗>/result）时，禁止 plugin.json 里 data/hr_analysis 覆盖，
+        # 否则报告落到项目 data/hr_analysis，职位 result 下看不到 *_analysis.md。
+        _caller_output_dir = (stdin_json.get("output_dir") or "").strip()
+        _skip_out_keys = frozenset({"output_dir", "output_dir_use_absolute", "use_absolute_path"})
         for k, v in cfg.items():
             if k and not k.startswith("_") and k not in ("JD_template", "jd_template", "jd_path"):
+                if _caller_output_dir and k in _skip_out_keys:
+                    continue
                 stdin_json[k] = v
+        try:
+            from l3_node.hr_reference_time import apply_hr_analysis_reference_time
+
+            apply_hr_analysis_reference_time(stdin_json)
+        except Exception:
+            pass
         # resume_path 依赖 cfg，需在 cfg 合并后解析（批量模式 target_dir 时跳过）
         if "resume_path" not in stdin_json and stdin_json.get("resume_filename") and not stdin_json.get("target_dir"):
             fn = stdin_json.get("resume_filename", "zhangsan_resume.md")
@@ -745,6 +841,9 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
     _jd_in = "jd_template" in stdin_json and bool((stdin_json.get("jd_template") or "").strip())
     _jd_src = "jd_template"
     print(f"[Skill Execute] WASM_IN jd_ok={_jd_in} jd_src={_jd_src} stdin_len={len(_stdin_str)}", file=sys.stderr, flush=True)
+    if lookup_id == "jpp:com.jachin.hr.analyzer4" and _jd_in:
+        _tr = (stdin_json.get("target_role") or "backend_engineer").strip() or "backend_engineer"
+        _sync_hr_caller_jd_to_skill_jds_files((stdin_json.get("jd_template") or "").strip(), _tr)
     # 调试：DEBUG_HR_JD=1 时写入 stdin 到临时文件，便于排查 JD 传入问题
     if _jd_in and __import__("os").environ.get("DEBUG_HR_JD") == "1":
         import tempfile
@@ -776,42 +875,22 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
             try:
                 persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
                 persist_hr_analysis_result = persist_mod.persist_hr_analysis_result if persist_mod else None
-                persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item if persist_mod else None
-                from core.wasm_runner import get_last_ndjson_lines
-                cfg = _fetch_skill_config(lookup_id.replace("jpp:", ""))
-                cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(cfg or {})}
-                ndjson_lines = get_last_ndjson_lines()
-                count = 0
-                if ndjson_lines:
-                    for line in ndjson_lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            item = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(item, dict):
-                            continue
-                        if item.get("status") == "done":
-                            continue
-                        if item.get("status") != "progress":
-                            continue
-                        report = item.get("report_content")
-                        if not report or not isinstance(report, str):
-                            continue
-                        fn = item.get("filename") or ""
-                        stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
-                        if not stem or re.match(r"^resume_\d+$", stem):
-                            stem = _extract_stem_from_hr_report(report) or stem or "unknown"
-                        if persist_hr_analysis_batch_item:
-                            persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
-                        count += 1
-                    if count > 0:
-                        result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
-                        logger.info("[Skill Execute] HR NDJSON 批量持久化完成 count=%d", count)
+                count = _persist_hr_analyzer_ndjson_batch(stdin_json, lookup_id)
+                if count > 0:
+                    result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
                 elif result_str and len(result_str.strip()) > 20 and not any(result_str.strip().startswith(p) for p in _err_prefixes):
                     # 回退：解析 JSON 数组（旧版 Wasm 输出）
+                    persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item if persist_mod else None
+                    cfg = _fetch_skill_config(lookup_id.replace("jpp:", ""))
+                    cfg = {**_get_hr_plugin_config_defaults(lookup_id), **(cfg or {})}
+                    _caller_out = (stdin_json.get("output_dir") or "").strip()
+                    if _caller_out:
+                        cfg = {
+                            **cfg,
+                            "output_dir": _caller_out,
+                            "output_dir_use_absolute": True,
+                            "use_absolute_path": True,
+                        }
                     parsed = None
                     raw = result_str.strip()
                     try:
@@ -824,6 +903,7 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                                     parsed = json.loads(raw[: end + 1])
                             except json.JSONDecodeError:
                                 pass
+                    jcount = 0
                     if isinstance(parsed, list) and parsed:
                         for item in parsed:
                             if not isinstance(item, dict):
@@ -837,9 +917,9 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
                                 stem = _extract_stem_from_hr_report(report) or stem or "unknown"
                             if persist_hr_analysis_batch_item:
                                 persist_hr_analysis_batch_item(lookup_id, report, stem, config=cfg)
-                            count += 1
-                        if count > 0:
-                            result_str = f"✅ 执行成功，本次分析了 {count} 份简历。报告已保存至 data/hr_analysis/ 目录。"
+                            jcount += 1
+                        if jcount > 0:
+                            result_str = f"✅ 执行成功，本次分析了 {jcount} 份简历。报告已保存至 data/hr_analysis/ 目录。"
                     else:
                         if persist_hr_analysis_result:
                             persist_hr_analysis_result(lookup_id, result_str, stdin_json, config=cfg)
@@ -852,8 +932,22 @@ def _invoke_wasm(tool_id: str, params: dict[str, Any], ndjson_queue: Optional[An
             return f"[exit {result}]"
         return str(result)
     except Exception as e:
+        _partial = 0
+        if ndjson_queue is None and lookup_id == "jpp:com.jachin.hr.analyzer4":
+            _partial = _persist_hr_analyzer_ndjson_batch(stdin_json, lookup_id)
+            if _partial > 0:
+                print(
+                    f"[Skill Execute] Wasm 异常但已将前 {_partial} 份 progress 落盘（单次大模型调用对应一条 progress）",
+                    file=sys.stderr,
+                    flush=True,
+                )
         print(f"[Skill Execute] [Wasm] 异常 tool_id={tool_id} error={e}", file=sys.stderr, flush=True)
         logger.warning("[Skills] Wasm 执行失败 %s: %s", tool_id, e)
+        if _partial > 0:
+            return (
+                f"⚠️ HR 透析镜批量在第 {_partial + 1} 份附近中断：已完成 {_partial} 份报告已写入 output_dir，"
+                f"请检查后续 PDF 或改用逐份调用（hr_analyze_resume 多文件默认已逐份 Wasm）。\n\n原错误：{e}"
+            )
         return f"[Wasm 执行失败: {e}]"
 
 

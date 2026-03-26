@@ -1703,7 +1703,7 @@ def _sync_refiner_to_lark(
     try:
         import sys
         from l3_node.paths import get_app_root
-        plugin_root = get_app_root() / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+        plugin_root = get_app_root() / "skills_repo" / "plugin" / "com.jachin.hr.recruitment"
         if plugin_root.exists() and str(plugin_root) not in sys.path:
             sys.path.insert(0, str(plugin_root))
         from tools.atom_lark_bitable_sync import sync_csv_to_bitable  # type: ignore[import-untyped]

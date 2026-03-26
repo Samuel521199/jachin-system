@@ -46,7 +46,13 @@ console = Console()
 _NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
 _OLLAMA_FALLBACK = "ollama/qwen2.5"
 
+# 阿里百炼 / DashScope：与 DASHSCOPE_API_KEY 共用；推理用 plus、编码用 coder-plus，降级可用 flash
+DASHSCOPE_REASONING_MODEL = "dashscope/qwen3.5-plus"
+DASHSCOPE_CODER_MODEL = "dashscope/qwen3-coder-plus"
+DASHSCOPE_ECON_FALLBACK_MODEL = "dashscope/qwen3.5-flash-2026-02-23"
+
 _IGNITION_EMITTED = False
+_IGNITION_CODER_EMITTED = False
 
 
 def _load_nexus_config() -> dict[str, Any]:
@@ -64,11 +70,24 @@ def _load_nexus_config() -> dict[str, Any]:
         return {}
 
 
+def _llm_model_from_env_or_settings() -> str:
+    """裸模型名或带前缀均可；空则默认 qwen3.5-plus（推理/分析）。"""
+    raw = (os.environ.get("LLM_MODEL") or "").strip()
+    if not raw:
+        try:
+            from core.config import settings
+
+            raw = (getattr(settings, "LLM_MODEL", None) or "").strip()
+        except ImportError:
+            pass
+    return raw if raw else "qwen3.5-plus"
+
+
 def _get_model_name(config: dict[str, Any] | None = None) -> str:
     """
     从配置读取 model_name，透传给 LiteLLM。
-    示例：gpt-4o, qwen/qwen-max, ollama/qwen2.5
-    当 QWEN_USE_OPENAI_KEY=1 或 llm.use_openai_key_for_qwen 时，默认使用 qwen/qwen-max。
+    示例：gpt-4o, dashscope/qwen3.5-plus, ollama/qwen2.5
+    已配置百炼/DashScope Key 且未显式写 model_name 时，默认 qwen3.5-plus（推理）；编码见 get_coder_model_litellm_id。
     """
     cfg = config or _load_nexus_config()
     llm_cfg = cfg.get("llm") or {}
@@ -86,26 +105,26 @@ def _get_model_name(config: dict[str, Any] | None = None) -> str:
     if not use_for_qwen and isinstance(llm_cfg, dict):
         use_for_qwen = llm_cfg.get("use_openai_key_for_qwen", False)
     if use_for_qwen:
-        return "dashscope/qwen3.5-flash-2026-02-23"  # LiteLLM 要求 dashscope/ 前缀
-    # 若已配置 DASHSCOPE/QWEN API Key，默认用通义千问，避免回退到未启动的 Ollama
+        return _llm_model_from_env_or_settings()
+    # 若已配置 DASHSCOPE/QWEN API Key，默认用通义千问（推理默认 qwen3.5-plus），避免回退到未启动的 Ollama
     if os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or os.environ.get("QWEN_AI_API_KEY"):
-        return "dashscope/qwen3.5-flash-2026-02-23"
+        return _llm_model_from_env_or_settings()
     try:
         from core.config import settings
         if getattr(settings, "DASHSCOPE_API_KEY", None) or getattr(settings, "QWEN_API_KEY", None):
-            return "dashscope/qwen3.5-flash-2026-02-23"
+            return _llm_model_from_env_or_settings()
     except ImportError:
         pass
     # 兜底：检查 nexus_config / credential_loader（可能尚未注入到 os.environ）
     try:
         from core.brain.llm.credential_loader import get_dashscope_key
         if get_dashscope_key():
-            return "dashscope/qwen3.5-flash-2026-02-23"
+            return _llm_model_from_env_or_settings()
     except ImportError:
         pass
     llm_keys = (cfg.get("llm_keys") or {}) if isinstance(cfg.get("llm_keys"), dict) else {}
     if llm_keys.get("dashscope"):
-        return "dashscope/qwen3.5-flash-2026-02-23"
+        return _llm_model_from_env_or_settings()
     return "gpt-4o-mini"  # LiteLLM 默认兜底
 
 
@@ -203,6 +222,62 @@ def _normalize_model_for_litellm(model: str) -> str:
     return m
 
 
+def get_coder_model_litellm_id(config: dict[str, Any] | None = None) -> str:
+    """
+    编码/子 Agent coder 角色用模型；与推理模型共用百炼 API Key。
+    优先级：nexus llm.coder_model_name → 环境变量 LLM_CODER_MODEL → 默认 qwen3-coder-plus。
+    """
+    cfg = config or _load_nexus_config()
+    llm_cfg = cfg.get("llm") or {}
+    if isinstance(llm_cfg, dict):
+        for key in ("coder_model_name", "coder_model", "code_model_name"):
+            name = llm_cfg.get(key)
+            if name and str(name).strip():
+                return _normalize_model_for_litellm(str(name).strip())
+    env_m = (os.environ.get("LLM_CODER_MODEL") or "").strip()
+    if env_m:
+        return _normalize_model_for_litellm(env_m)
+    try:
+        from core.config import settings
+
+        sc = (getattr(settings, "LLM_CODER_MODEL", None) or "").strip()
+        if sc:
+            return _normalize_model_for_litellm(sc)
+    except ImportError:
+        pass
+    return DASHSCOPE_CODER_MODEL
+
+
+def _brief_llm_context(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> str:
+    """调度可观测性：消息规模、角色计数、最后 user 预览、工具数。"""
+    n = len(messages)
+    roles: dict[str, int] = {}
+    for m in messages:
+        r = (m.get("role") or "?").strip()
+        roles[r] = roles.get(r, 0) + 1
+    last_user = ""
+    for m in reversed(messages):
+        if (m.get("role") or "").strip() == "user":
+            c = m.get("content") or ""
+            if not isinstance(c, str):
+                c = str(c)
+            last_user = c[:120].replace("\n", " ")
+            break
+    tc = len(tools) if tools else 0
+    return f"msgs={n} roles={roles} tools={tc} last_user_preview={last_user!r}"
+
+
+def _pop_call_purpose(kwargs: dict[str, Any], default: str = "cognitive_unspecified") -> str:
+    p = kwargs.pop("call_purpose", None)
+    if p is None:
+        p = kwargs.pop("l3_call_purpose", None)
+    s = str(p or "").strip()
+    return s if s else default
+
+
 def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[str], float]:
     """
     读取重试与降级配置。
@@ -222,7 +297,7 @@ def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[s
         if env_fallback:
             fallback_models = [m.strip() for m in env_fallback.split(",") if m.strip()]
         elif _has_dashscope_key():
-            fallback_models = ["dashscope/qwen3.5-flash-2026-02-23"]
+            fallback_models = [DASHSCOPE_ECON_FALLBACK_MODEL]
         else:
             fallback_models = [_OLLAMA_FALLBACK]
     timeout = float(llm.get("timeout_seconds", 60.0))
@@ -281,13 +356,35 @@ class LiteLLMEngine:
         调用 litellm.acompletion，返回纯文本或 tool_calls 字典。
         v8.0 神盾：for attempt 重试 + fallback_models 降级灾备。
         """
+        call_purpose = _pop_call_purpose(kwargs)
         _inject_api_keys()
         max_attempts, fallback_models, timeout = _get_retry_config()
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 
+        logger.info(
+            "[LLM][调度] purpose=%s action=chat_completion %s",
+            call_purpose,
+            _brief_llm_context(messages, tools),
+        )
+
         for attempt in range(max_attempts):
             model = _normalize_model_for_litellm(models_to_try[min(attempt, len(models_to_try) - 1)])
+            phase = "primary" if attempt == 0 else "fallback_resilience"
+            next_if_fail = (
+                models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                if attempt + 1 < len(models_to_try)
+                else None
+            )
+            logger.info(
+                "[LLM][调度] purpose=%s phase=%s attempt=%d/%d model=%s next_if_fail=%s",
+                call_purpose,
+                phase,
+                attempt + 1,
+                max_attempts,
+                model,
+                next_if_fail or "-",
+            )
             try:
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
@@ -302,16 +399,42 @@ class LiteLLMEngine:
                 response = await litellm.acompletion(**kwargs_chat)
                 choice = response.choices[0] if response.choices else None
                 if not choice:
+                    logger.info(
+                        "[LLM][调度] purpose=%s result=empty model_used=%s",
+                        call_purpose,
+                        model,
+                    )
                     return ""
 
                 msg = choice.message
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    logger.info(
+                        "[LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls n=%d",
+                        call_purpose,
+                        model,
+                        len(msg.tool_calls),
+                    )
                     return {"content": msg.content or "", "tool_calls": msg.tool_calls}
-                return (msg.content or "").strip()
+                text = (msg.content or "").strip()
+                logger.info(
+                    "[LLM][调度] purpose=%s result=ok model_used=%s outcome=text chars=%d",
+                    call_purpose,
+                    model,
+                    len(text),
+                )
+                return text
             except Exception as e:
                 last_error = e
                 if attempt < max_attempts - 1 and len(models_to_try) > 1:
                     next_model = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                    logger.info(
+                        "[LLM][调度] purpose=%s phase=fallback_chain from=%s to=%s err=%s: %s",
+                        call_purpose,
+                        model,
+                        next_model,
+                        type(e).__name__,
+                        str(e)[:320],
+                    )
                     console.print(
                         f"[yellow][⚠ 降级策略][/yellow] 主模型异常，尝试第 {attempt + 2} 次呼叫备用算力: [cyan]{next_model}[/cyan]"
                     )
@@ -333,13 +456,35 @@ class LiteLLMEngine:
         v8.0 流式神经：stream=True 调用 litellm.acompletion，逐 token 回调并返回完整响应。
         v8.0 神盾：for attempt 重试 + fallback_models 降级灾备。
         """
+        call_purpose = _pop_call_purpose(kwargs)
         _inject_api_keys()
         max_attempts, fallback_models, timeout = _get_retry_config()
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 
+        logger.info(
+            "[LLM][调度] purpose=%s action=chat_completion_stream %s",
+            call_purpose,
+            _brief_llm_context(messages, None),
+        )
+
         for attempt in range(max_attempts):
             model = _normalize_model_for_litellm(models_to_try[min(attempt, len(models_to_try) - 1)])
+            phase = "primary" if attempt == 0 else "fallback_resilience"
+            next_if_fail = (
+                models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                if attempt + 1 < len(models_to_try)
+                else None
+            )
+            logger.info(
+                "[LLM][调度] purpose=%s phase=%s attempt=%d/%d model=%s stream=1 next_if_fail=%s",
+                call_purpose,
+                phase,
+                attempt + 1,
+                max_attempts,
+                model,
+                next_if_fail or "-",
+            )
             full_content: list[str] = []
             try:
                 kwargs_chat: dict[str, Any] = {
@@ -361,11 +506,26 @@ class LiteLLMEngine:
                         full_content.append(delta)
                         if chunk_callback:
                             await chunk_callback(delta)
-                return "".join(full_content).strip()
+                out = "".join(full_content).strip()
+                logger.info(
+                    "[LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",
+                    call_purpose,
+                    model,
+                    len(out),
+                )
+                return out
             except Exception as e:
                 last_error = e
                 if attempt < max_attempts - 1 and len(models_to_try) > 1:
                     next_model = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
+                    logger.info(
+                        "[LLM][调度] purpose=%s phase=fallback_chain stream=1 from=%s to=%s err=%s: %s",
+                        call_purpose,
+                        model,
+                        next_model,
+                        type(e).__name__,
+                        str(e)[:320],
+                    )
                     console.print(
                         f"[yellow][⚠ 降级策略][/yellow] 主模型异常，尝试第 {attempt + 2} 次呼叫备用算力: [cyan]{next_model}[/cyan]"
                     )
@@ -382,6 +542,7 @@ class CognitiveEngineFactory:
     """
 
     _engine: LiteLLMEngine | None = None
+    _coder_engine: LiteLLMEngine | None = None
 
     @classmethod
     def get_engine(cls, config: dict[str, Any] | None = None) -> LiteLLMEngine:
@@ -400,4 +561,22 @@ class CognitiveEngineFactory:
                 f"[bold green][Ignition][/bold green] Cognitive Swarm Online. Model: [cyan]{engine.model_name}[/cyan]"
             )
             _IGNITION_EMITTED = True
+        return engine
+
+    @classmethod
+    def get_coder_engine(cls, config: dict[str, Any] | None = None) -> LiteLLMEngine:
+        """
+        编码专用引擎（默认 qwen3-coder-plus），与 get_engine 共用 DASHSCOPE_API_KEY。
+        """
+        global _IGNITION_CODER_EMITTED
+        _inject_api_keys()
+        raw = get_coder_model_litellm_id(config)
+        resolved = _resolve_model_with_fallback(raw)
+        engine = LiteLLMEngine(model_name=_normalize_model_for_litellm(resolved))
+        cls._coder_engine = engine
+        if not _IGNITION_CODER_EMITTED:
+            console.print(
+                f"[bold green][Ignition][/bold green] Coder model online: [cyan]{engine.model_name}[/cyan]"
+            )
+            _IGNITION_CODER_EMITTED = True
         return engine

@@ -16,9 +16,12 @@ WebSocket 线程（否则 ping 超时导致连接断开）。
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -43,10 +46,39 @@ def _get_chat_lock(chat_id: str) -> threading.Lock:
             _chat_locks[chat_id] = threading.Lock()
         return _chat_locks[chat_id]
 
+
+_IM_INBOUND_RECENT: dict[str, float] = {}
+_IM_INBOUND_TTL_SEC = 30.0
+_IM_INBOUND_GUARD = threading.Lock()
+
+
+def _should_skip_duplicate_inbound(chat_id: str, text: str) -> bool:
+    """飞书长连接偶发同一条文本短时投递两次：同会话 + 归一化文案在 TTL 内只处理一次。"""
+    cid = (chat_id or "").strip()
+    if not cid:
+        return False
+    norm = " ".join((text or "").strip().split())
+    if not norm:
+        return False
+    digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:20]
+    key = f"{cid}\0{digest}"
+    now = time.monotonic()
+    with _IM_INBOUND_GUARD:
+        stale = [k for k, t in _IM_INBOUND_RECENT.items() if now - t > _IM_INBOUND_TTL_SEC]
+        for k in stale:
+            del _IM_INBOUND_RECENT[k]
+        prev = _IM_INBOUND_RECENT.get(key)
+        if prev is not None and (now - prev) < _IM_INBOUND_TTL_SEC:
+            return True
+        _IM_INBOUND_RECENT[key] = now
+    return False
+
+
 # 招聘类消息关键词：命中则走 HR process_lark_message
 _HR_RECRUITMENT_KEYWORDS = [
     "招聘", "发布", "发职位", "职位", "JD", "岗位", "简历", "打招呼", "推荐牛人",
     "同意", "确认", "确认发布", "直接发布", "收网", "抓取", "同步", "多维表",
+    "清除岗位", "清除全部", "清空岗位", "删除岗位",
     "post", "greet", "harvest", "bitable",
 ]
 
@@ -57,10 +89,80 @@ def _is_hr_package_available() -> bool:
     return is_hr_package_available()
 
 
+def _line_parses_as_boss_job_select(text: str) -> bool:
+    """
+    「python工程师 杭州 15-25K」等一行选岗文案：应走 process_lark_message 预写 jd.json，
+    避免仅关键词未命中时直进 Agent 把历史里的「抓取…」错当 job_name。
+    """
+    s = (text or "").strip()
+    if len(s) < 6:
+        return False
+    try:
+        from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+        root = _get_hr_recruitment_plugin_root()
+        if not root or not root.exists():
+            return False
+        cache_str = str(root.resolve())
+        prev = sys.path.copy()
+        try:
+            if cache_str not in sys.path:
+                sys.path.insert(0, cache_str)
+            from tools.boss_utils import extract_job_select_line_for_boss_from_hr_chat
+
+            return bool(extract_job_select_line_for_boss_from_hr_chat(s))
+        finally:
+            sys.path = prev
+    except Exception:
+        return False
+
+
+def _apply_hr_im_job_select_prelude(text: str) -> None:
+    """
+    在 ``try_lark_workflow_command_intercept`` 之前合并飞书里的 Boss 选岗行。
+
+    否则整句「Python 工程师 _ 杭州 15-25K，打招呼改成20人」会先被拦截器命中，
+    **永远不会**执行 ``process_lark_message`` 里的 ``apply_job_select_from_hr_im_text``，
+    指针仍留在旧岗，批次参数误作用到产品经理等。
+    """
+    s = (text or "").strip()
+    if not s:
+        return
+    if not _is_hr_package_available() or not _is_recruitment_message(s):
+        return
+    try:
+        from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+        root = _get_hr_recruitment_plugin_root()
+        if not root or not root.exists():
+            return
+        cache_str = str(root.resolve())
+        prev = sys.path.copy()
+        try:
+            if cache_str not in sys.path:
+                sys.path.insert(0, cache_str)
+            from tools.atom_lark_chat import apply_job_select_from_hr_im_text
+
+            r = apply_job_select_from_hr_im_text(s)
+            if r.get("applied"):
+                logger.info(
+                    "[IM Dispatcher] 拦截前已合并选岗 jd_select=%r job_folder=%r job_name=%r",
+                    (r.get("jd_select") or "")[:100],
+                    r.get("job_folder") or "",
+                    (r.get("job_name") or "")[:60],
+                )
+        finally:
+            sys.path = prev
+    except Exception as e:
+        logger.debug("[IM Dispatcher] 选岗 prelude 跳过: %s", e)
+
+
 def _is_recruitment_message(text: str) -> bool:
     """判断是否为招聘类消息"""
     if not text or not text.strip():
         return False
+    if _line_parses_as_boss_job_select(text):
+        return True
     t = text.strip().lower()
     for kw in _HR_RECRUITMENT_KEYWORDS:
         if kw.lower() in t or kw in text:
@@ -127,11 +229,19 @@ def _do_agent_work(
     with lock:
         session_messages = load_lark_session(cid) if cid else []
         intent = (text or "").strip()
+        if _should_skip_duplicate_inbound(cid, intent):
+            logger.info(
+                "[IM Dispatcher] 忽略短时重复投递（同会话同文案）chat_id=%s preview=%s",
+                cid[:24] if cid else "",
+                intent[:48],
+            )
+            return
         reply = ""
+        _apply_hr_im_job_select_prelude(intent)
         try:
             from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
 
-            cmd_reply = try_lark_workflow_command_intercept(intent)
+            cmd_reply = try_lark_workflow_command_intercept(intent, channel_id=cid)
         except Exception as ex:
             logger.debug("[IM Dispatcher] workflow command intercept 不可用: %s", ex)
             cmd_reply = None
@@ -152,12 +262,15 @@ def _do_agent_work(
                         intent, cid, user_id, run_agent_fn, engine, loop, timeout, session_messages
                     )
                 else:
+                    _iatt = {"channel": "lark_im_dispatcher"}
+                    if cid:
+                        _iatt["lark_chat_id"] = str(cid).strip()
                     future = asyncio.run_coroutine_threadsafe(
                         run_agent_fn(
                             intent,
                             engine,
                             _session_messages=session_messages,
-                            implicit_attribution={"channel": "lark_im_dispatcher"},
+                            implicit_attribution=_iatt,
                         ),
                         loop,
                     )

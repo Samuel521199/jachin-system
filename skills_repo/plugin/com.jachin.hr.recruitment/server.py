@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-轨道 A - 原子 MCP Server
-暴露原子工具：atom_post_job_boss, atom_greet_recommend_boss, harvest_resume_full_flow, atom_request_resume_batch, local_archiver, brain_filter
+HR 招聘 MCP — 可选 FastMCP 入口（与 plugin.json 动态加载并存，供 Cursor / mcp_servers.json 使用）
+
+暴露：发帖、打招呼、收网、求简历、归档、brain_filter、进度、Lark 消息与多维表同步等。
 """
 import asyncio
 import sys
@@ -116,8 +117,9 @@ async def harvest_resume_full_flow(
     download_to_pending: bool = True,
     max_items: int = 50,
     request_if_no_resume: bool = True,
+    use_all_positions: bool = False,
 ) -> dict:
-    """收网抓取：选择职位→遍历左侧求职者→无简历则求简历，有简历则下载 PDF 到 data/{职位}/pending。可传 jd_config_path。需 Chrome 以调试模式启动，停留在 Boss 沟通页。"""
+    """收网抓取：选择职位→遍历左侧求职者→无简历则求简历，有简历则下载 PDF 到 data/{职位}/pending。可传 jd_config_path。use_all_positions=True 时选「全部职位」、忽略 job_text（仅短时联调）。需 Chrome 以调试模式启动，停留在 Boss 沟通页。"""
     return await asyncio.to_thread(
         _harvest_full,
         cdp_url=cdp_url,
@@ -126,6 +128,7 @@ async def harvest_resume_full_flow(
         download_to_pending=download_to_pending,
         max_items=max_items,
         request_if_no_resume=request_if_no_resume,
+        use_all_positions=use_all_positions,
     )
 
 
@@ -143,9 +146,13 @@ async def atom_post_job_boss(
             cfg = jd_config if isinstance(jd_config, dict) else json.loads(str(jd_config))
             if isinstance(cfg, dict) and (cfg.get("job_title") or cfg.get("jd_full")):
                 from tools.hr_data_paths import init_job_jd_from_template
+
                 job_title = (cfg.get("job_title") or "").strip()
                 if job_title:
-                    jd_path = init_job_jd_from_template(job_title, overrides=cfg)
+                    try:
+                        jd_path = init_job_jd_from_template(job_title, overrides=cfg)
+                    except ValueError as e:
+                        return {"success": False, "posted": False, "error": str(e)}
                     path_to_use = str(jd_path)
         except (json.JSONDecodeError, Exception):
             pass

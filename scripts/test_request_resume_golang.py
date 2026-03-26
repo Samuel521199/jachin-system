@@ -32,7 +32,7 @@ if sys.platform == "win32":
 
 # 从项目根目录运行：scripts/test_request_resume_golang.py
 ROOT = Path(__file__).resolve().parent.parent
-PLUGIN_TOOLS = ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+PLUGIN_TOOLS = ROOT / "skills_repo" / "plugin" / "com.jachin.hr.recruitment"
 sys.path.insert(0, str(PLUGIN_TOOLS))
 
 from tools.atom_request_resume import atom_request_resume, atom_request_resume_batch

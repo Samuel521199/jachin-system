@@ -7,12 +7,22 @@ jd_config_path 指向 data/{岗位名}/jd.json；若无则从 job_name 推导。
 """
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from .hr_data_paths import get_job_jd_path, ensure_job_dirs, init_job_jd_from_template, sanitize_job_folder
+from .boss_utils import canonicalize_boss_job_select, strip_leading_recruitment_verbs_for_job_chat
+from .hr_data_paths import (
+    clear_jd_boss_post_published_flag,
+    get_job_jd_path,
+    ensure_job_dirs,
+    init_job_jd_from_template,
+    jd_boss_post_marked_published,
+    mark_jd_boss_post_published,
+    sanitize_job_folder,
+)
 
 
 def load_jd_config(config_path: str = "", job_name: str = "") -> dict:
@@ -40,24 +50,44 @@ def load_jd_config(config_path: str = "", job_name: str = "") -> dict:
     return {}
 
 
+def _jd_select_field_looks_complete_boss_line(sel_canon: str) -> bool:
+    """jd.json 里显式 jd_select 是否像完整 Boss 顶栏/下拉行（含城市段与 K 薪）。"""
+    s = (sel_canon or "").strip()
+    if " _ " not in s:
+        return False
+    if not re.search(r"\d", s):
+        return False
+    if not re.search(r"[KkＫ]", s):
+        return False
+    return True
+
+
 def get_jd_select(jd: dict) -> str:
     """
     获取 Boss「全部职位」下拉框精确匹配用文本。
-    格式：岗位名称 _ 杭州 最低薪资-最高薪资（仅最高薪资带 K，如 10-15K）
-    优先使用 jd.json 中的 jd_select 字段，否则根据 job_title、salary_min、salary_max 推导。
+    规范格式：``岗位名称 _ 工作地点 最低-最高K``（与 Boss 在招列表一致，如 ``Python 工程师 _ 杭州 15-25K``）。
+
+    **若 jd.json 已写入完整 ``jd_select``**（飞书/MCP 合并的选岗行），**优先于** ``salary_min``/``salary_max`` 拼行：
+    模板里薪资常未随用户改口而更新，否则会误选成 10-15K 等在招岗而忽略 15-25K 目录。
+    仅当 ``jd_select`` 不完整（缺 `` _ `` 或薪资）时，再用结构化字段拼行，最后回退标题。
     """
-    sel = (jd.get("jd_select") or "").strip()
-    if sel:
-        return sel
     title = (jd.get("job_title") or "").strip()
     city = (jd.get("job_location") or "杭州").strip()
     sal_min = jd.get("salary_min")
     sal_max = jd.get("salary_max")
-    if sal_min is not None and sal_max is not None:
-        return f"{title} _ {city} {int(sal_min)}-{int(sal_max)}K"
-    if sal_min is not None:
-        return f"{title} _ {city} {int(sal_min)}K"
-    return title or ""
+
+    sel = strip_leading_recruitment_verbs_for_job_chat((jd.get("jd_select") or "").strip())
+    sel_canon = canonicalize_boss_job_select(sel) if sel else ""
+    if sel_canon and _jd_select_field_looks_complete_boss_line(sel_canon):
+        return sel_canon
+
+    if title and sal_min is not None and sal_max is not None:
+        return canonicalize_boss_job_select(f"{title} _ {city} {int(sal_min)}-{int(sal_max)}K")
+    if title and sal_min is not None:
+        return canonicalize_boss_job_select(f"{title} _ {city} {int(sal_min)}K")
+    if sel_canon:
+        return sel_canon
+    return canonicalize_boss_job_select(title or "")
 
 
 def _close_review_passed_modal(page) -> None:
@@ -89,10 +119,14 @@ def atom_post_job_boss(
     jd_config_path: str = "",
     jd_config: dict | str | None = None,
     os_context: dict | None = None,
+    force_republish: bool = False,
 ) -> dict:
     """
     在 Boss 直聘自动填写并发布职位。
     若传 jd_config，先写入 data/{职位}/jd.json 再发布。
+
+    jd.json 中 ``boss_post_published=true`` 时**默认拒绝再次发帖**（发职位与调度分离）；
+    仅当 ``force_republish=true``（或 jd 内临时字段，见 MCP）时才会再次走 Boss RPA。
 
     os_context: 可选 Workflow/DAG 上下文；与 Harvest 工具对齐，发布流程内可按需扩展 STOP 探针。
     """
@@ -107,7 +141,10 @@ def atom_post_job_boss(
         if isinstance(cfg, dict) and (cfg.get("job_title") or cfg.get("jd_full")):
             job_title = (cfg.get("job_title") or "").strip()
             if job_title:
-                jd_path = init_job_jd_from_template(job_title, overrides=cfg)
+                try:
+                    jd_path = init_job_jd_from_template(job_title, overrides=cfg)
+                except ValueError as e:
+                    return {"success": False, "posted": False, "error": str(e)}
                 jd_config_path = str(jd_path)
 
     job_name = ""
@@ -123,6 +160,27 @@ def atom_post_job_boss(
     jd = load_jd_config(jd_config_path, job_name)
     if not jd.get("job_title") and not jd.get("jd_full"):
         return {"success": False, "posted": False, "error": "JD 配置为空，请先填写 data/{职位}/jd.json"}
+
+    _force = bool(force_republish)
+    if isinstance(jd, dict) and jd.get("force_republish") is True:
+        _force = True
+    if jd_boss_post_marked_published(jd) and not _force:
+        return {
+            "success": True,
+            "posted": False,
+            "already_published": True,
+            "skipped_repost": True,
+            "error": "",
+            "message": (
+                "该岗位 jd.json 已标记 boss_post_published（Boss 侧已发过帖）。"
+                "改薪资/JD 文案可只更新 jd.json；改打招呼/收网/透析请改调度字段并 hr_scheduler_send_confirm_prompt 或 add_automated_recruitment_task。"
+                "若确需在 Boss 再发一条职位，请传 force_republish=true。"
+            ),
+        }
+    jd_path_for_flag = Path(jd_config_path) if jd_config_path and Path(jd_config_path).exists() else None
+    if _force and jd_path_for_flag:
+        clear_jd_boss_post_published_flag(jd_path_for_flag)
+        jd = load_jd_config(jd_config_path, job_name)
 
     try:
         from playwright.sync_api import sync_playwright
@@ -184,21 +242,62 @@ def atom_post_job_boss(
                     page.goto("https://www.zhipin.com/web/chat/job/list?ka=menu-manager-job", wait_until="domcontentloaded", timeout=20000)
                     page.wait_for_timeout(3000)
 
-            # 2. 定位职位列表 iframe（job/list-new），按钮在此 frame 内
-            page.wait_for_timeout(1200)
+            # 2. 定位职位列表 iframe（SPA 偶发慢加载 / iframe URL 与文档不一致）— 多轮扫描 + 刷新
+            _iframe_attempts = max(2, min(8, int(os.environ.get("BOSS_POST_IFRAME_ATTEMPTS", "4"))))
+
+            def _pick_job_frame():
+                """优先含 job/list 的 frame 内 div.add-btn；否则任意 frame 含 add-btn。"""
+                for f in page.frames:
+                    try:
+                        if "job/list" in (f.url or ""):
+                            loc = f.locator("div.add-btn")
+                            if loc.count() > 0:
+                                return f
+                    except Exception:
+                        pass
+                for f in page.frames:
+                    try:
+                        loc = f.locator("div.add-btn")
+                        if loc.count() > 0:
+                            return f
+                    except Exception:
+                        pass
+                return None
+
             job_frame = None
-            for f in page.frames:
-                if "job/list" in (f.url or ""):
-                    loc = f.locator("div.add-btn")
-                    if loc.count() > 0:
-                        job_frame = f
-                        break
+            for attempt in range(1, _iframe_attempts + 1):
+                page.wait_for_timeout(600 + 400 * attempt)
+                job_frame = _pick_job_frame()
+                if job_frame:
+                    break
+                logger.warning(
+                    "atom_post_job_boss 未找到 add-btn（第 %d/%d 次），刷新职位管理页后重试",
+                    attempt,
+                    _iframe_attempts,
+                )
+                if attempt >= _iframe_attempts:
+                    break
+                try:
+                    page.goto(
+                        "https://www.zhipin.com/web/chat/job/list?ka=menu-manager-job",
+                        wait_until="domcontentloaded",
+                        timeout=25000,
+                    )
+                    page.wait_for_timeout(2000 + 500 * attempt)
+                except Exception as ex:
+                    logger.debug("刷新职位管理页: %s", ex)
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=20000)
+                        page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
+
             if not job_frame:
-                curr = (page.url or "")[:80]
+                curr = (page.url or "")[:120]
                 return {
                     "success": False,
                     "posted": False,
-                    "error": f"未找到职位列表 iframe。当前页: {curr}",
+                    "error": f"未找到职位列表 iframe（已重试 {_iframe_attempts} 次）。当前页: {curr}",
                 }
 
             add_btn = job_frame.locator("div.add-btn").first
@@ -513,6 +612,8 @@ def atom_post_job_boss(
                 page.wait_for_timeout(10000)  # 等待约 10 秒
                 _close_review_passed_modal(page)
 
+                if jd_config_path and Path(jd_config_path).exists():
+                    mark_jd_boss_post_published(Path(jd_config_path))
                 return {"success": True, "posted": True, "error": ""}
             return {"success": False, "posted": False, "error": "未找到发布按钮"}
     except Exception as e:

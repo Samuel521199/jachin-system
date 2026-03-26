@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PLUGIN_ROOT = ROOT / "2-track-a-atomic-mcp"
+PLUGIN_ROOT = ROOT / "com.jachin.hr.recruitment"
 PROJ_ROOT = ROOT.resolve().parent.parent
 DATA_ROOT = ROOT / "data"
 TEMPLATE = DATA_ROOT / "jd_to_publish.example.json"
@@ -138,7 +138,6 @@ def test_add_automated_recruitment_task() -> tuple[bool, str]:
             "filter_tab": "全部",
             "request_resume": True,
             "analyze_threshold": 2,
-            "analyze_interval_hours": 0.05,
         })
         remove_scheduled_job(job_name)
         ok = result.get("ok") is True

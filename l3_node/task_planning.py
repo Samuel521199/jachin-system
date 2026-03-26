@@ -236,20 +236,60 @@ def append_hr_session_header(workflow_id: str, job_label: str, ts: str) -> bool:
     return append_hr_recruitment_progress(block)
 
 
+def get_hr_recruitment_planning_context_for_prompt(
+    *,
+    plan_max_chars: int = 900,
+    progress_tail_chars: int = 700,
+) -> str:
+    """
+    读取 ``workspace/hr_recruitment/task_plan.md`` 与 ``progress.md``，
+    供 Agent 与通用 task_plan 注入对齐（此前仅 DAG 写入、默认 prompt 未读此目录）。
+    """
+    plan_path = get_hr_recruitment_task_plan_path()
+    prog_path = get_hr_recruitment_progress_path()
+    plan_txt = ""
+    prog_txt = ""
+    try:
+        if plan_path.exists():
+            plan_txt = plan_path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.debug("[TaskPlanning] read HR task_plan 失败: %s", e)
+    try:
+        if prog_path.exists():
+            prog_txt = prog_path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.debug("[TaskPlanning] read HR progress 失败: %s", e)
+    if not plan_txt and not prog_txt:
+        return ""
+    parts = []
+    if plan_txt:
+        cap = max(200, int(plan_max_chars))
+        parts.append(f"【HR 招聘宏图 task_plan】\n{plan_txt[:cap]}{'...' if len(plan_txt) > cap else ''}")
+    if prog_txt:
+        cap = max(200, int(progress_tail_chars))
+        tail = prog_txt[-cap:] if len(prog_txt) > cap else prog_txt
+        ellip = "..." if len(prog_txt) > cap else ""
+        parts.append(f"【HR 招聘战况 progress（尾部）】\n{ellip}{tail}")
+    return "\n\n".join(parts) + "\n\n（HR 自动化与飞书指令会续写 progress；回复时请结合上述战况与岗位目录 jd.json。）\n"
+
+
 def get_planning_context_for_prompt() -> str:
     """
     获取任务规划上下文，供 Agent System Prompt 注入。
-    若存在 task_plan 或 progress，则注入「继续执行计划」提示。
+    若存在 task_plan 或 progress，则注入「继续执行计划」提示；
+    并附加 HR 专用目录下的宏图/战况（若存在）。
     """
     plan = read_task_plan()
     progress = read_progress()
-    if not plan and not progress:
-        return ""
-    parts = []
+    parts: list[str] = []
     if plan:
         parts.append(f"【当前任务计划】\n{plan[:800]}{'...' if len(plan) > 800 else ''}")
     if progress:
         parts.append(f"【已执行进度】\n{progress[-600:]}{'...' if len(progress) > 600 else ''}")
-    if not parts:
-        return ""
-    return "\n\n".join(parts) + "\n\n请根据上述计划继续执行，或更新 progress。\n"
+    base = ""
+    if parts:
+        base = "\n\n".join(parts) + "\n\n请根据上述计划继续执行，或更新 progress。\n"
+    hr_extra = get_hr_recruitment_planning_context_for_prompt()
+    if hr_extra.strip():
+        base = (base + "\n" + hr_extra) if base else hr_extra
+    return base

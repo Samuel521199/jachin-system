@@ -12,21 +12,21 @@
 
 | 文件路径 | 类型 | 职责 |
 |----------|------|------|
-| `2-track-a-atomic-mcp/server.py` | **MCP 入口** | FastMCP 服务，暴露所有 HR 原子工具 |
-| `2-track-a-atomic-mcp/tools/atom_post_job_boss.py` | 原子工具 | Boss 自动填表并发布职位 |
-| `2-track-a-atomic-mcp/tools/atom_greet_recommend_boss.py` | 原子工具 | 推荐牛人页筛选并打招呼 |
-| `2-track-a-atomic-mcp/tools/atom_inbox_harvester.py` | 原子工具 | 选职位→遍历会话→下载附件简历 PDF |
-| `2-track-a-atomic-mcp/tools/atom_request_resume.py` | 原子工具 | 单人/批量点击「求简历」 |
-| `2-track-a-atomic-mcp/tools/boss_harvest_orchestrator.py` | 编排 | 收网流程编排，委托 atom_inbox_harvester |
-| `2-track-a-atomic-mcp/tools/boss_utils.py` | **共享基础** | Cookie 加载、职位选择、候选人导航、Playwright 操作 |
-| `2-track-a-atomic-mcp/tools/local_archiver.py` | 原子工具 | PDF 保存到 data/pending/<职位>/ |
-| `2-track-a-atomic-mcp/tools/brain_filter.py` | 原子工具 | 小模型粗筛（学历、年限） |
-| `2-track-a-atomic-mcp/tools/recruitment_status.py` | 状态管理 | recruitment_status.json 读写、双触发判定 |
+| `com.jachin.hr.recruitment/server.py` | **MCP 入口** | FastMCP 服务，暴露所有 HR 原子工具 |
+| `com.jachin.hr.recruitment/tools/atom_post_job_boss.py` | 原子工具 | Boss 自动填表并发布职位 |
+| `com.jachin.hr.recruitment/tools/atom_greet_recommend_boss.py` | 原子工具 | 推荐牛人页筛选并打招呼 |
+| `com.jachin.hr.recruitment/tools/atom_inbox_harvester.py` | 原子工具 | 选职位→遍历会话→下载附件简历 PDF |
+| `com.jachin.hr.recruitment/tools/atom_request_resume.py` | 原子工具 | 单人/批量点击「求简历」 |
+| `com.jachin.hr.recruitment/tools/boss_harvest_orchestrator.py` | 编排 | 收网流程编排，委托 atom_inbox_harvester |
+| `com.jachin.hr.recruitment/tools/boss_utils.py` | **共享基础** | Cookie 加载、职位选择、候选人导航、Playwright 操作 |
+| `com.jachin.hr.recruitment/tools/local_archiver.py` | 原子工具 | PDF 保存到 data/pending/<职位>/ |
+| `com.jachin.hr.recruitment/tools/brain_filter.py` | 原子工具 | 小模型粗筛（学历、年限） |
+| `com.jachin.hr.recruitment/tools/recruitment_status.py` | 状态管理 | recruitment_status.json 读写、双触发判定 |
 
 **依赖关系**（导入顺序建议保留）：
 ```
 boss_utils（无依赖）→ recruitment_status（无依赖）→ local_archiver（无依赖）
-→ brain_filter（DashScope API）→ atom_post_job_boss（recruitment_status）
+→ brain_filter（L3 统一 Key，core.plugin_llm_identity）→ atom_post_job_boss（recruitment_status）
 → atom_inbox_harvester（boss_utils, local_archiver）
 → atom_request_resume（boss_utils）
 → atom_greet_recommend_boss（brain_filter 可选，当前用规则兜底）
@@ -196,7 +196,7 @@ run_final_judgment()
 
 ```
 plugin/
-├── 2-track-a-atomic-mcp/
+├── com.jachin.hr.recruitment/
 │   ├── server.py
 │   ├── requirements.txt
 │   └── tools/
@@ -251,19 +251,20 @@ python install.py --skip-wasm --skip-mcp
       "id": "hr-atomic-tools",
       "name": "HR 原子工具箱",
       "command": "python",
-      "args": ["/path/to/plugin/2-track-a-atomic-mcp/server.py"]
+      "args": ["/path/to/plugin/com.jachin.hr.recruitment/server.py"]
     }
   ]
 }
 ```
 
-### 4.4 环境变量
+### 4.4 LLM 与密钥（统一走 L3 / 主仓）
 
-| 变量 | 说明 |
+| 来源 | 说明 |
 |------|------|
-| `DASHSCOPE_API_KEY` | 阿里百炼（brain_filter 小模型） |
-| `BRAIN_FILTER_MODEL` | 可选，brain_filter 模型名 |
-| `GEMINI_API_KEY` | 可选，Gemini 回退 |
+| **仓库根 `.env`** | `DASHSCOPE_API_KEY`、`LLM_MODEL`、`LLM_CODER_MODEL` 等（与 L3 主进程一致） |
+| **`core.plugin_llm_identity`** | Skill/MCP 内读 Key 与模型：进程环境 → `l3_node.agent_ref.engine` 内存 Key → `credential_loader`；**禁止**插件目录 `.env` 覆盖 LLM/Key |
+| **`GEMINI_API_KEY`** | 仅进程级 Gemini 回退（建议在根 `.env` 配置） |
+| **brain_filter** | 粗筛模型固定为 `DASHSCOPE_ECON_FALLBACK_MODEL`，非插件 env |
 
 ### 4.5 运行时前置
 
@@ -277,16 +278,16 @@ python install.py --skip-wasm --skip-mcp
 
 | 功能 | 核心代码 |
 |------|----------|
-| MCP 入口与工具注册 | `2-track-a-atomic-mcp/server.py` |
-| Boss 自动化基础（选职位、导航、Cookie） | `2-track-a-atomic-mcp/tools/boss_utils.py` |
-| 发布职位 | `2-track-a-atomic-mcp/tools/atom_post_job_boss.py` |
-| 打招呼 | `2-track-a-atomic-mcp/tools/atom_greet_recommend_boss.py` |
-| 收网下载简历 | `2-track-a-atomic-mcp/tools/atom_inbox_harvester.py` |
-| 求简历 | `2-track-a-atomic-mcp/tools/atom_request_resume.py` |
-| PDF 归档 | `2-track-a-atomic-mcp/tools/local_archiver.py` |
-| 小模型粗筛 | `2-track-a-atomic-mcp/tools/brain_filter.py` |
-| 招聘状态与双触发 | `2-track-a-atomic-mcp/tools/recruitment_status.py` |
-| 收网编排 | `2-track-a-atomic-mcp/tools/boss_harvest_orchestrator.py` |
+| MCP 入口与工具注册 | `com.jachin.hr.recruitment/server.py` |
+| Boss 自动化基础（选职位、导航、Cookie） | `com.jachin.hr.recruitment/tools/boss_utils.py` |
+| 发布职位 | `com.jachin.hr.recruitment/tools/atom_post_job_boss.py` |
+| 打招呼 | `com.jachin.hr.recruitment/tools/atom_greet_recommend_boss.py` |
+| 收网下载简历 | `com.jachin.hr.recruitment/tools/atom_inbox_harvester.py` |
+| 求简历 | `com.jachin.hr.recruitment/tools/atom_request_resume.py` |
+| PDF 归档 | `com.jachin.hr.recruitment/tools/local_archiver.py` |
+| 小模型粗筛 | `com.jachin.hr.recruitment/tools/brain_filter.py` |
+| 招聘状态与双触发 | `com.jachin.hr.recruitment/tools/recruitment_status.py` |
+| 收网编排 | `com.jachin.hr.recruitment/tools/boss_harvest_orchestrator.py` |
 | 三专家评审引擎 | `3-track-c-swarm-wasm/src/main.py` |
 | 一键安装 | `install.py` |
 

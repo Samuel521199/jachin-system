@@ -1,5 +1,6 @@
 # IM 通道配置 — L3 独立使用 Lark/Telegram 等，无需 Layer 1
 # 复制到 ~/.jachin/config/im_channels.yaml 后修改（支持 JACHIN_HOME 覆盖）
+# Lark 凭证仅此一处（长连接、发消息、HR 多维表同步均读该文件；环境变量可覆盖）。
 # 打包后可随意修改，无需重新打包
 
 im_channels:

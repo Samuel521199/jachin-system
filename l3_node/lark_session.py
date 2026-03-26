@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 _JACHIN_ROOT = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
 _LARK_SESSIONS_PATH = _JACHIN_ROOT / "l3_lark_sessions.json"
-_MAX_SESSION_MESSAGES = 30
+_MAX_SESSION_MESSAGES = 48
 
 
 def load_lark_session(chat_id: str) -> list[dict[str, Any]]:

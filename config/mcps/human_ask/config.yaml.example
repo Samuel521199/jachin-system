@@ -1,5 +1,19 @@
 # human_ask MCP 配置 — Human-in-the-Loop 人工劫持
 # 当 ask_human_for_decision 被调用时，将待决策信息推送到飞书供统帅审批
 # 复制为 config.yaml 并填入实际值；不配置时仅输出到日志
+#
+# 通知方式（可同时配置，优先 Webhook）：
+#   1) webhook_url — 群自定义机器人 Incoming Webhook
+#   2) lark_chat_id — 会话 chat_id（如 oc_xxx），走 IM API，需 LARK_APP_ID/SECRET（可与 atom_lark_notifier 共用）
+# 每人会话不同：建议用环境变量 HUMAN_ASK_LARK_CHAT_ID 覆盖下方默认值
 
 webhook_url: "${HUMAN_ASK_LARK_WEBHOOK}"
+
+# 团队联调默认会话；每人不同请改成自己的 oc_xxx，或使用：
+#   lark_chat_id: "${HUMAN_ASK_LARK_CHAT_ID}"
+# 并在环境中设置 HUMAN_ASK_LARK_CHAT_ID（优先于字面量）
+lark_chat_id: "oc_f67fcf98f4d42c289eaafd9d6e0cfb5c"
+
+# 可选：无 Webhook 且未在环境变量中配置应用时，可在此填写（与飞书开放平台应用一致）
+# app_id: "${LARK_APP_ID}"
+# app_secret: "${LARK_APP_SECRET}"

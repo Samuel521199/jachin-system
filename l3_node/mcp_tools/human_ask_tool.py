@@ -2,8 +2,13 @@
 Human-in-the-Loop 人工劫持工具 — mcp:human_ask
 
 当大模型调用此工具且无预注入决策时，不返回结果，而是：
-  1. 将 prompt_msg 和 options 输出到日志（或通过飞书 webhook 通知）
+  1. 将 prompt_msg 和 options 输出到日志（或通过飞书 webhook / IM 通知）
   2. 抛出 SuspendForHumanException，触发 workflow 挂起等待人工决策
+
+配置：~/.jachin/config/mcps/human_ask/config.yaml（或项目 config/mcps/human_ask/）
+  - webhook_url: 群自定义机器人 Webhook（优先）
+  - lark_chat_id / default_chat_id: 会话 oc_xxx；每人不同可改配置或设环境变量 HUMAN_ASK_LARK_CHAT_ID
+  - app_id / app_secret: 可选，无 Webhook 走 IM API 且未设置 LARK_APP_* 时使用
 
 在 Node 中使用时，必须传入 context 中的 _human_decision（resume 时由 inject 注入）：
 
@@ -13,34 +18,62 @@ Human-in-the-Loop 人工劫持工具 — mcp:human_ask
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from core.errors import SuspendForHumanException
 
 logger = logging.getLogger(__name__)
 
-# 预留：从 ~/.jachin/config/mcps/human_ask/config.yaml 读取 webhook
-_HUMAN_ASK_WEBHOOK: str | None = None
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# 首次加载后缓存（与进程生命周期一致）；lark_chat_id 可通过环境变量 HUMAN_ASK_LARK_CHAT_ID 每次覆盖
+_HUMAN_ASK_CFG: dict[str, Any] | None = None
 
 
-def _get_human_ask_webhook() -> str | None:
-    """预留飞书 webhook，用于将待决策信息推送给统帅。"""
-    global _HUMAN_ASK_WEBHOOK
-    if _HUMAN_ASK_WEBHOOK is not None:
-        return _HUMAN_ASK_WEBHOOK
+def _get_human_ask_cfg() -> dict[str, Any]:
+    global _HUMAN_ASK_CFG
+    if _HUMAN_ASK_CFG is not None:
+        return _HUMAN_ASK_CFG
     try:
-        from pathlib import Path
-
         from l3_node.jachin_config import load_mcp_config
 
-        cfg = load_mcp_config("human_ask")
-        url = (cfg.get("webhook_url") or "").strip()
-        if url and not url.startswith("${"):
-            _HUMAN_ASK_WEBHOOK = url
-            return url
+        _HUMAN_ASK_CFG = load_mcp_config("human_ask", project_root=_REPO_ROOT) or {}
     except Exception:
-        pass
-    return None
+        _HUMAN_ASK_CFG = {}
+    return _HUMAN_ASK_CFG
+
+
+def _effective_webhook_url(cfg: dict[str, Any]) -> str:
+    url = (cfg.get("webhook_url") or "").strip()
+    if url and not url.startswith("${"):
+        return url
+    return ""
+
+
+def _effective_lark_chat_id(cfg: dict[str, Any]) -> str:
+    """环境变量优先，便于每人本地覆盖而无需改文件。"""
+    env_cid = (os.environ.get("HUMAN_ASK_LARK_CHAT_ID") or "").strip()
+    if env_cid:
+        return env_cid
+    cid = (cfg.get("lark_chat_id") or cfg.get("default_chat_id") or "").strip()
+    if cid and not cid.startswith("${"):
+        return cid
+    return ""
+
+
+def _inject_lark_credentials_from_human_ask(cfg: dict[str, Any]) -> None:
+    """无全局 LARK_APP_ID 时，允许在 human_ask 配置中单独填应用凭证。"""
+    if os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID"):
+        return
+    aid = (cfg.get("app_id") or "").strip()
+    asec = (cfg.get("app_secret") or "").strip()
+    if aid and asec and not str(aid).startswith("${"):
+        os.environ.setdefault("LARK_APP_ID", aid)
+        os.environ.setdefault("LARK_APP_SECRET", asec)
+    if cfg.get("lark_use_feishu") in (True, "true", "1", "yes"):
+        os.environ.setdefault("LARK_USE_FEISHU", "1")
 
 
 def ask_human_for_decision(
@@ -71,14 +104,22 @@ def ask_human_for_decision(
     log_line = f"[HITL] 等待人工决策: {prompt_msg}\n  选项: {opts_str}"
     logger.warning(log_line)
 
-    webhook_url = _get_human_ask_webhook()
-    if webhook_url:
+    cfg = _get_human_ask_cfg()
+    webhook_url = _effective_webhook_url(cfg)
+    chat_id = _effective_lark_chat_id(cfg) or None
+    if webhook_url or chat_id:
         try:
-            from l3_node.channels.lark import send_markdown
+            from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
 
+            _inject_lark_credentials_from_human_ask(cfg)
             body = f"**🛑 人工决策待处理**\n\n{prompt_msg}\n\n**选项:** {opts_str}"
-            send_markdown(webhook_url=webhook_url, markdown_content=body, title="Jachin HITL")
+            send_lark_markdown(
+                webhook_url or "",
+                body,
+                title="Jachin HITL",
+                chat_id=chat_id,
+            )
         except Exception as e:
-            logger.debug("[HITL] 飞书 webhook 发送失败（已记录日志）: %s", e)
+            logger.debug("[HITL] 飞书通知发送失败（已记录日志）: %s", e)
 
     raise SuspendForHumanException(prompt_msg=prompt_msg, options=options)

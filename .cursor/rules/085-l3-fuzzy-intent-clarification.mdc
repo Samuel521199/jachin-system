@@ -1,0 +1,29 @@
+---
+description: L3 模糊意图澄清 — 通用框架 ClarificationRule、域插件与调用顺序（设计强制）
+alwaysApply: false
+---
+
+# L3 模糊意图澄清
+
+**完整规范**：`docs/L3_FUZZY_INTENT_CLARIFICATION.md`
+
+## 1. 定位
+
+- 属于 **整个 L3** 的横切能力，**不是** HR 专属；HR 仅为 `intent_clarification_plugins/hr_recruitment_lark` 插件。
+- **精确遥控优先**：各通道必须先跑本通道的精确匹配，**未命中**再调用 `intent_clarification`（见文档数据流）。
+
+## 2. 实现约束
+
+- 新域模糊规则放在 `l3_node/intent_clarification_plugins/`，导出 `*_clarification_rules() -> list[ClarificationRule]`。
+- 在 `intent_clarification.default_l3_clarification_rules()` 中注册汇总；勿在业务文件内复制粘贴冷却逻辑。
+- 与精确谓词共享时，抽到独立模块（范例：`hr_lark_command_lexicon.py`），**禁止**插件与拦截器循环 import。
+- 调用时尽量传入 **`channel_id`**（chat_id / session_id），便于按会话冷却。
+
+## 3. 产品约束
+
+- **禁止**对单独「同意/好的」等无动作短句在澄清层抢答（交给 Agent 与上下文）。
+- 模糊命中应给出**可选明确指令**，而非静默执行长流程。
+
+## 4. 文档
+
+新增域或改优先级时，同步更新 `docs/L3_FUZZY_INTENT_CLARIFICATION.md` 第六节插件列表。

@@ -56,7 +56,8 @@ class Settings(BaseSettings):
     QWEN_API_KEY: Optional[str] = None
     DASHSCOPE_API_KEY: Optional[str] = None
     QWEN_AI_API_KEY: Optional[str] = None
-    LLM_MODEL: str = "qwen3.5-flash-2026-02-23"
+    LLM_MODEL: str = "qwen3.5-plus"
+    LLM_CODER_MODEL: str = "qwen3-coder-plus"
     QWEN_REGION: str = "cn-beijing"
 
     # Local LLM (小脑 / Edge - Ollama 默认)

@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -26,9 +28,264 @@ from l3_node.engine.hooks_pipeline import (
     global_hooks,
 )
 from l3_node.llm_client import LiteLLMEngine, SecurityContext
+from l3_node.capability_catalog import build_capability_prompt_inject_for_tools, tools_include_recruitment
 from l3_node.skills import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
 
 logger = logging.getLogger(__name__)
+
+# ReAct：一旦发生 workspace 写改，后续 LLM 轮次改用编码模型（与主推理共用 Key）
+_L3_CODER_MODE_META = "_l3_coder_mode"
+_L3_CODER_ENGINE_CACHE_META = "_l3_coder_engine_cache"
+
+
+def _react_engine_for_iteration(base: LiteLLMEngine, ctx: PipelineContext) -> LiteLLMEngine:
+    """主 Agent 在 fs_write / apply_patch 之后自动使用 LLM_CODER_MODEL。"""
+    if not ctx.metadata.get(_L3_CODER_MODE_META):
+        return base
+    cached = ctx.metadata.get(_L3_CODER_ENGINE_CACHE_META)
+    if cached is not None:
+        return cached
+    try:
+        from core.llm_provider import get_coder_model_litellm_id
+
+        cm = get_coder_model_litellm_id()
+        if base._normalize_model(cm) == base._normalize_model(base.model_name):
+            ctx.metadata[_L3_CODER_ENGINE_CACHE_META] = base
+            return base
+        ce = LiteLLMEngine(
+            security_context=base.ctx,
+            model_name=cm,
+            fallback_models=list(base.fallback_models or []),
+            timeout=base.timeout,
+            max_attempts=base.max_attempts,
+        )
+        ctx.metadata[_L3_CODER_ENGINE_CACHE_META] = ce
+        logger.info(
+            "[L3 Agent] ReAct 切换编码模型 %s（主推理 %s，已执行 fs_write/apply_patch）",
+            ce.model_name,
+            base.model_name,
+        )
+        return ce
+    except Exception as e:
+        logger.warning("[L3 Agent] 编码模型不可用，沿用主模型: %s", e)
+        return base
+
+
+def _hr_answer_claims_job_published(ans: str) -> bool:
+    """检测助手是否声称「刚在 Boss 发帖成功」。子串过宽会误伤（如「已在Boss 沟通页」）。"""
+    a = ans or ""
+    if "JOB_" in a:
+        return True
+    phrases = (
+        "职位已发布",
+        "职位发布成功",
+        "已发布职位",
+        "Boss 发布成功",
+        "boss 发布成功",
+        "已在 Boss 发布",
+        "已在Boss 发布",
+        "已成功发布职位",
+        "职位发布完成",
+        "发帖成功",
+        "已成功发帖",
+        "已在 Boss 上架",
+        "职位已在 Boss 上架",
+    )
+    return any(p in a for p in phrases)
+
+
+def _hr_answer_claims_unmanned_scheduler_running(ans: str) -> bool:
+    """
+    检测助手是否声称「无人值守/收网调度已在跑」，但未实际调用 MCP 时即为幻觉。
+    （与 _hr_answer_claims_job_published 区分：后者针对 Boss 发帖。）
+    """
+    a = ans or ""
+    if re.search(r"调度状态\s*\*?\s*[|｜]\s*\*?\s*运行中", a, re.I):
+        return True
+    if re.search(r"无人值守[^\n]{0,48}(已启动|运行中|已开始)", a):
+        return True
+    if "收网任务已启动" in a or ("自动抓取简历" in a and "已启动" in a):
+        return True
+    if re.search(r"任务\s*ID\s*\|\s*[`'\"]?hr_recruit", a, re.I):
+        return True
+    if "✅" in a and "无人值守" in a and ("启动" in a or "运行" in a):
+        return True
+    return False
+
+
+def _hr_thread_forbids_atom_post(messages: list | None) -> bool:
+    """预检 3b / 分支 B 等已在 user 消息里写明：禁止 atom_post_job_boss。"""
+    if not messages:
+        return False
+    markers = (
+        "当前表述仅为 **收网/打招呼/调度参数**",
+        "与 Boss **发帖**无关",
+        "【系统·分支B】当前为「已有岗位·轻量收网」",
+        "**禁止**调用 mcp:atom_post_job_boss",
+    )
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        c = msg.get("content") or ""
+        if any(m in c for m in markers):
+            return True
+    return False
+
+
+def _hr_active_jd_marked_published_on_disk() -> bool:
+    """指针或 fallback 对应的 jd.json 是否已标记发帖成功（声称已发布不算幻觉）。"""
+    from pathlib import Path as _Path
+
+    paths: list = []
+    try:
+        from l3_node.local_memory import get_hr_recruitment_workflow_pointer
+
+        jp = (get_hr_recruitment_workflow_pointer().get("jd_config_path") or "").strip()
+        if jp:
+            paths.append(_Path(jp))
+    except Exception:
+        pass
+    try:
+        jd = _load_last_jd_pending()
+        if isinstance(jd, dict):
+            jt = (jd.get("job_title") or "").strip()
+            if jt:
+                from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+                pr = _get_hr_recruitment_plugin_root()
+                if pr and (pr / "tools" / "hr_data_paths.py").exists():
+                    import sys as _sys
+
+                    ps = str(pr.resolve())
+                    if ps not in _sys.path:
+                        _sys.path.insert(0, ps)
+                    from tools.hr_data_paths import (
+                        get_job_jd_path_by_folder_key,
+                        resolve_recruitment_data_folder_key,
+                    )
+
+                    _fk = resolve_recruitment_data_folder_key(jd_doc=jd, job_title=jt)
+                    if _fk:
+                        paths.append(_Path(get_job_jd_path_by_folder_key(_fk)))
+    except Exception:
+        pass
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        try:
+            from l3_node.hr_loader import _get_hr_recruitment_plugin_root as _gr
+
+            _pr = _gr()
+            if _pr and _pr.exists():
+                import sys as _sys
+
+                _ps = str(_pr.resolve())
+                if _ps not in _sys.path:
+                    _sys.path.insert(0, _ps)
+                from tools.hr_data_paths import jd_boss_post_marked_published
+
+                if jd_boss_post_marked_published(doc):
+                    return True
+        except Exception:
+            if doc.get("boss_post_published") is True:
+                return True
+    return False
+
+
+def _hr_skip_force_atom_post_hallucination_guard(messages: list | None, _ctx: Any) -> bool:
+    """为真时：不要求助手「本轮必须再调 atom_post」才能结束（收网/调度语境或 jd 已标记发帖）。"""
+    if _hr_thread_forbids_atom_post(messages):
+        return True
+    if _hr_branch_b_recruitment_context(messages):
+        return True
+    if _hr_active_jd_marked_published_on_disk():
+        return True
+    return False
+
+
+def _apply_hr_recruitment_final_answer_table_sync(text: str, ctx: Any) -> str:
+    """
+    若本轮已成功执行 add_automated_recruitment_task，将 Final Answer 里 Markdown 表中
+    「收网目标 / 自动分析阈值 / 透析阈值」等行的份数统一为工具返回的同一数值，避免模型杜撰不一致。
+    """
+    s = (text or "").strip()
+    if not s or "|" not in s:
+        return text or ""
+    tools = getattr(ctx, "_executed_tools_this_run", None) or set()
+    if "add_automated_recruitment_task" not in tools:
+        return text or ""
+    try:
+        from l3_node.skills import mcp_registry as _mr
+
+        payload = getattr(_mr, "last_add_automated_recruitment_task_payload", None)
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return text or ""
+    try:
+        n = int(payload.get("resume_collect_target") or payload.get("analyze_threshold") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return text or ""
+    val = f"{n} 份"
+    # Markdown 表：| 收网目标 | 5 份 |  —— 替换第二列单元格（长标签优先，避免「分析阈值」误伤「自动分析阈值」行）
+    row_labels = (
+        "自动分析阈值",
+        "简历收集目标",
+        "收网目标",
+        "透析阈值",
+        "分析阈值",
+    )
+    out_lines: list[str] = []
+    for line in s.split("\n"):
+        stripped = line.strip()
+        if "|" not in stripped:
+            out_lines.append(line)
+            continue
+        new_line = line
+        for label in row_labels:
+            if label not in stripped:
+                continue
+            if label == "分析阈值" and "自动分析阈值" in stripped:
+                continue
+            # 允许 | **收网目标** | 5 份 |
+            el = re.escape(label)
+            pat = rf"(\|\s*(?:\*\*)?\s*{el}\s*(?:\*\*)?\s*\|\s*)([^|]+)(\|)"
+
+            def _repl(m: re.Match, v: str = val) -> str:
+                return f"{m.group(1)}{v}{m.group(3)}"
+
+            new_line = re.sub(pat, _repl, new_line, count=1, flags=re.IGNORECASE)
+        out_lines.append(new_line)
+    return "\n".join(out_lines)
+
+
+def _hr_recruitment_success_answer(ctx: Any, ans: str) -> bool:
+    """招聘流程成功收尾：含发帖成功，或仅启动无人值守/收网（已有在招岗位，无需发帖）。"""
+    if _hr_answer_claims_job_published(ans):
+        return True
+    if "极速测试模式" in (ans or "") or "TASK_AUTO" in (ans or ""):
+        return True
+    tools = getattr(ctx, "_executed_tools_this_run", None) or []
+    if "add_automated_recruitment_task" in tools and any(
+        k in (ans or "")
+        for k in ("无人值守", "收网", "抓简历", "调度", "已添加", "自动化招聘", "已启动")
+    ):
+        return True
+    if "hr_scheduler_send_confirm_prompt" in tools and any(
+        k in (ans or "")
+        for k in ("飞书", "调度", "同意调度", "定时任务", "无人值守", "参数")
+    ):
+        return True
+    return False
+
 
 MAX_REACT_ITERATIONS = 8  # 多轮工具调用场景需更多迭代，5 易触发「循环达到上限」
 NATIVE_TOOL_IDS = (
@@ -229,29 +486,27 @@ def _extract_jd_config_from_conversation(messages: list, current_response: str) 
     return ""
 
 
-LAST_JD_PENDING_PATH = Path.home() / ".jachin" / "l3_last_jd_pending.json"
+def _jd_config_dict_from_conversation(messages: list, current_response: str = "") -> dict | None:
+    """从对话中解析 HR 待确认的 JD 对象（含 job_title / jd_full）；无则 None。"""
+    raw = _extract_jd_config_from_conversation(messages, current_response)
+    if not raw:
+        return None
+    try:
+        w = json.loads(raw)
+        jd = w.get("jd_config") if isinstance(w, dict) else None
+        return jd if isinstance(jd, dict) else None
+    except Exception:
+        return None
+
+
+_JACHIN_ROOT = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin"))).resolve()
+LAST_JD_PENDING_PATH = _JACHIN_ROOT / "l3_last_jd_pending.json"
+JD_PENDING_BY_CHAT_PATH = _JACHIN_ROOT / "memory" / "l3_jd_pending_by_chat.json"
 _JD_PENDING_TTL_SEC = 7200  # 2 小时内有效
 
 
-def _save_last_jd_pending(jd_config: dict) -> None:
-    """当 Agent 输出待确认的 JD 时保存，供「同意」无会话时兜底"""
-    if not jd_config or not isinstance(jd_config, dict):
-        return
-    if not (jd_config.get("job_title") or jd_config.get("jd_full")):
-        return
-    try:
-        LAST_JD_PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LAST_JD_PENDING_PATH.write_text(
-            json.dumps({"jd_config": jd_config, "updated_at": __import__("time").time()}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        logger.info("[Agent] 已保存待确认 JD 至 fallback，job_title=%s", jd_config.get("job_title", ""))
-    except Exception as e:
-        logger.debug("[Agent] 保存 last_jd_pending 失败: %s", e)
-
-
-def _load_last_jd_pending() -> dict | None:
-    """加载最近待确认的 JD（chat_id 会话失效时兜底），超时返回 None"""
+def _read_global_jd_pending_file() -> dict | None:
+    """仅读全局 ``l3_last_jd_pending.json``（无 chat 回退 / 桌面端）。"""
     if not LAST_JD_PENDING_PATH.exists():
         return None
     try:
@@ -261,16 +516,61 @@ def _load_last_jd_pending() -> dict | None:
         jd = data.get("jd_config")
         ts = data.get("updated_at", 0)
         if isinstance(jd, dict) and (jd.get("job_title") or jd.get("jd_full")):
-            age = __import__("time").time() - ts if ts else 999999
+            age = time.time() - ts if ts else 999999
             if age < _JD_PENDING_TTL_SEC:
                 return jd
     except Exception as e:
-        logger.debug("[Agent] 加载 last_jd_pending 失败: %s", e)
+        logger.debug("[Agent] 加载全局 last_jd_pending 失败: %s", e)
     return None
 
 
-def _clear_last_jd_pending() -> None:
-    """发布成功后清除，避免误用"""
+def _jd_pending_by_chat_read_store() -> dict[str, Any]:
+    if not JD_PENDING_BY_CHAT_PATH.exists():
+        return {}
+    try:
+        data = json.loads(JD_PENDING_BY_CHAT_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _jd_pending_by_chat_write_store(data: dict[str, Any]) -> None:
+    JD_PENDING_BY_CHAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    JD_PENDING_BY_CHAT_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _jd_pending_by_chat_get(cid: str) -> dict | None:
+    if not (cid or "").strip():
+        return None
+    entry = _jd_pending_by_chat_read_store().get(cid.strip())
+    if not isinstance(entry, dict):
+        return None
+    jd = entry.get("jd_config")
+    ts = entry.get("updated_at", 0)
+    if isinstance(jd, dict) and (jd.get("job_title") or jd.get("jd_full")):
+        age = time.time() - ts if ts else 999999
+        if age < _JD_PENDING_TTL_SEC:
+            return jd
+    return None
+
+
+def _jd_pending_by_chat_set(cid: str, jd_config: dict) -> None:
+    data = _jd_pending_by_chat_read_store()
+    data[cid.strip()] = {"jd_config": jd_config, "updated_at": time.time()}
+    _jd_pending_by_chat_write_store(data)
+
+
+def _jd_pending_by_chat_delete(cid: str) -> None:
+    cid = (cid or "").strip()
+    if not cid:
+        return
+    data = _jd_pending_by_chat_read_store()
+    if cid in data:
+        del data[cid]
+        _jd_pending_by_chat_write_store(data)
+
+
+def _clear_global_jd_pending_file() -> None:
     try:
         if LAST_JD_PENDING_PATH.exists():
             LAST_JD_PENDING_PATH.unlink()
@@ -278,10 +578,577 @@ def _clear_last_jd_pending() -> None:
         pass
 
 
+def _save_last_jd_pending(jd_config: dict, *, chat_id: str = "") -> None:
+    """保存待确认 JD：有 ``chat_id`` 时写入按会话文件；无 chat 时写全局（桌面等）。"""
+    if not jd_config or not isinstance(jd_config, dict):
+        return
+    if not (jd_config.get("job_title") or jd_config.get("jd_full")):
+        return
+    cid = (chat_id or "").strip()
+    try:
+        if cid:
+            _jd_pending_by_chat_set(cid, jd_config)
+            logger.info(
+                "[Agent] 已保存待确认 JD（会话）chat_id=%s job_title=%s",
+                cid[:28],
+                jd_config.get("job_title", ""),
+            )
+        else:
+            LAST_JD_PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LAST_JD_PENDING_PATH.write_text(
+                json.dumps({"jd_config": jd_config, "updated_at": time.time()}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("[Agent] 已保存待确认 JD（全局）job_title=%s", jd_config.get("job_title", ""))
+    except Exception as e:
+        logger.debug("[Agent] 保存 last_jd_pending 失败: %s", e)
+
+
+def _resolve_last_jd_pending(chat_id: str = "") -> tuple[dict | None, str]:
+    """先按 chat 读 pending，再全局；返回 (jd, 'chat'|'global'|'')。"""
+    cid = (chat_id or "").strip()
+    if cid:
+        jd = _jd_pending_by_chat_get(cid)
+        if jd:
+            return jd, "chat"
+    g = _read_global_jd_pending_file()
+    if g:
+        return g, "global"
+    return None, ""
+
+
+def _load_last_jd_pending(chat_id: str = "") -> dict | None:
+    """加载待确认 JD：有 chat 时优先该会话，否则全局文件。"""
+    jd, _ = _resolve_last_jd_pending(chat_id)
+    return jd
+
+
+def _clear_jd_pending_source(chat_id: str, source: str) -> None:
+    """仅清除本次解析所用的来源（chat 或 global）。"""
+    src = (source or "").strip().lower()
+    if src == "chat" and (chat_id or "").strip():
+        _jd_pending_by_chat_delete(chat_id.strip())
+    elif src == "global":
+        _clear_global_jd_pending_file()
+
+
+def _clear_last_jd_pending(chat_id: str = "") -> None:
+    """发布成功等场景：清除指定会话条目并清除全局文件，避免串岗。"""
+    if (chat_id or "").strip():
+        _jd_pending_by_chat_delete(chat_id.strip())
+    _clear_global_jd_pending_file()
+
+
+def _hr_user_intent_skip_boss_post(messages: list | None) -> bool:
+    """
+    HR 已表达「Boss 上已有在招岗 / 只收网不发帖」等：pending 应带 skip_boss_post，
+    飞书裸「同意」时不再强制 atom_post_job_boss。
+    扫描最近几条 user 消息（含当前轮之前）。
+    """
+    if not messages:
+        return False
+    pat = re.compile(
+        r"只(?:抓|收)简历|仅(?:抓|收)(?:取)?简历|只收网|仅收网|不用发(?:帖|职位)?|不要发(?:帖|职位)?|不(?:用|要)?发(?:帖|职位)|"
+        r"不重新发帖|别再发帖|职位已在|已在Boss|Boss已有|已有(?:在招)?职位|只开调度|只要抓简历|"
+        r"轻量收网|已有岗|不调发帖|别发(?:帖|职位)|不要发布职位",
+        re.I,
+    )
+    n = 0
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        c = (msg.get("content") or "").strip()
+        if pat.search(c):
+            return True
+        n += 1
+        if n >= 6:
+            break
+    return False
+
+
+def _hr_assistant_declares_skip_boss_post(text: str) -> bool:
+    """助手本轮回复若明确「只收网 / 已有在招 / 不发帖」等，pending 带 skip 以免裸「同意」误触发发帖。"""
+    if not (text or "").strip():
+        return False
+    return bool(
+        re.search(
+            r"只收网|只抓简历|仅收网|仅抓(?:取)?简历|无需发(?:帖|职位)?|不(?:需要|用)发(?:帖|职位)|"
+            r"不重新发帖|本次[^\n]{0,60}不[^\n]{0,12}发帖|不(?:再)?调用发帖|仅配置收网|"
+            r"Boss.*已有|已有在招|已有职位|轻量收网|分支\s*B|"
+            r"仅(?:开)?调度|不调\s*atom_post|不发Boss",
+            text,
+            re.I,
+        )
+    )
+
+
+def _hr_branch_b_recruitment_context(messages: list | None) -> bool:
+    """
+    对话是否为「分支 B / 已有在招岗位·轻量收网」：只加调度收网，禁止走 atom_post_job_boss 发帖短路。
+    """
+    if not messages:
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        c = msg.get("content") or ""
+        if re.search(
+            r"分支\s*B|分支B|轻量收网|已有在招岗位|"
+            r"运行模式|累计收网目标|透析触发份数|仅配置无人值守|无人值守收网前|"
+            r"请确认以下\s*\d\s*项",
+            c,
+            re.I,
+        ):
+            return True
+        for m in re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", c):
+            try:
+                obj = json.loads(m.group(1).strip())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            jn = (obj.get("job_name") or "").strip()
+            if not jn:
+                continue
+            if not (
+                "resume_collect_target" in obj
+                or "enable_greet_recommend" in obj
+                or (obj.get("jd_select") or "").strip()
+            ):
+                continue
+            return True
+    return False
+
+
+def _hr_arg_bool(val: Any, default: bool) -> bool:
+    """与 MCP _arg_bool 一致：避免 bool('false')==True。"""
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    s = str(val).strip().lower()
+    if s in ("0", "false", "no", "否", "关", "off"):
+        return False
+    if s in ("1", "true", "yes", "是", "开", "on"):
+        return True
+    return default
+
+
+def _branch_b_json_block_qualifies(obj: dict[str, Any]) -> bool:
+    jn = (obj.get("job_name") or "").strip()
+    if not jn:
+        return False
+    return bool(
+        obj.get("resume_collect_target") is not None
+        or "enable_greet_recommend" in obj
+        or (obj.get("jd_select") or "").strip()
+    )
+
+
+def _branch_b_obj_to_task_payload(obj: dict[str, Any]) -> dict[str, Any] | None:
+    """将单个 JSON 对象转为 add_automated_recruitment_task 参数字典（不含无效块）。"""
+    if not _branch_b_json_block_qualifies(obj):
+        return None
+    jn = (obj.get("job_name") or "").strip()
+    payload: dict[str, Any] = {"job_name": jn}
+    if "enable_greet_recommend" in obj:
+        payload["enable_greet_recommend"] = _hr_arg_bool(obj["enable_greet_recommend"], True)
+    if obj.get("resume_collect_target") is not None:
+        try:
+            payload["resume_collect_target"] = int(obj["resume_collect_target"])
+        except (TypeError, ValueError):
+            pass
+    if obj.get("analyze_threshold") is not None:
+        try:
+            payload["analyze_threshold"] = int(obj["analyze_threshold"])
+        except (TypeError, ValueError):
+            pass
+    _mch = obj.get("max_count_per_harvest_tick")
+    if _mch is None and obj.get("max_count") is not None:
+        _mch = obj.get("max_count")
+    if _mch is not None:
+        try:
+            payload["max_count_per_harvest_tick"] = int(_mch)
+        except (TypeError, ValueError):
+            pass
+    if obj.get("greet_target") is not None:
+        try:
+            payload["greet_target"] = int(obj["greet_target"])
+        except (TypeError, ValueError):
+            pass
+    if obj.get("greet_harvest_switch_interval_minutes") is not None:
+        try:
+            payload["greet_harvest_switch_interval_minutes"] = int(obj["greet_harvest_switch_interval_minutes"])
+        except (TypeError, ValueError):
+            pass
+    js = (obj.get("jd_select") or "").strip()
+    if js:
+        payload["jd_select"] = js
+    jcp = (obj.get("jd_config_path") or "").strip()
+    if jcp:
+        payload["jd_config_path"] = jcp
+    return payload
+
+
+def _score_branch_b_task_payload(p: dict[str, Any]) -> int:
+    """分越高表示配置越完整；优先含 enable_greet_recommend 的块（避免误选仅含 job_name 的首个 json）。"""
+    sc = len(p) * 3
+    if "enable_greet_recommend" in p:
+        sc += 40
+    if "resume_collect_target" in p:
+        sc += 15
+    if (p.get("jd_select") or "").strip():
+        sc += 8
+    if p.get("analyze_threshold") is not None:
+        sc += 5
+    if p.get("greet_harvest_switch_interval_minutes") is not None:
+        sc += 5
+    if p.get("max_count_per_harvest_tick") is not None:
+        sc += 6
+    if p.get("greet_target") is not None:
+        sc += 6
+    return sc
+
+
+def _extract_branch_b_add_task_payload(messages: list | None) -> dict[str, Any] | None:
+    """从 assistant 消息中所有 ```json``` 块里选取「最完整」的分支 B 配置，再交给 add_automated_recruitment_task。"""
+    if not messages:
+        return None
+    best: dict[str, Any] | None = None
+    best_sc = -1
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        text = msg.get("content") or ""
+        for m in re.finditer(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text):
+            try:
+                obj = json.loads(m.group(1).strip())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            cand = _branch_b_obj_to_task_payload(obj)
+            if not cand:
+                continue
+            sc = _score_branch_b_task_payload(cand)
+            if sc > best_sc:
+                best_sc = sc
+                best = cand
+    return best
+
+
+def _last_assistant_asks_ab_scheduler_choice(messages: list | None) -> bool:
+    """助手刚问过「选项 A / B」类自动透析确认时，用户单行 A/B 应视为分支 B 最终确认。"""
+    if not messages:
+        return False
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        t = msg.get("content") or ""
+        return bool(
+            re.search(r"选项\s*[AB]|请回复\s*[`「『]?\s*[AB]\s*[`」』]?\s*或", t, re.I)
+        )
+    return False
+
+
+def _branch_b_user_ab_choice(user_input: str) -> str | None:
+    s = (user_input or "").strip()
+    if re.fullmatch(r"(?i)[ab]", s):
+        return s.upper()
+    return None
+
+
+def _extract_branch_b_scheduler_hints_from_markdown(messages: list | None) -> dict[str, Any]:
+    """
+    从 assistant 的 Markdown 表里抽取分支 B 调度参数（模型常只画表不输出 ```json```，
+    随后单行「A」又不触发「同意」预检，导致 MCP 省略参数、回退 jd.json 默认）。
+    取各字段在对话中的**最后一次**匹配。
+    """
+    out: dict[str, Any] = {}
+    if not messages:
+        return out
+    chunks: list[str] = []
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            chunks.append(msg.get("content") or "")
+    blob = "\n".join(chunks[-12:])
+    if len(blob) > 12000:
+        blob = blob[-12000:]
+
+    def _last_int(regex: str, group: int = 1) -> int | None:
+        ms = list(re.finditer(regex, blob, re.I))
+        if not ms:
+            return None
+        try:
+            return int(ms[-1].group(group))
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    ms_jn = list(
+        re.finditer(r"\|[^|\n]*岗位名称[^|\n]*\|\s*([^|]+?)\s*\|", blob, re.I)
+    )
+    if ms_jn:
+        jn = ms_jn[-1].group(1).strip().strip("*").strip("`").strip()
+        if jn and len(jn) < 240:
+            out["job_name"] = jn
+
+    ms_gr = list(re.finditer(r"\|[^|\n]*推荐牛人[^|\n]*\|\s*([^|]+?)\s*\|", blob, re.I))
+    if ms_gr:
+        cell = ms_gr[-1].group(1)
+        if re.search(r"关|否|不要|❌|仅收网|不(?:需要|打)|\bno\b|\boff\b", cell, re.I):
+            out["enable_greet_recommend"] = False
+        elif re.search(r"\b是\b|需要(?!\s*吗)|✅|开|启用|\byes\b|\bon\b", cell, re.I):
+            out["enable_greet_recommend"] = True
+
+    cap = _last_int(
+        r"\|[^|\n]*(?:累计抓取简历目标|简历目标|收集(?:上)?限)[^|\n]*\|\s*(\d+)\s*份",
+    )
+    if cap is not None and cap > 0:
+        out["resume_collect_target"] = cap
+        out["analyze_threshold"] = cap
+
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        uc = msg.get("content") or ""
+        um = re.search(
+            r"仅(?:抓|收)(?:取)?简历\s*(\d+)\s*份|(\d+)\s*份\s*$",
+            uc.strip(),
+            re.I,
+        )
+        if um:
+            try:
+                n = int(um.group(1) or um.group(2))
+                if 0 < n < 10000:
+                    out["resume_collect_target"] = n
+                    out["analyze_threshold"] = n
+                    break
+            except (TypeError, ValueError):
+                pass
+        if re.search(r"仅(?:抓|收)(?:取)?简历|只抓简历|仅收网|只收网", uc, re.I):
+            um2 = re.search(
+                r"(?:仅收网|只收网)\s*(\d{1,4})\s*份|(\d{1,4})\s*份",
+                uc,
+                re.I,
+            )
+            if um2:
+                try:
+                    n = int(um2.group(1) or um2.group(2))
+                    if 0 < n < 10000:
+                        out["resume_collect_target"] = n
+                        out["analyze_threshold"] = n
+                        break
+                except (TypeError, ValueError):
+                    pass
+
+    return out
+
+
+def _apply_last_user_line_to_add_task_args(messages: list | None, out: dict[str, Any]) -> None:
+    """
+    最近一条 HR 用户话里的调度短句：模型常只传 job_name，须覆盖 jd 默认（交替+4 份+3 人+10 分钟）。
+    支持：仅收网10份；交替模式，打招呼10人，收简历5份，间隔2分钟；整句可带「【系统】…」前缀。
+    """
+    if not messages:
+        return
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        raw = (msg.get("content") or "").strip()
+        if not raw:
+            continue
+        if not re.search(
+            r"仅收网|只收网|仅抓|只抓简历|交替|↔|打招呼|再抓|收网改成|多抓|enable_greet|"
+            r"收简历|间隔|轮换|推荐间隔|牛人|运行模式",
+            raw,
+            re.I,
+        ):
+            break
+        # 仅收网优先于「交替」字样（避免歧义句）
+        if re.search(
+            r"仅收网|只收网|仅抓(?:取)?简历|只抓简历|不要打招呼|关闭打招呼|不打招呼|"
+            r"只要简历|只下简历|enable_greet[^\n]*false",
+            raw,
+            re.I,
+        ):
+            out["enable_greet_recommend"] = False
+        elif re.search(
+            r"交替|打招呼\s*↔|↔\s*收|开.*打招呼|打开打招呼|推荐.*打招呼|enable_greet[^\n]*true",
+            raw,
+            re.I,
+        ):
+            out["enable_greet_recommend"] = True
+
+        m = re.search(
+            r"(?:仅收网|只收网)\s*(\d{1,4})\s*份|"
+            r"(?:仅抓|只抓)(?:取)?简历\s*(\d{1,4})\s*份|"
+            r"(?:再抓|多抓|收网(?:改成)?)\s*(\d{1,4})\s*份",
+            raw,
+            re.I,
+        )
+        if m:
+            for g in m.groups():
+                if g:
+                    try:
+                        n = int(g)
+                        if 0 < n < 10000:
+                            out["resume_collect_target"] = n
+                            out["analyze_threshold"] = n
+                    except ValueError:
+                        pass
+
+        # 交替模式下的自然语言：打招呼 N 人、收简历 M 份、间隔 K 分钟
+        _want_alt = bool(
+            re.search(r"交替", raw, re.I) or out.get("enable_greet_recommend") is True
+        )
+        if _want_alt and not re.search(
+            r"仅收网|只收网|仅抓(?:取)?简历|只抓简历",
+            raw,
+            re.I,
+        ):
+            mg = re.search(r"打招呼\s*(\d{1,3})\s*人", raw, re.I)
+            if not mg:
+                mg = re.search(
+                    r"(?:推荐|牛人|牛人沟通).{0,24}?(\d{1,3})\s*人",
+                    raw,
+                    re.I,
+                )
+            if mg:
+                try:
+                    gv = int(mg.group(1))
+                    if 0 < gv <= 500:
+                        out["greet_target"] = gv
+                except ValueError:
+                    pass
+            mcv = re.search(
+                r"收简历\s*(\d{1,4})\s*份|"
+                r"抓\s*(\d{1,4})\s*份(?:简历)?|"
+                r"累计(?:收网|收简历)?\s*(\d{1,4})\s*份",
+                raw,
+                re.I,
+            )
+            if mcv:
+                for gg in mcv.groups():
+                    if gg:
+                        try:
+                            n = int(gg)
+                            if 0 < n < 10000:
+                                out["resume_collect_target"] = n
+                                out["analyze_threshold"] = n
+                        except ValueError:
+                            pass
+                        break
+            mi = re.search(
+                r"间隔\s*(\d{1,3})\s*分钟|轮换\s*(\d{1,3})\s*分钟|"
+                r"推荐间隔\s*(\d{1,3})\s*分钟",
+                raw,
+                re.I,
+            )
+            if mi:
+                for gg in mi.groups():
+                    if gg:
+                        try:
+                            k = int(gg)
+                            if 0 < k <= 120:
+                                out["greet_harvest_switch_interval_minutes"] = k
+                                out["recommend_interval_minutes"] = k
+                        except ValueError:
+                            pass
+                        break
+        break
+
+
+def _merge_branch_b_into_add_automated_args(args: dict[str, Any], messages: list | None) -> dict[str, Any]:
+    """用 ```json```、Markdown 表与**最近用户短句**补全 add_automated_recruitment_task 入参（防 jd 默认）。"""
+    if not isinstance(args, dict):
+        return args
+    out = dict(args)
+    if _hr_branch_b_recruitment_context(messages):
+        json_pl = _extract_branch_b_add_task_payload(messages)
+        if json_pl:
+            for k, v in json_pl.items():
+                if v is None:
+                    continue
+                if k not in out or out.get(k) in (None, ""):
+                    out[k] = v
+        hints = _extract_branch_b_scheduler_hints_from_markdown(messages)
+        # 仅补全 MCP 省略的键；勿用历史 assistant 成功文案里的「仅收网」表覆盖本轮显式 true/false
+        if hints.get("enable_greet_recommend") is not None:
+            if "enable_greet_recommend" not in out or out.get("enable_greet_recommend") is None:
+                out["enable_greet_recommend"] = hints["enable_greet_recommend"]
+        if hints.get("resume_collect_target") is not None:
+            if "resume_collect_target" not in out or out.get("resume_collect_target") is None:
+                try:
+                    n = int(hints["resume_collect_target"])
+                    if n > 0:
+                        out["resume_collect_target"] = n
+                        out["analyze_threshold"] = int(
+                            hints.get("analyze_threshold") or hints["resume_collect_target"]
+                        )
+                except (TypeError, ValueError):
+                    pass
+        jh = (hints.get("job_name") or "").strip()
+        if jh and not (out.get("job_name") or "").strip():
+            out["job_name"] = jh
+    _apply_last_user_line_to_add_task_args(messages, out)
+    return out
+
+
+def _hr_user_input_is_solitary_boss_job_select_line(user_input: str) -> bool:
+    """
+    飞书「绑定/换岗」常见：整句基本就是一行 Boss 选岗，无调度参数。
+    此类消息已在外层 apply_job_select 写 jd_select；不应让模型立刻 add_automated 吃 jd 默认。
+    """
+    s = (user_input or "").strip()
+    if len(s) < 6 or len(s) > 160:
+        return False
+    if re.search(
+        r"仅收网|仅打招呼|交替|抓\s*\d|份简历|同意调度|再抓|打招呼改成|收网改成|推荐间隔|透析|"
+        r"启动无人值守|注册.*任务|进度|停止|分析简历|恢复挂起|继续|需要吗|选项\s*[AB]",
+        s,
+        re.I,
+    ):
+        return False
+    if any(x in s for x in (",", "，", "\n", ";", "；")):
+        return False
+    import sys
+
+    try:
+        from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+        root = _get_hr_recruitment_plugin_root()
+        if not root or not root.exists():
+            return False
+        ps = str(root.resolve())
+        inserted = ps not in sys.path
+        if inserted:
+            sys.path.insert(0, ps)
+        try:
+            from tools.boss_utils import extract_job_select_line_for_boss_from_hr_chat
+
+            line = (extract_job_select_line_for_boss_from_hr_chat(s) or "").strip()
+        finally:
+            if inserted:
+                try:
+                    sys.path.remove(ps)
+                except ValueError:
+                    pass
+        if not line:
+            return False
+
+        def _nz(x: str) -> str:
+            return re.sub(r"\s+", "", (x or "").lower())
+
+        return _nz(s) == _nz(line)
+    except Exception:
+        return False
+
+
 async def _execute_publish_bypass(
     jd_config: dict,
     *,
     allowed_skills: list[str] | None = None,
+    lark_chat_id: str = "",
 ) -> str | None:
     """
     当「同意」但会话丢失时，直接执行发布，不经过 LLM。
@@ -296,25 +1163,137 @@ async def _execute_publish_bypass(
         path = _persist_jd_config_before_publish(jd_config)
         if not path:
             return None
+        from pathlib import Path as _Path
+
+        jd_doc: dict = {}
+        try:
+            raw_j = json.loads(_Path(path).read_text(encoding="utf-8"))
+            if isinstance(raw_j, dict):
+                jd_doc = raw_j
+        except Exception:
+            pass
+        force_pub = bool(jd_config.get("force_republish"))
+        already_on_boss = False
+        try:
+            from l3_node.hr_loader import _get_hr_recruitment_plugin_root as _gr
+
+            _pr = _gr()
+            if _pr and _pr.exists():
+                import sys as _sys
+
+                _ps = str(_pr.resolve())
+                if _ps not in _sys.path:
+                    _sys.path.insert(0, _ps)
+                from tools.hr_data_paths import jd_boss_post_marked_published
+
+                already_on_boss = jd_boss_post_marked_published(jd_doc)
+        except Exception as _e:
+            logger.debug("[Agent] 读取 boss_post 标记失败: %s", _e)
+
+        def _send_sched_confirm() -> None:
+            try:
+                from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+                pr = _get_hr_recruitment_plugin_root()
+                if pr and pr.exists():
+                    import sys
+
+                    ps = str(pr.resolve())
+                    if ps not in sys.path:
+                        sys.path.insert(0, ps)
+                    from tools.hr_scheduler_confirm_prompt import hr_scheduler_send_confirm_prompt
+
+                    hr_scheduler_send_confirm_prompt(job_name=job_title, jd_config_path=path)
+            except Exception as e:
+                logger.warning("[Agent] 发送调度确认失败: %s", e)
+
+        if already_on_boss and not force_pub:
+            _clear_last_jd_pending(lark_chat_id)
+            _send_sched_confirm()
+            return (
+                "本岗位 **已在 Boss 发布过**（jd.json 中 `boss_post_published=true`），本次 **未再次执行发帖**。\n\n"
+                "已按您确认的 JSON **合并更新** jd.json（职位描述与调度字段彼此独立，均可只改文件不重发帖）。"
+                "已向飞书发送 **无人值守调度参数确认单**。\n\n"
+                "**定时任务尚未启动** — 请在飞书回复 **「同意调度」**；仅改数字也可在飞书发「打招呼改成N人」「收网改成M人」等。\n"
+                "若确需在 Boss **重新发帖**，请在 JSON 中加 `\"force_republish\": true` 或让助手调用 `atom_post_job_boss` 并传 `force_republish`。"
+            )
+
         mcp_registry = get_mcp_registry()
-        inp = json.dumps({"jd_config_path": path, "cdp_url": "http://127.0.0.1:9222"}, ensure_ascii=False)
+        inp = json.dumps(
+            {
+                "jd_config_path": path,
+                "cdp_url": "http://127.0.0.1:9222",
+                "force_republish": force_pub,
+            },
+            ensure_ascii=False,
+        )
         obs = await mcp_registry.invoke("mcp:atom_post_job_boss", inp, allowed_skills=allowed_skills)
         result = json.loads(obs) if (obs or "").strip().startswith("{") else {}
-        if not result.get("posted", False) and "需要登录" in str(result.get("error", "")):
+        posted_ok = bool(result.get("posted")) or bool(result.get("already_published"))
+        if not posted_ok and "需要登录" in str(result.get("error", "")):
             return "已为您打开 Boss 直聘登录页，请扫码登录。登录完成后请回复「已登录」或「继续发布」。"
-        if not result.get("posted", False):
+        if not posted_ok:
             err = result.get("error", obs) or ""
             err_preview = (err[:200] + "…") if len(str(err)) > 200 else err
             logger.warning("[Agent] 直接发布未成功: %s", err_preview)
             if "playwright" in str(err).lower():
                 return "发布失败：缺少 playwright 组件。若使用 exe：请重新执行 `python scripts/build_l3_sidecar.py --force` 后重启。若使用 Python：请执行 `pip install playwright` 后重启 L3。"
             return None
-        _clear_last_jd_pending()
-        task_inp = json.dumps({"job_name": job_title}, ensure_ascii=False)
-        await mcp_registry.invoke("mcp:add_automated_recruitment_task", task_inp, allowed_skills=allowed_skills)
-        return "职位发布成功！【无人值守流程】已启动：推荐牛人每15分钟（满3人打招呼即停）→20秒后自动抓简历→满4份简历触发 Agent 讨论简历，输出前2名排行榜和 Lark 多维表，达标后停止该岗位招聘。"
+        _clear_last_jd_pending(lark_chat_id)
+        _send_sched_confirm()
+        if result.get("already_published"):
+            return (
+                "Boss 侧 **已记录过发帖成功**，本次未重复发帖；已尝试发送飞书 **调度参数确认单**。\n\n"
+                "**定时任务尚未启动** — 请飞书回复 **「同意调度」** 或执行 **add_automated_recruitment_task**。"
+            )
+        return (
+            "职位已在 Boss 发布成功。\n\n"
+            "已向飞书发送 **无人值守调度参数确认单**（默认：推荐间隔、每轮打招呼人数、打招呼后衔接抓简历延迟、每轮收网上限、简历累计目标与透析阈值等）。\n\n"
+            "**定时任务尚未启动** — 请在飞书核对参数后回复 **「同意调度」** 以正式启动；也可先按消息说明修改（如「打招呼改成5人」「推荐间隔20分钟」）再回复同意调度。\n"
+            "若当前环境未配置飞书推送，请在对话中让助手执行 **add_automated_recruitment_task**（参数已写入 jd.json，可省略）。"
+        )
     except Exception as e:
         logger.warning("[Agent] 直接发布异常: %s", e)
+        return None
+
+
+async def _execute_branch_b_harvest_bypass(
+    task_payload: dict[str, Any],
+    *,
+    allowed_skills: list[str] | None = None,
+) -> str | None:
+    """
+    分支 B：Boss 上职位已在招，用户确认后仅向调度器添加任务，不调用 atom_post_job_boss。
+    """
+    if not task_payload or not isinstance(task_payload, dict):
+        return None
+    jn = (task_payload.get("job_name") or "").strip()
+    if not jn:
+        return None
+    try:
+        mcp_registry = get_mcp_registry()
+        clean = {k: v for k, v in task_payload.items() if v is not None}
+        inp = json.dumps(clean, ensure_ascii=False)
+        obs = await mcp_registry.invoke("mcp:add_automated_recruitment_task", inp, allowed_skills=allowed_skills)
+        result: dict[str, Any] = {}
+        if (obs or "").strip().startswith("{"):
+            try:
+                _parsed = json.loads(obs)
+                result = _parsed if isinstance(_parsed, dict) else {}
+            except json.JSONDecodeError:
+                result = {}
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            err = (result.get("error", obs) if isinstance(result, dict) else obs) or ""
+            logger.warning("[Agent] 分支B 收网调度未成功: %s", (str(err))[:200])
+            return None
+        greet_on = bool(task_payload.get("enable_greet_recommend", True))
+        rct = task_payload.get("resume_collect_target", "")
+        return (
+            f"✅ 已按「分支B·轻量收网」启动无人值守：岗位「{jn}」，打招呼={'开启' if greet_on else '关闭'}，"
+            f"简历收集目标约 {rct} 份。本次**未**调用发帖工具（atom_post_job_boss）。"
+        )
+    except Exception as e:
+        logger.warning("[Agent] 分支B 直接收网异常: %s", e)
         return None
 
 
@@ -337,11 +1316,24 @@ def _persist_jd_config_before_publish(jd_config: dict) -> str | None:
         import sys
         if str(plugin_root) not in sys.path:
             sys.path.insert(0, str(plugin_root))
-        from tools.hr_data_paths import init_job_jd_from_template
-        jd_path = init_job_jd_from_template(job_title, overrides=jd_config)
+        from tools.boss_utils import canonicalize_boss_job_select
+        from tools.hr_data_paths import init_job_jd_from_template, resolve_recruitment_data_folder_key
+
+        ov = dict(jd_config) if isinstance(jd_config, dict) else {}
+        sel_raw = (ov.get("jd_select") or "").strip()
+        canon_sel = (canonicalize_boss_job_select(sel_raw) or sel_raw).strip() if sel_raw else ""
+        jt_fk = (ov.get("job_title") or job_title or "").strip()
+        data_fk = resolve_recruitment_data_folder_key(
+            jd_select_canon=canon_sel,
+            job_title=jt_fk,
+            jd_doc=ov,
+        )
+        jd_path = init_job_jd_from_template(
+            job_title, overrides=jd_config, data_folder_key=data_fk
+        )
         logger.info(
             "[Agent] HR 已确认，已在 hr_recruitment/%s/ 复制模板填 jd.json、创建 pending/processed/result",
-            job_title,
+            data_fk,
         )
         return str(jd_path)
     except Exception as e:
@@ -723,18 +1715,25 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 【重要】当用户要求「简历分析」「HR 透析镜」等时：直接调用 {hr_preferred or "jpp:com.jachin.hr.analyzer4"}，Action Input 可传 {{}}，系统会从技能配置自动注入默认参数。禁止用 list_directory 探索。
 【强制】当用户说「再分析」「重新分析」「再去分析」「再跑一次」等时：必须重新调用 HR 透析镜工具，不得复用上一轮 Observation，不得用 fs_read 或 recall_memory 代替。"""
 
-    # 招聘意图：当工具列表含招聘相关 MCP 时，从 Skill 注入 SOP（OpenClaw 风格）
-    tool_ids = [str(t.get("id") or "").lower() for t in tools]
-    _hr_has_recruitment_tools = any(
-        x in " ".join(tool_ids)
-        for x in ("atom_post_job_boss", "add_automated_recruitment_task", "stop_automated_recruitment")
-    )
+    # 能力总目录：核心（与域无关）+ 当前工具命中的各域摘要（见 capability_catalog.DOMAIN_REGISTRY）
+    _cap_inject = build_capability_prompt_inject_for_tools(tools).strip()
+    capability_catalog_hint = ""
+    if _cap_inject:
+        capability_catalog_hint = f"""【L3 能力总目录】
+{_cap_inject}
+
+---
+"""
+    # 招聘域 SOP：仅当招聘 MCP 可见时注入 SKILL.md（与总目录解耦，新域可仿照单独挂载）
+    _hr_has_recruitment_tools = tools_include_recruitment(tools)
     hr_recruitment_hint = ""
     if _hr_has_recruitment_tools:
         skill_content = _load_hr_recruitment_skill_content()
         if skill_content:
             hr_recruitment_hint = f"""
-【当前激活技能：HR 招聘总监】按以下 SOP 执行，禁止臆想、禁止在 HR 明确同意前调用发布工具。
+【当前激活技能：HR 招聘总监】按以下 SOP 执行。发帖与调度分离：`boss_post_published` 后勿再 `atom_post_job_boss`（除非 `force_republish`）；改收网/打招呼只走调度工具或飞书短指令。
+**新岗 / 用户刚确认的 JD**：调用 `mcp:add_automated_recruitment_task` 时，`job_name` 必须与**上一轮 assistant 消息里 ```json``` 中的 `job_title` 完全一致**，禁止沿用系统摘要、指针或历史会话里的其它岗位名（如上一岗「Python」）。
+若 Final Answer 中用 Markdown 表列出「收网目标」与「自动分析/透析阈值」，两处份数须与 `add_automated_recruitment_task` 工具结果一致（系统会在下发前按注册任务自动对齐表格中的份数）。
 
 {skill_content}
 
@@ -742,8 +1741,10 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 """
         else:
             # 兜底：Skill 未找到时保留简短提示，避免完全无招聘能力
-            hr_recruitment_hint = f"""
-【HR 招聘】当用户说「我要招聘」「发布职位」等时：依次询问岗位名称、招聘类型、薪资、学历、经验；收集齐后输出完整 JD JSON 供确认；用户回复「同意」后立即调用 mcp:atom_post_job_boss。关闭流程时调用 mcp:stop_automated_recruitment。
+            hr_recruitment_hint = """
+【HR 招聘】发帖仅 `atom_post_job_boss`（成功后 jd 会 `boss_post_published`，勿重复发帖除非 force_republish）。调度用 `hr_scheduler_send_confirm_prompt` / `add_automated_recruitment_task` 或飞书改批次。关闭：`stop_automated_recruitment`。
+`add_automated_recruitment_task` 的 `job_name` 必须与用户刚确认的 JD 里 `job_title` 一致，勿沿用其它岗位名。
+Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数须一致（与工具返回值一致）。
 """
     # L3 本地记忆注入（智能化升级 P0：断网/无 L2 时仍可用）
     local_mem = ""
@@ -764,6 +1765,15 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
     plan_prefix = f"\n{plan_ctx}\n" if plan_ctx else ""
     plan_hint = """
 【任务规划】复杂多步任务（3+ 步骤）可先用 core:fs_write 将计划写入 task_plan.md，再按计划执行。完成后可更新 progress.md。新会话会加载既有计划继续执行。""" if not plan_ctx else ""
+
+    hr_runtime_ctx = ""
+    try:
+        from l3_node.hr_prompt_context import get_hr_recruitment_runtime_context_for_prompt
+
+        hr_runtime_ctx = get_hr_recruitment_runtime_context_for_prompt()
+    except Exception:
+        pass
+    hr_runtime_prefix = f"\n{hr_runtime_ctx}\n" if (hr_runtime_ctx or "").strip() else ""
 
     p1_inject = ""
     try:
@@ -798,10 +1808,10 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 
     return f"""你是一个智能助手，使用 ReAct 格式思考。
 {local_prefix}
-{plan_prefix}
+{plan_prefix}{hr_runtime_prefix}
 {p1_inject}
 {intel_b}
-{hr_recruitment_hint}
+{capability_catalog_hint}{hr_recruitment_hint}
 可用工具：
 {tools_desc}
 {recall_hint}
@@ -919,6 +1929,27 @@ async def _spawn_sub_agent_async(
         if len(switches) == 0 or role.lower() not in switches:
             return "当前子账号未开启该项服务支持", ""
     role_lower = (role or "default").lower()
+    eff_engine = engine
+    if role_lower == "coder":
+        try:
+            from core.llm_provider import get_coder_model_litellm_id
+
+            cm = get_coder_model_litellm_id()
+            if cm and engine._normalize_model(cm) != engine._normalize_model(engine.model_name):
+                eff_engine = LiteLLMEngine(
+                    security_context=engine.ctx,
+                    model_name=cm,
+                    fallback_models=list(engine.fallback_models or []),
+                    timeout=engine.timeout,
+                    max_attempts=engine.max_attempts,
+                )
+                logger.info(
+                    "[L3 Agent] 子 Agent role=coder 使用编码模型 %s（主模型 %s）",
+                    eff_engine.model_name,
+                    engine.model_name,
+                )
+        except Exception as e:
+            logger.debug("[L3 Agent] coder 模型切换跳过: %s", e)
     prompt = SUB_AGENT_PROMPTS.get(role_lower, SUB_AGENT_PROMPTS["default"])
     allowed = SUB_AGENT_ALLOWED_SKILLS.get(role_lower, SUB_AGENT_ALLOWED_SKILLS["default"])
     global_allowed = _get_allowed_skills()
@@ -927,13 +1958,13 @@ async def _spawn_sub_agent_async(
 
     if sub_agent_id and sub_agent_id in _sub_agent_registry:
         agent = _sub_agent_registry[sub_agent_id]
-        result = await agent.run_once(task, engine)
+        result = await agent.run_once(task, eff_engine)
         return result, sub_agent_id
 
     sid = sub_agent_id or f"sub-{uuid.uuid4().hex[:8]}"
     agent = SubAgent(sid, prompt, allowed)
     _sub_agent_registry[sid] = agent
-    result = await agent.run_once(task, engine)
+    result = await agent.run_once(task, eff_engine)
     return result, sid
 
 
@@ -966,6 +1997,14 @@ async def _run_react_core(
 
     # 追踪本轮已执行的招聘相关工具，用于拒绝「未调用工具却声称已发布」的幻觉回复
     ctx._executed_tools_this_run = set()
+    try:
+        from l3_node.skills.mcp_registry import clear_last_add_automated_recruitment_task_payload
+
+        clear_last_add_automated_recruitment_task_payload()
+    except Exception:
+        pass
+    ctx.metadata.pop(_L3_CODER_MODE_META, None)
+    ctx.metadata.pop(_L3_CODER_ENGINE_CACHE_META, None)
 
     if not ctx.metadata.get("_skills_unfiltered"):
         ctx.metadata["_skills_unfiltered"] = list(ctx.metadata.get("_skills") or [])
@@ -1006,14 +2045,23 @@ async def _run_react_core(
 
         full_messages = [{"role": "system", "content": ctx.system_prompt}] + messages
         logger.debug("[L3 Agent] ReAct iter=%d 调用 LLM stream=%s", iteration + 1, bool(on_chunk))
+        _eff = _react_engine_for_iteration(engine, ctx)
+        _coder_suffix = "_coder" if _eff is not engine else ""
+        _llm_purpose = (
+            f"react_iter_{iteration + 1}_stream{_coder_suffix}"
+            if on_chunk
+            else f"react_iter_{iteration + 1}{_coder_suffix}"
+        )
         if on_chunk:
-            response = await engine.generate_response_stream(
+            response = await _eff.generate_response_stream(
                 full_messages, chunk_callback=on_chunk,
                 temperature=0.7, max_tokens=16384,
+                l3_call_purpose=_llm_purpose,
             )
         else:
-            result = await engine.generate_response(
+            result = await _eff.generate_response(
                 full_messages, temperature=0.7, max_tokens=16384,
+                l3_call_purpose=_llm_purpose,
             )
             response = result.get("content", result) if isinstance(result, dict) else str(result)
 
@@ -1026,7 +2074,24 @@ async def _run_react_core(
                 _jd_obj = json.loads(_jd_raw)
                 _jd = _jd_obj.get("jd_config") if isinstance(_jd_obj, dict) else None
                 if isinstance(_jd, dict):
-                    _save_last_jd_pending(_jd)
+                    _lc = str(ctx.metadata.get("_lark_chat_id") or "").strip()
+                    _comb_b = messages + [{"role": "assistant", "content": response}]
+                    if _hr_branch_b_recruitment_context(_comb_b):
+                        _jd = {**_jd, "skip_boss_post": True}
+                        logger.debug(
+                            "[L3 Agent] 分支B 语境：pending JD 已写 skip_boss_post，飞书裸「同意」将不强制 atom_post"
+                        )
+                    elif _hr_user_intent_skip_boss_post(messages):
+                        _jd = {**_jd, "skip_boss_post": True}
+                        logger.debug(
+                            "[L3 Agent] 用户话术=已有岗/只收网：pending 已写 skip_boss_post（不写 jd.json）"
+                        )
+                    elif _hr_assistant_declares_skip_boss_post(response):
+                        _jd = {**_jd, "skip_boss_post": True}
+                        logger.debug(
+                            "[L3 Agent] 助手话术=只收网/已有岗：pending 已写 skip_boss_post"
+                        )
+                    _save_last_jd_pending(_jd, chat_id=_lc)
                     logger.debug("[L3 Agent] 检测到 JD 输出，已写入 fallback job_title=%s", _jd.get("job_title"))
             except Exception:
                 pass
@@ -1135,6 +2200,23 @@ async def _run_react_core(
                     last_user_content = (m.get("content") or "").strip()
                     break
             if re.search(r"同意|确认|确认发布|就按这个发|直接发布", last_user_content):
+                if _hr_branch_b_recruitment_context(messages):
+                    _fb_b = _extract_branch_b_add_task_payload(messages)
+                    _no_cfg = "没有" in (response or "") and "配置" in (response or "")
+                    if _fb_b and (_no_cfg or "没有之前收集" in (response or "")):
+                        logger.info(
+                            "[L3 Agent] 分支B：用户已确认但 LLM 误判无配置，强制要求 add_automated_recruitment_task"
+                        )
+                        messages.append({"role": "assistant", "content": response})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "【系统·分支B】对话中已有收网任务配置（assistant 的 ```json``` 块）。"
+                                "请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 填入该完整 JSON。"
+                                "**禁止** mcp:atom_post_job_boss。"
+                            ),
+                        })
+                        continue
                 fallback = _extract_jd_config_from_conversation(messages, response)
                 no_config_hint = "没有" in (response or "") and "配置" in (response or "")
                 if fallback and (no_config_hint or "没有之前收集" in (response or "")):
@@ -1154,10 +2236,21 @@ async def _run_react_core(
                         ans = response[idx + len(prefix):].strip()
                         if ans:
                             # 校验：招聘工具链必须完整调用
-                            has_success = "职位已发布" in ans or "JOB_" in ans or "TASK_AUTO" in ans or "极速测试模式" in ans or "已启动" in ans
+                            has_success = _hr_recruitment_success_answer(ctx, ans)
                             no_post = "atom_post_job_boss" not in ctx._executed_tools_this_run
-                            no_task = "add_automated_recruitment_task" not in ctx._executed_tools_this_run
-                            if has_success and no_post:
+                            sched_step_done = (
+                                "add_automated_recruitment_task" in ctx._executed_tools_this_run
+                                or "hr_scheduler_send_confirm_prompt" in ctx._executed_tools_this_run
+                            )
+                            _b_ctx = _hr_branch_b_recruitment_context(messages)
+                            _skip_force_post = _hr_skip_force_atom_post_hallucination_guard(messages, ctx)
+                            if (
+                                not _b_ctx
+                                and not _skip_force_post
+                                and has_success
+                                and no_post
+                                and _hr_answer_claims_job_published(ans)
+                            ):
                                 logger.warning(
                                     "[L3 Agent] 拒绝幻觉回复：声称职位已发布但未调用 atom_post_job_boss，强制要求先执行工具"
                                 )
@@ -1167,14 +2260,24 @@ async def _run_react_core(
                                     "content": "【系统校验】你声称职位已发布，但未实际调用 mcp:atom_post_job_boss。请立即输出 Action: mcp:atom_post_job_boss，Action Input 为上一轮 JSON 配置单（从你之前的 Assistant 回复中提取），不得直接给出 Final Answer。",
                                 })
                                 continue
-                            if has_success and no_task:
+                            if (
+                                not _b_ctx
+                                and not _skip_force_post
+                                and has_success
+                                and not sched_step_done
+                                and _hr_answer_claims_job_published(ans)
+                            ):
                                 logger.warning(
-                                    "[L3 Agent] 招聘工具链不完整：已调用 atom_post_job_boss 但未调用 add_automated_recruitment_task，强制要求开启无人值守"
+                                    "[L3 Agent] 招聘工具链不完整：发帖后未发调度确认或未注册任务"
                                 )
                                 messages.append({"role": "assistant", "content": response})
                                 messages.append({
                                     "role": "user",
-                                    "content": "【系统校验】你已发布职位但未开启无人值守招聘流。请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 为 {\"job_name\": \"岗位名称\"}（从上一轮 JSON 配置单的 job_title 提取），不得直接给出 Final Answer。",
+                                    "content": (
+                                        "【系统校验】你已发布职位。请先输出 Action: mcp:hr_scheduler_send_confirm_prompt，"
+                                        'Action Input 为 {"job_name": "<与 job_title 一致>"}，向飞书发送无人值守参数确认单（定时任务此时不启动）。'
+                                        "若 HR 明确要求跳过飞书、立即开跑，可改调用 mcp:add_automated_recruitment_task。不得直接给出 Final Answer。"
+                                    ),
                                 })
                                 continue
                             try:
@@ -1191,8 +2294,32 @@ async def _run_react_core(
                                     ctx.metadata["_intel_strict_pending_verify"] = False
                             except ImportError:
                                 pass
+                            if (
+                                _hr_answer_claims_unmanned_scheduler_running(ans)
+                                and "add_automated_recruitment_task"
+                                not in ctx._executed_tools_this_run
+                                and "hr_scheduler_send_confirm_prompt"
+                                not in ctx._executed_tools_this_run
+                            ):
+                                logger.warning(
+                                    "[L3 Agent] 拒绝幻觉：声称无人值守/调度已运行但未调用 "
+                                    "add_automated_recruitment_task 或 hr_scheduler_send_confirm_prompt"
+                                )
+                                messages.append({"role": "assistant", "content": response})
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        "【系统校验】你声称无人值守或收网调度已启动/运行中，但本轮尚未执行 "
+                                        "mcp:add_automated_recruitment_task（或先 mcp:hr_scheduler_send_confirm_prompt）。"
+                                        "飞书侧可能已合并 jd.json，**必须**输出 Action: mcp:add_automated_recruitment_task，"
+                                        "Action Input 为 JSON：至少含 job_name、enable_greet_recommend、"
+                                        "resume_collect_target、analyze_threshold（与 HR 要求一致）；"
+                                        "禁止无工具调用直接 Final Answer 声称已启动。"
+                                    ),
+                                })
+                                continue
                             _emit("answer", ans)
-                            ctx.final_answer = ans
+                            ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
                             messages.append({"role": "assistant", "content": response})
                             return
             messages.append({"role": "assistant", "content": response})
@@ -1202,12 +2329,21 @@ async def _run_react_core(
         if parsed["type"] == "answer":
             ans = parsed.get("content", response)
             # 校验：招聘工具链必须完整调用
-            has_success = any(
-                k in (ans or "") for k in ("职位已发布", "JOB_", "TASK_AUTO", "极速测试模式", "已启动")
-            )
+            has_success = _hr_recruitment_success_answer(ctx, ans)
             no_post = "atom_post_job_boss" not in ctx._executed_tools_this_run
-            no_task = "add_automated_recruitment_task" not in ctx._executed_tools_this_run
-            if has_success and no_post:
+            sched_step_done = (
+                "add_automated_recruitment_task" in ctx._executed_tools_this_run
+                or "hr_scheduler_send_confirm_prompt" in ctx._executed_tools_this_run
+            )
+            _b_ctx_ans = _hr_branch_b_recruitment_context(messages)
+            _skip_force_post_ans = _hr_skip_force_atom_post_hallucination_guard(messages, ctx)
+            if (
+                not _b_ctx_ans
+                and not _skip_force_post_ans
+                and has_success
+                and no_post
+                and _hr_answer_claims_job_published(ans)
+            ):
                 logger.warning(
                     "[L3 Agent] 拒绝幻觉回复：声称职位已发布但未调用 atom_post_job_boss，强制要求先执行工具"
                 )
@@ -1217,14 +2353,24 @@ async def _run_react_core(
                     "content": "【系统校验】你声称职位已发布，但未实际调用 mcp:atom_post_job_boss。请立即输出 Action: mcp:atom_post_job_boss，Action Input 为上一轮 JSON 配置单（从你之前的 Assistant 回复中提取），不得直接给出 Final Answer。",
                 })
                 continue
-            if has_success and no_task:
+            if (
+                not _b_ctx_ans
+                and not _skip_force_post_ans
+                and has_success
+                and not sched_step_done
+                and _hr_answer_claims_job_published(ans)
+            ):
                 logger.warning(
-                    "[L3 Agent] 招聘工具链不完整：已调用 atom_post_job_boss 但未调用 add_automated_recruitment_task，强制要求开启无人值守"
+                    "[L3 Agent] 招聘工具链不完整：发帖后未发调度确认或未注册任务"
                 )
                 messages.append({"role": "assistant", "content": response})
                 messages.append({
                     "role": "user",
-                    "content": "【系统校验】你已发布职位但未开启无人值守招聘流。请立即输出 Action: mcp:add_automated_recruitment_task，Action Input 为 {\"job_name\": \"岗位名称\"}（从上一轮 JSON 配置单的 job_title 提取），不得直接给出 Final Answer。",
+                    "content": (
+                        "【系统校验】你已发布职位。请先输出 Action: mcp:hr_scheduler_send_confirm_prompt，"
+                        'Action Input 为 {"job_name": "<与 job_title 一致>"}。'
+                        "若 HR 明确要求跳过飞书立即开跑，可改 mcp:add_automated_recruitment_task。不得直接给出 Final Answer。"
+                    ),
                 })
                 continue
             try:
@@ -1241,8 +2387,26 @@ async def _run_react_core(
                     ctx.metadata["_intel_strict_pending_verify"] = False
             except ImportError:
                 pass
+            if (
+                _hr_answer_claims_unmanned_scheduler_running(ans)
+                and "add_automated_recruitment_task" not in ctx._executed_tools_this_run
+                and "hr_scheduler_send_confirm_prompt" not in ctx._executed_tools_this_run
+            ):
+                logger.warning(
+                    "[L3 Agent] 拒绝幻觉：声称调度已运行（parsed answer）但未调用招聘 MCP"
+                )
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "【系统校验】你给出了含「调度已运行/无人值守已启动」的答复，但尚未执行 "
+                        "mcp:add_automated_recruitment_task。请立即输出 Action 与该工具 JSON 参数，"
+                        "不得虚构任务 ID 或「运行中」状态。"
+                    ),
+                })
+                continue
             _emit("answer", ans)
-            ctx.final_answer = ans
+            ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
             messages.append({"role": "assistant", "content": response})
             return
 
@@ -1385,6 +2549,37 @@ async def _run_react_core(
             except ImportError:
                 pass
             base_tool = (tool or "").replace("mcp:", "").strip()
+            if base_tool == "atom_post_job_boss":
+                _force_pub = False
+                if (inp or "").strip().startswith("{"):
+                    try:
+                        _args = json.loads(inp)
+                        if isinstance(_args, dict):
+                            _force_pub = bool(_args.get("force_republish"))
+                            _jdc = _args.get("jd_config")
+                            if isinstance(_jdc, dict):
+                                _force_pub = _force_pub or bool(_jdc.get("force_republish"))
+                    except Exception:
+                        pass
+                if not _force_pub and _hr_thread_forbids_atom_post(messages):
+                    logger.warning(
+                        "[L3 Agent] 已拦截 atom_post_job_boss：会话含「仅收网/调度」约束且未 force_republish"
+                    )
+                    observation = json.dumps(
+                        {
+                            "ok": False,
+                            "skipped": True,
+                            "reason": "harvest_scheduler_only_context",
+                            "error": "当前对话为收网/打招呼/调度语境，禁止 Boss 发帖。请改用 mcp:add_automated_recruitment_task（job_name 与 jd.json 岗位名一致）或 mcp:hr_scheduler_send_confirm_prompt；确需重新发帖请加 force_republish。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:",
+                    })
+                    continue
             # 兜底：atom_post_job_boss 未传 jd_config 时，从对话历史提取 HR 确认的 JSON
             if base_tool == "atom_post_job_boss" and not (inp or "").strip():
                 fallback = _extract_jd_config_from_conversation(messages, response)
@@ -1413,8 +2608,41 @@ async def _run_react_core(
             if ctx.aborted:
                 return
             # 记录已执行的招聘工具，用于校验幻觉回复
-            if base_tool in ("atom_post_job_boss", "add_automated_recruitment_task"):
+            if base_tool in (
+                "atom_post_job_boss",
+                "add_automated_recruitment_task",
+                "hr_scheduler_send_confirm_prompt",
+            ):
                 ctx._executed_tools_this_run.add(base_tool)
+            # 新岗确认后模型常误传上一岗 job_name；以对话中最新 JD 的 job_title 为准并落盘 jd.json
+            if base_tool == "add_automated_recruitment_task":
+                try:
+                    args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
+                    if isinstance(args, dict):
+                        args = _merge_branch_b_into_add_automated_args(args, messages)
+                        inp = json.dumps(args, ensure_ascii=False)
+                        jd_conf = _jd_config_dict_from_conversation(messages, response)
+                        jt = (jd_conf.get("job_title") or "").strip() if jd_conf else ""
+                        jn = (args.get("job_name") or "").strip()
+                        if jd_conf and jt and jn != jt:
+                            logger.warning(
+                                "[L3 Agent] add_automated_recruitment_task job_name=%r 与对话 JD job_title=%r 不一致，已纠正并写入 jd.json",
+                                jn or "(空)",
+                                jt,
+                            )
+                            path = _persist_jd_config_before_publish(jd_conf)
+                            args["job_name"] = jt
+                            if path:
+                                args["jd_config_path"] = path
+                            inp = json.dumps(args, ensure_ascii=False)
+                        elif jd_conf and jt and not jn:
+                            path = _persist_jd_config_before_publish(jd_conf)
+                            args["job_name"] = jt
+                            if path:
+                                args["jd_config_path"] = path
+                            inp = json.dumps(args, ensure_ascii=False)
+                except Exception as e:
+                    logger.debug("[L3 Agent] add_automated_recruitment_task 纠正 job_name 跳过: %s", e)
             # 工具执行路由器：MCP 工具（L3 本地 read_file 或 L2 代理），本地工具走 run_tool
             mcp_registry = get_mcp_registry()
             if tool in mcp_registry.known_mcp_tools:
@@ -1426,6 +2654,8 @@ async def _run_react_core(
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
             tl = (tool or "").lower()
+            if tl in ("core:fs_write", "core:apply_patch"):
+                ctx.metadata[_L3_CODER_MODE_META] = True
             if tl in ("core:fs_write", "core:shell_exec", "core:apply_patch"):
                 try:
                     from l3_node.intelligence_b_execution import get_execution_mode
@@ -1440,14 +2670,15 @@ async def _run_react_core(
                     raw = (observation or "").strip()
                     if raw.startswith("{"):
                         _obs_obj = json.loads(raw)
-                        if _obs_obj.get("posted", False):
-                            _clear_last_jd_pending()
+                        if _obs_obj.get("posted", False) or _obs_obj.get("already_published"):
+                            _lc = str(ctx.metadata.get("_lark_chat_id") or "").strip()
+                            _clear_last_jd_pending(_lc)
                 except Exception:
                     pass
             # 工具返回已是完整报告（如 HR 透析镜）时直接作为最终答案，禁止 LLM 二次总结导致截断
             obs = (observation or "").strip()
             if len(obs) > 500 and ("## " in obs or "**" in obs or "综合评分" in obs or "录用建议" in obs or "评估" in obs):
-                ctx.final_answer = obs
+                ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(obs, ctx)
                 if on_step:
                     on_step("answer", ctx.final_answer, ctx.run_id)
                 return
@@ -1463,7 +2694,7 @@ async def _run_react_core(
         obs = (ctx.observation or "").strip()
         # Observation 已是完整报告（如 HR 透析镜输出）时直接使用，避免 LLM 二次总结导致截断
         if len(obs) > 800 and ("## " in obs or "**" in obs or "综合评分" in obs or "录用建议" in obs):
-            ctx.final_answer = obs
+            ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(obs, ctx)
             if on_step:
                 on_step("answer", ctx.final_answer, ctx.run_id)
             return
@@ -1474,12 +2705,22 @@ async def _run_react_core(
         })
         try:
             full_m = [{"role": "system", "content": ctx.system_prompt}] + messages
-            result = await engine.generate_response(full_m, temperature=0.3, max_tokens=16384)
+            _feff = _react_engine_for_iteration(engine, ctx)
+            result = await _feff.generate_response(
+                full_m,
+                temperature=0.3,
+                max_tokens=16384,
+                l3_call_purpose=(
+                    "react_final_answer_fallback_coder"
+                    if _feff is not engine
+                    else "react_final_answer_fallback"
+                ),
+            )
             resp = result.get("content", result) if isinstance(result, dict) else str(result)
             for pat in (r"Final\s+Answer:\s*(.+?)(?:\n\n|$)", r"Answer:\s*(.+?)(?:\n\n|$)"):
                 m = re.search(pat, resp, re.DOTALL | re.IGNORECASE)
                 if m:
-                    ctx.final_answer = m.group(1).strip()
+                    ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(m.group(1).strip(), ctx)
                     if on_step:
                         on_step("answer", ctx.final_answer, ctx.run_id)
                     return
@@ -1491,7 +2732,7 @@ async def _run_react_core(
         for pat in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)", r"总结[：:]\s*(.+)"):
             m = re.search(pat, last, re.DOTALL | re.IGNORECASE)
             if m:
-                ctx.final_answer = m.group(1).strip()
+                ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(m.group(1).strip(), ctx)
                 return
     ctx.final_answer = "[ReAct 循环达到上限]"
 
@@ -1514,9 +2755,14 @@ async def run_agent(
     支持 _system_prompt_override 供子 Agent 使用。
     _session_messages: 若提供，将作为历史上下文并在调用结束后被更新为完整对话（含本轮），供多轮对话复用。
     implicit_signals: 可选 {"skip": true, "dwell_sec"|"dwell_ms": n, "assistant_echo": "...", "source": "lark"} → 见 docs/IMPLICIT_SIGNALS.md。
-    implicit_attribution: 可选 {"channel": "lark_im"|"websocket"|"http_agent_run", ...} → 每轮写 implicit_turn_attribution（全端覆盖埋点）。
+    implicit_attribution: 可选 {"channel": "lark_im"|"websocket"|"http_agent_run", "lark_chat_id": "..."} → 每轮写 implicit_turn_attribution；**lark_chat_id** 用于按会话隔离待确认 JD（同意/兜底）。
     """
     run_id = str(uuid.uuid4())
+    _lark_cid = ""
+    if implicit_attribution and isinstance(implicit_attribution, dict):
+        _lark_cid = str(
+            implicit_attribution.get("lark_chat_id") or implicit_attribution.get("chat_id") or ""
+        ).strip()
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
     allowed = _get_allowed_skills()
     tools = load_tools(allowed_skills=allowed)
@@ -1697,15 +2943,77 @@ async def run_agent(
         prefix = "【系统】用户要发布职位，但尚未提供完整配置。你必须**仅做询问**，禁止臆想、禁止杜撰、禁止调用 atom_post_job_boss。请用 Final Answer 向 HR 依次询问：1.岗位名称是什么？2.社招、校招、实习还是兼职？3.薪资待遇大概多少？4.学历要求？5.经验要求？若 HR 第一轮未给某项，下一轮**单独追问**该项，直到收集齐再输出完整 JD 配置供确认。\n\n"
         messages[-1]["content"] = prefix + (user_input or "")
 
+    # 预检1b：单行 Boss 选岗（已同步 jd_select/指针）≠ 已确认无人值守参数；禁止用 jd.json 缺省直接开跑
+    if (
+        tools_include_recruitment(tools)
+        and _hr_user_input_is_solitary_boss_job_select_line(user_input or "")
+        and _extract_branch_b_add_task_payload(messages) is None
+        and not _extract_jd_config_from_conversation(prior_messages, "")
+    ):
+        _pfx1b = (
+            "【系统】本条为 **Boss 选岗／换绑**（jd_select 与工作指针已在外层合并），**不是** HR 已确认的无人值守参数表。\n"
+            "你必须 **先** 用 Final Answer 追问并等 HR 明确：① **推荐牛人 ↔ 沟通收简历** 是否交替，还是 **仅收网**；"
+            "② **累计收网目标**（份）；③ **透析触发份数**（可与收网目标相同）；④ 若开交替：**每轮打招呼人数**、**轮换间隔（分钟，默认 10）**。\n"
+            "**在 HR 逐项确认前禁止调用** mcp:add_automated_recruitment_task；禁止用磁盘 jd 缺省（如示例 4 份、或历史「仅收网」快照）代替 HR 决策。\n\n"
+        )
+        messages[-1]["content"] = _pfx1b + (messages[-1].get("content") or user_input or "")
+
     # 预检2：用户说「关闭」「停止」招聘流程时，强制要求调用 stop_automated_recruitment，禁止仅回复文字
     if re.search(r"关闭|停止|取消", (user_input or "").strip()) and re.search(r"招聘|无人值守|自动化", (user_input or "").strip()):
         prefix = "【系统】用户要求关闭招聘流程。你必须输出 Action: mcp:stop_automated_recruitment，Action Input: {\"job_name\": \"\"}，以真正停止后台任务。禁止仅回复「已关闭」而不调用工具。\n\n"
         messages[-1]["content"] = prefix + (messages[-1].get("content") or "")
 
-    # 预检3：用户回复「同意」时，若有 JD 配置则直接执行发布，不经过 LLM（彻底避免循环）
+    # 预检3：分支 B 用户确认 → 仅 add_automated_recruitment_task，禁止发帖短路（含 last_jd_pending 误伤）
+    _branch_b_ctx = _hr_branch_b_recruitment_context(messages)
+    _branch_b_confirm = re.search(
+        r"同意|确认启动|确认|确认发布|就按这个发|^\s*同\s*$|^同$|好的|可以|开始|启动|直接发布",
+        (user_input or "").strip(),
+        re.I,
+    )
+    # 预检3b：仅改收网/打招呼/调度语境 — 禁止再走发帖工具
+    _ui0 = (user_input or "").strip()
+    if re.search(r"收网|打招呼|推荐间隔|抓简历|无人值守|调度|透析|简历目标", _ui0) and not re.search(
+        r"发布|发帖|新职位|重新发布|force_republish|再发.*职位",
+        _ui0,
+        re.I,
+    ):
+        _pfx3b = (
+            "【系统】当前表述仅为 **收网/打招呼/调度参数**，与 Boss **发帖**无关。"
+            "**禁止**调用 mcp:atom_post_job_boss（除非 HR 明确说重新发布职位并传 force_republish）。"
+            "请用：飞书短指令（收网改成N人、打招呼改成N人、推荐间隔N分钟）、或 mcp:add_automated_recruitment_task、"
+            "或 mcp:hr_scheduler_send_confirm_prompt；已发帖岗位勿再发帖。\n\n"
+        )
+        messages[-1]["content"] = _pfx3b + (messages[-1].get("content") or _ui0)
+
+    # 预检3a：分支 B + 助手刚问 A/B + 用户单行 A/B → 直连调度（避免模型下一跳省略参数读 jd 默认）
+    _ab_choice = _branch_b_user_ab_choice(user_input or "")
+    if _branch_b_ctx and _ab_choice and _last_assistant_asks_ab_scheduler_choice(messages):
+        _pl: dict[str, Any] = dict(_extract_branch_b_add_task_payload(messages) or {})
+        for k, v in _extract_branch_b_scheduler_hints_from_markdown(messages).items():
+            if v is not None:
+                _pl[k] = v
+        if _pl.get("job_name"):
+            _direct_ab = await _execute_branch_b_harvest_bypass(_pl, allowed_skills=allowed)
+            if _direct_ab:
+                return _direct_ab
+
+    if _branch_b_ctx and _branch_b_confirm:
+        _b_payload = _extract_branch_b_add_task_payload(messages)
+        if _b_payload:
+            _direct_b = await _execute_branch_b_harvest_bypass(_b_payload, allowed_skills=allowed)
+            if _direct_b:
+                return _direct_b
+        _b_prefix = (
+            "【系统·分支B】当前为「已有岗位·轻量收网」，**严禁** mcp:atom_post_job_boss。"
+            "用户已确认启动，请立即输出 Action: mcp:add_automated_recruitment_task，"
+            "Action Input 为上一轮「配置总览」中的完整 JSON（含 job_name、enable_greet_recommend、resume_collect_target 等）。\n\n"
+        )
+        messages[-1]["content"] = _b_prefix + (messages[-1].get("content") or user_input or "")
+
+    # 预检4：分支 A — 用户回复「同意」时，若有 JD 配置则直接执行发布，不经过 LLM（彻底避免循环）
     _agree_match = re.search(r"同意|确认|确认发布|就按这个发|直接发布", (user_input or "").strip())
     _agree_jd_cfg = None
-    if _agree_match:
+    if (not _branch_b_ctx) and _agree_match:
         fallback = _extract_jd_config_from_conversation(messages, "")
         if fallback:
             try:
@@ -1716,12 +3024,18 @@ async def run_agent(
             except Exception:
                 pass
         if not _agree_jd_cfg:
-            _agree_jd_cfg = _load_last_jd_pending()
+            _agree_jd_cfg = _load_last_jd_pending(_lark_cid)
             if _agree_jd_cfg:
-                logger.info("[Agent] 同意但无会话，从 fallback 恢复 JD job_title=%s，直接执行发布", _agree_jd_cfg.get("job_title"))
+                logger.info(
+                    "[Agent] 同意但无会话 JD 块，从 pending 恢复 job_title=%s chat=%s",
+                    _agree_jd_cfg.get("job_title"),
+                    (_lark_cid[:20] + "…") if len(_lark_cid) > 20 else (_lark_cid or "(无)"),
+                )
         # 只要拿到 JD，一律直接发布，不再交给 LLM（防止误判「新对话」导致循环）
         if _agree_jd_cfg:
-            _direct_publish = await _execute_publish_bypass(_agree_jd_cfg, allowed_skills=allowed)
+            _direct_publish = await _execute_publish_bypass(
+                _agree_jd_cfg, allowed_skills=allowed, lark_chat_id=_lark_cid
+            )
             if _direct_publish:
                 return _direct_publish
             # 直接发布失败时，注入 JD 让 LLM 兜底调用 atom_post_job_boss
@@ -1740,6 +3054,7 @@ async def run_agent(
             "_max_iterations": max_iterations,
             "_on_step": on_step,
             "_on_chunk": on_chunk,
+            "_lark_chat_id": _lark_cid,
         },
     )
     ctx.messages = messages
@@ -1770,18 +3085,9 @@ async def run_agent(
         # 保留最近 30 条消息，避免 token 溢出，同时确保「确认」等上下文可追溯
         recent = ctx.messages[-30:] if len(ctx.messages) > 30 else ctx.messages
         _session_messages.extend(recent)
-        # 若本轮输出含待确认 JD，写入 fallback，供 Lark 会话丢失时「同意」兜底
-        _pending = _extract_jd_config_from_conversation(recent, ctx.current_response or "")
-        if _pending:
-            try:
-                obj = json.loads(_pending)
-                jd = obj.get("jd_config") if isinstance(obj, dict) else None
-                if isinstance(jd, dict):
-                    _save_last_jd_pending(jd)
-            except Exception:
-                pass
 
-    return ctx.final_answer or "[未产出回复]"
+    out = ctx.final_answer or "[未产出回复]"
+    return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
 
 
 # ---------------------------------------------------------------------------

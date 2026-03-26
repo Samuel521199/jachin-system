@@ -7,6 +7,7 @@ L3 启动时按 ~/.jachin/config/im_channels.yaml 加载配置，
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Callable
 
@@ -43,6 +44,7 @@ def start_im_channels(
     cfg = load_config()
     channels = cfg.get("im_channels") or {}
     threads: list[threading.Thread] = []
+    lark_started = False
 
     for ch_id, ch_cfg in channels.items():
         if not isinstance(ch_cfg, dict) or not ch_cfg.get("enabled", False):
@@ -53,17 +55,19 @@ def start_im_channels(
             continue
 
         if ch_id == "lark":
+            lark_started = True
             send_fn = create_lark_send_reply(ch_cfg)
         else:
             logger.warning("[IM Channels] 通道 %s 暂未实现 send_reply", ch_id)
             continue
 
+        _im_timeout = float(os.environ.get("LARK_IM_AGENT_TIMEOUT", "180"))
         handler = create_im_message_handler(
             run_agent_fn,
             engine,
             send_fn,
             main_loop=main_loop,
-            timeout=180.0,
+            timeout=_im_timeout,
         )
         channel = impl()
         t = threading.Thread(
@@ -75,5 +79,24 @@ def start_im_channels(
         t.start()
         threads.append(t)
         logger.info("[IM Channels] 已启动 %s 入站通道（长连接），招聘测试请直接使用 Lark 发消息", ch_id)
+
+    if lark_started:
+        def _delayed_hr_online_briefing() -> None:
+            import time
+
+            # 略晚于 Lark WS connect，且等 im_channels 凭证已参与首轮请求
+            time.sleep(6.0)
+            try:
+                from l3_node.channels.lark.hr_recruitment_notify import send_hr_l3_online_briefing_if_configured
+
+                send_hr_l3_online_briefing_if_configured(reason="startup")
+            except Exception as e:
+                logger.debug("[IM Channels] HR 上线简报跳过: %s", e)
+
+        threading.Thread(
+            target=_delayed_hr_online_briefing,
+            name="hr-lark-startup-briefing",
+            daemon=True,
+        ).start()
 
     return threads

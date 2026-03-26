@@ -270,9 +270,14 @@ async def bootstrap_l3_gateway_pending(
     # 有 dashscope（L2 或 .env）时用 qwen，避免回退到未启动的 Ollama
     has_dashscope = ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")
     if has_dashscope:
-        fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+        try:
+            from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
+
+            fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
+        except ImportError:
+            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
         if "gpt" in (model_name or "").lower() or "openai" in (model_name or "").lower():
-            model_name = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+            model_name = os.environ.get("LLM_MODEL", "qwen3.5-plus")
     else:
         fallback = None
     _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
@@ -381,7 +386,15 @@ async def bootstrap_l3_node(
     for provider, plain in keys.items():
         ctx.set_key(provider, plain)
 
-    fallback = ["dashscope/qwen3.5-flash-2026-02-23"] if ctx.get_key("dashscope") else None
+    if ctx.get_key("dashscope"):
+        try:
+            from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
+
+            fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
+        except ImportError:
+            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+    else:
+        fallback = None
     _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
     logger.debug("[L3 Bootstrap] 创建引擎 model=%s fallback=%s timeout=%s ctx_has_key=%s", model_name, fallback, _timeout, ctx.has_any_key())
     engine = LiteLLMEngine(
