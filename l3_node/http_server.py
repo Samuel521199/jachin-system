@@ -379,7 +379,6 @@ async def _handle_scheduler_add_job(request) -> "aiohttp.web.Response":
         "filter_tab": (body.get("filter_tab") or "全部").strip(),
         "request_resume": body.get("request_resume", True),
         "analyze_threshold": int(body.get("analyze_threshold", 2)),
-        "analyze_interval_hours": float(body.get("analyze_interval_hours", 0.05)),
         "output_dir": (body.get("output_dir") or "").strip(),
         "focus_keywords": (body.get("focus_keywords") or "").strip(),
         "strictness": (body.get("strictness") or "standard").strip(),
@@ -522,7 +521,10 @@ async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse
     logger.info("[L3 HTTP] recruitment start_task request_resume=%s filter_tab=%s", request_resume, filter_tab)
     jd_content = (body.get("jd_content") or "").strip()
     if not jd_content:
-        logger.warning("[L3 HTTP] recruitment 未提供岗位 JD（jd_content 为空），将使用数据库兜底或默认「云边协同架构师」，分析报告可能出现岗位错位")
+        logger.warning(
+            "[L3 HTTP] recruitment 未提供岗位 JD（jd_content 为空），将使用岗位名/数据库/中性兜底；"
+            "请务必在招聘大盘填写正式 JD 以获得最准评估"
+        )
         print("\n[岗位 JD] 为空，将使用兜底\n", flush=True)
     else:
         logger.info("[L3 HTTP] recruitment 收到岗位 JD len=%d preview=%s", len(jd_content), (jd_content[:80] + "…") if len(jd_content) > 80 else jd_content)
@@ -640,6 +642,18 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         _iatt = _iatt if isinstance(_iatt, dict) else None
         if _iatt is None:
             _iatt = {"channel": "http_agent_run"}
+        _ch = body.get("chat_id") or body.get("session_id") or ""
+        _ch_s = str(_ch).strip() if _ch else ""
+        if _ch_s:
+            _iatt = {**_iatt, "lark_chat_id": _ch_s}
+        try:
+            from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
+
+            _cmd = try_lark_workflow_command_intercept(user_input, channel_id=_ch_s)
+        except Exception:
+            _cmd = None
+        if _cmd:
+            return _json_response({"answer": _cmd, "command_intercepted": True})
         answer = await run_agent(
             user_input,
             engine,

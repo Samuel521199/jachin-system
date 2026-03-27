@@ -11,7 +11,8 @@ HR Lark 机器人 — 入口脚本
   - Webhook 模式：channels 入站 → handle_message → process_lark_message + 发回复
   - 长连接模式：python lark_bot.py --long-connection（与 L3 内置等价）
 
-使用方式：
+使用方式（在包目录或从仓库根用 python -m 调用时，请保证 cwd / PYTHONPATH 含本包根）：
+  cd skills_repo/plugin/com.jachin.hr.recruitment
   python lark_bot.py --interactive
   python lark_bot.py --webhook --port 5000
   python lark_bot.py --long-connection   # 长连接模式，无需 ngrok
@@ -23,10 +24,11 @@ import os
 import sys
 from pathlib import Path
 
-# 确保 project root、plugin、2-track-a-atomic-mcp 在 path 中
-_ROOT = Path(__file__).resolve().parent.parent  # plugin
-_PROJECT_ROOT = _ROOT.parent.parent  # jachin-system-main
-for _p in (_PROJECT_ROOT, _ROOT, _ROOT / "2-track-a-atomic-mcp"):
+# 确保仓库根、plugin、HR MCP 包根在 path 中（供 tools.* 导入）
+_PKG_ROOT = Path(__file__).resolve().parent  # com.jachin.hr.recruitment
+_PLUGIN_ROOT = _PKG_ROOT.parent  # skills_repo/plugin
+_PROJECT_ROOT = _PLUGIN_ROOT.parent.parent  # 仓库根
+for _p in (_PROJECT_ROOT, _PLUGIN_ROOT, _PKG_ROOT):
     _s = str(_p)
     if _s not in sys.path:
         sys.path.insert(0, _s)
@@ -43,7 +45,7 @@ _RECRUITMENT_KEYWORDS = (
 
 def _ensure_dotenv() -> None:
     from dotenv import load_dotenv
-    env_path = _ROOT / ".env"
+    env_path = _PLUGIN_ROOT / ".env"
     load_dotenv(env_path)
     if not env_path.exists():
         logger.warning("未找到 .env 文件: %s，L3_WS_URL 等需在环境中手动配置", env_path)

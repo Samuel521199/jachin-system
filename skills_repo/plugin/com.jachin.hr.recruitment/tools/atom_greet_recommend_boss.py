@@ -1,11 +1,14 @@
 """
 原子 Tool: atom_greet_recommend_boss
 在「推荐牛人」页面自动筛选候选人并打招呼。
-流程：读 data/{岗位名}/jd.json → 在「全部职位」中选中该职位 → 点击推荐牛人 → 遍历卡片 → 初筛 → 打招呼。
+流程：读 data/{岗位名}/jd.json → 顶栏必须选中 jd_select 对应职位（失败则中止）→ 推荐牛人 → 遍历卡片 → 初筛 → 打招呼。
 支持 jd_config_path：仅从 data/{岗位名}/jd.json 读取，与 atom_post_job_boss 一致。
 """
+from __future__ import annotations
+
 import logging
 import re
+from typing import Optional
 # from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError  # 小模型初筛暂注释
 from pathlib import Path
 
@@ -61,7 +64,7 @@ def atom_greet_recommend_boss(
     """
     在推荐牛人页面自动筛选并打招呼。
     前置：Chrome 以 --remote-debugging-port 启动，已登录 Boss。
-    流程：读 data/{岗位名}/jd.json（jd_config_path）→ 点击「全部职位」/职位下拉展开 → 选中该职位 → 点推荐牛人 → 遍历卡片 → 初筛 → 打招呼。
+    流程：读 jd.json → 尽量选岗对齐 jd_select；推荐牛人页上选岗未确认仍继续 → 遍历卡片 → 初筛 → 打招呼。
 
     workflow_hitl_context:
         可选 DAG 上下文，可含 ``_human_decision``，供反爬检测时 ask_human 续跑注入。
@@ -87,6 +90,7 @@ def atom_greet_recommend_boss(
             "skipped_chat_history": 0,
             "skipped_low_score": 0,
             "error": "JD 配置为空，请传入 jd_config_path（指向 data/{岗位名}/jd.json）",
+            "greet_events": [],
         }
     hr_criteria = _jd_to_hr_criteria(jd)
     limit = max_greet_per_run if max_greet_per_run > 0 else MAX_GREET_PER_RUN
@@ -100,6 +104,7 @@ def atom_greet_recommend_boss(
             "skipped_chat_history": 0,
             "skipped_low_score": 0,
             "error": "playwright 未安装",
+            "greet_events": [],
         }
 
     # try:
@@ -112,11 +117,25 @@ def atom_greet_recommend_boss(
             browser = pw.chromium.connect_over_cdp(cdp_url, timeout=5000)
             contexts = browser.contexts
             if not contexts:
-                return {"success": False, "greeted_count": 0, "skipped_chat_history": 0, "skipped_low_score": 0, "error": "未找到浏览器上下文"}
+                return {
+                    "success": False,
+                    "greeted_count": 0,
+                    "skipped_chat_history": 0,
+                    "skipped_low_score": 0,
+                    "error": "未找到浏览器上下文",
+                    "greet_events": [],
+                }
             context = contexts[0]
             pages = context.pages
             if not pages:
-                return {"success": False, "greeted_count": 0, "skipped_chat_history": 0, "skipped_low_score": 0, "error": "未找到页面"}
+                return {
+                    "success": False,
+                    "greeted_count": 0,
+                    "skipped_chat_history": 0,
+                    "skipped_low_score": 0,
+                    "error": "未找到页面",
+                    "greet_events": [],
+                }
 
             def _is_recommend_page(url: str) -> bool:
                 """Boss 推荐牛人页面：geek/recommend 或 chat/recommend"""
@@ -169,17 +188,22 @@ def atom_greet_recommend_boss(
                             continue
             check_and_bypass_anti_bot(page, _hitl)
 
-            # 2. 在「全部职位」中选择与 jd_select 匹配的职位（推荐牛人页：div.ui-dropmenu-label）
+            # 2. 顶栏必须与 jd_select 一致；否则中止，避免在 Java 等其它在招岗上误打招呼
             jd_select = get_jd_select(jd)
-            if jd_select and not select_job(page, jd_select):
-                return {
-                    "success": False,
-                    "greeted_count": 0,
-                    "skipped_chat_history": 0,
-                    "skipped_low_score": 0,
-                    "error": f"无法在「全部职位」中选择职位「{jd_select}」，请确认 jd.json 中 jd_select 与 Boss 下拉显示一致",
-                }
+            jd_city = (jd.get("job_location") or "").strip() or "杭州"
             if jd_select:
+                if not select_job(page, jd_select, expect_city=jd_city):
+                    return {
+                        "success": False,
+                        "greeted_count": 0,
+                        "skipped_chat_history": 0,
+                        "skipped_low_score": 0,
+                        "error": (
+                            f"未能在 Boss 顶栏选中职位「{jd_select}」（可能无此在招岗或下拉未加载）。"
+                            "已中止打招呼，请核对 jd.json 的 job_title / jd_select / 薪资与账号内职位行一致。"
+                        ),
+                        "greet_events": [],
+                    }
                 page.wait_for_timeout(2500)  # 职位切换后列表会刷新，等待加载
             check_and_bypass_anti_bot(page, _hitl)
 
@@ -243,14 +267,29 @@ def atom_greet_recommend_boss(
                     "skipped_chat_history": 0,
                     "skipped_low_score": 0,
                     "error": f"未找到推荐牛人候选人卡片。当前页: {curr_url}。请确保在推荐牛人页面且列表已加载。",
+                    "greet_events": [],
                 }
 
             n_cards = cards_loc.count()
             greeted = 0
             skipped_chat = 0
             skipped_score = 0
+            greet_events: list[dict] = []
+
+            def _card_name_preview(card_loc) -> str:
+                for sel in ("span.name", ".name", "[class*='geek-name']", "a.name"):
+                    try:
+                        nm = card_loc.locator(sel).first
+                        if nm.count() > 0:
+                            t = (nm.inner_text() or "").strip()
+                            if t:
+                                return t[:80]
+                    except Exception:
+                        pass
+                return ""
 
             for i in range(min(n_cards, 20)):
+                preview = ""
                 if _os_stop_requested(os_context):
                     return {
                         "success": True,
@@ -259,20 +298,31 @@ def atom_greet_recommend_boss(
                         "skipped_low_score": skipped_score,
                         "error": "",
                         "stopped_by_os": True,
+                        "greet_events": greet_events,
+                        "jd_select_used": jd_select,
+                        "job_location": (jd.get("job_location") or "").strip(),
+                        "job_title": (jd.get("job_title") or "").strip(),
                     }
                 if greeted >= limit:
                     break
                 try:
                     card = cards_loc.nth(i)
+                    preview = _card_name_preview(card)
                     # 3. 检查是否有沟通记录图标（同事沟通过则跳过；图标可能在卡片内或父容器内）
                     has_chat = card.locator("svg.icon-chat-history").count() > 0
                     if not has_chat:
                         has_chat = card.locator("..").locator("svg.icon-chat-history").count() > 0
                     if has_chat:
                         skipped_chat += 1
+                        ev = {"index": i, "name_preview": preview, "result": "skip", "reason": "already_chatted"}
+                        greet_events.append(ev)
+                        logger.info("[Greet] 卡片 #%d name=%r → 跳过（已有沟通记录）", i, preview)
                         continue
 
-                    # 4. 点击卡片主体进入简历详情（避免点到打招呼按钮；点击后等待详情加载）
+                    # 4. 点击卡片前关掉简历预览弹层（否则 iframe 挡列表 → Playwright intercepts pointer events）
+                    _dismiss_boss_recommend_resume_overlay(page)
+
+                    # 5. 点击卡片主体进入简历详情（避免点到打招呼按钮；点击后等待详情加载）
                     click_area = card.locator("div.card-inner, div.col-2, span.name").first
                     try:
                         if click_area.count() > 0:
@@ -281,6 +331,9 @@ def atom_greet_recommend_boss(
                             card.click(timeout=8000)
                     except Exception as click_err:
                         logger.debug("点击卡片失败(跳过): %s", click_err)
+                        ev = {"index": i, "name_preview": preview, "result": "fail", "reason": f"open_card:{click_err}"}
+                        greet_events.append(ev)
+                        logger.warning("[Greet] 卡片 #%d name=%r → 失败（无法点开卡片）: %s", i, preview, click_err)
                         continue
                     page.wait_for_timeout(1800)
                     check_and_bypass_anti_bot(page, _hitl)
@@ -292,9 +345,13 @@ def atom_greet_recommend_boss(
                             "skipped_low_score": skipped_score,
                             "error": "",
                             "stopped_by_os": True,
+                            "greet_events": greet_events,
+                            "jd_select_used": jd_select,
+                            "job_location": (jd.get("job_location") or "").strip(),
+                            "job_title": (jd.get("job_title") or "").strip(),
                         }
 
-                    # 5. 提取详情页简历文本（可能在主页面或弹窗）
+                    # 6. 提取详情页简历文本（可能在主页面或弹窗）
                     resume_text = ""
                     for f in [page] + list(page.frames):
                         try:
@@ -326,11 +383,28 @@ def atom_greet_recommend_boss(
                     score = result.get("score", 0)
                     if not result.get("pass", False) or score < MIN_MATCH_SCORE:
                         skipped_score += 1
+                        ev = {
+                            "index": i,
+                            "name_preview": preview,
+                            "result": "skip",
+                            "reason": "low_score",
+                            "score": score,
+                            "pass": bool(result.get("pass", False)),
+                        }
+                        greet_events.append(ev)
+                        logger.info(
+                            "[Greet] 卡片 #%d name=%r → 跳过（初筛未通过 score=%s pass=%s）",
+                            i,
+                            preview,
+                            score,
+                            result.get("pass", False),
+                        )
                         _close_detail(page)
                         continue
 
-                    # 6. 通过初筛，点击打招呼（支持详情页按钮 class：btn-v2 btn-sure-v2 btn-greet）
+                    # 7. 通过初筛，点击打招呼（支持详情页按钮 class：btn-v2 btn-sure-v2 btn-greet）
                     greet_clicked = False
+                    click_err: Optional[str] = None
                     for f in [page] + list(page.frames):
                         if greet_clicked:
                             break
@@ -343,17 +417,48 @@ def atom_greet_recommend_boss(
                                     greet_clicked = True
                                     page.wait_for_timeout(600)
                                     break
-                            except Exception:
-                                pass
+                            except Exception as ex:
+                                click_err = str(ex)
 
-                    # 7. 若有「已向牛人发送招呼」弹窗，点击「知道了」
+                    # 8. 若有「已向牛人发送招呼」弹窗，点击「知道了」
                     _dismiss_greet_popup(page)
 
-                    # 8. 关闭详情
+                    # 9. 关闭详情与简历预览层（避免下一轮点卡片被 iframe 挡住）
                     _close_detail(page)
                     page.wait_for_timeout(600)
 
-                    # 9. 满 limit 人即立即退出，不继续遍历剩余卡片
+                    if greet_clicked:
+                        ev = {
+                            "index": i,
+                            "name_preview": preview,
+                            "result": "success",
+                            "reason": "greet_clicked",
+                            "greeted_total": greeted,
+                        }
+                        greet_events.append(ev)
+                        logger.info(
+                            "[Greet] 卡片 #%d name=%r → 成功（本轮累计已打招呼 %d 人）",
+                            i,
+                            preview,
+                            greeted,
+                        )
+                    else:
+                        ev = {
+                            "index": i,
+                            "name_preview": preview,
+                            "result": "fail",
+                            "reason": "no_greet_button_or_click_failed",
+                            "last_click_error": click_err or "",
+                        }
+                        greet_events.append(ev)
+                        logger.warning(
+                            "[Greet] 卡片 #%d name=%r → 失败（初筛通过但未点到打招呼或按钮不可用） detail=%s",
+                            i,
+                            preview,
+                            click_err or "unknown",
+                        )
+
+                    # 10. 满 limit 人即立即退出，不继续遍历剩余卡片
                     if greeted >= limit:
                         logger.info("已成功打招呼 %d 人，达到上限，结束本轮", greeted)
                         break
@@ -361,11 +466,14 @@ def atom_greet_recommend_boss(
                 except Exception as e:
                     if should_reraise_hitl(e):
                         raise
-                    logger.warning(f"atom_greet_recommend_boss card {i} failed: {e}")
                     try:
                         _close_detail(page)
                     except Exception:
                         pass
+                    greet_events.append(
+                        {"index": i, "name_preview": preview, "result": "fail", "reason": f"exception:{e}"}
+                    )
+                    logger.warning("[Greet] 卡片 #%d name=%r → 失败（异常）: %s", i, preview, e)
 
             return {
                 "success": True,
@@ -373,6 +481,10 @@ def atom_greet_recommend_boss(
                 "skipped_chat_history": skipped_chat,
                 "skipped_low_score": skipped_score,
                 "error": "",
+                "greet_events": greet_events,
+                "jd_select_used": jd_select,
+                "job_location": (jd.get("job_location") or "").strip(),
+                "job_title": (jd.get("job_title") or "").strip(),
             }
 
     except Exception as e:
@@ -385,7 +497,59 @@ def atom_greet_recommend_boss(
             "skipped_chat_history": 0,
             "skipped_low_score": 0,
             "error": str(e),
+            "greet_events": [],
         }
+
+
+def _dismiss_boss_recommend_resume_overlay(page) -> None:
+    """
+    关闭推荐牛人页「简历预览」全屏/半屏弹层（boss-dynamic-dialog + c-resume iframe）。
+
+    Boss 在点开卡片后常保留该层；若不关，下一轮点击列表卡片时 Playwright 报
+    ``iframe ... subtree intercepts pointer events``（与收网页附件预览同类问题）。
+    """
+    try:
+        dlg_selectors = (
+            'div.dialog-wrap.active[data-type="boss-dialog"]',
+            "div[id^='boss-dynamic-dialog'].dialog-wrap.active",
+        )
+        for ds in dlg_selectors:
+            try:
+                dlg = page.locator(ds)
+                if dlg.count() == 0:
+                    continue
+                root = dlg.first
+                if not root.is_visible():
+                    continue
+                for sel in (
+                    "i.icon-close",
+                    ".boss-popup__close",
+                    "span.close",
+                    "[class*='layer-close']",
+                    "[class*='dialog-close']",
+                    "button[aria-label*='关闭']",
+                    "button:has-text('关闭')",
+                ):
+                    try:
+                        btn = root.locator(sel).first
+                        if btn.count() > 0 and btn.is_visible():
+                            btn.click(timeout=2500)
+                            page.wait_for_timeout(400)
+                            logger.info("[Greet] 已关闭简历预览弹层 (%s / %s)", ds[:48], sel)
+                            break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug("[Greet] dismiss resume overlay: %s", e)
+    for _ in range(4):
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(220)
+        except Exception:
+            break
+    page.wait_for_timeout(200)
 
 
 def _dismiss_greet_popup(page):
@@ -404,6 +568,7 @@ def _dismiss_greet_popup(page):
 
 def _close_detail(page):
     """点击 × 关闭候选人详情。优先匹配详情区/弹窗内的关闭按钮，避免误点右上角头像下拉。"""
+    _dismiss_boss_recommend_resume_overlay(page)
     # 优先在详情区/弹窗内查找，排除 header 区域
     scoped_selectors = [
         "[class*='geek-detail'] i.icon-close",

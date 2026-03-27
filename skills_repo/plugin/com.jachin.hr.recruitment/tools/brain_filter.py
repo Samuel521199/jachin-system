@@ -1,25 +1,13 @@
 """
-小脑粗筛 - 第一漏斗底线过滤（云端平替）
-使用 qwen3.5-flash-2026-02-23 极速扫雷，仅看学历、年限等硬指标。
+小脑粗筛 - 第一漏斗底线过滤（云端）
+模型与 Key 由 L3 / core.plugin_llm_identity 统一解析（经济型降级模型），
+禁止依赖插件 .env 的 BRAIN_FILTER_MODEL / DASHSCOPE_API_KEY。
 """
 import json
 import logging
 import os
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-# 第一漏斗：极速、廉价，一秒扫完几十份在线简历
-BRAIN_FILTER_MODEL = "qwen3.5-flash-2026-02-23"
-
-
-def _load_dotenv():
-    try:
-        from dotenv import load_dotenv
-        root = Path(__file__).resolve().parent.parent.parent
-        load_dotenv(root / ".env")
-    except ImportError:
-        pass
 
 
 def brain_filter(online_resume_text: str = "", resume_text: str = "", hr_criteria: str = "") -> dict:
@@ -31,21 +19,30 @@ def brain_filter(online_resume_text: str = "", resume_text: str = "", hr_criteri
     Returns:
         {"pass": bool, "reason": str, "score": int}
     """
-    _load_dotenv()
     text = online_resume_text or resume_text
-    api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("ALIBABA_API_KEY")
+    try:
+        from core.plugin_llm_identity import (
+            ensure_plugin_dashscope_key_in_env,
+            plugin_brain_filter_model_openai_compat,
+        )
+
+        api_key = ensure_plugin_dashscope_key_in_env()
+        model = plugin_brain_filter_model_openai_compat()
+    except ImportError:
+        api_key = (os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or "").strip()
+        model = "qwen3.5-flash-2026-02-23"
+
     if not api_key:
-        # 无 API 时：简单规则回退
         return _rule_fallback(text, hr_criteria)
 
     try:
         from openai import OpenAI
+
         client = OpenAI(
             api_key=api_key,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             timeout=15.0,
         )
-        model = os.environ.get("BRAIN_FILTER_MODEL", BRAIN_FILTER_MODEL)
         prompt = f"""
 HR 硬性标准摘要：
 {hr_criteria[:500]}
@@ -71,7 +68,7 @@ HR 硬性标准摘要：
         except Exception:
             return _parse_text_fallback(resp_text)
     except Exception as e:
-        logger.warning(f"brain_filter LLM failed: {e}")
+        logger.warning("brain_filter LLM failed: %s", e)
         return _rule_fallback(text, hr_criteria)
 
 

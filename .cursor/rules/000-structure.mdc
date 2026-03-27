@@ -25,6 +25,7 @@ globs: core/**/*.py, cloud/nexus/**/*.ts, clients/**/*.tsx, l3_node/**/*.py, doc
 | **Dream Weaver** | LanceDB 记忆聚类/去重/融合 |
 | **Omni-Sensory Bus** | layer3_broadcast、能力协商 |
 | **L3 智能化基线** | P0～P2 + **阶段 A～E**（锚点/计划卡/apply_patch/shell HITL/事件 JSONL/brainstorm·只读 verify·task_plan 门/§4.3 隐式学习+向量检测/`implicit_turn_attribution`）见总览 **§5.2～§六** 与规则 **078**、`docs/IMPLICIT_SIGNALS.md`；**长期三层编排**见 `docs/ORCHESTRATION_ARCHITECTURE.md`；对标文 **§九**（`JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`） |
+| **L3 能力总目录** | `docs/L3_CAPABILITY_CATALOG.md` + `docs/capability_domains/` + `l3_node/capability_catalog.py`（`DOMAIN_REGISTRY`）；新 MCP/Skill 域须登记；Sidecar 打包见规则 **079**、`scripts/build_l3_sidecar.py` |
 
 ## 禁止目录
 

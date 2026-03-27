@@ -32,6 +32,9 @@ if (-not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-P
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONUTF8 = "1"
 $env:LOG_LEVEL = "DEBUG"
+# 与 start-layer3 一致：避免 l3_mcp_cache 旧 HR 包盖过仓库 recruitment_scheduler
+$env:JACHIN_APP_ROOT = $appRoot
+$env:JACHIN_DEV_HR_FIRST = "1"
 
 # 便携包模式：日志写入 logs/，应用根目录明确，便于移植
 $binDir = Join-Path $appRoot "bin"

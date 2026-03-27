@@ -104,5 +104,6 @@ tools:                                    # Native Core Fallback（防止 MCP �
 ## 七、 参考
 
 - OpenClaw SKILL.md 设计（借鉴）
+- `docs/L3_CAPABILITY_CATALOG.md` — L3 能力总目录（与业务域解耦）；各域见 `docs/capability_domains/*.md` + `l3_node/capability_catalog.py` 的 `DOMAIN_REGISTRY`
 - `docs/whitepaper/06_LAYER2_EDGE.md` — 轨道 B 实现
 - `docs/MCP_SPEC.md` — MCP 工具接入

@@ -28,7 +28,7 @@
 | 模块 | 轨道/组件 | 职责 |
 |------|-----------|------|
 | 1-config-template | 动态配置 | HR 业务规则（Markdown） |
-| 2-track-a-atomic-mcp | 轨道 A (高信任) | 原子工具：PDF 提取、网页抓取、Boss 简历 |
+| com.jachin.hr.recruitment | 轨道 A (高信任) | 原子工具：PDF 提取、网页抓取、Boss 简历 |
 | 3-track-c-swarm-wasm | 轨道 C (零信任) | 三专家多 Agent：Tech Lead + HR BP + 主理法官 |
 | 4-track-b-skill | 轨道 B (用户可控) | hr-recruiter + hr-job-manager + hr-progress-query |
 | 5-privacy-hook | Nexus Hook | before_llm_think 简历 PII 脱敏 |
@@ -51,23 +51,14 @@
 ```bash
 # 安装依赖
 pip install -r requirements.txt
-pip install -r 2-track-a-atomic-mcp/requirements.txt
-
-# API Key（轨道 C 三专家多 Agent 用）
-copy .env.example .env
-# 编辑 .env，填入 DASHSCOPE_API_KEY=（阿里百炼，推荐）或 GEMINI_API_KEY=（回退）
+pip install -r com.jachin.hr.recruitment/requirements.txt
 ```
 
-**三专家模型分配**（阿里百炼 qwen3.5 系列）：
+**LLM / 百炼**：在 **jachin-system 仓库根目录** `.env` 配置 `DASHSCOPE_API_KEY`、`LLM_MODEL` 等；由 L3 或进程统一注入。Skill/MCP 通过 `core.plugin_llm_identity` 读取，**勿**在 `skills_repo/plugin/.env` 配置 Key 或主模型（插件 `.env.example` 仅保留 Lark 等非 LLM 项）。
 
-| 专家 | 角色 | 默认模型 | 说明 |
-|------|------|----------|------|
-| A | 技术总监 | qwen3.5-122b-a10b | 1220 亿参数，逻辑纵深、技术拆解 |
-| B | HR BP | qwen3.5-plus | 长文本语义、情商均衡、稳定性分析 |
-| C | 主理法官 | qwen3.5-397b-a17b | 近 4000 亿参数，指令遵循、纯净 JSON |
-| 第一漏斗 | 雷达粗筛 | qwen3.5-flash-2026-02-23 | 极速扫雷，学历/年限底线过滤 |
+**三专家（轨道 C）**：提示词仍区分 Tech Lead / HR BP / 法官角色；DashScope 实际调用统一使用 **L3 主推理模型**（与根 `.env` 的 `LLM_MODEL` 一致）。
 
-可通过 `.env` 覆盖：`TECH_LEAD_MODEL`、`HR_BP_MODEL`、`JUDGE_MODEL`、`BRAIN_FILTER_MODEL`。
+**第一漏斗（brain_filter）**：使用 **`core.llm_provider.DASHSCOPE_ECON_FALLBACK_MODEL`**（经济型降级模型），由上层策略定义，不由插件环境变量覆盖。
 
 ### 2. 一键安装（推荐）
 
@@ -110,7 +101,7 @@ echo '{"resume_text":"张三\nJava 3年\nSpringCloud","hr_criteria":"要求本�
 ### 5. 轨道 A 原子工具（MCP Server）
 
 ```bash
-cd 2-track-a-atomic-mcp
+cd com.jachin.hr.recruitment
 pip install mcp
 python server.py   # stdio 模式，供 Jachin MCP 客户端连接
 ```
@@ -122,7 +113,7 @@ plugin/
 ├── 1-config-template/       # 部署时复制到 ~/.jachin/workspace/hr_rules/
 │   └── hr_rules/
 │       └── java_engineer.md
-├── 2-track-a-atomic-mcp/   # 轨道 A - 原子 MCP Server（依赖）
+├── com.jachin.hr.recruitment/   # 轨道 A - 原子 MCP Server（依赖）
 │   ├── server.py
 │   ├── tools/
 │   └── requirements.txt

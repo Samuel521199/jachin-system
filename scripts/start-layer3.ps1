@@ -11,6 +11,11 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
+# HR 招聘：Sidecar/L3 加载 recruitment_scheduler 时默认先读 ~/.jachin/l3_mcp_cache，易与仓库代码不一致
+#（现象：MCP 已传 enable_greet_recommend=false，仍注册「推荐牛人」）。开发启动强制用本仓库 skills_repo 内插件。
+$env:JACHIN_APP_ROOT = $ProjectRoot
+$env:JACHIN_DEV_HR_FIRST = "1"
+
 try {
 # 单实例：清理已有 L3 进程与端口，确保一台机器仅一个 L3 实例
 Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
@@ -71,5 +76,8 @@ if (Get-Command tauri -ErrorAction SilentlyContinue) {
 Pop-Location
 } finally {
     Write-Host ""
-    Read-Host "Press Enter to exit"
+    # 默认不阻塞：npm/tauri 退出后脚本曾一直停在这里，像「卡住」；需留窗看日志时设 JACHIN_PAUSE_ON_EXIT=1
+    if ($env:JACHIN_PAUSE_ON_EXIT -eq "1") {
+        Read-Host "Press Enter to exit"
+    }
 }

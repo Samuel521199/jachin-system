@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Optional
@@ -17,6 +19,25 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_stdio_command(command: str) -> str:
+    """
+    Windows 下 npx/npm 常为 .cmd，部分环境下需绝对路径才能稳定拉起 stdio 子进程。
+    """
+    if not command or sys.platform != "win32":
+        return command
+    low = command.lower()
+    if low not in ("npx", "npm", "node"):
+        return command
+    found = shutil.which(command)
+    if found:
+        return found
+    found_cmd = shutil.which(f"{command}.cmd")
+    if found_cmd:
+        return found_cmd
+    return command
+
 
 # 内置工具 server_id（用于 IAM item_id）
 BUILTIN_SERVER_ID = "l2-builtin"
@@ -47,7 +68,7 @@ class MCPServerInstance:
         env: Optional[dict[str, str]] = None,
     ) -> None:
         self.server_id = server_id
-        self.command = command
+        self.command = _resolve_stdio_command(command)
         self.args = args or []
         self.env = env
         self._exit_stack = AsyncExitStack()

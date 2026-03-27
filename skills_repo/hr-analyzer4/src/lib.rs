@@ -38,7 +38,35 @@ unsafe impl GlobalAlloc for HostAlloc {
 static A: HostAlloc = HostAlloc;
 
 const OUTPUT_OFFSET: i32 = 0x8000;
-const DEFAULT_ROLE: &str = "云边协同后端架构师";
+/// 历史版本曾用「云边协同后端架构师」作演示，易被当成真实岗位。禁止再作为默认 JD。
+const DEFAULT_JOB_DESC_FALLBACK: &str = "未提供可用的岗位 JD。请仅依据简历中的求职意向、技能与经历做客观评估，并在报告开头明确写出「岗位 JD 未提供」。不得臆造具体业务线或项目名称。";
+
+/// 仅当 JD 与历史内置演示模板一致（或强特征组合）时重写，避免误伤真实岗位 JD 里偶发的「云边」字样。
+fn is_residual_demo_yunbian_jd(job_desc: &str) -> bool {
+    let s = job_desc.trim();
+    if s.contains("云边协同后端架构师：精通 Rust/Go") {
+        return true;
+    }
+    if s == "云边协同后端架构师" {
+        return true;
+    }
+    s.contains("百万级设备接入") && s.contains("云边协同")
+}
+
+/// 若 JD 仍为历史演示工模，按 job_name 重写，避免模型按错误岗位评估。
+fn sanitize_stale_template_job_desc(job_desc: String, job_name: Option<&str>) -> String {
+    if !is_residual_demo_yunbian_jd(&job_desc) {
+        return job_desc;
+    }
+    if let Some(jn) = job_name.map(str::trim).filter(|s| !s.is_empty()) {
+        format!(
+            "招聘岗位：{}\n\n请严格按上述岗位名称与常见职责评估候选人；忽略任何与当前招聘无关的内置演示描述。",
+            jn
+        )
+    } else {
+        String::from(DEFAULT_JOB_DESC_FALLBACK)
+    }
+}
 
 const SYSTEM_PROMPT: &str = r#"你是一位拥有 20 年经验的硅谷顶尖 HR 专家与技术面试官。
 你的任务是根据给定的【岗位要求】，对候选人的【原始简历】进行极其严苛、客观的评估。
@@ -48,6 +76,7 @@ const SYSTEM_PROMPT: &str = r#"你是一位拥有 20 年经验的硅谷顶尖 HR
 3. 通用条件 (占比 20%)：学历背景、工作年限匹配、跳槽频繁度带来的稳定风险、薪酬合理性。
 【绝对禁令：反幻觉机制】
 必须像法官一样只看证据！简历中未写明或无法合理推断的部分，绝不允许主观臆断或脑补，必须明确标注为「信息缺失，无法评估」，绝不能凭空赋分。
+【时间基准】凡涉及「当前日期」「至今」「工作年限」「应届生/毕业届别」「证书是否在有效期内」等时间判断，必须严格以用户消息中给出的【参考时间】为准（中国标准时间 Asia/Shanghai，UTC+8）；不得使用训练数据截止日期、UTC「现在」或猜测时区。
 【输出格式要求】
 必须输出格式规范的 Markdown 报告：
 1. 💡 核心结论与录用建议
@@ -170,6 +199,11 @@ fn json_escape(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // 其它 ASCII 控制字符必须 \uXXXX，否则宿主 json.loads 失败 → result 目录无落盘
+            c if (c as u32) < 0x20 => {
+                out.push_str("\\u");
+                out.push_str(&format!("{:04x}", c as u32));
+            }
             _ => out.push(c),
         }
     }
@@ -295,6 +329,10 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         (None, raw_input, None)
     };
 
+    let job_name_key = extract_json_str_unescaped(input, "job_name")
+        .or_else(|| extract_json_str(input, "job_name").map(String::from))
+        .filter(|s| !s.trim().is_empty());
+
     // 优先 jd_first_line（Loader 首行 JD_START:::），其次 jd_template（JSON），避免 JSON 转义导致提取失败
     let jd_template_value = jd_first_line
         .filter(|s| !s.trim().is_empty())
@@ -303,7 +341,8 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| extract_json_str(input, "jd_template").map(|s| String::from(s)))
         });
-    let job_desc = if let Some(jd) = jd_template_value {
+
+    let mut job_desc = if let Some(jd) = jd_template_value {
         jd
     } else if let Some(jd_path) = extract_json_str_unescaped(input, "jd_path") {
         let pb = jd_path.as_bytes();
@@ -318,25 +357,27 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
             if !s.is_empty() {
                 s
             } else {
-                String::from(DEFAULT_ROLE)
+                String::from(DEFAULT_JOB_DESC_FALLBACK)
             }
         } else {
-            String::from(DEFAULT_ROLE)
+            String::from(DEFAULT_JOB_DESC_FALLBACK)
         }
     } else if let Some(jd) = extract_json_str_unescaped(input, "jd") {
         jd
+    } else if let Some(ref jn) = job_name_key {
+        format!(
+            "招聘岗位：{}\n\n请根据该岗位评估候选人简历与技能的匹配度。",
+            jn.trim()
+        )
     } else {
-        extract_json_str(input, "target_role")
-            .map(String::from)
-            .unwrap_or_else(|| String::from(DEFAULT_ROLE))
+        String::from(DEFAULT_JOB_DESC_FALLBACK)
     };
 
-    // 空字符串视为未提供：使用 DEFAULT_ROLE，避免 LLM 提示「未提供【岗位要求】」
-    let job_desc = if job_desc.trim().is_empty() {
-        String::from(DEFAULT_ROLE)
-    } else {
-        job_desc
-    };
+    if job_desc.trim().is_empty() {
+        job_desc = String::from(DEFAULT_JOB_DESC_FALLBACK);
+    }
+
+    job_desc = sanitize_stale_template_job_desc(job_desc, job_name_key.as_deref());
 
     // 调试：流式输出 jd_len、extract 原始结果，便于排查岗位 JD 传入问题
     let jd_preview: String = job_desc.chars().take(60).collect();
@@ -370,9 +411,13 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
                 .collect()
         })
         .unwrap_or_else(alloc::vec::Vec::new);
-    // 参考日期：中国时区，供判断应届生、工作经历时间
+    // 参考日期/时刻：由宿主注入 Asia/Shanghai（UTC+8），供判断应届生、工作经历时间
     let reference_date = extract_json_str_unescaped(input, "reference_date")
         .or_else(|| extract_json_str(input, "reference_date").map(String::from));
+    let reference_datetime_iso = extract_json_str_unescaped(input, "reference_datetime_iso")
+        .or_else(|| extract_json_str(input, "reference_datetime_iso").map(String::from));
+    let reference_timezone_note = extract_json_str_unescaped(input, "reference_timezone_note")
+        .or_else(|| extract_json_str(input, "reference_timezone_note").map(String::from));
     // 动态配置：L3 UI 注入
     let focus_keywords = extract_json_str_unescaped(input, "focus_keywords")
         .or_else(|| extract_json_str(input, "focus_keywords").map(String::from));
@@ -471,11 +516,43 @@ pub extern "C" fn execute(ptr: i32, len: i32) -> i32 {
         })
         .into_owned();
 
-        let date_hint = reference_date
-            .as_ref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|d| format!("\n\n【参考日期】当前为中国北京时间 {}，请据此判断应届生毕业年份、工作经历起止时间等，避免将未来日期误判。", d.trim()))
-            .unwrap_or_else(|| String::new());
+        let date_hint = {
+            let d = reference_date
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let iso = reference_datetime_iso
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let note = reference_timezone_note
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            if d.is_none() && iso.is_none() {
+                String::new()
+            } else {
+                let mut s = String::from("\n\n【参考时间｜分析基准】\n");
+                if let Some(n) = note {
+                    s.push_str(n);
+                    s.push_str("\n");
+                } else {
+                    s.push_str("一律以中国标准时间 Asia/Shanghai（UTC+8）为「当前」；请勿使用 UTC 或其它时区。\n");
+                }
+                if let Some(is) = iso {
+                    s.push_str("当前时刻（ISO 8601，东八区）：");
+                    s.push_str(is);
+                    s.push_str("\n");
+                }
+                if let Some(dv) = d {
+                    s.push_str("当前日期（");
+                    s.push_str(dv);
+                    s.push_str("）用于判断毕业届别、工龄等日历语义。\n");
+                }
+                s.push_str("请据此判断应届生毕业年份、工作经历起止时间、空窗期等，避免将未来日期或已过期表述误判。");
+                s
+            }
+        };
         let user_prompt = format!(
             "【岗位要求】\n{}\n\n【原始简历】\n{}{}\n\n请按 System Prompt 要求输出 Markdown 报告。",
             job_desc, resume_text, date_hint

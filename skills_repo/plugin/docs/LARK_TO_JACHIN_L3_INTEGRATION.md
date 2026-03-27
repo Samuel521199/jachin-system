@@ -5,7 +5,7 @@
 ```
 Lark 用户消息
     ↓
-Lark Webhook (plugin/2-track-a-atomic-mcp/lark_bot)
+Lark Webhook (plugin/com.jachin.hr.recruitment/lark_bot)
     ↓
 atom_lark_chat.process_lark_message
     ↓
@@ -52,12 +52,14 @@ python -m l3_node --ws-only
 
 ### Step 2：配置 Plugin 转发到 L3
 
-在 plugin 的 `.env` 中增加：
+在 **插件目录 `.env`**（或你启动 `lark_bot` 时已加载的环境）中增加 **仅** Lark 转发相关项，例如：
 
 ```
 # Jachin L3 WebSocket 地址（配置后 Lark 消息将转发给 L3，由 L3 调用 MCP 工具）
 L3_WS_URL=ws://127.0.0.1:18981/sensory
 ```
+
+**百炼 Key / 主模型**：在 **jachin-system 仓库根 `.env`** 配置，与 L3 一致；勿在插件 `.env` 写 `DASHSCOPE_API_KEY` / `LLM_MODEL`（见 `core.plugin_llm_identity`）。
 
 端口需与 L3 实际监听端口一致（18981、18982...）。
 
@@ -70,7 +72,7 @@ L3_WS_URL=ws://127.0.0.1:18981/sensory
 
 ```bash
 cd D:\project\jachin-system-main\skills_repo\plugin
-python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000
+python com.jachin.hr.recruitment/lark_bot.py --webhook --port 5000
 ```
 
 ngrok 暴露后，Lark 用户消息会进入 Webhook，再由 `atom_lark_chat` 转发到 L3。
@@ -80,7 +82,7 @@ ngrok 暴露后，Lark 用户消息会进入 Webhook，再由 `atom_lark_chat` �
 ## 四、运行顺序
 
 1. **先启动 L3**：`python -m l3_node --ws-only`（jachin-system-main）
-2. **再启动 Webhook**：`python 2-track-a-atomic-mcp/lark_bot.py --webhook`（plugin）
+2. **再启动 Webhook**：`python com.jachin.hr.recruitment/lark_bot.py --webhook`（plugin）
 3. **可选**：`ngrok http 5000`（若需公网接收 Lark 回调）
 
 ---

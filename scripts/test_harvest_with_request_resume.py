@@ -30,7 +30,7 @@ if sys.platform == "win32":
         pass
 
 ROOT = Path(__file__).resolve().parent.parent
-PLUGIN_TOOLS = ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+PLUGIN_TOOLS = ROOT / "skills_repo" / "plugin" / "com.jachin.hr.recruitment"
 sys.path.insert(0, str(PLUGIN_TOOLS))
 
 from tools.boss_harvest_orchestrator import harvest_resume_full_flow

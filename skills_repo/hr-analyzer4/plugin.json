@@ -8,7 +8,7 @@
   "entry": "main.wasm",
   "parameters": ["target_role", "resume_filename", "target_dir", "focus_keywords", "strictness"],
   "configs": {
-    "JD_template": "云边协同后端架构师：精通 Rust/Go，具备百万级设备接入、高可用分布式系统经验。熟悉 Kubernetes、消息队列、时序数据库。",
+    "JD_template": "（占位：由招聘任务传入的 jd_template 覆盖）请仅按调用方提供的岗位要求评估简历，勿使用任何内置演示岗位描述。",
     "strictness": "standard",
     "strict_mode": true,
     "resume_input_dir": "data/hr_resumes",

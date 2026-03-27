@@ -100,9 +100,9 @@ def step_track_c(jachin_path: Path | None) -> bool:
 
 def step_track_a(jachin_path: Path | None) -> bool:
     """4. 轨道 A MCP → 注册到 ~/.jachin/mcp_servers.json（兼容 Jachin v8 mcp_servers 格式）"""
-    server_path = ROOT / "2-track-a-atomic-mcp" / "server.py"
+    server_path = ROOT / "com.jachin.hr.recruitment" / "server.py"
     if not server_path.exists():
-        print("[跳过] 2-track-a-atomic-mcp/server.py 不存在")
+        print("[跳过] com.jachin.hr.recruitment/server.py 不存在")
         return False
     abs_server = str(server_path.resolve())
     python_cmd = sys.executable

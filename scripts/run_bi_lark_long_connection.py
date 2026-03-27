@@ -28,7 +28,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 _plugin_root = _root / "skills_repo" / "plugin"
-_plugin_mcp = _plugin_root / "2-track-a-atomic-mcp"
+_plugin_mcp = _plugin_root / "com.jachin.hr.recruitment"
 for _p in (_root, str(_plugin_root), str(_plugin_mcp)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -50,16 +50,13 @@ def _apply_l3_ws_url_from_config() -> None:
 
 
 def _load_bi_lark_credentials() -> None:
-    """加载 Lark 凭证与 L3_WS_URL，优先级：atom_lark_notifier config > bi_daily_report > .env"""
+    """加载 Lark 凭证与 L3_WS_URL，优先级：atom_lark_notifier config > bi_daily_report > 仓库根 .env（不加载插件目录 .env，避免覆盖 L3 统一 LLM/Key）。"""
     try:
         from dotenv import load_dotenv
 
         _env = _root / ".env"
         if _env.exists():
             load_dotenv(_env, encoding="utf-8")
-        _plugin_env = _root / "skills_repo" / "plugin" / ".env"
-        if _plugin_env.exists():
-            load_dotenv(_plugin_env, encoding="utf-8")
     except ImportError:
         pass
 

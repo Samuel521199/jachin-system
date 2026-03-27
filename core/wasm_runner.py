@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import sys
 import tempfile
@@ -64,6 +65,7 @@ except ImportError:
     HAS_WASMTIME = False
     Linker = None  # type: ignore
     WasiConfig = None  # type: ignore
+    WasmtimeError = RuntimeError  # type: ignore[misc, assignment]
 
 
 class WasmExecutionError(Exception):
@@ -81,6 +83,29 @@ def _format_wasm_error(exc: BaseException) -> str:
         tb = "".join(traceback.format_tb(exc.__traceback__))
         parts.append(f"Python traceback:\n{tb}")
     return "\n---\n".join(parts)
+
+
+def _is_hr_analyzer_wasm(wasm_file_path: str) -> bool:
+    return "hr-analyzer" in wasm_file_path.replace("\\", "/").lower()
+
+
+def _grow_wasm_linear_memory(memory: Any, store: Any, min_bytes: int = 8 * 1024 * 1024) -> None:
+    """
+    透析镜等插件会在 Wasm 内拼大段 NDJSON（含简历附录），默认 ~1MB 线性内存易 OOB。
+    在执行 execute 前尽量 grow 到 min_bytes（受模块 max memory 约束）。
+    """
+    if memory is None or not hasattr(memory, "grow"):
+        return
+    try:
+        data_len = memory.data_len(store) if hasattr(memory, "data_len") else 0
+        if data_len >= min_bytes:
+            return
+        need = min_bytes - data_len
+        pages = max(1, (need + 65535) // 65536)
+        memory.grow(store, pages)
+        logger.debug("[WASM] linear memory grown toward %s bytes (+%s pages)", min_bytes, pages)
+    except Exception as ex:
+        logger.debug("[WASM] memory.grow skipped: %s", ex)
 
 
 class JachinWasmSandbox:
@@ -137,9 +162,19 @@ class JachinWasmSandbox:
                 out = self.run_plugin_execute_abi(wasm_file_path, stdin_str, fuel_limit, ndjson_queue=ndjson_q)
                 if out is not None:
                     return out
+            except WasmExecutionError:
+                raise
             except Exception as e:
                 print(f"[Skill Execute] [WASM] execute ABI 不可用，回退 WASI: {e}", file=sys.stderr, flush=True)
                 logger.debug("[WASM] execute ABI 不可用，回退 WASI: %s", e)
+                # HR 透析镜走 WASI 会再跑一整批 LLM（重复扣费、极慢）；trap/OOB 时应失败并提示分批
+                if _is_hr_analyzer_wasm(wasm_file_path):
+                    raise WasmExecutionError(
+                        "HR 透析镜 execute ABI 异常，已禁止回退 WASI（避免对同一批简历重复调用大模型）。"
+                        "若见 linear memory / out of bounds，请减少单次批量文件数，或设置 HR_ANALYZER_SEQUENTIAL_WASM=1 / "
+                        "hr_analyze_resume(sequential_wasm=True) 逐份调用。",
+                        _format_wasm_error(e),
+                    ) from e
             if not HAS_WASMTIME or Linker is None or WasiConfig is None:
                 raise ImportError("WASI 模式需要 wasmtime。请安装: pip install wasmtime")
             print(f"[Skill Execute] [WASM] WASI 模式 wasm={wasm_file_path} stdin_len={len(stdin_str)}", file=sys.stderr, flush=True)
@@ -441,15 +476,53 @@ class JachinWasmSandbox:
                 if not engine:
                     return _write_to_mem(mem, store, OUTPUT_OFFSET, "⚠️ LLM 引擎未注册，请确保 L3 已配对并启动")
                 import litellm
-                # LiteLLM 需要 provider 前缀（如 dashscope/qwen3.5-flash-2026-02-23），L2 可能只返回 qwen3.5-flash-2026-02-23
-                model = engine.model_name or "dashscope/qwen3.5-flash-2026-02-23"
+                # LiteLLM 需要 provider 前缀；L2 可能返回裸模型名，需 engine._normalize_model
+                try:
+                    from core.llm_provider import DASHSCOPE_REASONING_MODEL
+
+                    _default_m = DASHSCOPE_REASONING_MODEL
+                except ImportError:
+                    _default_m = "dashscope/qwen3.5-plus"
+                model = engine.model_name or _default_m
                 if hasattr(engine, "_normalize_model"):
                     model = engine._normalize_model(model) or model
+                try:
+                    _idx = int(_run_context.get("llm_call_idx") or 0) + 1
+                    _run_context["llm_call_idx"] = _idx
+                    _pv = prompt.replace("\r\n", "\n")
+                    _pv = _pv[:220] + ("…" if len(_pv) > 220 else "")
+                    logger.info(
+                        "[WASM Host] llm_complete 第 %d 次调用 model=%s prompt_len=%d 预览=%r",
+                        _idx,
+                        model,
+                        len(prompt),
+                        _pv,
+                    )
+                    print(
+                        f"[WASM Host] llm_complete #{_idx} model={model} prompt_len={len(prompt)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                except Exception:
+                    pass
                 engine._inject_key(model)
+                # 单份简历 + JD 的 prompt 较长，Dashscope 偶发排队；默认 LLM_TIMEOUT=180 易贴边超时。
+                # WASM_LLM_TIMEOUT 强制秒数；WASM_LLM_TIMEOUT_FLOOR 与 engine.timeout 取 max（设 0 关闭下限）。
+                _t = float(getattr(engine, "timeout", 180) or 180)
+                _cap = (os.environ.get("WASM_LLM_TIMEOUT") or "").strip()
+                if _cap:
+                    _t = float(_cap)
+                else:
+                    try:
+                        _floor = float((os.environ.get("WASM_LLM_TIMEOUT_FLOOR") or "300").strip() or "300")
+                    except ValueError:
+                        _floor = 300.0
+                    if _floor > 0:
+                        _t = max(_t, _floor)
                 resp = litellm.completion(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
-                    timeout=engine.timeout,
+                    timeout=_t,
                 )
                 text = (resp.choices[0].message.content or "").strip()
                 return _write_to_mem(mem, store, OUTPUT_OFFSET, text)
@@ -555,36 +628,39 @@ class JachinWasmSandbox:
             memory = exports.get("memory")
             if func is None or memory is None:
                 return None
+            _grow_wasm_linear_memory(memory, store)
             # 设置 run context 供 http_post/llm_complete/host_stream_ndjson 等 host 函数使用
             _run_context["memory"] = memory
             _run_context["store"] = store
             _run_context["ndjson_queue"] = ndjson_queue if ndjson_queue is not None else queue.Queue()
+            _run_context["llm_call_idx"] = 0
+            # JPP 约定：宿主写输入到 memory[ptr..ptr+len]，插件写输出到 memory[OUTPUT_OFFSET..]
+            INPUT_OFFSET = 0x8000
+            OUTPUT_OFFSET = 0x8000  # 与 jachin-system-pilot 等 Rust 插件约定
+            data = stdin_str.encode("utf-8")
+            len_i = len(data)
+            print(f"[WASM] execute ABI stdin_len={len_i} has_hr_files={'_hr_files' in stdin_str} has_delim={'|||' in stdin_str}", file=sys.stderr, flush=True)
+            if len_i > 0 and len_i < 800:
+                print(f"[WASM] execute ABI stdin_full={stdin_str!r}", file=sys.stderr, flush=True)
+            elif len_i > 0:
+                print(f"[WASM] execute ABI stdin_preview={stdin_str[:350]!r}...", file=sys.stderr, flush=True)
+            if len_i == 0:
+                ptr = 0
+            else:
+                ptr = INPUT_OFFSET
+                try:
+                    mem_size = memory.data_len(store) if hasattr(memory, "data_len") else 65536
+                    if ptr + len_i > mem_size and hasattr(memory, "grow"):
+                        memory.grow(store, max(1, (ptr + len_i - mem_size + 65535) // 65536))
+                except (TypeError, AttributeError):
+                    pass
+                memory.write(store, data, ptr)
+            # guest trap 时也必须 drain NDJSON，否则已完成的 llm_complete 对应报告永远不会进 _last_ndjson_lines → 磁盘 0 更新
+            out_len = -1
+            ndjson_lines: list[str] = []
             try:
-                # JPP 约定：宿主写输入到 memory[ptr..ptr+len]，插件写输出到 memory[OUTPUT_OFFSET..]
-                INPUT_OFFSET = 0x8000
-                OUTPUT_OFFSET = 0x8000  # 与 jachin-system-pilot 等 Rust 插件约定
-                data = stdin_str.encode("utf-8")
-                len_i = len(data)
-                print(f"[WASM] execute ABI stdin_len={len_i} has_hr_files={'_hr_files' in stdin_str} has_delim={'|||' in stdin_str}", file=sys.stderr, flush=True)
-                if len_i > 0 and len_i < 800:
-                    print(f"[WASM] execute ABI stdin_full={stdin_str!r}", file=sys.stderr, flush=True)
-                elif len_i > 0:
-                    print(f"[WASM] execute ABI stdin_preview={stdin_str[:350]!r}...", file=sys.stderr, flush=True)
-                if len_i == 0:
-                    ptr = 0
-                else:
-                    ptr = INPUT_OFFSET
-                    try:
-                        mem_size = memory.data_len(store) if hasattr(memory, "data_len") else 65536
-                        if ptr + len_i > mem_size and hasattr(memory, "grow"):
-                            memory.grow(store, max(1, (ptr + len_i - mem_size + 65535) // 65536))
-                    except (TypeError, AttributeError):
-                        pass
-                    memory.write(store, data, ptr)
                 out_len = func(store, ptr, len_i)
-                # 收集 NDJSON 流式输出（host_stream_ndjson 写入）
-                # 若使用外部 ndjson_queue（流式模式），不 drain 到 _last_ndjson_lines
-                ndjson_lines: list[str] = []
+            finally:
                 try:
                     q = _run_context.get("ndjson_queue")
                     if q is not None and ndjson_queue is None:
@@ -596,21 +672,26 @@ class JachinWasmSandbox:
                         _last_ndjson_lines[:] = ndjson_lines
                 except Exception:
                     pass
-                if out_len <= 0:
-                    if ndjson_lines:
-                        result = ndjson_lines[-1] if ndjson_lines else ""
-                    else:
-                        print(f"[Skill Execute] [WASM] execute ABI 返回空 out_len={out_len} wasm={wasm_file_path}", file=sys.stderr, flush=True)
-                        return ""
-                else:
-                    out_bytes = memory.read(store, OUTPUT_OFFSET, OUTPUT_OFFSET + out_len)
-                    result = bytes(out_bytes).decode("utf-8", errors="replace")
-                print(f"[Skill Execute] [WASM] execute ABI 返回 wasm={wasm_file_path} len={len(result)} ndjson_lines={len(ndjson_lines)}", file=sys.stderr, flush=True)
-                return result
-            finally:
                 _run_context.clear()
+            if out_len <= 0:
+                if ndjson_lines:
+                    result = ndjson_lines[-1] if ndjson_lines else ""
+                else:
+                    print(f"[Skill Execute] [WASM] execute ABI 返回空 out_len={out_len} wasm={wasm_file_path}", file=sys.stderr, flush=True)
+                    return ""
+            else:
+                out_bytes = memory.read(store, OUTPUT_OFFSET, OUTPUT_OFFSET + out_len)
+                result = bytes(out_bytes).decode("utf-8", errors="replace")
+            print(f"[Skill Execute] [WASM] execute ABI 返回 wasm={wasm_file_path} len={len(result)} ndjson_lines={len(ndjson_lines)}", file=sys.stderr, flush=True)
+            return result
         except (WasmtimeError, TypeError, AttributeError) as e:
             logger.debug("[WASM] execute ABI 失败 %s: %s", wasm_file_path, e)
+            if HAS_WASMTIME and _is_hr_analyzer_wasm(wasm_file_path):
+                raise WasmExecutionError(
+                    "HR 透析镜 Wasm execute 失败（常见于 linear memory 不足或 guest trap）。"
+                    "已避免静默回退 WASI 导致整批简历重复调用大模型。",
+                    _format_wasm_error(e),
+                ) from e
             return None
 
     def run_plugin_wasi(
@@ -686,6 +767,7 @@ class JachinWasmSandbox:
                 func = exports.get("execute")
                 memory = exports.get("memory")
                 if func is not None and memory is not None:
+                    _grow_wasm_linear_memory(memory, store)
                     _run_context["memory"] = memory
                     _run_context["store"] = store
                     try:

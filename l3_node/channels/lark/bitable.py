@@ -17,6 +17,8 @@ from l3_node.channels.lark.client import (
     LARK_API_BASE,
     _api_base_from_domain,
     get_tenant_access_token,
+    is_lark_api_configured,
+    resolve_lark_credentials,
 )
 from l3_node.channels.lark.im import send_text as send_im_text
 
@@ -68,7 +70,8 @@ def list_bitable_fields(app_token: str = "", table_id: str = "") -> dict[str, An
     table_id = table_id or os.environ.get("LARK_TABLE_ID") or DEFAULT_TABLE_ID
     try:
         token = get_tenant_access_token()
-        base = _get_api_base()
+        _, _, cred_base = resolve_lark_credentials()
+        base = cred_base or _get_api_base()
         url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
         import requests
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
@@ -447,7 +450,8 @@ def sync_bitable_from_md(
             }
 
         token = get_tenant_access_token()
-        api_base = _get_api_base()
+        _, _, cred_base = resolve_lark_credentials()
+        api_base = cred_base or _get_api_base()
 
         created_cols: list[str] = []
         try:
@@ -539,6 +543,21 @@ def sync_bitable_from_md(
         return {"success": False, "record_id": None, "parsed": [], "error": str(e)}
     except json.JSONDecodeError as e:
         return {"success": False, "record_id": None, "parsed": [], "error": f"field_mapping JSON 解析失败: {e}"}
+    except ValueError as e:
+        # 凭证缺失等配置问题：降级为警告，避免控制台整段 Traceback
+        err = str(e)
+        if "LARK_APP_ID" in err or "LARK_APP_SECRET" in err or "FEISHU_APP_ID" in err:
+            logger.info("[Lark Bitable] 跳过同步: %s", err)
+            return {
+                "success": False,
+                "record_id": None,
+                "record_ids": [],
+                "parsed": [],
+                "skipped": True,
+                "error": err,
+            }
+        logger.warning("sync_bitable_from_md: %s", err)
+        return {"success": False, "record_id": None, "parsed": [], "error": err}
     except Exception as e:
         logger.exception("sync_bitable_from_md failed")
         return {"success": False, "record_id": None, "parsed": [], "error": str(e)}

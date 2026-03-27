@@ -33,6 +33,8 @@ python scripts/run_bi_scraper_spa.py
 
 3. 确认 `~/.jachin/client_volumes/bi_data/raw/` 下生成 `*.csv` 文件
 
+**新增用户留存对比（`stats_retention_user_compare`）/ 付费留存对比**：抓取前会自动填入与 BI 周对比一致的双时间段——**时间段1** = 昨日往前共 7 天（含昨日），**时间段2** = 再往前 7 天（与「游戏数据统计对比」同一套日期算法）。若运行日为上文示例的次日，则对应 `2026-03-17~03-23` vs `2026-03-10~03-16`。
+
 **方式 B：单表抓取**
 
 - 配置 `bi_daily_report.yaml` 中 `skip_collect: false`、`data_source.url` 等

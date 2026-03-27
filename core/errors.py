@@ -8,7 +8,24 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import HTTPException
+# 网关（FastAPI 路由）应安装 fastapi；L3 仅加载 workflow_engine / HR DAG 时可为精简环境，避免强依赖。
+try:
+    from fastapi import HTTPException
+except ImportError:
+
+    class HTTPException(Exception):  # type: ignore[no-redef]
+        """与 FastAPI HTTPException 字段兼容的最小实现，供 api_error 与非 HTTP 场景共用。"""
+
+        def __init__(
+            self,
+            status_code: int = 500,
+            detail: Any = None,
+            headers: Optional[dict[str, str]] = None,
+        ) -> None:
+            self.status_code = status_code
+            self.detail = detail
+            self.headers = headers
+            super().__init__(detail if isinstance(detail, str) else repr(detail))
 
 
 # -----------------------------------------------------------------------------

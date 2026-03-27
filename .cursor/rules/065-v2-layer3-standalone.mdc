@@ -28,6 +28,7 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 - `llm_client.py` — SecurityContext + LiteLLMEngine
 - `agent_core.py` — ReAct Agent + MemorySyncDaemon
 - `bootstrap.py` — 注册、拉 Key、创建引擎
+- `capability_catalog.py` — 能力总目录注入（`DOMAIN_REGISTRY`）；新 MCP/域见规则 **079**
 
 ## 禁止
 

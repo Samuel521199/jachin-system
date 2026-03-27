@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
 
 # 加载 .env（供 LARK_APP_ID 等）
 try:

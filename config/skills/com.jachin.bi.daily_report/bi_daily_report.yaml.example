@@ -100,7 +100,7 @@ storage:
 
 # ========== LLM ==========
 llm:
-  model: "dashscope/qwen3.5-flash-2026-02-23"
+  model: "dashscope/qwen3.5-plus"
 
 # ========== 战略深度分析 ==========
 # 见 STRATEGIC_REPORT_ANALYSIS_SPEC.md v4（长文 Markdown，非 1-3-3）

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
 
 # 职位类型相关选择器（图1：点击后检查）
 JOB_CATEGORY_SELECTORS = [

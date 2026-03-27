@@ -141,6 +141,27 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent", len(intent), len(session_messages))
             run_id = str(uuid.uuid4())[:8]
             broadcast = bool(chat_id)
+
+            try:
+                from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
+
+                cmd_reply = try_lark_workflow_command_intercept(intent, channel_id=chat_id or "")
+            except Exception:
+                cmd_reply = None
+            if cmd_reply:
+                if chat_id:
+                    session_messages.append({"role": "user", "content": intent})
+                    session_messages.append({"role": "assistant", "content": cmd_reply})
+                    _save_lark_session(chat_id, session_messages)
+                    logger.debug("[L3 WS] chat_id=%s 遥控拦截已保存会话", chat_id[:20])
+                ans_payload = {"step_type": "answer", "content": cmd_reply, "run_id": run_id}
+                await _send_safe(websocket, ans_payload)
+                if broadcast and chat_id:
+                    await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+                if origin_terminal and chat_id:
+                    asyncio.create_task(_push_reply_to_lark(chat_id, cmd_reply))
+                continue
+
             on_step = _make_on_step(websocket, run_id, chat_id, broadcast)
 
             async def on_chunk(chunk: str) -> None:
@@ -155,6 +176,8 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                 "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
                 "has_chat_id": bool(chat_id),
             }
+            if chat_id:
+                _imp_attr["lark_chat_id"] = str(chat_id).strip()
             try:
                 reply = await run_agent_fn(
                     intent,

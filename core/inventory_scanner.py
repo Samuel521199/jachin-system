@@ -81,6 +81,38 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 registered_local_skills: dict[str, dict[str, Any]] = {}
 
 
+def _prune_mcp_filesystem_roots(resolved: list[Any]) -> list[Any] | None:
+    """
+    @modelcontextprotocol/server-filesystem 若传入不存在的目录，子进程会立刻退出，
+    Python 端表现为 initialize 时 Connection closed。
+    返回 None 表示无任何有效根目录，调用方应跳过该 MCP。
+    """
+    if not isinstance(resolved, list):
+        return resolved
+    try:
+        pkg_idx = next(
+            i
+            for i, a in enumerate(resolved)
+            if isinstance(a, str) and "server-filesystem" in a
+        )
+    except StopIteration:
+        return resolved
+    head = resolved[: pkg_idx + 1]
+    roots = resolved[pkg_idx + 1 :]
+    good: list[Any] = []
+    for r in roots:
+        if isinstance(r, str) and Path(r).is_dir():
+            good.append(r)
+        elif isinstance(r, str):
+            logger.warning(
+                "[Inventory] server-filesystem 跳过不存在的根路径（避免 MCP 子进程立即退出）: %s",
+                r,
+            )
+    if not good:
+        return None
+    return head + good
+
+
 def ensure_inventory_dirs() -> None:
     """确保仓库目录存在。"""
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -124,7 +156,14 @@ def _extract_mcp_configs(data: dict[str, Any]) -> list[dict[str, Any]]:
                                 resolved.append(str(_PROJECT_ROOT / sub) if sub else str(_PROJECT_ROOT))
                             else:
                                 resolved.append(a)
-                        cfg["args"] = resolved
+                        pruned = _prune_mcp_filesystem_roots(resolved)
+                        if pruned is None:
+                            logger.warning(
+                                "[Inventory] 跳过 MCP server_id=%s：server-filesystem 无有效根目录",
+                                sid,
+                            )
+                            continue
+                        cfg["args"] = pruned
                     configs.append(cfg)
     elif data.get("command"):
         configs = [data]

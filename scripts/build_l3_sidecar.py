@@ -102,6 +102,14 @@ def main() -> int:
     for mod in exclude_modules:
         cmd.extend(["--exclude-module", mod])
     cmd.extend(["--exclude-module", "l3_node.mcp_tools"])
+    # 能力总目录：供 capability_catalog 在 frozen 下从 sys._MEIPASS/docs 读取（与 l3_node/capability_catalog._docs_dirs 一致）
+    _docs_sep = ";" if sys.platform == "win32" else ":"
+    _cat_md = ROOT / "docs" / "L3_CAPABILITY_CATALOG.md"
+    _domains = ROOT / "docs" / "capability_domains"
+    if _cat_md.is_file():
+        cmd.extend(["--add-data", f"{_cat_md}{_docs_sep}docs"])
+    if _domains.is_dir():
+        cmd.extend(["--add-data", f"{_domains}{_docs_sep}docs/capability_domains"])
     cmd += [
         "--hidden-import", "l3_node",
         "--hidden-import", "l3_node.paths",
@@ -114,6 +122,7 @@ def main() -> int:
         "--hidden-import", "l3_node.engine.hooks_pipeline",
         "--hidden-import", "l3_node.skills.loader",
         "--hidden-import", "l3_node.hr_loader",
+        "--hidden-import", "l3_node.capability_catalog",
         "--hidden-import", "l3_node.http_server",
         "--hidden-import", "l3_node.config_writeout",
         "--hidden-import", "l3_node.im_channels",

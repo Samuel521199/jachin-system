@@ -517,6 +517,7 @@
 | **P2 编辑** | 语言服务校验、影子 git（§9.6） | 与 OpenClaw 多文件编辑 **完整度** |
 | **持续** | IM SDK **停留/已读/跳过** 与运营看板 | 隐式学习 **业务闭环** |
 
-> **单一事实来源**：**[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)** §五～§六；**记忆排序**：[MEMORY_SCORING.md](./MEMORY_SCORING.md)；**编排分层**：[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)。
+> **单一事实来源**：**[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)** §五～§六；**记忆排序**：[MEMORY_SCORING.md](./MEMORY_SCORING.md)；**编排分层**：[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)。  
+> **执行韧性（全 Skill/任务）**：[JACHIN_EXECUTION_RESILIENCE_CONTRACT.md](./JACHIN_EXECUTION_RESILIENCE_CONTRACT.md)；Cursor 规则：`.cursor/rules/080-jachin-execution-resilience.mdc`（`alwaysApply`）。
 
 ---

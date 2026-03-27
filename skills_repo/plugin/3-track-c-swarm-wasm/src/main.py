@@ -1,9 +1,7 @@
 """
 轨道 C - 虫群评审引擎 (HR Swarm Engine)
-三专家多 Agent 交叉评分：Tech Lead + HR BP → 主理法官裁决
-- 专家 A (Tech Lead): qwen3.5-122b-a10b，1220 亿参数，逻辑纵深
-- 专家 B (HR BP): qwen3.5-plus，长文本语义、情商均衡
-- 专家 C (Judge): qwen3.5-397b-a17b，近 4000 亿参数，指令遵循
+三专家多 Agent 交叉评分：Tech Lead + HR BP → 主理法官裁决（提示词角色不同）。
+DashScope 实际模型与 Key 与 L3 统一（core.plugin_llm_identity / 根 .env 的 LLM_MODEL）。
 """
 from __future__ import annotations
 
@@ -44,17 +42,27 @@ def _call_llm(prompt: str, system: str, model: str | None = None) -> str:
 
 
 def _invoke_llm_fallback(prompt: str, system: str, model: str | None = None) -> str:
-    """回退：DashScope 或 Gemini"""
-    from dotenv import load_dotenv
+    """回退：DashScope 或 Gemini（Key/主模型与 L3 统一，不读插件 .env）"""
     import os
-    load_dotenv(_root / ".env")
-    # 优先 DashScope
-    key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("ALIBABA_API_KEY")
+
+    try:
+        from core.plugin_llm_identity import (
+            ensure_plugin_dashscope_key_in_env,
+            plugin_gemini_fallback_model,
+            plugin_reasoning_model_openai_compat,
+        )
+
+        key = ensure_plugin_dashscope_key_in_env()
+        m = plugin_reasoning_model_openai_compat()
+    except ImportError:
+        key = (os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or "").strip()
+        m = (model or "qwen3.5-plus").strip() or "qwen3.5-plus"
+
     if key:
         try:
             from openai import OpenAI
+
             client = OpenAI(api_key=key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
-            m = model or os.environ.get("HR_BP_MODEL", "qwen-plus")
             resp = client.chat.completions.create(
                 model=m,
                 messages=[
@@ -67,15 +75,22 @@ def _invoke_llm_fallback(prompt: str, system: str, model: str | None = None) -> 
                 return resp.choices[0].message.content.strip()
         except Exception:
             pass
-    # Gemini 回退
-    gkey = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    gkey = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
     if gkey:
         try:
             from google import genai
             from google.genai import types
+
+            gmodel = "gemini-2.0-flash"
+            try:
+                from core.plugin_llm_identity import plugin_gemini_fallback_model
+
+                gmodel = plugin_gemini_fallback_model()
+            except ImportError:
+                pass
             client = genai.Client(api_key=gkey)
             resp = asyncio.run(client.aio.models.generate_content(
-                model=os.environ.get("HR_PLUGIN_LLM_MODEL", "gemini-2.0-flash"),
+                model=gmodel,
                 contents=prompt,
                 config=types.GenerateContentConfig(system_instruction=system, temperature=0.3),
             ))
@@ -83,7 +98,11 @@ def _invoke_llm_fallback(prompt: str, system: str, model: str | None = None) -> 
                 return resp.text.strip()
         except Exception:
             pass
-    return json.dumps({"verdict": "Pass", "reason": "[规则模式] 需配置 DASHSCOPE_API_KEY 或 GEMINI_API_KEY", "score": 60})
+    return json.dumps({
+        "verdict": "Pass",
+        "reason": "[规则模式] 需配置 L3/根目录 DASHSCOPE_API_KEY 或 GEMINI_API_KEY",
+        "score": 60,
+    })
 
 
 def _parse_expert_output(text: str) -> tuple[str, str, int]:

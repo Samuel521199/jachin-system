@@ -83,7 +83,7 @@ async def run_screening(
     print(f"[RunID: {run_id}] [OK] 已加载 HR 规则")
 
     # Step 2: 获取简历文本
-    sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+    sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
     resume_text = ""
     if resume_source == "local" and resume_path:
         try:

@@ -31,7 +31,7 @@
 
 | 变更 | 说明 |
 |------|------|
-| **llm_complete 模型规范化** | L2 可能返回 `qwen3.5-flash-2026-02-23`，LiteLLM 需 `dashscope/qwen3.5-flash-2026-02-23`。调用前使用 `engine._normalize_model(model)` 补全 provider 前缀。 |
+| **llm_complete 模型规范化** | L2 可能返回裸模型名（无 `dashscope/` 前缀），LiteLLM 需带前缀。调用前使用 `engine._normalize_model(model)`；主模型与降级以 `core.llm_provider` / L3 配置为准。 |
 | **mcp_read_file 本地直读** | 本地绝对路径且文件存在时直接读取，否则解析为 `project_root/data/hr_resumes` 或 `project_root/config/hr_jds`，再经 L2 委托或 L2 MCP。 |
 | **execute ABI** | 支持 Rust JPP 插件的 `execute(ptr, len) -> i32`，提供 `__rust_alloc`/`__rust_dealloc` 等 host 函数。 |
 | **WASI 回退** | execute ABI 不可用时回退 WASI；若错误含 `__rust_dealloc`，抛出明确提示，避免误用纯 WASI。 |

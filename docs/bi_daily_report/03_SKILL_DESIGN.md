@@ -148,7 +148,7 @@ BiReportConfig = {
         "base_path": "client_volumes/bi_data",  # raw/ 与 metrics/ 父目录
     },
     "llm": {
-        "model": "dashscope/qwen3.5-flash-2026-02-23",  # 可选覆盖
+        "model": "dashscope/qwen3.5-plus",  # 可选覆盖；默认与 L3 主推理一致
     },
     "distribution": {
         "lark_webhook_url": str,

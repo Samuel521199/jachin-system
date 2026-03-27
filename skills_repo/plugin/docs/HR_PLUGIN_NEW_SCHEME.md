@@ -12,7 +12,7 @@
 - **数据源**：推荐牛人、搜索人才库、主动打招呼消息列表
 - **动作**：
   1. 抓取残缺的在线文本简历（非附件）
-  2. 小脑粗筛：qwen3.5-flash-2026-02-23 云端底线过滤（学历、年限）
+  2. 小脑粗筛：云端底线过滤（学历、年限），模型为全局经济型降级（`DASHSCOPE_ECON_FALLBACK_MODEL`）
   3. 对底线合格者自动打招呼：「您好，我们对您的经历很感兴趣，方便发一份简历过来吗」
   4. 对主动打招呼者：「方便发一份简历过来吗」
 
@@ -63,7 +63,7 @@
 | atom_auto_greeter | 自动发送打招呼话术 |
 | atom_inbox_harvester | 扫描消息列表，下载 PDF 附件 |
 | local_archiver | 将 PDF 保存到 pending |
-| brain_filter | 小脑粗筛（qwen3.5-flash-2026-02-23 云端底线过滤） |
+| brain_filter | 小脑粗筛（云端底线过滤，模型见 `core.llm_provider.DASHSCOPE_ECON_FALLBACK_MODEL`） |
 | nat_lang_to_jd | 自然语言解析为 JD 与评审规则，烙印至 hr_rules |
 | atom_post_job | 发布岗位（当前保存到 workspace，可扩展 Boss API） |
 | atom_lark_notifier | 向飞书发送进度汇报消息卡片 |

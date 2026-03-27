@@ -46,6 +46,9 @@ pygame>=2.5.0
 # V2 Zero-trust key flow
 cryptography>=42.0.0
 
+# 进程/主机遥测（Commander、Skills/Orchestrator 路由等）
+psutil>=5.9.0
+
 # MCP (Model Context Protocol) Track A
 mcp>=1.0.0
 

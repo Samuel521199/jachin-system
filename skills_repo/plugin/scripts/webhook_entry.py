@@ -21,10 +21,10 @@ else:
     _plugin_root = Path(__file__).resolve().parent.parent
     _app_root = _plugin_root.parent.parent
 
-# 路径：project root (l3_node)、plugin、2-track-a-atomic-mcp
+# 路径：project root (l3_node)、plugin、com.jachin.hr.recruitment
 sys.path.insert(0, str(_app_root))
 sys.path.insert(0, str(_plugin_root))
-sys.path.insert(0, str(_plugin_root / "2-track-a-atomic-mcp"))
+sys.path.insert(0, str(_plugin_root / "com.jachin.hr.recruitment"))
 
 for _env in [_plugin_root / ".env", _app_root / ".env"]:
     if _env.exists():

@@ -34,7 +34,7 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 
 def _run_direct(config_path: str) -> dict:
     """直接调用工具（不经过 MCP）"""
-    sys.path.insert(0, str(ROOT / "2-track-a-atomic-mcp"))
+    sys.path.insert(0, str(ROOT / "com.jachin.hr.recruitment"))
     from tools.atom_greet_recommend_boss import atom_greet_recommend_boss, load_jd_config
 
     jd = load_jd_config(config_path)
@@ -48,7 +48,7 @@ async def _run_via_mcp(config_path: str) -> dict:
     sys.path.insert(0, str(PLUGIN_ROOT.parent))  # 项目根，用于 import core.mcp_client
     from core.mcp_client import MCPServerInstance
 
-    server_script = ROOT / "2-track-a-atomic-mcp" / "server.py"
+    server_script = ROOT / "com.jachin.hr.recruitment" / "server.py"
     if not server_script.exists():
         return {"success": False, "greeted_count": 0, "error": f"MCP server 不存在: {server_script}"}
 

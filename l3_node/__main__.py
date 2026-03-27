@@ -28,13 +28,21 @@ import re
 import sys
 from pathlib import Path
 
-# Windows 下强制 UTF-8 输出，避免日志乱码（PowerShell/终端显示）
+# Windows 下强制 UTF-8 + 行缓冲，避免日志/print 块缓冲导致「以为卡死、Ctrl+C 后一次性涌出」
 if sys.platform == "win32":
     try:
         if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
         if hasattr(sys.stderr, "reconfigure"):
-            sys.stderr.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
+    except Exception:
+        pass
+else:
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
     except Exception:
         pass
 
@@ -169,7 +177,7 @@ if not _dash_key and not _openai_key:
 
 
 def _create_engine_standalone():
-    """仅用环境变量创建引擎，不连接 L2。有 DASHSCOPE 时用 qwen3.5-flash-2026-02-23，避免连未启动的 Ollama。"""
+    """仅用环境变量创建引擎，不连接 L2。有 DASHSCOPE 时默认 qwen3.5-plus，降级用 flash，避免连未启动的 Ollama。"""
     try:
         trace("_create_engine_standalone: importing LiteLLMEngine...")
         from l3_node.llm_client import LiteLLMEngine, SecurityContext
@@ -182,8 +190,13 @@ def _create_engine_standalone():
         fallback = None
         default_model = "gpt-4o-mini"
         if ctx.get_key("dashscope"):
-            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
-            default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+            try:
+                from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
+
+                fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
+            except ImportError:
+                fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+            default_model = os.environ.get("LLM_MODEL", "qwen3.5-plus")
         _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
         engine = LiteLLMEngine(
             security_context=ctx,

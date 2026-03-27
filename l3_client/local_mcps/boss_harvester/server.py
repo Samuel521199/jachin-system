@@ -22,7 +22,7 @@ from pathlib import Path
 
 # 项目根与 plugin 路径
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_PLUGIN_TOOLS = _PROJECT_ROOT / "skills_repo" / "plugin" / "2-track-a-atomic-mcp"
+_PLUGIN_TOOLS = _PROJECT_ROOT / "skills_repo" / "plugin" / "com.jachin.hr.recruitment"
 if str(_PLUGIN_TOOLS) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_TOOLS))
 
@@ -56,6 +56,7 @@ def atom_inbox_harvester(
     filter_tab: str = "全部",
     request_if_no_resume: bool = True,
     cdp_url: str = "http://127.0.0.1:9222",
+    use_all_positions: bool = False,
 ) -> dict:
     """
     Boss 直聘收网：选择职位 → 遍历消息列表 → 有附件简历则下载 PDF；无简历则点击「求简历」。
@@ -68,6 +69,7 @@ def atom_inbox_harvester(
         filter_tab: 消息列表 Tab（全部/新招呼，默认全部）
         request_if_no_resume: 无附件简历时是否点击求简历
         cdp_url: Chrome 调试端口地址
+        use_all_positions: True 时选「全部职位」、忽略 job_name（仅短时联调）；默认 False 按 job_name 选职位
     """
     if not job_name or not str(job_name).strip():
         return {"status": "error", "error": "job_name 为必填参数"}
@@ -94,6 +96,7 @@ def atom_inbox_harvester(
         save_dir=str(save_dir),
         filter_tab=filter_tab,
         request_if_no_resume=request_if_no_resume,
+        use_all_positions=use_all_positions,
     )
 
     downloaded = raw.get("downloaded", 0)

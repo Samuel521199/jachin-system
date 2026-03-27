@@ -31,7 +31,7 @@ async def _connect_and_list_tools() -> list[dict]:
     """连接 MCP 并列出工具"""
     from core.mcp_client import MCPServerInstance
 
-    server_script = ROOT / "2-track-a-atomic-mcp" / "server.py"
+    server_script = ROOT / "com.jachin.hr.recruitment" / "server.py"
     if not server_script.exists():
         raise FileNotFoundError(f"MCP server 不存在: {server_script}")
 
@@ -50,7 +50,7 @@ async def _call_tool(name: str, arguments: dict) -> str:
     """调用 MCP 工具"""
     from core.mcp_client import MCPServerInstance
 
-    server_script = ROOT / "2-track-a-atomic-mcp" / "server.py"
+    server_script = ROOT / "com.jachin.hr.recruitment" / "server.py"
     instance = MCPServerInstance(
         server_id="hr-atomic-tools",
         command="python",
@@ -74,7 +74,7 @@ def main() -> int:
     print("=" * 60)
     print("HR 原子 MCP 工具箱测试")
     print("=" * 60)
-    print(f"Server: {ROOT / '2-track-a-atomic-mcp' / 'server.py'}")
+    print(f"Server: {ROOT / 'com.jachin.hr.recruitment' / 'server.py'}")
     print()
 
     try:

@@ -18,15 +18,50 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 from .config import get_data_root, get_plugin_package_root
 
 _TASKS_FILE = get_data_root() / "lark_tasks.json"
+
+
+def _feishu_text_implies_resume_harvest_focus(user_text: str) -> bool:
+    """
+    飞书整句是否明显是「只要收简历 / 先抓简历」，而非推荐打招呼为主。
+    命中时合并 jd.json 会写 enable_greet_recommend=false，供 MCP 省略参数时从 jd 读取。
+    """
+    s = (user_text or "").strip()
+    if not s:
+        return False
+    if re.search(
+        r"(仅收网|只抓简历|仅抓简历|不要打招呼|别打招呼|先抓简历|直接抓简历|"
+        r"只要简历|只收简历|只下载简历|跳过打招呼|不收打招呼)",
+        s,
+        re.I,
+    ):
+        return True
+    if re.search(r"抓取.{1,400}\d+\s*份(?:简历)?", s, re.I):
+        return True
+    if re.search(r"\d+\s*份简历", s, re.I):
+        return True
+    return False
+
+
+def _parse_resume_collect_target_from_feishu(user_text: str) -> int | None:
+    m = re.search(r"(\d{1,4})\s*份(?:简历)?", (user_text or "").strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    if 1 <= n <= 9999:
+        return n
+    return None
+
 
 # 任务关键词：命中则视为「做任务」，只记录不执行
 TASK_KEYWORDS = [
@@ -217,11 +252,11 @@ def _call_bailian(prompt: str) -> str:
     async def _do():
         try:
             from src.llm_client import invoke_llm_with_model
-            model = os.environ.get("LARK_BOT_LLM_MODEL", "qwen-plus")
+
             raw = await invoke_llm_with_model(
                 prompt,
                 "你是 HR 招聘辅助机器人，简洁友好地回答问题。若涉及具体操作（同步、抓取、发布等），请告知已记录任务。必须用自然语言回复，不要输出 JSON。",
-                model,
+                "",
             )
             return _to_chat_reply(raw or "")
         except Exception as e:
@@ -237,6 +272,138 @@ def _call_bailian(prompt: str) -> str:
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor() as pool:
         return pool.submit(asyncio.run, _do()).result()
+
+
+def apply_job_select_from_hr_im_text(user_text: str) -> dict[str, Any]:
+    """
+    从飞书整句提取 Boss 选岗行并写 jd.json / 必要时切换指针。
+
+    供 ``process_lark_message`` 与 L3 ``try_lark_workflow_command_intercept`` 共用：
+    IM 通道先命中「仅打招呼 / 再抓」等拦截时，也必须先落盘选岗，否则会沿用旧指针的 jd_select。
+    """
+    out: dict[str, Any] = {"applied": False, "jd_select": "", "job_folder": "", "job_name": ""}
+    ut = (user_text or "").strip()
+    if not ut:
+        return out
+    try:
+        from .boss_utils import (
+            canonicalize_boss_job_select,
+            extract_job_select_line_for_boss_from_hr_chat,
+            primary_job_title_from_boss_select_line,
+        )
+        from .hr_data_paths import (
+            ensure_job_dirs_by_folder_key,
+            get_job_jd_path_by_folder_key,
+            infer_folder_key_from_job_display_name,
+            init_job_jd_from_template,
+            resolve_recruitment_data_folder_key,
+            sanitize_job_folder,
+        )
+        from l3_node.local_memory import get_hr_recruitment_workflow_pointer
+
+        sel = extract_job_select_line_for_boss_from_hr_chat(ut)
+        if not sel:
+            return out
+
+        sel_c = canonicalize_boss_job_select(sel) or sel.strip()
+        p2 = get_hr_recruitment_workflow_pointer()
+        jn_cur = (p2.get("job_name") or "").strip()
+        jf_cur = (p2.get("primary_job_folder") or p2.get("job_folder") or "").strip()
+        derived = primary_job_title_from_boss_select_line(sel_c)
+        fk_new = resolve_recruitment_data_folder_key(jd_select_canon=sel_c, job_title=derived or "")
+        fk_cur = sanitize_job_folder(jf_cur) if jf_cur else ""
+        switch_job = bool(fk_new and fk_new != fk_cur)
+        jd_path: Path | None = None
+        if switch_job:
+            ensure_job_dirs_by_folder_key(fk_new)
+            jd_path = get_job_jd_path_by_folder_key(fk_new)
+            if not jd_path.exists():
+                init_job_jd_from_template(
+                    derived or (primary_job_title_from_boss_select_line(sel_c) or "未命名"),
+                    overrides={"job_title": derived, "jd_select": sel_c, "data_folder_key": fk_new},
+                    data_folder_key=fk_new,
+                )
+            wid = (p2.get("workflow_id") or "").strip()
+            try:
+                from l3_node.local_memory import set_hr_recruitment_workflow_pointer
+
+                set_hr_recruitment_workflow_pointer(
+                    wid,
+                    job_name=derived,
+                    job_folder=fk_new,
+                    jd_config_path=str(jd_path),
+                    resume_pending_dir=str(jd_path.parent / "pending"),
+                )
+            except Exception as _e:
+                logger.debug("[Lark] 切换指针到新岗位跳过: %s", _e)
+        else:
+            jcp = (p2.get("jd_config_path") or "").strip()
+            if jcp:
+                cand = Path(jcp)
+                if cand.exists() and "jd_to_publish" not in str(cand).replace("\\", "/"):
+                    jd_path = cand
+            if jd_path is None and fk_new:
+                jd_path = get_job_jd_path_by_folder_key(fk_new)
+            elif jd_path is None and jn_cur:
+                _fk_cur = infer_folder_key_from_job_display_name(jn_cur)
+                if _fk_cur:
+                    jd_path = get_job_jd_path_by_folder_key(_fk_cur)
+        if jd_path is None:
+            return out
+
+        jd_path.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {}
+        if jd_path.exists():
+            try:
+                data = json.loads(jd_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data["jd_select"] = sel_c
+        n_tgt_merged = None
+        p0_before = 0
+        # 仅当句子里明确「收网/抓简历」时才关推荐；纯选岗行（如只发 jd_select）不再自动关，
+        # 否则换 Java 岗后 jd 被标成仅收网，易与后续「仅打招呼」混淆，且与 HR 仅切换 Boss 岗意图不符。
+        if _feishu_text_implies_resume_harvest_focus(ut):
+            data["enable_greet_recommend"] = False
+            n_tgt_merged = _parse_resume_collect_target_from_feishu(ut)
+            if n_tgt_merged is not None:
+                pend_dir = jd_path.parent / "pending"
+                if pend_dir.is_dir():
+                    p0_before = sum(1 for _ in pend_dir.rglob("*.pdf"))
+                data["resume_collect_target"] = n_tgt_merged
+                data["analyze_threshold"] = n_tgt_merged
+            logger.info(
+                "[Lark] 收简历意图：已写 enable_greet_recommend=false"
+                + (f", resume_collect_target={n_tgt_merged}" if n_tgt_merged is not None else "")
+                + " -> %s",
+                jd_path,
+            )
+        jd_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("[Lark] 已合并 jd_select=%s -> %s", sel, jd_path)
+        if n_tgt_merged is not None and p0_before > n_tgt_merged:
+            try:
+                from l3_node.channels.lark.hr_recruitment_notify import (
+                    send_hr_incremental_resume_target_clarify_if_configured,
+                )
+
+                jt = (derived or jn_cur or str(data.get("job_title") or "")).strip()
+                send_hr_incremental_resume_target_clarify_if_configured(
+                    pending_count=p0_before,
+                    stated_cumulative_target=n_tgt_merged,
+                    job_title=jt,
+                )
+            except Exception as _clar_e:
+                logger.debug("[Lark] 收网目标确认飞书跳过: %s", _clar_e)
+
+        out["applied"] = True
+        out["jd_select"] = sel_c
+        out["job_name"] = (str(data.get("job_title") or "") or derived or "").strip()
+        out["job_folder"] = jd_path.parent.name
+    except Exception as e:
+        logger.debug("[Lark] apply_job_select_from_hr_im_text 跳过: %s", e)
+    return out
 
 
 def process_lark_message(
@@ -271,11 +438,36 @@ def process_lark_message(
     if not user_text or not user_text.strip():
         return {"reply": "", "is_task": False}
 
+    # 记录飞书 chat_id，供收网进度推送（LARK_CHAT_ID 未设时从指针读取）
+    if (chat_id or "").strip():
+        try:
+            from l3_node.local_memory import get_hr_recruitment_workflow_pointer, set_hr_recruitment_workflow_pointer
+
+            p = get_hr_recruitment_workflow_pointer()
+            jf = (p.get("primary_job_folder") or p.get("job_folder") or "").strip()
+            set_hr_recruitment_workflow_pointer(
+                p.get("workflow_id", ""),
+                job_name=p.get("job_name", ""),
+                job_folder=jf,
+                jd_config_path=p.get("jd_config_path", ""),
+                resume_pending_dir=p.get("resume_pending_dir", ""),
+                lark_chat_id=chat_id.strip(),
+            )
+        except Exception as e:
+            logger.debug("[Lark] 写入 lark_chat_id 跳过: %s", e)
+
+    # 从飞书整句解析 Boss 选岗行并写入 jd.json（如「python工程师 杭州 15-25k开始抓取简历」）
+    if (user_text or "").strip():
+        try:
+            apply_job_select_from_hr_im_text(user_text.strip())
+        except Exception as e:
+            logger.debug("[Lark] 合并 jd_select 跳过: %s", e)
+
     # 高优遥控指令：停止收网 / 触发透析镜 — 不经过 LLM
     try:
         from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
 
-        cmd_reply = try_lark_workflow_command_intercept(user_text.strip())
+        cmd_reply = try_lark_workflow_command_intercept(user_text.strip(), channel_id=(chat_id or "").strip())
         if cmd_reply:
             return {"reply": cmd_reply, "is_task": False, "command_intercepted": True}
     except Exception as e:
@@ -286,12 +478,17 @@ def process_lark_message(
         import asyncio
 
         sess = session_messages if isinstance(session_messages, list) else []
+        _cid = (chat_id or "").strip()
+
         async def _do():
+            _iatt = {"channel": "lark_hr_recruitment"}
+            if _cid:
+                _iatt["lark_chat_id"] = _cid
             return await run_agent_fn(
                 user_text.strip(),
                 engine,
                 _session_messages=sess,
-                implicit_attribution={"channel": "lark_hr_recruitment"},
+                implicit_attribution=_iatt,
             )
 
         future = asyncio.run_coroutine_threadsafe(_do(), loop)

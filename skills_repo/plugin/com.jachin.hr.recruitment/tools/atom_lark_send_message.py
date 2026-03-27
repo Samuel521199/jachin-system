@@ -4,7 +4,7 @@
 
 前置条件：
   - LARK_APP_ID、LARK_APP_SECRET、LARK_CHAT_ID（目标群/单聊 ID）
-  - 若 use_llm=True：DASHSCOPE_API_KEY
+  - 若 use_llm=True：由 L3 / 根目录 .env 提供百炼 Key（与主 Agent 一致，勿在插件 .env 单独配模型/Key）
   - Lark 应用需有 im:message 权限，机器人需已加入目标群/单聊
 
 使用 l3_node.channels.lark 通道层实现。
@@ -86,11 +86,11 @@ def _call_bailian(prompt: str, system: str = "") -> str:
     async def _do():
         try:
             from src.llm_client import invoke_llm_with_model
-            model = os.environ.get("LARK_BOT_LLM_MODEL", "qwen-plus")
+
             return await invoke_llm_with_model(
                 prompt,
                 system or "你是 HR 招聘辅助机器人，简洁友好地回答问题。",
-                model,
+                "",
             )
         except Exception as e:
             logger.warning("百炼调用失败: %s", e)

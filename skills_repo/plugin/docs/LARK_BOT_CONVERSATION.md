@@ -2,10 +2,10 @@
 
 ## 功能说明
 
-- **普通问题**：用户发问 → 阿里百炼生成回复 → 机器人发送
+- **普通问题**：用户发问 → 百炼生成回复（Key/主模型与 L3 统一，见 `core.plugin_llm_identity`）→ 机器人发送
 - **任务请求**：用户说「同步多维表」「抓取简历」等 → 只记录到 `data/lark_tasks.json`，不执行
 
-核心逻辑在 `2-track-a-atomic-mcp/tools/atom_lark_chat.py`，可被 MCP、Webhook、交互脚本共同调用。
+核心逻辑在 `com.jachin.hr.recruitment/tools/atom_lark_chat.py`，可被 MCP、Webhook、交互脚本共同调用。
 
 ## 使用方式
 
@@ -15,7 +15,7 @@
 
 ```bash
 cd skills_repo/plugin
-python 2-track-a-atomic-mcp/lark_bot.py --interactive
+python com.jachin.hr.recruitment/lark_bot.py --interactive
 ```
 
 - 输入普通问题 → AI 回复并发送到 Lark
@@ -26,7 +26,7 @@ python 2-track-a-atomic-mcp/lark_bot.py --interactive
 1. **启动 Webhook 服务**（先启动，再配置）：
    ```bash
    cd skills_repo/plugin
-   python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000
+   python com.jachin.hr.recruitment/lark_bot.py --webhook --port 5000
    ```
 
 2. **暴露公网**（新开终端）：
@@ -80,7 +80,7 @@ python 2-track-a-atomic-mcp/lark_bot.py --interactive
 - **原因**：Lark 验证 URL 时，服务端返回了非 JSON（如 HTML 或纯文本）
 - **处理**：
   1. 确认请求地址是**真实 ngrok 地址**，不是 `https://xxx.ngrok-free.app` 占位符
-  2. 启动脚本后再在 Lark 保存：`python 2-track-a-atomic-mcp/lark_bot.py --webhook --port 5000`
+  2. 启动脚本后再在 Lark 保存：`python com.jachin.hr.recruitment/lark_bot.py --webhook --port 5000`
   3. ngrok 和 Flask 都正常时再点击「保存」
   4. 若仍失败，可尝试 [localtunnel](https://localtunnel.github.io/www/) 或 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps) 代替 ngrok
 

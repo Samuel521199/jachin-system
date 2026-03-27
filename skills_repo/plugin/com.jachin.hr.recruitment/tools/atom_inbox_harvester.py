@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import re
 import tempfile
@@ -16,12 +17,80 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .anti_bot_guardian import check_and_bypass_anti_bot, should_reraise_hitl
 from .atom_request_resume import _click_request_resume_btn
-from .boss_utils import _get_current_job_label, navigate_to_chat_page, select_all_positions, select_job
+from .boss_utils import (
+    _get_current_job_label,
+    _verify_job_selected,
+    dismiss_boss_onboarding_overlays,
+    is_boss_identity_verify_page,
+    navigate_to_chat_page,
+    select_all_positions,
+    select_job,
+)
 from .human_utils import human_wait
 from .local_archiver import _extract_job_folder, local_archiver
 from .os_signal_probe import os_stop_requested as _os_stop_requested
 
 logger = logging.getLogger(__name__)
+
+# Boss 沟通页在验证码/SPA 下 domcontentloaded 可能迟迟不满足；过短会导致「继续」后首轮收网直接超时退出
+_BOSS_PAGE_DOMCONTENTLOADED_MS = int(os.environ.get("JACHIN_BOSS_INBOX_DOMLOAD_MS", "28000") or "28000")
+_CDP_CONNECT_MS = int(os.environ.get("JACHIN_BOSS_CDP_CONNECT_MS", "15000") or "15000")
+
+
+def _wait_domcontentloaded_lenient(page, *, timeout_ms: int | None = None) -> None:
+    """
+    等待主帧 domcontentloaded；超时仅告警并继续（页面常仍可操作）。
+    验证码后重连 CDP 时，Playwright 日志可能出现 networkidle 与 domcontentloaded 不同步。
+    """
+    ms = int(timeout_ms if timeout_ms is not None else _BOSS_PAGE_DOMCONTENTLOADED_MS)
+    ms = max(3000, min(120000, ms))
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=ms)
+    except Exception as e:
+        logger.warning(
+            "[inbox] domcontentloaded 未在 %dms 内就绪（%s），页面可能仍可用，继续收网流程",
+            ms,
+            e,
+        )
+        try:
+            human_wait(page, 0.4, 0.9)
+        except Exception:
+            pass
+
+
+def _harvest_return(
+    *,
+    success: bool,
+    pdf_paths: list | None,
+    downloaded: int = 0,
+    requested_count: int = 0,
+    processed: list | None = None,
+    error: str = "",
+    chat_list_count: int = -1,
+    inbox_no_chats: bool | None = None,
+    **extra: object,
+) -> dict:
+    """统一收网返回结构；供调度器根据「左侧沟通列表」动态调整推荐/收网频率。"""
+    proc = [] if processed is None else processed
+    paths = [] if pdf_paths is None else pdf_paths
+    c = int(chat_list_count)
+    if inbox_no_chats is not None:
+        nc = bool(inbox_no_chats)
+    else:
+        nc = c == 0 if c >= 0 else False
+    out: dict = {
+        "success": success,
+        "pdf_paths": paths,
+        "downloaded": downloaded,
+        "requested_count": requested_count,
+        "processed": proc,
+        "error": error,
+        "chat_list_count": c,
+        "inbox_no_chats": nc,
+    }
+    out.update(extra)
+    return out
+
 
 BOSS_CHAT_ITEM_SELECTORS = [
     "div.geek-item",
@@ -74,13 +143,15 @@ BOSS_PREVIEW_CLOSE_SELECTORS = [
     "[class*='boss-dialog'] i.icon-close",
     "[class*='boss-dialog'] [class*='icon-close']",
     "[class*='preview'] i.icon-close",
+    "[class*='resume-preview'] i.icon-close",
     "[class*='dialog'] [class*='close']",
     "[class*='drawer'] i.icon-close",
     "[class*='modal'] i.icon-close",
-    "i.icon-close",
+    "[class*='icon-close'][class*='preview']",
     ".icon-close",
     "[class*='icon-close']",
     "i[class*='close']",
+    "i.icon-close",
 ]
 
 BOSS_PREVIEW_BTN_SELECTORS = [
@@ -90,15 +161,54 @@ BOSS_PREVIEW_BTN_SELECTORS = [
 ]
 
 
+def dismiss_boss_resume_overlay(page, pages) -> None:
+    """
+    关闭「附件简历」PDF 预览遮罩（boss-dynamic-dialog + pdf-viewer-b iframe）。
+    若不关，左侧 div.geek-item 点击会被弹层拦截（subtree intercepts pointer events）。
+    """
+    pages = list(pages) if pages else [page]
+    try:
+        dlg = page.locator('div.dialog-wrap.active[data-type="boss-dialog"]')
+        if dlg.count() > 0:
+            for sel in (
+                "i.icon-close",
+                ".icon-close",
+                "[class*='layer-close']",
+                "[class*='dialog-close']",
+                "span.close",
+                ".boss-popup__close",
+                "button[aria-label*='关闭']",
+                "[id^='boss-dynamic-dialog'] i.icon-close",
+            ):
+                try:
+                    btn = dlg.first.locator(sel).first
+                    if btn.count() > 0 and btn.is_visible():
+                        btn.click(timeout=2500)
+                        human_wait(page, 0.35, 0.7)
+                        logger.info("[收网] 已关闭 Boss 附件预览弹层 (%s)", sel)
+                        break
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug("[收网] 关闭附件弹层(主层): %s", e)
+    _close_preview_dialog(page, pages)
+    try:
+        for _ in range(3):
+            page.keyboard.press("Escape")
+            human_wait(page, 0.2, 0.45)
+    except Exception:
+        pass
+
+
 def _close_preview_dialog(page, pages) -> bool:
     for p in pages:
         for sel in BOSS_PREVIEW_CLOSE_SELECTORS:
             try:
                 loc = p.locator(sel).first
-                if loc.count() > 0:
-                    loc.scroll_into_view_if_needed()
+                if loc.count() > 0 and loc.is_visible():
+                    loc.scroll_into_view_if_needed(timeout=3000)
                     human_wait(p, 0.15, 0.5)
-                    loc.click()
+                    loc.click(timeout=3000)
                     human_wait(p, 0.4, 0.9)
                     logger.debug("已点击关闭按钮")
                     return True
@@ -108,10 +218,10 @@ def _close_preview_dialog(page, pages) -> bool:
             for sel in BOSS_PREVIEW_CLOSE_SELECTORS:
                 try:
                     loc = frame.locator(sel).first
-                    if loc.count() > 0:
-                        loc.scroll_into_view_if_needed()
+                    if loc.count() > 0 and loc.is_visible():
+                        loc.scroll_into_view_if_needed(timeout=3000)
                         human_wait(p, 0.15, 0.5)
-                        loc.click()
+                        loc.click(timeout=3000)
                         human_wait(p, 0.4, 0.9)
                         logger.debug("已点击关闭按钮(iframe)")
                         return True
@@ -119,10 +229,16 @@ def _close_preview_dialog(page, pages) -> bool:
                     pass
     try:
         hit = page.get_by_role("button", name="关闭").first
-        if hit.count() > 0:
-            hit.click()
+        if hit.count() > 0 and hit.is_visible():
+            hit.click(timeout=3000)
             human_wait(page, 0.4, 0.9)
             return True
+    except Exception:
+        pass
+    try:
+        page.keyboard.press("Escape")
+        human_wait(page, 0.3, 0.6)
+        return True
     except Exception:
         pass
     return False
@@ -430,8 +546,9 @@ def click_preview_and_download(
             p.remove_listener("response", on_response)
         except Exception:
             pass
+    pages = list(context.pages)
     if err:
-        _close_preview_dialog(page, pages)
+        dismiss_boss_resume_overlay(page, pages)
         if err == "OS_STOP_HARVEST":
             return {"success": False, "pdf_path": "", "error": err, "stopped_by_os": True}
         return {"success": False, "pdf_path": "", "error": err}
@@ -445,16 +562,84 @@ def click_preview_and_download(
             job_folder=job_folder,
             use_flat_dir=bool(save_dir and job_folder),
         )
-        _close_preview_dialog(page, pages)
+        dismiss_boss_resume_overlay(page, pages)
         if out.get("success"):
             return {"success": True, "pdf_path": out["saved_path"], "error": ""}
         return {"success": False, "pdf_path": "", "error": out.get("error", "归档失败")}
 
-    _close_preview_dialog(page, pages)
+    dismiss_boss_resume_overlay(page, pages)
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.write(content)
     tmp.close()
     return {"success": True, "pdf_path": tmp.name, "error": ""}
+
+
+def _inject_stop_harvest_for_workflow(os_context: dict | None) -> None:
+    """与飞书「停止收网」一致：持久化 STOP_HARVEST，便于「继续」统一恢复。"""
+    if not os_context or not isinstance(os_context, dict):
+        return
+    wid = str(os_context.get("_dag_workflow_id") or "").strip()
+    if not wid:
+        return
+    try:
+        from core.workflow_engine import DAGWorkflow, SIGNAL_STOP_HARVEST
+
+        DAGWorkflow.inject_signal(wid, SIGNAL_STOP_HARVEST)
+        logger.warning("[收网] 已注入 %s workflow=%s（验证页刹车）", SIGNAL_STOP_HARVEST, wid)
+    except Exception as e:
+        logger.debug("[收网] inject_signal 跳过: %s", e)
+
+
+def _notify_lark_boss_verify_slider(job_label: str = "") -> None:
+    jn = (job_label or "").strip() or "招聘任务"
+    try:
+        from l3_node.channels.lark.hr_recruitment_notify import send_hr_recruitment_progress_message
+    except ImportError:
+        logger.debug("[收网] Lark 通知跳过（无 hr_recruitment_notify）")
+        return
+    msg = (
+        f"🛑【{jn}】Boss 已跳转**访客身份验证/异常访问**页，自动化已**立即停止**，请勿再连点。\n"
+        f"请在 Chrome 中**手动完成滑块验证**并回到沟通页后，在飞书回复 **继续** 以恢复收网。"
+    )
+    try:
+        send_hr_recruitment_progress_message(msg, message_kind="hr_boss_verify")
+    except Exception as e:
+        logger.warning("[收网] 飞书通知失败: %s", e)
+
+
+def _exit_harvest_on_boss_verify(
+    page,
+    os_context: dict | None,
+    job_folder: str,
+    pdf_paths: list,
+    downloaded: int,
+    requested_count: int,
+    processed: list,
+    *,
+    chat_list_count: int = -1,
+) -> dict:
+    logger.error(
+        "[收网] 检测到 Boss 身份验证页，停止本轮遍历 job=%s url=%s",
+        job_folder,
+        (page.url or "")[:120],
+    )
+    _notify_lark_boss_verify_slider(job_folder)
+    _inject_stop_harvest_for_workflow(os_context)
+    if os_context is not None:
+        os_context["_os_playwright_stop"] = True
+    c = int(chat_list_count)
+    return _harvest_return(
+        success=True,
+        pdf_paths=pdf_paths,
+        downloaded=downloaded,
+        requested_count=requested_count,
+        processed=processed,
+        error="boss_identity_verify_slider",
+        chat_list_count=c,
+        inbox_no_chats=(c == 0) if c >= 0 else None,
+        stopped_by_os=True,
+        stopped_by_boss_verify_slider=True,
+    )
 
 
 def _select_filter_tab(page, filter_tab: str) -> bool:
@@ -481,7 +666,7 @@ def atom_inbox_harvester_full_flow(
     request_if_no_resume: bool = True,
     job_folder: str = "",
     max_ops_per_run: int = 0,
-    use_all_positions: bool = True,
+    use_all_positions: bool = False,
     stop_when_downloaded: int = 0,
     workflow_hitl_context: dict | None = None,
     os_context: dict | None = None,
@@ -492,6 +677,7 @@ def atom_inbox_harvester_full_flow(
     - 无简历：点击「求简历」向求职者索要简历（request_if_no_resume=True 时）
 
     前置：Chrome 以 --remote-debugging-port 启动，停留在 Boss 沟通页。
+    use_all_positions: True 选「全部职位」、忽略 job_text（仅联调）；默认 False 按 job_text 选职位。
 
     workflow_hitl_context:
         可选 DAG 上下文（含 ``_human_decision``），供反爬/滑块检测时 HITL 注入。
@@ -503,18 +689,18 @@ def atom_inbox_harvester_full_flow(
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return {"success": False, "pdf_paths": [], "downloaded": 0, "requested_count": 0, "processed": [], "error": "playwright 未安装"}
+        return _harvest_return(success=False, pdf_paths=[], error="playwright 未安装")
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.connect_over_cdp(cdp_url, timeout=5000)
+            browser = pw.chromium.connect_over_cdp(cdp_url, timeout=max(5000, _CDP_CONNECT_MS))
             contexts = browser.contexts
             if not contexts:
-                return {"success": False, "pdf_paths": [], "downloaded": 0, "requested_count": 0, "processed": [], "error": "未找到浏览器上下文"}
+                return _harvest_return(success=False, pdf_paths=[], error="未找到浏览器上下文")
             context = contexts[0]
             pages = context.pages
             if not pages:
-                return {"success": False, "pdf_paths": [], "downloaded": 0, "requested_count": 0, "processed": [], "error": "未找到页面"}
+                return _harvest_return(success=False, pdf_paths=[], error="未找到页面")
 
             page = None
             for p in pages:
@@ -539,7 +725,7 @@ def atom_inbox_harvester_full_flow(
             except ImportError:
                 logger.debug("playwright-stealth not installed, skip")
 
-            page.wait_for_load_state("domcontentloaded", timeout=5000)
+            _wait_domcontentloaded_lenient(page)
             try:
                 page.bring_to_front()
                 human_wait(page, 0.3, 0.7)
@@ -549,27 +735,37 @@ def atom_inbox_harvester_full_flow(
 
             navigate_to_chat_page(page)
             human_wait(page, 0.5, 1.0)
+            dismiss_boss_onboarding_overlays(page)
             check_and_bypass_anti_bot(page, _hitl)
 
             if use_all_positions:
                 if not select_all_positions(page):
-                    return {
-                        "success": False,
-                        "pdf_paths": [],
-                        "downloaded": 0,
-                        "requested_count": 0,
-                        "processed": [],
-                        "error": "无法选择「全部职位」",
-                    }
+                    return _harvest_return(success=False, pdf_paths=[], error="无法选择「全部职位」")
             elif not select_job(page, job_text):
-                return {
-                    "success": False,
-                    "pdf_paths": [],
-                    "downloaded": 0,
-                    "requested_count": 0,
-                    "processed": [],
-                    "error": f"无法选择职位「{job_text}」，请确认该职位存在。",
-                }
+                return _harvest_return(
+                    success=False,
+                    pdf_paths=[],
+                    error=f"无法选择职位「{job_text}」，请确认该职位存在。",
+                )
+            elif not use_all_positions:
+                human_wait(page, 0.5, 1.0)
+                lbl_now = _get_current_job_label(page)
+                if lbl_now == "全部职位" or not (lbl_now or "").strip():
+                    return _harvest_return(
+                        success=False,
+                        pdf_paths=[],
+                        error=(
+                            "职位未切换成功，顶部仍为「全部职位」。请先手动关闭新手引导（点「我知道了」），"
+                            "再重试；或确认 Boss 下拉中的职位文案与 job_text 完全一致。"
+                        ),
+                    )
+                ok_sel, cur_sel = _verify_job_selected(page, job_text)
+                if not ok_sel:
+                    return _harvest_return(
+                        success=False,
+                        pdf_paths=[],
+                        error=f"职位与目标不符：期望「{job_text}」，当前「{cur_sel}」。",
+                    )
 
             human_wait(page, 0.8, 1.5)
             check_and_bypass_anti_bot(page, _hitl)
@@ -603,20 +799,24 @@ def atom_inbox_harvester_full_flow(
                     filter_tab or "(空)",
                     request_if_no_resume,
                 )
-                return {
-                    "success": True,
-                    "pdf_paths": [],
-                    "downloaded": 0,
-                    "requested_count": 0,
-                    "processed": [],
-                    "error": "未找到左侧求职者对话列表",
-                }
+                return _harvest_return(
+                    success=True,
+                    pdf_paths=[],
+                    error="未找到左侧求职者对话列表",
+                    chat_list_count=0,
+                    inbox_no_chats=True,
+                )
 
+            chat_list_total = int(chat_items_loc.count())
             check_and_bypass_anti_bot(page, _hitl)
+            if is_boss_identity_verify_page(page):
+                return _exit_harvest_on_boss_verify(
+                    page, os_context, job_folder, [], 0, 0, [], chat_list_count=chat_list_total
+                )
 
             ops_limit = max_ops_per_run if max_ops_per_run > 0 else max_items
-            n = min(chat_items_loc.count(), max_items, ops_limit)
-            logger.info("本轮最多处理 %d 个对话（共 %d 个候选），stop_when_downloaded=%d", n, chat_items_loc.count(), stop_when_downloaded)
+            n = min(chat_list_total, max_items, ops_limit)
+            logger.info("本轮最多处理 %d 个对话（共 %d 个候选），stop_when_downloaded=%d", n, chat_list_total, stop_when_downloaded)
             pdf_paths = []
             downloaded = 0
             requested_count = 0
@@ -629,20 +829,44 @@ def atom_inbox_harvester_full_flow(
             # 翻页/遍历会话列表：每轮开头探针，实现飞书 STOP 秒级响应（等价于 while has_next_page 内嵌探针）
             for i in range(n):
                 if _os_stop_requested(os_context):
-                    return {
-                        "success": True,
-                        "pdf_paths": pdf_paths,
-                        "downloaded": downloaded,
-                        "requested_count": requested_count,
-                        "processed": processed,
-                        "error": "",
-                        "stopped_by_os": True,
-                    }
+                    return _harvest_return(
+                        success=True,
+                        pdf_paths=pdf_paths,
+                        downloaded=downloaded,
+                        requested_count=requested_count,
+                        processed=processed,
+                        error="",
+                        chat_list_count=chat_list_total,
+                        inbox_no_chats=False,
+                        stopped_by_os=True,
+                    )
+                if is_boss_identity_verify_page(page):
+                    return _exit_harvest_on_boss_verify(
+                        page,
+                        os_context,
+                        job_folder,
+                        pdf_paths,
+                        downloaded,
+                        requested_count,
+                        processed,
+                        chat_list_count=chat_list_total,
+                    )
                 try:
                     item = chat_items_loc.nth(i)
                     try:
                         item.scroll_into_view_if_needed(timeout=10000)
                     except Exception as scroll_err:
+                        if is_boss_identity_verify_page(page):
+                            return _exit_harvest_on_boss_verify(
+                                page,
+                                os_context,
+                                job_folder,
+                                pdf_paths,
+                                downloaded,
+                                requested_count,
+                                processed,
+                                chat_list_count=chat_list_total,
+                            )
                         logger.warning("第 %d 项 scroll 超时或失败，跳过: %s", i + 1, scroll_err)
                         continue
                     human_wait(page, 0.2, 0.6)
@@ -653,9 +877,46 @@ def atom_inbox_harvester_full_flow(
                     job_from_item = (job_el.inner_text() or "").strip() if job_el.count() > 0 else ""
                     label = f"{candidate_name} ({job_from_item})" if job_from_item else candidate_name
 
-                    item.click()
+                    fresh_pages = list(context.pages)
+                    dismiss_boss_resume_overlay(page, fresh_pages)
+                    clicked_item = False
+                    last_click_err: Exception | None = None
+                    for _attempt in range(8):
+                        if _os_stop_requested(os_context):
+                            return _harvest_return(
+                                success=True,
+                                pdf_paths=pdf_paths,
+                                downloaded=downloaded,
+                                requested_count=requested_count,
+                                processed=processed,
+                                error="",
+                                chat_list_count=chat_list_total,
+                                inbox_no_chats=False,
+                                stopped_by_os=True,
+                            )
+                        dismiss_boss_resume_overlay(page, list(context.pages))
+                        try:
+                            item.click(timeout=6000)
+                            clicked_item = True
+                            break
+                        except Exception as _ce:
+                            last_click_err = _ce
+                            human_wait(page, 0.35, 0.75)
+                    if not clicked_item:
+                        raise last_click_err or RuntimeError("geek-item 点击失败")
                     human_wait(page, 1.2, 2.5)
                     check_and_bypass_anti_bot(page, _hitl)
+                    if is_boss_identity_verify_page(page):
+                        return _exit_harvest_on_boss_verify(
+                            page,
+                            os_context,
+                            job_folder,
+                            pdf_paths,
+                            downloaded,
+                            requested_count,
+                            processed,
+                            chat_list_count=chat_list_total,
+                        )
 
                     if not has_preview_attachment_btn(page):
                         if request_if_no_resume:
@@ -664,6 +925,17 @@ def atom_inbox_harvester_full_flow(
                                 processed.append({"label": label, "action": "request_sent"})
                                 logger.info("已对 %s 点击求简历（无附件简历）", label)
                                 _random_wait_after_op()
+                                if is_boss_identity_verify_page(page):
+                                    return _exit_harvest_on_boss_verify(
+                                        page,
+                                        os_context,
+                                        job_folder,
+                                        pdf_paths,
+                                        downloaded,
+                                        requested_count,
+                                        processed,
+                                        chat_list_count=chat_list_total,
+                                    )
                             else:
                                 processed.append({"label": label, "action": "skipped_no_preview"})
                                 logger.info("跳过 %s：无「求简历」按钮或点击失败", label)
@@ -719,21 +991,34 @@ def atom_inbox_harvester_full_flow(
                     )
                     if out.get("stopped_by_os"):
                         logger.warning("🚨 [OS 中断] 预览/下载流程中捕获 STOP_HARVEST")
-                        return {
-                            "success": True,
-                            "pdf_paths": pdf_paths,
-                            "downloaded": downloaded,
-                            "requested_count": requested_count,
-                            "processed": processed,
-                            "error": "",
-                            "stopped_by_os": True,
-                        }
+                        return _harvest_return(
+                            success=True,
+                            pdf_paths=pdf_paths,
+                            downloaded=downloaded,
+                            requested_count=requested_count,
+                            processed=processed,
+                            error="",
+                            chat_list_count=chat_list_total,
+                            inbox_no_chats=False,
+                            stopped_by_os=True,
+                        )
                     if out.get("success") and out.get("pdf_path"):
                         pdf_paths.append(out["pdf_path"])
                         downloaded += 1
                         processed.append({"label": label, "action": "downloaded", "path": out["pdf_path"]})
                         logger.info("已下载 %s 简历: %s", label, out["pdf_path"])
                         _random_wait_after_op()
+                        if is_boss_identity_verify_page(page):
+                            return _exit_harvest_on_boss_verify(
+                                page,
+                                os_context,
+                                job_folder,
+                                pdf_paths,
+                                downloaded,
+                                requested_count,
+                                processed,
+                                chat_list_count=chat_list_total,
+                            )
                         if stop_when_downloaded > 0 and downloaded >= stop_when_downloaded:
                             logger.info("已下载 %d 份简历，达到目标，提前结束遍历", downloaded)
                             break
@@ -744,17 +1029,34 @@ def atom_inbox_harvester_full_flow(
                 except Exception as e:
                     if should_reraise_hitl(e):
                         raise
+                    if is_boss_identity_verify_page(page):
+                        return _exit_harvest_on_boss_verify(
+                            page,
+                            os_context,
+                            job_folder,
+                            pdf_paths,
+                            downloaded,
+                            requested_count,
+                            processed,
+                            chat_list_count=chat_list_total,
+                        )
                     logger.warning("处理第 %d 个对话失败: %s", i + 1, e)
+                    try:
+                        dismiss_boss_resume_overlay(page, list(context.pages))
+                    except Exception:
+                        pass
                     processed.append({"label": f"item_{i}", "action": "error", "error": str(e)})
 
-            return {
-                "success": True,
-                "pdf_paths": pdf_paths,
-                "downloaded": downloaded,
-                "requested_count": requested_count,
-                "processed": processed,
-                "error": "",
-            }
+            return _harvest_return(
+                success=True,
+                pdf_paths=pdf_paths,
+                downloaded=downloaded,
+                requested_count=requested_count,
+                processed=processed,
+                error="",
+                chat_list_count=chat_list_total,
+                inbox_no_chats=False,
+            )
     except Exception as e:
         if should_reraise_hitl(e):
             raise
@@ -762,4 +1064,4 @@ def atom_inbox_harvester_full_flow(
         err_msg = str(e)
         if "Target closed" in err_msg or "connect" in err_msg.lower():
             err_msg = f"{err_msg}\n提示：请用 scripts\\launch_chrome_debug.ps1 启动 Chrome"
-        return {"success": False, "pdf_paths": [], "downloaded": 0, "requested_count": 0, "processed": [], "error": err_msg}
+        return _harvest_return(success=False, pdf_paths=[], error=err_msg)

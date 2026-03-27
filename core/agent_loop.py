@@ -271,11 +271,18 @@ async def _get_llm_response(
         full_messages = [{"role": "system", "content": system_prompt}] + messages
         if chunk_callback:
             result = await engine.generate_response_stream(
-                full_messages, chunk_callback=chunk_callback, temperature=0.7, max_tokens=1024
+                full_messages,
+                chunk_callback=chunk_callback,
+                temperature=0.7,
+                max_tokens=1024,
+                call_purpose="layer2_agent_loop_stream",
             )
         else:
             result = await engine.generate_response(
-                full_messages, temperature=0.7, max_tokens=1024
+                full_messages,
+                temperature=0.7,
+                max_tokens=1024,
+                call_purpose="layer2_agent_loop",
             )
         if isinstance(result, dict):
             result = result.get("content", "") or ""
