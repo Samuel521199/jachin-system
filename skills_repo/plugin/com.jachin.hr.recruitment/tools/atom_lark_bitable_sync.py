@@ -426,36 +426,19 @@ def sync_csv_to_bitable(
                 lark_key = col_map.get(k, k)  # 使用映射后的 Lark 字段名
                 s = (v or "").strip()
                 ft = lark_field_types.get(lark_key, 1)  # 1=文本, 2=数字, 5=日期
-                # 日期类型(5)：API 需毫秒时间戳整数；勿对 "YYYY-MM-DD" 使用 float(s)（会 ValueError 后误传字符串 → DatetimeFieldConvFail）
-                if ft == 5:
-                    if not s:
-                        continue
+                # 日期类型(5)：必须发毫秒时间戳(整数)，否则 DatetimeFieldConvFail
+                if ft == 5 and s:
                     ts_val = None
                     try:
-                        compact = (
-                            s.replace(".", "")
-                            .replace("-", "")
-                            .replace("/", "")
-                            .replace(":", "")
-                            .replace(" ", "")
-                        )
-                        if compact.isdigit():
-                            raw = int(compact)
+                        if s.replace(".", "").replace("-", "").replace("/", "").replace(":", "").replace(" ", "").isdigit():
+                            raw = int(float(s))
                             if 1000000000000 <= raw <= 9999999999999:
                                 ts_val = raw
                             elif 1e9 <= raw < 1e10:
                                 ts_val = raw * 1000
                         if ts_val is None:
                             from datetime import datetime
-
-                            for fmt in (
-                                "%Y-%m-%d %H:%M:%S",
-                                "%Y-%m-%d %H:%M",
-                                "%Y-%m-%d",
-                                "%Y/%m/%d %H:%M:%S",
-                                "%Y/%m/%d %H:%M",
-                                "%Y/%m/%d",
-                            ):
+                            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
                                 try:
                                     dt = datetime.strptime(s[:19], fmt)
                                     ts_val = int(dt.timestamp() * 1000)
@@ -474,13 +457,8 @@ def sync_csv_to_bitable(
                     try:
                         fields[lark_key] = float(s.replace("%", "").replace(",", ""))
                     except ValueError:
-                        if ft == 2:
-                            continue
                         fields[lark_key] = s
                 else:
-                    # 数字列：空单元格、「-」等占位勿当字符串写入，否则 Lark 报 NumberFieldConvFail
-                    if ft == 2 and (not s or s in ("-", "—", "－")):
-                        continue
                     fields[lark_key] = s
             resp = requests.post(url, headers=headers, json={"fields": fields}, timeout=15)
             data = resp.json()

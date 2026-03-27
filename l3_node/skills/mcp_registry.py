@@ -614,22 +614,6 @@ def _wrap_add_automated_recruitment_task_reply(raw: str) -> str:
         return raw
 
 
-def _invoke_atom_bi_project_context_local(arguments: dict[str, Any] | None = None) -> str:
-    """L3 本地执行 atom_bi_project_context，路由到 l3_node.mcp_tools.bi.tool_bi_project_context。"""
-    try:
-        from l3_node.mcp_tools.bi.tool_bi_project_context import sync_bi_project_context
-
-        args = dict(arguments or {})
-        nested = args.pop("config", None) if isinstance(args.get("config"), dict) else None
-        cfg: dict[str, Any] = dict(nested or {})
-        cfg.update(args)
-        result = sync_bi_project_context(config=cfg)
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        logger.warning("[MCP Registry] atom_bi_project_context 失败: %s", e)
-        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
-
-
 def _invoke_add_automated_recruitment_task_local(
     job_name: str = "",
     analyze_threshold: int | None = None,
