@@ -1,12 +1,12 @@
 """
-BI 闪电战报 — 1-3-3 闪电战报法则（首席商业决策智库 CSO）
+BI 战略大战报（长文深度分析）
 
-专供 CEO 在手机端首屏阅读，基于 Lark 多维表数据生成《闪电战报 (Blitz Report)》：
-1 句核心战略论断 | 3 条统帅决策行动批示 | 3 组支撑论断的致命数据点。
-铁律：≤400 字、剔除推理与名词解释、动作可执行（老板可回复「同意，去执行」）。
-诊断规则：反作弊与渠道验真、核心控盘逻辑(RTP)、经济通胀与阶级固化。
+分析规范以 **docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md**（v4 交付形态）为 SSOT，
+运行时加载为 System Prompt；缺失时回退 _STRATEGIC_ANALYSIS_SPEC_FALLBACK。
 
-数据来源：优先从 Lark 多维表（同 base 下各子表）拉取；无配置时从 output CSV 读取。
+User 侧注入：bi_project 背景、T vs T-1 字段摘要、指标 JSON、CSV/Lark 摘要。
+
+数据来源：优先 Lark 多维表；否则 raw/output CSV。仪表盘小分析（Step 4a）不在此模块。
 """
 from __future__ import annotations
 
@@ -25,18 +25,32 @@ def _get_bi_raw_dir() -> Path:
     from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
     return get_bi_raw_dir()
 
-# 战略分析所需多维表子集（与 _load_csv_summary 的 key_files 对应）
+# 战略分析所需多维表子集（与 _load_csv_summary / 日环比 / Lark 拉取一致）
 _STRATEGIC_KEY_FILES = [
     "01_用户活跃_增幅表.csv",
+    "02_用户活跃_日期数量表.csv",
     "03a_用户活跃_DAU渠道来源.csv",
     "03b_用户活跃_DNU渠道来源.csv",
     "13_用户活跃_新增设备表.csv",
     "04_留存_次留表.csv",
+    "05_留存_付费用户次留表.csv",
+    "06_留存_周环比表.csv",
+    "07_留存_付费用户周环比表.csv",
     "08_消耗_每日表.csv",
+    "08b_消耗_金币_渠道层.csv",
     "09_消耗_按游戏表.csv",
     "10_充值_付费人数按SKU.csv",
     "11_充值_付费金额按SKU.csv",
+    "14_充值_付费人数金额增幅表.csv",
+    "15_消耗_Arup表.csv",
+    "16_消耗_Arppu表.csv",
+    "17_游戏_完成局数.csv",
+    "18_游戏_用户获胜.csv",
+    "19_游戏_RTP_GGR.csv",
 ]
+
+# 无对应 output 表名、仅 raw 存在的 slug（漏斗与告警）
+_STRATEGIC_RAW_ONLY_SLUGS = ["daily_acquisition", "alert_gold", "alert_traffic"]
 
 
 _METRICS_KEY_MAP = {
@@ -68,15 +82,19 @@ def _metrics_to_chinese(metrics: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _extract_blitz_report(raw: str) -> str:
-    """仅保留 1-3-3 闪电战报块，剔除旧格式。若含多条战报，取最后一条。"""
-    # 兼容新旧格式：🚨 核心战略论断 或 🚨 Jachin OS
-    start = raw.rfind("🚨 核心战略论断")
-    if start < 0:
-        start = raw.rfind("🚨 Jachin OS")
-    if start < 0:
-        return raw.strip()
-    return raw[start:].strip()
+def _finalize_strategic_report_output(raw: str) -> str:
+    """保留模型全文输出；仅去空白与偶发的整段 ``` 代码围栏包裹。"""
+    text = (raw or "").strip()
+    if not text:
+        return text
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
 
 
 def _to_json_serializable(obj: Any) -> Any:
@@ -89,37 +107,46 @@ def _to_json_serializable(obj: Any) -> Any:
         return [_to_json_serializable(v) for v in obj]
     return obj
 
-# 首席商业决策智库 (CSO) — 1-3-3 闪电战报 System Prompt
-_SYSTEM_PROMPT = """# Role: 首席商业决策智库 (CSO) & Jachin OS 战略引擎
-你的任务是深度透析每日运营与产销汇总数据，跨越冰冷的表格，直接向 CEO 输出致命的商业异动与战略决策。你极度精通 RMG (真金博彩) 游戏生态、黑产防范及虚拟经济学。
+# 未找到 STRATEGIC_REPORT_ANALYSIS_SPEC.md 时的兜底（保持可运行）
+_STRATEGIC_ANALYSIS_SPEC_FALLBACK = """# BI 战略战报（兜底规范）
 
-# 核心战法与异动判定规则 (Diagnostic Rules)
-1. 【反作弊与渠道验真】：
-   - 重点监控 `日活(DAU)`、`当日新增用户(DNU)` 与 `当日新增设备数` 的差值。若 DNU 激增但新设备数平缓，或 `注册漏斗` 中"注册人数"极高但"进桌人数"极低，判定为黑产刷号。
-   - 警惕 `Meta_ads` 等买量渠道的假量注入，结合 `CPR` 与 `CPP` 评估买量健康度。
-2. 【核心控盘逻辑 (RTP 警戒线)】：
-   - 永远分离 `参与用户数` 与 `参与机器人数` 的经济流转。
-   - 严密监控 `用户回报率RTP`，精度校验至万分位。若个别游戏（如 Mines, Tongits）RTP 异常飙高，判定为赔率漏洞或薅羊毛事故。
-   - 极度关注 `充值用户回报率RTP`：若该值显著低于大盘 RTP，表明系统在过度"杀大 R"，极易导致金主骤性流失；若高于 100%，则平台处于倒贴状态。
-3. 【经济通胀与阶级固化】：
-   - 监控 `用户金币总资产变动(产-消)`。若持续为正大数，说明处于通胀期。
-   - 交叉比对 `当日老用户金币产出/消耗` 与 `当日新增用户金币产出/消耗`。若老用户资产呈滚雪球式正向变动，说明底层资源获取过于容易，必须下发开启"消耗型活动"的指令。
+未加载到 `docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md`。请按 User 中 bi_project + T vs T-1 + JSON/CSV 输出 **长文 Markdown**（勿单一归因），须含：
 
-# 强制输出格式 (1-3-3 闪电战报法则)
-不要输出任何计算过程与名词解释。严格按照以下格式输出，总字数必须控制在 400 字以内：
+# 标题（含数据日）
+## 一、执行摘要（须含：菲律宾发薪窗与 Petsa de Peligro 判断；IAP 弱时追问 IAA 兜底；付费跌+RTP/产销异常时提死亡螺旋假设）
+## 二、红榜与黑榜（各 2 项；黑榜成对串联相关异动）
+## 三、分维度数据解读
+## 四、重点异动归因树（≤5 条；含「网赚双轨与死亡螺旋」段；无 IAA 数据须写明强需求）
+## 五、跨部门行动清单
+## 六、待澄清（首条优先：补 IAA/激励视频/eCPM 等）
 
-🚨 核心战略论断
-(一句话定性当前大盘健康度。例如：安全 / 通胀预警 / 渠道假量预警 / RTP击穿警告)
+建议总篇幅约 1200～3500 汉字。禁止编造；缺数据写「未提供」。"""
 
-⚡ 统帅决策行动批示 (3条立刻执行的明确指令)
-1. 研发/风控：(如：封禁异常设备、热更修复某游戏赔率)
-2. 市场/运营：(如：熔断某链接买量、开启老客金币回收活动)
-3. 经济宏观调控：(如：调整充值用户胜率权重，拉长破产周期)
 
-🩸 支撑论断的致命数据点
-- 风控盲区：(指出 DNU 与设备数、进桌数的异常断层)
-- 控盘红线：(指出特定玩法或充值用户的 RTP 异常偏离点)
-- 资产失衡：(指出金币总资产产消差的极端变化)"""
+def _load_strategic_analysis_spec(project_root: Path | None = None) -> str:
+    """加载大战报分析规范 MD；缺失则回退 _STRATEGIC_ANALYSIS_SPEC_FALLBACK。"""
+    try:
+        from l3_node.paths import get_app_root
+    except ImportError:
+        get_app_root = lambda: Path(__file__).resolve().parents[4]  # noqa: E731
+    root = project_root or get_app_root()
+    p = root / "docs" / "bi_daily_report" / "STRATEGIC_REPORT_ANALYSIS_SPEC.md"
+    if not p.is_file():
+        logger.warning("[Strategic] 未找到 %s，使用兜底 System 提示", p)
+        return _STRATEGIC_ANALYSIS_SPEC_FALLBACK
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+        if not text:
+            return _STRATEGIC_ANALYSIS_SPEC_FALLBACK
+        logger.info(
+            "[Strategic] 已加载大战报分析规范 MD: %s（%d 字符）",
+            p.resolve(),
+            len(text),
+        )
+        return text
+    except OSError as e:
+        logger.warning("[Strategic] 读取分析规范失败: %s", e)
+        return _STRATEGIC_ANALYSIS_SPEC_FALLBACK
 
 
 def _collect_duckdb_strategic_metrics(date_str: str | None = None) -> dict[str, Any]:
@@ -384,13 +411,24 @@ def _collect_duckdb_strategic_metrics(date_str: str | None = None) -> dict[str, 
 
 
 # User Prompt 模板：仅注入数据，格式由 System Prompt 强制
-_USER_PROMPT_TEMPLATE = """核心数据：
+_USER_PROMPT_TEMPLATE = """## K11 / BI 项目背景知识（docs/bi_daily_report/bi_project）
+{k11_context_section}
+
+## 数据日 T 相对前一日 T-1 的字段级变化摘要（output 提纯表 + raw 源表，供对照）
+比对：**T = {dod_t1}**，**T-1 = {dod_t2}**
+{dod_summary_section}
+
+---
+
+## 核心指标 JSON（引擎/同环比）
 ```json
 {metrics_json}
 ```
+
+## 多维表 / CSV 数据摘要（与上表互补）
 {csv_summary_section}
 
-请基于以上数据，严格按照 System Prompt 中的 1-3-3 闪电战报法则输出。日期用 {report_date_mmdd}（数据所属日）。总字数≤400。"""
+请**先**结合「背景知识」与「T vs T-1 摘要」理解异动，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v4 交付形态**（长文 Markdown：执行摘要、红黑榜、分维度解读、归因树、行动清单、待澄清；**不要**再用固定 🚨/⚡/🩸 三段子作为主结构）。**若 System 含「战报输出美学」追加节，排版（引用块摘要、涨跌符号与颜色、维度 emoji、`---` 分隔、行动项标签、表名行内代码）必须一并遵守。** 日期用 {report_date_mmdd}（数据所属日）。篇幅以说清为准（建议约 1200～3500 汉字）。"""
 
 
 def _lark_bitable_list_params(
@@ -505,14 +543,25 @@ def _load_csv_summary(output_dir: Path) -> str:
 # 战略分析 key 与 raw CSV 映射（output 表名 → raw slug）
 _STRATEGIC_KEY_TO_RAW: dict[str, list[str]] = {
     "01_用户活跃_增幅表.csv": ["stats_user_dau", "stats_user_new"],
+    "02_用户活跃_日期数量表.csv": ["stats_user_dau", "stats_user_new"],
     "03a_用户活跃_DAU渠道来源.csv": ["stats_user_dau"],
     "03b_用户活跃_DNU渠道来源.csv": ["stats_user_new"],
     "13_用户活跃_新增设备表.csv": ["stats_user_dau", "stats_user_new", "daily_ops_summary"],
     "04_留存_次留表.csv": ["stats_retention_user"],
+    "05_留存_付费用户次留表.csv": ["stats_retention_paid"],
+    "06_留存_周环比表.csv": ["stats_retention_user_compare"],
+    "07_留存_付费用户周环比表.csv": ["stats_retention_paid_compare"],
     "08_消耗_每日表.csv": ["prod_sales"],
+    "08b_消耗_金币_渠道层.csv": ["prod_sales", "stats_user_dau"],
     "09_消耗_按游戏表.csv": ["prod_sales"],
     "10_充值_付费人数按SKU.csv": ["recharge_status"],
     "11_充值_付费金额按SKU.csv": ["recharge_status"],
+    "14_充值_付费人数金额增幅表.csv": ["stats_recharge"],
+    "15_消耗_Arup表.csv": ["daily_ops_summary"],
+    "16_消耗_Arppu表.csv": ["daily_ops_summary"],
+    "17_游戏_完成局数.csv": ["stats_game_core"],
+    "18_游戏_用户获胜.csv": ["stats_game_core"],
+    "19_游戏_RTP_GGR.csv": ["stats_game_daily"],
 }
 
 
@@ -594,21 +643,55 @@ def _load_raw_strategic_summary(raw_dir: Path | None) -> str:
                         lines.append(f"  {line}")
             except Exception as e:
                 logger.debug("[Strategic] 读取 raw %s 失败: %s", slug, e)
+    for slug in _STRATEGIC_RAW_ONLY_SLUGS:
+        if slug in seen_slugs:
+            continue
+        p = raw_dir / f"{slug}.csv"
+        if not p.exists():
+            continue
+        seen_slugs.add(slug)
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                reader = csv_module.DictReader(f)
+                rows = list(reader)[:10]
+            if rows:
+                cols = list(rows[0].keys())
+                lines.append(f"### {slug}.csv（raw 数据，漏斗/告警）")
+                for r in rows[:5]:
+                    line = " | ".join(f"{k}: {str(r.get(k, ''))[:30]}" for k in cols[:5])
+                    lines.append(f"  {line}")
+        except Exception as e:
+            logger.debug("[Strategic] 读取 raw %s 失败: %s", slug, e)
     return "\n".join(lines) if lines else "（无 raw 数据）"
 
 
-def _build_user_prompt(metrics: dict[str, Any], data_summary: str, report_date_mmdd: str = "") -> str:
+def _build_user_prompt(
+    metrics: dict[str, Any],
+    data_summary: str,
+    report_date_mmdd: str = "",
+    *,
+    k11_context_md: str = "",
+    dod_summary: str = "",
+    dod_t1: str = "",
+    dod_t2: str = "",
+) -> str:
     # 仅传递中文 key 的 core 指标，避免 LLM 输出英文变量名
     core = {k: v for k, v in (metrics or {}).items() if not k.startswith("_")}
     metrics_cn = _metrics_to_chinese(core)
     metrics_clean = _to_json_serializable(metrics_cn)
     metrics_json = json.dumps(metrics_clean, ensure_ascii=False, indent=2)
-    data_section = ""
-    if data_summary and data_summary not in ("（无 CSV 摘要）", "（无数据）", "（无配置）"):
-        data_section = "\n多维表 / CSV 数据摘要：\n" + data_summary
+    data_section = (data_summary or "").strip() or "（无）"
     if not report_date_mmdd:
         report_date_mmdd = (datetime.now() - timedelta(days=1)).strftime("%m/%d")
+    k11_sec = (k11_context_md or "").strip() or "（未注入：请仍按 System 要求保守表述）"
+    dod_sec = (dod_summary or "").strip() or "（未生成 T/T-1 对照摘要，仅依据下列 JSON 与摘要）"
+    dt1 = (dod_t1 or "").strip() or report_date_mmdd
+    dt2 = (dod_t2 or "").strip() or "T-1"
     return _USER_PROMPT_TEMPLATE.format(
+        k11_context_section=k11_sec,
+        dod_summary_section=dod_sec,
+        dod_t1=dt1,
+        dod_t2=dt2,
         metrics_json=metrics_json,
         csv_summary_section=data_section,
         report_date_mmdd=report_date_mmdd,
@@ -690,8 +773,41 @@ async def generate_bi_strategic_report_async(
     metrics = dict(metrics or {})
     metrics["_strategic_duckdb"] = strategic_metrics
 
-    user_prompt = _build_user_prompt(metrics, data_summary, report_date_mmdd)
-    sys_prompt = _SYSTEM_PROMPT
+    k11_md = str(sr_cfg.get("_k11_project_context_md") or "").strip()
+    dod_txt = str(sr_cfg.get("_strategic_dod_summary") or "").strip()
+    dod_t1 = str(sr_cfg.get("_strategic_dod_t1") or "").strip()
+    dod_t2 = str(sr_cfg.get("_strategic_dod_t2") or "").strip()
+    if dod_t1 and not dod_t2:
+        try:
+            d0 = datetime.strptime(dod_t1[:10], "%Y-%m-%d")
+            dod_t2 = (d0 - timedelta(days=1)).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    user_prompt = _build_user_prompt(
+        metrics,
+        data_summary,
+        report_date_mmdd,
+        k11_context_md=k11_md,
+        dod_summary=dod_txt,
+        dod_t1=dod_t1 or date_str,
+        dod_t2=dod_t2,
+    )
+    spec_ov = str(sr_cfg.get("_strategic_analysis_spec_override") or "").strip()
+    if spec_ov:
+        sys_prompt = spec_ov
+    else:
+        from l3_node.paths import get_app_root
+
+        sys_prompt = _load_strategic_analysis_spec(get_app_root())
+
+    aest = str(sr_cfg.get("_strategic_aesthetics_section") or "").strip()
+    if aest:
+        sys_prompt = (
+            sys_prompt.rstrip()
+            + "\n\n---\n\n## （追加）大战报 Markdown 排版与可读性 — 与上文 SSOT 同等效力\n\n"
+            + aest
+        )
 
     engine = None
     try:
@@ -710,9 +826,8 @@ async def generate_bi_strategic_report_async(
     if not engine:
         fallback = """# 📊 BI 战略分析（LLM 未就绪）
 
-🚨 核心战略论断：数据已就绪，但 LLM 引擎不可用。请配置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY 后重试。
-
-💡 建议：检查 .env 或 L2 下发的 API Key。"""
+## 说明
+数据已就绪，但 LLM 引擎不可用。请在项目根 `.env` 配置 `DASHSCOPE_API_KEY` 或 `OPENAI_API_KEY`，或通过 L2 为子账号下发 Key 后重试。"""
         return fallback
 
     try:
@@ -723,7 +838,7 @@ async def generate_bi_strategic_report_async(
         result = await engine.generate_response(
             messages,
             temperature=0.2,
-            max_tokens=800,  # 1-3-3 闪电战报 ≤400 字
+            max_tokens=8192,
         )
         if isinstance(result, dict):
             text = result.get("content", "")
@@ -731,8 +846,7 @@ async def generate_bi_strategic_report_async(
             text = (result or "").strip()
         if not text:
             return "LLM 返回空内容"
-        # 仅保留 1-3-1-3-1 闪电战报，剔除旧格式及括号内容
-        return _extract_blitz_report(text)
+        return _finalize_strategic_report_output(text)
     except Exception as e:
         logger.exception("[Strategic] LLM 调用失败: %s", e)
         return f"""# 📊 BI 战略分析（生成失败）

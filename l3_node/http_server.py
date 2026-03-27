@@ -689,7 +689,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         logger.warning("[L3 HTTP] aiohttp 未安装，技能 HTTP API 不可用。pip install aiohttp")
         return None
 
-    # 预加载招聘心脏起搏器（APScheduler），HR 包存在时加载
+    # 预加载招聘 APScheduler（HR 包存在时）；与 BI 定时独立（v0.8.50 系统基线 + BI 侧独立注册）
     try:
         try:
             from l3_node.early_log import trace
@@ -697,6 +697,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except ImportError:
             pass
         from l3_node.hr_loader import get_recruitment_scheduler
+
         sched = get_recruitment_scheduler()
         if sched:
             try:
@@ -704,33 +705,15 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
                 trace("http_server: recruitment_scheduler loaded")
             except ImportError:
                 pass
-        try:
-            from l3_node.skills.bi.scheduler import register_bi_daily_report_job
-            # #region agent log
-            try:
-                import json, time
-                _p = Path(__file__).resolve().parents[1] / "debug-ead14b.log"
-                _line = json.dumps({"sessionId":"ead14b","location":"http_server.pre_register_bi","message":"about_to_call","data":{},"timestamp":int(time.time()*1000),"hypothesisId":"H0"}, ensure_ascii=False) + "\n"
-                with open(_p, "a", encoding="utf-8") as _f:
-                    _f.write(_line)
-            except Exception:
-                pass
-            # #endregion
-            register_bi_daily_report_job()
-        except Exception as e:
-            logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
-            # #region agent log
-            try:
-                import json, time
-                _p = Path(__file__).resolve().parents[1] / "debug-ead14b.log"
-                _line = json.dumps({"sessionId":"ead14b","location":"http_server.register_bi_failed","message":"exception","data":{"error": str(e)},"timestamp":int(time.time()*1000),"hypothesisId":"H0"}, ensure_ascii=False) + "\n"
-                with open(_p, "a", encoding="utf-8") as _f:
-                    _f.write(_line)
-            except Exception:
-                pass
-            # #endregion
     except Exception as e:
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
+
+    try:
+        from l3_node.skills.bi.scheduler import register_bi_daily_report_job
+
+        register_bi_daily_report_job()
+    except Exception as e:
+        logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
 
     @aiohttp.web.middleware
     async def cors_middleware(request, handler):

@@ -85,11 +85,21 @@ def main() -> int:
     print("-" * 50)
 
     async def _run() -> str:
+        from l3_node.paths import get_app_root
+        from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
+        from l3_node.skills.bi.bi_daily_report.main_skill import _merge_strategic_report_config_for_llm
         from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
+
+        cfg_m = _merge_strategic_report_config_for_llm(
+            cfg,
+            project_root=get_app_root(),
+            output_dir=output_dir,
+            raw_dir=get_bi_raw_dir(),
+        )
         return await generate_bi_strategic_report_async(
             metrics=None,
             output_dir=output_dir,
-            config=cfg,
+            config=cfg_m,
         )
 
     md = asyncio.run(_run())

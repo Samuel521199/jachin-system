@@ -77,6 +77,17 @@ smtp:
 default_to_addrs:
   - "${BI_SMTP_TO}"
 """,
+    "atom_bi_project_context": """# atom_bi_project_context — BI 项目知识库同步（写入 docs/bi_daily_report/bi_project）
+app_id: "${LARK_APP_ID}"
+app_secret: "${LARK_APP_SECRET}"
+lark_use_feishu: false
+output_dir_relative: docs/bi_daily_report/bi_project
+max_records_per_table: 2000
+max_discovered_links: 40
+recurse_children_depth: 2
+# wiki_urls 省略时使用工具内置默认链接列表；若需自定义请取消下行注释并编辑
+# wiki_urls: []
+""",
 }
 
 

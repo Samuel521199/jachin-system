@@ -39,7 +39,8 @@ l3_node/mcp_tools/bi/
 ├── spa_collector.py         # BI 批量 SPA 抓取（供 scripts + main_skill 复用）
 ├── tool_web_scraper.py      # mcp:atom_web_scraper
 ├── tool_lark_notifier.py    # mcp:atom_lark_notifier
-└── tool_email_sender.py    # mcp:atom_email_sender
+├── tool_email_sender.py    # mcp:atom_email_sender
+└── tool_bi_project_context.py  # mcp:atom_bi_project_context
 ```
 
 ### 2.2 文件职责
@@ -53,6 +54,7 @@ l3_node/mcp_tools/bi/
 | `tool_web_scraper.py` | 网页/表格抓取，输出 CSV/JSON | MCP 路由到 `harvest_table_data` |
 | `tool_lark_notifier.py` | 飞书 webhook 推送 | MCP 路由到 `send_lark_markdown` |
 | `tool_email_sender.py` | SMTP 邮件发送 | MCP 路由到 `send_email` |
+| `tool_bi_project_context.py` | Lark 知识库项目文档同步至 `docs/bi_daily_report/bi_project/` | MCP 路由到 `sync_bi_project_context` |
 
 ### 2.3 MCP 工具注册（mcp_registry）
 
@@ -61,6 +63,7 @@ l3_node/mcp_tools/bi/
 | `mcp:atom_web_scraper` | `l3_node.mcp_tools.bi.tool_web_scraper` |
 | `mcp:atom_lark_notifier` | `l3_node.mcp_tools.bi.tool_lark_notifier` |
 | `mcp:atom_email_sender` | `l3_node.mcp_tools.bi.tool_email_sender` |
+| `mcp:atom_bi_project_context` | `l3_node.mcp_tools.bi.tool_bi_project_context` |
 
 ---
 
@@ -109,6 +112,8 @@ register_bi_daily_report_job()
 | [07_BI_METRICS_PLUGINS.md](./07_BI_METRICS_PLUGINS.md) | 指标插件开发指南 |
 | [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md) | **本文档** — 目录布局与归属规范 |
 | [09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md](./09_SPA_SCRAPER_PLACEMENT_ANALYSIS.md) | run_bi_scraper_spa 归属分析、spa_collector 集成方案 |
+| [STRATEGIC_REPORT_ANALYSIS_SPEC.md](./STRATEGIC_REPORT_ANALYSIS_SPEC.md) | **大战报（Step 3.5）** v4.2 SSOT；文末「战报输出美学」由 `main_skill` 截取并注入 System 追加节 |
+| [bi_project/](./bi_project/) | K11/项目背景等 Markdown，注入大战报 User 上下文 |
 
 ---
 

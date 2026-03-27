@@ -8,13 +8,15 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 当用户发起「BI分析」「帮我开始今天的BI分析」等意图时，按以下步骤执行：
 
-1. **数据新鲜度**：检查 bi.duckdb 是否含今日 _ingested_date；若无则执行 SPA 抓取（spa_collector）并 ingest_csv
-2. **数据提纯**：从 DuckDB 按产品需求（12_PRODUCT_REQUIREMENTS.md）与 Lark 表结构（11_LARK_TABLE_SCHEMA.md）
-   提炼 14 个 CSV：用户活跃(增幅/日期数量/渠道/新增设备)、留存(次留/周环比)、消耗(每日/按游戏)、充值(付费人数/付费金额按SKU/付费人数金额增幅/ARPU/ARPPU)
+1. **数据新鲜度**：检查 bi.duckdb 是否含今日 _ingested_date；若无则执行 SPA 抓取（spa_collector）并 ingest_csv。抓取前按 `full_spa.report_date_end`（默认昨天）写入统计日期并点「查询/对比查询」，与战报「最新完整日」一致
+2. **数据提纯**：从 DuckDB / raw 按 Lark 表结构（11_LARK_TABLE_SCHEMA.md）与业务规则提炼 CSV：
+   用户活跃（增幅含数值、周统计含老用户、渠道、日活占比、新增设备）、留存四表、消耗（当日金币七列、按游戏）、
+   充值 SKU（人数/金额含总付费增幅）、付费汇总、Arpu/Arppu（日运营汇总）、游戏（完成局数/获胜/RTP·GGR）
 3. **Lark 同步**：将 output 下 CSV 同步到飞书多维表格（atom_lark_bitable_sync）
-4. **战略深度分析**：基于 DuckDB 指标与 CSV，调用 LLM 生成金字塔原则战报，可选推送 Lark
-5. **邮件通知**：调用 mcp:atom_email_sender（路由到 l3_node.mcp_tools.bi.tool_email_sender → channels.email.smtp）将战报发送至 distribution.email.to_addrs
-6. **仪表盘分析**（Step 4a）：对每个仪表盘调用 LLM 分析统计图数据 → 保存到 output → 通过 Lark 机器人推送消息卡片（分析+仪表盘链接）。不再使用浏览器配置「设置自动化发送」。
+3.4 **KPI 快照卡片**：同步完成后，从同目录 CSV 拼装指标（按 👥/💰/🎮/⚖️ 分组、`---` 分隔、涨跌 🟢/🔻）推送 Lark
+4. **仪表盘分析**（Step 4a）：对每个仪表盘调用 LLM 分析统计图数据 → 保存到 output → 通过 Lark 机器人推送消息卡片（分析+仪表盘链接）。**先于大战报执行**。
+5. **战略深度分析（大战报）**：System 从 `STRATEGIC_REPORT_ANALYSIS_SPEC.md`（**v4 长文交付**）加载；注入 `bi_project` + output/raw **T vs T-1** 摘要 + DuckDB/CSV；在 Step 4a 之后执行。
+6. **邮件通知**：调用 mcp:atom_email_sender 将战报发送至 distribution.email.to_addrs（邮件内顺序：一、仪表盘 → 二、Lark 同步 → 三、战略分析）。
 
 配置项 `verbose_log`（默认 true）：控制是否在终端打印执行进度；false 时仅写日志文件。
 
@@ -30,9 +32,13 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 | 留存数据统计 → 新增用户留存对比 | stats_retention_user_compare | 06 周环比（T+1/T+3/T+5） |
 | 留存数据统计 → 新增付费留存统计 | stats_retention_paid | 05 付费用户次留表 |
 | 留存数据统计 → 新增付费留存对比 | stats_retention_paid_compare | 07 付费用户周环比 |
-| 平台产销 → 平台产销情况 | prod_sales | 08 当日金币产出消耗、09 每个游戏的产出消耗 |
+| 平台产销 → 平台产销情况 | prod_sales | 08 当日金币（全）、09 每个游戏的产出消耗 |
+| 用户数据统计 → 日活统计 | stats_user_dau | 08b 当日金币（渠道层） |
 | 平台数据 → 平台充值情况 | recharge_status | 10 付费人数按SKU、11 付费金额按SKU |
-| 充值数据统计 → 充值数据统计 | stats_recharge | 14 付费人数金额增幅、15 ARPU、16 ARPPU |
+| 充值数据统计 → 充值数据统计 | stats_recharge | 14 付费人数金额增幅（无日运营时 Arpu/Arppu 兜底） |
+| 平台数据 → 日常报表 → 每日运营数据汇总 | daily_ops_summary | 15 Arpu 表、16 Arppu 表 |
+| 游戏数据统计 → 核心产品每日数据表 | stats_game_core | 17 完成局数、18 用户获胜 |
+| 游戏数据统计 → 每日游戏数据 | stats_game_daily | 19 GameRTP、GGR |
 
 输出目录：~/.jachin/client_volumes/bi_data/output/
 """
@@ -46,7 +52,7 @@ import logging
 import os
 import re
 import socket
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -93,8 +99,9 @@ _REQUIRED_SLUGS = [
     "stats_retention_user_compare",
     "stats_retention_paid_compare",  # 付费用户周环比
     "daily_acquisition",
-    "stats_game_daily",       # 图2 每日游戏数据（游戏名称+消耗产出）
-    "stats_game_compare",     # 图2 游戏数据统计对比（统计范围=游戏名）
+    "stats_game_daily",       # 每日游戏数据（按游戏产出消耗 / RTP·GGR）
+    "stats_game_compare",     # 游戏数据统计对比
+    "stats_game_core",        # 核心产品每日数据表（局数、胜负）
 ]
 # 周/月环比数据来源（若存在则填入）
 _RETENTION_COMPARE_SLUGS = ["stats_retention_user_compare", "stats_retention_paid_compare"]
@@ -114,7 +121,27 @@ _DASHBOARD_DISPLAY_URLS = {
     "仪表盘_用户登录活跃情况": "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlghRi3WdEjFX9aH3LI3Bbf2c",
     "仪表盘_平台留存情况": "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlgr00stzCWoJ2cySEAy4Ryie",
     "仪表盘_平台消耗情况": "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlg77U8jQvTTodea2ZQifK8ab",
+    # 游戏情况：请在 bi_daily_report.yaml dashboard_automation.dashboards 中配置 url；未配置时 Step4a 仅用多维表/CSV 摘要
+    "仪表盘_游戏情况": "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlgc0qFebIwVIkEaTy7HpktIc",
 }
+
+
+def _bi_spa_report_date_end(cfg: dict[str, Any]) -> date:
+    """
+    SPA 在 BI 后台填「统计日期」时使用的区间结束日（通常为昨天）。
+    可选 full_spa.report_date_end: \"YYYY-MM-DD\"，或顶层 spa_report_date_end。
+    """
+    fs = cfg.get("full_spa") if isinstance(cfg.get("full_spa"), dict) else {}
+    raw = fs.get("report_date_end") or cfg.get("spa_report_date_end")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parts = raw.strip()[:10].split("-")
+            if len(parts) == 3:
+                y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                return date(y, m, d)
+        except (ValueError, TypeError):
+            pass
+    return (datetime.now() - timedelta(days=1)).date()
 
 
 def _get_bi_log_dir(cfg: dict[str, Any] | None = None) -> Path:
@@ -201,6 +228,46 @@ def _resolve_config_values(cfg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _nonempty_str(v: Any) -> bool:
+    return isinstance(v, str) and bool(v.strip())
+
+
+def _merge_lark_tables_from_project_yaml(result: dict[str, Any], proj_raw: dict[str, Any]) -> None:
+    """~/.jachin 下 YAML 里 table_id 为空的项，用项目 config 中的非空 table_id 补齐（避免本机配置落后导致大量「未配置 table_id」）。"""
+    tables_user = (result.get("lark_bitable") or {}).get("tables")
+    tables_proj = (proj_raw.get("lark_bitable") or {}).get("tables")
+    if not isinstance(tables_proj, dict):
+        return
+    merged = dict(tables_user) if isinstance(tables_user, dict) else {}
+    for key, pid in tables_proj.items():
+        if _nonempty_str(merged.get(key)):
+            continue
+        if _nonempty_str(pid):
+            merged[key] = pid
+    result.setdefault("lark_bitable", {})["tables"] = merged
+
+
+def _merge_dashboards_by_name_from_project(result: dict[str, Any], proj_raw: dict[str, Any]) -> None:
+    """用户目录仅配置了 3 个仪表盘时，按 name 从项目 YAML 追加缺失项（如 仪表盘_游戏情况）。"""
+    da_u = result.get("dashboard_automation") or {}
+    da_p = proj_raw.get("dashboard_automation") or {}
+    dash_u = da_u.get("dashboards")
+    dash_p = da_p.get("dashboards")
+    if not isinstance(dash_p, list):
+        return
+    out = list(dash_u) if isinstance(dash_u, list) else []
+    names = {d.get("name") for d in out if isinstance(d, dict) and d.get("name")}
+    for d in dash_p:
+        if not isinstance(d, dict):
+            continue
+        n = d.get("name")
+        if n and n not in names:
+            out.append(dict(d))
+            names.add(n)
+    if out:
+        result.setdefault("dashboard_automation", {})["dashboards"] = out
+
+
 def _load_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     if config and isinstance(config, dict):
         return _resolve_config_values(config)
@@ -218,6 +285,17 @@ def _load_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
                 with open(path, encoding="utf-8") as f:
                     raw = yaml.safe_load(f) or {}
                 result = _resolve_config_values(raw)
+                # 本机优先读 ~/.jachin 时：用项目仓库 YAML 补全空的 table_id、缺的仪表盘 URL
+                proj_raw: dict[str, Any] = {}
+                if path == candidates[0] and candidates[1].exists():
+                    try:
+                        with open(candidates[1], encoding="utf-8") as pf:
+                            proj_raw = yaml.safe_load(pf) or {}
+                    except Exception:
+                        proj_raw = {}
+                if proj_raw:
+                    _merge_lark_tables_from_project_yaml(result, proj_raw)
+                    _merge_dashboards_by_name_from_project(result, proj_raw)
                 da = result.get("dashboard_automation") or {}
                 # 若 dashboard_automation 为空（用户目录配置较旧未同步该块），从另一处补全
                 if not da or not da.get("dashboards"):
@@ -297,7 +375,7 @@ def _bi_reconcile_llm_engine_ref_with_agent() -> None:
     合并 .env 后：若环境中有 Key，则
     - engine_ref 已有引擎：将 Key 写回 engine.ctx 与 os.environ（与 L3 Agent 使用同一套上下文）；
     - 否则：按 L3 _create_engine_standalone 等价逻辑新建引擎并 register_host_services。
-    在 Step 1.1 长时间抓取之后、Step 3.5/4a 之前应再调用一次，避免仅依赖流程开头的环境状态。
+    在 Step 1.1 长时间抓取之后、Step 4a/3.5 之前应再调用一次，避免仅依赖流程开头的环境状态。
     """
     _bi_merge_dotenv_for_skill()
     dash = (
@@ -363,6 +441,24 @@ def _find_col(columns: list[str], *candidates: str) -> str | None:
         for c in columns:
             if cand and (cand.lower() in (c or "").lower() or (c or "") == cand):
                 return c
+    return None
+
+
+def _find_col_arpu_or_arppu(columns: list[str], *, want_arppu: bool) -> str | None:
+    """匹配每日运营汇总中的 Arpu / Arppu 列。勿用 _find_col('Arpu')：子串 arpu 会误命中「Arppu」。"""
+    for c in columns:
+        if not c:
+            continue
+        raw = str(c).strip()
+        cl = raw.lower().replace(" ", "")
+        if want_arppu:
+            if "arppu" in cl or cl.startswith("arppu") or raw.upper() == "ARPPU":
+                return raw
+        else:
+            if "arppu" in cl:
+                continue
+            if cl == "arpu" or cl.startswith("arpu") or raw.upper() == "ARPU":
+                return raw
     return None
 
 
@@ -531,12 +627,19 @@ def _query_table_or_raw(
     return _query_table(conn, slug, date_from, date_to)
 
 
-def _date_to_lark_ts(d: str) -> int:
-    try:
-        dt = datetime.strptime(d[:10], "%Y-%m-%d")
-        return int(dt.timestamp() * 1000)
-    except ValueError:
-        return 0
+def _lark_date_cell(d: str, *, fallback: str = "") -> str:
+    """写入 CSV 的日期列：统一 YYYY-MM-DD，供 Lark 日期字段解析。
+
+    毫秒时间戳写入 CSV 易被 Excel 变成科学计数法或丢精度，同步后表现为 1970-01-01 或空。
+    """
+    for cand in (d, fallback):
+        if not cand:
+            continue
+        iso = _parse_date_to_iso(cand)
+        if iso:
+            return iso[:10]
+    s = (d or fallback or "").strip()
+    return s[:10] if len(s) >= 10 and s[4] == "-" and s[7] == "-" else ""
 
 
 def _lark_safe_text(v: str) -> str:
@@ -592,9 +695,32 @@ def _write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> int:
     return len(rows)
 
 
+def _filter_rows_to_single_date(rows: list[dict], date_cands: list[str], t1: str) -> list[dict]:
+    """只保留目标日期的数据。优先 t1（昨日）；展开子行继承上一行日期（与 BI 导出一致）。"""
+    if not rows:
+        return []
+    cols = list(rows[0].keys())
+    date_col = _find_col(cols, *date_cands)
+    if not date_col:
+        return rows
+    last_iso = ""
+    stamped: list[tuple[dict, str]] = []
+    for r in rows:
+        di = _parse_date_to_iso(r.get(date_col))
+        if di:
+            last_iso = di
+        eff = di or last_iso
+        stamped.append((r, eff))
+    dates_in = sorted({eff for _, eff in stamped if eff}, reverse=True)
+    target = (t1[:10] if t1 else "") if dates_in and t1[:10] in dates_in else (dates_in[0] if dates_in else (t1[:10] if t1 else ""))
+    if not target:
+        return rows
+    return [r for r, eff in stamped if eff == target]
+
+
 def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str, raw_dir: Path | None = None) -> list[Path]:
-    """用户活跃：01 DAU/DNU增幅、02 日期数量、03a DAU渠道、03b DNU渠道、13 新增设备。
-    数据来源：stats_user_dau（日活统计）、stats_user_new（日新用户统计），优先 raw/*.csv。"""
+    """用户活跃：01 增幅+数值、02 周统计（含老用户）、03a/03b 渠道（03b 含老用户）、12 日活占比、13 新增设备。
+    数据来源：stats_user_dau、stats_user_new，优先 raw/*.csv。"""
     written: list[Path] = []
     q = lambda slug, df=None, dt=None: _query_table_or_raw(conn, raw_dir, slug, df, dt)
 
@@ -667,18 +793,28 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
     dnu1, dnu0 = dnu_by_date.get(d1, 0), dnu_by_date.get(d2, 0) if d2 else 0
     dau_pct = round((dau1 - dau0) / dau0 * 100, 2) if dau0 else 0.0
     dnu_pct = round((dnu1 - dnu0) / dnu0 * 100, 2) if dnu0 else 0.0
-    increase_rows = [{"类型": "DAU", "增幅（%）": dau_pct}, {"类型": "DNU", "增幅（%）": dnu_pct}]
-    _write_csv(output_dir / "01_用户活跃_增幅表.csv", increase_rows, ["类型", "增幅（%）"])
+    increase_rows = [
+        {"类型": "DAU", "增幅（%）": dau_pct, "数值": float(dau1)},
+        {"类型": "DNU", "增幅（%）": dnu_pct, "数值": float(dnu1)},
+    ]
+    _write_csv(output_dir / "01_用户活跃_增幅表.csv", increase_rows, ["类型", "增幅（%）", "数值"])
     written.append(output_dir / "01_用户活跃_增幅表.csv")
 
-    # 02 周统计 DAU/DNU 数量：合并两表按日期
+    # 02 周统计 DAU/DNU 数量：合并两表按日期；老用户数量 = DAU - DNU
     by_date_02: dict[str, dict] = {}
     for d in all_dates[:7]:
-        by_date_02[d] = {"日期": _date_to_lark_ts(d), "DAU数量": int(dau_by_date.get(d, 0)), "DNU数量": int(dnu_by_date.get(d, 0))}
+        di = int(dau_by_date.get(d, 0))
+        ni = int(dnu_by_date.get(d, 0))
+        by_date_02[d] = {
+            "日期": _lark_date_cell(d),
+            "DAU数量": di,
+            "DNU数量": ni,
+            "老用户数量": max(0, di - ni),
+        }
     daily_rows = [by_date_02[d] for d in sorted(by_date_02.keys())]
     if not daily_rows:
-        daily_rows = [{"日期": _date_to_lark_ts(t1), "DAU数量": 0, "DNU数量": 0}]
-    _write_csv(output_dir / "02_用户活跃_日期数量表.csv", daily_rows, ["日期", "DAU数量", "DNU数量"])
+        daily_rows = [{"日期": _lark_date_cell(t1), "DAU数量": 0, "DNU数量": 0, "老用户数量": 0}]
+    _write_csv(output_dir / "02_用户活跃_日期数量表.csv", daily_rows, ["日期", "DAU数量", "DNU数量", "老用户数量"])
     written.append(output_dir / "02_用户活跃_日期数量表.csv")
 
     def _agg_channel(rows: list[dict], ch_col: str, count_unique_col: str | None = None) -> list[dict]:
@@ -710,28 +846,6 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
             cnt = int(_safe_float(r.get(count_col, 0)))
             out.append({"渠道": ch, "数量": cnt})
         return sorted(out, key=lambda x: -x["数量"])[:30]
-
-    def _filter_rows_to_single_date(rows: list[dict], date_cands: list[str], t1: str) -> list[dict]:
-        """只保留目标日期的数据。优先 t1（昨日）；展开子行继承上一行日期（与 BI 导出一致）。"""
-        if not rows:
-            return []
-        cols = list(rows[0].keys())
-        date_col = _find_col(cols, *date_cands)
-        if not date_col:
-            return rows
-        last_iso = ""
-        stamped: list[tuple[dict, str]] = []
-        for r in rows:
-            di = _parse_date_to_iso(r.get(date_col))
-            if di:
-                last_iso = di
-            eff = di or last_iso
-            stamped.append((r, eff))
-        dates_in = sorted({eff for _, eff in stamped if eff}, reverse=True)
-        target = (t1[:10] if t1 else "") if dates_in and t1[:10] in dates_in else (dates_in[0] if dates_in else (t1[:10] if t1 else ""))
-        if not target:
-            return rows
-        return [r for r, eff in stamped if eff == target]
 
     dau_rows, dnu_rows = [], []
     # 03a DAU 渠道来源：日活统计，最新日期各渠道 DAU 数量
@@ -796,11 +910,24 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
         _bi_log("Step 2 提示: 03a DAU 渠道无数据，已写入占位行", detail="若 Lark 表显示 0 或占位符，请设置 skip_collect=false 并重新运行，确保 SPA 抓取「日活统计」时已展开日期/渠道")
     if not dnu_rows:
         _bi_log("Step 2 提示: 03b DNU 渠道无数据，已写入占位行", detail="若 Lark 表显示 0 或占位符，请设置 skip_collect=false 并重新运行，确保 SPA 抓取「日新用户统计」时已展开渠道")
+    # Lark「DNU渠道来源」子表多为两列：DNU渠道来源、数量（无「老用户数量」列，写入第三列会 FieldNameNotFound）
     _write_csv(output_dir / "03a_用户活跃_DAU渠道来源.csv", dau_rows if dau_rows else [{"DAU渠道来源": "（需抓取 stats_user_dau/日活统计）", "数量": 0}], ["DAU渠道来源", "数量"])
-    _write_csv(output_dir / "03b_用户活跃_DNU渠道来源.csv", dnu_rows if dnu_rows else [{"DNU渠道来源": "（需抓取 stats_user_new/日新用户统计）", "数量": 0}], ["DNU渠道来源", "数量"])
+    _write_csv(
+        output_dir / "03b_用户活跃_DNU渠道来源.csv",
+        dnu_rows if dnu_rows else [{"DNU渠道来源": "（需抓取 stats_user_new/日新用户统计）", "数量": 0}],
+        ["DNU渠道来源", "数量"],
+    )
     written.extend([output_dir / "03a_用户活跃_DAU渠道来源.csv", output_dir / "03b_用户活跃_DNU渠道来源.csv"])
 
-    # 13 新增设备数、增幅、占比：来自 stats_user_new（日日新用户统计），取 ALL 汇总行的日新设备数、DNU
+    # 12 日活占比：固定两行「新用户」「老用户」，日活 = DNU 与 DAU-DNU（最新日 d1）
+    nu_live = int(dnu_by_date.get(d1, 0)) if d1 else 0
+    du_live = int(dau_by_date.get(d1, 0)) if d1 else 0
+    old_live = max(0, du_live - nu_live)
+    ratio_rows = [{"用户": "新用户", "日活": float(nu_live)}, {"用户": "老用户", "日活": float(old_live)}]
+    _write_csv(output_dir / "12_用户活跃_日活占比.csv", ratio_rows, ["用户", "日活"])
+    written.append(output_dir / "12_用户活跃_日活占比.csv")
+
+    # 13 新增设备数：来自 stats_user_new（日日新用户统计），取 ALL 汇总行的日新设备数、DNU
     dev_rows = q("stats_user_new", t0, t1)
     dev_val, dev_pct, dnu_dev_ratio = 0, 0.0, "-"
     if dev_rows:
@@ -831,8 +958,19 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
                 r0 = by_date_dev.get(dates_dev[1], {})
                 dev0 = r0.get("dev", 0)
                 dev_pct = round((dev_val - dev0) / dev0 * 100, 2) if dev0 else 0.0
-    dev_table = [{"新增设备数值": dev_val, "新增设备增幅": dev_pct, "新增用户/新增设备": dnu_dev_ratio}]
-    _write_csv(output_dir / "13_用户活跃_新增设备表.csv", dev_table, ["新增设备数值", "新增设备增幅", "新增用户/新增设备"])
+    dev_table = [
+        {
+            "日期": _lark_date_cell(d1 if d1 else t1, fallback=t1),
+            "新增设备数量": dev_val,
+            "新增设备增幅（%）": dev_pct,
+            "新增用户/新增设备": dnu_dev_ratio,
+        }
+    ]
+    _write_csv(
+        output_dir / "13_用户活跃_新增设备表.csv",
+        dev_table,
+        ["日期", "新增设备数量", "新增设备增幅（%）", "新增用户/新增设备"],
+    )
     written.append(output_dir / "13_用户活跃_新增设备表.csv")
 
     return written
@@ -970,29 +1108,33 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str, raw_dir: Path | None
                 pass
         return _parse_pct_to_num(s)
 
-    def _parse_paid_compare_pct(s: str) -> float:
+    def _parse_paid_compare_pct(s: str) -> float | None:
         """解析 stats_retention_paid_compare（新增付费留存对比）的周环比变化。
-        BI 展示：上空/中变化率/下上周基线。需取中间的变化率（如 -100%），非上周基线（如 50%、16.67%）。
-        格式：'--100%60.00%' → 变化 -100%， baseline 60% 忽略；'---' 空数据 → -100。"""
+        BI 展示：上空/中变化率/下上周基线。需取中间的变化率，非上周基线。
+        主格为「-」「---」等表示无数据 → 返回 None（CSV 写「-」），勿臆造 -100。"""
         s = str(s or "").strip()
-        if not s or s in ("---", "--", "N/A"):
-            return -100.0  # 空数据表示本周无数据，环比视为 -100%
-        # 匹配带符号的百分数：-100%、+50%、0% 等
+        if not s or s in ("-", "—", "－", "---", "--", "N/A", "n/a"):
+            return None
+        if re.fullmatch(r"[\s\-—－]+", s):
+            return None
         matches = re.findall(r"([+-]?\d+\.?\d*)\s*%", s)
         if not matches:
-            return -100.0
+            return None
         try:
             vals = [float(x) for x in matches]
-            # 三段式 [本周][变化][上周]：取中间
             if len(vals) >= 3:
                 return round(vals[1], 2)
-            # 两段式 [变化][上周]：如 --100%60.00%
             if len(vals) == 2:
-                # 变化通常带负号或为 0
                 return round(vals[0], 2)
             return round(vals[0], 2)
         except ValueError:
-            return -100.0
+            return None
+
+    def _paid_wow_cell(v: float | None) -> str | float:
+        """None → 空单元格（Lark 数字列同步时省略该字段，避免 '-' 触发 NumberFieldConvFail）。"""
+        if v is None:
+            return ""
+        return round(float(v), 2)
 
     wow_t2, wow_t4, wow_t6 = 0.0, 0.0, 0.0
     # 06 周环比：来源 stats_retention_user_compare（新增用户留存对比）第一行 ALL，T+1/T+3/T+5
@@ -1037,8 +1179,10 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str, raw_dir: Path | None
     # 06 周环比：类型 T+1/T+3/T+5，留存率（%）。Lark 表「周环比」固定三行
     wow_rows = [{"类型": _RETENTION_TYPE_WOW["t2"], "留存率（%）": wow_t2}, {"类型": _RETENTION_TYPE_WOW["t4"], "留存率（%）": wow_t4}, {"类型": _RETENTION_TYPE_WOW["t6"], "留存率（%）": wow_t6}]
     _write_csv(output_dir / "06_留存_周环比表.csv", wow_rows, ["类型", "留存率（%）"])
-    # 07 付费用户周环比：来源 stats_retention_paid_compare（新增付费留存对比）第一行 统计范围=ALL 且 日期对比含~，T+1/T+2/T+3 周环比变化（取变化率如-100%，非上周基线）
-    paid_wow_t1, paid_wow_t2, paid_wow_t3 = 0.0, 0.0, 0.0
+    # 07 付费用户周环比：来源 stats_retention_paid_compare（新增付费留存对比）第一行 统计范围=ALL 且 日期对比含~，T+1/T+2/T+3 周环比变化（取变化率；无数据为 None →「-」）
+    paid_wow_t1: float | None = None
+    paid_wow_t2: float | None = None
+    paid_wow_t3: float | None = None
     paid_compare = q("stats_retention_paid_compare")
     if not paid_compare and raw_dir and raw_dir.exists():
         paid_compare = _load_raw_csv(raw_dir, "stats_retention_paid_compare")
@@ -1064,7 +1208,7 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str, raw_dir: Path | None
             col = _find_col(pcols, *cands)
             if col:
                 raw_val = str(pr.get(col, "") or "")
-                num = _parse_paid_compare_pct(raw_val)  # 取周环比变化（-100%），非上周基线（50%等）
+                num = _parse_paid_compare_pct(raw_val)
                 if key == "t1":
                     paid_wow_t1 = num
                 elif key == "t2":
@@ -1072,7 +1216,11 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str, raw_dir: Path | None
                 else:
                     paid_wow_t3 = num
     # 07 付费用户周环比：类型 T+1/T+2/T+3，Lark 表「付费用户周环比」固定三行
-    paid_wow_rows = [{"类型": "T+1", "留存率": paid_wow_t1}, {"类型": "T+2", "留存率": paid_wow_t2}, {"类型": "T+3", "留存率": paid_wow_t3}]
+    paid_wow_rows = [
+        {"类型": "T+1", "留存率": _paid_wow_cell(paid_wow_t1)},
+        {"类型": "T+2", "留存率": _paid_wow_cell(paid_wow_t2)},
+        {"类型": "T+3", "留存率": _paid_wow_cell(paid_wow_t3)},
+    ]
     _write_csv(output_dir / "07_留存_付费用户周环比表.csv", paid_wow_rows, ["类型", "留存率"])
     written.extend([output_dir / "04_留存_次留表.csv", output_dir / "05_留存_付费用户次留表.csv", output_dir / "06_留存_周环比表.csv", output_dir / "07_留存_付费用户周环比表.csv"])
     return written
@@ -1121,8 +1269,80 @@ def _load_prod_sales_game_latest(raw_dir: Path | None, date_from: str | None, ta
     return [{"游戏名称": r["game"], "产出": round(r["prod"], 2), "消耗": round(r["cons"], 2)} for r in valid_rows if r["date"] == pick_date]
 
 
+def _refine_consumption_channel_gold(
+    conn: Any, output_dir: Path, t1: str, t7: str, raw_dir: Path | None = None
+) -> list[Path]:
+    """
+    当日金币产出、消耗（渠道层）→ 08b_消耗_金币_渠道层.csv
+    数据来源：日活统计 stats_user_dau；取「最新数据日」（优先 t1）下各渠道行，排除汇总行。
+    多维表侧通常无「日期」列，CSV 仅三列：渠道、金币产出、金币消耗（数据日 = 战报 t1，由同步批次隐含）。
+    """
+    q = lambda slug, df=None, dt=None: _query_table_or_raw(conn, raw_dir, slug, df, dt)
+    dau = q("stats_user_dau", t7, None) or q("stats_user_dau", None, None)
+    if not dau:
+        return []
+    dau = _filter_rows_to_single_date(dau, ["日期", "date", "统计日期"], t1)
+    cols = list(dau[0].keys())
+    ch_col = _find_col(cols, "渠道", "channel", "渠道来源")
+    prod_c = _find_col(
+        cols,
+        "当日金币产出",
+        "用户金币产出",
+        "金币产出",
+        "产出",
+    )
+    cons_c = _find_col(
+        cols,
+        "当日金币消耗",
+        "当日今日消耗",
+        "今日消耗",
+        "用户金币消耗",
+        "消耗",
+    )
+    skip_ch = (
+        "全部汇总",
+        "全平台",
+        "ALL",
+        "> ALL",
+        ">ALL",
+        "＞ ALL",
+        "＞ALL",
+        "全量合计",
+        "总计",
+        "合计",
+        "当日总计",
+        "",
+    )
+    out_rows: list[dict] = []
+    for r in dau:
+        ch = str(r.get(ch_col, "")).strip() if ch_col else ""
+        if not ch or ch in skip_ch:
+            continue
+        pv = _safe_prod_cons(r.get(prod_c)) if prod_c else 0.0
+        cv = _safe_prod_cons(r.get(cons_c)) if cons_c else 0.0
+        out_rows.append(
+            {
+                "渠道": ch,
+                "金币产出": round(pv, 2),
+                "金币消耗": round(cv, 2),
+            }
+        )
+    out_rows = sorted(out_rows, key=lambda x: -float(x["金币产出"]))
+    if not out_rows:
+        out_rows = [
+            {
+                "渠道": "（需抓取 stats_user_dau 日活统计并展开日期/渠道，且表中含当日金币产出/消耗列）",
+                "金币产出": 0.0,
+                "金币消耗": 0.0,
+            }
+        ]
+    path = output_dir / "08b_消耗_金币_渠道层.csv"
+    _write_csv(path, out_rows, ["渠道", "金币产出", "金币消耗"])
+    return [path]
+
+
 def _refine_consumption(conn: Any, output_dir: Path, t1: str, t7: str, raw_dir: Path | None = None) -> list[Path]:
-    """消耗：08 每日金币产出消耗、09 每个游戏的产出消耗。数据来源：平台产销情况 prod_sales。"""
+    """消耗：08 当日金币产出/消耗（七列）、09 每个游戏的产出消耗。数据来源：prod_sales + stats_user_new（新用户金流）。"""
     written: list[Path] = []
     q = lambda slug, df=None, dt=None: _query_table_or_raw(conn, raw_dir, slug, df, dt)
     date_col_cands = ["日期", "date", "业务日期", "日期对比"]
@@ -1143,6 +1363,7 @@ def _refine_consumption(conn: Any, output_dir: Path, t1: str, t7: str, raw_dir: 
     if not rows_game:
         rows_game = q("stats_game_compare")
     if not rows_daily and not rows_game:
+        written.extend(_refine_consumption_channel_gold(conn, output_dir, t1, t7, raw_dir=raw_dir))
         return written
 
     # 08 表必须用 prod_sales 的列结构（汇总项目、用户金币产出总数、用户金币消耗总数）
@@ -1158,7 +1379,7 @@ def _refine_consumption(conn: Any, output_dir: Path, t1: str, t7: str, raw_dir: 
     prod_col = _find_col(cols_game, *prod_col_cands)
     game_col = _find_col(cols_game, *game_col_cands)
 
-    # 08 当日金币产出、消耗：取 prod_sales 每日期「全部汇总」行，否则按日期汇总
+    # 08 当日金币产出、消耗：prod_sales 全部汇总 + stats_user_new 汇总行的新用户产出/消耗；旧用户 = 全部 - 新用户
     by_date_daily: dict[str, dict] = {}
     for r in (rows_daily or []):
         d = _parse_date_to_iso(r.get(date_col, "")) if date_col else ""
@@ -1167,21 +1388,101 @@ def _refine_consumption(conn: Any, output_dir: Path, t1: str, t7: str, raw_dir: 
         g = str(r.get(game_col_daily, "") or "").strip()
         is_total = g in ("全部汇总", "全量合计", "全平台汇总", "ALL", "> ALL")
         if d not in by_date_daily:
-            by_date_daily[d] = {"日期": d, "产出": 0.0, "消耗": 0.0, "_has_total_row": False}
+            by_date_daily[d] = {
+                "日期": d,
+                "全部产出": 0.0,
+                "全部消耗": 0.0,
+                "新用户金币产出": 0.0,
+                "新用户金币消耗": 0.0,
+                "_has_total_row": False,
+            }
         if is_total:
-            by_date_daily[d]["产出"] = _safe_prod_cons(r.get(prod_col_daily))
-            by_date_daily[d]["消耗"] = _safe_prod_cons(r.get(cons_col_daily))
+            by_date_daily[d]["全部产出"] = _safe_prod_cons(r.get(prod_col_daily))
+            by_date_daily[d]["全部消耗"] = _safe_prod_cons(r.get(cons_col_daily))
             by_date_daily[d]["_has_total_row"] = True
         elif not by_date_daily[d].get("_has_total_row"):
-            by_date_daily[d]["产出"] += _safe_prod_cons(r.get(prod_col_daily))
-            by_date_daily[d]["消耗"] += _safe_prod_cons(r.get(cons_col_daily))
-    for v in list(by_date_daily.values()):
-        v.pop("_has_total_row", None)
+            by_date_daily[d]["全部产出"] += _safe_prod_cons(r.get(prod_col_daily))
+            by_date_daily[d]["全部消耗"] += _safe_prod_cons(r.get(cons_col_daily))
+
+    # 新用户金流：stats_user_new 汇总行（ALL/全部汇总）
+    new_rows = q("stats_user_new", t7, None) or q("stats_user_new", None, None) or []
+    if new_rows:
+        ncols = list(new_rows[0].keys())
+        ndate = _find_col(ncols, "日期", "date", "统计日期")
+        nch = _find_col(ncols, "渠道", "channel")
+        new_prod_c = _find_col(
+            ncols,
+            "当日新增金币产出",
+            "当日新增用户产出",
+            "新增用户产出",
+            "新增用户金币产出",
+            "当日新增产出",
+        )
+        new_cons_c = _find_col(
+            ncols,
+            "当日新增金币消耗",
+            "当日新增用户消耗",
+            "新增用户消耗",
+            "新增用户金币消耗",
+            "当日新增消耗",
+        )
+        # 日新用户统计汇总行：渠道多为 > ALL / ALL；无空格写法也需识别
+        new_total_labels = ("ALL", "全部汇总", "全平台", "> ALL", ">ALL", "＞ ALL", "＞ALL")
+        for r in new_rows:
+            if nch and str(r.get(nch, "")).strip() not in new_total_labels:
+                continue
+            d = _parse_date_to_iso(r.get(ndate, "")) if ndate else ""
+            if not d or d not in by_date_daily:
+                continue
+            if new_prod_c:
+                by_date_daily[d]["新用户金币产出"] = _safe_prod_cons(r.get(new_prod_c))
+            if new_cons_c:
+                by_date_daily[d]["新用户金币消耗"] = _safe_prod_cons(r.get(new_cons_c))
+
+    daily_rows = []
     dates_sorted = sorted([d for d in by_date_daily if d])[-7:]
-    daily_rows = [{"日期": _date_to_lark_ts(d), "产出": round(by_date_daily[d]["产出"], 2), "消耗": round(by_date_daily[d]["消耗"], 2)} for d in dates_sorted]
+    for d in dates_sorted:
+        v = by_date_daily[d]
+        v.pop("_has_total_row", None)
+        tp, tc = float(v["全部产出"]), float(v["全部消耗"])
+        np, nc = float(v["新用户金币产出"]), float(v["新用户金币消耗"])
+        daily_rows.append(
+            {
+                "日期": _lark_date_cell(d),
+                "全部产出": round(tp, 2),
+                "全部消耗": round(tc, 2),
+                "新用户金币产出": round(np, 2),
+                "新用户金币消耗": round(nc, 2),
+                "旧用户金币产出": round(max(0.0, tp - np), 2),
+                "旧用户金币消耗": round(max(0.0, tc - nc), 2),
+            }
+        )
     if not daily_rows:
-        daily_rows = [{"日期": _date_to_lark_ts(t1), "产出": 0.0, "消耗": 0.0}]
-    _write_csv(output_dir / "08_消耗_每日表.csv", daily_rows, ["日期", "产出", "消耗"])
+        z = _lark_date_cell(t1)
+        daily_rows = [
+            {
+                "日期": z,
+                "全部产出": 0.0,
+                "全部消耗": 0.0,
+                "新用户金币产出": 0.0,
+                "新用户金币消耗": 0.0,
+                "旧用户金币产出": 0.0,
+                "旧用户金币消耗": 0.0,
+            }
+        ]
+    _write_csv(
+        output_dir / "08_消耗_每日表.csv",
+        daily_rows,
+        [
+            "日期",
+            "全部产出",
+            "全部消耗",
+            "新用户金币产出",
+            "新用户金币消耗",
+            "旧用户金币产出",
+            "旧用户金币消耗",
+        ],
+    )
     written.append(output_dir / "08_消耗_每日表.csv")
 
     # 09 每个游戏的产出、消耗：优先 t1（昨日），否则取最新
@@ -1222,30 +1523,48 @@ def _refine_consumption(conn: Any, output_dir: Path, t1: str, t7: str, raw_dir: 
         _bi_log("09表仅含占位行，无按游戏明细", detail="请确保 skip_collect=false 且 prod_sales 抓取时已展开日期")
     _write_csv(output_dir / "09_消耗_按游戏表.csv", game_rows, ["游戏名称", "产出", "消耗"])
     written.append(output_dir / "09_消耗_按游戏表.csv")
+    written.extend(_refine_consumption_channel_gold(conn, output_dir, t1, t7, raw_dir=raw_dir))
     return written
 
 
-def _refine_daily_metrics(conn: Any, output_dir: Path, t1: str, t0: str, raw_dir: Path | None = None) -> list[Path]:
-    """14 付费人数金额增幅、15 ARPU、16 ARPPU — 来自 stats_recharge（充值数据统计），取 ALL/全部汇总 行"""
+def _refine_daily_metrics(conn: Any, output_dir: Path, t1: str, t0: str, t7: str, raw_dir: Path | None = None) -> list[Path]:
+    """14 付费人数金额增幅（stats_recharge / daily_ops）；15/16 Arpu、Arppu 表（优先 daily_ops_summary，否则 stats_recharge）。"""
     written: list[Path] = []
     q = lambda slug, df=None, dt=None: _query_table_or_raw(conn, raw_dir, slug, df, dt)
+
+    def _pct(cur: float, prev: float) -> float:
+        return round((cur - prev) / prev * 100, 2) if prev else 0.0
+
     rows = q("stats_recharge", t0, t1)
     if not rows:
         rows = q("daily_ops_summary", t0, t1)
     if not rows:
         _write_csv(output_dir / "14_充值_付费人数金额增幅表.csv", [{"当天付费人数": 0, "付费总金额": 0.0, "增幅": 0.0}], ["当天付费人数", "付费总金额", "增幅"])
-        _write_csv(output_dir / "15_充值_ARPU表.csv", [{"ARPU数值": 0.0, "ARPU增幅": 0.0}], ["ARPU数值", "ARPU增幅"])
-        _write_csv(output_dir / "16_充值_ARPPU表.csv", [{"ARPPU数值": 0.0, "ARPPU涨幅": 0.0}], ["ARPPU数值", "ARPPU涨幅"])
-        return [output_dir / "14_充值_付费人数金额增幅表.csv", output_dir / "15_充值_ARPU表.csv", output_dir / "16_充值_ARPPU表.csv"]
+        zd = _lark_date_cell(t1)
+        _write_csv(
+            output_dir / "15_消耗_Arup表.csv",
+            [{"日期": zd, "Arpu数值": 0.0, "Arpu增幅（%）": 0.0}],
+            ["日期", "Arpu数值", "Arpu增幅（%）"],
+        )
+        _write_csv(
+            output_dir / "16_消耗_Arppu表.csv",
+            [{"日期": zd, "Arppu数值": 0.0, "增幅（%）": 0.0}],
+            ["日期", "Arppu数值", "增幅（%）"],
+        )
+        return [
+            output_dir / "14_充值_付费人数金额增幅表.csv",
+            output_dir / "15_消耗_Arup表.csv",
+            output_dir / "16_消耗_Arppu表.csv",
+        ]
 
     cols = list(rows[0].keys())
     date_col = _find_col(cols, "日期", "date", "统计日期") or "_ingested_date"
     paid_count_col = _find_col(cols, "充值人数", "付费人数", "付费", "人数")
     paid_amt_col = _find_col(cols, "当日充值总额", "付费总金额", "充值", "金额", "总金额")
-    arpu_col = _find_col(cols, "Arpu", "ARPU", "arpu")
+    arpu_col = _find_col_arpu_or_arppu(cols, want_arppu=False)
+    arppu_col = _find_col_arpu_or_arppu(cols, want_arppu=True)
     ch_col_rec = _find_col(cols, "渠道", "channel")
     rec_total_labels = ("ALL", "全部汇总", "全平台", "> ALL")
-    # 仅取汇总行（ALL/全部汇总），避免渠道明细覆盖
     rows_all = [r for r in rows if not ch_col_rec or str(r.get(ch_col_rec, "")).strip() in rec_total_labels]
     if not rows_all:
         rows_all = rows
@@ -1261,31 +1580,86 @@ def _refine_daily_metrics(conn: Any, output_dir: Path, t1: str, t0: str, raw_dir
     r1 = by_date.get(pick_d1, {}) if pick_d1 else {}
     r0 = by_date.get(pick_d0, {}) if pick_d0 else {}
 
-    def _pct(cur: float, prev: float) -> float:
-        return round((cur - prev) / prev * 100, 2) if prev else 0.0
-
-    # 14 付费人数、金额、增幅（增幅=付费总金额相较于前一天的增幅）
     pc1, pc0 = _safe_float(r1.get(paid_count_col)), _safe_float(r0.get(paid_count_col))
     pa1, pa0 = _safe_float(r1.get(paid_amt_col)), _safe_float(r0.get(paid_amt_col))
-    paid_pct = _pct(pa1, pa0)  # 增幅为付费总金额较前一日
+    paid_pct = _pct(pa1, pa0)
     row14 = [{"当天付费人数": int(pc1), "付费总金额": round(pa1, 2), "增幅": paid_pct}]
     _write_csv(output_dir / "14_充值_付费人数金额增幅表.csv", row14, ["当天付费人数", "付费总金额", "增幅"])
     written.append(output_dir / "14_充值_付费人数金额增幅表.csv")
 
-    # 15 ARPU
-    arpu1, arpu0 = _safe_float(r1.get(arpu_col)), _safe_float(r0.get(arpu_col))
-    arpu_pct = _pct(arpu1, arpu0)
-    row15 = [{"ARPU数值": round(arpu1, 2), "ARPU增幅": arpu_pct}]
-    _write_csv(output_dir / "15_充值_ARPU表.csv", row15, ["ARPU数值", "ARPU增幅"])
-    written.append(output_dir / "15_充值_ARPU表.csv")
+    # Arpu / Arppu：优先 daily_ops_summary（平台数据 → 日常报表 → 每日运营数据汇总）
+    ops = q("daily_ops_summary", t7, t1) or q("daily_ops_summary", None, None) or []
+    arpu1, arpu0, arppu1, arppu0 = 0.0, 0.0, 0.0, 0.0
+    d1_iso, d0_iso = pick_d1, pick_d0
+    used_ops_arpu, used_ops_arppu = False, False
+    if ops:
+        ocols = list(ops[0].keys())
+        odate = _find_col(ocols, "日期", "date", "统计日期", "业务日期")
+        och = _find_col(ocols, "渠道", "channel", "统计范围")
+        o_total = ("ALL", "全部汇总", "全平台", "> ALL", ">ALL", "＞ ALL", "＞ALL", "全部")
 
-    # 16 ARPPU = 当日充值总额/充值人数，增幅为较前一日
-    arppu1 = pa1 / pc1 if pc1 else 0.0
-    arppu0 = pa0 / pc0 if pc0 else 0.0
+        def _ops_row_is_platform_total(r: dict) -> bool:
+            if not och:
+                return True
+            chv = str(r.get(och, "") or "").strip()
+            if not chv:
+                return True
+            if chv in o_total:
+                return True
+            return chv.replace(" ", "").replace("＞", ">").upper() in (">ALL", "ALL")
+
+        filtered = [r for r in ops if _ops_row_is_platform_total(r)]
+        if not filtered:
+            filtered = ops
+        oby: dict[str, dict] = {}
+        for r in filtered:
+            dk = _parse_date_to_iso(r.get(odate, "")) if odate else ""
+            if not dk:
+                continue
+            prev = oby.get(dk)
+            if prev is None:
+                oby[dk] = r
+            elif _ops_row_is_platform_total(r) and not _ops_row_is_platform_total(prev):
+                oby[dk] = r
+        o_dates = sorted([d for d in oby if d], reverse=True)
+        od1 = t1 if t1 in oby else (o_dates[0] if o_dates else "")
+        od0 = ""
+        if od1 and od1 in o_dates:
+            i = o_dates.index(od1) + 1
+            od0 = o_dates[i] if i < len(o_dates) else ""
+        or1, or0 = oby.get(od1, {}), oby.get(od0, {}) if od0 else {}
+        o_arpu = _find_col_arpu_or_arppu(ocols, want_arppu=False)
+        o_arppu = _find_col_arpu_or_arppu(ocols, want_arppu=True)
+        o_pc = _find_col(ocols, "充值人数", "付费人数", "人数")
+        o_pa = _find_col(ocols, "当日充值总额", "付费总金额", "充值总额", "金额")
+        if o_arpu:
+            arpu1, arpu0 = _safe_float(or1.get(o_arpu)), _safe_float(or0.get(o_arpu))
+            used_ops_arpu = True
+        if o_arppu:
+            arppu1, arppu0 = _safe_float(or1.get(o_arppu)), _safe_float(or0.get(o_arppu))
+            used_ops_arppu = True
+        elif o_pc and o_pa:
+            opc1, opc0 = _safe_float(or1.get(o_pc)), _safe_float(or0.get(o_pc))
+            opa1, opa0 = _safe_float(or1.get(o_pa)), _safe_float(or0.get(o_pa))
+            arppu1 = opa1 / opc1 if opc1 else 0.0
+            arppu0 = opa0 / opc0 if opc0 else 0.0
+            used_ops_arppu = True
+        d1_iso, d0_iso = od1 or pick_d1, od0 or pick_d0
+    if not used_ops_arpu:
+        arpu1, arpu0 = _safe_float(r1.get(arpu_col)), _safe_float(r0.get(arpu_col))
+    if not used_ops_arppu:
+        arppu1 = pa1 / pc1 if pc1 else 0.0
+        arppu0 = pa0 / pc0 if pc0 else 0.0
+
+    arpu_pct = _pct(arpu1, arpu0)
     arppu_pct = _pct(arppu1, arppu0)
-    row16 = [{"ARPPU数值": round(arppu1, 2), "ARPPU涨幅": arppu_pct}]
-    _write_csv(output_dir / "16_充值_ARPPU表.csv", row16, ["ARPPU数值", "ARPPU涨幅"])
-    written.append(output_dir / "16_充值_ARPPU表.csv")
+    ts1 = _lark_date_cell(d1_iso or t1, fallback=t1)
+    row15 = [{"日期": ts1, "Arpu数值": round(arpu1, 2), "Arpu增幅（%）": arpu_pct}]
+    _write_csv(output_dir / "15_消耗_Arup表.csv", row15, ["日期", "Arpu数值", "Arpu增幅（%）"])
+    written.append(output_dir / "15_消耗_Arup表.csv")
+    row16 = [{"日期": ts1, "Arppu数值": round(arppu1, 2), "增幅（%）": arppu_pct}]
+    _write_csv(output_dir / "16_消耗_Arppu表.csv", row16, ["日期", "Arppu数值", "增幅（%）"])
+    written.append(output_dir / "16_消耗_Arppu表.csv")
 
     return written
 
@@ -1490,8 +1864,10 @@ def _try_tier_rows_from_stats_recharge_raw(raw_dir: Path | None, t1: str) -> lis
     return out
 
 
-def _refine_recharge(conn: Any, output_dir: Path, t1: str, days: int = 7, raw_dir: Path | None = None) -> list[Path]:
-    """10 付费人数按SKU、11 付费金额按SKU。数据来源：recharge_status（平台充值情况），最新日期各统计范围。人数=充值次数，此等级总金额=充值金额（或 充值次数×档位金额）。"""
+def _refine_recharge(
+    conn: Any, output_dir: Path, t1: str, days: int = 7, raw_dir: Path | None = None, t_prev: str | None = None
+) -> list[Path]:
+    """10 付费人数按SKU、11 付费金额按SKU（含付费金额总增幅%）。数据来源：recharge_status / stats_recharge。人数=充值次数。"""
     written: list[Path] = []
     dt = datetime.strptime(t1[:10], "%Y-%m-%d")
     date_from = (dt - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -1590,7 +1966,11 @@ def _refine_recharge(conn: Any, output_dir: Path, t1: str, days: int = 7, raw_di
 
     if not rows:
         _write_csv(output_dir / "10_充值_付费人数按SKU.csv", [{"不同充值金额分等级": "（需抓取充值数据）", "人数": 0}], ["不同充值金额分等级", "人数"])
-        _write_csv(output_dir / "11_充值_付费金额按SKU.csv", [{"不同充值金额分等级": "（需抓取充值数据）", "此等级总金额": 0.0}], ["不同充值金额分等级", "此等级总金额"])
+        _write_csv(
+            output_dir / "11_充值_付费金额按SKU.csv",
+            [{"不同充值金额分等级": "（需抓取充值数据）", "此等级总金额": 0.0, "付费金额增幅（%）": 0.0}],
+            ["不同充值金额分等级", "此等级总金额", "付费金额增幅（%）"],
+        )
         return [output_dir / "10_充值_付费人数按SKU.csv", output_dir / "11_充值_付费金额按SKU.csv"]
 
     cols = list(rows[0].keys())
@@ -1614,6 +1994,15 @@ def _refine_recharge(conn: Any, output_dir: Path, t1: str, days: int = 7, raw_di
         total_amount = sum(_safe_float(r.get(amount_col)) for r in rows)
         out_rows = [{SKU_COL: "合计", "人数": total_count, "此等级总金额": round(total_amount, 2)}]
 
+    total1 = sum(_safe_float(r.get("此等级总金额", 0)) for r in out_rows)
+    total0 = 0.0
+    prev_key = (t_prev or "").strip()[:10]
+    if prev_key:
+        prev_tier = _try_tier_rows_from_stats_recharge_raw(raw_dir, prev_key)
+        if prev_tier:
+            total0 = sum(_safe_float(r.get("此等级总金额", 0)) for r in prev_tier)
+    amt_wow = round((total1 - total0) / total0 * 100, 2) if total0 else 0.0
+
     p10, p11 = output_dir / "10_充值_付费人数按SKU.csv", output_dir / "11_充值_付费金额按SKU.csv"
     try:
         _write_csv(p10, [{SKU_COL: _lark_safe_text(str(r[SKU_COL])), "人数": r["人数"]} for r in out_rows], [SKU_COL, "人数"])
@@ -1621,10 +2010,124 @@ def _refine_recharge(conn: Any, output_dir: Path, t1: str, days: int = 7, raw_di
     except PermissionError as e:
         logger.warning("[Refiner] 无法写入 %s（可能被占用）: %s", p10.name, e)
     try:
-        _write_csv(p11, [{SKU_COL: _lark_safe_text(str(r[SKU_COL])), "此等级总金额": round(r["此等级总金额"], 2)} for r in out_rows], [SKU_COL, "此等级总金额"])
+        _write_csv(
+            p11,
+            [
+                {
+                    SKU_COL: _lark_safe_text(str(r[SKU_COL])),
+                    "此等级总金额": round(r["此等级总金额"], 2),
+                    "付费金额增幅（%）": amt_wow,
+                }
+                for r in out_rows
+            ],
+            [SKU_COL, "此等级总金额", "付费金额增幅（%）"],
+        )
         written.append(p11)
     except PermissionError as e:
         logger.warning("[Refiner] 无法写入 %s（可能被占用）: %s", p11.name, e)
+    return written
+
+
+def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_dir: Path | None = None) -> list[Path]:
+    """17/18/19 游戏情况：stats_game_core（核心产品每日数据表）、stats_game_daily（每日游戏数据）。"""
+    written: list[Path] = []
+    q = lambda slug, df=None, dt=None: _query_table_or_raw(conn, raw_dir, slug, df, dt)
+    skip_g = ("ALL", "全部汇总", "全平台", "> ALL", "全量合计", "总计", "合计", "奖励", "赠送", "游戏输赢", "兑换")
+
+    core = q("stats_game_core", t0, t1)
+    core = _filter_rows_to_single_date(core or [], ["日期", "date", "统计日期"], t1)
+    out17: list[dict] = []
+    out18: list[dict] = []
+    if core:
+        ccols = list(core[0].keys())
+        game_col = _find_col(ccols, "统计范围", "游戏类型", "游戏名称", "游戏", "产品")
+        rounds_c = _find_col(ccols, "完成游戏局数", "游戏局数", "总局数", "完成局数", "局数")
+        users_c = _find_col(ccols, "完成游戏用户数", "完成用户数", "游戏用户数", "完成用户")
+        legacy_total = _find_col(ccols, "全部用户局数", "完成游戏用户数")
+        new_g = _find_col(ccols, "完成游戏新用户数", "新用户局数", "完成游戏新用户", "新用户完成局数")
+        old_g = _find_col(ccols, "完成游戏老用户数", "老用户局数", "完成游戏老用户", "老用户完成局数")
+        avg_g = _find_col(ccols, "人均游戏局数", "人均局数", "人均完成局数", "平均游戏局数", "局均")
+        w_new = _find_col(ccols, "新用户胜利数", "新用户胜")
+        w_old = _find_col(ccols, "老用户胜利数", "老用户胜")
+        for r in core:
+            g = str(r.get(game_col, "")).strip() if game_col else ""
+            if not g or g in skip_g:
+                continue
+            rr = int(_safe_float(r.get(rounds_c))) if rounds_c else 0
+            uu = int(_safe_float(r.get(users_c))) if users_c else 0
+            tg = rr if rr else (uu if users_c else 0)
+            if not tg and legacy_total:
+                tg = int(_safe_float(r.get(legacy_total)))
+            ng = int(_safe_float(r.get(new_g))) if new_g else 0
+            og = int(_safe_float(r.get(old_g))) if old_g else 0
+            av = _safe_float(r.get(avg_g)) if avg_g else 0.0
+            if (not av or av == 0.0) and rounds_c and users_c:
+                rrv = _safe_float(r.get(rounds_c))
+                uuv = _safe_float(r.get(users_c))
+                if uuv:
+                    av = rrv / uuv
+            out17.append(
+                {
+                    "游戏类型": g,
+                    "全部用户局数": tg,
+                    "新用户局数": ng,
+                    "老用户局数": og,
+                    "人均游戏局数": round(av, 4) if av else 0.0,
+                }
+            )
+            wn = int(_safe_float(r.get(w_new))) if w_new else 0
+            wo = int(_safe_float(r.get(w_old))) if w_old else 0
+            wr = round((wn + wo) / tg * 100, 2) if tg else 0.0
+            out18.append(
+                {
+                    "游戏类型": g,
+                    "老用户胜利数": wo,
+                    "新用户胜利数": wn,
+                    "总胜率（%）": wr,
+                }
+            )
+
+    if not out17:
+        out17 = [{"游戏类型": "（需抓取 stats_game_core 核心产品每日数据表）", "全部用户局数": 0, "新用户局数": 0, "老用户局数": 0, "人均游戏局数": 0.0}]
+    if not out18:
+        out18 = [{"游戏类型": "（需抓取 stats_game_core）", "老用户胜利数": 0, "新用户胜利数": 0, "总胜率（%）": 0.0}]
+    _write_csv(
+        output_dir / "17_游戏_完成局数.csv",
+        out17,
+        ["游戏类型", "全部用户局数", "新用户局数", "老用户局数", "人均游戏局数"],
+    )
+    written.append(output_dir / "17_游戏_完成局数.csv")
+    _write_csv(
+        output_dir / "18_游戏_用户获胜.csv",
+        out18,
+        ["游戏类型", "老用户胜利数", "新用户胜利数", "总胜率（%）"],
+    )
+    written.append(output_dir / "18_游戏_用户获胜.csv")
+
+    gday = q("stats_game_daily", t0, t1)
+    gday = _filter_rows_to_single_date(gday or [], ["日期", "date", "统计日期"], t1)
+    out19: list[dict] = []
+    if gday:
+        gcols = list(gday[0].keys())
+        ggc = _find_col(gcols, "统计范围", "游戏类型", "游戏名称", "游戏")
+        rtp_c = _find_col(gcols, "回报率RTP", "回报率", "RTP", "rtp", "RTP(%)")
+        ggr_c = _find_col(gcols, "GGR", "ggr")
+        for r in gday:
+            g = str(r.get(ggc, "")).strip() if ggc else ""
+            if not g or g in skip_g:
+                continue
+            out19.append(
+                {
+                    "游戏类型": g,
+                    "RTP(%)": round(_safe_float(r.get(rtp_c)), 4) if rtp_c else 0.0,
+                    "GGR": round(_safe_float(r.get(ggr_c)), 2) if ggr_c else 0.0,
+                }
+            )
+    if not out19:
+        out19 = [{"游戏类型": "（需抓取 stats_game_daily）", "RTP(%)": 0.0, "GGR": 0.0}]
+    _write_csv(output_dir / "19_游戏_RTP_GGR.csv", out19, ["游戏类型", "RTP(%)", "GGR"])
+    written.append(output_dir / "19_游戏_RTP_GGR.csv")
+
     return written
 
 
@@ -1669,8 +2172,9 @@ def _run_refiner(date_str: str | None = None, output_dir: Path | None = None, ra
         written += _refine_user_activity(conn, out, t1, t0, t7, raw_dir=raw)
         written += _refine_retention(conn, out, t1, raw_dir=raw)
         written += _refine_consumption(conn, out, t1, t7, raw_dir=raw)
-        written += _refine_daily_metrics(conn, out, t1, t0, raw_dir=raw)
-        written += _refine_recharge(conn, out, t1, days=7, raw_dir=raw)
+        written += _refine_daily_metrics(conn, out, t1, t0, t7, raw_dir=raw)
+        written += _refine_recharge(conn, out, t1, days=7, raw_dir=raw, t_prev=t0)
+        written += _refine_game_situation(conn, out, t1, t0, raw_dir=raw)
     except Exception as e:
         errors.append(str(e))
         logger.exception("[Refiner] 提纯异常: %s", e)
@@ -1713,7 +2217,16 @@ def _sync_refiner_to_lark(
     ok_count = 0
     errors: list[str] = []
     skipped: list[tuple[str, str]] = []
-    default_text_columns = {"10_充值_付费人数按SKU.csv": ["不同充值金额分等级"], "11_充值_付费金额按SKU.csv": ["不同充值金额分等级"]}
+    default_text_columns = {
+        "10_充值_付费人数按SKU.csv": ["不同充值金额分等级"],
+        "11_充值_付费金额按SKU.csv": ["不同充值金额分等级"],
+        "12_用户活跃_日活占比.csv": ["用户"],
+        "17_游戏_完成局数.csv": ["游戏类型"],
+        "18_游戏_用户获胜.csv": ["游戏类型"],
+        "19_游戏_RTP_GGR.csv": ["游戏类型"],
+        "08b_消耗_金币_渠道层.csv": ["渠道"],
+        # 07「留存率」在 Lark 多为数字列：勿放 text_columns，否则整列按字符串提交 → NumberFieldConvFail
+    }
     text_cols_per_table = lark_bitable_config.get("text_columns") or {}
     field_mapping_per_table = dict(lark_bitable_config.get("field_mapping") or {})
     # 01 表列名已与 Lark 统一为「增幅（%）」；06 表为「留存率（%）」。若 Lark 表用其他字段名，可在 field_mapping 中配置
@@ -1755,6 +2268,607 @@ def _sync_refiner_to_lark(
             if on_table:
                 on_table("fail", name, err)
     return (ok_count, errors, skipped)
+
+
+def _load_output_csv_rows(csv_path: Path) -> list[dict[str, str]]:
+    """读取提纯 output 下的 CSV（utf-8-sig），不存在或为空则返回 []。"""
+    if not csv_path.is_file():
+        return []
+    try:
+        with open(csv_path, encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+    except Exception as e:
+        logger.warning("[BI KPI] 读取 %s 失败: %s", csv_path.name, e)
+        return []
+
+
+def _csv_first_nonempty(row: dict[str, str], *keys: str) -> Any:
+    """按顺序取第一个「键存在且非空白」的单元格；勿用 a or b，否则合法数值 0 会被跳过。"""
+    for k in keys:
+        if k not in row:
+            continue
+        v = row[k]
+        if v is None:
+            continue
+        if isinstance(v, str) and not str(v).strip():
+            continue
+        return v
+    return None
+
+
+def _csv_float(val: Any, default: float = 0.0) -> float:
+    if val is None or (isinstance(val, str) and not str(val).strip()):
+        return default
+    s = str(val).strip().replace(",", "")
+    if s in ("-", "NaN", "nan"):
+        return default
+    try:
+        return float(s)
+    except ValueError:
+        return default
+
+
+def _csv_int(val: Any, default: int = 0) -> int:
+    return int(round(_csv_float(val, float(default))))
+
+
+def _fmt_kpi_pct_badge(pct: float) -> str:
+    """KPI 快报涨跌可视化：🟢 **+x%** / 🔻 **-x%**（Lark Markdown；零增幅用中性粗体）。"""
+    if abs(pct) < 1e-9:
+        return " **`0.00%`**"
+    if pct > 0:
+        return f" 🟢 **+{pct:.2f}%**"
+    return f" 🔻 **{pct:.2f}%**"
+
+
+def _game_row_is_placeholder(game_type: str) -> bool:
+    g = (game_type or "").strip()
+    return not g or g.startswith("（需") or g.startswith("(需")
+
+
+def _build_bi_kpi_snapshot_markdown(output_dir: Path, report_date: str) -> str:
+    """
+    从 output 目录 CSV 拼装「多维表同步后、大战报前」的 KPI 快照（Markdown：分组 + 涨跌徽章）。
+    数据来源与 Lark 子表一一对应（提纯输出）；数值口径与旧版一行式一致，仅排版分层。
+    """
+    od = output_dir
+    # 1) DAU / DNU — 01_用户活跃_增幅表.csv
+    dau_v, dnu_v = 0, 0
+    dau_pct, dnu_pct = 0.0, 0.0
+    for r in _load_output_csv_rows(od / "01_用户活跃_增幅表.csv"):
+        typ = str(r.get("类型", "")).strip().upper()
+        if typ == "DAU":
+            dau_v = _csv_int(r.get("数值"), 0)
+            dau_pct = _csv_float(r.get("增幅（%）"), 0.0)
+        elif typ == "DNU":
+            dnu_v = _csv_int(r.get("数值"), 0)
+            dnu_pct = _csv_float(r.get("增幅（%）"), 0.0)
+
+    # 2) 新增设备 — 13
+    r13 = (_load_output_csv_rows(od / "13_用户活跃_新增设备表.csv") or [{}])[0]
+    new_dev = _csv_int(r13.get("新增设备数量"), 0)
+    new_dev_pct = _csv_float(_csv_first_nonempty(r13, "新增设备增幅（%）", "新增设备涨幅（%）"), 0.0)
+    ratio_raw = r13.get("新增用户/新增设备", "")
+    if ratio_raw is None or str(ratio_raw).strip() in ("", "-"):
+        ratio_s = "-"
+    else:
+        try:
+            ratio_s = f"{_csv_float(ratio_raw, 0.0):.2f}"
+        except Exception:
+            ratio_s = str(ratio_raw).strip()
+
+    # 3) 付费 — 14
+    r14 = (_load_output_csv_rows(od / "14_充值_付费人数金额增幅表.csv") or [{}])[0]
+    paid_n = _csv_int(r14.get("当天付费人数"), 0)
+    paid_amt = _csv_float(r14.get("付费总金额"), 0.0)
+    paid_amt_pct = _csv_float(r14.get("增幅"), 0.0)
+
+    # 4) Arup / Arppu — 15、16（列名与多维表一致）
+    r15 = (_load_output_csv_rows(od / "15_消耗_Arup表.csv") or [{}])[0]
+    r16 = (_load_output_csv_rows(od / "16_消耗_Arppu表.csv") or [{}])[0]
+    arpu_v = _csv_float(r15.get("Arpu数值"), 0.0)
+    arpu_pct = _csv_float(_csv_first_nonempty(r15, "Arpu增幅（%）", "Arup涨幅（%）", "Arup增幅（%）"), 0.0)
+    arppu_v = _csv_float(r16.get("Arppu数值"), 0.0)
+    arppu_pct = _csv_float(_csv_first_nonempty(r16, "增幅（%）", "涨幅（%）"), 0.0)
+
+    # 5) 完成局数 / 人均局数 — 17
+    rows17 = _load_output_csv_rows(od / "17_游戏_完成局数.csv")
+    total_rounds = 0
+    w_num, w_den = 0.0, 0.0  # 加权人均局数
+    for r in rows17:
+        g = str(r.get("游戏类型", "")).strip()
+        if _game_row_is_placeholder(g):
+            continue
+        tr = _csv_int(r.get("全部用户局数"), 0)
+        total_rounds += tr
+        pu = _csv_float(r.get("人均游戏局数"), 0.0)
+        if tr > 0 and pu > 0:
+            w_num += pu * tr
+            w_den += float(tr)
+    avg_rounds = (w_num / w_den) if w_den > 0 else 0.0
+
+    # 6) 获胜次数 / 胜率 — 18 + 17 按游戏对齐
+    rows18 = _load_output_csv_rows(od / "18_游戏_用户获胜.csv")
+    by_game_17: dict[str, int] = {}
+    for r in rows17:
+        g = str(r.get("游戏类型", "")).strip()
+        if _game_row_is_placeholder(g):
+            continue
+        by_game_17[g] = _csv_int(r.get("全部用户局数"), 0)
+    total_wins = 0
+    total_complete_for_rate = 0
+    for r in rows18:
+        g = str(r.get("游戏类型", "")).strip()
+        if _game_row_is_placeholder(g):
+            continue
+        wo = _csv_int(r.get("老用户胜利数"), 0)
+        wn = _csv_int(r.get("新用户胜利数"), 0)
+        total_wins += wo + wn
+        tc = by_game_17.get(g, 0)
+        if tc <= 0:
+            tc = wo + wn  # 兜底：无 17 对齐时用胜场和作分母近似
+        total_complete_for_rate += tc
+    win_rate = (100.0 * total_wins / total_complete_for_rate) if total_complete_for_rate > 0 else _csv_float(
+        (rows18[0].get("总胜率（%）") if rows18 else 0), 0.0
+    )
+
+    # 7) RTP / GGR — 19
+    rows19 = _load_output_csv_rows(od / "19_游戏_RTP_GGR.csv")
+    ggr_sum = 0.0
+    rtp_w_num, rtp_w_den = 0.0, 0.0
+    rtp_simple: list[float] = []
+    for r in rows19:
+        g = str(r.get("游戏类型", "")).strip()
+        if _game_row_is_placeholder(g):
+            continue
+        rtp = _csv_float(r.get("RTP(%)"), 0.0)
+        ggr = _csv_float(r.get("GGR"), 0.0)
+        ggr_sum += ggr
+        rtp_simple.append(rtp)
+        ag = abs(ggr)
+        if ag > 0:
+            rtp_w_num += rtp * ag
+            rtp_w_den += ag
+    rtp_disp = (rtp_w_num / rtp_w_den) if rtp_w_den > 0 else (sum(rtp_simple) / len(rtp_simple) if rtp_simple else 0.0)
+
+    ratio_disp = f"`{ratio_s}`" if ratio_s != "-" else ratio_s
+    lines = [
+        f"**数据日 {report_date}**｜多维表已同步",
+        "",
+        "---",
+        "",
+        "### 👥 用户与流量",
+        f"- DAU：`{dau_v}`{_fmt_kpi_pct_badge(dau_pct)}",
+        f"- DNU：`{dnu_v}`{_fmt_kpi_pct_badge(dnu_pct)}",
+        f"- 新增设备数：`{new_dev}`{_fmt_kpi_pct_badge(new_dev_pct)}",
+        f"- 新增用户/设备数：{ratio_disp}",
+        "",
+        "---",
+        "",
+        "### 💰 充值与营收",
+        f"- 付费人数：`{paid_n}`",
+        f"- 付费总金额：`{paid_amt:.2f}`{_fmt_kpi_pct_badge(paid_amt_pct)}",
+        f"- Arpu：`{arpu_v:.2f}`{_fmt_kpi_pct_badge(arpu_pct)}",
+        f"- Arppu：`{arppu_v:.2f}`{_fmt_kpi_pct_badge(arppu_pct)}",
+        "",
+        "---",
+        "",
+        "### 🎮 游戏与生态",
+        f"- 完成游戏局数：`{total_rounds}`",
+        f"- 人均游戏局数：`{avg_rounds:.2f}`",
+        f"- 用户获胜次数：`{total_wins}`",
+        f"- 胜率：`{win_rate:.2f}%`",
+        "",
+        "---",
+        "",
+        "### ⚖️ 经济与风控（RTP / GGR）",
+        f"- GameRTP：`{rtp_disp:.2f}%`",
+        f"- GGR：`{ggr_sum:.2f}`",
+    ]
+    return "\n".join(lines)
+
+
+def _resolve_bi_lark_push_targets(cfg: dict[str, Any]) -> tuple[str, str]:
+    """返回 (webhook_url, chat_id)，与 Step 3.5 战略推送一致。"""
+    dist = cfg.get("distribution") or {}
+    webhook = (dist.get("lark_webhook_url") or "").strip()
+    chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
+    if not chat_id:
+        chat_id = (dist.get("lark_chat_id") or "").strip()
+    if str(webhook).startswith("${"):
+        webhook = ""
+    if str(chat_id).startswith("${"):
+        chat_id = ""
+    if not chat_id:
+        try:
+            from l3_node.jachin_config import load_mcp_config
+            from l3_node.paths import get_app_root
+
+            mcp_cfg = load_mcp_config("atom_lark_notifier", project_root=get_app_root())
+            chat_id = (mcp_cfg.get("default_chat_id") or "").strip()
+            if str(chat_id).startswith("${"):
+                chat_id = ""
+        except Exception:
+            pass
+    return webhook, chat_id
+
+
+def _load_bi_project_context_md(project_root: Path, max_total_chars: int = 75000) -> str:
+    """大战报用：聚合 docs/bi_daily_report/bi_project 下全部 .md。"""
+    d = project_root / "docs" / "bi_daily_report" / "bi_project"
+    if not d.is_dir():
+        return "（目录不存在：docs/bi_daily_report/bi_project）"
+    parts: list[str] = []
+    total = 0
+    for p in sorted(d.glob("*.md")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError as e:
+            text = f"（读取失败: {e}）"
+        block = f"\n\n#### 文件 `{p.name}`\n\n{text}"
+        if total + len(block) > max_total_chars:
+            parts.append("\n\n…（后续 bi_project 文档因长度上限省略）")
+            break
+        parts.append(block)
+        total += len(block)
+    body = "".join(parts).strip()
+    return body if body else "（bi_project 下无 .md）"
+
+
+def _norm_strategic_csv_date(val: Any) -> str:
+    """统一为 YYYY-MM-DD，无法解析则返回空串。"""
+    s = str(val or "").strip()
+    if not s:
+        return ""
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        cand = s[:10]
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", cand):
+            return cand
+    if s.isdigit() and len(s) >= 13:
+        try:
+            ms = int(s[:13])
+            return datetime.utcfromtimestamp(ms / 1000.0).strftime("%Y-%m-%d")
+        except (ValueError, OSError):
+            pass
+    m = re.match(r"^(\d{4})/(\d{1,2})/(\d{1,2})", s)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return f"{y:04d}-{mo:02d}-{d:02d}"
+    return ""
+
+
+def _strategic_pick_date_column(fieldnames: list[str]) -> str | None:
+    priority = ("统计日期", "业务日期", "日期", "data_date")
+    for key in priority:
+        if key in fieldnames:
+            return key
+    for c in fieldnames:
+        cs = str(c or "")
+        if "日期" in cs or str(c).lower() in ("date", "day"):
+            return c
+    return None
+
+
+def _strategic_row_for_date(rows: list[dict[str, Any]], date_col: str, target: str) -> dict[str, Any] | None:
+    for r in rows:
+        if _norm_strategic_csv_date(r.get(date_col)) == target:
+            return r
+    return None
+
+
+def _strategic_diff_two_rows(
+    r_t1: dict[str, Any],
+    r_t2: dict[str, Any],
+    skip: set[str],
+    max_cols: int = 24,
+) -> list[str]:
+    out: list[str] = []
+    keys = sorted(set(r_t1.keys()) | set(r_t2.keys()))
+    n = 0
+    for k in keys:
+        if k in skip or not str(k).strip():
+            continue
+        a, b = r_t1.get(k), r_t2.get(k)
+        if a == b:
+            continue
+        fa, fb = _sf_float(a), _sf_float(b)
+        if fa is not None and fb is not None:
+            delta = fa - fb
+            pct = (delta / fb * 100.0) if fb not in (0, 0.0) else float("nan")
+            pct_s = f"{pct:+.2f}%" if pct == pct else "n/a"
+            out.append(f"  - **{k}**: T={fa:g} | T-1={fb:g} | Δ={delta:+.6g} ({pct_s})")
+        else:
+            sa, sb = str(a).strip()[:80], str(b).strip()[:80]
+            if sa != sb:
+                out.append(f"  - **{k}**: T=`{sa}` | T-1=`{sb}`")
+        n += 1
+        if n >= max_cols:
+            out.append("  - …（更多列省略）")
+            break
+    return out
+
+
+def _sf_float(v: Any) -> float | None:
+    try:
+        return float(str(v).replace(",", "").replace("%", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _strategic_channel_two_day_digest(
+    rows: list[dict[str, Any]],
+    date_col: str,
+    ch_col: str,
+    qty_col: str,
+    t1: str,
+    t2: str,
+    top_n: int = 5,
+) -> list[str]:
+    from collections import defaultdict
+
+    m1: dict[str, float] = defaultdict(float)
+    m2: dict[str, float] = defaultdict(float)
+    for r in rows:
+        d = _norm_strategic_csv_date(r.get(date_col))
+        ch = str(r.get(ch_col) or "").strip() or "(空)"
+        q = _sf_float(r.get(qty_col))
+        if q is None:
+            continue
+        if d == t1:
+            m1[ch] += q
+        elif d == t2:
+            m2[ch] += q
+    s1, s2 = sum(m1.values()), sum(m2.values())
+    lines = [
+        f"  - **{qty_col} 合计**: T={s1:g} | T-1={s2:g} | Δ={s1 - s2:+.6g}",
+    ]
+    all_ch = set(m1.keys()) | set(m2.keys())
+    deltas: list[tuple[float, str]] = []
+    for ch in all_ch:
+        a, b = m1.get(ch, 0.0), m2.get(ch, 0.0)
+        deltas.append((a - b, ch))
+    deltas.sort(key=lambda x: -abs(x[0]))
+    for dlt, ch in deltas[:top_n]:
+        a, b = m1.get(ch, 0.0), m2.get(ch, 0.0)
+        lines.append(f"  - 渠道 `{ch}`: T={a:g} | T-1={b:g} | Δ={dlt:+.6g}")
+    return lines
+
+
+def _summarize_one_csv_dod(path: Path, t1: str, t2: str, label: str) -> list[str]:
+    lines: list[str] = []
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            rows = list(reader)
+    except OSError as e:
+        return [f"- （读取失败 {label}: {e}）"]
+
+    if not rows:
+        return [f"- （空表 {label}）"]
+
+    fn = path.name
+    # 01 增幅表：按类型快照 + 增幅列已含日环比语义
+    if fn.startswith("01_用户活跃_增幅表"):
+        lines.append(f"**{label}**（无日期列；提纯为 DAU/DNU 快照，增幅列为相对前日）")
+        for r in rows[:12]:
+            typ = str(r.get("类型", "") or "").strip()
+            if typ:
+                lines.append(
+                    f"  - {typ}: 数值={r.get('数值', '')} 增幅（%）={r.get('增幅（%）', '')}"
+                )
+        return lines
+
+    if fn.startswith(
+        ("04_留存_次留表", "05_留存_付费用户次留表", "06_留存_周环比表", "07_留存_付费用户周环比表")
+    ):
+        lines.append(f"**{label}**（留存/周环比多行快照；对照 T 业务日与周结构）")
+        for r in rows[:18]:
+            ks = list(r.keys())[:6]
+            lines.append("  - " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
+        return lines
+
+    if fn.startswith("10_充值_付费人数按SKU") or fn.startswith("11_充值_付费金额按SKU"):
+        lines.append(f"**{label}**（SKU 分档快照；判断小额单 vs 大R 结构）")
+        for r in rows[:22]:
+            ks = list(r.keys())[:5]
+            lines.append("  - " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
+        return lines
+
+    if fn.startswith("17_游戏_完成局数") or fn.startswith("18_游戏_用户获胜") or fn.startswith("19_游戏_RTP_GGR"):
+        lines.append(f"**{label}**（按游戏多行；关注 RTP/GGR/局数/胜负）")
+        for r in rows[:16]:
+            g = str(r.get("游戏类型", "") or "").strip()
+            if not g or "需抓取" in g:
+                continue
+            ks = [k for k in r.keys() if k != "游戏类型"][:5]
+            lines.append(f"  - {g}: " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
+        return lines
+
+    dc = _strategic_pick_date_column(list(fieldnames))
+    if not dc:
+        lines.append(f"**{label}**（无日期列；首行抽样）")
+        r0 = rows[0]
+        for k in list(r0.keys())[:8]:
+            lines.append(f"  - {k}={r0.get(k, '')}")
+        return lines
+
+    r1 = _strategic_row_for_date(rows, dc, t1)
+    r2 = _strategic_row_for_date(rows, dc, t2)
+
+    # 渠道类：按日聚合
+    if "03a_" in fn or "03b_" in fn:
+        ch_c = _find_col(list(fieldnames), "DAU渠道来源", "DNU渠道来源", "渠道", "来源")
+        qty_c = _find_col(list(fieldnames), "数量", "人数", "DAU数量", "DNU数量")
+        if ch_c and qty_c:
+            lines.append(f"**{label}**（按 `{dc}` 聚合 `{qty_c}`）")
+            lines.extend(_strategic_channel_two_day_digest(rows, dc, ch_c, qty_c, t1, t2))
+            return lines
+
+    lines.append(f"**{label}**（日期列 `{dc}`）")
+    if r1 and r2:
+        skip = {dc}
+        diff = _strategic_diff_two_rows(r1, r2, skip)
+        if diff:
+            lines.extend(diff)
+        else:
+            lines.append("  - （T 与 T-1 行非数值字段一致或无可比列）")
+    elif r1:
+        lines.append(f"  - 仅有 **T={t1}** 行，缺少 **T-1={t2}**（无法做双日 diff）")
+    elif r2:
+        lines.append(f"  - 仅有 **T-1={t2}** 行，缺少 **T={t1}**")
+    else:
+        have = {_norm_strategic_csv_date(r.get(dc)) for r in rows if r.get(dc)}
+        sample = sorted(x for x in have if x)[:5]
+        lines.append(f"  - 未命中 T/T-1；表中出现的日期样例: {sample}")
+    return lines
+
+
+def _build_strategic_dod_summary(
+    output_dir: Path,
+    raw_dir: Path | None,
+    t1_iso: str,
+    t2_iso: str,
+    *,
+    max_lines: int = 340,
+) -> str:
+    """
+    大战报专用：对 strategic_report 关注的 output CSV + 对应 raw slug 做 T vs T-1 字段级对照文本。
+    """
+    try:
+        from l3_node.skills.bi.bi_daily_report.strategic_report import (
+            _STRATEGIC_KEY_FILES,
+            _STRATEGIC_KEY_TO_RAW,
+            _STRATEGIC_RAW_ONLY_SLUGS,
+        )
+    except ImportError as e:
+        return f"（日环比摘要：无法导入战略模块列表: {e}）"
+
+    t1 = t1_iso[:10]
+    t2 = t2_iso[:10]
+    acc: list[str] = [
+        f"说明：T 为数据日（通常昨日），T-1 为前一自然日。数值型字段给出差值与环比%；若缺某日行则标明。",
+        "",
+        "**大战报归因要求（v3）**：以下 diff 须结合 `docs/bi_daily_report/bi_project` 背景与《STRATEGIC_REPORT_ANALYSIS_SPEC.md》——"
+        " 异动不可单一归因；并列检验 **平台/运营/版本**（上新、活动、买量、支付、体验房与弹窗）与 **外部**（发薪日、圣周、台风/断网、渠道）及 **风控/埋点/黑产**。"
+        " output 为提纯表重点；同路径下 raw 明细已在下文对照。",
+        "",
+        "## output（提纯表，与 Lark 多维表同源）",
+        "",
+    ]
+    od = Path(output_dir)
+    for name in _STRATEGIC_KEY_FILES:
+        p = od / name
+        if not p.exists():
+            continue
+        acc.extend(_summarize_one_csv_dod(p, t1, t2, f"`{name}`"))
+        acc.append("")
+        if len(acc) > max_lines:
+            break
+
+    acc.append("## raw（client_volumes/bi_data/raw，与 SPA 抓取同源）")
+    acc.append("")
+    seen: set[str] = set()
+    if raw_dir and Path(raw_dir).is_dir():
+        for name in _STRATEGIC_KEY_FILES:
+            for slug in _STRATEGIC_KEY_TO_RAW.get(name, []):
+                if slug in seen:
+                    continue
+                seen.add(slug)
+                rp = Path(raw_dir) / f"{slug}.csv"
+                if not rp.exists():
+                    continue
+                acc.extend(_summarize_one_csv_dod(rp, t1, t2, f"raw `{slug}.csv`"))
+                acc.append("")
+                if len(acc) > max_lines:
+                    break
+        for slug in _STRATEGIC_RAW_ONLY_SLUGS:
+            if slug in seen:
+                continue
+            rp = Path(raw_dir) / f"{slug}.csv"
+            if not rp.exists():
+                continue
+            seen.add(slug)
+            acc.extend(_summarize_one_csv_dod(rp, t1, t2, f"raw `{slug}.csv`"))
+            acc.append("")
+            if len(acc) > max_lines:
+                break
+    else:
+        acc.append("（raw 目录不可用，跳过 raw 对照）")
+
+    text = "\n".join(acc).strip()
+    if len(text) > 45000:
+        text = text[:45000] + "\n\n…（日环比全文截断）"
+    return text
+
+
+_STRATEGIC_SPEC_AESTHETICS_MARKER = "## 战报输出美学与 Markdown 排版规范"
+
+
+def _extract_strategic_report_aesthetics_section(project_root: Path) -> str:
+    """从 STRATEGIC_REPORT_ANALYSIS_SPEC.md 截取「战报输出美学」章节，供大战报 System Prompt 追加（与 SSOT 同步）。"""
+    p = project_root / "docs" / "bi_daily_report" / "STRATEGIC_REPORT_ANALYSIS_SPEC.md"
+    if not p.is_file():
+        return ""
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        logger.debug("[BI] 读取战略规范节选排版失败: %s", e)
+        return ""
+    start_i: int | None = None
+    for i, line in enumerate(lines):
+        if line.strip() == _STRATEGIC_SPEC_AESTHETICS_MARKER or line.startswith(
+            _STRATEGIC_SPEC_AESTHETICS_MARKER
+        ):
+            start_i = i
+            break
+    if start_i is None:
+        return ""
+    out: list[str] = [lines[start_i]]
+    for j in range(start_i + 1, len(lines)):
+        line = lines[j]
+        if line.startswith("## ") and not line.startswith("###"):
+            break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _merge_strategic_report_config_for_llm(
+    cfg: dict[str, Any],
+    *,
+    project_root: Path,
+    output_dir: Path,
+    raw_dir: Path,
+) -> dict[str, Any]:
+    """在不改仪表盘逻辑的前提下，为 Step 3.5 大战报注入 bi_project 背景 + T/T-1 数据摘要 + 排版美学节选（注入 strategic_report System 追加节）。"""
+    from l3_node.skills.bi.bi_daily_report.strategic_report import _detect_report_date_from_raw
+
+    out_cfg = dict(cfg or {})
+    sr0 = dict(out_cfg.get("strategic_report") or {})
+
+    k11_md = _load_bi_project_context_md(project_root)
+    rd = Path(raw_dir)
+    if rd.is_dir():
+        t1_iso, _ = _detect_report_date_from_raw(rd)
+    else:
+        t1_iso = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    t2_iso = (datetime.strptime(t1_iso[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    try:
+        dod = _build_strategic_dod_summary(Path(output_dir), rd if rd.is_dir() else None, t1_iso, t2_iso)
+    except Exception as e:
+        logger.warning("[BI] 大战报日环比摘要生成失败: %s", e)
+        dod = f"（生成失败: {e}）"
+
+    sr0["_k11_project_context_md"] = k11_md
+    sr0["_strategic_dod_summary"] = dod
+    sr0["_strategic_dod_t1"] = t1_iso[:10]
+    sr0["_strategic_dod_t2"] = t2_iso[:10]
+    _aest = _extract_strategic_report_aesthetics_section(project_root)
+    if _aest:
+        sr0["_strategic_aesthetics_section"] = _aest
+    out_cfg["strategic_report"] = sr0
+    return out_cfg
 
 
 # =============================================================================
@@ -1825,19 +2939,65 @@ def _cdp_endpoint_reachable(cdp_url: str, timeout: float = 2.5) -> bool:
         return False
 
 
+def _try_autolaunch_chrome_for_bi(cdp_url: str, open_url: str) -> tuple[bool, str]:
+    """
+    在 Windows 上尝试启动带远程调试端口的 Chrome（与 scripts/launch_chrome_debug_bi.ps1 行为一致）。
+    返回 (是否已成功发起进程, 说明文案)。
+    """
+    import subprocess
+    from urllib.parse import urlparse
+
+    if os.name != "nt":
+        return False, "当前仅 Windows 支持自动拉起 Chrome（Linux/Mac 请先手动启动调试 Chrome）"
+    u = urlparse((cdp_url or "").strip() or "http://127.0.0.1:9222")
+    try:
+        port = int(u.port or 9222)
+    except (TypeError, ValueError):
+        port = 9222
+    chrome_paths = [
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), r"Google\Chrome\Application\chrome.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), r"Google\Chrome\Application\chrome.exe"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+    ]
+    chrome_exe = next((p for p in chrome_paths if p and os.path.isfile(p)), None)
+    if not chrome_exe:
+        return False, "未找到 chrome.exe，请安装 Google Chrome"
+    user_data_dir = os.path.join(os.environ.get("TEMP", os.environ.get("TMP", ".")), "chrome-debug-bi")
+    url = (open_url or "").strip() or "https://bi-admin-web.heronpro.xin/#/layout/person"
+    args = [chrome_exe, f"--remote-debugging-port={port}", f"--user-data-dir={user_data_dir}", url]
+    creationflags = 0
+    if hasattr(subprocess, "DETACHED_PROCESS"):
+        creationflags |= subprocess.DETACHED_PROCESS
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(
+            args,
+            cwd=os.path.dirname(chrome_exe) or None,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        return True, f"已启动 Chrome 调试端口 {port}，用户数据目录 {user_data_dir}"
+    except Exception as e:
+        return False, str(e)
+
+
 def _cdp_unavailable_user_message(cdp_url: str) -> str:
     return (
         f"无法连接 Chrome 远程调试 ({cdp_url})，本机拒绝连接(ECONNREFUSED) 表示该端口没有浏览器在监听。\n\n"
-        "【浏览器需要你提前自己打开】脚本不会自动弹出 Chrome。必须先启动「带远程调试端口」的 Chrome，"
-        "Python 才能连上去替你点菜单、抓表格（这样才能用你已登录的 BI 会话）。\n\n"
-        "请按顺序处理：\n"
+        "【原因】SPA 抓取通过 CDP 控制本机 Chrome；未先启动「带 --remote-debugging-port 的 Chrome」时，9222 端口无人监听即会失败。\n\n"
+        "【处理方式 A — 手动】\n"
         "1) 先关掉平时用的 Chrome（避免占端口）。\n"
-        "2) 在项目根打开 PowerShell，执行: .\\scripts\\launch_chrome_debug_bi.ps1\n"
-        "   （或手动启动 Chrome，启动参数加上: --remote-debugging-port=9222）\n"
-        "3) 用**这一只**弹出来的 Chrome 打开 BI 网址并完成登录。\n"
-        "4) 保持该窗口不要关，核对 full_spa.cdp_url / BI_SPA_CDP_URL 与端口一致（默认 http://127.0.0.1:9222）。\n"
-        "5) 再在项目根执行: python scripts\\run_bi_daily_report.py\n\n"
-        "说明：当前设计是「连接已有浏览器」，不是「由脚本启动无登录的新浏览器」。"
+        "2) 在项目根 PowerShell 执行: .\\scripts\\launch_chrome_debug_bi.ps1\n"
+        "3) 在弹出的 Chrome 中登录 BI，保持窗口不关。\n"
+        "4) 再执行: python scripts\\run_bi_daily_report.py\n\n"
+        "【处理方式 B — 自动（仅 Windows）】\n"
+        "在 bi_daily_report.yaml 的 full_spa 下设置 auto_launch_chrome_when_cdp_unreachable: true，\n"
+        "或设置环境变量 BI_SPA_AUTO_LAUNCH_CHROME=1，脚本会尝试自动拉起调试 Chrome 并等待端口就绪。\n\n"
+        "【无需抓数时】若 DuckDB/raw 已是今日数据，Step 1 会跳过抓取，可不启 Chrome。"
     )
 
 
@@ -1862,7 +3022,20 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             "lark_enabled": (cfg.get("lark_bitable") or {}).get("enabled"),
         },
     )
-    result: dict[str, Any] = {"success": False, "stage": "init", "data_updated": False, "output_paths": [], "lark_sync_ok": 0, "lark_sync_errors": [], "strategic_report_sent": False, "dashboard_analysis_sent": False, "email_ok": False, "email_error": "", "error": ""}
+    result: dict[str, Any] = {
+        "success": False,
+        "stage": "init",
+        "data_updated": False,
+        "output_paths": [],
+        "lark_sync_ok": 0,
+        "lark_sync_errors": [],
+        "kpi_snapshot_sent": False,
+        "strategic_report_sent": False,
+        "dashboard_analysis_sent": False,
+        "email_ok": False,
+        "email_error": "",
+        "error": "",
+    }
 
     from l3_node.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs, get_bi_raw_dir
     _bi_debug("Step 0", "entry", detail="ensure_bi_dirs")
@@ -1918,15 +3091,54 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             cdp_url = _cdp if _cdp.lower().startswith("http") else "http://127.0.0.1:9222"
             _bi_log("Step 1.1: 检测 CDP 端口是否可连", detail=cdp_url, progress=True)
             if not await asyncio.to_thread(_cdp_endpoint_reachable, cdp_url):
-                result["stage"] = "collect"
-                result["error"] = _cdp_unavailable_user_message(cdp_url)
-                _bi_log("Step 1.1 前置检查失败", detail="CDP 不可达，已中止抓取（避免逐表重复报错）", progress=True)
-                _bi_debug("Step 1.1", "cdp_unreachable", data={"cdp_url": cdp_url})
-                return result
+                auto_launch = bool(full_spa.get("auto_launch_chrome_when_cdp_unreachable")) or os.environ.get(
+                    "BI_SPA_AUTO_LAUNCH_CHROME", ""
+                ).strip().lower() in ("1", "true", "yes")
+                if auto_launch:
+                    ok_launch, launch_msg = await asyncio.to_thread(_try_autolaunch_chrome_for_bi, cdp_url, base_url)
+                    _bi_log("Step 1.1: CDP 不可达，尝试自动启动 Chrome", detail=launch_msg, progress=True)
+                    if not ok_launch:
+                        result["stage"] = "collect"
+                        result["error"] = _cdp_unavailable_user_message(cdp_url) + f"\n\n自动启动失败：{launch_msg}"
+                        _bi_log("Step 1.1 前置检查失败", detail="CDP 不可达且自动启动 Chrome 失败", progress=True)
+                        _bi_debug("Step 1.1", "cdp_unreachable", data={"cdp_url": cdp_url, "auto_launch": False})
+                        return result
+                    for wait_sec in range(25):
+                        await asyncio.sleep(1)
+                        if await asyncio.to_thread(_cdp_endpoint_reachable, cdp_url):
+                            _bi_log(
+                                "Step 1.1: CDP 已连通",
+                                detail=f"等待约 {wait_sec + 1}s 后检测到调试端口，继续 SPA 抓取",
+                                progress=True,
+                            )
+                            break
+                    else:
+                        result["stage"] = "collect"
+                        result["error"] = (
+                            _cdp_unavailable_user_message(cdp_url)
+                            + "\n\n已自动启动 Chrome，但 25 秒内仍未检测到 CDP。"
+                            "若为首次使用的调试用户目录，请在弹出的窗口中完成登录后重试；"
+                            "或确认 9222 未被防火墙/安全软件拦截。"
+                        )
+                        _bi_log("Step 1.1 前置检查失败", detail="自动启动后 CDP 仍不可达", progress=True)
+                        _bi_debug("Step 1.1", "cdp_unreachable_after_autolaunch", data={"cdp_url": cdp_url})
+                        return result
+                else:
+                    result["stage"] = "collect"
+                    result["error"] = _cdp_unavailable_user_message(cdp_url)
+                    _bi_log("Step 1.1 前置检查失败", detail="CDP 不可达，已中止抓取（避免逐表重复报错）", progress=True)
+                    _bi_debug("Step 1.1", "cdp_unreachable", data={"cdp_url": cdp_url})
+                    return result
             # 与 run_bi_scraper_spa：未传 slug 时 slugs=None → 整表 MENU_ITEMS；仅 full_spa.slugs 非空列表时才收窄
             _cfg_slugs = full_spa.get("slugs")
             slugs = _cfg_slugs if isinstance(_cfg_slugs, list) and len(_cfg_slugs) > 0 else None
             dm = parse_direct_url_map_from_full_spa(full_spa)
+            spa_end = _bi_spa_report_date_end(cfg)
+            _bi_log(
+                "Step 1.1: SPA 统计日期区间结束日",
+                detail=spa_end.isoformat(),
+                progress=True,
+            )
 
             def _spa_collect_progress_cb(idx: int, total: int, slug: str, result: dict) -> None:
                 st = result.get("status", "")
@@ -1945,6 +3157,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 raw_dir=raw_dir_collect,
                 direct_url_map=dm,
                 progress_cb=_spa_collect_progress_cb,
+                report_date_end=spa_end,
             )
             if ok > 0:
                 result["data_updated"] = True
@@ -1964,7 +3177,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     else:
         _bi_log("Step 1 结果: DuckDB 与 raw 均新鲜，跳过抓取", progress=True)
 
-    # 长耗时 SPA 后再次对齐 Key/engine_ref，避免 Step 3.5 仍 import __main__ 且 os.environ 未含 DASHSCOPE
+    # 长耗时 SPA 后再次对齐 Key/engine_ref，避免 Step 4a/3.5 仍 import __main__ 且 os.environ 未含 DASHSCOPE
     _bi_reconcile_llm_engine_ref_with_agent()
 
     # run_refiner: false 时跳过 Step 2，不生成 output CSV（后续 Lark/邮件将无新 CSV 可同步）
@@ -2012,7 +3225,10 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             elif status == "fail":
                 _bi_log("Step 3: 表同步失败", detail=f"{name}: {detail}")
                 if "FieldNameNotFound" in detail:
-                    _bi_log("Step 3 提示", detail=f"FieldNameNotFound 表示 Lark 表字段名与 CSV 列名不一致。01 表列名「增幅（%）」、06 表「留存率（%）」。请在 bi_daily_report.yaml 的 lark_bitable.field_mapping 中配置映射（按 11_LARK_TABLE_SCHEMA.md 对照）")
+                    _bi_log(
+                        "Step 3 提示",
+                        detail="FieldNameNotFound 表示 Lark 表字段名与 CSV 列名不一致。提纯侧约定：13「新增设备增幅（%）」；08b 渠道层表仅「渠道、金币产出、金币消耗」；15「Arpu增幅（%）」、16「增幅（%）」；其余含日期表为 YYYY-MM-DD。若 Lark 列名不同，请在 bi_daily_report.yaml 的 lark_bitable.field_mapping 中配置（见 docs/bi_daily_report/11_LARK_TABLE_SCHEMA.md）。",
+                    )
                 elif "TableIdNotFound" in detail:
                     _bi_log("Step 3 提示", detail=f"TableIdNotFound 表示 table_id 不存在。请在 Lark 多维表中打开对应子表，从 URL 的 ?table=tblXXX 获取正确 table_id，更新到 bi_daily_report.yaml 的 lark_bitable.tables")
 
@@ -2038,85 +3254,39 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         elif not result["output_paths"]:
             _bi_log("Step 3: 已跳过 Lark 同步 (无输出文件)")
 
+    # Step 3.4: 多维表同步完成后、战略大战报前 — 推送 KPI 快照卡片（读 output CSV，与 Lark 表同源）
+    snap_cfg = cfg.get("kpi_snapshot_card") or {}
+    if snap_cfg.get("enabled", True) and output_dir.is_dir():
+        report_d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        _wh, _cid = _resolve_bi_lark_push_targets(cfg)
+        if _wh or _cid:
+            try:
+                kpi_md = _build_bi_kpi_snapshot_markdown(output_dir, report_d)
+                lark_cfg = cfg.get("lark_bitable") or {}
+                if lark_cfg.get("app_id") and lark_cfg.get("app_secret"):
+                    os.environ.setdefault("LARK_APP_ID", str(lark_cfg.get("app_id", "")).strip())
+                    os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
+                if lark_cfg.get("lark_use_feishu"):
+                    os.environ["LARK_USE_FEISHU"] = "1"
+                from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+
+                _r = send_lark_markdown(_wh or "", kpi_md[:6000], title="📊 BI 数据快报", chat_id=_cid or None)
+                if _r.get("status") == "success":
+                    result["kpi_snapshot_sent"] = True
+                    _bi_log("Step 3.4: KPI 快照卡片已推送至 Lark", detail=f"数据日={report_d}", progress=True)
+                else:
+                    _bi_log("Step 3.4 警告: KPI 快照推送失败", detail=str(_r.get("error", _r)))
+            except Exception as e:
+                _bi_log("Step 3.4 警告: KPI 快照异常", detail=str(e))
+                _bi_debug("Step 3.4", "exception", exc=e)
+        else:
+            _bi_log("Step 3.4: 未配置 Lark webhook/chat_id，跳过 KPI 快照卡片")
+    else:
+        _bi_debug("Step 3.4", "skip", data={"enabled": snap_cfg.get("enabled", True), "dir_exists": output_dir.is_dir()})
+
     _bi_reconcile_llm_engine_ref_with_agent()
 
-    # Step 3.5: 同步完 Lark 多维表后 — 自动用 Lark 机器人向用户汇报分析数据（调用战略分析 + 推送）
-    strategic_cfg = cfg.get("strategic_report") or {}
-    _bi_debug("Step 3.5", "branch", data={"enabled": strategic_cfg.get("enabled", True)})
-    if strategic_cfg.get("enabled", True):
-        _bi_debug("Step 3.5", "entry", detail="generate_bi_strategic_report_async")
-        _bi_log("Step 3.5: 正在调用 LLM 生成战略深度分析战报（金字塔原则）...", progress=True)
-        try:
-            from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
-            strategic_md = await generate_bi_strategic_report_async(
-                metrics=None,
-                output_dir=output_dir,
-                config=cfg,
-            )
-            result["strategic_report"] = strategic_md
-            _bi_debug("Step 3.5", "exit", data={"report_len": len(strategic_md), "push_to_lark": strategic_cfg.get("push_to_lark", True)})
-            _bi_log("Step 3.5 结果: 战略报告已生成", detail=f"长度={len(strategic_md)} 字符", progress=True)
-            if strategic_cfg.get("push_to_lark", True) and strategic_md:
-                dist = cfg.get("distribution") or {}
-                webhook = (dist.get("lark_webhook_url") or "").strip()
-                chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
-                if not chat_id:
-                    chat_id = (dist.get("lark_chat_id") or "").strip()
-                elif dist.get("lark_chat_id") and dist.get("lark_chat_id") != chat_id:
-                    _bi_log("Step 3.5: 使用环境变量 BI_LARK_CHAT_ID 覆盖 config 中的 lark_chat_id", detail=f"chat_id={chat_id[:20]}...", progress=True)
-                if str(webhook).startswith("${"):
-                    webhook = ""
-                if str(chat_id).startswith("${"):
-                    chat_id = ""
-                if not chat_id and not webhook:
-                    try:
-                        from l3_node.jachin_config import load_mcp_config
-                        from l3_node.paths import get_app_root
-                        mcp_cfg = load_mcp_config("atom_lark_notifier", project_root=get_app_root())
-                        chat_id = (mcp_cfg.get("default_chat_id") or "").strip()
-                        if str(chat_id).startswith("${"):
-                            chat_id = ""
-                        if chat_id:
-                            _bi_log("Step 3.5: 使用 atom_lark_notifier 的 default_chat_id 作为推送目标", detail=chat_id[:20] + "...")
-                    except Exception:
-                        pass
-                if webhook or chat_id:
-                    _bi_log("Step 3.5: 正在将战略报告推送到 Lark 机器人...", detail=f"chat_id={chat_id or '(无)'}, webhook={'已配置' if webhook else '无'}")
-                    _bi_debug("Step 3.5", "lark_target", data={"chat_id": chat_id or "", "webhook": bool(webhook)})
-                    try:
-                        lark_cfg = cfg.get("lark_bitable") or {}
-                        if lark_cfg.get("app_id") and lark_cfg.get("app_secret"):
-                            os.environ.setdefault("LARK_APP_ID", str(lark_cfg.get("app_id", "")).strip())
-                            os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
-                        if lark_cfg.get("lark_use_feishu"):
-                            os.environ["LARK_USE_FEISHU"] = "1"
-                        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
-                        r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 战略深度分析战报", chat_id=chat_id or None)
-                        if r.get("status") == "success":
-                            _bi_log("Step 3.5: 战略报告已推送至 Lark", detail="发送成功", progress=True)
-                            result["strategic_report_sent"] = True
-                        else:
-                            result["strategic_report_sent"] = False
-                            err_msg = r.get("error", "")
-                            _bi_log("Step 3.5 警告: Lark 推送失败", detail=err_msg)
-                            if "can NOT be out of the chat" in str(err_msg):
-                                _bi_log("Step 3.5 提示", detail=f"当前 chat_id={chat_id or '(无)'}。若 BI 助手已加入其他群，请设置 BI_LARK_CHAT_ID=该群会话ID 后重试")
-                            elif "already been dissolved" in str(err_msg):
-                                _bi_log("Step 3.5 提示", detail=f"当前 chat_id={chat_id or '(无)'} 对应的群聊已解散。请将 BI_LARK_CHAT_ID 改为一个仍存在的群聊会话 ID（如 oc_bb2b468cb04acb709c2e7aa5683f8f08）")
-                    except Exception as e:
-                        result["strategic_report_sent"] = False
-                        _bi_log("Step 3.5 警告: Lark 推送异常", detail=str(e))
-                else:
-                    _bi_log("Step 3.5: 已跳过推送 (未配置 distribution.lark_chat_id / lark_webhook_url 或 atom_lark_notifier.default_chat_id)")
-        except Exception as e:
-            result["strategic_report_error"] = str(e)
-            _bi_debug("Step 3.5", "exception", exc=e, data={"stage": "strategic_report"})
-            _bi_log("Step 3.5 警告: 战略分析异常（不影响主流程）", detail=str(e))
-    else:
-        _bi_debug("Step 3.5", "skip", data={"reason": "strategic_report.enabled=false"})
-        _bi_log("Step 3.5: 已跳过数据分析 (strategic_report.enabled=false)")
-
-    # Step 4a: 生成所有仪表盘分析（供邮件 + Lark 使用）
+    # Step 4a: 先于大战报 — 生成所有仪表盘分析（供邮件 + Lark 使用）
     dist = cfg.get("distribution") or {}
     da_cfg = cfg.get("dashboard_automation") or {}
     dashboard_analyses: list[tuple[str, str]] = []
@@ -2212,8 +3382,94 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
             else:
                 _bi_log("Step 4a: 未配置 Lark chat_id/webhook，跳过仪表盘分析推送")
 
-    # Step 3.6: 仪表盘推送完成后发送邮件（战略分析 + 仪表盘分析）
-    _bi_log("接下来执行 Step 3.6 发送 BI 战报邮件（含战略分析 + 仪表盘分析）", progress=True)
+    _bi_reconcile_llm_engine_ref_with_agent()
+
+    # Step 3.5: 仪表盘之后 — 战略大战报 + Lark 推送
+    strategic_cfg = cfg.get("strategic_report") or {}
+    _bi_debug("Step 3.5", "branch", data={"enabled": strategic_cfg.get("enabled", True)})
+    if strategic_cfg.get("enabled", True):
+        _bi_debug("Step 3.5", "entry", detail="generate_bi_strategic_report_async")
+        _bi_log("Step 3.5: 正在调用 LLM 生成战略深度分析战报（v4 长文形态）...", progress=True)
+        try:
+            from l3_node.paths import get_app_root
+            from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
+
+            cfg_strategic = _merge_strategic_report_config_for_llm(
+                cfg,
+                project_root=get_app_root(),
+                output_dir=output_dir,
+                raw_dir=raw_dir_collect,
+            )
+            strategic_md = await generate_bi_strategic_report_async(
+                metrics=None,
+                output_dir=output_dir,
+                config=cfg_strategic,
+            )
+            result["strategic_report"] = strategic_md
+            _bi_debug("Step 3.5", "exit", data={"report_len": len(strategic_md), "push_to_lark": strategic_cfg.get("push_to_lark", True)})
+            _bi_log("Step 3.5 结果: 战略报告已生成", detail=f"长度={len(strategic_md)} 字符", progress=True)
+            if strategic_cfg.get("push_to_lark", True) and strategic_md:
+                dist_push = cfg.get("distribution") or {}
+                webhook = (dist_push.get("lark_webhook_url") or "").strip()
+                chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
+                if not chat_id:
+                    chat_id = (dist_push.get("lark_chat_id") or "").strip()
+                elif dist_push.get("lark_chat_id") and dist_push.get("lark_chat_id") != chat_id:
+                    _bi_log("Step 3.5: 使用环境变量 BI_LARK_CHAT_ID 覆盖 config 中的 lark_chat_id", detail=f"chat_id={chat_id[:20]}...", progress=True)
+                if str(webhook).startswith("${"):
+                    webhook = ""
+                if str(chat_id).startswith("${"):
+                    chat_id = ""
+                if not chat_id and not webhook:
+                    try:
+                        from l3_node.jachin_config import load_mcp_config
+                        from l3_node.paths import get_app_root
+                        mcp_cfg = load_mcp_config("atom_lark_notifier", project_root=get_app_root())
+                        chat_id = (mcp_cfg.get("default_chat_id") or "").strip()
+                        if str(chat_id).startswith("${"):
+                            chat_id = ""
+                        if chat_id:
+                            _bi_log("Step 3.5: 使用 atom_lark_notifier 的 default_chat_id 作为推送目标", detail=chat_id[:20] + "...")
+                    except Exception:
+                        pass
+                if webhook or chat_id:
+                    _bi_log("Step 3.5: 正在将战略报告推送到 Lark 机器人...", detail=f"chat_id={chat_id or '(无)'}, webhook={'已配置' if webhook else '无'}")
+                    _bi_debug("Step 3.5", "lark_target", data={"chat_id": chat_id or "", "webhook": bool(webhook)})
+                    try:
+                        lark_cfg = cfg.get("lark_bitable") or {}
+                        if lark_cfg.get("app_id") and lark_cfg.get("app_secret"):
+                            os.environ.setdefault("LARK_APP_ID", str(lark_cfg.get("app_id", "")).strip())
+                            os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
+                        if lark_cfg.get("lark_use_feishu"):
+                            os.environ["LARK_USE_FEISHU"] = "1"
+                        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+                        r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 战略深度分析战报", chat_id=chat_id or None)
+                        if r.get("status") == "success":
+                            _bi_log("Step 3.5: 战略报告已推送至 Lark", detail="发送成功", progress=True)
+                            result["strategic_report_sent"] = True
+                        else:
+                            result["strategic_report_sent"] = False
+                            err_msg = r.get("error", "")
+                            _bi_log("Step 3.5 警告: Lark 推送失败", detail=err_msg)
+                            if "can NOT be out of the chat" in str(err_msg):
+                                _bi_log("Step 3.5 提示", detail=f"当前 chat_id={chat_id or '(无)'}。若 BI 助手已加入其他群，请设置 BI_LARK_CHAT_ID=该群会话ID 后重试")
+                            elif "already been dissolved" in str(err_msg):
+                                _bi_log("Step 3.5 提示", detail=f"当前 chat_id={chat_id or '(无)'} 对应的群聊已解散。请将 BI_LARK_CHAT_ID 改为一个仍存在的群聊会话 ID（如 oc_bb2b468cb04acb709c2e7aa5683f8f08）")
+                    except Exception as e:
+                        result["strategic_report_sent"] = False
+                        _bi_log("Step 3.5 警告: Lark 推送异常", detail=str(e))
+                else:
+                    _bi_log("Step 3.5: 已跳过推送 (未配置 distribution.lark_chat_id / lark_webhook_url 或 atom_lark_notifier.default_chat_id)")
+        except Exception as e:
+            result["strategic_report_error"] = str(e)
+            _bi_debug("Step 3.5", "exception", exc=e, data={"stage": "strategic_report"})
+            _bi_log("Step 3.5 警告: 战略分析异常（不影响主流程）", detail=str(e))
+    else:
+        _bi_debug("Step 3.5", "skip", data={"reason": "strategic_report.enabled=false"})
+        _bi_log("Step 3.5: 已跳过数据分析 (strategic_report.enabled=false)")
+
+    # Step 3.6: 仪表盘与战略均完成后发送邮件
+    _bi_log("接下来执行 Step 3.6 发送 BI 战报邮件（一、仪表盘 → 二、Lark 同步 → 三、战略分析）", progress=True)
 
     email_cfg = dist.get("email") or {}
     _bi_debug("Step 3.6", "branch", data={"email_enabled": email_cfg.get("enabled", True), "is_dict": isinstance(email_cfg, dict)})
@@ -2237,7 +3493,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 _bi_log("Step 3.6 警告: 解析 scheduled_time 失败，立即发送", detail=str(e))
         else:
             _bi_log("Step 3.6: 无 scheduled_time，立即发送", detail="(可配置 distribution.email.scheduled_time 如 18:08)")
-        _bi_log("Step 3.6: 发送 BI 战报邮件（战略分析 + 仪表盘分析）...", progress=True)
+        _bi_log("Step 3.6: 发送 BI 战报邮件（仪表盘 + Lark 同步 + 战略分析）...", progress=True)
         try:
             smtp_config = {
                 "host": (email_cfg.get("smtp_host") or email_cfg.get("host") or "smtp.qq.com"),
@@ -2342,8 +3598,8 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 dashboard_section = ""
                 if dashboard_section_parts:
                     dashboard_section = f"""
-<h3>三、仪表盘统计图与分析</h3>
-<p>以下为 Lark 多维表格各仪表盘及 LLM 分析结果。</p>
+<h3>一、仪表盘统计图与分析</h3>
+<p>以下为 Lark 多维表格各仪表盘及 LLM 分析结果（与流程执行顺序一致：先于战略大战报）。</p>
 {"".join(dashboard_section_parts)}"""
 
                 body = f"""<html><body style="font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size:14px; line-height:1.6; color:#333;">
@@ -2352,10 +3608,10 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
 <p style="margin:0; color:#c41d7f; font-size:13px;">⚠ 注意将此账号放入白名单，以防被当垃圾邮件误删！</p>
 </div>
 <h2 style="color:#1890ff;">📊 BI 每日战报 ({report_date})</h2>
-<h3>一、战略深度分析（闪电战报）</h3>
-<div style="background:#f5f5f5; padding:16px; border-radius:8px; white-space: pre-wrap;">{strategic_html}</div>
-{lark_section}
 {dashboard_section}
+{lark_section}
+<h3>三、战略深度分析</h3>
+<div style="background:#f5f5f5; padding:16px; border-radius:8px; white-space: pre-wrap;">{strategic_html}</div>
 
 <hr style="margin:20px 0; border:none; border-top:1px solid #eee;"/>
 <p style="color:#999; font-size:12px;">— Jachin OS BI 战报系统 · 自动发送</p>
@@ -2412,7 +3668,7 @@ def run_bi_daily_report(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     BI 每日战报主入口。
 
-    流程: 1) 检查 DuckDB 今日数据 2) 无则 SPA 抓取+ingest 3) 提纯输出 CSV 4) 同步 Lark 多维表 5) 战略分析并推送 Lark 6) 邮件通知
+    流程: 1) 检查 DuckDB 今日数据 2) 无则 SPA 抓取+ingest 3) 提纯输出 CSV 4) 同步 Lark 多维表 5) 仪表盘分析并推送 Lark 6) 战略大战报并推送 Lark 7) 邮件通知
     """
     try:
         return asyncio.run(_run_bi_daily_report_async(config))

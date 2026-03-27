@@ -56,6 +56,24 @@ def test_atom_lark_notifier_contract() -> tuple[bool, str]:
     return True, "OK"
 
 
+def test_atom_bi_project_context_contract() -> tuple[bool, str]:
+    """无有效凭证时也应返回含 status 的 dict（由 registry 或实现保证）。"""
+    from l3_node.mcp_tools.bi.tool_bi_project_context import sync_bi_project_context
+
+    result = sync_bi_project_context(config={"app_id": "", "app_secret": ""})
+    if not isinstance(result, dict):
+        return False, f"返回值应为 dict，实际: {type(result)}"
+    if "status" not in result:
+        return False, "返回值缺少 status 字段"
+    if result.get("status") == "success":
+        if "files" not in result:
+            return False, "status=success 时建议含 files"
+    else:
+        if "error" not in result and not result.get("errors"):
+            return False, "status=error 时应有 error 或 errors"
+    return True, "OK"
+
+
 def test_atom_email_sender_contract() -> tuple[bool, str]:
     """验证 atom_email_sender 返回值包含 status、msg/error"""
     from l3_node.mcp_tools.bi.tool_email_sender import send_email_with_attachment
@@ -86,6 +104,7 @@ def main() -> int:
     for name, fn in [
         ("atom_web_scraper", test_atom_web_scraper_contract),
         ("atom_lark_notifier", test_atom_lark_notifier_contract),
+        ("atom_bi_project_context", test_atom_bi_project_context_contract),
         ("atom_email_sender", test_atom_email_sender_contract),
     ]:
         ok, msg = fn()
@@ -94,10 +113,10 @@ def main() -> int:
         if ok:
             ok_count += 1
     print()
-    if ok_count == 3:
+    if ok_count == 4:
         print("全部通过")
         return 0
-    print(f"失败 {3 - ok_count} 项，请检查契约: docs/bi_daily_report/01_PARALLEL_DEVELOPMENT_GUIDE.md")
+    print(f"失败 {4 - ok_count} 项，请检查契约: docs/bi_daily_report/01_PARALLEL_DEVELOPMENT_GUIDE.md")
     return 1
 
 

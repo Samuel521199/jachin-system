@@ -1,0 +1,19 @@
+# BI 定时覆盖（可选）
+# 复制到以下任一位置（优先 ~/.jachin）:
+#   %USERPROFILE%\.jachin\config\skills\com.jachin.bi.daily_report\bi_scheduler.yaml
+#   <项目根>\config\skills\com.jachin.bi.daily_report\bi_scheduler.yaml
+#
+# 与 bi_daily_report.yaml 合并：此处字段覆盖主文件中的 schedule / schedule_enabled。
+# 适合本机只改时间、不动仓库里大块 YAML。
+
+schedule_enabled: true
+
+schedule:
+  enabled: true
+  mode: cron
+  hour: 8
+  minute: 0
+  timezone: Asia/Shanghai
+  # mode: interval 时示例:
+  # minutes: 60
+  # hours: 2

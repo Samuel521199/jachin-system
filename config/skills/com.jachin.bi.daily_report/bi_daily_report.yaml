@@ -1,6 +1,7 @@
 # BI 每日战报配置
 # 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
-# 实际配置: ~/.jachin/config/skills/com.jachin.bi.daily_report/
+# 三处建议保持同步：① 项目本文件 ② 项目根 .env（BI_* 与仪表盘 URL 等）③ %USERPROFILE%\.jachin\config\skills\com.jachin.bi.daily_report\ 下同名 YAML
+# 运行时：若优先加载了 ~/.jachin 且其中 lark_bitable.tables 某 CSV 的 table_id 为空，会用本仓库此文件中的非空 table_id 自动补齐；仪表盘同理按 name 追加缺失项。
 
 # skip_collect: 仅在 DuckDB+raw 已「今日新鲜」时跳过 SPA 抓取；不新鲜时仍会抓。完整流程建议 false。
 skip_collect: false
@@ -12,10 +13,17 @@ analysis_data_source: "raw"
 # run_refiner: false 时跳过 Step2 提纯，不生成 output CSV（Lark 同步无新文件）。完整流程须 true。
 run_refiner: true
 
+# Step 3.4：Lark 多维表同步完成后、战略大战报前，是否推送 KPI 快照卡片（读 output 下 CSV，与多维表同源）
+kpi_snapshot_card:
+  enabled: true
+
 # ========== 定时开关（可随意调节） ==========
 # schedule_enabled: 顶层开关，false 时完全关闭 BI 定时任务（不注册、不启动）
 # 也可在下方 schedule.enabled 中设置，两者任一为 false 即关闭
-# 须与 ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml 同步（本机优先读 ~/.jachin 那份）
+# 配置路径（优先 ~/.jachin，再到项目 config）:
+#   bi_daily_report.yaml — 主配置（本段 + schedule）
+#   bi_scheduler.yaml — 可选，仅覆盖 schedule_enabled / schedule，见同目录 bi_scheduler.yaml.example
+# 环境变量（可选）: BI_DAILY_REPORT_SCHEDULE=off — 强制关定时，不改 YAML
 # 定时排查日志: ~/.jachin/client_volumes/bi_data/logs/bi_scheduler_audit.log
 schedule_enabled: false
 
@@ -26,8 +34,8 @@ schedule_enabled: false
 schedule:
   enabled: false
   mode: cron
-  hour: 22
-  minute: 55
+  hour: 14
+  minute: 13
   timezone: Asia/Shanghai
   # —— 仅 mode: loop 时生效（一般不用）——
   # run_at_hour: 15
@@ -43,10 +51,14 @@ data_source:
 # ========== SPA 批量抓取（Chrome CDP）==========
 # use_direct_urls: true 且 direct_urls 非空时，按 slug 直链打开页面，避免侧栏菜单不可见导致失败
 # base_url / cdp_url 可用 .env 的 BI_DATA_URL、BI_SPA_CDP_URL（需在 .env 中配置）
+# auto_launch_chrome_when_cdp_unreachable: true 时，若 9222 无监听则 Windows 下自动启动调试 Chrome（等同 launch_chrome_debug_bi.ps1）
+#   无界面服务器请 false；也可设环境变量 BI_SPA_AUTO_LAUNCH_CHROME=1 临时开启
+# report_date_end: "2026-03-24"  # 可选；不填则默认昨天。各表「统计日期」结束日与此一致后点查询/对比查询
 # 实际生效配置请同步: ~/.jachin/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml
 full_spa:
   base_url: "${BI_DATA_URL}"
   cdp_url: "${BI_SPA_CDP_URL}"
+  auto_launch_chrome_when_cdp_unreachable: true
   use_direct_urls: true
   direct_urls:
     daily_ops_summary: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/PlatformData/platformOpData/biUserDailySummary"
@@ -120,23 +132,28 @@ lark_bitable:
     "03a_用户活跃_DAU渠道来源.csv": "tblXTientR8Pkd5x"  # Lark 表名: DAU渠道来源
     "02_用户活跃_日期数量表.csv": "tblflaMe457ML81v"   # Lark 表名: 周统计DAU和DNU数量
     "03b_用户活跃_DNU渠道来源.csv": "tblSXaeym4v83wH2"  # Lark 表名: DNU渠道来源
-    "13_用户活跃_新增设备表.csv": ""                   # Lark 表名: 新增设备数、增幅、占比（在 Lark 打开子表，URL ?table=tblXXX 填入）
+    "12_用户活跃_日活占比.csv": "tbl6RtYwVWqnkS2u"     # 日活占比
+    "13_用户活跃_新增设备表.csv": "tbluUuhcYkeIP1g4"  # 新增设备数
     # === 平台留存情况 ===
     "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留率（留存类型, 留存率）
     "05_留存_付费用户次留表.csv": "tblc8C8Qs3CjWxpG"   # 付费用户次留表
     "06_留存_周环比表.csv": "tblMZ2XUYURKID3r"        # Lark 表名: 周环比（类型, 留存率）
     "07_留存_付费用户周环比表.csv": "tblVqFqEvDeJ2N7f"  # 付费用户周环比
     # === 平台消耗情况 ===
-    "08_消耗_每日表.csv": "tbl094S7AAZ0ZcoN"          # Lark 表名: 每日金币产出、消耗
-    "09_消耗_按游戏表.csv": "tblasHRF6rV4VQRu"        # Lark 表名: 每个游戏的产出、消耗
+    "08_消耗_每日表.csv": "tbl094S7AAZ0ZcoN"          # 当日金币产出、消耗（全）
+    "08b_消耗_金币_渠道层.csv": "tbly3ii4772CL2Vn"    # 当日金币产出、消耗（渠道层）
+    "09_消耗_按游戏表.csv": "tblasHRF6rV4VQRu"        # 每个游戏的产出、消耗
     "10_充值_付费人数按SKU.csv": "tblY7p1sHL6iRT4c"   # Lark 表名: 付费人数表格（不同充值金人数）
-    "11_充值_付费金额按SKU.csv": "tblk1u7w34guUa8k"   # Lark 表名: 付费金额表格（不同充值金金额）
+    "11_充值_付费金额按SKU.csv": "tblk1u7w34guUa8k"   # Lark 表名: 付费人数表格（不同充值金金额）
     "14_充值_付费人数金额增幅表.csv": ""              # Lark 表名: 付费人数、金额、增幅
-    "15_充值_ARPU表.csv": ""                          # Lark 表名: ARPU
-    "16_充值_ARPPU表.csv": ""                         # Lark 表名: ARPPU
+    "15_消耗_Arup表.csv": "tblF9bURalT1YHdf"          # Arpu（表名勿拼成 Arup）
+    "16_消耗_Arppu表.csv": "tblR3kSMGegIvJWK"         # Arppu
+    "17_游戏_完成局数.csv": "tblpFAP90hcUJuWo"        # 完成游戏局数
+    "18_游戏_用户获胜.csv": "tblTejoGwG9SBeTa"        # 用户获胜
+    "19_游戏_RTP_GGR.csv": "tblrfEVyPJedLW4a"         # GameRTP、GGR
 
-# 战略深度分析（金字塔原则 + 四维度：资本效率、系统性脆弱度、商业护城河、预测雷达）
-# 结合菲律宾社交游戏市场，基于 DuckDB 指标与 CSV 提纯数据调用 LLM 生成战报
+# 战略深度分析：见 docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md（v4 长文 Markdown，非 1-3-3）
+# 基于 bi_project + output/raw T/T-1 + DuckDB/CSV 调用 LLM
 strategic_report:
   enabled: true
   push_to_lark: true   # 生成后推送到 distribution.lark_chat_id 或 lark_webhook_url
@@ -152,7 +169,7 @@ dashboard_automation:
   cdp_url: ""   # 留空=自动启动浏览器；填 http://127.0.0.1:9222 则连接已有 Chrome
   # 分析 MD 文档保存子目录，相对于 output（如 统计分析 → output/统计分析）
   analysis_output_subdir: "统计分析"
-  # 三个仪表盘的完整 URL（在 Lark 中打开对应仪表盘后从地址栏复制）
+  # 各仪表盘的 Base 内链接（在 Lark 中打开对应仪表盘后从地址栏复制）
   dashboards:
     - name: "仪表盘_用户登录活跃情况"
       url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blkGTGJFC566IaO6"
@@ -160,6 +177,8 @@ dashboard_automation:
       url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blkVkFVeGiIlOtwd"
     - name: "仪表盘_平台消耗情况"
       url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blknCLFXiQZD6otD"
+    - name: "仪表盘_游戏情况"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlgc0qFebIwVIkEaTy7HpktIc"
 
 distribution:
   lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
