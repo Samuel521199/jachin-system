@@ -9,6 +9,7 @@
 | **A** | `bi/tool_web_scraper.py` | mcp:atom_web_scraper |
 | **B** | `bi/tool_lark_notifier.py` | mcp:atom_lark_notifier |
 | **B** | `bi/tool_email_sender.py` | mcp:atom_email_sender |
+| **BI** | `bi/tool_bi_project_context.py` | mcp:atom_bi_project_context |
 
 ## 依赖
 

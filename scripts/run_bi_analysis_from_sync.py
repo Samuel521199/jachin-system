@@ -4,7 +4,7 @@
 BI 分析（从多维表格同步后开始）— 中间阶段测试入口
 
 跳过：数据抓取、提纯、Lark 多维表同步。
-执行：战略分析 → 推送 Lark → 仪表盘分析 → 推送 Lark 卡片（每个仪表盘一条）→ 邮件发送。
+执行：仪表盘分析 → 推送 Lark 卡片（每个仪表盘一条）→ 战略分析 → 推送 Lark → 邮件发送（与 main_skill 顺序一致）。
 
 前置：output 目录已有 CSV（可先运行完整 run_bi_analysis 一次，或手动将 CSV 放入 output）。
 
@@ -44,17 +44,25 @@ if sys.platform == "win32":
 
 
 def _run_analysis_flow() -> int:
-    """从多维表格同步后开始：战略分析 + 推送 Lark + 仪表盘分析 + 推送卡片 + 邮件"""
-    from l3_node.skills.bi.bi_daily_report.main_skill import _load_config, _DASHBOARD_DISPLAY_URLS
+    """从多维表格同步后开始：仪表盘分析 + 推送卡片 + 战略分析 + 推送 Lark + 邮件"""
+    from l3_node.skills.bi.bi_daily_report.main_skill import (
+        _bi_merge_dotenv_for_skill,
+        _bi_reconcile_llm_engine_ref_with_agent,
+        _load_config,
+        _DASHBOARD_DISPLAY_URLS,
+    )
     from l3_node.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
 
     cfg = _load_config(None)
     ensure_bi_dirs()
+    # 与 run_bi_daily_report / main_skill 一致：合并项目根 .env 与 ~/.jachin/.env，并注入 engine_ref
+    _bi_merge_dotenv_for_skill()
+    _bi_reconcile_llm_engine_ref_with_agent()
     output_dir = get_bi_output_dir((cfg.get("storage") or {}).get("refiner_output_path") or "")
     output_paths = list(output_dir.glob("*.csv"))
     output_paths = [str(p) for p in output_paths]
 
-    print("\n[BI分析-中间] 从多维表格同步后开始：战略分析 → Lark 推送 → 仪表盘分析 → Lark 卡片 → 邮件")
+    print("\n[BI分析-中间] 从多维表格同步后开始：仪表盘分析 → Lark 卡片 → 战略分析 → Lark → 邮件")
     print(f"[BI分析-中间] output 目录: {output_dir}")
     print(f"[BI分析-中间] 已有 CSV: {len(output_paths)} 个")
     if not output_paths:
@@ -73,55 +81,7 @@ def _run_analysis_flow() -> int:
         strategic_cfg = cfg.get("strategic_report") or {}
         da_cfg = cfg.get("dashboard_automation") or {}
 
-        # Step 3.5: 战略分析 + 推送 Lark
-        if strategic_cfg.get("enabled", True):
-            print("\n[Step 3.5] 生成战略深度分析...")
-            try:
-                from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
-                strategic_md = await generate_bi_strategic_report_async(
-                    metrics=None, output_dir=output_dir, config=cfg
-                )
-                result["strategic_report"] = strategic_md or ""
-                print(f"  -> 已生成 ({len(strategic_md or '')} 字符)")
-                if strategic_cfg.get("push_to_lark", True) and strategic_md:
-                    webhook = (dist.get("lark_webhook_url") or "").strip()
-                    chat_id = (dist.get("lark_chat_id") or "").strip()
-                    if str(webhook).startswith("${"):
-                        webhook = ""
-                    if str(chat_id).startswith("${"):
-                        chat_id = ""
-                    if not chat_id and not webhook:
-                        chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
-                    if not chat_id and not webhook:
-                        try:
-                            from l3_node.jachin_config import load_mcp_config
-                            from l3_node.paths import get_app_root
-                            mcp = load_mcp_config("atom_lark_notifier", project_root=get_app_root())
-                            chat_id = (mcp.get("default_chat_id") or "").strip()
-                            if str(chat_id).startswith("${"):
-                                chat_id = ""
-                        except Exception:
-                            pass
-                    if webhook or chat_id:
-                        lark_cfg = cfg.get("lark_bitable") or {}
-                        if lark_cfg.get("app_id") and lark_cfg.get("app_secret"):
-                            os.environ.setdefault("LARK_APP_ID", str(lark_cfg.get("app_id", "")).strip())
-                            os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
-                        if lark_cfg.get("lark_use_feishu"):
-                            os.environ["LARK_USE_FEISHU"] = "1"
-                        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
-                        r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 战略深度分析战报", chat_id=chat_id or None)
-                        if r.get("status") == "success":
-                            result["strategic_report_sent"] = True
-                            print("  -> 已推送到 Lark")
-                        else:
-                            print(f"  -> Lark 推送失败: {r.get('error', '')}")
-                    else:
-                        print("  -> 未配置 chat_id/webhook，跳过推送")
-            except Exception as e:
-                print(f"  -> 异常: {e}")
-
-        # Step 4a: 仪表盘分析 + 推送 Lark 卡片
+        # Step 4a: 仪表盘分析 + 推送 Lark 卡片（先于大战报，与 main_skill 一致）
         dashboard_analyses: list[tuple[str, str]] = []
         if da_cfg.get("enabled", False):
             dashboards = da_cfg.get("dashboards") or []
@@ -147,7 +107,6 @@ def _run_analysis_flow() -> int:
                 except Exception as e:
                     print(f"  [{i + 1}] {name} -> 失败: {e}")
 
-            result["dashboard_analyses"] = dashboard_analyses
             if dashboard_analyses and da_cfg.get("push_dashboard_to_lark", True):
                 _lark_webhook = (dist.get("lark_webhook_url") or "").strip()
                 _lark_chat_id = (dist.get("lark_chat_id") or "").strip()
@@ -189,6 +148,68 @@ def _run_analysis_flow() -> int:
                     if sent_ok:
                         result["dashboard_analysis_sent"] = True
                     print(f"  -> 共推送 {sent_ok}/{len(dashboard_analyses)} 条")
+        result["dashboard_analyses"] = dashboard_analyses
+
+        _bi_reconcile_llm_engine_ref_with_agent()
+
+        # Step 3.5: 战略分析 + 推送 Lark（与 main_skill 一致：注入 bi_project + T/T-1 摘要）
+        if strategic_cfg.get("enabled", True):
+            print("\n[Step 3.5] 生成战略深度分析...")
+            try:
+                from l3_node.paths import get_app_root
+                from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
+                from l3_node.skills.bi.bi_daily_report.main_skill import _merge_strategic_report_config_for_llm
+                from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
+
+                raw_dir_collect = get_bi_raw_dir()
+                cfg_strategic = _merge_strategic_report_config_for_llm(
+                    cfg,
+                    project_root=get_app_root(),
+                    output_dir=output_dir,
+                    raw_dir=raw_dir_collect,
+                )
+                strategic_md = await generate_bi_strategic_report_async(
+                    metrics=None, output_dir=output_dir, config=cfg_strategic
+                )
+                result["strategic_report"] = strategic_md or ""
+                print(f"  -> 已生成 ({len(strategic_md or '')} 字符)")
+                if strategic_cfg.get("push_to_lark", True) and strategic_md:
+                    webhook = (dist.get("lark_webhook_url") or "").strip()
+                    chat_id = (dist.get("lark_chat_id") or "").strip()
+                    if str(webhook).startswith("${"):
+                        webhook = ""
+                    if str(chat_id).startswith("${"):
+                        chat_id = ""
+                    if not chat_id and not webhook:
+                        chat_id = (os.environ.get("BI_LARK_CHAT_ID") or os.environ.get("LARK_CHAT_ID") or "").strip()
+                    if not chat_id and not webhook:
+                        try:
+                            from l3_node.jachin_config import load_mcp_config
+                            from l3_node.paths import get_app_root
+                            mcp = load_mcp_config("atom_lark_notifier", project_root=get_app_root())
+                            chat_id = (mcp.get("default_chat_id") or "").strip()
+                            if str(chat_id).startswith("${"):
+                                chat_id = ""
+                        except Exception:
+                            pass
+                    if webhook or chat_id:
+                        lark_cfg = cfg.get("lark_bitable") or {}
+                        if lark_cfg.get("app_id") and lark_cfg.get("app_secret"):
+                            os.environ.setdefault("LARK_APP_ID", str(lark_cfg.get("app_id", "")).strip())
+                            os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
+                        if lark_cfg.get("lark_use_feishu"):
+                            os.environ["LARK_USE_FEISHU"] = "1"
+                        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+                        r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 战略深度分析战报", chat_id=chat_id or None)
+                        if r.get("status") == "success":
+                            result["strategic_report_sent"] = True
+                            print("  -> 已推送到 Lark")
+                        else:
+                            print(f"  -> Lark 推送失败: {r.get('error', '')}")
+                    else:
+                        print("  -> 未配置 chat_id/webhook，跳过推送")
+            except Exception as e:
+                print(f"  -> 异常: {e}")
 
         # Step 3.6: 邮件
         email_cfg = dist.get("email") or {}
@@ -259,17 +280,21 @@ def _run_analysis_flow() -> int:
                     link_html = f'<a href="{html.escape(durl)}">打开仪表盘</a>' if durl and not durl.startswith("${") else ""
                     analysis_escaped = html.escape(analysis_text).replace("\n", "<br/>")
                     dashboard_section_parts.append(f'<div style="margin:12px 0; padding:12px; background:#f8f9fa; border-radius:8px; border-left:4px solid #1890ff;"><h4 style="margin:0 0 8px 0;">{i + 1}. {html.escape(dname)}</h4><p style="margin:4px 0; color:#666; font-size:13px;">📊 {html.escape(chart_list)} {link_html}</p><p style="margin:8px 0 0 0; white-space: pre-wrap;">{analysis_escaped}</p></div>')
-                dashboard_section = f'<h3>三、仪表盘统计图与分析</h3>{"".join(dashboard_section_parts)}' if dashboard_section_parts else ""
+                dashboard_section = (
+                    f'<h3>一、仪表盘统计图与分析</h3><p>与流程顺序一致：先于战略大战报。</p>{"".join(dashboard_section_parts)}'
+                    if dashboard_section_parts
+                    else ""
+                )
                 body = f"""<html><body style="font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-size:14px; line-height:1.6; color:#333;">
 <div style="background:#e6f7ff; padding:12px 16px; border-radius:8px; margin-bottom:16px; border-left:4px solid #1890ff;">
 <p style="margin:0 0 8px 0; font-weight:600;">本邮件由 jachin 系统自动发送</p>
 <p style="margin:0; color:#c41d7f; font-size:13px;">⚠ 注意将此账号放入白名单，以防被当垃圾邮件误删！</p>
 </div>
 <h2 style="color:#1890ff;">📊 BI 每日战报 ({report_date})</h2>
-<h3>一、战略深度分析</h3>
-<div style="background:#f5f5f5; padding:16px; border-radius:8px; white-space: pre-wrap;">{strategic_html}</div>
-{lark_section}
 {dashboard_section}
+{lark_section}
+<h3>三、战略深度分析</h3>
+<div style="background:#f5f5f5; padding:16px; border-radius:8px; white-space: pre-wrap;">{strategic_html}</div>
 <hr style="margin:20px 0; border:none; border-top:1px solid #eee;"/>
 <p style="color:#999; font-size:12px;">— Jachin OS BI 战报系统 · 分析阶段</p>
 </body></html>"""

@@ -1,0 +1,23 @@
+# atom_bi_project_context — 将 Lark 知识库中的 BI 项目文档同步到仓库 docs/bi_daily_report/bi_project/
+# 复制为 config/mcps/atom_bi_project_context/config.yaml 或写入 ~/.jachin/config/mcps/atom_bi_project_context/config.yaml
+#
+# 要求：自建应用开通 知识库、云文档(docx)、电子表格、多维表格 等只读权限；应用须加入对应知识空间成员。
+# 参考：https://open.larksuite.com/document/server-docs/docs/wiki-v2/wiki-qa
+
+app_id: "${LARK_APP_ID}"
+app_secret: "${LARK_APP_SECRET}"
+lark_use_feishu: false
+output_dir_relative: docs/bi_daily_report/bi_project
+max_records_per_table: 2000
+max_discovered_links: 40
+recurse_children_depth: 2
+
+# 可选：覆盖内置种子链接（默认已包含下列 7 条，已去掉一次性 login token）
+wiki_urls:
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblozlbpzHlL8m8m&view=vew8TxMcSh
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewpI8lyYw
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/TO3twkDP3iPlBJklCHwln4FSgSc?table=tblsd9jtoIMhIskf&view=vewPvbGgis
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/HS8qw9XvDiN7u3kolkOlEplCgvb?sheet=3045da
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/FxOlwGQOniz5H2k5qiYl4Fzgggb?sheet=eIdFLx
+  - https://ssgkm409t6q5.sg.larksuite.com/wiki/UVR8wY8NUiyItnkA5dal4De7gUh

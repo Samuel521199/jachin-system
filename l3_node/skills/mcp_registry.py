@@ -74,6 +74,12 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "desc": "[L3 本地] 通用邮件发射器。传入 smtp_config、to_addrs、subject、body、attachment_paths，发送邮件。",
         "params": ["smtp_config", "to_addrs", "subject", "body", "attachment_paths"],
     },
+    {
+        "id": "mcp:atom_bi_project_context",
+        "label": "mcp:atom_bi_project_context",
+        "desc": "[L3 本地] 从配置的 Lark 知识库 Wiki 链接拉取多维表/文档/表格、子页面及文内 Wiki 链接，写入 docs/bi_daily_report/bi_project/，供 BI 理解项目背景。可选参数见 config/mcps/atom_bi_project_context/config.yaml。",
+        "params": ["config", "wiki_urls", "output_dir_relative", "max_records_per_table", "max_discovered_links", "recurse_children_depth"],
+    },
 ]
 
 
@@ -397,6 +403,22 @@ def _invoke_atom_email_sender_local(
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
 
 
+def _invoke_atom_bi_project_context_local(arguments: dict[str, Any] | None = None) -> str:
+    """L3 本地执行 atom_bi_project_context，路由到 l3_node.mcp_tools.bi.tool_bi_project_context。"""
+    try:
+        from l3_node.mcp_tools.bi.tool_bi_project_context import sync_bi_project_context
+
+        args = dict(arguments or {})
+        nested = args.pop("config", None) if isinstance(args.get("config"), dict) else None
+        cfg: dict[str, Any] = dict(nested or {})
+        cfg.update(args)
+        result = sync_bi_project_context(config=cfg)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("[MCP Registry] atom_bi_project_context 失败: %s", e)
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+
 def _invoke_add_automated_recruitment_task_local(
     job_name: str = "",
     analyze_threshold: int = 4,
@@ -652,7 +674,7 @@ class MCPToolRegistry:
 
         tools: list[dict[str, Any]] = list(L3_LOCAL_MCP_TOOLS)
         self._known_mcp_tools = set(self._local_mcp_tools)
-        local_names = {"read_file", "atom_post_job_boss", "atom_greet_recommend_boss", "add_automated_recruitment_task", "stop_automated_recruitment"}
+        local_names = {"read_file", "atom_post_job_boss", "atom_greet_recommend_boss", "add_automated_recruitment_task", "stop_automated_recruitment", "atom_bi_project_context"}
 
         cached_tools, self._cache_invoke_map = _load_tools_from_l3_mcp_cache()
         for ct in cached_tools:
@@ -915,6 +937,11 @@ class MCPToolRegistry:
                     subject=arguments.get("subject", ""),
                     body=arguments.get("body", ""),
                     attachment_paths=arguments.get("attachment_paths"),
+                )
+            if raw_name == "atom_bi_project_context":
+                return await asyncio.to_thread(
+                    _invoke_atom_bi_project_context_local,
+                    arguments if isinstance(arguments, dict) else {},
                 )
 
         if tool_id in self._cache_invoke_map or self._raw_name(tool_id) in self._cache_invoke_map:

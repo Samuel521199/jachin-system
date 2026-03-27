@@ -103,7 +103,7 @@ llm:
   model: "dashscope/qwen3.5-flash-2026-02-23"
 
 # ========== 战略深度分析 ==========
-# 金字塔原则 + 四维度（资本效率、系统性脆弱度、商业护城河、预测雷达），结合菲律宾社交游戏
+# 见 STRATEGIC_REPORT_ANALYSIS_SPEC.md v4（长文 Markdown，非 1-3-3）
 strategic_report:
   enabled: true
   push_to_lark: true
