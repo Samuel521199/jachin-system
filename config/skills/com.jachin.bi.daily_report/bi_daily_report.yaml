@@ -118,6 +118,8 @@ lark_bitable:
   # 列表记录 API 可选视图（与浏览器 ?view= 一致）；按 CSV 文件名配置
   list_records_view_by_csv:
     "11_充值_付费金额按SKU.csv": "vewwkBfksC"
+    # 漏斗图新开 · Tongits King老用户（与浏览器 ?view= 一致时可强制按视图拉取）
+    "22_漏斗_Tongits_King_老用户.csv": "vewBNmeNKJ"
   app_id: "cli_a930e0054ecf5ed1"
   app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
   app_token: "HCvubvsubak2WPs2GbClYq68gjh"
@@ -151,6 +153,15 @@ lark_bitable:
     "17_游戏_完成局数.csv": "tblpFAP90hcUJuWo"        # 完成游戏局数
     "18_游戏_用户获胜.csv": "tblTejoGwG9SBeTa"        # 用户获胜
     "19_游戏_RTP_GGR.csv": "tblrfEVyPJedLW4a"         # GameRTP、GGR
+    # 游戏深度参与情况（产品BI测试等 Base 中子表 URL ?table=tblXXX）
+    "20_游戏_游戏深度参与情况.csv": "tblQ03zgfxRexuD5"
+    # === 漏斗图新开（与「游戏深度参与情况」同源 stats_game_core；行=类型，列=游戏名）===
+    "21_漏斗_Tongits_King_全平台.csv": "tblPT6orVd7e6qBu"
+    "22_漏斗_Tongits_King_老用户.csv": "tblaBiKG6o97RhoB"
+    "23_漏斗_Tongits_King_新用户.csv": "tblN9FdNzQdzPNLA"
+    "24_漏斗_Color_Blitz_Social_全平台.csv": "tblqRZr3seJs23mx"
+    "25_漏斗_Color_Blitz_Social_老用户.csv": "tblgUMsjF7cafZRb"
+    "26_漏斗_Color_Blitz_Social_新用户.csv": "tblZbZN4Iz7CzTi8"
 
 # 战略深度分析：见 docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md（v4 长文 Markdown，非 1-3-3）
 # 基于 bi_project + output/raw T/T-1 + DuckDB/CSV 调用 LLM
@@ -169,14 +180,14 @@ dashboard_automation:
   cdp_url: ""   # 留空=自动启动浏览器；填 http://127.0.0.1:9222 则连接已有 Chrome
   # 分析 MD 文档保存子目录，相对于 output（如 统计分析 → output/统计分析）
   analysis_output_subdir: "统计分析"
-  # 各仪表盘的 Base 内链接（在 Lark 中打开对应仪表盘后从地址栏复制）
+  # 各仪表盘链接（与对外分享页一致，便于邮件/回退；Lark 推送卡片仍优先 main_skill._DASHBOARD_DISPLAY_URLS）
   dashboards:
     - name: "仪表盘_用户登录活跃情况"
-      url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blkGTGJFC566IaO6"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlghRi3WdEjFX9aH3LI3Bbf2c"
     - name: "仪表盘_平台留存情况"
-      url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blkVkFVeGiIlOtwd"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlgr00stzCWoJ2cySEAy4Ryie"
     - name: "仪表盘_平台消耗情况"
-      url: "https://ssgkm409t6q5.sg.larksuite.com/base/HCvubvsubak2WPs2GbClYq68gjh?table=blknCLFXiQZD6otD"
+      url: "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlg77U8jQvTTodea2ZQifK8ab"
     - name: "仪表盘_游戏情况"
       url: "https://ssgkm409t6q5.sg.larksuite.com/share/base/dashboard/shrlgc0qFebIwVIkEaTy7HpktIc"
 

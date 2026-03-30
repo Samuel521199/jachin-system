@@ -24,6 +24,11 @@ def get_bi_raw_dir() -> Path:
     return get_bi_data_root() / "raw"
 
 
+def get_bi_raw_natural_dir() -> Path:
+    """自然周/自然月留存对比抓取目录 (~/.jachin/client_volumes/bi_data/raw_natural)"""
+    return get_bi_data_root() / "raw_natural"
+
+
 def get_bi_metrics_dir() -> Path:
     """计算后指标目录 (~/.jachin/client_volumes/bi_data/metrics)"""
     return get_bi_data_root() / "metrics"
@@ -57,6 +62,7 @@ def get_bi_duckdb_path() -> Path:
 def ensure_bi_dirs() -> None:
     """确保 BI 数据目录存在"""
     get_bi_raw_dir().mkdir(parents=True, exist_ok=True)
+    get_bi_raw_natural_dir().mkdir(parents=True, exist_ok=True)
     get_bi_metrics_dir().mkdir(parents=True, exist_ok=True)
     get_bi_duckdb_dir().mkdir(parents=True, exist_ok=True)
     get_bi_output_dir().mkdir(parents=True, exist_ok=True)

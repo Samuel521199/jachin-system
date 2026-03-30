@@ -10,8 +10,11 @@ BI 数据持久化层 (D) — DuckDB 存储
 """
 from __future__ import annotations
 
+import csv
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,59 @@ def _find_date_column(columns: list[str]) -> str | None:
 def _q(col: str) -> str:
     """列名加双引号（含特殊字符）"""
     return f'"{col.replace(chr(34), chr(34)+chr(34))}"' if col else "1"
+
+
+_THOUSAND_SEP_NUM_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
+
+
+def _normalize_csv_thousand_separators(path: Path) -> tuple[str, bool]:
+    """
+    BI 表格抓取常带千分位逗号（如 1,697），DuckDB 写入 INT 列会失败。
+    返回 (供 read_csv_auto 使用的路径, 是否为临时文件需删除)。
+    """
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+    except UnicodeDecodeError:
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+    if not rows:
+        return str(path.resolve()), False
+
+    def norm_cell(cell: str) -> tuple[str, bool]:
+        s = (cell or "").strip()
+        if not s or "%" in s:
+            return cell, False
+        if any(c.isalpha() for c in s):
+            return cell, False
+        if "," not in s or not _THOUSAND_SEP_NUM_RE.match(s):
+            return cell, False
+        return s.replace(",", ""), True
+
+    changed = False
+    out_rows: list[list[str]] = []
+    for row in rows:
+        new_r = []
+        for c in row:
+            nc, ch = norm_cell(c)
+            if ch:
+                changed = True
+            new_r.append(nc)
+        out_rows.append(new_r)
+    if not changed:
+        return str(path.resolve()), False
+
+    fd, tmp = tempfile.mkstemp(suffix=".normalized.csv", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as wf:
+            csv.writer(wf, lineterminator="\n").writerows(out_rows)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return tmp, True
 
 
 def _get_conn():
@@ -74,53 +130,75 @@ def ingest_csv(file_path: str | Path, slug: str, captured_at: str | None = None)
         return {"status": "error", "error": "CSV 文件为空"}
 
     table_name = _sanitize_table_name(slug)
-    path_str = str(path.resolve())
+    norm_path, norm_is_tmp = _normalize_csv_thousand_separators(path)
+    path_str = norm_path
+
+    def _do_ingest(conn: Any, csv_path: str, *, drop_first: bool) -> int:
+        if drop_first:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS {table} AS
+            SELECT *, current_timestamp::TIMESTAMP AS _ingested_at, current_date AS _ingested_date
+            FROM read_csv_auto(?) LIMIT 0
+            """.format(table=table_name),
+            [csv_path],
+        )
+        cols = [r[0] for r in conn.execute("DESCRIBE " + table_name).fetchall()]
+        date_col = _find_date_column(cols)
+        if date_col:
+            qd = _q(date_col)
+            try:
+                conn.execute(
+                    """
+                    DELETE FROM {table} WHERE {qd} IN (
+                        SELECT {qd} FROM read_csv_auto(?)
+                    )
+                    """.format(table=table_name, qd=qd),
+                    [csv_path],
+                )
+            except Exception as e:
+                logger.debug("[D] delete before insert skipped: %s", e)
+        conn.execute(
+            """
+            INSERT INTO {table} SELECT *, current_timestamp::TIMESTAMP AS _ingested_at, current_date AS _ingested_date
+            FROM read_csv_auto(?)
+            """.format(table=table_name),
+            [csv_path],
+        )
+        return conn.execute("SELECT COUNT(*) FROM read_csv_auto(?)", [csv_path]).fetchone()[0]
 
     try:
         conn = _get_conn()
         try:
-            # 创建表（含 _ingested_at, _ingested_date），若不存在
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS {table} AS
-                SELECT *, current_timestamp::TIMESTAMP AS _ingested_at, current_date AS _ingested_date
-                FROM read_csv_auto(?) LIMIT 0
-                """.format(table=table_name),
-                [path_str],
-            )
-            # UPSERT：每个日期只存一份，先删后插
-            cols = [r[0] for r in conn.execute("DESCRIBE " + table_name).fetchall()]
-            date_col = _find_date_column(cols)
-            if date_col:
-                qd = _q(date_col)
+            rows = _do_ingest(conn, path_str, drop_first=False)
+        except Exception as e1:
+            err = str(e1)
+            retry_drop = "columns but" in err and "values" in err
+            if retry_drop:
+                logger.warning("[D] ingest column mismatch, drop %s and retry: %s", table_name, err)
                 try:
-                    conn.execute(
-                        """
-                        DELETE FROM {table} WHERE {qd} IN (
-                            SELECT {qd} FROM read_csv_auto(?)
-                        )
-                        """.format(table=table_name, qd=qd),
-                        [path_str],
-                    )
-                except Exception as e:
-                    logger.debug("[D] delete before insert skipped: %s", e)
-            conn.execute(
-                """
-                INSERT INTO {table} SELECT *, current_timestamp::TIMESTAMP AS _ingested_at, current_date AS _ingested_date
-                FROM read_csv_auto(?)
-                """.format(table=table_name),
-                [path_str],
-            )
-            rows = conn.execute("SELECT COUNT(*) FROM read_csv_auto(?)", [path_str]).fetchone()[0]
-            conn.close()
-            logger.info("[D] ingest: slug=%s rows=%d table=%s (upsert)", slug, rows, table_name)
-            return {"status": "success", "slug": slug, "rows": rows, "table": table_name}
-        except Exception as e:
-            conn.close()
-            raise
+                    rows = _do_ingest(conn, path_str, drop_first=True)
+                except Exception as e2:
+                    conn.close()
+                    raise e2 from e1
+            else:
+                conn.close()
+                raise e1
+        conn.close()
+        logger.info("[D] ingest: slug=%s rows=%d table=%s (upsert)", slug, rows, table_name)
+        out = {"status": "success", "slug": slug, "rows": rows, "table": table_name}
     except Exception as e:
         logger.exception("[D] ingest failed: %s", e)
-        return {"status": "error", "error": str(e)}
+        out = {"status": "error", "error": str(e)}
+    finally:
+        if norm_is_tmp:
+            try:
+                os.unlink(norm_path)
+            except OSError:
+                pass
+
+    return out
 
 
 def get_table(slug: str, date_from: str | None = None, date_to: str | None = None) -> Any:

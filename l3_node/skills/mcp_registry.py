@@ -109,6 +109,22 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "params": ["url", "output_path", "config", "cdp_url"],
     },
     {
+        "id": "mcp:atom_bi_natural_retention_collect",
+        "label": "mcp:atom_bi_natural_retention_collect",
+        "desc": "[L3 本地] 仅抓取「新增用户留存对比」「新增付费留存对比」两表，按四段日期填对比区间，CSV 写入 raw_natural/。参数：period1_start/end、period2_start/end（YYYY-MM-DD）；可选 raw_dir、base_url、cdp_url、auto_ingest、full_spa_config（含 direct_urls 时走直链）。",
+        "params": [
+            "period1_start",
+            "period1_end",
+            "period2_start",
+            "period2_end",
+            "raw_dir",
+            "base_url",
+            "cdp_url",
+            "auto_ingest",
+            "full_spa_config",
+        ],
+    },
+    {
         "id": "mcp:atom_lark_notifier",
         "label": "mcp:atom_lark_notifier",
         "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title，发送 Markdown 消息。",
@@ -473,6 +489,39 @@ def _invoke_stop_automated_recruitment_local(job_name: str = "") -> str:
     except Exception as e:
         logger.warning("[MCP Registry] stop_automated_recruitment 失败: %s", e)
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+def _invoke_atom_bi_natural_retention_collect_local(
+    period1_start: str = "",
+    period1_end: str = "",
+    period2_start: str = "",
+    period2_end: str = "",
+    raw_dir: str = "",
+    base_url: str = "",
+    cdp_url: str = "",
+    auto_ingest: bool = False,
+    full_spa_config: dict | None = None,
+) -> str:
+    """L3 本地：自然留存对比两表抓取 → raw_natural。"""
+    try:
+        from l3_node.mcp_tools.bi.tool_natural_retention_collect import atom_bi_natural_retention_collect_mcp
+
+        return atom_bi_natural_retention_collect_mcp(
+            period1_start=period1_start or "",
+            period1_end=period1_end or "",
+            period2_start=period2_start or "",
+            period2_end=period2_end or "",
+            raw_dir=raw_dir or "",
+            base_url=base_url or "",
+            cdp_url=cdp_url or "",
+            auto_ingest=bool(auto_ingest),
+            full_spa_config=full_spa_config if isinstance(full_spa_config, dict) else None,
+        )
+    except Exception as e:
+        logger.warning("[MCP Registry] atom_bi_natural_retention_collect 失败: %s", e)
+        import json as _json
+
+        return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
 
 def _invoke_atom_web_scraper_local(
@@ -1562,6 +1611,22 @@ class MCPToolRegistry:
                     url=arguments.get("url", ""),
                     output_path=arguments.get("output_path", ""),
                     config=cfg,
+                )
+            if raw_name == "atom_bi_natural_retention_collect":
+                fsc = arguments.get("full_spa_config")
+                if not isinstance(fsc, dict):
+                    fsc = arguments.get("full_spa")
+                return await asyncio.to_thread(
+                    _invoke_atom_bi_natural_retention_collect_local,
+                    str(arguments.get("period1_start", "") or ""),
+                    str(arguments.get("period1_end", "") or ""),
+                    str(arguments.get("period2_start", "") or ""),
+                    str(arguments.get("period2_end", "") or ""),
+                    str(arguments.get("raw_dir", "") or ""),
+                    str(arguments.get("base_url", "") or ""),
+                    str(arguments.get("cdp_url", "") or ""),
+                    bool(arguments.get("auto_ingest", False)),
+                    fsc if isinstance(fsc, dict) else None,
                 )
             if raw_name == "atom_lark_notifier":
                 return await asyncio.to_thread(

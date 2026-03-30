@@ -152,6 +152,210 @@ def _log_locator_diag(page: Any, selector: str, ctx: str) -> None:
     except Exception as e:
         _diff_log(f"[{ctx}] | Selector [{sel}] 诊断异常: {type(e).__name__}: {e}")
 
+
+def _locate_date_editor_by_form_item_label(page: Any, label_text: str, ctx: str, sel_timeout: int) -> Any:
+    """
+    留存对比等页有两个并排 .el-date-editor，按「第 N 个可见」易点到错误实例或填不进 Vue。
+    通过 .el-form-item 内标签文案（如 时间段1 / 时间段2）定位对应日期范围框。
+    """
+    txt = str(label_text).strip()
+    if not txt:
+        raise ValueError("form_item_label 为空")
+    pat = re.compile(re.escape(txt))
+    t = min(int(sel_timeout), 25000)
+    candidates = [
+        page.locator(".el-form-item")
+        .filter(has=page.locator(".el-form-item__label").filter(has_text=pat))
+        .locator(".el-date-editor")
+        .first,
+        page.locator(".el-form-item")
+        .filter(has=page.locator("label").filter(has_text=pat))
+        .locator(".el-date-editor")
+        .first,
+    ]
+    last_err: Exception | None = None
+    for ed in candidates:
+        try:
+            ed.wait_for(state="visible", timeout=t)
+            _diff_log(f"[{ctx}] | fill_date_range 按表单项标签 {txt!r} 已定位到 .el-date-editor")
+            return ed
+        except Exception as e:
+            last_err = e
+            continue
+    raise TimeoutError(
+        f"未找到标签含 {txt!r} 的表单项下的 .el-date-editor（已尝试 el-form-item__label / label）。"
+        f" 上一错误: {last_err!r}"
+    )
+
+
+def _soft_pause_after_range_cell_fill(page: Any, ctx: str) -> None:
+    """对比页勿按 Escape：用户反馈选完日期面板自行关闭；Escape 会把整段筛选区从 DOM 卸掉（.el-date-editor 变 0）。"""
+    page.wait_for_timeout(350)
+
+
+def _set_el_range_input_value(inp: Any, value: str, sel_timeout: int) -> None:
+    """对 .el-range-input 写入并触发 Vue 常见监听（fill 单独有时第二段不生效）。"""
+    v = str(value or "").strip()
+    if not v:
+        return
+    inp.click(timeout=min(sel_timeout, 8000))
+    inp.fill(v, timeout=sel_timeout)
+    try:
+        inp.evaluate(
+            """(el) => {
+                try {
+                    const ev = new Event('input', { bubbles: true });
+                    Object.defineProperty(ev, 'target', { value: el, enumerable: true });
+                    el.dispatchEvent(ev);
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                } catch (e) {}
+            }"""
+        )
+    except Exception:
+        pass
+
+
+def _fill_el_date_range_inputs(
+    page: Any,
+    chosen_ed: Any,
+    start_val: str,
+    end_val: str,
+    sel_timeout: int,
+    ctx: str,
+) -> None:
+    """Element Plus 范围选择：逐格点击 .el-range-input 填写并同步 Vue；结束后面板收起便于下一段。"""
+    chosen_ed.scroll_into_view_if_needed(timeout=min(sel_timeout, 15000))
+    ins = chosen_ed.locator("input.el-range-input")
+    if ins.count() == 0:
+        ins = chosen_ed.locator("input")
+    ic = ins.count()
+    _diff_log(f"[{ctx}] | fill_date_range 目标编辑器内 input 数量={ic}")
+    if start_val and ic > 0:
+        _set_el_range_input_value(ins.nth(0), str(start_val), sel_timeout)
+        page.wait_for_timeout(80)
+    if end_val and ic > 1:
+        _set_el_range_input_value(ins.nth(1), str(end_val), sel_timeout)
+        page.wait_for_timeout(80)
+    _soft_pause_after_range_cell_fill(page, ctx)
+
+
+def _clear_date_editor_scraper_marks(page: Any) -> None:
+    try:
+        page.evaluate(
+            """() => {
+                document.querySelectorAll('[data-bi-scraper-order]').forEach(
+                    (e) => e.removeAttribute('data-bi-scraper-order')
+                );
+            }"""
+        )
+    except Exception:
+        pass
+
+
+def _mark_main_date_editors_by_visual_x(page: Any, ctx: str) -> int:
+    """
+    主内容区内可见的 .el-date-editor 按视口 X（左→右）编号到 data-bi-scraper-order。
+    只排除挂在日历面板 DOM 内的节点；勿用 closest('.el-popper') —— Element Plus 常把表单项上的
+    日期触发器也包在含 el-popper 的祖先里，首段填完后会误杀全部，第二次打标变成 0 个。
+    """
+    diag = page.evaluate(
+        """() => {
+            document.querySelectorAll('[data-bi-scraper-order]').forEach(
+                (e) => e.removeAttribute('data-bi-scraper-order')
+            );
+            const all = document.querySelectorAll('.el-date-editor');
+            let skipPicker = 0, skipDisplay = 0, skipRect = 0;
+            const candidates = [];
+            for (const el of all) {
+                if (el.closest('.el-picker-panel')) {
+                    skipPicker++;
+                    continue;
+                }
+                const r = el.getBoundingClientRect();
+                const s = window.getComputedStyle(el);
+                if (s.display === 'none' || s.visibility === 'hidden') {
+                    skipDisplay++;
+                    continue;
+                }
+                if (parseFloat(s.opacity || '1') < 0.05) {
+                    skipDisplay++;
+                    continue;
+                }
+                if (r.width < 2 || r.height < 2) {
+                    skipRect++;
+                    continue;
+                }
+                candidates.push({ el, x: r.left + r.width * 0.5 });
+            }
+            candidates.sort((a, b) => a.x - b.x);
+            candidates.forEach((c, i) => {
+                c.el.setAttribute('data-bi-scraper-order', String(i));
+            });
+            return {
+                n: candidates.length,
+                total: all.length,
+                skipPicker,
+                skipDisplay,
+                skipRect,
+            };
+        }"""
+    )
+    n = int(diag.get("n", 0))
+    _diff_log(
+        f"[{ctx}] | fill_date_range 视觉序打标: 入选={n} "
+        f"DOM中.el-date-editor总数={diag.get('total')} "
+        f"跳过(在.el-picker-panel内)={diag.get('skipPicker')} "
+        f"跳过(display/opacity)={diag.get('skipDisplay')} "
+        f"跳过(宽高过小)={diag.get('skipRect')}"
+    )
+    return n
+
+
+def _pick_date_editor_visible_main_form(
+    page: Any,
+    want_idx: int,
+    ctx: str,
+    sel_timeout: int,
+) -> Any:
+    """
+    回退：Playwright is_visible + 排除 .el-picker-panel 内节点，按 bounding_box 中心 X 左→右取第 want_idx 个。
+    """
+    roots = page.locator(".el-date-editor")
+    nscan = min(roots.count(), 48)
+    scored: list[tuple[float, int]] = []
+    for j in range(nscan):
+        cell = roots.nth(j)
+        try:
+            if not cell.is_visible(timeout=600):
+                continue
+        except Exception:
+            continue
+        try:
+            in_panel = cell.evaluate("el => !!el.closest('.el-picker-panel')")
+        except Exception:
+            in_panel = False
+        if in_panel:
+            continue
+        try:
+            box = cell.bounding_box()
+            if not box or box.get("width", 0) < 2 or box.get("height", 0) < 2:
+                continue
+            cx = float(box["x"]) + float(box["width"]) * 0.5
+            scored.append((cx, j))
+        except Exception:
+            continue
+    scored.sort(key=lambda t: t[0])
+    if want_idx >= len(scored):
+        raise TimeoutError(
+            f"回退定位失败：可见且非 picker 内 .el-date-editor 仅 {len(scored)} 个（按 X 排序），需要第 {want_idx} 个"
+        )
+    j_pick = scored[want_idx][1]
+    _diff_log(
+        f"[{ctx}] | fill_date_range 回退定位: 按 X 左→右第 {want_idx} 个 → DOM 序号 j={j_pick}（共候选 {len(scored)}）"
+    )
+    return roots.nth(j_pick)
+
+
 # 合并单元格模式：当前值 (+/-X%) 上期值，如 "3,383 (+50.09%) 2,254" 或 "120.00 (+300.00%) 30.00"
 _MERGED_CELL_RE = re.compile(
     r"^(.+?)\s*\(([+-]?[\d.]+%)\)\s*(.+)$",
@@ -370,38 +574,127 @@ def _run_automation_actions(
             elif typ == "click_expand_first_row":
                 # 日活/日新统计表：点击首行日期或展开图标，展开渠道明细
                 # 优先点 .el-table__expand-icon，否则点首行首列（日期）
+                # force=True：避免 el-table__border-left-patch 等装饰层拦截点击（如用户流量来源页）
                 er_sel = ".el-table__body-wrapper tbody tr:first-child .el-table__expand-icon, .el-table__body-wrapper tbody tr:first-child td:first-child .el-table__expand-icon"
                 error_diag_sel = er_sel
                 fb_sel = ".el-table__body-wrapper tbody tr:first-child td:first-child"
                 _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
                 _log_locator_diag(page, er_sel, ctx)
                 try:
-                    page.locator(er_sel).first.click(timeout=3000)
+                    page.locator(er_sel).first.click(timeout=3000, force=True)
                 except Exception:
                     _log_locator_diag(page, fb_sel, ctx)
-                    page.locator(fb_sel).first.click(timeout=3000)
+                    page.locator(fb_sel).first.click(timeout=3000, force=True)
             elif typ == "fill_date_range":
                 # 日期范围：填写开始、结束两个输入框
+                # date_editor_index：对比页多段时间用第 N 个 .el-date-editor（nth-of-type 在 Vue 下常失效）
                 start_val = act.get("start") or act.get("value", "")
                 end_val = act.get("end", "")
                 start_sel = act.get("start_selector") or sel
                 end_sel = act.get("end_selector") or ""
                 optional = act.get("optional", False)
+                editor_idx = act.get("date_editor_index")
+                form_lbl = (act.get("form_item_label") or "").strip()
+                vis_idx = act.get("date_editor_visual_index")
                 _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
-                if start_sel:
-                    _log_locator_diag(page, str(start_sel), ctx)
-                if end_sel:
-                    _log_locator_diag(page, str(end_sel), ctx)
                 try:
-                    if start_sel and start_val:
-                        page.locator(start_sel).first.fill(str(start_val), timeout=sel_timeout)
-                    if end_sel and end_val:
-                        page.locator(end_sel).first.fill(str(end_val), timeout=sel_timeout)
-                    # 关闭可能打开的日期选择器弹窗，避免遮挡后续点击
-                    page.keyboard.press("Escape")
-                    _diff_log(f"强制等待开始: 200ms (fill_date_range Escape 后) ...")
-                    page.wait_for_timeout(200)
-                    _diff_log(f"强制等待结束: 200ms")
+                    if vis_idx is not None:
+                        # 付费留存对比等页标签文案可能与用户对比不一致，按横向「左=段1、右=段2」最稳
+                        _clear_date_editor_scraper_marks(page)
+                        try:
+                            idx_v = int(vis_idx)
+                            n_ed = _mark_main_date_editors_by_visual_x(page, ctx)
+                            if n_ed == 0:
+                                _diff_log(f"[{ctx}] | 视觉序入选 0，短等 1.5s 后重试打标（DOM 抖动）…")
+                                page.wait_for_timeout(1500)
+                                n_ed = _mark_main_date_editors_by_visual_x(page, ctx)
+                            chosen_ed = None
+                            if n_ed > 0 and idx_v < n_ed:
+                                le = page.locator(f'.el-date-editor[data-bi-scraper-order="{idx_v}"]').first
+                                try:
+                                    le.wait_for(state="visible", timeout=min(sel_timeout, 20000))
+                                    chosen_ed = le
+                                except Exception as e_vis:
+                                    _diff_log(f"[{ctx}] | 打标后 locator 等待可见失败，改回退路径: {type(e_vis).__name__}: {e_vis}")
+                            if chosen_ed is None:
+                                chosen_ed = _pick_date_editor_visible_main_form(
+                                    page, idx_v, ctx, sel_timeout
+                                )
+                                chosen_ed.wait_for(state="visible", timeout=min(sel_timeout, 20000))
+                            _fill_el_date_range_inputs(
+                                page,
+                                chosen_ed,
+                                str(start_val or ""),
+                                str(end_val or ""),
+                                sel_timeout,
+                                ctx,
+                            )
+                        finally:
+                            _clear_date_editor_scraper_marks(page)
+                    elif form_lbl:
+                        # 留存对比：按表单项标签定位（部分页面与视觉序可并存，优先由 filters 选用）
+                        chosen_ed = _locate_date_editor_by_form_item_label(page, form_lbl, ctx, sel_timeout)
+                        _fill_el_date_range_inputs(
+                            page,
+                            chosen_ed,
+                            str(start_val or ""),
+                            str(end_val or ""),
+                            sel_timeout,
+                            ctx,
+                        )
+                    elif editor_idx is not None:
+                        # 对比页常有多个 .el-date-editor（侧栏/弹层/隐藏副本）；按「可见」顺序取第 N 个，避免 nth(0) 点到不可见节点导致「无法选择日期」
+                        idx = int(editor_idx)
+                        roots = page.locator(".el-date-editor")
+                        nscan = min(roots.count(), 48)
+                        chosen_ed = None
+                        vis_rank = 0
+                        for j in range(nscan):
+                            cell = roots.nth(j)
+                            try:
+                                if not cell.is_visible(timeout=800):
+                                    continue
+                            except Exception:
+                                continue
+                            if vis_rank == idx:
+                                chosen_ed = cell
+                                break
+                            vis_rank += 1
+                        if chosen_ed is None:
+                            raise TimeoutError(
+                                f"未找到第 {idx} 个可见的 .el-date-editor（已扫描 {nscan} 个节点，可见序共尝试到 {vis_rank}）"
+                            )
+                        chosen_ed.wait_for(state="visible", timeout=min(sel_timeout, 20000))
+                        _fill_el_date_range_inputs(
+                            page,
+                            chosen_ed,
+                            str(start_val or ""),
+                            str(end_val or ""),
+                            sel_timeout,
+                            ctx,
+                        )
+                    else:
+                        if start_sel:
+                            _log_locator_diag(page, str(start_sel), ctx)
+                        if end_sel:
+                            _log_locator_diag(page, str(end_sel), ctx)
+                        if start_sel and start_val:
+                            page.locator(start_sel).first.fill(str(start_val), timeout=sel_timeout)
+                        if end_sel and end_val:
+                            page.locator(end_sel).first.fill(str(end_val), timeout=sel_timeout)
+                    no_esc = bool(act.get("no_escape_after_fill"))
+                    if no_esc:
+                        _diff_log(
+                            f"[{ctx}] | fill_date_range 对比页: 跳过 Escape（避免整段筛选卸载）；"
+                            f"缓冲 280ms 供面板自行关闭"
+                        )
+                        page.wait_for_timeout(280)
+                    else:
+                        # 非对比页：仍用 Escape 关浮层，避免挡后续菜单/按钮
+                        page.keyboard.press("Escape")
+                        _diff_log(f"强制等待开始: 200ms (fill_date_range Escape 后) ...")
+                        page.wait_for_timeout(200)
+                        _diff_log(f"强制等待结束: 200ms")
                 except Exception as fill_err:
                     if optional:
                         logger.debug("[Automation] fill_date_range optional 失败，继续: %s", fill_err)
@@ -756,6 +1049,12 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
     将 filters 配置展开为 automation actions。
     filters.date_range: [start_date, end_date]
     filters.date_range_selectors: {start, end} 可选
+    filters.date_range_compare_form_labels: ["时间段1","时间段2"] 可选；与 date_range_compare 同行数，
+        按表单项标签定位 .el-date-editor
+    filters.date_range_compare_use_visual_order: True 时按主区域内日期框「从左到右」填段1/段2，
+        适用于付费/用户对比页标签文案不一致的情况（与 form_labels 二选一，此项优先于 form_labels）
+    filters.date_range_compare_no_escape_after_fill: True 时每段 fill_date_range 后不按 Escape；
+        Heron-BI 等站点多按 Escape 会整段卸载筛选区（DOM 中 .el-date-editor 变为 0）
     filters.query_selector: 查询按钮选择器
     filters.wait_after_query_ms: 点击查询后的固定等待毫秒，默认 5000（弱网环境可调大）
     filters.wait_for_loading_hidden: 加载遮罩选择器，等待其隐藏表示数据加载完成
@@ -769,19 +1068,48 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
     if isinstance(dr_compare, (list, tuple)) and len(dr_compare) >= 2:
         # 对比页：填写两个时间段。第 0 个用通用选择器；第 1 个可选（部分页面 DOM 不同）
         sels_list = filters.get("date_range_compare_selectors") or [{}, {}]
+        use_visual_order = bool(filters.get("date_range_compare_use_visual_order"))
+        no_esc_compare = bool(filters.get("date_range_compare_no_escape_after_fill"))
+        raw_lbls = filters.get("date_range_compare_form_labels")
+        form_lbls: list[str | None] = []
+        if isinstance(raw_lbls, (list, tuple)):
+            form_lbls = [str(x).strip() if x is not None and str(x).strip() else None for x in raw_lbls[:2]]
+        while len(form_lbls) < 2:
+            form_lbls.append(None)
         for i, pr in enumerate(dr_compare[:2]):
             if isinstance(pr, (list, tuple)) and len(pr) >= 2:
                 s = sels_list[i] if i < len(sels_list) else {}
-                start_sel = s.get("start") or (".el-date-editor input:first-of-type" if i == 0 else ".el-date-editor:nth-of-type(2) input:first-of-type")
-                end_sel = s.get("end") or (".el-date-editor input:last-of-type" if i == 0 else ".el-date-editor:nth-of-type(2) input:last-of-type")
-                actions.append({
-                    "type": "fill_date_range",
-                    "start_selector": start_sel,
-                    "end_selector": end_sel,
-                    "start": str(pr[0]),
-                    "end": str(pr[1]),
-                    "optional": i > 0,  # 第二时间段可选，失败时继续
-                })
+                form_lbl = form_lbls[i] if i < len(form_lbls) else None
+                # 自定义选择器优先；否则用第 i 个日期范围组件（避免 :nth-of-type(2) 在表单布局下匹配不到）
+                if s.get("start") or s.get("end"):
+                    actions.append({
+                        "type": "fill_date_range",
+                        "start_selector": s.get("start") or ".el-date-editor input:first-of-type",
+                        "end_selector": s.get("end") or ".el-date-editor input:last-of-type",
+                        "start": str(pr[0]),
+                        "end": str(pr[1]),
+                        "optional": i > 0,
+                    })
+                else:
+                    act: dict[str, Any] = {
+                        "type": "fill_date_range",
+                        "start": str(pr[0]),
+                        "end": str(pr[1]),
+                        # 两段区间均需填写；原先第二段 optional=True 会导致静默跳过、对比查询口径错误
+                        "optional": False,
+                    }
+                    if use_visual_order:
+                        act["date_editor_visual_index"] = i
+                    else:
+                        act["date_editor_index"] = i
+                        if form_lbl:
+                            act["form_item_label"] = form_lbl
+                    if no_esc_compare:
+                        act["no_escape_after_fill"] = True
+                    actions.append(act)
+                    # 段1 填完会打开日历；收起并稳定 DOM 后再打标段2，减少付费对比页第二段仍为空
+                    if use_visual_order and i == 0:
+                        actions.append({"type": "wait_ms", "ms": 500})
     elif isinstance(dr, (list, tuple)) and len(dr) >= 2:
         sels = filters.get("date_range_selectors") or {}
         start_sel = sels.get("start") or ".el-date-editor input:first-of-type"
@@ -848,6 +1176,148 @@ def _harvest_via_api(url: str, headers: dict, timeout: int) -> tuple[list[dict[s
         return None, "响应格式不支持"
     except Exception as e:
         return None, str(e)
+
+
+def _visible_el_pagination_locator(target_page: Any) -> Any | None:
+    """主内容区可见的 Element UI 分页条；无则返回 None。"""
+    pags = target_page.locator(".el-pagination")
+    try:
+        n = pags.count()
+    except Exception:
+        return None
+    for i in range(n):
+        loc = pags.nth(i)
+        try:
+            if loc.is_visible():
+                return loc
+        except Exception:
+            continue
+    return pags.first if n else None
+
+
+def _extract_element_ui_table_rows(target_page: Any, automation: dict) -> list[dict[str, Any]]:
+    """从当前页提取 Element UI 表格（表头与 body 分离、展开行嵌套表等逻辑与单次抓取一致）。"""
+    rows: list[dict[str, Any]] = []
+    split_merged = automation.get("split_merged_cells", True)
+    _date_re = re.compile(r"^\d{4}-\d{2}-\d{2}")
+    last_date = ""
+    header_cells = [
+        h.strip()
+        for h in target_page.locator(
+            ".el-table__header-wrapper thead th, .el-table__header-wrapper thead td"
+        ).all_text_contents()
+        if h.strip()
+    ]
+    if not header_cells:
+        header_cells = [
+            h.strip() for h in target_page.locator("table thead th, table thead td").all_text_contents() if h.strip()
+        ]
+    body_trs = target_page.locator(
+        ".el-table__body-wrapper table tbody tr, .el-table__body-wrapper tbody tr, .el-table tbody tr"
+    ).all()
+    if not body_trs:
+        body_trs = target_page.locator("table:not(.el-date-table) tbody tr").all()
+    if header_cells and body_trs:
+        for tr in body_trs:
+            tds = tr.locator("td").all()
+            expanded_td = None
+            if len(tds) == 1:
+                expanded_td = tds[0]
+            elif len(tds) > 1:
+                for td in tds:
+                    if "expanded-cell" in (td.get_attribute("class") or ""):
+                        expanded_td = td
+                        break
+            if expanded_td is not None:
+                try:
+                    nested_table = expanded_td.locator("table").first
+                    if nested_table.count() > 0:
+                        nested_trs = nested_table.locator("tbody tr").all()
+                        for ntr in nested_trs:
+                            ncells = ntr.locator("td").all_text_contents()
+                            ncells = [c.strip() for c in ncells]
+                            if split_merged:
+                                ncells = [_split_merged_cell_value(c) for c in ncells]
+                            if ncells and last_date:
+                                if len(ncells) == len(header_cells) - 1:
+                                    ncells = [last_date] + ncells
+                                elif not _date_re.match(ncells[0] if ncells else ""):
+                                    ncells = [last_date] + ncells
+                            if len(ncells) >= len(header_cells):
+                                rows.append(dict(zip(header_cells, ncells[: len(header_cells)])))
+                        continue
+                except Exception:
+                    pass
+            if len(tds) == 1 and expanded_td is not None:
+                continue
+            cells = tr.locator("td").all_text_contents()
+            cells = [c.strip() for c in cells]
+            if split_merged:
+                cells = [_split_merged_cell_value(c) for c in cells]
+            if len(cells) == len(header_cells) - 1 and len(header_cells) >= 2:
+                cells = [last_date] + cells
+            if cells and len(cells) >= len(header_cells) and _date_re.match(cells[0]):
+                last_date = cells[0]
+            if len(cells) >= len(header_cells):
+                rows.append(dict(zip(header_cells, cells[: len(header_cells)])))
+            elif cells:
+                rows.append({"col_0": cells[0], "data": " | ".join(cells[1:])})
+    if not rows and body_trs:
+        for tr in body_trs:
+            cells = tr.locator("td").all_text_contents()
+            cells = [c.strip() for c in cells if c]
+            if split_merged:
+                cells = [_split_merged_cell_value(c) for c in cells]
+            if cells:
+                rows.append({f"col_{i}": v for i, v in enumerate(cells)})
+    return rows
+
+
+def _harvest_table_rows_with_optional_pagination(
+    target_page: Any,
+    automation: dict,
+    diff_label: str,
+) -> list[dict[str, Any]]:
+    """
+    提取表格行；automation.pagination_all_pages 为 True 时翻遍 Element UI 分页（下一页）直到末页。
+    用于「每日充值明细」等默认 10 条/页、仅 DOM 当前页有数据的页面。
+    """
+    if not automation.get("pagination_all_pages"):
+        return _extract_element_ui_table_rows(target_page, automation)
+
+    all_rows: list[dict[str, Any]] = []
+    max_pages = int(automation.get("pagination_max_pages") or 200)
+    wait_ms = int(automation.get("pagination_wait_ms") or 1600)
+    wait_ms = max(400, min(wait_ms, 10000))
+
+    for page_i in range(max_pages):
+        # 第 1 页前已在 pre_table 做过反残影；翻页后需再等 loading
+        if page_i > 0:
+            _spa_anti_ghost_settle(target_page, diff_label, f"pagination_page_{page_i + 1}")
+        chunk = _extract_element_ui_table_rows(target_page, automation)
+        if chunk:
+            all_rows.extend(chunk)
+
+        pag = _visible_el_pagination_locator(target_page)
+        if pag is None:
+            break
+        next_btn = pag.locator("button.btn-next").first
+        if next_btn.count() == 0:
+            break
+        try:
+            if next_btn.is_disabled():
+                break
+        except Exception:
+            cls = (next_btn.get_attribute("class") or "") + " " + (next_btn.get_attribute("disabled") or "")
+            if "disabled" in cls.lower():
+                break
+        try:
+            next_btn.click(timeout=8000)
+        except Exception:
+            break
+        target_page.wait_for_timeout(wait_ms)
+
+    return all_rows
 
 
 def _harvest_via_playwright(
@@ -990,74 +1460,9 @@ def _harvest_via_playwright(
                 except Exception:
                     pass
 
-            # 提取表格：Element UI 表头/表体分离，需分别取
-            rows = []
+            # 提取表格：Element UI 表头/表体分离；可选翻遍分页（见 automation.pagination_all_pages）
             try:
-                # Element UI：.el-table__header-wrapper 与 .el-table__body-wrapper 各有一个 table
-                header_cells = [h.strip() for h in target_page.locator(".el-table__header-wrapper thead th, .el-table__header-wrapper thead td").all_text_contents() if h.strip()]
-                if not header_cells:
-                    header_cells = [h.strip() for h in target_page.locator("table thead th, table thead td").all_text_contents() if h.strip()]
-                body_trs = target_page.locator(".el-table__body-wrapper table tbody tr, .el-table__body-wrapper tbody tr, .el-table tbody tr").all()
-                if not body_trs:
-                    body_trs = target_page.locator("table:not(.el-date-table) tbody tr").all()
-                split_merged = automation.get("split_merged_cells", True)
-                _date_re = re.compile(r"^\d{4}-\d{2}-\d{2}")
-                last_date = ""
-                if header_cells and body_trs:
-                    for tr in body_trs:
-                        # 跳过 Element UI 展开行：单 td 含 colspan，内容在 slot 内；需从嵌套表提取
-                        tds = tr.locator("td").all()
-                        expanded_td = None
-                        if len(tds) == 1:
-                            expanded_td = tds[0]
-                        elif len(tds) > 1:
-                            for td in tds:
-                                if "expanded-cell" in (td.get_attribute("class") or ""):
-                                    expanded_td = td
-                                    break
-                        if expanded_td is not None:
-                            try:
-                                nested_table = expanded_td.locator("table").first
-                                if nested_table.count() > 0:
-                                    nested_trs = nested_table.locator("tbody tr").all()
-                                    for ntr in nested_trs:
-                                        ncells = ntr.locator("td").all_text_contents()
-                                        ncells = [c.strip() for c in ncells]
-                                        if split_merged:
-                                            ncells = [_split_merged_cell_value(c) for c in ncells]
-                                        if ncells and last_date:
-                                            if len(ncells) == len(header_cells) - 1:
-                                                ncells = [last_date] + ncells
-                                            elif not _date_re.match(ncells[0] if ncells else ""):
-                                                ncells = [last_date] + ncells
-                                        if len(ncells) >= len(header_cells):
-                                            rows.append(dict(zip(header_cells, ncells[: len(header_cells)])))
-                                    continue
-                            except Exception:
-                                pass
-                        # 单 td 且无嵌套表：视为展开行占位，跳过（避免误当普通行）
-                        if len(tds) == 1 and expanded_td is not None:
-                            continue
-                        cells = tr.locator("td").all_text_contents()
-                        cells = [c.strip() for c in cells]
-                        if split_merged:
-                            cells = [_split_merged_cell_value(c) for c in cells]
-                        if len(cells) == len(header_cells) - 1 and len(header_cells) >= 2:
-                            cells = [last_date] + cells
-                        if cells and len(cells) >= len(header_cells) and _date_re.match(cells[0]):
-                            last_date = cells[0]
-                        if len(cells) >= len(header_cells):
-                            rows.append(dict(zip(header_cells, cells[: len(header_cells)])))
-                        elif cells:
-                            rows.append({"col_0": cells[0], "data": " | ".join(cells[1:])})
-                if not rows and body_trs:
-                    for tr in body_trs:
-                        cells = tr.locator("td").all_text_contents()
-                        cells = [c.strip() for c in cells if c]
-                        if split_merged:
-                            cells = [_split_merged_cell_value(c) for c in cells]
-                        if cells:
-                            rows.append({f"col_{i}": v for i, v in enumerate(cells)})
+                rows = _harvest_table_rows_with_optional_pagination(target_page, automation, diff_label)
             except Exception as e:
                 return None, f"表格提取失败: {e}"
 

@@ -426,19 +426,43 @@ def sync_csv_to_bitable(
                 lark_key = col_map.get(k, k)  # 使用映射后的 Lark 字段名
                 s = (v or "").strip()
                 ft = lark_field_types.get(lark_key, 1)  # 1=文本, 2=数字, 5=日期
+                # 数字列：CSV 占位「-」表示无数据，勿提交字符串（NumberFieldConvFail）；省略字段即留空
+                if ft == 2 and s in ("-", "—", "－", "N/A", "n/a", "--"):
+                    continue
                 # 日期类型(5)：必须发毫秒时间戳(整数)，否则 DatetimeFieldConvFail
                 if ft == 5 and s:
                     ts_val = None
                     try:
-                        if s.replace(".", "").replace("-", "").replace("/", "").replace(":", "").replace(" ", "").isdigit():
-                            raw = int(float(s))
-                            if 1000000000000 <= raw <= 9999999999999:
-                                ts_val = raw
-                            elif 1e9 <= raw < 1e10:
-                                ts_val = raw * 1000
+                        from datetime import datetime
+
+                        # 仅当原串为「纯数字时间戳」时才走数值分支。YYYY-MM-DD 去横杠后也会变成全数字，
+                        # 若对原串 float() 会失败并落入外层 except，导致把字符串写入日期列 → DatetimeFieldConvFail。
+                        num_s = s.replace(",", "").strip()
+                        looks_like_epoch = num_s and (
+                            "-" not in s
+                            and "/" not in s
+                            and ":" not in s
+                            and (num_s.replace(".", "", 1).isdigit())
+                        )
+                        if looks_like_epoch:
+                            try:
+                                raw = int(float(num_s))
+                                if 1000000000000 <= raw <= 9999999999999:
+                                    ts_val = raw
+                                elif 1e9 <= raw < 1e10:
+                                    ts_val = raw * 1000
+                            except (ValueError, OverflowError):
+                                pass
                         if ts_val is None:
-                            from datetime import datetime
-                            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
+                            for fmt in (
+                                "%Y-%m-%d %H:%M:%S",
+                                "%Y-%m-%d %H:%M",
+                                "%Y-%m-%d",
+                                "%Y/%m/%d %H:%M:%S",
+                                "%Y/%m/%d %H:%M",
+                                "%Y/%m/%d",
+                                "%Y%m%d",
+                            ):
                                 try:
                                     dt = datetime.strptime(s[:19], fmt)
                                     ts_val = int(dt.timestamp() * 1000)
