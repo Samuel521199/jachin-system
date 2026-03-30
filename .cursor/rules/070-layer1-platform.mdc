@@ -15,8 +15,9 @@ globs: cloud/nexus/**/*.ts, cloud/nexus/**/*.tsx, cloud/nexus/supabase/migration
 
 ### 2.1 企业级实体隔离
 
-- **强制要求**：企业级实体必须通过 `organization_id`（或 `tenant_id`）隔离。
-- **绝不允许**：仅使用 `user_id` 来管理企业舰队 (Fleets)。企业舰队必须归属 `organizations` 表，通过 `organization_id` 关联。
+- **强制要求**：企业级实体必须通过 **`organizations.id`**（API/JWT 中常记为 `tenant_id` / `org_id`）隔离；用户归属 **必须** 经 `organization_users` 校验。
+- **绝不允许**：假设 `users` 表存在 `tenantId`/`tenant_id`；**绝不允许**仅使用 `user_id` 代替组织边界管理企业舰队。舰队必须归属 `organizations`，经 `organization_id` 关联。
+- **业务 API**：多租户敏感操作应使用 **`withOrgRole`**（`cloud/nexus/src/lib/with-org-role.ts`），租户上下文取自 **Auth.js 验签 JWT**，而非未校验 Header。
 
 ### 2.2 数据模型约束
 

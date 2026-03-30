@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { pluginsRegistry, userLicenses } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
-import { extractTenantId } from "@/lib/tenant";
+import { extractTenantIdAllowingMachineFallback } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -19,14 +19,14 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  */
 export async function POST(request: NextRequest) {
   try {
-    const tenantId = extractTenantId(request);
+    const tenantId = await extractTenantIdAllowingMachineFallback(request);
     if (!tenantId) {
       return NextResponse.json(
         {
           success: false,
           error: "未登录或缺少租户标识",
           code: "UNAUTHORIZED",
-          message: "请先登录或提供 X-Tenant-Id / JWT / nexus_tenant_id cookie",
+          message: "请先登录（会话 JWT）或提供 X-Tenant-Id / Bearer / nexus_tenant_id cookie",
         },
         { status: 401 }
       );

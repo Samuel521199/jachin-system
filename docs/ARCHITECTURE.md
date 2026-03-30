@@ -112,7 +112,7 @@
 ## 六、禁止项（已废弃）
 
 - `core/dapr/`、`core/ray_cluster/`、`core/memory/schema/`（已移除）
-- Dapr、Ray、Qdrant、PostgreSQL 作为 L2 主存储
+- Dapr、Ray、PostgreSQL、独立托管向量服务作为 L2 主存储（L2 现为 SQLite + LanceDB）
 
 ---
 

@@ -17,8 +17,7 @@ const navLinks = [
 ];
 
 /**
- * 演示模式。
- * 后续可接入 Auth.js 实现登录/登出。
+ * 全局导航。Auth.js 已闭环：未登录用户由 middleware 重定向至 `/login`；此处提供显式登录入口。
  */
 export default function Navbar() {
   return (
@@ -40,7 +39,12 @@ export default function Navbar() {
               {link.label}
             </Link>
           ))}
-          <span className="text-sm text-white/60">演示模式</span>
+          <Link
+            href="/login"
+            className="text-sm text-cyan-400/90 hover:text-cyan-300 transition-colors"
+          >
+            登录
+          </Link>
         </div>
       </div>
     </nav>

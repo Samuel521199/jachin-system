@@ -148,10 +148,7 @@ async function main() {
     `);
     log("[init-store-schema] telemetry_logs, developer_payouts OK");
 
-    // 5. users 表补齐 tenant_id、is_root（配对确认插入默认用户需要，与 schema.ts 对齐）
-    await sql.unsafe(`
-      ALTER TABLE public.users ADD COLUMN IF NOT EXISTS tenant_id TEXT;
-    `);
+    // 5. users.is_root（配对等）。tenant_id 已废止（P1 SSOT），见 drizzle/0012、docs/MIGRATION_P1_TENANT.md
     await sql.unsafe(`
       ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_root BOOLEAN NOT NULL DEFAULT false;
     `);

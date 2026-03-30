@@ -125,5 +125,5 @@ Layer 1 (平台) ↔ Layer 2 (控制面) ↔ Layer 3 (单体执行节点)
 
 ❌ Dapr & Ray Cluster  
 ❌ 本地 Redis / PostgreSQL  
-❌ Qdrant（已由 LanceDB + 可插拔向量引擎取代）  
+❌ 独立托管向量库（已由 LanceDB + 可插拔向量引擎取代）  
 ❌ “万物皆 Wasm”的单一形态（现为双轨制）

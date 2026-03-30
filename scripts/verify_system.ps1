@@ -51,17 +51,7 @@ if ($pgTest) {
     Write-Host "  [WARNING] PostgreSQL (5432) not responding" -ForegroundColor Yellow
 }
 
-$qdrantResponse = $null
-try {
-    $qdrantResponse = Invoke-WebRequest -Uri "http://localhost:6333/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
-} catch {
-    $qdrantResponse = $null
-}
-if ($qdrantResponse -and $qdrantResponse.StatusCode -eq 200) {
-    Write-Host "  [OK] Qdrant (6333) running OK" -ForegroundColor Green
-} else {
-    Write-Host "  [WARNING] Qdrant (6333) not responding" -ForegroundColor Yellow
-}
+Write-Host "  [INFO] Vector store uses LanceDB on disk (no separate service port)" -ForegroundColor Gray
 
 # Check Docker service
 Write-Host "[4/6] Checking Docker service..." -ForegroundColor Yellow

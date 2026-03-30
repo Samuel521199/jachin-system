@@ -85,6 +85,20 @@
       "when": 1741341000000,
       "tag": "0011_telemetry_timestamp_precision",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1741341100000,
+      "tag": "0012_p1_tenant_ssot",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1741341200000,
+      "tag": "0013_fleet_acl_device_groups",
+      "breakpoints": true
     }
   ]
 }

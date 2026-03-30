@@ -15,13 +15,6 @@ volumes:
       o: bind
       device: E:\docker\volumes\postgres_data
   
-  qdrant_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: E:\docker\volumes\qdrant_data
-  
   redis_data:
     driver: local
     driver_opts:

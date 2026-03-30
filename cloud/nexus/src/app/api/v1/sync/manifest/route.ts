@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { pluginsRegistry, userLicenses } from "@/db/schema";
 import { eq, and, or, gt, inArray, isNull } from "drizzle-orm";
-import { extractTenantId } from "@/lib/tenant";
+import {
+  assertOrganizationExists,
+  assertUserMemberOfOrganization,
+  extractJwtSubjectFromRequest,
+  extractTenantIdAllowingMachineFallback,
+  isTenantUuidString,
+} from "@/lib/tenant";
 import { rateLimit, MANIFEST_LIMIT } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
@@ -46,7 +52,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const tenantId = extractTenantId(request);
+    const tenantId = await extractTenantIdAllowingMachineFallback(request);
     if (!tenantId) {
       return NextResponse.json(
         {
@@ -55,6 +61,17 @@ export async function GET(request: NextRequest) {
           message: "Provide X-Tenant-Id header or Authorization: Bearer <JWT> with tenant_id/sub claim",
         },
         { status: 401 }
+      );
+    }
+
+    if (!isTenantUuidString(tenantId.trim())) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Invalid tenant_id",
+          message: "tenant_id must be organizations.id (UUID)",
+        },
+        { status: 400 }
       );
     }
 
@@ -70,6 +87,33 @@ export async function GET(request: NextRequest) {
     }
 
     const db = getDb()!;
+    const tid = tenantId.trim();
+    const orgOk = await assertOrganizationExists(db, tid);
+    if (!orgOk) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Unknown tenant",
+          message: "tenant_id is not a registered organization",
+        },
+        { status: 404 }
+      );
+    }
+    const jwtSub = extractJwtSubjectFromRequest(request);
+    if (jwtSub) {
+      const member = await assertUserMemberOfOrganization(db, tid, jwtSub);
+      if (!member) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Forbidden",
+            message: "JWT sub is not a member of this organization",
+          },
+          { status: 403 }
+        );
+      }
+    }
+
     const now = new Date();
 
     // 1. 查 user_licenses：status = ACTIVE 且 (expires_at IS NULL 或 expires_at > now)
@@ -80,7 +124,7 @@ export async function GET(request: NextRequest) {
       .from(userLicenses)
       .where(
         and(
-          eq(userLicenses.tenantId, tenantId),
+          eq(userLicenses.tenantId, tid),
           eq(userLicenses.status, "ACTIVE"),
           or(
             isNull(userLicenses.expiresAt),
@@ -94,7 +138,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         success: true,
         manifest: [],
-        meta: { tenant_id: tenantId, total: 0 },
+        meta: { tenant_id: tid, total: 0 },
       });
     }
 
@@ -199,7 +243,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       manifest,
-      meta: { tenant_id: tenantId, total: manifest.length },
+      meta: { tenant_id: tid, total: manifest.length },
     });
   } catch (e) {
     console.error("[sync/manifest] Unexpected error:", e);

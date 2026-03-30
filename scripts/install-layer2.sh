@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Layer2 (用户) - 一键安装 (Linux / macOS)
-# nexus_daemon（V2：记忆用 LanceDB，无需 Qdrant）
+# nexus_daemon（V2：LanceDB 本地向量记忆）
 #
 # 用法: ./scripts/install-layer2.sh [--systemd]
 # =============================================================================
@@ -22,7 +22,7 @@ echo "  Layer2 (用户) - 一键安装"
 echo "=========================================="
 echo ""
 
-# V2: Qdrant 已废弃，记忆由 LanceDB 管理，跳过
+# V2: 向量由 LanceDB 管理，跳过独立向量服务
 
 # nexus_daemon (Conda preferred for Python 3.11)
 echo "[1/3] nexus_daemon (Python)..."

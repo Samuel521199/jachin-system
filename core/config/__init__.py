@@ -38,11 +38,7 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://jachin:secure_password@localhost:5432/jachin_brain"
 
-    # Vector Database (Qdrant)
-    QDRANT_URL: str = "http://localhost:6333"
-    QDRANT_GRPC_URL: str = "http://localhost:6334"
-
-    # LanceDB（RAG 战役一、Edge L1 本地向量库）
+    # LanceDB（L2 向量记忆、RAG、Edge L1；亦可由 JACHIN_LANCEDB_PATH / JACHIN_DATA_DIR 覆盖）
     LANCEDB_PATH: str = "data/lancedb"
 
     # Redis

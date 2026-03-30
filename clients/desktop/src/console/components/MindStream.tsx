@@ -11,7 +11,7 @@ const DEMO_LINES: string[] = [
   "Analyzing user intent...",
   "Optimizing memory index...",
   "Ray cluster: 2 nodes active (1 GPU).",
-  "Qdrant: 1,247 vectors loaded.",
+  "LanceDB: 1,247 vectors indexed.",
   "Skill [files.search] invoked.",
   "Context window: 4,096 / 8,192 tokens.",
   "Eagle eye: console focus requested.",

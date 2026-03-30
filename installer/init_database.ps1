@@ -17,10 +17,10 @@ Write-Host "  - Script execution does NOT change your PowerShell session's envir
 Write-Host "  - If you see '(base)' in the prompt, that's normal - the script uses jachin-dev directly" -ForegroundColor Gray
 Write-Host ""
 Write-Host "[NOTE] Database Selection:" -ForegroundColor Gray
-Write-Host "  - This script will automatically detect and use local PostgreSQL/Qdrant if available" -ForegroundColor Gray
-Write-Host "  - If local services are not found, it will use Docker containers" -ForegroundColor Gray
+Write-Host "  - This script will automatically detect and use local PostgreSQL if available" -ForegroundColor Gray
+Write-Host "  - If local services are not found, it may use Docker containers where applicable" -ForegroundColor Gray
 Write-Host "  - Local PostgreSQL: Checks for running postgresql* Windows services" -ForegroundColor Gray
-Write-Host "  - Local Qdrant: Checks for service on http://localhost:6333" -ForegroundColor Gray
+Write-Host "  - Vector memory: V2 uses LanceDB on disk (no separate vector service port)" -ForegroundColor Gray
 Write-Host ""
 
 # Get project root directory (where this script is located)
@@ -219,7 +219,6 @@ if (-not $alembicInstalled) {
 # Check and install required dependencies for migrations
 Write-Host "[4/8] Checking required dependencies..." -ForegroundColor Yellow
 $requiredPackages = @(
-    @{Package="qdrant-client"; Import="qdrant_client"},
     @{Package="psycopg2-binary"; Import="psycopg2"},
     @{Package="sqlalchemy"; Import="sqlalchemy"}
 )
@@ -245,26 +244,9 @@ foreach ($pkg in $requiredPackages) {
     }
 }
 
-# Check Qdrant connection (optional check)
-Write-Host "[5/8] Checking Qdrant vector database..." -ForegroundColor Yellow
-Write-Host "  [INFO] Checking for local Qdrant service..." -ForegroundColor Cyan
-$useLocalQdrant = $false
-try {
-    $qdrantTest = Invoke-WebRequest -Uri "http://localhost:6333/health" -TimeoutSec 3 -ErrorAction SilentlyContinue
-    if ($qdrantTest.StatusCode -eq 200) {
-        Write-Host "  [OK] Local Qdrant service is running on port 6333" -ForegroundColor Green
-        $useLocalQdrant = $true
-    }
-} catch {
-    # Check Docker container
-    $qdrantContainer = docker ps --filter "name=jachin-qdrant" --format "{{.Names}}" 2>&1 | Select-String "jachin-qdrant"
-    if ($qdrantContainer) {
-        Write-Host "  [OK] Qdrant Docker container is running" -ForegroundColor Green
-    } else {
-        Write-Host "  [WARN] Neither local Qdrant nor Docker container found" -ForegroundColor Yellow
-        Write-Host "  [INFO] Qdrant is optional for database initialization" -ForegroundColor Gray
-    }
-}
+# Vector storage (LanceDB — no standalone service)
+Write-Host "[5/8] Vector storage (LanceDB)..." -ForegroundColor Yellow
+Write-Host "  [INFO] V2 vectors use LanceDB on disk (LANCEDB_PATH / ~/.jachin/lancedb_data); no separate vector DB service required." -ForegroundColor Gray
 
 # Check database connection
 Write-Host "[6/8] Checking database connection..." -ForegroundColor Yellow

@@ -44,6 +44,13 @@ export const platformAdmins = pgTable("platform_admins", {
 // users 支持 OAuth；password_hash 可选，用于 Credentials 密码登录
 // =============================================================================
 
+/**
+ * 平台用户（自然人账号）。
+ *
+ * @warning **禁止**用本表推断「当前租户」或做资源隔离。租户边界 **唯一** 来自
+ * {@link organizations} + {@link organizationUsers}。配对 Fleet / 计费 / 许可证须使用
+ * `organizations.id`（UUID）并与 `organization_users` 校验成员身份。
+ */
 export const users = pgTable("users", {
   id: text("id")
     .primaryKey()
@@ -53,8 +60,6 @@ export const users = pgTable("users", {
   emailVerified: timestamp("email_verified", { mode: "date" }),
   image: text("image"),
   passwordHash: text("password_hash"),
-  /** 租户 ID（企业主账号归属，SaaS 购买者） */
-  tenantId: text("tenant_id"),
   /** 是否超级管理员（区分平台根账号与普通租户管理员） */
   isRoot: boolean("is_root").default(false),
 });
@@ -104,13 +109,29 @@ export const verificationTokens = pgTable(
 );
 
 // =============================================================================
-// SaaS 多租户核心表
+// SaaS 多租户核心表 — Organization = Tenant（单一事实来源，SSOT）
 // =============================================================================
 
+/**
+ * **租户（Tenant）即组织（Organization）**。`id` 是全系统隔离边界主键；API / JWT / `X-Tenant-Id`
+ * 中的 `tenant_id` **必须**等于本表某一行的 `id`（UUID 字符串）。
+ *
+ * - **企业**：常规一行，`is_personal_default = false`。
+ * - **个人默认组织**：每个尚未加入任何组织的用户，迁移脚本会为其插入一行
+ *   `is_personal_default = true`，并在 {@link organizationUsers} 中写入 `owner`，从而在代码路径上与
+ *   企业租户一致，避免 `if (personal) … else …` 双轨。
+ *
+ * @see docs/MIGRATION_P1_TENANT.md
+ */
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   billingPlan: text("billing_plan").default("free"),
+  /**
+   * 是否为系统自动创建的「个人默认工作区」。每用户至多一个 such org（由迁移与应用层保证）。
+   * 企业组织恒为 `false`。
+   */
+  isPersonalDefault: boolean("is_personal_default").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -119,8 +140,24 @@ export const organizations = pgTable("organizations", {
     .defaultNow(),
 });
 
-export const orgRoleEnum = pgEnum("org_role", ["owner", "admin", "member"]);
+/** P2 Fleet ACL：在 org 内增加车队管理员（管设备/组）与只读成员 */
+export const orgRoleEnum = pgEnum("org_role", [
+  "owner",
+  "admin",
+  "member",
+  "fleet_admin",
+  "viewer",
+]);
 
+/**
+ * **用户 ↔ 组织成员关系（唯一合法归属来源）**。
+ *
+ * @warning 任何「该用户是否属于某租户」的判断 **必须** 查询本表（`org_id` + `user_id`）。
+ * 禁止从 `users` 推断租户；禁止仅凭未校验的 Header/Cookie 中的 `tenant_id` 放行写操作。
+ *
+ * **极简分配**：`POST .../members/join` 验签邀请后插入；`POST .../active-org` 切换会话内当前 `org_id`；
+ * 成员列表与角色见 `.../members`、`.../members/invite` 等。
+ */
 export const organizationUsers = pgTable(
   "organization_users",
   {
@@ -137,6 +174,64 @@ export const organizationUsers = pgTable(
       .defaultNow(),
   },
   (t) => [{ unique: [t.orgId, t.userId] }]
+);
+
+/** P2：组内成员角色（与 org_role 独立；见 device_group_members 表注释） */
+export const deviceGroupMemberRoleEnum = pgEnum("device_group_member_role", [
+  "admin",
+  "viewer",
+]);
+
+/**
+ * P2 Fleet ACL：组织下的设备资源组（车队 / 站点 / 产线）。
+ * `org_id` 为强租户边界；组内设备见 {@link edgeAgents.deviceGroupId}。
+ */
+export const deviceGroups = pgTable(
+  "device_groups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("device_groups_org_id_idx").on(t.orgId),
+    uniqueIndex("device_groups_org_id_name_unique").on(t.orgId, t.name),
+  ]
+);
+
+/**
+ * 组级授权：**在 organization_users.role（org 级）之下的细粒度覆写**。
+ * - 典型用法：限制某用户仅管理/查看特定 `device_groups` 下的 edge_agent。
+ * - 应用层须保证：effective 权限 = f(org_role, group membership)；不得仅信任其一。
+ */
+export const deviceGroupMembers = pgTable(
+  "device_group_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => deviceGroups.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: deviceGroupMemberRoleEnum("role").notNull().default("viewer"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("device_group_members_group_user_unique").on(t.groupId, t.userId),
+    index("device_group_members_user_id_idx").on(t.userId),
+  ]
 );
 
 // =============================================================================
@@ -167,30 +262,42 @@ export const blueprints = pgTable("blueprints", {
     .defaultNow(),
 });
 
-export const edgeAgents = pgTable("edge_agents", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
-  organizationId: uuid("organization_id").references(() => organizations.id, {
-    onDelete: "set null",
-  }),
-  name: text("name"),
-  pairingCode: varchar("pairing_code", { length: 6 }).notNull().unique(),
-  status: edgeAgentStatusEnum("status").notNull().default("pending"),
-  currentBlueprintId: uuid("current_blueprint_id").references(() => blueprints.id, {
-    onDelete: "set null",
-  }),
-  authToken: text("auth_token"),
-  pairingExpiresAt: timestamp("pairing_expires_at", { withTimezone: true }),
-  lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
-  imBindingId: text("im_binding_id"),
-  imPlatform: text("im_platform").default("telegram"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const edgeAgents = pgTable(
+  "edge_agents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** 顶层租户边界（冗余 SSOT：应与 device_groups.org_id 一致当 device_group_id 已设） */
+    organizationId: uuid("organization_id").references(() => organizations.id, {
+      onDelete: "set null",
+    }),
+    /** P2：强关联资源组；未分组时为 null（或后续迁移写入 org 默认组） */
+    deviceGroupId: uuid("device_group_id").references(() => deviceGroups.id, {
+      onDelete: "set null",
+    }),
+    name: text("name"),
+    pairingCode: varchar("pairing_code", { length: 6 }).notNull().unique(),
+    status: edgeAgentStatusEnum("status").notNull().default("pending"),
+    currentBlueprintId: uuid("current_blueprint_id").references(() => blueprints.id, {
+      onDelete: "set null",
+    }),
+    authToken: text("auth_token"),
+    pairingExpiresAt: timestamp("pairing_expires_at", { withTimezone: true }),
+    lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
+    imBindingId: text("im_binding_id"),
+    imPlatform: text("im_platform").default("telegram"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("edge_agents_organization_id_idx").on(t.organizationId),
+    index("edge_agents_device_group_id_idx").on(t.deviceGroupId),
+  ]
+);
 
 export const transactions = pgTable("transactions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -337,7 +444,10 @@ export const userLicenses = pgTable(
   {
     /** 主键 */
     id: uuid("id").primaryKey().defaultRandom(),
-    /** 租户/购买者 ID（users.id 或 organizations.id） */
+    /**
+     * **租户 ID = `organizations.id`**（UUID 字符串）。与 JWT `tenant_id` / `X-Tenant-Id` 对齐。
+     * 禁止写入 `users.id` 作为本字段（历史误用已随 P1 废止）。
+     */
     tenantId: text("tenant_id").notNull(),
     /** 关联的商品 ID */
     itemId: uuid("item_id")
@@ -373,6 +483,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   edgeAgents: many(edgeAgents),
   blueprints: many(blueprints),
   transactions: many(transactions),
+  deviceGroupMembers: many(deviceGroupMembers),
 }));
 
 export const accountsRelations = relations(accounts, ({ one }) => ({
@@ -388,11 +499,23 @@ export const organizationsRelations = relations(organizations, ({ many }) => ({
   edgeAgents: many(edgeAgents),
   blueprints: many(blueprints),
   transactions: many(transactions),
+  deviceGroups: many(deviceGroups),
 }));
 
 export const organizationUsersRelations = relations(organizationUsers, ({ one }) => ({
   organization: one(organizations, { fields: [organizationUsers.orgId], references: [organizations.id] }),
   user: one(users, { fields: [organizationUsers.userId], references: [users.id] }),
+}));
+
+export const deviceGroupsRelations = relations(deviceGroups, ({ one, many }) => ({
+  organization: one(organizations, { fields: [deviceGroups.orgId], references: [organizations.id] }),
+  edgeAgents: many(edgeAgents),
+  members: many(deviceGroupMembers),
+}));
+
+export const deviceGroupMembersRelations = relations(deviceGroupMembers, ({ one }) => ({
+  group: one(deviceGroups, { fields: [deviceGroupMembers.groupId], references: [deviceGroups.id] }),
+  user: one(users, { fields: [deviceGroupMembers.userId], references: [users.id] }),
 }));
 
 export const blueprintsRelations = relations(blueprints, ({ one, many }) => ({
@@ -404,6 +527,7 @@ export const blueprintsRelations = relations(blueprints, ({ one, many }) => ({
 export const edgeAgentsRelations = relations(edgeAgents, ({ one }) => ({
   user: one(users, { fields: [edgeAgents.userId], references: [users.id] }),
   organization: one(organizations, { fields: [edgeAgents.organizationId], references: [organizations.id] }),
+  deviceGroup: one(deviceGroups, { fields: [edgeAgents.deviceGroupId], references: [deviceGroups.id] }),
   currentBlueprint: one(blueprints, {
     fields: [edgeAgents.currentBlueprintId],
     references: [blueprints.id],
@@ -431,7 +555,7 @@ export const userLicensesRelations = relations(userLicenses, ({ one }) => ({
 /** 遥测日志：来自全球 L2 的原始调用记录 */
 export const telemetryLogs = pgTable("telemetry_logs", {
   id: uuid("id").primaryKey().defaultRandom(),
-  /** 租户 ID（L2 归属） */
+  /** 租户 ID：等同 `organizations.id`（L2 归属边界） */
   tenantId: text("tenant_id").notNull(),
   /** L2 原始记录 ID */
   originalId: text("original_id").notNull(),

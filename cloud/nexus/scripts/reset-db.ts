@@ -24,6 +24,8 @@ async function reset() {
       DROP TABLE IF EXISTS plugins_registry CASCADE;
       DROP TABLE IF EXISTS transactions CASCADE;
       DROP TABLE IF EXISTS edge_agents CASCADE;
+      DROP TABLE IF EXISTS device_group_members CASCADE;
+      DROP TABLE IF EXISTS device_groups CASCADE;
       DROP TABLE IF EXISTS blueprints CASCADE;
       DROP TABLE IF EXISTS organization_users CASCADE;
       DROP TABLE IF EXISTS accounts CASCADE;
@@ -32,6 +34,7 @@ async function reset() {
       DROP TABLE IF EXISTS organizations CASCADE;
       DROP TABLE IF EXISTS users CASCADE;
       DROP TYPE IF EXISTS edge_agent_status CASCADE;
+      DROP TYPE IF EXISTS device_group_member_role CASCADE;
       DROP TYPE IF EXISTS org_role CASCADE;
     `);
     console.log("✅ 表已删除");

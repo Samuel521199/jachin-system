@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import ErrorBoundaryWrapper from "@/components/ErrorBoundaryWrapper";
+import { SessionProvider } from "@/components/SessionProvider";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -21,7 +22,9 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${inter.variable} font-sans antialiased`}>
-        <ErrorBoundaryWrapper>{children}</ErrorBoundaryWrapper>
+        <SessionProvider>
+          <ErrorBoundaryWrapper>{children}</ErrorBoundaryWrapper>
+        </SessionProvider>
       </body>
     </html>
   );
