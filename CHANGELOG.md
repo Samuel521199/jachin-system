@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.97] - 2026-03-30
+
+### Added
+
+- **MCP（Filesystem 上架包）**：`skills_repo/plugin/com.jachin.mcp.filesystem_workspace` — `L2_GATEWAY` 官方 `@modelcontextprotocol/server-filesystem`，根目录占位符 `__JACHIN_WORKSPACE__`
+- **脚本**：`scripts/sideload_mcp_filesystem_workspace.ps1`（侧载 inventory）、`scripts/test_mcp_l2_filesystem.ps1`（本机/远程探测 `GET/POST /api/v2/mcp/*`）
+
+### Changed
+
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli` 统一为 **0.8.97**（Git 标签 `v0.8.97`）
+
+---
+
 ## [v0.8.50] - 2026-03-16
 
 **Milestone: DeepBrain（深脑）** — 产品基线与 Git 标签 `v0.8.50` 对齐。

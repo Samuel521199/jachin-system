@@ -1,0 +1,16 @@
+{
+  "id": "com.jachin.mcp.fs.workspace",
+  "name": "Jachin Workspace 文件系统 MCP",
+  "version": "1.0.0",
+  "description": "L2_GATEWAY：官方 @modelcontextprotocol/server-filesystem，允许根目录为 ~/.jachin/workspace（args 使用 __JACHIN_WORKSPACE__，由 L2 inventory 扫描时展开）。用于在 ReAct 中与 core:fs_write 同工作区协作；write_file/list_directory/search_files 等由 L2 起 npx 进程。工具名 read_file 与 L3 本地 mcp:read_file 重名时，L3 工具列表仍优先本地 read，其余走 L2。",
+  "type": "mcp",
+  "item_type": "MCP",
+  "runtime_tier": "L2_GATEWAY",
+  "mcp_servers": [
+    {
+      "id": "com.jachin.mcp.fs.workspace",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "__JACHIN_WORKSPACE__"]
+    }
+  ]
+}
