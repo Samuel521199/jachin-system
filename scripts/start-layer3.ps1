@@ -15,11 +15,13 @@ Set-Location $ProjectRoot
 #（现象：MCP 已传 enable_greet_recommend=false，仍注册「推荐牛人」）。开发启动强制用本仓库 skills_repo 内插件。
 $env:JACHIN_APP_ROOT = $ProjectRoot
 $env:JACHIN_DEV_HR_FIRST = "1"
+# PyInstaller 等向 stderr 打 INFO；2>&1|Out-Host 会触发 RemoteException，改为不合并流
+$ErrorActionPreference = "Continue"
 
 try {
 # 单实例：清理已有 L3 进程与端口，确保一台机器仅一个 L3 实例
 Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
-& (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause 2>&1 | Out-Host
+& (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause
 
 $DesktopDir = Join-Path $ProjectRoot "clients\desktop"
 if (-not (Test-Path $DesktopDir)) {
@@ -39,11 +41,11 @@ $L3Exe = Get-ChildItem -Path $BinDir -Filter "l3_node-*.exe" -ErrorAction Silent
 if (-not $L3Exe) {
     Write-Host ""
     Write-Host "[Layer3] L3 Sidecar 未找到，正在构建 (需 PyInstaller)..." -ForegroundColor Yellow
-    & python (Join-Path $ScriptDir "build_l3_sidecar.py") 2>&1 | Out-Host
+    & python (Join-Path $ScriptDir "build_l3_sidecar.py")
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
         Write-Host "[Layer3] 构建失败，尝试创建占位符..." -ForegroundColor Yellow
-        & python (Join-Path $ScriptDir "create_l3_stub.py") 2>&1 | Out-Host
+        & python (Join-Path $ScriptDir "create_l3_stub.py")
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] 请先运行: pip install pyinstaller && python scripts\build_l3_sidecar.py" -ForegroundColor Red
             exit 1
@@ -60,7 +62,7 @@ Write-Host ""
 Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
 Write-Host "[$UtcNow]   Layer3 (Desktop)" -ForegroundColor Cyan
 Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
-Write-Host "[$UtcNow]  Prereq: Start L2 first! Run in terminal 1: .\scripts\run-gateway.ps1" -ForegroundColor Yellow
+Write-Host "[$UtcNow]  L2: 本机可 .\scripts\run-gateway.ps1；远程 L2 在桌面「网关接驳」填 http://<公网>:18888" -ForegroundColor Yellow
 Write-Host "[$UtcNow]  Skills empty? Run diagnose: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
 Write-Host "[$UtcNow]  Tauri requires Rust. Falls back to Vite dev if not found."
 Write-Host "[$UtcNow]  Press Ctrl+C to stop"

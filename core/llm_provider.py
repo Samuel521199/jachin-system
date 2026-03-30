@@ -2,12 +2,13 @@
 Jachin Nexus v8.0 - 虫群大脑 (Cognitive Swarm via LiteLLM) + 流式神经
 
 LiteLLM 万能模型库：model_name 透传，彻底清除 API 差异冗余。
-支持 gpt-4o, qwen/qwen-max, ollama/qwen2.5 等任意 LiteLLM 兼容模型。
+支持 gpt-4o、通义 DashScope 等 LiteLLM 兼容模型。
 API Key 优先级：环境变量 > .env > ~/.jachin/nexus_config.json llm_keys
-无 Key 时自动回退到 ollama/qwen2.5 本地模型。
+未配置 Key 时默认仍指向 dashscope/qwen3.5-plus（调用将失败直至配置 DASHSCOPE_API_KEY），不再使用已弃用的 Ollama 默认回退。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -44,7 +45,6 @@ from rich.console import Console
 logger = logging.getLogger(__name__)
 console = Console()
 _NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
-_OLLAMA_FALLBACK = "ollama/qwen2.5"
 
 # 阿里百炼 / DashScope：与 DASHSCOPE_API_KEY 共用；推理用 plus、编码用 coder-plus，降级可用 flash
 DASHSCOPE_REASONING_MODEL = "dashscope/qwen3.5-plus"
@@ -86,7 +86,7 @@ def _llm_model_from_env_or_settings() -> str:
 def _get_model_name(config: dict[str, Any] | None = None) -> str:
     """
     从配置读取 model_name，透传给 LiteLLM。
-    示例：gpt-4o, dashscope/qwen3.5-plus, ollama/qwen2.5
+    示例：gpt-4o, dashscope/qwen3.5-plus
     已配置百炼/DashScope Key 且未显式写 model_name 时，默认 qwen3.5-plus（推理）；编码见 get_coder_model_litellm_id。
     """
     cfg = config or _load_nexus_config()
@@ -278,11 +278,31 @@ def _pop_call_purpose(kwargs: dict[str, Any], default: str = "cognitive_unspecif
     return s if s else default
 
 
+def sanitize_llm_fallback_models(models: list[str]) -> list[str]:
+    """
+    将链中的 ollama/* 替换为 DASHSCOPE_REASONING_MODEL（qwen3.5-plus），去重并保持顺序。
+    避免本机未启动 Ollama 时长时间 TCP 等待。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in models:
+        s = str(m).strip()
+        if not s:
+            continue
+        sl = s.lower()
+        if sl.startswith("ollama/") or sl.startswith("ollama:"):
+            s = DASHSCOPE_REASONING_MODEL
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[str], float]:
     """
     读取重试与降级配置。
     返回 (max_attempts, fallback_models, timeout_seconds)
-    有 DASHSCOPE_API_KEY 时默认用 dashscope 兜底，避免回退到未启动的 Ollama。
+    有 DASHSCOPE_API_KEY 时默认第二路为低成本 flash；无 Key 时第二路仍为 qwen3.5-plus（将报 Key 错误，不再使用 Ollama）。
     """
     cfg = config or _load_nexus_config()
     llm = (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
@@ -299,13 +319,16 @@ def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[s
         elif _has_dashscope_key():
             fallback_models = [DASHSCOPE_ECON_FALLBACK_MODEL]
         else:
-            fallback_models = [_OLLAMA_FALLBACK]
+            fallback_models = [DASHSCOPE_REASONING_MODEL]
+    fallback_models = sanitize_llm_fallback_models(fallback_models)
+    if not fallback_models:
+        fallback_models = [DASHSCOPE_REASONING_MODEL]
     timeout = float(llm.get("timeout_seconds", 60.0))
     return max_attempts, fallback_models, timeout
 
 
 def _resolve_model_with_fallback(model: str) -> str:
-    """若云模型无 Key，回退到 ollama/qwen2.5。使用 _get_openai_key_from_sources 多源检测"""
+    """若云模型无 Key，改为使用 DASHSCOPE_REASONING_MODEL（需配置 DASHSCOPE_API_KEY，不再回退 Ollama）。"""
     needs, env_key = _model_needs_key(model)
     if not needs:
         return model
@@ -323,19 +346,19 @@ def _resolve_model_with_fallback(model: str) -> str:
     if has_key:
         return model
     logger.info(
-        "[LiteLLM] %s 未配置，回退到本地模型 %s。"
-        "可设置环境变量或 ~/.jachin/nexus_config.json → llm_keys",
+        "[LiteLLM] %s 未配置，主模型将使用 %s（请配置环境变量或 ~/.jachin/nexus_config.json → llm_keys）。"
+        "已弃用 Ollama 默认回退。",
         env_key or "API Key",
-        _OLLAMA_FALLBACK,
+        DASHSCOPE_REASONING_MODEL,
     )
-    return _OLLAMA_FALLBACK
+    return DASHSCOPE_REASONING_MODEL
 
 
 class LiteLLMEngine:
     """
     虫群大脑引擎 — 通过 litellm.acompletion 统一接入任意模型。
     不再维护 Qwen/OpenAI/Ollama 分支，model_name 直接透传。
-    API Key 从环境变量或 nexus_config.json 注入；无 Key 时回退 ollama/qwen2.5。
+    API Key 从环境变量或 nexus_config.json 注入；无 Key 时默认指向 dashscope/qwen3.5-plus。
     """
 
     def __init__(self, model_name: str | None = None) -> None:
@@ -343,6 +366,12 @@ class LiteLLMEngine:
         raw = model_name or _get_model_name()
         resolved = _resolve_model_with_fallback(raw)
         self.model_name = _normalize_model_for_litellm(resolved)
+        if self.model_name.lower().startswith(("ollama/", "ollama:")):
+            logger.info(
+                "[LiteLLM] 配置中的 Ollama 模型已弃用，改为 %s",
+                DASHSCOPE_REASONING_MODEL,
+            )
+            self.model_name = _normalize_model_for_litellm(DASHSCOPE_REASONING_MODEL)
 
     async def generate_response(
         self,
@@ -396,7 +425,14 @@ class LiteLLMEngine:
                 if tools:
                     kwargs_chat["tools"] = tools
 
-                response = await litellm.acompletion(**kwargs_chat)
+                # 硬上限：个别环境下 litellm/httpx 可能长时间不返回，避免只能 Ctrl+C
+                _cap = float(timeout) + 45.0
+                try:
+                    response = await asyncio.wait_for(litellm.acompletion(**kwargs_chat), timeout=_cap)
+                except asyncio.TimeoutError as te:
+                    raise TimeoutError(
+                        f"LLM 非流式调用逾时 (>{_cap:.0f}s, purpose={call_purpose}, model={model})"
+                    ) from te
                 choice = response.choices[0] if response.choices else None
                 if not choice:
                     logger.info(
@@ -548,7 +584,7 @@ class CognitiveEngineFactory:
     def get_engine(cls, config: dict[str, Any] | None = None) -> LiteLLMEngine:
         """
         获取 LiteLLM 引擎实例。
-        config.llm.model_name: 如 gpt-4o, qwen/qwen-max, ollama/qwen2.5
+        config.llm.model_name: 如 gpt-4o, dashscope/qwen3.5-plus
         """
         global _IGNITION_EMITTED
         _inject_api_keys()  # 先注入 key，确保 _get_model_name 能检测到 nexus_config/credential_loader 中的 DASHSCOPE_API_KEY

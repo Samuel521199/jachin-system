@@ -10,6 +10,7 @@ export async function middleware() {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/).*)",
+    // packages/*.zip 由 Route Handler 直出，避免与中间件链冲突
+    "/((?!_next/static|_next/image|favicon.ico|api/|packages/).*)",
   ],
 };

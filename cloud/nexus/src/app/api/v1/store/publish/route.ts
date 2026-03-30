@@ -176,8 +176,9 @@ function validateConfigInZip(zip: AdmZip): void {
  */
 async function validateRequiredMcpsForSkill(
   db: ReturnType<typeof getDb>,
-  requiredMcps: string[]
+  requiredMcps: string[] | undefined
 ): Promise<void> {
+  if (!db) return;
   if (!requiredMcps || requiredMcps.length === 0) return;
 
   const pluginIdsLower = new Set(
@@ -254,11 +255,19 @@ async function savePackageLocally(
   const fileName = `${safeId}_v${safeVersion}_${Date.now()}.zip`;
   const destPath = path.join(packagesDir, fileName);
   fs.writeFileSync(destPath, zipBuffer);
-  const baseUrl =
-    process.env.NEXUS_PUBLIC_URL ||
-    process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "https://nexus.jachin";
+  // 禁止写成 a || b ? c : d：当 NEXUS_PUBLIC_URL 已设而 VERCEL_URL 未设时，旧写法会走到
+  // `https://${VERCEL_URL}` → https://undefined（L2 无法拉包）。
+  const pub = (process.env.NEXUS_PUBLIC_URL || "").trim().replace(/\/$/, "");
+  const vercel = (process.env.VERCEL_URL || "").trim();
+  let baseUrl: string;
+  if (pub) {
+    baseUrl = pub;
+  } else if (vercel) {
+    const host = vercel.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    baseUrl = `https://${host}`;
+  } else {
+    baseUrl = "https://nexus.jachin";
+  }
   return `${baseUrl.replace(/\/$/, "")}/packages/${fileName}`;
 }
 

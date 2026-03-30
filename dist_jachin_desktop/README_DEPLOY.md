@@ -57,8 +57,8 @@ copy .env.example .env
 .\scripts\run_l3.ps1
 ```
 
-- 已配对 L2：使用 `--gateway`（默认），MCP/Skill 自动拉取
-- 未配对：`.\scripts\run_l3.ps1 --ws-only`（需 .env 有 DASHSCOPE_API_KEY，无订阅能力）
+- **已配对 L2**：使用 `--gateway`（默认），MCP/Skill 自动拉取
+- **新机器 / L2 未启动**：双击 `run_l3_standalone.bat` 或 `.\scripts\run_l3.ps1 --ws-only`（需 .env 有 DASHSCOPE_API_KEY，无订阅能力）
 
 ### 5. 验证
 
@@ -87,6 +87,26 @@ copy .env.example .env
 
 ## 故障排查
 
-1. **exe 启动后无响应**：查看 `logs/l3_debug.log` 是否有异常
-2. **MCP/Skill 不可用**：确认 L2 已配对 L1，且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
-3. **Lark 等 MCP 配置**：订阅下载后配置在 `~/.jachin/config/mcps/{plugin_id}/`，按包内 manifest 写出
+1. **ConnectError / All connection attempts failed**：新机器或 L2 未启动时会出现。使用独立模式启动：
+   ```powershell
+   .\scripts\run_l3.ps1 --ws-only
+   ```
+   需在 `.env` 配置 `DASHSCOPE_API_KEY`，无 MCP/Skill 订阅能力。
+2. **exe 启动后无响应**：查看 `logs/l3_debug.log` 是否有异常
+3. **MCP/Skill 不可用**：确认 L2 已配对 L1，且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
+4. **Lark 等 MCP 配置**：订阅下载后配置在 `~/.jachin/config/mcps/{plugin_id}/`，按包内 manifest 写出
+5. **Lark「我要招聘」无回复**：见下方「Lark 无回复排查」；架构与数据路径见 [HR_RECRUITMENT.md](./HR_RECRUITMENT.md)
+
+### Lark 无回复排查
+
+发送「我要招聘」后无回复，常见原因：
+
+| 现象 | 原因 | 处理 |
+|------|------|------|
+| `connect failed, err: 1000040351: Incorrect domain name` | 应用与域名不匹配 | 应用在 **飞书中国版** 创建 → `im_channels.yaml` 中 `domain: "https://open.feishu.cn"`；在 **Lark 国际版** 创建 → `domain: "https://open.larksuite.com"` |
+| `[IM Lark] 未配置 app_id/app_secret` | 未配置 Lark 凭证 | 在 `~/.jachin/config/im_channels.yaml` 填写 `app_id`、`app_secret`，或设置环境变量 `LARK_APP_ID`、`LARK_APP_SECRET` |
+| 无 `[IM Lark] 收到消息` 日志 | 长连接未建立或未收到消息 | 确认 Lark 后台「事件订阅」已启用，且长连接连接成功；检查 `chat_ids` 是否过滤了当前会话 |
+| `HR 招聘 MCP 包未找到` | 未订阅或未拉取 HR 包 | 在 L2 订阅 `com.jachin.hr.recruitment`，L3 启动后自动拉取到 `~/.jachin/l3_mcp_cache` |
+| `ConnectError: Cannot connect to host dashscope.aliyuncs.com` | 本机无法访问阿里云 DashScope | 检查网络/防火墙；需代理时设置 `HTTP_PROXY`、`HTTPS_PROXY`；或换用可访问的 LLM |
+
+**配置路径**：`~/.jachin/config/im_channels.yaml`（可复制 `config/im_channels.yaml.example` 后修改）

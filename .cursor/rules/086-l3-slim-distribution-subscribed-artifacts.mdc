@@ -1,0 +1,39 @@
+---
+description: L3 轻量本体 vs L1 订阅 Skill/MCP（缓存即运行时扩展）；打包与加载路径强制约定
+globs: l3_node/**, scripts/build_l3_sidecar.py, scripts/build_full.ps1, skills_repo/**, docs/L3_SLIM_DISTRIBUTION*.md
+alwaysApply: false
+---
+
+# L3 轻量分发与订阅制品（核心规则）
+
+**完整说明**：`docs/L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md`
+
+## 必须遵守的分层
+
+1. **L3 本体（轻量）**：侧车 `l3_node-*.exe` + 便携包 = **核心 Agent / WS / HTTP / IM（含 Lark）**；**不把业务 MCP/Skill 仓库树打进便携包**（`build_full.ps1` 不复制 `skills_repo` 业务插件目录）。
+2. **业务 Skill / MCP**：**L1 上架 → L2 订阅与同步 → L3 拉取到用户缓存**；下载完成后在**运行语义上**即「当前 L3 的能力一部分」，无需重装侧车。
+3. **Lark/IM** 属于 **L3 本体通道**，与「可订阅业务包」分层；修改打包范围时勿把 IM 与业务插件混为一谈。
+
+## 缓存路径（`JACHIN_HOME` 默认 `~/.jachin`）
+
+| 路径 | 用途 |
+|------|------|
+| `l3_mcp_cache/<item_id>/` | MCP 插件根（须含 `plugin.json` 等），L3 发现并启动 |
+| `l3_skill_cache/` | Wasm 等技能包；**frozen 下**与 `loader._scan_wasm_plugins` 一致，**不依赖**仓库内 `l3_node/skills/wasm_plugins/` 扫描 |
+
+## 实现与改代码时的约束
+
+- **frozen / PyInstaller**：新增 Wasm 技能时须保证目标机可通过 **L2 同步 → `l3_skill_cache`** 获得；勿假设便携包内自带 `wasm_plugins`。
+- **便携包 / 安装脚本**：勿默认复制整块 `skills_repo/plugin/*` 业务目录；Chrome/脚本等若需随包，应来自 **`scripts/`** 或单独说明，避免与「轻量 L3」冲突。
+- **侧车 Python**：允许保留 **加载器、dispatcher、Agent 域胶水**（动态路径解析等）；「轻量」**不等于** exe 内零业务相关字符串/分支——若要做 exe 级域剔除，须单独特性开关/分包，不默认承诺。
+
+## 端到端（对齐产品/运维）
+
+`L1 上架` → `L2 订阅/授权/同步` → `L3 写入 l3_mcp_cache / l3_skill_cache` → registry 加载 → **等同已安装该能力**。
+
+## 构建脚本对应
+
+- `scripts/build_l3_sidecar.py`：轻量侧车 onefile。
+- `scripts/build_full.ps1`：便携目录；**不复制 MCP/Skill 仓库树**。
+
+修改上述脚本或 `l3_node/skills/loader.py` 扫描逻辑时，**同步更新** `docs/L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md` 与本规则。

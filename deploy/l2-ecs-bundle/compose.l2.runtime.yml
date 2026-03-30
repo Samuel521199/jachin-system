@@ -1,0 +1,38 @@
+# 与仓库 docker/compose.l2.runtime.yml 同步；ECS 目录 /opt/jachin-l2/
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - l2_redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  l2:
+    image: jachin-l2:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - l2.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - l2_app_data:/data
+      - l2_jachin_config:/root/.jachin
+    ports:
+      - "18888:18888"
+    command: ["uvicorn", "core.main:app", "--host", "0.0.0.0", "--port", "18888"]
+
+volumes:
+  l2_redis_data:
+  l2_app_data:
+  l2_jachin_config:

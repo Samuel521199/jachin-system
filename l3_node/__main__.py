@@ -12,6 +12,8 @@ L3 节点独立运行入口
   L2_BASE_URL: L2 地址，默认 http://localhost:18888
   SUB_ACCOUNT_ID: 子账号 ID（非 ws-only/--gateway 模式必需）
   OPENAI_API_KEY: ws-only 或 L2 无 Key 时的兜底
+  JACHIN_L3_CONSOLE: Windows 下是否弹出独立控制台。1/true 强制开启；0/false 强制关闭。
+    未设置时：PyInstaller 打包 exe 默认开启（便于目标机看日志）；源码运行默认关闭。
 """
 from __future__ import annotations
 
@@ -53,6 +55,21 @@ else:
     _root = __file__.rsplit("l3_node", 1)[0].rstrip("/\\")
 if _root and _root not in sys.path:
     sys.path.insert(0, _root)
+
+# 桌面/GUI 拉起打包 exe 时无控制台：分配独立控制台（须在 logging 绑定 stdout 之前）
+if sys.platform == "win32":
+    try:
+        from l3_node.win_console import maybe_attach_windows_console
+
+        maybe_attach_windows_console()
+        for _stream in (sys.stdout, sys.stderr):
+            if _stream is not None and hasattr(_stream, "reconfigure"):
+                try:
+                    _stream.reconfigure(encoding="utf-8", line_buffering=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 # 最早阶段：启动调试日志（在加载 dotenv 等之前，便于排查 exe 打包问题）
 from l3_node.early_log import setup_early_logging, trace, get_log_path

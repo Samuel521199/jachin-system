@@ -1,18 +1,28 @@
+# syntax=docker/dockerfile:1
 # Jachin Nexus V2 - L2 无状态节点镜像
-# 从项目根构建，支持 core.main 入口
-FROM python:3.11-slim
+# 从项目根构建：docker build --platform linux/amd64 -f deploy/Dockerfile.l2 -t jachin-l2:latest .
+# 国内直连 docker.io 超时：docker build --build-arg PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim ...
+# 重试构建：未改动的指令会用层缓存；pip 用下方 cache mount 可保留已下载 wheel，不必每次重新下几 GB。
+ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
+FROM ${PYTHON_IMAGE}
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*
+# build-essential：PyAudio 等源码编译需要 stdlib.h（libc6-dev）；portaudio19-dev：portaudio.h
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY core/requirements.txt ./core/
-RUN pip install --no-cache-dir -r core/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r core/requirements.txt
 
 COPY core/ ./core/
 
 ENV PYTHONPATH=/app
 
-EXPOSE 18880
+EXPOSE 18888
 
-CMD ["uvicorn", "core.main:app", "--host", "0.0.0.0", "--port", "18880"]
+# 默认 18888（与 core.config SERVER_PORT 一致）；集群 compose 可用 command 覆盖为多端口
+CMD ["uvicorn", "core.main:app", "--host", "0.0.0.0", "--port", "18888"]
