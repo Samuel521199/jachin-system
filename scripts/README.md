@@ -43,6 +43,15 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 | 层 | 角色 | Windows 安装 | Windows 启动 | Linux/macOS 安装 | Linux/macOS 启动 |
 |------|------|--------------|--------------|------------------|------------------|
 | **Cloud** | 平台商 | `install-cloud.ps1` | `start-cloud.ps1` | `install-cloud.sh` | `start-cloud.sh` |
+
+**L1 Linux 生产包（云端部署，默认非 Docker）**：
+- 交付物为 **`dist\jachin-l1-linux-amd64-v*.tar.gz`**：解压即可运行（内含 **runtime/node**，类似 Windows 便携版），服务器 **无需 Docker**、**无需安装 Node**（默认包）。
+- **Windows 本机构建**：`.\scripts\build-l1-linux-via-docker.ps1`（仅用 Docker 当 linux 构建机，产物仍是普通目录/tar）。
+- **ECS 方式 B 一键目录**：`deploy\l1-ecs-bundle\`（compose、`l1.env` 预填示例见 `l1.env.example`，真实 `l1.env` 勿提交 Git）。
+- **上传镜像到当前 ECS**：`.\scripts\scp-l1-docker-artifacts-to-server.ps1`（目标 **47.86.39.173**，换机请改脚本内 `$DeployHost`；优先上传 bundle 内文件）。
+- **L2 Docker 上传 ECS**：`.\scripts\scp-l2-docker-artifacts-to-server.ps1`（目录 **`/opt/jachin-l2`**，端口 **18888**，详见 **`deploy\l2-ecs-bundle\README.txt`**）。
+- **Linux/WSL 本机构建**：`./scripts/build-l1-linux-release.sh`。
+- 服务器：`./start.sh`。详见 `docs/L1_LINUX_CLOUD_DEPLOY.md`。**Docker 跑 L1、PostgreSQL 装宿主机**：`docker/compose.l1.yml` + `docker/l1.env`（从 `docker/l1.env.example` 复制）。
 | **Layer2** | 用户 | `install-layer2.ps1` | `start-layer2.ps1` | `install-layer2.sh` | `start-layer2.sh` |
 | **Layer3** | 用户 | `install-layer3.ps1` | `start-layer3.ps1` | `install-layer3.sh` | `start-layer3.sh` |
 

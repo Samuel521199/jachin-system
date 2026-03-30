@@ -112,6 +112,7 @@ def main() -> int:
         cmd.extend(["--add-data", f"{_domains}{_docs_sep}docs/capability_domains"])
     cmd += [
         "--hidden-import", "l3_node",
+        "--hidden-import", "l3_node.win_console",
         "--hidden-import", "l3_node.paths",
         "--hidden-import", "l3_node.early_log",
         "--hidden-import", "l3_node.bootstrap",

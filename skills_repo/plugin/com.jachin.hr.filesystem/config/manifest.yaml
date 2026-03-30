@@ -1,0 +1,7 @@
+version: "1"
+output_root: "~/.jachin"
+
+writes:
+  - path: "config/mcps/com.jachin.hr.filesystem/config.json"
+    type: "file"
+    merge: "overwrite_if_missing"

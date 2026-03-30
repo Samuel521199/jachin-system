@@ -1,0 +1,28 @@
+# 服务器专用：不包含 build，只使用已 load 的镜像 jachin-l1:latest
+# 与本机打好的镜像配合（方式 B）。与 compose.l1.yml 二选一。
+#
+# 服务器目录示例 /opt/jachin-l1/ 下放置：
+#   - compose.l1.runtime.yml（本文件）
+#   - l1.env（从仓库 docker/l1.env.example 复制并修改）
+#
+#   gunzip -c jachin-l1-latest.tar.gz | docker load
+#   docker compose -f compose.l1.runtime.yml --profile host up -d nexus-host
+
+services:
+  nexus:
+    image: jachin-l1:latest
+    ports:
+      - "3000:3000"
+    env_file:
+      - l1.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  nexus-host:
+    profiles: ["host"]
+    image: jachin-l1:latest
+    network_mode: host
+    env_file:
+      - l1.env
+    restart: unless-stopped

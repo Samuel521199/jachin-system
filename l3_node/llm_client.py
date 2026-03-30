@@ -257,7 +257,7 @@ class LiteLLMEngine:
         self.ctx = security_context
         self.model_name = model_name or "gpt-4o-mini"
         if fallback_models:
-            self.fallback_models = fallback_models
+            self.fallback_models = list(fallback_models)
         else:
             env_fb = os.environ.get("LITELLM_FALLBACK_MODELS", "").strip()
             if env_fb:
@@ -265,17 +265,31 @@ class LiteLLMEngine:
             elif self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY"):
                 self.fallback_models = [_dashscope_econ_fallback()]
             else:
-                self.fallback_models = ["ollama/qwen2.5"]
-        # 有 dashscope 时绝不使用 ollama
-        if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")) and "ollama" in str(self.fallback_models).lower():
-            self.fallback_models = [m for m in self.fallback_models if "ollama" not in m.lower()]
-            if not self.fallback_models:
-                self.fallback_models = [_dashscope_econ_fallback()]
-        if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY")) and "ollama" in (self.model_name or "").lower():
+                try:
+                    from core.llm_provider import DASHSCOPE_REASONING_MODEL as _plus
+
+                    self.fallback_models = [_plus]
+                except ImportError:
+                    self.fallback_models = ["dashscope/qwen3.5-plus"]
+        try:
+            from core.llm_provider import DASHSCOPE_REASONING_MODEL, sanitize_llm_fallback_models
+
+            self.fallback_models = sanitize_llm_fallback_models(self.fallback_models or [])
+        except ImportError:
+            DASHSCOPE_REASONING_MODEL = "dashscope/qwen3.5-plus"  # type: ignore[misc]
+        if not self.fallback_models:
+            self.fallback_models = (
+                [_dashscope_econ_fallback()]
+                if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY"))
+                else [DASHSCOPE_REASONING_MODEL]
+            )
+        mn = (self.model_name or "").lower()
+        if mn.startswith("ollama/") or mn.startswith("ollama:"):
             self.model_name = os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
             if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                fb = _dashscope_econ_fallback()
-                self.model_name = f"dashscope/{self.model_name}" if self.model_name else fb
+                self.model_name = (
+                    f"dashscope/{self.model_name}" if self.model_name else DASHSCOPE_REASONING_MODEL
+                )
         self.timeout = timeout
         self.max_attempts = max_attempts
 
@@ -345,17 +359,18 @@ class LiteLLMEngine:
             raise RuntimeError(
                 "未配置 API Key。请在 L2 管理为子账号添加 API Key，或在项目根 .env 中设置 DASHSCOPE_API_KEY"
             )
-        # 有 dashscope 时强制使用 dashscope，绝不连接 Ollama
-        has_dashscope = self.ctx.get_key("dashscope") or _os.environ.get("DASHSCOPE_API_KEY")
-        if has_dashscope:
-            self.fallback_models = [m for m in (self.fallback_models or []) if "ollama" not in (m or "").lower()]
-            if not self.fallback_models:
-                self.fallback_models = [_dashscope_econ_fallback()]
-            if "ollama" in (self.model_name or "").lower():
+        try:
+            from core.llm_provider import DASHSCOPE_REASONING_MODEL, sanitize_llm_fallback_models
+
+            self.fallback_models = sanitize_llm_fallback_models(self.fallback_models or [])
+            if (self.model_name or "").lower().startswith(("ollama/", "ollama:")):
                 self.model_name = _os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
                 if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    fb = _dashscope_econ_fallback()
-                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else fb
+                    self.model_name = (
+                        f"dashscope/{self.model_name}" if self.model_name else DASHSCOPE_REASONING_MODEL
+                    )
+        except ImportError:
+            pass
 
         models_to_try = [self.model_name] + [m for m in (self.fallback_models or []) if m != self.model_name]
         last_error: Optional[Exception] = None
@@ -389,7 +404,16 @@ class LiteLLMEngine:
                 if tools:
                     kwargs_chat["tools"] = tools
 
-                response = await litellm.acompletion(**kwargs_chat)
+                _cap = float(self.timeout) + 45.0
+                try:
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(**kwargs_chat),
+                        timeout=_cap,
+                    )
+                except asyncio.TimeoutError as te:
+                    raise TimeoutError(
+                        f"L3 LLM 非流式逾时 (>{_cap:.0f}s, purpose={purpose}, model={model})"
+                    ) from te
                 choice = response.choices[0] if response.choices else None
                 if not choice:
                     logger.info(
@@ -475,16 +499,18 @@ class LiteLLMEngine:
             raise RuntimeError(
                 "未配置 API Key。请在 L2 管理为子账号添加 API Key，或在项目根 .env 中设置 DASHSCOPE_API_KEY"
             )
-        has_dashscope = self.ctx.get_key("dashscope") or _os.environ.get("DASHSCOPE_API_KEY")
-        if has_dashscope:
-            self.fallback_models = [m for m in (self.fallback_models or []) if "ollama" not in (m or "").lower()]
-            if not self.fallback_models:
-                self.fallback_models = [_dashscope_econ_fallback()]
-            if "ollama" in (self.model_name or "").lower():
+        try:
+            from core.llm_provider import DASHSCOPE_REASONING_MODEL, sanitize_llm_fallback_models
+
+            self.fallback_models = sanitize_llm_fallback_models(self.fallback_models or [])
+            if (self.model_name or "").lower().startswith(("ollama/", "ollama:")):
                 self.model_name = _os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
                 if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    fb = _dashscope_econ_fallback()
-                    self.model_name = f"dashscope/{self.model_name}" if self.model_name else fb
+                    self.model_name = (
+                        f"dashscope/{self.model_name}" if self.model_name else DASHSCOPE_REASONING_MODEL
+                    )
+        except ImportError:
+            pass
 
         models_to_try = [self.model_name] + [
             m for m in self.fallback_models if m != self.model_name

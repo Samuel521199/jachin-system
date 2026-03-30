@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 console = Console()
 _NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
 _DEFAULT_THRESHOLD = 6000
-_DEFAULT_SUMMARY_MODEL = "ollama/qwen2.5"
 # 记忆刷新：当 token 超过 threshold - soft_margin 时触发，在压缩前提醒模型写入持久记忆
 _MEMORY_FLUSH_SOFT_MARGIN = 4000
 
@@ -76,12 +75,26 @@ def _get_compaction_config() -> tuple[int, str]:
     cfg = _load_nexus_config()
     llm = (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
     threshold = int(llm.get("compaction_threshold", _DEFAULT_THRESHOLD))
-    raw = str(llm.get("compaction_model") or llm.get("edge_model") or _DEFAULT_SUMMARY_MODEL).strip()
-    # edge_model 可能为 "qwen2.5:0.5b"，需补全 ollama/ 前缀供 LiteLLM 使用
-    if raw and "/" not in raw and ":" in raw:
-        model = f"ollama/{raw}"
+    try:
+        from core.llm_provider import DASHSCOPE_REASONING_MODEL
+    except ImportError:
+        DASHSCOPE_REASONING_MODEL = "dashscope/qwen3.5-plus"  # type: ignore[misc]
+    explicit_comp = bool(llm.get("compaction_model") and str(llm.get("compaction_model")).strip())
+    # 压缩链路统一默认 qwen3.5-plus；已弃用 Ollama
+    default_sm = DASHSCOPE_REASONING_MODEL
+    if explicit_comp:
+        raw = str(llm.get("compaction_model")).strip()
     else:
-        model = raw or _DEFAULT_SUMMARY_MODEL
+        raw = str(llm.get("edge_model") or default_sm).strip()
+    # 旧版 edge 标签如 "qwen2.5:0.5b" 曾映射到 Ollama，现改为 qwen3.5-plus
+    if raw and "/" not in raw and ":" in raw:
+        model = DASHSCOPE_REASONING_MODEL
+    else:
+        model = raw or default_sm
+    ml = (model or "").lower()
+    if ml.startswith("ollama/") or ml.startswith("ollama:"):
+        logger.info("[Compaction] Ollama 已弃用，压缩改用 %s", DASHSCOPE_REASONING_MODEL)
+        model = DASHSCOPE_REASONING_MODEL
     return threshold, model
 
 

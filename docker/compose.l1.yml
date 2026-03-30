@@ -1,0 +1,33 @@
+# L1（Nexus）仅容器化应用；PostgreSQL 安装在宿主机，不纳入本 compose。
+# 在仓库根目录执行：
+#   cp docker/l1.env.example docker/l1.env   # 编辑 DATABASE_URL 等
+#   docker compose -f docker/compose.l1.yml build
+#   docker compose -f docker/compose.l1.yml up -d
+#
+# 默认服务 nexus：桥接网络 + host.docker.internal 访问宿主机 5432（需配置 Postgres 监听与 pg_hba，见 docs/L1_LINUX_CLOUD_DEPLOY.md）
+# 可选服务 nexus-host：network_mode: host，DATABASE_URL 可用 127.0.0.1（与宿主机网络完全共用）
+
+services:
+  nexus:
+    image: jachin-l1:latest
+    build:
+      context: ..
+      dockerfile: docker/l1-nexus.Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - l1.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  nexus-host:
+    profiles: ["host"]
+    image: jachin-l1:latest
+    build:
+      context: ..
+      dockerfile: docker/l1-nexus.Dockerfile
+    network_mode: host
+    env_file:
+      - l1.env
+    restart: unless-stopped

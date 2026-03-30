@@ -139,3 +139,13 @@ commit_msg.txt
 .git_commit_msg.txt
 .git_tag_msg.txt
 .git_commit_msg2.txt
+
+# L1 Docker 部署本地密钥（从 docker/l1.env.example 复制）
+docker/l1.env
+# ECS 一键部署包内预填的 l1.env（含数据库密码）
+deploy/l1-ecs-bundle/l1.env
+deploy/l2-ecs-bundle/l2.env
+
+# Local Docker image exports (large; do not commit)
+/jachin-*-latest.tar
+/jachin-*-latest.tar.gz

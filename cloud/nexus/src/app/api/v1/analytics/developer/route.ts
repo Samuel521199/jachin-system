@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
-import {
-  developerPayouts,
-  pluginsRegistry,
-  telemetryLogs,
-} from "@/db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { developerPayouts, pluginsRegistry } from "@/db/schema";
+import { eq, sql } from "drizzle-orm";
 import { extractDeveloperId } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";

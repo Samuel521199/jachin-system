@@ -166,7 +166,15 @@ def pair(base_url: str, recover: bool, code: str) -> None:
         console.print(f"        请确认 [cyan]{base_url}[/cyan] 可访问，且 Nexus 服务已启动。")
         raise SystemExit(1)
     except httpx.HTTPStatusError as e:
+        body = (e.response.text or "").strip()[:500]
         console.print(f"[red][ERROR][/red] 配对请求失败: HTTP {e.response.status_code}")
+        if body:
+            console.print(f"[dim]{body}[/dim]")
+        console.print(
+            "[dim]常见原因：L1 已配置 DATABASE_URL 但未执行迁移（缺 edge_agents 表）、"
+            "或 Postgres 连不上。请查 L1 容器日志 pairing/request、并在 cloud/nexus 执行 "
+            "npm run db:migrate。[/dim]"
+        )
         raise SystemExit(1)
 
     session_id = data.get("session_id")

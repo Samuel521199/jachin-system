@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
       .where(eq(developerPayouts.developerId, developerId));
 
     const pluginIds = [...new Set(rows.map((r) => r.itemId))];
-    let nameMap: Record<string, string> = {};
+    const nameMap: Record<string, string> = {};
     if (pluginIds.length > 0) {
       const plugins = await db
         .select({

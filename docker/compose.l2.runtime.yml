@@ -1,0 +1,48 @@
+# L2 服务器运行时：不 build，使用已 load 的 jachin-l2:latest + 官方 redis:7-alpine（服务器上 docker pull）
+# 与 ECS 同机部署 L1（nexus-host 监听宿主机 3000）时，L2 通过 host.docker.internal 访问 Nexus。
+#
+# 服务器目录示例 /opt/jachin-l2/：
+#   compose.l2.runtime.yml
+#   l2.env
+#
+#   docker load -i jachin-l2-latest.tar   # 或 gunzip 后再 load
+#   docker compose -f compose.l2.runtime.yml pull redis
+#   docker compose -f compose.l2.runtime.yml up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - l2_redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  l2:
+    image: jachin-l2:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - l2.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - l2_app_data:/data
+      # 配对凭证 ~/.jachin/nexus_config.json；不挂卷则删容器后需重新配对
+      - l2_jachin_config:/root/.jachin
+    ports:
+      - "18888:18888"
+    command: ["uvicorn", "core.main:app", "--host", "0.0.0.0", "--port", "18888"]
+
+volumes:
+  l2_redis_data:
+  l2_app_data:
+  l2_jachin_config:
