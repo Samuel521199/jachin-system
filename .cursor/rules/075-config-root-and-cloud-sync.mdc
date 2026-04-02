@@ -134,7 +134,7 @@ writes:
 ### 用户操作
 
 1. 安装 L3
-2. 配对 L2（或通过 L2 代理连接 L1）
+2. L3 神经接驳 L2；运维侧保证 L2 已与 L1 建立信任（见 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`）
 3. 同步技能 / MCP
 4. 包内 config 自动写出 → 技能可用
 

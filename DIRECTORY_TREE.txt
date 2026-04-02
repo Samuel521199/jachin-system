@@ -84,5 +84,6 @@ jachin-system/
 │
 ├── .env
 ├── .env.example
-├── PROJECT_STRUCTURE.md
 └── README.md
+
+# Repo layout: docs/FILE_STRUCTURE.md

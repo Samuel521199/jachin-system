@@ -53,7 +53,7 @@ alwaysApply: false
 
 | 新增内容 | 必须纳入 |
 |----------|----------|
-| core/cli.py pair | install-layer2 自动执行 run-pair；已配对则跳过 |
+| core/cli.py pair | install-layer2 无 nexus_config 时自动 run-pair（**辅助**）；有 Web 时优先 `/gateway` Nexus 登录 |
 | core/daemon.py | run-daemon.ps1/sh、start-layer2 选项菜单、start.bat daemon |
 | Drizzle 迁移 | install-cloud 执行 `npx drizzle-kit push` |
 | 新页面 /plaza | 随 start-cloud 自动可用，无需额外脚本 |

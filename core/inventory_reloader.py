@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import Any
 
+from core.l2_stdio_mcp_flag import l2_stdio_mcp_enabled
+
 logger = logging.getLogger(__name__)
 
 # 队列项: ("initial", future) | ("reload", future) | ("shutdown",)
@@ -35,7 +37,8 @@ async def _reloader_loop() -> None:
         from core.inventory_scanner import reload_inventory, ensure_inventory_dirs
 
         ensure_inventory_dirs()
-        manager = get_mcp_manager()
+        manager = get_mcp_manager() if l2_stdio_mcp_enabled() else None
+        mcp_started = False
 
         while True:
             item = await _reload_queue.get()
@@ -44,7 +47,9 @@ async def _reloader_loop() -> None:
 
             if kind == "shutdown":
                 logger.debug("[InventoryReloader] 收到 shutdown，关闭 MCP 管理器")
-                await manager.stop()
+                if manager and mcp_started:
+                    await manager.stop()
+                    mcp_started = False
                 if future:
                     try:
                         future.set_result(None)
@@ -56,12 +61,19 @@ async def _reloader_loop() -> None:
                 try:
                     if first:
                         first = False
-                        await manager.start()
-                        logger.info(
-                            "[InventoryReloader] MCP 管理器已启动 servers=%d tools=%d",
-                            manager.server_count,
-                            manager.tool_count,
-                        )
+                        if manager:
+                            await manager.start()
+                            mcp_started = True
+                            logger.info(
+                                "[InventoryReloader] L2 MCP 管理器已启动 servers=%d tools=%d",
+                                manager.server_count,
+                                manager.tool_count,
+                            )
+                        else:
+                            logger.info(
+                                "[InventoryReloader] L2 stdio MCP 已禁用，仅重载 inventory（Skills）；"
+                                "stdio MCP 在 L3 进程内启动"
+                            )
                     result = await reload_inventory()
                     if future:
                         try:

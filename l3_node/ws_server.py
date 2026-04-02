@@ -31,8 +31,9 @@ from l3_node.lark_session import load_lark_session as _load_lark_session, save_l
 # 终端-Lark 镜像：chat_id -> 订阅该会话的 WebSocket 集合（终端连接）
 _mirror_subscribers: dict[str, set] = {}
 _mirror_subscribers_lock = asyncio.Lock()
-# LARK_MIRROR_PUSH_URL：终端发消息后，L3 将回复推送到该 URL，由 webhook 转发到 Lark
-_LARK_MIRROR_PUSH_URL = os.environ.get("LARK_MIRROR_PUSH_URL", "http://127.0.0.1:5000/api/mirror-push")
+# LARK_MIRROR_PUSH_URL：终端发消息后，可 POST 到独立 lark_bot webhook；未配置或默认 localhost:5000 时，
+# 若已配置 Lark 凭证则优先走 Open API 直连（与长连接模式一致，避免 5000 被占用或非 webhook 返回 503）。
+_DEFAULT_MIRROR_PUSH = "http://127.0.0.1:5000/api/mirror-push"
 
 WS_HOST = "127.0.0.1"
 WS_PORT = 18981  # 189xx 系列，与 L2(18888)、Sensory(18881) 分离
@@ -59,19 +60,80 @@ async def _broadcast_to_mirror_subscribers(chat_id: str, payload: dict) -> None:
             pass
 
 
+def _mirror_push_url_effective() -> str:
+    return (os.environ.get("LARK_MIRROR_PUSH_URL") or _DEFAULT_MIRROR_PUSH).strip()
+
+
+def _is_default_mirror_push_url(url: str) -> bool:
+    u = (url or "").strip().rstrip("/").lower()
+    return u in (
+        "http://127.0.0.1:5000/api/mirror-push",
+        "http://localhost:5000/api/mirror-push",
+    )
+
+
+def _push_via_lark_open_api_sync(chat_id: str, content: str) -> bool:
+    """使用与 IM 长连接相同的凭证，经 Open API 发送文本（不依赖 :5000 webhook）。"""
+    cid = (chat_id or "").strip()
+    if not cid or content is None:
+        return False
+    try:
+        from l3_node.channels.lark.client import get_lark_api_base, resolve_lark_credentials
+        from l3_node.channels.lark.im import send_text
+
+        aid, sec, yb = resolve_lark_credentials()
+        if not aid or not sec:
+            return False
+        base = yb or get_lark_api_base()
+        res = send_text(cid, str(content), app_id=aid, app_secret=sec, api_base=base)
+        return res.get("status") == "success"
+    except Exception as e:
+        logger.debug("[L3 WS] mirror 直连 Lark Open API 失败: %s", e)
+        return False
+
+
 async def _push_reply_to_lark(chat_id: str, content: str) -> None:
-    """将回复推送到 Lark（终端发消息后，由 webhook 转发）。"""
-    url = _LARK_MIRROR_PUSH_URL.strip()
-    if not url or not chat_id or content is None:
+    """将回复同步到 Lark：默认 URL 或凭证可用时优先 Open API；否则或失败时再 POST mirror-push。"""
+    url = _mirror_push_url_effective()
+    if not chat_id or content is None:
         return
+
+    prefer_direct_first = _is_default_mirror_push_url(url) or not url
+    if prefer_direct_first:
+        if await asyncio.to_thread(_push_via_lark_open_api_sync, chat_id, content):
+            return
+        if not url:
+            logger.debug("[L3 WS] mirror-push 未配置 URL 且 Lark API 未发送成功，跳过")
+            return
+
     try:
         import httpx
+
         async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(url, json={"chat_id": chat_id, "content": content})
-            if r.status_code != 200:
-                logger.warning("[L3 WS] mirror-push 失败 status=%d %s", r.status_code, r.text[:200])
+            try:
+                r = await client.post(url, json={"chat_id": chat_id, "content": content})
+            except httpx.RequestError as e:
+                logger.debug("[L3 WS] mirror-push 请求异常: %s", e)
+                if await asyncio.to_thread(_push_via_lark_open_api_sync, chat_id, content):
+                    logger.info("[L3 WS] mirror-push 不可用，已改用 Lark Open API 发送成功")
+                else:
+                    logger.warning("[L3 WS] mirror-push 失败（网络）且 Lark API 未成功: %s", e)
+                return
+
+            if r.status_code == 200:
+                return
+            if r.status_code in (502, 503, 504):
+                if await asyncio.to_thread(_push_via_lark_open_api_sync, chat_id, content):
+                    logger.info(
+                        "[L3 WS] mirror-push HTTP %d，已改用 Lark Open API 发送成功",
+                        r.status_code,
+                    )
+                    return
+            logger.warning("[L3 WS] mirror-push 失败 status=%d %s", r.status_code, r.text[:200])
     except Exception as e:
         logger.debug("[L3 WS] mirror-push 异常: %s", e)
+        if await asyncio.to_thread(_push_via_lark_open_api_sync, chat_id, content):
+            logger.info("[L3 WS] mirror-push 异常后已改用 Lark Open API 发送成功")
 
 
 def _make_on_step(websocket, run_id: str, chat_id: str, broadcast: bool):

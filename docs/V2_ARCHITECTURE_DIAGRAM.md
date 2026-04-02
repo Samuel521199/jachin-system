@@ -94,7 +94,7 @@ flowchart TB
         MEM_SEARCH["GET /memory/search"]
         INV_SKILLS["GET /inventory/skills"]
         INV_DL["GET /inventory/skills/{id}/download"]
-        MCP_INVOKE["POST /mcp/invoke<br/>(L2 委托其他 L3)"]
+        MCP_INVOKE["POST /mcp/invoke<br/>(侧载 + 兼容 peer HTTP)"]
         COORD_TASK["POST /coordinate/task"]
         COORD_POLL["GET /coordinate/poll"]
         ADMIN_SA["POST /admin/sub-accounts"]
@@ -180,7 +180,7 @@ flowchart TB
     F --> A
 ```
 
-详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)。
+规格与 NAT/拉取模型：[ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)（v0.4）；执行模型：[MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)（v2.2）。
 
 ---
 

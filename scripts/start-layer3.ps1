@@ -1,8 +1,28 @@
-# =============================================================================
+﻿# =============================================================================
 # Layer3 (Desktop) - One-click start (Windows)
 # clients/desktop - Jachin Terminal
 # 单实例：启动前清理已有 L3 进程与端口，确保一台机器仅一个 L3 实例
+#
+# 仅源码 L3（前台、无桌面）：
+#   .\scripts\start-layer3.ps1 -Source
+#   等价项目根: python -m l3_node --gateway
+#   仅 WS：.\scripts\start-layer3.ps1 -Source -WsOnly
+#
+# 仅桌面（前台）：Tauri/Vite 启动后由桌面自动拉起 L3，优先编译 Sidecar（bin/l3_node-*.exe），失败可回退 python
+#   .\scripts\start-layer3.ps1
+#
+# 桌面 + 后台源码 L3（双开）：
+#   .\scripts\start-layer3.ps1 -WithBackgroundSource
+#   - 新窗口后台：python -m l3_node（必须用仓库代码，cwd=项目根）
+#   - 前台：npm tauri:dev / npm run dev，并设置 JACHIN_SKIP_L3_SPAWN=1，避免桌面再启第二个 L3（端口冲突）
+#   - 与 -Source 互斥
 # =============================================================================
+param(
+    [switch]$Source,
+    [switch]$WsOnly,
+    [switch]$WithBackgroundSource
+)
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONUTF8 = "1"
@@ -11,74 +31,116 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
+if ($Source -and $WithBackgroundSource) {
+    Write-Host "[Layer3] 错误：不可同时使用 -Source 与 -WithBackgroundSource。" -ForegroundColor Red
+    Write-Host "  -Source        = 仅前台源码 L3，不启桌面" -ForegroundColor Gray
+    Write-Host "  -WithBackgroundSource = 后台源码 L3 新窗口 + 前台桌面（桌面内不再自动起 L3）" -ForegroundColor Gray
+    exit 1
+}
+
+# 桌面进程继承本脚本环境：双开时必须跳过 Tauri 内自动 spawn（见 clients/desktop l3_spawn.rs）
+if ($WithBackgroundSource -and -not $Source) {
+    $env:JACHIN_SKIP_L3_SPAWN = "1"
+} else {
+    Remove-Item Env:\JACHIN_SKIP_L3_SPAWN -ErrorAction SilentlyContinue
+}
+
 # HR 招聘：Sidecar/L3 加载 recruitment_scheduler 时默认先读 ~/.jachin/l3_mcp_cache，易与仓库代码不一致
-#（现象：MCP 已传 enable_greet_recommend=false，仍注册「推荐牛人」）。开发启动强制用本仓库 skills_repo 内插件。
 $env:JACHIN_APP_ROOT = $ProjectRoot
 $env:JACHIN_DEV_HR_FIRST = "1"
-# PyInstaller 等向 stderr 打 INFO；2>&1|Out-Host 会触发 RemoteException，改为不合并流
 $ErrorActionPreference = "Continue"
 
 try {
-# 单实例：清理已有 L3 进程与端口，确保一台机器仅一个 L3 实例
-Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
-& (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause
+    Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
+    & (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause
 
-$DesktopDir = Join-Path $ProjectRoot "clients\desktop"
-if (-not (Test-Path $DesktopDir)) {
-    Write-Host "[ERROR] clients\desktop not found. Run: .\scripts\install-layer3.ps1" -ForegroundColor Red
-    exit 1
-}
-if (-not (Test-Path (Join-Path $DesktopDir "node_modules"))) {
-    Write-Host "[INFO] Installing dependencies..." -ForegroundColor Yellow
-    Push-Location $DesktopDir
-    npm install
-    Pop-Location
-}
-
-# L3 Sidecar 检查：bin 目录需有 l3_node 可执行文件
-$BinDir = Join-Path $DesktopDir "src-tauri\bin"
-$L3Exe = Get-ChildItem -Path $BinDir -Filter "l3_node-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $L3Exe) {
-    Write-Host ""
-    Write-Host "[Layer3] L3 Sidecar 未找到，正在构建 (需 PyInstaller)..." -ForegroundColor Yellow
-    & python (Join-Path $ScriptDir "build_l3_sidecar.py")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        Write-Host "[Layer3] 构建失败，尝试创建占位符..." -ForegroundColor Yellow
-        & python (Join-Path $ScriptDir "create_l3_stub.py")
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] 请先运行: pip install pyinstaller && python scripts\build_l3_sidecar.py" -ForegroundColor Red
-            exit 1
-        }
-        Write-Host "[WARN] 占位符仅用于通过构建，L3 引擎不会真正运行。完整功能需: python scripts\build_l3_sidecar.py" -ForegroundColor Yellow
-    } else {
-        Write-Host "[Layer3] L3 Sidecar 构建完成" -ForegroundColor Green
+    if ($WithBackgroundSource -and -not $Source) {
+        $pyMode = if ($WsOnly) { "--ws-only" } else { "--gateway" }
+        Write-Host "[Layer3] 后台：新窗口启动源码 L3  python -m l3_node $pyMode  (cwd=$ProjectRoot)" -ForegroundColor Cyan
+        $prEsc = $ProjectRoot.Replace("'", "''")
+        # 单行 -Command，避免 Start-Process 传参拆行导致解析失败
+        $psCmd = "`$Host.UI.RawUI.WindowTitle = 'Jachin L3 (source)'; Set-Location -LiteralPath '$prEsc'; `$env:JACHIN_APP_ROOT = '$prEsc'; `$env:JACHIN_DEV_HR_FIRST = '1'; `$env:PYTHONUTF8 = '1'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; `$OutputEncoding = [System.Text.Encoding]::UTF8; & python -m l3_node $pyMode"
+        Start-Process -FilePath "powershell.exe" -ArgumentList @(
+            "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $psCmd
+        )
+        Start-Sleep -Seconds 2
+        Write-Host "[Layer3] 已设置 JACHIN_SKIP_L3_SPAWN=1，桌面不会自动再起 L3（引擎以后台窗口为准）。" -ForegroundColor Gray
     }
+
+    if ($Source) {
+        $pyArgs = @("-m", "l3_node")
+        if ($WsOnly) {
+            $pyArgs += "--ws-only"
+            Write-Host '[Layer3] Source mode: python -m l3_node --ws-only' -ForegroundColor Cyan
+        } else {
+            $pyArgs += "--gateway"
+            Write-Host '[Layer3] Source mode: python -m l3_node --gateway' -ForegroundColor Cyan
+        }
+        Write-Host "[Layer3] cwd=$ProjectRoot" -ForegroundColor Gray
+        & python @pyArgs
+        exit $LASTEXITCODE
+    }
+
+    $DesktopDir = Join-Path $ProjectRoot "clients\desktop"
+    if (-not (Test-Path $DesktopDir)) {
+        Write-Host "[ERROR] clients\desktop not found. Run: .\scripts\install-layer3.ps1" -ForegroundColor Red
+        exit 1
+    }
+    if (-not (Test-Path (Join-Path $DesktopDir "node_modules"))) {
+        Write-Host "[INFO] Installing dependencies..." -ForegroundColor Yellow
+        Push-Location $DesktopDir
+        npm install
+        Pop-Location
+    }
+
+    # L3 Sidecar：桌面自动 spawn 时使用；双开模式下不 spawn，但仍建议有 exe 供配对等路径使用
+    $BinDir = Join-Path $DesktopDir "src-tauri\bin"
+    $L3Exe = Get-ChildItem -Path $BinDir -Filter "l3_node-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $L3Exe) {
+        Write-Host ""
+        Write-Host "[Layer3] L3 Sidecar 未找到，正在构建 (需 PyInstaller)..." -ForegroundColor Yellow
+        & python (Join-Path $ScriptDir "build_l3_sidecar.py")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host ""
+            Write-Host "[Layer3] 构建失败，尝试创建占位符..." -ForegroundColor Yellow
+            & python (Join-Path $ScriptDir "create_l3_stub.py")
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host '[ERROR] Run: pip install pyinstaller ; python scripts\build_l3_sidecar.py' -ForegroundColor Red
+                exit 1
+            }
+            Write-Host "[WARN] 占位符仅用于通过构建，L3 引擎不会真正运行。完整功能需: python scripts\build_l3_sidecar.py" -ForegroundColor Yellow
+        } else {
+            Write-Host "[Layer3] L3 Sidecar 构建完成" -ForegroundColor Green
+        }
+        Write-Host ""
+    }
+
+    $UtcNow = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
     Write-Host ""
-}
+    Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+    Write-Host "[$UtcNow]   Layer3 (Desktop)" -ForegroundColor Cyan
+    Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
+    Write-Host "[$UtcNow]  L2: local gateway .\scripts\run-gateway.ps1 ; remote L2 URL in app (e.g. http://YOUR_HOST:18888)" -ForegroundColor Yellow
+    Write-Host "[$UtcNow]  Skills empty? Run diagnose: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
+    if ($WithBackgroundSource) {
+        Write-Host "[$UtcNow]  双开模式：L3 引擎在独立窗口（源码）；本窗口为桌面。" -ForegroundColor Yellow
+    } else {
+        Write-Host "[$UtcNow]  Tauri requires Rust. Falls back to Vite dev if not found."
+        Write-Host "[$UtcNow]  默认由桌面自动起 L3（优先编译 Sidecar）。" -ForegroundColor Gray
+    }
+    Write-Host "[$UtcNow]  Press Ctrl+C to stop"
+    Write-Host ""
 
-$UtcNow = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-Write-Host ""
-Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
-Write-Host "[$UtcNow]   Layer3 (Desktop)" -ForegroundColor Cyan
-Write-Host "[$UtcNow] ==========================================" -ForegroundColor Cyan
-Write-Host "[$UtcNow]  L2: 本机可 .\scripts\run-gateway.ps1；远程 L2 在桌面「网关接驳」填 http://<公网>:18888" -ForegroundColor Yellow
-Write-Host "[$UtcNow]  Skills empty? Run diagnose: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
-Write-Host "[$UtcNow]  Tauri requires Rust. Falls back to Vite dev if not found."
-Write-Host "[$UtcNow]  Press Ctrl+C to stop"
-Write-Host ""
-
-Push-Location $DesktopDir
-if (Get-Command tauri -ErrorAction SilentlyContinue) {
-    npm run tauri:dev
-} else {
-    Write-Host "[INFO] Tauri not found, using Vite dev mode" -ForegroundColor Yellow
-    npm run dev
-}
-Pop-Location
+    Push-Location $DesktopDir
+    if (Get-Command tauri -ErrorAction SilentlyContinue) {
+        npm run tauri:dev
+    } else {
+        Write-Host "[INFO] Tauri not found, using Vite dev mode" -ForegroundColor Yellow
+        npm run dev
+    }
+    Pop-Location
 } finally {
     Write-Host ""
-    # 默认不阻塞：npm/tauri 退出后脚本曾一直停在这里，像「卡住」；需留窗看日志时设 JACHIN_PAUSE_ON_EXIT=1
     if ($env:JACHIN_PAUSE_ON_EXIT -eq "1") {
         Read-Host "Press Enter to exit"
     }

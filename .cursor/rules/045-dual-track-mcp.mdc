@@ -12,13 +12,13 @@ globs: core/mcp_client.py, core/skill_loader.py, core/wasm_runner.py, core/agent
 | **B** | SKILL.md | 用户可控 | `core/skill_loader.py` |
 | **C** | JPP Wasm | 零信任 | `core/wasm_runner.py` |
 
-## 轨道 A: MCP（L3 优先执行模型）
+## 轨道 A: MCP（L3 默认执行面 + L2 TaskManager 目标）
 
-- **L3 本机已安装**：L3 本地直接执行，压力在 L3。
-- **L3 本机未安装**：L2 委托其他有权限且空闲的 L3 执行，结果经 L2 返回。
-- **L2 不执行 MCP**：L2 仅做同步、分配、委托协调。
-- 配置：`~/.jachin/mcp_servers.json`（侧载 L2_GATEWAY 兼容）；L3_LOCAL 由 `l3_mcp_cache/` 动态加载。
-- 参考：`docs/MCP_EXECUTION_MODEL.md`、`docs/MCP_SPEC.md`
+- **L3 本机已安装**：本地 MCPManager / `mcp_registry` 执行。
+- **L3 本机未安装**：**目标** L2 TaskManager 下行队列 + 对端 L3 **Pull**（NAT 安全）；**现状** 仍可能 `v2_mcp` HTTP POST peer `/api/v3/mcp/execute`（兼容路径，见 `docs/MCP_EXECUTION_MODEL.md` §三）。
+- **L2 不默认代跑 LOCAL_PINNED MCP**：侧载 L2_GATEWAY 为兼容；控制面以任务编排与路由为主。
+- 配置：`~/.jachin/mcp_servers.json`（侧载）；L3_LOCAL 由 `l3_mcp_cache/` 动态加载。
+- 参考：`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`（规格）、`docs/MCP_EXECUTION_MODEL.md`、`docs/MCP_SPEC.md`
 
 ## 轨道 B: SKILL.md
 - 监听 `skills_repo/**/SKILL.md`，热加载。

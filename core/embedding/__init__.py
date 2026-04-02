@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -113,7 +114,6 @@ class DashScopeEmbedder(BaseEmbedder):
         self._api_key = api_key or None
 
     def _get_key(self) -> str | None:
-        import os
         if self._api_key:
             return self._api_key
         return os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY")
@@ -126,10 +126,12 @@ class DashScopeEmbedder(BaseEmbedder):
             return []
         try:
             from openai import OpenAI
-            client = OpenAI(
-                api_key=key,
-                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+
+            base = (
+                os.environ.get("DASHSCOPE_API_BASE", "").strip()
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
             )
+            client = OpenAI(api_key=key, base_url=base)
             loop = asyncio.get_running_loop()
             r = await loop.run_in_executor(
                 None,
@@ -202,7 +204,6 @@ def get_embedder(config: dict[str, Any] | None = None) -> BaseEmbedder:
     Returns:
         OpenAIEmbedder、DashScopeEmbedder 或 ONNXEmbedder
     """
-    import os
     if config is None:
         cfg = _load_embedding_config()
     else:

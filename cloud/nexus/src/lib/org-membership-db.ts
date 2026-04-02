@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 import type { NexusDb } from "@/lib/tenant";
 import { organizations, organizationUsers } from "@/db/schema";
 
@@ -30,6 +30,7 @@ export async function listOrganizationsForUser(
     orgId: string;
     role: string;
     name: string;
+    slug: string | null;
     isPersonalDefault: boolean;
   }>
 > {
@@ -38,6 +39,7 @@ export async function listOrganizationsForUser(
       orgId: organizationUsers.orgId,
       role: organizationUsers.role,
       name: organizations.name,
+      slug: organizations.slug,
       isPersonalDefault: organizations.isPersonalDefault,
     })
     .from(organizationUsers)
@@ -47,4 +49,38 @@ export async function listOrganizationsForUser(
     )
     .where(eq(organizationUsers.userId, userId));
   return rows;
+}
+
+/** 边缘凭证用户在其成员工作区内按 slug 或显示名（不区分大小写、整串匹配）解析组织 */
+export async function getOrganizationBySlugForUser(
+  db: NexusDb,
+  userId: string,
+  slug: string
+): Promise<{ orgId: string; name: string; slug: string | null } | null> {
+  const rows = await db
+    .select({
+      orgId: organizations.id,
+      name: organizations.name,
+      slug: organizations.slug,
+    })
+    .from(organizations)
+    .innerJoin(
+      organizationUsers,
+      eq(organizationUsers.orgId, organizations.id)
+    )
+    .where(
+      and(
+        eq(organizationUsers.userId, userId),
+        or(
+          and(isNotNull(organizations.slug), eq(organizations.slug, slug)),
+          sql`lower(trim(${organizations.name}::text)) = ${slug}`
+        )
+      )
+    )
+    .limit(10);
+
+  if (rows.length === 0) return null;
+  const ids = new Set(rows.map((r) => r.orgId));
+  if (ids.size !== 1) return null;
+  return rows[0] ?? null;
 }

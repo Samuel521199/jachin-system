@@ -55,7 +55,7 @@ if (-not $UseConda) {
 }
 Write-Host '  [OK] nexus_daemon installed' -ForegroundColor Green
 
-# 配对：已配对则跳过，未配对则自动执行
+# L1 信任：已有 nexus_config 则跳过；否则自动跑 CLI 辅助配对（有 Gateway 时可改用 /gateway Nexus 登录）
 $ConfigPath = Join-Path $env:USERPROFILE ".jachin\nexus_config.json"
 $AlreadyPaired = $false
 if (Test-Path $ConfigPath) {

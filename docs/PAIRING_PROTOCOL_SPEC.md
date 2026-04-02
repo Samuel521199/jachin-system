@@ -1,23 +1,24 @@
-# 配对协议 (V2 L3-L2 零信任)
+# 配对协议 (V2 L2↔L3 零信任)
 
-**版本**: 2.0  
-**状态**: 设计规范  
-**定位**: L3 节点向 L2 网关宣誓效忠 — RSA 双盲零信任  
-**已废弃**: L1 6 位码配对（仅 Layer 2 daemon 保留兼容）
+**版本**: 2.2  
+**状态**: 与仓库实现一致  
+**定位**: **仅 L2 与 L3 之间存在配对**（RSA 双盲、`auth/sync`、`auth/poll`）。**L1 不与 L3 配对**；L1 的 `GET /api/v1/me/workspaces` 等仅供 L3 配置时拉取工作区元数据。总述见 **[ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](./ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md)**。
+
+**L1↔L2 控制面**（Nexus 登录、Web Bridge、CLI 辅助）见 **[L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)**。
 
 ---
 
-## 一、V2 L3-L2 零信任配对（主流程）
+## 一、V2 L2↔L3 零信任配对（主流程）
 
-L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2 网关发起注册，管理员审批后获取加密的 API Key。
+L3（`l3_node` / 桌面侧车）自行生成 RSA 密钥对，向 **L2** 注册；**管理员在 L2 `/gateway/`** 审批后获取加密的 API Key。
 
 ### 阶段 1：L3 向 L2 注册
 
 | 动作 | 说明 |
 |------|------|
 | **L3** | 检查 `~/.jachin/l3_identity.json`，无则生成 RSA 密钥对并持久化 |
-| **L3 发送** | `POST /api/v2/auth/sync` `{ device_fingerprint, public_key_pem }` |
-| **L2 响应** | `{ node_id }`，登记到 `l3_nodes` 表（sub_account_id 为空，待审批） |
+| **L3 发送** | `POST /api/v2/auth/sync`：至少 `device_fingerprint`、`public_key_pem`；**已配对 L2**（`nexus_config` 含 `tenant_id`）时 **必填** `organization_id`（须与 `tenant_id` 一致），可选 `workspace_name`、`display_name`、`node_id` |
+| **L2 响应** | `{ node_id }`，写入 `l3_nodes`（`sub_account_id` 为空表示待审批） |
 
 ### 阶段 2：L2 管理员审批
 
@@ -42,12 +43,14 @@ L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2
 
 ### POST /api/v2/auth/sync
 
-**请求体**：
+**请求体**（字段随 L2 是否已写 `tenant_id` 而定；未配对开发态可省略 `organization_id`）：
 ```json
 {
   "device_fingerprint": "sha256:...",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
-  "capabilities": []
+  "capabilities": [],
+  "organization_id": "00000000-0000-0000-0000-000000000000",
+  "workspace_name": "可选展示名"
 }
 ```
 
@@ -94,19 +97,9 @@ L3 节点（Tauri 桌面端 + l3_node）自行生成 RSA 密钥对，向 Layer 2
 
 ---
 
-## 三、数据模型：l3_nodes
+## 三、数据模型：l3_nodes（SQLite，迁移后列齐全）
 
-```sql
-CREATE TABLE l3_nodes (
-    id TEXT PRIMARY KEY,
-    device_fingerprint TEXT,
-    public_key_pem TEXT NOT NULL,
-    sub_account_id TEXT,  -- NULL = 待审批
-    capabilities_json TEXT DEFAULT '{}',
-    last_seen_at REAL,
-    created_at REAL
-);
-```
+核心列包括：`id`、`device_fingerprint`、`public_key_pem`、`sub_account_id`（NULL = 待审批）、`capabilities_json`、`organization_id`、`workspace_name`、`display_name`、`last_seen_at`、`created_at` 等（以 `core/db/schema.py` 迁移为准）。
 
 ---
 
@@ -115,7 +108,7 @@ CREATE TABLE l3_nodes (
 | 路径 | 用途 |
 |------|------|
 | `~/.jachin/l3_identity.json` | RSA 私钥/公钥（严禁泄露私钥） |
-| `~/.jachin/l2_gateway_config.json` | L2 地址、node_id、paired 状态 |
+| `~/.jachin/l2_gateway_config.json` | L2 地址、`organization_id`、`workspace_name`、node_id、paired 等 |
 
 ---
 
@@ -129,20 +122,16 @@ CREATE TABLE l3_nodes (
 
 ---
 
-## 六、Legacy：L1 6 位码配对（仅 Layer 2 daemon）
+## 六、与 L1↔L2 控制面配对的关系
 
-Layer 2 daemon（nexus_daemon）、jachin-cli、run-pair 仍使用 L1 配对：
-
-- `POST /api/v1/pairing/request` → 6 位 short_code
-- 用户去 Nexus Console 输入 → `POST /api/v1/pairing/confirm`
-- 轮询 `GET /api/v1/pairing/status` → access_token
-- 写入 `~/.jachin/nexus_config.json`
-
-**Tauri 桌面端已不再使用此流程**，统一走 V2 L2 网关配对。
+- **禁止**将本文流程表述为「L1↔L3 配对」。L3 **只**与 L2 交换 `auth/sync` / `auth/poll`。
+- **L2** 须先与 L1 建立信任（`nexus_config.json`、`tenant_id`），见 **[L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)**。
 
 ---
 
 **相关文档**:
+- [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](./ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md) — L1 工作区 · L2 网关 · L2↔L3 权威说明
+- [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md) — L1↔L2 网关邮箱、Web Bridge 与 CLI 辅助
 - [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 架构
 - [V2_ARCHITECTURE_DIAGRAM.md](./V2_ARCHITECTURE_DIAGRAM.md) — 架构图
 - [P0_TRUST_AND_HEARTBEAT_SPEC.md](./P0_TRUST_AND_HEARTBEAT_SPEC.md) — 信任链与心跳

@@ -1,6 +1,8 @@
 """
-Jachin Nexus Layer 2 - 极客终端 CLI
-入口: python -m core.cli pair
+Jachin Nexus Layer 2 CLI
+python -m core.cli pair — L1↔L2 **辅助**配对（无头/SSH/恢复）；主路径见 L2 /gateway：
+L1 邮箱+密码 或「Nexus 账号登录」。docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md
+refresh-tenant：租户字段修复
 """
 from __future__ import annotations
 
@@ -68,7 +70,7 @@ def _format_short_code(code: str) -> str:
 @click.group()
 @click.version_option(version="0.8.97", prog_name="Jachin Nexus CLI")
 def cli() -> None:
-    """Jachin Nexus Layer 2 极客终端工具"""
+    """Jachin Nexus Layer 2 CLI（L1↔L2 辅助配对、refresh-tenant 等）"""
     pass
 
 
@@ -86,7 +88,7 @@ def cli() -> None:
 )
 @click.option("--code", default="", help="恢复时使用的 6 位配对码（与 --recover 配合）")
 def pair(base_url: str, recover: bool, code: str) -> None:
-    """边缘智能体配对 - 6 位码连接指挥部"""
+    """L1↔L2 辅助配对：6 位码 + L1 网页确认（有 Web 时优先用 L2 /gateway「Nexus 账号登录」）。"""
     base_url = base_url.rstrip("/")
 
     # 恢复模式：云端已确认但 CLI 未写入配置时，用码取回凭证
@@ -136,6 +138,10 @@ def pair(base_url: str, recover: bool, code: str) -> None:
         }
         if l1_user_id:
             cfg["l1_user_id"] = l1_user_id
+        tid = data.get("tenant_id")
+        if tid:
+            cfg["tenant_id"] = tid
+            cfg["sync_tenant_ids"] = [tid]
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
         console.print(Panel("[green]✅ 凭证已恢复并写入本地配置[/green]", border_style="green"))
         console.print(f"  配置路径: [cyan]{CONFIG_PATH}[/cyan]")
@@ -259,6 +265,10 @@ def pair(base_url: str, recover: bool, code: str) -> None:
     }
     if l1_user_id:
         cfg["l1_user_id"] = l1_user_id
+    tenant_id = status_data.get("tenant_id")
+    if tenant_id:
+        cfg["tenant_id"] = tenant_id
+        cfg["sync_tenant_ids"] = [tenant_id]
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # 7. 炫酷退出
@@ -276,6 +286,55 @@ def pair(base_url: str, recover: bool, code: str) -> None:
             padding=(1, 2),
         )
     )
+
+
+@cli.command("refresh-tenant")
+@click.option(
+    "--base-url",
+    default="",
+    envvar="NEXUS_BASE_URL",
+    help="Layer 1 地址；默认使用 nexus_config.json 中的 nexus_base_url",
+)
+def refresh_tenant(base_url: str) -> None:
+    """已配对机器：从 L1 拉取 organizations.id 写入 tenant_id（修复 manifest 用错 l1_user_id）"""
+    if not CONFIG_PATH.exists():
+        console.print(f"[red][ERROR][/red] 未找到配置: {CONFIG_PATH}")
+        raise SystemExit(1)
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        console.print(f"[red][ERROR][/red] 无法解析配置: {e}")
+        raise SystemExit(1)
+    instance_id = cfg.get("instance_id")
+    if not instance_id:
+        console.print("[red][ERROR][/red] 配置中缺少 instance_id")
+        raise SystemExit(1)
+    url = (base_url or cfg.get("nexus_base_url") or "http://localhost:3000").rstrip("/")
+    try:
+        r = httpx.get(
+            f"{url}/api/v1/pairing/status",
+            params={"session_id": instance_id},
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        console.print(f"[red][ERROR][/red] 请求失败: {e}")
+        raise SystemExit(1)
+    if data.get("status") != "success":
+        console.print(f"[red][ERROR][/red] 边缘未激活: {data.get('error', data.get('status'))}")
+        raise SystemExit(1)
+    tid = data.get("tenant_id")
+    if not tid:
+        console.print(
+            "[yellow]云端未返回 tenant_id[/yellow]（可能为旧版 L1 或未写入 organization_id）。"
+            "请在 Console 用同一账号再次确认配对或升级 Nexus 后重试。"
+        )
+        raise SystemExit(1)
+    cfg["tenant_id"] = tid
+    cfg["sync_tenant_ids"] = [tid]
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    console.print(f"[green]✅ 已写入 tenant_id=[/green][cyan]{tid}[/cyan] → {CONFIG_PATH}")
 
 
 @cli.command()

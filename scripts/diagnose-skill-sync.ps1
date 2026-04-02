@@ -83,8 +83,8 @@ if (-not $subId) {
 }
 Write-Host ""
 
-# 4. L1 pairing
-Write-Host "[4] L1 pairing (nexus_config.json)" -ForegroundColor Yellow
+# 4. L1↔L2 信任 (nexus_config)
+Write-Host "[4] L1 trust / nexus_config.json" -ForegroundColor Yellow
 if (Test-Path $nexusCfg) {
     try {
         $nc = Get-Content $nexusCfg -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -95,7 +95,7 @@ if (Test-Path $nexusCfg) {
         Write-Host "    File exists but parse failed" -ForegroundColor Red
     }
 } else {
-    Write-Host "    Not paired. Run: .\scripts\run-pair.ps1" -ForegroundColor Red
+    Write-Host "    No nexus_config. Use L2 /gateway Nexus login or: .\scripts\run-pair.ps1" -ForegroundColor Red
 }
 Write-Host ""
 

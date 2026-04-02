@@ -43,7 +43,7 @@
 | **分配** | 管理员在角色中勾选 `mcp:atom_web_scraper` 等，`allowed_skills` 下发 |
 | **使用** | L3 按 `allowed_skills` 过滤后加载并执行 |
 
-**实现方式**：采用 **路径 3（L3_LOCAL 扩展）**，与 [MCP_EXECUTION_MODEL.md](../../docs/MCP_EXECUTION_MODEL.md) 一致：L3 优先执行，本机无则 L2 委托其他 L3。
+**实现方式**：采用 **路径 3（L3_LOCAL 扩展）** — L3 优先执行；跨节点投递的 **目标规格** 见 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](../../docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)，**现状兼容 HTTP 委托** 见 [MCP_EXECUTION_MODEL.md](../../docs/MCP_EXECUTION_MODEL.md) §三。
 
 ---
 
@@ -383,9 +383,9 @@ com.jachin.bi.atom_web_scraper_v1.0.0.zip
 
 | 阶段 | 建议 |
 |------|------|
-| **设计规范** | 采用路径 3：L3 优先执行，本机无则 L2 委托其他 L3。详见 [MCP_EXECUTION_MODEL.md](../../docs/MCP_EXECUTION_MODEL.md) |
+| **设计规范** | 路径 3 + [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](../../docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)（TaskManager、Pull、Task Token、多维 Manifest） |
 | **短期** | 路径 1：L2 登记 L3 builtin MCP，修复 L3 的 allowed_skills 过滤，先形成「分配→执行」闭环 |
-| **中期** | 路径 3：L2 sync 支持 L3_LOCAL MCP，L3 从 L2 拉取到 l3_mcp_cache 动态加载；L2 委托 fallback 待实现 |
+| **中期** | L3_LOCAL 同步与 `l3_mcp_cache` 动态加载、**HTTP 兼容委托** 已部分落地；下一步按 ARCHITECTURE_L3 收敛跨节点为队列 + 长连 |
 
 ### 6.5 关键命名对齐
 

@@ -64,14 +64,17 @@ Write-Host "[$UtcNow]   Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $NexusDir
-# 确保 schema 与 app 使用同一 DATABASE_URL：先迁移，再 init-store 补齐
+# 确保 schema 与 app 使用同一 DATABASE_URL：先迁移，再 init-store 幂等补齐（含 organizations.slug 等 migrate 漏跑项）
 $ErrBackup = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
-npm run db:migrate 2>$null
+npm run db:migrate
 if ($LASTEXITCODE -ne 0) {
     Write-Host "(WARN) db:migrate failed. Ensure PostgreSQL is running (localhost:5432)" -ForegroundColor Yellow
     Write-Host "  Ignore to continue; some features may be unavailable." -ForegroundColor Gray
 }
-npm run db:init-store 2>$null
+npm run db:init-store
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "(WARN) db:init-store failed. Store / org columns may be incomplete." -ForegroundColor Yellow
+}
 $ErrorActionPreference = $ErrBackup
 npm run dev
 Pop-Location

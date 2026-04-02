@@ -13,16 +13,16 @@
 | 层级 | 定位 | 职责 |
 |------|------|------|
 | **L1 全球商城** | 商业收银台 | 展示 Skill/MCP、处理订阅、颁发 License；不接触企业明文密码，不提供推理算力 |
-| **L2 本地数字仓库** | 企业数字金库 | L1 在企业内网的物理投影；静默同步已购订单、下载囤积包、向 L3 下发权限与 Skill；MCP 同步与委托协调（L2 不执行 MCP） |
+| **L2 本地数字仓库** | 企业数字金库 | L1 在企业内网的物理投影；静默同步已购订单、下载囤积包、向 L3 下发权限与 Skill；MCP 清单同步与 **TaskManager 式委托**（**默认**不在 L2 起 stdio MCP 子进程；`JACHIN_L2_STDIO_MCP=1` 可回滚） |
 
 ### 1.2 双轨制与执行模型
 
 | 商品形态 | 流转 | 执行策略 |
 |----------|------|----------|
 | **Skill (.wasm)** | 轻量，L2 发放给 L3，员工电脑沙箱运行 | L3 本地执行 |
-| **MCP** | L2 同步到 inventory，L3 拉取到 l3_mcp_cache 动态加载 | **L3 优先**：本机已安装则本地执行；本机未安装则 L2 委托其他 L3 执行 |
+| **MCP** | L2 同步到 inventory；L3_LOCAL 包进 `l3_mcp_cache`，stdio 由 **L3 内嵌 MCPManager** 读 `mcp_servers.json` / `inventory/mcps` | **L3 执行**；L2 **GET /tools** 聚合与 **invoke 委托**（Pull、HTTP 须 Task Token）；详见 MCP_EXECUTION_MODEL v2.2 |
 
-详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)。
+详见 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)（规格）、[MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)（目标 vs 现状）。
 
 | 可见性 | 流转 |
 |--------|------|
@@ -65,7 +65,7 @@
 | L2 仓库 | `core/inventory_scanner.py` | 侧载扫描、`.local_meta` |
 | L2 权限 | `core/policy_enforcer.py` | RBAC、断网降级、role_permissions |
 | L2 清单 | `core/api/routes/v2_inventory.py` | `/skills`、`/download`、`/l3_mcps`、`/l3_mcps/{id}/download`（需 X-Sub-Account-Id） |
-| L2 MCP 委托 | `core/api/routes/v2_mcp.py` | 本机无技能时委托其他 L3 执行；L2 不执行 MCP |
+| L2 MCP / 任务 | `core/api/routes/v2_mcp.py` | **默认**仅委托（Redis Pull + HTTP 回退）；`GET /tools` 聚合 Redis；`JACHIN_L2_STDIO_MCP=1` 时合并本机 stdio（见 MCP_EXECUTION_MODEL） |
 | L3 同步 | `clients/desktop/src-tauri/src/commands/skill_sync.rs`、`l3_node/mcp_sync.py` | 从 L2 拉取技能与 MCP |
 | L3 Agent | `l3_node/agent_core.py` | ReAct、工具调用 |
 | 跨会话规划文件 | `l3_node/task_planning.py` | `~/.jachin/workspace/task_plan.md`、`progress.md`、`findings.md`；Prompt 注入「继续执行计划」 |
@@ -128,4 +128,4 @@
 | `GET /api/v2/inventory/skills/{id}/download` | 下载（需 X-Sub-Account-Id） |
 | `GET /api/v2/inventory/l3_mcps` | L3_LOCAL MCP 清单（供 L3 mcp_sync 拉取） |
 | `GET /api/v2/inventory/l3_mcps/{id}/download` | 下载 L3_LOCAL MCP 包 |
-| `POST /api/v2/mcp/invoke` | MCP 委托（本机无技能时，L2 委托其他 L3 执行；X-Sub-Account-Id 可选） |
+| `POST /api/v2/mcp/invoke` | L3 缺工具时入口；L2 **TaskManager** 委托（Pull / HTTP）；仅回滚标志下 L2 本机 stdio（见 MCP_EXECUTION_MODEL §三） |

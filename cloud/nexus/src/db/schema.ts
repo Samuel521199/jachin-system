@@ -116,29 +116,34 @@ export const verificationTokens = pgTable(
  * **租户（Tenant）即组织（Organization）**。`id` 是全系统隔离边界主键；API / JWT / `X-Tenant-Id`
  * 中的 `tenant_id` **必须**等于本表某一行的 `id`（UUID 字符串）。
  *
- * - **企业**：常规一行，`is_personal_default = false`。
- * - **个人默认组织**：每个尚未加入任何组织的用户，迁移脚本会为其插入一行
- *   `is_personal_default = true`，并在 {@link organizationUsers} 中写入 `owner`，从而在代码路径上与
- *   企业租户一致，避免 `if (personal) … else …` 双轨。
+ * - **企业 / 团队**：用户于 `/console/workspace` 创建，`is_personal_default = false`。
+ * - **个人默认组织**：仅 **历史迁移或旧数据** 可能出现 `is_personal_default = true`；**新注册**
+ *   仅创建 `users`，不自动插入组织（见 `docs/ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md`）。
  *
  * @see docs/MIGRATION_P1_TENANT.md
  */
-export const organizations = pgTable("organizations", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  billingPlan: text("billing_plan").default("free"),
-  /**
-   * 是否为系统自动创建的「个人默认工作区」。每用户至多一个 such org（由迁移与应用层保证）。
-   * 企业组织恒为 `false`。
-   */
-  isPersonalDefault: boolean("is_personal_default").notNull().default(false),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const organizations = pgTable(
+  "organizations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    /** 可选短码，全局唯一；API 仍以 UUID `id` 为契约主键 */
+    slug: varchar("slug", { length: 64 }),
+    billingPlan: text("billing_plan").default("free"),
+    /**
+     * 是否为系统自动创建的「个人默认工作区」。每用户至多一个 such org（由迁移与应用层保证）。
+     * 企业组织恒为 `false`。
+     */
+    isPersonalDefault: boolean("is_personal_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("organizations_slug_unique").on(t.slug)]
+);
 
 /** P2 Fleet ACL：在 org 内增加车队管理员（管设备/组）与只读成员 */
 export const orgRoleEnum = pgEnum("org_role", [

@@ -1,8 +1,36 @@
 # Layer 1（Nexus）Linux 云端部署指南
 
-面向在海外 **Linux x86_64** 服务器上运行 Jachin Nexus（Next.js 14 + Drizzle + PostgreSQL）。**当前文档与上传脚本中的示例服务器 IP：`47.86.39.173`**（若更换服务器，请同步修改 `scripts/scp-l1-docker-artifacts-to-server.ps1` 与本文件中出现的 IP）。
+面向在海外 **Linux x86_64** 服务器上运行 Jachin Nexus（Next.js 14 + Drizzle + PostgreSQL）。
 
 **交付形态（非 Docker）**：`tar.gz` 解压后是一个**便携运行目录**——类似 Windows 上的「绿色版 / 免安装文件夹」：内含 **`runtime/node`**（官方 Linux x64 Node 二进制）、`server.js` 与追踪依赖。服务器上 **不需要安装 Docker**，默认也 **不需要 `apt/yum install node`**，执行 `./start.sh` 即可。
+
+---
+
+## 0. 服务器与环境一览（示例 ECS）
+
+以下为本仓库脚本与示例配置里沿用的 **当前示例机**；**更换 IP、域名或目录后，请同步修改** `deploy/l1-ecs-bundle/l1.env`（及本机 `l1.env`）、`scripts/scp-l1-docker-artifacts-to-server.ps1`、`scripts/scp-l2-docker-artifacts-to-server.ps1`，并全文替换本文档与 `deploy/l1-ecs-bundle/README.txt` 中的旧地址。
+
+| 项 | 示例值 | 说明 |
+|----|--------|------|
+| **ECS 公网 IPv4** | `47.86.39.173` | 阿里云等控制台「公网 IP」 |
+| **L1 Nexus（浏览器访问）** | `http://47.86.39.173:3000` | 控制台 / 注册 / 登录入口；安全组需放行 **TCP 3000**（或经 Nginx 反代 443） |
+| **L1 Docker 部署目录（示例）** | `/opt/jachin-l1` | `compose.l1.runtime.yml`、`l1.env`、`server-load-and-up.sh` 所在目录 |
+| **便携包部署目录（示例）** | `/opt/jachin/jachin-l1-linux-amd64-v*` | 非 Docker 解压路径，见 §4 |
+| **SSH 登录（示例）** | `ssh root@47.86.39.173` | 以你实际用户与密钥为准 |
+| **PostgreSQL（同机、容器连宿主机）** | `127.0.0.1:5432` / 库 `jachin_nexus` | `nexus-host` 网络时常用；桥接网络见 §9.1 |
+| **本机迁移连库（示例）** | `postgres://jachin:…@47.86.39.173:5432/jachin_nexus` | 需安全组放行 **5432** 或 SSH 隧道 |
+| **L2（若同机 Docker）** | `http://47.86.39.173:18888` | 见 §11.1；`l2.env` 中 `BRAIN_BASE_URL` 等需指向可达地址 |
+
+### 0.1 公网地址、`NEXUS_PUBLIC_URL` 与浏览器
+
+- **日志里的 `0.0.0.0:3000` 不是「网站地址」**，只表示进程在容器/机器上 **监听所有网卡**。**浏览器地址栏请始终使用公网 IP 或域名**，例如 `http://47.86.39.173:3000`，**不要**输入 `http://0.0.0.0:3000`（易出现 503、跳转与登录回调异常）。
+- **Docker / 生产环境**在 `docker/l1.env` 或 `deploy/l1-ecs-bundle/l1.env` 中必须配置：
+  - **`NEXUS_PUBLIC_URL`**：与用户在浏览器里访问的基址一致，例如 `http://47.86.39.173:3000`（无尾部 `/`）。
+  - **`AUTH_SECRET`**：生产必填，否则 Auth.js 报 `MissingSecret`。
+  - **`AUTH_URL`（可选）**：与 `NEXUS_PUBLIC_URL` 一致即可，用于规范绝对 URL（见 Auth.js 文档）。
+- 若已配置 `NEXUS_PUBLIC_URL`，Nexus 中间件会将 **Host 为 `0.0.0.0` / `::` 的误访请求** 重定向到 `NEXUS_PUBLIC_URL`（需使用包含该改动的镜像版本）。
+
+模板文件：`docker/l1.env.example`、`deploy/l1-ecs-bundle/l1.env.example`。
 
 ---
 
@@ -104,6 +132,14 @@ SKIP_AUTH=true
 # 生产请关闭 SKIP_AUTH，并配置 Auth / NEXUS_ADMIN_SECRET 等，见 cloud/nexus/.env.example
 ```
 
+**生产（`SKIP_AUTH=false`）** 建议同时设置（与 §0.1 一致）：
+
+```bash
+NEXUS_PUBLIC_URL=http://你的公网IP或域名:3000
+AUTH_SECRET=openssl-rand-base64-32-生成的值
+# AUTH_URL=http://你的公网IP或域名:3000   # 可选，与上一行一致即可
+```
+
 启动（**先打日志再检查文件**，再启动 Node）：
 
 ```bash
@@ -111,10 +147,11 @@ chmod +x ./start.sh
 ./start.sh
 ```
 
-或指定端口与监听地址：
+指定端口（**默认已监听 `0.0.0.0`**，一般无需再设 `HOSTNAME`）：
 
 ```bash
-PORT=3000 HOSTNAME=0.0.0.0 ./start.sh
+PORT=3000 ./start.sh
+# 仅当需要只绑本机时再设，例如：HOSTNAME=127.0.0.1 PORT=3000 ./start.sh
 ```
 
 日志位置：
@@ -139,7 +176,7 @@ User=www-data
 WorkingDirectory=/opt/jachin/jachin-l1-linux-amd64-v0.1.0
 Environment=NODE_ENV=production
 Environment=PORT=3000
-Environment=HOSTNAME=0.0.0.0
+# 不设 HOSTNAME 时 Next standalone 仍监听 0.0.0.0；对外 URL 用 NEXUS_PUBLIC_URL
 ExecStart=/opt/jachin/jachin-l1-linux-amd64-v0.1.0/start.sh
 Restart=on-failure
 RestartSec=5
@@ -329,6 +366,8 @@ L1 使用 **`nexus-host`（宿主机网络、3000）** 时，L2 容器在 bridge
 3. **上传**：`.\scripts\scp-l2-docker-artifacts-to-server.ps1` 或手动放到服务器 **`/opt/jachin-l2/`**  
 4. **服务器**：`docker load -i jachin-l2-latest.tar`，`docker compose -f compose.l2.runtime.yml pull redis`，`docker compose -f compose.l2.runtime.yml up -d`（或 `deploy/l2-ecs-bundle/server-l2-up.sh`）  
 5. **安全组**：放行 **TCP 18888**；`l2.env` 中 **`BRAIN_BASE_URL`** 改为公网可访问的 L2 地址（如 `http://47.86.39.173:18888`）。  
+
+**L1↔L2 配对**（网关 L1 邮箱+密码、Nexus Web 绑定、配对码 CLI 辅助）、回跳白名单与环境变量见：**[L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)**。
 
 多副本负载均衡仍用仓库根 **`docker-compose.l2-cluster.yml`**（3×L2 + Nginx + Redis）。
 

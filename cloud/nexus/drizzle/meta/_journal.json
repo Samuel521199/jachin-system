@@ -99,6 +99,13 @@
       "when": 1741341200000,
       "tag": "0013_fleet_acl_device_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1741341300000,
+      "tag": "0014_organizations_slug",
+      "breakpoints": true
     }
   ]
 }

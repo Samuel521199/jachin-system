@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
-import { getDb, isDatabaseConfigured } from "@/db";
+import { describeDatabaseConnectError, getDb, isDatabaseConfigured } from "@/db";
 import { users } from "@/db/schema";
-import { registerUserWithGenesis } from "@/lib/auth/genesis";
+import { registerUserOnly } from "@/lib/auth/genesis";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * POST /api/auth/register
- * 邮箱 + 密码注册：单事务写入 users + 个人组织 + organization_users.owner（零感知生根）
+ * 邮箱 + 密码注册：仅创建 users；工作区须登录后在 /console/workspace 创建或加入。
  */
 export async function POST(req: NextRequest) {
   try {
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const { userId, orgId } = await registerUserWithGenesis(db, {
+    const { userId } = await registerUserOnly(db, {
       email,
       passwordHash,
       name: name || undefined,
@@ -56,10 +56,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       userId,
-      orgId,
-      message: "注册成功，请登录",
+      needs_workspace: true,
+      message: "注册成功，请登录后在「工作区」创建或加入组织",
     });
   } catch (e) {
+    const dbHint = describeDatabaseConnectError(e);
+    if (dbHint) {
+      console.warn("[register]", dbHint);
+      return NextResponse.json(
+        {
+          success: false,
+          error: "DATABASE_UNAVAILABLE",
+          message: dbHint,
+        },
+        { status: 503 }
+      );
+    }
     console.error("[register]", e);
     return NextResponse.json(
       { success: false, error: "REGISTER_FAILED", message: "注册失败" },

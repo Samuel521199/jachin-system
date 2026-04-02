@@ -8,11 +8,8 @@ import { eq } from "drizzle-orm";
 import { authConfig } from "@/auth.config";
 import { getDb } from "@/db";
 import { accounts, sessions, users, verificationTokens } from "@/db/schema";
-import {
-  ensurePersonalWorkspace,
-  getPersonalOrgMembership,
-} from "@/lib/auth/genesis";
-import { getOrgMembershipRole } from "@/lib/org-membership-db";
+import { getOrgMembershipRole, listOrganizationsForUser } from "@/lib/org-membership-db";
+import { pickSessionDefaultOrg } from "@/lib/l1-workspace-context";
 
 function buildAdapter() {
   const db = getDb();
@@ -76,6 +73,11 @@ export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
   callbacks: {
     ...authConfig.callbacks,
     async jwt({ token, user, trigger, session }) {
+      if (user) {
+        if (user.email) token.email = user.email;
+        if (user.name) token.name = user.name;
+        if (user.image) token.picture = user.image;
+      }
       const uid = (user?.id ?? token.sub) as string | undefined;
       if (!uid) return token;
 
@@ -100,18 +102,31 @@ export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
         return token;
       }
 
-      if (token.orgId && trigger !== "signIn") {
-        return token;
-      }
-
       const db = getDb();
       if (!db) return token;
-      let mem = await getPersonalOrgMembership(db, uid);
-      if (!mem) {
-        mem = await ensurePersonalWorkspace(db, uid);
+      const rows = await listOrganizationsForUser(db, uid);
+      if (!rows.length) {
+        token.orgId = "";
+        token.orgRole = "";
+        return token;
       }
-      token.orgId = mem.orgId;
-      token.orgRole = mem.role;
+      const currentId =
+        typeof token.orgId === "string" && token.orgId.trim()
+          ? token.orgId.trim()
+          : "";
+      const still = currentId
+        ? rows.find((r) => r.orgId === currentId)
+        : undefined;
+      if (still) {
+        token.orgId = still.orgId;
+        token.orgRole = still.role;
+        return token;
+      }
+      const pick = pickSessionDefaultOrg(rows);
+      if (pick) {
+        token.orgId = pick.orgId;
+        token.orgRole = pick.role;
+      }
       return token;
     },
     async session({ session, token }) {
@@ -119,15 +134,16 @@ export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
         session.user.id = (token.sub as string) ?? "";
         session.user.orgId = (token.orgId as string) ?? "";
         session.user.orgRole = (token.orgRole as string) ?? "";
+        // JWT 策略下需显式从 token 带回，否则客户端 useSession() 里 user.email/name 为空
+        const email = token.email as string | undefined | null;
+        const name = token.name as string | undefined | null;
+        const picture = token.picture as string | undefined | null;
+        if (email) session.user.email = email;
+        if (name) session.user.name = name;
+        if (picture) session.user.image = picture;
       }
       return session;
     },
   },
-  events: {
-    async createUser({ user }) {
-      const db = getDb();
-      if (!db || !user.id) return;
-      await ensurePersonalWorkspace(db, user.id);
-    },
-  },
+  events: {},
 } satisfies NextAuthConfig);

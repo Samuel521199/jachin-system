@@ -18,7 +18,8 @@ FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
+# 不显式设 HOSTNAME：Next standalone 的 server.js 在未设置时仍 listen 0.0.0.0；
+# 避免把「监听地址」写进 process.env.HOSTNAME，减少与对外 URL（NEXUS_PUBLIC_URL / AUTH_URL）混淆。
 
 COPY --from=builder /src/nexus/.next/standalone ./
 COPY --from=builder /src/nexus/.next/static ./.next/static

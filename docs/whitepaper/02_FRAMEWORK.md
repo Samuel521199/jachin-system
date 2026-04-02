@@ -106,7 +106,7 @@ Layer 1 (平台) ↔ Layer 2 (控制面) ↔ Layer 3 (单体执行节点)
 
 ### 4.4 极客视觉流 (Cyber-CLI)
 
-- `jachin-cli pair`：配对授权
+- `python -m core.cli pair`：L1↔L2 无头配对（有 Web 时优先 L2 `/gateway` 邮箱或 Nexus 登录）
 - `jachin-cli shell`：终端流光溢彩，满足顶尖黑客控制欲
 
 ---

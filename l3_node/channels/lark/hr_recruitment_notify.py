@@ -720,21 +720,37 @@ def build_hr_l3_status_briefing_text(*, reason: str = "startup") -> str:
 def send_hr_l3_online_briefing_if_configured(*, reason: str = "startup") -> dict[str, Any]:
     """
     向当前 HR 飞书会话发送上线/重连简报（与进度推送共用 chat_id 逻辑）。
-    环境变量 JACHIN_HR_LARK_BRIEF_ON_START=0|false|off 可关闭「启动时」自动发送。
+
+    - **默认不发送**（避免未装招聘技能时也往飞书推长文）。
+    - 须 **已加载 HR 招聘调度器**（com.jachin.hr.recruitment / recruitment_scheduler 可用）。
+    - 启动时另须 **显式打开**：``JACHIN_HR_LARK_BRIEF_ON_START=1``（或 true/yes/on）。
     """
+    try:
+        from l3_node.hr_loader import get_recruitment_scheduler
+
+        _rs = get_recruitment_scheduler()
+    except Exception:
+        _rs = None
+    if _rs is None or not hasattr(_rs, "get_recruitment_status_digest"):
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "hr_recruitment_skill_not_loaded",
+        }
+
     if reason == "startup":
-        v = (os.environ.get("JACHIN_HR_LARK_BRIEF_ON_START") or "1").strip().lower()
-        if v in ("0", "false", "no", "off"):
-            return {"ok": False, "skipped": True, "reason": "JACHIN_HR_LARK_BRIEF_ON_START off"}
+        v = (os.environ.get("JACHIN_HR_LARK_BRIEF_ON_START") or "0").strip().lower()
+        if v not in ("1", "true", "yes", "on"):
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "JACHIN_HR_LARK_BRIEF_ON_START off (default; set to 1 to enable)",
+            }
 
     text = build_hr_l3_status_briefing_text(reason=reason)
     tech = ""
     try:
-        from l3_node.hr_loader import get_recruitment_scheduler
-
-        rs = get_recruitment_scheduler()
-        if rs is not None and hasattr(rs, "get_recruitment_status_digest"):
-            tech = json.dumps(rs.get_recruitment_status_digest(""), ensure_ascii=False, default=str)[:12000]
+        tech = json.dumps(_rs.get_recruitment_status_digest(""), ensure_ascii=False, default=str)[:12000]
     except Exception:
         pass
     r = send_hr_recruitment_progress_message(

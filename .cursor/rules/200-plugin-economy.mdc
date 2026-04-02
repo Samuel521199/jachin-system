@@ -8,9 +8,9 @@ globs: core/system/**, core/wasm_runner.py, core/mcp_client.py, core/runtime/ski
 
 ### 轨道 A: MCP (Model Context Protocol)
 - **格式:** 连接 MCP 服务器，发现并注册工具。
-- **执行:** `core/mcp_client.py`。
-- **适用:** 高信任本地环境，文件、Shell、PostgreSQL、Git 等开箱即用。
-- **参考:** `docs/MCP_SPEC.md`
+- **执行:** **L3 默认** `l3_node/skills/mcp_registry.py`；**L2 侧载** `core/mcp_client.py`。跨节点 **目标** `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`（Pull + Task Token）。
+- **适用:** 高信任本地环境；L2 侧载为兼容网关场景。
+- **参考:** `docs/MCP_SPEC.md`、`docs/MCP_EXECUTION_MODEL.md`
 
 ### 轨道 B: SKILL.md 声明式技能
 - **格式:** `skills_repo/**/SKILL.md`，YAML Frontmatter + 自然语言指令。
@@ -43,8 +43,8 @@ globs: core/system/**, core/wasm_runner.py, core/mcp_client.py, core/runtime/ski
 
 ## 3. 路由规则
 
-Agent 在 ReAct 的 `[Action]` 阶段：
-1. 若 `action_name` 在 MCP 工具列表中 → 走 `core/mcp_client.py`
+Agent 在 ReAct 的 `[Action]` 阶段（L3 桌面为主）：
+1. 若 `action_name` 在 MCP 工具列表中 → **L3** `mcp_registry`（或 L2 编排链路中的 `core/mcp_client.py`）
 2. 若 `action_name` 对应 SKILL.md 中声明的技能 → 读取 SKILL.md，关联 MCP 工具执行
 3. 否则 → 走 `core/wasm_runner.py`（轨道 C）
 

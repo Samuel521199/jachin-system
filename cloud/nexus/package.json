@@ -3,15 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node --require ./scripts/suppress-watchpack-stderr.cjs ./node_modules/next/dist/bin/next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:init-store": "tsx scripts/init-store-schema.ts",
-    "db:push": "drizzle-kit push",
+    "db:push": "tsx scripts/preflight-then-push.ts",
+    "db:push:verbose": "tsx scripts/preflight-then-push.ts --verbose",
+    "db:push:raw": "drizzle-kit push",
+    "db:push:raw:verbose": "drizzle-kit push --verbose",
     "db:reset": "tsx scripts/reset-db.ts",
+    "db:fresh": "tsx scripts/reset-db.ts --with-push",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {

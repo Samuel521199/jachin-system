@@ -9,6 +9,11 @@ import {
   extractTenantIdAllowingMachineFallback,
   isTenantUuidString,
 } from "@/lib/tenant";
+import {
+  extractBearerTokenRaw,
+  resolveEdgeAgentManifestContext,
+  resolveTenantIdFromEdgeAgentBearer,
+} from "@/lib/edge-agent-manifest-auth";
 import { rateLimit, MANIFEST_LIMIT } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +37,9 @@ export interface ManifestItem {
  *
  * 状态锁死：仅同步 status = 'approved' 的已核准公共物资，未审核的绝不下发。
  *
- * 请求头：需提供 tenant_id（X-Tenant-Id 或 JWT Bearer token 中的 sub/tenant_id）
+ * 请求头：Authorization Bearer = L2 配对 access_token（edge_agents）时，默认解析为单租户；
+ * **P3**：可再带 `X-Tenant-Id: <organizations.id>`，须为该 edge 绑定 **用户** 的成员工作区。
+ * 非 edge 时需提供 tenant_id（X-Tenant-Id 或 JWT Bearer 中的 tenant_id/org_id）。
  *
  * 逻辑：
  * - 查 user_licenses 表，找出该 tenant_id 下 status = 'ACTIVE' 且未过期的 item_id
@@ -52,13 +59,71 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const tenantId = await extractTenantIdAllowingMachineFallback(request);
+    const bearer = extractBearerTokenRaw(request);
+
+    let tenantId: string | null = null;
+    let tenantSource: "edge_agent" | "header_session" = "header_session";
+
+    if (isDatabaseConfigured() && bearer) {
+      const dbEarly = getDb()!;
+      const edgeCtx = await resolveEdgeAgentManifestContext(dbEarly, bearer);
+      if (edgeCtx) {
+        tenantSource = "edge_agent";
+        const hdr =
+          request.headers.get("X-Tenant-Id")?.trim() ??
+          request.headers.get("x-tenant-id")?.trim() ??
+          "";
+        if (hdr && isTenantUuidString(hdr)) {
+          if (edgeCtx.userId) {
+            const member = await assertUserMemberOfOrganization(
+              dbEarly,
+              hdr,
+              edgeCtx.userId
+            );
+            if (!member) {
+              return NextResponse.json(
+                {
+                  success: false,
+                  error: "Forbidden",
+                  message: "Edge 凭证对应用户非该 X-Tenant-Id 工作区成员",
+                },
+                { status: 403 }
+              );
+            }
+            tenantId = hdr;
+          } else if (
+            edgeCtx.organizationId &&
+            hdr === edgeCtx.organizationId.trim()
+          ) {
+            tenantId = hdr;
+          } else {
+            return NextResponse.json(
+              {
+                success: false,
+                error: "Forbidden",
+                message:
+                  "未绑定用户的边缘凭证仅允许拉取已配对组织；请使 X-Tenant-Id 与 edge_agents.organization_id 一致",
+              },
+              { status: 403 }
+            );
+          }
+        } else {
+          tenantId = await resolveTenantIdFromEdgeAgentBearer(dbEarly, bearer);
+        }
+      }
+    }
+
+    if (!tenantId) {
+      tenantId = await extractTenantIdAllowingMachineFallback(request);
+    }
+
     if (!tenantId) {
       return NextResponse.json(
         {
           success: false,
           error: "Missing tenant_id",
-          message: "Provide X-Tenant-Id header or Authorization: Bearer <JWT> with tenant_id/sub claim",
+          message:
+            "Provide L2 pairing Bearer token, or X-Tenant-Id / Bearer org_id (organizations UUID)",
         },
         { status: 401 }
       );
@@ -99,18 +164,21 @@ export async function GET(request: NextRequest) {
         { status: 404 }
       );
     }
-    const jwtSub = extractJwtSubjectFromRequest(request);
-    if (jwtSub) {
-      const member = await assertUserMemberOfOrganization(db, tid, jwtSub);
-      if (!member) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: "Forbidden",
-            message: "JWT sub is not a member of this organization",
-          },
-          { status: 403 }
-        );
+    /** L2 配对 token 非 Auth.js JWT，不触发 sub 与组织成员校验；浏览器 JWT 仍校验 */
+    if (tenantSource !== "edge_agent") {
+      const jwtSub = extractJwtSubjectFromRequest(request);
+      if (jwtSub) {
+        const member = await assertUserMemberOfOrganization(db, tid, jwtSub);
+        if (!member) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: "Forbidden",
+              message: "JWT sub is not a member of this organization",
+            },
+            { status: 403 }
+          );
+        }
       }
     }
 

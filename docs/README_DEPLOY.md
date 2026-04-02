@@ -39,17 +39,17 @@ copy .env.example .env
 **必填项：**
 
 - `DASHSCOPE_API_KEY`：阿里百炼 API Key（LLM）
-- L2 配对后 Key 由 L2 下发；未配对时需本地配置
+- L2 与 L1 建立信任后 Key 由 L2 下发；未完成前需本地配置（见仓库 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`）
 
 **可选（Lark / 飞书）：**
 
 - 方式一：在 `.env` 中配置 `LARK_APP_ID`、`LARK_APP_SECRET`、`LARK_CHAT_ID`
 - 方式二：复制 `config/im_channels.yaml.example` 到 `~/.jachin/config/im_channels.yaml` 并填写
 
-### 3. 配对 L2 并订阅 MCP/Skill
+### 3. L2 连上 L1 并订阅 MCP/Skill
 
-- 首次使用需通过 L2 配对 L1，在 L2 控制台订阅所需 MCP、Skill
-- L3 启动后自动从 L2 拉取到 `~/.jachin/`
+- L2 需先与 L1 建立信任（默认在 L2 `/gateway` 用 **Nexus 账号登录**；无头环境用 CLI 6 位码，见 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`）
+- 在 L2 侧订阅所需 MCP、Skill；L3 启动后自动从 L2 拉取到 `~/.jachin/`
 
 ### 4. 启动 L3
 
@@ -77,13 +77,17 @@ copy .env.example .env
 ## MCP / Skill 订阅
 
 - L3 启动后通过 L2 从 L1 拉取已订阅的 MCP 与 Skill 到 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
+
+### 多节点 / 跨机 MCP 委托（可选）
+
+若使用 Redis + L2 委托到多台 L3：在 **L2 与每台执行委托的 L3** 配置相同 **`JACHIN_MCP_TASK_TOKEN_SECRET`**（见 `docs/MCP_EXECUTION_MODEL.md`）。无 Redis 时仅 HTTP 入站委托，NAT 场景不可靠。
 - Lark、HR、BI 等能力均以 MCP/Skill 形式从 L1 订阅，不在便携包内
 
 ## 依赖说明
 
 - **无需 Python**：L3 以 exe 形式运行
 - **无需 Node**：若仅用 L3 独立模式（`run_l3.ps1`）
-- **首次配对**：需能访问 L2（Nexus）完成设备注册
+- **首次接入**：需能访问 L2 网关完成 L3 神经接驳（L3–L2）；L2–L1 信任见上文
 
 ## 故障排查
 
@@ -93,7 +97,7 @@ copy .env.example .env
    ```
    需在 `.env` 配置 `DASHSCOPE_API_KEY`，无 MCP/Skill 订阅能力。
 2. **exe 启动后无响应**：查看 `logs/l3_debug.log` 是否有异常
-3. **MCP/Skill 不可用**：确认 L2 已配对 L1，且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
+3. **MCP/Skill 不可用**：确认 L2 已与 L1 建立信任（`nexus_config`）且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
 4. **Lark 等 MCP 配置**：订阅下载后配置在 `~/.jachin/config/mcps/{plugin_id}/`，按包内 manifest 写出
 5. **Lark「我要招聘」无回复**：见下方「Lark 无回复排查」；架构与数据路径见 [HR_RECRUITMENT.md](./HR_RECRUITMENT.md)
 

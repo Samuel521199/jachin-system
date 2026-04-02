@@ -33,11 +33,11 @@
 | 方案 | 适用 | 操作 |
 |------|------|------|
 | **A V2 L2 网关零信任** | L3 桌面端 | 输入 L2 地址，发起神经接驳，管理员审批后密文 Key 下发 |
-| **B L1 6 位码** | Layer 2 daemon | 扫码/输入 6 位码，写入 nexus_config.json（Legacy） |
+| **B L1↔L2 控制面** | L2 网关 / 无头 daemon | **主**：L2 `/gateway` L1 邮箱+密码 或 Nexus 账号登录 → `nexus_config.json`；**辅**：CLI / 网页 6 位码（见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)） |
 | **C Wi-Fi 热点** | 无屏设备 | Captive Portal 输入 Wi-Fi + 邮箱（规划） |
 | **D ZTP** | 企业批量 | 预烧录 enterprise_id，通电即注册（规划） |
 
-**详细协议**：[PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)
+**详细协议**：**L2↔L3** 见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)（非 L1↔L3）；L1↔L2 见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)；总述见 [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](./ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md)
 
 ---
 

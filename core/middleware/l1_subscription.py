@@ -17,6 +17,7 @@ _ALLOWED_WHEN_EXPIRED = (
     "/openapi.json",
     "/redoc",
     "/",
+    "/favicon.ico",
     "/test",
     "/routes",
     "/static",

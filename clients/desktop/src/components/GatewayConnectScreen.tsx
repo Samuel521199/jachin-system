@@ -1,6 +1,6 @@
 /**
- * V2 L3-L2 零信任配对 - 网关接驳界面
- * 用户输入 L2 网关地址，发起神经接驳，等待管理员审批
+ * V2 L2↔L3 零信任配对（非 L1↔L3）— 网关接驳界面
+ * 用户输入 L2 网关地址、可选工作区（P3 多租户时必填其一）、发起神经接驳，等待管理员审批
  */
 
 import { useState, useCallback, useEffect } from "react";
@@ -10,6 +10,10 @@ import { Loader2, Zap, AlertCircle } from "lucide-react";
 const DEFAULT_L2 = "http://localhost:18888";
 const POLL_INTERVAL_MS = 2000;
 
+const UUID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
 interface GatewayConnectScreenProps {
   onPaired: () => void;
 }
@@ -17,21 +21,32 @@ interface GatewayConnectScreenProps {
 export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
   const [l2Url, setL2Url] = useState(DEFAULT_L2);
   const [deviceName, setDeviceName] = useState("");
+  const [organizationId, setOrganizationId] = useState("");
+  const [organizationSlug, setOrganizationSlug] = useState("");
   const [step, setStep] = useState<"idle" | "connecting" | "waiting" | "success" | "error">("idle");
   const [error, setError] = useState("");
 
-  const loadSavedUrl = useCallback(async () => {
+  const loadSavedGateway = useCallback(async () => {
     try {
       const url = await invoke<string>("read_l2_gateway_url");
       if (url) setL2Url(url);
     } catch {
       // 使用默认值
     }
+    try {
+      const cfg = await invoke<Record<string, unknown>>("read_l2_gateway_config");
+      const oid = cfg.organization_id;
+      const osl = cfg.organization_slug;
+      if (typeof oid === "string" && oid.trim()) setOrganizationId(oid.trim());
+      if (typeof osl === "string" && osl.trim()) setOrganizationSlug(osl.trim());
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
-    loadSavedUrl();
-  }, [loadSavedUrl]);
+    loadSavedGateway();
+  }, [loadSavedGateway]);
 
   // 已审批节点：L3 可能已被 setup 自动启动，轮询 is_gateway_paired 自动进入主界面
   useEffect(() => {
@@ -48,14 +63,44 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
   }, [step, onPaired]);
 
   const startConnect = useCallback(async () => {
+    setError("");
     const url = l2Url.trim().replace(/\/+$/, "") || DEFAULT_L2;
     const name = deviceName.trim() || undefined;
+    const oid = organizationId.trim();
+    const osl = organizationSlug.trim().toLowerCase();
+
+    if (oid && osl) {
+      setError("请只填写「工作区 UUID」或「工作区 slug」其中一项");
+      return;
+    }
+    if (oid && !UUID_RE.test(oid)) {
+      setError("工作区 UUID 格式不正确（应为 8-4-4-4-12 的十六进制）");
+      return;
+    }
+    if (osl && !SLUG_RE.test(osl)) {
+      setError("工作区 slug 仅允许小写字母、数字与连字符");
+      return;
+    }
+
     setStep("connecting");
-    setError("");
 
     try {
-      await invoke("write_l2_gateway_config", { input: { url, displayName: name || undefined } });
-      await invoke("gateway_connect", { input: { l2Url: url, displayName: name ?? null } });
+      await invoke("write_l2_gateway_config", {
+        input: {
+          url,
+          displayName: name || undefined,
+          organizationId: oid || undefined,
+          organizationSlug: osl || undefined,
+        },
+      });
+      await invoke("gateway_connect", {
+        input: {
+          l2Url: url,
+          displayName: name ?? null,
+          organizationId: oid || null,
+          organizationSlug: osl || null,
+        },
+      });
       setStep("waiting");
       // 轮询检测 L2 是否已审批（paired=true），而非仅检测 WebSocket 端口
       const checkReady = async () => {
@@ -85,7 +130,7 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
       setError(String(e));
       setStep("error");
     }
-  }, [l2Url, deviceName, onPaired]);
+  }, [l2Url, deviceName, organizationId, organizationSlug, onPaired]);
 
   return (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white overflow-hidden">
@@ -103,8 +148,11 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
         <h1 className="text-2xl font-bold text-cyan-400/95 mb-1 tracking-wide">
           L2 网关神经接驳
         </h1>
-        <p className="text-sm text-white/50 mb-8">
+        <p className="text-sm text-white/50 mb-2 text-center max-w-sm">
           Zero-Trust · 向 L2 宣誓效忠
+        </p>
+        <p className="text-xs text-white/35 mb-8 text-center max-w-sm leading-relaxed">
+          L2 在 /gateway 勾选了多个工作区同步时，请填写本机要接入的工作区 UUID 或 slug；仅单个同步工作区时可留空（由 L2 自动匹配）。
         </p>
 
         {step === "idle" && (
@@ -134,6 +182,33 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
                 className="w-full px-4 py-3 rounded-xl bg-black/40 border border-cyan-500/30 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 text-sm"
               />
             </div>
+            <div>
+              <label className="block text-xs text-cyan-400/80 uppercase tracking-wider mb-2">
+                工作区 UUID（可选，与 slug 二选一）
+              </label>
+              <input
+                type="text"
+                value={organizationId}
+                onChange={(e) => setOrganizationId(e.target.value)}
+                placeholder="如：2bae144b-3adc-4e06-adb9-…"
+                className="w-full px-4 py-3 rounded-xl bg-black/40 border border-cyan-500/30 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 font-mono text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-cyan-400/80 uppercase tracking-wider mb-2">
+                或 工作区 slug（可选）
+              </label>
+              <input
+                type="text"
+                value={organizationSlug}
+                onChange={(e) => setOrganizationSlug(e.target.value.toLowerCase())}
+                placeholder="如：ceo"
+                className="w-full px-4 py-3 rounded-xl bg-black/40 border border-cyan-500/30 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 font-mono text-sm"
+              />
+            </div>
+            {error && (
+              <p className="text-rose-400/90 text-xs text-center -mt-2">{error}</p>
+            )}
             <button
               onClick={startConnect}
               className="w-full py-3 rounded-xl bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 font-medium hover:bg-cyan-500/30 transition-colors flex items-center justify-center gap-2"

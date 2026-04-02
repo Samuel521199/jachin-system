@@ -1,8 +1,9 @@
 /**
  * 极简魔法邀请：短效 HS256 JWT，与 Auth.js 会话 JWT 分离（claims 含 typ=nexus_org_invite）。
- * 密钥优先 `NEXUS_ORG_INVITE_SECRET`，否则回退 `AUTH_SECRET`（与站点会话同源时仍通过 `typ` 区分用途）。
+ * 密钥优先 `NEXUS_ORG_INVITE_SECRET`，否则回退与 Auth.js 一致的 {@link resolveAuthSecret}（含 dev 占位）。
  */
 import { SignJWT, jwtVerify } from "jose";
+import { resolveAuthSecret } from "@/auth.config";
 
 export const ORG_INVITE_JWT_TYP = "nexus_org_invite";
 
@@ -16,9 +17,11 @@ export type OrgInvitePayload = {
 
 function getInviteSecretKey(): Uint8Array {
   const raw =
-    process.env.NEXUS_ORG_INVITE_SECRET?.trim() || process.env.AUTH_SECRET?.trim();
+    process.env.NEXUS_ORG_INVITE_SECRET?.trim() || resolveAuthSecret() || "";
   if (!raw) {
-    throw new Error("NEXUS_ORG_INVITE_SECRET or AUTH_SECRET is required for org invites");
+    throw new Error(
+      "NEXUS_ORG_INVITE_SECRET or AUTH_SECRET is required for org invites (production)"
+    );
   }
   return new TextEncoder().encode(raw);
 }

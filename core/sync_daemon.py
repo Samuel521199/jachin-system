@@ -21,6 +21,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
+from core.nexus_config_store import load_nexus_config, normalize_sync_tenant_ids
+
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path.home() / ".jachin" / "nexus_config.json"
@@ -48,25 +50,6 @@ _LOCK_TTL_SEC = _DEFAULT_INTERVAL_SEC + 15
 
 # 本进程唯一标识（短命 UUID，每次启动重新生成）
 L2_PROCESS_ID = str(uuid.uuid4())[:8]
-
-
-def _load_nexus_config() -> dict[str, Any]:
-    """读取 nexus_config.json"""
-    logger.info("[SyncDaemon] 即将读取 nexus_config path=%s", _CONFIG_PATH)
-    if not _CONFIG_PATH.exists():
-        logger.info("[SyncDaemon] nexus_config 不存在，跳过")
-        return {}
-    try:
-        raw = _CONFIG_PATH.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        try:
-            raw = _CONFIG_PATH.read_text(encoding="utf-16")
-        except Exception:
-            return {}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
 
 
 # =============================================================================
@@ -118,10 +101,10 @@ class CloudSyncDaemon:
     """
 
     def __init__(self) -> None:
-        cfg = _load_nexus_config()
+        cfg = load_nexus_config()
         self._base_url = (cfg.get("nexus_base_url") or "").rstrip("/")
         self._access_token = cfg.get("access_token") or ""
-        # tenant_id: 神谕接口鉴权，优先级 config > env > l1_user_id > instance_id
+        # tenant_id: 活动租户（遥测等）；manifest P3 见 poll_manifest 多 X-Tenant-Id
         self._tenant_id = (
             cfg.get("tenant_id")
             or os.environ.get("JACHIN_TENANT_ID")
@@ -192,29 +175,78 @@ class CloudSyncDaemon:
         logger.warning("[SyncDaemon] manifest 拉取失败 tenant=%s err=%s", tenant_id[:24], last_err)
         return []
 
+    def _merge_manifests(self, chunks: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """按 item id 去重，保留版本号较高者（P3 多工作区合并）。"""
+        best: dict[str, dict[str, Any]] = {}
+        for manifest in chunks:
+            for item in manifest:
+                iid = item.get("id")
+                if not iid:
+                    continue
+                prev = best.get(str(iid))
+                if prev is None or _version_compare(
+                    item.get("version") or "0.0.0",
+                    prev.get("version") or "0.0.0",
+                ) > 0:
+                    best[str(iid)] = item
+        return list(best.values())
+
     async def poll_manifest(self) -> list[dict[str, Any]]:
         """
-        请求 L1 manifest 接口获取最新清单。
-        主 tenant 无数据时，尝试 demo-tenant-001（兼容旧版 Store 默认 cookie）。
-        Returns:
-             manifest 列表，失败返回 []
+        请求 L1 manifest：P3 时对 sync_tenant_ids 逐租户拉取并合并去重。
         """
+        cfg = load_nexus_config()
+        self._base_url = (cfg.get("nexus_base_url") or "").rstrip("/")
+        self._access_token = cfg.get("access_token") or ""
+        self._tenant_id = (
+            cfg.get("tenant_id")
+            or os.environ.get("JACHIN_TENANT_ID")
+            or cfg.get("l1_user_id")
+            or cfg.get("instance_id")
+            or ""
+        )
+
         if not self._is_configured():
             logger.debug("[SyncDaemon] 未配置 L1 URL / tenant，跳过 manifest 拉取")
             return []
 
-        manifest = await self._fetch_manifest_with_tenant(self._tenant_id)
-        if manifest:
-            logger.info("[SyncDaemon] manifest 拉取成功 tenant=%s count=%d", self._tenant_id[:24], len(manifest))
-            return manifest
-        logger.info("[SyncDaemon] 主 tenant=%s 无订阅", self._tenant_id[:24])
-        # 兼容：旧版 Store 默认 nexus_tenant_id=demo-tenant-001，主 tenant 空时回退
-        if self._tenant_id != "demo-tenant-001":
-            logger.info("[SyncDaemon] 尝试 fallback tenant=demo-tenant-001")
-            manifest = await self._fetch_manifest_with_tenant("demo-tenant-001")
+        tenant_ids = normalize_sync_tenant_ids(cfg)
+        if not tenant_ids and self._tenant_id:
+            tenant_ids = [self._tenant_id]
+
+        if len(tenant_ids) <= 1:
+            tid = tenant_ids[0] if tenant_ids else self._tenant_id
+            manifest = await self._fetch_manifest_with_tenant(tid)
             if manifest:
-                logger.info("[SyncDaemon] fallback 成功 count=%d", len(manifest))
-        return manifest
+                logger.info(
+                    "[SyncDaemon] manifest 拉取成功 tenant=%s count=%d",
+                    (tid or "")[:24],
+                    len(manifest),
+                )
+                return manifest
+            logger.info(
+                "[SyncDaemon] 主 tenant 无订阅或拉取失败 tenant=%s",
+                (tid or "")[:24] if tid else "",
+            )
+            return manifest
+
+        parts: list[list[dict[str, Any]]] = []
+        for tid in tenant_ids:
+            m = await self._fetch_manifest_with_tenant(tid)
+            if m:
+                logger.info(
+                    "[SyncDaemon] manifest 分租户 tenant=%s count=%d",
+                    tid[:24],
+                    len(m),
+                )
+                parts.append(m)
+        merged = self._merge_manifests(parts)
+        logger.info(
+            "[SyncDaemon] manifest P3 合并完成 tenants=%d unique_items=%d",
+            len(tenant_ids),
+            len(merged),
+        )
+        return merged
 
     def _diff_manifest_vs_local(self, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
@@ -670,6 +702,70 @@ async def start_cloud_sync_background(interval_seconds: float = 60) -> asyncio.T
     return task
 
 
+async def _cancel_background_task(task: asyncio.Task | None, name: str) -> None:
+    """取消后台 Task，与 lifespan shutdown 行为一致。"""
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+    logger.debug("[%s] 后台任务已取消", name)
+
+
+def log_pairing_snapshot(phase: str, *, extra_lines: list[str] | None = None) -> None:
+    """控制台输出当前配对诊断（供启动/热重启等调用）。"""
+    try:
+        from core.l2_pairing_diagnostics import log_pairing_diagnostics
+
+        log_pairing_diagnostics(logger, phase=phase, extra_lines=extra_lines)
+    except Exception as e:
+        logger.warning("[SyncDaemon] 配对诊断输出失败: %s", e)
+
+
+async def hot_restart_l1_background_services(app: Any, interval_seconds: float = 60) -> None:
+    """
+    在 nexus_config 写入或更新后调用（如网关 L1 邮箱登录、redeem-l1-bridge）：
+    取消旧的 L1 心跳与 CloudSyncDaemon（若存在），按磁盘最新配置重新启动。
+    解决「先启动 L2 后配对」时 lifespan 阶段未起同步的问题。
+    """
+    hb_old = getattr(app.state, "l1_heartbeat_task", None)
+    cs_old = getattr(app.state, "cloud_sync_task", None)
+
+    await _cancel_background_task(hb_old, "L1Heartbeat")
+    await _cancel_background_task(cs_old, "SyncDaemon")
+
+    try:
+        app.state.l1_heartbeat_task = start_l1_heartbeat_background()
+    except Exception as e:
+        logger.warning("[SyncDaemon] 热启动 L1 心跳失败: %s", e)
+        app.state.l1_heartbeat_task = None
+
+    try:
+        app.state.cloud_sync_task = await start_cloud_sync_background(
+            interval_seconds=interval_seconds
+        )
+    except Exception as e:
+        logger.warning("[SyncDaemon] 热启动云边同步失败: %s", e)
+        app.state.cloud_sync_task = None
+
+    hb_on = bool(getattr(app.state, "l1_heartbeat_task", None))
+    cs_on = bool(getattr(app.state, "cloud_sync_task", None))
+    logger.info(
+        "[SyncDaemon] 配对后热启动完成 heartbeat=%s cloud_sync=%s",
+        "on" if hb_on else "off",
+        "on" if cs_on else "off",
+    )
+    log_pairing_snapshot(
+        "post_login_hot_restart",
+        extra_lines=[
+            f"热启动结果: l1_heartbeat_task={'已挂载' if hb_on else '未挂载'} "
+            f"cloud_sync_task={'已挂载' if cs_on else '未挂载'}",
+        ],
+    )
+
+
 # =============================================================================
 # L1 心跳（原有逻辑）
 # =============================================================================
@@ -683,7 +779,7 @@ async def l1_heartbeat_sync() -> dict[str, Any] | None:
     Returns:
         心跳响应体，失败返回 None
     """
-    cfg = _load_nexus_config()
+    cfg = load_nexus_config()
     instance_id = cfg.get("instance_id") or ""
     access_token = cfg.get("access_token") or ""
     base_url = (cfg.get("nexus_base_url") or "").rstrip("/")
@@ -785,7 +881,7 @@ def start_l1_heartbeat_background() -> asyncio.Task | None:
     返回 Task，供 lifespan 在 shutdown 时 cancel。
     L2 集群化：多节点时通过 Redis 锁选举 Leader，仅 Leader 执行心跳。
     """
-    cfg = _load_nexus_config()
+    cfg = load_nexus_config()
     if not cfg.get("instance_id") or not cfg.get("access_token") or not cfg.get("nexus_base_url"):
         logger.info("[L1Heartbeat] 未配对 L1，心跳守护进程不启动")
         return None

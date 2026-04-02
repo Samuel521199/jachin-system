@@ -11,6 +11,7 @@
  */
 import { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { resolveAuthSecret } from "@/auth.config";
 import { and, eq } from "drizzle-orm";
 import type { getDb } from "@/db";
 import { organizations, organizationUsers } from "@/db/schema";
@@ -93,7 +94,7 @@ export async function extractVerifiedOrgIdFromSession(
 export async function extractVerifiedOrgRoleFromSession(
   request: NextRequest
 ): Promise<string | null> {
-  const secret = process.env.AUTH_SECRET;
+  const secret = resolveAuthSecret();
   if (!secret) return null;
   try {
     const token = await getToken({ req: request, secret });

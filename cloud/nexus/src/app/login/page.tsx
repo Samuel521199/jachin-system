@@ -1,7 +1,7 @@
 /**
  * Nexus 登录 / 注册页：Auth.js Credentials + `/api/auth/register`。
- * 注册走「零感知生根」单事务（users + 个人 organizations + organization_users.owner），
- * 登录后会话 JWT 含 orgId/orgRole；与 `middleware.ts` Default Deny 白名单 `/login` 对齐。
+ * 注册仅创建 users；工作区须在 `/console/workspace` 创建或加入。
+ * 登录后会话 JWT 含 orgId/orgRole（无工作区时为空，控制台会引导至工作区页）。
  */
 "use client";
 
@@ -10,6 +10,59 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { Loader2 } from "lucide-react";
+
+function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return (
+    h === "localhost" ||
+    h === "127.0.0.1" ||
+    h === "::1" ||
+    h === "[::1]"
+  );
+}
+
+/**
+ * 1) 中间件可能带 callbackUrl=http://0.0.0.0:3000/...（监听地址），浏览器打不开。
+ * 2) AUTH_URL / Auth.js 默认常为 http://localhost:3000；用户用局域网 IP 访问时，
+ *    signIn 返回的 res.url 仍是 localhost，会跳到本机而非服务器——用当前页 origin 替换。
+ */
+function getSafeCallbackUrl(raw: string): string {
+  if (typeof window === "undefined") return raw;
+  const t = raw.trim();
+  if (!t.startsWith("http://") && !t.startsWith("https://")) {
+    return t;
+  }
+  try {
+    const u = new URL(t);
+    const browserHost = window.location.hostname;
+    if (u.hostname === "0.0.0.0" || u.hostname === "[::]") {
+      u.protocol = window.location.protocol;
+      u.host = window.location.host;
+      return u.toString();
+    }
+    if (isLoopbackHost(u.hostname) && !isLoopbackHost(browserHost)) {
+      u.protocol = window.location.protocol;
+      u.host = window.location.host;
+      return u.toString();
+    }
+  } catch {
+    return raw;
+  }
+  return raw;
+}
+
+/** 登录成功后的跳转：优先用服务端返回 URL，但须校正 loopback / 0.0.0.0；相对路径原样使用。 */
+function postLoginHref(
+  serverUrl: string | null | undefined,
+  fallback: string
+): string {
+  if (typeof window === "undefined") return fallback;
+  const raw = (serverUrl && serverUrl.length > 0 ? serverUrl : fallback).trim();
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    return raw;
+  }
+  return getSafeCallbackUrl(raw);
+}
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -28,19 +81,20 @@ function LoginForm() {
     e.preventDefault();
     setError(null);
     setLoading(true);
+    const safeCb = getSafeCallbackUrl(callbackUrl);
     try {
       const res = await signIn("credentials", {
         email: email.trim().toLowerCase(),
         password,
         redirect: false,
-        callbackUrl,
+        callbackUrl: safeCb,
       });
       if (res?.error) {
         setError("邮箱或密码错误");
         setLoading(false);
         return;
       }
-      window.location.href = res?.url ?? callbackUrl;
+      window.location.href = postLoginHref(res?.url, safeCb);
     } catch {
       setError("登录失败，请重试");
       setLoading(false);
@@ -74,7 +128,7 @@ function LoginForm() {
         email: email.trim().toLowerCase(),
         password,
         redirect: false,
-        callbackUrl,
+        callbackUrl: "/console/workspace",
       });
       if (res?.error) {
         setError("注册成功但自动登录失败，请手动登录");
@@ -82,7 +136,7 @@ function LoginForm() {
         setMode("login");
         return;
       }
-      window.location.href = res?.url ?? callbackUrl;
+      window.location.href = postLoginHref(res?.url, "/console/workspace");
     } catch {
       setError("注册失败，请重试");
       setLoading(false);
@@ -107,7 +161,9 @@ function LoginForm() {
           Jachin Nexus
         </h1>
         <p className="text-sm text-white/50 text-center mb-8">
-          {mode === "login" ? "登录以继续" : "注册账号（自动创建个人工作区）"}
+          {mode === "login"
+            ? "登录以继续"
+            : "注册账号（登录后请创建或加入工作区）"}
         </p>
 
         <div className="flex rounded-lg bg-white/5 p-1 mb-6">

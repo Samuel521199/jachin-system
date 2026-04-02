@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>L2 — Nexus 绑定中</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+  <div id="root" class="max-w-md w-full text-center">
+    <p id="msg" class="text-cyan-400 text-lg">正在完成 Nexus 账号绑定…</p>
+    <p id="sub" class="text-slate-500 text-sm mt-2">请勿关闭此页</p>
+  </div>
+  <script>
+    (function () {
+      const params = new URLSearchParams(location.search);
+      const code = params.get("bridge_code");
+      const msg = document.getElementById("msg");
+      const sub = document.getElementById("sub");
+      const STORAGE_KEY = "l2_admin_jwt";
+
+      if (!code) {
+        msg.textContent = "缺少 bridge_code";
+        msg.classList.remove("text-cyan-400");
+        msg.classList.add("text-red-400");
+        sub.textContent = "请从 L2 网关重新点击「使用 Nexus 账号登录」";
+        return;
+      }
+
+      fetch("/api/v2/admin/redeem-l1-bridge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bridge_code: code }),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (_ref) {
+          var ok = _ref.ok;
+          var data = _ref.data;
+          if (ok && data.token) {
+            localStorage.setItem(STORAGE_KEY, data.token);
+            msg.textContent = "绑定成功，正在进入控制台…";
+            sub.textContent = "";
+            window.location.replace("/gateway/");
+            return;
+          }
+          var detail = data.detail;
+          var errText =
+            (detail && detail.message) ||
+            (typeof detail === "string" ? detail : null) ||
+            data.message ||
+            "绑定失败";
+          msg.textContent = errText;
+          msg.classList.remove("text-cyan-400");
+          msg.classList.add("text-red-400");
+          sub.innerHTML =
+            '<a href="/gateway/" class="text-cyan-400 underline">返回登录</a>';
+        })
+        .catch(function (e) {
+          msg.textContent = "网络错误: " + String(e);
+          msg.classList.remove("text-cyan-400");
+          msg.classList.add("text-red-400");
+          sub.innerHTML =
+            '<a href="/gateway/" class="text-cyan-400 underline">返回登录</a>';
+        });
+    })();
+  </script>
+</body>
+</html>

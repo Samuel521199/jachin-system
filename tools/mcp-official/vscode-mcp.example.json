@@ -1,0 +1,28 @@
+{
+  "mcp": {
+    "servers": {
+      "fetch": {
+        "command": "python",
+        "args": ["-m", "mcp_server_fetch"],
+        "env": {
+          "PYTHONIOENCODING": "utf-8"
+        }
+      },
+      "time": {
+        "command": "python",
+        "args": ["-m", "mcp_server_time"],
+        "env": {
+          "PYTHONIOENCODING": "utf-8"
+        }
+      },
+      "filesystem": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "${workspaceFolder}"
+        ]
+      }
+    }
+  }
+}

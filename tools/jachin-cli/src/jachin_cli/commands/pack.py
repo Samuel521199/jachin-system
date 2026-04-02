@@ -122,12 +122,39 @@ def _validate(data: dict, cwd: Path) -> list[tuple[str, str]]:
     elif item_type == "mcp":
         runtime_tier = (data.get("runtime_tier") or "L3_LOCAL").upper()
         if runtime_tier == "L2_GATEWAY":
+            console.print(
+                "[yellow]提示：长期默认请使用 runtime_tier=L3_LOCAL，"
+                "并以 stdio_server（官方 MCP）或 tools[]（Python）在 L3 执行；"
+                "L2_GATEWAY 仅保留兼容。[/]"
+            )
             mcp = data.get("mcp_servers")
             if not mcp or not isinstance(mcp, list):
                 errors.append(("L2_GATEWAY MCP 需配置 mcp_servers", "添加 mcp_servers 数组，含 command 与 args"))
             elif mcp and not (mcp[0].get("command") if isinstance(mcp[0], dict) else False):
                 errors.append(("mcp_servers 需含 command", "如 \"command\": \"npx\", \"args\": [\"-y\", \"xxx\"]"))
-        # L3_LOCAL MCP 需 tools 或等效结构，由 plugin.json 约定
+        if runtime_tier == "L3_LOCAL":
+            stdio_blk = data.get("stdio_server")
+            has_stdio = (
+                isinstance(stdio_blk, dict)
+                and str(stdio_blk.get("command") or "").strip() != ""
+            )
+            tools = data.get("tools") or []
+            if isinstance(tools, dict):
+                tools = list(tools.values()) if tools else []
+            has_python = False
+            if isinstance(tools, list):
+                for t in tools:
+                    if isinstance(t, dict) and (t.get("module") or "").strip() and (t.get("function") or "").strip():
+                        has_python = True
+                        break
+            if not has_stdio and not has_python:
+                errors.append(
+                    (
+                        "L3_LOCAL MCP 需 stdio_server 或 tools[]",
+                        "二选一：① \"stdio_server\": {\"id\":\"...\",\"command\":\"npx\",\"args\":[\"-y\",\"@pkg\"]} "
+                        "② \"tools\": [{\"id\":\"x\",\"module\":\"tools.x\",\"function\":\"run\",\"params\":[\"input\"]}]",
+                    ),
+                )
 
     # 077: Skill 依赖 MCP — required_mcps 格式校验
     if item_type == "skill":

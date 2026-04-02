@@ -49,5 +49,5 @@
 ## 四、下一步
 
 - 架构：[ARCHITECTURE.md](./ARCHITECTURE.md) | [docs/](./README.md)
-- 配对：V2 桌面端见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)；Layer 2 daemon 用 `python -m core.cli pair`
+- 配对：**L2↔L3** 见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)；L1↔L2 见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)；边界见 [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](./ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md)（`/gateway`：owner/admin 或本地 `admin`；无头 `python -m core.cli pair`）
 - IM 网关：[IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md)

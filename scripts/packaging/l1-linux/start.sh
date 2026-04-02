@@ -2,7 +2,8 @@
 # =============================================================================
 # Jachin Nexus (Layer 1) — Linux 生产启动（须放在 standalone 包根目录，与 server.js 同级）
 # 原则：先打印阶段日志，再检查路径；不通过 shell source 密钥文件，由 Next 加载 .env*。
-# 环境：PORT（默认 3000）、HOSTNAME（默认 0.0.0.0）、NODE_ENV（默认 production）
+# 环境：PORT（默认 3000）、NODE_ENV（默认 production）
+# 不设 HOSTNAME：Next standalone 的 server.js 在未设置时仍监听 0.0.0.0；对外访问请用 NEXUS_PUBLIC_URL。
 # =============================================================================
 set -euo pipefail
 
@@ -69,10 +70,14 @@ fi
 
 export NODE_ENV="${NODE_ENV:-production}"
 export PORT="${PORT:-3000}"
-export HOSTNAME="${HOSTNAME:-0.0.0.0}"
+
+# Next standalone 的 server.js：hostname = process.env.HOSTNAME || '0.0.0.0'
+# Linux / Docker 常自动带上 HOSTNAME=机器名（如云厂商 iZj...），该字符串不是可解析的
+# 监听地址，Node 会 getaddrinfo ENOTFOUND。须清除，回退到 0.0.0.0。
+unset HOSTNAME 2>/dev/null || true
 
 l1_line "---------- 启动 Node（运行期日志 tee -> $RUN_LOG）----------"
-l1_line "NODE_ENV=$NODE_ENV PORT=$PORT HOSTNAME=$HOSTNAME"
+l1_line "NODE_ENV=$NODE_ENV PORT=$PORT"
 
 cd "$ROOT"
 set +e

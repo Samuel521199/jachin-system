@@ -1,0 +1,18 @@
+{
+  "id": "com.example.mcp.filesystem_workspace",
+  "name": "Filesystem (workspace) via official MCP",
+  "version": "1.0.0",
+  "description": "L3_LOCAL 轻量包：仅声明 stdio，无包内 Python。订阅后经 L2→l3_mcp_cache，L3 拉起 @modelcontextprotocol/server-filesystem。",
+  "item_type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "example-fs-workspace",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem@0.6.2",
+      "__JACHIN_WORKSPACE__"
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "mcp_servers": [
+    {
+      "id": "official-fetch",
+      "name": "MCP Fetch（官方参考）",
+      "command": "python",
+      "args": ["-m", "mcp_server_fetch"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "official-time",
+      "name": "MCP Time（官方参考）",
+      "command": "python",
+      "args": ["-m", "mcp_server_time"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "official-git",
+      "name": "MCP Git（官方参考）",
+      "command": "python",
+      "args": [
+        "-m",
+        "mcp_server_git",
+        "--repository",
+        "REPLACE_WITH_GIT_REPO_ROOT"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "official-filesystem",
+      "name": "MCP Filesystem（官方 npm，需 Node）",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "REPLACE_WITH_ALLOWED_DIR_1",
+        "REPLACE_WITH_ALLOWED_DIR_2"
+      ]
+    }
+  ]
+}

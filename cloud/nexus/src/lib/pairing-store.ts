@@ -1,6 +1,6 @@
 /**
- * Pairing store for Demo mode (when DATABASE_URL not configured).
- * 支持文件持久化，避免 Next.js dev 热重载清空内存导致配对码失效。
+ * 无 DB 时 pairing/** 辅助流程的内存存储（DATABASE_URL 未配置）。
+ * 主路径 L1↔L2 见 l2-bridge-store + /api/v1/l2-bridge/*。
  */
 import fs from "fs";
 

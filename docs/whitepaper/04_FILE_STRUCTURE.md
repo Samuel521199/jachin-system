@@ -42,7 +42,7 @@ cloud/nexus/
 │   ├── fleet/                # 舰队指挥大屏
 │   ├── forge/                # 造物厂 (React Flow 蓝图编排)
 │   ├── market/               # 神经元商城
-│   ├── pair/                 # L1 6 位码配对承接页（Legacy，仅 Layer 2 daemon 使用）
+│   ├── pair/                 # L1 辅助配对页（6 位码）；主路径：L2 网关邮箱登录 + /console/l2-bridge（Web Bridge）
 │   └── api/v1/
 │       ├── agents/heartbeat/ # 边缘心跳与指令下发
 │       ├── agents/callback/  # 执行结果回传
@@ -173,7 +173,7 @@ skills_repo/
 
 ```text
 ~/.jachin/
-├── nexus_config.json         # 配对凭证 (L3 或 jachin-cli pair 写入)
+├── nexus_config.json         # L2↔L1 配对凭证（L2 网关邮箱/Web Bridge/CLI 写入，非 L3）
 ├── mcp_servers.json          # MCP 服务器配置 (可选)
 ├── memory.db                 # SQLite 生物学记忆 (short_term_logs + core_memory)
 ├── event_queue.db            # v8.0 感官总线任务队列 (SQLite)

@@ -1,11 +1,13 @@
 """
-Jachin Nexus V2 - L3 节点引导
+Jachin Nexus V2 - L3 节点引导（L2↔L3 配对，不经 L1）
 
 1. 生成 RSA 密钥对（或加载已持久化的）
-2. 向 L2 注册 (POST /api/v2/auth/sync)
-3. 轮询 GET /api/v2/auth/poll 等待管理员审批
+2. 向 **L2** 注册：POST /api/v2/auth/sync（含 organization_id 或 organization_slug，须落在 L2 sync_tenant_ids 内）
+3. 轮询 GET /api/v2/auth/poll 等待 **L2 网关** 管理员审批
 4. 拉取密文 Key，本地解密，填充 SecurityContext
 5. 创建 LiteLLMEngine，可选启动 MemorySyncDaemon
+
+工作区列表可从 L1 GET /api/v1/me/workspaces 拉取填表，属元数据，非 L1↔L3 配对。
 """
 from __future__ import annotations
 
@@ -120,18 +122,30 @@ async def bootstrap_l3_gateway_pending(
         trace("bootstrap: GATEWAY_CONFIG_PATH=%s exists=%s", _GATEWAY_CONFIG_PATH, _GATEWAY_CONFIG_PATH.exists())
     except ImportError:
         pass
-    display_name = (os.environ.get("JACHIN_DEVICE_NAME") or "").strip()[:64]
-    existing_node_id: Optional[str] = None
+    cfg_early: dict[str, Any] = {}
     if _GATEWAY_CONFIG_PATH.exists():
         try:
-            cfg_load = json.loads(_GATEWAY_CONFIG_PATH.read_text(encoding="utf-8"))
-            if not display_name:
-                display_name = (cfg_load.get("display_name") or "").strip()[:64]
-            nid = cfg_load.get("node_id")
-            if isinstance(nid, str) and nid.strip().startswith("l3-"):
-                existing_node_id = nid.strip()
+            cfg_early = json.loads(_GATEWAY_CONFIG_PATH.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            cfg_early = {}
+
+    display_name = (os.environ.get("JACHIN_DEVICE_NAME") or "").strip()[:64]
+    if not display_name:
+        display_name = (cfg_early.get("display_name") or "").strip()[:64]
+    existing_node_id: Optional[str] = None
+    nid = cfg_early.get("node_id")
+    if isinstance(nid, str) and nid.strip().startswith("l3-"):
+        existing_node_id = nid.strip()
+
+    organization_id = (
+        os.environ.get("JACHIN_ORGANIZATION_ID") or cfg_early.get("organization_id") or ""
+    ).strip()
+    organization_slug = (
+        os.environ.get("JACHIN_ORGANIZATION_SLUG") or cfg_early.get("organization_slug") or ""
+    ).strip().lower()
+    workspace_name_cfg = (
+        os.environ.get("JACHIN_WORKSPACE_NAME") or cfg_early.get("workspace_name") or ""
+    ).strip()[:128]
 
     sync_body: dict[str, Any] = {
         "device_fingerprint": device_fp,
@@ -142,6 +156,12 @@ async def bootstrap_l3_gateway_pending(
         sync_body["display_name"] = display_name
     if existing_node_id:
         sync_body["node_id"] = existing_node_id  # 复用已有节点，避免 L2 出现多个待审批
+    if organization_id:
+        sync_body["organization_id"] = organization_id
+    if organization_slug:
+        sync_body["organization_slug"] = organization_slug
+    if workspace_name_cfg:
+        sync_body["workspace_name"] = workspace_name_cfg
 
     # 1. POST /auth/sync（无 sub_account_id，待审批）
     # trust_env=False：绕过系统代理，避免 localhost 请求被错误转发导致 ReadTimeout
@@ -167,6 +187,45 @@ async def bootstrap_l3_gateway_pending(
                 logger.info("[L3 Gateway] L2 返回 503，%ds 后重试 (%d/4)", int(wait), attempt)
                 await asyncio.sleep(wait)
                 continue
+            if e.response.status_code == 403:
+                hint = "403 Forbidden"
+                try:
+                    j = e.response.json()
+                    if isinstance(j, dict):
+                        d = j.get("detail")
+                        if isinstance(d, dict) and d.get("message"):
+                            hint = str(d["message"])
+                        elif isinstance(d, str):
+                            hint = d
+                        elif j.get("message"):
+                            hint = str(j["message"])
+                except Exception:
+                    hint = e.response.text or hint
+                raise RuntimeError(
+                    f"L2 拒绝 auth/sync（403）：{hint}\n"
+                    "已配对 L2 时：organization_id 须落在 nexus_config 的 sync_tenant_ids，"
+                    "或使用 organization_slug（L1 已设 slug）；亦可配置 JACHIN_ORGANIZATION_ID / "
+                    "JACHIN_ORGANIZATION_SLUG 或 ~/.jachin/l2_gateway_config.json。"
+                ) from e
+            if e.response.status_code == 400:
+                hint = "400 Bad Request"
+                try:
+                    j = e.response.json()
+                    if isinstance(j, dict):
+                        d = j.get("detail")
+                        if isinstance(d, dict) and d.get("message"):
+                            hint = str(d["message"])
+                        elif isinstance(d, str):
+                            hint = d
+                        elif j.get("message"):
+                            hint = str(j["message"])
+                except Exception:
+                    hint = e.response.text or hint
+                raise RuntimeError(
+                    f"L2 拒绝 auth/sync（400）：{hint}\n"
+                    "常见原因：organization_slug 无法在 L1 解析（显示名/slug 不一致可多试 UUID），"
+                    "或与 organization_id 同时填写。详见 ~/.jachin/l2_gateway_config.json。"
+                ) from e
             raise
         except httpx.TimeoutException as e:
             if attempt < 4:
@@ -192,15 +251,16 @@ async def bootstrap_l3_gateway_pending(
 
     # 持久化 node_id 供下次使用
     _JACHIN_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = {}
-    if _GATEWAY_CONFIG_PATH.exists():
-        try:
-            cfg = json.loads(_GATEWAY_CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    cfg = dict(cfg_early)
     cfg["l2_base_url"] = base
     cfg["node_id"] = node_id
     cfg["paired"] = False  # 审批通过后设为 True
+    if organization_id:
+        cfg["organization_id"] = organization_id
+    if organization_slug:
+        cfg["organization_slug"] = organization_slug
+    if workspace_name_cfg:
+        cfg["workspace_name"] = workspace_name_cfg
     _GATEWAY_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     if on_status:
@@ -327,6 +387,13 @@ async def bootstrap_l3_gateway_pending(
     except Exception as e:
         logger.warning("[L3 Gateway] MCP 同步异常: %s", e, exc_info=True)
 
+    try:
+        from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
+
+        await start_l3_stdio_mcp_host()
+    except Exception as e:
+        logger.warning("[L3 Gateway] L3 stdio MCP 宿主启动异常: %s", e, exc_info=True)
+
     if on_status:
         on_status("approved", "神经接驳成功，引擎已点火")
 
@@ -416,6 +483,13 @@ async def bootstrap_l3_node(
             interval_seconds=memory_sync_interval,
         )
         memory_daemon.start()
+
+    try:
+        from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
+
+        await start_l3_stdio_mcp_host()
+    except Exception as e:
+        logger.warning("[L3 Bootstrap] stdio MCP 宿主启动异常: %s", e, exc_info=True)
 
     return engine, memory_daemon, resolved_node_id
 

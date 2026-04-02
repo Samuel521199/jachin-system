@@ -6,12 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **L1↔L2 网关配对（主路径）**：① L1 `POST /api/v1/l2-gateway/verify-credentials`；L2 `POST /api/v2/admin/login`（用户名为邮箱时）写 `nexus_config` 并 **热启** L1 心跳与 CloudSync。② L1 `POST /api/v1/l2-bridge/mint|redeem`、`/console/l2-bridge`；L2 `GET /api/v2/admin/l1-bridge-config`、`POST /api/v2/admin/redeem-l1-bridge` 与 `/gateway/l1-bridge-callback.html`；`L2_BRIDGE_ALLOWED_RETURN_PREFIXES`。③ CLI 6 位码与 `pairing/*` 为**无头/恢复辅助**。控制台诊断前缀 **`[L1↔L2 Pairing]`**（`core/l2_pairing_diagnostics.py`）。文档 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`
+- **L3_LOCAL MCP 轻量 stdio 制品**：`plugin.json` 支持 `stdio_server`（command/args/env），L3 `l3_packaged_stdio_mcp.register_l3_packaged_stdio_mcps` 在 `mcp_stdio_bootstrap` 中注入 `MCPManager`；`jachin pack` 对 `L3_LOCAL` 校验「`stdio_server` 或 `tools[]` 二选一」。示例 `docs/examples/l3_local_stdio_mcp.plugin.json`，规范 `docs/SKILL_MCP_UPLOAD_SPEC.md` §2.3
 - **MCP（Filesystem 上架包）**：`skills_repo/plugin/com.jachin.mcp.filesystem_workspace` — `L2_GATEWAY` 官方 `@modelcontextprotocol/server-filesystem`，根目录占位符 `__JACHIN_WORKSPACE__`
 - **脚本**：`scripts/sideload_mcp_filesystem_workspace.ps1`（侧载 inventory）、`scripts/test_mcp_l2_filesystem.ps1`（本机/远程探测 `GET/POST /api/v2/mcp/*`）
 
 ### Changed
 
 - **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli` 统一为 **0.8.97**（Git 标签 `v0.8.97`）
+- **文档**：MCP 规格升至 ARCHITECTURE_L3 **v0.4**、MCP_EXECUTION_MODEL **v2.2**；删除根目录重复的 `PROJECT_STRUCTURE.md`（结构以 `docs/FILE_STRUCTURE.md` 为准）；`DIRECTORY_TREE.txt` 同步
 
 ---
 
@@ -36,13 +39,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **L1-L2 配对码溯源**：配对成功后，将 6 位配对码写入 L2 默认子账号 `l1_pairing_code`，实现审计溯源
+- **L1-L2 凭证溯源**：CLI 配对将 6 位码写入 L2 默认子账号 `l1_pairing_code`；Web 绑定写入 `web`（见后续 Web Bridge 变更）
 
 ### Changed
 
 - 版本号统一更新至 v0.8.5
 - **文档整理**：移除过时智能化/招聘长文（`MEMORY_IMPROVEMENTS_*`、`HR_RECRUITMENT_DECOUPLE_*`、`hr_decouple_inventory`、`L3_RECRUITMENT_BUILD_SPEC`、`WEEKLY_DEV_LOG_20260317`）；新增单一事实来源 [docs/HR_RECRUITMENT.md](docs/HR_RECRUITMENT.md)，`docs/README.md` 增加「智能化与招聘」索引
-- **文档对齐（智能化 + HR）**：更新 `JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`（P0/DAG/任务持久现状）、`ARCHITECTURE.md`、`INTELLIGENCE_UPGRADE_OVERVIEW.md`（§1.5 HR 物理绑定）、`README_DEPLOY.md`、`LARK_NO_REPLY_TROUBLESHOOTING.md`、`l3_node/README.md`、`PROJECT_STRUCTURE.md`、根 `README.md`；插件侧 `skills_repo/plugin/README.md`、`INTEGRATION_CORE.md`；`skills_repo/hr-recruitment/README.md`；`.cursor/rules/077-skill-mcp-dependency.mdc`
+- **文档对齐（智能化 + HR）**：更新 `JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`（P0/DAG/任务持久现状）、`ARCHITECTURE.md`、`INTELLIGENCE_UPGRADE_OVERVIEW.md`（§1.5 HR 物理绑定）、`README_DEPLOY.md`、`LARK_NO_REPLY_TROUBLESHOOTING.md`、`l3_node/README.md`、`docs/FILE_STRUCTURE.md`、根 `README.md`；插件侧 `skills_repo/plugin/README.md`、`INTEGRATION_CORE.md`；`skills_repo/hr-recruitment/README.md`；`.cursor/rules/077-skill-mcp-dependency.mdc`
 
 ---
 

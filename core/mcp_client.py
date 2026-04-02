@@ -227,12 +227,29 @@ class MCPManager:
             return
         logger.info("[MCP] 开始并发拉起 %d 个 Server", len(servers))
         for cfg in servers:
+            try:
+                from core.mcp_embedded_runtime import resolve_mcp_cfg_placeholders
+
+                cfg = resolve_mcp_cfg_placeholders(dict(cfg))
+            except Exception:
+                cfg = dict(cfg)
             server_id = cfg.get("id") or cfg.get("name") or "unknown"
             command = cfg.get("command", "")
             args = cfg.get("args") or []
             env = cfg.get("env")
             if not command:
                 logger.warning("[MCP] 跳过无效配置 server_id=%s 缺少 command", server_id)
+                continue
+            try:
+                from core.mcp_embedded_runtime import preflight_mcp_stdio_command, resolve_mcp_stdio_command
+
+                command = resolve_mcp_stdio_command(str(command).strip())
+                ok_pf, pf_msg = preflight_mcp_stdio_command(command, server_id)
+                if not ok_pf:
+                    logger.error("[MCP] %s", pf_msg)
+                    continue
+            except Exception as e:
+                logger.warning("[MCP] 运行时解析/预检异常 server_id=%s err=%s，跳过该 Server", server_id, e)
                 continue
             instance = MCPServerInstance(
                 server_id=server_id,
@@ -305,6 +322,11 @@ class MCPManager:
                 logger.warning("[MCP] list_tools 失败 server_id=%s err=%s", instance.server_id, e)
         return tools
 
+    def can_invoke_stdio_tool(self, tool_name: str) -> bool:
+        """本进程是否已挂载该工具（内置或 stdio Server）。"""
+        n = (tool_name or "").strip()
+        return bool(n) and (n in self._builtin_tool_names or n in self._tool_route)
+
     async def invoke_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """
         根据路由表将工具调用转发到对应 Server 执行。
@@ -323,6 +345,12 @@ class MCPManager:
         动态注入单个 MCP Server 配置（供 Inventory 侧载使用）。
         创建实例、连接、注册工具。返回 True 表示成功。
         """
+        try:
+            from core.mcp_embedded_runtime import resolve_mcp_cfg_placeholders
+
+            cfg = resolve_mcp_cfg_placeholders(dict(cfg))
+        except Exception:
+            cfg = dict(cfg)
         server_id = cfg.get("id") or cfg.get("name") or "unknown"
         command = cfg.get("command", "")
         args = cfg.get("args") or []
@@ -333,6 +361,17 @@ class MCPManager:
         if server_id in self._instances:
             logger.debug("[MCP] add_server 跳过 server_id=%s 已存在", server_id)
             return True
+        try:
+            from core.mcp_embedded_runtime import preflight_mcp_stdio_command, resolve_mcp_stdio_command
+
+            command = resolve_mcp_stdio_command(str(command).strip())
+            ok_pf, pf_msg = preflight_mcp_stdio_command(command, server_id)
+            if not ok_pf:
+                logger.error("[MCP] add_server 预检失败: %s", pf_msg)
+                return False
+        except Exception as e:
+            logger.warning("[MCP] add_server 运行时解析/预检异常 server_id=%s err=%s", server_id, e)
+            return False
         instance = MCPServerInstance(
             server_id=server_id,
             command=command,

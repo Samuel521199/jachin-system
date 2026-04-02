@@ -49,7 +49,7 @@ if ! $USE_CONDA; then
 fi
 echo "  [OK] nexus_daemon installed"
 
-# 配对：已配对则跳过，未配对则自动执行
+# L1 信任：已有 nexus_config 则跳过；否则自动跑 CLI 辅助配对
 CONFIG_PATH="$HOME/.jachin/nexus_config.json"
 ALREADY_PAIRED=false
 if [ -f "$CONFIG_PATH" ]; then

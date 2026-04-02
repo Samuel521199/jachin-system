@@ -1,0 +1,6 @@
+# Official MCP reference servers on PyPI. Source: https://github.com/modelcontextprotocol/servers
+# Install: pip install -r tools/mcp-official/requirements-official-mcp.txt
+# (Keep this file ASCII-only so pip on Windows GBK default does not fail.)
+mcp-server-fetch>=2025.1.16
+mcp-server-time>=2025.7.1
+mcp-server-git>=2025.7.1

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "python_bundle": "3.12.7+embed",
+  "node_bundle": "20.18.0+portable",
+  "notes": "Optional manifest under JACHIN_HOME/runtime/manifest.json for installers to record bundled versions. L3 does not require this file for path resolution."
+}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { resolveAuthSecret } from "@/auth.config";
 import { and, eq } from "drizzle-orm";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { organizationUsers } from "@/db/schema";
@@ -18,10 +19,10 @@ export const dynamic = "force-dynamic";
  * Body: `{ "token": "<invite_jwt>" }`
  */
 export async function POST(request: NextRequest) {
-  const secret = process.env.AUTH_SECRET?.trim();
+  const secret = resolveAuthSecret();
   if (!secret) {
     return NextResponse.json(
-      { success: false, error: "CONFIG", message: "AUTH_SECRET 未配置" },
+      { success: false, error: "CONFIG", message: "AUTH_SECRET 未配置（生产环境必填）" },
       { status: 500 }
     );
   }

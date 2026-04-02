@@ -1,8 +1,14 @@
 # 05 — Layer 1: Jachin Nexus (平台)
 
 **文档类型**: 白皮书 · Layer 1 详细说明  
-**版本**: V2.1（P1/P2 schema + **极简大一统**：零感知生根、无状态魔法加入、JWT 租户 SSOT、`withOrgRole`）  
+**版本**: V2.2（工作区显式 onboarding；与 **L2 网关 / L2↔L3** 边界以 [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](../ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md) 为准）  
 **基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) · Schema: [`cloud/nexus/src/db/schema.ts`](../../cloud/nexus/src/db/schema.ts)
+
+---
+
+## 〇·〇、 与现行实现对齐（必读）
+
+自 **V2.2** 起，**注册不再自动创建组织**：`POST /api/auth/register` 仅写入 `users`；用户登录后在 **`/console/workspace`** **创建或加入**工作区后，会话 JWT 才有 `orgId`/`orgRole`。历史迁移数据仍可能含 `is_personal_default` 个人组织，**新用户路径**以架构文档为准。OAuth 与 Credentials **均不再**调用已删除的 `ensurePersonalWorkspace` 自动生根。
 
 ---
 
@@ -18,12 +24,12 @@
 
 以下四条为 Layer 1 **实现与文档**的共同约束（代码落点：`cloud/nexus` — Auth.js、`middleware.ts`、`auth.config.ts` / `auth.edge.ts`、`lib/tenant.ts`、`lib/with-org-role.ts`、`lib/org-invite.ts`、`app/api/v1/organizations/*`）。
 
-1. **零感知生根 (Zero-Touch Genesis)**：自然人注册或 OAuth 首登后，**不得**出现「请先创建组织」类阻断。系统在 DB 事务或等价路径中完成 **`User → 个人隐藏 Org（`is_personal_default`）→ `organization_users` 行（`owner`）**；登录后会话 JWT 携带合法 **`org_id` / `org_role`**（即租户上下文）。
+1. **显式工作区 (Workspace Onboarding)**：注册 **仅** 创建 `users`。用户 **主动** 在控制台「工作区」**创建或加入**组织后，`organization_users` 写入角色；JWT 经 `listOrganizationsForUser` 注入 **`orgId` / `orgRole`**。与 L2 网关、L3 填表边界见 [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](../ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md)。
 2. **无状态魔法加入 (Stateless Magic Join)**：不设邮件审批状态机表。`owner`/`admin` 通过 **`POST /api/v1/organizations/members/invite`** 签发短效签名 JWT；被邀请人已登录后 **`POST .../members/join`** 验签并 **INSERT `organization_users`**。切换当前工作区：**`POST .../active-org`**；枚举所属组织：**`GET .../list`**。
 3. **防弹罩中间件 (Default Deny Middleware)**：除白名单（如 `/`、`/login`、`/auth/*`、`/api/auth/*`、全站 `/api/*` 放行由路由内自鉴权、对外 Webhook 等）外，页面级访问由 Auth.js **`authorized`** 强制会话。业务租户解析：**`extractTenantId` 仅信验签 JWT 内 `orgId`**；L2/机器流量使用显式 **`extractTenantIdAllowingMachineFallback`**。
 4. **历史清洗与 SSOT (Total Sanitization)**：文档与代码只描述 **「租户 = `organizations.id`、归属 = `organization_users`」**；不在业务叙述中复活「用户表自带租户列」等已废止模型。
 
-### 〇·一·1 零感知生根与登录闭环（时序）
+### 〇·一·1 注册与工作区闭环（时序）
 
 ```mermaid
 sequenceDiagram
@@ -31,27 +37,27 @@ sequenceDiagram
     participant U as 自然人
     participant B as 浏览器
     participant Reg as Register API
+    participant WS as /console/workspace
     participant GH as OAuth / Auth.js
     participant DB as PostgreSQL
     participant JWT as Auth.js JWT 回调
 
-    Note over U,JWT: 路径 A — 邮箱密码注册（单事务生根）
+    Note over U,JWT: 路径 A — 邮箱密码注册（仅 users）
     U->>B: 填写邮箱/密码
     B->>Reg: POST /api/auth/register
-    Reg->>DB: 事务: INSERT users + organizations(个人) + organization_users(owner)
-    DB-->>Reg: userId / orgId
-    Reg-->>B: 201 success
+    Reg->>DB: INSERT users
+    DB-->>Reg: userId
+    Reg-->>B: success
     B->>GH: signIn(credentials)
-    GH->>DB: 校验凭据
-    GH->>JWT: jwt 回调: 解析/补齐 orgId、orgRole
-    JWT-->>B: Set-Cookie（会话 JWT）
+    GH->>JWT: jwt 回调: 无组织则 orgId 为空
+    JWT-->>B: Set-Cookie
+    B->>WS: 创建或加入工作区 → organization_users
 
-    Note over U,JWT: 路径 B — OAuth 首登（createUser + 生根）
+    Note over U,JWT: 路径 B — OAuth 首登（仅 users + 可选工作区页）
     U->>GH: GitHub 等 OAuth
     GH->>DB: Adapter 写入 users / accounts
-    GH->>DB: events.createUser → ensurePersonalWorkspace（若尚无成员行）
-    GH->>JWT: jwt 回调: 注入 orgId、orgRole
-    JWT-->>B: Set-Cookie（会话 JWT）
+    GH->>JWT: jwt 回调: listOrganizationsForUser
+    JWT-->>B: Set-Cookie（有组织则带 orgId）
 ```
 
 ---
@@ -69,7 +75,7 @@ Layer 1 是 Jachin 系统的**平台**：用户主账号注册/登录，平台�
 ## 二、 核心模块全景 (Core Modules)
 
 ### 2.1 极简身份之门 (Jachin ID & Auth.js)
-* **Auth.js 闭环**：Credentials（邮箱+密码）+ 可选 OAuth；注册 API 与 OAuth **`createUser`** 均触发 **零感知生根**（见 §〇·一），登录后会话含 **`orgId`/`orgRole`**。
+* **Auth.js 闭环**：Credentials + 可选 OAuth；注册 **仅** `users`；会话 **`orgId`/`orgRole`** 来自已加入的组织（见 §〇·〇、§〇·一）。
 * **演进中能力**：Magic Link / Passkey / Web3 可作为补充登录方式；**当前实现**以 Credentials + JWT 会话为 SSOT，与 `middleware` Default Deny 一致。
 
 ### 2.2 舰队指挥大屏 (Fleet Management) - B端杀器

@@ -44,6 +44,7 @@ ENV/
 
 # Nexus pairing (memory mode fallback)
 .nexus-pairing.json
+.nexus-l2-bridge.json
 
 # Logs
 *.log
@@ -133,6 +134,9 @@ bi_data/
 
 # Build artifacts
 skills_repo/*.zip
+
+# L3 桌面包内嵌 Python 运行时（本地打包生成，体积 >100MB，勿提交）
+dist_jachin_desktop/runtime/
 
 # Temporary commit messages
 commit_msg.txt

@@ -33,8 +33,15 @@ def _get_jwt_expiry_hours() -> int:
     return int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
 
 
-def create_admin_token(admin_id: str, username: str, main_user_id: str, role: str = "admin") -> str:
-    """签发 24 小时有效 JWT"""
+def create_admin_token(
+    admin_id: str,
+    username: str,
+    main_user_id: str,
+    role: str = "admin",
+    *,
+    workspace_gateway_access: bool = True,
+) -> str:
+    """签发 Admin JWT。workspace_gateway_access=False 时 /api/v2/admin/* 将 403（预留）。"""
     try:
         import jwt
     except ImportError:
@@ -44,6 +51,7 @@ def create_admin_token(admin_id: str, username: str, main_user_id: str, role: st
         "username": username,
         "main_user_id": main_user_id,
         "role": role,
+        "workspace_gateway_access": workspace_gateway_access,
         "exp": int(time.time()) + _get_jwt_expiry_hours() * 3600,
         "iat": int(time.time()),
     }
@@ -98,6 +106,15 @@ async def get_current_admin(
     if not token:
         raise HTTPException(status_code=401, detail="需要登录，请携带 Authorization: Bearer <token>")
     payload = decode_admin_token(token)
+    wga = payload.get("workspace_gateway_access")
+    if wga is False:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "GATEWAY_ACCESS_DENIED",
+                "message": "权限不足：当前令牌无权使用 L2 网关控制台。",
+            },
+        )
     return {
         "id": payload.get("sub", ""),
         "username": payload.get("username", ""),
