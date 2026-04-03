@@ -1,6 +1,6 @@
 # =============================================================================
 # Layer2 (用户) - 一键安装 (Windows)
-# nexus_daemon（V2：记忆用 LanceDB，无需 Qdrant）
+# nexus_daemon（V2：LanceDB 本地向量记忆）
 # =============================================================================
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,7 @@ Write-Host '  Layer2 - Install' -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# V2: Qdrant 已废弃，记忆由 LanceDB 管理，跳过
+# V2: 向量由 LanceDB 管理，跳过独立向量服务
 
 # nexus_daemon (Conda env for Python 3.11)
 Write-Host "[1/4] nexus_daemon (Python)..." -ForegroundColor Blue
@@ -55,7 +55,7 @@ if (-not $UseConda) {
 }
 Write-Host '  [OK] nexus_daemon installed' -ForegroundColor Green
 
-# 配对：已配对则跳过，未配对则自动执行
+# L1 信任：已有 nexus_config 则跳过；否则自动跑 CLI 辅助配对（有 Gateway 时可改用 /gateway Nexus 登录）
 $ConfigPath = Join-Path $env:USERPROFILE ".jachin\nexus_config.json"
 $AlreadyPaired = $false
 if (Test-Path $ConfigPath) {

@@ -1,6 +1,8 @@
 /**
- * 直接修复 store schema（plugins_registry 新列 + user_licenses 表）
- * 使用与 Next.js 相同的 DATABASE_URL，解决迁移与应用连接不同 DB 的问题
+ * 直接修复 store / 租户 schema（plugins_registry 新列、user_licenses、organizations.slug 等）
+ * 使用与 Next.js 相同的 DATABASE_URL，解决：
+ * - 迁移与应用连不同库
+ * - journal 已登记但某次 migrate 未真正执行 SQL（列仍缺失）——与 drizzle 迁移幂等互补
  *
  * 用法: cd cloud/nexus && npx tsx scripts/init-store-schema.ts
  */
@@ -148,14 +150,20 @@ async function main() {
     `);
     log("[init-store-schema] telemetry_logs, developer_payouts OK");
 
-    // 5. users 表补齐 tenant_id、is_root（配对确认插入默认用户需要，与 schema.ts 对齐）
-    await sql.unsafe(`
-      ALTER TABLE public.users ADD COLUMN IF NOT EXISTS tenant_id TEXT;
-    `);
+    // 5. users.is_root（配对等）。tenant_id 已废止（P1 SSOT），见 drizzle/0012、docs/MIGRATION_P1_TENANT.md
     await sql.unsafe(`
       ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_root BOOLEAN NOT NULL DEFAULT false;
     `);
     log("[init-store-schema] users columns OK");
+
+    // 6. organizations.slug（Drizzle 0014；listOrganizationsForUser / JWT 依赖）
+    await sql.unsafe(`
+      ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS slug varchar(64);
+    `);
+    await sql.unsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS organizations_slug_unique ON public.organizations (slug);
+    `);
+    log("[init-store-schema] organizations.slug OK");
 
     // 打印连接信息（脱敏）便于排查 DB 不一致
     const masked = url.replace(/:([^:@]+)@/, ":****@");

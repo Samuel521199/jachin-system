@@ -7,6 +7,12 @@ alwaysApply: false
 
 **V2**：L1 为平台，用户主账号注册/管理，与 L2/L3 无直接耦合。详见 [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)。
 
+## 【强制】组织即租户与鉴权（与根目录 `.cursorrules` 一致）
+
+- 租户 SSOT = `organizations.id`；成员关系 SSOT = `organization_users`。**禁止**假设 `users` 表含租户列。
+- 多租户业务 API：**优先** `withOrgRole` + 会话 JWT 中的 `orgId`/`orgRole`；全站 **Default Deny** 见 `middleware.ts` + `auth.config.ts`。
+- 魔法邀请、成员管理、切换当前组织：`/api/v1/organizations/*`（见白皮书 §〇·一）。
+
 ## 设计哲学
 
 Layer 1 **绝不能做成传统 SaaS 或 Web2.0 商城**（如淘宝、App Store 那种沉重、复杂的列表页）。

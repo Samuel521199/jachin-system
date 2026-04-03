@@ -1,4 +1,4 @@
-//! V2 L3-L2 零信任配对 - 网关接驳
+//! V2 L2↔L3 零信任配对（非 L1↔L3）— 网关接驳
 //! 读写 ~/.jachin/l2_gateway_config.json，管理 L2 网关地址与配对状态
 
 use serde::{Deserialize, Serialize};
@@ -98,9 +98,49 @@ pub struct WriteGatewayConfigInput {
     pub url: String,
     #[serde(default, alias = "displayName")]
     pub display_name: Option<String>,
+    /// L1 工作区 UUID（与 organization_slug 二选一）
+    #[serde(default, alias = "organizationId")]
+    pub organization_id: Option<String>,
+    /// L1 工作区 slug（小写字母、数字、连字符）
+    #[serde(default, alias = "organizationSlug")]
+    pub organization_slug: Option<String>,
 }
 
-/// 保存 L2 网关地址及可选设备名（设备名会同步到 L2 审批界面）
+fn merge_workspace_into_cfg(cfg: &mut serde_json::Value, input: &WriteGatewayConfigInput) -> Result<(), String> {
+    let id = input
+        .organization_id
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let slug = input
+        .organization_slug
+        .as_ref()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let obj = cfg
+        .as_object_mut()
+        .ok_or("internal: config root must be object")?;
+    match (id, slug) {
+        (Some(_), Some(_)) => Err("请勿同时填写工作区 UUID 与 slug，只填其一即可".to_string()),
+        (Some(id), None) => {
+            obj.insert("organization_id".to_string(), serde_json::json!(id));
+            obj.remove("organization_slug");
+            Ok(())
+        }
+        (None, Some(s)) => {
+            obj.insert("organization_slug".to_string(), serde_json::json!(s));
+            obj.remove("organization_id");
+            Ok(())
+        }
+        (None, None) => {
+            obj.remove("organization_id");
+            obj.remove("organization_slug");
+            Ok(())
+        }
+    }
+}
+
+/// 保存 L2 网关地址、可选设备名、可选工作区（organization_id 或 organization_slug，供 L3 auth/sync）
 #[tauri::command]
 pub fn write_l2_gateway_config(input: WriteGatewayConfigInput) -> Result<(), String> {
     let path = gateway_config_path()?;
@@ -114,12 +154,13 @@ pub fn write_l2_gateway_config(input: WriteGatewayConfigInput) -> Result<(), Str
         serde_json::json!({})
     };
     cfg["l2_base_url"] = serde_json::json!(url);
-    if let Some(name) = input.display_name {
+    if let Some(name) = &input.display_name {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
             cfg["display_name"] = serde_json::json!(trimmed.chars().take(64).collect::<String>());
         }
     }
+    merge_workspace_into_cfg(&mut cfg, &input)?;
     fs::write(
         &path,
         serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?,
@@ -134,10 +175,14 @@ pub struct GatewayConnectInput {
     pub l2_url: String,
     #[serde(default, alias = "displayName")]
     pub display_name: Option<String>,
+    #[serde(default, alias = "organizationId")]
+    pub organization_id: Option<String>,
+    #[serde(default, alias = "organizationSlug")]
+    pub organization_slug: Option<String>,
 }
 
 /// 发起网关接驳：重启 L3 为 --gateway 模式（支持 Sidecar 或 Python 回退）
-/// display_name 会写入配置并作为 JACHIN_DEVICE_NAME 传给 L3，同步到 L2 审批界面
+/// display_name 会写入配置并作为 JACHIN_DEVICE_NAME 传给 L3；工作区写入 l2_gateway_config 供 auth/sync
 #[tauri::command]
 pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) -> Result<(), String> {
     let url = input.l2_url.trim().trim_end_matches('/');
@@ -145,6 +190,8 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
     write_l2_gateway_config(WriteGatewayConfigInput {
         url: url.to_string(),
         display_name: display_name.clone(),
+        organization_id: input.organization_id.clone(),
+        organization_slug: input.organization_slug.clone(),
     })?;
 
     let env_root = crate::l3_spawn::exe_dir().unwrap_or_else(PathBuf::new);

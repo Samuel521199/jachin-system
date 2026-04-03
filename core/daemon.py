@@ -83,7 +83,8 @@ def validate_config() -> tuple[str, str, str]:
 
     if not token:
         console.print(
-            "[red]❌ 边缘智能体尚未配对，请先运行 [bold]python -m core.cli pair[/bold][/red]"
+            "[red]❌ 尚未写入 nexus_config（未与 L1 配对）。请在 L2 /gateway 使用 L1 邮箱+密码或 "
+            "\"Nexus 账号登录\"；无 Web 时再运行 [bold]python -m core.cli pair[/bold][/red]"
         )
         raise SystemExit(1)
 

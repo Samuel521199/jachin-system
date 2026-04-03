@@ -17,7 +17,7 @@ cmd_exists() { command -v "$1" &>/dev/null; }
 
 [ "$LAYER" = "all" ] || [ "$LAYER" = "layer2" ] && {
     cmd_exists python3 || cmd_exists python || MISSING+=("Python 3.10+ (apt install python3 / brew install python)")
-    cmd_exists docker || [ "$LAYER" = "all" ] || WARNINGS+=("Docker (Qdrant 需 Docker)")
+    cmd_exists docker || [ "$LAYER" = "all" ] || WARNINGS+=("Docker (可选：容器化 Redis/基础设施)")
 }
 
 [ "$LAYER" = "all" ] || [ "$LAYER" = "layer3" ] && {

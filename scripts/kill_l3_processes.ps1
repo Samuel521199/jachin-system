@@ -1,9 +1,12 @@
-# 清理残留的 L3 进程与端口
+﻿# 清理残留的 L3 进程与端口
 # 用法: .\scripts\kill_l3_processes.ps1
 #       .\scripts\kill_l3_processes.ps1 -NoPause  # 不等待 Enter，适合脚本调用
 
 param([switch]$NoPause)
 $ErrorActionPreference = 'Continue'
+# 被 start-layer3 等调用时独立进程，须自设编码，否则 Windows PowerShell 5.1 下中文易乱码
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $ScriptDir) { $ScriptDir = ".\scripts" }
 

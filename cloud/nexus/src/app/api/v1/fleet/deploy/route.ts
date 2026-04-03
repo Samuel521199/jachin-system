@@ -1,18 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { jsonOrgRequiredResponse } from "@/lib/org-session-guard";
 import { edgeAgents, blueprints } from "@/db/schema";
-import { eq, inArray, and } from "drizzle-orm";
-
-const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
+import { eq, inArray, and, or, isNull } from "drizzle-orm";
 
 /**
  * POST /api/v1/fleet/deploy
- * 批量下发蓝图 - 更新多台 edge_agents 的 current_blueprint_id
+ * 批量下发蓝图 - 更新多台 edge_agents 的 current_blueprint_id（仅当前登录用户名下）
  */
 export async function POST(req: NextRequest) {
   try {
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) {
+      return NextResponse.json(
+        { success: false, error: "请先登录" },
+        { status: 401 }
+      );
+    }
+
+    const activeOrgId =
+      typeof session.user?.orgId === "string" ? session.user.orgId.trim() : "";
+    if (!activeOrgId) {
+      return jsonOrgRequiredResponse();
+    }
+
     const body = await req.json().catch(() => ({}));
-    const { agent_ids, blueprint_id, user_id } = body;
+    const { agent_ids, blueprint_id } = body;
 
     if (!Array.isArray(agent_ids) || agent_ids.length === 0) {
       return NextResponse.json(
@@ -35,7 +50,6 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getDb()!;
-    const userId = user_id ?? DEFAULT_USER_ID;
 
     const [bp] = await db
       .select({ id: blueprints.id })
@@ -50,6 +64,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const orgClause = or(
+      isNull(edgeAgents.organizationId),
+      eq(edgeAgents.organizationId, activeOrgId)
+    );
+
     const result = await db
       .update(edgeAgents)
       .set({
@@ -59,7 +78,8 @@ export async function POST(req: NextRequest) {
       .where(
         and(
           inArray(edgeAgents.id, agent_ids),
-          eq(edgeAgents.userId, userId)
+          eq(edgeAgents.userId, userId),
+          orgClause
         )
       )
       .returning({ id: edgeAgents.id });

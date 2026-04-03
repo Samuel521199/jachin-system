@@ -36,8 +36,8 @@ dependencies:
     - asyncpg>=0.29.0    # PostgreSQL async driver
     - psycopg2-binary>=2.9.9  # PostgreSQL sync driver
 
-    # Vector Database
-    - qdrant-client>=1.7.0  # Qdrant vector database client
+    # Vector (LanceDB)
+    - lancedb>=0.3.0
 
     # Redis
     - redis>=5.0.1

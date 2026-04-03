@@ -22,8 +22,8 @@ function generateShortCode(): string {
 
 /**
  * POST /api/v1/pairing/request
- * 阶段 1：Layer 2 发起配对请求，获取 6 位码
- * Drizzle ORM：写入 edge_agents 表
+ * L1↔L2 **辅助**路径：无头/CLI 发起请求，获取 6 位码（主路径见 l2-bridge + /gateway）。
+ * Drizzle：写入 edge_agents（pending）。
  */
 export async function POST(req: NextRequest) {
   try {

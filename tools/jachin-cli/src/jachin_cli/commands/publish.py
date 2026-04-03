@@ -156,7 +156,8 @@ def _do_publish(
         else:
             with open(zip_path, "rb") as f:
                 files = {"package": (zip_path.name, f, "application/zip")}
-                resp = httpx.post(url, data=data, files=files, headers=headers, timeout=60.0)
+                # 本机 next dev / 冷启动或大包上传可能超过 60s
+                resp = httpx.post(url, data=data, files=files, headers=headers, timeout=180.0)
 
         if resp.status_code == 200:
             return True

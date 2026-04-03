@@ -20,7 +20,7 @@
 **参数**：`target_role`（如 `backend_engineer`）、`resume_filename`（如 `zhangsan_resume.md`）。
 
 **Host 函数**：
-- `mcp_read_file(path_ptr, path_len)`：L3 本地有则直读，否则经 L2 委托其他 L3 或 L2 MCP 读取简历/JD
+- `mcp_read_file(path_ptr, path_len)`：L3 本地有则直读，否则经 L2 `/api/v2/mcp/invoke`（L2 委托至具备工具的 L3；**兼容** HTTP peer 链）读简历/JD
 - `llm_complete(prompt_ptr, prompt_len)`：调用 L3 本地 LLM
 
 **依赖**：L3 已配对并持有 API Key；简历/JD 读取优先 L3 本地，无则 L2 委托。
@@ -191,52 +191,41 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 
 ## 四、三层架构 MCP 流转
 
-### 4.1 总览（L3 优先执行模型）
+### 4.1 总览（规格 vs 现状）
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  L3 — MCP 执行主体                                                             │
-│  本机已安装 → 本地直接执行；本机未安装 → 请求 L2 委托其他 L3                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │ 本机无技能时
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  L2 — 委托协调（不执行 MCP）                                                     │
-│  查找有权限且空闲的 L3，委托执行，结果转发回发起方                                 │
-│  core/api/routes/v2_mcp.py、core/mcp_client.py（L2 侧载 MCP 时兼容）           │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+**规格与实现对照**（单一维护点）：[MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md)（v2.2）、[ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)（v0.4）。
 
-### 4.2 MCP 执行策略
+本文 §4 仅保留 API/路径索引；流程、环境变量、Task Token、LOCAL_PINNED、NAT 降级说明以 **MCP_EXECUTION_MODEL** 为准。
+
+### 4.2 MCP 执行策略（摘要）
 
 | 场景 | 执行位置 | 说明 |
 |------|----------|------|
-| **本机有技能** | L3 本地 | 直接执行，压力在 L3 |
-| **本机无技能** | 其他 L3 | L2 委托有权限且空闲的 L3 执行 |
-| **复杂任务** | 多 L3 协同 | L2 coordinate 拆分分配 |
+| **本机有工具** | L3 本地 | stdio + l3_mcp_cache + 内置工具 |
+| **本机无工具** | L2 TaskManager | Pull 优先；HTTP 入站须 `task_token`；候选节点 ∩ `l3_nodes` |
+| **LOCAL_PINNED 工具** | 仅本 L3 | 禁止跨节点委托（`core/mcp_tool_locality.py`） |
+| **复杂任务** | 多 L3 | L2 coordinate / 编排演进中 |
 
-详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)。
+### 4.3 MCP 配置与运行位置（默认 L3）
 
-### 4.3 L2 MCP 配置（侧载兼容）
-
-- 配置：`~/.jachin/mcp_servers.json`（参考 `config/mcp_servers.json.example`）
-- L3_LOCAL MCP 优先：L2 同步到 `inventory/l3_mcps/`，L3 拉取到 `l3_mcp_cache/` 动态加载
-- 侧载 MCP（L2_GATEWAY）：仍可配置于 L2，供本机无技能时 L2 委托其他 L3 或兼容旧流程
+- 配置：`~/.jachin/mcp_servers.json`（参考 `config/mcp_servers.json.example`）；侧载/同步的 MCP 描述仍在 `~/.jachin/inventory/mcps/`（L2 从 L1 同步后，**同一台用户机上的 L3** 读取并起 stdio 子进程）。
+- L3_LOCAL MCP：L2 同步到 `inventory/l3_mcps/`，L3 拉取到 `l3_mcp_cache/` 动态加载（Python 模块型）。
+- L2_GATEWAY（清单语义）：**长期默认由 L3 执行 stdio**；仅在 **`JACHIN_L2_STDIO_MCP=1`** 时由 L2 进程侧载 stdio（兼容/回滚）。跨节点代跑仍走 **Pull + HTTP 回退**，与 TaskManager 一致。
 
 ### 4.4 L3 调用 MCP 的两种方式
 
 | 方式 | 说明 |
 |------|------|
-| **Agent 直接调用** | `l3_node/agent_core.py`：本机有则 `mcp_registry.invoke` 本地执行；无则 `invoke_via_l2` 请求 L2 委托 |
-| **Wasm host 函数** | `mcp_read_file`：本地直读优先；否则经 L2 委托或 `POST /api/v2/mcp/invoke` |
+| **Agent 直接调用** | `mcp_registry.invoke` 本机优先；否则 `invoke_via_l2` |
+| **Wasm host 函数** | `mcp_read_file`：本地直读优先；否则 `POST /api/v2/mcp/invoke` |
 
 ### 4.5 MCP 关键 API
 
 | 接口 | 说明 |
 |------|------|
-| `GET /api/v2/mcp/tools` | L2 返回 MCP 工具列表（含 L3 已同步 + L2 侧载） |
-| `POST /api/v2/mcp/invoke` | 本机无技能时，L2 委托其他 L3 执行并返回结果（X-Sub-Account-Id 可选） |
-| `POST /api/v3/mcp/execute` | L3 暴露给 L2 委托调用的 MCP 执行接口 |
+| `GET /api/v2/mcp/tools` | 默认：**Redis 聚合**各 L3 `mcp_tools`；`JACHIN_L2_STDIO_MCP=1` 时合并 L2 本机侧载 |
+| `POST /api/v2/mcp/invoke` | L3 缺工具入口；L2 **委托**（Pull / HTTP）；仅回滚标志开启时 L2 本机 stdio |
+| `POST /api/v3/mcp/execute` | L2 对 **可达** peer 触发本机 MCP（须 `task_id`+`task_token`；`JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1` 可跳过） |
 
 ### 4.6 mcp_read_file 实现逻辑（wasm_runner）
 
@@ -254,9 +243,14 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | `l3_node/skills/loader.py` | 技能扫描、ID 统一、路径覆盖、resume/jd 注入 |
 | `l3_node/skill_sync.py` | L3 从 L2 同步技能到 l3_skill_cache |
 | `l3_node/mcp_sync.py` | L3 从 L2 同步 L3_LOCAL MCP 到 l3_mcp_cache |
+| `l3_node/mcp_stdio_bootstrap.py` | L3 内嵌 stdio MCP Host（`MCPManager` + inventory 扫描） |
 | `l3_node/http_server.py` | GET /api/v3/skills、POST /execute，技能去重 |
 | `l3_node/llm_client.py` | LiteLLMEngine、_normalize_model |
-| `core/api/routes/v2_mcp.py` | L2 MCP invoke |
+| `core/api/routes/v2_mcp.py` | L2 MCP tools / invoke（TaskManager 委托 + 可选本机 stdio） |
+| `core/l2_stdio_mcp_flag.py` | `JACHIN_L2_STDIO_MCP` 回滚开关 |
+| `core/mcp_task_token.py` | 跨节点委托 Task Token |
+| `core/mcp_tool_locality.py` | LOCAL_PINNED |
+| `core/l3_node_db_filter.py` | 委托目标 ∩ SQLite `l3_nodes` |
 | `core/api/routes/v2_inventory.py` | L2 技能清单与下载 |
 | `tools/jachin-cli/src/jachin_cli/commands/pack.py` | jachin pack |
 | `tools/jachin-cli/src/jachin_cli/commands/publish.py` | jachin publish |
@@ -268,7 +262,10 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 
 ## 六、相关文档
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — 架构规范
+- [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md) — L3 MCP Host + L2 TaskManager 规格 v0.4
+- [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) — 目标态与兼容实现对照
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — 一店一库总览
 - [L1_L2_L3_END_TO_END_FLOW.md](./L1_L2_L3_END_TO_END_FLOW.md) — 端到端流程
 - [MCP_SPEC.md](./MCP_SPEC.md) — MCP 接入规范
-- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) — L3-L2 配对
+- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) — **L2↔L3** 配对（非 L1↔L3）；总述见 [ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md](./ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md)
+- [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md) — L1-L2 控制面信任（网关邮箱 / Web Bridge / CLI 辅助）

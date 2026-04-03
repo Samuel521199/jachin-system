@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { userLicenses } from "@/db/schema";
 import { eq, and, or, gt, isNull } from "drizzle-orm";
-import { extractTenantId } from "@/lib/tenant";
+import { extractTenantIdAllowingMachineFallback } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(request: NextRequest) {
   try {
-    const tenantId = extractTenantId(request);
+    const tenantId = await extractTenantIdAllowingMachineFallback(request);
     if (!tenantId) {
       return NextResponse.json(
         { success: true, data: [], meta: { tenant_id: null } },

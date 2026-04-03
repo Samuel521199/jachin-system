@@ -17,7 +17,7 @@ except ImportError:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 
@@ -26,6 +26,7 @@ class UTF8JSONResponse(JSONResponse):
     media_type = "application/json; charset=utf-8"
 from contextlib import asynccontextmanager
 import asyncio
+import base64
 import os
 import logging
 import sys
@@ -67,6 +68,7 @@ class _AccessLogFilter(logging.Filter):
         "GET /api/v3/logs/recent",
         "GET /api/v3/config ",
         "GET /api/v2/devices ",
+        "GET /api/v2/mcp/delegate/poll",
         "GET /api/v3/suggestions",
         "OPTIONS /api/v3/logs/recent",
     )
@@ -228,8 +230,6 @@ def _asyncio_task_exception_handler(loop: asyncio.AbstractEventLoop, context: di
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - v5.0 极简模式"""
-    heartbeat_task = None
-    cloud_sync_task = None
     try:
         # 抑制 MCP SDK anyio cancel scope 跨 task 退出的误报
         try:
@@ -261,10 +261,12 @@ async def lifespan(app: FastAPI):
                 logger.warning("L2 LanceDB 初始化跳过（Embedder 或 lancedb 不可用）")
         except Exception as e:
             logger.warning("init_l2_lancedb 跳过: %s", e)
-        # L1-L2 策略同步心跳：启动后台守护进程
+        # L1-L2 策略同步心跳：启动后台守护进程（任务挂 app.state 供配对后热重启）
+        app.state.l1_heartbeat_task = None
+        app.state.cloud_sync_task = None
         try:
             from core.sync_daemon import start_l1_heartbeat_background
-            heartbeat_task = start_l1_heartbeat_background()
+            app.state.l1_heartbeat_task = start_l1_heartbeat_background()
         except Exception as e:
             logger.warning("L1 心跳守护进程启动跳过: %s", e)
         # 本地数字仓库：确保目录存在
@@ -287,9 +289,26 @@ async def lifespan(app: FastAPI):
         # L1-L2 云边同步：神谕 manifest 拉取 + 技能/MCP 空投（必须在 initial_reload 之后）
         try:
             from core.sync_daemon import start_cloud_sync_background
-            cloud_sync_task = await start_cloud_sync_background(interval_seconds=60)
+
+            app.state.cloud_sync_task = await start_cloud_sync_background(interval_seconds=60)
         except Exception as e:
             logger.warning("云边同步守护进程启动跳过: %s", e)
+        try:
+            from core.sync_daemon import L2_PROCESS_ID, log_pairing_snapshot
+
+            _hb = getattr(app.state, "l1_heartbeat_task", None)
+            _cs = getattr(app.state, "cloud_sync_task", None)
+            log_pairing_snapshot(
+                "lifespan_startup_complete",
+                extra_lines=[
+                    f"本进程 L2 标识(心跳/集群日志): L2_PROCESS_ID={L2_PROCESS_ID}",
+                    f"l1_heartbeat_task: {'已启动' if _hb else '未启动(None)'}",
+                    f"cloud_sync_task: {'已启动' if _cs else '未启动(None)'}",
+                    "说明: 先启动 L2 后配对时，网关登录成功后会再打印 post_login_hot_restart 诊断块。",
+                ],
+            )
+        except Exception as e:
+            logger.warning("配对诊断块输出跳过: %s", e)
         # 断网自治：从本地 role_permissions 预加载 RBAC 策略（L1 同步前或断网时作为真理来源）
         try:
             from core.policy_enforcer import load_from_local_db
@@ -303,17 +322,18 @@ async def lifespan(app: FastAPI):
     yield
 
     # 先停止 sync/heartbeat，再通过 reloader 关闭 MCP（同 task 退出，避免 anyio 报错）
-    if heartbeat_task and not heartbeat_task.done():
-        heartbeat_task.cancel()
+    hb = getattr(app.state, "l1_heartbeat_task", None)
+    cs = getattr(app.state, "cloud_sync_task", None)
+    if hb and not hb.done():
+        hb.cancel()
         try:
-            import asyncio
-            await asyncio.wait_for(asyncio.shield(heartbeat_task), timeout=2.0)
+            await asyncio.wait_for(asyncio.shield(hb), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-    if cloud_sync_task and not cloud_sync_task.done():
-        cloud_sync_task.cancel()
+    if cs and not cs.done():
+        cs.cancel()
         try:
-            await asyncio.wait_for(asyncio.shield(cloud_sync_task), timeout=2.0)
+            await asyncio.wait_for(asyncio.shield(cs), timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
     try:
@@ -321,13 +341,13 @@ async def lifespan(app: FastAPI):
         await request_shutdown_and_wait()
     except Exception as e:
         logger.warning("InventoryReloader 关闭异常: %s", e)
-    logger.info("Shutting down Jachin Nexus v0.8.50 (Singularity OS)...")
+    logger.info("Shutting down Jachin Nexus v0.8.97 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="0.8.50",
+    version="0.8.97",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码
@@ -348,6 +368,14 @@ try:
     app.add_middleware(L1SubscriptionMiddleware)
 except ImportError as e:
     logger.warning("L1SubscriptionMiddleware 未加载: %s", e)
+
+# /gateway 审批面板：去掉条件请求头，避免 index.html 常显 304、本地改 UI 不刷新
+try:
+    from core.middleware.gateway_dev_static import GatewayStaticNo304Middleware
+
+    app.add_middleware(GatewayStaticNo304Middleware)
+except ImportError as e:
+    logger.warning("GatewayStaticNo304Middleware 未加载: %s", e)
 
 # L2 本地管理控制台静态资源
 _static_admin = Path(__file__).resolve().parent.parent / "static" / "admin"
@@ -404,6 +432,20 @@ if v2_skills_router:
 if v2_events_router:
     app.include_router(v2_events_router)
 logger.info("Routes: /api, /api/v2/auth/sync, /api/v2/auth/check, /api/v2/keys, /api/v2/devices, /api/v2/memory/*, /api/v2/mcp/*, /api/v2/inventory/*, /api/v2/events/*, /api/v2/coordinate/*, /api/v2/admin/*, /api/v3/*")
+
+# 浏览器打开 /gateway/ 等页面时会请求站点根 /favicon.ico；未处理时访问日志出现 404
+_FAVICON_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ZkAAAAASUVORK5CYII="
+)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico():
+    return Response(
+        content=_FAVICON_PNG_BYTES,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 # 健康检查端点
 @app.get("/health")

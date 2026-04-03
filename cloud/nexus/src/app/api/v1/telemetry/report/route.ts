@@ -6,7 +6,7 @@ import {
   pluginsRegistry,
 } from "@/db/schema";
 import { eq, and, or } from "drizzle-orm";
-import { extractTenantId } from "@/lib/tenant";
+import { extractTenantIdAllowingMachineFallback } from "@/lib/tenant";
 import { rateLimit, TELEMETRY_LIMIT } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const tenantId = extractTenantId(request);
+    const tenantId = await extractTenantIdAllowingMachineFallback(request);
     const authHeader = request.headers.get("Authorization");
     if (!tenantId || !authHeader?.startsWith("Bearer ")) {
       return NextResponse.json(

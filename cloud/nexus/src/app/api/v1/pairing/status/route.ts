@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { error as logError } from "@/lib/console-utc";
 import { edgeAgents } from "@/db/schema";
+import { resolveTenantIdForEdgeUser } from "@/lib/l1-workspace-context";
 import { pairingStoreGetBySession, pairingStoreGetByCode } from "@/lib/pairing-store";
 import { eq } from "drizzle-orm";
+
+const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/v1/pairing/status?code=XXX 或 ?session_id=XXX
- * 阶段 3：Layer 2 轮询配对状态
- * Drizzle ORM：查询 edge_agents，status=active 时返回 auth_token
+ * **辅助**路径：L2 CLI 轮询；active 时返回与 l2-bridge redeem 同形凭证。
  */
 export async function GET(req: NextRequest) {
   try {
@@ -71,6 +73,7 @@ export async function GET(req: NextRequest) {
         status: edgeAgents.status,
         authToken: edgeAgents.authToken,
         userId: edgeAgents.userId,
+        organizationId: edgeAgents.organizationId,
         pairingExpiresAt: edgeAgents.pairingExpiresAt,
       })
       .from(edgeAgents)
@@ -112,12 +115,25 @@ export async function GET(req: NextRequest) {
         ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
         : "http://localhost:3000");
 
+    let resolvedTenantId = agent.organizationId;
+    if (!resolvedTenantId && agent.userId && agent.userId !== DEFAULT_USER_ID) {
+      const tid = await resolveTenantIdForEdgeUser(db, agent.userId);
+      if (tid) {
+        await db
+          .update(edgeAgents)
+          .set({ organizationId: tid })
+          .where(eq(edgeAgents.id, agent.id));
+        resolvedTenantId = tid;
+      }
+    }
+
     return NextResponse.json({
       status: "success",
       access_token: agent.authToken ?? agent.id,
       layer1_public_key: null,
       instance_id: agent.id,
       l1_user_id: agent.userId ?? null,
+      tenant_id: resolvedTenantId ?? null,
       nexus_base_url: baseUrl,
     });
   } catch (e) {

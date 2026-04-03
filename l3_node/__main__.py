@@ -224,7 +224,11 @@ def _create_engine_standalone():
         )
         trace("_create_engine_standalone: importing register_host_services...")
         from core.wasm_runner import register_host_services
-        register_host_services(llm_engine=engine, l2_base_url=os.environ.get("L2_BASE_URL", "http://localhost:18888"))
+        from l3_node.l2_url_util import normalize_l2_base_url
+
+        register_host_services(
+            llm_engine=engine, l2_base_url=normalize_l2_base_url(os.environ.get("L2_BASE_URL"))
+        )
         trace("_create_engine_standalone: done")
         return engine
     except Exception as e:
@@ -278,7 +282,11 @@ async def main() -> None:
             logger.warning("[L3] BI 分析失败: %s", result.get("error"))
         return
 
-    l2_url = os.environ.get("L2_BASE_URL", "http://localhost:18888")
+    from l3_node.l2_url_util import normalize_l2_base_url
+
+    l2_url = normalize_l2_base_url(os.environ.get("L2_BASE_URL"))
+    if os.environ.get("L2_BASE_URL", "").strip() and l2_url != os.environ.get("L2_BASE_URL", "").strip().rstrip("/"):
+        logger.info("[L3] L2_BASE_URL 已规范化: %r → %s", os.environ.get("L2_BASE_URL"), l2_url)
     sub_id = os.environ.get("SUB_ACCOUNT_ID", "")
 
     if args.ws_only:
@@ -331,6 +339,11 @@ async def main() -> None:
         except Exception as e:
             logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml", e)
         heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
+        _pull_worker = None
+        if os.environ.get("JACHIN_MCP_PULL_WORKER", "1").strip().lower() not in ("0", "false", "no"):
+            from l3_node.mcp_delegate_pull_worker import run_mcp_delegate_pull_forever
+
+            _pull_worker = asyncio.create_task(run_mcp_delegate_pull_forever())
         try:
             await run_ws_server(engine, run_l3_agent, port=args.port)
         finally:
@@ -339,6 +352,12 @@ async def main() -> None:
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
+            if _pull_worker:
+                _pull_worker.cancel()
+                try:
+                    await _pull_worker
+                except asyncio.CancelledError:
+                    pass
         return
 
     if not sub_id:
@@ -367,6 +386,11 @@ async def main() -> None:
     except Exception as e:
         logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml", e)
     heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
+    _pull_worker = None
+    if os.environ.get("JACHIN_MCP_PULL_WORKER", "1").strip().lower() not in ("0", "false", "no"):
+        from l3_node.mcp_delegate_pull_worker import run_mcp_delegate_pull_forever
+
+        _pull_worker = asyncio.create_task(run_mcp_delegate_pull_forever())
     try:
         await run_ws_server(engine, run_l3_agent, port=args.port)
     finally:
@@ -375,6 +399,12 @@ async def main() -> None:
             await heartbeat_task
         except asyncio.CancelledError:
             pass
+        if _pull_worker:
+            _pull_worker.cancel()
+            try:
+                await _pull_worker
+            except asyncio.CancelledError:
+                pass
 
     logger.info("L3 节点退出")
 

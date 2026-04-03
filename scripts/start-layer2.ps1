@@ -102,7 +102,7 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
     }
 }
 
-# 配对检查：未配对则自动执行（与 run-daemon.ps1 一致）
+# 信任检查：无 nexus_config 则自动跑 CLI 辅助配对（有 Web 时可先起 L2 用 /gateway Nexus 登录，见 docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md）
 $ConfigPath = Join-Path $env:USERPROFILE ".jachin\nexus_config.json"
 $AlreadyPaired = $false
 if (Test-Path $ConfigPath) {
@@ -113,8 +113,8 @@ if (Test-Path $ConfigPath) {
 }
 if (-not $AlreadyPaired) {
     Write-Host ""
-    Write-Host "[Layer2] ========== Pairing Required ==========" -ForegroundColor Cyan
-    Write-Host "[Layer2] First-time setup: running pairing script..." -ForegroundColor Cyan
+    Write-Host "[Layer2] ========== L1 trust required (nexus_config) ==========" -ForegroundColor Cyan
+    Write-Host "[Layer2] Running CLI 6-digit pairing helper (or use L2 /gateway Nexus login if Gateway is up)..." -ForegroundColor Cyan
     Write-Host "[Layer2] Ensure Nexus Console is running: start.bat -> option 1, or: cd cloud\nexus; npm run dev" -ForegroundColor DarkGray
     Write-Host ""
     & powershell -ExecutionPolicy Bypass -File (Join-Path $ScriptDir "run-pair.ps1")

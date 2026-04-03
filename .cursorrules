@@ -1,0 +1,22 @@
+# Jachin-System — Cursor 补充规则（与 `.cursor/rules/*.mdc` 并存）
+
+## 【最高优先级】Layer 1 Nexus — 组织即租户（SSOT）
+
+**RULE（强制）**：`cloud/nexus` 内 Layer 1 业务须严格遵循 **「组织即租户」** 模型。
+
+- **成员与租户边界**：任何「用户是否属于某租户」的判定 **必须** 查 `organization_users`（`org_id` + `user_id`）；**禁止**在业务代码中假设 `users` 表存在 `tenantId` / `tenant_id` 列或等价「用户自带租户」字段。
+- **业务路由鉴权**：凡多租户写操作或敏感读操作，**应** 使用 `withOrgRole`（`cloud/nexus/src/lib/with-org-role.ts`）或等价逻辑：从 **Auth.js 验签 JWT** 读取 `orgId` / `orgRole`，**禁止**单独信任客户端 `X-Tenant-Id` 作为租户凭据（L2 桥接路由除外，见 `extractTenantIdAllowingMachineFallback`）。
+- **默认租户解析**：`extractTenantId`（`lib/tenant.ts`）对业务语义 **仅** 返回会话内验签的 `org_id`；与边缘/脚本对接时使用明确的「机器桥」API，不得混用。
+
+详见 `docs/whitepaper/05_LAYER1_NEXUS.md`、`cloud/nexus/src/db/schema.ts`。
+
+---
+
+## 安全 / 多租户（L1 Nexus & Fleet）
+
+RULE: All edge_agent queries MUST filter by the current Request's verified organization_id to prevent Cross-Tenant IDOR.
+
+- 实现数据访问时，禁止仅依赖 URL 或客户端提交的 `organization_id` / `tenant_id`；必须与已认证会话中解析并校验过的组织 ID 一致后再查询 `edge_agents`。
+- 涉及 `device_group_id` 时，应校验对应 `device_groups.org_id` 与该组织 ID 一致。
+
+详见 `docs/API_FLEET_ACL_DRAFT.md`。

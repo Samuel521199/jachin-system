@@ -44,6 +44,7 @@ ENV/
 
 # Nexus pairing (memory mode fallback)
 .nexus-pairing.json
+.nexus-l2-bridge.json
 
 # Logs
 *.log
@@ -113,11 +114,11 @@ mqtt_logs/
 # Archived documentation (do not track in git)
 docs/archive/
 
-# Qdrant (V2 已废弃，记忆用 LanceDB)
-qdrant_storage/
+# 本地向量/大体积运行时数据（勿提交；若目录在仓库内可自行追加路径）
 
 # Coverage
 .coverage
+htmlcov/
 
 # TTS models (download via scripts/download_tts_models.py, exceed GitHub 100MB limit)
 data/tts/*.onnx
@@ -133,6 +134,9 @@ bi_data/
 
 # Build artifacts
 skills_repo/*.zip
+
+# L3 桌面包内嵌 Python 运行时（本地打包生成，体积 >100MB，勿提交）
+dist_jachin_desktop/runtime/
 
 # Temporary commit messages
 commit_msg.txt

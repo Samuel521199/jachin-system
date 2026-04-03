@@ -1,13 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { jsonOrgRequiredResponse } from "@/lib/org-session-guard";
 import { edgeAgents, blueprints } from "@/db/schema";
-import { eq, inArray, desc, and } from "drizzle-orm";
+import { eq, inArray, desc, and, or, isNull } from "drizzle-orm";
 
 /**
  * GET /api/v1/fleet
- * 舰队指挥大屏 - 拉取 edge_agents，含蓝图名称
+ * 舰队指挥大屏 - 拉取当前登录用户名下的 edge_agents（含蓝图名称）
  */
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     if (!isDatabaseConfigured()) {
       const mockAgents = [
@@ -21,12 +23,34 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const db = getDb()!;
-    const userId = req.nextUrl.searchParams.get("user_id");
+    const session = await auth();
+    const userId = session?.user?.id;
+    if (!userId) {
+      return NextResponse.json(
+        { error: "请先登录" },
+        { status: 401 }
+      );
+    }
 
-    const whereClause = userId
-      ? and(inArray(edgeAgents.status, ["active", "offline", "pending"]), eq(edgeAgents.userId, userId))
-      : inArray(edgeAgents.status, ["active", "offline", "pending"]);
+    const activeOrgId =
+      typeof session.user?.orgId === "string" ? session.user.orgId.trim() : "";
+    if (!activeOrgId) {
+      return jsonOrgRequiredResponse();
+    }
+
+    const db = getDb()!;
+
+    /** 仅本人节点；按当前会话组织收敛（与切换工作区一致） */
+    const tenantScope = or(
+      isNull(edgeAgents.organizationId),
+      eq(edgeAgents.organizationId, activeOrgId)
+    );
+
+    const whereClause = and(
+      inArray(edgeAgents.status, ["active", "offline", "pending"]),
+      eq(edgeAgents.userId, userId),
+      tenantScope
+    );
 
     const agents = await db
       .select({

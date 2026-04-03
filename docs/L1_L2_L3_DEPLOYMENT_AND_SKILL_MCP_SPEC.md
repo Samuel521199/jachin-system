@@ -4,6 +4,8 @@
 **日期**: 2026-03  
 **定位**: 回答「L1+L2 同机、L3 异地、仅 exe 部署、Skill/MCP 订阅下载」的架构满足度与规范缺口
 
+**运维侧（示例服务器公网 IP、端口、`NEXUS_PUBLIC_URL` / `AUTH_SECRET`、Docker 目录等）**：见 [`docs/L1_LINUX_CLOUD_DEPLOY.md`](L1_LINUX_CLOUD_DEPLOY.md) **§0**。
+
 ---
 
 ## 一、部署拓扑满足度
@@ -105,15 +107,16 @@ L1 (manifest)  →  L2 (CloudSyncDaemon)  →  ~/.jachin/inventory/
 
 **结论**：L3_LOCAL MCP 可订阅下载，但必须是 **纯 Python 源码**，exe 内嵌的 Python 能 `import`。
 
-#### 类型 C：L2_GATEWAY MCP（stdio）— 在 L2 执行
+#### 类型 C：L2_GATEWAY MCP（stdio）— **默认在 L3 执行**（L2 仅同步与委托）
 
 | 说明 | 路径 |
 |------|------|
-| 运行位置 | L2 机器 |
-| 配置 | `inventory/mcps/` 或 `config.json`，含 command + args |
-| 依赖 | L2 需有 Python/Node 等，以执行 `python -m xxx` 或 `npx -y xxx` |
+| **默认运行位置** | **L3 所在用户机**（`l3_node/mcp_stdio_bootstrap.py` 内嵌 `MCPManager`，读 `~/.jachin/mcp_servers.json` 与 `inventory/mcps/`） |
+| 配置落盘 | L2 仍同步 `inventory/mcps/`（及用户 `mcp_servers.json`），与旧侧载布局一致，便于 L3 与本机命令行环境对齐 |
+| 依赖 | 执行 **stdio 子进程** 的机器需具备对应 Python/Node 等（通常是 **L3 笔记本/边缘机**，而非 L2 服务器） |
+| **回滚** | 环境变量 **`JACHIN_L2_STDIO_MCP=1`** 时，L2 进程再次侧载 stdio（兼容旧部署/排障） |
 
-**结论**：L2_GATEWAY MCP 与 L3 解耦，但依赖 L2 环境；L3 通过 L2 委托调用。
+**结论**：清单类型仍可为 L2_GATEWAY，但**长期默认**不在 L2 宿主机上起 MCP 子进程；L3 本机执行，缺能力时 `POST /api/v2/mcp/invoke` 走 L2 **TaskManager**。**跨 L3**：Pull + 带 Task Token 的 HTTP 降级；见 `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md` v0.4、`docs/MCP_EXECUTION_MODEL.md` v2.2。
 
 ---
 
@@ -184,7 +187,7 @@ zip/
 | 3. L3 拉取 | L3 启动后 mcp_sync 拉取到 l3_mcp_cache |
 | 4. 执行 | 通过 L3 Agent 或 API 调用 mcp:xxx |
 | 5. 打包上传 | jachin pack && jachin publish |
-| 6. 订阅 | L2 配对 L1，CloudSyncDaemon 拉 manifest 并下载 |
+| 6. 订阅 | L2 已与 L1 建立信任（Web Bridge 或 CLI），CloudSyncDaemon 拉 manifest 并下载 |
 | 7. 目标机 | 仅 exe，L3 拉取后应能直接使用 |
 
 ---

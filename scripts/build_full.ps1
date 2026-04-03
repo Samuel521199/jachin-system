@@ -1,11 +1,13 @@
 # Full Build Script（招聘/打包约定见 docs/HR_RECRUITMENT.md）
 # Usage: .\scripts\build_full.ps1
 # Options: -SkipTauri (L3 only), -NoClean (skip clean, incremental), -Force (force L3+Tauri rebuild)
+# -SkipMcpRuntime: 跳过便携包内嵌 Python + mcp-official（Win amd64，需联网下载 embeddable CPython）
 
 param(
     [switch]$SkipTauri,
     [switch]$NoClean,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$SkipMcpRuntime
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,14 +24,14 @@ Set-Location $root
 
 # 1. Clean (unless -NoClean)
 if (-not $NoClean) {
-    Write-Host "`n[1/4] Cleaning build artifacts..." -ForegroundColor Cyan
+    Write-Host "`n[1/5] Cleaning build artifacts..." -ForegroundColor Cyan
     . "$PSScriptRoot\build_clean.ps1" -Root $root
 } else {
-    Write-Host "`n[1/4] Skip clean (-NoClean)" -ForegroundColor Gray
+    Write-Host "`n[1/5] Skip clean (-NoClean)" -ForegroundColor Gray
 }
 
 # 2. Build L3 Sidecar (skips if binary newer than source, unless -Force)
-Write-Host "`n[2/4] Building L3 Sidecar (PyInstaller)..." -ForegroundColor Cyan
+Write-Host "`n[2/5] Building L3 Sidecar (PyInstaller)..." -ForegroundColor Cyan
 $l3Args = @()
 if ($Force) { $l3Args += "--force" }
 python scripts\build_l3_sidecar.py @l3Args
@@ -40,7 +42,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # 3. Build Tauri Desktop (optional)
 if (-not $SkipTauri) {
-    Write-Host "`n[3/4] Building Tauri Desktop..." -ForegroundColor Cyan
+    Write-Host "`n[3/5] Building Tauri Desktop..." -ForegroundColor Cyan
     Push-Location (Join-Path $root "clients\desktop")
     npm run tauri build
     $tauriExit = $LASTEXITCODE
@@ -50,11 +52,11 @@ if (-not $SkipTauri) {
         exit $tauriExit
     }
 } else {
-    Write-Host "`n[3/4] Skip Tauri (-SkipTauri)" -ForegroundColor Gray
+    Write-Host "`n[3/5] Skip Tauri (-SkipTauri)" -ForegroundColor Gray
 }
 
 # 4. Assemble portable output (L3 轻量架构：仅 exe + 脚本 + 最小配置，MCP/Skill 通过 L1 订阅下载)
-Write-Host "`n[4/4] Assembling portable output..." -ForegroundColor Cyan
+Write-Host "`n[4/5] Assembling portable output..." -ForegroundColor Cyan
 $tauriTarget = Join-Path $root "clients\desktop\src-tauri\target\release"
 $outDir = Join-Path $root "dist_jachin_desktop"
 if (-not (Test-Path $tauriTarget)) {
@@ -131,6 +133,24 @@ if (Test-Path (Join-Path $root "docs\README_DEPLOY.md")) {
     Copy-Item (Join-Path $root "README_DEPLOY.md") -Destination $outDir -Force
 }
 
+# 5. Embedded MCP runtime（订阅 fetch 等 stdio MCP 时，零系统 Python 机器可仅用此解释器）
+if (-not $SkipMcpRuntime) {
+    Write-Host "`n[5/5] Bundling MCP embedded runtime (Python + official MCP wheels)..." -ForegroundColor Cyan
+    # 须用 hashtable splat；@("-Root", $x) 数组展开是按「位置参数」绑定，不会按 -Name 解析
+    $bundleArgs = @{ Root = $root; OutDir = $outDir }
+    if ($Force) { $bundleArgs.Force = $true }
+    & "$PSScriptRoot\bundle_l3_mcp_runtime.ps1" @bundleArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERR] bundle_l3_mcp_runtime.ps1 failed (use -SkipMcpRuntime to skip)" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+} else {
+    Write-Host "`n[5/5] Skip MCP runtime (-SkipMcpRuntime)" -ForegroundColor Gray
+}
+
 Write-Host "`n[Done] Portable output: $outDir" -ForegroundColor Green
 Write-Host "  Run: $outDir\*.exe" -ForegroundColor Gray
 Write-Host "  Debug L3: set JACHIN_SKIP_L3_SPAWN=1 then run $outScripts\run_l3.ps1 --ws-only" -ForegroundColor Gray
+if (-not $SkipMcpRuntime) {
+    Write-Host "  MCP runtime: $outDir\runtime\python\python.exe (fetch/time/git PyPI)" -ForegroundColor Gray
+}

@@ -1,19 +1,21 @@
 # MCP 接入规范 (Model Context Protocol)
 
-**版本**: v8.0 (The Singularity OS)  
-**定位**: Layer 2 双轨制引擎 — 轨道 A
+**版本**: V2（2026-03），与 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) v2.2 一致  
+**定位**: 双轨制 — 轨道 A（高信任本机工具）
 
 ---
 
-## 一、 划时代意义
+## 一、用途
 
-**瞬间继承全球最大的 AI 工具生态**。Layer 2 实现 MCP Client，GitHub 上现成的文件读写、本地 Shell 控制、PostgreSQL 查询、Git 操作等数百个标准 MCP 服务器，Jachin 可**免代码、开箱即用**。直接拥有最高级别的系统控制力。
+复用 Model Context Protocol 生态中的 stdio/SSE 服务端。V2 默认在 **L3** 进程内托管 `MCPManager`；L2 负责清单同步与跨节点委托（Task Token、Pull），见 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)。
 
-**适用场景**：极其信任的本地环境（个人设备、企业内网边缘节点）。
+**适用场景**：高信任本机/边缘节点（个人设备、企业内网）。
 
 ---
 
 ## 二、 架构位置
+
+**V2 默认**：stdio MCP **宿主进程为 L3**（`l3_node/mcp_stdio_bootstrap.py` 拉起 `core/mcp_client.py` 的 `MCPManager`）。L2 负责清单同步与跨节点委托，**默认不在 L2 起 stdio 子进程**（回滚：`JACHIN_L2_STDIO_MCP=1`）。详见 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md)、[ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)。
 
 | 轨道 | 形态 | 信任级别 | 用途 |
 |------|------|----------|------|
@@ -27,7 +29,8 @@
 
 ### 3.1 核心组件
 
-- **位置**: `core/mcp_client.py`
+- **实现**: `core/mcp_client.py`（`MCPManager`）
+- **L3 启动**: `l3_node/mcp_stdio_bootstrap.py`（与 inventory 扫描配合）
 - **职责**: 连接 MCP 服务器、发现工具、执行工具调用、将结果返回 ReAct 循环
 - **协议**: [Model Context Protocol](https://modelcontextprotocol.io/) 标准
 

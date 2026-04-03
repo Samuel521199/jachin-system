@@ -573,7 +573,14 @@ async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse
 
 
 async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
-    """POST /api/v3/mcp/execute - L2 委托执行 MCP 工具，供本机无技能时由其他 L3 执行"""
+    """POST /api/v3/mcp/execute — 兼容路径：供 L2 在可达 peer URL 时代为触发本机 MCP。
+
+    目标态跨节点投递见 docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md（L2 下行队列 + L3 Pull，非依赖入站 HTTP）。
+    入站 HTTP 为 **NAT 降级路径**；须携带 L2 签发的 ``task_id`` + ``task_token``（与 Pull 队列一致）。
+    开发排障可设 ``JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1`` 跳过令牌（不安全）。
+    """
+    import os
+
     try:
         body = await request.json() if request.body_exists else {}
     except Exception as e:
@@ -582,27 +589,55 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
     arguments = body.get("arguments") or {}
     if not tool_name:
         return _json_response({"ok": False, "error": "tool_name 不能为空"}, status=400)
-    try:
-        from l3_node.skills.mcp_registry import get_mcp_registry
-        registry = get_mcp_registry()
-        action_input = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
-        result = await registry.invoke(f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name, action_input)
-        return _json_response({"ok": True, "tool_name": tool_name, "result": result})
-    except Exception as e:
-        logger.warning("[L3 HTTP] mcp/execute 失败 tool=%s: %s", tool_name, e)
-        return _json_response({"ok": False, "error": str(e)}, status=500)
 
+    allow_legacy = os.environ.get("JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    task_id = str(body.get("task_id") or "").strip()
+    task_token = str(body.get("task_token") or "").strip()
+    if not allow_legacy:
+        if not task_token or not task_id:
+            return _json_response(
+                {
+                    "ok": False,
+                    "error": "缺少 task_id/task_token；L2 委托须带 Task Token。NAT 场景请优先使用 Redis Pull。"
+                    " 开发可设 JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1（不安全）。",
+                },
+                status=401,
+            )
+        try:
+            from core.mcp_task_token import verify_mcp_delegate_task_token
+        except ImportError:
+            return _json_response({"ok": False, "error": "L3 无法加载 core.mcp_task_token"}, status=500)
+        gw = Path.home() / ".jachin" / "l2_gateway_config.json"
+        node_id = ""
+        sub_account_id = ""
+        if gw.exists():
+            try:
+                gc = json.loads(gw.read_text(encoding="utf-8"))
+                if isinstance(gc, dict):
+                    node_id = str(gc.get("node_id") or "").strip()
+                    sub_account_id = str(gc.get("sub_account_id") or "").strip()
+            except Exception:
+                pass
+        if not node_id or not sub_account_id:
+            return _json_response(
+                {"ok": False, "error": "本机缺少 ~/.jachin/l2_gateway_config.json 中的 node_id/sub_account_id，无法校验 Task Token"},
+                status=401,
+            )
+        vok, vwhy = verify_mcp_delegate_task_token(
+            task_token,
+            task_id=task_id,
+            tool_name=tool_name,
+            executor_node_id=node_id,
+            sub_account_id=sub_account_id,
+        )
+        if not vok:
+            return _json_response({"ok": False, "error": f"task_token 无效: {vwhy}"}, status=403)
 
-async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
-    """POST /api/v3/mcp/execute - L2 委托执行 MCP 工具，供本机无技能时由其他 L3 执行"""
-    try:
-        body = await request.json() if request.body_exists else {}
-    except Exception as e:
-        return _json_response({"ok": False, "error": f"请求体解析失败: {e}"}, status=400)
-    tool_name = (body.get("tool_name") or "").strip()
-    arguments = body.get("arguments") or {}
-    if not tool_name:
-        return _json_response({"ok": False, "error": "tool_name 不能为空"}, status=400)
     try:
         from l3_node.skills.mcp_registry import get_mcp_registry
         registry = get_mcp_registry()
@@ -676,6 +711,157 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         return _json_response({"error": str(e)}, status=500)
 
 
+async def _handle_l3_setup_page(request) -> "aiohttp.web.Response":
+    """GET /l3/setup — 浏览器内选择 L1 工作区并写入 l2_gateway_config（需 edge token）。"""
+    import aiohttp.web
+
+    html = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>L3 工作区向导</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:520px;margin:2rem auto;padding:0 1rem;background:#0f172a;color:#e2e8f0}
+label{display:block;margin-top:.75rem;font-size:.85rem;color:#94a3b8}
+input,select,button{width:100%;box-sizing:border-box;margin-top:.25rem;padding:.5rem .6rem;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#f8fafc}
+button{cursor:pointer;background:#0d9488;border-color:#0f766e;font-weight:600;margin-top:1rem}
+button.secondary{background:#4f46e5;border-color:#4338ca}
+.err{color:#f87171;font-size:.85rem;margin-top:.5rem}
+.ok{color:#34d399;font-size:.85rem;margin-top:.5rem}
+h1{font-size:1.25rem}
+.note{font-size:.8rem;color:#64748b}
+</style></head>
+<body>
+<h1>L3 工作区配置向导</h1>
+<p class="note">使用 L1 边缘 <strong>access_token</strong>（常见于 L2 上 <code>~/.jachin/nexus_config.json</code>）。非边缘会话请先在 L1 完成配对。</p>
+<label>L1 根地址</label>
+<input id="base" type="text" placeholder="http://localhost:3000"/>
+<label>Edge Bearer（access_token）</label>
+<input id="token" type="password" autocomplete="off" placeholder="token"/>
+<button type="button" id="btnLoad">拉取工作区列表</button>
+<div id="err" class="err"></div>
+<label id="lblWs" style="display:none">选择工作区</label>
+<select id="ws" style="display:none"></select>
+<button type="button" class="secondary" id="btnSave" style="display:none">写入 ~/.jachin/l2_gateway_config.json</button>
+<div id="ok" class="ok"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+$('btnLoad').onclick = async () => {
+  $('err').textContent = ''; $('ok').textContent = '';
+  let nexus_base_url = $('base').value.trim();
+  while (nexus_base_url.endsWith('/')) nexus_base_url = nexus_base_url.slice(0, -1);
+  const access_token = $('token').value.trim();
+  if (!nexus_base_url || !access_token) { $('err').textContent = '请填写 L1 地址与 token'; return; }
+  const r = await fetch('/api/v3/setup/workspaces', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nexus_base_url, access_token })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.success) {
+    $('err').textContent = (j && j.message) || j.error || '拉取失败';
+    return;
+  }
+  const ws = (j.data && j.data.workspaces) || [];
+  const sel = $('ws');
+  sel.innerHTML = '';
+  for (const w of ws) {
+    const o = document.createElement('option');
+    o.value = w.id;
+    o.textContent = (w.name || w.id) + (w.slug ? ' (' + w.slug + ')' : '');
+    sel.appendChild(o);
+  }
+  sel.style.display = ws.length ? 'block' : 'none';
+  $('lblWs').style.display = ws.length ? 'block' : 'none';
+  $('btnSave').style.display = ws.length ? 'block' : 'none';
+  if (!ws.length) $('err').textContent = '该账号下无工作区，请先在 L1 创建/加入工作区';
+};
+$('btnSave').onclick = async () => {
+  $('err').textContent = ''; $('ok').textContent = '';
+  const organization_id = $('ws').value;
+  const workspace_name = ($('ws').selectedOptions[0] && $('ws').selectedOptions[0].textContent) || '';
+  const r = await fetch('/api/v3/setup/save-gateway-org', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ organization_id, workspace_name })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) {
+    $('err').textContent = (j && j.error) || '保存失败';
+    return;
+  }
+  $('ok').textContent = '已写入。请重启 L3 或重新执行配对流程。';
+};
+</script>
+</body></html>"""
+    return aiohttp.web.Response(text=html, content_type="text/html; charset=utf-8")
+
+
+async def _handle_setup_workspaces(request) -> "aiohttp.web.Response":
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"success": False, "error": "Invalid JSON"}, status=400)
+    base = (body.get("nexus_base_url") or "").strip().rstrip("/")
+    token = (body.get("access_token") or "").strip()
+    if not base or not token:
+        return _json_response(
+            {
+                "success": False,
+                "error": "BAD_REQUEST",
+                "message": "nexus_base_url 与 access_token 必填",
+            },
+            status=400,
+        )
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{base}/api/v1/edge/me/workspaces",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        data = resp.json()
+    except Exception as e:
+        logger.warning("[L3 setup] workspaces fetch failed: %s", e)
+        return _json_response(
+            {"success": False, "error": "UPSTREAM", "message": str(e)},
+            status=502,
+        )
+    if resp.status_code != 200 or not isinstance(data, dict) or not data.get("success"):
+        msg = "拉取失败"
+        if isinstance(data, dict):
+            msg = str(data.get("message") or data.get("error") or msg)
+        return _json_response(
+            {"success": False, "error": "UPSTREAM", "message": msg},
+            status=502,
+        )
+    return _json_response({"success": True, "data": data.get("data")})
+
+
+async def _handle_setup_save_gateway_org(request) -> "aiohttp.web.Response":
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "Invalid JSON"}, status=400)
+    organization_id = (body.get("organization_id") or "").strip()
+    workspace_name = (body.get("workspace_name") or "").strip()[:128]
+    if not organization_id:
+        return _json_response({"ok": False, "error": "organization_id required"}, status=400)
+    cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+    prev: dict[str, Any] = {}
+    if cfg_path.exists():
+        try:
+            prev = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            prev = {}
+    prev["organization_id"] = organization_id
+    if workspace_name:
+        prev["workspace_name"] = workspace_name
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(prev, indent=2, ensure_ascii=False), encoding="utf-8")
+    return _json_response({"ok": True})
+
+
 def _json_response(data: Any, status: int = 200) -> "aiohttp.web.Response":
     import aiohttp.web
     return aiohttp.web.json_response(data, status=status, dumps=lambda o: json.dumps(o, ensure_ascii=False))
@@ -715,6 +901,10 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     except Exception as e:
         logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
 
+    # stdio MCP 不得在「主 await 链」上同步拉起：Windows + frozen + mcp/anyio 子进程创建时可能抛出
+    # asyncio.CancelledError（非 Exception 子类），会穿透 except Exception 并终止 asyncio.run(main)。
+    # 在 HTTP 监听成功后再 create_task 后台引导，取消隔离在子任务内；详见 mcp_stdio_bootstrap。
+
     @aiohttp.web.middleware
     async def cors_middleware(request, handler):
         if request.method == "OPTIONS":
@@ -739,7 +929,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
-    app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
+    app.router.add_get("/l3/setup", _handle_l3_setup_page)
+    app.router.add_post("/api/v3/setup/workspaces", _handle_setup_workspaces)
+    app.router.add_post("/api/v3/setup/save-gateway-org", _handle_setup_save_gateway_org)
     app.router.add_get("/api/v3/recycle-bin/skills", _handle_recycle_bin_list)
     app.router.add_post("/api/v3/recycle-bin/skills/{recycle_id}/restore", _handle_recycle_bin_restore)
     app.router.add_delete("/api/v3/recycle-bin/skills/{recycle_id}", _handle_recycle_bin_delete)
@@ -762,6 +954,33 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
                 logger.warning("[L3 HTTP] 端口 %d 被占用，已改用 %d", port, try_port)
             logger.info("[L3 HTTP] 技能 API 已启动 http://%s:%d/api/v3/skills", host, try_port)
             print(f"[L3 HTTP] 已启动 http://{host}:{try_port}/api/v3/skills", file=sys.stderr, flush=True)
+
+            async def _stdio_mcp_bootstrap_bg() -> None:
+                try:
+                    from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
+
+                    await start_l3_stdio_mcp_host()
+                except asyncio.CancelledError:
+                    logger.debug("[L3 HTTP] stdio MCP 后台引导任务被取消")
+                    raise
+                except Exception as e:
+                    logger.warning("[L3 HTTP] stdio MCP 宿主启动失败: %s", e, exc_info=True)
+
+            def _stdio_mcp_bootstrap_done(t: asyncio.Task) -> None:
+                if t.cancelled():
+                    logger.debug("[L3 HTTP] stdio MCP bootstrap task 已取消")
+                    return
+                try:
+                    exc = t.exception()
+                except asyncio.CancelledError:
+                    return
+                if exc is not None:
+                    logger.warning("[L3 HTTP] stdio MCP bootstrap task 异常: %s", exc, exc_info=exc)
+
+            _mcp_bg = asyncio.create_task(_stdio_mcp_bootstrap_bg(), name="jachin-l3-stdio-mcp")
+            _mcp_bg.add_done_callback(_stdio_mcp_bootstrap_done)
+            app["jachin_stdio_mcp_bootstrap_task"] = _mcp_bg
+
             return app
         except OSError as e:
             last_err = e

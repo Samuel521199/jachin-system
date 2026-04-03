@@ -62,6 +62,18 @@ def _migrate_l3_nodes_display_name(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _migrate_l3_nodes_organization_id(conn: sqlite3.Connection) -> None:
+    """迁移：L2↔L3 同步上报的 L1 工作区 UUID 与展示名（与 nexus_config.tenant_id 对齐校验）"""
+    cur = conn.execute("PRAGMA table_info(l3_nodes)")
+    cols = [row[1] for row in cur.fetchall()]
+    if "organization_id" not in cols:
+        conn.execute("ALTER TABLE l3_nodes ADD COLUMN organization_id TEXT DEFAULT ''")
+        conn.commit()
+    if "workspace_name" not in cols:
+        conn.execute("ALTER TABLE l3_nodes ADD COLUMN workspace_name TEXT DEFAULT ''")
+        conn.commit()
+
+
 def _migrate_sub_accounts_iam(conn: sqlite3.Connection) -> None:
     """迁移：为 sub_accounts 添加 department, role_id, is_active（IAM 层级化）"""
     cur = conn.execute("PRAGMA table_info(sub_accounts)")
@@ -220,6 +232,7 @@ def init_all(conn: sqlite3.Connection) -> None:
     _migrate_l3_nodes_api_key_id(conn)
     _migrate_l3_nodes_trust_zone(conn)
     _migrate_l3_nodes_display_name(conn)
+    _migrate_l3_nodes_organization_id(conn)
     _migrate_coordinate_subtasks_timeout(conn)
     _migrate_permissions_to_structured(conn)
     _ensure_default_gateway_admin(conn)

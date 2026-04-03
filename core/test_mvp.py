@@ -139,7 +139,7 @@ async def test_config():
         print(f"✅ LLM Model: {settings.LLM_MODEL}")
         print(f"✅ Server Port: {settings.SERVER_PORT}")
         print(f"✅ Debug Mode: {settings.DEBUG}")
-        print(f"✅ Qdrant URL: {settings.QDRANT_URL}")
+        print(f"✅ LanceDB path: {settings.LANCEDB_PATH}")
         print(f"✅ Redis URL: {settings.REDIS_URL}")
         
         return True

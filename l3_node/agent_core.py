@@ -392,11 +392,36 @@ def _parse_action(
             return ""
         search_start = m.end()
         rest = text[search_start:]
+        # 终止段：双换行 / 下一行 Thought|Action|Final|Observation / Markdown 标题 ### / 中文「观察」/ 文本结束
+        # 旧版仅认 \nThought，若 JSON 后无换行或紧跟「### 动作」会导致整段匹配失败、inp 为空
         mi = re.search(
-            r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))",
-            rest, re.DOTALL | re.IGNORECASE,
+            r"Action\s+Input:\s*(.+?)(?:\n\n|\n\s*(?:Thought|Action|Final|Answer|Observation|###|观察)|\Z)",
+            rest,
+            re.DOTALL | re.IGNORECASE,
         )
-        return (mi.group(1).strip() if mi else "")
+        if mi:
+            return mi.group(1).strip()
+        ai = re.search(r"Action\s+Input:\s*", rest, re.IGNORECASE)
+        if not ai:
+            return ""
+        tail = rest[ai.end() :]
+        ts = tail.lstrip()
+        if ts.startswith("{"):
+            depth = 0
+            for i, c in enumerate(ts):
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return ts[: i + 1].strip()
+            return ts.splitlines()[0].strip() if ts else ""
+        m2 = re.search(
+            r"^(.+?)(?=\n\s*(?:Thought|Action|Final|Answer|Observation|###|观察)|\n\n|\Z)",
+            tail,
+            re.DOTALL | re.IGNORECASE,
+        )
+        return (m2.group(1).strip() if m2 else tail.strip())
 
     # 匹配 Action 行（含同行 Action Input 情形）
     action_suffix = r"(?:\s|\n|$)"
@@ -1689,7 +1714,7 @@ def _build_system_prompt(
     coordinate_hint = ""
     if allow_coordinate and _get_l2_config():
         coordinate_hint = """
-- coordinate: 向 L2 请求多节点协同。当任务需拆分给多台 L3 并行执行时使用。
+- coordinate: 向 L2 请求多节点任务编排（拆分/分配/聚合）。规格见 docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md；跨节点投递目标为 TaskManager + L3 拉取，非依赖 L2 对 NAT 笔记本入站 HTTP。
   Action Input: {"parent_node_id": "本节点ID", "intent": "主任务描述", "sub_tasks": [{"intent": "子任务1"}, {"intent": "子任务2"}]}
 - P1+ 远程原生工具：若要在**其他 L3 节点**直接执行 shell（不经子 Agent LLM），sub_tasks 中 skill_required 填 core:shell_exec，input_data 示例：
   {"type":"native_tool","tool_id":"core:shell_exec","action_input":{"command":"git status","timeout":60}}
@@ -2549,6 +2574,23 @@ async def _run_react_core(
             except ImportError:
                 pass
             base_tool = (tool or "").replace("mcp:", "").strip()
+            # mcp:fetch：ReAct 解析偶发拿不到 Action Input（重复 Action、### 标题等），从用户原话补 URL
+            if base_tool == "fetch" and not (inp or "").strip():
+                _um = ""
+                for _msg in reversed(messages or []):
+                    if isinstance(_msg, dict) and _msg.get("role") == "user":
+                        _um = str(_msg.get("content") or "")
+                        break
+                if _um:
+                    try:
+                        from l3_node.skills.mcp_registry import extract_http_url_from_corrupted_text
+
+                        _fu = extract_http_url_from_corrupted_text(_um)
+                        if _fu:
+                            inp = json.dumps({"url": _fu}, ensure_ascii=False)
+                            logger.info("[L3 Agent] fetch 无 Action Input，已从用户消息注入 url=%s", _fu[:60])
+                    except Exception:
+                        pass
             if base_tool == "atom_post_job_boss":
                 _force_pub = False
                 if (inp or "").strip().startswith("{"):

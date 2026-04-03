@@ -18,6 +18,9 @@ services:
       - "3000:3000"
     env_file:
       - l1.env
+    # Next standalone 用 HOSTNAME 作 listen 地址；云平台/宿主机常注入不可解析的实例名 → ENOTFOUND
+    environment:
+      HOSTNAME: "0.0.0.0"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -28,4 +31,6 @@ services:
     network_mode: host
     env_file:
       - l1.env
+    environment:
+      HOSTNAME: "0.0.0.0"
     restart: unless-stopped

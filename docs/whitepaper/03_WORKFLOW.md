@@ -5,9 +5,9 @@
 
 ---
 
-## 一、 新设备觉醒流 (V2 L3-L2 零信任配对)
+## 一、 新设备觉醒流 (V2 L2↔L3 零信任配对)
 
-这是 C 端用户和 B 端员工接入 Jachin Nexus 星图的方式。**极客**亦可使用 `jachin-cli pair` 完成 L1 配对（Layer 2 daemon）。
+这是 C 端用户和 B 端员工接入 Jachin Nexus 星图的方式。**L1↔L2 控制面**：在 L2 `/gateway` 使用 **L1 注册邮箱+密码** 或 **Nexus 账号登录**；无头/SSH/恢复时用 **CLI 6 位码**（`python -m core.cli pair`）。详见仓库 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`。
 
 ### V2 L3 桌面端（主流程）
 
@@ -19,9 +19,10 @@
 | 4 | **L3 (l3_node)** | 收到加密 Key，私钥解密，引擎点火，启动 ws://127.0.0.1:18981。 |
 | 5 | **Layer 3 (React)** | 检测 L3 就绪，UI 丝滑过渡为主大盘。 |
 
-### Legacy：Layer 2 daemon（L1 6 位码）
+### L1↔L2：控制面信任（与上表 L3 流程独立）
 
-Layer 2 daemon、jachin-cli、run-pair 仍使用 L1 配对：`pairing/request` → 6 位码 → `pairing/confirm` → `pairing/status` → 写入 `nexus_config.json`。
+- **主路径**：L2 `/gateway` →（A）L1 邮箱+密码经 L2 调 L1 `verify-credentials` 写盘；或（B）L1 `/console/l2-bridge` → `bridge_code` 兑换 → `nexus_config.json`。
+- **辅助路径**：`pairing/request` → 6 位码 → `pairing/confirm` → CLI 轮询 `pairing/status` → 同上配置文件。
 
 ---
 

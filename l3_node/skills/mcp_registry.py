@@ -1,22 +1,99 @@
 """
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
-从 L2 拉取 MCP 工具列表，维护 known_mcp_tools 避免与本地 Wasm 重名冲突，
-提供 OpenAI/Anthropic 标准 tools 格式，供大模型使用。
+合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
+向模型提供 OpenAI/Anthropic 标准 tools 格式。
 
-read_file、atom_post_job_boss、atom_greet_recommend_boss 已下放 L3 本地执行，不依赖 L2。
+本机未命中时 ``invoke_via_l2`` → L2 ``POST /api/v2/mcp/invoke``（TaskManager：Pull / HTTP，载荷侧由 L2 签发 Task Token）。
+规格：docs/MCP_EXECUTION_MODEL.md、docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md。
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 from l3_node.paths import get_app_root
 
 logger = logging.getLogger(__name__)
+
+# 官方 mcp-server-fetch 等要求 arguments 含 url；模型 ReAct 输出损坏时 JSON 解析会得到 {} 或 {"url":""} 而无可用 url
+_FETCH_URL_IN_JSON = re.compile(r'"url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', re.I)
+_URL_FROM_POS = re.compile(
+    r"https?://[a-zA-Z0-9][-a-zA-Z0-9.]{0,253}[a-zA-Z0-9](?::\d+)?(?:/[^\s\"'`{}>]*)?",
+    re.I,
+)
+
+
+def extract_http_url_from_corrupted_text(s: str) -> str:
+    """从重复/粘连的 ReAct 输出中提取首个可用 http(s) URL。"""
+    if not (s or "").strip():
+        return ""
+    s = s.strip()
+    m = _FETCH_URL_IN_JSON.search(s)
+    if m:
+        try:
+            raw = m.group(1).replace("\\\"", '"').strip()
+            if raw.startswith("http"):
+                return raw
+        except Exception:
+            pass
+    idx = max(s.rfind("https://"), s.rfind("http://"))
+    if idx >= 0:
+        tail = s[idx:]
+        m2 = _URL_FROM_POS.match(tail)
+        if m2:
+            return m2.group(0).rstrip(".,;)]}>\"'")
+    if re.search(r"python\.org", s, re.I):
+        return "https://www.python.org"
+    return ""
+
+
+def normalize_mcp_fetch_arguments(
+    arguments: dict[str, Any],
+    *,
+    fallback_text: str = "",
+) -> dict[str, Any]:
+    """
+    补全 fetch 的 url。优先从原始 Action Input 整段文本恢复（解析结果常为 {} 或残缺 JSON）。
+    """
+    out = dict(arguments) if isinstance(arguments, dict) else {}
+    u = (out.get("url") or "").strip()
+    if u:
+        if u.count("://") > 1:
+            fixed = extract_http_url_from_corrupted_text(u)
+            if fixed:
+                out["url"] = fixed
+                return out
+        out["url"] = u
+        return out
+    candidates: list[str] = []
+    ft = (fallback_text or "").strip()
+    if ft:
+        candidates.append(ft)
+    for v in out.values():
+        if isinstance(v, str) and v.strip():
+            candidates.append(v.strip())
+    try:
+        dumped = json.dumps(out, ensure_ascii=False)
+        if dumped and dumped not in ("{}", "null"):
+            candidates.append(dumped)
+    except Exception:
+        pass
+    seen: set[str] = set()
+    for c in candidates:
+        if c in seen:
+            continue
+        seen.add(c)
+        got = extract_http_url_from_corrupted_text(c)
+        if got:
+            out["url"] = got
+            return out
+    return out
+
 
 # 默认 L2 地址（可从 l2_gateway_config.json 读取）
 DEFAULT_L2_BASE_URL = "http://localhost:18888"
@@ -1257,6 +1334,42 @@ class MCPToolRegistry:
             logger.info("[MCP Registry] L3 本地优先模式，仅用本地工具 %d 个（JACHIN_L3_LOCAL_ONLY=1，跳过 L2）", len(tools))
             return tools
 
+        # L3 进程内 stdio MCP（长期架构；与 L2 原 mcp_servers.json + inventory/mcps 同源）
+        try:
+            from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
+
+            await start_l3_stdio_mcp_host()
+            from core.mcp_client import get_mcp_manager
+
+            mgr = get_mcp_manager()
+            stdio_list = mgr.get_all_tools()
+            if not stdio_list:
+                stdio_list = await mgr.list_tools_async()
+            for t in stdio_list:
+                name = (t.get("name") or "").strip()
+                if not name or name in local_names:
+                    continue
+                mcp_id = self._mcp_id(name)
+                if mcp_id in self._known_mcp_tools:
+                    continue
+                params: list[str] = []
+                schema = t.get("inputSchema") or {}
+                if isinstance(schema, dict):
+                    props = schema.get("properties") or {}
+                    params = list(props.keys()) if props else ["input"]
+                desc = t.get("description") or name
+                tools.append({
+                    "id": mcp_id,
+                    "label": mcp_id,
+                    "desc": f"[L3 stdio] {desc}",
+                    "params": params,
+                })
+                self._known_mcp_tools.add(mcp_id)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug("[MCP Registry] 合并 L3 stdio MCP 失败: %s", e)
+
         url = f"{self._l2_base_url}/api/v2/mcp/tools"
         logger.info("[MCP Registry] L3 本地优先，L2 补充 url=%s", url)
         try:
@@ -1383,10 +1496,12 @@ class MCPToolRegistry:
         *,
         timeout: float = 30.0,
         allowed_skills: list[str] | None = None,
+        allow_l2_delegate: bool = True,
     ) -> str:
         """
         执行 MCP 工具。L3 本地工具（read_file、atom_post_job_boss、atom_greet_recommend_boss）直接执行，其余走 L2。
         allowed_skills: None=开发模式全开；非 None 时执行前校验白名单，未分配则拒绝。
+        allow_l2_delegate: 为 False 时禁止 invoke_via_l2（跨节点代跑执行端用，避免 L2↔L3 循环委派）。
         """
         if allowed_skills is not None:
             from l3_node.skills.loader import is_tool_allowed
@@ -1398,7 +1513,9 @@ class MCPToolRegistry:
         if _cached is not None:
             return _cached
 
-        out = await self._invoke_impl(tool_id, action_input, timeout=timeout)
+        out = await self._invoke_impl(
+            tool_id, action_input, timeout=timeout, allow_l2_delegate=allow_l2_delegate
+        )
         return store_if_cacheable(tool_id, action_input, out)
 
     async def _invoke_impl(
@@ -1407,6 +1524,7 @@ class MCPToolRegistry:
         action_input: str,
         *,
         timeout: float = 30.0,
+        allow_l2_delegate: bool = True,
     ) -> str:
         """MCP 实际执行（不含权限与 P1 缓存包装）。"""
         if tool_id in self._local_mcp_tools:
@@ -1603,12 +1721,18 @@ class MCPToolRegistry:
 
             # BI 战报 MCP 工具（docs/bi_daily_report/）
             if raw_name == "atom_web_scraper":
+                arguments = dict(arguments)
+                _u = (str(arguments.get("url") or "")).strip()
+                if not _u:
+                    _u = extract_http_url_from_corrupted_text(action_input or "")
+                    if _u:
+                        arguments["url"] = _u
                 cfg = arguments.get("config") or {}
                 if isinstance(cfg, dict) and arguments.get("cdp_url"):
                     cfg = {**cfg, "cdp_url": arguments.get("cdp_url")}
                 return await asyncio.to_thread(
                     _invoke_atom_web_scraper_local,
-                    url=arguments.get("url", ""),
+                    url=str(arguments.get("url", "") or ""),
                     output_path=arguments.get("output_path", ""),
                     config=cfg,
                 )
@@ -1661,6 +1785,42 @@ class MCPToolRegistry:
                     cache_dir, module_path, func_name, self._parse_action_input(action_input),
                 )
 
+        try:
+            from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
+            from core.mcp_client import get_mcp_manager, MCPToolNotFoundError as _McpNotFound
+
+            await start_l3_stdio_mcp_host()
+            _mgr = get_mcp_manager()
+            _rn = self._raw_name(tool_id)
+            if _rn and _mgr.can_invoke_stdio_tool(_rn):
+                _args = self._parse_action_input(action_input)
+                if _rn == "fetch":
+                    _args = normalize_mcp_fetch_arguments(_args, fallback_text=action_input or "")
+                    if not (str(_args.get("url") or "").strip()):
+                        return (
+                            "[MCP] fetch 缺少 url：请让 Action Input 为合法 JSON，例如 "
+                            '{"url":"https://www.python.org"}'
+                        )
+                try:
+                    return await asyncio.wait_for(
+                        _mgr.invoke_tool(_rn, _args),
+                        timeout=timeout,
+                    )
+                except _McpNotFound:
+                    pass
+                except asyncio.TimeoutError:
+                    return f"[MCP] stdio 调用超时 tool={_rn}"
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning("[MCP Registry] L3 stdio invoke 失败 tool=%s err=%s", tool_id, e)
+            return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False)
+
+        if not allow_l2_delegate:
+            logger.warning("[MCP Registry] 工具 %s 本机不可用且禁止转发 L2（代跑执行上下文）", tool_id)
+            return (
+                "[MCP] 本机未安装该工具，且当前处于跨节点代跑执行上下文，禁止再转发 L2（避免循环委派）。"
+            )
         logger.info("[MCP Registry] 工具 %s 不在 L3 本地，转发 L2", tool_id)
         return await self.invoke_via_l2(tool_id, action_input, timeout=timeout)
 
@@ -1672,7 +1832,8 @@ class MCPToolRegistry:
         timeout: float = 30.0,
     ) -> str:
         """
-        通过 L2 POST /api/v2/mcp/invoke 执行 MCP 工具。
+        通过 L2 ``POST /api/v2/mcp/invoke`` 触发委托执行（本请求不携带用户 JWT，仅 tool + arguments）。
+
         强容错：L2 宕机或超时时返回拟人化系统提示，不抛异常。
         """
         import httpx
@@ -1695,14 +1856,27 @@ class MCPToolRegistry:
             else:
                 arguments = {"input": inp}
 
+        if raw_name == "fetch":
+            arguments = normalize_mcp_fetch_arguments(arguments, fallback_text=inp)
+
         url = f"{self._l2_base_url}/api/v2/mcp/invoke"
         payload = {"tool_name": raw_name, "arguments": arguments}
         logger.info("[MCP Registry] 调用 L2 invoke tool=%s url=%s", raw_name, url)
 
-        # TODO(MVP): 不传 X-Sub-Account-Id / Bearer，L2 已放宽鉴权，直接 POST 即可
+        headers: dict[str, str] = {}
+        _cfg_p = Path.home() / ".jachin" / "l2_gateway_config.json"
+        if _cfg_p.exists():
+            try:
+                _gc = json.loads(_cfg_p.read_text(encoding="utf-8"))
+                _sub = (_gc.get("sub_account_id") or "").strip()
+                if _sub:
+                    headers["X-Sub-Account-Id"] = _sub
+            except Exception:
+                pass
+
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.TimeoutException as e:

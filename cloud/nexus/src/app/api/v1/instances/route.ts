@@ -1,16 +1,44 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getDb, isDatabaseConfigured } from "@/db";
+import { jsonOrgRequiredResponse } from "@/lib/org-session-guard";
 import { edgeAgents } from "@/db/schema";
-import { inArray, desc } from "drizzle-orm";
+import { inArray, desc, and, eq, or, isNull } from "drizzle-orm";
 
 /**
  * GET /api/v1/instances
- * 舰队指挥台 - 拉取边缘智能体列表
+ * 指挥台 / Market 等 - 拉取当前登录用户名下的边缘智能体（与 /api/v1/fleet 隔离规则一致）
  */
 export async function GET() {
   try {
     if (isDatabaseConfigured()) {
+      const session = await auth();
+      const userId = session?.user?.id;
+      if (!userId) {
+        return NextResponse.json(
+          { error: "请先登录" },
+          { status: 401 }
+        );
+      }
+
+      const activeOrgId =
+        typeof session.user?.orgId === "string" ? session.user.orgId.trim() : "";
+      if (!activeOrgId) {
+        return jsonOrgRequiredResponse();
+      }
+
       const db = getDb()!;
+      const tenantScope = or(
+        isNull(edgeAgents.organizationId),
+        eq(edgeAgents.organizationId, activeOrgId)
+      );
+
+      const whereClause = and(
+        inArray(edgeAgents.status, ["active", "offline", "pending"]),
+        eq(edgeAgents.userId, userId),
+        tenantScope
+      );
+
       const agents = await db
         .select({
           id: edgeAgents.id,
@@ -19,21 +47,20 @@ export async function GET() {
           lastHeartbeat: edgeAgents.lastHeartbeat,
         })
         .from(edgeAgents)
-        .where(inArray(edgeAgents.status, ["active", "offline", "pending"]))
+        .where(whereClause)
         .orderBy(desc(edgeAgents.lastHeartbeat));
 
-      if (agents.length > 0) {
-        const instances = agents.map((a) => ({
-          instance_id: a.id,
-          name: a.name ?? `边缘智能体-${a.id.slice(0, 8)}`,
-          status: a.status,
-          last_heartbeat: a.lastHeartbeat?.toISOString() ?? null,
-        }));
-        return NextResponse.json({ instances });
-      }
+      const instances = agents.map((a) => ({
+        instance_id: a.id,
+        name: a.name ?? `边缘智能体-${a.id.slice(0, 8)}`,
+        status: a.status,
+        last_heartbeat: a.lastHeartbeat?.toISOString() ?? null,
+      }));
+
+      return NextResponse.json({ instances });
     }
 
-    // Mock 数据
+    // 无数据库：演示用 mock
     const mockData = [
       {
         instance_id: "dev-layer2-instance-001",

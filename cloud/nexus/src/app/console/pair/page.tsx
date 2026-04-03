@@ -151,7 +151,7 @@ function PairForm() {
               Activate Edge Agent
             </p>
             <p className="text-white/60 text-sm mb-6">
-              请输入 CLI 终端上显示的 6 位神经配对码。
+              辅助方式：无头服务器 / SSH 请输入 CLI 终端上的 6 位配对码。带 Web 的 L2 请在网关使用 L1 邮箱+密码登录，或「Nexus 账号登录」。
             </p>
 
             {success ? (
@@ -165,7 +165,7 @@ function PairForm() {
                 </p>
                 {usedCode && (
                   <p className="mt-4 px-4 py-2 rounded-lg bg-black/30 border border-white/10 text-white/70 text-xs font-mono text-center max-w-full break-all">
-                    若终端未保存凭证，请运行恢复命令：
+                    有 L2 Web 时优先在 /gateway 使用 Nexus 账号登录；若终端未保存凭证可恢复：
                     <br />
                     <code className="text-cyan-400">.\scripts\run-pair.ps1 -Recover -Code &quot;{usedCode}&quot;</code>
                   </p>

@@ -203,7 +203,8 @@ checks:
 ---
 
 **相关文档**:
-- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) - **V2 L3-L2 零信任配对**（RSA 双盲、auth/poll 轮询；Legacy L1 6 位码）
+- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) — **V2 L2↔L3 零信任配对**（RSA 双盲、auth/poll；非 L1↔L3）
+- [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md) — **L1↔L2 控制面**（网关 L1 邮箱、Web Bridge、CLI 辅助）
 - [IM_GATEWAY_SPEC.md](./IM_GATEWAY_SPEC.md) - **IM 网关**（TG/飞书 Webhook、消息队列、心跳扩展 task、result API）
 - [NEXUS_DAEMON.md](./NEXUS_DAEMON.md) - 守护进程总览（轻量版 daemon 心跳 + Agent Loop）
 - [INVISIBLE_SECURITY_UX.md](./INVISIBLE_SECURITY_UX.md) - **无感安全与渐进式授权**（傻瓜式配对、权限大白话、云端无感打包）

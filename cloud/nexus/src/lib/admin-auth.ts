@@ -2,7 +2,7 @@
  * Admin API 权限校验：仅 isRoot 用户可访问 /api/v1/admin/*
  *
  * 当前实现：X-Admin-Token 与 NEXUS_ADMIN_SECRET 匹配即视为 root。
- * 后续接入 Auth.js 时，可改为 getServerSession + users.isRoot 校验。
+ * 可增强：`auth()` + `users.is_root` 与平台管理员策略组合（与主站 Auth.js 会话并存时需统一设计）。
  */
 import { NextResponse } from "next/server";
 

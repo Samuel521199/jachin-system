@@ -51,7 +51,7 @@ export default function PairPage() {
       <main className="pt-24 px-6 max-w-md mx-auto">
         <h1 className="text-2xl font-bold text-purple-400 mb-2">边缘智能体配对</h1>
         <p className="text-white/60 text-sm mb-8">
-          Layer 2 daemon 配对：在终端执行 <code className="text-violet-400">jachin pair</code> 或 <code className="text-violet-400">run-pair.ps1</code> 获取 6 位码，输入下方完成授权。V2 L3 桌面端使用 L2 网关零信任配对。
+          辅助配对（CLI / 无头）：终端执行 <code className="text-violet-400">jachin pair</code> 或 <code className="text-violet-400">run-pair.ps1</code> 获取 6 位码。有 L2 Web 控制台时优先在 <code className="text-violet-400">/gateway</code> 使用「Nexus 账号登录」。
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

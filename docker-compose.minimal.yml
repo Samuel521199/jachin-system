@@ -22,25 +22,7 @@ services:
     networks:
       - jachin-network
 
-  # 向量数据库：Qdrant - 必需
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: jachin-qdrant
-    ports:
-      - "6333:6333"  # REST API
-      - "6334:6334"  # gRPC API
-    volumes:
-      - qdrant_data:/qdrant/storage
-    restart: always
-    environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - jachin-network
+  # 向量：V2 使用 LanceDB 本地目录，无需独立向量容器
 
   # Redis (用于缓存和消息队列) - 必需
   redis:
@@ -97,12 +79,6 @@ volumes:
       type: none
       o: bind
       device: E:\docker\volumes\postgres_data
-  qdrant_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: E:\docker\volumes\qdrant_data
   redis_data:
     driver: local
     driver_opts:

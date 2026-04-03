@@ -1,6 +1,6 @@
 # Skill / MCP 上传规范
 
-**版本**: 1.0  
+**版本**: 1.1  
 **关联**: `.cursor/rules/076-skill-mcp-upload-spec.mdc`、`.cursor/rules/075-config-root-and-cloud-sync.mdc`
 
 ---
@@ -41,10 +41,25 @@
 | `version` | 语义化版本，如 `1.0.0` |
 | `description` | 描述 |
 | `item_type` | `SKILL` 或 `MCP` |
-| `runtime_tier` | MCP 用：`L3_LOCAL` / `L2_GATEWAY` / `L1_CLOUD` |
+| `runtime_tier` | MCP **长期默认** `L3_LOCAL`（L2 落 `inventory/l3_mcps/`，L3 `mcp_sync` 拉取后本机执行）。`L2_GATEWAY` 仅兼容旧侧载。 |
 | `required_mcps` | Skill 用：依赖的 MCP 列表，如 `["mcp:com.jachin.boss.atom"]`。L1 manifest 会据此自动将依赖 MCP 加入下发清单，L2 同步时一并拉取。 |
 
-### 2.3 config/manifest.yaml 格式
+### 2.3 L3_LOCAL MCP：`tools[]`（Python）与 `stdio_server`（官方进程）
+
+**新上架 MCP 须** `item_type=MCP` 且 `runtime_tier=L3_LOCAL`，并在 `jachin pack` 中通过下列**之一**：
+
+| 形态 | plugin.json | 说明 |
+|------|-------------|------|
+| **Python 工具** | `"tools": [{ "id": "my_tool", "module": "tools.my_tool", "function": "run", "params": ["input"], "desc": "..." }]` | 包内 `tools/*.py`，由 `mcp_registry` 动态 import（与现网一致）。 |
+| **stdio 声明式** | `"stdio_server": { "id": "fs-workspace", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@0.6.2", "__JACHIN_WORKSPACE__"], "env": {} }` | 无 Python 实现；L3 启动时对应该目录执行 `MCPManager.add_server`。工具名由子进程 `tools/list` 决定。 |
+
+可选：`"mcp_execution_mode": "stdio_server"`（显式标注；有 `stdio_server` 块时可省略）。
+
+**占位符**（`args` / `env` 字符串）：`__PROJECT_ROOT__`、`__JACHIN_HOME__`、`__JACHIN_WORKSPACE__`（工作区目录不存在会自动创建）。与 `server-filesystem` 组合时，无效根路径会被跳过（与 `inventory` 侧载逻辑一致）。
+
+完整示例见 `docs/examples/l3_local_stdio_mcp.plugin.json`。
+
+### 2.4 config/manifest.yaml 格式
 
 ```yaml
 version: "1"
@@ -138,7 +153,7 @@ L1 (manifest)  →  L2 (CloudSyncDaemon)  →  ~/.jachin/inventory/
 
 目标机仅 `l3_node.exe` + 网络时：
 
-1. 配对 L2
+1. L2 与 L1 建立信任（默认 `/gateway` Nexus 账号登录；无头用 CLI，见 `L1_L2_PAIRING_AND_WEB_BRIDGE.md`）
 2. 订阅技能 / MCP
 3. L3 拉取到 `l3_mcp_cache/` 或 `l3_skill_cache/`
 4. 配置自动写出到 `~/.jachin/config/`

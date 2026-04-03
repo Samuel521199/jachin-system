@@ -32,11 +32,11 @@
 
 | 设计定位 | 实现状态 | 证据与说明 |
 |----------|----------|------------|
-| 只面向 IT 网管 | ✅ 已实现 | L2 Admin、nexus_config 配对、sync 配置 |
+| 只面向 IT 网管 | ✅ 已实现 | L2 Admin、L1↔L2 信任（网关邮箱 / Web Bridge / nexus_config）、sync 配置 |
 | L1 在企业内网的物理投影 | ✅ 已实现 | CloudSyncDaemon 拉 manifest → 下载 → 解压到 `~/.jachin/inventory/` |
 | 静默同步云端已购订单 | ✅ 已实现 | `poll_manifest()` → `_diff_manifest_vs_local()` → `download_and_extract()` |
 | 下载并囤积压缩包 | ✅ 已实现 | SKILL → `skills/{item_id}/`，MCP → `mcps/` |
-| 常驻运行高敏 MCP 驱动 | ✅ 已实现 | `core/mcp_client.py` MCPManager，`scan_local_mcps()` 注入 |
+| 常驻运行高敏 MCP 驱动 | ✅ 已实现（**默认在 L3**） | `l3_node/mcp_stdio_bootstrap.py` + `core/mcp_client.py`；L2 默认不注入 stdio（`JACHIN_L2_STDIO_MCP=1` 回滚） |
 | 数据库密码锁在本地 | ✅ 已实现 | MCP 配置在 `~/.jachin/inventory/mcps/`；L3_LOCAL 时 L3 执行，L2 仅同步与委托 |
 | 动态向 L3 下发权限和 Skill | ✅ 已实现 | 本地 `role_permissions`（L2 数据主权，由 v2_local_admin 管理）；`GET /api/v2/inventory/skills` + `/download` |
 
@@ -55,7 +55,7 @@
 | 商品形态 | 设计 | 实现状态 | 说明 |
 |----------|------|----------|------|
 | **Skill (.wasm)** | 轻量，L2 发放给 L3，员工电脑沙箱运行 | ✅ 已实现 | L2 `/skills` + `/download`，L3 `perform_startup_sync` 拉取到 `~/.jachin/l3_skill_cache/`，Wasm 沙箱执行 |
-| **MCP** | L3 优先执行，本机无则 L2 委托其他 L3 | ✅ 已实现 | L3 本地 MCP（l3_mcp_cache 动态加载）、L2 委托 fallback（v2_mcp → 其他 L3 `POST /api/v3/mcp/execute`）均已实现。详见 [MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md) |
+| **MCP** | L3 stdio；L2 TaskManager + Pull + Task Token | ✅ 默认路径已对齐 | 见 [ARCHITECTURE_L3 v0.4](ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)、[MCP_EXECUTION_MODEL v2.2](MCP_EXECUTION_MODEL.md) |
 
 ### 2.2 双轨可见性
 
@@ -83,7 +83,7 @@
 |------|------|----------|------|
 | 写完 MCP + Wasm 丢进 L2 文件夹 | 侧载 | ✅ 已实现 | `~/.jachin/inventory/skills/{id}/`、`mcps/*.json` |
 | 全公司高管立刻可用 | 扫描 + 热重载 | ✅ 已实现 | `scan_local_skills`、`scan_local_mcps`，`POST /inventory/reload` 热重载 |
-| 数据不出局域网 | MCP 在 L3 或委托 L3 | ✅ 已实现 | L3 本地执行或 L2 委托其他 L3，数据不离开企业内网 |
+| 数据不出局域网 | MCP 在 L3 或同租户 peer | ✅ 已实现 | 本机或 **可达** peer；NAT 笔记本须按 ARCHITECTURE_L3 用 Pull，勿假设 L2 总能 HTTP 打入 |
 | `.local_meta` 结构化元数据 | 侧载元数据 | ✅ 已实现 | `origin: SIDE_LOAD`、`installed_at`、`is_private: true` |
 
 ### 3.3 场景三：生态创作者 — 极简暴富与零成本分发
@@ -109,7 +109,7 @@
 |--------|------|
 | **L2 技能清单/下载无鉴权** | `/skills`、`/download` 现强制 X-Sub-Account-Id，经 PolicyEnforcer.check_access 按 role_permissions 过滤；L3 skill_sync 携带 sub_account_id |
 | **PRIVATE 技能按角色过滤** | 同上，清单与下载均按角色过滤 |
-| **L2 MCP 委托 fallback** | `v2_mcp.py` 在 MCPToolNotFoundError 时委托其他 L3 的 `POST /api/v3/mcp/execute`；`get_l3_nodes_with_mcp_tool` 从 Redis 查找有该工具的 L3 |
+| **L2 MCP 委托** | **Pull 优先**（`l3_mcp_delegate_queue` + `mcp_delegate_pull_worker`）；无 Redis/关闭 Pull 时 HTTP POST 他机 `/api/v3/mcp/execute`。L2 **默认**不侧载 stdio（`JACHIN_L2_STDIO_MCP` 回滚） |
 | **L3 MCP 同步与动态加载** | `l3_node/mcp_sync.py` 从 L2 `GET /l3_mcps` 拉取；`mcp_registry._load_tools_from_l3_mcp_cache` 从 `~/.jachin/l3_mcp_cache/` 动态加载 |
 
 ### 4.3 设计层面的待确认点
@@ -129,7 +129,7 @@
 |------|--------|------|
 | **L1** | 95%+ | 商城、manifest、publish、licenses、PRIVATE 影子上传、PUBLIC 审核均就绪；IAM 已下放 L2；支付除外 |
 | **L2** | 95%+ | 同步、侧载、MCP、PolicyEnforcer、断网降级、inventory API 完整 |
-| **L3** | 95% | 技能同步、MCP 同步、l3_mcp_cache 动态加载、L2 委托 fallback 均已实现 |
+| **L3** | 95% | 技能/MCP 同步与动态加载、兼容 HTTP 委托链已就绪；TaskManager/Pull/Task Token 为路线图 |
 
 ### 5.2 三大流程满足度
 

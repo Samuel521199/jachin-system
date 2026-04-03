@@ -2,11 +2,10 @@
 # 注意：Docker Compose v2+ 不再需要 version 字段
 # 仅包含基础设施服务，后端代码在本地 Conda 环境中运行
 # 
-# 注意：PostgreSQL 和 Qdrant 使用本地安装的版本，不在 Docker 中运行
-# 请确保本地已安装并运行：
-#   - PostgreSQL 15+ (端口 5432)
-#   - Qdrant (端口 6333/6334)
-# 参考 docs/LOCAL_DATABASE_SETUP.md 了解本地数据库配置说明
+# 注意：PostgreSQL 可使用本地安装，不在 Docker 中运行
+# 请确保本地已安装并运行 PostgreSQL 15+（端口 5432）若需要
+# 向量记忆使用 LanceDB 本地目录，无需单独向量服务
+# 本地数据与 LanceDB 路径：见 docs/FILE_STRUCTURE.md（~/.jachin）、docs/L2_K8S_READINESS.md
 #
 # 项目名称：使用环境变量 COMPOSE_PROJECT_NAME=jachin-dev 或通过 -p 参数指定
 
@@ -28,26 +27,6 @@ services:
   #     interval: 10s
   #     timeout: 5s
   #     retries: 5
-  #   networks:
-  #     - jachin-network
-
-  # 向量数据库：Qdrant - 已禁用，使用本地 Qdrant
-  # qdrant:
-  #   image: qdrant/qdrant:latest
-  #   container_name: jachin-qdrant-dev
-  #   ports:
-  #     - "6333:6333"  # REST API
-  #     - "6334:6334"  # gRPC API
-  #   volumes:
-  #     - qdrant_data:/qdrant/storage
-  #   restart: always
-  #   environment:
-  #     - QDRANT__SERVICE__GRPC_PORT=6334
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
   #   networks:
   #     - jachin-network
 
@@ -129,7 +108,6 @@ services:
 
 volumes:
   # postgres_data:  # 已禁用，使用本地 PostgreSQL
-  # qdrant_data:    # 已禁用，使用本地 Qdrant
   redis_data:
   mqtt_data:
   mqtt_logs:

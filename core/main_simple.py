@@ -53,7 +53,7 @@ async def chat_endpoint(request: ChatRequest):
     聊天接口
     
     这是核心逻辑：
-    1. 这里未来会加入：查询 Qdrant 记忆
+    1. 这里未来会加入：检索 LanceDB / 生物学记忆上下文
     2. 这里未来会加入：查询 Dapr 状态
     3. 调用大模型
     """

@@ -52,6 +52,27 @@ def get_target_triple() -> str:
         return f"{machine}-unknown-linux-gnu"
 
 
+def _patch_pyinstaller_create_base_library_zip() -> None:
+    """
+    PyInstaller 在 assemble 阶段写入 CONF['workpath']/base_library.zip 时，
+    在部分环境（含 Windows + 自定义 --workpath）下父目录可能尚未创建，触发 FileNotFoundError。
+    build_main 在模块导入时 from utils import create_base_library_zip，仅 patch utils 无效，须同时替换 build_main 全局名。
+    """
+    import PyInstaller.building.build_main as bm
+    import PyInstaller.building.utils as bu
+
+    _orig = bu.create_base_library_zip
+
+    def _wrapped(filename, modules_toc, code_cache=None):
+        parent = os.path.dirname(os.path.abspath(filename))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        return _orig(filename, modules_toc, code_cache)
+
+    bu.create_base_library_zip = _wrapped
+    bm.create_base_library_zip = _wrapped
+
+
 def main() -> int:
     os.chdir(ROOT)
 
@@ -89,12 +110,12 @@ def main() -> int:
         "bokeh", "matplotlib", "PIL", "cv2", "h5py", "tables",  # 非 L3 依赖
         "PyQt5", "qtpy", "onnxruntime", "numba", "llvmlite",  # 非 L3 依赖
     ]
+    # 不用 --clean：脚本上方已 rmtree dist_l3/build_l3；PyInstaller --clean 会清空 workpath 子目录，易与 base_library.zip 路径竞态
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--noconsole",  # Windows: 不弹黑框; Unix: 无影响
         "-n", SIDECAR_NAME,
-        "--clean",
         "--distpath", str(ROOT / "dist_l3"),
         "--workpath", str(ROOT / "build_l3"),
         "--specpath", str(ROOT),
@@ -162,9 +183,16 @@ def main() -> int:
     (ROOT / "dist_l3").mkdir(parents=True, exist_ok=True)
 
     print("[1/3] 运行 PyInstaller...")
-    r = subprocess.run(cmd, cwd=str(ROOT))
-    if r.returncode != 0:
-        return r.returncode
+    _patch_pyinstaller_create_base_library_zip()
+    from PyInstaller.__main__ import run as pyi_run
+
+    pyi_args = cmd[3:]
+    try:
+        pyi_run(pyi_args=pyi_args)
+    except SystemExit as e:
+        code = e.code
+        if code not in (None, 0):
+            return code if isinstance(code, int) else 1
 
     # 复制到 bin 目录（target 已在上面计算）
     src = ROOT / "dist_l3" / f"{SIDECAR_NAME}{ext}"

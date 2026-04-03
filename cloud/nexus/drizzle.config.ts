@@ -1,8 +1,9 @@
 import { config } from "dotenv";
 
-// 加载 .env.local（Next.js 约定），drizzle-kit 不自动加载
-config({ path: ".env.local" });
+// drizzle-kit 不经过 Next；先 .env 再 .env.local。
+// override: true 让文件覆盖**已存在于进程中的**变量（否则终端里残留的 DATABASE_URL=15432 会盖过 .env.local 的 5432）。
 config({ path: ".env" });
+config({ path: ".env.local", override: true });
 
 import { defineConfig } from "drizzle-kit";
 

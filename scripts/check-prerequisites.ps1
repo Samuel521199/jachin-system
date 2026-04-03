@@ -64,7 +64,7 @@ if ($Layer -in "all", "layer2") {
         }
     }
     if ($Layer -in "all", "layer2") {
-        Write-Host "  > Docker (optional for Qdrant)..." -ForegroundColor Gray -NoNewline
+        Write-Host "  > Docker (optional for infra / Redis)..." -ForegroundColor Gray -NoNewline
         if (-not (Test-Cmd docker)) {
             Write-Host " not installed" -ForegroundColor Yellow
             $warnings += "Docker (optional: winget install Docker.DockerDesktop)"

@@ -1,7 +1,9 @@
 # L1-L2-L3 端到端流程指南
 
-**版本**: V2 (2026-03)  
+**版本**: V2 (2026-04)  
 **适用场景**: L1 云端已启动，L2 与 L3 在同一台机器上运行，跑通「发布 → 同步 → 分配」完整链路。
+
+**L1↔L2 信任建立**（架构、白名单、API）以 **[L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)** 为准：优先 **L2 `/gateway` → L1 注册邮箱+密码**（无跳转）或 **Nexus 账号登录（Web Bridge）**；无 Web/无头时用 **CLI 6 位码** 辅助。
 
 ---
 
@@ -24,8 +26,10 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. L2 配对 L1                                                               │
-│     python -m core.cli pair → 6 位码 → L1 Console 确认 → nexus_config.json  │
+│  1. L2 与 L1 建立信任（nexus_config.json）                                    │
+│     主：/gateway 填 L1 邮箱+密码，或「Nexus 账号登录」→ L1 l2-bridge 回跳兑换   │
+│     辅：python -m core.cli pair → 6 位码 → L1 确认（无头/恢复）                │
+│     配对成功后 L2 热启心跳与 CloudSync（一般无需仅为配对而重启 L2）              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  2. L1 发布技能                                                              │
 │     L1 Store / The Forge 上传 .zip → 审核通过 → plugins_registry             │
@@ -48,11 +52,25 @@
 
 ## 三、详细步骤
 
-### 步骤 1：L2 配对 L1
+### 步骤 1：L2 与 L1 建立信任（写入 nexus_config）
 
-L2 需要与 L1 配对，才能拉取 manifest 和上报遥测。
+L2 需有效 `~/.jachin/nexus_config.json` 才能拉取 manifest 与上报遥测。
 
-**1.1 确保 L1 已启动**
+#### 方式 A（推荐，无跳转）：L1 注册邮箱 + 密码
+
+1. 配置 L2 `NEXUS_BASE_URL` 指向可达的 L1（容器内需能访问该地址）；`BRAIN_BASE_URL` 用于 Web 回跳（本方式可不依赖）。详见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)。
+2. 启动 L2 后打开 `http://<L2>:18888/gateway/`（或你的 `BRAIN_BASE_URL/gateway/`）。
+3. **用户名**填 L1 注册邮箱，**密码**填 L1 密码，点击登录。L2 向 L1 校验后写入 `nexus_config.json` 并签发 Admin JWT，并 **热启** manifest 同步与 L1 心跳。
+
+#### 方式 B：Nexus 账号登录 / Web Bridge（OAuth-only 或偏好浏览器在 L1 域登录）
+
+1. 配置 L2 `NEXUS_BASE_URL`、`BRAIN_BASE_URL`；L1 配置 `L2_BRIDGE_ALLOWED_RETURN_PREFIXES`（须覆盖 `BRAIN_BASE_URL` 前缀）。
+2. 启动 L2 后打开 `/gateway/`。
+3. 点击 **「使用 Nexus 账号登录」**，在 L1 登录并确认授权，回跳后写入 `nexus_config.json` 并签发 Admin JWT（同样会热启后台任务）。
+
+#### 方式 C（辅助）：CLI 6 位配对码（无头 / SSH / 恢复）
+
+**C.1 确保 L1 已启动**
 
 ```powershell
 cd cloud\nexus
@@ -60,7 +78,7 @@ npm run dev
 # 访问 http://localhost:3000 确认可打开
 ```
 
-**1.2 执行配对**
+**C.2 执行配对**
 
 ```powershell
 # 在项目根目录
@@ -69,13 +87,13 @@ python -m core.cli pair --base-url http://localhost:3000
 
 终端会显示 6 位配对码（如 `X7A-9K2`）。
 
-**1.3 在 L1 Console 确认**
+**C.3 在 L1 确认**
 
-1. 打开 http://localhost:3000/console/pair
-2. 输入 6 位码，点击确认
-3. CLI 轮询到成功后，会写入 `~/.jachin/nexus_config.json`
+1. 打开 http://localhost:3000/console/pair（或 `/pair`）
+2. 输入 6 位码并确认
+3. CLI 轮询成功后写入 `~/.jachin/nexus_config.json`
 
-**1.4 验证配置**
+**验证配置**（方式 A/B/C 通用）
 
 ```json
 // ~/.jachin/nexus_config.json
@@ -259,7 +277,7 @@ L2 数据主权：权限由 L2 本地管理，不依赖 L1 下发。
 
 - L3 获批后，`l3_node/bootstrap.py` 调用 `sync_mcps_from_l2()`（`l3_node/mcp_sync.py`）
 - 请求 `GET /api/v2/inventory/l3_mcps` 获取清单，下载缺失/变更的包到 `~/.jachin/l3_mcp_cache/`
-- `mcp_registry` 从 l3_mcp_cache 动态加载工具；本机无技能时，L2 委托其他 L3 执行
+- `mcp_registry` 从 l3_mcp_cache 动态加载工具；本机无工具时走 `invoke_via_l2`（**兼容** 链路至 peer，目标 Pull 见 ARCHITECTURE_L3）
 
 ---
 
@@ -333,11 +351,11 @@ L2 数据主权：权限由 L2 本地管理，不依赖 L1 下发。
 - [ ] L2 已创建子账号并绑定角色
 - [ ] L3 已连接 L2 并完成审批
 - [ ] L3 可正常调用已分配技能
-- [ ] L3 获批后已同步 MCP（`~/.jachin/l3_mcp_cache/` 有内容，或 L2 委托其他 L3 执行）
+- [ ] L3 获批后已同步 MCP（`~/.jachin/l3_mcp_cache/` 有内容）；跨机 MCP 依赖兼容路径或未来 TaskManager
 
 ---
 
 **相关文档**:
-- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) — L3-L2 配对
+- [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md) — **L2↔L3** 配对（非 L1↔L3）
 - [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 架构
 - [QUICKSTART.md](./QUICKSTART.md) — 快速开始

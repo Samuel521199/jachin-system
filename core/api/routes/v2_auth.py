@@ -1,17 +1,21 @@
 """
-Jachin Nexus V2 - L2 控制面认证与密钥 API
+Jachin Nexus V2 - L2 控制面认证与密钥 API（L2↔L3 零信任）
 
-POST /api/v2/auth/sync: L3 携带设备指纹和公钥注册
-GET /api/v2/keys: 根据 sub_account_id 返回使用请求者公钥加密的 API Key 列表
-POST /api/v2/auth/check: L3 执行前校验子账号权限
+POST /api/v2/auth/sync: L3 注册；已配对 L2 时 organization_id（或 slug）须落在 sync_tenant_ids。
+仅配置**一个**同步租户时，L3 可省略 organization，L2 默认使用该租户（降低首次配对摩擦）。
+多租户时 L3 必须显式提供 organization_id 或 organization_slug。配对仅发生在 L2↔L3，不经 L1。
+GET /api/v2/keys / auth/poll / auth/check: L3 运行时密钥与权限。
 L2 不代理大模型推理请求。
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from typing import Any, Optional
+
+import httpx
 
 from fastapi import APIRouter, HTTPException, Header, Request
 
@@ -38,6 +42,7 @@ from core.permissions import (
     verify_permissions,
 )
 from core.security.crypto_manager import decrypt_from_storage, encrypt_for_l3
+from core.nexus_config_store import load_nexus_config, normalize_sync_tenant_ids
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,137 @@ def _validate_l3_public_key(pem: Optional[str]) -> bool:
     return s.startswith("-----BEGIN ") and "-----END " in s and "PUBLIC KEY" in s
 
 router = APIRouter(prefix="/api/v2", tags=["v2-auth"])
+
+
+_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_ORG_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.I,
+)
+
+
+async def _fetch_l1_org_by_id(org_id: str) -> Optional[str]:
+    """
+    GET /api/v1/l2-gateway/resolve-org?organization_id=…（X-L2-Gateway-Secret）。
+    用于按主键校验组织存在并返回 canonical org_id。
+    """
+    import os
+
+    oid = org_id.strip()
+    if not oid or not _ORG_UUID_RE.fullmatch(oid):
+        return None
+
+    cfg = load_nexus_config()
+    base = (cfg.get("nexus_base_url") or "").strip().rstrip("/")
+    if not base:
+        from core.config import settings
+
+        base = (settings.NEXUS_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None
+
+    secret = (os.environ.get("NEXUS_L2_LOGIN_SECRET") or "").strip()
+    if not secret:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                f"{base}/api/v1/l2-gateway/resolve-org",
+                params={"organization_id": oid},
+                headers={"X-L2-Gateway-Secret": secret},
+            )
+        if r.status_code == 200:
+            try:
+                data = r.json()
+            except Exception:
+                return None
+            if data.get("success"):
+                d = data.get("data") or {}
+                out = (d.get("org_id") or "").strip()
+                if out:
+                    return out
+    except httpx.RequestError as e:
+        logger.warning("[v2/auth] l2-gateway/resolve-org-by-id 请求失败: %s", e)
+    return None
+
+
+async def _fetch_l1_org_id_for_slug(slug: str) -> Optional[str]:
+    """
+    将 slug → organizations.id。
+    1) 优先 L1 GET /api/v1/l2-gateway/resolve-org（X-L2-Gateway-Secret，与 workspace-members 一致）
+    2) 回退 GET /api/v1/edge/resolve-org（Bearer 配对 access_token，须边缘行有效）
+    """
+    import os
+
+    cfg = load_nexus_config()
+    token = (cfg.get("access_token") or "").strip()
+    base = (cfg.get("nexus_base_url") or "").strip().rstrip("/")
+    if not base:
+        from core.config import settings
+
+        base = (settings.NEXUS_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None
+
+    secret = (os.environ.get("NEXUS_L2_LOGIN_SECRET") or "").strip()
+    if secret:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.get(
+                    f"{base}/api/v1/l2-gateway/resolve-org",
+                    params={"slug": slug},
+                    headers={"X-L2-Gateway-Secret": secret},
+                )
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {}
+                if data.get("success"):
+                    d = data.get("data") or {}
+                    oid = (d.get("org_id") or "").strip()
+                    if oid:
+                        return oid
+            elif r.status_code == 404:
+                logger.info(
+                    "[v2/auth] l2-gateway/resolve-org 未找到 slug=%s（可在 L1 为工作区设 slug，或显示名与参数一致）",
+                    slug[:32],
+                )
+            elif r.status_code == 409:
+                try:
+                    amb = (r.json().get("message") or "").strip()
+                except Exception:
+                    amb = ""
+                logger.warning(
+                    "[v2/auth] l2-gateway/resolve-org 歧义 slug=%s %s",
+                    slug[:32],
+                    amb or "(多个工作区同名)",
+                )
+        except httpx.RequestError as e:
+            logger.warning("[v2/auth] l2-gateway/resolve-org 请求失败: %s", e)
+
+    if not token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                f"{base}/api/v1/edge/resolve-org",
+                params={"slug": slug},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.RequestError:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        data = r.json()
+    except Exception:
+        return None
+    if not data.get("success"):
+        return None
+    d = data.get("data") or {}
+    oid = (d.get("org_id") or "").strip()
+    return oid or None
 
 
 def _get_keys_for_sub_account_with_fallback(conn, sub_account_id: str) -> list:
@@ -120,6 +256,86 @@ async def auth_sync(request: Request) -> dict[str, Any]:
     capabilities = body.get("capabilities") or []
     trust_zone = body.get("trust_zone") or ""
     display_name = (body.get("display_name") or "").strip()[:64]  # 用户自定义设备名，便于 L2 审批识别
+    organization_id = (
+        body.get("organization_id") or body.get("organizationId") or ""
+    )
+    if isinstance(organization_id, str):
+        organization_id = organization_id.strip()
+    else:
+        organization_id = ""
+    workspace_name = (body.get("workspace_name") or body.get("workspaceName") or "").strip()[:128]
+
+    org_slug_raw = body.get("organization_slug") or body.get("organizationSlug") or ""
+    org_slug = org_slug_raw.strip().lower() if isinstance(org_slug_raw, str) else ""
+    if org_slug and not _SLUG_RE.match(org_slug):
+        raise api_error(
+            400,
+            ERR_BAD_REQUEST_002,
+            "organization_slug 格式无效（小写字母、数字、连字符）",
+        )
+
+    if org_slug and organization_id:
+        raise api_error(
+            400,
+            ERR_BAD_REQUEST_002,
+            "请勿同时提供 organization_id 与 organization_slug",
+        )
+
+    effective_org_id = organization_id
+    if org_slug:
+        resolved = await _fetch_l1_org_id_for_slug(org_slug)
+        if not resolved:
+            cfg_fb = load_nexus_config()
+            ids_fb = normalize_sync_tenant_ids(cfg_fb)
+            if len(ids_fb) == 1:
+                only_tid = str(ids_fb[0]).strip()
+                if _ORG_UUID_RE.fullmatch(only_tid):
+                    verified = await _fetch_l1_org_by_id(only_tid)
+                    if verified:
+                        logger.warning(
+                            "[auth/sync] organization_slug=%r 在 L1 未解析；"
+                            "L2 仅配置单一同步租户，已改用 tenant_id=%s",
+                            org_slug,
+                            only_tid[:20] + ("..." if len(only_tid) > 20 else ""),
+                        )
+                        resolved = verified
+            if not resolved:
+                raise api_error(
+                    400,
+                    ERR_BAD_REQUEST_002,
+                    "无法解析 organization_slug：请在 L1 为该工作区设置 slug，"
+                    "或使显示名经 trim/小写后与 slug 一致；也可在 L3 改用 organization_id（UUID）。"
+                    "若 L2 只同步一个工作区，可去掉错误的 organization_slug 以使用默认租户。",
+                )
+        effective_org_id = resolved
+
+    cfg = load_nexus_config()
+    ids_ordered = normalize_sync_tenant_ids(cfg)
+    if ids_ordered:
+        allowed_set = set(ids_ordered)
+        if not effective_org_id:
+            if len(ids_ordered) == 1:
+                effective_org_id = ids_ordered[0]
+                logger.info(
+                    "[auth/sync] 未提供 organization，单同步租户默认使用 tenant_id=%s",
+                    effective_org_id[:20] + ("..." if len(effective_org_id) > 20 else ""),
+                )
+            else:
+                raise api_error(
+                    403,
+                    ERR_AUTH_004,
+                    "多工作区已启用：L3 须在请求体中提供 organization_id 或 organization_slug。"
+                    "可在 L2 /gateway「多工作区同步」查看活动 tenant_id，"
+                    "并写入 L3 的 ~/.jachin/l2_gateway_config.json 或环境变量 "
+                    "JACHIN_ORGANIZATION_ID / JACHIN_ORGANIZATION_SLUG。",
+                )
+        elif effective_org_id not in allowed_set:
+            raise api_error(
+                403,
+                ERR_AUTH_004,
+                "organization_id（或 slug 解析结果）须落在当前 L2 的 sync_tenant_ids / tenant_id 内"
+                "（见 ~/.jachin/nexus_config.json）。可在 L2 /gateway 的「多工作区同步」中勾选。",
+            )
 
     if not public_key_pem or not isinstance(public_key_pem, str):
         raise api_error(400, ERR_BAD_REQUEST_002, "public_key_pem is required")
@@ -152,17 +368,29 @@ async def auth_sync(request: Request) -> dict[str, Any]:
 
         conn.execute(
             """
-            INSERT INTO l3_nodes (id, device_fingerprint, public_key_pem, sub_account_id, capabilities_json, trust_zone, display_name, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+            INSERT INTO l3_nodes (id, device_fingerprint, public_key_pem, sub_account_id, capabilities_json, trust_zone, display_name, organization_id, workspace_name, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
             ON CONFLICT(id) DO UPDATE SET
                 device_fingerprint = excluded.device_fingerprint,
                 public_key_pem = excluded.public_key_pem,
                 capabilities_json = excluded.capabilities_json,
                 trust_zone = CASE WHEN excluded.trust_zone != '' THEN excluded.trust_zone ELSE trust_zone END,
                 display_name = CASE WHEN excluded.display_name != '' THEN excluded.display_name ELSE display_name END,
+                organization_id = CASE WHEN excluded.organization_id != '' THEN excluded.organization_id ELSE organization_id END,
+                workspace_name = CASE WHEN excluded.workspace_name != '' THEN excluded.workspace_name ELSE workspace_name END,
                 last_seen_at = strftime('%s', 'now')
             """,
-            (node_id, device_fingerprint, public_key_pem, sub_account_id, caps_json, trust_zone, display_name),
+            (
+                node_id,
+                device_fingerprint,
+                public_key_pem,
+                sub_account_id,
+                caps_json,
+                trust_zone,
+                display_name,
+                effective_org_id,
+                workspace_name,
+            ),
         )
         conn.commit()
     except Exception as e:

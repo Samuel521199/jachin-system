@@ -1,9 +1,9 @@
 """
-Jachin Nexus V2 - L2 本地数字仓库扫描器
+Jachin Nexus V2 - 本地数字仓库扫描器（L2 / 工具脚本共用）
 
-扫描 ~/.jachin/inventory/ 下的侧载技能与 MCP 配置，
-动态注入 MCPManager，缓存 Wasm 技能元数据。
-侧载时自动生成 .local_meta 结构化元数据。
+扫描 ~/.jachin/inventory/ 下的侧载技能与 MCP 配置，缓存 Wasm 技能元数据。
+``scan_local_mcps``：L2 进程默认不向 MCPManager 注入 stdio（除非 ``JACHIN_L2_STDIO_MCP=1``）；L3 内嵌 Host 传 ``for_l2_host=False`` 始终注入。
+侧载时自动生成 .local_meta。
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _ensure_local_meta(subdir: Path, plugin_id: str, wasm_sha256: str | None = N
 INVENTORY_ROOT = Path.home() / ".jachin" / "inventory"
 SKILLS_DIR = INVENTORY_ROOT / "skills"
 MCPS_DIR = INVENTORY_ROOT / "mcps"
-L3_MCPS_DIR = INVENTORY_ROOT / "l3_mcps"  # 路径 3：L3_LOCAL MCP，L3 拉取后动态加载
+L3_MCPS_DIR = INVENTORY_ROOT / "l3_mcps"  # L3_LOCAL MCP，供 L3 mcp_sync 拉取后动态加载
 
 # 项目根目录（用于 MCP config 中 __PROJECT_ROOT__ 占位符替换）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -170,12 +170,25 @@ def _extract_mcp_configs(data: dict[str, Any]) -> list[dict[str, Any]]:
     return configs
 
 
-async def scan_local_mcps() -> int:
+async def scan_local_mcps(*, for_l2_host: bool = True) -> int:
     """
     遍历 ~/.jachin/inventory/mcps/ 下的 .json 文件及子目录（含 plugin.json + config.json），
-    校验格式，将发现的 MCP 配置注入 MCPManager 并拉起。
+    校验格式，将发现的 MCP 配置注入 **本进程** MCPManager 并拉起。
     返回成功注入的 Server 数量。
+
+    - for_l2_host=True（默认）：仅在 L2 开启 ``JACHIN_L2_STDIO_MCP=1`` 时执行；否则跳过（长期架构 L2 不跑 stdio）。
+    - for_l2_host=False：供 L3 调用，始终扫描（L3 内嵌 stdio MCP）。
     """
+    if for_l2_host:
+        from core.l2_stdio_mcp_flag import l2_stdio_mcp_enabled
+
+        if not l2_stdio_mcp_enabled():
+            logger.info(
+                "[Inventory] L2 未启用本机 stdio MCP（默认关闭），跳过 inventory MCP 注入；"
+                "回滚请设 JACHIN_L2_STDIO_MCP=1"
+            )
+            return 0
+
     if not MCPS_DIR.exists():
         logger.debug("[Inventory] MCP 目录不存在 path=%s", MCPS_DIR)
         return 0

@@ -1,7 +1,8 @@
 # =============================================================================
-# 边缘智能体配对 - 6 位码连接指挥部 (极客终端版)
+# L1↔L2 辅助配对：CLI 6 位码（无头/恢复）。有 Web 时优先 L2 /gateway「Nexus 账号登录」。
 # 用法: .\scripts\run-pair.ps1 [-BaseUrl http://localhost:3000]
-# 恢复: .\scripts\run-pair.ps1 -Recover -Code "ABC123"  (云端已配对但本地未保存时)
+# 恢复: .\scripts\run-pair.ps1 -Recover -Code "ABC123"
+# 文档: docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md
 # =============================================================================
 
 param(

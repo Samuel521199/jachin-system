@@ -55,12 +55,12 @@
 ## 三、 匹配方式：三层绑定关系
 
 **V2 L3 桌面端**：配对走 L2 网关零信任（RSA 双盲），配置在 `~/.jachin/l2_gateway_config.json`。  
-**Layer 2 daemon / 第三方 IM**：仍使用 Layer 1 `edge_agents` 与 `nexus_config.json`。
+**L2 控制面与 L1**：通过 `edge_agents` + `nexus_config.json` 建立信任（**主**：L2 `/gateway` L1 邮箱+密码 或 Nexus 账号 Web 绑定；**辅**：CLI 6 位码）。详见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)。
 
 | 绑定链 | 用途 | 数据来源 |
 |--------|------|----------|
 | **1. l3_nodes ↔ sub_accounts** | L3 零信任配对 | L2 `POST /auth/sync`、`GET /auth/poll`，写入 `~/.jachin/l2_gateway_config.json` |
-| **2. access_token ↔ edge_agents** | Layer 2 daemon 鉴权 | L1 6 位码配对，写入 `~/.jachin/nexus_config.json` |
+| **2. access_token ↔ edge_agents** | L2 拉 L1 manifest / 遥测 | 网关邮箱登录、Web Bridge 或 CLI → `~/.jachin/nexus_config.json` |
 | **3. im_binding_id ↔ edge_agents** | 第三方 IM 消息路由 | 用户通过 `bind-im` API 将 Telegram chat_id 绑定到 agent |
 | **4. agent_id ↔ agent_message_queue** | 第三方 IM 任务队列 | 消息插入时 `agent_id`，WS 推送或心跳拉取时按 `agent_id` 过滤 |
 
@@ -179,7 +179,7 @@ Layer 2 连接 Layer 1 用于**鉴权、信令、第三方 IM 任务**：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                    V2 L3-L2 零信任配对                                             │
+│                    V2 L2↔L3 零信任配对                                             │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  ① Tauri 启动，未检测到 ~/.jachin/l2_gateway_config.json (paired)               │
@@ -194,9 +194,9 @@ Layer 2 连接 Layer 1 用于**鉴权、信令、第三方 IM 任务**：
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Legacy：Layer 2 daemon（L1 6 位码）
+### 7.2 L1↔L2 控制面（与 L3 配对无关）
 
-Layer 2 daemon、jachin-cli、run-pair 仍使用 L1 配对：`pairing/request` → 6 位码 → `pairing/confirm` → `pairing/status` → 写入 `nexus_config.json`。详见 [PAIRING_PROTOCOL_SPEC.md](./PAIRING_PROTOCOL_SPEC.md)。
+流程与 API 以 **[L1_L2_PAIRING_AND_WEB_BRIDGE.md](./L1_L2_PAIRING_AND_WEB_BRIDGE.md)** 为准（邮箱登录 + Web Bridge 主路径；CLI 辅助）。
 
 ---
 

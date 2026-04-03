@@ -12,7 +12,7 @@ import {
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { motion } from "framer-motion";
-import Navbar from "@/components/Navbar";
+import ConsoleScaffold from "@/components/ConsoleScaffold";
 import Toast from "@/components/Toast";
 import { Stethoscope, MessageCircle, Shield, Activity } from "lucide-react";
 
@@ -165,7 +165,8 @@ function AgentCard({
 }
 
 export default function ConsolePage() {
-  const [agents, setAgents] = useState<Agent[]>(FALLBACK_AGENTS);
+  /** 初始为空；仅在有接口数据或明确失败时使用 fallback，避免换账号后仍显示上一用户的节点 */
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [blueprints, setBlueprints] = useState<Blueprint[]>(FALLBACK_BLUEPRINTS);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [deployingAgent, setDeployingAgent] = useState<string | null>(null);
@@ -197,37 +198,43 @@ export default function ConsolePage() {
   useEffect(() => {
     const fetchInstances = async () => {
       try {
-        const res = await fetch("/api/v1/instances");
+        const res = await fetch("/api/v1/instances", { credentials: "same-origin" });
         const data = await res.json();
-        const list = data.instances ?? [];
-        if (list.length > 0) {
-          setAgents((prev) =>
-            list.map((inst: Record<string, unknown>, i: number) => {
-              const id = String(inst.instance_id ?? `api-${i}`);
-              const existing = prev.find((a) => a.id === id);
-              const lastHb = inst.last_heartbeat as string | undefined;
-              const status = inst.status as string | undefined;
-              const online =
-                status === "active" ||
-                (lastHb ? Date.now() - new Date(lastHb).getTime() < 120000 : false);
-              const metrics = inst.metrics as { cpu_percent?: number; ram_used_mb?: number; ram_total_mb?: number } | undefined;
-              const ramPct =
-                metrics?.ram_total_mb && metrics?.ram_used_mb
-                  ? Math.round((metrics.ram_used_mb / metrics.ram_total_mb) * 100)
-                  : existing?.ram ?? 0;
-              return {
-                id,
-                name: String(inst.name ?? inst.instance_id ?? "边缘智能体"),
-                online,
-                cpu: metrics?.cpu_percent ?? existing?.cpu ?? 0,
-                ram: ramPct,
-                blueprint: (inst.blueprint_name as string) ?? existing?.blueprint ?? "—",
-              };
-            })
-          );
+        if (!res.ok) {
+          if (res.status === 401) setAgents([]);
+          return;
         }
+        const list = data.instances ?? [];
+        setAgents((prev) =>
+          list.map((inst: Record<string, unknown>, i: number) => {
+            const id = String(inst.instance_id ?? `api-${i}`);
+            const existing = prev.find((a) => a.id === id);
+            const lastHb = inst.last_heartbeat as string | undefined;
+            const status = inst.status as string | undefined;
+            const online =
+              status === "active" ||
+              (lastHb ? Date.now() - new Date(lastHb).getTime() < 120000 : false);
+            const metrics = inst.metrics as {
+              cpu_percent?: number;
+              ram_used_mb?: number;
+              ram_total_mb?: number;
+            } | undefined;
+            const ramPct =
+              metrics?.ram_total_mb && metrics?.ram_used_mb
+                ? Math.round((metrics.ram_used_mb / metrics.ram_total_mb) * 100)
+                : existing?.ram ?? 0;
+            return {
+              id,
+              name: String(inst.name ?? inst.instance_id ?? "边缘智能体"),
+              online,
+              cpu: metrics?.cpu_percent ?? existing?.cpu ?? 0,
+              ram: ramPct,
+              blueprint: (inst.blueprint_name as string) ?? existing?.blueprint ?? "—",
+            };
+          })
+        );
       } catch {
-        // 保持 fallback
+        setAgents(FALLBACK_AGENTS);
       }
     };
     fetchInstances();
@@ -269,26 +276,7 @@ export default function ConsolePage() {
     : null;
 
   return (
-    <div className="min-h-screen bg-[#050505]">
-      <div
-        className="fixed inset-0 -z-10 pointer-events-none opacity-30"
-        style={{
-          backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2322d3ee' fill-opacity='0.08'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
-        }}
-      />
-      <div
-        className="fixed inset-0 -z-10 pointer-events-none"
-        style={{
-          background: `
-            radial-gradient(ellipse 60% 40% at 50% 20%, rgba(34, 211, 238, 0.06) 0%, transparent 50%),
-            radial-gradient(ellipse 40% 60% at 80% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%),
-            #050505
-          `,
-        }}
-      />
-
-      <Navbar />
-
+    <ConsoleScaffold>
       <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <main className="pt-20 px-6 pb-16 min-h-screen">
           <div className="flex gap-6 max-w-7xl mx-auto">
@@ -319,12 +307,20 @@ export default function ConsolePage() {
                 <h1 className="text-2xl font-bold tracking-widest text-cyan-400/95">
                   边缘智能体星图
                 </h1>
-                <Link
-                  href="/console/fleet"
-                  className="text-sm text-cyan-400/80 hover:text-cyan-400 transition-colors"
-                >
-                  舰队指挥大屏 →
-                </Link>
+                <div className="flex items-center gap-4">
+                  <Link
+                    href="/console/workspace"
+                    className="text-sm text-white/50 hover:text-cyan-400 transition-colors"
+                  >
+                    工作区与权限
+                  </Link>
+                  <Link
+                    href="/console/fleet"
+                    className="text-sm text-cyan-400/80 hover:text-cyan-400 transition-colors"
+                  >
+                    舰队指挥大屏 →
+                  </Link>
+                </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {agents.map((agent) => (
@@ -361,6 +357,6 @@ export default function ConsolePage() {
         visible={toastVisible}
         onClose={() => setToastVisible(false)}
       />
-    </div>
+    </ConsoleScaffold>
   );
 }
