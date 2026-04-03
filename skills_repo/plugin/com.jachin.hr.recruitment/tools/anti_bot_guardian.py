@@ -60,7 +60,7 @@ def _ensure_repo_root_on_path() -> None:
 
 def _import_ask_human():
     _ensure_repo_root_on_path()
-    from l3_node.mcp_tools.human_ask_tool import ask_human_for_decision
+    from l3_node.primitives.mcp.mcp_tools.human_ask_tool import ask_human_for_decision
 
     return ask_human_for_decision
 

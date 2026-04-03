@@ -813,7 +813,7 @@ class JachinWasmSandbox:
                     if "__rust_dealloc" in msg or "__rust_alloc" in msg:
                         raise WasmExecutionError(
                             "此技能为 Rust Wasm，需要 execute ABI（__rust_alloc 等）。"
-                            "请确保 L3 与 core 使用最新 wasm_runner，或从 l3_node/skills/wasm_plugins 侧载。",
+                            "请确保 L3 与 core 使用最新 wasm_runner，或从 l3_node/primitives/tools/wasm_bundled 侧载。",
                             _format_wasm_error(e),
                         )
                     raise

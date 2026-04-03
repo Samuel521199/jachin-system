@@ -8,7 +8,7 @@ alwaysApply: false
 
 **目标**：上传 MCP 和 Skill 时配置必须一同打包；订阅下载后配置自动写出到目标机 `~/.jachin/config/`，立即可用。
 
-**关联**：075-config-root-and-cloud-sync.mdc（配置根与写出逻辑）、077-skill-mcp-dependency.mdc（Skill 依赖 MCP）、docs/SKILL_MCP_UPLOAD_SPEC.md
+**关联**：075-config-root-and-cloud-sync.mdc（配置根与写出逻辑）、077-skill-mcp-dependency.mdc（Skill 依赖 MCP）、072-jachin-four-primitives.mdc（**Skill 声明 vs MCP vs jpp Tool**）、docs/SKILL_MCP_UPLOAD_SPEC.md、docs/Jachin 视角的「四大原语」终极架构规范.md
 
 ---
 

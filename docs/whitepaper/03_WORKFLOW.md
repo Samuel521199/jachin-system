@@ -35,7 +35,7 @@
 | 1 | **用户 (Telegram)** | 在街上向专属机器人发送：“查一下北京天气并写入本地日志”。 |
 | 2 | **Layer 1 (Next.js)**| Webhook 捕获消息，查库匹配 `agent_id`，存入 `agent_messages` 队列。 |
 | 3 | **Layer 2 (Daemon)** | 拉取 `pending_task`（过渡期：10 秒/次 HTTP 心跳；P0：WS 长连推送）。 |
-| 4 | **Layer 2 (Agent)** | **进入 Nexus Hook Pipeline**：<br>1. `[Thought]` 需要调用天气 API。<br>2. `[Action]` 选择 MCP 或 Wasm 插件（双轨制）；Swarm Hook 可拦截 heavy_tools 外包至虫群。<br>3. `[Observation]` 获取结果；若报错则自我修复重试。<br>4. `[Action]` 再次调用 MCP 文件工具或 Wasm 写入。 |
+| 4 | **Layer 2 (Agent)** | **进入 Nexus Hook Pipeline**：<br>1. `[Thought]` 需要调用天气 API。<br>2. `[Action]` 按 **四大原语** 选择 MCP / Skills / Tools(jpp)；Swarm Hook 可拦截 heavy_tools 外包至虫群。<br>3. `[Observation]` 获取结果；若报错则自我修复重试。<br>4. `[Action]` 再次调用 MCP 文件工具或 Wasm 写入。 |
 | 5 | **Layer 2 (Daemon)** | 得到 `[Final Answer]`，向 Layer 1 发起 `/api/v1/agents/callback`。 |
 | 6 | **Layer 1 (Next.js)**| 收到结果，调用 Telegram API 推送至用户手机。手机震动，闭环完成。 |
 

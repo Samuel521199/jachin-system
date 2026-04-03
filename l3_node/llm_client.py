@@ -15,6 +15,11 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+try:
+    from l3_node.llm_budget import BudgetExhaustedError as _BudgetExhaustedError
+except ImportError:
+    _BudgetExhaustedError = None  # type: ignore[misc, assignment]
+
 
 def _dashscope_econ_fallback() -> str:
     """与 core 一致：主模型失败时的低成本 DashScope 降级。"""
@@ -27,6 +32,52 @@ def _dashscope_econ_fallback() -> str:
 
 
 _L3_DEFAULT_REASONING_MODEL = "qwen3.5-plus"
+
+
+def _effective_max_tokens_for_model(model: str, requested: int) -> int:
+    """
+    DashScope 对部分模型限制 max_tokens 上界（例如 qwen-max 仅 [1, 8192]）。
+    agent_core ReAct 常传 16384，必须在调用 litellm 前钳制，否则会 400，并被 LiteLLM 包装成 APIConnectionError。
+    """
+    try:
+        n = int(requested)
+    except (TypeError, ValueError):
+        n = 1024
+    n = max(1, n)
+    ml = (model or "").lower()
+    tail = ml.split("/")[-1] if "/" in ml else ml
+    if "qwen-max" in tail or "vl-max" in tail or "qwen-vl-max" in ml:
+        import os as _env_cap
+
+        cap = 8192
+        try:
+            cap = int(_env_cap.environ.get("JACHIN_QWEN_MAX_MAX_TOKENS", "8192"))
+            cap = max(1, min(cap, 8192))
+        except ValueError:
+            cap = 8192
+        if n > cap:
+            logger.info(
+                "[L3 LLM] max_tokens=%s 超过模型 %s 允许上限 %s，已钳制为 %s",
+                n,
+                model,
+                cap,
+                cap,
+            )
+        return min(n, cap)
+    return n
+
+
+def _is_probably_network_llm_error(err: BaseException) -> bool:
+    """避免把 InvalidParameter/max_tokens 等 400 误报成「网络不可达」。"""
+    msg = str(err).lower()
+    if "invalidparameter" in msg.replace(" ", ""):
+        return False
+    if "max_tokens" in msg and ("8192" in msg or "range of max_tokens" in msg):
+        return False
+    if "internalerror.algo" in msg.replace(" ", ""):
+        return False
+    name = type(err).__name__
+    return "ConnectError" in name or "connecterror" in msg or "connection reset" in msg
 
 
 def _brief_llm_context(
@@ -57,6 +108,29 @@ def _pop_l3_call_purpose(kwargs: dict[str, Any], default: str = "unspecified") -
         p = kwargs.pop("call_purpose", None)
     s = str(p or "").strip()
     return s if s else default
+
+
+class RunCancelledError(RuntimeError):
+    """协作式取消：l3_cancel_event 已 set。"""
+
+
+def _pop_l3_runtime_controls(kwargs: dict[str, Any]) -> tuple[Any, Any, Any]:
+    acc = kwargs.pop("l3_token_accumulator", None)
+    budget = kwargs.pop("l3_token_budget_max", None)
+    cancel = kwargs.pop("l3_cancel_event", None)
+    return acc, budget, cancel
+
+
+def _apply_usage_budget(response: object, acc: Any, budget: Any) -> None:
+    if acc is None or not isinstance(acc, dict):
+        return
+    try:
+        from l3_node.llm_budget import accumulate_and_check, extract_usage_tokens
+
+        pt, ct = extract_usage_tokens(response)
+        accumulate_and_check(acc, pt, ct, budget)
+    except ImportError:
+        pass
 
 import os as _os
 _JACHIN_DIR = Path(_os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
@@ -342,6 +416,8 @@ class LiteLLMEngine:
         import litellm
 
         purpose = _pop_l3_call_purpose(kwargs)
+        _acc, _budget, _cancel = _pop_l3_runtime_controls(kwargs)
+        _override_model = kwargs.pop("l3_override_model", None)
 
         # 优先从 env 注入，确保有 DASHSCOPE 时绝不走 Ollama
         _inject_env_keys_into_ctx(self.ctx)
@@ -373,6 +449,9 @@ class LiteLLMEngine:
             pass
 
         models_to_try = [self.model_name] + [m for m in (self.fallback_models or []) if m != self.model_name]
+        if _override_model:
+            om = self._normalize_model(str(_override_model).strip())
+            models_to_try = [om] + [m for m in models_to_try if self._normalize_model(m) != om]
         last_error: Optional[Exception] = None
 
         for attempt in range(self.max_attempts):
@@ -394,15 +473,24 @@ class LiteLLMEngine:
                 next_if_fail or "-",
             )
             try:
+                if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
+                    raise RunCancelledError("l3_llm_cancelled_before_completion")
+                _mt = _effective_max_tokens_for_model(model, max_tokens)
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
+                    "max_tokens": _mt,
                     "timeout": self.timeout,
                 }
                 if tools:
                     kwargs_chat["tools"] = tools
+
+                _rfmt = kwargs.pop("response_format", None)
+                if _rfmt is not None:
+                    kwargs_chat["response_format"] = _rfmt
+                if kwargs:
+                    logger.debug("[L3 LLM] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
 
                 _cap = float(self.timeout) + 45.0
                 try:
@@ -414,6 +502,7 @@ class LiteLLMEngine:
                     raise TimeoutError(
                         f"L3 LLM 非流式逾时 (>{_cap:.0f}s, purpose={purpose}, model={model})"
                     ) from te
+                _apply_usage_budget(response, _acc, _budget)
                 choice = response.choices[0] if response.choices else None
                 if not choice:
                     logger.info(
@@ -440,13 +529,22 @@ class LiteLLMEngine:
                 )
                 return text
             except Exception as e:
+                if _BudgetExhaustedError and isinstance(e, _BudgetExhaustedError):
+                    raise
+                if isinstance(e, RunCancelledError):
+                    raise
                 last_error = e
-                err_msg = str(e)
-                is_connect_err = "ConnectError" in type(e).__name__ or "connect" in err_msg.lower()
-                if is_connect_err:
+                if _is_probably_network_llm_error(e):
                     logger.warning(
                         "[L3 LLM] 网络不可达 model=%s: %s。请检查本机能否访问 dashscope.aliyuncs.com，或配置 HTTP_PROXY/HTTPS_PROXY",
-                        model, e,
+                        model,
+                        e,
+                    )
+                elif "max_tokens" in str(e).lower():
+                    logger.warning(
+                        "[L3 LLM] 模型/API 参数错误（非纯网络故障）model=%s: %s",
+                        model,
+                        str(e)[:400],
                     )
                 if attempt < self.max_attempts - 1 and len(models_to_try) > 1:
                     nxt = models_to_try[min(attempt + 1, len(models_to_try) - 1)]
@@ -484,11 +582,15 @@ class LiteLLMEngine:
         import litellm
 
         purpose = _pop_l3_call_purpose(kwargs)
+        _acc, _budget, _cancel = _pop_l3_runtime_controls(kwargs)
+        _stream_run_id = kwargs.pop("l3_run_id", None)
+        _override_model_s = kwargs.pop("l3_override_model", None)
 
         _inject_env_keys_into_ctx(self.ctx)
         has_keys = self.ctx.has_any_key()
         logger.info(
-            "[L3 LLM][调度] purpose=%s action=chat_completion_stream has_key=%s %s",
+            "[L3 LLM][调度] purpose=%s action=chat_completion_stream has_key=%s %s "
+            "react_note=API 未传 tools[]（流式 ReAct 仅靠 system 内文本工具说明；须输出 Action:/Action Input:）",
             purpose,
             has_keys,
             _brief_llm_context(messages, None),
@@ -515,6 +617,9 @@ class LiteLLMEngine:
         models_to_try = [self.model_name] + [
             m for m in self.fallback_models if m != self.model_name
         ]
+        if _override_model_s:
+            om = self._normalize_model(str(_override_model_s).strip())
+            models_to_try = [om] + [m for m in models_to_try if self._normalize_model(m) != om]
         last_error: Optional[Exception] = None
 
         for attempt in range(self.max_attempts):
@@ -537,27 +642,76 @@ class LiteLLMEngine:
                 model,
                 next_if_fail or "-",
             )
-            full_content: list[str] = []
             try:
+                if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
+                    raise RunCancelledError("l3_llm_cancelled_before_stream")
+                _mt = _effective_max_tokens_for_model(model, max_tokens)
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
                     "stream": True,
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
+                    "max_tokens": _mt,
                     "timeout": self.timeout,
                 }
+                _rfmt_s = kwargs.pop("response_format", None)
+                if _rfmt_s is not None:
+                    kwargs_chat["response_format"] = _rfmt_s
+                if kwargs:
+                    logger.debug("[L3 LLM][stream] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
+
+                from core.litellm_stream_hints import merge_dashscope_stream_incremental_hint
+
+                merge_dashscope_stream_incremental_hint(model, kwargs_chat)
+
                 response = await litellm.acompletion(**kwargs_chat)
-                async for chunk in response:
-                    choice = chunk.choices[0] if chunk.choices else None
-                    if not choice or not hasattr(choice, "delta"):
-                        continue
-                    delta = getattr(choice.delta, "content", None) or ""
-                    if delta:
-                        full_content.append(delta)
-                        if chunk_callback:
-                            await chunk_callback(delta)
-                out = "".join(full_content).strip()
+
+                async def _consume_stream() -> tuple[list[str], object | None]:
+                    from core.stream_text_delta import StreamDeltaNormalizer
+
+                    # 默认始终启用 StreamDeltaNormalizer：用前两帧自动判别「真增量」vs「每帧累积全文」。
+                    # DashScope/LiteLLM 部分路径每帧 content 为全文，若当增量拼接会产生严重复读。
+                    # 调试可设 JACHIN_STREAM_DELTA_RAW=1 在 normalizer 内强制逐帧透传。
+                    pieces: list[str] = []
+                    luc: object | None = None
+                    _norm = StreamDeltaNormalizer()
+                    async for chunk in response:
+                        if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
+                            raise RunCancelledError("l3_llm_cancelled_mid_stream")
+                        choice = chunk.choices[0] if chunk.choices else None
+                        if not choice or not hasattr(choice, "delta"):
+                            continue
+                        delta = getattr(choice.delta, "content", None) or ""
+                        if not delta:
+                            u = getattr(chunk, "usage", None)
+                            if u is not None:
+                                luc = chunk
+                            continue
+                        piece = _norm.feed(delta)
+                        if piece:
+                            pieces.append(piece)
+                            if chunk_callback:
+                                await chunk_callback(piece)
+                        u = getattr(chunk, "usage", None)
+                        if u is not None:
+                            luc = chunk
+                    return pieces, luc
+
+                import l3_node.agent_cancel as _agent_cancel_mod
+
+                _stream_task = asyncio.create_task(_consume_stream())
+                if _stream_run_id:
+                    _agent_cancel_mod.register_stream_task(str(_stream_run_id), _stream_task)
+                try:
+                    pieces, _last_usage_chunk = await _stream_task
+                except asyncio.CancelledError:
+                    raise RunCancelledError("l3_llm_stream_task_cancelled") from None
+                finally:
+                    if _stream_run_id:
+                        _agent_cancel_mod.unregister_stream_task(str(_stream_run_id))
+                if _last_usage_chunk is not None:
+                    _apply_usage_budget(_last_usage_chunk, _acc, _budget)
+                out = "".join(pieces).strip()
                 logger.info(
                     "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",
                     purpose,
@@ -566,13 +720,22 @@ class LiteLLMEngine:
                 )
                 return out
             except Exception as e:
+                if _BudgetExhaustedError and isinstance(e, _BudgetExhaustedError):
+                    raise
+                if isinstance(e, RunCancelledError):
+                    raise
                 last_error = e
-                err_msg = str(e)
-                is_connect_err = "ConnectError" in type(e).__name__ or "connect" in err_msg.lower()
-                if is_connect_err:
+                if _is_probably_network_llm_error(e):
                     logger.warning(
                         "[L3 LLM] 网络不可达 model=%s: %s。请检查本机能否访问 dashscope.aliyuncs.com，或配置 HTTP_PROXY/HTTPS_PROXY",
-                        model, e,
+                        model,
+                        e,
+                    )
+                elif "max_tokens" in str(e).lower():
+                    logger.warning(
+                        "[L3 LLM] 模型/API 参数错误（非纯网络故障）model=%s: %s",
+                        model,
+                        str(e)[:400],
                     )
                 if attempt < self.max_attempts - 1 and len(models_to_try) > 1:
                     nxt = models_to_try[min(attempt + 1, len(models_to_try) - 1)]

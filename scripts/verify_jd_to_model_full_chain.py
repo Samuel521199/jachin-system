@@ -94,7 +94,7 @@ def main() -> int:
 
     if args.trace_only:
         # 仅追踪：loader → stdin → 模拟 Wasm 解析 → 展示将发送给模型的 prompt
-        from l3_node.skills.loader import build_hr_stdin_for_debug
+        from l3_node.primitives.tools.loader import build_hr_stdin_for_debug
 
         def _simulate_extract(json_str: str, key: str) -> str | None:
             for pat in (f'"{key}":"', f'"{key}": "'):
@@ -178,7 +178,7 @@ def main() -> int:
     # 执行 run_tool（需 LLM）
     import queue
     import threading
-    from l3_node.skills import run_tool
+    from l3_node.primitives import run_tool
 
     inp = json.dumps({**input_data, "capability": "execute"}, ensure_ascii=False)
     ndjson_lines: list[str] = []

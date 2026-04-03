@@ -104,7 +104,7 @@ def main() -> int:
         print("[节点1] jd_template 前80字:", (input_data.get("jd_template", "") or "")[:80], flush=True)
 
     # [2] loader 构建 stdin
-    from l3_node.skills.loader import build_hr_stdin_for_debug
+    from l3_node.primitives.tools.loader import build_hr_stdin_for_debug
 
     stdin_str, debug = build_hr_stdin_for_debug(input_data)
     if args.trace:
@@ -141,7 +141,7 @@ def main() -> int:
             print("⚠️ LLM 引擎未注册，请先启动 L3 并完成配对", flush=True)
     except Exception:
         pass
-    from l3_node.skills import run_tool
+    from l3_node.primitives import run_tool
 
     inp = json.dumps({**input_data, "capability": "execute"}, ensure_ascii=False)
     result = run_tool("jpp:com.jachin.hr.analyzer4", inp)

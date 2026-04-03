@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -151,6 +152,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
     支持终端-Lark 镜像：subscribe_mirror 订阅、广播 mirror_input/answer、终端回复推送到 Lark。"""
     session_messages: list[dict] = []
     _my_lark_chat_id: str = ""  # 本连接订阅的 chat_id（终端镜像模式）
+    _bg_task_subscribed: bool = False
     try:
         async for raw in websocket:
             try:
@@ -180,6 +182,23 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                         if not s:
                             _mirror_subscribers.pop(cid, None)
                     _my_lark_chat_id = ""
+                continue
+
+            if msg_type == "subscribe_background_tasks":
+                try:
+                    from l3_node.l3_event_bus import register_background_task_subscriber
+
+                    await register_background_task_subscriber(websocket)
+                    _bg_task_subscribed = True
+                    await _send_safe(
+                        websocket,
+                        {"type": "background_task_subscribed", "ok": True},
+                    )
+                except Exception as e:
+                    await _send_safe(
+                        websocket,
+                        {"type": "background_task_subscribed", "ok": False, "error": str(e)},
+                    )
                 continue
 
             intent = (msg.get("intent") or msg.get("content") or "").strip()
@@ -226,6 +245,24 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
 
             on_step = _make_on_step(websocket, run_id, chat_id, broadcast)
 
+            # 首包：在 compaction / 首 token 之前可能静默数分钟，避免桌面端 300s 空气泡误判 + 超时后仍靠 run_id 收 answer。
+            # OOD 硬拦路径与 Lark（仅最终 reply）对齐：不发送「长任务」占位 thought，避免聊天框多段思考 + 安全拒答。
+            try:
+                from l3_node.intent_gateway.ood_signals import should_skip_progress_thought_kick
+
+                _skip_kick = should_skip_progress_thought_kick(raw_user_input=intent)
+            except Exception:
+                _skip_kick = False
+            if not _skip_kick:
+                _kick = {
+                    "step_type": "thought",
+                    "content": "已接入任务。若上下文较长会先执行记忆刷新与摘要压缩，随后再推理（可能需数分钟）。",
+                    "run_id": run_id,
+                }
+                await _send_safe(websocket, _kick)
+                if broadcast and chat_id:
+                    await _broadcast_to_mirror_subscribers(chat_id, _kick)
+
             async def on_chunk(chunk: str) -> None:
                 p = {"step_type": "chunk", "content": chunk, "run_id": run_id}
                 await _send_safe(websocket, p)
@@ -240,6 +277,15 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             }
             if chat_id:
                 _imp_attr["lark_chat_id"] = str(chat_id).strip()
+            _att_meta = msg.get("attachments_metadata")
+            _att_meta = _att_meta if isinstance(_att_meta, list) else None
+            _gw_st = msg.get("gateway_system_state")
+            _gw_st = str(_gw_st).strip() if _gw_st else None
+            _gw_ch = str(msg.get("gateway_clarification_handle") or "").strip()
+            try:
+                _gw_dl = float(msg.get("gateway_clarification_deadline_ts") or 0.0)
+            except (TypeError, ValueError):
+                _gw_dl = 0.0
             try:
                 reply = await run_agent_fn(
                     intent,
@@ -249,6 +295,10 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     _session_messages=session_messages,
                     implicit_signals=_imp_sig,
                     implicit_attribution=_imp_attr,
+                    attachments_metadata=_att_meta,
+                    gateway_system_state=_gw_st,
+                    gateway_clarification_handle=_gw_ch,
+                    gateway_clarification_deadline_ts=_gw_dl,
                 )
                 if chat_id and session_messages:
                     _save_lark_session(chat_id, session_messages)
@@ -271,6 +321,13 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
     except Exception as e:
         logger.warning("WebSocket client error: %s", e)
     finally:
+        if _bg_task_subscribed:
+            try:
+                from l3_node.l3_event_bus import unregister_background_task_subscriber
+
+                await unregister_background_task_subscriber(websocket)
+            except Exception:
+                pass
         if _my_lark_chat_id:
             async with _mirror_subscribers_lock:
                 s = _mirror_subscribers.get(_my_lark_chat_id, set())
@@ -323,7 +380,40 @@ async def run_ws_server(
                     port, try_port, try_port,
                 )
             logger.info("L3 WebSocket 服务已启动 ws://%s:%d/sensory", host, try_port)
-            await server.wait_closed()
+            _sig_tokens: list = []
+
+            def _on_stop_signal() -> None:
+                async def _close_srv() -> None:
+                    logger.info("[WS] 收到停止信号，关闭 WebSocket 服务…")
+                    await server.close()
+
+                try:
+                    asyncio.get_running_loop().create_task(_close_srv())
+                except RuntimeError:
+                    pass
+
+            if sys.platform != "win32":
+                import signal
+
+                loop = asyncio.get_running_loop()
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        loop.add_signal_handler(sig, _on_stop_signal)
+                        _sig_tokens.append(sig)
+                    except (NotImplementedError, RuntimeError, ValueError):
+                        pass
+            try:
+                await server.wait_closed()
+            finally:
+                if _sig_tokens:
+                    import signal
+
+                    loop = asyncio.get_running_loop()
+                    for sig in _sig_tokens:
+                        try:
+                            loop.remove_signal_handler(sig)
+                        except Exception:
+                            pass
             return
         except OSError as e:
             last_err = e

@@ -63,7 +63,7 @@ def main() -> int:
     print()
 
     # [2] loader 层：构建 stdin
-    from l3_node.skills.loader import build_hr_stdin_for_debug
+    from l3_node.primitives.tools.loader import build_hr_stdin_for_debug
 
     # 模拟 recruitment_task 的 input_data
     sample_pdf = str(Path.home() / ".jachin" / "client_volumes" / "pool_test" / "resume.pdf")

@@ -8,7 +8,7 @@
 
 ## 一、核心代码清单
 
-### 1.1 必须打包的核心代码（轨道 A）
+### 1.1 必须打包的核心代码（MCP）
 
 | 文件路径 | 类型 | 职责 |
 |----------|------|------|
@@ -34,7 +34,7 @@ boss_utils（无依赖）→ recruitment_status（无依赖）→ local_archiver
 → server.py（聚合所有）
 ```
 
-### 1.2 轨道 B、C（技能与 Wasm）
+### 1.2 Skills 与 Tools(jpp)（SKILL.md 与 Wasm）
 
 | 文件路径 | 类型 | 职责 |
 |----------|------|------|
@@ -57,7 +57,7 @@ boss_utils（无依赖）→ recruitment_status（无依赖）→ local_archiver
 
 | 文件路径 | 类型 | 职责 |
 |----------|------|------|
-| `install.py` | **安装入口** | 一键部署轨道 A/B/C + HR 规则到 ~/.jachin 或 jachin-system |
+| `install.py` | **安装入口** | 一键部署四大原语（MCP + Skills + Tools·jpp）+ HR 规则到 ~/.jachin 或 jachin-system |
 | `scripts/launch_chrome_debug.ps1` | 前置脚本 | Chrome 调试模式（--remote-debugging-port=9222） |
 
 ### 1.5 可选/扩展代码（非整合必需）
@@ -154,17 +154,17 @@ run_final_judgment()
 | `atom_greet_recommend_boss` | atom_greet_recommend_boss | 推荐牛人打招呼 |
 | `atom_get_progress` | recruitment_status | 招聘进度查询 |
 
-### 3.2 轨道分层
+### 3.2 四大原语分层（Skills → MCP）
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  轨道 B - 技能 (SKILL.md)                                         │
+│  Skills - SKILL.md                                                │
 │  hr-recruiter | hr-job-manager | hr-progress-query               │
 │  mcp_tools: ["hr-atomic-tools"]                                  │
 └────────────────────────────┬────────────────────────────────────┘
                              │ 调用
 ┌────────────────────────────▼────────────────────────────────────┐
-│  轨道 A - 原子 MCP (server.py)                                    │
+│  MCP - 原子 server.py                                             │
 │  atom_post_job | atom_greet | harvest_resume | atom_request_resume│
 │  local_archiver | brain_filter | atom_get_progress                │
 └────────────────────────────┬────────────────────────────────────┘
@@ -175,7 +175,7 @@ run_final_judgment()
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  轨道 C - Wasm 虫群 (hr_swarm_engine)                            │
+│  Tools(jpp) - Wasm 虫群 (hr_swarm_engine)                         │
 │  三专家多 Agent 评审 → 终局审判                                   │
 │  dependencies: hr-recruiter, hr-atomic-tools                     │
 └─────────────────────────────────────────────────────────────────┘

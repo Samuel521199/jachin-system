@@ -2,7 +2,7 @@
 
 **版本**: V2 (2026-03)  
 **状态**: 当前实现基准  
-**定位**: 一店一库、双轨双擎、三大极简流程
+**定位**: 一店一库、**四大原语**执行模型、三层云边、三大极简流程
 
 ---
 
@@ -15,7 +15,7 @@
 | **L1 全球商城** | 商业收银台 | 展示 Skill/MCP、处理订阅、颁发 License；不接触企业明文密码，不提供推理算力 |
 | **L2 本地数字仓库** | 企业数字金库 | L1 在企业内网的物理投影；静默同步已购订单、下载囤积包、向 L3 下发权限与 Skill；MCP 清单同步与 **TaskManager 式委托**（**默认**不在 L2 起 stdio MCP 子进程；`JACHIN_L2_STDIO_MCP=1` 可回滚） |
 
-### 1.2 双轨制与执行模型
+### 1.2 商城商品形态与执行（映射四大原语）
 
 | 商品形态 | 流转 | 执行策略 |
 |----------|------|----------|
@@ -23,6 +23,17 @@
 | **MCP** | L2 同步到 inventory；L3_LOCAL 包进 `l3_mcp_cache`，stdio 由 **L3 内嵌 MCPManager** 读 `mcp_servers.json` / `inventory/mcps` | **L3 执行**；L2 **GET /tools** 聚合与 **invoke 委托**（Pull、HTTP 须 Task Token）；详见 MCP_EXECUTION_MODEL v2.2 |
 
 详见 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)（规格）、[MCP_EXECUTION_MODEL.md](MCP_EXECUTION_MODEL.md)（目标 vs 现状）。
+
+### 1.3 四大原语（术语 SSOT）
+
+讨论 **工具、技能、子 Agent、后台任务** 时，以 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)** 为准：
+
+- **Tools**：`core:*` Native、`jpp:*` Wasm 原子，单次 tool 调用级。
+- **MCP**：`mcp:*` 外部 MCP 进程，协议扩展。
+- **Skills**：`SKILL.md`、Skill 包声明与 SOP、能力域文档；**非** jpp 二进制本体。
+- **Agent Tasks**：`delegate` / `core:submit_background_task` / `coordinate` 等多轮子运行时。
+
+与上表「Skill (.wasm) / MCP」**商品形态**的关系：Wasm 商品在执行语义上主要属于 **Tools（jpp）**；商城元数据与 SKILL 正文仍属 **Skills**。索引：[FOUR_PRIMITIVES.md](./FOUR_PRIMITIVES.md)。
 
 | 可见性 | 流转 |
 |--------|------|
@@ -67,9 +78,10 @@
 | L2 清单 | `core/api/routes/v2_inventory.py` | `/skills`、`/download`、`/l3_mcps`、`/l3_mcps/{id}/download`（需 X-Sub-Account-Id） |
 | L2 MCP / 任务 | `core/api/routes/v2_mcp.py` | **默认**仅委托（Redis Pull + HTTP 回退）；`GET /tools` 聚合 Redis；`JACHIN_L2_STDIO_MCP=1` 时合并本机 stdio（见 MCP_EXECUTION_MODEL） |
 | L3 同步 | `clients/desktop/src-tauri/src/commands/skill_sync.rs`、`l3_node/mcp_sync.py` | 从 L2 拉取技能与 MCP |
-| L3 Agent | `l3_node/agent_core.py` | ReAct、工具调用 |
+| L3 Agent | `l3_node/agent_core.py` | ReAct、工具调用；前台同步超时、工具后预取、规划门禁见 [前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md) |
+| L3 后台任务 | `l3_node/background_task_service.py`、`l3_node/l3_event_bus.py` | `core:submit_background_task` / `check`、队列 Worker、WebSocket `subscribe_background_tasks` |
 | 跨会话规划文件 | `l3_node/task_planning.py` | `~/.jachin/workspace/task_plan.md`、`progress.md`、`findings.md`；Prompt 注入「继续执行计划」 |
-| HR 招聘（DAG + 物理进度） | `l3_node/skills/hr_recruitment_dag.py` + `skills_repo/plugin/com.jachin.hr.recruitment/` | `hr_plan_init` → `harvest_loop` → 可选分析；`STOP_HARVEST`；`~/.jachin/workspace/hr_recruitment/` 下宏图与战况 — 详见 [HR_RECRUITMENT.md](HR_RECRUITMENT.md) |
+| HR 招聘（DAG + 物理进度） | `l3_node/primitives/skills/hr_recruitment_dag.py` + `skills_repo/plugin/com.jachin.hr.recruitment/` | `hr_plan_init` → `harvest_loop` → 可选分析；`STOP_HARVEST`；`~/.jachin/workspace/hr_recruitment/` 下宏图与战况 — 详见 [HR_RECRUITMENT.md](HR_RECRUITMENT.md) |
 | 智能化与编排 | `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`、`docs/ORCHESTRATION_ARCHITECTURE.md` | OpenClaw 对比、记忆/梦境/规划、**三层编排（L1 路由 / L2 领域子图 / L3 YAML glue）** |
 
 ---

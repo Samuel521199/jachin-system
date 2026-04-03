@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def run_hr_recruitment_domain(params: dict[str, Any] | None) -> dict[str, Any]:
     p = params if isinstance(params, dict) else {}
     try:
-        from l3_node.skills.hr_recruitment_dag import (
+        from l3_node.primitives.skills.hr_recruitment_dag import (
             HR_RECRUITMENT_DEFAULT_WORKFLOW_ID,
             build_hr_recruitment_dag,
         )

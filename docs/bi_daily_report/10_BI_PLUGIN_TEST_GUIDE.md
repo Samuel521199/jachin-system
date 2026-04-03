@@ -87,7 +87,7 @@ python scripts/run_bi_report_refiner.py --sync-lark
 
 ```bash
 python -c "
-from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
+from l3_node.primitives.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
 r = run_bi_daily_report()
 print(r)
 "

@@ -103,6 +103,24 @@ def _get_llm_section() -> dict[str, Any]:
     return (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
 
 
+def _get_compaction_context_summary_model() -> str:
+    """
+    「历史摘要」专用模型：默认经济型 flash，避免 qwen3.5-plus 在大 blob 上动辄 200s+。
+    可在 nexus llm.compaction_summary_model / compaction_fast_model 覆盖。
+    """
+    llm = _get_llm_section()
+    for key in ("compaction_summary_model", "compaction_fast_model"):
+        raw = str(llm.get(key) or "").strip()
+        if raw:
+            return raw
+    try:
+        from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
+
+        return DASHSCOPE_ECON_FALLBACK_MODEL
+    except ImportError:
+        return "dashscope/qwen3.5-flash-2026-02-23"
+
+
 def _get_memory_flush_config() -> tuple[bool, int]:
     """返回 (enabled, soft_threshold)。enabled 时，token 超过 threshold - soft_threshold 即触发刷新。"""
     llm = _get_llm_section()
@@ -351,10 +369,16 @@ async def _run_anchor_focused_second_flush(
 
 
 async def _generate_summary(middle_messages: list[dict[str, str]], summary_model: str) -> str:
-    """异步调用 LLM 生成历史摘要"""
+    """异步调用 LLM 生成历史摘要（模型优先 compaction_summary_model / flash，与 memory_flush 所用 summary_model 解耦）。"""
     from core.llm_provider import LiteLLMEngine
 
-    engine = LiteLLMEngine(model_name=summary_model)
+    summary_llm = _get_compaction_context_summary_model()
+    engine = LiteLLMEngine(model_name=summary_llm)
+    logger.info(
+        "[Compaction] context_summary 使用模型 %s（配置项 llm.compaction_summary_model；memory_flush 仍用 %s）",
+        summary_llm,
+        summary_model,
+    )
     content_blob = "\n\n".join(
         f"{m.get('role', '')}: {m.get('content', '')}"[:500]
         for m in middle_messages[:20]  # 最多取 20 条
@@ -514,7 +538,13 @@ async def compaction_before_llm_think(ctx: PipelineContext) -> None:
             f"[bold blue][🛡️ 神盾][/bold blue] 上下文超载 ({estimated} tokens)，"
             f"已触发时空折叠，压缩至 {new_est} tokens。"
         )
-        logger.info("[Compaction] %s -> %s tokens, summary_model=%s", estimated, new_est, summary_model)
+        logger.info(
+            "[Compaction] %s -> %s tokens, memory_flush/compaction_model=%s context_summary_llm=%s",
+            estimated,
+            new_est,
+            summary_model,
+            _get_compaction_context_summary_model(),
+        )
         emit_intelligence_event(
             "compaction_fold",
             {

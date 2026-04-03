@@ -1,15 +1,15 @@
 """
-L3 本地记忆持久化 — 智能化升级 P0
+L3 本地记忆持久化（主文件 l3_local.json + delegate 分片 l3_local_shard_*.json）。
 
-L3 独立运行或 L2 不可用时，本地存储核心记忆，供 run_agent 检索注入。
-与 L2 同步时 merge，断网可用。
-设计: docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md
+供 run_agent 被动注入与 core:local_memory_search；与 L2 recall merge；断网可用。
+架构说明: docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §4；治理路线与快照: docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md（§〇、§4）。
 """
 from __future__ import annotations
 
 import json
 import logging
 import time
+from contextvars import ContextVar
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,77 @@ _JACHIN_ROOT = Path.home() / ".jachin"
 _MEMORY_DIR = _JACHIN_ROOT / "memory"
 _LOCAL_DB = _MEMORY_DIR / "l3_local.json"
 _MAX_ENTRIES = 200  # 最多保留条数
+_PROMPT_CYCLE = 0
+_MEMORY_SHARD_ID: ContextVar[str | None] = ContextVar("l3_memory_shard_id", default=None)
+
+
+def set_memory_shard_id_token(shard_id: str) -> object | None:
+    s = (shard_id or "").strip()
+    if not s:
+        return None
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in s[:72])
+    return _MEMORY_SHARD_ID.set(safe)
+
+
+def reset_memory_shard_token(token: object | None) -> None:
+    if token is not None:
+        try:
+            _MEMORY_SHARD_ID.reset(token)
+        except ValueError:
+            pass
+
+
+def _db_path() -> Path:
+    sid = _MEMORY_SHARD_ID.get()
+    if sid:
+        return _MEMORY_DIR / f"l3_local_shard_{sid}.json"
+    return _LOCAL_DB
+
+
+def load_raw_entries() -> list[dict]:
+    """供 memory_facade / local_memory_search 读取当前 shard。"""
+    return _load_raw()
+
+
+def next_prompt_cycle() -> int:
+    """单调递增的 prompt 轮次，用于被动记忆衰减（未注入超过 N 轮则不再塞进 prompt）。"""
+    global _PROMPT_CYCLE
+    _PROMPT_CYCLE += 1
+    return _PROMPT_CYCLE
+
+
+def _memory_passive_max_idle() -> int:
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        m = cfg.get("memory") or {}
+        return max(1, int(m.get("passive_max_idle_runs", 12)))
+    except Exception:
+        return 12
+
+
+def bump_memory_inject_cycle_for_content_hit(
+    text_snippet: str,
+    *,
+    prompt_cycle: int,
+    max_scan_chars: int = 400,
+) -> None:
+    """prefetch / 工具读到与某条记忆内容重叠的文本时，刷新该条的注入轮次，避免误衰减。"""
+    snip = (text_snippet or "").strip()[:max_scan_chars]
+    if not snip or len(snip) < 8:
+        return
+    entries = _load_raw()
+    changed = False
+    for e in entries:
+        c = (e.get("content") or "").strip()
+        if len(c) < 8:
+            continue
+        if snip in c or c[:80] in snip:
+            e["last_prompt_inject_cycle"] = int(prompt_cycle)
+            changed = True
+    if changed:
+        _save_raw(entries)
 
 
 def _ensure_dir() -> None:
@@ -27,10 +98,11 @@ def _ensure_dir() -> None:
 def _load_raw() -> list[dict]:
     """加载本地记忆 JSON"""
     _ensure_dir()
-    if not _LOCAL_DB.exists():
+    p = _db_path()
+    if not p.exists():
         return []
     try:
-        data = json.loads(_LOCAL_DB.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except Exception as e:
         logger.debug("[L3 LocalMemory] 加载失败: %s", e)
@@ -41,7 +113,7 @@ def _save_raw(entries: list[dict]) -> None:
     """保存本地记忆"""
     _ensure_dir()
     try:
-        _LOCAL_DB.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+        _db_path().write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning("[L3 LocalMemory] 保存失败: %s", e)
 
@@ -68,28 +140,107 @@ def add_local_memory(tag: str, content: str, *, source: str = "agent") -> None:
         entries = entries[:_MAX_ENTRIES]
     _save_raw(entries)
     logger.debug("[L3 LocalMemory] 已写入 tag=%s", tag)
+    if str(tag).lower() in ("fact", "correction", "preference", "user_habit"):
+        try:
+            from l3_node.memory_sync_signals import bump_urgent_l3_local_sync
+
+            bump_urgent_l3_local_sync()
+        except ImportError:
+            pass
 
 
-def get_local_memory_for_prompt(limit: int = 15) -> str:
+def touch_entries_from_search_hits(hits: list[dict]) -> None:
+    """local_memory_search 命中后刷新条目的访问时间，供衰减与门面共用。"""
+    if not hits:
+        return
+    snippets: list[str] = []
+    for h in hits:
+        c = (h.get("content") or "").strip()
+        if len(c) >= 12:
+            snippets.append(c[:120])
+    if not snippets:
+        return
+    entries = _load_raw()
+    now = time.time()
+    changed = False
+    for e in entries:
+        c = (e.get("content") or "").strip()
+        if len(c) < 12:
+            continue
+        pre = c[:120]
+        for sn in snippets:
+            if sn in c or pre in sn:
+                e["last_access_ts"] = now
+                changed = True
+                break
+    if changed:
+        _save_raw(entries)
+
+
+def get_local_memory_for_prompt(
+    limit: int = 15,
+    *,
+    prompt_cycle: int | None = None,
+    max_idle_prompt_cycles: int | None = None,
+) -> str:
     """
     获取最近 N 条本地记忆，格式化为 System Prompt 片段。
     供 run_agent 在 L2 recall 不可用时注入。
+    若传入 prompt_cycle，则对「非 correction」条目做被动衰减：超过 max_idle 轮未注入则不再展示；
+    本次实际注入的条目会写回 last_prompt_inject_cycle。
     """
     entries = _load_raw()
     if not entries:
         return ""
-    # P2：修正类记忆优先展示，再按时间倒序
-    entries = sorted(
-        entries,
-        key=lambda e: (0 if str(e.get("tag", "")).lower() == "correction" else 1, -float(e.get("timestamp", 0) or 0)),
-    )[:limit]
+    max_idle = max_idle_prompt_cycles if max_idle_prompt_cycles is not None else _memory_passive_max_idle()
+
+    def eligible(e: dict) -> bool:
+        if str(e.get("tag", "")).lower() == "correction":
+            return True
+        if prompt_cycle is None:
+            return True
+        lp = e.get("last_prompt_inject_cycle")
+        if lp is None:
+            return True
+        try:
+            return (int(prompt_cycle) - int(lp)) <= max_idle
+        except Exception:
+            return True
+
+    from l3_node.local_memory_ranking import sort_entries_by_agent_priority
+
+    pool = sort_entries_by_agent_priority(entries)
+    selected: list[dict] = []
+    for e in pool:
+        if not eligible(e):
+            continue
+        if not (e.get("content") or "").strip():
+            continue
+        selected.append(e)
+        if len(selected) >= limit:
+            break
+
+    if prompt_cycle is not None and selected:
+        sigs = {(str(e.get("content"))[:120], float(e.get("timestamp", 0) or 0)) for e in selected}
+        all_e = _load_raw()
+        changed = False
+        for e in all_e:
+            sig = (str(e.get("content"))[:120], float(e.get("timestamp", 0) or 0))
+            if sig in sigs:
+                e["last_prompt_inject_cycle"] = int(prompt_cycle)
+                changed = True
+        if changed:
+            _save_raw(all_e)
+
+    if not selected:
+        return ""
     lines = ["【本地记忆】"]
-    for e in entries:
+    for e in selected:
         tag = e.get("tag", "general")
         content = (e.get("content") or "")[:300]
         if content:
             lines.append(f"- [{tag}] {content}")
-    return "\n".join(lines) + "\n" if lines else ""
+    return "\n".join(lines) + "\n"
 
 
 def merge_from_l2(items: list[dict]) -> None:

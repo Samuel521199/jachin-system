@@ -12,6 +12,8 @@ L3 节点独立运行入口
   L2_BASE_URL: L2 地址，默认 http://localhost:18888
   SUB_ACCOUNT_ID: 子账号 ID（非 ws-only/--gateway 模式必需）
   OPENAI_API_KEY: ws-only 或 L2 无 Key 时的兜底
+  JACHIN_L3_MCP_NO_L2: 1/true 时禁止一切 MCP 调用转发 L2（原子任务仅在 L3：stdio / Native 桥接）。
+  JACHIN_L3_LOCAL_ONLY: 1/true 时 MCP 工具列表不合并 L2，且 invoke 禁止转发 L2（与上条「禁止 L2」叠加语义一致）。
   JACHIN_L3_CONSOLE: Windows 下是否弹出独立控制台。1/true 强制开启；0/false 强制关闭。
     未设置时：PyInstaller 打包 exe 默认开启（便于目标机看日志）；源码运行默认关闭。
 """
@@ -272,7 +274,7 @@ async def main() -> None:
 
     # 终端快捷入口：python -m l3_node BI分析
     if args.bi_cmd and re.search(r"BI分析|bi分析|BI 分析|bi\s*分析", args.bi_cmd.strip(), re.IGNORECASE):
-        from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
+        from l3_node.primitives.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
 
         logger.info("[L3] 执行 BI 分析...")
         result = run_bi_daily_report()
@@ -295,6 +297,9 @@ async def main() -> None:
         trace("main: engine created, loading agent_ref...")
         from l3_node.agent_ref import engine_ref
         engine_ref["engine"] = engine
+        from l3_node.background_task_service import start_background_task_runtime
+
+        await start_background_task_runtime(engine)
         from l3_node.bootstrap import run_l3_agent
         from l3_node.ws_server import run_ws_server
         from l3_node.http_server import run_http_server, L3_HTTP_PORT
@@ -310,8 +315,16 @@ async def main() -> None:
             logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
         except Exception as e:
             logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml 的 app_id/app_secret", e)
-        await run_http_server(port=L3_HTTP_PORT)
-        await run_ws_server(engine, run_l3_agent, port=args.port)
+        try:
+            await run_http_server(port=L3_HTTP_PORT)
+            await run_ws_server(engine, run_l3_agent, port=args.port)
+        finally:
+            try:
+                from l3_node.graceful_shutdown import run_shutdown_hooks
+
+                await run_shutdown_hooks()
+            except Exception as e:
+                logger.debug("[L3] run_shutdown_hooks 跳过: %s", e)
         return
 
     if args.gateway:
@@ -327,6 +340,9 @@ async def main() -> None:
         )
         from l3_node.agent_ref import engine_ref
         engine_ref["engine"] = engine
+        from l3_node.background_task_service import start_background_task_runtime
+
+        await start_background_task_runtime(engine)
         logger.info("L3 节点已就绪 node_id=%s，WebSocket 端口 %d", node_id, args.port)
         # IM 通道（Lark 长连接等）
         try:
@@ -358,6 +374,12 @@ async def main() -> None:
                     await _pull_worker
                 except asyncio.CancelledError:
                     pass
+            try:
+                from l3_node.graceful_shutdown import run_shutdown_hooks
+
+                await run_shutdown_hooks()
+            except Exception as e:
+                logger.debug("[L3] run_shutdown_hooks 跳过: %s", e)
         return
 
     if not sub_id:
@@ -374,6 +396,9 @@ async def main() -> None:
     engine, node_id = await bootstrap_l3_gateway_pending(l2_base_url=l2_url)
     from l3_node.agent_ref import engine_ref
     engine_ref["engine"] = engine
+    from l3_node.background_task_service import start_background_task_runtime
+
+    await start_background_task_runtime(engine)
     logger.info("L3 节点已就绪 node_id=%s，WebSocket 端口 %d", node_id, args.port)
     # IM 通道（Lark 长连接等）— 招聘测试优先使用长连接
     try:
@@ -405,6 +430,12 @@ async def main() -> None:
                 await _pull_worker
             except asyncio.CancelledError:
                 pass
+        try:
+            from l3_node.graceful_shutdown import run_shutdown_hooks
+
+            await run_shutdown_hooks()
+        except Exception as e:
+            logger.debug("[L3] run_shutdown_hooks 跳过: %s", e)
 
     logger.info("L3 节点退出")
 

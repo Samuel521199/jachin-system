@@ -1,41 +1,41 @@
 # HR 招聘插件 (jachin-hr-plugins)
 
-基于 **Jachin 三轨道体系** 与 **原子架构** 的 HR 招聘筛选插件。  
+基于 **Jachin 四大原语**（MCP / Skills / Tools / Agent Tasks）与 **原子架构** 的 HR 招聘筛选插件。  
 独立工程结构，规范对齐 jachin-system v8.0 `docs/PLUGIN_DEVELOPMENT_GUIDE.md` v2.0（技能发现：SemanticRouter 向量检索）。
 
-> **主仓（jachin-system）当前招聘执行架构**（`com.jachin.hr.recruitment` MCP、`hr_recruitment_dag`、调度走 DAG、`task_planning` HR 路径等）以仓库根目录 **`docs/HR_RECRUITMENT.md`** 为单一事实来源；本文档侧重插件包内轨道与历史目录结构。
+> **主仓（jachin-system）当前招聘执行架构**（`com.jachin.hr.recruitment` MCP、`hr_recruitment_dag`、调度走 DAG、`task_planning` HR 路径等）以仓库根目录 **`docs/HR_RECRUITMENT.md`** 为单一事实来源；术语 SSOT：**`docs/Jachin 视角的「四大原语」终极架构规范.md`**。
 
 ## 分发模型
 
-本插件采用 **Wasm 为主体 + 轨道 A/B 为依赖** 的分发策略：
+本插件采用 **Tools(jpp) Wasm 为主体 + MCP 与 Skills 为依赖** 的分发策略：
 
-| 组件 | 轨道 | 商店形态 | 说明 |
+| 组件 | 原语 | 商店形态 | 说明 |
 |------|------|----------|------|
-| **主体** | 轨道 C | Wasm 插件 | `hr_swarm_engine` 虫群评审引擎，上架神经元商城 |
-| **依赖** | 轨道 B | Skill 包 | `hr-recruiter` 意图路由，SKILL.md |
-| **依赖** | 轨道 A | MCP 包 | `hr-atomic-tools` 原子工具箱 |
+| **主体** | **Tools · jpp** | Wasm 插件 | `hr_swarm_engine` 虫群评审引擎，上架神经元商城 |
+| **依赖** | **Skills** | Skill 包 | `hr-recruiter` 意图路由，SKILL.md |
+| **依赖** | **MCP** | MCP 包 | `hr-atomic-tools` 原子工具箱 |
 
-**安装流程**：用户从插件商店下载 Wasm 主体时，平台将自动拉取并安装轨道 A、B 依赖并完成集成；若平台暂不支持依赖自动安装，可运行项目根目录的 `install.py` 实现等效的一键安装。
+**安装流程**：用户从插件商店下载 Wasm 主体时，平台将自动拉取并安装 MCP、Skills 依赖并完成集成；若平台暂不支持依赖自动安装，可运行项目根目录的 `install.py` 实现等效的一键安装。
 
 ## 架构概览
 
 ```
-轨道 B (SKILL) 意图路由 → 轨道 A (MCP) 原子工具 → 轨道 C (Wasm) 虫群评审 → 输出
+Skills(SKILL.md) 意图路由 → MCP 原子工具 → Tools(jpp) Wasm 虫群评审 → 输出
                               ↑
                     v8.0 洋葱 Hook (PII 脱敏)
 ```
 
-| 模块 | 轨道/组件 | 职责 |
+| 模块 | 原语/组件 | 职责 |
 |------|-----------|------|
 | 1-config-template | 动态配置 | HR 业务规则（Markdown） |
-| com.jachin.hr.recruitment | 轨道 A (高信任) | 原子工具：PDF 提取、网页抓取、Boss 简历 |
-| 3-track-c-swarm-wasm | 轨道 C (零信任) | 三专家多 Agent：Tech Lead + HR BP + 主理法官 |
-| 4-track-b-skill | 轨道 B (用户可控) | hr-recruiter + hr-job-manager + hr-progress-query |
+| com.jachin.hr.recruitment | **MCP**（高信任） | 原子工具：PDF 提取、网页抓取、Boss 简历 |
+| 3-track-c-swarm-wasm | **Tools · jpp**（零信任） | 三专家多 Agent：Tech Lead + HR BP + 主理法官 |
+| 4-track-b-skill | **Skills**（用户可控） | hr-recruiter + hr-job-manager + hr-progress-query |
 | 5-privacy-hook | Nexus Hook | before_llm_think 简历 PII 脱敏 |
 
 ## 依赖声明
 
-轨道 C 的 `plugin.json` 中声明了依赖，供平台解析：
+**Tools(jpp)** 的 `plugin.json` 中声明了依赖，供平台解析：
 
 ```json
 "dependencies": [
@@ -56,13 +56,13 @@ pip install -r com.jachin.hr.recruitment/requirements.txt
 
 **LLM / 百炼**：在 **jachin-system 仓库根目录** `.env` 配置 `DASHSCOPE_API_KEY`、`LLM_MODEL` 等；由 L3 或进程统一注入。Skill/MCP 通过 `core.plugin_llm_identity` 读取，**勿**在 `skills_repo/plugin/.env` 配置 Key 或主模型（插件 `.env.example` 仅保留 Lark 等非 LLM 项）。
 
-**三专家（轨道 C）**：提示词仍区分 Tech Lead / HR BP / 法官角色；DashScope 实际调用统一使用 **L3 主推理模型**（与根 `.env` 的 `LLM_MODEL` 一致）。
+**三专家（Tools·jpp 虫群）**：提示词仍区分 Tech Lead / HR BP / 法官角色；DashScope 实际调用统一使用 **L3 主推理模型**（与根 `.env` 的 `LLM_MODEL` 一致）。
 
 **第一漏斗（brain_filter）**：使用 **`core.llm_provider.DASHSCOPE_ECON_FALLBACK_MODEL`**（经济型降级模型），由上层策略定义，不由插件环境变量覆盖。
 
 ### 2. 一键安装（推荐）
 
-将轨道 A、B、C 及 HR 规则一次性部署到本地或 jachin-system：
+将 MCP、Skills、Tools·jpp 及 HR 规则一次性部署到本地或 jachin-system：
 
 ```bash
 # 仅部署到 ~/.jachin/（HR 规则、SKILL、Wasm、MCP 注册）
@@ -91,14 +91,14 @@ python tests/mock_v8_runner.py --source local --path "data/xxx.pdf"
 python tests/mock_v8_runner.py --source boss --job "Java工程师"
 ```
 
-### 4. 轨道 C 单独测试
+### 4. Tools(jpp) 单独测试
 
 ```bash
 cd 3-track-c-swarm-wasm
 echo '{"resume_text":"张三\nJava 3年\nSpringCloud","hr_criteria":"要求本科"}' | python src/main.py
 ```
 
-### 5. 轨道 A 原子工具（MCP Server）
+### 5. MCP 原子工具（MCP Server）
 
 ```bash
 cd com.jachin.hr.recruitment
@@ -112,16 +112,16 @@ python server.py   # stdio 模式，供 Jachin MCP 客户端连接
 plugin/
 ├── 1-config-template/       # 部署时复制到 ~/.jachin/workspace/hr_rules/
 │   └── hr_rules/
-│       └── java_engineer.md
-├── com.jachin.hr.recruitment/   # 轨道 A - 原子 MCP Server（依赖）
+│   └── java_engineer.md
+├── com.jachin.hr.recruitment/   # MCP - 原子 MCP Server（依赖）
 │   ├── server.py
 │   ├── tools/
 │   └── requirements.txt
-├── 3-track-c-swarm-wasm/   # 轨道 C - 虫群评审引擎（主体）
+├── 3-track-c-swarm-wasm/   # Tools(jpp) - 虫群评审引擎（主体）；目录名保留历史
 │   ├── src/
 │   ├── plugin.json         # 含 dependencies 声明
 │   └── Makefile
-├── 4-track-b-skill/        # 轨道 B - 意图路由（依赖）
+├── 4-track-b-skill/        # Skills - 意图路由（依赖）
 │   └── SKILL.md
 ├── 5-privacy-hook/         # v8.0 洋葱中间件
 │   └── hook_desensitize.py
@@ -144,14 +144,14 @@ plugin/
 **方式二**：手动部署
 
 1. **HR 规则**：将 `1-config-template/hr_rules/` 复制到 `~/.jachin/workspace/hr_rules/`
-2. **轨道 A**：将 MCP 加入 `~/.jachin/mcp_servers.json`（Jachin v8 格式 `{"mcp_servers": [...]}`），参考 [deploy/mcp_servers.example.json](deploy/mcp_servers.example.json)
-3. **轨道 B**：将 `4-track-b-skill/` 下三个 SKILL 复制到 `skills_repo/`：
+2. **MCP**：将 MCP 加入 `~/.jachin/mcp_servers.json`（Jachin v8 格式 `{"mcp_servers": [...]}`），参考 [deploy/mcp_servers.example.json](deploy/mcp_servers.example.json)
+3. **Skills**：将 `4-track-b-skill/` 下三个 SKILL 复制到 `skills_repo/`：
    - `hr-recruiter/SKILL.md`、`hr-progress-query/SKILL.md`、`hr-job-manager/SKILL.md`
 4. **首次集成**：需触发技能向量索引 `SemanticRouter().reindex_all_skills()`（daemon 启动或 API 调用）
-5. **轨道 C**：`cd 3-track-c-swarm-wasm && make build`，将 `dist/plugin.wasm` + `plugin.json` 放入 `skills_repo/com.jachin.hr-swarm-engine/` 或 `skills_repo/_bundled/`
+5. **Tools(jpp)**：`cd 3-track-c-swarm-wasm && make build`，将 `dist/plugin.wasm` + `plugin.json` 放入 `skills_repo/com.jachin.hr-swarm-engine/` 或 `skills_repo/_bundled/`
 6. **Hook（可选）**：将 `5-privacy-hook/hook_desensitize.py` 注册进 Jachin 的 Hook Pipeline
 
-**轨道 C 独立验证**（无需 Jachin 主项目）：
+**Tools(jpp) 独立验证**（无需 Jachin 主项目）：
 ```bash
 cd 3-track-c-swarm-wasm && python verify_standalone.py   # 或 verify_standalone.bat / make test
 ```
@@ -182,7 +182,7 @@ python scripts/cron_runner.py --force-judge --lark-sheet "xxx"
 
 ## 军规（开发约束）
 
-- **轨道 C**：禁止读写本地文件，stdin 入 / stdout 出
+- **Tools(jpp)**：禁止读写本地文件，stdin 入 / stdout 出
 - **plugin.json**：必须声明 `"permissions": ["llm.invoke"]`
 - **core:fs_read**：仅限 `~/.jachin/workspace/`
 - **Hook**：必须 `async def` 且调用 `await next_middleware()`

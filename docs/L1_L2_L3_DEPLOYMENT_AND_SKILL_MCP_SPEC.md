@@ -4,6 +4,8 @@
 **日期**: 2026-03  
 **定位**: 回答「L1+L2 同机、L3 异地、仅 exe 部署、Skill/MCP 订阅下载」的架构满足度与规范缺口
 
+**术语**：文中 **Skill / MCP / Wasm** 与 **Tools / MCP / Skills / Agent Tasks** 四原语对照见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
+
 **运维侧（示例服务器公网 IP、端口、`NEXUS_PUBLIC_URL` / `AUTH_SECRET`、Docker 目录等）**：见 [`docs/L1_LINUX_CLOUD_DEPLOY.md`](L1_LINUX_CLOUD_DEPLOY.md) **§0**。
 
 ---
@@ -67,7 +69,7 @@ L1 (manifest)  →  L2 (CloudSyncDaemon)  →  ~/.jachin/inventory/
 
 | 工具 | 位置 | 说明 |
 |------|------|------|
-| mcp:atom_web_scraper | `l3_node/mcp_tools/bi/` | 硬编码在 L3_LOCAL_MCP_TOOLS，随 exe 打包 |
+| mcp:atom_web_scraper | `l3_node/primitives/mcp/mcp_tools/bi/` | 硬编码在 L3_LOCAL_MCP_TOOLS，随 exe 打包 |
 | mcp:atom_lark_notifier | 同上 | 同上 |
 | mcp:atom_email_sender | 同上 | 同上 |
 | mcp:read_file | `mcp_registry.py` | 同上 |

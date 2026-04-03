@@ -10,19 +10,19 @@
 
 | 原则 | 说明 |
 |------|------|
-| **MCP 归属** | BI 的 MCP 工具、数据层（paths、data_store、metrics）统一放在 `l3_node/mcp_tools/bi/` |
-| **Skill 归属** | BI 的 Skill、调度逻辑统一放在 `l3_node/skills/bi/` |
+| **MCP 归属** | BI 的 MCP 工具、数据层（paths、data_store、metrics）统一放在 `l3_node/primitives/mcp/mcp_tools/bi/` |
+| **Skill 归属** | BI 的 Skill、调度逻辑统一放在 `l3_node/primitives/skills/bi/` |
 | **文档集中** | 所有 BI 相关设计、契约、使用说明均放在 `docs/bi_daily_report/` |
 | **新增规范** | 后续新增 BI 相关文件必须放入上述目录，并在此文档中登记 |
 
 ---
 
-## 二、MCP 层：`l3_node/mcp_tools/bi/`
+## 二、MCP 层：`l3_node/primitives/mcp/mcp_tools/bi/`
 
 ### 2.1 目录结构
 
 ```
-l3_node/mcp_tools/bi/
+l3_node/primitives/mcp/mcp_tools/bi/
 ├── __init__.py              # 模块说明
 ├── paths.py                 # 路径常量：get_bi_raw_dir, ensure_bi_dirs, get_bi_duckdb_path
 ├── data_store.py            # DuckDB 存储：ingest_csv, get_table, list_available_slugs 等
@@ -67,12 +67,12 @@ l3_node/mcp_tools/bi/
 
 ---
 
-## 三、Skill 层：`l3_node/skills/bi/`
+## 三、Skill 层：`l3_node/primitives/skills/bi/`
 
 ### 3.1 目录结构
 
 ```
-l3_node/skills/bi/
+l3_node/primitives/skills/bi/
 ├── __init__.py              # 模块说明
 ├── scheduler.py             # 定时调度：register_bi_daily_report_job
 └── bi_daily_report/
@@ -84,15 +84,15 @@ l3_node/skills/bi/
 
 | 文件 | 职责 | 导入路径 |
 |------|------|----------|
-| `scheduler.py` | 注册 APScheduler 任务，按 config 执行 cron/interval | `l3_node.skills.bi.scheduler` |
-| `bi_daily_report/main_skill.py` | 四步流程：收集→对比→LLM→分发 | `l3_node.skills.bi.bi_daily_report.main_skill` |
+| `scheduler.py` | 注册 APScheduler 任务，按 config 执行 cron/interval | `l3_node.primitives.skills.bi.scheduler` |
+| `bi_daily_report/main_skill.py` | 四步流程：收集→对比→LLM→分发 | `l3_node.primitives.skills.bi.bi_daily_report.main_skill` |
 
 ### 3.3 调度挂载
 
 在 `l3_node/http_server.py` 启动时：
 
 ```python
-from l3_node.skills.bi.scheduler import register_bi_daily_report_job
+from l3_node.primitives.skills.bi.scheduler import register_bi_daily_report_job
 register_bi_daily_report_job()
 ```
 
@@ -121,8 +121,8 @@ register_bi_daily_report_job()
 
 后续新增 BI 相关功能时，请遵循：
 
-1. **MCP 工具** → 放入 `l3_node/mcp_tools/bi/`，在 `mcp_registry` 中注册，并在本文档 2.1 节补充文件说明
-2. **Skill 逻辑** → 放入 `l3_node/skills/bi/`（可新建子目录如 `bi_xxx/`），并在本文档 3.1 节补充
+1. **MCP 工具** → 放入 `l3_node/primitives/mcp/mcp_tools/bi/`，在 `mcp_registry` 中注册，并在本文档 2.1 节补充文件说明
+2. **Skill 逻辑** → 放入 `l3_node/primitives/skills/bi/`（可新建子目录如 `bi_xxx/`），并在本文档 3.1 节补充
 3. **设计/契约文档** → 放入 `docs/bi_daily_report/`，在 README 索引中登记
 4. **配置** → 放入 `config/` 或 `~/.jachin/config/skills/com.jachin.bi.*/`
 
@@ -132,4 +132,4 @@ register_bi_daily_report_job()
 
 - [MCP_SPEC.md](../MCP_SPEC.md) — MCP 接入规范
 - [SKILL_MD_SPEC.md](../SKILL_MD_SPEC.md) — Skill 声明式规范
-- [l3_node/mcp_tools/README.md](../../l3_node/mcp_tools/README.md) — MCP 工具目录说明
+- [l3_node/primitives/mcp/mcp_tools/README.md](../../l3_node/primitives/mcp/mcp_tools/README.md) — MCP 工具目录说明

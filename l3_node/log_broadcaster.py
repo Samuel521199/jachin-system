@@ -123,7 +123,7 @@ def install_broadcast_handler() -> None:
     root.addHandler(handler)
     # 确保 l3_node 子模块的日志能传播上来
     root.setLevel(logging.INFO)
-    for name in ("l3_node.agent_core", "l3_node.skills.mcp_registry", "l3_node.bootstrap", "l3_node.llm_client"):
+    for name in ("l3_node.agent_core", "l3_node.primitives.mcp.registry", "l3_node.bootstrap", "l3_node.llm_client"):
         logging.getLogger(name).setLevel(logging.INFO)
 
 

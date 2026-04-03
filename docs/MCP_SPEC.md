@@ -1,7 +1,9 @@
 # MCP 接入规范 (Model Context Protocol)
 
 **版本**: V2（2026-03），与 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) v2.2 一致  
-**定位**: 双轨制 — 轨道 A（高信任本机工具）
+**定位**: **四大原语**中的 **MCP**（外部协议进程、`mcp:*`；高信任本机托管）
+
+**四大原语**：本文所述 MCP 在 Jachin 中归类为 **MCP 原语**（外部协议进程、`mcp:*`），与 **Tools**（`core:*`/`jpp:*`）、**Skills**（声明式 SOP）、**Agent Tasks**（delegate/后台/coordinate）并列定义见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
 
 ---
 
@@ -17,11 +19,11 @@
 
 **V2 默认**：stdio MCP **宿主进程为 L3**（`l3_node/mcp_stdio_bootstrap.py` 拉起 `core/mcp_client.py` 的 `MCPManager`）。L2 负责清单同步与跨节点委托，**默认不在 L2 起 stdio 子进程**（回滚：`JACHIN_L2_STDIO_MCP=1`）。详见 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md)、[ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)。
 
-| 轨道 | 形态 | 信任级别 | 用途 |
+| 原语 | 形态 | 信任级别 | 用途 |
 |------|------|----------|------|
-| **A** | MCP 宿主 | 高信任 | 本地系统控制、开箱工具 |
-| B | SKILL.md | 用户可控 | 声明式轻量技能 |
-| C | Wasm 沙箱 | 零信任 | 商城第三方付费插件 |
+| **MCP** | MCP 宿主 | 高信任 | 本地系统控制、开箱工具 |
+| **Skills** | SKILL.md | 用户可控 | 声明式轻量技能 |
+| **Tools · jpp** | Wasm 沙箱 | 零信任 | 商城第三方付费插件（jpp 原子） |
 
 ---
 
@@ -85,4 +87,4 @@
 
 - [MCP 官方文档](https://modelcontextprotocol.io/)
 - [MCP 服务器列表](https://github.com/modelcontextprotocol/servers)
-- `docs/whitepaper/06_LAYER2_EDGE.md` — 双轨制引擎总览
+- `docs/whitepaper/06_LAYER2_EDGE.md` — L2 边缘与执行面总览（术语以四大原语为准）

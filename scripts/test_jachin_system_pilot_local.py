@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 def test_wasm_runner_direct() -> bool:
     """直接通过 wasm_runner 执行 wasm"""
-    wasm_path = ROOT / "l3_node" / "skills" / "wasm_plugins" / "main.wasm"
+    wasm_path = ROOT / "l3_node" / "primitives" / "tools" / "wasm_bundled" / "main.wasm"
     if not wasm_path.exists():
         print(f"[FAIL] wasm 不存在: {wasm_path}")
         return False
@@ -54,7 +54,7 @@ def test_wasm_runner_direct() -> bool:
 def test_l3_loader_run_tool() -> bool:
     """通过 L3 loader run_tool 执行"""
     try:
-        from l3_node.skills import run_tool, load_skills_for_ui
+        from l3_node.primitives import run_tool, load_skills_for_ui
         tools = load_skills_for_ui(allowed_skills=None)
         pilot = [t for t in tools if "pilot" in (t.get("id") or "").lower()]
         if not pilot:

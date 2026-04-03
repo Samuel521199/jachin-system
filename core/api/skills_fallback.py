@@ -89,7 +89,7 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
             if not input_data.get("resume_filename") and not input_data.get("target_dir"):
                 input_data["target_dir"] = "data/hr_resumes"
         try:
-            from l3_node.skills import run_tool
+            from l3_node.primitives import run_tool
             inp = __import__("json").dumps({**input_data, "capability": request.capability_name}, ensure_ascii=False)
             result = run_tool(skill_id, inp, allowed_skills=None)
             print(f"[Skill Execute] [L2 Fallback] 通过 L3 run_tool 完成 skill_id={skill_id}", file=sys.stderr, flush=True)
@@ -158,7 +158,7 @@ async def execute_skill_fallback(skill_id: str, request: SkillExecutionRequest) 
                 persist_hr_analysis_result = persist_mod.persist_hr_analysis_result if persist_mod else None
                 persist_hr_analysis_batch_item = persist_mod.persist_hr_analysis_batch_item if persist_mod else None
                 _lookup_id = f"jpp:{skill_id}" if not (skill_id or "").startswith("jpp:") else skill_id
-                from l3_node.skills.loader import _extract_stem_from_hr_report, _get_hr_plugin_config_defaults
+                from l3_node.primitives.tools.loader import _extract_stem_from_hr_report, _get_hr_plugin_config_defaults
                 import re as _re
                 cfg = {}
                 try:

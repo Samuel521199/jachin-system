@@ -19,11 +19,11 @@ alwaysApply: false
 | 路径 | 用途 |
 |------|------|
 | `l3_mcp_cache/<item_id>/` | MCP 插件根（须含 `plugin.json` 等），L3 发现并启动 |
-| `l3_skill_cache/` | Wasm 等技能包；**frozen 下**与 `loader._scan_wasm_plugins` 一致，**不依赖**仓库内 `l3_node/skills/wasm_plugins/` 扫描 |
+| `l3_skill_cache/` | Wasm 等技能包；**frozen 下**与 `loader._scan_wasm_plugins` 一致，**不依赖**仓库内 `l3_node/primitives/tools/wasm_bundled/` 扫描 |
 
 ## 实现与改代码时的约束
 
-- **frozen / PyInstaller**：新增 Wasm 技能时须保证目标机可通过 **L2 同步 → `l3_skill_cache`** 获得；勿假设便携包内自带 `wasm_plugins`。
+- **frozen / PyInstaller**：新增 Wasm 技能时须保证目标机可通过 **L2 同步 → `l3_skill_cache`** 获得；勿假设便携包内自带 `wasm_bundled`。
 - **便携包 / 安装脚本**：勿默认复制整块 `skills_repo/plugin/*` 业务目录；Chrome/脚本等若需随包，应来自 **`scripts/`** 或单独说明，避免与「轻量 L3」冲突。
 - **侧车 Python**：允许保留 **加载器、dispatcher、Agent 域胶水**（动态路径解析等）；「轻量」**不等于** exe 内零业务相关字符串/分支——若要做 exe 级域剔除，须单独特性开关/分包，不默认承诺。
 
@@ -36,4 +36,4 @@ alwaysApply: false
 - `scripts/build_l3_sidecar.py`：轻量侧车 onefile。
 - `scripts/build_full.ps1`：便携目录；**不复制 MCP/Skill 仓库树**。
 
-修改上述脚本或 `l3_node/skills/loader.py` 扫描逻辑时，**同步更新** `docs/L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md` 与本规则。
+修改上述脚本或 `l3_node/primitives/tools/loader.py` 扫描逻辑时，**同步更新** `docs/L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md` 与本规则。

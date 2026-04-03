@@ -2514,7 +2514,7 @@ def _run_hr_recruitment_dag_tick(
     """
     try:
         from core.workflow_engine import WorkflowContext
-        from l3_node.skills.hr_recruitment_dag import build_hr_recruitment_dag
+        from l3_node.primitives.skills.hr_recruitment_dag import build_hr_recruitment_dag
     except ImportError as e:
         logger.exception("[Scheduler] 无法加载 HR DAG（需 core + l3_node）: %s", e)
         return {
@@ -3081,7 +3081,7 @@ def _run_wasm_analysis_sequential(
     import time as _time
 
     _ensure_hr_plugin_on_sys_path()
-    from l3_node.skills import run_tool
+    from l3_node.primitives import run_tool
     from recruitment_task import _append_verdict_from_recruitment_report
 
     passed_list: list[dict] = []
@@ -3201,8 +3201,8 @@ def _run_wasm_analysis_sync(
         _fetch_jd_from_db,
         _save_jd_to_db,
     )
-    from l3_node.skills import run_tool
-    from l3_node.skills.loader import _extract_stem_from_hr_report
+    from l3_node.primitives import run_tool
+    from l3_node.primitives.tools.loader import _extract_stem_from_hr_report
     from hr_analysis_persist import persist_hr_analysis_batch_item
 
     job_name = job_config.get("job_name", "")

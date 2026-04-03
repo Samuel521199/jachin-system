@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     QWEN_AI_API_KEY: Optional[str] = None
     LLM_MODEL: str = "qwen3.5-plus"
     LLM_CODER_MODEL: str = "qwen3-coder-plus"
+    LLM_COMPLEX_MODEL: str = "qwen-max"
     QWEN_REGION: str = "cn-beijing"
 
     # Local LLM (小脑 / Edge - Ollama 默认)

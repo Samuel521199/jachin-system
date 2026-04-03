@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { formatAssistantStepPayload } from "../utils/sensoryStepFormat";
 
 const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18981";
 const SENSORY_WS_URL = `ws://localhost:${SENSORY_WS_PORT}/sensory`;
@@ -44,6 +45,12 @@ export interface SwarmEvent {
   tool?: string;
 }
 
+/** 随 answer 回调：用于区分「仅有流式拼气泡」与「无 chunk 时由 step 注入 ### 回复」；runId 对齐 L3 WS 防超时后陈旧 answer 污染新气泡 */
+export interface SensoryAnswerMeta {
+  hadStreamChunks?: boolean;
+  runId?: string;
+}
+
 export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const larkChatId = (options.larkChatId ?? DEFAULT_LARK_CHAT_ID).trim();
   const [connected, setConnected] = useState(false);
@@ -59,9 +66,11 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChunkRef = useRef<((chunk: string, runId: string) => void) | null>(null);
-  const onAnswerRef = useRef<((content: string) => void) | null>(null);
-  const onStepRef = useRef<((stepType: string, content: string) => void) | null>(null);
+  const onAnswerRef = useRef<((content: string, meta?: SensoryAnswerMeta) => void) | null>(null);
+  const onStepRef = useRef<((stepType: string, content: string, runId?: string) => void) | null>(null);
   const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
+  /** 本轮是否已收到流式 chunk（有则 answer 勿再向同气泡追加全文，否则会「复读机」） */
+  const hadStreamChunksForRunRef = useRef(false);
 
   /** 注册 Lark 镜像输入回调：Lark 用户发消息时，终端同步显示 */
   const registerMirrorInputHandler = useCallback((fn: ((content: string) => void) | null) => {
@@ -73,13 +82,13 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     onChunkRef.current = fn;
   }, []);
 
-  /** 注册 answer 回调：收到最终回复时调用（含完整内容，用于无 chunk 时的兜底） */
-  const registerAnswerHandler = useCallback((fn: ((content: string) => void) | null) => {
+  /** 注册 answer 回调：收到最终回复时调用（content 与 Lark 推送同源；meta.hadStreamChunks 表示本轮曾收到 chunk） */
+  const registerAnswerHandler = useCallback((fn: ((content: string, meta?: SensoryAnswerMeta) => void) | null) => {
     onAnswerRef.current = fn;
   }, []);
 
   /** 注册 step 回调：thought/action/observation 等思考过程，供 Chat 完整展示 */
-  const registerStepHandler = useCallback((fn: ((stepType: string, content: string) => void) | null) => {
+  const registerStepHandler = useCallback((fn: ((stepType: string, content: string, runId?: string) => void) | null) => {
     onStepRef.current = fn;
   }, []);
 
@@ -117,6 +126,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
           // v8.0 流式神经：chunk 追加到当前消息，不创建新气泡
           if (data.step_type === "chunk" && data.content != null) {
             const runId = data.run_id ?? "";
+            hadStreamChunksForRunRef.current = true;
             setStreamingContent((prev) => prev + data.content);
             setCurrentRunId(runId);
             onChunkRef.current?.(data.content, runId);
@@ -126,14 +136,35 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
           if (["thought", "action", "observation"].includes(data.step_type) && data.content != null) {
             const labels: Record<string, string> = { thought: "思考", action: "动作", observation: "观察" };
             const label = labels[data.step_type] ?? data.step_type;
-            onStepRef.current?.(data.step_type, `### ${label}\n\n${data.content}\n\n`);
+            onStepRef.current?.(data.step_type, `### ${label}\n\n${data.content}\n\n`, data.run_id ?? "");
+          }
+
+          // 网关 / 环境嗅探 / 拓扑校验等微状态（content 常为 JSON.stringify({ status })）
+          if (data.step_type === "system_status" && data.content != null) {
+            let line = String(data.content);
+            try {
+              const j = JSON.parse(line) as { status?: string };
+              if (j?.status) line = j.status;
+            } catch {
+              /* 非 JSON 则原样展示 */
+            }
+            onStepRef.current?.("system_status", `### 系统状态\n\n${line}\n\n`, data.run_id ?? "");
           }
 
           // answer/rejected/error 结束时：先追加到思考过程，再通知回调
           if (["answer", "rejected", "error"].includes(data.step_type)) {
             const content = data.content ?? "";
-            onStepRef.current?.("answer", `### 回复\n\n${content}\n\n`);
-            onAnswerRef.current?.(content);
+            const hadChunks = hadStreamChunksForRunRef.current;
+            hadStreamChunksForRunRef.current = false;
+            // 流式已逐段拼进气泡时，禁止再注入整段正文（否则与 chunk 叠加成双倍/多倍复读）
+            const stepPayload = hadChunks
+              ? ""
+              : formatAssistantStepPayload(data.step_type, content);
+            onStepRef.current?.(data.step_type, stepPayload, data.run_id ?? "");
+            onAnswerRef.current?.(content, {
+              hadStreamChunks: hadChunks,
+              runId: data.run_id ?? "",
+            });
             setStreamingContent("");
             setCurrentRunId(null);
           }

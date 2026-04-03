@@ -4,11 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, streamChatMessage } from "../lib/api";
 import { useAppStore } from "../store/appStore";
 import { useSttAudioReady } from "../hooks/useSttAudioReady";
-import { useSensoryWebSocket } from "../hooks/useSensoryWebSocket";
+import { useSensoryWebSocket, type SensoryAnswerMeta } from "../hooks/useSensoryWebSocket";
 import { cn } from "../utils/cn";
 import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "../utils/messageStorage";
 import { typewriterAnimation } from "../utils/typewriter";
 import { MarkdownMessage } from "./Chat/MarkdownMessage";
+import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "../constants/chatResponseTimeout";
 
 export default function ChatPanel() {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
@@ -21,9 +22,17 @@ export default function ChatPanel() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
+  const l3PanelRunIdRef = useRef<string>("");
   const { isConnected } = useAppStore();
   const sensory = useSensoryWebSocket();
-  const { connected: sensoryConnected, sendInput, registerChunkHandler, registerAnswerHandler, registerMirrorInputHandler } = sensory;
+  const {
+    connected: sensoryConnected,
+    sendInput,
+    registerChunkHandler,
+    registerAnswerHandler,
+    registerStepHandler,
+    registerMirrorInputHandler,
+  } = sensory;
   const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
 
   // VAD 截断事件：收到后自动播放以验证截断效果
@@ -52,7 +61,7 @@ export default function ChatPanel() {
     scrollToBottom();
   }, [messages]);
 
-  // Lark 镜像：Lark 用户发消息时，终端同步显示并接收后续回复
+  // Lark 镜像：终端同步显示；answer 与 Lark 推送同源，有 chunk 时用最终 answer 覆盖气泡
   useEffect(() => {
     const handler = (content: string) => {
       if (!content.trim() || isLoading || isTyping) return;
@@ -63,7 +72,9 @@ export default function ChatPanel() {
       setMessages((prev) => addMessage(prev, assistantMsg));
       setIsLoading(true);
       setIsTyping(true);
-      const chunkHandler = (chunk: string) => {
+      const mirrorRunIdRef = { current: "" };
+      const chunkHandler = (chunk: string, runId?: string) => {
+        if (runId) mirrorRunIdRef.current = runId;
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
@@ -71,24 +82,51 @@ export default function ChatPanel() {
           return u;
         });
       };
-      const answerHandler = (answerContent: string) => {
+      const stepHandler = (_step: string, stepContent: string, runId?: string) => {
+        if (runId) mirrorRunIdRef.current = runId;
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
-          if (last?.role === "assistant") u[u.length - 1] = { ...last, content: answerContent || last.content };
+          if (last?.role === "assistant") u[u.length - 1] = { ...last, content: last.content + stepContent };
+          return u;
+        });
+      };
+      const answerHandler = (answerContent: string, meta?: SensoryAnswerMeta) => {
+        const rid = meta?.runId ?? "";
+        if (rid && mirrorRunIdRef.current && rid !== mirrorRunIdRef.current) return;
+        const hadStream = meta?.hadStreamChunks ?? false;
+        const useServerFinal = hadStream && !!(answerContent || "").trim();
+        setMessages((prev) => {
+          const u = [...prev];
+          const last = u[u.length - 1];
+          if (last?.role === "assistant") {
+            const next = {
+              ...last,
+              content: useServerFinal
+                ? answerContent
+                : !hadStream
+                  ? answerContent || last.content
+                  : last.content,
+              source: "L3" as const,
+            };
+            u[u.length - 1] = next;
+          }
+          saveMessages(u);
           return u;
         });
         setIsLoading(false);
         setIsTyping(false);
         registerChunkHandler(null);
         registerAnswerHandler(null);
+        registerStepHandler(null);
       };
       registerChunkHandler(chunkHandler);
+      registerStepHandler(stepHandler);
       registerAnswerHandler(answerHandler);
     };
     registerMirrorInputHandler(handler);
     return () => registerMirrorInputHandler(null);
-  }, [isLoading, isTyping, registerChunkHandler, registerAnswerHandler, registerMirrorInputHandler]);
+  }, [isLoading, isTyping, registerChunkHandler, registerAnswerHandler, registerStepHandler, registerMirrorInputHandler]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading || isTyping) return;
@@ -110,30 +148,42 @@ export default function ChatPanel() {
     };
     setMessages((prev) => addMessage(prev, assistantMessage));
     setIsTyping(true);
+    l3PanelRunIdRef.current = "";
 
     const timeoutId = setTimeout(() => {
       registerChunkHandler(null);
-      registerAnswerHandler(null);
+      registerStepHandler(null);
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && !last.content) {
-          return [...prev.slice(0, -1), { ...last, content: "响应超时（120 秒）" }];
+          return [
+            ...prev.slice(0, -1),
+            {
+              ...last,
+              content: `响应超时（${CHAT_RESPONSE_TIMEOUT_SEC} 秒）；长任务可在 .env 设置 VITE_CHAT_RESPONSE_TIMEOUT_MS`,
+            },
+          ];
         }
         return prev;
       });
       setIsLoading(false);
       setIsTyping(false);
-    }, 120000);
+    }, CHAT_RESPONSE_TIMEOUT_MS);
 
-    const cleanup = (finalContent: string, source?: "L3" | "L2") => {
+    const cleanup = (finalContent: string, source?: "L3" | "L2", opts?: { skipContentUpdate?: boolean }) => {
       clearTimeout(timeoutId);
       registerChunkHandler(null);
       registerAnswerHandler(null);
+      registerStepHandler(null);
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
+          if (!opts?.skipContentUpdate) {
+            updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
+          } else {
+            updated[updated.length - 1] = { ...last, source };
+          }
         }
         saveMessages(updated);
         return updated;
@@ -142,7 +192,8 @@ export default function ChatPanel() {
       setIsTyping(false);
     };
 
-    const chunkHandler = (chunk: string) => {
+    const chunkHandler = (chunk: string, runId?: string) => {
+      if (runId) l3PanelRunIdRef.current = runId;
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
@@ -153,8 +204,27 @@ export default function ChatPanel() {
       });
     };
 
+    const stepHandler = (_stepType: string, stepContent: string, runId?: string) => {
+      if (runId) l3PanelRunIdRef.current = runId;
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant") {
+          updated[updated.length - 1] = { ...last, content: last.content + stepContent };
+        }
+        return updated;
+      });
+    };
+
     registerChunkHandler(chunkHandler);
-    registerAnswerHandler((answerContent) => cleanup(answerContent, "L3"));
+    registerStepHandler(stepHandler);
+    registerAnswerHandler((answerContent, meta) => {
+      const rid = meta?.runId ?? "";
+      if (rid && l3PanelRunIdRef.current && rid !== l3PanelRunIdRef.current) return;
+      const hadStream = meta?.hadStreamChunks ?? false;
+      const useServerFinal = hadStream && !!(answerContent || "").trim();
+      cleanup(answerContent, "L3", { skipContentUpdate: !useServerFinal });
+    });
 
     // 优先 L3（L3 直连大模型），未连接时兜底 L2
     if (sensoryConnected && sendInput(content)) {
@@ -166,11 +236,13 @@ export default function ChatPanel() {
       const fullText = await streamChatMessage(content, chunkHandler);
       registerChunkHandler(null);
       registerAnswerHandler(null);
+      registerStepHandler(null);
       cleanup(fullText, "L2");
     } catch (e) {
       clearTimeout(timeoutId);
       registerChunkHandler(null);
       registerAnswerHandler(null);
+      registerStepHandler(null);
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];

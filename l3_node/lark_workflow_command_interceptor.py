@@ -170,7 +170,7 @@ def _extract_hr_batch_limit_updates(text: str) -> dict[str, int]:
 
 def _resolve_hr_workflow_id() -> str:
     from l3_node.local_memory import get_hr_recruitment_active_workflow_id, list_workflow_state_ids
-    from l3_node.skills.hr_recruitment_dag import HR_RECRUITMENT_DEFAULT_WORKFLOW_ID
+    from l3_node.primitives.skills.hr_recruitment_dag import HR_RECRUITMENT_DEFAULT_WORKFLOW_ID
 
     w = get_hr_recruitment_active_workflow_id()
     if w:
@@ -238,7 +238,7 @@ def _background_hr_analyze() -> None:
     try:
         from core.workflow_engine import DAGWorkflow, SIGNAL_STOP_HARVEST
         from l3_node.local_memory import load_workflow_state, save_workflow_state
-        from l3_node.skills.hr_recruitment_dag import build_hr_recruitment_dag
+        from l3_node.primitives.skills.hr_recruitment_dag import build_hr_recruitment_dag
 
         wid = _resolve_hr_workflow_id()
         DAGWorkflow.inject_signal(wid, SIGNAL_STOP_HARVEST)
@@ -578,7 +578,7 @@ def try_lark_workflow_command_intercept(user_text: str, channel_id: str = "") ->
                     except Exception:
                         need_boss_post = True
                     if need_boss_post:
-                        from l3_node.skills.mcp_registry import _invoke_atom_post_job_boss_local
+                        from l3_node.primitives.mcp.registry import _invoke_atom_post_job_boss_local
 
                         logger.info("[LarkCmd] 裸「同意」：jd 未标记 boss_post_published，先 atom_post_job_boss path=%s", jdp)
                         post_raw = _invoke_atom_post_job_boss_local(jd_config_path=jdp.strip())

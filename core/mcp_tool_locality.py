@@ -1,7 +1,7 @@
 """
 MCP 工具 locality：LOCAL_PINNED 禁止跨节点委托（Pull / HTTP）。
 
-与 l3_node.skills.mcp_registry.L3_LOCAL_MCP_TOOLS 保持名称一致（仅工具名，无 mcp: 前缀）。
+与 l3_node.primitives.mcp.registry.L3_LOCAL_MCP_TOOLS 保持名称一致（仅工具名，无 mcp: 前缀）。
 可选覆盖：~/.jachin/mcp_tool_locality.json
   {"local_pinned": ["extra_tool"], "routable_allow_delegate": ["some_tool"]}
 routable_allow_delegate 从默认 pinned 集合中移除（高级用法）。

@@ -508,7 +508,7 @@ async def run_recruitment_task_stream(
 
         def _run_wasm() -> None:
             try:
-                from l3_node.skills import run_tool
+                from l3_node.primitives import run_tool
                 inp = json.dumps({**input_data, "capability": "execute"}, ensure_ascii=False)
                 r = run_tool(HR_SKILL_ID, inp, allowed_skills=None, ndjson_queue=ndjson_queue)
                 thread_result["result"] = r
@@ -559,7 +559,7 @@ async def run_recruitment_task_stream(
                 md_path: str | None = None
                 if report and isinstance(report, str):
                     from hr_analysis_persist import persist_hr_analysis_batch_item
-                    from l3_node.skills.loader import _extract_stem_from_hr_report
+                    from l3_node.primitives.tools.loader import _extract_stem_from_hr_report
                     stem = (Path(fn).stem.replace("_resume", "").replace("_analysis", "").strip() or Path(fn).stem) if fn else ""
                     if not stem or re.match(r"^resume_\d+$", stem):
                         stem = _extract_stem_from_hr_report(report or "") or stem or "unknown"
@@ -637,7 +637,7 @@ async def run_recruitment_task_stream(
             inp_js = json.dumps({**one, "capability": "execute"}, ensure_ascii=False)
 
             def _run_one() -> str:
-                from l3_node.skills import run_tool
+                from l3_node.primitives import run_tool
                 return run_tool(HR_SKILL_ID, inp_js, allowed_skills=None, ndjson_queue=None) or ""
 
             t0 = _time.perf_counter()

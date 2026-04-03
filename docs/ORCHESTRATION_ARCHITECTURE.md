@@ -2,7 +2,7 @@
 
 **更新**: 2026-03-16（与总览、对标文 `JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、规则 **078** 同步）  
 **代码入口**: `l3_node/orchestration/`、`l3_node/workflow_spec_runner.py`、`core/native_tools.py`（`core:domain_workflow_run`）  
-**与 HR 关系**: 招聘 **领域子图** 仍为 `l3_node/skills/hr_recruitment_dag.py` + `DAGWorkflow`（见 [HR_RECRUITMENT.md](./HR_RECRUITMENT.md)）；本架构 **不替换** HR 实现，只提供 **注册与调用面**。
+**与 HR 关系**: 招聘 **领域子图** 仍为 `l3_node/primitives/skills/hr_recruitment_dag.py` + `DAGWorkflow`（见 [HR_RECRUITMENT.md](./HR_RECRUITMENT.md)）；本架构 **不替换** HR 实现，只提供 **注册与调用面**。
 
 ---
 

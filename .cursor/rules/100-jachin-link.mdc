@@ -141,7 +141,7 @@ Client (Tier 3) -> Detect network environment
 - **File:** `core/transport/gateway.py`
 - **SSL Context:** Use `mtls_manager.get_server_ssl_context()` with `verify_mode=ssl.CERT_REQUIRED`.
 - **Service Handler:** Implement `InvokePlugin` and `StreamPlugin` methods.
-- **Dynamic Dispatch:** Extract `plugin_id`, find MCP 工具/SKILL/WASM 插件或本地处理器，调用 `method_name`。（v8.0 主链路为 Jachin Mesh WebSocket + 双轨制，gRPC 为可选扩展）
+- **Dynamic Dispatch:** Extract `plugin_id`，按 **四大原语** 路由 MCP / Skills / Tools（jpp）或本地处理器，调用 `method_name`。（v8.0 主链路为 Jachin Mesh WebSocket + 四大原语执行面，gRPC 为可选扩展）
 
 ### Client Implementation (Tier 3)
 - **File:** `clients/lib/jachin_link_client/`

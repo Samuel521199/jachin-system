@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 RECYCLE_BIN_ROOT = Path.home() / ".jachin" / "recycle_bin"
 _L3_CACHE_DIR = Path.home() / ".jachin" / "l3_skill_cache"
-_WASM_PLUGINS_DIR = Path(__file__).resolve().parent.parent / "l3_node" / "skills" / "wasm_plugins"
+_WASM_PLUGINS_DIR = Path(__file__).resolve().parent.parent / "l3_node" / "primitives" / "tools" / "wasm_bundled"
 _PROJ_ROOT = Path(__file__).resolve().parent.parent
 
 

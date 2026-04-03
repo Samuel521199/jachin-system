@@ -1,9 +1,9 @@
 """
-Jachin Nexus V2 - L3 单体 Agent 与记忆同步
+Jachin Nexus V2 — L3 单体 Agent 与记忆同步（ReAct；delegate 子 Agent）。
 
-单机闭环：Thought -> Action -> Observation。
-支持 Agent 分身（delegate）：主 Agent 可将复杂任务拆给子 Agent 并行执行。
-真实技能：core:fs_read、core:shell_exec、core:shell_job_status、core:shell_job_cancel、core:fs_write（权限限于 ~/.jachin/workspace/）。
+工具清单以 load_tools / build_tools_description 为准。
+相关规格：docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md；
+薄弱点与实现快照：docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md（§〇）。
 """
 from __future__ import annotations
 
@@ -27,47 +27,158 @@ from l3_node.engine.hooks_pipeline import (
     PipelineContext,
     global_hooks,
 )
-from l3_node.llm_client import LiteLLMEngine, SecurityContext
+from l3_node.llm_client import LiteLLMEngine, RunCancelledError, SecurityContext
 from l3_node.capability_catalog import build_capability_prompt_inject_for_tools, tools_include_recruitment
-from l3_node.skills import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
+from l3_node.primitives import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _gateway_prior_brief(prior_messages: list[dict[str, Any]], max_chars: int = 1200) -> str:
+    """供 GatewayContextBundle.short_memory_context 的轻量摘要（非完整历史）。"""
+    parts: list[str] = []
+    for m in prior_messages[-8:]:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        c = (m.get("content") or "") if isinstance(m.get("content"), str) else str(m.get("content") or "")
+        parts.append(f"{role}: {c[:400]}")
+    s = "\n".join(parts)
+    return s[:max_chars] if len(s) > max_chars else s
+
+
+def _max_delegate_depth_cfg() -> int:
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        ag = cfg.get("agent") or {}
+        return max(0, int(ag.get("max_delegate_depth", 2)))
+    except Exception:
+        return 2
+
+
+def _llm_token_budget_for_run(delegate_depth: int) -> int | None:
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        ag = cfg.get("agent") or {}
+        key = "sub_agent_max_total_tokens" if delegate_depth > 0 else "main_max_total_tokens"
+        v = ag.get(key)
+        if v is None:
+            return 120_000 if delegate_depth > 0 else None
+        vi = int(v)
+        return None if vi <= 0 else vi
+    except Exception:
+        return 120_000 if delegate_depth > 0 else None
+
 
 # ReAct：一旦发生 workspace 写改，后续 LLM 轮次改用编码模型（与主推理共用 Key）
 _L3_CODER_MODE_META = "_l3_coder_mode"
 _L3_CODER_ENGINE_CACHE_META = "_l3_coder_engine_cache"
+_L3_COMPLEX_ENGINE_CACHE_META = "_l3_complex_engine_cache"
 
 
-def _react_engine_for_iteration(base: LiteLLMEngine, ctx: PipelineContext) -> LiteLLMEngine:
-    """主 Agent 在 fs_write / apply_patch 之后自动使用 LLM_CODER_MODEL。"""
+def _react_engine_for_iteration(
+    base: LiteLLMEngine,
+    ctx: PipelineContext,
+    *,
+    full_messages: list[dict[str, Any]],
+    tools_count: int,
+    react_iteration: int,
+    force_complex: bool = False,
+) -> LiteLLMEngine:
+    """
+    ReAct 每轮选引擎：优先级 编码（LLM_CODER_MODEL）> 复杂（LLM_COMPLEX_MODEL）> 默认（LLM_MODEL）。
+    复杂路由条件见 core.llm_provider.l3_react_should_use_complex_model。
+    """
+    # 0) 首轮明确编程/脚本意图：与 fs_write 后切 coder 一致，避免 tools 数量先触发 complex
     if not ctx.metadata.get(_L3_CODER_MODE_META):
-        return base
-    cached = ctx.metadata.get(_L3_CODER_ENGINE_CACHE_META)
-    if cached is not None:
-        return cached
-    try:
-        from core.llm_provider import get_coder_model_litellm_id
+        try:
+            from core.llm_provider import should_prime_l3_react_coder_mode
 
-        cm = get_coder_model_litellm_id()
-        if base._normalize_model(cm) == base._normalize_model(base.model_name):
-            ctx.metadata[_L3_CODER_ENGINE_CACHE_META] = base
+            if should_prime_l3_react_coder_mode(
+                react_iteration=react_iteration,
+                full_messages=full_messages,
+            ):
+                ctx.metadata[_L3_CODER_MODE_META] = True
+        except Exception:
+            pass
+
+    # 1) 编程：已执行 fs_write / apply_patch 后的轮次（或首轮已 prime）
+    if ctx.metadata.get(_L3_CODER_MODE_META):
+        cached = ctx.metadata.get(_L3_CODER_ENGINE_CACHE_META)
+        if cached is not None:
+            return cached
+        try:
+            from core.llm_provider import get_coder_model_litellm_id
+
+            cm = get_coder_model_litellm_id()
+            if base._normalize_model(cm) == base._normalize_model(base.model_name):
+                ctx.metadata[_L3_CODER_ENGINE_CACHE_META] = base
+                return base
+            ce = LiteLLMEngine(
+                security_context=base.ctx,
+                model_name=cm,
+                fallback_models=list(base.fallback_models or []),
+                timeout=base.timeout,
+                max_attempts=base.max_attempts,
+            )
+            ctx.metadata[_L3_CODER_ENGINE_CACHE_META] = ce
+            logger.info(
+                "[L3 Agent] ReAct 切换编码模型 %s（主推理 %s，已执行 fs_write/apply_patch）",
+                ce.model_name,
+                base.model_name,
+            )
+            return ce
+        except Exception as e:
+            logger.warning("[L3 Agent] 编码模型不可用，沿用主模型: %s", e)
             return base
-        ce = LiteLLMEngine(
+
+    # 2) 复杂任务：qwen-max 等（子 Agent、长 ReAct、大工具池、planned/strict 等）
+    _dd = int(ctx.metadata.get("_delegate_depth", 0) or 0)
+    try:
+        from core.llm_provider import (
+            get_complex_model_litellm_id,
+            l3_react_should_use_complex_model,
+        )
+
+        if not l3_react_should_use_complex_model(
+            delegate_depth=_dd,
+            react_iteration=react_iteration,
+            full_messages=full_messages,
+            tools_count=tools_count,
+            force_complex=force_complex,
+        ):
+            return base
+        cx = get_complex_model_litellm_id()
+        if base._normalize_model(cx) == base._normalize_model(base.model_name):
+            return base
+        c_cached = ctx.metadata.get(_L3_COMPLEX_ENGINE_CACHE_META)
+        if c_cached is not None:
+            return c_cached
+        c_eng = LiteLLMEngine(
             security_context=base.ctx,
-            model_name=cm,
+            model_name=cx,
             fallback_models=list(base.fallback_models or []),
             timeout=base.timeout,
             max_attempts=base.max_attempts,
         )
-        ctx.metadata[_L3_CODER_ENGINE_CACHE_META] = ce
+        ctx.metadata[_L3_COMPLEX_ENGINE_CACHE_META] = c_eng
         logger.info(
-            "[L3 Agent] ReAct 切换编码模型 %s（主推理 %s，已执行 fs_write/apply_patch）",
-            ce.model_name,
+            "[L3 Agent] ReAct 切换复杂模型 %s（主推理 %s，iter=%s delegate_depth=%s tools=%s）",
+            c_eng.model_name,
             base.model_name,
+            react_iteration + 1,
+            _dd,
+            tools_count,
         )
-        return ce
+        return c_eng
     except Exception as e:
-        logger.warning("[L3 Agent] 编码模型不可用，沿用主模型: %s", e)
+        logger.warning("[L3 Agent] 复杂模型路由不可用，沿用主模型: %s", e)
         return base
 
 
@@ -221,7 +332,7 @@ def _apply_hr_recruitment_final_answer_table_sync(text: str, ctx: Any) -> str:
     if "add_automated_recruitment_task" not in tools:
         return text or ""
     try:
-        from l3_node.skills import mcp_registry as _mr
+        import l3_node.primitives.mcp.registry as _mr
 
         payload = getattr(_mr, "last_add_automated_recruitment_task_payload", None)
     except Exception:
@@ -381,7 +492,7 @@ def _parse_action(
     if skills:
         tool_ids = [t.get("id", "") for t in skills if t.get("id")]
     else:
-        from l3_node.skills import load_tools
+        from l3_node.primitives import load_tools
         tools_fallback = load_tools(allowed_skills=allowed_skills)
         tool_ids = [t.get("id", "") for t in tools_fallback if t.get("id")]
 
@@ -437,6 +548,64 @@ def _parse_action(
             if re.search(pat, text, re.IGNORECASE):
                 return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
     return None
+
+
+def _is_hallucinated_final_mcp_error_json(text: str) -> bool:
+    """
+    模型未走 Action 却把「MCP -32602 / write_file 校验失败」式 JSON 当作 Final Answer 整段输出。
+    与真实工具返回区分：真实调用会先打 [L3 Agent][工具路由]。
+    """
+    s = (text or "").strip()
+    if len(s) > 8000:
+        return False
+    if not (s.startswith("{") and s.endswith("}")):
+        return False
+    if "32602" not in s and "MCP error" not in s:
+        return False
+    try:
+        o = json.loads(s)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(o, dict):
+        return False
+    st = str(o.get("status") or "").lower()
+    err = str(o.get("error") or "")
+    if st == "failed" and (
+        "32602" in err
+        or "write_file" in err.lower()
+        or "invalid arguments" in err.lower()
+        or "validation" in err.lower()
+    ):
+        return True
+    return False
+
+
+def _infer_mcp_write_path_from_user_messages(messages: list) -> str | None:
+    """
+    write_file/create_file 常漏传 path。从最近一条用户消息推断工作区相对路径（与 fetch 的 URL 补全同思路）。
+    """
+    blob = ""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            blob = str(m.get("content") or "")
+            if blob.strip():
+                break
+    if not blob.strip():
+        return None
+    m_py = re.search(r"\b([A-Za-z0-9_][A-Za-z0-9_\-]*\.py)\b", blob)
+    if not m_py:
+        return None
+    fn = m_py.group(1)
+    use_scripts = bool(
+        re.search(
+            r"(?:scripts|名为\s*scripts|文件夹.*scripts|scripts\s*文件夹|在\s*scripts|scripts\s*目录)",
+            blob,
+            re.I,
+        )
+    )
+    if use_scripts:
+        return f"scripts/{fn}"
+    return fn
 
 
 def _extract_jd_config_from_conversation(messages: list, current_response: str) -> str:
@@ -1695,9 +1864,28 @@ def _build_system_prompt(
     allow_delegate: bool = True,
     allow_recall: bool = True,
     allow_coordinate: bool = True,
+    prompt_cycle: int | None = None,
+    recruitment_longform: bool = True,
+    prompt_style: str = "full",
+    pure_json_contract: bool = False,
+    gateway_inject: str = "",
+    safety_lock_user_text: str = "",
+    *,
+    chief_advisor_mode: bool = False,
+    environment_report_block: str = "",
 ) -> str:
+    from l3_node.prompt_compose import (
+        SuffixChunk,
+        apply_system_prompt_total_cap,
+        load_prompt_suffix_budget,
+        load_system_prompt_total_max_chars,
+        sort_tools_by_id,
+    )
+
+    slim_style = (prompt_style or "").strip().lower() == "slim_user_led"
+    slim_mode = slim_style or bool(pure_json_contract)
     allowed = _get_allowed_skills()
-    tools = tools or load_tools(allowed_skills=allowed)
+    tools = sort_tools_by_id(tools or load_tools(allowed_skills=allowed))
     tools_desc = build_tools_description(tools)
     recall_hint = ""
     if allow_recall and _get_l2_config():
@@ -1771,74 +1959,157 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 `add_automated_recruitment_task` 的 `job_name` 必须与用户刚确认的 JD 里 `job_title` 一致，勿沿用其它岗位名。
 Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数须一致（与工具返回值一致）。
 """
+    if _hr_has_recruitment_tools and not recruitment_longform:
+        hr_recruitment_hint = ""
+        hr_hint = (
+            "【HR·动态收敛】未检测到本轮与招聘强相关意图时勿调用招聘 MCP；"
+            "用户谈到职位、简历、Boss、透析、收网、飞书调度等再按需使用工具。\n"
+        )
     # L3 本地记忆注入（智能化升级 P0：断网/无 L2 时仍可用）
     local_mem = ""
     try:
         from l3_node.local_memory import get_local_memory_for_prompt
-        local_mem = get_local_memory_for_prompt(limit=12)
+
+        local_mem = get_local_memory_for_prompt(
+            limit=6 if slim_mode else 12, prompt_cycle=prompt_cycle
+        )
     except ImportError:
         pass
-    local_prefix = f"\n{local_mem}\n" if local_mem else ""
+    jachin_rules = ""
+    try:
+        from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
 
+        jachin_rules = get_jachin_workspace_rules_snippet()
+    except ImportError:
+        pass
+    safety_lock_txt = ""
+    try:
+        from l3_node.jachin_safety_lock import get_safety_lock_snippet
+
+        safety_lock_txt = get_safety_lock_snippet(user_text=safety_lock_user_text or "")
+    except ImportError:
+        pass
     # 智能化 P0：跨会话任务规划上下文（task_plan.md / progress.md）
     plan_ctx = ""
-    try:
-        from l3_node.task_planning import get_planning_context_for_prompt
-        plan_ctx = get_planning_context_for_prompt()
-    except ImportError:
-        pass
-    plan_prefix = f"\n{plan_ctx}\n" if plan_ctx else ""
+    if not slim_mode:
+        try:
+            from l3_node.task_planning import get_planning_context_for_prompt
+
+            plan_ctx = get_planning_context_for_prompt()
+        except ImportError:
+            pass
     plan_hint = """
 【任务规划】复杂多步任务（3+ 步骤）可先用 core:fs_write 将计划写入 task_plan.md，再按计划执行。完成后可更新 progress.md。新会话会加载既有计划继续执行。""" if not plan_ctx else ""
 
+    if slim_mode:
+        capability_catalog_hint = ""
+        hr_recruitment_hint = ""
+        hr_hint = ""
+        plan_ctx = ""
+        plan_hint = ""
+
     hr_runtime_ctx = ""
-    try:
-        from l3_node.hr_prompt_context import get_hr_recruitment_runtime_context_for_prompt
+    if not slim_mode:
+        try:
+            from l3_node.hr_prompt_context import get_hr_recruitment_runtime_context_for_prompt
 
-        hr_runtime_ctx = get_hr_recruitment_runtime_context_for_prompt()
-    except Exception:
-        pass
-    hr_runtime_prefix = f"\n{hr_runtime_ctx}\n" if (hr_runtime_ctx or "").strip() else ""
-
+            hr_runtime_ctx = get_hr_recruitment_runtime_context_for_prompt()
+        except Exception:
+            pass
     p1_inject = ""
-    try:
-        from l3_node.intelligence_p1 import get_p1_prompt_injections
+    if not slim_mode:
+        try:
+            from l3_node.intelligence_p1 import get_p1_prompt_injections
 
-        _pp, _pc = get_p1_prompt_injections()
-        p1_inject = f"{_pp}{_pc}"
-    except ImportError:
-        pass
+            _pp, _pc = get_p1_prompt_injections()
+            p1_inject = f"{_pp}{_pc}"
+        except ImportError:
+            pass
 
     intel_b = ""
-    try:
-        from l3_node.intelligence_b_execution import get_execution_mode, get_require_brainstorm_card
-
-        _eb = get_execution_mode()
-        _bs = ""
-        if get_require_brainstorm_card() and _eb in ("planned", "strict"):
-            _bs = (
-                "\n须 **先** 输出 brainstorm 卡 JSON（可 ```json 包裹）："
-                '{"jachin_brainstorm_card":{"angles":["思路1","思路2"],"constraints":"约束","open_questions":"待澄清"}}，'
-                "再输出下方计划卡。"
+    if not slim_mode:
+        try:
+            from l3_node.intelligence_b_execution import (
+                get_execution_mode,
+                get_force_universal_planning_chain,
+                get_require_brainstorm_card,
             )
-        if _eb == "planned":
-            intel_b = f"""
+
+            _eb = get_execution_mode()
+            _force_u = get_force_universal_planning_chain()
+            _planning_style = _eb in ("planned", "strict") or _force_u
+            _bs = ""
+            if get_require_brainstorm_card() and _planning_style:
+                _bs = (
+                    "\n须 **先** 输出 brainstorm 卡 JSON（可 ```json 包裹）："
+                    '{"jachin_brainstorm_card":{"angles":["思路1","思路2"],"constraints":"约束","open_questions":"待澄清"}}，'
+                    "再输出下方计划卡。"
+                )
+            if _eb == "strict":
+                intel_b = f"""
+【执行范式 strict】同 planned；若已执行 core:fs_write / core:shell_exec / core:apply_patch，进入 **只读 verify 轮**（系统可能仅展示只读工具），须先用只读工具复核，再在回复中包含 **VERIFY_PASS**（大写）后方可 Final Answer。{_bs}"""
+            elif _eb == "planned" or _force_u:
+                intel_b = f"""
 【执行范式 planned】在首次调用任何 Action 工具前，须在本轮或此前 assistant 消息中输出可解析 JSON 计划卡，Schema：
 {{"jachin_plan_card":{{"goal":"目标一句话","steps":["步骤1","步骤2"],"risks":"主要风险","rollback_point":"可回退点"}}}}{_bs}"""
-        elif _eb == "strict":
-            intel_b = f"""
-【执行范式 strict】同 planned；若已执行 core:fs_write / core:shell_exec / core:apply_patch，进入 **只读 verify 轮**（系统可能仅展示只读工具），须先用只读工具复核，再在回复中包含 **VERIFY_PASS**（大写）后方可 Final Answer。{_bs}"""
-    except ImportError:
-        pass
+        except ImportError:
+            pass
 
-    return f"""你是一个智能助手，使用 ReAct 格式思考。
-{local_prefix}
-{plan_prefix}{hr_runtime_prefix}
-{p1_inject}
+    chat_task_hint = """
+【前台/后台隔离】长耗时、大批量任务（如抓数十份简历、长跑分析、大量文件 IO）请优先使用 **core:submit_background_task**（JSON：intent 必填；可选 require_skills、max_iterations），立即返回 task_id，不阻塞用户继续闲聊。用户问进度时用 **core:check_background_task**（task_id 或 {"list_recent":true}）。若工具返回 status=rejected 且 reason=resource_exhausted，须如实说明本机后台等待队列已满，请用户稍后再试或待进行中任务完成；勿承诺不存在的「自动转发 L2」能力（多节点编排仅在已配对且允许使用 **coordinate** 时另行处理）。
+【前台同步预算】默认非豁免工具单次执行约 **5s** 超时；超时 Observation 会提示改走后台任务。"""
+    if slim_mode:
+        chat_task_hint = (
+            "长耗时、大批量任务请优先 **core:submit_background_task**；进度用 **core:check_background_task**。"
+            "前台同步工具默认约 5s 超时。\n"
+        )
+
+    # 前缀缓存友好：静态/半静态在前，随会话变化的记忆与长 SOP 在后（工具段可单独截断以配合总硬帽）
+    if pure_json_contract:
+        _prefix_before_tools = f"""你是助手；优先遵守用户消息中的格式要求；不要寒暄，不要用 Markdown 章节标题当开场。
 {intel_b}
-{capability_catalog_hint}{hr_recruitment_hint}
+{chat_task_hint}
+
 可用工具：
-{tools_desc}
+"""
+    elif slim_mode:
+        _prefix_before_tools = f"""你是智能助手。**用户对本轮「最终可见回复」有强格式要求时，你必须优先服从用户消息**：不要寒暄，以及用 Markdown 章节标题当开场。
+若任务需要读文件、执行命令等，仍使用下方 Thought / Action / Observation；工具用完后，只输出用户要求的正文（若用户要求仅 JSON，勿加 markdown 围栏与解释性前言）。
+{intel_b}
+{chat_task_hint}
+
+可用工具：
+"""
+    else:
+        _prefix_before_tools = f"""你是一个智能助手，使用 ReAct 格式思考。
+{intel_b}
+{chat_task_hint}
+
+可用工具：
+"""
+    _pure_mem_rules = ""
+    if pure_json_contract:
+        if (safety_lock_txt or "").strip():
+            _pure_mem_rules += f"\n{safety_lock_txt.strip()}\n"
+        if (local_mem or "").strip():
+            _pure_mem_rules += f"\n【本地记忆】\n{local_mem.strip()}\n"
+        if (jachin_rules or "").strip():
+            _pure_mem_rules += f"\n【工作区规则】\n{jachin_rules.strip()}\n"
+
+    if pure_json_contract:
+        _prefix_after_tools = f"""
+{_pure_mem_rules}
+{recall_hint}
+{coordinate_hint}
+{delegate_hint}
+【数据输出】若用户要求合法 JSON：只输出一个 JSON 对象；不要用代码围栏，不要用井号标题行，不要附加说明。
+若必须调用工具：使用 Thought、Action、Action Input（JSON 参数），工具结果为 Observation，可多轮。工具结束后若仍需 JSON，则接下来只输出 JSON 本体，不要继续写 Action 行。
+若明显无需工具：从首条助手回复起只输出用户要求的正文（如 JSON），不要 Thought、Action、Observation 等标签行。
+
+--- 以下段落为会话/记忆上下文（API 前缀缓存友好）---
+"""
+    else:
+        _prefix_after_tools = f"""
 {recall_hint}
 {coordinate_hint}
 {delegate_hint}
@@ -1850,10 +2121,109 @@ Action Input: <参数>
 Observation: <工具返回>
 ...（可多轮）
 Final Answer: <最终回复>
-{plan_hint}
-{hr_hint}
-注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。
+
+--- 以下段落随会话、记忆与域状态变化（建议置于提示词末尾以利于 API 前缀缓存）---
 """
+    # 后缀驱逐 rank：越小越先丢。对齐 L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §5.3
+    suffix_chunks: list[SuffixChunk] = []
+    _gwi = (gateway_inject or "").strip()
+    if _gwi and not pure_json_contract:
+        suffix_chunks.append(
+            SuffixChunk("mid", "intent_gateway_execution_inject", f"\n{_gwi}\n", eviction_rank=28)
+        )
+    _erb = (environment_report_block or "").strip()
+    if chief_advisor_mode and _erb and not pure_json_contract:
+        suffix_chunks.append(
+            SuffixChunk("high", "environment_report", f"\n{_erb}\n", eviction_rank=91)
+        )
+    if chief_advisor_mode and not pure_json_contract:
+        try:
+            from l3_node.intent_gateway.pushback_copy import CHIEF_ADVISOR_SYSTEM_BLOCK
+
+            suffix_chunks.append(
+                SuffixChunk("high", "chief_advisor_persona", f"\n{CHIEF_ADVISOR_SYSTEM_BLOCK}\n", eviction_rank=93)
+            )
+        except ImportError:
+            pass
+    if not pure_json_contract:
+        if (local_mem or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("low", "passive_local_memory", f"\n{local_mem}\n", eviction_rank=10)
+            )
+        if (jachin_rules or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("high", "jachin_workspace_rules", f"\n{jachin_rules}\n", eviction_rank=90)
+            )
+        if (safety_lock_txt or "").strip():
+            suffix_chunks.append(
+                SuffixChunk(
+                    "high",
+                    "jachin_safety_lock",
+                    f"\n{safety_lock_txt}\n",
+                    eviction_rank=98,
+                )
+            )
+        if (plan_ctx or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("high", "task_plan_disk", f"\n{plan_ctx}\n", eviction_rank=95)
+            )
+        if (hr_runtime_ctx or "").strip():
+            suffix_chunks.append(SuffixChunk("mid", "hr_runtime", f"\n{hr_runtime_ctx}\n", eviction_rank=45))
+        if (p1_inject or "").strip():
+            suffix_chunks.append(SuffixChunk("low", "p1_inject", p1_inject, eviction_rank=15))
+        if (capability_catalog_hint or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("mid", "capability_catalog", capability_catalog_hint, eviction_rank=40)
+            )
+        if (hr_recruitment_hint or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("mid", "hr_recruitment_sop", hr_recruitment_hint, eviction_rank=42)
+            )
+        if (plan_hint or "").strip():
+            suffix_chunks.append(SuffixChunk("low", "plan_hint", plan_hint, eviction_rank=18))
+        if (hr_hint or "").strip():
+            suffix_chunks.append(SuffixChunk("high", "hr_tool_routing", hr_hint, eviction_rank=55))
+        if slim_mode:
+            _react_footer_body = (
+                "【记忆】被动注入仅供参考；事实以 recall_memory / core:local_memory_search 为准。\n"
+                "【输出】工具执行后须给出 Final Answer。若用户要求仅 JSON/固定结构，Final Answer 后只写该结构，"
+                "禁止井号标题行与无关套话。\n"
+                "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
+            )
+        else:
+            _react_footer_body = (
+                "【记忆 SSOT】被动「本地记忆」仅为提示；事实以 recall_memory / core:local_memory_search 检索为准。\n"
+                "【安全锁】若上文含安全锁段，与 MEMORY.md / 闲聊推测冲突时 **以安全锁为准**。"
+                "追加事实用 **core:safety_lock_append**（默认进入 **待审批**，由管理员 CLI 刷入 MD，勿向模型泄露管理员密钥）；"
+                "撤销用 **core:safety_lock_remove**（entry_id）；查看队列 **core:safety_lock_list_pending**。\n"
+                "注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。"
+                "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
+            )
+        suffix_chunks.append(
+            SuffixChunk(
+                "high",
+                "react_footer",
+                _react_footer_body,
+                eviction_rank=100,
+            )
+        )
+    _suffix_budget = load_prompt_suffix_budget()
+    _total_cap = load_system_prompt_total_max_chars()
+    prompt_prefix, prompt_suffix = apply_system_prompt_total_cap(
+        prefix_without_tools=_prefix_before_tools,
+        tools_desc=tools_desc,
+        prefix_after_tools=_prefix_after_tools,
+        suffix_chunks=suffix_chunks,
+        suffix_budget=_suffix_budget,
+        total_max_chars=_total_cap,
+    )
+    if _total_cap > 0 and len(prompt_prefix) + len(prompt_suffix) > _total_cap:
+        logger.warning(
+            "[prompt_total_cap] still_over total=%s cap=%s (check nexus prompt.system_prompt_max_chars)",
+            len(prompt_prefix) + len(prompt_suffix),
+            _total_cap,
+        )
+    return prompt_prefix + prompt_suffix
 
 
 class SubAgent:
@@ -1879,6 +2249,8 @@ class SubAgent:
         task: str,
         engine: LiteLLMEngine,
         max_iterations: int = 3,
+        *,
+        delegate_depth: int = 1,
     ) -> str:
         """执行一次思考，将 task 追加到 messages 并运行 Agent，结果写入 messages。"""
         tools = load_tools(allowed_skills=self.allowed_skills)
@@ -1895,6 +2267,7 @@ class SubAgent:
             _system_prompt_override=system,
             _initial_messages=self.messages,
             implicit_attribution={"channel": "delegate_sub_agent", "sub_agent_id": self.sub_agent_id},
+            _delegate_depth=delegate_depth,
         )
         self.messages.append({"role": "user", "content": task})
         self.messages.append({"role": "assistant", "content": result})
@@ -1927,18 +2300,20 @@ def terminate_sub_agent(sub_agent_id: str) -> bool:
 
 def _build_allowed_ids(allowed_skills: list[str]) -> set[str]:
     """白名单 id 集合（与 loader 逻辑一致）。"""
-    from l3_node.skills.loader import _build_allowed_ids as _loader_ids
+    from l3_node.primitives.tools.loader import _build_allowed_ids as _loader_ids
     return _loader_ids(allowed_skills)
 
 
 async def _run_sub_agent(
     task_spec: dict[str, Any],
     engine: LiteLLMEngine,
+    *,
+    delegate_depth: int = 1,
 ) -> str:
     """运行子 Agent，完成指定子任务。内部调用 _spawn_sub_agent_async（一次性，不复用）。"""
     role = (task_spec.get("role") or "default").lower()
     task = task_spec.get("task", "")
-    result, _ = await _spawn_sub_agent_async(role, task, engine)
+    result, _ = await _spawn_sub_agent_async(role, task, engine, delegate_depth=delegate_depth)
     return result
 
 
@@ -1947,6 +2322,8 @@ async def _spawn_sub_agent_async(
     task: str,
     engine: LiteLLMEngine,
     sub_agent_id: Optional[str] = None,
+    *,
+    delegate_depth: int = 1,
 ) -> tuple[str, str]:
     """异步版 spawn_sub_agent，供 delegate 流程调用。"""
     switches = _get_service_switches()
@@ -1983,14 +2360,116 @@ async def _spawn_sub_agent_async(
 
     if sub_agent_id and sub_agent_id in _sub_agent_registry:
         agent = _sub_agent_registry[sub_agent_id]
-        result = await agent.run_once(task, eff_engine)
+        result = await agent.run_once(task, eff_engine, delegate_depth=delegate_depth)
         return result, sub_agent_id
 
     sid = sub_agent_id or f"sub-{uuid.uuid4().hex[:8]}"
     agent = SubAgent(sid, prompt, allowed)
     _sub_agent_registry[sid] = agent
-    result = await agent.run_once(task, eff_engine)
+    result = await agent.run_once(task, eff_engine, delegate_depth=delegate_depth)
     return result, sid
+
+
+def _foreground_tool_timeout_json(tool: str, sec: float) -> str:
+    return json.dumps(
+        {
+            "status": "timeout",
+            "reason": "foreground_sync_budget_exceeded",
+            "message": (
+                f"工具在 {sec:g}s 内未完成（前台同步预算）。"
+                "长耗时/大批量请使用 core:submit_background_task；"
+                "在工具注册中声明 long_running 或配置 foreground_tools.long_running_tool_ids 可豁免此时限。"
+                "注意：超时后前台已恢复，但同步阻塞调用可能仍在线程中运行（无法强制终止）。"
+            ),
+            "tool": tool,
+        },
+        ensure_ascii=False,
+    )
+
+
+async def _invoke_react_tool(
+    tool: str,
+    inp: str,
+    allowed_skills: Optional[list[str]],
+    ctx: PipelineContext,
+) -> str:
+    """前台同步工具：可选 asyncio 超时；后台任务 / 子代理 / 豁免工具跳过。"""
+    _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
+    _inp = inp or ""
+    logger.info(
+        "[L3 Agent][工具路由] trace=%s run_id=%s tool=%s inp_len=%s preview=%r%s",
+        _rtrace,
+        getattr(ctx, "run_id", "") or "",
+        tool,
+        len(_inp),
+        _inp[:500],
+        "…(truncated)" if len(_inp) > 500 else "",
+    )
+    try:
+        _gb = ctx.metadata.get("_gateway_bundle")
+        if _gb is not None:
+            from l3_node.intent_gateway.jit_binding import jit_resolve_entity_refs
+
+            await jit_resolve_entity_refs(
+                resource_ref_keys=[f"tool:{tool}"],
+                tenant_id=getattr(_gb, "tenant_id", "") or "",
+                context={
+                    "tool": tool,
+                    "inp": inp or "",
+                    "inp_len": len(inp or ""),
+                    "messages": getattr(ctx, "messages", None),
+                },
+            )
+    except Exception:
+        pass
+    from l3_node.foreground_tool_policy import (
+        channel_exempt_from_timeout,
+        load_foreground_tools_config,
+        tool_bypasses_foreground_timeout,
+    )
+
+    mcp_registry = get_mcp_registry()
+    cfg = load_foreground_tools_config()
+    ch = str(ctx.metadata.get("_implicit_channel") or "")
+    sec = float(cfg.get("sync_timeout_sec") or 5.0)
+    mcp_lr = tool in mcp_registry.known_mcp_tools and mcp_registry.is_long_running_mcp_tool(tool)
+    use_timeout = (
+        bool(cfg.get("enabled", True))
+        and sec > 0
+        and not channel_exempt_from_timeout(ch, cfg)
+        and not tool_bypasses_foreground_timeout(tool, cfg, mcp_declares_long_running=mcp_lr)
+    )
+    if tool in mcp_registry.known_mcp_tools:
+        if use_timeout:
+            try:
+                return await asyncio.wait_for(
+                    mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills),
+                    timeout=sec,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
+                    "MCP/线程内阻塞仍可能继续，无法强制终止；见长文档）",
+                    tool,
+                    sec,
+                )
+                return _foreground_tool_timeout_json(tool, sec)
+        return await mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills)
+    if use_timeout:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(run_tool, tool, inp, allowed_skills),
+                timeout=sec,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
+                "to_thread 内同步调用仍可能继续，无法强制终止；见长文档）",
+                tool,
+                sec,
+            )
+            return _foreground_tool_timeout_json(tool, sec)
+    return run_tool(tool, inp, allowed_skills=allowed_skills)
 
 
 def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: str) -> None:
@@ -2020,21 +2499,38 @@ async def _run_react_core(
         if on_step:
             on_step(step_type, content, ctx.run_id)
 
+    def _llm_control_kwargs() -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        _ce = ctx.metadata.get("_cancel_event")
+        if _ce is not None:
+            out["l3_cancel_event"] = _ce
+        _acc = ctx.metadata.get("_llm_token_accumulator")
+        if _acc is not None:
+            out["l3_token_accumulator"] = _acc
+            out["l3_token_budget_max"] = ctx.metadata.get("_llm_token_budget_max")
+        return out
+
     # 追踪本轮已执行的招聘相关工具，用于拒绝「未调用工具却声称已发布」的幻觉回复
     ctx._executed_tools_this_run = set()
     try:
-        from l3_node.skills.mcp_registry import clear_last_add_automated_recruitment_task_payload
+        from l3_node.primitives.mcp.registry import clear_last_add_automated_recruitment_task_payload
 
         clear_last_add_automated_recruitment_task_payload()
     except Exception:
         pass
     ctx.metadata.pop(_L3_CODER_MODE_META, None)
     ctx.metadata.pop(_L3_CODER_ENGINE_CACHE_META, None)
+    ctx.metadata.pop(_L3_COMPLEX_ENGINE_CACHE_META, None)
 
     if not ctx.metadata.get("_skills_unfiltered"):
         ctx.metadata["_skills_unfiltered"] = list(ctx.metadata.get("_skills") or [])
 
     for iteration in range(max_iterations):
+        ctx.metadata["_react_iteration"] = iteration + 1
+        # 每轮唯一 trace，便于 PowerShell 里对比「这一次 vs 下一次」日志
+        ctx.metadata["_react_step_trace"] = (
+            f"{(ctx.run_id or 'norun')}-i{iteration + 1}-t{time.time_ns():x}"
+        )
         ctx.current_response = ""
         ctx.parsed_action = None
         ctx.observation = ""
@@ -2052,15 +2548,30 @@ async def _run_react_core(
 
             if ctx.metadata.get("_intel_strict_pending_verify") and get_enforce_readonly_verify_round():
                 skills = filter_tools_for_verify_round(base_skills)
+                _spe = ctx.metadata.get("_system_prompt_extras") or {}
                 ctx.system_prompt = _build_system_prompt(
                     tools=skills,
                     allow_delegate=False,
                     allow_recall=True,
                     allow_coordinate=False,
+                    prompt_cycle=ctx.metadata.get("_prompt_cycle"),
+                    recruitment_longform=True,
+                    prompt_style=str(ctx.metadata.get("_react_prompt_style") or "full"),
+                    pure_json_contract=bool(ctx.metadata.get("_pure_json_contract")),
+                    gateway_inject=str(ctx.metadata.get("_gw_inject_stored") or ""),
+                    safety_lock_user_text=str(ctx.intent or ""),
+                    chief_advisor_mode=bool(_spe.get("chief_advisor")),
+                    environment_report_block=str(_spe.get("environment_report_block") or ""),
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
         except ImportError:
+            pass
+        try:
+            from l3_node.intent_gateway.planning_gate_phase import filter_skills_for_planning_composite
+
+            skills = filter_skills_for_planning_composite(skills, ctx)
+        except Exception:
             pass
         ctx.metadata["_skills"] = skills
 
@@ -2068,29 +2579,102 @@ async def _run_react_core(
         if ctx.aborted:
             return
 
+        _cev = ctx.metadata.get("_cancel_event")
+        if _cev is not None and getattr(_cev, "is_set", lambda: False)():
+            ctx.final_answer = "[ExecutionBrief] 运行已被取消（协作式 cancel）。"
+            _emit("answer", ctx.final_answer)
+            return
+
         full_messages = [{"role": "system", "content": ctx.system_prompt}] + messages
         logger.debug("[L3 Agent] ReAct iter=%d 调用 LLM stream=%s", iteration + 1, bool(on_chunk))
-        _eff = _react_engine_for_iteration(engine, ctx)
-        _coder_suffix = "_coder" if _eff is not engine else ""
-        _llm_purpose = (
-            f"react_iter_{iteration + 1}_stream{_coder_suffix}"
-            if on_chunk
-            else f"react_iter_{iteration + 1}{_coder_suffix}"
+        _force_complex = False
+        try:
+            from l3_node.intelligence_b_execution import get_execution_mode
+
+            if get_execution_mode() in ("planned", "strict"):
+                _force_complex = True
+        except ImportError:
+            pass
+        _eff = _react_engine_for_iteration(
+            engine,
+            ctx,
+            full_messages=full_messages,
+            tools_count=len(skills or []),
+            react_iteration=iteration,
+            force_complex=_force_complex,
         )
+        _route_suffix = ""
+        if _eff is not engine:
+            _route_suffix = "_coder" if ctx.metadata.get(_L3_CODER_MODE_META) else "_complex"
+        _llm_purpose = (
+            f"react_iter_{iteration + 1}_stream{_route_suffix}"
+            if on_chunk
+            else f"react_iter_{iteration + 1}{_route_suffix}"
+        )
+        _lkw = _llm_control_kwargs()
         if on_chunk:
-            response = await _eff.generate_response_stream(
-                full_messages, chunk_callback=on_chunk,
-                temperature=0.7, max_tokens=16384,
-                l3_call_purpose=_llm_purpose,
-            )
-        else:
-            result = await _eff.generate_response(
-                full_messages, temperature=0.7, max_tokens=16384,
-                l3_call_purpose=_llm_purpose,
-            )
-            response = result.get("content", result) if isinstance(result, dict) else str(result)
+            _lkw["l3_run_id"] = ctx.run_id
+        try:
+            if on_chunk:
+                response = await _eff.generate_response_stream(
+                    full_messages,
+                    chunk_callback=on_chunk,
+                    temperature=0.7,
+                    max_tokens=16384,
+                    l3_call_purpose=_llm_purpose,
+                    **_lkw,
+                )
+            else:
+                result = await _eff.generate_response(
+                    full_messages,
+                    temperature=0.7,
+                    max_tokens=16384,
+                    l3_call_purpose=_llm_purpose,
+                    **_lkw,
+                )
+                response = result.get("content", result) if isinstance(result, dict) else str(result)
+        except RunCancelledError:
+            ctx.final_answer = "[ExecutionBrief] 运行已被取消（LLM 协作式中断）。"
+            _emit("answer", ctx.final_answer)
+            return
+        except Exception as e:
+            try:
+                from l3_node.llm_budget import BudgetExhaustedError
+
+                if isinstance(e, BudgetExhaustedError):
+                    ctx.final_answer = (
+                        f"[ExecutionBrief] Token 预算用尽（resource）：累计 {e.used}，上限 {e.limit}。"
+                        "可调整 ~/.jachin/nexus_config.json 中 agent.main_max_total_tokens / agent.sub_agent_max_total_tokens。"
+                    )
+                    _emit("answer", ctx.final_answer)
+                    return
+            except ImportError:
+                pass
+            raise
 
         ctx.current_response = response
+
+        try:
+            from l3_node.intent_gateway.config import get_intent_gateway_config
+            from l3_node.intent_gateway.planning_gate_phase import extract_needs_info, is_composite_planning_locked
+
+            _ni_txt = extract_needs_info(response)
+            if (
+                _ni_txt
+                and bool(get_intent_gateway_config().get("needs_info_gateway_enabled", True))
+                and is_composite_planning_locked(ctx)
+            ):
+                ctx.final_answer = f"【需要补充信息】{_ni_txt}"
+                _emit("answer", ctx.final_answer)
+                try:
+                    from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event
+
+                    emit_intent_tracker_event("needs_info_short_circuit", {"chars": len(_ni_txt)})
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
 
         # 一旦 LLM 输出含 JD 配置，立即写入 fallback，供 Lark 会话丢失时「同意」兜底
         _jd_raw = _extract_jd_config_from_conversation(messages, response)
@@ -2130,16 +2714,57 @@ async def _run_react_core(
 
         parsed = _parse_action(response, skills, use_mock=use_mock, allowed_skills=allowed_skills)
         ctx.parsed_action = parsed
+        _iter_n = ctx.metadata.get("_react_iteration")
+        _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
+        if parsed is None:
+            logger.info(
+                "[L3 Agent][ReAct 解析] trace=%s iter=%s parsed=None（无 Action / 格式无法识别）"
+                " response_len=%s head=%r",
+                _rtrace,
+                _iter_n,
+                len(response or ""),
+                (response or "")[:400].replace("\n", "\\n"),
+            )
+        else:
+            _pt = parsed.get("type")
+            if _pt == "native":
+                _tn = str(parsed.get("tool") or "")
+                logger.info(
+                    "[L3 Agent][ReAct 解析] trace=%s iter=%s type=native tool=%s inp_len=%s "
+                    "(仅 mcp:* 会打 [MCP Registry] invoke；core:* 走 run_tool 无该行)",
+                    _rtrace,
+                    _iter_n,
+                    _tn[:160],
+                    len(str(parsed.get("input") or "")),
+                )
+            else:
+                logger.info(
+                    "[L3 Agent][ReAct 解析] trace=%s iter=%s type=%s",
+                    _rtrace,
+                    _iter_n,
+                    _pt,
+                )
 
         try:
-            from l3_node.intelligence_b_execution import get_execution_mode, scan_messages_for_valid_plan
+            from l3_node.intelligence_b_execution import (
+                get_execution_mode,
+                get_force_universal_planning_chain,
+                scan_messages_for_valid_plan,
+            )
 
             _eb_mode = get_execution_mode()
+            _force_plan = get_force_universal_planning_chain()
         except ImportError:
             _eb_mode = "react"
+            _force_plan = False
+
+        _ich_plan = str(ctx.metadata.get("_implicit_channel") or "")
+        _planning_gate = _eb_mode in ("planned", "strict") or _force_plan
+        if _ich_plan in ("delegate_sub_agent", "background_task"):
+            _planning_gate = False
 
         if (
-            _eb_mode in ("planned", "strict")
+            _planning_gate
             and parsed is not None
             and parsed.get("type") not in ("answer",)
         ):
@@ -2154,20 +2779,25 @@ async def _run_react_core(
                 _pre = parse_types_allowed_before_plan_gates()
                 if parsed.get("type") not in _pre:
                     _combined = messages + [{"role": "assistant", "content": response}]
+                    _mode_label = (
+                        _eb_mode
+                        if _eb_mode != "react"
+                        else ("react+force_universal_planning_chain" if _force_plan else "react")
+                    )
                     if get_require_brainstorm_card() and not scan_messages_for_valid_brainstorm(_combined):
                         messages.append({"role": "assistant", "content": response})
                         messages.append({
                             "role": "user",
                             "content": (
-                                "【系统 · intelligence_b】当前为 %s 模式：请先输出 brainstorm 卡 JSON（jachin_brainstorm_card："
+                                "【系统 · intelligence_b】当前为 %s：请先输出 brainstorm 卡 JSON（jachin_brainstorm_card："
                                 "angles 非空数组、constraints、open_questions），再输出计划卡。"
                             )
-                            % _eb_mode,
+                            % _mode_label,
                         })
                         try:
                             from core.intelligence_workspace import emit_intelligence_event
 
-                            emit_intelligence_event("brainstorm_gate_blocked", {"mode": _eb_mode})
+                            emit_intelligence_event("brainstorm_gate_blocked", {"mode": _mode_label})
                         except Exception:
                             pass
                         continue
@@ -2176,15 +2806,15 @@ async def _run_react_core(
                         messages.append({
                             "role": "user",
                             "content": (
-                                "【系统 · intelligence_b】当前为 %s 模式：请先输出完整计划卡 JSON（jachin_plan_card："
+                                "【系统 · intelligence_b】当前为 %s：请先输出完整计划卡 JSON（jachin_plan_card："
                                 "goal、steps 非空数组、risks、rollback_point），通过校验后才会执行工具。"
                             )
-                            % _eb_mode,
+                            % _mode_label,
                         })
                         try:
                             from core.intelligence_workspace import emit_intelligence_event
 
-                            emit_intelligence_event("plan_gate_blocked", {"mode": _eb_mode})
+                            emit_intelligence_event("plan_gate_blocked", {"mode": _mode_label})
                         except Exception:
                             pass
                         continue
@@ -2200,13 +2830,31 @@ async def _run_react_core(
 
                 if task_plan_gate_blocks_action(parsed, ctx.intent or ""):
                     messages.append({"role": "assistant", "content": response})
-                    messages.append({
-                        "role": "user",
-                        "content": (
+                    try:
+                        from l3_node.intent_gateway.pushback_copy import task_plan_gate_user_message
+
+                        _tp_msg = task_plan_gate_user_message()
+                    except ImportError:
+                        _tp_msg = (
                             "【系统 · task_plan】当前任务需要先在工作区根目录创建/完善 task_plan.md（至少概述目标与步骤）。"
                             "请使用 Action: core:fs_write，将内容写入 task_plan.md；完成后再执行写操作、Shell 或 delegate/coordinate。"
-                        ),
-                    })
+                        )
+                    messages.append({"role": "user", "content": _tp_msg})
+                    _stp = ctx.metadata.get("_on_step")
+                    if _stp:
+                        try:
+                            import json as _json
+
+                            _stp(
+                                "system_status",
+                                _json.dumps(
+                                    {"status": "识别为多步任务：task_plan 门禁生效，请先落盘 task_plan.md。"},
+                                    ensure_ascii=False,
+                                ),
+                                ctx.run_id,
+                            )
+                        except Exception:
+                            pass
                     try:
                         from core.intelligence_workspace import emit_intelligence_event
 
@@ -2215,6 +2863,51 @@ async def _run_react_core(
                         pass
                     continue
             except ImportError:
+                pass
+
+        if parsed is not None:
+            try:
+                from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event
+                from l3_node.intent_gateway.planning_gate_phase import planning_composite_gate_blocks_action
+
+                if planning_composite_gate_blocks_action(parsed, ctx):
+                    messages.append({"role": "assistant", "content": response})
+                    try:
+                        from l3_node.intent_gateway.pushback_copy import planning_composite_gate_user_message
+
+                        _pc_msg = planning_composite_gate_user_message()
+                    except ImportError:
+                        _pc_msg = (
+                            "【系统 · planning_composite】当前为复合规划阶段：请先用 core:fs_write 将可执行计划写入 "
+                            "workspace 根目录 task_plan.md；计划中提及的工具 id 须在当前可见白名单内。"
+                            "若关键信息不足请输出 [Needs_Info: …] 向用户反问。"
+                            "在规划静态扫描通过前，禁止 delegate/coordinate、禁止其它写类工具与 MCP 执行。"
+                        )
+                    messages.append({"role": "user", "content": _pc_msg})
+                    _stp2 = ctx.metadata.get("_on_step")
+                    if _stp2:
+                        try:
+                            import json as _json
+
+                            _stp2(
+                                "system_status",
+                                _json.dumps(
+                                    {"status": "识别为复合任务，规划门禁已拦截高风险动作；请先完善 task_plan.md。"},
+                                    ensure_ascii=False,
+                                ),
+                                ctx.run_id,
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        from core.intelligence_workspace import emit_intelligence_event
+
+                        emit_intelligence_event("planning_composite_gate_blocked", {})
+                    except Exception:
+                        pass
+                    emit_intent_tracker_event("planning_composite_gate_blocked", {})
+                    continue
+            except Exception:
                 pass
 
         if parsed is None:
@@ -2343,6 +3036,17 @@ async def _run_react_core(
                                     ),
                                 })
                                 continue
+                            _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
+                            _ans_s = str(ans or "")
+                            logger.info(
+                                "[L3 Agent][FinalAnswer 路径] trace=%s run_id=%s via=parsed_None+Final_prefix "
+                                "answer_len=%s preview=%r%s",
+                                _rtrace,
+                                ctx.run_id,
+                                len(_ans_s),
+                                _ans_s[:700],
+                                "…(truncated)" if len(_ans_s) > 700 else "",
+                            )
                             _emit("answer", ans)
                             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
                             messages.append({"role": "assistant", "content": response})
@@ -2353,6 +3057,61 @@ async def _run_react_core(
 
         if parsed["type"] == "answer":
             ans = parsed.get("content", response)
+            _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
+            _ans_s = str(ans or "")
+            logger.info(
+                "[L3 Agent][FinalAnswer 路径] trace=%s run_id=%s type=answer answer_len=%s preview=%r%s",
+                _rtrace,
+                ctx.run_id,
+                len(_ans_s),
+                _ans_s[:700],
+                "…(truncated)" if len(_ans_s) > 700 else "",
+            )
+            if any(
+                x in _ans_s
+                for x in (
+                    "-32602",
+                    "MCP error",
+                    "write_file",
+                    "Invalid arguments",
+                    "invalid_type",
+                    "received undefined",
+                )
+            ):
+                logger.warning(
+                    "[L3 Agent][排障·语义] trace=%s Final Answer 文本内含 MCP/校验类字样。"
+                    "若**同一次请求**内未见后续的 [L3 Agent][工具路由] 且未见 [MCP Registry] invoke / "
+                    "[MCP] call_tool，则界面上的 JSON 多为**模型直接输出**，不是 stdio MCP 的真实返回。"
+                    "真实工具调用时一定会先出现 [L3 Agent][工具路由]（含 inp_preview）。",
+                    _rtrace,
+                )
+            if (
+                _is_hallucinated_final_mcp_error_json(_ans_s)
+                and not ctx.metadata.get("_react_fake_mcp_error_retry_done")
+                and not ctx._executed_tools_this_run
+            ):
+                ctx.metadata["_react_fake_mcp_error_retry_done"] = True
+                logger.warning(
+                    "[L3 Agent][纠偏] trace=%s 将注入系统消息并续跑 ReAct（仅一次）："
+                    "Final Answer 为虚构 MCP 错误 JSON，且本轮尚未执行任何工具。",
+                    _rtrace,
+                )
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "【系统纠偏】你刚才的 Final Answer 是模仿 MCP/API 错误格式的 JSON，但本轮并未执行任何工具"
+                        "（不应出现 -32602 类真实返回）。\n"
+                        "请改用 ReAct 文本续写，**禁止**再用 Final Answer 提交伪错误 JSON：\n"
+                        "1) Thought: …\n"
+                        "2) Action: core:fs_write\n"
+                        "3) Action Input: "
+                        '{"path":"<相对工作区路径，如 scripts/xxx.py>","content":"<完整文件内容>"}\n'
+                        "path 须为非空相对路径；也可用 mcp:write_file + 同上 JSON。"
+                        "写盘成功后再 Final Answer 给出绝对路径。"
+                    ),
+                })
+                continue
             # 校验：招聘工具链必须完整调用
             has_success = _hr_recruitment_success_answer(ctx, ans)
             no_post = "atom_post_job_boss" not in ctx._executed_tools_this_run
@@ -2451,13 +3210,38 @@ async def _run_react_core(
                     continue
             except ImportError:
                 pass
+            _dd = int(ctx.metadata.get("_delegate_depth", 0))
+            _max_dd = _max_delegate_depth_cfg()
+            if _dd >= _max_dd:
+                observation = json.dumps(
+                    {
+                        "ok": False,
+                        "error_class": "config",
+                        "message": (
+                            f"已达 max_delegate_depth={_max_dd}（当前深度 {_dd}），禁止继续 delegate。"
+                            "请合并子任务或由单 Agent 顺序执行。"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+                ctx.observation = observation
+                _p2_record_skill_outcome(ctx, "delegate", observation)
+                await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+                _emit("observation", observation)
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": f"Observation: {observation}\n\n请根据限制调整策略并给出 Final Answer:",
+                })
+                continue
             sub_tasks = parsed.get("sub_tasks", [])
             _emit("action", f"delegate {len(sub_tasks)} 个子任务")
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
+            _child_depth = _dd + 1
             results = await asyncio.gather(
-                *[_run_sub_agent(t, engine) for t in sub_tasks],
+                *[_run_sub_agent(t, engine, delegate_depth=_child_depth) for t in sub_tasks],
                 return_exceptions=True,
             )
             parts = []
@@ -2552,6 +3336,24 @@ async def _run_react_core(
             inp = parsed.get("input", "")
             tl_full = (tool or "").strip().lower()
             try:
+                from l3_node.intelligence_b_execution import get_enforce_readonly_verify_round
+
+                if (
+                    ctx.metadata.get("_intel_strict_pending_verify")
+                    and get_enforce_readonly_verify_round()
+                    and tl_full == "core:submit_background_task"
+                ):
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "【strict·只读 verify 轮】禁止 core:submit_background_task；请仅用只读工具复核，再在 Final Answer 中含 VERIFY_PASS。"
+                        ),
+                    })
+                    continue
+            except ImportError:
+                pass
+            try:
                 from l3_node.intelligence_b_execution import (
                     get_enforce_readonly_verify_round,
                     verify_round_allowed_tool_ids,
@@ -2583,7 +3385,7 @@ async def _run_react_core(
                         break
                 if _um:
                     try:
-                        from l3_node.skills.mcp_registry import extract_http_url_from_corrupted_text
+                        from l3_node.primitives.mcp.registry import extract_http_url_from_corrupted_text
 
                         _fu = extract_http_url_from_corrupted_text(_um)
                         if _fu:
@@ -2645,7 +3447,34 @@ async def _run_react_core(
                             logger.info("[L3 Agent] 步骤1完成：配置已持久化至 %s，即将打开 Chrome 发布", path)
                 except Exception as e:
                     logger.debug("[L3 Agent] 解析 jd_config 失败，将传递原始 inp: %s", e)
+            if base_tool in ("write_file", "create_file") and (inp or "").strip().startswith("{"):
+                try:
+                    _wd = json.loads(inp)
+                    if isinstance(_wd, dict) and _wd.get("content") is not None:
+                        _pv = _wd.get("path")
+                        if _pv is None or (isinstance(_pv, str) and not str(_pv).strip()):
+                            _inf = _infer_mcp_write_path_from_user_messages(messages)
+                            if _inf:
+                                _wd["path"] = _inf
+                                inp = json.dumps(_wd, ensure_ascii=False)
+                                logger.info(
+                                    "[L3 Agent] %s 缺 path，已从用户消息推断并注入 path=%s",
+                                    base_tool,
+                                    _inf,
+                                )
+                except Exception as _wpe:
+                    logger.debug("[L3 Agent] write_file path 推断跳过: %s", _wpe)
             _emit("action", f"{tool} {inp[:200]}{'...' if len(inp or '') > 200 else ''}".strip())
+            _tl_dbg = (tool or "").lower()
+            if "write_file" in _tl_dbg or "edit_file" in _tl_dbg or "create_file" in _tl_dbg:
+                _inp_s = inp or ""
+                logger.info(
+                    "[L3 Agent][编程 排障] 即将执行文件类 MCP/工具 tool=%s inp_len=%s inp_preview=%r%s",
+                    tool,
+                    len(_inp_s),
+                    _inp_s[:500],
+                    "…(truncated)" if len(_inp_s) > 500 else "",
+                )
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -2685,18 +3514,57 @@ async def _run_react_core(
                             inp = json.dumps(args, ensure_ascii=False)
                 except Exception as e:
                     logger.debug("[L3 Agent] add_automated_recruitment_task 纠正 job_name 跳过: %s", e)
-            # 工具执行路由器：MCP 工具（L3 本地 read_file 或 L2 代理），本地工具走 run_tool
-            mcp_registry = get_mcp_registry()
-            if tool in mcp_registry.known_mcp_tools:
-                observation = await mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills)
-            else:
-                observation = run_tool(tool, inp, allowed_skills=allowed_skills)
+            # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
+            observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
+            if "write_file" in _tl_dbg or "edit_file" in _tl_dbg or "create_file" in _tl_dbg:
+                _obs_s = str(observation or "")
+                if any(
+                    x in _obs_s
+                    for x in ("-32602", "missing_path", "Invalid arguments", "path undefined")
+                ) or ("invalid" in _obs_s.lower() and "path" in _obs_s.lower()):
+                    logger.warning(
+                        "[L3 Agent][编程 排障] 文件工具返回含校验/路径错误 tool=%s observation_len=%s observation_preview=%r",
+                        tool,
+                        len(_obs_s),
+                        _obs_s[:700],
+                    )
+            try:
+                from l3_node.context_prefetch import build_prefetch_attachment
+
+                _extra = build_prefetch_attachment(
+                    ctx, tool, inp, str(observation or ""), assistant_response=response
+                )
+                if _extra:
+                    observation = f"{observation}\n\n{_extra}"
+            except Exception as _pe:
+                logger.debug("[L3 Agent] context_prefetch 跳过: %s", _pe)
+            try:
+                from l3_node.observation_dedup import maybe_replace_duplicate_observation
+
+                observation = maybe_replace_duplicate_observation(ctx.metadata, str(observation or ""))
+            except Exception as _ode:
+                logger.debug("[L3 Agent] observation_dedup 跳过: %s", _ode)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, (tool or "native").strip(), observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
+            _linter_inject = ""
+            if tl_full == "core:fs_write":
+                try:
+                    from l3_node.task_plan_policy import fs_write_targets_workspace_task_plan
+                    from l3_node.intent_gateway.planning_gate_phase import try_release_planning_composite_after_task_plan_write
+
+                    if fs_write_targets_workspace_task_plan(tool, inp):
+                        _linter_inject = try_release_planning_composite_after_task_plan_write(ctx) or ""
+                except Exception:
+                    _linter_inject = ""
             tl = (tool or "").lower()
-            if tl in ("core:fs_write", "core:apply_patch"):
+            if tl in ("core:fs_write", "core:apply_patch") or base_tool in (
+                "write_file",
+                "edit_file",
+                "create_file",
+                "search_replace",
+            ):
                 ctx.metadata[_L3_CODER_MODE_META] = True
             if tl in ("core:fs_write", "core:shell_exec", "core:apply_patch"):
                 try:
@@ -2725,10 +3593,13 @@ async def _run_react_core(
                     on_step("answer", ctx.final_answer, ctx.run_id)
                 return
             messages.append({"role": "assistant", "content": response})
-            messages.append({
-                "role": "user",
-                "content": f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:",
-            })
+            _obs_tail = (
+                f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer"
+                f"（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:"
+            )
+            if _linter_inject:
+                _obs_tail = f"{_linter_inject}\n\n{_obs_tail}"
+            messages.append({"role": "user", "content": _obs_tail})
             continue
 
     # 循环结束仍未产出：最后一轮兜底
@@ -2747,16 +3618,33 @@ async def _run_react_core(
         })
         try:
             full_m = [{"role": "system", "content": ctx.system_prompt}] + messages
-            _feff = _react_engine_for_iteration(engine, ctx)
+            _fb_iter = max(0, int(ctx.metadata.get("_react_iteration", max_iterations) or max_iterations) - 1)
+            _fb_force_cx = False
+            try:
+                from l3_node.intelligence_b_execution import get_execution_mode
+
+                if get_execution_mode() in ("planned", "strict"):
+                    _fb_force_cx = True
+            except ImportError:
+                pass
+            _feff = _react_engine_for_iteration(
+                engine,
+                ctx,
+                full_messages=full_m,
+                tools_count=len(ctx.metadata.get("_skills") or []),
+                react_iteration=_fb_iter,
+                force_complex=_fb_force_cx,
+            )
+            _flkw = _llm_control_kwargs()
+            _fb_suffix = ""
+            if _feff is not engine:
+                _fb_suffix = "_coder" if ctx.metadata.get(_L3_CODER_MODE_META) else "_complex"
             result = await _feff.generate_response(
                 full_m,
                 temperature=0.3,
                 max_tokens=16384,
-                l3_call_purpose=(
-                    "react_final_answer_fallback_coder"
-                    if _feff is not engine
-                    else "react_final_answer_fallback"
-                ),
+                l3_call_purpose=f"react_final_answer_fallback{_fb_suffix}",
+                **_flkw,
             )
             resp = result.get("content", result) if isinstance(result, dict) else str(result)
             for pat in (r"Final\s+Answer:\s*(.+?)(?:\n\n|$)", r"Answer:\s*(.+?)(?:\n\n|$)"):
@@ -2779,6 +3667,146 @@ async def _run_react_core(
     ctx.final_answer = "[ReAct 循环达到上限]"
 
 
+def _build_direct_system_prompt(
+    *,
+    prompt_cycle: int | None,
+    json_mode: bool,
+) -> str:
+    """直连 LLM：无 ReAct、无工具表；保留记忆与工作区规则（保密约束等）。"""
+    lines: list[str] = [
+        "你是高精度指令遵从助手。不要问候语，不要输出可见的思考过程，不要使用 Markdown 章节标题行作开场。",
+        "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 套话。",
+    ]
+    if json_mode:
+        lines.append(
+            "你只输出一个合法 JSON 对象。不要 markdown 代码围栏，不要解释性前后缀，除非用户明确要求。"
+        )
+    else:
+        lines.append("只输出用户要求的正文。")
+    try:
+        from l3_node.local_memory import get_local_memory_for_prompt
+
+        lm = get_local_memory_for_prompt(limit=8, prompt_cycle=prompt_cycle)
+        if (lm or "").strip():
+            lines.append("\n【本地记忆摘要】\n" + lm.strip())
+    except ImportError:
+        pass
+    try:
+        from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
+
+        jr = get_jachin_workspace_rules_snippet()
+        if (jr or "").strip():
+            lines.append("\n【工作区规则摘录】\n" + jr.strip())
+    except ImportError:
+        pass
+    return "\n".join(lines)
+
+
+async def _run_direct_llm_completion(
+    *,
+    messages: list[dict[str, Any]],
+    engine: LiteLLMEngine,
+    prompt_cycle: int | None,
+    json_mode: bool,
+    on_chunk: Optional[Callable[[str], Awaitable[None]]],
+    run_id: str,
+    token_acc: dict[str, int],
+    token_budget: int | None,
+    cancel_event: asyncio.Event,
+    model_override: str | None = None,
+) -> str:
+    sys_p = _build_direct_system_prompt(prompt_cycle=prompt_cycle, json_mode=json_mode)
+    api_messages: list[dict[str, Any]] = [{"role": "system", "content": sys_p}]
+    api_messages.extend(messages)
+    base_kw: dict[str, Any] = {
+        "l3_call_purpose": "direct_llm_bypass",
+        "l3_token_accumulator": token_acc,
+        "l3_token_budget_max": token_budget,
+        "l3_cancel_event": cancel_event,
+        "temperature": 0.2,
+        "max_tokens": 8192,
+    }
+    if (model_override or "").strip():
+        base_kw["l3_override_model"] = (model_override or "").strip()
+    attempts_kw: list[dict[str, Any]] = []
+    if json_mode:
+        attempts_kw.append({**base_kw, "response_format": {"type": "json_object"}})
+        attempts_kw.append(dict(base_kw))
+    else:
+        attempts_kw.append(dict(base_kw))
+
+    last_err: BaseException | None = None
+    for i, kw in enumerate(attempts_kw):
+        try:
+            if on_chunk:
+                stream_kw = dict(kw)
+                stream_kw["l3_run_id"] = run_id
+                text = await engine.generate_response_stream(
+                    api_messages,
+                    chunk_callback=on_chunk,
+                    **stream_kw,
+                )
+            else:
+                raw = await engine.generate_response(api_messages, tools=None, **kw)
+                if isinstance(raw, dict):
+                    text = (raw.get("content") or "") or ""
+                else:
+                    text = str(raw or "")
+            return (text or "").strip()
+        except Exception as e:
+            last_err = e
+            if json_mode and i == 0 and len(attempts_kw) > 1:
+                logger.warning(
+                    "[L3 Agent] direct_llm json_object 被拒，重试无 response_format: %s",
+                    e,
+                )
+                continue
+            raise
+    raise last_err or RuntimeError("direct_llm_bypass failed")
+
+
+async def _paraphrase_abort_slot_reply_async(
+    *,
+    base_msg: str,
+    user_input: str,
+    engine: LiteLLMEngine,
+) -> str:
+    """§8.1：槽位 Abort 后单次闲聊式改写，不执行挂起任务。"""
+    fm = [
+        {
+            "role": "system",
+            "content": (
+                "你是温和的前台助手。用户任务因必填信息多次未补齐而中止。"
+                "请将下列系统说明改写为一两句自然中文：不编造已执行的操作，可建议用户用一句完整指令重试。"
+                "不要使用 Markdown 标题。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"系统说明：\n{base_msg}\n\n用户原话：\n{(user_input or '')[:800]}",
+        },
+    ]
+    try:
+        raw = await engine.generate_response(
+            fm,
+            temperature=0.45,
+            max_tokens=320,
+            l3_call_purpose="abort_slot_chat_fallback",
+        )
+        text = (raw.get("content", raw) if isinstance(raw, dict) else str(raw or "")).strip()
+        return text or base_msg
+    except Exception as e:
+        logger.debug("[L3 Agent] abort_slot_chat_fallback 失败: %s", e)
+        return base_msg
+
+
+class _DirectBypassCtx:
+    __slots__ = ("_executed_tools_this_run",)
+
+    def __init__(self) -> None:
+        self._executed_tools_this_run: set[str] = set()
+
+
 async def run_agent(
     user_input: str,
     engine: LiteLLMEngine,
@@ -2791,6 +3819,15 @@ async def run_agent(
     _session_messages: Optional[list[dict[str, Any]]] = None,
     implicit_signals: Optional[dict[str, Any]] = None,
     implicit_attribution: Optional[dict[str, Any]] = None,
+    _allowed_skills_override: Optional[list[str]] = None,
+    _delegate_depth: int = 0,
+    attachments_metadata: Optional[list[dict[str, Any]]] = None,
+    gateway_context_bundle: Any = None,
+    short_memory_context: str = "",
+    gateway_system_state: Optional[str] = None,
+    gateway_clarification_handle: str = "",
+    gateway_clarification_deadline_ts: float = 0.0,
+    gateway_workspace_dir: str | None = None,
 ) -> str:
     """
     运行 L3 单体 ReAct 循环。
@@ -2798,31 +3835,37 @@ async def run_agent(
     _session_messages: 若提供，将作为历史上下文并在调用结束后被更新为完整对话（含本轮），供多轮对话复用。
     implicit_signals: 可选 {"skip": true, "dwell_sec"|"dwell_ms": n, "assistant_echo": "...", "source": "lark"} → 见 docs/IMPLICIT_SIGNALS.md。
     implicit_attribution: 可选 {"channel": "lark_im"|"websocket"|"http_agent_run", "lark_chat_id": "..."} → 每轮写 implicit_turn_attribution；**lark_chat_id** 用于按会话隔离待确认 JD（同意/兜底）。
+    _allowed_skills_override: 非 None 时覆盖 _get_allowed_skills()（供后台任务沿用投递时的白名单快照）。
+    _delegate_depth: delegate 嵌套深度（子 Agent 由 delegate 路径传入，用于 max_delegate_depth 与 Token 子预算）。
+    attachments_metadata: §12.1 附件元数据（name/size/mime 等），入 GatewayContextBundle；正文仍走对象存储。
+    gateway_context_bundle: 若传入则沿用；否则由 user_input + 会话摘要自动构造（战役一 GatewayContextBundle）。
+    short_memory_context: 显式覆盖网关用短记忆；空则取最近若干轮截断摘要。
+    gateway_system_state: 如 AWAITING_CLARIFICATION，配合 gateway_clarification_* 驱动澄清门控（仅在未传 gateway_context_bundle 时生效）。
+    gateway_workspace_dir: 显式 Git/嗅探工作区目录（绝对路径为佳）；空则尝试 implicit_attribution 的
+        workspace_dir / git_workspace_dir / effective_workspace_root，再回退 ~/.jachin/workspace。
     """
     run_id = str(uuid.uuid4())
+    _ws_tok = None
+    _mem_shard_tok = None
     _lark_cid = ""
+    _bg_channel = ""
     if implicit_attribution and isinstance(implicit_attribution, dict):
         _lark_cid = str(
             implicit_attribution.get("lark_chat_id") or implicit_attribution.get("chat_id") or ""
         ).strip()
+        _bg_channel = str(implicit_attribution.get("channel") or "").strip()
+    _gateway_sniffer_ws = ""
+    if gateway_workspace_dir and str(gateway_workspace_dir).strip():
+        _gateway_sniffer_ws = str(gateway_workspace_dir).strip()
+    elif implicit_attribution and isinstance(implicit_attribution, dict):
+        for _gwk in ("workspace_dir", "git_workspace_dir", "effective_workspace_root"):
+            _gwv = implicit_attribution.get(_gwk)
+            if _gwv is not None and str(_gwv).strip():
+                _gateway_sniffer_ws = str(_gwv).strip()
+                break
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
-    allowed = _get_allowed_skills()
-    tools = load_tools(allowed_skills=allowed)
-    # 神经桥接：从 L2 拉取 MCP 工具并合并（强容错，L2 不可用时仅用本地工具）
-    # 双模式：allowed=None 时不过滤（开发即用）；allowed 非 None 时按白名单过滤（测试/生产闭环）
-    try:
-        mcp_registry = get_mcp_registry()
-        mcp_tools = await mcp_registry.fetch_tools_from_l2()
-        if mcp_tools:
-            if allowed is not None:
-                from l3_node.skills.loader import is_tool_allowed
-                mcp_tools = [t for t in mcp_tools if is_tool_allowed(t["id"], allowed)]
-            tools = list(tools) + mcp_tools
-            logger.info("[L3 Agent] 已合并 %d 个 MCP 工具，总计 %d", len(mcp_tools), len(tools))
-    except Exception as e:
-        logger.debug("[L3 Agent] MCP 工具拉取跳过（L2 可能未启动）: %s", e)
-    system_prompt = _system_prompt_override or _build_system_prompt(tools=tools, allow_delegate=True)
-    # 优先使用 _session_messages（多轮对话），否则用 _initial_messages
+    allowed = _allowed_skills_override if _allowed_skills_override is not None else _get_allowed_skills()
+    # 优先使用 _session_messages（多轮对话），否则用 _initial_messages（须先于 MCP 拉取与 Gateway 流水线）
     if _session_messages is not None:
         messages = list(_session_messages)
     elif _initial_messages:
@@ -2830,6 +3873,490 @@ async def run_agent(
     else:
         messages = []
     prior_messages = list(messages)
+
+    _gateway_bridge_fmt: Any = None
+    _gateway_bundle = gateway_context_bundle
+    try:
+        from l3_node.intent_gateway.bundle import build_gateway_bundle
+        from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
+
+        _gw_mem = (short_memory_context or "").strip() or _gateway_prior_brief(prior_messages)
+        if _gateway_bundle is None:
+            _gateway_bundle = build_gateway_bundle(
+                user_input=user_input or "",
+                short_memory_context=_gw_mem,
+                correlation_id=run_id,
+                session_id=_lark_cid,
+                implicit_attribution=implicit_attribution,
+                attachments_metadata=attachments_metadata,
+                system_state=gateway_system_state or "NORMAL",
+                clarification_handle=gateway_clarification_handle or "",
+                clarification_deadline_ts=float(gateway_clarification_deadline_ts or 0.0),
+            )
+        if _gateway_bundle is not None:
+            await apply_gateway_ingress_pipeline(
+                _gateway_bundle,
+                user_input or "",
+                prior_messages,
+                on_step=on_step,
+                run_id=run_id,
+                workspace_dir=_gateway_sniffer_ws,
+            )
+            try:
+                from l3_node.intent_gateway.config import get_intent_gateway_config
+                from l3_node.intent_gateway.format_signals_cache import (
+                    format_signals_from_dict,
+                    format_signals_to_dict,
+                )
+                from l3_node.intent_gateway.gateway_enrich import enrich_gateway_async
+                from l3_node.intent_gateway.semantic_cache import get_semantic_cache
+                from l3_node.intent_gateway.semantic_router import infer_semantic_route_hint, merge_route_hints
+                from l3_node.routing.output_format_signals import analyze_output_format_signals
+
+                _ig0 = get_intent_gateway_config()
+                _ct0_key = (_gateway_bundle.classification_text or "").strip() or (
+                    _gateway_bundle.user_input or ""
+                )
+                _any_enrich = bool(
+                    _ig0.get("embedding_router_enabled")
+                    or _ig0.get("classification_llm_rewrite_enabled")
+                    or _ig0.get("multimodal_routing_head_enabled")
+                )
+                _enrich_keys = (
+                    "embedding_route",
+                    "embedding_ood_sparse",
+                    "multimodal_route_head",
+                    "classification_llm_routing_rewrite",
+                )
+                _cache_hit = False
+                if _ig0.get("semantic_cache_enabled"):
+                    _c0 = get_semantic_cache()
+                    _k0 = _c0.make_key(
+                        _gateway_bundle.tenant_id or "default",
+                        _ct0_key,
+                        _gateway_bundle.registry_version,
+                    )
+                    _snap0 = _c0.get(_k0)
+                    if isinstance(_snap0, dict) and isinstance(_snap0.get("output_format_signals"), dict):
+                        if not _any_enrich or _snap0.get("gateway_enrich") is not None:
+                            ge = _snap0.get("gateway_enrich") or {}
+                            if isinstance(ge, dict):
+                                for _gk, _gv in ge.items():
+                                    _gateway_bundle.extra[_gk] = _gv
+                            if _snap0.get("routing_utterance_cached"):
+                                _gateway_bundle.routing_utterance = str(_snap0["routing_utterance_cached"])
+                            _gateway_bundle.rebuild_classification_text()
+                            _gateway_bridge_fmt = format_signals_from_dict(_snap0["output_format_signals"])
+                            _cache_hit = True
+                if not _cache_hit:
+                    await enrich_gateway_async(
+                        _gateway_bundle, engine, user_input or "", prior_messages
+                    )
+                    _gateway_bundle.rebuild_classification_text()
+                    _ct_after = _gateway_bundle.classification_text
+                    _gateway_bridge_fmt = analyze_output_format_signals(_ct_after)
+                    if _ig0.get("semantic_cache_enabled"):
+                        _c1 = get_semantic_cache()
+                        _k1 = _c1.make_key(
+                            _gateway_bundle.tenant_id or "default",
+                            _ct0_key,
+                            _gateway_bundle.registry_version,
+                        )
+                        _ge_snap = {
+                            k: _gateway_bundle.extra.get(k)
+                            for k in _enrich_keys
+                            if k in _gateway_bundle.extra
+                        }
+                        _c1.set(
+                            _k1,
+                            {
+                                "gateway_enrich": _ge_snap,
+                                "routing_utterance_cached": _gateway_bundle.routing_utterance,
+                                "output_format_signals": format_signals_to_dict(_gateway_bridge_fmt),
+                            },
+                        )
+                _gateway_bundle.extra["semantic_route_merged"] = merge_route_hints(
+                    infer_semantic_route_hint(_gateway_bundle.classification_text),
+                    _gateway_bundle.extra.get("embedding_route"),
+                )
+            except Exception as _ge:
+                logger.debug("[L3 Agent] gateway enrich/cache 跳过: %s", _ge)
+                try:
+                    from l3_node.intent_gateway.semantic_router import infer_semantic_route_hint, merge_route_hints
+
+                    _gateway_bundle.extra["semantic_route_merged"] = merge_route_hints(
+                        infer_semantic_route_hint(_gateway_bundle.classification_text),
+                        _gateway_bundle.extra.get("embedding_route"),
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("[L3 Agent] GatewayContextBundle 构造失败，回退裸字符串: %s", e)
+        _gateway_bundle = None
+
+    tools = load_tools(allowed_skills=allowed)
+    _skip_mcp_for_rbac = False
+    if _gateway_bundle is not None:
+        try:
+            from l3_node.intent_gateway.rbac_precheck import precheck_l2_subintent_allowed
+
+            _loc = "prefer_l2" if _gateway_bundle.extra.get("attachment_forced_l2_routing") else "local_only"
+            _ok_rbac, _rbac_reason = precheck_l2_subintent_allowed(_gateway_bundle, locality=_loc)
+            if not _ok_rbac:
+                _skip_mcp_for_rbac = True
+                logger.warning(
+                    "[L3 Agent] RBAC 预检拒绝合并 L2 MCP locality=%s reason=%s",
+                    _loc,
+                    _rbac_reason,
+                )
+        except Exception as e:
+            logger.debug("[L3 Agent] RBAC MCP 预检跳过: %s", e)
+    # 神经桥接：从 L2 拉取 MCP 工具并合并（强容错，L2 不可用时仅用本地工具）
+    # 双模式：allowed=None 时不过滤（开发即用）；allowed 非 None 时按白名单过滤（测试/生产闭环）
+    try:
+        if not _skip_mcp_for_rbac:
+            mcp_registry = get_mcp_registry()
+            mcp_tools = await mcp_registry.fetch_tools_from_l2()
+            if mcp_tools:
+                if allowed is not None:
+                    from l3_node.primitives.tools.loader import is_tool_allowed
+                    mcp_tools = [t for t in mcp_tools if is_tool_allowed(t["id"], allowed)]
+                tools = list(tools) + mcp_tools
+                logger.info("[L3 Agent] 已合并 %d 个 MCP 工具，总计 %d", len(mcp_tools), len(tools))
+    except Exception as e:
+        logger.debug("[L3 Agent] MCP 工具拉取跳过（L2 可能未启动）: %s", e)
+    if _bg_channel == "background_task":
+        tools = [t for t in tools if (t.get("id") or "").strip().lower() != "core:submit_background_task"]
+    try:
+        from l3_node.local_memory import next_prompt_cycle
+
+        _mem_cycle = next_prompt_cycle()
+    except ImportError:
+        _mem_cycle = None
+
+    from l3_node.routing.intent_signals import user_message_suggests_recruitment_domain
+    from l3_node.routing.output_format_signals import (
+        OutputFormatSignals,
+        analyze_output_format_signals,
+        should_use_direct_llm_bypass,
+    )
+
+    _classify_text = (
+        (_gateway_bundle.classification_text if _gateway_bundle is not None else None)
+        or (user_input or "")
+    )
+
+    _recruit_longform = (not tools_include_recruitment(tools)) or user_message_suggests_recruitment_domain(
+        user_input or "", prior_messages
+    )
+
+    _fmt_sig: OutputFormatSignals
+    if _gateway_bridge_fmt is not None:
+        _fmt_sig = _gateway_bridge_fmt
+    else:
+        try:
+            from l3_node.intent_gateway.config import get_intent_gateway_config
+            from l3_node.intent_gateway.format_signals_cache import (
+                format_signals_from_dict,
+                format_signals_to_dict,
+            )
+            from l3_node.intent_gateway.semantic_cache import get_semantic_cache
+
+            _ig_cfg = get_intent_gateway_config()
+            _fmt_sig_opt: OutputFormatSignals | None = None
+            if _ig_cfg.get("semantic_cache_enabled") and _gateway_bundle is not None:
+                _cache = get_semantic_cache()
+                _ck = _cache.make_key(
+                    _gateway_bundle.tenant_id or "default",
+                    _classify_text,
+                    _gateway_bundle.registry_version,
+                )
+                _cached = _cache.get(_ck)
+                if _cached and isinstance(_cached.get("output_format_signals"), dict):
+                    _fmt_sig_opt = format_signals_from_dict(_cached["output_format_signals"])
+            if _fmt_sig_opt is None:
+                _fmt_sig_opt = analyze_output_format_signals(_classify_text)
+                if _ig_cfg.get("semantic_cache_enabled") and _gateway_bundle is not None:
+                    _cache = get_semantic_cache()
+                    _ck = _cache.make_key(
+                        _gateway_bundle.tenant_id or "default",
+                        _classify_text,
+                        _gateway_bundle.registry_version,
+                    )
+                    _cache.set(_ck, {"output_format_signals": format_signals_to_dict(_fmt_sig_opt)})
+            _fmt_sig = _fmt_sig_opt
+        except Exception:
+            _fmt_sig = analyze_output_format_signals(_classify_text)
+
+    _prompt_style: str = "slim_user_led" if _fmt_sig.slim_system_prompt() else "full"
+    _pure_json_contract = bool(_fmt_sig.prefer_json_object or _fmt_sig.json_relaxed)
+    _try_direct, _direct_json = should_use_direct_llm_bypass(
+        _classify_text,
+        delegate_depth=_delegate_depth,
+        channel=_bg_channel,
+        raw_user_input=user_input or "",
+    )
+    if _try_direct:
+        try:
+            from l3_node.intent_gateway.ood_signals import should_veto_direct_llm_bypass
+
+            if should_veto_direct_llm_bypass(
+                _classify_text,
+                bundle_extra=_gateway_bundle.extra if _gateway_bundle is not None else None,
+                raw_user_input=user_input or "",
+            ):
+                _try_direct = False
+                if _gateway_bundle is not None:
+                    _gateway_bundle.extra["ood_veto_direct_bypass"] = True
+        except Exception:
+            pass
+
+    try:
+        from l3_node.intent_gateway.dag_router import propose_subintents_with_analysis_async, split_intents_enabled
+        from l3_node.intent_gateway.topology import validate_subintent_dag
+
+        if split_intents_enabled() and _gateway_bundle is not None:
+            _nodes, _dag_da = await propose_subintents_with_analysis_async(_classify_text, engine)
+            if _nodes:
+                if _dag_da is not None:
+                    _gateway_bundle.extra["dag_dependency_analysis"] = _dag_da
+                _ok, _cyc = validate_subintent_dag(_nodes, on_step=on_step, run_id=run_id)
+                if not _ok:
+                    _gateway_bundle.extra["gateway_dag_cycle_detected"] = True
+                    _gateway_bundle.extra["gateway_dag_cycle_detail"] = _cyc
+                    logger.warning("[L3 Agent] Intent DAG 环检测拒绝 sub_intents=%s err=%s", len(_nodes), _cyc)
+                else:
+                    _gateway_bundle.extra["validated_subintent_ids"] = [n.id for n in _nodes]
+                    _gateway_bundle.extra["validated_subintents"] = [
+                        {
+                            "id": n.id,
+                            "text_span": n.text_span,
+                            "rewritten_text": n.rewritten_text or n.text_span,
+                            "what": n.what,
+                            "locality": n.locality,
+                            "depends_on": list(n.depends_on),
+                            "planning_requirement": n.planning_requirement,
+                            "preconditions": list(n.preconditions),
+                            "slot_schema": list(getattr(n, "slot_schema", None) or []),
+                        }
+                        for n in _nodes
+                    ]
+                    try:
+                        from l3_node.task_plan_policy import user_message_suggests_multi_step_task
+
+                        if len(_nodes) > 1 or user_message_suggests_multi_step_task(user_input or ""):
+                            _gateway_bundle.extra["gateway_planning_mandatory"] = True
+                    except Exception:
+                        if len(_nodes) > 1:
+                            _gateway_bundle.extra["gateway_planning_mandatory"] = True
+                    logger.info(
+                        "[L3 Agent] Intent DAG 已校验 sub_intents=%s；system 将注入子意图说明（单 ReAct 内顺序执行）",
+                        _gateway_bundle.extra["validated_subintent_ids"],
+                    )
+    except Exception as e:
+        logger.debug("[L3 Agent] DAG 路由占位跳过: %s", e)
+
+    if _gateway_bundle is not None:
+        try:
+            from l3_node.intent_gateway.execution_tier import compute_execution_tier
+            from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event
+
+            _ex_tier, _ex_sig = compute_execution_tier(
+                user_input=user_input or "",
+                classification_text=_classify_text or "",
+                bundle_extra=_gateway_bundle.extra,
+            )
+            try:
+                from l3_node.intelligence_b_execution import get_force_universal_planning_chain
+
+                if get_force_universal_planning_chain():
+                    _ex_tier = "composite"
+                    _ex_sig = {**dict(_ex_sig or {}), "reason": "force_universal_planning_chain"}
+            except Exception:
+                pass
+            _gateway_bundle.extra["execution_tier"] = _ex_tier
+            _gateway_bundle.extra["execution_tier_signals"] = _ex_sig
+            emit_intent_tracker_event(
+                "execution_tier",
+                {"tier": _ex_tier, "correlation_id": (_gateway_bundle.correlation_id or "")[:16]},
+            )
+            try:
+                from l3_node.intent_gateway.config import get_intent_gateway_config
+
+                _pcg = bool(get_intent_gateway_config().get("planning_composite_gate_enabled", False))
+                if _ex_tier == "composite" and _pcg:
+                    _gateway_bundle.extra["planning_composite_released"] = False
+                else:
+                    _gateway_bundle.extra.pop("planning_composite_released", None)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("[L3 Agent] execution_tier 跳过: %s", e)
+
+    _gw_inject = ""
+    if _gateway_bundle is not None:
+        try:
+            from l3_node.intent_gateway.execution_inject import build_gateway_system_inject
+
+            _gw_inject = build_gateway_system_inject(_gateway_bundle)
+        except Exception:
+            pass
+
+    _environment_report_block = ""
+    _chief_advisor_mode = False
+    try:
+        from l3_node.intent_gateway.config import get_intent_gateway_config
+        from l3_node.intent_gateway.context_sniffer import format_environment_report_for_prompt
+        from l3_node.routing.output_format_signals import heuristic_tool_need
+
+        if _gateway_bundle is not None:
+            _environment_report_block = format_environment_report_for_prompt(
+                _gateway_bundle.extra.get("environment_report")
+            )
+            _et = str(_gateway_bundle.extra.get("execution_tier") or "").strip()
+            _chief_advisor_mode = _et == "composite" or bool(heuristic_tool_need(user_input or ""))
+            _ig_adv = get_intent_gateway_config()
+            if not bool(_ig_adv.get("chief_advisor_prompt_enabled", True)):
+                _chief_advisor_mode = False
+    except Exception as _adv_ex:
+        logger.debug("[L3 Agent] environment_report / chief_advisor 片段跳过: %s", _adv_ex)
+
+    if _system_prompt_override is not None:
+        system_prompt = _system_prompt_override
+    elif _try_direct:
+        system_prompt = ""
+    elif _bg_channel == "background_task":
+        system_prompt = _build_system_prompt(
+            tools=tools,
+            allow_delegate=False,
+            allow_coordinate=False,
+            prompt_cycle=_mem_cycle,
+            recruitment_longform=_recruit_longform,
+            prompt_style=_prompt_style,
+            pure_json_contract=_pure_json_contract,
+            gateway_inject=_gw_inject,
+            safety_lock_user_text=user_input or "",
+            chief_advisor_mode=_chief_advisor_mode,
+            environment_report_block=_environment_report_block,
+        )
+    else:
+        system_prompt = _build_system_prompt(
+            tools=tools,
+            allow_delegate=True,
+            prompt_cycle=_mem_cycle,
+            recruitment_longform=_recruit_longform,
+            prompt_style=_prompt_style,
+            pure_json_contract=_pure_json_contract,
+            gateway_inject=_gw_inject,
+            safety_lock_user_text=user_input or "",
+            chief_advisor_mode=_chief_advisor_mode,
+            environment_report_block=_environment_report_block,
+        )
+
+    try:
+        from l3_node.intent_gateway.ood_signals import evaluate_gateway_ood_gates, get_ood_hard_block_reply
+
+        _ood_bundle_ex = None
+        if _gateway_bundle is not None:
+            _ood_surf = (_gateway_bundle.routing_utterance or _gateway_bundle.user_input or user_input or "").strip()
+            _gateway_bundle.extra["ood_classification_surface"] = _ood_surf
+            _ood_bundle_ex = _gateway_bundle.extra
+        _ood_gate = evaluate_gateway_ood_gates(
+            raw_user_input=user_input or "",
+            classification_text=_classify_text or "",
+            bundle_extra=_ood_bundle_ex,
+        )
+        if _gateway_bundle is not None:
+            _gateway_bundle.extra["gateway_ood_surface_label"] = _ood_gate.surface_label
+            _gateway_bundle.extra["gateway_ood_surface_score"] = round(float(_ood_gate.surface_score), 4)
+            if _ood_gate.treat_as_embedding_ood_sparse:
+                _gateway_bundle.extra["gateway_embedding_ood_sparse"] = True
+            if _ood_gate.hard_block_llm:
+                _gateway_bundle.extra["gateway_ood_hard_block"] = True
+                _gateway_bundle.extra["gateway_ood_hard_block_reason"] = _ood_gate.reason
+
+        if _ood_gate.hard_block_llm:
+            logger.warning(
+                "[L3 Agent] §12.4 OOD 硬拦截 run_id=%s reason=%s label=%s score=%.2f",
+                run_id[:12],
+                _ood_gate.reason,
+                _ood_gate.surface_label,
+                _ood_gate.surface_score,
+            )
+            messages.append({"role": "user", "content": user_input})
+            _ood_reply = get_ood_hard_block_reply()
+            messages.append({"role": "assistant", "content": _ood_reply})
+            if _session_messages is not None:
+                _session_messages.clear()
+                _recent_ood = messages[-30:] if len(messages) > 30 else messages
+                _session_messages.extend(_recent_ood)
+            return _apply_hr_recruitment_final_answer_table_sync(_ood_reply, _DirectBypassCtx())
+    except Exception as _ood_ex:
+        logger.debug("[L3 Agent] OOD 硬拦截评估跳过: %s", _ood_ex)
+
+    # L1.5 语义域 OOD：L0.5 放行后由小模型判定闲聊/非业务域（可选，默认关）
+    try:
+        from l3_node.intent_gateway.config import get_intent_gateway_config
+        from l3_node.intent_gateway.semantic_ood_llm import (
+            classify_semantic_ood_async,
+            get_semantic_ood_reject_reply,
+        )
+
+        _ig_sem = get_intent_gateway_config()
+        if bool(_ig_sem.get("semantic_ood_llm_enabled", False)):
+            _skip_sem_bg = bool(_ig_sem.get("semantic_ood_skip_background_task", True))
+            if not _skip_sem_bg or _bg_channel != "background_task":
+                try:
+                    _sem_to = float(_ig_sem.get("semantic_ood_timeout_sec", 5.0))
+                except (TypeError, ValueError):
+                    _sem_to = 5.0
+                try:
+                    _sem_min_conf = float(_ig_sem.get("semantic_ood_min_confidence", 0.78))
+                except (TypeError, ValueError):
+                    _sem_min_conf = 0.78
+                try:
+                    _sem_max_c = int(_ig_sem.get("semantic_ood_max_input_chars", 4000))
+                except (TypeError, ValueError):
+                    _sem_max_c = 4000
+                try:
+                    _sem_max_tok = int(_ig_sem.get("semantic_ood_max_tokens", 128))
+                except (TypeError, ValueError):
+                    _sem_max_tok = 128
+                _sem_res = await classify_semantic_ood_async(
+                    user_input=user_input or "",
+                    classification_text=_classify_text or "",
+                    engine=engine,
+                    timeout_sec=_sem_to,
+                    max_tokens=_sem_max_tok,
+                    max_chars=_sem_max_c,
+                )
+                if (
+                    _sem_res is not None
+                    and _sem_res.verdict == "out_of_domain"
+                    and _sem_res.confidence >= _sem_min_conf
+                ):
+                    if _gateway_bundle is not None:
+                        _gateway_bundle.extra["gateway_semantic_ood_verdict"] = _sem_res.verdict
+                        _gateway_bundle.extra["gateway_semantic_ood_confidence"] = round(
+                            float(_sem_res.confidence), 4
+                        )
+                        _gateway_bundle.extra["gateway_semantic_ood_reason"] = _sem_res.reason_short
+                    logger.warning(
+                        "[L3 Agent] L1.5 semantic_ood 拒答 conf=%.2f reason=%s",
+                        _sem_res.confidence,
+                        (_sem_res.reason_short or "")[:120],
+                    )
+                    messages.append({"role": "user", "content": user_input})
+                    _sem_reply = get_semantic_ood_reject_reply()
+                    messages.append({"role": "assistant", "content": _sem_reply})
+                    if _session_messages is not None:
+                        _session_messages.clear()
+                        _recent_sem = messages[-30:] if len(messages) > 30 else messages
+                        _session_messages.extend(_recent_sem)
+                    return _apply_hr_recruitment_final_answer_table_sync(_sem_reply, _DirectBypassCtx())
+    except Exception as _sem_ex:
+        logger.debug("[L3 Agent] semantic_ood 评估跳过: %s", _sem_ex)
+
     messages.append({"role": "user", "content": user_input})
 
     text_implicit_types: set[str] = set()
@@ -2922,214 +4449,284 @@ async def run_agent(
     except Exception:
         pass
 
-    # 预检0：用户说「停止招聘」等时，直接执行 stop_automated_recruitment，不经过 LLM（保证立即生效）
-    _stop_intent = re.search(
-        r"(关闭|停止|取消|不要|结束|暂停)(?:所有|全部)?(?:的)?(?:招聘|无人值守|自动化)(?:流程)?|"
-        r"(停止|取消)(?:所有|全部)?(?:的)?(?:招聘)?(?:流程)?|"
-        r"招聘(?:流程)?(?:要)?(?:停止|关闭|取消)",
-        (user_input or "").strip(),
+    from l3_node.agent_preflight import apply_inbound_preflight
+
+    _early = await apply_inbound_preflight(
+        user_input=user_input or "",
+        messages=messages,
+        prior_messages=prior_messages,
+        tools=tools,
+        allowed=allowed,
+        lark_cid=_lark_cid,
+        gateway_bundle=_gateway_bundle,
+        engine=engine,
     )
-    if _stop_intent:
+    if _early is not None:
         try:
-            from l3_node.skills.mcp_registry import _invoke_stop_automated_recruitment_local
-            result_str = await asyncio.to_thread(_invoke_stop_automated_recruitment_local, "")
-            result = json.loads(result_str)
-            if result.get("ok"):
-                removed = result.get("removed", [])
-                msg = f"已停止所有招聘流程，已移除 {len(removed)} 个定时任务。"
-                if removed:
-                    msg += " 后续将不再执行打招呼、抓简历、Agent 讨论或 Lark 同步。"
-                return msg
-        except Exception as e:
-            logger.warning("[Agent] 直接执行 stop_automated_recruitment 失败: %s", e)
+            from l3_node.intent_gateway.config import get_intent_gateway_config
+            from l3_node.intent_gateway.slot_filling_guard import clear_slot_filling_abort_pending
 
-    # 预检0.5：用户说「BI分析」「帮我开始今天的BI分析」「生成战报」等时，直接执行 BI 每日战报流程
-    # 意图逻辑集中在 main_skill.is_bi_analysis_intent
-    try:
-        from l3_node.skills.bi.bi_daily_report import is_bi_analysis_intent
-        _bi_intent = is_bi_analysis_intent(user_input or "")
-    except ImportError:
-        _bi_intent = re.search(
-            r"BI\s*分析|bi\s*分析|帮我开始.*BI|今天的BI分析|开始BI分析|执行BI分析",
-            (user_input or "").strip(),
-            re.IGNORECASE,
-        )
-    if _bi_intent:
-        try:
-            from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
-
-            result = await asyncio.to_thread(run_bi_daily_report)
-            if result.get("success"):
-                lines = ["✅ BI 分析已完成"]
-                lines.append(f"输出文件: {len(result.get('output_paths', []))} 个")
-                lines.append(f"Lark 同步: {result.get('lark_sync_ok', 0)} 个表")
-                if result.get("lark_sync_errors"):
-                    lines.append(f"同步警告: {', '.join(str(e)[:50] for e in result['lark_sync_errors'][:3])}")
-                if result.get("strategic_report_sent"):
-                    lines.append("战略分析战报: 已推送到 Lark")
-                elif result.get("strategic_report_error"):
-                    lines.append(f"战略分析: 生成或推送异常 ({str(result['strategic_report_error'])[:40]}...)")
-                return "\n".join(lines)
-            return f"❌ BI 分析失败: {result.get('error', '未知错误')}"
-        except Exception as e:
-            logger.warning("[Agent] 直接执行 BI 分析失败: %s", e)
-            return f"❌ BI 分析异常: {e}"
-
-    # 预检1：用户说「我要招聘」等模糊指令且对话中尚无 JD 配置时，强制依次询问所有硬性字段
-    _vague_recruitment = re.search(
-        r"我要(?:招聘|发布|招人?)|发布(?:一个)?职位|招聘",
-        (user_input or "").strip(),
-    )
-    _has_jd_in_history = bool(_extract_jd_config_from_conversation(messages, ""))
-    if _vague_recruitment and not _has_jd_in_history:
-        prefix = "【系统】用户要发布职位，但尚未提供完整配置。你必须**仅做询问**，禁止臆想、禁止杜撰、禁止调用 atom_post_job_boss。请用 Final Answer 向 HR 依次询问：1.岗位名称是什么？2.社招、校招、实习还是兼职？3.薪资待遇大概多少？4.学历要求？5.经验要求？若 HR 第一轮未给某项，下一轮**单独追问**该项，直到收集齐再输出完整 JD 配置供确认。\n\n"
-        messages[-1]["content"] = prefix + (user_input or "")
-
-    # 预检1b：单行 Boss 选岗（已同步 jd_select/指针）≠ 已确认无人值守参数；禁止用 jd.json 缺省直接开跑
-    if (
-        tools_include_recruitment(tools)
-        and _hr_user_input_is_solitary_boss_job_select_line(user_input or "")
-        and _extract_branch_b_add_task_payload(messages) is None
-        and not _extract_jd_config_from_conversation(prior_messages, "")
-    ):
-        _pfx1b = (
-            "【系统】本条为 **Boss 选岗／换绑**（jd_select 与工作指针已在外层合并），**不是** HR 已确认的无人值守参数表。\n"
-            "你必须 **先** 用 Final Answer 追问并等 HR 明确：① **推荐牛人 ↔ 沟通收简历** 是否交替，还是 **仅收网**；"
-            "② **累计收网目标**（份）；③ **透析触发份数**（可与收网目标相同）；④ 若开交替：**每轮打招呼人数**、**轮换间隔（分钟，默认 10）**。\n"
-            "**在 HR 逐项确认前禁止调用** mcp:add_automated_recruitment_task；禁止用磁盘 jd 缺省（如示例 4 份、或历史「仅收网」快照）代替 HR 决策。\n\n"
-        )
-        messages[-1]["content"] = _pfx1b + (messages[-1].get("content") or user_input or "")
-
-    # 预检2：用户说「关闭」「停止」招聘流程时，强制要求调用 stop_automated_recruitment，禁止仅回复文字
-    if re.search(r"关闭|停止|取消", (user_input or "").strip()) and re.search(r"招聘|无人值守|自动化", (user_input or "").strip()):
-        prefix = "【系统】用户要求关闭招聘流程。你必须输出 Action: mcp:stop_automated_recruitment，Action Input: {\"job_name\": \"\"}，以真正停止后台任务。禁止仅回复「已关闭」而不调用工具。\n\n"
-        messages[-1]["content"] = prefix + (messages[-1].get("content") or "")
-
-    # 预检3：分支 B 用户确认 → 仅 add_automated_recruitment_task，禁止发帖短路（含 last_jd_pending 误伤）
-    _branch_b_ctx = _hr_branch_b_recruitment_context(messages)
-    _branch_b_confirm = re.search(
-        r"同意|确认启动|确认|确认发布|就按这个发|^\s*同\s*$|^同$|好的|可以|开始|启动|直接发布",
-        (user_input or "").strip(),
-        re.I,
-    )
-    # 预检3b：仅改收网/打招呼/调度语境 — 禁止再走发帖工具
-    _ui0 = (user_input or "").strip()
-    if re.search(r"收网|打招呼|推荐间隔|抓简历|无人值守|调度|透析|简历目标", _ui0) and not re.search(
-        r"发布|发帖|新职位|重新发布|force_republish|再发.*职位",
-        _ui0,
-        re.I,
-    ):
-        _pfx3b = (
-            "【系统】当前表述仅为 **收网/打招呼/调度参数**，与 Boss **发帖**无关。"
-            "**禁止**调用 mcp:atom_post_job_boss（除非 HR 明确说重新发布职位并传 force_republish）。"
-            "请用：飞书短指令（收网改成N人、打招呼改成N人、推荐间隔N分钟）、或 mcp:add_automated_recruitment_task、"
-            "或 mcp:hr_scheduler_send_confirm_prompt；已发帖岗位勿再发帖。\n\n"
-        )
-        messages[-1]["content"] = _pfx3b + (messages[-1].get("content") or _ui0)
-
-    # 预检3a：分支 B + 助手刚问 A/B + 用户单行 A/B → 直连调度（避免模型下一跳省略参数读 jd 默认）
-    _ab_choice = _branch_b_user_ab_choice(user_input or "")
-    if _branch_b_ctx and _ab_choice and _last_assistant_asks_ab_scheduler_choice(messages):
-        _pl: dict[str, Any] = dict(_extract_branch_b_add_task_payload(messages) or {})
-        for k, v in _extract_branch_b_scheduler_hints_from_markdown(messages).items():
-            if v is not None:
-                _pl[k] = v
-        if _pl.get("job_name"):
-            _direct_ab = await _execute_branch_b_harvest_bypass(_pl, allowed_skills=allowed)
-            if _direct_ab:
-                return _direct_ab
-
-    if _branch_b_ctx and _branch_b_confirm:
-        _b_payload = _extract_branch_b_add_task_payload(messages)
-        if _b_payload:
-            _direct_b = await _execute_branch_b_harvest_bypass(_b_payload, allowed_skills=allowed)
-            if _direct_b:
-                return _direct_b
-        _b_prefix = (
-            "【系统·分支B】当前为「已有岗位·轻量收网」，**严禁** mcp:atom_post_job_boss。"
-            "用户已确认启动，请立即输出 Action: mcp:add_automated_recruitment_task，"
-            "Action Input 为上一轮「配置总览」中的完整 JSON（含 job_name、enable_greet_recommend、resume_collect_target 等）。\n\n"
-        )
-        messages[-1]["content"] = _b_prefix + (messages[-1].get("content") or user_input or "")
-
-    # 预检4：分支 A — 用户回复「同意」时，若有 JD 配置则直接执行发布，不经过 LLM（彻底避免循环）
-    _agree_match = re.search(r"同意|确认|确认发布|就按这个发|直接发布", (user_input or "").strip())
-    _agree_jd_cfg = None
-    if (not _branch_b_ctx) and _agree_match:
-        fallback = _extract_jd_config_from_conversation(messages, "")
-        if fallback:
-            try:
-                obj = json.loads(fallback)
-                _agree_jd_cfg = obj.get("jd_config") if isinstance(obj, dict) else obj
-                if not isinstance(_agree_jd_cfg, dict):
-                    _agree_jd_cfg = None
-            except Exception:
-                pass
-        if not _agree_jd_cfg:
-            _agree_jd_cfg = _load_last_jd_pending(_lark_cid)
-            if _agree_jd_cfg:
-                logger.info(
-                    "[Agent] 同意但无会话 JD 块，从 pending 恢复 job_title=%s chat=%s",
-                    _agree_jd_cfg.get("job_title"),
-                    (_lark_cid[:20] + "…") if len(_lark_cid) > 20 else (_lark_cid or "(无)"),
+            _deg = None
+            if _gateway_bundle is not None:
+                _deg = _gateway_bundle.extra.get("slot_filling_degraded")
+            if (
+                _gateway_bundle is not None
+                and bool(get_intent_gateway_config().get("abort_slot_fill_chat_fallback_enabled", False))
+                and isinstance(_deg, dict)
+                and _deg.get("action") == "abort_intent"
+            ):
+                _early = await _paraphrase_abort_slot_reply_async(
+                    base_msg=_early,
+                    user_input=user_input or "",
+                    engine=engine,
                 )
-        # 只要拿到 JD，一律直接发布，不再交给 LLM（防止误判「新对话」导致循环）
-        if _agree_jd_cfg:
-            _direct_publish = await _execute_publish_bypass(
-                _agree_jd_cfg, allowed_skills=allowed, lark_chat_id=_lark_cid
-            )
-            if _direct_publish:
-                return _direct_publish
-            # 直接发布失败时，注入 JD 让 LLM 兜底调用 atom_post_job_boss
-            _jd_str = json.dumps({"jd_config": _agree_jd_cfg}, ensure_ascii=False)
-            prefix = "【系统】用户已确认以下 JD，请直接调用 mcp:atom_post_job_boss，Action Input 填：{}\n勿输出「没有配置」或「新对话」类提示。\n\n".format(_jd_str)
-            messages[-1]["content"] = prefix + (user_input or "")
+            if _gateway_bundle is not None:
+                clear_slot_filling_abort_pending(_gateway_bundle)
+        except Exception as e:
+            logger.debug("[L3 Agent] abort_slot_chat_fallback 跳过: %s", e)
+        return _early
 
-    ctx = PipelineContext(
-        intent=user_input,
-        source="l3_agent",
-        run_id=run_id,
-        metadata={
+    try:
+        from l3_node.routing import apply_registered_plugins
+
+        await apply_registered_plugins({
+            "user_input": user_input,
+            "messages": messages,
+            "prior_messages": prior_messages,
+            "tools": tools,
+            "engine": engine,
+            "run_id": run_id,
+            "implicit_attribution": implicit_attribution,
+        })
+    except Exception as e:
+        logger.debug("[Agent] routing plugins 跳过: %s", e)
+
+    if _delegate_depth > 0:
+        _sub_id = ""
+        if implicit_attribution and isinstance(implicit_attribution, dict):
+            _sub_id = str(implicit_attribution.get("sub_agent_id") or "").strip()
+        _eff_sub = (_sub_id or run_id).replace("/", "_")[:48]
+        try:
+            from l3_node.local_memory import set_memory_shard_id_token
+
+            _mem_shard_tok = set_memory_shard_id_token(_eff_sub)
+        except Exception:
+            pass
+        try:
+            from pathlib import Path as _Path
+
+            from l3_node.workspace_context import (
+                enforce_delegate_sandbox_enabled,
+                get_effective_workspace_root,
+                set_delegate_workspace_sandbox,
+            )
+
+            if enforce_delegate_sandbox_enabled():
+                _ws_tok = set_delegate_workspace_sandbox(f"sandboxes/sub-{_eff_sub}")
+                try:
+                    _Path(get_effective_workspace_root()).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.debug("[Agent] delegate workspace sandbox 跳过: %s", e)
+
+    try:
+        from l3_node.agent_cancel import register_cancel_event, unregister_cancel_event
+    except ImportError:
+
+        def register_cancel_event(*_a: Any, **_k: Any) -> None:
+            return None
+
+        def unregister_cancel_event(*_a: Any, **_k: Any) -> None:
+            return None
+
+    _cancel_ev = asyncio.Event()
+    register_cancel_event(run_id, _cancel_ev)
+    _tok_cap = _llm_token_budget_for_run(_delegate_depth)
+    _tok_acc: dict[str, int] = {"prompt": 0, "completion": 0}
+
+    try:
+        if _try_direct and _system_prompt_override is None:
+            _direct_model_ov: str | None = None
+            if _gateway_bundle is not None and bool(_gateway_bundle.extra.get("attachment_has_image")):
+                _direct_model_ov = str(
+                    _gateway_bundle.extra.get("gateway_multimodal_model_litellm") or ""
+                ).strip() or None
+            logger.info(
+                "[L3 Agent] direct_llm_bypass run_id=%s json_object=%s model_override=%s",
+                run_id,
+                _direct_json,
+                _direct_model_ov or "-",
+            )
+            try:
+                _db_out = await _run_direct_llm_completion(
+                    messages=messages,
+                    engine=engine,
+                    prompt_cycle=_mem_cycle,
+                    json_mode=_direct_json,
+                    on_chunk=on_chunk,
+                    run_id=run_id,
+                    token_acc=_tok_acc,
+                    token_budget=_tok_cap,
+                    cancel_event=_cancel_ev,
+                    model_override=_direct_model_ov,
+                )
+                messages.append({"role": "assistant", "content": _db_out})
+                if _session_messages is not None:
+                    _session_messages.clear()
+                    _recent_db = messages[-30:] if len(messages) > 30 else messages
+                    _session_messages.extend(_recent_db)
+                return _apply_hr_recruitment_final_answer_table_sync(_db_out, _DirectBypassCtx())
+            except Exception as _e_db:
+                logger.warning("[L3 Agent] direct_llm_bypass 失败，回退 ReAct: %s", _e_db)
+                if _bg_channel == "background_task":
+                    system_prompt = _build_system_prompt(
+                        tools=tools,
+                        allow_delegate=False,
+                        allow_coordinate=False,
+                        prompt_cycle=_mem_cycle,
+                        recruitment_longform=_recruit_longform,
+                        prompt_style=_prompt_style,
+                        pure_json_contract=_pure_json_contract,
+                        gateway_inject=_gw_inject,
+                        safety_lock_user_text=user_input or "",
+                        chief_advisor_mode=_chief_advisor_mode,
+                        environment_report_block=_environment_report_block,
+                    )
+                else:
+                    system_prompt = _build_system_prompt(
+                        tools=tools,
+                        allow_delegate=True,
+                        prompt_cycle=_mem_cycle,
+                        recruitment_longform=_recruit_longform,
+                        prompt_style=_prompt_style,
+                        pure_json_contract=_pure_json_contract,
+                        gateway_inject=_gw_inject,
+                        safety_lock_user_text=user_input or "",
+                        chief_advisor_mode=_chief_advisor_mode,
+                        environment_report_block=_environment_report_block,
+                    )
+
+        if not system_prompt and _system_prompt_override is None:
+            if _bg_channel == "background_task":
+                system_prompt = _build_system_prompt(
+                    tools=tools,
+                    allow_delegate=False,
+                    allow_coordinate=False,
+                    prompt_cycle=_mem_cycle,
+                    recruitment_longform=_recruit_longform,
+                    prompt_style=_prompt_style,
+                    pure_json_contract=_pure_json_contract,
+                    gateway_inject=_gw_inject,
+                    safety_lock_user_text=user_input or "",
+                    chief_advisor_mode=_chief_advisor_mode,
+                    environment_report_block=_environment_report_block,
+                )
+            else:
+                system_prompt = _build_system_prompt(
+                    tools=tools,
+                    allow_delegate=True,
+                    prompt_cycle=_mem_cycle,
+                    recruitment_longform=_recruit_longform,
+                    prompt_style=_prompt_style,
+                    pure_json_contract=_pure_json_contract,
+                    gateway_inject=_gw_inject,
+                    safety_lock_user_text=user_input or "",
+                    chief_advisor_mode=_chief_advisor_mode,
+                    environment_report_block=_environment_report_block,
+                )
+
+        _md_base: dict[str, Any] = {
             "_skills": tools,
             "_skills_unfiltered": list(tools),
             "_use_mock": False,
             "_max_iterations": max_iterations,
             "_on_step": on_step,
+            "_system_prompt_extras": {
+                "chief_advisor": _chief_advisor_mode,
+                "environment_report_block": _environment_report_block,
+            },
+            "_gw_inject_stored": _gw_inject,
             "_on_chunk": on_chunk,
             "_lark_chat_id": _lark_cid,
-        },
-    )
-    ctx.messages = messages
-    ctx.system_prompt = system_prompt
+            "_implicit_channel": _bg_channel,
+            "_prompt_cycle": _mem_cycle,
+            "_cancel_event": _cancel_ev,
+            "_delegate_depth": _delegate_depth,
+            "_llm_token_accumulator": _tok_acc,
+            "_llm_token_budget_max": _tok_cap,
+            "_react_prompt_style": _prompt_style,
+            "_pure_json_contract": _pure_json_contract,
+        }
+        if _gateway_bundle is not None:
+            _md_base["_gateway_bundle"] = _gateway_bundle
+            _md_base["gateway_classification_truncated"] = bool(_gateway_bundle.classification_truncated)
+            _md_base["gateway_system_state"] = str(_gateway_bundle.system_state)
+            _md_base["gateway_semantic_route_hint"] = _gateway_bundle.extra.get("semantic_route_hint")
+            _md_base["gateway_clarification_gate"] = _gateway_bundle.extra.get("clarification_gate")
+            _md_base["gateway_attachment_forced_l2"] = bool(_gateway_bundle.extra.get("attachment_forced_l2_routing"))
+            _md_base["gateway_attachment_has_image"] = bool(_gateway_bundle.extra.get("attachment_has_image"))
+            _md_base["gateway_classification_model"] = _gateway_bundle.extra.get(
+                "gateway_classification_model_litellm"
+            )
+            _md_base["gateway_multimodal_model"] = _gateway_bundle.extra.get("gateway_multimodal_model_litellm")
+            _md_base["gateway_semantic_route_merged"] = _gateway_bundle.extra.get("semantic_route_merged")
+            _md_base["gateway_embedding_route"] = _gateway_bundle.extra.get("embedding_route")
+            _md_base["gateway_embedding_ood_sparse"] = bool(_gateway_bundle.extra.get("embedding_ood_sparse"))
 
-    pipeline = Pipeline()
+        ctx = PipelineContext(
+            intent=user_input,
+            source="l3_agent",
+            run_id=run_id,
+            metadata=_md_base,
+        )
+        ctx.messages = messages
+        ctx.system_prompt = system_prompt
 
-    async def on_intent_mw(c: PipelineContext, next_fn) -> None:
-        await global_hooks.run(HOOK_ON_INTENT_RECEIVED, c)
-        if not c.aborted:
+        pipeline = Pipeline()
+
+        async def on_intent_mw(c: PipelineContext, next_fn) -> None:
+            await global_hooks.run(HOOK_ON_INTENT_RECEIVED, c)
+            if not c.aborted:
+                await next_fn()
+
+        async def react_mw(c: PipelineContext, next_fn) -> None:
+            await _run_react_core(c, engine, on_step=on_step)
+            if not c.aborted:
+                await next_fn()
+
+        async def pre_resp_mw(c: PipelineContext, next_fn) -> None:
+            await global_hooks.run(HOOK_BEFORE_RESPONSE, c)
             await next_fn()
 
-    async def react_mw(c: PipelineContext, next_fn) -> None:
-        await _run_react_core(c, engine, on_step=on_step)
-        if not c.aborted:
-            await next_fn()
+        pipeline.use(on_intent_mw).use(react_mw).use(pre_resp_mw)
+        await pipeline.execute(ctx)
 
-    async def pre_resp_mw(c: PipelineContext, next_fn) -> None:
-        await global_hooks.run(HOOK_BEFORE_RESPONSE, c)
-        await next_fn()
+        # 多轮对话：将完整对话写回 _session_messages，供下一轮复用（含上一轮 Assistant 的 JSON 草案等）
+        if _session_messages is not None:
+            _session_messages.clear()
+            # 保留最近 30 条消息，避免 token 溢出，同时确保「确认」等上下文可追溯
+            recent = ctx.messages[-30:] if len(ctx.messages) > 30 else ctx.messages
+            _session_messages.extend(recent)
 
-    pipeline.use(on_intent_mw).use(react_mw).use(pre_resp_mw)
-    await pipeline.execute(ctx)
+        out = ctx.final_answer or "[未产出回复]"
+        return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
+    finally:
+        unregister_cancel_event(run_id)
+        if _ws_tok is not None:
+            try:
+                from l3_node.workspace_context import reset_delegate_workspace_sandbox
 
-    # 多轮对话：将完整对话写回 _session_messages，供下一轮复用（含上一轮 Assistant 的 JSON 草案等）
-    if _session_messages is not None:
-        _session_messages.clear()
-        # 保留最近 30 条消息，避免 token 溢出，同时确保「确认」等上下文可追溯
-        recent = ctx.messages[-30:] if len(ctx.messages) > 30 else ctx.messages
-        _session_messages.extend(recent)
+                reset_delegate_workspace_sandbox(_ws_tok)
+            except Exception:
+                pass
+        if _mem_shard_tok is not None:
+            try:
+                from l3_node.local_memory import reset_memory_shard_token
 
-    out = ctx.final_answer or "[未产出回复]"
-    return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
+                reset_memory_shard_token(_mem_shard_tok)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -3206,6 +4803,7 @@ class MemorySyncDaemon:
         self.interval = interval_seconds
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
+        self._last_urgent_gen: int = 0
 
     async def _loop(self) -> None:
         while not self._stop.is_set():
@@ -3219,7 +4817,31 @@ class MemorySyncDaemon:
                 break
             except Exception as e:
                 logger.warning("[MemorySyncDaemon] %s", e)
-            await asyncio.wait([self._stop.wait(), asyncio.sleep(self.interval)], return_when=asyncio.FIRST_COMPLETED)
+            try:
+                from l3_node.memory_sync_signals import get_urgent_sync_generation
+
+                self._last_urgent_gen = get_urgent_sync_generation()
+            except Exception as e:
+                logger.debug("[MemorySyncDaemon] urgent gen 读取跳过: %s", e)
+
+            remaining = float(self.interval)
+            chunk = 10.0
+            while remaining > 0 and not self._stop.is_set():
+                try:
+                    from l3_node.memory_sync_signals import get_urgent_sync_generation
+
+                    if get_urgent_sync_generation() > self._last_urgent_gen:
+                        break
+                except Exception:
+                    pass
+                step = min(chunk, remaining)
+                await asyncio.wait(
+                    [self._stop.wait(), asyncio.sleep(step)],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._stop.is_set():
+                    break
+                remaining -= step
 
     def start(self) -> None:
         if self._task is None or self._task.done():

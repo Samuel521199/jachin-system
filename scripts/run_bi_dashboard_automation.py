@@ -36,7 +36,7 @@ if sys.platform == "win32":
 
 
 def _load_config() -> dict:
-    from l3_node.skills.bi.bi_daily_report.main_skill import _load_config as _load
+    from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _load_config as _load
     return _load(None)
 
 
@@ -50,8 +50,8 @@ def _run_push_cards_only() -> int:
         print("[push-cards] dashboards 未配置")
         return 1
 
-    from l3_node.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
-    from l3_node.skills.bi.bi_daily_report.dashboard_automation import (
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
+    from l3_node.primitives.skills.bi.bi_daily_report.dashboard_automation import (
         generate_dashboard_analysis_async,
         _save_analysis_to_file,
     )
@@ -113,8 +113,8 @@ def _run_push_cards_only() -> int:
         import os
         os.environ["LARK_USE_FEISHU"] = "1"
 
-    from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
-    from l3_node.skills.bi.bi_daily_report.main_skill import _DASHBOARD_DISPLAY_URLS
+    from l3_node.primitives.mcp.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+    from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _DASHBOARD_DISPLAY_URLS
     sent_ok = 0
     for name, text in analyses:
         url = _DASHBOARD_DISPLAY_URLS.get(name) or url_by_name.get(name, "")
@@ -143,8 +143,8 @@ def _run_dashboard_only(scheduled_time_override: str | None = None, dry_run: boo
         print("[仪表盘] dashboards 未配置")
         return 1
 
-    from l3_node.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
-    from l3_node.skills.bi.bi_daily_report.dashboard_automation import (
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
+    from l3_node.primitives.skills.bi.bi_daily_report.dashboard_automation import (
         generate_dashboard_analysis_async,
         _save_analysis_to_file,
         setup_lark_dashboard_automation_via_browser,

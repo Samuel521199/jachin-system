@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.99] - 2026-04-03
+
+### Added
+
+- **Intent Gateway 入站增强**：`l3_node/intent_gateway/`（澄清门控、DAG 拆分/拓扑、槽位、OOD、执行分层等）；**Omni-Context Sniffer**（`context_sniffer.py`：Git + 安全锁摘要 + 本地记忆 Top-2，硬字符预算）；`apply_gateway_ingress_pipeline` 改为 **async** 并在末尾挂载 `bundle.extra["environment_report"]`
+- **状态透传**：复用 `on_step`，新增 **`system_status`**（JSON `status`）；嗅探起止、DAG 拓扑校验、task_plan / planning_composite 门闸埋点；桌面端 `useSensoryWebSocket.ts` 解析展示
+- **参谋长软拦截**：`pushback_copy.py`、`_build_system_prompt` 注入 `[ENVIRONMENT_REPORT]` + 人设段（`chief_advisor_prompt_enabled`）；槽位追问统一【情报汇整】/【行动预案】；`nexus` → `intent_gateway` 可配置嗅探开关/预算/tracker/DAG 审计
+- **安全锁体系**：`jachin_safety_lock.py` 按需域注入、pending + CLI 审批、`core:safety_lock_list_pending` / `remove`；`jachin_safety_lock_admin.py`；文档 `JACHIN_SAFETY_LOCK*.md`、`JACHIN_SAFETY_LOCK_REMEDIATION.md`
+- **`run_agent`**：`gateway_workspace_dir` 与 `implicit_attribution` 工作区键；HTTP `agent/run` 支持 `gateway_workspace_dir` / `git_workspace_dir`
+- **文档**：`INTENT_GATEWAY_CONTEXT_SNIFFER_AND_TRANSPARENCY.md`、四大原语与 L3 意图/记忆/限制类多篇；**单测** `test_intent_gateway`、`test_context_sniffer`、`test_gateway_pipeline_sniffer`、`test_jachin_safety_lock`、`test_planning_gate_phase` 等
+
+### Changed
+
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli` 统一为 **0.8.99**（Git 标签 `v0.8.99`）
+- **L3 与 Core**：`agent_core` 网关流水线与 prompt 组装、MCP/原生工具与插件路径、文档与规则与仓库树大量对齐（含 skills 迁至 `skills_repo`、BI/HR 脚本与插件增量）
+
+---
+
 ## [v0.8.97] - 2026-03-30
 
 ### Added
@@ -89,10 +107,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **双轨制执行引擎 (Dual-Track Engine)**
-  - 轨道 A：MCP (Model Context Protocol) 宿主，继承全球 AI 工具生态，开箱即用
-  - 轨道 B：SKILL.md 声明式技能，`skills_repo/` 热加载，零编译
-  - 轨道 C：The Abyss Wasm 沙箱，商城第三方付费插件，零信任
+- **四大原语执行面**（当时文档称「双轨制/三轨道」，现已统一术语，见 `docs/Jachin 视角的「四大原语」终极架构规范.md`）
+  - **MCP**：Model Context Protocol 宿主，继承全球 AI 工具生态，开箱即用
+  - **Skills**：SKILL.md 声明式技能，`skills_repo/` 热加载，零编译
+  - **Tools · jpp**：The Abyss Wasm 沙箱，商城第三方付费插件，零信任
 - **量子记忆 (Quantum Memory)**
   - Vector SQLite (sqlite-vss/lancedb) 扩展，百万级 Token 语义检索
   - 自我修复 (Self-Healing)：工具报错时自动重试，梦境阶段生成 bug_fix 规则
@@ -113,7 +131,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - Layer 2 定位由「边缘守护引擎」升级为「神经中枢总线 (Neural Bus)」
-- 技能体系由单一 JPP Wasm 扩展为三轨道（MCP + SKILL.md + Wasm）
+- 技能体系由单一 JPP Wasm 扩展为 **MCP + Skills(SKILL.md) + Tools(jpp)**（四大原语）
 - 记忆系统由生物学梦境扩展为量子记忆（向量 + 自我修复）
 - 主动能力由纯 10s 心跳拉取扩展为 cron_thinker 生物钟 + 云端心跳
 

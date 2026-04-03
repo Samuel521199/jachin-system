@@ -1,7 +1,7 @@
 """
 Jachin Nexus Layer 2 - 自主代理循环 (ReAct) v8.0
 
-Reason + Act：双轨制 + Fallback + HITL 安全红线。
+Reason + Act：四大原语路由（MCP / Skills / Tools）+ Fallback + HITL 安全红线。
 v8.0 Nexus Hook Pipeline：ReAct 逻辑封装为中间件，pre_intent/pre_llm/post_tool/pre_response 可扩展。
 """
 from __future__ import annotations
@@ -103,7 +103,7 @@ def _build_system_prompt(
     wasm_list = [s for s in skills if s.get("type") != "skill_md"]
 
     if skill_md_list:
-        # 轨道 B：SKILL.md 技能，注入完整内容 + Native Core 工具
+        # Skills：SKILL.md 技能，注入完整内容 + Native Core 工具
         skill_content = skill_md_list[0].get("skill_content", "")
         skills_desc = f"""## 当前激活技能（SKILL.md）
 

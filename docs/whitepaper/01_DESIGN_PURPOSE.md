@@ -17,10 +17,12 @@
 ### 1. 极致的零摩擦 (Zero-Friction UX)
 摒弃一切反人类的命令行配置。利用 Layer 3 桌面端实现“扫码即连”；配置写入后，通过 OS 级 API 在后台“静默唤醒” Layer 2 引擎。普通用户在 3 秒内即可接入星图。
 
-### 2. 分轨制安全 (Dual-Track Security)
-- **轨道 A (MCP)**：高信任环境，继承全球 AI 工具生态，开箱即用。
-- **轨道 B (SKILL.md)**：用户可控的声明式技能，热加载，零编译。
-- **轨道 C (Wasm 沙箱)**：商城第三方插件，The Abyss 物理隔离 + 燃料熔断，绝对安全。
+### 2. 分层安全（四大原语）
+- **MCP**：高信任本机/边缘托管，继承全球 AI 工具生态。
+- **Skills（SKILL.md）**：用户可控声明式技能，热加载，零编译。
+- **Tools · jpp（Wasm 沙箱）**：商城第三方插件，The Abyss 物理隔离 + 燃料熔断。
+- **Agent Tasks**：多轮子循环与后台队列，独立预算与隔离策略。
+- **SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`
 
 ### 3. 一切皆技能 (Everything is a Skill)
 Jachin Nexus 本身退化为极度稳定、极度轻量的**神经中枢总线 (Neural Bus)**。发 Telegram、语音播报、分析系统报错并自我修改代码，均为技能。接入不同神经元（MCP/SKILL.md/Wasm），即可无限变身。
@@ -32,7 +34,7 @@ Jachin Nexus 本身退化为极度稳定、极度轻量的**神经中枢总线 (
 
 | 维度 | OpenClaw (极客单兵) | Jachin Nexus (企业航母) |
 |------|-------------------|-----------------------|
-| **安全性** | 极差（ClawHub 供应链攻击、裸跑脚本） | **分轨制**（MCP 高信任 + Wasm 零信任沙箱） |
+| **安全性** | 极差（ClawHub 供应链攻击、裸跑脚本） | **四大原语分层**（MCP / Skills / Tools(jpp) / Agent Tasks；Wasm 零信任沙箱） |
 | **生态** | 5700+ skills 但无沙箱、无签名 | **MCP 开箱 + SKILL.md 轻量 + JPP 商业沙箱** |
 | **交互入口** | 寄生于 Telegram/Discord 等 | **全覆盖**（Universal Message Adapter + 桌面精灵 + Voice Wake + jachin-cli） |
 | **大规模管理**| 无 | **舰队指挥大屏** |

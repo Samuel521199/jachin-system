@@ -4,10 +4,10 @@
 
 | 模块 | 文件 | 与 v0.8.45 是否一致 |
 |------|------|---------------------|
-| **抓数据** | `l3_node/mcp_tools/bi/spa_collector.py` | ❌ **有差异** |
-| **抓数据** | `l3_node/mcp_tools/bi/tool_web_scraper.py` | ❌ **有差异** |
-| **存数据库** | `l3_node/mcp_tools/bi/data_store.py` | ✅ 一致 |
-| **存数据库** | `l3_node/mcp_tools/bi/paths.py` | ✅ 一致 |
+| **抓数据** | `l3_node/primitives/mcp/mcp_tools/bi/spa_collector.py` | ❌ **有差异** |
+| **抓数据** | `l3_node/primitives/mcp/mcp_tools/bi/tool_web_scraper.py` | ❌ **有差异** |
+| **存数据库** | `l3_node/primitives/mcp/mcp_tools/bi/data_store.py` | ✅ 一致 |
+| **存数据库** | `l3_node/primitives/mcp/mcp_tools/bi/paths.py` | ✅ 一致 |
 | **脚本** | `scripts/run_bi_scraper_spa.py` | ✅ 一致 |
 | **脚本** | `scripts/import_raw_to_duckdb.py` | ✅ 一致 |
 

@@ -320,13 +320,21 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
         inc_md = kwargs.get("include_memory_md", True)
         if isinstance(inc_md, str):
             inc_md = inc_md.lower() in ("1", "true", "yes")
-        return search_local_memories(
+        out = search_local_memories(
             q,
             top_k=max(1, min(32, top_k)),
             mmr_lambda=mmr_l,
             half_life_days=half,
             include_memory_md=bool(inc_md),
         )
+        try:
+            if isinstance(out, dict) and out.get("ok") and out.get("hits"):
+                from l3_node.local_memory import touch_entries_from_search_hits
+
+                touch_entries_from_search_hits(list(out["hits"]))
+        except Exception:
+            pass
+        return out
     if tool_id == "core:apply_patch_rollback":
         bid = kwargs.get("backup_id")
         s = str(bid).strip() if bid is not None and str(bid).strip() else ""
@@ -365,4 +373,26 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
             reset=bool(kwargs.get("reset", False)),
             keep_completed_state=bool(kwargs.get("keep_completed_state", False)),
         )
+    if tool_id == "core:safety_lock_append":
+        from l3_node.jachin_safety_lock import append_verified_fact
+
+        body = str(kwargs.get("body") or kwargs.get("content") or "")
+        src = str(kwargs.get("source") or "core:safety_lock_append")
+        tags = kwargs.get("tags")
+        if isinstance(tags, str):
+            tags = [x.strip() for x in tags.split(",") if x.strip()]
+        elif not isinstance(tags, list):
+            tags = None
+        tok = kwargs.get("token") if kwargs.get("token") is not None else kwargs.get("secret_token")
+        tok_s = str(tok).strip() if tok is not None and str(tok).strip() else None
+        return append_verified_fact(body, source=src, tags=tags, token=tok_s)
+    if tool_id == "core:safety_lock_list_pending":
+        from l3_node.jachin_safety_lock import list_pending_entries
+
+        return list_pending_entries()
+    if tool_id == "core:safety_lock_remove":
+        from l3_node.jachin_safety_lock import remove_entry_by_id
+
+        eid = str(kwargs.get("entry_id") or kwargs.get("id") or "").strip()
+        return remove_entry_by_id(eid)
     raise ValueError(f"Unknown Native Core tool: {tool_id}")

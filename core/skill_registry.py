@@ -43,7 +43,7 @@ def _get_plugin_config_defaults(skill_id: str) -> dict[str, Any]:
         item_ids.append("hr-analyzer4")
     proj_root = Path(__file__).resolve().parent.parent
     search_dirs = [
-        proj_root / "l3_node" / "skills" / "wasm_plugins",
+        proj_root / "l3_node" / "primitives" / "tools" / "wasm_bundled",
         Path.home() / ".jachin" / "inventory" / "skills",
         Path.home() / ".jachin" / "l3_skill_cache",
     ]

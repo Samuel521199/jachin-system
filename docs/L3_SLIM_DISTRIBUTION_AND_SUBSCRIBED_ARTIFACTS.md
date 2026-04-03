@@ -18,7 +18,7 @@
 ### 1.2 L3 本体的「轻量」指什么
 
 - **便携包 / 安装包**侧：以 `scripts/build_full.ps1` 组装的 `dist_jachin_desktop` 为例，**不复制** 仓库内的 `skills_repo` 业务插件目录；脚本注释已写明：MCP/Skill 走 **L1 订阅 → L2 同步 → L3 拉取**。
-- **PyInstaller 侧车（`l3_node-*.exe`）**：定位为 **agent + IM 核心**；**Wasm 技能在 frozen 模式下不扫描仓库内 `l3_node/skills/wasm_plugins/`**，只认 **`~/.jachin/l3_skill_cache/`**（与 `l3_node/skills/loader.py` 中 `_scan_wasm_plugins` 行为一致）。
+- **PyInstaller 侧车（`l3_node-*.exe`）**：定位为 **agent + IM 核心**；**Wasm 技能在 frozen 模式下不扫描仓库内 `l3_node/primitives/tools/wasm_bundled/`**，只认 **`~/.jachin/l3_skill_cache/`**（与 `l3_node/primitives/tools/loader.py` 中 `_scan_wasm_plugins` 行为一致）。
 - **Lark / IM**：作为 L3 的**通道与集成能力**，与「可订阅的业务 Skill/MCP」分层；侧车依赖中包含 `lark_oapi` 及 `l3_node/channels/lark`、`l3_node/im_channels` 等，属于 **L3 轻量本体** 应覆盖的范围。
 
 ### 1.3 「变成 L3 的一部分」的边界
@@ -104,4 +104,4 @@ Agent / HTTP / IM 路由按 registry 加载 → 行为上等同「L3 已安装�
 
 ---
 
-*文档版本：与仓库 `build_full.ps1` / `build_l3_sidecar.py` 及 `l3_node/skills/loader.py` 行为对齐；若打包策略变更，请同步更新本节与第 5 节。*
+*文档版本：与仓库 `build_full.ps1` / `build_l3_sidecar.py` 及 `l3_node/primitives/tools/loader.py` 行为对齐；若打包策略变更，请同步更新本节与第 5 节。*

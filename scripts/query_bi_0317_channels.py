@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from l3_node.mcp_tools.bi.paths import get_bi_duckdb_path
+from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_duckdb_path
 
 # 你指定的 6 个渠道，查 3月17日 DAU
 TARGET_CHANNELS = ["unknown", "meta_ads06", "meta_ads05", "meta_ads04", "meta_ads03", "meta_ads01"]

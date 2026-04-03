@@ -22,7 +22,7 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from l3_node.mcp_tools.bi.data_store import _get_conn, _sanitize_table_name
+from l3_node.primitives.mcp.mcp_tools.bi.data_store import _get_conn, _sanitize_table_name
 
 
 def _find_col(columns: list[str], *candidates: str) -> str | None:

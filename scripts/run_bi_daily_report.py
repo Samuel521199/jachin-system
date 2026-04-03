@@ -22,7 +22,7 @@ except ImportError:
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
-from l3_node.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
+from l3_node.primitives.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
 
 
 def main() -> int:

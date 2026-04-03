@@ -2,7 +2,7 @@
 
 BI 战报同步到 Lark 多维表格时，各子表需按此文档创建对应字段。字段名需与 CSV 列名**完全一致**，否则会触发 `FieldNameNotFound` 等错误。
 
-> 参考实现：`l3_node/skills/bi/bi_daily_report/main_skill.py`  
+> 参考实现：`l3_node/primitives/skills/bi/bi_daily_report/main_skill.py`  
 > 配置映射：`config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml` 的 `lark_bitable.tables`  
 > 业务规则与数据来源：`BI分析对应lark表格的规则.txt`（与 BI 后台菜单路径一致）
 

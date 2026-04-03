@@ -61,7 +61,7 @@ async def _handle_skills_list(request) -> "aiohttp.web.Response":
     """GET /api/v3/skills - 仅返回 Wasm 技能（L2 同步），不含 Native Core"""
     import sys
     try:
-        from l3_node.skills import load_skills_for_ui
+        from l3_node.primitives import load_skills_for_ui
         tools = load_skills_for_ui(allowed_skills=None)
         skills = _tools_to_skill_infos(tools)
         print(f"[L3 HTTP] GET /api/v3/skills 返回 {len(skills)} 项技能", file=sys.stderr, flush=True)
@@ -214,7 +214,7 @@ async def _handle_skills_execute(request) -> "aiohttp.web.Response":
         input_data = {**input_data, "target_dir": "data/hr_resumes"}
     print(f"[Skill Execute] 开始 skill_id={skill_id} capability={capability_name} input={json.dumps(input_data, ensure_ascii=False)[:200]}", file=sys.stderr, flush=True)
     try:
-        from l3_node.skills import run_tool
+        from l3_node.primitives import run_tool
         inp = json.dumps({**input_data, "capability": capability_name}, ensure_ascii=False)
         result = run_tool(skill_id, inp, allowed_skills=None)
         print(f"[Skill Execute] 完成 skill_id={skill_id} result_len={len(str(result))} result_preview={str(result)[:300]}", file=sys.stderr, flush=True)
@@ -274,7 +274,7 @@ async def _handle_skills_execute_stream(request) -> "aiohttp.web.Response":
 
     def _run_in_thread() -> None:
         try:
-            from l3_node.skills import run_tool
+            from l3_node.primitives import run_tool
             inp = json.dumps({**input_data, "capability": capability_name}, ensure_ascii=False)
             r = run_tool(skill_id, inp, allowed_skills=None, ndjson_queue=ndjson_queue)
             thread_result["result"] = r
@@ -287,7 +287,7 @@ async def _handle_skills_execute_stream(request) -> "aiohttp.web.Response":
     thread = threading.Thread(target=_run_in_thread, daemon=True)
     thread.start()
 
-    from l3_node.skills.loader import _extract_stem_from_hr_report, _fetch_skill_config, _get_hr_plugin_config_defaults
+    from l3_node.primitives.tools.loader import _extract_stem_from_hr_report, _fetch_skill_config, _get_hr_plugin_config_defaults
     persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
     if not persist_mod:
         persist_hr_analysis_batch_item = lambda *a, **k: None
@@ -639,7 +639,7 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
             return _json_response({"ok": False, "error": f"task_token 无效: {vwhy}"}, status=403)
 
     try:
-        from l3_node.skills.mcp_registry import get_mcp_registry
+        from l3_node.primitives.mcp.registry import get_mcp_registry
         registry = get_mcp_registry()
         action_input = json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments)
         result = await registry.invoke(f"mcp:{tool_name}" if not tool_name.startswith("mcp:") else tool_name, action_input)
@@ -689,12 +689,28 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
             _cmd = None
         if _cmd:
             return _json_response({"answer": _cmd, "command_intercepted": True})
+        _att_meta = body.get("attachments_metadata")
+        _att_meta = _att_meta if isinstance(_att_meta, list) else None
+        _gw_st = body.get("gateway_system_state")
+        _gw_st = str(_gw_st).strip() if _gw_st else None
+        _gw_ch = str(body.get("gateway_clarification_handle") or "").strip()
+        try:
+            _gw_dl = float(body.get("gateway_clarification_deadline_ts") or 0.0)
+        except (TypeError, ValueError):
+            _gw_dl = 0.0
+        _sniff_ws = body.get("gateway_workspace_dir") or body.get("git_workspace_dir")
+        _sniff_ws = str(_sniff_ws).strip() if _sniff_ws else None
         answer = await run_agent(
             user_input,
             engine,
             max_iterations=8,
             implicit_signals=_isig,
             implicit_attribution=_iatt,
+            attachments_metadata=_att_meta,
+            gateway_system_state=_gw_st,
+            gateway_clarification_handle=_gw_ch,
+            gateway_clarification_deadline_ts=_gw_dl,
+            gateway_workspace_dir=_sniff_ws,
         )
         resp = {"answer": answer or ""}
         try:
@@ -895,7 +911,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
 
     try:
-        from l3_node.skills.bi.scheduler import register_bi_daily_report_job
+        from l3_node.primitives.skills.bi.scheduler import register_bi_daily_report_job
 
         register_bi_daily_report_job()
     except Exception as e:

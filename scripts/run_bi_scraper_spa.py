@@ -52,9 +52,9 @@ def _check_chrome_cdp(cdp_url: str = "http://127.0.0.1:9222") -> bool:
 
 
 def main() -> int:
-    from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect, parse_direct_url_map_from_full_spa
-    from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
-    from l3_node.skills.bi.bi_daily_report.main_skill import _load_config
+    from l3_node.primitives.mcp.mcp_tools.bi.spa_collector import run_full_spa_collect, parse_direct_url_map_from_full_spa
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
+    from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _load_config
 
     argv = sys.argv[1:]
     use_discover = "--no-discover" not in argv

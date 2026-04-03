@@ -4,6 +4,8 @@
 **状态**: 当前实现基准  
 **定位**: 三层架构中 Skill 与 MCP 的完整流转、云端上传流程、近期代码变更说明
 
+**术语 SSOT**：文中 **Skill 商品 / Wasm / MCP** 与 **Tools / Skills / MCP / Agent Tasks** 四者的严格定义与边界见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**（商城 Skill 含 Wasm 时：执行体属 **Tools(jpp)**，SKILL 正文属 **Skills**）。
+
 ---
 
 ## 一、近期修改摘要
@@ -13,7 +15,7 @@
 | 路径 | 说明 |
 |------|------|
 | `skills_repo/hr-analyzer4/` | Rust Wasm 源码、plugin.json、main.wasm |
-| `l3_node/skills/wasm_plugins/hr-analyzer4/` | 内置版本，与 execute ABI 兼容 |
+| `l3_node/primitives/tools/wasm_bundled/hr-analyzer4/` | 内置版本，与 execute ABI 兼容 |
 
 **功能**：根据岗位 JD 对候选人简历进行严苛评估，输出 Markdown 报告（综合评分、优劣势、录用建议）。
 
@@ -38,12 +40,12 @@
 
 ---
 
-### 1.3 l3_node/skills/loader.py
+### 1.3 l3_node/primitives/tools/loader.py
 
 | 变更 | 说明 |
 |------|------|
 | **技能 ID 统一** | 内置 `hr-analyzer4` 统一用 `jpp:com.jachin.hr.analyzer4`（L1 发布 id）。 |
-| **wasm 路径** | `jpp:com.jachin.hr.analyzer4` 使用 `l3_node/skills/wasm_plugins/hr-analyzer4/main.wasm`。 |
+| **wasm 路径** | `jpp:com.jachin.hr.analyzer4` 使用 `l3_node/primitives/tools/wasm_bundled/hr-analyzer4/main.wasm`。 |
 | **resume_path / jd_path 注入** | `target_role` 为 `backend_engineer` 时注入 `jd_path`，由 Wasm 通过 MCP 读取，避免 JSON 转义问题。 |
 
 ---
@@ -161,7 +163,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | **L2 同步** | `core/sync_daemon.py` | 轮询 `GET /api/v1/sync/manifest` → 下载到 `~/.jachin/inventory/skills/<item_id>/` |
 | **L2 分配** | L2 Admin | 角色勾选物资 → `role_permissions`；子账号绑定角色 |
 | **L3 同步** | `l3_node/skill_sync.py` | L3 获批后：`POST /trigger-sync` → `GET /skills` → `GET /download` → `~/.jachin/l3_skill_cache/<uuid>/` |
-| **L3 加载** | `l3_node/skills/loader.py` | 扫描 `wasm_plugins/` + `l3_skill_cache/` → `load_skills_for_ui()`、`load_tools()` |
+| **L3 加载** | `l3_node/primitives/tools/loader.py` | 扫描 `wasm_plugins/` + `l3_skill_cache/` → `load_skills_for_ui()`、`load_tools()` |
 | **L3 执行** | `core/wasm_runner.py` | `run_tool(jpp:xxx)` → `run_wasm_plugin()` → execute ABI / WASI |
 
 ### 3.3 关键 API
@@ -185,7 +187,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | `~/.jachin/inventory/l3_mcps/` | L2 从 L1 同步的 L3_LOCAL MCP |
 | `~/.jachin/l3_skill_cache/` | L3 从 L2 下载的技能 |
 | `~/.jachin/l3_mcp_cache/` | L3 从 L2 拉取的 MCP（mcp_sync 同步，mcp_registry 动态加载） |
-| `l3_node/skills/wasm_plugins/` | 内置技能（如 hr-analyzer4） |
+| `l3_node/primitives/tools/wasm_bundled/` | 内置技能（如 hr-analyzer4） |
 
 ---
 
@@ -240,7 +242,7 @@ jachin publish --visibility PRIVATE            # 仅元数据（影子上传）
 | 文件 | 职责 |
 |------|------|
 | `core/wasm_runner.py` | Wasm 沙箱、execute ABI、host 函数（mcp_read_file、llm_complete） |
-| `l3_node/skills/loader.py` | 技能扫描、ID 统一、路径覆盖、resume/jd 注入 |
+| `l3_node/primitives/tools/loader.py` | 技能扫描、ID 统一、路径覆盖、resume/jd 注入 |
 | `l3_node/skill_sync.py` | L3 从 L2 同步技能到 l3_skill_cache |
 | `l3_node/mcp_sync.py` | L3 从 L2 同步 L3_LOCAL MCP 到 l3_mcp_cache |
 | `l3_node/mcp_stdio_bootstrap.py` | L3 内嵌 stdio MCP Host（`MCPManager` + inventory 扫描） |

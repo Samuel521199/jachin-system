@@ -8,11 +8,15 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 
 [docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
+## 术语（Tools / MCP / Skills / Agent Tasks）
+
+**SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`（与 **072**、**045-four-primitives-execution.mdc** 同步）。讨论 `load_tools`、`mcp_registry`、`delegate`、`submit_background_task` 时统一使用 **Tools / MCP / Skills / Agent Tasks**。
+
 ## 核心原则
 
 1. **L2 不代理推理**：L2 只管理 API Key（密文下发）、记忆、权限、L3 协同调度
 2. **L3 直连 LLM**：L3 持密文 Key，请求时解密后自行调用 api.openai.com 等
-3. **L3 执行面**：多 Agent、多 Skill、本地记忆、ReAct、YAML 工作流与 **领域子图委托**（`l3_node/orchestration/`、`core:domain_workflow_run`）；与 OpenClaw **对标与差异化**见 `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` §五、**`docs/ORCHESTRATION_ARCHITECTURE.md`**
+3. **L3 执行面**：多 Agent、多 Skill、本地记忆、ReAct、YAML 工作流与 **领域子图委托**（`l3_node/orchestration/`、`core:domain_workflow_run`）；**前台超时 / 后台任务队列 / 工具后预取 / 规划链** 见 **`docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`**；与 OpenClaw **对标**见 `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` §五、**`docs/ORCHESTRATION_ARCHITECTURE.md`**
 
 ## L2 API (V2)
 
@@ -27,6 +31,7 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 
 - `llm_client.py` — SecurityContext + LiteLLMEngine
 - `agent_core.py` — ReAct Agent + MemorySyncDaemon
+- `background_task_service.py`、`l3_event_bus.py`、`context_prefetch.py`、`foreground_tool_policy.py` — 见 `docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`
 - `bootstrap.py` — 注册、拉 Key、创建引擎
 - `capability_catalog.py` — 能力总目录注入（`DOMAIN_REGISTRY`）；新 MCP/域见规则 **079**
 

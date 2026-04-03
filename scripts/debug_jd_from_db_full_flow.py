@@ -71,7 +71,7 @@ def main() -> int:
     _print_jd("节点2: recruitment_task jd_final", jd_final)
 
     # [3] loader build_hr_stdin_for_debug
-    from l3_node.skills.loader import build_hr_stdin_for_debug
+    from l3_node.primitives.tools.loader import build_hr_stdin_for_debug
 
     input_data = {
         "target_dir": "pool_前端开发工程师_杭州_15-26K",
@@ -91,7 +91,7 @@ def main() -> int:
         return 0
 
     print("\n[节点4] 调用 run_tool... (观察 stderr 中 [Loader] [mcp_read_file] 的岗位 JD 输出)", flush=True)
-    from l3_node.skills import run_tool
+    from l3_node.primitives import run_tool
     import queue
     ndjson_queue = queue.Queue()
     try:
