@@ -2,7 +2,7 @@
 
 本目录为 **BI 每日战报 Skill** 的专属文档区，与项目其他文档保持独立。
 
-**代码归属**：BI 相关代码统一放在 `l3_node/mcp_tools/bi/`（MCP 与数据层）和 `l3_node/skills/bi/`（Skill 与调度），后续新增 BI 文件也需遵循此规范，并在 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md) 中登记。
+**代码归属**：BI 相关代码统一放在 `l3_node/primitives/mcp/mcp_tools/bi/`（MCP 与数据层）和 `l3_node/primitives/skills/bi/`（Skill 与调度），后续新增 BI 文件也需遵循此规范，并在 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md) 中登记。
 
 ---
 
@@ -39,7 +39,7 @@
 
 | 序号 | 检查项 | 状态 |
 |------|--------|------|
-| 1 | `l3_node/mcp_tools/bi/` 目录及 `__init__.py` | ✅ |
+| 1 | `l3_node/primitives/mcp/mcp_tools/bi/` 目录及 `__init__.py` | ✅ |
 | 2 | `bi/tool_web_scraper.py` 占位 stub（A 替换实现） | ✅ |
 | 3 | `tool_broadcaster.py` 占位 stub（B 替换实现） | ✅ |
 | 4 | `l3_node.mcp_tools.bi.paths` 路径常量 | ✅ |

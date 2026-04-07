@@ -5,8 +5,8 @@
 | 位置 | 文件 | 职责 |
 |------|------|------|
 | scripts/ | run_bi_scraper_spa.py | 批量抓取 BI 后台 30+ 张表，输出 raw/*.csv |
-| l3_node/skills/bi/ | main_skill.py Step A | 单表抓取（调用 atom_web_scraper），可选 inline ingest |
-| l3_node/mcp_tools/bi/ | tool_web_scraper.py | 通用 SPA/API 抓取，无 BI 业务知识 |
+| l3_node/primitives/skills/bi/ | main_skill.py Step A | 单表抓取（调用 atom_web_scraper），可选 inline ingest |
+| l3_node/primitives/mcp/mcp_tools/bi/ | tool_web_scraper.py | 通用 SPA/API 抓取，无 BI 业务知识 |
 
 **典型流程**：`run_bi_scraper_spa` → `import_raw_to_duckdb`（手动/cron）→ `main_skill`（skip_collect=true 时直接用 DuckDB）
 
@@ -36,7 +36,7 @@
 
 ## 三、最终方案
 
-1. **提取核心逻辑** → `l3_node/mcp_tools/bi/spa_collector.py`
+1. **提取核心逻辑** → `l3_node/primitives/mcp/mcp_tools/bi/spa_collector.py`
    - MENU_ITEMS、_build_leaf_actions、_discover_menu_items、run_full_spa_collect()
 
 2. **scripts/run_bi_scraper_spa.py** → 薄封装

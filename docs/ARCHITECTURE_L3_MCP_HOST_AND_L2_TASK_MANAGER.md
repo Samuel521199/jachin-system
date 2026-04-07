@@ -266,7 +266,7 @@ sequenceDiagram
 | 模块 | 说明 |
 |------|------|
 | `l3_node/mcp_stdio_bootstrap.py` | L3 启动时 `start_l3_stdio_mcp_host()`：确保 inventory 目录、`MCPManager.start()`、`scan_local_mcps(for_l2_host=False)` |
-| `l3_node/skills/mcp_registry.py` | 合并 L3 本机 stdio 工具列表；本机可执行则 `invoke_tool`，否则 `invoke_via_l2`（请求头可带 `~/.jachin/l2_gateway_config.json` 的 `X-Sub-Account-Id`） |
+| `l3_node/primitives/mcp/registry.py` | 合并 L3 本机 stdio 工具列表；本机可执行则 `invoke_tool`，否则 `invoke_via_l2`（请求头可带 `~/.jachin/l2_gateway_config.json` 的 `X-Sub-Account-Id`） |
 | `core/l2_stdio_mcp_flag.py` | `l2_stdio_mcp_enabled()` 解析 `JACHIN_L2_STDIO_MCP` |
 | `core/api/routes/v2_mcp.py` | `GET /tools`：Redis 聚合 ∪（可选）L2 本机；`POST /invoke`：本机 stdio 或 **仅** 委托（Pull / HTTP 回退） |
 | `invoke_via_l2`（L3→L2 HTTP） | 仍用于 L3 缺工具时的控制面入口；L2 侧委托已 **Pull 队列优先** |

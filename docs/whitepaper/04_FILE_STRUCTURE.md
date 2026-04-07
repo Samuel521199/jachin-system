@@ -20,8 +20,8 @@ jachin-system/
 ├── core/                     # [Layer 2] 控制面 (子账号、权限、记忆、L3 调度；不代理推理)
 ├── clients/                  # [Layer 3] 终端 (Tauri + Voice Wake + jachin-cli)
 ├── l3_node/                  # [Layer 3] 单体执行引擎 (Agent + Skill + 直连 LLM)
-├── jachin-plugin-sdk-python/ # [JPP] 轨道 C Wasm 插件脚手架
-├── skills_repo/              # 轨道 B SKILL.md + 轨道 C Wasm 插件
+├── jachin-plugin-sdk-python/ # [JPP] Tools(jpp) Wasm 插件脚手架
+├── skills_repo/              # Skills(SKILL.md) + Tools(jpp) Wasm 插件
 ├── scripts/                  # 极简启动脚本
 ├── docs/                     # 核心白皮书
 └── .cursor/rules/            # Cursor AI 规则
@@ -67,9 +67,9 @@ core/
 ├── event_bus.py              # 全息感官总线 (Session Multiplexing)
 ├── session_manager.py        # v8.0 会话隔离器 (session_id → Actor)
 ├── hooks_pipeline.py         # v8.0 洋葱中间件 (pre_intent/pre_llm/post_tool/pre_response)
-├── mcp_client.py             # 轨道 A：MCP 宿主
-├── skill_loader.py           # 轨道 B：SKILL.md 热加载
-├── wasm_runner.py            # 轨道 C：The Abyss Wasm 沙箱
+├── mcp_client.py             # 四大原语 · MCP（L2 侧载宿主）
+├── skill_loader.py           # 四大原语 · Skills（SKILL.md 热加载）
+├── wasm_runner.py            # 四大原语 · Tools(jpp) Wasm 沙箱
 ├── biological_memory.py      # 海马体 + 大脑皮层 (short_term + core_memory)
 ├── memory_store.py           # v8.0 LanceDB 记忆碎片 (is_consolidated, Dream Weaver 数据层)
 ├── vector_router.py          # 全域向量路由 (Semantic Router, skills 表)
@@ -158,11 +158,11 @@ tools/jachin-cli/             # 插件发布 CLI (Python)
 ```text
 skills_repo/
 ├── github-pr-reviewer/
-│   └── SKILL.md              # 轨道 B 声明式技能
+│   └── SKILL.md              # Skills 声明式技能
 ├── email-briefing/
 │   └── SKILL.md
 ├── crypto-oracle/
-│   ├── plugin.wasm           # 轨道 C JPP 插件
+│   ├── plugin.wasm           # Tools(jpp) JPP 插件
 │   └── plugin.json
 └── ...
 ```

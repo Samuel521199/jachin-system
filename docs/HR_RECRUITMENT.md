@@ -15,7 +15,7 @@
 | **Skill 文案** | `skills_repo/hr-recruitment/SKILL.md`（及 MCP 包内同名） | Agent SOP：多轮问 JD、发布、停止等 **对话层** |
 | **MCP 包** | `skills_repo/plugin/com.jachin.hr.recruitment/` | 原子工具、APScheduler、`recruitment_task`、Lark、`anti_bot` 等 |
 | **L3 加载** | `l3_node/hr_loader.py` | 动态加载上述 MCP 包 |
-| **DAG** | `l3_node/skills/hr_recruitment_dag.py` | **执行层编排**：`HrRecruitmentPlanInitNode` → `HarvestLoopNode` →（可选）`AnalyzeResumeNode` |
+| **DAG** | `l3_node/primitives/skills/hr_recruitment_dag.py` | **执行层编排**：`HrRecruitmentPlanInitNode` → `HarvestLoopNode` →（可选）`AnalyzeResumeNode` |
 | **长期编排 L2** | `l3_node/orchestration/domain_hr.py` | 通过 `domain_ref: hr_recruitment` 或 `core:domain_workflow_run` **委托**同一套 `build_hr_recruitment_dag`（不复制业务逻辑）；详见 [ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md) |
 
 **关系**：飞书「我要招聘」多由 Skill 驱动工具；**无人值守打招呼/收网**由调度器走 **DAG**（非直接散调 atom），以便信号与进度统一。
@@ -60,7 +60,7 @@
 
 **飞书 / Lark**：HR 可发 **`python工程师 杭州 15-25k`**（无下划线）；会规范为带 **` _ `** 与 **`K`** 的选岗串。`get_jd_select` **优先**用 `jd.json` 里的 **`job_title` + `job_location` + `salary_min/max`** 拼行（与 Boss 在招列表一致，如 **`Python 工程师 _ 杭州 15-25K`**），避免仅依赖 `jd_select` 小写/无下划线与页面不一致。
 
-HTTP / MCP 注册：`l3_node/http_server.py`、`l3_node/skills/mcp_registry.py`、`plugin.json`。
+HTTP / MCP 注册：`l3_node/http_server.py`、`l3_node/primitives/mcp/registry.py`、`plugin.json`。
 
 ---
 

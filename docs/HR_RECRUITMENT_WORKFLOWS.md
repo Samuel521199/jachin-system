@@ -106,7 +106,7 @@
 - HR 可读封装：`l3_node/hr_tool_reply_zh.py`  
 - 飞书短指令：`l3_node/lark_workflow_command_interceptor.py`（再抓 N 份、停止收网、恢复挂起等）  
 - **飞书指令汇总（表格式）：** `docs/HR_LARK_COMMANDS.md`  
-- MCP 注册：`l3_node/skills/mcp_registry.py`（`stop_automated_recruitment`、`list_hr_scheduler_suspended_jobs`、`resume_hr_job_scheduler`）
+- MCP 注册：`l3_node/primitives/mcp/registry.py`（`stop_automated_recruitment`、`list_hr_scheduler_suspended_jobs`、`resume_hr_job_scheduler`）
 
 ---
 

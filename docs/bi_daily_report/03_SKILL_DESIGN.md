@@ -19,7 +19,7 @@
 
 ## 二、阶段一：通用 MCP 工具
 
-**存放路径**: `l3_node/mcp_tools/bi/`  
+**存放路径**: `l3_node/primitives/mcp/mcp_tools/bi/`  
 **注册前缀**: `mcp:`  
 **目录规范**: 详见 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md)
 
@@ -104,7 +104,7 @@
 
 ## 三、阶段二：业务 Skill
 
-**存放路径**: `l3_node/skills/bi/bi_daily_report/main_skill.py`  
+**存放路径**: `l3_node/primitives/skills/bi/bi_daily_report/main_skill.py`  
 **定位**: 统筹全局的「技能大脑」，编排 MCP 调用与 LLM 洞察  
 **目录规范**: 详见 [08_BI_MCP_AND_SKILL_LAYOUT.md](./08_BI_MCP_AND_SKILL_LAYOUT.md)
 
@@ -245,7 +245,7 @@ scheduler.add_job(
 
 ## 五、MCP 工具注册
 
-在 `l3_node/skills/mcp_registry.py` 的 `L3_LOCAL_MCP_TOOLS` 中**追加**（不修改现有 HR 工具）：
+在 `l3_node/primitives/mcp/registry.py` 的 `L3_LOCAL_MCP_TOOLS` 中**追加**（不修改现有 HR 工具）：
 
 ```python
 {
@@ -268,7 +268,7 @@ scheduler.add_job(
 },
 ```
 
-**路由**: 在 `mcp_registry` 的 `invoke_mcp_tool` 分支中，根据 `tool_id` 分发到 `l3_node/mcp_tools/bi/` 下对应模块。
+**路由**: 在 `mcp_registry` 的 `invoke_mcp_tool` 分支中，根据 `tool_id` 分发到 `l3_node/primitives/mcp/mcp_tools/bi/` 下对应模块。
 
 ---
 

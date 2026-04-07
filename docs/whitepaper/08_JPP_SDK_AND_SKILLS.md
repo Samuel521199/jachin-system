@@ -1,7 +1,8 @@
-# 08 — JPP 与技能生态 (三轨道技能体系)
+# 08 — JPP 与技能生态（四大原语）
 
 **文档类型**: 白皮书 · 技能生态规范  
-**版本**: v8.0 (The Singularity OS)
+**版本**: v8.0 (The Singularity OS)  
+**术语 SSOT**：[Jachin 视角的「四大原语」终极架构规范.md](../Jachin%20视角的「四大原语」终极架构规范.md)（**已废弃**「轨道 A/B/C」命名）
 
 ---
 
@@ -9,25 +10,26 @@
 
 **“Write Once, Run Everywhere, Earn Crypto.”**
 
-Jachin Nexus v8.0 采用**三轨道技能体系**，彻底打破“万物皆需编译 Wasm”的傲慢设定：
+Jachin Nexus v8.0 以 **四大原语** 组织执行面：**MCP**、**Skills**、**Tools**（含 `core:*` 与 `jpp:*` Wasm）、**Agent Tasks**（多轮/后台/编排）。本文侧重 **Tools · jpp** 与生态；MCP / Skills 见专文。
 
-| 轨道 | 形态 | 信任级别 | 用途 |
+| 原语 | 形态 | 信任级别 | 用途 |
 |------|------|----------|------|
-| **A** | MCP (Model Context Protocol) | 高信任 | 开箱工具、系统控制 |
-| **B** | SKILL.md 声明式技能 | 用户可控 | skills_repo/ 热加载 |
-| **C** | JPP Wasm 沙箱 | 零信任 | 商城第三方付费插件 |
+| **MCP** | Model Context Protocol 外挂 | 高信任（本机托管） | 开箱工具、系统控制 |
+| **Skills** | SKILL.md 声明式 | 用户可控 | `skills_repo/` 热加载 |
+| **Tools · jpp** | JPP Wasm 沙箱 | 零信任 | 商城第三方付费插件 |
+| **Agent Tasks** | delegate / 后台 / coordinate | 独立预算与生命周期 | 多轮子运行时 |
 
 ---
 
-## 二、 轨道 A：MCP 宿主
+## 二、 MCP（原语）
 
 * **划时代意义**: 瞬间继承全球最大的 AI 工具生态。
-* **实现**: Layer 2 `core/mcp_client.py` 连接 MCP 服务器，发现工具，供 ReAct 调用。
+* **实现**: L2 `core/mcp_client.py` / L3 `mcp_registry` 连接 MCP 服务器，发现 `mcp:*` 工具。
 * **参考**: `docs/MCP_SPEC.md`
 
 ---
 
-## 三、 轨道 B：SKILL.md 声明式技能
+## 三、 Skills（原语）：SKILL.md 声明式技能
 
 * **划时代意义**: 极低门槛。用户只需在 `skills_repo/` 丢一个 Markdown 文件。
 * **格式**: YAML Frontmatter (name, description, persona, mcp_tools) + 自然语言指令正文。
@@ -36,7 +38,7 @@ Jachin Nexus v8.0 采用**三轨道技能体系**，彻底打破“万物皆需�
 
 ---
 
-## 四、 轨道 C：JPP 插件协议 (Jachin Plugin Protocol)
+## 四、 Tools · jpp：JPP 插件协议 (Jachin Plugin Protocol)
 
 **专供从“神经元商城”下载的、不信任的第三方付费插件使用**，确保商业生态的安全变现。
 
@@ -84,6 +86,7 @@ Jachin Nexus v8.0 采用**三轨道技能体系**，彻底打破“万物皆需�
 
 ## 五、 v8.0 废弃声明
 
-1. **❌ 废弃“万物皆 Wasm”**: 轨道 A/B 与轨道 C 并存。
+1. **❌ 废弃“万物皆 Wasm”**: **MCP + Skills + Tools(jpp)** 并存。
 2. **❌ 废弃原生脚本裸跑**: 不受信任的第三方代码仍必须通过 Wasm 沙箱；MCP 与 SKILL.md 为用户可控的高信任扩展。
 3. **❌ 废弃 Docker 技能容器**: Wasm 极速冷启动、极低内存占用，完美契合边缘端。
+4. **❌ 废弃「轨道 A/B/C」文案**: 统一使用 **四大原语**（见仓库 SSOT 文档）。

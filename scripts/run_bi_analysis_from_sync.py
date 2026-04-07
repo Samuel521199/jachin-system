@@ -45,13 +45,13 @@ if sys.platform == "win32":
 
 def _run_analysis_flow() -> int:
     """从多维表格同步后开始：仪表盘分析 + 推送卡片 + 战略分析 + 推送 Lark + 邮件"""
-    from l3_node.skills.bi.bi_daily_report.main_skill import (
+    from l3_node.primitives.skills.bi.bi_daily_report.main_skill import (
         _bi_merge_dotenv_for_skill,
         _bi_reconcile_llm_engine_ref_with_agent,
         _load_config,
         _DASHBOARD_DISPLAY_URLS,
     )
-    from l3_node.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_output_dir, ensure_bi_dirs
 
     cfg = _load_config(None)
     ensure_bi_dirs()
@@ -96,7 +96,7 @@ def _run_analysis_flow() -> int:
                 if not name:
                     continue
                 try:
-                    from l3_node.skills.bi.bi_daily_report.dashboard_automation import (
+                    from l3_node.primitives.skills.bi.bi_daily_report.dashboard_automation import (
                         generate_dashboard_analysis_async,
                         _save_analysis_to_file,
                     )
@@ -134,7 +134,7 @@ def _run_analysis_flow() -> int:
                         os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
                     if lark_cfg.get("lark_use_feishu"):
                         os.environ["LARK_USE_FEISHU"] = "1"
-                    from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+                    from l3_node.primitives.mcp.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
                     sent_ok = 0
                     for _name, _text in dashboard_analyses:
                         _url = _DASHBOARD_DISPLAY_URLS.get(_name) or url_by_name.get(_name, "")
@@ -157,9 +157,9 @@ def _run_analysis_flow() -> int:
             print("\n[Step 3.5] 生成战略深度分析...")
             try:
                 from l3_node.paths import get_app_root
-                from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
-                from l3_node.skills.bi.bi_daily_report.main_skill import _merge_strategic_report_config_for_llm
-                from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
+                from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_raw_dir
+                from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _merge_strategic_report_config_for_llm
+                from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
 
                 raw_dir_collect = get_bi_raw_dir()
                 cfg_strategic = _merge_strategic_report_config_for_llm(
@@ -199,7 +199,7 @@ def _run_analysis_flow() -> int:
                             os.environ.setdefault("LARK_APP_SECRET", str(lark_cfg.get("app_secret", "")).strip())
                         if lark_cfg.get("lark_use_feishu"):
                             os.environ["LARK_USE_FEISHU"] = "1"
-                        from l3_node.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+                        from l3_node.primitives.mcp.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
                         r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 战略深度分析战报", chat_id=chat_id or None)
                         if r.get("status") == "success":
                             result["strategic_report_sent"] = True
@@ -263,7 +263,7 @@ def _run_analysis_flow() -> int:
                 dashboards = da_cfg.get("dashboards") or []
                 analyses_by_name = {n: t for n, t in dashboard_analyses}
                 try:
-                    from l3_node.skills.bi.bi_daily_report.dashboard_automation import _DASHBOARD_CHARTS
+                    from l3_node.primitives.skills.bi.bi_daily_report.dashboard_automation import _DASHBOARD_CHARTS
                 except ImportError:
                     _DASHBOARD_CHARTS = {}
                 dashboard_section_parts = []
@@ -299,7 +299,7 @@ def _run_analysis_flow() -> int:
 <p style="color:#999; font-size:12px;">— Jachin OS BI 战报系统 · 分析阶段</p>
 </body></html>"""
                 action_input = json.dumps({"smtp_config": smtp_config, "to_addrs": to_addrs, "subject": subject, "body": body, "attachment_paths": []}, ensure_ascii=False)
-                from l3_node.skills.mcp_registry import get_mcp_registry
+                from l3_node.primitives.mcp.registry import get_mcp_registry
                 r_str = await get_mcp_registry().invoke("mcp:atom_email_sender", action_input, timeout=60.0)
                 try:
                     r = json.loads(r_str) if isinstance(r_str, str) and r_str.strip().startswith("{") else {}

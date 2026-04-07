@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HR 招聘插件 - 一键安装脚本
-将轨道 A、B、C 及 HR 规则一次性部署到本地 / jachin-system。
+将 **四大原语** 相关组件（MCP、Skills/SKILL.md、Tools·jpp/Wasm）及 HR 规则一次性部署到本地 / jachin-system。
 当 Jachin 插件商店支持依赖自动安装时，用户下载 Wasm 主体即可自动拉取本脚本部署的依赖；
 在此之前，运行本脚本实现「模拟自动安装」效果。
 """
@@ -36,8 +36,8 @@ def step_hr_rules() -> bool:
     return True
 
 
-def step_track_b(jachin_path: Path | None) -> bool:
-    """2. 轨道 B SKILL → skills_repo/"""
+def step_skills_md(jachin_path: Path | None) -> bool:
+    """2. Skills：SKILL.md → skills_repo/"""
     ok = False
     for skill_name, rel_path in [
         ("hr-recruiter", "4-track-b-skill/SKILL.md"),
@@ -60,8 +60,8 @@ def step_track_b(jachin_path: Path | None) -> bool:
     return ok
 
 
-def step_track_c(jachin_path: Path | None) -> bool:
-    """3. 轨道 C Wasm → 编译并放入 skills_repo 或 plugins/"""
+def step_tools_jpp_wasm(jachin_path: Path | None) -> bool:
+    """3. Tools(jpp)：Wasm → 编译并放入 skills_repo 或 plugins/"""
     wasm_dir = ROOT / "3-track-c-swarm-wasm"
     plugin_json = wasm_dir / "plugin.json"
     dist_wasm = wasm_dir / "dist" / "plugin.wasm"
@@ -98,8 +98,8 @@ def step_track_c(jachin_path: Path | None) -> bool:
     return False
 
 
-def step_track_a(jachin_path: Path | None) -> bool:
-    """4. 轨道 A MCP → 注册到 ~/.jachin/mcp_servers.json（兼容 Jachin v8 mcp_servers 格式）"""
+def step_mcp_register(jachin_path: Path | None) -> bool:
+    """4. MCP：注册到 ~/.jachin/mcp_servers.json（兼容 Jachin v8 mcp_servers 格式）"""
     server_path = ROOT / "com.jachin.hr.recruitment" / "server.py"
     if not server_path.exists():
         print("[跳过] com.jachin.hr.recruitment/server.py 不存在")
@@ -153,7 +153,7 @@ def step_track_a(jachin_path: Path | None) -> bool:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="HR 招聘插件 - 一键安装（轨道 A/B/C + HR 规则）")
+    ap = argparse.ArgumentParser(description="HR 招聘插件 - 一键安装（四大原语：MCP + Skills + Tools·jpp + HR 规则）")
     ap.add_argument("--jachin", "-j", default="", help="jachin-system 项目根目录，不填则仅部署到 ~/.jachin/")
     ap.add_argument("--skip-wasm", action="store_true", help="跳过 Wasm 编译与复制")
     ap.add_argument("--skip-mcp", action="store_true", help="跳过 MCP 注册")
@@ -164,11 +164,11 @@ def main():
         sys.exit(1)
     print("=== HR 招聘插件 一键安装 ===\n")
     step_hr_rules()
-    step_track_b(jachin_path)
+    step_skills_md(jachin_path)
     if not args.skip_wasm:
-        step_track_c(jachin_path)
+        step_tools_jpp_wasm(jachin_path)
     if not args.skip_mcp:
-        step_track_a(jachin_path)
+        step_mcp_register(jachin_path)
     print("\n安装完成。若需 PII 脱敏，请将 5-privacy-hook/hook_desensitize.py 注册到 Jachin 的 Hook Pipeline。")
 
 

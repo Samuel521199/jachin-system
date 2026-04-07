@@ -1,10 +1,14 @@
 ---
 description: L3 能力总目录 — 新 MCP/Skill 必须登记；打包侧车须随 exe 分发 md
-globs: l3_node/capability_catalog.py, l3_node/agent_core.py, docs/L3_CAPABILITY_CATALOG.md, docs/capability_domains/**/*.md, scripts/build_l3_sidecar.py, l3_node/skills/mcp_registry.py, skills_repo/**/plugin.json
+globs: l3_node/capability_catalog.py, l3_node/agent_core.py, docs/L3_CAPABILITY_CATALOG.md, docs/capability_domains/**/*.md, scripts/build_l3_sidecar.py, l3_node/primitives/mcp/registry.py, skills_repo/**/plugin.json
 alwaysApply: false
 ---
 
 # L3 能力总目录（Capability Catalog）
+
+## 术语
+
+能力总目录注入属 **Skills（知识层）**；工具 id 属 **Tools/MCP**。四大原语 SSOT：`docs/Jachin 视角的「四大原语」终极架构规范.md`、**072-jachin-four-primitives.mdc**。
 
 ## 单一事实来源
 
@@ -28,7 +32,7 @@ Agent 通过 `build_capability_prompt_inject_for_tools()` 将 **CORE + 命中域
 2. **若仅扩展现有域工具**  
    - 更新该域的 `capability_domains/*.md` 中的工具表；若 markers 变化，同步改 `DOMAIN_REGISTRY.tool_markers`。
 
-3. **L3 内置 MCP 列表**（如 `l3_node/skills/mcp_registry.py` 本地工具）变更时  
+3. **L3 内置 MCP 列表**（如 `l3_node/primitives/mcp/registry.py` 本地工具）变更时  
    - 若该工具属于某域，更新对应域 md；必要时为新域建文件并注册。
 
 4. **不要**把具体业务 SOP 写进总目录正文；流程仍放在各包 `SKILL.md`（见 `docs/SKILL_MD_SPEC.md`）。

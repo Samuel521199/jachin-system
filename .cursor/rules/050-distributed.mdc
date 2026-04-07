@@ -1,5 +1,5 @@
 ---
-description: v8.0 Layer 2 通信、Jachin Mesh、双轨制、cron_thinker、持久化感官总线、全链路 runId、流式神经
+description: v8.0 Layer 2 通信、Jachin Mesh、四大原语执行面、cron_thinker、持久化感官总线、全链路 runId、流式神经
 globs: core/transport/**, core/system/**, core/daemon.py, core/agent_loop.py, core/cron_thinker.py
 ---
 # Layer 2 Communication Rules (V2)
@@ -14,22 +14,22 @@ globs: core/transport/**, core/system/**, core/daemon.py, core/agent_loop.py, co
 
 ---
 
-## 双轨制插件调用
+## 四大原语插件调用（L2 / L3）
 
-### 轨道 A: MCP
-- **L2 侧载入口:** `core/mcp_client.py`（L2 宿主机 stdio MCP）。
-- **L3 本机:** `l3_node/skills/mcp_registry.py`；跨节点目标见 `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`。
-- **协议:** Model Context Protocol 标准。
+术语 SSOT：`docs/Jachin 视角的「四大原语」终极架构规范.md`、**072**、**045-four-primitives-execution.mdc**。
 
-### 轨道 B: SKILL.md
-- **执行入口:** `core/runtime/skill_loader.py` — 热加载 `skills_repo/**/SKILL.md`。
-- **适用:** 用户可控，零编译。
+### MCP
+- **L2 侧载:** `core/mcp_client.py`（stdio MCP）。
+- **L3 本机:** `l3_node/primitives/mcp/registry.py`；跨节点见 `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`。
 
-### 轨道 C: JPP / WASM
-- **执行入口:** `core/wasm_runner.py` — `run_plugin(wasm_path, fuel_limit, stdin_json)`。
-- **协议:** WASI stdin/stdout JSON，详见 `docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`。
-- **沙箱:** wasmtime，燃料熔断防死循环。
-- **适用:** 商城第三方付费插件，零信任。
+### Skills（SKILL.md）
+- **入口:** `core/runtime/skill_loader.py` — 热加载 `skills_repo/**/SKILL.md`。
+
+### Tools（jpp / Wasm）
+- **入口:** `core/wasm_runner.py`；协议见 `docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`；沙箱 wasmtime + 燃料熔断。
+
+### Agent Tasks
+- 多轮 / 后台 / L2 编排：`l3_node/agent_core.py`（非单次 MCP 调用同一层级）。
 
 ---
 
@@ -38,4 +38,4 @@ globs: core/transport/**, core/system/**, core/daemon.py, core/agent_loop.py, co
 若使用 Jachin Link (gRPC)：
 - `InvokePlugin(PluginRequest) -> PluginResponse`
 - 路由基于 `plugin_id`，payload 为业务数据。
-- v8.0 主链路为 Jachin Mesh (WebSocket) + 双轨制，gRPC 为可选扩展。
+- v8.0 主链路为 Jachin Mesh (WebSocket) + **四大原语执行面**，gRPC 为可选扩展。

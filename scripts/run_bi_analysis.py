@@ -39,8 +39,8 @@ def _run_bi_flow() -> int:
     """执行 BI 完整流程"""
     from datetime import datetime, timedelta
 
-    from l3_node.mcp_tools.bi.paths import get_bi_output_dir, get_bi_raw_dir
-    from l3_node.skills.bi.bi_daily_report.main_skill import _load_config, run_bi_daily_report
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_output_dir, get_bi_raw_dir
+    from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _load_config, run_bi_daily_report
 
     cfg = _load_config(None)
     storage = cfg.get("storage") or {}

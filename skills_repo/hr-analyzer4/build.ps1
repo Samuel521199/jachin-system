@@ -2,7 +2,7 @@
 # 用法: .\build.ps1
 # 使用 cargo + wasm32-unknown-unknown（无需 wasm-pack）
 # 输出:
-#   - l3_node/skills/wasm_plugins/hr-analyzer4/main.wasm（L3 运行时）
+#   - l3_node/primitives/tools/wasm_bundled/hr-analyzer4/main.wasm（L3 运行时）
 #   - skills_repo/hr-analyzer4/main.wasm（jachin pack 用）
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +15,7 @@ if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location
 
 $src = Join-Path $PSScriptRoot "target\wasm32-unknown-unknown\release\hr_analyzer4.wasm"
-$dest = Join-Path $projRoot "l3_node\skills\wasm_plugins\hr-analyzer4\main.wasm"
+$dest = Join-Path $projRoot "l3_node\primitives\tools\wasm_bundled\hr-analyzer4\main.wasm"
 $destDir = Split-Path $dest -Parent
 if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 Copy-Item $src $dest -Force

@@ -9,7 +9,8 @@
 
 | 文档 | 说明 |
 |------|------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范** — 一店一库、双轨制、三层架构、关键组件 |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范** — 一店一库、四大原语、三层架构、关键组件 |
+| [Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md) | **术语 SSOT** — Tools / MCP / Skills / Agent Tasks 定义与代码落点（索引：[FOUR_PRIMITIVES.md](./FOUR_PRIMITIVES.md)） |
 | [FILE_STRUCTURE.md](./FILE_STRUCTURE.md) | 项目文件结构 |
 | [CLOUD_EDGE_AI_OS_IMPLEMENTATION_ANALYSIS.md](./CLOUD_EDGE_AI_OS_IMPLEMENTATION_ANALYSIS.md) | 实现度分析 — 三大场景、缺口与风险 |
 
@@ -49,6 +50,14 @@
 | 文档 | 说明 |
 |------|------|
 | [JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md](./JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md) | **OpenClaw 对比** — 记忆、任务执行、路线图 |
+| [JACHIN_VS_CLAUDE_CODE_ARCHITECTURE.md](./JACHIN_VS_CLAUDE_CODE_ARCHITECTURE.md) | **Claude Code 对照** — 上下文/记忆/Agents/MCP；与现行实现对齐 |
+| [前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md) | **L3 单一事实来源**：前台超时、后台队列、`submit/check`、prefetch、规划链、WS 事件 |
+| [L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md](./L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md) | **L3 执行面深度说明**：主/子/后台 Agent、消息与 metadata、多路记忆、Prompt 前后缀与门禁 |
+| [JACHIN_SAFETY_LOCK.md](./JACHIN_SAFETY_LOCK.md) | **安全锁**：`JACHIN_SAFETY_LOCK.md` 与 MEMORY 分离、prompt 高优先级注入、`core:safety_lock_append` 受控追加 |
+| [JACHIN_SAFETY_LOCK_LEARNING.md](./JACHIN_SAFETY_LOCK_LEARNING.md) | **安全锁学习逻辑**：架构图、写入决策流、与对话时序、与记忆优先级对照 |
+| [L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md](./L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md) | **薄弱点与治理路线**：并发/状态、Agent 嵌套与观测、上下文缓存与去重、记忆多源、Prompt 耦合 |
+| [L3_AMBIGUOUS_INTENT_ARCHITECTURE.md](./L3_AMBIGUOUS_INTENT_ARCHITECTURE.md) | **模糊/不标准用户指令**：精确→模糊澄清→澄清态门控→网关 OOD/语义闸→ReAct 分工与扩展清单 |
+| [L3_FUZZY_INTENT_CLARIFICATION.md](./L3_FUZZY_INTENT_CLARIFICATION.md) | **L3 模糊遥控澄清框架**：`ClarificationRule`、HR 插件、冷却与数据流 |
 | [INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md) | **P0 智能化落地** — L3 本地记忆、pre-reset flush、梦境阈值、task_plan 三文件 |
 | [HR_RECRUITMENT.md](./HR_RECRUITMENT.md) | **HR 招聘当前架构** — MCP 包、DAG、调度、数据路径（单一事实来源） |
 

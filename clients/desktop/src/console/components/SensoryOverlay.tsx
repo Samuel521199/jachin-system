@@ -13,13 +13,15 @@ import { useSensoryWebSocket } from "../../hooks/useSensoryWebSocket";
 import { HandoffToast } from "../../components/HandoffToast";
 import { SwarmRadar } from "../../components/SwarmRadar";
 
+export type SensoryOverlayBundle = ReturnType<typeof useSensoryWebSocket>;
+
 export interface SensoryOverlayProps {
-  /** 可选：传入外部 hook 结果以复用连接（如 Chat 窗口） */
-  sensory?: ReturnType<typeof useSensoryWebSocket>;
+  /** 传入则复用同一 WebSocket（如 MIND STREAM）；不传则本组件自建连接（控制台） */
+  sensory?: SensoryOverlayBundle;
 }
 
-export function SensoryOverlay({ sensory: sensoryProp }: SensoryOverlayProps = {}) {
-  const internal = useSensoryWebSocket();
+/** 仅渲染：避免与 Chat 共用 hook 时再开第二条 /sensory 连接 */
+function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
   const {
     connected,
     lastPayload,
@@ -27,7 +29,7 @@ export function SensoryOverlay({ sensory: sensoryProp }: SensoryOverlayProps = {
     resolveHitl,
     handoffEvent,
     swarmEvent,
-  } = sensoryProp ?? internal;
+  } = sensory;
 
   const isThinking = connected && lastPayload?.step_type === "thought";
   const isShellExec =
@@ -180,4 +182,16 @@ export function SensoryOverlay({ sensory: sensoryProp }: SensoryOverlayProps = {
       </AnimatePresence>
     </>
   );
+}
+
+function SensoryOverlaySelfConnected() {
+  const sensory = useSensoryWebSocket();
+  return <SensoryOverlayView sensory={sensory} />;
+}
+
+export function SensoryOverlay({ sensory }: SensoryOverlayProps = {}) {
+  if (sensory) {
+    return <SensoryOverlayView sensory={sensory} />;
+  }
+  return <SensoryOverlaySelfConnected />;
 }

@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -49,6 +50,7 @@ _NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
 # 阿里百炼 / DashScope：与 DASHSCOPE_API_KEY 共用；推理用 plus、编码用 coder-plus，降级可用 flash
 DASHSCOPE_REASONING_MODEL = "dashscope/qwen3.5-plus"
 DASHSCOPE_CODER_MODEL = "dashscope/qwen3-coder-plus"
+DASHSCOPE_COMPLEX_MODEL = "dashscope/qwen-max"
 DASHSCOPE_ECON_FALLBACK_MODEL = "dashscope/qwen3.5-flash-2026-02-23"
 
 _IGNITION_EMITTED = False
@@ -248,6 +250,130 @@ def get_coder_model_litellm_id(config: dict[str, Any] | None = None) -> str:
     return DASHSCOPE_CODER_MODEL
 
 
+def get_complex_model_litellm_id(config: dict[str, Any] | None = None) -> str:
+    """
+    复杂推理用模型（长链路、子 Agent、大上下文等）；与推理/编码共用百炼 Key。
+    优先级：nexus llm.complex_model_name → 环境变量 LLM_COMPLEX_MODEL → 默认 qwen-max。
+    """
+    cfg = config or _load_nexus_config()
+    llm_cfg = cfg.get("llm") or {}
+    if isinstance(llm_cfg, dict):
+        for key in ("complex_model_name", "complex_model", "heavy_model_name"):
+            name = llm_cfg.get(key)
+            if name and str(name).strip():
+                return _normalize_model_for_litellm(str(name).strip())
+    env_m = (os.environ.get("LLM_COMPLEX_MODEL") or "").strip()
+    if env_m:
+        return _normalize_model_for_litellm(env_m)
+    try:
+        from core.config import settings
+
+        sc = (getattr(settings, "LLM_COMPLEX_MODEL", None) or "").strip()
+        if sc:
+            return _normalize_model_for_litellm(sc)
+    except ImportError:
+        pass
+    return DASHSCOPE_COMPLEX_MODEL
+
+
+def l3_react_should_use_complex_model(
+    *,
+    delegate_depth: int,
+    react_iteration: int,
+    full_messages: list[dict[str, Any]],
+    tools_count: int,
+    force_complex: bool = False,
+) -> bool:
+    """
+    L3 ReAct 主循环：是否改用 LLM_COMPLEX_MODEL（qwen-max）。
+    可通过 JACHIN_LLM_COMPLEX_DISABLE=1 关闭；阈值见环境变量注释。
+    """
+    if os.environ.get("JACHIN_LLM_COMPLEX_DISABLE", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    if force_complex:
+        return True
+    if delegate_depth and delegate_depth > 0:
+        return True
+    try:
+        min_iter = int(os.environ.get("JACHIN_LLM_COMPLEX_MIN_REACT_ITER", "8"))
+    except ValueError:
+        min_iter = 8
+    if react_iteration >= min_iter:
+        return True
+    try:
+        # L3 常合并 20+ MCP；28 会导致几乎每轮强制 qwen-max，压过主模型与「编程首轮→coder」
+        min_tools = int(os.environ.get("JACHIN_LLM_COMPLEX_MIN_TOOLS", "56"))
+    except ValueError:
+        min_tools = 56
+    if tools_count >= min_tools:
+        return True
+    try:
+        min_user_chars = int(os.environ.get("JACHIN_LLM_COMPLEX_MIN_USER_CHARS", "2400"))
+    except ValueError:
+        min_user_chars = 2400
+    for m in reversed(full_messages):
+        if (m.get("role") or "").strip() != "user":
+            continue
+        c = m.get("content") or ""
+        if not isinstance(c, str):
+            c = str(c)
+        if len(c) >= min_user_chars:
+            return True
+        break
+    try:
+        min_msg_count = int(os.environ.get("JACHIN_LLM_COMPLEX_MIN_MESSAGES", "28"))
+    except ValueError:
+        min_msg_count = 28
+    if len(full_messages) >= min_msg_count:
+        return True
+    return False
+
+
+_CODING_INTENT_USER_RE = re.compile(
+    r"(?:写|编写|新建|创建).{0,52}(?:脚本|代码|程序|\.py\b|python|typescript|ts\b|javascript|js\b|golang|rust\b)"
+    r"|\.py\b|python\s*脚本|(?:shell|bash)\s*脚本|core:fs_write|apply_patch|"
+    r"(?:工作区|workspace).{0,44}(?:脚本|文件|文件夹|目录|路径)"
+    r"|实现.{0,28}(?:函数|类|模块|接口|功能|程序)"
+    r"|(?:打印|监控|获取).{0,24}(?:CPU|内存|占用率|系统)",
+    re.I | re.DOTALL,
+)
+
+
+def _last_substantive_user_snippet(full_messages: list[dict[str, Any]]) -> str:
+    """跳过 Observation 追问问句，取最近一条像「用户原任务」的 user 文本。"""
+    for m in reversed(full_messages or []):
+        if (m.get("role") or "").strip() != "user":
+            continue
+        c = m.get("content") or ""
+        if not isinstance(c, str):
+            c = str(c)
+        c = c.strip()
+        if len(c) < 14:
+            continue
+        low = c[:120].lower()
+        if low.startswith("observation:") or low.startswith("请根据观察") or low.startswith("这是最后一轮"):
+            continue
+        return c
+    return ""
+
+
+def should_prime_l3_react_coder_mode(
+    *,
+    react_iteration: int,
+    full_messages: list[dict[str, Any]],
+) -> bool:
+    """
+    ReAct 首轮（及尚未写过工作区时）：用户话明显是编程/脚本/监控类任务时，优先走编码模型。
+    与「fs_write/apply_patch 之后才切 coder」互补，避免 tools 数量误触 complex 后整轮用 qwen-max 写代码。
+    """
+    if int(react_iteration or 0) != 0:
+        return False
+    snip = _last_substantive_user_snippet(full_messages)
+    if len(snip) < 14:
+        return False
+    return bool(_CODING_INTENT_USER_RE.search(snip))
+
+
 def _brief_llm_context(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -387,7 +513,12 @@ class LiteLLMEngine:
         """
         call_purpose = _pop_call_purpose(kwargs)
         _inject_api_keys()
-        max_attempts, fallback_models, timeout = _get_retry_config()
+        _nexus_cfg = _load_nexus_config()
+        max_attempts, fallback_models, timeout = _get_retry_config(_nexus_cfg)
+        _llm_cfg = (_nexus_cfg.get("llm") or {}) if isinstance(_nexus_cfg.get("llm"), dict) else {}
+        if str(call_purpose).startswith("compaction_"):
+            _cts = _llm_cfg.get("compaction_timeout_seconds")
+            timeout = float(_cts) if _cts is not None else max(float(timeout), 180.0)
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 
@@ -425,8 +556,9 @@ class LiteLLMEngine:
                 if tools:
                     kwargs_chat["tools"] = tools
 
-                # 硬上限：个别环境下 litellm/httpx 可能长时间不返回，避免只能 Ctrl+C
-                _cap = float(timeout) + 45.0
+                # 硬上限：litellm 内部可能对 /chat/completions 重试，compaction 类需更大 slack
+                _slack = 90.0 if str(call_purpose).startswith("compaction_") else 45.0
+                _cap = float(timeout) + _slack
                 try:
                     response = await asyncio.wait_for(litellm.acompletion(**kwargs_chat), timeout=_cap)
                 except asyncio.TimeoutError as te:
@@ -532,16 +664,25 @@ class LiteLLMEngine:
                     "timeout": timeout,
                 }
 
+                from core.litellm_stream_hints import merge_dashscope_stream_incremental_hint
+                from core.stream_text_delta import StreamDeltaNormalizer
+
+                merge_dashscope_stream_incremental_hint(model, kwargs_chat)
+                # 与 l3_node.llm_client 一致：默认识别增量/累积帧，避免 UI 复读。
                 response = await litellm.acompletion(**kwargs_chat)
+                _norm = StreamDeltaNormalizer()
                 async for chunk in response:
                     choice = chunk.choices[0] if chunk.choices else None
                     if not choice or not hasattr(choice, "delta"):
                         continue
                     delta = getattr(choice.delta, "content", None) or ""
-                    if delta:
-                        full_content.append(delta)
+                    if not delta:
+                        continue
+                    piece = _norm.feed(delta)
+                    if piece:
+                        full_content.append(piece)
                         if chunk_callback:
-                            await chunk_callback(delta)
+                            await chunk_callback(piece)
                 out = "".join(full_content).strip()
                 logger.info(
                     "[LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",

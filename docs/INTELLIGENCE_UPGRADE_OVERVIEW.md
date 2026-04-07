@@ -72,6 +72,16 @@
 | **DAG 节点** | `HrRecruitmentPlanInitNode` 写宏图 + Session 头；`HarvestLoopNode` 内打招呼/收网成功行与 `STOP_HARVEST`、OS 停止、tick 暂停均落盘 |
 | **单一事实文档** | [HR_RECRUITMENT.md](./HR_RECRUITMENT.md) |
 
+### 1.6 L3 前台 / 后台与上下文增强（2026-04）
+
+| 项 | 说明 |
+|----|------|
+| **规格** | [前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md) |
+| **后台队列** | `core:submit_background_task`、`core:check_background_task`；`background_task_service` + `__main__.py` 启动 |
+| **前台超时** | `foreground_tool_policy` + `_invoke_react_tool`（默认 5s，豁免见规格） |
+| **预取** | `context_prefetch`：Observation 后 workspace `*.md` 摘录 + 去重 |
+| **规划链** | `intelligence_b.force_universal_planning_chain`；与 `planned`/`strict` 共用门禁逻辑 |
+
 ---
 
 ## 二、P1 / P1+ 已实现（2026-03）

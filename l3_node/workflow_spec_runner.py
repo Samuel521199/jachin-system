@@ -274,7 +274,7 @@ def _execute_one_step(
             "ok": False,
         }
     try:
-        from l3_node.skills.loader import run_tool
+        from l3_node.primitives.tools.loader import run_tool
 
         out = run_tool(tool_id, inp, allowed_skills=allowed_skills)
         return {

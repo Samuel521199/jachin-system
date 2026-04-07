@@ -1,33 +1,36 @@
 ---
-description: v8.0 三轨道技能体系、JPP、MCP、SKILL.md
+description: v8.0 插件生态 — 四大原语（MCP / Skills / Tools / Agent Tasks）、JPP、商城
 globs: core/system/**, core/wasm_runner.py, core/mcp_client.py, core/runtime/skill_loader.py, jachin-plugin-sdk-python/**, jachin-plugin-sdk/**
 ---
-# Jachin Skill Ecosystem Rules (v8.0)
+# Jachin 插件生态规则（v8.0 · 四大原语）
 
-## 1. 三轨道技能体系
+**SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`、**072-jachin-four-primitives.mdc**、本仓 **045-four-primitives-execution.mdc**。
 
-### 轨道 A: MCP (Model Context Protocol)
-- **格式:** 连接 MCP 服务器，发现并注册工具。
-- **执行:** **L3 默认** `l3_node/skills/mcp_registry.py`；**L2 侧载** `core/mcp_client.py`。跨节点 **目标** `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`（Pull + Task Token）。
-- **适用:** 高信任本地环境；L2 侧载为兼容网关场景。
+## 1. 四类能力（工程侧）
+
+### MCP（原语）
+- **格式:** 连接 MCP 服务器，发现并注册 `mcp:*` 工具。
+- **执行:** **L3 默认** `l3_node/primitives/mcp/registry.py`；**L2 侧载** `core/mcp_client.py`。跨节点见 `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`。
 - **参考:** `docs/MCP_SPEC.md`、`docs/MCP_EXECUTION_MODEL.md`
 
-### 轨道 B: SKILL.md 声明式技能
+### Skills（原语）
 - **格式:** `skills_repo/**/SKILL.md`，YAML Frontmatter + 自然语言指令。
 - **执行:** `core/runtime/skill_loader.py` 热加载，按需注入 Prompt。
-- **适用:** 用户可控，零编译。
 - **参考:** `docs/SKILL_MD_SPEC.md`
 
-### 轨道 C: JPP (Jachin Plugin Protocol)
-- **格式:** 编译为 `.wasm`，配合 `plugin.json` 声明。
-- **Required:** `plugin.json` — 元数据、版税、Schema；`.wasm` — 由 py2wasm 或 Rust 编译。
-- **执行:** `core/wasm_runner.py` 通过 wasmtime 运行，支持 stdin/stdout JSON 协议。
-- **适用:** 商城第三方付费插件，零信任沙箱。
+### Tools — jpp / Wasm（原语）
+- **格式:** 编译为 `.wasm`，`plugin.json` 声明。
+- **Required:** `plugin.json` — 元数据、版税、Schema；`.wasm` — Rust / py2wasm 等。
+- **执行:** `core/wasm_runner.py` / `l3_node/primitives/tools/loader.py` 注册为 `jpp:*`。
 - **参考:** `docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`
+
+### Agent Tasks（原语）
+- **形态:** `delegate`、后台 `core:submit_background_task`、`coordinate`；多轮、独立预算。
+- **参考:** `docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md`
 
 ---
 
-## 2. JPP Manifest Specification (轨道 C)
+## 2. JPP Manifest（Wasm / jpp Tool）
 
 ### Required Fields
 - `id`, `version`, `name`, `description`
@@ -35,23 +38,23 @@ globs: core/system/**, core/wasm_runner.py, core/mcp_client.py, core/runtime/ski
 - `entry_point`: `plugin.wasm`
 - `schema`: input/output
 
-### Sandboxing (轨道 C)
-- **WASM 沙箱:** 每个插件在 `core/wasm_runner.py` 中独立执行，燃料熔断防死循环。
-- **无 Ray:** v8.0 已废弃 Ray Actor，插件为 .wasm 二进制。
+### Sandboxing（Tools · jpp）
+- **WASM 沙箱:** `core/wasm_runner.py`，燃料熔断。
+- **无 Ray:** v8.0 已废弃 Ray Actor。
 
 ---
 
 ## 3. 路由规则
 
-Agent 在 ReAct 的 `[Action]` 阶段（L3 桌面为主）：
-1. 若 `action_name` 在 MCP 工具列表中 → **L3** `mcp_registry`（或 L2 编排链路中的 `core/mcp_client.py`）
-2. 若 `action_name` 对应 SKILL.md 中声明的技能 → 读取 SKILL.md，关联 MCP 工具执行
-3. 否则 → 走 `core/wasm_runner.py`（轨道 C）
+Agent 在 ReAct `[Action]` 阶段（L3 为主）：
+1. `action_name` 在 **MCP** 列表 → `mcp_registry` / `mcp_client`
+2. 命中 **Skills**（SKILL.md 声明）→ 读 SKILL，关联 MCP / Tools
+3. 否则 → **Tools**（`jpp` / `core:*` 经 `run_tool`）
 
 ---
 
 ## 4. 安全约束
 
-- **轨道 A:** 仅高信任环境启用，可配置 `mcp_enabled`、`mcp_tool_allowlist`。
-- **轨道 B:** 用户可控，SKILL.md 位于本地 `skills_repo/`。
-- **轨道 C:** 零信任，WASM 物理隔离，无法访问宿主机。
+- **MCP:** 高信任场景配置 `mcp_enabled`、`mcp_tool_allowlist`。
+- **Skills:** 用户可控，`skills_repo/` 本地 Markdown。
+- **Tools · jpp:** 零信任沙箱，与宿主机隔离。

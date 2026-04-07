@@ -1,0 +1,57 @@
+---
+description: L3/Core 执行面 — 四大原语（MCP / Skills / Tools / Agent Tasks）与路由；Cognitive Swarm；Aegis
+globs: core/mcp_client.py, core/skill_loader.py, core/wasm_runner.py, core/agent_loop.py
+---
+# 四大原语执行规则（L3 / Core）
+
+**术语 SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`、**072-jachin-four-primitives.mdc**。  
+**禁止**再使用「轨道 A/B/C」命名；下表为唯一工程词汇。
+
+## 四类能力与典型组件
+
+| 原语 | 形态 | 信任级别 | 典型代码 |
+|------|------|----------|----------|
+| **MCP** | 外部 MCP 进程，`mcp:*` | 高信任（本机托管） | `core/mcp_client.py`（L2 侧载）；L3 默认 `l3_node/primitives/mcp/registry.py` |
+| **Skills** | `SKILL.md`、声明式 SOP / 人设 / 白名单 | 用户可控 | `core/skill_loader.py`、`core/runtime/skill_loader.py` |
+| **Tools** | `core:*` Native、`jpp:*` Wasm 原子 | Native 受限目录；jpp 零信任沙箱 | `core/native_tools.py`、`core/wasm_runner.py`、`l3_node/primitives/tools/loader.py` |
+| **Agent Tasks** | 多轮子循环 / 后台队列 / L2 编排 | 独立预算与生命周期 | `delegate`、`core:submit_background_task`、`coordinate`（见 `l3_node/agent_core.py`） |
+
+## MCP（原语）
+
+- **L3 本机已安装**：`mcp_registry` 执行。
+- **L3 本机未安装**：**目标** L2 TaskManager + 对端 L3 **Pull**；**现状** 仍可能 `v2_mcp` HTTP POST peer（见 `docs/MCP_EXECUTION_MODEL.md`）。
+- **L2 不默认代跑 LOCAL_PINNED MCP**：侧载 L2_GATEWAY 为兼容。
+- 配置：`~/.jachin/mcp_servers.json`；L3_LOCAL：`l3_mcp_cache/`。
+- 参考：`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`、`docs/MCP_SPEC.md`
+
+## Skills（原语）
+
+- 监听 `skills_repo/**/SKILL.md`，热加载。
+- 格式：YAML Frontmatter (name, description, persona, mcp_tools) + 自然语言指令。
+- 按需注入 Prompt；**不**等同于可执行的 jpp 二进制。
+- 参考：`docs/SKILL_MD_SPEC.md`
+
+## Tools（原语）
+
+- **Native Core**：`core:fs_read` 等，权限约束在 workspace。
+- **jpp / Wasm**：`core/wasm_runner.py`，WASI / execute ABI，燃料熔断。
+- 参考：`docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`（内容已按四大原语表述）
+
+## Native Core Fallback
+
+SKILL.md 可声明 MCP `prefer` + Native `fallback`（`core/native_tools.py`），防止 MCP 不可用导致链路断裂。
+
+## 路由规则（ReAct Action）
+
+1. `action_name` 在 **MCP** 工具列表 → `mcp_registry` / `mcp_client`  
+2. 命中 **Skills**（SKILL.md 声明的意图与工具映射）→ 读 SKILL，关联 MCP / Tools 执行  
+3. 否则 → **Tools**（`jpp` / Wasm 或 Native `run_tool`）  
+4. **Agent Tasks**：由伪动作 `delegate` / `coordinate` 或工具 `submit_background_task` 进入，**不是**单次原子 Tool 同一层级
+
+## Cognitive Swarm（虫群心智）
+
+- **LiteLLM** 多模型；**Router Agent** 多意图分发。
+
+## Aegis
+
+- **OpenTelemetry** 遥测；**Prompt 注入拦截墙**。

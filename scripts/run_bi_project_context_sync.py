@@ -43,7 +43,7 @@ def main() -> int:
     p.add_argument("--pretty", action="store_true", help="美化 JSON 输出")
     args = p.parse_args()
 
-    from l3_node.mcp_tools.bi.tool_bi_project_context import sync_bi_project_context
+    from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import sync_bi_project_context
 
     result = sync_bi_project_context(project_root=root)
     indent = 2 if args.pretty else None

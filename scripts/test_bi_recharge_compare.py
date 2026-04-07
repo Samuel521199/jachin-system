@@ -35,8 +35,8 @@ def _check_chrome_cdp(cdp_url: str = "http://127.0.0.1:9222") -> bool:
 
 
 def main() -> int:
-    from l3_node.mcp_tools.bi.tool_web_scraper import harvest_table_data
-    from l3_node.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
+    from l3_node.primitives.mcp.mcp_tools.bi.tool_web_scraper import harvest_table_data
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_raw_dir, ensure_bi_dirs
 
     if not _check_chrome_cdp():
         print("Chrome 调试模式未启动，请先运行: .\\scripts\\launch_chrome_debug_bi.ps1")
@@ -49,7 +49,7 @@ def main() -> int:
     use_direct = "--direct" in sys.argv
 
     if use_direct:
-        from l3_node.mcp_tools.bi.spa_collector import get_automation_for_direct_url
+        from l3_node.primitives.mcp.mcp_tools.bi.spa_collector import get_automation_for_direct_url
 
         logger.info("使用 --direct 模式，直接打开: %s", RECHARGE_COMPARE_DIRECT_URL)
         automation = get_automation_for_direct_url("recharge_compare", RECHARGE_COMPARE_DIRECT_URL)
@@ -70,7 +70,7 @@ def main() -> int:
         else:
             logger.warning("[1/1] recharge_compare -> %s", r)
     else:
-        from l3_node.mcp_tools.bi.spa_collector import run_full_spa_collect
+        from l3_node.primitives.mcp.mcp_tools.bi.spa_collector import run_full_spa_collect
 
         ok, fail, _ = run_full_spa_collect(
             slugs=["recharge_compare"],

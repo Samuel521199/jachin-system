@@ -2,6 +2,9 @@
  * Chat Window - 全息风格对话窗口（MIND STREAM）
  *
  * 独立 chat 窗口入口，使用 ChatUI 全息 UI。
+ *
+ * Sensory 步骤气泡（含「### 回复」与 JSON 豁免）与 {@link formatAssistantStepPayload} 同源；
+ * 实际调用在 `useSensoryWebSocket`，本文件通过下方 import 锚定 SSOT 模块便于检索与依赖图一致。
  */
 
 import React, { useState, useRef, useEffect } from "react";
@@ -11,10 +14,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3AgentForIntent, checkHealth, type VoiceProcessResponse } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
-import { useSensoryWebSocket } from "./hooks/useSensoryWebSocket";
+import { useSensoryWebSocket, type SensoryAnswerMeta } from "./hooks/useSensoryWebSocket";
 import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
+import { formatAssistantStepPayload } from "./utils/sensoryStepFormat";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
+import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "./constants/chatResponseTimeout";
 import { ChatUI } from "./components/Chat/ChatUI";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { SystemLogPanel } from "./console/components/SystemLogPanel";
@@ -48,6 +53,7 @@ function ChatApp() {
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
+  // 步骤文案由 hook 内调用 formatAssistantStepPayload（./utils/sensoryStepFormat）
   const sensory = useSensoryWebSocket();
   const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler, registerAnswerHandler, registerStepHandler, registerMirrorInputHandler, sendInput } = sensory;
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
@@ -61,6 +67,8 @@ function ChatApp() {
   const isVadActiveRef = useRef(false);
   isRecordingRef.current = isRecording;
   isVadActiveRef.current = isVadActive;
+  /** 当前轮 L3 WS run_id，用于超时后仍接收 answer 时丢弃陈旧回复 */
+  const l3ActiveRunIdRef = useRef<string>("");
 
   // L2 健康检查：打字和语音都走 L2，只需 L2 可用即可
   useEffect(() => {
@@ -114,7 +122,9 @@ function ChatApp() {
       setMessages((prev) => addMessage(prev, assistantMsg));
       setIsLoading(true);
       setIsTyping(true);
-      const chunkHandler = (chunk: string) => {
+      const mirrorRunIdRef = { current: "" };
+      const chunkHandler = (chunk: string, runId?: string) => {
+        if (runId) mirrorRunIdRef.current = runId;
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
@@ -122,7 +132,8 @@ function ChatApp() {
           return u;
         });
       };
-      const stepHandler = (_step: string, stepContent: string) => {
+      const stepHandler = (_step: string, stepContent: string, runId?: string) => {
+        if (runId) mirrorRunIdRef.current = runId;
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
@@ -130,11 +141,25 @@ function ChatApp() {
           return u;
         });
       };
-      const answerHandler = (answerContent: string) => {
+      const answerHandler = (answerContent: string, meta?: SensoryAnswerMeta) => {
+        const rid = meta?.runId ?? "";
+        if (rid && mirrorRunIdRef.current && rid !== mirrorRunIdRef.current) return;
+        const hadStream = meta?.hadStreamChunks ?? false;
+        const useServerFinal = hadStream && !!(answerContent || "").trim();
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
-          if (last?.role === "assistant") u[u.length - 1] = { ...last, content: answerContent || last.content };
+          if (last?.role === "assistant") {
+            u[u.length - 1] = {
+              ...last,
+              content: useServerFinal
+                ? answerContent
+                : !hadStream
+                  ? answerContent || last.content
+                  : last.content,
+              source: "L3",
+            };
+          }
           return u;
         });
         setIsLoading(false);
@@ -163,6 +188,7 @@ function ChatApp() {
     const assistantMessage: StoredMessage = { role: "assistant", content: "", timestamp: Date.now() };
     setMessages((prev) => addMessage(prev, assistantMessage));
     setIsTyping(true);
+    l3ActiveRunIdRef.current = "";
 
     const audioEl = chatAudioRef.current;
     const ttsQueue = ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
@@ -176,7 +202,11 @@ function ChatApp() {
     };
 
     let timeoutCleared = false;
-    const cleanup = (finalContent: string, source?: "L3" | "L2", opts?: { skipContentUpdate?: boolean }) => {
+    const cleanup = (
+      finalContent: string,
+      source?: "L3" | "L2",
+      opts?: { skipContentUpdate?: boolean; ttsUseFinalOnly?: boolean },
+    ) => {
       if (timeoutCleared) return;
       timeoutCleared = true;
       clearTimeout(timeoutId);
@@ -192,7 +222,8 @@ function ChatApp() {
         return updated;
       });
       if (ttsQueue && finalContent) {
-        const { complete, remainder } = extractCompleteSentences(accumulatedForTts + finalContent);
+        const ttsSource = opts?.ttsUseFinalOnly ? finalContent : accumulatedForTts + finalContent;
+        const { complete, remainder } = extractCompleteSentences(ttsSource);
         complete.forEach(enqueueSentence);
         if (remainder.trim()) enqueueSentence(remainder);
         ttsQueue.ensureIdle();
@@ -203,7 +234,8 @@ function ChatApp() {
       if (!ttsQueue) setTimeout(() => setState("idle"), 2000);
     };
 
-    const chunkHandler = (chunk: string) => {
+    const chunkHandler = (chunk: string, runId?: string) => {
+      if (runId) l3ActiveRunIdRef.current = runId;
       accumulatedForTts += chunk;
       setMessages((prev) => {
         const updated = [...prev];
@@ -215,7 +247,8 @@ function ChatApp() {
       });
     };
 
-    const stepHandler = (stepType: string, content: string) => {
+    const stepHandler = (stepType: string, content: string, runId?: string) => {
+      if (runId) l3ActiveRunIdRef.current = runId;
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
@@ -228,23 +261,34 @@ function ChatApp() {
 
     const timeoutId = setTimeout(() => {
       registerChunkHandler(null);
-      registerAnswerHandler(null);
       registerStepHandler(null);
+      // 保留 answer：L3 可能在 compaction 后晚于本定时器返回，与 Lark 同源的最终包仍应写入气泡
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && !last.content) {
-          return [...prev.slice(0, -1), { ...last, content: "响应超时（120 秒），请检查 Layer 3 或 Layer 2 是否正常运行" }];
+          return [
+            ...prev.slice(0, -1),
+            {
+              ...last,
+              content: `响应超时（${CHAT_RESPONSE_TIMEOUT_SEC} 秒），请检查 Layer 3 或 Layer 2 是否正常运行；长任务可在 .env 增大 VITE_CHAT_RESPONSE_TIMEOUT_MS`,
+            },
+          ];
         }
         return prev;
       });
       setIsLoading(false);
       setIsTyping(false);
-    }, 120000);
+    }, CHAT_RESPONSE_TIMEOUT_MS);
 
     const pendingL3InputRef = { current: content };
     registerChunkHandler(chunkHandler);
     registerStepHandler(stepHandler);
-    registerAnswerHandler((answerContent) => {
+    registerAnswerHandler((answerContent, meta) => {
+      const rid = meta?.runId ?? "";
+      if (rid && l3ActiveRunIdRef.current && rid !== l3ActiveRunIdRef.current) {
+        console.debug("[Chat] 忽略陈旧 answer runId=%s 期望=%s", rid, l3ActiveRunIdRef.current);
+        return;
+      }
       registerChunkHandler(null);
       registerAnswerHandler(null);
       registerStepHandler(null);
@@ -268,7 +312,13 @@ function ChatApp() {
             cleanup(`L2 兜底也失败：${(e as Error).message}`, "L2");
           });
       } else {
-        cleanup(answerContent, "L3", { skipContentUpdate: true });
+        // 与 Lark 一致：最终正文以服务端 answer 为准；流式仅作打字机，避免坏 chunk 永久留在气泡里
+        const hadStream = meta?.hadStreamChunks ?? false;
+        const useServerFinal = hadStream && typeof answerContent === "string" && answerContent.trim().length > 0;
+        cleanup(answerContent, "L3", {
+          skipContentUpdate: !useServerFinal,
+          ttsUseFinalOnly: useServerFinal,
+        });
       }
     });
 
@@ -572,10 +622,11 @@ function ChatApp() {
   };
 
   // v8.0 流式神经：WebSocket chunk 追加到当前 Assistant 消息
-  const appendChunkRef = useRef<(chunk: string) => void>(() => {});
+  const appendChunkRef = useRef<(chunk: string, runId?: string) => void>(() => {});
   const isLoadingRef = useRef(false);
   isLoadingRef.current = isLoading;
-  appendChunkRef.current = (chunk: string) => {
+  appendChunkRef.current = (chunk: string, runId?: string) => {
+    if (runId) l3ActiveRunIdRef.current = runId;
     if (!isLoadingRef.current) return;
     setMessages((prev) => {
       const last = prev[prev.length - 1];
@@ -588,7 +639,7 @@ function ChatApp() {
     });
   };
   useEffect(() => {
-    registerChunkHandler((chunk) => appendChunkRef.current(chunk));
+    registerChunkHandler((chunk, runId) => appendChunkRef.current(chunk, runId));
     return () => registerChunkHandler(null);
   }, [registerChunkHandler]);
 

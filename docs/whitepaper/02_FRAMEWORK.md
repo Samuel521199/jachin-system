@@ -49,17 +49,18 @@ Layer 1 (平台) ↔ Layer 2 (控制面) ↔ Layer 3 (单体执行节点)
 
 ---
 
-## 二、 双轨制执行引擎 (Dual-Track Engine)
+## 二、 四大原语执行面
 
-**V2**：执行引擎在 **Layer 3**。L3 打破“万物皆需编译 Wasm”的设定，升级为三轨道：
+**V2**：执行引擎在 **Layer 3**。L3 打破“万物皆需编译 Wasm”的设定，以 **四大原语** 组织能力（**已废弃**「轨道 A/B/C」命名）：
 
-| 轨道 | 形态 | 信任级别 | 用途 |
+| 原语 | 形态 | 信任级别 | 用途 |
 |------|------|----------|------|
-| **A** | MCP (Model Context Protocol) | 高信任 | 文件、Shell、PostgreSQL、Git 等开箱工具 |
-| **B** | SKILL.md 声明式技能 | 用户可控 | skills_repo/ 下 Markdown，热加载 |
-| **C** | The Abyss Wasm 沙箱 | 零信任 | 商城第三方付费插件，燃料熔断 |
+| **MCP** | Model Context Protocol 外挂 | 高信任 | 文件、Shell、数据库、Git 等开箱工具 |
+| **Skills** | SKILL.md 声明式 | 用户可控 | `skills_repo/` Markdown，热加载 |
+| **Tools · jpp** | The Abyss Wasm 沙箱 | 零信任 | 商城第三方付费插件，燃料熔断 |
+| **Agent Tasks** | delegate / 后台 / coordinate | 独立预算 | 多轮子运行时 |
 
-详见 `docs/MCP_SPEC.md`、`docs/SKILL_MD_SPEC.md`、`docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`。
+**SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`。详见 `docs/MCP_SPEC.md`、`docs/SKILL_MD_SPEC.md`、`docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`。
 
 ---
 
@@ -126,4 +127,4 @@ Layer 1 (平台) ↔ Layer 2 (控制面) ↔ Layer 3 (单体执行节点)
 ❌ Dapr & Ray Cluster  
 ❌ 本地 Redis / PostgreSQL  
 ❌ 独立托管向量库（已由 LanceDB + 可插拔向量引擎取代）  
-❌ “万物皆 Wasm”的单一形态（现为双轨制）
+❌ “万物皆 Wasm”的单一形态（现为 **四大原语** 并存）

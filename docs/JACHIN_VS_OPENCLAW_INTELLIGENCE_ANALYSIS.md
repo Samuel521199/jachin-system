@@ -265,7 +265,7 @@
 | 工具调用缓存 | `tool_invoke_cache.json`；默认只读白名单；`mcp:invoke` / `recall_memory` / `core:fs_read` |
 | exec 策略与 P1+ | 危险子串拦截 + 可选前缀白名单；`shell_job_*`；协同子任务 `input_data.type=native_tool` 直接 `run_tool` |
 
-**主要代码**：`l3_node/intelligence_p1.py`、`l3_node/tool_call_cache.py`、`l3_node/shell_jobs.py`、`l3_node/skills/mcp_registry.py`、`l3_node/agent_core.py`、`core/native_tools.py`、`core/dream_weaver.py`、`core/db/dream_weaver.py`。
+**主要代码**：`l3_node/intelligence_p1.py`、`l3_node/tool_call_cache.py`、`l3_node/shell_jobs.py`、`l3_node/primitives/mcp/registry.py`、`l3_node/agent_core.py`、`core/native_tools.py`、`core/dream_weaver.py`、`core/db/dream_weaver.py`。
 
 ### P2：隐式学习 — **MVP 已落地**（见 [INTELLIGENCE_UPGRADE_OVERVIEW.md §三](./INTELLIGENCE_UPGRADE_OVERVIEW.md)）
 

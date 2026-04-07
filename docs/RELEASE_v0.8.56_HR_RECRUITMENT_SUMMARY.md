@@ -2,7 +2,7 @@
 
 **范围**：Git 提交 `8ca9968` → `145b1b6`（标签 `v0.8.56`，说明：hr 招聘插件升级完成）。
 
-**说明**：本段 rebase 时 `l3_node/mcp_tools/bi/tool_web_scraper.py`、`l3_node/mcp_tools/bi/spa_collector.py` 保留了上游 `8ca9968`（BI 全流程）版本，未作为本标签内的 BI 功能增量列出；v0.8.56 主体为 **HR 招聘插件 + L3 编排 + 能力目录 / 执行韧性 / 模糊意图澄清 + 文档与配置**。
+**说明**：本段 rebase 时 `l3_node/primitives/mcp/mcp_tools/bi/tool_web_scraper.py`、`l3_node/primitives/mcp/mcp_tools/bi/spa_collector.py` 保留了上游 `8ca9968`（BI 全流程）版本，未作为本标签内的 BI 功能增量列出；v0.8.56 主体为 **HR 招聘插件 + L3 编排 + 能力目录 / 执行韧性 / 模糊意图澄清 + 文档与配置**。
 
 ---
 
@@ -63,16 +63,16 @@
 
 ## 5. Skill 注册 / DAG / Wasm（4 项）
 
-1. [x] `l3_node/skills/mcp_registry.py` — MCP 工具注册、HR 指针与 `jd_select` 冲突策略等
-2. [x] `l3_node/skills/loader.py` — Skill 加载与依赖解析增强
-3. [x] `l3_node/skills/hr_recruitment_dag.py` — 招聘 DAG 与 L3 对齐
-4. [x] `l3_node/skills/wasm_plugins/hr-analyzer4/main.wasm`、`plugin.json` — hr-analyzer4 Wasm 与清单更新（与 `skills_repo/hr-analyzer4` 同步）
+1. [x] `l3_node/primitives/mcp/registry.py` — MCP 工具注册、HR 指针与 `jd_select` 冲突策略等
+2. [x] `l3_node/primitives/tools/loader.py` — Skill 加载与依赖解析增强
+3. [x] `l3_node/primitives/skills/hr_recruitment_dag.py` — 招聘 DAG 与 L3 对齐
+4. [x] `l3_node/primitives/tools/wasm_bundled/hr-analyzer4/main.wasm`、`plugin.json` — hr-analyzer4 Wasm 与清单更新（与 `skills_repo/hr-analyzer4` 同步）
 
 ---
 
 ## 6. MCP 工具层（L3 侧）（2 项）
 
-1. [x] `l3_node/mcp_tools/human_ask_tool.py` — 人工确认/追问工具行为扩展（与 `config/mcps/human_ask` 示例一致）
+1. [x] `l3_node/primitives/mcp/mcp_tools/human_ask_tool.py` — 人工确认/追问工具行为扩展（与 `config/mcps/human_ask` 示例一致）
 2. [x] `l3_client/local_mcps/boss_harvester/server.py` — 本地 Boss 采集 MCP 小改
 
 ---
@@ -107,7 +107,7 @@
 
 ## 9. BI Skill（随仓库一并触达）（2 项）
 
-1. [x] `l3_node/skills/bi/bi_daily_report/main_skill.py` — 与配置/文档引用的小幅同步
+1. [x] `l3_node/primitives/skills/bi/bi_daily_report/main_skill.py` — 与配置/文档引用的小幅同步
 2. [x] `config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml.example`、`docs/bi_daily_report/*.md` — 示例与文档一字级更新
 
 ---

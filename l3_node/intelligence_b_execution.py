@@ -1,6 +1,7 @@
 """
 智能化阶段 B：execution_mode（react | planned | strict）与计划卡轻量校验；
-可选 **brainstorm 卡**、**strict 下硬只读 verify 轮** 工具白名单。
+可选 **brainstorm 卡**、**strict 下硬只读 verify 轮** 工具白名单；
+**force_universal_planning_chain**：react 下也强制计划卡（及可选 brainstorm）门禁。
 
 计划卡格式（assistant 消息内 JSON 对象，可置于 ```json 代码块）：
 {
@@ -87,6 +88,14 @@ def get_force_task_plan_file() -> bool:
     return bool(load_intelligence_b_config().get("force_task_plan_file", False))
 
 
+def get_force_universal_planning_chain() -> bool:
+    """
+    若为 True：即使在 **react** 模式下也强制 **计划卡**（及可选 brainstorm 卡）门禁，
+    与 planned/strict 相同校验逻辑（见 agent_core 计划门）。
+    """
+    return bool(load_intelligence_b_config().get("force_universal_planning_chain", False))
+
+
 def get_verify_round_extra_tool_ids() -> list[str]:
     """只读 verify 轮额外允许的 tool id（小写）。"""
     raw = load_intelligence_b_config().get("verify_round_extra_tools")
@@ -105,6 +114,7 @@ _DEFAULT_VERIFY_READONLY_IDS = frozenset(
     {
         "core:fs_read",
         "core:shell_job_status",
+        "core:check_background_task",
     },
 )
 

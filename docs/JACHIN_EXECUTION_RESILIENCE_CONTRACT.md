@@ -21,7 +21,7 @@
 
 | 类型 | 说明 |
 |------|------|
-| **JPP / Wasm Skill** | `l3_node/skills`、`skills_repo` 下技能宿主与插件 |
+| **JPP / Wasm Skill** | `l3_node/primitives`（tools/skills）、`skills_repo` 下技能宿主与插件 |
 | **MCP 工具** | Python 原子工具、长流程 orchestrator |
 | **定时 / DAG / 调度** | 如 `recruitment_scheduler`、`hr_recruitment_dag`、APScheduler、YAML 工作流 |
 | **Agent 工具调用** | `agent_core`、IM `dispatcher`、WS/HTTP 触发的 `run_tool` / 领域工作流 |

@@ -75,14 +75,15 @@ def _chunks_from_memory_md(max_chunks: int = 24) -> list[dict[str, Any]]:
 
 
 def _load_l3_entries() -> list[dict[str, Any]]:
-    if not _LOCAL_DB.exists():
-        return []
+    from l3_node.local_memory import load_raw_entries
+    from l3_node.local_memory_ranking import sort_entries_by_agent_priority
+
     try:
-        data = json.loads(_LOCAL_DB.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        raw = load_raw_entries()
     except Exception as e:
         logger.debug("[L3Search] l3_local 加载失败: %s", e)
         return []
+    return sort_entries_by_agent_priority(raw)
 
 
 def _mmr_select(

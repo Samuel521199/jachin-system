@@ -1,0 +1,40 @@
+---
+description: Jachin 四大原语 — Tools / MCP / Skills / Agent Tasks 术语 SSOT（已取代旧「轨道 A/B/C」）
+globs: l3_node/**/*.py, docs/**/*.md, core/**/*.py, skills_repo/**/*, .cursor/rules/*.mdc
+alwaysApply: true
+---
+
+# 四大原语（Jachin 术语）
+
+**全文 SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`（索引：`docs/FOUR_PRIMITIVES.md`）。
+
+编写或修改 **工具列表、Skill 包、MCP 配置、delegate/后台任务** 相关代码与文档时，必须使用下列定义，**不得**把「商城 Skill」「jpp」「MCP」「子 Agent」混称为同一概念。
+
+## 1. Tools（原子工具）
+
+- **是什么**：单次 tool call 即可完成、**无独立多轮子 Agent 生命周期** 的执行单元。
+- **包含**：`core:*`（Native，`l3_node/primitives/tools/loader.py` + `core/native_tools.py`）；`jpp:*`（Wasm 原子，`core/wasm_runner.py`）。
+- **Prompt**：`tools[]` 描述中 **稳定项靠前**；易变的 **MCP 工具靠后**（见 `l3_node/prompt_compose.py`）。
+
+## 2. MCP（协议扩展）
+
+- **是什么**：遵循 Model Context Protocol 的 **外部进程**；工具 id 通常为 `mcp:*`。
+- **代码**：`core/mcp_client.py`、`l3_node/primitives/mcp/registry.py`；规格见 `docs/MCP_SPEC.md`、`docs/MCP_EXECUTION_MODEL.md`。
+
+## 3. Skills（领域知识包）
+
+- **是什么**：**声明式** SOP、人设、**Tools/MCP 白名单与依赖**，**不是** 与 Native 同级的「宿主可执行代码」本体。
+- **形态**：`skills_repo/**/SKILL.md`（`docs/SKILL_MD_SPEC.md`）；商城 `plugin.json`（`item_type: SKILL`、`required_mcps`）；`docs/capability_domains/*.md`。
+- **注意**：商城 **Skill zip 里的 Wasm** 在四大原语里执行时归类为 **Tool（jpp）**；**SKILL.md 正文** 才属 **Skills**。
+- **目标态**：单一 `use_skill` 入口按需加载（**当前仓库可能仍直接枚举多工具**，以 SSOT 文档「目标态与现状」为准）。
+
+## 4. Agent Tasks（多轮子运行时）
+
+- **是什么**：**独立上下文 + 多轮 ReAct**（或等价循环），对外常表现为一次 `delegate` 或异步投递。
+- **入口**：同步 **`delegate` / SubAgent**；异步 **`core:submit_background_task`**；分布式 **`coordinate`**（L2）。
+- **文档**：`docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md`、`docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`。
+
+## 与工程规则的关系
+
+执行面路由与组件清单见 **045-four-primitives-execution.mdc**（与本文一致，**禁止**再写轨道 A/B/C）。  
+L3 通义 **三档模型**（`LLM_MODEL` / `LLM_COMPLEX_MODEL` / `LLM_CODER_MODEL`）自动切换见 **063-l3-qwen-tri-model-routing.mdc**。

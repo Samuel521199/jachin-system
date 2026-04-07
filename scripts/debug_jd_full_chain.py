@@ -105,7 +105,7 @@ def main() -> int:
     print("\n" + "=" * 70)
     print("[3] loader 层：build_hr_stdin_for_debug（与 _invoke_wasm 一致）")
     print("-" * 70)
-    from l3_node.skills.loader import build_hr_stdin_for_debug
+    from l3_node.primitives.tools.loader import build_hr_stdin_for_debug
 
     sample_pdf = str(Path.home() / ".jachin" / "client_volumes" / "pool_test" / "resume.pdf")
     input_data = {

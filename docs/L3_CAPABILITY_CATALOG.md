@@ -5,6 +5,8 @@
 
 **打包 L3（PyInstaller Sidecar）**：`scripts/build_l3_sidecar.py` 会将本文件与 `capability_domains/` 一并打入 `sys._MEIPASS/docs/`，与源码仓库路径一致；任意机器上的 frozen L3 均可读取，大模型仍能注入「是谁、会什么」。详见 Cursor 规则 **079-l3-capability-catalog.mdc**。
 
+**四大原语**：本目录与 `capability_domains/*.md` 属于 **Skills（领域知识注入层）**，与 **Tools/MCP** 工具 id 列表互补；术语 SSOT 见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
+
 | 资源 | 说明 |
 |------|------|
 | 技能格式 | [SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md) |

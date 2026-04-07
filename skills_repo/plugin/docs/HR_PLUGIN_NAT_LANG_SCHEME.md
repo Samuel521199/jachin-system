@@ -9,7 +9,7 @@
 
 ## 一、零阶漏斗：自然语言发帖与规则定调（上行）
 
-### 1.1 轨道 B 技能：hr-job-manager
+### 1.1 Skills：hr-job-manager
 
 当 HR 在飞书发语音或文字时，触发此技能。
 
@@ -41,7 +41,7 @@
 - `scanned_online_count`、`greeted_count`、`total_processed`
 - `last_milestone_notified`、`last_progress_notify_time`
 
-### 2.2 轨道 A 原子工具：atom_lark_notifier
+### 2.2 MCP 原子工具：atom_lark_notifier
 
 - **职责**：接收 JSON 数据，调用飞书 Message API，向指定 HR 发送结构化消息卡片
 - **优点**：消息卡片可带进度条、颜色标记，视觉体验优于纯文本
@@ -66,7 +66,7 @@
 
 ### 2.4 汇报模式 B：HR 随时随地被动查询
 
-**轨道 B 技能**：hr-progress-query
+**Skills**：hr-progress-query
 
 HR 在飞书问：「前端岗现在收了多少简历了？」「现在几个了？」
 
@@ -77,7 +77,7 @@ HR 在飞书问：「前端岗现在收了多少简历了？」「现在几个�
 
 ---
 
-## 三、轨道 A 新增原子工具
+## 三、MCP 新增原子工具
 
 | 工具 | 职责 |
 |------|------|

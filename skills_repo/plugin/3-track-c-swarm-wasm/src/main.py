@@ -1,5 +1,5 @@
 """
-轨道 C - 虫群评审引擎 (HR Swarm Engine)
+Tools(jpp) - 虫群评审引擎 (HR Swarm Engine)
 三专家多 Agent 交叉评分：Tech Lead + HR BP → 主理法官裁决（提示词角色不同）。
 DashScope 实际模型与 Key 与 L3 统一（core.plugin_llm_identity / 根 .env 的 LLM_MODEL）。
 """

@@ -4,6 +4,8 @@
 **状态**: 与 [ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md) **v0.4 对齐**  
 **定位**: 统一 MCP/Skill 执行策略；区分 **目标规格** 与 **仓库当前兼容实现**
 
+**四大原语**：本文聚焦 **MCP** 的宿主与委托；与 **Tools**、**Skills**、**Agent Tasks** 并列定义见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
+
 ---
 
 ## 一、权威规格（目标态）
@@ -86,7 +88,7 @@ L3 需要调用某 MCP
 | Redis 工具目录聚合（`GET /tools`） | `core/l3_redis_state.py`（`aggregate_mcp_tools_catalog_from_redis` 等） |
 | L3 在线与工具列表（委托用） | `core/l3_redis_state.py`（`write_l3_node_status`、`get_l3_nodes_with_mcp_tool`） |
 | L3 stdio Host 启动 | `l3_node/mcp_stdio_bootstrap.py` |
-| L3 注册表与 L2 转发 | `l3_node/skills/mcp_registry.py` |
+| L3 注册表与 L2 转发 | `l3_node/primitives/mcp/registry.py` |
 | L3 HTTP 执行入口 | `l3_node/http_server.py`（`/api/v3/mcp/execute`） |
 | MCPManager / stdio 客户端 | `core/mcp_client.py`（L3 默认使用；L2 仅 `JACHIN_L2_STDIO_MCP=1` 时） |
 | Task Token 签发/校验 | `core/mcp_task_token.py` |

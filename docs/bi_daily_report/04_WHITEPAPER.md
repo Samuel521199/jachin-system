@@ -44,7 +44,7 @@
 │             │                         │                                       │
 │             ▼                         ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │ 通用 MCP 工具层 (l3_node/mcp_tools/bi/)                                  │ │
+│  │ 通用 MCP 工具层 (l3_node/primitives/mcp/mcp_tools/bi/)                                  │ │
 │  │ atom_web_scraper | atom_lark_notifier | atom_email_sender                │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -179,10 +179,10 @@ distribution:
 
 | 规范 | 衔接方式 |
 |------|----------|
-| [MCP_SPEC.md](../MCP_SPEC.md) | 三个 atom 工具按 MCP 规范注册，invoke 时路由到 `l3_node/mcp_tools/bi/` |
+| [MCP_SPEC.md](../MCP_SPEC.md) | 三个 atom 工具按 MCP 规范注册，invoke 时路由到 `l3_node/primitives/mcp/mcp_tools/bi/` |
 | [SKILL_MD_SPEC.md](../SKILL_MD_SPEC.md) | 可选：为 skill_bi_daily_report 编写 SKILL.md 声明，供 Agent 发现与触发 |
 | [07_LAYER3_TERMINAL.md](../whitepaper/07_LAYER3_TERMINAL.md) | BI 战报作为 L3 单体上的独立 Skill，复用 MCP + LiteLLM 能力 |
-| [08_JPP_SDK_AND_SKILLS.md](../whitepaper/08_JPP_SDK_AND_SKILLS.md) | 轨道 A (MCP) 提供原子工具，BI Skill 为轨道 A 之上的业务编排 |
+| [08_JPP_SDK_AND_SKILLS.md](../whitepaper/08_JPP_SDK_AND_SKILLS.md) | **MCP** 提供外挂工具；BI 为 **Skills + Tools** 之上的业务编排（四大原语） |
 
 ---
 

@@ -75,7 +75,7 @@ def main() -> int:
     cfg = _load_config()
     storage = cfg.get("storage") or {}
     refiner_path = (storage.get("refiner_output_path") or "").strip()
-    from l3_node.mcp_tools.bi.paths import get_bi_output_dir
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_output_dir
     output_dir = get_bi_output_dir(refiner_path)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -86,9 +86,9 @@ def main() -> int:
 
     async def _run() -> str:
         from l3_node.paths import get_app_root
-        from l3_node.mcp_tools.bi.paths import get_bi_raw_dir
-        from l3_node.skills.bi.bi_daily_report.main_skill import _merge_strategic_report_config_for_llm
-        from l3_node.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
+        from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_raw_dir
+        from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _merge_strategic_report_config_for_llm
+        from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
 
         cfg_m = _merge_strategic_report_config_for_llm(
             cfg,

@@ -1,7 +1,7 @@
 # SKILL.md 声明式技能规范
 
 **版本**: v8.0 (The Singularity OS)  
-**定位**: Layer 2 双轨制引擎 — 轨道 B
+**定位**: **四大原语**中的 **Skills**（`SKILL.md` 声明式领域知识卡）；与 **Tools**（`jpp`/`core` 原子）、**MCP** 区分见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
 
 ---
 
@@ -105,5 +105,5 @@ tools:                                    # Native Core Fallback（防止 MCP �
 
 - OpenClaw SKILL.md 设计（借鉴）
 - `docs/L3_CAPABILITY_CATALOG.md` — L3 能力总目录（与业务域解耦）；各域见 `docs/capability_domains/*.md` + `l3_node/capability_catalog.py` 的 `DOMAIN_REGISTRY`
-- `docs/whitepaper/06_LAYER2_EDGE.md` — 轨道 B 实现
+- `docs/whitepaper/06_LAYER2_EDGE.md` — L2 边缘（Skills / MCP / Tools 以四大原语为准）
 - `docs/MCP_SPEC.md` — MCP 工具接入

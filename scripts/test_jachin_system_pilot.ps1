@@ -29,12 +29,12 @@ if ($LASTEXITCODE -ne 0) {
 Copy-Item "target\wasm32-unknown-unknown\release\jachin_system_pilot.wasm" -Destination "main.wasm" -Force
 Write-Host "      完成" -ForegroundColor Green
 
-# 2. 复制到 wasm_plugins
-$wasmPlugins = Join-Path $root "l3_node\skills\wasm_plugins"
+# 2. 复制到 primitives/tools/wasm_bundled
+$wasmPlugins = Join-Path $root "l3_node\primitives\tools\wasm_bundled"
 $null = New-Item -ItemType Directory -Force -Path $wasmPlugins
 Copy-Item "main.wasm" -Destination (Join-Path $wasmPlugins "main.wasm") -Force
 Copy-Item "plugin.json" -Destination (Join-Path $wasmPlugins "plugin.json") -Force
-Write-Host "[2/3] 已复制到 l3_node\skills\wasm_plugins" -ForegroundColor Green
+Write-Host "[2/3] 已复制到 l3_node\primitives\tools\wasm_bundled" -ForegroundColor Green
 
 # 3. 运行测试
 Set-Location $root

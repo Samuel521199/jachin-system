@@ -4,6 +4,8 @@
 **代码入口**: `l3_node/intent_clarification.py`  
 **与精确遥控的关系**: 各通道应先匹配**精确指令**（如飞书 `lark_workflow_command_interceptor` 内停收网、分析、继续、进度等），**均未命中**后再调用本框架。
 
+**更广视角**（澄清态门控、OOD、主 Agent 分工）: [L3_AMBIGUOUS_INTENT_ARCHITECTURE.md](./L3_AMBIGUOUS_INTENT_ARCHITECTURE.md)。
+
 ---
 
 ## 1. 目标

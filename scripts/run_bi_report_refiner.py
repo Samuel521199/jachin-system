@@ -16,8 +16,8 @@ root = Path(__file__).resolve().parents[1]
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
-from l3_node.mcp_tools.bi.report_refiner import run_refiner, sync_refiner_to_lark
-from l3_node.mcp_tools.bi.paths import get_bi_output_dir, get_bi_raw_dir
+from l3_node.primitives.mcp.mcp_tools.bi.report_refiner import run_refiner, sync_refiner_to_lark
+from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_output_dir, get_bi_raw_dir
 
 
 def _load_config() -> dict:

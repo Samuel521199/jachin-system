@@ -163,4 +163,4 @@
 | L2 MCP invoke（含 L3 委托） | `core/api/routes/v2_mcp.py` |
 | L3 skill sync | `clients/desktop/src-tauri/src/commands/skill_sync.rs` |
 | L3 MCP 同步 | `l3_node/mcp_sync.py` |
-| L3 MCP 代理调用与 l3_mcp_cache 动态加载 | `l3_node/skills/mcp_registry.py` |
+| L3 MCP 代理调用与 l3_mcp_cache 动态加载 | `l3_node/primitives/mcp/registry.py` |

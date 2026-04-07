@@ -1,0 +1,37 @@
+---
+description: L3 通义三档模型自动路由（日常 qwen3.5-plus / 复杂 qwen-max / 编程 LLM_CODER_MODEL）
+globs: l3_node/agent_core.py, l3_node/llm_client.py, core/llm_provider.py, core/config/**/*.py, .env
+alwaysApply: false
+---
+
+# L3 通义三档模型路由（ReAct）
+
+## 单一约定
+
+| 档位 | 环境变量 / 默认 | 触发条件 |
+|------|-----------------|----------|
+| **日常** | `LLM_MODEL`（默认 `qwen3.5-plus`） | ReAct 默认主模型 |
+| **复杂** | `LLM_COMPLEX_MODEL`（默认 `qwen-max`） | 见下节「复杂路由」；**DashScope 对 qwen-max 的 `max_tokens` 上限为 8192**，`l3_node/llm_client.py` 会自动钳制（勿把 ReAct 的 16384 原样下发） |
+| **编程** | `LLM_CODER_MODEL`（默认 `qwen3-coder-plus`） | 本轮已执行 `core:fs_write` 或 `core:apply_patch` 之后**优先于**复杂档 |
+
+实现：`l3_node/agent_core.py` 的 `_react_engine_for_iteration`；解析与阈值：`core/llm_provider.py` 的 `get_complex_model_litellm_id`、`l3_react_should_use_complex_model`。
+
+## 复杂档触发（任一满足）
+
+- `delegate_depth > 0`（子 Agent / delegate 链）
+- ReAct 轮次索引 `>= JACHIN_LLM_COMPLEX_MIN_REACT_ITER`（默认 `8`，0-based，即第 9 轮起）
+- 可见工具数 `>= JACHIN_LLM_COMPLEX_MIN_TOOLS`（默认 `28`）
+- 最后一条 **user** 消息长度 `>= JACHIN_LLM_COMPLEX_MIN_USER_CHARS`（默认 `2400`）
+- `system + messages` 总条数 `>= JACHIN_LLM_COMPLEX_MIN_MESSAGES`（默认 `28`）
+- **intelligence_b** `get_execution_mode()` 为 `planned` 或 `strict` 时**强制**复杂档（与阈值叠加：强制项）
+
+关闭复杂自动路由：`JACHIN_LLM_COMPLEX_DISABLE=1`。
+
+## Nexus 配置（可选）
+
+`~/.jachin/nexus_config.json` → `llm.complex_model_name` / `complex_model` / `heavy_model_name` 覆盖 `LLM_COMPLEX_MODEL`；`llm.coder_model_name` 等仍覆盖编码档。
+
+## 修改时注意
+
+- 调整阈值或优先级时**同步**更新本规则与项目根 `.env` 注释。
+- PyInstaller 侧车：主模型仍来自 `LiteLLMEngine` 构造时的 `LLM_MODEL`；复杂/编码在运行时按需构造额外引擎，**共用** `DASHSCOPE_API_KEY`。

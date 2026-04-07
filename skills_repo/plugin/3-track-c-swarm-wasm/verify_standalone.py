@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-轨道 C 独立验证：无需 Jachin 主项目，验证 stdin/stdout JSON 协议。
+Tools(jpp) 独立验证：无需 Jachin 主项目，验证 stdin/stdout JSON 协议。
 规范要求：echo '{"key":"val"}' | python src/main.py 输出正确 JSON。
 """
 import subprocess

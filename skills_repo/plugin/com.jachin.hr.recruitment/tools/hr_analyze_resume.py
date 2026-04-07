@@ -65,7 +65,7 @@ def hr_analyze_resume(
         分析报告文本，失败时返回错误信息
     """
     try:
-        from l3_node.skills import run_tool
+        from l3_node.primitives import run_tool
     except ImportError as e:
         logger.warning("[hr_analyze_resume] 无法导入 run_tool: %s", e)
         return f"错误：L3 技能加载器不可用，{e}"

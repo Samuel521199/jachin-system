@@ -7,7 +7,7 @@ jachin-system/
 │       ├── 041-pluggable-vector-engine.mdc
 │       ├── 042-pluggable-cognitive-engines.mdc
 │       ├── 043-omni-sensory-bus.mdc
-│       ├── 045-dual-track-mcp.mdc
+│       ├── 045-four-primitives-execution.mdc
 │       ├── 050-distributed.mdc
 │       ├── 055-tts-service.mdc
 │       ├── 057-voice-endpointing.mdc

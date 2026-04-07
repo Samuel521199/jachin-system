@@ -151,7 +151,7 @@ def test_l3_mcp_invoke() -> tuple[bool, str]:
     """通过 L3 MCP Registry 调用 atom_post_job_boss（需 Chrome）"""
     sys.path.insert(0, str(PROJ_ROOT))
     try:
-        from l3_node.skills.mcp_registry import get_mcp_registry
+        from l3_node.primitives.mcp.registry import get_mcp_registry
         import asyncio
 
         async def _run():

@@ -47,7 +47,7 @@ def main() -> int:
     except Exception as e:
         print(f"[WARN] 未注册 LLM 引擎: {e}，MCP 可测但 LLM 会失败")
 
-    wasm_path = ROOT / "l3_node" / "skills" / "wasm_plugins" / "hr-analyzer4" / "main.wasm"
+    wasm_path = ROOT / "l3_node" / "primitives" / "tools" / "wasm_bundled" / "hr-analyzer4" / "main.wasm"
     if not wasm_path.exists():
         print(f"[FAIL] Wasm 不存在: {wasm_path}")
         return 1

@@ -1,5 +1,5 @@
 """
-Jachin Nexus V2 - L2 MCP 客户端代理引擎 (轨道 A)
+Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
 
 连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
 使用官方 mcp Python SDK，全异步实现。
@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import sys
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Optional
@@ -19,6 +20,76 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+
+
+def format_mcp_tool_args_for_log(tool_name: str, arguments: dict[str, Any] | None) -> str:
+    """
+    编程/排障：单行摘要，避免把整段 content 打进日志。
+    """
+    tn = (tool_name or "").strip().lower()
+    if tn.startswith("mcp:"):
+        tn = tn[4:]
+    args = arguments if isinstance(arguments, dict) else {}
+    keys = list(args.keys())
+
+    def _pv(key: str) -> str:
+        v = args.get(key)
+        if v is None:
+            return "missing"
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return "empty_str"
+            return f"len={len(s)} preview={s[:100]!r}{'…' if len(s) > 100 else ''}"
+        return f"type={type(v).__name__!r} repr={repr(v)[:120]}"
+
+    if tn in ("write_file", "edit_file", "create_file"):
+        return (
+            f"keys={keys} path={_pv('path')} content={_pv('content')} "
+            f"file_path_present={('file_path' in args)}"
+        )
+    if tn == "read_file":
+        return f"keys={keys} path={_pv('path')}"
+    if tn in ("delete_file", "move_file", "copy_file", "get_file_info"):
+        return f"keys={keys} path={_pv('path')}"
+    return f"keys={keys} n={len(keys)}"
+
+
+def normalize_mcp_schema_aliases(tool_name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    模型常按 core:fs_write 习惯传 file_path；官方 MCP server-filesystem 的 write_file/read_file 等要求 path。
+    在 call_tool / L2 invoke 前统一映射，避免 -32602 path undefined。
+    """
+    if not isinstance(arguments, dict):
+        return {}
+    out = dict(arguments)
+    tn = (tool_name or "").strip().lower()
+    if tn.startswith("mcp:"):
+        tn = tn[4:]
+    if tn not in (
+        "write_file",
+        "read_file",
+        "edit_file",
+        "create_file",
+        "delete_file",
+        "move_file",
+        "copy_file",
+        "get_file_info",
+        "list_directory",
+        "search_files",
+    ):
+        return out
+    path_ok = out.get("path")
+    if path_ok is not None and str(path_ok).strip():
+        return out
+    for k in ("file_path", "filepath", "target_path", "file", "uri"):
+        v = out.get(k)
+        if v is not None and str(v).strip():
+            out["path"] = str(v).strip()
+            if k != "path":
+                out.pop(k, None)
+            break
+    return out
 
 
 def _resolve_stdio_command(command: str) -> str:
@@ -129,7 +200,16 @@ class MCPServerInstance:
         """
         if not self._session:
             raise MCPConnectionError(f"Server {self.server_id} 未连接")
-        logger.info("[MCP] call_tool server_id=%s name=%s args_keys=%s", self.server_id, name, list(arguments.keys()) if arguments else [])
+        arguments = normalize_mcp_schema_aliases(name, arguments or {})
+        _diag = format_mcp_tool_args_for_log(name, arguments)
+        _ct = f"stdio-{time.time_ns():x}"
+        logger.info(
+            "[MCP] call_tool trace=%s server_id=%s name=%s diag=%s",
+            _ct,
+            self.server_id,
+            name,
+            _diag,
+        )
         try:
             result = await self._session.call_tool(name, arguments)
             if result.isError:
@@ -332,13 +412,22 @@ class MCPManager:
         根据路由表将工具调用转发到对应 Server 执行。
         内置工具优先本地执行，无需外部 MCP Server。
         """
+        args = normalize_mcp_schema_aliases(tool_name, arguments or {})
+        _mt = f"mgr-{time.time_ns():x}"
+        logger.info(
+            "[MCP] invoke_tool trace=%s route name=%s builtin=%s diag=%s",
+            _mt,
+            tool_name,
+            tool_name in self._builtin_tool_names,
+            format_mcp_tool_args_for_log(tool_name, args),
+        )
         if tool_name in self._builtin_tool_names:
             from core.mcp_builtin_tools import invoke_builtin_tool
-            return await invoke_builtin_tool(tool_name, arguments or {})
+            return await invoke_builtin_tool(tool_name, args)
         instance = self._tool_route.get(tool_name)
         if not instance:
             raise MCPToolNotFoundError(f"工具 '{tool_name}' 未找到或未挂载")
-        return await instance.call_tool(tool_name, arguments or {})
+        return await instance.call_tool(tool_name, args)
 
     async def add_server(self, cfg: dict[str, Any]) -> bool:
         """

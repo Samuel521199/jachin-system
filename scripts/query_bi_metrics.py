@@ -19,7 +19,7 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from l3_node.mcp_tools.bi.metrics.engine import run, main_cli
+from l3_node.primitives.mcp.mcp_tools.bi.metrics.engine import run, main_cli
 
 
 def main() -> int:
