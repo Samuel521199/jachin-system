@@ -29,6 +29,7 @@ from l3_node.engine.hooks_pipeline import (
 )
 from l3_node.llm_client import LiteLLMEngine, RunCancelledError, SecurityContext
 from l3_node.capability_catalog import build_capability_prompt_inject_for_tools, tools_include_recruitment
+from l3_node.exec_trace import exec_trace
 from l3_node.primitives import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
 from l3_node.primitives.tools.tool_pool import assemble_tool_pool
 
@@ -81,6 +82,51 @@ def _llm_token_budget_for_run(delegate_depth: int) -> int | None:
 _L3_CODER_MODE_META = "_l3_coder_mode"
 _L3_CODER_ENGINE_CACHE_META = "_l3_coder_engine_cache"
 _L3_COMPLEX_ENGINE_CACHE_META = "_l3_complex_engine_cache"
+
+# composite / 参谋长模式：system 后缀页脚追加；高危工具的人性化「悬挂签批」与统帅决策权
+CHIEF_ADVISOR_LOGIC_VALIDATION_BLOCK = (
+    "\n【参谋长高危签批准则】：此规则适用于所有内部工具 (core:*) 及外部挂载工具 (mcp:*)！\n"
+    "当用户的指令涉及对系统环境、文件、或数据库的【写入、修改、删除】操作（例如：使用 mcp_sqlite 执行 UPDATE/DELETE）时，"
+    "你**绝对禁止**擅自静默执行。\n"
+    "你必须将任务**悬挂（挂起）**，并严格按以下格式向统帅请示：\n"
+    "1. 【风险评估】：一句话指出该操作的潜在风险或爆炸半径。\n"
+    "2. 【待签批计划】：展示你准备调用的工具和具体参数（如准备执行的 SQL 语句）。\n"
+    "3. 【决策请求】：明确询问统帅：「此操作将修改底层数据，请问是否授权执行？回复「批准」即可放行，或提供其他修改意见。」\n"
+    "只有当统帅在下一轮对话中明确回复了批准词汇后，你才能调用修改工具。\n"
+    "【MCP SQLite 硬约束】调用官方 SQLite 的 **write_query** 前必须完成上述签批；获准后须在 Action Input 的 JSON 内增加 "
+    "`jachin_mcp_write_ack`: true（系统会校验，且该键不会传给数据库）。"
+    "用户口头「用 SQLite 工具帮我改」**不**等于已签批——仍须先悬挂请示或确认其已书面同意。"
+)
+
+# 全量 ReAct 页脚：防止对工作区内 DB/表行「无 Observation 却断言」（与 MCP 是否启用正交：无工具须明说不能查）
+REACT_FOOTER_FACTUAL_DB_BLOCK = (
+    "【工作区可核验数据】当用户问及 workspace 内 *.sqlite、数据库表内容、库存、缺货、行级数量等**可核验事实**时："
+    "若当前可见工具中存在 **MCP SQLite / 数据库只读类**或可通过 **core:shell_exec** 等执行**只读**查询，"
+    "你必须**先在本轮调用工具**并取得 Observation，再据 Observation 作答；"
+    "禁止仅凭被动「本地记忆」、上文闲聊或推测填写表数据。"
+    "「缺货」若用户未另行定义，默认指数量字段为 **0** 的条目；须在 **SQL 中表达该条件**（例如 WHERE quantity=0，列名以实际表为准；"
+    "未知列名时可先用只读 PRAGMA table_info 或 LIMIT 1 探查），**禁止**仅靠 SELECT * 拉全表再在自然语言里「看图猜谁缺货」。"
+    "列举缺货项须与 Observation 返回的行逐条一致，不得把第一行或随机行说成缺货。"
+    "若工具列表中**没有任何**可用的数据库只读能力，须在 Final Answer 中明确说明当前无法访问该库，并请用户检查 MCP（如 official-sqlite-npx）或配置，**禁止编造查询结果或假装已查库**。"
+)
+REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM = (
+    "【DB 事实】*.sqlite/表数据：须先工具只读查询、有 Observation 再答；无 DB 工具则明说无法查库，禁止编造。\n"
+)
+
+
+def _tools_include_sqlite_mcp(tools: list[dict[str, Any]] | None) -> bool:
+    """是否可见 MCP SQLite（官方 read_query/write_query 或 id 含 sqlite）。"""
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or "").strip().lower()
+        if "sqlite" in tid:
+            return True
+        if tid.startswith("mcp:"):
+            r = tid[4:].strip().lower()
+            if r in ("read_query", "write_query"):
+                return True
+    return False
 
 
 def _react_engine_for_iteration(
@@ -2146,6 +2192,30 @@ Final Answer: <最终回复>
             )
         except ImportError:
             pass
+    if not pure_json_contract and _tools_include_sqlite_mcp(tools):
+        try:
+            from l3_node.prompt_sqlite_sop import (
+                SQLITE_ACTOR_CRITIC_STUB_NOTE,
+                SQLITE_REACT_SOP_BLOCK,
+                SQLITE_SELF_CRITIC_BLOCK,
+            )
+
+            suffix_chunks.append(
+                SuffixChunk("high", "sqlite_react_sop", f"\n{SQLITE_REACT_SOP_BLOCK}\n", eviction_rank=92)
+            )
+            suffix_chunks.append(
+                SuffixChunk("high", "sqlite_self_critic", f"\n{SQLITE_SELF_CRITIC_BLOCK}\n", eviction_rank=92)
+            )
+            suffix_chunks.append(
+                SuffixChunk(
+                    "mid",
+                    "sqlite_critic_arch_note",
+                    f"\n{SQLITE_ACTOR_CRITIC_STUB_NOTE}\n",
+                    eviction_rank=35,
+                )
+            )
+        except ImportError:
+            pass
     if not pure_json_contract:
         if (local_mem or "").strip():
             suffix_chunks.append(
@@ -2185,11 +2255,20 @@ Final Answer: <最终回复>
         if (hr_hint or "").strip():
             suffix_chunks.append(SuffixChunk("high", "hr_tool_routing", hr_hint, eviction_rank=55))
         if slim_mode:
+            _slim_sqlite = ""
+            if _tools_include_sqlite_mcp(tools):
+                try:
+                    from l3_node.prompt_sqlite_sop import SQLITE_REACT_SOP_BLOCK_SLIM
+
+                    _slim_sqlite = SQLITE_REACT_SOP_BLOCK_SLIM
+                except ImportError:
+                    pass
             _react_footer_body = (
                 "【记忆】被动注入仅供参考；事实以 recall_memory / core:local_memory_search 为准。\n"
                 "【输出】工具执行后须给出 Final Answer。若用户要求仅 JSON/固定结构，Final Answer 后只写该结构，"
                 "禁止井号标题行与无关套话。\n"
                 "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
+                f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{_slim_sqlite}"
             )
         else:
             _react_footer_body = (
@@ -2199,7 +2278,11 @@ Final Answer: <最终回复>
                 "撤销用 **core:safety_lock_remove**（entry_id）；查看队列 **core:safety_lock_list_pending**。\n"
                 "注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。"
                 "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
+                f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n"
             )
+        # 与 [ENVIRONMENT_REPORT] / 参谋长人设同条件：页脚最末追加，优先于其它后缀块被保留（eviction_rank=100）
+        if chief_advisor_mode:
+            _react_footer_body += CHIEF_ADVISOR_LOGIC_VALIDATION_BLOCK
         suffix_chunks.append(
             SuffixChunk(
                 "high",
@@ -2406,6 +2489,7 @@ async def _invoke_react_tool(
         _inp[:500],
         "…(truncated)" if len(_inp) > 500 else "",
     )
+    _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
         if _gb is not None:
@@ -2440,37 +2524,64 @@ async def _invoke_react_tool(
         and not channel_exempt_from_timeout(ch, cfg)
         and not tool_bypasses_foreground_timeout(tool, cfg, mcp_declares_long_running=mcp_lr)
     )
-    if tool in mcp_registry.known_mcp_tools:
-        if use_timeout:
+    _is_mcp = tool in mcp_registry.known_mcp_tools
+    exec_trace(
+        logger,
+        "工具调度开始 trace=%s run_id=%s tool=%s mcp=%s use_timeout=%s sync_limit_s=%s inp_len=%d",
+        _rtrace,
+        (getattr(ctx, "run_id", "") or "")[:12],
+        (tool or "")[:160],
+        _is_mcp,
+        use_timeout,
+        sec if use_timeout else 0.0,
+        len(_inp),
+    )
+    _out: str | None = None
+    try:
+        if _is_mcp:
+            if use_timeout:
+                try:
+                    _out = await asyncio.wait_for(
+                        mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills),
+                        timeout=sec,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
+                        "MCP/线程内阻塞仍可能继续，无法强制终止；见长文档）",
+                        tool,
+                        sec,
+                    )
+                    _out = _foreground_tool_timeout_json(tool, sec)
+            else:
+                _out = await mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills)
+        elif use_timeout:
             try:
-                return await asyncio.wait_for(
-                    mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills),
+                _out = await asyncio.wait_for(
+                    asyncio.to_thread(run_tool, tool, inp, allowed_skills),
                     timeout=sec,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
                     "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
-                    "MCP/线程内阻塞仍可能继续，无法强制终止；见长文档）",
+                    "to_thread 内同步调用仍可能继续，无法强制终止；见长文档）",
                     tool,
                     sec,
                 )
-                return _foreground_tool_timeout_json(tool, sec)
-        return await mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills)
-    if use_timeout:
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(run_tool, tool, inp, allowed_skills),
-                timeout=sec,
+                _out = _foreground_tool_timeout_json(tool, sec)
+        else:
+            _out = run_tool(tool, inp, allowed_skills)
+        return _out
+    finally:
+        if _out is not None:
+            exec_trace(
+                logger,
+                "工具调度结束 trace=%s tool=%s elapsed_ms=%.0f out_len=%d",
+                _rtrace,
+                (tool or "")[:160],
+                (time.perf_counter() - _t0) * 1000.0,
+                len(_out),
             )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "[L3 Agent] 前台工具超时 tool=%s limit=%ss（wait_for 已返回；"
-                "to_thread 内同步调用仍可能继续，无法强制终止；见长文档）",
-                tool,
-                sec,
-            )
-            return _foreground_tool_timeout_json(tool, sec)
-    return run_tool(tool, inp, allowed_skills=allowed_skills)
 
 
 def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: str) -> None:
@@ -2535,6 +2646,14 @@ async def _run_react_core(
         ctx.current_response = ""
         ctx.parsed_action = None
         ctx.observation = ""
+        exec_trace(
+            logger,
+            "ReAct 轮次开始 trace=%s iter=%d/%d run_id=%s",
+            ctx.metadata.get("_react_step_trace"),
+            iteration + 1,
+            max_iterations,
+            (ctx.run_id or "")[:12],
+        )
 
         # strict 写后 verify：硬只读轮 —— 重载 system 与可见工具列表
         if ctx.metadata.get("_react_system_prompt_full") is None:
@@ -2654,6 +2773,13 @@ async def _run_react_core(
             raise
 
         ctx.current_response = response
+        exec_trace(
+            logger,
+            "ReAct LLM 返回 trace=%s iter=%d response_len=%d",
+            str(ctx.metadata.get("_react_step_trace") or ""),
+            iteration + 1,
+            len(response or ""),
+        )
 
         try:
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -3865,6 +3991,14 @@ async def run_agent(
                 _gateway_sniffer_ws = str(_gwv).strip()
                 break
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
+    exec_trace(
+        logger,
+        "run_agent 开始 run_id=%s channel=%s input_len=%d history_msgs=%d",
+        run_id[:12],
+        (_bg_channel or "-"),
+        len(user_input or ""),
+        len(messages),
+    )
     allowed = _allowed_skills_override if _allowed_skills_override is not None else _get_allowed_skills()
     # 优先使用 _session_messages（多轮对话），否则用 _initial_messages（须先于 MCP 拉取与 Gateway 流水线）
     if _session_messages is not None:
@@ -3903,6 +4037,7 @@ async def run_agent(
                 run_id=run_id,
                 workspace_dir=_gateway_sniffer_ws,
             )
+            exec_trace(logger, "网关入站流水线完成 run_id=%s", run_id[:12])
             try:
                 from l3_node.intent_gateway.config import get_intent_gateway_config
                 from l3_node.intent_gateway.format_signals_cache import (
@@ -4000,6 +4135,13 @@ async def run_agent(
         gateway_bundle=_gateway_bundle,
         bg_channel=_bg_channel or None,
         logger=logger,
+    )
+    exec_trace(
+        logger,
+        "工具列表就绪 run_id=%s count=%d bg_channel=%s",
+        run_id[:12],
+        len(tools),
+        (_bg_channel or "-"),
     )
     try:
         from l3_node.local_memory import next_prompt_cycle
@@ -4257,6 +4399,7 @@ async def run_agent(
                 _ood_gate.surface_label,
                 _ood_gate.surface_score,
             )
+            exec_trace(logger, "OOD 硬拦截直接返回 run_id=%s reason=%s", run_id[:12], (_ood_gate.reason or "")[:120])
             messages.append({"role": "user", "content": user_input})
             _ood_reply = get_ood_hard_block_reply()
             messages.append({"role": "assistant", "content": _ood_reply})
@@ -4319,6 +4462,12 @@ async def run_agent(
                         "[L3 Agent] L1.5 semantic_ood 拒答 conf=%.2f reason=%s",
                         _sem_res.confidence,
                         (_sem_res.reason_short or "")[:120],
+                    )
+                    exec_trace(
+                        logger,
+                        "semantic_ood 拒答直接返回 run_id=%s conf=%.2f",
+                        run_id[:12],
+                        float(_sem_res.confidence),
                     )
                     messages.append({"role": "user", "content": user_input})
                     _sem_reply = get_semantic_ood_reject_reply()
@@ -4458,6 +4607,7 @@ async def run_agent(
                 clear_slot_filling_abort_pending(_gateway_bundle)
         except Exception as e:
             logger.debug("[L3 Agent] abort_slot_chat_fallback 跳过: %s", e)
+        exec_trace(logger, "preflight 短路返回 run_id=%s out_len=%d", run_id[:12], len(_early or ""))
         return _early
 
     try:
@@ -4532,6 +4682,7 @@ async def run_agent(
                 _direct_json,
                 _direct_model_ov or "-",
             )
+            exec_trace(logger, "direct_llm_bypass 开始 run_id=%s json_object=%s", run_id[:12], _direct_json)
             try:
                 _db_out = await _run_direct_llm_completion(
                     messages=messages,
@@ -4550,9 +4701,11 @@ async def run_agent(
                     _session_messages.clear()
                     _recent_db = messages[-30:] if len(messages) > 30 else messages
                     _session_messages.extend(_recent_db)
+                exec_trace(logger, "direct_llm_bypass 完成 run_id=%s out_len=%d", run_id[:12], len(_db_out or ""))
                 return _apply_hr_recruitment_final_answer_table_sync(_db_out, _DirectBypassCtx())
             except Exception as _e_db:
                 logger.warning("[L3 Agent] direct_llm_bypass 失败，回退 ReAct: %s", _e_db)
+                exec_trace(logger, "direct_llm_bypass 失败回退 ReAct run_id=%s err=%s", run_id[:12], str(_e_db)[:200])
                 if _bg_channel == "background_task":
                     system_prompt = _build_system_prompt(
                         tools=tools,
@@ -4674,7 +4827,21 @@ async def run_agent(
             await next_fn()
 
         pipeline.use(on_intent_mw).use(react_mw).use(pre_resp_mw)
+        exec_trace(
+            logger,
+            "ReAct 管道开始 run_id=%s max_iter=%d tools=%d",
+            run_id[:12],
+            max_iterations,
+            len(tools),
+        )
         await pipeline.execute(ctx)
+        exec_trace(
+            logger,
+            "ReAct 管道结束 run_id=%s aborted=%s final_len=%d",
+            run_id[:12],
+            bool(getattr(ctx, "aborted", False)),
+            len(ctx.final_answer or ""),
+        )
 
         # 多轮对话：将完整对话写回 _session_messages，供下一轮复用（含上一轮 Assistant 的 JSON 草案等）
         if _session_messages is not None:

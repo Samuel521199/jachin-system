@@ -1,0 +1,3 @@
+{"q": "哪个水果缺货", "sql": "SELECT item FROM inventory WHERE quantity = 0", "tags": ["inventory", "缺货", "水果"]}
+{"q": "库存表里数量为 0 的商品", "sql": "SELECT item, quantity FROM inventory WHERE quantity = 0", "tags": ["inventory", "缺货"]}
+{"q": "低库存的水果有哪些", "sql": "SELECT item, quantity FROM inventory WHERE quantity > 0 AND quantity < 10", "tags": ["低库存", "inventory"]}

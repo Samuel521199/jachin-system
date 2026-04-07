@@ -1,0 +1,27 @@
+{
+  "mcp_servers": [
+    {
+      "id": "official-fetch-npx",
+      "name": "MCP Fetch（官方 npx，网页阅读）",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    },
+    {
+      "id": "official-sqlite-npx",
+      "name": "MCP SQLite（官方 npx，压测库）",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite",
+        "--db-path",
+        "__JACHIN_WORKSPACE__/test_db.sqlite"
+      ]
+    },
+    {
+      "id": "official-memory-npx",
+      "name": "MCP Memory（官方 npx，知识图谱）",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    }
+  ]
+}

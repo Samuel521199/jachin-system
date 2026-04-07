@@ -5,7 +5,7 @@
 - 澄清：~/.jachin/workspace/clarification_pending.json（列表，注入 System Prompt）
 - P1+：`coordinate_native_tool_dispatch`（默认 true）— 协同子任务 input_data.type=native_tool 时直接 run_tool
 - 后台 shell：`l3_node/shell_jobs.py`，配置见 `shell_background_max_jobs`、`shell_job_cancel_enabled` 等
-- 配置：~/.jachin/nexus_config.json → intelligence_p1 段
+- 配置：~/.jachin/nexus_config.json → intelligence_p1 段（可选 `destructive_shell_requires_task_plan`：docker prune / 部分 DDL 须先有 task_plan.md）
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import uuid
+import re
 from pathlib import Path
 from typing import Any
 
@@ -232,6 +233,25 @@ _DEFAULT_SHELL_BLOCKLIST = [
 ]
 
 
+def _command_matches_destructive_task_plan_gate(command: str) -> bool:
+    """
+    与 task_plan.md 门禁配套的「毁灭性」启发式（避免误伤 git prune 等）。
+    命中时若启用 destructive_shell_requires_task_plan，则要求 task_plan 已实质落盘。
+    """
+    c = (command or "").strip().lower()
+    if not c:
+        return False
+    if re.search(r"docker\s+.{0,240}\bprune\b", c, re.DOTALL):
+        return True
+    if re.search(r"\bpodman\s+.{0,240}\bprune\b", c, re.DOTALL):
+        return True
+    if re.search(r"\btruncate\s+table\b", c):
+        return True
+    if re.search(r"\bdrop\s+(?:database|table|schema)\b", c):
+        return True
+    return False
+
+
 def assert_shell_exec_allowed(command: str) -> None:
     """
     根据 intelligence_p1 校验 shell 命令；不通过时 raise ValueError。
@@ -249,6 +269,22 @@ def assert_shell_exec_allowed(command: str) -> None:
             continue
         if pat.lower() in lowered:
             raise ValueError(f"shell_exec 已拦截危险模式: {pat!r}")
+
+    # 须在 restricted 早退之前执行：open 模式下也应能拦 docker prune / DDL 等（由配置显式开启）
+    if bool(cfg.get("destructive_shell_requires_task_plan", False)):
+        if _command_matches_destructive_task_plan_gate(cmd):
+            try:
+                from l3_node.task_planning import task_plan_is_substantial
+
+                if not task_plan_is_substantial():
+                    raise ValueError(
+                        "高危清理/DDL 类 shell：已启用 destructive_shell_requires_task_plan，"
+                        "须先在 workspace 落盘 task_plan.md（目标范围、清理策略、风险与回滚）后再执行。"
+                    )
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.debug("[P1] destructive_shell task_plan 门检查失败: %s", e)
 
     mode = str(cfg.get("shell_exec_mode", "open") or "open").lower()
     if mode != "restricted":

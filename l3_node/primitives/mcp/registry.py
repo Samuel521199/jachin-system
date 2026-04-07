@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from l3_node.exec_trace import exec_trace
 from l3_node.paths import get_app_root
 
 logger = logging.getLogger(__name__)
@@ -1671,14 +1672,36 @@ class MCPToolRegistry:
             tool_id,
             len(action_input or ""),
         )
+        exec_trace(
+            logger,
+            "MCP invoke 开始 trace=%s tool_id=%s inp_len=%d",
+            _inv_trace,
+            (tool_id or "")[:160],
+            len(action_input or ""),
+        )
         _cached = try_get_cached(tool_id, action_input)
         if _cached is not None:
+            exec_trace(
+                logger,
+                "MCP invoke 缓存命中 trace=%s tool_id=%s out_len=%d",
+                _inv_trace,
+                (tool_id or "")[:160],
+                len(_cached or ""),
+            )
             return _cached
 
         out = await self._invoke_impl(
             tool_id, action_input, timeout=timeout, allow_l2_delegate=allow_l2_delegate
         )
-        return store_if_cacheable(tool_id, action_input, out)
+        out = store_if_cacheable(tool_id, action_input, out)
+        exec_trace(
+            logger,
+            "MCP invoke 结束 trace=%s tool_id=%s out_len=%d",
+            _inv_trace,
+            (tool_id or "")[:160],
+            len(out or ""),
+        )
+        return out
 
     async def _bridge_atomic_file_mcp_to_native(
         self, tool_id: str, action_input: str
@@ -2083,6 +2106,31 @@ class MCPToolRegistry:
             if _rn and _mgr.can_invoke_stdio_tool(_rn):
                 _parsed_stdio = self._parse_action_input(action_input)
                 _args = normalize_mcp_schema_aliases(_rn, _parsed_stdio)
+                try:
+                    from l3_node.primitives.mcp.sqlite_write_guard import (
+                        check_sqlite_mcp_blocked,
+                        strip_write_ack_for_mcp,
+                    )
+
+                    _sq_block, _sq_msg = check_sqlite_mcp_blocked(tool_id, _rn, _args)
+                    if _sq_block:
+                        logger.warning(
+                            "[MCP Registry] sqlite_write_guard 拦截 tool_id=%s raw=%s",
+                            tool_id,
+                            _rn,
+                        )
+                        return json.dumps(
+                            {
+                                "status": "blocked",
+                                "error": "sqlite_write_guard",
+                                "tool": _rn,
+                                "message": _sq_msg,
+                            },
+                            ensure_ascii=False,
+                        )
+                    _args = strip_write_ack_for_mcp(_args)
+                except Exception as _sg_e:
+                    logger.debug("[MCP Registry] sqlite_write_guard 跳过: %s", _sg_e)
                 _log_mcp_invoke_diagnostic(tool_id, _rn, action_input, _parsed_stdio, _args)
                 if _rn in _MCP_STDIO_WRITE_RAW:
                     _pv = _args.get("path")
@@ -2213,6 +2261,32 @@ class MCPToolRegistry:
             arguments = normalize_mcp_schema_aliases(raw_name, arguments)
         except Exception:
             pass
+
+        try:
+            from l3_node.primitives.mcp.sqlite_write_guard import (
+                check_sqlite_mcp_blocked,
+                strip_write_ack_for_mcp,
+            )
+
+            _sq_block_l2, _sq_msg_l2 = check_sqlite_mcp_blocked(tool_id, raw_name, arguments)
+            if _sq_block_l2:
+                logger.warning(
+                    "[MCP Registry] sqlite_write_guard(L2) 拦截 tool_id=%s raw=%s",
+                    tool_id,
+                    raw_name,
+                )
+                return json.dumps(
+                    {
+                        "status": "blocked",
+                        "error": "sqlite_write_guard",
+                        "tool": raw_name,
+                        "message": _sq_msg_l2,
+                    },
+                    ensure_ascii=False,
+                )
+            arguments = strip_write_ack_for_mcp(arguments)
+        except Exception as _sg2_e:
+            logger.debug("[MCP Registry] sqlite_write_guard(L2) 跳过: %s", _sg2_e)
 
         _log_mcp_invoke_diagnostic(
             tool_id, raw_name, action_input, _parsed_before_alias, arguments

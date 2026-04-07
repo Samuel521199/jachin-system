@@ -162,6 +162,12 @@ def format_environment_report_for_prompt(report: Any) -> str:
     mem = str(report.get("memory_excerpt") or "").strip()
     if mem:
         parts.append("【本地经验（检索摘要）】\n" + mem)
+    dbs = str(report.get("db_semantics_snippet") or "").strip()
+    if dbs:
+        parts.append("【业务语义层 · db_semantics.md】\n" + dbs)
+    gfs = str(report.get("golden_sql_fewshot") or "").strip()
+    if gfs:
+        parts.append("【Golden SQL 少样本（工作区 golden_sql_examples.jsonl）】\n" + gfs)
     if not parts:
         return ""
     body = "\n\n".join(parts)
@@ -211,13 +217,58 @@ async def build_environment_report(
         mem_task,
     )
 
+    try:
+        from l3_node.intent_gateway.config import get_intent_gateway_config
+
+        _ig_sn = get_intent_gateway_config()
+        _db_ctx_on = bool(_ig_sn.get("context_sniffer_workspace_db_context_enabled", True))
+        try:
+            _sem_mc = int(_ig_sn.get("context_sniffer_db_semantics_max_chars", 480))
+        except (TypeError, ValueError):
+            _sem_mc = 480
+        try:
+            _gold_mc = int(_ig_sn.get("context_sniffer_golden_sql_max_chars", 520))
+        except (TypeError, ValueError):
+            _gold_mc = 520
+        try:
+            _gold_ne = int(_ig_sn.get("context_sniffer_golden_sql_max_examples", 3))
+        except (TypeError, ValueError):
+            _gold_ne = 3
+    except Exception:
+        _db_ctx_on, _sem_mc, _gold_mc, _gold_ne = True, 480, 520, 3
+
+    _reserve = 0
+    if _db_ctx_on:
+        _reserve = max(0, _sem_mc) + max(0, _gold_mc) + 32
+    _classic_max = max(200, int(max_total_chars) - _reserve)
+
     merged = _apply_total_budget(
         str(git_info.get("combined") or ""),
         safety_raw,
         mem_text,
-        max_total=max_total_chars,
+        max_total=_classic_max,
         max_git=max_git_chars,
     )
+
+    sem_snip = ""
+    gold_snip = ""
+    if _db_ctx_on:
+        try:
+            from l3_node.intent_gateway.workspace_db_context import build_workspace_db_context_bundle
+
+            _bundle = build_workspace_db_context_bundle(
+                workspace_dir,
+                ui,
+                semantics_max_chars=max(0, _sem_mc),
+                golden_max_chars=max(0, _gold_mc),
+                golden_max_examples=max(1, _gold_ne),
+            )
+            sem_snip = _bundle.get("db_semantics_snippet") or ""
+            gold_snip = _bundle.get("golden_sql_fewshot") or ""
+        except Exception as e:
+            logger.debug("[ContextSniffer] workspace_db_context 跳过: %s", e)
+
+    _total_all = int(merged["total_chars"]) + len(sem_snip) + len(gold_snip)
 
     report: dict[str, Any] = {
         "ok": True,
@@ -229,11 +280,14 @@ async def build_environment_report(
         "safety_lock_snippet": merged["safety_lock_snippet"],
         "memory_excerpt": merged["memory_excerpt"],
         "memory_hits_meta": mem_hits,
+        "db_semantics_snippet": sem_snip,
+        "golden_sql_fewshot": gold_snip,
         "meta": {
             "truncated": merged["truncated"],
-            "total_chars": merged["total_chars"],
+            "total_chars": _total_all,
             "max_total_chars": max_total_chars,
             "workspace_dir": workspace_dir[:200],
+            "workspace_db_context_enabled": _db_ctx_on,
         },
     }
     _emit_status(on_step, run_id, "✓ 环境嗅探完成，已写入网关上下文（受字符预算约束）。")

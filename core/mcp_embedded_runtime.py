@@ -14,7 +14,8 @@ MCP stdio 子进程用的嵌入式 Python / Node 路径解析与预检。
 便携包 JACHIN_APP_ROOT/runtime → ~/.jachin/runtime →
 frozen 下 exe 旁 runtime/ → 系统 PATH（python/python3/node）。
 
-占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__
+占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__、__JACHIN_WORKSPACE__
+（后者展开为 ``~/.jachin/workspace`` 或 ``$JACHIN_HOME/workspace`` 的绝对路径，供 MCP 如 server-sqlite 的 ``--db-path``）
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN_PYTHON = "__JACHIN_MCP_PYTHON__"
 TOKEN_NODE = "__JACHIN_MCP_NODE__"
+TOKEN_WORKSPACE = "__JACHIN_WORKSPACE__"
 
 
 def _jachin_home() -> Path:
@@ -155,6 +157,9 @@ def inject_embedded_tokens(s: str) -> str:
         out = out.replace(TOKEN_PYTHON, get_effective_mcp_python_command())
     if TOKEN_NODE in out:
         out = out.replace(TOKEN_NODE, get_effective_mcp_node_command())
+    if TOKEN_WORKSPACE in out:
+        ws = str((_jachin_home() / "workspace").resolve())
+        out = out.replace(TOKEN_WORKSPACE, ws)
     return out
 
 
@@ -217,7 +222,7 @@ def preflight_mcp_stdio_command(command: str, server_id: str) -> tuple[bool, str
 
 
 def resolve_mcp_cfg_placeholders(cfg: dict[str, Any]) -> dict[str, Any]:
-    """解析配置中 command、args、env 字符串里的 __JACHIN_MCP_*__ 占位符。"""
+    """解析配置中 command、args、env 字符串里的 __JACHIN_MCP_*__ / __JACHIN_WORKSPACE__ 占位符。"""
     out = dict(cfg)
     cmd = out.get("command")
     if isinstance(cmd, str):

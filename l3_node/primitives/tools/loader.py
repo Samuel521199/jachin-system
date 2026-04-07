@@ -1399,5 +1399,19 @@ def build_tools_description(tools: list[dict[str, Any]]) -> str:
             param_hint += " 【文件类 MCP】键名须为 `path`，不要用 `file_path`。"
             if raw in ("write_file", "edit_file", "create_file"):
                 param_hint += " `path` 与 `content` 均须提供。"
+        if raw == "write_query":
+            param_hint += (
+                " 【SQLite·写门禁】数据变更前须先按参谋长格式向统帅悬挂请示；获准后在**本条** JSON 内增加 "
+                "`jachin_mcp_write_ack`: true，否则调用会被系统拦截。该键仅用于 Jachin 门禁，不会传给数据库。"
+            )
+        elif raw == "read_query":
+            param_hint += (
+                " 【SQLite·只读】`query` 须为 SELECT。用户问「缺货」时应在 SQL 中体现条件（如 WHERE quantity=0 "
+                "或与表列名一致），勿依赖 SELECT * 再在文中猜谁缺货。"
+            )
+        elif "sqlite" in (tid or "").lower():
+            param_hint += (
+                " 【SQLite 相关】含写语句时须签批并在 JSON 中带 `jachin_mcp_write_ack`: true；只读请用 SELECT。"
+            )
         lines.append(f"- {tid} ({t.get('label', tid)}): {desc}{param_hint}")
     return "\n".join(lines) if lines else "（无可用工具）"

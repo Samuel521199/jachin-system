@@ -16,6 +16,7 @@ L3 节点独立运行入口
   JACHIN_L3_LOCAL_ONLY: 1/true 时 MCP 工具列表不合并 L2，且 invoke 禁止转发 L2（与上条「禁止 L2」叠加语义一致）。
   JACHIN_L3_CONSOLE: Windows 下是否弹出独立控制台。1/true 强制开启；0/false 强制关闭。
     未设置时：PyInstaller 打包 exe 默认开启（便于目标机看日志）；源码运行默认关闭。
+  JACHIN_EXEC_TRACE_STDERR: 0/false/off 关闭 [JachinExec] 执行里程碑的 stderr 同步打印（默认开启，便于 PowerShell 排障）。
 """
 from __future__ import annotations
 

@@ -24,7 +24,8 @@ _DEFAULT: dict[str, Any] = {
     "dag_splitting_fallback_heuristic": True,
     "attachment_l2_bytes_threshold": 524288,
     "ood_veto_direct_bypass_enabled": True,
-    # §12.4：混合注入 / 键盘乱码 — 硬拦截整轮 LLM（默认开）
+    # §12.4 总闸：关则表面 OOD 不硬拦、不因 surface 分数否决直连 bypass（多轮压测/降噪时可关）
+    "ood_surface_gate_enabled": False,
     "ood_mixed_injection_enabled": True,
     "ood_hard_block_llm_enabled": True,
     # 提高默认阈值：仅高置信（键盘游走/重复拉丁等）硬拦，减少正常中英技术句误杀
@@ -98,6 +99,11 @@ _DEFAULT: dict[str, Any] = {
     "context_sniffer_max_git_chars": 500,
     # 嗅探完成后写入 intent_tracker.jsonl（correlation_id / run_id 审计）
     "context_sniffer_tracker_enabled": True,
+    # 工作区 db_semantics.md + golden_sql_examples.jsonl 注入 [ENVIRONMENT_REPORT]（语义层 + 关键词 Few-Shot）
+    "context_sniffer_workspace_db_context_enabled": True,
+    "context_sniffer_db_semantics_max_chars": 480,
+    "context_sniffer_golden_sql_max_chars": 520,
+    "context_sniffer_golden_sql_max_examples": 3,
     # 参谋长人设 + [ENVIRONMENT_REPORT] 注入（关则仍可有 environment_report 数据但不注入 prompt）
     "chief_advisor_prompt_enabled": True,
     # 子意图 DAG 拓扑校验结果写入 intent_tracker（run_id 关联）

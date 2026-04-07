@@ -1,6 +1,8 @@
 """
 §12.4 OOD / UNKNOWN：否决直连 completion；对「高置信键盘游走/重复拉丁/乱码」硬拦截整轮 LLM。
 正常一段话式中英技术需求不因「混排」误拦；分类面 OOD 第二路优先用 bundle「当前路由/用户句」而非短记忆拼接全文。
+
+mixed_injection：技术实体白名单（*.log、docker 等）先豁免；短输入（<100 字）提高贴标分位，含 JWT/Base64 等载荷时仍用原阈值以兼容运维豁免链。
 """
 from __future__ import annotations
 
@@ -65,6 +67,29 @@ _NATURAL_TASK_HINT_RE = re.compile(
 
 # mixed_injection 标签最低分（与 hard_min 解耦：标签要「够毒」才贴 mixed）
 _MIXED_INJECTION_LABEL_MIN_SCORE = 0.82
+# 短句（口语 + 文件名/API 等）提高 mixed 贴标门槛，降低「error.log」类误杀
+_SHORT_INPUT_MIXED_LEN_MAX = 100
+_SHORT_INPUT_MIXED_THRESHOLD = 0.95
+
+# --- 技术实体白名单：常见文件名与 CLI/栈词汇，勿当「中英夹带注入」---
+# 左侧用 ASCII 负向环视，避免 CJK 与 error.log 黏连时被当成「扩展名」误匹配失败
+_TECH_FILE_EXT_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_./-])[\w.-]{1,80}\.(?:log|txt|md|py|js|mjs|cjs|ts|tsx|jsx|json|ya?ml|xml|sh|bash|zsh|"
+    r"env|toml|lock|ini|cfg|conf|properties|gradle|kt|java|go|rs|cpp|c|h|hpp|cs|rb|php|sql|"
+    r"vue|svelte|css|scss|less|html?|wasm|so|dll|exe|zip|tar|gz|tgz|7z|pkg|deb|rpm|ipa|apk|"
+    r"pem|crt|key|p12|jks|keystore|patch|diff|svg|ico|webp|jpe?g|png|gif|pdf)\b"
+)
+_TECH_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:docker|dockerfile|docker-compose|git|github|gitlab|kubectl|k8s|kubernetes|helm|"
+    r"npm|pnpm|yarn|bun|pip|pip3|poetry|conda|cargo|rustc|go\s+mod|maven|gradle|"
+    r"curl|wget|bash|zsh|fish|powershell|pwsh|cmd\.exe|ssh|scp|sftp|rsync|"
+    r"nginx|apache|caddy|traefik|haproxy|postgres|postgresql|psql|mysql|mariadb|sqlite|"
+    r"mongo|redis|elastic|kafka|rabbitmq|grpc|graphql|rest|openapi|swagger|oauth|oidc|jwt|saml|ldap|"
+    r"prometheus|grafana|loki|datadog|splunk|jira|confluence|jenkins|gitlab-ci|github\s+actions|"
+    r"terraform|ansible|pulumi|vim|nvim|emacs|vscode|idea|linux|ubuntu|debian|centos|rhel|"
+    r"windows|win32|darwin|macos|aarch64|x86_64|amd64|arm64|"
+    r"stack\s*trace|stacktrace|errno|traceback|segmentation\s+fault|core\s+dump|null\s*pointer)\b"
+)
 
 
 def _latin_letter_ratio(t: str) -> float:
@@ -112,62 +137,6 @@ def _repeated_short_token_score(t: str) -> float:
     return 0.0
 
 
-def surface_ood_class(text: str) -> Tuple[str, float]:
-    """
-    返回 (label, score)。label 含 normal | ood_gibberish | ood_unknown_short | ood_keyboard_mash | ood_mixed_injection。
-    score 越高越异常。
-    """
-    t = (text or "").strip()
-    if not t:
-        return "normal", 0.0
-    n = len(t)
-    if n > 8000:
-        t = t[:8000]
-        n = len(t)
-
-    # --- 混合注入：仅在高置信「拉丁噪声」特征下贴标；正常一段话技术需求不进入 ---
-    has_cjk = bool(_CJK_RE.search(t))
-    lat_r = _latin_letter_ratio(t)
-    if has_cjk and lat_r >= 0.14 and n >= 16:
-        if _natural_zh_instruction_exempt_from_mixed(t):
-            pass  # 交由后续键盘/乱码检测；不因「中英混排」单独定罪
-        else:
-            mixed_score = 0.0
-            if _KEYBOARD_SPAM_RE.search(t):
-                mixed_score = max(mixed_score, 0.93)
-            if _REPEATED_LATIN_CHUNK_RE.search(t):
-                mixed_score = max(mixed_score, 0.91)
-            mixed_score = max(mixed_score, _repeated_short_token_score(t))
-            if _LONG_LATIN_NO_SPACE_RE.search(t):
-                mixed_score = max(mixed_score, 0.88)
-            if mixed_score >= _MIXED_INJECTION_LABEL_MIN_SCORE:
-                return "ood_mixed_injection", mixed_score
-
-    # --- 纯键盘游走 / 明显垃圾拉丁（可无中文）---
-    if _KEYBOARD_SPAM_RE.search(t) or _REPEATED_LATIN_CHUNK_RE.search(t):
-        return "ood_keyboard_mash", 0.9
-    if n >= 10 and lat_r >= 0.85 and not has_cjk:
-        if _repeated_short_token_score(t) >= 0.75 or _LONG_LATIN_NO_SPACE_RE.search(t):
-            return "ood_keyboard_mash", 0.88
-
-    printable_hits = sum(1 for c in t if _PRINTABLE_OK.match(c))
-    ratio_print = printable_hits / max(n, 1)
-
-    if ratio_print < 0.45 and n >= 8:
-        return "ood_gibberish", min(1.0, 1.0 - ratio_print + 0.2)
-
-    alnum_cn = sum(1 for c in t if c.isalnum() or "\u4e00" <= c <= "\u9fff")
-    if n <= 6 and alnum_cn < 2:
-        return "ood_unknown_short", 0.85
-
-    if n >= 12:
-        uniq = len(set(t))
-        if uniq <= 3:
-            return "ood_gibberish", 0.7
-
-    return "normal", 0.0
-
-
 def text_has_technical_artifact_signature(text: str) -> bool:
     """
     判断文本是否含典型技术载荷（JWT、长 Base64 行、十六进制摘要、K8s/容器、堆栈、JSON 片段）。
@@ -197,6 +166,87 @@ def text_has_technical_artifact_signature(text: str) -> bool:
 def text_has_ops_diagnostic_framing(text: str) -> bool:
     """用户是否在描述「排查/报错/日志」类运维语境（与 mixed 豁免联用）。"""
     return bool(_DIAGNOSTIC_FRAMING_RE.search(text or ""))
+
+
+def _tech_entity_whitelist_exempt_mixed_injection(t: str) -> bool:
+    """文件名/扩展名与常见技术词：口语中夹带 error.log、docker 等不按 mixed_injection 定罪。"""
+    s = t or ""
+    if _TECH_FILE_EXT_RE.search(s):
+        return True
+    if _TECH_KEYWORD_RE.search(s):
+        return True
+    return False
+
+
+def mixed_injection_label_threshold_for_len(text_len: int, t: str) -> float:
+    """
+    短输入提高 mixed 贴标门槛（宁可漏掉夹带，减少误杀）；
+    已含技术载荷特征时保持原阈值，以免运维粘贴 Base64/堆栈仍被判 mixed 时无法走既有豁免链。
+    """
+    if text_len >= _SHORT_INPUT_MIXED_LEN_MAX:
+        return _MIXED_INJECTION_LABEL_MIN_SCORE
+    if text_has_technical_artifact_signature(t):
+        return _MIXED_INJECTION_LABEL_MIN_SCORE
+    return max(_MIXED_INJECTION_LABEL_MIN_SCORE, _SHORT_INPUT_MIXED_THRESHOLD)
+
+
+def surface_ood_class(text: str) -> Tuple[str, float]:
+    """
+    返回 (label, score)。label 含 normal | ood_gibberish | ood_unknown_short | ood_keyboard_mash | ood_mixed_injection。
+    score 越高越异常。
+    """
+    t = (text or "").strip()
+    if not t:
+        return "normal", 0.0
+    n = len(t)
+    if n > 8000:
+        t = t[:8000]
+        n = len(t)
+
+    # --- 混合注入：仅在高置信「拉丁噪声」特征下贴标；正常一段话技术需求不进入 ---
+    has_cjk = bool(_CJK_RE.search(t))
+    lat_r = _latin_letter_ratio(t)
+    if has_cjk and lat_r >= 0.14 and n >= 16:
+        if _tech_entity_whitelist_exempt_mixed_injection(t):
+            pass  # 技术实体白名单：error.log、docker 等不作 mixed 贴标
+        elif _natural_zh_instruction_exempt_from_mixed(t):
+            pass  # 交由后续键盘/乱码检测；不因「中英混排」单独定罪
+        else:
+            mixed_score = 0.0
+            if _KEYBOARD_SPAM_RE.search(t):
+                mixed_score = max(mixed_score, 0.93)
+            if _REPEATED_LATIN_CHUNK_RE.search(t):
+                mixed_score = max(mixed_score, 0.91)
+            mixed_score = max(mixed_score, _repeated_short_token_score(t))
+            if _LONG_LATIN_NO_SPACE_RE.search(t):
+                mixed_score = max(mixed_score, 0.88)
+            eff_min = mixed_injection_label_threshold_for_len(n, t)
+            if mixed_score >= eff_min:
+                return "ood_mixed_injection", mixed_score
+
+    # --- 纯键盘游走 / 明显垃圾拉丁（可无中文）---
+    if _KEYBOARD_SPAM_RE.search(t) or _REPEATED_LATIN_CHUNK_RE.search(t):
+        return "ood_keyboard_mash", 0.9
+    if n >= 10 and lat_r >= 0.85 and not has_cjk:
+        if _repeated_short_token_score(t) >= 0.75 or _LONG_LATIN_NO_SPACE_RE.search(t):
+            return "ood_keyboard_mash", 0.88
+
+    printable_hits = sum(1 for c in t if _PRINTABLE_OK.match(c))
+    ratio_print = printable_hits / max(n, 1)
+
+    if ratio_print < 0.45 and n >= 8:
+        return "ood_gibberish", min(1.0, 1.0 - ratio_print + 0.2)
+
+    alnum_cn = sum(1 for c in t if c.isalnum() or "\u4e00" <= c <= "\u9fff")
+    if n <= 6 and alnum_cn < 2:
+        return "ood_unknown_short", 0.85
+
+    if n >= 12:
+        uniq = len(set(t))
+        if uniq <= 3:
+            return "ood_gibberish", 0.7
+
+    return "normal", 0.0
 
 
 def _apply_technical_exemption_to_hard_block(
@@ -267,6 +317,9 @@ def evaluate_gateway_ood_gates(
     except Exception:
         cfg = {}
 
+    # 总闸关：不做表面 OOD 硬拦、不因 surface 分数否决直连（embedding 稀疏 veto 仍可由 emb_sparse 触发）
+    surface_gate = bool(cfg.get("ood_surface_gate_enabled", False))
+
     be = bundle_extra or {}
     # 避免「短记忆 + --- + 当前句」整段参与 mixed 表面分：优先用 bundle 注入的当前路由/用户面
     _surf2 = be.get("ood_classification_surface")
@@ -291,14 +344,14 @@ def evaluate_gateway_ood_gates(
             pass
         elif emb_sparse:
             veto_bypass = True
-        elif lab != "normal" and sc >= 0.55:
+        elif surface_gate and lab != "normal" and sc >= 0.55:
             veto_bypass = True
     except Exception:
-        veto_bypass = lab != "normal" and sc >= 0.55
+        veto_bypass = bool(surface_gate and lab != "normal" and sc >= 0.55)
 
     hard_block = False
     reason = ""
-    if hard_on and mixed_on:
+    if surface_gate and hard_on and mixed_on:
         if lab in ("ood_mixed_injection", "ood_keyboard_mash") and sc >= hard_min:
             hard_block = True
             reason = f"{lab}:score={sc:.2f}"
@@ -319,7 +372,11 @@ def evaluate_gateway_ood_gates(
         exemption_on=_tex_on,
     )
 
-    treat_sparse = emb_sparse or (lab in ("ood_mixed_injection", "ood_keyboard_mash") and sc >= max(0.82, hard_min - 0.06))
+    treat_sparse = emb_sparse or (
+        surface_gate
+        and lab in ("ood_mixed_injection", "ood_keyboard_mash")
+        and sc >= max(0.82, hard_min - 0.06)
+    )
 
     return OodGateResult(
         hard_block_llm=hard_block,
@@ -380,5 +437,17 @@ def get_ood_hard_block_reply() -> str:
 
 def user_input_looks_like_mixed_poison(text: str) -> bool:
     """供 classification_llm 等跳过「抠句」扩写。"""
-    lab, sc = surface_ood_class(text or "")
-    return lab in ("ood_mixed_injection", "ood_keyboard_mash") and sc >= _MIXED_INJECTION_LABEL_MIN_SCORE
+    try:
+        from l3_node.intent_gateway.config import get_intent_gateway_config
+
+        if not bool(get_intent_gateway_config().get("ood_surface_gate_enabled", False)):
+            return False
+    except Exception:
+        return False
+    t = (text or "").strip()
+    lab, sc = surface_ood_class(t)
+    if lab == "ood_mixed_injection":
+        return sc >= mixed_injection_label_threshold_for_len(len(t), t)
+    if lab == "ood_keyboard_mash":
+        return sc >= _MIXED_INJECTION_LABEL_MIN_SCORE
+    return False
