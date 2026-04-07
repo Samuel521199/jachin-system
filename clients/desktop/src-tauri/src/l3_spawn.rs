@@ -125,7 +125,15 @@ fn project_root() -> Option<PathBuf> {
     None
 }
 
-const L3_ENV_KEYS: &[&str] = &["DASHSCOPE_API_KEY", "OPENAI_API_KEY", "LITELLM_FALLBACK_MODELS", "LLM_MODEL"];
+const L3_ENV_KEYS: &[&str] = &[
+    "DASHSCOPE_API_KEY",
+    "OPENAI_API_KEY",
+    "LITELLM_FALLBACK_MODELS",
+    "LLM_MODEL",
+    "JACHIN_L3_DEBUG",
+    "L3_VERBOSE_LOG",
+    "LOG_LEVEL",
+];
 
 fn parse_env_file(path: &PathBuf) -> Vec<(String, String)> {
     let mut vars = Vec::new();
@@ -225,7 +233,10 @@ pub fn spawn_l3_via_python(
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let root = project_root().ok_or("无法定位项目根目录 (l3_node)")?;
     let mut cmd = app.shell().command("python").args(["-m", "l3_node"]).args(args);
-    cmd = cmd.env("PYTHONUNBUFFERED", "1").env("PYTHONUTF8", "1");
+    cmd = cmd
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONUTF8", "1")
+        .env("JACHIN_APP_ROOT", root.to_string_lossy().as_ref());
     for (k, v) in load_l3_env_vars(&root) {
         cmd = cmd.env(&k, &v);
     }

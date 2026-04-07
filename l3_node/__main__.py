@@ -156,10 +156,11 @@ trace("configuring logging, level=%s", _log_level)
 _handler = logging.StreamHandler(sys.stdout)
 _handler.setFormatter(_UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logging.basicConfig(level=_log_level, handlers=[_handler], force=True)
-from l3_node.early_log import reattach_file_handler
+from l3_node.early_log import configure_l3_runtime_diagnostics, is_l3_verbose, reattach_file_handler
 reattach_file_handler()  # basicConfig 会清除 file handler，需重新挂载
+configure_l3_runtime_diagnostics()  # JACHIN_L3_DEBUG=1 时 WS/LLM 等 DEBUG 落盘到 l3_debug.log
 logger = logging.getLogger("l3_node")
-trace("logger ready, debug_log=%s", get_log_path())
+trace("logger ready, debug_log=%s verbose=%s", get_log_path(), is_l3_verbose())
 # 将 l3_node 日志转发到全息监控 SSE，供前端 L3 全息监控面板订阅
 try:
     trace("importing log_broadcaster...")
@@ -185,6 +186,10 @@ except Exception as e:
 # 启动时打印 env 状态，便于排查 Key 分配问题（脱敏显示前8+后4字符）
 if _log_path:
     logger.info("[L3] 调试日志: %s", _log_path)
+    if is_l3_verbose():
+        logger.info("[L3] 超详细诊断已开启 (JACHIN_L3_DEBUG/L3_VERBOSE_LOG)，l3_debug.log 将包含 WS/LLM 流式 DEBUG")
+    else:
+        logger.info("[L3] 需要更详细日志时请在 .env 设置 JACHIN_L3_DEBUG=1 后重启 L3")
 _dash_key = os.environ.get("DASHSCOPE_API_KEY", "")
 _openai_key = os.environ.get("OPENAI_API_KEY", "")
 if _dash_key:
@@ -334,10 +339,26 @@ async def main() -> None:
         from l3_node.http_server import run_http_server, L3_HTTP_PORT
         trace("main: starting HTTP server...")
         await run_http_server(port=L3_HTTP_PORT)
-        engine, node_id = await bootstrap_l3_gateway_pending(
-            l2_base_url=l2_url,
-            on_status=lambda s, m: logger.info("[L3 Gateway] %s: %s", s, m),
-        )
+        engine = None
+        node_id = "local-fallback"
+        gateway_l2_ok = False
+        try:
+            engine, node_id = await bootstrap_l3_gateway_pending(
+                l2_base_url=l2_url,
+                on_status=lambda s, m: logger.info("[L3 Gateway] %s: %s", s, m),
+            )
+            gateway_l2_ok = True
+        except RuntimeError as e:
+            msg = str(e)
+            if "无法连接 L2" not in msg and "连接 L2 超时" not in msg:
+                raise
+            logger.warning(
+                "[L3] Gateway 无法连接 L2（%s），自动降级为独立 WebSocket 模式（等同 --ws-only）。"
+                " 桌面聊天将可直连本机大模型；待 L2 可达后请用 --gateway 重启以完成配对与技能订阅。",
+                l2_url,
+            )
+            engine = _create_engine_standalone()
+            node_id = "local-fallback"
         from l3_node.agent_ref import engine_ref
         engine_ref["engine"] = engine
         from l3_node.background_task_service import start_background_task_runtime
@@ -354,20 +375,23 @@ async def main() -> None:
             logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
         except Exception as e:
             logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml", e)
-        heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
+        heartbeat_task = None
         _pull_worker = None
-        if os.environ.get("JACHIN_MCP_PULL_WORKER", "1").strip().lower() not in ("0", "false", "no"):
-            from l3_node.mcp_delegate_pull_worker import run_mcp_delegate_pull_forever
+        if gateway_l2_ok:
+            heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
+            if os.environ.get("JACHIN_MCP_PULL_WORKER", "1").strip().lower() not in ("0", "false", "no"):
+                from l3_node.mcp_delegate_pull_worker import run_mcp_delegate_pull_forever
 
-            _pull_worker = asyncio.create_task(run_mcp_delegate_pull_forever())
+                _pull_worker = asyncio.create_task(run_mcp_delegate_pull_forever())
         try:
             await run_ws_server(engine, run_l3_agent, port=args.port)
         finally:
-            heartbeat_task.cancel()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
             if _pull_worker:
                 _pull_worker.cancel()
                 try:
@@ -393,7 +417,22 @@ async def main() -> None:
     from l3_node.http_server import run_http_server, L3_HTTP_PORT
 
     await run_http_server(port=L3_HTTP_PORT)
-    engine, node_id = await bootstrap_l3_gateway_pending(l2_base_url=l2_url)
+    engine = None
+    node_id = "local-fallback"
+    gateway_l2_ok = False
+    try:
+        engine, node_id = await bootstrap_l3_gateway_pending(l2_base_url=l2_url)
+        gateway_l2_ok = True
+    except RuntimeError as e:
+        msg = str(e)
+        if "无法连接 L2" not in msg and "连接 L2 超时" not in msg:
+            raise
+        logger.warning(
+            "[L3] SUB_ACCOUNT_ID 模式仍无法连接 L2（%s），自动降级为独立 WebSocket 模式。",
+            l2_url,
+        )
+        engine = _create_engine_standalone()
+        node_id = "local-fallback"
     from l3_node.agent_ref import engine_ref
     engine_ref["engine"] = engine
     from l3_node.background_task_service import start_background_task_runtime
@@ -410,20 +449,23 @@ async def main() -> None:
         logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
     except Exception as e:
         logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml", e)
-    heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
+    heartbeat_task = None
     _pull_worker = None
-    if os.environ.get("JACHIN_MCP_PULL_WORKER", "1").strip().lower() not in ("0", "false", "no"):
-        from l3_node.mcp_delegate_pull_worker import run_mcp_delegate_pull_forever
+    if gateway_l2_ok:
+        heartbeat_task = asyncio.create_task(heartbeat_loop(l2_url, node_id, interval_sec=60.0))
+        if os.environ.get("JACHIN_MCP_PULL_WORKER", "1").strip().lower() not in ("0", "false", "no"):
+            from l3_node.mcp_delegate_pull_worker import run_mcp_delegate_pull_forever
 
-        _pull_worker = asyncio.create_task(run_mcp_delegate_pull_forever())
+            _pull_worker = asyncio.create_task(run_mcp_delegate_pull_forever())
     try:
         await run_ws_server(engine, run_l3_agent, port=args.port)
     finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
         if _pull_worker:
             _pull_worker.cancel()
             try:

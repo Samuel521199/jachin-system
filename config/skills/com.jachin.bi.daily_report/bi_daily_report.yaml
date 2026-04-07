@@ -137,7 +137,7 @@ lark_bitable:
     "12_用户活跃_日活占比.csv": "tbl6RtYwVWqnkS2u"     # 日活占比
     "13_用户活跃_新增设备表.csv": "tbluUuhcYkeIP1g4"  # 新增设备数
     # === 平台留存情况 ===
-    "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留率（留存类型, 留存率）
+    "04_留存_次留表.csv": "tblieBOTmvhzqVFG"          # Lark 表名: 次留表（日期, 次留；近7日次日T+1留存%）
     "05_留存_付费用户次留表.csv": "tblc8C8Qs3CjWxpG"   # 付费用户次留表
     "06_留存_周环比表.csv": "tblMZ2XUYURKID3r"        # Lark 表名: 周环比（类型, 留存率）
     "07_留存_付费用户周环比表.csv": "tblVqFqEvDeJ2N7f"  # 付费用户周环比
@@ -200,12 +200,11 @@ distribution:
     enabled: true
     # 定时发送时间（HH:MM），留空则生成后立即发送；填写则等到该时刻再发（可手动修改）
     scheduled_time: ""
-    smtp_host: "smtp.qq.com"
-    smtp_port: 587
-    # 与 .env BI_SMTP_USER / BI_SMTP_PASSWORD、~/.jachin 同名文件三处同步
-    smtp_user: "2105582473@qq.com"
-    smtp_password: "grchforahkyzcfab"
+    smtp_host: "smtp.larksuite.com"
+    smtp_port: 465
+    # 与 .env BI_SMTP_USER / BI_SMTP_PASSWORD、~/.jachin 同名文件三处同步（Lark 邮箱 SSL 发信）
+    smtp_user: "neil@herontech.net"
+    smtp_password: "ktfuGMkSccjM6zho"
     # 收件人列表，写几个就发给几个人（一次性发送给列表内所有邮箱；与 .env BI_SMTP_TO、~/.jachin 同步）
     to_addrs:
-      - "1807301549@qq.com"
       - "vivian@herontech.net"

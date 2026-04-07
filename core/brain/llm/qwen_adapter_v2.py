@@ -89,6 +89,19 @@ def _extract_text_from_content(content: Any) -> str:
     return str(content)
 
 
+def _stream_piece_from_message(message: Any) -> str:
+    """流式单帧：优先 content；qwen3.5 思考链等模型常把可见输出放在 reasoning_content。"""
+    if message is None:
+        return ""
+    text = _extract_text_from_content(getattr(message, "content", None))
+    if text:
+        return text
+    rc = getattr(message, "reasoning_content", None)
+    if rc is not None and str(rc).strip():
+        return str(rc)
+    return ""
+
+
 def _extract_response_content(response) -> str:
     """安全地从 Qwen API 响应中提取内容"""
     if not response or response.status_code != 200:
@@ -108,8 +121,13 @@ def _extract_response_content(response) -> str:
     # 支持旧版本的响应格式：output.choices[0].message.content
     if hasattr(response.output, 'choices') and response.output.choices:
         if response.output.choices[0].message:
-            content = response.output.choices[0].message.content
-            return _extract_text_from_content(content)
+            msg = response.output.choices[0].message
+            text = _extract_text_from_content(msg.content)
+            if text:
+                return text
+            rc = getattr(msg, "reasoning_content", None)
+            if rc is not None and str(rc).strip():
+                return str(rc)
     
     # 如果都不匹配，记录详细信息以便调试
     error_msg = f"Qwen API returned unsupported response format: {response.output}"
@@ -237,8 +255,8 @@ class QwenAdapterV2(BaseLLMProvider):
             for response in responses:
                 if response.status_code == 200:
                     if response.output and response.output.choices:
-                        content = response.output.choices[0].message.content
-                        text = _extract_text_from_content(content)
+                        msg = response.output.choices[0].message
+                        text = _stream_piece_from_message(msg)
                         if text:
                             yield text
                 else:
@@ -314,8 +332,8 @@ class QwenAdapterV2(BaseLLMProvider):
             for response in responses:
                 if response.status_code == 200:
                     if response.output and response.output.choices:
-                        content = response.output.choices[0].message.content
-                        text = _extract_text_from_content(content)
+                        msg = response.output.choices[0].message
+                        text = _stream_piece_from_message(msg)
                         if text:
                             yield text
                 else:

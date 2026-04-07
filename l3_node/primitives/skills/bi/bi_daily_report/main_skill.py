@@ -10,7 +10,7 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 1. **数据新鲜度**：检查 bi.duckdb 是否含今日 _ingested_date；若无则执行 SPA 抓取（spa_collector）并 ingest_csv。抓取前按 `full_spa.report_date_end`（默认昨天）写入统计日期并点「查询/对比查询」，与战报「最新完整日」一致
 2. **数据提纯**：从 DuckDB / raw 按 Lark 表结构（11_LARK_TABLE_SCHEMA.md）与业务规则提炼 CSV：
-   用户活跃（增幅含数值、周统计含老用户、渠道、日活占比、新增设备）、留存四表、消耗（当日金币七列、按游戏）、
+   用户活跃（增幅含数值、周统计含老用户、渠道、日活占比、新增设备）、留存四表（次留表为近 7 日「次日(T+1)留存」）、消耗（当日金币七列、按游戏）、
    充值 SKU（人数、金额及各档位较前一日该档位金额增幅%）、付费汇总、Arpu/Arppu（日运营汇总）、游戏（完成局数/获胜/RTP·GGR/深度参与）
 3. **Lark 同步**：将 output 下 CSV 同步到飞书多维表格（atom_lark_bitable_sync）
 3.4 **KPI 快照卡片**：同步完成后，从同目录 CSV 拼装指标（按 👥/💰/🎮/⚖️ 分组、`---` 分隔、涨跌 🟢/🔻）推送 Lark
@@ -26,9 +26,9 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 | BI 菜单路径 | 页面名称 | slug | 产出表 |
 |-------------|----------|------|--------|
-| 用户数据统计 → 日活统计 | stats_user_dau | 01 DAU增幅、02 日期数量、03a DAU渠道来源 |
+| 用户数据统计 → 日活统计 | stats_user_dau | 01 DAU增幅、02 日期数量（次留列来自 stats_retention_user）、03a DAU渠道来源 |
 | 用户数据统计 → 日新用户统计 | stats_user_new | 01 DNU增幅、02、03b DNU渠道来源、13 新增设备 |
-| 留存数据统计 → 新增用户留存统计 | stats_retention_user | 04 次留表（T+2/T+4/T+6） |
+| 留存数据统计 → 新增用户留存统计 | stats_retention_user | 04 次留表（近 7 日「次日(T+1)留存」） |
 | 留存数据统计 → 新增用户留存对比 | stats_retention_user_compare | 06 周环比（T+1/T+3/T+5） |
 | 留存数据统计 → 新增付费留存统计 | stats_retention_paid | 05 付费用户次留表 |
 | 留存数据统计 → 新增付费留存对比 | stats_retention_paid_compare | 07 付费用户周环比 |
@@ -734,8 +734,8 @@ def _filter_rows_to_single_date(rows: list[dict], date_cands: list[str], t1: str
 
 
 def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str, raw_dir: Path | None = None) -> list[Path]:
-    """用户活跃：01 增幅+数值、02 周统计（含老用户）、03a/03b 渠道（03b 含老用户）、12 日活占比、13 新增设备。
-    数据来源：stats_user_dau、stats_user_new，优先 raw/*.csv。"""
+    """用户活跃：01 增幅+数值、02 周统计（含老用户、次留）、03a/03b 渠道（03b 含老用户）、12 日活占比、13 新增设备。
+    数据来源：stats_user_dau、stats_user_new；02「次留」列与 04 同口径（stats_retention_user 次日 T+1）。"""
     written: list[Path] = []
     q = lambda slug, df=None, dt=None: _query_table_or_raw(conn, raw_dir, slug, df, dt)
 
@@ -801,6 +801,7 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
     dates_dau = sorted([d for d in dau_by_date if d], reverse=True)[:8]
     dates_dnu = sorted([d for d in dnu_by_date if d], reverse=True)[:8]
     all_dates = sorted(set(dates_dau + dates_dnu), reverse=True)[:8]
+    ret_t1_by_date = _retention_user_t1_pct_by_date(conn, raw_dir)
     # 优先取 t1（昨日）：今天 24 号则取 23 号，表中有则用 23 号
     d1 = t1 if all_dates and t1 in all_dates else (all_dates[0] if all_dates else t1)
     d2 = all_dates[all_dates.index(d1) + 1] if d1 in all_dates and all_dates.index(d1) + 1 < len(all_dates) else (all_dates[1] if len(all_dates) >= 2 else None)
@@ -815,7 +816,7 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
     _write_csv(output_dir / "01_用户活跃_增幅表.csv", increase_rows, ["类型", "增幅（%）", "数值"])
     written.append(output_dir / "01_用户活跃_增幅表.csv")
 
-    # 02 周统计 DAU/DNU 数量：合并两表按日期；老用户数量 = DAU - DNU
+    # 02 周统计 DAU/DNU 数量：合并两表按日期；老用户数量 = DAU - DNU；次留 = stats_retention_user 同日「次日(T+1)留存」%
     by_date_02: dict[str, dict] = {}
     for d in all_dates[:7]:
         di = int(dau_by_date.get(d, 0))
@@ -825,11 +826,12 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
             "DAU数量": di,
             "DNU数量": ni,
             "老用户数量": max(0, di - ni),
+            "次留": float(ret_t1_by_date.get(d, 0.0)),
         }
     daily_rows = [by_date_02[d] for d in sorted(by_date_02.keys())]
     if not daily_rows:
-        daily_rows = [{"日期": _lark_date_cell(t1), "DAU数量": 0, "DNU数量": 0, "老用户数量": 0}]
-    _write_csv(output_dir / "02_用户活跃_日期数量表.csv", daily_rows, ["日期", "DAU数量", "DNU数量", "老用户数量"])
+        daily_rows = [{"日期": _lark_date_cell(t1), "DAU数量": 0, "DNU数量": 0, "老用户数量": 0, "次留": 0.0}]
+    _write_csv(output_dir / "02_用户活跃_日期数量表.csv", daily_rows, ["日期", "DAU数量", "DNU数量", "老用户数量", "次留"])
     written.append(output_dir / "02_用户活跃_日期数量表.csv")
 
     def _agg_channel(rows: list[dict], ch_col: str, count_unique_col: str | None = None) -> list[dict]:
@@ -991,11 +993,9 @@ def _refine_user_activity(conn: Any, output_dir: Path, t1: str, t0: str, t7: str
     return written
 
 
-# 次留表：类型 T-2、T-4、T-6（对应 stats_retention_user 第三日 T+2/第五日 T+4/第七日 T+6 留存）
 # 付费用户次留表：文本列 T+2、T+4、T+6（对应 stats_retention_paid 的 T+2/T+4/T+6 留存）
 # 周环比：类型 T+1、T+3、T+5（对应 stats_retention_user_compare 第一行 ALL 的 T+1/T+3/T+5 留存率）
 # 付费用户周环比：类型 T+1、T+2、T+3（对应 stats_retention_paid_compare 的 T+1/T+2/T+3 留存率）
-_RETENTION_TYPE_NEXT = {"t2": "T-2", "t4": "T-4", "t6": "T-6"}  # 次留表：第三日/第五日/第七日 → T-2/T-4/T-6
 _RETENTION_TYPE_PAID_NEXT = {"t2": "T+2", "t4": "T+4", "t6": "T+6"}  # 付费用户次留表：文本列
 _RETENTION_TYPE_WOW = {"t2": "T+1", "t4": "T+3", "t6": "T+5"}       # 周环比
 _RETENTION_TYPE_PAID_WOW = {"t2": "T+1", "t4": "T+2", "t6": "T+3"}  # 付费用户周环比
@@ -1016,11 +1016,46 @@ def _parse_retention_val(s: str) -> tuple[int, float]:
     return (num, round(pct, 4))
 
 
+def _retention_user_t1_pct_by_date(conn: Any, raw_dir: Path | None) -> dict[str, float]:
+    """新增用户留存统计（stats_retention_user）：全平台行按业务日期 →「次日(T+1)留存」百分比数值（0～100，一位小数）。
+    与 raw/DuckDB 同源；供 02 周统计表「次留」列与 04 次留表共用口径。"""
+    rows = _query_table_or_raw(conn, raw_dir, "stats_retention_user", None, None)
+    if not rows:
+        return {}
+    ch_col = _find_col(list(rows[0].keys()), "渠道", "channel")
+    if ch_col:
+        filt = [r for r in rows if str(r.get(ch_col, "")).strip().upper() in ("ALL", "> ALL", "全平台")]
+        if filt:
+            rows = filt
+    udc = _find_col(list(rows[0].keys()), "日期", "date", "统计日期")
+    if not udc:
+        return {}
+    cols_u = list(rows[0].keys())
+    t1_ret_col = _find_col(
+        cols_u,
+        "次日（T+1）留存",
+        "次日(T+1)留存",
+        "T+1 留存",
+        "T+1留存",
+        "次日留存",
+    )
+    if not t1_ret_col:
+        return {}
+    rows = sorted(rows, key=lambda r: _parse_date_to_iso(r.get(udc, "")), reverse=True)
+    by_d: dict[str, float] = {}
+    for r in rows:
+        dk = _parse_date_to_iso(r.get(udc, ""))
+        if not dk or dk in by_d:
+            continue
+        _n, p = _parse_retention_val(str(r.get(t1_ret_col, "")))
+        by_d[dk] = round(p * 100, 1)
+    return by_d
+
+
 def _refine_retention(conn: Any, output_dir: Path, t1: str, raw_dir: Path | None = None) -> list[Path]:
     """留存：04 次留表、05 付费用户次留、06 周环比、07 付费用户周环比。数据来源：新增用户留存统计、新增付费留存统计、留存对比。"""
     written: list[Path] = []
     q = lambda slug: _query_table_or_raw(conn, raw_dir, slug, None, None)
-    user_rows = q("stats_retention_user")
     paid_rows = q("stats_retention_paid")
     if not paid_rows and raw_dir and raw_dir.exists():
         paid_rows = _load_raw_csv(raw_dir, "stats_retention_paid")
@@ -1029,44 +1064,21 @@ def _refine_retention(conn: Any, output_dir: Path, t1: str, raw_dir: Path | None
         date_col = _find_col(cols, "日期", "date", "业务日期")
         if date_col:
             paid_rows = sorted(paid_rows, key=lambda r: _parse_date_to_iso(r.get(date_col, "")), reverse=True)
-    # 图1 新增用户留存统计：取第一行（最新日期），渠道=ALL 或 > ALL
     def _filter_platform_rows(rows: list[dict], ch_col: str) -> list[dict]:
         if not rows or not ch_col:
             return rows
         all_rows = [r for r in rows if str(r.get(ch_col, "")).strip().upper() in ("ALL", "> ALL", "全平台")]
         return all_rows if all_rows else rows
 
-    ch_col = _find_col(list(user_rows[0].keys()), "渠道", "channel") if user_rows else None
-    if user_rows and ch_col:
-        user_rows = _filter_platform_rows(user_rows, ch_col)
-    # 次留表：优先取 t1（昨日）数据，如表中有 23 号则取 23 号，否则取最新
-    udc = _find_col(list(user_rows[0].keys()), "日期", "date", "统计日期") if user_rows else None
-    if user_rows and udc:
-        user_rows = sorted(user_rows, key=lambda r: _parse_date_to_iso(r.get(udc, "")), reverse=True)
-    r0_user = _pick_row_for_target_date(user_rows or [], udc, t1)
-
-    # stats_retention_user（新增用户留存统计）：第三日(T+2)/第五日(T+4)/第七日(T+6) → Lark 次留表 T-2/T-4/T-6
-    user_col_map = [
-        (["第三日（T+2）留存", "第三日(T+2)留存", "T+2 留存", "T+2留存"], "t2"),
-        (["第五日（T+4）留存", "第五日(T+4)留存", "T+4 留存", "T+4留存"], "t4"),
-        (["第七日（T+6）留存", "第七日(T+6)留存", "T+6 留存", "T+6留存", "七留"], "t6"),
-    ]
-    by_type: dict[str, tuple[int, float]] = {}
-    if r0_user:
-        cols = list(r0_user.keys())
-        for cands, key in user_col_map:
-            col = _find_col(cols, *cands)
-            if col:
-                val = r0_user.get(col, "")
-                n, p = _parse_retention_val(str(val))
-                by_type[key] = (n, p)
-
-    # 04 次留表：类型 T-2/T-4/T-6，留存率。数据来源：stats_retention_user 第一行（最新日期）ALL
-    next_ret_rows = []
-    for k in ("t2", "t4", "t6"):
-        n, p = by_type.get(k, (0, 0.0))
-        next_ret_rows.append({"类型": _RETENTION_TYPE_NEXT[k], "留存率": round(p * 100, 1)})
-    _write_csv(output_dir / "04_留存_次留表.csv", next_ret_rows, ["类型", "留存率"])
+    # 04 次留表：与 02「次留」同口径（_retention_user_t1_pct_by_date）；窗口为 t1 起往前 7 日
+    ret_t1_map = _retention_user_t1_pct_by_date(conn, raw_dir)
+    try:
+        anchor_d = date.fromisoformat((t1 or "")[:10])
+    except ValueError:
+        anchor_d = date.today() - timedelta(days=1)
+    seven = [(anchor_d - timedelta(days=6 - i)).isoformat() for i in range(7)]
+    next_ret_rows = [{"日期": _lark_date_cell(d), "次留": float(ret_t1_map.get(d, 0.0))} for d in seven]
+    _write_csv(output_dir / "04_留存_次留表.csv", next_ret_rows, ["日期", "次留"])
 
     # 05 付费用户次留表：优先取 t1（昨日）数据，否则取最新
     pch_col = _find_col(list((paid_rows or [{}])[0].keys()), "渠道", "channel") if paid_rows else None
@@ -1873,16 +1885,77 @@ def _load_recharge_status_latest(raw_dir: Path | None, date_from: str | None, ta
     return out
 
 
+def _stats_recharge_platform_row_is_zero_recharge(raw_dir: Path | None, t1: str) -> bool | None:
+    """
+    读 raw/stats_recharge（BI「充值数据统计」页）。
+    取数据日 t1 下汇总渠道行（优先「> ALL」/ ALL / 全平台等）的「当日充值总额」「充值人数」。
+    若二者均为 0 → True（当日无充值，平台充值分档页不会有数，10/11 应填 0）。
+    若非 0 → False（分档应来自 recharge_status「平台充值情况」）。
+    无文件或无法解析 → None（沿用原有多路回退）。
+    """
+    raw = _load_raw_csv(raw_dir, "stats_recharge")
+    if not raw:
+        return None
+    cols = list(raw[0].keys())
+    date_col = _find_col(cols, "日期", "date", "统计日期", "业务日期")
+    ch_col = _find_col(cols, "渠道", "channel")
+    amt_col = _find_col(cols, "当日充值总额", "当日充值金额", "充值金额", "总金额")
+    cnt_col = _find_col(cols, "充值人数", "人数", "充值次数")
+    if not date_col or not amt_col:
+        return None
+    tgt = t1[:10]
+    last = ""
+    picked: dict | None = None
+    pick_rank = -1
+    for r in raw:
+        di = _parse_date_to_iso(r.get(date_col))
+        if di:
+            last = di
+        eff = di or last
+        if eff != tgt:
+            continue
+        if not ch_col:
+            picked = r
+            break
+        chv = str(r.get(ch_col, "")).strip()
+        rank = 0
+        if "> ALL" in chv or chv == "> ALL":
+            rank = 3
+        elif chv.upper() in ("ALL",) or chv in ("全部汇总", "全平台"):
+            rank = 2
+        elif chv == "":
+            rank = 1
+        if rank > pick_rank:
+            pick_rank = rank
+            picked = r
+    if picked is None:
+        return None
+    amt = _safe_float(picked.get(amt_col, 0)) if amt_col else 0.0
+    cnt = _safe_float(picked.get(cnt_col, 0)) if cnt_col else 0.0
+    return amt <= 1e-9 and cnt <= 1e-9
+
+
+def _total_paid_wow_pct(total_today: float, total_prev: float) -> float:
+    """付费总金额环比（%）：用于 11 表各同行填同一数值。"""
+    if total_prev > 1e-9:
+        return round((total_today - total_prev) / total_prev * 100, 2)
+    if total_today > 1e-9:
+        return 100.0
+    return 0.0
+
+
 def _try_tier_rows_from_stats_recharge_raw(raw_dir: Path | None, t1: str) -> list[dict]:
     """
-    若 stats_recharge.csv 含「不同充值金额分等级」等档位列，则按 t1（昨日）筛选生成 10/11 行。
-    日期列支持 2026/3/23；展开子行继承上一行日期。
+    若 stats_recharge.csv 含档位列，则按 t1 筛选生成 10/11 行。
+    BI「充值数据统计」常为：全渠道块与各分包渠道块并存；**若存在 ALL/全平台 等汇总渠道行，则只取该块**
+    （与「每个渠道块首行当日总计」同源口径），避免再与各渠道明细相加重复。
+    若仅有分包渠道行，则使用全部渠道行并由下游按档位聚合。
     """
     raw = _load_raw_csv(raw_dir, "stats_recharge")
     if not raw:
         return []
     cols = list(raw[0].keys())
-    date_col = _find_col(cols, "日期", "date", "统计日期")
+    date_col = _find_col(cols, "日期", "date", "统计日期", "业务日期")
     tier_col = _find_col(
         cols,
         "不同充值金额分等级",
@@ -1900,8 +1973,8 @@ def _try_tier_rows_from_stats_recharge_raw(raw_dir: Path | None, t1: str) -> lis
     last = ""
     tgt = t1[:10]
     skip_tier = {"", "ALL", "全部汇总", "全平台", "> ALL", "所有"}
-    skip_ch = ("ALL", "全部汇总", "全平台", "> ALL")
-    out: list[dict] = []
+    platform_ch = frozenset({"ALL", "全部汇总", "全平台", "> ALL"})
+    staged: list[tuple[dict, str, str]] = []
     for r in raw:
         di = _parse_date_to_iso(r.get(date_col))
         if di:
@@ -1912,10 +1985,25 @@ def _try_tier_rows_from_stats_recharge_raw(raw_dir: Path | None, t1: str) -> lis
         tier = str(r.get(tier_col, "")).strip()
         if not tier or tier.upper() in {x.upper() for x in skip_tier if x}:
             continue
+        chv = str(r.get(ch_col, "")).strip() if ch_col else ""
+        staged.append((r, tier, chv))
+
+    if not staged:
+        return []
+
+    has_platform_block = False
+    if ch_col:
+        has_platform_block = any((c in platform_ch or c == "") for _, _, c in staged)
+
+    out: list[dict] = []
+    for r, tier, chv in staged:
         if ch_col:
-            chv = str(r.get(ch_col, "")).strip()
-            if chv in skip_ch:
-                continue
+            if has_platform_block:
+                if chv not in platform_ch and chv != "":
+                    continue
+            else:
+                if chv in platform_ch or chv == "":
+                    continue
         cnt = int(_safe_float(r.get(cnt_col, 0)))
         amt = _safe_float(r.get(amt_col, 0)) if amt_col else 0.0
         total_amt = amt if amt > 0 else (cnt * _parse_tier_amount(tier))
@@ -1939,7 +2027,13 @@ def _recharge_amount_by_tier_label_for_date(
     date_from = (dt - timedelta(days=days)).strftime("%Y-%m-%d")
     sku_key = "不同充值金额分等级"
 
+    sr_z = _stats_recharge_platform_row_is_zero_recharge(raw_dir, date_iso)
+    if sr_z is True:
+        return {}
+
     tier_rows = _try_tier_rows_from_stats_recharge_raw(raw_dir, date_iso)
+    if sr_z is False:
+        tier_rows = []
     if tier_rows:
         m: dict[str, float] = {}
         for r in tier_rows:
@@ -2042,14 +2136,43 @@ def _recharge_amount_by_tier_label_for_date(
 def _refine_recharge(
     conn: Any, output_dir: Path, t1: str, days: int = 7, raw_dir: Path | None = None, t_prev: str | None = None
 ) -> list[Path]:
-    """10 付费人数按SKU、11 付费金额按SKU（11 表「付费金额增幅（%）」= 各档位较前一日该档位金额的增长率）。数据来源：recharge_status / stats_recharge。人数=充值次数。"""
+    """10 付费人数按SKU、11 付费金额按SKU。
+    先读 stats_recharge「充值数据统计」当日汇总行：当日充值总额与充值人数均为 0 则 10/11 填 0（无分档进平台充值页）。
+    非 0 时档位以 recharge_status「平台充值情况」为准（人数=充值次数；此等级总金额=列或 次数×档位价）。
+    11「付费金额增幅（%）」= 当日各档金额之和相对前一日各档金额之和的增幅（同列各值相同）。"""
     written: list[Path] = []
     dt = datetime.strptime(t1[:10], "%Y-%m-%d")
     date_from = (dt - timedelta(days=days)).strftime("%Y-%m-%d")
     q = lambda slug, df=None, dt_end=None: _query_table_or_raw(conn, raw_dir, slug, df, dt_end)
+    SKU_COL = "不同充值金额分等级"
 
-    # 优先：stats_recharge 含档位列时按昨日从 raw 取数（与多维表口径一致）
+    sr_zero = _stats_recharge_platform_row_is_zero_recharge(raw_dir, t1)
+    if sr_zero is True:
+        prev_key = (t_prev or "").strip()[:10] or (datetime.strptime(t1[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        prev_by_label = _recharge_amount_by_tier_label_for_date(conn, raw_dir, prev_key, days, q)
+        total_prev = sum(prev_by_label.values())
+        pct_total = _total_paid_wow_pct(0.0, total_prev)
+        p10, p11 = output_dir / "10_充值_付费人数按SKU.csv", output_dir / "11_充值_付费金额按SKU.csv"
+        try:
+            _write_csv(p10, [{SKU_COL: "（当日无充值）", "人数": 0}], [SKU_COL, "人数"])
+            written.append(p10)
+        except PermissionError as e:
+            logger.warning("[Refiner] 无法写入 %s（可能被占用）: %s", p10.name, e)
+        try:
+            _write_csv(
+                p11,
+                [{SKU_COL: "（当日无充值）", "此等级总金额": 0.0, "付费金额增幅（%）": pct_total}],
+                [SKU_COL, "此等级总金额", "付费金额增幅（%）"],
+            )
+            written.append(p11)
+        except PermissionError as e:
+            logger.warning("[Refiner] 无法写入 %s（可能被占用）: %s", p11.name, e)
+        return written
+
+    # 优先：stats_recharge 含档位列时按昨日从 raw 取数；若汇总已非 0 则分档以平台充值页为准，不再用 stats 分档
     tier_from_sr = _try_tier_rows_from_stats_recharge_raw(raw_dir, t1)
+    if sr_zero is False:
+        tier_from_sr = []
 
     # 其次：raw/recharge_status.csv，优先 t1（昨日），无则查 DuckDB
     rows_from_status = _load_recharge_status_latest(raw_dir, date_from, target_date=t1)
@@ -2193,7 +2316,6 @@ def _refine_recharge(
     )
     count_col = _find_col(cols, "人数", "付费人数", "用户数", "count", "充值人数")
     amount_col = _find_col(cols, "总金额", "金额", "此等级总金额", "amount", "当日充值总额")
-    SKU_COL = "不同充值金额分等级"
 
     if sku_col:
         by_sku: dict[str, dict] = {}
@@ -2214,12 +2336,9 @@ def _refine_recharge(
     if not prev_key:
         prev_key = (datetime.strptime(t1[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     prev_by_label = _recharge_amount_by_tier_label_for_date(conn, raw_dir, prev_key, days, q)
-
-    def _tier_amt_wow_pct(amt_today: float, label: str) -> float:
-        prev_amt = prev_by_label.get(label, 0.0)
-        if prev_amt > 0:
-            return round((amt_today - prev_amt) / prev_amt * 100, 2)
-        return 0.0
+    total_today = sum(float(r["此等级总金额"]) for r in out_rows)
+    total_prev = sum(prev_by_label.values())
+    pct_total = _total_paid_wow_pct(total_today, total_prev)
 
     p10, p11 = output_dir / "10_充值_付费人数按SKU.csv", output_dir / "11_充值_付费金额按SKU.csv"
     try:
@@ -2234,7 +2353,7 @@ def _refine_recharge(
                 {
                     SKU_COL: _lark_safe_text(str(r[SKU_COL])),
                     "此等级总金额": round(r["此等级总金额"], 2),
-                    "付费金额增幅（%）": _tier_amt_wow_pct(float(r["此等级总金额"]), str(r[SKU_COL])),
+                    "付费金额增幅（%）": pct_total,
                 }
                 for r in out_rows
             ],
@@ -2334,6 +2453,7 @@ def _write_game_funnel_facet_csvs(output_dir: Path, deep_by_name: dict[str, dict
 def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_dir: Path | None = None) -> list[Path]:
     """17/18/19/20 及 21～26 游戏情况：stats_game_core（核心产品每日数据表）、stats_game_daily（每日游戏数据）。
     17 表新/老局数优先取「新用户参与总局次数」「老用户参与总局次数」，人均取「全用户平均局数」。
+    19 表：`stats_game_daily` 按 **BI 页面行序** 输出（含「当日总计」与各游戏），与「每日游戏数据」导出一致；勿再拼出行以免与多维表固定行重复。
     20 表：进房/真实进房/完成/局通过（全平台、老、新）来自同源列；「人数/通过率」列只提纯人数；
     全平台 3/6 局 = 新用户对应局通过人数 + 老用户对应局通过人数。仅输出 `_GAME_DEEP_ENGAGEMENT_GAMES` 两款，固定两行顺序。
     21～26：漏斗图新开六子表，行=固定「类型」、列=Tongits King 或 Color Blitz Social，指标与 20_ 宽表列名一一对应。"""
@@ -2503,20 +2623,9 @@ def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_di
         ggc = _find_col(gcols, "统计范围", "游戏类型", "游戏名称", "游戏")
         rtp_c = _find_col(gcols, "回报率RTP", "回报率", "RTP", "rtp", "RTP(%)")
         ggr_c = _find_col(gcols, "GGR", "ggr")
-        total19: dict | None = None
+        # 与 BI 导出顺序一致输出（通常首行为「当日总计」，其后为各游戏），勿拆行再追加以免重复行或错位
         for r in gday:
             g = str(r.get(ggc, "")).strip() if ggc else ""
-            if _is_stats_game_daily_total_scope(g):
-                total19 = {
-                    "游戏类型": g,
-                    "RTP(%)": round(_safe_float(r.get(rtp_c)), 4) if rtp_c else 0.0,
-                    "GGR": round(_safe_float(r.get(ggr_c)), 2) if ggr_c else 0.0,
-                }
-                break
-        for r in gday:
-            g = str(r.get(ggc, "")).strip() if ggc else ""
-            if _is_stats_game_daily_total_scope(g):
-                continue
             if not g or g in skip_g:
                 continue
             out19.append(
@@ -2526,8 +2635,6 @@ def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_di
                     "GGR": round(_safe_float(r.get(ggr_c)), 2) if ggr_c else 0.0,
                 }
             )
-        if total19:
-            out19.insert(0, total19)
     if not out19:
         out19 = [{"游戏类型": "（需抓取 stats_game_daily）", "RTP(%)": 0.0, "GGR": 0.0}]
     _write_csv(output_dir / "19_游戏_RTP_GGR.csv", out19, ["游戏类型", "RTP(%)", "GGR"])
@@ -2655,8 +2762,10 @@ def _sync_refiner_to_lark(
         replace_tables = None
     else:
         replace_tables = set(_rt_raw)
-    # 充值分档两表必须删旧写新；否则仅追加时视图仍似「未更新」
-    _recharge_tier_csv = frozenset({"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv"})
+    # 充值分档两表、GameRTP/GGR（含末行当日总计）须整表删旧写新；否则仅追加时旧行残留或合计行不刷新
+    _recharge_tier_csv = frozenset(
+        {"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv", "19_游戏_RTP_GGR.csv"}
+    )
     total = len([p for p in written_paths if (tables_map.get(p.name) or "").strip()])
     idx = 0
     for p in written_paths:
@@ -2679,7 +2788,19 @@ def _sync_refiner_to_lark(
             do_replace = replace_table_default or (name in replace_tables)
         if name in _recharge_tier_csv:
             do_replace = True
-        result = sync_csv_to_bitable(csv_path=str(p), app_token=app_token, table_id=table_id, replace_table=do_replace, ensure_columns=lark_bitable_config.get("ensure_columns", False), text_columns=text_cols, field_mapping=col_mapping)
+        # 10/11/19：勿自动建列，避免 CSV 表头与 Lark 已有字段微差时多维表侧出现「新字段」
+        _ensure = bool(lark_bitable_config.get("ensure_columns", False))
+        if name in frozenset({"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv", "19_游戏_RTP_GGR.csv"}):
+            _ensure = False
+        result = sync_csv_to_bitable(
+            csv_path=str(p),
+            app_token=app_token,
+            table_id=table_id,
+            replace_table=do_replace,
+            ensure_columns=_ensure,
+            text_columns=text_cols,
+            field_mapping=col_mapping,
+        )
         if result.get("success"):
             ok_count += 1
             if on_table:
@@ -2749,13 +2870,12 @@ def _game_row_is_placeholder(game_type: str) -> bool:
 
 
 def _is_stats_game_daily_total_scope(scope: str) -> bool:
-    """BI「每日游戏数据」表中首行「当日总计」口径（非各游戏分行）。用于 RTP/GGR 平台合计。"""
+    """BI「每日游戏数据」中「当日总计」行（平台合计 RTP/GGR），非各游戏分行。"""
     g = (scope or "").strip()
     if not g:
         return False
     if g in ("当日总计", "日总计", "当日合计", "本日合计"):
         return True
-    # 少数导出为「全部」汇总行，与当日总计同列位置
     if g in ("全部汇总", "全平台汇总", "平台汇总"):
         return True
     return False
@@ -2847,7 +2967,7 @@ def _build_bi_kpi_snapshot_markdown(output_dir: Path, report_date: str) -> str:
         (rows18[0].get("总胜率（%）") if rows18 else 0), 0.0
     )
 
-    # 7) RTP / GGR — 19（GameRTP 须为 BI「每日游戏数据」当日总计行「回报率RTP」，勿对各游戏 RTP 做平均或按 GGR 加权）
+    # 7) RTP / GGR — 19（与 BI「每日游戏数据」当日总计行一致；勿对各游戏 RTP 取平均或按 GGR 加权代替平台 RTP）
     rows19 = _load_output_csv_rows(od / "19_游戏_RTP_GGR.csv")
     ggr_sum = 0.0
     rtp_disp = 0.0

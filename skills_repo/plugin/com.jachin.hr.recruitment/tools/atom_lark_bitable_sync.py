@@ -406,6 +406,19 @@ def sync_csv_to_bitable(
                 except (TypeError, ValueError):
                     lark_field_types[fn] = 1
 
+        valid_lark_fields = frozenset(lark_field_types.keys())
+        csv_only_cols = sorted(
+            {col_map.get(c, c) for c in fieldnames if col_map.get(c, c) not in valid_lark_fields}
+        )
+        if csv_only_cols:
+            logger.warning(
+                "sync_csv_to_bitable: %d 个 CSV 列在多维表中不存在，已跳过写入（可设 ensure_columns=true 自动建列，或配置 field_mapping）。"
+                " 列名示例: %s%s",
+                len(csv_only_cols),
+                csv_only_cols[:20],
+                " ..." if len(csv_only_cols) > 20 else "",
+            )
+
         import requests
         if replace_table:
             existing = _list_all_records(token, app_token, table_id)
@@ -424,19 +437,25 @@ def sync_csv_to_bitable(
                 if k not in fieldnames:
                     continue
                 lark_key = col_map.get(k, k)  # 使用映射后的 Lark 字段名
+                if lark_key not in valid_lark_fields:
+                    continue
                 s = (v or "").strip()
-                ft = lark_field_types.get(lark_key, 1)  # 1=文本, 2=数字, 5=日期
+                ft = lark_field_types[lark_key]  # 1=文本, 2=数字, 5=日期
+                # 数字列空串：不提交该字段（勿传 ""，否则 Lark NumberFieldConvFail）
+                if ft == 2 and not s:
+                    continue
                 # 数字列：CSV 占位「-」表示无数据，勿提交字符串（NumberFieldConvFail）；省略字段即留空
                 if ft == 2 and s in ("-", "—", "－", "N/A", "n/a", "--"):
                     continue
-                # 日期类型(5)：必须发毫秒时间戳(整数)，否则 DatetimeFieldConvFail
-                if ft == 5 and s:
+                # 日期类型(5)：必须发毫秒时间戳(整数)；解析失败或空值则省略，勿传字符串（否则 DatetimeFieldConvFail）
+                if ft == 5:
+                    if not s:
+                        continue
                     ts_val = None
                     try:
                         from datetime import datetime
 
-                        # 仅当原串为「纯数字时间戳」时才走数值分支。YYYY-MM-DD 去横杠后也会变成全数字，
-                        # 若对原串 float() 会失败并落入外层 except，导致把字符串写入日期列 → DatetimeFieldConvFail。
+                        # 仅当原串为「纯数字时间戳」时才走数值分支。
                         num_s = s.replace(",", "").strip()
                         looks_like_epoch = num_s and (
                             "-" not in s
@@ -472,18 +491,50 @@ def sync_csv_to_bitable(
                         if ts_val is not None:
                             fields[lark_key] = ts_val
                         else:
-                            fields[lark_key] = s
+                            logger.debug(
+                                "sync_csv_to_bitable: 日期列 %r 值 %r 无法解析，已省略",
+                                lark_key,
+                                s[:80],
+                            )
                     except (ValueError, OverflowError):
-                        fields[lark_key] = s
-                elif k in text_cols or ft != 2:
+                        logger.debug(
+                            "sync_csv_to_bitable: 日期列 %r 解析异常，已省略",
+                            lark_key,
+                        )
+                    continue
+                if k in text_cols or ft != 2:
                     fields[lark_key] = s
-                elif s.replace(".", "").replace("-", "").replace("%", "").replace(",", "").isdigit() or (s and s[-1] == "%" and s[:-1].replace(".", "").replace("-", "").replace(",", "").isdigit()):
-                    try:
-                        fields[lark_key] = float(s.replace("%", "").replace(",", ""))
-                    except ValueError:
-                        fields[lark_key] = s
+                elif ft == 2:
+                    num_ok = (
+                        s.replace(".", "", 1).replace("-", "", 1).replace("%", "").replace(",", "").isdigit()
+                        or (
+                            s
+                            and s[-1] == "%"
+                            and s[:-1].replace(".", "").replace("-", "").replace(",", "").isdigit()
+                        )
+                    )
+                    if num_ok:
+                        try:
+                            fields[lark_key] = float(s.replace("%", "").replace(",", ""))
+                        except ValueError:
+                            logger.debug(
+                                "sync_csv_to_bitable: 数字列 %r 值 %r 转 float 失败，已省略",
+                                lark_key,
+                                s[:80],
+                            )
+                    else:
+                        logger.debug(
+                            "sync_csv_to_bitable: 数字列 %r 值 %r 非数字格式，已省略",
+                            lark_key,
+                            s[:80],
+                        )
                 else:
                     fields[lark_key] = s
+            if not fields:
+                logger.warning(
+                    "sync_csv_to_bitable: 跳过无有效字段的行（请检查列名是否与多维表一致，或配置 field_mapping）"
+                )
+                continue
             resp = requests.post(url, headers=headers, json={"fields": fields}, timeout=15)
             data = resp.json()
             if resp.status_code != 200 or data.get("code") != 0:

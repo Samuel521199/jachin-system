@@ -1,9 +1,19 @@
 # 本地一键 PostgreSQL，与 .env.example 默认账号一致
-# 使用: cd cloud/nexus && docker compose -f docker-compose.postgres.yml up -d
+#
+# 使用:
+#   cd cloud/nexus
+#   docker compose -f docker-compose.postgres.yml up -d
+#
+# 默认镜像使用 DaoCloud 同步的 library/postgres（完整域名），避免请求 docker.io，
+# 从而绕过 Docker Desktop 里 registry-mirrors（如 USTC）对 Hub 的拦截/TLS 超时。
+# 若你已能直连 Docker Hub，可设环境变量: POSTGRES_IMAGE=postgres:16-alpine
+#
 # DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+#
+# 镜像可通过 POSTGRES_IMAGE 覆盖；默认见下。
 services:
   postgres:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-docker.m.daocloud.io/library/postgres:16-alpine}
     ports:
       - "5432:5432"
     environment:

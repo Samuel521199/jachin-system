@@ -81,6 +81,8 @@ class Settings(BaseSettings):
 
     # Whisper / Voice
     TTS_PROVIDER: str = "edge_tts"  # edge_tts | aliyun
+    # 云端 TTS 总开关：默认关闭；需显式 True 才连接 Edge/Aliyun（避免阻塞文本流、避免无外网环境误连微软）
+    TTS_ENABLED: bool = False
     WHISPER_MODEL_PATH: Optional[str] = None
     ALIYUN_APP_KEY: Optional[str] = None
     XDG_CACHE_HOME: Optional[str] = None

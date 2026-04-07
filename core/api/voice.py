@@ -23,7 +23,7 @@ import logging
 import os
 import base64
 
-from core.voice import SpeechToText, STTProvider, TextToSpeech, TTSProvider, IntentRouter
+from core.voice import SpeechToText, STTProvider, TextToSpeech, TTSProvider, IntentRouter, is_tts_globally_enabled
 from core.brain.llm.factory import LLMProviderFactory
 from core.brain.llm.call_types import AudioInput
 from core.config import settings
@@ -66,7 +66,11 @@ except Exception as e:
 
 try:
     tts = TextToSpeech(provider=tts_provider)
-    logger.info(f"Initialized TTS provider: {tts_provider}")
+    logger.info(
+        "Initialized TTS provider: %s (globally enabled=%s)",
+        tts_provider,
+        is_tts_globally_enabled(source="voice"),
+    )
 except Exception as e:
     logger.error(f"Failed to initialize TTS provider: {e}")
     tts = None
@@ -249,6 +253,11 @@ async def synthesize_speech(request: SynthesizeRequest):
             status_code=503,
             detail="Text-to-Speech service is not available. Please check configuration."
         )
+    if not is_tts_globally_enabled(source="voice"):
+        raise HTTPException(
+            status_code=503,
+            detail="TTS is disabled. Set JACHIN_TTS_ENABLED=true or TTS_ENABLED=true, or tts_enabled in ~/.jachin/nexus_config.json.",
+        )
     
     try:
         # 合成语音
@@ -260,7 +269,10 @@ async def synthesize_speech(request: SynthesizeRequest):
             pitch=request.pitch
         )
         if not audio_data:
-            raise HTTPException(status_code=400, detail="Text too short or invalid for synthesis")
+            raise HTTPException(
+                status_code=503,
+                detail="TTS returned empty audio (timeout, network error, or text invalid).",
+            )
         # 返回音频数据
         return Response(
             content=audio_data,
@@ -294,6 +306,11 @@ async def synthesize_speech_stream(request: SynthesizeRequest):
         raise HTTPException(
             status_code=503,
             detail="Text-to-Speech service is not available. Please check configuration."
+        )
+    if not is_tts_globally_enabled(source="voice"):
+        raise HTTPException(
+            status_code=503,
+            detail="TTS is disabled. Set JACHIN_TTS_ENABLED=true or TTS_ENABLED=true, or tts_enabled in ~/.jachin/nexus_config.json.",
         )
     
     try:
@@ -370,13 +387,14 @@ async def voice_process(
 
         audio_base64_result = None
         audio_format_result = None
-        if return_audio and tts:
+        if return_audio and tts and is_tts_globally_enabled(source="voice"):
             try:
                 reply_audio = await tts.synthesize(
                     text=reply_text, voice=voice, language=language, speed=speed, pitch=pitch
                 )
-                audio_base64_result = base64.b64encode(reply_audio).decode("utf-8")
-                audio_format_result = "wav"
+                if reply_audio:
+                    audio_base64_result = base64.b64encode(reply_audio).decode("utf-8")
+                    audio_format_result = "wav"
             except Exception as e:
                 logger.warning(f"TTS failed: {e}")
         elif return_audio and not tts:
@@ -496,7 +514,7 @@ async def voice_chat(
         audio_base64_result = None
         audio_format_result = None
         
-        if return_audio and tts:
+        if return_audio and tts and is_tts_globally_enabled(source="voice"):
             try:
                 reply_audio = await tts.synthesize(
                     text=reply_text,
@@ -505,8 +523,9 @@ async def voice_chat(
                     speed=speed,
                     pitch=pitch
                 )
-                audio_base64_result = base64.b64encode(reply_audio).decode('utf-8')
-                audio_format_result = "wav"
+                if reply_audio:
+                    audio_base64_result = base64.b64encode(reply_audio).decode('utf-8')
+                    audio_format_result = "wav"
             except Exception as e:
                 logger.warning(f"Failed to synthesize speech: {e}")
                 # 即使TTS失败，也返回文本回复
@@ -577,6 +596,8 @@ async def list_voices(language: Optional[str] = None):
             status_code=503,
             detail="Text-to-Speech service is not available."
         )
+    if not is_tts_globally_enabled(source="voice"):
+        return {"voices": []}
     
     try:
         voices = await tts.list_voices(language=language)

@@ -5,8 +5,10 @@ Text-to-Speech (TTS) - 语音合成模块
 """
 
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Optional, Dict, Any, AsyncIterator
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -14,6 +16,66 @@ from abc import ABC, abstractmethod
 from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Edge TTS：单次合成超时（秒）；最多 1 次 fallback（主音色 + 备用共 2 次尝试）
+EDGE_TTS_REQUEST_TIMEOUT_SEC = 3.0
+EDGE_TTS_MAX_FALLBACK_COUNT = 1
+# TextToSpeech 外层兜底（应 ≥ 单次超时 × 最多尝试次数）
+TTS_SYNTHESIZE_OUTER_TIMEOUT_SEC = 8.0
+
+_NEXUS_CONFIG_PATH = Path.home() / ".jachin" / "nexus_config.json"
+
+
+def _parse_bool_env(val: str | None) -> bool | None:
+    if val is None or not str(val).strip():
+        return None
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def _read_nexus_tts_enabled() -> bool | None:
+    """nexus_config.json 中 tts_enabled；未配置则返回 None。"""
+    if not _NEXUS_CONFIG_PATH.exists():
+        return None
+    try:
+        raw = _NEXUS_CONFIG_PATH.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            raw = _NEXUS_CONFIG_PATH.read_text(encoding="utf-16")
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or "tts_enabled" not in data:
+        return None
+    return bool(data["tts_enabled"])
+
+
+def is_tts_globally_enabled(source: str | None = None) -> bool:
+    """
+    是否允许调用云端 TTS。
+
+    - 若 ``source`` 已给出且不是 ``voice``，直接关闭（文本/CLI 等路径不浪费外连）。
+    - 否则：环境变量 JACHIN_TTS_ENABLED / TTS_ENABLED > nexus_config.json ``tts_enabled`` > settings.TTS_ENABLED
+    """
+    if source is not None and source != "voice":
+        return False
+    for key in ("JACHIN_TTS_ENABLED", "TTS_ENABLED"):
+        v = _parse_bool_env(os.environ.get(key))
+        if v is not None:
+            return v
+    nx = _read_nexus_tts_enabled()
+    if nx is not None:
+        return nx
+    return bool(getattr(settings, "TTS_ENABLED", False))
 
 
 class TTSProvider(str, Enum):
@@ -259,6 +321,13 @@ class EdgeTTSProvider(BaseTTSProvider):
             self.available = False
             logger.warning("edge-tts package not installed. Install with: pip install edge-tts")
 
+    async def _collect_stream_audio(self, communicate: Any) -> bytes:
+        audio_data = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data += chunk["data"]
+        return audio_data
+
     async def synthesize(
         self,
         text: str,
@@ -268,24 +337,29 @@ class EdgeTTSProvider(BaseTTSProvider):
         pitch: float = 1.0,
         **kwargs
     ) -> bytes:
-        """使用 Edge TTS 合成语音"""
+        """使用 Edge TTS 合成语音；失败时返回空 bytes，不抛异常（避免拖死事件循环）。"""
         if not self.available:
-            raise NotImplementedError("edge-tts package is required for EdgeTTSProvider")
+            logger.error("EdgeTTSProvider: edge-tts 未安装，跳过合成")
+            return b""
 
         text = (text or "").strip()
         if not text:
-            raise ValueError("Text cannot be empty for TTS synthesis")
+            return b""
 
         voice = _resolve_edge_voice(voice, language)
-        # Build try list: primary voice first, then fallbacks we haven't tried
-        to_try = [voice] + [v for v in _EDGE_TTS_FALLBACK_VOICES if v != voice]
+        # 主音色 + 至多 EDGE_TTS_MAX_FALLBACK_COUNT 个备用（合计 ≤ 2 次网络尝试）
+        to_try: list[str] = [voice]
+        for v in _EDGE_TTS_FALLBACK_VOICES:
+            if v != voice and len(to_try) <= EDGE_TTS_MAX_FALLBACK_COUNT:
+                to_try.append(v)
+                break
 
         for attempt, try_voice in enumerate(to_try):
             if attempt > 0:
-                logger.info("Edge TTS retry with fallback voice: %s", try_voice)
+                logger.info("Edge TTS fallback 尝试备用音色: %s", try_voice)
 
             try:
-                communicate_params = {
+                communicate_params: Dict[str, Any] = {
                     "text": text,
                     "voice": try_voice,
                 }
@@ -295,23 +369,33 @@ class EdgeTTSProvider(BaseTTSProvider):
                     communicate_params["pitch"] = f"{'+' if pitch >= 1 else ''}{int((pitch - 1.0) * 50)}Hz"
 
                 communicate = self.edge_tts.Communicate(**communicate_params)
-                audio_data = b""
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        audio_data += chunk["data"]
+                audio_data = await asyncio.wait_for(
+                    self._collect_stream_audio(communicate),
+                    timeout=EDGE_TTS_REQUEST_TIMEOUT_SEC,
+                )
 
                 if audio_data:
                     return audio_data
-                logger.warning("Edge TTS returned empty audio for voice %s, trying fallback", try_voice)
+                logger.error(
+                    "Edge TTS 返回空音频 voice=%s（已超时限制 %.1fs 内完成流读取）",
+                    try_voice,
+                    EDGE_TTS_REQUEST_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Edge TTS 超时 voice=%s timeout=%.1fs",
+                    try_voice,
+                    EDGE_TTS_REQUEST_TIMEOUT_SEC,
+                )
             except Exception as e:
                 err_name = type(e).__name__
                 if "NoAudioReceived" in err_name or "No audio" in str(e):
-                    logger.warning("Edge TTS NoAudioReceived for voice %s, trying fallback: %s", try_voice, e)
-                    continue
-                logger.error("Error in EdgeTTSProvider.synthesize: %s", e)
-                raise
+                    logger.error("Edge TTS NoAudioReceived voice=%s: %s", try_voice, e)
+                else:
+                    logger.error("Edge TTS 合成失败 voice=%s: %s", try_voice, e)
 
-        raise RuntimeError("No audio received from Edge TTS after retries")
+        logger.error("Edge TTS 已用尽允许次数（主音色 + 最多 %d 次 fallback），静默放弃语音", EDGE_TTS_MAX_FALLBACK_COUNT)
+        return b""
     
     async def synthesize_stream(
         self,
@@ -322,13 +406,12 @@ class EdgeTTSProvider(BaseTTSProvider):
         pitch: float = 1.0,
         **kwargs
     ) -> AsyncIterator[bytes]:
-        """流式合成语音"""
+        """流式合成语音（内部仍受单次超时约束，失败则结束迭代）"""
         if not self.available:
-            raise NotImplementedError("edge-tts package is required for EdgeTTSProvider")
-
+            return
         text = (text or "").strip()
         if not text:
-            raise ValueError("Text cannot be empty for TTS synthesis")
+            return
 
         voice = _resolve_edge_voice(voice, language)
 
@@ -342,9 +425,12 @@ class EdgeTTSProvider(BaseTTSProvider):
             communicate_params["pitch"] = f"{'+' if pitch >= 1 else ''}{int((pitch - 1.0) * 50)}Hz"
 
         communicate = self.edge_tts.Communicate(**communicate_params)
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                yield chunk["data"]
+        try:
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    yield chunk["data"]
+        except Exception as e:
+            logger.error("Edge TTS synthesize_stream 失败: %s", e)
     
     async def list_voices(self, language: Optional[str] = None) -> list:
         """列出可用的语音列表"""
@@ -405,10 +491,25 @@ class TextToSpeech:
         Returns:
             音频数据（bytes）
         """
+        if not is_tts_globally_enabled(source="voice"):
+            return b""
         if not self.provider:
-            raise ValueError("TTS provider not initialized")
-        
-        return await self.provider.synthesize(text, voice, language, speed, pitch, **kwargs)
+            logger.error("TTS provider not initialized")
+            return b""
+        try:
+            return await asyncio.wait_for(
+                self.provider.synthesize(text, voice, language, speed, pitch, **kwargs),
+                timeout=TTS_SYNTHESIZE_OUTER_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "TTS synthesize 外层超时 %.1fs，静默放弃语音",
+                TTS_SYNTHESIZE_OUTER_TIMEOUT_SEC,
+            )
+            return b""
+        except Exception as e:
+            logger.error("TTS synthesize 失败: %s", e)
+            return b""
     
     async def synthesize_stream(
         self,
@@ -433,11 +534,16 @@ class TextToSpeech:
         Yields:
             音频数据块（bytes）
         """
+        if not is_tts_globally_enabled(source="voice"):
+            return
         if not self.provider:
-            raise ValueError("TTS provider not initialized")
-        
-        async for chunk in self.provider.synthesize_stream(text, voice, language, speed, pitch, **kwargs):
-            yield chunk
+            logger.error("TTS provider not initialized")
+            return
+        try:
+            async for chunk in self.provider.synthesize_stream(text, voice, language, speed, pitch, **kwargs):
+                yield chunk
+        except Exception as e:
+            logger.error("TTS synthesize_stream 失败: %s", e)
     
     async def list_voices(self, language: Optional[str] = None) -> list:
         """列出可用的语音列表"""

@@ -56,7 +56,8 @@ def sanitize_wiki_url(url: str) -> str:
     for k in list(qs.keys()):
         if k in drop:
             del qs[k]
-    new_q = urlencode([(k, v[0]) for k, vals in sorted(qs.items()) for v in vals if vals], doseq=True)
+    # 每项取完整查询值 v（勿写 v[0]，否则会把 table=tblXXX 截成 table=t）
+    new_q = urlencode([(k, v) for k, vals in sorted(qs.items()) for v in vals if vals], doseq=True)
     return urlunparse((u.scheme, u.netloc, u.path, u.params, new_q, u.fragment))
 
 

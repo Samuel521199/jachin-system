@@ -1,6 +1,6 @@
 # L3 独立运行脚本 - 在 PowerShell 中查看完整日志
-# 用法: .\scripts\run_l3.ps1  或  .\scripts\run_l3.ps1 --ws-only
-# 配对后使用 --gateway；未配对用 --ws-only（需 .env 有 DASHSCOPE_API_KEY）
+# 用法: 默认 --ws-only（不依赖 L2）。需 L2 配对/心跳时: .\scripts\run_l3.ps1 --gateway
+# 需 .env 有 DASHSCOPE_API_KEY（或 OPENAI_API_KEY）
 # 打包模式：无 Python 时自动调用 bin/l3_node-*.exe
 
 $ErrorActionPreference = "Stop"
@@ -45,8 +45,10 @@ if ($binDir -and (Test-Path $binDir)) {
     $env:JACHIN_APP_ROOT = $appRoot
 }
 
-$mode = "--gateway"
-if ($args -contains "--ws-only") { $mode = "--ws-only" }
+# 默认独立模式：不依赖 L2（与 ~/.jachin/l2_gateway_config.json 中的局域网 L2 解耦，避免进程直接退出）
+# 需要与 L2 零信任配对、心跳与 MCP 拉取时显式传入: .\scripts\run_l3.ps1 --gateway
+$mode = "--ws-only"
+if ($args -contains "--gateway") { $mode = "--gateway" }
 
 # 优先 Python，否则用 exe（打包模式）
 $l3Exe = $null

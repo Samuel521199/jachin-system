@@ -10,6 +10,10 @@
 | **B** | `bi/tool_lark_notifier.py` | mcp:atom_lark_notifier |
 | **B** | `bi/tool_email_sender.py` | mcp:atom_email_sender |
 | **BI** | `bi/tool_bi_project_context.py` | mcp:atom_bi_project_context |
+| **PMO/BMO** | `pmo_bmo/tool_lark_doc.py` | mcp:atom_pmo_lark_doc |
+| **PMO/BMO** | `pmo_bmo/tool_knowledge_base.py` | mcp:atom_pmo_knowledge_base |
+
+飞书发送仍使用 `bi/tool_lark_notifier.py`（mcp:atom_lark_notifier）；PMO 目录内 `pmo_bmo/lark_notifier_bridge.py` 仅作说明与便捷引用。
 
 ## 依赖
 

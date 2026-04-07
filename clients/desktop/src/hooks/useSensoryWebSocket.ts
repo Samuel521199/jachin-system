@@ -6,9 +6,11 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { formatAssistantStepPayload } from "../utils/sensoryStepFormat";
+import { mergeStreamChunk } from "../utils/streamChunkMerge";
 
 const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18981";
-const SENSORY_WS_URL = `ws://localhost:${SENSORY_WS_PORT}/sensory`;
+const SENSORY_WS_HOST = import.meta.env.VITE_SENSORY_WS_HOST || "127.0.0.1";
+const SENSORY_WS_URL = `ws://${SENSORY_WS_HOST}:${SENSORY_WS_PORT}/sensory`;
 const RECONNECT_DELAY_MS = 3000;
 
 /** Lark 镜像模式：从 VITE_LARK_CHAT_ID 或参数传入，终端作为主屏、Lark 为副屏同步显示 */
@@ -22,14 +24,22 @@ export interface UseSensoryOptions {
   larkChatId?: string;
 }
 
+/** 与 L3 Sensory 总线对齐；兼容 `action_type` 与顶层 `metadata` */
 export interface SensoryPayload {
   step_type: string;
+  /** 部分后端使用 action_type，与 step_type 等价 */
+  action_type?: string;
   content: string;
   source?: string;
   task_id?: string;
   run_id?: string;
   tool?: string;
   payload?: Record<string, unknown>;
+  metadata?: {
+    tool_name?: string;
+    error?: string;
+    [key: string]: unknown;
+  };
 }
 
 /** Handoff 人格切换事件 */
@@ -71,6 +81,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
   /** 本轮是否已收到流式 chunk（有则 answer 勿再向同气泡追加全文，否则会「复读机」） */
   const hadStreamChunksForRunRef = useRef(false);
+  /** 与 streamingContent 同步，用于合并 cumulative/delta chunk，避免重复拼接 */
+  const streamingAccRef = useRef("");
 
   /** 注册 Lark 镜像输入回调：Lark 用户发消息时，终端同步显示 */
   const registerMirrorInputHandler = useCallback((fn: ((content: string) => void) | null) => {
@@ -111,7 +123,47 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data) as SensoryPayload;
+          /**
+           * 与 v0.8.98 一致：`JSON.parse` 后直接按 `step_type` + `content` 驱动 chunk/answer。
+           * 仅做最小别名：action_type / type → step_type；忽略 manifest_ack 等控制帧（不污染 lastPayload）。
+           */
+          const raw = JSON.parse(event.data) as Record<string, unknown>;
+          const step =
+            (typeof raw.step_type === "string" && raw.step_type) ||
+            (typeof raw.action_type === "string" && raw.action_type) ||
+            (typeof raw.type === "string" && raw.type) ||
+            "";
+          if (step === "manifest_ack" || step === "manifest" || step === "ping" || step === "pong") {
+            return;
+          }
+          const content =
+            typeof raw.content === "string"
+              ? raw.content
+              : raw.content != null
+                ? String(raw.content)
+                : "";
+          const payloadNested =
+            raw.payload && typeof raw.payload === "object"
+              ? (raw.payload as Record<string, unknown>)
+              : undefined;
+          const meta =
+            (raw.metadata && typeof raw.metadata === "object"
+              ? (raw.metadata as SensoryPayload["metadata"])
+              : undefined) ??
+            (payloadNested?.metadata && typeof payloadNested.metadata === "object"
+              ? (payloadNested.metadata as SensoryPayload["metadata"])
+              : undefined);
+          const data: SensoryPayload = {
+            step_type: step,
+            action_type: typeof raw.action_type === "string" ? raw.action_type : undefined,
+            content,
+            source: typeof raw.source === "string" ? raw.source : undefined,
+            task_id: typeof raw.task_id === "string" ? raw.task_id : undefined,
+            run_id: typeof raw.run_id === "string" ? raw.run_id : undefined,
+            tool: typeof raw.tool === "string" ? raw.tool : undefined,
+            payload: payloadNested as Record<string, unknown> | undefined,
+            metadata: meta,
+          };
           setLastPayload(data);
 
           // Lark 镜像：Lark 用户发消息时同步到终端显示
@@ -123,13 +175,17 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             setHitlPending(data);
           }
 
-          // v8.0 流式神经：chunk 追加到当前消息，不创建新气泡
+          // v8.0 流式神经：合并 chunk（支持全量累加或纯增量），仅把新增 delta 交给 Chat 气泡
           if (data.step_type === "chunk" && data.content != null) {
             const runId = data.run_id ?? "";
-            hadStreamChunksForRunRef.current = true;
-            setStreamingContent((prev) => prev + data.content);
+            const { next, delta } = mergeStreamChunk(streamingAccRef.current, data.content);
+            streamingAccRef.current = next;
+            setStreamingContent(next);
             setCurrentRunId(runId);
-            onChunkRef.current?.(data.content, runId);
+            if (delta) {
+              hadStreamChunksForRunRef.current = true;
+              onChunkRef.current?.(delta, runId);
+            }
           }
 
           // thought/action/observation：完整展示思考过程，禁止总结
@@ -156,6 +212,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             const content = data.content ?? "";
             const hadChunks = hadStreamChunksForRunRef.current;
             hadStreamChunksForRunRef.current = false;
+            streamingAccRef.current = "";
             // 流式已逐段拼进气泡时，禁止再注入整段正文（否则与 chunk 叠加成双倍/多倍复读）
             const stepPayload = hadChunks
               ? ""
@@ -220,6 +277,10 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     setConnected(false);
     setLastPayload(null);
     setHitlPending(null);
+    streamingAccRef.current = "";
+    hadStreamChunksForRunRef.current = false;
+    setStreamingContent("");
+    setCurrentRunId(null);
   }, []);
 
   const sendHitlResponse = useCallback((approved: boolean, taskId?: string) => {
@@ -235,7 +296,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     sendHitlResponse(approved, tid);
   }, [sendHitlResponse, hitlPending?.task_id]);
 
-  /** 发送聊天输入到 Layer 3（通过 Sensory WebSocket，注入全息感官总线） */
+  /** 发送聊天输入到 Layer 3（与 v0.8.98 一致：`{ intent }`；L3 ws_server 读 intent/content） */
   const sendInput = useCallback((text: string) => {
     if (!text.trim()) {
       console.debug("[Sensory] sendInput 跳过: 空文本");

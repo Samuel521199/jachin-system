@@ -1144,6 +1144,9 @@ export async function routeIntent(text: string): Promise<IntentRouteResponse> {
   return response.json();
 }
 
+/** L2 返回 503（TTS 关闭等）后本会话内不再轰炸 /api/v2/voice/synthesize */
+let l2TtsHttpSkipped = false;
+
 /**
  * 语音合成
  * 优先使用本地 Kokoro TTS（tts_speak），失败时回退到 Tier 2 Edge TTS
@@ -1165,6 +1168,10 @@ export async function synthesizeSpeech(
     // 本地 TTS 不可用时回退到 Tier 2
   }
 
+  if (l2TtsHttpSkipped) {
+    throw new Error("L2 TTS skipped after 503");
+  }
+
   const response = await fetch(`${BACKEND_URL}/api/v2/voice/synthesize`, {
     method: "POST",
     headers: {
@@ -1180,6 +1187,9 @@ export async function synthesizeSpeech(
   });
 
   if (!response.ok) {
+    if (response.status === 503) {
+      l2TtsHttpSkipped = true;
+    }
     const error = await response.text();
     throw new Error(error);
   }

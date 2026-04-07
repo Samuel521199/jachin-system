@@ -555,7 +555,7 @@ def _load_csv_summary(output_dir: Path) -> str:
 # 战略分析 key 与 raw CSV 映射（output 表名 → raw slug）
 _STRATEGIC_KEY_TO_RAW: dict[str, list[str]] = {
     "01_用户活跃_增幅表.csv": ["stats_user_dau", "stats_user_new"],
-    "02_用户活跃_日期数量表.csv": ["stats_user_dau", "stats_user_new"],
+    "02_用户活跃_日期数量表.csv": ["stats_user_dau", "stats_user_new", "stats_retention_user"],
     "03a_用户活跃_DAU渠道来源.csv": ["stats_user_dau"],
     "03b_用户活跃_DNU渠道来源.csv": ["stats_user_new"],
     "13_用户活跃_新增设备表.csv": ["stats_user_dau", "stats_user_new", "daily_ops_summary"],

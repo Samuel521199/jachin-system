@@ -150,6 +150,9 @@ docker/l1.env
 deploy/l1-ecs-bundle/l1.env
 deploy/l2-ecs-bundle/l2.env
 
+# PMO/BMO 技能配置（含 Lark app_secret）
+config/skills/com.jachin.pmo.bmo/pmo_bmo.yaml
+
 # Local Docker image exports (large; do not commit)
 /jachin-*-latest.tar
 /jachin-*-latest.tar.gz

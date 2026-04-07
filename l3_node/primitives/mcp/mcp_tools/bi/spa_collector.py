@@ -229,6 +229,8 @@ def _apply_slug_specific_automation(
         automation["filters"] = stats_game_daily_filters
         automation["expand_extract_collapse_loop"] = True
         automation["expand_table_rows"] = False
+        # 父 tr 含「当日总计」与整日 GGR/RTP；原先只采子 tr 会漏该行
+        automation["expand_include_parent_row"] = True
     elif slug_name == "stats_game_compare":
         automation["filters"] = dict(stats_game_compare_filters)
         automation["expand_extract_collapse_loop"] = True
@@ -248,10 +250,12 @@ def _apply_slug_specific_automation(
         automation["filters"] = stats_game_daily_filters
         automation["expand_extract_collapse_loop"] = True
         automation["expand_table_rows"] = False
+        automation["expand_include_parent_row"] = True
     elif slug_name == "stats_game_new":
         automation["filters"] = stats_game_daily_filters
         automation["expand_extract_collapse_loop"] = True
         automation["expand_table_rows"] = False
+        automation["expand_include_parent_row"] = True
     elif slug_name in compare_slugs:
         automation["filters"] = dict(stats_game_compare_filters)
     elif slug_name == "stats_recharge":

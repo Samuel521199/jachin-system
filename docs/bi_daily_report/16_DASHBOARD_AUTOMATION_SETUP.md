@@ -78,7 +78,7 @@ python scripts/run_bi_dashboard_automation.py --dry-run    # 只生成分析并�
 ### 5. 禁用 Step 4
 
 若暂不需要仪表盘自动化，设置 `dashboard_automation.enabled: false`。
-
+image.png
 ## Lark 自动化 UI 流程（Playwright 自动执行）
 
 Step 4b 的 Playwright 操作顺序：

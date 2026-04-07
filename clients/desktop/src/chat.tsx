@@ -1,14 +1,13 @@
 /**
- * Chat Window - 全息风格对话窗口（MIND STREAM）
+ * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
- * 独立 chat 窗口入口，使用 ChatUI 全息 UI。
- *
- * Sensory 步骤气泡（含「### 回复」与 JSON 豁免）与 {@link formatAssistantStepPayload} 同源；
- * 实际调用在 `useSensoryWebSocket`，本文件通过下方 import 锚定 SSOT 模块便于检索与依赖图一致。
+ * 独立 chat 窗口入口；大控制台仍为 main（console.html）。
+ * Sensory 步骤与回复逻辑与 `useSensoryWebSocket` + `sensoryStepFormat` 对齐（云端 v0.8.99 行为）。
  */
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import ReactDOM from "react-dom/client";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3AgentForIntent, checkHealth, type VoiceProcessResponse } from "./lib/api";
@@ -16,13 +15,14 @@ import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { useSensoryWebSocket, type SensoryAnswerMeta } from "./hooks/useSensoryWebSocket";
 import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
-import { formatAssistantStepPayload } from "./utils/sensoryStepFormat";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "./constants/chatResponseTimeout";
-import { ChatUI } from "./components/Chat/ChatUI";
+import { mergeStreamChunk } from "./utils/streamChunkMerge";
+import type { WavePhase } from "./components/Chat/VoiceWaveform";
+import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
-import { SystemLogPanel } from "./console/components/SystemLogPanel";
+import { useJachinCoreState } from "./hooks/useJachinCoreState";
 import "./styles/globals.css";
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -53,9 +53,9 @@ function ChatApp() {
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
-  // 步骤文案由 hook 内调用 formatAssistantStepPayload（./utils/sensoryStepFormat）
   const sensory = useSensoryWebSocket();
   const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler, registerAnswerHandler, registerStepHandler, registerMirrorInputHandler, sendInput } = sensory;
+  const jachinCore = useJachinCoreState(sensory, { isTyping });
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
@@ -69,6 +69,28 @@ function ChatApp() {
   isVadActiveRef.current = isVadActive;
   /** 当前轮 L3 WS run_id，用于超时后仍接收 answer 时丢弃陈旧回复 */
   const l3ActiveRunIdRef = useRef<string>("");
+  /** PTT 时 Web Audio 电平 → 声波条 */
+  const [micLevel, setMicLevel] = useState(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const micRafRef = useRef(0);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
+  /** Lark 镜像回调：用 ref 读加载态，避免 effect 随 isLoading 反复卸载/重挂载导致抢答/丢 chunk */
+  const isLoadingRef = useRef(false);
+  const isTypingRef = useRef(false);
+  isLoadingRef.current = isLoading;
+  isTypingRef.current = isTyping;
+
+  const stopMicAnalyser = () => {
+    if (micRafRef.current) {
+      cancelAnimationFrame(micRafRef.current);
+      micRafRef.current = 0;
+    }
+    if (audioCtxRef.current) {
+      void audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
+    setMicLevel(0);
+  };
 
   // L2 健康检查：打字和语音都走 L2，只需 L2 可用即可
   useEffect(() => {
@@ -89,9 +111,33 @@ function ChatApp() {
     };
   }, []);
 
-  // 窗口显示时请求焦点，便于左键点击能落到输入区
+  // 不在此用 window blur 自动隐藏：dev 环境下焦点常在 PowerShell/IDE，WebView 收不到 focus，
+  // 延迟隐藏仍会在数百毫秒后执行 → Omni「闪退」。收起请用 Esc、托盘左键或窗口关闭。
+
   useEffect(() => {
-    getCurrentWindow().setFocus().catch(() => {});
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        void invoke("hide_chat_window");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 唤醒词：弹出 Omni 条
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("WAKE_UP", () => {
+      void invoke("show_chat_window");
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   // 加载保存的消息历史
@@ -114,7 +160,7 @@ function ChatApp() {
   // Lark 镜像：Lark 用户发消息时，终端同步显示并接收后续回复
   useEffect(() => {
     const handler = (content: string) => {
-      if (!content.trim() || isLoading || isTyping) return;
+      if (!content.trim() || isLoadingRef.current || isTypingRef.current) return;
       const displayContent = `[Lark] ${content.trim()}`;
       const userMsg: StoredMessage = { role: "user", content: displayContent, timestamp: Date.now() };
       setMessages((prev) => addMessage(prev, userMsg));
@@ -174,7 +220,8 @@ function ChatApp() {
     };
     registerMirrorInputHandler(handler);
     return () => registerMirrorInputHandler(null);
-  }, [isLoading, isTyping, registerChunkHandler, registerAnswerHandler, registerStepHandler, registerMirrorInputHandler]);
+  }, [registerMirrorInputHandler, registerChunkHandler, registerAnswerHandler, registerStepHandler]);
+
 
   /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
   const doActualSend = async (content: string) => {
@@ -202,6 +249,11 @@ function ChatApp() {
     };
 
     let timeoutCleared = false;
+    /**
+     * L2 等直连流式：chunk 可能是全量累加字符串，需 merge。
+     * L3 Sensory：hook 内已 merge，此处仅收到 delta，merge 后与 prev 拼接仍正确。
+     */
+    let streamMergeAcc = "";
     const cleanup = (
       finalContent: string,
       source?: "L3" | "L2",
@@ -209,14 +261,20 @@ function ChatApp() {
     ) => {
       if (timeoutCleared) return;
       timeoutCleared = true;
+      registerChunkHandler(null);
       clearTimeout(timeoutId);
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
-        if (last?.role === "assistant" && !opts?.skipContentUpdate) {
-          updated[updated.length - 1] = { ...last, content: finalContent || last.content, source };
-        } else if (last?.role === "assistant" && opts?.skipContentUpdate) {
-          updated[updated.length - 1] = { ...last, source };
+        if (last?.role === "assistant") {
+          let newContent = last.content;
+          if (opts?.skipContentUpdate) {
+            // 已有 chunk 流式内容则保留，避免与最终 answer 重复；若仍为空则用 answer 填满（仅 answer、无 chunk 时否则会空白）
+            newContent = last.content?.trim() ? last.content : (finalContent || last.content);
+          } else {
+            newContent = finalContent || last.content;
+          }
+          updated[updated.length - 1] = { ...last, content: newContent, source };
         }
         saveMessages(updated);
         return updated;
@@ -232,16 +290,21 @@ function ChatApp() {
       setIsTyping(false);
       setRiskLevel("safe");
       if (!ttsQueue) setTimeout(() => setState("idle"), 2000);
+      registerAnswerHandler(null);
+      registerStepHandler(null);
     };
 
     const chunkHandler = (chunk: string, runId?: string) => {
       if (runId) l3ActiveRunIdRef.current = runId;
-      accumulatedForTts += chunk;
+      const { next, delta } = mergeStreamChunk(streamMergeAcc, chunk);
+      streamMergeAcc = next;
+      if (!delta) return;
+      accumulatedForTts += delta;
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          updated[updated.length - 1] = { ...last, content: last.content + chunk };
+          updated[updated.length - 1] = { ...last, content: last.content + delta };
         }
         return updated;
       });
@@ -300,13 +363,11 @@ function ChatApp() {
         console.debug("[Chat] L3 返回错误，兜底 L2:", answerContent.slice(0, 80));
         streamChatMessage(pendingL3InputRef.current, (chunk) => chunkHandler(chunk))
           .then((fullText) => {
-            registerChunkHandler(null);
             registerAnswerHandler(null);
             registerStepHandler(null);
             cleanup(fullText, "L2");
           })
           .catch((e) => {
-            registerChunkHandler(null);
             registerAnswerHandler(null);
             registerStepHandler(null);
             cleanup(`L2 兜底也失败：${(e as Error).message}`, "L2");
@@ -338,9 +399,6 @@ function ChatApp() {
     if (l3Answer != null && l3Answer.trim()) {
       console.debug("[Chat] L3 agent/run 命中 BI 意图，使用 L3 回复");
       clearTimeout(timeoutId);
-      registerChunkHandler(null);
-      registerAnswerHandler(null);
-      registerStepHandler(null);
       cleanup(l3Answer, "L3");
       return;
     }
@@ -349,14 +407,13 @@ function ChatApp() {
     try {
       console.debug("[Chat] L2 streamChatMessage 开始");
       const fullText = await streamChatMessage(content, (chunk) => chunkHandler(chunk));
-      registerChunkHandler(null);
-      registerAnswerHandler(null);
       cleanup(fullText, "L2");
     } catch (e) {
       console.debug("[Chat] L2 streamChatMessage 失败:", (e as Error).message);
       clearTimeout(timeoutId);
-      registerChunkHandler(null);
       registerAnswerHandler(null);
+      registerStepHandler(null);
+      registerChunkHandler(null);
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
@@ -474,6 +531,25 @@ function ChatApp() {
     setListeningText("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try {
+        const audioCtx = new AudioContext();
+        audioCtxRef.current = audioCtx;
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 128;
+        source.connect(analyser);
+        const buf = new Uint8Array(analyser.frequencyBinCount);
+        const loop = () => {
+          analyser.getByteFrequencyData(buf);
+          const v = buf.reduce((a, b) => a + b, 0) / buf.length / 255;
+          setMicLevel(Math.min(1, v * 2.4));
+          micRafRef.current = requestAnimationFrame(loop);
+        };
+        micRafRef.current = requestAnimationFrame(loop);
+      } catch {
+        /* 忽略 Analyser 失败，仍可用录音 */
+      }
+
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -487,6 +563,7 @@ function ChatApp() {
       };
 
       mediaRecorder.onstop = () => {
+        stopMicAnalyser();
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
         (window as any).recordedAudioBlob = audioBlob;
         stream.getTracks().forEach((track) => track.stop());
@@ -529,6 +606,7 @@ function ChatApp() {
       }
       setState("listening");
     } catch (error: any) {
+      stopMicAnalyser();
       setIsRecording(false);
       setListeningText("");
       setRecordingStatus(`无法访问麦克风: ${error.message}`);
@@ -621,28 +699,6 @@ function ChatApp() {
     }
   };
 
-  // v8.0 流式神经：WebSocket chunk 追加到当前 Assistant 消息
-  const appendChunkRef = useRef<(chunk: string, runId?: string) => void>(() => {});
-  const isLoadingRef = useRef(false);
-  isLoadingRef.current = isLoading;
-  appendChunkRef.current = (chunk: string, runId?: string) => {
-    if (runId) l3ActiveRunIdRef.current = runId;
-    if (!isLoadingRef.current) return;
-    setMessages((prev) => {
-      const last = prev[prev.length - 1];
-      if (last?.role === "assistant") {
-        return prev.map((m, i) =>
-          i === prev.length - 1 ? { ...m, content: m.content + chunk } : m
-        );
-      }
-      return prev;
-    });
-  };
-  useEffect(() => {
-    registerChunkHandler((chunk, runId) => appendChunkRef.current(chunk, runId));
-    return () => registerChunkHandler(null);
-  }, [registerChunkHandler]);
-
   // v8.0 人格色彩：Handoff 时全局主题突变（default 科技蓝 / architect 赛博紫 / researcher 矩阵绿）
   const personaTheme = handoffEvent?.persona ?? "default";
   useEffect(() => {
@@ -650,42 +706,95 @@ function ChatApp() {
     if (root) root.setAttribute("data-persona", personaTheme);
   }, [personaTheme]);
 
+  /** 仅录音 / VAD / TTS 时用声波动画。等待模型时仍保留文本框（否则会卸载 input，表现为「无法输入」）；思考态由 Jachin Core 的 cyberPhase 呈现 */
+  const interactionPhase: "text" | WavePhase = ttsPlaying
+    ? "speaking"
+    : isRecording || isVadActive
+      ? "mic_listen"
+      : "text";
+
+  const openConsole = () => {
+    void invoke("show_console_window");
+    void invoke("hide_chat_window");
+  };
+
+  const lastAssistantBubble = [...messages].reverse().find((m) => m.role === "assistant");
+  /** L3 的 ws 累积 + 当前轮助手气泡（与 v0.8.98 语义一致） */
+  const streamDisplay = wsStreamingContent || (lastAssistantBubble?.content ?? "");
+
+  /** 与 useJachinCoreState 对齐，映射到赛博协议 CorePhase（驱动 JachinCore 流光） */
+  const cyberPhase = useMemo((): CorePhase => {
+    if (jachinCore.selfHealFlash) return CorePhase.HEALING;
+    if (isTyping && streamDisplay.trim().length > 0) return CorePhase.STREAMING;
+    if (sensory.hitlPending) return CorePhase.THINKING;
+    if (isLoading && !isRecording && !isVadActive) return CorePhase.THINKING;
+    if (jachinCore.coreState === "thinking") return CorePhase.THINKING;
+    if (jachinCore.coreState === "streaming" && streamDisplay.trim().length > 0) {
+      return CorePhase.STREAMING;
+    }
+    return CorePhase.IDLE;
+  }, [
+    jachinCore.selfHealFlash,
+    jachinCore.coreState,
+    isTyping,
+    streamDisplay,
+    sensory.hitlPending,
+    isLoading,
+    isRecording,
+    isVadActive,
+  ]);
+
+  /** 流式面板：有正文且为本轮助手消息时展示（含完成后保留，直到用户发出下一条并产生新的空助手泡） */
+  const lastMsg = messages[messages.length - 1];
+  const showStreamPanel =
+    streamDisplay.trim().length > 0 &&
+    (isTyping ||
+      isLoading ||
+      cyberPhase === CorePhase.STREAMING ||
+      (lastMsg?.role === "assistant" && !!lastMsg.content?.trim()));
+
   return (
     <div
-      className="w-full h-full min-h-0 flex flex-col bg-transparent border-0 relative"
-      style={{ height: "100vh", background: "transparent" }}
+      className="w-full min-h-0 flex flex-col overflow-visible bg-transparent border-0 relative"
+      style={{ height: "100%", minHeight: 0, background: "transparent" }}
     >
       {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
-      <SensoryOverlay sensory={sensory} />
-      <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
-        <div className="flex-1 min-h-0 min-w-0">
-          <ChatUI
-            messages={messages}
+      <SensoryOverlay sensory={sensory} variant="minimal" />
+      {/* pointer-events-none：空白区不拦截；justify-end：Omni 仅占内容高度贴底，避免外壳 h-full 形成整窗透明命中层（空气墙） */}
+      {/* 禁止 overflow-hidden：会裁切 Omni 下方 absolute 流式面板 */}
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col justify-end overflow-visible pointer-events-none">
+          <OmniCyberChatShell
+            phase={cyberPhase}
+            thinkingToolFlash={jachinCore.toolFlash}
             input={input}
             onInputChange={setInput}
             onSend={handleSend}
+            placeholder={
+              sensory.connected
+                ? "Alt+Shift+Space · 输入或按住说话（L3）…"
+                : l2Available
+                  ? "Alt+Shift+Space · 输入指令（L2）…"
+                  : "等待 L3 或 L2…"
+            }
+            disabled={!sensory.connected && !l2Available}
+            isLoading={isLoading}
+            isTyping={isTyping}
+            streamText={streamDisplay}
+            showStreamPanel={showStreamPanel}
+            isRecording={isRecording}
             onVoiceStart={startRecording}
             onVoiceStop={stopRecording}
             isVadActive={isVadActive}
             onVadToggle={handleVadToggle}
-            isLoading={isLoading}
-            isTyping={isTyping}
-            isRecording={isRecording}
+            interactionPhase={interactionPhase}
+            micLevel={micLevel}
+            onOpenConsole={openConsole}
             recordingStatus={recordingStatus}
             listeningText={listeningText}
-            placeholder={
-              sensory.connected ? "输入指令或语音（L3 直连）..." :
-              l2Available ? "输入指令或语音（L2 兜底）..." :
-              "等待 L3 (ws://localhost:18981) 或 L2 连接..."
-            }
+            hitlPending={sensory.hitlPending}
+            onHitlResolve={(ok) => sensory.resolveHitl(ok)}
             riskLevel={riskLevel}
-            disabled={!sensory.connected && !l2Available}
-            streamingFromWs={!!(isTyping && wsStreamingContent)}
           />
-        </div>
-        <div className="flex-shrink-0 px-4 pb-2">
-          <SystemLogPanel />
-        </div>
       </div>
       {/* 高风险操作二次确认弹窗 */}
       {pendingHighRisk && (
@@ -701,7 +810,13 @@ function ChatApp() {
           </div>
         </div>
       )}
-      <audio ref={chatAudioRef} style={{ display: "none" }} />
+      <audio
+        ref={chatAudioRef}
+        style={{ display: "none" }}
+        onPlay={() => setTtsPlaying(true)}
+        onPause={() => setTtsPlaying(false)}
+        onEnded={() => setTtsPlaying(false)}
+      />
     </div>
   );
 }

@@ -880,6 +880,7 @@ def _harvest_expand_extract_collapse_loop(
       expand_target_column: 0=首列(默认), 1=第二列(对比页统计范围)
       expand_parent_full_cell: True 时用首列完整文本作父级标识(如 "2026-03-13 VS 2026-03-06")
       expand_capture_first_rows: 展开循环前先抓取的首行数（如汇总行）
+      expand_include_parent_row: True 时每一轮在子行前追加父 tr（每日游戏数据「当日总计」在该行）
     """
     import re as _re
     _date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -973,7 +974,7 @@ def _harvest_expand_extract_collapse_loop(
         extracted = page.evaluate(
             """
             (args) => {
-                const expandedRowIdx = args.expandedRowIdx, useFullParent = args.useFullParent;
+                const expandedRowIdx = args.expandedRowIdx, useFullParent = args.useFullParent, includeParent = args.includeParent;
                 const wrapper = document.querySelector('.el-table__body-wrapper');
                 if (!wrapper || wrapper.closest('.el-picker-panel')) return null;
                 const trs = wrapper.querySelectorAll('tbody tr');
@@ -989,6 +990,13 @@ def _harvest_expand_extract_collapse_loop(
                 }
                 if (!parentDate) return null;
                 const rows = [];
+                if (includeParent) {
+                    const parentTds = parentTr.querySelectorAll('td');
+                    const parentCells = Array.from(parentTds).map(t => (t.innerText || '').trim());
+                    if (parentCells.length) {
+                        rows.push({ cells: parentCells, parentDate });
+                    }
+                }
                 for (let i = expandedRowIdx; i < trs.length; i++) {
                     const tr = trs[i];
                     const tds = tr.querySelectorAll('td');
@@ -1002,7 +1010,11 @@ def _harvest_expand_extract_collapse_loop(
                 return rows.length ? rows : null;
             }
             """,
-            {"expandedRowIdx": row_idx, "useFullParent": parent_full_cell},
+            {
+                "expandedRowIdx": row_idx,
+                "useFullParent": parent_full_cell,
+                "includeParent": bool(automation.get("expand_include_parent_row")),
+            },
         )
         if extracted:
             for item in extracted:

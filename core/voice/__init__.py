@@ -5,7 +5,7 @@ Voice Module - 语音模块
 """
 
 from .stt import SpeechToText, STTProvider
-from .tts import TextToSpeech, TTSProvider
+from .tts import TextToSpeech, TTSProvider, is_tts_globally_enabled
 from .intent_router import IntentRouter, RoutedIntent, IntentType, RiskLevel
 
 __all__ = [
@@ -13,6 +13,7 @@ __all__ = [
     "STTProvider",
     "TextToSpeech",
     "TTSProvider",
+    "is_tts_globally_enabled",
     "IntentRouter",
     "RoutedIntent",
     "IntentType",

@@ -29,6 +29,9 @@ yarn-error.log*
 # local env files
 .env*.local
 
+# docker-compose.postgres 本地镜像覆盖（从 docker-compose.postgres.env.example 复制）
+docker-compose.postgres.env
+
 # pairing store (memory mode)
 .nexus-pairing.json
 
