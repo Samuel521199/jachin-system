@@ -1,10 +1,11 @@
-/**
- * Omni 赛博协议壳层 — 极简：无历史气泡列表，流式面板贴输入区上方（above_capsule）
+﻿/**
+ * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
 import React, { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, Square, Radio, LayoutDashboard, Settings2 } from "lucide-react";
+import { Send, Mic, Square, Radio, LayoutDashboard, Settings2, Brain } from "lucide-react";
+import type { StoredMessage } from "../../utils/messageStorage";
 import { WindowControls } from "../Chat/WindowControls";
 import { VoiceWaveform, type WavePhase } from "../Chat/VoiceWaveform";
 import { JachinCore } from "./JachinCore";
@@ -39,6 +40,7 @@ function phaseToCoreVisual(
 export interface OmniCyberChatShellProps {
   phase: CorePhase;
   thinkingToolFlash: ToolFlashKind;
+  messages: StoredMessage[];
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
@@ -46,8 +48,6 @@ export interface OmniCyberChatShellProps {
   disabled?: boolean;
   isLoading: boolean;
   isTyping: boolean;
-  streamText: string;
-  showStreamPanel: boolean;
   isRecording: boolean;
   onVoiceStart: () => void;
   onVoiceStop: () => void;
@@ -73,8 +73,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   disabled = false,
   isLoading,
   isTyping,
-  streamText,
-  showStreamPanel,
+  messages,
   isRecording,
   onVoiceStart,
   onVoiceStop,
@@ -89,11 +88,11 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   onHitlResolve,
   riskLevel = "safe",
 }) => {
-  const streamEndRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    streamEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [streamText, isTyping]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTyping]);
 
   const canSend = !disabled && !isLoading && input.trim().length > 0;
   const canVoice = !disabled && !isLoading;
@@ -111,123 +110,148 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
 
   return (
     <div
-      className={`w-full h-full min-h-0 flex flex-col rounded-2xl overflow-hidden pointer-events-none ${riskBorder}`}
+      className={`flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-none ${riskBorder}`}
       style={{ background: "transparent" }}
     >
-      <div className="relative flex flex-col mt-auto w-full shrink-0 pointer-events-auto rounded-2xl">
+      <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-auto">
         <div
-          className="absolute inset-0 pointer-events-none rounded-2xl"
+          className="pointer-events-none absolute inset-0 rounded-2xl"
           style={{
             backgroundColor: "rgba(6, 14, 32, 0.5)",
             backdropFilter: "blur(20px) saturate(1.15)",
             WebkitBackdropFilter: "blur(20px) saturate(1.15)",
           }}
         />
-        <div className="absolute inset-0 pointer-events-none rounded-2xl shadow-[inset_0_0_48px_rgba(34,211,238,0.06)]" />
+        <div className="pointer-events-none absolute inset-0 rounded-2xl shadow-[inset_0_0_48px_rgba(34,211,238,0.06)]" />
 
-        <div
-          className="h-6 flex-shrink-0 flex items-center justify-center cursor-grab active:cursor-grabbing select-none relative z-10"
-          data-tauri-drag-region
-        >
-          <span className="w-7 h-0.5 rounded-full bg-cyan-400/35" />
-        </div>
-
-        <header className="flex justify-between items-center px-3 pb-1 pt-0 flex-shrink-0 relative z-10">
-          <span className="text-[10px] uppercase tracking-[0.2em] text-cyan-400/80">Omni</span>
-          <div className="flex items-center gap-0.5">
-            <WindowControls />
+        <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
+          {/* 原生拖拽区：整段标题栏交给系统，避免仅细条可拖；按钮区 pointer-events-auto */}
+          <div
+            data-tauri-drag-region
+            className="flex shrink-0 select-none items-center justify-between gap-2 px-3 pb-1.5 pt-2"
+          >
+            <span className="pointer-events-none text-[10px] font-medium uppercase tracking-[0.2em] text-cyan-400/80">
+              Omni
+            </span>
+            <div className="pointer-events-none flex min-w-0 flex-1 justify-center px-2">
+              <span className="h-0.5 w-7 shrink-0 rounded-full bg-cyan-400/35" aria-hidden />
+            </div>
+            <div className="pointer-events-auto shrink-0">
+              <WindowControls />
+            </div>
           </div>
-        </header>
 
-        <AnimatePresence>
-          {hitlPending && (
-            <motion.div
-              key="hitl-panel"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden border-t border-red-500/30 relative z-20"
-            >
-              <div className="p-3 space-y-3 bg-red-950/40">
-                <p className="text-center text-red-300 text-xs font-semibold tracking-wide">HITL · 需人工授权</p>
-                <p className="text-slate-300 text-xs font-mono max-h-24 overflow-y-auto whitespace-pre-wrap">
-                  {hitlPending.content || "[高危操作待确认]"}
-                </p>
-                <div className="flex gap-2 justify-center">
-                  <button
-                    type="button"
-                    className="px-4 py-2 rounded-lg bg-emerald-600/80 text-white text-sm font-medium hover:bg-emerald-500"
-                    onClick={() => onHitlResolve(true)}
-                  >
-                    授权通过
-                  </button>
-                  <button
-                    type="button"
-                    className="px-4 py-2 rounded-lg bg-slate-700 text-slate-100 text-sm hover:bg-slate-600"
-                    onClick={() => onHitlResolve(false)}
-                  >
-                    拦截销毁
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          {/* 中部可滚动：HITL / 流式 / 状态，撑满剩余高度，绝不挤出底栏 */}
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+            <AnimatePresence>
+              {hitlPending && (
+                <motion.div
+                  key="hitl-panel"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="relative z-20 overflow-hidden border-t border-red-500/30"
+                >
+                  <div className="space-y-3 bg-red-950/40 p-3">
+                    <p className="text-center text-xs font-semibold tracking-wide text-red-300">HITL · 需人工授权</p>
+                    <p className="max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-slate-300">
+                      {hitlPending.content || "[高危操作待确认]"}
+                    </p>
+                    <div className="flex justify-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg bg-emerald-600/80 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                        onClick={() => onHitlResolve(true)}
+                      >
+                        授权通过
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-100 hover:bg-slate-600"
+                        onClick={() => onHitlResolve(false)}
+                      >
+                        拦截销毁
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-        {/* 流式面板：贴输入区上方（above_capsule） */}
-        <AnimatePresence>
-          {showStreamPanel && !hitlPending && (
-            <motion.div
-              key="stream"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.28, ease: "easeOut" }}
-              className="overflow-hidden border-t border-white/10 relative z-10 mb-3"
-            >
-              <motion.div
-                className="h-1 w-full bg-gradient-to-r from-cyan-500/50 via-violet-500/60 to-cyan-500/50"
-                animate={{ backgroundPosition: ["0% 50%", "100% 50%"] }}
-                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                style={{ backgroundSize: "200% 100%" }}
-              />
-              <div className="p-3 max-h-40 overflow-y-auto text-sm text-cyan-50/95 leading-relaxed scrollbar-thin">
-                <div className="font-mono whitespace-pre-wrap break-words">
-                  {streamText}
-                  {isTyping && (
-                    <span className="inline-block w-1.5 h-3 ml-0.5 bg-cyan-400/90 animate-pulse align-middle" />
-                  )}
-                </div>
-                <div ref={streamEndRef} />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {(recordingStatus || listeningText || isVadActive) && (
-          <div className="flex flex-col gap-1 mx-3 mb-1 flex-shrink-0 text-[10px] relative z-10">
-            {isVadActive && (
-              <div className="text-amber-300/90 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25">
-                VAD 监听中…
+            {!hitlPending && (
+              <div className="relative z-10 flex flex-col gap-2 px-3 py-2">
+                {messages.length === 0 && (
+                  <p className="text-center text-[11px] text-cyan-500/40 font-mono tracking-wide">
+                    在此输入或语音，对话将按轮次显示
+                  </p>
+                )}
+                {messages.map((msg, idx) => {
+                  const isLastAssistant =
+                    msg.role === "assistant" && idx === messages.length - 1;
+                  if (msg.role === "user") {
+                    return (
+                      <div key={`${msg.timestamp}-${idx}`} className="flex justify-end">
+                        <div className="max-w-[88%] rounded-2xl border border-cyan-500/25 bg-cyan-950/35 px-3 py-2 text-sm text-cyan-100/95 shadow-[0_0_20px_rgba(34,211,238,0.06)]">
+                          <div className="break-words whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (msg.role === "assistant") {
+                    return (
+                      <div key={`${msg.timestamp}-${idx}`} className="flex justify-start">
+                        <div className="max-w-[92%] rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-sm shadow-inner">
+                          {!!msg.reasoning?.trim() && (
+                            <details className="mb-2 group rounded-lg border border-cyan-500/15 bg-slate-900/40">
+                              <summary className="cursor-pointer select-none list-none px-2 py-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-cyan-500/50 hover:text-cyan-400/70 [&::-webkit-details-marker]:hidden">
+                                <Brain className="h-3.5 w-3.5 shrink-0 text-cyan-500/60" aria-hidden />
+                                <span>Thought Process</span>
+                                <span className="ml-auto text-[10px] font-mono text-cyan-600/40 group-open:hidden">▸</span>
+                                <span className="ml-auto hidden text-[10px] font-mono text-cyan-600/40 group-open:inline">▾</span>
+                              </summary>
+                              <div className="border-l-2 border-cyan-500/25 mx-2 mb-2 pl-2.5 text-[11px] leading-relaxed text-cyan-500/50 font-mono whitespace-pre-wrap break-words">
+                                {msg.reasoning}
+                              </div>
+                            </details>
+                          )}
+                          <div className="break-words whitespace-pre-wrap leading-relaxed font-medium text-cyan-50/95">
+                            {msg.content}
+                            {isLastAssistant && isTyping && (
+                              <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-cyan-400/90 align-middle" />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+                <div ref={messagesEndRef} className="h-px shrink-0" />
               </div>
             )}
-            {recordingStatus && (
-              <div
-                className={
-                  recordingStatus.includes("错误") ? "text-red-300" : "text-cyan-300/90"
-                }
-              >
-                {recordingStatus}
+
+            {(recordingStatus || listeningText || isVadActive) && (
+              <div className="relative z-10 mx-3 mb-2 flex flex-col gap-1 text-[10px]">
+                {isVadActive && (
+                  <div className="rounded border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-amber-300/90">
+                    VAD 监听中…
+                  </div>
+                )}
+                {recordingStatus && (
+                  <div className={recordingStatus.includes("错误") ? "text-red-300" : "text-cyan-300/90"}>
+                    {recordingStatus}
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
 
-        <div
-          data-chat-interactive
-          className="flex items-center gap-2 px-3 pb-3 pt-1 flex-shrink-0 relative z-20"
-          style={{ pointerEvents: "auto" }}
-        >
+          {/* Omni-Bar：永远贴底，禁止被压缩 */}
+          <div
+            data-chat-interactive
+            className="relative z-20 flex shrink-0 items-center gap-2 px-3 pb-3 pt-1"
+            style={{ pointerEvents: "auto" }}
+          >
           <JachinCore state={coreState} toolFlash={thinkingToolFlash} />
 
           {onVadToggle != null && (
@@ -342,6 +366,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
           >
             <Settings2 className="w-4 h-4" />
           </button>
+        </div>
         </div>
       </div>
     </div>

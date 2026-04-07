@@ -10,20 +10,25 @@
       html, body {
         margin: 0;
         padding: 0;
+        height: 100%;
+        width: 100%;
+        box-sizing: border-box;
         background: transparent !important;
-        /* 不可 overflow:hidden：会裁切 Omni 下方 absolute 流式面板 */
-        overflow-x: hidden;
-        overflow-y: visible;
+        overflow: hidden;
         pointer-events: auto;
       }
+      /* 流式/长文滚动在 Omni 内部 flex 子树完成，根节点锁高度避免挤出输入栏 */
       #chat-root {
         width: 100%;
         min-width: 100%;
         min-height: 0;
         height: 100%;
-        overflow: visible;
+        max-height: 100%;
+        overflow: hidden;
         background: transparent !important;
         pointer-events: auto !important;
+        display: flex;
+        flex-direction: column;
       }
       #chat-root input,
       #chat-root button,

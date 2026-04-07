@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口；大控制台仍为 main（console.html）。
@@ -13,14 +13,22 @@ import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3AgentForIntent, checkHealth, type VoiceProcessResponse } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
-import { useSensoryWebSocket, type SensoryAnswerMeta } from "./hooks/useSensoryWebSocket";
+import { useSensoryWebSocket, type SensoryAnswerMeta, type StreamChunkKind } from "./hooks/useSensoryWebSocket";
 import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "./constants/chatResponseTimeout";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
+import {
+  createReasoningStreamAcc,
+  mergeAssistantParts,
+  normalizeAssistantOutput,
+  processReasoningDelta,
+  type ReasoningStreamAcc,
+} from "./utils/reasoningStreamSplit";
 import type { WavePhase } from "./components/Chat/VoiceWaveform";
 import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
+import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
 import "./styles/globals.css";
@@ -54,8 +62,23 @@ function ChatApp() {
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
   const sensory = useSensoryWebSocket();
-  const { streamingContent: wsStreamingContent, handoffEvent, swarmEvent, registerChunkHandler, registerAnswerHandler, registerStepHandler, registerMirrorInputHandler, sendInput } = sensory;
-  const jachinCore = useJachinCoreState(sensory, { isTyping });
+  const {
+    handoffEvent,
+    swarmEvent,
+    streamChunkKind: wsStreamChunkKind,
+    registerChunkHandler,
+    registerAnswerHandler,
+    registerStepHandler,
+    registerMirrorInputHandler,
+    sendInput,
+  } = sensory;
+  /** L2 等无 Sensory 累积串时，按 chunk 元数据同步 Core 相位 */
+  const [localStreamChunkKind, setLocalStreamChunkKind] = useState<StreamChunkKind | null>(null);
+  const streamChunkKindEffective = wsStreamChunkKind ?? localStreamChunkKind;
+  const jachinCore = useJachinCoreState(sensory, { isTyping, localStreamChunkKind });
+  /** 当前轮流式：<redacted_thinking> 与 metadata.is_reasoning 的解析状态 */
+  const reasoningAccRef = useRef<ReasoningStreamAcc>(createReasoningStreamAcc());
+  const mirrorReasoningAccRef = useRef<ReasoningStreamAcc>(createReasoningStreamAcc());
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
@@ -164,17 +187,51 @@ function ChatApp() {
       const displayContent = `[Lark] ${content.trim()}`;
       const userMsg: StoredMessage = { role: "user", content: displayContent, timestamp: Date.now() };
       setMessages((prev) => addMessage(prev, userMsg));
-      const assistantMsg: StoredMessage = { role: "assistant", content: "", timestamp: Date.now() };
+      const assistantMsg: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
       setMessages((prev) => addMessage(prev, assistantMsg));
       setIsLoading(true);
       setIsTyping(true);
+      setLocalStreamChunkKind(null);
+      mirrorReasoningAccRef.current = createReasoningStreamAcc();
+      let mirrorStreamMerge = "";
       const mirrorRunIdRef = { current: "" };
-      const chunkHandler = (chunk: string, runId?: string) => {
+      const chunkHandler = (chunk: string, runId?: string, meta?: { isReasoning?: boolean }) => {
         if (runId) mirrorRunIdRef.current = runId;
+        setLocalStreamChunkKind(meta?.isReasoning ? "reasoning" : "content");
+        if (meta?.isReasoning) {
+          setMessages((prev) => {
+            const u = [...prev];
+            const last = u[u.length - 1];
+            if (last?.role !== "assistant") return prev;
+            const { content, reasoning } = processReasoningDelta(
+              mirrorReasoningAccRef.current,
+              last.content,
+              last.reasoning ?? "",
+              chunk,
+              true,
+            );
+            const merged = mergeAssistantParts(content, reasoning);
+            u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
+            return u;
+          });
+          return;
+        }
+        const { next, delta } = mergeStreamChunk(mirrorStreamMerge, chunk);
+        mirrorStreamMerge = next;
+        if (!delta) return;
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
-          if (last?.role === "assistant") u[u.length - 1] = { ...last, content: last.content + chunk };
+          if (last?.role !== "assistant") return prev;
+          const { content, reasoning } = processReasoningDelta(
+            mirrorReasoningAccRef.current,
+            last.content,
+            last.reasoning ?? "",
+            delta,
+            false,
+          );
+          const merged = mergeAssistantParts(content, reasoning);
+          u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
           return u;
         });
       };
@@ -183,7 +240,10 @@ function ChatApp() {
         setMessages((prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
-          if (last?.role === "assistant") u[u.length - 1] = { ...last, content: last.content + stepContent };
+          if (last?.role === "assistant") {
+            const r = (last.reasoning ?? "") + stepContent;
+            u[u.length - 1] = { ...last, reasoning: r };
+          }
           return u;
         });
       };
@@ -196,13 +256,19 @@ function ChatApp() {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role === "assistant") {
+            let newContent = useServerFinal
+              ? answerContent
+              : !hadStream
+                ? answerContent || last.content
+                : last.content;
+            let newReasoning = last.reasoning ?? "";
+            const n = normalizeAssistantOutput(newContent);
+            newContent = n.content;
+            newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
             u[u.length - 1] = {
               ...last,
-              content: useServerFinal
-                ? answerContent
-                : !hadStream
-                  ? answerContent || last.content
-                  : last.content,
+              content: newContent,
+              reasoning: newReasoning,
               source: "L3",
             };
           }
@@ -210,6 +276,7 @@ function ChatApp() {
         });
         setIsLoading(false);
         setIsTyping(false);
+        setLocalStreamChunkKind(null);
         registerChunkHandler(null);
         registerAnswerHandler(null);
         registerStepHandler(null);
@@ -232,10 +299,12 @@ function ChatApp() {
     setRiskLevel("safe");
     setState("thinking");
 
-    const assistantMessage: StoredMessage = { role: "assistant", content: "", timestamp: Date.now() };
+    const assistantMessage: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
     setMessages((prev) => addMessage(prev, assistantMessage));
     setIsTyping(true);
     l3ActiveRunIdRef.current = "";
+    setLocalStreamChunkKind(null);
+    reasoningAccRef.current = createReasoningStreamAcc();
 
     const audioEl = chatAudioRef.current;
     const ttsQueue = ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
@@ -274,7 +343,11 @@ function ChatApp() {
           } else {
             newContent = finalContent || last.content;
           }
-          updated[updated.length - 1] = { ...last, content: newContent, source };
+          let newReasoning = last.reasoning ?? "";
+          const n = normalizeAssistantOutput(newContent);
+          newContent = n.content;
+          newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
+          updated[updated.length - 1] = { ...last, content: newContent, reasoning: newReasoning, source };
         }
         saveMessages(updated);
         return updated;
@@ -288,14 +361,34 @@ function ChatApp() {
       }
       setIsLoading(false);
       setIsTyping(false);
+      setLocalStreamChunkKind(null);
       setRiskLevel("safe");
       if (!ttsQueue) setTimeout(() => setState("idle"), 2000);
       registerAnswerHandler(null);
       registerStepHandler(null);
     };
 
-    const chunkHandler = (chunk: string, runId?: string) => {
+    const chunkHandler = (chunk: string, runId?: string, meta?: { isReasoning?: boolean }) => {
       if (runId) l3ActiveRunIdRef.current = runId;
+      setLocalStreamChunkKind(meta?.isReasoning ? "reasoning" : "content");
+      if (meta?.isReasoning) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last?.role !== "assistant") return prev;
+          const { content, reasoning } = processReasoningDelta(
+            reasoningAccRef.current,
+            last.content,
+            last.reasoning ?? "",
+            chunk,
+            true,
+          );
+          const merged = mergeAssistantParts(content, reasoning);
+          updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
+          return updated;
+        });
+        return;
+      }
       const { next, delta } = mergeStreamChunk(streamMergeAcc, chunk);
       streamMergeAcc = next;
       if (!delta) return;
@@ -304,7 +397,15 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          updated[updated.length - 1] = { ...last, content: last.content + delta };
+          const { content, reasoning } = processReasoningDelta(
+            reasoningAccRef.current,
+            last.content,
+            last.reasoning ?? "",
+            delta,
+            false,
+          );
+          const merged = mergeAssistantParts(content, reasoning);
+          updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
         }
         return updated;
       });
@@ -316,7 +417,8 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          updated[updated.length - 1] = { ...last, content: last.content + content };
+          const reasoning = (last.reasoning ?? "") + content;
+          updated[updated.length - 1] = { ...last, reasoning };
         }
         return updated;
       });
@@ -328,7 +430,7 @@ function ChatApp() {
       // 保留 answer：L3 可能在 compaction 后晚于本定时器返回，与 Lark 同源的最终包仍应写入气泡
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (last?.role === "assistant" && !last.content) {
+        if (last?.role === "assistant" && !last.content?.trim() && !(last.reasoning ?? "").trim()) {
           return [
             ...prev.slice(0, -1),
             {
@@ -417,7 +519,7 @@ function ChatApp() {
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
-        if (last?.role === "assistant" && !last.content) {
+        if (last?.role === "assistant" && !last.content?.trim()) {
           updated[updated.length - 1] = { ...last, content: `打字请求失败：${(e as Error).message}。请确认 Layer 3 (ws://localhost:18981) 或 Layer 2 (http://localhost:18888) 已启动。` };
         }
         return updated;
@@ -650,7 +752,7 @@ function ChatApp() {
       const response = await voiceChat(audioFile, "wav", "zh-CN", true, "zh-CN-XiaoxiaoNeural");
 
       setMessages((prev) => addMessage(prev, { role: "user", content: `🎤 [语音] ${response.user_text || response.text || "已发送语音消息"}`, timestamp: Date.now() }));
-      setMessages((prev) => addMessage(prev, { role: "assistant", content: "", timestamp: Date.now() }));
+      setMessages((prev) => addMessage(prev, { role: "assistant", content: "", reasoning: "", timestamp: Date.now() }));
       setIsTyping(true);
       let currentContent = "";
       await typewriterAnimation(response.text, {
@@ -719,14 +821,23 @@ function ChatApp() {
   };
 
   const lastAssistantBubble = [...messages].reverse().find((m) => m.role === "assistant");
-  /** L3 的 ws 累积 + 当前轮助手气泡（与 v0.8.98 语义一致） */
-  const streamDisplay = wsStreamingContent || (lastAssistantBubble?.content ?? "");
+  /** 当前轮助手可见文本（正文 + 思考），用于 Core 流式相位判断 */
+  const streamDisplay =
+    (lastAssistantBubble?.content ?? "") + (lastAssistantBubble?.reasoning ?? "");
 
   /** 与 useJachinCoreState 对齐，映射到赛博协议 CorePhase（驱动 JachinCore 流光） */
   const cyberPhase = useMemo((): CorePhase => {
     if (jachinCore.selfHealFlash) return CorePhase.HEALING;
-    if (isTyping && streamDisplay.trim().length > 0) return CorePhase.STREAMING;
     if (sensory.hitlPending) return CorePhase.THINKING;
+    // reasoning 流式：狂暴 THINKING（须先于「有字即 STREAMING」）
+    if (
+      isTyping &&
+      streamChunkKindEffective === "reasoning" &&
+      streamDisplay.trim().length > 0
+    ) {
+      return CorePhase.THINKING;
+    }
+    if (isTyping && streamDisplay.trim().length > 0) return CorePhase.STREAMING;
     if (isLoading && !isRecording && !isVadActive) return CorePhase.THINKING;
     if (jachinCore.coreState === "thinking") return CorePhase.THINKING;
     if (jachinCore.coreState === "streaming" && streamDisplay.trim().length > 0) {
@@ -738,34 +849,24 @@ function ChatApp() {
     jachinCore.coreState,
     isTyping,
     streamDisplay,
+    streamChunkKindEffective,
     sensory.hitlPending,
     isLoading,
     isRecording,
     isVadActive,
   ]);
 
-  /** 流式面板：有正文且为本轮助手消息时展示（含完成后保留，直到用户发出下一条并产生新的空助手泡） */
-  const lastMsg = messages[messages.length - 1];
-  const showStreamPanel =
-    streamDisplay.trim().length > 0 &&
-    (isTyping ||
-      isLoading ||
-      cyberPhase === CorePhase.STREAMING ||
-      (lastMsg?.role === "assistant" && !!lastMsg.content?.trim()));
-
   return (
-    <div
-      className="w-full min-h-0 flex flex-col overflow-visible bg-transparent border-0 relative"
-      style={{ height: "100%", minHeight: 0, background: "transparent" }}
-    >
+    <div className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
+      <WindowResizeHandles />
       {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
       <SensoryOverlay sensory={sensory} variant="minimal" />
-      {/* pointer-events-none：空白区不拦截；justify-end：Omni 仅占内容高度贴底，避免外壳 h-full 形成整窗透明命中层（空气墙） */}
-      {/* 禁止 overflow-hidden：会裁切 Omni 下方 absolute 流式面板 */}
-      <div className="flex-1 min-h-0 min-w-0 flex flex-col justify-end overflow-visible pointer-events-none">
+      <div className="pointer-events-none flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
           <OmniCyberChatShell
             phase={cyberPhase}
             thinkingToolFlash={jachinCore.toolFlash}
+            messages={messages}
             input={input}
             onInputChange={setInput}
             onSend={handleSend}
@@ -779,8 +880,6 @@ function ChatApp() {
             disabled={!sensory.connected && !l2Available}
             isLoading={isLoading}
             isTyping={isTyping}
-            streamText={streamDisplay}
-            showStreamPanel={showStreamPanel}
             isRecording={isRecording}
             onVoiceStart={startRecording}
             onVoiceStop={stopRecording}
@@ -795,6 +894,7 @@ function ChatApp() {
             onHitlResolve={(ok) => sensory.resolveHitl(ok)}
             riskLevel={riskLevel}
           />
+        </div>
       </div>
       {/* 高风险操作二次确认弹窗 */}
       {pendingHighRisk && (

@@ -1,0 +1,24 @@
+﻿版本号,完成的需求
+2025/10/20-Sprint,数据后台；管理后台
+2025/10/27-Sprint,PLDT短信OTP接入；平台多语言翻译；数据后台；测试记录问题修改；管理后台；语音房-上麦管理
+2025/11/03-Sprint,Ecolor；主播功能优化；支付服务；木头人排行榜；机器人相关逻辑；测试记录问题修改；管理后台
+2025/11/10-Sprint,Ecolor；H5三方登录接入；平台多语言翻译；数据后台；新用户注册绑定邀请码；木头人排行榜；机器人相关逻辑；测试记录问题修改；游戏优化；管理后台；转盘优化
+2025/11/17-Sprint,Ecolor；H5三方登录接入；数据后台；游戏优化；管理后台；转盘优化
+2025/11/24-Sprint,Ecolor；H5三方登录接入；Zendesk 集成接入；中台；平台多语言翻译；平台游戏集成调试模拟器；数据后台；木头人排行榜；测试记录问题修改；游戏优化；游戏多语言翻译；游戏规则；管理后台
+2025/12/01-Sprint,Color game 直进游戏（新增）；中台；后台；平台侧的回顾，现状，计划（参考tongits go）
+2025/12/08-Sprint,Color game 直进游戏（新增）；后台；平台侧的回顾，现状，计划（参考tongits go）
+2025/12/15-Sprint,Color game 直进游戏（新增）；中台；后台；平台侧的回顾，现状，计划（参考tongits go）；技术性需求
+2025/12/22-Sprint,BI完善；Color game 直进游戏（新增）；P24风控；中台；平台侧的回顾，现状，计划（参考tongits go）
+2025/12/29-Sprint,BI完善；Color game 直进游戏（新增）；P24风控；中台；平台侧的回顾，现状，计划（参考tongits go）
+2026/01/05-Sprint,BI完善；Color game 直进游戏（新增）；中台；任务系统V1.0；平台前端；平台后台；平台后端
+2026/01/12-Sprint,BI完善；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）
+2026/01/19-Sprint,BI完善；Color game 直进游戏（新增）；MQ新方案；平台侧的回顾，现状，计划（参考tongits go）；平台后台
+2026/01/26-Sprint,BI-三期；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）；风控
+2026/02/02-Sprint,BI-三期；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）
+2026/02/09-Sprint,BI-三期；Color game 直进游戏（新增）；平台侧的回顾，现状，计划（参考tongits go）
+2026/02/23-Sprint,BI完善；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）
+2026/03/02-Sprint,BI完善；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）；管理后台
+2026/03/09-Sprint,BI完善；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）；管理后台
+2026/03/16-Sprint,BI完善；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）；平台后台
+2026/03/23-Sprint,BI完善；Color game 直进游戏（新增）；中台；平台侧的回顾，现状，计划（参考tongits go）
+2026/03/30-Sprint,BI报表重构；BingoFlash；BingoShow；Texas；任务系统上线

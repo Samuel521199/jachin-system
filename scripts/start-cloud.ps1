@@ -1,25 +1,47 @@
-# =============================================================================
+﻿# =============================================================================
 # Cloud (Layer 1) - One-click start (Windows)
 # cloud/nexus - Nexus Console @ http://localhost:3000
 # 使用 Drizzle ORM + PostgreSQL
 # 首次运行会创建 .env.local；若项目根 .env 有 DATABASE_URL 则自动继承
+#
+# 双击 .ps1 时窗口会在脚本结束后立刻关闭，若「闪退」看不到报错，请从项目根打开 PowerShell 执行：
+#   .\scripts\start-cloud.ps1
+# 或保留窗口：powershell -NoExit -File .\scripts\start-cloud.ps1
 # =============================================================================
 
-$ErrorActionPreference = "Stop"
+param(
+    [switch]$NonInteractive
+)
+
+# 勿用 Stop：Copy-Item/Get-Content 等一旦报错会整段终止，双击运行时窗口一闪而过看不到原因
+$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Continue
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-chcp 65001 | Out-Null
+$null = chcp 65001 2>$null
+
+function Pause-End {
+    if (-not $NonInteractive) { Read-Host "按 Enter 关闭" }
+}
 
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $ProjectRoot = Split-Path -Parent $ScriptDir
-Set-Location $ProjectRoot
+try {
+    Set-Location -LiteralPath $ProjectRoot -ErrorAction Stop
+} catch {
+    Write-Host "(ERROR) 无法进入项目目录: $ProjectRoot" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Pause-End
+    exit 1
+}
 
 $NexusDir = Join-Path $ProjectRoot "cloud\nexus"
-if (-not (Test-Path $NexusDir)) {
+if (-not (Test-Path -LiteralPath $NexusDir)) {
     Write-Host "(ERROR) cloud\nexus not found. Run: .\scripts\install-cloud.ps1" -ForegroundColor Red
+    Pause-End
     exit 1
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Host "(ERROR) Node.js not found. Run: .\scripts\install-cloud.ps1" -ForegroundColor Red
+    Pause-End
     exit 1
 }
 
@@ -35,16 +57,22 @@ if (-not $NextInstalled) {
 $EnvLocal = Join-Path $NexusDir ".env.local"
 $EnvExample = Join-Path $NexusDir ".env.example"
 $RootEnv = Join-Path $ProjectRoot ".env"
-if (-not (Test-Path $EnvLocal)) {
-    if (Test-Path $EnvExample) {
-        Copy-Item $EnvExample $EnvLocal
-        Add-Content $EnvLocal "`n# Auto-added for first run`nSKIP_AUTH=true"
+if (-not (Test-Path -LiteralPath $EnvLocal)) {
+    if (Test-Path -LiteralPath $EnvExample) {
+        try {
+            Copy-Item -LiteralPath $EnvExample -Destination $EnvLocal -Force -ErrorAction Stop
+        } catch {
+            Write-Host "(ERROR) 无法复制 .env.example -> .env.local: $($_.Exception.Message)" -ForegroundColor Red
+            Pause-End
+            exit 1
+        }
+        Add-Content -LiteralPath $EnvLocal -Value "`n# Auto-added for first run`nSKIP_AUTH=true"
         Write-Host "(INFO) Created .env.local from .env.example (SKIP_AUTH=true)" -ForegroundColor Gray
         # 若项目根 .env 有 DATABASE_URL 且 nexus 未配置，则继承（便于共用 PostgreSQL）
-        if (Test-Path $RootEnv) {
-            $DbLine = Get-Content $RootEnv | Where-Object { $_ -match "^\s*DATABASE_URL=" } | Select-Object -First 1
-            if ($DbLine -and -not (Select-String -Path $EnvLocal -Pattern "^\s*DATABASE_URL=" -Quiet)) {
-                Add-Content $EnvLocal "`n# Inherited from project root .env`n$DbLine"
+        if (Test-Path -LiteralPath $RootEnv) {
+            $DbLine = Get-Content -LiteralPath $RootEnv -ErrorAction SilentlyContinue | Where-Object { $_ -match "^\s*DATABASE_URL=" } | Select-Object -First 1
+            if ($DbLine -and -not (Select-String -Path $EnvLocal -Pattern "^\s*DATABASE_URL=" -Quiet -ErrorAction SilentlyContinue)) {
+                Add-Content -LiteralPath $EnvLocal -Value "`n# Inherited from project root .env`n$DbLine"
                 Write-Host "(INFO) Inherited DATABASE_URL from project root" -ForegroundColor Gray
             }
         }

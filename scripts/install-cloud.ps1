@@ -41,13 +41,15 @@ if ($NextInstalled) {
     Pop-Location
 }
 
-# Drizzle 迁移（PostgreSQL，需 DATABASE_URL）
+# Drizzle：先 push（Auth 基表）再 migrate（增量 SQL）；需 DATABASE_URL
 Push-Location $NexusDir
 if (Test-Path "drizzle") {
-    Write-Host "> Drizzle migration..." -ForegroundColor Gray
+    Write-Host "> Drizzle push + migrate..." -ForegroundColor Gray
+    npm run db:push 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Host "(SKIP) db:push 失败，检查 DATABASE_URL" -ForegroundColor DarkGray }
     npm run db:migrate 2>$null
-    if ($LASTEXITCODE -eq 0) { Write-Host "(OK) Drizzle migrations applied" -ForegroundColor Green }
-    else { Write-Host "(SKIP) DATABASE_URL 未配置或迁移失败，跳过" -ForegroundColor DarkGray }
+    if ($LASTEXITCODE -eq 0) { Write-Host "(OK) Drizzle schema + migrations applied" -ForegroundColor Green }
+    else { Write-Host "(SKIP) db:migrate 失败，可稍后手动: cd cloud/nexus; npm run db:push; npm run db:migrate" -ForegroundColor DarkGray }
 }
 Pop-Location
 

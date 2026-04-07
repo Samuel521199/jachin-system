@@ -1,4 +1,4 @@
-/**
+﻿/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -61,6 +61,24 @@ export interface SensoryAnswerMeta {
   runId?: string;
 }
 
+/** 当前流式 chunk 语义：思考 reasoning vs 正文 content（驱动 Jachin Core THINKING / STREAMING） */
+export type StreamChunkKind = "reasoning" | "content";
+
+function detectChunkIsReasoning(
+  meta: Record<string, unknown> | undefined,
+  raw: Record<string, unknown>,
+  chunkContent: string,
+): boolean {
+  const m = meta ?? {};
+  if (m.is_reasoning === true || m.is_reasoning === "true") return true;
+  if (m.isReasoning === true || m.isReasoning === "true") return true;
+  const contentEmpty = !String(chunkContent ?? "").trim();
+  const rc = m.reasoning_content ?? m.reasoningContent;
+  if (typeof rc === "string" && rc.length > 0 && contentEmpty) return true;
+  if (typeof raw.reasoning === "string" && raw.reasoning.length > 0 && contentEmpty) return true;
+  return false;
+}
+
 export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const larkChatId = (options.larkChatId ?? DEFAULT_LARK_CHAT_ID).trim();
   const [connected, setConnected] = useState(false);
@@ -68,6 +86,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [hitlPending, setHitlPending] = useState<SensoryPayload | null>(null);
   /** v8.0 流式神经：当前 run 的累积内容，收到 answer 时清空 */
   const [streamingContent, setStreamingContent] = useState("");
+  /** 最近一条 chunk 是思考流还是正文流（与 metadata / reasoning 字段同步） */
+  const [streamChunkKind, setStreamChunkKind] = useState<StreamChunkKind | null>(null);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   /** Handoff 人格切换：供 UI 触发主题色突变 */
   const [handoffEvent, setHandoffEvent] = useState<HandoffEvent | null>(null);
@@ -75,7 +95,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [swarmEvent, setSwarmEvent] = useState<SwarmEvent | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onChunkRef = useRef<((chunk: string, runId: string) => void) | null>(null);
+  const onChunkRef = useRef<
+    ((chunk: string, runId: string, meta?: { isReasoning?: boolean }) => void) | null
+  >(null);
   const onAnswerRef = useRef<((content: string, meta?: SensoryAnswerMeta) => void) | null>(null);
   const onStepRef = useRef<((stepType: string, content: string, runId?: string) => void) | null>(null);
   const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
@@ -90,9 +112,12 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   }, []);
 
   /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
-  const registerChunkHandler = useCallback((fn: ((chunk: string, runId: string) => void) | null) => {
-    onChunkRef.current = fn;
-  }, []);
+  const registerChunkHandler = useCallback(
+    (fn: ((chunk: string, runId: string, meta?: { isReasoning?: boolean }) => void) | null) => {
+      onChunkRef.current = fn;
+    },
+    [],
+  );
 
   /** 注册 answer 回调：收到最终回复时调用（content 与 Lark 推送同源；meta.hadStreamChunks 表示本轮曾收到 chunk） */
   const registerAnswerHandler = useCallback((fn: ((content: string, meta?: SensoryAnswerMeta) => void) | null) => {
@@ -178,13 +203,16 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
           // v8.0 流式神经：合并 chunk（支持全量累加或纯增量），仅把新增 delta 交给 Chat 气泡
           if (data.step_type === "chunk" && data.content != null) {
             const runId = data.run_id ?? "";
+            const metaObj = meta as Record<string, unknown> | undefined;
+            const isReasoningChunk = detectChunkIsReasoning(metaObj, raw, data.content);
+            setStreamChunkKind(isReasoningChunk ? "reasoning" : "content");
             const { next, delta } = mergeStreamChunk(streamingAccRef.current, data.content);
             streamingAccRef.current = next;
             setStreamingContent(next);
             setCurrentRunId(runId);
             if (delta) {
               hadStreamChunksForRunRef.current = true;
-              onChunkRef.current?.(delta, runId);
+              onChunkRef.current?.(delta, runId, { isReasoning: isReasoningChunk });
             }
           }
 
@@ -222,6 +250,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
               hadStreamChunks: hadChunks,
               runId: data.run_id ?? "",
             });
+            setStreamChunkKind(null);
             setStreamingContent("");
             setCurrentRunId(null);
           }
@@ -279,6 +308,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     setHitlPending(null);
     streamingAccRef.current = "";
     hadStreamChunksForRunRef.current = false;
+    setStreamChunkKind(null);
     setStreamingContent("");
     setCurrentRunId(null);
   }, []);
@@ -342,6 +372,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     larkMirrorMode: !!larkChatId,
     // v8.0 视觉觉醒
     streamingContent,
+    streamChunkKind,
     currentRunId,
     handoffEvent,
     swarmEvent,

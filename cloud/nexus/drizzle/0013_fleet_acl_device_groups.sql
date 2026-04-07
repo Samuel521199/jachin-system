@@ -2,9 +2,17 @@
 -- 依赖：0012_p1_tenant_ssot
 -- 注意：若 PostgreSQL < 15 且在「单语句事务」中执行失败，可将下方 ALTER TYPE … ADD VALUE 拆出单独会话执行（旧版 PG 对枚举追加与事务有限制）。
 
--- 1) 扩展 org_role（枚举追加；重复执行会报错，属预期）
-ALTER TYPE "org_role" ADD VALUE 'fleet_admin';
-ALTER TYPE "org_role" ADD VALUE 'viewer';
+-- 1) 扩展 org_role（与 drizzle-kit push 可并存：枚举值已由 schema 创建时跳过）
+DO $$ BEGIN
+  ALTER TYPE "org_role" ADD VALUE 'fleet_admin';
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER TYPE "org_role" ADD VALUE 'viewer';
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- 2) 组内成员角色枚举
 DO $$ BEGIN

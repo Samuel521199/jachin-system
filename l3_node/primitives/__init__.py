@@ -1,7 +1,7 @@
 """
 L3 执行层四大原语：tools、mcp、skills、agent_tasks。
 
-聚合导出（原 ``l3_node.skills`` 包已移除，请使用本包或各子模块显式路径）。
+域技能与 MCP 实现位于 ``l3_node.primitives.skills`` / ``l3_node.primitives.mcp``；兼容旧导入仍可用 ``l3_node.skills`` / ``l3_node.mcp_tools``（薄转发）。
 """
 from __future__ import annotations
 

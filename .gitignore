@@ -7,7 +7,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-downloads/
+/downloads/
 eggs/
 .eggs/
 /lib/
@@ -41,6 +41,9 @@ ENV/
 .env.txt
 .env.local
 .env.*.local
+
+# Tauri updater signing key（勿提交私钥；公钥在 updater.key.pub / tauri.conf）
+clients/desktop/src-tauri/updater.key
 
 # Nexus pairing (memory mode fallback)
 .nexus-pairing.json

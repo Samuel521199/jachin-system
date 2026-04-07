@@ -3,6 +3,7 @@
 
 mod commands;
 mod config;
+mod nexus_config;
 mod device;
 mod device_registry;
 mod kernel;
@@ -354,6 +355,15 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
+        .plugin({
+            let mut b = tauri_plugin_updater::Builder::new();
+            if let Some(tok) = nexus_config::access_token() {
+                b = b
+                    .header("Authorization", format!("Bearer {}", tok))
+                    .expect("Authorization header value");
+            }
+            b.build()
+        })
         .plugin(GlobalShortcutBuilder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::settings::get_current_config,
