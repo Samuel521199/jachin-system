@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.100] - 2026-04-04
+
+### Added
+
+- **L3 工具池**：`l3_node/primitives/tools/tool_pool.py` 的 `assemble_tool_pool`（内置 + MCP 合并、RBAC 预检、后台通道剔除）；`run_agent` 单点调用
+- **文档**：`docs/architecture/L3_TOOL_POOL_AND_MCP_ASSEMBLY.md`（工具池与 MCP 组装 SSOT）；`.cursor/rules` 065 / 072 交叉引用
+
+### Changed
+
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli` 统一为 **0.8.100**（Git 标签 `v0.8.100`）
+
+---
+
 ## [v0.8.99] - 2026-04-03
 
 ### Added

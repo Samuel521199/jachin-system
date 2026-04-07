@@ -14,7 +14,7 @@ alwaysApply: true
 
 - **是什么**：单次 tool call 即可完成、**无独立多轮子 Agent 生命周期** 的执行单元。
 - **包含**：`core:*`（Native，`l3_node/primitives/tools/loader.py` + `core/native_tools.py`）；`jpp:*`（Wasm 原子，`core/wasm_runner.py`）。
-- **Prompt**：`tools[]` 描述中 **稳定项靠前**；易变的 **MCP 工具靠后**（见 `l3_node/prompt_compose.py`）。
+- **Prompt**：`tools[]` 描述中 **稳定项靠前**；易变的 **MCP 工具靠后**（主路径由 `load_tools` + MCP **追加**合并保证；按 `id` 排序见 `l3_node/prompt_compose.py` 的 `sort_tools_by_id`）。**SSOT**：`docs/architecture/L3_TOOL_POOL_AND_MCP_ASSEMBLY.md`。
 
 ## 2. MCP（协议扩展）
 
