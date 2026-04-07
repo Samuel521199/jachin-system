@@ -1,7 +1,7 @@
 """
 Jachin Nexus V2 — L3 单体 Agent 与记忆同步（ReAct；delegate 子 Agent）。
 
-工具清单以 load_tools / build_tools_description 为准。
+工具清单以 load_tools、assemble_tool_pool（MCP 合并）、build_tools_description 为准。
 相关规格：docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md；
 薄弱点与实现快照：docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md（§〇）。
 """
@@ -30,6 +30,7 @@ from l3_node.engine.hooks_pipeline import (
 from l3_node.llm_client import LiteLLMEngine, RunCancelledError, SecurityContext
 from l3_node.capability_catalog import build_capability_prompt_inject_for_tools, tools_include_recruitment
 from l3_node.primitives import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
+from l3_node.primitives.tools.tool_pool import assemble_tool_pool
 
 logger = logging.getLogger(__name__)
 
@@ -3994,39 +3995,12 @@ async def run_agent(
         logger.warning("[L3 Agent] GatewayContextBundle 构造失败，回退裸字符串: %s", e)
         _gateway_bundle = None
 
-    tools = load_tools(allowed_skills=allowed)
-    _skip_mcp_for_rbac = False
-    if _gateway_bundle is not None:
-        try:
-            from l3_node.intent_gateway.rbac_precheck import precheck_l2_subintent_allowed
-
-            _loc = "prefer_l2" if _gateway_bundle.extra.get("attachment_forced_l2_routing") else "local_only"
-            _ok_rbac, _rbac_reason = precheck_l2_subintent_allowed(_gateway_bundle, locality=_loc)
-            if not _ok_rbac:
-                _skip_mcp_for_rbac = True
-                logger.warning(
-                    "[L3 Agent] RBAC 预检拒绝合并 L2 MCP locality=%s reason=%s",
-                    _loc,
-                    _rbac_reason,
-                )
-        except Exception as e:
-            logger.debug("[L3 Agent] RBAC MCP 预检跳过: %s", e)
-    # 神经桥接：从 L2 拉取 MCP 工具并合并（强容错，L2 不可用时仅用本地工具）
-    # 双模式：allowed=None 时不过滤（开发即用）；allowed 非 None 时按白名单过滤（测试/生产闭环）
-    try:
-        if not _skip_mcp_for_rbac:
-            mcp_registry = get_mcp_registry()
-            mcp_tools = await mcp_registry.fetch_tools_from_l2()
-            if mcp_tools:
-                if allowed is not None:
-                    from l3_node.primitives.tools.loader import is_tool_allowed
-                    mcp_tools = [t for t in mcp_tools if is_tool_allowed(t["id"], allowed)]
-                tools = list(tools) + mcp_tools
-                logger.info("[L3 Agent] 已合并 %d 个 MCP 工具，总计 %d", len(mcp_tools), len(tools))
-    except Exception as e:
-        logger.debug("[L3 Agent] MCP 工具拉取跳过（L2 可能未启动）: %s", e)
-    if _bg_channel == "background_task":
-        tools = [t for t in tools if (t.get("id") or "").strip().lower() != "core:submit_background_task"]
+    tools = await assemble_tool_pool(
+        allowed_skills=allowed,
+        gateway_bundle=_gateway_bundle,
+        bg_channel=_bg_channel or None,
+        logger=logger,
+    )
     try:
         from l3_node.local_memory import next_prompt_cycle
 

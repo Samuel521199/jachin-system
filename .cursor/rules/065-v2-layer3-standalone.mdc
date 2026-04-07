@@ -6,7 +6,8 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 
 ## 基准文档
 
-[docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+[docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md](../../docs/ARCHITECTURE_V2_LAYER3_STANDALONE.md)  
+工具池与 MCP 合并流水线（与 Claude 风格对照、阶段 C 锚点）：[docs/architecture/L3_TOOL_POOL_AND_MCP_ASSEMBLY.md](../../docs/architecture/L3_TOOL_POOL_AND_MCP_ASSEMBLY.md)
 
 ## 术语（Tools / MCP / Skills / Agent Tasks）
 
@@ -34,6 +35,12 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 - `background_task_service.py`、`l3_event_bus.py`、`context_prefetch.py`、`foreground_tool_policy.py` — 见 `docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`
 - `bootstrap.py` — 注册、拉 Key、创建引擎
 - `capability_catalog.py` — 能力总目录注入（`DOMAIN_REGISTRY`）；新 MCP/域见规则 **079**
+
+## 工具池（L3）
+
+- **合并顺序**：`load_tools`（Native + jpp）在前，MCP（`fetch_tools_from_l2`）**追加**在后；权限上 MCP 与内置在 `allowed` 非空时统一走 `is_tool_allowed`。实现单点：`l3_node/primitives/tools/tool_pool.py` 的 `assemble_tool_pool`（`run_agent` await 调用）。
+- **单点原则**：新增通道级工具过滤时优先改 `assemble_tool_pool`（或在其内分支），避免多处复制合并逻辑。
+- **韧性**：MCP 拉取失败不得拖死整次 ReAct；须可降级为仅内置池。
 
 ## 禁止
 
