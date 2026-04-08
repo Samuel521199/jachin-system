@@ -48,6 +48,37 @@ async def _send_safe(websocket, payload: dict) -> None:
         logger.debug("WebSocket send failed: %s", e)
 
 
+async def _maybe_push_memory_compact_suggest(websocket) -> None:
+    """连接建立后：若到达整理周期，推送倒计时提示（由前端决定是否自动开始）。"""
+    try:
+        from l3_node.memory_compact_schedule import (
+            build_ws_prompt_payload,
+            record_prompt_sent,
+            should_send_prompt_now,
+        )
+
+        if not should_send_prompt_now():
+            return
+        await _send_safe(websocket, build_ws_prompt_payload())
+        record_prompt_sent()
+    except Exception as e:
+        logger.debug("[L3 WS] memory_compact_suggest 跳过: %s", e)
+
+
+async def _run_scheduled_memory_compact_background() -> None:
+    try:
+        from l3_node.memory_compact_control import reset_memory_compact_cancel
+        from l3_node.memory_compactor import compact_local_memory_if_needed
+        from l3_node.local_memory import main_local_memory_json_path
+
+        reset_memory_compact_cancel()
+        report = await compact_local_memory_if_needed(str(main_local_memory_json_path()))
+        if (report or "").strip():
+            logger.info("[MemoryCompact] %s", report.strip())
+    except Exception as e:
+        logger.debug("[MemoryCompact] 后台整理失败: %s", e)
+
+
 async def _broadcast_to_mirror_subscribers(chat_id: str, payload: dict) -> None:
     """向订阅该 chat_id 的终端连接广播消息。"""
     if not chat_id or not payload:
@@ -168,6 +199,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             msg_type = msg.get("type") or msg.get("action", "")
             if msg_type == "manifest":
                 await _send_safe(websocket, {"type": "manifest_ack", "caps": msg.get("caps", [])})
+                asyncio.create_task(_maybe_push_memory_compact_suggest(websocket))
                 continue
 
             # 终端订阅 Lark 镜像：后续该 chat_id 的消息会广播到此连接
@@ -207,6 +239,60 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     )
                 continue
 
+            # 前端 /clear：控制帧清空 per-connection 缓冲与（可选）Lark 持久化会话，不进入 intent/LLM
+            if msg_type == "clear_session":
+                cid = (msg.get("chat_id") or _my_lark_chat_id or "").strip()
+                session_messages.clear()
+                if cid:
+                    _save_lark_session(cid, session_messages)
+                logger.debug("[L3 WS] clear_session 已清空 chat_id=%s", cid[:20] if cid else "-")
+                continue
+
+            # 记忆整理调度：控制帧（无 intent 亦可）
+            if msg_type == "memory_compact_defer":
+                try:
+                    from l3_node.memory_compact_schedule import defer_hours
+
+                    defer_hours(float(msg.get("hours", 24)))
+                except Exception as e:
+                    logger.debug("[L3 WS] memory_compact_defer: %s", e)
+                await _send_safe(
+                    websocket,
+                    {
+                        "step_type": "system_status",
+                        "content": json.dumps({"status": "记忆整理已推迟"}, ensure_ascii=False),
+                        "run_id": "",
+                    },
+                )
+                continue
+            if msg_type in ("memory_compact_confirm", "memory_compact_auto_start"):
+                asyncio.create_task(_run_scheduled_memory_compact_background())
+                await _send_safe(
+                    websocket,
+                    {
+                        "step_type": "system_status",
+                        "content": json.dumps({"status": "记忆整理已在后台启动"}, ensure_ascii=False),
+                        "run_id": "",
+                    },
+                )
+                continue
+            if msg_type == "memory_compact_cancel":
+                try:
+                    from l3_node.memory_compact_control import request_memory_compact_cancel
+
+                    request_memory_compact_cancel()
+                except Exception as e:
+                    logger.debug("[L3 WS] memory_compact_cancel: %s", e)
+                await _send_safe(
+                    websocket,
+                    {
+                        "step_type": "system_status",
+                        "content": json.dumps({"status": "已请求取消记忆整理（写入前生效）"}, ensure_ascii=False),
+                        "run_id": "",
+                    },
+                )
+                continue
+
             intent = (msg.get("intent") or msg.get("content") or "").strip()
             if not intent:
                 continue
@@ -228,6 +314,20 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent", len(intent), len(session_messages))
             run_id = str(uuid.uuid4())[:8]
             broadcast = bool(chat_id)
+
+            # 与前端 /clear 对齐：不进 run_agent、不发 thought kick，就地清空本会话缓冲
+            if intent == "/clear":
+                session_messages.clear()
+                if chat_id:
+                    _save_lark_session(chat_id, session_messages)
+                reply_clear = "[System] 后端上下文已强制清空。"
+                ans_payload = {"step_type": "answer", "content": reply_clear, "run_id": run_id}
+                await _send_safe(websocket, ans_payload)
+                if broadcast and chat_id:
+                    await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+                if origin_terminal and chat_id:
+                    asyncio.create_task(_push_reply_to_lark(chat_id, reply_clear))
+                continue
 
             try:
                 from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口；大控制台仍为 main（console.html）。
@@ -14,7 +14,7 @@ import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3Agen
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { useSensoryWebSocket, type SensoryAnswerMeta, type StreamChunkKind } from "./hooks/useSensoryWebSocket";
-import { loadMessages, saveMessages, addMessage, StoredMessage } from "./utils/messageStorage";
+import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "./utils/messageStorage";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "./constants/chatResponseTimeout";
@@ -71,6 +71,10 @@ function ChatApp() {
     registerStepHandler,
     registerMirrorInputHandler,
     sendInput,
+    sendSessionClearControl,
+    memoryCompactSuggest,
+    sendMemoryCompactControl,
+    dismissMemoryCompactSuggest,
   } = sensory;
   /** L2 等无 Sensory 累积串时，按 chunk 元数据同步 Core 相位 */
   const [localStreamChunkKind, setLocalStreamChunkKind] = useState<StreamChunkKind | null>(null);
@@ -292,6 +296,29 @@ function ChatApp() {
 
   /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
   const doActualSend = async (content: string) => {
+    if (content.trim() === "/clear") {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      registerStepHandler(null);
+      clearMessages();
+      const systemLine: StoredMessage = {
+        role: "system",
+        content: "🧹 统帅，当前会话上下文已物理清空，大模型已进入失忆状态。",
+        timestamp: Date.now(),
+      };
+      setMessages([systemLine]);
+      saveMessages([systemLine]);
+      setInput("");
+      setIsLoading(false);
+      setIsTyping(false);
+      setRiskLevel("safe");
+      setState("idle");
+      setLocalStreamChunkKind(null);
+      l3ActiveRunIdRef.current = "";
+      sendSessionClearControl();
+      return;
+    }
+
     const userMessage: StoredMessage = { role: "user", content, timestamp: Date.now() };
     setMessages((prev) => addMessage(prev, userMessage));
     setInput("");
@@ -863,6 +890,40 @@ function ChatApp() {
       <SensoryOverlay sensory={sensory} variant="minimal" />
       <div className="pointer-events-none flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
+          {memoryCompactSuggest && (
+            <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-amber-500/45 bg-amber-950/95 px-3 py-2.5 text-xs text-amber-100 shadow-lg backdrop-blur-sm">
+              <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>
+              <p className="mb-2 leading-relaxed text-amber-100/90">{memoryCompactSuggest.content}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-amber-200/85">
+                  {memoryCompactSuggest.remainingSec > 0
+                    ? `${memoryCompactSuggest.remainingSec} 秒后自动开始整理（后台）…`
+                    : "正在请求启动…"}
+                </span>
+                <button
+                  type="button"
+                  className="rounded-md bg-amber-500/90 px-2.5 py-1 text-[11px] font-medium text-amber-950 hover:bg-amber-400"
+                  onClick={() => sendMemoryCompactControl("memory_compact_confirm")}
+                >
+                  立即开始
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-white/10 px-2.5 py-1 text-[11px] text-amber-100 hover:bg-white/15"
+                  onClick={() => sendMemoryCompactControl("memory_compact_defer", 24)}
+                >
+                  推迟 24 小时
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-1 text-[11px] text-amber-200/70 hover:text-amber-100"
+                  onClick={() => dismissMemoryCompactSuggest()}
+                >
+                  关闭提示
+                </button>
+              </div>
+            </div>
+          )}
           <OmniCyberChatShell
             phase={cyberPhase}
             thinkingToolFlash={jachinCore.toolFlash}

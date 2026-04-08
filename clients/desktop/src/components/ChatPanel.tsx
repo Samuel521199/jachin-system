@@ -28,10 +28,14 @@ export default function ChatPanel() {
   const {
     connected: sensoryConnected,
     sendInput,
+    sendSessionClearControl,
     registerChunkHandler,
     registerAnswerHandler,
     registerStepHandler,
     registerMirrorInputHandler,
+    memoryCompactSuggest,
+    sendMemoryCompactControl,
+    dismissMemoryCompactSuggest,
   } = sensory;
   const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
 
@@ -130,6 +134,25 @@ export default function ChatPanel() {
 
   const handleSend = async () => {
     if (!input.trim() || isLoading || isTyping) return;
+
+    if (input.trim() === "/clear") {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      registerStepHandler(null);
+      clearMessages();
+      const systemLine: StoredMessage = {
+        role: "system",
+        content: "🧹 统帅，当前会话上下文已物理清空，大模型已进入失忆状态。",
+        timestamp: Date.now(),
+      };
+      setMessages([systemLine]);
+      saveMessages([systemLine]);
+      setInput("");
+      setIsLoading(false);
+      setIsTyping(false);
+      sendSessionClearControl();
+      return;
+    }
 
     const content = input.trim();
     const userMessage: StoredMessage = {
@@ -522,6 +545,36 @@ export default function ChatPanel() {
 
       {/* 输入区域 */}
       <div className="border-t border-purple-500/20 p-4">
+        {memoryCompactSuggest && (
+          <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-950/90 px-3 py-2 text-xs text-amber-100">
+            <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>
+            <p className="mb-2 text-amber-100/90">{memoryCompactSuggest.content}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-amber-200/80">
+                {memoryCompactSuggest.remainingSec > 0
+                  ? `${memoryCompactSuggest.remainingSec} 秒后自动开始…`
+                  : "正在启动…"}
+              </span>
+              <button
+                type="button"
+                className="rounded bg-amber-500/90 px-2 py-0.5 text-[11px] text-amber-950"
+                onClick={() => sendMemoryCompactControl("memory_compact_confirm")}
+              >
+                立即开始
+              </button>
+              <button
+                type="button"
+                className="rounded bg-white/10 px-2 py-0.5 text-[11px]"
+                onClick={() => sendMemoryCompactControl("memory_compact_defer", 24)}
+              >
+                推迟 24h
+              </button>
+              <button type="button" className="text-[11px] text-amber-300/80" onClick={() => dismissMemoryCompactSuggest()}>
+                关闭
+              </button>
+            </div>
+          </div>
+        )}
         {/* 清空消息按钮（仅在消息存在时显示） */}
         {messages.length > 0 && (
           <div className="mb-2 flex justify-end">

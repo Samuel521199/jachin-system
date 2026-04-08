@@ -8,9 +8,45 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_lark_oapi_ws_keepalive() -> None:
+    """
+    lark-oapi 内部使用 ``websockets.connect(conn_url)`` 且未传 ping 参数；
+    websockets 16 默认 ping_interval/ping_timeout=20s。与 L3 run_agent、神盾 Compaction
+    等**共用同一 asyncio 事件循环**时，若循环被同步计算（如 tiktoken）短时占用，协议层
+    pong 可能逾时，触发 ``1011 (internal error) keepalive ping timeout`` 断连。
+
+    仅替换 ``lark_oapi.ws.client`` 模块内对已 import 的 ``websockets.connect`` 的引用，
+    不影响本进程其它 WebSocket 客户端的默认行为。
+    """
+    try:
+        import lark_oapi.ws.client as lark_ws_client
+    except ImportError:
+        return
+    if getattr(lark_ws_client, "_jachin_keepalive_patched", False):
+        return
+    _real = lark_ws_client.websockets.connect
+    ping_iv = float((os.environ.get("LARK_WS_PING_INTERVAL") or "30").strip() or "30")
+    ping_to = float((os.environ.get("LARK_WS_PING_TIMEOUT") or "120").strip() or "120")
+
+    async def _connect_with_keepalive(uri, *args, **kwargs):
+        kwargs.setdefault("ping_interval", ping_iv)
+        kwargs.setdefault("ping_timeout", ping_to)
+        return await _real(uri, *args, **kwargs)
+
+    lark_ws_client.websockets.connect = _connect_with_keepalive  # type: ignore[method-assign]
+    setattr(lark_ws_client, "_jachin_keepalive_patched", True)
+    logger.info(
+        "[Lark] WS 协议层 keepalive 已放宽：ping_interval=%ss ping_timeout=%ss "
+        "（环境变量 LARK_WS_PING_INTERVAL / LARK_WS_PING_TIMEOUT 可覆盖）",
+        ping_iv,
+        ping_to,
+    )
 
 
 def _extract_from_p2_event(data: object) -> tuple[str, str, str] | None:
@@ -75,6 +111,8 @@ def start_long_connection(
         import lark_oapi as lark
     except ImportError:
         raise ImportError("请安装 lark-oapi: pip install lark-oapi") from None
+
+    _patch_lark_oapi_ws_keepalive()
 
     def _handler(data) -> None:
         parsed = _extract_from_p2_event(data)

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.104] - 2026-04-07
+
+### Added
+
+- **L5 记忆坍缩（梦境合并）**：`l3_local.json` 超阈值时轻量 LLM 合并；**双缓冲（影子副本）**、**原子覆写**、`memory_compact_control` 取消标记、快照后主库增量合并（`memory_compactor.py`）
+- **定时整理与 WS**：`memory_compact_schedule.py`（`~/.jachin/memory/compact_schedule.json`）、`ws_server` 在 manifest 后推送 `memory_compact_suggest`；控制帧 `memory_compact_confirm` / `defer` / `auto_start` / `cancel`
+- **桌面端**：`useSensoryWebSocket` 倒计时横幅；`chat.tsx` / `ChatPanel` 操作入口
+- **聊天调度**：间隔天数、倒计时秒、推迟整理等话术解析（`agent_core` 注入 system 确认）
+- **测试**：`tests/unit/test_memory_compactor_threshold5.py`（阈值 5、mock `litellm`，不依赖真实 API）
+- **文档/配置**：`.env.example` 增加 `JACHIN_MEMORY_*` 与坍缩相关说明
+
+### Changed
+
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli`、`clients/desktop/package.json`、`clients/desktop/src-tauri/tauri.conf.json` 统一为 **0.8.104**（Git 标签 `v0.8.104`）
+
+---
+
 ## [v0.8.102] - 2026-04-07
 
 ### Added

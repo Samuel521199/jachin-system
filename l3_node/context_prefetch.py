@@ -34,6 +34,7 @@ def _load_prefetch_cfg() -> dict[str, Any]:
         "ledger_iteration_window": 8,
         "skip_tools": (
             "core:local_memory_search",
+            "core:local_memory_append",
             "recall_memory",
             "core:check_background_task",
             # SQLite / DB 只读：Observation 应保持短小（表清单或行集），勿再拼 workspace Markdown，

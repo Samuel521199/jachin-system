@@ -13,7 +13,7 @@ import {
   Settings,
   Calendar as CalIcon,
   Mic,
-  Users,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -21,9 +21,14 @@ import { SystemHeartbeat } from "./components/SystemHeartbeat";
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, title: "首页：系统状态、快捷操作与最近活动" },
   { path: "/brain", label: "Neural Nexus", icon: BrainCircuit, title: "模型与记忆管理，后端连接状态" },
+  {
+    path: "/safety-lock",
+    label: "安全锁审批",
+    icon: ShieldCheck,
+    title: "待审批安全锁条目：写入 JACHIN_SAFETY_LOCK.md（需管理员密钥）",
+  },
   { path: "/calendar", label: "日历", icon: CalIcon, title: "事件、提醒、待办，支持循环" },
   { path: "/skills", label: "Skill Matrix", icon: AppWindow, title: "插件与技能，自然语言执行与能力调用" },
-  { path: "/recruitment", label: "招聘大盘", icon: Users, title: "一键式全链路招聘：收网 → HR 透析镜" },
   { path: "/network", label: "Jachin Link", icon: Network, title: "网络拓扑与已连接设备列表" },
   { path: "/wake", label: "唤醒模式", icon: Mic, title: "设置唤醒词/名字，启动唤醒监听（模式 B）" },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },

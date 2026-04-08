@@ -12,7 +12,7 @@ import { JachinLink } from "./pages/JachinLink";
 import { Persona } from "./pages/Persona";
 import { SettingsPanel } from "./pages/SettingsPanel";
 import { WakeModePanel } from "./pages/WakeModePanel";
-import { RecruitmentDashboard } from "./pages/RecruitmentDashboard";
+import { SafetyLockApproval } from "./pages/SafetyLockApproval";
 
 export const consoleRoutes = [
   {
@@ -22,9 +22,9 @@ export const consoleRoutes = [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: "dashboard", element: <Dashboard /> },
       { path: "brain", element: <NeuralNexus /> },
+      { path: "safety-lock", element: <SafetyLockApproval /> },
       { path: "calendar", element: <Calendar /> },
       { path: "skills", element: <SkillMatrix /> },
-      { path: "recruitment", element: <RecruitmentDashboard /> },
       { path: "network", element: <JachinLink /> },
       { path: "wake", element: <WakeModePanel /> },
       { path: "settings", element: <Persona /> },

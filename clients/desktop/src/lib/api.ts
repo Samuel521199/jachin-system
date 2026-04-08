@@ -632,6 +632,155 @@ async function invokeL3Skills<T>(
   throw lastErr ?? new Error("L3 技能 API 不可达");
 }
 
+/** 与 L3 进程环境变量 JACHIN_SAFETY_LOCK_ADMIN_TOKEN 对应；由用户在控制台输入，勿硬编码进仓库 */
+export const SAFETY_LOCK_TOKEN_HEADER = "X-Jachin-Safety-Lock-Token";
+
+export interface SafetyLockPendingItem {
+  pending_id: string;
+  body: string;
+  source?: string;
+  tags?: unknown;
+  created_at?: string;
+}
+
+export interface SafetyLockMutationResult {
+  ok: boolean;
+  pending_id?: string;
+  entry_id?: string;
+  path?: string;
+  message?: string;
+  error?: string;
+}
+
+/** 带额外请求头的 L3 调用（多端口回退，与 invokeL3Skills 一致） */
+async function invokeL3WithExtraHeaders(
+  path: string,
+  init: RequestInit,
+  extraHeaders: Record<string, string>
+): Promise<Response> {
+  const baseHeaders: Record<string, string> = {
+    ...(init.headers as Record<string, string> | undefined),
+    ...extraHeaders,
+  };
+  const merged: RequestInit = { ...init, headers: baseHeaders };
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return fetch(`${envUrl.replace(/\/$/, "")}${p}`, merged);
+  }
+  if (L3_DEV_PROXY) {
+    try {
+      return await fetch(`${L3_DEV_PROXY}${p}`, merged);
+    } catch (e) {
+      if (
+        (e as Error)?.message?.includes("Failed to fetch") ||
+        (e as Error)?.message?.includes("NetworkError")
+      ) {
+        /* fall through */
+      } else {
+        throw e;
+      }
+    }
+  }
+  let lastErr: Error | null = null;
+  for (const port of L3_SKILLS_PORTS) {
+    try {
+      const url = `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}${p}`;
+      return await fetch(url, merged);
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      if (
+        (e as Error)?.message?.includes("Failed to fetch") ||
+        (e as Error)?.message?.includes("NetworkError")
+      ) {
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr ?? new Error("L3 技能 API 不可达");
+}
+
+async function readL3ResponseJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+}
+
+/** 列出安全锁待审批条目（需管理员密钥） */
+export async function fetchSafetyLockPending(adminToken: string): Promise<{
+  ok: boolean;
+  count?: number;
+  items?: SafetyLockPendingItem[];
+  error?: string;
+  message?: string;
+}> {
+  const tok = (adminToken || "").trim();
+  const res = await invokeL3WithExtraHeaders(
+    "/api/v3/safety-lock/pending",
+    { method: "GET" },
+    { [SAFETY_LOCK_TOKEN_HEADER]: tok }
+  );
+  const data = await readL3ResponseJson(res);
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: String(data.error ?? "request_failed"),
+      message: typeof data.message === "string" ? data.message : undefined,
+    };
+  }
+  return {
+    ok: data.ok !== false,
+    count: typeof data.count === "number" ? data.count : 0,
+    items: Array.isArray(data.items) ? (data.items as SafetyLockPendingItem[]) : [],
+  };
+}
+
+/** 审批通过：写入 ~/.jachin/JACHIN_SAFETY_LOCK.md */
+export async function approveSafetyLockPending(
+  adminToken: string,
+  pendingId: string
+): Promise<SafetyLockMutationResult> {
+  const res = await invokeL3WithExtraHeaders(
+    "/api/v3/safety-lock/approve",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pending_id: pendingId }),
+    },
+    { [SAFETY_LOCK_TOKEN_HEADER]: (adminToken || "").trim() }
+  );
+  const data = (await readL3ResponseJson(res)) as unknown as SafetyLockMutationResult;
+  if (!res.ok) {
+    return { ok: false, error: data.error ?? "request_failed", message: data.message };
+  }
+  return data;
+}
+
+/** 拒绝待审批条目（仅删除 pending 文件） */
+export async function rejectSafetyLockPending(
+  adminToken: string,
+  pendingId: string
+): Promise<SafetyLockMutationResult> {
+  const res = await invokeL3WithExtraHeaders(
+    "/api/v3/safety-lock/reject",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pending_id: pendingId }),
+    },
+    { [SAFETY_LOCK_TOKEN_HEADER]: (adminToken || "").trim() }
+  );
+  const data = (await readL3ResponseJson(res)) as unknown as SafetyLockMutationResult;
+  if (!res.ok) {
+    return { ok: false, error: data.error ?? "request_failed", message: data.message };
+  }
+  return data;
+}
+
 /** BI 等 L3 专用意图：在 L2 兜底前优先尝试 L3 agent/run（当 Sensory WebSocket 未连接时） */
 const BI_INTENT_REGEX = /BI\s*分析|bi\s*分析|帮我开始.*BI|今天的BI分析|开始BI分析|执行BI分析/i;
 
@@ -995,80 +1144,6 @@ export async function* executeSkillStream(
 /** 判断是否为 HR 透析镜技能（支持流式） */
 export function isHrSkill(skillId: string): boolean {
   return HR_SKILL_IDS.includes((skillId || "").trim());
-}
-
-/** 招聘全链路任务 SSE 事件 */
-export interface RecruitmentStreamEvent {
-  step?: number;
-  msg?: string;
-  status?: "progress" | "done" | "error";
-  filename?: string;
-  current?: number;
-  total?: number;
-}
-
-/**
- * 一键式全链路招聘（POST /api/recruitment/start_task）
- * 收网 → HR 透析镜，SSE 流式进度
- */
-export async function* startRecruitmentTask(payload: {
-  job_name: string;
-  max_count?: number;
-  filter_tab?: string;
-  request_resume?: boolean;
-  output_dir?: string;
-  force_reanalyze?: boolean;
-  jd_content?: string;
-  focus_keywords?: string;
-  strictness?: string;
-}): AsyncGenerator<RecruitmentStreamEvent> {
-  const baseUrl = await getL3SkillsBaseUrl();
-  const url = `${baseUrl}/api/recruitment/start_task`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      job_name: payload.job_name,
-      max_count: payload.max_count ?? 20,
-      filter_tab: payload.filter_tab ?? "全部",
-      request_resume: payload.request_resume ?? true,
-      output_dir: payload.output_dir ?? "",
-      force_reanalyze: payload.force_reanalyze ?? false,
-      jd_content: payload.jd_content ?? "",
-      focus_keywords: payload.focus_keywords ?? "",
-      strictness: payload.strictness ?? "standard",
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`招聘任务 HTTP ${res.status}: ${text.slice(0, 200)}`);
-  }
-  if (!res.body) throw new Error("招聘任务 API 返回无 body");
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n\n");
-      buffer = lines.pop() ?? "";
-      for (const block of lines) {
-        const m = block.match(/^data:\s*(.+)/);
-        if (!m) continue;
-        try {
-          const ev = JSON.parse(m[1]) as RecruitmentStreamEvent;
-          yield ev;
-          if (ev.status === "done" || ev.status === "error") return;
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }
 
 /**

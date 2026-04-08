@@ -18,6 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from l3_node.tools.core_safety_lock_append import (
+    decide_safety_lock_append_path,
+    format_category_header_fragment,
+    normalize_safety_lock_category,
+    remove_lock_blocks_for_category,
+    scan_approved_categories_in_text,
+)
+
 logger = logging.getLogger(__name__)
 
 SAFETY_LOCK_FILENAME = "JACHIN_SAFETY_LOCK.md"
@@ -251,14 +259,49 @@ def _append_block_to_md(path: Path, block: str, *, new_file_header: str | None =
     return {"ok": True}
 
 
-def _make_block(body: str, *, source: str, tags: list[str] | None, eid: str) -> str:
+def _write_full_lock_md(path: Path, full_text: str, *, new_file_header: str | None = None) -> dict[str, Any]:
+    """整文件替换写入（TOFU 覆盖同 category 块后使用），带软上限与原子替换。"""
+    text = full_text
+    if not (text or "").strip() and new_file_header:
+        text = new_file_header
+    if len(text) > _MAX_FILE_CHARS:
+        return {
+            "ok": False,
+            "error": "file_size_cap",
+            "message": f"安全锁文件将超过 {_MAX_FILE_CHARS} 字符；请人工归档。",
+        }
+    tmp = path.with_suffix(".md.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        logger.warning("[safety_lock] full write failed: %s", e)
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": "io_error", "message": str(e)}
+    return {"ok": True}
+
+
+def _make_block(
+    body: str,
+    *,
+    source: str,
+    tags: list[str] | None,
+    eid: str,
+    category: str | None = None,
+) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     tag_s = ""
     if tags:
         tag_s = ", ".join(str(t).strip() for t in tags if str(t).strip())[:200]
     src = re.sub(r"[\r\n]+", " ", (source or "unknown").strip())[:120]
+    cat_frag = format_category_header_fragment(category)
     return (
-        f"\n\n---\n\n### 条目 `{ts}` · id=`{eid}` · source=`{src}`"
+        f"\n\n---\n\n### 条目 `{ts}` · id=`{eid}` · source=`{src}`{cat_frag}"
         f"{(' · tags=`' + tag_s + '`') if tag_s else ''}\n\n{body}\n"
     )
 
@@ -269,10 +312,14 @@ def append_verified_fact(
     source: str = "core:safety_lock_append",
     tags: list[str] | None = None,
     token: str | None = None,
+    category: str | None = None,
 ) -> dict[str, Any]:
     """
     Agent 调用：默认进入 **pending**（不暴露管理员密钥给模型）。
     token 参数已废弃（保留签名兼容）；不再用于授权写入正式 MD。
+
+    **TOFU（同类二次免批）**：若提供 `category`（如 backend_framework），且正式 MD 中已存在
+    同 category 的已批准条目，则跳过 pending，直接覆盖该 category 下旧块并写入新块。
     """
     _ = token  # 兼容旧客户端；忽略，防止「把密钥塞进 Action Input」的伪安全
     if not learn_enabled():
@@ -293,25 +340,80 @@ def append_verified_fact(
             "message": f"单条正文上限 {_MAX_ENTRY_CHARS} 字符。",
         }
 
-    if append_requires_approval():
+    norm_cat = normalize_safety_lock_category(category)
+    path = global_lock_path()
+    requires = append_requires_approval()
+    existing_text = ""
+    try:
+        if path.is_file():
+            existing_text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        logger.debug("[safety_lock] read global for tofu: %s", e)
+    approved_cats = scan_approved_categories_in_text(existing_text)
+    decision = decide_safety_lock_append_path(
+        append_requires_approval=requires,
+        category_norm=norm_cat,
+        approved_categories=approved_cats,
+    )
+
+    def _finalize_replace_append(*, msg: str, status: str) -> dict[str, Any]:
+        eid = uuid.uuid4().hex[:12]
+        block = _make_block(raw, source=source, tags=tags, eid=eid, category=norm_cat)
+        base = existing_text
+        if norm_cat:
+            base, n_rm = remove_lock_blocks_for_category(base, norm_cat)
+            logger.info("[safety_lock] removed %d block(s) for category=%s", n_rm, norm_cat)
+        else:
+            base = existing_text
+        if not (base or "").strip():
+            base = _DEFAULT_HEADER
+        new_full = base.rstrip() + block
+        wr = _write_full_lock_md(path, new_full, new_file_header=_DEFAULT_HEADER)
+        if not wr.get("ok"):
+            return wr
+        logger.info("[safety_lock] %s id=%s path=%s category=%s", status, eid, path, norm_cat)
+        out: dict[str, Any] = {
+            "ok": True,
+            "status": status,
+            "entry_id": eid,
+            "path": str(path),
+            "message": msg,
+        }
+        if norm_cat:
+            out["category"] = norm_cat
+        return out
+
+    if decision == "tofu_auto":
+        return _finalize_replace_append(
+            status="auto_approved_tofu",
+            msg=(
+                "【同类二次免批】该 category 在正式安全锁中已存在（首条曾人工审批）；"
+                "已自动覆盖同 category 旧条目并写入新规则。"
+            ),
+        )
+
+    if decision == "pending":
         pid = uuid.uuid4().hex[:16]
-        rec = {
+        rec: dict[str, Any] = {
             "pending_id": pid,
             "body": raw,
             "source": source,
             "tags": tags or [],
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        if norm_cat:
+            rec["category"] = norm_cat
         p = pending_dir() / f"{pid}.json"
         try:
             p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as e:
             return {"ok": False, "error": "io_error", "message": str(e)}
-        logger.info("[safety_lock] pending id=%s", pid)
+        logger.info("[safety_lock] pending id=%s category=%s", pid, norm_cat)
         return {
             "ok": True,
             "status": "pending_approval",
             "pending_id": pid,
+            "category": norm_cat,
             "message": (
                 "已提交待审批（未写入正式安全锁）。请管理员在本机 shell 执行：\n"
                 f"  python -m l3_node.jachin_safety_lock_admin approve {pid}\n"
@@ -319,9 +421,15 @@ def append_verified_fact(
             ),
         }
 
+    # direct_md
+    if norm_cat:
+        return _finalize_replace_append(
+            status="appended",
+            msg="已直接写入 JACHIN_SAFETY_LOCK.md（direct_append_to_md；同 category 已替换旧块）。",
+        )
+
     eid = uuid.uuid4().hex[:12]
-    block = _make_block(raw, source=source, tags=tags, eid=eid)
-    path = global_lock_path()
+    block = _make_block(raw, source=source, tags=tags, eid=eid, category=None)
     r = _append_block_to_md(path, block, new_file_header=_DEFAULT_HEADER)
     if not r.get("ok"):
         return r
@@ -380,10 +488,23 @@ def approve_pending(pending_id: str, admin_token: str) -> dict[str, Any]:
     tags = rec.get("tags")
     if not isinstance(tags, list):
         tags = None
+    _rcat = rec.get("category")
+    catn = normalize_safety_lock_category(str(_rcat).strip() if _rcat is not None else None)
     eid = uuid.uuid4().hex[:12]
-    block = _make_block(body, source=src, tags=tags, eid=eid)
+    block = _make_block(body, source=src, tags=tags, eid=eid, category=catn)
     path = global_lock_path()
-    r = _append_block_to_md(path, block, new_file_header=_DEFAULT_HEADER)
+    if catn:
+        try:
+            existing_text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+        except OSError:
+            existing_text = ""
+        base, _n = remove_lock_blocks_for_category(existing_text, catn)
+        if not (base or "").strip():
+            base = _DEFAULT_HEADER
+        new_full = base.rstrip() + block
+        r = _write_full_lock_md(path, new_full, new_file_header=_DEFAULT_HEADER)
+    else:
+        r = _append_block_to_md(path, block, new_file_header=_DEFAULT_HEADER)
     if not r.get("ok"):
         return r
     try:

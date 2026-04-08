@@ -11,6 +11,7 @@ import logging
 import time
 from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -118,22 +119,34 @@ def _save_raw(entries: list[dict]) -> None:
         logger.warning("[L3 LocalMemory] 保存失败: %s", e)
 
 
-def add_local_memory(tag: str, content: str, *, source: str = "agent") -> None:
+def add_local_memory(
+    tag: str,
+    content: str,
+    *,
+    source: str = "agent",
+    tags_list: list[str] | None = None,
+) -> None:
     """
     写入一条 L3 本地核心记忆。
     tag: preference | user_habit | config_hint | fact 等
+    tags_list: 可选，完整标签列表（含与 tag 一致的首项），存入条目 tags 字段供检索/展示。
     """
     content = (content or "").strip()
     tag = (tag or "general").strip()
     if not content or not tag:
         return
     entries = _load_raw()
-    entries.append({
+    rec: dict[str, Any] = {
         "tag": tag,
         "content": content,
         "source": source,
         "timestamp": time.time(),
-    })
+    }
+    if tags_list:
+        clean = [str(t).strip() for t in tags_list if str(t).strip()][:32]
+        if clean:
+            rec["tags"] = clean
+    entries.append(rec)
     # 按时间倒序，保留最近 MAX
     entries.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
     if len(entries) > _MAX_ENTRIES:
@@ -681,3 +694,8 @@ def clear_stop_harvest_from_workflow_state(workflow_id: str) -> int:
     save_workflow_state(wid, {**saved, "state": st})
     logger.info("[L3 LocalMemory] 已从 workflow=%s 持久化信号中移除 STOP_HARVEST x%d", wid, removed)
     return removed
+
+
+def main_local_memory_json_path() -> Path:
+    """主会话 `l3_local.json` 绝对路径（非 delegate 分片）；供梦境合并等模块使用。"""
+    return _LOCAL_DB.expanduser().resolve()

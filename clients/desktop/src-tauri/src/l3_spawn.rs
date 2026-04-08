@@ -133,6 +133,9 @@ const L3_ENV_KEYS: &[&str] = &[
     "JACHIN_L3_DEBUG",
     "L3_VERBOSE_LOG",
     "LOG_LEVEL",
+    // 安全锁：控制台「安全锁审批」与 CLI approve 均依赖 L3 进程内该变量；须从项目 .env 注入子进程（原白名单未包含会导致 503 admin_token_not_configured）
+    "JACHIN_SAFETY_LOCK_ADMIN_TOKEN",
+    "JACHIN_SAFETY_LOCK_LEARN",
 ];
 
 fn parse_env_file(path: &PathBuf) -> Vec<(String, String)> {
