@@ -9,9 +9,10 @@
  */
 
 import React, { useRef, useEffect } from "react";
-import { Send, Mic, Sparkles, Loader2, Square, Radio } from "lucide-react";
+import { Send, Mic, Sparkles, Loader2, Square, Radio, LayoutDashboard } from "lucide-react";
 import { WindowControls } from "./WindowControls";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { VoiceWaveform, type WavePhase } from "./VoiceWaveform";
 import type { StoredMessage } from "../../utils/messageStorage";
 
 export type RiskLevel = "safe" | "warning" | "danger";
@@ -38,6 +39,12 @@ export interface ChatUIProps {
   disabled?: boolean;
   /** v8.0 流式神经：来自 WebSocket 的逐 token 推送，使用极客光标 █ */
   streamingFromWs?: boolean;
+  /** 文本输入 vs 声波（语音/思考/播报） */
+  interactionPhase?: "text" | WavePhase;
+  /** 麦克风电平 0–1，用于声波条高度 */
+  micLevel?: number;
+  /** 打开大控制台（main） */
+  onOpenConsole?: () => void;
 }
 
 const displayMessages = (messages: StoredMessage[]) =>
@@ -61,6 +68,9 @@ export const ChatUI: React.FC<ChatUIProps> = ({
   riskLevel = "safe",
   disabled = false,
   streamingFromWs = false,
+  interactionPhase = "text",
+  micLevel = 0,
+  onOpenConsole,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -72,6 +82,8 @@ export const ChatUI: React.FC<ChatUIProps> = ({
   const list = displayMessages(messages);
   const canSend = !disabled && !isLoading && input.trim().length > 0;
   const canVoice = !disabled && !isLoading;
+  const voiceVisual = interactionPhase !== "text";
+  const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
 
   const riskBorder =
     riskLevel === "danger"
@@ -117,11 +129,12 @@ export const ChatUI: React.FC<ChatUIProps> = ({
         <header className="flex justify-between items-center border-b border-white/10 pb-2 px-4 pt-2 flex-shrink-0">
           <div className="flex items-center gap-2 flex-1 min-w-0">
             <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse flex-shrink-0" />
-            <span className="font-bold tracking-widest text-sm text-cyan-100 uppercase truncate">
-              MIND STREAM
+            <span className="font-bold tracking-wide text-xs text-cyan-100 uppercase truncate">
+              Jachin Omni
             </span>
+            <span className="text-[10px] text-slate-500 hidden sm:inline">Alt+Shift+Space</span>
           </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-0.5 flex-shrink-0">
             <WindowControls />
           </div>
         </header>
@@ -280,61 +293,85 @@ export const ChatUI: React.FC<ChatUIProps> = ({
           >
             {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
           </button>
-          <div
-            className="flex-1 relative group min-w-0 cursor-text"
-            style={{ pointerEvents: "auto" }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              inputRef.current?.focus();
-            }}
-            onPointerDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              inputRef.current?.focus();
-            }}
-          >
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => onInputChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+          <div className="flex-1 min-w-0 flex flex-col justify-center">
+            {voiceVisual ? (
+              <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
+            ) : (
+              <div
+                className="relative group min-w-0 cursor-text"
+                style={{ pointerEvents: "auto" }}
+                onMouseDown={(e) => {
                   e.preventDefault();
-                  if (canSend) onSend();
-                }
+                  e.stopPropagation();
+                  inputRef.current?.focus();
+                }}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  inputRef.current?.focus();
+                }}
+              >
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={(e) => onInputChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (canSend) onSend();
+                    }
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  placeholder={placeholder}
+                  readOnly={isLoading}
+                  aria-label="输入消息"
+                  className="w-full bg-transparent border-none py-2.5 pl-2 pr-2 text-sm focus:outline-none focus:ring-0 text-cyan-100 placeholder-cyan-300/70 cursor-text"
+                  style={{ pointerEvents: "auto" }}
+                />
+                <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/10 pointer-events-none" />
+                <div className="absolute bottom-0 left-0 h-[2px] w-0 bg-cyan-400 group-focus-within:w-full transition-all duration-300 pointer-events-none" />
+              </div>
+            )}
+          </div>
+          {!voiceVisual && (
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (canSend) onSend();
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              disabled={!canSend}
+              aria-label="发送"
+              className="p-2.5 rounded-full text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/25 border border-cyan-400/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 cursor-pointer select-none"
+              style={{ pointerEvents: "auto" }}
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          )}
+          {onOpenConsole && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenConsole();
               }}
               onMouseDown={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              placeholder={placeholder}
-              readOnly={isLoading}
-              aria-label="输入消息"
-              className="w-full bg-transparent border-none py-2.5 pl-2 pr-2 text-sm focus:outline-none focus:ring-0 text-cyan-100 placeholder-cyan-300/70 cursor-text"
-              style={{ pointerEvents: "auto" }}
-            />
-            <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/10 pointer-events-none" />
-            <div className="absolute bottom-0 left-0 h-[2px] w-0 bg-cyan-400 group-focus-within:w-full transition-all duration-300 pointer-events-none" />
-          </div>
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              if (e.button !== 0) return;
-              e.preventDefault();
-              e.stopPropagation();
-              if (canSend) onSend();
-            }}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            disabled={!canSend}
-            aria-label="发送"
-            className="p-2.5 rounded-full text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/25 border border-cyan-400/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 cursor-pointer select-none"
-            style={{ pointerEvents: "auto" }}
-          >
-            <Send className="w-4 h-4" />
-          </button>
+              title="大控制台（监控、日志与设置）"
+              aria-label="打开大控制台"
+              className="p-2 rounded-full text-slate-400 hover:text-cyan-300 hover:bg-white/10 border border-white/10 flex-shrink-0"
+            >
+              <LayoutDashboard className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </div>

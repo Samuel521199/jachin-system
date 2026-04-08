@@ -1,0 +1,88 @@
+# com.jachin.pmo.bmo — 示例（可复制为 pmo_bmo.yaml 并填入真实值）
+# 单独测六表导出：在项目根执行  python -m l3_node.primitives.skills.pmo_bmo.main_skill（或兼容旧路径 l3_node.skills.pmo_bmo.main_skill）
+skill_id: com.jachin.pmo.bmo
+display_name: PMO 知识库同步（BMO）
+
+lark:
+  app_id: "${LARK_APP_ID}"
+  app_secret: "${LARK_APP_SECRET}"
+  # 种子为 sg.larksuite.com 等国际域时用 false；仅飞书国内租户用 true
+  lark_use_feishu: false
+
+pipeline:
+  knowledge_sync_enabled: true
+  # 先导出六张 K11 多维表（JSON + MD + DuckDB），再跑 Wiki sync 与 knowledge ingest
+  export_scheduled_tables: true
+  # pmo_export:
+  #   max_export_records: 8000
+  #   snapshot_date: "2026-03-30"
+  #   # req_march_coarse：Wiki 内「需求表3月」为云文档表格时填 document_id（/docx/<token>）；不写则用代码内置默认（K11）
+  #   docx_document_ids:
+  #     req_march_coarse: "ZcpedCREaoNrQUxvM7EluZGugWg"
+  # 覆盖优先级：本处 > 环境变量 PMO_REQ_MARCH_COARSE_DOCX_ID > 内置默认（main_skill.PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID）
+  lark_doc: {}
+  knowledge_base: {}
+  notify:
+    after_sync: false
+
+# PMO「仪表盘」四张子表：提纯 CSV 写入 ~/.jachin/client_volumes/PMO/output/，并可选同步到 Lark「PMO测试」多维表
+# CLI: python -m l3_node.primitives.skills.pmo_bmo.main_skill push-dashboard [--no-sync]
+# app_token：打开目标多维表，浏览器 URL 中 /base/<app_token> 段
+pmo_dashboard_push:
+  enabled: false
+  app_token: ""
+  replace_tables: true
+  # ensure_columns: true 时四张表同步前都会按 CSV 补建缺失列。
+  # 为 false 时：main_skill 仍会对四张 PMO_*.csv 默认开启「按 CSV 补列」（人员分配任务列、需求人员参与动态列等）；若需完全关闭，设 dashboard_csv_auto_columns: false
+  ensure_columns: false
+  # dashboard_csv_auto_columns: false
+  tables:
+    PMO_需求完成情况.csv: tblUjVGoTEbqxFeu
+    PMO_人员分配.csv: tblhNL8S0f2tk8bO
+    PMO_需求人员参与情况.csv: tblGWpIj6Gif1znE
+    PMO_版本发布.csv: tblQQHxcgGOb8tO1
+  # 若报 FieldNameNotFound：多维表「字段配置」中的列名须与 CSV 表头一致，或在此写 CSV列名 -> 飞书字段名（覆盖 main_skill 内对 PMO_需求完成情况 的默认映射）
+  # field_mapping:
+  #   PMO_需求人员参与情况.csv:
+  #     完成度1: "完成度 1"
+  #     人员1: "人员 1"
+  #   PMO_需求完成情况.csv:
+  #     当前完成度(%): "当前完成度（%）"
+
+# 仪表盘 CSV 同步 Lark 成功后，发送 VChart 交互卡片（需 atom_lark_notifier 中 app_id/app_secret/chat_id）
+# 图表数据默认从 Lark 多维表拉取（与上方 pmo_dashboard_push.tables 中 PMO_需求完成情况/人员分配 的 table_id 一致），不读本地 CSV
+# 若需仅用 ~/.jachin/.../PMO/output 下 CSV：data_source: csv 或环境变量 PMO_BATTLE_REPORT_DATA_SOURCE=csv
+pmo_battle_report_card:
+  enabled: false
+  data_source: bitable
+  header_title: "📊 K11 研发效能大盘日线图"
+  bitable_open_url: ""
+  chat_id: ""
+  ai_markdown: ""
+
+# 月度需求总线锚点：为 true 时「需求完成情况战报」仅汇报 docs 中锚点表列出的条目（与白板总线一致），
+# 完成度/人员参与由多维表 + coarse + dev/art raw NL 匹配聚合；见 docs/pmo_bmo_plugin/PMO_月度需求总线_锚点_YYYY-MM.md
+pmo_monthly_master_line:
+  enabled: false
+  # anchor_doc_rel: docs/pmo_bmo_plugin/PMO_月度需求总线_锚点_2026-04.md
+  # min_match_bitable: 0.28
+  # min_match_coarse: 0.28
+  # min_match_participation: 0.25
+  # min_match_task: 0.30
+
+# 连发三张卡片：①需求完成情况（VChart 条形图+堆叠进度+人员进度）②人员分配表 ③版本发布（Markdown）
+pmo_dashboard_three_cards:
+  enabled: false
+  max_requirement_detail_charts: 12
+  chat_id: ""
+  bitable_open_url: ""
+
+pmo_resource_monitoring:
+  enabled: false
+  chat_id: ""
+  receive_id_type: "chat_id"
+  manager_receive_id: ""
+  weekly_capacity_units: 4.0
+  overload_saturation_pct: 120.0
+  hunger_saturation_pct: 50.0
+  card_title: "🚨 高危资源预警"

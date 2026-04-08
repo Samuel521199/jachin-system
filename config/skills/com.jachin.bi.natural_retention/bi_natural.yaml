@@ -1,0 +1,52 @@
+# 自然周 / 自然月 · 留存对比（两表 → raw_natural，Lark 双卡片）
+# 规范与同步方式同 bi_daily_report：
+#   ① 本仓库本文件
+#   ② 项目根 .env（BI_DATA_URL、BI_SPA_CDP_URL、BI_LARK_CHAT_ID、BI_LARK_WEBHOOK_URL、
+#      LARK_APP_ID、LARK_APP_SECRET — 无 Webhook 时用 IM API 发群）
+#   ③ %USERPROFILE%\.jachin\config\skills\com.jachin.bi.natural_retention\bi_natural.yaml
+#      及 %USERPROFILE%\.jachin\config\mcps\atom_lark_notifier\config.yaml（MCP 优先于项目 config）
+# 未在本文件填写的 full_spa / lark_chat_id / lark_app_* 会在运行时从 bi_daily_report.yaml 的
+# distribution / lark_bitable 合并（lark_use_feishu 以本文件为准，IM 发群建议 true）。
+
+# ========== 推送（与 bi_daily_report distribution + lark_bitable 凭证一致）==========
+distribution:
+  lark_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+  # 与 bi_daily_report.yaml、.env BI_LARK_CHAT_ID 保持同一群
+  lark_chat_id: "oc_bb2b468cb04acb709c2e7aa5683f8f08"
+  # 无有效 Webhook 时走 chat_id + 应用机器人；可与 .env 的 LARK_APP_ID / LARK_APP_SECRET 同步
+  lark_app_id: "${LARK_APP_ID}"
+  lark_app_secret: "${LARK_APP_SECRET}"
+  # 中国飞书 IM 用 open.feishu.cn（与 config/mcps/atom_lark_notifier 一致；多维表 lark_bitable 可能为 false）
+  lark_use_feishu: true
+
+# ========== 存储 ==========
+storage:
+  # 留空则 ~/.jachin/client_volumes/bi_data/raw_natural
+  raw_natural_path: ""
+  # 与日报 storage.base_path 同属 bi_data 根下，仅作文档说明
+  base_path: "client_volumes/bi_data"
+
+# ========== 自然留存抓取微调（可选）==========
+# 默认已在代码中启用：视觉序填两段 + 填完不按 Escape（避免 Heron-BI 整段卸载筛选区）。
+# 若需改回按表单项文案定位，可例如：
+# natural_retention:
+#   scraper_filters:
+#     date_range_compare_use_visual_order: false
+#     date_range_compare_form_labels: ["时间段1", "时间段2"]
+
+# ========== SPA 抓取（与 bi_daily_report.full_spa 一致；仅需两表直链时可只保留下列两项）==========
+full_spa:
+  base_url: "${BI_DATA_URL}"
+  cdp_url: "${BI_SPA_CDP_URL}"
+  auto_launch_chrome_when_cdp_unreachable: true
+  use_direct_urls: true
+  direct_urls:
+    stats_retention_user_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RetentionDataS/biUserChannelRetentionSummaryCompare"
+    stats_retention_paid_compare: "https://bi-admin-web.heronpro.xin/#/layout/BIManager/DataS/RetentionDataS/biUserChannelPayRetentionSummaryCompare"
+
+# ========== 定时参考（系统计划任务调用脚本：--weekly / --monthly）==========
+# 周：每周一 09:00 — 段1=上周一至上周日，段2=上上周一至上上周日
+# 月：每月1日 09:15 — 段1=上月1～28，段2=上上月1～28
+schedule:
+  weekly_cron_hint: "0 9 * * 1"
+  monthly_cron_hint: "15 9 1 * *"

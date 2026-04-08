@@ -6,19 +6,29 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%230c4a6e' width='32' height='32' rx='6'/><path fill='%2322d3ee' d='M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z'/></svg>" />
     <title>Jachin Chat</title>
     <style>
-      /* 极低不透明背景：避免 Windows 透明窗口对“全透明”区域做点击穿透，左键须进入 WebView */
+      /* 全透明：避免在浅色桌面前出现整块发灰的「空气墙」；交互仍由 Omni 毛玻璃舱承接 */
       html, body {
         margin: 0;
         padding: 0;
-        background: rgba(0,0,0,0.02) !important;
+        height: 100%;
+        width: 100%;
+        box-sizing: border-box;
+        background: transparent !important;
         overflow: hidden;
         pointer-events: auto;
       }
+      /* 流式/长文滚动在 Omni 内部 flex 子树完成，根节点锁高度避免挤出输入栏 */
       #chat-root {
-        width: 100vw;
-        height: 100vh;
-        background: rgba(0,0,0,0.02) !important;
+        width: 100%;
+        min-width: 100%;
+        min-height: 0;
+        height: 100%;
+        max-height: 100%;
+        overflow: hidden;
+        background: transparent !important;
         pointer-events: auto !important;
+        display: flex;
+        flex-direction: column;
       }
       #chat-root input,
       #chat-root button,

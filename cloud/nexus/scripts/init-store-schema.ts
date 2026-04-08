@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 直接修复 store / 租户 schema（plugins_registry 新列、user_licenses、organizations.slug 等）
  * 使用与 Next.js 相同的 DATABASE_URL，解决：
  * - 迁移与应用连不同库
@@ -151,19 +151,34 @@ async function main() {
     log("[init-store-schema] telemetry_logs, developer_payouts OK");
 
     // 5. users.is_root（配对等）。tenant_id 已废止（P1 SSOT），见 drizzle/0012、docs/MIGRATION_P1_TENANT.md
+    // Auth.js 的 users 表由 drizzle migrate 全量跑完或 db:push 后才有；迁移失败时跳过而非报错。
     await sql.unsafe(`
-      ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_root BOOLEAN NOT NULL DEFAULT false;
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'users'
+        ) THEN
+          ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_root BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+      END $$;
     `);
-    log("[init-store-schema] users columns OK");
+    log("[init-store-schema] users columns OK (skipped if no users table)");
 
     // 6. organizations.slug（Drizzle 0014；listOrganizationsForUser / JWT 依赖）
     await sql.unsafe(`
-      ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS slug varchar(64);
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'organizations'
+        ) THEN
+          ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS slug varchar(64);
+          CREATE UNIQUE INDEX IF NOT EXISTS organizations_slug_unique ON public.organizations (slug);
+        END IF;
+      END $$;
     `);
-    await sql.unsafe(`
-      CREATE UNIQUE INDEX IF NOT EXISTS organizations_slug_unique ON public.organizations (slug);
-    `);
-    log("[init-store-schema] organizations.slug OK");
+    log("[init-store-schema] organizations.slug OK (skipped if no organizations table)");
 
     // 打印连接信息（脱敏）便于排查 DB 不一致
     const masked = url.replace(/:([^:@]+)@/, ":****@");

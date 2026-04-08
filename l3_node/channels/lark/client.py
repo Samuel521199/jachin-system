@@ -123,7 +123,10 @@ def get_tenant_access_token(
     app_secret: str | None = None,
     api_base: str | None = None,
 ) -> str:
-    """获取 Lark tenant_access_token。显式传入 app_id+app_secret 时仅用二者；否则走 resolve_lark_credentials（含 YAML）。"""
+    """获取 Lark tenant_access_token。显式传入 app_id+app_secret 时仅用二者；否则走 resolve_lark_credentials（含 YAML）。
+
+    每次调用都会向开放平台请求新 token，**不在本地持久化缓存**；权限变更后无需「删缓存文件」，但租户侧可能需重新授权应用。
+    """
     _ensure_dotenv_loaded()
     if app_id and app_secret:
         aid, sec = str(app_id).strip(), str(app_secret).strip()

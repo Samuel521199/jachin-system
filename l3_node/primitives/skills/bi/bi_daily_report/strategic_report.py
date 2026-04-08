@@ -52,6 +52,16 @@ _STRATEGIC_KEY_FILES = [
 # 无对应 output 表名、仅 raw 存在的 slug（漏斗与告警）
 _STRATEGIC_RAW_ONLY_SLUGS = ["daily_acquisition", "alert_gold", "alert_traffic"]
 
+# 注入 User 摘要开头，防止 LLM 误读千分位或混淆用户/机器人金币列（与 STRATEGIC_REPORT_ANALYSIS_SPEC §数据口径与数值防错 对齐）
+_RAW_STRATEGIC_PREAMBLE = """### 【raw 摘要 · 口径提示】（生成战报时必须遵守）
+- **`stats_user_dau`「全部汇总」** 的当日金币产出/消耗：按真实位数换算（**1 亿 = 10⁸**）。例如 `53,179,122` ≈ **5318 万** 或 **约 0.53 亿**，**禁止**误写为 5.32 亿。
+- **`prod_sales`「全部汇总」**：**用户金币产出/消耗** 与 **机器人金币产出/消耗** 为不同列，须**分开**写；无合并定义时不要自行相加统称「全平台总产出」。
+- **`daily_acquisition`**：每行 = **单条落地 URL**，非全站唯一漏斗总和。
+- **`stats_retention_user`**：T 日行上 **T+1 留存** 为 `0`/`NaN%` 时，优先写 **指标未闭合或 ETL 未就绪**；架构延迟仅作**并列假设**。
+- **局数**：优先与 **`stats_game_daily`（完成局数）** 对齐；若用 `stats_game_core` 请注明表名。
+
+"""
+
 
 _METRICS_KEY_MAP = {
     "dau": "日活", "dnu": "新增用户", "dau_pct": "日活增幅", "dnu_pct": "新增用户增幅",
@@ -120,7 +130,9 @@ _STRATEGIC_ANALYSIS_SPEC_FALLBACK = """# BI 战略战报（兜底规范）
 ## 五、跨部门行动清单
 ## 六、待澄清（首条优先：补 IAA/激励视频/eCPM 等）
 
-建议总篇幅约 1200～3500 汉字。禁止编造；缺数据写「未提供」。"""
+建议总篇幅约 1200～3500 汉字。禁止编造；缺数据写「未提供」。
+
+**数值**：`stats_user_dau` 金币列换算「亿」时 1 亿=10⁸（例 53,179,122≈0.53 亿）；`prod_sales` 用户列与机器人列分述；`daily_acquisition` 按单链接口径；T+1 留存 NaN 优先写未闭合/ETL。"""
 
 
 def _load_strategic_analysis_spec(project_root: Path | None = None) -> str:
@@ -415,7 +427,7 @@ _USER_PROMPT_TEMPLATE = """## K11 / BI 项目背景知识（docs/bi_daily_report
 {k11_context_section}
 
 ## 数据日 T 相对前一日 T-1 的字段级变化摘要（output 提纯表 + raw 源表，供对照）
-比对：**T = {dod_t1}**，**T-1 = {dod_t2}**
+比对：**T = {dod_t1}**，**T-1 = {dod_t2}**（战报标题与摘要中的 **公历年份** 须与此处 T 的 YYYY 一致。）
 {dod_summary_section}
 
 ---
@@ -543,7 +555,7 @@ def _load_csv_summary(output_dir: Path) -> str:
 # 战略分析 key 与 raw CSV 映射（output 表名 → raw slug）
 _STRATEGIC_KEY_TO_RAW: dict[str, list[str]] = {
     "01_用户活跃_增幅表.csv": ["stats_user_dau", "stats_user_new"],
-    "02_用户活跃_日期数量表.csv": ["stats_user_dau", "stats_user_new"],
+    "02_用户活跃_日期数量表.csv": ["stats_user_dau", "stats_user_new", "stats_retention_user"],
     "03a_用户活跃_DAU渠道来源.csv": ["stats_user_dau"],
     "03b_用户活跃_DNU渠道来源.csv": ["stats_user_new"],
     "13_用户活跃_新增设备表.csv": ["stats_user_dau", "stats_user_new", "daily_ops_summary"],
@@ -617,7 +629,7 @@ def _load_raw_strategic_summary(raw_dir: Path | None) -> str:
     """从 raw 目录 CSV 提取战略分析所需数据摘要（替代 Lark 多维表）"""
     if not raw_dir or not raw_dir.exists():
         return "（无 raw 目录）"
-    lines: list[str] = []
+    lines: list[str] = [_RAW_STRATEGIC_PREAMBLE.rstrip(), ""]
     seen_slugs: set[str] = set()
     import csv as csv_module
     for name in _STRATEGIC_KEY_FILES:

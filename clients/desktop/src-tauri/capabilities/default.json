@@ -5,9 +5,12 @@
   "windows": ["main", "sprite", "chat"],
   "permissions": [
     "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
     "core:window:allow-set-position",
     "core:window:allow-show",
     "core:window:allow-hide",
-    "shell:allow-spawn"
+    "shell:allow-spawn",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
   ]
 }

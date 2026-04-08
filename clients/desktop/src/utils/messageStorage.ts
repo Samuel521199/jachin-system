@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 消息持久化工具
  * 
  * 使用 localStorage 保存和加载消息历史
@@ -7,6 +7,8 @@
 export interface StoredMessage {
   role: "user" | "assistant" | "system";
   content: string;
+  /** 思考过程（与正文隔离；可来自 reasoning_content / redacted_thinking / Sensory step） */
+  reasoning?: string;
   timestamp: number;
   /** 回复来源：L3 直连大模型 / L2 兜底 */
   source?: "L3" | "L2";

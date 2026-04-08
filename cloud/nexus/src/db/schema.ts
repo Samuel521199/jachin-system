@@ -554,6 +554,34 @@ export const userLicensesRelations = relations(userLicenses, ({ one }) => ({
 }));
 
 // =============================================================================
+// 桌面端安装包分发（私有对象存储 + 预签名 URL；Tauri 热更新 JSON）
+// =============================================================================
+
+/** 单平台构建产物：MinIO/S3 对象键 + Tauri/minisign 签名（与 tauri signer 一致） */
+export type DesktopArtifactMeta = {
+  objectKey: string;
+  signature: string;
+};
+
+export const desktopAppReleases = pgTable(
+  "desktop_app_releases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** semver，如 0.8.17 */
+    version: text("version").notNull().unique(),
+    notes: text("notes"),
+    pubDate: timestamp("pub_date", { withTimezone: true }).notNull(),
+    /** Tauri 平台键，如 windows-x86_64 → objectKey + signature */
+    artifacts: jsonb("artifacts")
+      .notNull()
+      .$type<Record<string, DesktopArtifactMeta>>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  }
+);
+
+// =============================================================================
 // L1 遥测与结算 — 边缘用量上报、开发者分润
 // =============================================================================
 

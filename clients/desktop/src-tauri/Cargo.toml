@@ -38,6 +38,8 @@ futures-util = "0.3"
 base64 = "0.22"
 sha2 = "0.10"
 ctrlc = "3.4"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
 
 [features]
 default = []

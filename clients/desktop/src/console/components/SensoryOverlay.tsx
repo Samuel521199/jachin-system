@@ -6,6 +6,9 @@
  * - HITL_REQUIRED: 霸气拦截框「指挥官，是否授权执行？」
  * - v8.0 Handoff: 虫群接力人格切换 Toast
  * - v8.0 Swarm: 蜂巢雷达
+ *
+ * 重要：若父组件已传入 sensory（如 chat.tsx），则**不得**再调用 useSensoryWebSocket，
+ * 否则会多开 WebSocket，L3 只向发起 intent 的那条连接推 chunk，导致其它实例永远收不到流式字。
  */
 
 import { motion, AnimatePresence } from "framer-motion";
@@ -16,12 +19,22 @@ import { SwarmRadar } from "../../components/SwarmRadar";
 export type SensoryOverlayBundle = ReturnType<typeof useSensoryWebSocket>;
 
 export interface SensoryOverlayProps {
-  /** 传入则复用同一 WebSocket（如 MIND STREAM）；不传则本组件自建连接（控制台） */
+  /** 传入则复用同一 WebSocket（如 Chat / MIND STREAM）；不传则本组件自建连接（控制台） */
   sensory?: SensoryOverlayBundle;
+  /**
+   * minimal：仅保留 Handoff + Swarm；不画全屏思考环 / Shell 横幅 / 全屏 HITL（由 Omni-Bar 承载）
+   */
+  variant?: "full" | "minimal";
 }
 
 /** 仅渲染：避免与 Chat 共用 hook 时再开第二条 /sensory 连接 */
-function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
+function SensoryOverlayBody({
+  sensory,
+  variant = "full",
+}: {
+  sensory: SensoryOverlayBundle;
+  variant?: "full" | "minimal";
+}) {
   const {
     connected,
     lastPayload,
@@ -30,6 +43,8 @@ function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
     handoffEvent,
     swarmEvent,
   } = sensory;
+
+  const minimal = variant === "minimal";
 
   const isThinking = connected && lastPayload?.step_type === "thought";
   const isShellExec =
@@ -41,7 +56,7 @@ function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
     <>
       {/* 思考中 - 黄色光环 */}
       <AnimatePresence>
-        {isThinking && (
+        {!minimal && isThinking && (
           <motion.div
             key="thinking"
             className="fixed inset-0 pointer-events-none z-30 flex items-center justify-center"
@@ -77,7 +92,7 @@ function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
 
       {/* core:shell_exec - 红色物理授权警告 */}
       <AnimatePresence>
-        {isShellExec && (
+        {!minimal && isShellExec && (
           <motion.div
             key="shell-exec"
             className="fixed top-20 left-1/2 -translate-x-1/2 z-30 px-6 py-4 rounded-xl border-2 border-rose-500/80 bg-rose-950/90 shadow-[0_0_30px_rgba(244,63,94,0.5)]"
@@ -126,7 +141,7 @@ function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
 
       {/* HITL_REQUIRED - 霸气拦截框 */}
       <AnimatePresence>
-        {hitlPending && (
+        {!minimal && hitlPending && (
           <motion.div
             key="hitl"
             className="fixed inset-0 z-50 flex items-center justify-center p-6"
@@ -184,14 +199,15 @@ function SensoryOverlayView({ sensory }: { sensory: SensoryOverlayBundle }) {
   );
 }
 
-function SensoryOverlaySelfConnected() {
+/** 无外部 sensory 时单独建连（例如仅大控制台使用 Overlay） */
+function SensoryOverlayWithOwnConnection({ variant }: { variant?: "full" | "minimal" }) {
   const sensory = useSensoryWebSocket();
-  return <SensoryOverlayView sensory={sensory} />;
+  return <SensoryOverlayBody sensory={sensory} variant={variant} />;
 }
 
-export function SensoryOverlay({ sensory }: SensoryOverlayProps = {}) {
-  if (sensory) {
-    return <SensoryOverlayView sensory={sensory} />;
+export function SensoryOverlay({ sensory: sensoryProp, variant = "full" }: SensoryOverlayProps = {}) {
+  if (sensoryProp) {
+    return <SensoryOverlayBody sensory={sensoryProp} variant={variant} />;
   }
-  return <SensoryOverlaySelfConnected />;
+  return <SensoryOverlayWithOwnConnection variant={variant} />;
 }

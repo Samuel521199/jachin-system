@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
@@ -18,8 +18,11 @@ const navLinks = [
   { href: "/console/pair", label: "Add Agent" },
 ];
 
+const navItemClass =
+  "text-sm text-white/70 hover:text-white/95 transition-colors tracking-wide whitespace-nowrap shrink-0";
+
 /**
- * 全局导航。未登录由 middleware 拦受保护路由；右上角用 `useSession()` 反映真实会话（此前写死「登录」导致已登录仍显示未登录）。
+ * 左 Logo | 中间主菜单（独立居中、大间距）| 最右「桌面端下载」圆角框按钮 + 登录/会话
  */
 export default function Navbar() {
   const { data: session, status } = useSession();
@@ -46,7 +49,7 @@ export default function Navbar() {
     ) : (
       <Link
         href="/login"
-        className="text-sm text-cyan-400/90 hover:text-cyan-300 transition-colors"
+        className="text-sm text-cyan-400/90 hover:text-cyan-300 transition-colors shrink-0"
       >
         登录
       </Link>
@@ -54,23 +57,42 @@ export default function Navbar() {
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 backdrop-blur-md bg-black/20 border-b border-white/5">
-      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <div className="mx-auto flex h-16 max-w-[min(100%,96rem)] items-center gap-4 px-6 lg:px-10">
         <Link
           href="/"
-          className="text-lg font-semibold tracking-[0.2em] text-white/95 hover:text-white transition-colors"
+          className="shrink-0 text-lg font-semibold tracking-[0.2em] text-white/95 hover:text-white transition-colors"
         >
           JACHIN NEXUS
         </Link>
-        <div className="flex items-center gap-8">
-          {navLinks.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className="text-sm text-white/70 hover:text-white/95 transition-colors tracking-wide"
-            >
-              {link.label}
-            </Link>
-          ))}
+
+        {/* 红框：仅主菜单，居中铺开，间距与 v0.8.99 参考图一致 */}
+        <div className="flex min-w-0 flex-1 items-center justify-center overflow-x-auto py-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex items-center justify-center gap-x-8 md:gap-x-10 lg:gap-x-12 xl:gap-x-14">
+            {navLinks.map((link) => (
+              <Link key={link.href} href={link.href} className={navItemClass}>
+                {link.label}
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        {/* 蓝框：圆角矩形按钮 + 登录（不与主菜单混在同一 flex gap 里） */}
+        <div className="flex shrink-0 items-center gap-5 pl-2">
+          <a
+            href="https://download.jachin.io"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="
+              inline-flex items-center justify-center shrink-0
+              rounded-xl border border-cyan-400/45 bg-cyan-500/5
+              px-4 py-1.5 text-sm font-medium text-cyan-100/95
+              shadow-[0_0_0_1px_rgba(34,211,238,0.12)]
+              hover:border-cyan-400/70 hover:bg-cyan-500/10 hover:text-white
+              transition-colors
+            "
+          >
+            桌面端下载
+          </a>
           {authSlot}
         </div>
       </div>

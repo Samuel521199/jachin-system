@@ -22,7 +22,8 @@ wasmtime>=15.0.0
 
 # Config
 pydantic>=2.5.0
-pydantic-settings>=2.1.0
+# mcp>=1.2 的 FastMCP 依赖 pydantic_settings（包名 pydantic-settings）
+pydantic-settings>=2.5.2
 python-dotenv>=1.0.0
 
 # Alibaba Qwen (optional)
@@ -53,6 +54,8 @@ psutil>=5.9.0
 
 # MCP (Model Context Protocol) Track A
 mcp>=1.0.0
+# Windows：mcp 在导入 stdio 时会加载 pywintypes（来自 pywin32），否则 ModuleNotFoundError: pywintypes
+pywin32>=306; sys_platform == 'win32'
 
 # PDF resume text extraction (L2 host, outside Wasm)
 pymupdf>=1.24.0

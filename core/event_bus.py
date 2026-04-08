@@ -275,14 +275,21 @@ async def _process_single_task(bus: OmniSensoryBus, task_data: dict[str, Any]) -
         asyncio.create_task(bus.publish_output(ev_sprite))
 
     async def _on_chunk(chunk_text: str) -> None:
-        """v8.0 流式神经：逐 token 广播，仅向 caps 含 stream_chunk 的客户端推送"""
+        """v8.0 流式神经：逐 token 广播。文本优先：不 await 分发链，避免慢处理器阻塞 LLM 流式回调。"""
         ev = SensoryOutputEvent(
             source_ref="layer3_broadcast",
             content=chunk_text,
             action_type="chunk",
             metadata={"step_type": "chunk", "chunk": chunk_text, "session_id": session_id, "run_id": run_id},
         )
-        await bus.publish_output(ev)
+
+        async def _publish_chunk_safe() -> None:
+            try:
+                await bus.publish_output(ev)
+            except Exception as e:
+                logger.exception("[OmniSensoryBus] chunk 输出分发异常: %s", e)
+
+        asyncio.create_task(_publish_chunk_safe())
 
     try:
         from core.agent_loop import SecurityException

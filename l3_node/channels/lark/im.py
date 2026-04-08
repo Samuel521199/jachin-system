@@ -142,3 +142,59 @@ def send_markdown_card(
     except Exception as e:
         logger.warning("Lark 卡片发送异常: %s", e)
         return {"status": "error", "error": str(e)}
+
+
+def send_interactive_card(
+    receive_id: str,
+    card: dict[str, Any],
+    receive_id_type: str = "chat_id",
+    token: str | None = None,
+    *,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    api_base: str | None = None,
+) -> dict[str, Any]:
+    """
+    通过 IM API 发送任意交互式卡片 JSON（支持 Schema 2.0：含 chart、button 等）。
+
+    ``card`` 需为飞书可解析的完整卡片对象。发群消息建议用**卡片 JSON 1.0**（根级 ``config`` / ``header`` / ``elements``），
+    与 ``send_markdown_card`` 一致；含 ``chart`` 时勿强依赖 Schema 2.0，以免 IM 端降级为图片预览。
+    """
+    if not (receive_id or "").strip():
+        return {"status": "error", "error": "receive_id 不能为空"}
+    if not isinstance(card, dict) or not card:
+        return {"status": "error", "error": "card 不能为空"}
+
+    try:
+        tkn = token or get_tenant_access_token(
+            app_id=app_id, app_secret=app_secret, api_base=api_base
+        )
+        try:
+            import requests
+        except ImportError:
+            return {"status": "error", "error": "请安装 requests: pip install requests"}
+
+        base = api_base or get_lark_api_base()
+        url = f"{base}/im/v1/messages"
+        params = {"receive_id_type": receive_id_type or "chat_id"}
+        payload = {
+            "receive_id": receive_id.strip(),
+            "msg_type": "interactive",
+            "content": json.dumps(card, ensure_ascii=False),
+        }
+        resp = requests.post(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {tkn}", "Content-Type": "application/json; charset=utf-8"},
+            json=payload,
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            err = data.get("msg", str(data))
+            logger.warning("Lark 交互卡片发送失败: %s", err)
+            return {"status": "error", "error": str(err)}
+        return {"status": "success", "msg": "飞书已送达", "data": data.get("data")}
+    except Exception as e:
+        logger.warning("Lark 交互卡片发送异常: %s", e)
+        return {"status": "error", "error": str(e)}

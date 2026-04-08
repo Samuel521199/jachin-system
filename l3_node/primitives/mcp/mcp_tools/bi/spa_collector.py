@@ -146,7 +146,6 @@ def _apply_slug_specific_automation(
         "daily_ops_summary",
         "daily_ops_compare",
         "daily_acquisition",
-        "recharge_history",
         "recharge_daily",
         "stats_recharge",
         "stats_recharge_compare",
@@ -219,7 +218,6 @@ def _apply_slug_specific_automation(
         "recharge_status",
         "daily_ops_summary",
         "daily_acquisition",
-        "recharge_history",
         "recharge_daily",
         "alert_gold",
         "alert_traffic",
@@ -231,6 +229,8 @@ def _apply_slug_specific_automation(
         automation["filters"] = stats_game_daily_filters
         automation["expand_extract_collapse_loop"] = True
         automation["expand_table_rows"] = False
+        # 父 tr 含「当日总计」与整日 GGR/RTP；原先只采子 tr 会漏该行
+        automation["expand_include_parent_row"] = True
     elif slug_name == "stats_game_compare":
         automation["filters"] = dict(stats_game_compare_filters)
         automation["expand_extract_collapse_loop"] = True
@@ -240,14 +240,22 @@ def _apply_slug_specific_automation(
         automation["expand_skip_first_rows"] = 1
         automation["expand_capture_first_rows"] = 1
         automation["expand_wait_ms"] = 2000
+    elif slug_name == "recharge_history":
+        # 页面无「统计日期」范围框，仅有用户ID/渠道等；直接查询后翻页抓全量
+        automation["filters"] = {
+            "query_selector": "button:has-text('查询'), .el-button:has-text('查询')",
+            "wait_after_query_ms": 3000,
+        }
     elif slug_name == "stats_game_active":
         automation["filters"] = stats_game_daily_filters
         automation["expand_extract_collapse_loop"] = True
         automation["expand_table_rows"] = False
+        automation["expand_include_parent_row"] = True
     elif slug_name == "stats_game_new":
         automation["filters"] = stats_game_daily_filters
         automation["expand_extract_collapse_loop"] = True
         automation["expand_table_rows"] = False
+        automation["expand_include_parent_row"] = True
     elif slug_name in compare_slugs:
         automation["filters"] = dict(stats_game_compare_filters)
     elif slug_name == "stats_recharge":
@@ -483,6 +491,10 @@ def run_full_spa_collect(
             }
             _apply_slug_specific_automation(automation, slug_name, report_date_end=report_date_end)
             page_url = base_url
+
+        # 分页表：仅抓当前 DOM 会漏后续页
+        if slug_name in ("detail_recharge_daily", "recharge_history"):
+            automation["pagination_all_pages"] = True
 
         try:
             diff_label = f"{slug_name}|{display_name}"

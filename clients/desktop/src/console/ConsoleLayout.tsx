@@ -13,6 +13,7 @@ import { Sidebar } from "./Sidebar";
 import { Horizon } from "./components/Horizon";
 import { VoidBackground } from "./components/VoidBackground";
 import { SensoryOverlay } from "./components/SensoryOverlay";
+import { DesktopUpdateBanner } from "../components/DesktopUpdateBanner";
 
 export function ConsoleLayout() {
   const themeId = useSpriteStore((s) => s.themeId);
@@ -77,24 +78,27 @@ export function ConsoleLayout() {
 
   return (
     <div
-      className="relative h-screen w-screen flex overflow-hidden text-white console-deep-space"
+      className="relative h-screen w-screen flex flex-col overflow-hidden text-white console-deep-space"
       data-theme={themeId}
     >
-      <VoidBackground
-        memoryCount={voidData?.memoryCount}
-        deviceCount={voidData?.deviceCount}
-      />
-      <Sidebar />
-      <SensoryOverlay />
-      <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        <Horizon
-          environment={config?.environment ?? import.meta.env.VITE_ENVIRONMENT ?? undefined}
-          modelName={config?.model_name ?? import.meta.env.VITE_MODEL_NAME ?? undefined}
+      <DesktopUpdateBanner />
+      <div className="flex-1 min-h-0 relative flex overflow-hidden">
+        <VoidBackground
+          memoryCount={voidData?.memoryCount}
+          deviceCount={voidData?.deviceCount}
         />
-        <div className="flex-1 min-h-0 overflow-auto flex flex-col">
-          <Outlet />
-        </div>
-      </main>
+        <Sidebar />
+        <SensoryOverlay />
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <Horizon
+            environment={config?.environment ?? import.meta.env.VITE_ENVIRONMENT ?? undefined}
+            modelName={config?.model_name ?? import.meta.env.VITE_MODEL_NAME ?? undefined}
+          />
+          <div className="flex-1 min-h-0 overflow-auto flex flex-col">
+            <Outlet />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

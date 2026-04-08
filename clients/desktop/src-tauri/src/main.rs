@@ -3,6 +3,7 @@
 
 mod commands;
 mod config;
+mod nexus_config;
 mod device;
 mod device_registry;
 mod kernel;
@@ -35,6 +36,7 @@ use device::DeviceController;
 use device_registry::{DeviceRegistry, DeviceCommand, DeviceResponse};
 use pubsub::start_pubsub_server;
 use tauri::{Manager, Emitter, Listener, tray::{TrayIconBuilder, TrayIconEvent}};
+use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -237,7 +239,7 @@ async fn quick_action_eagle_eye(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(next)
 }
 
-/// 休眠状态：true = 精灵与聊天已隐藏，false = 正常显示
+/// 休眠状态：true = Omni 条已隐藏（桌面精灵默认不显示）
 static HIBERNATE_ON: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
@@ -245,7 +247,7 @@ fn get_hibernate_mode() -> Result<bool, String> {
     Ok(HIBERNATE_ON.load(Ordering::Relaxed))
 }
 
-/// 快捷指令：休眠系统（切换精灵与聊天窗口显示/隐藏）
+/// 快捷指令：休眠系统（切换 Omni 条；桌面精灵保持默认隐藏）
 #[tauri::command]
 async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
     let prev = HIBERNATE_ON.load(Ordering::Relaxed);
@@ -254,24 +256,88 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
     if let Some(sprite) = app.get_webview_window("sprite") {
         if next {
             let _ = sprite.hide();
-        } else {
-            let _ = sprite.show();
         }
     }
     if let Some(chat) = app.get_webview_window("chat") {
         if next {
             let _ = chat.hide();
         } else {
+            let _ = position_chat_omni_bar(&app);
             let _ = chat.show();
+            let _ = chat.set_focus();
         }
     }
     let (title, body) = if next {
-        ("休眠系统", "已开启：精灵与聊天已隐藏，点击托盘可恢复")
+        ("休眠系统", "已开启：Omni 条与桌面精灵已隐藏，托盘或全局快捷键可恢复")
     } else {
-        ("休眠系统", "已关闭：精灵与聊天已恢复显示")
+        ("休眠系统", "已关闭：Omni 条已恢复显示（精灵默认保持关闭）")
     };
     let _ = app.notification().builder().title(title).body(body).show();
     Ok(next)
+}
+
+/// 将 Omni 输入条置于主显示器水平居中、垂直约 2/3（Raycast / Spotlight 风格）
+fn position_chat_omni_bar(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::PhysicalPosition;
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    let monitor = chat
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let win_size = chat.outer_size().map_err(|e| e.to_string())?;
+    let x = mon_pos.x + (mon_size.width as i32 - win_size.width as i32) / 2;
+    let y = mon_pos.y + (mon_size.height as i32 - win_size.height as i32) * 2 / 3;
+    chat.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 切换 Omni 条显示；由托盘、全局快捷键等调用
+fn toggle_chat_omni(app: &tauri::AppHandle) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(chat) = app_clone.get_webview_window("chat") {
+            let visible = chat.is_visible().unwrap_or(false);
+            if visible {
+                let _ = chat.hide();
+            } else {
+                let _ = position_chat_omni_bar(&app_clone);
+                let _ = chat.show();
+                let _ = chat.set_focus();
+            }
+        }
+    });
+}
+
+/// 注册 Omni 全局快捷键（PowerToys Run 等常占用 Alt+Space，故做多候选，失败不崩溃）
+fn register_omni_hotkeys(app: &tauri::AppHandle) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    const CANDIDATES: &[&str] = &["alt+shift+space", "ctrl+shift+space", "alt+space"];
+    let mut registered = false;
+    for combo in CANDIDATES {
+        match app.global_shortcut().on_shortcut(*combo, |app, _, event| {
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            toggle_chat_omni(app);
+        }) {
+            Ok(()) => {
+                eprintln!("[Omni] 全局快捷键已注册: {}（若需 Alt+Space，请在 PowerToys 中改掉「Run」占用）", combo);
+                registered = true;
+                break;
+            }
+            Err(e) => eprintln!("[Omni] 跳过 {}: {}", combo, e),
+        }
+    }
+    if !registered {
+        eprintln!(
+            "[Omni] 未能注册全局快捷键，请使用托盘图标左键打开 Omni 条，或释放 Alt+Space 后再试。"
+        );
+    }
 }
 
 fn main() {
@@ -282,8 +348,23 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                // 桌面精灵不再作为默认交互；勿从 .window-state.json 恢复「上次曾打开」导致重新显示
+                .with_denylist(&["sprite"])
+                .build(),
+        )
         .plugin(tauri_plugin_notification::init())
+        .plugin({
+            let mut b = tauri_plugin_updater::Builder::new();
+            if let Some(tok) = nexus_config::access_token() {
+                b = b
+                    .header("Authorization", format!("Bearer {}", tok))
+                    .expect("Authorization header value");
+            }
+            b.build()
+        })
+        .plugin(GlobalShortcutBuilder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::settings::get_current_config,
             commands::settings::get_user_settings,
@@ -508,21 +589,14 @@ fn main() {
             if let Some(icon) = app.default_window_icon() {
                 let _ = TrayIconBuilder::new()
                     .icon(icon.clone())
-                    .tooltip("Jachin Desktop Sprite")
+                    .tooltip("Jachin · 左键 Omni · 右键控制台 · 快捷键默认 Alt+Shift+Space（见终端日志）")
                     .on_tray_icon_event(|tray, event| {
                         match event {
                             TrayIconEvent::Click {
                                 button: tauri::tray::MouseButton::Left,
                                 ..
                             } => {
-                                // 左键点击：显示/隐藏精灵窗口
-                                if let Some(window) = tray.app_handle().get_webview_window("sprite") {
-                                    if window.is_visible().unwrap_or(false) {
-                                        let _ = window.hide();
-                                    } else {
-                                        let _ = window.show();
-                                    }
-                                }
+                                toggle_chat_omni(tray.app_handle());
                             }
                             TrayIconEvent::Click {
                                 button: tauri::tray::MouseButton::Right,
@@ -545,12 +619,13 @@ fn main() {
                     .build(app); // 如果构建失败，忽略错误（托盘图标是可选的）
             }
 
-            // 初始化窗口位置
+            // 桌面精灵：固定初始位置；若用户从控制台再次打开，仍从该锚点旁弹出 chat
             if let Some(sprite_window) = app.get_webview_window("sprite") {
-                // 设置初始位置（屏幕右下角）
-                // 注意：在开发模式下，窗口位置可能由 window-state 插件管理
                 let _ = sprite_window.set_position(tauri::LogicalPosition::new(100.0, 100.0));
+                let _ = sprite_window.hide();
             }
+
+            register_omni_hotkeys(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -603,22 +678,18 @@ async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 显示对话窗口
+/// 显示对话窗口（Omni 条）：屏幕居中偏下，不依赖桌面精灵位置
 #[tauri::command]
 async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(chat_window) = app.get_webview_window("chat") {
-        // 获取精灵窗口位置
-        if let Some(sprite_window) = app.get_webview_window("sprite") {
-            if let Ok(sprite_pos) = sprite_window.inner_position() {
-                let _ = chat_window.set_position(tauri::LogicalPosition::new(
-                    sprite_pos.x as f64 + 220.0,
-                    sprite_pos.y as f64,
-                ));
-            }
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = position_chat_omni_bar(&app_handle);
+        if let Some(chat_window) = app_handle.get_webview_window("chat") {
+            let _ = chat_window.show();
+            let _ = chat_window.set_focus();
         }
-        chat_window.show().map_err(|e| e.to_string())?;
-        chat_window.set_focus().map_err(|e| e.to_string())?;
-    }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

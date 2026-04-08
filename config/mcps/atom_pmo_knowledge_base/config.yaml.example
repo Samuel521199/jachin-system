@@ -1,0 +1,9 @@
+# atom_pmo_knowledge_base — 将同步目录 Markdown 分块并写入 corpus
+# 复制为 config/mcps/atom_pmo_knowledge_base/config.yaml
+
+source_dir_relative: docs/pmo_bmo_plugin/synced
+corpus_dir_relative: docs/pmo_bmo_plugin/corpus
+chunk_max_chars: 2000
+chunk_overlap: 200
+# 是否调用可插拔 Embedder 写入向量预览（失败时仍保留文本块）
+embed: true

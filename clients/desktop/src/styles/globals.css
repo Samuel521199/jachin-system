@@ -1,4 +1,17 @@
 /* Global styles (Sci-Fi HUD) - 项目主样式入口，等同于 index.css */
+/*
+ * Chat 悬浮窗（chat.html）：强制 html/body/根容器完全透明，避免叠出浅灰「空气墙」。
+ * 须放在 @tailwind / @layer 之前，且下方 body/#chat-root 不得再写非透明底色覆盖。
+ */
+html:has(#chat-root),
+body:has(#chat-root),
+#chat-root,
+#root {
+  background-color: transparent !important;
+  background-image: none !important;
+  background: transparent !important;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -130,9 +143,9 @@
     font-family: ui-monospace, "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
   }
 
-  /* 极低不透明，避免 OS 对透明窗口点击穿透，视觉仍为透明 */
+  /* Chat 根节点：全透明（勿用 rgba 微底色，在浅色桌面前会像「灰墙」） */
   #chat-root {
-    background: rgba(0,0,0,0.02) !important;
+    background: transparent !important;
     pointer-events: auto !important;
   }
   /* Chat 窗口：强制输入/按钮可点击，避免透明窗口或父层影响 */
