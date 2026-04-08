@@ -1,6 +1,14 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.8.103] - 2026-04-08
+
+### Changed
+
+- **备份**：本地工作区与桌面/云端/Nexus/下载站/BI 等改动合入；版本号统一为 **0.8.103**（Git 标签 `v0.8.103`）
+
+---
 
 ## [v0.8.102] - 2026-04-07
 

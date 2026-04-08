@@ -1,0 +1,4 @@
+﻿[[permission]]
+identifier = "allow-updater-debug-append"
+description = "Append hot-update debug lines to local log (D:\\zzz\\jachin)."
+commands.allow = ["updater_debug_append"]

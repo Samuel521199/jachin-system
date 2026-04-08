@@ -1,0 +1,5 @@
+﻿{
+  "_readme": "合并到 %USERPROFILE%/.jachin/nexus_config.json；desktop_update_token 与 Nexus DESKTOP_UPDATE_BEARER 一致",
+  "nexus_base_url": "http://127.0.0.1:3000",
+  "desktop_update_token": "jachin-dev-desktop-update-secret-2026"
+}

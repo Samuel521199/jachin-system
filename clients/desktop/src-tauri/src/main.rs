@@ -1,9 +1,10 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 mod config;
 mod nexus_config;
+mod updater_debug_log;
 mod device;
 mod device_registry;
 mod kernel;
@@ -35,7 +36,11 @@ use sysinfo::System;
 use device::DeviceController;
 use device_registry::{DeviceRegistry, DeviceCommand, DeviceResponse};
 use pubsub::start_pubsub_server;
-use tauri::{Manager, Emitter, Listener, tray::{TrayIconBuilder, TrayIconEvent}};
+use tauri::{
+    menu::{MenuBuilder, MenuItem},
+    tray::{TrayIconBuilder, TrayIconEvent},
+    Emitter, Listener, Manager,
+};
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use serde_json::json;
@@ -340,13 +345,39 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
     }
 }
 
+/// 释放 L3 Sidecar 并退出进程（托盘「退出」与 `app_exit` 命令共用）。
+fn shutdown_application(app: &tauri::AppHandle) {
+    if let Some(l3) = app.try_state::<std::sync::Arc<l3_spawn::L3Handle>>() {
+        l3.kill();
+    }
+    app.exit(0);
+}
+
 fn main() {
     // 启动时生成策略（用户覆盖 > 自动检测），并打印决策来源
     let profile = kernel::HardwareProfile::detect();
     let settings = config::UserSettings::load();
     let _config = kernel::generate_policy(profile, &settings);
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // 必须尽量靠前注册：阻止多开 exe；再次启动时唤起已有实例的主窗口
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let ah = app.clone();
+            let ah_focus = ah.clone();
+            let _ = ah.run_on_main_thread(move || {
+                if let Some(w) = ah_focus.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            });
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -357,7 +388,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin({
             let mut b = tauri_plugin_updater::Builder::new();
-            if let Some(tok) = nexus_config::access_token() {
+            if let Some(tok) = nexus_config::updater_bearer_token() {
                 b = b
                     .header("Authorization", format!("Bearer {}", tok))
                     .expect("Authorization header value");
@@ -415,8 +446,11 @@ fn main() {
             stt_voice_stub::stop_voice_capture,
             #[cfg(not(feature = "ambient"))]
             stt_voice_stub::is_voice_capture_running,
+            updater_debug_log::updater_debug_append,
         ])
         .setup(|app| {
+            updater_debug_log::log_startup_rust(&app.package_info().version.to_string());
+
             // L3 引擎生命周期：静默启动 l3_node Sidecar（--ws-only），Ctrl+C 时 kill 释放端口
             match l3_spawn::spawn_l3_node(&*app) {
                 Ok(child) => {
@@ -584,39 +618,62 @@ fn main() {
                 }
             });
             
-            // 创建系统托盘图标
-            // 使用默认窗口图标
+            // 系统托盘：左键 Omni；右键为系统上下文菜单（打开控制台 / 退出）
             if let Some(icon) = app.default_window_icon() {
-                let _ = TrayIconBuilder::new()
-                    .icon(icon.clone())
-                    .tooltip("Jachin · 左键 Omni · 右键控制台 · 快捷键默认 Alt+Shift+Space（见终端日志）")
-                    .on_tray_icon_event(|tray, event| {
-                        match event {
-                            TrayIconEvent::Click {
+                let tray_build = (|| -> Result<(), tauri::Error> {
+                    let item_console = MenuItem::with_id(
+                        app,
+                        "tray_console",
+                        "打开控制台",
+                        true,
+                        None::<&str>,
+                    )?;
+                    let item_quit =
+                        MenuItem::with_id(app, "tray_quit", "退出 Jachin", true, None::<&str>)?;
+                    let tray_menu = MenuBuilder::new(app)
+                        .item(&item_console)
+                        .item(&item_quit)
+                        .build()?;
+
+                    let _tray = TrayIconBuilder::new()
+                        .icon(icon.clone())
+                        .tooltip(
+                            "Jachin · 左键打开 Omni · 右键菜单可打开控制台或退出 · Alt+Shift+Space",
+                        )
+                        .menu(&tray_menu)
+                        .on_menu_event(|app, event| {
+                            match event.id.as_ref() {
+                                "tray_console" => {
+                                    let ah = app.app_handle().clone();
+                                    let ah_focus = ah.clone();
+                                    let _ = ah.run_on_main_thread(move || {
+                                        if let Some(w) = ah_focus.get_webview_window("main") {
+                                            let _ = w.show();
+                                            let _ = w.unminimize();
+                                            let _ = w.set_focus();
+                                        }
+                                    });
+                                }
+                                "tray_quit" => shutdown_application(app.app_handle()),
+                                _ => {}
+                            }
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            if let TrayIconEvent::Click {
                                 button: tauri::tray::MouseButton::Left,
                                 ..
-                            } => {
+                            } = event
+                            {
                                 toggle_chat_omni(tray.app_handle());
                             }
-                            TrayIconEvent::Click {
-                                button: tauri::tray::MouseButton::Right,
-                                ..
-                            } => {
-                                // 右键点击：打开控制台窗口（主线程执行以保证 Windows 上生效）
-                                let app_handle = tray.app_handle().clone();
-                                let app_in_closure = app_handle.clone();
-                                let _ = app_handle.run_on_main_thread(move || {
-                                    if let Some(w) = app_in_closure.get_webview_window("main") {
-                                        let _ = w.show();
-                                        let _ = w.unminimize();
-                                        let _ = w.set_focus();
-                                    }
-                                });
-                            }
-                            _ => {}
-                        }
-                    })
-                    .build(app); // 如果构建失败，忽略错误（托盘图标是可选的）
+                        })
+                        .build(app)?;
+                    Ok(())
+                })();
+
+                if let Err(e) = tray_build {
+                    eprintln!("[Tray] 创建失败（无托盘菜单）: {}", e);
+                }
             }
 
             // 桌面精灵：固定初始位置；若用户从控制台再次打开，仍从该锚点旁弹出 chat
@@ -705,10 +762,7 @@ async fn hide_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 /// 退出应用（先 kill L3 释放端口）
 #[tauri::command]
 fn app_exit(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(l3) = app.try_state::<std::sync::Arc<l3_spawn::L3Handle>>() {
-        l3.kill();
-    }
-    app.exit(0);
+    shutdown_application(&app);
     Ok(())
 }
 

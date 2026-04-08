@@ -1,9 +1,10 @@
-/**
+﻿/**
  * Horizon - 顶部状态栏 (The Horizon)
  * 设计愿景 2.3：环境、算力池、当前大脑模型
  */
 
 import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getClusterStats, getGpuStats } from "../../lib/api";
 import { cn } from "../../utils/cn";
 
@@ -83,6 +84,14 @@ export function Horizon({
       <span className="text-slate-500" title="当前大脑模型">
         Brain: {modelName}
       </span>
+      <button
+        type="button"
+        className="ml-auto shrink-0 rounded px-2 py-0.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-rose-300/90"
+        title="完全退出 Jachin（结束进程；关闭主窗口仅会隐藏，请用此处或托盘菜单退出）"
+        onClick={() => void invoke("app_exit")}
+      >
+        退出
+      </button>
     </header>
   );
 }

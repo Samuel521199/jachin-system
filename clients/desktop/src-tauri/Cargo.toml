@@ -1,6 +1,6 @@
-[package]
+﻿[package]
 name = "jachin-desktop"
-version = "0.1.0"
+version = "0.8.103"
 description = "Jachin-System Desktop Console"
 authors = ["Jachin Team"]
 license = ""
@@ -40,6 +40,7 @@ sha2 = "0.10"
 ctrlc = "3.4"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-single-instance = "2"
 
 [features]
 default = []

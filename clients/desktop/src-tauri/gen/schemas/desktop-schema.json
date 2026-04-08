@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Append hot-update debug lines to local log (D:\\zzz\\jachin).",
+          "type": "string",
+          "const": "allow-updater-debug-append",
+          "markdownDescription": "Append hot-update debug lines to local log (D:\\zzz\\jachin)."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { desc } from "drizzle-orm";
 import semver from "semver";
 import { getDb, isDatabaseConfigured } from "@/db";
@@ -7,19 +7,25 @@ import { extractBearerTokenRaw } from "@/lib/edge-agent-manifest-auth";
 import { findActiveEdgeAgentByBearerToken } from "@/lib/edge-bearer";
 import { presignDesktopArtifactGetUrl, isDesktopReleasesS3Configured } from "@/lib/desktop-releases-s3";
 import { tauriPlatformKeyFromParts } from "@/lib/desktop-releases-common";
+import { isDesktopUpdateSharedSecretBearer } from "@/lib/desktop-update-auth";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/v1/update/desktop?target=windows&arch=x86_64&current_version=0.8.16
- * Tauri updater：Authorization: Bearer &lt;access_token&gt;（与 L2 nexus_config 一致）。
+ * Tauri updater：Authorization: Bearer
+ * - edge_agents.auth_token / id（舰队边缘），或
+ * - 与 DESKTOP_UPDATE_BEARER 一致（桌面客户端 ~/.jachin/nexus_config.json → desktop_update_token）。
  * 无新版本：204 No Content。
  */
 export async function GET(request: NextRequest) {
   const bearer = extractBearerTokenRaw(request);
   if (!bearer) {
     return NextResponse.json(
-      { error: "需要 Bearer access_token（~/.jachin/nexus_config.json）" },
+      {
+        error:
+          "需要 Bearer：edge 凭证或 desktop_update_token（见 DESKTOP_UPDATE_BEARER）",
+      },
       { status: 401 }
     );
   }
@@ -30,8 +36,12 @@ export async function GET(request: NextRequest) {
 
   const db = getDb()!;
   const agent = await findActiveEdgeAgentByBearerToken(db, bearer);
-  if (!agent) {
-    return NextResponse.json({ error: "无效或过期的边缘凭证" }, { status: 401 });
+  const sharedOk = isDesktopUpdateSharedSecretBearer(bearer);
+  if (!agent && !sharedOk) {
+    return NextResponse.json(
+      { error: "无效凭证：非 edge_agents 且与 DESKTOP_UPDATE_BEARER 不匹配" },
+      { status: 401 }
+    );
   }
 
   if (!isDesktopReleasesS3Configured()) {

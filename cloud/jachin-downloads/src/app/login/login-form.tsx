@@ -6,12 +6,13 @@ import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-type Props = { showGithub: boolean };
+type Props = { showGithub: boolean; devBypass?: boolean };
 
 /**
  * 与 Nexus 一致：邮箱密码需 `users.password_hash` 非空；纯 GitHub 账号须走 GitHub 登录。
+ * devBypass：开发模式任意（可空）凭据通过，见 dev-login-bypass.ts。
  */
-export function LoginForm({ showGithub }: Props) {
+export function LoginForm({ showGithub, devBypass = false }: Props) {
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
   const [email, setEmail] = useState("");
@@ -61,7 +62,9 @@ export function LoginForm({ showGithub }: Props) {
         <h1 className="mb-1 text-center text-xl font-semibold tracking-tight text-white">
           桌面端发行大厅
         </h1>
-        <p className="mb-8 text-center text-sm text-white/45">使用 Nexus 账号登录</p>
+        <p className="mb-8 text-center text-sm text-white/45">
+          {devBypass ? "开发模式：可直接点登录（或填任意内容）" : "使用 Nexus 账号登录"}
+        </p>
 
         <form onSubmit={onSubmit} className="space-y-4">
           <div>
@@ -69,7 +72,7 @@ export function LoginForm({ showGithub }: Props) {
             <input
               type="email"
               autoComplete="email"
-              required
+              required={!devBypass}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none ring-cyan-500/30 focus:ring-2"
@@ -80,7 +83,7 @@ export function LoginForm({ showGithub }: Props) {
             <input
               type="password"
               autoComplete="current-password"
-              required
+              required={!devBypass}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none ring-cyan-500/30 focus:ring-2"

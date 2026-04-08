@@ -1,6 +1,6 @@
-{
+﻿{
   "productName": "Jachin Desktop Sprite",
-  "version": "0.8.16",
+  "version": "0.8.103",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -64,14 +64,20 @@
     ],
     "security": {
       "csp": null,
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
     }
   },
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": ["icons/icon.ico"],
-    "externalBin": ["bin/l3_node"]
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "bin/l3_node"
+    ]
   },
   "plugins": {
     "shell": {

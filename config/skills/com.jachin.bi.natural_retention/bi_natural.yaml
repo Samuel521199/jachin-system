@@ -1,4 +1,4 @@
-# 自然周 / 自然月 · 留存对比（两表 → raw_natural，Lark 双卡片）
+﻿# 自然周 / 自然月 · 留存对比（两表 → raw_natural，Lark 双卡片）
 # 规范与同步方式同 bi_daily_report：
 #   ① 本仓库本文件
 #   ② 项目根 .env（BI_DATA_URL、BI_SPA_CDP_URL、BI_LARK_CHAT_ID、BI_LARK_WEBHOOK_URL、

@@ -1,4 +1,4 @@
-# Jachin Desktop Console
+﻿# Jachin Desktop Console
 
 Jachin-System 的桌面控制台应用，使用 Tauri v2 + React + TypeScript 构建。
 
@@ -91,6 +91,70 @@ npm run tauri:dev
 ```
 
 **前置条件**：L2 后端已启动（`python -m core.main`，默认端口 18888）。
+
+### 统一版本号（单一入口）
+
+编辑本目录下的 **`VERSION`** 文件（仅一行，如 `0.8.17`），然后执行：
+
+```bash
+npm run sync-version
+```
+
+会将版本同步到 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。也可直接指定版本：`npm run sync-version -- 0.8.17`。
+
+### Tauri 热更新（控制台顶栏提示）
+
+1. **L1 Nexus** 运行，且 `.env` 配置 `DESKTOP_UPDATE_BEARER`（与下方 token 一致）。
+2. 将 **`nexus_config.example.json`** 中的字段合并到 **`%USERPROFILE%\.jachin\nexus_config.json`**，至少包含 **`desktop_update_token`**（与 `DESKTOP_UPDATE_BEARER` 相同）；`tauri.conf.json` 中 updater **endpoints** 指向同一台 Nexus 的 `/api/v1/update/desktop`。
+3. **签名（minisign）**：热更新下载的是**安装包文件**；Tauri 用 **`tauri.conf.json` → `plugins.updater.pubkey`** 校验该文件的 **`.sig`**。`python scripts/publish_desktop_release.py --unsigned` 只会写入占位符，**不能**通过校验。
+
+#### 签名是什么、从哪来
+
+- **不是** HTTPS 证书，而是 **minisign** 对「最终上传的那一个 `.exe` / `.msi`」生成的 **detached signature**（一个文本文件，通常名为 `xxx.exe.sig`）。
+- **公钥**：在 **`src-tauri/tauri.conf.json`** 的 **`pubkey`** 字段（随应用编译进客户端）。
+- **私钥**：只在你本机或 CI 密钥库里；**绝不能**提交到 Git。用私钥对安装包执行 `tauri signer sign` 得到 `.sig`。
+
+#### 推荐流程（Windows，在 `clients/desktop` 目录）
+
+**A. 已有与当前 `pubkey` 配对的私钥文件**
+
+```powershell
+npx tauri signer sign -f C:\path\to\your-updater.key .\src-tauri\target\release\jachin-desktop.exe
+```
+
+（若构建产物在 `bundle\nsis\*.exe`，请对该文件签名。）生成 `.sig` 后**不要**再改动 `.exe`。
+
+**B. 新建密钥对**（仅当没有私钥，或你愿意换公钥并让老用户重装）
+
+```powershell
+npx tauri signer generate -w .\tauri-desktop-updater.key
+```
+
+将命令输出里的 **公钥** 粘贴进 **`src-tauri/tauri.conf.json`** 的 **`plugins.updater.pubkey`**，重新打一次客户端安装包；之后所有热更新包都必须用 **`tauri-desktop-updater.key`** 签名。
+
+**C. 上传发行（带签名，不要用 `--unsigned`）**
+
+**一键（推荐）**：把与当前 `pubkey` 成对的**私钥**保存为 `clients/desktop/tauri-desktop-updater.key`（已 gitignore），然后在仓库根目录：
+
+```powershell
+python scripts\publish_desktop_release.py --sign
+```
+
+或在 `clients/desktop`：
+
+```bash
+npm run publish-desktop-release
+```
+
+脚本会自动发现 `bundle` / `target/release` 下的安装包；若无 `.sig` 会调用 `npx tauri signer sign`。也可用环境变量 `TAURI_PRIVATE_KEY_PATH` 或 `--private-key-path` 指定私钥路径。
+
+若 `.sig` 已存在且与 `.exe` 同目录，可直接（无需 `--sign`）：
+
+```powershell
+python scripts\publish_desktop_release.py
+```
+
+详见仓库根目录 **`scripts/publish_desktop_release.py`** 文件头注释。
 
 ### 构建生产版本
 

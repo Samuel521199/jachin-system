@@ -21,11 +21,21 @@ const navLinks = [
 const navItemClass =
   "text-sm text-white/70 hover:text-white/95 transition-colors tracking-wide whitespace-nowrap shrink-0";
 
+/** 默认站内 `/desktop-downloads`，与 Nexus 共用 Session；若需独立域名可设 NEXT_PUBLIC_DESKTOP_DOWNLOAD_HALL_URL */
+function desktopDownloadHref(): { href: string; external: boolean } {
+  const raw = process.env.NEXT_PUBLIC_DESKTOP_DOWNLOAD_HALL_URL?.trim();
+  if (raw && /^https?:\/\//i.test(raw)) {
+    return { href: raw, external: true };
+  }
+  return { href: "/desktop-downloads", external: false };
+}
+
 /**
  * 左 Logo | 中间主菜单（独立居中、大间距）| 最右「桌面端下载」圆角框按钮 + 登录/会话
  */
 export default function Navbar() {
   const { data: session, status } = useSession();
+  const download = desktopDownloadHref();
 
   const authSlot =
     status === "loading" ? (
@@ -78,11 +88,12 @@ export default function Navbar() {
 
         {/* 蓝框：圆角矩形按钮 + 登录（不与主菜单混在同一 flex gap 里） */}
         <div className="flex shrink-0 items-center gap-5 pl-2">
-          <a
-            href="https://download.jachin.io"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="
+          {download.external ? (
+            <a
+              href={download.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="
               inline-flex items-center justify-center shrink-0
               rounded-xl border border-cyan-400/45 bg-cyan-500/5
               px-4 py-1.5 text-sm font-medium text-cyan-100/95
@@ -90,9 +101,24 @@ export default function Navbar() {
               hover:border-cyan-400/70 hover:bg-cyan-500/10 hover:text-white
               transition-colors
             "
-          >
-            桌面端下载
-          </a>
+            >
+              桌面端下载
+            </a>
+          ) : (
+            <Link
+              href={download.href}
+              className="
+              inline-flex items-center justify-center shrink-0
+              rounded-xl border border-cyan-400/45 bg-cyan-500/5
+              px-4 py-1.5 text-sm font-medium text-cyan-100/95
+              shadow-[0_0_0_1px_rgba(34,211,238,0.12)]
+              hover:border-cyan-400/70 hover:bg-cyan-500/10 hover:text-white
+              transition-colors
+            "
+            >
+              桌面端下载
+            </Link>
+          )}
           {authSlot}
         </div>
       </div>

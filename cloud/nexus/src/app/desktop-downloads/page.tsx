@@ -8,10 +8,10 @@ import { DownloadHall, type ReleaseRow } from "@/components/download-hall";
 
 export const dynamic = "force-dynamic";
 
-export default async function HomePage() {
+export default async function DesktopDownloadsPage() {
   const session = await auth();
   if (!session?.user) {
-    redirect("/login");
+    redirect("/login?callbackUrl=/desktop-downloads");
   }
 
   let latest: ReleaseRow | null = null;
@@ -46,7 +46,6 @@ export default async function HomePage() {
       );
       if (valid.length) {
         latest = valid[0]!;
-        // 历史列表不包含「最新」那条，避免与上方最新区块重复
         history = valid.slice(1);
       }
     }

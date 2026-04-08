@@ -11,6 +11,7 @@
     "core:window:allow-hide",
     "shell:allow-spawn",
     "updater:allow-check",
-    "updater:allow-download-and-install"
+    "updater:allow-download-and-install",
+    "allow-updater-debug-append"
   ]
 }

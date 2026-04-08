@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { authConfig } from "@/auth.config";
 import { getDb } from "@/db";
 import { accounts, sessions, users, verificationTokens } from "@/db/schema";
+import { isDownloadsDevLoginBypassEnabled } from "@/lib/dev-login-bypass";
 
 function buildAdapter() {
   const db = getDb();
@@ -34,6 +35,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       async authorize(credentials) {
         const email = credentials?.email;
         const password = credentials?.password;
+
+        if (isDownloadsDevLoginBypassEnabled()) {
+          const em =
+            typeof email === "string" && email.trim()
+              ? email.trim().toLowerCase()
+              : "dev@localhost";
+          return {
+            id: "00000000-0000-4000-8000-000000000001",
+            name: "Dev（发行大厅测试）",
+            email: em,
+          };
+        }
+
         if (
           typeof email !== "string" ||
           typeof password !== "string" ||

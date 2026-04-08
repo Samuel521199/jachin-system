@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "jachin-desktop",
-  "version": "0.8.102",
+  "version": "0.8.103",
   "private": true,
   "type": "module",
   "description": "Jachin-System Desktop Console - Tauri v2 + React + TypeScript",
@@ -18,7 +18,9 @@
     "tauri:build:tts": "tauri build --features tts-local",
     "tauri:dev:tts": "tauri dev --features tts-local",
     "tauri:dev:ambient": "tauri dev --features ambient",
-    "tauri:build:ambient": "tauri build --features ambient"
+    "tauri:build:ambient": "tauri build --features ambient",
+    "sync-version": "node scripts/sync-version.mjs",
+    "publish-desktop-release": "python ../../scripts/publish_desktop_release.py --sign"
   },
   "dependencies": {
     "@react-three/drei": "^9.122.0",

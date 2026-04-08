@@ -7,18 +7,18 @@ import { extractBearerTokenRaw } from "@/lib/bearer";
 import { findActiveEdgeAgentByBearerToken } from "@/lib/edge-bearer";
 import { getDownloadUrl, isS3Configured } from "@/lib/s3";
 import { tauriPlatformKeyFromParts } from "@/lib/tauri-platform";
+import { isDesktopUpdateSharedSecretBearer } from "@/lib/desktop-update-auth";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/v1/update/desktop?target=windows&arch=x86_64&current_version=0.8.16
- * Tauri：Authorization: Bearer &lt;access_token&gt;
+ * GET /api/v1/update/desktop — 与 Nexus 行为一致（edge 或 DESKTOP_UPDATE_BEARER）。
  */
 export async function GET(request: NextRequest) {
   const bearer = extractBearerTokenRaw(request);
   if (!bearer) {
     return NextResponse.json(
-      { error: "需要 Bearer access_token" },
+      { error: "需要 Bearer（edge 或 desktop_update_token）" },
       { status: 401 }
     );
   }
@@ -29,8 +29,8 @@ export async function GET(request: NextRequest) {
 
   const db = getDb()!;
   const agent = await findActiveEdgeAgentByBearerToken(db, bearer);
-  if (!agent) {
-    return NextResponse.json({ error: "无效或过期的边缘凭证" }, { status: 401 });
+  if (!agent && !isDesktopUpdateSharedSecretBearer(bearer)) {
+    return NextResponse.json({ error: "无效凭证" }, { status: 401 });
   }
 
   if (!isS3Configured()) {
