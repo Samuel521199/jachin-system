@@ -100,6 +100,10 @@ def setup_early_logging() -> str:
             f.write(f"{utc} [L3 DEBUG] L2_BASE_URL={os.environ.get('L2_BASE_URL', '')}\n")
             f.write(f"{utc} [L3 DEBUG] LLM_MODEL={os.environ.get('LLM_MODEL', '')} L3_MODEL={os.environ.get('L3_MODEL', '')}\n")
             f.write(f"{utc} [L3 DEBUG] JACHIN_LOG_DIR={os.environ.get('JACHIN_LOG_DIR', '')}\n")
+            f.write(
+                f"{utc} [L3 DEBUG] JACHIN_L3_DEEP_LOG={os.environ.get('JACHIN_L3_DEEP_LOG', '(default=on)')} "
+                f"(0/false=关闭 jachin.deep 全量轨迹)\n"
+            )
     except OSError:
         pass
 
@@ -192,3 +196,10 @@ def configure_l3_runtime_diagnostics() -> None:
         logging.getLogger("l3_node").setLevel(logging.INFO)
         logging.getLogger("l3_node.ws_server").setLevel(logging.INFO)
         logging.getLogger("l3_node.llm_client").setLevel(logging.INFO)
+
+
+def attach_file_handler_to_logger(lg: logging.Logger) -> None:
+    """将 l3_debug FileHandler 挂到指定 logger（与 root 共用同一实例，避免重复打开文件）。"""
+    global _FILE_HANDLER
+    if _LOG_PATH and _FILE_HANDLER and _FILE_HANDLER not in lg.handlers:
+        lg.addHandler(_FILE_HANDLER)

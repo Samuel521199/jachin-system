@@ -32,7 +32,20 @@ def _load_prefetch_cfg() -> dict[str, Any]:
         "max_session_bytes": 120_000,
         "path_sliding_window_size": 12,
         "ledger_iteration_window": 8,
-        "skip_tools": ("core:local_memory_search", "recall_memory", "core:check_background_task"),
+        "skip_tools": (
+            "core:local_memory_search",
+            "recall_memory",
+            "core:check_background_task",
+            # SQLite / DB 只读：Observation 应保持短小（表清单或行集），勿再拼 workspace Markdown，
+            # 否则易触发误判（长文含 ##/**）并污染用户可见流。
+            "list_tables",
+            "get_table_schema",
+            "db_info",
+            "read_records",
+            "read_query",
+            ":query",
+            "write_query",
+        ),
     }
     if not p.exists():
         return dft

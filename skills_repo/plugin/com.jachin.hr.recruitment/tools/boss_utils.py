@@ -136,6 +136,9 @@ def extract_job_select_line_for_boss_from_hr_chat(text: str) -> str:
     raw = (text or "").strip()
     if not raw:
         return ""
+    # SQLite 写签批键名含下划线，canonicalize 会误当成「职位 _ 后缀」→ 绝不可当 Boss 选岗
+    if "jachin_mcp_write_ack" in raw.lower():
+        return ""
     t = strip_hr_recruitment_command_suffix(raw)
     t = strip_leading_recruitment_verbs_for_job_chat(t)
     t = strip_trailing_job_reference_noise(t)
@@ -234,6 +237,9 @@ def canonicalize_boss_job_select(s: str) -> str:
     if not s:
         return ""
     s = " ".join(s.split())
+    # 避免 jachin_mcp_write_ack 中的下划线被误解析为「职位 _ 城市」
+    if "jachin_mcp_write_ack" in s.lower():
+        return s
     m = re.match(r"^(.+?)\s*_\s*(.+)$", s)
     if m:
         return f"{m.group(1).strip()} _ {m.group(2).strip()}"

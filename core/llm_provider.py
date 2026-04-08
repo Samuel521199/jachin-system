@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -453,6 +454,40 @@ def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[s
     return max_attempts, fallback_models, timeout
 
 
+def _deep_llm_log(
+    *,
+    source: str,
+    purpose: str,
+    phase: str,
+    model: str,
+    stream: bool,
+    t0: float,
+    messages: list[dict[str, str]],
+    tools: list[dict[str, Any]] | None,
+    response_text: str | None = None,
+    response_dict_summary: str | None = None,
+    error: str | None = None,
+) -> None:
+    try:
+        from core.deep_execution_log import log_llm_completion
+
+        log_llm_completion(
+            source=source,
+            purpose=purpose,
+            phase=phase,
+            model=model,
+            stream=stream,
+            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+            messages=messages,
+            tools=tools,
+            response_text=response_text,
+            response_dict_summary=response_dict_summary,
+            error=error,
+        )
+    except Exception:
+        pass
+
+
 def _resolve_model_with_fallback(model: str) -> str:
     """若云模型无 Key，改为使用 DASHSCOPE_REASONING_MODEL（需配置 DASHSCOPE_API_KEY，不再回退 Ollama）。"""
     needs, env_key = _model_needs_key(model)
@@ -546,6 +581,7 @@ class LiteLLMEngine:
                 next_if_fail or "-",
             )
             try:
+                t0 = time.perf_counter()
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
@@ -572,6 +608,18 @@ class LiteLLMEngine:
                         call_purpose,
                         model,
                     )
+                    _deep_llm_log(
+                        source="core.llm_provider",
+                        purpose=str(call_purpose),
+                        phase=phase,
+                        model=model,
+                        stream=False,
+                        t0=t0,
+                        messages=messages,
+                        tools=tools,
+                        response_text="",
+                        error=None,
+                    )
                     return ""
 
                 msg = choice.message
@@ -582,6 +630,28 @@ class LiteLLMEngine:
                         model,
                         len(msg.tool_calls),
                     )
+                    _names: list[str] = []
+                    try:
+                        for _tc in msg.tool_calls:
+                            _fn = getattr(getattr(_tc, "function", None), "name", None)
+                            _names.append(str(_fn or _tc))
+                    except Exception:
+                        _names = ["(unreadable)"]
+                    _deep_llm_log(
+                        source="core.llm_provider",
+                        purpose=str(call_purpose),
+                        phase=phase,
+                        model=model,
+                        stream=False,
+                        t0=t0,
+                        messages=messages,
+                        tools=tools,
+                        response_text=None,
+                        response_dict_summary=(
+                            f"non-stream tool_calls n={len(msg.tool_calls)} names={_names} "
+                            f"assistant_content_preview={(msg.content or '')[:800]!r}"
+                        ),
+                    )
                     return {"content": msg.content or "", "tool_calls": msg.tool_calls}
                 text = (msg.content or "").strip()
                 logger.info(
@@ -589,6 +659,17 @@ class LiteLLMEngine:
                     call_purpose,
                     model,
                     len(text),
+                )
+                _deep_llm_log(
+                    source="core.llm_provider",
+                    purpose=str(call_purpose),
+                    phase=phase,
+                    model=model,
+                    stream=False,
+                    t0=t0,
+                    messages=messages,
+                    tools=tools,
+                    response_text=text,
                 )
                 return text
             except Exception as e:
@@ -609,6 +690,20 @@ class LiteLLMEngine:
                     logger.warning("[LiteLLM] attempt=%s model=%s 失败: %s，降级至 %s", attempt + 1, model, e, next_model)
                 else:
                     logger.exception("[LiteLLM] 调用异常 model=%s: %s", model, e)
+                    try:
+                        _deep_llm_log(
+                            source="core.llm_provider",
+                            purpose=str(call_purpose),
+                            phase=phase,
+                            model=model,
+                            stream=False,
+                            t0=t0,
+                            messages=messages,
+                            tools=tools,
+                            error=f"{type(e).__name__}: {e}"[:8000],
+                        )
+                    except Exception:
+                        pass
                     raise last_error
         raise last_error or RuntimeError("LLM 调用失败")
 
@@ -655,6 +750,7 @@ class LiteLLMEngine:
             )
             full_content: list[str] = []
             try:
+                t0 = time.perf_counter()
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
@@ -690,6 +786,17 @@ class LiteLLMEngine:
                     model,
                     len(out),
                 )
+                _deep_llm_log(
+                    source="core.llm_provider",
+                    purpose=str(call_purpose),
+                    phase=phase,
+                    model=model,
+                    stream=True,
+                    t0=t0,
+                    messages=messages,
+                    tools=None,
+                    response_text=out,
+                )
                 return out
             except Exception as e:
                 last_error = e
@@ -709,6 +816,20 @@ class LiteLLMEngine:
                     logger.warning("[LiteLLM] 流式 attempt=%s model=%s 失败: %s，降级至 %s", attempt + 1, model, e, next_model)
                 else:
                     logger.exception("[LiteLLM] 流式调用异常 model=%s: %s", model, e)
+                    try:
+                        _deep_llm_log(
+                            source="core.llm_provider",
+                            purpose=str(call_purpose),
+                            phase=phase,
+                            model=model,
+                            stream=True,
+                            t0=t0,
+                            messages=messages,
+                            tools=None,
+                            error=f"{type(e).__name__}: {e}"[:8000],
+                        )
+                    except Exception:
+                        pass
                     raise last_error
         raise last_error or RuntimeError("LLM 流式调用失败")
 

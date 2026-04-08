@@ -25,6 +25,22 @@ from l3_node.paths import get_app_root
 
 logger = logging.getLogger(__name__)
 
+
+def openapi_safe_function_name(tool_id: str) -> str:
+    """
+    OpenAI Chat Completions 的 function.name 须匹配 ^[a-zA-Z0-9_-]+$（不能含冒号）。
+    将 ``mcp:query``、``core:fs_read`` 等清洗为 ``mcp_query``、``core_fs_read``；
+    与 Jachin 真实 tool id 的对应关系写入 *openapi_fname_to_tool_id*。
+    """
+    tid = (tool_id or "").strip()
+    s = re.sub(r"[^a-zA-Z0-9_]+", "_", tid)
+    s = re.sub(r"_+", "_", s).strip("_")
+    if not s:
+        s = "jachin_tool"
+    if s[0].isdigit():
+        s = "t_" + s
+    return s[:64]
+
 # 官方 mcp-server-fetch 等要求 arguments 含 url；模型 ReAct 输出损坏时 JSON 解析会得到 {} 或 {"url":""} 而无可用 url
 _FETCH_URL_IN_JSON = re.compile(r'"url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', re.I)
 _URL_FROM_POS = re.compile(
@@ -34,6 +50,67 @@ _URL_FROM_POS = re.compile(
 
 
 _MCP_STDIO_WRITE_RAW = frozenset({"write_file", "edit_file", "create_file"})
+
+# stdio「mcp-sqlite」等：便于日志排查的最终 SQL / 结构化查询入参
+_SQLITE_MCP_RAW_WITH_SQL = frozenset({"query", "read_query", "write_query"})
+_SQLITE_MCP_RAW_READISH = frozenset({"read_records", "list_tables", "get_table_schema", "db_info"})
+
+
+def _log_sqlite_mcp_diagnostic_sql(tool_id: str, action_input: str, inv_trace: str) -> None:
+    """将 MCP SQLite 相关工具的最终 SQL 或入参 JSON 打到 INFO，供运维对照 Observation 排查。"""
+    s = (tool_id or "").strip().lower()
+    raw = s[4:].strip() if s.startswith("mcp:") else s
+    if raw not in _SQLITE_MCP_RAW_WITH_SQL and raw not in _SQLITE_MCP_RAW_READISH:
+        return
+    try:
+        d = json.loads(action_input or "{}")
+    except json.JSONDecodeError:
+        logger.info(
+            "[MCP Registry][SQLite·入参] trace=%s tool_id=%s parse=json_fail preview=%r%s",
+            inv_trace,
+            tool_id,
+            (action_input or "")[:500],
+            "…(truncated)" if len(action_input or "") > 500 else "",
+        )
+        return
+    if not isinstance(d, dict):
+        return
+    if raw in _SQLITE_MCP_RAW_WITH_SQL:
+        sql = ""
+        used_key = ""
+        for k in ("sql", "query", "statement", "command"):
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                sql = v.strip()
+                used_key = k
+                break
+        if sql:
+            max_sql = 12000
+            tail = "…(truncated)" if len(sql) > max_sql else ""
+            logger.info(
+                "[MCP Registry][SQLite·SQL] trace=%s tool_id=%s json_key=%s sql_len=%d sql=%s%s",
+                inv_trace,
+                tool_id,
+                used_key,
+                len(sql),
+                sql[:max_sql],
+                tail,
+            )
+        else:
+            logger.info(
+                "[MCP Registry][SQLite·SQL] trace=%s tool_id=%s 未解析到 sql/query 键，keys=%s raw_json=%s",
+                inv_trace,
+                tool_id,
+                sorted(d.keys()),
+                json.dumps(d, ensure_ascii=False)[:2000],
+            )
+    elif raw in _SQLITE_MCP_RAW_READISH:
+        logger.info(
+            "[MCP Registry][SQLite·查询参数] trace=%s tool_id=%s args=%s",
+            inv_trace,
+            tool_id,
+            json.dumps(d, ensure_ascii=False)[:4000],
+        )
 
 # 编程/原子文件：stdio 未命中时走 L3 Native，不经过 L2
 _L3_FILE_MCP_NATIVE_BRIDGE_WRITE = frozenset({"write_file", "create_file"})
@@ -1596,7 +1673,12 @@ class MCPToolRegistry:
         )
         return tools
 
-    def to_openai_tools_schema(self, tools: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
+    def to_openai_tools_schema(
+        self,
+        tools: Optional[list[dict[str, Any]]] = None,
+        *,
+        openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
+    ) -> list[dict[str, Any]]:
         """
         将工具列表格式化为 OpenAI/Anthropic 标准的 tools JSON Schema 数组。
         供 LiteLLM 等传递 function calling 使用。
@@ -1608,6 +1690,11 @@ class MCPToolRegistry:
         for t in lst:
             name = t.get("id", t.get("label", ""))
             desc = t.get("desc", t.get("description", ""))
+            fn_name = openapi_safe_function_name(str(name))
+            if openapi_fname_to_tool_id is not None and fn_name:
+                openapi_fname_to_tool_id[fn_name] = str(name)
+            if fn_name != str(name).strip():
+                desc = f"{desc}\n\n[Jachin tool id: {name}]"
             raw = _mcp_id_raw_local_part(str(name))
             isc = t.get("inputSchema")
             if isinstance(isc, dict) and isc.get("type") == "object":
@@ -1638,7 +1725,7 @@ class MCPToolRegistry:
             result.append({
                 "type": "function",
                 "function": {
-                    "name": name,
+                    "name": fn_name,
                     "description": desc,
                     "parameters": schema,
                 },
@@ -1723,6 +1810,7 @@ class MCPToolRegistry:
             tool_id,
             len(action_input or ""),
         )
+        _log_sqlite_mcp_diagnostic_sql(tool_id, action_input or "", _inv_trace)
         exec_trace(
             logger,
             "MCP invoke 开始 trace=%s tool_id=%s inp_len=%d",

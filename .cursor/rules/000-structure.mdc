@@ -4,7 +4,7 @@ globs: core/**/*.py, cloud/nexus/**/*.ts, clients/**/*.tsx, l3_node/**/*.py, doc
 ---
 # V2 项目结构宪法
 
-**规范**: docs/ARCHITECTURE.md | docs/FILE_STRUCTURE.md | **术语** Tools/MCP/Skills/Agent Tasks：`docs/Jachin 视角的「四大原语」终极架构规范.md`（**072-jachin-four-primitives.mdc**）
+**规范**: docs/ARCHITECTURE.md | docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md（L3 执行主轴） | docs/FILE_STRUCTURE.md | **术语** Tools/MCP/Skills/Agent Tasks：`docs/Jachin 视角的「四大原语」终极架构规范.md`（**072-jachin-four-primitives.mdc**）
 
 ## V2 分层
 
@@ -12,7 +12,7 @@ globs: core/**/*.py, cloud/nexus/**/*.ts, clients/**/*.tsx, l3_node/**/*.py, doc
 |------|------|
 | **Layer 1** | 平台：商城、IAM、manifest、licenses；与 L2/L3 无直接耦合 |
 | **Layer 2** | 控制面：子账号、权限、API Key、记忆、数字仓库、MCP、L3 调度；**不代理推理** |
-| **Layer 3** | 执行面：单体 Agent，持密文 Key 直连 API，技能从 L2 拉取 |
+| **Layer 3** | 执行面：单主轴 ReAct（`run_agent`）+ MCP/Skill；网关/语义层/内联 Critic/经验 RAG；持密文 Key 直连 API，技能从 L2 拉取 |
 
 ## Key Components
 

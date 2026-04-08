@@ -19,10 +19,19 @@ _started: bool = False
 
 
 async def start_l3_stdio_mcp_host() -> None:
-    """幂等：启动本进程 MCPManager + ``scan_local_mcps(for_l2_host=False)``。"""
+    """
+    启动本进程 MCPManager + ``scan_local_mcps(for_l2_host=False)``（仅首轮）。
+
+    ``await mgr.start()`` **每次**调用：依赖 MCPManager 内 mtime 缓存与已连接 server 跳过，
+    以便在 L3 已运行后再写入 ``mcp_servers.json`` 时仍能拉起 official-sqlite-npx 等 stdio 服务。
+    """
     global _started
-    if _started:
-        return
+    try:
+        from l3_node.nexus_config import sync_merge_sqlite_read_from_env_to_nexus_config
+
+        sync_merge_sqlite_read_from_env_to_nexus_config()
+    except Exception as e:
+        logger.debug("[L3 MCP Host] nexus merge_sqlite 持久化跳过: %s", e)
     try:
         from core.mcp_client import get_mcp_manager
         from core.inventory_scanner import scan_local_mcps, ensure_inventory_dirs
@@ -30,18 +39,26 @@ async def start_l3_stdio_mcp_host() -> None:
         ensure_inventory_dirs()
         mgr = get_mcp_manager()
         await mgr.start()
-        injected = await scan_local_mcps(for_l2_host=False)
-        from l3_node.l3_packaged_stdio_mcp import register_l3_packaged_stdio_mcps
 
-        packaged = await register_l3_packaged_stdio_mcps()
-        _started = True
-        logger.info(
-            "[L3 MCP Host] stdio MCP 已就绪 servers=%d tools=%d inventory_injected=%d packaged_stdio=%d",
-            mgr.server_count,
-            mgr.tool_count,
-            injected,
-            packaged,
-        )
+        if not _started:
+            injected = await scan_local_mcps(for_l2_host=False)
+            from l3_node.l3_packaged_stdio_mcp import register_l3_packaged_stdio_mcps
+
+            packaged = await register_l3_packaged_stdio_mcps()
+            _started = True
+            logger.info(
+                "[L3 MCP Host] stdio MCP 已就绪 servers=%d tools=%d inventory_injected=%d packaged_stdio=%d",
+                mgr.server_count,
+                mgr.tool_count,
+                injected,
+                packaged,
+            )
+        else:
+            logger.debug(
+                "[L3 MCP Host] MCPManager.start() 已重入（配置/补连）servers=%d tools=%d",
+                mgr.server_count,
+                mgr.tool_count,
+            )
     except asyncio.CancelledError:
         logger.debug("[L3 MCP Host] 启动过程被取消（常见于 Windows stdio 子进程竞态），已中止本次引导")
         raise

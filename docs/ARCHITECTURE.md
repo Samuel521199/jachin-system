@@ -35,6 +35,10 @@
 
 与上表「Skill (.wasm) / MCP」**商品形态**的关系：Wasm 商品在执行语义上主要属于 **Tools（jpp）**；商城元数据与 SKILL 正文仍属 **Skills**。索引：[FOUR_PRIMITIVES.md](./FOUR_PRIMITIVES.md)。
 
+### 1.4 L3 执行主轴（混合智能体，非「对等多 Agent」默认）
+
+L3 默认是 **单进程、单 `run_agent` ReAct 主循环**；在此主轴上挂载 **意图网关 / 环境嗅探、`db_semantics.yaml` 语义层、system 内 SOP、工具执行前内联 Critic、Experience RAG 检索** 等增强。**不是**把 Critic 当作与主 Agent 并行的独立运行时。详见 **[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)**。
+
 | 可见性 | 流转 |
 |--------|------|
 | **PUBLIC** | L1 审核 → 购买 → L2 同步 → L3 执行 |
@@ -60,7 +64,7 @@
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  L3 (l3_node/ + clients/desktop) — 执行面                         │
-│  单体 Agent、多 Skill、本地记忆；持密文 Key 直连 LLM API           │
+│  单主轴 ReAct（run_agent）+ MCP/Skill；语义层/内联 Critic/经验 RAG；本地记忆；持密文 Key 直连 LLM │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

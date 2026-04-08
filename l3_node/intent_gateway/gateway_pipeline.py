@@ -1,5 +1,7 @@
 """
-run_agent 入站流水线：澄清门控 → 附件 L1 规则与 Feature Slots → routing_utterance → 分类面截断重建 → 环境嗅探。
+run_agent 入站流水线：澄清门控 → 附件 L1 规则与 Feature Slots → routing_utterance → 分类面截断重建 → 环境嗅探（含 semantic_layer YAML）。
+
+编排顺序与 L4 挂载见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md。
 """
 from __future__ import annotations
 
@@ -80,12 +82,32 @@ async def apply_gateway_ingress_pipeline(
     from l3_node.intent_gateway.config import get_intent_gateway_config
 
     _ig_sniff = get_intent_gateway_config()
+    ws = (workspace_dir or "").strip()
+    if not ws:
+        try:
+            from l3_node.jachin_config import get_jachin_root
+
+            ws = str((get_jachin_root() / "workspace").resolve())
+        except Exception:
+            ws = str(Path.home() / ".jachin" / "workspace")
+
     if not bool(_ig_sniff.get("context_sniffer_enabled", True)):
         bundle.extra["environment_report"] = {
             "ok": True,
             "skipped": True,
             "reason": "context_sniffer_disabled",
         }
+        try:
+            from l3_node.intent_gateway.workspace_db_context import load_db_semantics_yaml
+
+            bundle.extra["semantic_layer"] = load_db_semantics_yaml(ws)
+        except Exception:
+            try:
+                from l3_node.intent_gateway.workspace_db_context import default_semantic_layer
+
+                bundle.extra["semantic_layer"] = default_semantic_layer()
+            except Exception:
+                bundle.extra["semantic_layer"] = {}
         if bool(_ig_sniff.get("context_sniffer_tracker_enabled", True)):
             try:
                 from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event
@@ -102,14 +124,6 @@ async def apply_gateway_ingress_pipeline(
                 pass
         return
 
-    ws = (workspace_dir or "").strip()
-    if not ws:
-        try:
-            from l3_node.jachin_config import get_jachin_root
-
-            ws = str((get_jachin_root() / "workspace").resolve())
-        except Exception:
-            ws = str(Path.home() / ".jachin" / "workspace")
     rid = (run_id or bundle.correlation_id or "").strip()
     try:
         _max_total = int(_ig_sniff.get("context_sniffer_max_total_chars", 1500))
@@ -133,6 +147,35 @@ async def apply_gateway_ingress_pipeline(
             max_total_chars=_max_total,
             max_git_chars=_max_git,
         )
+        _env_rep = bundle.extra.get("environment_report")
+        if isinstance(_env_rep, dict) and isinstance(_env_rep.get("semantic_layer"), dict):
+            _sl_from_rep = _env_rep["semantic_layer"]
+            if _sl_from_rep:
+                bundle.extra["semantic_layer"] = _sl_from_rep
+            else:
+                try:
+                    from l3_node.intent_gateway.workspace_db_context import load_db_semantics_yaml
+
+                    bundle.extra["semantic_layer"] = load_db_semantics_yaml(ws)
+                except Exception:
+                    try:
+                        from l3_node.intent_gateway.workspace_db_context import default_semantic_layer
+
+                        bundle.extra["semantic_layer"] = default_semantic_layer()
+                    except Exception:
+                        bundle.extra["semantic_layer"] = {}
+        else:
+            try:
+                from l3_node.intent_gateway.workspace_db_context import load_db_semantics_yaml
+
+                bundle.extra["semantic_layer"] = load_db_semantics_yaml(ws)
+            except Exception:
+                try:
+                    from l3_node.intent_gateway.workspace_db_context import default_semantic_layer
+
+                    bundle.extra["semantic_layer"] = default_semantic_layer()
+                except Exception:
+                    bundle.extra["semantic_layer"] = {}
         if bool(_ig_sniff.get("context_sniffer_tracker_enabled", True)):
             try:
                 from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event
@@ -154,6 +197,17 @@ async def apply_gateway_ingress_pipeline(
     except Exception as e:
         logger.debug("[IntentGateway] environment_report 跳过: %s", e)
         bundle.extra["environment_report"] = {"ok": False, "error": str(e)[:200]}
+        try:
+            from l3_node.intent_gateway.workspace_db_context import load_db_semantics_yaml
+
+            bundle.extra["semantic_layer"] = load_db_semantics_yaml(ws)
+        except Exception:
+            try:
+                from l3_node.intent_gateway.workspace_db_context import default_semantic_layer
+
+                bundle.extra["semantic_layer"] = default_semantic_layer()
+            except Exception:
+                bundle.extra["semantic_layer"] = {}
         if bool(_ig_sniff.get("context_sniffer_tracker_enabled", True)):
             try:
                 from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event

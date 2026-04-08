@@ -18,8 +18,8 @@ from typing import Optional
 
 logger = logging.getLogger("l3_node")
 
-# 线程安全队列，供 SSE 生成器消费（最大 500 条，防止内存溢出）
-_log_queue: queue.Queue[tuple[str, str, float]] = queue.Queue(maxsize=500)
+# 线程安全队列，供 SSE 生成器消费（加大容量以承载深度执行日志分片）
+_log_queue: queue.Queue[tuple[str, str, float]] = queue.Queue(maxsize=4000)
 _queue_lock = threading.Lock()
 
 # ANSI 颜色（PowerShell / Windows Terminal 支持）
@@ -111,6 +111,75 @@ class BroadcastLogHandler(logging.Handler):
             self.handleError(record)
 
 
+_DEEP_BROADCAST_CHUNK = 7500
+
+
+class DeepLogBroadcastHandler(logging.Handler):
+    """将 jachin.deep 大块日志切片送入全息队列（避免单条 SSE 过大）。"""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            level = record.levelname.upper()
+            if level == "DEBUG":
+                return
+            if level == "CRITICAL":
+                level = "ERROR"
+            if len(msg) <= _DEEP_BROADCAST_CHUNK:
+                broadcast_log(msg, level, console=False)
+                return
+            total = (len(msg) + _DEEP_BROADCAST_CHUNK - 1) // _DEEP_BROADCAST_CHUNK
+            for i in range(0, len(msg), _DEEP_BROADCAST_CHUNK):
+                part = msg[i : i + _DEEP_BROADCAST_CHUNK]
+                idx = i // _DEEP_BROADCAST_CHUNK + 1
+                broadcast_log(f"[Deep {idx}/{total}] {part}", level, console=False)
+        except Exception:
+            self.handleError(record)
+
+
+def install_deep_log_handlers(*, stream_handler: logging.Handler | None = None) -> None:
+    """
+    配置 logger「jachin.deep」：控制台 + l3_debug.log（与 early_log 共用 FileHandler）+ 全息 SSE。
+    若已与 l3_node/core 共用 StreamHandler，传入同一实例可避免重复配置。
+    """
+    try:
+        from core.deep_execution_log import deep_log_enabled
+    except ImportError:
+        return
+    if not deep_log_enabled():
+        return
+    dlg = logging.getLogger("jachin.deep")
+    dlg.setLevel(logging.INFO)
+    dlg.propagate = False
+    for h in dlg.handlers[:]:
+        dlg.removeHandler(h)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    fmt_deep = logging.Formatter("%(message)s")
+    if stream_handler is not None:
+        sh = stream_handler
+        if sh.formatter is None:
+            sh.setFormatter(fmt)
+        dlg.addHandler(sh)
+    else:
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        sh.setLevel(logging.INFO)
+        dlg.addHandler(sh)
+    try:
+        from l3_node.early_log import attach_file_handler_to_logger
+
+        attach_file_handler_to_logger(dlg)
+        _fh = next((h for h in dlg.handlers if isinstance(h, logging.FileHandler)), None)
+        if _fh is not None and _fh.formatter is None:
+            _fh.setFormatter(fmt_deep)
+    except Exception:
+        pass
+    dbh = DeepLogBroadcastHandler()
+    dbh.setFormatter(fmt_deep)
+    dbh.setLevel(logging.INFO)
+    dlg.addHandler(dbh)
+
+
 def install_broadcast_handler() -> None:
     """为 l3_node 及其子模块安装 BroadcastLogHandler，使全息监控能收到详细日志"""
     root = logging.getLogger("l3_node")
@@ -127,4 +196,12 @@ def install_broadcast_handler() -> None:
         logging.getLogger(name).setLevel(logging.INFO)
 
 
-__all__ = ["broadcast_log", "consume_logs", "format_sse_event", "install_broadcast_handler", "BroadcastLogHandler"]
+__all__ = [
+    "broadcast_log",
+    "consume_logs",
+    "format_sse_event",
+    "install_broadcast_handler",
+    "install_deep_log_handlers",
+    "BroadcastLogHandler",
+    "DeepLogBroadcastHandler",
+]

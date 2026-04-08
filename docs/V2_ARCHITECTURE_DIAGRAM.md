@@ -2,7 +2,7 @@
 
 **版本**: 2.0  
 **状态**: 设计规范  
-**关联**: [ARCHITECTURE.md](ARCHITECTURE.md) | [ARCHITECTURE_V2_LAYER3_STANDALONE.md](ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+**关联**: [ARCHITECTURE.md](ARCHITECTURE.md) | [architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)（L3 执行主轴） | [ARCHITECTURE_V2_LAYER3_STANDALONE.md](ARCHITECTURE_V2_LAYER3_STANDALONE.md)
 
 ---
 
@@ -29,7 +29,7 @@
                                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │  Layer 3：执行面 (clients/desktop + l3_node/)                                     │
-│  • 单体 OpenClaw：多 Agent、多 Skill、本地记忆                                     │
+│  • Jachin L3：单主轴 ReAct、MCP/Skill、本地记忆；网关/语义层/内联 Critic/经验 RAG      │
 │  • 持密文 Key，请求时解密后直连外部 API                                           │
 │  • 可与 L2 同机部署                                                                │
 └─────────────────────────────────────────────────────────────────────────────────┘

@@ -58,8 +58,12 @@ try {
         $pyMode = if ($WsOnly) { "--ws-only" } else { "--gateway" }
         Write-Host "[Layer3] 后台：新窗口启动源码 L3  python -m l3_node $pyMode  (cwd=$ProjectRoot)" -ForegroundColor Cyan
         $prEsc = $ProjectRoot.Replace("'", "''")
-        # 单行 -Command，避免 Start-Process 传参拆行导致解析失败
-        $psCmd = "`$Host.UI.RawUI.WindowTitle = 'Jachin L3 (source)'; Set-Location -LiteralPath '$prEsc'; `$env:JACHIN_APP_ROOT = '$prEsc'; `$env:JACHIN_DEV_HR_FIRST = '1'; `$env:PYTHONUTF8 = '1'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; `$OutputEncoding = [System.Text.Encoding]::UTF8; & python -m l3_node $pyMode"
+        # 子窗口脚本：用单引号模板 + -f 拼接，避免外层双引号与 '、$prEsc、[Type]:: 组合触发解析歧义
+        $setEnc = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8'
+        $psCmd = (
+            '$Host.UI.RawUI.WindowTitle = ''Jachin L3 (source)''; Set-Location -LiteralPath ''{0}''; $env:JACHIN_APP_ROOT = ''{0}''; $env:JACHIN_DEV_HR_FIRST = 1; $env:PYTHONUTF8 = 1; {1}; & python -m l3_node {2}' `
+                -f $prEsc, $setEnc, $pyMode
+        )
         Start-Process -FilePath "powershell.exe" -ArgumentList @(
             "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $psCmd
         )
@@ -71,10 +75,10 @@ try {
         $pyArgs = @("-m", "l3_node")
         if ($WsOnly) {
             $pyArgs += "--ws-only"
-            Write-Host '[Layer3] Source mode: python -m l3_node --ws-only' -ForegroundColor Cyan
+            Write-Host "[Layer3] Source mode: python -m l3_node --ws-only" -ForegroundColor Cyan
         } else {
             $pyArgs += "--gateway"
-            Write-Host '[Layer3] Source mode: python -m l3_node --gateway' -ForegroundColor Cyan
+            Write-Host "[Layer3] Source mode: python -m l3_node --gateway" -ForegroundColor Cyan
         }
         Write-Host "[Layer3] cwd=$ProjectRoot" -ForegroundColor Gray
         & python @pyArgs
@@ -82,6 +86,8 @@ try {
     }
 
     $DesktopDir = Join-Path $ProjectRoot "clients\desktop"
+    # 字面量 @：避免在源码中出现 "'@' + …" 或 "= '@' + …" 等片段，部分 PS 版本会把 @' 解析为 here-string
+    $at = [char]64
     if (-not (Test-Path $DesktopDir)) {
         Write-Host "[ERROR] clients\desktop not found. Run: .\scripts\install-layer3.ps1" -ForegroundColor Red
         exit 1
@@ -105,10 +111,12 @@ try {
             Write-Host "[Layer3] 构建失败，尝试创建占位符..." -ForegroundColor Yellow
             & python (Join-Path $ScriptDir "create_l3_stub.py")
             if ($LASTEXITCODE -ne 0) {
-                Write-Host '[ERROR] Run: pip install pyinstaller ; python scripts\build_l3_sidecar.py' -ForegroundColor Red
+                $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
+                Write-Host "[ERROR] Run: pip install pyinstaller ; python $sidecarHint" -ForegroundColor Red
                 exit 1
             }
-            Write-Host "[WARN] 占位符仅用于通过构建，L3 引擎不会真正运行。完整功能需: python scripts\build_l3_sidecar.py" -ForegroundColor Yellow
+            $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
+            Write-Host "[WARN] 占位符仅用于通过构建，L3 引擎不会真正运行。完整功能需: python $sidecarHint" -ForegroundColor Yellow
         } else {
             Write-Host "[Layer3] L3 Sidecar 构建完成" -ForegroundColor Green
         }
@@ -125,17 +133,23 @@ try {
     if ($WithBackgroundSource) {
         Write-Host "[$UtcNow]  双开模式：L3 引擎在独立窗口（源码）；本窗口为桌面。" -ForegroundColor Yellow
     } else {
-        Write-Host "[$UtcNow]  Tauri requires Rust. Falls back to Vite dev if not found."
+        Write-Host ('[' + $UtcNow + ']  默认 npm run tauri:dev（需 Rust + node_modules/' + ($at + 'tauri-apps/cli') + '）；否则回退 npm run dev。') -ForegroundColor Gray
         Write-Host "[$UtcNow]  默认由桌面自动起 L3（优先编译 Sidecar）。" -ForegroundColor Gray
     }
     Write-Host "[$UtcNow]  Press Ctrl+C to stop"
     Write-Host ""
 
     Push-Location $DesktopDir
-    if (Get-Command tauri -ErrorAction SilentlyContinue) {
+    # 优先走 Tauri：页面与 v0.8.x 桌面逻辑（Omni/更新条等）在壳内 + 自动起 L3 Sidecar。
+    # 勿仅用 Get-Command tauri：CLI 通常在 devDependencies，npm run 会从 node_modules\.bin 解析。
+    $tauriPkgDir = $at + 'tauri-apps'
+    $tauriBin = Join-Path (Join-Path (Join-Path $DesktopDir "node_modules") $tauriPkgDir) 'cli'
+    $hasLocalTauriCli = (Test-Path $tauriBin)
+    $hasGlobalTauri = [bool](Get-Command tauri -ErrorAction SilentlyContinue)
+    if ($hasLocalTauriCli -or $hasGlobalTauri) {
         npm run tauri:dev
     } else {
-        Write-Host "[INFO] Tauri not found, using Vite dev mode" -ForegroundColor Yellow
+        Write-Host ('[INFO] 未找到 ' + ($at + 'tauri-apps/cli') + '。请先 npm install；否则为纯 Vite（无 Tauri、无自动 Sidecar）。') -ForegroundColor Yellow
         npm run dev
     }
     Pop-Location

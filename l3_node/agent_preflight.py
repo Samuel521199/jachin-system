@@ -65,6 +65,18 @@ async def apply_inbound_preflight(
 
     ui = (user_input or "").strip()
 
+    try:
+        from l3_node.primitives.mcp.sqlite_write_guard import user_message_is_only_sqlite_write_ack
+
+        if user_message_is_only_sqlite_write_ack(ui):
+            return (
+                "✅ 已记录：**本对话**内后续 SQLite 写库将自动附带签批（`jachin_mcp_write_ack`），"
+                "**与招聘 / 无人值守调度无关**。\n"
+                "请直接继续描述数据操作（例如更新库存）；无需 HR 确认调度参数。"
+            )
+    except Exception:
+        pass
+
     # 招聘停止、BI 分析已迁至 l3_node.intent_gateway.registry（插件表）；此处保留 HR 文案改写与分支 B 等逻辑。
 
     _vague_recruitment = re.search(r"我要(?:招聘|发布|招人?)|发布(?:一个)?职位|招聘", ui)

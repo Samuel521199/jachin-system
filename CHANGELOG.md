@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.102] - 2026-04-07
+
+### Added
+
+- **合并上游**：Git 标签 `v0.8.101` 合入（桌面更新、Nexus/下载站、BI/PMO、Lark IM 等）
+- **L4 / 混合 Agent**：语义层与文档增量（`db_semantics.yaml`、`critic_agent`、`experience_memory`、`deep_execution_log`、架构文与 `.cursor/rules/090-jachin-l4-agent.mdc` 等，以仓库树为准）
+
+### Changed
+
+- **L3**：网关嗅探、工作区 DB 语义、SQLite 写签批与 HR 选岗误判修复、`start-layer3.ps1`（UTF-8 BOM、Tauri CLI 检测、`@tauri-apps` / PowerShell 解析规避）等
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli`、`clients/desktop/package.json` 统一为 **0.8.102**（Git 标签 `v0.8.102`）
+
+---
+
 ## [v0.8.100] - 2026-04-04
 
 ### Added

@@ -2,6 +2,8 @@
 
 本文对应 **PR1（Omni-Context Sniffer）**、**PR2（system_status 透传）**、**PR3（参谋长范式）** 及 **nexus 可配置项 / 工作区传入 / intent_tracker 审计**，与 `docs/L3_AMBIGUOUS_INTENT_ARCHITECTURE.md`、`docs/USER_INTENT_RECOGNITION_ARCHITECTURE.md` 互补。
 
+**与最新混合架构的关系**：嗅探链路同时挂载 **结构化语义层**（`db_semantics.yaml` → `bundle.extra["semantic_layer"]`）与 **L4 system 注入**，总览见 **[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)**。
+
 ---
 
 ## PR1：全域环境嗅探器（入站）
@@ -13,7 +15,7 @@
 | 预算 | 默认全文 **≤1500**、Git **≤500**（均由 `nexus_config.json` → `intent_gateway` 可覆盖）；子进程 **timeout=2s**，失败静默 |
 | 战略层 | `jachin_safety_lock.get_safety_lock_snippet(user_text=…)` |
 | 经验层 | `local_memory_search.search_local_memories` → Top **2**；摘录上限随 `max_total_chars` 缩放 |
-| 落点 | `GatewayContextBundle.extra["environment_report"]`（dict） |
+| 落点 | `GatewayContextBundle.extra["environment_report"]`（dict）；**另** `extra["semantic_layer"]` 由 `workspace_db_context.load_db_semantics_yaml` 写入（嗅探关时仍会加载 YAML） |
 | 流水线 | `apply_gateway_ingress_pipeline` **末尾** `await` 嗅探（在分类 enrich 之前完成数据采集） |
 | 关闭 | `context_sniffer_enabled: false` → `environment_report.skipped=true`，仍写 tracker 事件 `context_sniffer_skipped`（若 tracker 开关开） |
 

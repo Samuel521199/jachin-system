@@ -10,6 +10,7 @@
 | 文档 | 说明 |
 |------|------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范** — 一店一库、四大原语、三层架构、关键组件 |
+| [architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md) | **L3 执行主轴 SSOT** — 单 ReAct 循环、网关/语义层、SOP、内联 Critic、Experience RAG、与 delegate/coordinate 关系 |
 | [Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md) | **术语 SSOT** — Tools / MCP / Skills / Agent Tasks 定义与代码落点（索引：[FOUR_PRIMITIVES.md](./FOUR_PRIMITIVES.md)） |
 | [FILE_STRUCTURE.md](./FILE_STRUCTURE.md) | 项目文件结构 |
 | [CLOUD_EDGE_AI_OS_IMPLEMENTATION_ANALYSIS.md](./CLOUD_EDGE_AI_OS_IMPLEMENTATION_ANALYSIS.md) | 实现度分析 — 三大场景、缺口与风险 |

@@ -1,5 +1,7 @@
 """
-Jachin Nexus V2 — L3 单体 Agent 与记忆同步（ReAct；delegate 子 Agent）。
+Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
+
+混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
 
 工具清单以 load_tools、assemble_tool_pool（MCP 合并）、build_tools_description 为准。
 相关规格：docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md；
@@ -17,6 +19,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from core.deep_execution_log import (
+    log_pipeline_phase,
+    log_react_iteration_context,
+    log_react_llm_result,
+    log_react_parse_result,
+    log_run_agent_start,
+    log_tool_execution,
+    summarize_parsed_action,
+)
 from l3_node.engine.hooks_pipeline import (
     HOOK_AFTER_TOOL_EXEC,
     HOOK_BEFORE_LLM_THINK,
@@ -31,7 +42,11 @@ from l3_node.llm_client import LiteLLMEngine, RunCancelledError, SecurityContext
 from l3_node.capability_catalog import build_capability_prompt_inject_for_tools, tools_include_recruitment
 from l3_node.exec_trace import exec_trace
 from l3_node.primitives import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
-from l3_node.primitives.tools.tool_pool import assemble_tool_pool
+from l3_node.primitives.tools.loader import tool_entry_looks_like_sqlite_family
+from l3_node.primitives.tools.tool_pool import (
+    assemble_tool_pool,
+    expand_allowed_skills_with_implicit_sqlite_read,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,20 +128,297 @@ REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM = (
     "【DB 事实】*.sqlite/表数据：须先工具只读查询、有 Observation 再答；无 DB 工具则明说无法查库，禁止编造。\n"
 )
 
+# L4：数据/MCP 库操作 SOP（与业务语义层 YAML 配套；见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md）
+_L4_AGENT_SOP_PROBE_MAP_EXECUTE = """【L4 智能体 SOP 法则】：当你处理数据查询、MCP 数据库操作或模糊业务词汇（如「缺货」「最贵」）时，绝对禁止直接生成最终的 SQL 或代码。你必须严格按以下三步执行：
+
+<probe>：若不清楚表结构，必须先调用 mcp:list_tables 或相关只读工具探查真实 Schema。
+
+<map>：结合查到的 Schema 和上方的【业务语义层字典】，在 <thinking> 标签内写出你的逻辑推导过程。
+
+<execute>：最后才能调用 write_query 或 read_query 执行动作。
+
+4. <continuous-tool-execution>（后台连续执行）：如果统帅的指令包含【先查询数据、后修改数据】的复杂目标，你**必须在本次思考链路中，连续、依次地调用工具**直至彻底完成！
+**致命禁令**：绝对禁止在只完成查询步骤后，就输出 Final Answer 宣告中断或要求统帅下达下一步指令！
+**正确流程**：
+步骤 1：输出 Action（`mcp:read_query` 等）查数据。
+步骤 2：收到系统的 Observation 数据后，继续在脑内思考，并紧接着输出新的 Action（`mcp:write_query` 等）执行修改。
+只有当所有的修改动作都已成功执行，并且拿到最后的成功 Observation 后，你才能输出 Final Answer 向统帅汇报最终战果。"""
+
 
 def _tools_include_sqlite_mcp(tools: list[dict[str, Any]] | None) -> bool:
-    """是否可见 MCP SQLite（官方 read_query/write_query 或 id 含 sqlite）。"""
-    for t in tools or []:
-        if not isinstance(t, dict):
+    """是否可见 MCP SQLite（与 loader.tool_entry_looks_like_sqlite_family 一致）。"""
+    return any(tool_entry_looks_like_sqlite_family(t) for t in (tools or []))
+
+
+def _last_non_system_user_text(messages: list[dict[str, Any]], *, max_scan: int = 32) -> str:
+    """
+    从对话末尾向前取最近一条「真实用户」正文。
+    跳过 ReAct 续跑时注入的 user 块（以【系统校验】等开头），避免把纠偏文案当成「最新用户意图」。
+    """
+    seen_user = 0
+    for m in reversed(messages or []):
+        if not isinstance(m, dict) or m.get("role") != "user":
             continue
-        tid = str(t.get("id") or "").strip().lower()
-        if "sqlite" in tid:
-            return True
-        if tid.startswith("mcp:"):
-            r = tid[4:].strip().lower()
-            if r in ("read_query", "write_query"):
-                return True
+        seen_user += 1
+        if seen_user > max_scan:
+            break
+        c = str(m.get("content") or "").strip()
+        if not c:
+            continue
+        if c.startswith(("【系统校验·SQLite】", "【系统校验】", "【系统纠偏】", "【strict】")):
+            continue
+        return c
+    return ""
+
+
+def _user_text_requests_workspace_sqlite_verification(text: str) -> bool:
+    """用户本轮是否在问工作区内 SQLite/库存等须工具核验的事实。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    tl = t.lower()
+    if ".sqlite" in tl or "test_db" in tl:
+        return True
+    if re.search(r"sqlite|\.db\b", tl) and re.search(r"工作区|workspace|查一下|查询|查库", t, re.I):
+        return True
+    if re.search(r"工作区|workspace", t, re.I) and re.search(r"数据库|缺货|库存", t, re.I):
+        return True
     return False
+
+
+def _react_observation_excerpt_for_critic(messages: list[dict[str, Any]] | None, *, max_len: int = 4500) -> str:
+    """
+    取最近一条**非 Critic 伪造**的、含 Observation 的 user 消息，供 Action Critic 判断「先读后写」第二步。
+    """
+    for m in reversed(messages or []):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = str(m.get("content") or "")
+        if "Observation:" not in c:
+            continue
+        if "System Critic Error" in c[:500]:
+            continue
+        if c.startswith(("【系统校验·SQLite】", "【系统校验】", "【系统纠偏】", "【strict】")):
+            continue
+        if "MCP 工具错误" in c[:600] or "Input validation error" in c[:800]:
+            continue
+        return c.strip()[:max_len]
+    return ""
+
+
+def _react_observation_followup_user_text(observation: str, tool_id: str) -> str:
+    """
+    工具执行后拼入 messages 的 user 文案。
+    SQLite 行集类 Observation 常为短 JSON；若仍提示「完整引用、禁止总结」，模型易把 Final Answer 写成纯 JSON 粘贴。
+    """
+    obs = (observation or "").strip()
+    tid = (tool_id or "").strip()
+    raw = tid[4:].strip().lower() if tid.lower().startswith("mcp:") else tid.lower()
+    _sqlfam = tool_entry_looks_like_sqlite_family({"id": tool_id})
+    _rowish = _sqlfam and raw in ("query", "read_query", "read_records")
+    if _rowish and len(obs) <= 8000:
+        return (
+            f"Observation: {observation}\n\n"
+            "以上为数据库只读查询返回。若用户问的是缺货、库存、表数据等，请用**简短自然中文**直接回答，"
+            "可点名具体品类或数量；**不要把 Final Answer 写成仅粘贴 JSON 数组/对象原文**。\n"
+            "若仍需其它只读查询可继续输出 Action；若 Observation 本身是 HR/评测类长篇报告才可大段原文引用。\n"
+            "请继续思考或给出 Final Answer:"
+        )
+    return (
+        f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer"
+        f"（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:"
+    )
+
+
+def _final_answer_is_honest_sqlite_capability_denial(text: str) -> bool:
+    """模型已承认无 read_query / 无法读库（与「假装 SELECT 出结果」相反）。"""
+    s = text or ""
+    if len(s) < 24:
+        return False
+    if re.search(
+        r"(无法|不能)(?:真实)?(?:访问|查询).{0,64}(?:test_db|\.sqlite|数据库)|"
+        r"不具备.{0,40}(?:执行)?(?:数据库)?(?:读取|查询)|"
+        r"(?:可用|可见)?工具列表.{0,48}未包含|"
+        r"未包含.{0,56}(?:read_query|SQLite|sqlite)|"
+        r"如实说明|不能编造|严禁编造|幻觉输出|并未(?:真正)?查询|"
+        r"技能白名单.{0,40}(?:未|没有|不包含).{0,20}(?:权限|read)|"
+        r"无法对数据库内容进行",
+        s,
+        re.I,
+    ):
+        return True
+    return False
+
+
+def _final_answer_claims_sqlite_was_queried(text: str) -> bool:
+    """Final Answer 是否假装已经查过库并得到库存/缺货事实（排除如实否认能力的回复）。"""
+    s = text or ""
+    if _final_answer_is_honest_sqlite_capability_denial(s):
+        return False
+    # 典型幻觉：根据 … test_db.sqlite … （实际）查询 … 缺货/库存/水果
+    if re.search(
+        r"根据\s*[`\u2018\u2019']?\s*[\w./\\-]+\.sqlite[`\u2018\u2019']?\s*[^。\n]{0,48}"
+        r"(?:数据库的查询结果|的查询结果)",
+        s,
+        re.I,
+    ):
+        return True
+    if re.search(r"根据.{0,32}\.sqlite", s, re.I) and re.search(
+        r"(?:数据库的)?实际查询|查询结果|查询表明|查询显示",
+        s,
+        re.I,
+    ):
+        return True
+    if re.search(r"数据库的查询结果\s*[，,：:]", s) and re.search(
+        r"(?:缺货|以下水果|水果现在|库存).{0,24}(?:是|：|:|[\n\r][\s\-•·])",
+        s,
+    ):
+        return True
+    if re.search(r"`[^`]*\.sqlite`", s, re.I) and re.search(
+        r"(?:数据库的查询结果|的查询结果|查询表明|查询显示|实际查询|数据库的实际查询)",
+        s,
+        re.I,
+    ):
+        head2 = s[: min(320, len(s))]
+        if not re.search(r"无法|不能|不具备|未包含|并未", head2, re.I):
+            return True
+    # 提及 .sqlite 且给出具体缺货/库存断言（含臆造列名 stock）
+    if re.search(r"\.sqlite|`[^`]*\.sqlite`", s, re.I) and re.search(
+        r"(?:缺货|库存|stock|quantity).{0,6}(?:是|为|：|:|\=)",
+        s,
+        re.I,
+    ):
+        if not _final_answer_is_honest_sqlite_capability_denial(s[:280]):
+            return True
+    return False
+
+
+def _reject_ungrounded_sqlite_final_answer(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """
+    若用户问工作区 SQLite 事实、答案声称已查库、但本轮尚未执行任何工具，则注入纠偏并返回 True（须 continue）。
+
+    与「白名单里是否真有 read_query」**解耦**：无 SQLite 工具时禁止假装已查库，须明说当前无法访问或请用户开 MCP；
+    有工具时强制先走 Action + Observation。
+    """
+    _skills = ctx.metadata.get("_skills_unfiltered") or ctx.metadata.get("_skills") or []
+    _last_u = ""
+    _sqlite_user_turn = False
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            c = str(m.get("content") or "")
+            if not _last_u:
+                _last_u = c
+            if _user_text_requests_workspace_sqlite_verification(c):
+                _sqlite_user_turn = True
+    _probe = f"{ctx.intent or ''}\n{_last_u}"
+    if not _sqlite_user_turn and not _user_text_requests_workspace_sqlite_verification(_probe):
+        return False
+    _anchor_u = _last_non_system_user_text(messages) or _last_u
+    _latest_sqlite_verify = _user_text_requests_workspace_sqlite_verification(_anchor_u)
+    _ans_s = str(ans or "")
+    _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
+    _has_sqlite = _tools_include_sqlite_mcp(_skills)
+    _inv = int(ctx.metadata.get("_react_tool_invocations") or 0)
+
+    # 已注册 SQLite MCP（如 mcp:query），但模型未调任何工具就声称「无法查询 / 没有工具」——属错误，须纠偏续跑
+    if (
+        _inv < 1
+        and _has_sqlite
+        and re.search(
+            r"(?:抱歉|很抱歉)?[,，]?\s*(?:我)?(?:无法|不能)(?:真实)?(?:查询|访问).{0,96}(?:test_db|\.sqlite|数据库)|"
+            r"没有(?:可用)?的\s*(?:SQLite|sqlite)?\s*查询工具|"
+            r"(?:当前)?(?:会话)?(?:环境)?中?\s*没有(?:可用)?的.{0,32}(?:SQLite|sqlite|查询工具|数据库)|"
+            r"(?:工具|白名单|权限).{0,40}(?:未|没有|不包含).{0,48}(?:read_query|SQLite|sqlite|数据库)|"
+            r"没有可用的 SQLite|不具备.{0,24}(?:查询)?(?:数据库|SQLite)",
+            _ans_s,
+            re.I | re.DOTALL,
+        )
+    ):
+        logger.warning(
+            "[L3 Agent][SQLite 接地] trace=%s via=%s 纠偏：已挂载 SQLite MCP 却声称无法查询（须先 Action）",
+            _rtrace,
+            via,
+        )
+        messages.append({"role": "assistant", "content": response})
+        messages.append({
+            "role": "user",
+            "content": (
+                "【系统校验·SQLite】本轮工具列表**已包含** MCP SQLite（常见为 **mcp:query**、mcp:read_records、"
+                "mcp:list_tables；若有官方 read_query 则为 **mcp:read_query**）。"
+                "你在未产生任何 Observation 的情况下写「无法查询 / 没有 SQLite 工具」是**错误**的。\n"
+                "请立即输出 ReAct（禁止本轮直接 Final Answer）：\n"
+                "Thought: …\n"
+                "Action: mcp:list_tables\n"
+                "Action Input: {}\n"
+                "再根据返回的表结构编写**只读** SELECT，Action: mcp:query，"
+                'Action Input: {"sql":"<你的 SELECT；键名须为 sql（mcp-sqlite），勿与 read_query 的 query 混淆>"}\n'
+                "取得 Observation 后再 Final Answer。"
+            ),
+        })
+        return True
+
+    # 最新用户话轮在问可核验库表事实，且已挂载 SQLite，但本轮尚未有任何工具调用：
+    # 禁止用 Final Answer 直接给出缺货/库存/行数据等（含「- 某某」式极简答），否则模型会猜答案绕过「声称已查库」检测。
+    if (
+        _inv < 1
+        and _has_sqlite
+        and _latest_sqlite_verify
+        and not _final_answer_is_honest_sqlite_capability_denial(_ans_s)
+    ):
+        logger.warning(
+            "[L3 Agent][SQLite 接地] trace=%s via=%s 拒绝无 Observation 的 Final Answer（须先 MCP） preview=%r",
+            _rtrace,
+            via,
+            _ans_s[:160],
+        )
+        messages.append({"role": "assistant", "content": response})
+        messages.append({
+            "role": "user",
+            "content": (
+                "【系统校验·SQLite】当前问题依赖数据库中的**可核验事实**。"
+                "在尚未产生任何工具 Observation 前，**禁止**用 Final Answer 输出具体缺货品类、库存结论或仅一行名称"
+                "（会被视为未查库臆测）。\n"
+                "必须输出 ReAct：先 **Action: mcp:list_tables**，**Action Input: {}**；再 **Action: mcp:query**，"
+                "用只读 SQL（JSON 键 **sql**）查询；**仅当** Observation 返回后才能在 Final Answer 中归纳结果。"
+            ),
+        })
+        return True
+
+    if not _final_answer_claims_sqlite_was_queried(_ans_s):
+        return False
+    if _inv >= 1:
+        return False
+    logger.warning(
+        "[L3 Agent][SQLite 接地] trace=%s via=%s 拒绝无工具 Final Answer（声称已查库） has_sqlite_tool=%s",
+        _rtrace,
+        via,
+        _has_sqlite,
+    )
+    messages.append({"role": "assistant", "content": response})
+    if _has_sqlite:
+        _nudge = (
+            "【系统校验·SQLite】你尚未调用任何工具，却声称「根据 *.sqlite / 实际查询」作答——这是禁止的幻觉。\n"
+            "当前已注册 **mcp:query** 等，必须先 **mcp:list_tables**（Action Input: {}）确认真实表与列名，"
+            "再 **mcp:query** 用只读 SQL（键 **sql**）查询，**禁止**在未收到 Observation 前写「根据…实际查询」"
+            "或编造行级结果；也不得用极简 Final Answer 代替工具调用。"
+        )
+    else:
+        _nudge = (
+            "【系统校验·SQLite】你尚未调用任何工具，却声称「根据 test_db.sqlite / 数据库查询结果」作答——这是禁止的幻觉。"
+            "当前**可见工具列表中未包含** MCP SQLite（read_query）或已被白名单过滤，你**无法**真实查库。"
+            "请在本轮 Final Answer 中**如实说明**无法访问该库，并提示检查：official-sqlite-npx MCP、"
+            "SUB_ACCOUNT 技能白名单是否包含 mcp:read_query、以及 db 路径是否指向 ~/.jachin/workspace/test_db.sqlite；"
+            "**禁止**编造查询结果或列举具体水果库存。"
+        )
+    messages.append({"role": "user", "content": _nudge})
+    return True
 
 
 def _react_engine_for_iteration(
@@ -1341,6 +1633,9 @@ def _hr_user_input_is_solitary_boss_job_select_line(user_input: str) -> bool:
     此类消息已在外层 apply_job_select 写 jd_select；不应让模型立刻 add_automated 吃 jd 默认。
     """
     s = (user_input or "").strip()
+    # jachin_mcp_write_ack 含下划线，会被 boss_utils.canonicalize 误解析成「职位 _ 城市」行，触发错误招聘预检
+    if "jachin_mcp_write_ack" in s.lower():
+        return False
     if len(s) < 6 or len(s) > 160:
         return False
     if re.search(
@@ -1631,7 +1926,12 @@ def _load_hr_recruitment_skill_content() -> str | None:
 
 def _get_l2_config() -> dict[str, Any] | None:
     """从 l2_gateway_config.json 读取 L2 配置（已配对时）。含 permissions_snapshot。"""
-    cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
+    try:
+        from l3_node.jachin_config import get_jachin_root
+
+        cfg_path = get_jachin_root() / "l2_gateway_config.json"
+    except ImportError:
+        cfg_path = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin"))) / "l2_gateway_config.json"
     if not cfg_path.exists():
         return None
     try:
@@ -1920,6 +2220,8 @@ def _build_system_prompt(
     *,
     chief_advisor_mode: bool = False,
     environment_report_block: str = "",
+    semantic_layer: dict[str, Any] | None = None,
+    experience_few_shots: str = "",
 ) -> str:
     from l3_node.prompt_compose import (
         SuffixChunk,
@@ -2173,10 +2475,29 @@ Final Answer: <最终回复>
 """
     # 后缀驱逐 rank：越小越先丢。对齐 L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §5.3
     suffix_chunks: list[SuffixChunk] = []
+    _sem_fmt = ""
+    if not pure_json_contract:
+        try:
+            from l3_node.intent_gateway.workspace_db_context import (
+                format_db_semantics_layer_for_prompt,
+                load_db_semantics_yaml,
+            )
+
+            _sl = semantic_layer if isinstance(semantic_layer, dict) else {}
+            if not _sl:
+                _sl = load_db_semantics_yaml("")
+            _sem_fmt = format_db_semantics_layer_for_prompt(_sl).strip()
+        except ImportError:
+            pass
     _gwi = (gateway_inject or "").strip()
     if _gwi and not pure_json_contract:
         suffix_chunks.append(
             SuffixChunk("mid", "intent_gateway_execution_inject", f"\n{_gwi}\n", eviction_rank=28)
+        )
+    # 业务语义字典：紧随网关注入之后、环境报告之前；eviction_rank 越大越晚被驱逐（见 prompt_compose）
+    if not pure_json_contract and _sem_fmt:
+        suffix_chunks.append(
+            SuffixChunk("high", "l4_db_semantics_layer", f"\n{_sem_fmt}\n", eviction_rank=99)
         )
     _erb = (environment_report_block or "").strip()
     if chief_advisor_mode and _erb and not pure_json_contract:
@@ -2192,6 +2513,21 @@ Final Answer: <最终回复>
             )
         except ImportError:
             pass
+    # 历史 Few-Shot：紧接参谋长人设之后、L4 Probe SOP 之前，便于先看到成功案例再跟准则
+    _exp_fs = (experience_few_shots or "").strip()
+    if not pure_json_contract and _exp_fs:
+        suffix_chunks.append(
+            SuffixChunk("high", "l4_experience_rag", f"\n{_exp_fs}\n", eviction_rank=94)
+        )
+    if not pure_json_contract and (_tools_include_sqlite_mcp(tools) or bool(_sem_fmt)):
+        suffix_chunks.append(
+            SuffixChunk(
+                "high",
+                "l4_agent_sop_probe_map_execute",
+                f"\n{_L4_AGENT_SOP_PROBE_MAP_EXECUTE}\n",
+                eviction_rank=92,
+            )
+        )
     if not pure_json_contract and _tools_include_sqlite_mcp(tools):
         try:
             from l3_node.prompt_sqlite_sop import (
@@ -2489,6 +2825,67 @@ async def _invoke_react_tool(
         _inp[:500],
         "…(truncated)" if len(_inp) > 500 else "",
     )
+    if tool_entry_looks_like_sqlite_family({"id": tool}):
+        try:
+            _jd = json.loads(_inp)
+            if isinstance(_jd, dict):
+                _sql_logged = False
+                for _k in ("sql", "query", "statement", "command"):
+                    _v = _jd.get(_k)
+                    if isinstance(_v, str) and _v.strip():
+                        _sql = _v.strip()
+                        _lim = 12000
+                        logger.info(
+                            "[L3 Agent][SQLite·SQL] trace=%s run_id=%s tool=%s json_key=%s sql_len=%d sql=%s%s",
+                            _rtrace,
+                            getattr(ctx, "run_id", "") or "",
+                            tool,
+                            _k,
+                            len(_sql),
+                            _sql[:_lim],
+                            "…(truncated)" if len(_sql) > _lim else "",
+                        )
+                        _sql_logged = True
+                        break
+                if not _sql_logged:
+                    logger.info(
+                        "[L3 Agent][SQLite·查询参数] trace=%s run_id=%s tool=%s args=%s",
+                        _rtrace,
+                        getattr(ctx, "run_id", "") or "",
+                        tool,
+                        json.dumps(_jd, ensure_ascii=False)[:4000],
+                    )
+        except json.JSONDecodeError:
+            logger.info(
+                "[L3 Agent][SQLite·入参] trace=%s run_id=%s tool=%s json_parse_fail preview=%r%s",
+                _rtrace,
+                getattr(ctx, "run_id", "") or "",
+                tool,
+                _inp[:800],
+                "…(truncated)" if len(_inp) > 800 else "",
+            )
+    # 统帅在聊天中发送 jachin_mcp_write_ack: true 时，自动合并进本条 Action Input（发往 MCP 前仍会被 strip）
+    _invoke_inp = _inp
+    if ctx.metadata.get("_user_granted_mcp_sqlite_write_ack") and tool_entry_looks_like_sqlite_family({"id": tool}):
+        try:
+            from l3_node.primitives.mcp.sqlite_write_guard import maybe_inject_user_write_ack
+
+            _jd_ack = json.loads(_inp)
+            if isinstance(_jd_ack, dict):
+                _rn_ack = (tool or "").strip().lower()
+                if _rn_ack.startswith("mcp:"):
+                    _rn_ack = _rn_ack[4:].strip().lower()
+                _jd_merged = maybe_inject_user_write_ack(tool, _rn_ack, _jd_ack, user_granted=True)
+                if _jd_merged != _jd_ack:
+                    _invoke_inp = json.dumps(_jd_merged, ensure_ascii=False)
+                    logger.info(
+                        "[L3 Agent] 对话已授权 SQLite 写签批，已自动注入 jachin_mcp_write_ack（tool=%s）",
+                        tool,
+                    )
+        except json.JSONDecodeError:
+            pass
+        except Exception as _ia_e:
+            logger.debug("[L3 Agent] write_ack 自动注入跳过: %s", _ia_e)
     _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
@@ -2500,8 +2897,8 @@ async def _invoke_react_tool(
                 tenant_id=getattr(_gb, "tenant_id", "") or "",
                 context={
                     "tool": tool,
-                    "inp": inp or "",
-                    "inp_len": len(inp or ""),
+                    "inp": _invoke_inp,
+                    "inp_len": len(_invoke_inp or ""),
                     "messages": getattr(ctx, "messages", None),
                 },
             )
@@ -2534,7 +2931,7 @@ async def _invoke_react_tool(
         _is_mcp,
         use_timeout,
         sec if use_timeout else 0.0,
-        len(_inp),
+        len(_invoke_inp),
     )
     _out: str | None = None
     try:
@@ -2542,7 +2939,7 @@ async def _invoke_react_tool(
             if use_timeout:
                 try:
                     _out = await asyncio.wait_for(
-                        mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills),
+                        mcp_registry.invoke(tool, _invoke_inp, allowed_skills=allowed_skills),
                         timeout=sec,
                     )
                 except asyncio.TimeoutError:
@@ -2554,11 +2951,11 @@ async def _invoke_react_tool(
                     )
                     _out = _foreground_tool_timeout_json(tool, sec)
             else:
-                _out = await mcp_registry.invoke(tool, inp, allowed_skills=allowed_skills)
+                _out = await mcp_registry.invoke(tool, _invoke_inp, allowed_skills=allowed_skills)
         elif use_timeout:
             try:
                 _out = await asyncio.wait_for(
-                    asyncio.to_thread(run_tool, tool, inp, allowed_skills),
+                    asyncio.to_thread(run_tool, tool, _invoke_inp, allowed_skills),
                     timeout=sec,
                 )
             except asyncio.TimeoutError:
@@ -2570,18 +2967,31 @@ async def _invoke_react_tool(
                 )
                 _out = _foreground_tool_timeout_json(tool, sec)
         else:
-            _out = run_tool(tool, inp, allowed_skills)
+            _out = run_tool(tool, _invoke_inp, allowed_skills)
         return _out
     finally:
         if _out is not None:
+            _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
             exec_trace(
                 logger,
                 "工具调度结束 trace=%s tool=%s elapsed_ms=%.0f out_len=%d",
                 _rtrace,
                 (tool or "")[:160],
-                (time.perf_counter() - _t0) * 1000.0,
+                _elapsed_ms,
                 len(_out),
             )
+            try:
+                log_tool_execution(
+                    trace=_rtrace,
+                    run_id=str(getattr(ctx, "run_id", "") or ""),
+                    tool=str(tool or ""),
+                    action_input=_invoke_inp,
+                    output=_out,
+                    elapsed_ms=_elapsed_ms,
+                    mcp=_is_mcp,
+                )
+            except Exception:
+                pass
 
 
 def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: str) -> None:
@@ -2624,6 +3034,7 @@ async def _run_react_core(
 
     # 追踪本轮已执行的招聘相关工具，用于拒绝「未调用工具却声称已发布」的幻觉回复
     ctx._executed_tools_this_run = set()
+    ctx.metadata["_react_tool_invocations"] = 0
     try:
         from l3_node.primitives.mcp.registry import clear_last_add_automated_recruitment_task_payload
 
@@ -2669,6 +3080,9 @@ async def _run_react_core(
             if ctx.metadata.get("_intel_strict_pending_verify") and get_enforce_readonly_verify_round():
                 skills = filter_tools_for_verify_round(base_skills)
                 _spe = ctx.metadata.get("_system_prompt_extras") or {}
+                _sl_verify = _spe.get("semantic_layer")
+                _sl_verify_d: dict[str, Any] = _sl_verify if isinstance(_sl_verify, dict) else {}
+                _exp_verify = str(_spe.get("experience_few_shots") or "")
                 ctx.system_prompt = _build_system_prompt(
                     tools=skills,
                     allow_delegate=False,
@@ -2682,6 +3096,8 @@ async def _run_react_core(
                     safety_lock_user_text=str(ctx.intent or ""),
                     chief_advisor_mode=bool(_spe.get("chief_advisor")),
                     environment_report_block=str(_spe.get("environment_report_block") or ""),
+                    semantic_layer=_sl_verify_d,
+                    experience_few_shots=_exp_verify,
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
@@ -2734,25 +3150,64 @@ async def _run_react_core(
         _lkw = _llm_control_kwargs()
         if on_chunk:
             _lkw["l3_run_id"] = ctx.run_id
+        _openapi_tools: list[dict[str, Any]] | None = None
+        _openapi_fname_map: dict[str, str] = {}
+        if skills and str(os.environ.get("JACHIN_REACT_STREAM_DISABLE_TOOLS", "")).strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            try:
+                _openapi_tools = get_mcp_registry().to_openai_tools_schema(
+                    skills,
+                    openapi_fname_to_tool_id=_openapi_fname_map,
+                )
+            except Exception as _e:
+                logger.warning("[L3 Agent] 构建 OpenAI tools 失败，ReAct 将仅依赖文本工具说明: %s", _e)
+                _openapi_tools = None
+                _openapi_fname_map.clear()
+        try:
+            log_react_iteration_context(
+                trace=str(ctx.metadata.get("_react_step_trace") or ""),
+                iteration=iteration + 1,
+                max_iter=max_iterations,
+                run_id=str(ctx.run_id or ""),
+                n_history_messages=len(messages),
+                n_skills=len(skills or []),
+                stream=bool(on_chunk),
+                llm_purpose=_llm_purpose,
+            )
+            log_pipeline_phase(
+                "react_pre_llm",
+                f"trace={ctx.metadata.get('_react_step_trace')} "
+                f"system_prompt_len={len(ctx.system_prompt or '')} "
+                f"openai_tools={'on' if _openapi_tools else 'off'} "
+                f"openai_tool_count={len(_openapi_tools or [])}",
+            )
+        except Exception:
+            pass
         try:
             if on_chunk:
                 response = await _eff.generate_response_stream(
                     full_messages,
                     chunk_callback=on_chunk,
+                    tools=_openapi_tools,
+                    openapi_fname_to_tool_id=_openapi_fname_map,
                     temperature=0.7,
                     max_tokens=16384,
                     l3_call_purpose=_llm_purpose,
                     **_lkw,
                 )
             else:
-                result = await _eff.generate_response(
+                response = await _eff.generate_response(
                     full_messages,
+                    tools=_openapi_tools,
+                    openapi_fname_to_tool_id=_openapi_fname_map,
                     temperature=0.7,
                     max_tokens=16384,
                     l3_call_purpose=_llm_purpose,
                     **_lkw,
                 )
-                response = result.get("content", result) if isinstance(result, dict) else str(result)
         except RunCancelledError:
             ctx.final_answer = "[ExecutionBrief] 运行已被取消（LLM 协作式中断）。"
             _emit("answer", ctx.final_answer)
@@ -2780,6 +3235,15 @@ async def _run_react_core(
             iteration + 1,
             len(response or ""),
         )
+        try:
+            log_react_llm_result(
+                trace=str(ctx.metadata.get("_react_step_trace") or ""),
+                iteration=iteration + 1,
+                response_len=len(response or ""),
+                response_full=str(response or ""),
+            )
+        except Exception:
+            pass
 
         try:
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -2843,6 +3307,14 @@ async def _run_react_core(
         ctx.parsed_action = parsed
         _iter_n = ctx.metadata.get("_react_iteration")
         _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
+        try:
+            log_react_parse_result(
+                trace=_rtrace,
+                iteration=int(_iter_n or iteration + 1),
+                parsed_summary=summarize_parsed_action(parsed),
+            )
+        except Exception:
+            pass
         if parsed is None:
             logger.info(
                 "[L3 Agent][ReAct 解析] trace=%s iter=%s parsed=None（无 Action / 格式无法识别）"
@@ -3174,6 +3646,10 @@ async def _run_react_core(
                                 _ans_s[:700],
                                 "…(truncated)" if len(_ans_s) > 700 else "",
                             )
+                            if _reject_ungrounded_sqlite_final_answer(
+                                ctx, messages, response, ans, via="parsed_none+final_prefix"
+                            ):
+                                continue
                             _emit("answer", ans)
                             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
                             messages.append({"role": "assistant", "content": response})
@@ -3315,6 +3791,8 @@ async def _run_react_core(
                         "不得虚构任务 ID 或「运行中」状态。"
                     ),
                 })
+                continue
+            if _reject_ungrounded_sqlite_final_answer(ctx, messages, response, ans, via="type=answer"):
                 continue
             _emit("answer", ans)
             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
@@ -3462,6 +3940,9 @@ async def _run_react_core(
             tool = parsed.get("tool", "")
             inp = parsed.get("input", "")
             tl_full = (tool or "").strip().lower()
+            ctx.metadata["_l4_exp_save_gate"] = False
+            if not tool_entry_looks_like_sqlite_family({"id": tool}):
+                ctx.metadata.pop("_l4_critic_reject_streak", None)
             try:
                 from l3_node.intelligence_b_execution import get_enforce_readonly_verify_round
 
@@ -3548,7 +4029,7 @@ async def _run_react_core(
                     messages.append({"role": "assistant", "content": response})
                     messages.append({
                         "role": "user",
-                        "content": f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:",
+                        "content": _react_observation_followup_user_text(str(observation or ""), str(tool or "")),
                     })
                     continue
             # 兜底：atom_post_job_boss 未传 jd_config 时，从对话历史提取 HR 确认的 JSON
@@ -3602,6 +4083,152 @@ async def _run_react_core(
                     _inp_s[:500],
                     "…(truncated)" if len(_inp_s) > 500 else "",
                 )
+            # L4 Action Critic：SQLite 族工具在真正执行前做逻辑审查；不通过则伪造 Observation 打回重做
+            _cev_crit = ctx.metadata.get("_cancel_event")
+            if _cev_crit is not None and getattr(_cev_crit, "is_set", lambda: False)():
+                return
+            if tool_entry_looks_like_sqlite_family({"id": tool}):
+                try:
+                    from l3_node.experience_memory import tool_id_is_sqlite_read_or_write
+
+                    if tool_id_is_sqlite_read_or_write(tool):
+                        try:
+                            from l3_node.critic_agent import action_critic_enabled
+
+                            if not action_critic_enabled():
+                                ctx.metadata["_l4_exp_save_gate"] = True
+                        except Exception:
+                            ctx.metadata["_l4_exp_save_gate"] = True
+                except Exception:
+                    pass
+            if tool_entry_looks_like_sqlite_family({"id": tool}):
+                try:
+                    from l3_node.critic_agent import (
+                        action_critic_enabled,
+                        action_critic_max_fails,
+                        evaluate_action,
+                    )
+
+                    if action_critic_enabled():
+                        _sem_crit: dict[str, Any] = {}
+                        _gb_crit = ctx.metadata.get("_gateway_bundle")
+                        if _gb_crit is not None:
+                            _sx_c = getattr(_gb_crit, "extra", {}).get("semantic_layer")
+                            if isinstance(_sx_c, dict):
+                                _sem_crit = _sx_c
+                        _prop_act = {
+                            "tool_id": tool,
+                            "action_input": (inp or "")[:12000],
+                            "assistant_react_excerpt": (response or "")[:8000],
+                        }
+                        _ui_crit = (ctx.intent or "").strip()
+                        if not _ui_crit:
+                            for _msg_cr in reversed(messages or []):
+                                if isinstance(_msg_cr, dict) and _msg_cr.get("role") == "user":
+                                    _ui_crit = str(_msg_cr.get("content") or "").strip()[:4000]
+                                    break
+                        _stp_cr = ctx.metadata.get("_on_step")
+                        if _stp_cr:
+                            try:
+                                _stp_cr(
+                                    "system_status",
+                                    json.dumps(
+                                        {"status": "🛡️ Critic 审查中…"},
+                                        ensure_ascii=False,
+                                    ),
+                                    ctx.run_id,
+                                )
+                            except Exception:
+                                pass
+                        _obs4crit = _react_observation_excerpt_for_critic(messages)
+                        _ok_cr, _crit_txt = await evaluate_action(
+                            _ui_crit,
+                            _prop_act,
+                            _sem_crit,
+                            react_observation_excerpt=_obs4crit,
+                        )
+                        if _ok_cr and _stp_cr:
+                            try:
+                                _stp_cr(
+                                    "system_status",
+                                    json.dumps(
+                                        {"status": "✅ 审查通过，即将执行"},
+                                        ensure_ascii=False,
+                                    ),
+                                    ctx.run_id,
+                                )
+                            except Exception:
+                                pass
+                        if not _ok_cr:
+                            if _stp_cr:
+                                try:
+                                    _stp_cr(
+                                        "system_status",
+                                        json.dumps(
+                                            {"status": "❌ Critic 未通过，已打回重做"},
+                                            ensure_ascii=False,
+                                        ),
+                                        ctx.run_id,
+                                    )
+                                except Exception:
+                                    pass
+                            _max_cr = action_critic_max_fails()
+                            _streak_cr = int(ctx.metadata.get("_l4_critic_reject_streak") or 0) + 1
+                            ctx.metadata["_l4_critic_reject_streak"] = _streak_cr
+                            logger.info(
+                                "[L3 Agent][ActionCritic] 拦截 tool=%s streak=%d/%d critique_preview=%r",
+                                tool,
+                                _streak_cr,
+                                _max_cr,
+                                (_crit_txt or "")[:240],
+                            )
+                            exec_trace(
+                                logger,
+                                "ActionCritic block streak=%s/%s tool=%s",
+                                _streak_cr,
+                                _max_cr,
+                                (tool or "")[:80],
+                            )
+                            if _streak_cr >= _max_cr:
+                                _crit_body = (
+                                    f"[System Critic Error] 已连续 {_max_cr} 次未通过逻辑审查！警报！\n"
+                                    "绝对禁止输出 Final Answer 放弃任务！绝对禁止把任务推给统帅！\n"
+                                    "现在，你必须立刻、马上输出一个合法的只读 Action（如 mcp:query 配合 SELECT，或 mcp:read_records / read_query / list_tables），"
+                                    "去获取必要的数据 Observation。只有拿到数据后，再在下一步执行修改！立刻重试！\n"
+                                    f"（上一轮审查意见供你修正：{_crit_txt}）"
+                                )
+                            else:
+                                _crit_body = (
+                                    f"[System Critic Error] 你的 Action 未通过逻辑审查：{_crit_txt} "
+                                    "请严格按 L4 SOP：<probe> 探查 Schema，<map> 结合业务语义层，<execute> 使用实际工具："
+                                    "只读可用 mcp:query(SELECT)、mcp:read_records、list_tables；"
+                                    "写入可用 mcp:update_records、write_query 或 mcp:query(UPDATE)；同一对话内连续执行，勿 Final Answer 中断。"
+                                )
+                            messages.append({"role": "assistant", "content": response})
+                            messages.append({
+                                "role": "user",
+                                "content": _react_observation_followup_user_text(_crit_body, str(tool or "")),
+                            })
+                            continue
+                        ctx.metadata["_l4_critic_reject_streak"] = 0
+                        try:
+                            from l3_node.experience_memory import tool_id_is_sqlite_read_or_write
+
+                            if tool_id_is_sqlite_read_or_write(tool):
+                                ctx.metadata["_l4_exp_save_gate"] = True
+                        except Exception:
+                            pass
+                except Exception as _ace:
+                    logger.debug("[L3 Agent][ActionCritic] 跳过: %s", _ace)
+                    try:
+                        from l3_node.experience_memory import tool_id_is_sqlite_read_or_write
+
+                        if tool_entry_looks_like_sqlite_family({"id": tool}) and tool_id_is_sqlite_read_or_write(
+                            tool
+                        ):
+                            ctx.metadata["_l4_exp_save_gate"] = True
+                    except Exception:
+                        pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -3643,6 +4270,10 @@ async def _run_react_core(
                     logger.debug("[L3 Agent] add_automated_recruitment_task 纠正 job_name 跳过: %s", e)
             # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
             observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
+            try:
+                ctx.metadata["_react_tool_invocations"] = int(ctx.metadata.get("_react_tool_invocations") or 0) + 1
+            except (TypeError, ValueError):
+                ctx.metadata["_react_tool_invocations"] = 1
             if "write_file" in _tl_dbg or "edit_file" in _tl_dbg or "create_file" in _tl_dbg:
                 _obs_s = str(observation or "")
                 if any(
@@ -3675,6 +4306,52 @@ async def _run_react_core(
             _p2_record_skill_outcome(ctx, (tool or "native").strip(), observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
             _emit("observation", observation)
+            try:
+                if ctx.metadata.get("_l4_exp_save_gate"):
+                    from l3_node.experience_memory import (
+                        observation_suggests_sqlite_success,
+                        save_experience,
+                        tool_id_is_sqlite_read_or_write,
+                    )
+
+                    if tool_id_is_sqlite_read_or_write(tool) and observation_suggests_sqlite_success(
+                        str(observation or "")
+                    ):
+                        _ui_sv = (ctx.intent or "").strip()
+                        if not _ui_sv:
+                            for _m_sv in reversed(messages or []):
+                                if isinstance(_m_sv, dict) and _m_sv.get("role") == "user":
+                                    _ui_sv = str(_m_sv.get("content") or "").strip()[:4000]
+                                    break
+                        _inp_sv = inp or ""
+                        if _inp_sv.strip().startswith("{"):
+                            try:
+                                _pl_obj = json.loads(_inp_sv)
+                                _exp_pl: dict[str, Any] = (
+                                    _pl_obj if isinstance(_pl_obj, dict) else {"action_input": _inp_sv}
+                                )
+                            except json.JSONDecodeError:
+                                _exp_pl = {"action_input": _inp_sv}
+                        else:
+                            _exp_pl = {"action_input": _inp_sv}
+
+                        def _experience_save_task() -> None:
+                            try:
+                                save_experience(_ui_sv, tool, _exp_pl)
+                            except Exception:
+                                pass
+
+                        try:
+                            import asyncio
+
+                            asyncio.get_running_loop().create_task(asyncio.to_thread(_experience_save_task))
+                        except RuntimeError:
+                            import threading
+
+                            threading.Thread(target=_experience_save_task, daemon=True).start()
+            except Exception:
+                pass
+            ctx.metadata["_l4_exp_save_gate"] = False
             _linter_inject = ""
             if tl_full == "core:fs_write":
                 try:
@@ -3712,18 +4389,30 @@ async def _run_react_core(
                             _clear_last_jd_pending(_lc)
                 except Exception:
                     pass
-            # 工具返回已是完整报告（如 HR 透析镜）时直接作为最终答案，禁止 LLM 二次总结导致截断
+            # 工具返回已是完整报告（如 HR 透析镜）时直接作为最终答案，禁止 LLM 二次总结导致截断。
+            # 禁止误伤：context_prefetch 会在 Observation 后附加 Markdown（含 ##/**），SQLite list_tables 等也会变长；
+            # 若仍用「含 ## 或 **」判断，会把 prefetch + 表清单当成 HR 报告并提前 return，用户会看到整坨 findings.md。
             obs = (observation or "").strip()
-            if len(obs) > 500 and ("## " in obs or "**" in obs or "综合评分" in obs or "录用建议" in obs or "评估" in obs):
+            _prefetch_blob = "【relevant_context_prefetch】" in obs
+            _sqlite_tool = tool_entry_looks_like_sqlite_family({"id": tool})
+            _obs_looks_hr_full_report = (
+                len(obs) > 500
+                and not _prefetch_blob
+                and not _sqlite_tool
+                and (
+                    "综合评分" in obs
+                    or "录用建议" in obs
+                    or ("透析" in obs and ("简历" in obs or "候选人" in obs))
+                    or "HR 透析" in obs
+                )
+            )
+            if _obs_looks_hr_full_report:
                 ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(obs, ctx)
                 if on_step:
                     on_step("answer", ctx.final_answer, ctx.run_id)
                 return
             messages.append({"role": "assistant", "content": response})
-            _obs_tail = (
-                f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer"
-                f"（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:"
-            )
+            _obs_tail = _react_observation_followup_user_text(str(observation or ""), str(tool or ""))
             if _linter_inject:
                 _obs_tail = f"{_linter_inject}\n\n{_obs_tail}"
             messages.append({"role": "user", "content": _obs_tail})
@@ -3732,8 +4421,32 @@ async def _run_react_core(
     # 循环结束仍未产出：最后一轮兜底
     if ctx.observation:
         obs = (ctx.observation or "").strip()
-        # Observation 已是完整报告（如 HR 透析镜输出）时直接使用，避免 LLM 二次总结导致截断
-        if len(obs) > 800 and ("## " in obs or "**" in obs or "综合评分" in obs or "录用建议" in obs):
+        # 与循环内一致：勿把 context_prefetch / SQLite 长 Observation 误判为 HR 终稿
+        _prefetch_blob2 = "【relevant_context_prefetch】" in obs
+        _last_tool = ""
+        try:
+            for _m in reversed(messages or []):
+                if isinstance(_m, dict) and _m.get("role") == "assistant":
+                    _c = str(_m.get("content") or "")
+                    _am = re.search(r"(?im)^Action:\s*(\S+)", _c)
+                    if _am:
+                        _last_tool = _am.group(1).strip()
+                        break
+        except Exception:
+            _last_tool = ""
+        _sqlite_obs2 = tool_entry_looks_like_sqlite_family({"id": _last_tool})
+        _obs_looks_hr_full_report2 = (
+            len(obs) > 800
+            and not _prefetch_blob2
+            and not _sqlite_obs2
+            and (
+                "综合评分" in obs
+                or "录用建议" in obs
+                or ("透析" in obs and ("简历" in obs or "候选人" in obs))
+                or "HR 透析" in obs
+            )
+        )
+        if _obs_looks_hr_full_report2:
             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(obs, ctx)
             if on_step:
                 on_step("answer", ctx.final_answer, ctx.run_id)
@@ -3773,7 +4486,7 @@ async def _run_react_core(
                 l3_call_purpose=f"react_final_answer_fallback{_fb_suffix}",
                 **_flkw,
             )
-            resp = result.get("content", result) if isinstance(result, dict) else str(result)
+            resp = str(result or "").strip()
             for pat in (r"Final\s+Answer:\s*(.+?)(?:\n\n|$)", r"Answer:\s*(.+?)(?:\n\n|$)"):
                 m = re.search(pat, resp, re.DOTALL | re.IGNORECASE)
                 if m:
@@ -3957,7 +4670,7 @@ async def run_agent(
     gateway_workspace_dir: str | None = None,
 ) -> str:
     """
-    运行 L3 单体 ReAct 循环。
+    运行 L3 单主轴 ReAct 循环（混合架构见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md）。
     支持 _system_prompt_override 供子 Agent 使用。
     _session_messages: 若提供，将作为历史上下文并在调用结束后被更新为完整对话（含本轮），供多轮对话复用。
     implicit_signals: 可选 {"skip": true, "dwell_sec"|"dwell_ms": n, "assistant_echo": "...", "source": "lark"} → 见 docs/IMPLICIT_SIGNALS.md。
@@ -3991,15 +4704,9 @@ async def run_agent(
                 _gateway_sniffer_ws = str(_gwv).strip()
                 break
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
-    exec_trace(
-        logger,
-        "run_agent 开始 run_id=%s channel=%s input_len=%d history_msgs=%d",
-        run_id[:12],
-        (_bg_channel or "-"),
-        len(user_input or ""),
-        len(messages),
-    )
     allowed = _allowed_skills_override if _allowed_skills_override is not None else _get_allowed_skills()
+    allowlist_diag_source: list[str] | None = list(allowed) if allowed is not None else None
+    allowed = expand_allowed_skills_with_implicit_sqlite_read(allowed)
     # 优先使用 _session_messages（多轮对话），否则用 _initial_messages（须先于 MCP 拉取与 Gateway 流水线）
     if _session_messages is not None:
         messages = list(_session_messages)
@@ -4008,6 +4715,14 @@ async def run_agent(
     else:
         messages = []
     prior_messages = list(messages)
+    exec_trace(
+        logger,
+        "run_agent 开始 run_id=%s channel=%s input_len=%d history_msgs=%d",
+        run_id[:12],
+        (_bg_channel or "-"),
+        len(user_input or ""),
+        len(messages),
+    )
 
     _gateway_bridge_fmt: Any = None
     _gateway_bundle = gateway_context_bundle
@@ -4135,6 +4850,7 @@ async def run_agent(
         gateway_bundle=_gateway_bundle,
         bg_channel=_bg_channel or None,
         logger=logger,
+        allowlist_diag_source=allowlist_diag_source,
     )
     exec_trace(
         logger,
@@ -4143,6 +4859,21 @@ async def run_agent(
         len(tools),
         (_bg_channel or "-"),
     )
+    try:
+        log_run_agent_start(
+            run_id=run_id,
+            user_input=user_input or "",
+            history_msgs=len(messages),
+            max_iterations=max_iterations,
+            n_tools=len(tools),
+            channel=_bg_channel or "",
+        )
+        log_pipeline_phase(
+            "run_agent_tools_ready",
+            f"run_id={run_id[:12]} n_tools={len(tools)} allowlist_set={allowed is not None}",
+        )
+    except Exception:
+        pass
     try:
         from l3_node.local_memory import next_prompt_cycle
 
@@ -4337,6 +5068,34 @@ async def run_agent(
     except Exception as _adv_ex:
         logger.debug("[L3 Agent] environment_report / chief_advisor 片段跳过: %s", _adv_ex)
 
+    _semantic_layer: dict[str, Any] = {}
+    if _gateway_bundle is not None:
+        _sl_gw = _gateway_bundle.extra.get("semantic_layer")
+        if isinstance(_sl_gw, dict):
+            _semantic_layer = _sl_gw
+
+    _experience_few_shots = ""
+    _exp_query = (user_input or "").strip()
+    if not _exp_query and _gateway_bundle is not None:
+        _exp_query = (
+            str(_gateway_bundle.classification_text or _gateway_bundle.user_input or "").strip()
+        )
+    try:
+        from l3_node.experience_memory import experience_rag_enabled, format_experience_block_for_prompt
+
+        if experience_rag_enabled() and on_step:
+            try:
+                on_step(
+                    "system_status",
+                    json.dumps({"status": "⏳ 正在检索历史经验…"}, ensure_ascii=False),
+                    run_id,
+                )
+            except Exception:
+                pass
+        _experience_few_shots = format_experience_block_for_prompt(_exp_query[:8000], top_k=2)
+    except Exception:
+        _experience_few_shots = ""
+
     if _system_prompt_override is not None:
         system_prompt = _system_prompt_override
     elif _try_direct:
@@ -4354,6 +5113,8 @@ async def run_agent(
             safety_lock_user_text=user_input or "",
             chief_advisor_mode=_chief_advisor_mode,
             environment_report_block=_environment_report_block,
+            semantic_layer=_semantic_layer,
+            experience_few_shots=_experience_few_shots,
         )
     else:
         system_prompt = _build_system_prompt(
@@ -4367,6 +5128,8 @@ async def run_agent(
             safety_lock_user_text=user_input or "",
             chief_advisor_mode=_chief_advisor_mode,
             environment_report_block=_environment_report_block,
+            semantic_layer=_semantic_layer,
+            experience_few_shots=_experience_few_shots,
         )
 
     try:
@@ -4719,6 +5482,8 @@ async def run_agent(
                         safety_lock_user_text=user_input or "",
                         chief_advisor_mode=_chief_advisor_mode,
                         environment_report_block=_environment_report_block,
+                        semantic_layer=_semantic_layer,
+                        experience_few_shots=_experience_few_shots,
                     )
                 else:
                     system_prompt = _build_system_prompt(
@@ -4732,6 +5497,8 @@ async def run_agent(
                         safety_lock_user_text=user_input or "",
                         chief_advisor_mode=_chief_advisor_mode,
                         environment_report_block=_environment_report_block,
+                        semantic_layer=_semantic_layer,
+                        experience_few_shots=_experience_few_shots,
                     )
 
         if not system_prompt and _system_prompt_override is None:
@@ -4748,6 +5515,8 @@ async def run_agent(
                     safety_lock_user_text=user_input or "",
                     chief_advisor_mode=_chief_advisor_mode,
                     environment_report_block=_environment_report_block,
+                    semantic_layer=_semantic_layer,
+                    experience_few_shots=_experience_few_shots,
                 )
             else:
                 system_prompt = _build_system_prompt(
@@ -4761,17 +5530,22 @@ async def run_agent(
                     safety_lock_user_text=user_input or "",
                     chief_advisor_mode=_chief_advisor_mode,
                     environment_report_block=_environment_report_block,
+                    semantic_layer=_semantic_layer,
+                    experience_few_shots=_experience_few_shots,
                 )
 
         _md_base: dict[str, Any] = {
             "_skills": tools,
             "_skills_unfiltered": list(tools),
+            "_allowed_skills": allowed,
             "_use_mock": False,
             "_max_iterations": max_iterations,
             "_on_step": on_step,
             "_system_prompt_extras": {
                 "chief_advisor": _chief_advisor_mode,
                 "environment_report_block": _environment_report_block,
+                "semantic_layer": dict(_semantic_layer),
+                "experience_few_shots": _experience_few_shots,
             },
             "_gw_inject_stored": _gw_inject,
             "_on_chunk": on_chunk,
@@ -4785,6 +5559,12 @@ async def run_agent(
             "_react_prompt_style": _prompt_style,
             "_pure_json_contract": _pure_json_contract,
         }
+        try:
+            from l3_node.primitives.mcp.sqlite_write_guard import messages_history_has_write_ack_grant
+
+            _md_base["_user_granted_mcp_sqlite_write_ack"] = messages_history_has_write_ack_grant(messages)
+        except Exception:
+            _md_base["_user_granted_mcp_sqlite_write_ack"] = False
         if _gateway_bundle is not None:
             _md_base["_gateway_bundle"] = _gateway_bundle
             _md_base["gateway_classification_truncated"] = bool(_gateway_bundle.classification_truncated)

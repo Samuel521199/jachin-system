@@ -499,7 +499,7 @@ async def run_l3_agent(
     engine: LiteLLMEngine,
     **kwargs,
 ) -> str:
-    """运行 L3 单体 Agent。"""
+    """运行 L3 单主轴 ReAct（run_agent）；架构见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md。"""
     return await run_agent(user_input, engine, **kwargs)
 
 

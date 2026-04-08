@@ -1,0 +1,39 @@
+---
+description: L4 Agentic — 数据库与复杂 MCP 必须遵循 Probe→Map→Execute；禁止一次性直出最终工具调用
+globs: l3_node/agent_core.py, l3_node/critic_agent.py, l3_node/experience_memory.py, l3_node/**/*sqlite*, l3_node/**/*mcp*, l3_node/context_prefetch.py, l3_node/primitives/**/*.py, core/native_tools.py, docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md, docs/**/*.md
+alwaysApply: false
+---
+
+# L4 Agentic 编排约束（实现与 Code Review）
+
+**架构 SSOT**：`docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md`（单主轴 ReAct + 语义层 / SOP / 内联 Critic / Experience RAG；旧 `L4_AGENTIC_WORKFLOW.md` 仅为 stub，勿当作正文 SSOT）  
+**术语 SSOT**：`docs/FOUR_PRIMITIVES.md`（四大原语不变；L4 为 **包装增强层**）
+
+## 硬性约束（数据库查询与复杂 MCP）
+
+凡修改或新增满足以下任一条件的代码路径，**必须**遵循 **Probe → Map → Execute** 三步 SOP；**严禁**依赖大模型在单步内「一次性直出」最终可执行工具调用（如最终 SQL、带副作用的 MCP 参数体）作为唯一依据。
+
+- **数据库**：任意 SQLite / SQL 生成、执行、或经 MCP 的等价查询写路径。
+- **复杂 MCP**：多必填字段、高歧义参数、或文档标明需 schema/元数据前置的 MCP 工具族（以 `JACHIN_HYBRID_AGENT_ARCHITECTURE.md` 与 capability 域为准）。
+
+### 三步含义（实现须可观测）
+
+1. **Probe（探查）**：只读 —— 表结构、列、或工具元数据；产物须进入上下文或 trace，供 Map 引用。
+2. **Map（映射）**：将用户意图与 **`db_semantics.yaml`（语义层）** 及 Probe 结果对齐；**禁止**在本步单独承担「最终执行体」责任而无 Critic 或等价校验。
+3. **Execute（执行）**：仅在 **Critic（或等价校验轨）通过** 后，才生成并派发最终 `Action` / tool call / SQL 执行。
+
+### 禁止项
+
+- **禁止**在 Prompt 或实现上鼓励：「直接写出最终 SQL / 最终 MCP JSON 而不先 list/describe」作为**主路径**。
+- **禁止**用静默 `except: pass` 掩盖 Critic 失败并继续写入（遵守 `080-jachin-execution-resilience.mdc`）。
+
+### 兼容性
+
+- 须保留 **开关或策略短路**：简单只读 Native 工具（如单文件 `core:fs_read`）可不经过完整 L4 三轨；**数据与复杂 MCP** 不得默认短路。
+- 不得引入与 **072 四大原语** 冲突的术语（不把 MCP 称为 Tool 本体等）。
+
+## 与现有规则关系
+
+- **072-jachin-four-primitives.mdc**：术语与边界。  
+- **080-jachin-execution-resilience.mdc**：错误分类、RunReport、部分成功。  
+- **063-l3-qwen-tri-model-routing.mdc**：Actor/Critic 可选用不同模型时，仍须遵守三档路由与成本控制约定。

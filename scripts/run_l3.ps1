@@ -32,6 +32,8 @@ if (-not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-P
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONUTF8 = "1"
 $env:LOG_LEVEL = "DEBUG"
+# 深度执行日志：ReAct/LLM 全文、工具入出参、耗时 → 控制台 + l3_debug.log + 全息 SSE（设为 0 可关）
+$env:JACHIN_L3_DEEP_LOG = "1"
 # 与 start-layer3 一致：避免 l3_mcp_cache 旧 HR 包盖过仓库 recruitment_scheduler
 $env:JACHIN_APP_ROOT = $appRoot
 $env:JACHIN_DEV_HR_FIRST = "1"
@@ -60,7 +62,24 @@ $hasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 if ($hasPython -and (Test-Path (Join-Path $appRoot "l3_node"))) {
     Set-Location $appRoot
     Write-Host "[L3] Python mode, logs to terminal (cwd=$appRoot)" -ForegroundColor Cyan
-    python -m l3_node $mode
+    # PowerShell 会话级抄本：与 Python 的 l3_debug.log 互补（含 Write-Host 与 python 标准输出）
+    $tlog = Join-Path $env:USERPROFILE ".jachin\l3_powershell_transcript.log"
+    $tDir = Split-Path $tlog -Parent
+    if (-not (Test-Path $tDir)) { New-Item -ItemType Directory -Path $tDir -Force | Out-Null }
+    Write-Host "[L3] PS transcript: $tlog" -ForegroundColor Gray
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+    $trOn = $false
+    try {
+        Start-Transcript -Path $tlog -Force -ErrorAction Stop | Out-Null
+        $trOn = $true
+    } catch {
+        Write-Host "[L3] Start-Transcript 不可用，跳过 PS 抄本" -ForegroundColor DarkYellow
+    }
+    try {
+        python -m l3_node $mode
+    } finally {
+        if ($trOn) { try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {} }
+    }
 } elseif ($l3Exe) {
     Set-Location $appRoot
     Write-Host "[L3] Exe mode (cwd=$appRoot)" -ForegroundColor Cyan

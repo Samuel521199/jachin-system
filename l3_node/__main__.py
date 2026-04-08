@@ -17,6 +17,12 @@ L3 节点独立运行入口
   JACHIN_L3_CONSOLE: Windows 下是否弹出独立控制台。1/true 强制开启；0/false 强制关闭。
     未设置时：PyInstaller 打包 exe 默认开启（便于目标机看日志）；源码运行默认关闭。
   JACHIN_EXEC_TRACE_STDERR: 0/false/off 关闭 [JachinExec] 执行里程碑的 stderr 同步打印（默认开启，便于 PowerShell 排障）。
+  JACHIN_L3_DEEP_LOG: 0/false/off 关闭「深度执行日志」logger（jachin.deep）：默认开启，将 ReAct/LLM 请求全文、模型输出、
+    工具入参/出参、耗时等写入 PowerShell、~/.jachin/l3_debug.log 与全息 SSE（分片推送）。
+  LOG_LEVEL: 根 logger 级别（默认 INFO）。设为 WARNING 时可压低第三方库噪音。
+  JACHIN_LOG_LEVEL: 可选，显式指定 Jachin 自有 logger（l3_node、core）级别；未设置且 LOG_LEVEL≥WARNING 时默认 INFO，
+    以便控制台与 l3_debug.log 仍能看到 [L3 Agent] 等 INFO 行。
+  JACHIN_REACT_STREAM_DISABLE_TOOLS: 设为 1/true/yes 时，流式/非流式 ReAct 不向 API 传 tools[]（回退为仅 system 文本工具说明）。
 """
 from __future__ import annotations
 
@@ -140,6 +146,11 @@ if not _dash and not _openai:
     trace("WARNING: 未检测到任何 API Key，大模型将不可用")
 
 _log_level = getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
+_je = (os.environ.get("JACHIN_LOG_LEVEL") or "").strip().upper()
+_jachin_level = getattr(logging, _je, None) if _je else None
+if _jachin_level is None:
+    # 根为 WARNING/ERROR 时，Jachin 默认仍打 INFO，避免「关了第三方刷屏却看不见 L3 工具路由」
+    _jachin_level = logging.INFO if _log_level >= logging.WARNING else _log_level
 
 
 class _UTCFormatter(logging.Formatter):
@@ -153,20 +164,44 @@ class _UTCFormatter(logging.Formatter):
 
 
 # 强制输出到 PowerShell 控制台（stdout），便于复制日志
-trace("configuring logging, level=%s", _log_level)
+trace("configuring logging, root=%s jachin=%s", _log_level, _jachin_level)
+_log_fmt = _UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 _handler = logging.StreamHandler(sys.stdout)
-_handler.setFormatter(_UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+_handler.setFormatter(_log_fmt)
 logging.basicConfig(level=_log_level, handlers=[_handler], force=True)
-from l3_node.early_log import configure_l3_runtime_diagnostics, is_l3_verbose, reattach_file_handler
+from l3_node.early_log import (
+    attach_file_handler_to_logger,
+    configure_l3_runtime_diagnostics,
+    is_l3_verbose,
+    reattach_file_handler,
+)
+
 reattach_file_handler()  # basicConfig 会清除 file handler，需重新挂载
+
+# LOG_LEVEL=WARNING 时根 logger 会丢弃 INFO；为 l3_node / core 单独挂控制台 + 文件，避免 Jachin INFO 被误杀
+_jh_shared: logging.StreamHandler | None = None
+if _jachin_level < _log_level:
+    _jh = logging.StreamHandler(sys.stdout)
+    _jh.setFormatter(_log_fmt)
+    _jh.setLevel(_jachin_level)
+    _jh_shared = _jh
+    for _pkg in ("l3_node", "core"):
+        _lg = logging.getLogger(_pkg)
+        _lg.setLevel(_jachin_level)
+        _lg.addHandler(_jh)
+        attach_file_handler_to_logger(_lg)
+        _lg.propagate = False
+
 configure_l3_runtime_diagnostics()  # JACHIN_L3_DEBUG=1 时 WS/LLM 等 DEBUG 落盘到 l3_debug.log
 logger = logging.getLogger("l3_node")
 trace("logger ready, debug_log=%s verbose=%s", get_log_path(), is_l3_verbose())
 # 将 l3_node 日志转发到全息监控 SSE，供前端 L3 全息监控面板订阅
 try:
     trace("importing log_broadcaster...")
-    from l3_node.log_broadcaster import install_broadcast_handler
+    from l3_node.log_broadcaster import install_broadcast_handler, install_deep_log_handlers
+
     install_broadcast_handler()
+    install_deep_log_handlers(stream_handler=_jh_shared)
     trace("log_broadcaster installed")
 except Exception as e:
     trace("log_broadcaster failed: %s", e)

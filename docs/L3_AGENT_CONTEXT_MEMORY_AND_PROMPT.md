@@ -1,10 +1,10 @@
 # L3 执行面深度架构：Agent、上下文、记忆与 Prompt
 
-**版本**: 2026-04-02  
-**定位**: 基于当前仓库实现的 **代码级** 说明（非愿景文档）。与 [ARCHITECTURE.md](./ARCHITECTURE.md)（三层产品架构）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)（前台/后台与超时）、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)（智能化里程碑）互补。  
+**版本**: 2026-04-07  
+**定位**: 基于当前仓库实现的 **代码级** 说明（非愿景文档）。与 [ARCHITECTURE.md](./ARCHITECTURE.md)（三层产品架构）、[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)（**L3 执行主轴 + L4 挂载 SSOT**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)（前台/后台与超时）、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)（智能化里程碑）互补。  
 **薄弱点、路线图与「实现快照」**: [L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md](./L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md)（文内 **§〇** 与仓库同步）。
 
-**主入口代码**: `l3_node/agent_core.py`（`run_agent`、`_build_system_prompt`、`_run_react_core`、`SubAgent`）。
+**主入口代码**: `l3_node/agent_core.py`（`run_agent`、`_build_system_prompt`、`_run_react_core`、`SubAgent`）；内联 Critic / 经验飞轮见同文件与 `critic_agent.py`、`experience_memory.py`。
 
 **四大原语（工具层词汇）**：主 Agent 所见的 **`tools[]`** 由 **Tools**（`core:*`、`jpp:*`）与 **MCP**（`mcp:*`）等组成；**Skills** 多为注入的 SOP/白名单而非独立进程；**Agent Tasks** 指 `delegate`、`core:submit_background_task`、`coordinate` 等 **多轮子** 实体。定义见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**。
 
@@ -33,9 +33,10 @@
   2. 组装 `full_messages = [system] + messages`，调用 `LiteLLMEngine.generate_response`（温度、max_tokens、用途标签 `l3_call_purpose` 等）。
   3. 解析输出：`_parse_action` 识别 `Final Answer` / `delegate` / `recall_memory` / `coordinate` / 具体 `tool_id`。
   4. **门禁**（见 §5）: `intelligence_b` 计划卡/头脑风暴卡、`task_plan_policy` 等可能 `continue` 下一轮而不执行工具。
-  5. 执行工具：MCP 走 `mcp_registry.invoke`；Native/Wasm 走 `run_tool`；伪动作 `recall` / `coordinate` / `delegate` 走专用分支。
-  6. `global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)`；工具后可拼接 **prefetch**（§4.4）。
-  7. 将 `Observation` 写回 `messages`，直到 `Final Answer` 或达到迭代上限。
+  5. **SQLite 族路径**：在 `HOOK_BEFORE_TOOL_EXEC` 之前可经 **`critic_agent.evaluate_action`** 内联审查；未通过则注入伪造 `Observation` 并 `continue`，**不**执行真实工具（见混合架构白皮书 §3–§4）。
+  6. 执行工具：MCP 走 `mcp_registry.invoke`；Native/Wasm 走 `run_tool`；伪动作 `recall` / `coordinate` / `delegate` 走专用分支。
+  7. `global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)`；工具后可拼接 **prefetch**（§4.4）；**read_query/write_query** 成功且门控允许时可 **`experience_memory.save_successful_action`**（经验飞轮）。
+  8. 将 `Observation` 写回 `messages`，直到 `Final Answer` 或达到迭代上限。
 
 - **迭代上限**: `MAX_REACT_ITERATIONS`（默认 8）；`run_agent` 的 `max_iterations` 写入 `ctx.metadata["_max_iterations"]` 供后台任务等覆盖。
 
@@ -54,11 +55,12 @@
 - **服务开关**: `_get_service_switches()` 可按角色禁用子 Agent。
 - **复用**: `_sub_agent_registry[sub_agent_id]` 保留历史 `messages`，`spawn_sub_agent` 可传同一 `sub_agent_id` 续聊。
 
-### 2.4 主 Agent 工具表组装（`run_agent` 开头）
+### 2.4 主 Agent 工具表组装与 Prompt 前增强（`run_agent` 开头）
 
-1. `load_tools(allowed_skills=allowed)` — Native Core + Wasm（受白名单过滤；`allowed is None` 为开发全开）。
-2. `await mcp_registry.fetch_tools_from_l2()` — L3 本地 MCP + stdio MCP + L2 补充；**若 `allowed` 非空** 则对 MCP 列表再 `is_tool_allowed` 过滤后合并。
-3. **后台通道**: 从工具表移除 `core:submit_background_task`；`_build_system_prompt(..., allow_delegate=False, allow_coordinate=False)`。
+1. **网关入站**：`apply_gateway_ingress_pipeline`（澄清、嗅探、`semantic_layer`、`environment_report` 等）。
+2. **Experience RAG**：`experience_memory.format_experience_block_for_prompt` → `_build_system_prompt(..., experience_few_shots=...)` 注入 `[HISTORY_FEW_SHOTS]`。
+3. `await assemble_tool_pool(...)` — 合并 Native / Wasm / MCP（白名单、隐式 SQLite 只读扩展等）。
+4. **后台通道**: 从工具表移除 `core:submit_background_task`；`_build_system_prompt(..., allow_delegate=False, allow_coordinate=False)`。
 
 ---
 
@@ -84,6 +86,9 @@
 | `_allowed_skills` | 执行层白名单（可与 run_agent 入参覆盖一致） |
 | `_on_step` / `_on_chunk` | 流式/步骤回调 |
 | `_react_iteration` | 当前 ReAct 轮次（从 1 递增）；供 `context_prefetch` 与 **`context_path_ledger`** 滑窗去重 |
+| `_gateway_bundle` | 网关包（含 `extra["semantic_layer"]`、`environment_report` 等） |
+| `_l4_exp_save_gate` / `_l4_critic_reject_streak` | 经验写入门控、Critic 连续打回计数（SQLite 路径） |
+| `_system_prompt_extras` | 含 `semantic_layer`、`experience_few_shots` 等，供 strict verify 轮重建 system |
 | `_context_path_ledger` | `path_key → last_seen_react_iteration`（prefetch / 读路径登记，见 `context_path_ledger.py`） |
 | Prefetch 相关 | `_prefetch_paths_shown`、`_prefetch_session_bytes`（路径滑窗与会话字节预算） |
 
@@ -193,21 +198,25 @@
 flowchart TB
   subgraph run_agent_entry["run_agent"]
     U[user_input + preflight + 路由插件]
-    T[load_tools + fetch MCP + 过滤]
-    S[_build_system_prompt 或 override]
+    GW[Gateway：嗅探 + semantic_layer + environment_report]
+    EXP[Experience RAG → experience_few_shots]
+    T[assemble_tool_pool]
+    S["_build_system_prompt（语义层+SOP+经验块+…）"]
     P[Pipeline: hooks + _run_react_core]
   end
-  U --> T --> S --> P
+  U --> GW --> EXP --> T --> S --> P
   P --> LLM[LiteLLMEngine.generate_response]
   LLM --> Parse[_parse_action]
   Parse --> Tool{类型?}
-  Tool -->|Native/Wasm| RT[run_tool]
-  Tool -->|MCP| MCP[mcp_registry.invoke]
+  Tool -->|Native MCP SQLite 族| CR{critic_agent.evaluate_action}
+  CR -->|未通过| FB[伪造 Observation 打回]
+  CR -->|通过/跳过| Exec[run_tool / invoke]
+  Tool -->|其它 Native/Wasm| Exec
   Tool -->|recall| L2R[_recall_memory_search]
   Tool -->|coordinate| L2C[_coordinate_task]
   Tool -->|delegate| SA[SubAgent / run_agent 嵌套]
-  RT --> Obs[Observation + prefetch + hooks]
-  MCP --> Obs
+  FB --> LLM
+  Exec --> Obs[Observation + prefetch + hooks + 可选经验写入]
   L2R --> Obs
   L2C --> Obs
   SA --> Obs
@@ -223,3 +232,4 @@ flowchart TB
 | 2026-04 | 初版：对齐当前 `agent_core` / `local_memory` / `task_planning` / `intelligence_b` / MCP 合并逻辑 |
 | 2026-04-02 | 预检/插件、metadata 账本与 prefetch/dedup、shard 记忆、`prompt_compose` 硬帽、MemorySync 急迫信号；与路线图 §〇 一致 |
 | 2026-04-02 | 增补四大原语（Tools/MCP/Skills/Agent Tasks）引用与文内说明 |
+| 2026-04-07 | 对齐混合架构白皮书：网关/语义层、Experience RAG、内联 Critic、metadata 键与 Mermaid 主路径 |

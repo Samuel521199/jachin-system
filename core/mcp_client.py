@@ -263,6 +263,9 @@ class MCPManager:
         self._tool_route: dict[str, MCPServerInstance] = {}  # tool_name -> instance
         self._tools_cache: dict[str, dict[str, Any]] = {}  # tool_name -> {name, description, inputSchema}
         self._builtin_tool_names: set[str] = set()  # 内置工具名，优先路由
+        # mcp_servers.json 热更新：mtime 变化时重读；已连接的 server_id 跳过，避免重复握手
+        self._mcp_cfg_loaded_mtime: Optional[float] = None
+        self._cached_mcp_servers: list[dict[str, Any]] = []
 
     def _load_config(self) -> list[dict[str, Any]]:
         """读取 mcp_servers.json 配置。"""
@@ -296,17 +299,44 @@ class MCPManager:
         except ImportError as e:
             logger.debug("[MCP] 内置工具未加载: %s", e)
 
+    def _config_file_mtime(self) -> float:
+        try:
+            return self._config_path.stat().st_mtime
+        except OSError:
+            return -1.0
+
     async def start(self) -> None:
         """
         读取配置，并发拉起所有 MCP Server，构建工具路由表。
         内置工具优先注册，外部 Server 工具不覆盖同名内置工具。
+
+        可安全多次调用：仅在 mcp_servers.json 变更时重读磁盘；已连接的 server_id 会跳过。
+        解决「先起 L3、后写 mcp_servers.json」时首包 start 早退导致永不加载 stdio MCP 的问题。
         """
         self._register_builtin_tools()
-        servers = self._load_config()
+        mt = self._config_file_mtime()
+        if self._mcp_cfg_loaded_mtime != mt:
+            self._mcp_cfg_loaded_mtime = mt
+            self._cached_mcp_servers = self._load_config()
+        servers = self._cached_mcp_servers
         if not servers:
             return
-        logger.info("[MCP] 开始并发拉起 %d 个 Server", len(servers))
+        pending = [
+            c
+            for c in servers
+            if isinstance(c, dict)
+            and (c.get("id") or c.get("name") or "unknown") not in self._instances
+        ]
+        if pending:
+            # 失败重试时可能每轮 ReAct 都进入；详情见下方 warning；此处用 debug 降噪
+            logger.debug("[MCP] 尝试连接 %d 个尚未就绪的 stdio Server（配置共 %d 条）", len(pending), len(servers))
+        _instances_before = len(self._instances)
         for cfg in servers:
+            if not isinstance(cfg, dict):
+                continue
+            server_id = cfg.get("id") or cfg.get("name") or "unknown"
+            if server_id in self._instances:
+                continue
             try:
                 from core.mcp_embedded_runtime import resolve_mcp_cfg_placeholders
 
@@ -357,7 +387,18 @@ class MCPManager:
                 logger.warning("[MCP] Server 启动失败 server_id=%s err=%s", server_id, e)
             except Exception as e:
                 logger.exception("[MCP] Server 启动异常 server_id=%s err=%s", server_id, e)
-        logger.info("[MCP] 启动完成 instances=%d tools=%d", len(self._instances), len(self._tool_route))
+        if len(self._instances) > _instances_before:
+            logger.info(
+                "[MCP] stdio Server 已连接，当前 instances=%d tools=%d",
+                len(self._instances),
+                len(self._tool_route),
+            )
+        elif pending:
+            logger.debug(
+                "[MCP] 本轮 stdio 连接尝试结束 instances=%d tools=%d",
+                len(self._instances),
+                len(self._tool_route),
+            )
 
     async def stop(self) -> None:
         """关闭所有 MCP Server 实例。"""
@@ -372,6 +413,8 @@ class MCPManager:
         for name in list(self._tools_cache.keys()):
             if name not in self._builtin_tool_names:
                 del self._tools_cache[name]
+        self._mcp_cfg_loaded_mtime = None
+        self._cached_mcp_servers = []
         logger.info("[MCP] 已关闭所有 Server")
 
     def get_all_tools(self) -> list[dict[str, Any]]:

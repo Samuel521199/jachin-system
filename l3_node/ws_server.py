@@ -138,9 +138,15 @@ async def _push_reply_to_lark(chat_id: str, content: str) -> None:
 
 
 def _make_on_step(websocket, run_id: str, chat_id: str, broadcast: bool):
-    """构建 on_step 回调；chat_id 且 broadcast 时同时广播到镜像订阅者。"""
-    def on_step(step_type: str, content: str, rid: str) -> None:
-        payload = {"step_type": step_type, "content": content, "run_id": rid}
+    """构建 on_step 回调；chat_id 且 broadcast 时同时广播到镜像订阅者。
+
+    注意：须与 on_chunk、以及 run_agent 返回后的 answer 使用**同一会话级** ``run_id``。
+    Agent 传入的第三参为 ``ctx.run_id``（完整 UUID），若写入 payload 会与 chunk 的短 id 不一致，
+    桌面端 ``l3ActiveRunIdRef`` 在「末帧为 chunk（短 id）→ answer（长 id）」时会丢弃 answer，
+    表现为一直转圈直至超时或中断。此处始终使用本 WS 消息轮次的 ``run_id``。
+    """
+    def on_step(step_type: str, content: str, _ctx_run_id: str) -> None:
+        payload = {"step_type": step_type, "content": content, "run_id": run_id}
         asyncio.create_task(_send_safe(websocket, payload))
         if broadcast and chat_id:
             asyncio.create_task(_broadcast_to_mirror_subscribers(chat_id, payload))

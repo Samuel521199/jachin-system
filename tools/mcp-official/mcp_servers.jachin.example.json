@@ -51,14 +51,9 @@
     },
     {
       "id": "official-sqlite-npx",
-      "name": "MCP SQLite（官方 npx，压测库）",
+      "name": "MCP SQLite（npm mcp-sqlite；勿用 @modelcontextprotocol/server-sqlite，npm 404）",
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-sqlite",
-        "--db-path",
-        "__JACHIN_WORKSPACE__/test_db.sqlite"
-      ]
+      "args": ["-y", "mcp-sqlite", "__JACHIN_WORKSPACE__/test_db.sqlite"]
     },
     {
       "id": "official-memory-npx",

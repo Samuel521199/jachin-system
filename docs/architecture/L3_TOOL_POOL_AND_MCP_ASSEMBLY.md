@@ -2,7 +2,7 @@
 
 **版本**: 1.0  
 **定位**: 说明 L3 如何将 **Native / Wasm（jpp）** 与 **MCP（含 L2 下发）** 合并为送入 LLM 的 `tools[]`，并与 Claude Code 风格「全量定义 → 上下文过滤 → 组装池」概念对齐。  
-**相关 SSOT**: `docs/Jachin 视角的「四大原语」终极架构规范.md`（`docs/FOUR_PRIMITIVES.md`）、`l3_node/primitives/mcp/mcp_tools/MCP_LIFECYCLE_AND_APPROVAL_FLOW.md`。
+**相关 SSOT**: `docs/Jachin 视角的「四大原语」终极架构规范.md`（`docs/FOUR_PRIMITIVES.md`）、`docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md`（L3 单主轴 ReAct 与工具派发链）、`l3_node/primitives/mcp/mcp_tools/MCP_LIFECYCLE_AND_APPROVAL_FLOW.md`。
 
 ---
 

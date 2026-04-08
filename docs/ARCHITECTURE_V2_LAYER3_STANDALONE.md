@@ -2,7 +2,9 @@
 
 **版本**: 2.0  
 **状态**: 设计规范  
-**定位**: 重新定义 Layer 1/2/3 职责 — L3 单体 = OpenClaw，L2 = 权限/记忆/调度，L1 = 平台
+**定位**: 重新定义 Layer 1/2/3 职责 — L3 为 **Jachin 执行节点**（单主轴 ReAct，**能力对标** OpenClaw 类单机 Agent），L2 = 权限/记忆/调度，L1 = 平台。
+
+> **2026-04 对齐现行实现**：L3 代码路径为 **`run_agent` 单循环**，并挂载语义层、内联 Critic、Experience RAG 等；**SSOT** 见 **[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)**。本文中「OpenClaw」均指**对标物**，非 Jachin 产品名。
 
 ---
 
@@ -26,7 +28,7 @@
                                         │
                                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  Layer 3：单体 = OpenClaw（多 Agent + 多 Skill + 本地记忆 + 可协同）                 │
+│  Layer 3：Jachin L3（单主轴 ReAct + 多 Skill/MCP + 本地记忆；能力对标 OpenClaw 类）   │
 │  • 本地持有密文 Key，发送请求时解密为明文后自行调用外部 API                         │
 │  • L2 只管理 Key，不代理请求；L3 自己发请求处理问题                                 │
 │  • 可与 L2 同机部署                                                                │
@@ -37,7 +39,7 @@
 |------|---------------|-------------|
 | **Layer 1** | 云端指挥、舰队、蓝图 | **平台**：注册/管理若干用户主账号；平台主账号管平台内部，与 L2/L3 无关 |
 | **Layer 2** | 边缘大脑（Agent + 记忆 + 执行） | 子账号、权限、记忆、梦境、L3 调度、**API Key 管理**（不代理请求）、可与 L3 同机 |
-| **Layer 3** | 终端外壳（UI、HITL、感官） | **单体 OpenClaw**：本地密文 Key，请求时解密后自行调用 API，可与 L2 同机 |
+| **Layer 3** | 终端外壳（UI、HITL、感官） | **Jachin L3**：单主轴 ReAct + MCP/Skill；本地密文 Key，解密后直连 API；可与 L2 同机（对标 OpenClaw 类能力） |
 
 **本质**：L1 是平台；用户主账号在平台注册，每个用户管理自己的 L2+L3；L2 只管理 Key，L3 持密文 Key 自行发请求。
 
@@ -226,13 +228,13 @@ L2 记忆支持 **namespace**（命名空间）实现物理隔断，杜绝数据
 
 ---
 
-## 三、Layer 3：单体 OpenClaw 对标
+## 三、Layer 3：Jachin L3 执行面（对标 OpenClaw 类单机）
 
 ### 3.1 定位
 
-**Layer 3 单体 = OpenClaw 单机**：多 Agent、多 Skill、本地记忆、任务执行、可协同。
+**Jachin L3**：默认 **单主轴 `run_agent` ReAct**（可选 `delegate`/后台/`coordinate`）；多 Skill/MCP、本地记忆、任务执行、可协同。混合架构见 **[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)**。
 
-| 维度 | OpenClaw 单机 | Jachin L3 单体 |
+| 维度 | OpenClaw 单机（对标） | Jachin L3 |
 |------|---------------|----------------|
 | **Agent** | 单/多 Agent，按 channel 路由 | 每节点有 Agent，可分身多个 |
 | **Skill** | ClawHub 10,700+ skills | MCP + SKILL.md + JPP .wasm |
@@ -246,7 +248,7 @@ L2 记忆支持 **namespace**（命名空间）实现物理隔断，杜绝数据
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Layer 3 单体节点 (对标 OpenClaw)                                            │
+│  Jachin L3 节点（单主轴 ReAct；能力对标 OpenClaw 类）                          │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │  主 Agent + 子 Agent 们                                               │   │

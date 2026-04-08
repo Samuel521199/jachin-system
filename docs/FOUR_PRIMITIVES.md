@@ -1,5 +1,7 @@
 # Four primitives — canonical index
 
+**混合架构白皮书（L3 单主轴 ReAct + L4 语义层 / 内联 Critic / Experience RAG）**: [architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)
+
 **中文单一事实来源（全文）**: [Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)
 
 **Cursor 规则**: `.cursor/rules/072-jachin-four-primitives.mdc`、`.cursor/rules/045-four-primitives-execution.mdc`（执行面路由；**已删除**旧 `045-dual-track-mcp.mdc`）

@@ -1,5 +1,8 @@
 """
-Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + 本地记忆 Top 命中），硬字符预算，写入 bundle.extra["environment_report"]。
+Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + 本地记忆 Top 命中 + db_semantics.md / golden_sql），
+硬字符预算，写入 bundle.extra["environment_report"]；并解析 db_semantics.yaml → report["semantic_layer"]（见 workspace_db_context）。
+
+与混合架构关系：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md §4。
 """
 from __future__ import annotations
 
@@ -162,6 +165,16 @@ def format_environment_report_for_prompt(report: Any) -> str:
     mem = str(report.get("memory_excerpt") or "").strip()
     if mem:
         parts.append("【本地经验（检索摘要）】\n" + mem)
+    _sem_raw = report.get("semantic_layer")
+    if isinstance(_sem_raw, dict) and _sem_raw:
+        try:
+            from l3_node.intent_gateway.workspace_db_context import format_semantic_layer_excerpt_for_environment_report
+
+            _sem_ex = format_semantic_layer_excerpt_for_environment_report(_sem_raw).strip()
+            if _sem_ex:
+                parts.append("【业务语义层 · db_semantics.yaml（结构化）】\n" + _sem_ex)
+        except Exception:
+            pass
     dbs = str(report.get("db_semantics_snippet") or "").strip()
     if dbs:
         parts.append("【业务语义层 · db_semantics.md】\n" + dbs)
@@ -270,6 +283,19 @@ async def build_environment_report(
 
     _total_all = int(merged["total_chars"]) + len(sem_snip) + len(gold_snip)
 
+    try:
+        from l3_node.intent_gateway.workspace_db_context import load_db_semantics_yaml
+
+        _semantic_layer = load_db_semantics_yaml(workspace_dir)
+    except Exception as e:
+        logger.debug("[ContextSniffer] semantic_layer YAML 跳过: %s", e)
+        try:
+            from l3_node.intent_gateway.workspace_db_context import default_semantic_layer
+
+            _semantic_layer = default_semantic_layer()
+        except Exception:
+            _semantic_layer = {}
+
     report: dict[str, Any] = {
         "ok": True,
         "git": {
@@ -282,6 +308,7 @@ async def build_environment_report(
         "memory_hits_meta": mem_hits,
         "db_semantics_snippet": sem_snip,
         "golden_sql_fewshot": gold_snip,
+        "semantic_layer": _semantic_layer,
         "meta": {
             "truncated": merged["truncated"],
             "total_chars": _total_all,

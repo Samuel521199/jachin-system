@@ -1323,6 +1323,61 @@ def load_tools(
     return tools
 
 
+# npm「mcp-sqlite」等社区 MCP 的工具名。官方 @modelcontextprotocol/server-sqlite 未在 npm 发布（404），见 tools/mcp-official。
+MCP_SQLITE_COMMUNITY_TOOL_RAW = frozenset(
+    {
+        "query",
+        "db_info",
+        "list_tables",
+        "get_table_schema",
+        "read_records",
+        "create_record",
+        "update_records",
+        "delete_records",
+    }
+)
+
+# 白名单 merge_sqlite_read 仅追加「探表/只读 SQL」相关 id，不含 create/update/delete_record
+MCP_SQLITE_MERGE_READISH_IDS: tuple[str, ...] = (
+    "mcp:read_query",
+    "read_query",
+    "mcp:query",
+    "query",
+    "mcp:list_tables",
+    "list_tables",
+    "mcp:get_table_schema",
+    "get_table_schema",
+    "mcp:db_info",
+    "db_info",
+    "mcp:read_records",
+    "read_records",
+)
+
+
+def tool_entry_looks_like_sqlite_family(t: Any) -> bool:
+    """工具字典是否像 MCP SQLite（read_query/write_query 或 id/desc 含 sqlite）。"""
+    if not isinstance(t, dict):
+        return False
+    tid = str(t.get("id") or t.get("label") or "").strip().lower()
+    desc = str(t.get("desc") or t.get("description") or "").lower()
+    if "sqlite" in tid or "sqlite" in desc:
+        return True
+    # 少数注册路径仅保留裸名（无 mcp: 前缀），须与 mcp:read_query 同等识别
+    if tid in ("read_query", "write_query"):
+        return True
+    if tid in MCP_SQLITE_COMMUNITY_TOOL_RAW:
+        return True
+    if tid.startswith("mcp:"):
+        r = tid[4:].strip().lower()
+        if r in ("read_query", "write_query"):
+            return True
+        if "read_query" in r or "write_query" in r:
+            return True
+        if r in MCP_SQLITE_COMMUNITY_TOOL_RAW:
+            return True
+    return False
+
+
 def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
     """
     硬拦截：校验 tool_id 是否在白名单内。
@@ -1408,6 +1463,10 @@ def build_tools_description(tools: list[dict[str, Any]]) -> str:
             param_hint += (
                 " 【SQLite·只读】`query` 须为 SELECT。用户问「缺货」时应在 SQL 中体现条件（如 WHERE quantity=0 "
                 "或与表列名一致），勿依赖 SELECT * 再在文中猜谁缺货。"
+            )
+        elif raw == "query":
+            param_hint += (
+                " 【SQLite·只读】npm mcp-sqlite：自定义 SQL 用键名 `sql`（见 schema）。SELECT 查缺货请写清条件（如 quantity=0）。"
             )
         elif "sqlite" in (tid or "").lower():
             param_hint += (

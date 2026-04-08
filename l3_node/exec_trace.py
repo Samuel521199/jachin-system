@@ -12,20 +12,35 @@ def exec_trace_stderr_enabled() -> bool:
 
 
 def exec_trace(
-    msg: str,
+    msg_or_logger: str | logging.Logger,
     *args: object,
     logger: logging.Logger | None = None,
     level: int = logging.INFO,
 ) -> None:
-    if args:
+    """
+    支持两种写法：
+    - exec_trace("fmt %s", x, logger=logger)
+    - exec_trace(logger, "fmt %s", x)   # 与全仓库现有调用一致
+    """
+    if isinstance(msg_or_logger, logging.Logger):
+        _log = msg_or_logger
+        if not args:
+            return
+        msg = str(args[0])
+        fmt_args = tuple(args[1:])
+    else:
+        _log = logger
+        msg = str(msg_or_logger)
+        fmt_args = args
+    if fmt_args:
         try:
-            text = msg % tuple(args)
+            text = msg % fmt_args
         except (TypeError, ValueError):
-            text = f"{msg} | args={args!r}"
+            text = f"{msg} | args={fmt_args!r}"
     else:
         text = msg
     _pfx = "[JachinExec]"
-    if logger is not None:
-        logger.log(level, "%s %s", _pfx, text)
+    if _log is not None:
+        _log.log(level, "%s %s", _pfx, text)
     if exec_trace_stderr_enabled():
         print(f"{_pfx} {text}", file=sys.stderr, flush=True)

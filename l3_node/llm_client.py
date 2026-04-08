@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -100,6 +101,100 @@ def _brief_llm_context(
             break
     tc = len(tools) if tools else 0
     return f"msgs={n} roles={roles} tools={tc} last_user_preview={last_user!r}"
+
+
+def _extract_tool_call_name_args(tc: Any) -> tuple[str, str]:
+    """从 litellm/OpenAI tool_call 对象或 dict 取出 function.name / arguments。"""
+    if isinstance(tc, dict):
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            return str(fn.get("name") or ""), str(fn.get("arguments") or "")
+        return "", ""
+    fn = getattr(tc, "function", None)
+    if fn is None:
+        return "", ""
+    n = getattr(fn, "name", None)
+    a = getattr(fn, "arguments", None)
+    if hasattr(fn, "model_dump"):
+        try:
+            dumped = fn.model_dump()
+            if isinstance(dumped, dict):
+                return str(dumped.get("name") or n or ""), str(dumped.get("arguments") or a or "")
+        except Exception:
+            pass
+    return str(n or ""), str(a or "")
+
+
+def tool_calls_to_react_text(
+    tool_calls: list[Any] | None,
+    *,
+    openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
+    use_first_only: bool = True,
+) -> str:
+    """
+    将 API 返回的 function/tool 调用转写为 Thought/Action/Action Input，供 agent_core._parse_action。
+    *openapi_fname_to_tool_id*：清洗后的 function.name → 真实 tool id（如 mcp_query → mcp:query）。
+    """
+    openapi_fname_to_tool_id = openapi_fname_to_tool_id or {}
+    if not tool_calls:
+        return ""
+    calls = list(tool_calls)
+    if use_first_only and len(calls) > 1:
+        logger.info("[L3 LLM] API 返回 %d 个 tool_calls，ReAct 单步仅取第一个", len(calls))
+        calls = calls[:1]
+    blocks: list[str] = []
+    for tc in calls:
+        name_api, args_raw = _extract_tool_call_name_args(tc)
+        tid = openapi_fname_to_tool_id.get(str(name_api or "")) or str(name_api or "")
+        if not tid:
+            continue
+        if isinstance(args_raw, (dict, list)):
+            args_str = json.dumps(args_raw, ensure_ascii=False)
+        else:
+            args_str = str(args_raw or "").strip()
+        if not args_str:
+            args_str = "{}"
+        blocks.append(f"Thought: （API function calling）\nAction: {tid}\nAction Input: {args_str}")
+    return "\n\n".join(blocks)
+
+
+def _accumulate_stream_tool_call_delta(tc_list: Any, acc: dict[int, dict[str, str]]) -> None:
+    """合并流式 chunk 中的 tool_calls 片段（按 index）。"""
+    if not tc_list:
+        return
+    for part in tc_list:
+        if isinstance(part, dict):
+            idx = int(part.get("index", 0) or 0)
+            pid = part.get("id")
+            fn = part.get("function")
+            if isinstance(fn, dict):
+                pname = fn.get("name")
+                pargs = fn.get("arguments")
+            else:
+                pname, pargs = None, None
+        else:
+            idx = int(getattr(part, "index", 0) or 0)
+            pid = getattr(part, "id", None)
+            fn = getattr(part, "function", None)
+            pname = getattr(fn, "name", None) if fn is not None else None
+            pargs = getattr(fn, "arguments", None) if fn is not None else None
+        slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+        if pid:
+            slot["id"] = str(pid)
+        if pname:
+            slot["name"] = str(pname)
+        if pargs:
+            slot["arguments"] += str(pargs)
+
+
+def _merged_tool_calls_from_stream_acc(acc: dict[int, dict[str, str]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i in sorted(acc.keys()):
+        m = acc[i]
+        if not m.get("name"):
+            continue
+        out.append({"function": {"name": m["name"], "arguments": m.get("arguments") or "{}"}})
+    return out
 
 
 def _pop_l3_call_purpose(kwargs: dict[str, Any], default: str = "unspecified") -> str:
@@ -399,10 +494,11 @@ class LiteLLMEngine:
         self,
         messages: list[dict[str, str]],
         tools: Optional[list[dict[str, Any]]] = None,
+        openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         **kwargs: Any,
-    ) -> str | dict[str, Any]:
+    ) -> str:
         """同步风格调用，带重试与 Fallback。无 Key 时自动向 L2 请求。"""
         try:
             from l3_node.early_log import trace
@@ -418,6 +514,7 @@ class LiteLLMEngine:
         purpose = _pop_l3_call_purpose(kwargs)
         _acc, _budget, _cancel = _pop_l3_runtime_controls(kwargs)
         _override_model = kwargs.pop("l3_override_model", None)
+        openapi_fname_to_tool_id = kwargs.pop("openapi_fname_to_tool_id", openapi_fname_to_tool_id)
 
         # 优先从 env 注入，确保有 DASHSCOPE 时绝不走 Ollama
         _inject_env_keys_into_ctx(self.ctx)
@@ -473,6 +570,7 @@ class LiteLLMEngine:
                 next_if_fail or "-",
             )
             try:
+                t0 = time.perf_counter()
                 if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
                     raise RunCancelledError("l3_llm_cancelled_before_completion")
                 _mt = _effective_max_tokens_for_model(model, max_tokens)
@@ -485,6 +583,7 @@ class LiteLLMEngine:
                 }
                 if tools:
                     kwargs_chat["tools"] = tools
+                    kwargs_chat["tool_choice"] = "auto"
 
                 _rfmt = kwargs.pop("response_format", None)
                 if _rfmt is not None:
@@ -510,16 +609,66 @@ class LiteLLMEngine:
                         purpose,
                         model,
                     )
+                    try:
+                        from core.deep_execution_log import log_llm_completion
+
+                        log_llm_completion(
+                            source="l3_node.llm_client",
+                            purpose=str(purpose),
+                            phase=phase,
+                            model=model,
+                            stream=False,
+                            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                            messages=messages,
+                            tools=tools,
+                            response_text="",
+                        )
+                    except Exception:
+                        pass
                     return ""
                 msg = choice.message
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    tclist = list(msg.tool_calls)
+                    synth = tool_calls_to_react_text(
+                        tclist,
+                        openapi_fname_to_tool_id=openapi_fname_to_tool_id,
+                    )
+                    rest = (getattr(msg, "content", None) or "").strip()
+                    out = (synth + "\n\n" + rest).strip() if rest else synth
                     logger.info(
-                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls n=%d",
+                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls->react n=%d chars=%d",
                         purpose,
                         model,
-                        len(msg.tool_calls),
+                        len(tclist),
+                        len(out),
                     )
-                    return {"content": msg.content or "", "tool_calls": msg.tool_calls}
+                    try:
+                        from core.deep_execution_log import log_llm_completion
+
+                        _names = []
+                        try:
+                            for _tc in tclist:
+                                _fn = getattr(getattr(_tc, "function", None), "name", None)
+                                _names.append(str(_fn or _tc))
+                        except Exception:
+                            _names = ["(unreadable)"]
+                        log_llm_completion(
+                            source="l3_node.llm_client",
+                            purpose=str(purpose),
+                            phase=phase,
+                            model=model,
+                            stream=False,
+                            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                            messages=messages,
+                            tools=tools,
+                            response_text=out,
+                            response_dict_summary=(
+                                f"stream_tool_calls_synthesized_to_react n={len(tclist)} names={_names}"
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    return out
                 text = (msg.content or "").strip()
                 logger.info(
                     "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=text chars=%d",
@@ -527,6 +676,22 @@ class LiteLLMEngine:
                     model,
                     len(text),
                 )
+                try:
+                    from core.deep_execution_log import log_llm_completion
+
+                    log_llm_completion(
+                        source="l3_node.llm_client",
+                        purpose=str(purpose),
+                        phase=phase,
+                        model=model,
+                        stream=False,
+                        elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                        messages=messages,
+                        tools=tools,
+                        response_text=text,
+                    )
+                except Exception:
+                    pass
                 return text
             except Exception as e:
                 if _BudgetExhaustedError and isinstance(e, _BudgetExhaustedError):
@@ -562,6 +727,22 @@ class LiteLLMEngine:
                     )
                 else:
                     logger.exception("[L3 LLM] 调用异常 model=%s: %s", model, e)
+                    try:
+                        from core.deep_execution_log import log_llm_completion
+
+                        log_llm_completion(
+                            source="l3_node.llm_client",
+                            purpose=str(purpose),
+                            phase=phase,
+                            model=model,
+                            stream=False,
+                            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                            messages=messages,
+                            tools=tools,
+                            error=f"{type(e).__name__}: {e}"[:8000],
+                        )
+                    except Exception:
+                        pass
                     raise last_error
         raise last_error or RuntimeError("LLM 调用失败")
 
@@ -569,6 +750,8 @@ class LiteLLMEngine:
         self,
         messages: list[dict[str, str]],
         chunk_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         **kwargs: Any,
@@ -585,15 +768,22 @@ class LiteLLMEngine:
         _acc, _budget, _cancel = _pop_l3_runtime_controls(kwargs)
         _stream_run_id = kwargs.pop("l3_run_id", None)
         _override_model_s = kwargs.pop("l3_override_model", None)
+        tools = kwargs.pop("tools", tools)
+        openapi_fname_to_tool_id = kwargs.pop("openapi_fname_to_tool_id", openapi_fname_to_tool_id)
 
         _inject_env_keys_into_ctx(self.ctx)
         has_keys = self.ctx.has_any_key()
+        _rn = (
+            "react_note=已传 tools[]（流式 function calling 将转写为 ReAct Action）"
+            if tools
+            else "react_note=未传 tools[]（仅靠 system 内工具说明；须输出 Action:/Action Input:）"
+        )
         logger.info(
-            "[L3 LLM][调度] purpose=%s action=chat_completion_stream has_key=%s %s "
-            "react_note=API 未传 tools[]（流式 ReAct 仅靠 system 内文本工具说明；须输出 Action:/Action Input:）",
+            "[L3 LLM][调度] purpose=%s action=chat_completion_stream has_key=%s %s %s",
             purpose,
             has_keys,
-            _brief_llm_context(messages, None),
+            _brief_llm_context(messages, tools),
+            _rn,
         )
         if not has_keys:
             await try_fetch_keys_from_l2(self.ctx)
@@ -643,6 +833,7 @@ class LiteLLMEngine:
                 next_if_fail or "-",
             )
             try:
+                t0 = time.perf_counter()
                 if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
                     raise RunCancelledError("l3_llm_cancelled_before_stream")
                 _mt = _effective_max_tokens_for_model(model, max_tokens)
@@ -654,6 +845,9 @@ class LiteLLMEngine:
                     "max_tokens": _mt,
                     "timeout": self.timeout,
                 }
+                if tools:
+                    kwargs_chat["tools"] = tools
+                    kwargs_chat["tool_choice"] = "auto"
                 _rfmt_s = kwargs.pop("response_format", None)
                 if _rfmt_s is not None:
                     kwargs_chat["response_format"] = _rfmt_s
@@ -665,6 +859,8 @@ class LiteLLMEngine:
                 merge_dashscope_stream_incremental_hint(model, kwargs_chat)
 
                 response = await litellm.acompletion(**kwargs_chat)
+
+                _tcall_acc: dict[int, dict[str, str]] = {}
 
                 async def _consume_stream() -> tuple[list[str], object | None]:
                     from core.stream_text_delta import StreamDeltaNormalizer
@@ -681,7 +877,16 @@ class LiteLLMEngine:
                         choice = chunk.choices[0] if chunk.choices else None
                         if not choice or not hasattr(choice, "delta"):
                             continue
-                        delta = getattr(choice.delta, "content", None) or ""
+                        d = choice.delta
+                        _tcl = getattr(d, "tool_calls", None)
+                        if _tcl:
+                            _accumulate_stream_tool_call_delta(_tcl, _tcall_acc)
+                        delta = getattr(d, "content", None) or ""
+                        if not delta and not _tcl:
+                            u = getattr(chunk, "usage", None)
+                            if u is not None:
+                                luc = chunk
+                            continue
                         if not delta:
                             u = getattr(chunk, "usage", None)
                             if u is not None:
@@ -711,13 +916,51 @@ class LiteLLMEngine:
                         _agent_cancel_mod.unregister_stream_task(str(_stream_run_id))
                 if _last_usage_chunk is not None:
                     _apply_usage_budget(_last_usage_chunk, _acc, _budget)
-                out = "".join(pieces).strip()
-                logger.info(
-                    "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",
-                    purpose,
-                    model,
-                    len(out),
-                )
+                text_out = "".join(pieces).strip()
+                merged_calls = _merged_tool_calls_from_stream_acc(_tcall_acc)
+                if merged_calls:
+                    synth = tool_calls_to_react_text(
+                        merged_calls,
+                        openapi_fname_to_tool_id=openapi_fname_to_tool_id,
+                    )
+                    out = (synth + "\n\n" + text_out).strip() if text_out else synth
+                    logger.info(
+                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=stream+tool_calls n=%d chars=%d",
+                        purpose,
+                        model,
+                        len(merged_calls),
+                        len(out),
+                    )
+                else:
+                    out = text_out
+                    logger.info(
+                        "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",
+                        purpose,
+                        model,
+                        len(out),
+                    )
+                try:
+                    from core.deep_execution_log import log_llm_completion
+
+                    _sum = (
+                        f"stream+tool_calls n={len(merged_calls)}"
+                        if merged_calls
+                        else "stream_text_only"
+                    )
+                    log_llm_completion(
+                        source="l3_node.llm_client",
+                        purpose=str(purpose),
+                        phase=phase,
+                        model=model,
+                        stream=True,
+                        elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                        messages=messages,
+                        tools=tools,
+                        response_text=out,
+                        response_dict_summary=_sum,
+                    )
+                except Exception:
+                    pass
                 return out
             except Exception as e:
                 if _BudgetExhaustedError and isinstance(e, _BudgetExhaustedError):
@@ -753,5 +996,21 @@ class LiteLLMEngine:
                     )
                 else:
                     logger.exception("[L3 LLM] 流式异常 model=%s: %s", model, e)
+                    try:
+                        from core.deep_execution_log import log_llm_completion
+
+                        log_llm_completion(
+                            source="l3_node.llm_client",
+                            purpose=str(purpose),
+                            phase=phase,
+                            model=model,
+                            stream=True,
+                            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                            messages=messages,
+                            tools=tools,
+                            error=f"{type(e).__name__}: {e}"[:8000],
+                        )
+                    except Exception:
+                        pass
                     raise last_error
         raise last_error or RuntimeError("LLM 流式调用失败")

@@ -1,7 +1,8 @@
 """
-SQLite / MCP 数据问数：ReAct SOP、同链逻辑自检、双模型 Critic 预留说明。
+SQLite / MCP 数据问数：ReAct SOP、同链逻辑自检；与 **内联 Critic**（agent_core → critic_agent.evaluate_action）及
+db_semantics.yaml / db_semantics.md / golden_sql_examples 配合使用。
 
-与 context_sniffer 注入的 db_semantics.md、golden_sql_examples.jsonl 配合使用。
+架构 SSOT：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
 """
 from __future__ import annotations
 
@@ -24,10 +25,10 @@ SQLITE_SELF_CRITIC_BLOCK = """【SQL·逻辑自检（Actor 同链 Critic）】�
 
 若任一条明显不成立，须 **修正 SQL 再查** 或明确说「当前结果无法支持结论」，**禁止** 将矛盾结论当最终答案输出。
 
-（完整 **双模型 Critic**：可将「用户原问 + SQL + Observation」二次送轻量模型裁决；见下方架构说明。当前默认用本段在同链内消化。）"""
+（**工具执行前** 另有系统级 **内联 Critic**（`l3_node/critic_agent.py`）审查 SQL/意图；本段为 Actor **同链** 自述自检。未来可选：在 Final Answer 前再跑一轮「问+SQL+Observation」事后裁决，如 `JACHIN_DB_CRITIC_ENABLED`。）"""
 
-SQLITE_ACTOR_CRITIC_STUB_NOTE = """【架构预留 · 双 Agent Critic】未来可经配置启用独立 Critic completion（如 `JACHIN_DB_CRITIC_ENABLED`），
-在 Actor 拿到 SQL 与结果后、对用户可见前自动跑一轮校验；当前以 **【SQL·逻辑自检】** 段落在同一 ReAct 链内实现「Actor-Critic」效果，避免额外时延与费用。"""
+SQLITE_ACTOR_CRITIC_STUB_NOTE = """【架构说明 · Critic 分层】**已落地**：`evaluate_action` 在 **派发 read_query/write_query 之前** 做内联门控（混合架构白皮书 §3）。
+**预留**：可选「事后双模型 Critic」（如 `JACHIN_DB_CRITIC_ENABLED`）在 Observation 之后、Final 之前再校一轮；当前以 **【SQL·逻辑自检】** 段落 + 上述内联 Critic 为主。"""
 
 SQLITE_REACT_SOP_BLOCK_SLIM = (
     "【DB·SOP】探表（sqlite_master/PRAGMA）→ 对照 db_semantics 映射 → 再 read_query；"

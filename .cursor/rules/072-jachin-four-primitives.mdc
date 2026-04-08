@@ -38,3 +38,5 @@ alwaysApply: true
 
 执行面路由与组件清单见 **045-four-primitives-execution.mdc**（与本文一致，**禁止**再写轨道 A/B/C）。  
 L3 通义 **三档模型**（`LLM_MODEL` / `LLM_COMPLEX_MODEL` / `LLM_CODER_MODEL`）自动切换见 **063-l3-qwen-tri-model-routing.mdc**。
+
+**混合架构 / L4 编排增强（非第五原语）**：在 **同一条 `run_agent` ReAct 主轴** 上挂载语义层、SOP、**内联 Critic**（`critic_agent.evaluate_action`）、Experience RAG（`experience_memory`），**不改变** Tools、MCP、Skills、Agent Tasks 的定义。架构白皮书：**`docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md`**；库表与复杂 MCP 工程约束见 **090-jachin-l4-agent.mdc**（Probe → Map → Execute）。

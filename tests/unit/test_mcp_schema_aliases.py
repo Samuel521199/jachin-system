@@ -49,7 +49,7 @@ def test_to_openai_write_file_requires_path_and_content_even_if_params_order_con
         }
     ]
     out = reg.to_openai_tools_schema(tools)
-    assert out and out[0]["function"]["name"] == "mcp:write_file"
+    assert out and out[0]["function"]["name"] == "mcp_write_file"
     req = out[0]["function"]["parameters"].get("required") or []
     assert set(req) == {"path", "content"}
 
