@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.105] - 2026-04-09
+
+### Added
+
+- **网站下载与热更新**：Nexus / jachin-downloads 下载站与桌面端 `tauri-plugin-updater` 对接；`jachin-updater-helper` 独立进程（下载、minisign 校验、准备/应用两阶段）；`publish_desktop_release.py` 发布与签名流程；任务 JSON 内联 `updater_pubkey_wire` 避免助手与主程序公钥不一致。
+
+### Changed
+
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli`、`clients/desktop/package.json`、`clients/desktop/src-tauri/tauri.conf.json`、`Cargo.toml`、`VERSION` 统一为 **0.8.105**（Git 标签 `v0.8.105`）
+
 ## [v0.8.104] - 2026-04-07
 
 ### Added
