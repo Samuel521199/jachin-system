@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 from pathlib import Path
@@ -878,6 +879,96 @@ async def _handle_setup_save_gateway_org(request) -> "aiohttp.web.Response":
     return _json_response({"ok": True})
 
 
+def _safety_lock_admin_token_ok(request: Any) -> tuple[bool, str | None]:
+    """校验请求头中的管理员密钥与 L3 进程环境变量一致。返回 (通过, 错误码)。"""
+    exp = os.environ.get("JACHIN_SAFETY_LOCK_ADMIN_TOKEN", "").strip()
+    if not exp:
+        return False, "admin_token_not_configured"
+    tok = (request.headers.get("X-Jachin-Safety-Lock-Token") or "").strip()
+    if tok != exp:
+        return False, "forbidden"
+    return True, None
+
+
+async def _handle_safety_lock_pending(request: Any) -> "aiohttp.web.Response":
+    """GET /api/v3/safety-lock/pending — 列出待审批条目（需管理员密钥）。"""
+    ok, err = _safety_lock_admin_token_ok(request)
+    if not ok:
+        status = 503 if err == "admin_token_not_configured" else 401
+        return _json_response(
+            {
+                "ok": False,
+                "error": err,
+                "message": (
+                    "请在本机为 L3 进程设置 JACHIN_SAFETY_LOCK_ADMIN_TOKEN。"
+                    if err == "admin_token_not_configured"
+                    else "管理员密钥不匹配。"
+                ),
+            },
+            status=status,
+        )
+    try:
+        from l3_node.jachin_safety_lock import list_pending_entries
+
+        data = list_pending_entries()
+        return _json_response(data)
+    except Exception as e:
+        logger.warning("[L3 HTTP] safety-lock pending list failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_safety_lock_approve(request: Any) -> "aiohttp.web.Response":
+    """POST /api/v3/safety-lock/approve — 审批通过，写入 JACHIN_SAFETY_LOCK.md 并删除 pending。"""
+    ok, err = _safety_lock_admin_token_ok(request)
+    if not ok:
+        status = 503 if err == "admin_token_not_configured" else 401
+        return _json_response({"ok": False, "error": err}, status=status)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid_json"}, status=400)
+    pending_id = (body.get("pending_id") or body.get("pendingId") or "").strip()
+    if not pending_id:
+        return _json_response({"ok": False, "error": "pending_id required"}, status=400)
+    from l3_node.jachin_safety_lock import approve_pending
+
+    tok = (request.headers.get("X-Jachin-Safety-Lock-Token") or "").strip()
+    result = approve_pending(pending_id, tok)
+    if result.get("ok"):
+        return _json_response(result)
+    ec = result.get("error") or "error"
+    status = 401 if ec == "forbidden" else 404 if ec == "not_found" else 400
+    if ec == "admin_token_not_configured":
+        status = 503
+    return _json_response(result, status=status)
+
+
+async def _handle_safety_lock_reject(request: Any) -> "aiohttp.web.Response":
+    """POST /api/v3/safety-lock/reject — 拒绝并删除 pending 文件。"""
+    ok, err = _safety_lock_admin_token_ok(request)
+    if not ok:
+        status = 503 if err == "admin_token_not_configured" else 401
+        return _json_response({"ok": False, "error": err}, status=status)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid_json"}, status=400)
+    pending_id = (body.get("pending_id") or body.get("pendingId") or "").strip()
+    if not pending_id:
+        return _json_response({"ok": False, "error": "pending_id required"}, status=400)
+    from l3_node.jachin_safety_lock import reject_pending
+
+    tok = (request.headers.get("X-Jachin-Safety-Lock-Token") or "").strip()
+    result = reject_pending(pending_id, tok)
+    if result.get("ok"):
+        return _json_response(result)
+    ec = result.get("error") or "error"
+    status = 401 if ec == "forbidden" else 404 if ec == "not_found" else 400
+    if ec == "admin_token_not_configured":
+        status = 503
+    return _json_response(result, status=status)
+
+
 def _json_response(data: Any, status: int = 200) -> "aiohttp.web.Response":
     import aiohttp.web
     return aiohttp.web.json_response(data, status=status, dumps=lambda o: json.dumps(o, ensure_ascii=False))
@@ -929,7 +1020,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
             r = await handler(request)
         r.headers["Access-Control-Allow-Origin"] = "*"
         r.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-        r.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        r.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Jachin-Safety-Lock-Token"
         return r
 
     app = aiohttp.web.Application(middlewares=[cors_middleware])
@@ -951,6 +1042,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v3/recycle-bin/skills", _handle_recycle_bin_list)
     app.router.add_post("/api/v3/recycle-bin/skills/{recycle_id}/restore", _handle_recycle_bin_restore)
     app.router.add_delete("/api/v3/recycle-bin/skills/{recycle_id}", _handle_recycle_bin_delete)
+    app.router.add_get("/api/v3/safety-lock/pending", _handle_safety_lock_pending)
+    app.router.add_post("/api/v3/safety-lock/approve", _handle_safety_lock_approve)
+    app.router.add_post("/api/v3/safety-lock/reject", _handle_safety_lock_reject)
 
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):

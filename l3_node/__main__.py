@@ -144,6 +144,11 @@ trace("DASHSCOPE_API_KEY=%s", _mask_key(_dash))
 trace("OPENAI_API_KEY=%s", _mask_key(_openai))
 if not _dash and not _openai:
     trace("WARNING: 未检测到任何 API Key，大模型将不可用")
+_sl_admin = (os.environ.get("JACHIN_SAFETY_LOCK_ADMIN_TOKEN") or "").strip()
+trace(
+    "JACHIN_SAFETY_LOCK_ADMIN_TOKEN=%s（未设置则控制台安全锁审批返回 503；桌面端需在 src-tauri l3_spawn L3_ENV_KEYS 中转发）",
+    _mask_key(_sl_admin) if _sl_admin else "(空)",
+)
 
 _log_level = getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
 _je = (os.environ.get("JACHIN_LOG_LEVEL") or "").strip().upper()

@@ -96,6 +96,64 @@ def test_domain_inject_css_vs_db(tmp_jachin_home: Path, monkeypatch: pytest.Monk
     assert "DB_RULE_ONLY" in fat
 
 
+def test_tofu_auto_second_append_same_category(tmp_jachin_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """首条带 category 人工批准后，同 category 再次 append 应直接写入并覆盖旧块。"""
+    monkeypatch.setenv("JACHIN_SAFETY_LOCK_LEARN", "1")
+    monkeypatch.setenv("JACHIN_SAFETY_LOCK_ADMIN_TOKEN", "adm-sec")
+    (tmp_jachin_home / "nexus_config.json").write_text("{}", encoding="utf-8")
+
+    from l3_node.jachin_safety_lock import (
+        append_verified_fact,
+        approve_pending,
+        global_lock_path,
+    )
+
+    r1 = append_verified_fact("rule v1", source="agent", category="backend_framework")
+    assert r1.get("status") == "pending_approval"
+    pid = r1.get("pending_id")
+    assert approve_pending(str(pid), "adm-sec").get("ok") is True
+    text1 = global_lock_path().read_text(encoding="utf-8")
+    assert "rule v1" in text1
+    assert "category=`backend_framework`" in text1
+
+    r2 = append_verified_fact("rule v2 override", source="agent", category="backend_framework")
+    assert r2.get("status") == "auto_approved_tofu"
+    assert r2.get("category") == "backend_framework"
+    text2 = global_lock_path().read_text(encoding="utf-8")
+    assert "rule v2 override" in text2
+    assert "rule v1" not in text2
+    assert text2.count("category=`backend_framework`") == 1
+
+
+def test_core_safety_lock_append_dispatch_unit() -> None:
+    from l3_node.tools.core_safety_lock_append import decide_safety_lock_append_path
+
+    assert (
+        decide_safety_lock_append_path(
+            append_requires_approval=True,
+            category_norm="x",
+            approved_categories={"x"},
+        )
+        == "tofu_auto"
+    )
+    assert (
+        decide_safety_lock_append_path(
+            append_requires_approval=True,
+            category_norm="x",
+            approved_categories=set(),
+        )
+        == "pending"
+    )
+    assert (
+        decide_safety_lock_append_path(
+            append_requires_approval=False,
+            category_norm="x",
+            approved_categories=set(),
+        )
+        == "direct_md"
+    )
+
+
 def test_full_inject_respects_cap(tmp_jachin_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JACHIN_SAFETY_LOCK_FULL_INJECT", "1")
     (tmp_jachin_home / "JACHIN_SAFETY_LOCK.md").write_text("H" * 100_000, encoding="utf-8")

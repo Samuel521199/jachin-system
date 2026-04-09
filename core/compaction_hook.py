@@ -9,6 +9,7 @@ Jachin Nexus v8.0 — 神盾 Compaction Hook（上下文时空折叠）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -410,7 +411,8 @@ async def compaction_before_llm_think(ctx: PipelineContext) -> None:
         return
 
     threshold, summary_model = _get_compaction_config()
-    estimated = _estimate_tokens(messages)
+    # tiktoken 在大 messages 上会长时间占用事件循环，易拖慢 Lark WS 协议层 pong → 1011 断连
+    estimated = await asyncio.to_thread(_estimate_tokens, messages)
     if estimated <= threshold:
         return
 
@@ -533,7 +535,7 @@ async def compaction_before_llm_think(ctx: PipelineContext) -> None:
         new_messages = first_system + [summary_msg] + last_rounds
         ctx.messages.clear()
         ctx.messages.extend(new_messages)
-        new_est = _estimate_tokens(ctx.messages)
+        new_est = await asyncio.to_thread(_estimate_tokens, ctx.messages)
         console.print(
             f"[bold blue][🛡️ 神盾][/bold blue] 上下文超载 ({estimated} tokens)，"
             f"已触发时空折叠，压缩至 {new_est} tokens。"

@@ -77,6 +77,28 @@ def _parse_action_input_json(action_input: Any) -> dict[str, Any]:
         return {}
 
 
+# 明显「日常偏好 / 项目情报」用语（非安防禁令）；与高危词互斥后用于打回误用 safety_lock_append
+_SOFT_PREF_HINT_RE = re.compile(
+    r"(偏好|习惯|口味|饮食|喜欢吃|框架|技术栈|frontend|backend|litestar|fastapi|django|flask|vue|react|svelte|"
+    r"项目代号|代号|日常|喜好|喜欢用|默认用)",
+    re.I,
+)
+_SAFETY_RISK_HINT_RE = re.compile(
+    r"(禁止|严禁|不得|不允许|高危|生产环境|删库|DROP\s+TABLE|TRUNCATE|credential|凭据|密码|token|密钥|"
+    r"rm\s+-rf|chmod\s+777|iptables|sudo)",
+    re.I,
+)
+
+
+def _safety_lock_body_looks_like_soft_preference(body: str) -> bool:
+    s = (body or "").strip()
+    if not s or len(s) > 800:
+        return False
+    if _SAFETY_RISK_HINT_RE.search(s):
+        return False
+    return bool(_SOFT_PREF_HINT_RE.search(s))
+
+
 def _extract_sql_from_proposed(proposed_action: dict[str, Any]) -> str:
     obj = _parse_action_input_json(proposed_action.get("action_input"))
     for k in ("sql", "query", "statement"):
@@ -154,19 +176,31 @@ def _critic_deterministic_pass(
     proposed_action: dict[str, Any],
     *,
     react_observation_excerpt: str,
-) -> bool | None:
+) -> tuple[bool, str] | None:
     """
-    若可确定性放行则 True；不可判定则 None（交 LLM）。
+    返回 (True, "") 表示确定性放行；(False, critique) 表示确定性打回；None 表示交 LLM。
     """
     tid = str(proposed_action.get("tool_id") or "").strip()
     if not tid:
         return None
+    if tid == "core:safety_lock_append":
+        ai = _parse_action_input_json(proposed_action.get("action_input"))
+        body = str(ai.get("body") or ai.get("content") or ai.get("text") or "").strip()
+        if body and _safety_lock_body_looks_like_soft_preference(body):
+            return (
+                False,
+                (
+                    "打回！本条属于日常偏好/项目情报，禁止使用 core:safety_lock_append。"
+                    "请改用 **core:local_memory_append**（content JSON）写入 l3_local.json，或 recall_memory / core:local_memory_search；"
+                    "仅「禁止高危操作、核心安防」才允许 safety_lock_append。"
+                ),
+            )
     sql = _extract_sql_from_proposed(proposed_action)
     kind = _sqlite_action_kind(tid, sql)
     if kind == "read":
-        return True
+        return True, ""
     if kind == "write" and _observation_excerpt_suggests_prior_rowset(react_observation_excerpt):
-        return True
+        return True, ""
     return None
 
 
@@ -213,8 +247,11 @@ async def evaluate_action(
         _det = _critic_deterministic_pass(
             user_intent, proposed_action, react_observation_excerpt=_exo
         )
-        if _det is True:
-            return True, ""
+        if _det is not None:
+            _ok, _crit = _det
+            if _ok:
+                return True, ""
+            return False, _crit
     except Exception as e:
         logger.debug("[ActionCritic] deterministic_pass 跳过: %s", e)
 
@@ -249,7 +286,9 @@ async def evaluate_action(
             "B) 若 semantic_layer 非空，业务词是否应按其中的片段体现为 WHERE/ORDER BY 等，而不是 SELECT * 拉全表再在脑中筛选。\n"
             "C) 只要 proposed_action 是**纯只读**（SELECT、list_tables、describe_table、PRAGMA table_info、只读 MCP 查询等），且**没有**试图盲目 INSERT/UPDATE/DELETE/write，"
             "一律 ok=true（critique 空字符串）。\n"
-            "D) 不要臆造表名；若仅缺 Schema，可 ok=true；若 Actor 在缺 Schema 时直接写破坏性 DML，必须 ok=false 并按纪律 4 命令其先探查/只读。"
+            "D) 不要臆造表名；若仅缺 Schema，可 ok=true；若 Actor 在缺 Schema 时直接写破坏性 DML，必须 ok=false 并按纪律 4 命令其先探查/只读。\n"
+            "6) **core:safety_lock_append 专用**：若 action 内容仅为日常偏好、项目代号、框架喜好、饮食习惯等非安防信息，必须 ok=false，"
+            "命令 Actor 改用 **core:local_memory_append**（content JSON）或 recall_memory；仅「禁止高危操作、核心底层安防」才允许本工具。"
         )
         payload = {
             "user_intent": (user_intent or "")[:6000],

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -22,6 +22,14 @@ const MANIFEST_CAPS = ["ui_render", "hitl_popup", "stream_chunk"];
 export interface UseSensoryOptions {
   /** Lark chat_id：启用镜像模式，Lark 消息同步到终端，终端回复同步到 Lark */
   larkChatId?: string;
+}
+
+/** L5 定时记忆整理：服务端推送的倒计时提示（勿当 thought 拼进助手气泡） */
+export interface MemoryCompactSuggestState {
+  content: string;
+  countdownSec: number;
+  remainingSec: number;
+  intervalDays: number;
 }
 
 /** 与 L3 Sensory 总线对齐；兼容 `action_type` 与顶层 `metadata` */
@@ -93,6 +101,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [handoffEvent, setHandoffEvent] = useState<HandoffEvent | null>(null);
   /** Swarm 算力雷达：task_offer 时显示扫描，task_completed 时爆发 */
   const [swarmEvent, setSwarmEvent] = useState<SwarmEvent | null>(null);
+  /** 记忆整理周期到期：横幅 + 倒计时，结束发 memory_compact_auto_start */
+  const [memoryCompactSuggest, setMemoryCompactSuggest] = useState<MemoryCompactSuggestState | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChunkRef = useRef<
@@ -129,6 +139,22 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     onStepRef.current = fn;
   }, []);
 
+  const dismissMemoryCompactSuggest = useCallback(() => {
+    setMemoryCompactSuggest(null);
+  }, []);
+
+  const sendMemoryCompactControl = useCallback(
+    (type: "memory_compact_confirm" | "memory_compact_defer" | "memory_compact_cancel", hours?: number) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+      const p: Record<string, unknown> = { type };
+      if (type === "memory_compact_defer") p.hours = hours ?? 24;
+      wsRef.current.send(JSON.stringify(p));
+      setMemoryCompactSuggest(null);
+      return true;
+    },
+    [],
+  );
+
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
@@ -158,6 +184,27 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             (typeof raw.action_type === "string" && raw.action_type) ||
             (typeof raw.type === "string" && raw.type) ||
             "";
+          if (step === "memory_compact_suggest") {
+            const metaRaw =
+              raw.metadata && typeof raw.metadata === "object"
+                ? (raw.metadata as Record<string, unknown>)
+                : undefined;
+            const cd = Math.max(3, Math.min(120, Number(metaRaw?.countdown_sec) || 10));
+            const id = Math.max(1, Number(metaRaw?.interval_days) || 3);
+            const suggestBody =
+              typeof raw.content === "string"
+                ? raw.content
+                : raw.content != null
+                  ? String(raw.content)
+                  : "";
+            setMemoryCompactSuggest({
+              content: suggestBody,
+              countdownSec: cd,
+              remainingSec: cd,
+              intervalDays: id,
+            });
+            return;
+          }
           if (step === "manifest_ack" || step === "manifest" || step === "ping" || step === "pong") {
             return;
           }
@@ -311,6 +358,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     setStreamChunkKind(null);
     setStreamingContent("");
     setCurrentRunId(null);
+    setMemoryCompactSuggest(null);
   }, []);
 
   const sendHitlResponse = useCallback((approved: boolean, taskId?: string) => {
@@ -320,6 +368,15 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     wsRef.current.send(JSON.stringify({ action, task_id: tid }));
     setHitlPending(null);
   }, [hitlPending?.task_id]);
+
+  /** 与本地 /clear 配合：清空 L3 侧会话缓冲（非 intent，不经大模型）；含 Lark chat_id 时同步落盘空会话 */
+  const sendSessionClearControl = useCallback(() => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    const payload: Record<string, string> = { type: "clear_session" };
+    if (larkChatId) payload.chat_id = larkChatId;
+    wsRef.current.send(JSON.stringify(payload));
+    return true;
+  }, [larkChatId]);
 
   const resolveHitl = useCallback((approved: boolean) => {
     const tid = hitlPending?.task_id;
@@ -351,6 +408,25 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     return () => disconnect();
   }, [connect, disconnect]);
 
+  /** 记忆整理提示：每秒倒计时，归零时发 auto_start 并收起横幅 */
+  useEffect(() => {
+    if (!memoryCompactSuggest || memoryCompactSuggest.remainingSec <= 0) return;
+    const id = window.setTimeout(() => {
+      setMemoryCompactSuggest((prev) => {
+        if (!prev) return null;
+        const n = prev.remainingSec - 1;
+        if (n <= 0) {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: "memory_compact_auto_start" }));
+          }
+          return null;
+        }
+        return { ...prev, remainingSec: n };
+      });
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [memoryCompactSuggest]);
+
   // Lark 镜像：连接后若 larkChatId 有值则订阅；larkChatId 变化时若已连接则更新订阅
   useEffect(() => {
     if (!larkChatId || wsRef.current?.readyState !== WebSocket.OPEN) return;
@@ -366,6 +442,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     reconnect: connect,
     /** 发送聊天输入到 Layer 3 */
     sendInput,
+    /** 通知 L3 清空 WS 会话缓冲（控制帧，非用户 intent） */
+    sendSessionClearControl,
     /** Lark 镜像：注册回调，Lark 用户发消息时终端同步显示 */
     registerMirrorInputHandler,
     /** 是否处于 Lark 镜像模式 */
@@ -379,5 +457,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     registerChunkHandler,
     registerAnswerHandler,
     registerStepHandler,
+    memoryCompactSuggest,
+    dismissMemoryCompactSuggest,
+    sendMemoryCompactControl,
   };
 }

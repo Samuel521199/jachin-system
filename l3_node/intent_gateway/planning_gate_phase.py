@@ -16,6 +16,7 @@ _PLANNING_NATIVE_ALLOW = frozenset(
         "core:fs_read",
         "core:fs_write",
         "core:local_memory_search",
+        "core:local_memory_append",
     }
 )
 

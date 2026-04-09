@@ -6,6 +6,26 @@ import { Readable } from "stream";
 /** L3 HTTP 端口回退（与 l3_node/http_server.py 一致） */
 const L3_PORTS = [18991, 18990, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999];
 
+const HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "proxy-connection",
+  "host",
+  "content-length",
+]);
+
+function readIncomingBody(req: any): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer | string) => {
+      chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c, "utf8"));
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 /** Vite 插件：/l3 多端口回退代理，L3 可能在 18990 等端口启动，支持 SSE 流式响应 */
 function viteL3Proxy() {
   return {
@@ -21,13 +41,39 @@ function viteL3Proxy() {
           return;
         }
         const pathname = req.url.replace(/^\/l3/, "");
+        const method = String(req.method || "GET").toUpperCase();
+
+        // Node fetch 不能把 IncomingMessage 直接当 body；POST（如安全锁审批）会全端口失败 → 502「L3 不可达」
+        let forwardBody: Buffer | undefined;
+        if (!["GET", "HEAD"].includes(method)) {
+          try {
+            const buf = await readIncomingBody(req);
+            if (buf.length > 0) forwardBody = buf;
+          } catch {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "读取请求体失败" }));
+            return;
+          }
+        }
+
         for (const port of L3_PORTS) {
           try {
             const target = `http://127.0.0.1:${port}${pathname}`;
+            const src = (req.headers || {}) as Record<string, string | string[] | undefined>;
+            const headers: Record<string, string> = {};
+            for (const [k, v] of Object.entries(src)) {
+              if (v == null || HOP_BY_HOP.has(k.toLowerCase())) continue;
+              headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+            }
+            headers["host"] = `127.0.0.1:${port}`;
+            if (forwardBody && forwardBody.length > 0) {
+              headers["content-length"] = String(forwardBody.length);
+            }
             const resp = await fetch(target, {
-              method: req.method,
-              headers: { ...(req.headers as Record<string, string>), host: `127.0.0.1:${port}` },
-              body: ["GET", "HEAD"].includes(req.method) ? undefined : (req as any),
+              method,
+              headers,
+              body: forwardBody,
             });
             res.statusCode = resp.status;
             resp.headers.forEach((v, k) => {

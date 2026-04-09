@@ -94,12 +94,22 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "params": ["query"],
     },
     {
+        "id": "core:local_memory_append",
+        "label": "core:local_memory_append",
+        "desc": (
+            "向 ~/.jachin/memory/l3_local.json **追加一条**本地记忆（事实/偏好）；带时间戳，立即可被 local_memory_search 命中。"
+            "**禁止**幻觉写入 MEMORY.md。JSON：content（必填）；可选 tags 字符串数组。"
+        ),
+        "params": ["content"],
+    },
+    {
         "id": "core:safety_lock_append",
         "label": "core:safety_lock_append",
         "desc": (
-            "提交「已验证事实」：默认进入 **待审批队列**（不写正式 MD），管理员用 CLI `python -m l3_node.jachin_safety_lock_admin approve` 刷入；"
-            "勿尝试提供「管理员密钥」。开发可设 nexus safety_lock.direct_append_to_md=true 直连追加。"
-            "JSON：body 或 content（必填）；可选 source、tags。"
+            "提交「系统级安防规则」：默认进入 **待审批队列**（不写正式 MD），管理员用 CLI 或控制台「安全锁审批」刷入；"
+            "勿尝试提供「管理员密钥」。**日常偏好/项目代号/技术栈喜好禁止走本工具**，应使用 **core:local_memory_append** 写入 l3_local.json 或 recall_memory / core:local_memory_search。"
+            "可选 **category**（如 backend_framework）：某 category 首条人工批准后，同 category 再次提交将 **自动覆盖** 旧规则（TOFU 同类二次免批）。"
+            "JSON：body 或 content（必填）；可选 source、tags、category。"
         ),
         "params": ["body"],
     },
@@ -487,6 +497,35 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
             )
         except ImportError as e:
             return {"ok": False, "error": str(e)}
+    if tool_id == "core:local_memory_search":
+        from l3_node.local_memory_search import search_local_memories
+
+        q = str(kwargs.get("query") or "").strip()
+        top_k = int(kwargs.get("top_k") or 8)
+        mmr_l = float(kwargs.get("mmr_lambda") or 0.55)
+        half = float(kwargs.get("half_life_days") or 30.0)
+        inc_md = kwargs.get("include_memory_md", True)
+        if isinstance(inc_md, str):
+            inc_md = inc_md.lower() in ("1", "true", "yes")
+        return search_local_memories(
+            q,
+            top_k=max(1, min(32, top_k)),
+            mmr_lambda=mmr_l,
+            half_life_days=half,
+            include_memory_md=bool(inc_md),
+        )
+    if tool_id == "core:local_memory_append":
+        from l3_node.tools.core_local_memory_append import run_local_memory_append
+
+        tags = kwargs.get("tags")
+        if isinstance(tags, str):
+            tags = [x.strip() for x in tags.split(",") if x.strip()]
+        elif not isinstance(tags, list):
+            tags = None
+        return run_local_memory_append(
+            content=str(kwargs.get("content") or kwargs.get("body") or ""),
+            tags=tags,
+        )
     raise ValueError(f"未知工具: {tool_id}")
 
 
@@ -1076,6 +1115,43 @@ def run_tool(
             except json.JSONDecodeError:
                 pass
         params["job_id"] = jid
+    elif tool_id == "core:local_memory_search":
+        params["query"] = ""
+        params["top_k"] = 8
+        params["mmr_lambda"] = 0.55
+        params["half_life_days"] = 30.0
+        params["include_memory_md"] = True
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["query"] = str(o.get("query") or "").strip()
+                    if o.get("top_k") is not None:
+                        params["top_k"] = o.get("top_k")
+                    if o.get("mmr_lambda") is not None:
+                        params["mmr_lambda"] = o.get("mmr_lambda")
+                    if o.get("half_life_days") is not None:
+                        params["half_life_days"] = o.get("half_life_days")
+                    if "include_memory_md" in o:
+                        params["include_memory_md"] = o.get("include_memory_md")
+            except json.JSONDecodeError:
+                params["query"] = inp.strip()
+        else:
+            params["query"] = inp.strip()
+    elif tool_id == "core:local_memory_append":
+        params["content"] = ""
+        params["tags"] = None
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["content"] = str(o.get("content") or o.get("text") or o.get("body") or "").strip()
+                    if o.get("tags") is not None:
+                        params["tags"] = o.get("tags")
+            except json.JSONDecodeError:
+                params["content"] = inp.strip()
+        else:
+            params["content"] = inp.strip()
     elif tool_id == "core:apply_patch":
         params["patch_text"] = inp
         if inp.strip().startswith("{"):
@@ -1152,6 +1228,7 @@ def run_tool(
         params["source"] = "react"
         params["tags"] = None
         params["token"] = None
+        params["category"] = None
         if inp.strip().startswith("{"):
             try:
                 o = json.loads(inp)
@@ -1165,6 +1242,8 @@ def run_tool(
                         params["token"] = o.get("token")
                     elif o.get("secret_token") is not None:
                         params["token"] = o.get("secret_token")
+                    if o.get("category") is not None:
+                        params["category"] = str(o.get("category") or "").strip() or None
             except json.JSONDecodeError:
                 params["body"] = inp
         else:
@@ -1230,6 +1309,8 @@ def run_tool(
                 "core:workflow_run",
                 "core:domain_workflow_run",
                 "core:shell_hitl_approve",
+                "core:local_memory_search",
+                "core:local_memory_append",
                 "core:safety_lock_append",
                 "core:safety_lock_list_pending",
                 "core:safety_lock_remove",
@@ -1398,6 +1479,13 @@ def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
         return True
     if tid == "core:check_background_task" and (
         "core:submit_background_task" in allowed_ids or "submit_background_task" in allowed_ids
+    ):
+        return True
+    if tid == "core:local_memory_append" and (
+        "core:local_memory_append" in allowed_ids
+        or "local_memory_append" in allowed_ids
+        or "core:local_memory_search" in allowed_ids
+        or "local_memory_search" in allowed_ids
     ):
         return True
     return False

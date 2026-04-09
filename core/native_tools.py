@@ -335,6 +335,18 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
         except Exception:
             pass
         return out
+    if tool_id == "core:local_memory_append":
+        from l3_node.tools.core_local_memory_append import run_local_memory_append
+
+        body = str(kwargs.get("content") or kwargs.get("body") or kwargs.get("text") or "").strip()
+        if not body and isinstance(kwargs.get("input"), dict):
+            body = str(kwargs["input"].get("content") or kwargs["input"].get("body") or "").strip()
+        tags = kwargs.get("tags")
+        if isinstance(tags, str):
+            tags = [x.strip() for x in tags.split(",") if x.strip()]
+        elif not isinstance(tags, list):
+            tags = None
+        return run_local_memory_append(content=body, tags=tags)
     if tool_id == "core:apply_patch_rollback":
         bid = kwargs.get("backup_id")
         s = str(bid).strip() if bid is not None and str(bid).strip() else ""
@@ -385,7 +397,9 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
             tags = None
         tok = kwargs.get("token") if kwargs.get("token") is not None else kwargs.get("secret_token")
         tok_s = str(tok).strip() if tok is not None and str(tok).strip() else None
-        return append_verified_fact(body, source=src, tags=tags, token=tok_s)
+        cat = kwargs.get("category")
+        cat_s = str(cat).strip() if cat is not None and str(cat).strip() else None
+        return append_verified_fact(body, source=src, tags=tags, token=tok_s, category=cat_s)
     if tool_id == "core:safety_lock_list_pending":
         from l3_node.jachin_safety_lock import list_pending_entries
 

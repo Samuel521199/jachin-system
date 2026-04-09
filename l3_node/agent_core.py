@@ -142,7 +142,76 @@ _L4_AGENT_SOP_PROBE_MAP_EXECUTE = """【L4 智能体 SOP 法则】：当你处�
 **正确流程**：
 步骤 1：输出 Action（`mcp:read_query` 等）查数据。
 步骤 2：收到系统的 Observation 数据后，继续在脑内思考，并紧接着输出新的 Action（`mcp:write_query` 等）执行修改。
-只有当所有的修改动作都已成功执行，并且拿到最后的成功 Observation 后，你才能输出 Final Answer 向统帅汇报最终战果。"""
+只有当所有的修改动作都已成功执行，并且拿到最后的成功 Observation 后，你才能输出 Final Answer 向统帅汇报最终战果。
+
+5. <proactive-journaling>（主动记忆与规划更新）：当你完成了一个极其复杂的跨会话任务（例如重构了代码、排查了深度 Bug、完成了数据清洗），在输出 Final Answer 之前，你**必须主动**考虑当前工作区的规划状态。如果有必要，请先调用 `core:fs_write` 或 `core:apply_patch` 工具，主动更新工作区中的 `progress.md` 或 `task_plan.md`，记录下你的最新进展和踩坑心得，然后再向统帅汇报。"""
+
+
+# L5 动态上下文路由：长线任务关键词（提升 task_plan / progress 后缀保活 rank）
+_MEMORY_ROUTE_LONG_HORIZON_CN = (
+    "总结",
+    "规划",
+    "项目进度",
+    "大纲",
+    "路线图",
+    "里程碑",
+    "跨会话",
+    "长期任务",
+    "阶段性",
+    "task_plan",
+    "progress.md",
+    "task_plan.md",
+)
+_MEMORY_ROUTE_LONG_HORIZON_ASCII = ("roadmap", "milestone", "sprint plan", "project status")
+# 短平快：跳过磁盘规划上下文注入，把后缀预算让给语义层与经验 Few-Shot
+_MEMORY_ROUTE_SHORT_HOP_CN = (
+    "查数据库",
+    "数据库里",
+    "sqlite",
+    "写一条sql",
+    "改个配置",
+    "改一下配置",
+    "单个配置",
+    "什么是",
+    "解释一下",
+    "一句话",
+    "知识点",
+    "查表",
+    "表结构",
+    "几条数据",
+)
+_MEMORY_ROUTE_SHORT_HOP_ASCII = (
+    "select ",
+    "pragma ",
+    "read_query",
+    "write_query",
+    "show tables",
+    "sqlite",
+)
+
+
+def _memory_attention_route_mode(user_text: str) -> str:
+    """
+    L5 Attention Budgeting：纯启发式，不调用 LLM。
+    返回 'long' | 'short' | 'default'。
+    """
+    t = (user_text or "").strip()
+    if not t:
+        return "default"
+    low = t.lower()
+    for k in _MEMORY_ROUTE_LONG_HORIZON_CN:
+        if k in t:
+            return "long"
+    for k in _MEMORY_ROUTE_LONG_HORIZON_ASCII:
+        if k in low:
+            return "long"
+    for k in _MEMORY_ROUTE_SHORT_HOP_CN:
+        if k in t:
+            return "short"
+    for k in _MEMORY_ROUTE_SHORT_HOP_ASCII:
+        if k in low:
+            return "short"
+    return "default"
 
 
 def _tools_include_sqlite_mcp(tools: list[dict[str, Any]] | None) -> bool:
@@ -749,6 +818,7 @@ NATIVE_TOOL_IDS = (
     "core:workflow_run",
     "core:shell_hitl_approve",
     "core:local_memory_search",
+    "core:local_memory_append",
 )
 RECALL_MEMORY_TOOL_ID = "recall_memory"
 COORDINATE_TOOL_ID = "coordinate"
@@ -773,11 +843,49 @@ SUB_AGENT_ALLOWED_SKILLS: dict[str, list[str]] = {
 _sub_agent_registry: dict[str, "SubAgent"] = {}
 
 
+def _fuzzy_action_tool_pattern_fragment(canonical_tool_id: str) -> str:
+    """
+    将注册工具 id 转为 Action 行内可匹配的「标点容错」片段（不含 Action: 前缀）。
+    按连续字母数字切 token，token 之间用 [\W_]+ 连接，容忍 LLM 把 : - . 等写成 _ 或混用。
+    匹配成功后仍应使用原始 canonical_tool_id 调用 run_tool。
+    """
+    s = (canonical_tool_id or "").strip()
+    if not s:
+        return re.escape(s)
+    tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", s) if t]
+    if not tokens:
+        return re.escape(s)
+    if len(tokens) == 1:
+        return re.escape(tokens[0])
+    return r"[\W_]+".join(re.escape(t) for t in tokens)
+
+
+# ReAct 伪动作（系统提示词声明、但不在 tools[] / NATIVE_TOOLS 注册表中）
+_REACT_PSEUDO_ACTION_IDS = ("recall_memory", "coordinate", "delegate")
+
+
+def _react_slice_first_action_step(text: str) -> tuple[str, bool]:
+    """
+    若同一轮输出中出现多个「行首 Action:」，只保留到第二个 Action 之前的内容。
+    避免多 Action 时只命中后段、Input 串台或后续动作被静默丢弃。
+    """
+    if not (text or "").strip():
+        return text, False
+    rx = re.compile(r"(?im)^\s*Action\s*:")
+    matches = list(rx.finditer(text))
+    if len(matches) <= 1:
+        return text, False
+    cut = matches[1].start()
+    return text[:cut].rstrip(), True
+
+
 def _parse_action(
     llm_output: str,
     skills: list[dict[str, Any]],
     use_mock: bool = False,
     allowed_skills: Optional[list[str]] = None,
+    *,
+    pure_json_contract: bool = False,
 ) -> dict[str, Any] | None:
     text = (llm_output or "").strip()
     for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
@@ -785,46 +893,11 @@ def _parse_action(
         if m:
             return {"type": "answer", "content": m.group(1).strip()}
 
-    # Action: delegate — 分身子 Agent
-    if re.search(r"Action:\s*delegate\s*(?:\n|$)", text, re.IGNORECASE):
-        mi = re.search(
-            r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))",
-            text, re.DOTALL | re.IGNORECASE,
+    text, _truncated = _react_slice_first_action_step(text)
+    if _truncated:
+        logger.warning(
+            "[L3 Agent][ReAct 解析] 检出多个行首 Action:，已截断为仅解析第一步（防多动作静默丢弃）"
         )
-        raw = (mi.group(1).strip() if mi else "").strip()
-        try:
-            data = json.loads(raw) if raw.startswith("{") or raw.startswith("[") else {}
-            if isinstance(data, list):
-                tasks = data
-            else:
-                tasks = data.get("sub_tasks", [])
-            if tasks:
-                return {"type": "delegate", "sub_tasks": tasks}
-        except json.JSONDecodeError:
-            pass
-
-    # recall_memory：向 L2 检索记忆（需 L2 已配对）
-    if re.search(rf"Action:\s*{re.escape(RECALL_MEMORY_TOOL_ID)}\s*(?:\n|$)", text, re.IGNORECASE):
-        mi = re.search(
-            r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))",
-            text, re.DOTALL | re.IGNORECASE,
-        )
-        inp = (mi.group(1).strip() if mi else "").strip()
-        return {"type": "recall", "query": inp}
-
-    # coordinate：向 L2 请求多节点协同
-    if re.search(rf"Action:\s*{re.escape(COORDINATE_TOOL_ID)}\s*(?:\n|$)", text, re.IGNORECASE):
-        mi = re.search(
-            r"Action\s+Input:\s*(.+?)(?:\n\n|\n(?:Thought|Action|Final|$))",
-            text, re.DOTALL | re.IGNORECASE,
-        )
-        raw = (mi.group(1).strip() if mi else "").strip()
-        try:
-            data = json.loads(raw) if raw.startswith("{") or raw.startswith("[") else {}
-            if isinstance(data, dict) and data.get("sub_tasks"):
-                return {"type": "coordinate", "payload": data}
-        except json.JSONDecodeError:
-            pass
 
     # Native 与 JPP Wasm 工具：从 skills 列表解析白名单内的 tool_id
     tool_ids: list[str] = []
@@ -873,19 +946,68 @@ def _parse_action(
         )
         return (m2.group(1).strip() if m2 else tail.strip())
 
-    # 匹配 Action 行（含同行 Action Input 情形）
+    # 匹配 Action 行（含同行 Action Input 情形）；工具名标点模糊匹配，返回仍用注册表 canonical tool_id
     action_suffix = r"(?:\s|\n|$)"
-    for tool_id in tool_ids:
-        pat = rf"Action:\s*{re.escape(tool_id)}{action_suffix}"
-        if re.search(pat, text, re.IGNORECASE):
-            return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
-    # 兼容：LLM 可能输出无 mcp: 前缀的 Action（如 Action: atom_post_job_boss）
-    for tool_id in tool_ids:
+
+    def _tool_id_match_priority(tid: str) -> tuple[int, int]:
+        toks = [t for t in re.split(r"[^a-zA-Z0-9]+", (tid or "").strip()) if t]
+        return (len(toks), len((tid or "").strip()))
+
+    # 更长 token 链优先，降低「local_memory」误吞「local_memory_search」类风险（二者均不匹配时才会轮到短 id）
+    _sorted_tool_ids = sorted(tool_ids, key=_tool_id_match_priority, reverse=True)
+    # 注入合法伪动作（delegate / recall_memory / coordinate），与真实 tool_id 同一套模糊匹配与 Action Input 提取
+    allowed_pseudo_actions = list(_REACT_PSEUDO_ACTION_IDS)
+    check_list = list(tool_ids) + allowed_pseudo_actions
+    _sorted_check = sorted(check_list, key=_tool_id_match_priority, reverse=True)
+    for tid in _sorted_check:
+        fuzzy_raw = _fuzzy_action_tool_pattern_fragment(tid)
+        pat = rf"Action:\s*{fuzzy_raw}{action_suffix}"
+        if not re.search(pat, text, re.IGNORECASE):
+            continue
+        inp = _extract_input_after_action(pat)
+        if tid in allowed_pseudo_actions:
+            if tid == "delegate":
+                raw = (inp or "").strip()
+                try:
+                    data = json.loads(raw) if raw.startswith("{") or raw.startswith("[") else {}
+                    if isinstance(data, list):
+                        tasks = data
+                    else:
+                        tasks = data.get("sub_tasks", [])
+                    if tasks:
+                        return {"type": "delegate", "sub_tasks": tasks}
+                except json.JSONDecodeError:
+                    pass
+                continue
+            if tid == "recall_memory":
+                return {"type": "recall", "query": (inp or "").strip()}
+            if tid == "coordinate":
+                raw = (inp or "").strip()
+                try:
+                    data = json.loads(raw) if raw.startswith("{") or raw.startswith("[") else {}
+                    if isinstance(data, dict) and data.get("sub_tasks"):
+                        return {"type": "coordinate", "payload": data}
+                except json.JSONDecodeError:
+                    pass
+                continue
+            continue
+        return {"type": "native", "tool": tid, "input": inp}
+    # 兼容：LLM 可能输出无 mcp: 前缀的 Action（如 Action: atom_post_job_boss）；同样做标点容错
+    for tool_id in _sorted_tool_ids:
         raw = tool_id.replace("mcp:", "").strip()
         if raw:
-            pat = rf"Action:\s*{re.escape(raw)}{action_suffix}"
+            fuzzy_raw = _fuzzy_action_tool_pattern_fragment(raw)
+            pat = rf"Action:\s*{fuzzy_raw}{action_suffix}"
             if re.search(pat, text, re.IGNORECASE):
                 return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
+    # ReAct 裸文本兜底：无 Final Answer 捕获且无 Action: 行时，避免解析失败拖死循环（如后台报告漏前缀）
+    if not pure_json_contract:
+        try:
+            _min_naked = max(8, int(os.environ.get("JACHIN_REACT_NAKED_ANSWER_MIN_CHARS") or "20"))
+        except (TypeError, ValueError):
+            _min_naked = 20
+        if len(text) > _min_naked and not re.search(r"(?i)\bAction\s*:", text):
+            return {"type": "answer", "content": text}
     return None
 
 
@@ -2231,6 +2353,9 @@ def _build_system_prompt(
         sort_tools_by_id,
     )
 
+    # L5：按本轮用户表面文本做启发式路由（与 run_agent 传入的 safety_lock_user_text 对齐）
+    _mem_route = _memory_attention_route_mode(safety_lock_user_text or "")
+
     slim_style = (prompt_style or "").strip().lower() == "slim_user_led"
     slim_mode = slim_style or bool(pure_json_contract)
     allowed = _get_allowed_skills()
@@ -2242,11 +2367,15 @@ def _build_system_prompt(
             "\n- recall_memory: 向 L2 检索历史记忆。参数: 查询关键词。当需要回忆过往对话或上下文时使用。"
             "\n- core:local_memory_search: L3 本地记忆检索（断网/无 L2 时优先）。Action Input JSON："
             '{"query":"关键词","top_k":8}；可选 mmr_lambda、half_life_days、include_memory_md。'
+            "\n- core:local_memory_append: 将事实/偏好**写入** ~/.jachin/memory/l3_local.json。JSON："
+            '{"content":"要记住的文本","tags":["可选"]}。'
         )
     else:
         recall_hint = (
             "\n- core:local_memory_search: 本地记忆检索（l3_local + 可选 MEMORY.md，含衰减与 MMR）。"
             ' JSON：{"query":"..."}，可选 top_k、mmr_lambda。'
+            "\n- core:local_memory_append: 写入本地 JSON 记忆库。JSON："
+            '{"content":"...","tags":["可选"]}。'
         )
     coordinate_hint = ""
     if allow_coordinate and _get_l2_config():
@@ -2339,16 +2468,23 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
     except ImportError:
         pass
     # 智能化 P0：跨会话任务规划上下文（task_plan.md / progress.md）
+    # L5 short 路由：跳过磁盘规划注入，把后缀预算让给语义层与经验 Few-Shot
     plan_ctx = ""
-    if not slim_mode:
+    if not slim_mode and _mem_route != "short":
         try:
             from l3_node.task_planning import get_planning_context_for_prompt
 
             plan_ctx = get_planning_context_for_prompt()
         except ImportError:
             pass
-    plan_hint = """
-【任务规划】复杂多步任务（3+ 步骤）可先用 core:fs_write 将计划写入 task_plan.md，再按计划执行。完成后可更新 progress.md。新会话会加载既有计划继续执行。""" if not plan_ctx else ""
+    plan_hint = ""
+    if not slim_mode and _mem_route != "short":
+        plan_hint = (
+            """
+【任务规划】复杂多步任务（3+ 步骤）可先用 core:fs_write 将计划写入 task_plan.md，再按计划执行。完成后可更新 progress.md。新会话会加载既有计划继续执行。"""
+            if not plan_ctx
+            else ""
+        )
 
     if slim_mode:
         capability_catalog_hint = ""
@@ -2455,6 +2591,8 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 若必须调用工具：使用 Thought、Action、Action Input（JSON 参数），工具结果为 Observation，可多轮。工具结束后若仍需 JSON，则接下来只输出 JSON 本体，不要继续写 Action 行。
 若明显无需工具：从首条助手回复起只输出用户要求的正文（如 JSON），不要 Thought、Action、Observation 等标签行。
 
+【严禁连续调用铁律】：你每次回复**只能输出一个** `Action` 和 `Action Input`！绝对禁止在同一段输出里连续写多个 `Action:`（须等系统返回 Observation 后再输出下一轮 Thought/Action）。违者解析器将只执行第一步，后续动作会被丢弃并导致行为与预期不符。
+
 --- 以下段落为会话/记忆上下文（API 前缀缓存友好）---
 """
     else:
@@ -2462,6 +2600,11 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {recall_hint}
 {coordinate_hint}
 {delegate_hint}
+
+【绝对报告纪律】：当你收到后台任务 (background_task) 的完成报告，或需要向统帅输出长篇大段的 Markdown 文本时，
+**你必须、绝对、永远在最开头加上 `Final Answer: ` 前缀！** 严禁直接输出裸的 Markdown 文本！
+
+【严禁连续调用铁律】：你每次回复**只能输出一个** `Action` 和 `Action Input`！绝对禁止在同一个 Thought 或同一段输出中连续写多个工具动作（多个 `Action:`）！你必须在一次 Action 后停下来，等待系统返回 Observation，然后才能进行下一个 Thought 和 Action。违者解析器将只执行第一步，后续动作会被丢弃，并可能导致系统行为异常。
 
 输出格式：
 Thought: <你的思考>
@@ -2474,6 +2617,13 @@ Final Answer: <最终回复>
 --- 以下段落随会话、记忆与域状态变化（建议置于提示词末尾以利于 API 前缀缓存）---
 """
     # 后缀驱逐 rank：越小越先丢。对齐 L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §5.3
+    # L5：long 提高 task_plan / plan_hint 保活；short 提高经验块、压低被动本地记忆（语义层始终最高档）
+    _rank_sem_layer = 99
+    _rank_exp_fs = 96 if _mem_route == "short" else 94
+    _rank_task_plan_disk = 97 if _mem_route == "long" else 95
+    _rank_plan_hint = 24 if _mem_route == "long" else 18
+    _rank_passive_local = 8 if _mem_route == "short" else 10
+
     suffix_chunks: list[SuffixChunk] = []
     _sem_fmt = ""
     if not pure_json_contract:
@@ -2497,7 +2647,7 @@ Final Answer: <最终回复>
     # 业务语义字典：紧随网关注入之后、环境报告之前；eviction_rank 越大越晚被驱逐（见 prompt_compose）
     if not pure_json_contract and _sem_fmt:
         suffix_chunks.append(
-            SuffixChunk("high", "l4_db_semantics_layer", f"\n{_sem_fmt}\n", eviction_rank=99)
+            SuffixChunk("high", "l4_db_semantics_layer", f"\n{_sem_fmt}\n", eviction_rank=_rank_sem_layer)
         )
     _erb = (environment_report_block or "").strip()
     if chief_advisor_mode and _erb and not pure_json_contract:
@@ -2517,7 +2667,7 @@ Final Answer: <最终回复>
     _exp_fs = (experience_few_shots or "").strip()
     if not pure_json_contract and _exp_fs:
         suffix_chunks.append(
-            SuffixChunk("high", "l4_experience_rag", f"\n{_exp_fs}\n", eviction_rank=94)
+            SuffixChunk("high", "l4_experience_rag", f"\n{_exp_fs}\n", eviction_rank=_rank_exp_fs)
         )
     if not pure_json_contract and (_tools_include_sqlite_mcp(tools) or bool(_sem_fmt)):
         suffix_chunks.append(
@@ -2555,7 +2705,7 @@ Final Answer: <最终回复>
     if not pure_json_contract:
         if (local_mem or "").strip():
             suffix_chunks.append(
-                SuffixChunk("low", "passive_local_memory", f"\n{local_mem}\n", eviction_rank=10)
+                SuffixChunk("low", "passive_local_memory", f"\n{local_mem}\n", eviction_rank=_rank_passive_local)
             )
         if (jachin_rules or "").strip():
             suffix_chunks.append(
@@ -2572,7 +2722,7 @@ Final Answer: <最终回复>
             )
         if (plan_ctx or "").strip():
             suffix_chunks.append(
-                SuffixChunk("high", "task_plan_disk", f"\n{plan_ctx}\n", eviction_rank=95)
+                SuffixChunk("high", "task_plan_disk", f"\n{plan_ctx}\n", eviction_rank=_rank_task_plan_disk)
             )
         if (hr_runtime_ctx or "").strip():
             suffix_chunks.append(SuffixChunk("mid", "hr_runtime", f"\n{hr_runtime_ctx}\n", eviction_rank=45))
@@ -2587,7 +2737,7 @@ Final Answer: <最终回复>
                 SuffixChunk("mid", "hr_recruitment_sop", hr_recruitment_hint, eviction_rank=42)
             )
         if (plan_hint or "").strip():
-            suffix_chunks.append(SuffixChunk("low", "plan_hint", plan_hint, eviction_rank=18))
+            suffix_chunks.append(SuffixChunk("low", "plan_hint", plan_hint, eviction_rank=_rank_plan_hint))
         if (hr_hint or "").strip():
             suffix_chunks.append(SuffixChunk("high", "hr_tool_routing", hr_hint, eviction_rank=55))
         if slim_mode:
@@ -2601,6 +2751,10 @@ Final Answer: <最终回复>
                     pass
             _react_footer_body = (
                 "【记忆】被动注入仅供参考；事实以 recall_memory / core:local_memory_search 为准。\n"
+                "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 l3_local.json，"
+                "**禁止**幻觉写 MEMORY.md、**禁止** core:safety_lock_append；仅「禁止高危操作、核心安防」才用 safety_lock_append。\n"
+                "【记忆整理纪律】统帅要求「整理本地记忆/梦境坍缩」时，后台 Daemon 已接管；**禁止**在对话中输出 Markdown 记忆清单；"
+                "用 **core:check_background_task** 轮询至完成后，Final Answer 只写「本地记忆坍缩完成」类短句即可。\n"
                 "【输出】工具执行后须给出 Final Answer。若用户要求仅 JSON/固定结构，Final Answer 后只写该结构，"
                 "禁止井号标题行与无关套话。\n"
                 "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
@@ -2609,9 +2763,18 @@ Final Answer: <最终回复>
         else:
             _react_footer_body = (
                 "【记忆 SSOT】被动「本地记忆」仅为提示；事实以 recall_memory / core:local_memory_search 检索为准。\n"
+                "【记忆分级写入铁律】\n"
+                "1. **个人偏好与项目情报（免审批）**：当统帅告诉你业务代号、框架偏好等日常记忆时，"
+                "**绝对禁止**幻觉写入 MEMORY.md！你**必须且只能使用 core:local_memory_append** 工具将事实存入底层 JSON 库（~/.jachin/memory/l3_local.json）。"
+                "存完后向统帅简短汇报即可。**禁止**为此使用 **core:safety_lock_append**。\n"
+                "2. **系统级安防规则（需审批 / TOFU）**：仅当涉及「禁止某项高危操作」「核心底层逻辑变更」等安防约束时，才允许使用 **core:safety_lock_append**；"
+                "并尽量提供稳定 **category**（如 backend_framework、shell_policy）。该 category **首条**人工批准后，同 category 再次提交将自动覆盖旧规则（同类二次免批）。\n"
+                "【记忆整理纪律】当统帅命令你「整理本地记忆/梦境坍缩」时，系统底层 Daemon 已自动接管该任务。"
+                "你**绝对禁止**在对话中自行总结、输出 Markdown 格式的记忆清单！"
+                "你只需调用 **core:check_background_task** 等待后台完成后，输出「本地记忆坍缩完成」即可。\n"
                 "【安全锁】若上文含安全锁段，与 MEMORY.md / 闲聊推测冲突时 **以安全锁为准**。"
-                "追加事实用 **core:safety_lock_append**（默认进入 **待审批**，由管理员 CLI 刷入 MD，勿向模型泄露管理员密钥）；"
-                "撤销用 **core:safety_lock_remove**（entry_id）；查看队列 **core:safety_lock_list_pending**。\n"
+                "追加安防规则用 **core:safety_lock_append**（新 category 默认 **待审批**，由管理员 CLI / 控制台审批；勿向模型泄露管理员密钥）；"
+                "撤销 **core:safety_lock_remove**（entry_id）；队列 **core:safety_lock_list_pending**。\n"
                 "注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。"
                 "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
                 f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n"
@@ -3303,7 +3466,13 @@ async def _run_react_core(
         if thought:
             _emit("thought", thought.group(1).strip())
 
-        parsed = _parse_action(response, skills, use_mock=use_mock, allowed_skills=allowed_skills)
+        parsed = _parse_action(
+            response,
+            skills,
+            use_mock=use_mock,
+            allowed_skills=allowed_skills,
+            pure_json_contract=bool(ctx.metadata.get("_pure_json_contract")),
+        )
         ctx.parsed_action = parsed
         _iter_n = ctx.metadata.get("_react_iteration")
         _rtrace = str(ctx.metadata.get("_react_step_trace") or "")
@@ -4342,8 +4511,6 @@ async def _run_react_core(
                                 pass
 
                         try:
-                            import asyncio
-
                             asyncio.get_running_loop().create_task(asyncio.to_thread(_experience_save_task))
                         except RuntimeError:
                             import threading
@@ -4715,6 +4882,13 @@ async def run_agent(
     else:
         messages = []
     prior_messages = list(messages)
+    # L5 盲测：/clear 在进入网关与 LLM 前清空会话缓冲，避免短期上下文「作弊」
+    if (user_input or "").strip() == "/clear":
+        if _session_messages is not None:
+            _session_messages.clear()
+        logger.info("[L3 Agent] /clear：已清空会话消息缓冲 run_id=%s", run_id[:12])
+        return "[System] 后端上下文已强制清空。"
+
     exec_trace(
         logger,
         "run_agent 开始 run_id=%s channel=%s input_len=%d history_msgs=%d",
@@ -5243,7 +5417,17 @@ async def run_agent(
     except Exception as _sem_ex:
         logger.debug("[L3 Agent] semantic_ood 评估跳过: %s", _sem_ex)
 
+    try:
+        from l3_node.memory_compact_schedule import try_apply_chat_command
+
+        _sched_note = try_apply_chat_command(user_input or "")
+        if _sched_note:
+            messages.append({"role": "system", "content": _sched_note})
+    except ImportError:
+        pass
+
     messages.append({"role": "user", "content": user_input})
+    _schedule_local_memory_compaction_background(user_input or "")
 
     text_implicit_types: set[str] = set()
     # 隐式信号 → intelligence_events（§4.3；见 docs/IMPLICIT_SIGNALS.md）
@@ -5648,6 +5832,81 @@ async def run_agent(
                 reset_memory_shard_token(_mem_shard_tok)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# L5 本地记忆梦境合并（后台调度，fail-open，不阻塞 ReAct）
+# ---------------------------------------------------------------------------
+
+_MEMORY_COMPACT_SESSION_DEBOUNCE_SEC = 600.0
+_last_scheduled_memory_compact_mono: float = 0.0
+
+
+def _user_explicit_memory_compact_intent(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    keys = (
+        "整理本地记忆",
+        "压缩本地记忆",
+        "梦境合并",
+        "坍缩记忆",
+        "合并记忆碎片",
+        "记忆坍缩",
+        "本地记忆整理",
+        "合并本地记忆",
+        "立即整理记忆",
+        "立即整理本地记忆",
+        "开始记忆整理",
+        "现在开始整理记忆",
+    )
+    return any(k in t for k in keys)
+
+
+def _schedule_local_memory_compaction_background(user_input: str) -> None:
+    """显式口令或 JACHIN_MEMORY_COMPACT_ON_SESSION=1 时异步尝试 compact_local_memory_if_needed。"""
+    global _last_scheduled_memory_compact_mono
+    try:
+        from l3_node.memory_compact_schedule import try_parse_defer_command
+
+        if try_parse_defer_command(user_input or ""):
+            return
+    except ImportError:
+        pass
+    try:
+        explicit = _user_explicit_memory_compact_intent(user_input)
+        on_session = str(os.environ.get("JACHIN_MEMORY_COMPACT_ON_SESSION", "")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if not explicit and not on_session:
+            return
+        now = time.monotonic()
+        if explicit:
+            _last_scheduled_memory_compact_mono = now
+        else:
+            if now - _last_scheduled_memory_compact_mono < _MEMORY_COMPACT_SESSION_DEBOUNCE_SEC:
+                return
+            _last_scheduled_memory_compact_mono = now
+
+        async def _runner() -> None:
+            try:
+                from l3_node.memory_compactor import compact_local_memory_if_needed
+                from l3_node.local_memory import main_local_memory_json_path
+
+                _cr = await compact_local_memory_if_needed(str(main_local_memory_json_path()))
+                if (_cr or "").strip():
+                    logger.info("[MemoryCompact] %s", (_cr or "").strip())
+            except Exception as _ex:
+                logger.debug("[MemoryCompact] 后台跳过: %s", _ex)
+
+        asyncio.get_running_loop().create_task(_runner())
+    except RuntimeError:
+        pass
+    except Exception as _ex:
+        logger.debug("[MemoryCompact] schedule 跳过: %s", _ex)
 
 
 # ---------------------------------------------------------------------------
