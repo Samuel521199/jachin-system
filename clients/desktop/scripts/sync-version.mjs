@@ -1,8 +1,11 @@
 ﻿#!/usr/bin/env node
 /**
- * 单一版本源：编辑本目录上一级的 VERSION 文件（仅一行 x.y.z），然后运行:
+ * 桌面安装包 / Tauri 产物版本（用户看到的安装程序与关于页版本）。
+ * 与仓库根 Git 标签、CHANGELOG、core/cli 的 monorepo 版本无强制一致；全仓备份提交不必改此文件。
+ *
+ * 单一版本源：编辑上一级的 VERSION（仅一行 x.y.z），然后:
  *   npm run sync-version
- * 或带参数: npm run sync-version -- 0.8.17
+ * 或: npm run sync-version -- 0.8.17
  *
  * 会同步到: package.json、src-tauri/tauri.conf.json、src-tauri/Cargo.toml
  */

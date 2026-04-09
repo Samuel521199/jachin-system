@@ -5,7 +5,7 @@
  * Sensory 步骤与回复逻辑与 `useSensoryWebSocket` + `sensoryStepFormat` 对齐（云端 v0.8.99 行为）。
  */
 
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import ReactDOM from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -28,10 +28,14 @@ import {
 } from "./utils/reasoningStreamSplit";
 import type { WavePhase } from "./components/Chat/VoiceWaveform";
 import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
+import type { JachinCoreMachineState } from "./components/Omni/JachinCore";
 import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
 import "./styles/globals.css";
+
+/** 与 Rust `HideChatWindowResult` 对齐（camelCase） */
+type HideChatWindowResult = { companion: boolean; fullyHidden: boolean };
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -140,17 +144,51 @@ function ChatApp() {
 
   // 不在此用 window blur 自动隐藏：dev 环境下焦点常在 PowerShell/IDE，WebView 收不到 focus，
   // 延迟隐藏仍会在数百毫秒后执行 → Omni「闪退」。收起请用 Esc、托盘左键或窗口关闭。
+  /** 右下角陪伴圆模式（窗口缩小，非完全 hide） */
+  const [companionMode, setCompanionMode] = useState(false);
+
+  useEffect(() => {
+    void invoke<boolean>("is_chat_companion_mode")
+      .then((v) => setCompanionMode(Boolean(v)))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ companion: boolean }>("omni-companion-mode", (ev) => {
+      setCompanionMode(Boolean(ev.payload?.companion));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.warn("[Omni] listen omni-companion-mode failed:", err);
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const requestHideChat = useCallback(async () => {
+    try {
+      const r = await invoke<HideChatWindowResult>("hide_chat_window");
+      setCompanionMode(Boolean(r?.companion));
+    } catch (err) {
+      console.error("[Omni] hide_chat_window failed:", err);
+    }
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        void invoke("hide_chat_window");
-      }
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      void requestHideChat();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    // 捕获阶段：避免输入框等子组件消费 Esc 后事件到不了 window
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [requestHideChat]);
 
   // 唤醒词：弹出 Omni 条
   useEffect(() => {
@@ -844,44 +882,70 @@ function ChatApp() {
 
   const openConsole = () => {
     void invoke("show_console_window");
-    void invoke("hide_chat_window");
+    void invoke<HideChatWindowResult>("hide_chat_window")
+      .then((r) => setCompanionMode(Boolean(r?.companion)))
+      .catch((err) => console.error("[Omni] hide_chat_window (openConsole):", err));
   };
 
   const lastAssistantBubble = [...messages].reverse().find((m) => m.role === "assistant");
-  /** 当前轮助手可见文本（正文 + 思考），用于 Core 流式相位判断 */
-  const streamDisplay =
-    (lastAssistantBubble?.content ?? "") + (lastAssistantBubble?.reasoning ?? "");
 
-  /** 与 useJachinCoreState 对齐，映射到赛博协议 CorePhase（驱动 JachinCore 流光） */
-  const cyberPhase = useMemo((): CorePhase => {
-    if (jachinCore.selfHealFlash) return CorePhase.HEALING;
-    if (sensory.hitlPending) return CorePhase.THINKING;
-    // reasoning 流式：狂暴 THINKING（须先于「有字即 STREAMING」）
-    if (
-      isTyping &&
-      streamChunkKindEffective === "reasoning" &&
-      streamDisplay.trim().length > 0
-    ) {
-      return CorePhase.THINKING;
-    }
-    if (isTyping && streamDisplay.trim().length > 0) return CorePhase.STREAMING;
-    if (isLoading && !isRecording && !isVadActive) return CorePhase.THINKING;
-    if (jachinCore.coreState === "thinking") return CorePhase.THINKING;
-    if (jachinCore.coreState === "streaming" && streamDisplay.trim().length > 0) {
-      return CorePhase.STREAMING;
-    }
-    return CorePhase.IDLE;
+  /**
+   * 与气泡内 Thought Process / 正文严格同步，显式传入 JachinCore（避免 streamDisplay 含 reasoning 却被当成 STREAMING）。
+   */
+  const jachinMachineState = useMemo((): JachinCoreMachineState => {
+    if (jachinCore.selfHealFlash) return "IDLE";
+    if (sensory.hitlPending) return "IDLE";
+    const last = lastAssistantBubble;
+    const r = last?.role === "assistant" ? (last.reasoning ?? "").trim() : "";
+    const c = last?.role === "assistant" ? (last.content ?? "").trim() : "";
+    if (isTyping && streamChunkKindEffective === "reasoning") return "THINKING";
+    if (isTyping && r.length > 0 && c.length === 0) return "THINKING";
+    if (isTyping && (r.length > 0 || c.length > 0)) return "STREAMING";
+    if (isLoading && !isRecording && !isVadActive) return "THINKING";
+    if (jachinCore.coreState === "thinking") return "THINKING";
+    if (jachinCore.coreState === "streaming" && (r.length > 0 || c.length > 0)) return "STREAMING";
+    return "IDLE";
   }, [
     jachinCore.selfHealFlash,
     jachinCore.coreState,
-    isTyping,
-    streamDisplay,
-    streamChunkKindEffective,
     sensory.hitlPending,
+    isTyping,
     isLoading,
     isRecording,
     isVadActive,
+    streamChunkKindEffective,
+    lastAssistantBubble?.role,
+    lastAssistantBubble?.reasoning,
+    lastAssistantBubble?.content,
   ]);
+
+  /** 赛博壳层相位（与 jachinMachineState 一致，供主题/其它 UI） */
+  const cyberPhase = useMemo((): CorePhase => {
+    if (jachinCore.selfHealFlash) return CorePhase.HEALING;
+    if (sensory.hitlPending) return CorePhase.THINKING;
+    if (jachinMachineState === "THINKING") return CorePhase.THINKING;
+    if (jachinMachineState === "STREAMING") return CorePhase.STREAMING;
+    return CorePhase.IDLE;
+  }, [jachinCore.selfHealFlash, sensory.hitlPending, jachinMachineState]);
+
+  if (companionMode) {
+    return (
+      <div className="relative flex h-full w-full min-h-0 items-center justify-center overflow-hidden bg-transparent">
+        <button
+          type="button"
+          aria-label="展开 Jachin Omni"
+          title="点击展开 Omni · 再按 Esc 可完全隐藏"
+          onClick={() => void invoke("show_chat_window")}
+          className="pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-400/45 bg-slate-950/92 shadow-[0_0_14px_rgba(34,211,238,0.5)] transition-shadow hover:border-cyan-300/60 hover:shadow-[0_0_20px_rgba(34,211,238,0.72)] active:scale-95"
+        >
+          <span
+            className="h-2.5 w-2.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.9)]"
+            aria-hidden
+          />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
@@ -926,10 +990,12 @@ function ChatApp() {
           )}
           <OmniCyberChatShell
             phase={cyberPhase}
+            jachinMachineState={jachinMachineState}
             thinkingToolFlash={jachinCore.toolFlash}
             messages={messages}
             input={input}
             onInputChange={setInput}
+            onRequestDismiss={requestHideChat}
             onSend={handleSend}
             placeholder={
               sensory.connected

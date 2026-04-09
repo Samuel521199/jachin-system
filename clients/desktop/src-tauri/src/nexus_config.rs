@@ -26,7 +26,9 @@ fn read_nexus_config_value() -> Value {
         return Value::Null;
     }
     let raw = fs::read_to_string(&p).unwrap_or_default();
-    serde_json::from_str(&raw).unwrap_or(Value::Null)
+    // Windows 记事本等会以 UTF-8 BOM 保存；serde_json 不接受文件首字节为 BOM，会整份解析失败。
+    let raw = raw.trim_start_matches('\u{feff}').trim_start();
+    serde_json::from_str(raw).unwrap_or(Value::Null)
 }
 
 /// L1 基址（无尾部斜杠），用于文档与调试；updater 端点以 `tauri.conf.json` 为准。

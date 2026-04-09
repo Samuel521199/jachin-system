@@ -6,7 +6,10 @@ import { desktopAppReleases } from "@/db/schema";
 import { extractBearerTokenRaw } from "@/lib/bearer";
 import { findActiveEdgeAgentByBearerToken } from "@/lib/edge-bearer";
 import { getDownloadUrl, isS3Configured } from "@/lib/s3";
-import { tauriPlatformKeyFromParts } from "@/lib/tauri-platform";
+import {
+  signatureWireFormatForTauri,
+  tauriPlatformKeyFromParts,
+} from "@/lib/tauri-platform";
 import { isDesktopUpdateSharedSecretBearer } from "@/lib/desktop-update-auth";
 
 export const dynamic = "force-dynamic";
@@ -105,7 +108,7 @@ export async function GET(request: NextRequest) {
     pub_date: latest.pubDate.toISOString(),
     platforms: {
       [platformKey]: {
-        signature: art.signature,
+        signature: signatureWireFormatForTauri(art.signature),
         url,
       },
     },

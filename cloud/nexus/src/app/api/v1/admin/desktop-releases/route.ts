@@ -1,8 +1,13 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { desktopAppReleases, type DesktopArtifactMeta } from "@/db/schema";
 import { requireIsRoot } from "@/lib/admin-auth";
+import {
+  normalizeArtifactSignatureForStorage,
+  validateArtifactSignatureMatchesDeclaredVersion,
+  validateObjectKeyContainsVersionSegment,
+} from "@/lib/desktop-releases-common";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +78,41 @@ export async function POST(request: Request) {
     }
   }
 
+  const artifactsNormalized: Record<string, DesktopArtifactMeta> = Object.fromEntries(
+    Object.entries(artifacts).map(([k, v]) => [
+      k,
+      {
+        objectKey: v.objectKey.trim(),
+        signature: normalizeArtifactSignatureForStorage(v.signature),
+      },
+    ])
+  );
+
+  for (const [plat, meta] of Object.entries(artifactsNormalized)) {
+    const keyChk = validateObjectKeyContainsVersionSegment(meta.objectKey, version);
+    if (!keyChk.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "OBJECT_KEY_VERSION_MISMATCH",
+          message: `[${plat}] ${keyChk.message}`,
+        },
+        { status: 400 }
+      );
+    }
+    const sigChk = validateArtifactSignatureMatchesDeclaredVersion(meta.signature, version);
+    if (!sigChk.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "SIGNATURE_VERSION_MISMATCH",
+          message: `[${plat}] ${sigChk.message}`,
+        },
+        { status: 400 }
+      );
+    }
+  }
+
   const db = getDb()!;
   const [existing] = await db
     .select({ id: desktopAppReleases.id })
@@ -86,7 +126,7 @@ export async function POST(request: Request) {
       .set({
         notes: body.notes ?? null,
         pubDate,
-        artifacts,
+        artifacts: artifactsNormalized,
       })
       .where(eq(desktopAppReleases.version, version));
     return NextResponse.json({ success: true, updated: true, version });
@@ -96,7 +136,7 @@ export async function POST(request: Request) {
     version,
     notes: body.notes ?? null,
     pubDate,
-    artifacts,
+    artifacts: artifactsNormalized,
   });
 
   return NextResponse.json({ success: true, updated: false, version });

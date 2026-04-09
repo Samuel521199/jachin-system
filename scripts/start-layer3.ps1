@@ -54,6 +54,19 @@ try {
     Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
     & (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause
 
+    # Tauri dev 的 beforeDevCommand 会起 Vite，固定端口 31421（见 clients/desktop/vite.config.ts 与 tauri.conf.json devUrl）
+    if (-not $Source) {
+        Write-Host "[Layer3] 检查 Vite 前端端口 31421..." -ForegroundColor Gray
+        $viteListen = netstat -ano 2>$null | Select-String ":31421\s" | Select-String "LISTENING"
+        if ($viteListen) {
+            Write-Host "  端口 31421 已被占用，正在释放（多为上次 npm run dev / tauri dev 未退出）..." -ForegroundColor Yellow
+            & (Join-Path $ScriptDir "kill_port.ps1") -Port 31421
+        } else {
+            Write-Host "  端口 31421 未被占用" -ForegroundColor Gray
+        }
+        Write-Host ""
+    }
+
     if ($WithBackgroundSource -and -not $Source) {
         $pyMode = if ($WsOnly) { "--ws-only" } else { "--gateway" }
         Write-Host "[Layer3] 后台：新窗口启动源码 L3  python -m l3_node $pyMode  (cwd=$ProjectRoot)" -ForegroundColor Cyan
@@ -99,27 +112,26 @@ try {
         Pop-Location
     }
 
-    # L3 Sidecar：桌面自动 spawn 时使用；双开模式下不 spawn，但仍建议有 exe 供配对等路径使用
+    # Tauri externalBin：必须存在「当前 Cargo 版本」对应的 l3_node-<ver>-<triple>.exe；仅有旧版 exe 时仍会构建失败
     $BinDir = Join-Path $DesktopDir "src-tauri\bin"
+    Write-Host "[Layer3] 确保当前版本 Sidecar 路径存在（供 Tauri 构建；已有真实 exe 则保留）..." -ForegroundColor Gray
+    & python (Join-Path $ScriptDir "create_l3_stub.py") --if-missing
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] create_l3_stub.py 失败" -ForegroundColor Red
+        exit 1
+    }
+
     $L3Exe = Get-ChildItem -Path $BinDir -Filter "l3_node-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $L3Exe) {
         Write-Host ""
-        Write-Host "[Layer3] L3 Sidecar 未找到，正在构建 (需 PyInstaller)..." -ForegroundColor Yellow
+        Write-Host "[Layer3] 仍未找到 l3_node-*.exe，尝试完整打包 Sidecar (需 PyInstaller)..." -ForegroundColor Yellow
         & python (Join-Path $ScriptDir "build_l3_sidecar.py")
         if ($LASTEXITCODE -ne 0) {
-            Write-Host ""
-            Write-Host "[Layer3] 构建失败，尝试创建占位符..." -ForegroundColor Yellow
-            & python (Join-Path $ScriptDir "create_l3_stub.py")
-            if ($LASTEXITCODE -ne 0) {
-                $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
-                Write-Host "[ERROR] Run: pip install pyinstaller ; python $sidecarHint" -ForegroundColor Red
-                exit 1
-            }
             $sidecarHint = Join-Path $ScriptDir "build_l3_sidecar.py"
-            Write-Host "[WARN] 占位符仅用于通过构建，L3 引擎不会真正运行。完整功能需: python $sidecarHint" -ForegroundColor Yellow
-        } else {
-            Write-Host "[Layer3] L3 Sidecar 构建完成" -ForegroundColor Green
+            Write-Host "[ERROR] Run: pip install pyinstaller ; python $sidecarHint" -ForegroundColor Red
+            exit 1
         }
+        Write-Host "[Layer3] L3 Sidecar 构建完成" -ForegroundColor Green
         Write-Host ""
     }
 

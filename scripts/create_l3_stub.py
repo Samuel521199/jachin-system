@@ -1,7 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 创建最小 Windows PE 占位符，供 Tauri 构建通过。
 占位符仅退出 0，不运行 L3。运行 build_l3_sidecar.py 后会被替换为真实二进制。
+
+用法:
+  python scripts/create_l3_stub.py
+  python scripts/create_l3_stub.py --if-missing   # 仅当 l3_node-<triple> 不存在时创建，不覆盖已有文件（含真实 sidecar）
 """
 from __future__ import annotations
 
@@ -29,9 +33,13 @@ def create_minimal_pe(out_path: Path) -> None:
 
 
 def main() -> int:
+    if_missing = "--if-missing" in sys.argv
     ext = ".exe" if sys.platform == "win32" else ""
     target = "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-apple-darwin" if sys.platform == "darwin" else "x86_64-unknown-linux-gnu"
     dst = BIN_DIR / f"{SIDECAR_NAME}-{target}{ext}"
+    if if_missing and dst.is_file():
+        print(f"[create_l3_stub] 已存在，跳过: {dst}")
+        return 0
     if sys.platform == "win32":
         create_minimal_pe(dst)
         print(f"已创建占位符: {dst}")

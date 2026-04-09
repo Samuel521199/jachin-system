@@ -134,13 +134,24 @@ npx tauri signer generate -w .\tauri-desktop-updater.key
 
 **C. 上传发行（带签名，不要用 `--unsigned`）**
 
-**一键（推荐）**：把与当前 `pubkey` 成对的**私钥**保存为 `clients/desktop/tauri-desktop-updater.key`（已 gitignore），然后在仓库根目录：
+**一键（推荐）**：把与当前 `pubkey` 成对的**私钥**保存为 `clients/desktop/tauri-desktop-updater.key`（已 gitignore）。
+
+**注意**：`publish_desktop_release.py` 在**仓库根目录**的 `scripts/`，不要在 `clients/desktop` 里执行 `python scripts\...`（会报找不到文件）。
+
+在**仓库根** `jachin-system-main`：
 
 ```powershell
+cd D:\project\jachin-system-main
 python scripts\publish_desktop_release.py --sign
 ```
 
-或在 `clients/desktop`：
+若当前目录已是 `clients\desktop`，用：
+
+```powershell
+python ..\..\scripts\publish_desktop_release.py --sign
+```
+
+或：
 
 ```bash
 npm run publish-desktop-release

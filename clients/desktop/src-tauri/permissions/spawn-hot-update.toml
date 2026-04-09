@@ -1,0 +1,8 @@
+﻿[[permission]]
+identifier = "allow-spawn-hot-update"
+description = "Spawn detached hot-update helper and exit (out-of-process updater)."
+commands.allow = [
+  "spawn_hot_update_and_exit",
+  "spawn_hot_update_prepare",
+  "apply_staged_hot_update_and_exit",
+]

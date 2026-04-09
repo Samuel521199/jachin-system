@@ -1,14 +1,15 @@
 ﻿//! 热更新调试：追加写入固定目录日志（Windows 调试路径，勿用于生产收集用户隐私）。
 //! 不落盘完整 Bearer / token，仅记录长度与是否配置。
+//!
+//! 目录：`crate::updater_common::hot_update_debug_log_dir()`（环境变量 `JACHIN_HOT_UPDATE_DEBUG_DIR`）。
 
+use crate::updater_common::hot_update_debug_log_dir;
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 与用户需求一致；发布前可改为环境变量（若需）。
-const DEBUG_DIR: &str = r"D:\zzz\jachin";
 const LOG_FILE: &str = "hot_update_debug.log";
 
 fn now_ts_ms() -> u128 {
@@ -20,14 +21,22 @@ fn now_ts_ms() -> u128 {
 
 /// 追加一行 UTF-8 日志（自动建目录）。
 pub fn append_line(source: &str, message: &str) {
-    let dir = Path::new(DEBUG_DIR);
+    let base = hot_update_debug_log_dir();
+    let dir = Path::new(&base);
     if let Err(e) = std::fs::create_dir_all(dir) {
-        eprintln!("[updater_debug] mkdir {}: {}", DEBUG_DIR, e);
+        eprintln!("[updater_debug] mkdir {}: {}", base.display(), e);
         return;
     }
     let path = dir.join(LOG_FILE);
     let sanitized = message.replace('\r', " ").replace('\n', " | ");
-    let line = format!("[{}ms] [{}] {}\n", now_ts_ms(), source, sanitized);
+    let pid = std::process::id();
+    let line = format!(
+        "[{}ms pid={} proc=desktop] [{}] {}\n",
+        now_ts_ms(),
+        pid,
+        source,
+        sanitized
+    );
     match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(mut f) => {
             if let Err(e) = f.write_all(line.as_bytes()) {
@@ -91,7 +100,7 @@ pub fn log_startup_rust(app_version: &str) {
              updater_plugin_bearer_header_installed={} \
              tauri_endpoints_json={} \
              {}",
-            app_version, os, arch, exe, DEBUG_DIR, LOG_FILE,
+            app_version, os, arch, exe, hot_update_debug_log_dir().display(), LOG_FILE,
             nc_path,
             nc_exists,
             nc_summary,

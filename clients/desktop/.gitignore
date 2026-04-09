@@ -25,6 +25,8 @@ dist-ssr
 
 # Tauri
 src-tauri/target
+# beforeBundleCommand 复制的热更新助手侧车（勿提交）
+src-tauri/bin/jachin-updater-helper-*.exe
 
 # Updater 私钥（勿提交；与 tauri.conf.json pubkey 成对）
 tauri-desktop-updater.key

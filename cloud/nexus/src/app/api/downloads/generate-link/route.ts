@@ -4,6 +4,10 @@ import { auth } from "@/auth";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { desktopAppReleases } from "@/db/schema";
 import {
+  validateArtifactSignatureMatchesDeclaredVersion,
+  validateObjectKeyContainsVersionSegment,
+} from "@/lib/desktop-releases-common";
+import {
   isDesktopReleasesS3Configured,
   presignDesktopArtifactGetUrl,
 } from "@/lib/desktop-releases-s3";
@@ -51,6 +55,21 @@ export async function GET(request: NextRequest) {
   const meta = row.artifacts[platform];
   if (!meta?.objectKey) {
     return NextResponse.json({ error: "该平台无构建产物" }, { status: 404 });
+  }
+
+  const keyChk = validateObjectKeyContainsVersionSegment(meta.objectKey, version);
+  if (!keyChk.ok) {
+    return NextResponse.json({ error: keyChk.message }, { status: 500 });
+  }
+  if (meta.signature?.trim()) {
+    const sigChk = validateArtifactSignatureMatchesDeclaredVersion(
+      meta.signature,
+      version,
+      { allowUndecodable: true }
+    );
+    if (!sigChk.ok) {
+      return NextResponse.json({ error: sigChk.message }, { status: 500 });
+    }
   }
 
   const url = await presignDesktopArtifactGetUrl(meta.objectKey, 900);

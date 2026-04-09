@@ -16,23 +16,32 @@
   NEXUS_BASE_URL                     例: http://localhost:3000（无尾斜杠）
   NEXUS_ADMIN_SECRET                 与 NEXUS_ADMIN_SECRET / X-Admin-Token 一致
 
-用法（在项目根目录）:
-  python scripts/publish_desktop_release.py --sign
+用法 —— 必须在「仓库根目录」jachin-system-main 下执行，或写对相对路径（本脚本不在 clients/desktop 下）:
+  cd D:\\path\\to\\jachin-system-main
+  python scripts\\publish_desktop_release.py --sign
+
+若在 clients\\desktop 目录，请用:
+  python ..\\..\\scripts\\publish_desktop_release.py --sign
+  或: npm run publish-desktop-release
+
+其它示例（均在仓库根目录）:
   python scripts/publish_desktop_release.py
+    （无 .sig 时若存在 tauri-desktop-updater.key 或 TAURI_PRIVATE_KEY_PATH，将自动签名，等同 --sign）
   python scripts/publish_desktop_release.py --installer path/to/setup.exe --sig path/to/setup.exe.sig
   python scripts/publish_desktop_release.py --installer .../jachin-desktop.exe --unsigned
   python scripts/publish_desktop_release.py --dry-run
   python scripts/publish_desktop_release.py --notes "修复若干问题"
 
-或在 clients/desktop: npm run publish-desktop-release
-
 环境变量可写入 cloud/nexus/.env.local；脚本启动时会自动加载（不覆盖已在终端里 export 的值）。
 
 说明:
-  - 默认从 clients/desktop/src-tauri/target/release/bundle 下自动发现 .exe/.msi 与 .sig。
-  - 签名文件内容（整文件文本）即入库的 Tauri updater signature。
-  - 无 .sig 时用 --unsigned 写入占位签名（仅发行大厅人工下载；Tauri 热更新签名校验会失败）。
-  - bundle.active=false 时若未生成安装包，请先用 --installer 指定路径。
+  - 默认从 clients/desktop/src-tauri/target/release/bundle 下自动发现 .exe/.msi；若有 .sig 则直接读取，否则在能找到私钥时自动 tauri signer sign（等同 --sign）。
+  - 发布前会检查：NSIS/MSI 文件名须含发布版本号；对象名由 version 推导。
+  - tauri.conf.json 里 bundle.active=false 时只发布 target/release/jachin-desktop.exe，**不会**再扫 bundle/nsis（避免误选历史 setup）。
+  - 签名文件：整份 .sig 文件做标准 Base64（单行）后入库，与 tauri-plugin-updater 的 verify_signature 一致；勿传明文多行 .sig。
+  - 无 .sig 且无可用私钥时用 --unsigned 写入占位签名（仅发行大厅人工下载；Tauri 热更新签名校验会失败）。
+  - crypto_verify 失败：多为「.sig 不是当前这份 exe 签的」（重建 exe 后未重签 / Nexus 复制了旧 signature），其次才是私钥与 tauri.conf pubkey 不成对。默认会拒绝「.sig 早于安装包 mtime」的组合。
+  - bundle.active=true（默认）时 Windows 产出 NSIS/MSI 安装包，内含 l3 侧车与热更新助手；用户应下载安装包而非散装主程序 exe。
 
 ========== 正式签名（热更新）==========
 「签名」指 minisign 对「要分发的安装包文件」生成的 detached signature。客户端 tauri.conf.json
@@ -60,9 +69,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -114,14 +125,39 @@ def _env(name: str, default: str | None = None) -> str | None:
     return v.strip()
 
 
-def read_version_from_tauri_conf() -> str:
+def _read_tauri_conf_json() -> dict[str, Any]:
     if not TAURI_CONF.is_file():
         raise FileNotFoundError(f"未找到 {TAURI_CONF}")
-    data = json.loads(TAURI_CONF.read_text(encoding="utf-8"))
+    raw = TAURI_CONF.read_text(encoding="utf-8")
+    if raw.startswith("\ufeff"):
+        raw = raw[1:]
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("tauri.conf.json 根节点应为对象")
+    return data
+
+
+def read_version_from_tauri_conf() -> str:
+    data = _read_tauri_conf_json()
     v = data.get("version")
     if not v or not isinstance(v, str):
         raise ValueError("tauri.conf.json 缺少 version")
     return v.strip()
+
+
+def tauri_bundle_active() -> bool:
+    """
+    与 tauri.conf.json 的 bundle.active 一致。
+    为 false 时 `tauri build` 不产出 NSIS/MSI，bundle/ 下可能残留历史 setup，发布脚本不得优先选用。
+    """
+    try:
+        data = _read_tauri_conf_json()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return True
+    b = data.get("bundle")
+    if not isinstance(b, dict):
+        return True
+    return bool(b.get("active", True))
 
 
 def read_release_version() -> str:
@@ -131,6 +167,35 @@ def read_release_version() -> str:
         if first and first[0].strip():
             return first[0].strip()
     return read_version_from_tauri_conf()
+
+
+def reject_if_detached_sig_older_than_installer(
+    installer: Path,
+    sig_path: Path,
+    *,
+    allow_stale: bool,
+) -> None:
+    """
+    安装包重建后若仍沿用旧 .sig，minisign 会在 crypto_verify 失败（日志里 pubkey_OK、Signature_decode_OK 后报错）。
+    与公私钥是否成对无关；常见于未加 --force-sign、或 Nexus 里复制了旧版本的 signature 字段。
+    """
+    try:
+        im = installer.stat().st_mtime
+        sm = sig_path.stat().st_mtime
+    except OSError:
+        return
+    if im <= sm + 1.0:
+        return
+    msg = (
+        f"拒绝使用陈旧签名: {sig_path.name} 早于安装包 {installer.name} 生成（mtime）。\n"
+        "当前 .sig 不是针对这份二进制签的，热更新会报 The signature verification failed。\n"
+        "请执行: npx tauri signer sign -f <私钥> <安装包>，或发布时加 --sign --force-sign。\n"
+        "若你确信无误，可加 --allow-stale-signature。"
+    )
+    if allow_stale:
+        print(f"[WARN] {msg}", file=sys.stderr)
+    else:
+        raise SystemExit(msg)
 
 
 def find_signature_beside(installer: Path) -> Path | None:
@@ -170,6 +235,28 @@ def pick_windows_installer(bundle: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_size)
 
 
+def pick_published_artifact(bundle: Path) -> Path | None:
+    """
+    选择待上传的安装介质：bundle.active=true 时优先 NSIS/MSI；否则只用 target/release 主程序 exe，
+    避免误选 bundle/nsis 里上次打安装包留下的旧 *_0.8.74_*-setup.exe。
+    """
+    if not tauri_bundle_active():
+        print(
+            "[INFO] tauri.conf.json 中 bundle.active=false：使用 target/release/jachin-desktop.exe（或同目录最大 .exe），"
+            "不扫描 bundle/nsis 以免误发历史 NSIS。若要发布 setup.exe，请先将 bundle.active 设为 true 并重新 tauri build。",
+            file=sys.stderr,
+        )
+        rel = pick_release_dir_exe()
+        if rel is not None:
+            return rel
+        return pick_windows_installer(bundle)
+
+    inst = pick_windows_installer(bundle)
+    if inst is not None:
+        return inst
+    return pick_release_dir_exe()
+
+
 def pick_release_dir_exe() -> Path | None:
     """
     bundle.active=false 时常见：主程序在 target/release/*.exe，不在 bundle/nsis/。
@@ -187,22 +274,67 @@ def pick_release_dir_exe() -> Path | None:
     return max(exes, key=lambda p: p.stat().st_size)
 
 
-def discover_installer_and_sig(bundle: Path) -> tuple[Path, Path]:
-    inst = pick_windows_installer(bundle)
-    if inst is None:
-        inst = pick_release_dir_exe()
+def discover_installer(bundle: Path) -> Path:
+    """仅解析安装包路径；不要求旁路已有 .sig。"""
+    inst = pick_published_artifact(bundle)
     if inst is None:
         raise FileNotFoundError(
             f"在 {bundle} 与 target/release 下未发现 .exe/.msi。"
             "请先 tauri build 或使用 --installer 指定路径。"
         )
-    sig = find_signature_beside(inst)
-    if sig is None:
-        raise FileNotFoundError(
-            f"未找到与 {inst.name} 对应的 .sig（尝试过 {inst.name}.sig 及同目录唯一 *.sig）。"
-            "请使用 --sig 指定。"
+    return inst
+
+
+def ensure_jachin_updater_helper_beside_main(main_exe: Path) -> None:
+    """
+    「立即更新」要求 jachin-updater-helper 与**已安装的主程序**同目录。
+    - 散装 target/release/jachin-desktop.exe：助手应在同目录（发布前可自动编译并期望已拷贝）。
+    - NSIS/MSI 安装包：助手由 Tauri externalBin 打入安装目录，不要求与 setup.exe 同目录。
+    """
+    helper_name = "jachin-updater-helper.exe" if sys.platform == "win32" else "jachin-updater-helper"
+    helper = main_exe.parent / helper_name
+    if helper.is_file():
+        return
+
+    release_helper = DESKTOP_ROOT / "src-tauri" / "target" / "release" / helper_name
+    is_windows_setup = sys.platform == "win32" and (
+        main_exe.name.endswith("-setup.exe") or "nsis" in main_exe.parts
+    )
+    if is_windows_setup:
+        if release_helper.is_file():
+            print(
+                "[INFO] 热更新助手已随 NSIS externalBin 打入安装目录；无需与 setup.exe 并列。",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[WARN] 未找到 target/release 下的热更新助手；请确认 tauri build 已执行且 "
+                "beforeBundleCommand（ensure-updater-helper-sidecar）成功。",
+                file=sys.stderr,
+            )
+        return
+
+    print(
+        f"[WARN] 未找到热更新助手（预期与 {main_exe.name} 同目录: {main_exe.parent}），"
+        "正在编译 release: jachin-updater-helper …",
+        file=sys.stderr,
+    )
+    st = subprocess.run(
+        ["cargo", "build", "--release", "--bin", "jachin-updater-helper"],
+        cwd=str(DESKTOP_ROOT / "src-tauri"),
+    )
+    if st.returncode != 0:
+        raise SystemExit(
+            "编译 jachin-updater-helper 失败。请在 clients/desktop/src-tauri 执行:\n"
+            "  cargo build --release --bin jachin-updater-helper"
         )
-    return inst, sig
+    if not helper.is_file():
+        raise SystemExit(
+            f"编译后仍未找到 {helper}。\n"
+            "若仅将主程序拷到 Downloads 等目录测试，请同时拷贝同目录下的 "
+            f"{helper_name}（与 jachin-desktop.exe 来自同一次构建）。"
+        )
+    print(f"[OK] 热更新助手: {helper}", file=sys.stderr)
 
 
 def make_s3_client():
@@ -268,10 +400,15 @@ def _guess_content_type(name: str) -> str | None:
 
 
 def read_signature_text(sig_path: Path) -> str:
-    raw = sig_path.read_text(encoding="utf-8", errors="replace").strip()
-    if not raw:
+    """
+    Tauri updater / jachin-updater-helper：JSON 里 signature 须为「整份 .sig 字节的标准 Base64」单行。
+    对文件原始字节编码，并去掉一切空白（防止工具或拷贝误插入换行）。
+    """
+    data = sig_path.read_bytes()
+    if not data:
         raise ValueError(f"签名文件为空: {sig_path}")
-    return raw
+    b64 = base64.standard_b64encode(data).decode("ascii")
+    return "".join(b64.split())
 
 
 def post_nexus(payload: dict[str, Any], dry_run: bool) -> None:
@@ -314,6 +451,47 @@ def normalize_version(v: str) -> str:
     return v
 
 
+def installer_path_expects_version_in_filename(installer_path: Path) -> bool:
+    """NSIS/MSI 安装包文件名通常带版本；散装 jachin-desktop.exe 不带。"""
+    n = installer_path.name.lower()
+    if n.endswith(".msi"):
+        return True
+    return "setup" in n or "-setup" in n or "_setup" in n
+
+
+def version_appears_in_installer_filename(version: str, installer_path: Path) -> bool:
+    """
+    本地安装包文件名是否包含将要发布的 semver（不含 v 前缀）。
+    避免 bump 到 0.8.75 却上传 bundle 里仍为 0.8.74 文件名的旧构建，导致「目录是 0.8.75、文件名像 0.8.74」。
+    """
+    v = version.strip().lstrip("vV")
+    if not v:
+        return False
+    name = installer_path.name.lower()
+    if v.lower() in name:
+        return True
+    alt = v.replace(".", "_").lower()
+    return alt in name
+
+
+def remote_artifact_basename(version: str, platform_key: str, installer: Path) -> str:
+    """
+    MinIO 对象名的 basename：由发布 version 推导，与路径段 …/{version}/{platform}/ 一致，
+    不沿用本地可能过期的「0.8.74」文件名。
+    """
+    v = version.strip().lstrip("vV")
+    ext = installer.suffix.lower()
+    if ext == ".msi":
+        return f"jachin-desktop-{v}-{platform_key}.msi"
+    lower = installer.name.lower()
+    is_setup = "setup" in lower or "-setup" in lower or "_setup" in lower
+    if ext == ".exe" and is_setup:
+        return f"jachin-desktop-{v}-{platform_key}-setup.exe"
+    if ext == ".exe":
+        return f"jachin-desktop-{v}-{platform_key}.exe"
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", installer.name)
+
+
 def resolve_installer_path(args: argparse.Namespace) -> Path:
     """与 --unsigned 相同的安装包发现逻辑（显式 --installer 或 bundle/release 自动发现）。"""
     if args.installer:
@@ -322,9 +500,7 @@ def resolve_installer_path(args: argparse.Namespace) -> Path:
             raise SystemExit(f"安装包不存在: {installer}")
         return installer
     bd = args.bundle_dir.resolve()
-    inst = pick_windows_installer(bd)
-    if inst is None:
-        inst = pick_release_dir_exe()
+    inst = pick_published_artifact(bd)
     if inst is None:
         raise SystemExit(
             "未在 bundle 与 target/release 发现 .exe。请使用 --installer 指向安装包路径。"
@@ -361,6 +537,47 @@ def resolve_private_key_path(cli_path: Path | None) -> Path:
     )
 
 
+def try_locate_private_key_path(cli_path: Path | None) -> Path | None:
+    """
+    查找可用于签名的私钥路径；找不到返回 None（不抛）。
+    若显式传入 --private-key-path 但文件不存在，仍抛 SystemExit（与 resolve_private_key_path 一致）。
+    """
+    if cli_path is not None:
+        p = cli_path.expanduser().resolve()
+        if not p.is_file():
+            raise SystemExit(f"私钥文件不存在: {p}")
+        return p
+    env_p = _env("TAURI_PRIVATE_KEY_PATH")
+    if env_p:
+        p = Path(env_p).expanduser().resolve()
+        if p.is_file():
+            return p
+    default = DEFAULT_TAURI_UPDATER_KEY.resolve()
+    if default.is_file():
+        return default
+    return None
+
+
+def _resolve_npx_executable() -> str:
+    """
+    Windows 上 subprocess 直接启动「npx」常失败（WinError 2），需解析到 npx.cmd / 完整路径。
+    """
+    if sys.platform == "win32":
+        for name in ("npx.cmd", "npx.exe", "npx"):
+            p = shutil.which(name)
+            if p:
+                return p
+    p = shutil.which("npx")
+    if p:
+        return p
+    raise SystemExit(
+        "未在 PATH 中找到 npx（已尝试 npx.cmd / npx.exe）。请安装 Node.js 并重新打开终端，\n"
+        "或在 clients/desktop 手动执行：\n"
+        "  npx tauri signer sign -f <私钥路径> <安装包.exe>\n"
+        "生成 .sig 后再： python scripts\\publish_desktop_release.py（不要 --sign）"
+    )
+
+
 def run_tauri_sign_installer(
     installer: Path,
     private_key_path: Path,
@@ -373,8 +590,9 @@ def run_tauri_sign_installer(
             f"[dry-run] (cd clients/desktop && npx tauri signer sign -f {private_key_path} {installer})"
         )
         return
+    npx = _resolve_npx_executable()
     cmd: list[str] = [
-        "npx",
+        npx,
         "tauri",
         "signer",
         "sign",
@@ -384,8 +602,8 @@ def run_tauri_sign_installer(
     ]
     if password:
         cmd.extend(["-p", password])
-    print("运行:", " ".join(cmd[:6]), "... sign", installer.name, file=sys.stderr)
-    r = subprocess.run(cmd, cwd=str(DESKTOP_ROOT))
+    print("运行:", npx, "tauri signer sign -f ... sign", installer.name, file=sys.stderr)
+    r = subprocess.run(cmd, cwd=str(DESKTOP_ROOT), shell=False)
     if r.returncode != 0:
         raise SystemExit("tauri signer sign 失败（见上输出）。请确认已 npm install 且私钥与 pubkey 成对。")
 
@@ -447,6 +665,16 @@ def main() -> None:
         action="store_true",
         help="只打印将要执行的操作，实际上传与 POST",
     )
+    ap.add_argument(
+        "--allow-artifact-filename-version-mismatch",
+        action="store_true",
+        help="允许安装包文件名不含发布版本号（易把旧构建登记为新版本，仅应急）",
+    )
+    ap.add_argument(
+        "--allow-stale-signature",
+        action="store_true",
+        help="允许 .sig 早于安装包 mtime（默认禁止，避免热更新验签在 crypto_verify 阶段失败）",
+    )
     args = ap.parse_args()
 
     if args.unsigned and args.sign:
@@ -464,9 +692,45 @@ def main() -> None:
         installer = resolve_installer_path(args)
         signature = SIGNATURE_UNSIGNED_PLACEHOLDER
     elif not args.installer and not args.sign and not args.sig:
-        installer, sig = discover_installer_and_sig(args.bundle_dir.resolve())
-        signature = read_signature_text(sig)
-        signature_from_discover = True
+        installer = discover_installer(args.bundle_dir.resolve())
+        sig = find_signature_beside(installer)
+        if sig is not None:
+            reject_if_detached_sig_older_than_installer(
+                installer, sig, allow_stale=args.allow_stale_signature
+            )
+            signature = read_signature_text(sig)
+            signature_from_discover = True
+        else:
+            key_path = try_locate_private_key_path(args.private_key_path)
+            if key_path is None:
+                raise SystemExit(
+                    f"未找到与 {installer.name} 对应的 .sig（尝试过 {installer.name}.sig 及同目录唯一 *.sig）。\n"
+                    "可选：\n"
+                    "  • 加 --sign 自动签名（需私钥在默认路径或 TAURI_PRIVATE_KEY_PATH）；\n"
+                    "  • 或先执行: npx tauri signer sign -f <私钥> <安装包>，再重新运行本脚本；\n"
+                    "  • 或 --installer 与 --sig 同时指定；\n"
+                    "  • 或 --unsigned（仅人工下载，热更新签名校验不可用）。\n"
+                    "私钥说明见脚本顶部「正式签名」一节。"
+                )
+            pw = args.private_key_password or _env("TAURI_PRIVATE_KEY_PASSWORD")
+            print(
+                "[INFO] 未在安装包旁发现 .sig；已找到 updater 私钥，将自动执行 tauri signer sign（与 --sign 相同）。",
+                file=sys.stderr,
+            )
+            run_tauri_sign_installer(installer, key_path, pw, args.dry_run)
+            if args.dry_run:
+                signature = (
+                    "[dry-run] 未写入真实 signature；去掉 --dry-run 后将以 .sig 全文入库"
+                )
+            else:
+                found2 = find_signature_beside(installer)
+                if found2 is None:
+                    raise SystemExit(
+                        "签名后仍未找到 .sig（预期在安装包同目录）。请检查 tauri signer 输出。"
+                    )
+                signature = read_signature_text(found2)
+            # 避免后续「无 .sig」分支在 dry-run 或未标记 discover 时重复校验或覆盖 signature
+            signature_from_discover = True
     elif args.sig and not args.installer:
         raise SystemExit("仅指定 --sig 无效，请同时指定 --installer")
     else:
@@ -477,12 +741,18 @@ def main() -> None:
             sig_path = args.sig.resolve()
             if not sig_path.is_file():
                 raise SystemExit(f"签名文件不存在: {sig_path}")
+            reject_if_detached_sig_older_than_installer(
+                installer, sig_path, allow_stale=args.allow_stale_signature
+            )
             signature = read_signature_text(sig_path)
         elif args.sign:
             key_path = resolve_private_key_path(args.private_key_path)
             pw = args.private_key_password or _env("TAURI_PRIVATE_KEY_PASSWORD")
             found = find_signature_beside(installer)
             if found and not args.force_sign:
+                reject_if_detached_sig_older_than_installer(
+                    installer, found, allow_stale=args.allow_stale_signature
+                )
                 signature = read_signature_text(found)
                 print(f"使用已有签名文件: {found}", file=sys.stderr)
             else:
@@ -504,10 +774,35 @@ def main() -> None:
                 raise SystemExit(
                     f"未找到 {installer.name} 旁的 .sig。请指定 --sig，或加 --sign 自动签名，或 --unsigned（仅人工下载）。"
                 )
+            reject_if_detached_sig_older_than_installer(
+                installer, found, allow_stale=args.allow_stale_signature
+            )
             signature = read_signature_text(found)
 
-    safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", installer.name)
+    ensure_jachin_updater_helper_beside_main(installer)
+
+    if (
+        not args.allow_artifact_filename_version_mismatch
+        and installer_path_expects_version_in_filename(installer)
+        and not version_appears_in_installer_filename(version, installer)
+    ):
+        raise SystemExit(
+            f"安装包「{installer.name}」文件名中未找到将要发布的版本号「{version}」。\n"
+            "常见原因：已把 VERSION / tauri.conf 改成新版本，但未重新执行 tauri build，"
+            "bundle 里仍是上一版的 setup。\n\n"
+            "请先完成对应版本的构建再发布；若坚持上传当前文件，请加 "
+            "--allow-artifact-filename-version-mismatch（不推荐，易与真实二进制版本不一致）。"
+        )
+
+    safe_name = remote_artifact_basename(version, args.platform_key, installer)
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", safe_name)
     object_key = f"{args.key_prefix.strip('/')}/{version}/{args.platform_key}/{safe_name}"
+    if installer.name != safe_name:
+        print(
+            f"[INFO] 对象存储内文件名: {safe_name}（与发布 version={version} 对齐）；"
+            f"本地文件: {installer.name}",
+            file=sys.stderr,
+        )
 
     notes = args.notes
     if args.notes_file:
@@ -536,6 +831,11 @@ def main() -> None:
 
     if not args.dry_run:
         print("完成。下载站 / Nexus 共用库时将显示该版本。")
+        print(
+            "提示：热更新「立即更新」需 jachin-updater-helper(.exe) 与主程序同目录；"
+            "若把 exe 拷到 Downloads 等目录手工测，请两枚一起拷贝（同一次 tauri build 产物）。",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import { Send, Mic, Square, Radio, LayoutDashboard, Settings2, Brain } from "luc
 import type { StoredMessage } from "../../utils/messageStorage";
 import { WindowControls } from "../Chat/WindowControls";
 import { VoiceWaveform, type WavePhase } from "../Chat/VoiceWaveform";
-import { JachinCore } from "./JachinCore";
+import { JachinCore, type JachinCoreMachineState } from "./JachinCore";
 import type { RiskLevel } from "../Chat/ChatUI";
 import type { CoreVisualState, ToolFlashKind } from "../../hooks/useJachinCoreState";
 import type { SensoryPayload } from "../../hooks/useSensoryWebSocket";
@@ -39,10 +39,14 @@ function phaseToCoreVisual(
 
 export interface OmniCyberChatShellProps {
   phase: CorePhase;
+  /** 与气泡 Thought Process / 正文流式同步，驱动 JachinCore 呼吸环 */
+  jachinMachineState: JachinCoreMachineState;
   thinkingToolFlash: ToolFlashKind;
   messages: StoredMessage[];
   input: string;
   onInputChange: (value: string) => void;
+  /** Esc 收起 Omni / 陪伴圆（与 window 捕获监听双保险，避免 WebView 吞键） */
+  onRequestDismiss?: () => void | Promise<void>;
   onSend: () => void;
   placeholder?: string;
   disabled?: boolean;
@@ -65,9 +69,11 @@ export interface OmniCyberChatShellProps {
 
 export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   phase,
+  jachinMachineState,
   thinkingToolFlash,
   input,
   onInputChange,
+  onRequestDismiss,
   onSend,
   placeholder = "输入指令…",
   disabled = false,
@@ -252,7 +258,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             className="relative z-20 flex shrink-0 items-center gap-2 px-3 pb-3 pt-1"
             style={{ pointerEvents: "auto" }}
           >
-          <JachinCore state={coreState} toolFlash={thinkingToolFlash} />
+          <JachinCore state={coreState} machineState={jachinMachineState} toolFlash={thinkingToolFlash} />
 
           {onVadToggle != null && (
             <button
@@ -307,6 +313,12 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   value={input}
                   onChange={(e) => onInputChange(e.target.value)}
                   onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void onRequestDismiss?.();
+                      return;
+                    }
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       if (canSend) onSend();

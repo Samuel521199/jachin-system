@@ -1,4 +1,4 @@
-# L3 Sidecar 二进制目录
+﻿# L3 Sidecar 二进制目录
 
 Tauri 从此目录加载 `l3_node` Sidecar 引擎。
 
@@ -25,6 +25,8 @@ Tauri 从此目录加载 `l3_node` Sidecar 引擎。
 - Windows: `l3_node-x86_64-pc-windows-msvc.exe`
 - macOS: `l3_node-aarch64-apple-darwin` 或 `l3_node-x86_64-apple-darwin`
 - Linux: `l3_node-x86_64-unknown-linux-gnu`
+
+`tauri.conf.json` 的 `bundle.externalBin` 为 `bin/l3_node`，与 `l3_node-<triple>` 文件名对应。热更新助手 `jachin-updater-helper.exe` 不在此外部二进制列表中；开发与发布时请用 `npm run ensure-updater-helper` 或从 `target/release` 与主程序同目录拷贝。
 
 ## 注意
 

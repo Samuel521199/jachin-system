@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
@@ -8,6 +8,7 @@ L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
 产出:
   clients/desktop/src-tauri/bin/l3_node-{target_triple}[.exe]
+  （与 tauri.conf.json 的 bundle.externalBin: bin/l3_node 对应）
 
 依赖:
   pip install pyinstaller

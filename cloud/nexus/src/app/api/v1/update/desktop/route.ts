@@ -6,7 +6,11 @@ import { desktopAppReleases } from "@/db/schema";
 import { extractBearerTokenRaw } from "@/lib/edge-agent-manifest-auth";
 import { findActiveEdgeAgentByBearerToken } from "@/lib/edge-bearer";
 import { presignDesktopArtifactGetUrl, isDesktopReleasesS3Configured } from "@/lib/desktop-releases-s3";
-import { tauriPlatformKeyFromParts } from "@/lib/desktop-releases-common";
+import {
+  signatureWireFormatForTauri,
+  tauriPlatformKeyFromParts,
+  validateArtifactSignatureMatchesDeclaredVersion,
+} from "@/lib/desktop-releases-common";
 import { isDesktopUpdateSharedSecretBearer } from "@/lib/desktop-update-auth";
 
 export const dynamic = "force-dynamic";
@@ -105,6 +109,21 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const sigChk = validateArtifactSignatureMatchesDeclaredVersion(
+    art.signature,
+    latest.version,
+    { allowUndecodable: true }
+  );
+  if (!sigChk.ok) {
+    return NextResponse.json(
+      {
+        error: "DESKTOP_RELEASE_SIGNATURE_MISMATCH",
+        message: sigChk.message,
+      },
+      { status: 500 }
+    );
+  }
+
   const url = await presignDesktopArtifactGetUrl(art.objectKey);
   if (!url) {
     return NextResponse.json({ error: "预签名失败" }, { status: 500 });
@@ -116,7 +135,7 @@ export async function GET(request: NextRequest) {
     pub_date: latest.pubDate.toISOString(),
     platforms: {
       [platformKey]: {
-        signature: art.signature,
+        signature: signatureWireFormatForTauri(art.signature),
         url,
       },
     },

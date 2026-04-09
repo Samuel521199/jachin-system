@@ -4,7 +4,10 @@
 mod commands;
 mod config;
 mod nexus_config;
+#[allow(dead_code)]
+mod updater_common;
 mod updater_debug_log;
+mod updater_spawn;
 mod device;
 mod device_registry;
 mod kernel;
@@ -13,6 +16,17 @@ mod pubsub;
 mod stt;
 mod tts;
 mod window;
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(
+        h_wnd: *mut std::ffi::c_void,
+        lp_text: *const u16,
+        lp_caption: *const u16,
+        u_type: u32,
+    ) -> i32;
+}
 
 /// 未启用 ambient 时的占位命令，返回明确错误或 false。
 #[cfg(not(feature = "ambient"))]
@@ -39,7 +53,7 @@ use pubsub::start_pubsub_server;
 use tauri::{
     menu::{MenuBuilder, MenuItem},
     tray::{TrayIconBuilder, TrayIconEvent},
-    Emitter, Listener, Manager,
+    Emitter, EventTarget, Listener, Manager, PhysicalPosition, PhysicalSize, Size,
 };
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -247,6 +261,39 @@ async fn quick_action_eagle_eye(app: tauri::AppHandle) -> Result<bool, String> {
 /// 休眠状态：true = Omni 条已隐藏（桌面精灵默认不显示）
 static HIBERNATE_ON: AtomicBool = AtomicBool::new(false);
 
+/// Omni 条是否处于右下角「陪伴圆」模式（窗口缩小而非 hide，便于存在感）
+static CHAT_COMPANION_MODE: AtomicBool = AtomicBool::new(false);
+/// 进入陪伴模式前记录的外尺寸，用于恢复用户拖拽后的大小
+static CHAT_RESTORE_SIZE: std::sync::Mutex<Option<(u32, u32)>> = std::sync::Mutex::new(None);
+
+const CHAT_DEFAULT_WIDTH: u32 = 440;
+const CHAT_DEFAULT_HEIGHT: u32 = 520;
+const CHAT_MIN_WIDTH: u32 = 360;
+const CHAT_MIN_HEIGHT: u32 = 280;
+const CHAT_COMPANION_PX: u32 = 56;
+const CHAT_COMPANION_MIN_PX: u32 = 48;
+
+/// 供前端在 Esc 后立即切换陪伴 UI（不依赖 event listen 权限）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HideChatWindowResult {
+    pub companion: bool,
+    pub fully_hidden: bool,
+}
+
+/// 前端 `listen('omni-companion-mode')`：优先投递到 chat Webview（Tauri 2 事件目标更明确）
+fn emit_omni_companion_ui(app: &tauri::AppHandle, companion: bool) {
+    let payload = json!({ "companion": companion });
+    if let Err(e) = app.emit_to(
+        EventTarget::webview_window("chat"),
+        "omni-companion-mode",
+        payload.clone(),
+    ) {
+        eprintln!("[Omni] emit_to(chat) omni-companion-mode failed: {}, fallback broadcast", e);
+        let _ = app.emit("omni-companion-mode", payload);
+    }
+}
+
 #[tauri::command]
 fn get_hibernate_mode() -> Result<bool, String> {
     Ok(HIBERNATE_ON.load(Ordering::Relaxed))
@@ -265,9 +312,25 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
     }
     if let Some(chat) = app.get_webview_window("chat") {
         if next {
+            CHAT_COMPANION_MODE.store(false, Ordering::Relaxed);
+            emit_omni_companion_ui(&app, false);
             let _ = chat.hide();
         } else {
+            let _ = chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
+                CHAT_MIN_WIDTH,
+                CHAT_MIN_HEIGHT,
+            ))));
+            let (w, h) = CHAT_RESTORE_SIZE
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
+            let w = w.max(CHAT_MIN_WIDTH);
+            let h = h.max(CHAT_MIN_HEIGHT);
+            let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, h)));
             let _ = position_chat_omni_bar(&app);
+            CHAT_COMPANION_MODE.store(false, Ordering::Relaxed);
+            emit_omni_companion_ui(&app, false);
             let _ = chat.show();
             let _ = chat.set_focus();
         }
@@ -283,7 +346,6 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
 
 /// 将 Omni 输入条置于主显示器水平居中、垂直约 2/3（Raycast / Spotlight 风格）
 fn position_chat_omni_bar(app: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::PhysicalPosition;
     let Some(chat) = app.get_webview_window("chat") else {
         return Err("chat window missing".into());
     };
@@ -301,19 +363,131 @@ fn position_chat_omni_bar(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 右下角「陪伴圆」锚点（主显示器工作区右下留白）
+fn position_chat_companion(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    let monitor = chat
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let margin: i32 = 20;
+    let w = CHAT_COMPANION_PX as i32;
+    let h = CHAT_COMPANION_PX as i32;
+    let x = mon_pos.x + mon_size.width as i32 - w - margin;
+    let y = mon_pos.y + mon_size.height as i32 - h - margin;
+    chat.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Esc / hide：缩为右下角小圆（需先放宽 min_inner_size，否则达不到 tauri.conf 的 360×280 下限）
+fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    if let Ok(sz) = chat.outer_size() {
+        if sz.width >= 120 && sz.height >= 120 {
+            if let Ok(mut g) = CHAT_RESTORE_SIZE.lock() {
+                *g = Some((sz.width, sz.height));
+            }
+        }
+    }
+    chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
+        CHAT_COMPANION_MIN_PX,
+        CHAT_COMPANION_MIN_PX,
+    ))))
+    .map_err(|e| format!("set_min_size(companion): {e}"))?;
+    chat.set_size(Size::Physical(PhysicalSize::new(
+        CHAT_COMPANION_PX,
+        CHAT_COMPANION_PX,
+    )))
+    .map_err(|e| format!("set_size(companion): {e}"))?;
+    position_chat_companion(app)?;
+    chat
+        .show()
+        .map_err(|e| format!("show(companion): {e}"))?;
+    CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
+    emit_omni_companion_ui(app, true);
+    Ok(())
+}
+
+fn restore_chat_full_omni(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    let (w, h) = CHAT_RESTORE_SIZE
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
+    let w = w.max(CHAT_MIN_WIDTH);
+    let h = h.max(CHAT_MIN_HEIGHT);
+    chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
+        CHAT_MIN_WIDTH,
+        CHAT_MIN_HEIGHT,
+    ))))
+    .map_err(|e| format!("set_min_size(restore): {e}"))?;
+    chat.set_size(Size::Physical(PhysicalSize::new(w, h)))
+        .map_err(|e| format!("set_size(restore): {e}"))?;
+    position_chat_omni_bar(app)?;
+    CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
+    emit_omni_companion_ui(app, false);
+    Ok(())
+}
+
+/// 陪伴模式下再按 Esc：彻底 hide，并恢复最小尺寸约束供下次打开
+fn hide_chat_fully_reset(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
+        CHAT_MIN_WIDTH,
+        CHAT_MIN_HEIGHT,
+    ))))
+    .map_err(|e| format!("set_min_size(reset): {e}"))?;
+    CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
+    emit_omni_companion_ui(app, false);
+    chat.hide().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 切换 Omni 条显示；由托盘、全局快捷键等调用
 fn toggle_chat_omni(app: &tauri::AppHandle) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(chat) = app_clone.get_webview_window("chat") {
             let visible = chat.is_visible().unwrap_or(false);
-            if visible {
-                let _ = chat.hide();
-            } else {
+            let companion = CHAT_COMPANION_MODE.load(Ordering::Relaxed);
+            if !visible {
+                let _ = chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
+                    CHAT_MIN_WIDTH,
+                    CHAT_MIN_HEIGHT,
+                ))));
+                let (w, h) = CHAT_RESTORE_SIZE
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
+                let w = w.max(CHAT_MIN_WIDTH);
+                let h = h.max(CHAT_MIN_HEIGHT);
+                let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, h)));
                 let _ = position_chat_omni_bar(&app_clone);
+                CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
+                emit_omni_companion_ui(&app_clone, false);
                 let _ = chat.show();
                 let _ = chat.set_focus();
+                return;
             }
+            if companion {
+                let _ = restore_chat_full_omni(&app_clone);
+                let _ = chat.set_focus();
+                return;
+            }
+            let _ = minimize_chat_to_companion(&app_clone);
         }
     });
 }
@@ -353,7 +527,37 @@ fn shutdown_application(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
+/// 旧版热更新曾把 NSIS 安装包复制为 `jachin-desktop.exe`，导致桌面快捷方式打开安装向导而非应用。
+#[cfg(windows)]
+fn guard_main_exe_not_nsis_installer_stub() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Ok(true) = updater_common::sniff_file_looks_like_windows_nsis_installer_package(&exe) else {
+        return;
+    };
+    const MB_OK: u32 = 0x0000_0000;
+    const MB_ICONERROR: u32 = 0x0000_0010;
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let title = "Jachin Desktop — 主程序文件异常";
+    let body = "检测到当前程序文件实际是 NSIS 安装向导，通常由旧版热更新误把「…-setup.exe」覆盖成 jachin-desktop.exe 导致。\n\n\
+请：使用官网下载的安装包重新运行安装（覆盖安装即可），或先卸载再从安装包安装。\n\n\
+说明：安装包与安装后的主程序不是同一个文件；快捷方式应指向安装目录里的 jachin-desktop.exe。\n\n\
+新版热更新已修复，不会再把安装包覆盖为主程序。";
+    let t = to_wide(title);
+    let b = to_wide(body);
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), b.as_ptr(), t.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+    std::process::exit(86);
+}
+
 fn main() {
+    #[cfg(windows)]
+    guard_main_exe_not_nsis_installer_stub();
+
     // 启动时生成策略（用户覆盖 > 自动检测），并打印决策来源
     let profile = kernel::HardwareProfile::detect();
     let settings = config::UserSettings::load();
@@ -381,8 +585,8 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                // 桌面精灵不再作为默认交互；勿从 .window-state.json 恢复「上次曾打开」导致重新显示
-                .with_denylist(&["sprite"])
+                // sprite：勿自动恢复显示。chat：勿用持久化尺寸覆盖 Esc 陪伴圆（否则会立刻弹回大窗）
+                .with_denylist(&["sprite", "chat"])
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
@@ -418,6 +622,9 @@ fn main() {
             control_device,
             get_system_info,
             app_exit,
+            spawn_hot_update_and_exit,
+            spawn_hot_update_prepare,
+            apply_staged_hot_update_and_exit,
             get_system_stats,
             tts_self_check,
             tts_has_model,
@@ -428,6 +635,7 @@ fn main() {
             get_hibernate_mode,
             show_chat_window,
             hide_chat_window,
+            is_chat_companion_mode,
             show_console_window,
             quick_action_privacy_mode,
             quick_action_clear_memory,
@@ -740,8 +948,26 @@ async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
 async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
-        let _ = position_chat_omni_bar(&app_handle);
         if let Some(chat_window) = app_handle.get_webview_window("chat") {
+            if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+                let _ = restore_chat_full_omni(&app_handle);
+            } else if !chat_window.is_visible().unwrap_or(false) {
+                let _ = chat_window.set_min_size(Some(Size::Physical(PhysicalSize::new(
+                    CHAT_MIN_WIDTH,
+                    CHAT_MIN_HEIGHT,
+                ))));
+                let (w, h) = CHAT_RESTORE_SIZE
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
+                let w = w.max(CHAT_MIN_WIDTH);
+                let h = h.max(CHAT_MIN_HEIGHT);
+                let _ = chat_window.set_size(Size::Physical(PhysicalSize::new(w, h)));
+                let _ = position_chat_omni_bar(&app_handle);
+            } else {
+                let _ = position_chat_omni_bar(&app_handle);
+            }
             let _ = chat_window.show();
             let _ = chat_window.set_focus();
         }
@@ -750,18 +976,111 @@ async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 隐藏对话窗口
+/// Esc：先缩为右下角陪伴圆；再按一次则彻底隐藏。必须等主线程执行完再返回，前端才能立刻切 UI。
 #[tauri::command]
-async fn hide_chat_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(chat_window) = app.get_webview_window("chat") {
-        chat_window.hide().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+async fn hide_chat_window(app: tauri::AppHandle) -> Result<HideChatWindowResult, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<HideChatWindowResult, String>>();
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        let out = if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+            hide_chat_fully_reset(&app_handle).map(|_| HideChatWindowResult {
+                companion: false,
+                fully_hidden: true,
+            })
+        } else {
+            minimize_chat_to_companion(&app_handle).map(|_| HideChatWindowResult {
+                companion: true,
+                fully_hidden: false,
+            })
+        };
+        let _ = tx.send(out);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|_| "hide_chat_window: 主线程未响应".to_string())?
+}
+
+#[tauri::command]
+fn is_chat_companion_mode() -> bool {
+    CHAT_COMPANION_MODE.load(Ordering::Relaxed)
 }
 
 /// 退出应用（先 kill L3 释放端口）
 #[tauri::command]
 fn app_exit(app: tauri::AppHandle) -> Result<(), String> {
+    shutdown_application(&app);
+    Ok(())
+}
+
+fn resolve_spawn_hot_update_payload(
+    download_url: Option<String>,
+    signature: Option<String>,
+    new_version: Option<String>,
+    payload: Option<updater_spawn::SpawnHotUpdatePayload>,
+) -> Result<updater_spawn::SpawnHotUpdatePayload, String> {
+    if let Some(p) = payload {
+        Ok(p)
+    } else if let (Some(d), Some(s), Some(n)) = (download_url, signature, new_version) {
+        Ok(updater_spawn::SpawnHotUpdatePayload {
+            download_url: d,
+            signature: s,
+            new_version: n,
+        })
+    } else {
+        Err(
+            "缺少参数。请传 payload: { downloadUrl, signature, newVersion }，或顶层 downloadUrl、signature、newVersion。"
+                .into(),
+        )
+    }
+}
+
+/// 启动独立热更新助手进程并退出本应用（助手下载、校验、检查用户数据后替换 exe 并启动新版本）。
+///
+/// 兼容两种 IPC 形态（避免已发布的旧 exe 仅识别 `payload`、而新前端只发扁平字段导致对不齐）：
+/// - 推荐：`payload: { downloadUrl, signature, newVersion }`（与 `gateway_connect` 的 `input` 风格一致）
+/// - 亦可：顶层 `downloadUrl`、`signature`、`newVersion`
+#[tauri::command]
+fn spawn_hot_update_and_exit(
+    app: tauri::AppHandle,
+    download_url: Option<String>,
+    signature: Option<String>,
+    new_version: Option<String>,
+    payload: Option<updater_spawn::SpawnHotUpdatePayload>,
+) -> Result<(), String> {
+    let job = resolve_spawn_hot_update_payload(download_url, signature, new_version, payload)
+        .map_err(|e| format!("spawn_hot_update_and_exit: {e}"))?;
+    updater_spawn::spawn_hot_update_job(&app, job)?;
+    shutdown_application(&app);
+    Ok(())
+}
+
+/// 仅下载并校验新版本到临时目录，**不退出主程序**；完成后向前端派发 `hot-update-prepare-result`。
+#[tauri::command]
+fn spawn_hot_update_prepare(
+    app: tauri::AppHandle,
+    download_url: Option<String>,
+    signature: Option<String>,
+    new_version: Option<String>,
+    payload: Option<updater_spawn::SpawnHotUpdatePayload>,
+) -> Result<(), String> {
+    let job = resolve_spawn_hot_update_payload(download_url, signature, new_version, payload)
+        .map_err(|e| format!("spawn_hot_update_prepare: {e}"))?;
+    updater_spawn::spawn_hot_update_prepare_job(&app, job)?;
+    Ok(())
+}
+
+/// 用户确认后：启动助手执行「等主进程退出 → 覆盖 exe → 启动新版本」，并**立即退出本应用**。
+#[tauri::command]
+fn apply_staged_hot_update_and_exit(
+    app: tauri::AppHandle,
+    staged_new_exe: String,
+    new_version: String,
+) -> Result<(), String> {
+    let staged = std::path::PathBuf::from(staged_new_exe.trim());
+    if !staged.is_file() {
+        return Err("暂存安装包不存在或已清理，请重新点击「立即更新」下载。".into());
+    }
+    updater_spawn::spawn_hot_update_apply_job(&app, staged, new_version)?;
     shutdown_application(&app);
     Ok(())
 }

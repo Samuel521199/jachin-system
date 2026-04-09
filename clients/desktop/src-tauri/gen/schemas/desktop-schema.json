@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Spawn detached hot-update helper and exit (out-of-process updater).",
+          "type": "string",
+          "const": "allow-spawn-hot-update",
+          "markdownDescription": "Spawn detached hot-update helper and exit (out-of-process updater)."
+        },
+        {
           "description": "Append hot-update debug lines to local log (D:\\zzz\\jachin).",
           "type": "string",
           "const": "allow-updater-debug-append",

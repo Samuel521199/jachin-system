@@ -175,6 +175,39 @@ pub fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
     vars
 }
 
+/// Tauri `externalBin` 路径（与 `tauri.conf.json` 的 `bin/l3_node` 一致）
+pub fn l3_sidecar_external_bin_path() -> &'static str {
+    "bin/l3_node"
+}
+
+fn l3_sidecar_target_triple() -> &'static str {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        "aarch64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "x86_64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "aarch64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "x86_64-apple-darwin"
+    } else {
+        "x86_64-pc-windows-msvc"
+    }
+}
+
+/// 便携包 `exe_dir/bin/` 下侧车文件名（与 `build_l3_sidecar.py` 产出一致）
+pub fn l3_sidecar_portable_exe_name() -> String {
+    let t = l3_sidecar_target_triple();
+    if cfg!(target_os = "windows") {
+        format!("l3_node-{}.exe", t)
+    } else {
+        format!("l3_node-{}", t)
+    }
+}
+
 /// 直接通过 exe 路径启动（绕过 Tauri Sidecar 路径解析，解决 bundle.active:false 时 Tauri 找不到 bin 的问题）
 pub fn spawn_l3_via_direct_exe(
     app: &impl tauri::Manager<tauri::Wry>,
@@ -185,16 +218,15 @@ pub fn spawn_l3_via_direct_exe(
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let dir = exe_dir().ok_or("无法获取 exe 目录")?;
     let bin_dir = dir.join("bin");
-    let exe_name = if cfg!(target_os = "windows") {
-        "l3_node-x86_64-pc-windows-msvc.exe"
-    } else {
-        "l3_node-x86_64-unknown-linux-gnu"
-    };
-    let exe_path = bin_dir.join(exe_name);
+    let exe_name = l3_sidecar_portable_exe_name();
+    let exe_path = bin_dir.join(&exe_name);
     if !exe_path.exists() {
         return Err(format!("L3 exe 不存在: {}，请运行 .\\scripts\\build_full.ps1", exe_path.display()));
     }
     let mut cmd = app.shell().command(exe_path.to_string_lossy().as_ref()).args(args).env("PYTHONUTF8", "1");
+    if let Some(ref pr) = project_root() {
+        cmd = cmd.env("JACHIN_APP_ROOT", pr.to_string_lossy().as_ref());
+    }
     if let Some(url) = env_url {
         cmd = cmd.env("L2_BASE_URL", url);
     }
@@ -295,9 +327,12 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
     };
     let env_vars = load_l3_env_vars(&env_root);
 
-    let child = match app.shell().sidecar("bin/l3_node") {
+    let child = match app.shell().sidecar(l3_sidecar_external_bin_path()) {
         Ok(sidecar) => {
             let mut sidecar = sidecar.args(args).env("PYTHONUTF8", "1");
+            if let Some(ref pr) = project_root() {
+                sidecar = sidecar.env("JACHIN_APP_ROOT", pr.to_string_lossy().as_ref());
+            }
             if let Some(ref url) = env_url {
                 sidecar = sidecar.env("L2_BASE_URL", url.as_str());
             }
@@ -330,11 +365,11 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
                 Err(e) => {
                     let err_msg = e.to_string();
                     let expected = exe_dir()
-                        .map(|d| format!("{}", d.join("bin").join("l3_node-x86_64-pc-windows-msvc.exe").display()))
-                        .unwrap_or_else(|| "bin/l3_node-*.exe".to_string());
+                        .map(|d| format!("{}", d.join("bin").join(l3_sidecar_portable_exe_name()).display()))
+                        .unwrap_or_else(|| format!("bin/{}", l3_sidecar_portable_exe_name()));
                     write_l3_debug(&format!("Sidecar spawn 失败: {} (期望路径: {})", err_msg, expected));
                     if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 3") || err_msg.contains("os error 2") || err_msg.contains("not found") {
-                        write_l3_debug("尝试直接启动 exe_dir/bin/l3_node-*.exe");
+                        write_l3_debug("尝试直接启动 exe_dir/bin/l3_node-<triple>.exe");
                         match spawn_l3_via_direct_exe(app, args, env_url.as_deref(), &env_vars, None) {
                             Ok(c) => c,
                             Err(direct_err) => {
@@ -357,7 +392,7 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
         }
         Err(e) => {
             let err_msg = e.to_string();
-            write_l3_debug(&format!("Sidecar 未找到: {}，尝试直接启动 exe_dir/bin/l3_node-*.exe", err_msg));
+            write_l3_debug(&format!("Sidecar 未找到: {}，尝试直接启动 exe_dir/bin 下 l3_node 侧车", err_msg));
             match spawn_l3_via_direct_exe(app, args, env_url.as_deref(), &env_vars, None) {
                 Ok(c) => c,
                 Err(direct_err) => {
@@ -367,8 +402,9 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
                         spawn_l3_via_python(app, args, env_url.as_deref(), None)?
                     } else {
                         let msg = format!(
-                            "L3 启动失败: {}。便携包需确保 bin/l3_node-x86_64-pc-windows-msvc.exe 存在，请运行: .\\scripts\\build_full.ps1",
-                            direct_err
+                            "L3 启动失败: {}。便携包需确保 bin/{} 存在，请运行: .\\scripts\\build_full.ps1",
+                            direct_err,
+                            l3_sidecar_portable_exe_name()
                         );
                         write_l3_debug(&msg);
                         return Err(msg);

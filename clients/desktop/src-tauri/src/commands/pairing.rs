@@ -1,4 +1,4 @@
-//! V2 L2↔L3 零信任配对（非 L1↔L3）— 网关接驳
+﻿//! V2 L2↔L3 零信任配对（非 L1↔L3）— 网关接驳
 //! 读写 ~/.jachin/l2_gateway_config.json，管理 L2 网关地址与配对状态
 
 use serde::{Deserialize, Serialize};
@@ -197,7 +197,7 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
     let env_root = crate::l3_spawn::exe_dir().unwrap_or_else(PathBuf::new);
     let env_vars = crate::l3_spawn::load_l3_env_vars(&env_root);
 
-    let sidecar = match app.shell().sidecar("bin/l3_node") {
+    let sidecar = match app.shell().sidecar(crate::l3_spawn::l3_sidecar_external_bin_path()) {
         Ok(s) => s,
         Err(e) => {
             println!("[L3] Sidecar 未找到，尝试直接启动 exe: {}", e);
