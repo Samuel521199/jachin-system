@@ -56,6 +56,8 @@ L3 需要调用某 MCP
 | L2 无本机工具、需兄弟 L3 代跑 | **优先**：Redis `l3_mcp_delegate_queue:{node_id}` + L3 `l3_node/mcp_delegate_pull_worker.py` 轮询 `GET /api/v2/mcp/delegate/poll`，结果 `POST /api/v2/mcp/delegate/result`（**无需 peer 入站 HTTP**）。**回退**：`get_l3_nodes_with_mcp_tool(..., require_l3_http_url=True)` → `POST {peer}/api/v3/mcp/execute`。 |
 | L3 被调入口（HTTP 回退） | `l3_node/http_server.py` → `POST /api/v3/mcp/execute` |
 
+**npm / npx**：`~/.jachin/mcp_servers.json` 中通过 `npx -y <包>` 拉起的 **包名必须与 npm registry 一致**，合并示例与文档前须核验，见 **`docs/MCP_SPEC.md` §3.5**。
+
 环境变量：**`JACHIN_L2_STDIO_MCP=1`** — 在 L2 宿主机上恢复旧行为（本机 stdio MCPManager + `GET /tools` 合并本机列表）。**`JACHIN_MCP_DELEGATE_PULL=0`** 关闭 Pull 优先；**`JACHIN_MCP_PULL_WORKER=0`** 关闭 L3 侧拉取协程。无 Redis 时自动仅走 HTTP 回退。
 
 **Task Token（跨节点委托）**：L2 在 Pull 与 HTTP 入站委托时签发 `task_token`（`core/mcp_task_token.py`），绑定 `task_id` + `tool_name` + 执行端 `node_id` + `sub_account_id`。L3 执行前校验；**`JACHIN_MCP_TASK_TOKEN_SECRET`** 建议在 L2 与所有 L3 设为同一密钥（未设时弱回退见模块说明）。**`JACHIN_MCP_DELEGATE_ALLOW_LEGACY_NO_TOKEN=1`** 允许 Pull 消费无令牌任务（仅迁移/排障）。**`JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1`** 允许 `/api/v3/mcp/execute` 不带令牌（不安全）。

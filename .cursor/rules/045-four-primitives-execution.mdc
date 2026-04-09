@@ -22,7 +22,7 @@ globs: core/mcp_client.py, core/skill_loader.py, core/wasm_runner.py, core/agent
 - **L3 本机未安装**：**目标** L2 TaskManager + 对端 L3 **Pull**；**现状** 仍可能 `v2_mcp` HTTP POST peer（见 `docs/MCP_EXECUTION_MODEL.md`）。
 - **L2 不默认代跑 LOCAL_PINNED MCP**：侧载 L2_GATEWAY 为兼容。
 - 配置：`~/.jachin/mcp_servers.json`；L3_LOCAL：`l3_mcp_cache/`。
-- 参考：`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`、`docs/MCP_SPEC.md`
+- 参考：`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`、`docs/MCP_SPEC.md`（**stdio：`npx` 包名核验见 §3.5**；规则 **088-mcp-npm-package-verification**）
 
 ## Skills（原语）
 

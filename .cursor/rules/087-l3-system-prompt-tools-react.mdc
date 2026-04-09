@@ -1,0 +1,29 @@
+---
+description: L3 system 提示词、工具清单、ReAct 与直连绕过（direct_llm_bypass）的职责划分
+alwaysApply: true
+---
+
+# L3：System 提示词 · 工具清单 · 模型是否调工具
+
+## 主路径（ReAct）
+
+- **工具从哪来**：`load_tools`（含 `assemble_tool_pool` / MCP 合并后的结果）得到本轮 `tools[]`。
+- **写进 system 的段落**：`build_tools_description(tools)` 生成「可用工具」清单（含 **id**、描述、参数/schema 提示），供模型在 **Action** 里与 **id 精确对齐**。
+- **组装位置**：`l3_node/agent_core.py` 的 `_build_system_prompt`：前缀含「可用工具：」+ 上述清单；后缀含 **ReAct 输出格式**（Thought / Action / Action Input / Observation / Final Answer）及业务域注入（记忆、招聘 SOP、能力目录等）。
+- **谁决定是否调工具**：**大模型按轮次**在 assistant 输出里写 `Action` + `Action Input`；宿主解析后执行 `run_tool`，再把结果以 **Observation** 写回对话。不是硬编码 if-else 选工具（安全/网关拦截等除外）。
+
+## 例外：直连 LLM（`direct_llm_bypass`）
+
+- **触发**：`l3_node/routing/output_format_signals.py` 的 `should_use_direct_llm_bypass` 为真（如用户强格式/轻量 JSON 等，且未被「明显需要工具」启发式拦住）。
+- **行为**：`run_agent` 内可将 **system_prompt 置空**，走 `_run_direct_llm_completion`，**不经过**带完整「可用工具」列表的 `_build_system_prompt`，因此**通常没有**主路径那种工具表 + ReAct。
+- **失败回退**：直连失败时可再 **回退 ReAct** 并重新构建带工具的 `system_prompt`（见 `agent_core` 中 direct 分支附近的回退逻辑）。
+
+## 子 Agent（delegate）
+
+- **独立 system**：在子 Agent 的 `system_prompt` 后追加「可用工具：」+ `build_tools_description(load_tools(allowed_skills=...))` 与 ReAct 格式（见 `SubAgent.run_once` 附近）。
+
+## 修改相关代码时的心智模型
+
+- 改 **工具可见性/描述**：`loader.py`、`tool_pool.py`、`core_util_tools` / native 注册、MCP 注册；**文案以 `build_tools_description` 最终进 prompt 的为准**。
+- 改 **哪些问句必须走工具、禁止直连**：`output_format_signals.py` 的 `_TOOL_NEED_RE` / `heuristic_tool_need` 与直连条件；避免「该用工具」的问句被绕过而导致幻觉。
+- **SSOT 代码锚点**：`agent_core._build_system_prompt`、`primitives/tools/loader.build_tools_description`、`run_agent` 中 system 与 `direct_llm_bypass` 分支。

@@ -115,6 +115,18 @@
 - **写入**: `add_local_memory`；**L2 recall 成功后** `merge_from_l2` 去重合并。
 - **注入 Prompt**: `get_local_memory_for_prompt`（经 **`memory_facade` / 统一排序 `local_memory_ranking`**）→ system 后缀 `【本地记忆】`；**correction 优先**；**被动衰减** 与 **`next_prompt_cycle`、`passive_max_idle_runs`**（`nexus_config` → `memory`）联动。
 
+#### 4.1.1 梦境合并 / 本地记忆坍缩（L5，`l3_node/memory_compactor.py`）
+
+与 **上下文 compaction**（`core/compaction_hook.py`）**不是同一机制**。向用户说明触发条件时应包含 **条数 + 时间 + 口令**，避免只回答「下口令、Daemon 接管」等模糊说法。
+
+| 维度 | 说明 |
+|------|------|
+| **条数阈值（仅静默路径）** | `compact_local_memory_if_needed(..., force=False)`：仅当主库 JSON **数组长度 > threshold**（默认 **150**）时才调用轻量 LLM 并写回。用于 **`JACHIN_MEMORY_COMPACT_ON_SESSION=1`** 时每条消息后的静默检查；未达标不改写。 |
+| **定时 + 桌面横幅** | `compact_schedule.json` + L3 WS `memory_compact_suggest`；用户点「立即开始」或倒计时 **auto_start** → 以 **`force=True`** 调用合并，**无视 150 条阈值**（主库 **空数组** 时不调 LLM，返回简短说明）。 |
+| **显式聊天口令** | 「整理本地记忆」「梦境合并」「立即整理记忆」等：`agent_core` 调度合并时 **`force=True`**，**立即尝试合并，无视 150 条阈值**（空库同上）。 |
+| **可选** | `JACHIN_MEMORY_COMPACT_ON_SESSION=1`：静默路径，**仍受** threshold；`JACHIN_MEMORY_COMPACT_ENABLED=0` 关闭整个坍缩。 |
+| **双缓冲** | 合并在影子副本上进行，成功后再替换主文件；详见 `memory_compactor.py` 与 `memory_compact_control.py`。 |
+
 ### 4.2 L2 向量/服务记忆：`recall_memory`
 
 - **非注册工具名**：由 `_parse_action` 特殊解析，走 `_recall_memory_search`（带 `tool_call_cache`）。

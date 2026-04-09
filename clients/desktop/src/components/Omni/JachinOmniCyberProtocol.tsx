@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
@@ -12,6 +12,7 @@ import { JachinCore } from "./JachinCore";
 import type { RiskLevel } from "../Chat/ChatUI";
 import type { CoreVisualState, ToolFlashKind } from "../../hooks/useJachinCoreState";
 import type { SensoryPayload } from "../../hooks/useSensoryWebSocket";
+import { MarkdownMessage } from "../Chat/MarkdownMessage";
 
 export enum CorePhase {
   IDLE = "IDLE",
@@ -214,8 +215,8 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                               </div>
                             </details>
                           )}
-                          <div className="break-words whitespace-pre-wrap leading-relaxed font-medium text-cyan-50/95">
-                            {msg.content}
+                          <div className="break-words leading-relaxed text-cyan-50/95 [&_.markdown-content]:font-medium">
+                            <MarkdownMessage content={msg.content} />
                             {isLastAssistant && isTyping && (
                               <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-cyan-400/90 align-middle" />
                             )}

@@ -4,6 +4,8 @@
 **定位**: 说明 L3 如何将 **Native / Wasm（jpp）** 与 **MCP（含 L2 下发）** 合并为送入 LLM 的 `tools[]`，并与 Claude Code 风格「全量定义 → 上下文过滤 → 组装池」概念对齐。  
 **相关 SSOT**: `docs/Jachin 视角的「四大原语」终极架构规范.md`（`docs/FOUR_PRIMITIVES.md`）、`docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md`（L3 单主轴 ReAct 与工具派发链）、`l3_node/primitives/mcp/mcp_tools/MCP_LIFECYCLE_AND_APPROVAL_FLOW.md`。
 
+**stdio MCP 与 npm**：`~/.jachin/mcp_servers.json` 中 `npx -y` 的包名**必须**与 npm 一致，合并示例前须核验，见 **`docs/MCP_SPEC.md` §3.5**（规则 **088-mcp-npm-package-verification**）。
+
 ---
 
 ## 1. 与 Claude Code 概念对照（简表）

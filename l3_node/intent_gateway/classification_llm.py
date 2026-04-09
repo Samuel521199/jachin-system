@@ -96,3 +96,103 @@ async def optional_rewrite_routing_utterance(
     if len(ru) < 2 or len(ru) > 800:
         return None
     return ru
+
+
+async def infer_requires_realtime_knowledge_async(
+    *,
+    engine: Any,
+    user_input: str,
+    classification_text: str,
+    timeout_sec: float = 2.5,
+) -> bool:
+    """
+    小模型 JSON 判定：本轮用户意图是否需要「实时外部知识」预取（ Tavily 注入）。
+    启发式优先命中则跳过小模型；小模型超时则回退启发式（避免始终 False）。
+    """
+    from l3_node.intent_gateway.config import get_intent_gateway_config
+    from l3_node.intent_gateway.model_resolve import get_classification_model_litellm_id
+    from l3_node.intent_gateway.realtime_knowledge_heuristic import heuristic_requires_realtime_knowledge
+
+    cfg = get_intent_gateway_config()
+    if not bool(cfg.get("realtime_knowledge_llm_enabled", True)):
+        return False
+
+    ui = (user_input or "").strip()
+    ct = (classification_text or "").strip()
+    surf = ct if len(ct) >= 8 else ui
+    if len(surf) < 4:
+        return False
+
+    if heuristic_requires_realtime_knowledge(ui, ct):
+        logger.info("[IntentGateway] realtime_knowledge 命中启发式，跳过小模型")
+        return True
+
+    try:
+        from l3_node.intent_gateway.ood_signals import user_input_looks_like_mixed_poison
+
+        if user_input_looks_like_mixed_poison(ui):
+            return False
+    except Exception:
+        pass
+
+    try:
+        to = float(cfg.get("realtime_knowledge_llm_timeout_sec", timeout_sec))
+    except (TypeError, ValueError):
+        to = float(timeout_sec)
+    to = max(0.5, min(to, 8.0))
+
+    try:
+        max_tok = int(cfg.get("realtime_knowledge_llm_max_tokens", 96))
+    except (TypeError, ValueError):
+        max_tok = 96
+    max_tok = max(32, min(max_tok, 256))
+
+    sys_p = (
+        "你是意图分类器。只输出一个 JSON 对象，不要其它文字。"
+        '键 requires_realtime_knowledge：布尔值。含义：当用户问题依赖「当前互联网上较新或较细」的外部事实时为 true，'
+        "例如：最新时事/政策/发布、股票或行情、某产品/API 最新文档版本、天气实况、赛程比分、具体外部实体近况等。"
+        "若主要是闲聊、编程通用知识、本地文件/仓库操作、或无需联网即可回答，则为 false。"
+    )
+    user_block = f"【分类面/用户句】\n{surf[:3500]}"
+    messages = [
+        {"role": "system", "content": sys_p},
+        {"role": "user", "content": user_block},
+    ]
+    model = get_classification_model_litellm_id()
+
+    async def _call() -> str:
+        raw = await engine.generate_response(
+            messages,
+            tools=None,
+            temperature=0.0,
+            max_tokens=max_tok,
+            l3_call_purpose="intent_gateway_realtime_knowledge",
+            l3_override_model=model,
+        )
+        if isinstance(raw, dict):
+            return (raw.get("content") or "") or ""
+        return str(raw or "")
+
+    try:
+        text = await asyncio.wait_for(_call(), timeout=to)
+    except asyncio.TimeoutError:
+        _fb = heuristic_requires_realtime_knowledge(ui, ct)
+        logger.info(
+            "[IntentGateway] realtime_knowledge 分类超时 %.1fs，回退启发式=%s",
+            to,
+            _fb,
+        )
+        return _fb
+    except Exception as e:
+        logger.info("[IntentGateway] realtime_knowledge 分类失败: %s", str(e)[:200])
+        return heuristic_requires_realtime_knowledge(ui, ct)
+
+    data = _parse_json_loose(text)
+    if not data:
+        return heuristic_requires_realtime_knowledge(ui, ct)
+    v = data.get("requires_realtime_knowledge")
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "是")
+    return False

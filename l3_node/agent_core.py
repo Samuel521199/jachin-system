@@ -128,6 +128,25 @@ REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM = (
     "【DB 事实】*.sqlite/表数据：须先工具只读查询、有 Observation 再答；无 DB 工具则明说无法查库，禁止编造。\n"
 )
 
+REACT_FOOTER_WEATHER_BLOCK = (
+    "【实况天气】用户问某地天气/气温/是否下雨等**当前实况**时：若工具列表含 **util:get_weather_lite**，"
+    "必须先输出 Action: util:get_weather_lite，Action Input 为用户所指地区的 **city** 或 **location**（从用户原话解析）；"
+    "未提城市时可合理默认或一句追问。**禁止**在未调用该工具时输出 `{\"status\":\"error\"}` 或编造「天气服务不可用」；"
+    "宿主工具返回形态为 `{\"ok\":true,\"result\":...}` 或 `{\"ok\":false,\"error\":...}`，与顶层 status/message 仿 API 不同。"
+    "**禁止**用 core:submit_background_task 仅投递「查天气」（require_skills 只有 util:get_weather_lite 会被拒绝）；短时查询必须前台完成。\n"
+)
+REACT_FOOTER_WEATHER_BLOCK_SLIM = (
+    "【天气】前台 **util:get_weather_lite**；勿 submit_background_task 只投天气；禁编造 status:error。\n"
+)
+
+# L5 本地记忆梦境合并：用户问「触发条件」时易与 150 条阈值混淆，须置顶强调 force 路径（与 memory_compactor / ws_server 一致）
+REACT_FOOTER_L5_MEMORY_COMPACT_FACTS = (
+    "【L5·记忆坍缩·条件·最高优先】统帅问「何时整理/压缩/坍缩」时：**禁止**把「须超 150 条」说成适用于**所有**情况。"
+    "**显式口令**（整理本地记忆、梦境合并、立即整理记忆等）与 **桌面横幅**「立即开始」或倒计时自动开始 → 系统 **force 立即合并**，**不要求**已满 150 条（主库空数组则不调 LLM，仅提示无条目）。"
+    "**仅**在设置 **JACHIN_MEMORY_COMPACT_ON_SESSION=1** 且用户**未**下整理口令时，每条消息后的**静默检查**才要求 **条目数 > 默认 150** 才调用 LLM 写回。"
+    "定时见 ~/.jachin/memory/compact_schedule.json（约 3 天）；**JACHIN_MEMORY_COMPACT_ENABLED=0** 关闭。详见 .env.example、docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §4.1.1。**禁止**编造 task_id。\n"
+)
+
 # L4：数据/MCP 库操作 SOP（与业务语义层 YAML 配套；见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md）
 _L4_AGENT_SOP_PROBE_MAP_EXECUTE = """【L4 智能体 SOP 法则】：当你处理数据查询、MCP 数据库操作或模糊业务词汇（如「缺货」「最贵」）时，绝对禁止直接生成最终的 SQL 或代码。你必须严格按以下三步执行：
 
@@ -253,6 +272,30 @@ def _user_text_requests_workspace_sqlite_verification(text: str) -> bool:
     if re.search(r"工作区|workspace", t, re.I) and re.search(r"数据库|缺货|库存", t, re.I):
         return True
     return False
+
+
+# ReAct：写入对话历史、供主模型消费的 Observation 文本长度上限（防 MCP/Fetch/大文件撑爆上下文）
+MAX_REACT_OBSERVATION_FOR_LLM = 15000
+_OBS_TRUNCATION_SUFFIX_FOR_LLM = (
+    "\n\n...[系统警告：外部工具或检索返回数据过长，已自动截断。"
+    "请基于当前已有的前文信息进行推理，或更换更精确的检索/读取方式。]..."
+)
+
+
+def _truncate_observation_for_llm(text: Any) -> str:
+    """
+    仅截断**即将进入 messages、供主模型读取的 Observation 字符串**。
+    工具层 run_tool / MCP invoke 返回的原始对象未被修改；此处为展示层护城河。
+    """
+    s = str(text or "")
+    max_len = MAX_REACT_OBSERVATION_FOR_LLM
+    if len(s) <= max_len:
+        return s
+    suf = _OBS_TRUNCATION_SUFFIX_FOR_LLM
+    room = max_len - len(suf)
+    if room <= 0:
+        return suf[:max_len]
+    return s[:room] + suf
 
 
 def _react_observation_excerpt_for_critic(messages: list[dict[str, Any]] | None, *, max_len: int = 4500) -> str:
@@ -1037,6 +1080,38 @@ def _is_hallucinated_final_mcp_error_json(text: str) -> bool:
         or "invalid arguments" in err.lower()
         or "validation" in err.lower()
     ):
+        return True
+    return False
+
+
+def _is_hallucinated_weather_service_error_json(text: str) -> bool:
+    """
+    模型未调用 util:get_weather_lite，却输出仿 API 的 {"status":"error","message":"天气服务…"}。
+    真实工具包装为 {"ok": true|false, "result"|"error": ...}，不会使用顶层 status+message 这种形态。
+    """
+    s = (text or "").strip()
+    if len(s) > 4000:
+        return False
+    if not (s.startswith("{") and s.endswith("}")):
+        return False
+    try:
+        o = json.loads(s)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(o, dict):
+        return False
+    # 真实 run_tool 包装
+    if "ok" in o:
+        return False
+    if str(o.get("status") or "").lower() != "error":
+        return False
+    msg = str(o.get("message") or "")
+    sug = str(o.get("suggestion") or "")
+    if ("天气" in msg or "weather" in msg.lower()) and (
+        "不可用" in msg or "暂时" in msg or "无法获取" in msg or "无法查询" in msg
+    ):
+        return True
+    if "wttr" in sug.lower() and "curl" in sug.lower():
         return True
     return False
 
@@ -2344,6 +2419,7 @@ def _build_system_prompt(
     environment_report_block: str = "",
     semantic_layer: dict[str, Any] | None = None,
     experience_few_shots: str = "",
+    realtime_web_grounding_block: str = "",
 ) -> str:
     from l3_node.prompt_compose import (
         SuffixChunk,
@@ -2542,10 +2618,14 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 
     chat_task_hint = """
 【前台/后台隔离】长耗时、大批量任务（如抓数十份简历、长跑分析、大量文件 IO）请优先使用 **core:submit_background_task**（JSON：intent 必填；可选 require_skills、max_iterations），立即返回 task_id，不阻塞用户继续闲聊。用户问进度时用 **core:check_background_task**（task_id 或 {"list_recent":true}）。若工具返回 status=rejected 且 reason=resource_exhausted，须如实说明本机后台等待队列已满，请用户稍后再试或待进行中任务完成；勿承诺不存在的「自动转发 L2」能力（多节点编排仅在已配对且允许使用 **coordinate** 时另行处理）。
+【短时查询勿投递后台】查某地**当日实况天气、气温**等，**必须**在当前会话前台 **Action: util:get_weather_lite**（勿将 require_skills 仅填 util:get_weather_lite 后 submit_background_task——宿主会拒绝），避免用户先看到「任务已排队」又与前台即时结果矛盾。后台任务完成事件可由客户端订阅 WebSocket 推送，但不应替代短时天气的前台直查。
+【联网检索·优先级】需要**全网时效/新闻/综合检索**时：**优先**使用工具列表中名称含 **tavily** 的 MCP 工具（语义搜索）；系统可能已在上下文中注入 `<realtime_web_search_results>`，请与之对齐，避免重复无效抓取。**mcp:fetch** 仅用于获取**单一已知 URL**的原文（兜底）；勿首选 fetch 拉 RSS/门户整页代替检索。
 【前台同步预算】默认非豁免工具单次执行约 **5s** 超时；超时 Observation 会提示改走后台任务。"""
     if slim_mode:
         chat_task_hint = (
-            "长耗时、大批量任务请优先 **core:submit_background_task**；进度用 **core:check_background_task**。"
+            "长耗时/大批量用 **core:submit_background_task**；进度 **core:check_background_task**。"
+            "查实况天气须前台 **util:get_weather_lite**，勿仅为此投递后台（会被拒绝）。"
+            "联网检索优先 **tavily** 类 MCP；**mcp:fetch** 仅兜底已知 URL。"
             "前台同步工具默认约 5s 超时。\n"
         )
 
@@ -2669,6 +2749,16 @@ Final Answer: <最终回复>
         suffix_chunks.append(
             SuffixChunk("high", "l4_experience_rag", f"\n{_exp_fs}\n", eviction_rank=_rank_exp_fs)
         )
+    _rtg = (realtime_web_grounding_block or "").strip()
+    if not pure_json_contract and _rtg:
+        suffix_chunks.append(
+            SuffixChunk(
+                "high",
+                "realtime_web_grounding",
+                f"\n<realtime_web_search_results>\n{_rtg}\n</realtime_web_search_results>\n",
+                eviction_rank=95,
+            )
+        )
     if not pure_json_contract and (_tools_include_sqlite_mcp(tools) or bool(_sem_fmt)):
         suffix_chunks.append(
             SuffixChunk(
@@ -2750,34 +2840,36 @@ Final Answer: <最终回复>
                 except ImportError:
                     pass
             _react_footer_body = (
-                "【记忆】被动注入仅供参考；事实以 recall_memory / core:local_memory_search 为准。\n"
+                REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
+                + "【记忆】被动注入仅供参考；事实以 recall_memory / core:local_memory_search 为准。\n"
                 "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 l3_local.json，"
                 "**禁止**幻觉写 MEMORY.md、**禁止** core:safety_lock_append；仅「禁止高危操作、核心安防」才用 safety_lock_append。\n"
-                "【记忆整理纪律】统帅要求「整理本地记忆/梦境坍缩」时，后台 Daemon 已接管；**禁止**在对话中输出 Markdown 记忆清单；"
-                "用 **core:check_background_task** 轮询至完成后，Final Answer 只写「本地记忆坍缩完成」类短句即可。\n"
+                "【记忆整理纪律】统帅**下令**整理时：系统常**异步**执行合并（非必有可轮询的 background_task）。**禁止**在对话中输出整份 Markdown 记忆清单；"
+                "若存在已登记的 background_task 可用 **core:check_background_task**；否则 Final Answer 简短说明已完成（显式口令/横幅路径会尝试合并，勿谎称「未达 150 条未触发」）。\n"
                 "【输出】工具执行后须给出 Final Answer。若用户要求仅 JSON/固定结构，Final Answer 后只写该结构，"
                 "禁止井号标题行与无关套话。\n"
                 "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
-                f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{_slim_sqlite}"
+                f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{REACT_FOOTER_WEATHER_BLOCK_SLIM}{_slim_sqlite}"
             )
         else:
             _react_footer_body = (
-                "【记忆 SSOT】被动「本地记忆」仅为提示；事实以 recall_memory / core:local_memory_search 检索为准。\n"
+                REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
+                + "【记忆 SSOT】被动「本地记忆」仅为提示；事实以 recall_memory / core:local_memory_search 检索为准。\n"
                 "【记忆分级写入铁律】\n"
                 "1. **个人偏好与项目情报（免审批）**：当统帅告诉你业务代号、框架偏好等日常记忆时，"
                 "**绝对禁止**幻觉写入 MEMORY.md！你**必须且只能使用 core:local_memory_append** 工具将事实存入底层 JSON 库（~/.jachin/memory/l3_local.json）。"
                 "存完后向统帅简短汇报即可。**禁止**为此使用 **core:safety_lock_append**。\n"
                 "2. **系统级安防规则（需审批 / TOFU）**：仅当涉及「禁止某项高危操作」「核心底层逻辑变更」等安防约束时，才允许使用 **core:safety_lock_append**；"
                 "并尽量提供稳定 **category**（如 backend_framework、shell_policy）。该 category **首条**人工批准后，同 category 再次提交将自动覆盖旧规则（同类二次免批）。\n"
-                "【记忆整理纪律】当统帅命令你「整理本地记忆/梦境坍缩」时，系统底层 Daemon 已自动接管该任务。"
-                "你**绝对禁止**在对话中自行总结、输出 Markdown 格式的记忆清单！"
-                "你只需调用 **core:check_background_task** 等待后台完成后，输出「本地记忆坍缩完成」即可。\n"
+                "【记忆整理纪律】统帅**下令**整理时：系统常**异步**执行合并（**未必**登记为可轮询的 background_task）。"
+                "你**绝对禁止**在对话中自行展开 Markdown 格式的整库记忆清单！"
+                "若确有 background_task 可调用 **core:check_background_task**；否则简短说明已完成（显式口令/横幅路径会尝试合并，勿谎称未达 150 条未触发）。\n"
                 "【安全锁】若上文含安全锁段，与 MEMORY.md / 闲聊推测冲突时 **以安全锁为准**。"
                 "追加安防规则用 **core:safety_lock_append**（新 category 默认 **待审批**，由管理员 CLI / 控制台审批；勿向模型泄露管理员密钥）；"
                 "撤销 **core:safety_lock_remove**（entry_id）；队列 **core:safety_lock_list_pending**。\n"
                 "注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。"
                 "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
-                f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n"
+                f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n{REACT_FOOTER_WEATHER_BLOCK}"
             )
         # 与 [ENVIRONMENT_REPORT] / 参谋长人设同条件：页脚最末追加，优先于其它后缀块被保留（eviction_rank=100）
         if chief_advisor_mode:
@@ -3261,6 +3353,7 @@ async def _run_react_core(
                     environment_report_block=str(_spe.get("environment_report_block") or ""),
                     semantic_layer=_sl_verify_d,
                     experience_few_shots=_exp_verify,
+                    realtime_web_grounding_block=str(_spe.get("realtime_web_grounding_block") or ""),
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
@@ -3884,6 +3977,30 @@ async def _run_react_core(
                     ),
                 })
                 continue
+            if (
+                _is_hallucinated_weather_service_error_json(_ans_s)
+                and not ctx.metadata.get("_react_fake_weather_error_retry_done")
+            ):
+                ctx.metadata["_react_fake_weather_error_retry_done"] = True
+                logger.warning(
+                    "[L3 Agent][纠偏] trace=%s 将续跑 ReAct（仅一次）：Final Answer 为虚构天气服务错误 JSON，"
+                    "须先调用 util:get_weather_lite。",
+                    _rtrace,
+                )
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "【系统纠偏】你刚才输出的是仿 API 的天气错误 JSON，但本轮并未执行 **util:get_weather_lite**，"
+                        "Observation 中也没有工具返回。\n"
+                        "请立即用 ReAct 续写（禁止再输出 Final Answer 或裸 JSON）：\n"
+                        "Thought: …\n"
+                        "Action: util:get_weather_lite\n"
+                        "Action Input: {\"city\":\"<从用户原话提取的城市或地区，如 杭州>\"}\n"
+                        "若用户未指定城市，可传 {\"location\":\"<合理默认或用户所在>\"} 或先一句追问。"
+                    ),
+                })
+                continue
             # 校验：招聘工具链必须完整调用
             has_success = _hr_recruitment_success_answer(ctx, ans)
             no_post = "atom_post_job_boss" not in ctx._executed_tools_this_run
@@ -3998,6 +4115,7 @@ async def _run_react_core(
                     },
                     ensure_ascii=False,
                 )
+                observation = _truncate_observation_for_llm(observation)
                 ctx.observation = observation
                 _p2_record_skill_outcome(ctx, "delegate", observation)
                 await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
@@ -4024,7 +4142,7 @@ async def _run_react_core(
                     parts.append(f"[子任务 {i+1} 失败: {r}]")
                 else:
                     parts.append(f"[子任务 {i+1}]\n{r}")
-            observation = "\n\n---\n\n".join(parts)
+            observation = _truncate_observation_for_llm("\n\n---\n\n".join(parts))
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "delegate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
@@ -4057,6 +4175,7 @@ async def _run_react_core(
                             merge_from_l2(items)
                     except ImportError:
                         pass
+            observation = _truncate_observation_for_llm(observation)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "recall_memory", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
@@ -4094,6 +4213,7 @@ async def _run_react_core(
                 observation = "[coordinate 不可用：未连接 L2 或未配对]"
             else:
                 observation = await _coordinate_task(payload, config, engine)
+            observation = _truncate_observation_for_llm(observation)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "coordinate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
@@ -4471,6 +4591,15 @@ async def _run_react_core(
                 observation = maybe_replace_duplicate_observation(ctx.metadata, str(observation or ""))
             except Exception as _ode:
                 logger.debug("[L3 Agent] observation_dedup 跳过: %s", _ode)
+            observation_full = str(observation or "")
+            if len(observation_full) > MAX_REACT_OBSERVATION_FOR_LLM:
+                logger.info(
+                    "[L3 Agent] Observation 超长已截断供 LLM：tool=%s full_len=%d max=%d",
+                    (tool or "")[:120],
+                    len(observation_full),
+                    MAX_REACT_OBSERVATION_FOR_LLM,
+                )
+            observation = _truncate_observation_for_llm(observation_full)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, (tool or "native").strip(), observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
@@ -4484,7 +4613,7 @@ async def _run_react_core(
                     )
 
                     if tool_id_is_sqlite_read_or_write(tool) and observation_suggests_sqlite_success(
-                        str(observation or "")
+                        str(observation_full or "")
                     ):
                         _ui_sv = (ctx.intent or "").strip()
                         if not _ui_sv:
@@ -4545,10 +4674,10 @@ async def _run_react_core(
                         ctx.metadata["_intel_strict_pending_verify"] = True
                 except ImportError:
                     pass
-            # atom_post_job_boss 发布成功后清除 fallback，避免下次误用
+            # atom_post_job_boss 发布成功后清除 fallback，避免下次误用（解析须用未截断全文）
             if base_tool == "atom_post_job_boss":
                 try:
-                    raw = (observation or "").strip()
+                    raw = (observation_full or "").strip()
                     if raw.startswith("{"):
                         _obs_obj = json.loads(raw)
                         if _obs_obj.get("posted", False) or _obs_obj.get("already_published"):
@@ -4559,7 +4688,7 @@ async def _run_react_core(
             # 工具返回已是完整报告（如 HR 透析镜）时直接作为最终答案，禁止 LLM 二次总结导致截断。
             # 禁止误伤：context_prefetch 会在 Observation 后附加 Markdown（含 ##/**），SQLite list_tables 等也会变长；
             # 若仍用「含 ## 或 **」判断，会把 prefetch + 表清单当成 HR 报告并提前 return，用户会看到整坨 findings.md。
-            obs = (observation or "").strip()
+            obs = (observation_full or "").strip()
             _prefetch_blob = "【relevant_context_prefetch】" in obs
             _sqlite_tool = tool_entry_looks_like_sqlite_family({"id": tool})
             _obs_looks_hr_full_report = (
@@ -5019,6 +5148,32 @@ async def run_agent(
         logger.warning("[L3 Agent] GatewayContextBundle 构造失败，回退裸字符串: %s", e)
         _gateway_bundle = None
 
+    # 实时外部知识意图：独立于 enrich / semantic cache，避免缓存命中 enrich 跳过时的漏判
+    if _gateway_bundle is not None:
+        try:
+            from l3_node.intent_gateway.classification_llm import infer_requires_realtime_knowledge_async
+            from l3_node.intent_gateway.config import get_intent_gateway_config
+
+            _ig_rt = get_intent_gateway_config()
+            if bool(_ig_rt.get("realtime_knowledge_llm_enabled", True)):
+                try:
+                    _to_rt = float(_ig_rt.get("realtime_knowledge_llm_timeout_sec", 2.5))
+                except (TypeError, ValueError):
+                    _to_rt = 2.5
+                _gateway_bundle.requires_realtime_knowledge = await infer_requires_realtime_knowledge_async(
+                    engine=engine,
+                    user_input=user_input or "",
+                    classification_text=_gateway_bundle.classification_text or "",
+                    timeout_sec=_to_rt,
+                )
+                _gateway_bundle.extra["requires_realtime_knowledge"] = _gateway_bundle.requires_realtime_knowledge
+                logger.info(
+                    "[IntentGatewayObs] requires_realtime_knowledge=%s",
+                    _gateway_bundle.requires_realtime_knowledge,
+                )
+        except Exception as _rt_e:
+            logger.debug("[L3 Agent] realtime_knowledge classify 跳过: %s", _rt_e)
+
     tools = await assemble_tool_pool(
         allowed_skills=allowed,
         gateway_bundle=_gateway_bundle,
@@ -5270,6 +5425,35 @@ async def run_agent(
     except Exception:
         _experience_few_shots = ""
 
+    _realtime_grounding_block = ""
+    try:
+        if (
+            _system_prompt_override is None
+            and _gateway_bundle is not None
+            and getattr(_gateway_bundle, "requires_realtime_knowledge", False)
+            and not _try_direct
+        ):
+            if on_step:
+                try:
+                    on_step(
+                        "system_status",
+                        json.dumps(
+                            {"status": "*(📡 探测到外部知识需求，已自动预取全网最新情报...)*"},
+                            ensure_ascii=False,
+                        ),
+                        run_id,
+                    )
+                except Exception:
+                    pass
+            from l3_node.primitives.tavily_grounding import fetch_tavily_context
+
+            _tq = (user_input or "").strip() or str(
+                _gateway_bundle.classification_text or _gateway_bundle.user_input or ""
+            )[:2000]
+            _realtime_grounding_block = await fetch_tavily_context(_tq, max_tokens=1500)
+    except Exception:
+        _realtime_grounding_block = ""
+
     if _system_prompt_override is not None:
         system_prompt = _system_prompt_override
     elif _try_direct:
@@ -5289,6 +5473,7 @@ async def run_agent(
             environment_report_block=_environment_report_block,
             semantic_layer=_semantic_layer,
             experience_few_shots=_experience_few_shots,
+            realtime_web_grounding_block=_realtime_grounding_block,
         )
     else:
         system_prompt = _build_system_prompt(
@@ -5304,6 +5489,7 @@ async def run_agent(
             environment_report_block=_environment_report_block,
             semantic_layer=_semantic_layer,
             experience_few_shots=_experience_few_shots,
+            realtime_web_grounding_block=_realtime_grounding_block,
         )
 
     try:
@@ -5653,6 +5839,21 @@ async def run_agent(
             except Exception as _e_db:
                 logger.warning("[L3 Agent] direct_llm_bypass 失败，回退 ReAct: %s", _e_db)
                 exec_trace(logger, "direct_llm_bypass 失败回退 ReAct run_id=%s err=%s", run_id[:12], str(_e_db)[:200])
+                if (
+                    _gateway_bundle is not None
+                    and getattr(_gateway_bundle, "requires_realtime_knowledge", False)
+                    and not (_realtime_grounding_block or "").strip()
+                    and _system_prompt_override is None
+                ):
+                    try:
+                        from l3_node.primitives.tavily_grounding import fetch_tavily_context
+
+                        _tq_fb = (user_input or "").strip() or str(
+                            _gateway_bundle.classification_text or _gateway_bundle.user_input or ""
+                        )[:2000]
+                        _realtime_grounding_block = await fetch_tavily_context(_tq_fb, max_tokens=1500)
+                    except Exception:
+                        pass
                 if _bg_channel == "background_task":
                     system_prompt = _build_system_prompt(
                         tools=tools,
@@ -5668,6 +5869,7 @@ async def run_agent(
                         environment_report_block=_environment_report_block,
                         semantic_layer=_semantic_layer,
                         experience_few_shots=_experience_few_shots,
+                        realtime_web_grounding_block=_realtime_grounding_block,
                     )
                 else:
                     system_prompt = _build_system_prompt(
@@ -5683,6 +5885,7 @@ async def run_agent(
                         environment_report_block=_environment_report_block,
                         semantic_layer=_semantic_layer,
                         experience_few_shots=_experience_few_shots,
+                        realtime_web_grounding_block=_realtime_grounding_block,
                     )
 
         if not system_prompt and _system_prompt_override is None:
@@ -5701,6 +5904,7 @@ async def run_agent(
                     environment_report_block=_environment_report_block,
                     semantic_layer=_semantic_layer,
                     experience_few_shots=_experience_few_shots,
+                    realtime_web_grounding_block=_realtime_grounding_block,
                 )
             else:
                 system_prompt = _build_system_prompt(
@@ -5716,6 +5920,7 @@ async def run_agent(
                     environment_report_block=_environment_report_block,
                     semantic_layer=_semantic_layer,
                     experience_few_shots=_experience_few_shots,
+                    realtime_web_grounding_block=_realtime_grounding_block,
                 )
 
         _md_base: dict[str, Any] = {
@@ -5730,6 +5935,7 @@ async def run_agent(
                 "environment_report_block": _environment_report_block,
                 "semantic_layer": dict(_semantic_layer),
                 "experience_few_shots": _experience_few_shots,
+                "realtime_web_grounding_block": _realtime_grounding_block,
             },
             "_gw_inject_stored": _gw_inject,
             "_on_chunk": on_chunk,
@@ -5896,7 +6102,10 @@ def _schedule_local_memory_compaction_background(user_input: str) -> None:
                 from l3_node.memory_compactor import compact_local_memory_if_needed
                 from l3_node.local_memory import main_local_memory_json_path
 
-                _cr = await compact_local_memory_if_needed(str(main_local_memory_json_path()))
+                _cr = await compact_local_memory_if_needed(
+                    str(main_local_memory_json_path()),
+                    force=explicit,
+                )
                 if (_cr or "").strip():
                     logger.info("[MemoryCompact] %s", (_cr or "").strip())
             except Exception as _ex:

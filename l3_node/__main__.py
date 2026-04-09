@@ -23,6 +23,9 @@ L3 节点独立运行入口
   JACHIN_LOG_LEVEL: 可选，显式指定 Jachin 自有 logger（l3_node、core）级别；未设置且 LOG_LEVEL≥WARNING 时默认 INFO，
     以便控制台与 l3_debug.log 仍能看到 [L3 Agent] 等 INFO 行。
   JACHIN_REACT_STREAM_DISABLE_TOOLS: 设为 1/true/yes 时，流式/非流式 ReAct 不向 API 传 tools[]（回退为仅 system 文本工具说明）。
+  JACHIN_HOME_DOTENV_OVERRIDE_PROJECT: 1/true/yes 时，合并 $JACHIN_HOME/.env（或 ~/.jachin/.env）覆盖项目 .env 中同名键；默认 false（仅补全项目未设置的键，如 TAVILY_API_KEY）。
+  JACHIN_L3_DEBUG_PRINT_ENV: 启动时打印当前进程全部环境变量（dotenv 合并后）。设为 1/true/yes 为键名排序 + 敏感值脱敏；
+    设为 raw/full/all/2 则打印明文（勿外传日志）。未设置或 0/false 则关闭。
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,49 +89,12 @@ from l3_node.early_log import setup_early_logging, trace, get_log_path
 _log_path = setup_early_logging()
 trace("early_log ready, log_path=%s", _log_path)
 
-# 尽早加载项目根 .env，确保 DASHSCOPE_API_KEY 等被 L3 继承（桌面端 spawn 时可能未继承）
-# PyInstaller 时 __file__ 为 _MEIPASS/__main__.py 不含 l3_node，_root 推导会错，故 frozen 时仅用 cwd
+# 尽早加载项目根 .env（逻辑在 core.l3_dotenv_merge，供 MCP 解析前再次合并共用）
 try:
     trace("loading dotenv...")
-    from dotenv import load_dotenv
-    _env_loaded = False
-    if getattr(sys, "frozen", False):
-        _env_candidates = [Path.cwd() / ".env", Path.home() / ".jachin" / ".env"]
-    else:
-        _pr = Path(_root) / ".env"
-        _pc = Path.cwd() / ".env"
-        _env_candidates = [_pr, _pc] if _pr != _pc else [_pr]
-        # 排除 PyInstaller 错误推导（__file__ 为 _MEIPASS/__main__.py 时 _root 会错）
-        _env_candidates = [p for p in _env_candidates if "_MEIPASS" not in str(p) and "__main__.py" not in str(p)]
-        if not _env_candidates:
-            _env_candidates = [Path.cwd() / ".env"]
-    for _p in _env_candidates:
-        trace(".env path=%s exists=%s", _p, _p.exists())
-        if _p.exists():
-            load_dotenv(_p, encoding="utf-8")
-            _env_loaded = True
-            trace(".env loaded from %s", _p)
-            break
-    if not _env_loaded:
-        _cwd = Path.cwd()
-        for _ in range(8):
-            _p = _cwd / ".env"
-            if _p.exists():
-                load_dotenv(_p, encoding="utf-8")
-                _env_loaded = True
-                trace(".env loaded from %s (cwd search)", _p)
-                break
-            _cwd = _cwd.parent if _cwd.parent != _cwd else _cwd
-            if not _cwd or str(_cwd) == "/":
-                break
-    # 兜底：~/.jachin/.env（桌面端打包/便携运行时，项目 .env 可能不可用）
-    if not _env_loaded:
-        _home_env = Path.home() / ".jachin" / ".env"
-        if _home_env.exists():
-            load_dotenv(_home_env, encoding="utf-8")
-            _env_loaded = True
-            trace(".env loaded from %s (home fallback)", _home_env)
-    trace("dotenv done, env_loaded=%s", _env_loaded)
+    from core.l3_dotenv_merge import merge_l3_dotenv_into_os
+
+    merge_l3_dotenv_into_os(l3_project_root=_root, trace_cb=trace)
 except ImportError as e:
     trace("dotenv ImportError: %s", e)
 except Exception as e:
@@ -140,8 +107,10 @@ def _mask_key(val: str) -> str:
     return f"{val[:8]}...{val[-4:]} (len={len(val)})"
 _dash = os.environ.get("DASHSCOPE_API_KEY", "")
 _openai = os.environ.get("OPENAI_API_KEY", "")
+_tavily = os.environ.get("TAVILY_API_KEY", "")
 trace("DASHSCOPE_API_KEY=%s", _mask_key(_dash))
 trace("OPENAI_API_KEY=%s", _mask_key(_openai))
+trace("TAVILY_API_KEY=%s（MCP tavily 占位符依赖）", _mask_key(_tavily))
 if not _dash and not _openai:
     trace("WARNING: 未检测到任何 API Key，大模型将不可用")
 _sl_admin = (os.environ.get("JACHIN_SAFETY_LOCK_ADMIN_TOKEN") or "").strip()
@@ -149,6 +118,40 @@ trace(
     "JACHIN_SAFETY_LOCK_ADMIN_TOKEN=%s（未设置则控制台安全锁审批返回 503；桌面端需在 src-tauri l3_spawn L3_ENV_KEYS 中转发）",
     _mask_key(_sl_admin) if _sl_admin else "(空)",
 )
+
+
+def _is_sensitive_env_key(name: str) -> bool:
+    u = (name or "").upper()
+    for s in ("KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE", "CREDENTIAL", "AUTH"):
+        if s in u:
+            return True
+    if "API" in u and "_" in u:
+        return True
+    return False
+
+
+def _format_env_val_for_dump(name: str, val: str, *, raw: bool) -> str:
+    if not (val or "").strip():
+        return "(空)"
+    if raw:
+        return val
+    if _is_sensitive_env_key(name):
+        return _mask_key(val)
+    if len(val) > 240:
+        return f"{val[:120]}…(len={len(val)})"
+    return val
+
+
+def _env_dump_mode() -> str:
+    v = (os.environ.get("JACHIN_L3_DEBUG_PRINT_ENV") or "").strip().lower()
+    if not v or v in ("0", "false", "no", "off"):
+        return "off"
+    if v in ("raw", "full", "all", "2"):
+        return "raw"
+    if v in ("1", "true", "yes", "on"):
+        return "masked"
+    return "off"
+
 
 _log_level = getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
 _je = (os.environ.get("JACHIN_LOG_LEVEL") or "").strip().upper()
@@ -200,6 +203,33 @@ if _jachin_level < _log_level:
 configure_l3_runtime_diagnostics()  # JACHIN_L3_DEBUG=1 时 WS/LLM 等 DEBUG 落盘到 l3_debug.log
 logger = logging.getLogger("l3_node")
 trace("logger ready, debug_log=%s verbose=%s", get_log_path(), is_l3_verbose())
+
+
+def _maybe_log_startup_environ() -> None:
+    """dotenv 合并后打印当前进程全部环境变量（需 JACHIN_L3_DEBUG_PRINT_ENV）。"""
+    mode = _env_dump_mode()
+    if mode == "off":
+        return
+    raw = mode == "raw"
+    if raw:
+        logger.warning(
+            "[L3] JACHIN_L3_DEBUG_PRINT_ENV=raw：将打印全部环境变量明文，请勿外传日志或截图"
+        )
+    keys = sorted(os.environ.keys())
+    logger.info(
+        "[L3] 环境变量快照（merge_l3_dotenv_into_os 之后）count=%s mode=%s JACHIN_L3_DEBUG_PRINT_ENV=%r",
+        len(keys),
+        mode,
+        os.environ.get("JACHIN_L3_DEBUG_PRINT_ENV"),
+    )
+    for k in keys:
+        try:
+            logger.info("[L3 env] %s=%s", k, _format_env_val_for_dump(k, os.environ.get(k, ""), raw=raw))
+        except Exception as e:
+            logger.info("[L3 env] %s=(format error: %s)", k, e)
+
+
+_maybe_log_startup_environ()
 # 将 l3_node 日志转发到全息监控 SSE，供前端 L3 全息监控面板订阅
 try:
     trace("importing log_broadcaster...")
@@ -216,6 +246,21 @@ logging.getLogger("websockets.server").setLevel(logging.WARNING)
 # 抑制 httpcore/httpx 的 DEBUG 刷屏（connect_tcp/receive_response 等），保留 httpx INFO 请求日志
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.INFO)
+
+
+class _AsyncioStdioGenShutdownFilter(logging.Filter):
+    """Ctrl+C 退出时 MCP stdio_client 异步生成器收尾会触发 asyncio 噪音 ERROR（SDK 已知竞态）。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "asyncio":
+            return True
+        msg = record.getMessage()
+        if "closing of asynchronous generator" in msg and "stdio_client" in msg:
+            return False
+        return True
+
+
+logging.getLogger("asyncio").addFilter(_AsyncioStdioGenShutdownFilter())
 try:
     trace("importing core.log_utc...")
     from core.log_utc import log_utc
@@ -239,6 +284,35 @@ if _openai_key:
     logger.info("[L3] OPENAI_API_KEY 已加载: %s", _mask_key(_openai_key))
 if not _dash_key and not _openai_key:
     logger.warning("[L3] 未检测到 DASHSCOPE_API_KEY 或 OPENAI_API_KEY，大模型不可用，将依赖 L2 下发 Key")
+
+
+def _log_l3_code_identity() -> None:
+    """启动时打印版本与包路径，可选 git 短哈希，便于确认是否跑在期望的源码上。"""
+    try:
+        import l3_node as _ln
+
+        ver = getattr(_ln, "__version__", "?")
+        pkg = Path(_ln.__file__).resolve().parent
+        extra = ""
+        try:
+            root = Path(_root).resolve() if _root else pkg.parent
+            r = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if r.returncode == 0 and (r.stdout or "").strip():
+                extra = f" git={r.stdout.strip()}"
+        except Exception:
+            pass
+        logger.info("[L3] 代码标识 version=%s package=%s%s", ver, pkg, extra)
+    except Exception as e:
+        logger.debug("[L3] 代码标识 省略: %s", e)
+
+
+_log_l3_code_identity()
 
 
 def _create_engine_standalone():
@@ -384,6 +458,11 @@ async def main() -> None:
         node_id = "local-fallback"
         gateway_l2_ok = False
         try:
+            logger.info(
+                "[L3 Gateway] 开始连接 L2: %s（此阶段可能数十秒无新日志：HTTP 握手/重试/审批轮询；"
+                "与下方 Tauri 输出交错属正常；MCP「已就绪」只表示 stdio 宿主完成，不代表网关已连上 L2）",
+                l2_url,
+            )
             engine, node_id = await bootstrap_l3_gateway_pending(
                 l2_base_url=l2_url,
                 on_status=lambda s, m: logger.info("[L3 Gateway] %s: %s", s, m),
@@ -462,6 +541,10 @@ async def main() -> None:
     node_id = "local-fallback"
     gateway_l2_ok = False
     try:
+        logger.info(
+            "[L3 Gateway] 开始连接 L2: %s（此阶段可能长时间无新日志，属正常；详见 --gateway 模式说明）",
+            l2_url,
+        )
         engine, node_id = await bootstrap_l3_gateway_pending(l2_base_url=l2_url)
         gateway_l2_ok = True
     except RuntimeError as e:
@@ -526,6 +609,9 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("[L3] 已中断 (Ctrl+C)，退出码 130")
+        raise SystemExit(130)
     except Exception as e:
         trace("FATAL: %s", e)
         if get_log_path():

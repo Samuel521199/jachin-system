@@ -425,6 +425,11 @@ fn main() {
                     app.manage(l3);
                     println!("[L3] 引擎已启动 ws://127.0.0.1:18981");
                 }
+                Err(e) if l3_spawn::is_skip_l3_auto_spawn(&e) => {
+                    println!(
+                        "[L3] 已跳过 Sidecar 自动启动（JACHIN_SKIP_L3_SPAWN=1）。若已用 start-layer3.ps1 等同控制台运行 python -m l3_node，此为预期，无需再执行 run_l3.ps1。"
+                    );
+                }
                 Err(e) => {
                     let msg = format!("[L3] 启动失败: {}", e);
                     eprintln!("{}", msg);

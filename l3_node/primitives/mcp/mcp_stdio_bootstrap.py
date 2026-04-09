@@ -16,6 +16,7 @@ import logging
 logger = logging.getLogger("l3_node")
 
 _started: bool = False
+_shutdown_hook_registered: bool = False
 
 
 async def start_l3_stdio_mcp_host() -> None:
@@ -25,7 +26,7 @@ async def start_l3_stdio_mcp_host() -> None:
     ``await mgr.start()`` **每次**调用：依赖 MCPManager 内 mtime 缓存与已连接 server 跳过，
     以便在 L3 已运行后再写入 ``mcp_servers.json`` 时仍能拉起 official-sqlite-npx 等 stdio 服务。
     """
-    global _started
+    global _started, _shutdown_hook_registered
     try:
         from l3_node.nexus_config import sync_merge_sqlite_read_from_env_to_nexus_config
 
@@ -39,6 +40,24 @@ async def start_l3_stdio_mcp_host() -> None:
         ensure_inventory_dirs()
         mgr = get_mcp_manager()
         await mgr.start()
+
+        if not _shutdown_hook_registered:
+            _shutdown_hook_registered = True
+
+            async def _shutdown_stop_mcp() -> None:
+                try:
+                    from core.mcp_client import get_mcp_manager as _gm
+
+                    await _gm().stop()
+                except Exception as e:
+                    logger.debug("[L3 MCP Host] shutdown hook stop: %s", e)
+
+            try:
+                from l3_node.graceful_shutdown import register_shutdown_hook
+
+                register_shutdown_hook(_shutdown_stop_mcp)
+            except Exception as e:
+                logger.debug("[L3 MCP Host] register_shutdown_hook 跳过: %s", e)
 
         if not _started:
             injected = await scan_local_mcps(for_l2_host=False)

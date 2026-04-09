@@ -50,7 +50,7 @@
 
 ### 3.4 配置示例
 
-将 `config/mcp_servers.json.example` 复制为 `~/.jachin/mcp_servers.json`，按需修改路径：
+将 `config/mcp_servers.json.example`（或 `tools/mcp-official/mcp_servers.jachin.example.json`）中的条目合并进 `~/.jachin/mcp_servers.json`，按需修改路径：
 
 ```json
 {
@@ -66,12 +66,47 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-shell"],
       "env": null
+    },
+    {
+      "id": "tavily-search",
+      "name": "Tavily Search",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@latest"],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
     }
   ]
 }
 ```
 
-**注意**：`server-filesystem` 的路径参数需为绝对路径，Windows 下请使用 `C:\\Users\\YourUser\\.jachin\\workspace` 等形式。
+**注意**：
+
+- `server-filesystem` 的路径参数需为绝对路径，Windows 下请使用 `C:\\Users\\YourUser\\.jachin\\workspace` 等形式。
+- **Tavily**：npm 包名为 **`tavily-mcp`**（勿使用已下架/不存在的 `@tavily/mcp-server`）。在 `.env` 或系统环境中设置 `TAVILY_API_KEY`；JSON 里使用 `"${TAVILY_API_KEY}"`，由 `core/mcp_embedded_runtime.resolve_mcp_cfg_placeholders` 在拉起子进程前从 **当前 L3 进程环境** 展开，避免把密钥写进配置文件落盘（若需明文仅放本机 `mcp_servers.json` 亦可，但不建议进版本库）。
+- **stdio 子进程与 API Key（深度说明）**：为何会出现「L3 已加载 Key 仍报 -32600」、SDK 白名单、`dotenv` 与 **cwd**、Windows **npx** 链等，以及新增依赖密钥的 MCP 时的通用清单，见 **[MCP_STDIO_API_KEY_AND_ENV.md](./MCP_STDIO_API_KEY_AND_ENV.md)**。
+- Windows 下 `command: npx` 由 `core/mcp_client._resolve_stdio_command` 尽量解析为 `npx.cmd`。
+
+### 3.5 npm / npx 包名校验（强制，防 404）
+
+`mcp_servers.json` 里 `"command": "npx"` 时，`args` 中的 **包名必须与 npm 上真实存在的包一致**。禁止凭记忆或「看起来像官方」自行拼 `@scope/pkg`。
+
+| 要求 | 说明 |
+|------|------|
+| **合并进仓库前** | 对包名执行一次核验：`npm view <包名> version`（exit 0）或打开 `https://www.npmjs.com/package/<包名>` 确认存在。 |
+| **禁止** | 未核验就写入 `config/mcp_servers.json.example`、`tools/mcp-official/**`、`.env.example` 注释、或对外文档中的 `npx -y …`。 |
+| **易混点** | JSON 里的 **`id`**（如 `tavily-search`）是 Jachin 侧标识，**不等于** npm 包名；**包名**只看 `args` 里传给 `npx -y` 的字符串。 |
+| **已踩坑案例（反例）** | `@tavily/mcp-server` → **npm 404，包不存在**。Tavily 官方本地 MCP 包名为 **`tavily-mcp`**（示例：`npx -y tavily-mcp@latest`）。 |
+| **替代形态** | 部分厂商提供 **远程 MCP URL**（HTTPS + `mcp-remote` 等），与本地 `npx` 二选一；若采用须在文档中写清命令与鉴权，同样不得臆造 URL。 |
+
+**自检命令示例**（开发机执行）：
+
+```bash
+npm view tavily-mcp version
+npm view @modelcontextprotocol/server-filesystem version
+```
+
+**Cursor / PR 检查清单**：改 MCP 示例配置或新增「官方 MCP」条目时，勾选：□ 已 `npm view` 或网页核对包名 □ 已在本文或 PR 描述中写明核验方式。
 
 ---
 

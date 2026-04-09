@@ -36,6 +36,8 @@ class GatewayContextBundle:
     routing_utterance: str = ""  # §6.1 供分类/L2 的路由文本（澄清挂接时可异于 user_input）
     classification_text: str = ""
     classification_truncated: bool = False
+    #: 网关小模型判定：本轮是否需要实时外部知识（新闻/行情/文档/天气事实等）
+    requires_realtime_knowledge: bool = False
     registry_version: str = "rv0"
     extra: dict[str, Any] = field(default_factory=dict)
 

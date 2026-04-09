@@ -151,6 +151,14 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+try:
+    from l3_node.primitives.tools.core_util_tools import UTIL_TOOLS_NATIVES_LIST
+
+    if not any(str(t.get("id", "")).startswith("util:") for t in NATIVE_TOOLS):
+        NATIVE_TOOLS.extend(UTIL_TOOLS_NATIVES_LIST)
+except Exception as e:
+    logger.debug("[Skills] Native util/sys 工具未挂载: %s", e)
+
 
 def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
     """
@@ -1070,6 +1078,28 @@ def run_tool(
 
         return check_background_task_status_sync(inp)
 
+    if tool_id.startswith("util:") or tool_id.startswith("sys:"):
+        util_params: dict[str, Any] = {}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    util_params = o
+            except json.JSONDecodeError:
+                pass
+        print(
+            f"[Skill Execute] [Native util/sys] tool_id={tool_id} params_keys={list(util_params.keys())}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            ures = _invoke_native(tool_id, **util_params)
+            if isinstance(ures, dict):
+                return json.dumps(ures, ensure_ascii=False, indent=2)
+            return str(ures)
+        except Exception as e:
+            return f"[执行失败: {e}]"
+
     params = {}
     if tool_id == "core:fs_read":
         params["file_path"] = inp or "target.txt"
@@ -1488,6 +1518,9 @@ def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
         or "local_memory_search" in allowed_ids
     ):
         return True
+    if tid.startswith("util:") or tid.startswith("sys:"):
+        if "native:utility_tools" in allowed_ids or "util:*" in allowed_ids or "sys:*" in allowed_ids:
+            return True
     return False
 
 

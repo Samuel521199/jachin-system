@@ -14,7 +14,11 @@ _TOOL_NEED_RE = re.compile(
     r"读取|读一下|打开.{0,4}文件|fs_read|list_dir|list_directory|shell_exec|执行命令|跑一下|运行脚本|"
     r"grep|rg\s|搜索代码|apply_patch|写文件|fs_write|submit_background_task|check_background_task|"
     r"delegate|coordinate|recall_memory|local_memory_search|"
-    r"atom_post|add_automated|透析镜|mcp:|jpp:com\.jachin",
+    r"atom_post|add_automated|透析镜|mcp:|jpp:com\.jachin|"
+    # 实况天气需 util:get_weather_lite；否则易走 direct_llm_bypass 编造「服务不可用」
+    r"(?:查|看|问|说说).{0,4}天气|天气.{0,16}(?:怎么样|如何|多少|冷不冷)|"
+    r"(?:今日|今天|明天|当地|外面).{0,12}天气|天气预报|气温|下雨|下雪|台风|空气质量|AQI|"
+    r"weather\s+in|what.{0,28}weather|util:get_weather_lite",
     re.I,
 )
 

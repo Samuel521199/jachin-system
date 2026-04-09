@@ -388,6 +388,21 @@ async def start_background_task_runtime(engine: Any) -> None:
     )
 
 
+def _norm_tool_id_alnum(s: str) -> str:
+    return "".join(c for c in (s or "").lower() if c.isalnum())
+
+
+def _only_util_get_weather_lite_skills(skills: list[str]) -> bool:
+    """require_skills 仅含 util:get_weather_lite（ tolerate util_get_weather_lite ）。"""
+    if not skills:
+        return False
+    want = _norm_tool_id_alnum("util:get_weather_lite")
+    for s in skills:
+        if _norm_tool_id_alnum(s) != want:
+            return False
+    return True
+
+
 def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]] = None) -> str:
     """供 run_tool 同步调用；依赖运行中的事件循环。"""
     cfg = _load_cfg()
@@ -445,6 +460,21 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
     require_skills: list[str] = []
     if isinstance(rs, list):
         require_skills = [str(x).strip() for x in rs if str(x).strip()]
+
+    # 短时实况天气不应走后台：避免用户看到「已入队」与前台即时 Observation 矛盾
+    if _only_util_get_weather_lite_skills(require_skills):
+        return json.dumps(
+            {
+                "status": "rejected",
+                "reason": "weather_must_foreground",
+                "message": (
+                    "util:get_weather_lite 为短时网络查询，应在当前对话中前台直接调用，"
+                    "勿使用 core:submit_background_task。请输出 Action: util:get_weather_lite，"
+                    'Action Input: {"city":"城市名"} 或 {"location":"地区"}。'
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     max_it = cfg["default_max_iterations"]
     if obj.get("max_iterations") is not None:

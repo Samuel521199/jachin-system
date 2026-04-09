@@ -40,7 +40,8 @@ def load_foreground_tools_config() -> dict[str, Any]:
         "exempt_channels": list(_DEFAULT_EXEMPT_CHANNELS),
         "allow_prefixes": list(_DEFAULT_ALLOW_PREFIXES),
         "allow_substrings": list(_DEFAULT_ALLOW_SUBSTRINGS),
-        "long_running_tool_ids": [],
+        # mcp:fetch 常拉取大页/XML，易超默认 5s；Tavily 等检索工具由 MCP 元数据 long_running 声明
+        "long_running_tool_ids": ["mcp:fetch"],
     }
     p = _nexus_path()
     if not p.exists():

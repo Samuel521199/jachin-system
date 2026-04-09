@@ -20,7 +20,7 @@ globs: core/**/*.py, cloud/nexus/**/*.ts, clients/**/*.tsx, l3_node/**/*.py, doc
 |------|------|
 | **API Key 零信任** | L2 用 L3 公钥加密下发，L3 私钥解密后直连 API |
 | **数字仓库** | L2 inventory：L1 同步 + 侧载；/skills、/download 需 X-Sub-Account-Id |
-| **MCP 执行模型** | L3 默认执行面；跨节点 **目标** TaskManager + Pull（`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`）；**现状** 兼容 HTTP 见 `docs/MCP_EXECUTION_MODEL.md` |
+| **MCP 执行模型** | L3 默认执行面；跨节点 **目标** TaskManager + Pull（`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md`）；**现状** 兼容 HTTP 见 `docs/MCP_EXECUTION_MODEL.md`；**stdio 的 `npx` 包名**须与 npm 一致，见 `docs/MCP_SPEC.md` §3.5、规则 **088-mcp-npm-package-verification** |
 | **PolicyEnforcer** | RBAC 鉴权，断网时从 role_permissions 降级 |
 | **Dream Weaver** | LanceDB 记忆聚类/去重/融合 |
 | **Omni-Sensory Bus** | layer3_broadcast、能力协商 |

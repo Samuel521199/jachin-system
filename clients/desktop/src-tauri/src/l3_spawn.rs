@@ -13,6 +13,14 @@ pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()))
 }
 
+/// `spawn_l3_node` 在 `JACHIN_SKIP_L3_SPAWN=1` 时返回的哨兵错误串（预期行为，非启动失败）
+pub const SKIP_L3_AUTO_SPAWN_ERR: &str = "__JACHIN_SKIP_L3_AUTO_SPAWN__";
+
+#[inline]
+pub fn is_skip_l3_auto_spawn(err: &str) -> bool {
+    err == SKIP_L3_AUTO_SPAWN_ERR
+}
+
 /// 将 L3 启动失败信息写入 l3_debug.log（Release 无控制台时用户可查看）
 pub fn write_l3_debug(msg: &str) {
     if let Some(dir) = exe_dir() {
@@ -128,6 +136,8 @@ fn project_root() -> Option<PathBuf> {
 const L3_ENV_KEYS: &[&str] = &[
     "DASHSCOPE_API_KEY",
     "OPENAI_API_KEY",
+    // MCP tavily-mcp：占位符 ${TAVILY_API_KEY} 从 L3 进程 os.environ 展开；须与 ~/.jachin/.env 一并注入，否则子进程报 -32600
+    "TAVILY_API_KEY",
     "LITELLM_FALLBACK_MODELS",
     "LLM_MODEL",
     "JACHIN_L3_DEBUG",
@@ -157,18 +167,16 @@ fn parse_env_file(path: &PathBuf) -> Vec<(String, String)> {
     vars
 }
 
-/// 从项目根及 ~/.jachin/.env 读取关键变量（DASHSCOPE_API_KEY 等），供 L3 子进程使用
+/// 从项目根 `.env` 与 `~/.jachin/.env` 读取白名单变量（`L3_ENV_KEYS`），供 L3 子进程使用。
+/// 统帅目录在后合并且**不覆盖**项目已有同名键（与 Python `load_dotenv(..., override=false)` 一致）。
+/// 此前仅在项目缺少 DASHSCOPE/OPENAI 时才读统帅目录，导致「项目已有 Key、TAVILY 只在 ~/.jachin/.env」时子进程永远拿不到 TAVILY。
 pub fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
     let mut vars = parse_env_file(&root.join(".env"));
-    let has_key = vars.iter().any(|(k, _)| k == "DASHSCOPE_API_KEY" || k == "OPENAI_API_KEY");
-    if !has_key {
-        let home = std::env::var("USERPROFILE").ok().or_else(|| std::env::var("HOME").ok());
-        if let Some(ref h) = home {
-            let home_env = PathBuf::from(h).join(".jachin").join(".env");
-            for (k, v) in parse_env_file(&home_env) {
-                if !vars.iter().any(|(ek, _)| ek == &k) {
-                    vars.push((k, v));
-                }
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let home_env = PathBuf::from(home).join(".jachin").join(".env");
+        for (k, v) in parse_env_file(&home_env) {
+            if !vars.iter().any(|(ek, _)| ek == &k) {
+                vars.push((k, v));
             }
         }
     }
@@ -274,12 +282,13 @@ pub fn spawn_l3_via_python(
 
 /// 静默启动 l3_node：优先 Sidecar，失败则回退到 python -m l3_node
 /// 若有 l2_gateway_config 则用 --gateway 模式，否则 --ws-only
-/// 若环境变量 JACHIN_SKIP_L3_SPAWN=1，则不启动（用户可手动运行 scripts/run_l3.ps1 查看完整日志）
+/// 若环境变量 JACHIN_SKIP_L3_SPAWN=1，则不启动第二条 L3（与 `start-layer3.ps1` 等同控制台已跑的 python -m l3_node 共存）
 pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     if std::env::var("JACHIN_SKIP_L3_SPAWN").as_deref() == Ok("1") {
-        let msg = "JACHIN_SKIP_L3_SPAWN=1，跳过 L3 自动启动。请手动运行: .\\scripts\\run_l3.ps1";
-        write_l3_debug(msg);
-        return Err(msg.to_string());
+        write_l3_debug(
+            "[L3] Sidecar 跳过：JACHIN_SKIP_L3_SPAWN=1（外部/脚本已托管 L3，非错误）",
+        );
+        return Err(SKIP_L3_AUTO_SPAWN_ERR.to_string());
     }
     let (args, env_url, mode) = if let Some(url) = should_use_gateway_mode() {
         (["--gateway"].as_slice(), Some(url), "gateway")
