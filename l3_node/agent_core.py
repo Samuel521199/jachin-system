@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -150,6 +150,17 @@ REACT_FOOTER_WEATHER_BLOCK = (
 )
 REACT_FOOTER_WEATHER_BLOCK_SLIM = (
     "【天气】前台 **util:get_weather_lite**；勿 submit_background_task 只投天气；禁编造 status:error。\n"
+)
+
+REACT_FOOTER_DESKTOP_NOTIFY_BLOCK = (
+    "【本机弹窗/通知】用户要**立即**在电脑上弹出消息框、桌面通知、看得见摸得着的提醒时："
+    "若工具列表含 **util:desktop_message_box**，必须调用并传入 **message**（必填）、**title**（可选）；"
+    "**禁止**谎称「无法弹窗」「没有操作系统级消息」或仅能飞书/闹钟替代而不先检查本工具。"
+    "说明边界：**定时到点**（如「今天 18:10 再弹」）本工具不会自动等待——须用户用系统闹钟/计划任务，或到时仍有进程调用本工具；"
+    "可如实告知该边界，但**立即弹一次**演示或确认权限时应直接调用工具。\n"
+)
+REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM = (
+    "【桌面提醒】含 **util:desktop_message_box** 则须调用（message 必填）；禁谎称无法弹窗；定时到点需闹钟/计划任务。\n"
 )
 
 # L5 本地记忆梦境合并：用户问「触发条件」时易与 150 条阈值混淆，须置顶强调 force 路径（与 memory_compactor / ws_server 一致）
@@ -316,6 +327,33 @@ _OBS_TRUNCATION_SUFFIX_FOR_LLM = (
 )
 
 
+def _maybe_shrink_shell_exec_observation(obs: str, tool: str) -> str:
+    """
+    shell 拉网页常返回数万字 HTML/混淆 JS，即使用 15k 截断仍会拖慢后续 LLM 轮次。
+    对明显「网页壳」类输出改为短摘要 + 小预览。
+    """
+    if (tool or "").strip().lower() != "core:shell_exec":
+        return obs
+    s = str(obs or "")
+    if len(s) <= 6000:
+        return s
+    low = s[:15000].lower()
+    looks_html_js = (
+        "<html" in low
+        or "</script>" in s.lower()
+        or "_$jsvmprt" in s
+        or "byted_acrawler" in s
+    )
+    if not looks_html_js:
+        return s
+    preview = s[:900].replace("\r", "")
+    return (
+        f"[shell 输出已压缩] 原始约 {len(s)} 字符；检测为 HTML/脚本型响应（多为动态页壳或反爬），"
+        "不宜整段送入上下文。抓取正文请优先 mcp:fetch / atom_web_scraper，或说明需浏览器环境。\n\n"
+        f"--- 预览（前 900 字）---\n{preview}"
+    )
+
+
 def _truncate_observation_for_llm(text: Any) -> str:
     """
     仅截断**即将进入 messages、供主模型读取的 Observation 字符串**。
@@ -374,6 +412,25 @@ def _react_observation_followup_user_text(observation: str, tool_id: str) -> str
         f"Observation: {observation}\n\n请根据观察继续思考，或给出 Final Answer"
         f"（若 Observation 已是完整报告，直接完整引用，禁止总结或截断）:"
     )
+
+
+def _sanitize_react_assistant_tool_turn_for_history(response: str) -> str:
+    """
+    含 Action 的轮次里，模型常在宿主注入真实 Observation 之前臆造 Observation / Final Answer，
+    若整段写入 messages，会污染下一轮（例如先声称「文件不存在」，与真实工具返回矛盾）。
+    仅截断在首个臆造段落之前，保留 Thought / Action / Action Input。
+    """
+    t = response or ""
+    if not re.search(r"(?im)^Action:\s*\S+", t):
+        return t
+    cut = len(t)
+    for pat in (r"(?im)\nObservation:\s*", r"(?im)\nFinal Answer:\s*", r"(?im)\nAnswer:\s*"):
+        m = re.search(pat, t)
+        if m and m.start() < cut:
+            cut = m.start()
+    if cut < len(t):
+        return t[:cut].rstrip()
+    return t
 
 
 def _final_answer_is_honest_sqlite_capability_denial(text: str) -> bool:
@@ -437,6 +494,161 @@ def _final_answer_claims_sqlite_was_queried(text: str) -> bool:
         if not _final_answer_is_honest_sqlite_capability_denial(s[:280]):
             return True
     return False
+
+
+def _user_text_requests_workspace_writeback(text: str) -> bool:
+    """用户是否明确要求把生成内容写回/覆盖某文件（与仅「总结」区分）。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(
+        r"(覆盖|改写|重写|替换|写回).{0,80}(源|原文|文档|文件|该\s*文|该\s*份|本\s*文)",
+        t,
+        re.I,
+    ):
+        return True
+    if re.search(r"(源|原文|文档|文件).{0,80}(覆盖|改写|重写|替换)", t, re.I):
+        return True
+    if "将源文档" in t or "将原文" in t or "源文档内容" in t:
+        return True
+    if re.search(r"(用|将).{0,48}(总结|摘要|提炼|改写|重写).{0,72}(覆盖|写入|保存|写回)", t, re.I):
+        return True
+    return False
+
+
+def _user_intent_requests_workspace_writeback(messages: list[dict[str, Any]] | None) -> bool:
+    """
+    从对话中查找带路径/文件语境的用户原话，判断是否要求写回磁盘。
+    跳过 Observation 与【系统…】注入，避免把工具回显当成用户意图。
+    """
+    for m in reversed(messages or []):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        t = str(m.get("content") or "").strip()
+        if not t:
+            continue
+        if t.startswith("【") or t.startswith("Observation:"):
+            continue
+        if not re.search(
+            r"[/\\]|\.(?:txt|md|json|csv|py|docx?)\b|workspace|工作区|文件",
+            t,
+            re.I,
+        ):
+            continue
+        if _user_text_requests_workspace_writeback(t):
+            return True
+    return False
+
+
+def _react_observation_suggests_workspace_read_ok(tool: str, obs: str) -> bool:
+    tl = (tool or "").lower()
+    if "fs_read" not in tl and "read_file" not in tl:
+        return False
+    o = (obs or "").strip()
+    if len(o) < 1:
+        return False
+    ol = o.lower()
+    if any(
+        x in ol
+        for x in (
+            "securityexception",
+            "路径越界",
+            "路径无效",
+            "-32602",
+            "enoent",
+            "not found",
+            "failed to read",
+            "missing_path",
+            "invalid arguments",
+            "[read_file]",
+        )
+    ):
+        return False
+    return True
+
+
+def _react_observation_suggests_workspace_write_ok(tool: str, base_tool: str, obs: str) -> bool:
+    tl = (tool or "").lower()
+    bt = (base_tool or "").lower()
+    o = (obs or "").strip()
+    if not o:
+        return False
+    ol = o.lower()
+    if any(
+        x in ol
+        for x in (
+            "-32602",
+            "securityexception",
+            "路径越界",
+            "路径无效",
+            "enoent",
+            "errno",
+            "error_class",
+            '"ok": false',
+            '"ok":false',
+            "missing_path",
+            "invalid arguments",
+            "mcp error",
+        )
+    ):
+        return False
+    if "fs_write" in tl or "apply_patch" in tl:
+        return True
+    if bt in ("write_file", "create_file", "edit_file", "search_replace"):
+        return True
+    return False
+
+
+def _react_mark_workspace_io_flags(ctx: PipelineContext, tool: str, observation_full: str) -> None:
+    """根据本轮工具与完整 Observation 更新「已读工作区文件 / 已成功写盘」标记（供写回守卫使用）。"""
+    base_tool = (tool or "").replace("mcp:", "").strip()
+    obs = str(observation_full or "")
+    if _react_observation_suggests_workspace_read_ok(tool, obs):
+        ctx.metadata["_react_did_workspace_read"] = True
+    if _react_observation_suggests_workspace_write_ok(tool, base_tool, obs):
+        ctx.metadata["_react_did_workspace_write"] = True
+
+
+def _reject_workspace_writeback_missing_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """
+    用户要求「读摘要后覆盖源文件」时：若已发生成功读盘、尚无成功写盘，则拦截 Final Answer（仅一次）并续跑。
+    """
+    if ctx.metadata.get("_react_writeback_guard_retry_done"):
+        return False
+    if not ctx.metadata.get("_react_did_workspace_read"):
+        return False
+    if ctx.metadata.get("_react_did_workspace_write"):
+        return False
+    if not _user_intent_requests_workspace_writeback(messages):
+        return False
+    ctx.metadata["_react_writeback_guard_retry_done"] = True
+    logger.warning(
+        "[L3 Agent][工作区写回校验] trace=%s via=%s 用户要求写回源文件但未见成功写盘，已注入纠偏续跑",
+        str(ctx.metadata.get("_react_step_trace") or ""),
+        via,
+    )
+    messages.append({"role": "assistant", "content": response})
+    messages.append({
+        "role": "user",
+        "content": (
+            "【系统校验】用户要求将总结/提炼后的内容**写回源文件**完成覆盖；"
+            "你已通过读类工具（如 core:fs_read、mcp:read_file）取得原文，但尚未执行**写盘**工具完成覆盖。\n"
+            "禁止用 core:local_memory_append 或仅口头复述代替写文件。\n"
+            "请下一步输出 ReAct：\n"
+            "Thought: …\n"
+            "Action: core:fs_write（或白名单内的 mcp:write_file / mcp:create_file）\n"
+            "Action Input: JSON，须含 path 或 file_path（与用户给出的路径一致，可为绝对路径或相对 ~/.jachin/workspace）"
+            "与 content（提炼后的完整替换正文）。工具返回成功后再输出 Final Answer，并明确说明已覆盖该路径。"
+        ),
+    })
+    return True
 
 
 def _reject_ungrounded_sqlite_final_answer(
@@ -965,10 +1177,8 @@ def _parse_action(
     pure_json_contract: bool = False,
 ) -> dict[str, Any] | None:
     text = (llm_output or "").strip()
-    for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if m:
-            return {"type": "answer", "content": m.group(1).strip()}
+    # 禁止先于 Action 解析 Final Answer：否则模型在一轮里伪造「Action + 假 Observation + write 成功 + Final Answer」
+    # 会整段命中 Final Answer，工具从未执行，却向用户声称已写盘（见 terminal_turn_debug 仅 parsed=answer 无 tool 调度）。
 
     text, _truncated = _react_slice_first_action_step(text)
     if _truncated:
@@ -1077,6 +1287,11 @@ def _parse_action(
             pat = rf"Action:\s*{fuzzy_raw}{action_suffix}"
             if re.search(pat, text, re.IGNORECASE):
                 return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
+    # 仅当本轮未识别到任何 Action 时，再接受 Final Answer / Answer（避免与上文「同轮伪 ReAct 剧」冲突）
+    for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
+        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if m:
+            return {"type": "answer", "content": m.group(1).strip()}
     # ReAct 裸文本兜底：无 Final Answer 捕获且无 Action: 行时，避免解析失败拖死循环（如后台报告漏前缀）
     if not pure_json_contract:
         try:
@@ -2566,7 +2781,9 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 【强制】当用户说「再分析」「重新分析」「再去分析」「再跑一次」等时：必须重新调用 HR 透析镜工具，不得复用上一轮 Observation，不得用 fs_read 或 recall_memory 代替。"""
 
     # 能力总目录：核心（与域无关）+ 当前工具命中的各域摘要（见 capability_catalog.DOMAIN_REGISTRY）
-    _cap_inject = build_capability_prompt_inject_for_tools(tools).strip()
+    _cap_inject = build_capability_prompt_inject_for_tools(
+        tools, include_hr_capability_slice=hr_domain_prompt_active
+    ).strip()
     capability_catalog_hint = ""
     if _cap_inject:
         capability_catalog_hint = f"""【L3 能力总目录】
@@ -2653,7 +2870,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
         plan_hint = ""
 
     hr_runtime_ctx = ""
-    if not slim_mode:
+    if not slim_mode and hr_domain_prompt_active:
         try:
             from l3_node.hr_prompt_context import get_hr_recruitment_runtime_context_for_prompt
 
@@ -2703,12 +2920,14 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 【前台/后台隔离】长耗时、大批量任务（如抓数十份简历、长跑分析、大量文件 IO）请优先使用 **core:submit_background_task**（JSON：intent 必填；可选 require_skills、max_iterations），立即返回 task_id，不阻塞用户继续闲聊。用户问进度时用 **core:check_background_task**（task_id 或 {"list_recent":true}）。若工具返回 status=rejected 且 reason=resource_exhausted，须如实说明本机后台等待队列已满，请用户稍后再试或待进行中任务完成；勿承诺不存在的「自动转发 L2」能力（多节点编排仅在已配对且允许使用 **coordinate** 时另行处理）。
 【短时查询勿投递后台】查某地**当日实况天气、气温**等，**必须**在当前会话前台 **Action: util:get_weather_lite**（勿将 require_skills 仅填 util:get_weather_lite 后 submit_background_task——宿主会拒绝），避免用户先看到「任务已排队」又与前台即时结果矛盾。后台任务完成事件可由客户端订阅 WebSocket 推送，但不应替代短时天气的前台直查。
 【联网检索·优先级】需要**全网时效/新闻/综合检索**时：**优先**使用工具列表中名称含 **tavily** 的 MCP 工具（语义搜索）；系统可能已在上下文中注入 `<realtime_web_search_results>`，请与之对齐，避免重复无效抓取。**mcp:fetch** 仅用于获取**单一已知 URL**的原文（兜底）；勿首选 fetch 拉 RSS/门户整页代替检索。
+【单页 URL 抓取】用户给出**具体 https 文章/网页链接**要抓正文、保存为文件时，**必须**使用 **mcp:fetch**（工具列表中可能显示为 ``fetch``），JSON 含 **url**。**禁止**为此调用 **mcp:atom_web_scraper**：后者为 BI/表格 SPA，依赖 Chrome **9222** 调试端口，用于普通头条/新闻页会误报 ECONNREFUSED。
 【前台同步预算】默认非豁免工具单次执行约 **5s** 超时；超时 Observation 会提示改走后台任务。"""
     if slim_mode:
         chat_task_hint = (
             "长耗时/大批量用 **core:submit_background_task**；进度 **core:check_background_task**。"
             "查实况天气须前台 **util:get_weather_lite**，勿仅为此投递后台（会被拒绝）。"
             "联网检索优先 **tavily** 类 MCP；**mcp:fetch** 仅兜底已知 URL。"
+            "单页 URL 正文用 **mcp:fetch**，勿用 **atom_web_scraper**（需 Chrome 9222）。"
             "前台同步工具默认约 5s 超时。\n"
         )
 
@@ -2935,7 +3154,8 @@ Final Answer: <最终回复>
                 "【输出】工具执行后须给出 Final Answer。若用户要求仅 JSON/固定结构，Final Answer 后只写该结构，"
                 "禁止井号标题行与无关套话。\n"
                 "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
-                f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{REACT_FOOTER_WEATHER_BLOCK_SLIM}{_slim_sqlite}"
+                f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{REACT_FOOTER_WEATHER_BLOCK_SLIM}"
+                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM}{_slim_sqlite}"
             )
         else:
             _react_footer_body = (
@@ -2956,6 +3176,7 @@ Final Answer: <最终回复>
                 "注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。"
                 "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
                 f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n{REACT_FOOTER_WEATHER_BLOCK}"
+                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK}"
             )
         # 与 [ENVIRONMENT_REPORT] / 参谋长人设同条件：页脚最末追加，优先于其它后缀块被保留（eviction_rank=100）
         if chief_advisor_mode:
@@ -3333,6 +3554,22 @@ async def _invoke_react_tool(
                 )
             except Exception:
                 pass
+            try:
+                from l3_node.terminal_turn_debug_log import log_tool_dispatch_summary
+
+                log_tool_dispatch_summary(
+                    int(ctx.metadata.get("_react_iteration") or 0),
+                    _rtrace,
+                    tool=str(tool or ""),
+                    mcp=_is_mcp,
+                    elapsed_ms=_elapsed_ms,
+                    output_len=len(_out),
+                    action_input_len=len(_invoke_inp or ""),
+                    used_foreground_timeout=use_timeout,
+                    sync_timeout_sec=float(sec) if use_timeout else None,
+                )
+            except Exception:
+                pass
 
 
 def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: str) -> None:
@@ -3375,6 +3612,9 @@ async def _run_react_core(
 
     # 追踪本轮已执行的招聘相关工具，用于拒绝「未调用工具却声称已发布」的幻觉回复
     ctx._executed_tools_this_run = set()
+    ctx.metadata["_react_did_workspace_read"] = False
+    ctx.metadata["_react_did_workspace_write"] = False
+    ctx.metadata.pop("_react_writeback_guard_retry_done", None)
     ctx.metadata["_react_tool_invocations"] = 0
     try:
         from l3_node.primitives.mcp.registry import clear_last_add_automated_recruitment_task_payload
@@ -3406,6 +3646,25 @@ async def _run_react_core(
             max_iterations,
             (ctx.run_id or "")[:12],
         )
+        try:
+            from l3_node.terminal_turn_debug_log import log_react_iteration_start
+
+            log_react_iteration_start(
+                iteration + 1,
+                str(ctx.metadata.get("_react_step_trace") or ""),
+                context={
+                    "run_id": getattr(ctx, "run_id", "") or "",
+                    "max_iterations": max_iterations,
+                    "delegate_depth": int(ctx.metadata.get("_delegate_depth", 0) or 0),
+                    "react_tool_invocations_so_far": int(ctx.metadata.get("_react_tool_invocations") or 0),
+                    "n_skills_visible": len(skills or []),
+                    "intel_strict_pending_verify": bool(ctx.metadata.get("_intel_strict_pending_verify")),
+                    "coder_mode": bool(ctx.metadata.get(_L3_CODER_MODE_META)),
+                    "implicit_channel": str(ctx.metadata.get("_implicit_channel") or ""),
+                },
+            )
+        except Exception:
+            pass
 
         # strict 写后 verify：硬只读轮 —— 重载 system 与可见工具列表
         if ctx.metadata.get("_react_system_prompt_full") is None:
@@ -3424,13 +3683,14 @@ async def _run_react_core(
                 _sl_verify = _spe.get("semantic_layer")
                 _sl_verify_d: dict[str, Any] = _sl_verify if isinstance(_sl_verify, dict) else {}
                 _exp_verify = str(_spe.get("experience_few_shots") or "")
+                _hr_act = bool(_spe.get("hr_domain_prompt_active", True))
                 ctx.system_prompt = _build_system_prompt(
                     tools=skills,
                     allow_delegate=False,
                     allow_recall=True,
                     allow_coordinate=False,
                     prompt_cycle=ctx.metadata.get("_prompt_cycle"),
-                    recruitment_longform=True,
+                    recruitment_longform=_hr_act,
                     prompt_style=str(ctx.metadata.get("_react_prompt_style") or "full"),
                     pure_json_contract=bool(ctx.metadata.get("_pure_json_contract")),
                     gateway_inject=str(ctx.metadata.get("_gw_inject_stored") or ""),
@@ -3529,6 +3789,8 @@ async def _run_react_core(
             )
         except Exception:
             pass
+        _llm_t0 = time.perf_counter()
+        response = ""
         try:
             if on_chunk:
                 response = await _eff.generate_response_stream(
@@ -3552,14 +3814,56 @@ async def _run_react_core(
                     **_lkw,
                 )
         except RunCancelledError:
+            _llm_ms = (time.perf_counter() - _llm_t0) * 1000.0
+            try:
+                from l3_node.terminal_turn_debug_log import log_llm_round_summary
+
+                log_llm_round_summary(
+                    iteration + 1,
+                    str(ctx.metadata.get("_react_step_trace") or ""),
+                    purpose=_llm_purpose,
+                    stream=bool(on_chunk),
+                    model_effective=str(getattr(_eff, "model_name", "") or ""),
+                    model_session_default=str(getattr(engine, "model_name", "") or ""),
+                    elapsed_ms=_llm_ms,
+                    n_full_messages=len(full_messages),
+                    system_prompt_chars=len(ctx.system_prompt or ""),
+                    openai_tools=bool(_openapi_tools),
+                    openai_tool_count=len(_openapi_tools or []),
+                    response_chars=0,
+                    error="RunCancelledError",
+                )
+            except Exception:
+                pass
             ctx.final_answer = "[ExecutionBrief] 运行已被取消（LLM 协作式中断）。"
             _emit("answer", ctx.final_answer)
             return
         except Exception as e:
+            _llm_ms = (time.perf_counter() - _llm_t0) * 1000.0
             try:
                 from l3_node.llm_budget import BudgetExhaustedError
 
                 if isinstance(e, BudgetExhaustedError):
+                    try:
+                        from l3_node.terminal_turn_debug_log import log_llm_round_summary
+
+                        log_llm_round_summary(
+                            iteration + 1,
+                            str(ctx.metadata.get("_react_step_trace") or ""),
+                            purpose=_llm_purpose,
+                            stream=bool(on_chunk),
+                            model_effective=str(getattr(_eff, "model_name", "") or ""),
+                            model_session_default=str(getattr(engine, "model_name", "") or ""),
+                            elapsed_ms=_llm_ms,
+                            n_full_messages=len(full_messages),
+                            system_prompt_chars=len(ctx.system_prompt or ""),
+                            openai_tools=bool(_openapi_tools),
+                            openai_tool_count=len(_openapi_tools or []),
+                            response_chars=len(response or ""),
+                            error="BudgetExhaustedError",
+                        )
+                    except Exception:
+                        pass
                     ctx.final_answer = (
                         f"[ExecutionBrief] Token 预算用尽（resource）：累计 {e.used}，上限 {e.limit}。"
                         "可调整 ~/.jachin/nexus_config.json 中 agent.main_max_total_tokens / agent.sub_agent_max_total_tokens。"
@@ -3568,7 +3872,48 @@ async def _run_react_core(
                     return
             except ImportError:
                 pass
+            try:
+                from l3_node.terminal_turn_debug_log import log_llm_round_summary
+
+                log_llm_round_summary(
+                    iteration + 1,
+                    str(ctx.metadata.get("_react_step_trace") or ""),
+                    purpose=_llm_purpose,
+                    stream=bool(on_chunk),
+                    model_effective=str(getattr(_eff, "model_name", "") or ""),
+                    model_session_default=str(getattr(engine, "model_name", "") or ""),
+                    elapsed_ms=_llm_ms,
+                    n_full_messages=len(full_messages),
+                    system_prompt_chars=len(ctx.system_prompt or ""),
+                    openai_tools=bool(_openapi_tools),
+                    openai_tool_count=len(_openapi_tools or []),
+                    response_chars=len(response or ""),
+                    error=type(e).__name__,
+                )
+            except Exception:
+                pass
             raise
+
+        _llm_ms = (time.perf_counter() - _llm_t0) * 1000.0
+        try:
+            from l3_node.terminal_turn_debug_log import log_llm_round_summary
+
+            log_llm_round_summary(
+                iteration + 1,
+                str(ctx.metadata.get("_react_step_trace") or ""),
+                purpose=_llm_purpose,
+                stream=bool(on_chunk),
+                model_effective=str(getattr(_eff, "model_name", "") or ""),
+                model_session_default=str(getattr(engine, "model_name", "") or ""),
+                elapsed_ms=_llm_ms,
+                n_full_messages=len(full_messages),
+                system_prompt_chars=len(ctx.system_prompt or ""),
+                openai_tools=bool(_openapi_tools),
+                openai_tool_count=len(_openapi_tools or []),
+                response_chars=len(response or ""),
+            )
+        except Exception:
+            pass
 
         ctx.current_response = response
         exec_trace(
@@ -3584,6 +3929,16 @@ async def _run_react_core(
                 iteration=iteration + 1,
                 response_len=len(response or ""),
                 response_full=str(response or ""),
+            )
+        except Exception:
+            pass
+        try:
+            from l3_node.terminal_turn_debug_log import log_llm_assistant_raw
+
+            log_llm_assistant_raw(
+                iteration + 1,
+                str(ctx.metadata.get("_react_step_trace") or ""),
+                str(response or ""),
             )
         except Exception:
             pass
@@ -3692,6 +4047,19 @@ async def _run_react_core(
                     _iter_n,
                     _pt,
                 )
+
+        try:
+            from l3_node.terminal_turn_debug_log import log_parsed_action_detail
+
+            log_parsed_action_detail(
+                iteration + 1,
+                parsed,
+                summarize_parsed_action(parsed) if parsed is not None else "(parsed=None)",
+                thought_excerpt=(thought.group(1).strip() if thought else ""),
+                trace=str(ctx.metadata.get("_react_step_trace") or ""),
+            )
+        except Exception:
+            pass
 
         try:
             from l3_node.intelligence_b_execution import (
@@ -3995,6 +4363,10 @@ async def _run_react_core(
                                 _ans_s[:700],
                                 "…(truncated)" if len(_ans_s) > 700 else "",
                             )
+                            if _reject_workspace_writeback_missing_guard(
+                                ctx, messages, response, ans, via="parsed_none+final_prefix"
+                            ):
+                                continue
                             if _reject_ungrounded_sqlite_final_answer(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
@@ -4165,6 +4537,8 @@ async def _run_react_core(
                     ),
                 })
                 continue
+            if _reject_workspace_writeback_missing_guard(ctx, messages, response, ans, via="type=answer"):
+                continue
             if _reject_ungrounded_sqlite_final_answer(ctx, messages, response, ans, via="type=answer"):
                 continue
             _emit("answer", ans)
@@ -4202,10 +4576,23 @@ async def _run_react_core(
                     },
                     ensure_ascii=False,
                 )
+                _obs_delegate_depth_raw = observation
                 observation = _truncate_observation_for_llm(observation)
                 ctx.observation = observation
                 _p2_record_skill_outcome(ctx, "delegate", observation)
                 await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+                try:
+                    from l3_node.terminal_turn_debug_log import log_observation_full
+
+                    log_observation_full(
+                        iteration + 1,
+                        "delegate(max_depth)",
+                        _obs_delegate_depth_raw,
+                        sent_to_llm_len=len(observation or ""),
+                        truncated_from_len=len(_obs_delegate_depth_raw),
+                    )
+                except Exception:
+                    pass
                 _emit("observation", observation)
                 messages.append({"role": "assistant", "content": response})
                 messages.append({
@@ -4215,6 +4602,21 @@ async def _run_react_core(
                 continue
             sub_tasks = parsed.get("sub_tasks", [])
             _emit("action", f"delegate {len(sub_tasks)} 个子任务")
+            try:
+                from l3_node.terminal_turn_debug_log import log_tool_call_full
+
+                try:
+                    _st_json = json.dumps(sub_tasks, ensure_ascii=False, default=str, indent=2)
+                except Exception:
+                    _st_json = repr(sub_tasks)
+                log_tool_call_full(
+                    iteration + 1,
+                    "delegate",
+                    _st_json,
+                    note=f"n_sub_tasks={len(sub_tasks)}",
+                )
+            except Exception:
+                pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -4229,10 +4631,23 @@ async def _run_react_core(
                     parts.append(f"[子任务 {i+1} 失败: {r}]")
                 else:
                     parts.append(f"[子任务 {i+1}]\n{r}")
-            observation = _truncate_observation_for_llm("\n\n---\n\n".join(parts))
+            _obs_delegate_raw = "\n\n---\n\n".join(parts)
+            observation = _truncate_observation_for_llm(_obs_delegate_raw)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "delegate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+            try:
+                from l3_node.terminal_turn_debug_log import log_observation_full
+
+                log_observation_full(
+                    iteration + 1,
+                    "delegate",
+                    _obs_delegate_raw,
+                    sent_to_llm_len=len(observation or ""),
+                    truncated_from_len=len(_obs_delegate_raw),
+                )
+            except Exception:
+                pass
             _emit("observation", observation)
             messages.append({"role": "assistant", "content": response})
             messages.append({
@@ -4246,6 +4661,17 @@ async def _run_react_core(
             query = parsed.get("query", "")
             config = _get_l2_config()
             _emit("action", f"recall_memory {query}".strip())
+            try:
+                from l3_node.terminal_turn_debug_log import log_tool_call_full
+
+                log_tool_call_full(
+                    iteration + 1,
+                    "recall_memory",
+                    str(query or ""),
+                    note="L2 recall",
+                )
+            except Exception:
+                pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -4262,10 +4688,23 @@ async def _run_react_core(
                             merge_from_l2(items)
                     except ImportError:
                         pass
-            observation = _truncate_observation_for_llm(observation)
+            _obs_recall_raw = str(observation or "")
+            observation = _truncate_observation_for_llm(_obs_recall_raw)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "recall_memory", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+            try:
+                from l3_node.terminal_turn_debug_log import log_observation_full
+
+                log_observation_full(
+                    iteration + 1,
+                    "recall_memory",
+                    _obs_recall_raw,
+                    sent_to_llm_len=len(observation or ""),
+                    truncated_from_len=len(_obs_recall_raw),
+                )
+            except Exception:
+                pass
             _emit("observation", observation)
             messages.append({"role": "assistant", "content": response})
             messages.append({
@@ -4293,6 +4732,16 @@ async def _run_react_core(
             payload = parsed.get("payload", {})
             config = _get_l2_config()
             _emit("action", "coordinate 多节点协同")
+            try:
+                from l3_node.terminal_turn_debug_log import log_tool_call_full
+
+                try:
+                    _pl_json = json.dumps(payload, ensure_ascii=False, default=str, indent=2)
+                except Exception:
+                    _pl_json = repr(payload)
+                log_tool_call_full(iteration + 1, "coordinate", _pl_json, note="L2 multi-node")
+            except Exception:
+                pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -4300,10 +4749,23 @@ async def _run_react_core(
                 observation = "[coordinate 不可用：未连接 L2 或未配对]"
             else:
                 observation = await _coordinate_task(payload, config, engine)
-            observation = _truncate_observation_for_llm(observation)
+            _obs_coord_raw = str(observation or "")
+            observation = _truncate_observation_for_llm(_obs_coord_raw)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "coordinate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+            try:
+                from l3_node.terminal_turn_debug_log import log_observation_full
+
+                log_observation_full(
+                    iteration + 1,
+                    "coordinate",
+                    _obs_coord_raw,
+                    sent_to_llm_len=len(observation or ""),
+                    truncated_from_len=len(_obs_coord_raw),
+                )
+            except Exception:
+                pass
             _emit("observation", observation)
             messages.append({"role": "assistant", "content": response})
             messages.append({
@@ -4449,6 +4911,17 @@ async def _run_react_core(
                 except Exception as _wpe:
                     logger.debug("[L3 Agent] write_file path 推断跳过: %s", _wpe)
             _emit("action", f"{tool} {inp[:200]}{'...' if len(inp or '') > 200 else ''}".strip())
+            try:
+                from l3_node.terminal_turn_debug_log import log_tool_call_full
+
+                log_tool_call_full(
+                    iteration + 1,
+                    str(tool or ""),
+                    str(inp or ""),
+                    note=f"trace={str(ctx.metadata.get('_react_step_trace') or '')}",
+                )
+            except Exception:
+                pass
             _tl_dbg = (tool or "").lower()
             if "write_file" in _tl_dbg or "edit_file" in _tl_dbg or "create_file" in _tl_dbg:
                 _inp_s = inp or ""
@@ -4678,7 +5151,11 @@ async def _run_react_core(
                 observation = maybe_replace_duplicate_observation(ctx.metadata, str(observation or ""))
             except Exception as _ode:
                 logger.debug("[L3 Agent] observation_dedup 跳过: %s", _ode)
-            observation_full = str(observation or "")
+            observation_full = _maybe_shrink_shell_exec_observation(str(observation or ""), tool)
+            try:
+                _react_mark_workspace_io_flags(ctx, tool, observation_full)
+            except Exception as _mwf:
+                logger.debug("[L3 Agent] _react_mark_workspace_io_flags 跳过: %s", _mwf)
             _eff_obs_max = _effective_observation_max_len(observation_full)
             if len(observation_full) > _eff_obs_max:
                 logger.info(
@@ -4692,6 +5169,18 @@ async def _run_react_core(
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, (tool or "native").strip(), observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+            try:
+                from l3_node.terminal_turn_debug_log import log_observation_full
+
+                log_observation_full(
+                    iteration + 1,
+                    str(tool or ""),
+                    observation_full,
+                    sent_to_llm_len=len(observation or ""),
+                    truncated_from_len=len(observation_full),
+                )
+            except Exception:
+                pass
             _emit("observation", observation)
             try:
                 if ctx.metadata.get("_l4_exp_save_gate"):
@@ -4796,7 +5285,9 @@ async def _run_react_core(
                 if on_step:
                     on_step("answer", ctx.final_answer, ctx.run_id)
                 return
-            messages.append({"role": "assistant", "content": response})
+            messages.append(
+                {"role": "assistant", "content": _sanitize_react_assistant_tool_turn_for_history(response)}
+            )
             _obs_tail = _react_observation_followup_user_text(str(observation or ""), str(tool or ""))
             if _linter_inject:
                 _obs_tail = f"{_linter_inject}\n\n{_obs_tail}"
@@ -4896,27 +5387,37 @@ def _build_direct_system_prompt(
     *,
     prompt_cycle: int | None,
     json_mode: bool,
+    general_chitchat: bool = False,
 ) -> str:
     """直连 LLM：无 ReAct、无工具表；保留记忆与工作区规则（保密约束等）。"""
-    lines: list[str] = [
-        "你是高精度指令遵从助手。不要问候语，不要输出可见的思考过程，不要使用 Markdown 章节标题行作开场。",
-        "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 套话。",
-    ]
-    if json_mode:
-        lines.append(
-            "你只输出一个合法 JSON 对象。不要 markdown 代码围栏，不要解释性前后缀，除非用户明确要求。"
-        )
+    if general_chitchat and not json_mode:
+        lines = [
+            "你是 Jachin 通用智能助手，语气自然、简洁、友善。",
+            "用户本轮多为寒暄或简短礼貌用语：用一两句自然中文回应即可，可适度用常见礼貌用语。",
+            "围绕用户话题简短回应，避免主动引入与当前消息无关的长篇领域话术。",
+            "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 标签行。",
+        ]
     else:
-        lines.append("只输出用户要求的正文。")
+        lines = [
+            "你是高精度指令遵从助手。不要问候语，不要输出可见的思考过程，不要使用 Markdown 章节标题行作开场。",
+            "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 套话。",
+        ]
+        if json_mode:
+            lines.append(
+                "你只输出一个合法 JSON 对象。不要 markdown 代码围栏，不要解释性前后缀，除非用户明确要求。"
+            )
+        else:
+            lines.append("只输出用户要求的正文。")
     lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
-    try:
-        from l3_node.local_memory import get_local_memory_for_prompt
+    if not (general_chitchat and not json_mode):
+        try:
+            from l3_node.local_memory import get_local_memory_for_prompt
 
-        lm = get_local_memory_for_prompt(limit=8, prompt_cycle=prompt_cycle)
-        if (lm or "").strip():
-            lines.append("\n【本地记忆摘要】\n" + lm.strip())
-    except ImportError:
-        pass
+            lm = get_local_memory_for_prompt(limit=8, prompt_cycle=prompt_cycle)
+            if (lm or "").strip():
+                lines.append("\n【本地记忆摘要】\n" + lm.strip())
+        except ImportError:
+            pass
     try:
         from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
 
@@ -4940,8 +5441,13 @@ async def _run_direct_llm_completion(
     token_budget: int | None,
     cancel_event: asyncio.Event,
     model_override: str | None = None,
+    general_chitchat: bool = False,
 ) -> str:
-    sys_p = _build_direct_system_prompt(prompt_cycle=prompt_cycle, json_mode=json_mode)
+    sys_p = _build_direct_system_prompt(
+        prompt_cycle=prompt_cycle,
+        json_mode=json_mode,
+        general_chitchat=general_chitchat,
+    )
     api_messages: list[dict[str, Any]] = [{"role": "system", "content": sys_p}]
     api_messages.extend(messages)
     base_kw: dict[str, Any] = {
@@ -5328,6 +5834,20 @@ async def run_agent(
     except Exception:
         pass
     try:
+        from core.deep_execution_log import format_messages_for_deep, format_tools_brief
+        from l3_node.terminal_turn_debug_log import append_section
+
+        append_section(
+            "[run_agent] 本轮可见工具池（assemble_tool_pool 之后）",
+            f"run_id={run_id}\nn_tools={len(tools)}\n{format_tools_brief(tools)}",
+        )
+        append_section(
+            "[run_agent] 当前会话 messages 快照（进入主流程前）",
+            format_messages_for_deep(messages, max_per_content=32_000, max_total=500_000),
+        )
+    except Exception:
+        pass
+    try:
         from l3_node.local_memory import next_prompt_cycle
 
         _mem_cycle = next_prompt_cycle()
@@ -5338,6 +5858,7 @@ async def run_agent(
     from l3_node.routing.output_format_signals import (
         OutputFormatSignals,
         analyze_output_format_signals,
+        heuristic_trivial_chitchat_only,
         should_use_direct_llm_bypass,
     )
 
@@ -5346,9 +5867,13 @@ async def run_agent(
         or (user_input or "")
     )
 
-    _recruit_longform = (not tools_include_recruitment(tools)) or user_message_suggests_recruitment_domain(
-        user_input or "", prior_messages
+    # 纯寒暄（如「你好」）不注入招聘 SKILL / 在册岗快照 / 招聘域总目录切片，避免默认变「招聘总监」
+    _trivial_chitchat = heuristic_trivial_chitchat_only((user_input or "").strip())
+    _recruit_domain = user_message_suggests_recruitment_domain(user_input or "", prior_messages)
+    _hr_domain_prompt_active = (
+        bool(tools_include_recruitment(tools)) and not _trivial_chitchat and _recruit_domain
     )
+    _recruit_longform = _hr_domain_prompt_active
 
     _fmt_sig: OutputFormatSignals
     if _gateway_bridge_fmt is not None:
@@ -5399,8 +5924,10 @@ async def run_agent(
     if _try_direct:
         try:
             from l3_node.intent_gateway.ood_signals import should_veto_direct_llm_bypass
+            from l3_node.routing.output_format_signals import heuristic_trivial_chitchat_only
 
-            if should_veto_direct_llm_bypass(
+            # 纯寒暄已在 should_use_direct_llm_bypass 内用原句过 OOD；此处勿再用含历史摘要的 classification 误 veto
+            if not heuristic_trivial_chitchat_only((user_input or "").strip()) and should_veto_direct_llm_bypass(
                 _classify_text,
                 bundle_extra=_gateway_bundle.extra if _gateway_bundle is not None else None,
                 raw_user_input=user_input or "",
@@ -5514,7 +6041,10 @@ async def run_agent(
                 _gateway_bundle.extra.get("environment_report")
             )
             _et = str(_gateway_bundle.extra.get("execution_tier") or "").strip()
-            _chief_advisor_mode = _et == "composite" or bool(heuristic_tool_need(user_input or ""))
+            _chief_advisor_mode = (
+                not _trivial_chitchat
+                and (_et == "composite" or bool(heuristic_tool_need(user_input or "")))
+            )
             _ig_adv = get_intent_gateway_config()
             if not bool(_ig_adv.get("chief_advisor_prompt_enabled", True)):
                 _chief_advisor_mode = False
@@ -5536,7 +6066,8 @@ async def run_agent(
     try:
         from l3_node.experience_memory import experience_rag_enabled, format_experience_block_for_prompt
 
-        if experience_rag_enabled() and on_step:
+        # 直连 completion 不走带工具的 system；纯寒暄也不拉经验库（易混入招聘等域 Few-Shot）
+        if experience_rag_enabled() and on_step and not _try_direct and not _trivial_chitchat:
             try:
                 on_step(
                     "system_status",
@@ -5545,7 +6076,8 @@ async def run_agent(
                 )
             except Exception:
                 pass
-        _experience_few_shots = format_experience_block_for_prompt(_exp_query[:8000], top_k=2)
+        if experience_rag_enabled() and not _try_direct and not _trivial_chitchat:
+            _experience_few_shots = format_experience_block_for_prompt(_exp_query[:8000], top_k=2)
     except Exception:
         _experience_few_shots = ""
 
@@ -5617,6 +6149,34 @@ async def run_agent(
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
         )
+
+    try:
+        from l3_node.terminal_turn_debug_log import append_section
+
+        _tier_dbg = ""
+        if _gateway_bundle is not None:
+            _tier_dbg = str(_gateway_bundle.extra.get("execution_tier") or "")
+        _dbg_body = {
+            "run_id": run_id,
+            "max_iterations": max_iterations,
+            "delegate_depth": _delegate_depth,
+            "channel": _bg_channel,
+            "lark_chat_id_suffix": (_lark_cid[-16:] if len(_lark_cid) > 16 else _lark_cid),
+            "prompt_style": _prompt_style,
+            "pure_json_contract": _pure_json_contract,
+            "try_direct_llm_bypass": _try_direct,
+            "system_prompt_chars": len(system_prompt or ""),
+            "chief_advisor_mode": _chief_advisor_mode,
+            "execution_tier": _tier_dbg,
+            "n_tools": len(tools),
+            "allowlist_is_set": allowed is not None,
+        }
+        append_section(
+            "[run_agent] 进入网关/OOD/ReAct 前的配置摘要",
+            json.dumps(_dbg_body, ensure_ascii=False, indent=2),
+        )
+    except Exception:
+        pass
 
     try:
         from l3_node.intent_gateway.ood_signals import evaluate_gateway_ood_gates, get_ood_hard_block_reply
@@ -5943,8 +6503,15 @@ async def run_agent(
             )
             exec_trace(logger, "direct_llm_bypass 开始 run_id=%s json_object=%s", run_id[:12], _direct_json)
             try:
+                # 纯寒暄直连：不传完整 history（其中常含【历史摘要】里的错误人设、旧轮「招聘总监」回复），否则模型会复读
+                _direct_chitchat = bool(_trivial_chitchat and not _direct_json)
+                _db_msgs: list[dict[str, Any]] = (
+                    [{"role": "user", "content": (user_input or "").strip()}]
+                    if _direct_chitchat
+                    else messages
+                )
                 _db_out = await _run_direct_llm_completion(
-                    messages=messages,
+                    messages=_db_msgs,
                     engine=engine,
                     prompt_cycle=_mem_cycle,
                     json_mode=_direct_json,
@@ -5954,6 +6521,7 @@ async def run_agent(
                     token_budget=_tok_cap,
                     cancel_event=_cancel_ev,
                     model_override=_direct_model_ov,
+                    general_chitchat=_direct_chitchat,
                 )
                 messages.append({"role": "assistant", "content": _db_out})
                 if _session_messages is not None:
@@ -6062,6 +6630,7 @@ async def run_agent(
             "_on_step": on_step,
             "_system_prompt_extras": {
                 "chief_advisor": _chief_advisor_mode,
+                "hr_domain_prompt_active": _hr_domain_prompt_active,
                 "environment_report_block": _environment_report_block,
                 "semantic_layer": dict(_semantic_layer),
                 "experience_few_shots": _experience_few_shots,

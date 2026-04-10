@@ -1112,7 +1112,19 @@ def run_tool(
 
     params = {}
     if tool_id == "core:fs_read":
-        params["file_path"] = inp or "target.txt"
+        # 与 core:fs_write 一致：模型常输出 JSON {"file_path":"..."}，不可整段当路径（否则会拼成 …/workspace/{"file_path":…} 触发 Errno 22）
+        params["file_path"] = ""
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    fp = str(o.get("file_path") or o.get("path") or "").strip()
+                    if fp:
+                        params["file_path"] = fp
+            except json.JSONDecodeError:
+                pass
+        if not params.get("file_path"):
+            params["file_path"] = (inp or "target.txt").strip()
     elif tool_id == "core:shell_exec":
         params["background"] = False
         params["timeout"] = 30

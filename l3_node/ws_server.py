@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 from l3_node.lark_session import load_lark_session as _load_lark_session, save_lark_session as _save_lark_session
 
+
+def _ws_msg_session_key(msg: dict) -> str:
+    """桌面 Omni 多会话：`session_id` 与 `chat_id` 同义，分区键写入 l3_lark_sessions.json。"""
+    return str(msg.get("chat_id") or msg.get("session_id") or "").strip()
+
+
 # 终端-Lark 镜像：chat_id -> 订阅该会话的 WebSocket 集合（终端连接）
 _mirror_subscribers: dict[str, set] = {}
 _mirror_subscribers_lock = asyncio.Lock()
@@ -38,6 +44,19 @@ _DEFAULT_MIRROR_PUSH = "http://127.0.0.1:5000/api/mirror-push"
 
 WS_HOST = "127.0.0.1"
 WS_PORT = 18981  # 189xx 系列，与 L2(18888)、Sensory(18881) 分离
+
+
+def _resolve_ws_engine(engine: Optional["LiteLLMEngine"]) -> Optional["LiteLLMEngine"]:
+    """每轮对话解析当前引擎：--gateway 预热线擎后可能在 engine_ref 内热切换为 L2 下发引擎。"""
+    try:
+        from l3_node.agent_ref import engine_ref
+
+        cur = engine_ref.get("engine")
+        if cur is not None:
+            return cur
+    except Exception:
+        pass
+    return engine
 
 
 async def _send_safe(websocket, payload: dict) -> None:
@@ -188,12 +207,219 @@ def _make_on_step(websocket, run_id: str, chat_id: str, broadcast: bool):
     return on_step
 
 
+async def _ws_execute_intent_turn(
+    websocket,
+    engine: "LiteLLMEngine",
+    run_agent_fn,
+    messages: list[dict],
+    msg: dict,
+    intent: str,
+    chat_id: str,
+    origin_terminal: bool,
+) -> None:
+    """单轮 intent：与 WS 主循环解耦，便于 run_abort 时 asyncio.cancel。"""
+    logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent (task)", len(intent), len(messages))
+    run_id = str(uuid.uuid4())[:8]
+    broadcast = bool(chat_id)
+
+    _engine = _resolve_ws_engine(engine)
+    if _engine is None:
+        await _send_safe(
+            websocket,
+            {
+                "step_type": "error",
+                "content": (
+                    "L3 大模型引擎尚未就绪：请等待 L2 管理员为该节点分配子账号，或在项目 .env 配置 "
+                    "DASHSCOPE_API_KEY（或 OPENAI_API_KEY）后重启 L3。"
+                ),
+                "run_id": run_id,
+            },
+        )
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(
+                chat_id,
+                {
+                    "step_type": "error",
+                    "content": "L3 引擎未就绪（等待 L2 分配或 .env Key）",
+                    "run_id": run_id,
+                },
+            )
+        return
+
+    if intent == "/clear":
+        messages.clear()
+        if chat_id:
+            _save_lark_session(chat_id, messages)
+        reply_clear = "[System] 后端上下文已强制清空。"
+        ans_payload = {"step_type": "answer", "content": reply_clear, "run_id": run_id}
+        await _send_safe(websocket, ans_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+        if origin_terminal and chat_id:
+            asyncio.create_task(_push_reply_to_lark(chat_id, reply_clear))
+        return
+
+    try:
+        from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
+
+        cmd_reply = try_lark_workflow_command_intercept(intent, channel_id=chat_id or "")
+    except Exception:
+        cmd_reply = None
+    if cmd_reply:
+        if chat_id:
+            messages.append({"role": "user", "content": intent})
+            messages.append({"role": "assistant", "content": cmd_reply})
+            _save_lark_session(chat_id, messages)
+            logger.debug("[L3 WS] chat_id=%s 遥控拦截已保存会话", chat_id[:20])
+        ans_payload = {"step_type": "answer", "content": cmd_reply, "run_id": run_id}
+        await _send_safe(websocket, ans_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+        if origin_terminal and chat_id:
+            asyncio.create_task(_push_reply_to_lark(chat_id, cmd_reply))
+        return
+
+    try:
+        from l3_node.terminal_turn_debug_log import begin_turn
+
+        begin_turn(
+            intent,
+            extra={
+                "run_id": run_id,
+                "origin_terminal": origin_terminal,
+                "has_chat_id": bool(chat_id),
+                "intent_chars": len(intent),
+                "history_msgs_before_turn": len(messages),
+                "default_engine_model": getattr(_engine, "model_name", ""),
+            },
+        )
+    except Exception:
+        pass
+
+    base_on_step = _make_on_step(websocket, run_id, chat_id, broadcast)
+
+    def on_step(step_type: str, content: str, ctx_run_id: str) -> None:
+        try:
+            from l3_node.terminal_turn_debug_log import append_line
+
+            append_line(step_type, content)
+        except Exception:
+            pass
+        base_on_step(step_type, content, ctx_run_id)
+
+    try:
+        from l3_node.intent_gateway.ood_signals import should_skip_progress_thought_kick
+
+        _skip_kick = should_skip_progress_thought_kick(raw_user_input=intent)
+    except Exception:
+        _skip_kick = False
+    if not _skip_kick:
+        _kick = {
+            "step_type": "thought",
+            "content": "已接入任务。若上下文较长会先执行记忆刷新与摘要压缩，随后再推理（可能需数分钟）。",
+            "run_id": run_id,
+        }
+        await _send_safe(websocket, _kick)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, _kick)
+
+    async def on_chunk(chunk: str) -> None:
+        try:
+            from l3_node.terminal_turn_debug_log import append_stream_chunk
+
+            append_stream_chunk(chunk)
+        except Exception:
+            pass
+        p = {"step_type": "chunk", "content": chunk, "run_id": run_id}
+        await _send_safe(websocket, p)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, p)
+
+    _imp_sig = msg.get("implicit_signals")
+    _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
+    _imp_attr = {
+        "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
+        "has_chat_id": bool(chat_id),
+    }
+    if chat_id:
+        _imp_attr["lark_chat_id"] = str(chat_id).strip()
+    _att_meta = msg.get("attachments_metadata")
+    _att_meta = _att_meta if isinstance(_att_meta, list) else None
+    _gw_st = msg.get("gateway_system_state")
+    _gw_st = str(_gw_st).strip() if _gw_st else None
+    _gw_ch = str(msg.get("gateway_clarification_handle") or "").strip()
+    try:
+        _gw_dl = float(msg.get("gateway_clarification_deadline_ts") or 0.0)
+    except (TypeError, ValueError):
+        _gw_dl = 0.0
+    try:
+        reply = await run_agent_fn(
+            intent,
+            _engine,
+            on_step=on_step,
+            on_chunk=on_chunk,
+            _session_messages=messages,
+            implicit_signals=_imp_sig,
+            implicit_attribution=_imp_attr,
+            attachments_metadata=_att_meta,
+            gateway_system_state=_gw_st,
+            gateway_clarification_handle=_gw_ch,
+            gateway_clarification_deadline_ts=_gw_dl,
+        )
+        if chat_id and messages:
+            _save_lark_session(chat_id, messages)
+            logger.debug("[L3 WS] chat_id=%s 已保存会话 %d 条", chat_id[:20], len(messages))
+
+        try:
+            from l3_node.terminal_turn_debug_log import append_final
+
+            append_final(
+                "final_answer",
+                reply or "",
+                extra={
+                    "run_id": run_id,
+                    "session_msgs_saved": len(messages) if chat_id else None,
+                    "chat_id_suffix": (chat_id[-12:] if chat_id and len(chat_id) >= 12 else chat_id) or "",
+                },
+            )
+        except Exception:
+            pass
+
+        ans_payload = {"step_type": "answer", "content": reply or "", "run_id": run_id}
+        await _send_safe(websocket, ans_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+        if origin_terminal and chat_id and reply:
+            asyncio.create_task(_push_reply_to_lark(chat_id, reply))
+    except asyncio.CancelledError:
+        logger.debug("[L3 WS] run_agent 已取消 run_id=%s", run_id)
+        raise
+    except Exception as e:
+        logger.debug("[L3 WS] run_agent 异常 intent_len=%d err=%s", len(intent), type(e).__name__)
+        logger.exception("run_agent failed: %s", e)
+        try:
+            from l3_node.terminal_turn_debug_log import append_final
+
+            append_final(
+                "run_agent_exception",
+                f"{type(e).__name__}: {e}",
+                extra={"run_id": run_id},
+            )
+        except Exception:
+            pass
+        err_payload = {"step_type": "error", "content": str(e), "run_id": run_id}
+        await _send_safe(websocket, err_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, err_payload)
+
+
 async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
     """处理单客户端连接。维护 per-connection 对话历史；Lark 通过 chat_id 持久化。
     支持终端-Lark 镜像：subscribe_mirror 订阅、广播 mirror_input/answer、终端回复推送到 Lark。"""
     session_messages: list[dict] = []
     _my_lark_chat_id: str = ""  # 本连接订阅的 chat_id（终端镜像模式）
     _bg_task_subscribed: bool = False
+    active_turn_task: asyncio.Task | None = None
     try:
         async for raw in websocket:
             try:
@@ -245,11 +471,24 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
 
             # 前端 /clear：控制帧清空 per-connection 缓冲与（可选）Lark 持久化会话，不进入 intent/LLM
             if msg_type == "clear_session":
-                cid = (msg.get("chat_id") or _my_lark_chat_id or "").strip()
+                cid = (_ws_msg_session_key(msg) or _my_lark_chat_id or "").strip()
                 session_messages.clear()
                 if cid:
                     _save_lark_session(cid, session_messages)
                 logger.debug("[L3 WS] clear_session 已清空 chat_id=%s", cid[:20] if cid else "-")
+                continue
+
+            # 终端「停止生成」：取消当前 run_agent 任务，主循环可继续收包（避免与含 intent 的误触 action 混淆）
+            _intent_probe = (msg.get("intent") or msg.get("content") or "").strip()
+            if msg_type == "run_abort" or (msg_type == "abort" and not _intent_probe):
+                t = active_turn_task
+                if t is not None and not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except asyncio.CancelledError:
+                        pass
+                active_turn_task = None
                 continue
 
             # 记忆整理调度：控制帧（无 intent 亦可）
@@ -299,7 +538,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
 
             # 生成式 UI：前端提交 tool 参数，Native 执行或生成说明，不经本轮 LLM ReAct（会话仍落盘）
             if msg_type == "tool_ui_result":
-                chat_id = (msg.get("chat_id") or "").strip()
+                chat_id = _ws_msg_session_key(msg)
                 if chat_id:
                     session_messages = _load_lark_session(chat_id)
                 tool_raw = (msg.get("tool_name") or msg.get("tool_id") or "").strip()
@@ -352,7 +591,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             if not intent:
                 continue
 
-            chat_id = (msg.get("chat_id") or "").strip()
+            chat_id = _ws_msg_session_key(msg)
             origin_terminal = str(msg.get("origin", "")).lower() == "terminal"
             if chat_id:
                 session_messages = _load_lark_session(chat_id)
@@ -366,122 +605,33 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     "run_id": "",
                 }))
 
-            logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent", len(intent), len(session_messages))
-            run_id = str(uuid.uuid4())[:8]
-            broadcast = bool(chat_id)
-
-            # 与前端 /clear 对齐：不进 run_agent、不发 thought kick，就地清空本会话缓冲
-            if intent == "/clear":
-                session_messages.clear()
-                if chat_id:
-                    _save_lark_session(chat_id, session_messages)
-                reply_clear = "[System] 后端上下文已强制清空。"
-                ans_payload = {"step_type": "answer", "content": reply_clear, "run_id": run_id}
-                await _send_safe(websocket, ans_payload)
-                if broadcast and chat_id:
-                    await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-                if origin_terminal and chat_id:
-                    asyncio.create_task(_push_reply_to_lark(chat_id, reply_clear))
-                continue
-
-            try:
-                from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
-
-                cmd_reply = try_lark_workflow_command_intercept(intent, channel_id=chat_id or "")
-            except Exception:
-                cmd_reply = None
-            if cmd_reply:
-                if chat_id:
-                    session_messages.append({"role": "user", "content": intent})
-                    session_messages.append({"role": "assistant", "content": cmd_reply})
-                    _save_lark_session(chat_id, session_messages)
-                    logger.debug("[L3 WS] chat_id=%s 遥控拦截已保存会话", chat_id[:20])
-                ans_payload = {"step_type": "answer", "content": cmd_reply, "run_id": run_id}
-                await _send_safe(websocket, ans_payload)
-                if broadcast and chat_id:
-                    await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-                if origin_terminal and chat_id:
-                    asyncio.create_task(_push_reply_to_lark(chat_id, cmd_reply))
-                continue
-
-            on_step = _make_on_step(websocket, run_id, chat_id, broadcast)
-
-            # 首包：在 compaction / 首 token 之前可能静默数分钟，避免桌面端 300s 空气泡误判 + 超时后仍靠 run_id 收 answer。
-            # OOD 硬拦路径与 Lark（仅最终 reply）对齐：不发送「长任务」占位 thought，避免聊天框多段思考 + 安全拒答。
-            try:
-                from l3_node.intent_gateway.ood_signals import should_skip_progress_thought_kick
-
-                _skip_kick = should_skip_progress_thought_kick(raw_user_input=intent)
-            except Exception:
-                _skip_kick = False
-            if not _skip_kick:
-                _kick = {
-                    "step_type": "thought",
-                    "content": "已接入任务。若上下文较长会先执行记忆刷新与摘要压缩，随后再推理（可能需数分钟）。",
-                    "run_id": run_id,
-                }
-                await _send_safe(websocket, _kick)
-                if broadcast and chat_id:
-                    await _broadcast_to_mirror_subscribers(chat_id, _kick)
-
-            async def on_chunk(chunk: str) -> None:
-                p = {"step_type": "chunk", "content": chunk, "run_id": run_id}
-                await _send_safe(websocket, p)
-                if broadcast and chat_id:
-                    await _broadcast_to_mirror_subscribers(chat_id, p)
-
-            _imp_sig = msg.get("implicit_signals")
-            _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
-            _imp_attr = {
-                "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
-                "has_chat_id": bool(chat_id),
-            }
-            if chat_id:
-                _imp_attr["lark_chat_id"] = str(chat_id).strip()
-            _att_meta = msg.get("attachments_metadata")
-            _att_meta = _att_meta if isinstance(_att_meta, list) else None
-            _gw_st = msg.get("gateway_system_state")
-            _gw_st = str(_gw_st).strip() if _gw_st else None
-            _gw_ch = str(msg.get("gateway_clarification_handle") or "").strip()
-            try:
-                _gw_dl = float(msg.get("gateway_clarification_deadline_ts") or 0.0)
-            except (TypeError, ValueError):
-                _gw_dl = 0.0
-            try:
-                reply = await run_agent_fn(
-                    intent,
+            if active_turn_task is not None and not active_turn_task.done():
+                active_turn_task.cancel()
+                try:
+                    await active_turn_task
+                except asyncio.CancelledError:
+                    pass
+            active_turn_task = asyncio.create_task(
+                _ws_execute_intent_turn(
+                    websocket,
                     engine,
-                    on_step=on_step,
-                    on_chunk=on_chunk,
-                    _session_messages=session_messages,
-                    implicit_signals=_imp_sig,
-                    implicit_attribution=_imp_attr,
-                    attachments_metadata=_att_meta,
-                    gateway_system_state=_gw_st,
-                    gateway_clarification_handle=_gw_ch,
-                    gateway_clarification_deadline_ts=_gw_dl,
+                    run_agent_fn,
+                    session_messages,
+                    msg,
+                    intent,
+                    chat_id,
+                    origin_terminal,
                 )
-                if chat_id and session_messages:
-                    _save_lark_session(chat_id, session_messages)
-                    logger.debug("[L3 WS] chat_id=%s 已保存会话 %d 条", chat_id[:20], len(session_messages))
-
-                ans_payload = {"step_type": "answer", "content": reply or "", "run_id": run_id}
-                await _send_safe(websocket, ans_payload)
-                if broadcast and chat_id:
-                    await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-                # 终端发起的消息：将回复同步推送到 Lark
-                if origin_terminal and chat_id and reply:
-                    asyncio.create_task(_push_reply_to_lark(chat_id, reply))
-            except Exception as e:
-                logger.debug("[L3 WS] run_agent 异常 intent_len=%d err=%s", len(intent), type(e).__name__)
-                logger.exception("run_agent failed: %s", e)
-                err_payload = {"step_type": "error", "content": str(e), "run_id": run_id}
-                await _send_safe(websocket, err_payload)
-                if broadcast and chat_id:
-                    await _broadcast_to_mirror_subscribers(chat_id, err_payload)
+            )
     except Exception as e:
         logger.warning("WebSocket client error: %s", e)
     finally:
+        if active_turn_task is not None and not active_turn_task.done():
+            active_turn_task.cancel()
+            try:
+                await active_turn_task
+            except asyncio.CancelledError:
+                pass
         if _bg_task_subscribed:
             try:
                 from l3_node.l3_event_bus import unregister_background_task_subscriber

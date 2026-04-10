@@ -1,10 +1,10 @@
-/**
+﻿/**
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
 import React, { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, Square, Radio, LayoutDashboard, Settings2 } from "lucide-react";
+import { Send, Mic, Square, Radio, LayoutDashboard, Settings2, Plus, Menu, Trash2 } from "lucide-react";
 import type { StoredMessage } from "../../utils/messageStorage";
 import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
 import type { ToolUiSubmitPayload } from "../../skills-ui/types";
@@ -50,6 +50,8 @@ export interface OmniCyberChatShellProps {
   /** Esc 收起 Omni / 陪伴圆（与 window 捕获监听双保险，避免 WebView 吞键） */
   onRequestDismiss?: () => void | Promise<void>;
   onSend: () => void;
+  /** 思考/流式过程中停止生成（与发送按钮同位） */
+  onStopGeneration?: () => void;
   placeholder?: string;
   disabled?: boolean;
   isLoading: boolean;
@@ -71,6 +73,15 @@ export interface OmniCyberChatShellProps {
   onToolUiResult?: (payload: ToolUiSubmitPayload) => void;
   /** 仅开发构建：标题栏可折叠插槽（如 tool_call 演示注入） */
   devToolbar?: React.ReactNode;
+  /** 新建会话（侧栏「发起新对话」） */
+  onNewChat?: () => void;
+  /** 左侧会话列表抽屉 */
+  sessionDrawerOpen?: boolean;
+  onToggleSessionDrawer?: () => void;
+  sessionsList?: { id: string; title: string }[];
+  currentSessionId?: string | null;
+  onSelectSession?: (id: string) => void;
+  onDeleteSession?: (id: string) => void;
 }
 
 export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
@@ -81,6 +92,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   onInputChange,
   onRequestDismiss,
   onSend,
+  onStopGeneration,
   placeholder = "输入指令…",
   disabled = false,
   isLoading,
@@ -101,6 +113,13 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   riskLevel = "safe",
   onToolUiResult,
   devToolbar,
+  onNewChat,
+  sessionDrawerOpen = false,
+  onToggleSessionDrawer,
+  sessionsList = [],
+  currentSessionId = null,
+  onSelectSession,
+  onDeleteSession,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -109,6 +128,9 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   }, [messages, isTyping]);
 
   const canSend = !disabled && !isLoading && input.trim().length > 0;
+  const stopMode =
+    onStopGeneration != null &&
+    (jachinMachineState === "THINKING" || jachinMachineState === "STREAMING");
   const canVoice = !disabled && !isLoading;
   const voiceVisual = interactionPhase !== "text";
   const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
@@ -139,6 +161,86 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
         <div className="pointer-events-none absolute inset-0 rounded-2xl shadow-[inset_0_0_48px_rgba(34,211,238,0.06)]" />
 
         <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
+          <AnimatePresence>
+            {sessionDrawerOpen && onToggleSessionDrawer != null && (
+              <>
+                <motion.button
+                  type="button"
+                  key="session-drawer-scrim"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute inset-0 z-[25] bg-black/50"
+                  aria-label="关闭会话列表"
+                  onClick={() => onToggleSessionDrawer()}
+                />
+                <motion.aside
+                  key="session-drawer"
+                  initial={{ x: "-100%" }}
+                  animate={{ x: 0 }}
+                  exit={{ x: "-100%" }}
+                  transition={{ type: "spring", stiffness: 380, damping: 34 }}
+                  className="absolute left-0 top-0 z-[30] flex h-full w-[min(280px,85vw)] min-h-0 flex-col border-r border-white/10 bg-black/80 shadow-[4px_0_32px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+                >
+                  <div className="shrink-0 border-b border-white/10 p-3">
+                    {onNewChat != null ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onNewChat();
+                        }}
+                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/15 py-2.5 text-center font-mono text-[11px] font-medium text-cyan-100 shadow-[0_0_20px_rgba(34,211,238,0.12)] transition-[box-shadow,background-color] hover:border-cyan-400/55 hover:bg-cyan-500/25"
+                      >
+                        <Plus className="h-3.5 w-3.5 shrink-0" strokeWidth={2.4} />
+                        发起新对话
+                      </button>
+                    ) : null}
+                  </div>
+                  <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-2">
+                    {sessionsList.map((s) => {
+                      const active = s.id === currentSessionId;
+                      return (
+                        <li key={s.id} className="group flex min-w-0 items-stretch gap-0.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onSelectSession?.(s.id);
+                            }}
+                            className={`min-w-0 flex-1 rounded-r-md border border-l-2 py-2 pl-3 pr-2 text-left font-mono text-[11px] leading-snug transition-colors ${
+                              active
+                                ? "border-l-cyan-400 border-y-white/10 border-r-white/10 bg-cyan-500/10 text-cyan-50"
+                                : "border-l-transparent border-transparent text-slate-400 hover:border-white/10 hover:bg-white/[0.06] hover:text-slate-200"
+                            }`}
+                          >
+                            <span className="line-clamp-2">{s.title || "新对话"}</span>
+                          </button>
+                          {onDeleteSession != null ? (
+                            <button
+                              type="button"
+                              title="删除会话"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onDeleteSession(s.id);
+                              }}
+                              className="flex w-8 shrink-0 items-center justify-center rounded-md text-slate-500 opacity-0 transition-opacity hover:bg-red-500/15 hover:text-red-300 group-hover:opacity-100"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
+                            </button>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </motion.aside>
+              </>
+            )}
+          </AnimatePresence>
           {/* 拖拽区勿包住窗口按钮：否则 WebView2 会吞掉首次点击，× / 最小化无响应 */}
           <div className="flex shrink-0 select-none items-center justify-between gap-2 px-3 pb-1.5 pt-2">
             <div
@@ -148,6 +250,37 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               <span className="pointer-events-none text-[10px] font-medium uppercase tracking-[0.2em] text-cyan-400/80">
                 Omni
               </span>
+              {onToggleSessionDrawer != null ? (
+                <button
+                  type="button"
+                  title="会话历史"
+                  data-tauri-drag-region="false"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onToggleSessionDrawer();
+                  }}
+                  className="pointer-events-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-cyan-500/20 text-cyan-300/90 transition-[box-shadow,background-color,border-color] hover:border-cyan-400/45 hover:bg-cyan-500/10 hover:shadow-[0_0_14px_rgba(34,211,238,0.28)] active:scale-95"
+                >
+                  <Menu className="h-3.5 w-3.5" strokeWidth={2.4} />
+                </button>
+              ) : onNewChat != null ? (
+                <button
+                  type="button"
+                  title="新建对话"
+                  data-tauri-drag-region="false"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onNewChat();
+                  }}
+                  className="pointer-events-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-cyan-500/20 text-cyan-300/90 transition-[box-shadow,background-color,border-color] hover:border-cyan-400/45 hover:bg-cyan-500/10 hover:shadow-[0_0_14px_rgba(34,211,238,0.28)] active:scale-95"
+                >
+                  <Plus className="h-3.5 w-3.5" strokeWidth={2.4} />
+                </button>
+              ) : null}
               <div className="pointer-events-none flex min-w-0 flex-1 justify-center px-2">
                 <span className="h-0.5 w-7 shrink-0 rounded-full bg-cyan-400/35" aria-hidden />
               </div>
@@ -347,21 +480,36 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             )}
           </div>
 
-          {!voiceVisual && (
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                e.preventDefault();
-                e.stopPropagation();
-                if (canSend) onSend();
-              }}
-              disabled={!canSend}
-              className="p-2 rounded-full text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/20 disabled:opacity-40"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          )}
+          {!voiceVisual &&
+            (stopMode ? (
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onStopGeneration?.();
+                }}
+                title="停止生成"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/5 bg-white/5 text-purple-400/80 transition-all duration-300 hover:bg-purple-500/20 hover:text-white hover:shadow-[0_0_15px_rgba(168,85,247,0.3)]"
+              >
+                <Square className="h-4 w-4 fill-current" strokeWidth={2.25} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (canSend) onSend();
+                }}
+                disabled={!canSend}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 text-cyan-400 transition-all duration-300 hover:bg-cyan-500/20 disabled:opacity-40"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            ))}
 
           {onOpenConsole && (
             <button

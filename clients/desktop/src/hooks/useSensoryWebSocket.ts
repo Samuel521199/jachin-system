@@ -4,7 +4,7 @@
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
 import { formatAssistantStepPayload } from "../utils/sensoryStepFormat";
 import { mergeStreamChunk } from "../utils/streamChunkMerge";
 
@@ -22,6 +22,11 @@ const MANIFEST_CAPS = ["ui_render", "hitl_popup", "stream_chunk"];
 export interface UseSensoryOptions {
   /** Lark chat_id：启用镜像模式，Lark 消息同步到终端，终端回复同步到 Lark */
   larkChatId?: string;
+  /**
+   * 无 Lark 镜像时：发往 L3 的会话隔离键（与 `chat_id` / `session_id` 一致）。
+   * 有 `larkChatId` 时仍以 Lark 为准，忽略此 ref。
+   */
+  desktopSessionIdRef?: MutableRefObject<string>;
 }
 
 /** L5 定时记忆整理：服务端推送的倒计时提示（勿当 thought 拼进助手气泡） */
@@ -79,6 +84,8 @@ export interface BackgroundTaskEventPayload {
 export interface SensoryAnswerMeta {
   hadStreamChunks?: boolean;
   runId?: string;
+  /** L3 帧：answer / rejected / error（哨兵通知等） */
+  terminalOutcome?: "answer" | "rejected" | "error";
 }
 
 /** 当前流式 chunk 语义：思考 reasoning vs 正文 content（驱动 Jachin Core THINKING / STREAMING） */
@@ -101,6 +108,7 @@ function detectChunkIsReasoning(
 
 export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const larkChatId = (options.larkChatId ?? DEFAULT_LARK_CHAT_ID).trim();
+  const desktopSessionIdRef = options.desktopSessionIdRef;
   const [connected, setConnected] = useState(false);
   const [lastPayload, setLastPayload] = useState<SensoryPayload | null>(null);
   const [hitlPending, setHitlPending] = useState<SensoryPayload | null>(null);
@@ -128,6 +136,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const hadStreamChunksForRunRef = useRef(false);
   /** 与 streamingContent 同步，用于合并 cumulative/delta chunk，避免重复拼接 */
   const streamingAccRef = useRef("");
+  /** 用户停止后丢弃残余 chunk/step，直到收到本轮终结帧（answer/rejected/error）以复位内部缓冲 */
+  const dropL3StreamUntilTerminalRef = useRef(false);
 
   /** 注册 Lark 镜像输入回调：Lark 用户发消息时，终端同步显示 */
   const registerMirrorInputHandler = useCallback((fn: ((content: string) => void) | null) => {
@@ -175,6 +185,34 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     },
     [],
   );
+
+  /** 通知 L3 取消当前 run_agent 任务；不断开 WS，后续残余帧由 dropL3StreamUntilTerminalRef 吞掉直至终结包 */
+  const sendRunAbort = useCallback(() => {
+    dropL3StreamUntilTerminalRef.current = true;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const payload: Record<string, string> = { type: "run_abort" };
+      if (larkChatId) {
+        payload.chat_id = larkChatId;
+        payload.session_id = larkChatId;
+      } else {
+        const sid = desktopSessionIdRef?.current?.trim() ?? "";
+        if (sid) {
+          payload.chat_id = sid;
+          payload.session_id = sid;
+        }
+      }
+      try {
+        wsRef.current.send(JSON.stringify(payload));
+      } catch {
+        /* noop */
+      }
+    }
+    streamingAccRef.current = "";
+    hadStreamChunksForRunRef.current = false;
+    setStreamChunkKind(null);
+    setStreamingContent("");
+    setCurrentRunId(null);
+  }, [larkChatId, desktopSessionIdRef]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -289,6 +327,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
 
           // v8.0 流式神经：合并 chunk（支持全量累加或纯增量），仅把新增 delta 交给 Chat 气泡
           if (data.step_type === "chunk" && data.content != null) {
+            if (dropL3StreamUntilTerminalRef.current) {
+              return;
+            }
             const runId = data.run_id ?? "";
             const metaObj = meta as Record<string, unknown> | undefined;
             const isReasoningChunk = detectChunkIsReasoning(metaObj, raw, data.content);
@@ -305,6 +346,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
 
           // thought/action/observation：完整展示思考过程，禁止总结
           if (["thought", "action", "observation"].includes(data.step_type) && data.content != null) {
+            if (dropL3StreamUntilTerminalRef.current) {
+              return;
+            }
             const labels: Record<string, string> = { thought: "思考", action: "动作", observation: "观察" };
             const label = labels[data.step_type] ?? data.step_type;
             onStepRef.current?.(data.step_type, `### ${label}\n\n${data.content}\n\n`, data.run_id ?? "");
@@ -328,18 +372,25 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             const hadChunks = hadStreamChunksForRunRef.current;
             hadStreamChunksForRunRef.current = false;
             streamingAccRef.current = "";
+            const swallowAfterAbort = dropL3StreamUntilTerminalRef.current;
+            dropL3StreamUntilTerminalRef.current = false;
+            setStreamChunkKind(null);
+            setStreamingContent("");
+            setCurrentRunId(null);
+            if (swallowAfterAbort) {
+              return;
+            }
             // 流式已逐段拼进气泡时，禁止再注入整段正文（否则与 chunk 叠加成双倍/多倍复读）
             const stepPayload = hadChunks
               ? ""
               : formatAssistantStepPayload(data.step_type, content);
             onStepRef.current?.(data.step_type, stepPayload, data.run_id ?? "");
+            const terminalOutcome = data.step_type as "answer" | "rejected" | "error";
             onAnswerRef.current?.(content, {
               hadStreamChunks: hadChunks,
               runId: data.run_id ?? "",
+              terminalOutcome,
             });
-            setStreamChunkKind(null);
-            setStreamingContent("");
-            setCurrentRunId(null);
           }
 
           // v8.0 Handoff：解析 [System] 灵魂传输完成... 触发人格色彩突变（持久至下次切换）
@@ -395,6 +446,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     setHitlPending(null);
     streamingAccRef.current = "";
     hadStreamChunksForRunRef.current = false;
+    dropL3StreamUntilTerminalRef.current = false;
     setStreamChunkKind(null);
     setStreamingContent("");
     setCurrentRunId(null);
@@ -413,10 +465,19 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const sendSessionClearControl = useCallback(() => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
     const payload: Record<string, string> = { type: "clear_session" };
-    if (larkChatId) payload.chat_id = larkChatId;
+    if (larkChatId) {
+      payload.chat_id = larkChatId;
+      payload.session_id = larkChatId;
+    } else {
+      const sid = desktopSessionIdRef?.current?.trim() ?? "";
+      if (sid) {
+        payload.chat_id = sid;
+        payload.session_id = sid;
+      }
+    }
     wsRef.current.send(JSON.stringify(payload));
     return true;
-  }, [larkChatId]);
+  }, [larkChatId, desktopSessionIdRef]);
 
   const resolveHitl = useCallback((approved: boolean) => {
     const tid = hitlPending?.task_id;
@@ -425,6 +486,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
 
   /** 发送聊天输入到 Layer 3（与 v0.8.98 一致：`{ intent }`；L3 ws_server 读 intent/content） */
   const sendInput = useCallback((text: string) => {
+    dropL3StreamUntilTerminalRef.current = false;
     if (!text.trim()) {
       console.debug("[Sensory] sendInput 跳过: 空文本");
       return false;
@@ -436,12 +498,19 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     const payload: Record<string, string> = { intent: text.trim() };
     if (larkChatId) {
       payload.chat_id = larkChatId;
+      payload.session_id = larkChatId;
       payload.origin = "terminal";
+    } else {
+      const sid = desktopSessionIdRef?.current?.trim() ?? "";
+      if (sid) {
+        payload.chat_id = sid;
+        payload.session_id = sid;
+      }
     }
     wsRef.current.send(JSON.stringify(payload));
     console.debug("[Sensory] sendInput 已发送 len=%d mirror=%s", text.trim().length, !!larkChatId);
     return true;
-  }, [larkChatId]);
+  }, [larkChatId, desktopSessionIdRef]);
 
   /**
    * 生成式 UI：将用户在面板中确认的参数发给 L3（ws_server `tool_ui_result`），
@@ -459,11 +528,20 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
         result: p.result,
       };
       if (p.toolCallId) payload.tool_call_id = p.toolCallId;
-      if (larkChatId) payload.chat_id = larkChatId;
+      if (larkChatId) {
+        payload.chat_id = larkChatId;
+        payload.session_id = larkChatId;
+      } else {
+        const sid = desktopSessionIdRef?.current?.trim() ?? "";
+        if (sid) {
+          payload.chat_id = sid;
+          payload.session_id = sid;
+        }
+      }
       wsRef.current.send(JSON.stringify(payload));
       return true;
     },
-    [larkChatId],
+    [larkChatId, desktopSessionIdRef],
   );
 
   useEffect(() => {
@@ -515,6 +593,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     sendToolUiResult,
     /** 通知 L3 清空 WS 会话缓冲（控制帧，非用户 intent） */
     sendSessionClearControl,
+    /** 停止当前 L3 生成（发 run_abort + 丢弃残余流直至终结帧） */
+    sendRunAbort,
     /** Lark 镜像：注册回调，Lark 用户发消息时终端同步显示 */
     registerMirrorInputHandler,
     registerBackgroundTaskHandler,

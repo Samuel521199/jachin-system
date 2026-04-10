@@ -105,6 +105,63 @@ def normalize_mcp_schema_aliases(tool_name: str, arguments: dict[str, Any] | Non
     return out
 
 
+def stdio_official_filesystem_workspace_cwd(args: Any) -> Optional[str]:
+    """
+    ``@modelcontextprotocol/server-filesystem`` 将相对 ``path``（如 list_directory 的 ``.``）
+    按 **子进程当前工作目录** 解析。若 stdio 的 cwd 继承为 L3 仓库根（常见），则 ``.`` 会落在
+    允许目录之外，触发 ``Access denied - path outside allowed directories``。
+
+    返回 MCP 命令行里、包名之后 **第一个已存在且为目录** 的允许根，供 ``StdioServerParameters.cwd`` 使用。
+    """
+    if not isinstance(args, list):
+        return None
+    pkg_idx = -1
+    for i, a in enumerate(args):
+        if isinstance(a, str) and "server-filesystem" in a:
+            pkg_idx = i
+            break
+    if pkg_idx < 0:
+        return None
+    for j in range(pkg_idx + 1, len(args)):
+        a = args[j]
+        if not isinstance(a, str) or not a.strip():
+            continue
+        s = a.strip()
+        if s.startswith("-"):
+            continue
+        try:
+            p = Path(s).expanduser()
+            if p.is_dir():
+                return str(p.resolve())
+        except OSError:
+            continue
+    return None
+
+
+def _stdio_missing_dash_m_module(args: Any) -> Optional[str]:
+    """
+    stdio 配置为 ``python -m some.module`` 时，若该模块未安装则子进程会立刻失败。
+    返回缺失的模块名，若无 ``-m`` 或已安装则返回 None。
+    """
+    if not isinstance(args, list):
+        return None
+    for i in range(len(args) - 1):
+        if args[i] != "-m":
+            continue
+        mod = args[i + 1]
+        if not isinstance(mod, str) or not mod.strip():
+            continue
+        name = mod.strip()
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec(name) is None:
+                return name
+        except (ValueError, AttributeError, ModuleNotFoundError):
+            return name
+    return None
+
+
 def _stdio_args_reference_missing_py_file(args: Any) -> Optional[str]:
     """
     stdio MCP 的 args 里若出现 .py 路径且文件不存在，子进程会立即退出并表现为 Connection closed。
@@ -211,11 +268,15 @@ class MCPServerInstance:
                     log_parent_os=True,
                 )
                 log_tavily_stdio_merged_spawn(self.server_id, eff_env)
+            fs_cwd = stdio_official_filesystem_workspace_cwd(self.args)
+            stdio_cwd = tavily_cwd or fs_cwd
+            if fs_cwd and not tavily_cwd:
+                logger.debug("[MCP] server-filesystem stdio cwd=%s server_id=%s", fs_cwd, self.server_id)
             server_params = StdioServerParameters(
                 command=self.command,
                 args=self.args,
                 env=eff_env,
-                cwd=tavily_cwd,
+                cwd=stdio_cwd,
             )
             stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
             stdio, write = stdio_transport
@@ -427,6 +488,14 @@ class MCPManager:
                 "[MCP] 跳过 server_id=%s：入口脚本不存在 path=%s（请修正 ~/.jachin/mcp_servers.json 或运行 scripts/repair-mcp-servers.ps1）",
                 server_id,
                 miss_py,
+            )
+            return
+        miss_mod = _stdio_missing_dash_m_module(args_list)
+        if miss_mod:
+            logger.error(
+                "[MCP] 跳过 server_id=%s：未安装 Python 模块 %r（例：mcp_server_fetch → pip install mcp-server-fetch）",
+                server_id,
+                miss_mod,
             )
             return
         instance = MCPServerInstance(
@@ -754,6 +823,14 @@ class MCPManager:
                 "[MCP] add_server 跳过 server_id=%s：入口脚本不存在 path=%s",
                 server_id,
                 miss_py,
+            )
+            return False
+        miss_mod = _stdio_missing_dash_m_module(args_list)
+        if miss_mod:
+            logger.error(
+                "[MCP] add_server 跳过 server_id=%s：未安装 Python 模块 %r（例：pip install mcp-server-fetch）",
+                server_id,
+                miss_mod,
             )
             return False
         instance = MCPServerInstance(

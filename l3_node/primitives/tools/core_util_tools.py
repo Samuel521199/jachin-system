@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
 
 供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
@@ -13,8 +13,10 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import socket
+import subprocess
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -1144,7 +1146,68 @@ def run_funnel_calc(**kwargs: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 类别五：系统健康
+# 类别五：本机可见提醒（与 com.jachin.os-mate.desktop_notify 能力对齐）
+# ---------------------------------------------------------------------------
+
+
+def run_desktop_message_box(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:desktop_message_box — 在本机弹出**立即**可见的提醒。
+
+    - Windows: WinForms MessageBox（异步 Popen，不阻塞 L3）。
+    - macOS: osascript display notification（非阻塞）。
+    - Linux: notify-send（若存在）。
+
+    标题/正文经 Base64 传入 PowerShell，避免引号注入。
+    「到 18:10 再弹」需系统计划任务 / 闹钟或到时仍运行的调度器触发本工具，本函数不负责定时。
+    """
+    title = (str(kwargs.get("title") or "Jachin").strip()[:200] or "Jachin").strip()
+    message = str(kwargs.get("message") or "").strip()
+    if not message:
+        return _err("message 不能为空")
+    message = message[:4000]
+
+    system = platform.system()
+    try:
+        if system == "Windows":
+            tb = base64.b64encode(title.encode("utf-8")).decode("ascii")
+            mb = base64.b64encode(message.encode("utf-8")).decode("ascii")
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                f"$t=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{tb}')); "
+                f"$m=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{mb}')); "
+                "[void][System.Windows.Forms.MessageBox]::Show($m,$t)"
+            )
+            cf = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+                creationflags=cf,
+            )
+            return _ok(
+                "已异步弹出 Windows 消息框（用户点击确定后关闭）。"
+                "若用户要求「指定时刻」提醒，须说明本工具仅立即弹出，到时需闹钟/计划任务或调度触发。"
+            )
+        if system == "Darwin":
+            safe_t = title.replace("\\", "\\\\").replace('"', '\\"')[:120]
+            safe_m = message.replace("\\", "\\\\").replace('"', '\\"')[:500]
+            subprocess.Popen(
+                ["osascript", "-e", f'display notification "{safe_m}" with title "{safe_t}"']
+            )
+            return _ok("已发送 macOS 通知（非模态）。")
+        subprocess.Popen(
+            ["notify-send", "-a", "Jachin", title[:128], message[:512]],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return _ok("已调用 notify-send（无图形会话时可能不可见）。")
+    except FileNotFoundError:
+        return _err("当前环境未找到 notify-send / osascript，或 PowerShell 不可用")
+    except Exception as e:
+        return _err(str(e))
+
+
+# ---------------------------------------------------------------------------
+# 类别六：系统健康
 # ---------------------------------------------------------------------------
 
 
@@ -1374,6 +1437,7 @@ _UTIL_HANDLERS: dict[str, Any] = {
     "util:text_diff": run_text_diff,
     "util:funnel_calc": run_funnel_calc,
     "util:generate_office_doc": run_generate_office_doc,
+    "util:desktop_message_box": run_desktop_message_box,
     "sys:health_stats": run_health_stats,
     "sys:list_env_safe": run_list_env_safe,
 }
@@ -1515,6 +1579,14 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "label": "sys:list_env_safe",
         "desc": "列出环境变量名（不含值，防泄密）。Action Input 可为 {}",
         "params": [],
+    },
+    {
+        "id": "util:desktop_message_box",
+        "label": "util:desktop_message_box",
+        "desc": "本机立即弹出可见提醒（Windows 消息框 / macOS 通知 / Linux notify-send）。"
+        "JSON：title（可选，默认 Jachin）, message（必填）。"
+        "仅**当下**弹出；「某时刻再弹」需系统闹钟/计划任务或到时由调度再调本工具；**禁止**对用户谎称无法弹窗。",
+        "params": ["message"],
     },
 ]
 
@@ -1761,6 +1833,17 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                 },
             },
             required=["file_format", "file_path", "content_json"],
+        ),
+    },
+    "util:desktop_message_box": {
+        "name": "util:desktop_message_box",
+        "description": "本机立即弹出消息框或桌面通知；定时提醒需闹钟或计划任务在到时触发",
+        "inputSchema": _schema_obj(
+            {
+                "title": {"type": "string", "description": "标题，默认 Jachin"},
+                "message": {"type": "string", "description": "正文，必填"},
+            },
+            required=["message"],
         ),
     },
 }

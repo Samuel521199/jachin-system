@@ -1,10 +1,11 @@
-{
+﻿{
   "mcp_servers": [
     {
-      "id": "official-fetch-npx",
-      "name": "MCP Fetch（官方 npx，网页阅读）",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+      "id": "official-mcp-fetch",
+      "name": "MCP Fetch（官方 mcp-server-fetch，与 npx 包名无关）",
+      "command": "__JACHIN_MCP_PYTHON__",
+      "args": ["-m", "mcp_server_fetch"],
+      "env": { "PYTHONIOENCODING": "utf-8" }
     },
     {
       "id": "official-sqlite-npx",

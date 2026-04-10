@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus Layer 2 - 自主代理循环 (ReAct) v8.0
 
 Reason + Act：四大原语路由（MCP / Skills / Tools）+ Fallback + HITL 安全红线。
@@ -217,11 +217,7 @@ def _parse_action(
         {"type": "mock", "tool": "get_weather", "input": "..."} 或 None
     """
     text = (llm_output or "").strip()
-    # Final Answer: / Answer: 最终回复
-    for pattern in (r"Final\s+Answer:\s*(.+?)(?:\n|$)", r"Answer:\s*(.+?)(?:\n|$)"):
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if m:
-            return {"type": "answer", "content": m.group(1).strip()}
+    # 与 l3_node.agent_core._parse_action 一致：先解析 Action，避免同轮「伪 Action + Final Answer」被误判为已收尾
 
     # Action: <mock 工具名> <参数>（无 Wasm 时）
     if use_mock:
@@ -255,6 +251,11 @@ def _parse_action(
         wasm_skills = [s for s in skills if s.get("type") != "skill_md"]
         if key.isdigit() and 1 <= int(key) <= len(wasm_skills):
             return {"type": "action", "skill": wasm_skills[int(key) - 1]}
+    # Final Answer: / Answer: 最终回复（无 Action 时）
+    for pattern in (r"Final\s+Answer:\s*(.+?)(?:\n|$)", r"Answer:\s*(.+?)(?:\n|$)"):
+        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if m:
+            return {"type": "answer", "content": m.group(1).strip()}
     return None
 
 

@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.8.110",
+  "version": "0.8.111",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -60,18 +60,43 @@
         "skipTaskbar": true,
         "visible": false,
         "url": "chat.html"
+      },
+      {
+        "label": "notification",
+        "title": "Jachin 哨兵",
+        "width": 380,
+        "height": 88,
+        "minWidth": 320,
+        "minHeight": 72,
+        "maxWidth": 480,
+        "maxHeight": 160,
+        "resizable": false,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "notification.html"
       }
     ],
     "security": {
       "csp": null,
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
     }
   },
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": ["icons/icon.ico"],
-    "externalBin": ["bin/l3_node"]
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "bin/l3_node"
+    ]
   },
   "plugins": {
     "shell": {

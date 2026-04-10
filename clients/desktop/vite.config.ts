@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+﻿import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { Readable } from "stream";
@@ -131,6 +131,7 @@ export default defineConfig(async () => ({
         console: path.resolve(__dirname, "console.html"),
         sprite: path.resolve(__dirname, "sprite.html"),
         chat: path.resolve(__dirname, "chat.html"),
+        notification: path.resolve(__dirname, "notification.html"),
       },
     },
   },

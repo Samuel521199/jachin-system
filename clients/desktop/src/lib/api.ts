@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -138,7 +138,8 @@ export async function sendChatMessage(message: string): Promise<ChatResponse> {
  */
 export async function streamChatMessage(
   message: string,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  opts?: { signal?: AbortSignal }
 ): Promise<string> {
   const url = `${BACKEND_URL}/api/v2/chat/text`;
   const res = await fetch(url, {
@@ -148,6 +149,7 @@ export async function streamChatMessage(
       messages: [{ role: "user", content: message }],
       stream: true,
     }),
+    signal: opts?.signal,
   });
   if (!res.ok) throw new Error(`Stream chat failed: ${res.status}`);
   const reader = res.body?.getReader();
@@ -156,6 +158,14 @@ export async function streamChatMessage(
   let fullText = "";
   const buf: string[] = [];
   while (true) {
+    if (opts?.signal?.aborted) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* noop */
+      }
+      break;
+    }
     const { done, value } = await reader.read();
     if (done) break;
     buf.push(decoder.decode(value, { stream: true }));
@@ -173,6 +183,9 @@ export async function streamChatMessage(
         }
       }
     }
+  }
+  if (opts?.signal?.aborted) {
+    return fullText;
   }
   if (!fullText) {
     throw new Error("Stream returned no data");

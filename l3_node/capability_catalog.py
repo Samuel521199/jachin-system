@@ -188,14 +188,22 @@ def iter_matching_domain_specs(tools: list[dict] | None) -> list[CapabilityDomai
     return out
 
 
-def build_capability_prompt_inject_for_tools(tools: list[dict] | None) -> str:
+def build_capability_prompt_inject_for_tools(
+    tools: list[dict] | None,
+    *,
+    include_hr_capability_slice: bool = True,
+) -> str:
     """
     拼接：核心总目录 + 当前工具命中的各域摘要。
     与具体业务解耦；新域仅扩展 DOMAIN_REGISTRY 与 docs/capability_domains/。
+
+    include_hr_capability_slice=False：仍列出工具，但不注入招聘域切片（避免「你好」也被总目录里的招聘段带偏）。
     """
     parts: list[str] = [load_core_catalog_prompt_block().strip()]
     seen: set[str] = set()
     for spec in iter_matching_domain_specs(tools):
+        if not include_hr_capability_slice and spec.domain_id == "hr_recruitment":
+            continue
         if spec.domain_id in seen:
             continue
         seen.add(spec.domain_id)

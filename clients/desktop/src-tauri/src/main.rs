@@ -1,4 +1,4 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -752,7 +752,7 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 // sprite：勿自动恢复显示。chat：勿用持久化尺寸覆盖 Esc 陪伴圆（否则会立刻弹回大窗）
-                .with_denylist(&["sprite", "chat"])
+                .with_denylist(&["sprite", "chat", "notification"])
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
@@ -807,6 +807,9 @@ fn main() {
             companion_set_dock_position,
             expand_chat_window_for_skill_canvas,
             restore_chat_window_after_skill_canvas_rust,
+            jachin_sentry_notify,
+            jachin_sentry_notify_dismiss,
+            jachin_expand_main_from_notification,
             show_console_window,
             quick_action_privacy_mode,
             quick_action_clear_memory,
@@ -1214,6 +1217,81 @@ fn show_omni_chat_window(app: &tauri::AppHandle) {
         let _ = chat_window.show();
         let _ = chat_window.set_focus();
     }
+}
+
+/// 右下角哨兵通知：置于与 Omni 同显的显示器工作区右下（与陪伴圆同参考 monitor）
+fn position_notification_bottom_right(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("notification") else {
+        return Err("notification window missing".into());
+    };
+    let monitor = app
+        .get_webview_window("chat")
+        .as_ref()
+        .and_then(|c| c.current_monitor().ok().flatten())
+        .or_else(|| win.current_monitor().ok().flatten())
+        .ok_or_else(|| "no monitor".to_string())?;
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let factor = win.scale_factor().unwrap_or(1.0);
+    let nw = (380.0_f64 * factor).round().clamp(280.0, 800.0) as u32;
+    let nh = (88.0_f64 * factor).round().clamp(64.0, 200.0) as u32;
+    let margin = (14.0_f64 * factor).round() as i32;
+    let x = mon_pos.x + mon_size.width as i32 - nw as i32 - margin;
+    let y = mon_pos.y + mon_size.height as i32 - nh as i32 - margin;
+    win.set_size(Size::Physical(PhysicalSize::new(nw, nh)))
+        .map_err(|e| e.to_string())?;
+    win.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Omni 最小化 / 陪伴圆 / 完全隐藏时：透明子窗口右下角通知（非系统 Notification）
+#[tauri::command]
+async fn jachin_sentry_notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let app_handle = app.clone();
+    let payload = serde_json::json!({ "title": title, "body": body });
+    app
+        .run_on_main_thread(move || {
+            let Some(win) = app_handle.get_webview_window("notification") else {
+                eprintln!("[Sentry] notification webview missing");
+                return;
+            };
+            if let Err(e) = position_notification_bottom_right(&app_handle) {
+                eprintln!("[Sentry] position failed: {e}");
+            }
+            if let Err(e) = app_handle.emit_to(
+                EventTarget::webview_window("notification"),
+                "jachin-notification-show",
+                payload,
+            ) {
+                eprintln!("[Sentry] emit_to notification failed: {e}");
+            }
+            let _ = win.show();
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn jachin_sentry_notify_dismiss(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    app
+        .run_on_main_thread(move || {
+            if let Some(win) = app_handle.get_webview_window("notification") {
+                let _ = win.hide();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 点击哨兵条：展开 Omni 并收起通知
+#[tauri::command]
+async fn jachin_expand_main_from_notification(app: tauri::AppHandle) -> Result<(), String> {
+    show_chat_window(app.clone()).await?;
+    jachin_sentry_notify_dismiss(app).await?;
+    Ok(())
 }
 
 /// 显示对话窗口（Omni 条）：屏幕居中偏下，不依赖桌面精灵位置

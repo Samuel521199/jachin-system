@@ -2,9 +2,13 @@
 """
 修复 ~/.jachin/mcp_servers.json 中过期的 hr-atomic-tools 路径（换目录/仓库名后常见）。
 
-用法（仓库根）:
-  python scripts/repair_mcp_servers.py
-  python scripts/repair_mcp_servers.py --project-root D:\\path\\to\\jachin-system-main
+用法（注意当前目录）:
+  在仓库根 jachin-system-main 下:
+    python scripts/repair_mcp_servers.py
+  已在 scripts 目录下时:
+    python repair_mcp_servers.py
+  指定仓库根:
+    python repair_mcp_servers.py --project-root D:\\path\\to\\jachin-system-main
 """
 from __future__ import annotations
 
@@ -49,17 +53,31 @@ def main() -> int:
         print("[repair_mcp_servers] 未找到 python 可执行文件", file=sys.stderr)
         return 1
 
+    def _is_hr(entry: dict) -> bool:
+        return str(entry.get("id") or entry.get("name") or "").strip().lower() == "hr-atomic-tools"
+
+    def _fix_hr_entry(entry: dict) -> None:
+        nonlocal changed
+        entry["command"] = py_exe
+        entry["args"] = [str(hr_server.resolve())]
+        changed = True
+        print(f"[repair_mcp_servers] 已更新 hr-atomic-tools -> {hr_server}")
+
     changed = False
     if isinstance(data, dict) and "mcp_servers" in data and isinstance(data["mcp_servers"], list):
         for entry in data["mcp_servers"]:
             if not isinstance(entry, dict):
                 continue
-            if str(entry.get("id") or "") != "hr-atomic-tools":
+            if not _is_hr(entry):
                 continue
-            entry["command"] = py_exe
-            entry["args"] = [str(hr_server.resolve())]
-            changed = True
-            print(f"[repair_mcp_servers] 已更新 hr-atomic-tools -> {hr_server}")
+            _fix_hr_entry(entry)
+    elif isinstance(data, list):
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            if not _is_hr(entry):
+                continue
+            _fix_hr_entry(entry)
     elif isinstance(data, dict) and "mcpServers" in data and isinstance(data["mcpServers"], dict):
         inner = data["mcpServers"].get("hr-atomic-tools")
         if isinstance(inner, dict):

@@ -1,8 +1,11 @@
 ﻿"""
 启动时修正 ~/.jachin/mcp_servers.json 中过期的 hr-atomic-tools 路径，避免整条 MCP 握手被无效配置干扰；
-并在用户尚未配置任何官方 server-filesystem 时，自动追加一条默认条目（与 skills_repo 插件同 id，避免双实例）。
+并在用户尚未配置任何官方 server-filesystem 时，自动追加一条默认条目（与 skills_repo 插件同 id，避免双实例）；
+尚未配置 **mcp-server-fetch**（``python -m mcp_server_fetch``）时追加官方 URL 抓取 MCP（工具名多为 ``fetch``）。
 
 由 l3_node.primitives.mcp.mcp_stdio_bootstrap 在 MCPManager.start() 之前调用。
+
+**说明**：Anthropic 官方 Fetch 在 **PyPI**（``mcp-server-fetch``），**无** npm ``@modelcontextprotocol/server-fetch`` 包；勿在配置里写错误的 npx 包名。
 """
 from __future__ import annotations
 
@@ -15,9 +18,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_HR_SERVER_IDS = frozenset({"hr-atomic-tools"})
+_HR_SERVER_IDS_LOWER = frozenset({"hr-atomic-tools"})
 
 _DEFAULT_FILESYSTEM_MCP_ID = "com.jachin.mcp.filesystem_workspace"
+_DEFAULT_FETCH_MCP_ID = "official-mcp-fetch"
 
 
 def _mcp_entry_has_official_filesystem(entry: dict[str, Any]) -> bool:
@@ -105,9 +109,90 @@ def ensure_default_official_filesystem_mcp() -> bool:
     return True
 
 
+def _mcp_entry_has_official_fetch_stdio(entry: dict[str, Any]) -> bool:
+    """已配置基于 ``mcp_server_fetch`` 的 stdio（与仓库 tools/mcp-official 示例一致即可）。"""
+    args = entry.get("args")
+    if not isinstance(args, list):
+        return False
+    return any(isinstance(a, str) and "mcp_server_fetch" in a for a in args)
+
+
+def ensure_default_official_fetch_mcp() -> bool:
+    """
+    若 ``~/.jachin/mcp_servers.json`` 中尚无 ``-m mcp_server_fetch`` 条目，则追加一条默认 stdio。
+
+    使用 ``__JACHIN_MCP_PYTHON__``（与嵌入式/当前 Python 一致），工具在模型侧多为 **mcp:fetch** / ``fetch``。
+    需 ``pip install mcp-server-fetch``（亦在 ``tools/mcp-official/requirements-official-mcp.txt``）。
+
+    Returns:
+        是否写回了磁盘。
+    """
+    jachin_dir = Path.home() / ".jachin"
+    try:
+        jachin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.debug("[mcp_json_repair] 无法创建 ~/.jachin（fetch）: %s", e)
+        return False
+
+    cfg_path = jachin_dir / "mcp_servers.json"
+    entry: dict[str, Any] = {
+        "id": _DEFAULT_FETCH_MCP_ID,
+        "name": "MCP Fetch（官方 mcp-server-fetch，单 URL→Markdown）",
+        "command": "__JACHIN_MCP_PYTHON__",
+        "args": ["-m", "mcp_server_fetch"],
+        "env": {"PYTHONIOENCODING": "utf-8"},
+    }
+
+    if not cfg_path.is_file():
+        blob: dict[str, Any] = {"mcp_servers": [entry]}
+        try:
+            cfg_path.write_text(json.dumps(blob, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError as e:
+            logger.warning("[mcp_json_repair] 写入默认 Fetch MCP 失败: %s", e)
+            return False
+        logger.info(
+            "[mcp_json_repair] 已创建 %s 并写入默认官方 Fetch MCP（需 pip install mcp-server-fetch）",
+            cfg_path,
+        )
+        return True
+
+    try:
+        parsed = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("[mcp_json_repair] 跳过默认 Fetch：读取失败 %s", e)
+        return False
+
+    if isinstance(parsed, dict):
+        if not isinstance(parsed.get("mcp_servers"), list):
+            parsed["mcp_servers"] = []
+        servers = parsed["mcp_servers"]
+        blob = parsed
+    elif isinstance(parsed, list):
+        servers = parsed
+        blob = parsed
+    else:
+        return False
+
+    for e in servers:
+        if isinstance(e, dict) and _mcp_entry_has_official_fetch_stdio(e):
+            return False
+
+    servers.append(entry)
+    try:
+        cfg_path.write_text(json.dumps(blob, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as e:
+        logger.warning("[mcp_json_repair] 合并默认 Fetch MCP 失败: %s", e)
+        return False
+    logger.info(
+        "[mcp_json_repair] 已向 %s 追加默认官方 Fetch MCP（需 pip install mcp-server-fetch）",
+        cfg_path,
+    )
+    return True
+
+
 def _is_hr_stdio_entry(entry: dict[str, Any]) -> bool:
-    sid = str(entry.get("id") or entry.get("name") or "").strip()
-    return sid in _HR_SERVER_IDS
+    sid = str(entry.get("id") or entry.get("name") or "").strip().lower()
+    return sid in _HR_SERVER_IDS_LOWER
 
 
 def _hr_first_py_arg_should_repoint(first: str, hr_server: Path) -> bool:
@@ -188,6 +273,11 @@ def repair_hr_atomic_tools_path(project_root: Path) -> bool:
 
     if isinstance(data, dict) and isinstance(data.get("mcp_servers"), list):
         for e in data["mcp_servers"]:
+            if isinstance(e, dict):
+                _fix_entry(e)
+    elif isinstance(data, list):
+        # Cursor / 部分导出为顶层数组，MCPManager._load_config 支持，repair 也必须遍历
+        for e in data:
             if isinstance(e, dict):
                 _fix_entry(e)
     elif isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):

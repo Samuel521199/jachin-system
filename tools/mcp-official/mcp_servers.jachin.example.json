@@ -1,4 +1,4 @@
-{
+﻿{
   "mcp_servers": [
     {
       "id": "official-fetch",
@@ -44,9 +44,9 @@
       ]
     },
     {
-      "id": "official-fetch-npx",
-      "name": "MCP Fetch（Python stdio；npm @modelcontextprotocol/server-fetch 在 registry 不可用，请用 PyPI mcp-server-fetch）",
-      "command": "python",
+      "id": "official-mcp-fetch",
+      "name": "MCP Fetch（PyPI mcp-server-fetch；npm @modelcontextprotocol/server-fetch 常不可用）",
+      "command": "__JACHIN_MCP_PYTHON__",
       "args": ["-m", "mcp_server_fetch"],
       "env": {
         "PYTHONIOENCODING": "utf-8"

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
@@ -368,7 +368,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:atom_web_scraper",
         "label": "mcp:atom_web_scraper",
-        "desc": "[L3 本地] 通用网页抓取器。传入 url、output_path、config，抓取表格/JSON 并保存到 client_volumes/bi_data/raw/。",
+        "desc": "[L3 本地·BI/表格] 面向 **飞书 BI 等 SPA 表格** 或带 automation 的采集；SPA 模式需本机 Chrome **--remote-debugging-port=9222**（否则 ECONNREFUSED）。**禁止**用于普通新闻/文章单 URL 正文：此类必须 **mcp:fetch**（官方 ``mcp-server-fetch`` stdio，无需 Chrome）。参数：url、output_path、config、cdp_url。",
         "params": ["url", "output_path", "config", "cdp_url"],
         "long_running": True,
     },
@@ -418,6 +418,34 @@ def _mcp_id_raw_local_part(tool_id: str) -> str:
     if s.lower().startswith(MCP_TOOLS_PREFIX.lower()):
         return s[len(MCP_TOOLS_PREFIX) :].strip().lower()
     return s.lower()
+
+
+def _normalize_apply_professional_design_args(args: dict[str, Any]) -> dict[str, Any]:
+    """
+    GongRzhe/office-powerpoint-mcp-server 的 apply_professional_design 与模型常见误用对齐。
+
+    上游实现：operation 仅接受 professional_slide | theme | enhance | get_schemes；
+    但 docstring/报错里曾出现 “slide”“apply” 等字样，易导致模型传错。
+    - apply → theme（整份演示文稿应用 color_scheme）
+    - slide → professional_slide
+    - enhance 且未提供 slide_index → theme（避免 “slide_index is required”；整册美化用 theme 更合适）
+    """
+    if not isinstance(args, dict):
+        return args
+    out = dict(args)
+    op = str(out.get("operation") or "").strip().lower()
+    if op == "apply":
+        out["operation"] = "theme"
+        logger.info("[MCP Registry] apply_professional_design: operation apply → theme")
+    elif op == "slide":
+        out["operation"] = "professional_slide"
+        logger.info("[MCP Registry] apply_professional_design: operation slide → professional_slide")
+    elif op == "enhance" and out.get("slide_index") is None:
+        out["operation"] = "theme"
+        logger.info(
+            "[MCP Registry] apply_professional_design: enhance 缺少 slide_index → theme（整册主题）"
+        )
+    return out
 
 
 def l3_local_mcp_raw_names() -> frozenset[str]:
@@ -1319,10 +1347,20 @@ def _invoke_get_recruitment_job_memory_local(job_name: str = "") -> str:
 
 def _invoke_read_file_local(path_raw: str) -> str:
     """L3 本地执行 read_file，使用 core.pdf_extractor。"""
+    import os
+
     from core.pdf_extractor import extract_pdf_text, SCAN_PLACEHOLDER
     _proj = get_app_root()
+    _workspace = Path.home() / ".jachin" / "workspace"
     _l3_vol = Path.home() / ".jachin" / "client_volumes"
     raw = (path_raw or "").strip().replace("\\", "/")
+    if not raw or "\n" in raw or len(raw) > 1200:
+        return "[read_file] 路径无效"
+    # 展开 ~/.jachin/... 与 %USERPROFILE% 等，避免 Path("~/.jachin/...") 在 Windows 上非绝对路径、仅靠 basename 兜底
+    try:
+        raw = str(Path(os.path.expandvars(raw)).expanduser()).replace("\\", "/")
+    except Exception:
+        pass
     if not raw or "\n" in raw or len(raw) > 1200:
         return "[read_file] 路径无效"
     p = Path(raw)
@@ -1337,7 +1375,10 @@ def _invoke_read_file_local(path_raw: str) -> str:
         from l3_node.jachin_config import get_hr_jds_dir
         raw_norm = raw.lstrip("/")
         plugin_data = _proj / "skills_repo" / "plugin" / "data"
+        # 须含 ~/.jachin/workspace（与 core:fs_read 一致）；此前仅搜 client_volumes/HR 等，导致「测试.txt」类相对路径恒失败
         for base, sub in [
+            (_workspace, raw_norm),
+            (_workspace, p.name or raw_norm),
             (_l3_vol, raw_norm),
             (plugin_data, raw_norm),
             (plugin_data, p.name or raw_norm),
@@ -1388,7 +1429,7 @@ def _load_tools_from_l3_mcp_cache() -> tuple[list[dict[str, Any]], dict[str, tup
                 for p in plugin_root.iterdir():
                     if p.is_dir() and (p / "plugin.json").exists():
                         try:
-                            pl = json.loads((p / "plugin.json").read_text(encoding="utf-8"))
+                            pl = json.loads((p / "plugin.json").read_text(encoding="utf-8-sig"))
                             if pl.get("runtime_tier") == "L3_LOCAL":
                                 scan_dirs.append(p)
                         except Exception:
@@ -1403,7 +1444,7 @@ def _load_tools_from_l3_mcp_cache() -> tuple[list[dict[str, Any]], dict[str, tup
         if not plugin_path.exists():
             continue
         try:
-            plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
+            plugin = json.loads(plugin_path.read_text(encoding="utf-8-sig"))
         except Exception as e:
             logger.debug("[MCP Registry] 解析 plugin.json 失败 %s: %s", subdir.name, e)
             continue
@@ -1696,6 +1737,15 @@ class MCPToolRegistry:
             if fn_name != str(name).strip():
                 desc = f"{desc}\n\n[Jachin tool id: {name}]"
             raw = _mcp_id_raw_local_part(str(name))
+            if raw == "apply_professional_design":
+                desc = (
+                    f"{desc}\n\n[Jachin · Office PPT] operation 必须是字面量之一："
+                    "get_schemes（列出 color_scheme 名）| "
+                    "theme（对整个 presentation 应用配色，不需要 slide_index）| "
+                    "professional_slide（新增一页专业样式幻灯片）| "
+                    "enhance（只增强已有某一页，必须提供整数 slide_index，从 0 起）。"
+                    "不要使用 apply、slide 等无效 operation；整册要「好看」优先用 theme。"
+                )
             isc = t.get("inputSchema")
             if isinstance(isc, dict) and isc.get("type") == "object":
                 schema = copy.deepcopy(isc)
@@ -2261,6 +2311,8 @@ class MCPToolRegistry:
             if _rn and _mgr.can_invoke_stdio_tool(_rn):
                 _parsed_stdio = self._parse_action_input(action_input)
                 _args = normalize_mcp_schema_aliases(_rn, _parsed_stdio)
+                if _rn == "apply_professional_design":
+                    _args = _normalize_apply_professional_design_args(dict(_args))
                 try:
                     from l3_node.primitives.mcp.sqlite_write_guard import (
                         check_sqlite_mcp_blocked,

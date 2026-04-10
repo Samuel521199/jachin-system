@@ -85,6 +85,32 @@ def heuristic_tool_need(user_text: str) -> bool:
     return bool(_TOOL_NEED_RE.search(user_text or ""))
 
 
+# 极短寒暄 / 礼貌用语：无任务语义时允许直连 completion，避免被长会话历史拖进 ReAct+大工具池
+_TRIVIAL_CHITCHAT_BLOCK_RE = re.compile(
+    r"读|写|文件|执行|命令|代码|http|www\.|toutiao|\.txt|\.py|mcp|工具|总结|抓取|覆盖|工作区|shell|powershell|curl|帮我|请帮",
+    re.I,
+)
+_TRIVIAL_CHITCHAT_OK_RE = re.compile(
+    r"^[\s，。！？、…·~～！]+$"
+    r"|^[\s，。！？、…·~～！]*(?:"
+    r"你好|您好|嗨|哈喽|哈啰|hello|hi|hey|早上好|下午好|晚上好|早安|午安|晚安|"
+    r"谢谢|多谢|感谢|不客气|拜拜|再见|see\s*ya|在吗|在不在|有人吗|哈喽哈喽|"
+    r"你好呀|你好啊|你好哦|在的|嗯嗯|好的|ok|okay|么么哒|辛苦|劳烦|打扰"
+    r")[\s，。！？、…·~～！]*$",
+    re.I,
+)
+
+
+def heuristic_trivial_chitchat_only(user_text: str) -> bool:
+    """是否仅为简短问候/致谢等，不包含任何可识别的任务意图。"""
+    t = (user_text or "").strip()
+    if not t or len(t) > 48:
+        return False
+    if _TRIVIAL_CHITCHAT_BLOCK_RE.search(t):
+        return False
+    return bool(_TRIVIAL_CHITCHAT_OK_RE.match(t))
+
+
 # 安全锁动态域：仅当用户话术中明显涉及 DB / Shell 时注入对应域文件，避免「CSS 任务却灌 10 万 token 安全锁」
 _DB_SAFETY_LOCK_RE = re.compile(
     r"数据库|数据表|SQL|mysql|postgres|oracle|mongodb|redis|表名|schema|information_schema|"
@@ -138,13 +164,17 @@ def should_use_direct_llm_bypass(
     """
     if _direct_bypass_disabled():
         return False, False
+    _raw_ui = (raw_user_input or "").strip() or (user_text or "").strip()
+    # 网关分类面常拼接历史摘要（含 shell/mcp/读取 等），不得据此挡掉「你好」类纯寒暄直连
+    _trivial_raw = heuristic_trivial_chitchat_only(_raw_ui)
     try:
         from l3_node.intent_gateway.ood_signals import evaluate_gateway_ood_gates
 
-        _raw = (raw_user_input or "").strip() or (user_text or "")
+        _raw = _raw_ui
+        _cls_for_ood = _raw_ui if _trivial_raw else (user_text or "")
         _og = evaluate_gateway_ood_gates(
             raw_user_input=_raw,
-            classification_text=user_text or "",
+            classification_text=_cls_for_ood,
             bundle_extra=None,
         )
         if _og.veto_direct_bypass:
@@ -156,8 +186,12 @@ def should_use_direct_llm_bypass(
     ch = (channel or "").strip().lower()
     if ch in ("background_task", "delegate_sub_agent"):
         return False, False
+    if _trivial_raw:
+        return True, False
     if heuristic_tool_need(user_text):
         return False, False
+    if heuristic_trivial_chitchat_only(user_text):
+        return True, False
     sig = analyze_output_format_signals(user_text)
     if sig.user_led_strict:
         return True, sig.prefer_json_object

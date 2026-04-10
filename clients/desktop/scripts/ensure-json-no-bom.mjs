@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * Vite/PostCSS 在 Windows 上会 JSON.parse(package.json)；若被存成「UTF-8 带 BOM」会报 Unexpected token '﻿'。
  * 在 dev/build 前快速去掉关键 JSON 的 BOM（无则跳过）。
@@ -19,6 +19,7 @@ const files = [
   "nexus_config.example.json",
   /* Tauri 用 serde_json 读配置，带 BOM 会报 expected value at line 1 column 1 */
   "src-tauri/tauri.conf.json",
+  "src-tauri/capabilities/default.json",
 ];
 
 function stripFileIfNeeded(rel) {

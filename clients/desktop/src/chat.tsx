@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -21,14 +21,18 @@ import {
   type StreamChunkKind,
 } from "./hooks/useSensoryWebSocket";
 import {
-  loadMessages,
-  saveMessages,
-  clearMessages,
-  addMessage,
   findUnresolvedToolCallMessageIndex,
   dismissUnresolvedToolCallMessage,
   StoredMessage,
 } from "./utils/messageStorage";
+import {
+  loadSessionsState,
+  persistSessionsState,
+  newEmptySession,
+  titleFromMessages,
+  sessionSidebarDisplayLabel,
+  type ChatSession,
+} from "./utils/chatSessionsStore";
 import { createDemoComposeEssaySkillUiMessage, createDemoGeneratePptSkillUiMessage } from "./skills-ui/devDemo";
 import { getActiveSkillCanvasFromMessages, SkillCanvasPane } from "./skills-ui";
 import { expandChatWindowForSkillCanvas, SKILL_CHAT_COLUMN_WIDTH } from "./skills-ui/skillCanvasWindow";
@@ -36,6 +40,11 @@ import type { ToolUiSubmitPayload } from "./skills-ui/types";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "./constants/chatResponseTimeout";
+import {
+  maybeNotifyJachinAssistantDone,
+  summarizeForSentryNotify,
+  type SentryNotifyVariant,
+} from "./lib/jachinSentryNotify";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
 import {
   applyAssistantStreamChunk,
@@ -69,7 +78,31 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 function ChatApp() {
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
+  const sessionBootstrap = useRef<ReturnType<typeof loadSessionsState> | null>(null);
+  if (sessionBootstrap.current === null) {
+    sessionBootstrap.current = loadSessionsState();
+  }
+  const boot = sessionBootstrap.current;
+
+  const currentSessionIdRef = useRef(boot.currentId);
+  const [sessions, setSessions] = useState<ChatSession[]>(boot.sessions);
+  const [currentSessionId, setCurrentSessionId] = useState(boot.currentId);
+  const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  /** 删除会话后若 current 已不存在，自动落到列表首条（含删到 0 条时新建的空白会话） */
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    if (!sessions.some((s) => s.id === currentSessionId)) {
+      const pick = sessions[0];
+      setCurrentSessionId(pick.id);
+      currentSessionIdRef.current = pick.id;
+    }
+  }, [sessions, currentSessionId]);
+
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -83,7 +116,7 @@ function ChatApp() {
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
-  const sensory = useSensoryWebSocket();
+  const sensory = useSensoryWebSocket({ desktopSessionIdRef: currentSessionIdRef });
   const {
     handoffEvent,
     swarmEvent,
@@ -92,14 +125,100 @@ function ChatApp() {
     registerAnswerHandler,
     registerStepHandler,
     registerMirrorInputHandler,
-    registerBackgroundTaskHandler,
     sendInput,
     sendToolUiResult,
     sendSessionClearControl,
+    sendRunAbort,
     memoryCompactSuggest,
     sendMemoryCompactControl,
     dismissMemoryCompactSuggest,
   } = sensory;
+
+  const messages = useMemo(
+    () => sessions.find((s) => s.id === currentSessionId)?.messages ?? [],
+    [sessions, currentSessionId],
+  );
+
+  const updateSessionMessagesById = useCallback(
+    (sessionId: string, updater: (m: StoredMessage[]) => StoredMessage[]) => {
+      setSessions((prev) => {
+        const idx = prev.findIndex((s) => s.id === sessionId);
+        if (idx < 0) return prev;
+        const cur = prev[idx];
+        const nextMsgs = updater(cur.messages);
+        let title = cur.title;
+        if (title === "新对话" || !title.trim()) {
+          const nt = titleFromMessages(nextMsgs);
+          if (nt !== "新对话") title = nt;
+        }
+        const nextS: ChatSession = { ...cur, messages: nextMsgs, title, updatedAt: Date.now() };
+        const rest = prev.filter((_, i) => i !== idx);
+        return [nextS, ...rest].sort((a, b) => b.updatedAt - a.updatedAt);
+      });
+    },
+    [],
+  );
+
+  const setMessages = useCallback(
+    (updater: React.SetStateAction<StoredMessage[]>) => {
+      const sid = currentSessionIdRef.current;
+      updateSessionMessagesById(sid, (prev) =>
+        typeof updater === "function" ? (updater as (p: StoredMessage[]) => StoredMessage[])(prev) : updater,
+      );
+    },
+    [updateSessionMessagesById],
+  );
+
+  useEffect(() => {
+    persistSessionsState(sessions, currentSessionId);
+  }, [sessions, currentSessionId]);
+
+  const handleNewChat = useCallback(() => {
+    registerChunkHandler(null);
+    registerAnswerHandler(null);
+    registerStepHandler(null);
+    setIsLoading(false);
+    setIsTyping(false);
+    setInput("");
+    setRecordingStatus("");
+    setSessionDrawerOpen(false);
+    const ns = newEmptySession();
+    setSessions((prev) => [ns, ...prev]);
+    setCurrentSessionId(ns.id);
+    currentSessionIdRef.current = ns.id;
+  }, [registerChunkHandler, registerAnswerHandler, registerStepHandler]);
+
+  const handleSelectSession = useCallback(
+    (id: string) => {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      registerStepHandler(null);
+      setIsLoading(false);
+      setIsTyping(false);
+      setInput("");
+      setSessionDrawerOpen(false);
+      setCurrentSessionId(id);
+      currentSessionIdRef.current = id;
+    },
+    [registerChunkHandler, registerAnswerHandler, registerStepHandler],
+  );
+
+  const handleDeleteSession = useCallback(
+    (id: string) => {
+      registerChunkHandler(null);
+      registerAnswerHandler(null);
+      registerStepHandler(null);
+      setIsLoading(false);
+      setIsTyping(false);
+      setSessions((prev) => {
+        const filtered = prev.filter((s) => s.id !== id);
+        if (filtered.length === 0) return [newEmptySession()];
+        return [...filtered].sort((a, b) => b.updatedAt - a.updatedAt);
+      });
+    },
+    [registerChunkHandler, registerAnswerHandler, registerStepHandler],
+  );
+
   /** L2 等无 Sensory 累积串时，按 chunk 元数据同步 Core 相位 */
   const [localStreamChunkKind, setLocalStreamChunkKind] = useState<StreamChunkKind | null>(null);
   const streamChunkKindEffective = wsStreamChunkKind ?? localStreamChunkKind;
@@ -120,6 +239,10 @@ function ChatApp() {
   isVadActiveRef.current = isVadActive;
   /** 当前轮 L3 WS run_id，用于超时后仍接收 answer 时丢弃陈旧回复 */
   const l3ActiveRunIdRef = useRef<string>("");
+  /** 用户停止或发起新轮时递增，使旧 chunk/answer 回调失效 */
+  const chatTurnTokenRef = useRef(0);
+  const activeChatTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const l2StreamAbortRef = useRef<AbortController | null>(null);
   /** PTT 时 Web Audio 电平 → 声波条 */
   const [micLevel, setMicLevel] = useState(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -166,6 +289,10 @@ function ChatApp() {
   // 延迟隐藏仍会在数百毫秒后执行 → Omni「闪退」。收起请用 Esc、托盘左键或窗口关闭。
   /** 右下角陪伴圆模式（窗口缩小，非完全 hide） */
   const [companionMode, setCompanionMode] = useState(false);
+  const companionModeRef = useRef(companionMode);
+  useEffect(() => {
+    companionModeRef.current = companionMode;
+  }, [companionMode]);
 
   /**
    * 启动时同步 Rust 陪伴态。若该 invoke 较慢，用户可能已先按 Esc 坍缩；
@@ -257,60 +384,12 @@ function ChatApp() {
     };
   }, []);
 
-  // 加载保存的消息历史
-  useEffect(() => {
-    const savedMessages = loadMessages();
-    if (savedMessages.length > 0) {
-      setMessages(savedMessages);
-    }
-  }, []);
-
-  /** 后台任务完成/失败/取消：L3 WebSocket `subscribe_background_tasks` + l3_event_bus 推送 */
-  useEffect(() => {
-    registerBackgroundTaskHandler((ev) => {
-      if (ev.event !== "completed" && ev.event !== "failed" && ev.event !== "cancelled") {
-        return;
-      }
-      const taskId = ev.task_id;
-      let text = "";
-      if (ev.event === "completed") {
-        const preview = (ev.result_preview || "").trim();
-        text =
-          `### 后台任务已完成\n\n` +
-          `- **任务 ID：** \`${taskId}\`\n` +
-          (preview ? `\n**结果摘要：**\n\n${preview}\n` : "\n") +
-          `\n如需完整输出，可在对话中说明「查询该任务结果」或请助手调用 \`core:check_background_task\`（传入该 task_id）。`;
-      } else if (ev.event === "failed") {
-        text =
-          `### 后台任务失败\n\n- **任务 ID：** \`${taskId}\`` +
-          (ev.message ? `\n\n**原因：** ${ev.message}` : "");
-      } else {
-        text = `### 后台任务已取消\n\n- **任务 ID：** \`${taskId}\``;
-      }
-      const msg: StoredMessage = {
-        role: "assistant",
-        content: text,
-        reasoning: "",
-        timestamp: Date.now(),
-        source: "L3",
-      };
-      setMessages((prev) => addMessage(prev, msg));
-    });
-    return () => registerBackgroundTaskHandler(null);
-  }, [registerBackgroundTaskHandler]);
-
-  // 自动保存消息
-  useEffect(() => {
-    if (messages.length > 0) {
-      saveMessages(messages);
-    }
-  }, [messages]);
-
   /**
    * 生成式 UI：经 L3 WebSocket `tool_ui_result` 执行 Native 工具，answer 帧写回同一条气泡并标记 resolved。
    */
   const handleToolUiResult = useCallback(
     async (payload: ToolUiSubmitPayload): Promise<void> => {
+      const toolSid = currentSessionIdRef.current;
       registerStepHandler(null);
       setIsTyping(true);
       await new Promise<void>((resolve) => {
@@ -325,7 +404,7 @@ function ChatApp() {
         };
         const timer = window.setTimeout(() => {
           registerAnswerHandler(null);
-          setMessages((prev) => {
+          updateSessionMessagesById(toolSid, (prev) => {
             const idx = findUnresolvedToolCallMessageIndex(prev, payload);
             if (idx < 0) return prev;
             const next = [...prev];
@@ -336,7 +415,6 @@ function ChatApp() {
               content: "提交超时：未收到 L3 回复。请确认 ws://127.0.0.1:18981 已连接且已重启 L3。",
               source: "L3",
             };
-            saveMessages(next);
             return next;
           });
           finish();
@@ -345,7 +423,7 @@ function ChatApp() {
         registerAnswerHandler((answerContent) => {
           window.clearTimeout(timer);
           registerAnswerHandler(null);
-          setMessages((prev) => {
+          updateSessionMessagesById(toolSid, (prev) => {
             const idx = findUnresolvedToolCallMessageIndex(prev, payload);
             if (idx < 0) {
               return prev;
@@ -360,9 +438,13 @@ function ChatApp() {
               reasoning: [cur.reasoning ?? "", n.reasoning].filter(Boolean).join("\n\n").trim(),
               source: "L3",
             };
-            saveMessages(next);
             return next;
           });
+          void maybeNotifyJachinAssistantDone(
+            companionModeRef.current,
+            summarizeForSentryNotify(answerContent || ""),
+            "answer",
+          );
           finish();
         });
 
@@ -374,7 +456,7 @@ function ChatApp() {
         if (!sent) {
           window.clearTimeout(timer);
           registerAnswerHandler(null);
-          setMessages((prev) => {
+          updateSessionMessagesById(toolSid, (prev) => {
             const idx = findUnresolvedToolCallMessageIndex(prev, payload);
             if (idx < 0) return prev;
             const next = [...prev];
@@ -385,14 +467,13 @@ function ChatApp() {
               content: "无法连接 L3 WebSocket，参数未送达。请启动 L3 后再试。",
               source: "L3",
             };
-            saveMessages(next);
             return next;
           });
           finish();
         }
       });
     },
-    [registerAnswerHandler, registerStepHandler, sendToolUiResult],
+    [registerAnswerHandler, registerStepHandler, sendToolUiResult, updateSessionMessagesById],
   );
 
   // 滚动由 HolographicChat 内部的 messagesEndRef 处理，此处不重复
@@ -401,11 +482,12 @@ function ChatApp() {
   useEffect(() => {
     const handler = (content: string) => {
       if (!content.trim() || isLoadingRef.current || isTypingRef.current) return;
+      const mirrorSid = currentSessionIdRef.current;
       const displayContent = `[Lark] ${content.trim()}`;
       const userMsg: StoredMessage = { role: "user", content: displayContent, timestamp: Date.now() };
-      setMessages((prev) => addMessage(prev, userMsg));
+      updateSessionMessagesById(mirrorSid, (m) => [...m, userMsg]);
       const assistantMsg: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
-      setMessages((prev) => addMessage(prev, assistantMsg));
+      updateSessionMessagesById(mirrorSid, (m) => [...m, assistantMsg]);
       setIsLoading(true);
       setIsTyping(true);
       setLocalStreamChunkKind(null);
@@ -416,7 +498,7 @@ function ChatApp() {
         if (runId) mirrorRunIdRef.current = runId;
         setLocalStreamChunkKind(meta?.isReasoning ? "reasoning" : "content");
         if (meta?.isReasoning) {
-          setMessages((prev) => {
+          updateSessionMessagesById(mirrorSid, (prev) => {
             const u = [...prev];
             const last = u[u.length - 1];
             if (last?.role !== "assistant") return prev;
@@ -435,7 +517,7 @@ function ChatApp() {
         const { next, delta } = mergeStreamChunk(mirrorStreamMerge, chunk);
         mirrorStreamMerge = next;
         if (!delta) return;
-        setMessages((prev) => {
+        updateSessionMessagesById(mirrorSid, (prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role !== "assistant") return prev;
@@ -452,7 +534,7 @@ function ChatApp() {
       };
       const stepHandler = (_step: string, stepContent: string, runId?: string) => {
         if (runId) mirrorRunIdRef.current = runId;
-        setMessages((prev) => {
+        updateSessionMessagesById(mirrorSid, (prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role === "assistant") {
@@ -467,7 +549,7 @@ function ChatApp() {
         if (rid && mirrorRunIdRef.current && rid !== mirrorRunIdRef.current) return;
         const hadStream = meta?.hadStreamChunks ?? false;
         const useServerFinal = hadStream && !!(answerContent || "").trim();
-        setMessages((prev) => {
+        updateSessionMessagesById(mirrorSid, (prev) => {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role === "assistant") {
@@ -495,6 +577,17 @@ function ChatApp() {
         registerChunkHandler(null);
         registerAnswerHandler(null);
         registerStepHandler(null);
+        const summaryText =
+          useServerFinal || !hadStream
+            ? (answerContent || "").trim()
+            : "流式回复已就绪";
+        const sv: SentryNotifyVariant =
+          meta?.terminalOutcome === "rejected"
+            ? "rejected"
+            : meta?.terminalOutcome === "error"
+              ? "error"
+              : "answer";
+        void maybeNotifyJachinAssistantDone(companionModeRef.current, summarizeForSentryNotify(summaryText), sv);
       };
       registerChunkHandler(chunkHandler);
       registerStepHandler(stepHandler);
@@ -502,7 +595,7 @@ function ChatApp() {
     };
     registerMirrorInputHandler(handler);
     return () => registerMirrorInputHandler(null);
-  }, [registerMirrorInputHandler, registerChunkHandler, registerAnswerHandler, registerStepHandler]);
+  }, [registerMirrorInputHandler, registerChunkHandler, registerAnswerHandler, registerStepHandler, updateSessionMessagesById]);
 
 
   /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
@@ -511,14 +604,13 @@ function ChatApp() {
       registerChunkHandler(null);
       registerAnswerHandler(null);
       registerStepHandler(null);
-      clearMessages();
+      const clearSid = currentSessionIdRef.current;
       const systemLine: StoredMessage = {
         role: "system",
         content: "🧹 统帅，当前会话上下文已物理清空，大模型已进入失忆状态。",
         timestamp: Date.now(),
       };
-      setMessages([systemLine]);
-      saveMessages([systemLine]);
+      updateSessionMessagesById(clearSid, () => [systemLine]);
       setInput("");
       setIsLoading(false);
       setIsTyping(false);
@@ -530,17 +622,21 @@ function ChatApp() {
       return;
     }
 
+    const turnSessionId = currentSessionIdRef.current;
     const userMessage: StoredMessage = { role: "user", content, timestamp: Date.now() };
-    setMessages((prev) => addMessage(prev, userMessage));
+    const assistantMessage: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
+    updateSessionMessagesById(turnSessionId, (m) => [...m, userMessage, assistantMessage]);
     setInput("");
     setIsLoading(true);
     setRiskLevel("safe");
     setState("thinking");
-
-    const assistantMessage: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
-    setMessages((prev) => addMessage(prev, assistantMessage));
     setIsTyping(true);
     l3ActiveRunIdRef.current = "";
+    chatTurnTokenRef.current += 1;
+    const myTurnToken = chatTurnTokenRef.current;
+    l2StreamAbortRef.current?.abort();
+    const l2Abort = new AbortController();
+    l2StreamAbortRef.current = l2Abort;
     setLocalStreamChunkKind(null);
     reasoningAccRef.current = createReasoningStreamAcc();
 
@@ -564,13 +660,19 @@ function ChatApp() {
     const cleanup = (
       finalContent: string,
       source?: "L3" | "L2",
-      opts?: { skipContentUpdate?: boolean; ttsUseFinalOnly?: boolean },
+      opts?: {
+        skipContentUpdate?: boolean;
+        ttsUseFinalOnly?: boolean;
+        sentryVariant?: SentryNotifyVariant;
+      },
     ) => {
+      if (myTurnToken !== chatTurnTokenRef.current) return;
       if (timeoutCleared) return;
       timeoutCleared = true;
       registerChunkHandler(null);
       clearTimeout(timeoutId);
-      setMessages((prev) => {
+      activeChatTurnTimeoutRef.current = null;
+      updateSessionMessagesById(turnSessionId, (prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
@@ -587,7 +689,6 @@ function ChatApp() {
           newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
           updated[updated.length - 1] = { ...last, content: newContent, reasoning: newReasoning, source };
         }
-        saveMessages(updated);
         return updated;
       });
       if (ttsQueue && finalContent) {
@@ -604,13 +705,20 @@ function ChatApp() {
       if (!ttsQueue) setTimeout(() => setState("idle"), 2000);
       registerAnswerHandler(null);
       registerStepHandler(null);
+      const sv = opts?.sentryVariant ?? "answer";
+      void maybeNotifyJachinAssistantDone(
+        companionModeRef.current,
+        summarizeForSentryNotify(finalContent),
+        sv,
+      );
     };
 
     const chunkHandler = (chunk: string, runId?: string, meta?: { isReasoning?: boolean }) => {
+      if (myTurnToken !== chatTurnTokenRef.current) return;
       if (runId) l3ActiveRunIdRef.current = runId;
       setLocalStreamChunkKind(meta?.isReasoning ? "reasoning" : "content");
       if (meta?.isReasoning) {
-        setMessages((prev) => {
+        updateSessionMessagesById(turnSessionId, (prev) => {
           const updated = [...prev];
           const last = updated[updated.length - 1];
           if (last?.role !== "assistant") return prev;
@@ -630,7 +738,7 @@ function ChatApp() {
       streamMergeAcc = next;
       if (!delta) return;
       accumulatedForTts += delta;
-      setMessages((prev) => {
+      updateSessionMessagesById(turnSessionId, (prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
@@ -648,8 +756,9 @@ function ChatApp() {
     };
 
     const stepHandler = (stepType: string, content: string, runId?: string) => {
+      if (myTurnToken !== chatTurnTokenRef.current) return;
       if (runId) l3ActiveRunIdRef.current = runId;
-      setMessages((prev) => {
+      updateSessionMessagesById(turnSessionId, (prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
@@ -661,10 +770,12 @@ function ChatApp() {
     };
 
     const timeoutId = setTimeout(() => {
+      if (myTurnToken !== chatTurnTokenRef.current) return;
       registerChunkHandler(null);
       registerStepHandler(null);
+      activeChatTurnTimeoutRef.current = null;
       // 保留 answer：L3 可能在 compaction 后晚于本定时器返回，与 Lark 同源的最终包仍应写入气泡
-      setMessages((prev) => {
+      updateSessionMessagesById(turnSessionId, (prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && !last.content?.trim() && !(last.reasoning ?? "").trim()) {
           return [
@@ -680,11 +791,13 @@ function ChatApp() {
       setIsLoading(false);
       setIsTyping(false);
     }, CHAT_RESPONSE_TIMEOUT_MS);
+    activeChatTurnTimeoutRef.current = timeoutId;
 
     const pendingL3InputRef = { current: content };
     registerChunkHandler(chunkHandler);
     registerStepHandler(stepHandler);
     registerAnswerHandler((answerContent, meta) => {
+      if (myTurnToken !== chatTurnTokenRef.current) return;
       const rid = meta?.runId ?? "";
       if (rid && l3ActiveRunIdRef.current && rid !== l3ActiveRunIdRef.current) {
         console.debug("[Chat] 忽略陈旧 answer runId=%s 期望=%s", rid, l3ActiveRunIdRef.current);
@@ -699,7 +812,9 @@ function ChatApp() {
       );
       if (isL3Error && pendingL3InputRef.current && l2Available) {
         console.debug("[Chat] L3 返回错误，兜底 L2:", answerContent.slice(0, 80));
-        streamChatMessage(pendingL3InputRef.current, (chunk) => chunkHandler(chunk))
+        streamChatMessage(pendingL3InputRef.current, (chunk) => chunkHandler(chunk), {
+          signal: l2Abort.signal,
+        })
           .then((fullText) => {
             registerAnswerHandler(null);
             registerStepHandler(null);
@@ -708,15 +823,31 @@ function ChatApp() {
           .catch((e) => {
             registerAnswerHandler(null);
             registerStepHandler(null);
+            if ((e as Error)?.name === "AbortError" || l2Abort.signal.aborted) {
+              if (myTurnToken === chatTurnTokenRef.current) {
+                setIsLoading(false);
+                setIsTyping(false);
+                setLocalStreamChunkKind(null);
+                setState("idle");
+              }
+              return;
+            }
             cleanup(`L2 兜底也失败：${(e as Error).message}`, "L2");
           });
       } else {
         // 与 Lark 一致：最终正文以服务端 answer 为准；流式仅作打字机，避免坏 chunk 永久留在气泡里
         const hadStream = meta?.hadStreamChunks ?? false;
         const useServerFinal = hadStream && typeof answerContent === "string" && answerContent.trim().length > 0;
+        const sentryVariant: SentryNotifyVariant =
+          meta?.terminalOutcome === "rejected"
+            ? "rejected"
+            : meta?.terminalOutcome === "error"
+              ? "error"
+              : "answer";
         cleanup(answerContent, "L3", {
           skipContentUpdate: !useServerFinal,
           ttsUseFinalOnly: useServerFinal,
+          sentryVariant,
         });
       }
     });
@@ -737,6 +868,7 @@ function ChatApp() {
     if (l3Answer != null && l3Answer.trim()) {
       console.debug("[Chat] L3 agent/run 命中 BI 意图，使用 L3 回复");
       clearTimeout(timeoutId);
+      activeChatTurnTimeoutRef.current = null;
       cleanup(l3Answer, "L3");
       return;
     }
@@ -744,19 +876,35 @@ function ChatApp() {
     // L2 兜底
     try {
       console.debug("[Chat] L2 streamChatMessage 开始");
-      const fullText = await streamChatMessage(content, (chunk) => chunkHandler(chunk));
+      const fullText = await streamChatMessage(content, (chunk) => chunkHandler(chunk), {
+        signal: l2Abort.signal,
+      });
+      if (myTurnToken !== chatTurnTokenRef.current) return;
       cleanup(fullText, "L2");
     } catch (e) {
       console.debug("[Chat] L2 streamChatMessage 失败:", (e as Error).message);
       clearTimeout(timeoutId);
+      activeChatTurnTimeoutRef.current = null;
       registerAnswerHandler(null);
       registerStepHandler(null);
       registerChunkHandler(null);
-      setMessages((prev) => {
+      if ((e as Error)?.name === "AbortError" || l2Abort.signal.aborted) {
+        if (myTurnToken === chatTurnTokenRef.current) {
+          setIsLoading(false);
+          setIsTyping(false);
+          setLocalStreamChunkKind(null);
+          setState("idle");
+        }
+        return;
+      }
+      updateSessionMessagesById(turnSessionId, (prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant" && !last.content?.trim()) {
-          updated[updated.length - 1] = { ...last, content: `打字请求失败：${(e as Error).message}。请确认 Layer 3 (ws://localhost:18981) 或 Layer 2 (http://localhost:18888) 已启动。` };
+          updated[updated.length - 1] = {
+            ...last,
+            content: `打字请求失败：${(e as Error).message}。请确认 Layer 3 (ws://localhost:18981) 或 Layer 2 (http://localhost:18888) 已启动。`,
+          };
         }
         return updated;
       });
@@ -764,6 +912,26 @@ function ChatApp() {
       setIsTyping(false);
     }
   };
+
+  const handleStopGeneration = useCallback(() => {
+    typewriterCancelRef.current?.();
+    chatTurnTokenRef.current += 1;
+    if (activeChatTurnTimeoutRef.current != null) {
+      clearTimeout(activeChatTurnTimeoutRef.current);
+      activeChatTurnTimeoutRef.current = null;
+    }
+    l2StreamAbortRef.current?.abort();
+    l2StreamAbortRef.current = null;
+    sendRunAbort();
+    registerChunkHandler(null);
+    registerAnswerHandler(null);
+    registerStepHandler(null);
+    setIsLoading(false);
+    setIsTyping(false);
+    setLocalStreamChunkKind(null);
+    setRiskLevel("safe");
+    setState("idle");
+  }, [sendRunAbort, registerChunkHandler, registerAnswerHandler, registerStepHandler]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading || isTyping) return;
@@ -825,10 +993,10 @@ function ChatApp() {
       return;
     }
     if (res.recognized_text) {
-      setMessages((prev) => addMessage(prev, { role: "user", content: `🎤 ${res.recognized_text}`, timestamp: Date.now() }));
+      setMessages((prev) => [...prev, { role: "user", content: `🎤 ${res.recognized_text}`, timestamp: Date.now() }]);
     }
     if (res.reply_text) {
-      setMessages((prev) => addMessage(prev, { role: "assistant", content: res.reply_text ?? "", timestamp: Date.now() }));
+      setMessages((prev) => [...prev, { role: "assistant", content: res.reply_text ?? "", timestamp: Date.now() }]);
     }
     if (res.reply_audio_base64 && chatAudioRef.current) {
       const bytes = Uint8Array.from(atob(res.reply_audio_base64), (c) => c.charCodeAt(0));
@@ -987,8 +1155,11 @@ function ChatApp() {
       const audioFile = new File([audioBlob], "recording.wav", { type: "audio/wav" });
       const response = await voiceChat(audioFile, "wav", "zh-CN", true, "zh-CN-XiaoxiaoNeural");
 
-      setMessages((prev) => addMessage(prev, { role: "user", content: `🎤 [语音] ${response.user_text || response.text || "已发送语音消息"}`, timestamp: Date.now() }));
-      setMessages((prev) => addMessage(prev, { role: "assistant", content: "", reasoning: "", timestamp: Date.now() }));
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: `🎤 [语音] ${response.user_text || response.text || "已发送语音消息"}`, timestamp: Date.now() },
+        { role: "assistant", content: "", reasoning: "", timestamp: Date.now() },
+      ]);
       setIsTyping(true);
       let currentContent = "";
       await typewriterAnimation(response.text, {
@@ -1006,7 +1177,6 @@ function ChatApp() {
           setMessages((prev) => {
             const updated = [...prev];
             updated[updated.length - 1] = { ...updated[updated.length - 1], content: response.text };
-            saveMessages(updated);
             return updated;
           });
         },
@@ -1028,7 +1198,7 @@ function ChatApp() {
       const friendly = msg.toLowerCase().includes("fetch") || msg.toLowerCase().includes("network")
         ? "语音服务暂不可用（后端未启动，请运行 start.bat 或确保端口 18888 可达）"
         : msg;
-      setMessages((prev) => addMessage(prev, { role: "assistant", content: `错误: ${friendly}`, timestamp: Date.now() }));
+      setMessages((prev) => [...prev, { role: "assistant", content: `错误: ${friendly}`, timestamp: Date.now() }]);
       setRecordingStatus(`错误: ${friendly}`);
       setState("idle");
     } finally {
@@ -1133,9 +1303,7 @@ function ChatApp() {
     setMessages((prev) => {
       const active = getActiveSkillCanvasFromMessages(prev);
       if (!active) return prev;
-      const next = dismissUnresolvedToolCallMessage(prev, active);
-      saveMessages(next);
-      return next;
+      return dismissUnresolvedToolCallMessage(prev, active);
     });
   }, []);
 
@@ -1201,15 +1369,21 @@ function ChatApp() {
               </div>
             </div>
           )}
-          {/* 双栏：左 chat 固定宽、右画布 flex-1；无 transform 父级，避免子元素被当成浮层。画布挂载点见下方 SkillCanvas 槽位。 */}
+          {/* 无画布：单栏 Omni 随窗口伸缩；有画布：左固定宽 + 右画布（与扩窗命令隔离，仅靠 activeSkillCanvas 切换布局） */}
           <div className="flex h-full min-h-0 w-full flex-1 flex-row items-stretch overflow-hidden">
             <div
-              className="relative flex min-h-0 flex-col overflow-hidden"
-              style={{
-                width: SKILL_CHAT_COLUMN_WIDTH,
-                maxWidth: "100%",
-                flex: "0 0 auto",
-              }}
+              className={`relative flex min-h-0 flex-col overflow-hidden ${
+                activeSkillCanvas ? "shrink-0" : "min-w-0 flex-1"
+              }`}
+              style={
+                activeSkillCanvas
+                  ? {
+                      width: SKILL_CHAT_COLUMN_WIDTH,
+                      maxWidth: "100%",
+                      flex: "0 0 auto",
+                    }
+                  : undefined
+              }
             >
               <OmniCyberChatShell
                 phase={cyberPhase}
@@ -1244,6 +1418,17 @@ function ChatApp() {
                 onHitlResolve={(ok) => sensory.resolveHitl(ok)}
                 riskLevel={riskLevel}
                 onToolUiResult={handleToolUiResult}
+                onStopGeneration={handleStopGeneration}
+                onNewChat={handleNewChat}
+                sessionDrawerOpen={sessionDrawerOpen}
+                onToggleSessionDrawer={() => setSessionDrawerOpen((o) => !o)}
+                sessionsList={sessions.map((s) => ({
+                  id: s.id,
+                  title: sessionSidebarDisplayLabel(s),
+                }))}
+                currentSessionId={currentSessionId}
+                onSelectSession={handleSelectSession}
+                onDeleteSession={handleDeleteSession}
                 devToolbar={
                   import.meta.env.DEV ? (
                     <details className="group relative z-40">
@@ -1261,7 +1446,7 @@ function ChatApp() {
                                 await expandChatWindowForSkillCanvas();
                                 await new Promise<void>((r) => requestAnimationFrame(() => r()));
                                 await expandChatWindowForSkillCanvas();
-                                setMessages((prev) => addMessage(prev, createDemoComposeEssaySkillUiMessage()));
+                                setMessages((prev) => [...prev, createDemoComposeEssaySkillUiMessage()]);
                               })();
                             }}
                           >
@@ -1275,7 +1460,7 @@ function ChatApp() {
                                 await expandChatWindowForSkillCanvas();
                                 await new Promise<void>((r) => requestAnimationFrame(() => r()));
                                 await expandChatWindowForSkillCanvas();
-                                setMessages((prev) => addMessage(prev, createDemoGeneratePptSkillUiMessage()));
+                                setMessages((prev) => [...prev, createDemoGeneratePptSkillUiMessage()]);
                               })();
                             }}
                           >
@@ -1288,23 +1473,16 @@ function ChatApp() {
                 }
               />
             </div>
-            <div
-              className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${activeSkillCanvas ? "min-w-[280px] border-l border-white/10" : ""}`}
-            >
-              {activeSkillCanvas ? (
+            {activeSkillCanvas ? (
+              <div className="flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden border-l border-white/10">
                 <SkillCanvasPane
                   key={`${activeSkillCanvas.toolCallId ?? ""}-${activeSkillCanvas.toolName}`}
                   active={activeSkillCanvas}
                   onToolUiResult={handleToolUiResult}
                   onRequestClose={handleDismissSkillCanvas}
                 />
-              ) : (
-                <div
-                  className="h-full min-h-0 w-full flex-1 bg-slate-950/25"
-                  aria-hidden
-                />
-              )}
-            </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

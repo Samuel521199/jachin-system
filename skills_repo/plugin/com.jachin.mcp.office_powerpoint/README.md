@@ -10,6 +10,20 @@ Jachin 封装的 **PowerPoint / PPTX MCP**（stdio），上游为 [Office-PowerP
 pip install -r requirements.txt
 ```
 
+## `apply_professional_design`（易错）
+
+上游工具 `operation` **只能是**（字面量，区分大小写按实现为准，建议小写）：
+
+| operation | 含义 | slide_index |
+|-----------|------|----------------|
+| `get_schemes` | 列出可用配色名 | 不需要 |
+| `theme` | 对整个演示文稿应用 `color_scheme` | 不需要 |
+| `professional_slide` | 新增一页专业样式幻灯片 | 按工具其它参数 |
+| `enhance` | 美化**已有**某一页 | **必填**（0 起） |
+
+常见模型误用：`operation: "apply"`（无效）、`"enhance"` 但不传 `slide_index`。  
+Jachin 在 `l3_node/primitives/mcp/registry.py` 会对上述情况做**调用前规范化**（如 `apply`→`theme`，无索引的 `enhance`→`theme`），并在工具描述中追加说明。
+
 ## 行为说明
 
 - L3 启动时由 `l3_packaged_stdio_mcp` 扫描本目录的 `plugin.json`，等价于在 `~/.jachin/mcp_servers.json` 增加一条 stdio 配置。

@@ -7,6 +7,7 @@ HR 透析镜白名单：允许读取项目 data/hr_resumes、config/hr_jds（解
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import uuid
 from pathlib import Path
@@ -82,7 +83,17 @@ def core_fs_read(file_path: str) -> str:
     Raises:
         SecurityException: 路径越界
     """
-    raw = (file_path or "").strip().replace("\\", "/")
+    raw_in = (file_path or "").strip()
+    if raw_in.startswith("{"):
+        try:
+            o = json.loads(raw_in)
+            if isinstance(o, dict):
+                inner = str(o.get("file_path") or o.get("path") or "").strip()
+                if inner:
+                    raw_in = inner
+        except json.JSONDecodeError:
+            pass
+    raw = raw_in.replace("\\", "/")
     p = Path(raw).expanduser()
     if not p.is_absolute():
         # 先尝试 HR 白名单路径（供 Agent 读取简历/JD）

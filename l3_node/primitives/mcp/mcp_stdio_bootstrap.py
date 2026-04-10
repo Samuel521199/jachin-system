@@ -41,11 +41,13 @@ async def start_l3_stdio_mcp_host() -> None:
         try:
             from l3_node.paths import get_app_root as _gar
             from core.mcp_json_repair import (
+                ensure_default_official_fetch_mcp,
                 ensure_default_official_filesystem_mcp,
                 repair_hr_atomic_tools_path,
             )
 
             ensure_default_official_filesystem_mcp()
+            ensure_default_official_fetch_mcp()
             repair_hr_atomic_tools_path(_gar())
         except Exception as e:
             logger.debug("[L3 MCP Host] mcp_json_repair 跳过: %s", e)

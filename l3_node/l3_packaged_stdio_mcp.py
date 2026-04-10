@@ -21,6 +21,12 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _read_plugin_json(path: Path) -> dict[str, Any]:
+    """读取 plugin.json；utf-8-sig 可去掉 Windows 编辑器写入的 BOM，避免 json.loads 失败。"""
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def _l3_mcp_cache_root() -> Path:
     h = os.environ.get("JACHIN_HOME")
     base = Path(h).expanduser().resolve() if h else Path.home() / ".jachin"
@@ -104,13 +110,17 @@ def _iter_package_dirs() -> list[Path]:
                 for p in plugin_root.iterdir():
                     if p.is_dir() and (p / "plugin.json").exists():
                         try:
-                            pl = json.loads((p / "plugin.json").read_text(encoding="utf-8"))
+                            pl = _read_plugin_json(p / "plugin.json")
                             if str(pl.get("runtime_tier", "")).upper() == "L3_LOCAL" and (
                                 pl.get("item_type", "").lower() == "mcp" or pl.get("type", "").lower() == "mcp"
                             ):
                                 dirs.append(p)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(
+                                "[L3PackagedStdio] 解析 %s 失败，已跳过: %s",
+                                p / "plugin.json",
+                                e,
+                            )
         except Exception:
             pass
     return dirs
@@ -146,9 +156,9 @@ async def register_l3_packaged_stdio_mcps() -> int:
         if not pj.exists():
             continue
         try:
-            plugin = json.loads(pj.read_text(encoding="utf-8"))
+            plugin = _read_plugin_json(pj)
         except Exception as e:
-            logger.debug("[L3PackagedStdio] 跳过 %s: %s", subdir.name, e)
+            logger.warning("[L3PackagedStdio] 跳过 %s: %s", subdir.name, e)
             continue
         it = (plugin.get("item_type") or plugin.get("type") or "").lower()
         if it != "mcp":

@@ -11,6 +11,15 @@
       ]
     },
     {
+      "id": "official-mcp-fetch",
+      "name": "MCP Fetch（官方 mcp-server-fetch，单 URL 抓正文）",
+      "command": "__JACHIN_MCP_PYTHON__",
+      "args": ["-m", "mcp_server_fetch"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
       "id": "tavily-search",
       "name": "Tavily Search（联网检索，官方 MCP）",
       "command": "npx",
@@ -29,5 +38,5 @@
       }
     }
   ],
-  "_comment": "复制到 ~/.jachin/mcp_servers.json 并与仓库 tools/mcp-official/mcp_servers.jachin.example.json 按需合并。Filesystem 项：__JACHIN_WORKSPACE__ 展开为 ~/.jachin/workspace（启动时确保存在）；可追加多个绝对路径作为额外允许根目录。${TAVILY_API_KEY} 在 L3 拉起 MCP 时从进程环境展开（见 .env / 系统环境变量）。Windows 下 npx 由 MCP 宿主解析为 npx.cmd。PowerPoint 项需先 pip install office-powerpoint-mcp-server；若已用 skills_repo/plugin 下同名 L3_LOCAL 包自动注册，请勿重复相同 id。"
+  "_comment": "复制到 ~/.jachin/mcp_servers.json 并与仓库 tools/mcp-official/mcp_servers.jachin.example.json 按需合并。Fetch 项：官方在 PyPI（pip install mcp-server-fetch），勿使用不存在的 npm 包 @modelcontextprotocol/server-fetch。Filesystem：__JACHIN_WORKSPACE__ 展开为 ~/.jachin/workspace。${TAVILY_API_KEY} 等同上。PowerPoint 需 pip install office-powerpoint-mcp-server。L3 启动时会自动补全未配置的 Filesystem/Fetch 默认项（见 core/mcp_json_repair.py）。"
 }

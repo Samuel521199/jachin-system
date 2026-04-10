@@ -5,7 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-/** OMNI 激活画布时左侧聊天列固定宽度（与 chat.tsx 中 style 一致） */
+/** 仅当 Skill 画布打开时：左侧聊天列固定逻辑宽（与 chat.tsx / ChatPanel 双栏布局一致；无画布时对话区 flex-1 铺满窗口） */
 export const SKILL_CHAT_COLUMN_WIDTH = 450;
 
 /** 与 Rust `CHAT_SKILL_CANVAS_MIN_TOTAL_WIDTH` 扩窗逻辑对应的逻辑像素增量（文档/注释用） */

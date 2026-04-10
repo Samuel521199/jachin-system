@@ -1,9 +1,20 @@
-"""MCP 工具参数别名：file_path → path（对齐 server-filesystem schema）。"""
+﻿"""MCP 工具参数别名：file_path → path（对齐 server-filesystem schema）。"""
 from __future__ import annotations
 
 import asyncio
 
-from core.mcp_client import normalize_mcp_schema_aliases
+from core.mcp_client import normalize_mcp_schema_aliases, stdio_official_filesystem_workspace_cwd
+
+
+def test_stdio_filesystem_cwd_first_allowed_root(tmp_path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    args = ["-y", "@modelcontextprotocol/server-filesystem", str(root)]
+    assert stdio_official_filesystem_workspace_cwd(args) == str(root.resolve())
+
+
+def test_stdio_filesystem_cwd_none_without_package() -> None:
+    assert stdio_official_filesystem_workspace_cwd(["-y", "other-pkg"]) is None
 
 
 def test_write_file_maps_file_path_to_path() -> None:

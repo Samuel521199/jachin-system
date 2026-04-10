@@ -630,12 +630,16 @@ export default function ChatPanel() {
     <div className="h-full flex flex-col bg-slate-800/50 rounded-lg border border-purple-500/20 overflow-hidden">
       <div className="flex h-full min-h-0 w-full flex-1 flex-row items-stretch overflow-hidden">
         <div
-          className="flex min-h-0 flex-col overflow-hidden"
-          style={{
-            width: SKILL_CHAT_COLUMN_WIDTH,
-            maxWidth: "100%",
-            flex: "0 0 auto",
-          }}
+          className={`flex min-h-0 flex-col overflow-hidden ${activeSkillCanvas ? "shrink-0" : "min-w-0 flex-1"}`}
+          style={
+            activeSkillCanvas
+              ? {
+                  width: SKILL_CHAT_COLUMN_WIDTH,
+                  maxWidth: "100%",
+                  flex: "0 0 auto",
+                }
+              : undefined
+          }
         >
       {/* 消息区域 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -717,20 +721,16 @@ export default function ChatPanel() {
         <div ref={messagesEndRef} />
       </div>
         </div>
-        <div
-          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${activeSkillCanvas ? "min-w-[280px] border-l border-purple-500/25" : ""}`}
-        >
-          {activeSkillCanvas ? (
+        {activeSkillCanvas ? (
+          <div className="flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden border-l border-purple-500/25">
             <SkillCanvasPane
               key={`${activeSkillCanvas.toolCallId ?? ""}-${activeSkillCanvas.toolName}`}
               active={activeSkillCanvas}
               onToolUiResult={handleToolUiResult}
               onRequestClose={handleDismissSkillCanvas}
             />
-          ) : (
-            <div className="h-full min-h-0 w-full flex-1 bg-slate-900/40" aria-hidden />
-          )}
-        </div>
+          </div>
+        ) : null}
       </div>
 
       {/* 输入区域 */}
