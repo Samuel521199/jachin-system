@@ -1,4 +1,4 @@
-﻿/**
+/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -63,6 +63,18 @@ export interface SwarmEvent {
   tool?: string;
 }
 
+/** L3 `l3_event_bus` 推送的后台任务事件（须先 `subscribe_background_tasks`） */
+export interface BackgroundTaskEventPayload {
+  type: "background_task";
+  event: "queued" | "started" | "completed" | "failed" | "cancelled";
+  task_id: string;
+  ts?: number;
+  result_preview?: string;
+  message?: string;
+  intent_preview?: string;
+  queue_hint?: string;
+}
+
 /** 随 answer 回调：用于区分「仅有流式拼气泡」与「无 chunk 时由 step 注入 ### 回复」；runId 对齐 L3 WS 防超时后陈旧 answer 污染新气泡 */
 export interface SensoryAnswerMeta {
   hadStreamChunks?: boolean;
@@ -111,6 +123,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const onAnswerRef = useRef<((content: string, meta?: SensoryAnswerMeta) => void) | null>(null);
   const onStepRef = useRef<((stepType: string, content: string, runId?: string) => void) | null>(null);
   const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
+  const onBackgroundTaskRef = useRef<((ev: BackgroundTaskEventPayload) => void) | null>(null);
   /** 本轮是否已收到流式 chunk（有则 answer 勿再向同气泡追加全文，否则会「复读机」） */
   const hadStreamChunksForRunRef = useRef(false);
   /** 与 streamingContent 同步，用于合并 cumulative/delta chunk，避免重复拼接 */
@@ -120,6 +133,14 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const registerMirrorInputHandler = useCallback((fn: ((content: string) => void) | null) => {
     onMirrorInputRef.current = fn;
   }, []);
+
+  /** 注册后台任务事件（完成/失败等）：须与 WS `subscribe_background_tasks` 配合 */
+  const registerBackgroundTaskHandler = useCallback(
+    (fn: ((ev: BackgroundTaskEventPayload) => void) | null) => {
+      onBackgroundTaskRef.current = fn;
+    },
+    [],
+  );
 
   /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
   const registerChunkHandler = useCallback(
@@ -166,6 +187,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
         setConnected(true);
         // v8.0 能力协商：声明 stream_chunk 以接收逐 token 推送
         ws.send(JSON.stringify({ type: "manifest", caps: MANIFEST_CAPS }));
+        // 后台任务完成/失败推送（l3_event_bus → broadcast_background_task_event）
+        ws.send(JSON.stringify({ type: "subscribe_background_tasks" }));
         // Lark 镜像：订阅后，Lark 消息会以 mirror_input 推送到此终端
         if (larkChatId) {
           ws.send(JSON.stringify({ type: "subscribe_mirror", lark_chat_id: larkChatId }));
@@ -179,6 +202,23 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
            * 仅做最小别名：action_type / type → step_type；忽略 manifest_ack 等控制帧（不污染 lastPayload）。
            */
           const raw = JSON.parse(event.data) as Record<string, unknown>;
+          if (raw.type === "background_task" && typeof raw.event === "string" && typeof raw.task_id === "string") {
+            const ev: BackgroundTaskEventPayload = {
+              type: "background_task",
+              event: raw.event as BackgroundTaskEventPayload["event"],
+              task_id: raw.task_id,
+              ts: typeof raw.ts === "number" ? raw.ts : undefined,
+              result_preview: typeof raw.result_preview === "string" ? raw.result_preview : undefined,
+              message: typeof raw.message === "string" ? raw.message : undefined,
+              intent_preview: typeof raw.intent_preview === "string" ? raw.intent_preview : undefined,
+              queue_hint: typeof raw.queue_hint === "string" ? raw.queue_hint : undefined,
+            };
+            onBackgroundTaskRef.current?.(ev);
+            return;
+          }
+          if (raw.type === "background_task_subscribed") {
+            return;
+          }
           const step =
             (typeof raw.step_type === "string" && raw.step_type) ||
             (typeof raw.action_type === "string" && raw.action_type) ||
@@ -456,6 +496,12 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     wsRef.current.send(JSON.stringify({ type: "subscribe_mirror", lark_chat_id: larkChatId }));
   }, [larkChatId, connected]);
 
+  /** 重连后 onopen 会发 subscribe；此处兜底确保已连上时也会订阅后台任务 */
+  useEffect(() => {
+    if (!connected || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "subscribe_background_tasks" }));
+  }, [connected]);
+
   return {
     connected,
     lastPayload,
@@ -471,6 +517,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     sendSessionClearControl,
     /** Lark 镜像：注册回调，Lark 用户发消息时终端同步显示 */
     registerMirrorInputHandler,
+    registerBackgroundTaskHandler,
     /** 是否处于 Lark 镜像模式 */
     larkMirrorMode: !!larkChatId,
     // v8.0 视觉觉醒

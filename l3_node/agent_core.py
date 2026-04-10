@@ -2454,6 +2454,7 @@ def _build_system_prompt(
     semantic_layer: dict[str, Any] | None = None,
     experience_few_shots: str = "",
     realtime_web_grounding_block: str = "",
+    domain_experts: list[str] | None = None,
 ) -> str:
     from l3_node.prompt_compose import (
         SuffixChunk,
@@ -2468,6 +2469,54 @@ def _build_system_prompt(
 
     slim_style = (prompt_style or "").strip().lower() == "slim_user_led"
     slim_mode = slim_style or bool(pure_json_contract)
+    _delist: list[str] = []
+    if domain_experts:
+        for _x in domain_experts:
+            _sx = str(_x).strip()
+            if not _sx:
+                continue
+            if len(_sx) > 48:
+                _sx = _sx[:48]
+            if _sx not in _delist:
+                _delist.append(_sx)
+            if len(_delist) >= 3:
+                break
+    _expert_identity_block = ""
+    if _delist:
+        _experts_str = "、".join(_delist)
+        _expert_identity_block = f"""【动态智囊团授权】
+当前任务极其复杂，系统已为你动态加载以下顶级专家人格：【{_experts_str}】。
+你不再是一个简单的 AI 助手，你是这支顶级专家团队的化身。你的目标是提供极具行业深度、洞察力和专业性的输出。
+
+"""
+    _expert_react_thought_addon = ""
+    if not pure_json_contract:
+        if len(_delist) >= 2:
+            if slim_mode:
+                _expert_react_thought_addon = (
+                    "【多视角推演协议 (Thought Protocol)】已分配多位专家身份。"
+                    "在 Action 或 Final Answer 之前，`Thought` 须含各 `[专家视角]` 要点与 `[综合决策]`，再执行下一步。\n\n"
+                )
+            else:
+                _expert_react_thought_addon = """【多视角推演协议 (Thought Protocol)】
+当且仅当已分配多位专家身份时（当前已分配），在写出 Action 与 Action Input，或 Final Answer **之前**，`Thought` 必须依次体现各专家视角的独立分析，再给出综合决策与下一步。
+推演格式范例：
+Thought:
+[资深产品视角]：从用户体验和商业变现来看，我们需要……
+[资深架构师视角]：底层技术实现需要考虑高并发与安全边界，因此应该……
+[综合决策]：结合以上视角，我决定第一步先调用工具抓取竞品架构数据。
+Action: ...
+
+"""
+        elif len(_delist) == 1:
+            if slim_mode:
+                _expert_react_thought_addon = (
+                    f"【专家视角】在 `Thought` 中可简要说明你如何以「{_delist[0]}」视角审视问题，再 Action 或 Final Answer。\n\n"
+                )
+            else:
+                _expert_react_thought_addon = f"""【专家视角】在 `Thought` 中可简要说明你如何以「{_delist[0]}」的专业视角审视当前问题，再给出 Action 或 Final Answer。
+
+"""
     allowed = _get_allowed_skills()
     tools = sort_tools_by_id(tools or load_tools(allowed_skills=allowed))
     tools_desc = build_tools_description(tools)
@@ -2665,7 +2714,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 
     # 前缀缓存友好：静态/半静态在前，随会话变化的记忆与长 SOP 在后（工具段可单独截断以配合总硬帽）
     if pure_json_contract:
-        _prefix_before_tools = f"""你是助手；优先遵守用户消息中的格式要求；不要寒暄，不要用 Markdown 章节标题当开场。
+        _prefix_before_tools = f"""{_expert_identity_block}你是助手；优先遵守用户消息中的格式要求；不要寒暄，不要用 Markdown 章节标题当开场。
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM}
@@ -2673,7 +2722,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 可用工具：
 """
     elif slim_mode:
-        _prefix_before_tools = f"""你是智能助手。**用户对本轮「最终可见回复」有强格式要求时，你必须优先服从用户消息**：不要寒暄，以及用 Markdown 章节标题当开场。
+        _prefix_before_tools = f"""{_expert_identity_block}你是智能助手。**用户对本轮「最终可见回复」有强格式要求时，你必须优先服从用户消息**：不要寒暄，以及用 Markdown 章节标题当开场。
 若任务需要读文件、执行命令等，仍使用下方 Thought / Action / Observation；工具用完后，只输出用户要求的正文（若用户要求仅 JSON，勿加 markdown 围栏与解释性前言）。
 {intel_b}
 {chat_task_hint}
@@ -2682,7 +2731,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 可用工具：
 """
     else:
-        _prefix_before_tools = f"""你是一个智能助手，使用 ReAct 格式思考。
+        _prefix_before_tools = f"""{_expert_identity_block}你是一个智能助手，使用 ReAct 格式思考。
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK}
@@ -2718,7 +2767,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {coordinate_hint}
 {delegate_hint}
 
-【绝对报告纪律】：当你收到后台任务 (background_task) 的完成报告，或需要向统帅输出长篇大段的 Markdown 文本时，
+{_expert_react_thought_addon}【绝对报告纪律】：当你收到后台任务 (background_task) 的完成报告，或需要向统帅输出长篇大段的 Markdown 文本时，
 **你必须、绝对、永远在最开头加上 `Final Answer: ` 前缀！** 严禁直接输出裸的 Markdown 文本！
 
 【严禁连续调用铁律】：你每次回复**只能输出一个** `Action` 和 `Action Input`！绝对禁止在同一个 Thought 或同一段输出中连续写多个工具动作（多个 `Action:`）！你必须在一次 Action 后停下来，等待系统返回 Observation，然后才能进行下一个 Thought 和 Action。违者解析器将只执行第一步，后续动作会被丢弃，并可能导致系统行为异常。
@@ -3391,6 +3440,7 @@ async def _run_react_core(
                     semantic_layer=_sl_verify_d,
                     experience_few_shots=_exp_verify,
                     realtime_web_grounding_block=str(_spe.get("realtime_web_grounding_block") or ""),
+                    domain_experts=list(ctx.metadata.get("_domain_experts") or []),
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
@@ -5214,6 +5264,40 @@ async def run_agent(
         except Exception as _rt_e:
             logger.debug("[L3 Agent] realtime_knowledge classify 跳过: %s", _rt_e)
 
+    _domain_experts_list: list[str] = []
+    if _gateway_bundle is not None:
+        try:
+            from l3_node.intent_gateway.classification_llm import infer_domain_experts_async
+            from l3_node.intent_gateway.config import get_intent_gateway_config
+
+            _ig_de = get_intent_gateway_config()
+            if bool(_ig_de.get("domain_experts_llm_enabled", True)):
+                try:
+                    _to_de = float(_ig_de.get("domain_experts_llm_timeout_sec", 3.0))
+                except (TypeError, ValueError):
+                    _to_de = 3.0
+                _gateway_bundle.domain_experts = await infer_domain_experts_async(
+                    engine=engine,
+                    user_input=user_input or "",
+                    classification_text=_gateway_bundle.classification_text or "",
+                    timeout_sec=_to_de,
+                )
+                _gateway_bundle.extra["domain_experts"] = list(_gateway_bundle.domain_experts or [])
+                logger.info(
+                    "[IntentGatewayObs] domain_experts=%s",
+                    json.dumps(_gateway_bundle.domain_experts, ensure_ascii=False),
+                )
+        except Exception as _de_e:
+            logger.debug("[L3 Agent] domain_experts 分类跳过: %s", _de_e)
+        try:
+            _domain_experts_list = [
+                str(x).strip()
+                for x in (getattr(_gateway_bundle, "domain_experts", None) or [])
+                if str(x).strip()
+            ][:3]
+        except Exception:
+            _domain_experts_list = []
+
     tools = await assemble_tool_pool(
         allowed_skills=allowed,
         gateway_bundle=_gateway_bundle,
@@ -5514,6 +5598,7 @@ async def run_agent(
             semantic_layer=_semantic_layer,
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
+            domain_experts=_domain_experts_list,
         )
     else:
         system_prompt = _build_system_prompt(
@@ -5530,6 +5615,7 @@ async def run_agent(
             semantic_layer=_semantic_layer,
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
+            domain_experts=_domain_experts_list,
         )
 
     try:
@@ -5910,6 +5996,7 @@ async def run_agent(
                         semantic_layer=_semantic_layer,
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
+                        domain_experts=_domain_experts_list,
                     )
                 else:
                     system_prompt = _build_system_prompt(
@@ -5926,6 +6013,7 @@ async def run_agent(
                         semantic_layer=_semantic_layer,
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
+                        domain_experts=_domain_experts_list,
                     )
 
         if not system_prompt and _system_prompt_override is None:
@@ -5945,6 +6033,7 @@ async def run_agent(
                     semantic_layer=_semantic_layer,
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
+                    domain_experts=_domain_experts_list,
                 )
             else:
                 system_prompt = _build_system_prompt(
@@ -5961,6 +6050,7 @@ async def run_agent(
                     semantic_layer=_semantic_layer,
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
+                    domain_experts=_domain_experts_list,
                 )
 
         _md_base: dict[str, Any] = {
@@ -5988,6 +6078,7 @@ async def run_agent(
             "_llm_token_budget_max": _tok_cap,
             "_react_prompt_style": _prompt_style,
             "_pure_json_contract": _pure_json_contract,
+            "_domain_experts": list(_domain_experts_list),
         }
         try:
             from l3_node.primitives.mcp.sqlite_write_guard import messages_history_has_write_ack_grant

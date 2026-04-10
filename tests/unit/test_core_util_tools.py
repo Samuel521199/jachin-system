@@ -1,5 +1,5 @@
 """
-十七项 util:* / sys:* 原生工具烟测与行为断言。
+十八项 util:* / sys:* 原生工具烟测与行为断言。
 
 运行（避免根 conftest 拉 ray / cov）：
   python -m pytest tests/unit/test_core_util_tools.py -v --override-ini="addopts=-v --tb=short --strict-markers" --noconftest
@@ -19,8 +19,8 @@ from l3_node.primitives.tools.core_util_tools import (
 )
 
 
-def test_seventeen_tool_ids_registered() -> None:
-    assert len(util_tool_ids()) == 17
+def test_eighteen_tool_ids_registered() -> None:
+    assert len(util_tool_ids()) == 18
     for tid in (
         "util:datetime_calc",
         "util:cron_explain",
@@ -37,6 +37,7 @@ def test_seventeen_tool_ids_registered() -> None:
         "util:fake_data_gen",
         "util:text_diff",
         "util:funnel_calc",
+        "util:generate_office_doc",
         "sys:health_stats",
         "sys:list_env_safe",
     ):
@@ -288,6 +289,67 @@ def test_util_funnel_calc() -> None:
     assert r2["result"]["roi"] == 4.0
 
 
+def test_util_generate_office_doc_docx(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("docx")
+    import l3_node.workspace_context as wc
+
+    monkeypatch.setattr(wc, "get_effective_workspace_root", lambda: tmp_path)
+    r = cut.run_generate_office_doc(
+        file_format="docx",
+        file_path="t.docx",
+        content_json={
+            "blocks": [
+                {"type": "h1", "text": "T"},
+                {"type": "p", "text": "p1"},
+                {"type": "bullet", "text": "item"},
+                {"type": "table", "data": [["A", "B"], ["1", "2"]]},
+            ],
+        },
+    )
+    assert r["ok"] is True
+    assert "file_path" in r
+    assert str((tmp_path / "t.docx").resolve()) == r["file_path"]
+    p = tmp_path / "t.docx"
+    assert p.exists()
+    assert p.stat().st_size > 200
+
+
+def test_util_generate_office_doc_xlsx(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("openpyxl")
+    import l3_node.workspace_context as wc
+
+    monkeypatch.setattr(wc, "get_effective_workspace_root", lambda: tmp_path)
+    r = cut.run_generate_office_doc(
+        file_format="xlsx",
+        file_path="d.xlsx",
+        content_json={
+            "sheets": [
+                {"sheet_name": "数据", "data": [["h1", "h2"], [1, 2]]},
+                {"sheet_name": "S2", "data": [["x"]]},
+            ],
+        },
+    )
+    assert r["ok"] is True
+    assert "file_path" in r
+    assert (tmp_path / "d.xlsx").exists()
+    assert (tmp_path / "d.xlsx").stat().st_size > 50
+
+
+def test_util_generate_office_doc_legacy_aliases(tmp_path, monkeypatch) -> None:
+    """file_type + content_data 仍可用。"""
+    pytest.importorskip("docx")
+    import l3_node.workspace_context as wc
+
+    monkeypatch.setattr(wc, "get_effective_workspace_root", lambda: tmp_path)
+    r = cut.run_generate_office_doc(
+        file_type="docx",
+        file_path="legacy.docx",
+        content_data={"blocks": [{"type": "p", "text": "x"}]},
+    )
+    assert r["ok"] is True
+    assert (tmp_path / "legacy.docx").exists()
+
+
 def test_native_dispatch_routes_util() -> None:
     from core.native_tools import dispatch_native_tool
 
@@ -301,4 +363,5 @@ def test_loader_native_tools_includes_utils() -> None:
 
     ids = {t["id"] for t in NATIVE_TOOLS if isinstance(t, dict)}
     assert "util:uuid_gen" in ids
+    assert "util:generate_office_doc" in ids
     assert "sys:list_env_safe" in ids

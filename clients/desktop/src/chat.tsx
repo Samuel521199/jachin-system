@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -15,7 +15,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3AgentForIntent, checkHealth, type VoiceProcessResponse } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
-import { useSensoryWebSocket, type SensoryAnswerMeta, type StreamChunkKind } from "./hooks/useSensoryWebSocket";
+import {
+  useSensoryWebSocket,
+  type SensoryAnswerMeta,
+  type StreamChunkKind,
+} from "./hooks/useSensoryWebSocket";
 import {
   loadMessages,
   saveMessages,
@@ -88,6 +92,7 @@ function ChatApp() {
     registerAnswerHandler,
     registerStepHandler,
     registerMirrorInputHandler,
+    registerBackgroundTaskHandler,
     sendInput,
     sendToolUiResult,
     sendSessionClearControl,
@@ -259,6 +264,40 @@ function ChatApp() {
       setMessages(savedMessages);
     }
   }, []);
+
+  /** 后台任务完成/失败/取消：L3 WebSocket `subscribe_background_tasks` + l3_event_bus 推送 */
+  useEffect(() => {
+    registerBackgroundTaskHandler((ev) => {
+      if (ev.event !== "completed" && ev.event !== "failed" && ev.event !== "cancelled") {
+        return;
+      }
+      const taskId = ev.task_id;
+      let text = "";
+      if (ev.event === "completed") {
+        const preview = (ev.result_preview || "").trim();
+        text =
+          `### 后台任务已完成\n\n` +
+          `- **任务 ID：** \`${taskId}\`\n` +
+          (preview ? `\n**结果摘要：**\n\n${preview}\n` : "\n") +
+          `\n如需完整输出，可在对话中说明「查询该任务结果」或请助手调用 \`core:check_background_task\`（传入该 task_id）。`;
+      } else if (ev.event === "failed") {
+        text =
+          `### 后台任务失败\n\n- **任务 ID：** \`${taskId}\`` +
+          (ev.message ? `\n\n**原因：** ${ev.message}` : "");
+      } else {
+        text = `### 后台任务已取消\n\n- **任务 ID：** \`${taskId}\``;
+      }
+      const msg: StoredMessage = {
+        role: "assistant",
+        content: text,
+        reasoning: "",
+        timestamp: Date.now(),
+        source: "L3",
+      };
+      setMessages((prev) => addMessage(prev, msg));
+    });
+    return () => registerBackgroundTaskHandler(null);
+  }, [registerBackgroundTaskHandler]);
 
   // 自动保存消息
   useEffect(() => {

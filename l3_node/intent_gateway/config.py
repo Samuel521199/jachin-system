@@ -91,6 +91,10 @@ _DEFAULT: dict[str, Any] = {
     "realtime_knowledge_llm_enabled": True,
     "realtime_knowledge_llm_timeout_sec": 5.0,
     "realtime_knowledge_llm_max_tokens": 96,
+    # 动态专家智囊团（小模型 JSON → agent_core 身份钢印 + 多视角 Thought；默认开）
+    "domain_experts_llm_enabled": True,
+    "domain_experts_llm_timeout_sec": 3.0,
+    "domain_experts_llm_max_tokens": 220,
     # §12.1：多模态侧路头（默认关闭）
     "multimodal_routing_head_enabled": False,
     "multimodal_routing_head_timeout_sec": 6.0,

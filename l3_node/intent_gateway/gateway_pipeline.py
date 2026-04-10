@@ -76,6 +76,8 @@ async def apply_gateway_ingress_pipeline(
             "clarification_gate": bundle.extra.get("clarification_gate"),
             # 实时知识意图在 run_agent 内由小模型补判后写入 bundle / bundle.extra（此处恒为初始值）
             "requires_realtime_knowledge": bool(getattr(bundle, "requires_realtime_knowledge", False)),
+            # domain_experts 在 run_agent 内由小模型补判后写入（此处恒为初始值）
+            "domain_experts": list(getattr(bundle, "domain_experts", None) or []),
         }
         logger.info("[IntentGatewayObs] %s", json.dumps(obs, ensure_ascii=False))
     except Exception:

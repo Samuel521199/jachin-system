@@ -1184,6 +1184,176 @@ def run_list_env_safe(**kwargs: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Office：Word / Excel 原生二进制（util:generate_office_doc）
+# ---------------------------------------------------------------------------
+
+try:
+    import docx  # noqa: F401
+    from docx import Document as _DocxDocument
+    from docx.shared import Pt, RGBColor  # noqa: F401
+
+    _OFFICE_DOCX_OK = True
+except ImportError:
+    docx = None  # type: ignore[assignment]
+    _DocxDocument = None  # type: ignore[misc]
+    Pt = RGBColor = None  # type: ignore[misc]
+    _OFFICE_DOCX_OK = False
+
+try:
+    import openpyxl  # noqa: F401
+    from openpyxl import Workbook as _OpenpyxlWorkbook
+
+    _OFFICE_XLSX_OK = True
+except ImportError:
+    openpyxl = None  # type: ignore[assignment]
+    _OpenpyxlWorkbook = None  # type: ignore[misc]
+    _OFFICE_XLSX_OK = False
+
+
+def _resolve_safe_output_path(file_path: str) -> Path:
+    """与 core:fs_write 一致：输出须在 workspace / HR 白名单路径下。"""
+    from l3_node.jachin_config import get_hr_jds_dir
+    from l3_node.workspace_context import get_effective_workspace_root
+
+    workspace = get_effective_workspace_root()
+    proj = Path(__file__).resolve().parent.parent.parent.parent
+    _l3_volume = (Path.home() / ".jachin" / "client_volumes").resolve()
+    _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), get_hr_jds_dir(proj).resolve()]
+
+    def _under_hr(p: Path) -> bool:
+        try:
+            abs_p = p.resolve()
+            return any(str(abs_p).startswith(str(a)) for a in _hr_allowed)
+        except (OSError, RuntimeError):
+            return False
+
+    def _assert_under(p: Path) -> None:
+        if _under_hr(p):
+            return
+        if not str(p.resolve()).startswith(str(workspace.resolve())):
+            raise ValueError(
+                f"路径越界: {p} 必须在 ~/.jachin/workspace/ 或 client_volumes、data/hr_resumes、hr_jds 下"
+            )
+
+    raw = (file_path or "").strip().replace("\\", "/")
+    fp = Path(raw).expanduser()
+    if not fp.is_absolute():
+        fp = (workspace / fp).resolve()
+    _assert_under(fp)
+    return fp
+
+
+def _xlsx_safe_sheet_name(name: str) -> str:
+    import re
+
+    base = (name or "Sheet").strip() or "Sheet"
+    base = re.sub(r"[\*\:\\/\?\[\]]+", "_", base)
+    return base[:31] if len(base) > 31 else base
+
+
+def run_generate_office_doc(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:generate_office_doc — 格式转换层：由 content_json 渲染原生 .docx / .xlsx。
+    参数：file_format（docx|xlsx，兼容旧名 file_type）、file_path、content_json（兼容旧名 content_data）。
+    docx：content_json.blocks[]，块 type 为 h1|h2|h3|p|bullet|table。
+    xlsx：content_json.sheets[]，每项含 sheet_name 与 data 二维数组。
+    """
+    try:
+        fmt = str(kwargs.get("file_format") or kwargs.get("file_type") or "").strip().lower()
+        if fmt not in ("docx", "xlsx"):
+            return _err('file_format 须为 "docx" 或 "xlsx"（也可用旧字段 file_type）')
+        raw_fp = str(kwargs.get("file_path") or "").strip()
+        if not raw_fp:
+            return _err("file_path 不能为空")
+
+        if fmt == "docx" and not _OFFICE_DOCX_OK:
+            return _err("缺少依赖 python-docx，请执行: pip install python-docx")
+        if fmt == "xlsx" and not _OFFICE_XLSX_OK:
+            return _err("缺少依赖 openpyxl，请执行: pip install openpyxl")
+
+        fp = _resolve_safe_output_path(raw_fp)
+        want_ext = ".docx" if fmt == "docx" else ".xlsx"
+        if fp.suffix.lower() != want_ext:
+            return _err(f"file_path 扩展名须为 {want_ext}")
+
+        cj = kwargs.get("content_json", kwargs.get("content_data"))
+        if isinstance(cj, str):
+            cj = json.loads(cj)
+        if not isinstance(cj, dict):
+            return _err("content_json 须为 JSON 对象（或可解析的 JSON 字符串；兼容旧字段 content_data）")
+
+        fp.parent.mkdir(parents=True, exist_ok=True)
+
+        if fmt == "docx":
+            assert _DocxDocument is not None
+            doc = _DocxDocument()
+            blocks = cj.get("blocks")
+            if not isinstance(blocks, list):
+                return _err("docx 的 content_json 须包含 blocks 数组")
+            # python-docx：level 1–3 对应 Word「标题 1」–「标题 3」
+            heading_level = {"h1": 1, "h2": 2, "h3": 3}
+            for i, block in enumerate(blocks):
+                if not isinstance(block, dict):
+                    return _err(f"blocks[{i}] 须为对象")
+                bt = str(block.get("type") or "").strip().lower()
+                if bt in heading_level:
+                    doc.add_heading(str(block.get("text") or ""), level=heading_level[bt])
+                elif bt == "p":
+                    doc.add_paragraph(str(block.get("text") or ""))
+                elif bt == "bullet":
+                    doc.add_paragraph(str(block.get("text") or ""), style="List Bullet")
+                elif bt == "table":
+                    data = block.get("data") or []
+                    if not isinstance(data, list) or not data:
+                        continue
+                    if not all(isinstance(r, list) for r in data):
+                        return _err(f"blocks[{i}].data 须为二维数组")
+                    n_rows = len(data)
+                    n_cols = max((len(r) for r in data), default=0)
+                    if n_cols < 1:
+                        continue
+                    tbl = doc.add_table(rows=n_rows, cols=n_cols)
+                    tbl.style = "Table Grid"
+                    for ri, row in enumerate(data):
+                        for ci in range(n_cols):
+                            val = row[ci] if ci < len(row) else ""
+                            tbl.cell(ri, ci).text = "" if val is None else str(val)
+                else:
+                    return _err(f"不支持的 block.type: {bt!r}（支持 h1,h2,h3,p,bullet,table）")
+            doc.save(str(fp))
+        else:
+            assert _OpenpyxlWorkbook is not None
+            sheets = cj.get("sheets")
+            if not isinstance(sheets, list) or not sheets:
+                return _err("xlsx 的 content_json 须包含非空 sheets 数组")
+            wb = _OpenpyxlWorkbook()
+            for si, sh in enumerate(sheets):
+                if not isinstance(sh, dict):
+                    return _err(f"sheets[{si}] 须为对象")
+                name = str(sh.get("sheet_name") or "").strip() or f"Sheet{si + 1}"
+                data = sh.get("data")
+                if not isinstance(data, list):
+                    return _err(f"sheets[{si}].data 须为二维数组（行列表）")
+                if si == 0:
+                    ws = wb.active
+                    assert ws is not None
+                    ws.title = _xlsx_safe_sheet_name(name)
+                else:
+                    ws = wb.create_sheet(title=_xlsx_safe_sheet_name(name))
+                for row in data:
+                    if not isinstance(row, list):
+                        return _err(f"sheets[{si}].data 中每一行须为数组")
+                    ws.append(row)
+            wb.save(str(fp))
+
+        return {"ok": True, "file_path": str(fp.resolve())}
+    except json.JSONDecodeError as e:
+        return _err(f"content_json JSON 无效: {e}")
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------------------
 # 分发与注册表（供 loader / native_tools 挂载）
 # ---------------------------------------------------------------------------
 
@@ -1203,6 +1373,7 @@ _UTIL_HANDLERS: dict[str, Any] = {
     "util:fake_data_gen": run_fake_data_gen,
     "util:text_diff": run_text_diff,
     "util:funnel_calc": run_funnel_calc,
+    "util:generate_office_doc": run_generate_office_doc,
     "sys:health_stats": run_health_stats,
     "sys:list_env_safe": run_list_env_safe,
 }
@@ -1323,6 +1494,15 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "label": "util:funnel_calc",
         "desc": "漏斗各层人数与可选 ROI。JSON：initial_traffic, conversion_rates；可选 cac、arpu（需同时给）",
         "params": ["initial_traffic", "conversion_rates"],
+    },
+    {
+        "id": "util:generate_office_doc",
+        "label": "util:generate_office_doc",
+        "desc": "【强制】生成原生 Word/Excel；**绝对禁止**用 core:fs_write 写 .docx/.xlsx。"
+        "参数：file_format（docx|xlsx）、file_path、content_json。"
+        "docx：content_json.blocks[]，type 为 h1|h2|h3|p|bullet|table（table 用 data 二维数组）。"
+        "xlsx：content_json.sheets[]，每项 sheet_name + data 二维数组。路径须在 workspace 白名单。",
+        "params": ["file_format", "file_path", "content_json"],
     },
     {
         "id": "sys:health_stats",
@@ -1507,5 +1687,80 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
         "name": "sys:list_env_safe",
         "description": "环境变量名列表（无值）",
         "inputSchema": _schema_obj({}),
+    },
+    "util:generate_office_doc": {
+        "name": "util:generate_office_doc",
+        "description": (
+            "用于生成原生的 Word (.docx) 报告或 Excel (.xlsx) 数据表。"
+            "绝对禁止用 core:fs_write（或等价写入）生成 .docx/.xlsx 富文本后缀文件；必须构造符合要求的 JSON（content_json）交给本工具渲染。"
+            "依赖：pip install python-docx openpyxl。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "file_format": {
+                    "type": "string",
+                    "enum": ["docx", "xlsx"],
+                    "description": "目标格式；兼容旧字段 file_type",
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "保存路径（相对 workspace 或白名单绝对路径；扩展名须与 file_format 一致）",
+                },
+                "content_json": {
+                    "type": "object",
+                    "description": (
+                        "docx：必须包含 blocks（顺序块数组）。"
+                        "xlsx：必须包含 sheets（多工作表；首表会复用 Workbook 默认表并改名）。"
+                        "兼容旧字段名 content_data。"
+                    ),
+                    "properties": {
+                        "blocks": {
+                            "type": "array",
+                            "description": "仅 docx：按顺序渲染",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["h1", "h2", "h3", "p", "bullet", "table"],
+                                        "description": "块类型：标题/段落/项目符号/表格",
+                                    },
+                                    "text": {
+                                        "type": "string",
+                                        "description": "h1、h2、h3、p、bullet 的正文；table 可省略",
+                                    },
+                                    "data": {
+                                        "type": "array",
+                                        "items": {"type": "array"},
+                                        "description": "仅 type=table：二维行数组，逐格写入单元格",
+                                    },
+                                },
+                                "required": ["type"],
+                            },
+                        },
+                        "sheets": {
+                            "type": "array",
+                            "description": "仅 xlsx：多个工作表",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "sheet_name": {
+                                        "type": "string",
+                                        "description": "工作表名（非法字符会被替换；超长截断至 31 字符）",
+                                    },
+                                    "data": {
+                                        "type": "array",
+                                        "items": {"type": "array"},
+                                        "description": "二维数组；每行 openpyxl.append",
+                                    },
+                                },
+                                "required": ["sheet_name", "data"],
+                            },
+                        },
+                    },
+                },
+            },
+            required=["file_format", "file_path", "content_json"],
+        ),
     },
 }

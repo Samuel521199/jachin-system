@@ -172,3 +172,94 @@ def _click_request_resume_btn(page) -> bool:
         human_wait(page, 0.3, 0.8)
     logger.warning("求简历按钮未找到或点击失败（Boss 可能已改 UI，请检查选择器）")
     return False
+
+
+def atom_request_resume(
+    cdp_url: str = "http://127.0.0.1:9222",
+    jd_config_path: str = "",
+    job_keyword: str = "",
+    candidate_name: str = "",
+    candidate_skill: str = "",
+) -> dict:
+    """
+    单人：选职位 → 在左侧列表定位候选人 → 点击「求简历」。
+    需 Chrome 调试端口；candidate_name / candidate_skill 与沟通列表展示一致。
+    """
+    from pathlib import Path
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"success": False, "request_sent": False, "error": "playwright 未安装"}
+
+    from .atom_post_job_boss import get_jd_select, load_jd_config
+    from .boss_utils import dismiss_boss_onboarding_overlays, navigate_to_candidate_chat, navigate_to_chat_page, select_job
+
+    jd = load_jd_config(jd_config_path, "") if (jd_config_path and str(jd_config_path).strip() and Path(jd_config_path).exists()) else {}
+    job_text = (get_jd_select(jd) if jd else "") or ""
+    if not (job_text or "").strip():
+        job_text = (job_keyword or "").strip()
+    if not job_text:
+        return {
+            "success": False,
+            "request_sent": False,
+            "error": "需要 jd_config_path 指向有效 jd.json，或提供 job_keyword（与 Boss 下拉职位行一致）",
+        }
+    name = (candidate_name or "").strip()
+    if not name:
+        return {"success": False, "request_sent": False, "error": "candidate_name 不能为空"}
+    skill = (candidate_skill or "").strip()
+    if not skill:
+        return {"success": False, "request_sent": False, "error": "candidate_skill 不能为空（与列表中 source-job 展示一致）"}
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(cdp_url, timeout=15000)
+            contexts = browser.contexts
+            if not contexts:
+                return {"success": False, "request_sent": False, "error": "未找到浏览器上下文"}
+            pages = contexts[0].pages
+            if not pages:
+                return {"success": False, "request_sent": False, "error": "未找到页面"}
+            page = None
+            for p in pages:
+                u = p.url or ""
+                if "zhipin.com" in u or "zhpin.com" in u:
+                    page = p
+                    break
+            page = page or pages[0]
+            navigate_to_chat_page(page)
+            dismiss_boss_onboarding_overlays(page)
+            if not select_job(page, job_text):
+                return {"success": False, "request_sent": False, "error": f"无法选择职位「{job_text}」"}
+            if not navigate_to_candidate_chat(page, job_text, name, skill):
+                return {"success": False, "request_sent": False, "error": "未找到对应候选人会话，请检查姓名与技能标签"}
+            sent = _click_request_resume_btn(page)
+            return {
+                "success": bool(sent),
+                "request_sent": bool(sent),
+                "error": "" if sent else "求简历按钮未点击成功",
+            }
+    except Exception as e:
+        logger.exception("atom_request_resume")
+        return {"success": False, "request_sent": False, "error": str(e)}
+
+
+def atom_request_resume_batch(
+    cdp_url: str = "http://127.0.0.1:9222",
+    jd_config_path: str = "",
+    job_text: str = "",
+    max_items: int = 50,
+) -> dict:
+    """批量遍历沟通列表，对无附件简历的对话点击求简历（与收网编排共用流程）。"""
+    from .boss_harvest_orchestrator import harvest_resume_full_flow
+
+    return harvest_resume_full_flow(
+        cdp_url=cdp_url,
+        job_text=job_text,
+        jd_config_path=jd_config_path,
+        download_to_pending=True,
+        max_items=max_items,
+        request_if_no_resume=True,
+        filter_tab="全部",
+    )

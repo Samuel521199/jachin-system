@@ -196,3 +196,100 @@ async def infer_requires_realtime_knowledge_async(
     if isinstance(v, str):
         return v.strip().lower() in ("1", "true", "yes", "是")
     return False
+
+
+def _normalize_domain_experts(raw: Any, *, max_n: int = 3) -> list[str]:
+    out: list[str] = []
+    if raw is None:
+        return out
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return out
+    for x in raw:
+        s = str(x).strip()
+        if not s or len(s) > 48:
+            continue
+        if s not in out:
+            out.append(s)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+async def infer_domain_experts_async(
+    *,
+    engine: Any,
+    user_input: str,
+    classification_text: str,
+    timeout_sec: float = 3.0,
+) -> list[str]:
+    """
+    小模型 JSON：推断 1–3 个最适合处理当前任务的资深专家身份；简单闲聊返回空列表。
+    失败或超时返回 []（不阻断主 ReAct）。
+    """
+    from l3_node.intent_gateway.config import get_intent_gateway_config
+    from l3_node.intent_gateway.model_resolve import get_classification_model_litellm_id
+
+    cfg = get_intent_gateway_config()
+    if not bool(cfg.get("domain_experts_llm_enabled", True)):
+        return []
+
+    ui = (user_input or "").strip()
+    ct = (classification_text or "").strip()
+    surf = ct if len(ct) >= 8 else ui
+    if len(surf) < 4:
+        return []
+
+    try:
+        to = float(cfg.get("domain_experts_llm_timeout_sec", timeout_sec))
+    except (TypeError, ValueError):
+        to = float(timeout_sec)
+    to = max(0.5, min(to, 10.0))
+
+    try:
+        max_tok = int(cfg.get("domain_experts_llm_max_tokens", 220))
+    except (TypeError, ValueError):
+        max_tok = 220
+    max_tok = max(64, min(max_tok, 512))
+
+    sys_p = (
+        "你是任务分析器。只输出一个 JSON 对象，不要其它文字。"
+        '键 domain_experts：字符串数组，长度 0～3。根据用户任务推断最适合处理该任务的资深专家身份标签'
+        "（如「资深系统架构师」「高级产品经理」「应用安全专家」），用于主对话模型扮演多视角智囊。"
+        "若仅为寒暄、极短附和、无实质任务需求，则 domain_experts 必须为 []。"
+        "不要输出解释性前言；标签宜简短（每个建议不超过 16 字）。"
+    )
+    user_block = f"【分类面/用户句】\n{surf[:3500]}"
+    messages = [
+        {"role": "system", "content": sys_p},
+        {"role": "user", "content": user_block},
+    ]
+    model = get_classification_model_litellm_id()
+
+    async def _call() -> str:
+        raw = await engine.generate_response(
+            messages,
+            tools=None,
+            temperature=0.1,
+            max_tokens=max_tok,
+            l3_call_purpose="intent_gateway_domain_experts",
+            l3_override_model=model,
+        )
+        if isinstance(raw, dict):
+            return (raw.get("content") or "") or ""
+        return str(raw or "")
+
+    try:
+        text = await asyncio.wait_for(_call(), timeout=to)
+    except asyncio.TimeoutError:
+        logger.info("[IntentGateway] domain_experts 分类超时 %.1fs，回退 []", to)
+        return []
+    except Exception as e:
+        logger.info("[IntentGateway] domain_experts 分类失败: %s", str(e)[:200])
+        return []
+
+    data = _parse_json_loose(text)
+    if not data:
+        return []
+    return _normalize_domain_experts(data.get("domain_experts"))

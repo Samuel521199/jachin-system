@@ -38,6 +38,8 @@ class GatewayContextBundle:
     classification_truncated: bool = False
     #: 网关小模型判定：本轮是否需要实时外部知识（新闻/行情/文档/天气事实等）
     requires_realtime_knowledge: bool = False
+    #: 动态专家智囊团：1–3 个资深身份标签（简单闲聊可为空）；由小模型在 run_agent 内补判写入
+    domain_experts: list[str] = field(default_factory=list)
     registry_version: str = "rv0"
     extra: dict[str, Any] = field(default_factory=dict)
 

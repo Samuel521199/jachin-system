@@ -32,7 +32,14 @@ from tools.atom_lark_chat import atom_lark_chat as _atom_lark_chat
 from tools.atom_lark_send_message import atom_lark_send_message as _atom_lark_send_message, atom_lark_list_tasks as _atom_lark_list_tasks
 from tools.atom_lark_bitable_sync import atom_lark_bitable_sync as _atom_lark_bitable_sync
 
-mcp = FastMCP("hr-atomic-tools", description="HR 招聘原子工具箱：发布、打招呼、收网、求简历、归档、粗筛、进度查询、Lark 多维表同步、Lark 机器人发言与 AI 对话")
+# 不同版本 FastMCP 对 description / instructions 参数支持不一，避免启动即 TypeError
+try:
+    mcp = FastMCP(
+        "hr-atomic-tools",
+        description="HR 招聘原子工具箱：发布、打招呼、收网、求简历、归档、粗筛、进度查询、Lark 多维表同步、Lark 机器人发言与 AI 对话",
+    )
+except TypeError:
+    mcp = FastMCP("hr-atomic-tools")
 
 
 @mcp.tool()
