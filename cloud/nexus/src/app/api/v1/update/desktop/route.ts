@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { desc } from "drizzle-orm";
 import semver from "semver";
 import { getDb, isDatabaseConfigured } from "@/db";
@@ -48,11 +48,10 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // 未配置私有桶时无法生成预签名 URL：对 Tauri 而言等价于「当前无可用 OTA」
+  //（返回 204 而非 503，避免本地/dev 日志持续报服务不可用）
   if (!isDesktopReleasesS3Configured()) {
-    return NextResponse.json(
-      { error: "服务端未配置 DESKTOP_RELEASES_S3_*" },
-      { status: 503 }
-    );
+    return new NextResponse(null, { status: 204 });
   }
 
   const { searchParams } = new URL(request.url);

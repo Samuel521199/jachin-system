@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3_LOCAL MCP 制品中的 **stdio 声明式** 包：仅 ``plugin.json`` + ``stdio_server{command,args,env}``，
 无 Python ``tools[]`` 模块。L3 启动时注入 ``MCPManager.add_server``，与 ``mcp_servers.json`` 行为一致。
 
@@ -6,6 +6,7 @@ L3_LOCAL MCP 制品中的 **stdio 声明式** 包：仅 ``plugin.json`` + ``stdi
 - ``__PROJECT_ROOT__`` / ``__PROJECT_ROOT__/sub`` → ``l3_node.paths.get_app_root()``
 - ``__JACHIN_HOME__`` → ``~/.jachin``（尊重 ``JACHIN_HOME`` 环境变量）
 - ``__JACHIN_WORKSPACE__`` → ``~/.jachin/workspace``（不存在则创建）
+- ``__MCP_PACKAGE_ROOT__`` → 当前 MCP 制品解压目录（``plugin.json`` 所在目录，用于 ``python .../server.py``）
 - ``__JACHIN_MCP_PYTHON__`` / ``__JACHIN_MCP_NODE__`` → 见 ``core.mcp_embedded_runtime``
 
 见 docs/SKILL_MCP_UPLOAD_SPEC.md §2.x。
@@ -190,6 +191,10 @@ async def register_l3_packaged_stdio_mcps() -> int:
             )
             continue
         args_resolved = pruned
+        pkg_root = str(subdir.resolve())
+        args_resolved = [
+            (a.replace("__MCP_PACKAGE_ROOT__", pkg_root) if isinstance(a, str) else a) for a in args_resolved
+        ]
 
         env_merged = _resolve_stdio_env(blk.get("env") if isinstance(blk.get("env"), dict) else None)
         cfg: dict[str, Any] = {
