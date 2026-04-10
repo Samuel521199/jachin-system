@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # Layer3 one-click start (Windows)
 # Single instance: kill_l3_processes.ps1 then start
 #
@@ -26,7 +26,6 @@ param(
     [switch]$DesktopOnly,
     [switch]$SeparateL3Window,
     [switch]$SkipRepairMcp,
-    # 启动 Tauri 后自动打开 Omni 聊天条（默认仅托盘静默，需左键托盘或 Alt+Shift+Space）
     [switch]$ShowOmni
 )
 

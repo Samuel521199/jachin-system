@@ -8,10 +8,12 @@ All notable changes to this project will be documented in this file.
 
 - **桌面 OMNI**：Mermaid 渲染传入沙箱容器，避免错误 DOM 污染 `body` 导致底部黑条；`chat.html` / 消息区 flex 布局与滚动
 - **Tauri 2**：`allow-app-core-invoke` ACL，修复 `invoke`（如 L2 网关配对）被拒绝
+- **Mermaid 导出**：全屏内 `html-to-image` 导出 PNG（兼容 foreignObject）；下载完成页内提示与系统通知；`start-layer3.ps1` 修复 PS 5.1 `param` 注释解析、UTF-8 BOM
 
 ### Changed
 
 - **版本号**：桌面 `package.json`、`tauri.conf.json`、`Cargo.toml`、`VERSION` 与 Git 标签 **v0.8.108**
+- **依赖**：`jachin-desktop` 增加 `html-to-image`（Mermaid PNG 导出）
 
 ---
 
