@@ -162,8 +162,8 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             </div>
           </div>
 
-          {/* 中部可滚动：HITL / 流式 / 状态，撑满剩余高度，绝不挤出底栏 */}
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          {/* 中部可滚动：HITL / 流式 / 状态，撑满剩余高度，绝不挤出底栏（min-h-0 保证 flex 子项可收缩，否则表现为「只显示一半」） */}
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain">
             <AnimatePresence>
               {hitlPending && (
                 <motion.div

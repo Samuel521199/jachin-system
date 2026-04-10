@@ -351,6 +351,119 @@ def run_regex_test(**kwargs: Any) -> dict[str, Any]:
 # 类别三：轻量感知
 # ---------------------------------------------------------------------------
 
+_STEALTH_TEXT_MAX = 500_000
+_STEALTH_HTML_MAX = 300_000
+
+# 轻装阶段若正文出现下列片段，视为被常见 WAF/CF 拦截页，转入重装旁路
+_STEALTH_WAF_MARKERS = (
+    "just a moment",
+    "enable javascript and cookies to continue",
+)
+
+_SIDECAR_UNREACHABLE_MSG = (
+    "轻装抓取被拦截，且重装旁路服务未启动（连接被拒绝）。"
+    "请在独立终端运行 `uvicorn server:app` 以开启重装刺客服务。"
+)
+
+
+def _stealth_clip(s: str, max_len: int) -> str:
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + "\n...[truncated]"
+
+
+def _html_to_naive_plain_text(html: str) -> str:
+    """无 lxml 时的极简可见文本（降级路径）。"""
+    s = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", html)
+    s = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _stealth_body_looks_waf_blocked(blob: str) -> bool:
+    low = (blob or "").lower()
+    return any(m in low for m in _STEALTH_WAF_MARKERS)
+
+
+def _stealth_pack_from_scrapling_response(resp: Any) -> dict[str, Any]:
+    status = int(getattr(resp, "status", 200) or 200)
+    try:
+        raw_text = resp.get_all_text(strip=True, separator="\n")
+        text = str(raw_text) if raw_text is not None else ""
+    except Exception:
+        text = str(getattr(resp, "text", "") or "")
+    try:
+        hc = resp.html_content
+        html_full = str(hc) if hc is not None else ""
+    except Exception:
+        html_full = ""
+    return {
+        "text": _stealth_clip(text, _STEALTH_TEXT_MAX),
+        "html_excerpt": _stealth_clip(html_full, _STEALTH_HTML_MAX),
+        "http_status": status,
+    }
+
+
+def _stealth_try_inprocess_fast(url: str) -> tuple[dict[str, Any] | None, Exception | None]:
+    """
+    轻装：优先 curl_cffi（显式 impersonate=chrome），失败再试 scrapling Fetcher。
+    返回 (payload, None) 表示拿到 HTTP 响应体； (None, exc) 表示两路均未成功。
+    """
+    try:
+        to = float(os.environ.get("JACHIN_STEALTH_INPROCESS_TIMEOUT", "15"))
+    except ValueError:
+        to = 15.0
+
+    last_exc: Exception | None = None
+
+    try:
+        from curl_cffi import requests as curl_req
+
+        r = curl_req.get(url, impersonate="chrome", timeout=to)
+        status = int(getattr(r, "status_code", 200) or 200)
+        html = str(r.text or "")
+        plain = _html_to_naive_plain_text(html)
+        return (
+            {
+                "text": _stealth_clip(plain, _STEALTH_TEXT_MAX),
+                "html_excerpt": _stealth_clip(html, _STEALTH_HTML_MAX),
+                "http_status": status,
+            },
+            None,
+        )
+    except ImportError:
+        pass
+    except Exception as e:
+        last_exc = e
+
+    try:
+        from scrapling.fetchers import Fetcher
+
+        resp = Fetcher.get(url, timeout=to, follow_redirects="safe")
+        return (_stealth_pack_from_scrapling_response(resp), None)
+    except ImportError as e:
+        last_exc = last_exc or e
+    except Exception as e:
+        last_exc = e
+
+    if last_exc is not None:
+        return (None, last_exc)
+    return (None, RuntimeError("未安装 curl_cffi 或 scrapling，无法进行轻装抓取"))
+
+
+def _stealth_sidecar_healthcheck(base: str, requests_mod: Any) -> bool:
+    """极短超时探测旁路是否在线（任意 HTTP 响应即视为可达）。"""
+    try:
+        hc_to = float(os.environ.get("JACHIN_SCRAPLING_HEALTH_TIMEOUT", "1.5"))
+    except ValueError:
+        hc_to = 1.5
+    try:
+        requests_mod.get(f"{base}/", timeout=hc_to)
+        return True
+    except Exception:
+        return False
+
 
 def run_http_ping(**kwargs: Any) -> dict[str, Any]:
     """util:http_ping — GET/HEAD 探测，超时 3s。"""
@@ -372,6 +485,121 @@ def run_http_ping(**kwargs: Any) -> dict[str, Any]:
         return _ok({"url": url, "method": method, "status_code": code, "elapsed_ms": elapsed_ms})
     except URLError as e:
         return _err(f"网络错误: {e}")
+    except Exception as e:
+        return _err(e)
+
+
+def run_stealth_extract(**kwargs: Any) -> dict[str, Any]:
+    print("\n" + "🔥" * 20, flush=True)
+    print("🚀 [ROUTING ALERT] 最新版智能路由 run_stealth_extract 已成功激活！", flush=True)
+    print("🔥" * 20 + "\n", flush=True)
+    # [TRACER] 若日志无以上三行：非本文件版本 / PYTHONPATH 指向旧副本 / 进程未重启。
+    try:
+        try:
+            import requests
+        except ImportError:
+            return _err("未安装 requests，请执行: pip install requests")
+
+        url = str(kwargs.get("url") or "").strip()
+        if not url:
+            return _err("url 不能为空")
+
+        try:
+            http_timeout = float(os.environ.get("JACHIN_SCRAPLING_HTTP_TIMEOUT", "15"))
+        except ValueError:
+            http_timeout = 15.0
+
+        skip_sidecar = str(os.environ.get("JACHIN_STEALTH_EXTRACT_SKIP_SIDECAR", "")).strip() == "1"
+        base = str(os.environ.get("JACHIN_SCRAPLING_SERVICE_BASE", "http://127.0.0.1:8000")).rstrip("/")
+        endpoint = f"{base}/api/scrape"
+
+        fast_res, fast_err = _stealth_try_inprocess_fast(url)
+
+        def _ok_fast(payload: dict[str, Any]) -> dict[str, Any]:
+            print(
+                f"👉 路由判定：in_process_fast, HTTP Status: {payload.get('http_status')}",
+                flush=True,
+            )
+            inner: dict[str, Any] = {
+                "url": url,
+                "content": {
+                    "text": payload.get("text", ""),
+                    "html_excerpt": payload.get("html_excerpt", ""),
+                    "http_status": payload.get("http_status"),
+                    "via": "in_process_fast",
+                },
+            }
+            assert inner["content"].get("via") == "in_process_fast"
+            return _ok(inner)
+
+        if fast_res is not None:
+            st = int(fast_res["http_status"])
+            blob = (fast_res.get("html_excerpt") or "") + "\n" + (fast_res.get("text") or "")
+            blocked = _stealth_body_looks_waf_blocked(blob)
+            if st == 200 and not blocked:
+                return _ok_fast(fast_res)
+            if st not in (403, 503) and not blocked:
+                return _ok_fast(fast_res)
+
+        # 未在轻装阶段 return：fast_res is None，或 403/503 / WAF 拦截页，需重装旁路
+        if skip_sidecar:
+            bits: list[str] = [
+                "需重装旁路但已设置 JACHIN_STEALTH_EXTRACT_SKIP_SIDECAR=1（仅轻装阶段允许）。",
+            ]
+            if fast_err is not None:
+                bits.append(f"轻装异常: {fast_err!r}")
+            return _err(" ".join(bits))
+
+        if not _stealth_sidecar_healthcheck(base, requests):
+            return _err(_SIDECAR_UNREACHABLE_MSG)
+
+        try:
+            r = requests.post(
+                endpoint,
+                json={"url": url},
+                timeout=http_timeout,
+            )
+        except Exception as e:
+            try:
+                import requests as req
+
+                if isinstance(e, req.exceptions.RequestException):
+                    return _err(_SIDECAR_UNREACHABLE_MSG)
+            except ImportError:
+                pass
+            return _err(str(e))
+
+        if not r.ok:
+            detail = ""
+            try:
+                j = r.json()
+                detail = str(j.get("detail", j))
+            except Exception:
+                detail = (r.text or "")[:800]
+            return _err(f"重装旁路返回 HTTP {r.status_code}: {detail}")
+
+        try:
+            data = r.json()
+        except Exception:
+            return _err("重装旁路返回非 JSON，无法解析")
+
+        if not isinstance(data, dict):
+            return _err("重装旁路返回格式异常")
+
+        text = data.get("text", "")
+        html_excerpt = data.get("html_excerpt", "")
+        return _ok(
+            {
+                "url": url,
+                "content": {
+                    "text": text,
+                    "html_excerpt": html_excerpt,
+                    "http_status": data.get("http_status"),
+                    "via": "sidecar_heavy",
+                    "in_process_error": repr(fast_err) if fast_err else None,
+                },
+            }
+        )
     except Exception as e:
         return _err(e)
 
@@ -968,6 +1196,7 @@ _UTIL_HANDLERS: dict[str, Any] = {
     "util:json_jq": run_json_jq,
     "util:regex_test": run_regex_test,
     "util:http_ping": run_http_ping,
+    "util:stealth_extract": run_stealth_extract,
     "util:dns_lookup": run_dns_lookup,
     "util:get_weather_lite": run_get_weather_lite,
     "util:ab_test_calc": run_ab_test_calc,
@@ -1049,6 +1278,13 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "id": "util:http_ping",
         "label": "util:http_ping",
         "desc": "HTTP HEAD/GET 探测，超时 3s。JSON：url；可选 method（HEAD|GET）",
+        "params": ["url"],
+    },
+    {
+        "id": "util:stealth_extract",
+        "label": "util:stealth_extract",
+        "desc": "智能路由抓取：默认轻装（curl_cffi / Scrapling Fetcher，via=in_process_fast）；遇 403/503 或常见 WAF 页再调用重装旁路（需 tools/scrapling-service，via=sidecar_heavy）。"
+        "旁路未启动时健康检查约 1.5s 内失败即提示启动 uvicorn。JSON：url。",
         "params": ["url"],
     },
     {
@@ -1190,6 +1426,14 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                 "url": {"type": "string"},
                 "method": {"type": "string", "enum": ["HEAD", "GET"]},
             },
+            required=["url"],
+        ),
+    },
+    "util:stealth_extract": {
+        "name": "util:stealth_extract",
+        "description": "轻装 curl_cffi 优先；拦截或 403/503 时再调用重装 FastAPI 旁路",
+        "inputSchema": _schema_obj(
+            {"url": {"type": "string", "description": "目标页面 URL（http/https）"}},
             required=["url"],
         ),
     },

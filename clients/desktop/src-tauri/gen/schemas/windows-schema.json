@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allow IPC to application custom commands (L2 gateway pairing, L3, settings, chat windows, TTS/STT, hot update).",
+          "type": "string",
+          "const": "allow-app-core-invoke",
+          "markdownDescription": "Allow IPC to application custom commands (L2 gateway pairing, L3, settings, chat windows, TTS/STT, hot update)."
+        },
+        {
           "description": "Spawn detached hot-update helper and exit (out-of-process updater).",
           "type": "string",
           "const": "allow-spawn-hot-update",

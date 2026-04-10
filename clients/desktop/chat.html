@@ -17,12 +17,18 @@
         overflow: hidden;
         pointer-events: auto;
       }
+      /* body 上若被第三方脚本插入兄弟节点，会撑高文档并挤压 #chat-root；用 flex 把视口高度只分给根节点 */
+      body {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
       /* 流式/长文滚动在 Omni 内部 flex 子树完成，根节点锁高度避免挤出输入栏 */
       #chat-root {
         width: 100%;
         min-width: 100%;
+        flex: 1 1 0;
         min-height: 0;
-        height: 100%;
         max-height: 100%;
         overflow: hidden;
         background: transparent !important;

@@ -1,5 +1,5 @@
 """
-十六项 util:* / sys:* 原生工具烟测与行为断言。
+十七项 util:* / sys:* 原生工具烟测与行为断言。
 
 运行（避免根 conftest 拉 ray / cov）：
   python -m pytest tests/unit/test_core_util_tools.py -v --override-ini="addopts=-v --tb=short --strict-markers" --noconftest
@@ -19,8 +19,8 @@ from l3_node.primitives.tools.core_util_tools import (
 )
 
 
-def test_sixteen_tool_ids_registered() -> None:
-    assert len(util_tool_ids()) == 16
+def test_seventeen_tool_ids_registered() -> None:
+    assert len(util_tool_ids()) == 17
     for tid in (
         "util:datetime_calc",
         "util:cron_explain",
@@ -30,6 +30,7 @@ def test_sixteen_tool_ids_registered() -> None:
         "util:json_jq",
         "util:regex_test",
         "util:http_ping",
+        "util:stealth_extract",
         "util:dns_lookup",
         "util:get_weather_lite",
         "util:ab_test_calc",
@@ -112,6 +113,71 @@ def test_util_dns_lookup_localhost() -> None:
     r = cut.run_dns_lookup(domain="localhost")
     assert r["ok"] is True
     assert "127.0.0.1" in r["result"]["ips"]
+
+
+@patch("l3_node.primitives.tools.core_util_tools._stealth_try_inprocess_fast")
+def test_util_stealth_extract_in_process_fast_ok(mock_fast: MagicMock) -> None:
+    mock_fast.return_value = (
+        {
+            "text": "plain",
+            "html_excerpt": "<div>x</div>",
+            "http_status": 200,
+        },
+        None,
+    )
+    r = cut.run_stealth_extract(url="https://example.com/page")
+    assert r["ok"] is True
+    assert r["result"]["url"] == "https://example.com/page"
+    assert r["result"]["content"]["text"] == "plain"
+    assert r["result"]["content"]["via"] == "in_process_fast"
+
+
+@patch("requests.post")
+@patch("l3_node.primitives.tools.core_util_tools._stealth_sidecar_healthcheck", return_value=True)
+@patch("l3_node.primitives.tools.core_util_tools._stealth_try_inprocess_fast")
+def test_util_stealth_extract_sidecar_heavy_after_cf_block(
+    mock_fast: MagicMock,
+    _mock_hc: MagicMock,
+    mock_post: MagicMock,
+) -> None:
+    mock_fast.return_value = (
+        {
+            "text": "",
+            "html_excerpt": "<title>Just a moment...</title>",
+            "http_status": 200,
+        },
+        None,
+    )
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.json.return_value = {
+        "text": "heavy-plain",
+        "html_excerpt": "<div>ok</div>",
+        "http_status": 200,
+    }
+    mock_post.return_value = mock_resp
+    r = cut.run_stealth_extract(url="https://example.com/cf")
+    assert r["ok"] is True
+    assert r["result"]["content"]["via"] == "sidecar_heavy"
+    assert r["result"]["content"]["text"] == "heavy-plain"
+    mock_post.assert_called_once()
+    assert mock_post.call_args[1]["timeout"] == 15
+
+
+@patch("requests.post")
+@patch("l3_node.primitives.tools.core_util_tools._stealth_sidecar_healthcheck", return_value=False)
+@patch("l3_node.primitives.tools.core_util_tools._stealth_try_inprocess_fast")
+def test_util_stealth_extract_sidecar_unreachable_short_circuit(
+    mock_fast: MagicMock,
+    _mock_hc: MagicMock,
+    mock_post: MagicMock,
+) -> None:
+    mock_fast.return_value = (None, OSError("no curl"))
+    r = cut.run_stealth_extract(url="https://example.com/")
+    assert r["ok"] is False
+    assert "轻装抓取被拦截" in str(r.get("error", ""))
+    assert "uvicorn" in str(r.get("error", ""))
+    mock_post.assert_not_called()
 
 
 @patch("l3_node.primitives.tools.core_util_tools.urlopen")

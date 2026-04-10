@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # Layer3 one-click start (Windows)
 # Single instance: kill_l3_processes.ps1 then start
 #
@@ -11,6 +11,8 @@
 #   - then npm run tauri:dev ; JACHIN_SKIP_L3_SPAWN=1 (desktop does not spawn second L3)
 #   .\scripts\start-layer3.ps1
 #   Optional old behavior (second window): -SeparateL3Window
+#   启动后自动打开 Omni 聊天条: .\scripts\start-layer3.ps1 -ShowOmni
+#   （默认仅托盘图标；也可左键托盘或 Alt+Shift+Space）
 #
 # Source only (no Tauri, one window):
 #   .\scripts\start-layer3.ps1 -SourceOnly
@@ -23,7 +25,9 @@ param(
     [switch]$SourceOnly,
     [switch]$DesktopOnly,
     [switch]$SeparateL3Window,
-    [switch]$SkipRepairMcp
+    [switch]$SkipRepairMcp,
+    # 启动 Tauri 后自动打开 Omni 聊天条（默认仅托盘静默，需左键托盘或 Alt+Shift+Space）
+    [switch]$ShowOmni
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -61,6 +65,10 @@ if ($DesktopOnly) {
     } else {
         Remove-Item Env:\JACHIN_SKIP_L3_SPAWN -ErrorAction SilentlyContinue
     }
+}
+
+if ($ShowOmni) {
+    $env:JACHIN_SHOW_OMNI_ON_START = "1"
 }
 
 function Start-L3SourceForeground {

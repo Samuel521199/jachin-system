@@ -45,9 +45,12 @@
     },
     {
       "id": "official-fetch-npx",
-      "name": "MCP Fetch（官方 npx，网页阅读）",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+      "name": "MCP Fetch（Python stdio；npm @modelcontextprotocol/server-fetch 在 registry 不可用，请用 PyPI mcp-server-fetch）",
+      "command": "python",
+      "args": ["-m", "mcp_server_fetch"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
     },
     {
       "id": "official-sqlite-npx",
@@ -69,6 +72,12 @@
       "env": {
         "TAVILY_API_KEY": "${TAVILY_API_KEY}"
       }
+    },
+    {
+      "id": "playwright-browser-npx",
+      "name": "MCP Playwright（最新版浏览器操控）",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
     }
   ]
 }

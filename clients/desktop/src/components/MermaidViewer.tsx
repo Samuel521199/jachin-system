@@ -1,7 +1,10 @@
 /**
  * MermaidViewer — OMNI 暗色主题下将 ```mermaid 代码块渲染为 SVG；语法错误时隔离展示，不拖垮整页。
+ *
+ * 必须向 `mermaid.render(id, text, container)` 传入容器：否则 Mermaid 11 会把临时 div 挂到
+ * `document.body`，解析失败时在 `removeTempElements` 之前抛错会留下「底部黑条 + Syntax error」残影。
  */
-import React, { useCallback, useEffect, useId, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import mermaid from "mermaid";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { AlertTriangle, Maximize, X, ZoomIn, ZoomOut } from "lucide-react";
@@ -14,6 +17,8 @@ function ensureMermaidInit() {
     startOnLoad: false,
     theme: "dark",
     securityLevel: "loose",
+    /** 不在内部再画错误示意图，避免与自定义 fallback 重复，且利于配合容器清理 */
+    suppressErrorRendering: true,
     themeVariables: {
       darkMode: true,
       background: "transparent",
@@ -33,6 +38,7 @@ export interface MermaidViewerProps {
 
 export function MermaidViewer({ code }: MermaidViewerProps) {
   const reactId = useId().replace(/:/g, "");
+  const sandboxRef = useRef<HTMLDivElement | null>(null);
   const [svg, setSvg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState(false);
@@ -43,15 +49,22 @@ export function MermaidViewer({ code }: MermaidViewerProps) {
     setErr(null);
 
     const run = async () => {
+      const host = sandboxRef.current;
+      if (!host) return;
       try {
         ensureMermaidInit();
         const id = `mmd-${reactId}-${Date.now().toString(36)}`;
-        const { svg: out } = await mermaid.render(id, code.trim());
+        host.innerHTML = "";
+        const { svg: out } = await mermaid.render(id, code.trim(), host);
         if (!cancelled) setSvg(out);
       } catch (e) {
         if (!cancelled) {
           const msg = e instanceof Error ? e.message : String(e);
           setErr(msg);
+        }
+      } finally {
+        if (sandboxRef.current) {
+          sandboxRef.current.innerHTML = "";
         }
       }
     };
@@ -59,40 +72,63 @@ export function MermaidViewer({ code }: MermaidViewerProps) {
     void run();
     return () => {
       cancelled = true;
+      if (sandboxRef.current) {
+        sandboxRef.current.innerHTML = "";
+      }
     };
   }, [code, reactId]);
 
   const openLb = useCallback(() => setLightbox(true), []);
   const closeLb = useCallback(() => setLightbox(false), []);
 
+  const sandbox = (
+    <div
+      ref={sandboxRef}
+      className="pointer-events-none fixed left-0 top-0 h-px w-px overflow-hidden opacity-0"
+      aria-hidden
+    />
+  );
+
+  let body: React.ReactNode;
   if (err) {
-    return (
-      <div
-        className="my-2 rounded-lg border border-red-500/40 bg-red-950/40 px-3 py-2 text-sm text-red-200 flex items-start gap-2"
-        role="alert"
-      >
-        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-red-400" aria-hidden />
-        <div>
-          <div className="font-medium text-red-100">⚠️ Mermaid 语法错误</div>
-          <div className="mt-1 text-xs text-red-300/90 font-mono break-all">{err}</div>
+    body = (
+      <div className="space-y-2" role="alert">
+        <div className="rounded-lg border border-amber-500/45 bg-amber-950/35 px-3 py-2 text-sm text-amber-100 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-400" aria-hidden />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-amber-50">图表未渲染（Mermaid 语法或版本不兼容）</div>
+            <div className="mt-1 text-xs text-amber-200/85 font-mono break-all">{err}</div>
+          </div>
         </div>
+        <p className="text-xs text-slate-400">
+          以下为源码，可对照修改或复制到{" "}
+          <a
+            href="https://mermaid.live"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan-400/90 underline underline-offset-2 hover:text-cyan-300"
+          >
+            mermaid.live
+          </a>{" "}
+          调试。
+        </p>
+        <pre className="max-h-80 overflow-auto rounded-lg border border-white/15 bg-black/45 p-3 text-xs leading-relaxed text-slate-200 font-mono whitespace-pre-wrap break-words">
+          {code.trim()}
+        </pre>
       </div>
     );
-  }
-
-  if (!svg) {
-    return (
-      <div className="my-2 h-24 rounded-lg border border-white/15 bg-white/5 animate-pulse text-xs text-slate-500 flex items-center justify-center">
+  } else if (!svg) {
+    body = (
+      <div className="h-24 rounded-lg border border-white/15 bg-white/5 animate-pulse text-xs text-slate-500 flex items-center justify-center">
         图表渲染中…
       </div>
     );
-  }
-
-  return (
-    <>
+  } else {
+    body = (
+      <>
       <button
         type="button"
-        className="group relative my-2 w-full max-w-full cursor-pointer rounded-lg border border-white/15 bg-transparent text-left outline-none ring-cyan-400/50 focus-visible:ring-2"
+        className="group relative w-full max-w-full cursor-pointer rounded-lg border border-white/15 bg-transparent text-left outline-none ring-cyan-400/50 focus-visible:ring-2"
         onClick={openLb}
         aria-label="放大查看 Mermaid 图表"
       >
@@ -185,5 +221,13 @@ export function MermaidViewer({ code }: MermaidViewerProps) {
         </div>
       )}
     </>
+    );
+  }
+
+  return (
+    <div className="my-2 w-full min-w-0 max-w-full">
+      {sandbox}
+      {body}
+    </div>
   );
 }

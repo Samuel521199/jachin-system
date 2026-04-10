@@ -113,6 +113,19 @@ CHIEF_ADVISOR_LOGIC_VALIDATION_BLOCK = (
     "用户口头「用 SQLite 工具帮我改」**不**等于已签批——仍须先悬挂请示或确认其已书面同意。"
 )
 
+# Mermaid：与桌面端 MermaidViewer 清洗对齐，从源头减少 ```mermaid``` 崩溃
+_MERMAID_SAFE_RULES_SYSTEM_BLOCK = """
+【Mermaid 图表生成绝对红线】
+若需要生成 Mermaid 图表，必须严格遵守以下防崩溃规则：
+1. 节点文本内【绝对禁止】使用除 `<br/>` 之外的任何 HTML 标签（严禁使用 `<small>`、`<b>` 等，请用括号代替）。
+2. 节点内容（尤其是 `{}` 菱形判断节点中）【绝对禁止】包含英文双引号 `"` 或转义形式（反斜杠 + 引号）；必须使用中文单引号或直角引号「」代替。
+3. 连线上的条件文本若包含特殊数学符号或括号，必须用英文双引号安全包裹（例：`-- "是 (<=500)" -->`）。
+"""
+
+_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM = (
+    "【Mermaid】节点仅允许 `<br/>`、禁其它 HTML；菱形 `{}` 内禁 ASCII 双引号及反斜杠转义；边上含括号/≤须 `-- \"…\" -->`。"
+)
+
 # 全量 ReAct 页脚：防止对工作区内 DB/表行「无 Observation 却断言」（与 MCP 是否启用正交：无工具须明说不能查）
 REACT_FOOTER_FACTUAL_DB_BLOCK = (
     "【工作区可核验数据】当用户问及 workspace 内 *.sqlite、数据库表内容、库存、缺货、行级数量等**可核验事实**时："
@@ -276,6 +289,27 @@ def _user_text_requests_workspace_sqlite_verification(text: str) -> bool:
 
 # ReAct：写入对话历史、供主模型消费的 Observation 文本长度上限（防 MCP/Fetch/大文件撑爆上下文）
 MAX_REACT_OBSERVATION_FOR_LLM = 15000
+# Playwright MCP（browser_snapshot / click）返回 YAML 快照可达数万～十万字；按默认 15k 截断会砍掉 #content_left 内标题链接，导致模型误点 [id="1"] 容器或瞎猜 ref。
+MAX_REACT_OBSERVATION_PLAYWRIGHT_MCP = 100000
+
+
+def _observation_looks_like_playwright_mcp(s: str) -> bool:
+    """识别 @playwright/mcp 的 Observation（Ran Playwright / 快照路径），以便放宽截断上限。"""
+    head = (s or "")[:16000]
+    hl = head.lower()
+    if "### ran playwright code" in hl:
+        return True
+    if ".playwright-mcp" in head or "playwright-mcp\\" in head or "playwright-mcp/" in head:
+        return True
+    return False
+
+
+def _effective_observation_max_len(s: str) -> int:
+    if _observation_looks_like_playwright_mcp(s):
+        return MAX_REACT_OBSERVATION_PLAYWRIGHT_MCP
+    return MAX_REACT_OBSERVATION_FOR_LLM
+
+
 _OBS_TRUNCATION_SUFFIX_FOR_LLM = (
     "\n\n...[系统警告：外部工具或检索返回数据过长，已自动截断。"
     "请基于当前已有的前文信息进行推理，或更换更精确的检索/读取方式。]..."
@@ -288,7 +322,7 @@ def _truncate_observation_for_llm(text: Any) -> str:
     工具层 run_tool / MCP invoke 返回的原始对象未被修改；此处为展示层护城河。
     """
     s = str(text or "")
-    max_len = MAX_REACT_OBSERVATION_FOR_LLM
+    max_len = _effective_observation_max_len(s)
     if len(s) <= max_len:
         return s
     suf = _OBS_TRUNCATION_SUFFIX_FOR_LLM
@@ -2634,6 +2668,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
         _prefix_before_tools = f"""你是助手；优先遵守用户消息中的格式要求；不要寒暄，不要用 Markdown 章节标题当开场。
 {intel_b}
 {chat_task_hint}
+{_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM}
 
 可用工具：
 """
@@ -2642,6 +2677,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 若任务需要读文件、执行命令等，仍使用下方 Thought / Action / Observation；工具用完后，只输出用户要求的正文（若用户要求仅 JSON，勿加 markdown 围栏与解释性前言）。
 {intel_b}
 {chat_task_hint}
+{_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM}
 
 可用工具：
 """
@@ -2649,6 +2685,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
         _prefix_before_tools = f"""你是一个智能助手，使用 ReAct 格式思考。
 {intel_b}
 {chat_task_hint}
+{_MERMAID_SAFE_RULES_SYSTEM_BLOCK}
 
 可用工具：
 """
@@ -4592,12 +4629,14 @@ async def _run_react_core(
             except Exception as _ode:
                 logger.debug("[L3 Agent] observation_dedup 跳过: %s", _ode)
             observation_full = str(observation or "")
-            if len(observation_full) > MAX_REACT_OBSERVATION_FOR_LLM:
+            _eff_obs_max = _effective_observation_max_len(observation_full)
+            if len(observation_full) > _eff_obs_max:
                 logger.info(
-                    "[L3 Agent] Observation 超长已截断供 LLM：tool=%s full_len=%d max=%d",
+                    "[L3 Agent] Observation 超长已截断供 LLM：tool=%s full_len=%d max=%d (playwright_mcp=%s)",
                     (tool or "")[:120],
                     len(observation_full),
-                    MAX_REACT_OBSERVATION_FOR_LLM,
+                    _eff_obs_max,
+                    _observation_looks_like_playwright_mcp(observation_full),
                 )
             observation = _truncate_observation_for_llm(observation_full)
             ctx.observation = observation
@@ -4819,6 +4858,7 @@ def _build_direct_system_prompt(
         )
     else:
         lines.append("只输出用户要求的正文。")
+    lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
     try:
         from l3_node.local_memory import get_local_memory_for_prompt
 

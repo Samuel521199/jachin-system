@@ -1,4 +1,4 @@
-﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -1067,6 +1067,20 @@ fn main() {
             }
 
             register_omni_hotkeys(app.handle());
+
+            // 默认不自动弹出 Omni：tauri.conf 里 chat.visible=false，且本处未 show。
+            // 一键开发脚本可设 JACHIN_SHOW_OMNI_ON_START=1（或 start-layer3.ps1 -ShowOmni）启动即显示。
+            if std::env::var("JACHIN_SHOW_OMNI_ON_START")
+                .map(|v| {
+                    let v = v.trim();
+                    v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+                })
+                .unwrap_or(false)
+            {
+                show_omni_chat_window(&app.handle());
+                eprintln!("[Omni] 已根据 JACHIN_SHOW_OMNI_ON_START 在启动时显示聊天窗口");
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1175,34 +1189,39 @@ async fn restore_chat_window_after_skill_canvas_rust(app: tauri::AppHandle) -> R
     Ok(())
 }
 
+/// 主线程：将 Omni 聊天窗置于条形态并显示、聚焦（与 `show_chat_window` 命令一致）。
+fn show_omni_chat_window(app: &tauri::AppHandle) {
+    if let Some(chat_window) = app.get_webview_window("chat") {
+        if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+            let _ = restore_chat_full_omni(app);
+        } else if !chat_window.is_visible().unwrap_or(false) {
+            let _ = chat_window.set_min_size(Some(Size::Physical(PhysicalSize::new(
+                CHAT_MIN_WIDTH,
+                CHAT_MIN_HEIGHT,
+            ))));
+            let (w, h) = CHAT_RESTORE_SIZE
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
+            let w = w.max(CHAT_MIN_WIDTH);
+            let h = h.max(CHAT_MIN_HEIGHT);
+            let _ = chat_window.set_size(Size::Physical(PhysicalSize::new(w, h)));
+            let _ = position_chat_omni_bar(app);
+        } else {
+            let _ = position_chat_omni_bar(app);
+        }
+        let _ = chat_window.show();
+        let _ = chat_window.set_focus();
+    }
+}
+
 /// 显示对话窗口（Omni 条）：屏幕居中偏下，不依赖桌面精灵位置
 #[tauri::command]
 async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
-        if let Some(chat_window) = app_handle.get_webview_window("chat") {
-            if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
-                let _ = restore_chat_full_omni(&app_handle);
-            } else if !chat_window.is_visible().unwrap_or(false) {
-                let _ = chat_window.set_min_size(Some(Size::Physical(PhysicalSize::new(
-                    CHAT_MIN_WIDTH,
-                    CHAT_MIN_HEIGHT,
-                ))));
-                let (w, h) = CHAT_RESTORE_SIZE
-                    .lock()
-                    .ok()
-                    .and_then(|g| *g)
-                    .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
-                let w = w.max(CHAT_MIN_WIDTH);
-                let h = h.max(CHAT_MIN_HEIGHT);
-                let _ = chat_window.set_size(Size::Physical(PhysicalSize::new(w, h)));
-                let _ = position_chat_omni_bar(&app_handle);
-            } else {
-                let _ = position_chat_omni_bar(&app_handle);
-            }
-            let _ = chat_window.show();
-            let _ = chat_window.set_focus();
-        }
+        show_omni_chat_window(&app_handle);
     })
     .map_err(|e| e.to_string())?;
     Ok(())

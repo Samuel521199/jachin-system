@@ -18,6 +18,7 @@
     "updater:allow-install",
     "updater:allow-download-and-install",
     "allow-updater-debug-append",
-    "allow-spawn-hot-update"
+    "allow-spawn-hot-update",
+    "allow-app-core-invoke"
   ]
 }
