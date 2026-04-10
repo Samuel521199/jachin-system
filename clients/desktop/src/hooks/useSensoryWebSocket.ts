@@ -1,4 +1,4 @@
-/**
+﻿/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -403,6 +403,29 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     return true;
   }, [larkChatId]);
 
+  /**
+   * 生成式 UI：将用户在面板中确认的参数发给 L3（ws_server `tool_ui_result`），
+   * 由 Native 工具执行后通过 answer 帧回传正文。
+   */
+  const sendToolUiResult = useCallback(
+    (p: { toolName: string; toolCallId?: string; result: unknown }) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        console.warn("[Sensory] sendToolUiResult: WebSocket 未连接");
+        return false;
+      }
+      const payload: Record<string, unknown> = {
+        type: "tool_ui_result",
+        tool_name: p.toolName,
+        result: p.result,
+      };
+      if (p.toolCallId) payload.tool_call_id = p.toolCallId;
+      if (larkChatId) payload.chat_id = larkChatId;
+      wsRef.current.send(JSON.stringify(payload));
+      return true;
+    },
+    [larkChatId],
+  );
+
   useEffect(() => {
     connect();
     return () => disconnect();
@@ -442,6 +465,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     reconnect: connect,
     /** 发送聊天输入到 Layer 3 */
     sendInput,
+    /** 生成式 UI 工具参数 → L3 Native 执行 */
+    sendToolUiResult,
     /** 通知 L3 清空 WS 会话缓冲（控制帧，非用户 intent） */
     sendSessionClearControl,
     /** Lark 镜像：注册回调，Lark 用户发消息时终端同步显示 */

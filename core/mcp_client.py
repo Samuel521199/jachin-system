@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
 
 连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
@@ -103,6 +103,28 @@ def normalize_mcp_schema_aliases(tool_name: str, arguments: dict[str, Any] | Non
                 out.pop(k, None)
             break
     return out
+
+
+def _stdio_args_reference_missing_py_file(args: Any) -> Optional[str]:
+    """
+    stdio MCP 的 args 里若出现 .py 路径且文件不存在，子进程会立即退出并表现为 Connection closed。
+    提前跳过并打日志，避免拖住其它 MCP 的排障。
+    """
+    if not isinstance(args, list):
+        return None
+    for a in args:
+        if not isinstance(a, str):
+            continue
+        s = a.strip()
+        if len(s) < 4 or not s.lower().endswith(".py"):
+            continue
+        try:
+            p = Path(s)
+            if not p.is_file():
+                return s
+        except OSError:
+            return s
+    return None
 
 
 def _resolve_stdio_command(command: str) -> str:
@@ -385,14 +407,36 @@ class MCPManager:
         except Exception as e:
             logger.warning("[MCP] 运行时解析/预检异常 server_id=%s err=%s，跳过该 Server", server_id, e)
             return
+        args_list = args if isinstance(args, list) else []
+        try:
+            from core.inventory_scanner import _prune_mcp_filesystem_roots
+
+            pruned = _prune_mcp_filesystem_roots(list(args_list))
+            if pruned is None:
+                logger.warning(
+                    "[MCP] 跳过 server_id=%s：server-filesystem 无有效根目录（路径须存在且为目录）",
+                    server_id,
+                )
+                return
+            args_list = pruned
+        except Exception:
+            pass
+        miss_py = _stdio_args_reference_missing_py_file(args_list)
+        if miss_py:
+            logger.warning(
+                "[MCP] 跳过 server_id=%s：入口脚本不存在 path=%s（请修正 ~/.jachin/mcp_servers.json 或运行 scripts/repair-mcp-servers.ps1）",
+                server_id,
+                miss_py,
+            )
+            return
         instance = MCPServerInstance(
             server_id=server_id,
             command=command,
-            args=args if isinstance(args, list) else [],
+            args=args_list,
             env=env,
         )
         try:
-            _log_tavily_before_stdio_connect(server_id, args if isinstance(args, list) else [], env)
+            _log_tavily_before_stdio_connect(server_id, args_list, env)
             await instance.connect()
             tools = await instance.list_tools()
         except MCPConnectionError as e:
@@ -449,6 +493,16 @@ class MCPManager:
         except Exception as e:
             logger.debug("[MCP] dotenv merge at start: %s", e)
         self._register_builtin_tools()
+        try:
+            from l3_node.paths import get_app_root
+
+            from core.mcp_json_repair import repair_hr_atomic_tools_path
+
+            if repair_hr_atomic_tools_path(get_app_root()):
+                self._mcp_cfg_loaded_mtime = None
+                logger.info("[MCP] mcp_json_repair 已更新 ~/.jachin/mcp_servers.json，将重载 stdio 配置")
+        except Exception as e:
+            logger.debug("[MCP] mcp_json_repair at start: %s", e)
         mt = self._config_file_mtime()
         if self._mcp_cfg_loaded_mtime != mt:
             self._mcp_cfg_loaded_mtime = mt
@@ -680,14 +734,36 @@ class MCPManager:
         except Exception as e:
             logger.warning("[MCP] add_server 运行时解析/预检异常 server_id=%s err=%s", server_id, e)
             return False
+        args_list = args if isinstance(args, list) else []
+        try:
+            from core.inventory_scanner import _prune_mcp_filesystem_roots
+
+            pruned = _prune_mcp_filesystem_roots(list(args_list))
+            if pruned is None:
+                logger.warning(
+                    "[MCP] add_server 跳过 server_id=%s：server-filesystem 无有效根目录",
+                    server_id,
+                )
+                return False
+            args_list = pruned
+        except Exception:
+            pass
+        miss_py = _stdio_args_reference_missing_py_file(args_list)
+        if miss_py:
+            logger.warning(
+                "[MCP] add_server 跳过 server_id=%s：入口脚本不存在 path=%s",
+                server_id,
+                miss_py,
+            )
+            return False
         instance = MCPServerInstance(
             server_id=server_id,
             command=command,
-            args=args if isinstance(args, list) else [],
+            args=args_list,
             env=env,
         )
         try:
-            _log_tavily_before_stdio_connect(server_id, args if isinstance(args, list) else [], env)
+            _log_tavily_before_stdio_connect(server_id, args_list, env)
             await instance.connect()
             tools = await instance.list_tools()
             self._instances[server_id] = instance

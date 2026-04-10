@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3_LOCAL MCP 制品中的 **stdio 声明式** 包：仅 ``plugin.json`` + ``stdio_server{command,args,env}``，
 无 Python ``tools[]`` 模块。L3 启动时注入 ``MCPManager.add_server``，与 ``mcp_servers.json`` 行为一致。
 
@@ -199,6 +199,21 @@ async def register_l3_packaged_stdio_mcps() -> int:
         }
         if env_merged is not None:
             cfg["env"] = env_merged
+
+        if plugin_id == "com.jachin.mcp.office_powerpoint" or server_id == "com.jachin.mcp.office_powerpoint":
+            try:
+                import importlib.util
+
+                if importlib.util.find_spec("ppt_mcp_server") is None:
+                    logger.error(
+                        "[L3PackagedStdio] 未安装 Office PowerPoint MCP 的 Python 包，已跳过 server_id=%s。"
+                        "请在当前 Python（与 L3 相同）执行: pip install office-powerpoint-mcp-server==2.0.7",
+                        server_id,
+                    )
+                    continue
+            except Exception as e:
+                logger.debug("[L3PackagedStdio] ppt_mcp_server 探测跳过: %s", e)
+
         try:
             cache_root = _l3_mcp_cache_root().resolve()
             try:

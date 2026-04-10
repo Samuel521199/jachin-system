@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 路径解析：支持 PyInstaller 打包与开发模式
 
 PyInstaller 时 __file__ 指向 _MEIPASS 临时目录，skills_repo 不在其中。
@@ -22,18 +22,22 @@ def get_app_root() -> Path:
     """
     获取应用根目录。
     frozen 时：基于 exe 路径、cwd 或 JACHIN_APP_ROOT，不依赖 skills_repo/plugin。
-    开发时：返回项目根（含 skills_repo/plugin/）。
+    开发时：默认以本文件所在仓库根为准；若设置了 JACHIN_APP_ROOT 且目录下含 l3_node 或 skills_repo，则优先采用（避免
+    多套 Python / 错误 cwd 导致 l3_node 包不在本仓库时找不到 skills_repo/plugin）。
     """
+    env_root = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+    if env_root:
+        p = Path(env_root).expanduser().resolve()
+        if p.is_dir() and ((p / "l3_node").is_dir() or (p / "skills_repo").is_dir()):
+            return p
+
     if getattr(sys, "frozen", False):
-        env_root = os.environ.get("JACHIN_APP_ROOT")
-        if env_root:
-            return Path(env_root).resolve()
         exe_dir = Path(sys.executable).resolve().parent
         parent = exe_dir.parent
         cwd = Path.cwd()
         # 便携包：exe 在 bin/，父级为 dist 根
-        for p in (exe_dir, parent, cwd, cwd.parent):
-            if p.exists():
-                return p
+        for cand in (exe_dir, parent, cwd, cwd.parent):
+            if cand.exists():
+                return cand
         return parent
     return Path(__file__).resolve().parent.parent

@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 本地 WebSocket 服务
 
 监听 127.0.0.1:18981（189xx 系列，与 L2 18888、Sensory 18881 互不冲突），
@@ -295,6 +295,57 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                         "run_id": "",
                     },
                 )
+                continue
+
+            # 生成式 UI：前端提交 tool 参数，Native 执行或生成说明，不经本轮 LLM ReAct（会话仍落盘）
+            if msg_type == "tool_ui_result":
+                chat_id = (msg.get("chat_id") or "").strip()
+                if chat_id:
+                    session_messages = _load_lark_session(chat_id)
+                tool_raw = (msg.get("tool_name") or msg.get("tool_id") or "").strip()
+                result = msg.get("result")
+                run_id = str(uuid.uuid4())[:8]
+                broadcast = bool(chat_id)
+                tid = tool_raw.lower()
+                if tid in ("compose_essay", "core:compose_essay"):
+                    tid = "core:compose_essay"
+                try:
+                    if tid == "core:compose_essay":
+                        from l3_node.primitives.tools.loader import run_tool
+
+                        body = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+                        out = await asyncio.to_thread(run_tool, "core:compose_essay", body, None)
+                        line_user = f"[tool_ui_result core:compose_essay]\n{body}"
+                        session_messages.append({"role": "user", "content": line_user})
+                        session_messages.append({"role": "assistant", "content": str(out)})
+                        if chat_id:
+                            _save_lark_session(chat_id, session_messages)
+                        ans_payload = {"step_type": "answer", "content": str(out), "run_id": run_id}
+                    elif tid in ("generate_ppt", "core:generate_ppt"):
+                        sel = json.dumps(result, ensure_ascii=False) if result is not None else ""
+                        out = (
+                            "## PPT 模版已选择\n\n"
+                            f"参数：{sel}\n\n"
+                            "请在对话中请模型根据上述选择继续生成幻灯片大纲或内容。"
+                        )
+                        line_user = f"[tool_ui_result generate_ppt]\n{sel}"
+                        session_messages.append({"role": "user", "content": line_user})
+                        session_messages.append({"role": "assistant", "content": out})
+                        if chat_id:
+                            _save_lark_session(chat_id, session_messages)
+                        ans_payload = {"step_type": "answer", "content": out, "run_id": run_id}
+                    else:
+                        out = f"[tool_ui_result] 未知工具: {tool_raw}"
+                        ans_payload = {"step_type": "error", "content": out, "run_id": run_id}
+                    await _send_safe(websocket, ans_payload)
+                    if broadcast and chat_id:
+                        await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+                except Exception as e:
+                    logger.exception("[L3 WS] tool_ui_result 失败: %s", e)
+                    err_payload = {"step_type": "error", "content": f"[tool_ui_result] 执行失败: {e}", "run_id": run_id}
+                    await _send_safe(websocket, err_payload)
+                    if broadcast and chat_id:
+                        await _broadcast_to_mirror_subscribers(chat_id, err_payload)
                 continue
 
             intent = (msg.get("intent") or msg.get("content") or "").strip()

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus Layer 2 CLI
 python -m core.cli pair — L1↔L2 **辅助**配对（无头/SSH/恢复）；主路径见 L2 /gateway：
 L1 邮箱+密码 或「Nexus 账号登录」。docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md
@@ -68,7 +68,7 @@ def _format_short_code(code: str) -> str:
 
 
 @click.group()
-@click.version_option(version="0.8.106", prog_name="Jachin Nexus CLI")
+@click.version_option(version="0.8.107", prog_name="Jachin Nexus CLI")
 def cli() -> None:
     """Jachin Nexus Layer 2 CLI（L1↔L2 辅助配对、refresh-tenant 等）"""
     pass
@@ -161,7 +161,7 @@ def pair(base_url: str, recover: bool, code: str) -> None:
             json={
                 "device_fingerprint": None,
                 "environment_type": "bare_metal",
-                "core_version": "0.8.106",
+                "core_version": "0.8.107",
             },
             timeout=10.0,
         )

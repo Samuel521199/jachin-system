@@ -60,6 +60,7 @@ use tauri_plugin_notification::NotificationExt;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
 /// [v5.0 已废弃] 原 Dapr 调用，现由 Layer 1 HTTP 心跳与云端 API 取代
@@ -270,8 +271,21 @@ const CHAT_DEFAULT_WIDTH: u32 = 440;
 const CHAT_DEFAULT_HEIGHT: u32 = 520;
 const CHAT_MIN_WIDTH: u32 = 360;
 const CHAT_MIN_HEIGHT: u32 = 280;
-const CHAT_COMPANION_PX: u32 = 56;
-const CHAT_COMPANION_MIN_PX: u32 = 48;
+/// 陪伴条略宽于球体，贴边缩进后仍有一條可悬停的透明区（类似网盘角标）
+const CHAT_COMPANION_W: u32 = 72;
+const CHAT_COMPANION_H: u32 = 56;
+const CHAT_COMPANION_MIN_W: u32 = 56;
+const CHAT_COMPANION_MIN_H: u32 = 48;
+/// 贴边时留在屏幕内的可见厚度（物理像素）
+const COMPANION_PEEK_VISIBLE_PX: i32 = 10;
+/// 「dock」= 小球完全露出时的左上角；peek 只改窗口位置不改此值
+static COMPANION_DOCK_POSITION: StdMutex<Option<(i32, i32)>> = StdMutex::new(None);
+
+/// Omni 双栏所需最小 **逻辑宽度**（左列 450 + 右画布 + 边距）；`outer_size` 为物理像素，须乘 `scale_factor`
+const CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL: f64 = 1040.0;
+
+/// Skill 画布打开前记录的外宽度，关闭时还原（避免用户误以为需手动拖窗）
+static CHAT_WIDTH_BEFORE_SKILL_CANVAS: StdMutex<Option<u32>> = StdMutex::new(None);
 
 /// 供前端在 Esc 后立即切换陪伴 UI（不依赖 event listen 权限）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -375,12 +389,157 @@ fn position_chat_companion(app: &tauri::AppHandle) -> Result<(), String> {
     let mon_pos = monitor.position();
     let mon_size = monitor.size();
     let margin: i32 = 20;
-    let w = CHAT_COMPANION_PX as i32;
-    let h = CHAT_COMPANION_PX as i32;
+    let w = CHAT_COMPANION_W as i32;
+    let h = CHAT_COMPANION_H as i32;
     let x = mon_pos.x + mon_size.width as i32 - w - margin;
     let y = mon_pos.y + mon_size.height as i32 - h - margin;
     chat.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn companion_sync_dock_from_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    let p = chat.outer_position().map_err(|e| e.to_string())?;
+    if let Ok(mut g) = COMPANION_DOCK_POSITION.lock() {
+        *g = Some((p.x, p.y));
+    }
+    Ok(())
+}
+
+fn companion_ensure_dock(app: &tauri::AppHandle) -> Result<(i32, i32), String> {
+    if let Ok(g) = COMPANION_DOCK_POSITION.lock() {
+        if let Some(p) = *g {
+            return Ok(p);
+        }
+    }
+    companion_sync_dock_from_window(app)?;
+    if let Ok(g) = COMPANION_DOCK_POSITION.lock() {
+        if let Some(p) = *g {
+            return Ok(p);
+        }
+    }
+    Err("companion dock unset".into())
+}
+
+/// 贴最近屏边，仅留一条细边在桌面内（网盘式半隐藏）
+fn companion_apply_peek(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    let (dx, dy) = companion_ensure_dock(app)?;
+    let sz = chat.outer_size().map_err(|e| e.to_string())?;
+    let w = sz.width as i32;
+    let h = sz.height as i32;
+    let monitor = chat
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let mx = mon_pos.x;
+    let my = mon_pos.y;
+    let mw = mon_size.width as i32;
+    let mh = mon_size.height as i32;
+    let cx = dx + w / 2;
+    let cy = dy + h / 2;
+    let d_left = cx - mx;
+    let d_right = mx + mw - cx;
+    let d_top = cy - my;
+    let d_bottom = my + mh - cy;
+    let peek = COMPANION_PEEK_VISIBLE_PX;
+    let (nx, ny) = if d_right <= d_left && d_right <= d_top && d_right <= d_bottom {
+        let x = mx + mw - peek;
+        let y = dy.clamp(my, (my + mh - h).max(my));
+        (x, y)
+    } else if d_left <= d_right && d_left <= d_top && d_left <= d_bottom {
+        let x = mx - w + peek;
+        let y = dy.clamp(my, (my + mh - h).max(my));
+        (x, y)
+    } else if d_top <= d_bottom {
+        let y = my - h + peek;
+        let x = dx.clamp(mx, (mx + mw - w).max(mx));
+        (x, y)
+    } else {
+        let y = my + mh - peek;
+        let x = dx.clamp(mx, (mx + mw - w).max(mx));
+        (x, y)
+    };
+    chat.set_position(PhysicalPosition::new(nx, ny))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn companion_apply_reveal(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(chat) = app.get_webview_window("chat") else {
+        return Err("chat window missing".into());
+    };
+    let (dx, dy) = companion_ensure_dock(app)?;
+    chat.set_position(PhysicalPosition::new(dx, dy))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn companion_peek(app: tauri::AppHandle) -> Result<(), String> {
+    if !CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = companion_apply_peek(&app_clone);
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn companion_reveal(app: tauri::AppHandle) -> Result<(), String> {
+    if !CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = companion_apply_reveal(&app_clone);
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn companion_set_dock_position(app: tauri::AppHandle, x: i32, y: i32) -> Result<(), String> {
+    if !CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(chat) = app_clone.get_webview_window("chat") {
+            let Ok(sz) = chat.outer_size() else {
+                return;
+            };
+            let Ok(m_opt) = chat.current_monitor() else {
+                return;
+            };
+            let Some(monitor) = m_opt else {
+                return;
+            };
+            let mx = monitor.position().x;
+            let my = monitor.position().y;
+            let mw = monitor.size().width as i32;
+            let mh = monitor.size().height as i32;
+            let w = sz.width as i32;
+            let h = sz.height as i32;
+            let cx = x.clamp(mx, (mx + mw - w).max(mx));
+            let cy = y.clamp(my, (my + mh - h).max(my));
+            let _ = chat.set_position(PhysicalPosition::new(cx, cy));
+            if let Ok(mut g) = COMPANION_DOCK_POSITION.lock() {
+                *g = Some((cx, cy));
+            }
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -397,19 +556,20 @@ fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
-        CHAT_COMPANION_MIN_PX,
-        CHAT_COMPANION_MIN_PX,
+        CHAT_COMPANION_MIN_W,
+        CHAT_COMPANION_MIN_H,
     ))))
     .map_err(|e| format!("set_min_size(companion): {e}"))?;
     chat.set_size(Size::Physical(PhysicalSize::new(
-        CHAT_COMPANION_PX,
-        CHAT_COMPANION_PX,
+        CHAT_COMPANION_W,
+        CHAT_COMPANION_H,
     )))
     .map_err(|e| format!("set_size(companion): {e}"))?;
     position_chat_companion(app)?;
     chat
         .show()
         .map_err(|e| format!("show(companion): {e}"))?;
+    let _ = companion_sync_dock_from_window(app);
     CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
     emit_omni_companion_ui(app, true);
     Ok(())
@@ -436,6 +596,9 @@ fn restore_chat_full_omni(app: &tauri::AppHandle) -> Result<(), String> {
     position_chat_omni_bar(app)?;
     CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
     emit_omni_companion_ui(app, false);
+    if let Ok(mut g) = COMPANION_DOCK_POSITION.lock() {
+        *g = None;
+    }
     Ok(())
 }
 
@@ -451,6 +614,9 @@ fn hide_chat_fully_reset(app: &tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| format!("set_min_size(reset): {e}"))?;
     CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
     emit_omni_companion_ui(app, false);
+    if let Ok(mut g) = COMPANION_DOCK_POSITION.lock() {
+        *g = None;
+    }
     chat.hide().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -636,6 +802,11 @@ fn main() {
             show_chat_window,
             hide_chat_window,
             is_chat_companion_mode,
+            companion_peek,
+            companion_reveal,
+            companion_set_dock_position,
+            expand_chat_window_for_skill_canvas,
+            restore_chat_window_after_skill_canvas_rust,
             show_console_window,
             quick_action_privacy_mode,
             quick_action_clear_memory,
@@ -945,6 +1116,62 @@ fn stt_wake_listener_running() -> Result<bool, String> {
 #[tauri::command]
 async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
     stt::WakeWordDetector::emit_wake_up(&app);
+    Ok(())
+}
+
+/// 右侧 Skill 画布激活时：保证 Omni 窗口总宽度 ≥ 双栏最小值，并前置显示/聚焦（无需用户手动拉宽）
+#[tauri::command]
+async fn expand_chat_window_for_skill_canvas(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    app
+        .run_on_main_thread(move || {
+            let Some(chat) = app_handle.get_webview_window("chat") else {
+                return;
+            };
+            let Ok(sz) = chat.outer_size() else {
+                return;
+            };
+            if let Ok(mut g) = CHAT_WIDTH_BEFORE_SKILL_CANVAS.lock() {
+                if g.is_none() {
+                    *g = Some(sz.width);
+                }
+            }
+            let factor = chat.scale_factor().unwrap_or(1.0);
+            let min_w_phys =
+                (CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL * factor).ceil().max(1.0) as u32;
+            let new_w = sz.width.max(min_w_phys);
+            // 始终 set_size：避免「已达标」时系统未重排导致右栏仍要手拖
+            let _ = chat.set_size(Size::Physical(PhysicalSize::new(new_w, sz.height)));
+            let _ = position_chat_omni_bar(&app_handle);
+            let _ = chat.show();
+            let _ = chat.set_focus();
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Skill 画布关闭后恢复扩窗前宽度
+#[tauri::command]
+async fn restore_chat_window_after_skill_canvas_rust(app: tauri::AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    app
+        .run_on_main_thread(move || {
+            let prev = CHAT_WIDTH_BEFORE_SKILL_CANVAS
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take());
+            let Some(w) = prev else {
+                return;
+            };
+            let Some(chat) = app_handle.get_webview_window("chat") else {
+                return;
+            };
+            if let Ok(sz) = chat.outer_size() {
+                let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, sz.height)));
+                let _ = position_chat_omni_bar(&app_handle);
+            }
+        })
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

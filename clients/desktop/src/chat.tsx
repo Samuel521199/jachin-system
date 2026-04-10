@@ -1,11 +1,13 @@
-/**
+﻿/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
- * 独立 chat 窗口入口；大控制台仍为 main（console.html）。
+ * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
+ * Skill 右侧画布挂载点在本文件内联 flex 第二列，**未**使用 createPortal。
  * Sensory 步骤与回复逻辑与 `useSensoryWebSocket` + `sensoryStepFormat` 对齐（云端 v0.8.99 行为）。
  */
 
-import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import ReactDOM from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,22 +16,34 @@ import { voiceChat, synthesizeSpeech, voiceProcess, streamChatMessage, tryL3Agen
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import { useSensoryWebSocket, type SensoryAnswerMeta, type StreamChunkKind } from "./hooks/useSensoryWebSocket";
-import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "./utils/messageStorage";
+import {
+  loadMessages,
+  saveMessages,
+  clearMessages,
+  addMessage,
+  findUnresolvedToolCallMessageIndex,
+  dismissUnresolvedToolCallMessage,
+  StoredMessage,
+} from "./utils/messageStorage";
+import { createDemoComposeEssaySkillUiMessage, createDemoGeneratePptSkillUiMessage } from "./skills-ui/devDemo";
+import { getActiveSkillCanvasFromMessages, SkillCanvasPane } from "./skills-ui";
+import { expandChatWindowForSkillCanvas, SKILL_CHAT_COLUMN_WIDTH } from "./skills-ui/skillCanvasWindow";
+import type { ToolUiSubmitPayload } from "./skills-ui/types";
 import { extractCompleteSentences, createAudioQueue } from "./utils/streamingTts";
 import { typewriterAnimation } from "./utils/typewriter";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "./constants/chatResponseTimeout";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
 import {
+  applyAssistantStreamChunk,
   createReasoningStreamAcc,
-  mergeAssistantParts,
   normalizeAssistantOutput,
-  processReasoningDelta,
   type ReasoningStreamAcc,
 } from "./utils/reasoningStreamSplit";
 import type { WavePhase } from "./components/Chat/VoiceWaveform";
 import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
 import type { JachinCoreMachineState } from "./components/Omni/JachinCore";
 import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
+import { OmniMiniSpark } from "./components/Omni/OmniMiniSpark";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
 import "./styles/globals.css";
@@ -75,6 +89,7 @@ function ChatApp() {
     registerStepHandler,
     registerMirrorInputHandler,
     sendInput,
+    sendToolUiResult,
     sendSessionClearControl,
     memoryCompactSuggest,
     sendMemoryCompactControl,
@@ -147,10 +162,22 @@ function ChatApp() {
   /** 右下角陪伴圆模式（窗口缩小，非完全 hide） */
   const [companionMode, setCompanionMode] = useState(false);
 
+  /**
+   * 启动时同步 Rust 陪伴态。若该 invoke 较慢，用户可能已先按 Esc 坍缩；
+   * 后到的 false 会错误盖掉 true → UI 与大窗不同步、球「随机」才出现。
+   * 规则：本地已是陪伴态时，不再被这次启动同步降成 false。
+   */
   useEffect(() => {
+    let cancelled = false;
     void invoke<boolean>("is_chat_companion_mode")
-      .then((v) => setCompanionMode(Boolean(v)))
+      .then((v) => {
+        if (cancelled) return;
+        setCompanionMode((prev) => (prev ? prev : Boolean(v)));
+      })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -171,10 +198,30 @@ function ChatApp() {
 
   const requestHideChat = useCallback(async () => {
     try {
+      // 乐观切陪伴 UI，与 Rust 立刻缩小窗口对齐；避免 mode=wait 时大窗已缩小仍渲主界面一帧
+      setCompanionMode((prev) => (prev ? prev : true));
       const r = await invoke<HideChatWindowResult>("hide_chat_window");
       setCompanionMode(Boolean(r?.companion));
     } catch (err) {
       console.error("[Omni] hide_chat_window failed:", err);
+      setCompanionMode(false);
+      // 陪伴坍缩失败时仍应能关掉窗口，避免 × / Esc 完全无响应
+      try {
+        const w = getCurrentWindow();
+        await w.hide();
+        setCompanionMode(false);
+      } catch (e2) {
+        console.error("[Omni] fallback hide() failed:", e2);
+      }
+    }
+  }, []);
+
+  const requestExpandFromSpark = useCallback(async () => {
+    try {
+      await invoke("show_chat_window");
+      setCompanionMode(false);
+    } catch (err) {
+      console.error("[Omni] show_chat_window failed:", err);
     }
   }, []);
 
@@ -220,6 +267,95 @@ function ChatApp() {
     }
   }, [messages]);
 
+  /**
+   * 生成式 UI：经 L3 WebSocket `tool_ui_result` 执行 Native 工具，answer 帧写回同一条气泡并标记 resolved。
+   */
+  const handleToolUiResult = useCallback(
+    async (payload: ToolUiSubmitPayload): Promise<void> => {
+      registerStepHandler(null);
+      setIsTyping(true);
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          registerAnswerHandler(null);
+          setIsTyping(false);
+          setIsLoading(false);
+          resolve();
+        };
+        const timer = window.setTimeout(() => {
+          registerAnswerHandler(null);
+          setMessages((prev) => {
+            const idx = findUnresolvedToolCallMessageIndex(prev, payload);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const cur = next[idx];
+            next[idx] = {
+              ...cur,
+              tool_call: { ...cur.tool_call!, resolved: true },
+              content: "提交超时：未收到 L3 回复。请确认 ws://127.0.0.1:18981 已连接且已重启 L3。",
+              source: "L3",
+            };
+            saveMessages(next);
+            return next;
+          });
+          finish();
+        }, CHAT_RESPONSE_TIMEOUT_MS);
+
+        registerAnswerHandler((answerContent) => {
+          window.clearTimeout(timer);
+          registerAnswerHandler(null);
+          setMessages((prev) => {
+            const idx = findUnresolvedToolCallMessageIndex(prev, payload);
+            if (idx < 0) {
+              return prev;
+            }
+            const next = [...prev];
+            const cur = next[idx];
+            const n = normalizeAssistantOutput(answerContent || "");
+            next[idx] = {
+              ...cur,
+              tool_call: { ...cur.tool_call!, resolved: true },
+              content: n.content,
+              reasoning: [cur.reasoning ?? "", n.reasoning].filter(Boolean).join("\n\n").trim(),
+              source: "L3",
+            };
+            saveMessages(next);
+            return next;
+          });
+          finish();
+        });
+
+        const sent = sendToolUiResult({
+          toolName: payload.toolName,
+          toolCallId: payload.toolCallId,
+          result: payload.result,
+        });
+        if (!sent) {
+          window.clearTimeout(timer);
+          registerAnswerHandler(null);
+          setMessages((prev) => {
+            const idx = findUnresolvedToolCallMessageIndex(prev, payload);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const cur = next[idx];
+            next[idx] = {
+              ...cur,
+              tool_call: { ...cur.tool_call!, resolved: true },
+              content: "无法连接 L3 WebSocket，参数未送达。请启动 L3 后再试。",
+              source: "L3",
+            };
+            saveMessages(next);
+            return next;
+          });
+          finish();
+        }
+      });
+    },
+    [registerAnswerHandler, registerStepHandler, sendToolUiResult],
+  );
+
   // 滚动由 HolographicChat 内部的 messagesEndRef 处理，此处不重复
 
   // Lark 镜像：Lark 用户发消息时，终端同步显示并接收后续回复
@@ -245,14 +381,13 @@ function ChatApp() {
             const u = [...prev];
             const last = u[u.length - 1];
             if (last?.role !== "assistant") return prev;
-            const { content, reasoning } = processReasoningDelta(
+            const merged = applyAssistantStreamChunk(
               mirrorReasoningAccRef.current,
               last.content,
-              last.reasoning ?? "",
+              last.reasoning,
               chunk,
               true,
             );
-            const merged = mergeAssistantParts(content, reasoning);
             u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
             return u;
           });
@@ -265,14 +400,13 @@ function ChatApp() {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role !== "assistant") return prev;
-          const { content, reasoning } = processReasoningDelta(
+          const merged = applyAssistantStreamChunk(
             mirrorReasoningAccRef.current,
             last.content,
-            last.reasoning ?? "",
+            last.reasoning,
             delta,
             false,
           );
-          const merged = mergeAssistantParts(content, reasoning);
           u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
           return u;
         });
@@ -441,14 +575,13 @@ function ChatApp() {
           const updated = [...prev];
           const last = updated[updated.length - 1];
           if (last?.role !== "assistant") return prev;
-          const { content, reasoning } = processReasoningDelta(
+          const merged = applyAssistantStreamChunk(
             reasoningAccRef.current,
             last.content,
-            last.reasoning ?? "",
+            last.reasoning,
             chunk,
             true,
           );
-          const merged = mergeAssistantParts(content, reasoning);
           updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
           return updated;
         });
@@ -462,14 +595,13 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          const { content, reasoning } = processReasoningDelta(
+          const merged = applyAssistantStreamChunk(
             reasoningAccRef.current,
             last.content,
-            last.reasoning ?? "",
+            last.reasoning,
             delta,
             false,
           );
-          const merged = mergeAssistantParts(content, reasoning);
           updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
         }
         return updated;
@@ -882,9 +1014,13 @@ function ChatApp() {
 
   const openConsole = () => {
     void invoke("show_console_window");
+    setCompanionMode((p) => (p ? p : true));
     void invoke<HideChatWindowResult>("hide_chat_window")
       .then((r) => setCompanionMode(Boolean(r?.companion)))
-      .catch((err) => console.error("[Omni] hide_chat_window (openConsole):", err));
+      .catch((err) => {
+        console.error("[Omni] hide_chat_window (openConsole):", err);
+        setCompanionMode(false);
+      });
   };
 
   const lastAssistantBubble = [...messages].reverse().find((m) => m.role === "assistant");
@@ -928,32 +1064,70 @@ function ChatApp() {
     return CorePhase.IDLE;
   }, [jachinCore.selfHealFlash, sensory.hitlPending, jachinMachineState]);
 
-  if (companionMode) {
-    return (
-      <div className="relative flex h-full w-full min-h-0 items-center justify-center overflow-hidden bg-transparent">
-        <button
-          type="button"
-          aria-label="展开 Jachin Omni"
-          title="点击展开 Omni · 再按 Esc 可完全隐藏"
-          onClick={() => void invoke("show_chat_window")}
-          className="pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-400/45 bg-slate-950/92 shadow-[0_0_14px_rgba(34,211,238,0.5)] transition-shadow hover:border-cyan-300/60 hover:shadow-[0_0_20px_rgba(34,211,238,0.72)] active:scale-95"
-        >
-          <span
-            className="h-2.5 w-2.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.9)]"
-            aria-hidden
-          />
-        </button>
-      </div>
-    );
-  }
+  /** 右侧画布：最近一条未解决的 canvas 模式 tool_call */
+  const activeSkillCanvas = useMemo(() => getActiveSkillCanvasFromMessages(messages), [messages]);
+
+  /** 画布激活：扩窗；关画布不 restore，避免左栏 flex 拉满吞掉原画布区（右侧保留空列） */
+  useLayoutEffect(() => {
+    if (!activeSkillCanvas) return;
+    let cancelled = false;
+    void (async () => {
+      const again = async () => {
+        await expandChatWindowForSkillCanvas();
+        if (cancelled) return;
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        if (cancelled) return;
+        await expandChatWindowForSkillCanvas();
+        if (cancelled) return;
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        if (cancelled) return;
+        await expandChatWindowForSkillCanvas();
+      };
+      await again();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSkillCanvas]);
+
+  const handleDismissSkillCanvas = useCallback(() => {
+    setMessages((prev) => {
+      const active = getActiveSkillCanvasFromMessages(prev);
+      if (!active) return prev;
+      const next = dismissUnresolvedToolCallMessage(prev, active);
+      saveMessages(next);
+      return next;
+    });
+  }, []);
 
   return (
     <div className="relative flex h-full w-full min-h-0 flex-col overflow-hidden bg-transparent">
+      <AnimatePresence>
+        {companionMode ? (
+          <motion.div
+            key="omni-spark"
+            initial={{ opacity: 0, scale: 0.15 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.12 }}
+            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+            className="pointer-events-auto flex h-full min-h-0 w-full flex-col overflow-hidden"
+          >
+            <OmniMiniSpark onExpandFull={requestExpandFromSpark} />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="omni-main"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="relative flex h-full min-h-0 w-full flex-col overflow-hidden"
+          >
       <WindowResizeHandles />
       {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
       <SensoryOverlay sensory={sensory} variant="minimal" />
       <div className="pointer-events-none flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
+        <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
           {memoryCompactSuggest && (
             <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-amber-500/45 bg-amber-950/95 px-3 py-2.5 text-xs text-amber-100 shadow-lg backdrop-blur-sm">
               <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>
@@ -988,43 +1162,118 @@ function ChatApp() {
               </div>
             </div>
           )}
-          <OmniCyberChatShell
-            phase={cyberPhase}
-            jachinMachineState={jachinMachineState}
-            thinkingToolFlash={jachinCore.toolFlash}
-            messages={messages}
-            input={input}
-            onInputChange={setInput}
-            onRequestDismiss={requestHideChat}
-            onSend={handleSend}
-            placeholder={
-              sensory.connected
-                ? "Alt+Shift+Space · 输入或按住说话（L3）…"
-                : l2Available
-                  ? "Alt+Shift+Space · 输入指令（L2）…"
-                  : "等待 L3 或 L2…"
-            }
-            disabled={!sensory.connected && !l2Available}
-            isLoading={isLoading}
-            isTyping={isTyping}
-            isRecording={isRecording}
-            onVoiceStart={startRecording}
-            onVoiceStop={stopRecording}
-            isVadActive={isVadActive}
-            onVadToggle={handleVadToggle}
-            interactionPhase={interactionPhase}
-            micLevel={micLevel}
-            onOpenConsole={openConsole}
-            recordingStatus={recordingStatus}
-            listeningText={listeningText}
-            hitlPending={sensory.hitlPending}
-            onHitlResolve={(ok) => sensory.resolveHitl(ok)}
-            riskLevel={riskLevel}
-          />
+          {/* 双栏：左 chat 固定宽、右画布 flex-1；无 transform 父级，避免子元素被当成浮层。画布挂载点见下方 SkillCanvas 槽位。 */}
+          <div className="flex h-full min-h-0 w-full flex-1 flex-row items-stretch overflow-hidden">
+            <div
+              className="relative flex min-h-0 flex-col overflow-hidden"
+              style={{
+                width: SKILL_CHAT_COLUMN_WIDTH,
+                maxWidth: "100%",
+                flex: "0 0 auto",
+              }}
+            >
+              <OmniCyberChatShell
+                phase={cyberPhase}
+                jachinMachineState={jachinMachineState}
+                thinkingToolFlash={jachinCore.toolFlash}
+                messages={messages}
+                input={input}
+                onInputChange={setInput}
+                onRequestDismiss={requestHideChat}
+                onSend={handleSend}
+                placeholder={
+                  sensory.connected
+                    ? "Alt+Shift+Space · 输入或按住说话（L3）…"
+                    : l2Available
+                      ? "Alt+Shift+Space · 输入指令（L2）…"
+                      : "等待 L3 或 L2…"
+                }
+                disabled={!sensory.connected && !l2Available}
+                isLoading={isLoading}
+                isTyping={isTyping}
+                isRecording={isRecording}
+                onVoiceStart={startRecording}
+                onVoiceStop={stopRecording}
+                isVadActive={isVadActive}
+                onVadToggle={handleVadToggle}
+                interactionPhase={interactionPhase}
+                micLevel={micLevel}
+                onOpenConsole={openConsole}
+                recordingStatus={recordingStatus}
+                listeningText={listeningText}
+                hitlPending={sensory.hitlPending}
+                onHitlResolve={(ok) => sensory.resolveHitl(ok)}
+                riskLevel={riskLevel}
+                onToolUiResult={handleToolUiResult}
+                devToolbar={
+                  import.meta.env.DEV ? (
+                    <details className="group relative z-40">
+                      <summary className="cursor-pointer list-none rounded border border-white/10 bg-slate-950/40 px-1.5 py-0.5 text-[9px] font-mono text-slate-500 hover:border-cyan-500/30 hover:text-slate-300 [&::-webkit-details-marker]:hidden">
+                        Dev
+                      </summary>
+                      <div className="absolute right-0 top-[calc(100%+6px)] z-50 w-max min-w-[9rem] rounded-lg border border-white/12 bg-slate-950/95 p-2 shadow-xl backdrop-blur-md">
+                        <p className="mb-1.5 text-[9px] text-slate-500">注入 tool_call（联调）</p>
+                        <div className="flex flex-wrap gap-1">
+                          <button
+                            type="button"
+                            className="rounded border border-violet-500/40 px-2 py-0.5 text-[10px] text-violet-200 hover:bg-violet-950/80"
+                            onClick={() => {
+                              void (async () => {
+                                await expandChatWindowForSkillCanvas();
+                                await new Promise<void>((r) => requestAnimationFrame(() => r()));
+                                await expandChatWindowForSkillCanvas();
+                                setMessages((prev) => addMessage(prev, createDemoComposeEssaySkillUiMessage()));
+                              })();
+                            }}
+                          >
+                            作文
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-amber-500/40 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-950/80"
+                            onClick={() => {
+                              void (async () => {
+                                await expandChatWindowForSkillCanvas();
+                                await new Promise<void>((r) => requestAnimationFrame(() => r()));
+                                await expandChatWindowForSkillCanvas();
+                                setMessages((prev) => addMessage(prev, createDemoGeneratePptSkillUiMessage()));
+                              })();
+                            }}
+                          >
+                            PPT
+                          </button>
+                        </div>
+                      </div>
+                    </details>
+                  ) : undefined
+                }
+              />
+            </div>
+            <div
+              className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${activeSkillCanvas ? "min-w-[280px] border-l border-white/10" : ""}`}
+            >
+              {activeSkillCanvas ? (
+                <SkillCanvasPane
+                  key={`${activeSkillCanvas.toolCallId ?? ""}-${activeSkillCanvas.toolName}`}
+                  active={activeSkillCanvas}
+                  onToolUiResult={handleToolUiResult}
+                  onRequestClose={handleDismissSkillCanvas}
+                />
+              ) : (
+                <div
+                  className="h-full min-h-0 w-full flex-1 bg-slate-950/25"
+                  aria-hidden
+                />
+              )}
+            </div>
+          </div>
         </div>
       </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* 高风险操作二次确认弹窗 */}
-      {pendingHighRisk && (
+      {!companionMode && pendingHighRisk && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 rounded-2xl" onClick={handleCancelHighRisk}>
           <div className="bg-slate-900 border-2 border-red-500/80 rounded-xl p-4 max-w-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
             <p className="text-red-200 text-sm font-medium mb-2">⚠️ 检测到高风险操作</p>

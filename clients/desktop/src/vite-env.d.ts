@@ -1,4 +1,4 @@
-/// <reference types="vite/client" />
+﻿/// <reference types="vite/client" />
 
 /** 浏览器流式语音识别（Web Speech API） */
 interface SpeechRecognitionEvent extends Event {

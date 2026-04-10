@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ChatUI — 独立 Chat 窗口用全息风格 UI（单文件、结构清晰，保证输入/按钮可响应）
  *
  * 结构：根 pointer-events-none → 面板 pointer-events-auto
@@ -11,9 +11,10 @@
 import React, { useRef, useEffect } from "react";
 import { Send, Mic, Sparkles, Loader2, Square, Radio, LayoutDashboard } from "lucide-react";
 import { WindowControls } from "./WindowControls";
-import { MarkdownMessage } from "./MarkdownMessage";
 import { VoiceWaveform, type WavePhase } from "./VoiceWaveform";
 import type { StoredMessage } from "../../utils/messageStorage";
+import { AssistantMessageContent } from "./AssistantMessageContent";
+import type { ToolUiSubmitPayload } from "../../skills-ui/types";
 
 export type RiskLevel = "safe" | "warning" | "danger";
 
@@ -45,6 +46,8 @@ export interface ChatUIProps {
   micLevel?: number;
   /** 打开大控制台（main） */
   onOpenConsole?: () => void;
+  /** 生成式 UI 工具结果（可选） */
+  onToolUiResult?: (payload: ToolUiSubmitPayload) => void;
 }
 
 const displayMessages = (messages: StoredMessage[]) =>
@@ -71,6 +74,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
   interactionPhase = "text",
   micLevel = 0,
   onOpenConsole,
+  onToolUiResult,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -155,15 +159,14 @@ export const ChatUI: React.FC<ChatUIProps> = ({
               >
                 <span className="contents">
                   {msg.role === "assistant" ? (
-                    <>
-                      <MarkdownMessage content={msg.content} />
-                      {isTyping && idx === list.length - 1 && (
-                        <span
-                          className={streamingFromWs ? "stream-cursor" : "inline-block w-2 h-4 ml-1 bg-cyan-400/80 animate-pulse rounded-sm"}
-                          aria-hidden
-                        />
-                      )}
-                    </>
+                    <AssistantMessageContent
+                      message={msg}
+                      isLastAssistant={idx === list.length - 1}
+                      isTyping={isTyping}
+                      variant="markdown"
+                      streamingFromWs={streamingFromWs}
+                      onToolUiResult={onToolUiResult}
+                    />
                   ) : (
                     msg.content
                   )}

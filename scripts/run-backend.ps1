@@ -31,6 +31,10 @@ if (-not $env:JACHIN_L2_ADMIN_TOKEN) {
     Write-Host "  在 .env 中配置或: `$env:JACHIN_L2_ADMIN_TOKEN='your-token'" -ForegroundColor Gray
     Write-Host ""
 }
+if ([string]::IsNullOrWhiteSpace($env:JACHIN_TTS_ENABLED) -and [string]::IsNullOrWhiteSpace($env:TTS_ENABLED)) {
+    Write-Host "[TIP] 语音合成总开关未设置：/api/v2/voice/synthesize 会 503。在 .env 添加 JACHIN_TTS_ENABLED=true 可开 Edge TTS。" -ForegroundColor DarkYellow
+    Write-Host ""
+}
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  L2 Backend (FastAPI)" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan

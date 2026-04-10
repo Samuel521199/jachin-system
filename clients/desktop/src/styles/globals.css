@@ -1,4 +1,4 @@
-/* Global styles (Sci-Fi HUD) - 项目主样式入口，等同于 index.css */
+﻿/* Global styles (Sci-Fi HUD) - 项目主样式入口，等同于 index.css */
 /*
  * Chat 悬浮窗（chat.html）：强制 html/body/根容器完全透明，避免叠出浅灰「空气墙」。
  * 须放在 @tailwind / @layer 之前，且下方 body/#chat-root 不得再写非透明底色覆盖。
@@ -95,6 +95,17 @@ body:has(#chat-root),
   #chat-root,
   #chat-root > * {
     border: none !important;
+  }
+
+  /* Omni 思考链：<details>/<summary> 在 WebView2 上易出现浅色焦点框，与全局 border 变量叠成「白框」 */
+  #chat-root details.omni-reasoning-chain,
+  #chat-root details.omni-reasoning-chain summary {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+  #chat-root details.omni-reasoning-chain {
+    border: none !important;
+    border-width: 0 !important;
   }
 
   /* 深空背景 (Deep Space): 中心午夜蓝 #0f172a → 边缘纯黑 #000，叠加 0.05 透明度网格 */

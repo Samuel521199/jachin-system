@@ -1,8 +1,11 @@
-# 本地一键 PostgreSQL，与 .env.example 默认账号一致
+﻿# 本地一键 PostgreSQL，与 .env.example 默认账号一致
 #
 # 使用:
 #   cd cloud/nexus
 #   docker compose -f docker-compose.postgres.yml up -d
+#
+# 数据持久化在命名卷 nexus_pg_data。切勿使用 `docker compose down -v`，否则会删除卷内数据
+# （含 desktop_app_releases 等所有库表内容，表现为「重启后发行记录没了」）。
 #
 # 默认镜像使用 DaoCloud 同步的 library/postgres（完整域名），避免请求 docker.io，
 # 从而绕过 Docker Desktop 里 registry-mirrors（如 USTC）对 Hub 的拦截/TLS 超时。

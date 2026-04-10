@@ -1,4 +1,4 @@
-"""
+﻿"""
 Voice API - 语音相关接口
 
 提供语音识别、语音合成和语音聊天功能
@@ -66,11 +66,18 @@ except Exception as e:
 
 try:
     tts = TextToSpeech(provider=tts_provider)
+    _tts_on = is_tts_globally_enabled(source="voice")
     logger.info(
         "Initialized TTS provider: %s (globally enabled=%s)",
         tts_provider,
-        is_tts_globally_enabled(source="voice"),
+        _tts_on,
     )
+    if tts and not _tts_on:
+        logger.warning(
+            "TTS 已加载但全局开关为关闭：POST /api/v2/voice/synthesize 与流式合成将返回 503。"
+            " 请在环境变量设置 JACHIN_TTS_ENABLED=true（或 TTS_ENABLED=true），"
+            "或在 ~/.jachin/nexus_config.json 设置 tts_enabled: true。详见项目根 .env.example 语音节。"
+        )
 except Exception as e:
     logger.error(f"Failed to initialize TTS provider: {e}")
     tts = None

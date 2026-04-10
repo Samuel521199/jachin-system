@@ -25,15 +25,30 @@ function downloadHref(version: string, platform: string) {
   return `/api/downloads/generate-link?${q.toString()}`;
 }
 
+export type DownloadHallBanner = {
+  tone: "warning" | "danger" | "info";
+  text: string;
+};
+
 export function DownloadHall({
   latest,
   history,
   userEmail,
+  emptyBanner,
 }: {
   latest: ReleaseRow | null;
   history: ReleaseRow[];
   userEmail?: string | null;
+  /** 无「最新版本」块时与真实「库空」区分：未配置 DATABASE_URL、连库失败、连错库等 */
+  emptyBanner?: DownloadHallBanner | null;
 }) {
+  const bannerStyles =
+    emptyBanner?.tone === "danger"
+      ? "border-red-500/40 bg-red-500/10 text-red-100/95"
+      : emptyBanner?.tone === "warning"
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-50/95"
+        : "border-cyan-500/30 bg-cyan-500/5 text-cyan-50/90";
+
   return (
     <div className="mx-auto max-w-4xl px-4 pb-20 pt-24">
       <header className="mb-10 flex flex-col gap-4 border-b border-white/10 pb-8 sm:flex-row sm:items-center sm:justify-between">
@@ -61,12 +76,23 @@ export function DownloadHall({
         </div>
       </header>
 
-      {!latest ? (
+      {emptyBanner ? (
+        <p
+          className={`mb-6 rounded-lg border px-4 py-3 text-sm leading-relaxed ${bannerStyles}`}
+          role="status"
+        >
+          {emptyBanner.text}
+        </p>
+      ) : null}
+
+      {!latest && !emptyBanner ? (
         <p className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-8 text-center text-white/50">
           暂无发布记录。请在 Nexus 管理端登记 <code className="text-cyan-400/90">desktop_app_releases</code>{" "}
           并上传产物到 MinIO。
         </p>
-      ) : (
+      ) : null}
+
+      {latest ? (
         <section className="mb-14">
           <h2 className="mb-2 text-lg font-medium text-cyan-400/90">最新版本</h2>
           <div className="rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.06] to-transparent p-6">
@@ -94,7 +120,7 @@ export function DownloadHall({
             </div>
           </div>
         </section>
-      )}
+      ) : null}
 
       <section>
         <h2 className="mb-4 text-lg font-medium text-white/90">历史版本</h2>

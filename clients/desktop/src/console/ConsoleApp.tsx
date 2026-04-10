@@ -1,5 +1,6 @@
-/**
- * ConsoleApp - 控制台应用入口
+﻿/**
+ * ConsoleApp - 控制台应用入口（main / console.html）
+ * OMNI 独立对话窗为 chat.html，侧栏 Skill 画布布局见 `src/chat.tsx`（非本文件）。
  * 使用 HashRouter 适配 Tauri 单页与本地加载
  * 含 ErrorBoundary，出错时显示错误信息而非空白
  * V2: 未配对时显示 L2 网关接驳 GatewayConnectScreen

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+﻿import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import { Send, Loader2, Mic, Square, Trash2, MicOff } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, streamChatMessage } from "../lib/api";
@@ -6,9 +6,21 @@ import { useAppStore } from "../store/appStore";
 import { useSttAudioReady } from "../hooks/useSttAudioReady";
 import { useSensoryWebSocket, type SensoryAnswerMeta } from "../hooks/useSensoryWebSocket";
 import { cn } from "../utils/cn";
-import { loadMessages, saveMessages, clearMessages, addMessage, StoredMessage } from "../utils/messageStorage";
+import {
+  loadMessages,
+  saveMessages,
+  clearMessages,
+  addMessage,
+  findUnresolvedToolCallMessageIndex,
+  dismissUnresolvedToolCallMessage,
+  StoredMessage,
+} from "../utils/messageStorage";
+import { normalizeAssistantOutput } from "../utils/reasoningStreamSplit";
+import type { ToolUiSubmitPayload } from "../skills-ui/types";
+import { getActiveSkillCanvasFromMessages, SkillCanvasPane } from "../skills-ui";
+import { expandChatWindowForSkillCanvas, SKILL_CHAT_COLUMN_WIDTH } from "../skills-ui/skillCanvasWindow";
 import { typewriterAnimation } from "../utils/typewriter";
-import { MarkdownMessage } from "./Chat/MarkdownMessage";
+import { AssistantMessageContent } from "./Chat/AssistantMessageContent";
 import { CHAT_RESPONSE_TIMEOUT_MS, CHAT_RESPONSE_TIMEOUT_SEC } from "../constants/chatResponseTimeout";
 
 export default function ChatPanel() {
@@ -28,6 +40,7 @@ export default function ChatPanel() {
   const {
     connected: sensoryConnected,
     sendInput,
+    sendToolUiResult,
     sendSessionClearControl,
     registerChunkHandler,
     registerAnswerHandler,
@@ -60,6 +73,91 @@ export default function ChatPanel() {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
+
+  /** 生成式 UI：经 L3 `tool_ui_result` 执行工具，answer 写回气泡（与 chat.tsx 一致） */
+  const handleToolUiResult = useCallback(
+    async (payload: ToolUiSubmitPayload): Promise<void> => {
+      registerStepHandler(null);
+      setIsTyping(true);
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          registerAnswerHandler(null);
+          setIsTyping(false);
+          setIsLoading(false);
+          resolve();
+        };
+        const timer = window.setTimeout(() => {
+          registerAnswerHandler(null);
+          setMessages((prev) => {
+            const idx = findUnresolvedToolCallMessageIndex(prev, payload);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const cur = next[idx];
+            next[idx] = {
+              ...cur,
+              tool_call: { ...cur.tool_call!, resolved: true },
+              content: "提交超时：请确认 L3 WebSocket 已连接。",
+              source: "L3",
+            };
+            saveMessages(next);
+            return next;
+          });
+          finish();
+        }, CHAT_RESPONSE_TIMEOUT_MS);
+
+        registerAnswerHandler((answerContent) => {
+          window.clearTimeout(timer);
+          registerAnswerHandler(null);
+          setMessages((prev) => {
+            const idx = findUnresolvedToolCallMessageIndex(prev, payload);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const cur = next[idx];
+            const n = normalizeAssistantOutput(answerContent || "");
+            next[idx] = {
+              ...cur,
+              tool_call: { ...cur.tool_call!, resolved: true },
+              content: n.content,
+              reasoning: [cur.reasoning ?? "", n.reasoning].filter(Boolean).join("\n\n").trim(),
+              source: "L3",
+            };
+            saveMessages(next);
+            return next;
+          });
+          finish();
+        });
+
+        const sent = sendToolUiResult({
+          toolName: payload.toolName,
+          toolCallId: payload.toolCallId,
+          result: payload.result,
+        });
+        if (!sent) {
+          window.clearTimeout(timer);
+          registerAnswerHandler(null);
+          setMessages((prev) => {
+            const idx = findUnresolvedToolCallMessageIndex(prev, payload);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const cur = next[idx];
+            next[idx] = {
+              ...cur,
+              tool_call: { ...cur.tool_call!, resolved: true },
+              content: "无法连接 L3 WebSocket。",
+              source: "L3",
+            };
+            saveMessages(next);
+            return next;
+          });
+          finish();
+        }
+      });
+    },
+    [registerAnswerHandler, registerStepHandler, sendToolUiResult],
+  );
 
   useEffect(() => {
     scrollToBottom();
@@ -463,8 +561,48 @@ export default function ChatPanel() {
     }
   }, [input]);
 
+  const activeSkillCanvas = useMemo(() => getActiveSkillCanvasFromMessages(messages), [messages]);
+
+  useLayoutEffect(() => {
+    if (!activeSkillCanvas) return;
+    let cancelled = false;
+    void (async () => {
+      await expandChatWindowForSkillCanvas();
+      if (cancelled) return;
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      if (cancelled) return;
+      await expandChatWindowForSkillCanvas();
+      if (cancelled) return;
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      if (cancelled) return;
+      await expandChatWindowForSkillCanvas();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSkillCanvas]);
+
+  const handleDismissSkillCanvas = useCallback(() => {
+    setMessages((prev) => {
+      const active = getActiveSkillCanvasFromMessages(prev);
+      if (!active) return prev;
+      const next = dismissUnresolvedToolCallMessage(prev, active);
+      saveMessages(next);
+      return next;
+    });
+  }, []);
+
   return (
     <div className="h-full flex flex-col bg-slate-800/50 rounded-lg border border-purple-500/20 overflow-hidden">
+      <div className="flex h-full min-h-0 w-full flex-1 flex-row items-stretch overflow-hidden">
+        <div
+          className="flex min-h-0 flex-col overflow-hidden"
+          style={{
+            width: SKILL_CHAT_COLUMN_WIDTH,
+            maxWidth: "100%",
+            flex: "0 0 auto",
+          }}
+        >
       {/* 消息区域 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 ? (
@@ -500,12 +638,14 @@ export default function ChatPanel() {
                 >
                   <div className="whitespace-pre-wrap">
                     {msg.role === "assistant" ? (
-                      <>
-                        <MarkdownMessage content={msg.content} />
-                        {isTyping && idx === messages.length - 1 && (
-                          <span className="typewriter-cursor" />
-                        )}
-                      </>
+                      <AssistantMessageContent
+                        message={msg}
+                        isLastAssistant={idx === messages.length - 1}
+                        isTyping={isTyping}
+                        variant="markdown"
+                        streamingFromWs={false}
+                        onToolUiResult={handleToolUiResult}
+                      />
                     ) : (
                       <>
                         {msg.content}
@@ -541,6 +681,22 @@ export default function ChatPanel() {
           </>
         )}
         <div ref={messagesEndRef} />
+      </div>
+        </div>
+        <div
+          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${activeSkillCanvas ? "min-w-[280px] border-l border-purple-500/25" : ""}`}
+        >
+          {activeSkillCanvas ? (
+            <SkillCanvasPane
+              key={`${activeSkillCanvas.toolCallId ?? ""}-${activeSkillCanvas.toolName}`}
+              active={activeSkillCanvas}
+              onToolUiResult={handleToolUiResult}
+              onRequestClose={handleDismissSkillCanvas}
+            />
+          ) : (
+            <div className="h-full min-h-0 w-full flex-1 bg-slate-900/40" aria-hidden />
+          )}
+        </div>
       </div>
 
       {/* 输入区域 */}

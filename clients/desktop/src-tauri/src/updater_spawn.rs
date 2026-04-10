@@ -97,7 +97,7 @@ pub fn resolve_helper_executable(app: &tauri::AppHandle) -> Result<PathBuf, Stri
     Err(format!(
         "未找到热更新助手 {HELPER_EXE_NAME}。\n\
          已尝试：① 环境变量 JACHIN_UPDATER_HELPER_EXE ② 与主程序同目录（当前: {dir_hint}）③ 应用资源目录。\n\
-         【开发】在 clients/desktop 执行: npm run ensure-updater-helper（或 cd src-tauri && cargo build --bin jachin-updater-helper）。\n\
+         【开发】在 clients/desktop 执行: npm run ensure-updater-helper，或使用 npm run tauri:dev:with-updater 一次起编好助手再 dev（日常可用 npm run tauri:dev 跳过以加快启动）。\n\
          【手动测试】勿只拷贝 jachin-desktop.exe：请把 target/release 下的 {HELPER_EXE_NAME} 与主程序放在同一文件夹（例如与 Downloads 里的 exe 同目录）。"
     ))
 }

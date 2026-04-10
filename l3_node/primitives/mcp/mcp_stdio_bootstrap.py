@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 进程内启动官方/侧载 stdio MCP（复用 core.mcp_client.MCPManager）。
 
 长期架构下 L2 默认不拉起 MCPManager；与 ``~/.jachin/mcp_servers.json`` 及
@@ -38,6 +38,17 @@ async def start_l3_stdio_mcp_host() -> None:
         from core.inventory_scanner import scan_local_mcps, ensure_inventory_dirs
 
         ensure_inventory_dirs()
+        try:
+            from l3_node.paths import get_app_root as _gar
+            from core.mcp_json_repair import (
+                ensure_default_official_filesystem_mcp,
+                repair_hr_atomic_tools_path,
+            )
+
+            ensure_default_official_filesystem_mcp()
+            repair_hr_atomic_tools_path(_gar())
+        except Exception as e:
+            logger.debug("[L3 MCP Host] mcp_json_repair 跳过: %s", e)
         mgr = get_mcp_manager()
         await mgr.start()
 

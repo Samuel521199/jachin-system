@@ -1,13 +1,15 @@
-import { randomUUID } from "crypto";
+﻿import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { error as logError } from "@/lib/console-utc";
 import { listOrganizationsForUser } from "@/lib/org-membership-db";
 import { resolveOrganizationForL2Gateway } from "@/lib/l1-workspace-context";
 import { generatePairingShortCode } from "@/lib/pairing-code-util";
 import { edgeAgents, users } from "@/db/schema";
+import { passwordPlainForCredentials } from "@/lib/auth/credentials-password";
+import { credentialsHashUsable } from "@/lib/auth/password-hash";
 
 export const dynamic = "force-dynamic";
 
@@ -60,7 +62,7 @@ export async function POST(req: NextRequest) {
 
   const email =
     typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-  const password = typeof body.password === "string" ? body.password : "";
+  const password = passwordPlainForCredentials(body.password);
 
   if (!email || !EMAIL_RE.test(email) || !password) {
     return NextResponse.json(
@@ -92,7 +94,7 @@ export async function POST(req: NextRequest) {
       passwordHash: users.passwordHash,
     })
     .from(users)
-    .where(eq(users.email, email))
+    .where(sql`lower(trim(${users.email})) = ${email}`)
     .limit(1);
 
   if (!u) {
@@ -102,7 +104,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!u.passwordHash) {
+  const storedHash = (u.passwordHash ?? "").trim();
+  if (!credentialsHashUsable(storedHash)) {
     return NextResponse.json(
       {
         success: false,
@@ -114,7 +117,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const ok = await bcrypt.compare(password, u.passwordHash);
+  const ok = await bcrypt.compare(password, storedHash);
   if (!ok) {
     return NextResponse.json(
       { success: false, error: "AUTH_FAILED", message: "邮箱或密码错误" },

@@ -1,4 +1,4 @@
-"""
+﻿"""
 MCP stdio 子进程用的嵌入式 Python / Node 路径解析与预检。
 
 目录约定（安装包或用户目录，版本见 manifest.example.json）::
@@ -175,7 +175,12 @@ def inject_embedded_tokens(s: str) -> str:
     if TOKEN_NODE in out:
         out = out.replace(TOKEN_NODE, get_effective_mcp_node_command())
     if TOKEN_WORKSPACE in out:
-        ws = str((_jachin_home() / "workspace").resolve())
+        ws_path = _jachin_home() / "workspace"
+        try:
+            ws_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        ws = str(ws_path.resolve())
         out = out.replace(TOKEN_WORKSPACE, ws)
     return out
 

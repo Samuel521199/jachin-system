@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Omni-Bar — Raycast 风格悬浮条：Jachin Core + 输入 + 流式面板 + HITL
  */
 
@@ -6,13 +6,14 @@ import React, { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Mic, Square, Radio, LayoutDashboard, Settings2 } from "lucide-react";
 import { WindowControls } from "../Chat/WindowControls";
-import { MarkdownMessage } from "../Chat/MarkdownMessage";
+import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
 import { VoiceWaveform, type WavePhase } from "../Chat/VoiceWaveform";
 import { JachinCore } from "./JachinCore";
 import type { StoredMessage } from "../../utils/messageStorage";
 import type { RiskLevel } from "../Chat/ChatUI";
 import type { CoreVisualState, ToolFlashKind } from "../../hooks/useJachinCoreState";
 import type { SensoryPayload } from "../../hooks/useSensoryWebSocket";
+import type { ToolUiSubmitPayload } from "../../skills-ui/types";
 
 export interface OmniBarProps {
   messages: StoredMessage[];
@@ -42,6 +43,7 @@ export interface OmniBarProps {
   /** HITL */
   hitlPending: SensoryPayload | null;
   onHitlResolve: (approved: boolean) => void;
+  onToolUiResult?: (payload: ToolUiSubmitPayload) => void;
 }
 
 const displayMessages = (messages: StoredMessage[]) =>
@@ -73,6 +75,7 @@ export const OmniBar: React.FC<OmniBarProps> = ({
   streamingContent,
   hitlPending,
   onHitlResolve,
+  onToolUiResult,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -140,7 +143,14 @@ export const OmniBar: React.FC<OmniBarProps> = ({
                 }`}
               >
                 {msg.role === "assistant" ? (
-                  <MarkdownMessage content={msg.content} />
+                  <AssistantMessageContent
+                    message={msg}
+                    isLastAssistant={idx === list.length - 1}
+                    isTyping={isTyping}
+                    variant="markdown"
+                    streamingFromWs={streamingFromWs}
+                    onToolUiResult={onToolUiResult}
+                  />
                 ) : (
                   msg.content
                 )}

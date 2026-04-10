@@ -4,16 +4,17 @@
 
 import React, { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, Square, Radio, LayoutDashboard, Settings2, Brain } from "lucide-react";
+import { Send, Mic, Square, Radio, LayoutDashboard, Settings2 } from "lucide-react";
 import type { StoredMessage } from "../../utils/messageStorage";
+import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
+import type { ToolUiSubmitPayload } from "../../skills-ui/types";
 import { WindowControls } from "../Chat/WindowControls";
 import { VoiceWaveform, type WavePhase } from "../Chat/VoiceWaveform";
 import { JachinCore, type JachinCoreMachineState } from "./JachinCore";
+import { OmniReasoningChain } from "./OmniReasoningChain";
 import type { RiskLevel } from "../Chat/ChatUI";
 import type { CoreVisualState, ToolFlashKind } from "../../hooks/useJachinCoreState";
 import type { SensoryPayload } from "../../hooks/useSensoryWebSocket";
-import { MarkdownMessage } from "../Chat/MarkdownMessage";
-
 export enum CorePhase {
   IDLE = "IDLE",
   THINKING = "THINKING",
@@ -66,6 +67,10 @@ export interface OmniCyberChatShellProps {
   hitlPending: SensoryPayload | null;
   onHitlResolve: (approved: boolean) => void;
   riskLevel?: RiskLevel;
+  /** 生成式 UI：用户提交工具结果时回调（可选，未传则面板内仅 console 警告） */
+  onToolUiResult?: (payload: ToolUiSubmitPayload) => void;
+  /** 仅开发构建：标题栏可折叠插槽（如 tool_call 演示注入） */
+  devToolbar?: React.ReactNode;
 }
 
 export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
@@ -94,6 +99,8 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   hitlPending,
   onHitlResolve,
   riskLevel = "safe",
+  onToolUiResult,
+  devToolbar,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -132,19 +139,26 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
         <div className="pointer-events-none absolute inset-0 rounded-2xl shadow-[inset_0_0_48px_rgba(34,211,238,0.06)]" />
 
         <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
-          {/* 原生拖拽区：整段标题栏交给系统，避免仅细条可拖；按钮区 pointer-events-auto */}
-          <div
-            data-tauri-drag-region
-            className="flex shrink-0 select-none items-center justify-between gap-2 px-3 pb-1.5 pt-2"
-          >
-            <span className="pointer-events-none text-[10px] font-medium uppercase tracking-[0.2em] text-cyan-400/80">
-              Omni
-            </span>
-            <div className="pointer-events-none flex min-w-0 flex-1 justify-center px-2">
-              <span className="h-0.5 w-7 shrink-0 rounded-full bg-cyan-400/35" aria-hidden />
+          {/* 拖拽区勿包住窗口按钮：否则 WebView2 会吞掉首次点击，× / 最小化无响应 */}
+          <div className="flex shrink-0 select-none items-center justify-between gap-2 px-3 pb-1.5 pt-2">
+            <div
+              data-tauri-drag-region
+              className="flex min-w-0 flex-1 items-center gap-2"
+            >
+              <span className="pointer-events-none text-[10px] font-medium uppercase tracking-[0.2em] text-cyan-400/80">
+                Omni
+              </span>
+              <div className="pointer-events-none flex min-w-0 flex-1 justify-center px-2">
+                <span className="h-0.5 w-7 shrink-0 rounded-full bg-cyan-400/35" aria-hidden />
+              </div>
             </div>
-            <div className="pointer-events-auto shrink-0">
-              <WindowControls />
+            <div
+              className="flex shrink-0 items-center gap-1"
+              data-tauri-drag-region="false"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              {devToolbar != null ? devToolbar : null}
+              <WindowControls onCloseOverride={onRequestDismiss} />
             </div>
           </div>
 
@@ -209,23 +223,19 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                       <div key={`${msg.timestamp}-${idx}`} className="flex justify-start">
                         <div className="max-w-[92%] rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-sm shadow-inner">
                           {!!msg.reasoning?.trim() && (
-                            <details className="mb-2 group rounded-lg border border-cyan-500/15 bg-slate-900/40">
-                              <summary className="cursor-pointer select-none list-none px-2 py-1.5 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-cyan-500/50 hover:text-cyan-400/70 [&::-webkit-details-marker]:hidden">
-                                <Brain className="h-3.5 w-3.5 shrink-0 text-cyan-500/60" aria-hidden />
-                                <span>Thought Process</span>
-                                <span className="ml-auto text-[10px] font-mono text-cyan-600/40 group-open:hidden">▸</span>
-                                <span className="ml-auto hidden text-[10px] font-mono text-cyan-600/40 group-open:inline">▾</span>
-                              </summary>
-                              <div className="border-l-2 border-cyan-500/25 mx-2 mb-2 pl-2.5 text-[11px] leading-relaxed text-cyan-500/50 font-mono whitespace-pre-wrap break-words">
-                                {msg.reasoning}
-                              </div>
-                            </details>
+                            <OmniReasoningChain
+                              text={msg.reasoning}
+                              isStreaming={isLastAssistant && isTyping}
+                            />
                           )}
                           <div className="break-words leading-relaxed text-cyan-50/95 [&_.markdown-content]:font-medium">
-                            <MarkdownMessage content={msg.content} />
-                            {isLastAssistant && isTyping && (
-                              <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-cyan-400/90 align-middle" />
-                            )}
+                            <AssistantMessageContent
+                              message={msg}
+                              isLastAssistant={isLastAssistant}
+                              isTyping={isTyping}
+                              variant="markdown"
+                              onToolUiResult={onToolUiResult}
+                            />
                           </div>
                         </div>
                       </div>

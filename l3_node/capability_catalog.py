@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 能力总目录：与业务域解耦。
 
 - 核心切片：`docs/L3_CAPABILITY_CATALOG.md` 中 PROMPT_INJECT_CORE
@@ -40,6 +40,8 @@ def _inject_tags(anchor: str) -> tuple[str, str]:
 
 _RECRUITMENT_FALLBACK = """【域：招聘】若可用工具中含 atom_post_job_boss、hr_scheduler_send_confirm_prompt、add_automated_recruitment_task、stop_automated_recruitment、atom_greet_recommend_boss、atom_lark_chat、hr_analyze_resume 等，则招聘能力已就绪；请用 MCP 落实意图。飞书极短指令可能已被 lark_workflow_command_interceptor 处理；WebSocket/HTTP 仍应调工具。详细步骤见注入的 SKILL.md（若有）。"""
 
+_OFFICE_PPT_FALLBACK = """【域：PPTX】若可用工具中含 create_presentation、save_presentation 等（id 多为 mcp: 前缀），则本机 PowerPoint MCP 已连接：必须用 ReAct 调用这些工具完成 PPT，禁止谎称无法连接 MCP 或只给替代 Python 脚本。用 presentation_id 串联步骤；save 时使用绝对路径（Windows 勿用未展开的 ~）。"""
+
 _CORE_FALLBACK = """你是 Jachin L3 执行节点助手：仅使用「可用工具」列表中出现的 MCP/技能；短指令可能由代码硬路径处理，长对话与控制台仍应通过工具落实意图。若下文含「域」摘要，仅在与该域相关的用户意图时使用对应工具。"""
 
 
@@ -62,6 +64,19 @@ DOMAIN_REGISTRY: tuple[CapabilityDomainSpec, ...] = (
         doc_relpath="capability_domains/hr_recruitment.md",
         inject_anchor="RECRUITMENT",
         fallback=_RECRUITMENT_FALLBACK.strip(),
+    ),
+    CapabilityDomainSpec(
+        domain_id="office_powerpoint_mcp",
+        tool_markers=(
+            "create_presentation",
+            "save_presentation",
+            "add_slide",
+            "apply_professional_design",
+            "create_presentation_from_template",
+        ),
+        doc_relpath="capability_domains/office_powerpoint_mcp.md",
+        inject_anchor="OFFICE_POWERPOINT",
+        fallback=_OFFICE_PPT_FALLBACK.strip(),
     ),
 )
 

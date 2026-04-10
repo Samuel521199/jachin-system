@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus v8.0 - Native Core 内置标准库
 
 权限死锁在 ~/.jachin/workspace/ 下，供 MCP 瘫痪时的 Fallback 使用。
@@ -415,4 +415,68 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
 
         eid = str(kwargs.get("entry_id") or kwargs.get("id") or "").strip()
         return remove_entry_by_id(eid)
+    if tool_id == "core:compose_essay":
+        return core_compose_essay(
+            topic=str(kwargs.get("topic") or "").strip(),
+            style_id=str(kwargs.get("style_id") or kwargs.get("styleId") or "").strip(),
+            style_label=str(kwargs.get("style_label") or kwargs.get("styleLabel") or "").strip(),
+            word_count_target=kwargs.get("word_count_target", kwargs.get("wordCountTarget", 600)),
+            audience=str(kwargs.get("audience") or "通用").strip(),
+            tone=str(kwargs.get("tone") or "正式").strip(),
+            structure=str(kwargs.get("structure") or "总-分-总").strip(),
+        )
     raise ValueError(f"Unknown Native Core tool: {tool_id}")
+
+
+def core_compose_essay(
+    topic: str = "",
+    style_id: str = "",
+    style_label: str = "",
+    word_count_target: Any = 600,
+    audience: str = "通用",
+    tone: str = "正式",
+    structure: str = "总-分-总",
+) -> str:
+    """
+    根据用户在生成式 UI 中确认的规格，生成作文 Markdown 骨架（不二次调用 LLM，便于与客户端 Opt-in 面板联调）。
+    """
+    try:
+        wc = int(word_count_target)
+    except (TypeError, ValueError):
+        wc = 600
+    wc = max(200, min(5000, wc))
+    t = topic or "（待补主题）"
+    sl = style_label or style_id or "记叙文"
+    lines = [
+        f"# 作文草稿：{t}",
+        "",
+        "## 写作规格",
+        "",
+        f"| 项目 | 选择 |",
+        f"|------|------|",
+        f"| 文体 | {sl} |",
+        f"| 目标字数（约） | {wc} |",
+        f"| 读者 | {audience} |",
+        f"| 语气 | {tone} |",
+        f"| 结构 | {structure} |",
+        "",
+        "## 正文骨架",
+        "",
+        f"（以下为按 **{structure}** 铺排的占位段落，你可据此扩写成约 {wc} 字。）",
+        "",
+        "### 开篇",
+        f"- 以 **{tone}** 语气切入，点题「{t}」，呼应 **{audience}** 读者的阅读预期。",
+        "",
+        "### 主体",
+        "- 展开 2～3 个层次或事例，注意与文体 **"
+        + sl
+        + "** 相符（记叙重画面与情感，议论重论点与论据，说明重条理与定义）。",
+        "",
+        "### 收束",
+        "- 回扣主题，可升华或呼吁，避免空喊口号。",
+        "",
+        "---",
+        "",
+        "*本稿由 `core:compose_essay` 根据客户端面板参数生成；若需润色，请继续在对话中说明修改方向。*",
+    ]
+    return "\n".join(lines)

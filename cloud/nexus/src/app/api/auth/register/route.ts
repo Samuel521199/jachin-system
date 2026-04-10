@@ -1,9 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { describeDatabaseConnectError, getDb, isDatabaseConfigured } from "@/db";
 import { users } from "@/db/schema";
 import { registerUserOnly } from "@/lib/auth/genesis";
+import { passwordPlainForCredentials } from "@/lib/auth/credentials-password";
+import { credentialsHashUsable } from "@/lib/auth/password-hash";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -21,7 +23,7 @@ export async function POST(req: NextRequest) {
     }
     const body = (await req.json()) as { email?: string; password?: string; name?: string };
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    const password = typeof body.password === "string" ? body.password : "";
+    const password = passwordPlainForCredentials(body.password);
     const name = typeof body.name === "string" ? body.name.trim() : undefined;
 
     if (!email || !EMAIL_RE.test(email)) {
@@ -38,15 +40,57 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getDb()!;
-    const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+    const [existing] = await db
+      .select({ id: users.id, passwordHash: users.passwordHash })
+      .from(users)
+      .where(sql`lower(trim(${users.email})) = ${email}`)
+      .limit(1);
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const devForcePw =
+      process.env.NEXUS_ALLOW_REGISTER_PASSWORD_OVERWRITE === "true" ||
+      process.env.NEXUS_ALLOW_REGISTER_PASSWORD_OVERWRITE === "1";
+
     if (existing) {
+      const stored = (existing.passwordHash ?? "").trim();
+      const weak = !credentialsHashUsable(stored);
+      if (weak || devForcePw) {
+        if (devForcePw && !weak) {
+          console.warn(
+            "[register] NEXUS_ALLOW_REGISTER_PASSWORD_OVERWRITE：已覆盖已有 bcrypt 密码 email=",
+            email
+          );
+        }
+        await db
+          .update(users)
+          .set({
+            passwordHash,
+            email,
+            ...(name ? { name } : {}),
+          })
+          .where(eq(users.id, existing.id));
+        return NextResponse.json({
+          success: true,
+          userId: existing.id,
+          needs_workspace: true,
+          message: weak
+            ? "该邮箱已存在但未设置有效登录密码（或仅有占位空串）。已为你写入新密码，请直接登录。"
+            : "已按开发开关覆盖登录密码，请立即登录并在完成后从 .env.local 删除 NEXUS_ALLOW_REGISTER_PASSWORD_OVERWRITE。",
+          password_recovered: true,
+        });
+      }
       return NextResponse.json(
-        { success: false, error: "EMAIL_TAKEN", message: "该邮箱已注册" },
+        {
+          success: false,
+          error: "EMAIL_TAKEN",
+          message:
+            "该邮箱已注册。若忘记密码：可在 .env.local 临时设 NEXUS_ALLOW_REGISTER_PASSWORD_OVERWRITE=true，重启 Nexus 后在「注册」页用同一邮箱提交新密码（仅限本机开发），完成后务必删掉该变量。",
+        },
         { status: 409 }
       );
     }
 
-    const passwordHash = await bcrypt.hash(password, 12);
     const { userId } = await registerUserOnly(db, {
       email,
       passwordHash,

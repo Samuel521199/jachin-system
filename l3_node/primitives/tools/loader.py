@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -48,7 +48,7 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:fs_write",
         "label": "core:fs_write",
-        "desc": "写入文件。路径必须位于 ~/.jachin/workspace/ 下。参数: file_path, content",
+        "desc": "写入文件。路径必须位于 ~/.jachin/workspace/ 下。推荐 Action Input 为 JSON：{\"file_path\":\"相对或绝对路径\",\"content\":\"全文\"}；也可用首行路径+换行后正文，或 file_path=a.txt, content=...（逗号分隔 key=value）。",
         "params": ["file_path", "content"],
     },
     {
@@ -148,6 +148,16 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "label": "core:shell_hitl_approve",
         "desc": "批准 Shell HITL。JSON：hash_hex 或 command 或 pending_id",
         "params": ["hash_hex"],
+    },
+    {
+        "id": "core:compose_essay",
+        "label": "core:compose_essay",
+        "desc": (
+            "写作文：根据 JSON 参数生成 Markdown 作文骨架（可与桌面端生成式 UI 联调）。"
+            "字段：topic（主题）；style_id、style_label（文体）；word_count_target（目标字数）；"
+            "audience（读者）；tone（语气）；structure（结构）。"
+        ),
+        "params": ["topic"],
     },
 ]
 
@@ -1291,16 +1301,60 @@ def run_tool(
                 pass
         elif inp.strip():
             params["entry_id"] = inp.strip()
-    elif tool_id == "core:fs_write":
-        if "," in inp and "=" in inp:
-            for part in inp.split(","):
-                if "=" in part:
-                    k, v = part.split("=", 1)
-                    params[k.strip()] = v.strip()
+    elif tool_id == "core:compose_essay":
+        params = {
+            "topic": "",
+            "style_id": "",
+            "style_label": "",
+            "word_count_target": 600,
+            "audience": "通用",
+            "tone": "正式",
+            "structure": "总-分-总",
+        }
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["topic"] = str(o.get("topic") or "").strip()
+                    params["style_id"] = str(o.get("style_id") or o.get("styleId") or "").strip()
+                    params["style_label"] = str(o.get("style_label") or o.get("styleLabel") or "").strip()
+                    if o.get("word_count_target") is not None or o.get("wordCountTarget") is not None:
+                        params["word_count_target"] = o.get("word_count_target", o.get("wordCountTarget", 600))
+                    if o.get("audience") is not None:
+                        params["audience"] = str(o.get("audience") or "通用").strip()
+                    if o.get("tone") is not None:
+                        params["tone"] = str(o.get("tone") or "正式").strip()
+                    if o.get("structure") is not None:
+                        params["structure"] = str(o.get("structure") or "总-分-总").strip()
+            except json.JSONDecodeError:
+                params["topic"] = inp.strip()
         else:
-            lines = inp.split("\n")
-            params["file_path"] = lines[0].strip() if lines else ""
-            params["content"] = "\n".join(lines[1:]) if len(lines) > 1 else ""
+            params["topic"] = inp.strip()
+    elif tool_id == "core:fs_write":
+        parsed_fs = False
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    fp = str(o.get("file_path") or o.get("path") or "").strip()
+                    ct = o.get("content")
+                    # 与 ReAct 常见输出对齐：整段 JSON 即一次写入
+                    if fp or ct is not None:
+                        params["file_path"] = fp
+                        params["content"] = "" if ct is None else str(ct)
+                        parsed_fs = True
+            except json.JSONDecodeError:
+                pass
+        if not parsed_fs:
+            if "," in inp and "=" in inp:
+                for part in inp.split(","):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        params[k.strip()] = v.strip()
+            else:
+                lines = inp.split("\n")
+                params["file_path"] = lines[0].strip() if lines else ""
+                params["content"] = "\n".join(lines[1:]) if len(lines) > 1 else ""
     else:
         print(f"[Skill Execute] 未知工具 tool_id={tool_id}", file=sys.stderr, flush=True)
         return f"[未知工具: {tool_id}]"

@@ -1,4 +1,4 @@
-{
+﻿{
   "id": "com.example.mcp.filesystem_workspace",
   "name": "Filesystem (workspace) via official MCP",
   "version": "1.0.0",
@@ -11,7 +11,7 @@
     "command": "npx",
     "args": [
       "-y",
-      "@modelcontextprotocol/server-filesystem@0.6.2",
+      "@modelcontextprotocol/server-filesystem",
       "__JACHIN_WORKSPACE__"
     ]
   }

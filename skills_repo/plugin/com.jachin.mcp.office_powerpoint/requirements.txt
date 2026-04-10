@@ -1,0 +1,2 @@
+﻿# Pin with plugin.json version; upstream: https://github.com/GongRzhe/Office-PowerPoint-MCP-Server
+office-powerpoint-mcp-server==2.0.7

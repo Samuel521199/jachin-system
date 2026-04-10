@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.107] - 2026-04-10
+
+### Fixed
+
+- **云端 UI**：Nexus 等云端界面排版问题修复
+- **登录**：账号密码登录问题修复（含注册/校验/凭证相关链路）
+
+### Changed
+
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli`、`clients/desktop/package.json`、`clients/desktop/package-lock.json`、`clients/desktop/src-tauri/tauri.conf.json`、`Cargo.toml`、`VERSION` 统一为 **0.8.107**（Git 标签 `v0.8.107`）
+
+---
+
 ## [v0.8.106] - 2026-04-09
 
 ### Added
@@ -9,6 +22,10 @@ All notable changes to this project will be documented in this file.
 - **L3 ReAct 护城河**：`agent_core` 对写入对话的 Observation 串统一 **长度截断**（`MAX_REACT_OBSERVATION_FOR_LLM`），降低 MCP Fetch/Tavily/大文件读回撑爆上下文风险；HR 终稿短路与 SQLite 经验判定仍基于未截断全文
 - **原生实用工具（PM/策划）**：`util:ab_test_calc`、`util:fake_data_gen`（Faker）、`util:text_diff`、`util:funnel_calc`（`core_util_tools.py`）；单测与 `faker` 依赖
 - **MCP stdio 与环境**：`mcp_embedded_runtime` / `mcp_client` 子进程 env、cwd 与 Tavily 链；文档 `docs/MCP_STDIO_API_KEY_AND_ENV.md`、规则 `088-mcp-stdio-apikey-env.mdc`；`config/mcp_servers.json.example`
+- **MCP · Office PowerPoint（PPTX）**：`skills_repo/plugin/com.jachin.mcp.office_powerpoint`（L3_LOCAL stdio，`python -m ppt_mcp_server`，依赖 PyPI `office-powerpoint-mcp-server`）；能力域 `office_powerpoint_mcp`（`docs/capability_domains/office_powerpoint_mcp.md`、`DOMAIN_REGISTRY`）；`mcp_servers.json.example` 可选示例条目
+- **L3 路径与桌面联调**：`l3_node.paths.get_app_root` 在设置 `JACHIN_APP_ROOT` 且目录含 `l3_node` 或 `skills_repo` 时优先使用该根（修复 `packaged_stdio=0`、HR 找不到 `skills_repo/plugin`）；`scripts/start-layer3.ps1` 同控制台起 L3 时用 `ProcessStartInfo` 显式注入环境变量
+- **MCP stdio 排障**：`mcp_client` 在拉起子进程前若发现 args 中 `.py` 路径不存在则跳过并打日志（避免 `Connection closed` 难查）；`scripts/repair_mcp_servers.py` / `repair-mcp-servers.ps1` 修正 `hr-atomic-tools` 指向本仓库 `com.jachin.hr.recruitment/server.py`；`start-layer3.ps1` 默认在启动前运行修复（`-SkipRepairMcp` 可关）；`com.jachin.hr.recruitment` 补 `plugin.json` 供 HR Loader 识别
+- **MCP 启动自愈**：`core/mcp_json_repair.py` 在 `start_l3_stdio_mcp_host` 内于 `MCPManager.start()` 前自动修正 `~/.jachin/mcp_servers.json` 中失效的 `hr-atomic-tools` 路径；`l3_packaged_stdio_mcp` 在注册 `com.jachin.mcp.office_powerpoint` 前检测 `ppt_mcp_server`，未安装时打明确 ERROR 与 `pip install` 提示
 - **桌面 OMNI**：`MarkdownMessage` + `MermaidViewer`（Mermaid、`react-zoom-pan-pinch` 全屏缩放平移）；`JachinOmniCyberProtocol` 助手气泡走 Markdown 渲染
 
 ### Changed

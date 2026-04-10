@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Nexus 登录 / 注册页：Auth.js Credentials + `/api/auth/register`。
  * 注册仅创建 users；工作区须在 `/console/workspace` 创建或加入。
  * 登录后会话 JWT 含 orgId/orgRole（无工作区时为空，控制台会引导至工作区页）。
@@ -52,6 +52,17 @@ function getSafeCallbackUrl(raw: string): string {
 }
 
 /** 登录成功后的跳转：优先用服务端返回 URL，但须校正 loopback / 0.0.0.0；相对路径原样使用。 */
+/** NextAuth 任意失败常统一成 CredentialsSignin；JWT/库异常已在 auth.ts 兜底，此处区分其它 code 避免误导读用户改密码 */
+function signInFailureMessage(error: string | undefined): string {
+  if (!error || error === "CredentialsSignin") {
+    return "邮箱或密码错误";
+  }
+  if (error === "Configuration") {
+    return "登录服务配置异常（例如生产环境未设置 AUTH_SECRET）。请检查 Nexus 环境变量。";
+  }
+  return `登录失败（${error}）。若刚配置 DATABASE_URL，请重启 npm run dev 并确认 PostgreSQL 已启动。`;
+}
+
 function postLoginHref(
   serverUrl: string | null | undefined,
   fallback: string
@@ -75,14 +86,17 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setLoading(true);
     const safeCb = getSafeCallbackUrl(callbackUrl);
     try {
+      // 密码原样交给 NextAuth，与 /api/auth/register 一致（见 passwordPlainForCredentials：不 trim）
       const res = await signIn("credentials", {
         email: email.trim().toLowerCase(),
         password,
@@ -90,7 +104,7 @@ function LoginForm() {
         callbackUrl: safeCb,
       });
       if (res?.error) {
-        setError("邮箱或密码错误");
+        setError(signInFailureMessage(res.error));
         setLoading(false);
         return;
       }
@@ -104,6 +118,7 @@ function LoginForm() {
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setLoading(true);
     try {
       const r = await fetch("/api/auth/register", {
@@ -118,12 +133,17 @@ function LoginForm() {
       const data = (await r.json()) as {
         success?: boolean;
         message?: string;
+        password_recovered?: boolean;
       };
       if (!r.ok || !data.success) {
         setError(data.message ?? "注册失败");
         setLoading(false);
         return;
       }
+      if (data.message && data.password_recovered) {
+        setNotice(data.message);
+      }
+      // 自动登录使用与上一步注册请求相同的 password 状态（不 trim）
       const res = await signIn("credentials", {
         email: email.trim().toLowerCase(),
         password,
@@ -131,7 +151,9 @@ function LoginForm() {
         callbackUrl: "/console/workspace",
       });
       if (res?.error) {
-        setError("注册成功但自动登录失败，请手动登录");
+        setError(
+          `注册成功但自动登录失败：${signInFailureMessage(res.error)} 请尝试手动登录。`
+        );
         setLoading(false);
         setMode("login");
         return;
@@ -172,6 +194,7 @@ function LoginForm() {
             onClick={() => {
               setMode("login");
               setError(null);
+              setNotice(null);
             }}
             className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
               mode === "login"
@@ -186,6 +209,7 @@ function LoginForm() {
             onClick={() => {
               setMode("register");
               setError(null);
+              setNotice(null);
             }}
             className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
               mode === "register"
@@ -244,6 +268,9 @@ function LoginForm() {
             />
           </div>
 
+          {notice && (
+            <p className="text-sm text-emerald-400/90 text-center">{notice}</p>
+          )}
           {error && (
             <p className="text-sm text-red-400/90 text-center">{error}</p>
           )}

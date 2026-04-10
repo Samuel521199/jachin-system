@@ -22,7 +22,8 @@ param(
     [switch]$WsOnly,
     [switch]$SourceOnly,
     [switch]$DesktopOnly,
-    [switch]$SeparateL3Window
+    [switch]$SeparateL3Window,
+    [switch]$SkipRepairMcp
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -41,6 +42,15 @@ if ($SourceOnly -and $DesktopOnly) {
 $env:JACHIN_APP_ROOT = $ProjectRoot
 $env:JACHIN_DEV_HR_FIRST = "1"
 $ErrorActionPreference = "Continue"
+
+# 修正 ~/.jachin/mcp_servers.json 里过期的 hr-atomic-tools 路径（换仓库目录名后常见），避免拖死整轮 MCP 握手
+if (-not $SkipRepairMcp) {
+    try {
+        & python (Join-Path $ScriptDir "repair_mcp_servers.py") --project-root $ProjectRoot
+    } catch {
+        Write-Host "[Layer3] repair_mcp_servers.py 跳过: $_" -ForegroundColor DarkGray
+    }
+}
 
 # Desktop+Sidecar path: do not skip spawn. Dual path: skip so desktop does not start a second L3.
 if ($DesktopOnly) {
@@ -69,8 +79,14 @@ function Start-L3SourceForeground {
 }
 
 try {
-    Write-Host "[Layer3] kill old L3..." -ForegroundColor Gray
-    & (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause
+    if ($SourceOnly) {
+        Write-Host "[Layer3] kill old L3..." -ForegroundColor Gray
+        & (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause
+    } else {
+        Write-Host "[Layer3] 检查并清理已有 L3 实例..." -ForegroundColor Gray
+        # 桌面启 Tauri 前结束本仓库 target 下 jachin-desktop，避免 single-instance 双开秒退
+        & (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause -AlsoKillDesktopDev
+    }
 
     # 本地热更新 / 桌面联调：释放 Vite 31421，避免上次 dev 残留占用
     if (-not $SourceOnly) {
@@ -113,8 +129,24 @@ try {
                 $pyCmd = Get-Command python -ErrorAction Stop
                 $argList = @("-m", "l3_node")
                 if ($WsOnly) { $argList += "--ws-only" } else { $argList += "--gateway" }
-                $null = Start-Process -FilePath $pyCmd.Source -ArgumentList $argList -WorkingDirectory $ProjectRoot `
-                    -PassThru -NoNewWindow
+                # 显式复制当前进程环境并写入 JACHIN_*，避免少数环境下 Start-Process 子进程未继承导致
+                # packaged_stdio=0 / HR 找不到 skills_repo（见 l3_node.paths.get_app_root）。
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $pyCmd.Source
+                $psi.Arguments = ($argList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+                $psi.WorkingDirectory = $ProjectRoot
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $false
+                $ev = $psi.EnvironmentVariables
+                foreach ($de in [System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Process).GetEnumerator()) {
+                    try {
+                        $ev[$de.Key.ToString()] = $de.Value.ToString()
+                    } catch { }
+                }
+                $ev["JACHIN_APP_ROOT"] = $ProjectRoot
+                $ev["JACHIN_DEV_HR_FIRST"] = "1"
+                $ev["PYTHONUTF8"] = "1"
+                [void][System.Diagnostics.Process]::Start($psi)
             }
             Start-Sleep -Seconds 2
             Write-Host "[Layer3] JACHIN_SKIP_L3_SPAWN=1 (Tauri window does not spawn second L3)" -ForegroundColor Gray
@@ -181,6 +213,10 @@ try {
         }
         Write-Host "[$UtcNow] Ctrl+C usually stops npm first; L3 may keep running (use kill_l3_processes.ps1)" -ForegroundColor Gray
         Write-Host ""
+
+        Write-Host "[$UtcNow] Skills 为空可运行: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
+        Write-Host "[$UtcNow] 热更新联调: npm run tauri:dev:with-updater（日常开发: npm run tauri:dev）" -ForegroundColor Gray
+        Write-Host "[$UtcNow] 发布/签名: 仓库根 npm run publish-desktop-release（见 clients/desktop/package.json）" -ForegroundColor Gray
 
         Push-Location $DesktopDir
         $tauriPkgDir = $at + "tauri-apps"

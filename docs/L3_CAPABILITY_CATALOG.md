@@ -1,4 +1,4 @@
-# L3 能力总目录（Jachin 执行节点）
+﻿# L3 能力总目录（Jachin 执行节点）
 
 **定位**：与具体业务域**解耦**的元层文档——说明系统身份、软/硬路由分工、**如何注册新 MCP/Skill 域**，供人工与 Agent 查阅。  
 **各域细节**（工具映射、飞书硬指令、注入正文）放在 **`docs/capability_domains/*.md`**，由 `l3_node/capability_catalog.py` 按当前「可用工具」自动拼接。
@@ -53,6 +53,7 @@
 | 域 id | 文档 | 说明 |
 |--------|------|------|
 | `hr_recruitment` | [capability_domains/hr_recruitment.md](./capability_domains/hr_recruitment.md) | Boss/Lark 招聘、无人值守、透析 MCP |
+| `office_powerpoint_mcp` | [capability_domains/office_powerpoint_mcp.md](./capability_domains/office_powerpoint_mcp.md) | PPTX 创建/编辑（com.jachin.mcp.office_powerpoint） |
 
 > 新域请在此表增加一行，并在 `DOMAIN_REGISTRY` 注册。
 

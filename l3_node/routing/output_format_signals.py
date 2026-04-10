@@ -1,4 +1,4 @@
-"""
+﻿"""
 检测用户消息中的「格式强约束」与直连 LLM 可行性。
 用于：动态瘦身系统提示词、在无需工具时绕过 ReAct。
 """
@@ -15,6 +15,10 @@ _TOOL_NEED_RE = re.compile(
     r"grep|rg\s|搜索代码|apply_patch|写文件|fs_write|submit_background_task|check_background_task|"
     r"delegate|coordinate|recall_memory|local_memory_search|"
     r"atom_post|add_automated|透析镜|mcp:|jpp:com\.jachin|"
+    # PPTX / Office MCP：避免走 direct_llm_bypass 后模型编造「无法连接 MCP」；须进 ReAct 调 mcp:create_presentation 等
+    r"pptx?|powerpoint|幻灯片|演示文稿|\.pptx|"
+    r"create_presentation|save_presentation|add_slide|populate_placeholder|"
+    r"(?:用|通过|调用)\s*MCP|MCP\s*(?:新建|创建|生成|做)|"
     # 实况天气需 util:get_weather_lite；否则易走 direct_llm_bypass 编造「服务不可用」
     r"(?:查|看|问|说说).{0,4}天气|天气.{0,16}(?:怎么样|如何|多少|冷不冷)|"
     r"(?:今日|今天|明天|当地|外面).{0,12}天气|天气预报|气温|下雨|下雪|台风|空气质量|AQI|"

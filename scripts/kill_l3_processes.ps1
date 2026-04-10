@@ -1,8 +1,12 @@
 ﻿# 清理残留的 L3 进程与端口
 # 用法: .\scripts\kill_l3_processes.ps1
 #       .\scripts\kill_l3_processes.ps1 -NoPause  # 不等待 Enter，适合脚本调用
+#       .\scripts\kill_l3_processes.ps1 -NoPause -AlsoKillDesktopDev  # 另结束本仓库 tauri target 下 jachin-desktop（避免 single-instance 双开秒退）
 
-param([switch]$NoPause)
+param(
+    [switch]$NoPause,
+    [switch]$AlsoKillDesktopDev
+)
 $ErrorActionPreference = 'Continue'
 # 被 start-layer3 等调用时独立进程，须自设编码，否则 Windows PowerShell 5.1 下中文易乱码
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -50,6 +54,38 @@ if ($portsInUse.Count -gt 0) {
     }
 } else {
     Write-Host "  端口 18981-18999 均未被占用" -ForegroundColor Gray
+}
+
+# 3. 可选：结束本仓库 cargo 输出目录下的桌面进程（Tauri single-instance 会令第二进程打印 [Kernel] 后立即退出）
+if ($AlsoKillDesktopDev) {
+    Write-Host ""
+    Write-Host '[L3] 结束本仓库 src-tauri\target 下的 jachin-desktop（避免与上次 tauri dev 双开）...' -ForegroundColor Cyan
+    $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+    $targetDir = Join-Path $ProjectRoot 'clients\desktop\src-tauri\target'
+    if (-not (Test-Path -LiteralPath $targetDir)) {
+        Write-Host "  跳过: 未找到 clients\desktop\src-tauri\target" -ForegroundColor Gray
+    } else {
+        $targetPrefix = ((Resolve-Path -LiteralPath $targetDir).Path).TrimEnd('\')
+        $dk = 0
+        try {
+            $desk = Get-CimInstance Win32_Process -Filter "Name = 'jachin-desktop.exe'" -ErrorAction SilentlyContinue
+            foreach ($p in $desk) {
+                $exe = $p.ExecutablePath
+                if ([string]::IsNullOrWhiteSpace($exe)) { continue }
+                $norm = $exe.TrimEnd('\')
+                $under = $norm.StartsWith($targetPrefix + '\', [StringComparison]::OrdinalIgnoreCase)
+                if (-not $under) { continue }
+                Write-Host "  结束: jachin-desktop (PID $($p.ProcessId)) $norm" -ForegroundColor Yellow
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+                $dk++
+            }
+        } catch {
+            Write-Host "  查询 jachin-desktop 时出错: $_" -ForegroundColor Red
+        }
+        if ($dk -eq 0) {
+            Write-Host "  未发现本仓库 target 下的 jachin-desktop" -ForegroundColor Gray
+        }
+    }
 }
 
 Write-Host ""
