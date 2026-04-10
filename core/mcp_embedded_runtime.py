@@ -16,11 +16,14 @@ frozen 下 exe 旁 runtime/ → 系统 PATH（python/python3/node）。
 
 占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__、__JACHIN_WORKSPACE__
 （后者展开为 ``~/.jachin/workspace`` 或 ``$JACHIN_HOME/workspace`` 的绝对路径，供 MCP 如 server-sqlite 的 ``--db-path``）
+
+env 值中可使用 ``${VAR_NAME}``，在拉起子进程前从 **当前进程** ``os.environ`` 展开（便于密钥只放在 .env / 系统环境，不进 JSON）。
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -148,6 +151,20 @@ def get_effective_mcp_node_command() -> str:
     return w or "node"
 
 
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def inject_os_env_tokens(s: str) -> str:
+    """将 ``${VAR}`` 替换为 os.environ.get(VAR, '')（未设置则为空串）。"""
+    if not isinstance(s, str) or "${" not in s:
+        return s
+
+    def _repl(m: re.Match[str]) -> str:
+        return os.environ.get(m.group(1), "")
+
+    return _ENV_REF_RE.sub(_repl, s)
+
+
 def inject_embedded_tokens(s: str) -> str:
     """将字符串中的 MCP 运行时占位符替换为实际路径或回退命令。"""
     if not isinstance(s, str) or not s:
@@ -221,8 +238,309 @@ def preflight_mcp_stdio_command(command: str, server_id: str) -> tuple[bool, str
     return False, hint
 
 
+def mask_secret_for_log(val: str | None) -> str:
+    """日志脱敏：不输出完整 API Key。"""
+    v = (val or "").strip()
+    if not v:
+        return "(空)"
+    if len(v) <= 8:
+        return f"(已设置 len={len(v)})"
+    return f"{v[:4]}...{v[-4:]} len={len(v)}"
+
+
+def _tavily_chain_logging_disabled() -> bool:
+    """设为 ``JACHIN_LOG_TAVILY_CHAIN=0`` / ``false`` / ``no`` 时关闭整条 Tavily 排障日志（默认开启）。"""
+    return (os.environ.get("JACHIN_LOG_TAVILY_CHAIN") or "1").strip().lower() in ("0", "false", "no")
+
+
+def _tavily_key_diag(parent_has: bool, stdio_has: bool) -> str:
+    """单行可检索结论，便于 grep ``[TavilyMCP]``。"""
+    if parent_has and stdio_has:
+        return "父进程与子进程env均含TAVILY(传参路径正常)"
+    if parent_has and not stdio_has:
+        return "警告-父有Key但stdio.env未带Key(查resolve_placeholders/实例.env)"
+    if not parent_has and stdio_has:
+        return "仅stdio有Key父进程无(罕见)"
+    return "两端均无TAVILY_KEY(不可用)"
+
+
+def log_tavily_mcp_chain(
+    phase: str,
+    server_id: str,
+    stdio_env: dict[str, Any] | None,
+    *,
+    log_parent_os: bool = False,
+) -> None:
+    """
+    Tavily stdio 关键路径：MCP Python SDK 不会把 L3 全量环境传给子进程，只合并白名单 + ``stdio_env``。
+    同时打出 ``parent_os_has_TAVILY`` / ``stdio_env_has_TAVILY`` 与 ``diag=``，便于对照是否「传不过去」。
+    关闭：环境变量 ``JACHIN_LOG_TAVILY_CHAIN=0``。
+    """
+    if _tavily_chain_logging_disabled():
+        return
+    sid = str(server_id or "unknown").strip()
+    par = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    par_has = bool(par)
+    sto = ""
+    if isinstance(stdio_env, dict):
+        sto = str(stdio_env.get("TAVILY_API_KEY") or "").strip()
+    stdio_has = bool(sto)
+    extra = ""
+    if log_parent_os:
+        extra = f" parent_key_masked={mask_secret_for_log(par)}"
+    logger.info(
+        "[TavilyMCP][chain] phase=%s server_id=%s parent_os_has_TAVILY=%s stdio_env_has_TAVILY=%s "
+        "stdio_key_masked=%s%s diag=%s",
+        phase,
+        sid,
+        par_has,
+        stdio_has,
+        mask_secret_for_log(sto),
+        extra,
+        _tavily_key_diag(par_has, stdio_has),
+    )
+
+
+def log_tavily_invoke_outcome(tool_name: str, result: str | None) -> None:
+    """
+    工具调用返回后一行摘要：成功只打长度；疑似错误打 WARNING + 截断预览（仍勿贴完整用户查询内容外的密钥）。
+    """
+    if _tavily_chain_logging_disabled():
+        return
+    tn = (tool_name or "").strip()
+    if "tavily" not in tn.lower():
+        return
+    r = (result or "").strip()
+    low = r.lower()
+    # 避免把网页正文里的 "error" 误判为失败；偏 JSON-RPC / 鉴权类文案
+    bad = any(
+        x in low
+        for x in (
+            "-32600",
+            "-32602",
+            "-32603",
+            "environment variable is required",
+            "missing tavily",
+            "invalid api key",
+            "api key not",
+            "unauthorized",
+            "authentication failed",
+            "incorrect api key",
+            "quota exceeded",
+            "rate limit",
+        )
+    ) or ("[mcp" in low and "error" in low)
+    if bad and len(r) < 800:
+        logger.warning("[TavilyMCP][invoke] tool=%s outcome=likely_error len=%s body=%s", tn, len(r), r)
+    elif bad:
+        logger.warning(
+            "[TavilyMCP][invoke] tool=%s outcome=likely_error len=%s body_preview=%s…",
+            tn,
+            len(r),
+            r[:400],
+        )
+    else:
+        logger.info("[TavilyMCP][invoke] tool=%s outcome=ok len=%s", tn, len(r))
+
+
+def _is_tavily_stdio_cfg(out: dict[str, Any]) -> bool:
+    """是否 Tavily 官方 npx stdio（需在 env 中显式带 TAVILY_API_KEY）。"""
+    sid = str(out.get("id") or out.get("name") or "").lower()
+    if "tavily" in sid:
+        return True
+    args = out.get("args")
+    if isinstance(args, list):
+        for a in args:
+            if isinstance(a, str) and "tavily" in a.lower():
+                return True
+    return False
+
+
+def is_tavily_stdio_server(server_id: str, args: Any) -> bool:
+    """与 ``_is_tavily_stdio_cfg`` 一致，仅 id + args（供 connect 时判断）。"""
+    return _is_tavily_stdio_cfg({"id": server_id, "args": args if isinstance(args, list) else []})
+
+
+def effective_stdio_env_for_sdk(
+    server_id: str,
+    args: Any,
+    raw_env: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    """
+    生成传给 ``mcp.StdioServerParameters.env`` 的值。
+
+    **关键（与官方 MCP Python SDK 一致）**：``stdio_client`` 在 ``env is None`` 时子进程**仅有**
+    ``get_default_environment()`` 白名单（**不含** ``TAVILY_API_KEY``）；只有 ``env`` 为非空 dict 时才会
+    合并 ``{**get_default_environment(), **env}``。因此 Tavily **禁止**传 ``env=None``，否则 Node 进程内
+    ``process.env.TAVILY_API_KEY`` 为空，``list_tools`` 可能仍成功，**首次** ``tavily_search`` 才报
+    ``-32600 TAVILY_API_KEY environment variable is required``。
+
+    对 Tavily：无论 ``raw_env`` 是否为 None，均返回 **dict**（至少尝试从 ``os.environ`` 补 Key）；
+    非 Tavily：无显式变量时返回 ``None`` 以保持与旧行为一致。
+    """
+    out: dict[str, str] = {}
+    if isinstance(raw_env, dict):
+        for k, v in raw_env.items():
+            if v is None:
+                continue
+            out[str(k)] = str(v)
+    tavily = is_tavily_stdio_server(server_id, args)
+    if tavily:
+        tv = (os.environ.get("TAVILY_API_KEY") or "").strip()
+        if tv and not (out.get("TAVILY_API_KEY") or "").strip():
+            out["TAVILY_API_KEY"] = tv
+        if not (out.get("TAVILY_API_KEY") or "").strip():
+            logger.warning(
+                "[TavilyMCP] effective_stdio_env: 父进程无 TAVILY_API_KEY，Tavily 工具调用将报 -32600（请配置 .env）"
+            )
+        return out
+    return out if out else None
+
+
+def resolve_tavily_stdio_cwd() -> Optional[str]:
+    """
+    tavily-mcp 入口执行 ``dotenv.config()``（默认读取 **当前工作目录** 下 ``.env``），随后
+    ``const API_KEY = process.env.TAVILY_API_KEY``（见 npm ``tavily-mcp`` 的 ``src/index.ts``）。
+
+    若用户在 ``clients/desktop`` 等子目录启动 ``python -m l3_node``，stdio 子进程 **cwd** 常为该子目录，
+    而 ``TAVILY_API_KEY`` 仅在仓库根 ``.env``，则 Node 侧 ``API_KEY`` 为空 → 首次 ``tavily_search`` 报
+    ``-32600 TAVILY_API_KEY environment variable is required``，与 Python 侧已 merge 密钥并存。
+
+    将子进程 ``cwd`` 设为「已存在 ``.env``」的目录，优先与 ``merge_l3_dotenv_into_os`` 可能加载的路径一致。
+    """
+    candidates: list[Path] = []
+    ja = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+    if ja:
+        try:
+            candidates.append(Path(ja).expanduser().resolve())
+        except OSError:
+            pass
+    try:
+        repo = Path(__file__).resolve().parent.parent
+        candidates.append(repo)
+    except OSError:
+        pass
+    try:
+        candidates.append(Path.cwd().resolve())
+    except OSError:
+        pass
+    candidates.append(Path.home() / ".jachin")
+    seen: set[str] = set()
+    for base in candidates:
+        if not base:
+            continue
+        try:
+            key = str(base.resolve())
+        except OSError:
+            key = str(base)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if (base / ".env").is_file():
+                return str(base.resolve())
+        except OSError:
+            continue
+    cwd = Path.cwd().resolve()
+    for _ in range(8):
+        try:
+            if (cwd / ".env").is_file():
+                return str(cwd)
+        except OSError:
+            pass
+        par = cwd.parent
+        if par == cwd:
+            break
+        cwd = par
+    return None
+
+
+def log_tavily_stdio_cwd_choice(server_id: str, cwd: Optional[str]) -> None:
+    """可检索：Tavily stdio 子进程 cwd（与 dotenv.config 对齐）。"""
+    if _tavily_chain_logging_disabled():
+        return
+    logger.info(
+        "[TavilyMCP][chain] phase=stdio_cwd_for_dotenv server_id=%s cwd=%s",
+        server_id,
+        cwd or "(default_inherit)",
+    )
+
+
+def expand_stdio_env_windows_npx_tavily(
+    server_id: str,
+    args: Any,
+    eff_env: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """
+    Windows 专用：``npx.cmd`` → Node 的链式子进程在部分环境下，仅靠
+    ``{**get_default_environment(), **显式小 dict}`` 仍可能让 Tavily 包内读不到
+    ``process.env.TAVILY_API_KEY``（list_tools 仍成功，首次 search 才 -32600）。
+
+    在已通过 ``effective_stdio_env_for_sdk`` 得到显式 Key 的前提下，将 **完整**
+    ``os.environ``（全部转为 str）作为基底，再用 ``eff_env`` 覆盖，使行为接近
+    「在父 shell 已 export 后启动 npx」。
+    """
+    if sys.platform != "win32":
+        return eff_env
+    if not is_tavily_stdio_server(server_id, args):
+        return eff_env
+    base: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if v is None:
+            continue
+        try:
+            base[str(k)] = str(v)
+        except Exception:
+            continue
+    if eff_env:
+        base.update(eff_env)
+    if not _tavily_chain_logging_disabled():
+        tv = str(base.get("TAVILY_API_KEY") or "").strip()
+        logger.info(
+            "[TavilyMCP][chain] phase=stdio_win32_full_parent_env server_id=%s keys=%s has_TAVILY=%s key_masked=%s",
+            server_id,
+            len(base),
+            bool(tv),
+            mask_secret_for_log(tv),
+        )
+    return base
+
+
+def log_tavily_stdio_merged_spawn(server_id: str, explicit_env: dict[str, str] | None) -> None:
+    """记录 SDK 合并后子进程可见的 TAVILY（与 ``get_default_environment()`` 合并后）。"""
+    if _tavily_chain_logging_disabled():
+        return
+    try:
+        from mcp.client.stdio import get_default_environment
+
+        merged = {**get_default_environment(), **(explicit_env or {})}
+        tv = str(merged.get("TAVILY_API_KEY") or "").strip()
+        logger.info(
+            "[TavilyMCP][chain] phase=stdio_spawn_merged server_id=%s merged_has_TAVILY=%s merged_key_masked=%s",
+            server_id,
+            bool(tv),
+            mask_secret_for_log(tv),
+        )
+    except Exception as e:
+        logger.debug("[TavilyMCP] stdio_spawn_merged log skip: %s", e)
+
+
 def resolve_mcp_cfg_placeholders(cfg: dict[str, Any]) -> dict[str, Any]:
-    """解析配置中 command、args、env 字符串里的 __JACHIN_MCP_*__ / __JACHIN_WORKSPACE__ 占位符。"""
+    """解析 command、args、env：先 __JACHIN_*__，再 env 值中的 ``${VAR}``。
+
+    **重要（MCP Python SDK stdio）**：子进程环境为 ``get_default_environment()``（PATH、USERPROFILE 等白名单）
+    与配置 ``env`` 的合并，**不会**继承 L3 进程的全部 ``os.environ``。因此像 ``TAVILY_API_KEY`` 这类密钥
+    必须出现在解析后的 ``env`` 里；展开后若仍为空，会尝试用当前 ``os.environ`` 回填；Tavily 则在检测到
+    相关配置且父进程已有 Key 时自动补全 ``TAVILY_API_KEY``。
+
+    解析前合并 ``.env``：避免未走 ``l3_node.__main__`` 或执行顺序导致占位符展开时父进程仍无 Key。
+    """
+    try:
+        from core.l3_dotenv_merge import merge_l3_dotenv_into_os
+
+        merge_l3_dotenv_into_os()
+    except Exception:
+        pass
     out = dict(cfg)
     cmd = out.get("command")
     if isinstance(cmd, str):
@@ -232,9 +550,29 @@ def resolve_mcp_cfg_placeholders(cfg: dict[str, Any]) -> dict[str, Any]:
         out["args"] = [inject_embedded_tokens(a) if isinstance(a, str) else a for a in args]
     env = out.get("env")
     if isinstance(env, dict):
-        out["env"] = {
-            str(k): inject_embedded_tokens(v) if isinstance(v, str) else v for k, v in env.items()
-        }
+        out["env"] = {}
+        for k, v in env.items():
+            if isinstance(v, str):
+                out["env"][str(k)] = inject_os_env_tokens(inject_embedded_tokens(v))
+            else:
+                out["env"][str(k)] = v
+        # 占位符展开后仍为空：用父进程已加载的同名变量回填（常见于 .env 已合并但拼写/时机边缘情况）
+        for k in list(out["env"].keys()):
+            v = out["env"][k]
+            if isinstance(v, str) and not v.strip():
+                ev = (os.environ.get(k) or "").strip()
+                if ev:
+                    out["env"][k] = ev
+    # Tavily：即使 JSON 未写 env 块，只要 L3 已具备 TAVILY_API_KEY，也注入，避免 stdio 白名单继承不到该 Key
+    if _is_tavily_stdio_cfg(out):
+        tv = (os.environ.get("TAVILY_API_KEY") or "").strip()
+        if tv:
+            if not isinstance(out.get("env"), dict):
+                out["env"] = {}
+            if not (str(out["env"].get("TAVILY_API_KEY") or "").strip()):
+                out["env"]["TAVILY_API_KEY"] = tv
+        _sid = str(out.get("id") or out.get("name") or "unknown")
+        log_tavily_mcp_chain("resolve_placeholders", _sid, out.get("env") if isinstance(out.get("env"), dict) else None, log_parent_os=True)
     return out
 
 

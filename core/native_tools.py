@@ -263,6 +263,12 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
     Returns:
         工具执行结果
     """
+    _tid = (tool_id or "").strip()
+    if _tid.startswith("util:") or _tid.startswith("sys:"):
+        from l3_node.primitives.tools.core_util_tools import dispatch_util_native_tool
+
+        return dispatch_util_native_tool(_tid, **kwargs)
+
     if tool_id == "core:fs_read":
         return core_fs_read(kwargs.get("file_path", ""))
     if tool_id == "core:fs_write":

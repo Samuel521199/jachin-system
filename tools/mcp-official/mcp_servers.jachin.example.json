@@ -60,6 +60,15 @@
       "name": "MCP Memory（官方 npx，知识图谱）",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    {
+      "id": "tavily-search",
+      "name": "Tavily Search（npm: tavily-mcp，需 TAVILY_API_KEY）",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@latest"],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
     }
   ]
 }

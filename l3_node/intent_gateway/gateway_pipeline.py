@@ -74,6 +74,8 @@ async def apply_gateway_ingress_pipeline(
             "gateway_multimodal_model": bundle.extra.get("gateway_multimodal_model_litellm"),
             "forced_l2": bool(bundle.extra.get("attachment_forced_l2_routing")),
             "clarification_gate": bundle.extra.get("clarification_gate"),
+            # 实时知识意图在 run_agent 内由小模型补判后写入 bundle / bundle.extra（此处恒为初始值）
+            "requires_realtime_knowledge": bool(getattr(bundle, "requires_realtime_knowledge", False)),
         }
         logger.info("[IntentGatewayObs] %s", json.dumps(obs, ensure_ascii=False))
     except Exception:

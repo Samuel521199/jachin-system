@@ -2,7 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v0.8.105] - 2026-04-09
+## [v0.8.106] - 2026-04-09
+
+### Added
+
+- **L3 ReAct 护城河**：`agent_core` 对写入对话的 Observation 串统一 **长度截断**（`MAX_REACT_OBSERVATION_FOR_LLM`），降低 MCP Fetch/Tavily/大文件读回撑爆上下文风险；HR 终稿短路与 SQLite 经验判定仍基于未截断全文
+- **原生实用工具（PM/策划）**：`util:ab_test_calc`、`util:fake_data_gen`（Faker）、`util:text_diff`、`util:funnel_calc`（`core_util_tools.py`）；单测与 `faker` 依赖
+- **MCP stdio 与环境**：`mcp_embedded_runtime` / `mcp_client` 子进程 env、cwd 与 Tavily 链；文档 `docs/MCP_STDIO_API_KEY_AND_ENV.md`、规则 `088-mcp-stdio-apikey-env.mdc`；`config/mcp_servers.json.example`
+- **桌面 OMNI**：`MarkdownMessage` + `MermaidViewer`（Mermaid、`react-zoom-pan-pinch` 全屏缩放平移）；`JachinOmniCyberProtocol` 助手气泡走 Markdown 渲染
+
+### Changed
+
+- **文档**：`MCP_SPEC`、`L3_TOOL_POOL_AND_MCP_ASSEMBLY`、L3 记忆与网关等相关增量
+- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli`、`clients/desktop/package.json`、`clients/desktop/package-lock.json`、`clients/desktop/src-tauri/tauri.conf.json` 统一为 **0.8.106**（Git 标签 `v0.8.106`）
+
+---
+
+## [v0.8.105] - 2026-04-09（本地合入）
 
 ### Added
 
@@ -10,7 +26,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **版本号**：`core/main.py`、`core/sync_daemon.py`、`core/cli.py`、`cli/jachin_cli`、`clients/desktop/package.json`、`clients/desktop/src-tauri/tauri.conf.json`、`Cargo.toml`、`VERSION` 统一为 **0.8.105**（Git 标签 `v0.8.105`）
+- **版本号**：曾与 **0.8.105** 对齐；合并 `v0.8.106` 后以 **0.8.106** 为准（桌面热更新与 OMNI 等本地改动保留在工作区 / 后续提交）
+
+---
 
 ## [v0.8.104] - 2026-04-07
 

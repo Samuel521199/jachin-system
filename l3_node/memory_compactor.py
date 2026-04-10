@@ -193,9 +193,19 @@ def _merge_post_snapshot_entries(
     return out
 
 
-async def compact_local_memory_if_needed(file_path: str, threshold: int = 150) -> str:
+async def compact_local_memory_if_needed(
+    file_path: str,
+    threshold: int = 150,
+    *,
+    force: bool = False,
+) -> str:
     """
-    若 JSON 数组条目数 > threshold，调用轻量 LLM 合并后原子覆写。
+    若 JSON 数组条目数 > threshold（或 force=True 为显式口令「立刻整理」），调用轻量 LLM 合并后原子覆写。
+
+    Args:
+        threshold: 自动/定时/每轮检查路径下的条数下限；force=True 时忽略。
+        force: 用户显式口令（整理本地记忆/梦境合并等）时为 True，**无视阈值**立即尝试合并；
+            主库为空数组时仍不调用 LLM，返回简短说明。
 
     Returns:
         成功：简短中文报告；未触发/失败：空字符串（fail-open，不抛错）。
@@ -232,10 +242,18 @@ async def compact_local_memory_if_needed(file_path: str, threshold: int = 150) -
             logger.debug("[MemoryCompact] 读取/解析跳过: %s", e)
             return ""
 
-        if not isinstance(entries, list) or len(entries) <= threshold:
+        if not isinstance(entries, list):
             return ""
 
         n_before = len(entries)
+        if n_before == 0:
+            if force:
+                return "本地记忆暂无条目，无需合并。"
+            return ""
+
+        if not force and n_before <= threshold:
+            return ""
+
         snapshot_ts = time.time()
         try:
             shutil.copy2(path, shadow)

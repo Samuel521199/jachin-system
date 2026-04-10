@@ -87,6 +87,10 @@ _DEFAULT: dict[str, Any] = {
     "classification_llm_rewrite_enabled": False,
     "classification_llm_timeout_sec": 4.0,
     "classification_llm_max_tokens": 256,
+    # 实时外部知识意图（小模型 JSON；主 ReAct 前 Tavily 预取注入，默认开）
+    "realtime_knowledge_llm_enabled": True,
+    "realtime_knowledge_llm_timeout_sec": 5.0,
+    "realtime_knowledge_llm_max_tokens": 96,
     # §12.1：多模态侧路头（默认关闭）
     "multimodal_routing_head_enabled": False,
     "multimodal_routing_head_timeout_sec": 6.0,

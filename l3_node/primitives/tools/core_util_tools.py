@@ -1,0 +1,1267 @@
+"""
+Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
+
+供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
+所有 run_* 返回可 JSON 序列化的 dict；异常时 {"ok": False, "error": ...}。
+"""
+from __future__ import annotations
+
+import ast
+import base64
+import difflib
+import hashlib
+import json
+import math
+import os
+import re
+import socket
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+# ---------------------------------------------------------------------------
+# 小工具：统一成功 / 失败包装
+# ---------------------------------------------------------------------------
+
+
+def _ok(result: Any) -> dict[str, Any]:
+    return {"ok": True, "result": result}
+
+
+def _err(msg: str) -> dict[str, Any]:
+    return {"ok": False, "error": str(msg)}
+
+
+# ---------------------------------------------------------------------------
+# 类别一：时间与数学
+# ---------------------------------------------------------------------------
+
+
+def run_datetime_calc(**kwargs: Any) -> dict[str, Any]:
+    """util:datetime_calc — base_time 可选 ISO8601；add_days；target_timezone（IANA）。"""
+    try:
+        from zoneinfo import ZoneInfo
+
+        add_days = int(kwargs.get("add_days", 0))
+        tz_name = str(kwargs.get("target_timezone") or "Asia/Shanghai").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
+            tz_name = "UTC"
+
+        base_raw = kwargs.get("base_time")
+        if base_raw is None or str(base_raw).strip() == "":
+            dt = datetime.now(tz=tz)
+        else:
+            s = str(base_raw).strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            else:
+                dt = dt.astimezone(tz)
+
+        out = dt + timedelta(days=add_days)
+        return _ok(
+            {
+                "iso_local": out.isoformat(),
+                "timezone": tz_name,
+                "add_days": add_days,
+                "unix_timestamp": out.timestamp(),
+            }
+        )
+    except Exception as e:
+        return _err(e)
+
+
+def _cron_field_zh(field: str, idx: int) -> str:
+    """极简五段式 cron 字段中文描述（启发式）。"""
+    f = field.strip()
+    names = ("分", "时", "日", "月", "周")
+    label = names[idx] if idx < len(names) else f"段{idx}"
+    if f == "*":
+        return f"{label}：每分钟/每次" if idx == 0 else f"{label}：任意"
+    if f.isdigit():
+        return f"{label}：{f}"
+    if f.startswith("*/"):
+        return f"{label}：每 {f[2:]} 单位"
+    return f"{label}：{f}"
+
+
+def _cron_next_three_via_croniter(expr: str) -> list[str]:
+    from croniter import croniter
+
+    base = datetime.now(timezone.utc)
+    it = croniter(expr, base)
+    next_times: list[str] = []
+    for _ in range(3):
+        nxt = it.get_next(datetime)
+        if nxt.tzinfo is None:
+            nxt = nxt.replace(tzinfo=timezone.utc)
+        next_times.append(nxt.astimezone(timezone.utc).isoformat())
+    return next_times
+
+
+def _cron_next_three_via_apscheduler(expr: str) -> list[str]:
+    """5 段 Unix cron；依赖项目已有的 apscheduler（无需 croniter）。"""
+    from apscheduler.triggers.cron import CronTrigger
+
+    ct = CronTrigger.from_crontab(expr)
+    prev = None
+    now = datetime.now(timezone.utc)
+    next_times: list[str] = []
+    for _ in range(3):
+        nxt = ct.get_next_fire_time(prev, now)
+        if nxt is None:
+            break
+        next_times.append(nxt.astimezone(timezone.utc).isoformat())
+        prev = nxt
+        now = nxt + timedelta(microseconds=1)
+    return next_times
+
+
+def run_cron_explain(**kwargs: Any) -> dict[str, Any]:
+    """util:cron_explain — 中文简述 + 接下来 3 次触发。5 段可用 APScheduler；6 段（含秒）优先 croniter。"""
+    try:
+        expr = str(kwargs.get("cron_expr") or kwargs.get("expression") or "").strip()
+        if not expr:
+            return _err("cron_expr 不能为空")
+
+        parts = expr.split()
+        if len(parts) not in (5, 6):
+            return _err("Cron 应为 5 段（分 时 日 月 周）或 6 段（秒 分 时 日 月 周）")
+
+        zh_parts = [_cron_field_zh(p, i) for i, p in enumerate(parts[-5:])]
+        summary_zh = "；".join(zh_parts)
+
+        next_times: list[str] = []
+        engine = ""
+
+        if len(parts) == 6:
+            try:
+                next_times = _cron_next_three_via_croniter(expr)
+                engine = "croniter"
+            except ImportError:
+                return _err(
+                    "6 段 Cron（含秒）需要安装 croniter。若清华等镜像暂无该包，请改用官方源："
+                    "pip install croniter -i https://pypi.org/simple；或改为 5 段 Unix cron（不含秒）。"
+                )
+        else:
+            # 5 段：优先 APScheduler（项目已依赖），不强制 croniter（避免镜像缺包）
+            try:
+                next_times = _cron_next_three_via_apscheduler(expr)
+                engine = "apscheduler"
+            except Exception:
+                try:
+                    next_times = _cron_next_three_via_croniter(expr)
+                    engine = "croniter"
+                except ImportError:
+                    return _err(
+                        "无法解析该 Cron。请安装 croniter（官方源）：pip install croniter -i https://pypi.org/simple"
+                    )
+
+        return _ok(
+            {
+                "cron_expr": expr,
+                "engine": engine,
+                "summary_zh": f"表达式「{expr}」大致含义：{summary_zh}（启发式说明，复杂规则请以实际调度为准）",
+                "next_three_iso_utc": next_times,
+            }
+        )
+    except Exception as e:
+        return _err(e)
+
+
+class _SafeMathVisitor(ast.NodeVisitor):
+    """仅允许 + - * / 与一元正负、数值常量（Decimal）。"""
+
+    def visit(self, node: ast.AST) -> Decimal:  # type: ignore[override]
+        if isinstance(node, ast.Expression):
+            return self.visit(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return Decimal(str(node.value))
+            if isinstance(node.value, str):
+                try:
+                    return Decimal(node.value.strip())
+                except InvalidOperation as e:
+                    raise ValueError(f"无法将字符串转为数字: {node.value!r}") from e
+            raise ValueError("不允许的常量类型")
+        if isinstance(node, ast.Num):  # py<3.8 兼容
+            return Decimal(str(node.n))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            v = self.visit(node.operand)
+            return -v if isinstance(node.op, ast.USub) else v
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            left = self.visit(node.left)
+            right = self.visit(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                if right == 0:
+                    raise ZeroDivisionError("除数为零")
+                return left / right
+        raise ValueError(f"不允许的语法节点: {type(node).__name__}")
+
+
+def run_precise_math(**kwargs: Any) -> dict[str, Any]:
+    """util:precise_math — 安全四则运算，Decimal，禁止 eval。"""
+    try:
+        expression = str(kwargs.get("expression") or "").strip()
+        if not expression:
+            return _err("expression 不能为空")
+        tree = ast.parse(expression, mode="eval")
+        val: Decimal = _SafeMathVisitor().visit(tree)
+        # 统一字符串输出，避免 JSON 对 Decimal 不友好
+        return _ok({"decimal_str": format(val, "f"), "repr": str(val)})
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------------------
+# 类别二：文本与密码学
+# ---------------------------------------------------------------------------
+
+
+def run_uuid_gen(**kwargs: Any) -> dict[str, Any]:
+    """util:uuid_gen — 生成 uuid4。"""
+    try:
+        _ = kwargs  # 接受任意 kwargs，忽略
+        return _ok({"uuid": str(uuid.uuid4())})
+    except Exception as e:
+        return _err(e)
+
+
+def run_hash_crypto(**kwargs: Any) -> dict[str, Any]:
+    """util:hash_crypto — algo: md5 | sha256 | base64_encode | base64_decode"""
+    try:
+        text = kwargs.get("text")
+        if text is None:
+            return _err("text 不能为空")
+        algo = str(kwargs.get("algo") or "sha256").strip().lower()
+        raw: bytes
+        if isinstance(text, bytes):
+            raw = text
+        else:
+            s = str(text)
+            if algo == "base64_decode":
+                raw = base64.b64decode(s.encode("ascii"), validate=False)
+                return _ok({"algo": algo, "output_text": raw.decode("utf-8", errors="replace")})
+            raw = s.encode("utf-8")
+
+        if algo == "md5":
+            return _ok({"algo": algo, "hex": hashlib.md5(raw).hexdigest()})
+        if algo == "sha256":
+            return _ok({"algo": algo, "hex": hashlib.sha256(raw).hexdigest()})
+        if algo == "base64_encode":
+            return _ok({"algo": algo, "b64": base64.b64encode(raw).decode("ascii")})
+        return _err(f"不支持的 algo: {algo}")
+    except Exception as e:
+        return _err(e)
+
+
+def _normalize_json_path(path: str) -> str:
+    """将 a[0].b 转为 a.0.b 供按段解析。"""
+    s = path.strip()
+    s = re.sub(r"\[(\d+)\]", r".\1", s)
+    s = re.sub(r"\.\.+", ".", s)
+    return s.strip(".")
+
+
+def _json_get_path(obj: Any, path: str) -> Any:
+    cur = obj
+    path = _normalize_json_path(path)
+    if not path:
+        return cur
+    for part in path.split("."):
+        part = part.strip()
+        if not part:
+            continue
+        if part.isdigit():
+            cur = cur[int(part)]
+        else:
+            cur = cur[part]
+    return cur
+
+
+def run_json_jq(**kwargs: Any) -> dict[str, Any]:
+    """util:json_jq — 轻量路径提取；path 支持点号与 [0] 下标。"""
+    try:
+        json_string = str(kwargs.get("json_string") or "")
+        path = str(kwargs.get("path") or "").strip()
+        if not json_string:
+            return _err("json_string 不能为空")
+        if not path:
+            return _err("path 不能为空")
+        data = json.loads(json_string)
+        hit = _json_get_path(data, path)
+        return _ok({"path": path, "value": hit})
+    except Exception as e:
+        return _err(e)
+
+
+def run_regex_test(**kwargs: Any) -> dict[str, Any]:
+    """util:regex_test — pattern + test_cases（字符串列表）。"""
+    try:
+        pattern = str(kwargs.get("pattern") or "")
+        if not pattern:
+            return _err("pattern 不能为空")
+        cases = kwargs.get("test_cases")
+        if cases is None:
+            return _err("test_cases 不能为空（JSON 数组）")
+        if isinstance(cases, str):
+            cases = json.loads(cases)
+        if not isinstance(cases, list):
+            return _err("test_cases 必须为列表")
+        rx = re.compile(pattern)
+        out: list[dict[str, Any]] = []
+        for c in cases:
+            s = str(c)
+            m = rx.search(s)
+            if not m:
+                out.append({"text": s, "matched": False, "groups": []})
+            else:
+                g = list(m.groups()) if m.lastindex else []
+                out.append(
+                    {
+                        "text": s,
+                        "matched": True,
+                        "full_match": m.group(0),
+                        "groups": g,
+                    }
+                )
+        return _ok({"pattern": pattern, "cases": out})
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------------------
+# 类别三：轻量感知
+# ---------------------------------------------------------------------------
+
+
+def run_http_ping(**kwargs: Any) -> dict[str, Any]:
+    """util:http_ping — GET/HEAD 探测，超时 3s。"""
+    try:
+        url = str(kwargs.get("url") or "").strip()
+        if not url:
+            return _err("url 不能为空")
+        method = str(kwargs.get("method") or "HEAD").upper()
+        if method not in ("HEAD", "GET"):
+            method = "HEAD"
+        t0 = time.perf_counter()
+        req = Request(url, method=method, headers={"User-Agent": "Jachin-util-http_ping/1.0"})
+        try:
+            with urlopen(req, timeout=3) as resp:
+                code = getattr(resp, "status", None) or resp.getcode()
+        except HTTPError as he:
+            code = he.code
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        return _ok({"url": url, "method": method, "status_code": code, "elapsed_ms": elapsed_ms})
+    except URLError as e:
+        return _err(f"网络错误: {e}")
+    except Exception as e:
+        return _err(e)
+
+
+def run_dns_lookup(**kwargs: Any) -> dict[str, Any]:
+    """util:dns_lookup — socket.gethostbyname_ex"""
+    try:
+        domain = str(kwargs.get("domain") or "").strip()
+        if not domain:
+            return _err("domain 不能为空")
+        hostname, aliaslist, ipaddrlist = socket.gethostbyname_ex(domain)
+        return _ok({"domain": domain, "hostname": hostname, "aliases": list(aliaslist), "ips": list(ipaddrlist)})
+    except Exception as e:
+        return _err(e)
+
+
+# wttr.in 对部分中文城市名会 500；优先尝试英文名。键：用户常用中文/拼音/马来地区。
+_WTTR_CITY_ALIASES: dict[str, str] = {
+    "杭州": "Hangzhou",
+    "北京": "Beijing",
+    "上海": "Shanghai",
+    "广州": "Guangzhou",
+    "深圳": "Shenzhen",
+    "成都": "Chengdu",
+    "南京": "Nanjing",
+    "武汉": "Wuhan",
+    "西安": "Xian",
+    "苏州": "Suzhou",
+    "重庆": "Chongqing",
+    "天津": "Tianjin",
+    # 马来西亚（含简体/繁体常用写法；国家名默认首都）
+    "马来西亚": "Kuala Lumpur",
+    "大马": "Kuala Lumpur",
+    "吉隆坡": "Kuala Lumpur",
+    "槟城": "Penang",
+    "檳城": "Penang",
+    "乔治市": "George Town",
+    "喬治市": "George Town",
+    "新山": "Johor Bahru",
+    "柔佛新山": "Johor Bahru",
+    "马六甲": "Malacca",
+    "麻六甲": "Malacca",
+    "古晋": "Kuching",
+    "古晉": "Kuching",
+    "亚庇": "Kota Kinabalu",
+    "亞庇": "Kota Kinabalu",
+    "哥打京那巴鲁": "Kota Kinabalu",
+    "哥打京那巴魯": "Kota Kinabalu",
+    "布城": "Putrajaya",
+    "纳闽": "Labuan",
+    "納閩": "Labuan",
+    "怡保": "Ipoh",
+    "关丹": "Kuantan",
+    "關丹": "Kuantan",
+    "美里": "Miri",
+    "芙蓉": "Seremban",
+    "八打灵再也": "Petaling Jaya",
+    "八打靈再也": "Petaling Jaya",
+    "莎阿南": "Shah Alam",
+    "梳邦": "Subang Jaya",
+}
+
+
+def _open_meteo_country_hint(city: str, candidates: list[str]) -> str | None:
+    """若查询指向马来西亚，则地理编码加 countryCode=MY，避免与其它国家同名地点混淆。"""
+    parts = [city] + list(candidates)
+    blob = " ".join(parts)
+    blob_l = blob.lower()
+    my_cn = (
+        "马来西亚",
+        "大马",
+        "吉隆坡",
+        "槟城",
+        "檳城",
+        "乔治市",
+        "喬治市",
+        "新山",
+        "柔佛",
+        "马六甲",
+        "麻六甲",
+        "古晋",
+        "古晉",
+        "亚庇",
+        "亞庇",
+        "哥打京那巴鲁",
+        "哥打京那巴魯",
+        "布城",
+        "纳闽",
+        "納閩",
+        "怡保",
+        "关丹",
+        "關丹",
+        "美里",
+        "芙蓉",
+        "八打灵再也",
+        "八打靈再也",
+        "莎阿南",
+        "梳邦",
+        "砂拉越",
+        "沙巴",
+        "登嘉楼",
+        "登嘉樓",
+        "霹雳",
+        "霹靂",
+        "雪兰莪",
+        "雪蘭莪",
+        "彭亨",
+        "吉打",
+        "森美兰",
+        "森美蘭",
+        "玻璃市",
+        "吉兰丹",
+        "吉蘭丹",
+        "兰卡威",
+        "蘭卡威",
+    )
+    if any(x in blob for x in my_cn):
+        return "MY"
+    my_en = (
+        "kuala lumpur",
+        "malaysia",
+        "johor bahru",
+        "penang",
+        "george town",
+        "melaka",
+        "malacca",
+        "kuching",
+        "kota kinabalu",
+        "putrajaya",
+        "labuan",
+        "ipoh",
+        "seremban",
+        "kuantan",
+        "miri",
+        "petaling jaya",
+        "shah alam",
+        "subang jaya",
+        "langkawi",
+        "sarawak",
+        "sabah",
+        "terengganu",
+        "perak",
+        "selangor",
+        "pahang",
+        "kedah",
+        "negeri sembilan",
+        "perlis",
+        "kelantan",
+    )
+    if any(w in blob_l for w in my_en):
+        return "MY"
+    return None
+
+
+def _wttr_first_condition_dict(current_condition: Any) -> dict[str, Any]:
+    """wttr j1 的 current_condition 可能为 [null] 或含非 dict，避免 NoneType.get。"""
+    if not isinstance(current_condition, list):
+        return {}
+    for item in current_condition:
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def _wttr_weather_desc_value(cur: dict[str, Any]) -> Any:
+    wd = cur.get("weatherDesc")
+    if not isinstance(wd, list) or not wd:
+        return None
+    first = wd[0]
+    return first.get("value") if isinstance(first, dict) else None
+
+
+def _wttr_nearest_area_name(data: dict[str, Any]) -> str:
+    area = data.get("nearest_area")
+    if not isinstance(area, list) or not area:
+        return ""
+    a0 = area[0]
+    if not isinstance(a0, dict):
+        return ""
+    n = a0.get("areaName") or []
+    if not isinstance(n, list) or not n:
+        return ""
+    z = n[0]
+    return str(z.get("value", "")) if isinstance(z, dict) else ""
+
+
+# Open-Meteo WMO weathercode（简版中文，与 api 文档一致）
+_OM_WMO_ZH: dict[int, str] = {
+    0: "晴",
+    1: "大部晴朗",
+    2: "少云",
+    3: "阴",
+    45: "雾",
+    48: "雾凇雾",
+    51: "小毛毛雨",
+    53: "中毛毛雨",
+    55: "大毛毛雨",
+    61: "小雨",
+    63: "中雨",
+    65: "大雨",
+    71: "小雪",
+    73: "中雪",
+    75: "大雪",
+    80: "阵雨",
+    81: "强阵雨",
+    95: "雷暴",
+    96: "雷暴伴冰雹",
+    99: "强雷暴伴冰雹",
+}
+
+
+def _open_meteo_wmo_zh(code: Any) -> str | None:
+    try:
+        c = int(code)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return _OM_WMO_ZH.get(c) or f"天气代码{c}"
+
+
+def _fetch_open_meteo_lite(geo_query: str, *, country_code: str | None = None) -> dict[str, Any] | None:
+    """免 Key：地理编码 + 当前实况。失败返回 None。country_code 如 MY 可提高马来西亚命中率。"""
+    extra = f"&countryCode={country_code}" if country_code else ""
+    # 带国家码时用英文检索更稳；否则保留中文利于国内地名
+    lang = "en" if country_code else "zh"
+    gurl = (
+        "https://geocoding-api.open-meteo.com/v1/search?"
+        f"name={quote(geo_query)}&count=5&language={lang}&format=json{extra}"
+    )
+    try:
+        req = Request(gurl, headers={"User-Agent": "Jachin-util-weather/1.1"})
+        with urlopen(req, timeout=8) as resp:
+            gdata = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (HTTPError, URLError, json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(gdata, dict):
+        return None
+    results = gdata.get("results")
+    if not isinstance(results, list) or not results:
+        return None
+    hit = results[0]
+    if not isinstance(hit, dict):
+        return None
+    lat, lon = hit.get("latitude"), hit.get("longitude")
+    if lat is None or lon is None:
+        return None
+    area_bits = [hit.get("name"), hit.get("admin1"), hit.get("country")]
+    area_name = " · ".join(str(x) for x in area_bits if x)
+    # 注意：current= 不能包含非法变量名；time 由响应里的 current.time 带回
+    furl = (
+        "https://api.open-meteo.com/v1/forecast?"
+        f"latitude={lat}&longitude={lon}"
+        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code"
+        "&timezone=auto&forecast_days=1"
+    )
+    try:
+        req = Request(furl, headers={"User-Agent": "Jachin-util-weather/1.1"})
+        with urlopen(req, timeout=8) as resp:
+            fdata = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (HTTPError, URLError, json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(fdata, dict):
+        return None
+    cur = fdata.get("current")
+    if not isinstance(cur, dict):
+        return None
+    t = cur.get("temperature_2m")
+    ap = cur.get("apparent_temperature")
+    rh = cur.get("relative_humidity_2m")
+    wc = cur.get("weather_code")
+    tm = cur.get("time")
+    return {
+        "queried_as": geo_query,
+        "area_name": area_name,
+        "temp_C": None if t is None else str(round(float(t), 1)),
+        "FeelsLikeC": None if ap is None else str(round(float(ap), 1)),
+        "weatherDesc": _open_meteo_wmo_zh(wc),
+        "humidity": None if rh is None else str(int(rh)),
+        "observation_time": str(tm) if tm else None,
+        "source": "open-meteo",
+    }
+
+
+def run_get_weather_lite(**kwargs: Any) -> dict[str, Any]:
+    """util:get_weather_lite — 优先 wttr.in；失败则 Open-Meteo（均免 Key）。"""
+    try:
+        raw_city = kwargs.get("city") or kwargs.get("location")
+        city = str(raw_city or "Beijing").strip() or "Beijing"
+        candidates: list[str] = [city]
+        alias = _WTTR_CITY_ALIASES.get(city)
+        if alias and alias not in candidates:
+            candidates.append(alias)
+
+        last_err: str | None = None
+        for q in candidates:
+            enc = quote(q, safe="")
+            url = f"https://wttr.in/{enc}?format=j1&lang=en"
+            req = Request(url, headers={"User-Agent": "Jachin-util-weather/1.1"})
+            try:
+                with urlopen(req, timeout=8) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+            except HTTPError as he:
+                last_err = f"HTTP {he.code}: {he.reason or 'Error'}"
+                continue
+            except URLError as e:
+                last_err = f"网络错误: {e}"
+                break
+            except Exception as e:
+                last_err = str(e)
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                last_err = f"JSON 解析失败: {e}"
+                continue
+            if not isinstance(data, dict):
+                last_err = "天气接口返回非 JSON 对象"
+                continue
+            cur = _wttr_first_condition_dict(data.get("current_condition"))
+            if not cur:
+                last_err = "current_condition 无有效数据（接口可能异常）"
+                continue
+            return _ok(
+                {
+                    "city_query": city,
+                    "queried_as": q,
+                    "area_name": _wttr_nearest_area_name(data),
+                    "temp_C": cur.get("temp_C"),
+                    "FeelsLikeC": cur.get("FeelsLikeC"),
+                    "weatherDesc": _wttr_weather_desc_value(cur),
+                    "humidity": cur.get("humidity"),
+                    "observation_time": cur.get("observation_time"),
+                    "source": "wttr.in",
+                }
+            )
+        # Open-Meteo 对「杭州」等中文会先命中同名小地名；有英文别名时优先用英文名做地理编码
+        om_order: list[str] = []
+        if alias:
+            om_order.append(alias)
+        for cq in candidates:
+            if cq not in om_order:
+                om_order.append(cq)
+        cc_hint = _open_meteo_country_hint(city, candidates)
+        for cq in om_order:
+            om = _fetch_open_meteo_lite(cq, country_code=cc_hint)
+            if om:
+                om["city_query"] = city
+                return _ok(om)
+        return _err(last_err or "天气查询失败（主源与备用源均不可用）")
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------------------
+# 类别四：产品 / 策划 — A/B、脏数据、文本 diff、漏斗 ROI
+# ---------------------------------------------------------------------------
+
+
+def run_ab_test_calc(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:ab_test_calc — 两组转化率 Z 检验（合并方差），双尾 P-value；α=0.05 时报告 is_significant。
+    JSON：visitors_a, conversions_a, visitors_b, conversions_b（均为 int）
+    """
+    try:
+        va = int(kwargs.get("visitors_a", 0))
+        ca = int(kwargs.get("conversions_a", 0))
+        vb = int(kwargs.get("visitors_b", 0))
+        cb = int(kwargs.get("conversions_b", 0))
+        if va <= 0 or vb <= 0:
+            return _err("visitors_a / visitors_b 必须为正整数")
+        if ca < 0 or cb < 0 or ca > va or cb > vb:
+            return _err("conversions 必须在 [0, visitors] 范围内")
+        p1 = ca / va
+        p2 = cb / vb
+        p_pool = (ca + cb) / (va + vb)
+        if p_pool <= 0 or p_pool >= 1:
+            # 全 0 或全 1 时方差为 0
+            z = 0.0
+            p_val = 1.0
+        else:
+            se_sq = p_pool * (1.0 - p_pool) * (1.0 / va + 1.0 / vb)
+            if se_sq <= 0:
+                return _err("无法计算标准误（请检查样本量）")
+            se = math.sqrt(se_sq)
+            z = (p1 - p2) / se
+            # 标准正态双尾：P(|Z|>|z|) = erfc(|z|/√2)
+            p_val = float(math.erfc(abs(z) / math.sqrt(2.0)))
+        alpha = 0.05
+        is_sig = bool(p_val < alpha)
+        return _ok(
+            {
+                "conversion_rate_a": round(p1, 6),
+                "conversion_rate_b": round(p2, 6),
+                "z_score": round(z, 6),
+                "p_value_two_tailed": round(p_val, 8),
+                "confidence_level": 0.95,
+                "alpha": alpha,
+                "is_significant": is_sig,
+            }
+        )
+    except Exception as e:
+        return _err(e)
+
+
+def run_fake_data_gen(**kwargs: Any) -> dict[str, Any]:
+    """util:fake_data_gen — Faker 生成占位数据。JSON：locale（默认 zh_CN）, count（默认 5，最大 50）, fields（name|phone|email|address|company|job）"""
+    try:
+        try:
+            from faker import Faker
+        except ImportError:
+            return _err("未安装 Faker，请执行: pip install faker")
+
+        locale = str(kwargs.get("locale") or "zh_CN").strip() or "zh_CN"
+        count = int(kwargs.get("count", 5))
+        count = max(1, min(50, count))
+        raw_fields = kwargs.get("fields")
+        allowed = {"name", "phone", "email", "address", "company", "job"}
+        if raw_fields is None or (isinstance(raw_fields, list) and len(raw_fields) == 0):
+            use_fields = sorted(allowed)
+        elif isinstance(raw_fields, list):
+            use_fields = []
+            for x in raw_fields:
+                k = str(x).strip()
+                if k not in allowed:
+                    return _err(f"未知字段: {k!r}，允许: {sorted(allowed)}")
+                if k not in use_fields:
+                    use_fields.append(k)
+        else:
+            return _err("fields 须为字符串数组")
+
+        fake = Faker(locale)
+        gen_map = {
+            "name": lambda: fake.name(),
+            "phone": lambda: fake.phone_number(),
+            "email": lambda: fake.email(),
+            "address": lambda: fake.address().replace("\n", ", "),
+            "company": lambda: fake.company(),
+            "job": lambda: fake.job(),
+        }
+        dummy_data: list[dict[str, str]] = []
+        for _ in range(count):
+            row: dict[str, str] = {}
+            for f in use_fields:
+                row[f] = str(gen_map[f]())
+            dummy_data.append(row)
+        return _ok({"locale": locale, "count": count, "fields": use_fields, "dummy_data": dummy_data})
+    except Exception as e:
+        return _err(e)
+
+
+def run_text_diff(**kwargs: Any) -> dict[str, Any]:
+    """util:text_diff — difflib.unified_diff，仅返回以 + / - 开头的实质差异行（去掉文件头）。"""
+    try:
+        text1 = str(kwargs.get("text1", ""))
+        text2 = str(kwargs.get("text2", ""))
+        a = text1.splitlines()
+        b = text2.splitlines()
+        diff_iter = difflib.unified_diff(a, b, lineterm="")
+        change_lines: list[str] = []
+        for line in diff_iter:
+            if not line:
+                continue
+            if line.startswith("---") or line.startswith("+++"):
+                continue
+            if line.startswith("@@"):
+                continue
+            if line.startswith("+") or line.startswith("-"):
+                change_lines.append(line)
+        return _ok(
+            {
+                "diff_lines": change_lines,
+                "added_count": sum(1 for x in change_lines if x.startswith("+")),
+                "removed_count": sum(1 for x in change_lines if x.startswith("-")),
+            }
+        )
+    except Exception as e:
+        return _err(e)
+
+
+def run_funnel_calc(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:funnel_calc — 链式漏斗人数；可选 CAC（单访客获客成本）与 ARPU（末层单用户收入）算 ROI。
+    JSON：initial_traffic, conversion_rates（每层 0~1）；可选 cac, arpu
+    """
+    try:
+        n0 = int(kwargs.get("initial_traffic", 0))
+        if n0 <= 0:
+            return _err("initial_traffic 必须为正整数")
+        rates_raw = kwargs.get("conversion_rates")
+        if not isinstance(rates_raw, list) or len(rates_raw) == 0:
+            return _err("conversion_rates 须为非空数组")
+        rates: list[float] = []
+        for i, x in enumerate(rates_raw):
+            r = float(x)
+            if r < 0 or r > 1:
+                return _err(f"conversion_rates[{i}] 应在 [0,1] 内")
+            rates.append(r)
+
+        layer_counts: list[float] = [float(n0)]
+        cur = float(n0)
+        for r in rates:
+            cur = cur * r
+            layer_counts.append(cur)
+
+        final_users = layer_counts[-1]
+        out: dict[str, Any] = {
+            "layer_counts": [round(x, 6) for x in layer_counts],
+            "final_conversions": round(final_users, 6),
+        }
+
+        cac_raw = kwargs.get("cac")
+        arpu_raw = kwargs.get("arpu")
+        if cac_raw is None and arpu_raw is None:
+            out["cpa"] = None
+            out["total_cost"] = None
+            out["total_revenue"] = None
+            out["roi"] = None
+            return _ok(out)
+
+        if cac_raw is None or arpu_raw is None:
+            return _err("计算财务指标时请同时提供 cac 与 arpu（均为数字）")
+
+        cac = float(cac_raw)
+        arpu = float(arpu_raw)
+        if cac < 0 or arpu < 0:
+            return _err("cac / arpu 不可为负")
+
+        total_cost = cac * float(n0)
+        total_revenue = arpu * final_users
+        out["total_cost"] = round(total_cost, 6)
+        out["total_revenue"] = round(total_revenue, 6)
+        if final_users > 0:
+            out["cpa"] = round(total_cost / final_users, 6)
+        else:
+            out["cpa"] = None
+        if total_cost > 0:
+            out["roi"] = round((total_revenue - total_cost) / total_cost, 6)
+        else:
+            out["roi"] = None
+        return _ok(out)
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------------------
+# 类别五：系统健康
+# ---------------------------------------------------------------------------
+
+
+def run_health_stats(**kwargs: Any) -> dict[str, Any]:
+    """sys:health_stats — CPU / 内存 / 磁盘（需 psutil）。"""
+    try:
+        _ = kwargs
+        try:
+            import psutil
+        except ImportError:
+            return _err("未安装 psutil，请执行: pip install psutil")
+
+        cpu = psutil.cpu_percent(interval=0.15)
+        vm = psutil.virtual_memory()
+        du = psutil.disk_usage(str(Path.home()))
+        return _ok(
+            {
+                "cpu_percent": round(float(cpu), 2),
+                "memory_free_mb": round(vm.available / (1024 * 1024), 2),
+                "memory_total_mb": round(vm.total / (1024 * 1024), 2),
+                "disk_free_gb": round(du.free / (1024**3), 3),
+                "disk_total_gb": round(du.total / (1024**3), 3),
+            }
+        )
+    except Exception as e:
+        return _err(e)
+
+
+def run_list_env_safe(**kwargs: Any) -> dict[str, Any]:
+    """sys:list_env_safe — 仅环境变量名，不含值。"""
+    try:
+        _ = kwargs
+        names = sorted(os.environ.keys())
+        return _ok({"count": len(names), "keys": names})
+    except Exception as e:
+        return _err(e)
+
+
+# ---------------------------------------------------------------------------
+# 分发与注册表（供 loader / native_tools 挂载）
+# ---------------------------------------------------------------------------
+
+_UTIL_HANDLERS: dict[str, Any] = {
+    "util:datetime_calc": run_datetime_calc,
+    "util:cron_explain": run_cron_explain,
+    "util:precise_math": run_precise_math,
+    "util:uuid_gen": run_uuid_gen,
+    "util:hash_crypto": run_hash_crypto,
+    "util:json_jq": run_json_jq,
+    "util:regex_test": run_regex_test,
+    "util:http_ping": run_http_ping,
+    "util:dns_lookup": run_dns_lookup,
+    "util:get_weather_lite": run_get_weather_lite,
+    "util:ab_test_calc": run_ab_test_calc,
+    "util:fake_data_gen": run_fake_data_gen,
+    "util:text_diff": run_text_diff,
+    "util:funnel_calc": run_funnel_calc,
+    "sys:health_stats": run_health_stats,
+    "sys:list_env_safe": run_list_env_safe,
+}
+
+
+def dispatch_util_native_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
+    """
+    由 core.native_tools.dispatch_native_tool 转发。
+    始终返回 dict（ok/result 或 ok/error），便于 JSON 输出。
+    """
+    tid = (tool_id or "").strip()
+    fn = _UTIL_HANDLERS.get(tid)
+    if fn is None:
+        return {"ok": False, "error": f"未知 util/sys 工具: {tool_id}"}
+    try:
+        out = fn(**kwargs)
+        if isinstance(out, dict) and "ok" in out:
+            return out
+        return {"ok": True, "result": out}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def util_tool_ids() -> frozenset[str]:
+    return frozenset(_UTIL_HANDLERS.keys())
+
+
+# 与 loader.NATIVE_TOOLS 条目形状一致：id / label / desc / params
+UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
+    {
+        "id": "util:datetime_calc",
+        "label": "util:datetime_calc",
+        "desc": "日期时间计算。JSON：add_days（int）；可选 base_time（ISO8601）、target_timezone（IANA，默认 Asia/Shanghai）",
+        "params": ["add_days"],
+    },
+    {
+        "id": "util:cron_explain",
+        "label": "util:cron_explain",
+        "desc": "解析 Cron（5 段默认用 APScheduler；6 段含秒需可选安装 croniter）。JSON：cron_expr",
+        "params": ["cron_expr"],
+    },
+    {
+        "id": "util:precise_math",
+        "label": "util:precise_math",
+        "desc": "安全四则运算（Decimal），禁止 eval。JSON：expression（如 \"1024.56 * 3.14 / 2\"）",
+        "params": ["expression"],
+    },
+    {
+        "id": "util:uuid_gen",
+        "label": "util:uuid_gen",
+        "desc": "生成 UUID v4。Action Input 可为 {} 或空",
+        "params": [],
+    },
+    {
+        "id": "util:hash_crypto",
+        "label": "util:hash_crypto",
+        "desc": "哈希/编解码。JSON：text；algo 可选 md5|sha256|base64_encode|base64_decode",
+        "params": ["text"],
+    },
+    {
+        "id": "util:json_jq",
+        "label": "util:json_jq",
+        "desc": "从 JSON 字符串按路径取值（点号与 [0] 下标）。JSON：json_string, path",
+        "params": ["json_string", "path"],
+    },
+    {
+        "id": "util:regex_test",
+        "label": "util:regex_test",
+        "desc": "正则测试。JSON：pattern, test_cases（字符串数组）",
+        "params": ["pattern", "test_cases"],
+    },
+    {
+        "id": "util:http_ping",
+        "label": "util:http_ping",
+        "desc": "HTTP HEAD/GET 探测，超时 3s。JSON：url；可选 method（HEAD|GET）",
+        "params": ["url"],
+    },
+    {
+        "id": "util:dns_lookup",
+        "label": "util:dns_lookup",
+        "desc": "DNS 解析。JSON：domain",
+        "params": ["domain"],
+    },
+    {
+        "id": "util:get_weather_lite",
+        "label": "util:get_weather_lite",
+        "desc": "极简天气（免 Key：先 wttr.in，失败则 Open-Meteo；中马等城市有英文别名）。"
+        "用户话里若出现城市/地区名须传入 city 或 location；勿传空 JSON。",
+        "params": [],
+    },
+    {
+        "id": "util:ab_test_calc",
+        "label": "util:ab_test_calc",
+        "desc": "A/B 转化率 Z 检验（双尾 P-value，α=0.05）。JSON：visitors_a, conversions_a, visitors_b, conversions_b",
+        "params": ["visitors_a", "conversions_a", "visitors_b", "conversions_b"],
+    },
+    {
+        "id": "util:fake_data_gen",
+        "label": "util:fake_data_gen",
+        "desc": "Faker 生成占位数据（需 pip install faker）。JSON：可选 locale、count（1–50）、fields（name|phone|email|address|company|job）",
+        "params": [],
+    },
+    {
+        "id": "util:text_diff",
+        "label": "util:text_diff",
+        "desc": "两段文本 unified_diff，仅返回 +/- 差异行。JSON：text1（旧）, text2（新）",
+        "params": ["text1", "text2"],
+    },
+    {
+        "id": "util:funnel_calc",
+        "label": "util:funnel_calc",
+        "desc": "漏斗各层人数与可选 ROI。JSON：initial_traffic, conversion_rates；可选 cac、arpu（需同时给）",
+        "params": ["initial_traffic", "conversion_rates"],
+    },
+    {
+        "id": "sys:health_stats",
+        "label": "sys:health_stats",
+        "desc": "本机 CPU/内存/磁盘余量（psutil）。Action Input 可为 {}",
+        "params": [],
+    },
+    {
+        "id": "sys:list_env_safe",
+        "label": "sys:list_env_safe",
+        "desc": "列出环境变量名（不含值，防泄密）。Action Input 可为 {}",
+        "params": [],
+    },
+]
+
+
+def _schema_obj(
+    props: dict[str, Any],
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": props,
+        "required": required or [],
+    }
+
+
+# 供上游或 OpenAPI 生成器使用：完整 Schema
+UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
+    "util:datetime_calc": {
+        "name": "util:datetime_calc",
+        "description": "在指定时区上基于 base_time 增加 add_days，返回 ISO 与时间戳",
+        "inputSchema": _schema_obj(
+            {
+                "base_time": {"type": "string", "description": "ISO8601，缺省为当前时刻"},
+                "add_days": {"type": "integer", "description": "要增加的天数，可为负"},
+                "target_timezone": {"type": "string", "description": "IANA 时区，默认 Asia/Shanghai"},
+            },
+            required=[],
+        ),
+    },
+    "util:cron_explain": {
+        "name": "util:cron_explain",
+        "description": "解释 Cron 并给出下三次触发（UTC ISO）。5 段无需 croniter；6 段含秒需可选安装 croniter",
+        "inputSchema": _schema_obj(
+            {"cron_expr": {"type": "string", "description": "标准 5 或 6 段 Cron"}},
+            required=["cron_expr"],
+        ),
+    },
+    "util:precise_math": {
+        "name": "util:precise_math",
+        "description": "安全算术表达式，仅 + - * / 与括号、一元正负",
+        "inputSchema": _schema_obj(
+            {"expression": {"type": "string"}},
+            required=["expression"],
+        ),
+    },
+    "util:uuid_gen": {
+        "name": "util:uuid_gen",
+        "description": "生成随机 UUID4",
+        "inputSchema": _schema_obj({}),
+    },
+    "util:hash_crypto": {
+        "name": "util:hash_crypto",
+        "description": "MD5/SHA256/Base64",
+        "inputSchema": _schema_obj(
+            {
+                "text": {"type": "string"},
+                "algo": {
+                    "type": "string",
+                    "enum": ["md5", "sha256", "base64_encode", "base64_decode"],
+                },
+            },
+            required=["text"],
+        ),
+    },
+    "util:json_jq": {
+        "name": "util:json_jq",
+        "description": "轻量 JSON 路径（点号与 [n]）",
+        "inputSchema": _schema_obj(
+            {"json_string": {"type": "string"}, "path": {"type": "string"}},
+            required=["json_string", "path"],
+        ),
+    },
+    "util:regex_test": {
+        "name": "util:regex_test",
+        "description": "对多段文本做正则匹配与分组提取",
+        "inputSchema": _schema_obj(
+            {
+                "pattern": {"type": "string"},
+                "test_cases": {"type": "array", "items": {"type": "string"}},
+            },
+            required=["pattern", "test_cases"],
+        ),
+    },
+    "util:http_ping": {
+        "name": "util:http_ping",
+        "description": "HTTP 探测延迟与状态码",
+        "inputSchema": _schema_obj(
+            {
+                "url": {"type": "string"},
+                "method": {"type": "string", "enum": ["HEAD", "GET"]},
+            },
+            required=["url"],
+        ),
+    },
+    "util:dns_lookup": {
+        "name": "util:dns_lookup",
+        "description": "域名解析为 IP 列表",
+        "inputSchema": _schema_obj({"domain": {"type": "string"}}, required=["domain"]),
+    },
+    "util:get_weather_lite": {
+        "name": "util:get_weather_lite",
+        "description": "极简天气（wttr/Open-Meteo；支持中马等）。用户提到城市时必传 city 或 location",
+        "inputSchema": _schema_obj(
+            {"city": {"type": "string"}, "location": {"type": "string"}},
+        ),
+    },
+    "util:ab_test_calc": {
+        "name": "util:ab_test_calc",
+        "description": "两组转化率差异 Z 检验（合并方差），双尾 p-value，报告 is_significant（α=0.05）",
+        "inputSchema": _schema_obj(
+            {
+                "visitors_a": {"type": "integer"},
+                "conversions_a": {"type": "integer"},
+                "visitors_b": {"type": "integer"},
+                "conversions_b": {"type": "integer"},
+            },
+            required=["visitors_a", "conversions_a", "visitors_b", "conversions_b"],
+        ),
+    },
+    "util:fake_data_gen": {
+        "name": "util:fake_data_gen",
+        "description": "Faker 占位数据（需安装 faker 包）",
+        "inputSchema": _schema_obj(
+            {
+                "locale": {"type": "string", "description": "BCP 47 / Faker locale，默认 zh_CN"},
+                "count": {"type": "integer", "description": "条数 1–50，默认 5"},
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "name|phone|email|address|company|job，缺省为全部",
+                },
+            },
+        ),
+    },
+    "util:text_diff": {
+        "name": "util:text_diff",
+        "description": "文本/配置行级差异（仅 +/- 行）",
+        "inputSchema": _schema_obj(
+            {"text1": {"type": "string"}, "text2": {"type": "string"}},
+            required=["text1", "text2"],
+        ),
+    },
+    "util:funnel_calc": {
+        "name": "util:funnel_calc",
+        "description": "漏斗各层人数；可选 CAC×流量与末层 ARPU 算成本、收入、ROI、CPA",
+        "inputSchema": _schema_obj(
+            {
+                "initial_traffic": {"type": "integer"},
+                "conversion_rates": {"type": "array", "items": {"type": "number"}},
+                "cac": {"type": "number", "description": "单访客获客成本"},
+                "arpu": {"type": "number", "description": "漏斗末层单用户平均收入"},
+            },
+            required=["initial_traffic", "conversion_rates"],
+        ),
+    },
+    "sys:health_stats": {
+        "name": "sys:health_stats",
+        "description": "本机 CPU、可用内存 MB、磁盘剩余 GB",
+        "inputSchema": _schema_obj({}),
+    },
+    "sys:list_env_safe": {
+        "name": "sys:list_env_safe",
+        "description": "环境变量名列表（无值）",
+        "inputSchema": _schema_obj({}),
+    },
+}

@@ -36,6 +36,7 @@ globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/me
 9. **主动记忆刷新（Memory Flush）**：神盾 Compaction 前，当 token 接近上限时静默 LLM 回合，提醒模型写入 core_memory。配置 `llm.memory_flush.enabled`、`llm.memory_flush.soft_threshold`。
 10. **Markdown 导出**：`export_core_memory_to_markdown()` 将 core_memory 导出至 `~/.jachin/memory/MEMORY.md`，梦境完成后自动执行；`GET /api/v3/memory/export-markdown` 手动触发。
 11. **L3 本地记忆（P0）**：`l3_node/local_memory.py` → `~/.jachin/memory/l3_local.json`，断网/无 L2 时注入 System Prompt；recall 后与 L2 `merge_from_l2`。**检索工具**：`core:local_memory_search`（`l3_node/local_memory_search.py`，半衰 + MMR，可选 `MEMORY.md` 分块）。
+11b. **L5 本地记忆「梦境合并/坍缩」**（`l3_node/memory_compactor.py`，与上下文 compaction **不同**）：向用户说明触发条件时，**显式口令**（整理本地记忆、梦境合并、立即整理记忆等）与 **桌面横幅** 确认 = **`force` 立即合并，不要求已满 150 条**（空库不调 LLM）；**仅** `JACHIN_MEMORY_COMPACT_ON_SESSION=1` 的静默轮询才要求 **>150 条**。SSOT：`docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md` §4.1.1；ReAct 页脚常量 `REACT_FOOTER_L5_MEMORY_COMPACT_FACTS`（`agent_core.py`）。
 12. **Pre-reset 刷新（P0）**：`POST /api/v3/llm/context/reset` 前 `run_pre_reset_memory_flush()`（`core/compaction_hook.py`）。
 13. **阶段 A（MVP）**：`llm.memory_flush.workspace_must_update` 锚点校验、`post_compaction_audit`、compaction 后 `findings` checkpoint + `l3_local`；L3 与 core 共用 `compaction_before_llm_think`（`l3_node/l3_compaction_bridge.py`）。见总览 §5.2、**078**。
 14. **P1 / P2（摘要）**：用户偏好与澄清队列、只读工具 TTL 缓存（`intelligence_p1.py`、`tool_call_cache.py`）；修正意图、意图-技能统计、检索强化分 + `POST /api/v2/memory/reinforce`（`intelligence_p2.py`）。**总表**：`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`。

@@ -65,14 +65,18 @@ async def _maybe_push_memory_compact_suggest(websocket) -> None:
         logger.debug("[L3 WS] memory_compact_suggest 跳过: %s", e)
 
 
-async def _run_scheduled_memory_compact_background() -> None:
+async def _run_scheduled_memory_compact_background(*, force: bool = True) -> None:
+    """用户点「立即开始」或倒计时 auto_start：force=True，无视默认条数阈值。"""
     try:
         from l3_node.memory_compact_control import reset_memory_compact_cancel
         from l3_node.memory_compactor import compact_local_memory_if_needed
         from l3_node.local_memory import main_local_memory_json_path
 
         reset_memory_compact_cancel()
-        report = await compact_local_memory_if_needed(str(main_local_memory_json_path()))
+        report = await compact_local_memory_if_needed(
+            str(main_local_memory_json_path()),
+            force=force,
+        )
         if (report or "").strip():
             logger.info("[MemoryCompact] %s", report.strip())
     except Exception as e:

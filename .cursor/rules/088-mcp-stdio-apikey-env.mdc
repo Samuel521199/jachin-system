@@ -1,0 +1,26 @@
+---
+description: MCP stdio 子进程 API Key / 环境变量 — 白名单、占位符、Windows、Node dotenv/cwd 与新增 MCP 自检
+globs: core/mcp*.py,l3_node/primitives/mcp/**/*.py,config/**/*.json*,**/mcp_servers.json*,.env.example
+alwaysApply: false
+---
+
+# MCP stdio 与 API Key / 环境变量
+
+**全文 SSOT**：`docs/MCP_STDIO_API_KEY_AND_ENV.md`。
+
+## 必须知道的根因
+
+1. **MCP Python SDK**：`StdioServerParameters.env is None` 时，子进程**只有** `get_default_environment()` 白名单，**不会**继承 L3 全量 `os.environ`。依赖 `process.env.XXX_API_KEY` 的 Node MCP **禁止**在配置里长期用 `env: null` 指望「自动继承」。
+2. **配置**：`~/.jachin/mcp_servers.json` 用 `"KEY": "${KEY}"`，展开前依赖 `merge_l3_dotenv_into_os()`；密钥放 `.env`，勿进版本库。
+3. **Node + dotenv**：若包在入口 `dotenv.config()`（无路径），子进程 **cwd** 错误会读不到仓库根 `.env` —— Tavily 已用显式 `cwd` 修复；**新增类似 MCP** 需评估是否复用同一模式。
+4. **Windows**：`npx` → Node 链式进程可能对「仅白名单 + 小 env dict」仍漏变量；Tavily 在 win32 上有全量父环境合并，其它 MCP 若踩同样坑再按文档扩展。
+
+## 修改代码 / 配置时自检
+
+- 新增或修改 **需要密钥** 的 stdio MCP：□ `env` 非空且含 `${VAR}` □ `.env.example` 有说明 □ 不以 `list_tools` 作为「Key 一定可用」的唯一证据。
+- 排查「父进程有 Key、子进程仍报缺 Key」：先读 `docs/MCP_STDIO_API_KEY_AND_ENV.md` §2–3，再查日志 phase（如 `[TavilyMCP][chain]`）。
+- **勿**把 `l3_node/primitives/tavily_grounding.py` 的 HTTP 预取成功与 **stdio MCP** 子进程鉴权混为一谈。
+
+## Tavily 专项（已实现）
+
+- `effective_stdio_env_for_sdk`、`expand_stdio_env_windows_npx_tavily`、`resolve_tavily_stdio_cwd` 均在 `core/mcp_embedded_runtime.py`；`MCPServerInstance.connect` 组装 `StdioServerParameters(env=..., cwd=...)`。

@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.8.105",
+  "version": "0.8.106",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -64,20 +64,14 @@
     ],
     "security": {
       "csp": null,
-      "capabilities": [
-        "default"
-      ]
+      "capabilities": ["default"]
     }
   },
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": [
-      "icons/icon.ico"
-    ],
-    "externalBin": [
-      "bin/l3_node"
-    ]
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["bin/l3_node"]
   },
   "plugins": {
     "shell": {
@@ -88,7 +82,7 @@
       "endpoints": [
         "http://127.0.0.1:3000/api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}"
       ],
-      "pubkey": "untrusted comment: minisign public key: 08AC3A4821DE1EFE\nRWT+Ht4hSDqsCEoNM84poJhl0iQDXHPuU3lChuRTZ+ArkkyRGrvnF7ea",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwNjk4MzVEMkREMzA2RjQK\nRWU0BtMtXYNpEDL1uQKXxb8cCNN9x6k7FT+XOmgA+m2zgr+BbmcW4wMm8K",
       "dangerousInsecureTransportProtocol": true
     }
   }

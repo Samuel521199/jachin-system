@@ -1,0 +1,28 @@
+---
+description: MCP stdio 使用 npx 时 npm 包名须核验，禁止臆造 @scope 包导致 404
+globs: config/mcp_servers.json.example, tools/mcp-official/**/*.json, docs/MCP*.md, docs/MCP_EXECUTION_MODEL.md, .env.example, core/mcp_embedded_runtime.py, core/mcp_client.py
+alwaysApply: false
+---
+
+# MCP · npm / npx 包名校验
+
+## 单一事实来源
+
+**`docs/MCP_SPEC.md` §3.5**（npm / npx 包名校验）。
+
+## 修改下列内容时必须遵守
+
+- `config/mcp_servers.json.example`、`tools/mcp-official/**/*.json` 中 **`args` 含 `npx -y <包>`** 的条目  
+- `docs/MCP_SPEC.md`、`docs/MCP_EXECUTION_MODEL.md` 等文档中的 **可复制** npx 示例  
+- `.env.example` 里对 MCP npm 包的**文字说明**
+
+## 强制流程（合并进主仓前）
+
+1. **核验包存在**：`npm view <包名> version` 成功，或打开 `https://www.npmjs.com/package/<包名>` 确认。  
+2. **禁止**凭想象写 `@vendor/mcp-server` 类名称；**scope 与包名均以 registry 为准**。  
+3. **`id` ≠ npm 包名**：`mcp_servers[].id`（如 `tavily-search`）只是本地标识；**真正传给 npx 的是 `args` 里的字符串**。  
+4. **已证反例**：`@tavily/mcp-server` **不存在**（404）；Tavily 官方本地包为 **`tavily-mcp`**（如 `tavily-mcp@latest`）。
+
+## 与 Skill / 四大原语
+
+MCP 仍为 **MCP 原语**（外部进程）；本规则仅约束**安装命令**正确性，不改变 `mcp:*` 工具语义。术语见 **072-jachin-four-primitives.mdc**。

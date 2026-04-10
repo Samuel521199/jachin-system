@@ -5,8 +5,16 @@
 import React, { type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MermaidViewer } from "../MermaidViewer";
 
 interface ChildProps { children?: ReactNode }
+
+interface CodeProps extends ChildProps {
+  className?: string;
+  /** react-markdown：行内代码为 true，围栏代码块为 false */
+  inline?: boolean;
+}
+
 const components = {
   h1: ({ children }: ChildProps) => <h1 className="text-lg font-semibold text-cyan-100 mt-3 mb-2 first:mt-0">{children}</h1>,
   h2: ({ children }: ChildProps) => <h2 className="text-base font-semibold text-cyan-100 mt-3 mb-2">{children}</h2>,
@@ -33,14 +41,39 @@ const components = {
       {children}
     </blockquote>
   ),
-  code: ({ children }: ChildProps) => (
-    <code className="text-cyan-300 bg-white/10 px-1 rounded text-xs font-mono">{children}</code>
-  ),
-  pre: ({ children }: ChildProps) => (
-    <pre className="bg-white/10 border border-white/20 rounded-lg p-3 my-2 overflow-x-auto text-sm text-slate-200">
-      {children}
-    </pre>
-  ),
+  code: ({ children, className, inline }: CodeProps) => {
+    const isMermaidBlock =
+      /\blanguage-mermaid\b/.test(className || "") && inline !== true;
+    if (isMermaidBlock) {
+      const raw = String(children ?? "").replace(/\n$/, "");
+      return <MermaidViewer code={raw} />;
+    }
+    if (inline) {
+      return (
+        <code className="text-cyan-300 bg-white/10 px-1 rounded text-xs font-mono">{children}</code>
+      );
+    }
+    return (
+      <code className={className}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }: ChildProps) => {
+    const arr = React.Children.toArray(children);
+    if (
+      arr.length === 1 &&
+      React.isValidElement(arr[0]) &&
+      arr[0].type === MermaidViewer
+    ) {
+      return <>{children}</>;
+    }
+    return (
+      <pre className="bg-white/10 border border-white/20 rounded-lg p-3 my-2 overflow-x-auto text-sm text-slate-200">
+        {children}
+      </pre>
+    );
+  },
   hr: () => <hr className="border-white/20 my-3" />,
 };
 

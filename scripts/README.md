@@ -100,7 +100,7 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 | `run-pair.ps1` / `run-pair.sh` | L1↔L2 **辅助**配对（CLI 6 位码）；有 Web 时优先 L2 `/gateway` Nexus 账号登录 |
 | `start.bat pair` | 同上，根目录快捷方式 |
 
-**V2 L3 桌面端**：使用 L2 网关零信任配对，见 [PAIRING_PROTOCOL_SPEC.md](../docs/PAIRING_PROTOCOL_SPEC.md)。启动 `start-layer3.ps1` 后，在 GatewayConnectScreen 输入 L2 地址发起神经接驳。
+**V2 L3 桌面端**：使用 L2 网关零信任配对，见 [PAIRING_PROTOCOL_SPEC.md](../docs/PAIRING_PROTOCOL_SPEC.md)。`start-layer3.ps1` **默认**为后台源码 L3 新窗口 + 本机 Tauri（`JACHIN_SKIP_L3_SPAWN=1`）；启动后在 GatewayConnectScreen 输入 L2 地址。仅终端 L3：`-SourceOnly`；仅桌面 Sidecar：`-DesktopOnly`。
 
 ---
 

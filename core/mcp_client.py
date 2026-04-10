@@ -7,8 +7,10 @@ Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -20,6 +22,17 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+
+
+def _log_tavily_before_stdio_connect(server_id: str, args: Any, env: Optional[dict[str, Any]]) -> None:
+    sid = (server_id or "").lower()
+    if "tavily" not in sid and not (
+        isinstance(args, list) and any(isinstance(a, str) and "tavily" in a.lower() for a in args)
+    ):
+        return
+    from core.mcp_embedded_runtime import log_tavily_mcp_chain
+
+    log_tavily_mcp_chain("stdio_connect_before", server_id, env if isinstance(env, dict) else None, log_parent_os=True)
 
 
 def format_mcp_tool_args_for_log(tool_name: str, arguments: dict[str, Any] | None) -> str:
@@ -153,16 +166,47 @@ class MCPServerInstance:
         """
         logger.info("[MCP] 正在拉起 Server server_id=%s command=%s args=%s", self.server_id, self.command, self.args)
         try:
+            from core.mcp_embedded_runtime import (
+                effective_stdio_env_for_sdk,
+                expand_stdio_env_windows_npx_tavily,
+                is_tavily_stdio_server,
+                log_tavily_mcp_chain,
+                log_tavily_stdio_cwd_choice,
+                log_tavily_stdio_merged_spawn,
+                resolve_tavily_stdio_cwd,
+            )
+
+            eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
+            eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
+            tavily_cwd: str | None = None
+            if is_tavily_stdio_server(self.server_id, self.args):
+                tavily_cwd = resolve_tavily_stdio_cwd()
+                log_tavily_stdio_cwd_choice(self.server_id, tavily_cwd)
+                log_tavily_mcp_chain(
+                    "stdio_explicit_env",
+                    self.server_id,
+                    eff_env,
+                    log_parent_os=True,
+                )
+                log_tavily_stdio_merged_spawn(self.server_id, eff_env)
             server_params = StdioServerParameters(
                 command=self.command,
                 args=self.args,
-                env=self.env,
+                env=eff_env,
+                cwd=tavily_cwd,
             )
             stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
             stdio, write = stdio_transport
             self._session = await self._exit_stack.enter_async_context(ClientSession(stdio, write))
             await self._session.initialize()
             logger.info("[MCP] Server 已连接 server_id=%s", self.server_id)
+            if is_tavily_stdio_server(self.server_id, self.args):
+                log_tavily_mcp_chain(
+                    "stdio_session_ready",
+                    self.server_id,
+                    eff_env,
+                    log_parent_os=True,
+                )
         except Exception as e:
             logger.exception("[MCP] Server 连接失败 server_id=%s err=%s", self.server_id, e)
             await self.close()
@@ -236,13 +280,25 @@ class MCPServerInstance:
         logger.debug("[MCP] 关闭 Server server_id=%s", self.server_id)
         try:
             await self._exit_stack.aclose()
-        except RuntimeError as e:
-            # MCP SDK 已知问题：stdio_client 的 anyio cancel scope 在跨 task 退出时抛错
-            # 见 https://github.com/modelcontextprotocol/python-sdk/issues/521
-            if "cancel scope" in str(e).lower():
-                logger.debug("[MCP] 关闭时 anyio 跨 task 退出（已知问题，可忽略）server_id=%s", self.server_id)
-            else:
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
+            msg = str(e).lower()
+            et = type(e).__name__
+            # MCP SDK：stdio_client 在 Ctrl+C / 事件循环收尾时异步生成器清理易触发竞态
+            # 见 https://github.com/modelcontextprotocol/python-sdk/issues/521
+            if (
+                "cancel scope" in msg
+                or "asynchronous generator" in msg
+                or "closing of asynchronous" in msg
+            ):
+                logger.debug("[MCP] SDK 关闭竞态（可忽略）server_id=%s %s", self.server_id, et)
+            elif isinstance(e, RuntimeError):
+                logger.debug("[MCP] 关闭 RuntimeError server_id=%s err=%s", self.server_id, e)
+            else:
+                logger.warning("[MCP] 关闭 Server 异常 server_id=%s err=%s", self.server_id, e)
         finally:
             self._session = None
             self._tool_names = []
@@ -305,6 +361,79 @@ class MCPManager:
         except OSError:
             return -1.0
 
+    async def _connect_single_stdio_server(self, cfg: dict[str, Any]) -> None:
+        """
+        连接单个 stdio MCP（已由调用方去重 server_id）。
+        """
+        server_id = str(cfg.get("id") or cfg.get("name") or "unknown").strip()
+        if server_id in self._instances:
+            return
+        command = cfg.get("command", "")
+        args = cfg.get("args") or []
+        env = cfg.get("env")
+        if not command:
+            logger.warning("[MCP] 跳过无效配置 server_id=%s 缺少 command", server_id)
+            return
+        try:
+            from core.mcp_embedded_runtime import preflight_mcp_stdio_command, resolve_mcp_stdio_command
+
+            command = resolve_mcp_stdio_command(str(command).strip())
+            ok_pf, pf_msg = preflight_mcp_stdio_command(command, server_id)
+            if not ok_pf:
+                logger.error("[MCP] %s", pf_msg)
+                return
+        except Exception as e:
+            logger.warning("[MCP] 运行时解析/预检异常 server_id=%s err=%s，跳过该 Server", server_id, e)
+            return
+        instance = MCPServerInstance(
+            server_id=server_id,
+            command=command,
+            args=args if isinstance(args, list) else [],
+            env=env,
+        )
+        try:
+            _log_tavily_before_stdio_connect(server_id, args if isinstance(args, list) else [], env)
+            await instance.connect()
+            tools = await instance.list_tools()
+        except MCPConnectionError as e:
+            logger.warning("[MCP] Server 启动失败 server_id=%s err=%s", server_id, e)
+            try:
+                await instance.close()
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            logger.exception("[MCP] Server 启动异常 server_id=%s err=%s", server_id, e)
+            try:
+                await instance.close()
+            except Exception:
+                pass
+            return
+        if server_id in self._instances:
+            try:
+                await instance.close()
+            except Exception:
+                pass
+            return
+        self._instances[server_id] = instance
+        for t in tools:
+            name = t.get("name", "")
+            if not name:
+                continue
+            if name in self._builtin_tool_names:
+                logger.debug("[MCP] 工具名与内置冲突 name=%s，保留内置实现", name)
+                continue
+            if name not in self._tool_route:
+                self._tool_route[name] = instance
+                self._tools_cache[name] = t
+            else:
+                logger.debug(
+                    "[MCP] 工具名冲突 name=%s 已由 %s 提供，跳过 %s",
+                    name,
+                    self._tool_route[name].server_id,
+                    server_id,
+                )
+
     async def start(self) -> None:
         """
         读取配置，并发拉起所有 MCP Server，构建工具路由表。
@@ -313,6 +442,12 @@ class MCPManager:
         可安全多次调用：仅在 mcp_servers.json 变更时重读磁盘；已连接的 server_id 会跳过。
         解决「先起 L3、后写 mcp_servers.json」时首包 start 早退导致永不加载 stdio MCP 的问题。
         """
+        try:
+            from core.l3_dotenv_merge import merge_l3_dotenv_into_os
+
+            merge_l3_dotenv_into_os()
+        except Exception as e:
+            logger.debug("[MCP] dotenv merge at start: %s", e)
         self._register_builtin_tools()
         mt = self._config_file_mtime()
         if self._mcp_cfg_loaded_mtime != mt:
@@ -331,62 +466,30 @@ class MCPManager:
             # 失败重试时可能每轮 ReAct 都进入；详情见下方 warning；此处用 debug 降噪
             logger.debug("[MCP] 尝试连接 %d 个尚未就绪的 stdio Server（配置共 %d 条）", len(pending), len(servers))
         _instances_before = len(self._instances)
+        # 按 server_id 去重后并发连接，避免多个 npx stdio 顺序阻塞（总墙钟≈最慢一个）
+        id_to_cfg: dict[str, dict[str, Any]] = {}
         for cfg in servers:
             if not isinstance(cfg, dict):
-                continue
-            server_id = cfg.get("id") or cfg.get("name") or "unknown"
-            if server_id in self._instances:
                 continue
             try:
                 from core.mcp_embedded_runtime import resolve_mcp_cfg_placeholders
 
-                cfg = resolve_mcp_cfg_placeholders(dict(cfg))
+                rcfg = resolve_mcp_cfg_placeholders(dict(cfg))
             except Exception:
-                cfg = dict(cfg)
-            server_id = cfg.get("id") or cfg.get("name") or "unknown"
-            command = cfg.get("command", "")
-            args = cfg.get("args") or []
-            env = cfg.get("env")
-            if not command:
-                logger.warning("[MCP] 跳过无效配置 server_id=%s 缺少 command", server_id)
+                rcfg = dict(cfg)
+            sid = str(rcfg.get("id") or rcfg.get("name") or "unknown").strip()
+            if not sid or sid == "unknown":
                 continue
-            try:
-                from core.mcp_embedded_runtime import preflight_mcp_stdio_command, resolve_mcp_stdio_command
-
-                command = resolve_mcp_stdio_command(str(command).strip())
-                ok_pf, pf_msg = preflight_mcp_stdio_command(command, server_id)
-                if not ok_pf:
-                    logger.error("[MCP] %s", pf_msg)
-                    continue
-            except Exception as e:
-                logger.warning("[MCP] 运行时解析/预检异常 server_id=%s err=%s，跳过该 Server", server_id, e)
+            if sid in self._instances:
                 continue
-            instance = MCPServerInstance(
-                server_id=server_id,
-                command=command,
-                args=args if isinstance(args, list) else [],
-                env=env,
+            if sid in id_to_cfg:
+                continue
+            id_to_cfg[sid] = rcfg
+        if id_to_cfg:
+            await asyncio.gather(
+                *[self._connect_single_stdio_server(c) for c in id_to_cfg.values()],
+                return_exceptions=True,
             )
-            try:
-                await instance.connect()
-                tools = await instance.list_tools()
-                self._instances[server_id] = instance
-                for t in tools:
-                    name = t.get("name", "")
-                    if not name:
-                        continue
-                    if name in self._builtin_tool_names:
-                        logger.debug("[MCP] 工具名与内置冲突 name=%s，保留内置实现", name)
-                        continue
-                    if name not in self._tool_route:
-                        self._tool_route[name] = instance
-                        self._tools_cache[name] = t
-                    else:
-                        logger.debug("[MCP] 工具名冲突 name=%s 已由 %s 提供，跳过 %s", name, self._tool_route[name].server_id, server_id)
-            except MCPConnectionError as e:
-                logger.warning("[MCP] Server 启动失败 server_id=%s err=%s", server_id, e)
-            except Exception as e:
-                logger.exception("[MCP] Server 启动异常 server_id=%s err=%s", server_id, e)
         if len(self._instances) > _instances_before:
             logger.info(
                 "[MCP] stdio Server 已连接，当前 instances=%d tools=%d",
@@ -450,6 +553,43 @@ class MCPManager:
         n = (tool_name or "").strip()
         return bool(n) and (n in self._builtin_tool_names or n in self._tool_route)
 
+    async def _reconnect_stdio_server_by_id(self, server_id: str) -> bool:
+        """
+        关闭并重新连接指定 stdio Server。
+        用于：首次连接时父进程尚无 TAVILY_API_KEY，子进程已以空环境启动；合并 .env 后需换新子进程。
+        """
+        sid = (server_id or "").strip()
+        if not sid or sid == "unknown":
+            return False
+        old = self._instances.pop(sid, None)
+        if old:
+            try:
+                await old.close()
+            except Exception as e:
+                logger.debug("[MCP] reconnect close server_id=%s err=%s", sid, e)
+        for tn in list(self._tool_route.keys()):
+            inst = self._tool_route.get(tn)
+            if inst is not None and getattr(inst, "server_id", None) == sid:
+                del self._tool_route[tn]
+                if tn in self._tools_cache and tn not in self._builtin_tool_names:
+                    del self._tools_cache[tn]
+        servers = self._cached_mcp_servers or self._load_config()
+        for cfg in servers:
+            if not isinstance(cfg, dict):
+                continue
+            try:
+                from core.mcp_embedded_runtime import resolve_mcp_cfg_placeholders
+
+                rc = resolve_mcp_cfg_placeholders(dict(cfg))
+            except Exception:
+                rc = dict(cfg)
+            rsid = str(rc.get("id") or rc.get("name") or "").strip()
+            if rsid == sid:
+                await self._connect_single_stdio_server(rc)
+                return sid in self._instances
+        logger.warning("[MCP] reconnect: 配置中无 server_id=%s", sid)
+        return False
+
     async def invoke_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """
         根据路由表将工具调用转发到对应 Server 执行。
@@ -470,7 +610,43 @@ class MCPManager:
         instance = self._tool_route.get(tool_name)
         if not instance:
             raise MCPToolNotFoundError(f"工具 '{tool_name}' 未找到或未挂载")
-        return await instance.call_tool(tool_name, args)
+        if "tavily" in (tool_name or "").lower():
+            from core.mcp_embedded_runtime import log_tavily_mcp_chain
+
+            log_tavily_mcp_chain(
+                "invoke_tool_before_call",
+                getattr(instance, "server_id", "?"),
+                instance.env if isinstance(getattr(instance, "env", None), dict) else None,
+                log_parent_os=True,
+            )
+        result = await instance.call_tool(tool_name, args)
+        if "tavily" in (tool_name or "").lower():
+            from core.mcp_embedded_runtime import log_tavily_invoke_outcome
+
+            log_tavily_invoke_outcome(tool_name, result if isinstance(result, str) else str(result))
+        if (
+            isinstance(result, str)
+            and "TAVILY_API_KEY" in result
+            and ("-32600" in result or "environment variable is required" in result.lower())
+            and "tavily" in (tool_name or "").lower()
+        ):
+            try:
+                from core.l3_dotenv_merge import merge_l3_dotenv_into_os
+
+                merge_l3_dotenv_into_os()
+                if (os.environ.get("TAVILY_API_KEY") or "").strip():
+                    _sid = getattr(instance, "server_id", "") or ""
+                    logger.warning(
+                        "[MCP] Tavily 报缺 Key，已合并 .env，尝试重连 stdio server_id=%s 并重试一次",
+                        _sid,
+                    )
+                    if await self._reconnect_stdio_server_by_id(_sid):
+                        inst2 = self._tool_route.get(tool_name)
+                        if inst2:
+                            return await inst2.call_tool(tool_name, args)
+            except Exception as e:
+                logger.debug("[MCP] Tavily 重连重试跳过: %s", e)
+        return result
 
     async def add_server(self, cfg: dict[str, Any]) -> bool:
         """
@@ -511,6 +687,7 @@ class MCPManager:
             env=env,
         )
         try:
+            _log_tavily_before_stdio_connect(server_id, args if isinstance(args, list) else [], env)
             await instance.connect()
             tools = await instance.list_tools()
             self._instances[server_id] = instance
