@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
 
 供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
@@ -1274,35 +1274,18 @@ except ImportError:
 
 
 def _resolve_safe_output_path(file_path: str) -> Path:
-    """与 core:fs_write 一致：输出须在 workspace / HR 白名单路径下。"""
-    from l3_node.jachin_config import get_hr_jds_dir
+    """与 core:fs_write 一致：输出须在 native_write_allowlist 白名单内。"""
+    from l3_node.primitives.native_write_allowlist import assert_path_allowed_for_native_write
     from l3_node.workspace_context import get_effective_workspace_root
 
     workspace = get_effective_workspace_root()
-    proj = Path(__file__).resolve().parent.parent.parent.parent
-    _l3_volume = (Path.home() / ".jachin" / "client_volumes").resolve()
-    _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), get_hr_jds_dir(proj).resolve()]
-
-    def _under_hr(p: Path) -> bool:
-        try:
-            abs_p = p.resolve()
-            return any(str(abs_p).startswith(str(a)) for a in _hr_allowed)
-        except (OSError, RuntimeError):
-            return False
-
-    def _assert_under(p: Path) -> None:
-        if _under_hr(p):
-            return
-        if not str(p.resolve()).startswith(str(workspace.resolve())):
-            raise ValueError(
-                f"路径越界: {p} 必须在 ~/.jachin/workspace/ 或 client_volumes、data/hr_resumes、hr_jds 下"
-            )
-
     raw = (file_path or "").strip().replace("\\", "/")
     fp = Path(raw).expanduser()
     if not fp.is_absolute():
         fp = (workspace / fp).resolve()
-    _assert_under(fp)
+    else:
+        fp = fp.resolve()
+    assert_path_allowed_for_native_write(fp)
     return fp
 
 
@@ -1565,7 +1548,8 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "desc": "【强制】生成原生 Word/Excel；**绝对禁止**用 core:fs_write 写 .docx/.xlsx。"
         "参数：file_format（docx|xlsx）、file_path、content_json。"
         "docx：content_json.blocks[]，type 为 h1|h2|h3|p|bullet|table（table 用 data 二维数组）。"
-        "xlsx：content_json.sheets[]，每项 sheet_name + data 二维数组。路径须在 workspace 白名单。",
+        "xlsx：content_json.sheets[]，每项 sheet_name + data 二维数组。"
+        "【路径特权】file_path 可为 workspace 相对路径，或 ~/Desktop/、~/Downloads/、~/Documents/ 下的绝对路径（与 core:fs_write 白名单一致）。",
         "params": ["file_format", "file_path", "content_json"],
     },
     {
@@ -1765,6 +1749,7 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
         "description": (
             "用于生成原生的 Word (.docx) 报告或 Excel (.xlsx) 数据表。"
             "绝对禁止用 core:fs_write（或等价写入）生成 .docx/.xlsx 富文本后缀文件；必须构造符合要求的 JSON（content_json）交给本工具渲染。"
+            "【路径特权】可将文件保存到默认 workspace，或用户真实桌面/下载/文档目录，例如 ~/Desktop/文件名.xlsx、~/Downloads/导出.xlsx、~/Documents/报表.docx。"
             "依赖：pip install python-docx openpyxl。"
         ),
         "inputSchema": _schema_obj(
@@ -1776,7 +1761,10 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "保存路径（相对 workspace 或白名单绝对路径；扩展名须与 file_format 一致）",
+                    "description": (
+                        "保存路径：相对路径相对于 workspace；或 ~/Desktop、~/Downloads、~/Documents 等白名单绝对路径。"
+                        "扩展名须与 file_format 一致。"
+                    ),
                 },
                 "content_json": {
                     "type": "object",

@@ -1,9 +1,10 @@
-﻿"""
+"""
 Jachin Nexus v8.0 - Native Core 内置标准库
 
-权限死锁在 ~/.jachin/workspace/ 下，供 MCP 瘫痪时的 Fallback 使用。
-HR 透析镜白名单：允许读取项目 data/hr_resumes、config/hr_jds（解决工作目录与配置文件路径冲突）。
-任何其他越界访问直接抛出 SecurityException。
+写路径白名单见 l3_node.primitives.native_write_allowlist（workspace、HR 数据卷、Desktop/Downloads/Documents 等），
+供 MCP 瘫痪时的 Fallback 使用。
+HR 透析镜读取：仍允许项目 data/hr_resumes、config/hr_jds（解决工作目录与配置文件路径冲突）。
+越界访问抛出 SecurityException。
 """
 from __future__ import annotations
 
@@ -59,13 +60,13 @@ def _is_under_hr_whitelist(path: Path) -> bool:
 
 
 def _assert_under_workspace(path: Path) -> None:
-    """断言路径在 workspace 下，否则抛出 SecurityException"""
-    abs_path = path.resolve()
-    root = _WORKSPACE_ROOT.resolve()
-    if not str(abs_path).startswith(str(root)):
-        raise SecurityException(
-            f"Wasm/Native Core sandbox violation: {path} escapes ~/.jachin/workspace/"
-        )
+    """断言路径在 Native 写白名单内（workspace、HR 卷、Desktop/Documents/Downloads 等），否则抛出 SecurityException。"""
+    from l3_node.primitives.native_write_allowlist import assert_path_allowed_for_native_write
+
+    try:
+        assert_path_allowed_for_native_write(path)
+    except ValueError as e:
+        raise SecurityException(str(e)) from e
 
 
 def core_fs_read(file_path: str) -> str:
@@ -110,7 +111,9 @@ def core_fs_read(file_path: str) -> str:
                 from core.pdf_extractor import extract_pdf_text
                 return extract_pdf_text(cand) or ""
             return cand.read_text(encoding="utf-8", errors="replace")
-        p = (_WORKSPACE_ROOT / raw).resolve()
+        from l3_node.workspace_context import get_effective_workspace_root
+
+        p = (get_effective_workspace_root() / raw).resolve()
     if _is_under_hr_whitelist(p):
         if p.suffix.lower() == ".pdf":
             from core.pdf_extractor import extract_pdf_text
@@ -125,7 +128,8 @@ def core_fs_read(file_path: str) -> str:
 
 def core_fs_write(file_path: str, content: str) -> None:
     """
-    写入文件。路径必须位于 ~/.jachin/workspace/ 下。
+    写入文件。路径须在 Native 白名单内：workspace（相对路径相对有效 workspace）、
+    client_volumes / HR 目录，或用户 Desktop、Downloads、Documents。
 
     Args:
         file_path: 相对或绝对路径
@@ -134,9 +138,13 @@ def core_fs_write(file_path: str, content: str) -> None:
     Raises:
         SecurityException: 路径越界
     """
+    from l3_node.workspace_context import get_effective_workspace_root
+
     p = Path(file_path).expanduser()
     if not p.is_absolute():
-        p = (_WORKSPACE_ROOT / p).resolve()
+        p = (get_effective_workspace_root() / p).resolve()
+    else:
+        p = p.resolve()
     _assert_under_workspace(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")

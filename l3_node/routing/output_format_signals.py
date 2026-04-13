@@ -1,4 +1,4 @@
-﻿"""
+"""
 检测用户消息中的「格式强约束」与直连 LLM 可行性。
 用于：动态瘦身系统提示词、在无需工具时绕过 ReAct。
 """
@@ -22,7 +22,14 @@ _TOOL_NEED_RE = re.compile(
     # 实况天气需 util:get_weather_lite；否则易走 direct_llm_bypass 编造「服务不可用」
     r"(?:查|看|问|说说).{0,4}天气|天气.{0,16}(?:怎么样|如何|多少|冷不冷)|"
     r"(?:今日|今天|明天|当地|外面).{0,12}天气|天气预报|气温|下雨|下雪|台风|空气质量|AQI|"
-    r"weather\s+in|what.{0,28}weather|util:get_weather_lite",
+    r"weather\s+in|what.{0,28}weather|util:get_weather_lite|"
+    # 原生 Office / 本机落盘：直连模式下模型会「假装」执行 Python/code_interpreter，文件不会真写入；须走 ReAct 调 util:generate_office_doc 等
+    r"util:generate_office_doc|openpyxl|python-docx|code_interpreter|"
+    r"\.xlsx|\.docx|\.xlsm?\b|excel|工作表|工作簿|预算表|"
+    r"保存.{0,32}(?:到|在|至).{0,16}(?:桌面|电脑|本机)|"
+    r"(?:桌面|Downloads|Documents|下载|文档)(?:路径|文件夹|目录)?|"
+    r"(?:生成|导出|写出|另存).{0,24}(?:word|excel|xlsx|docx|表格|文档|报告)|"
+    r"(?:word|excel).{0,12}(?:报告|文档|表格|文件)",
     re.I,
 )
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -2670,6 +2670,7 @@ def _build_system_prompt(
     experience_few_shots: str = "",
     realtime_web_grounding_block: str = "",
     domain_experts: list[str] | None = None,
+    hr_domain_prompt_active: bool = True,
 ) -> str:
     from l3_node.prompt_compose import (
         SuffixChunk,
@@ -3701,6 +3702,7 @@ async def _run_react_core(
                     experience_few_shots=_exp_verify,
                     realtime_web_grounding_block=str(_spe.get("realtime_web_grounding_block") or ""),
                     domain_experts=list(ctx.metadata.get("_domain_experts") or []),
+                    hr_domain_prompt_active=_hr_act,
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
@@ -6131,6 +6133,7 @@ async def run_agent(
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
+            hr_domain_prompt_active=_hr_domain_prompt_active,
         )
     else:
         system_prompt = _build_system_prompt(
@@ -6148,6 +6151,7 @@ async def run_agent(
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
+            hr_domain_prompt_active=_hr_domain_prompt_active,
         )
 
     try:
@@ -6565,6 +6569,7 @@ async def run_agent(
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
                         domain_experts=_domain_experts_list,
+                        hr_domain_prompt_active=_hr_domain_prompt_active,
                     )
                 else:
                     system_prompt = _build_system_prompt(
@@ -6582,6 +6587,7 @@ async def run_agent(
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
                         domain_experts=_domain_experts_list,
+                        hr_domain_prompt_active=_hr_domain_prompt_active,
                     )
 
         if not system_prompt and _system_prompt_override is None:
@@ -6602,6 +6608,7 @@ async def run_agent(
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
                     domain_experts=_domain_experts_list,
+                    hr_domain_prompt_active=_hr_domain_prompt_active,
                 )
             else:
                 system_prompt = _build_system_prompt(
@@ -6619,6 +6626,7 @@ async def run_agent(
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
                     domain_experts=_domain_experts_list,
+                    hr_domain_prompt_active=_hr_domain_prompt_active,
                 )
 
         _md_base: dict[str, Any] = {

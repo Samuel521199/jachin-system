@@ -1,0 +1,85 @@
+"""
+Native 写路径白名单（core:fs_write、util:generate_office_doc 等）。
+
+安全要求：对目标路径与各白名单根目录均使用 .resolve()，并用 Path.is_relative_to 判定，
+避免 ../ 路径穿越。与 workspace / HR 数据卷 / 用户常用目录对齐。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List
+
+
+def get_allowed_native_write_roots() -> List[Path]:
+    """
+    返回已 resolve 的去重根目录列表（顺序稳定）。
+    包含：有效 workspace、client_volumes、HR 目录、用户 Desktop/Downloads/Documents。
+    """
+    from l3_node.jachin_config import get_hr_jds_dir
+    from l3_node.workspace_context import get_effective_workspace_root
+
+    user = Path.home()
+    try:
+        workspace = get_effective_workspace_root().resolve()
+    except (OSError, RuntimeError):
+        workspace = (user / ".jachin" / "workspace").resolve()
+
+    # loader.py 与 core/native_tools 的 proj 根：…/jachin-system-main
+    here = Path(__file__).resolve()
+    proj = here.parent.parent.parent
+
+    candidates = [
+        workspace,
+        user / ".jachin" / "client_volumes",
+        proj / "data" / "hr_resumes",
+        get_hr_jds_dir(proj),
+        user / "Desktop",
+        user / "Downloads",
+        user / "Documents",
+    ]
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for c in candidates:
+        try:
+            r = c.expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        key = str(r).lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append(r)
+    return roots
+
+
+def assert_path_allowed_for_native_write(path: Path) -> None:
+    """
+    校验 path（可先 expanduser）是否落在允许写入的根目录之下。
+    不通过则抛出 ValueError。
+    """
+    try:
+        rp = path.expanduser().resolve()
+    except (OSError, RuntimeError) as e:
+        raise ValueError(f"无效路径: {path} ({e})") from e
+
+    roots = get_allowed_native_write_roots()
+    for root in roots:
+        try:
+            if rp.is_relative_to(root):
+                return
+        except ValueError:
+            continue
+
+    raise ValueError(
+        "路径越界，严禁写入该位置。仅允许写入 Jachin workspace、client_volumes、HR 数据目录，"
+        "或用户 Desktop / Downloads / Documents 下（请使用已解析的绝对路径或 workspace 相对路径）。"
+    )
+
+
+def path_is_under_allowed_write_roots(path: Path) -> bool:
+    """不抛异常的布尔判定（供 fs_read 候选路径快速过滤）。"""
+    try:
+        assert_path_allowed_for_native_write(path)
+        return True
+    except ValueError:
+        return False

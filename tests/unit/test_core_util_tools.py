@@ -1,5 +1,5 @@
 """
-十八项 util:* / sys:* 原生工具烟测与行为断言。
+util:* / sys:* 原生工具烟测与行为断言（工具总数用下限断言，避免新增工具时测试误伤）。
 
 运行（避免根 conftest 拉 ray / cov）：
   python -m pytest tests/unit/test_core_util_tools.py -v --override-ini="addopts=-v --tb=short --strict-markers" --noconftest
@@ -19,8 +19,9 @@ from l3_node.primitives.tools.core_util_tools import (
 )
 
 
-def test_eighteen_tool_ids_registered() -> None:
-    assert len(util_tool_ids()) == 18
+def test_util_native_tool_ids_registered_minimum() -> None:
+    """工具数量会随业务增长；只断言下限，并校验核心 id 仍存在。"""
+    assert len(util_tool_ids()) >= 18
     for tid in (
         "util:datetime_calc",
         "util:cron_explain",
@@ -37,6 +38,7 @@ def test_eighteen_tool_ids_registered() -> None:
         "util:fake_data_gen",
         "util:text_diff",
         "util:funnel_calc",
+        "util:desktop_message_box",
         "util:generate_office_doc",
         "sys:health_stats",
         "sys:list_env_safe",
@@ -363,5 +365,6 @@ def test_loader_native_tools_includes_utils() -> None:
 
     ids = {t["id"] for t in NATIVE_TOOLS if isinstance(t, dict)}
     assert "util:uuid_gen" in ids
+    assert "util:desktop_message_box" in ids
     assert "util:generate_office_doc" in ids
     assert "sys:list_env_safe" in ids

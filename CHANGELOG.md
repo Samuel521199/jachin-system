@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.112] - 2026-04-13
+
+### Fixed
+
+- **L3 agent**: `NameError` for `hr_domain_prompt_active` in `_build_system_prompt` — pass `hr_domain_prompt_active` from `run_agent` (and strict verify rebuild) into prompt builder; restores ReAct when HR tools are present.
+
+### Changed
+
+- **L3**: Output-format / tool-need heuristics (`output_format_signals`), native write allowlist, `core_util_tools` / loader updates; unit tests aligned.
+- **Version**: Desktop (`package.json`, `tauri.conf.json`, `Cargo.toml`, `VERSION`), core (`main.py`, `sync_daemon.py`, `cli.py`, `cli/jachin_cli`) bumped to **0.8.112**.
+
+---
+
 ## [v0.8.108] - 2026-04-10
 
 ### Fixed

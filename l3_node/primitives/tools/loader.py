@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -37,18 +37,18 @@ _WASM_PLUGINS_DIR = Path(__file__).resolve().parent / "wasm_bundled"
 # L3 冷启动同步缓存：~/.jachin/l3_skill_cache/（从 L2 拉取的技能）
 _L3_SKILL_CACHE_DIR = Path.home() / ".jachin" / "l3_skill_cache"
 
-# Native Core 工具定义（对标 core/native_tools.py，权限限于 ~/.jachin/workspace/）
+# Native Core 工具定义（对标 core/native_tools.py；写路径见 native_write_allowlist）
 NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:fs_read",
         "label": "core:fs_read",
-        "desc": "读取文件内容。路径必须位于 ~/.jachin/workspace/ 下。参数: file_path",
+        "desc": "读取文件内容。路径须在允许范围内：默认 ~/.jachin/workspace/，或 HR 数据白名单，或用户 Desktop / Downloads / Documents。参数: file_path",
         "params": ["file_path"],
     },
     {
         "id": "core:fs_write",
         "label": "core:fs_write",
-        "desc": "写入文件。路径必须位于 ~/.jachin/workspace/ 下。推荐 Action Input 为 JSON：{\"file_path\":\"相对或绝对路径\",\"content\":\"全文\"}；也可用首行路径+换行后正文，或 file_path=a.txt, content=...（逗号分隔 key=value）。",
+        "desc": "写入文件。【路径特权】可将文件保存到默认 workspace（相对路径相对 workspace），或用户真实桌面/下载/文档目录，例如 ~/Desktop/文件名.xlsx、~/Downloads/报告.md、~/Documents/笔记.txt（须为落在白名单内的绝对路径）。推荐 JSON：{\"file_path\":\"...\",\"content\":\"全文\"}。",
         "params": ["file_path", "content"],
     },
     {
@@ -381,18 +381,17 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
     _l3_volume = (Path.home() / ".jachin" / "client_volumes").resolve()
     _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), get_hr_jds_dir(proj).resolve()]
 
+    from l3_node.primitives.native_write_allowlist import (
+        assert_path_allowed_for_native_write,
+        path_is_under_allowed_write_roots,
+    )
+
     def _under_hr(p: Path) -> bool:
-        try:
-            abs_p = p.resolve()
-            return any(str(abs_p).startswith(str(a)) for a in _hr_allowed)
-        except (OSError, RuntimeError):
-            return False
+        """与历史逻辑兼容：是否落在扩展后的 Native 读写白名单内。"""
+        return path_is_under_allowed_write_roots(p)
 
     def _assert_under(p: Path) -> None:
-        if _under_hr(p):
-            return
-        if not str(p.resolve()).startswith(str(workspace.resolve())):
-            raise ValueError(f"路径越界: {p} 必须在 ~/.jachin/workspace/ 或 client_volumes、data/hr_resumes、config/skills/.../hr_jds 下")
+        assert_path_allowed_for_native_write(p)
 
     def _read_file_content(p: Path) -> str:
         """读取文件，PDF 使用 core.pdf_extractor 提取纯文本（与 MCP read_file 复用）。"""
