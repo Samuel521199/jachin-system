@@ -1400,6 +1400,122 @@ def run_generate_office_doc(**kwargs: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 长文 Map-Reduce：逐章 LLM 后拼装 Markdown（util:compose_long_document）
+# ---------------------------------------------------------------------------
+
+
+def _parse_outline_sections(raw: Any) -> tuple[list[str], str | None]:
+    """解析大纲节点列表。成功返回 (sections, None)；失败返回 ([], error_msg)。"""
+    if raw is None:
+        return [], "outline_sections 缺失"
+    if isinstance(raw, list):
+        sections = [str(x).strip() for x in raw if str(x).strip()]
+        return (sections, None)
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return [], "outline_sections 为空"
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError as e:
+                return [], f"outline_sections JSON 无效: {e}"
+            if not isinstance(parsed, list):
+                return [], "outline_sections 须为非空 JSON 数组"
+            sections = [str(x).strip() for x in parsed if str(x).strip()]
+            return (sections, None)
+        sections = [ln.strip() for ln in s.replace("\r", "").split("\n") if ln.strip()]
+        return (sections, None)
+    return [], "outline_sections 须为字符串数组或可解析的 JSON 数组字符串"
+
+
+def _run_coroutine_in_fresh_loop(coro):
+    """在无非运行事件循环的上下文中执行协程；若当前线程已有 loop，则放到独立线程里 asyncio.run。"""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    import concurrent.futures
+
+    def _entry() -> Any:
+        return asyncio.run(coro)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(_entry)
+        return fut.result()
+
+
+def run_compose_long_document(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:compose_long_document — Map-Reduce 式长文：按大纲逐章调用 LiteLLM（无状态），再拼装为 Markdown 落盘。
+    参数：file_path、topic、outline_sections（字符串列表，或 JSON 数组字符串）。
+    """
+    try:
+        topic = str(kwargs.get("topic") or "").strip()
+        if not topic:
+            return _err("topic 不能为空")
+        raw_fp = str(kwargs.get("file_path") or "").strip()
+        if not raw_fp:
+            return _err("file_path 不能为空")
+
+        sections, sec_err = _parse_outline_sections(kwargs.get("outline_sections"))
+        if sec_err:
+            return _err(sec_err)
+        if not sections:
+            return _err("outline_sections 不能为空")
+        if len(sections) > 24:
+            return _err("outline_sections 章节过多（建议 5–12 节，上限 24）")
+
+        from core.llm_provider import LiteLLMEngine, get_complex_model_litellm_id
+
+        try:
+            eng = LiteLLMEngine(model_name=get_complex_model_litellm_id())
+        except Exception:
+            eng = LiteLLMEngine()
+
+        parts: list[str] = []
+        for section in sections:
+            chapter_prompt = (
+                f"你正在撰写《{topic}》，当前章节为【{section}】。"
+                "请输出极其详尽的专业内容，务必展开论述，不要输出总结套话。"
+                "直接返回 Markdown 文本。"
+            )
+
+            async def _one_chapter(
+                _prompt: str = chapter_prompt,
+            ) -> str:
+                out = await eng.generate_response(
+                    [{"role": "user", "content": _prompt}],
+                    tools=None,
+                    temperature=0.75,
+                    max_tokens=8192,
+                    call_purpose="util_compose_long_document",
+                )
+                if isinstance(out, dict):
+                    return str(out.get("content") or "").strip()
+                return str(out or "").strip()
+
+            chapter = _run_coroutine_in_fresh_loop(_one_chapter())
+            parts.append(f"## {section}\n\n{chapter}")
+
+        body = "\n\n".join(parts)
+        fp = _resolve_safe_output_path(raw_fp)
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(body, encoding="utf-8")
+
+        return {
+            "ok": True,
+            "file_path": str(fp.resolve()),
+            "total_sections_processed": len(sections),
+        }
+    except Exception as e:
+        return _err(str(e))
+
+
+# ---------------------------------------------------------------------------
 # 分发与注册表（供 loader / native_tools 挂载）
 # ---------------------------------------------------------------------------
 
@@ -1420,6 +1536,7 @@ _UTIL_HANDLERS: dict[str, Any] = {
     "util:text_diff": run_text_diff,
     "util:funnel_calc": run_funnel_calc,
     "util:generate_office_doc": run_generate_office_doc,
+    "util:compose_long_document": run_compose_long_document,
     "util:desktop_message_box": run_desktop_message_box,
     "sys:health_stats": run_health_stats,
     "sys:list_env_safe": run_list_env_safe,
@@ -1551,6 +1668,14 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "xlsx：content_json.sheets[]，每项 sheet_name + data 二维数组。"
         "【路径特权】file_path 可为 workspace 相对路径，或 ~/Desktop/、~/Downloads/、~/Documents/ 下的绝对路径（与 core:fs_write 白名单一致）。",
         "params": ["file_format", "file_path", "content_json"],
+    },
+    {
+        "id": "util:compose_long_document",
+        "label": "util:compose_long_document",
+        "desc": "用于生成极度丰富、字数极多（万字级）的深度报告或长篇文档。不要使用 fs_write，而是将你构思好的文章主题和详细大纲（拆分成 5-10 个具体节点）作为数组传入本工具。"
+        "本工具会在后台利用独立线程逐章撰写并自动拼装成完整文件。"
+        "JSON：file_path、topic、outline_sections（字符串数组）。路径与 core:fs_write 白名单一致。",
+        "params": ["file_path", "topic", "outline_sections"],
     },
     {
         "id": "sys:health_stats",
@@ -1821,6 +1946,35 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                 },
             },
             required=["file_format", "file_path", "content_json"],
+        ),
+    },
+    "util:compose_long_document": {
+        "name": "util:compose_long_document",
+        "description": (
+            "用于生成极度丰富、字数极多（万字级）的深度报告或长篇文档。不要使用 fs_write，而是将你构思好的文章主题和详细大纲（拆分成 5-10 个具体节点）作为数组传入本工具。"
+            "本工具会在后台利用独立线程逐章撰写并自动拼装成完整文件。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "file_path": {
+                    "type": "string",
+                    "description": (
+                        "保存路径：相对路径相对于 Jachin workspace；或 ~/Desktop、~/Downloads、~/Documents 等白名单绝对路径。"
+                        "建议 .md 以便存放 Markdown。"
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "文档总标题 / 主题，将写入各章提示语中。",
+                },
+                "outline_sections": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "章节节点标题列表（建议 5–10 条，每条对应一次独立生成后再拼接）。",
+                    "minItems": 1,
+                },
+            },
+            required=["file_path", "topic", "outline_sections"],
         ),
     },
     "util:desktop_message_box": {

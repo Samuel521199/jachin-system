@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.113] - 2026-04-13
+
+### Added
+
+- **L3 `util:compose_long_document`**: Map-Reduce style long Markdown assembly (per-section LLM via `LiteLLMEngine`, then write under native write allowlist).
+
+### Fixed / Changed
+
+- **L3 `run_tool`**: Parse ReAct XML-style `<parameter=name>...</parameter>` for `util:*` / `sys:*` so `topic` / `outline_sections` are not dropped when the model does not emit JSON.
+- **`core/llm_provider`**: Longer timeouts and slack for `call_purpose=util_compose_long_document` to reduce spurious timeout → fallback on large `max_tokens` calls.
+- **`l3_node/llm_client`**: `JACHIN_QWEN_MAX_MAX_TOKENS` no longer hard-capped at 8192 in code (still clamped to ≥1).
+- **Desktop `chat.tsx`**: Register `registerBackgroundTaskHandler` so Omni shows background task completion (and sentry notify), aligned with `ChatPanel`.
+- **Tests**: `test_loader_xml_tool_params`, `test_core_util_tools` updates.
+
+- **Version**: Desktop and core CLI bumped to **0.8.113**.
+
+---
+
 ## [v0.8.112] - 2026-04-13
 
 ### Fixed

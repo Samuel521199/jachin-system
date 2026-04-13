@@ -425,6 +425,56 @@ def sanitize_llm_fallback_models(models: list[str]) -> list[str]:
     return out
 
 
+def _apply_purpose_timeout_overrides(
+    call_purpose: str,
+    timeout: float,
+    llm_cfg: dict[str, Any],
+) -> float:
+    """
+    按调用目的抬高 litellm 的 HTTP timeout：compaction / 长文拼装等单次可能极慢，
+    若仍用默认 60s 会频繁触发外层 asyncio.wait_for，误判为失败并降级备用模型。
+    """
+    cp = str(call_purpose)
+    t = float(timeout)
+    if cp.startswith("compaction_"):
+        _cts = llm_cfg.get("compaction_timeout_seconds")
+        return float(_cts) if _cts is not None else max(t, 180.0)
+    if cp == "util_compose_long_document":
+        _env = (os.environ.get("JACHIN_LLM_LONG_DOCUMENT_TIMEOUT_SEC") or "").strip()
+        if _env:
+            try:
+                return max(t, float(_env))
+            except ValueError:
+                pass
+        _ld = llm_cfg.get("long_document_timeout_seconds")
+        if _ld is not None:
+            try:
+                return max(t, float(_ld))
+            except (TypeError, ValueError):
+                pass
+        return max(t, 300.0)
+    return t
+
+
+def _asyncio_wait_slack_for_purpose(call_purpose: str) -> float:
+    """
+    asyncio.wait_for 相对 litellm timeout 的额外余量（内部重试、网络抖动）。
+    长文生成默认加大，避免「API 仍在输出但 wait_for 先掐断」。
+    """
+    cp = str(call_purpose)
+    if cp.startswith("compaction_"):
+        return 90.0
+    if cp == "util_compose_long_document":
+        _s = (os.environ.get("JACHIN_LLM_LONG_DOCUMENT_SLACK_SEC") or "").strip()
+        if _s:
+            try:
+                return max(30.0, float(_s))
+            except ValueError:
+                pass
+        return 180.0
+    return 45.0
+
+
 def _get_retry_config(config: dict[str, Any] | None = None) -> tuple[int, list[str], float]:
     """
     读取重试与降级配置。
@@ -551,9 +601,7 @@ class LiteLLMEngine:
         _nexus_cfg = _load_nexus_config()
         max_attempts, fallback_models, timeout = _get_retry_config(_nexus_cfg)
         _llm_cfg = (_nexus_cfg.get("llm") or {}) if isinstance(_nexus_cfg.get("llm"), dict) else {}
-        if str(call_purpose).startswith("compaction_"):
-            _cts = _llm_cfg.get("compaction_timeout_seconds")
-            timeout = float(_cts) if _cts is not None else max(float(timeout), 180.0)
+        timeout = _apply_purpose_timeout_overrides(call_purpose, timeout, _llm_cfg)
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 
@@ -592,8 +640,8 @@ class LiteLLMEngine:
                 if tools:
                     kwargs_chat["tools"] = tools
 
-                # 硬上限：litellm 内部可能对 /chat/completions 重试，compaction 类需更大 slack
-                _slack = 90.0 if str(call_purpose).startswith("compaction_") else 45.0
+                # 硬上限：litellm 内部可能对 /chat/completions 重试；长文/compaction 需更大 slack
+                _slack = _asyncio_wait_slack_for_purpose(call_purpose)
                 _cap = float(timeout) + _slack
                 try:
                     response = await asyncio.wait_for(litellm.acompletion(**kwargs_chat), timeout=_cap)
@@ -721,7 +769,10 @@ class LiteLLMEngine:
         """
         call_purpose = _pop_call_purpose(kwargs)
         _inject_api_keys()
-        max_attempts, fallback_models, timeout = _get_retry_config()
+        _nexus_cfg = _load_nexus_config()
+        max_attempts, fallback_models, timeout = _get_retry_config(_nexus_cfg)
+        _llm_cfg = (_nexus_cfg.get("llm") or {}) if isinstance(_nexus_cfg.get("llm"), dict) else {}
+        timeout = _apply_purpose_timeout_overrides(call_purpose, timeout, _llm_cfg)
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 

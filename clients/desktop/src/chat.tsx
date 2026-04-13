@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -125,6 +125,7 @@ function ChatApp() {
     registerAnswerHandler,
     registerStepHandler,
     registerMirrorInputHandler,
+    registerBackgroundTaskHandler,
     sendInput,
     sendToolUiResult,
     sendSessionClearControl,
@@ -293,6 +294,50 @@ function ChatApp() {
   useEffect(() => {
     companionModeRef.current = companionMode;
   }, [companionMode]);
+
+  /** 与 ChatPanel 一致：后台任务完成/失败时写入会话并可选哨兵通知（主 Omni 此前未注册 handler，收不到 l3_event_bus 推送） */
+  useEffect(() => {
+    registerBackgroundTaskHandler((ev) => {
+      if (ev.event !== "completed" && ev.event !== "failed" && ev.event !== "cancelled") {
+        return;
+      }
+      const taskId = ev.task_id;
+      let text = "";
+      if (ev.event === "completed") {
+        const preview = (ev.result_preview || "").trim();
+        text =
+          `### 后台任务已完成\n\n` +
+          `- **任务 ID：** \`${taskId}\`\n` +
+          (preview ? `\n**结果摘要：**\n\n${preview}\n` : "\n") +
+          `\n如需完整输出，可在对话中说明「查询该任务结果」或请助手调用 \`core:check_background_task\`（传入该 task_id）。`;
+        void maybeNotifyJachinAssistantDone(
+          companionModeRef.current,
+          `后台任务完成 ${taskId}：${summarizeForSentryNotify(preview || "已完成")}`,
+          "answer",
+        );
+      } else if (ev.event === "failed") {
+        text =
+          `### 后台任务失败\n\n- **任务 ID：** \`${taskId}\`` +
+          (ev.message ? `\n\n**原因：** ${ev.message}` : "");
+        void maybeNotifyJachinAssistantDone(
+          companionModeRef.current,
+          `后台任务失败：${ev.message || taskId}`,
+          "error",
+        );
+      } else {
+        text = `### 后台任务已取消\n\n- **任务 ID：** \`${taskId}\``;
+      }
+      const msg: StoredMessage = {
+        role: "assistant",
+        content: text,
+        reasoning: "",
+        timestamp: Date.now(),
+        source: "L3",
+      };
+      setMessages((prev) => [...prev, msg]);
+    });
+    return () => registerBackgroundTaskHandler(null);
+  }, [registerBackgroundTaskHandler, setMessages]);
 
   /**
    * 启动时同步 Rust 陪伴态。若该 invoke 较慢，用户可能已先按 Esc 坍缩；

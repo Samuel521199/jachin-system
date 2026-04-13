@@ -37,8 +37,9 @@ _L3_DEFAULT_REASONING_MODEL = "qwen3.5-plus"
 
 def _effective_max_tokens_for_model(model: str, requested: int) -> int:
     """
-    DashScope 对部分模型限制 max_tokens 上界（例如 qwen-max 仅 [1, 8192]）。
-    agent_core ReAct 常传 16384，必须在调用 litellm 前钳制，否则会 400，并被 LiteLLM 包装成 APIConnectionError。
+    DashScope 对部分模型限制 max_tokens 上界；qwen-max / vl-max 等分支的上限由环境变量
+    JACHIN_QWEN_MAX_MAX_TOKENS 给出（默认 8192），仅保证 >=1，不再在代码里锁死 API 未来可能放大的输出上限。
+    agent_core ReAct 常传较大 max_tokens，须在调用 litellm 前按该上限钳制，避免 400。
     """
     try:
         n = int(requested)
@@ -53,7 +54,7 @@ def _effective_max_tokens_for_model(model: str, requested: int) -> int:
         cap = 8192
         try:
             cap = int(_env_cap.environ.get("JACHIN_QWEN_MAX_MAX_TOKENS", "8192"))
-            cap = max(1, min(cap, 8192))
+            cap = max(1, cap)
         except ValueError:
             cap = 8192
         if n > cap:

@@ -21,7 +21,7 @@ from l3_node.primitives.tools.core_util_tools import (
 
 def test_util_native_tool_ids_registered_minimum() -> None:
     """工具数量会随业务增长；只断言下限，并校验核心 id 仍存在。"""
-    assert len(util_tool_ids()) >= 18
+    assert len(util_tool_ids()) >= 19
     for tid in (
         "util:datetime_calc",
         "util:cron_explain",
@@ -40,6 +40,7 @@ def test_util_native_tool_ids_registered_minimum() -> None:
         "util:funnel_calc",
         "util:desktop_message_box",
         "util:generate_office_doc",
+        "util:compose_long_document",
         "sys:health_stats",
         "sys:list_env_safe",
     ):
@@ -352,6 +353,32 @@ def test_util_generate_office_doc_legacy_aliases(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "legacy.docx").exists()
 
 
+def test_compose_long_document_mocked(tmp_path, monkeypatch) -> None:
+    import l3_node.workspace_context as wc
+
+    monkeypatch.setattr(wc, "get_effective_workspace_root", lambda: tmp_path)
+
+    class DummyEng:
+        def __init__(self, *a, **k):
+            pass
+
+        async def generate_response(self, messages, tools=None, **kwargs):
+            return "Mock chapter markdown."
+
+    with patch("core.llm_provider.LiteLLMEngine", DummyEng):
+        r = cut.run_compose_long_document(
+            file_path="report.md",
+            topic="Test Topic",
+            outline_sections=["A", "B"],
+        )
+    assert r["ok"] is True
+    assert r["total_sections_processed"] == 2
+    assert r.get("file_path")
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "## A" in text and "## B" in text
+    assert "Mock chapter" in text
+
+
 def test_native_dispatch_routes_util() -> None:
     from core.native_tools import dispatch_native_tool
 
@@ -367,4 +394,5 @@ def test_loader_native_tools_includes_utils() -> None:
     assert "util:uuid_gen" in ids
     assert "util:desktop_message_box" in ids
     assert "util:generate_office_doc" in ids
+    assert "util:compose_long_document" in ids
     assert "sys:list_env_safe" in ids

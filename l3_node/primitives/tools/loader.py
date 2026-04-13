@@ -16,6 +16,45 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _parse_react_xml_tool_params(inp: str) -> dict[str, Any]:
+    """
+    解析 ReAct 常见的 XML 风格参数块（非 JSON 时模型仍可能输出）：
+    <parameter=file_path>~/Desktop/x.md</parameter>
+    <parameter=topic>标题</parameter>
+    <parameter=outline_sections>["a","b"]</parameter>
+    与 JSON 互补：用于 util:/sys: 工具在仅输出 XML 时不再得到空 kwargs。
+    """
+    raw = (inp or "").strip()
+    if not raw or "parameter" not in raw.lower():
+        return {}
+    out: dict[str, Any] = {}
+    for m in re.finditer(
+        r"<\s*parameter\s*=\s*([a-zA-Z0-9_]+)\s*>(.*?)</\s*parameter\s*>",
+        raw,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        key = (m.group(1) or "").strip()
+        val = (m.group(2) or "").strip()
+        if not key:
+            continue
+        if val.startswith(("[", "{")):
+            try:
+                out[key] = json.loads(val)
+                continue
+            except json.JSONDecodeError:
+                pass
+        out[key] = val
+    return out
+
+
+def _merge_xml_params_into_util(util_params: dict[str, Any], xml_params: dict[str, Any]) -> None:
+    """对缺失或空字符串的键用 XML 解析结果补齐。"""
+    for k, v in xml_params.items():
+        cur = util_params.get(k)
+        if cur is None or (isinstance(cur, str) and not cur.strip()):
+            util_params[k] = v
+
+
 def _extract_stem_from_hr_report(report: str) -> str:
     """从 HR 报告提取候选人姓名作为 stem。支持多种 LLM 输出格式。"""
     # 格式1: 候选人姓名：张三
@@ -1096,6 +1135,7 @@ def run_tool(
                     util_params = o
             except json.JSONDecodeError:
                 pass
+        _merge_xml_params_into_util(util_params, _parse_react_xml_tool_params(inp))
         print(
             f"[Skill Execute] [Native util/sys] tool_id={tool_id} params_keys={list(util_params.keys())}",
             file=sys.stderr,
