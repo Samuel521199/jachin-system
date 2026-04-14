@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -14,6 +14,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusAnalytics } from "@/lib/nexus-ui-i18n";
 import { Activity, TrendingUp, Zap, CheckCircle2 } from "lucide-react";
 
 const DEMO_TENANT_ID = "demo-tenant-001";
@@ -23,6 +25,8 @@ type SkillItem = { item_id: string; name: string; calls: number };
 type GlobalStats = { successRate: number; avgLatencyMs: number };
 
 export default function AnalyticsDashboardPage() {
+  const { lang } = useNexusUiLang();
+  const ta = nexusAnalytics[lang];
   const [range, setRange] = useState<"24h" | "7d">("24h");
   const [usageTrend, setUsageTrend] = useState<UsagePoint[]>([]);
   const [skillRanking, setSkillRanking] = useState<SkillItem[]>([]);
@@ -97,10 +101,10 @@ export default function AnalyticsDashboardPage() {
         <header className="mb-10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-white tracking-tight mb-1">
-              企业主审计大屏
+              {ta.title}
             </h1>
             <p className="text-white/50 text-sm font-mono">
-              用量趋势 · 活跃技能 · 全局成功率
+              {ta.subtitle}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -112,7 +116,7 @@ export default function AnalyticsDashboardPage() {
                   : "bg-white/5 text-white/60 border border-white/10 hover:bg-white/10"
               }`}
             >
-              24 小时
+              {ta.range24h}
             </button>
             <button
               onClick={() => setRange("7d")}
@@ -122,7 +126,7 @@ export default function AnalyticsDashboardPage() {
                   : "bg-white/5 text-white/60 border border-white/10 hover:bg-white/10"
               }`}
             >
-              7 天
+              {ta.range7d}
             </button>
           </div>
         </header>
@@ -168,7 +172,7 @@ export default function AnalyticsDashboardPage() {
                     </div>
                     <div>
                       <p className="text-white/50 text-xs font-medium uppercase tracking-wider">
-                        总调用量
+                        {ta.totalCalls}
                       </p>
                       <p className="text-2xl font-bold text-white tabular-nums">
                         {totalCalls.toLocaleString()}
@@ -183,7 +187,7 @@ export default function AnalyticsDashboardPage() {
                     </div>
                     <div>
                       <p className="text-white/50 text-xs font-medium uppercase tracking-wider">
-                        活跃技能
+                        {ta.activeSkills}
                       </p>
                       <p className="text-2xl font-bold text-white tabular-nums">
                         {skillRanking.length}
@@ -198,7 +202,7 @@ export default function AnalyticsDashboardPage() {
                     </div>
                     <div>
                       <p className="text-white/50 text-xs font-medium uppercase tracking-wider">
-                        全局成功率 / 平均耗时
+                        {ta.successLatency}
                       </p>
                       <p className="text-2xl font-bold text-white tabular-nums">
                         {globalStats.successRate}% / {globalStats.avgLatencyMs}ms
@@ -217,7 +221,7 @@ export default function AnalyticsDashboardPage() {
               >
                 <h3 className="text-sm font-medium text-white/80 mb-4 flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-cyan-400" />
-                  用量趋势
+                  {ta.usageTrend}
                 </h3>
                 <div className="h-72">
                   {usageTrend.length > 0 ? (
@@ -243,7 +247,7 @@ export default function AnalyticsDashboardPage() {
                           labelStyle={{ color: "#22d3ee" }}
                           formatter={(value) => [
                             (typeof value === "number" ? value : 0).toLocaleString(),
-                            "调用量",
+                            ta.tooltipCalls,
                           ]}
                         />
                         <Line
@@ -258,7 +262,7 @@ export default function AnalyticsDashboardPage() {
                     </ResponsiveContainer>
                   ) : (
                     <div className="h-full flex items-center justify-center text-white/30 text-sm">
-                      暂无数据
+                      {ta.noData}
                     </div>
                   )}
                 </div>
@@ -273,7 +277,7 @@ export default function AnalyticsDashboardPage() {
               >
                 <h3 className="text-sm font-medium text-white/80 mb-4 flex items-center gap-2">
                   <Zap className="h-4 w-4 text-violet-400" />
-                  活跃技能排名
+                  {ta.skillRank}
                 </h3>
                 <div className="h-72">
                   {skillRanking.length > 0 ? (
@@ -300,7 +304,7 @@ export default function AnalyticsDashboardPage() {
                           }}
                           formatter={(value) => [
                             (typeof value === "number" ? value : 0).toLocaleString(),
-                            "调用",
+                            ta.tooltipInvoke,
                           ]}
                         />
                         <Bar dataKey="calls" fill="#a78bfa" radius={[0, 4, 4, 0]} />
@@ -308,7 +312,7 @@ export default function AnalyticsDashboardPage() {
                     </ResponsiveContainer>
                   ) : (
                     <div className="h-full flex items-center justify-center text-white/30 text-sm">
-                      暂无数据
+                      {ta.noData}
                     </div>
                   )}
                 </div>

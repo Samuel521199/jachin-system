@@ -1,4 +1,4 @@
-"""
+﻿"""
 jachin pack - 打包与极度严苛的校验
 
 规范: .cursor/rules/076-skill-mcp-upload-spec.mdc, docs/SKILL_MCP_UPLOAD_SPEC.md
@@ -112,13 +112,16 @@ def _validate(data: dict, cwd: Path) -> list[tuple[str, str]]:
 
     # 入口文件
     item_type = (data.get("type") or data.get("item_type") or "skill").lower()
-    if item_type == "skill":
+    if item_type in ("skill", "tool"):
         entry = data.get("entry") or "main.wasm"
         entry_path = cwd / entry
         if not entry_path.exists():
-            errors.append(
-                (f"入口文件不存在: {entry}", "编译 Wasm 后将 main.wasm 放入项目根目录"),
+            hint = (
+                "编译 Wasm 后将 main.wasm 放入项目根目录"
+                if item_type == "skill"
+                else "原子工具包请提供与 entry 一致的 Wasm 或宿主约定入口文件"
             )
+            errors.append((f"入口文件不存在: {entry}", hint))
     elif item_type == "mcp":
         runtime_tier = (data.get("runtime_tier") or "L3_LOCAL").upper()
         if runtime_tier == "L2_GATEWAY":
@@ -156,7 +159,7 @@ def _validate(data: dict, cwd: Path) -> list[tuple[str, str]]:
                     ),
                 )
 
-    # 077: Skill 依赖 MCP — required_mcps 格式校验
+    # 077: Skill 依赖 MCP — required_mcps 格式校验（TOOL 一般无 required_mcps）
     if item_type == "skill":
         errors.extend(_validate_required_mcps(data))
 

@@ -1,16 +1,14 @@
-"use client";
+﻿"use client";
 
-const PALETTE_ITEMS = [
-  { type: "trigger" as const, label: "麦克风语音唤醒", pluginId: "geek-a-wake", price: "$1" },
-  { type: "trigger" as const, label: "HTTP Webhook", pluginId: "geek-b-webhook", price: "$2" },
-  { type: "processor" as const, label: "本地离线 LLM", pluginId: "geek-c-llm", price: "$5" },
-  { type: "processor" as const, label: "情感分析 WASM", pluginId: "geek-d-wasm", price: "$3" },
-  { type: "action" as const, label: "扬声器播放", pluginId: "geek-e-tts", price: "$2" },
-  { type: "action" as const, label: "控制 IoT 继电器", pluginId: "geek-f-iot", price: "$4" },
-];
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusForge } from "@/lib/nexus-ui-i18n";
 
 export function NodePalette() {
-  const onDragStart = (e: React.DragEvent, item: (typeof PALETTE_ITEMS)[0]) => {
+  const { lang } = useNexusUiLang();
+  const t = nexusForge[lang];
+  const paletteItems = t.palette;
+
+  const onDragStart = (e: React.DragEvent, item: (typeof paletteItems)[number]) => {
     e.dataTransfer.setData("application/reactflow", JSON.stringify(item));
     e.dataTransfer.effectAllowed = "move";
   };
@@ -19,11 +17,11 @@ export function NodePalette() {
     <div className="w-56 shrink-0 p-4">
       <div className="sticky top-24 rounded-2xl backdrop-blur-md bg-white/5 border border-white/10 p-4">
         <h3 className="text-xs font-semibold uppercase tracking-widest text-cyan-400/90 mb-2">
-          神经元组件库
+          {t.paletteTitle}
         </h3>
-        <p className="text-[10px] text-white/40 mb-4">拖拽到画布放置</p>
+        <p className="text-[10px] text-white/40 mb-4">{t.paletteHint}</p>
         <div className="space-y-2">
-          {PALETTE_ITEMS.map((item) => (
+          {paletteItems.map((item) => (
             <div
               key={`${item.type}-${item.pluginId}`}
               draggable
@@ -45,5 +43,3 @@ export function NodePalette() {
     </div>
   );
 }
-
-export { PALETTE_ITEMS };

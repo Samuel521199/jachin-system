@@ -7,6 +7,9 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getClusterStats, getGpuStats } from "../../lib/api";
 import { cn } from "../../utils/cn";
+import { useDesktopUiLang } from "../../hooks/useDesktopUiLang";
+import { desktopHorizon } from "../../utils/desktopUiI18n";
+import { DesktopLanguageMenu } from "../../components/DesktopLanguageMenu";
 
 const GPU_OVERHEAT_THRESHOLD = 85;
 
@@ -19,6 +22,8 @@ export function Horizon({
   environment?: string;
   modelName?: string;
 }) {
+  const [lang] = useDesktopUiLang();
+  const hz = desktopHorizon[lang];
   const [clusterSummary, setClusterSummary] = useState<string | null>(null);
   const [gpuOverheat, setGpuOverheat] = useState(false);
 
@@ -59,15 +64,16 @@ export function Horizon({
   return (
     <header
       className={cn(
-        "flex-shrink-0 h-9 px-4 flex items-center gap-6 border-b border-white/10 bg-black/20 backdrop-blur-sm",
+        // z-index：语言下拉面板的第二项会落入下方 Outlet 区域，必须与主内容分层否则会被盖住
+        "relative z-[100] flex-shrink-0 h-9 px-4 flex items-center gap-6 border-b border-white/10 bg-black/20 backdrop-blur-sm",
         "font-mono text-xs text-slate-400",
         gpuOverheat && "border-amber-500/40",
         className
       )}
     >
       {gpuOverheat && (
-        <span className="text-amber-400" title="GPU 过热，建议分流任务到云端">
-          ⚠ 算力过热
+        <span className="text-amber-400" title={hz.gpuHotTitle}>
+          {hz.gpuHot}
         </span>
       )}
       <span className="text-slate-500" title="当前环境">
@@ -84,14 +90,17 @@ export function Horizon({
       <span className="text-slate-500" title="当前大脑模型">
         Brain: {modelName}
       </span>
-      <button
-        type="button"
-        className="ml-auto shrink-0 rounded px-2 py-0.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-rose-300/90"
-        title="完全退出 Jachin（结束进程；关闭主窗口仅会隐藏，请用此处或托盘菜单退出）"
-        onClick={() => void invoke("app_exit")}
-      >
-        退出
-      </button>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <DesktopLanguageMenu />
+        <button
+          type="button"
+          className="rounded px-2 py-0.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-rose-300/90"
+          title={hz.exitTitle}
+          onClick={() => void invoke("app_exit")}
+        >
+          {hz.exit}
+        </button>
+      </div>
     </header>
   );
 }

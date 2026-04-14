@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -18,6 +18,7 @@ import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import {
   useSensoryWebSocket,
   type SensoryAnswerMeta,
+  type SensoryChunkMeta,
   type StreamChunkKind,
 } from "./hooks/useSensoryWebSocket";
 import {
@@ -45,12 +46,12 @@ import {
   summarizeForSentryNotify,
   type SentryNotifyVariant,
 } from "./lib/jachinSentryNotify";
+import { desktopDiagLog } from "./lib/desktopDiagLog";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
 import {
-  applyAssistantStreamChunk,
-  createReasoningStreamAcc,
+  mergeAssistantFlatAndSplitFinalAnswer,
   normalizeAssistantOutput,
-  type ReasoningStreamAcc,
+  splitAssistantFromMergeCumulative,
 } from "./utils/reasoningStreamSplit";
 import type { WavePhase } from "./components/Chat/VoiceWaveform";
 import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
@@ -59,6 +60,8 @@ import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
 import { OmniMiniSpark } from "./components/Omni/OmniMiniSpark";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
+import { useDesktopUiLang } from "./hooks/useDesktopUiLang";
+import { getDesktopOmniUi } from "./utils/desktopUiI18n";
 import "./styles/globals.css";
 
 /** 与 Rust `HideChatWindowResult` 对齐（camelCase） */
@@ -116,6 +119,8 @@ function ChatApp() {
   const chatAudioRef = useRef<HTMLAudioElement | null>(null);
   const typewriterCancelRef = useRef<(() => void) | null>(null);
   const { setState, ttsEnabled, ttsVoice } = useSpriteStore();
+  const [desktopLang] = useDesktopUiLang();
+  const desktopUi = useMemo(() => getDesktopOmniUi(desktopLang), [desktopLang]);
   const sensory = useSensoryWebSocket({ desktopSessionIdRef: currentSessionIdRef });
   const {
     handoffEvent,
@@ -224,9 +229,6 @@ function ChatApp() {
   const [localStreamChunkKind, setLocalStreamChunkKind] = useState<StreamChunkKind | null>(null);
   const streamChunkKindEffective = wsStreamChunkKind ?? localStreamChunkKind;
   const jachinCore = useJachinCoreState(sensory, { isTyping, localStreamChunkKind });
-  /** 当前轮流式：<redacted_thinking> 与 metadata.is_reasoning 的解析状态 */
-  const reasoningAccRef = useRef<ReasoningStreamAcc>(createReasoningStreamAcc());
-  const mirrorReasoningAccRef = useRef<ReasoningStreamAcc>(createReasoningStreamAcc());
   /** 安全指令协议：safe | warning(COMMAND) | danger(高风险待确认) */
   const [riskLevel, setRiskLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [pendingHighRisk, setPendingHighRisk] = useState<{ text: string; strippedText: string } | null>(null);
@@ -311,7 +313,6 @@ function ChatApp() {
           (preview ? `\n**结果摘要：**\n\n${preview}\n` : "\n") +
           `\n如需完整输出，可在对话中说明「查询该任务结果」或请助手调用 \`core:check_background_task\`（传入该 task_id）。`;
         void maybeNotifyJachinAssistantDone(
-          companionModeRef.current,
           `后台任务完成 ${taskId}：${summarizeForSentryNotify(preview || "已完成")}`,
           "answer",
         );
@@ -319,11 +320,7 @@ function ChatApp() {
         text =
           `### 后台任务失败\n\n- **任务 ID：** \`${taskId}\`` +
           (ev.message ? `\n\n**原因：** ${ev.message}` : "");
-        void maybeNotifyJachinAssistantDone(
-          companionModeRef.current,
-          `后台任务失败：${ev.message || taskId}`,
-          "error",
-        );
+        void maybeNotifyJachinAssistantDone(`后台任务失败：${ev.message || taskId}`, "error");
       } else {
         text = `### 后台任务已取消\n\n- **任务 ID：** \`${taskId}\``;
       }
@@ -339,6 +336,24 @@ function ChatApp() {
     return () => registerBackgroundTaskHandler(null);
   }, [registerBackgroundTaskHandler, setMessages]);
 
+  /** 陪伴态 React state 每次变化时打一条，与 Rust emit / 窗口 API 对照 */
+  useEffect(() => {
+    void (async () => {
+      try {
+        const w = getCurrentWindow();
+        const [min, vis] = await Promise.all([w.isMinimized(), w.isVisible()]);
+        void desktopDiagLog("react_companion_mode_state", {
+          companionModeReact: companionMode,
+          label: w.label,
+          minimized: min,
+          visible: vis,
+        });
+      } catch (e) {
+        void desktopDiagLog("react_companion_mode_state_err", { err: String(e) });
+      }
+    })();
+  }, [companionMode]);
+
   /**
    * 启动时同步 Rust 陪伴态。若该 invoke 较慢，用户可能已先按 Esc 坍缩；
    * 后到的 false 会错误盖掉 true → UI 与大窗不同步、球「随机」才出现。
@@ -349,9 +364,15 @@ function ChatApp() {
     void invoke<boolean>("is_chat_companion_mode")
       .then((v) => {
         if (cancelled) return;
+        void desktopDiagLog("react_startup_companion_sync", {
+          rustCompanionReported: v,
+          note: "before merge with optimistic local state",
+        });
         setCompanionMode((prev) => (prev ? prev : Boolean(v)));
       })
-      .catch(() => {});
+      .catch((e) => {
+        void desktopDiagLog("react_startup_companion_sync_err", { err: String(e) });
+      });
     return () => {
       cancelled = true;
     };
@@ -360,7 +381,27 @@ function ChatApp() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<{ companion: boolean }>("omni-companion-mode", (ev) => {
-      setCompanionMode(Boolean(ev.payload?.companion));
+      const next = Boolean(ev.payload?.companion);
+      setCompanionMode(next);
+      void (async () => {
+        try {
+          const w = getCurrentWindow();
+          const [min, vis, focused] = await Promise.all([
+            w.isMinimized(),
+            w.isVisible(),
+            w.isFocused().catch(() => false),
+          ]);
+          void desktopDiagLog("react_omni_companion_event", {
+            payloadCompanion: next,
+            label: w.label,
+            minimized: min,
+            visible: vis,
+            focused,
+          });
+        } catch (e) {
+          void desktopDiagLog("react_omni_companion_event_err", { err: String(e) });
+        }
+      })();
     })
       .then((fn) => {
         unlisten = fn;
@@ -374,31 +415,42 @@ function ChatApp() {
   }, []);
 
   const requestHideChat = useCallback(async () => {
+    void desktopDiagLog("react_hide_chat_request", { phase: "before_invoke" });
     try {
       // 乐观切陪伴 UI，与 Rust 立刻缩小窗口对齐；避免 mode=wait 时大窗已缩小仍渲主界面一帧
       setCompanionMode((prev) => (prev ? prev : true));
       const r = await invoke<HideChatWindowResult>("hide_chat_window");
       setCompanionMode(Boolean(r?.companion));
+      void desktopDiagLog("react_hide_chat_ok", {
+        companion: r?.companion,
+        fullyHidden: r?.fullyHidden,
+      });
     } catch (err) {
       console.error("[Omni] hide_chat_window failed:", err);
+      void desktopDiagLog("react_hide_chat_err", { err: String(err) });
       setCompanionMode(false);
       // 陪伴坍缩失败时仍应能关掉窗口，避免 × / Esc 完全无响应
       try {
         const w = getCurrentWindow();
         await w.hide();
         setCompanionMode(false);
+        void desktopDiagLog("react_hide_chat_fallback_hide_ok", {});
       } catch (e2) {
         console.error("[Omni] fallback hide() failed:", e2);
+        void desktopDiagLog("react_hide_chat_fallback_hide_err", { err: String(e2) });
       }
     }
   }, []);
 
   const requestExpandFromSpark = useCallback(async () => {
+    void desktopDiagLog("react_expand_from_spark", { phase: "before_invoke" });
     try {
       await invoke("show_chat_window");
       setCompanionMode(false);
+      void desktopDiagLog("react_expand_from_spark", { phase: "ok" });
     } catch (err) {
       console.error("[Omni] show_chat_window failed:", err);
+      void desktopDiagLog("react_expand_from_spark", { phase: "err", err: String(err) });
     }
   }, []);
 
@@ -485,11 +537,7 @@ function ChatApp() {
             };
             return next;
           });
-          void maybeNotifyJachinAssistantDone(
-            companionModeRef.current,
-            summarizeForSentryNotify(answerContent || ""),
-            "answer",
-          );
+          void maybeNotifyJachinAssistantDone(summarizeForSentryNotify(answerContent || ""), "answer");
           finish();
         });
 
@@ -536,10 +584,9 @@ function ChatApp() {
       setIsLoading(true);
       setIsTyping(true);
       setLocalStreamChunkKind(null);
-      mirrorReasoningAccRef.current = createReasoningStreamAcc();
       let mirrorStreamMerge = "";
       const mirrorRunIdRef = { current: "" };
-      const chunkHandler = (chunk: string, runId?: string, meta?: { isReasoning?: boolean }) => {
+      const chunkHandler = (chunk: string, runId?: string, meta?: SensoryChunkMeta) => {
         if (runId) mirrorRunIdRef.current = runId;
         setLocalStreamChunkKind(meta?.isReasoning ? "reasoning" : "content");
         if (meta?.isReasoning) {
@@ -547,13 +594,7 @@ function ChatApp() {
             const u = [...prev];
             const last = u[u.length - 1];
             if (last?.role !== "assistant") return prev;
-            const merged = applyAssistantStreamChunk(
-              mirrorReasoningAccRef.current,
-              last.content,
-              last.reasoning,
-              chunk,
-              true,
-            );
+            const merged = mergeAssistantFlatAndSplitFinalAnswer(last, chunk, meta);
             u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
             return u;
           });
@@ -566,13 +607,7 @@ function ChatApp() {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role !== "assistant") return prev;
-          const merged = applyAssistantStreamChunk(
-            mirrorReasoningAccRef.current,
-            last.content,
-            last.reasoning,
-            delta,
-            false,
-          );
+          const merged = splitAssistantFromMergeCumulative(next, meta?.reasoningAppend);
           u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
           return u;
         });
@@ -598,21 +633,27 @@ function ChatApp() {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role === "assistant") {
-            let newContent = useServerFinal
-              ? answerContent
-              : !hadStream
-                ? answerContent || last.content
-                : last.content;
-            let newReasoning = last.reasoning ?? "";
-            const n = normalizeAssistantOutput(newContent);
-            newContent = n.content;
-            newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
-            u[u.length - 1] = {
-              ...last,
-              content: newContent,
-              reasoning: newReasoning,
-              source: "L3",
-            };
+            if (hadStream && !useServerFinal) {
+              const combined = [last.reasoning ?? "", last.content ?? ""].filter(Boolean).join("\n\n");
+              const n = normalizeAssistantOutput(combined);
+              u[u.length - 1] = { ...last, content: n.content, reasoning: n.reasoning, source: "L3" };
+            } else {
+              let newContent = useServerFinal
+                ? answerContent
+                : !hadStream
+                  ? answerContent || last.content
+                  : last.content;
+              let newReasoning = last.reasoning ?? "";
+              const n = normalizeAssistantOutput(newContent ?? "");
+              newContent = n.content;
+              newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
+              u[u.length - 1] = {
+                ...last,
+                content: newContent,
+                reasoning: newReasoning,
+                source: "L3",
+              };
+            }
           }
           return u;
         });
@@ -632,7 +673,7 @@ function ChatApp() {
             : meta?.terminalOutcome === "error"
               ? "error"
               : "answer";
-        void maybeNotifyJachinAssistantDone(companionModeRef.current, summarizeForSentryNotify(summaryText), sv);
+        void maybeNotifyJachinAssistantDone(summarizeForSentryNotify(summaryText), sv);
       };
       registerChunkHandler(chunkHandler);
       registerStepHandler(stepHandler);
@@ -646,6 +687,7 @@ function ChatApp() {
   /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
   const doActualSend = async (content: string) => {
     if (content.trim() === "/clear") {
+      /* reasoningPulseTimer 仅存在于进行中的 doActualSend；此处仅清处理器 */
       registerChunkHandler(null);
       registerAnswerHandler(null);
       registerStepHandler(null);
@@ -683,7 +725,6 @@ function ChatApp() {
     const l2Abort = new AbortController();
     l2StreamAbortRef.current = l2Abort;
     setLocalStreamChunkKind(null);
-    reasoningAccRef.current = createReasoningStreamAcc();
 
     const audioEl = chatAudioRef.current;
     const ttsQueue = ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
@@ -702,6 +743,15 @@ function ChatApp() {
      * L3 Sensory：hook 内已 merge，此处仅收到 delta，merge 后与 prev 拼接仍正确。
      */
     let streamMergeAcc = "";
+    let reasoningPulseTimer: ReturnType<typeof setInterval> | null = null;
+    let lastSensoryActivityAt = Date.now();
+    const clearReasoningPulse = () => {
+      if (reasoningPulseTimer != null) {
+        clearInterval(reasoningPulseTimer);
+        reasoningPulseTimer = null;
+      }
+    };
+
     const cleanup = (
       finalContent: string,
       source?: "L3" | "L2",
@@ -714,6 +764,7 @@ function ChatApp() {
       if (myTurnToken !== chatTurnTokenRef.current) return;
       if (timeoutCleared) return;
       timeoutCleared = true;
+      clearReasoningPulse();
       registerChunkHandler(null);
       clearTimeout(timeoutId);
       activeChatTurnTimeoutRef.current = null;
@@ -721,18 +772,21 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          let newContent = last.content;
           if (opts?.skipContentUpdate) {
-            // 已有 chunk 流式内容则保留，避免与最终 answer 重复；若仍为空则用 answer 填满（仅 answer、无 chunk 时否则会空白）
-            newContent = last.content?.trim() ? last.content : (finalContent || last.content);
+            // 流式已按 reasoning+content 拆开：收尾时对「全量串」再 normalize（含 Final Answer: 与标签）
+            const combined = [last.reasoning ?? "", last.content ?? ""].filter(Boolean).join("\n\n");
+            const n = normalizeAssistantOutput(
+              combined.trim() ? combined : (finalContent || last.content || ""),
+            );
+            updated[updated.length - 1] = { ...last, content: n.content, reasoning: n.reasoning, source };
           } else {
-            newContent = finalContent || last.content;
+            let newContent = finalContent || last.content;
+            let newReasoning = last.reasoning ?? "";
+            const n = normalizeAssistantOutput(newContent ?? "");
+            newContent = n.content;
+            newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
+            updated[updated.length - 1] = { ...last, content: newContent, reasoning: newReasoning, source };
           }
-          let newReasoning = last.reasoning ?? "";
-          const n = normalizeAssistantOutput(newContent);
-          newContent = n.content;
-          newReasoning = [newReasoning, n.reasoning].filter(Boolean).join("\n\n").trim();
-          updated[updated.length - 1] = { ...last, content: newContent, reasoning: newReasoning, source };
         }
         return updated;
       });
@@ -751,15 +805,12 @@ function ChatApp() {
       registerAnswerHandler(null);
       registerStepHandler(null);
       const sv = opts?.sentryVariant ?? "answer";
-      void maybeNotifyJachinAssistantDone(
-        companionModeRef.current,
-        summarizeForSentryNotify(finalContent),
-        sv,
-      );
+      void maybeNotifyJachinAssistantDone(summarizeForSentryNotify(finalContent), sv);
     };
 
-    const chunkHandler = (chunk: string, runId?: string, meta?: { isReasoning?: boolean }) => {
+    const chunkHandler = (chunk: string, runId?: string, meta?: SensoryChunkMeta) => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
+      lastSensoryActivityAt = Date.now();
       if (runId) l3ActiveRunIdRef.current = runId;
       setLocalStreamChunkKind(meta?.isReasoning ? "reasoning" : "content");
       if (meta?.isReasoning) {
@@ -767,13 +818,7 @@ function ChatApp() {
           const updated = [...prev];
           const last = updated[updated.length - 1];
           if (last?.role !== "assistant") return prev;
-          const merged = applyAssistantStreamChunk(
-            reasoningAccRef.current,
-            last.content,
-            last.reasoning,
-            chunk,
-            true,
-          );
+          const merged = mergeAssistantFlatAndSplitFinalAnswer(last, chunk, meta);
           updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
           return updated;
         });
@@ -787,13 +832,7 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          const merged = applyAssistantStreamChunk(
-            reasoningAccRef.current,
-            last.content,
-            last.reasoning,
-            delta,
-            false,
-          );
+          const merged = splitAssistantFromMergeCumulative(next, meta?.reasoningAppend);
           updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
         }
         return updated;
@@ -802,6 +841,7 @@ function ChatApp() {
 
     const stepHandler = (stepType: string, content: string, runId?: string) => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
+      lastSensoryActivityAt = Date.now();
       if (runId) l3ActiveRunIdRef.current = runId;
       updateSessionMessagesById(turnSessionId, (prev) => {
         const updated = [...prev];
@@ -814,8 +854,32 @@ function ChatApp() {
       });
     };
 
+    const REASONING_PULSE_MS = 1000;
+    const pulseHints = [
+      "调度管线等待上游 token（chunk 流式）…",
+      "Sensory WebSocket 已连接；若长时间无输出多为模型或工具阻塞。",
+      "仍在合并流式片段，L3 run 进行中。",
+      "可检查网络、API Key 或缩小单次请求范围。",
+    ];
+    let pulseIdx = 0;
+    reasoningPulseTimer = window.setInterval(() => {
+      if (myTurnToken !== chatTurnTokenRef.current) return;
+      if (Date.now() - lastSensoryActivityAt < 900) return;
+      updateSessionMessagesById(turnSessionId, (prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last?.role !== "assistant") return prev;
+        const ts = new Date().toLocaleTimeString();
+        const line = `\n[${ts}] [jachin:heartbeat] ${pulseHints[pulseIdx % pulseHints.length]}\n`;
+        pulseIdx += 1;
+        updated[updated.length - 1] = { ...last, reasoning: (last.reasoning ?? "") + line };
+        return updated;
+      });
+    }, REASONING_PULSE_MS);
+
     const timeoutId = setTimeout(() => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
+      clearReasoningPulse();
       registerChunkHandler(null);
       registerStepHandler(null);
       activeChatTurnTimeoutRef.current = null;
@@ -848,6 +912,7 @@ function ChatApp() {
         console.debug("[Chat] 忽略陈旧 answer runId=%s 期望=%s", rid, l3ActiveRunIdRef.current);
         return;
       }
+      clearReasoningPulse();
       registerChunkHandler(null);
       registerAnswerHandler(null);
       registerStepHandler(null);
@@ -930,6 +995,7 @@ function ChatApp() {
       console.debug("[Chat] L2 streamChatMessage 失败:", (e as Error).message);
       clearTimeout(timeoutId);
       activeChatTurnTimeoutRef.current = null;
+      clearReasoningPulse();
       registerAnswerHandler(null);
       registerStepHandler(null);
       registerChunkHandler(null);
@@ -1441,11 +1507,12 @@ function ChatApp() {
                 onSend={handleSend}
                 placeholder={
                   sensory.connected
-                    ? "Alt+Shift+Space · 输入或按住说话（L3）…"
+                    ? desktopUi.placeholderL3
                     : l2Available
-                      ? "Alt+Shift+Space · 输入指令（L2）…"
-                      : "等待 L3 或 L2…"
+                      ? desktopUi.placeholderL2
+                      : desktopUi.placeholderWait
                 }
+                ui={desktopUi}
                 disabled={!sensory.connected && !l2Available}
                 isLoading={isLoading}
                 isTyping={isTyping}

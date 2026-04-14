@@ -2,24 +2,27 @@
 
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
+import { NexusLanguageMenu } from "@/components/NexusLanguageMenu";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusLanding, nexusNav } from "@/lib/nexus-ui-i18n";
 
 /**
- * 与落地页顶栏参考图一致：单行从左到右 — Logo → Store → … → Add Agent → 登录（红框内），
+ * 与落地页顶栏参考图一致：单行从左到右 — Logo → Store → … → 登录（红框内），
  * 「桌面端下载」单独固定在栏最右侧（绿框），不占中间链位置。
  */
-const navLinks = [
-  { href: "/store", label: "Store" },
-  { href: "/dashboard/analytics", label: "审计大屏" },
-  { href: "/developer/payouts", label: "收纳中心" },
-  { href: "/developer/plugins", label: "我的作品" },
-  { href: "/dashboard/admin/review", label: "法律市场" },
-  { href: "/market", label: "Market" },
-  { href: "/forge", label: "The Forge" },
-  { href: "/plaza", label: "Plaza" },
-  { href: "/console", label: "Console" },
-  { href: "/console/workspace", label: "工作区" },
-  { href: "/console/fleet", label: "Fleet" },
-  { href: "/console/pair", label: "Add Agent" },
+const navEntries: { href: string; key: keyof (typeof nexusNav)["zh"] }[] = [
+  { href: "/store", key: "store" },
+  { href: "/dashboard/analytics", key: "analytics" },
+  { href: "/developer/payouts", key: "payouts" },
+  { href: "/developer/plugins", key: "plugins" },
+  { href: "/dashboard/admin/review", key: "legal" },
+  { href: "/market", key: "market" },
+  { href: "/forge", key: "forge" },
+  { href: "/plaza", key: "plaza" },
+  { href: "/console", key: "console" },
+  { href: "/console/workspace", key: "workspace" },
+  { href: "/console/fleet", key: "fleet" },
+  { href: "/console/pair", key: "pair" },
 ];
 
 const navItemClass =
@@ -35,7 +38,10 @@ function desktopDownloadHref(): { href: string; external: boolean } {
 
 export default function Navbar() {
   const { data: session, status } = useSession();
+  const { lang } = useNexusUiLang();
   const download = desktopDownloadHref();
+  const t = nexusLanding[lang];
+  const nav = nexusNav[lang];
 
   const authSlot =
     status === "loading" ? (
@@ -46,14 +52,14 @@ export default function Navbar() {
           className="text-sm text-white/80 max-w-[160px] truncate sm:max-w-[200px]"
           title={session.user.email ?? session.user.name ?? ""}
         >
-          {session.user.name || session.user.email || "已登录"}
+          {session.user.name || session.user.email || t.loggedInFallback}
         </span>
         <button
           type="button"
           className="text-sm text-cyan-400/90 hover:text-cyan-300 transition-colors shrink-0"
           onClick={() => void signOut({ callbackUrl: "/" })}
         >
-          退出
+          {t.signOut}
         </button>
       </div>
     ) : (
@@ -61,7 +67,7 @@ export default function Navbar() {
         href="/login"
         className="text-sm text-cyan-400/90 hover:text-cyan-300 transition-colors shrink-0"
       >
-        登录
+        {t.login}
       </Link>
     );
 
@@ -88,28 +94,24 @@ export default function Navbar() {
           >
             JACHIN NEXUS
           </Link>
-          {navLinks.map((link) => (
+          {navEntries.map((link) => (
             <Link key={link.href} href={link.href} className={navItemClass}>
-              {link.label}
+              {nav[link.key]}
             </Link>
           ))}
           {authSlot}
         </div>
 
-        {/* 绿框：仅「桌面端下载」，贴顶栏最右，与红框用竖线分隔 */}
-        <div className="flex shrink-0 items-center border-l border-white/10 pl-4 sm:pl-5 ml-2">
+        {/* 绿框：语言 + 桌面端下载 */}
+        <div className="flex shrink-0 items-center gap-3 border-l border-white/10 pl-4 sm:pl-5 ml-2">
+          <NexusLanguageMenu />
           {download.external ? (
-            <a
-              href={download.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={downloadBtnClass}
-            >
-              桌面端下载
+            <a href={download.href} target="_blank" rel="noopener noreferrer" className={downloadBtnClass}>
+              {t.download}
             </a>
           ) : (
             <Link href={download.href} className={downloadBtnClass}>
-              桌面端下载
+              {t.download}
             </Link>
           )}
         </div>

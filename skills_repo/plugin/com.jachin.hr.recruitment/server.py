@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 HR 招聘 MCP — 可选 FastMCP 入口（与 plugin.json 动态加载并存，供 Cursor / mcp_servers.json 使用）
 
@@ -197,13 +197,15 @@ def atom_lark_send_message(
     prompt: str = "",
     use_llm: bool = False,
     chat_id: str = "",
+    receive_id_type: str = "chat_id",
 ) -> dict:
-    """让 Lark 机器人发言：发送固定文案，或根据 prompt 用阿里百炼生成回复后发送。需配置 LARK_CHAT_ID。"""
+    """让 Lark 机器人发言：发送固定文案，或根据 prompt 用阿里百炼生成回复后发送。需配置 LARK_CHAT_ID；chat_id 须为 oc_/ou_/邮箱/手机，勿填人名。"""
     return _atom_lark_send_message(
         text=text,
         prompt=prompt,
         use_llm=use_llm,
         chat_id=chat_id or "",
+        receive_id_type=receive_id_type or "chat_id",
     )
 
 

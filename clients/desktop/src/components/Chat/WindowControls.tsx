@@ -13,11 +13,20 @@ export interface WindowControlsProps {
    * 未传时保持原行为：隐藏当前窗口。
    */
   onCloseOverride?: () => void | Promise<void>;
+  /**
+   * Omni：最小化与 Esc 一致，走陪伴圆（invoke hide_chat_window），勿用系统 minimize（任务栏），否则陪伴态与前端不同步。
+   * 未传时：`window.minimize()`。
+   */
+  onMinimizeOverride?: () => void | Promise<void>;
 }
 
-export const WindowControls: React.FC<WindowControlsProps> = ({ onCloseOverride }) => {
+export const WindowControls: React.FC<WindowControlsProps> = ({ onCloseOverride, onMinimizeOverride }) => {
   const handleMinimize = async () => {
     try {
+      if (onMinimizeOverride) {
+        await Promise.resolve(onMinimizeOverride());
+        return;
+      }
       const window = getCurrentWindow();
       await window.minimize();
     } catch (error) {

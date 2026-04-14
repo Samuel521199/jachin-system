@@ -1,19 +1,14 @@
-/**
+﻿/**
  * Compute Topology - Ray 集群可视化：Master 居中，Worker 环绕，连线与数据流动画
  */
 
 import { useMemo, useState, useEffect, useCallback } from "react";
+import { useDesktopUiLang } from "../../hooks/useDesktopUiLang";
+import { getDesktopConsole } from "../../utils/desktopUiI18n";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "../../utils/cn";
 import { getInferenceStrategy, setInferenceStrategy } from "../../lib/api";
 import type { GpuStatsItem, ClusterNodeInfo, ClusterTaskInfo } from "../../lib/api";
-
-const STRATEGY_OPTIONS = [
-  { id: "eco", label: "节能" },
-  { id: "default", label: "默认" },
-  { id: "performance", label: "高性能" },
-  { id: "god", label: "上帝模式" },
-] as const;
 
 const MASTER_R = 28;
 const WORKER_R = 20;
@@ -52,6 +47,18 @@ export function ComputeTopology({
   tasks?: ClusterTaskInfo[];
   className?: string;
 }) {
+  const [lang] = useDesktopUiLang();
+  const c = useMemo(() => getDesktopConsole(lang), [lang]);
+  const strategyOptions = useMemo(
+    () =>
+      [
+        { id: "eco", label: c.topology.strategyEco },
+        { id: "default", label: c.topology.strategyDefault },
+        { id: "performance", label: c.topology.strategyPerformance },
+        { id: "god", label: c.topology.strategyGod },
+      ] as const,
+    [c],
+  );
   const [showDetails, setShowDetails] = useState(false);
   const [strategyMode, setStrategyMode] = useState<string>("default");
 
@@ -234,8 +241,8 @@ export function ComputeTopology({
         ) : null}
       </div>
       <div className="flex gap-2 mt-2">
-        <span className="text-[10px] text-slate-500 font-mono self-center">运行模式:</span>
-        {STRATEGY_OPTIONS.map((opt) => (
+        <span className="text-[10px] text-slate-500 font-mono self-center">{c.topology.runMode}</span>
+        {strategyOptions.map((opt) => (
           <button
             key={opt.id}
             type="button"
@@ -258,7 +265,7 @@ export function ComputeTopology({
             onClick={() => setShowDetails(!showDetails)}
             className="text-[10px] text-slate-500 hover:text-cyan-400 font-mono transition-colors"
           >
-            {showDetails ? "▼ 收起" : "▶ 节点与任务详情"}
+            {showDetails ? c.topology.collapse : c.topology.expandDetails}
           </button>
           <AnimatePresence>
             {showDetails && (
@@ -271,7 +278,7 @@ export function ComputeTopology({
                 <div className="mt-2 space-y-2 max-h-28 overflow-y-auto custom-scrollbar text-[10px] font-mono">
                   {nodes.length > 0 && (
                     <div>
-                      <span className="text-slate-500">节点:</span>
+                      <span className="text-slate-500">{c.topology.nodesLabel}</span>
                       {nodes.map((n) => (
                         <div key={n.node_id} className="text-slate-400 pl-2">
                           {n.node_type === "master" ? "M" : "W"} · {n.node_id?.slice(0, 8) ?? "—"} · {n.host || "local"} · {n.status}
@@ -281,7 +288,7 @@ export function ComputeTopology({
                   )}
                   {tasks.filter((t) => t.status === "running").length > 0 && (
                     <div>
-                      <span className="text-slate-500">运行中:</span>
+                      <span className="text-slate-500">{c.topology.runningLabel}</span>
                       {tasks
                         .filter((t) => t.status === "running")
                         .slice(0, 5)

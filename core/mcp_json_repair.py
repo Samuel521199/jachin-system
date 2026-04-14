@@ -3,6 +3,10 @@
 并在用户尚未配置任何官方 server-filesystem 时，自动追加一条默认条目（与 skills_repo 插件同 id，避免双实例）；
 尚未配置 **mcp-server-fetch**（``python -m mcp_server_fetch``）时追加官方 URL 抓取 MCP（工具名多为 ``fetch``）。
 
+**robots.txt**：官方 fetch 默认遵守站点规则（如头条 ``Disallow: /trending/`` 会导致工具返回错误而非崩溃）。
+若你确认自用场景可承担合规风险，可设环境变量 ``JACHIN_MCP_FETCH_IGNORE_ROBOTS=1``（或 ``true``/``yes``/``on``）：
+启动时会为已配置的 ``-m mcp_server_fetch`` 条目自动追加 CLI 参数 ``--ignore-robots-txt``（亦作用于自动补全的默认 Fetch 项）。
+
 由 l3_node.primitives.mcp.mcp_stdio_bootstrap 在 MCPManager.start() 之前调用。
 
 **说明**：Anthropic 官方 Fetch 在 **PyPI**（``mcp-server-fetch``），**无** npm ``@modelcontextprotocol/server-fetch`` 包；勿在配置里写错误的 npx 包名。
@@ -11,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -76,7 +81,7 @@ def ensure_default_official_filesystem_mcp() -> bool:
         return True
 
     try:
-        parsed = json.loads(cfg_path.read_text(encoding="utf-8"))
+        parsed = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("[mcp_json_repair] 跳过默认 Filesystem：读取失败 %s", e)
         return False
@@ -117,6 +122,78 @@ def _mcp_entry_has_official_fetch_stdio(entry: dict[str, Any]) -> bool:
     return any(isinstance(a, str) and "mcp_server_fetch" in a for a in args)
 
 
+def _fetch_ignore_robots_enabled() -> bool:
+    v = (os.environ.get("JACHIN_MCP_FETCH_IGNORE_ROBOTS") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _default_official_fetch_args() -> list[str]:
+    out = ["-m", "mcp_server_fetch"]
+    if _fetch_ignore_robots_enabled():
+        out.append("--ignore-robots-txt")
+    return out
+
+
+def repair_official_fetch_ignore_robots_arg() -> bool:
+    """
+    当 ``JACHIN_MCP_FETCH_IGNORE_ROBOTS`` 为真时，为所有含 ``mcp_server_fetch`` 的 stdio 条目
+    追加 ``--ignore-robots-txt``（若尚未存在）。
+
+    Returns:
+        是否写回了磁盘。
+    """
+    if not _fetch_ignore_robots_enabled():
+        return False
+
+    cfg_path = Path.home() / ".jachin" / "mcp_servers.json"
+    if not cfg_path.is_file():
+        return False
+
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("[mcp_json_repair] 跳过 Fetch robots 修补：读取失败 %s", e)
+        return False
+
+    changed = False
+
+    def _patch_one(entry: dict[str, Any]) -> None:
+        nonlocal changed
+        if not _mcp_entry_has_official_fetch_stdio(entry):
+            return
+        args = entry.get("args")
+        if not isinstance(args, list):
+            return
+        if any(isinstance(a, str) and a.strip() == "--ignore-robots-txt" for a in args):
+            return
+        args.append("--ignore-robots-txt")
+        changed = True
+        sid = str(entry.get("id") or entry.get("name") or "").strip() or "?"
+        logger.info(
+            "[mcp_json_repair] 已为 Fetch MCP（id=%s）追加 --ignore-robots-txt（JACHIN_MCP_FETCH_IGNORE_ROBOTS）",
+            sid,
+        )
+
+    if isinstance(data, dict) and isinstance(data.get("mcp_servers"), list):
+        for e in data["mcp_servers"]:
+            if isinstance(e, dict):
+                _patch_one(e)
+    elif isinstance(data, list):
+        for e in data:
+            if isinstance(e, dict):
+                _patch_one(e)
+
+    if not changed:
+        return False
+
+    try:
+        cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as e:
+        logger.warning("[mcp_json_repair] Fetch robots 修补写入失败: %s", e)
+        return False
+    return True
+
+
 def ensure_default_official_fetch_mcp() -> bool:
     """
     若 ``~/.jachin/mcp_servers.json`` 中尚无 ``-m mcp_server_fetch`` 条目，则追加一条默认 stdio。
@@ -139,7 +216,7 @@ def ensure_default_official_fetch_mcp() -> bool:
         "id": _DEFAULT_FETCH_MCP_ID,
         "name": "MCP Fetch（官方 mcp-server-fetch，单 URL→Markdown）",
         "command": "__JACHIN_MCP_PYTHON__",
-        "args": ["-m", "mcp_server_fetch"],
+        "args": _default_official_fetch_args(),
         "env": {"PYTHONIOENCODING": "utf-8"},
     }
 
@@ -157,7 +234,7 @@ def ensure_default_official_fetch_mcp() -> bool:
         return True
 
     try:
-        parsed = json.loads(cfg_path.read_text(encoding="utf-8"))
+        parsed = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("[mcp_json_repair] 跳过默认 Fetch：读取失败 %s", e)
         return False
@@ -241,7 +318,7 @@ def repair_hr_atomic_tools_path(project_root: Path) -> bool:
         return False
 
     try:
-        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("[mcp_json_repair] 跳过: 读取失败 %s", e)
         return False

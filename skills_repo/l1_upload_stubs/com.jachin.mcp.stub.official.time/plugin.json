@@ -1,0 +1,20 @@
+{
+  "id": "com.jachin.mcp.stub.official.time",
+  "name": "MCP Time（stub）",
+  "version": "1.0.0",
+  "description": "PyPI mcp_server_time；与本机 official-time 对应。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-time",
+    "command": "python",
+    "args": [
+      "-m",
+      "mcp_server_time"
+    ],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}

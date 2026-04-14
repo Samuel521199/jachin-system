@@ -1,8 +1,10 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusMarket, nexusMarketCategoryLabel } from "@/lib/nexus-ui-i18n";
 
 type SkillNode = {
   id: string;
@@ -19,13 +21,6 @@ type SkillNode = {
   manifest_json?: Record<string, unknown> | null;
 };
 
-const CATEGORY_LABELS: Record<string, string> = {
-  skill: "左脑能力",
-  persona: "右脑灵魂",
-  memory: "海马体记忆",
-  default: "插件",
-};
-
 /** 贝塞尔曲线：原生 App 级滑入减速质感 */
 const EASE_SMOOTH = [0.16, 1, 0.3, 1];
 
@@ -40,6 +35,8 @@ function ManifestCodeBlock({ manifest }: { manifest: Record<string, unknown> | n
 }
 
 export default function MarketPage() {
+  const { lang } = useNexusUiLang();
+  const t = nexusMarket[lang];
   const [selected, setSelected] = useState<SkillNode | null>(null);
   const [hoveredNode, setHoveredNode] = useState<SkillNode | null>(null);
   const [nodes, setNodes] = useState<SkillNode[]>([]);
@@ -155,13 +152,13 @@ export default function MarketPage() {
             <h1 className="text-sm font-medium tracking-[0.2em] text-white/40 uppercase">
               Neural Market
             </h1>
-            <p className="text-xs text-white/25 mt-1">悬浮在深空中的赛博朋克神经元星图</p>
+            <p className="text-xs text-white/25 mt-1">{t.heroSub}</p>
           </div>
           <div className="absolute inset-0 flex items-center justify-center p-8">
             {loading ? (
-              <div className="text-white/40 animate-pulse">加载神经元...</div>
+              <div className="text-white/40 animate-pulse">{t.loadingNodes}</div>
             ) : nodes.length === 0 ? (
-              <div className="text-white/40">暂无插件</div>
+              <div className="text-white/40">{t.noPlugins}</div>
             ) : (
               <svg
                 viewBox="0 0 100 100"
@@ -290,17 +287,17 @@ export default function MarketPage() {
                     }}
                   />
                   <span className="text-xs uppercase tracking-widest text-white/50">
-                    {CATEGORY_LABELS[selected.category] || selected.category}
+                    {nexusMarketCategoryLabel(lang, selected.category) || selected.category}
                   </span>
                 </div>
                 <h2 className="text-xl font-semibold text-white mb-3 tracking-tight">
                   {selected.name}
                 </h2>
                 <p className="text-sm text-white/70 leading-relaxed mb-5">
-                  {manifestDesc || selected.description || "暂无描述"}
+                  {manifestDesc || selected.description || t.noDesc}
                 </p>
                 <div className="text-sm text-white/40 mb-5">
-                  <span className="font-mono">{selected.downloads.toLocaleString()}</span> 次部署
+                  <span className="font-mono">{selected.downloads.toLocaleString()}</span> {t.deploys}
                 </div>
 
                 {/* JMP 2.0 Manifest 代码块 */}
@@ -311,7 +308,7 @@ export default function MarketPage() {
 
                 {instances.length > 0 && (
                   <div className="mb-4">
-                    <label className="text-xs text-white/50 block mb-2">部署目标</label>
+                    <label className="text-xs text-white/50 block mb-2">{t.deployTarget}</label>
                     <select
                       value={targetInstanceId}
                       onChange={(e) => setTargetInstanceId(e.target.value)}
@@ -339,16 +336,16 @@ export default function MarketPage() {
                   `}
                 >
                   {deployLoading
-                    ? "部署中..."
+                    ? t.deployIng
                     : deploySent
-                    ? "✓ 指令已下发"
-                    : "部署到边缘智能体"}
+                    ? t.deploySent
+                    : t.deployCta}
                 </button>
                 <button
                   onClick={() => setSelected(null)}
                   className="mt-4 w-full py-2 text-sm text-white/40 hover:text-white/70 transition-colors"
                 >
-                  关闭
+                  {t.close}
                 </button>
               </motion.div>
             ) : (
@@ -366,9 +363,9 @@ export default function MarketPage() {
                 >
                   <span className="text-3xl text-white/25">◇</span>
                 </div>
-                <p className="text-white/40 text-sm mb-2">点击左侧神经元节点</p>
+                <p className="text-white/40 text-sm mb-2">{t.placeholderTitle}</p>
                 <p className="text-white/25 text-xs max-w-[200px]">
-                  查看 JMP 2.0 Manifest 并部署到私有大脑
+                  {t.placeholderSub}
                 </p>
               </motion.div>
             )}

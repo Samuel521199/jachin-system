@@ -1,8 +1,10 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusDeveloperPayouts } from "@/lib/nexus-ui-i18n";
 import { Activity, Package, CheckCircle2, Clock } from "lucide-react";
 
 const DEMO_DEVELOPER_ID = "dev-demo-001";
@@ -17,6 +19,8 @@ type AppItem = {
 };
 
 export default function DeveloperPayoutsPage() {
+  const { lang } = useNexusUiLang();
+  const t = nexusDeveloperPayouts[lang];
   const [totalCalls, setTotalCalls] = useState(0);
   const [unpaidAmountCents, setUnpaidAmountCents] = useState(0);
   const [paidAmountCents, setPaidAmountCents] = useState(0);
@@ -92,10 +96,10 @@ export default function DeveloperPayoutsPage() {
       <main className="pt-24 pb-16 px-6 max-w-5xl mx-auto">
         <header className="mb-10">
           <h1 className="text-2xl font-bold text-white tracking-tight mb-1">
-            开发者收益中心
+            {t.title}
           </h1>
           <p className="text-white/50 text-sm font-mono">
-            总调用量 · 待结算余额 · 应用表现
+            {t.subtitle}
           </p>
         </header>
 
@@ -140,7 +144,7 @@ export default function DeveloperPayoutsPage() {
                     </div>
                     <div>
                       <p className="text-white/50 text-xs font-medium uppercase tracking-wider">
-                        总调用量
+                        {t.totalCalls}
                       </p>
                       <p className="text-2xl font-bold text-white tabular-nums">
                         {totalCalls.toLocaleString()}
@@ -160,13 +164,13 @@ export default function DeveloperPayoutsPage() {
                     </div>
                     <div>
                       <p className="text-white/50 text-xs font-medium uppercase tracking-wider">
-                        待结算余额
+                        {t.pendingBalance}
                       </p>
                       <p className="text-2xl font-bold text-white tabular-nums">
                         ¥{unpaidYuan}
                       </p>
                       <p className="text-xs text-white/40 mt-0.5">
-                        1000 次 ≈ ¥1
+                        {t.rateHint}
                       </p>
                     </div>
                   </div>
@@ -183,7 +187,7 @@ export default function DeveloperPayoutsPage() {
                     </div>
                     <div>
                       <p className="text-white/50 text-xs font-medium uppercase tracking-wider">
-                        已结算
+                        {t.settled}
                       </p>
                       <p className="text-2xl font-bold text-white tabular-nums">
                         ¥{paidYuan}
@@ -203,7 +207,7 @@ export default function DeveloperPayoutsPage() {
                 <div className="p-4 border-b border-white/10 flex items-center gap-2">
                   <Package className="h-4 w-4 text-violet-400" />
                   <h3 className="text-sm font-medium text-white/80">
-                    应用列表
+                    {t.appList}
                   </h3>
                 </div>
                 <div className="overflow-x-auto">
@@ -212,19 +216,19 @@ export default function DeveloperPayoutsPage() {
                       <thead>
                         <tr className="border-b border-white/10">
                           <th className="text-left py-3 px-4 text-white/60 font-medium">
-                            应用
+                            {t.colApp}
                           </th>
                           <th className="text-right py-3 px-4 text-white/60 font-medium">
-                            调用量
+                            {t.colCalls}
                           </th>
                           <th className="text-right py-3 px-4 text-white/60 font-medium">
-                            待结算
+                            {t.colPending}
                           </th>
                           <th className="text-right py-3 px-4 text-white/60 font-medium">
-                            成功率
+                            {t.colSuccess}
                           </th>
                           <th className="text-right py-3 px-4 text-white/60 font-medium">
-                            平均耗时
+                            {t.colLatency}
                           </th>
                         </tr>
                       </thead>
@@ -273,7 +277,7 @@ export default function DeveloperPayoutsPage() {
                     </table>
                   ) : (
                     <div className="p-12 text-center text-white/40 text-sm">
-                      暂无应用数据，发布 Skill/MCP 后即可在此查看收益
+                      {t.empty}
                     </div>
                   )}
                 </div>

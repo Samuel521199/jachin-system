@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — 入站 Webhook 传输层
 
 接收 Lark 的 HTTP 回调，解析事件为 (text, chat_id, user_id)，调用业务回调。
@@ -21,7 +21,8 @@ _MAX_PROCESSED_IDS = 500
 def parse_lark_im_message(body: dict[str, Any]) -> tuple[str, str, str] | None:
     """
     从 Lark 事件 body 解析 im.message.receive 类消息。
-    返回 (text, chat_id, user_id)，解析失败或非消息类事件返回 None。
+    返回 (text, chat_id, user_id)。**chat_id 为会话 ID**（单聊多为 oc_），与 LARK_CHAT_ID / HR 发消息一致。
+    解析失败或非消息类事件返回 None。
     """
     if not isinstance(body, dict):
         return None
@@ -46,8 +47,10 @@ def parse_lark_im_message(body: dict[str, Any]) -> tuple[str, str, str] | None:
     )
     sender = ev.get("sender") or {}
     sid = sender.get("sender_id")
+    open_id_log = ""
     if isinstance(sid, dict):
-        user_id = sid.get("user_id", "")
+        open_id_log = (sid.get("open_id") or "").strip()
+        user_id = (sid.get("user_id") or "").strip()
         sender_type = sid.get("sender_type", "")
     else:
         user_id = str(sid or "") or sender.get("user_id", "")
@@ -56,7 +59,17 @@ def parse_lark_im_message(body: dict[str, Any]) -> tuple[str, str, str] | None:
         return None
     if not text:
         return None
-    return text, chat_id or "", user_id or ""
+    _cid = chat_id or ""
+    _cid_show = (_cid[:36] + "…") if len(_cid) > 36 else _cid
+    _txt_show = (text[:48] + "…") if len(text) > 48 else text
+    logger.info(
+        "[Lark Webhook 入站] 会话ID(chat_id)→可配 LARK_CHAT_ID | %s | sender.open_id=%s sender.user_id=%s | text=%s",
+        _cid_show,
+        open_id_log or "(empty)",
+        user_id or "(empty)",
+        _txt_show,
+    )
+    return text, _cid, user_id or ""
 
 
 def create_lark_webhook_app(

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L1-L2 策略同步心跳 + 云边同步守护进程
 
 - 心跳：私有化部署的 L2 定期向 L1 云端发起心跳，拉取订阅状态与全局安全策略。
@@ -795,7 +795,7 @@ async def l1_heartbeat_sync() -> dict[str, Any] | None:
     }
     payload = {
         "instance_id": instance_id,
-        "core_version": "0.8.113",
+        "core_version": "0.8.114",
     }
 
     last_err = None

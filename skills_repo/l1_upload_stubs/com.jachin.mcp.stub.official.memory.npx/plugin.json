@@ -1,0 +1,17 @@
+{
+  "id": "com.jachin.mcp.stub.official.memory.npx",
+  "name": "MCP Memory（stub）",
+  "version": "1.0.0",
+  "description": "npm @modelcontextprotocol/server-memory。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-memory-npx",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-memory"
+    ]
+  }
+}

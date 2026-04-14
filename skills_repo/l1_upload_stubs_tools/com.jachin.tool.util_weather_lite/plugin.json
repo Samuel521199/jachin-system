@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.util_weather_lite",
+  "name": "极简天气（util:get_weather_lite）",
+  "version": "1.0.0",
+  "description": "对应 L3 Native 工具 util:get_weather_lite：优先 wttr.in，失败则 Open-Meteo，免 API Key。运行时由终端内置加载；本包用于 L1 货架登记与 manifest。",
+  "item_type": "TOOL",
+  "type": "TOOL",
+  "runtime_tier": "L3_LOCAL"
+}

@@ -136,6 +136,8 @@ bi_data/
 
 # Build artifacts
 skills_repo/*.zip
+# L1 Nexus 本机 bulk-publish 生成的技能/MCP zip（体积大，可脚本重生成）
+cloud/nexus/public/packages/*.zip
 
 # L3 桌面包内嵌 Python 运行时（本地打包生成，体积 >100MB，勿提交）
 dist_jachin_desktop/runtime/

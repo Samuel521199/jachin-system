@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Jachin Nexus Layer 1 - Drizzle Schema
  * 去 BaaS 化 P0：Auth.js + 多租户 + 舰队资产
  * 完全遵循 Auth.js Drizzle Adapter 规范，严丝合缝关联 Organizations 与舰队
@@ -364,8 +364,8 @@ export const deployCommands = pgTable("deploy_commands", {
 // 任务 1：核心枚举 (Enums)
 // -----------------------------------------------------------------------------
 
-/** 商品类型：SKILL=轻量 Wasm 逻辑，MCP=重型数据驱动 */
-export const itemTypeEnum = pgEnum("item_type", ["SKILL", "MCP"]);
+/** 商品类型：SKILL=领域包，MCP=外部驱动，TOOL=原子工具包（与本机 Tools 概念对齐） */
+export const itemTypeEnum = pgEnum("item_type", ["SKILL", "MCP", "TOOL"]);
 
 /** 可见性：PUBLIC=公开售卖，PRIVATE=企业私有自用 */
 export const visibilityEnum = pgEnum("visibility", ["PUBLIC", "PRIVATE"]);
@@ -396,7 +396,7 @@ export const pluginsRegistry = pgTable(
     pluginId: text("plugin_id").notNull().unique(),
     /** 语义化版本号 */
     version: text("version").notNull().default("1.0.0"),
-    /** 商品类型：SKILL 或 MCP */
+    /** 商品类型：SKILL / MCP / TOOL */
     itemType: itemTypeEnum("item_type").notNull(),
   /** 商品名称 */
   name: text("name").notNull(),

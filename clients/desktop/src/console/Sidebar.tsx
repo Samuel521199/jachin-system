@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Sidebar - 悬浮玻璃侧栏 (The Bridge)
  * 默认仅图标 w-20，悬停展开 w-64，底部 SystemHeartbeat
  */
@@ -17,25 +17,40 @@ import {
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
+import { useDesktopUiLang } from "../hooks/useDesktopUiLang";
+import { getDesktopConsole } from "../utils/desktopUiI18n";
 
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, title: "首页：系统状态、快捷操作与最近活动" },
   { path: "/brain", label: "Neural Nexus", icon: BrainCircuit, title: "模型与记忆管理，后端连接状态" },
   {
     path: "/safety-lock",
-    label: "安全锁审批",
+    labelKey: "safetyLock" as const,
+    titleKey: "safetyLockTitle" as const,
     icon: ShieldCheck,
-    title: "待审批安全锁条目：写入 JACHIN_SAFETY_LOCK.md（需管理员密钥）",
   },
-  { path: "/calendar", label: "日历", icon: CalIcon, title: "事件、提醒、待办，支持循环" },
+  { path: "/calendar", labelKey: "calendar" as const, titleKey: "calendarTitle" as const, icon: CalIcon },
   { path: "/skills", label: "Skill Matrix", icon: AppWindow, title: "插件与技能，自然语言执行与能力调用" },
   { path: "/network", label: "Jachin Link", icon: Network, title: "网络拓扑与已连接设备列表" },
-  { path: "/wake", label: "唤醒模式", icon: Mic, title: "设置唤醒词/名字，启动唤醒监听（模式 B）" },
+  {
+    path: "/wake",
+    labelKey: "wakeMode" as const,
+    titleKey: "wakeModeTitle" as const,
+    icon: Mic,
+  },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
-  { path: "/preferences", label: "设置", icon: Settings, title: "AI 模式与运行模式" },
+  {
+    path: "/preferences",
+    labelKey: "preferences" as const,
+    titleKey: "preferencesTitle" as const,
+    icon: Settings,
+  },
 ] as const;
 
 export function Sidebar() {
+  const [lang] = useDesktopUiLang();
+  const c = getDesktopConsole(lang);
+
   return (
     <aside
       className={cn(
@@ -56,7 +71,18 @@ export function Sidebar() {
         </h1>
       </div>
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto min-h-0">
-        {navItems.map(({ path, label, icon: Icon, title }) => (
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const label =
+            "label" in item
+              ? item.label
+              : c.sidebar[item.labelKey];
+          const title =
+            "title" in item
+              ? item.title
+              : c.sidebar[item.titleKey];
+          const path = item.path;
+          return (
           <NavLink
             key={path}
             to={path}
@@ -77,7 +103,8 @@ export function Sidebar() {
               {label}
             </span>
           </NavLink>
-        ))}
+          );
+        })}
       </nav>
       <SystemHeartbeat />
     </aside>

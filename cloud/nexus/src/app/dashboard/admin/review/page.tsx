@@ -1,8 +1,10 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusLegalReview } from "@/lib/nexus-ui-i18n";
 import { Scale, CheckCircle2, XCircle, FileJson, Package, Shield, Archive, RotateCcw } from "lucide-react";
 
 type PendingPlugin = {
@@ -71,6 +73,8 @@ function Toast({
 type TabType = "pending" | "approved" | "archived";
 
 export default function AdminReviewDashboardPage() {
+  const { lang } = useNexusUiLang();
+  const tr = nexusLegalReview[lang];
   const [tab, setTab] = useState<TabType>("pending");
   const [plugins, setPlugins] = useState<PendingPlugin[]>([]);
   const [selected, setSelected] = useState<PendingPlugin | null>(null);
@@ -126,9 +130,9 @@ export default function AdminReviewDashboardPage() {
       setTokenError("");
       fetchList();
     } else {
-      setTokenError("Token 无效，请检查 NEXUS_ADMIN_SECRET 配置");
+      setTokenError(tr.tokenInvalid);
     }
-  }, [tokenInput, fetchList]);
+  }, [tokenInput, fetchList, tr.tokenInvalid]);
 
   useEffect(() => {
     const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
@@ -149,13 +153,13 @@ export default function AdminReviewDashboardPage() {
       });
       const json = await res.json();
       if (json.success) {
-        setToast({ message: "插件已下架归档，商城与 manifest 均不再展示", variant: "success" });
+        setToast({ message: tr.toastArchiveOk, variant: "success" });
         await fetchList();
       } else {
-        setToast({ message: `下架失败：${json.error ?? "未知错误"}` });
+        setToast({ message: tr.failArchive(json.error ?? tr.unknownError) });
       }
     } catch (e) {
-      setToast({ message: `下架失败：${e instanceof Error ? e.message : "网络错误"}` });
+      setToast({ message: tr.failArchive(e instanceof Error ? e.message : tr.networkError) });
     } finally {
       setActioning(null);
     }
@@ -171,13 +175,13 @@ export default function AdminReviewDashboardPage() {
       });
       const json = await res.json();
       if (json.success) {
-        setToast({ message: "插件已恢复上架", variant: "success" });
+        setToast({ message: tr.toastRestoreOk, variant: "success" });
         await fetchList();
       } else {
-        setToast({ message: `恢复失败：${json.error ?? "未知错误"}` });
+        setToast({ message: tr.failRestore(json.error ?? tr.unknownError) });
       }
     } catch (e) {
-      setToast({ message: `恢复失败：${e instanceof Error ? e.message : "网络错误"}` });
+      setToast({ message: tr.failRestore(e instanceof Error ? e.message : tr.networkError) });
     } finally {
       setActioning(null);
     }
@@ -195,15 +199,15 @@ export default function AdminReviewDashboardPage() {
       const json = await res.json();
       if (json.success) {
         setToast({
-          message: "✅ 该物资已面向全球 L2 开放同步",
+          message: tr.toastApproveOk,
           variant: "success",
         });
         await fetchList();
       } else {
-        setToast({ message: `批准失败：${json.error ?? "未知错误"}` });
+        setToast({ message: tr.failApprove(json.error ?? tr.unknownError) });
       }
     } catch (e) {
-      setToast({ message: `批准失败：${e instanceof Error ? e.message : "网络错误"}` });
+      setToast({ message: tr.failApprove(e instanceof Error ? e.message : tr.networkError) });
     } finally {
       setActioning(null);
     }
@@ -225,14 +229,14 @@ export default function AdminReviewDashboardPage() {
       });
       const json = await res.json();
       if (json.success) {
-        setToast({ message: "已驳回该插件请求。" });
+        setToast({ message: tr.toastRejectOk });
         setRejectModal(null);
         await fetchList();
       } else {
-        setToast({ message: `驳回失败：${json.error ?? "未知错误"}` });
+        setToast({ message: tr.failReject(json.error ?? tr.unknownError) });
       }
     } catch (e) {
-      setToast({ message: `驳回失败：${e instanceof Error ? e.message : "网络错误"}` });
+      setToast({ message: tr.failReject(e instanceof Error ? e.message : tr.networkError) });
     } finally {
       setActioning(null);
     }
@@ -254,10 +258,10 @@ export default function AdminReviewDashboardPage() {
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-8">
             <h2 className="text-lg font-bold text-amber-400 flex items-center gap-2 mb-2">
               <Shield className="h-5 w-5" />
-              管理员验证
+              {tr.unlockTitle}
             </h2>
             <p className="text-white/60 text-sm mb-4">
-              此页面仅限 isRoot 用户访问。请输入管理员 Token 解锁。
+              {tr.unlockDesc}
             </p>
             <input
               type="password"
@@ -271,7 +275,7 @@ export default function AdminReviewDashboardPage() {
               onClick={checkUnlock}
               className="mt-4 w-full px-4 py-3 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30 transition-colors font-medium"
             >
-              解锁
+              {tr.unlockBtn}
             </button>
           </div>
         </main>
@@ -309,23 +313,27 @@ export default function AdminReviewDashboardPage() {
         <header className="mb-10">
           <h1 className="text-2xl font-bold text-white tracking-tight mb-1 flex items-center gap-3">
             <Scale className="h-8 w-8 text-amber-400" />
-            法律审核中心
+            {tr.title}
           </h1>
           <p className="text-white/50 text-sm font-mono mb-4">
-            待审插件 · 已上架管理 · 已归档恢复 · 仅 isRoot
+            {tr.subtitle}
           </p>
           <div className="flex gap-2">
-            {(["pending", "approved", "archived"] as const).map((t) => (
+            {(["pending", "approved", "archived"] as const).map((tabKey) => (
               <button
-                key={t}
-                onClick={() => setTab(t)}
+                key={tabKey}
+                onClick={() => setTab(tabKey)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  tab === t
+                  tab === tabKey
                     ? "bg-cyan-500/20 text-cyan-300 border border-cyan-400/50"
                     : "bg-white/5 text-white/60 border border-white/10 hover:bg-white/10 hover:text-white/80"
                 }`}
               >
-                {t === "pending" ? "待审" : t === "approved" ? "已上架" : "已归档"}
+                {tabKey === "pending"
+                  ? tr.tabPending
+                  : tabKey === "approved"
+                    ? tr.tabApproved
+                    : tr.tabArchived}
               </button>
             ))}
           </div>
@@ -357,17 +365,17 @@ export default function AdminReviewDashboardPage() {
             <Scale className="h-16 w-16 text-white/20 mx-auto mb-4" />
             <p className="text-white/50 text-lg">
               {tab === "pending"
-                ? "暂无待审插件"
+                ? tr.emptyPending
                 : tab === "approved"
-                  ? "暂无已上架插件"
-                  : "暂无已归档插件"}
+                  ? tr.emptyApproved
+                  : tr.emptyArchived}
             </p>
             <p className="text-white/30 text-sm mt-2">
               {tab === "pending"
-                ? "开发者发布 PUBLIC 插件后将在此排队"
+                ? tr.emptyHintPending
                 : tab === "approved"
-                  ? "批准后的插件将在此展示，可下架归档"
-                  : "下架后的插件将在此展示，可恢复上架"}
+                  ? tr.emptyHintApproved
+                  : tr.emptyHintArchived}
             </p>
           </div>
         ) : (
@@ -394,7 +402,11 @@ export default function AdminReviewDashboardPage() {
                         {plugin.developer_id ?? "—"}
                       </p>
                       <p className="text-white/40 text-xs mt-1">
-                        {plugin.created_at ? new Date(plugin.created_at).toLocaleString("zh-CN") : "—"}
+                        {plugin.created_at
+                          ? new Date(plugin.created_at).toLocaleString(
+                              lang === "en" ? "en-US" : "zh-CN"
+                            )
+                          : "—"}
                       </p>
                     </div>
                   </div>
@@ -419,7 +431,7 @@ export default function AdminReviewDashboardPage() {
                           {selected.plugin_id} · v{selected.version}
                         </p>
                         <p className="text-white/40 text-sm mt-2">
-                          开发者 ID: {selected.developer_id ?? "—"}
+                          {tr.devId} {selected.developer_id ?? "—"}
                         </p>
                         <div className="flex flex-wrap gap-2 mt-3">
                           <span className="px-2 py-0.5 rounded text-xs bg-cyan-500/20 text-cyan-300">
@@ -429,7 +441,7 @@ export default function AdminReviewDashboardPage() {
                             {selected.runtime_tier}
                           </span>
                           <span className="px-2 py-0.5 rounded text-xs bg-white/10 text-white/70">
-                            ¥{selected.price_monthly}/月
+                            {tr.priceMonthly(selected.price_monthly)}
                           </span>
                         </div>
                       </div>
@@ -442,7 +454,7 @@ export default function AdminReviewDashboardPage() {
                               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 hover:bg-cyan-500/30 disabled:opacity-50 transition-colors font-medium"
                             >
                               <CheckCircle2 className="h-4 w-4" />
-                              批准入驻
+                              {tr.approve}
                             </button>
                             <button
                               onClick={() => setRejectModal({ plugin: selected, reason: "" })}
@@ -450,7 +462,7 @@ export default function AdminReviewDashboardPage() {
                               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-400/40 hover:bg-red-500/30 disabled:opacity-50 transition-colors font-medium"
                             >
                               <XCircle className="h-4 w-4" />
-                              驳回申请
+                              {tr.reject}
                             </button>
                           </>
                         ) : tab === "approved" ? (
@@ -460,7 +472,7 @@ export default function AdminReviewDashboardPage() {
                             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30 disabled:opacity-50 transition-colors font-medium"
                           >
                             <Archive className="h-4 w-4" />
-                            下架归档
+                            {tr.archive}
                           </button>
                         ) : (
                           <button
@@ -469,7 +481,7 @@ export default function AdminReviewDashboardPage() {
                             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 hover:bg-emerald-500/30 disabled:opacity-50 transition-colors font-medium"
                           >
                             <RotateCcw className="h-4 w-4" />
-                            恢复上架
+                            {tr.restore}
                           </button>
                         )}
                       </div>
@@ -485,19 +497,19 @@ export default function AdminReviewDashboardPage() {
                   <div className="p-4 border-b border-white/5">
                     <div className="flex items-center gap-2 mb-2">
                       <Shield className="h-4 w-4 text-amber-400" />
-                      <span className="text-sm font-medium text-white/80">权限声明</span>
+                      <span className="text-sm font-medium text-white/80">{tr.permissions}</span>
                     </div>
                     <p className="text-white/50 text-xs">
                       {(selected.manifest_json as Record<string, unknown>)?.permissions
                         ? JSON.stringify((selected.manifest_json as Record<string, unknown>).permissions)
-                        : "无特殊权限"}
+                        : tr.noExtraPerms}
                     </p>
                   </div>
 
                   <div className="p-4 bg-black/20">
                     <div className="flex items-center gap-2 mb-2">
                       <FileJson className="h-4 w-4 text-amber-400" />
-                      <span className="text-sm font-medium text-white/80">plugin.json 完整内容</span>
+                      <span className="text-sm font-medium text-white/80">{tr.pluginJsonTitle}</span>
                     </div>
                     <pre className="text-xs text-white/70 overflow-x-auto p-4 rounded-lg bg-black/40 border border-white/5 font-mono max-h-64 overflow-y-auto">
                       {JSON.stringify(selected.manifest_json ?? {}, null, 2)}
@@ -507,7 +519,7 @@ export default function AdminReviewDashboardPage() {
               ) : (
                 <div className="rounded-xl border border-white/10 bg-white/[0.02] p-16 text-center">
                   <Package className="h-12 w-12 text-white/20 mx-auto mb-3" />
-                  <p className="text-white/50">选择左侧插件查看详情</p>
+                  <p className="text-white/50">{tr.selectLeft}</p>
                 </div>
               )}
             </div>
@@ -531,16 +543,16 @@ export default function AdminReviewDashboardPage() {
               onClick={(e) => e.stopPropagation()}
               className="rounded-2xl border border-white/10 bg-slate-900/95 backdrop-blur-xl p-6 max-w-md w-full shadow-2xl"
             >
-              <h3 className="text-lg font-bold text-white mb-2">驳回申请</h3>
+              <h3 className="text-lg font-bold text-white mb-2">{tr.rejectModalTitle}</h3>
               <p className="text-white/60 text-sm mb-4">
-                插件：{rejectModal.plugin.name} ({rejectModal.plugin.plugin_id})
+                {tr.rejectModalPlugin} {rejectModal.plugin.name} ({rejectModal.plugin.plugin_id})
               </p>
               <textarea
                 value={rejectModal.reason}
                 onChange={(e) =>
                   setRejectModal((prev) => (prev ? { ...prev, reason: e.target.value } : null))
                 }
-                placeholder="驳回理由（可选，将通知开发者）"
+                placeholder={tr.rejectPlaceholder}
                 className="w-full h-24 px-4 py-3 rounded-lg bg-black/40 border border-white/10 text-white/90 text-sm placeholder-white/30 resize-none focus:outline-none focus:border-red-400/40"
               />
               <div className="flex gap-3 mt-4">
@@ -549,14 +561,14 @@ export default function AdminReviewDashboardPage() {
                   disabled={!!actioning}
                   className="flex-1 px-4 py-2.5 rounded-xl bg-white/10 text-white/80 hover:bg-white/15 disabled:opacity-50 transition-colors"
                 >
-                  取消
+                  {tr.cancel}
                 </button>
                 <button
                   onClick={handleRejectSubmit}
                   disabled={!!actioning}
                   className="flex-1 px-4 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-400/40 hover:bg-red-500/30 disabled:opacity-50 transition-colors font-medium"
                 >
-                  {actioning ? "处理中..." : "确认驳回"}
+                  {actioning ? tr.processing : tr.confirmReject}
                 </button>
               </div>
             </motion.div>

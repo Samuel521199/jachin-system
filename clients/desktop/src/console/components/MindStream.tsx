@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MindStream - 实时思维流
  * 滚动日志窗口，打字机效果显示 Tier 2 的实时操作（模拟 / 后续接真实日志）
  */
@@ -85,6 +85,13 @@ const StreamLine = forwardRef<HTMLDivElement, StreamLineProps>(function StreamLi
   );
 });
 
+export type MindStreamLocale = {
+  waiting1: string;
+  waiting2: string;
+  statusLive: string;
+  statusError: string;
+};
+
 export function MindStream({
   className,
   maxLines = 8,
@@ -93,12 +100,18 @@ export function MindStream({
   liveStatsLines = [],
   /** 从后端 /api/v3/logs/recent 获取的日志行，有则优先显示，无则用 demo */
   liveLogLines = [],
+  /** 无后端日志时的占位与状态角标文案 */
+  mindLocale,
+  /** 英文界面下将常见中文调试句替换为可读英文（专名不改） */
+  localizeLine,
 }: {
   className?: string;
   maxLines?: number;
   demoLoop?: boolean;
   liveStatsLines?: string[];
   liveLogLines?: string[];
+  mindLocale?: MindStreamLocale;
+  localizeLine?: (line: string) => string;
 }) {
   const [lines, setLines] = useState<string[]>([]);
   const nextIndexRef = useRef(0);
@@ -120,11 +133,24 @@ export function MindStream({
     return () => clearInterval(t);
   }, [demoLoop, addLine, liveLogLines.length]);
 
-  const displayLines = liveLogLines.length > 0
+  const fallbackWait = mindLocale
+    ? [mindLocale.waiting1, mindLocale.waiting2]
+    : ["等待连接…", "请确保后端已启动 (scripts\\start.ps1)"];
+
+  const rawDisplayLines = liveLogLines.length > 0
     ? liveLogLines.slice(-maxLines)
     : lines.length > 0
       ? lines
-      : ["等待连接...", "请确保后端已启动 (scripts\\start.ps1)"];
+      : fallbackWait;
+
+  const displayLines = localizeLine
+    ? rawDisplayLines.map((line) => localizeLine(line))
+    : rawDisplayLines;
+
+  const lineLooksDisconnected = (l: string) =>
+    /连接失败|未连接|disconnected|connection failed|not connected/i.test(l);
+  const statsLookDisconnected = (l: string) =>
+    /未连接|not connected|disconnected/i.test(l);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -144,16 +170,16 @@ export function MindStream({
         <span
           className={cn(
             "w-2 h-2 rounded-full animate-pulse",
-            displayLines.some((l) => l.includes("连接失败") || l.includes("未连接")) ||
-            liveStatsLines.some((l) => l.includes("未连接"))
+            displayLines.some(lineLooksDisconnected) ||
+            liveStatsLines.some(statsLookDisconnected)
               ? "bg-amber-500"
               : "bg-emerald-500"
           )}
           title={
-            displayLines.some((l) => l.includes("连接失败") || l.includes("未连接")) ||
-            liveStatsLines.some((l) => l.includes("未连接"))
-              ? "连接异常"
-              : "Live"
+            displayLines.some(lineLooksDisconnected) ||
+            liveStatsLines.some(statsLookDisconnected)
+              ? (mindLocale?.statusError ?? "连接异常")
+              : (mindLocale?.statusLive ?? "Live")
           }
         />
         <span

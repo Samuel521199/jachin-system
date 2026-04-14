@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 本地解密与直连 LLM
 
 内存级解密：从 L2 拉取密文 Key，用 L3 私钥解密，仅存于 SecurityContext。
@@ -408,6 +408,36 @@ def _inject_env_keys_into_ctx(ctx: SecurityContext) -> bool:
     return False
 
 
+def _merge_litellm_optional_penalties(kwargs_remaining: dict[str, Any], kwargs_chat: dict[str, Any]) -> None:
+    """将 presence_penalty / frequency_penalty 等传入 LiteLLM（此前 kwargs 被丢弃）。默认适度抑制复读，可用环境变量覆盖或关闭。"""
+    for k in ("presence_penalty", "frequency_penalty", "top_p", "stop", "seed"):
+        if k in kwargs_remaining and kwargs_remaining[k] is not None:
+            kwargs_chat[k] = kwargs_remaining.pop(k)
+    if _os.environ.get("JACHIN_LLM_DISABLE_DEFAULT_PENALTIES", "").strip().lower() in ("1", "true", "yes", "on"):
+        for k, envk in (
+            ("presence_penalty", "JACHIN_LLM_PRESENCE_PENALTY"),
+            ("frequency_penalty", "JACHIN_LLM_FREQUENCY_PENALTY"),
+        ):
+            raw = _os.environ.get(envk, "").strip()
+            if raw:
+                try:
+                    kwargs_chat[k] = float(raw)
+                except ValueError:
+                    pass
+        return
+    try:
+        kwargs_chat.setdefault(
+            "presence_penalty",
+            float(_os.environ.get("JACHIN_LLM_PRESENCE_PENALTY", "0.35")),
+        )
+        kwargs_chat.setdefault(
+            "frequency_penalty",
+            float(_os.environ.get("JACHIN_LLM_FREQUENCY_PENALTY", "0.2")),
+        )
+    except ValueError:
+        pass
+
+
 class LiteLLMEngine:
     """
     L3 直连 LLM 引擎。
@@ -589,6 +619,7 @@ class LiteLLMEngine:
                 _rfmt = kwargs.pop("response_format", None)
                 if _rfmt is not None:
                     kwargs_chat["response_format"] = _rfmt
+                _merge_litellm_optional_penalties(kwargs, kwargs_chat)
                 if kwargs:
                     logger.debug("[L3 LLM] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
 
@@ -852,6 +883,7 @@ class LiteLLMEngine:
                 _rfmt_s = kwargs.pop("response_format", None)
                 if _rfmt_s is not None:
                     kwargs_chat["response_format"] = _rfmt_s
+                _merge_litellm_optional_penalties(kwargs, kwargs_chat)
                 if kwargs:
                     logger.debug("[L3 LLM][stream] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
 

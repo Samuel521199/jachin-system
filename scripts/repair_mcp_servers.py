@@ -39,7 +39,8 @@ def main() -> int:
         print(f"[repair_mcp_servers] 无配置文件，跳过: {cfg_path}")
         return 0
 
-    raw = cfg_path.read_text(encoding="utf-8")
+    # utf-8-sig：与 core/mcp_client 一致，兼容 Windows 记事本等写入的 BOM
+    raw = cfg_path.read_text(encoding="utf-8-sig")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:

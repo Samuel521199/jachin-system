@@ -1,4 +1,4 @@
-"""
+﻿"""
 IM 通道抽象 — Lark/Telegram 等同维度
 
 各通道实现 InboundIMChannel 接口，L3 启动时按配置启动入站接收。
@@ -31,7 +31,7 @@ class InboundIMChannel(ABC):
     ) -> None:
         """
         启动入站接收，阻塞直到进程退出。
-        on_message(text, chat_id, user_id) 由实现方在收到消息时调用。
+        on_message(text, chat_id, user_id) 由实现方在收到消息时调用；**chat_id 为会话 ID**（常配 LARK_CHAT_ID）。
         """
         ...
 

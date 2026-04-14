@@ -1,0 +1,18 @@
+{
+  "id": "com.jachin.mcp.stub.official.filesystem.dirs",
+  "name": "MCP Filesystem 多目录（stub）",
+  "version": "1.0.0",
+  "description": "npm @modelcontextprotocol/server-filesystem；与本机 official-filesystem 多目录示例对应。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-filesystem",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "__JACHIN_WORKSPACE__"
+    ]
+  }
+}

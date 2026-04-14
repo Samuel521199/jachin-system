@@ -1,4 +1,4 @@
-//! UserSettings - 持久化用户配置
+﻿//! UserSettings - 持久化用户配置
 //!
 //! 允许用户在自动生成的策略之上手动覆盖（如强制本地 LLM、指定模型路径等）
 
@@ -41,6 +41,9 @@ pub struct UserSettings {
 
     /// Qwen/通义千问 API Key（桌面端保存，会同步到后端覆盖文件）
     pub qwen_api_key: Option<String>,
+
+    /// 桌面控制台 / Omni 对话窗界面语言：`Some("zh")` | `Some("en")`，None 视为 zh
+    pub desktop_ui_lang: Option<String>,
 }
 
 /// 获取应用数据根目录（与 TTS 路径策略一致）

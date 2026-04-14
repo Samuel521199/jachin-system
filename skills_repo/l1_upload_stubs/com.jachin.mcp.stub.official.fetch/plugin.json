@@ -1,0 +1,20 @@
+{
+  "id": "com.jachin.mcp.stub.official.fetch",
+  "name": "MCP Fetch（stub）",
+  "version": "1.0.0",
+  "description": "PyPI mcp-server-fetch；与本机 official-fetch / official-mcp-fetch 配置对应。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-fetch",
+    "command": "python",
+    "args": [
+      "-m",
+      "mcp_server_fetch"
+    ],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}

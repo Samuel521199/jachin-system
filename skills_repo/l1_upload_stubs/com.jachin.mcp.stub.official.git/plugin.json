@@ -1,0 +1,22 @@
+{
+  "id": "com.jachin.mcp.stub.official.git",
+  "name": "MCP Git（stub）",
+  "version": "1.0.0",
+  "description": "PyPI mcp_server_git；仓库根请在本机 args 中替换为实际路径。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-git",
+    "command": "python",
+    "args": [
+      "-m",
+      "mcp_server_git",
+      "--repository",
+      "__JACHIN_WORKSPACE__"
+    ],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}

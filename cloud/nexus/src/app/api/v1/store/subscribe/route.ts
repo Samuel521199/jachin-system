@@ -1,8 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { getDb, isDatabaseConfigured } from "@/db";
 import { pluginsRegistry, userLicenses } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { extractTenantIdAllowingMachineFallback } from "@/lib/tenant";
+import { isBuiltinToolCatalogId } from "@/lib/builtin-l3-tools";
+import { appendL1DebugLine } from "@/lib/l1-debug-file-log";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +69,16 @@ export async function POST(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    // L3 内置 Native 工具（商城展示用稳定 UUID，非可购 SKU）
+    if (isBuiltinToolCatalogId(itemId)) {
+      appendL1DebugLine("store.subscribe", { msg: "builtin_noop", item_id: itemId });
+      return NextResponse.json({
+        success: true,
+        message: "此为 L3 运行时内置工具，无需订阅",
+        runtime_builtin: true,
+      });
     }
 
     if (!isDatabaseConfigured()) {
@@ -145,6 +157,11 @@ export async function POST(request: NextRequest) {
         .where(eq(userLicenses.id, existing.id));
     }
 
+    appendL1DebugLine("store.subscribe", {
+      msg: "subscribed",
+      item_id: itemId,
+      tenant_id: tenantId,
+    });
     return NextResponse.json({
       success: true,
       message: "订阅成功",

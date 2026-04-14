@@ -1,4 +1,4 @@
-"""
+﻿"""
 jachin publish - 一键上云发布到 Nexus 商城
 
 PRIVATE 可见性时默认执行「影子上传」：仅登记 plugin.json 元数据，不打包、不上传二进制。
@@ -16,6 +16,30 @@ from rich.prompt import Prompt
 from jachin_cli.config import get_nexus_url, get_token
 
 console = Console()
+
+
+def _normalize_dev_token(raw: str | None) -> str | None:
+    """去掉首尾空白与成对引号，避免用户复制 .env 时带上引号。"""
+    if not raw:
+        return None
+    s = raw.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        s = s[1:-1].strip()
+    return s or None
+
+
+def _validate_dev_token_for_http(token: str) -> str | None:
+    """
+    Bearer Token 须为 ASCII（HTTP 头编码）；若含中文多为误把文档说明当成了密钥。
+    返回 None 表示可用；否则返回给人看的错误说明。
+    """
+    if any(ord(c) > 127 for c in token):
+        return (
+            "当前 JACHIN_DEV_TOKEN 含有非 ASCII 字符（例如误把「与 cloud…中完全一致」说明文字当成了 Token）。\n"
+            "请打开 cloud/nexus/.env.local，复制 JACHIN_DEV_TOKEN= 后面的**随机字符串**（仅英文数字符号），"
+            "不要包含中文或整句说明。"
+        )
+    return None
 
 
 def publish_cmd(
@@ -37,12 +61,21 @@ def publish_cmd(
     ))
     console.print()
 
-    token = get_token()
+    token = _normalize_dev_token(get_token())
     if not token:
         console.print(Panel.fit(
             "[bold red]未配置 JACHIN_DEV_TOKEN[/]\n\n"
-            "请设置环境变量: export JACHIN_DEV_TOKEN=your_token\n"
-            "或在 ~/.jachin-cli/config.json 中配置 token 字段",
+            "请设置环境变量: [cyan]JACHIN_DEV_TOKEN[/]（与 [cyan]cloud/nexus/.env.local[/] 中 [cyan]JACHIN_DEV_TOKEN=[/] 后的值一致）\n"
+            "或在 [cyan]~/.jachin-cli/config.json[/] 中配置 [cyan]token[/] 字段",
+            border_style="red",
+            title="[bold red]Error[/]",
+        ))
+        raise typer.Exit(1)
+
+    _tok_err = _validate_dev_token_for_http(token)
+    if _tok_err:
+        console.print(Panel.fit(
+            "[bold red]JACHIN_DEV_TOKEN 无效[/]\n\n" + _tok_err,
             border_style="red",
             title="[bold red]Error[/]",
         ))
@@ -140,12 +173,19 @@ def _do_publish(
         import httpx
 
         headers = {"Authorization": f"Bearer {token}"}
+        raw_type = (plugin_data.get("type") or plugin_data.get("item_type") or "skill").lower()
+        if raw_type == "mcp":
+            form_item_type = "MCP"
+        elif raw_type in ("tool", "tools"):
+            form_item_type = "TOOL"
+        else:
+            form_item_type = "SKILL"
         data = {
             "plugin_id": plugin_data.get("id"),
             "name": plugin_data.get("name"),
             "description": plugin_data.get("description", ""),
             "version": plugin_data.get("version", "1.0.0"),
-            "item_type": "SKILL" if (plugin_data.get("type") or "").lower() == "skill" else "MCP",
+            "item_type": form_item_type,
             "visibility": visibility,
             "price_monthly": str(price),
             "shadow_only": "true" if shadow_only else "false",

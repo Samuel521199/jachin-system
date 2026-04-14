@@ -19,6 +19,9 @@ import {
 } from "lucide-react";
 import { useSession, signOut } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
+import { NexusLanguageMenu } from "@/components/NexusLanguageMenu";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusLanding, nexusNav } from "@/lib/nexus-ui-i18n";
 
 function desktopDownloadHref(): { href: string; external: boolean } {
   const raw = process.env.NEXT_PUBLIC_DESKTOP_DOWNLOAD_HALL_URL?.trim();
@@ -28,27 +31,28 @@ function desktopDownloadHref(): { href: string; external: boolean } {
   return { href: "/desktop-downloads", external: false };
 }
 
-/** Tooltip 文案用 `name`（与 label 同源，避免遗漏） */
+/** Dock：文案键与 `nexusNav` 对齐 */
 const dockItems: {
   href: string;
-  name: string;
+  navKey: keyof (typeof nexusNav)["zh"];
   Icon: LucideIcon;
 }[] = [
-  { href: "/store", name: "Store", Icon: ShoppingBag },
-  { href: "/dashboard/analytics", name: "审计大屏", Icon: Activity },
-  { href: "/developer/payouts", name: "收纳中心", Icon: Archive },
-  { href: "/developer/plugins", name: "我的作品", Icon: Layers },
-  { href: "/dashboard/admin/review", name: "法律市场", Icon: Scale },
-  { href: "/market", name: "Market", Icon: Orbit },
-  { href: "/forge", name: "The Forge", Icon: Hammer },
-  { href: "/plaza", name: "Plaza", Icon: LayoutGrid },
-  { href: "/console", name: "Console", Icon: Terminal },
-  { href: "/console/workspace", name: "工作区", Icon: Layout },
-  { href: "/console/fleet", name: "Fleet", Icon: Box },
-  { href: "/console/pair", name: "Add Agent", Icon: Bot },
+  { href: "/store", navKey: "store", Icon: ShoppingBag },
+  { href: "/dashboard/analytics", navKey: "analytics", Icon: Activity },
+  { href: "/developer/payouts", navKey: "payouts", Icon: Archive },
+  { href: "/developer/plugins", navKey: "plugins", Icon: Layers },
+  { href: "/dashboard/admin/review", navKey: "legal", Icon: Scale },
+  { href: "/market", navKey: "market", Icon: Orbit },
+  { href: "/forge", navKey: "forge", Icon: Hammer },
+  { href: "/plaza", navKey: "plaza", Icon: LayoutGrid },
+  { href: "/console", navKey: "console", Icon: Terminal },
+  { href: "/console/workspace", navKey: "workspace", Icon: Layout },
+  { href: "/console/fleet", navKey: "fleet", Icon: Box },
+  { href: "/console/pair", navKey: "pair", Icon: Bot },
 ];
 
 function NeuralOsTopbar() {
+  const { lang } = useNexusUiLang();
   const { data: session, status } = useSession();
   const download = desktopDownloadHref();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -68,6 +72,7 @@ function NeuralOsTopbar() {
     session?.user?.email?.charAt(0)?.toUpperCase() ||
     "?";
 
+  const t = nexusLanding[lang];
   const downloadEl = download.external ? (
     <a
       href={download.href}
@@ -78,7 +83,7 @@ function NeuralOsTopbar() {
         "transition-all hover:border-cyan-400 hover:bg-cyan-500/10"
       }
     >
-      桌面端下载
+      {t.download}
     </a>
   ) : (
     <Link
@@ -88,7 +93,7 @@ function NeuralOsTopbar() {
         "transition-all hover:border-cyan-400 hover:bg-cyan-500/10"
       }
     >
-      桌面端下载
+      {t.download}
     </Link>
   );
 
@@ -102,7 +107,10 @@ function NeuralOsTopbar() {
       </Link>
 
       <div className="flex items-center gap-6">
-        {downloadEl}
+        <div className="flex items-center gap-4">
+          <NexusLanguageMenu />
+          {downloadEl}
+        </div>
         {status === "loading" ? (
           <span className="h-9 w-9 rounded-full bg-white/10" />
         ) : session?.user ? (
@@ -138,7 +146,7 @@ function NeuralOsTopbar() {
                     void signOut({ callbackUrl: "/" });
                   }}
                 >
-                  退出
+                  {t.signOut}
                 </button>
               </div>
             )}
@@ -148,7 +156,7 @@ function NeuralOsTopbar() {
             href="/login"
             className="text-sm font-medium text-cyan-400/90 transition-colors hover:text-cyan-300"
           >
-            登录
+            {t.login}
           </Link>
         )}
       </div>
@@ -198,6 +206,7 @@ function DockIconButton({
 }
 
 function NeuralDock() {
+  const { lang } = useNexusUiLang();
   return (
     <nav
       aria-label="全息导航 Dock"
@@ -216,8 +225,8 @@ function NeuralDock() {
           "[scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
         }
       >
-        {dockItems.map(({ href, name, Icon }) => (
-          <DockIconButton key={href} href={href} name={name} Icon={Icon} />
+        {dockItems.map(({ href, navKey, Icon }) => (
+          <DockIconButton key={href} href={href} name={nexusNav[lang][navKey]} Icon={Icon} />
         ))}
       </div>
     </nav>
@@ -228,6 +237,8 @@ function NeuralDock() {
  * Neural OS 全息桌面首页：深渊点阵背景 + 极简穹顶 + 液态玻璃 Hero + 底部 Dock。
  */
 export default function NeuralOsLanding() {
+  const { lang } = useNexusUiLang();
+
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#030305] font-sans">
       {/* 极细星尘点阵 */}
@@ -268,7 +279,7 @@ export default function NeuralOsLanding() {
                 "hover:shadow-[0_0_40px_rgba(0,240,255,0.35)]"
               }
             >
-              Enter Neural Market
+              {nexusLanding[lang].primaryBtn}
             </Link>
             <Link
               href="/forge"
@@ -278,7 +289,7 @@ export default function NeuralOsLanding() {
                 "hover:text-white"
               }
             >
-              Launch The Forge
+              {nexusLanding[lang].secondaryBtn}
             </Link>
           </div>
         </div>

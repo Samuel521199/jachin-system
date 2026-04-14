@@ -1,0 +1,20 @@
+{
+  "id": "com.jachin.mcp.stub.office.powerpoint",
+  "name": "Office PowerPoint MCP（stub）",
+  "version": "1.0.0",
+  "description": "与本机 com.jachin.mcp.office_powerpoint 对应；需 pip 安装 office-powerpoint-mcp-server。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "com.jachin.mcp.office_powerpoint",
+    "command": "python",
+    "args": [
+      "-m",
+      "ppt_mcp_server"
+    ],
+    "env": {
+      "PPT_TEMPLATE_PATH": "__JACHIN_WORKSPACE__/ppt_templates"
+    }
+  }
+}

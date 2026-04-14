@@ -1,4 +1,4 @@
-/**
+﻿/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -91,6 +91,13 @@ export interface SensoryAnswerMeta {
 /** 当前流式 chunk 语义：思考 reasoning vs 正文 content（驱动 Jachin Core THINKING / STREAMING） */
 export type StreamChunkKind = "reasoning" | "content";
 
+/** 传给 Chat 的 chunk 元信息：双通道 + 服务端 reasoning_content 并行追加 */
+export type SensoryChunkMeta = {
+  isReasoning?: boolean;
+  /** metadata.reasoning_content / 顶层 reasoning：与正文 delta 同时写入思考链 */
+  reasoningAppend?: string;
+};
+
 function detectChunkIsReasoning(
   meta: Record<string, unknown> | undefined,
   raw: Record<string, unknown>,
@@ -104,6 +111,23 @@ function detectChunkIsReasoning(
   if (typeof rc === "string" && rc.length > 0 && contentEmpty) return true;
   if (typeof raw.reasoning === "string" && raw.reasoning.length > 0 && contentEmpty) return true;
   return false;
+}
+
+/** Debug 风格：时间戳 + run/task/tool/source，写入思考链 */
+function formatSensoryDebugBlock(data: SensoryPayload, phase: string, body: string): string {
+  const ts = new Date().toISOString().replace("T", " ").slice(0, 23);
+  const bits: string[] = [`phase=${phase}`];
+  bits.push(`step=${data.step_type}`);
+  if (data.run_id) bits.push(`run=${String(data.run_id).slice(0, 20)}`);
+  if (data.task_id) bits.push(`task=${String(data.task_id).slice(0, 20)}`);
+  if (data.tool) bits.push(`tool=${data.tool}`);
+  if (data.source) bits.push(`src=${data.source}`);
+  const mn = data.metadata?.tool_name;
+  if (mn) bits.push(`tool_name=${String(mn)}`);
+  const err = data.metadata?.error;
+  if (err) bits.push(`err=${String(err).slice(0, 160)}`);
+  const head = `[${ts}] [jachin] ${bits.join(" | ")}`;
+  return `\n${"─".repeat(52)}\n${head}\n\n${body.trim()}\n`;
 }
 
 export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
@@ -125,9 +149,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [memoryCompactSuggest, setMemoryCompactSuggest] = useState<MemoryCompactSuggestState | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onChunkRef = useRef<
-    ((chunk: string, runId: string, meta?: { isReasoning?: boolean }) => void) | null
-  >(null);
+  const onChunkRef = useRef<((chunk: string, runId: string, meta?: SensoryChunkMeta) => void) | null>(
+    null,
+  );
   const onAnswerRef = useRef<((content: string, meta?: SensoryAnswerMeta) => void) | null>(null);
   const onStepRef = useRef<((stepType: string, content: string, runId?: string) => void) | null>(null);
   const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
@@ -154,7 +178,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
 
   /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
   const registerChunkHandler = useCallback(
-    (fn: ((chunk: string, runId: string, meta?: { isReasoning?: boolean }) => void) | null) => {
+    (fn: ((chunk: string, runId: string, meta?: SensoryChunkMeta) => void) | null) => {
       onChunkRef.current = fn;
     },
     [],
@@ -340,18 +364,40 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             setCurrentRunId(runId);
             if (delta) {
               hadStreamChunksForRunRef.current = true;
-              onChunkRef.current?.(delta, runId, { isReasoning: isReasoningChunk });
+              const chunkMeta: SensoryChunkMeta = { isReasoning: isReasoningChunk };
+              // 正文通道可与 metadata.reasoning_content 并行；纯思考通道不再重复追加
+              if (!isReasoningChunk) {
+                const fromMeta =
+                  typeof metaObj?.reasoning_content === "string"
+                    ? metaObj.reasoning_content.trim()
+                    : typeof metaObj?.reasoningContent === "string"
+                      ? metaObj.reasoningContent.trim()
+                      : "";
+                const rawTop = raw as Record<string, unknown>;
+                const fromTop = typeof rawTop.reasoning === "string" ? String(rawTop.reasoning).trim() : "";
+                let extra = fromMeta;
+                if (fromTop && fromTop !== fromMeta && !fromMeta.includes(fromTop)) {
+                  extra = fromMeta ? `${fromMeta}\n\n${fromTop}` : fromTop;
+                }
+                if (extra) chunkMeta.reasoningAppend = extra;
+              }
+              onChunkRef.current?.(delta, runId, chunkMeta);
             }
           }
 
-          // thought/action/observation：完整展示思考过程，禁止总结
+          // thought/action/observation：完整展示思考过程（debug 块 + 原文）
           if (["thought", "action", "observation"].includes(data.step_type) && data.content != null) {
             if (dropL3StreamUntilTerminalRef.current) {
               return;
             }
             const labels: Record<string, string> = { thought: "思考", action: "动作", observation: "观察" };
             const label = labels[data.step_type] ?? data.step_type;
-            onStepRef.current?.(data.step_type, `### ${label}\n\n${data.content}\n\n`, data.run_id ?? "");
+            const inner = `### ${label}\n\n${data.content}`;
+            onStepRef.current?.(
+              data.step_type,
+              formatSensoryDebugBlock(data, data.step_type, inner),
+              data.run_id ?? "",
+            );
           }
 
           // 网关 / 环境嗅探 / 拓扑校验等微状态（content 常为 JSON.stringify({ status })）
@@ -363,7 +409,11 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             } catch {
               /* 非 JSON 则原样展示 */
             }
-            onStepRef.current?.("system_status", `### 系统状态\n\n${line}\n\n`, data.run_id ?? "");
+            onStepRef.current?.(
+              "system_status",
+              formatSensoryDebugBlock(data, "system_status", `### 系统状态\n\n${line}`),
+              data.run_id ?? "",
+            );
           }
 
           // answer/rejected/error 结束时：先追加到思考过程，再通知回调
@@ -403,16 +453,46 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             setHandoffEvent({ persona, displayName });
           }
 
-          // v8.0 Swarm：task_offer 显示雷达扫描
+          // v8.0 Swarm：task_offer 显示雷达扫描 + 思考链 debug 行
           if (data.step_type === "task_offer" && data.task_id) {
             setSwarmEvent({ taskId: data.task_id, type: "offer", tool: data.tool });
+            if (!dropL3StreamUntilTerminalRef.current) {
+              const pl = data.payload ? JSON.stringify(data.payload).slice(0, 400) : "";
+              onStepRef.current?.(
+                "task_offer",
+                formatSensoryDebugBlock(
+                  data,
+                  "swarm",
+                  `### Swarm · 任务邀请\n- task_id: ${data.task_id}\n- tool: ${data.tool ?? "(none)"}${pl ? `\n- payload: ${pl}` : ""}`,
+                ),
+                data.run_id ?? "",
+              );
+            }
           }
           if (data.step_type === "task_assigned" && data.task_id) {
             setSwarmEvent({ taskId: data.task_id, type: "assigned", tool: data.tool });
+            if (!dropL3StreamUntilTerminalRef.current) {
+              onStepRef.current?.(
+                "task_assigned",
+                formatSensoryDebugBlock(
+                  data,
+                  "swarm",
+                  `### Swarm · 已分配\n- task_id: ${data.task_id}\n- tool: ${data.tool ?? "(none)"}`,
+                ),
+                data.run_id ?? "",
+              );
+            }
           }
           if (data.step_type === "task_completed" && data.task_id) {
             setSwarmEvent({ taskId: data.task_id, type: "completed" });
             setTimeout(() => setSwarmEvent(null), 3000);
+            if (!dropL3StreamUntilTerminalRef.current) {
+              onStepRef.current?.(
+                "task_completed",
+                formatSensoryDebugBlock(data, "swarm", `### Swarm · 任务完成\n- task_id: ${data.task_id}`),
+                data.run_id ?? "",
+              );
+            }
           }
         } catch {
           // 忽略非 JSON 消息

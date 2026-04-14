@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SystemHeartbeat - 系统心跳脉冲条
  * 随 CPU/GPU 负载跳动，置于侧栏底部
  */
@@ -8,11 +8,15 @@ import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getGpuStats } from "../../lib/api";
 import { cn } from "../../utils/cn";
+import { useDesktopUiLang } from "../../hooks/useDesktopUiLang";
+import { getDesktopConsole } from "../../utils/desktopUiI18n";
 
 const FALLBACK_CPU = 24;
 const GPU_OVERHEAT_THRESHOLD = 85;
 
 export function SystemHeartbeat() {
+  const [lang] = useDesktopUiLang();
+  const c = getDesktopConsole(lang);
   const [cpu, setCpu] = useState(FALLBACK_CPU);
   const [gpu, setGpu] = useState<number | null>(null);
   const [gpuTemp, setGpuTemp] = useState<number | null>(null);
@@ -79,9 +83,9 @@ export function SystemHeartbeat() {
         {gpu != null ? ` (CPU ${cpu} · GPU ${gpu})` : ""}
         {gpuTemp != null ? ` · ${gpuTemp}°C` : ""}
       </p>
-      {isOverheated && (
-        <p className="text-[10px] text-amber-400 mt-1 font-mono" title="算力负载过高，建议分流任务到云端">
-          ⚠ GPU 过热 ({gpuTemp}°C)
+      {isOverheated && gpuTemp != null && (
+        <p className="text-[10px] text-amber-400 mt-1 font-mono" title={c.heartbeat.gpuHotTitle}>
+          {c.heartbeat.gpuHot.replace("{temp}", String(gpuTemp))}
         </p>
       )}
     </div>

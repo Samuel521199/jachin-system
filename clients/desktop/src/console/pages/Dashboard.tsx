@@ -1,9 +1,9 @@
-/**
+﻿/**
  * Dashboard - 战情室 (Situation Room)
  * Top 30% MindStream | Middle 40% ComputeTopology + Quick Actions | Bottom 30% ProactiveSuggestions
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { MindStream } from "../components/MindStream";
@@ -11,19 +11,9 @@ import { ComputeTopology } from "../components/ComputeTopology";
 import { getClusterStats, getSuggestions, getLogsRecent, executeSuggestion, getGpuStats, getClusterNodes, getClusterTasks } from "../../lib/api";
 import type { SuggestionItem, GpuStatsItem, ClusterNodeInfo, ClusterTaskInfo } from "../../lib/api";
 import { cn } from "../../utils/cn";
-
-const quickActions = [
-  { id: "privacy", label: "隐私模式", icon: "🛡️", cmd: "quick_action_privacy_mode", isToggle: true as const, title: "点击切换：开启后本地数据不再上报。" },
-  { id: "clean", label: "清理内存", icon: "🧹", cmd: "quick_action_clear_memory", isToggle: false as const, title: "触发内存清理。" },
-  { id: "eagle", label: "鹰眼", icon: "👁️", cmd: "quick_action_eagle_eye", isToggle: true as const, title: "切换控制台显示/隐藏。" },
-  { id: "sleep", label: "休眠", icon: "💤", cmd: "quick_action_hibernate", isToggle: true as const, title: "切换精灵与聊天窗口显示。" },
-] as const;
-
-const DEMO_SUGGESTIONS: SuggestionItem[] = [
-  { id: "1", text: "明天上午 9 点有会议，需要整理相关邮件吗？", action: "执行", type: "calendar" },
-  { id: "2", text: "C 盘空间不足 10%，建议清理缓存。", action: "清理", type: "system" },
-  { id: "3", text: "检测到 3 个待办事项未完成，要现在处理吗？", action: "查看", type: "task" },
-];
+import { useDesktopUiLang } from "../../hooks/useDesktopUiLang";
+import { getDesktopConsole, localizeMindStreamLine } from "../../utils/desktopUiI18n";
+import { readDesktopUiLang } from "../../utils/desktopUiLang";
 
 export type { SuggestionItem };
 
@@ -42,6 +32,48 @@ export function Dashboard({
   /** 点击建议卡片按钮时回调，便于后端执行或记录 */
   onSuggestionAction?: (suggestionId: string, action: string) => void;
 } = {}) {
+  const [lang] = useDesktopUiLang();
+  const c = useMemo(() => getDesktopConsole(lang), [lang]);
+  const quickActions = useMemo(
+    () =>
+      [
+        {
+          id: "privacy",
+          label: c.dashboard.quickPrivacy,
+          icon: "🛡️",
+          cmd: "quick_action_privacy_mode",
+          isToggle: true as const,
+          title: c.dashboard.quickPrivacyTitle,
+        },
+        {
+          id: "clean",
+          label: c.dashboard.quickClean,
+          icon: "🧹",
+          cmd: "quick_action_clear_memory",
+          isToggle: false as const,
+          title: c.dashboard.quickCleanTitle,
+        },
+        {
+          id: "eagle",
+          label: c.dashboard.quickEagle,
+          icon: "👁️",
+          cmd: "quick_action_eagle_eye",
+          isToggle: true as const,
+          title: c.dashboard.quickEagleTitle,
+        },
+        {
+          id: "sleep",
+          label: c.dashboard.quickSleep,
+          icon: "💤",
+          cmd: "quick_action_hibernate",
+          isToggle: true as const,
+          title: c.dashboard.quickSleepTitle,
+        },
+      ] as const,
+    [c],
+  );
+
+  const suggestionsFromApiRef = useRef(false);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [privacyMode, setPrivacyMode] = useState<boolean | null>(null);
@@ -49,7 +81,9 @@ export function Dashboard({
   const [hibernateOn, setHibernateOn] = useState<boolean | null>(null);
   const [liveStatsLines, setLiveStatsLines] = useState<string[]>([]);
   const [liveLogLines, setLiveLogLines] = useState<string[]>([]);
-  const [suggestions, setSuggestions] = useState<SuggestionItem[]>(DEMO_SUGGESTIONS);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>(() => [
+    ...(getDesktopConsole(readDesktopUiLang()).demoSuggestions as unknown as SuggestionItem[]),
+  ]);
   const [clusterStats, setClusterStats] = useState<{ nodes?: { total?: number }; tasks?: { running?: number } } | null>(null);
   const [gpuStats, setGpuStats] = useState<{ gpus: GpuStatsItem[] } | null>(null);
   const [clusterNodes, setClusterNodes] = useState<ClusterNodeInfo[]>([]);
@@ -121,11 +155,23 @@ export function Dashboard({
   const fetchSuggestions = useCallback(async () => {
     try {
       const res = await getSuggestions();
-      if (res?.items?.length) setSuggestions(res.items);
+      if (res?.items?.length) {
+        suggestionsFromApiRef.current = true;
+        setSuggestions(res.items);
+      } else {
+        suggestionsFromApiRef.current = false;
+        setSuggestions([...(getDesktopConsole(lang).demoSuggestions as unknown as SuggestionItem[])]);
+      }
     } catch {
-      setSuggestions(DEMO_SUGGESTIONS);
+      suggestionsFromApiRef.current = false;
+      setSuggestions([...(getDesktopConsole(lang).demoSuggestions as unknown as SuggestionItem[])]);
     }
-  }, []);
+  }, [lang]);
+
+  useEffect(() => {
+    if (suggestionsFromApiRef.current) return;
+    setSuggestions([...(getDesktopConsole(lang).demoSuggestions as unknown as SuggestionItem[])]);
+  }, [lang]);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -211,7 +257,15 @@ export function Dashboard({
     <div className="flex-1 flex flex-col min-h-0 p-6 gap-6">
       {/* Top 30%: Mind Stream */}
       <section className="h-[30%] min-h-[200px] flex-shrink-0">
-        <MindStream className="h-full" maxLines={6} demoLoop liveStatsLines={liveStatsLines} liveLogLines={liveLogLines} />
+        <MindStream
+          className="h-full"
+          maxLines={6}
+          demoLoop
+          liveStatsLines={liveStatsLines}
+          liveLogLines={liveLogLines}
+          mindLocale={c.mind}
+          localizeLine={(line) => localizeMindStreamLine(line, lang)}
+        />
       </section>
 
       {/* Middle 40%: Compute Topology + Quick Actions */}
@@ -241,7 +295,7 @@ export function Dashboard({
           transition={{ duration: 0.35, delay: 0.05 }}
         >
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3" style={{ fontFamily: "Orbitron, sans-serif" }}>
-            Quick Actions
+            {c.dashboard.quickActionsTitle}
           </h2>
           <div className="grid grid-cols-2 gap-2">
             {quickActions.map((action, i) => {
@@ -261,13 +315,13 @@ export function Dashboard({
                   whileTap={{ scale: 0.98 }}
                 >
                   <span className="text-lg">{action.icon}</span>
-                  <span className="leading-tight">{isOn ? "已开" : action.label}</span>
+                  <span className="leading-tight">{isOn ? c.dashboard.quickToggleOn : action.label}</span>
                 </motion.button>
               );
             })}
           </div>
           <div className="mt-4 pt-4 border-t border-white/10">
-            <p className="text-xs text-slate-500 mb-2">VAD 语音采集</p>
+            <p className="text-xs text-slate-500 mb-2">{c.dashboard.vadHeading}</p>
             <div className="flex items-center gap-2">
               {!isVoiceCaptureRunning ? (
                 <button
@@ -282,7 +336,7 @@ export function Dashboard({
                   }}
                   className="px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 flex items-center gap-1.5"
                 >
-                  <span>🎤</span> 开始 VAD
+                  <span>🎤</span> {c.dashboard.vadStart}
                 </button>
               ) : (
                 <button
@@ -297,13 +351,13 @@ export function Dashboard({
                   }}
                   className="px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/15 text-rose-300 text-xs font-medium hover:bg-rose-500/25 flex items-center gap-1.5"
                 >
-                  <span>⏹</span> 停止 VAD
+                  <span>⏹</span> {c.dashboard.vadStop}
                 </button>
               )}
               {isVoiceCaptureRunning && (
                 <span className="text-xs text-amber-400 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                  采集中
+                  {c.dashboard.vadCapturing}
                 </span>
               )}
             </div>
@@ -316,7 +370,7 @@ export function Dashboard({
         <div className="h-full flex flex-col glass-panel rounded-xl overflow-hidden">
           <div className="flex-shrink-0 px-4 py-2 border-b border-white/10 flex items-center gap-2">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-400" style={{ fontFamily: "Orbitron, sans-serif" }}>
-              Agenda & Suggestions
+              {c.dashboard.agendaTitle}
             </span>
           </div>
           <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-4 p-4 custom-scrollbar">
@@ -335,7 +389,7 @@ export function Dashboard({
                   onClick={() => handleSuggestionAction(s.id, s.action)}
                   className="self-start px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium border border-rose-500/30 hover:bg-rose-500/30 transition-colors"
                 >
-                  {s.action}
+                  {c.suggestionActionLabels[s.action] ?? s.action}
                 </button>
               </motion.div>
             ))}

@@ -13,6 +13,7 @@ mod device_registry;
 mod kernel;
 mod l3_spawn;
 mod pubsub;
+mod reminder_scheduler;
 mod stt;
 mod tts;
 mod window;
@@ -295,8 +296,62 @@ pub struct HideChatWindowResult {
     pub fully_hidden: bool,
 }
 
+/// 桌面 Omni / 哨兵：单行快照，写入 `~/.jachin/l3_debug.log` 便于与 L3 日志对照。
+fn omni_surface_debug_snapshot(app: &tauri::AppHandle) -> String {
+    let rust_companion = CHAT_COMPANION_MODE.load(Ordering::Relaxed);
+    let hib = HIBERNATE_ON.load(Ordering::Relaxed);
+    let mut parts = vec![format!(
+        "rust_companion={} hibernate={}",
+        rust_companion, hib
+    )];
+    if let Some(chat) = app.get_webview_window("chat") {
+        let mini = chat.is_minimized().unwrap_or(false);
+        let vis = chat.is_visible().unwrap_or(false);
+        let sz = chat
+            .outer_size()
+            .map(|z| format!("{}x{}", z.width, z.height))
+            .unwrap_or_else(|_| "?x?".into());
+        let mon = chat
+            .current_monitor()
+            .ok()
+            .flatten()
+            .map(|m| {
+                let p = m.position();
+                let s = m.size();
+                format!("mon@{}:{} sz={}x{}", p.x, p.y, s.width, s.height)
+            })
+            .unwrap_or_else(|| "mon=?".into());
+        parts.push(format!(
+            "chat mini={} vis={} outer={} {}",
+            mini, vis, sz, mon
+        ));
+    } else {
+        parts.push("chat_absent=1".into());
+    }
+    if let Some(n) = app.get_webview_window("notification") {
+        let nv = n.is_visible().unwrap_or(false);
+        let ns = n
+            .outer_size()
+            .map(|z| format!("{}x{}", z.width, z.height))
+            .unwrap_or_else(|_| "?".into());
+        parts.push(format!("notif vis={} outer={}", nv, ns));
+    } else {
+        parts.push("notif_absent=1".into());
+    }
+    parts.join(" ")
+}
+
 /// 前端 `listen('omni-companion-mode')`：优先投递到 chat Webview（Tauri 2 事件目标更明确）
 fn emit_omni_companion_ui(app: &tauri::AppHandle, companion: bool) {
+    l3_spawn::write_jachin_shared_l3_debug(
+        "omni_companion_emit",
+        &format!(
+            "emit_payload_companion={} {} file={}",
+            companion,
+            omni_surface_debug_snapshot(app),
+            l3_spawn::jachin_shared_l3_debug_path().display()
+        ),
+    );
     let payload = json!({ "companion": companion });
     if let Err(e) = app.emit_to(
         EventTarget::webview_window("chat"),
@@ -304,6 +359,10 @@ fn emit_omni_companion_ui(app: &tauri::AppHandle, companion: bool) {
         payload.clone(),
     ) {
         eprintln!("[Omni] emit_to(chat) omni-companion-mode failed: {}, fallback broadcast", e);
+        l3_spawn::write_jachin_shared_l3_debug(
+            "omni_companion_emit_err",
+            &format!("emit_to_failed={e} fallback_broadcast=1"),
+        );
         let _ = app.emit("omni-companion-mode", payload);
     }
 }
@@ -543,6 +602,52 @@ fn companion_set_dock_position(app: tauri::AppHandle, x: i32, y: i32) -> Result<
     Ok(())
 }
 
+/// 系统标题栏 / Win+↓ 等将窗口最小化到任务栏时，转为右下角陪伴圆（与 Esc、`hide_chat_window` 一致）。
+fn convert_os_minimize_to_companion_if_needed(app: &tauri::AppHandle) {
+    l3_spawn::write_jachin_shared_l3_debug(
+        "os_minimize_to_companion_enter",
+        &omni_surface_debug_snapshot(app),
+    );
+    let Some(chat) = app.get_webview_window("chat") else {
+        l3_spawn::write_jachin_shared_l3_debug(
+            "os_minimize_to_companion_skip",
+            "reason=chat_window_missing",
+        );
+        return;
+    };
+    if HIBERNATE_ON.load(Ordering::Relaxed) {
+        l3_spawn::write_jachin_shared_l3_debug(
+            "os_minimize_to_companion_skip",
+            "reason=hibernate_on",
+        );
+        return;
+    }
+    if !chat.is_minimized().unwrap_or(false) {
+        l3_spawn::write_jachin_shared_l3_debug(
+            "os_minimize_to_companion_skip",
+            "reason=not_os_minimized",
+        );
+        return;
+    }
+    let already_companion = CHAT_COMPANION_MODE.load(Ordering::Relaxed);
+    let _ = chat.unminimize();
+    if already_companion {
+        let _ = chat.show();
+        let _ = chat.set_focus();
+        emit_omni_companion_ui(app, true);
+        l3_spawn::write_jachin_shared_l3_debug(
+            "os_minimize_to_companion_branch",
+            "action=restore_already_companion_unminimize_show",
+        );
+        return;
+    }
+    let _ = minimize_chat_to_companion(app);
+    l3_spawn::write_jachin_shared_l3_debug(
+        "os_minimize_to_companion_branch",
+        "action=minimize_chat_to_companion_after_unminimize",
+    );
+}
+
 /// Esc / hide：缩为右下角小圆（需先放宽 min_inner_size，否则达不到 tauri.conf 的 360×280 下限）
 fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(chat) = app.get_webview_window("chat") else {
@@ -770,6 +875,8 @@ fn main() {
             commands::settings::get_current_config,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
+            commands::settings::get_desktop_ui_lang,
+            commands::settings::set_desktop_ui_lang,
             commands::pairing::is_gateway_paired,
             commands::pairing::read_l2_gateway_config,
             commands::pairing::read_l2_gateway_url,
@@ -801,6 +908,7 @@ fn main() {
             get_hibernate_mode,
             show_chat_window,
             hide_chat_window,
+            desktop_diag_log,
             is_chat_companion_mode,
             companion_peek,
             companion_reveal,
@@ -809,6 +917,9 @@ fn main() {
             restore_chat_window_after_skill_canvas_rust,
             jachin_sentry_notify,
             jachin_sentry_notify_dismiss,
+            schedule_jachin_reminder,
+            cancel_jachin_reminder,
+            list_jachin_reminders,
             jachin_expand_main_from_notification,
             show_console_window,
             quick_action_privacy_mode,
@@ -861,6 +972,10 @@ fn main() {
             // 存储 registry 到应用状态（在 setup 中）
             app.manage(registry.clone());
 
+            let reminders = Arc::new(reminder_scheduler::ReminderService::new(app.app_handle().clone()));
+            reminder_scheduler::ReminderService::spawn_tick_loop(reminders.clone());
+            app.manage(reminders.clone());
+
             #[cfg(feature = "ambient")]
             app.manage(stt::SttState::new());
             
@@ -868,13 +983,21 @@ fn main() {
             let app_handle_clone = app.app_handle().clone();
             let device_id_clone = device_id.clone();
             let pubsub_port = 8002; // 桌面客户端的应用端口
+            let reminders_pubsub = reminders.clone();
             
             // 在后台任务中启动 Pub/Sub 服务器
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 
                 // 启动 Pub/Sub 服务器
-                if let Err(e) = start_pubsub_server(app_handle_clone.clone(), device_id_clone.clone(), pubsub_port).await {
+                if let Err(e) = start_pubsub_server(
+                    app_handle_clone.clone(),
+                    device_id_clone.clone(),
+                    pubsub_port,
+                    reminders_pubsub.clone(),
+                )
+                .await
+                {
                     eprintln!("[PubSub] Failed to start Pub/Sub server: {}", e);
                 } else {
                     println!("[PubSub] Pub/Sub server started on port {}", pubsub_port);
@@ -1094,6 +1217,20 @@ fn main() {
                     EAGLE_EYE_ON.store(false, Ordering::Relaxed);
                     let _ = window.hide();
                 }
+                return;
+            }
+            // chat：原生最小化进任务栏时不会走 hide_chat_window；失焦后短暂延迟再检测 is_minimized，转为陪伴圆
+            if window.label() == "chat" {
+                if let tauri::WindowEvent::Focused(false) = event {
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(64)).await;
+                        let app2 = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            convert_os_minimize_to_companion_if_needed(&app2);
+                        });
+                    });
+                }
             }
         })
         .run(tauri::generate_context!())
@@ -1219,7 +1356,7 @@ fn show_omni_chat_window(app: &tauri::AppHandle) {
     }
 }
 
-/// 右下角哨兵通知：置于与 Omni 同显的显示器工作区右下（与陪伴圆同参考 monitor）
+/// 右下角哨兵通知：贴在当前显示器 **工作区** 右下（不压 Windows 任务栏；Tauri 2.5 Monitor 无 work_area，用底边预留）。
 fn position_notification_bottom_right(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(win) = app.get_webview_window("notification") else {
         return Err("notification window missing".into());
@@ -1235,9 +1372,15 @@ fn position_notification_bottom_right(app: &tauri::AppHandle) -> Result<(), Stri
     let factor = win.scale_factor().unwrap_or(1.0);
     let nw = (380.0_f64 * factor).round().clamp(280.0, 800.0) as u32;
     let nh = (88.0_f64 * factor).round().clamp(64.0, 200.0) as u32;
-    let margin = (14.0_f64 * factor).round() as i32;
+    let margin = (10.0_f64 * factor).round() as i32;
+    // 横置任务栏典型高度（逻辑像素量级）→ 物理像素，从屏幕底边上移，避免盖住任务栏/系统托盘
+    #[cfg(windows)]
+    let taskbar_reserve = (48.0_f64 * factor).round().max(32.0) as i32;
+    #[cfg(not(windows))]
+    let taskbar_reserve = (40.0_f64 * factor).round().max(24.0) as i32;
+    let screen_bottom = mon_pos.y + mon_size.height as i32;
     let x = mon_pos.x + mon_size.width as i32 - nw as i32 - margin;
-    let y = mon_pos.y + mon_size.height as i32 - nh as i32 - margin;
+    let y = screen_bottom - taskbar_reserve - margin - nh as i32;
     win.set_size(Size::Physical(PhysicalSize::new(nw, nh)))
         .map_err(|e| e.to_string())?;
     win.set_position(PhysicalPosition::new(x, y))
@@ -1245,36 +1388,116 @@ fn position_notification_bottom_right(app: &tauri::AppHandle) -> Result<(), Stri
     Ok(())
 }
 
+/// 主线程：右下角哨兵通知展示逻辑（`jachin_sentry_notify` 与定时提醒共用）。
+pub(crate) fn show_sentry_toast_inner(
+    app_handle: &tauri::AppHandle,
+    title: String,
+    body: String,
+    log_prefix: &str,
+) {
+    let payload = serde_json::json!({ "title": title, "body": body });
+    let snap = omni_surface_debug_snapshot(app_handle);
+    let Some(win) = app_handle.get_webview_window("notification") else {
+        eprintln!("[Sentry] notification webview missing");
+        l3_spawn::write_jachin_shared_l3_debug(
+            &format!("{log_prefix}_main_thread"),
+            "FAIL notification_webview_missing",
+        );
+        return;
+    };
+    let pos_res = position_notification_bottom_right(app_handle);
+    if let Err(ref e) = pos_res {
+        eprintln!("[Sentry] position failed: {e}");
+    }
+    let emit_res = app_handle.emit_to(
+        EventTarget::webview_window("notification"),
+        "jachin-notification-show",
+        payload,
+    );
+    if let Err(ref e) = emit_res {
+        eprintln!("[Sentry] emit_to notification failed: {e}");
+    }
+    let show_res = win.show();
+    if let Err(ref e) = show_res {
+        eprintln!("[Sentry] notification show failed: {e}");
+    }
+    let notif_vis_after = win.is_visible().unwrap_or(false);
+    l3_spawn::write_jachin_shared_l3_debug(
+        &format!("{log_prefix}_main_thread_done"),
+        &format!(
+            "{} position_ok={} emit_ok={} show_ok={} notif_visible_after={} pos_err={:?} emit_err={:?} show_err={:?}",
+            snap,
+            pos_res.is_ok(),
+            emit_res.is_ok(),
+            show_res.is_ok(),
+            notif_vis_after,
+            pos_res.err(),
+            emit_res.err(),
+            show_res.err(),
+        ),
+    );
+}
+
 /// Omni 最小化 / 陪伴圆 / 完全隐藏时：透明子窗口右下角通知（非系统 Notification）
 #[tauri::command]
 async fn jachin_sentry_notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    let title_preview: String = title.chars().take(100).collect();
+    let body_preview: String = body.chars().take(160).collect();
+    l3_spawn::write_jachin_shared_l3_debug(
+        "sentry_notify_invoke",
+        &format!(
+            "title_len={} body_len={} title_preview={:?} body_preview={:?} pre_sleep {}",
+            title.len(),
+            body.len(),
+            title_preview,
+            body_preview,
+            omni_surface_debug_snapshot(&app)
+        ),
+    );
     tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     let app_handle = app.clone();
-    let payload = serde_json::json!({ "title": title, "body": body });
+    let title_m = title;
+    let body_m = body;
     app
         .run_on_main_thread(move || {
-            let Some(win) = app_handle.get_webview_window("notification") else {
-                eprintln!("[Sentry] notification webview missing");
-                return;
-            };
-            if let Err(e) = position_notification_bottom_right(&app_handle) {
-                eprintln!("[Sentry] position failed: {e}");
-            }
-            if let Err(e) = app_handle.emit_to(
-                EventTarget::webview_window("notification"),
-                "jachin-notification-show",
-                payload,
-            ) {
-                eprintln!("[Sentry] emit_to notification failed: {e}");
-            }
-            let _ = win.show();
+            show_sentry_toast_inner(&app_handle, title_m, body_m, "sentry_notify");
         })
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
+/// 注册定时提醒（持久化，到点右下角哨兵）。
+#[tauri::command]
+fn schedule_jachin_reminder(
+    reminders: tauri::State<'_, Arc<reminder_scheduler::ReminderService>>,
+    fire_at_unix_ms: u64,
+    title: String,
+    body: String,
+) -> Result<String, String> {
+    reminders.add(fire_at_unix_ms, title, body)
+}
+
+#[tauri::command]
+fn cancel_jachin_reminder(
+    reminders: tauri::State<'_, Arc<reminder_scheduler::ReminderService>>,
+    id: String,
+) -> Result<(), String> {
+    reminders.cancel(&id)
+}
+
+#[tauri::command]
+fn list_jachin_reminders(
+    reminders: tauri::State<'_, Arc<reminder_scheduler::ReminderService>>,
+) -> Result<Vec<reminder_scheduler::Reminder>, String> {
+    reminders.list()
+}
+
 #[tauri::command]
 async fn jachin_sentry_notify_dismiss(app: tauri::AppHandle) -> Result<(), String> {
+    l3_spawn::write_jachin_shared_l3_debug(
+        "sentry_notify_dismiss",
+        &omni_surface_debug_snapshot(&app),
+    );
     let app_handle = app.clone();
     app
         .run_on_main_thread(move || {
@@ -1297,9 +1520,17 @@ async fn jachin_expand_main_from_notification(app: tauri::AppHandle) -> Result<(
 /// 显示对话窗口（Omni 条）：屏幕居中偏下，不依赖桌面精灵位置
 #[tauri::command]
 async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+    l3_spawn::write_jachin_shared_l3_debug(
+        "show_chat_window_cmd",
+        &omni_surface_debug_snapshot(&app),
+    );
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
         show_omni_chat_window(&app_handle);
+        l3_spawn::write_jachin_shared_l3_debug(
+            "show_chat_window_after",
+            &omni_surface_debug_snapshot(&app_handle),
+        );
     })
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1308,6 +1539,14 @@ async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 /// Esc：先缩为右下角陪伴圆；再按一次则彻底隐藏。必须等主线程执行完再返回，前端才能立刻切 UI。
 #[tauri::command]
 async fn hide_chat_window(app: tauri::AppHandle) -> Result<HideChatWindowResult, String> {
+    l3_spawn::write_jachin_shared_l3_debug(
+        "hide_chat_window_cmd",
+        &format!(
+            "before {} already_companion={}",
+            omni_surface_debug_snapshot(&app),
+            CHAT_COMPANION_MODE.load(Ordering::Relaxed)
+        ),
+    );
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<HideChatWindowResult, String>>();
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
@@ -1322,11 +1561,37 @@ async fn hide_chat_window(app: tauri::AppHandle) -> Result<HideChatWindowResult,
                 fully_hidden: false,
             })
         };
+        match &out {
+            Ok(ok) => {
+                l3_spawn::write_jachin_shared_l3_debug(
+                    "hide_chat_window_result",
+                    &format!(
+                        "companion={} fully_hidden={} {}",
+                        ok.companion,
+                        ok.fully_hidden,
+                        omni_surface_debug_snapshot(&app_handle)
+                    ),
+                );
+            }
+            Err(e) => {
+                l3_spawn::write_jachin_shared_l3_debug(
+                    "hide_chat_window_err",
+                    &format!("err={e} {}", omni_surface_debug_snapshot(&app_handle)),
+                );
+            }
+        }
         let _ = tx.send(out);
     })
     .map_err(|e| e.to_string())?;
     rx.await
         .map_err(|_| "hide_chat_window: 主线程未响应".to_string())?
+}
+
+/// 前端写入 `~/.jachin/l3_debug.log`（与 L3 共用）：哨兵预判、Web 层陪伴态等。
+#[tauri::command]
+fn desktop_diag_log(category: String, message: String) {
+    let sanitized = message.chars().take(4000).collect::<String>();
+    l3_spawn::write_jachin_shared_l3_debug(&category, &sanitized);
 }
 
 #[tauri::command]

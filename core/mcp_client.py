@@ -412,7 +412,8 @@ class MCPManager:
             logger.info("[MCP] 配置文件不存在 path=%s，跳过 MCP 初始化", self._config_path)
             return []
         try:
-            raw = self._config_path.read_text(encoding="utf-8")
+            # utf-8-sig：兼容 Windows 记事本等保存的带 BOM 文件，避免整表解析失败
+            raw = self._config_path.read_text(encoding="utf-8-sig")
             data = json.loads(raw)
             servers = data.get("mcp_servers", data) if isinstance(data, dict) else data
             if not isinstance(servers, list):
@@ -565,9 +566,14 @@ class MCPManager:
         try:
             from l3_node.paths import get_app_root
 
-            from core.mcp_json_repair import repair_hr_atomic_tools_path
+            from core.mcp_json_repair import (
+                repair_hr_atomic_tools_path,
+                repair_official_fetch_ignore_robots_arg,
+            )
 
-            if repair_hr_atomic_tools_path(get_app_root()):
+            _cfg_repaired = repair_hr_atomic_tools_path(get_app_root())
+            _cfg_repaired = repair_official_fetch_ignore_robots_arg() or _cfg_repaired
+            if _cfg_repaired:
                 self._mcp_cfg_loaded_mtime = None
                 logger.info("[MCP] mcp_json_repair 已更新 ~/.jachin/mcp_servers.json，将重载 stdio 配置")
         except Exception as e:

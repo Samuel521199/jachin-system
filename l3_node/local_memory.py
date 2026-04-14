@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 本地记忆持久化（主文件 l3_local.json + delegate 分片 l3_local_shard_*.json）。
 
 供 run_agent 被动注入与 core:local_memory_search；与 L2 recall merge；断网可用。
@@ -19,6 +19,9 @@ _JACHIN_ROOT = Path.home() / ".jachin"
 _MEMORY_DIR = _JACHIN_ROOT / "memory"
 _LOCAL_DB = _MEMORY_DIR / "l3_local.json"
 _MAX_ENTRIES = 200  # 最多保留条数
+# compaction 写入的会话摘要，常含「当时 workspace 里有哪些文件」等**易过期状态**；
+# 注入 system 会导致新会话「记忆污染」、模型跳过 list_directory —— 仅保留在检索库里，不被动注入。
+_TAGS_EXCLUDE_FROM_PASSIVE_PROMPT: frozenset[str] = frozenset({"task_checkpoint"})
 _PROMPT_CYCLE = 0
 _MEMORY_SHARD_ID: ContextVar[str | None] = ContextVar("l3_memory_shard_id", default=None)
 
@@ -226,6 +229,8 @@ def get_local_memory_for_prompt(
     selected: list[dict] = []
     for e in pool:
         if not eligible(e):
+            continue
+        if str(e.get("tag", "")).strip().lower() in _TAGS_EXCLUDE_FROM_PASSIVE_PROMPT:
             continue
         if not (e.get("content") or "").strip():
             continue

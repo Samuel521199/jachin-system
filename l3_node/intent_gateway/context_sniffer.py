@@ -1,4 +1,4 @@
-"""
+﻿"""
 Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + 本地记忆 Top 命中 + db_semantics.md / golden_sql），
 硬字符预算，写入 bundle.extra["environment_report"]；并解析 db_semantics.yaml → report["semantic_layer"]（见 workspace_db_context）。
 
@@ -87,10 +87,18 @@ def _memory_excerpt(query: str, *, max_chars: int, top_k: int = 2) -> tuple[str,
     try:
         from l3_node.local_memory_search import search_local_memories
 
-        res = search_local_memories(query or "", top_k=top_k, candidate_pool=24)
+        # 多取候选再过滤：排除 compaction 的 task_checkpoint（含过时目录快照，勿当「环境事实」）
+        res = search_local_memories(
+            query or "", top_k=max(top_k * 12, 16), candidate_pool=64
+        )
         hits = res.get("hits") if isinstance(res, dict) else []
         if not isinstance(hits, list):
             return "", []
+        hits = [
+            h
+            for h in hits
+            if isinstance(h, dict) and str(h.get("tag") or "").strip().lower() != "task_checkpoint"
+        ][:top_k]
         lines: list[str] = []
         used = 0
         slim_hits: list[dict[str, Any]] = []
@@ -164,7 +172,11 @@ def format_environment_report_for_prompt(report: Any) -> str:
         parts.append("【安全锁（嗅探摘要）】\n" + sl)
     mem = str(report.get("memory_excerpt") or "").strip()
     if mem:
-        parts.append("【本地经验（检索摘要）】\n" + mem)
+        parts.append(
+            "【本地经验（检索摘要）】\n"
+            + mem
+            + "\n（已排除 compaction 会话摘要，避免过时目录快照当事实。）"
+        )
     _sem_raw = report.get("semantic_layer")
     if isinstance(_sem_raw, dict) and _sem_raw:
         try:

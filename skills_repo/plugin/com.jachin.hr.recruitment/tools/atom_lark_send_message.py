@@ -1,4 +1,4 @@
-"""
+﻿"""
 原子 Tool: atom_lark_send_message
 让 Lark 机器人主动发言：发送固定文案，或使用阿里百炼生成回复后发送。
 
@@ -132,8 +132,8 @@ def atom_lark_send_message(
     :param text: 直接发送的文案（与 prompt 二选一）
     :param prompt: 用户提问/上下文，use_llm=True 时用百炼生成回复后发送
     :param use_llm: 是否用阿里百炼生成回复（需 prompt）
-    :param chat_id: 目标 chat_id，不填则用 LARK_CHAT_ID
-    :param receive_id_type: chat_id（群/单聊）或 user_id
+    :param chat_id: 目标 chat_id / open_id / 邮箱 / 手机，不填则用 LARK_CHAT_ID（**勿填人名**）
+    :param receive_id_type: chat_id、open_id 等与飞书 im 消息 API 一致
     :return: {"success": bool, "message": str, "error": str|None}
     """
     _ensure_dotenv_loaded()
@@ -152,7 +152,20 @@ def atom_lark_send_message(
         return {"success": False, "message": "", "error": "请提供 text 或 prompt（use_llm=True 时需 prompt）"}
 
     try:
-        token = _get_tenant_access_token()
+        _ensure_l3_importable()
+        from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_lark_credentials
+        from l3_node.channels.lark.receive_resolve import normalize_lark_im_receive
+
+        aid, sec, yb = resolve_lark_credentials()
+        if not aid or not sec:
+            return {"success": False, "message": "", "error": "请配置 LARK_APP_ID / LARK_APP_SECRET"}
+        base = yb or get_lark_api_base()
+        token = get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
+        n_rid, n_rt, n_err = normalize_lark_im_receive(target, receive_id_type, token=token, api_base=base)
+        if n_err:
+            return {"success": False, "message": "", "error": n_err}
+        target = n_rid
+        receive_id_type = n_rt
         ok = _send_lark_message(token, target, to_send, receive_id_type)
         if ok:
             return {"success": True, "message": to_send, "error": None}

@@ -15,6 +15,8 @@ import { OmniReasoningChain } from "./OmniReasoningChain";
 import type { RiskLevel } from "../Chat/ChatUI";
 import type { CoreVisualState, ToolFlashKind } from "../../hooks/useJachinCoreState";
 import type { SensoryPayload } from "../../hooks/useSensoryWebSocket";
+import { desktopOmniUi, type DesktopOmniUiStrings } from "../../utils/desktopUiI18n";
+import { getAssistantReasoningForDisplay } from "../../utils/reasoningStreamSplit";
 export enum CorePhase {
   IDLE = "IDLE",
   THINKING = "THINKING",
@@ -82,6 +84,8 @@ export interface OmniCyberChatShellProps {
   currentSessionId?: string | null;
   onSelectSession?: (id: string) => void;
   onDeleteSession?: (id: string) => void;
+  /** 与 Horizon 语言菜单联动（默认中文） */
+  ui?: DesktopOmniUiStrings;
 }
 
 export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
@@ -120,6 +124,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   currentSessionId = null,
   onSelectSession,
   onDeleteSession,
+  ui = desktopOmniUi.zh,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -172,7 +177,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
                   className="absolute inset-0 z-[25] bg-black/50"
-                  aria-label="关闭会话列表"
+                  aria-label={ui.closeSessionList}
                   onClick={() => onToggleSessionDrawer()}
                 />
                 <motion.aside
@@ -195,7 +200,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                         className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/15 py-2.5 text-center font-mono text-[11px] font-medium text-cyan-100 shadow-[0_0_20px_rgba(34,211,238,0.12)] transition-[box-shadow,background-color] hover:border-cyan-400/55 hover:bg-cyan-500/25"
                       >
                         <Plus className="h-3.5 w-3.5 shrink-0" strokeWidth={2.4} />
-                        发起新对话
+                        {ui.newChatSidebar}
                       </button>
                     ) : null}
                   </div>
@@ -217,12 +222,12 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                                 : "border-l-transparent border-transparent text-slate-400 hover:border-white/10 hover:bg-white/[0.06] hover:text-slate-200"
                             }`}
                           >
-                            <span className="line-clamp-2">{s.title || "新对话"}</span>
+                            <span className="line-clamp-2">{s.title || ui.newChatFallback}</span>
                           </button>
                           {onDeleteSession != null ? (
                             <button
                               type="button"
-                              title="删除会话"
+                              title={ui.deleteSession}
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -253,7 +258,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               {onToggleSessionDrawer != null ? (
                 <button
                   type="button"
-                  title="会话历史"
+                  title={ui.sessionHistory}
                   data-tauri-drag-region="false"
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
@@ -268,7 +273,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               ) : onNewChat != null ? (
                 <button
                   type="button"
-                  title="新建对话"
+                  title={ui.newChatTitle}
                   data-tauri-drag-region="false"
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
@@ -291,7 +296,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               onPointerDown={(e) => e.stopPropagation()}
             >
               {devToolbar != null ? devToolbar : null}
-              <WindowControls onCloseOverride={onRequestDismiss} />
+              <WindowControls onCloseOverride={onRequestDismiss} onMinimizeOverride={onRequestDismiss} />
             </div>
           </div>
 
@@ -307,9 +312,9 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   className="relative z-20 overflow-hidden border-t border-red-500/30"
                 >
                   <div className="space-y-3 bg-red-950/40 p-3">
-                    <p className="text-center text-xs font-semibold tracking-wide text-red-300">HITL · 需人工授权</p>
+                    <p className="text-center text-xs font-semibold tracking-wide text-red-300">{ui.hitlTitle}</p>
                     <p className="max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-slate-300">
-                      {hitlPending.content || "[高危操作待确认]"}
+                      {hitlPending.content || ui.hitlFallback}
                     </p>
                     <div className="flex justify-center gap-2">
                       <button
@@ -317,14 +322,14 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                         className="rounded-lg bg-emerald-600/80 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
                         onClick={() => onHitlResolve(true)}
                       >
-                        授权通过
+                        {ui.hitlApprove}
                       </button>
                       <button
                         type="button"
                         className="rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-100 hover:bg-slate-600"
                         onClick={() => onHitlResolve(false)}
                       >
-                        拦截销毁
+                        {ui.hitlReject}
                       </button>
                     </div>
                   </div>
@@ -336,7 +341,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               <div className="relative z-10 flex flex-col gap-2 px-3 py-2">
                 {messages.length === 0 && (
                   <p className="text-center text-[11px] text-cyan-500/40 font-mono tracking-wide">
-                    在此输入或语音，对话将按轮次显示
+                    {ui.emptyThreadHint}
                   </p>
                 )}
                 {messages.map((msg, idx) => {
@@ -352,13 +357,19 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                     );
                   }
                   if (msg.role === "assistant") {
+                    const reasoningChainText = getAssistantReasoningForDisplay(msg);
                     return (
                       <div key={`${msg.timestamp}-${idx}`} className="flex justify-start">
                         <div className="max-w-[92%] rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-sm shadow-inner">
-                          {!!msg.reasoning?.trim() && (
+                          {!!reasoningChainText.trim() && (
                             <OmniReasoningChain
-                              text={msg.reasoning}
+                              text={reasoningChainText}
                               isStreaming={isLastAssistant && isTyping}
+                              labels={{
+                                chain: ui.reasoningChain,
+                                expand: ui.reasoningExpand,
+                                updating: ui.reasoningUpdating,
+                              }}
                             />
                           )}
                           <div className="break-words leading-relaxed text-cyan-50/95 [&_.markdown-content]:font-medium">
@@ -384,11 +395,15 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               <div className="relative z-10 mx-3 mb-2 flex flex-col gap-1 text-[10px]">
                 {isVadActive && (
                   <div className="rounded border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-amber-300/90">
-                    VAD 监听中…
+                    {ui.vadListening}
                   </div>
                 )}
                 {recordingStatus && (
-                  <div className={recordingStatus.includes("错误") ? "text-red-300" : "text-cyan-300/90"}>
+                  <div
+                    className={
+                      /错误|error/i.test(recordingStatus) ? "text-red-300" : "text-cyan-300/90"
+                    }
+                  >
                     {recordingStatus}
                   </div>
                 )}
@@ -490,7 +505,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   e.stopPropagation();
                   onStopGeneration?.();
                 }}
-                title="停止生成"
+                title={ui.stopGeneration}
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/5 bg-white/5 text-purple-400/80 transition-all duration-300 hover:bg-purple-500/20 hover:text-white hover:shadow-[0_0_15px_rgba(168,85,247,0.3)]"
               >
                 <Square className="h-4 w-4 fill-current" strokeWidth={2.25} />
@@ -519,7 +534,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                 e.stopPropagation();
                 onOpenConsole();
               }}
-              title="大控制台"
+              title={ui.largeConsole}
               className="p-2 rounded-full text-slate-400 border border-white/10 hover:text-cyan-300"
             >
               <LayoutDashboard className="w-4 h-4" />
@@ -532,7 +547,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               e.stopPropagation();
               onOpenConsole?.();
             }}
-            title="设置（控制台）"
+            title={ui.settingsConsole}
             className="p-2 rounded-full text-slate-500 border border-white/10 hover:text-cyan-300"
           >
             <Settings2 className="w-4 h-4" />

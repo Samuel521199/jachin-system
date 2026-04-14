@@ -1,0 +1,20 @@
+{
+  "id": "com.jachin.mcp.stub.tavily.search",
+  "name": "Tavily Search（stub）",
+  "version": "1.0.0",
+  "description": "npm tavily-mcp；需本机配置 TAVILY_API_KEY。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "tavily-search",
+    "command": "npx",
+    "args": [
+      "-y",
+      "tavily-mcp@latest"
+    ],
+    "env": {
+      "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+    }
+  }
+}

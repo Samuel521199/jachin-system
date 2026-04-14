@@ -1,33 +1,20 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import {
+  nexusPlaza,
+  nexusPlazaMockBlueprints,
+  nexusPlazaMockLogs,
+  type NexusUiLang,
+} from "@/lib/nexus-ui-i18n";
 
-// Mock: 边缘智能体自治日志 (Machine's Twitter)
-const MOCK_LOGS = [
-  "[1分钟前] 边缘智能体 0x8A9F 成功过滤 1000 条恶意指令",
-  "[2分钟前] 蓝图 enterprise-legal-v1 被 Fork 23 次",
-  "[3分钟前] 边缘智能体 0x3B2C 完成 RAG 索引更新",
-  "[5分钟前] 新蓝图「傲娇女仆语音包」上架 Neural Market",
-  "[8分钟前] 边缘智能体 0x7D1E 心跳正常，0 次上传",
-  "[10分钟前] 魔法师 @prompt_mage 发布《企业级高管私人助理 v1.0》",
-  "[12分钟前] 悬赏任务 #B042 已被极客接单",
-  "[15分钟前] 边缘智能体 0x8A9F 成功过滤 1000 条恶意指令",
-];
+type PlazaBlueprint = (typeof nexusPlazaMockBlueprints)[NexusUiLang][number];
 
-// Mock: 蓝图瀑布流数据
-const MOCK_BLUEPRINTS = [
-  { id: "1", name: "企业级高管私人助理 v1.0", deploys: 12500, author: "prompt_mage", avatar: "🧙", sbt: "金牌魔法师" },
-  { id: "2", name: "低成本离线智慧门店方案", deploys: 8200, author: "edge_architect", avatar: "🏗️", sbt: "蓝图架构师" },
-  { id: "3", name: "全自动 AI 心理医生", deploys: 5600, author: "flow_composer", avatar: "🎭", sbt: "灵魂注入者" },
-  { id: "4", name: "傲娇女仆语音包", deploys: 18900, author: "vits_master", avatar: "🎤", sbt: "声纹雕刻师" },
-  { id: "5", name: "少儿英语外教蓝图", deploys: 4200, author: "edu_wizard", avatar: "📚", sbt: "教育魔法师" },
-  { id: "6", name: "自动挂断诈骗电话 AI 路由器", deploys: 3100, author: "security_geek", avatar: "🛡️", sbt: "防线守卫" },
-];
-
-function TickerTape({ logs }: { logs: string[] }) {
+function TickerTape({ logs }: { logs: readonly string[] }) {
   const duplicated = [...logs, ...logs];
   return (
     <div className="overflow-hidden border-y border-cyan-500/20 bg-black/40 backdrop-blur-sm">
@@ -49,9 +36,13 @@ function TickerTape({ logs }: { logs: string[] }) {
 function BlueprintCard({
   blueprint,
   index,
+  deployLabel,
+  forkLabel,
 }: {
-  blueprint: (typeof MOCK_BLUEPRINTS)[0];
+  blueprint: PlazaBlueprint;
   index: number;
+  deployLabel: string;
+  forkLabel: string;
 }) {
   const [hovered, setHovered] = useState(false);
   return (
@@ -89,13 +80,13 @@ function BlueprintCard({
           href={`/market?deploy=${blueprint.id}`}
           className="flex-1 py-2 rounded-lg text-center text-sm font-medium bg-cyan-500/20 text-cyan-400 border border-cyan-400/40 hover:bg-cyan-500/30 transition-colors"
         >
-          ⚡ 部署至边缘智能体
+          {deployLabel}
         </Link>
         <button
           type="button"
           className="flex-1 py-2 rounded-lg text-sm font-medium bg-purple-500/20 text-purple-400 border border-purple-400/40 hover:bg-purple-500/30 transition-colors"
         >
-          🧬 一键 Fork
+          {forkLabel}
         </button>
       </motion.div>
     </motion.div>
@@ -103,7 +94,10 @@ function BlueprintCard({
 }
 
 export default function PlazaPage() {
-  const [logs] = useState(MOCK_LOGS);
+  const { lang } = useNexusUiLang();
+  const t = nexusPlaza[lang];
+  const logs = nexusPlazaMockLogs[lang];
+  const mockBlueprints = nexusPlazaMockBlueprints[lang];
 
   return (
     <div className="min-h-screen relative overflow-hidden">
@@ -133,16 +127,22 @@ export default function PlazaPage() {
       <main className="max-w-7xl mx-auto px-6 py-12">
         <div className="mb-10">
           <h1 className="text-3xl font-bold text-white/95 tracking-tight mb-2">
-            神经元广场
+            {t.title}
           </h1>
           <p className="text-white/50 text-sm">
-            AI 时代的「魔法师抄作业」视觉盛宴 · 复合蓝图展示与一键 Fork
+            {t.subtitle}
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {MOCK_BLUEPRINTS.map((bp, i) => (
-            <BlueprintCard key={bp.id} blueprint={bp} index={i} />
+          {mockBlueprints.map((bp, i) => (
+            <BlueprintCard
+              key={bp.id}
+              blueprint={bp}
+              index={i}
+              deployLabel={t.deploy}
+              forkLabel={t.fork}
+            />
           ))}
         </div>
       </main>

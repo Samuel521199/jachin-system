@@ -1,0 +1,18 @@
+{
+  "id": "com.jachin.mcp.stub.official.sqlite.npx",
+  "name": "MCP SQLite npm（stub）",
+  "version": "1.0.0",
+  "description": "npm mcp-sqlite；数据库路径使用工作区内 sqlite。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-sqlite-npx",
+    "command": "npx",
+    "args": [
+      "-y",
+      "mcp-sqlite",
+      "__JACHIN_WORKSPACE__/test_db.sqlite"
+    ]
+  }
+}

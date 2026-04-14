@@ -12,25 +12,40 @@ export type JachinNotificationPayload = {
   body: string;
 };
 
+/** 无人点击时：toast 展示满 3 秒后收起，再稍延迟隐藏子窗口（避免一闪而过） */
 const AUTO_HIDE_MS = 3000;
-const HIDE_WINDOW_AFTER_MS = 380;
+const HIDE_WINDOW_AFTER_MS = 800;
 
-function playCyberChime() {
+/** Web Audio 合成「全息玻璃敲击音」：双高频正弦 + 快指数衰减，无外部资源 */
+function playJachinNotify() {
   try {
-    const ctx = new AudioContext();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "sine";
-    o.frequency.setValueAtTime(880, ctx.currentTime);
-    o.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.06);
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.22);
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.start(ctx.currentTime);
-    o.stop(ctx.currentTime + 0.24);
-    setTimeout(() => void ctx.close().catch(() => {}), 400);
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+    const osc1 = audioCtx.createOscillator();
+    const osc2 = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(1200, audioCtx.currentTime);
+
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(1760, audioCtx.currentTime);
+
+    gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.15, audioCtx.currentTime + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+
+    osc1.connect(gainNode);
+    osc2.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    osc1.start();
+    osc2.start();
+
+    osc1.stop(audioCtx.currentTime + 0.4);
+    osc2.stop(audioCtx.currentTime + 0.4);
+
+    setTimeout(() => void audioCtx.close().catch(() => {}), 500);
   } catch {
     /* 非安全上下文或禁音 */
   }
@@ -68,7 +83,7 @@ export function NotificationApp() {
   const onPayload = useCallback(
     (p: JachinNotificationPayload) => {
       cancelHideWindow();
-      playCyberChime();
+      playJachinNotify();
       const title = typeof p.title === "string" ? p.title : "Jachin";
       const body = typeof p.body === "string" ? p.body : "";
       setToast({ title, body, key: `${Date.now()}-${title.slice(0, 12)}` });

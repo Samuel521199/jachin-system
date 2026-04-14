@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — 客户端与 Token 管理
 """
 from __future__ import annotations
@@ -19,39 +19,45 @@ def get_lark_api_base() -> str:
 
 LARK_API_BASE = "https://open.larksuite.com/open-apis"  # 兼容旧代码，新逻辑用 get_lark_api_base()
 
+_PLUGIN_DOTENV_MERGED = False
+
 
 def _ensure_dotenv_loaded() -> None:
-    """若 LARK 相关变量未设置，尝试从项目根或插件 .env 加载"""
-    if os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID"):
+    """合并 skills_repo/plugin/.env 等路径（override=False），补全 LARK_CHAT_ID 等。
+
+    进程启动时已从仓库根 .env 注入 LARK_APP_ID 时，旧实现会直接 return，导致 **从未读取**
+    ``skills_repo/plugin/.env`` 中的 LARK_CHAT_ID，util:lark_send_text 误报未配置。
+    """
+    global _PLUGIN_DOTENV_MERGED
+    if _PLUGIN_DOTENV_MERGED:
         return
+    _PLUGIN_DOTENV_MERGED = True
     try:
         from dotenv import load_dotenv
 
-        try:
-            from l3_node.paths import get_app_root
+        from l3_node.paths import get_app_root
 
-            root = get_app_root()
-            jachin = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
-            env_candidates = [
-                root / ".env",
-                root / "skills_repo" / "plugin" / "com.jachin.hr.recruitment" / ".env",
-                jachin / "l3_mcp_cache" / "com.jachin.hr.recruitment" / ".env",
-            ]
-            try:
-                from l3_node.hr_loader import _get_hr_recruitment_plugin_root
-                hr_root = _get_hr_recruitment_plugin_root()
-                if hr_root:
-                    env_candidates.insert(2, hr_root / ".env")  # 优先 l3_mcp_cache（含 UUID 目录）
-            except Exception:
-                pass
-            for p in env_candidates:
-                if p.exists():
-                    load_dotenv(p)
-                    return
-        except ImportError:
+        root = get_app_root()
+        jachin = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
+        paths: list[Path] = [
+            root / "skills_repo" / "plugin" / ".env",
+            root / "skills_repo" / "plugin" / "com.jachin.hr.recruitment" / ".env",
+            jachin / "l3_mcp_cache" / "com.jachin.hr.recruitment" / ".env",
+        ]
+        try:
+            from l3_node.hr_loader import _get_hr_recruitment_plugin_root
+
+            hr_root = _get_hr_recruitment_plugin_root()
+            if hr_root:
+                paths.insert(1, hr_root / ".env")
+        except Exception:
             pass
-        load_dotenv()
+        for p in paths:
+            if p.is_file():
+                load_dotenv(p, override=False)
     except ImportError:
+        pass
+    except Exception:
         pass
 
 

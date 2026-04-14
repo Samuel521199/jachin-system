@@ -1,0 +1,14 @@
+﻿{
+  "id": "com.jachin.mcp.stub.sendmail.smtp",
+  "name": "MCP Sendmail（SMTP）",
+  "version": "1.0.0",
+  "description": "L3_LOCAL：npx 拉起 sendmail-mcp（Nodemailer）。需在环境变量或 L3 中配置 SMTP_HOST、SMTP_PORT、SMTP_USER、SMTP_PASS 等。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "sendmail-smtp",
+    "command": "npx",
+    "args": ["-y", "sendmail-mcp"]
+  }
+}

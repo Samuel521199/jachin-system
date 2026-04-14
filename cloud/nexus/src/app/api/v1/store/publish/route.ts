@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -7,6 +7,7 @@ import { getDb, isDatabaseConfigured } from "@/db";
 import { pluginsRegistry } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { isIpfsConfigured, uploadToIpfs } from "@/lib/ipfs";
+import { appendL1DebugLine, appendL1DebugError } from "@/lib/l1-debug-file-log";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +20,17 @@ interface PluginJson {
   name: string;
   version?: string;
   description?: string;
-  item_type?: "SKILL" | "MCP";
+  item_type?: "SKILL" | "MCP" | "TOOL";
   type?: string;
   runtime_tier?: "L3_LOCAL" | "L2_GATEWAY" | "L1_CLOUD";
   required_mcps?: string[];
+}
+
+function normalizePluginItemType(raw: string): "SKILL" | "MCP" | "TOOL" {
+  const u = String(raw).toUpperCase();
+  if (u === "MCP") return "MCP";
+  if (u === "TOOL") return "TOOL";
+  return "SKILL";
 }
 
 /**
@@ -110,8 +118,7 @@ function parseAndValidateZip(zipBuffer: Buffer): {
   }
 
   const itemType = (p.item_type ?? p.type ?? "skill") as string;
-  const itemTypeNorm =
-    String(itemType).toUpperCase() === "MCP" ? "MCP" : "SKILL";
+  const itemTypeNorm = normalizePluginItemType(itemType);
 
   const runtimeTier = (p.runtime_tier ?? "L3_LOCAL") as string;
   const runtimeTierNorm =
@@ -282,7 +289,7 @@ function validateMetadataFromForm(
   const version = (formData.get("version") as string | null)?.trim() ?? "1.0.0";
   const description = (formData.get("description") as string | null)?.trim() ?? null;
   const itemTypeRaw = (formData.get("item_type") as string | null) ?? "SKILL";
-  const itemTypeNorm = String(itemTypeRaw).toUpperCase() === "MCP" ? "MCP" : "SKILL";
+  const itemTypeNorm = normalizePluginItemType(itemTypeRaw);
 
   if (!id || !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/i.test(id)) {
     throw new PublishError(
@@ -332,7 +339,14 @@ export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get("Authorization");
     const developerId = resolveDeveloperFromToken(authHeader);
+    appendL1DebugLine("store.publish", {
+      msg: "request",
+      has_auth: Boolean(authHeader?.startsWith("Bearer ")),
+      developer_ok: Boolean(developerId),
+      nexus_auto_approve: process.env.NEXUS_AUTO_APPROVE === "1",
+    });
     if (!developerId) {
+      appendL1DebugLine("store.publish", { msg: "reject", reason: "INVALID_TOKEN" });
       return NextResponse.json(
         { success: false, error: "Unauthorized", code: "INVALID_TOKEN" },
         { status: 401 }
@@ -451,6 +465,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (!isDatabaseConfigured()) {
+      appendL1DebugLine("store.publish", {
+        msg: "no_database",
+        plugin_id: pluginJson.id,
+        item_type: pluginJson.item_type,
+      });
       return NextResponse.json({
         success: true,
         message: shadowOnly ? "影子上传接收成功（数据库未配置）" : "发布接收成功（数据库未配置，未入库）",
@@ -477,7 +496,7 @@ export async function POST(request: NextRequest) {
     const row = {
       pluginId: pluginJson.id,
       version: pluginJson.version ?? "1.0.0",
-      itemType: (pluginJson.item_type ?? "SKILL") as "SKILL" | "MCP",
+      itemType: (pluginJson.item_type ?? "SKILL") as "SKILL" | "MCP" | "TOOL",
       name: pluginJson.name,
       description: pluginJson.description ?? null,
       developerId,
@@ -496,25 +515,41 @@ export async function POST(request: NextRequest) {
       updatedAt: new Date(),
     };
 
+    let itemUuid: string | undefined;
     if (existing.length > 0) {
       await db
         .update(pluginsRegistry)
         .set(row)
         .where(eq(pluginsRegistry.pluginId, pluginJson.id));
+      itemUuid = existing[0].id;
     } else {
-      await db.insert(pluginsRegistry).values(row);
+      const ins = await db.insert(pluginsRegistry).values(row).returning({ id: pluginsRegistry.id });
+      itemUuid = ins[0]?.id;
     }
+
+    appendL1DebugLine("store.publish", {
+      msg: "upsert_ok",
+      plugin_id: pluginJson.id,
+      item_id: itemUuid,
+      item_type: row.itemType,
+      status: row.status,
+      visibility: row.visibility,
+      shadow_only: shadowOnly,
+    });
 
     return NextResponse.json({
       success: true,
       message: shadowOnly ? "影子上传成功，私有包已登记，实体请侧载到 L2" : "发布成功",
       plugin_id: pluginJson.id,
+      item_id: itemUuid,
+      status: row.status,
       name: pluginJson.name,
       version: pluginJson.version,
       package_url: packageUrl ?? undefined,
     });
   } catch (err) {
     console.error("[store/publish] Error:", err);
+    appendL1DebugError("store.publish", err);
     return NextResponse.json(
       {
         success: false,

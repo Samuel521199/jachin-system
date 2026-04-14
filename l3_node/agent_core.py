@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -46,6 +46,10 @@ from l3_node.primitives.tools.loader import tool_entry_looks_like_sqlite_family
 from l3_node.primitives.tools.tool_pool import (
     assemble_tool_pool,
     expand_allowed_skills_with_implicit_sqlite_read,
+)
+from l3_node.intent_gateway.pushback_copy import (
+    L3_SERVICE_ETHOS_RETRY_BLOCK,
+    L3_SERVICE_ETHOS_RETRY_BLOCK_SLIM,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,11 +160,30 @@ REACT_FOOTER_DESKTOP_NOTIFY_BLOCK = (
     "【本机弹窗/通知】用户要**立即**在电脑上弹出消息框、桌面通知、看得见摸得着的提醒时："
     "若工具列表含 **util:desktop_message_box**，必须调用并传入 **message**（必填）、**title**（可选）；"
     "**禁止**谎称「无法弹窗」「没有操作系统级消息」或仅能飞书/闹钟替代而不先检查本工具。"
-    "说明边界：**定时到点**（如「今天 18:10 再弹」）本工具不会自动等待——须用户用系统闹钟/计划任务，或到时仍有进程调用本工具；"
-    "可如实告知该边界，但**立即弹一次**演示或确认权限时应直接调用工具。\n"
+    "若用户要**指定时刻/延迟**在 Jachin 桌面端右下角哨兵弹出（本机 Jachin 桌面已运行）："
+    "若工具列表含 **util:schedule_desktop_reminder**，应调用并传入 **body**（必填）、**title**（可选），"
+    "以及 **fire_at_unix_ms**、**delay_seconds** 或 **fire_at_iso** 之一；"
+    "勿与仅立即弹窗的 **util:desktop_message_box** 混淆。"
+    "说明边界：无 Jachin 桌面或未监听 127.0.0.1:8002 时，定时注册会失败，可如实说明并请用户用系统闹钟或 **util:desktop_message_box** 立即提醒。\n"
 )
 REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM = (
-    "【桌面提醒】含 **util:desktop_message_box** 则须调用（message 必填）；禁谎称无法弹窗；定时到点需闹钟/计划任务。\n"
+    "【桌面提醒】立即弹窗用 **util:desktop_message_box**（message 必填）；"
+    "定时哨兵用 **util:schedule_desktop_reminder**（body + 时刻/延迟）；禁谎称无法弹窗。\n"
+)
+REACT_FOOTER_LARK_PUSH_BLOCK = (
+    "【飞书/Lark 推送】用户要「总结网页/文章并发到飞书、发到 Lark、发到我的飞书会话」等："
+    "若工具列表含 **util:stealth_extract**（或 MCP 读 URL）与 **util:lark_send_text**，应**连续调用**："
+    "先取网页正文，再在模型内按用户字数要求压缩，最后 **util:lark_send_text** 传入 **text**（摘要正文）。"
+    "**chat_id/receive_id** 须为飞书 **oc_/ou_**、**邮箱**或**手机号**，**禁止**把人名/昵称（如 vivian）当作 ID；"
+    "若用户只提供姓名，须先 **util:lark_search_user**（唯一则取 open_id）；多结果则列出并请用户选；"
+    "无映射时也可问邮箱/手机再 **util:lark_resolve_user**，或请用户给出 **ou_**。"
+    "未指定接收者则用环境变量 **LARK_CHAT_ID** / **LARK_USER_OPEN_ID**（与镜像同源时由宿主注入）。"
+    "须已配置 **LARK_APP_ID** / **LARK_APP_SECRET** 且应用具备 im:message、通讯录解析权限、机器人可发目标会话。"
+    "**禁止**在 Action Input 中写入 App Secret；密钥仅来自宿主环境。\n"
+)
+REACT_FOOTER_LARK_PUSH_BLOCK_SLIM = (
+    "【飞书推送】**util:stealth_extract** → **util:lark_send_text**；chat_id 须 oc_/ou_/邮箱/手机，**禁人名**；"
+    "仅姓名时先 **util:lark_search_user**（多结果让用户选）或邮箱/手机 **util:lark_resolve_user**；禁写密钥。\n"
 )
 
 # L5 本地记忆梦境合并：用户问「触发条件」时易与 150 条阈值混淆，须置顶强调 force 路径（与 memory_compactor / ws_server 一致）
@@ -260,6 +283,34 @@ def _memory_attention_route_mode(user_text: str) -> str:
 def _tools_include_sqlite_mcp(tools: list[dict[str, Any]] | None) -> bool:
     """是否可见 MCP SQLite（与 loader.tool_entry_looks_like_sqlite_family 一致）。"""
     return any(tool_entry_looks_like_sqlite_family(t) for t in (tools or []))
+
+
+def _tools_include_workspace_filesystem_for_prompt(tools: list[dict[str, Any]] | None) -> bool:
+    """是否可见工作区文件类工具，用于注入「须实地列目录、勿信被动记忆里的目录快照」铁律。"""
+    if not tools:
+        return False
+    needles = (
+        "write_file",
+        "list_directory",
+        "edit_file",
+        "read_text_file",
+        "read_multiple_files",
+        "search_files",
+        "get_file_info",
+        "move_file",
+        "directory_tree",
+        "list_allowed_directories",
+        "fs_write",
+        "fs_read",
+        "shell_exec",
+    )
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or "").lower()
+        if any(n in tid for n in needles):
+            return True
+    return False
 
 
 def _last_non_system_user_text(messages: list[dict[str, Any]], *, max_scan: int = 32) -> str:
@@ -1168,6 +1219,52 @@ def _react_slice_first_action_step(text: str) -> tuple[str, bool]:
     return text[:cut].rstrip(), True
 
 
+def _try_coerce_json_tool_intent_to_native(text: str) -> dict[str, Any] | None:
+    """
+    tools/流式 模式下模型可能输出裸 JSON，例如
+    {"thought": "...", "action": "core:shell_exec", "action_input": {"command": "..."}}
+    而无 Thought:/Action: 行。若整段当 answer，会导致工具不执行且把 thought 泄漏给用户。
+
+    满足「显式 action + action_input/input」时转为 native，由正常路由执行工具。
+    """
+    raw = (text or "").strip()
+    if not raw.startswith("{"):
+        return None
+    s = raw
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s, count=1, flags=re.IGNORECASE).strip()
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3].rstrip()
+    try:
+        o = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(o, dict):
+        return None
+    tid = str(o.get("action") or o.get("tool") or o.get("tool_id") or "").strip()
+    if not tid:
+        return None
+    # 仅归一「命名空间工具 id」（含 :），避免用户/模型最终 JSON 里业务字段 "action":"completed" 被误当工具。
+    if ":" not in tid:
+        return None
+    inp_obj = None
+    for k in ("action_input", "input", "arguments", "args"):
+        if k in o:
+            inp_obj = o.get(k)
+            break
+    if inp_obj is None:
+        return None
+    if isinstance(inp_obj, (dict, list)):
+        inp_str = json.dumps(inp_obj, ensure_ascii=False)
+    else:
+        inp_str = str(inp_obj)
+    logger.info(
+        "[L3 Agent][ReAct 解析] 已将裸 JSON 工具意图归一为 native tool=%s（避免当 Final Answer 泄漏 thought）",
+        tid[:80],
+    )
+    return {"type": "native", "tool": tid, "input": inp_str}
+
+
 def _parse_action(
     llm_output: str,
     skills: list[dict[str, Any]],
@@ -1177,6 +1274,11 @@ def _parse_action(
     pure_json_contract: bool = False,
 ) -> dict[str, Any] | None:
     text = (llm_output or "").strip()
+    # 须始终在 ReAct 解析前尝试裸 JSON → native（含 pure_json_contract：终端 JSON 契约下模型常只输出一行
+    # {"thought","action","action_input"}，若跳过则 parsed=None、工具永不执行，下一轮却可直接 Final Answer 谎称已写盘）。
+    _coerced = _try_coerce_json_tool_intent_to_native(text)
+    if _coerced is not None:
+        return _coerced
     # 禁止先于 Action 解析 Final Answer：否则模型在一轮里伪造「Action + 假 Observation + write 成功 + Final Answer」
     # 会整段命中 Final Answer，工具从未执行，却向用户声称已写盘（见 terminal_turn_debug 仅 parsed=answer 无 tool 调度）。
 
@@ -2659,6 +2761,7 @@ def _build_system_prompt(
     allow_coordinate: bool = True,
     prompt_cycle: int | None = None,
     recruitment_longform: bool = True,
+    hr_domain_prompt_active: bool = True,
     prompt_style: str = "full",
     pure_json_contract: bool = False,
     gateway_inject: str = "",
@@ -2670,7 +2773,6 @@ def _build_system_prompt(
     experience_few_shots: str = "",
     realtime_web_grounding_block: str = "",
     domain_experts: list[str] | None = None,
-    hr_domain_prompt_active: bool = True,
 ) -> str:
     from l3_node.prompt_compose import (
         SuffixChunk,
@@ -2922,15 +3024,38 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 【短时查询勿投递后台】查某地**当日实况天气、气温**等，**必须**在当前会话前台 **Action: util:get_weather_lite**（勿将 require_skills 仅填 util:get_weather_lite 后 submit_background_task——宿主会拒绝），避免用户先看到「任务已排队」又与前台即时结果矛盾。后台任务完成事件可由客户端订阅 WebSocket 推送，但不应替代短时天气的前台直查。
 【联网检索·优先级】需要**全网时效/新闻/综合检索**时：**优先**使用工具列表中名称含 **tavily** 的 MCP 工具（语义搜索）；系统可能已在上下文中注入 `<realtime_web_search_results>`，请与之对齐，避免重复无效抓取。**mcp:fetch** 仅用于获取**单一已知 URL**的原文（兜底）；勿首选 fetch 拉 RSS/门户整页代替检索。
 【单页 URL 抓取】用户给出**具体 https 文章/网页链接**要抓正文、保存为文件时，**必须**使用 **mcp:fetch**（工具列表中可能显示为 ``fetch``），JSON 含 **url**。**禁止**为此调用 **mcp:atom_web_scraper**：后者为 BI/表格 SPA，依赖 Chrome **9222** 调试端口，用于普通头条/新闻页会误报 ECONNREFUSED。
-【前台同步预算】默认非豁免工具单次执行约 **5s** 超时；超时 Observation 会提示改走后台任务。"""
+【前台同步预算】默认非豁免工具单次执行约 **5s** 超时；超时 Observation 会提示改走后台任务。
+【工具结果真实性·落盘与 Shell】凡本机写 Word/文件、执行 **core:shell_exec**：**仅当本轮已出现工具 Observation 且表明成功**（如 **util:generate_office_doc** 返回 `"ok": true` 与 `file_path`；shell 的 `returncode` 为 **0** 且无未处理 stderr）时，Final Answer 才可用「已成功创建」「已执行」等措辞。**禁止**在从未收到成功 Observation、或上一轮工具失败/超时时，凭想象或历史摘要谎称已落盘。
+**core:shell_exec**：若 Observation 含 **returncode≠0**、stderr 含 `Traceback` / `ModuleNotFoundError` / `Error`，须视为失败并如实说明；可建议 `pip install` 缺失模块，或改用 **util:generate_office_doc** 等宿主工具；**禁止**忽略报错宣称成功。
+【长文 docx】优先 **util:generate_office_doc**；若用 Python 自写 .docx，勿在单行命令里塞数千字字符串，可先 **mcp:write_file** 写入 `.txt` 再短脚本读取生成；环境缺 `python-docx` 时须安装或走 **util:generate_office_doc**。"""
     if slim_mode:
         chat_task_hint = (
             "长耗时/大批量用 **core:submit_background_task**；进度 **core:check_background_task**。"
             "查实况天气须前台 **util:get_weather_lite**，勿仅为此投递后台（会被拒绝）。"
             "联网检索优先 **tavily** 类 MCP；**mcp:fetch** 仅兜底已知 URL。"
             "单页 URL 正文用 **mcp:fetch**，勿用 **atom_web_scraper**（需 Chrome 9222）。"
-            "前台同步工具默认约 5s 超时。\n"
+            "前台同步工具默认约 5s 超时。"
+            "写盘/shell：须 ok:true 或 returncode 0 才宣称成功；shell 报错勿谎称成功；长 docx 勿塞爆命令行。\n"
         )
+    if slim_mode and _tools_include_workspace_filesystem_for_prompt(tools):
+        chat_task_hint += (
+            "工作区删改：须凭 Observation，禁编造已删文件；先列目录再删；"
+            "按日期筛选时用本地时区/mtime，勿混 UTC。\n"
+        )
+    if not slim_mode and _tools_include_workspace_filesystem_for_prompt(tools):
+        _ws_fs = (
+            "\n【工作区物理状态】列出/删除/整理目录内文件时：**禁止**仅凭【本地记忆】【历史摘要】"
+            "[ENVIRONMENT_REPORT] 中的旧摘要推断当前磁盘上有哪些文件；"
+            "**必须先**调用 **mcp:list_directory**（或 **core:shell_exec** 的 `dir` / `Get-ChildItem`）获取**实时**列表与时间戳，再执行删除或写入。\n"
+            "【真实性铁律·工作区】Final Answer 中关于「删了哪些文件 / 还剩哪些」的陈述，**必须且只能**与**本轮最近一次**相关工具返回的 Observation 一致。"
+            "若 Observation 为空、未列出路径、exit 非 0、或明确未删除任何项，须如实说明；**严禁**根据旧会话、摘要或推测捏造「已删除 progress.md」等战果。\n"
+            "【先列后删】批量删除或按日期筛选前，须先得到**当前**目录清单（含文件名与修改时间），再基于该 Observation 选定目标；禁止未核对清单就盲写删除脚本。\n"
+            "【日期与 mtime】在 Windows 上优先用 **PowerShell** 展示本地时间，例如 "
+            "`Get-ChildItem -LiteralPath '...' -File | Select-Object Name,LastWriteTime`。"
+            "若用 Python 判断「今天」：用文件 `Path.stat().st_mtime` 与**本地时区**下「今日 0 点～现在」的 Unix 时间戳比较，或 "
+            "`datetime.now(tz=...)` 取本地日历日；**禁止**默认假设 UTC 的 `date.today()` 与文件系统本地日混用导致漏删。\n"
+        )
+        chat_task_hint += _ws_fs
 
     # 前缀缓存友好：静态/半静态在前，随会话变化的记忆与长 SOP 在后（工具段可单独截断以配合总硬帽）
     if pure_json_contract:
@@ -2975,6 +3100,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {delegate_hint}
 【数据输出】若用户要求合法 JSON：只输出一个 JSON 对象；不要用代码围栏，不要用井号标题行，不要附加说明。
 若必须调用工具：使用 Thought、Action、Action Input（JSON 参数），工具结果为 Observation，可多轮。工具结束后若仍需 JSON，则接下来只输出 JSON 本体，不要继续写 Action 行。
+也允许单独一行 **裸 JSON**（含 `"action":"util:…"/"core:…"` 与 `action_input`）作为唯一工具调用；**须等系统返回 Observation 后**才能在 Final Answer 宣称文件已创建或命令已成功。
 若明显无需工具：从首条助手回复起只输出用户要求的正文（如 JSON），不要 Thought、Action、Observation 等标签行。
 
 【严禁连续调用铁律】：你每次回复**只能输出一个** `Action` 和 `Action Input`！绝对禁止在同一段输出里连续写多个 `Action:`（须等系统返回 Observation 后再输出下一轮 Thought/Action）。违者解析器将只执行第一步，后续动作会被丢弃并导致行为与预期不符。
@@ -3156,7 +3282,8 @@ Final Answer: <最终回复>
                 "禁止井号标题行与无关套话。\n"
                 "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
                 f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{REACT_FOOTER_WEATHER_BLOCK_SLIM}"
-                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM}{_slim_sqlite}"
+                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM}{REACT_FOOTER_LARK_PUSH_BLOCK_SLIM}{_slim_sqlite}"
+                f"{L3_SERVICE_ETHOS_RETRY_BLOCK_SLIM}"
             )
         else:
             _react_footer_body = (
@@ -3177,7 +3304,8 @@ Final Answer: <最终回复>
                 "注意：工具执行后务必给出 Final Answer。禁止对 Observation 进行总结、概括或改写；若 Observation 已是完整报告，必须原样完整输出。"
                 "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
                 f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n{REACT_FOOTER_WEATHER_BLOCK}"
-                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK}"
+                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK}{REACT_FOOTER_LARK_PUSH_BLOCK}"
+                f"{L3_SERVICE_ETHOS_RETRY_BLOCK}"
             )
         # 与 [ENVIRONMENT_REPORT] / 参谋长人设同条件：页脚最末追加，优先于其它后缀块被保留（eviction_rank=100）
         if chief_advisor_mode:
@@ -3449,6 +3577,93 @@ async def _invoke_react_tool(
             pass
         except Exception as _ia_e:
             logger.debug("[L3 Agent] write_ack 自动注入跳过: %s", _ia_e)
+    # OpenAI function.name 不能含冒号，模型侧常为 util_lark_send_text；须先于 chat_id 注入归一成 util:lark_send_text
+    _tool_raw = (tool or "").strip()
+    if _tool_raw and ":" not in _tool_raw:
+        try:
+            from l3_node.primitives.mcp.registry import openapi_safe_function_name
+            from l3_node.primitives.tools.core_util_tools import util_tool_ids
+
+            for _ut in util_tool_ids():
+                if openapi_safe_function_name(_ut) == _tool_raw:
+                    tool = _ut
+                    logger.info("[L3 Agent] OpenAPI 工具名已归一 %s -> %s", _tool_raw, _ut)
+                    break
+            else:
+                for _st in ("sys:health_stats", "sys:list_env_safe"):
+                    if openapi_safe_function_name(_st) == _tool_raw:
+                        tool = _st
+                        logger.info("[L3 Agent] OpenAPI 工具名已归一 %s -> %s", _tool_raw, _st)
+                        break
+        except Exception as _norm_e:
+            logger.debug("[L3 Agent] OpenAPI 工具名归一跳过: %s", _norm_e)
+    # 桌面/WebSocket 镜像 chat_id 可注入 util:lark_send_text；若已配置 LARK_CHAT_ID 则**优先环境**（避免镜像会话与目标群不一致导致「机器人不在该会话」）
+    if (tool or "").strip() == "util:lark_send_text":
+        try:
+            try:
+                from l3_node.channels.lark.client import _ensure_dotenv_loaded
+
+                _ensure_dotenv_loaded()
+            except Exception:
+                pass
+            _env_lark = (
+                os.environ.get("LARK_CHAT_ID")
+                or os.environ.get("LARK_DEFAULT_CHAT_ID")
+                or os.environ.get("FEISHU_CHAT_ID")
+                or ""
+            ).strip()
+            _p2p_open = (
+                os.environ.get("LARK_USER_OPEN_ID")
+                or os.environ.get("LARK_DM_OPEN_ID")
+                or ""
+            ).strip()
+            _jd_lark = json.loads(_invoke_inp)
+            if isinstance(_jd_lark, dict):
+                _sess_cid = str(ctx.metadata.get("_lark_chat_id") or "").strip()
+                _has_cid = bool(
+                    str(_jd_lark.get("chat_id") or _jd_lark.get("receive_id") or "").strip()
+                )
+                # 私聊用用户 open_id（ou_）时由工具读环境，勿注入 oc_ 镜像以免覆盖
+                if not _has_cid and not _p2p_open:
+                    if _env_lark:
+                        _jd_lark["chat_id"] = _env_lark
+                        _invoke_inp = json.dumps(_jd_lark, ensure_ascii=False)
+                        logger.info(
+                            "[L3 Agent] util:lark_send_text 使用 LARK_CHAT_ID 环境变量（len=%d），未注入镜像会话",
+                            len(_env_lark),
+                        )
+                    elif _sess_cid:
+                        _jd_lark["chat_id"] = _sess_cid
+                        _invoke_inp = json.dumps(_jd_lark, ensure_ascii=False)
+                        logger.info(
+                            "[L3 Agent] util:lark_send_text 已注入镜像会话 chat_id len=%d",
+                            len(_sess_cid),
+                        )
+                elif not _has_cid and _p2p_open:
+                    logger.info(
+                        "[L3 Agent] util:lark_send_text 已配置 LARK_USER_OPEN_ID/LARK_DM_OPEN_ID，跳过 oc_ 注入",
+                    )
+        except json.JSONDecodeError:
+            pass
+        except Exception as _le:
+            logger.debug("[L3 Agent] lark_send_text chat_id 注入跳过: %s", _le)
+    _lark_bind = str(ctx.metadata.get("_lark_chat_id") or "")
+    if (tool or "").strip() == "util:lark_send_text":
+        try:
+            _jd_bind = json.loads(_invoke_inp)
+            if isinstance(_jd_bind, dict):
+                _cid_bind = str(_jd_bind.get("chat_id") or _jd_bind.get("receive_id") or "").strip()
+                if _cid_bind:
+                    _lark_bind = _cid_bind
+        except Exception:
+            pass
+    _lark_cv_tok = None
+    try:
+        from l3_node.channels.lark.turn_chat_context import bind_lark_chat_id_for_tools
+
+        _lark_cv_tok = bind_lark_chat_id_for_tools(_lark_bind)
+    except Exception:
+        _lark_cv_tok = None
     _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
@@ -3533,6 +3748,13 @@ async def _invoke_react_tool(
             _out = run_tool(tool, _invoke_inp, allowed_skills)
         return _out
     finally:
+        if _lark_cv_tok is not None:
+            try:
+                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
+
+                reset_lark_chat_id_for_tools(_lark_cv_tok)
+            except Exception:
+                pass
         if _out is not None:
             _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
             exec_trace(
@@ -3692,6 +3914,7 @@ async def _run_react_core(
                     allow_coordinate=False,
                     prompt_cycle=ctx.metadata.get("_prompt_cycle"),
                     recruitment_longform=_hr_act,
+                    hr_domain_prompt_active=_hr_act,
                     prompt_style=str(ctx.metadata.get("_react_prompt_style") or "full"),
                     pure_json_contract=bool(ctx.metadata.get("_pure_json_contract")),
                     gateway_inject=str(ctx.metadata.get("_gw_inject_stored") or ""),
@@ -3702,7 +3925,6 @@ async def _run_react_core(
                     experience_few_shots=_exp_verify,
                     realtime_web_grounding_block=str(_spe.get("realtime_web_grounding_block") or ""),
                     domain_experts=list(ctx.metadata.get("_domain_experts") or []),
-                    hr_domain_prompt_active=_hr_act,
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
@@ -6123,6 +6345,7 @@ async def run_agent(
             allow_coordinate=False,
             prompt_cycle=_mem_cycle,
             recruitment_longform=_recruit_longform,
+            hr_domain_prompt_active=_hr_domain_prompt_active,
             prompt_style=_prompt_style,
             pure_json_contract=_pure_json_contract,
             gateway_inject=_gw_inject,
@@ -6133,7 +6356,6 @@ async def run_agent(
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
-            hr_domain_prompt_active=_hr_domain_prompt_active,
         )
     else:
         system_prompt = _build_system_prompt(
@@ -6141,6 +6363,7 @@ async def run_agent(
             allow_delegate=True,
             prompt_cycle=_mem_cycle,
             recruitment_longform=_recruit_longform,
+            hr_domain_prompt_active=_hr_domain_prompt_active,
             prompt_style=_prompt_style,
             pure_json_contract=_pure_json_contract,
             gateway_inject=_gw_inject,
@@ -6151,7 +6374,6 @@ async def run_agent(
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
-            hr_domain_prompt_active=_hr_domain_prompt_active,
         )
 
     try:
@@ -6559,6 +6781,7 @@ async def run_agent(
                         allow_coordinate=False,
                         prompt_cycle=_mem_cycle,
                         recruitment_longform=_recruit_longform,
+                        hr_domain_prompt_active=_hr_domain_prompt_active,
                         prompt_style=_prompt_style,
                         pure_json_contract=_pure_json_contract,
                         gateway_inject=_gw_inject,
@@ -6569,7 +6792,6 @@ async def run_agent(
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
                         domain_experts=_domain_experts_list,
-                        hr_domain_prompt_active=_hr_domain_prompt_active,
                     )
                 else:
                     system_prompt = _build_system_prompt(
@@ -6577,6 +6799,7 @@ async def run_agent(
                         allow_delegate=True,
                         prompt_cycle=_mem_cycle,
                         recruitment_longform=_recruit_longform,
+                        hr_domain_prompt_active=_hr_domain_prompt_active,
                         prompt_style=_prompt_style,
                         pure_json_contract=_pure_json_contract,
                         gateway_inject=_gw_inject,
@@ -6587,7 +6810,6 @@ async def run_agent(
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
                         domain_experts=_domain_experts_list,
-                        hr_domain_prompt_active=_hr_domain_prompt_active,
                     )
 
         if not system_prompt and _system_prompt_override is None:
@@ -6598,6 +6820,7 @@ async def run_agent(
                     allow_coordinate=False,
                     prompt_cycle=_mem_cycle,
                     recruitment_longform=_recruit_longform,
+                    hr_domain_prompt_active=_hr_domain_prompt_active,
                     prompt_style=_prompt_style,
                     pure_json_contract=_pure_json_contract,
                     gateway_inject=_gw_inject,
@@ -6608,7 +6831,6 @@ async def run_agent(
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
                     domain_experts=_domain_experts_list,
-                    hr_domain_prompt_active=_hr_domain_prompt_active,
                 )
             else:
                 system_prompt = _build_system_prompt(
@@ -6616,6 +6838,7 @@ async def run_agent(
                     allow_delegate=True,
                     prompt_cycle=_mem_cycle,
                     recruitment_longform=_recruit_longform,
+                    hr_domain_prompt_active=_hr_domain_prompt_active,
                     prompt_style=_prompt_style,
                     pure_json_contract=_pure_json_contract,
                     gateway_inject=_gw_inject,
@@ -6626,7 +6849,6 @@ async def run_agent(
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
                     domain_experts=_domain_experts_list,
-                    hr_domain_prompt_active=_hr_domain_prompt_active,
                 )
 
         _md_base: dict[str, Any] = {

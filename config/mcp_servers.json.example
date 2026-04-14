@@ -38,5 +38,5 @@
       }
     }
   ],
-  "_comment": "复制到 ~/.jachin/mcp_servers.json 并与仓库 tools/mcp-official/mcp_servers.jachin.example.json 按需合并。Fetch 项：官方在 PyPI（pip install mcp-server-fetch），勿使用不存在的 npm 包 @modelcontextprotocol/server-fetch。Filesystem：__JACHIN_WORKSPACE__ 展开为 ~/.jachin/workspace。${TAVILY_API_KEY} 等同上。PowerPoint 需 pip install office-powerpoint-mcp-server。L3 启动时会自动补全未配置的 Filesystem/Fetch 默认项（见 core/mcp_json_repair.py）。"
+  "_comment": "复制到 ~/.jachin/mcp_servers.json 并与仓库 tools/mcp-official/mcp_servers.jachin.example.json 按需合并。Fetch 项：官方在 PyPI（pip install mcp-server-fetch），勿使用不存在的 npm 包 @modelcontextprotocol/server-fetch；默认遵守 robots.txt（如头条 /trending/ 会被拒）。需自担合规风险时可在 args 末尾加 \"--ignore-robots-txt\"，或设环境变量 JACHIN_MCP_FETCH_IGNORE_ROBOTS=1 由启动逻辑自动追加（见 core/mcp_json_repair.py）。Filesystem：__JACHIN_WORKSPACE__ 展开为 ~/.jachin/workspace。${TAVILY_API_KEY} 等同上。PowerPoint 需 pip install office-powerpoint-mcp-server。L3 启动时会自动补全未配置的 Filesystem/Fetch 默认项。"
 }

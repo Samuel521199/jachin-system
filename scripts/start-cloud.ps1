@@ -92,6 +92,8 @@ Write-Host "[$UtcNow]   Press Ctrl+C to stop"
 Write-Host ""
 
 Push-Location $NexusDir
+# UTF-8 BOM 会导致 package.json / drizzle meta 无法 JSON.parse（tsx、Next/webpack 报错）；在任意 npm 前先清理
+node .\scripts\ensure-json-no-bom.cjs 2>$null
 # 确保 schema 与 app 使用同一 DATABASE_URL：先迁移，再 init-store 幂等补齐（含 organizations.slug 等 migrate 漏跑项）
 $ErrBackup = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
 npm run db:migrate

@@ -47,6 +47,7 @@ $env:JACHIN_DEV_HR_FIRST = "1"
 $ErrorActionPreference = "Continue"
 
 # 修正 ~/.jachin/mcp_servers.json 里过期的 hr-atomic-tools 路径（换仓库目录名后常见），避免拖死整轮 MCP 握手
+# （repair_mcp_servers.py 以 utf-8-sig 读取，兼容带 BOM 的 JSON，与 L3 mcp_client 一致）
 if (-not $SkipRepairMcp) {
     try {
         & python (Join-Path $ScriptDir "repair_mcp_servers.py") --project-root $ProjectRoot

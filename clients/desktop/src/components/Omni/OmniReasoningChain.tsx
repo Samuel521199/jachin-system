@@ -1,28 +1,81 @@
 ﻿/**
- * Omni 助手「思考链」— 默认折叠，与正文视觉分层（弱对比、等宽小字）
+ * Omni 助手「思考链」— 固定 max-h-48、内部滚动、半透明弱对比；与主文严格分层
  */
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ChevronDown, Sparkles } from "lucide-react";
+
+export interface OmniReasoningChainLabels {
+  chain: string;
+  expand: string;
+  updating: string;
+}
 
 export interface OmniReasoningChainProps {
   text: string;
-  /** 当前轮仍在流式写入 reasoning 时显示轻提示 */
   isStreaming?: boolean;
+  labels?: OmniReasoningChainLabels;
 }
 
-export const OmniReasoningChain: React.FC<OmniReasoningChainProps> = ({ text, isStreaming }) => {
+const DEFAULT_LABELS: OmniReasoningChainLabels = {
+  chain: "思考链",
+  expand: "（可展开）",
+  updating: "更新中",
+};
+
+export const OmniReasoningChain: React.FC<OmniReasoningChainProps> = ({
+  text,
+  isStreaming,
+  labels = DEFAULT_LABELS,
+}) => {
   const trimmed = text.trim();
+  const [open, setOpen] = useState(true);
+  const reasoningEndRef = useRef<HTMLDivElement>(null);
+  const prevStreamingRef = useRef(false);
+
+  useEffect(() => {
+    if (isStreaming) setOpen(true);
+  }, [isStreaming]);
+
+  /** 流式结束：自动收起思考链，正文成为视觉焦点 */
+  useEffect(() => {
+    const streaming = Boolean(isStreaming);
+    if (prevStreamingRef.current && !streaming) {
+      setOpen(false);
+    }
+    prevStreamingRef.current = streaming;
+  }, [isStreaming]);
+
+  /** 流式追加思考文字时，保持滚动区锚定在底部，最新输出始终可见 */
+  useEffect(() => {
+    if (!trimmed) return;
+    const id = requestAnimationFrame(() => {
+      reasoningEndRef.current?.scrollIntoView({
+        behavior: isStreaming ? "auto" : "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [text, trimmed, isStreaming, open]);
+
   if (!trimmed) return null;
 
   return (
-    <details className="omni-reasoning-chain group mb-2.5 rounded-xl border-0 bg-slate-900/35 shadow-none outline-none ring-0 backdrop-blur-sm focus:outline-none focus-visible:outline-none">
-      <summary className="flex cursor-pointer select-none list-none items-center gap-2 rounded-lg px-3 py-2 text-left outline-none ring-0 ring-offset-0 focus:outline-none focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+    <details
+      open={open}
+      onToggle={(e) => {
+        e.stopPropagation();
+        setOpen((e.target as HTMLDetailsElement).open);
+      }}
+      className="omni-reasoning-chain group mb-2.5 w-full max-w-full rounded-xl border border-white/10 bg-black/40 outline-none ring-0 focus:outline-none focus-visible:outline-none"
+    >
+      <summary className="flex cursor-pointer select-none list-none items-center gap-2 rounded-t-xl border-b border-white/5 bg-white/5 px-3 py-2 text-left outline-none [&::-webkit-details-marker]:hidden">
         <Sparkles className="h-3.5 w-3.5 shrink-0 text-cyan-500/50" aria-hidden />
-        <span className="text-[12px] font-medium tracking-wide text-cyan-400/80">思考链</span>
-        <span className="text-[10px] text-cyan-600/50">（可展开）</span>
+        <span className="text-[12px] font-medium tracking-wide text-cyan-400/80">{labels.chain}</span>
+        <span className="text-[10px] text-cyan-500/45">{labels.expand}</span>
         {isStreaming ? (
-          <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-mono text-cyan-500/55">
-            更新中
+          <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-mono text-cyan-400/55">
+            {labels.updating}
           </span>
         ) : null}
         <ChevronDown
@@ -30,10 +83,10 @@ export const OmniReasoningChain: React.FC<OmniReasoningChainProps> = ({ text, is
           aria-hidden
         />
       </summary>
-      <div className="max-h-[min(38vh,300px)] overflow-y-auto border-x-0 border-b-0 border-t border-cyan-500/10 px-3 py-2.5 pt-2">
-        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-cyan-200/45">
-          {trimmed}
-        </pre>
+      {/* 展开后的思考内容：固定高度、盒内滚动、半透明「暗流」字色 */}
+      <div className="max-h-48 overflow-y-auto no-scrollbar p-3 bg-black/30 border-t border-white/5 text-sm text-gray-400/70 font-mono leading-relaxed break-words whitespace-pre-wrap">
+        {trimmed}
+        <div ref={reasoningEndRef} className="h-px w-full shrink-0 scroll-mt-1" aria-hidden />
       </div>
     </details>
   );

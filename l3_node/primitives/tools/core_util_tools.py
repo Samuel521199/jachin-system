@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
 
 供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
@@ -1206,6 +1206,403 @@ def run_desktop_message_box(**kwargs: Any) -> dict[str, Any]:
         return _err(str(e))
 
 
+def run_schedule_desktop_reminder(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:schedule_desktop_reminder — 向本机 Jachin 桌面客户端注册**定时**右下角哨兵提醒（HTTP 127.0.0.1:8002）。
+
+    须 Jachin 桌面已运行并监听该端口。与 util:desktop_message_box（立即弹窗）不同。
+    时刻三选一：fire_at_unix_ms | delay_seconds | fire_at_iso（ISO8601，缺省按 Asia/Shanghai 解释无时区的本地时刻）。
+    """
+    title = (str(kwargs.get("title") or "Jachin").strip()[:200] or "Jachin").strip()
+    body = str(kwargs.get("body") or kwargs.get("message") or "").strip()
+    if not body:
+        return _err("body 或 message 不能为空")
+    body = body[:4000]
+
+    fire_at_unix_ms = kwargs.get("fire_at_unix_ms")
+    delay_seconds = kwargs.get("delay_seconds")
+    fire_at_iso = kwargs.get("fire_at_iso")
+    filled = 0
+    if fire_at_unix_ms is not None and str(fire_at_unix_ms).strip() != "":
+        filled += 1
+    if delay_seconds is not None and str(delay_seconds).strip() != "":
+        filled += 1
+    if fire_at_iso is not None and str(fire_at_iso).strip() != "":
+        filled += 1
+    if filled != 1:
+        return _err("fire_at_unix_ms、delay_seconds、fire_at_iso 须且只能指定其一")
+
+    now_ms = int(time.time() * 1000)
+    target_ms: int
+    try:
+        if fire_at_unix_ms is not None and str(fire_at_unix_ms).strip() != "":
+            target_ms = int(fire_at_unix_ms)
+        elif delay_seconds is not None and str(delay_seconds).strip() != "":
+            target_ms = now_ms + int(float(delay_seconds) * 1000)
+        else:
+            s = str(fire_at_iso).strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+            try:
+                from zoneinfo import ZoneInfo
+
+                sh = ZoneInfo("Asia/Shanghai")
+            except Exception:
+                sh = timezone(timedelta(hours=8))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=sh)
+            else:
+                dt = dt.astimezone(sh)
+            target_ms = int(dt.timestamp() * 1000)
+    except (ValueError, TypeError, OSError) as e:
+        return _err(f"时刻解析失败: {e}")
+
+    base_url = (
+        os.environ.get("JACHIN_DESKTOP_REMINDER_URL") or "http://127.0.0.1:8002/jachin/v1/reminders"
+    ).rstrip("/")
+    payload = json.dumps(
+        {"fire_at_unix_ms": target_ms, "title": title, "body": body},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = Request(
+        base_url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json; charset=utf-8"},
+    )
+    try:
+        with urlopen(req, timeout=8.0) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            err_body = ""
+        return _err(f"HTTP {e.code} {e.reason} {err_body}".strip())
+    except URLError as e:
+        return _err(
+            "无法连接 Jachin 桌面提醒接口（请确认桌面端已启动且监听 127.0.0.1:8002）。"
+            f" 详情: {e.reason!s}"
+        )
+    except Exception as e:
+        return _err(str(e))
+
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        return _err(f"响应非 JSON: {raw[:500]}")
+
+    if not data.get("ok"):
+        return _err(str(data.get("error") or data))
+    rid = data.get("id")
+    return _ok(
+        {
+            "id": rid,
+            "fire_at_unix_ms": target_ms,
+            "hint": "提醒已写入桌面端；到点将弹出右下角哨兵（与立即弹窗的 util:desktop_message_box 不同）。",
+        }
+    )
+
+
+def run_lark_send_text(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:lark_send_text — 经 Lark Open API 向指定会话发送纯文本（需 LARK_APP_ID / LARK_APP_SECRET）。
+
+    典型链路：用户要「总结某网页并发到飞书」→ 先用 **util:stealth_extract**（或 MCP）取正文，再在模型内压缩后调用本工具 **text**。
+    **接收者** 解析顺序（与飞书「发送消息」一致）：
+    1) Action Input 里同时给出 **receive_id_type**（非默认 chat_id）与 **chat_id/receive_id** 时，按模型指定发；
+    2) 环境变量 **LARK_USER_OPEN_ID** / **LARK_DM_OPEN_ID**（用户 **ou_** open_id）— 官方推荐用于**机器人私聊**，不必依赖 oc_ 会话 ID；
+    3) **LARK_CHAT_ID**（群或会话 oc_…）；
+    4) Action 仅含正文时的 **chat_id**；
+    5) 当前轮 ContextVar（终端镜像）。
+    """
+    try:
+        from l3_node.channels.lark.client import _ensure_dotenv_loaded
+
+        _ensure_dotenv_loaded()
+    except Exception:
+        pass
+
+    text = str(kwargs.get("text") or kwargs.get("message") or "").strip()
+    if not text:
+        return _err("text 不能为空（可将摘要作为 text 传入）")
+    # 飞书单条文本上限约 6k，留余量
+    text = text[:5900]
+
+    _valid_recv = ("chat_id", "open_id", "user_id", "union_id", "email")
+    _kw_cid = str(kwargs.get("chat_id") or kwargs.get("receive_id") or "").strip()
+    _kw_type = str(kwargs.get("receive_id_type") or "").strip().lower()
+    _p2p_open = (
+        os.environ.get("LARK_USER_OPEN_ID")
+        or os.environ.get("LARK_DM_OPEN_ID")
+        or ""
+    ).strip()
+    _env_cid = (
+        os.environ.get("LARK_CHAT_ID")
+        or os.environ.get("LARK_DEFAULT_CHAT_ID")
+        or os.environ.get("FEISHU_CHAT_ID")
+        or ""
+    ).strip()
+
+    chat_id = ""
+    receive_id_type = "chat_id"
+    if _kw_type and _kw_type in _valid_recv and _kw_type != "chat_id" and _kw_cid:
+        chat_id = _kw_cid
+        receive_id_type = _kw_type
+    elif _p2p_open:
+        chat_id = _p2p_open
+        receive_id_type = "open_id"
+    elif _env_cid:
+        chat_id = _env_cid
+        receive_id_type = "chat_id"
+    elif _kw_cid:
+        chat_id = _kw_cid
+        receive_id_type = _kw_type if _kw_type in _valid_recv else "chat_id"
+    else:
+        try:
+            from l3_node.channels.lark.turn_chat_context import peek_lark_chat_id_for_tools
+
+            chat_id = peek_lark_chat_id_for_tools()
+        except Exception:
+            chat_id = ""
+        receive_id_type = "chat_id"
+    if not chat_id:
+        return _err(
+            "未指定接收者：请配置 LARK_CHAT_ID（群/会话 oc_…），或私聊配置 LARK_USER_OPEN_ID（用户 ou_…），"
+            "或在 Action Input 传入 chat_id / receive_id_type。"
+        )
+
+    if receive_id_type not in _valid_recv:
+        receive_id_type = "chat_id"
+
+    try:
+        from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_lark_credentials
+        from l3_node.channels.lark.im import send_text as lark_send_text_impl
+        from l3_node.channels.lark.receive_resolve import normalize_lark_im_receive
+    except ImportError as e:
+        return _err(f"L3 Lark 通道未就绪: {e}")
+
+    aid, sec, yb = resolve_lark_credentials()
+    if not aid or not sec:
+        return _err(
+            "未配置 LARK_APP_ID / LARK_APP_SECRET（或 ~/.jachin/config/im_channels.yaml 中 im_channels.lark）。"
+            "参见仓库根 .env.example。"
+        )
+    base = yb or get_lark_api_base()
+    try:
+        tkn = get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
+        n_rid, n_rt, n_err = normalize_lark_im_receive(chat_id, receive_id_type, token=tkn, api_base=base)
+        if n_err:
+            return _err(n_err)
+        chat_id = n_rid
+        receive_id_type = n_rt
+    except Exception as e:
+        return _err(str(e))
+    res = lark_send_text_impl(
+        chat_id,
+        text,
+        receive_id_type=receive_id_type,
+        app_id=aid,
+        app_secret=sec,
+        api_base=base,
+    )
+    if res.get("status") == "success":
+        return _ok(
+            {
+                "lark": res.get("msg", "已送达"),
+                "receive_id_type": receive_id_type,
+            }
+        )
+    err_raw = str(res.get("error") or res)
+    _el = err_raw.lower()
+    if "out of the chat" in _el or "no availability" in _el or "230013" in err_raw:
+        return _err(
+            f"{err_raw}。"
+            "常见原因：(1) 群聊：机器人未入群，请 @ 添加该应用机器人；"
+            "(2) 私聊：飞书文档推荐用用户 **open_id**（ou_…）发消息，可在 .env 设置 LARK_USER_OPEN_ID=你的 ou_…，"
+            "或在 Action 中传 receive_id_type=open_id、receive_id=ou_…，避免仅用 oc_ 会话 ID；"
+            "(3) 用户在应用「可用范围」外（开发者后台调整可见范围并重新发布）；"
+            "(4) 终端镜像 oc_ 与目标不一致时，用 LARK_CHAT_ID 或 LARK_USER_OPEN_ID 固定目标。"
+        )
+    return _err(err_raw)
+
+
+def run_lark_resolve_user(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:lark_resolve_user — 通过邮箱或手机号解析飞书用户 **open_id**（contact/v3/users/batch_get_id）。
+    需应用开通通讯录相关权限；仅有姓名时优先 **util:lark_search_user**，或别名表 / 邮箱 / ou_。
+    """
+    try:
+        from l3_node.channels.lark.client import _ensure_dotenv_loaded
+
+        _ensure_dotenv_loaded()
+    except Exception:
+        pass
+    try:
+        from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_lark_credentials
+        from l3_node.channels.lark.receive_resolve import (
+            feishu_batch_get_id,
+            is_contact_scope_denied_payload,
+            looks_like_email,
+            normalize_mobile_for_feishu,
+            pick_open_id_from_batch_get,
+            resolve_display_name_to_id,
+            search_user_candidates_by_name,
+        )
+    except ImportError as e:
+        return _err(str(e))
+
+    display_name = str(kwargs.get("display_name") or kwargs.get("name") or "").strip()
+    email = str(kwargs.get("email") or "").strip()
+    mobile = str(kwargs.get("mobile") or "").strip()
+    if display_name and not email and not mobile:
+        mapped = resolve_display_name_to_id(display_name)
+        if mapped:
+            if mapped.startswith("ou_"):
+                return _ok(
+                    {
+                        "open_id": mapped,
+                        "user_id": None,
+                        "union_id": None,
+                        "source": "LARK_DISPLAY_NAME_MAP",
+                        "hint": "来自别名表；发消息：util:lark_send_text + receive_id_type=open_id",
+                    }
+                )
+            if looks_like_email(mapped):
+                email = mapped
+            elif normalize_mobile_for_feishu(mapped):
+                mobile = mapped
+        else:
+            return _err(
+                "未配置该英文名的映射。请在环境变量 LARK_DISPLAY_NAME_MAP 或 ~/.jachin/lark_display_name_map.json "
+                "中设置 {\"vivian\":\"ou_xxx\"}，或提供邮箱/手机。"
+            )
+    if not email and not mobile:
+        return _err("请至少提供 email 或 mobile，或 display_name（须先在 LARK_DISPLAY_NAME_MAP 配置映射）")
+    if email and not looks_like_email(email):
+        return _err("email 格式不合法")
+    mob_norm: str | None = None
+    if mobile:
+        mob_norm = normalize_mobile_for_feishu(mobile)
+        if not mob_norm:
+            return _err("mobile 无法解析为中国大陆 11 位手机号（可含空格/短横线）")
+
+    aid, sec, yb = resolve_lark_credentials()
+    if not aid or not sec:
+        return _err("未配置 LARK_APP_ID / LARK_APP_SECRET（或 im_channels.yaml）。")
+    base = yb or get_lark_api_base()
+    try:
+        tkn = get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
+    except Exception as e:
+        return _err(str(e))
+
+    data = feishu_batch_get_id(
+        token=tkn,
+        api_base=base,
+        emails=[email] if email else None,
+        mobiles=[mob_norm] if mob_norm else None,
+    )
+    oid, err = pick_open_id_from_batch_get(data)
+    if (err or not oid) and is_contact_scope_denied_payload(data):
+        import time
+
+        time.sleep(1.2)
+        try:
+            tkn = get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
+        except Exception:
+            pass
+        data = feishu_batch_get_id(
+            token=tkn,
+            api_base=base,
+            emails=[email] if email else None,
+            mobiles=[mob_norm] if mob_norm else None,
+        )
+        oid, err = pick_open_id_from_batch_get(data)
+    if err or not oid:
+        # batch_get_id 报缺 contact:user.id:readonly 时，仍可能具备通讯录搜索/列表类权限：用邮箱前缀做一次降级解析
+        try:
+            if email and looks_like_email(email) and data and is_contact_scope_denied_payload(data):
+                q = email.split("@", 1)[0].strip()
+                if q:
+                    cands, _serr = search_user_candidates_by_name(q, tenant_token=tkn, api_base=base)
+                    if len(cands) == 1:
+                        oid_fb = str((cands[0] or {}).get("open_id") or "").strip()
+                        if oid_fb.startswith("ou_"):
+                            return _ok(
+                                {
+                                    "open_id": oid_fb,
+                                    "user_id": None,
+                                    "union_id": None,
+                                    "source": "name_search_fallback",
+                                    "hint": (
+                                        "batch_get_id 因 scope 被拒，已通过姓名关键词解析到唯一用户；"
+                                        "发消息：util:lark_send_text + receive_id_type=open_id。"
+                                        "建议在后台开通「通过手机号或邮箱获取用户 ID」并发布版本，避免依赖降级。"
+                                    ),
+                                }
+                            )
+                    if len(cands) > 1:
+                        lines = [
+                            f"- {u.get('name', '-') or '-'} / {u.get('en_name', '-') or '-'} | 邮箱:{u.get('email', '-') or '-'} | open_id:{u.get('open_id', '')}"
+                            for u in cands[:15]
+                        ]
+                        return _err(
+                            "batch_get_id 无 contact:user.id:readonly 权限；按邮箱前缀搜索到多名用户，请确认目标：\n"
+                            + "\n".join(lines)
+                        )
+        except Exception:
+            pass
+        return _err(err or "batch_get_id 失败")
+    ulist = (data.get("data") or {}).get("user_list") or []
+    u0 = ulist[0] if ulist else {}
+    return _ok(
+        {
+            "open_id": oid,
+            "user_id": (u0.get("user_id") or "").strip() or None,
+            "union_id": (u0.get("union_id") or "").strip() or None,
+            "hint": "发消息：util:lark_send_text 传入 receive_id_type=open_id，chat_id/receive_id 填上述 open_id",
+        }
+    )
+
+
+def run_lark_search_user(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:lark_search_user — 按姓名/昵称在飞书通讯录中搜索用户（search/v1/user，可选 user token；失败则 contact/v3/users 分页匹配）。
+    唯一候选时可将 open_id 用于 util:lark_send_text；多个时须在回复中列出部门/邮箱并请用户确认。
+    """
+    q = str(kwargs.get("query") or kwargs.get("name") or "").strip()
+    if not q:
+        return _err("query 或 name 必填")
+    try:
+        from l3_node.channels.lark.client import (
+            _ensure_dotenv_loaded,
+            get_lark_api_base,
+            get_tenant_access_token,
+            resolve_lark_credentials,
+        )
+        from l3_node.channels.lark.receive_resolve import search_user_candidates_by_name
+    except ImportError as e:
+        return _err(str(e))
+    try:
+        _ensure_dotenv_loaded()
+    except Exception:
+        pass
+    aid, sec, yb = resolve_lark_credentials()
+    if not aid or not sec:
+        return _err("未配置 LARK_APP_ID / LARK_APP_SECRET（或 im_channels.yaml）。")
+    base = yb or get_lark_api_base()
+    try:
+        tkn = get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
+    except Exception as e:
+        return _err(str(e))
+    cands, serr = search_user_candidates_by_name(q, tenant_token=tkn, api_base=base)
+    if not cands:
+        msg = serr or f"未能在飞书中搜到名为「{q}」的用户，请确认姓名是否有误，或配置 LARK_FEISHU_USER_ACCESS_TOKEN 以启用搜索接口。"
+        return _err(msg)
+    return _ok({"query": q, "count": len(cands), "candidates": cands})
+
+
 # ---------------------------------------------------------------------------
 # 类别六：系统健康
 # ---------------------------------------------------------------------------
@@ -1538,6 +1935,10 @@ _UTIL_HANDLERS: dict[str, Any] = {
     "util:generate_office_doc": run_generate_office_doc,
     "util:compose_long_document": run_compose_long_document,
     "util:desktop_message_box": run_desktop_message_box,
+    "util:schedule_desktop_reminder": run_schedule_desktop_reminder,
+    "util:lark_send_text": run_lark_send_text,
+    "util:lark_search_user": run_lark_search_user,
+    "util:lark_resolve_user": run_lark_resolve_user,
     "sys:health_stats": run_health_stats,
     "sys:list_env_safe": run_list_env_safe,
 }
@@ -1696,6 +2097,34 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "JSON：title（可选，默认 Jachin）, message（必填）。"
         "仅**当下**弹出；「某时刻再弹」需系统闹钟/计划任务或到时由调度再调本工具；**禁止**对用户谎称无法弹窗。",
         "params": ["message"],
+    },
+    {
+        "id": "util:schedule_desktop_reminder",
+        "label": "util:schedule_desktop_reminder",
+        "desc": "【Jachin 桌面】注册定时右下角哨兵提醒（HTTP 127.0.0.1:8002，桌面端须运行）。"
+        "JSON：body（必填）, title（可选）；时刻三选一 fire_at_unix_ms | delay_seconds | fire_at_iso（ISO）。"
+        "与 util:desktop_message_box（立即弹窗）不同。",
+        "params": ["body"],
+    },
+    {
+        "id": "util:lark_send_text",
+        "label": "util:lark_send_text",
+        "desc": "【飞书/Lark】向指定会话发送纯文本（Open API，需 LARK_APP_ID/SECRET；默认 LARK_CHAT_ID）。"
+        "网页摘要场景：先 util:stealth_extract 取正文，再本工具发摘要。**勿**在工具参数中写密钥。"
+        "**禁止**把「人名、昵称」填进 chat_id；须 oc_/ou_ 或邮箱/手机，或先 **util:lark_search_user** / util:lark_resolve_user。",
+        "params": ["text"],
+    },
+    {
+        "id": "util:lark_search_user",
+        "label": "util:lark_search_user",
+        "desc": "【飞书】按姓名/昵称搜索用户，返回候选 open_id（多结果须让用户选）。发消息前若仅有姓名须先调本工具或别名表。",
+        "params": ["query"],
+    },
+    {
+        "id": "util:lark_resolve_user",
+        "label": "util:lark_resolve_user",
+        "desc": "【飞书】用邮箱或手机号解析用户 open_id（batch_get_id）；display_name 仅当 LARK_DISPLAY_NAME_MAP 已映射。姓名无映射时优先 util:lark_search_user。",
+        "params": ["email"],
     },
 ]
 
@@ -1986,6 +2415,87 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                 "message": {"type": "string", "description": "正文，必填"},
             },
             required=["message"],
+        ),
+    },
+    "util:schedule_desktop_reminder": {
+        "name": "util:schedule_desktop_reminder",
+        "description": (
+            "向本机 Jachin 桌面（127.0.0.1:8002）注册定时右下角哨兵提醒；"
+            "须桌面端已运行。与立即弹窗的 util:desktop_message_box 不同。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "title": {"type": "string", "description": "标题，默认 Jachin"},
+                "body": {"type": "string", "description": "正文，必填（兼容 message）"},
+                "message": {"type": "string", "description": "同 body"},
+                "fire_at_unix_ms": {"type": "integer", "description": "到点 Unix 毫秒时间戳"},
+                "delay_seconds": {"type": "number", "description": "相对延迟秒数"},
+                "fire_at_iso": {
+                    "type": "string",
+                    "description": "ISO8601；无时区则按 Asia/Shanghai 本地解释",
+                },
+            },
+            required=[],
+        ),
+    },
+    "util:lark_send_text": {
+        "name": "util:lark_send_text",
+        "description": (
+            "向飞书/Lark 指定会话发送纯文本（im:message）。凭证来自 LARK_APP_ID/LARK_APP_SECRET 或 im_channels.yaml；"
+            "目标会话默认 LARK_CHAT_ID，可覆盖传入 chat_id。"
+            "**禁止**将人名/昵称当作 chat_id；须 oc_/ou_、邮箱、手机，或先 util:lark_search_user / util:lark_resolve_user。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "text": {"type": "string", "description": "要发送的正文（摘要可直接放这里）"},
+                "message": {"type": "string", "description": "同 text"},
+                "chat_id": {
+                    "type": "string",
+                    "description": "receive_id；须 oc_ 会话、ou_ 用户、或邮箱/手机（自动解析）。**勿填人名**（仅有姓名时先 util:lark_search_user）。缺省读 LARK_CHAT_ID / LARK_USER_OPEN_ID",
+                },
+                "receive_id": {"type": "string", "description": "同 chat_id"},
+                "receive_id_type": {
+                    "type": "string",
+                    "enum": ["chat_id", "open_id", "user_id", "union_id", "email"],
+                    "description": "与飞书 API 一致；私聊推荐 open_id（ou_…）",
+                },
+            },
+            required=["text"],
+        ),
+    },
+    "util:lark_search_user": {
+        "name": "util:lark_search_user",
+        "description": (
+            "飞书：按姓名/昵称搜索用户，返回候选 open_id（search/v1/user + 通讯录列表兜底）。"
+            "仅姓名时不要直接填 util:lark_send_text；唯一候选可用其 open_id，多条须在回复中列出并请用户确认。"
+            "可选配置 LARK_FEISHU_USER_ACCESS_TOKEN 以提升搜索命中率。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "query": {"type": "string", "description": "搜索关键词（中文名/英文名/昵称）"},
+                "name": {"type": "string", "description": "同 query"},
+            },
+            required=[],
+        ),
+    },
+    "util:lark_resolve_user": {
+        "name": "util:lark_resolve_user",
+        "description": (
+            "飞书通讯录：用邮箱或手机号查询用户 open_id（batch_get_id）。"
+            "也可传 display_name（须先在 LARK_DISPLAY_NAME_MAP 配置「英文名→ou_」）。"
+            "仅有姓名且未映射时优先 util:lark_search_user。"
+            "权限报错时会自动重试一次并提示「版本发布」说明。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "email": {"type": "string", "description": "飞书企业邮箱"},
+                "mobile": {"type": "string", "description": "大陆 11 位手机号"},
+                "display_name": {
+                    "type": "string",
+                    "description": "英文名/昵称；仅当已在 LARK_DISPLAY_NAME_MAP 映射到 ou_/邮箱 时有效",
+                },
+            },
+            required=[],
         ),
     },
 }

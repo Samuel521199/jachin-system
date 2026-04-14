@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.8.114] - 2026-04-14
+
+### Added / Changed
+
+- 弹窗、定时、思考链存储；桌面与 Nexus 中英文切换；文件整理；Lark 单聊发送与邮件相关整理。
+- **Version**: Desktop（`package.json` / Tauri / `VERSION`）、core CLI 与 `core/main` 版本号 **0.8.114**。
+
+---
 
 ## [v0.8.113] - 2026-04-13
 

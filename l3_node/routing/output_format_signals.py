@@ -1,4 +1,4 @@
-"""
+﻿"""
 检测用户消息中的「格式强约束」与直连 LLM 可行性。
 用于：动态瘦身系统提示词、在无需工具时绕过 ReAct。
 """
@@ -29,7 +29,9 @@ _TOOL_NEED_RE = re.compile(
     r"保存.{0,32}(?:到|在|至).{0,16}(?:桌面|电脑|本机)|"
     r"(?:桌面|Downloads|Documents|下载|文档)(?:路径|文件夹|目录)?|"
     r"(?:生成|导出|写出|另存).{0,24}(?:word|excel|xlsx|docx|表格|文档|报告)|"
-    r"(?:word|excel).{0,12}(?:报告|文档|表格|文件)",
+    r"(?:word|excel).{0,12}(?:报告|文档|表格|文件)|"
+    # 含 URL / 明确抓网页：须走 mcp:fetch、stealth 等；禁止直连否则只输出「Action:」假动作、不执行工具（见 terminal_turn 只有流式无 Observation）
+    r"https?://|抓取|抓网页|爬取|爬虫|下载网页|网页内容",
     re.I,
 )
 
@@ -195,7 +197,8 @@ def should_use_direct_llm_bypass(
         return False, False
     if _trivial_raw:
         return True, False
-    if heuristic_tool_need(user_text):
+    # 分类面可能不含 URL（网关摘要截断）；原句含 http/抓取 时也必须禁止直连
+    if heuristic_tool_need(user_text) or heuristic_tool_need(_raw_ui):
         return False, False
     if heuristic_trivial_chitchat_only(user_text):
         return True, False

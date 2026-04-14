@@ -1,9 +1,11 @@
-//! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
+﻿//! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
 
+use directories::BaseDirs;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -33,11 +35,55 @@ pub fn write_l3_debug(msg: &str) {
 }
 
 fn timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| format!("{}.{:03}", d.as_secs(), d.subsec_millis()))
         .unwrap_or_else(|_| "0".to_string())
+}
+
+/// 与 L3 Python `early_log` / `~/.jachin/l3_debug.log` 对齐的共享诊断文件（桌面端追加）。
+/// 优先 `JACHIN_LOG_DIR/l3_debug.log`，否则 `~/.jachin/l3_debug.log`。
+pub fn jachin_shared_l3_debug_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("JACHIN_LOG_DIR") {
+        return PathBuf::from(dir).join("l3_debug.log");
+    }
+    BaseDirs::new()
+        .map(|b| b.home_dir().join(".jachin").join("l3_debug.log"))
+        .unwrap_or_else(|| std::env::temp_dir().join("l3_debug.log"))
+}
+
+/// 追加一行 UTF-8（自动建目录）；单行内换行会压成 ` | `，便于与 L3 日志混排检索。
+pub fn write_jachin_shared_l3_debug(category: &str, message: &str) {
+    let path = jachin_shared_l3_debug_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!(
+                "[Desktop] mkdir for l3_debug.log failed: {} ({})",
+                e,
+                parent.display()
+            );
+            return;
+        }
+    }
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let sanitized = message.replace('\r', " ").replace('\n', " | ");
+    let line = format!(
+        "{}ms [Desktop][{}] [pid={}] {}\n",
+        now_ms, category, pid, sanitized
+    );
+    match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                eprintln!("[Desktop] write {}: {}", path.display(), e);
+            }
+            let _ = f.flush();
+        }
+        Err(e) => eprintln!("[Desktop] open l3_debug.log {}: {}", path.display(), e),
+    }
 }
 
 /// 供 Ctrl+C 时 kill 使用

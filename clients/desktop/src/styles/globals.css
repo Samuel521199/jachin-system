@@ -198,6 +198,15 @@ body:has(#chat-root),
   border: 1px solid rgba(139, 92, 246, 0.2);
 }
 
+/* 思考链等：显式声明隐藏滚动条（与全局一致，便于组件语义化） */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* 需要可见滚动条时使用 .custom-scrollbar 覆盖全局隐藏 */
 .custom-scrollbar {
   scrollbar-width: thin;

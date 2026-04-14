@@ -1,8 +1,10 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusDeveloperPlugins } from "@/lib/nexus-ui-i18n";
 import { Package, Archive } from "lucide-react";
 
 type PluginItem = {
@@ -40,6 +42,8 @@ function persistDeveloperId(id: string) {
 }
 
 export default function DeveloperPluginsPage() {
+  const { lang } = useNexusUiLang();
+  const t = nexusDeveloperPlugins[lang];
   const [developerId, setDeveloperIdState] = useState("");
   const [developerIdInput, setDeveloperIdInput] = useState("");
   const [plugins, setPlugins] = useState<PluginItem[]>([]);
@@ -70,16 +74,16 @@ export default function DeveloperPluginsPage() {
       } else {
         setPlugins([]);
         if (res.status === 401) {
-          setToast({ message: "请先输入开发者 ID", type: "error" });
+          setToast({ message: t.toastEnterId, type: "error" });
         }
       }
     } catch {
       setPlugins([]);
-      setToast({ message: "加载失败", type: "error" });
+      setToast({ message: t.toastLoadFail, type: "error" });
     } finally {
       setLoading(false);
     }
-  }, [developerId, developerIdInput]);
+  }, [developerId, developerIdInput, t.toastEnterId, t.toastLoadFail]);
 
   useEffect(() => {
     if (developerId) fetchPlugins();
@@ -88,7 +92,7 @@ export default function DeveloperPluginsPage() {
   const handleUnlock = async () => {
     const id = developerIdInput.trim();
     if (!id) {
-      setToast({ message: "请输入开发者 ID", type: "error" });
+      setToast({ message: t.toastEnterIdError, type: "error" });
       return;
     }
     persistDeveloperId(id);
@@ -114,7 +118,7 @@ export default function DeveloperPluginsPage() {
   const handleUnpublish = async (plugin: PluginItem) => {
     const devId = developerId || getDeveloperId();
     if (!devId) {
-      setToast({ message: "请先输入开发者 ID 解锁", type: "error" });
+      setToast({ message: t.toastUnlockFirst, type: "error" });
       return;
     }
     setActioning(plugin.id);
@@ -130,13 +134,13 @@ export default function DeveloperPluginsPage() {
       });
       const json = await res.json();
       if (json.success) {
-        setToast({ message: "插件已下架归档", type: "success" });
+        setToast({ message: t.toastUnpublishOk, type: "success" });
         await fetchPlugins();
       } else {
-        setToast({ message: json.message || json.error || "下架失败", type: "error" });
+        setToast({ message: json.message || json.error || t.toastUnpublishFail, type: "error" });
       }
     } catch (e) {
-      setToast({ message: e instanceof Error ? e.message : "网络错误", type: "error" });
+      setToast({ message: e instanceof Error ? e.message : t.toastNetwork, type: "error" });
     } finally {
       setActioning(null);
     }
@@ -173,10 +177,10 @@ export default function DeveloperPluginsPage() {
         <header className="mb-10">
           <h1 className="text-2xl font-bold text-white tracking-tight mb-1 flex items-center gap-3">
             <Package className="h-8 w-8 text-cyan-400" />
-            我的作品
+            {t.title}
           </h1>
           <p className="text-white/50 text-sm font-mono mb-4">
-            管理已发布的 Skill / MCP，可自助下架
+            {t.subtitle}
           </p>
 
           {!hasDevId ? (
@@ -185,20 +189,20 @@ export default function DeveloperPluginsPage() {
                 type="text"
                 value={developerIdInput}
                 onChange={(e) => setDeveloperIdInput(e.target.value)}
-                placeholder="开发者 ID（如 dev-demo-001 或 publish 时填写的 developer_id）"
+                placeholder={t.placeholder}
                 className="flex-1 px-4 py-3 rounded-lg bg-black/40 border border-white/10 text-white placeholder-white/30 focus:outline-none focus:border-cyan-400/50"
               />
               <button
                 onClick={handleUnlock}
                 className="px-5 py-3 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 hover:bg-cyan-500/30 transition-colors font-medium"
               >
-                查看
+                {t.view}
               </button>
             </div>
           ) : (
             <div className="flex items-center gap-3">
               <span className="text-white/60 text-sm font-mono">
-                开发者 ID: {developerId || developerIdInput}
+                {t.devIdLabel} {developerId || developerIdInput}
               </span>
               <button
                 onClick={() => {
@@ -208,7 +212,7 @@ export default function DeveloperPluginsPage() {
                 }}
                 className="text-xs text-white/40 hover:text-white/70"
               >
-                切换
+                {t.switch}
               </button>
             </div>
           )}
@@ -240,17 +244,17 @@ export default function DeveloperPluginsPage() {
         ) : !hasDevId ? (
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-16 text-center">
             <Package className="h-16 w-16 text-white/20 mx-auto mb-4" />
-            <p className="text-white/50 text-lg">请输入开发者 ID 查看作品</p>
+            <p className="text-white/50 text-lg">{t.emptyPrompt}</p>
             <p className="text-white/30 text-sm mt-2">
-              publish 时填写的 developer_id，或与收益中心一致的 ID
+              {t.emptyHint}
             </p>
           </div>
         ) : plugins.length === 0 ? (
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-16 text-center">
             <Package className="h-16 w-16 text-white/20 mx-auto mb-4" />
-            <p className="text-white/50 text-lg">暂无作品</p>
+            <p className="text-white/50 text-lg">{t.noPlugins}</p>
             <p className="text-white/30 text-sm mt-2">
-              使用 jachin publish 发布后，将在此展示
+              {t.noPluginsHint}
             </p>
           </div>
         ) : (
@@ -284,7 +288,11 @@ export default function DeveloperPluginsPage() {
                               : "bg-white/10 text-white/60"
                         }`}
                       >
-                        {plugin.status === "approved" ? "已上架" : plugin.status === "archived" ? "已归档" : plugin.status}
+                        {plugin.status === "approved"
+                          ? t.statusApproved
+                          : plugin.status === "archived"
+                            ? t.statusArchived
+                            : plugin.status}
                       </span>
                     </div>
                     <h3 className="text-lg font-semibold text-white truncate">{plugin.name}</h3>
@@ -300,10 +308,10 @@ export default function DeveloperPluginsPage() {
                         className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30 disabled:opacity-50 transition-colors font-medium"
                       >
                         <Archive className="h-4 w-4" />
-                        {actioning === plugin.id ? "处理中..." : "下架"}
+                        {actioning === plugin.id ? t.unpublishing : t.unpublish}
                       </button>
                     ) : (
-                      <span className="text-white/40 text-sm">下架后需联系管理员恢复</span>
+                      <span className="text-white/40 text-sm">{t.archivedNote}</span>
                     )}
                   </div>
                 </div>

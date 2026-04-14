@@ -1,6 +1,6 @@
-"use client";
+﻿"use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import {
   DndContext,
@@ -15,18 +15,39 @@ import { motion } from "framer-motion";
 import ConsoleScaffold from "@/components/ConsoleScaffold";
 import Toast from "@/components/Toast";
 import { Stethoscope, MessageCircle, Shield, Activity } from "lucide-react";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import {
+  nexusConsole,
+  nexusConsoleFallbackAgents,
+  nexusConsoleFallbackBlueprints,
+  readNexusUiLangFromStorage,
+  type NexusUiLang,
+} from "@/lib/nexus-ui-i18n";
 
-const FALLBACK_BLUEPRINTS = [
-  { id: "bp-1", name: "离线医疗助手", icon: Stethoscope, desc: "本地诊断推理" },
-  { id: "bp-2", name: "傲娇女仆客服", icon: MessageCircle, desc: "语音对话服务" },
-  { id: "bp-3", name: "安防视觉中枢", icon: Shield, desc: "实时视频分析" },
-];
+const FALLBACK_ICONS = [Stethoscope, MessageCircle, Shield] as const;
 
-const FALLBACK_AGENTS = [
-  { id: "agent-1", name: "多伦多一号机", online: true, cpu: 42, ram: 68, blueprint: "离线医疗助手" },
-  { id: "agent-2", name: "树莓派测试节点", online: true, cpu: 18, ram: 45, blueprint: "傲娇女仆客服" },
-  { id: "agent-3", name: "上海门店终端", online: false, cpu: 0, ram: 0, blueprint: "—" },
-];
+function buildFallbackBlueprints(lang: NexusUiLang): Blueprint[] {
+  const rows = nexusConsoleFallbackBlueprints[lang];
+  return rows.map((bp, i) => ({
+    id: bp.id,
+    name: bp.name,
+    icon: FALLBACK_ICONS[i] ?? MessageCircle,
+    desc: bp.desc,
+  }));
+}
+
+function buildFallbackAgents(lang: NexusUiLang) {
+  const rows = nexusConsoleFallbackAgents[lang];
+  const online = [true, true, false] as const;
+  const cpu = [42, 18, 0] as const;
+  const ram = [68, 45, 0] as const;
+  return rows.map((a, i) => ({
+    ...a,
+    online: online[i] ?? false,
+    cpu: cpu[i] ?? 0,
+    ram: ram[i] ?? 0,
+  }));
+}
 
 interface Blueprint {
   id: string;
@@ -87,9 +108,11 @@ function BlueprintCard({
 function AgentCard({
   agent,
   isDeploying,
+  ui,
 }: {
   agent: Agent;
   isDeploying: boolean;
+  ui: (typeof nexusConsole)[NexusUiLang];
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: agent.id,
@@ -110,7 +133,7 @@ function AgentCard({
         <div className="absolute inset-0 rounded-2xl bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
           <Activity className="w-10 h-10 text-cyan-400 animate-pulse mb-2" />
           <p className="text-cyan-400 text-sm animate-pulse">
-            📡 正在热更新蓝图... (Deploying Blueprint...)
+            {ui.deploying}
           </p>
         </div>
       )}
@@ -153,21 +176,27 @@ function AgentCard({
             </div>
           </div>
           <div className="border-t border-white/10 pt-3">
-            <p className="text-xs text-gray-400">当前蓝图</p>
+            <p className="text-xs text-gray-400">{ui.currentBlueprint}</p>
             <p className="text-sm text-cyan-400 font-mono">{agent.blueprint}</p>
           </div>
         </>
       ) : (
-        <div className="text-sm text-gray-500 py-4">边缘智能体已离线</div>
+        <div className="text-sm text-gray-500 py-4">{ui.offlineAgent}</div>
       )}
     </div>
   );
 }
 
 export default function ConsolePage() {
+  const { lang } = useNexusUiLang();
+  const nc = nexusConsole[lang];
+  const apiBlueprintsLoaded = useRef(false);
+  const apiAgentsFromFetch = useRef(false);
   /** 初始为空；仅在有接口数据或明确失败时使用 fallback，避免换账号后仍显示上一用户的节点 */
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [blueprints, setBlueprints] = useState<Blueprint[]>(FALLBACK_BLUEPRINTS);
+  const [agents, setAgents] = useState<Agent[]>(() => buildFallbackAgents(readNexusUiLangFromStorage()));
+  const [blueprints, setBlueprints] = useState<Blueprint[]>(() =>
+    buildFallbackBlueprints(readNexusUiLangFromStorage())
+  );
   const [activeId, setActiveId] = useState<string | null>(null);
   const [deployingAgent, setDeployingAgent] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
@@ -179,12 +208,13 @@ export default function ConsolePage() {
         const data = await res.json();
         const list = data.blueprints ?? [];
         if (list.length > 0) {
+          apiBlueprintsLoaded.current = true;
           setBlueprints(
             list.map((bp: { id: string; name: string; description: string }) => ({
               id: bp.id,
               name: bp.name,
               icon: MessageCircle,
-              desc: bp.description || "Forge 蓝图",
+              desc: bp.description || nc.forgeBlueprintDesc,
             }))
           );
         }
@@ -193,7 +223,7 @@ export default function ConsolePage() {
       }
     };
     fetchBlueprints();
-  }, []);
+  }, [nc.forgeBlueprintDesc]);
 
   useEffect(() => {
     const fetchInstances = async () => {
@@ -205,6 +235,7 @@ export default function ConsolePage() {
           return;
         }
         const list = data.instances ?? [];
+        if (list.length > 0) apiAgentsFromFetch.current = true;
         setAgents((prev) =>
           list.map((inst: Record<string, unknown>, i: number) => {
             const id = String(inst.instance_id ?? `api-${i}`);
@@ -225,7 +256,7 @@ export default function ConsolePage() {
                 : existing?.ram ?? 0;
             return {
               id,
-              name: String(inst.name ?? inst.instance_id ?? "边缘智能体"),
+              name: String(inst.name ?? inst.instance_id ?? nc.defaultAgentName),
               online,
               cpu: metrics?.cpu_percent ?? existing?.cpu ?? 0,
               ram: ramPct,
@@ -234,13 +265,25 @@ export default function ConsolePage() {
           })
         );
       } catch {
-        setAgents(FALLBACK_AGENTS);
+        setAgents(buildFallbackAgents(lang));
       }
     };
     fetchInstances();
     const interval = setInterval(fetchInstances, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [lang, nc.defaultAgentName]);
+
+  useEffect(() => {
+    if (!apiBlueprintsLoaded.current) {
+      setBlueprints(buildFallbackBlueprints(lang));
+    }
+  }, [lang]);
+
+  useEffect(() => {
+    if (!apiAgentsFromFetch.current) {
+      setAgents(buildFallbackAgents(lang));
+    }
+  }, [lang]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setActiveId(String(event.active.id));
@@ -284,10 +327,10 @@ export default function ConsolePage() {
             <aside className="w-64 flex-shrink-0">
               <div className="sticky top-24 rounded-2xl backdrop-blur-md bg-white/5 border border-white/10 p-4">
                 <h2 className="text-sm font-semibold uppercase tracking-widest text-cyan-400/90 mb-4">
-                  蓝图武库
+                  {nc.blueprintArmory}
                 </h2>
                 <p className="text-xs text-white/50 mb-4">
-                  拖拽到右侧智能体卡片上完成部署
+                  {nc.blueprintHint}
                 </p>
                 <div className="space-y-3">
                   {blueprints.map((bp) => (
@@ -305,20 +348,20 @@ export default function ConsolePage() {
             <section className="flex-1 min-w-0">
               <div className="flex items-center justify-between mb-6">
                 <h1 className="text-2xl font-bold tracking-widest text-cyan-400/95">
-                  边缘智能体星图
+                  {nc.agentMapTitle}
                 </h1>
                 <div className="flex items-center gap-4">
                   <Link
                     href="/console/workspace"
                     className="text-sm text-white/50 hover:text-cyan-400 transition-colors"
                   >
-                    工作区与权限
+                    {nc.linkWorkspace}
                   </Link>
                   <Link
                     href="/console/fleet"
                     className="text-sm text-cyan-400/80 hover:text-cyan-400 transition-colors"
                   >
-                    舰队指挥大屏 →
+                    {nc.linkFleet}
                   </Link>
                 </div>
               </div>
@@ -328,6 +371,7 @@ export default function ConsolePage() {
                     key={agent.id}
                     agent={agent}
                     isDeploying={deployingAgent === agent.id}
+                    ui={nc}
                   />
                 ))}
               </div>
@@ -353,7 +397,7 @@ export default function ConsolePage() {
       </DndContext>
 
       <Toast
-        message="✅ 蓝图已成功下发至边缘智能体！"
+        message={nc.toastDeployOk}
         visible={toastVisible}
         onClose={() => setToastVisible(false)}
       />

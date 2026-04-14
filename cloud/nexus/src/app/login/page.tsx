@@ -10,6 +10,8 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { Loader2 } from "lucide-react";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
+import { nexusLogin, signInFailureMessageI18n } from "@/lib/nexus-ui-i18n";
 
 function isLoopbackHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
@@ -51,18 +53,6 @@ function getSafeCallbackUrl(raw: string): string {
   return raw;
 }
 
-/** 登录成功后的跳转：优先用服务端返回 URL，但须校正 loopback / 0.0.0.0；相对路径原样使用。 */
-/** NextAuth 任意失败常统一成 CredentialsSignin；JWT/库异常已在 auth.ts 兜底，此处区分其它 code 避免误导读用户改密码 */
-function signInFailureMessage(error: string | undefined): string {
-  if (!error || error === "CredentialsSignin") {
-    return "邮箱或密码错误";
-  }
-  if (error === "Configuration") {
-    return "登录服务配置异常（例如生产环境未设置 AUTH_SECRET）。请检查 Nexus 环境变量。";
-  }
-  return `登录失败（${error}）。若刚配置 DATABASE_URL，请重启 npm run dev 并确认 PostgreSQL 已启动。`;
-}
-
 function postLoginHref(
   serverUrl: string | null | undefined,
   fallback: string
@@ -76,6 +66,8 @@ function postLoginHref(
 }
 
 function LoginForm() {
+  const { lang } = useNexusUiLang();
+  const tl = nexusLogin[lang];
   const searchParams = useSearchParams();
   const callbackUrl =
     searchParams.get("callbackUrl") ||
@@ -104,13 +96,13 @@ function LoginForm() {
         callbackUrl: safeCb,
       });
       if (res?.error) {
-        setError(signInFailureMessage(res.error));
+        setError(signInFailureMessageI18n(lang, res.error));
         setLoading(false);
         return;
       }
       window.location.href = postLoginHref(res?.url, safeCb);
     } catch {
-      setError("登录失败，请重试");
+      setError(tl.errLoginRetry);
       setLoading(false);
     }
   }
@@ -136,7 +128,7 @@ function LoginForm() {
         password_recovered?: boolean;
       };
       if (!r.ok || !data.success) {
-        setError(data.message ?? "注册失败");
+        setError(data.message ?? tl.errRegister);
         setLoading(false);
         return;
       }
@@ -151,16 +143,14 @@ function LoginForm() {
         callbackUrl: "/console/workspace",
       });
       if (res?.error) {
-        setError(
-          `注册成功但自动登录失败：${signInFailureMessage(res.error)} 请尝试手动登录。`
-        );
+        setError(tl.errRegisterAutoLogin(signInFailureMessageI18n(lang, res.error)));
         setLoading(false);
         setMode("login");
         return;
       }
       window.location.href = postLoginHref(res?.url, "/console/workspace");
     } catch {
-      setError("注册失败，请重试");
+      setError(tl.errRegisterRetry);
       setLoading(false);
     }
   }
@@ -183,9 +173,7 @@ function LoginForm() {
           Jachin Nexus
         </h1>
         <p className="text-sm text-white/50 text-center mb-8">
-          {mode === "login"
-            ? "登录以继续"
-            : "注册账号（登录后请创建或加入工作区）"}
+          {mode === "login" ? tl.subtitleLogin : tl.subtitleRegister}
         </p>
 
         <div className="flex rounded-lg bg-white/5 p-1 mb-6">
@@ -202,7 +190,7 @@ function LoginForm() {
                 : "text-white/50 hover:text-white/80"
             }`}
           >
-            登录
+            {tl.tabLogin}
           </button>
           <button
             type="button"
@@ -217,7 +205,7 @@ function LoginForm() {
                 : "text-white/50 hover:text-white/80"
             }`}
           >
-            注册
+            {tl.tabRegister}
           </button>
         </div>
 
@@ -228,7 +216,7 @@ function LoginForm() {
           {mode === "register" && (
             <div>
               <label className="block text-xs text-white/50 mb-1.5">
-                显示名（可选）
+                {tl.labelDisplayName}
               </label>
               <input
                 type="text"
@@ -236,12 +224,12 @@ function LoginForm() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white placeholder:text-white/30 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
-                placeholder="昵称"
+                placeholder={tl.placeholderNick}
               />
             </div>
           )}
           <div>
-            <label className="block text-xs text-white/50 mb-1.5">邮箱</label>
+            <label className="block text-xs text-white/50 mb-1.5">{tl.labelEmail}</label>
             <input
               type="email"
               required
@@ -253,7 +241,7 @@ function LoginForm() {
             />
           </div>
           <div>
-            <label className="block text-xs text-white/50 mb-1.5">密码</label>
+            <label className="block text-xs text-white/50 mb-1.5">{tl.labelPassword}</label>
             <input
               type="password"
               required
@@ -264,7 +252,7 @@ function LoginForm() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white placeholder:text-white/30 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30"
-              placeholder={mode === "register" ? "至少 8 位" : "••••••••"}
+              placeholder={mode === "register" ? tl.placeholderPwdRegister : tl.placeholderPwdLogin}
             />
           </div>
 
@@ -283,16 +271,16 @@ function LoginForm() {
             {loading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : mode === "login" ? (
-              "登录"
+              tl.submitLogin
             ) : (
-              "注册并登录"
+              tl.submitRegister
             )}
           </button>
         </form>
 
         <p className="mt-6 text-center text-xs text-white/40">
           <Link href="/" className="text-cyan-400/80 hover:text-cyan-300">
-            返回首页
+            {tl.backHome}
           </Link>
         </p>
       </div>

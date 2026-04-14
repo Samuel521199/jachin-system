@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — 入站长连接（WebSocket）
 
 使用 lark-oapi WebSocket 客户端与飞书建立长连接，接收 im.message.receive_v1 事件。
@@ -52,7 +52,10 @@ def _patch_lark_oapi_ws_keepalive() -> None:
 def _extract_from_p2_event(data: object) -> tuple[str, str, str] | None:
     """
     从 P2ImMessageReceiveV1 事件数据提取 (text, chat_id, user_id)。
-    lark-oapi 结构: data.event.message (chat_id, content), data.event.sender (sender_id.user_id).
+
+    **第二项 chat_id 即飞书「会话 ID」**（单聊与机器人会话多为 oc_ 开头），与 HR 插件、
+    im 发消息默认 receive_id_type=chat_id、环境变量 **LARK_CHAT_ID** 使用同一字段。
+    第三项为发送方租户 user_id（非会话 ID）；若需用户 open_id(ou_) 见日志中的 sender.open_id。
     """
     try:
         ev = getattr(data, "event", None)
@@ -74,10 +77,22 @@ def _extract_from_p2_event(data: object) -> tuple[str, str, str] | None:
         if not text:
             return None
         user_id = ""
+        open_id_log = ""
         if sender:
             sid = getattr(sender, "sender_id", None)
             if sid:
-                user_id = str(getattr(sid, "user_id", "") or "")
+                user_id = str(getattr(sid, "user_id", "") or "").strip()
+                open_id_log = str(getattr(sid, "open_id", "") or "").strip()
+        _cid_show = (chat_id[:36] + "…") if len(chat_id) > 36 else chat_id
+        _txt_show = (text[:48] + "…") if len(text) > 48 else text
+        logger.info(
+            "[Lark 入站] 会话ID(chat_id)→可配 LARK_CHAT_ID / 发消息用 receive_id_type=chat_id | %s | "
+            "sender.open_id=%s sender.user_id=%s | text=%s",
+            _cid_show,
+            open_id_log or "(empty)",
+            user_id or "(empty)",
+            _txt_show,
+        )
         return text, chat_id, user_id
     except Exception as e:
         logger.warning("解析 P2ImMessageReceiveV1 失败: %s", e)
@@ -103,7 +118,7 @@ def start_long_connection(
 
     :param app_id: LARK_APP_ID
     :param app_secret: LARK_APP_SECRET
-    :param on_message: 回调 (text, chat_id, user_id)
+    :param on_message: 回调 (text, chat_id, user_id)；**chat_id 为会话 ID**（常配 LARK_CHAT_ID）
     :param domain: 开放平台域名，默认 LARK_DOMAIN（国际版），飞书中国版用 FEISHU_DOMAIN
     :param log_level: lark.LogLevel.DEBUG / INFO / WARN 或 "DEBUG"/"INFO"
     """

@@ -1,0 +1,17 @@
+{
+  "id": "com.jachin.mcp.stub.playwright.browser",
+  "name": "MCP Playwright（stub）",
+  "version": "1.0.0",
+  "description": "npm @playwright/mcp 浏览器自动化。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "playwright-browser-npx",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@playwright/mcp@latest"
+    ]
+  }
+}

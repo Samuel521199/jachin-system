@@ -7,6 +7,7 @@
 import React from "react";
 import { Loader2 } from "lucide-react";
 import type { StoredMessage } from "../../utils/messageStorage";
+import { getAssistantMainBodyForDisplay } from "../../utils/reasoningStreamSplit";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { getRegisteredSkillUI, getSkillUiRegistration } from "../../skills-ui/skillUIRegistry";
 import type { ToolUiSubmitPayload } from "../../skills-ui/types";
@@ -90,7 +91,8 @@ export function AssistantMessageContent({
   }
 
   // ---------- 分支 B：普通 assistant 文本（历史行为） ----------
-  const body = message.content ?? "";
+  /** 主气泡只展示「对用户正文」；调度/Action 等仅在思考链中展示 */
+  const body = getAssistantMainBodyForDisplay(message);
   if (variant === "markdown") {
     return (
       <>

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useState } from "react";
 import {
@@ -19,31 +19,36 @@ import {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import Navbar from "@/components/Navbar";
+import { useNexusUiLang } from "@/components/NexusUiLangProvider";
 import Toast from "@/components/Toast";
 import { forgeNodeTypes } from "@/components/forge/CustomNodes";
 import { NodePalette } from "@/components/forge/NodePalette";
 import type { ForgeNodeData } from "@/components/forge/CustomNodes";
+import { nexusForge, type NexusUiLang } from "@/lib/nexus-ui-i18n";
 
-const initialNodes: Node<ForgeNodeData>[] = [
-  {
-    id: "n1",
-    type: "trigger",
-    position: { x: 100, y: 150 },
-    data: { label: "麦克风语音唤醒" },
-  },
-  {
-    id: "n2",
-    type: "processor",
-    position: { x: 350, y: 150 },
-    data: { label: "意图分析 LLM" },
-  },
-  {
-    id: "n3",
-    type: "action",
-    position: { x: 600, y: 150 },
-    data: { label: "扬声器播放" },
-  },
-];
+function buildInitialForgeNodes(lang: NexusUiLang): Node<ForgeNodeData>[] {
+  const labels = nexusForge[lang].nodes;
+  return [
+    {
+      id: "n1",
+      type: "trigger",
+      position: { x: 100, y: 150 },
+      data: { label: labels[0].label },
+    },
+    {
+      id: "n2",
+      type: "processor",
+      position: { x: 350, y: 150 },
+      data: { label: labels[1].label },
+    },
+    {
+      id: "n3",
+      type: "action",
+      position: { x: 600, y: 150 },
+      data: { label: labels[2].label },
+    },
+  ];
+}
 
 const initialEdges: Edge[] = [
   { id: "e1-2", source: "n1", target: "n2", animated: true, style: { stroke: "#22d3ee", strokeWidth: 2 } },
@@ -56,11 +61,13 @@ function getId() {
 }
 
 function ForgeCanvas() {
+  const { lang } = useNexusUiLang();
+  const t = nexusForge[lang];
   const { screenToFlowPosition } = useReactFlow();
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState(buildInitialForgeNodes(lang));
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [toastVisible, setToastVisible] = useState(false);
-  const [toastMessage, setToastMessage] = useState("AST 语法树已生成！版税分润链路已锁定！");
+  const [toastMessage, setToastMessage] = useState<string>(() => nexusForge[lang].toastDefault);
   const [minting, setMinting] = useState(false);
 
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -120,7 +127,7 @@ function ForgeCanvas() {
     console.log("Forge AST:", JSON.stringify(ast, null, 2));
 
     const payload = {
-      name: "Forge 蓝图",
+      name: t.defaultName,
       ast_json: ast,
     };
 
@@ -133,20 +140,20 @@ function ForgeCanvas() {
       const data = await res.json();
 
       if (!res.ok) {
-        setToastMessage(data.error || "铸造失败");
+        setToastMessage(data.error || t.mintFail);
         setToastVisible(true);
         return;
       }
 
-      setToastMessage(data.message || "AST 语法树已成功写入底层数据库！版税资产已确权！");
+      setToastMessage(data.message || t.mintOk);
       setToastVisible(true);
     } catch (err) {
-      setToastMessage((err as Error).message || "网络请求失败");
+      setToastMessage((err as Error).message || t.mintNetwork);
       setToastVisible(true);
     } finally {
       setMinting(false);
     }
-  }, [nodes, edges]);
+  }, [nodes, edges, t.defaultName, t.mintFail, t.mintOk, t.mintNetwork]);
 
   return (
     <>
@@ -193,7 +200,7 @@ function ForgeCanvas() {
           disabled={minting}
           className="absolute top-4 right-4 z-10 px-5 py-2.5 rounded-xl font-semibold bg-cyan-500/20 border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/30 hover:border-cyan-400/60 transition-all shadow-[0_0_20px_rgba(34,211,238,0.2)] disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {minting ? "铸造中…" : "⚡ 铸造并上架蓝图 (Compile & Mint Blueprint)"}
+          {minting ? t.minting : t.mintCta}
         </button>
       </div>
       <Toast
@@ -206,6 +213,7 @@ function ForgeCanvas() {
 }
 
 export default function ForgePage() {
+  const { lang } = useNexusUiLang();
   return (
     <div className="h-screen flex flex-col bg-[#030303]">
       <div
@@ -224,7 +232,7 @@ export default function ForgePage() {
       <div className="flex-1 flex pt-16 overflow-hidden">
         <NodePalette />
         <ReactFlowProvider>
-          <ForgeCanvas />
+          <ForgeCanvas key={lang} />
         </ReactFlowProvider>
       </div>
     </div>
