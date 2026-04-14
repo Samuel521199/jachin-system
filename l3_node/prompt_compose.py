@@ -1,4 +1,4 @@
-"""System prompt 后缀：稳定工具排序、优先级驱逐与硬帽。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇、§5。"""
+﻿"""System prompt 后缀：稳定工具排序、优先级驱逐与硬帽。见 docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇、§5。"""
 from __future__ import annotations
 
 import json
@@ -13,10 +13,20 @@ _FOOTER_CHUNK = "react_footer"
 _PLAN_DISK = "task_plan_disk"
 
 
+# 原生 A 股数据（AKShare）：排序靠前，避免模型在大量 MCP 中优先选 mcp:fetch 捏造 URL
+_TOOL_SORT_PRIORITY_PREFIXES: tuple[str, ...] = ("core:akshare_", "core:yfinance_")
+
+
 def sort_tools_by_id(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     if not tools:
         return []
-    return sorted(tools, key=lambda t: str(t.get("id") or t.get("label") or "").lower())
+
+    def _key(t: dict[str, Any]) -> tuple[int, str]:
+        tid = str(t.get("id") or t.get("label") or "").lower()
+        pri = 0 if any(tid.startswith(p) for p in _TOOL_SORT_PRIORITY_PREFIXES) else 1
+        return (pri, tid)
+
+    return sorted(tools, key=_key)
 
 
 def _prompt_section_from_nexus() -> dict[str, Any]:

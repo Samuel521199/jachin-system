@@ -1,4 +1,4 @@
-"""
+﻿"""
 util:* / sys:* 原生工具烟测与行为断言（工具总数用下限断言，避免新增工具时测试误伤）。
 
 运行（避免根 conftest 拉 ray / cov）：
@@ -396,3 +396,6 @@ def test_loader_native_tools_includes_utils() -> None:
     assert "util:generate_office_doc" in ids
     assert "util:compose_long_document" in ids
     assert "sys:list_env_safe" in ids
+    assert "core:akshare_a_share_hist" in ids
+    assert "core:yfinance_global_market_hist" in ids
+    assert "core:yfinance_ticker_info" in ids

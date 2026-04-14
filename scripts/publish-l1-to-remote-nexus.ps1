@@ -1,8 +1,10 @@
 ﻿# 将仓库内 L1 商店可上架的 Skill / MCP / TOOL 批量发布到指定 Nexus（公网或内网）。
 #
-# 与「已上传到某台 L1」对齐的源码清单来自：
-#   - cloud/nexus/scripts/bulk-publish-store.cjs（MCP stub、HR recruitment、声明式 SKILL、TOOL stub）
-#   - 以及本脚本补发的 Wasm：com.jachin.hr.filesystem → hr-analyzer4、jachin-system-pilot
+# 与本地 L1 对齐：
+#   - 声明式 SKILL + MCP stub + TOOL 元数据包：与本地相同，走 cloud/nexus/scripts/bulk-publish-store.cjs
+#     （npm run store:bulk-publish；TOOL 仅 zip 内 plugin.json，与 MCP stub 同理）
+#   - 大目录 jachin pack + publish：publish_l1_store.ps1 用 jachin；本脚本含 filesystem、hr-analyzer4、jachin-system-pilot
+# bulk 使用 --continue-on-error：避免最后一项 TOOL 在远端 DB 报错时阻断后续 Wasm 上架
 #
 # 前置：
 #   - pip install -e tools/jachin-cli
@@ -78,7 +80,7 @@ Publish-JachinDir "skills_repo\plugin\com.jachin.hr.filesystem"
 $env:NEXUS_URL = $Nexus
 Push-Location (Join-Path $Root "cloud\nexus")
 try {
-    node scripts/bulk-publish-store.cjs
+    node scripts/bulk-publish-store.cjs --continue-on-error
     if ($LASTEXITCODE -ne 0) { throw "bulk-publish-store.cjs failed" }
 } finally {
     Pop-Location

@@ -1,4 +1,4 @@
-# MCP 接入规范 (Model Context Protocol)
+﻿# MCP 接入规范 (Model Context Protocol)
 
 **版本**: V2（2026-03），与 [MCP_EXECUTION_MODEL.md](./MCP_EXECUTION_MODEL.md) v2.2 一致  
 **定位**: **四大原语**中的 **MCP**（外部协议进程、`mcp:*`；高信任本机托管）
@@ -98,12 +98,14 @@
 | **易混点** | JSON 里的 **`id`**（如 `tavily-search`）是 Jachin 侧标识，**不等于** npm 包名；**包名**只看 `args` 里传给 `npx -y` 的字符串。 |
 | **已踩坑案例（反例）** | `@tavily/mcp-server` → **npm 404，包不存在**。Tavily 官方本地 MCP 包名为 **`tavily-mcp`**（示例：`npx -y tavily-mcp@latest`）。 |
 | **替代形态** | 部分厂商提供 **远程 MCP URL**（HTTPS + `mcp-remote` 等），与本地 `npx` 二选一；若采用须在文档中写清命令与鉴权，同样不得臆造 URL。 |
+| **Notion 托管 MCP** | 官方端点 `https://mcp.notion.com/mcp`（OAuth，无长期 API Token）。Jachin 当前宿主仅 **stdio**，请用 **`npx -y mcp-remote https://mcp.notion.com/mcp`** 桥接（`npm view mcp-remote version` 核验包名）。首次连接按 `mcp-remote` 提示在浏览器完成 OAuth。 |
 
 **自检命令示例**（开发机执行）：
 
 ```bash
 npm view tavily-mcp version
 npm view @modelcontextprotocol/server-filesystem version
+npm view mcp-remote version
 ```
 
 **Cursor / PR 检查清单**：改 MCP 示例配置或新增「官方 MCP」条目时，勾选：□ 已 `npm view` 或网页核对包名 □ 已在本文或 PR 描述中写明核验方式。

@@ -11,6 +11,15 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [v0.8.116] - 2026-04-16
+
+### Added / Changed
+
+- 热更新完成，添加多个 MCP。
+- **Version**: Desktop、core CLI 与 `core/main` 版本号 **0.8.116**。
+
+---
+
 ## [v0.8.115] - 2026-04-15
 
 ### Added / Changed

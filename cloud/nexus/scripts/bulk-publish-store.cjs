@@ -7,12 +7,13 @@
  * 可选：NEXUS_URL=http://localhost:3000
  * 可选：NEXUS_AUTO_APPROVE=1（本机自动审核为 approved，否则为 pending）
  *
- * 顺序：先全部 MCP（含 com.jachin.hr.recruitment），再 SKILL（077 要求依赖 MCP 已入库），最后 TOOL 元数据包（如天气 util:get_weather_lite 对应 com.jachin.tool.util-weather-lite）。
+ * 顺序：先全部 MCP（含 com.jachin.hr.recruitment），再 SKILL（077 要求依赖 MCP 已入库），最后 TOOL 元数据包（如天气 util:get_weather_lite 对应 com.jachin.tool.util_weather_lite）。
  * 说明：util:get_weather_lite 已在 L3 内置并在商店「原子工具」展示；上架本条仅为 plugins_registry 登记，目录 API 会与内置去重避免双卡片。
  *
  * 用法：
  *   cd cloud/nexus && node scripts/bulk-publish-store.cjs
  *   node scripts/bulk-publish-store.cjs --dry-run
+ *   node scripts/bulk-publish-store.cjs --continue-on-error   # 单项失败仍继续并 exit 0（便于再接 Wasm jachin 发布）
  */
 const fs = require("fs");
 const path = require("path");
@@ -33,6 +34,7 @@ const repoRoot = path.join(__dirname, "..", "..", "..");
 const skillsRepo = path.join(repoRoot, "skills_repo");
 
 const dryRun = process.argv.includes("--dry-run");
+const continueOnError = process.argv.includes("--continue-on-error");
 
 /** 去掉 UTF-8 BOM，避免 L1 parse plugin.json 报 Unexpected token '﻿' */
 function stripUtf8Bom(buf) {
@@ -169,6 +171,39 @@ const skillDefs = [
     skillMd: "com.jachin.bi.analysis/SKILL.md",
     required_mcps: [],
   },
+  {
+    id: "com.jachin.skill.diagram.mermaid",
+    name: "Mermaid 结构图",
+    description:
+      "用 Markdown 中的 Mermaid 代码块输出流程图、时序图、架构图；客户端渲染，无需 MCP。",
+    skillMd: "com.jachin.skill.diagram.mermaid/SKILL.md",
+    required_mcps: [],
+  },
+  {
+    id: "com.jachin.skill.global.market.analyst",
+    name: "Global Market Analyst",
+    description:
+      "全球资本市场：用 yfinance（core:yfinance_*）拉取美股/外汇/加密行情与基本面并撰写双语简报；非投资建议。",
+    skillMd: "global-market-analyst/SKILL.md",
+    required_mcps: [],
+  },
+  {
+    id: "com.jachin.skill.a.share.analyst",
+    name: "A 股分析师（AKShare）",
+    description:
+      "A 股：用 AKShare（core:akshare_*）拉取 K 线与基本面摘要并输出结构化分析；非投资建议。",
+    skillMd: "a-share-analyst/SKILL.md",
+    required_mcps: [],
+  },
+  {
+    id: "com.jachin.skill.youtube.summarizer",
+    name: "YouTube 知识提炼",
+    description:
+      "用 L3 原生 core:youtube_transcript 拉字幕，再由模型提炼要点；勿用 fetch 当字幕来源。",
+    skillMd: "youtube-summarizer/SKILL.md",
+    version: "1.1.0",
+    required_mcps: [],
+  },
 ];
 
 for (const s of skillDefs) {
@@ -178,7 +213,7 @@ for (const s of skillDefs) {
   });
 }
 
-// —— TOOL：仅 plugin.json（与 L3 内置 util 对齐的货架登记，见 l1_upload_stubs_tools）——
+// —— l1_upload_stubs_tools：仅 plugin.json；多为 TOOL 货架登记，亦可为 MCP（由 plugin.json 的 item_type 决定）——
 const toolStubRoot = path.join(skillsRepo, "l1_upload_stubs_tools");
 if (fs.existsSync(toolStubRoot)) {
   const toolNames = fs
@@ -190,8 +225,18 @@ if (fs.existsSync(toolStubRoot)) {
     .sort();
   for (const name of toolNames) {
     const d = path.join(toolStubRoot, name);
+    let kind = "TOOL";
+    try {
+      const raw = stripUtf8Bom(fs.readFileSync(path.join(d, "plugin.json")));
+      const pj = JSON.parse(raw.toString("utf8"));
+      const it = String(pj.item_type || pj.type || "TOOL").toUpperCase();
+      if (it === "MCP") kind = "MCP";
+      else if (it === "SKILL") kind = "SKILL";
+    } catch {
+      /* keep TOOL */
+    }
     jobs.push({
-      label: `TOOL ${name}`,
+      label: `${kind} stub_tools/${name}`,
       zip: () => zipSinglePluginJson(d),
     });
   }
@@ -259,7 +304,10 @@ async function main() {
   }
 
   console.log(`[bulk-publish] 完成：成功 ${ok}，失败 ${fail}`);
-  if (fail > 0) process.exit(1);
+  if (fail > 0 && !continueOnError) process.exit(1);
+  if (fail > 0 && continueOnError) {
+    console.warn("[bulk-publish] 存在失败项，因 --continue-on-error 进程仍以 0 退出（请查看上方 [FAIL]）");
+  }
 }
 
 main().catch((e) => {

@@ -235,21 +235,7 @@ pub fn normalize_signature_for_hot_update_job(signature: &str) -> String {
         .collect()
 }
 
-fn is_minisign_pubkey_plaintext(s: &str) -> bool {
-    s.trim_start().starts_with("untrusted comment:")
-}
-
-fn decode_pubkey_plaintext_minisign_pub(t: &str) -> Result<PublicKey, String> {
-    let normalized: String = t
-        .lines()
-        .map(|l| l.trim_end_matches('\r').trim())
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    decode_minisign_pubkey_from_pub_file_text(&normalized)
-}
-
-/// 解析 `.pub` 第二行 `RW…`：去非法字符后按 [`normalize_base64_padding`] 再 [`PublicKey::from_base64`]。
+/// 解析 minisign `.pub` **第二行**（单行 Base64）：去非法字符后按 [`normalize_base64_padding`] 再 [`PublicKey::from_base64`]。
 fn public_key_from_minisign_rw_line_b64(line: &str) -> Result<PublicKey, String> {
     let compact: String = line
         .trim()
@@ -257,83 +243,50 @@ fn public_key_from_minisign_rw_line_b64(line: &str) -> Result<PublicKey, String>
         .filter(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
         .collect();
     let padded = normalize_base64_padding(&compact)?;
-    PublicKey::from_base64(&padded).map_err(|e| format!("minisign from_base64(RW 行): {e}"))
+    PublicKey::from_base64(&padded).map_err(|e| format!("minisign from_base64(公钥行): {e}"))
 }
 
-/// 优先 [`PublicKey::decode`] 整份 `.pub`；失败则对 `RW…` 行截断至 56 字符并补 padding 后再 [`PublicKey::from_base64`]。
-fn decode_minisign_pubkey_from_pub_file_text(pub_file: &str) -> Result<PublicKey, String> {
-    let t = pub_file.trim_end();
-    match PublicKey::decode(t) {
-        Ok(pk) => Ok(pk),
-        Err(e_decode) => {
-            for line in t.lines() {
-                let line = line.trim();
-                if line.starts_with("RW")
-                    && line
-                        .chars()
-                        .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
-                {
-                    return public_key_from_minisign_rw_line_b64(line).map_err(|e| {
-                        format!("pubkey: {e}（decode 曾失败: {e_decode}）")
-                    });
-                }
-            }
-            Err(format!("pubkey: minisign 解析失败: {e_decode}"))
-        }
+/// 误把「整份 `.pub` UTF-8 再做一次外层 Base64」写入 `pubkey` 时，解码后以 `untrusted comment:` 开头（日志里常见 `dW50…` 前缀）。
+fn looks_like_outer_base64_wrapped_full_pub_file(wire: &str) -> bool {
+    let t = strip_crlf(wire.trim());
+    if t.len() < 80 {
+        return false;
     }
-}
-
-/// 常见误配置：第一行是「首行 ASCII 的 Base64」，第二行是 `.pub` 里原始的 `RW…` 密钥行（中间换行）。
-/// 整段 **不是** 单一连续外层 Base64，直接 decode 会在约 offset 133 处失败（Invalid last symbol）。
-fn try_reconstruct_pubkey_mixed_first_line_b64_second_rw_line(wire: &str) -> Option<String> {
-    let lines: Vec<&str> = wire
-        .lines()
-        .map(|l| l.trim().trim_end_matches('\r'))
-        .filter(|l| !l.is_empty())
-        .collect();
-    if lines.len() != 2 {
-        return None;
-    }
-    let (first_b64, second_raw) = (lines[0], lines[1]);
-    if !second_raw.starts_with("RW") {
-        return None;
-    }
-    if !second_raw
+    if !t
         .chars()
         .all(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
     {
-        return None;
+        return false;
     }
-    let first_decoded = base64_decode_to_string(first_b64).ok()?;
-    if !first_decoded.trim_start().starts_with("untrusted comment:") {
-        return None;
-    }
-    let mut combined = if first_decoded.ends_with('\n') {
-        format!("{first_decoded}{second_raw}")
-    } else {
-        format!("{first_decoded}\n{second_raw}")
-    };
-    if !combined.ends_with('\n') {
-        combined.push('\n');
-    }
-    Some(combined)
+    base64_decode_to_string(&t)
+        .map(|s| s.trim_start().starts_with("untrusted comment:"))
+        .unwrap_or(false)
 }
 
-/// `tauri.conf.json` 的 `plugins.updater.pubkey`：
-/// - 明文整份 `.pub`；
-/// - **或** 首行 Base64 + 次行原始 `RW…`（见上）；
-/// - **或** 「整份 `.pub` 字节」的单一外层 Base64（推荐）。
+/// `plugins.updater.pubkey`：**仅** minisign `.pub` 第二行（单行 Base64，常见约 56 字符，以 `R` 开头）。
+/// 禁止使用整份 `.pub` 明文或「整份 `.pub` 的外层 Base64」。
 fn decode_public_key_from_conf(pubkey_wire: &str) -> Result<PublicKey, String> {
     let t = pubkey_wire.trim().trim_start_matches('\u{feff}');
-    if is_minisign_pubkey_plaintext(t) {
-        return decode_pubkey_plaintext_minisign_pub(t);
+    if t.contains("untrusted comment:") {
+        return Err(
+            "pubkey: 勿粘贴带注释的整份 .pub；请只填第二行公钥（单行 R… Base64）".into(),
+        );
     }
-    if let Some(combined) = try_reconstruct_pubkey_mixed_first_line_b64_second_rw_line(t) {
-        return decode_minisign_pubkey_from_pub_file_text(&combined);
+    if looks_like_outer_base64_wrapped_full_pub_file(t) {
+        return Err(
+            "pubkey: 检测到整份 .pub 的外层 Base64（常以 dW50… 开头）；请改为仅粘贴 .pub 第二行，勿再 Base64 包一层"
+                .into(),
+        );
     }
-    let decoded = base64_decode_to_string(pubkey_wire)
-        .map_err(|e| format!("pubkey: 外层 Base64 解码失败（若 pubkey 在 json 里折行，应已自动去掉换行；详情 {e}）"))?;
-    decode_minisign_pubkey_from_pub_file_text(&decoded)
+    let compact: String = strip_crlf(t)
+        .chars()
+        .filter(|c| matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '='))
+        .collect();
+    if compact.is_empty() {
+        return Err("pubkey: 为空".into());
+    }
+    public_key_from_minisign_rw_line_b64(&compact)
+        .map_err(|e| format!("pubkey: minisign 解析失败: {e}"))
 }
 
 /// 从 Nexus/任务 JSON 的 `signature` 得到 minisign **多行明文** `.sig`，供 `Signature::decode` 使用。
@@ -545,37 +498,35 @@ pub fn user_data_ready_for_hot_update() -> Result<(), String> {
 
 #[cfg(test)]
 mod pubkey_decode_tests {
-    use base64::Engine;
     use super::decode_public_key_from_conf;
 
-    /// `minisign-verify` 文档示例公钥行（56 字符，解码前缀 `Ed`）。
+    /// `minisign-verify` 文档示例公钥行。
     const DOC_RW_LINE: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
 
-    fn sample_pub_plaintext() -> String {
-        format!(
-            "untrusted comment: minisign public key: FFFFFFFFFFFFFFFFFFFFFFFF\n{}\n",
-            DOC_RW_LINE
-        )
+    /// 与 `tauri.conf.json` / `publish_desktop_release.py` 默认私钥成对。
+    const REPO_DEFAULT_KEY_LINE: &str =
+        "RWT+Ht4hSDqsCEoNM84poJhl0iQDXHPuU3lChuRTZ+ArkkyRGrvnF7ea";
+
+    #[test]
+    fn decode_single_line_doc_example_ok() {
+        decode_public_key_from_conf(DOC_RW_LINE).expect("doc example line");
     }
 
     #[test]
-    fn decode_public_key_plaintext_pub_file_ok() {
-        decode_public_key_from_conf(&sample_pub_plaintext()).expect("plaintext .pub");
+    fn decode_single_line_repo_default_ok() {
+        decode_public_key_from_conf(REPO_DEFAULT_KEY_LINE).expect("repo default publish key line");
     }
 
     #[test]
-    fn decode_public_key_outer_single_blob_ok() {
-        let plain = sample_pub_plaintext();
-        let outer = base64::engine::general_purpose::STANDARD.encode(plain.as_bytes());
-        decode_public_key_from_conf(&outer).expect("outer base64 of full .pub");
+    fn reject_outer_base64_wrapped_full_pub() {
+        let outer = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA4QUMzQTQ4MjFERTFFRkUKUldUK0h0NGhTRHFzQ0VvTk04NHBvSmhsMGlRRFhIUHVVM2xDaHVSVForQXJra3lSR3J2bkY3ZWEK";
+        let e = decode_public_key_from_conf(outer).unwrap_err();
+        assert!(e.contains("外层 Base64"), "unexpected err: {e}");
     }
 
-    /// 与历史 `tauri.conf.json` 一致：首行为「第一行 ASCII 的 Base64」，次行为 RW 原文（整段非单一外层 Base64）。
     #[test]
-    fn decode_public_key_mixed_first_b64_second_raw_ok() {
-        let first = "untrusted comment: minisign public key: FFFFFFFFFFFFFFFFFFFFFFFF\n";
-        let first_b64 = base64::engine::general_purpose::STANDARD.encode(first.as_bytes());
-        let mixed = format!("{}\n{}", first_b64, DOC_RW_LINE);
-        decode_public_key_from_conf(&mixed).expect("mixed two-line (offset~133 场景)");
+    fn reject_plaintext_pub_with_comment() {
+        let bad = "untrusted comment: minisign public key: x\nRWT+xxx";
+        assert!(decode_public_key_from_conf(bad).is_err());
     }
 }

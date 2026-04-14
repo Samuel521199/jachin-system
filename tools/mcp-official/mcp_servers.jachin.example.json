@@ -93,10 +93,22 @@
       }
     },
     {
+      "id": "youtube-transcript",
+      "name": "YouTube Transcript（@kimtaeyoon83/mcp-server-youtube-transcript）",
+      "command": "npx",
+      "args": ["-y", "@kimtaeyoon83/mcp-server-youtube-transcript"]
+    },
+    {
       "id": "playwright-browser-npx",
       "name": "MCP Playwright（最新版浏览器操控）",
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"]
+    },
+    {
+      "id": "notion-remote-oauth",
+      "name": "Notion 托管 MCP（OAuth；mcp-remote 桥接 Streamable HTTP）",
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
     }
   ]
 }

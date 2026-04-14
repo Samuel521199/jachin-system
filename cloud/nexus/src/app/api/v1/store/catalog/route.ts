@@ -114,20 +114,48 @@ export async function GET(request: NextRequest) {
     // TOOL：先拉取**全部**已审核上架的 TOOL 行，再与内置列表合并后做 slice（禁止对 SQL 先 limit 再合并，否则会丢内置或截断错误）
     if (itemType === "TOOL") {
       const builtins = builtinToolsToCatalogRows();
-      const [dbTOOLRows, countResult] = await Promise.all([
-        db
-          .select(selectCols)
-          .from(pluginsRegistry)
-          .where(whereClause)
-          .orderBy(desc(pluginsRegistry.createdAt))
-          .limit(5000),
-        db.select({ count: sql<number>`count(*)::int` }).from(pluginsRegistry).where(whereClause),
-      ]);
-      const dbTotal = countResult[0]?.count ?? 0;
+      let dbTOOLRows: Parameters<typeof mapRow>[0][] = [];
+      let dbTotal = 0;
+      try {
+        const [rows, countResult] = await Promise.all([
+          db
+            .select(selectCols)
+            .from(pluginsRegistry)
+            .where(whereClause)
+            .orderBy(desc(pluginsRegistry.createdAt))
+            .limit(5000),
+          db.select({ count: sql<number>`count(*)::int` }).from(pluginsRegistry).where(whereClause),
+        ]);
+        dbTOOLRows = rows as Parameters<typeof mapRow>[0][];
+        dbTotal = countResult[0]?.count ?? 0;
+      } catch (dbErr) {
+        /** 远端常见：未跑 drizzle/0015，`item_type` 枚举无 TOOL → SQL 失败；旧逻辑整段 500，前端原子工具 tab 空 */
+        appendL1DebugLine("store.catalog", {
+          msg: "tool_db_query_failed_fallback_builtins",
+          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+        });
+        const merged = builtins.slice(offset, offset + limit);
+        return NextResponse.json({
+          success: true,
+          data: merged,
+          meta: {
+            total: builtins.length,
+            limit,
+            offset,
+            builtin_tools_count: builtins.length,
+            db_count: 0,
+            hint:
+              "TOOL 数据库查询失败（常见：Postgres 未执行 drizzle/0015_item_type_tool.sql，item_type 枚举缺少 TOOL）。当前仅展示 L3 内置原子工具；执行迁移后刷新可合并数据库中的 TOOL 上架项。",
+          },
+        });
+      }
       const dbRows = dbTOOLRows.map(mapRow);
-      /** 与内置 util:get_weather_lite 同能力的上架行仅用于登记，避免货架双卡片 */
+      /** 与内置 util:get_weather_lite 同能力的上架行仅用于登记，避免货架双卡片（id 含连字符与下划线两种历史写法） */
       const dbRowsDeduped = dbRows.filter((r) => {
-        if (r.plugin_id !== "com.jachin.tool.util-weather-lite") return true;
+        const isWeatherStub =
+          r.plugin_id === "com.jachin.tool.util_weather_lite" ||
+          r.plugin_id === "com.jachin.tool.util-weather-lite";
+        if (!isWeatherStub) return true;
         const hasBuiltinWeather = builtins.some((b) => b.tool_id === "util:get_weather_lite");
         return !hasBuiltinWeather;
       });

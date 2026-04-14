@@ -14,9 +14,6 @@ export const dynamic = "force-dynamic";
 /** 语义化版本正则 */
 const SEMVER_REGEX = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$/;
 
-/** plugin id：反向域名风格，含 ._-（与 jachin-cli、util_weather_lite 等一致） */
-const PLUGIN_ID_REGEX = /^[a-z0-9][a-z0-9._-]*[a-z0-9]$/i;
-
 /** plugin.json 结构（从 zip 内解析） */
 interface PluginJson {
   id: string;
@@ -34,12 +31,6 @@ function normalizePluginItemType(raw: string): "SKILL" | "MCP" | "TOOL" {
   if (u === "MCP") return "MCP";
   if (u === "TOOL") return "TOOL";
   return "SKILL";
-}
-
-/** 与 bulk-publish-store.cjs / jachin-cli 对齐：去掉 UTF-8 BOM，避免 JSON.parse 失败 */
-function stripUtf8Bom(content: string): string {
-  if (content.charCodeAt(0) === 0xfeff) return content.slice(1);
-  return content;
 }
 
 /**
@@ -87,7 +78,7 @@ function parseAndValidateZip(zipBuffer: Buffer): {
 
   let raw: unknown;
   try {
-    const content = stripUtf8Bom(pluginEntry.getData().toString("utf8"));
+    const content = pluginEntry.getData().toString("utf8");
     raw = JSON.parse(content) as unknown;
   } catch {
     throw new PublishError(
@@ -102,7 +93,7 @@ function parseAndValidateZip(zipBuffer: Buffer): {
   const name = typeof p.name === "string" ? p.name.trim() : "";
   const version = typeof p.version === "string" ? p.version.trim() : "1.0.0";
 
-  if (!id || !PLUGIN_ID_REGEX.test(id)) {
+  if (!id || !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/i.test(id)) {
     throw new PublishError(
       400,
       "INVALID_PLUGIN_ID",
@@ -300,7 +291,7 @@ function validateMetadataFromForm(
   const itemTypeRaw = (formData.get("item_type") as string | null) ?? "SKILL";
   const itemTypeNorm = normalizePluginItemType(itemTypeRaw);
 
-  if (!id || !PLUGIN_ID_REGEX.test(id)) {
+  if (!id || !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/i.test(id)) {
     throw new PublishError(
       400,
       "INVALID_PLUGIN_ID",
@@ -526,9 +517,12 @@ export async function POST(request: NextRequest) {
 
     let itemUuid: string | undefined;
     if (existing.length > 0) {
+      // 更新时不要 SET plugin_id：部分 PG/Drizzle 组合下对唯一键列自赋值会报错；WHERE 已限定行。
+      const { pluginId: _omitPluginId, ...updateRow } = row;
+      void _omitPluginId;
       await db
         .update(pluginsRegistry)
-        .set(row)
+        .set(updateRow)
         .where(eq(pluginsRegistry.pluginId, pluginJson.id));
       itemUuid = existing[0].id;
     } else {
