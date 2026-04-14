@@ -356,17 +356,26 @@ async def evaluate_action(
             pass
 
         try:
-            resp = await litellm.acompletion(
-                model=model,
-                messages=[
+            kw: dict[str, Any] = {
+                "model": model,
+                "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                temperature=0.0,
-                max_tokens=max_t,
-                timeout=timeout,
-                stream=False,
-            )
+                "temperature": 0.0,
+                "max_tokens": max_t,
+                "timeout": timeout,
+                "stream": False,
+            }
+            try:
+                from core.llm_provider import _inject_api_keys
+                from core.brain.llm.dashscope_regional import litellm_apply_dashscope_credentials
+
+                _inject_api_keys()
+                litellm_apply_dashscope_credentials(model, kw)
+            except ImportError:
+                pass
+            resp = await litellm.acompletion(**kw)
         except Exception as e:
             logger.warning("[ActionCritic] LLM 调用失败/超时，fail-open 放行: %s", e)
             return True, ""

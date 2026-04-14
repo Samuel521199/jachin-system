@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 import logging
 
 from core.brain.llm.factory import LLMProviderFactory
+from core.brain.llm.regions import effective_qwen_region_from_env
 from core.config import settings, get_effective_qwen_api_key
 
 logger = logging.getLogger(__name__)
@@ -54,9 +55,9 @@ try:
     if api_key:
         provider_kwargs["api_key"] = api_key
     
-    # 传递地域配置（如果使用 qwen-v2）
-    if settings.LLM_PROVIDER == "qwen-v2" and hasattr(settings, "QWEN_REGION"):
-        provider_kwargs["region"] = settings.QWEN_REGION
+    # 传递地域配置（如果使用 qwen-v2；与 JACHIN_ACTIVE_REGION / QWEN_REGION 对齐）
+    if settings.LLM_PROVIDER == "qwen-v2":
+        provider_kwargs["region"] = effective_qwen_region_from_env()
     
     llm_provider = LLMProviderFactory.create_provider(
         provider_type=settings.LLM_PROVIDER,

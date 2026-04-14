@@ -9,7 +9,11 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from l3_node.intent_gateway.config import get_intent_gateway_config
-from l3_node.intent_gateway.sanitize import SanitizedFileMeta, sanitize_attachments_list
+from l3_node.intent_gateway.sanitize import (
+    SanitizedFileMeta,
+    sanitize_attachments_list,
+    trim_attachments_metadata_list,
+)
 from l3_node.intent_gateway.truncation import truncate_for_gateway_classification
 
 
@@ -101,7 +105,7 @@ def build_gateway_bundle(
             tid = str(implicit_attribution.get("tenant_id") or implicit_attribution.get("org_id") or "")
     if not tid:
         tid = str(os.environ.get("JACHIN_TENANT_ID") or os.environ.get("JACHIN_ORG_ID") or "").strip()
-    att_raw = list(attachments_metadata or [])
+    att_raw = trim_attachments_metadata_list(list(attachments_metadata or []))
     bundle = GatewayContextBundle(
         user_input=user_input or "",
         short_memory_context=short_memory_context or "",

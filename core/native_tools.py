@@ -69,6 +69,17 @@ def _assert_under_workspace(path: Path) -> None:
         raise SecurityException(str(e)) from e
 
 
+def _fs_read_file_not_found_hint(resolved: Path) -> str:
+    """文件不存在时返回可检索提示，引导模型使用对话内已注入的附件正文，勿臆造 Downloads 路径。"""
+    return (
+        "[执行失败: 文件不存在] "
+        f"路径: {resolved}。"
+        " 说明：通过 Omni/聊天上传的附件，正文通常已出现在用户消息中的「[附件: … 内容]」块，"
+        "L3 进程所在机器上不一定存在同名的 ~/Downloads/ 或桌面路径，请勿猜测本机路径重复读取。"
+        " 请直接根据对话中的附件正文作答；仅当确认文件已落在 workspace / 白名单目录且路径可靠时再使用本工具。"
+    )
+
+
 def core_fs_read(file_path: str) -> str:
     """
     读取文件内容。路径必须位于 ~/.jachin/workspace/ 下，
@@ -85,6 +96,10 @@ def core_fs_read(file_path: str) -> str:
         SecurityException: 路径越界
     """
     raw_in = (file_path or "").strip()
+    if len(raw_in) >= 2 and (
+        (raw_in[0] == raw_in[-1] == '"') or (raw_in[0] == raw_in[-1] == "'")
+    ):
+        raw_in = raw_in[1:-1].strip()
     if raw_in.startswith("{"):
         try:
             o = json.loads(raw_in)
@@ -115,11 +130,15 @@ def core_fs_read(file_path: str) -> str:
 
         p = (get_effective_workspace_root() / raw).resolve()
     if _is_under_hr_whitelist(p):
+        if not p.exists():
+            return _fs_read_file_not_found_hint(p)
         if p.suffix.lower() == ".pdf":
             from core.pdf_extractor import extract_pdf_text
             return extract_pdf_text(p) or ""
         return p.read_text(encoding="utf-8", errors="replace")
     _assert_under_workspace(p)
+    if not p.exists():
+        return _fs_read_file_not_found_hint(p)
     if p.suffix.lower() == ".pdf":
         from core.pdf_extractor import extract_pdf_text
         return extract_pdf_text(p) or ""

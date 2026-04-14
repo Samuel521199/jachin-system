@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.8.115",
+  "version": "0.8.117",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -60,7 +60,8 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "url": "chat.html"
+        "url": "chat.html",
+        "dragDropEnabled": false
       },
       {
         "label": "notification",

@@ -94,6 +94,29 @@ def _mcp_placeholder_project_root() -> Path:
 registered_local_skills: dict[str, dict[str, Any]] = {}
 
 
+def _remap_legacy_hr_jds_root(project_root: Path, expanded: str) -> str:
+    """
+    历史上 inventory 曾写 ``__PROJECT_ROOT__/config/hr_jds``，该目录可能从未创建；
+    规范路径为 ``config/skills/com.jachin.hr.analyzer4/hr_jds``（见 get_hr_jds_dir）。
+    若旧路径不存在而规范目录存在，则改用规范路径，减少无效根与告警。
+    """
+    try:
+        p = Path(expanded)
+        legacy = (project_root / "config" / "hr_jds").resolve()
+        if p.resolve() != legacy:
+            return expanded
+        if legacy.is_dir():
+            return expanded
+        from l3_node.jachin_config import get_hr_jds_dir
+
+        alt = get_hr_jds_dir(project_root).resolve()
+        if alt.is_dir():
+            return str(alt)
+    except Exception:
+        pass
+    return expanded
+
+
 def _prune_mcp_filesystem_roots(resolved: list[Any]) -> list[Any] | None:
     """
     @modelcontextprotocol/server-filesystem 若传入不存在的目录，子进程会立刻退出，
@@ -114,11 +137,20 @@ def _prune_mcp_filesystem_roots(resolved: list[Any]) -> list[Any] | None:
     roots = resolved[pkg_idx + 1 :]
     good: list[Any] = []
     for r in roots:
-        if isinstance(r, str) and Path(r).is_dir():
+        if not isinstance(r, str):
+            continue
+        rs = r.strip()
+        if not rs:
+            continue
+        try:
+            Path(rs).expanduser().mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.debug("[Inventory] server-filesystem 根路径预创建失败 path=%s err=%s", rs, e)
+        if Path(rs).expanduser().is_dir():
             good.append(r)
-        elif isinstance(r, str):
+        else:
             logger.warning(
-                "[Inventory] server-filesystem 跳过不存在的根路径（避免 MCP 子进程立即退出）: %s",
+                "[Inventory] server-filesystem 跳过不可用的根路径（避免 MCP 子进程立即退出）: %s",
                 r,
             )
     if not good:
@@ -199,7 +231,8 @@ def _extract_mcp_configs(data: dict[str, Any]) -> list[dict[str, Any]]:
                             if isinstance(a, str) and "__PROJECT_ROOT__" in a:
                                 sub = a.replace("__PROJECT_ROOT__/", "").replace("__PROJECT_ROOT__", "").lstrip("/")
                                 root = _mcp_placeholder_project_root()
-                                resolved.append(str(root / sub) if sub else str(root))
+                                raw = str((root / sub).resolve()) if sub else str(root.resolve())
+                                resolved.append(_remap_legacy_hr_jds_root(root, raw))
                             else:
                                 resolved.append(a)
                         pruned = _prune_mcp_filesystem_roots(resolved)
@@ -254,6 +287,7 @@ async def scan_local_mcps(*, for_l2_host: bool = True) -> int:
         return 0
 
     count = 0
+    seen_server_ids: set[str] = set()
 
     # 1. 扁平 .json 文件（兼容旧格式）
     for p in MCPS_DIR.iterdir():
@@ -279,6 +313,12 @@ async def scan_local_mcps(*, for_l2_host: bool = True) -> int:
             if not cfg.get("command"):
                 logger.warning("[Inventory] MCP 配置缺少 command file=%s，跳过", p.name)
                 continue
+            _sid = str(cfg.get("id") or cfg.get("name") or "").strip()
+            if _sid and _sid in seen_server_ids:
+                logger.debug("[Inventory] 跳过重复 server_id=%s file=%s", _sid, p.name)
+                continue
+            if _sid:
+                seen_server_ids.add(_sid)
             try:
                 ok = await manager.add_server(cfg)
                 if ok:
@@ -312,6 +352,12 @@ async def scan_local_mcps(*, for_l2_host: bool = True) -> int:
             if not cfg.get("command"):
                 logger.warning("[Inventory] MCP 配置缺少 command dir=%s，跳过", subdir.name)
                 continue
+            _sid2 = str(cfg.get("id") or cfg.get("name") or "").strip()
+            if _sid2 and _sid2 in seen_server_ids:
+                logger.debug("[Inventory] 跳过重复 server_id=%s dir=%s", _sid2, subdir.name)
+                continue
+            if _sid2:
+                seen_server_ids.add(_sid2)
             try:
                 ok = await manager.add_server(cfg)
                 if ok:

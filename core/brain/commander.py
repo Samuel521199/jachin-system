@@ -388,7 +388,12 @@ def _create_memory_manager() -> Optional[Any]:
             key = getattr(settings, "OPENAI_API_KEY", None)
         base_url = None
         if settings.LLM_PROVIDER in ("qwen", "qwen-v2") and key:
-            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            try:
+                from core.brain.llm.dashscope_regional import get_dashscope_regional_api_base
+
+                base_url = get_dashscope_regional_api_base()
+            except ImportError:
+                base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         embedder = OpenAIEmbedder(model="text-embedding-3-small", api_key=key, base_url=base_url)
         return MemoryManager(store=store, embedder=embedder)
     except Exception as e:
@@ -418,7 +423,13 @@ def get_commander_agent(
 
         if base is None or key is None or m is None:
             if settings.LLM_PROVIDER in ("qwen", "qwen-v2"):
-                base = base or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                if not base:
+                    try:
+                        from core.brain.llm.dashscope_regional import get_dashscope_regional_api_base
+
+                        base = get_dashscope_regional_api_base()
+                    except ImportError:
+                        base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
                 key = key or settings.QWEN_API_KEY or settings.DASHSCOPE_API_KEY or settings.QWEN_AI_API_KEY
                 m = m or settings.LLM_MODEL
             else:

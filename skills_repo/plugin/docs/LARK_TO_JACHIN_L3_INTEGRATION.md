@@ -59,7 +59,7 @@ python -m l3_node --ws-only
 L3_WS_URL=ws://127.0.0.1:18981/sensory
 ```
 
-**百炼 Key / 主模型**：在 **jachin-system 仓库根 `.env`** 配置，与 L3 一致；勿在插件 `.env` 写 `DASHSCOPE_API_KEY` / `LLM_MODEL`（见 `core.plugin_llm_identity`）。
+**百炼 Key / 主模型**：在 **jachin-system 仓库根 `.env`** 配置，与 L3 一致（国内/东南亚分 Key 见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）；勿在插件 `.env` 写 DashScope / `LLM_MODEL`（见 `core.plugin_llm_identity`）。
 
 端口需与 L3 实际监听端口一致（18981、18982...）。
 

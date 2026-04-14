@@ -162,6 +162,7 @@ QWEN_AI_API_KEY=your_api_key_here
 # 或使用其他名称
 QWEN_API_KEY=your_api_key_here
 DASHSCOPE_API_KEY=your_api_key_here
+# 若与主 LLM 一致使用分区域百炼 Key，见仓库 docs/DASHSCOPE_REGIONAL_KEYS.md
 ```
 
 ### 代码配置

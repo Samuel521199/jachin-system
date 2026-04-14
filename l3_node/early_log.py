@@ -24,6 +24,7 @@ from pathlib import Path
 
 _LOG_PATH: str | None = None
 _FILE_HANDLER: logging.FileHandler | None = None
+_WS_HANDSHAKE_NOISE_FILTER_INSTALLED: bool = False
 
 
 class _UTCFormatter(logging.Formatter):
@@ -44,6 +45,37 @@ def _env_truthy(name: str) -> bool:
 def is_l3_verbose() -> bool:
     """是否开启 L3 超详细诊断（WS/LLM 流式逐条等）。"""
     return _env_truthy("JACHIN_L3_DEBUG") or _env_truthy("L3_VERBOSE_LOG")
+
+
+class _WebsocketHandshakeNoiseFilter(logging.Filter):
+    """
+    抑制 websockets 库在「握手未完成即断开」时打的 ERROR + 堆栈（常见于端口探测、HTTP 误连、
+    浏览器预检、客户端快速刷新）。与业务无关，避免污染 l3_debug.log。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if is_l3_verbose():
+            return True
+        name = str(record.name or "")
+        if not name.startswith("websockets"):
+            return True
+        msg = (record.getMessage() or "").lower()
+        if "opening handshake failed" in msg:
+            return False
+        if "connectionclosederror" in msg.replace(" ", "") and "no close frame" in msg:
+            return False
+        return True
+
+
+def install_websocket_handshake_noise_filters() -> None:
+    """幂等：为 websockets 相关 logger 挂载 Filter，并压低非致命噪声级别依赖。"""
+    global _WS_HANDSHAKE_NOISE_FILTER_INSTALLED
+    if _WS_HANDSHAKE_NOISE_FILTER_INSTALLED:
+        return
+    _WS_HANDSHAKE_NOISE_FILTER_INSTALLED = True
+    flt = _WebsocketHandshakeNoiseFilter()
+    for ln in ("websockets", "websockets.server", "websockets.asyncio.server", "websockets.client"):
+        logging.getLogger(ln).addFilter(flt)
 
 
 def _resolve_log_path() -> str:
@@ -123,6 +155,8 @@ def setup_early_logging() -> str:
     except OSError:
         pass
 
+    install_websocket_handshake_noise_filters()
+
     return _LOG_PATH
 
 
@@ -196,6 +230,8 @@ def configure_l3_runtime_diagnostics() -> None:
         logging.getLogger("l3_node").setLevel(logging.INFO)
         logging.getLogger("l3_node.ws_server").setLevel(logging.INFO)
         logging.getLogger("l3_node.llm_client").setLevel(logging.INFO)
+
+    install_websocket_handshake_noise_filters()
 
 
 def attach_file_handler_to_logger(lg: logging.Logger) -> None:

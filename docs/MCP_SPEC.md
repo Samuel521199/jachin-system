@@ -58,7 +58,7 @@
     {
       "id": "filesystem",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem@0.6.3", "~/.jachin/workspace"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@0.6.2", "~/.jachin/workspace"],
       "env": null
     },
     {

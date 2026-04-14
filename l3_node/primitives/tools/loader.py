@@ -81,7 +81,11 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:fs_read",
         "label": "core:fs_read",
-        "desc": "读取文件内容。路径须在允许范围内：默认 ~/.jachin/workspace/，或 HR 数据白名单，或用户 Desktop / Downloads / Documents。参数: file_path",
+        "desc": (
+            "读取本机已存在文件。路径须在允许范围：~/.jachin/workspace/、HR 白名单目录、或本机 Desktop/Downloads/Documents 的真实路径。"
+            "**禁止**在用户通过聊天/Omni 上传附件后，臆造 ~/Downloads/同名路径再读：附件正文若已出现在用户消息「[附件: 文件名 内容]」中，应直接使用该段文字，勿再调用本工具。"
+            "参数: file_path"
+        ),
         "params": ["file_path"],
     },
     {

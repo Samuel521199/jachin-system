@@ -1,10 +1,23 @@
-﻿/**
+/**
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
 import React, { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, Square, Radio, LayoutDashboard, Settings2, Plus, Menu, Trash2 } from "lucide-react";
+import {
+  Send,
+  Mic,
+  Square,
+  Radio,
+  LayoutDashboard,
+  Settings2,
+  Plus,
+  Menu,
+  Trash2,
+  FileText,
+  Image as ImageIcon,
+  X,
+} from "lucide-react";
 import type { StoredMessage } from "../../utils/messageStorage";
 import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
 import type { ToolUiSubmitPayload } from "../../skills-ui/types";
@@ -84,6 +97,17 @@ export interface OmniCyberChatShellProps {
   currentSessionId?: string | null;
   onSelectSession?: (id: string) => void;
   onDeleteSession?: (id: string) => void;
+  /** 待发送附件（多模态）；与 `onMergePendingFiles` / `onRemovePendingFile` 成组使用 */
+  pendingFiles?: File[];
+  /** 合并新选/拖入的文件（父级做体积与类型校验） */
+  onMergePendingFiles?: (files: File[]) => void;
+  onRemovePendingFile?: (index: number) => void;
+  /** 隐藏 file input 的 ref，供父级聚焦（可选） */
+  fileInputRef?: React.RefObject<HTMLInputElement | null>;
+  /** 附件提示条（校验失败文案） */
+  attachmentHint?: string | null;
+  /** 是否显示全局拖拽高亮（由父级控制） */
+  dragOverlayActive?: boolean;
   /** 与 Horizon 语言菜单联动（默认中文） */
   ui?: DesktopOmniUiStrings;
 }
@@ -124,15 +148,24 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   currentSessionId = null,
   onSelectSession,
   onDeleteSession,
+  pendingFiles = [],
+  onMergePendingFiles,
+  onRemovePendingFile,
+  fileInputRef: fileInputRefProp,
+  attachmentHint = null,
+  dragOverlayActive = false,
   ui = desktopOmniUi.zh,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputLocalRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = fileInputRefProp ?? fileInputLocalRef;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  const canSend = !disabled && !isLoading && input.trim().length > 0;
+  const hasPendingFiles = pendingFiles.length > 0;
+  const canSend = !disabled && !isLoading && (input.trim().length > 0 || hasPendingFiles);
   const stopMode =
     onStopGeneration != null &&
     (jachinMachineState === "THINKING" || jachinMachineState === "STREAMING");
@@ -151,7 +184,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
 
   return (
     <div
-      className={`flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-none ${riskBorder}`}
+      className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-none ${riskBorder}`}
       style={{ background: "transparent" }}
     >
       <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-auto">
@@ -411,13 +444,94 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             )}
           </div>
 
+          {/* 附件预览条（在输入条上方） */}
+          {(hasPendingFiles || attachmentHint) && (
+            <div className="relative z-20 shrink-0 border-t border-cyan-500/15 bg-slate-950/40 px-3 pb-2 pt-2">
+              {attachmentHint ? (
+                <p className="mb-2 text-[11px] text-amber-300/90">{attachmentHint}</p>
+              ) : null}
+              {hasPendingFiles ? (
+                <div className="flex flex-wrap gap-2">
+                  {pendingFiles.map((file, idx) => {
+                    const isImg = file.type.startsWith("image/");
+                    const url = isImg ? URL.createObjectURL(file) : "";
+                    return (
+                      <div
+                        key={`${file.name}-${file.size}-${idx}`}
+                        className="group relative flex max-w-[140px] items-center gap-2 rounded-lg border border-cyan-500/35 bg-slate-800/50 px-2 py-1.5 shadow-[0_0_12px_rgba(34,211,238,0.08)]"
+                      >
+                        {isImg ? (
+                          <img src={url} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
+                        ) : (
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-slate-900/80 text-cyan-400/90">
+                            <FileText className="h-5 w-5" />
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-mono text-[10px] text-cyan-100/90" title={file.name}>
+                            {file.name}
+                          </p>
+                          <p className="font-mono text-[9px] text-slate-500">
+                            {(file.size / 1024).toFixed(1)} KB
+                          </p>
+                        </div>
+                        {onRemovePendingFile != null ? (
+                          <button
+                            type="button"
+                            className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-cyan-500/40 bg-slate-950 text-cyan-200 opacity-0 shadow transition hover:bg-red-950/90 hover:text-red-100 group-hover:opacity-100"
+                            aria-label="移除附件"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onRemovePendingFile(idx);
+                            }}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          )}
+
           {/* Omni-Bar：永远贴底，禁止被压缩 */}
           <div
             data-chat-interactive
             className="relative z-20 flex shrink-0 items-center gap-2 px-3 pb-3 pt-1"
             style={{ pointerEvents: "auto" }}
           >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt"
+            className="hidden"
+            onChange={(e) => {
+              const fl = e.target.files;
+              if (fl?.length && onMergePendingFiles) onMergePendingFiles(Array.from(fl));
+              e.target.value = "";
+            }}
+          />
           <JachinCore state={coreState} machineState={jachinMachineState} toolFlash={thinkingToolFlash} />
+
+          {onMergePendingFiles != null && (
+            <button
+              type="button"
+              title="添加附件"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+              disabled={disabled || isLoading}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/35 bg-slate-900/60 text-cyan-300 transition hover:border-cyan-400/55 hover:bg-cyan-500/10 disabled:opacity-40"
+            >
+              <Plus className="h-5 w-5" strokeWidth={2.25} />
+            </button>
+          )}
 
           {onVadToggle != null && (
             <button
@@ -555,6 +669,19 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
         </div>
         </div>
       </div>
+
+      {dragOverlayActive ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-[60] flex items-center justify-center rounded-2xl border-2 border-dashed border-cyan-400/50 bg-cyan-500/10 backdrop-blur-[2px]"
+          aria-hidden
+        >
+          <div className="rounded-xl border border-cyan-400/40 bg-slate-950/80 px-6 py-4 text-center shadow-[0_0_32px_rgba(34,211,238,0.2)]">
+            <ImageIcon className="mx-auto mb-2 h-10 w-10 text-cyan-300/90" />
+            <p className="font-mono text-sm font-medium text-cyan-100">松开以添加至会话</p>
+            <p className="mt-1 font-mono text-[10px] text-cyan-400/70">图片 / PDF / Word / Excel / TXT · 最多 5 个 · 单文件 ≤ 5MB</p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

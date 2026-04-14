@@ -261,7 +261,7 @@ python install.py --skip-wasm --skip-mcp
 
 | 来源 | 说明 |
 |------|------|
-| **仓库根 `.env`** | `DASHSCOPE_API_KEY`、`LLM_MODEL`、`LLM_CODER_MODEL` 等（与 L3 主进程一致） |
+| **仓库根 `.env`** | DashScope：`JACHIN_ACTIVE_REGION`、`DASHSCOPE_API_KEY_SEA` / `_CN` 或通用 `DASHSCOPE_API_KEY` 等（见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）；以及 `LLM_MODEL`、`LLM_CODER_MODEL` 等（与 L3 主进程一致） |
 | **`core.plugin_llm_identity`** | Skill/MCP 内读 Key 与模型：进程环境 → `l3_node.agent_ref.engine` 内存 Key → `credential_loader`；**禁止**插件目录 `.env` 覆盖 LLM/Key |
 | **`GEMINI_API_KEY`** | 仅进程级 Gemini 回退（建议在根 `.env` 配置） |
 | **brain_filter** | 粗筛模型固定为 `DASHSCOPE_ECON_FALLBACK_MODEL`，非插件 env |

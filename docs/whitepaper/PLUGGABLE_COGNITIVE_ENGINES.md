@@ -35,14 +35,16 @@
 
 ### 2.2 密钥的瀑布流降级读取 (Waterfall Credentialing)
 
-系统加载云端模型时，读取密钥的优先级：
+系统加载云端模型时，DashScope 密钥与 endpoint 由 **`JACHIN_ACTIVE_REGION`（CN | SEA）** 与 **`DASHSCOPE_API_KEY_SEA` / `DASHSCOPE_API_KEY_CN`**、通用 `DASHSCOPE_API_KEY` / `QWEN_*` 共同决定；LiteLLM 注入时若已配置区域专用 Key，则 **不会** 用 L2 下发的国内 Key 覆盖（避免国际域名 + 国服 sk）。**SSOT**：`docs/DASHSCOPE_REGIONAL_KEYS.md`。
 
-| 优先级 | 来源 | 说明 |
-|--------|------|------|
-| 1 | `os.environ.get("DASHSCOPE_API_KEY")` | 系统环境变量，优先 |
-| 2 | `~/.jachin/nexus_config.json` → `llm_keys.dashscope` | 本地配置文件 |
-| 3 | `~/.jachin/.qwen_api_key` | 桌面端保存的覆盖 |
-| 4 | `.env` 中的 `QWEN_API_KEY` / `DASHSCOPE_API_KEY` | 项目级配置 |
+与配置文件、旧路径的合并关系（非严格序号，以运行时 `get_dashscope_regional_credentials` / `credential_loader` 为准）：
+
+| 来源 | 说明 |
+|------|------|
+| `os.environ` | `DASHSCOPE_API_KEY_*`、回退 `DASHSCOPE_API_KEY`、`QWEN_*` 等 |
+| `~/.jachin/nexus_config.json` → `llm_keys.dashscope` | 本地配置文件（经 credential_loader） |
+| `~/.jachin/.qwen_api_key` | 桌面端保存的覆盖 |
+| 项目 `.env` / `~/.jachin/.env` | 与上互补；桌面 L3 子进程由 `load_l3_env_vars` 白名单注入 |
 
 **若全部为空**：终端抛出赛博风格红色警告，挂起进程，禁止静默降级。
 

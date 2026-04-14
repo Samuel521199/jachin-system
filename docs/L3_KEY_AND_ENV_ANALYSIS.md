@@ -1,17 +1,22 @@
 # L3 拿 Key 逻辑与 env 访问全面分析
 
+> **DashScope 国内 / 东南亚分 Key、默认 endpoint、与 L2 下发优先级**：见 [DASHSCOPE_REGIONAL_KEYS.md](./DASHSCOPE_REGIONAL_KEYS.md)（SSOT）。
+
 ## 一、L3 拿 Key 的三种路径
 
 | 路径 | 触发时机 | 数据来源 | 注入方式 |
-|-----|---------|---------|---------|
-| **A. L2 auth/poll** | gateway 模式，配对审批通过 | L2 返回 `encrypted_api_keys` | 用 L3 私钥解密 → `ctx.set_key()` |
+|------|----------|----------|----------|
+| **A. L2 auth/poll** | gateway 模式，配对审批通过 | L2 返回 `encrypted_api_keys` | 用 L3 私钥解密 → `ctx.set_key("dashscope", ...)` |
 | **B. L2 兜底拉取** | 首次聊天时 ctx 为空 | L2 `GET /api/v2/keys` | 同上 |
-| **C. 环境变量兜底** | A/B 无 Key 或解密失败 | `os.environ` | `_inject_env_keys_into_ctx()` 读 `DASHSCOPE_API_KEY` 等 |
+| **C. 环境变量兜底** | A/B 无可用 Key 或解密失败 | `os.environ` | `_inject_env_keys_into_ctx()`：DashScope 经 `get_dashscope_regional_credentials()`（`DASHSCOPE_API_KEY_SEA` / `_CN`、回退 `DASHSCOPE_API_KEY` / `QWEN_*`）；其他 provider 读对应 env |
 
 **调用顺序**（以 `generate_response` 为例）：
-1. `_inject_env_keys_into_ctx(ctx)` — 优先从 env 注入
-2. 若仍无 Key → `try_fetch_keys_from_l2(ctx)` — 从 L2 拉取
-3. 若仍无 Key → 抛出 `RuntimeError`
+
+1. `_inject_env_keys_into_ctx(ctx)` — 优先从 env（含区域化 DashScope）注入  
+2. 若仍无 Key → `try_fetch_keys_from_l2(ctx)` — 从 L2 拉取  
+3. 若仍无 Key → 抛出 `RuntimeError`  
+
+**与 L2 Key 的关系**：若已为当前区域配置 `DASHSCOPE_API_KEY_SEA` 或 `DASHSCOPE_API_KEY_CN`，实际 LiteLLM 调用时 **不会** 用 L2 下发的国内 Key 覆盖区域 Key（避免国际 endpoint + 国服 sk → 401）。见区域文档第三节。
 
 ---
 
@@ -20,42 +25,38 @@
 ### 2.1 命令行直接运行（`python -m l3_node --gateway`）
 
 | 环节 | 是否生效 | 说明 |
-|-----|---------|------|
+|------|----------|------|
 | **load_dotenv** | ✅ | `__main__.py` 开头执行，`_root` 由 `__file__` 推导为项目根 |
-| **路径** | ✅ | `Path(_root)/".env"` 或 `Path.cwd()/".env"`，cwd 通常为项目根 |
+| **路径** | ✅ | `Path(_root)/".env"` 或 `Path.cwd()/".env"` |
 | **os.environ** | ✅ | load_dotenv 会写入，`_inject_env_keys_into_ctx` 可读到 |
 
-**结论**：能访问 env，Key 可来自 .env。
+**结论**：能访问 env。
 
 ---
 
 ### 2.2 桌面 Tauri 用 Python 回退启动（`spawn_l3_via_python`）
 
-当 Sidecar 不可用时，桌面会执行 `python -m l3_node`：
-
 | 环节 | 是否生效 | 说明 |
-|-----|---------|------|
-| **load_dotenv** | ✅ | 同上，Python 进程会执行 `__main__.py` |
-| **cmd.env()** | ✅ | `load_l3_env_vars()` 从项目根 `.env` 读取，通过 `cmd.env(k,v)` 传给子进程 |
-| **cmd.current_dir()** | ✅ | cwd 设为项目根，`Path.cwd()/".env"` 也能找到 |
-| **双重保障** | ✅ | 即使 load_dotenv 失败，spawn 时已显式传入 DASHSCOPE_API_KEY 等 |
+|------|----------|------|
+| **load_dotenv** | ✅ | Python 进程执行 `__main__.py` |
+| **cmd.env()** | ✅ | `load_l3_env_vars()` 从项目根 `.env` 与 `~/.jachin/.env` 读取白名单键，通过 `cmd.env(k,v)` 传入；可与 `env_overlay` 合并（网关配对） |
+| **cwd** | ✅ | 通常设为项目根 |
 
-**结论**：能访问 env，且有 spawn 显式传参兜底。
+**结论**：能访问 env；spawn 显式注入 `L3_ENV_KEYS` 中的变量（含 `JACHIN_ACTIVE_REGION`、`DASHSCOPE_API_KEY_SEA` / `_CN` 等）。
 
 ---
 
 ### 2.3 桌面 Tauri 用 Sidecar 启动（`bin/l3_node-xxx.exe`）
 
-Sidecar 是 PyInstaller 打包的 l3_node：
+Sidecar 为 PyInstaller 打包的 l3_node：
 
 | 环节 | 是否生效 | 说明 |
-|-----|---------|------|
-| **load_dotenv** | ⚠️ 可能失败 | `__file__` 指向解压目录（如 `_MEIxxxxx/l3_node/__main__.py`），`_root` 不是项目根 |
-| **Path(_root)/".env"** | ❌ | 解压目录下无 `.env` |
-| **Path.cwd()/".env"** | ⚠️ 视 cwd 而定 | Sidecar 的 cwd 由 Tauri 决定，可能是 `target/debug` 等，未必有 `.env` |
-| **cmd.env()** | ❌ | Sidecar 只传了 `L2_BASE_URL`，**未传** DASHSCOPE_API_KEY 等 |
+|------|----------|------|
+| **load_dotenv** | ⚠️ 可能失败 | `__file__` 指向解压目录，项目根 `.env` 路径可能不对 |
+| **sidecar.env()** | ✅ | 与 Python 回退一致：`load_l3_env_vars` 将白名单变量逐项 `sidecar.env(k, v)` 传入（见 `l3_spawn.rs`） |
+| **合并** | ✅ | 子进程 `os.environ` 含 DashScope 等键时，`_inject_env_keys_into_ctx` 可读到 |
 
-**结论**：Sidecar 模式下，L3 很可能拿不到 env 中的 Key，只能依赖 L2 下发。
+**结论**：即使 Sidecar 下 `load_dotenv` 未命中项目根，只要 `.env`（或 `~/.jachin/.env`）经 `load_l3_env_vars` 注入，L3 仍可从 env 兜底。**旧版「Sidecar 不传 DASHSCOPE」已不适用当前代码。**
 
 ---
 
@@ -71,50 +72,31 @@ for _p in [Path(_root) / ".env", Path.cwd() / ".env"]:
         break
 ```
 
-- **命令行**：`__file__` 为项目内真实路径，`_root` 正确。
-- **Sidecar**：`__file__` 为解压路径，`_root` 错误，第一个路径通常找不到；是否成功取决于 cwd 下是否有 `.env`。
+- **命令行**：`__file__` 为项目内真实路径，`_root` 正确。  
+- **Sidecar**：`__file__` 为解压路径，第一个路径常无效；是否成功还取决于 cwd 下是否有 `.env`。桌面路径已通过 2.3 的 **显式 env 注入** 补偿。
 
-### 3.2 `_inject_env_keys_into_ctx` 读取的变量
+### 3.2 `_inject_env_keys_into_ctx`（DashScope）
 
-```python
-dash = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or os.environ.get("QWEN_AI_API_KEY")
-openai_key = os.environ.get("OPENAI_API_KEY")
-```
+DashScope 使用 `get_dashscope_regional_credentials()`，变量含义与优先级见 [DASHSCOPE_REGIONAL_KEYS.md](./DASHSCOPE_REGIONAL_KEYS.md)。  
+其他 provider 仍直接读 `OPENAI_API_KEY` 等（以 `llm_client.py` 为准）。
 
-依赖 `os.environ` 已有值，来源为：
-1. 进程继承的父进程 env
-2. `load_dotenv()` 写入
-3. Tauri spawn 时 `cmd.env()` 传入（仅 Python 回退路径）
+### 3.3 桌面的 `load_l3_env_vars`
 
-### 3.3 桌面 spawn 的 `load_l3_env_vars`
-
-```rust
-// 从 root/.env 读取 DASHSCOPE_API_KEY, OPENAI_API_KEY, LITELLM_FALLBACK_MODELS, LLM_MODEL
-for (k, v) in load_l3_env_vars(&root) {
-    cmd = cmd.env(&k, &v);
-}
-```
-
-- 仅用于 **Python 回退**（`spawn_l3_via_python`）
-- **Sidecar 路径** 不经过此处，因此不会注入这些变量
+- 白名单：`L3_ENV_KEYS`（`clients/desktop/src-tauri/src/l3_spawn.rs`）。  
+- **Python 回退、Sidecar、便携直接 exe** 均使用该列表向子进程注入。  
+- 统帅目录 `.env` 与项目根合并时 **不覆盖** 项目已有同名键。
 
 ---
 
-## 四、风险与修复建议
+## 四、风险与建议
 
-### 4.1 当前风险
+| 场景 | 说明 |
+|------|------|
+| 仅依赖 Sidecar 内 load_dotenv | 可能找不到项目根 `.env`；依赖 `load_l3_env_vars` 注入即可缓解 |
+| dotenv 未安装 | `load_dotenv` 不执行；依赖 spawn 白名单注入或 L2 |
+| 区域与 Key 不匹配 | 国际 endpoint + 国内 sk → 401；按区域文档配置 `_SEA` / `_CN` |
 
-| 场景 | 风险 |
-|-----|------|
-| Sidecar 模式 | 无 env 注入，若 L2 未下发 Key，L3 无法从 env 兜底 |
-| dotenv 未安装 | load_dotenv 不执行，仅靠 spawn 传参（Python 回退）或 L2 |
-| .env 路径错误 | `_root` 或 cwd 不对时，load_dotenv 找不到文件 |
-
-### 4.2 建议修复
-
-1. **Sidecar 也注入 env**：在 `sidecar.spawn()` 前，对 Sidecar 使用与 Python 相同的 `load_l3_env_vars` 逻辑，通过 `sidecar.env(k, v)` 传入。
-2. **load_dotenv 路径增强**：在 `__main__.py` 中增加基于可执行文件路径的查找（如 `sys.executable` 所在目录向上查找 `.env`），以适配 PyInstaller 等打包场景。
-3. **显式兜底路径**：在 `_inject_env_keys_into_ctx` 中，若 `os.environ` 无 Key，可尝试从 `~/.jachin/.env` 或项目根 `.env` 再次 load_dotenv 并重试。
+可选增强：在 `__main__.py` 中基于可执行文件目录向上查找 `.env`，进一步减少 cwd 依赖（非必须）。
 
 ---
 
@@ -122,16 +104,12 @@ for (k, v) in load_l3_env_vars(&root) {
 
 ```
 L3 启动
-  ├─ 命令行 / Python 回退
-  │    ├─ load_dotenv(项目根/.env) ✅
-  │    └─ [Python 回退] cmd.env(DASHSCOPE_API_KEY 等) ✅
+  ├─ 命令行 / Python 回退 / Sidecar / 便携直接 exe
+  │    ├─ load_dotenv（路径正确则 ✅）
+  │    └─ [桌面] load_l3_env_vars → cmd.env / sidecar.env（白名单）✅
   │
-  └─ Sidecar
-       ├─ load_dotenv ⚠️（路径可能错误）
-       └─ 无 cmd.env 注入 ❌
-
 首次需要 Key 时
-  ├─ _inject_env_keys_into_ctx() → 读 os.environ
-  ├─ try_fetch_keys_from_l2() → L2 GET /keys，解密
-  └─ 仍无 Key → RuntimeError
+  ├─ _inject_env_keys_into_ctx()（DashScope 区域化 + 其他 provider）
+  ├─ try_fetch_keys_from_l2()
+  └─ LiteLLM：litellm_apply_dashscope_credentials（区域专用 Key 优先于 L2 explicit，见区域文档）
 ```

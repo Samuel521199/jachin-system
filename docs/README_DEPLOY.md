@@ -38,8 +38,8 @@ copy .env.example .env
 
 **必填项：**
 
-- `DASHSCOPE_API_KEY`：阿里百炼 API Key（LLM）
-- L2 与 L1 建立信任后 Key 由 L2 下发；未完成前需本地配置（见仓库 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`）
+- 阿里百炼（DashScope）LLM Key：按部署区域配置，见仓库 **`docs/DASHSCOPE_REGIONAL_KEYS.md`**（`JACHIN_ACTIVE_REGION=CN|SEA`，推荐 `DASHSCOPE_API_KEY_CN` / `DASHSCOPE_API_KEY_SEA`，或回退通用 `DASHSCOPE_API_KEY`）
+- L2 与 L1 建立信任后 L2 可下发 Key；**东南亚（SEA）** 建议在本地配置国际站 Key，避免仅依赖 L2 国内 Key 与国际 endpoint 不匹配（详见该文档第 3 节）
 
 **可选（Lark / 飞书）：**
 
@@ -58,7 +58,7 @@ copy .env.example .env
 ```
 
 - **已配对 L2**：使用 `--gateway`（默认），MCP/Skill 自动拉取
-- **新机器 / L2 未启动**：双击 `run_l3_standalone.bat` 或 `.\scripts\run_l3.ps1 --ws-only`（需 .env 有 DASHSCOPE_API_KEY，无订阅能力）
+- **新机器 / L2 未启动**：双击 `run_l3_standalone.bat` 或 `.\scripts\run_l3.ps1 --ws-only`（需 `.env` 中已按区域配置 DashScope Key，见 `DASHSCOPE_REGIONAL_KEYS.md`，无订阅能力）
 
 ### 5. 验证
 
@@ -95,7 +95,7 @@ copy .env.example .env
    ```powershell
    .\scripts\run_l3.ps1 --ws-only
    ```
-   需在 `.env` 配置 `DASHSCOPE_API_KEY`，无 MCP/Skill 订阅能力。
+   需在 `.env` 按区域配置 DashScope Key（见 `docs/DASHSCOPE_REGIONAL_KEYS.md`），无 MCP/Skill 订阅能力。
 2. **exe 启动后无响应**：查看 `logs/l3_debug.log` 是否有异常
 3. **MCP/Skill 不可用**：确认 L2 已与 L1 建立信任（`nexus_config`）且已在 L2 订阅对应 MCP/Skill；L3 拉取后写入 `~/.jachin/l3_mcp_cache`、`l3_skill_cache`
 4. **Lark 等 MCP 配置**：订阅下载后配置在 `~/.jachin/config/mcps/{plugin_id}/`，按包内 manifest 写出

@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     LLM_CODER_MODEL: str = "qwen3-coder-plus"
     LLM_COMPLEX_MODEL: str = "qwen-max"
     QWEN_REGION: str = "cn-beijing"
+    # 与 DashScope 区域化凭证对齐：CN | SEA（未设 QWEN_REGION 环境变量时 SEA 对应 sea-intl endpoint）
+    JACHIN_ACTIVE_REGION: str = "CN"
 
     # Local LLM (小脑 / Edge - Ollama 默认)
     LOCAL_LLM_URL: str = "http://localhost:11434"

@@ -23,6 +23,8 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
   const [deviceName, setDeviceName] = useState("");
   const [organizationId, setOrganizationId] = useState("");
   const [organizationSlug, setOrganizationSlug] = useState("");
+  /** 算力节点区域：与 JACHIN_ACTIVE_REGION / DashScope 路由一致 */
+  const [activeRegion, setActiveRegion] = useState<"CN" | "SEA">("CN");
   const [step, setStep] = useState<"idle" | "connecting" | "waiting" | "success" | "error">("idle");
   const [error, setError] = useState("");
 
@@ -39,6 +41,8 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
       const osl = cfg.organization_slug;
       if (typeof oid === "string" && oid.trim()) setOrganizationId(oid.trim());
       if (typeof osl === "string" && osl.trim()) setOrganizationSlug(osl.trim());
+      const jar = cfg["jachin_active_region"];
+      if (jar === "SEA" || jar === "CN") setActiveRegion(jar);
     } catch {
       // ignore
     }
@@ -91,6 +95,7 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
           displayName: name || undefined,
           organizationId: oid || undefined,
           organizationSlug: osl || undefined,
+          activeRegion,
         },
       });
       await invoke("gateway_connect", {
@@ -99,6 +104,7 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
           displayName: name ?? null,
           organizationId: oid || null,
           organizationSlug: osl || null,
+          activeRegion,
         },
       });
       setStep("waiting");
@@ -130,7 +136,7 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
       setError(String(e));
       setStep("error");
     }
-  }, [l2Url, deviceName, organizationId, organizationSlug, onPaired]);
+  }, [l2Url, deviceName, organizationId, organizationSlug, activeRegion, onPaired]);
 
   return (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white overflow-hidden">
@@ -206,6 +212,36 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
                 className="w-full px-4 py-3 rounded-xl bg-black/40 border border-cyan-500/30 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 font-mono text-sm"
               />
             </div>
+            <div>
+              <span className="block text-xs text-cyan-400/80 uppercase tracking-wider mb-2">
+                算力节点区域 (Region)
+              </span>
+              <p className="text-[11px] text-white/35 mb-3 leading-relaxed">
+                选择后将写入本机 <span className="font-mono text-cyan-500/60">JACHIN_ACTIVE_REGION</span>，用于百炼 / DashScope API 路由（中国大陆 vs 东南亚及国际）。
+              </p>
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-black/40 border border-cyan-500/25 cursor-pointer hover:border-cyan-500/45 transition-colors has-[:checked]:border-teal-400/50 has-[:checked]:bg-teal-500/10">
+                  <input
+                    type="radio"
+                    name="jachin-region"
+                    checked={activeRegion === "CN"}
+                    onChange={() => setActiveRegion("CN")}
+                    className="accent-teal-400 w-4 h-4 shrink-0"
+                  />
+                  <span className="text-sm text-white/90">中国大陆节点 (CN)</span>
+                </label>
+                <label className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-black/40 border border-cyan-500/25 cursor-pointer hover:border-cyan-500/45 transition-colors has-[:checked]:border-teal-400/50 has-[:checked]:bg-teal-500/10">
+                  <input
+                    type="radio"
+                    name="jachin-region"
+                    checked={activeRegion === "SEA"}
+                    onChange={() => setActiveRegion("SEA")}
+                    className="accent-teal-400 w-4 h-4 shrink-0"
+                  />
+                  <span className="text-sm text-white/90">东南亚 / 国际节点 (SEA)</span>
+                </label>
+              </div>
+            </div>
             {error && (
               <p className="text-rose-400/90 text-xs text-center -mt-2">{error}</p>
             )}
@@ -253,7 +289,13 @@ export function GatewayConnectScreen({ onPaired }: GatewayConnectScreenProps) {
               <Zap className="w-8 h-8 text-green-400" />
             </div>
             <p className="text-green-400 font-medium">神经接驳成功</p>
-            <p className="text-white/50 text-sm">引擎已点火，进入控制台</p>
+            <p className="text-white/50 text-sm text-center max-w-xs">
+              已切换至{" "}
+              <span className="text-teal-400/90 font-mono">
+                {activeRegion === "SEA" ? "SEA（东南亚/国际）" : "CN（中国大陆）"}
+              </span>{" "}
+              算力节点，引擎已点火
+            </p>
           </div>
         )}
 

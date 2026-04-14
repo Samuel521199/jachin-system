@@ -1,9 +1,26 @@
-﻿"""MCP 工具参数别名：file_path → path（对齐 server-filesystem schema）。"""
+"""MCP 工具参数别名：file_path → path（对齐 server-filesystem schema）。"""
 from __future__ import annotations
 
 import asyncio
 
-from core.mcp_client import normalize_mcp_schema_aliases, stdio_official_filesystem_workspace_cwd
+from core.mcp_client import (
+    _SERVER_FILESYSTEM_NPM_PIN,
+    _pin_server_filesystem_npm_version,
+    normalize_mcp_schema_aliases,
+    stdio_official_filesystem_workspace_cwd,
+)
+
+
+def test_pin_server_filesystem_upgrades_unversioned_and_old_pins() -> None:
+    assert _pin_server_filesystem_npm_version(
+        ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/ws"]
+    ) == ["-y", _SERVER_FILESYSTEM_NPM_PIN, "/tmp/ws"]
+    assert _pin_server_filesystem_npm_version(
+        ["-y", "@modelcontextprotocol/server-filesystem@0.6.2", "/tmp/ws"]
+    ) == ["-y", _SERVER_FILESYSTEM_NPM_PIN, "/tmp/ws"]
+    assert _pin_server_filesystem_npm_version(
+        ["-y", _SERVER_FILESYSTEM_NPM_PIN, "/tmp/ws"]
+    ) == ["-y", _SERVER_FILESYSTEM_NPM_PIN, "/tmp/ws"]
 
 
 def test_stdio_filesystem_cwd_first_allowed_root(tmp_path) -> None:

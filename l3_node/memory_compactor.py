@@ -344,6 +344,14 @@ async def compact_local_memory_if_needed(
             }
             if extra:
                 kw.update(extra)
+            try:
+                from core.llm_provider import _inject_api_keys
+                from core.brain.llm.dashscope_regional import litellm_apply_dashscope_credentials
+
+                _inject_api_keys()
+                litellm_apply_dashscope_credentials(model, kw)
+            except ImportError:
+                pass
             return await litellm.acompletion(**kw)
 
         if is_memory_compact_cancel_requested():

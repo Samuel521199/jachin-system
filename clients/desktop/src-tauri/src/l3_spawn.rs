@@ -1,4 +1,4 @@
-﻿//! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
+//! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
 
 use directories::BaseDirs;
 use std::fs;
@@ -181,6 +181,12 @@ fn project_root() -> Option<PathBuf> {
 
 const L3_ENV_KEYS: &[&str] = &[
     "DASHSCOPE_API_KEY",
+    "DASHSCOPE_API_KEY_SEA",
+    "DASHSCOPE_API_KEY_CN",
+    "DASHSCOPE_API_BASE",
+    "DASHSCOPE_API_BASE_CN",
+    "DASHSCOPE_API_BASE_SEA",
+    "JACHIN_ACTIVE_REGION",
     "OPENAI_API_KEY",
     // MCP tavily-mcp：占位符 ${TAVILY_API_KEY} 从 L3 进程 os.environ 展开；须与 ~/.jachin/.env 一并注入，否则子进程报 -32600
     "TAVILY_API_KEY",
@@ -320,11 +326,16 @@ pub fn spawn_l3_via_direct_exe(
 }
 
 /// 使用 Python 回退启动 l3_node（Sidecar 不可用时）
+///
+/// `env_overlay`：在 `load_l3_env_vars` 之后按 key 覆盖（与 Sidecar/直接 exe 路径一致）。
+/// 典型场景：`gateway_connect` 已合并 `JACHIN_ACTIVE_REGION=SEA`，但项目根 `.env` 仍为 CN 时，
+/// 若此处不覆盖，L3 进程会误用旧区域，进而出现「选 SEA 时配对/行为异常」。
 pub fn spawn_l3_via_python(
     app: &impl tauri::Manager<tauri::Wry>,
     args: &[&str],
     env_l2_url: Option<&str>,
     env_device_name: Option<&str>,
+    env_overlay: &[(String, String)],
 ) -> Result<tauri_plugin_shell::process::CommandChild, String> {
     let root = project_root().ok_or("无法定位项目根目录 (l3_node)")?;
     let mut cmd = app.shell().command("python").args(["-m", "l3_node"]).args(args);
@@ -332,7 +343,12 @@ pub fn spawn_l3_via_python(
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONUTF8", "1")
         .env("JACHIN_APP_ROOT", root.to_string_lossy().as_ref());
-    for (k, v) in load_l3_env_vars(&root) {
+    let mut merged = load_l3_env_vars(&root);
+    for (k, v) in env_overlay {
+        merged.retain(|(ek, _)| ek != k);
+        merged.push((k.clone(), v.clone()));
+    }
+    for (k, v) in merged {
         cmd = cmd.env(&k, &v);
     }
     if let Some(url) = env_l2_url {
@@ -452,7 +468,7 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
                                 write_l3_debug(&format!("直接 exe 启动失败: {}", direct_err));
                                 if project_root().is_some() {
                                     write_l3_debug("回退到 python -m l3_node");
-                                    spawn_l3_via_python(app, args, env_url.as_deref(), None)?
+                                    spawn_l3_via_python(app, args, env_url.as_deref(), None, &env_vars)?
                                 } else {
                                     return Err(format!("L3 启动失败: {}；直接 exe: {}", err_msg, direct_err));
                                 }
@@ -475,7 +491,7 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
                     write_l3_debug(&format!("直接 exe 启动失败: {}", direct_err));
                     if project_root().is_some() {
                         write_l3_debug("回退到 python -m l3_node");
-                        spawn_l3_via_python(app, args, env_url.as_deref(), None)?
+                        spawn_l3_via_python(app, args, env_url.as_deref(), None, &env_vars)?
                     } else {
                         let msg = format!(
                             "L3 启动失败: {}。便携包需确保 bin/{} 存在，请运行: .\\scripts\\build_full.ps1",

@@ -45,7 +45,7 @@ python scripts/test_hr_analyze_jd_pipeline.py --job-root "..." --forbid-substr "
 
 **前置**：
 
-- 已配置 `DASHSCOPE_API_KEY` 或 `OPENAI_API_KEY`（与现有 `test_analyze_pdf_leaderboard.py` 相同）。  
+- 已配置 DashScope（`DASHSCOPE_API_KEY_*` 或通用 `DASHSCOPE_API_KEY`，见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）或 `OPENAI_API_KEY`（与现有 `test_analyze_pdf_leaderboard.py` 相同）。  
 - 建议开发联调时：`JACHIN_DEV_HR_FIRST=1`，`JACHIN_APP_ROOT` 指向本仓库根，确保用仓库内最新 HR 插件与透析镜 Wasm。
 
 ---

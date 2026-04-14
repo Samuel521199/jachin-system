@@ -86,7 +86,16 @@ async def _embed_one(text: str, shared_ctx: Any | None) -> Optional[list[float]]
         ctx.inject_for_litellm("openai")
 
     try:
-        resp = await litellm.aembedding(model=model, input=[t])
+        kw_emb: dict[str, Any] = {"model": model, "input": [t]}
+        try:
+            from core.llm_provider import _inject_api_keys
+            from core.brain.llm.dashscope_regional import litellm_apply_dashscope_credentials
+
+            _inject_api_keys()
+            litellm_apply_dashscope_credentials(model, kw_emb)
+        except ImportError:
+            pass
+        resp = await litellm.aembedding(**kw_emb)
         data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
         if not data:
             return None

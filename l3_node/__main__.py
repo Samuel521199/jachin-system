@@ -246,8 +246,14 @@ try:
 except Exception as e:
     trace("log_broadcaster failed: %s", e)
     logger.debug("[L3] 全息监控 handler 安装跳过: %s", e)
-# 抑制 websockets 客户端断开时的 ConnectionClosedError 堆栈（刷新/关闭页面时常见）
+# websockets：握手未完成即断开时的 ERROR 堆栈由 early_log.install_websocket_handshake_noise_filters 过滤
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
+try:
+    from l3_node.early_log import install_websocket_handshake_noise_filters
+
+    install_websocket_handshake_noise_filters()
+except Exception:
+    pass
 # 抑制 httpcore/httpx 的 DEBUG 刷屏（connect_tcp/receive_response 等），保留 httpx INFO 请求日志
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.INFO)

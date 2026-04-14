@@ -246,6 +246,25 @@ def test_attachment_feature_slots() -> None:
     assert "name_safe" in slots[0]
 
 
+def test_attachments_metadata_trimmed_to_five() -> None:
+    meta = [{"name": f"f{i}.txt", "size_bytes": 1, "mime": "text/plain"} for i in range(8)]
+    b = build_gateway_bundle(user_input="hi", attachments_metadata=meta)
+    assert len(b.attachments_raw) == 5
+
+
+def test_attachments_metadata_skips_oversized_claim() -> None:
+    big = 6 * 1024 * 1024
+    b = build_gateway_bundle(
+        user_input="hi",
+        attachments_metadata=[
+            {"name": "huge.bin", "size_bytes": big, "mime": "application/octet-stream"},
+            {"name": "ok.txt", "size_bytes": 10, "mime": "text/plain"},
+        ],
+    )
+    assert len(b.attachments_raw) == 1
+    assert b.attachments_raw[0]["name"] == "ok.txt"
+
+
 def test_global_escape_hatch_short_utterance() -> None:
     from l3_node.intent_gateway.bundle import SystemState
     from l3_node.intent_gateway.global_escape_hatch import apply_global_escape_hatch, global_escape_triggered

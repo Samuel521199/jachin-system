@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -49,6 +49,10 @@ import {
 import { desktopDiagLog } from "./lib/desktopDiagLog";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
 import {
+  buildAttachmentsMetadataPayload,
+  mergePendingAttachmentFiles,
+} from "./utils/attachmentPayload";
+import {
   mergeAssistantFlatAndSplitFinalAnswer,
   normalizeAssistantOutput,
   splitAssistantFromMergeCumulative,
@@ -80,6 +84,21 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/**
+ * 是否像「从资源管理器 / 桌面拖入文件」。
+ * - WebView2 在 dragenter 时 `dataTransfer.types` 可能暂时为空，不能仅判断 `Files`。
+ * - 页面内仅选中文本拖动通常只有 text/plain 且无 Files，不显示全窗拖放提示。
+ */
+function isLikelyExternalFileDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  const types = Array.from(dt.types ?? []);
+  if (types.includes("Files")) return true;
+  if (types.includes("application/x-moz-file")) return true;
+  if (types.includes("text/plain") && !types.includes("Files")) return false;
+  if (types.length === 0) return true;
+  return false;
+}
+
 function ChatApp() {
   const sessionBootstrap = useRef<ReturnType<typeof loadSessionsState> | null>(null);
   if (sessionBootstrap.current === null) {
@@ -107,6 +126,11 @@ function ChatApp() {
   }, [sessions, currentSessionId]);
 
   const [input, setInput] = useState("");
+  /** Omni 多模态：待发附件（随 WebSocket attachments_metadata 发往 L3） */
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const pendingFilesRef = useRef<File[]>([]);
+  const [attachmentHint, setAttachmentHint] = useState<string | null>(null);
+  const [omniFileDragHighlight, setOmniFileDragHighlight] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState<string>("");
@@ -181,6 +205,23 @@ function ChatApp() {
     persistSessionsState(sessions, currentSessionId);
   }, [sessions, currentSessionId]);
 
+  useEffect(() => {
+    pendingFilesRef.current = pendingFiles;
+  }, [pendingFiles]);
+
+  const mergeOmniPendingFiles = useCallback((incoming: File[]) => {
+    if (!incoming.length) return;
+    const { next, hint } = mergePendingAttachmentFiles(pendingFilesRef.current, incoming);
+    pendingFilesRef.current = next;
+    setPendingFiles(next);
+    setAttachmentHint(hint);
+  }, []);
+
+  const removeOmniPendingFile = useCallback((index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+    setAttachmentHint(null);
+  }, []);
+
   const handleNewChat = useCallback(() => {
     registerChunkHandler(null);
     registerAnswerHandler(null);
@@ -188,6 +229,8 @@ function ChatApp() {
     setIsLoading(false);
     setIsTyping(false);
     setInput("");
+    setPendingFiles([]);
+    setAttachmentHint(null);
     setRecordingStatus("");
     setSessionDrawerOpen(false);
     const ns = newEmptySession();
@@ -700,7 +743,7 @@ function ChatApp() {
 
 
   /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
-  const doActualSend = async (content: string) => {
+  const doActualSend = async (content: string, attachmentFiles: File[] = []) => {
     if (content.trim() === "/clear") {
       /* reasoningPulseTimer 仅存在于进行中的 doActualSend；此处仅清处理器 */
       registerChunkHandler(null);
@@ -714,6 +757,8 @@ function ChatApp() {
       };
       updateSessionMessagesById(clearSid, () => [systemLine]);
       setInput("");
+      setPendingFiles([]);
+      setAttachmentHint(null);
       setIsLoading(false);
       setIsTyping(false);
       setRiskLevel("safe");
@@ -724,11 +769,29 @@ function ChatApp() {
       return;
     }
 
+    const filesSnapshot = [...attachmentFiles];
+    const attBuilt = await buildAttachmentsMetadataPayload(filesSnapshot);
+    if (!attBuilt.ok) {
+      setAttachmentHint(attBuilt.error);
+      return;
+    }
+    if (filesSnapshot.length > 0 && !sensory.connected) {
+      setAttachmentHint("发送附件需已连接 Layer 3（Sensory WebSocket，ws://localhost:18981）");
+      return;
+    }
+
     const turnSessionId = currentSessionIdRef.current;
-    const userMessage: StoredMessage = { role: "user", content, timestamp: Date.now() };
+    const namesLine =
+      filesSnapshot.length > 0
+        ? `📎 ${filesSnapshot.map((f) => f.name).join(", ")}`
+        : "";
+    const userBubbleText = [content.trim(), namesLine].filter(Boolean).join("\n\n");
+    const userMessage: StoredMessage = { role: "user", content: userBubbleText, timestamp: Date.now() };
     const assistantMessage: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
     updateSessionMessagesById(turnSessionId, (m) => [...m, userMessage, assistantMessage]);
     setInput("");
+    setPendingFiles([]);
+    setAttachmentHint(null);
     setIsLoading(true);
     setRiskLevel("safe");
     setState("thinking");
@@ -917,7 +980,8 @@ function ChatApp() {
     }, CHAT_RESPONSE_TIMEOUT_MS);
     activeChatTurnTimeoutRef.current = timeoutId;
 
-    const pendingL3InputRef = { current: content };
+    const intentForWire = content.trim() || (filesSnapshot.length > 0 ? "请查看附件并回答。" : "");
+    const pendingL3InputRef = { current: intentForWire };
     registerChunkHandler(chunkHandler);
     registerStepHandler(stepHandler);
     registerAnswerHandler((answerContent, meta) => {
@@ -978,18 +1042,21 @@ function ChatApp() {
     });
 
     // 优先 L3（L3 直连大模型，自有 API Key），未连接时兜底 L2
-    if (sensory.connected && sendInput(content)) {
-      console.debug("[Chat] L3 直连发送成功 sensory.connected=true");
-      return; // L3 已接收，将通过 WebSocket 流式返回
-    }
-    if (sensory.connected && !sendInput(content)) {
+    const attExtras =
+      attBuilt.items.length > 0 ? { attachments_metadata: attBuilt.items } : undefined;
+    if (sensory.connected) {
+      const l3Ok = sendInput(intentForWire, attExtras);
+      if (l3Ok) {
+        console.debug("[Chat] L3 直连发送成功 sensory.connected=true");
+        return; // L3 已接收，将通过 WebSocket 流式返回
+      }
       console.debug("[Chat] L3 发送失败（可能 ws 未就绪），fallback L2");
-    } else if (!sensory.connected) {
+    } else {
       console.debug("[Chat] L2 兜底 sensory.connected=false");
     }
 
     // L2 兜底前：若为 BI 等 L3 专用意图，优先尝试 L3 HTTP agent/run（Sensory WS 未连时也能触发）
-    const l3Answer = await tryL3AgentForIntent(content);
+    const l3Answer = await tryL3AgentForIntent(intentForWire);
     if (l3Answer != null && l3Answer.trim()) {
       console.debug("[Chat] L3 agent/run 命中 BI 意图，使用 L3 回复");
       clearTimeout(timeoutId);
@@ -1001,7 +1068,7 @@ function ChatApp() {
     // L2 兜底
     try {
       console.debug("[Chat] L2 streamChatMessage 开始");
-      const fullText = await streamChatMessage(content, (chunk) => chunkHandler(chunk), {
+      const fullText = await streamChatMessage(intentForWire, (chunk) => chunkHandler(chunk), {
         signal: l2Abort.signal,
       });
       if (myTurnToken !== chatTurnTokenRef.current) return;
@@ -1060,8 +1127,9 @@ function ChatApp() {
   }, [sendRunAbort, registerChunkHandler, registerAnswerHandler, registerStepHandler]);
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || isTyping) return;
-    await doActualSend(input.trim());
+    const t = input.trim();
+    if ((!t && pendingFiles.length === 0) || isLoading || isTyping) return;
+    await doActualSend(t, pendingFiles);
   };
 
   const handleConfirmHighRisk = () => {
@@ -1455,6 +1523,35 @@ function ChatApp() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
             className="relative flex h-full min-h-0 w-full flex-col overflow-hidden"
+            onDragEnter={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (isLikelyExternalFileDrag(e.dataTransfer)) setOmniFileDragHighlight(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const root = e.currentTarget as HTMLElement;
+              const rel = e.relatedTarget as Node | null;
+              if (rel && root.contains(rel)) return;
+              setOmniFileDragHighlight(false);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const dt = e.dataTransfer;
+              if (dt) {
+                dt.dropEffect = "copy";
+                if (isLikelyExternalFileDrag(dt)) setOmniFileDragHighlight(true);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setOmniFileDragHighlight(false);
+              const fl = e.dataTransfer?.files;
+              if (fl?.length) mergeOmniPendingFiles(Array.from(fl));
+            }}
           >
       <WindowResizeHandles />
       {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
@@ -1564,6 +1661,11 @@ function ChatApp() {
                 onInputChange={setInput}
                 onRequestDismiss={requestHideChat}
                 onSend={handleSend}
+                pendingFiles={pendingFiles}
+                onMergePendingFiles={mergeOmniPendingFiles}
+                onRemovePendingFile={removeOmniPendingFile}
+                attachmentHint={attachmentHint}
+                dragOverlayActive={omniFileDragHighlight}
                 placeholder={
                   sensory.connected
                     ? desktopUi.placeholderL3

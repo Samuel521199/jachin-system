@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -33,6 +34,71 @@ from l3_node.lark_session import load_lark_session as _load_lark_session, save_l
 def _ws_msg_session_key(msg: dict) -> str:
     """桌面 Omni 多会话：`session_id` 与 `chat_id` 同义，分区键写入 l3_lark_sessions.json。"""
     return str(msg.get("chat_id") or msg.get("session_id") or "").strip()
+
+
+def _coerce_ws_intent_and_inline_attachments(msg: dict) -> tuple[str, list[dict[str, Any]]]:
+    """
+    解析 ``intent`` / ``content``。
+
+    - 现网：``content`` 为字符串，与 ``intent`` 二选一作为用户输入。
+    - 扩展：``content`` 为 OpenAI 多模态列表（text + image_url）时，抽取文案并生成与
+      ``attachments_metadata`` 兼容的内联附件（经 ``multimodal_attachments.build_openai_user_content``）。
+    """
+    intent_raw = msg.get("intent")
+    content = msg.get("content")
+    if isinstance(content, list):
+        texts: list[str] = []
+        images: list[dict[str, Any]] = []
+        for idx, part in enumerate(content):
+            if not isinstance(part, dict):
+                continue
+            pt = str(part.get("type") or "").lower()
+            if pt == "text":
+                texts.append(str(part.get("text") or ""))
+            elif pt == "image_url":
+                iu = part.get("image_url")
+                u = ""
+                if isinstance(iu, dict):
+                    u = str(iu.get("url") or "").strip()
+                elif isinstance(iu, str):
+                    u = iu.strip()
+                if not u:
+                    continue
+                is_png = "image/png" in u[:120].lower() or "png" in u[:40].lower()
+                suf = ".png" if is_png else ".jpg"
+                # data URL 勿用 len(整串) 作为 size_bytes：trim 门限按「字节」计，整串偏大约 4/3 会误丢图
+                _sz_decl = len(u)
+                if u.strip().lower().startswith("data:image/") and ";base64" in u.lower():
+                    try:
+                        _comma = u.index(",")
+                        _b64 = re.sub(r"\s+", "", u[_comma + 1 :])
+                        _sz_decl = max((len(_b64) * 3) // 4, 1)
+                    except ValueError:
+                        pass
+                images.append(
+                    {
+                        "name": f"inline_image_{idx}{suf}",
+                        "mime": "image/png" if is_png else "image/jpeg",
+                        "has_image": True,
+                        "size_bytes": _sz_decl,
+                        "image_url": {"url": u},
+                    }
+                )
+        joined = "\n".join(texts).strip()
+        if isinstance(intent_raw, str) and intent_raw.strip():
+            intent_out = intent_raw.strip()
+            if joined and joined not in intent_out:
+                intent_out = f"{intent_out}\n{joined}"
+        else:
+            intent_out = joined
+        return intent_out, images
+    if isinstance(intent_raw, str) and intent_raw.strip():
+        return intent_raw.strip(), []
+    if isinstance(content, str):
+        return content.strip(), []
+    if content is None:
+        return "", []
+    return str(content).strip(), []
 
 
 # 终端-Lark 镜像：chat_id -> 订阅该会话的 WebSocket 集合（终端连接）
@@ -246,6 +312,7 @@ async def _ws_execute_intent_turn(
     intent: str,
     chat_id: str,
     origin_terminal: bool,
+    attachments_metadata: list | None = None,
 ) -> None:
     """单轮 intent：与 WS 主循环解耦，便于 run_abort 时 asyncio.cancel。"""
     logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent (task)", len(intent), len(messages))
@@ -381,8 +448,10 @@ async def _ws_execute_intent_turn(
     }
     if chat_id:
         _imp_attr["lark_chat_id"] = str(chat_id).strip()
-    _att_meta = msg.get("attachments_metadata")
-    _att_meta = _att_meta if isinstance(_att_meta, list) else None
+    _att_meta = attachments_metadata
+    if _att_meta is None:
+        _raw = msg.get("attachments_metadata")
+        _att_meta = _raw if isinstance(_raw, list) else None
     _gw_st = msg.get("gateway_system_state")
     _gw_st = str(_gw_st).strip() if _gw_st else None
     _gw_ch = str(msg.get("gateway_clarification_handle") or "").strip()
@@ -629,9 +698,15 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                         await _broadcast_to_mirror_subscribers(chat_id, err_payload)
                 continue
 
-            intent = (msg.get("intent") or msg.get("content") or "").strip()
-            if not intent:
+            intent, inline_att = _coerce_ws_intent_and_inline_attachments(msg)
+            _base_att = msg.get("attachments_metadata")
+            _base_att_list = list(_base_att) if isinstance(_base_att, list) else []
+            _merged_att = _base_att_list + inline_att
+            attachments_for_turn = _merged_att if _merged_att else None
+            if not (intent or "").strip() and not attachments_for_turn:
                 continue
+            if not (intent or "").strip() and attachments_for_turn:
+                intent = "请查看附件并回答。"
 
             chat_id = _ws_msg_session_key(msg)
             origin_terminal = str(msg.get("origin", "")).lower() == "terminal"
@@ -663,6 +738,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     intent,
                     chat_id,
                     origin_terminal,
+                    attachments_metadata=attachments_for_turn,
                 )
             )
     except Exception as e:

@@ -12,6 +12,32 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def prepend_text_to_last_user_message(messages: list[dict[str, Any]], prefix: str) -> None:
+    """
+    在**保留** user.content 为多模态列表（text + image_url）的前提下前置系统指令。
+
+    若干历史分支曾写 ``messages[-1]["content"] = prefix + user_input``，会把整段多模态
+    覆盖成纯字符串，导致 ReAct 侧「已切 VL 但请求里无 image_url」。
+    """
+    if not messages or not (prefix or "").strip():
+        return
+    last = messages[-1]
+    if (last.get("role") or "").strip() != "user":
+        return
+    c = last.get("content")
+    if isinstance(c, str):
+        last["content"] = prefix + c
+        return
+    if isinstance(c, list):
+        for p in c:
+            if isinstance(p, dict) and p.get("type") == "text":
+                p["text"] = prefix + str(p.get("text") or "")
+                return
+        last["content"] = [{"type": "text", "text": prefix}, *c]
+        return
+    last["content"] = prefix + str(c or "")
+
+
 async def apply_inbound_preflight(
     *,
     user_input: str,
@@ -83,7 +109,7 @@ async def apply_inbound_preflight(
     _has_jd_in_history = bool(_extract_jd_config_from_conversation(messages, ""))
     if _vague_recruitment and not _has_jd_in_history:
         prefix = "【系统】用户要发布职位，但尚未提供完整配置。你必须**仅做询问**，禁止臆想、禁止杜撰、禁止调用 atom_post_job_boss。请用 Final Answer 向 HR 依次询问：1.岗位名称是什么？2.社招、校招、实习还是兼职？3.薪资待遇大概多少？4.学历要求？5.经验要求？若 HR 第一轮未给某项，下一轮**单独追问**该项，直到收集齐再输出完整 JD 配置供确认。\n\n"
-        messages[-1]["content"] = prefix + (user_input or "")
+        prepend_text_to_last_user_message(messages, prefix)
 
     if (
         tools_include_recruitment(tools)
@@ -97,11 +123,11 @@ async def apply_inbound_preflight(
             "② **累计收网目标**（份）；③ **透析触发份数**（可与收网目标相同）；④ 若开交替：**每轮打招呼人数**、**轮换间隔（分钟，默认 10）**。\n"
             "**在 HR 逐项确认前禁止调用** mcp:add_automated_recruitment_task；禁止用磁盘 jd 缺省（如示例 4 份、或历史「仅收网」快照）代替 HR 决策。\n\n"
         )
-        messages[-1]["content"] = _pfx1b + (messages[-1].get("content") or user_input or "")
+        prepend_text_to_last_user_message(messages, _pfx1b)
 
     if re.search(r"关闭|停止|取消", ui) and re.search(r"招聘|无人值守|自动化", ui):
         prefix = "【系统】用户要求关闭招聘流程。你必须输出 Action: mcp:stop_automated_recruitment，Action Input: {\"job_name\": \"\"}，以真正停止后台任务。禁止仅回复「已关闭」而不调用工具。\n\n"
-        messages[-1]["content"] = prefix + (messages[-1].get("content") or "")
+        prepend_text_to_last_user_message(messages, prefix)
 
     _branch_b_ctx = _hr_branch_b_recruitment_context(messages)
     _branch_b_confirm = re.search(
@@ -121,7 +147,7 @@ async def apply_inbound_preflight(
             "请用：飞书短指令（收网改成N人、打招呼改成N人、推荐间隔N分钟）、或 mcp:add_automated_recruitment_task、"
             "或 mcp:hr_scheduler_send_confirm_prompt；已发帖岗位勿再发帖。\n\n"
         )
-        messages[-1]["content"] = _pfx3b + (messages[-1].get("content") or _ui0)
+        prepend_text_to_last_user_message(messages, _pfx3b)
 
     _ab_choice = _branch_b_user_ab_choice(user_input or "")
     if _branch_b_ctx and _ab_choice and _last_assistant_asks_ab_scheduler_choice(messages):
@@ -145,7 +171,7 @@ async def apply_inbound_preflight(
             "用户已确认启动，请立即输出 Action: mcp:add_automated_recruitment_task，"
             "Action Input 为上一轮「配置总览」中的完整 JSON（含 job_name、enable_greet_recommend、resume_collect_target 等）。\n\n"
         )
-        messages[-1]["content"] = _b_prefix + (messages[-1].get("content") or user_input or "")
+        prepend_text_to_last_user_message(messages, _b_prefix)
 
     _agree_match = re.search(r"同意|确认|确认发布|就按这个发|直接发布", ui)
     _agree_jd_cfg = None
@@ -175,7 +201,7 @@ async def apply_inbound_preflight(
                 return _direct_publish
             _jd_str = json.dumps({"jd_config": _agree_jd_cfg}, ensure_ascii=False)
             prefix = "【系统】用户已确认以下 JD，请直接调用 mcp:atom_post_job_boss，Action Input 填：{}\n勿输出「没有配置」或「新对话」类提示。\n\n".format(_jd_str)
-            messages[-1]["content"] = prefix + (user_input or "")
+            prepend_text_to_last_user_message(messages, prefix)
 
     try:
         from l3_node.intent_gateway.slot_subintent_gate import maybe_subintent_slot_gate_async

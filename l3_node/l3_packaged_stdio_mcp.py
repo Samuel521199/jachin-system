@@ -66,7 +66,7 @@ def _resolve_placeholders_l3(s: str) -> str:
     return out
 
 
-def _resolve_stdio_args(args: list[Any]) -> list[Any]:
+def _resolve_stdio_args(args: list[Any]) -> list[Any] | None:
     from core.inventory_scanner import _prune_mcp_filesystem_roots
 
     resolved: list[Any] = []
@@ -76,7 +76,8 @@ def _resolve_stdio_args(args: list[Any]) -> list[Any]:
         else:
             resolved.append(a)
     pruned = _prune_mcp_filesystem_roots(resolved)
-    return pruned if pruned is not None else resolved
+    # None = server-filesystem 且无任何有效根目录；勿回退到未校验的 resolved（会再次 Connection closed）
+    return pruned
 
 
 def _resolve_stdio_env(env: Optional[dict[str, Any]]) -> Optional[dict[str, str]]:
@@ -190,17 +191,13 @@ async def register_l3_packaged_stdio_mcps() -> int:
         args_raw = blk.get("args") or []
         if not isinstance(args_raw, list):
             args_raw = []
-        resolved = _resolve_stdio_args(args_raw)
-        from core.inventory_scanner import _prune_mcp_filesystem_roots
-
-        pruned = _prune_mcp_filesystem_roots(list(resolved))
-        if pruned is None:
+        args_resolved = _resolve_stdio_args(args_raw)
+        if args_resolved is None:
             logger.warning(
                 "[L3PackagedStdio] 跳过 %s：server-filesystem 无有效根目录",
                 server_id,
             )
             continue
-        args_resolved = pruned
         pkg_root = str(subdir.resolve())
         args_resolved = [
             (a.replace("__MCP_PACKAGE_ROOT__", pkg_root) if isinstance(a, str) else a) for a in args_resolved

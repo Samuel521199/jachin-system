@@ -54,7 +54,7 @@ pip install -r requirements.txt
 pip install -r com.jachin.hr.recruitment/requirements.txt
 ```
 
-**LLM / 百炼**：在 **jachin-system 仓库根目录** `.env` 配置 `DASHSCOPE_API_KEY`、`LLM_MODEL` 等；由 L3 或进程统一注入。Skill/MCP 通过 `core.plugin_llm_identity` 读取，**勿**在 `skills_repo/plugin/.env` 配置 Key 或主模型（插件 `.env.example` 仅保留 Lark 等非 LLM 项）。
+**LLM / 百炼**：在 **jachin-system 仓库根目录** `.env` 配置 DashScope 相关变量（国内/东南亚分 Key 见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）、`LLM_MODEL` 等；由 L3 或进程统一注入。Skill/MCP 通过 `core.plugin_llm_identity` 读取，**勿**在 `skills_repo/plugin/.env` 配置 Key 或主模型（插件 `.env.example` 仅保留 Lark 等非 LLM 项）。
 
 **三专家（Tools·jpp 虫群）**：提示词仍区分 Tech Lead / HR BP / 法官角色；DashScope 实际调用统一使用 **L3 主推理模型**（与根 `.env` 的 `LLM_MODEL` 一致）。
 

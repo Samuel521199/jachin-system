@@ -424,6 +424,12 @@ def ensure_sqlite_manager_life_db_mcp() -> bool:
         "on",
     ):
         return False
+    if not shutil.which("uvx"):
+        logger.info(
+            "[mcp_json_repair] 跳过自动追加 sqlite_manager：PATH 中无 uvx（可安装 Astral uv，"
+            "或使用 mcp_servers.json 中的 official-sqlite-npx；设 JACHIN_MCP_NO_AUTO_SQLITE_MANAGER=1 可永久关闭提示）",
+        )
+        return False
 
     jachin_dir = Path.home() / ".jachin"
     try:

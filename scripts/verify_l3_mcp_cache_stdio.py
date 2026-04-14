@@ -89,7 +89,6 @@ async def main() -> int:
         _resolve_stdio_env,
         _stdio_block_from_plugin,
     )
-    from core.inventory_scanner import _prune_mcp_filesystem_roots
     from core.mcp_client import MCPServerInstance
 
     it = (plugin.get("item_type") or plugin.get("type") or "").lower()
@@ -110,8 +109,7 @@ async def main() -> int:
     args_raw = blk.get("args") or []
     if not isinstance(args_raw, list):
         args_raw = []
-    resolved = _resolve_stdio_args(args_raw)
-    pruned = _prune_mcp_filesystem_roots(list(resolved))
+    pruned = _resolve_stdio_args(args_raw)
     if pruned is None:
         log.error("[MCP_VERIFY] server-filesystem 无有效根目录，已跳过（与 L3 注册逻辑一致）")
         return 8

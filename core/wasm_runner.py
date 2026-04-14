@@ -519,11 +519,24 @@ class JachinWasmSandbox:
                         _floor = 300.0
                     if _floor > 0:
                         _t = max(_t, _floor)
-                resp = litellm.completion(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=_t,
-                )
+                _kw: dict[str, Any] = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "timeout": _t,
+                }
+                try:
+                    from core.llm_provider import _inject_api_keys
+                    from core.brain.llm.dashscope_regional import litellm_apply_dashscope_credentials
+
+                    _inject_api_keys()
+                    _dk = None
+                    _ctx = getattr(engine, "ctx", None)
+                    if _ctx is not None and hasattr(_ctx, "get_key"):
+                        _dk = _ctx.get_key("dashscope")
+                    litellm_apply_dashscope_credentials(model, _kw, explicit_api_key=_dk)
+                except ImportError:
+                    pass
+                resp = litellm.completion(**_kw)
                 text = (resp.choices[0].message.content or "").strip()
                 return _write_to_mem(mem, store, OUTPUT_OFFSET, text)
             except Exception as e:

@@ -32,7 +32,7 @@
 
 - Python 3.10+
 - Node.js 18+（桌面端）
-- 环境变量：`DASHSCOPE_API_KEY`（优先）或 `QWEN_API_KEY`；`~/.jachin/nexus_config.json` 中 `llm_keys.dashscope`；LLM 默认 Ollama `localhost:11434`
+- 环境变量：DashScope 见 [DASHSCOPE_REGIONAL_KEYS.md](./DASHSCOPE_REGIONAL_KEYS.md)（`JACHIN_ACTIVE_REGION` + `DASHSCOPE_API_KEY_SEA` / `_CN` 或回退 `DASHSCOPE_API_KEY` / `QWEN_*`）；`~/.jachin/nexus_config.json` 中 `llm_keys.dashscope`；LLM 默认 Ollama `localhost:11434`
 
 ---
 

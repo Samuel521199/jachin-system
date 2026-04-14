@@ -4,6 +4,7 @@ Region Configuration - 地域配置
 支持不同地域的API端点配置
 """
 
+import os
 from enum import Enum
 from typing import Dict, Optional
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ class Region(str, Enum):
     CN_BEIJING = "cn-beijing"  # 华北2（北京）
     AP_SINGAPORE = "ap-singapore"  # 新加坡
     US_VIRGINIA = "us-virginia"  # 美国（弗吉尼亚）
+    SEA_INTL = "sea-intl"  # 东南亚/国际站兼容模式（dashscope-intl，与 JACHIN_ACTIVE_REGION=SEA 对齐）
 
 
 @dataclass
@@ -45,6 +47,12 @@ REGION_CONFIGS: Dict[Region, RegionConfig] = {
         api_endpoint="https://dashscope.us-east-1.aliyuncs.com/compatible-mode/v1",
         description="美国地域，适合北美用户"
     ),
+    Region.SEA_INTL: RegionConfig(
+        name="国际（东南亚常用）",
+        base_url="https://dashscope-intl.aliyuncs.com",
+        api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        description="国际站兼容模式，与 DASHSCOPE_API_BASE_SEA 默认一致"
+    ),
 }
 
 
@@ -63,4 +71,39 @@ def get_region_config(region: Region) -> RegionConfig:
 
 def get_default_region() -> Region:
     """获取默认地域（北京）"""
+    return Region.CN_BEIJING
+
+
+def effective_qwen_region_from_env() -> Region:
+    """
+    与 JACHIN_ACTIVE_REGION 对齐：显式 QWEN_REGION（环境变量优先）未设置且 ACTIVE=SEA → sea-intl；
+    否则解析 QWEN_REGION / settings 或默认北京。
+    """
+    try:
+        from core.brain.llm.dashscope_regional import get_jachin_active_region
+
+        active = get_jachin_active_region()
+    except ImportError:
+        active = os.getenv("JACHIN_ACTIVE_REGION", "").strip().upper()
+    raw_env = os.getenv("QWEN_REGION", "").strip()
+    if active == "SEA" and not raw_env:
+        return Region.SEA_INTL
+    raw = raw_env
+    if not raw:
+        try:
+            from core.config import settings
+
+            raw = (getattr(settings, "QWEN_REGION", None) or "").strip()
+        except Exception:
+            raw = ""
+    if raw:
+        try:
+            region_name = raw.upper().replace("-", "_")
+            r = getattr(Region, region_name, None)
+            if isinstance(r, Region):
+                return r
+        except Exception:
+            pass
+    if active == "SEA":
+        return Region.SEA_INTL
     return Region.CN_BEIJING

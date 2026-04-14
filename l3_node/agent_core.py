@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -101,6 +101,7 @@ def _llm_token_budget_for_run(delegate_depth: int) -> int | None:
 _L3_CODER_MODE_META = "_l3_coder_mode"
 _L3_CODER_ENGINE_CACHE_META = "_l3_coder_engine_cache"
 _L3_COMPLEX_ENGINE_CACHE_META = "_l3_complex_engine_cache"
+_L3_VISION_ENGINE_CACHE_META = "_l3_vision_engine_cache"
 
 # composite / 参谋长模式：system 后缀页脚追加；高危工具的人性化「悬挂签批」与统帅决策权
 CHIEF_ADVISOR_LOGIC_VALIDATION_BLOCK = (
@@ -840,9 +841,48 @@ def _react_engine_for_iteration(
     force_complex: bool = False,
 ) -> LiteLLMEngine:
     """
-    ReAct 每轮选引擎：优先级 编码（LLM_CODER_MODEL）> 复杂（LLM_COMPLEX_MODEL）> 默认（LLM_MODEL）。
+    ReAct 每轮选引擎：优先级 用户含图（多模态 VL）> 编码（LLM_CODER_MODEL）> 复杂（LLM_COMPLEX_MODEL）> 默认（LLM_MODEL）。
     复杂路由条件见 core.llm_provider.l3_react_should_use_complex_model。
     """
+    # -1) 用户消息含 OpenAI image_url 块：走多模态统一模型（默认 qwen3.5-plus），不向 flash/VL 等降级
+    if os.environ.get("JACHIN_L3_VISION_ROUTING_DISABLE", "").strip().lower() not in ("1", "true", "yes"):
+        try:
+            from core.llm_provider import l3_react_full_messages_need_vision_model
+
+            if l3_react_full_messages_need_vision_model(full_messages):
+                v_cached = ctx.metadata.get(_L3_VISION_ENGINE_CACHE_META)
+                if v_cached is not None:
+                    return v_cached
+                try:
+                    from l3_node.intent_gateway.model_resolve import get_multimodal_model_litellm_id
+
+                    vm = get_multimodal_model_litellm_id()
+                except Exception:
+                    vm = "dashscope/qwen3.5-plus"
+
+                pnorm = base._normalize_model
+                if pnorm(vm) == pnorm(base.model_name):
+                    primary_vision = base.model_name
+                else:
+                    primary_vision = vm
+                # 仅重复主模型 id 以满足引擎「非空 fallback」逻辑；models_to_try 仍只有一路，不向其它模型降级
+                ve = LiteLLMEngine(
+                    security_context=base.ctx,
+                    model_name=primary_vision,
+                    fallback_models=[primary_vision],
+                    timeout=base.timeout,
+                    max_attempts=base.max_attempts,
+                )
+                ctx.metadata[_L3_VISION_ENGINE_CACHE_META] = ve
+                logger.info(
+                    "[L3 Agent] ReAct 用户消息含图片，使用多模态模型 %s（与 INTENT_GATEWAY_MULTIMODAL_MODEL 一致，不向其它模型降级；原主模型 %s）",
+                    ve.model_name,
+                    base.model_name,
+                )
+                return ve
+        except Exception as e:
+            logger.warning("[L3 Agent] 视觉模型路由不可用，沿用主模型: %s", e)
+
     # 0) 首轮明确编程/脚本意图：与 fs_write 后切 coder 一致，避免 tools 数量先触发 complex
     if not ctx.metadata.get(_L3_CODER_MODE_META):
         try:
@@ -3863,6 +3903,7 @@ async def _run_react_core(
     ctx.metadata.pop(_L3_CODER_MODE_META, None)
     ctx.metadata.pop(_L3_CODER_ENGINE_CACHE_META, None)
     ctx.metadata.pop(_L3_COMPLEX_ENGINE_CACHE_META, None)
+    ctx.metadata.pop(_L3_VISION_ENGINE_CACHE_META, None)
 
     if not ctx.metadata.get("_skills_unfiltered"):
         ctx.metadata["_skills_unfiltered"] = list(ctx.metadata.get("_skills") or [])
@@ -5808,7 +5849,8 @@ async def run_agent(
     implicit_attribution: 可选 {"channel": "lark_im"|"websocket"|"http_agent_run", "lark_chat_id": "..."} → 每轮写 implicit_turn_attribution；**lark_chat_id** 用于按会话隔离待确认 JD（同意/兜底）。
     _allowed_skills_override: 非 None 时覆盖 _get_allowed_skills()（供后台任务沿用投递时的白名单快照）。
     _delegate_depth: delegate 嵌套深度（子 Agent 由 delegate 路径传入，用于 max_delegate_depth 与 Token 子预算）。
-    attachments_metadata: §12.1 附件元数据（name/size/mime 等），入 GatewayContextBundle；正文仍走对象存储。
+    attachments_metadata: §12.1 附件列表（元数据 + 可选 local_path/base64 等实体），入 GatewayContextBundle；
+        run_agent 内会组装 OpenAI 多模态 user content（图片 data URL；PDF/docx/txt 抽文本拼入）。
     gateway_context_bundle: 若传入则沿用；否则由 user_input + 会话摘要自动构造（战役一 GatewayContextBundle）。
     short_memory_context: 显式覆盖网关用短记忆；空则取最近若干轮截断摘要。
     gateway_system_state: 如 AWAITING_CLARIFICATION，配合 gateway_clarification_* 驱动澄清门控（仅在未传 gateway_context_bundle 时生效）。
@@ -6391,6 +6433,40 @@ async def run_agent(
             domain_experts=_domain_experts_list,
         )
 
+    _user_llm_content: str | list[Any] = user_input or ""
+    try:
+        from l3_node.intent_gateway.multimodal_attachments import build_openai_user_content
+        from l3_node.intent_gateway.sanitize import trim_attachments_metadata_list
+        from l3_node.multimodal_log import summarize_attachments_ingress, summarize_openai_user_content_for_log
+
+        # 优先使用调用方传入的 attachments_metadata（与 WS 合并内联图一致），再 trim；
+        # 勿在「bundle.attachments_raw 非空」时仅采 bundle，以免与入参漂移时丢图。
+        _raw_att: list[dict[str, Any]] = []
+        if attachments_metadata is not None:
+            _raw_att = trim_attachments_metadata_list(
+                [x for x in attachments_metadata if isinstance(x, dict)]
+            )
+        elif _gateway_bundle is not None and getattr(_gateway_bundle, "attachments_raw", None):
+            _raw_att = [x for x in _gateway_bundle.attachments_raw if isinstance(x, dict)]
+        if _raw_att:
+            logger.info(
+                "[MultimodalIngress] %s",
+                summarize_attachments_ingress(_raw_att, run_id=run_id),
+            )
+            _user_llm_content = await asyncio.to_thread(
+                build_openai_user_content,
+                user_input or "",
+                _raw_att,
+            )
+            logger.info(
+                "[MultimodalIngress] assembled_user_content run_id=%s %s",
+                run_id[:12],
+                summarize_openai_user_content_for_log(_user_llm_content),
+            )
+    except Exception as _mmc_ex:
+        logger.warning("[L3 Agent] 多模态附件组装失败，回退纯文本: %s", _mmc_ex)
+        _user_llm_content = user_input or ""
+
     try:
         from l3_node.terminal_turn_debug_log import append_section
 
@@ -6450,7 +6526,7 @@ async def run_agent(
                 _ood_gate.surface_score,
             )
             exec_trace(logger, "OOD 硬拦截直接返回 run_id=%s reason=%s", run_id[:12], (_ood_gate.reason or "")[:120])
-            messages.append({"role": "user", "content": user_input})
+            messages.append({"role": "user", "content": _user_llm_content})
             _ood_reply = get_ood_hard_block_reply()
             messages.append({"role": "assistant", "content": _ood_reply})
             if _session_messages is not None:
@@ -6519,7 +6595,7 @@ async def run_agent(
                         run_id[:12],
                         float(_sem_res.confidence),
                     )
-                    messages.append({"role": "user", "content": user_input})
+                    messages.append({"role": "user", "content": _user_llm_content})
                     _sem_reply = get_semantic_ood_reject_reply()
                     messages.append({"role": "assistant", "content": _sem_reply})
                     if _session_messages is not None:
@@ -6539,7 +6615,7 @@ async def run_agent(
     except ImportError:
         pass
 
-    messages.append({"role": "user", "content": user_input})
+    messages.append({"role": "user", "content": _user_llm_content})
     _schedule_local_memory_compaction_background(user_input or "")
 
     text_implicit_types: set[str] = set()
@@ -6731,11 +6807,8 @@ async def run_agent(
 
     try:
         if _try_direct and _system_prompt_override is None:
+            # 直连路径仍用主 engine；ReAct 含图时已由 _react_engine_for_iteration 切至 INTENT_GATEWAY_MULTIMODAL_MODEL（默认 qwen3.5-plus）
             _direct_model_ov: str | None = None
-            if _gateway_bundle is not None and bool(_gateway_bundle.extra.get("attachment_has_image")):
-                _direct_model_ov = str(
-                    _gateway_bundle.extra.get("gateway_multimodal_model_litellm") or ""
-                ).strip() or None
             logger.info(
                 "[L3 Agent] direct_llm_bypass run_id=%s json_object=%s model_override=%s",
                 run_id,
@@ -6746,8 +6819,11 @@ async def run_agent(
             try:
                 # 纯寒暄直连：不传完整 history（其中常含【历史摘要】里的错误人设、旧轮「招聘总监」回复），否则模型会复读
                 _direct_chitchat = bool(_trivial_chitchat and not _direct_json)
+                _uc_direct = _user_llm_content
+                if _direct_chitchat and isinstance(_uc_direct, str):
+                    _uc_direct = _uc_direct.strip()
                 _db_msgs: list[dict[str, Any]] = (
-                    [{"role": "user", "content": (user_input or "").strip()}]
+                    [{"role": "user", "content": _uc_direct}]
                     if _direct_chitchat
                     else messages
                 )

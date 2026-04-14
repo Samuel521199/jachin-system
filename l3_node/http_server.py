@@ -758,6 +758,11 @@ h1{font-size:1.25rem}
 <div id="err" class="err"></div>
 <label id="lblWs" style="display:none">选择工作区</label>
 <select id="ws" style="display:none"></select>
+<label style="margin-top:1rem">算力节点区域 (JACHIN_ACTIVE_REGION)</label>
+<select id="region">
+  <option value="CN" selected>中国大陆 (CN)</option>
+  <option value="SEA">东南亚 / 国际 (SEA)</option>
+</select>
 <button type="button" class="secondary" id="btnSave" style="display:none">写入 ~/.jachin/l2_gateway_config.json</button>
 <div id="ok" class="ok"></div>
 <script>
@@ -796,17 +801,19 @@ $('btnSave').onclick = async () => {
   $('err').textContent = ''; $('ok').textContent = '';
   const organization_id = $('ws').value;
   const workspace_name = ($('ws').selectedOptions[0] && $('ws').selectedOptions[0].textContent) || '';
+  const region = ($('region').value || 'CN').trim().toUpperCase();
   const r = await fetch('/api/v3/setup/save-gateway-org', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ organization_id, workspace_name })
+    body: JSON.stringify({ organization_id, workspace_name, region })
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.ok) {
     $('err').textContent = (j && j.error) || '保存失败';
     return;
   }
-  $('ok').textContent = '已写入。请重启 L3 或重新执行配对流程。';
+  const jr = (j && j.jachin_active_region) ? j.jachin_active_region : region;
+  $('ok').textContent = '已写入（算力区域：' + jr + '）。请重启 L3 或重新执行配对流程。';
 };
 </script>
 </body></html>"""
@@ -862,6 +869,7 @@ async def _handle_setup_save_gateway_org(request) -> "aiohttp.web.Response":
         return _json_response({"ok": False, "error": "Invalid JSON"}, status=400)
     organization_id = (body.get("organization_id") or "").strip()
     workspace_name = (body.get("workspace_name") or "").strip()[:128]
+    region_raw = (body.get("region") or body.get("jachin_active_region") or "CN").strip().upper()
     if not organization_id:
         return _json_response({"ok": False, "error": "organization_id required"}, status=400)
     cfg_path = Path.home() / ".jachin" / "l2_gateway_config.json"
@@ -874,9 +882,26 @@ async def _handle_setup_save_gateway_org(request) -> "aiohttp.web.Response":
     prev["organization_id"] = organization_id
     if workspace_name:
         prev["workspace_name"] = workspace_name
+    if region_raw in ("CN", "SEA"):
+        prev["jachin_active_region"] = region_raw
+        try:
+            from core.env_persist import persist_jachin_active_region
+
+            ok, err = persist_jachin_active_region(region_raw)
+            if not ok:
+                return _json_response(
+                    {"ok": False, "error": "persist_region_failed", "message": err or "unknown"},
+                    status=500,
+                )
+        except Exception as e:
+            logger.warning("[L3 setup] persist JACHIN_ACTIVE_REGION failed: %s", e)
+            return _json_response(
+                {"ok": False, "error": "persist_region_failed", "message": str(e)},
+                status=500,
+            )
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(json.dumps(prev, indent=2, ensure_ascii=False), encoding="utf-8")
-    return _json_response({"ok": True})
+    return _json_response({"ok": True, "jachin_active_region": prev.get("jachin_active_region", "CN")})
 
 
 def _safety_lock_admin_token_ok(request: Any) -> tuple[bool, str | None]:

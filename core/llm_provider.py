@@ -44,6 +44,12 @@ _load_dotenv_safe()
 import litellm
 from rich.console import Console
 
+from core.brain.llm.dashscope_regional import (
+    get_dashscope_regional_api_base,
+    get_dashscope_regional_credentials,
+    litellm_apply_dashscope_credentials,
+)
+
 logger = logging.getLogger(__name__)
 console = Console()
 _NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
@@ -153,6 +159,8 @@ def _get_openai_key_from_sources() -> str | None:
 
 def _has_dashscope_key() -> bool:
     """检测是否已配置通义千问 API Key（env / credential_loader / nexus_config）"""
+    if os.environ.get("DASHSCOPE_API_KEY_CN") or os.environ.get("DASHSCOPE_API_KEY_SEA"):
+        return True
     if os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or os.environ.get("QWEN_AI_API_KEY"):
         return True
     try:
@@ -197,6 +205,12 @@ def _inject_api_keys() -> None:
             use_for_qwen = llm.get("use_openai_key_for_qwen", False)
         if use_for_qwen:
             os.environ["DASHSCOPE_API_KEY"] = os.environ["OPENAI_API_KEY"]
+    # 区域化 CN/SEA：同步 DASHSCOPE_API_KEY 与 DASHSCOPE_API_BASE，供 LiteLLM 与旧路径读取
+    _rk, _rb = get_dashscope_regional_credentials()
+    if _rk:
+        os.environ["DASHSCOPE_API_KEY"] = str(_rk).strip()
+    if _rb:
+        os.environ["DASHSCOPE_API_BASE"] = str(_rb).strip()
 
 
 def _model_needs_key(model: str) -> tuple[bool, str | None]:
@@ -277,6 +291,133 @@ def get_complex_model_litellm_id(config: dict[str, Any] | None = None) -> str:
     return DASHSCOPE_COMPLEX_MODEL
 
 
+def _coerce_user_content_to_text(content: Any) -> str:
+    """OpenAI 多模态 user content 可能为 str 或 list[dict]；启发式路由只应看文本段。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text":
+                parts.append(str(p.get("text") or ""))
+        return "\n".join(parts).strip() if parts else ""
+    return str(content or "")
+
+
+def user_message_content_has_openai_image(content: Any) -> bool:
+    """
+    OpenAI Chat 格式：user.content 为 list 且含 type=image_url 时，需走视觉模型（如 qwen-vl）。
+    主推理模型（qwen3.5-plus 等）走 LiteLLM 时可能不消费 image_url，表现为「用户已传图但模型称未见」。
+    """
+    if not isinstance(content, list):
+        return False
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "image_url":
+            return True
+        # 少数兼容形态
+        if p.get("type") in ("input_image", "image"):
+            return True
+    return False
+
+
+def l3_react_full_messages_need_vision_model(full_messages: list[dict[str, Any]] | None) -> bool:
+    """任一条 user 消息含 OpenAI 图片块则本轮 ReAct 应使用多模态（VL）模型。"""
+    if not full_messages:
+        return False
+    for m in full_messages:
+        if (m.get("role") or "").strip() != "user":
+            continue
+        if user_message_content_has_openai_image(m.get("content")):
+            return True
+    return False
+
+
+def litellm_model_supports_openai_multimodal_chat(model: str) -> bool:
+    """
+    粗略判断 LiteLLM 模型 id 是否可能按 OpenAI Chat 格式消费 ``user.content`` 中的 ``image_url`` 块。
+
+    用于过滤 ``fallback_models``：若含图会话在重试时降级到 ``qwen3.5-flash`` / ``qwen3.5-plus`` 等
+    **纯语言**模型，API 仍可能 200，但模型侧会忽略图片，表现为「用户未上传图」。
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    if "embedding" in m or "text-embedding" in m:
+        return False
+    tail = m.split("/")[-1] if "/" in m else m
+    if tail.startswith("gpt-4o"):
+        return True
+    if "gemini" in m and "embedding" not in m:
+        return True
+    if "claude-3" in m or "claude-3-" in m:
+        return True
+    if "qwen-vl" in m or "qwen2-vl" in m or "qwen2.5-vl" in m or "qwen3-vl" in m:
+        return True
+    # 通义 3.5 主推理模型在兼容模式下按 OpenAI 多模态 Chat 消费 image_url（与 ReAct 多模态路由一致）
+    if "qwen3.5-plus" in m:
+        return True
+    return False
+
+
+def dashscope_vl_should_omit_openai_tools_for_multimodal(
+    *,
+    model: str,
+    messages: list[dict[str, Any]] | None,
+) -> bool:
+    """
+    DashScope 经 LiteLLM 时，**同一请求**内同时携带 OpenAI ``tools`` 与含 ``image_url`` 的
+    ``user`` 多模态块时，上游可能不将图片送入推理，表现为模型否认收到图（仅依据文本与历史摘要）。
+
+    此前仅对「名称像 VL」的模型省略 tools；但 ``dashscope/qwen3.5-plus`` 等在**无 tools** 的直连请求里
+    可正常读图（见 ``scripts/test_dashscope_vision_smoke.py``），**带 tools 时仍会丢图**，故改为：
+    凡 ``dashscope/*`` 且 ``messages`` 中已有 OpenAI 图片块，即省略 ``tools``（除非环境显式关闭）。
+
+    为 true 时，调用方应**不传** ``tools`` / ``tool_choice``，仅依赖 system 内 ReAct 工具说明输出
+    Thought/Action（与 ``JACHIN_REACT_STREAM_DISABLE_TOOLS`` 行为一致）。
+
+    设 ``JACHIN_DASHSCOPE_VL_KEEPS_TOOLS=1`` 可关闭此规避（用于供应商修复后验证）。
+    """
+    if os.environ.get("JACHIN_DASHSCOPE_VL_KEEPS_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    ml = (model or "").strip().lower()
+    if not ml.startswith("dashscope/"):
+        return False
+    return l3_react_full_messages_need_vision_model(messages)
+
+
+def vision_safe_litellm_fallback_models(
+    *,
+    primary: str,
+    base_fallbacks: list[str] | None,
+) -> list[str]:
+    """
+    从引擎原有 fallback 链中只保留多模态可用的模型 id；若链被清空则回退到环境或主 VL，避免注入 flash/plus。
+    """
+    import os
+
+    primary = (primary or "").strip()
+    kept = [str(x).strip() for x in (base_fallbacks or []) if str(x).strip()]
+    kept = [x for x in kept if litellm_model_supports_openai_multimodal_chat(x)]
+    alt = (os.environ.get("JACHIN_VISION_LITELLM_FALLBACK") or "").strip()
+    if alt and litellm_model_supports_openai_multimodal_chat(alt) and alt not in kept:
+        kept.append(alt)
+    if not kept and primary and litellm_model_supports_openai_multimodal_chat(primary):
+        # 与主模型同 id 一条：满足 LiteLLMEngine「非空 fallback」默认值逻辑，且第二路重试仍是 VL
+        kept = [primary]
+    if not kept:
+        # 极端：主模型未被识别为 VL（配置错误）— 仍优于误塞入 flash
+        kept = [primary] if primary else []
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in kept:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
 def l3_react_should_use_complex_model(
     *,
     delegate_depth: int,
@@ -315,9 +456,7 @@ def l3_react_should_use_complex_model(
     for m in reversed(full_messages):
         if (m.get("role") or "").strip() != "user":
             continue
-        c = m.get("content") or ""
-        if not isinstance(c, str):
-            c = str(c)
+        c = _coerce_user_content_to_text(m.get("content"))
         if len(c) >= min_user_chars:
             return True
         break
@@ -345,10 +484,7 @@ def _last_substantive_user_snippet(full_messages: list[dict[str, Any]]) -> str:
     for m in reversed(full_messages or []):
         if (m.get("role") or "").strip() != "user":
             continue
-        c = m.get("content") or ""
-        if not isinstance(c, str):
-            c = str(c)
-        c = c.strip()
+        c = _coerce_user_content_to_text(m.get("content")).strip()
         if len(c) < 14:
             continue
         low = c[:120].lower()
@@ -388,9 +524,7 @@ def _brief_llm_context(
     last_user = ""
     for m in reversed(messages):
         if (m.get("role") or "").strip() == "user":
-            c = m.get("content") or ""
-            if not isinstance(c, str):
-                c = str(c)
+            c = _coerce_user_content_to_text(m.get("content"))
             last_user = c[:120].replace("\n", " ")
             break
     tc = len(tools) if tools else 0
@@ -644,6 +778,8 @@ class LiteLLMEngine:
                     if _ev is not None:
                         kwargs_chat[_ek] = _ev
 
+                litellm_apply_dashscope_credentials(model, kwargs_chat)
+
                 # 硬上限：litellm 内部可能对 /chat/completions 重试；长文/compaction 需更大 slack
                 _slack = _asyncio_wait_slack_for_purpose(call_purpose)
                 _cap = float(timeout) + _slack
@@ -819,6 +955,7 @@ class LiteLLMEngine:
                 from core.stream_text_delta import StreamDeltaNormalizer
 
                 merge_dashscope_stream_incremental_hint(model, kwargs_chat)
+                litellm_apply_dashscope_credentials(model, kwargs_chat)
                 # 与 l3_node.llm_client 一致：默认识别增量/累积帧，避免 UI 复读。
                 response = await litellm.acompletion(**kwargs_chat)
                 _norm = StreamDeltaNormalizer()

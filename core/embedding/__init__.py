@@ -127,10 +127,13 @@ class DashScopeEmbedder(BaseEmbedder):
         try:
             from openai import OpenAI
 
-            base = (
-                os.environ.get("DASHSCOPE_API_BASE", "").strip()
-                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            )
+            try:
+                from core.brain.llm.dashscope_regional import get_dashscope_regional_api_base
+
+                _default_base = get_dashscope_regional_api_base()
+            except ImportError:
+                _default_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            base = (os.environ.get("DASHSCOPE_API_BASE", "").strip() or _default_base)
             client = OpenAI(api_key=key, base_url=base)
             loop = asyncio.get_running_loop()
             r = await loop.run_in_executor(

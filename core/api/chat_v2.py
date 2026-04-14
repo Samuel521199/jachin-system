@@ -16,7 +16,7 @@ from core.brain.llm.call_types import (
     CallType, ImageInput, VideoInput, AudioInput,
     DocumentInput, WebSearchConfig, ToolCall, CallOptions
 )
-from core.brain.llm.regions import Region, get_default_region
+from core.brain.llm.regions import effective_qwen_region_from_env
 from core.brain.llm.personality import get_personality_manager
 from core.config import settings
 
@@ -128,15 +128,9 @@ _qwen_fallback_provider = None  # GPU 过热时回退到云端
 _current_provider_model: str = ""  # 当前 provider 对应的模型，用于热切换检测
 
 try:
-    # 解析地域配置
-    region = get_default_region()
-    if hasattr(settings, 'QWEN_REGION') and settings.QWEN_REGION:
-        try:
-            region_name = settings.QWEN_REGION.upper().replace("-", "_")
-            region = getattr(Region, region_name, get_default_region())
-        except:
-            region = get_default_region()
-    
+    # 解析地域配置（JACHIN_ACTIVE_REGION=SEA 时与 DashScope 国际 endpoint 对齐，除非显式设置 QWEN_REGION）
+    region = effective_qwen_region_from_env()
+
     llm_provider = LLMProviderFactory.create_provider(
         provider_type=settings.LLM_PROVIDER,
         model=settings.LLM_MODEL,
@@ -192,13 +186,7 @@ async def _resolve_provider():
             current_model = getattr(settings, "LLM_MODEL", None) or "qwen-turbo"
         if current_model != _current_provider_model:
             try:
-                region = get_default_region()
-                if hasattr(settings, "QWEN_REGION") and settings.QWEN_REGION:
-                    try:
-                        region_name = settings.QWEN_REGION.upper().replace("-", "_")
-                        region = getattr(Region, region_name, get_default_region())
-                    except Exception:
-                        region = get_default_region()
+                region = effective_qwen_region_from_env()
                 new_provider = LLMProviderFactory.create_provider(
                     provider_type=settings.LLM_PROVIDER,
                     model=current_model,

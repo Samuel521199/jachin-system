@@ -36,12 +36,12 @@ def get_classification_model_litellm_id() -> str:
 
 def get_multimodal_model_litellm_id() -> str:
     """
-    网关多模态模型（默认 qwen-vl-max）。
+    网关 / ReAct 多模态（图、文档抽取、混排 user 块）统一模型（默认 qwen3.5-plus）。
     优先级：环境变量 INTENT_GATEWAY_MULTIMODAL_MODEL → nexus intent_gateway.multimodal_model → 默认。
     """
     env_m = (os.environ.get("INTENT_GATEWAY_MULTIMODAL_MODEL") or "").strip()
     if env_m:
         return _to_litellm_id(env_m)
     cfg = get_intent_gateway_config()
-    m = str(cfg.get("multimodal_model") or "qwen-vl-max").strip() or "qwen-vl-max"
+    m = str(cfg.get("multimodal_model") or "qwen3.5-plus").strip() or "qwen3.5-plus"
     return _to_litellm_id(m)

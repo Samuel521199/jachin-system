@@ -1,6 +1,15 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.8.117] - 2026-04-15
+
+### Added / Changed
+
+- 聊天界面：文档与图片附件传入、解析与多模态路由（含 L3 网关、WebSocket、sanitize/trim、DashScope 兼容层等）。
+- **Version**: Desktop、core CLI 与 `core/main` 版本号 **0.8.117**。
+
+---
 
 ## [v0.8.115] - 2026-04-15
 

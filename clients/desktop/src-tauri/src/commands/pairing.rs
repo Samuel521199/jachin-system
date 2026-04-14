@@ -1,4 +1,4 @@
-﻿//! V2 L2↔L3 零信任配对（非 L1↔L3）— 网关接驳
+//! V2 L2↔L3 零信任配对（非 L1↔L3）— 网关接驳
 //! 读写 ~/.jachin/l2_gateway_config.json，管理 L2 网关地址与配对状态
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,73 @@ fn jachin_dir() -> Result<PathBuf, String> {
 
 fn gateway_config_path() -> Result<PathBuf, String> {
     Ok(jachin_dir()?.join("l2_gateway_config.json"))
+}
+
+/// CN | SEA，与 `JACHIN_ACTIVE_REGION` / `dashscope_regional.py` 一致
+fn normalize_jachin_active_region(raw: &Option<String>) -> &'static str {
+    match raw.as_ref().map(|s| s.trim().to_uppercase()).as_deref() {
+        Some("SEA") => "SEA",
+        _ => "CN",
+    }
+}
+
+/// 写入或更新 `.env` 中的 `KEY=value`（单行，支持已有文件与注释行）
+fn upsert_dotenv_key(path: &std::path::Path, key: &str, value: &str) -> Result<(), String> {
+    let key_eq = format!("{}=", key);
+    let new_line = format!("{}={}", key, value);
+    let mut lines: Vec<String> = Vec::new();
+    if path.exists() {
+        let content = fs::read_to_string(path).map_err(|e| format!("读取 {}: {}", path.display(), e))?;
+        let mut replaced = false;
+        for line in content.lines() {
+            let t = line.trim();
+            if !t.is_empty() && !t.starts_with('#') {
+                if t.starts_with(&key_eq) {
+                    lines.push(new_line.clone());
+                    replaced = true;
+                    continue;
+                }
+                if let Some((k, _)) = t.split_once('=') {
+                    if k.trim() == key {
+                        lines.push(new_line.clone());
+                        replaced = true;
+                        continue;
+                    }
+                }
+            }
+            lines.push(line.to_string());
+        }
+        if !replaced {
+            if !lines.is_empty() && lines.last().map(|l| !l.trim().is_empty()).unwrap_or(false) {
+                lines.push(String::new());
+            }
+            lines.push(new_line);
+        }
+    } else {
+        lines.push(new_line);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let out = lines.join("\n") + "\n";
+    fs::write(path, out).map_err(|e| format!("写入 {}: {}", path.display(), e))
+}
+
+/// 持久化 `JACHIN_ACTIVE_REGION` 到 `~/.jachin/.env` 与便携目录 `exe_dir/.env`
+fn persist_jachin_active_region_to_dotenv(region: &str) -> Result<(), String> {
+    let r = if region == "SEA" { "SEA" } else { "CN" };
+    let home_env = jachin_dir()?.join(".env");
+    upsert_dotenv_key(&home_env, "JACHIN_ACTIVE_REGION", r)?;
+    if let Some(exe_dir) = crate::l3_spawn::exe_dir() {
+        let portable = exe_dir.join(".env");
+        if portable != home_env {
+            if let Err(e) = upsert_dotenv_key(&portable, "JACHIN_ACTIVE_REGION", r) {
+                eprintln!("[Gateway] 写入便携 .env 失败（可忽略）: {}", e);
+            }
+        }
+    }
+    std::env::set_var("JACHIN_ACTIVE_REGION", r);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +171,9 @@ pub struct WriteGatewayConfigInput {
     /// L1 工作区 slug（小写字母、数字、连字符）
     #[serde(default, alias = "organizationSlug")]
     pub organization_slug: Option<String>,
+    /// 算力区域：CN | SEA（默认 CN），写入 `JACHIN_ACTIVE_REGION` 与 l2_gateway_config
+    #[serde(default, alias = "activeRegion")]
+    pub active_region: Option<String>,
 }
 
 fn merge_workspace_into_cfg(cfg: &mut serde_json::Value, input: &WriteGatewayConfigInput) -> Result<(), String> {
@@ -161,6 +231,9 @@ pub fn write_l2_gateway_config(input: WriteGatewayConfigInput) -> Result<(), Str
         }
     }
     merge_workspace_into_cfg(&mut cfg, &input)?;
+    let reg = normalize_jachin_active_region(&input.active_region);
+    cfg["jachin_active_region"] = serde_json::json!(reg);
+    persist_jachin_active_region_to_dotenv(reg).map_err(|e| format!("写入 JACHIN_ACTIVE_REGION 失败: {}", e))?;
     fs::write(
         &path,
         serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?,
@@ -179,6 +252,8 @@ pub struct GatewayConnectInput {
     pub organization_id: Option<String>,
     #[serde(default, alias = "organizationSlug")]
     pub organization_slug: Option<String>,
+    #[serde(default, alias = "activeRegion")]
+    pub active_region: Option<String>,
 }
 
 /// 发起网关接驳：重启 L3 为 --gateway 模式（支持 Sidecar 或 Python 回退）
@@ -192,10 +267,14 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
         display_name: display_name.clone(),
         organization_id: input.organization_id.clone(),
         organization_slug: input.organization_slug.clone(),
+        active_region: input.active_region.clone(),
     })?;
 
     let env_root = crate::l3_spawn::exe_dir().unwrap_or_else(PathBuf::new);
-    let env_vars = crate::l3_spawn::load_l3_env_vars(&env_root);
+    let mut env_vars = crate::l3_spawn::load_l3_env_vars(&env_root);
+    let rr = normalize_jachin_active_region(&input.active_region).to_string();
+    env_vars.retain(|(k, _)| k != "JACHIN_ACTIVE_REGION");
+    env_vars.push(("JACHIN_ACTIVE_REGION".to_string(), rr));
 
     let sidecar = match app.shell().sidecar(crate::l3_spawn::l3_sidecar_external_bin_path()) {
         Ok(s) => s,
@@ -269,6 +348,7 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
                             &["--gateway"],
                             Some(url),
                             display_name.as_deref(),
+                            &env_vars,
                         )?
                     }
                 }

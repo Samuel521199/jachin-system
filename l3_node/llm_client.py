@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 本地解密与直连 LLM
 
 内存级解密：从 L2 拉取密文 Key，用 L3 私钥解密，仅存于 SecurityContext。
@@ -15,6 +15,14 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+from core.brain.llm.dashscope_regional import (
+    get_dashscope_regional_api_base,
+    get_dashscope_regional_credentials,
+    get_jachin_active_region,
+    litellm_apply_dashscope_credentials,
+    user_configured_regional_dashscope_key_env,
+)
 
 try:
     from l3_node.llm_budget import BudgetExhaustedError as _BudgetExhaustedError
@@ -96,7 +104,14 @@ def _brief_llm_context(
     for m in reversed(messages):
         if (m.get("role") or "").strip() == "user":
             c = m.get("content") or ""
-            if not isinstance(c, str):
+            if isinstance(c, list):
+                texts = [
+                    str(p.get("text", ""))
+                    for p in c
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                c = texts[0] if texts else f"[multimodal n={len(c)}]"
+            elif not isinstance(c, str):
                 c = str(c)
             last_user = c[:120].replace("\n", " ")
             break
@@ -393,6 +408,16 @@ def _inject_env_keys_into_ctx(ctx: SecurityContext) -> bool:
     """将环境变量中的 Key 注入 ctx（.env 已加载时可用）。"""
     if ctx.has_any_key():
         return True
+    _rk, _rb = get_dashscope_regional_credentials()
+    if _rb:
+        _os.environ["DASHSCOPE_API_BASE"] = str(_rb).strip()
+    else:
+        _os.environ.setdefault("DASHSCOPE_API_BASE", get_dashscope_regional_api_base())
+    if _rk:
+        ctx.set_key("dashscope", str(_rk).strip())
+        logger.info("[L3] 已从区域/环境变量注入 DashScope API Key")
+        logger.debug("[L3 Keys] 环境变量兜底: provider=dashscope (regional)")
+        return True
     dash = _os.environ.get("DASHSCOPE_API_KEY") or _os.environ.get("QWEN_API_KEY") or _os.environ.get("QWEN_AI_API_KEY")
     openai_key = _os.environ.get("OPENAI_API_KEY")
     if dash:
@@ -508,7 +533,16 @@ class LiteLLMEngine:
         logger.debug("[L3 LLM] _inject_key model=%s provider=%s has_key=%s", model, provider, bool(key))
         if key:
             if provider == "dashscope":
-                os.environ["DASHSCOPE_API_KEY"] = key
+                # 与 litellm_apply_dashscope_credentials 一致：已配 *_SEA / *_CN 时勿用 ctx（常为 L2 国内 Key）污染 env
+                if user_configured_regional_dashscope_key_env():
+                    rk, _ = get_dashscope_regional_credentials()
+                    if rk:
+                        os.environ["DASHSCOPE_API_KEY"] = rk
+                    else:
+                        os.environ["DASHSCOPE_API_KEY"] = key
+                else:
+                    os.environ["DASHSCOPE_API_KEY"] = key
+                os.environ["DASHSCOPE_API_BASE"] = get_dashscope_regional_api_base()
             else:
                 os.environ["OPENAI_API_KEY"] = key
 
@@ -523,7 +557,7 @@ class LiteLLMEngine:
 
     async def generate_response(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
         temperature: float = 0.7,
@@ -555,6 +589,11 @@ class LiteLLMEngine:
             purpose,
             has_keys,
             _brief_llm_context(messages, tools),
+        )
+        logger.info(
+            "[L3 LLM][调度] dashscope: region=%s api_base=%s（SEA 应为 dashscope-intl 域名；CN 为 dashscope.aliyuncs.com）",
+            get_jachin_active_region(),
+            get_dashscope_regional_api_base(),
         )
         if not has_keys:
             logger.info("[L3] 从 L2 兜底拉取 API Key...")
@@ -601,19 +640,44 @@ class LiteLLMEngine:
                 next_if_fail or "-",
             )
             try:
+                effective_tools = tools
                 t0 = time.perf_counter()
                 if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
                     raise RunCancelledError("l3_llm_cancelled_before_completion")
                 _mt = _effective_max_tokens_for_model(model, max_tokens)
+                try:
+                    from l3_node.dashscope_multimodal_normalize import (
+                        maybe_normalize_messages_for_dashscope_litellm,
+                    )
+
+                    _msgs_api = maybe_normalize_messages_for_dashscope_litellm(
+                        list(messages or []), model=model
+                    )
+                except Exception:
+                    _msgs_api = list(messages or [])
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
-                    "messages": messages,
+                    "messages": _msgs_api,
                     "temperature": temperature,
                     "max_tokens": _mt,
                     "timeout": self.timeout,
                 }
                 if tools:
-                    kwargs_chat["tools"] = tools
+                    try:
+                        from core.llm_provider import dashscope_vl_should_omit_openai_tools_for_multimodal
+
+                        if dashscope_vl_should_omit_openai_tools_for_multimodal(
+                            model=model, messages=list(messages or [])
+                        ):
+                            logger.warning(
+                                "[L3 LLM] DashScope VL + 多模态：本轮不传 OpenAI tools[]（避免 image_url 被忽略），"
+                                "仍以 system 内 ReAct 工具说明为准"
+                            )
+                            effective_tools = None
+                    except Exception as _e:
+                        logger.debug("[L3 LLM] dashscope VL tools 规避检查跳过: %s", _e)
+                if effective_tools:
+                    kwargs_chat["tools"] = effective_tools
                     kwargs_chat["tool_choice"] = "auto"
 
                 _rfmt = kwargs.pop("response_format", None)
@@ -622,6 +686,32 @@ class LiteLLMEngine:
                 _merge_litellm_optional_penalties(kwargs, kwargs_chat)
                 if kwargs:
                     logger.debug("[L3 LLM] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
+
+                litellm_apply_dashscope_credentials(
+                    model, kwargs_chat, explicit_api_key=self.ctx.get_key("dashscope")
+                )
+
+                try:
+                    from l3_node.multimodal_log import (
+                        log_litellm_outbound_messages,
+                        summarize_messages_for_litellm_dispatch,
+                    )
+
+                    log_litellm_outbound_messages(
+                        logger,
+                        list(kwargs_chat.get("messages") or []),
+                        purpose=str(purpose),
+                        model=str(model),
+                        stream=False,
+                    )
+                    logger.debug(
+                        "[L3 LLM][dispatch_payload_summary]\n%s",
+                        summarize_messages_for_litellm_dispatch(
+                            list(kwargs_chat.get("messages") or []), purpose=str(purpose)
+                        ),
+                    )
+                except Exception:
+                    pass
 
                 _cap = float(self.timeout) + 45.0
                 try:
@@ -652,7 +742,7 @@ class LiteLLMEngine:
                             stream=False,
                             elapsed_ms=(time.perf_counter() - t0) * 1000.0,
                             messages=messages,
-                            tools=tools,
+                            tools=effective_tools,
                             response_text="",
                         )
                     except Exception:
@@ -692,7 +782,7 @@ class LiteLLMEngine:
                             stream=False,
                             elapsed_ms=(time.perf_counter() - t0) * 1000.0,
                             messages=messages,
-                            tools=tools,
+                            tools=effective_tools,
                             response_text=out,
                             response_dict_summary=(
                                 f"stream_tool_calls_synthesized_to_react n={len(tclist)} names={_names}"
@@ -719,7 +809,7 @@ class LiteLLMEngine:
                         stream=False,
                         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
                         messages=messages,
-                        tools=tools,
+                        tools=effective_tools,
                         response_text=text,
                     )
                 except Exception:
@@ -780,7 +870,7 @@ class LiteLLMEngine:
 
     async def generate_response_stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         chunk_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
@@ -816,6 +906,11 @@ class LiteLLMEngine:
             has_keys,
             _brief_llm_context(messages, tools),
             _rn,
+        )
+        logger.info(
+            "[L3 LLM][调度] dashscope: region=%s api_base=%s（SEA 应为 dashscope-intl 域名；CN 为 dashscope.aliyuncs.com）",
+            get_jachin_active_region(),
+            get_dashscope_regional_api_base(),
         )
         if not has_keys:
             await try_fetch_keys_from_l2(self.ctx)
@@ -865,20 +960,45 @@ class LiteLLMEngine:
                 next_if_fail or "-",
             )
             try:
+                effective_tools = tools
                 t0 = time.perf_counter()
                 if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
                     raise RunCancelledError("l3_llm_cancelled_before_stream")
                 _mt = _effective_max_tokens_for_model(model, max_tokens)
+                try:
+                    from l3_node.dashscope_multimodal_normalize import (
+                        maybe_normalize_messages_for_dashscope_litellm,
+                    )
+
+                    _msgs_api_s = maybe_normalize_messages_for_dashscope_litellm(
+                        list(messages or []), model=model
+                    )
+                except Exception:
+                    _msgs_api_s = list(messages or [])
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
-                    "messages": messages,
+                    "messages": _msgs_api_s,
                     "stream": True,
                     "temperature": temperature,
                     "max_tokens": _mt,
                     "timeout": self.timeout,
                 }
                 if tools:
-                    kwargs_chat["tools"] = tools
+                    try:
+                        from core.llm_provider import dashscope_vl_should_omit_openai_tools_for_multimodal
+
+                        if dashscope_vl_should_omit_openai_tools_for_multimodal(
+                            model=model, messages=list(messages or [])
+                        ):
+                            logger.warning(
+                                "[L3 LLM][stream] DashScope VL + 多模态：本轮不传 OpenAI tools[]（避免 image_url 被忽略），"
+                                "仍以 system 内 ReAct 工具说明为准"
+                            )
+                            effective_tools = None
+                    except Exception as _e:
+                        logger.debug("[L3 LLM][stream] dashscope VL tools 规避检查跳过: %s", _e)
+                if effective_tools:
+                    kwargs_chat["tools"] = effective_tools
                     kwargs_chat["tool_choice"] = "auto"
                 _rfmt_s = kwargs.pop("response_format", None)
                 if _rfmt_s is not None:
@@ -890,6 +1010,32 @@ class LiteLLMEngine:
                 from core.litellm_stream_hints import merge_dashscope_stream_incremental_hint
 
                 merge_dashscope_stream_incremental_hint(model, kwargs_chat)
+
+                litellm_apply_dashscope_credentials(
+                    model, kwargs_chat, explicit_api_key=self.ctx.get_key("dashscope")
+                )
+
+                try:
+                    from l3_node.multimodal_log import (
+                        log_litellm_outbound_messages,
+                        summarize_messages_for_litellm_dispatch,
+                    )
+
+                    log_litellm_outbound_messages(
+                        logger,
+                        list(kwargs_chat.get("messages") or []),
+                        purpose=str(purpose),
+                        model=str(model),
+                        stream=True,
+                    )
+                    logger.debug(
+                        "[L3 LLM][dispatch_payload_summary][stream]\n%s",
+                        summarize_messages_for_litellm_dispatch(
+                            list(kwargs_chat.get("messages") or []), purpose=str(purpose)
+                        ),
+                    )
+                except Exception:
+                    pass
 
                 response = await litellm.acompletion(**kwargs_chat)
 
@@ -988,7 +1134,7 @@ class LiteLLMEngine:
                         stream=True,
                         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
                         messages=messages,
-                        tools=tools,
+                        tools=effective_tools,
                         response_text=out,
                         response_dict_summary=_sum,
                     )
@@ -1040,7 +1186,7 @@ class LiteLLMEngine:
                             stream=True,
                             elapsed_ms=(time.perf_counter() - t0) * 1000.0,
                             messages=messages,
-                            tools=tools,
+                            tools=effective_tools,
                             error=f"{type(e).__name__}: {e}"[:8000],
                         )
                     except Exception:

@@ -123,10 +123,37 @@ def _is_npx_server_filesystem_args(args: list[Any]) -> bool:
     return any(isinstance(a, str) and "@modelcontextprotocol/server-filesystem" in a for a in args)
 
 
+def _npx_filesystem_connect_max_attempts() -> int:
+    """
+    默认 **1 次**（失败即放弃，不阻塞 L3 主流程）。
+
+    若需对 ``Connection closed`` 自动重试，设置 ``JACHIN_MCP_NPX_FILESYSTEM_CONNECT_ATTEMPTS=2..10``。
+    """
+    raw = (os.environ.get("JACHIN_MCP_NPX_FILESYSTEM_CONNECT_ATTEMPTS") or "").strip()
+    if raw.isdigit():
+        return max(1, min(10, int(raw)))
+    return 1
+
+
+def _npx_filesystem_initialize_failure_retriable(err: BaseException) -> bool:
+    """MCP SDK 在子进程过早退出时多为 McpError: Connection closed。"""
+    msg = f"{type(err).__name__} {err}".lower()
+    if "connection closed" in msg:
+        return True
+    if "mcperror" in msg and "closed" in msg:
+        return True
+    if "eof" in msg and "stdio" in msg:
+        return True
+    return False
+
+
 def _pin_server_filesystem_npm_version(args: list[Any]) -> list[Any]:
     """
-    将 ``@modelcontextprotocol/server-filesystem``（无 npm 版本段）固定为 @0.6.3。
-    作用域包名本身只含一个 ``@``；带版本时为 ``...server-filesystem@x.y.z``（至少两个 ``@``）。
+    将 ``@modelcontextprotocol/server-filesystem`` 固定为与当前 MCP Python SDK 对齐的 npm 版本。
+
+    - 无版本号（仅 ``@scope/pkg``）会拉到 registry 最新，常与 mcp 1.26+ 不兼容；
+    - 旧 pin（如 ``@0.6.2``）在部分环境下会在 ``initialize`` 阶段即 Connection closed。
+    因此凡在 args 中出现该包名，一律规范为 ``_SERVER_FILESYSTEM_NPM_PIN``（当前 0.6.3）。
     """
     out: list[Any] = []
     changed = False
@@ -135,17 +162,57 @@ def _pin_server_filesystem_npm_version(args: list[Any]) -> list[Any]:
             out.append(a)
             continue
         s = a.strip()
-        if "@modelcontextprotocol/server-filesystem" in s and s.count("@") == 1:
-            out.append(_SERVER_FILESYSTEM_NPM_PIN)
-            changed = True
-            continue
+        if "@modelcontextprotocol/server-filesystem" in s:
+            if s != _SERVER_FILESYSTEM_NPM_PIN:
+                out.append(_SERVER_FILESYSTEM_NPM_PIN)
+                changed = True
+                continue
         out.append(a)
     if changed:
         logger.info(
-            "[MCP] 已将 npx 参数固定为 %s（避免拉到与 MCP SDK 不兼容的最新 server-filesystem）",
+            "[MCP] 已将 npx 参数固定为 %s（统一 server-filesystem 版本，避免与 MCP SDK 不兼容）",
             _SERVER_FILESYSTEM_NPM_PIN,
         )
     return out
+
+
+def ensure_mcp_server_filesystem_root_directories(args: list[Any]) -> None:
+    """
+    官方 ``@modelcontextprotocol/server-filesystem``（npm）启动时对每个 CLI 允许路径 ``fs.stat``，
+    不存在或不可访问的目录会被丢弃；若最终 **没有任何** 可访问目录则 ``process.exit(1)``，
+    父进程侧表现为 ``initialize`` 阶段 ``Connection closed``。
+
+    Python ``mcp`` 客户端默认 **不** 声明 MCP ``roots`` 能力（见 ``mcp.client.session.ClientSession``），
+    无法仅靠协议向服务端补根目录，因此必须在拉起 npx 子进程前保证每个 CLI 根路径为**已存在目录**
+    （``mkdir(parents=True, exist_ok=True)``）。
+
+    与 npm 包版本（当前 pin ``0.6.3``）无关；属上游服务器契约。
+    """
+    if not isinstance(args, list):
+        return
+    try:
+        pkg_idx = next(
+            i
+            for i, a in enumerate(args)
+            if isinstance(a, str) and "server-filesystem" in a
+        )
+    except StopIteration:
+        return
+    for a in args[pkg_idx + 1 :]:
+        if not isinstance(a, str):
+            continue
+        raw = a.strip()
+        if not raw or raw.startswith("-"):
+            continue
+        try:
+            p = Path(raw).expanduser()
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                "[MCP] server-filesystem 根目录无法预创建（服务端可能直接退出）path=%s err=%s",
+                raw,
+                e,
+            )
 
 
 def _collapse_redundant_server_filesystem_roots(args: list[Any]) -> list[Any]:
@@ -319,74 +386,120 @@ class MCPServerInstance:
         self._session: Optional[ClientSession] = None
         self._tool_names: list[str] = []
 
+    async def _connect_stdio_once(self) -> None:
+        """单次 stdio 启动并完成 MCP initialize（成功则 self._session 可用）。"""
+        from core.mcp_embedded_runtime import (
+            effective_stdio_env_for_sdk,
+            expand_stdio_env_windows_npx_google_maps,
+            expand_stdio_env_windows_npx_tavily,
+            is_tavily_stdio_server,
+            log_tavily_mcp_chain,
+            log_tavily_stdio_cwd_choice,
+            log_tavily_stdio_merged_spawn,
+            resolve_tavily_stdio_cwd,
+        )
+
+        eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
+        eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
+        eff_env = expand_stdio_env_windows_npx_google_maps(self.server_id, self.args, eff_env)
+        if _is_npx_server_filesystem_args(self.args):
+            ensure_mcp_server_filesystem_root_directories(self.args)
+        # server-filesystem 与 @modelcontextprotocol/sdk 1.26+ 需与 Python mcp 默认协议一致；
+        # 勿强行降级 protocolVersion（曾导致 initialize 阶段即 Connection closed）。
+        # 若全局安装了 dotenvx 等 npx 包装，可向 stdout 注入非 JSON 行；合并 CI 以降低啰嗦输出（与 mcp_stdio_noise_filter 互补）。
+        if _is_npx_server_filesystem_args(self.args):
+            merged = dict(eff_env) if isinstance(eff_env, dict) else {}
+            merged.setdefault("CI", "true")
+            # 降低 npx/npm 交互式提示与进度条污染 stderr，减少 Windows 上子进程握手竞态
+            merged.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")
+            merged.setdefault("npm_config_fund", "false")
+            merged.setdefault("npm_config_progress", "false")
+            eff_env = merged
+        tavily_cwd: str | None = None
+        if is_tavily_stdio_server(self.server_id, self.args):
+            tavily_cwd = resolve_tavily_stdio_cwd()
+            log_tavily_stdio_cwd_choice(self.server_id, tavily_cwd)
+            log_tavily_mcp_chain(
+                "stdio_explicit_env",
+                self.server_id,
+                eff_env,
+                log_parent_os=True,
+            )
+            log_tavily_stdio_merged_spawn(self.server_id, eff_env)
+        fs_cwd = stdio_official_filesystem_workspace_cwd(self.args)
+        stdio_cwd = tavily_cwd or fs_cwd
+        if fs_cwd and not tavily_cwd:
+            logger.debug("[MCP] server-filesystem stdio cwd=%s server_id=%s", fs_cwd, self.server_id)
+        server_params = StdioServerParameters(
+            command=self.command,
+            args=self.args,
+            env=eff_env,
+            cwd=stdio_cwd,
+        )
+        stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
+        stdio, write = stdio_transport
+        self._session = await self._exit_stack.enter_async_context(ClientSession(stdio, write))
+        await self._session.initialize()
+        if is_tavily_stdio_server(self.server_id, self.args):
+            log_tavily_mcp_chain(
+                "stdio_session_ready",
+                self.server_id,
+                eff_env,
+                log_parent_os=True,
+            )
+
     async def connect(self) -> None:
         """
         通过 stdio 启动并连接底层 MCP 进程。
         使用 AsyncExitStack 管理资源生命周期。
+
+        ``npx @modelcontextprotocol/server-filesystem`` 默认只尝试一次；失败由上层跳过该 Server，
+        不长时间重试以免拖慢启动。需要重试时设置 ``JACHIN_MCP_NPX_FILESYSTEM_CONNECT_ATTEMPTS``。
         """
         self.args = _collapse_redundant_server_filesystem_roots(
             _pin_server_filesystem_npm_version(list(self.args))
         )
         logger.info("[MCP] 正在拉起 Server server_id=%s command=%s args=%s", self.server_id, self.command, self.args)
-        try:
-            from core.mcp_embedded_runtime import (
-                effective_stdio_env_for_sdk,
-                expand_stdio_env_windows_npx_google_maps,
-                expand_stdio_env_windows_npx_tavily,
-                is_tavily_stdio_server,
-                log_tavily_mcp_chain,
-                log_tavily_stdio_cwd_choice,
-                log_tavily_stdio_merged_spawn,
-                resolve_tavily_stdio_cwd,
-            )
 
-            eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
-            eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
-            eff_env = expand_stdio_env_windows_npx_google_maps(self.server_id, self.args, eff_env)
-            # server-filesystem 与 @modelcontextprotocol/sdk 1.26+ 需与 Python mcp 默认协议一致；
-            # 勿强行降级 protocolVersion（曾导致 initialize 阶段即 Connection closed）。
-            # 若全局安装了 dotenvx 等 npx 包装，可向 stdout 注入非 JSON 行；合并 CI 以降低啰嗦输出（与 mcp_stdio_noise_filter 互补）。
-            if _is_npx_server_filesystem_args(self.args):
-                merged = dict(eff_env) if isinstance(eff_env, dict) else {}
-                merged.setdefault("CI", "true")
-                eff_env = merged
-            tavily_cwd: str | None = None
-            if is_tavily_stdio_server(self.server_id, self.args):
-                tavily_cwd = resolve_tavily_stdio_cwd()
-                log_tavily_stdio_cwd_choice(self.server_id, tavily_cwd)
-                log_tavily_mcp_chain(
-                    "stdio_explicit_env",
-                    self.server_id,
-                    eff_env,
-                    log_parent_os=True,
+        fs_npx = _is_npx_server_filesystem_args(self.args)
+        max_att = _npx_filesystem_connect_max_attempts() if fs_npx else 1
+        last_err: Optional[BaseException] = None
+
+        for attempt in range(max_att):
+            try:
+                await self._connect_stdio_once()
+                logger.info("[MCP] Server 已连接 server_id=%s", self.server_id)
+                return
+            except Exception as e:
+                last_err = e
+                await self.close()
+                self._exit_stack = AsyncExitStack()
+                retriable = (
+                    fs_npx
+                    and attempt + 1 < max_att
+                    and _npx_filesystem_initialize_failure_retriable(e)
                 )
-                log_tavily_stdio_merged_spawn(self.server_id, eff_env)
-            fs_cwd = stdio_official_filesystem_workspace_cwd(self.args)
-            stdio_cwd = tavily_cwd or fs_cwd
-            if fs_cwd and not tavily_cwd:
-                logger.debug("[MCP] server-filesystem stdio cwd=%s server_id=%s", fs_cwd, self.server_id)
-            server_params = StdioServerParameters(
-                command=self.command,
-                args=self.args,
-                env=eff_env,
-                cwd=stdio_cwd,
-            )
-            stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
-            stdio, write = stdio_transport
-            self._session = await self._exit_stack.enter_async_context(ClientSession(stdio, write))
-            await self._session.initialize()
-            logger.info("[MCP] Server 已连接 server_id=%s", self.server_id)
-            if is_tavily_stdio_server(self.server_id, self.args):
-                log_tavily_mcp_chain(
-                    "stdio_session_ready",
-                    self.server_id,
-                    eff_env,
-                    log_parent_os=True,
-                )
-        except Exception as e:
-            logger.exception("[MCP] Server 连接失败 server_id=%s err=%s", self.server_id, e)
-            await self.close()
-            raise MCPConnectionError(f"MCP server {self.server_id} 连接失败: {e}") from e
+                if retriable:
+                    delay = min(4.0, 0.55 * (2**attempt))
+                    logger.warning(
+                        "[MCP] server-filesystem 握手失败，%.1fs 后重试 (%d/%d) server_id=%s err=%s",
+                        delay,
+                        attempt + 1,
+                        max_att,
+                        self.server_id,
+                        e,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if fs_npx:
+                    logger.warning(
+                        "[MCP] Server 连接失败（server-filesystem 不重试或已达上限）server_id=%s err=%s",
+                        self.server_id,
+                        e,
+                    )
+                else:
+                    logger.exception("[MCP] Server 连接失败 server_id=%s err=%s", self.server_id, e)
+                raise MCPConnectionError(f"MCP server {self.server_id} 连接失败: {e}") from e
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """
@@ -559,7 +672,10 @@ class MCPManager:
             command = resolve_mcp_stdio_command(str(command).strip())
             ok_pf, pf_msg = preflight_mcp_stdio_command(command, server_id)
             if not ok_pf:
-                logger.error("[MCP] %s", pf_msg)
+                if server_id == "sqlite_manager" and "uvx" in (command or "").lower():
+                    logger.warning("[MCP] 跳过 sqlite_manager（无 uvx）：%s", pf_msg)
+                else:
+                    logger.error("[MCP] %s", pf_msg)
                 return
         except Exception as e:
             logger.warning("[MCP] 运行时解析/预检异常 server_id=%s err=%s，跳过该 Server", server_id, e)
@@ -718,10 +834,13 @@ class MCPManager:
                 continue
             id_to_cfg[sid] = rcfg
         if id_to_cfg:
-            await asyncio.gather(
-                *[self._connect_single_stdio_server(c) for c in id_to_cfg.values()],
-                return_exceptions=True,
-            )
+            # 串行连接：多路 npx @modelcontextprotocol/server-filesystem 并发时，Windows 上 npm 缓存/
+            # 子进程握手易竞态，表现为 initialize 阶段 Connection closed（见 inventory 与默认 workspace FS）。
+            for c in id_to_cfg.values():
+                try:
+                    await self._connect_single_stdio_server(c)
+                except Exception as e:
+                    logger.debug("[MCP] 单 Server 连接链异常（已忽略）server_id=%s err=%s", c.get("id"), e)
         if len(self._instances) > _instances_before:
             logger.info(
                 "[MCP] stdio Server 已连接，当前 instances=%d tools=%d",

@@ -97,7 +97,7 @@ im_channels:
 - [ ] `domain` 与飞书应用创建地一致（feishu.cn / larksuite.com）
 - [ ] `chat_ids` 为空或包含目标会话 ID
 - [ ] L2 已订阅 `com.jachin.hr.recruitment`，L3 已拉取到 `~/.jachin/l3_mcp_cache`
-- [ ] `DASHSCOPE_API_KEY` 或等效 LLM Key 已配置
+- [ ] DashScope / 等效 LLM Key 已配置（区域变量见 `docs/DASHSCOPE_REGIONAL_KEYS.md`）
 
 ## 相关文件
 
