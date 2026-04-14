@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -12,6 +13,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# zombie_tasks.json 追加与读取共用锁（同进程内并发；跨进程靠原子 replace）
+_zombie_tasks_file_lock = threading.Lock()
 
 _ENGINE: Any = None
 _queue: asyncio.Queue | None = None
@@ -29,6 +33,60 @@ def _task_dir() -> Path:
     d = _jachin_dir() / "workspace" / ".background_tasks"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _zombie_tasks_path() -> Path:
+    return _task_dir() / "zombie_tasks.json"
+
+
+def load_zombie_tasks_snapshot() -> list[dict[str, Any]]:
+    """读取 zombie_tasks.json 当前列表（与 check_interrupted_tasks 同源，供启动日志 / 广播）。"""
+    with _zombie_tasks_file_lock:
+        p = _zombie_tasks_path()
+        if not p.exists():
+            return []
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(data, list):
+            return []
+        return [x for x in data if isinstance(x, dict)]
+
+
+def _append_zombie_task_record(entry: dict[str, Any]) -> None:
+    """
+    将中断任务元数据追加到 zombie_tasks.json（列表）。
+    同 task_id 已存在则先移除再追加，避免重复堆积。
+    写盘：临时文件 + os.replace，降低断电时写坏主文件的概率。
+    """
+    tid = str(entry.get("task_id") or "").strip()
+    if not tid:
+        return
+    with _zombie_tasks_file_lock:
+        p = _zombie_tasks_path()
+        data: list[Any] = []
+        if p.exists():
+            try:
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(raw, list):
+                    data = raw
+            except Exception as e:
+                logger.warning("[BackgroundTasks] zombie_tasks.json 解析失败，将重建列表: %s", e)
+                data = []
+        data = [x for x in data if not (isinstance(x, dict) and str(x.get("task_id") or "").strip() == tid)]
+        data.append(entry)
+        tmp = p.with_name(p.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(str(tmp), str(p))
+        except Exception as e:
+            logger.warning("[BackgroundTasks] zombie_tasks.json 写入失败: %s", e)
+            try:
+                if tmp.is_file():
+                    tmp.unlink()
+            except Exception:
+                pass
 
 
 def _load_cfg() -> dict[str, Any]:
@@ -165,6 +223,7 @@ def reconcile_stale_background_tasks_on_startup() -> int:
     """
     进程重启后内存队列为空：磁盘上仍为 running/queued 的记录无法被 Worker 捡起。
     标记为 interrupted 并写回，避免「僵尸任务」永久卡住。
+    同时将任务摘要追加到 zombie_tasks.json，供 core:check_interrupted_tasks 晨会提示。
     """
     n = 0
     base_msg = (
@@ -172,7 +231,9 @@ def reconcile_stale_background_tasks_on_startup() -> int:
         "请用新的 intent 重新调用 core:submit_background_task。"
     )
     try:
-        for fp in _task_dir().glob("*.json"):
+        for fp in sorted(_task_dir().glob("*.json")):
+            if fp.name == "zombie_tasks.json":
+                continue
             try:
                 rec = json.loads(fp.read_text(encoding="utf-8"))
             except Exception:
@@ -187,6 +248,19 @@ def reconcile_stale_background_tasks_on_startup() -> int:
             rec["error"] = (f"{prev}；" if prev else "") + base_msg
             _merge_registry(rec)
             _persist_record(tid, rec)
+            try:
+                _append_zombie_task_record(
+                    {
+                        "task_id": tid,
+                        "task_prompt": str(rec.get("intent") or ""),
+                        "interrupted_at": float(rec["finished_at"]),
+                        "previous_status": str(st),
+                        "require_skills": list(rec.get("require_skills") or []),
+                        "max_iterations": rec.get("max_iterations"),
+                    }
+                )
+            except Exception as ze:
+                logger.debug("[BackgroundTasks] zombie 记录追加跳过: %s", ze)
             n += 1
     except Exception as e:
         logger.warning("[BackgroundTasks] 启动对账失败: %s", e)
@@ -380,6 +454,44 @@ async def start_background_task_runtime(engine: Any) -> None:
     reconcile_stale_background_tasks_on_startup()
     _recover_sqlite_pending_queue()
     _ensure_background_shutdown_hook()
+    zombies = load_zombie_tasks_snapshot()
+    if zombies:
+        parts: list[str] = []
+        for z in zombies[:8]:
+            tid = str(z.get("task_id") or "?")[:32]
+            tip = str(z.get("task_prompt") or "")[:100]
+            parts.append(f"{tid} → {tip!r}")
+        logger.warning(
+            "[BackgroundTasks] 断电/崩溃遗留未完成后台任务：共 %d 条（见 ~/.jachin/workspace/.background_tasks/zombie_tasks.json）。"
+            " 摘要：%s%s",
+            len(zombies),
+            " | ".join(parts),
+            " …" if len(zombies) > 8 else "",
+        )
+        logger.warning(
+            "[BackgroundTasks] 请在新会话中由助手调用 core:check_interrupted_tasks 向统帅确认是否用 core:submit_background_task 重投；"
+            "已连接且订阅 background_task 的客户端将收到 zombie_tasks_pending 事件。"
+        )
+        try:
+            from l3_node.l3_event_bus import broadcast_background_task_event
+
+            await broadcast_background_task_event(
+                {
+                    "type": "background_task",
+                    "event": "zombie_tasks_pending",
+                    "count": len(zombies),
+                    "tasks": [
+                        {
+                            "task_id": z.get("task_id"),
+                            "task_prompt": str(z.get("task_prompt") or "")[:800],
+                            "previous_status": z.get("previous_status"),
+                        }
+                        for z in zombies[:40]
+                    ],
+                }
+            )
+        except Exception as e:
+            logger.debug("[BackgroundTasks] zombie 启动事件广播跳过: %s", e)
     logger.info(
         "[BackgroundTasks] 已启动 workers=%d 队列容量=%d default_max_iterations=%s",
         n,
@@ -592,6 +704,72 @@ def check_background_task_status_sync(inp: str) -> str:
     return json.dumps({"status": "ok", "task": out}, ensure_ascii=False)
 
 
+def check_interrupted_tasks_sync(inp: str) -> str:
+    """
+    读取 ~/.jachin/workspace/.background_tasks/zombie_tasks.json（崩溃/断电时未跑完的后台任务摘要）。
+    Action Input：可选 JSON `{"consume": true}` — 成功读取后清空列表，表示已向统帅汇报过。
+    """
+    raw = (inp or "").strip()
+    consume = False
+    if raw.startswith("{"):
+        try:
+            o = json.loads(raw)
+            if isinstance(o, dict):
+                consume = bool(o.get("consume") or o.get("clear") or o.get("acknowledge"))
+        except json.JSONDecodeError:
+            pass
+    elif raw.lower() in ("1", "true", "yes", "consume", "clear"):
+        consume = True
+
+    with _zombie_tasks_file_lock:
+        p = _zombie_tasks_path()
+        if not p.exists():
+            return json.dumps(
+                {"ok": True, "tasks": [], "count": 0, "consumed": False},
+                ensure_ascii=False,
+            )
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"zombie_tasks.json 无法解析: {e}",
+                    "tasks": [],
+                    "count": 0,
+                },
+                ensure_ascii=False,
+            )
+        if not isinstance(data, list):
+            data = []
+        tasks = [x for x in data if isinstance(x, dict)]
+        if consume:
+            tmp = p.with_name(p.name + ".tmp")
+            try:
+                tmp.write_text(json.dumps([], ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(str(tmp), str(p))
+            except Exception as e:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": str(e),
+                        "tasks": tasks,
+                        "count": len(tasks),
+                        "consumed": False,
+                    },
+                    ensure_ascii=False,
+                )
+        return json.dumps(
+            {
+                "ok": True,
+                "tasks": tasks,
+                "count": len(tasks),
+                "consumed": bool(consume),
+            },
+            ensure_ascii=False,
+        )
+
+
 _shutdown_hook_registered = False
 
 
@@ -646,6 +824,20 @@ async def graceful_shutdown_background_tasks(*, timeout_sec: float = 4.0) -> Non
             nr["error"] = (f"{prev}；" if prev else "") + base_msg
             _merge_registry(nr)
             _persist_record(tid, nr)
+            try:
+                _append_zombie_task_record(
+                    {
+                        "task_id": tid,
+                        "task_prompt": str(nr.get("intent") or ""),
+                        "interrupted_at": float(nr["finished_at"]),
+                        "previous_status": "running",
+                        "require_skills": list(nr.get("require_skills") or []),
+                        "max_iterations": nr.get("max_iterations"),
+                        "reason": "graceful_shutdown",
+                    }
+                )
+            except Exception as ze:
+                logger.debug("[BackgroundTasks] 停机 zombie 记录追加跳过: %s", ze)
     except Exception as e:
         logger.warning("[BackgroundTasks] 停机标记 running 失败: %s", e)
 

@@ -127,6 +127,12 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "params": ["task_id"],
     },
     {
+        "id": "core:check_interrupted_tasks",
+        "label": "core:check_interrupted_tasks",
+        "desc": "读取断电/崩溃遗留的未完成后台任务摘要（zombie_tasks.json）。可选 JSON {\"consume\":true} 读后清空。新会话或用户问系统状态时应调用，便于询问是否用 core:submit_background_task 重投。",
+        "params": [],
+    },
+    {
         "id": "core:local_memory_search",
         "label": "core:local_memory_search",
         "desc": "L3 断网检索：本地 l3_local.json + 可选 MEMORY.md，关键词+时间衰减+MMR。JSON：query；可选 top_k、mmr_lambda、half_life_days、include_memory_md",
@@ -1125,6 +1131,10 @@ def run_tool(
         from l3_node.primitives.agent_tasks.background_task_service import check_background_task_status_sync
 
         return check_background_task_status_sync(inp)
+    if tool_id == "core:check_interrupted_tasks":
+        from l3_node.primitives.agent_tasks.background_task_service import check_interrupted_tasks_sync
+
+        return check_interrupted_tasks_sync(inp)
 
     if tool_id.startswith("util:") or tool_id.startswith("sys:"):
         util_params: dict[str, Any] = {}

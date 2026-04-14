@@ -1,4 +1,4 @@
-﻿"""
+"""
 MCP stdio 子进程用的嵌入式 Python / Node 路径解析与预检。
 
 目录约定（安装包或用户目录，版本见 manifest.example.json）::
@@ -10,12 +10,15 @@ MCP stdio 子进程用的嵌入式 Python / Node 路径解析与预检。
       node/node.exe          # Windows portable
       node/bin/node          # Unix
 
-优先顺序：环境变量 JACHIN_MCP_PYTHON / JACHIN_MCP_NODE →
+优先顺序：环境变量 JACHIN_MCP_PYTHON / JACHIN_MCP_NODE / JACHIN_MCP_NPX →
 便携包 JACHIN_APP_ROOT/runtime → ~/.jachin/runtime →
-frozen 下 exe 旁 runtime/ → 系统 PATH（python/python3/node）。
+frozen 下 exe 旁 runtime/ → 系统 PATH（python/python3/node/npx）。
 
-占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__、__JACHIN_WORKSPACE__
+占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__、__JACHIN_MCP_NPX__、__JACHIN_WORKSPACE__
 （后者展开为 ``~/.jachin/workspace`` 或 ``$JACHIN_HOME/workspace`` 的绝对路径，供 MCP 如 server-sqlite 的 ``--db-path``）
+
+**npx**：官方 MCP 常用 ``command: npx``；若已将 Node 便携包解压到 ``runtime/node/``（含 ``npx.cmd`` / ``npx``），
+则裸 ``npx`` / ``npm`` 会解析到该路径，无需系统安装 Node。见 ``tools/mcp-runtime/README.txt``。
 
 env 值中可使用 ``${VAR_NAME}``，在拉起子进程前从 **当前进程** ``os.environ`` 展开（便于密钥只放在 .env / 系统环境，不进 JSON）。
 """
@@ -33,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN_PYTHON = "__JACHIN_MCP_PYTHON__"
 TOKEN_NODE = "__JACHIN_MCP_NODE__"
+TOKEN_NPX = "__JACHIN_MCP_NPX__"
 TOKEN_WORKSPACE = "__JACHIN_WORKSPACE__"
 
 
@@ -110,6 +114,37 @@ def _embedded_node_candidates() -> list[Path]:
     return out
 
 
+def _embedded_npx_candidates() -> list[Path]:
+    """官方 Windows Node zip：node.exe 与 npx.cmd / npm.cmd 同目录。"""
+    out: list[Path] = []
+    for base in _runtime_base_dirs():
+        nd = base / "node"
+        out.extend(
+            [
+                nd / "npx.cmd",
+                nd / "npx.exe",
+                nd / "npx",
+                nd / "bin" / "npx",
+            ]
+        )
+    return out
+
+
+def _embedded_npm_candidates() -> list[Path]:
+    out: list[Path] = []
+    for base in _runtime_base_dirs():
+        nd = base / "node"
+        out.extend(
+            [
+                nd / "npm.cmd",
+                nd / "npm.exe",
+                nd / "npm",
+                nd / "bin" / "npm",
+            ]
+        )
+    return out
+
+
 def find_embedded_python() -> Optional[Path]:
     """返回嵌入式 python 可执行文件路径，不存在则 None。"""
     env_p = (os.environ.get("JACHIN_MCP_PYTHON") or "").strip()
@@ -131,6 +166,27 @@ def find_embedded_node() -> Optional[Path]:
     return _first_existing(_embedded_node_candidates())
 
 
+def find_embedded_npx() -> Optional[Path]:
+    """返回嵌入式 npx 可执行文件（Windows 多为 npx.cmd），不存在则 None。"""
+    env_p = (os.environ.get("JACHIN_MCP_NPX") or "").strip()
+    if env_p:
+        p = Path(env_p)
+        if p.is_file():
+            return p
+        logger.debug("[MCP Runtime] JACHIN_MCP_NPX 指向的文件不存在: %s", env_p)
+    return _first_existing(_embedded_npx_candidates())
+
+
+def find_embedded_npm() -> Optional[Path]:
+    env_p = (os.environ.get("JACHIN_MCP_NPM") or "").strip()
+    if env_p:
+        p = Path(env_p)
+        if p.is_file():
+            return p
+        logger.debug("[MCP Runtime] JACHIN_MCP_NPM 指向的文件不存在: %s", env_p)
+    return _first_existing(_embedded_npm_candidates())
+
+
 def get_effective_mcp_python_command() -> str:
     """占位符展开用：嵌入式优先，否则 python3 / python（供 PATH 解析）。"""
     emb = find_embedded_python()
@@ -149,6 +205,28 @@ def get_effective_mcp_node_command() -> str:
         return str(emb)
     w = shutil.which("node")
     return w or "node"
+
+
+def get_effective_mcp_npx_command() -> str:
+    emb = find_embedded_npx()
+    if emb:
+        return str(emb)
+    if sys.platform == "win32":
+        w = shutil.which("npx") or shutil.which("npx.cmd")
+        return w or "npx"
+    w = shutil.which("npx")
+    return w or "npx"
+
+
+def get_effective_mcp_npm_command() -> str:
+    emb = find_embedded_npm()
+    if emb:
+        return str(emb)
+    if sys.platform == "win32":
+        w = shutil.which("npm") or shutil.which("npm.cmd")
+        return w or "npm"
+    w = shutil.which("npm")
+    return w or "npm"
 
 
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -174,6 +252,8 @@ def inject_embedded_tokens(s: str) -> str:
         out = out.replace(TOKEN_PYTHON, get_effective_mcp_python_command())
     if TOKEN_NODE in out:
         out = out.replace(TOKEN_NODE, get_effective_mcp_node_command())
+    if TOKEN_NPX in out:
+        out = out.replace(TOKEN_NPX, get_effective_mcp_npx_command())
     if TOKEN_WORKSPACE in out:
         ws_path = _jachin_home() / "workspace"
         try:
@@ -185,23 +265,55 @@ def inject_embedded_tokens(s: str) -> str:
     return out
 
 
+def _bare_cmd_name(command: str) -> str:
+    """command 的文件名小写，用于识别裸 npx / npx.cmd。"""
+    s = (command or "").strip()
+    if not s:
+        return ""
+    try:
+        return Path(s).name.lower()
+    except OSError:
+        return s.lower()
+
+
+def _is_relative_stdio_command(cmd: str) -> bool:
+    """仅对裸命令名（无盘符/非绝对路径）做嵌入式替换，避免覆盖用户显式绝对路径。"""
+    s = (cmd or "").strip()
+    if not s:
+        return False
+    try:
+        p = Path(s)
+        return not p.is_absolute()
+    except OSError:
+        return True
+
+
 def resolve_mcp_stdio_command(command: str) -> str:
     """
     解析 stdio MCP 的 command：
-    1) 注入 __JACHIN_MCP_PYTHON__ / __JACHIN_MCP_NODE__
+    1) 注入 __JACHIN_MCP_PYTHON__ / __JACHIN_MCP_NODE__ / __JACHIN_MCP_NPX__
     2) 若 command 为裸 python/python3 且已部署嵌入式 Python，改用嵌入式路径
     3) 若 command 为裸 node 且已部署嵌入式 Node，改用嵌入式路径
+    4) 若 command 为裸 npx / npm（及 Windows 下 npx.cmd / npm.cmd）且 runtime/node 下存在对应文件，改用嵌入式路径
     """
     cmd = inject_embedded_tokens((command or "").strip())
     if not cmd:
         return cmd
     low = cmd.lower()
+    base = _bare_cmd_name(cmd)
     emb_py = find_embedded_python()
-    if emb_py and low in ("python", "python3"):
+    if emb_py and low in ("python", "python3") and _is_relative_stdio_command(cmd):
         return str(emb_py)
     emb_n = find_embedded_node()
-    if emb_n and low == "node":
+    if emb_n and low == "node" and _is_relative_stdio_command(cmd):
         return str(emb_n)
+    rel = _is_relative_stdio_command(cmd)
+    emb_npx = find_embedded_npx()
+    if emb_npx and rel and (base in ("npx", "npx.cmd", "npx.exe") or low == "npx"):
+        return str(emb_npx)
+    emb_npm = find_embedded_npm()
+    if emb_npm and rel and (base in ("npm", "npm.cmd", "npm.exe") or low == "npm"):
+        return str(emb_npm)
     return cmd
 
 
@@ -236,8 +348,9 @@ def preflight_mcp_stdio_command(command: str, server_id: str) -> tuple[bool, str
 
     hint = (
         f"[MCP Runtime] 无法在 PATH 中找到 {cmd!r}（server_id={server_id}）。"
-        "请安装系统 Python/Node，或将嵌入式运行时放入 ~/.jachin/runtime/（python、node 子目录），"
-        "或设置 JACHIN_MCP_PYTHON / JACHIN_MCP_NODE。"
+        "请安装系统 Python/Node/npx，或将嵌入式运行时放入 ~/.jachin/runtime/（python、node 子目录，"
+        "Node 便携包须含 node.exe 与 npx.cmd），"
+        "或设置 JACHIN_MCP_PYTHON / JACHIN_MCP_NODE / JACHIN_MCP_NPX。"
         " 详见 tools/mcp-runtime/README.txt"
     )
     return False, hint

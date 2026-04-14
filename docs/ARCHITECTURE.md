@@ -1,8 +1,10 @@
 # Jachin 云边协同数字发行操作系统 — 架构规范
 
-**版本**: V2 (2026-03)  
+**版本**: V2 (2026-04)  
 **状态**: 当前实现基准  
-**定位**: 一店一库、**四大原语**执行模型、三层云边、三大极简流程
+**定位**: 一店一库、**四大原语**执行模型、三层云边、三大极简流程  
+
+**现行实现一页索引**（MCP 守卫、stdio 噪声过滤、后台 zombie、桌面 WS）：[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)
 
 ---
 
@@ -83,7 +85,7 @@ L3 默认是 **单进程、单 `run_agent` ReAct 主循环**；在此主轴上�
 | L2 MCP / 任务 | `core/api/routes/v2_mcp.py` | **默认**仅委托（Redis Pull + HTTP 回退）；`GET /tools` 聚合 Redis；`JACHIN_L2_STDIO_MCP=1` 时合并本机 stdio（见 MCP_EXECUTION_MODEL） |
 | L3 同步 | `clients/desktop/src-tauri/src/commands/skill_sync.rs`、`l3_node/mcp_sync.py` | 从 L2 拉取技能与 MCP |
 | L3 Agent | `l3_node/agent_core.py` | ReAct、工具调用；前台同步超时、工具后预取、规划门禁见 [前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md) |
-| L3 后台任务 | `l3_node/background_task_service.py`、`l3_node/l3_event_bus.py` | `core:submit_background_task` / `check`、队列 Worker、WebSocket `subscribe_background_tasks` |
+| L3 后台任务 | `l3_node/primitives/agent_tasks/background_task_service.py`、`l3_node/l3_event_bus.py` | `core:submit_background_task` / `check` / **`check_interrupted_tasks`**、队列 Worker、`zombie_tasks.json`、WebSocket `subscribe_background_tasks`（含 `zombie_tasks_pending`）；详见 [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md) §5 |
 | 跨会话规划文件 | `l3_node/task_planning.py` | `~/.jachin/workspace/task_plan.md`、`progress.md`、`findings.md`；Prompt 注入「继续执行计划」 |
 | HR 招聘（DAG + 物理进度） | `l3_node/primitives/skills/hr_recruitment_dag.py` + `skills_repo/plugin/com.jachin.hr.recruitment/` | `hr_plan_init` → `harvest_loop` → 可选分析；`STOP_HARVEST`；`~/.jachin/workspace/hr_recruitment/` 下宏图与战况 — 详见 [HR_RECRUITMENT.md](HR_RECRUITMENT.md) |
 | 智能化与编排 | `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`、`docs/ORCHESTRATION_ARCHITECTURE.md` | OpenClaw 对比、记忆/梦境/规划、**三层编排（L1 路由 / L2 领域子图 / L3 YAML glue）** |

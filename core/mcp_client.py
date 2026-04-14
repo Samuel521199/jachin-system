@@ -1,9 +1,13 @@
-﻿"""
+"""
 Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
 
 连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
 使用官方 mcp Python SDK，全异步实现。
 本地 RPA 已迁至 L3 伴生 MCP，L2 仅代理外部 MCP Server。
+
+stdio 噪声过滤（npx/dotenv 等非 JSON 行）在 import 本模块前由 ``core.mcp_stdio_noise_filter`` 安装；
+MCP 路径预检（filesystem 根目录、git 仓库）见 ``core/inventory_scanner.py``，架构索引见
+``docs/architecture/CURRENT_SYSTEM_ARCHITECTURE.md`` §4。
 """
 from __future__ import annotations
 
@@ -18,6 +22,12 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Optional
 
+from core.mcp_stdio_noise_filter import apply_stdio_stdout_noise_filter
+
+# 须在首次 stdio 连接前安装：过滤子进程 stdout 中非 JSON-RPC 的噪声行（见 mcp_stdio_noise_filter 模块说明）
+apply_stdio_stdout_noise_filter()
+
+import mcp.types as mcp_types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -105,6 +115,68 @@ def normalize_mcp_schema_aliases(tool_name: str, arguments: dict[str, Any] | Non
     return out
 
 
+# 与仓库 plugin.json / mcp_json_repair 对齐；无版本号的 npx 会拉到最新，常与 Python mcp 1.26+ 在 tools/list 上不兼容
+_SERVER_FILESYSTEM_NPM_PIN = "@modelcontextprotocol/server-filesystem@0.6.3"
+
+
+def _is_npx_server_filesystem_args(args: list[Any]) -> bool:
+    return any(isinstance(a, str) and "@modelcontextprotocol/server-filesystem" in a for a in args)
+
+
+def _pin_server_filesystem_npm_version(args: list[Any]) -> list[Any]:
+    """
+    将 ``@modelcontextprotocol/server-filesystem``（无 npm 版本段）固定为 @0.6.3。
+    作用域包名本身只含一个 ``@``；带版本时为 ``...server-filesystem@x.y.z``（至少两个 ``@``）。
+    """
+    out: list[Any] = []
+    changed = False
+    for a in args:
+        if not isinstance(a, str):
+            out.append(a)
+            continue
+        s = a.strip()
+        if "@modelcontextprotocol/server-filesystem" in s and s.count("@") == 1:
+            out.append(_SERVER_FILESYSTEM_NPM_PIN)
+            changed = True
+            continue
+        out.append(a)
+    if changed:
+        logger.info(
+            "[MCP] 已将 npx 参数固定为 %s（避免拉到与 MCP SDK 不兼容的最新 server-filesystem）",
+            _SERVER_FILESYSTEM_NPM_PIN,
+        )
+    return out
+
+
+def _collapse_redundant_server_filesystem_roots(args: list[Any]) -> list[Any]:
+    """
+    若同时传入「项目根」与「其下的 data/hr_resumes」，只保留项目根（子路径仍可在工具内访问）。
+    多根目录在部分 Node 版上易触发异常退出。
+    """
+    try:
+        pkg_idx = next(
+            i
+            for i, a in enumerate(args)
+            if isinstance(a, str) and "server-filesystem" in a
+        )
+    except StopIteration:
+        return args
+    tail = [args[i] for i in range(pkg_idx + 1, len(args)) if isinstance(args[i], str) and not str(args[i]).startswith("-")]
+    if len(tail) != 2:
+        return args
+    try:
+        root = Path(tail[0]).expanduser().resolve()
+        sub = Path(tail[1]).expanduser().resolve()
+        sub.relative_to(root)
+    except (ValueError, OSError):
+        return args
+    logger.info(
+        "[MCP] server-filesystem 省略冗余子目录参数，仅保留根: %s",
+        root,
+    )
+    return list(args[: pkg_idx + 1]) + [str(root)]
+
+
 def stdio_official_filesystem_workspace_cwd(args: Any) -> Optional[str]:
     """
     ``@modelcontextprotocol/server-filesystem`` 将相对 ``path``（如 list_directory 的 ``.``）
@@ -187,8 +259,17 @@ def _stdio_args_reference_missing_py_file(args: Any) -> Optional[str]:
 def _resolve_stdio_command(command: str) -> str:
     """
     Windows 下 npx/npm 常为 .cmd，部分环境下需绝对路径才能稳定拉起 stdio 子进程。
+    已由 ``resolve_mcp_stdio_command`` 解析为嵌入式路径时，此处若已是存在的 .exe/.cmd 则原样返回。
     """
-    if not command or sys.platform != "win32":
+    if not command:
+        return command
+    try:
+        p = Path(command)
+        if p.is_file():
+            return str(p.resolve())
+    except OSError:
+        pass
+    if sys.platform != "win32":
         return command
     low = command.lower()
     if low not in ("npx", "npm", "node"):
@@ -243,6 +324,9 @@ class MCPServerInstance:
         通过 stdio 启动并连接底层 MCP 进程。
         使用 AsyncExitStack 管理资源生命周期。
         """
+        self.args = _collapse_redundant_server_filesystem_roots(
+            _pin_server_filesystem_npm_version(list(self.args))
+        )
         logger.info("[MCP] 正在拉起 Server server_id=%s command=%s args=%s", self.server_id, self.command, self.args)
         try:
             from core.mcp_embedded_runtime import (
@@ -257,6 +341,13 @@ class MCPServerInstance:
 
             eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
             eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
+            # server-filesystem 与 @modelcontextprotocol/sdk 1.26+ 需与 Python mcp 默认协议一致；
+            # 勿强行降级 protocolVersion（曾导致 initialize 阶段即 Connection closed）。
+            # 若全局安装了 dotenvx 等 npx 包装，可向 stdout 注入非 JSON 行；合并 CI 以降低啰嗦输出（与 mcp_stdio_noise_filter 互补）。
+            if _is_npx_server_filesystem_args(self.args):
+                merged = dict(eff_env) if isinstance(eff_env, dict) else {}
+                merged.setdefault("CI", "true")
+                eff_env = merged
             tavily_cwd: str | None = None
             if is_tavily_stdio_server(self.server_id, self.args):
                 tavily_cwd = resolve_tavily_stdio_cwd()
@@ -304,7 +395,9 @@ class MCPServerInstance:
         if not self._session:
             raise MCPConnectionError(f"Server {self.server_id} 未连接")
         try:
-            response = await self._session.list_tools()
+            # 显式传空分页参数，避免 mcp SDK 序列化时省略 params 导致部分 Node 版
+            # @modelcontextprotocol/server-filesystem 在 tools/list 阶段异常退出（Connection closed）。
+            response = await self._session.list_tools(params=mcp_types.PaginatedRequestParams())
             tools = []
             self._tool_names = []
             for t in response.tools:
@@ -471,7 +564,7 @@ class MCPManager:
             return
         args_list = args if isinstance(args, list) else []
         try:
-            from core.inventory_scanner import _prune_mcp_filesystem_roots
+            from core.inventory_scanner import _prune_mcp_filesystem_roots, _prune_mcp_git_repository_args
 
             pruned = _prune_mcp_filesystem_roots(list(args_list))
             if pruned is None:
@@ -480,7 +573,15 @@ class MCPManager:
                     server_id,
                 )
                 return
-            args_list = pruned
+            gpr = _prune_mcp_git_repository_args(pruned)
+            if gpr is None:
+                logger.warning(
+                    "[MCP] 跳过 server_id=%s：mcp_server_git 的 --repository 不是有效 Git 工作区"
+                    "（该路径下需存在 .git；或把仓库改为已 git init / git clone 的目录，例如项目根）",
+                    server_id,
+                )
+                return
+            args_list = gpr
         except Exception:
             pass
         miss_py = _stdio_args_reference_missing_py_file(args_list)
@@ -811,7 +912,7 @@ class MCPManager:
             return False
         args_list = args if isinstance(args, list) else []
         try:
-            from core.inventory_scanner import _prune_mcp_filesystem_roots
+            from core.inventory_scanner import _prune_mcp_filesystem_roots, _prune_mcp_git_repository_args
 
             pruned = _prune_mcp_filesystem_roots(list(args_list))
             if pruned is None:
@@ -820,7 +921,14 @@ class MCPManager:
                     server_id,
                 )
                 return False
-            args_list = pruned
+            gpr = _prune_mcp_git_repository_args(pruned)
+            if gpr is None:
+                logger.warning(
+                    "[MCP] add_server 跳过 server_id=%s：mcp_server_git 的 --repository 不是有效 Git 工作区",
+                    server_id,
+                )
+                return False
+            args_list = gpr
         except Exception:
             pass
         miss_py = _stdio_args_reference_missing_py_file(args_list)

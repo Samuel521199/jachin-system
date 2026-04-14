@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 开发用：将 users.password_hash 设为与注册 API 相同的 bcrypt（cost 12）。
  * 须在 .env.local 中设置 NEXUS_ALLOW_CLI_PASSWORD_RESET=1（或 true），防止误在生产执行。
  *
@@ -30,6 +30,8 @@ if (!url) {
   console.error("缺少 DATABASE_URL，请在 cloud/nexus 下执行且存在 .env.local");
   process.exit(1);
 }
+/** 顶层已校验；单独 const 供嵌套函数内使用，避免 TS 不把收窄传播进 main() */
+const databaseUrl: string = url;
 if (!emailArg || !plain) {
   console.error("用法: npx tsx scripts/set-user-password.ts <邮箱> <新密码>");
   process.exit(1);
@@ -40,7 +42,7 @@ if (plain.length < 8) {
 }
 
 async function main() {
-  const sql = postgres(url, { max: 1, connect_timeout: 15 });
+  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 15 });
   try {
     const rows = await sql`
       SELECT id, email FROM users WHERE lower(trim(email)) = ${emailArg} LIMIT 1

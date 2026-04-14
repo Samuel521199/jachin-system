@@ -2,5 +2,5 @@
   "schema_version": 1,
   "python_bundle": "3.12.7+embed",
   "node_bundle": "20.18.0+portable",
-  "notes": "Optional manifest under JACHIN_HOME/runtime/manifest.json for installers to record bundled versions. L3 does not require this file for path resolution."
+  "notes": "Optional manifest under JACHIN_HOME/runtime/manifest.json for installers. Node portable zip must include node.exe + npx.cmd (+ npm.cmd) under runtime/node/. L3 resolves bare command=npx via core/mcp_embedded_runtime.py — see docs/L3_EMBEDDED_RUNTIME.md."
 }

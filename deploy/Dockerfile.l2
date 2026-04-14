@@ -2,11 +2,24 @@
 # Jachin Nexus V2 - L2 无状态节点镜像
 # 从项目根构建：docker build --platform linux/amd64 -f deploy/Dockerfile.l2 -t jachin-l2:latest .
 # 国内直连 docker.io 超时：docker build --build-arg PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim ...
+# apt 访问 deb.debian.org 超时：默认换国内 Debian 镜像（见 DEBIAN_MIRROR）；海外可 --build-arg DEBIAN_MIRROR=deb.debian.org
 # 重试构建：未改动的指令会用层缓存；pip 用下方 cache mount 可保留已下载 wheel，不必每次重新下几 GB。
 ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
 FROM ${PYTHON_IMAGE}
 
 WORKDIR /app
+
+# Debian slim 内 apt 默认指向 deb.debian.org，国内构建常中途超时；构建前替换为镜像站（deb822 + 传统 sources 均尝试）
+ARG DEBIAN_MIRROR=mirrors.aliyun.com
+RUN set -eux; \
+    find /etc/apt -type f \( -name '*.sources' -o -name 'sources.list' -o -name '*.list' \) | while read -r f; do \
+      sed -i \
+        -e "s|http://deb.debian.org/debian|http://${DEBIAN_MIRROR}/debian|g" \
+        -e "s|https://deb.debian.org/debian|https://${DEBIAN_MIRROR}/debian|g" \
+        -e "s|http://security.debian.org/debian-security|http://${DEBIAN_MIRROR}/debian-security|g" \
+        -e "s|https://security.debian.org/debian-security|https://${DEBIAN_MIRROR}/debian-security|g" \
+        "$f"; \
+    done
 
 # build-essential：PyAudio 等源码编译需要 stdlib.h（libc6-dev）；portaudio19-dev：portaudio.h
 RUN apt-get update && apt-get install -y --no-install-recommends \

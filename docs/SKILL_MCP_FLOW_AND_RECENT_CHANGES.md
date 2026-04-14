@@ -1,8 +1,10 @@
 # Skill / MCP 流转与近期变更文档
 
-**版本**: V2 (2026-03)  
+**版本**: V2 (2026-04)  
 **状态**: 当前实现基准  
-**定位**: 三层架构中 Skill 与 MCP 的完整流转、云端上传流程、近期代码变更说明
+**定位**: 三层架构中 Skill 与 MCP 的完整流转、云端上传流程、近期代码变更说明  
+
+**架构总览（索引）**：[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)
 
 **术语 SSOT**：文中 **Skill 商品 / Wasm / MCP** 与 **Tools / Skills / MCP / Agent Tasks** 四者的严格定义与边界见 **[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)**（商城 Skill 含 Wasm 时：执行体属 **Tools(jpp)**，SKILL 正文属 **Skills**）。
 

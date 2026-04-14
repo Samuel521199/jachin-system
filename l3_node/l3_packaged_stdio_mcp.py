@@ -7,7 +7,7 @@ L3_LOCAL MCP 制品中的 **stdio 声明式** 包：仅 ``plugin.json`` + ``stdi
 - ``__JACHIN_HOME__`` → ``~/.jachin``（尊重 ``JACHIN_HOME`` 环境变量）
 - ``__JACHIN_WORKSPACE__`` → ``~/.jachin/workspace``（不存在则创建）
 - ``__MCP_PACKAGE_ROOT__`` → 当前 MCP 制品解压目录（``plugin.json`` 所在目录，用于 ``python .../server.py``）
-- ``__JACHIN_MCP_PYTHON__`` / ``__JACHIN_MCP_NODE__`` → 见 ``core.mcp_embedded_runtime``
+- ``__JACHIN_MCP_PYTHON__`` / ``__JACHIN_MCP_NODE__`` / ``__JACHIN_MCP_NPX__`` → 见 ``core.mcp_embedded_runtime``（裸 ``npx``/``npm`` 亦解析到 ``runtime/node/``）
 
 见 docs/SKILL_MCP_UPLOAD_SPEC.md §2.x。
 """

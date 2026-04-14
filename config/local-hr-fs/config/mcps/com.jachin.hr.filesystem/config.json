@@ -2,7 +2,7 @@
   "mcpServers": {
     "local-hr-fs": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "__PROJECT_ROOT__"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@0.6.3", "__PROJECT_ROOT__"]
     }
   }
 }

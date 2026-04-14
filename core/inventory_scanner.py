@@ -74,8 +74,21 @@ SKILLS_DIR = INVENTORY_ROOT / "skills"
 MCPS_DIR = INVENTORY_ROOT / "mcps"
 L3_MCPS_DIR = INVENTORY_ROOT / "l3_mcps"  # L3_LOCAL MCP，供 L3 mcp_sync 拉取后动态加载
 
-# 项目根目录（用于 MCP config 中 __PROJECT_ROOT__ 占位符替换）
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# 开发态仓库根（兜底）；PyInstaller 下 __file__ 在 _MEIPASS，不可用。
+_DEV_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _mcp_placeholder_project_root() -> Path:
+    """
+    侧载 MCP 里 ``__PROJECT_ROOT__`` 应指向「便携包 / 安装目录」或 JACHIN_APP_ROOT，
+    不能是 frozen 时的 _MEIPASS（否则 server-filesystem 根落在临时目录，子进程易异常退出）。
+    """
+    try:
+        from l3_node.paths import get_app_root
+
+        return get_app_root()
+    except Exception:
+        return _DEV_REPO_ROOT
 
 # 本地 Wasm 技能缓存：skill_id -> {id, name, description, permissions, wasm_path, ...}
 registered_local_skills: dict[str, dict[str, Any]] = {}
@@ -111,6 +124,38 @@ def _prune_mcp_filesystem_roots(resolved: list[Any]) -> list[Any] | None:
     if not good:
         return None
     return head + good
+
+
+def _prune_mcp_git_repository_args(args: list[Any]) -> list[Any] | None:
+    """
+    ``python -m mcp_server_git --repository <path>`` 要求 path 为有效 Git 工作区；
+    否则子进程打 ERROR 后立即退出，Python 侧表现为 initialize 时 Connection closed。
+    返回 None 表示应跳过该 MCP；否则返回原 args 列表。
+    """
+    if not isinstance(args, list):
+        return None
+    has_git_mod = any(isinstance(a, str) and "mcp_server_git" in a for a in args)
+    if not has_git_mod:
+        return list(args)
+    repo_path: str | None = None
+    for i, a in enumerate(args):
+        if a == "--repository" and i + 1 < len(args) and isinstance(args[i + 1], str):
+            repo_path = args[i + 1]
+            break
+    if not repo_path:
+        return list(args)
+    root = Path(repo_path)
+    try:
+        is_repo = root.is_dir() and (root / ".git").exists()
+    except OSError:
+        is_repo = False
+    if is_repo:
+        return list(args)
+    logger.warning(
+        "[Inventory] mcp_server_git 跳过无效仓库路径（目录下无 .git，避免 Connection closed）：%s",
+        repo_path,
+    )
+    return None
 
 
 def ensure_inventory_dirs() -> None:
@@ -153,7 +198,8 @@ def _extract_mcp_configs(data: dict[str, Any]) -> list[dict[str, Any]]:
                         for a in args:
                             if isinstance(a, str) and "__PROJECT_ROOT__" in a:
                                 sub = a.replace("__PROJECT_ROOT__/", "").replace("__PROJECT_ROOT__", "").lstrip("/")
-                                resolved.append(str(_PROJECT_ROOT / sub) if sub else str(_PROJECT_ROOT))
+                                root = _mcp_placeholder_project_root()
+                                resolved.append(str(root / sub) if sub else str(root))
                             else:
                                 resolved.append(a)
                         pruned = _prune_mcp_filesystem_roots(resolved)
@@ -163,7 +209,14 @@ def _extract_mcp_configs(data: dict[str, Any]) -> list[dict[str, Any]]:
                                 sid,
                             )
                             continue
-                        cfg["args"] = pruned
+                        gpr = _prune_mcp_git_repository_args(pruned)
+                        if gpr is None:
+                            logger.warning(
+                                "[Inventory] 跳过 MCP server_id=%s：mcp_server_git 无有效 Git 工作区",
+                                sid,
+                            )
+                            continue
+                        cfg["args"] = gpr
                     configs.append(cfg)
     elif data.get("command"):
         configs = [data]

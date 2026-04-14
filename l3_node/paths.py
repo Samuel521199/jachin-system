@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 路径解析：支持 PyInstaller 打包与开发模式
 
 PyInstaller 时 __file__ 指向 _MEIPASS 临时目录，skills_repo 不在其中。
@@ -33,9 +33,11 @@ def get_app_root() -> Path:
 
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
+        # 侧车在 bin/ 时应用根为上一级（含 .env、config、workspace 占位），勿把 bin 当根
+        if exe_dir.name.lower() == "bin" and exe_dir.parent.is_dir():
+            return exe_dir.parent
         parent = exe_dir.parent
         cwd = Path.cwd()
-        # 便携包：exe 在 bin/，父级为 dist 根
         for cand in (exe_dir, parent, cwd, cwd.parent):
             if cand.exists():
                 return cand

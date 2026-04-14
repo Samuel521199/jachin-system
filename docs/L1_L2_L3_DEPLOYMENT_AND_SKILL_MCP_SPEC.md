@@ -115,7 +115,7 @@ L1 (manifest)  →  L2 (CloudSyncDaemon)  →  ~/.jachin/inventory/
 |------|------|
 | **默认运行位置** | **L3 所在用户机**（`l3_node/mcp_stdio_bootstrap.py` 内嵌 `MCPManager`，读 `~/.jachin/mcp_servers.json` 与 `inventory/mcps/`） |
 | 配置落盘 | L2 仍同步 `inventory/mcps/`（及用户 `mcp_servers.json`），与旧侧载布局一致，便于 L3 与本机命令行环境对齐 |
-| 依赖 | 执行 **stdio 子进程** 的机器需具备对应 Python/Node 等（通常是 **L3 笔记本/边缘机**，而非 L2 服务器） |
+| 依赖 | 执行 **stdio 子进程** 的机器需具备对应 Python/Node/**npx**（通常是 **L3 笔记本/边缘机**）。**无系统 Node 时**：将官方 Node 便携包解压到 `~/.jachin/runtime/node/`（须含 `npx.cmd`），或由安装器/Sidecar 随包附带；详见 **[L3_EMBEDDED_RUNTIME.md](./L3_EMBEDDED_RUNTIME.md)**、`core/mcp_embedded_runtime.py`。 |
 | **回滚** | 环境变量 **`JACHIN_L2_STDIO_MCP=1`** 时，L2 进程再次侧载 stdio（兼容旧部署/排障） |
 
 **结论**：清单类型仍可为 L2_GATEWAY，但**长期默认**不在 L2 宿主机上起 MCP 子进程；L3 本机执行，缺能力时 `POST /api/v2/mcp/invoke` 走 L2 **TaskManager**。**跨 L3**：Pull + 带 Task Token 的 HTTP 降级；见 `docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md` v0.4、`docs/MCP_EXECUTION_MODEL.md` v2.2。

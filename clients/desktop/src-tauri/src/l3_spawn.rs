@@ -262,6 +262,12 @@ pub fn l3_sidecar_portable_exe_name() -> String {
     }
 }
 
+/// 主程序旁便携侧车绝对路径（随安装/解压位置变化，**不**含编译机固定盘符）
+pub fn portable_l3_sidecar_exe_path() -> Option<PathBuf> {
+    let dir = exe_dir()?;
+    Some(dir.join("bin").join(l3_sidecar_portable_exe_name()))
+}
+
 /// 直接通过 exe 路径启动（绕过 Tauri Sidecar 路径解析，解决 bundle.active:false 时 Tauri 找不到 bin 的问题）
 pub fn spawn_l3_via_direct_exe(
     app: &impl tauri::Manager<tauri::Wry>,
@@ -381,6 +387,21 @@ pub fn spawn_l3_node(app: &impl tauri::Manager<tauri::Wry>) -> Result<tauri_plug
         root.clone()
     };
     let env_vars = load_l3_env_vars(&env_root);
+
+    // 便携包：侧车与主程序同目录树 `主程序.exe` + `bin/l3_node-<triple>.exe`。
+    // 路径始终由 current_exe 推导（解压到任意盘符均可），但 tauri `sidecar()` 在部分环境下会错误解析导致 os error 2；
+    // 若文件已存在则直接按绝对路径启动，避免先失败再回退的噪音与偶发问题。
+    if let Some(ref p) = portable_l3_sidecar_exe_path() {
+        if p.is_file() {
+            write_l3_debug(&format!(
+                "[L3] 使用便携侧车（相对主程序目录）: {}",
+                p.display()
+            ));
+            let child = spawn_l3_via_direct_exe(app, args, env_url.as_deref(), &env_vars, None)?;
+            write_l3_debug(&format!("L3 引擎已启动 ws://127.0.0.1:18981 (mode={})", mode));
+            return Ok(child);
+        }
+    }
 
     let child = match app.shell().sidecar(l3_sidecar_external_bin_path()) {
         Ok(sidecar) => {

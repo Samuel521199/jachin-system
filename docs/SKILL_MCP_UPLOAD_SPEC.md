@@ -55,7 +55,8 @@
 
 可选：`"mcp_execution_mode": "stdio_server"`（显式标注；有 `stdio_server` 块时可省略）。
 
-**占位符**（`args` / `env` 字符串）：`__PROJECT_ROOT__`、`__JACHIN_HOME__`、`__JACHIN_WORKSPACE__`（工作区目录不存在会自动创建）。与 `server-filesystem` 组合时，无效根路径会被跳过（与 `inventory` 侧载逻辑一致）。
+**占位符**（`args` / `env` 字符串）：`__PROJECT_ROOT__`、`__JACHIN_HOME__`、`__JACHIN_WORKSPACE__`（工作区目录不存在会自动创建）。与 `server-filesystem` 组合时，无效根路径会被跳过（与 `inventory` 侧载逻辑一致）。  
+另支持 **`__JACHIN_MCP_NPX__`**：解析为嵌入式 `runtime/node/npx.cmd` 或 PATH 中的 `npx`（与裸 `command: npx` 等价，见 `docs/L3_EMBEDDED_RUNTIME.md`）。
 
 完整示例见 `docs/examples/l3_local_stdio_mcp.plugin.json`。
 

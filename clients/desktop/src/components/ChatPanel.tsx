@@ -50,6 +50,8 @@ export default function ChatPanel() {
     memoryCompactSuggest,
     sendMemoryCompactControl,
     dismissMemoryCompactSuggest,
+    zombieTasksPending,
+    dismissZombieTasksPending,
   } = sensory;
   const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
 
@@ -66,10 +68,13 @@ export default function ChatPanel() {
 
   useEffect(() => {
     registerBackgroundTaskHandler((ev) => {
+      if (ev.event === "zombie_tasks_pending") {
+        return;
+      }
       if (ev.event !== "completed" && ev.event !== "failed" && ev.event !== "cancelled") {
         return;
       }
-      const taskId = ev.task_id;
+      const taskId = ev.task_id ?? "";
       let text = "";
       if (ev.event === "completed") {
         const preview = (ev.result_preview || "").trim();
@@ -735,6 +740,41 @@ export default function ChatPanel() {
 
       {/* 输入区域 */}
       <div className="border-t border-purple-500/20 p-4">
+        {zombieTasksPending && zombieTasksPending.count > 0 && (
+          <div className="mb-3 rounded-lg border border-rose-500/45 bg-rose-950/90 px-3 py-2 text-xs text-rose-100">
+            <p className="mb-1 flex flex-wrap items-center gap-2 font-medium text-rose-50">
+              <span className="inline-flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[11px] font-bold text-rose-950">
+                {zombieTasksPending.count}
+              </span>
+              上次断电或崩溃未闭环的后台任务
+            </p>
+            <ul className="mb-2 max-h-24 overflow-y-auto text-[11px] text-rose-100/85">
+              {zombieTasksPending.tasks.slice(0, 5).map((t, i) => (
+                <li key={`${t.task_id ?? "z"}-${i}`} className="truncate py-0.5 font-mono">
+                  {t.task_id ?? "?"}
+                  {(t.task_prompt ?? "").trim() ? ` — ${(t.task_prompt ?? "").slice(0, 80)}` : ""}
+                </li>
+              ))}
+            </ul>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded bg-rose-500/90 px-2 py-0.5 text-[11px] text-rose-950"
+                onClick={() => {
+                  setInput(
+                    "请调用 core:check_interrupted_tasks，列出上次断电遗留的后台任务摘要，并问我是否需要用 core:submit_background_task 重新排队执行。",
+                  );
+                  dismissZombieTasksPending();
+                }}
+              >
+                填入追问指令
+              </button>
+              <button type="button" className="text-[11px] text-rose-200/80" onClick={() => dismissZombieTasksPending()}>
+                知道了
+              </button>
+            </div>
+          </div>
+        )}
         {memoryCompactSuggest && (
           <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-950/90 px-3 py-2 text-xs text-amber-100">
             <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>

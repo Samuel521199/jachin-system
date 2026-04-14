@@ -1,10 +1,10 @@
-﻿import NextAuth from "next-auth";
+import NextAuth from "next-auth";
 import type { NextAuthConfig } from "next-auth";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import Credentials from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import bcrypt from "bcryptjs";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { authConfig } from "@/auth.config";
 import { getDb } from "@/db";
 import { accounts, sessions, users, verificationTokens } from "@/db/schema";

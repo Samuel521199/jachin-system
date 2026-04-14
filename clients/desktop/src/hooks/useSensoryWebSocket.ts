@@ -68,16 +68,33 @@ export interface SwarmEvent {
   tool?: string;
 }
 
+/** 断电/崩溃遗留的后台任务摘要（L3 启动时广播；无 task_id） */
+export interface ZombieTaskSummary {
+  task_id?: string;
+  task_prompt?: string;
+  previous_status?: string;
+}
+
 /** L3 `l3_event_bus` 推送的后台任务事件（须先 `subscribe_background_tasks`） */
 export interface BackgroundTaskEventPayload {
   type: "background_task";
-  event: "queued" | "started" | "completed" | "failed" | "cancelled";
-  task_id: string;
+  event: "queued" | "started" | "completed" | "failed" | "cancelled" | "zombie_tasks_pending";
+  /** 生命周期事件必填；`zombie_tasks_pending` 无此项 */
+  task_id?: string;
   ts?: number;
   result_preview?: string;
   message?: string;
   intent_preview?: string;
   queue_hint?: string;
+  /** 仅 `event === "zombie_tasks_pending"` */
+  count?: number;
+  tasks?: ZombieTaskSummary[];
+}
+
+/** 桌面横幅：断电遗留任务提醒（由 hook 内 state 驱动） */
+export interface ZombieTasksPendingBanner {
+  count: number;
+  tasks: ZombieTaskSummary[];
 }
 
 /** 随 answer 回调：用于区分「仅有流式拼气泡」与「无 chunk 时由 step 注入 ### 回复」；runId 对齐 L3 WS 防超时后陈旧 answer 污染新气泡 */
@@ -147,6 +164,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [swarmEvent, setSwarmEvent] = useState<SwarmEvent | null>(null);
   /** 记忆整理周期到期：横幅 + 倒计时，结束发 memory_compact_auto_start */
   const [memoryCompactSuggest, setMemoryCompactSuggest] = useState<MemoryCompactSuggestState | null>(null);
+  /** L3 启动时推送：上次未闭环的后台任务（zombie_tasks.json） */
+  const [zombieTasksPending, setZombieTasksPending] = useState<ZombieTasksPendingBanner | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChunkRef = useRef<((chunk: string, runId: string, meta?: SensoryChunkMeta) => void) | null>(
@@ -196,6 +215,10 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
 
   const dismissMemoryCompactSuggest = useCallback(() => {
     setMemoryCompactSuggest(null);
+  }, []);
+
+  const dismissZombieTasksPending = useCallback(() => {
+    setZombieTasksPending(null);
   }, []);
 
   const sendMemoryCompactControl = useCallback(
@@ -264,6 +287,29 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
            * 仅做最小别名：action_type / type → step_type；忽略 manifest_ack 等控制帧（不污染 lastPayload）。
            */
           const raw = JSON.parse(event.data) as Record<string, unknown>;
+          // 断电遗留：无 task_id，须先于下方生命周期分支处理
+          if (raw.type === "background_task" && raw.event === "zombie_tasks_pending") {
+            const count = typeof raw.count === "number" ? raw.count : 0;
+            const taskArr = Array.isArray(raw.tasks) ? raw.tasks : [];
+            const tasks: ZombieTaskSummary[] = taskArr
+              .filter((t): t is Record<string, unknown> => t != null && typeof t === "object")
+              .map((t) => ({
+                task_id: typeof t.task_id === "string" ? t.task_id : undefined,
+                task_prompt: typeof t.task_prompt === "string" ? t.task_prompt : undefined,
+                previous_status: typeof t.previous_status === "string" ? t.previous_status : undefined,
+              }));
+            if (count > 0 || tasks.length > 0) {
+              setZombieTasksPending({ count: count || tasks.length, tasks });
+            }
+            const ev: BackgroundTaskEventPayload = {
+              type: "background_task",
+              event: "zombie_tasks_pending",
+              count: count || tasks.length,
+              tasks,
+            };
+            onBackgroundTaskRef.current?.(ev);
+            return;
+          }
           if (raw.type === "background_task" && typeof raw.event === "string" && typeof raw.task_id === "string") {
             const ev: BackgroundTaskEventPayload = {
               type: "background_task",
@@ -531,6 +577,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     setStreamingContent("");
     setCurrentRunId(null);
     setMemoryCompactSuggest(null);
+    setZombieTasksPending(null);
   }, []);
 
   const sendHitlResponse = useCallback((approved: boolean, taskId?: string) => {
@@ -692,5 +739,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     memoryCompactSuggest,
     dismissMemoryCompactSuggest,
     sendMemoryCompactControl,
+    /** 断电遗留后台任务横幅（L3 zombie_tasks_pending） */
+    zombieTasksPending,
+    dismissZombieTasksPending,
   };
 }

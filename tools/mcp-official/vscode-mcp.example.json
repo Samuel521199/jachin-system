@@ -19,7 +19,7 @@
         "command": "npx",
         "args": [
           "-y",
-          "@modelcontextprotocol/server-filesystem",
+          "@modelcontextprotocol/server-filesystem@0.6.3",
           "${workspaceFolder}"
         ]
       }

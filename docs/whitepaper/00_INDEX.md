@@ -1,11 +1,12 @@
 # Jachin Nexus 白皮书 — 文档索引
 
 **版本**: V2  
-**更新日期**: 2026-03  
+**更新日期**: 2026-04  
 **核心基调**: L1 平台 / L2 零信任控制面 / L3 单体执行面（对标 OpenClaw）
 
 > **当前架构规范**：[ARCHITECTURE.md](../ARCHITECTURE.md) — 云边协同数字发行操作系统  
-> **详细设计**：[ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) | **架构图**：[V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)
+> **现行实现索引（代码同步）**：[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](../architecture/CURRENT_SYSTEM_ARCHITECTURE.md)  
+> **历史详细设计**：[ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) | **架构图**：[V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)
 
 ---
 

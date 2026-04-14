@@ -138,6 +138,8 @@ function ChatApp() {
     memoryCompactSuggest,
     sendMemoryCompactControl,
     dismissMemoryCompactSuggest,
+    zombieTasksPending,
+    dismissZombieTasksPending,
   } = sensory;
 
   const messages = useMemo(
@@ -297,9 +299,22 @@ function ChatApp() {
     companionModeRef.current = companionMode;
   }, [companionMode]);
 
+  /** 断电遗留横幅出现时：陪伴圆/最小化时走哨兵 Toast（与后台任务完成一致） */
+  useEffect(() => {
+    if (!zombieTasksPending || zombieTasksPending.count < 1) return;
+    void maybeNotifyJachinAssistantDone(
+      companionModeRef.current,
+      `断电遗留 ${zombieTasksPending.count} 条后台任务未闭环，可让助手调用 core:check_interrupted_tasks`,
+      "answer",
+    );
+  }, [zombieTasksPending]);
+
   /** 与 ChatPanel 一致：后台任务完成/失败时写入会话并可选哨兵通知（主 Omni 此前未注册 handler，收不到 l3_event_bus 推送） */
   useEffect(() => {
     registerBackgroundTaskHandler((ev) => {
+      if (ev.event === "zombie_tasks_pending") {
+        return;
+      }
       if (ev.event !== "completed" && ev.event !== "failed" && ev.event !== "cancelled") {
         return;
       }
@@ -1446,6 +1461,50 @@ function ChatApp() {
       <SensoryOverlay sensory={sensory} variant="minimal" />
       <div className="pointer-events-none flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
+          {zombieTasksPending && zombieTasksPending.count > 0 && (
+            <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-rose-500/50 bg-rose-950/95 px-3 py-2.5 text-xs text-rose-100 shadow-lg backdrop-blur-sm">
+              <p className="mb-1 flex flex-wrap items-center gap-2 font-medium text-rose-50">
+                <span
+                  className="inline-flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[11px] font-bold text-rose-950"
+                  aria-label="未闭环任务条数"
+                >
+                  {zombieTasksPending.count}
+                </span>
+                上次断电或崩溃未闭环的后台任务
+              </p>
+              <ul className="mb-2 max-h-28 overflow-y-auto text-[11px] leading-snug text-rose-100/90">
+                {zombieTasksPending.tasks.slice(0, 6).map((t, i) => (
+                  <li key={`${t.task_id ?? "t"}-${i}`} className="truncate border-b border-rose-500/15 py-0.5 font-mono last:border-b-0">
+                    <span className="text-rose-200/90">{t.task_id ?? "?"}</span>
+                    {(t.task_prompt ?? "").trim()
+                      ? ` — ${(t.task_prompt ?? "").slice(0, 96)}${(t.task_prompt ?? "").length > 96 ? "…" : ""}`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-md bg-rose-500/90 px-2.5 py-1 text-[11px] font-medium text-rose-950 hover:bg-rose-400"
+                  onClick={() => {
+                    setInput(
+                      "请调用 core:check_interrupted_tasks，列出上次断电遗留的后台任务摘要，并问我是否需要用 core:submit_background_task 重新排队执行。",
+                    );
+                    dismissZombieTasksPending();
+                  }}
+                >
+                  填入追问指令
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-white/10 px-2.5 py-1 text-[11px] text-rose-100 hover:bg-white/15"
+                  onClick={() => dismissZombieTasksPending()}
+                >
+                  知道了
+                </button>
+              </div>
+            </div>
+          )}
           {memoryCompactSuggest && (
             <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-amber-500/45 bg-amber-950/95 px-3 py-2.5 text-xs text-amber-100 shadow-lg backdrop-blur-sm">
               <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>

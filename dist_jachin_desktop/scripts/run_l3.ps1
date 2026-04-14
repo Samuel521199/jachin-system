@@ -1,6 +1,6 @@
 # L3 独立运行脚本 - 在 PowerShell 中查看完整日志
-# 用法: .\scripts\run_l3.ps1  或  .\scripts\run_l3.ps1 --ws-only
-# 配对后使用 --gateway；未配对用 --ws-only（需 .env 有 DASHSCOPE_API_KEY）
+# 用法: 默认 --ws-only（不依赖 L2）。需 L2 配对/心跳时: .\scripts\run_l3.ps1 --gateway
+# 需 .env 有 DASHSCOPE_API_KEY（或 OPENAI_API_KEY）
 # 打包模式：无 Python 时自动调用 bin/l3_node-*.exe
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +32,7 @@ if (-not (Test-Path (Join-Path $appRoot "l3_node")) -and -not (Test-Path (Join-P
 $env:PYTHONUNBUFFERED = "1"
 $env:PYTHONUTF8 = "1"
 $env:LOG_LEVEL = "DEBUG"
+# 深度执行日志：ReAct/LLM 全文、工具入出参、耗时 → 控制台 + l3_debug.log + 全息 SSE（设为 0 可关）
 $env:JACHIN_L3_DEEP_LOG = "1"
 # 与 start-layer3 一致：避免 l3_mcp_cache 旧 HR 包盖过仓库 recruitment_scheduler
 $env:JACHIN_APP_ROOT = $appRoot
@@ -46,8 +47,10 @@ if ($binDir -and (Test-Path $binDir)) {
     $env:JACHIN_APP_ROOT = $appRoot
 }
 
-$mode = "--gateway"
-if ($args -contains "--ws-only") { $mode = "--ws-only" }
+# 默认独立模式：不依赖 L2（与 ~/.jachin/l2_gateway_config.json 中的局域网 L2 解耦，避免进程直接退出）
+# 需要与 L2 零信任配对、心跳与 MCP 拉取时显式传入: .\scripts\run_l3.ps1 --gateway
+$mode = "--ws-only"
+if ($args -contains "--gateway") { $mode = "--gateway" }
 
 # 优先 Python，否则用 exe（打包模式）
 $l3Exe = $null
@@ -59,6 +62,7 @@ $hasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 if ($hasPython -and (Test-Path (Join-Path $appRoot "l3_node"))) {
     Set-Location $appRoot
     Write-Host "[L3] Python mode, logs to terminal (cwd=$appRoot)" -ForegroundColor Cyan
+    # PowerShell 会话级抄本：与 Python 的 l3_debug.log 互补（含 Write-Host 与 python 标准输出）
     $tlog = Join-Path $env:USERPROFILE ".jachin\l3_powershell_transcript.log"
     $tDir = Split-Path $tlog -Parent
     if (-not (Test-Path $tDir)) { New-Item -ItemType Directory -Path $tDir -Force | Out-Null }

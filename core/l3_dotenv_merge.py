@@ -17,6 +17,28 @@ TraceCb = Optional[Callable[..., Any]]
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _frozen_dotenv_candidates() -> list[Path]:
+    """
+    便携包（PyInstaller）下 cwd 常不等于 dist 根（快捷方式/双击/从别处启动），
+    不能仅依赖 cwd/.env；须优先从 exe 旁推断 dist 根再加载 .env。
+    """
+    out: list[Path] = []
+    try:
+        exe = Path(sys.executable).resolve()
+        ed = exe.parent
+        if ed.name.lower() == "bin":
+            out.append(ed.parent / ".env")
+        out.append(ed / ".env")
+    except OSError:
+        pass
+    try:
+        out.append(Path.cwd().resolve() / ".env")
+    except OSError:
+        out.append(Path.cwd() / ".env")
+    out.append(Path.home() / ".jachin" / ".env")
+    return out
+
+
 def _jachin_home_dotenv_path() -> Path:
     jh = (os.environ.get("JACHIN_HOME") or "").strip()
     if jh:
@@ -58,9 +80,17 @@ def merge_l3_dotenv_into_os(
     _env_loaded = False
     try:
         if getattr(sys, "frozen", False):
-            for _p in (Path.cwd() / ".env", Path.home() / ".jachin" / ".env"):
+            _seen: set[str] = set()
+            for _p in _frozen_dotenv_candidates():
+                try:
+                    _k = str(_p.resolve())
+                except OSError:
+                    _k = str(_p)
+                if _k in _seen:
+                    continue
+                _seen.add(_k)
                 _t(".env path=%s exists=%s", _p, _p.exists())
-                if _p.exists():
+                if _p.is_file():
                     load_dotenv(_p, encoding="utf-8")
                     _env_loaded = True
                     _t(".env loaded from %s (frozen)", _p)

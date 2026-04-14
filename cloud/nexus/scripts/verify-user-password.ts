@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 一次性诊断：从 DB 读用户 password_hash，对给定明文做 bcrypt.compare。
  * 用法（在 cloud/nexus 下）: npx tsx scripts/verify-user-password.ts vivian@herontech.net 12345678
  */
@@ -16,9 +16,10 @@ if (!url) {
   console.error("缺少 DATABASE_URL，请在 cloud/nexus 下执行且存在 .env.local");
   process.exit(1);
 }
+const databaseUrl: string = url;
 
 async function main() {
-  const sql = postgres(url, { max: 1, connect_timeout: 15 });
+  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 15 });
   try {
     const rows = await sql`
       SELECT email, password_hash

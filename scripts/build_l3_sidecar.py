@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
@@ -9,6 +9,9 @@ L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 产出:
   clients/desktop/src-tauri/bin/l3_node-{target_triple}[.exe]
   （与 tauri.conf.json 的 bundle.externalBin: bin/l3_node 对应）
+
+  部署时若需 npx 类 MCP 且无系统 Node：将官方 Node zip 解压到
+  「exe 同目录/runtime/node/」（含 node.exe、npx.cmd），见 docs/L3_EMBEDDED_RUNTIME.md。
 
 依赖:
   pip install pyinstaller
@@ -238,6 +241,11 @@ def main() -> int:
 
     print(f"\n完成。Sidecar 二进制: {dst}")
     print("下一步: cd clients/desktop && npm run tauri dev")
+    print(
+        "\n[MCP/npx] 目标机无系统 Node 时：将官方 Node 便携包解压到 exe 旁 runtime\\node\\（须含 npx.cmd），"
+        "或使用 scripts/stage-l3-mcp-node-runtime.ps1 复制到 %USERPROFILE%\\.jachin\\runtime\\node\\ — "
+        "详见 docs/L3_EMBEDDED_RUNTIME.md"
+    )
     return 0
 
 

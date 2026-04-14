@@ -639,6 +639,10 @@ class LiteLLMEngine:
                 }
                 if tools:
                     kwargs_chat["tools"] = tools
+                # 透传 LiteLLM 兼容参数（如 DashScope extra_body / enable_thinking）
+                for _ek, _ev in kwargs.items():
+                    if _ev is not None:
+                        kwargs_chat[_ek] = _ev
 
                 # 硬上限：litellm 内部可能对 /chat/completions 重试；长文/compaction 需更大 slack
                 _slack = _asyncio_wait_slack_for_purpose(call_purpose)

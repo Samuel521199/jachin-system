@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 本地 WebSocket 服务
 
 监听 127.0.0.1:18981（189xx 系列，与 L2 18888、Sensory 18881 互不冲突），
@@ -82,6 +82,36 @@ async def _maybe_push_memory_compact_suggest(websocket) -> None:
         record_prompt_sent()
     except Exception as e:
         logger.debug("[L3 WS] memory_compact_suggest 跳过: %s", e)
+
+
+async def _maybe_push_zombie_tasks_snapshot(websocket) -> None:
+    """
+    订阅 ``subscribe_background_tasks`` 后：若 zombie_tasks.json 仍有未读摘要，补推一条。
+    解决「L3 先启动广播、桌面后连 WebSocket」时收不到 zombie_tasks_pending 的问题。
+    """
+    try:
+        from l3_node.primitives.agent_tasks.background_task_service import load_zombie_tasks_snapshot
+
+        tasks = load_zombie_tasks_snapshot()
+        if not tasks:
+            return
+        payload = {
+            "type": "background_task",
+            "event": "zombie_tasks_pending",
+            "count": len(tasks),
+            "tasks": [
+                {
+                    "task_id": z.get("task_id"),
+                    "task_prompt": str(z.get("task_prompt") or "")[:800],
+                    "previous_status": z.get("previous_status"),
+                }
+                for z in tasks[:40]
+            ],
+        }
+        await _send_safe(websocket, payload)
+        logger.info("[L3 WS] 已向订阅端补推 zombie_tasks_pending count=%d", len(tasks))
+    except Exception as e:
+        logger.debug("[L3 WS] zombie_tasks_pending 补推跳过: %s", e)
 
 
 async def _run_scheduled_memory_compact_background(*, force: bool = True) -> None:
@@ -462,6 +492,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                         websocket,
                         {"type": "background_task_subscribed", "ok": True},
                     )
+                    asyncio.create_task(_maybe_push_zombie_tasks_snapshot(websocket))
                 except Exception as e:
                     await _send_safe(
                         websocket,

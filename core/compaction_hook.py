@@ -104,6 +104,30 @@ def _get_llm_section() -> dict[str, Any]:
     return (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
 
 
+def _get_memory_flush_model() -> str:
+    """
+    记忆刷新专用模型：默认经济型 flash，避免 qwen3.5-plus 等「思考链」在 JSON 抽取上耗时数十秒、浪费 reasoning_tokens。
+    可在 ~/.jachin/nexus_config.json → llm.memory_flush.model 覆盖。
+    """
+    llm = _get_llm_section()
+    mf = (llm.get("memory_flush") or {}) if isinstance(llm.get("memory_flush"), dict) else {}
+    raw = str(mf.get("model") or mf.get("memory_flush_model") or "").strip()
+    if raw:
+        return raw
+    try:
+        from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
+
+        return DASHSCOPE_ECON_FALLBACK_MODEL
+    except ImportError:
+        return "dashscope/qwen3.5-flash-2026-02-23"
+
+
+def _dashscope_extra_no_thinking(model_name: str) -> dict[str, Any]:
+    if (model_name or "").lower().startswith("dashscope/"):
+        return {"extra_body": {"enable_thinking": False}}
+    return {}
+
+
 def _get_compaction_context_summary_model() -> str:
     """
     「历史摘要」专用模型：默认经济型 flash，避免 qwen3.5-plus 在大 blob 上动辄 200s+。
@@ -158,6 +182,7 @@ async def _run_memory_flush(messages: list[dict[str, Any]], summary_model: str) 
     """
     主动记忆刷新：静默 LLM 回合，提醒模型将重要信息写入 core_memory。
     返回写入的条数。
+    summary_model 参数保留兼容；实际模型见 _get_memory_flush_model()。
     """
     from core.biological_memory import add_core_memory
 
@@ -176,12 +201,20 @@ async def _run_memory_flush(messages: list[dict[str, Any]], summary_model: str) 
 
     try:
         from core.llm_provider import LiteLLMEngine
-        engine = LiteLLMEngine(model_name=summary_model)
+
+        mf_model = _get_memory_flush_model()
+        logger.info(
+            "[Compaction] memory_flush 使用模型 %s（nexus llm.memory_flush.model 可覆盖；默认 flash；compaction 主模型=%s）",
+            mf_model,
+            summary_model,
+        )
+        engine = LiteLLMEngine(model_name=mf_model)
         result = await engine.generate_response(
             [{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=512,
             call_purpose="compaction_memory_flush",
+            **_dashscope_extra_no_thinking(mf_model),
         )
         if isinstance(result, dict):
             result = result.get("content", "") or ""
@@ -345,12 +378,14 @@ async def _run_anchor_focused_second_flush(
     try:
         from core.llm_provider import LiteLLMEngine
 
-        engine = LiteLLMEngine(model_name=summary_model)
+        mf_model = _get_memory_flush_model()
+        engine = LiteLLMEngine(model_name=mf_model)
         result = await engine.generate_response(
             [{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=512,
             call_purpose="compaction_anchor_second_flush",
+            **_dashscope_extra_no_thinking(mf_model),
         )
         if isinstance(result, dict):
             result = result.get("content", "") or ""
@@ -376,9 +411,8 @@ async def _generate_summary(middle_messages: list[dict[str, str]], summary_model
     summary_llm = _get_compaction_context_summary_model()
     engine = LiteLLMEngine(model_name=summary_llm)
     logger.info(
-        "[Compaction] context_summary 使用模型 %s（配置项 llm.compaction_summary_model；memory_flush 仍用 %s）",
+        "[Compaction] context_summary 使用模型 %s（配置项 llm.compaction_summary_model；memory_flush 独立见 llm.memory_flush.model）",
         summary_llm,
-        summary_model,
     )
     content_blob = "\n\n".join(
         f"{m.get('role', '')}: {m.get('content', '')}"[:500]

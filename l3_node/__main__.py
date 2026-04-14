@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 节点独立运行入口
 
 用法:
@@ -61,9 +61,14 @@ else:
     except Exception:
         pass
 
-# 确保项目根在 path 中。PyInstaller 时 __file__ 为 _MEIPASS/__main__.py 不含 l3_node，需用 cwd
+# 确保项目根在 path 中。PyInstaller 时 __file__ 在 _MEIPASS；便携包根须用 exe 推断（cwd 可能为 System32 等）
 if getattr(sys, "frozen", False):
-    _root = str(Path.cwd())
+    _exe_parent = Path(sys.executable).resolve().parent
+    if _exe_parent.name.lower() == "bin" and _exe_parent.parent.is_dir():
+        _root = str(_exe_parent.parent.resolve())
+        os.environ.setdefault("JACHIN_APP_ROOT", _root)
+    else:
+        _root = str(Path.cwd().resolve())
 else:
     _root = __file__.rsplit("l3_node", 1)[0].rstrip("/\\")
 if _root and _root not in sys.path:

@@ -1,6 +1,6 @@
 # Jachin 文档
 
-**版本**: V2 (2026-03)  
+**版本**: V2 (2026-04)  
 **架构**: 云边协同数字发行操作系统 (Cloud-Edge AI OS)
 
 ---
@@ -9,6 +9,8 @@
 
 | 文档 | 说明 |
 |------|------|
+| [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md) | **现行实现总览（2026-04）** — L1/L2/L3/桌面、MCP stdio 与守卫、后台 zombie、WS 与桌面通知；与代码同步时优先改此索引 |
+| [L3_EMBEDDED_RUNTIME.md](./L3_EMBEDDED_RUNTIME.md) | **L3 嵌入式 Python/Node（含 npx）** — 便携 `runtime/` 布局、环境变量、安装器与 Sidecar 旁路 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范** — 一店一库、四大原语、三层架构、关键组件 |
 | [architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md) | **L3 执行主轴 SSOT** — 单 ReAct 循环、网关/语义层、SOP、内联 Critic、Experience RAG、与 delegate/coordinate 关系 |
 | [Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md) | **术语 SSOT** — Tools / MCP / Skills / Agent Tasks 定义与代码落点（索引：[FOUR_PRIMITIVES.md](./FOUR_PRIMITIVES.md)） |
@@ -82,8 +84,8 @@
 
 ## 历史参考（已归档）
 
-以下文档保留供参考，当前实现以 [ARCHITECTURE.md](./ARCHITECTURE.md) 为准：
+以下文档保留供背景阅读；**术语与实现以 [ARCHITECTURE.md](./ARCHITECTURE.md)** 与 **[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)** 为准：
 
-- [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 详细设计
+- [ARCHITECTURE_V2_LAYER3_STANDALONE.md](./ARCHITECTURE_V2_LAYER3_STANDALONE.md) — V2 详细设计（历史稿）
 - [V2_ARCHITECTURE_DIAGRAM.md](./V2_ARCHITECTURE_DIAGRAM.md) — 架构图
 - [whitepaper/](./whitepaper/) — 白皮书系列

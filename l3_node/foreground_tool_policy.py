@@ -16,6 +16,7 @@ _DEFAULT_ALLOW_PREFIXES = (
     "core:domain_workflow_run",
     "core:submit_background_task",
     "core:check_background_task",
+    "core:check_interrupted_tasks",
 )
 
 # 已废弃默认子串豁免（易误伤如 mcp:atom_download_*）；请改用 MCP 工具元数据 long_running 或 long_running_tool_ids。

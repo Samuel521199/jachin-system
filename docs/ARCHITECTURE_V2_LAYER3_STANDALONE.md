@@ -4,7 +4,7 @@
 **状态**: 设计规范  
 **定位**: 重新定义 Layer 1/2/3 职责 — L3 为 **Jachin 执行节点**（单主轴 ReAct，**能力对标** OpenClaw 类单机 Agent），L2 = 权限/记忆/调度，L1 = 平台。
 
-> **2026-04 对齐现行实现**：L3 代码路径为 **`run_agent` 单循环**，并挂载语义层、内联 Critic、Experience RAG 等；**SSOT** 见 **[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)**。本文中「OpenClaw」均指**对标物**，非 Jachin 产品名。
+> **2026-04 对齐现行实现**：L3 代码路径为 **`run_agent` 单循环**，并挂载语义层、内联 Critic、Experience RAG 等；**SSOT** 见 **[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)**。**现行组件索引（MCP/后台/zombie/桌面）** 见 **[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)**。本文档为历史设计长文，**不随每次代码变更更新**；与 [../ARCHITECTURE.md](../ARCHITECTURE.md) 冲突时以全局规范与代码为准。本文中「OpenClaw」均指**对标物**，非 Jachin 产品名。
 
 ---
 

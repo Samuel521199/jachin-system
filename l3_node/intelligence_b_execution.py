@@ -115,6 +115,7 @@ _DEFAULT_VERIFY_READONLY_IDS = frozenset(
         "core:fs_read",
         "core:shell_job_status",
         "core:check_background_task",
+        "core:check_interrupted_tasks",
     },
 )
 

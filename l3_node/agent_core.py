@@ -3021,6 +3021,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 
     chat_task_hint = """
 【前台/后台隔离】长耗时、大批量任务（如抓数十份简历、长跑分析、大量文件 IO）请优先使用 **core:submit_background_task**（JSON：intent 必填；可选 require_skills、max_iterations），立即返回 task_id，不阻塞用户继续闲聊。用户问进度时用 **core:check_background_task**（task_id 或 {"list_recent":true}）。若工具返回 status=rejected 且 reason=resource_exhausted，须如实说明本机后台等待队列已满，请用户稍后再试或待进行中任务完成；勿承诺不存在的「自动转发 L2」能力（多节点编排仅在已配对且允许使用 **coordinate** 时另行处理）。
+【断电遗留·晨会】当用户**开启新会话**、**询问系统状态/后台情况**，或首轮对话尚无明确任务时，应优先调用 **core:check_interrupted_tasks**（Action Input 可为 `{}`）检查是否有上次崩溃/断电遗留的未完成后台任务。若返回 `tasks` 非空，须**主动列出** `task_id` 与 `task_prompt` 摘要，并**询问统帅**是否要用 **core:submit_background_task** 按相同意图重新排队执行；用户确认后再投递。若已在同一会话汇报过且用户要求清空，可传 `{"consume":true}` 表示已读并清空僵尸列表。
 【短时查询勿投递后台】查某地**当日实况天气、气温**等，**必须**在当前会话前台 **Action: util:get_weather_lite**（勿将 require_skills 仅填 util:get_weather_lite 后 submit_background_task——宿主会拒绝），避免用户先看到「任务已排队」又与前台即时结果矛盾。后台任务完成事件可由客户端订阅 WebSocket 推送，但不应替代短时天气的前台直查。
 【联网检索·优先级】需要**全网时效/新闻/综合检索**时：**优先**使用工具列表中名称含 **tavily** 的 MCP 工具（语义搜索）；系统可能已在上下文中注入 `<realtime_web_search_results>`，请与之对齐，避免重复无效抓取。**mcp:fetch** 仅用于获取**单一已知 URL**的原文（兜底）；勿首选 fetch 拉 RSS/门户整页代替检索。
 【单页 URL 抓取】用户给出**具体 https 文章/网页链接**要抓正文、保存为文件时，**必须**使用 **mcp:fetch**（工具列表中可能显示为 ``fetch``），JSON 含 **url**。**禁止**为此调用 **mcp:atom_web_scraper**：后者为 BI/表格 SPA，依赖 Chrome **9222** 调试端口，用于普通头条/新闻页会误报 ECONNREFUSED。
@@ -3030,7 +3031,8 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 【长文 docx】优先 **util:generate_office_doc**；若用 Python 自写 .docx，勿在单行命令里塞数千字字符串，可先 **mcp:write_file** 写入 `.txt` 再短脚本读取生成；环境缺 `python-docx` 时须安装或走 **util:generate_office_doc**。"""
     if slim_mode:
         chat_task_hint = (
-            "长耗时/大批量用 **core:submit_background_task**；进度 **core:check_background_task**。"
+            "长耗时/大批量用 **core:submit_background_task**；进度 **core:check_background_task**；"
+            "新会话/问状态先 **core:check_interrupted_tasks** 查断电遗留僵尸任务。"
             "查实况天气须前台 **util:get_weather_lite**，勿仅为此投递后台（会被拒绝）。"
             "联网检索优先 **tavily** 类 MCP；**mcp:fetch** 仅兜底已知 URL。"
             "单页 URL 正文用 **mcp:fetch**，勿用 **atom_web_scraper**（需 Chrome 9222）。"

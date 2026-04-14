@@ -13,13 +13,25 @@ export function isDesktopReleasesS3Configured(): boolean {
   return !!(b && ak && sk);
 }
 
+/**
+ * 预签名 GET 使用的 S3/MinIO 地址，必须与用户浏览器最终访问的 Host 一致。
+ * - 若 DESKTOP_RELEASES_S3_ENDPOINT 为 http://127.0.0.1:9000（L1 容器访问宿主机 MinIO），
+ *   必须另设本项为公网可达地址（如 http://47.86.39.173:9000），否则下载链接会指向用户本机 127.0.0.1。
+ * - 未设置时回退为 DESKTOP_RELEASES_S3_ENDPOINT（兼容仅公网 endpoint 的部署）。
+ */
+function presignEndpoint(): string {
+  const pub = (process.env.DESKTOP_RELEASES_S3_PRESIGN_ENDPOINT ?? "").trim();
+  if (pub) return pub;
+  return (process.env.DESKTOP_RELEASES_S3_ENDPOINT ?? "").trim();
+}
+
 function getS3Client(): S3Client | null {
   if (cachedClient !== undefined) return cachedClient;
   if (!isDesktopReleasesS3Configured()) {
     cachedClient = null;
     return null;
   }
-  const endpoint = (process.env.DESKTOP_RELEASES_S3_ENDPOINT ?? "").trim();
+  const endpoint = presignEndpoint();
   const region = (process.env.DESKTOP_RELEASES_S3_REGION ?? "us-east-1").trim();
   cachedClient = new S3Client({
     region,

@@ -1,4 +1,4 @@
-﻿{
+{
   "mcp_servers": [
     {
       "id": "official-fetch",
@@ -38,7 +38,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-filesystem",
+        "@modelcontextprotocol/server-filesystem@0.6.3",
         "REPLACE_WITH_ALLOWED_DIR_1",
         "REPLACE_WITH_ALLOWED_DIR_2"
       ]

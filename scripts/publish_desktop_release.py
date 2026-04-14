@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 一键：将 Tauri 构建产物上传 MinIO，并向 Nexus 登记 desktop_app_releases。
 
@@ -9,7 +9,8 @@
   DESKTOP_RELEASES_S3_BUCKET
   DESKTOP_RELEASES_S3_ACCESS_KEY
   DESKTOP_RELEASES_S3_SECRET_KEY
-  DESKTOP_RELEASES_S3_ENDPOINT       例: http://127.0.0.1:9000
+  DESKTOP_RELEASES_S3_ENDPOINT       例: http://127.0.0.1:9000（本机/内网上传用）
+  DESKTOP_RELEASES_S3_PRESIGN_ENDPOINT  可选；L1 生成给用户浏览器的预签名链若需公网 MinIO，在 l1.env 设为 http://公网IP:9000
   DESKTOP_RELEASES_S3_REGION         默认 us-east-1
   DESKTOP_RELEASES_S3_FORCE_PATH_STYLE  默认 true
 
