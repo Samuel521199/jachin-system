@@ -12,6 +12,9 @@
 **说明**：Anthropic 官方 Fetch 在 **PyPI**（``mcp-server-fetch``），**无** npm ``@modelcontextprotocol/server-fetch`` 包；勿在配置里写错误的 npx 包名。
 
 **SQLite 生活库**：若尚未配置 ``uvx mcp-server-sqlite``（``sqlite_manager``），可由 ``ensure_sqlite_manager_life_db_mcp`` 自动合并一条（需本机 ``uv``/``uvx``）。
+
+**YouTube 字幕**：已改为 L3 **原生工具** ``core:youtube_transcript``（``youtube-transcript-api``，见 ``l3_node/skills/native_tools/youtube_transcript_tools.py``），
+不再由本文件自动注入 npm ``youtube-transcript`` MCP。
 """
 from __future__ import annotations
 

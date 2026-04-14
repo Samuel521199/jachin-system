@@ -2,9 +2,22 @@
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, Square, Radio, LayoutDashboard, Settings2, Plus, Menu, Trash2 } from "lucide-react";
+import {
+  Send,
+  Mic,
+  Square,
+  Radio,
+  LayoutDashboard,
+  Settings2,
+  Plus,
+  Menu,
+  Trash2,
+  Paperclip,
+  FileText,
+  X,
+} from "lucide-react";
 import type { StoredMessage } from "../../utils/messageStorage";
 import { AssistantMessageContent } from "../Chat/AssistantMessageContent";
 import type { ToolUiSubmitPayload } from "../../skills-ui/types";
@@ -51,7 +64,8 @@ export interface OmniCyberChatShellProps {
   onInputChange: (value: string) => void;
   /** Esc 收起 Omni / 陪伴圆（与 window 捕获监听双保险，避免 WebView 吞键） */
   onRequestDismiss?: () => void | Promise<void>;
-  onSend: () => void;
+  /** text 为输入框文案；files 为本次随发的本地附件（发送后由父级清空输入） */
+  onSend: (detail: { text: string; files: File[] }) => void | Promise<void>;
   /** 思考/流式过程中停止生成（与发送按钮同位） */
   onStopGeneration?: () => void;
   placeholder?: string;
@@ -127,12 +141,58 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   ui = desktopOmniUi.zh,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const previewUrls = useMemo(
+    () => attachments.map((f) => (f.type.startsWith("image/") ? URL.createObjectURL(f) : "")),
+    [attachments],
+  );
+  useEffect(() => {
+    return () => {
+      previewUrls.forEach((u) => {
+        if (u) URL.revokeObjectURL(u);
+      });
+    };
+  }, [previewUrls]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  const canSend = !disabled && !isLoading && input.trim().length > 0;
+  const maxFiles = 8;
+  const mergeFiles = useCallback((incoming: FileList | File[]) => {
+    const arr = Array.from(incoming);
+    setAttachments((prev) => {
+      const next = [...prev];
+      for (const f of arr) {
+        if (next.length >= maxFiles) break;
+        const dup = next.some(
+          (x) => x.name === f.name && x.size === f.size && x.lastModified === f.lastModified,
+        );
+        if (!dup) next.push(f);
+      }
+      return next;
+    });
+  }, []);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const canSend =
+    !disabled &&
+    !isLoading &&
+    !isTyping &&
+    (input.trim().length > 0 || attachments.length > 0);
+
+  const commitSend = useCallback(() => {
+    if (!canSend) return;
+    const files = [...attachments];
+    setAttachments([]);
+    void onSend({ text: input.trim(), files });
+  }, [attachments, input, onSend, canSend]);
   const stopMode =
     onStopGeneration != null &&
     (jachinMachineState === "THINKING" || jachinMachineState === "STREAMING");
@@ -411,12 +471,102 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             )}
           </div>
 
-          {/* Omni-Bar：永远贴底，禁止被压缩 */}
+          {/* Omni-Bar：永远贴底；外层支持拖拽接入附件 */}
           <div
             data-chat-interactive
-            className="relative z-20 flex shrink-0 items-center gap-2 px-3 pb-3 pt-1"
+            className={`relative z-20 flex shrink-0 flex-col gap-0 px-3 pb-3 pt-1 transition-[box-shadow,background-color,border-color] duration-200 ${
+              isDragging
+                ? "rounded-xl border border-cyan-500/50 bg-cyan-900/10 shadow-[0_0_20px_rgba(0,240,255,0.2)]"
+                : "border border-transparent"
+            }`}
             style={{ pointerEvents: "auto" }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(true);
+            }}
+            onDragEnter={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragging(false);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(false);
+              if (e.dataTransfer?.files?.length) mergeFiles(e.dataTransfer.files);
+            }}
           >
+            {isDragging && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-black/20 text-center text-[11px] font-medium tracking-wide text-cyan-100/95">
+                松开以接入数据
+              </div>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.txt,.md,.csv,.json"
+              className="hidden"
+              onChange={(ev) => {
+                const fl = ev.target.files;
+                if (fl?.length) mergeFiles(fl);
+                ev.target.value = "";
+              }}
+            />
+            <AnimatePresence>
+              {attachments.length > 0 && (
+                <motion.div
+                  key="attach-ribbon"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  transition={{ type: "spring", stiffness: 420, damping: 32 }}
+                  className="mb-2 flex gap-3 overflow-x-auto px-0.5 pb-1 no-scrollbar"
+                >
+                  {attachments.map((file, idx) => {
+                    const isImg = file.type.startsWith("image/");
+                    const url = previewUrls[idx];
+                    return (
+                      <div
+                        key={`${file.name}-${file.size}-${idx}`}
+                        className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black/40 backdrop-blur-md"
+                      >
+                        {isImg && url ? (
+                          <img src={url} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-0.5 px-1">
+                            <FileText className="h-5 w-5 text-cyan-400/80" />
+                            <span className="line-clamp-2 w-full text-center text-[10px] leading-tight text-slate-400">
+                              {file.name}
+                            </span>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          title="移除"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeAttachment(idx);
+                          }}
+                          className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500/80 text-[10px] text-white opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-red-500 group-hover:opacity-100"
+                        >
+                          <X className="h-2.5 w-2.5" strokeWidth={3} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="flex shrink-0 items-center gap-2">
           <JachinCore state={coreState} machineState={jachinMachineState} toolFlash={thinkingToolFlash} />
 
           {onVadToggle != null && (
@@ -462,11 +612,25 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
           </button>
 
-          <div className="flex-1 min-w-0 flex flex-col justify-center">
+          <div className="flex min-w-0 flex-1 flex-col justify-center">
             {voiceVisual ? (
               <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
             ) : (
-              <div className="relative group min-w-0">
+              <div className="group relative min-w-0 flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title="添加图片或文档"
+                  className="shrink-0 cursor-pointer rounded-full p-2 text-slate-400 transition-colors hover:bg-white/5 hover:text-cyan-400"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <div className="relative min-w-0 flex-1">
                 <input
                   type="text"
                   value={input}
@@ -480,7 +644,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                     }
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      if (canSend) onSend();
+                      if (canSend) commitSend();
                     }
                   }}
                   placeholder={placeholder}
@@ -488,9 +652,10 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   disabled={disabled}
                   autoComplete="off"
                   spellCheck={false}
-                  className="w-full bg-transparent border-none py-2 pl-2 pr-2 text-sm text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50"
+                  className="w-full bg-transparent border-none py-2 pl-1 pr-2 text-sm text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50"
                 />
                 <div className="absolute bottom-0 left-0 right-0 h-px bg-white/10" />
+                </div>
               </div>
             )}
           </div>
@@ -517,7 +682,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   if (e.button !== 0) return;
                   e.preventDefault();
                   e.stopPropagation();
-                  if (canSend) onSend();
+                  if (canSend) commitSend();
                 }}
                 disabled={!canSend}
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 text-cyan-400 transition-all duration-300 hover:bg-cyan-500/20 disabled:opacity-40"
@@ -552,6 +717,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
           >
             <Settings2 className="w-4 h-4" />
           </button>
+            </div>
         </div>
         </div>
       </div>

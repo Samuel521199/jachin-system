@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.jpp-hr-analyzer4",
+  "name": "Wasm 原子：HR 透析镜 4（jpp:com.jachin.hr.analyzer4）",
+  "version": "1.0.1",
+  "description": "L1 货架归类为 MCP 卡片；运行侧为已订阅 Wasm 技能 com.jachin.hr.analyzer4 暴露的 jpp:com.jachin.hr.analyzer4，无独立 stdio 进程。",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL"
+}

@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.core-yfinance-global-market-hist",
+  "name": "全球市场 K 线（core:yfinance_global_market_hist）",
+  "version": "1.0.1",
+  "description": "L1 货架归类为 MCP 卡片；运行侧仍为 L3 Native core:yfinance_global_market_hist（yfinance），终端内置加载。需 pip install yfinance。",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL"
+}

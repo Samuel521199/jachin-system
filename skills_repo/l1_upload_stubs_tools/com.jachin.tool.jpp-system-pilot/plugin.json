@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.jpp-system-pilot",
+  "name": "Wasm 原子：System Pilot（jpp:com.jachin.system.pilot）",
+  "version": "1.0.0",
+  "description": "对应已订阅 Wasm 技能 com.jachin.system.pilot 暴露的 jpp:com.jachin.system.pilot；无独立分发包；本条目用于 L1 货架登记与 manifest 对齐。",
+  "item_type": "TOOL",
+  "type": "TOOL",
+  "runtime_tier": "L3_LOCAL"
+}

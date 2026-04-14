@@ -564,33 +564,44 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     sendHitlResponse(approved, tid);
   }, [sendHitlResponse, hitlPending?.task_id]);
 
-  /** 发送聊天输入到 Layer 3（与 v0.8.98 一致：`{ intent }`；L3 ws_server 读 intent/content） */
-  const sendInput = useCallback((text: string) => {
-    dropL3StreamUntilTerminalRef.current = false;
-    if (!text.trim()) {
-      console.debug("[Sensory] sendInput 跳过: 空文本");
-      return false;
-    }
-    if (wsRef.current?.readyState !== WebSocket.OPEN) {
-      console.debug("[Sensory] sendInput 失败: ws 未连接 readyState=%s", wsRef.current?.readyState ?? "null");
-      return false;
-    }
-    const payload: Record<string, string> = { intent: text.trim() };
-    if (larkChatId) {
-      payload.chat_id = larkChatId;
-      payload.session_id = larkChatId;
-      payload.origin = "terminal";
-    } else {
-      const sid = desktopSessionIdRef?.current?.trim() ?? "";
-      if (sid) {
-        payload.chat_id = sid;
-        payload.session_id = sid;
+  /** 发送聊天输入到 Layer 3（与 v0.8.98 一致：`{ intent }`；L3 ws_server 读 intent/content；可选 attachments_metadata） */
+  const sendInput = useCallback(
+    (
+      text: string,
+      extras?: { attachments_metadata?: unknown[] },
+    ) => {
+      dropL3StreamUntilTerminalRef.current = false;
+      const trimmed = text.trim();
+      const hasAtt = Array.isArray(extras?.attachments_metadata) && extras!.attachments_metadata!.length > 0;
+      if (!trimmed && !hasAtt) {
+        console.debug("[Sensory] sendInput 跳过: 空文本且无附件");
+        return false;
       }
-    }
-    wsRef.current.send(JSON.stringify(payload));
-    console.debug("[Sensory] sendInput 已发送 len=%d mirror=%s", text.trim().length, !!larkChatId);
-    return true;
-  }, [larkChatId, desktopSessionIdRef]);
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        console.debug("[Sensory] sendInput 失败: ws 未连接 readyState=%s", wsRef.current?.readyState ?? "null");
+        return false;
+      }
+      const payload: Record<string, unknown> = { intent: trimmed || "（见附件）" };
+      if (hasAtt) {
+        payload.attachments_metadata = extras!.attachments_metadata;
+      }
+      if (larkChatId) {
+        payload.chat_id = larkChatId;
+        payload.session_id = larkChatId;
+        payload.origin = "terminal";
+      } else {
+        const sid = desktopSessionIdRef?.current?.trim() ?? "";
+        if (sid) {
+          payload.chat_id = sid;
+          payload.session_id = sid;
+        }
+      }
+      wsRef.current.send(JSON.stringify(payload));
+      console.debug("[Sensory] sendInput 已发送 len=%d mirror=%s att=%s", trimmed.length, !!larkChatId, hasAtt);
+      return true;
+    },
+    [larkChatId, desktopSessionIdRef],
+  );
 
   /**
    * 生成式 UI：将用户在面板中确认的参数发给 L3（ws_server `tool_ui_result`），

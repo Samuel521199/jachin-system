@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.mcp.l3.atom-email-sender",
+  "name": "邮件发送（L3 内置 atom）",
+  "version": "1.0.0",
+  "description": "对应运行时工具 mcp:atom_email_sender：由 L3 进程内置注册（与独立 SMTP stdio MCP 可并存）；上架仅供商城可见性与 manifest 对齐。",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL"
+}

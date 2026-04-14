@@ -27,6 +27,11 @@ import {
   StoredMessage,
 } from "./utils/messageStorage";
 import {
+  filesToAttachmentsMetadata,
+  buildL2FallbackUserText,
+  formatUserBubbleLine,
+} from "./utils/multimodalPayload";
+import {
   loadSessionsState,
   persistSessionsState,
   newEmptySession,
@@ -684,8 +689,8 @@ function ChatApp() {
   }, [registerMirrorInputHandler, registerChunkHandler, registerAnswerHandler, registerStepHandler, updateSessionMessagesById]);
 
 
-  /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源） */
-  const doActualSend = async (content: string) => {
+  /** 实际发送消息：优先 L3 Sensory，未连接时直连 L2 文本 API（与语音同源）；可选本地文件 → attachments_metadata */
+  const doActualSend = async (content: string, attachmentFiles?: File[]) => {
     if (content.trim() === "/clear") {
       /* reasoningPulseTimer 仅存在于进行中的 doActualSend；此处仅清处理器 */
       registerChunkHandler(null);
@@ -709,8 +714,12 @@ function ChatApp() {
       return;
     }
 
+    const attMeta = attachmentFiles?.length ? await filesToAttachmentsMetadata(attachmentFiles) : [];
+    const userLine = formatUserBubbleLine(content, attMeta);
+    const combinedForL2 = buildL2FallbackUserText(content, attMeta);
+
     const turnSessionId = currentSessionIdRef.current;
-    const userMessage: StoredMessage = { role: "user", content, timestamp: Date.now() };
+    const userMessage: StoredMessage = { role: "user", content: userLine, timestamp: Date.now() };
     const assistantMessage: StoredMessage = { role: "assistant", content: "", reasoning: "", timestamp: Date.now() };
     updateSessionMessagesById(turnSessionId, (m) => [...m, userMessage, assistantMessage]);
     setInput("");
@@ -902,7 +911,7 @@ function ChatApp() {
     }, CHAT_RESPONSE_TIMEOUT_MS);
     activeChatTurnTimeoutRef.current = timeoutId;
 
-    const pendingL3InputRef = { current: content };
+    const pendingL3InputRef = { current: combinedForL2 };
     registerChunkHandler(chunkHandler);
     registerStepHandler(stepHandler);
     registerAnswerHandler((answerContent, meta) => {
@@ -963,18 +972,20 @@ function ChatApp() {
     });
 
     // 优先 L3（L3 直连大模型，自有 API Key），未连接时兜底 L2
-    if (sensory.connected && sendInput(content)) {
+    const intentForL3 = content.trim() || (attMeta.length ? "请结合附件回答。" : "");
+    const sendExtras = attMeta.length ? { attachments_metadata: attMeta as unknown[] } : undefined;
+    if (sensory.connected && sendInput(intentForL3, sendExtras)) {
       console.debug("[Chat] L3 直连发送成功 sensory.connected=true");
       return; // L3 已接收，将通过 WebSocket 流式返回
     }
-    if (sensory.connected && !sendInput(content)) {
+    if (sensory.connected && !sendInput(intentForL3, sendExtras)) {
       console.debug("[Chat] L3 发送失败（可能 ws 未就绪），fallback L2");
     } else if (!sensory.connected) {
       console.debug("[Chat] L2 兜底 sensory.connected=false");
     }
 
     // L2 兜底前：若为 BI 等 L3 专用意图，优先尝试 L3 HTTP agent/run（Sensory WS 未连时也能触发）
-    const l3Answer = await tryL3AgentForIntent(content);
+    const l3Answer = await tryL3AgentForIntent(combinedForL2);
     if (l3Answer != null && l3Answer.trim()) {
       console.debug("[Chat] L3 agent/run 命中 BI 意图，使用 L3 回复");
       clearTimeout(timeoutId);
@@ -986,7 +997,7 @@ function ChatApp() {
     // L2 兜底
     try {
       console.debug("[Chat] L2 streamChatMessage 开始");
-      const fullText = await streamChatMessage(content, (chunk) => chunkHandler(chunk), {
+      const fullText = await streamChatMessage(combinedForL2, (chunk) => chunkHandler(chunk), {
         signal: l2Abort.signal,
       });
       if (myTurnToken !== chatTurnTokenRef.current) return;
@@ -1044,9 +1055,11 @@ function ChatApp() {
     setState("idle");
   }, [sendRunAbort, registerChunkHandler, registerAnswerHandler, registerStepHandler]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading || isTyping) return;
-    await doActualSend(input.trim());
+  const handleSend = async (detail?: { text: string; files: File[] }) => {
+    const text = detail?.text ?? input.trim();
+    const files = detail?.files ?? [];
+    if ((!text.trim() && files.length === 0) || isLoading || isTyping) return;
+    await doActualSend(text, files);
   };
 
   const handleConfirmHighRisk = () => {

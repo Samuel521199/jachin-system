@@ -39,7 +39,15 @@ from l3_node.engine.hooks_pipeline import (
     global_hooks,
 )
 from l3_node.llm_client import LiteLLMEngine, RunCancelledError, SecurityContext
-from l3_node.capability_catalog import build_capability_prompt_inject_for_tools, tools_include_recruitment
+from l3_node.capability_catalog import (
+    build_capability_prompt_inject_for_tools,
+    tools_include_akshare_native,
+    tools_include_recruitment,
+)
+from l3_node.routing.intent_signals import (
+    user_message_suggests_a_share_analysis,
+    user_message_suggests_recruitment_domain,
+)
 from l3_node.exec_trace import exec_trace
 from l3_node.primitives import build_tools_description, get_hr_invoke_defaults, get_mcp_registry, load_tools, run_tool
 from l3_node.primitives.tools.loader import tool_entry_looks_like_sqlite_family
@@ -184,6 +192,18 @@ REACT_FOOTER_LARK_PUSH_BLOCK = (
 REACT_FOOTER_LARK_PUSH_BLOCK_SLIM = (
     "【飞书推送】**util:stealth_extract** → **util:lark_send_text**；chat_id 须 oc_/ou_/邮箱/手机，**禁人名**；"
     "仅姓名时先 **util:lark_search_user**（多结果让用户选）或邮箱/手机 **util:lark_resolve_user**；禁写密钥。\n"
+)
+REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK = (
+    "【YouTube 视频正文与字幕】用户给出 youtube.com / youtu.be 并要求总结、知识点、字幕时："
+    "**禁止**用 **mcp:fetch** 当作视频内容来源（fetch 只能拿到标题/壳页面）。"
+    "必须先 **core:youtube_transcript**（Python 原生，依赖 pip youtube-transcript-api，走系统/环境代理）。"
+    "Action Input 须为 JSON：**url** = 完整 https 链接；禁止只传裸 video id。"
+    "若无字幕或工具不可用，须在 Final Answer 如实说明，**禁止**仅凭标题或话题标签编造「视频内步骤/独家信息」。"
+    "**禁止**为省轮次把字幕任务改投 **core:submit_background_task**（须前台先取字幕再提炼）。\n"
+)
+REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK_SLIM = (
+    "【YouTube】总结/字幕：**禁止** **mcp:fetch**（仅壳）；须 **core:youtube_transcript**；"
+    "**url** 完整 https；禁只传 id；禁后台任务代替取字幕；无字幕则明说。\n"
 )
 
 # L5 本地记忆梦境合并：用户问「触发条件」时易与 150 条阈值混淆，须置顶强调 force 路径（与 memory_compactor / ws_server 一致）
@@ -2894,6 +2914,19 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 
 ---
 """
+    a_share_mandatory_hint = ""
+    if tools_include_akshare_native(tools) and user_message_suggests_a_share_analysis(safety_lock_user_text or ""):
+        a_share_mandatory_hint = """
+【强制执行 · A 股 AKShare】工具池已含 **core:akshare_a_share_hist**、**core:akshare_company_info**。本轮若涉及 A 股代码、区间行情、K 线、走势或基本面/财报：
+1. **首次**工具调用必须是 **core:akshare_a_share_hist**，Action Input JSON 示例：
+   {"symbol":"600519","start_date":"2024-01-01","end_date":"2024-06-30","period":"daily","adjust":"qfq"}（日期用用户给定区间；格式 YYYYMMDD 或 YYYY-MM-DD）
+2. **第二次**调用 **core:akshare_company_info**，示例：{"symbol":"600519","report_rows":12}
+3. 读完两段 Observation 后再写 Final Answer；数值以 Observation 为准，禁止编造。
+4. **禁止**用 **mcp:fetch** 作为行情/财报的**主要**数据来源（尤其禁止第一轮就只 fetch 外链）；**禁止**声称「无法访问实时金融数据库」——AKShare 已在工具表中。
+5. mcp:fetch 仅可在已有 AKShare 数据后作补充，且不得捏造不存在的文章 URL。
+
+---
+"""
     # 招聘域 SOP：仅当招聘 MCP 可见时注入 SKILL.md（与总目录解耦，新域可仿照单独挂载）
     _hr_has_recruitment_tools = tools_include_recruitment(tools)
     hr_recruitment_hint = ""
@@ -3267,6 +3300,10 @@ Final Answer: <最终回复>
             suffix_chunks.append(
                 SuffixChunk("mid", "capability_catalog", capability_catalog_hint, eviction_rank=40)
             )
+        if (a_share_mandatory_hint or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("high", "a_share_akshare_mandatory", a_share_mandatory_hint, eviction_rank=97)
+            )
         if (hr_recruitment_hint or "").strip():
             suffix_chunks.append(
                 SuffixChunk("mid", "hr_recruitment_sop", hr_recruitment_hint, eviction_rank=42)
@@ -3295,7 +3332,8 @@ Final Answer: <最终回复>
                 "禁止井号标题行与无关套话。\n"
                 "若本轮调用了 HR 透析镜且用户未禁止固定格式，Final Answer 仍须以 Observation 为准完整呈现结果。\n"
                 f"{REACT_FOOTER_FACTUAL_DB_BLOCK_SLIM}{REACT_FOOTER_WEATHER_BLOCK_SLIM}"
-                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM}{REACT_FOOTER_LARK_PUSH_BLOCK_SLIM}{_slim_sqlite}"
+                f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM}{REACT_FOOTER_LARK_PUSH_BLOCK_SLIM}"
+                f"{REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK_SLIM}{_slim_sqlite}"
                 f"{L3_SERVICE_ETHOS_RETRY_BLOCK_SLIM}"
             )
         else:
@@ -3318,6 +3356,7 @@ Final Answer: <最终回复>
                 "HR 透析镜执行后，Final Answer 必须以「✅ 执行成功，本次分析了 X 份简历」开头（X 从 Observation 提取），再输出完整报告。\n"
                 f"{REACT_FOOTER_FACTUAL_DB_BLOCK}\n{REACT_FOOTER_WEATHER_BLOCK}"
                 f"{REACT_FOOTER_DESKTOP_NOTIFY_BLOCK}{REACT_FOOTER_LARK_PUSH_BLOCK}"
+                f"{REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK}"
                 f"{L3_SERVICE_ETHOS_RETRY_BLOCK}"
             )
         # 与 [ENVIRONMENT_REPORT] / 参谋长人设同条件：页脚最末追加，优先于其它后缀块被保留（eviction_rank=100）
@@ -3511,6 +3550,64 @@ def _foreground_tool_timeout_json(tool: str, sec: float) -> str:
     )
 
 
+def _youtube_url_looks_like_watch_or_shorts(url: str) -> bool:
+    u = (url or "").strip().lower()
+    if not u:
+        return False
+    return "youtube.com" in u or "youtu.be" in u
+
+
+def _youtube_video_id_from_url(url: str) -> str:
+    """从 watch / shorts / youtu.be 等链接提取 video id（失败则返回空串）。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    m = re.search(
+        r"(?:youtube\.com/watch\?[^#\s]*[&?]v=|youtube\.com/(?:embed|shorts|live)/|youtu\.be/)([a-zA-Z0-9_-]{6,})",
+        u,
+        re.I,
+    )
+    if m:
+        return m.group(1)
+    m2 = re.search(r"[?&]v=([a-zA-Z0-9_-]{6,})", u, re.I)
+    return m2.group(1) if m2 else ""
+
+
+def _react_block_mcp_fetch_if_youtube_url(tool: str, action_input: str) -> str | None:
+    """
+    mcp:fetch 无法拿到 YouTube 字幕与口播，只会诱导模型凭标题「补全」知识点。
+    对已识别的油管播放页/Shorts 拦截 fetch，引导 core:youtube_transcript。
+    """
+    tid = (tool or "").strip().lower()
+    if tid not in ("mcp:fetch", "fetch"):
+        return None
+    raw = (action_input or "").strip()
+    url = ""
+    if raw.startswith("{"):
+        try:
+            o = json.loads(raw)
+            if isinstance(o, dict):
+                url = str(o.get("url") or o.get("uri") or "").strip()
+        except json.JSONDecodeError:
+            return None
+    if not url or not _youtube_url_looks_like_watch_or_shorts(url):
+        return None
+    example_url = url.strip()
+    vid_line = (
+        f'请先调用 **core:youtube_transcript**，Action Input 示例：{{"url": "{example_url}"}}（须完整 https）。'
+        if example_url
+        else '请先调用 **core:youtube_transcript**，Action Input：{{"url": "https://www.youtube.com/watch?v=..."}}。'
+    )
+    return (
+        "[Jachin·YouTube] 已拦截 **mcp:fetch**：YouTube 页面仅能返回标题/壳 HTML，无法获得字幕或口播正文，"
+        "继续 fetch 会导致模型仅凭标题臆测「视频知识点」。\n\n"
+        f"{vid_line}\n\n"
+        "若提示未安装依赖，请在本机执行：`pip install youtube-transcript-api` 后重启 L3。\n\n"
+        "**禁止**在仅看过标题/标签的情况下输出看似具体的步骤或「视频内独家信息」；"
+        "若无字幕或工具不可用，须在 Final Answer 中如实说明无法从视频提炼。"
+    )
+
+
 async def _invoke_react_tool(
     tool: str,
     inp: str,
@@ -3677,6 +3774,20 @@ async def _invoke_react_tool(
         _lark_cv_tok = bind_lark_chat_id_for_tools(_lark_bind)
     except Exception:
         _lark_cv_tok = None
+    _yt_block = _react_block_mcp_fetch_if_youtube_url(tool, _invoke_inp)
+    if _yt_block is not None:
+        logger.info(
+            "[L3 Agent][工具路由] trace=%s YouTube URL：已拦截 mcp:fetch，引导 core:youtube_transcript",
+            _rtrace,
+        )
+        if _lark_cv_tok is not None:
+            try:
+                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
+
+                reset_lark_chat_id_for_tools(_lark_cv_tok)
+            except Exception:
+                pass
+        return _yt_block
     _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
@@ -6091,7 +6202,6 @@ async def run_agent(
     except ImportError:
         _mem_cycle = None
 
-    from l3_node.routing.intent_signals import user_message_suggests_recruitment_domain
     from l3_node.routing.output_format_signals import (
         OutputFormatSignals,
         analyze_output_format_signals,

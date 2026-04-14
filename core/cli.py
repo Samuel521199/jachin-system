@@ -68,7 +68,7 @@ def _format_short_code(code: str) -> str:
 
 
 @click.group()
-@click.version_option(version="0.8.115", prog_name="Jachin Nexus CLI")
+@click.version_option(version="0.8.116", prog_name="Jachin Nexus CLI")
 def cli() -> None:
     """Jachin Nexus Layer 2 CLI（L1↔L2 辅助配对、refresh-tenant 等）"""
     pass
@@ -161,7 +161,7 @@ def pair(base_url: str, recover: bool, code: str) -> None:
             json={
                 "device_fingerprint": None,
                 "environment_type": "bare_metal",
-                "core_version": "0.8.115",
+                "core_version": "0.8.116",
             },
             timeout=10.0,
         )

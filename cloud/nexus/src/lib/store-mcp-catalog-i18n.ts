@@ -57,13 +57,29 @@ const ENTRIES: Record<string, Entry> = {
     zh: { title: "MCP Fetch（网页抓取）", tagline: "按 URL 抓取正文，遵守站点 robots 等策略。" },
     en: { title: "MCP Fetch (HTTP content)", tagline: "Fetch page text by URL with robots-aware behavior." },
   },
-  "com.jachin.mcp.stub.office.powerpoint": {
-    zh: { title: "Office PowerPoint（幻灯片）", tagline: "生成或编辑 PPTX，需本机安装对应 MCP 服务端。" },
-    en: { title: "Office PowerPoint (Slides)", tagline: "Create or edit PPTX; requires the PowerPoint MCP server locally." },
-  },
   "com.jachin.mcp.stub.sendmail.smtp": {
     zh: { title: "MCP Sendmail（SMTP 邮件）", tagline: "通过 SMTP 发送邮件，适合告警与通知类集成。" },
     en: { title: "MCP Sendmail (SMTP email)", tagline: "Send mail via SMTP for alerts and integrations." },
+  },
+  "com.jachin.mcp.stub.sqlite.life.ledger": {
+    zh: {
+      title: "SQLite 生活库 / 记账",
+      tagline: "本地 SQLite 生活库与记账（uvx mcp-server-sqlite），默认库位于工作区 my_life_data.db。",
+    },
+    en: {
+      title: "SQLite Life Ledger",
+      tagline: "Local SQLite life DB and ledger via uvx mcp-server-sqlite; default my_life_data.db in workspace.",
+    },
+  },
+  "com.jachin.mcp.stub.google.maps.travel": {
+    zh: {
+      title: "Google Maps（出行助手）",
+      tagline: "地理编码、路线、周边地点；需配置 GOOGLE_MAPS_API_KEY。",
+    },
+    en: {
+      title: "Google Maps (Travel)",
+      tagline: "Geocoding, routes, and places; requires GOOGLE_MAPS_API_KEY.",
+    },
   },
 };
 

@@ -192,6 +192,9 @@ export const nexusStore = {
     tabSkill: "⚡ 终端技能 (Skills)",
     tabMcp: "🔌 底层驱动 (MCPs)",
     tabTool: "🔧 原子工具 (Tools)",
+    /** 与四大原语一致：core:/util:/jpp: 为宿主/ Wasm 原子工具；MCP 为独立进程/协议扩展，见上一标签 */
+    toolTabExplain:
+      "说明：本页为「原子工具」——含 L3 内置的 core:/util:/ 以及 Wasm 技能暴露的 jpp:*（如行情、透析镜原子）。「底层驱动」页才是 MCP（stdio/协议扩展进程），二者不要混为一类。",
     loading: "加载中...",
     totalItems: (n: number) => `共 ${n} 件商品`,
     noDesc: "暂无描述",
@@ -217,6 +220,8 @@ export const nexusStore = {
     tabSkill: "⚡ Skills",
     tabMcp: "🔌 MCPs",
     tabTool: "🔧 Tools",
+    toolTabExplain:
+      "This tab lists atomic tools: native core:/util:/ and jpp:* exposed by Wasm skills (e.g. market data). The MCP tab is for protocol/extension processes — different category.",
     loading: "Loading…",
     totalItems: (n: number) => `${n} item(s)`,
     noDesc: "No description",

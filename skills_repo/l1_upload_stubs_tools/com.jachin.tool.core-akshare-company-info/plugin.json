@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.core-akshare-company-info",
+  "name": "A 股公司信息（core:akshare_company_info）",
+  "version": "1.0.1",
+  "description": "L1 货架归类为 MCP 卡片；运行侧仍为 L3 Native core:akshare_company_info，终端内置加载。需 pip install akshare。",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL"
+}

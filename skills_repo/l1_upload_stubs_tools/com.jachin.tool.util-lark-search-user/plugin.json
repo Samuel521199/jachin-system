@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.util-lark-search-user",
+  "name": "飞书按名搜人（util:lark_search_user）",
+  "version": "1.0.0",
+  "description": "对应 L3 Native 工具 util:lark_search_user；需飞书应用通讯录权限；运行时由终端内置加载；本包用于 L1 货架登记与 manifest。",
+  "item_type": "TOOL",
+  "type": "TOOL",
+  "runtime_tier": "L3_LOCAL"
+}

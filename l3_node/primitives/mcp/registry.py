@@ -2,6 +2,8 @@
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
+在 ``~/.jachin/mcp_servers.json`` 增加条目（如 ``youtube-transcript`` → npx ``@kimtaeyoon83/mcp-server-youtube-transcript``）后，
+``MCPManager`` 握手 ``list_tools`` 即可动态暴露 ``get_transcript`` 等，**无须**在本文件硬编码白名单。
 向模型提供 OpenAI/Anthropic 标准 tools 格式。
 
 原子文件类 MCP：**write_file/create_file 在 stdio 之前**即走 **L3 Native core:fs_write**（避免本机已挂 filesystem MCP 时先收到缺 path 的 -32602）。
@@ -40,6 +42,25 @@ def openapi_safe_function_name(tool_id: str) -> str:
     if s[0].isdigit():
         s = "t_" + s
     return s[:64]
+
+
+def infer_tool_id_from_openapi_fname(api_name: str) -> str | None:
+    """
+    将 OpenAI function.name（不含冒号）逆推为 Jachin tool id，与 openapi_safe_function_name 成对。
+    用于 openapi_fname_to_tool_id 漏项、或工具池未握手时仍能把 ``mcp_get_transcript`` 解析为 ``mcp:get_transcript``，
+    避免 ReAct 出现 parsed=None、工具从未调度。
+    仅处理常见前缀 mcp:/core:/util:/sys:；无法推断时返回 None（调用方保留原名）。
+    """
+    s = (api_name or "").strip()
+    if not s:
+        return None
+    if ":" in s:
+        return s
+    m = re.match(r"^(mcp|core|util|sys)_(.+)$", s, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).lower()}:{m.group(2)}"
+    return None
+
 
 # 官方 mcp-server-fetch 等要求 arguments 含 url；模型 ReAct 输出损坏时 JSON 解析会得到 {} 或 {"url":""} 而无可用 url
 _FETCH_URL_IN_JSON = re.compile(r'"url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', re.I)
@@ -1643,7 +1664,10 @@ class MCPToolRegistry:
         except ImportError:
             pass
         except Exception as e:
-            logger.debug("[MCP Registry] 合并 L3 stdio MCP 失败: %s", e)
+            logger.warning(
+                "[MCP Registry] 合并 L3 stdio MCP 失败（请查 ~/.jachin/mcp_servers.json、Node/npx）：%s",
+                e,
+            )
 
         url = f"{self._l2_base_url}/api/v2/mcp/tools"
         logger.info("[MCP Registry] L3 本地优先，L2 补充 url=%s", url)

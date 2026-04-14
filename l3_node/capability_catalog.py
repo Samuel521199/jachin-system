@@ -42,6 +42,8 @@ _RECRUITMENT_FALLBACK = """【域：招聘】若可用工具中含 atom_post_job
 
 _OFFICE_PPT_FALLBACK = """【域：PPTX】若可用工具中含 create_presentation、save_presentation 等（id 多为 mcp: 前缀），则本机 PowerPoint MCP 已连接：必须用 ReAct 调用这些工具完成 PPT，禁止谎称无法连接 MCP 或只给替代 Python 脚本。用 presentation_id 串联步骤；save 时使用绝对路径（Windows 勿用未展开的 ~）。"""
 
+_A_SHARE_FALLBACK = """【域：A 股 / AKShare】若工具列表中出现 core:akshare_a_share_hist、core:akshare_company_info：分析 A 股走势、K 线、财报摘要时**必须先**依次调用二者（先行情后基本面），用返回的 JSON 事实撰写结论。**禁止**用 mcp:fetch 捏造不存在的文章链接或靠泛化「宏观因素」代替数据。"""
+
 _CORE_FALLBACK = """你是 Jachin L3 执行节点助手：仅使用「可用工具」列表中出现的 MCP/技能；短指令可能由代码硬路径处理，长对话与控制台仍应通过工具落实意图。若下文含「域」摘要，仅在与该域相关的用户意图时使用对应工具。"""
 
 
@@ -77,6 +79,16 @@ DOMAIN_REGISTRY: tuple[CapabilityDomainSpec, ...] = (
         doc_relpath="capability_domains/office_powerpoint_mcp.md",
         inject_anchor="OFFICE_POWERPOINT",
         fallback=_OFFICE_PPT_FALLBACK.strip(),
+    ),
+    CapabilityDomainSpec(
+        domain_id="a_share_analyst",
+        tool_markers=(
+            "core:akshare_a_share_hist",
+            "core:akshare_company_info",
+        ),
+        doc_relpath="capability_domains/a_share_analyst.md",
+        inject_anchor="A_SHARE_ANALYST",
+        fallback=_A_SHARE_FALLBACK.strip(),
     ),
 )
 
@@ -221,3 +233,9 @@ def tools_include_recruitment(tools: list[dict] | None) -> bool:
             continue
         return any(m in blob for m in spec.tool_markers)
     return False
+
+
+def tools_include_akshare_native(tools: list[dict] | None) -> bool:
+    """工具池是否含 A 股 AKShare 原生工具（与 MCP 无关）。"""
+    blob = _tools_blob(tools)
+    return "core:akshare_a_share_hist" in blob and "core:akshare_company_info" in blob

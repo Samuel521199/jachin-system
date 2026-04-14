@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -207,6 +207,27 @@ try:
         NATIVE_TOOLS.extend(UTIL_TOOLS_NATIVES_LIST)
 except Exception as e:
     logger.debug("[Skills] Native util/sys 工具未挂载: %s", e)
+
+try:
+    from l3_node.skills.native_tools.akshare_tools import AKSHARE_NATIVE_TOOLS_LIST
+
+    NATIVE_TOOLS.extend(AKSHARE_NATIVE_TOOLS_LIST)
+except Exception as e:
+    logger.debug("[Skills] AKShare 原生工具未挂载: %s", e)
+
+try:
+    from l3_node.skills.native_tools.yfinance_tools import YFINANCE_NATIVE_TOOLS_LIST
+
+    NATIVE_TOOLS.extend(YFINANCE_NATIVE_TOOLS_LIST)
+except Exception as e:
+    logger.debug("[Skills] yfinance 原生工具未挂载: %s", e)
+
+try:
+    from l3_node.skills.native_tools.youtube_transcript_tools import YOUTUBE_NATIVE_TOOLS_LIST
+
+    NATIVE_TOOLS.extend(YOUTUBE_NATIVE_TOOLS_LIST)
+except Exception as e:
+    logger.debug("[Skills] YouTube 字幕原生工具未挂载: %s", e)
 
 
 def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
@@ -1381,6 +1402,22 @@ def run_tool(
                 params["topic"] = inp.strip()
         else:
             params["topic"] = inp.strip()
+    elif tool_id == "core:youtube_transcript":
+        params["url"] = ""
+        params["languages"] = None
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    u = str(o.get("url") or o.get("video_url") or "").strip()
+                    if u:
+                        params["url"] = u
+                    if o.get("languages") is not None:
+                        params["languages"] = o.get("languages")
+            except json.JSONDecodeError:
+                pass
+        if not params.get("url"):
+            params["url"] = inp.strip()
     elif tool_id == "core:fs_write":
         parsed_fs = False
         if inp.strip().startswith("{"):
@@ -1449,6 +1486,7 @@ def run_tool(
                 "core:safety_lock_append",
                 "core:safety_lock_list_pending",
                 "core:safety_lock_remove",
+                "core:youtube_transcript",
             ):
                 return json.dumps(result, ensure_ascii=False, indent=2)
             if result.get("background") and result.get("job_id"):

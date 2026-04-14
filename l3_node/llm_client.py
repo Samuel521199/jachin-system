@@ -146,7 +146,12 @@ def tool_calls_to_react_text(
     blocks: list[str] = []
     for tc in calls:
         name_api, args_raw = _extract_tool_call_name_args(tc)
-        tid = openapi_fname_to_tool_id.get(str(name_api or "")) or str(name_api or "")
+        name_clean = str(name_api or "").strip()
+        tid = openapi_fname_to_tool_id.get(name_clean)
+        if tid is None:
+            from l3_node.primitives.mcp.registry import infer_tool_id_from_openapi_fname
+
+            tid = infer_tool_id_from_openapi_fname(name_clean) or name_clean
         if not tid:
             continue
         if isinstance(args_raw, (dict, list)):

@@ -31,6 +31,8 @@ dashscope>=1.17.0
 
 # Utils
 requests>=2.28.0  # util:stealth_extract 旁路 Scrapling 服务
+# YouTube 字幕（L3 原生 core:youtube_transcript，替代 Node mcp-server-youtube-transcript）
+youtube-transcript-api>=1.0.0,<2
 curl_cffi>=0.6.0  # util:stealth_extract 进程内 TLS 指纹降级（旁路不可用时）
 pyyaml>=6.0.1
 aiofiles>=23.2.1
@@ -91,3 +93,9 @@ aiosqlite>=0.19.0
 # Office 原生导出（util:generate_office_doc：Word / Excel）
 python-docx>=1.1.0
 openpyxl>=3.1.0
+
+# A 股数据（Native Tool：core:akshare_*）
+akshare>=1.14.0
+
+# 全球标的行情（Native Tool：core:yfinance_*，Yahoo Finance）
+yfinance>=0.2.40

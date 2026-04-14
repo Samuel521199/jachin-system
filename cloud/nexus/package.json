@@ -19,6 +19,8 @@
     "db:studio": "drizzle-kit studio",
     "store:bulk-publish": "node scripts/bulk-publish-store.cjs",
     "store:bulk-publish:dry-run": "node scripts/bulk-publish-store.cjs --dry-run",
+    "store:bulk-publish:continue": "node scripts/bulk-publish-store.cjs --continue-on-error",
+    "store:republish-util-weather": "node scripts/republish-util-weather.cjs",
     "store:unpublish": "node scripts/unpublish-store-plugin.cjs"
   },
   "dependencies": {

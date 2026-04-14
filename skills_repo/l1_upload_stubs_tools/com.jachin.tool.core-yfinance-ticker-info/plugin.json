@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.core-yfinance-ticker-info",
+  "name": "标的快照（core:yfinance_ticker_info）",
+  "version": "1.0.0",
+  "description": "对应 L3 Native 工具 core:yfinance_ticker_info（yfinance）；运行时由终端内置加载；本包用于 L1 货架登记与 manifest。需 pip install yfinance。",
+  "item_type": "TOOL",
+  "type": "TOOL",
+  "runtime_tier": "L3_LOCAL"
+}

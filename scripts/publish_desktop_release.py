@@ -201,22 +201,34 @@ def reject_if_detached_sig_older_than_installer(
 
 
 def find_signature_beside(installer: Path) -> Path | None:
-    """常见命名: foo.exe.sig / foo.exe.sig 同目录同名 .sig。"""
+    """常见命名: 与安装包同名的 detached 签名 foo.exe.sig（同目录）。"""
     same_stem = installer.with_name(installer.name + ".sig")
     if same_stem.is_file():
         return same_stem
     alt = installer.with_suffix(installer.suffix + ".sig")
     if alt.is_file():
         return alt
-    # 同目录唯一 .sig
-    sigs = list(installer.parent.glob("*.sig"))
-    if len(sigs) == 1:
-        return sigs[0]
+    # 禁止「目录里只有一个 .sig 就拿来用」：多版本并存时常剩下旧版 *.sig，会误配到新安装包，
+    # 直到 reject_if_detached_sig_older_than_installer 才报错；此处直接不认无关 .sig。
+    expected_name = installer.name + ".sig"
+    sigs = [p for p in installer.parent.glob("*.sig") if p.is_file()]
+    if sigs:
+        print(
+            f"[提示] 未找到与当前安装包同名的签名文件「{expected_name}」。"
+            f"目录内另有 {len(sigs)} 个 .sig（例如 {sigs[0].name}），多为旧版本遗留；"
+            "请删除旧 .sig 后加 --sign，或手动: npx tauri signer sign -f <私钥> <本安装包>。",
+            file=sys.stderr,
+        )
     return None
 
 
-def pick_windows_installer(bundle: Path) -> Path | None:
-    """优先 NSIS / MSI 目录下体积最大的 .exe/.msi。"""
+def pick_windows_installer(bundle: Path, version_hint: str | None = None) -> Path | None:
+    """
+    在 bundle/nsis（及 msi/wix）下发现安装包。
+
+    若目录内**同时存在多个**历史 setup（例如 0.9.10 与 0.9.101），旧逻辑「取体积最大」会误选旧包。
+    当提供 ``version_hint``（待发布版本）时，**优先**选文件名能严格匹配该版本的文件；多命中时取最近修改时间。
+    """
     candidates: list[Path] = []
     for sub in ("nsis", "msi", "wix"):
         d = bundle / sub
@@ -233,11 +245,27 @@ def pick_windows_installer(bundle: Path) -> Path | None:
             candidates.append(p)
     if not candidates:
         return None
-    # 取最大文件（通常是主安装包）
+
+    if version_hint:
+        v = version_hint.strip().lstrip("vV")
+        matched = [p for p in candidates if version_appears_in_installer_filename(v, p)]
+        if len(matched) == 1:
+            return matched[0]
+        if len(matched) > 1:
+            return max(matched, key=lambda p: p.stat().st_mtime)
+        print(
+            f"[WARN] 在 {bundle} 下未找到文件名匹配版本「{v}」的安装包（共 {len(candidates)} 个候选），"
+            "将回退为「体积最大」策略，易误选旧构建；建议删除 bundle/nsis 中旧版 *_setup.exe 或改用 --installer。",
+            file=sys.stderr,
+        )
+
+    # 历史行为：体积最大（多版本并存时不可靠）
     return max(candidates, key=lambda p: p.stat().st_size)
 
 
-def pick_published_artifact(bundle: Path) -> Path | None:
+def pick_published_artifact(
+    bundle: Path, version_hint: str | None = None
+) -> Path | None:
     """
     选择待上传的安装介质：bundle.active=true 时优先 NSIS/MSI；否则只用 target/release 主程序 exe，
     避免误选 bundle/nsis 里上次打安装包留下的旧 *_0.8.74_*-setup.exe。
@@ -251,9 +279,9 @@ def pick_published_artifact(bundle: Path) -> Path | None:
         rel = pick_release_dir_exe()
         if rel is not None:
             return rel
-        return pick_windows_installer(bundle)
+        return pick_windows_installer(bundle, version_hint=version_hint)
 
-    inst = pick_windows_installer(bundle)
+    inst = pick_windows_installer(bundle, version_hint=version_hint)
     if inst is not None:
         return inst
     return pick_release_dir_exe()
@@ -276,9 +304,9 @@ def pick_release_dir_exe() -> Path | None:
     return max(exes, key=lambda p: p.stat().st_size)
 
 
-def discover_installer(bundle: Path) -> Path:
+def discover_installer(bundle: Path, version_hint: str | None = None) -> Path:
     """仅解析安装包路径；不要求旁路已有 .sig。"""
-    inst = pick_published_artifact(bundle)
+    inst = pick_published_artifact(bundle, version_hint=version_hint)
     if inst is None:
         raise FileNotFoundError(
             f"在 {bundle} 与 target/release 下未发现 .exe/.msi。"
@@ -464,16 +492,20 @@ def installer_path_expects_version_in_filename(installer_path: Path) -> bool:
 def version_appears_in_installer_filename(version: str, installer_path: Path) -> bool:
     """
     本地安装包文件名是否包含将要发布的 semver（不含 v 前缀）。
-    避免 bump 到 0.8.75 却上传 bundle 里仍为 0.8.74 文件名的旧构建，导致「目录是 0.8.75、文件名像 0.8.74」。
+    避免 bump 到 0.8.75 却上传 bundle 里仍为 0.8.74 文件名的旧构建。
+
+    使用「非数字/点」边界，避免 ``0.9.10`` 作为子串误命中 ``0.9.101`` 文件名。
     """
     v = version.strip().lstrip("vV")
     if not v:
         return False
     name = installer_path.name.lower()
-    if v.lower() in name:
+    escaped = re.escape(v.lower())
+    if re.search(rf"(?<![0-9.]){escaped}(?![0-9.])", name):
         return True
     alt = v.replace(".", "_").lower()
-    return alt in name
+    alt_esc = re.escape(alt)
+    return re.search(rf"(?<![0-9._]){alt_esc}(?![0-9._])", name) is not None
 
 
 def remote_artifact_basename(version: str, platform_key: str, installer: Path) -> str:
@@ -502,7 +534,8 @@ def resolve_installer_path(args: argparse.Namespace) -> Path:
             raise SystemExit(f"安装包不存在: {installer}")
         return installer
     bd = args.bundle_dir.resolve()
-    inst = pick_published_artifact(bd)
+    ver = normalize_version(args.version or read_release_version())
+    inst = pick_published_artifact(bd, version_hint=ver)
     if inst is None:
         raise SystemExit(
             "未在 bundle 与 target/release 发现 .exe。请使用 --installer 指向安装包路径。"
@@ -700,7 +733,7 @@ def main() -> None:
         installer = resolve_installer_path(args)
         signature = SIGNATURE_UNSIGNED_PLACEHOLDER
     elif not args.installer and not args.sign and not args.sig:
-        installer = discover_installer(args.bundle_dir.resolve())
+        installer = discover_installer(args.bundle_dir.resolve(), version_hint=version)
         sig = find_signature_beside(installer)
         if sig is not None:
             reject_if_detached_sig_older_than_installer(
@@ -712,7 +745,7 @@ def main() -> None:
             key_path = try_locate_private_key_path(args.private_key_path)
             if key_path is None:
                 raise SystemExit(
-                    f"未找到与 {installer.name} 对应的 .sig（尝试过 {installer.name}.sig 及同目录唯一 *.sig）。\n"
+                    f"未找到与 {installer.name} 对应的 .sig（需同目录同名：{installer.name}.sig）。\n"
                     "可选：\n"
                     "  • 加 --sign 自动签名（需私钥在默认路径或 TAURI_PRIVATE_KEY_PATH）；\n"
                     "  • 或先执行: npx tauri signer sign -f <私钥> <安装包>，再重新运行本脚本；\n"

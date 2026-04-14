@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus v8.0 - Native Core 内置标准库
 
 写路径白名单见 l3_node.primitives.native_write_allowlist（workspace、HR 数据卷、Desktop/Downloads/Documents 等），
@@ -444,6 +444,18 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
             tone=str(kwargs.get("tone") or "正式").strip(),
             structure=str(kwargs.get("structure") or "总-分-总").strip(),
         )
+    if tool_id in ("core:yfinance_global_market_hist", "core:yfinance_ticker_info"):
+        from l3_node.skills.native_tools.yfinance_tools import dispatch_yfinance_core
+
+        return dispatch_yfinance_core(tool_id, **kwargs)
+    if tool_id in ("core:akshare_a_share_hist", "core:akshare_company_info"):
+        from l3_node.skills.native_tools.akshare_tools import dispatch_akshare_core
+
+        return dispatch_akshare_core(tool_id, **kwargs)
+    if tool_id == "core:youtube_transcript":
+        from l3_node.skills.native_tools.youtube_transcript_tools import dispatch_youtube_transcript_core
+
+        return dispatch_youtube_transcript_core(tool_id, **kwargs)
     raise ValueError(f"Unknown Native Core tool: {tool_id}")
 
 

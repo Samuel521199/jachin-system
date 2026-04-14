@@ -58,7 +58,13 @@
         "--db-path",
         "__JACHIN_WORKSPACE__/my_life_data.db"
       ]
+    },
+    {
+      "id": "notion-remote-oauth",
+      "name": "Notion 托管 MCP（Remote，OAuth；npm mcp-remote → https://mcp.notion.com/mcp）",
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
     }
   ],
-  "_comment": "复制到 ~/.jachin/mcp_servers.json 并与仓库 tools/mcp-official/mcp_servers.jachin.example.json 按需合并。Fetch 项：官方在 PyPI（pip install mcp-server-fetch），勿使用不存在的 npm 包 @modelcontextprotocol/server-fetch；默认遵守 robots.txt（如头条 /trending/ 会被拒）。需自担合规风险时可在 args 末尾加 \"--ignore-robots-txt\"，或设环境变量 JACHIN_MCP_FETCH_IGNORE_ROBOTS=1 由启动逻辑自动追加（见 core/mcp_json_repair.py）。Filesystem：__JACHIN_WORKSPACE__ 展开为 ~/.jachin/workspace。${TAVILY_API_KEY} / ${GOOGLE_MAPS_API_KEY} 从 .env 注入，勿把真实 Key 写入 Git。maps_assistant：见 modelcontextprotocol/servers-archived/src/google-maps（NPM @modelcontextprotocol/server-google-maps）。PowerPoint 需 pip install office-powerpoint-mcp-server。sqlite_manager：官方归档实现见 modelcontextprotocol/servers-archived/src/sqlite，PyPI 包名 mcp-server-sqlite，需本机安装 uv 且 PATH 可执行 uvx。L3 启动时会自动补全未配置的 Filesystem/Fetch 默认项，并可选合并 sqlite_manager（见 core/mcp_json_repair.ensure_sqlite_manager_life_db_mcp）。"
+  "_comment": "复制到 ~/.jachin/mcp_servers.json 并与仓库 tools/mcp-official/mcp_servers.jachin.example.json 按需合并。YouTube 字幕已改为 L3 原生工具 core:youtube_transcript（pip youtube-transcript-api），不再推荐使用 npm youtube-transcript MCP。若你仍在 ~/.jachin/mcp_servers.json 中保留旧 youtube-transcript 条目，可手动删除以免多余 stdio 进程。Fetch 项：官方在 PyPI（pip install mcp-server-fetch），勿使用不存在的 npm 包 @modelcontextprotocol/server-fetch；默认遵守 robots.txt（如头条 /trending/ 会被拒）。需自担合规风险时可在 args 末尾加 \"--ignore-robots-txt\"，或设环境变量 JACHIN_MCP_FETCH_IGNORE_ROBOTS=1 由启动逻辑自动追加（见 core/mcp_json_repair.py）。Filesystem：__JACHIN_WORKSPACE__ 展开为 ~/.jachin/workspace。${TAVILY_API_KEY} / ${GOOGLE_MAPS_API_KEY} 从 .env 注入，勿把真实 Key 写入 Git。maps_assistant：见 modelcontextprotocol/servers-archived/src/google-maps（NPM @modelcontextprotocol/server-google-maps）。PowerPoint 需 pip install office-powerpoint-mcp-server。sqlite_manager：官方归档实现见 modelcontextprotocol/servers-archived/src/sqlite，PyPI 包名 mcp-server-sqlite，需本机安装 uv 且 PATH 可执行 uvx。L3 启动时会自动补全未配置的 Filesystem/Fetch 默认项，并可选合并 sqlite_manager（见 core/mcp_json_repair.ensure_sqlite_manager_life_db_mcp）。notion-remote-oauth：Notion 官方托管 Remote MCP（OAuth），npm 包 mcp-remote 桥接 https://mcp.notion.com/mcp，首次按终端/桥接提示在浏览器完成授权；详见 docs/MCP_SPEC.md §3.5。"
 }

@@ -451,9 +451,16 @@ export default function StorePage() {
         </div>
 
         {/* 商品数量 */}
-        <p className="text-xs text-white/40 font-mono mb-6">
+        <p className="text-xs text-white/40 font-mono mb-2">
           {loading ? t.loading : t.totalItems(total)}
         </p>
+        {tab === "TOOL" && !loading ? (
+          <p className="text-xs text-white/45 mb-6 max-w-4xl leading-relaxed border-l border-amber-500/25 pl-3">
+            {t.toolTabExplain}
+          </p>
+        ) : (
+          <div className="mb-6" />
+        )}
 
         {/* 商品网格 */}
         {loading ? (

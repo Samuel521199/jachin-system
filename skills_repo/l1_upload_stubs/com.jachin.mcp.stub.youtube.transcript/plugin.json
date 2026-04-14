@@ -1,0 +1,15 @@
+﻿{
+  "id": "com.jachin.mcp.stub.youtube.transcript",
+  "name": "YouTube Transcript（npm MCP）",
+  "version": "1.0.0",
+  "description": "npx @kimtaeyoon83/mcp-server-youtube-transcript。仓库默认推荐 L3 原生 core:youtube_transcript（pip youtube-transcript-api）；本条目供仍希望独立 stdio 进程时在 ~/.jachin/mcp_servers.json 中配置。",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "youtube-transcript",
+    "command": "npx",
+    "args": ["-y", "@kimtaeyoon83/mcp-server-youtube-transcript"]
+  }
+}

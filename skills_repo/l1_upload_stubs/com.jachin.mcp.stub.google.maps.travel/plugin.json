@@ -1,0 +1,20 @@
+{
+  "id": "com.jachin.mcp.stub.google.maps.travel",
+  "name": "Google Maps MCP（出行助手，stub）",
+  "version": "1.0.0",
+  "description": "npm @modelcontextprotocol/server-google-maps；与本机 maps_assistant 对应，需 GOOGLE_MAPS_API_KEY。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "maps_assistant",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-google-maps"
+    ],
+    "env": {
+      "GOOGLE_MAPS_API_KEY": "${GOOGLE_MAPS_API_KEY}"
+    }
+  }
+}

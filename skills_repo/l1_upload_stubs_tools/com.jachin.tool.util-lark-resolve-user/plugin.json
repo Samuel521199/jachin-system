@@ -1,0 +1,9 @@
+﻿{
+  "id": "com.jachin.tool.util-lark-resolve-user",
+  "name": "飞书解析用户 open_id（util:lark_resolve_user）",
+  "version": "1.0.0",
+  "description": "对应 L3 Native 工具 util:lark_resolve_user（邮箱/手机等解析 open_id）；运行时由终端内置加载；本包用于 L1 货架登记与 manifest。",
+  "item_type": "TOOL",
+  "type": "TOOL",
+  "runtime_tier": "L3_LOCAL"
+}
