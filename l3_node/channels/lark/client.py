@@ -21,12 +21,32 @@ LARK_API_BASE = "https://open.larksuite.com/open-apis"  # 兼容旧代码，新�
 
 _PLUGIN_DOTENV_MERGED = False
 
+# 供 403 / scope 后「强制换发」占位：当前每次请求均 POST 新 token；若将来增加短期内存缓存，在此 bump 后代际失效。
+_lark_tenant_token_epoch: int = 0
+
+
+def bump_lark_tenant_token_epoch() -> None:
+    """使后续逻辑可感知「已要求丢弃旧代 token」（排查日志、未来缓存键）。"""
+    global _lark_tenant_token_epoch
+    _lark_tenant_token_epoch += 1
+
+
+def invalidate_lark_tenant_token_cache() -> None:
+    """
+    飞书开放平台 tenant_access_token 在**本进程**若将来做短期缓存，在此清空。
+    当前实现为每次 ``get_tenant_access_token`` 均重新 POST；403/权限刚发布时仍调用本函数
+    并配合 ``time.sleep`` 重试，以满足「先失效再换发」的操作顺序与可观测性。
+    """
+    bump_lark_tenant_token_epoch()
+
 
 def _ensure_dotenv_loaded() -> None:
-    """合并 skills_repo/plugin/.env 等路径（override=False），补全 LARK_CHAT_ID 等。
+    """合并 skills_repo/plugin/.env 等路径，补全 LARK_CHAT_ID 等。
 
-    进程启动时已从仓库根 .env 注入 LARK_APP_ID 时，旧实现会直接 return，导致 **从未读取**
-    ``skills_repo/plugin/.env`` 中的 LARK_CHAT_ID，util:lark_send_text 误报未配置。
+    第一轮 ``override=False``：不覆盖进程里已有变量（兼容 L2 注入）。
+    第二轮仅对 ``skills_repo/plugin/.env`` 使用 ``override=True``（可用 ``JACHIN_IGNORE_PLUGIN_LARK=1`` 跳过）：
+    避免用户曾在**系统/用户级环境变量**里导出过旧的 ``LARK_APP_ID``（如 HR 应用），导致与
+    ``ou_`` 不同源的 **open_id cross app**；仓库内 plugin/.env 通常为显式飞书配置，应优先生效。
     """
     global _PLUGIN_DOTENV_MERGED
     if _PLUGIN_DOTENV_MERGED:
@@ -55,6 +75,11 @@ def _ensure_dotenv_loaded() -> None:
         for p in paths:
             if p.is_file():
                 load_dotenv(p, override=False)
+        _pl = root / "skills_repo" / "plugin" / ".env"
+        if _pl.is_file():
+            _ign = (os.environ.get("JACHIN_IGNORE_PLUGIN_LARK") or "").strip().lower()
+            if _ign not in ("1", "true", "yes", "on"):
+                load_dotenv(_pl, override=True)
     except ImportError:
         pass
     except Exception:
@@ -87,6 +112,9 @@ def resolve_lark_credentials() -> tuple[str, str, str | None]:
     优先级：环境变量（含 .env）→ ~/.jachin/config/im_channels.yaml（`im_channels.lark`，与长连接同源）。
 
     返回 (app_id, app_secret, api_base)；api_base 为 None 时调用方应使用 get_lark_api_base()。
+
+    **约定**：`LARK_APP_ID` / `LARK_APP_SECRET` 表示 **通用/默认** 机器人（终端镜像、util:lark_send_text、与用户 open_id 同应用）；
+    HR 招聘专用应用请用 `resolve_hr_lark_credentials()`，避免与通用 open_id 混用导致 ``open_id cross app``。
     """
     _ensure_dotenv_loaded()
     aid = (os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID") or "").strip()
@@ -105,6 +133,20 @@ def resolve_lark_credentials() -> tuple[str, str, str | None]:
         pass
 
     return "", "", None
+
+
+def resolve_hr_lark_credentials() -> tuple[str, str, str | None]:
+    """
+    HR 招聘插件专用应用（多维表、atom_lark_*、与招聘场景绑定的回调）。
+
+    优先级：**HR_LARK_APP_ID** + **HR_LARK_APP_SECRET** → 回退 ``resolve_lark_credentials()``（兼容仅配置一套凭证的旧环境）。
+    """
+    _ensure_dotenv_loaded()
+    aid = (os.environ.get("HR_LARK_APP_ID") or os.environ.get("FEISHU_HR_APP_ID") or "").strip()
+    sec = (os.environ.get("HR_LARK_APP_SECRET") or os.environ.get("FEISHU_HR_APP_SECRET") or "").strip()
+    if aid and sec:
+        return aid, sec, None
+    return resolve_lark_credentials()
 
 
 def is_lark_api_configured(

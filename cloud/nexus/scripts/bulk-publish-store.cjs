@@ -7,7 +7,7 @@
  * 可选：NEXUS_URL=http://localhost:3000
  * 可选：NEXUS_AUTO_APPROVE=1（本机自动审核为 approved，否则为 pending）
  *
- * 顺序：先全部 MCP（含 com.jachin.hr.recruitment），再 SKILL（077 要求依赖 MCP 已入库），最后 TOOL 元数据包（如天气 util:get_weather_lite 对应 com.jachin.tool.util_weather_lite）。
+ * 顺序：先全部 MCP（含 com.jachin.hr.recruitment），再 SKILL（077 要求依赖 MCP 已入库），最后 TOOL 元数据包（如天气 util:get_weather_lite 对应 com.jachin.tool.util-weather-lite）。
  * 说明：util:get_weather_lite 已在 L3 内置并在商店「原子工具」展示；上架本条仅为 plugins_registry 登记，目录 API 会与内置去重避免双卡片。
  *
  * 用法：

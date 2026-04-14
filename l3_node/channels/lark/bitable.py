@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — 多维表（Bitable）同步
 
 将 HR 排行榜 MD 文档解析后导入 Lark 多维表格，供 HR 查看、协作。
@@ -16,9 +16,9 @@ from typing import Any
 from l3_node.channels.lark.client import (
     LARK_API_BASE,
     _api_base_from_domain,
+    get_lark_api_base,
     get_tenant_access_token,
-    is_lark_api_configured,
-    resolve_lark_credentials,
+    resolve_hr_lark_credentials,
 )
 from l3_node.channels.lark.im import send_text as send_im_text
 
@@ -69,9 +69,12 @@ def list_bitable_fields(app_token: str = "", table_id: str = "") -> dict[str, An
     app_token = app_token or os.environ.get("LARK_APP_TOKEN") or DEFAULT_APP_TOKEN
     table_id = table_id or os.environ.get("LARK_TABLE_ID") or DEFAULT_TABLE_ID
     try:
-        token = get_tenant_access_token()
-        _, _, cred_base = resolve_lark_credentials()
-        base = cred_base or _get_api_base()
+        _aid, _sec, _yb = resolve_hr_lark_credentials()
+        base = _yb or get_lark_api_base() or _get_api_base()
+        if _aid and _sec:
+            token = get_tenant_access_token(app_id=_aid, app_secret=_sec, api_base=base)
+        else:
+            token = get_tenant_access_token()
         url = f"{base}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
         import requests
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
@@ -449,9 +452,12 @@ def sync_bitable_from_md(
                 "message": f"[dry_run] 解析到 {len(parsed_list)} 条（最多{max_n}），未写入 Lark",
             }
 
-        token = get_tenant_access_token()
-        _, _, cred_base = resolve_lark_credentials()
-        api_base = cred_base or _get_api_base()
+        _aid, _sec, _yb = resolve_hr_lark_credentials()
+        api_base = _yb or get_lark_api_base() or _get_api_base()
+        if _aid and _sec:
+            token = get_tenant_access_token(app_id=_aid, app_secret=_sec, api_base=api_base)
+        else:
+            token = get_tenant_access_token()
 
         created_cols: list[str] = []
         try:

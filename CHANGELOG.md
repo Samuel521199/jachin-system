@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.115] - 2026-04-15
+
+### Added / Changed
+
+- L1（Nexus）界面增加 tools 模块及相关能力。
+- **Version**: Desktop、core CLI 与 `core/main` 版本号 **0.8.115**。
+
+---
+
 ## [v0.8.114] - 2026-04-14
 
 ### Added / Changed

@@ -1,4 +1,4 @@
-"""
+﻿"""
 L4 内联 Action Critic（非独立 Agent）：在 **同一条 run_agent ReAct 循环** 内、真正调用 MCP/Native 前，
 用轻量 LLM 审查 Action 与用户意图、业务语义层是否一致。
 
@@ -152,6 +152,35 @@ def _sqlite_action_kind(tool_id: str, sql: str) -> str:
     return "unknown"
 
 
+def _sql_first_statement_is_insert(sql: str) -> bool:
+    """首条语句是否为 INSERT（新建表后首行写入、记账场景）。"""
+    s = (sql or "").strip()
+    if not s:
+        return False
+    first = s.split(";")[0].strip()
+    return bool(re.match(r"^\s*INSERT\b", first, re.I))
+
+
+def _action_has_jachin_mcp_write_ack(proposed_action: dict[str, Any]) -> bool:
+    ai = _parse_action_input_json(proposed_action.get("action_input"))
+    v = ai.get("jachin_mcp_write_ack")
+    if v is True:
+        return True
+    if isinstance(v, str) and v.strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return False
+
+
+def _observation_hints_post_ddl_ready_for_insert(excerpt: str) -> bool:
+    """上一轮 Observation 是否表明刚建表成功，允许紧接着 INSERT 首行（无需先 SELECT 出数据行）。"""
+    ex = excerpt or ""
+    if "Table created successfully" in ex:
+        return True
+    if re.search(r"CREATE\s+TABLE", ex, re.I) and re.search(r"success", ex, re.I):
+        return True
+    return False
+
+
 def _observation_excerpt_suggests_prior_rowset(excerpt: str) -> bool:
     """上一轮用户侧 Observation 是否像已成功返回行数据（供写步放行）。"""
     s = (excerpt or "").strip()
@@ -199,6 +228,12 @@ def _critic_deterministic_pass(
     kind = _sqlite_action_kind(tid, sql)
     if kind == "read":
         return True, ""
+    # 写库：INSERT 且用户已显式 ack，或紧接在「建表成功」之后（空表首行 / 本地记账）
+    if kind == "write" and sql and _sql_first_statement_is_insert(sql):
+        if _action_has_jachin_mcp_write_ack(proposed_action):
+            return True, ""
+        if _observation_hints_post_ddl_ready_for_insert(react_observation_excerpt):
+            return True, ""
     if kind == "write" and _observation_excerpt_suggests_prior_rowset(react_observation_excerpt):
         return True, ""
     return None

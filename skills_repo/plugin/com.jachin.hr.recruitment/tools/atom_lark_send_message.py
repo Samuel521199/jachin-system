@@ -52,11 +52,15 @@ def _ensure_dotenv_loaded() -> None:
 
 
 def _get_tenant_access_token() -> str:
-    """供 atom_lark_send_message、lark_bot 等调用。委托 channels.lark。"""
+    """供 atom_lark_send_message、lark_bot 等调用。使用 HR 专用凭证（与通用 LARK_APP_ID 分离）。"""
     _ensure_l3_importable()
-    from l3_node.channels.lark import get_tenant_access_token
+    from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_hr_lark_credentials
 
     _ensure_dotenv_loaded()
+    aid, sec, yb = resolve_hr_lark_credentials()
+    base = yb or get_lark_api_base()
+    if aid and sec:
+        return get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
     return get_tenant_access_token()
 
 
@@ -153,10 +157,10 @@ def atom_lark_send_message(
 
     try:
         _ensure_l3_importable()
-        from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_lark_credentials
+        from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_hr_lark_credentials
         from l3_node.channels.lark.receive_resolve import normalize_lark_im_receive
 
-        aid, sec, yb = resolve_lark_credentials()
+        aid, sec, yb = resolve_hr_lark_credentials()
         if not aid or not sec:
             return {"success": False, "message": "", "error": "请配置 LARK_APP_ID / LARK_APP_SECRET"}
         base = yb or get_lark_api_base()

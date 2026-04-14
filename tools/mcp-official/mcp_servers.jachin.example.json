@@ -59,6 +59,16 @@
       "args": ["-y", "mcp-sqlite", "__JACHIN_WORKSPACE__/test_db.sqlite"]
     },
     {
+      "id": "sqlite_manager",
+      "name": "SQLite 生活库 / 记账（PyPI mcp-server-sqlite，uvx；与 official-sqlite-npx 二选一即可）",
+      "command": "uvx",
+      "args": [
+        "mcp-server-sqlite",
+        "--db-path",
+        "__JACHIN_WORKSPACE__/my_life_data.db"
+      ]
+    },
+    {
       "id": "official-memory-npx",
       "name": "MCP Memory（官方 npx，知识图谱）",
       "command": "npx",
@@ -71,6 +81,15 @@
       "args": ["-y", "tavily-mcp@latest"],
       "env": {
         "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
+    },
+    {
+      "id": "maps_assistant",
+      "name": "Google Maps MCP（地理编码、路线、周边；@modelcontextprotocol/server-google-maps）",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-google-maps"],
+      "env": {
+        "GOOGLE_MAPS_API_KEY": "${GOOGLE_MAPS_API_KEY}"
       }
     },
     {

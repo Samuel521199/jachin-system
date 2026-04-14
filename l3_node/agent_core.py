@@ -3092,6 +3092,15 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
         if (jachin_rules or "").strip():
             _pure_mem_rules += f"\n【工作区规则】\n{jachin_rules.strip()}\n"
 
+    _service_attitude_feishu_block = ""
+    if not pure_json_contract:
+        _service_attitude_feishu_block = """
+【服务姿态与飞书/通讯录工具故障纪律】
+- 在 `Thought:` 中严禁使用否定尝试价值或泄气的措辞（如「没有意义」「重复尝试没必要」「算了」「懒得再试」等）；应写清下一步可执行动作（调整参数、引导用户确认权限已发布、稍后重试等）。
+- 若工具返回 Access Denied、权限拒绝、HTTP 403、缺少 scope/permission：优先假设用户或管理员刚在飞书开放平台为应用勾选了新权限，但尚未完成「版本创建与发布」或权限尚未即时落到租户 token；在 `Final Answer` 中友善、可操作地引导：请确认已对应用执行**版本发布**（创建版本并申请发布/审批通过），并等待约 1～2 分钟后再试。
+- `Final Answer` 对用户须保持积极协助，可自然表达「我非常希望能为您办好这件事」；交付类诉求可表达「我非常想为您送达」等真诚积极的收尾，并配合清晰步骤说明。
+"""
+
     if pure_json_contract:
         _prefix_after_tools = f"""
 {_pure_mem_rules}
@@ -3112,7 +3121,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {recall_hint}
 {coordinate_hint}
 {delegate_hint}
-
+{_service_attitude_feishu_block}
 {_expert_react_thought_addon}【绝对报告纪律】：当你收到后台任务 (background_task) 的完成报告，或需要向统帅输出长篇大段的 Markdown 文本时，
 **你必须、绝对、永远在最开头加上 `Final Answer: ` 前缀！** 严禁直接输出裸的 Markdown 文本！
 
@@ -3204,10 +3213,14 @@ Final Answer: <最终回复>
         try:
             from l3_node.prompt_sqlite_sop import (
                 SQLITE_ACTOR_CRITIC_STUB_NOTE,
+                SQLITE_LIFE_LEDGER_HINT,
                 SQLITE_REACT_SOP_BLOCK,
                 SQLITE_SELF_CRITIC_BLOCK,
             )
 
+            suffix_chunks.append(
+                SuffixChunk("high", "sqlite_life_ledger_hint", f"\n{SQLITE_LIFE_LEDGER_HINT}\n", eviction_rank=91)
+            )
             suffix_chunks.append(
                 SuffixChunk("high", "sqlite_react_sop", f"\n{SQLITE_REACT_SOP_BLOCK}\n", eviction_rank=92)
             )

@@ -247,6 +247,7 @@ class MCPServerInstance:
         try:
             from core.mcp_embedded_runtime import (
                 effective_stdio_env_for_sdk,
+                expand_stdio_env_windows_npx_google_maps,
                 expand_stdio_env_windows_npx_tavily,
                 is_tavily_stdio_server,
                 log_tavily_mcp_chain,
@@ -257,6 +258,7 @@ class MCPServerInstance:
 
             eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
             eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
+            eff_env = expand_stdio_env_windows_npx_google_maps(self.server_id, self.args, eff_env)
             tavily_cwd: str | None = None
             if is_tavily_stdio_server(self.server_id, self.args):
                 tavily_cwd = resolve_tavily_stdio_cwd()

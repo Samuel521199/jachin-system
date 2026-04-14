@@ -10,6 +10,8 @@
 由 l3_node.primitives.mcp.mcp_stdio_bootstrap 在 MCPManager.start() 之前调用。
 
 **说明**：Anthropic 官方 Fetch 在 **PyPI**（``mcp-server-fetch``），**无** npm ``@modelcontextprotocol/server-fetch`` 包；勿在配置里写错误的 npx 包名。
+
+**SQLite 生活库**：若尚未配置 ``uvx mcp-server-sqlite``（``sqlite_manager``），可由 ``ensure_sqlite_manager_life_db_mcp`` 自动合并一条（需本机 ``uv``/``uvx``）。
 """
 from __future__ import annotations
 
@@ -388,4 +390,102 @@ def repair_hr_atomic_tools_path(project_root: Path) -> bool:
     except OSError as e:
         logger.warning("[mcp_json_repair] 写入失败: %s", e)
         return False
+    return True
+
+
+_SQLITE_MANAGER_ID = "sqlite_manager"
+
+
+def _mcp_entry_has_sqlite_manager_uvx(entry: dict[str, Any]) -> bool:
+    """已配置 sqlite_manager 或基于 PyPI mcp-server-sqlite 的 uvx 条目。"""
+    if str(entry.get("id") or "").strip() == _SQLITE_MANAGER_ID:
+        return True
+    args = entry.get("args")
+    if not isinstance(args, list):
+        return False
+    return any(isinstance(a, str) and "mcp-server-sqlite" in a for a in args)
+
+
+def ensure_sqlite_manager_life_db_mcp() -> bool:
+    """
+    若 ``~/.jachin/mcp_servers.json`` 中尚无 ``sqlite_manager`` / ``mcp-server-sqlite`` 条目，
+    则追加默认 **uvx mcp-server-sqlite**（数据库 ``__JACHIN_WORKSPACE__/my_life_data.db``）。
+
+    与 ``ensure_jachin_workspace_my_life_sqlite_db`` 配合：先占位库文件再拉起 MCP。
+    需本机安装 `uv` 且 ``uvx`` 在 PATH 中。
+
+    Returns:
+        是否写回了磁盘。
+    """
+    if (os.environ.get("JACHIN_MCP_NO_AUTO_SQLITE_MANAGER") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+
+    jachin_dir = Path.home() / ".jachin"
+    try:
+        jachin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.debug("[mcp_json_repair] 无法创建 ~/.jachin: %s", e)
+        return False
+
+    cfg_path = jachin_dir / "mcp_servers.json"
+    entry: dict[str, Any] = {
+        "id": _SQLITE_MANAGER_ID,
+        "name": "SQLite 生活库 / 记账（PyPI mcp-server-sqlite，uvx）",
+        "command": "uvx",
+        "args": [
+            "mcp-server-sqlite",
+            "--db-path",
+            "__JACHIN_WORKSPACE__/my_life_data.db",
+        ],
+    }
+
+    if not cfg_path.is_file():
+        blob: dict[str, Any] = {"mcp_servers": [entry]}
+        try:
+            cfg_path.write_text(json.dumps(blob, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError as e:
+            logger.warning("[mcp_json_repair] 写入默认 sqlite_manager MCP 失败: %s", e)
+            return False
+        logger.info(
+            "[mcp_json_repair] 已创建 %s 并写入默认 sqlite_manager（需 uvx）",
+            cfg_path,
+        )
+        return True
+
+    try:
+        parsed = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("[mcp_json_repair] 跳过 sqlite_manager：读取失败 %s", e)
+        return False
+
+    if isinstance(parsed, dict):
+        if not isinstance(parsed.get("mcp_servers"), list):
+            parsed["mcp_servers"] = []
+        servers = parsed["mcp_servers"]
+        blob = parsed
+    elif isinstance(parsed, list):
+        servers = parsed
+        blob = parsed
+    else:
+        return False
+
+    for e in servers:
+        if isinstance(e, dict) and _mcp_entry_has_sqlite_manager_uvx(e):
+            return False
+
+    servers.append(entry)
+    try:
+        cfg_path.write_text(json.dumps(blob, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as e:
+        logger.warning("[mcp_json_repair] 合并 sqlite_manager MCP 失败: %s", e)
+        return False
+    logger.info(
+        "[mcp_json_repair] 已向 %s 追加默认 sqlite_manager（uvx mcp-server-sqlite）",
+        cfg_path,
+    )
     return True
