@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 防弹罩：Default Deny — 由 `auth.config.ts` 中 `callbacks.authorized` 判定。
  * 使用 `auth.edge`（仅依赖轻量 `auth.config`），避免把 Drizzle/bcrypt 打进 Edge。
  *
@@ -58,12 +58,18 @@ function redirectOffBindAllHost(req: NextRequest): NextResponse | null {
 
 /** NextAuth v5：`auth` 须用回调包装为中间件，不能 `auth(req)` 直接调用。 */
 export default auth((req) => {
+  const p = req.nextUrl.pathname;
+  // 双保险：matcher 已排除 _next，但若环境对正则匹配有差异，避免误伤静态资源
+  if (p.startsWith("/_next/")) {
+    return NextResponse.next();
+  }
   const early = redirectOffBindAllHost(req);
   if (early) return early;
 });
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // 排除 API、Next 内部资源、静态后缀；api 用 api/|api$ 避免误伤 /apiconfig 等
+    "/((?!api/|api$|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

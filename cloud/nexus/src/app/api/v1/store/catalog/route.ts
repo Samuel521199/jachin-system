@@ -127,7 +127,7 @@ export async function GET(request: NextRequest) {
       const dbRows = dbTOOLRows.map(mapRow);
       /** 与内置 util:get_weather_lite 同能力的上架行仅用于登记，避免货架双卡片 */
       const dbRowsDeduped = dbRows.filter((r) => {
-        if (r.plugin_id !== "com.jachin.tool.util_weather_lite") return true;
+        if (r.plugin_id !== "com.jachin.tool.util-weather-lite") return true;
         const hasBuiltinWeather = builtins.some((b) => b.tool_id === "util:get_weather_lite");
         return !hasBuiltinWeather;
       });

@@ -1307,7 +1307,8 @@ def run_schedule_desktop_reminder(**kwargs: Any) -> dict[str, Any]:
 
 def run_lark_send_text(**kwargs: Any) -> dict[str, Any]:
     """
-    util:lark_send_text — 经 Lark Open API 向指定会话发送纯文本（需 LARK_APP_ID / LARK_APP_SECRET）。
+    util:lark_send_text — 经 Lark Open API 向指定会话发送纯文本（**通用** LARK_APP_ID / LARK_APP_SECRET；
+    与 HR 多维表分离时请把招聘应用填到 HR_LARK_APP_*，勿与终端用户 open_id 混用）。
 
     典型链路：用户要「总结某网页并发到飞书」→ 先用 **util:stealth_extract**（或 MCP）取正文，再在模型内压缩后调用本工具 **text**。
     **接收者** 解析顺序（与飞书「发送消息」一致）：
@@ -1416,6 +1417,13 @@ def run_lark_send_text(**kwargs: Any) -> dict[str, Any]:
         )
     err_raw = str(res.get("error") or res)
     _el = err_raw.lower()
+    if "cross app" in _el:
+        return _err(
+            f"{err_raw}。"
+            f" 当前 tenant 对应应用 ID：{aid}；接收方 open_id 须与该应用在飞书开放平台为同一应用下解析得到。"
+            " 若已在 skills_repo/plugin/.env 配置通用机器人仍报错，请检查系统/用户环境变量是否残留其它 LARK_APP_ID，"
+            "或确认 ou_ 不是从其它应用复制；可用 JACHIN_IGNORE_PLUGIN_LARK=1 禁止 plugin/.env 覆盖环境变量。"
+        )
     if "out of the chat" in _el or "no availability" in _el or "230013" in err_raw:
         return _err(
             f"{err_raw}。"
@@ -1504,10 +1512,22 @@ def run_lark_resolve_user(**kwargs: Any) -> dict[str, Any]:
         mobiles=[mob_norm] if mob_norm else None,
     )
     oid, err = pick_open_id_from_batch_get(data)
-    if (err or not oid) and is_contact_scope_denied_payload(data):
+    _msg_l = str(data.get("msg") or "").lower()
+    _need_token_retry = (err or not oid) and (
+        is_contact_scope_denied_payload(data)
+        or data.get("code") == 403
+        or ("access denied" in _msg_l and "scope" in _msg_l)
+    )
+    if _need_token_retry:
         import time
 
-        time.sleep(1.2)
+        try:
+            from l3_node.channels.lark.client import invalidate_lark_tenant_token_cache
+
+            invalidate_lark_tenant_token_cache()
+        except Exception:
+            pass
+        time.sleep(2.0)
         try:
             tkn = get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
         except Exception:

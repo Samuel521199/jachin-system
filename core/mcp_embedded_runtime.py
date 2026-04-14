@@ -479,6 +479,31 @@ def is_tavily_stdio_server(server_id: str, args: Any) -> bool:
     return _is_tavily_stdio_cfg({"id": server_id, "args": args if isinstance(args, list) else []})
 
 
+def _is_google_maps_stdio_cfg(out: dict[str, Any]) -> bool:
+    """官方 npm ``@modelcontextprotocol/server-google-maps``（出行/地理/路线）。"""
+    sid = str(out.get("id") or out.get("name") or "").lower()
+    if sid == "maps_assistant" or ("google" in sid and "map" in sid):
+        return True
+    args = out.get("args")
+    if isinstance(args, list):
+        for a in args:
+            if isinstance(a, str) and "server-google-maps" in a:
+                return True
+    return False
+
+
+def is_google_maps_stdio_server(server_id: str, args: Any) -> bool:
+    return _is_google_maps_stdio_cfg({"id": server_id, "args": args if isinstance(args, list) else []})
+
+
+def _google_maps_api_key_from_os() -> str:
+    """npm 包读 ``GOOGLE_MAPS_API_KEY``；兼容用户别名 ``Maps_API_KEY`` / ``MAPS_API_KEY``。"""
+    k = (os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
+    if k:
+        return k
+    return (os.environ.get("Maps_API_KEY") or os.environ.get("MAPS_API_KEY") or "").strip()
+
+
 def effective_stdio_env_for_sdk(
     server_id: str,
     args: Any,
@@ -493,8 +518,8 @@ def effective_stdio_env_for_sdk(
     ``process.env.TAVILY_API_KEY`` 为空，``list_tools`` 可能仍成功，**首次** ``tavily_search`` 才报
     ``-32600 TAVILY_API_KEY environment variable is required``。
 
-    对 Tavily：无论 ``raw_env`` 是否为 None，均返回 **dict**（至少尝试从 ``os.environ`` 补 Key）；
-    非 Tavily：无显式变量时返回 ``None`` 以保持与旧行为一致。
+    对 Tavily / Google Maps（npx Node）：须向子进程显式传入 API Key，否则进程内读不到（与 Tavily 同理）。
+    非上述：无显式变量时返回 ``None`` 以保持与旧行为一致。
     """
     out: dict[str, str] = {}
     if isinstance(raw_env, dict):
@@ -510,6 +535,16 @@ def effective_stdio_env_for_sdk(
         if not (out.get("TAVILY_API_KEY") or "").strip():
             logger.warning(
                 "[TavilyMCP] effective_stdio_env: 父进程无 TAVILY_API_KEY，Tavily 工具调用将报 -32600（请配置 .env）"
+            )
+        return out
+    gmaps = is_google_maps_stdio_server(server_id, args)
+    if gmaps:
+        gm = _google_maps_api_key_from_os()
+        if gm and not (out.get("GOOGLE_MAPS_API_KEY") or "").strip():
+            out["GOOGLE_MAPS_API_KEY"] = gm
+        if not (out.get("GOOGLE_MAPS_API_KEY") or "").strip():
+            logger.warning(
+                "[GoogleMapsMCP] effective_stdio_env: 父进程无 GOOGLE_MAPS_API_KEY（可在 .env 设 Maps_API_KEY 别名），地图工具将不可用"
             )
         return out
     return out if out else None
@@ -624,6 +659,29 @@ def expand_stdio_env_windows_npx_tavily(
     return base
 
 
+def expand_stdio_env_windows_npx_google_maps(
+    server_id: str,
+    args: Any,
+    eff_env: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Windows：npx 链式子进程与 Tavily 类似，合并完整父环境以确保 ``GOOGLE_MAPS_API_KEY`` 可见。"""
+    if sys.platform != "win32":
+        return eff_env
+    if not is_google_maps_stdio_server(server_id, args):
+        return eff_env
+    base: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if v is None:
+            continue
+        try:
+            base[str(k)] = str(v)
+        except Exception:
+            continue
+    if eff_env:
+        base.update(eff_env)
+    return base
+
+
 def log_tavily_stdio_merged_spawn(server_id: str, explicit_env: dict[str, str] | None) -> None:
     """记录 SDK 合并后子进程可见的 TAVILY（与 ``get_default_environment()`` 合并后）。"""
     if _tavily_chain_logging_disabled():
@@ -691,6 +749,16 @@ def resolve_mcp_cfg_placeholders(cfg: dict[str, Any]) -> dict[str, Any]:
                 out["env"]["TAVILY_API_KEY"] = tv
         _sid = str(out.get("id") or out.get("name") or "unknown")
         log_tavily_mcp_chain("resolve_placeholders", _sid, out.get("env") if isinstance(out.get("env"), dict) else None, log_parent_os=True)
+    if _is_google_maps_stdio_cfg(out):
+        if not isinstance(out.get("env"), dict):
+            out["env"] = {}
+        gm = _google_maps_api_key_from_os()
+        if gm and not (str(out["env"].get("GOOGLE_MAPS_API_KEY") or "").strip()):
+            out["env"]["GOOGLE_MAPS_API_KEY"] = gm
+        if not (str(out["env"].get("GOOGLE_MAPS_API_KEY") or "").strip()):
+            logger.warning(
+                "[GoogleMapsMCP] 未配置 GOOGLE_MAPS_API_KEY（或别名 Maps_API_KEY）；请写入仓库或 ~/.jachin/.env"
+            )
     return out
 
 
@@ -704,3 +772,19 @@ def resolve_and_preflight_command(command: str, server_id: str) -> tuple[Optiona
     if not ok:
         return None, msg
     return resolved, None
+
+
+def ensure_jachin_workspace_my_life_sqlite_db() -> None:
+    """
+    确保 ``~/.jachin/workspace`` 存在，且 ``my_life_data.db`` 占位文件已创建，
+    供 ``uvx mcp-server-sqlite --db-path …`` 首次连接（空文件即可，SQLite 首次打开时初始化）。
+    """
+    try:
+        ws = _jachin_home() / "workspace"
+        ws.mkdir(parents=True, exist_ok=True)
+        db = ws / "my_life_data.db"
+        if not db.exists():
+            db.touch()
+            logger.info("[Jachin MCP] 已创建本地生活库占位: %s", db)
+    except OSError as e:
+        logger.debug("[Jachin MCP] ensure my_life_data.db 跳过: %s", e)

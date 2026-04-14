@@ -32,6 +32,8 @@
   python scripts/publish_desktop_release.py --installer .../jachin-desktop.exe --unsigned
   python scripts/publish_desktop_release.py --dry-run
   python scripts/publish_desktop_release.py --notes "修复若干问题"
+  python scripts/publish_desktop_release.py --register-only
+    安装包已上传到 S3，仅补登记 Nexus（objectKey + Base64 signature）；需 NEXUS_BASE_URL、NEXUS_ADMIN_SECRET，不重传对象。
 
 环境变量可写入 cloud/nexus/.env.local；脚本启动时会自动加载（不覆盖已在终端里 export 的值）。
 
@@ -667,6 +669,12 @@ def main() -> None:
         help="只打印将要执行的操作，实际上传与 POST",
     )
     ap.add_argument(
+        "--register-only",
+        action="store_true",
+        help="跳过 S3 上传，仅 POST Nexus 登记 desktop_app_releases（artifacts.signature + objectKey）。"
+        "用于对象已上传但先前未设置 NEXUS_* 的情况；签名仍从本地 .sig 或 --sign 解析。",
+    )
+    ap.add_argument(
         "--allow-artifact-filename-version-mismatch",
         action="store_true",
         help="允许安装包文件名不含发布版本号（易把旧构建登记为新版本，仅应急）",
@@ -827,7 +835,13 @@ def main() -> None:
     if notes:
         payload["notes"] = notes
 
-    upload_file_s3(installer, object_key, args.dry_run)
+    if args.register_only:
+        print(
+            "[INFO] --register-only：跳过 S3 PUT，仅向 Nexus 写入 objectKey + signature（请确认对象已在桶内）。",
+            file=sys.stderr,
+        )
+    else:
+        upload_file_s3(installer, object_key, args.dry_run)
     post_nexus(payload, args.dry_run)
 
     if not args.dry_run:

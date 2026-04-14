@@ -159,9 +159,14 @@ def feishu_batch_get_id(
         timeout=15,
     )
     try:
-        return resp.json()
+        data = resp.json()
     except Exception as e:
         return {"code": -1, "msg": str(e)}
+    if isinstance(data, dict) and resp.status_code == 403:
+        data.setdefault("msg", str(data.get("msg") or "403 Forbidden"))
+        if data.get("code") in (None, 0):
+            data["code"] = 403
+    return data
 
 
 def pick_open_id_from_batch_get(data: dict[str, Any]) -> tuple[str | None, str | None]:

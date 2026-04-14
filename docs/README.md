@@ -1,4 +1,4 @@
-# Jachin 文档
+﻿# Jachin 文档
 
 **版本**: V2 (2026-04)  
 **架构**: 云边协同数字发行操作系统 (Cloud-Edge AI OS)
@@ -45,6 +45,7 @@
 | [PLUGIN_SECURITY_SANDBOX.md](./PLUGIN_SECURITY_SANDBOX.md) | 插件沙箱 |
 | [VOICE_AND_TTS_GUIDE.md](./VOICE_AND_TTS_GUIDE.md) | 语音与 TTS |
 | [TESTING_GUIDE.md](./TESTING_GUIDE.md) | 测试指南 |
+| [L3_LARK_CONFIG_SINGLE_SOURCE.md](./L3_LARK_CONFIG_SINGLE_SOURCE.md) | **L3 × 飞书**：`plugin/.env`、`im_channels.yaml`、终端 WS、工具发信 — **单一说明** |
 
 ---
 

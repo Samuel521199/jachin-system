@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 HR Lark 机器人 — 入口脚本
@@ -167,10 +167,18 @@ def run_webhook_server(port: int = 5000) -> None:
 def run_long_connection() -> None:
     """启动 Lark 长连接，无需 ngrok/公网。连接成功后需在 Lark 后台切换订阅方式。"""
     _ensure_dotenv()
-    app_id = os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID")
-    app_secret = os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET")
+    app_id = (
+        os.environ.get("HR_LARK_APP_ID")
+        or os.environ.get("LARK_APP_ID")
+        or os.environ.get("FEISHU_APP_ID")
+    )
+    app_secret = (
+        os.environ.get("HR_LARK_APP_SECRET")
+        or os.environ.get("LARK_APP_SECRET")
+        or os.environ.get("FEISHU_APP_SECRET")
+    )
     if not app_id or not app_secret:
-        print("请配置 LARK_APP_ID 和 LARK_APP_SECRET（在 .env 或环境变量中）")
+        print("请配置 HR_LARK_APP_ID + HR_LARK_APP_SECRET（招聘回调专用），或 LARK_APP_ID + LARK_APP_SECRET（.env）")
         sys.exit(1)
     try:
         from l3_node.channels.lark.long_connection import start_long_connection

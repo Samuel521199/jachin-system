@@ -22,7 +22,8 @@ Tauri 从此目录加载 `l3_node` Sidecar 引擎。
 
 ## 文件命名
 
-- Windows: `l3_node-x86_64-pc-windows-msvc.exe`
+- Windows: `l3_node-x86_64-pc-windows-msvc.exe`（**必须**放在 **`bin/`** 下；Tauri `externalBin` 与 `l3_spawn` 均按此路径解析）
+- **不要**把侧车改名为 `l3_node.exe` 放在安装根目录：桌面端无法按侧车方式启动，Omni 会卡在「等待 L3」。
 - macOS: `l3_node-aarch64-apple-darwin` 或 `l3_node-x86_64-apple-darwin`
 - Linux: `l3_node-x86_64-unknown-linux-gnu`
 
@@ -32,3 +33,4 @@ Tauri 从此目录加载 `l3_node` Sidecar 引擎。
 
 - 占位符仅用于通过构建，不提供 L3 功能
 - 运行 `build_l3_sidecar.py` 后需设置 `OPENAI_API_KEY` 环境变量
+- **安装后 Omni 提示「等待 L3 或 L2」且 `l3_debug.log` 报 `bin\\l3_node-…exe` 不存在**：安装包构建时未打入真实侧车。请重新执行 `npm run tauri:build`（`beforeBundle` 会校验侧车），必要时先 `python scripts/build_l3_sidecar.py`；若杀软删了 `bin` 下 exe，需加白名单或重装。

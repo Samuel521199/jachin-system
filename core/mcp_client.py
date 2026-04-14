@@ -331,6 +331,7 @@ class MCPServerInstance:
         try:
             from core.mcp_embedded_runtime import (
                 effective_stdio_env_for_sdk,
+                expand_stdio_env_windows_npx_google_maps,
                 expand_stdio_env_windows_npx_tavily,
                 is_tavily_stdio_server,
                 log_tavily_mcp_chain,
@@ -341,6 +342,7 @@ class MCPServerInstance:
 
             eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
             eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
+            eff_env = expand_stdio_env_windows_npx_google_maps(self.server_id, self.args, eff_env)
             # server-filesystem 与 @modelcontextprotocol/sdk 1.26+ 需与 Python mcp 默认协议一致；
             # 勿强行降级 protocolVersion（曾导致 initialize 阶段即 Connection closed）。
             # 若全局安装了 dotenvx 等 npx 包装，可向 stdout 注入非 JSON 行；合并 CI 以降低啰嗦输出（与 mcp_stdio_noise_filter 互补）。

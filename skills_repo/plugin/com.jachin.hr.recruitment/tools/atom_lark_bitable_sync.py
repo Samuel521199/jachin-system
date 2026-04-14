@@ -1,4 +1,4 @@
-"""
+﻿"""
 原子 Tool: atom_lark_bitable_sync
 将多 Agent 评审结果 MD 文档解析后，自动导入到 Lark 多维表格，供 HR 查看、修改、协作。
 
@@ -113,11 +113,15 @@ def _ensure_dotenv_loaded() -> None:
 
 
 def _get_tenant_access_token() -> str:
-    """获取 Lark tenant_access_token。委托 channels.lark。"""
+    """获取 Lark tenant_access_token。HR 招聘场景使用 HR_LARK_APP_*（与通用 LARK_APP_ID 分离）。"""
     _ensure_dotenv_loaded()
     _ensure_l3_importable()
-    from l3_node.channels.lark import get_tenant_access_token
+    from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_hr_lark_credentials
 
+    aid, sec, yb = resolve_hr_lark_credentials()
+    base = yb or get_lark_api_base()
+    if aid and sec:
+        return get_tenant_access_token(app_id=aid, app_secret=sec, api_base=base)
     return get_tenant_access_token()
 
 

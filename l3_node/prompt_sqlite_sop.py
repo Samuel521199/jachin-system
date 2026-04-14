@@ -1,4 +1,4 @@
-"""
+﻿"""
 SQLite / MCP 数据问数：ReAct SOP、同链逻辑自检；与 **内联 Critic**（agent_core → critic_agent.evaluate_action）及
 db_semantics.yaml / db_semantics.md / golden_sql_examples 配合使用。
 
@@ -34,3 +34,7 @@ SQLITE_REACT_SOP_BLOCK_SLIM = (
     "【DB·SOP】探表（sqlite_master/PRAGMA）→ 对照 db_semantics 映射 → 再 read_query；"
     "Final 前须「【逻辑自检】」。写库仍须签批 + jachin_mcp_write_ack。\n"
 )
+
+SQLITE_LIFE_LEDGER_HINT = """【本地生活库 / 记账】若工具列表含 MCP SQLite（如 **sqlite_manager**，库文件多为 ``~/.jachin/workspace/my_life_data.db``）：
+用户提及「记账」「记录开支」「待办」「日常消费」等时，请优先使用 **read_query / write_query / create_table** 等工具完成结构化建表与插入；
+勿仅用自然语言宣称已记录而未实际调用工具。写操作仍须遵守签批与 ``jachin_mcp_write_ack`` 规则（与其它 SQLite 工具一致）。"""

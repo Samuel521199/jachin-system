@@ -335,7 +335,12 @@ async def _ws_execute_intent_turn(
             append_line(step_type, content)
         except Exception:
             pass
-        base_on_step(step_type, content, ctx_run_id)
+        out_content = content
+        if step_type == "thought":
+            from l3_node.react_ui_sanitize import sanitize_thought_step_for_ui
+
+            out_content = sanitize_thought_step_for_ui(content)
+        base_on_step(step_type, out_content, ctx_run_id)
 
     try:
         from l3_node.intent_gateway.ood_signals import should_skip_progress_thought_kick
@@ -360,7 +365,10 @@ async def _ws_execute_intent_turn(
             append_stream_chunk(chunk)
         except Exception:
             pass
-        p = {"step_type": "chunk", "content": chunk, "run_id": run_id}
+        from l3_node.react_ui_sanitize import sanitize_stream_chunk_for_ui
+
+        safe_chunk = sanitize_stream_chunk_for_ui(chunk)
+        p = {"step_type": "chunk", "content": safe_chunk, "run_id": run_id}
         await _send_safe(websocket, p)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, p)
@@ -415,12 +423,15 @@ async def _ws_execute_intent_turn(
         except Exception:
             pass
 
-        ans_payload = {"step_type": "answer", "content": reply or "", "run_id": run_id}
+        from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
+
+        _reply_ui = sanitize_final_answer_for_ui(reply or "") if (reply or "").strip() else (reply or "")
+        ans_payload = {"step_type": "answer", "content": _reply_ui, "run_id": run_id}
         await _send_safe(websocket, ans_payload)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
         if origin_terminal and chat_id and reply:
-            asyncio.create_task(_push_reply_to_lark(chat_id, reply))
+            asyncio.create_task(_push_reply_to_lark(chat_id, _reply_ui))
     except asyncio.CancelledError:
         logger.debug("[L3 WS] run_agent 已取消 run_id=%s", run_id)
         raise

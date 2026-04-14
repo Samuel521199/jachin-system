@@ -1,11 +1,12 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.8.114",
+  "version": "0.8.115",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:31421",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run prepare-installer-payload",
+    "beforeBundleCommand": "npm run tauri:before-bundle",
     "frontendDist": "../dist"
   },
   "app": {
@@ -89,14 +90,39 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
+    "active": true,
+    "targets": [
+      "nsis",
+      "app",
+      "dmg",
+      "deb",
+      "appimage",
+      "rpm"
+    ],
     "icon": [
       "icons/icon.ico"
     ],
     "externalBin": [
       "bin/l3_node"
-    ]
+    ],
+    "resources": {
+      "../../../dist_jachin_desktop/bin/": "bin/",
+      "../../../dist_jachin_desktop/config/": "config/",
+      "../../../dist_jachin_desktop/scripts/": "scripts/",
+      "../../../dist_jachin_desktop/logs/": "logs/",
+      "../../../dist_jachin_desktop/runtime/": "runtime/",
+      "../../../dist_jachin_desktop/.env.example": ".env.example",
+      "../../../dist_jachin_desktop/.env": ".env",
+      "../../../dist_jachin_desktop/.env.sea.example": ".env.sea.example",
+      "../../../dist_jachin_desktop/README_DEPLOY.md": "README_DEPLOY.md",
+      "../../../dist_jachin_desktop/run_l3.bat": "run_l3.bat",
+      "../../../dist_jachin_desktop/run_l3_standalone.bat": "run_l3_standalone.bat"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer_hooks.nsh"
+      }
+    }
   },
   "plugins": {
     "shell": {
@@ -107,7 +133,7 @@
       "endpoints": [
         "http://127.0.0.1:3000/api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNFNjRDRkVDQkNBNjA5NEQKUldSTkNhYTg3TTlrUG9OaG1yK3gxanNzTXdmNm9TTkVQSU1MRWJMazBtNUo5cC9tcStkcUhvaFoK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwNjk4MzVEMkREMzA2RjQKUlZUMEJ0TXRYWU5wRURMMXVRS1h4YjhjQ05OOXg2azdGVCtYT21nQSttMnpncitCYmNXNHdNbTgK",
       "dangerousInsecureTransportProtocol": true
     }
   }

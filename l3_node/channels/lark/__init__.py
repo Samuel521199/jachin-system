@@ -1,9 +1,14 @@
-"""
+﻿"""
 Lark/飞书 通道
 """
 from __future__ import annotations
 
-from l3_node.channels.lark.client import get_tenant_access_token, is_lark_api_configured
+from l3_node.channels.lark.client import (
+    get_tenant_access_token,
+    invalidate_lark_tenant_token_cache,
+    is_lark_api_configured,
+    resolve_hr_lark_credentials,
+)
 from l3_node.channels.lark.im import send_text as send_im_text
 from l3_node.channels.lark.inbound_webhook import create_lark_webhook_app, parse_lark_im_message
 from l3_node.channels.lark.plugin import LarkChannelPlugin, LarkWebhookChannelPlugin
@@ -20,7 +25,9 @@ atom_lark_bitable_sync = sync_bitable_from_md
 
 __all__ = [
     "get_tenant_access_token",
+    "invalidate_lark_tenant_token_cache",
     "is_lark_api_configured",
+    "resolve_hr_lark_credentials",
     "send_markdown",
     "send_im_text",
     "sync_bitable_from_md",

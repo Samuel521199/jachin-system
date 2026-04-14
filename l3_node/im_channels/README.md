@@ -1,4 +1,6 @@
-# IM 通道层 — Lark/Telegram 等同维度
+﻿# IM 通道层 — Lark/Telegram 等同维度
+
+**配置总览（L3 交互 / `plugin/.env` / 长连接 合并说明）**：见仓库根文档 [`docs/L3_LARK_CONFIG_SINGLE_SOURCE.md`](../../docs/L3_LARK_CONFIG_SINGLE_SOURCE.md)。
 
 L3 独立使用 Lark、Telegram 等 IM 通道，无需 Layer 1。Lark 优先使用长连接，无需公网 IP/ngrok。
 

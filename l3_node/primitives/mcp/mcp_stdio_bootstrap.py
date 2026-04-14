@@ -46,15 +46,19 @@ async def start_l3_stdio_mcp_host() -> None:
             except Exception as _de:
                 logger.debug("[L3 MCP Host] dotenv merge（MCP 修补前）跳过: %s", _de)
             from l3_node.paths import get_app_root as _gar
+            from core.mcp_embedded_runtime import ensure_jachin_workspace_my_life_sqlite_db
             from core.mcp_json_repair import (
                 ensure_default_official_fetch_mcp,
                 ensure_default_official_filesystem_mcp,
+                ensure_sqlite_manager_life_db_mcp,
                 repair_hr_atomic_tools_path,
                 repair_official_fetch_ignore_robots_arg,
             )
 
+            ensure_jachin_workspace_my_life_sqlite_db()
             ensure_default_official_filesystem_mcp()
             ensure_default_official_fetch_mcp()
+            ensure_sqlite_manager_life_db_mcp()
             repair_official_fetch_ignore_robots_arg()
             repair_hr_atomic_tools_path(_gar())
         except Exception as e:
