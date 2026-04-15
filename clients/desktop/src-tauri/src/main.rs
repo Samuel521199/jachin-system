@@ -1194,17 +1194,24 @@ fn main() {
 
             register_omni_hotkeys(app.handle());
 
-            // 默认不自动弹出 Omni：tauri.conf 里 chat.visible=false，且本处未 show。
-            // 一键开发脚本可设 JACHIN_SHOW_OMNI_ON_START=1（或 start-layer3.ps1 -ShowOmni）启动即显示。
-            if std::env::var("JACHIN_SHOW_OMNI_ON_START")
+            // 启动时默认同时显示：控制台（main）与 Omni（chat）。关闭/最小化由用户在窗口内操作；托盘与 Alt+Shift+Space 仍可唤回。
+            // 自动化/无头场景可设 JACHIN_SKIP_STARTUP_WINDOWS=1 恢复旧行为（不自动 show）。
+            let skip_startup_ui = std::env::var("JACHIN_SKIP_STARTUP_WINDOWS")
                 .map(|v| {
                     let v = v.trim();
                     v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
                 })
-                .unwrap_or(false)
-            {
-                show_omni_chat_window(&app.handle());
-                eprintln!("[Omni] 已根据 JACHIN_SHOW_OMNI_ON_START 在启动时显示聊天窗口");
+                .unwrap_or(false);
+            if !skip_startup_ui {
+                let ah = app.handle().clone();
+                if let Some(w) = ah.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                }
+                show_omni_chat_window(&ah);
+                eprintln!(
+                    "[Desktop] 启动时已显示控制台与 Omni（JACHIN_SKIP_STARTUP_WINDOWS=1 可跳过）"
+                );
             }
 
             Ok(())

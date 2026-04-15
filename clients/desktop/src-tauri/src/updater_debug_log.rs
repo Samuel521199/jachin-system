@@ -12,6 +12,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG_FILE: &str = "hot_update_debug.log";
 
+/// 编译期嵌入 `tauri.conf.json`（与当次构建一致）。
+/// 禁止在运行时用 `fs::read(CARGO_MANIFEST_DIR/...)`：`CARGO_MANIFEST_DIR` 是**构建机**绝对路径，
+/// 打包到用户电脑后该路径不存在，日志会误报 `(no pubkey)`，与真实 updater 行为无关。
+const EMBEDDED_TAURI_CONF_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"));
+
+fn embedded_tauri_conf_value() -> Result<Value, String> {
+    serde_json::from_str(EMBEDDED_TAURI_CONF_JSON)
+        .map_err(|e| format!("parse embedded tauri.conf.json: {e}"))
+}
+
 fn now_ts_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -48,14 +59,9 @@ pub fn append_line(source: &str, message: &str) {
 }
 
 fn read_tauri_updater_endpoints_debug() -> String {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
-    let raw = match std::fs::read_to_string(&p) {
-        Ok(s) => s,
-        Err(e) => return format!("(read tauri.conf.json failed: {} path={})", e, p.display()),
-    };
-    let v: Value = match serde_json::from_str(&raw) {
+    let v = match embedded_tauri_conf_value() {
         Ok(x) => x,
-        Err(e) => return format!("(parse tauri.conf.json: {})", e),
+        Err(e) => return format!("({})", e),
     };
     v.pointer("/plugins/updater/endpoints")
         .map(|x| x.to_string())
@@ -63,17 +69,17 @@ fn read_tauri_updater_endpoints_debug() -> String {
 }
 
 fn read_tauri_pubkey_fingerprint_debug() -> String {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
-    let Ok(raw) = std::fs::read_to_string(&p) else {
-        return "(no pubkey)".into();
-    };
-    let Ok(v): Result<Value, _> = serde_json::from_str(&raw) else {
-        return "(parse err)".into();
+    let v = match embedded_tauri_conf_value() {
+        Ok(x) => x,
+        Err(e) => return format!("({})", e),
     };
     let pk = v
         .pointer("/plugins/updater/pubkey")
         .and_then(|x| x.as_str())
         .unwrap_or("");
+    if pk.is_empty() {
+        return "(no pubkey in embedded conf)".into();
+    }
     let len = pk.len();
     let head: String = pk.chars().take(24).collect();
     format!("pubkey_len={} pubkey_prefix={}...", len, head)

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
 
 连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
@@ -564,7 +564,11 @@ class MCPServerInstance:
             return "[无输出]"
         except Exception as e:
             logger.exception("[MCP] call_tool 异常 server_id=%s name=%s err=%s", self.server_id, name, e)
-            raise
+            # 禁止向上抛出：海外网络/站点封禁时子进程或传输层异常会击穿 ReAct，导致进程静默退出
+            return (
+                f"[MCP 工具错误] {type(e).__name__}: {e}\n"
+                "（若访问境内站点，海外 IP 可能被拒绝、重置连接或长时间挂起；请换网络或稍后重试。）"
+            )
 
     async def close(self) -> None:
         """优雅关闭进程与连接。"""

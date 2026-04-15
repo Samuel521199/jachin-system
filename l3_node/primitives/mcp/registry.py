@@ -1923,9 +1923,34 @@ class MCPToolRegistry:
             )
             return _cached
 
-        out = await self._invoke_impl(
-            tool_id, action_input, timeout=timeout, allow_l2_delegate=allow_l2_delegate
-        )
+        try:
+            out = await self._invoke_impl(
+                tool_id, action_input, timeout=timeout, allow_l2_delegate=allow_l2_delegate
+            )
+        except Exception as e:
+            import traceback
+
+            tb = traceback.format_exc()
+            logger.exception("[MCP Registry] invoke 未捕获异常 tool_id=%s err=%s", tool_id, e)
+            try:
+                from l3_node.terminal_turn_debug_log import append_section
+
+                append_section(
+                    "[MCP Registry] invoke 异常（已转为字符串返回，不向上抛）",
+                    f"tool_id={tool_id}\n{type(e).__name__}: {e}\n\n{tb}",
+                )
+            except Exception:
+                pass
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "tool_id": tool_id,
+                    "hint": "网络、MCP 子进程或解析失败；若访问境内站点，海外 IP 可能被拦截。",
+                },
+                ensure_ascii=False,
+            )
         out = store_if_cacheable(tool_id, action_input, out)
         exec_trace(
             logger,
@@ -2414,15 +2439,26 @@ class MCPToolRegistry:
                             "[MCP] fetch 缺少 url：请让 Action Input 为合法 JSON，例如 "
                             '{"url":"https://www.python.org"}'
                         )
+                # fetch：单页 HTTP 抓取，境外网络易被 WAF/超时拖死；单独收紧 wait_for（默认 18s，可用 JACHIN_MCP_FETCH_INVOKE_SEC 覆盖）
+                _invoke_cap = float(timeout) if (timeout or 0) > 0 else 30.0
+                if _rn == "fetch":
+                    try:
+                        _cap = float((os.environ.get("JACHIN_MCP_FETCH_INVOKE_SEC") or "18").strip())
+                        _invoke_cap = max(5.0, min(_invoke_cap, _cap))
+                    except (TypeError, ValueError):
+                        _invoke_cap = min(_invoke_cap, 18.0)
                 try:
                     return await asyncio.wait_for(
                         _mgr.invoke_tool(_rn, _args),
-                        timeout=timeout,
+                        timeout=_invoke_cap,
                     )
                 except _McpNotFound:
                     pass
                 except asyncio.TimeoutError:
-                    return f"[MCP] stdio 调用超时 tool={_rn}"
+                    return (
+                        f"[MCP] stdio 调用超时 tool={_rn}（上限 {_invoke_cap:.0f}s）。"
+                        "若目标为国内站点，海外网络可能无法稳定访问，请换网络或稍后重试。"
+                    )
         except ImportError:
             pass
         except Exception as e:

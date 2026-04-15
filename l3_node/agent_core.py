@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -3933,6 +3933,30 @@ async def _invoke_react_tool(
         else:
             _out = run_tool(tool, _invoke_inp, allowed_skills)
         return _out
+    except Exception as _react_tool_ex:
+        import traceback
+
+        _tb = traceback.format_exc()
+        logger.exception(
+            "[L3 Agent] 工具调度未捕获异常 trace=%s tool=%s err=%s",
+            _rtrace,
+            (tool or "")[:160],
+            _react_tool_ex,
+        )
+        try:
+            from l3_node.terminal_turn_debug_log import append_section
+
+            append_section(
+                "[L3 Agent] 工具调度异常（已转为 Observation，避免进程退出）",
+                f"tool={tool}\n{type(_react_tool_ex).__name__}: {_react_tool_ex}\n\n{_tb}",
+            )
+        except Exception:
+            pass
+        _out = (
+            f"[工具执行失败] {type(_react_tool_ex).__name__}: {_react_tool_ex}\n"
+            "若访问的是境内网页，海外网络可能被拒绝、超时或重置连接；请换网络或稍后重试。"
+        )
+        return _out
     finally:
         if _lark_cv_tok is not None:
             try:
@@ -6216,13 +6240,28 @@ async def run_agent(
         except Exception:
             _domain_experts_list = []
 
-    tools = await assemble_tool_pool(
-        allowed_skills=allowed,
-        gateway_bundle=_gateway_bundle,
-        bg_channel=_bg_channel or None,
-        logger=logger,
-        allowlist_diag_source=allowlist_diag_source,
-    )
+    try:
+        tools = await assemble_tool_pool(
+            allowed_skills=allowed,
+            gateway_bundle=_gateway_bundle,
+            bg_channel=_bg_channel or None,
+            logger=logger,
+            allowlist_diag_source=allowlist_diag_source,
+        )
+    except Exception as _pool_ex:
+        import traceback
+
+        logger.exception("[L3 Agent] assemble_tool_pool 失败，降级为仅内置工具: %s", _pool_ex)
+        try:
+            from l3_node.terminal_turn_debug_log import append_section
+
+            append_section(
+                "[run_agent] assemble_tool_pool 异常（已降级内置池）",
+                traceback.format_exc(),
+            )
+        except Exception:
+            pass
+        tools = load_tools(allowed_skills=allowed)
     exec_trace(
         logger,
         "工具列表就绪 run_id=%s count=%d bg_channel=%s",

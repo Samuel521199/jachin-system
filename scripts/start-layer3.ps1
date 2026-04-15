@@ -11,7 +11,7 @@
 #   - then npm run tauri:dev ; JACHIN_SKIP_L3_SPAWN=1 (desktop does not spawn second L3)
 #   .\scripts\start-layer3.ps1
 #   Optional old behavior (second window): -SeparateL3Window
-#   启动后自动打开 Omni 聊天条: .\scripts\start-layer3.ps1 -ShowOmni
+#   （已默认行为）桌面会随启动打开控制台 + Omni；无需 -ShowOmni。自动化可设 JACHIN_SKIP_STARTUP_WINDOWS=1
 #   （默认仅托盘图标；也可左键托盘或 Alt+Shift+Space）
 #
 # Source only (no Tauri, one window):
@@ -68,7 +68,7 @@ if ($DesktopOnly) {
 }
 
 if ($ShowOmni) {
-    $env:JACHIN_SHOW_OMNI_ON_START = "1"
+    Write-Host "[Layer3] -ShowOmni 已省略效：桌面默认会打开 Omni 与控制台" -ForegroundColor DarkGray
 }
 
 function Start-L3SourceForeground {
