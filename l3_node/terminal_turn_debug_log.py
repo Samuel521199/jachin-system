@@ -8,7 +8,7 @@
 若需恢复旧行为（始终写入并覆盖 ``terminal_turn_debug.log``），设置
 ``JACHIN_TERMINAL_DEBUG_OVERWRITE=1``。
 
-默认目录（Windows）：``D:\\zzz\\jachin``；非 Windows：``~/.jachin/terminal_debug``。
+默认目录（Windows）：``%USERPROFILE%\\.jachin\\jachin_debug``；非 Windows：``~/.jachin/terminal_debug``。
 
 环境变量：
 - ``JACHIN_TERMINAL_DEBUG_LOG``：``0`` / ``false`` 关闭
@@ -82,7 +82,7 @@ def _dir() -> Path:
     if override:
         return Path(override).expanduser()
     if sys.platform == "win32":
-        return Path(r"D:\zzz\jachin")
+        return Path.home() / ".jachin" / "jachin_debug"
     return Path.home() / ".jachin" / "terminal_debug"
 
 

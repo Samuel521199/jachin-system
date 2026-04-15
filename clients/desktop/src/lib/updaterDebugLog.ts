@@ -1,5 +1,5 @@
 ﻿/**
- * 热更新调试：追加写入 D:\\zzz\\jachin\\hot_update_debug.log（Rust 侧实现，不落盘 token）。
+ * 热更新调试：追加写入 %USERPROFILE%\\.jachin\\jachin_debug\\hot_update_debug.log（Rust 侧实现，不落盘 token）。
  */
 import { invoke } from "@tauri-apps/api/core";
 

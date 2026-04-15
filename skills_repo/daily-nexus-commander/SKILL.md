@@ -114,6 +114,6 @@ python scripts/run_daily_nexus.py
 - 未配置 `sqlite_manager` 或本地无 `my_life_data.db` 时，SQLite 小节会降级为「库不存在」或仅探表
 - 一键脚本里「飞书任务队列」**直连**本仓库 `com.jachin.hr.recruitment` 插件（与 MCP 工具同源），**不经 MCP stdio**，避免短脚本退出时 asyncio/MCP 清理报错
 
-**日志协议**：每次运行可在配置项 `log_dir`（默认 `D:\zzz\jachin\健康skill`）下生成 `daily_nexus_run_*.log`，并同步协议全文 `DAILY_NEXUS_LOGGING_PROTOCOL.md`；完整字段说明见仓库 `skills_repo/daily-nexus-commander/DAILY_NEXUS_LOGGING_PROTOCOL.md`。
+**日志协议**：每次运行可在配置项 `log_dir`（默认 `%USERPROFILE%\.jachin\jachin_debug\健康skill`）下生成 `daily_nexus_run_*.log`，并同步协议全文 `DAILY_NEXUS_LOGGING_PROTOCOL.md`；完整字段说明见仓库 `skills_repo/daily-nexus-commander/DAILY_NEXUS_LOGGING_PROTOCOL.md`。
 - 不需要任务列表小节时：`python scripts/run_daily_nexus.py --skip-mcp`
 - 已配置飞书 notifier 后要推送：`python scripts/run_daily_nexus.py --send-lark`（或把配置里 `notify_channel` 设为 `lark`）

@@ -11,7 +11,7 @@ Daily Nexus Commander — 一键晨间早报（联调 Native + SQLite + 可选 M
 **不**经 MCP stdio，避免脚本结束时 MCP 客户端在 asyncio 关闭阶段触发 anyio cancel scope 报错。
 
 详细日志协议：skills_repo/daily-nexus-commander/DAILY_NEXUS_LOGGING_PROTOCOL.md
-默认日志目录：D:\\zzz\\jachin\\健康skill（可配置 DAILY_NEXUS_LOG_DIR 或 daily_nexus.yaml 的 log_dir）
+默认日志目录（Windows）：%USERPROFILE%\\.jachin\\jachin_debug\\健康skill（可配置 DAILY_NEXUS_LOG_DIR 或 daily_nexus.yaml 的 log_dir）
 
 依赖：项目根 .env 可选；PyYAML；与 L3 相同的 Python 环境。
 """
@@ -34,7 +34,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 
 PROTOCOL_REL = Path("skills_repo/daily-nexus-commander/DAILY_NEXUS_LOGGING_PROTOCOL.md")
-DEFAULT_LOG_DIR_WIN = Path(r"D:\zzz\jachin\健康skill")
+DEFAULT_LOG_DIR_WIN = Path.home() / ".jachin" / "jachin_debug" / "健康skill"
 
 
 def _setup_path() -> None:

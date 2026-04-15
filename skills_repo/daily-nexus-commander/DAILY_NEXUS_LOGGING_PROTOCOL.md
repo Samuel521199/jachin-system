@@ -17,7 +17,7 @@
 
 | 项 | 说明 |
 |----|------|
-| **默认目录** | `D:\zzz\jachin\健康skill`（Windows）；可通过配置或环境变量覆盖，见 §4。 |
+| **默认目录** | `%USERPROFILE%\.jachin\jachin_debug\健康skill`（Windows）；可通过配置或环境变量覆盖，见 §4。 |
 | **单次运行主日志** | `daily_nexus_run_YYYY-MM-DD_HHMMSS_fff.log`（本地时间，`fff` 为毫秒，避免同秒并发覆盖）。 |
 | **协议副本** | 首次在日志目录落地时写入 `DAILY_NEXUS_LOGGING_PROTOCOL.md`（与仓库 `skills_repo/daily-nexus-commander/` 下同名文件同步）。 |
 
@@ -35,7 +35,7 @@
 
 1. 环境变量 **`DAILY_NEXUS_LOG_DIR`**（绝对路径优先）。
 2. 用户配置 `~/.jachin/config/skills/com.jachin.daily_nexus_commander/daily_nexus.yaml` 中键 **`log_dir`**。
-3. 默认 `D:\zzz\jachin\健康skill`。
+3. 默认 `%USERPROFILE%\.jachin\jachin_debug\健康skill`。
 
 可选：
 

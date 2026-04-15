@@ -283,7 +283,7 @@ export function DesktopUpdateBanner() {
         {prepareBusy && (
           <p className="text-xs text-amber-200/85">
             下载与校验进行中，请勿关闭本程序。进度见{" "}
-            <code className="text-amber-100/90">D:\zzz\jachin\hot_update_debug.log</code> 中{" "}
+            <code className="text-amber-100/90">%USERPROFILE%\.jachin\jachin_debug\hot_update_debug.log</code> 中{" "}
             <code className="text-amber-100/90">[updater_helper]</code>。
           </p>
         )}

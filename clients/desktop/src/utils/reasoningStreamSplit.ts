@@ -472,8 +472,9 @@ export function mergeAssistantFlatAndSplitFinalAnswer(
 }
 
 /**
- * 对 `mergeStreamChunk` 得到的**整段累计串**切分（内部始终含 `Final Answer:` 字面量直至流结束，
- * 避免用「已切开的 reasoning+content 再拼接」导致标记丢失、后续 chunk 把正文吞回思考链）。
+ * 对**单通道**累计串切分（例如仅正文通道、不含已写入 `last.reasoning` 的前缀）。
+ * 聊天主路径应对 `delta` 使用 `mergeAssistantFlatAndSplitFinalAnswer`，以便与思考通道合并后再按
+ * `Final Answer:` 分区；误用本函数会导致「Final Answer 在思考流、续写在正文流」时主文为空。
  */
 export function splitAssistantFromMergeCumulative(
   mergedCumulativeText: string,
@@ -497,6 +498,25 @@ export function normalizeAssistantOutput(text: string): { content: string; reaso
   const tag = splitCompleteThinkingText(text);
   let body = tag.content;
   let reasoning = tag.reasoning.trim();
+
+  /**
+   * 模型漏输出 `</think>` 时，`processReasoningDelta` 会把含 `Final Answer:` 的全文留在 reasoning，
+   * content 为空。此处用 Final Answer: 从 reasoning 再拆一次，避免收尾 normalize 后主气泡仍空。
+   */
+  if (!body.trim() && reasoning.length > 0) {
+    const probe = partitionByFinalAnswerMarker(reasoning);
+    if (probe.hasMarker) {
+      reasoning = probe.reasoning.trim();
+      body = probe.content;
+    } else if (!reasoning.includes(CLOSE) && reasoning.includes(OPEN)) {
+      const stripped = reasoning.replace(/<\s*redacted_thinking\s*>/gi, "").trimStart();
+      const probe2 = partitionByFinalAnswerMarker(stripped);
+      if (probe2.hasMarker) {
+        reasoning = probe2.reasoning.trim();
+        body = probe2.content;
+      }
+    }
+  }
 
   const fa = partitionByFinalAnswerMarker(body);
   if (fa.hasMarker) {

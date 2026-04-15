@@ -181,27 +181,27 @@ const skillDefs = [
   },
   {
     id: "com.jachin.skill.global.market.analyst",
-    name: "Global Market Analyst",
+    name: "【暂不可用】Global Market Analyst",
     description:
-      "全球资本市场：用 yfinance（core:yfinance_*）拉取美股/外汇/加密行情与基本面并撰写双语简报；非投资建议。",
+      "【暂不可用】本 Skill 维护中，请暂勿订阅；恢复后将通过商店更新。——全球资本市场：用 yfinance（core:yfinance_*）拉取美股/外汇/加密行情与基本面并撰写双语简报；非投资建议。",
     skillMd: "global-market-analyst/SKILL.md",
     required_mcps: [],
   },
   {
     id: "com.jachin.skill.a.share.analyst",
-    name: "A 股分析师（AKShare）",
+    name: "【暂不可用】A 股分析师（AKShare）",
     description:
-      "A 股：用 AKShare（core:akshare_*）拉取 K 线与基本面摘要并输出结构化分析；非投资建议。",
+      "【暂不可用】本 Skill 维护中，请暂勿订阅；恢复后将通过商店更新。——A 股：用 AKShare（core:akshare_*）拉取 K 线与基本面摘要并输出结构化分析；非投资建议。",
     skillMd: "a-share-analyst/SKILL.md",
     required_mcps: [],
   },
   {
     id: "com.jachin.skill.youtube.summarizer",
-    name: "YouTube 知识提炼",
+    name: "【暂不可用】YouTube 知识提炼",
     description:
-      "用 MCP mcp:get_transcript（jkawamoto；推荐 python -m uv tool run 配置）拉字幕，再由模型提炼要点；勿用 fetch / 勿用后台任务代拉字幕。",
+      "【暂不可用】本 Skill 维护中，请暂勿订阅；恢复后将通过商店更新。——用 L3 原生 core:youtube_transcript 拉字幕，再由模型提炼要点；勿用 fetch 当字幕来源。",
     skillMd: "youtube-summarizer/SKILL.md",
-    version: "1.3.0",
+    version: "1.3.1",
     required_mcps: [],
   },
 ];

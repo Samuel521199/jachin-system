@@ -2,6 +2,9 @@
 /**
  * tauri build 的 beforeBuildCommand（末尾）与 beforeBundleCommand：确保 dist_jachin_desktop
  * 具备安装包 / 便携包要打入的最小目录结构（含 bin 内真实 L3 侧车、.env + .env.example）。
+ * .env 内容：优先 JACHIN_DESKTOP_BUNDLE_ENV_FILE 或 .jachin_bundle_env_path（显式覆盖）；
+ * 否则若存在仓库根 .env 则复制（与本地合并后的默认打包源）；再否则复制仓库根 .env.example。
+ * 见 jachin_bundle_env_path.example。
  * 输出目录：仓库根目录 dist_jachin_desktop（与 src-tauri/tauri.conf.json 中 bundle.resources 的
  * ../../../dist_jachin_desktop/ 一致；勿使用 ../../，否则会错误指向 clients/dist_jachin_desktop）。
  * 与 scripts/build_full.ps1 第 4 步对齐；runtime/python 为可选（见环境变量）。
@@ -33,6 +36,30 @@ function copyIfExists(src, dst) {
 }
 
 /** 删除 dist bin 根目录下旧的 l3_node-* 可执行文件，避免与示例一致只保留当前 triplet 侧车（不删 bin/logs） */
+/**
+ * 打进 dist_jachin_desktop/.env 的来源路径（非空则必须存在）：
+ * 1) JACHIN_DESKTOP_BUNDLE_ENV_FILE
+ * 2) clients/desktop/.jachin_bundle_env_path（单行绝对路径，gitignore）
+ * 3) 仓库根 .env（存在则作为默认）
+ * 若以上均无有效路径，返回空字符串（由 main 回退为 .env.example）。
+ */
+function resolveBundleEnvSourcePath() {
+  const fromEnv = process.env.JACHIN_DESKTOP_BUNDLE_ENV_FILE?.trim();
+  if (fromEnv) return fromEnv;
+  const pointer = path.join(DESKTOP, ".jachin_bundle_env_path");
+  if (fs.existsSync(pointer)) {
+    const raw = fs.readFileSync(pointer, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      return t;
+    }
+  }
+  const rootEnv = path.join(ROOT, ".env");
+  if (fs.existsSync(rootEnv)) return rootEnv;
+  return "";
+}
+
 function pruneOldL3SidecarsInDistBin() {
   const binDir = path.join(DIST, "bin");
   if (!fs.existsSync(binDir)) return;
@@ -87,11 +114,31 @@ function main() {
   copyL3SidecarIntoDistBin();
 
   const envExample = path.join(ROOT, ".env.example");
+  const rootEnv = path.join(ROOT, ".env");
   const envDst = path.join(DIST, ".env");
-  if (fs.existsSync(envExample)) {
+  const bundleEnvSrc = resolveBundleEnvSourcePath();
+
+  if (bundleEnvSrc) {
+    if (!fs.existsSync(bundleEnvSrc)) {
+      console.error(
+        "[prepare-installer-payload] 配置的打包用 .env 源文件不存在（请检查 JACHIN_DESKTOP_BUNDLE_ENV_FILE、clients/desktop/.jachin_bundle_env_path 或仓库根 .env）:",
+        bundleEnvSrc
+      );
+      process.exit(1);
+    }
+    fs.copyFileSync(bundleEnvSrc, envDst);
+    if (path.resolve(bundleEnvSrc) === path.resolve(rootEnv)) {
+      console.log("[prepare-installer-payload] bundled .env from repo root .env (default when no override)");
+    } else {
+      console.log("[prepare-installer-payload] bundled .env from override:", bundleEnvSrc);
+    }
+    if (fs.existsSync(envExample)) {
+      copyIfExists(envExample, path.join(DIST, ".env.example"));
+    }
+  } else if (fs.existsSync(envExample)) {
     copyIfExists(envExample, path.join(DIST, ".env.example"));
-    // 安装目录需暴露可编辑 .env（与便携包图1一致；内容由示例复制，密钥由用户本地填写）
     fs.copyFileSync(envExample, envDst);
+    console.log("[prepare-installer-payload] bundled .env from repo root .env.example (no repo .env and no override)");
   } else if (!fs.existsSync(envDst)) {
     fs.writeFileSync(
       envDst,

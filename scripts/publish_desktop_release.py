@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 一键：将 Tauri 构建产物上传 MinIO，并向 Nexus 登记 desktop_app_releases。
 
@@ -16,7 +16,7 @@
   DESKTOP_RELEASES_S3_DISABLE_PROXY    默认视为开启：上传时直连 MinIO/S3（清环境变量代理 + botocore 禁用 proxies）。
                                        Windows 即使未设 HTTP_PROXY，系统代理（注册表/127.0.0.1:8800）也会让 boto 中途失败；
                                        若必须经 HTTP 代理访问 S3，请设为 0/false。
-  DESKTOP_PUBLISH_LOG_DIR              发布/上传诊断日志目录（默认 Windows: D:\\zzz\\jachin\\打包）
+  DESKTOP_PUBLISH_LOG_DIR              发布/上传诊断日志目录（默认 Windows: %USERPROFILE%\\.jachin\\jachin_debug\\打包）
 
   NEXUS_BASE_URL                     例: http://localhost:3000（无尾斜杠）
   NEXUS_ADMIN_SECRET                 与 NEXUS_ADMIN_SECRET / X-Admin-Token 一致
@@ -397,12 +397,12 @@ def _without_http_proxy_env():
 
 
 def publish_upload_log_dir() -> Path:
-    """上传诊断日志目录：DESKTOP_PUBLISH_LOG_DIR；默认 Windows 为 D:\\zzz\\jachin\\打包。"""
+    """上传诊断日志目录：DESKTOP_PUBLISH_LOG_DIR；默认 Windows 为 %USERPROFILE%\\.jachin\\jachin_debug\\打包。"""
     raw = (_env("DESKTOP_PUBLISH_LOG_DIR") or "").strip()
     if raw:
         return Path(raw).expanduser()
     if sys.platform == "win32":
-        return Path(r"D:\zzz\jachin\打包")
+        return Path.home() / ".jachin" / "jachin_debug" / "打包"
     return Path.home() / ".jachin" / "publish_upload_logs"
 
 

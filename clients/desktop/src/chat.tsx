@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -55,7 +55,6 @@ import {
 import {
   mergeAssistantFlatAndSplitFinalAnswer,
   normalizeAssistantOutput,
-  splitAssistantFromMergeCumulative,
 } from "./utils/reasoningStreamSplit";
 import type { WavePhase } from "./components/Chat/VoiceWaveform";
 import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
@@ -664,7 +663,10 @@ function ChatApp() {
           const u = [...prev];
           const last = u[u.length - 1];
           if (last?.role !== "assistant") return prev;
-          const merged = splitAssistantFromMergeCumulative(next, meta?.reasoningAppend);
+          const merged = mergeAssistantFlatAndSplitFinalAnswer(last, delta, {
+            ...meta,
+            isReasoning: false,
+          });
           u[u.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
           return u;
         });
@@ -909,7 +911,10 @@ function ChatApp() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
-          const merged = splitAssistantFromMergeCumulative(next, meta?.reasoningAppend);
+          const merged = mergeAssistantFlatAndSplitFinalAnswer(last, delta, {
+            ...meta,
+            isReasoning: false,
+          });
           updated[updated.length - 1] = { ...last, content: merged.content, reasoning: merged.reasoning };
         }
         return updated;

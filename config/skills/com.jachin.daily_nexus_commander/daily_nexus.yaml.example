@@ -3,8 +3,8 @@
 
 weather_city: "上海"
 
-# 详细运行日志目录（默认 Windows: D:\zzz\jachin\健康skill）；也可用环境变量 DAILY_NEXUS_LOG_DIR
-# log_dir: "D:\\zzz\\jachin\\健康skill"
+# 详细运行日志目录（默认 Windows: %USERPROFILE%\.jachin\jachin_debug\健康skill）；也可用环境变量 DAILY_NEXUS_LOG_DIR
+# log_dir: ""
 # log_level: DEBUG
 # log_copy_latest: false
 

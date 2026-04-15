@@ -1,4 +1,4 @@
-# Full Build Script（招聘/打包约定见 docs/HR_RECRUITMENT.md）
+﻿# Full Build Script（招聘/打包约定见 docs/HR_RECRUITMENT.md）
 # Usage: .\scripts\build_full.ps1
 # Options: -SkipTauri (L3 only), -NoClean (skip clean, incremental), -Force (force L3+Tauri rebuild)
 # -SkipMcpRuntime: 跳过便携包内嵌 Python + mcp-official（Win amd64，需联网下载 embeddable CPython）
@@ -121,9 +121,39 @@ if (Test-Path (Join-Path $root "config\im_channels.yaml.example")) {
 }
 Write-Host "  Copied config/" -ForegroundColor Gray
 
-# Copy .env.example
-if (Test-Path (Join-Path $root ".env.example")) {
-    Copy-Item (Join-Path $root ".env.example") -Destination $outDir -Force
+# Copy .env.example（模板）；.env 与 clients/desktop/scripts/prepare-installer-payload.mjs 同优先级
+$envExamplePath = Join-Path $root ".env.example"
+$envRootPath = Join-Path $root ".env"
+$envDstPortable = Join-Path $outDir ".env"
+if (Test-Path $envExamplePath) {
+    Copy-Item $envExamplePath -Destination $outDir -Force
+    Write-Host "  Copied .env.example" -ForegroundColor Gray
+}
+$bundleSrc = $null
+$fromBundleEnv = $env:JACHIN_DESKTOP_BUNDLE_ENV_FILE
+if ($fromBundleEnv -and $fromBundleEnv.Trim()) {
+    $p = $fromBundleEnv.Trim()
+    if (Test-Path $p) { $bundleSrc = $p }
+}
+if (-not $bundleSrc) {
+    $pointerPath = Join-Path $root "clients\desktop\.jachin_bundle_env_path"
+    if (Test-Path $pointerPath) {
+        foreach ($line in Get-Content $pointerPath) {
+            $t = $line.Trim()
+            if (-not $t -or $t.StartsWith("#")) { continue }
+            if (Test-Path $t) { $bundleSrc = $t; break }
+        }
+    }
+}
+if (-not $bundleSrc -and (Test-Path $envRootPath)) {
+    $bundleSrc = $envRootPath
+}
+if ($bundleSrc) {
+    Copy-Item $bundleSrc -Destination $envDstPortable -Force
+    Write-Host "  Copied .env <- $bundleSrc" -ForegroundColor Gray
+} elseif (Test-Path $envExamplePath) {
+    Copy-Item $envExamplePath -Destination $envDstPortable -Force
+    Write-Host "  Copied .env from .env.example (no repo .env / override)" -ForegroundColor Gray
 }
 
 # Copy README_DEPLOY.md (optional)

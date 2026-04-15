@@ -1,0 +1,13 @@
+﻿# 用法：复制本文件为同目录下的 .jachin_bundle_env_path（已 gitignore），
+# 只保留一行：要打进 NSIS/便携包 dist_jachin_desktop/.env 的绝对路径（可为仓库外的文件）。
+#
+# 例（请改成你自己的路径）：
+# C:\Users\YourName\Desktop\.env
+#
+# 也可不设此文件，在每次 tauri build 前设置环境变量（优先级更高）：
+#   PowerShell:  $env:JACHIN_DESKTOP_BUNDLE_ENV_FILE = "C:\Users\YourName\Desktop\.env"
+#   CMD:         set JACHIN_DESKTOP_BUNDLE_ENV_FILE=C:\Users\YourName\Desktop\.env
+#
+# 未设置指针且未设置 JACHIN_DESKTOP_BUNDLE_ENV_FILE 时：
+#   若仓库根存在 .env，则默认将其复制为 dist_jachin_desktop/.env（与本地合并后的完整配置一致）；
+#   否则回退为复制仓库根 .env.example。

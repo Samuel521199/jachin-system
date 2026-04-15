@@ -11,14 +11,19 @@ use std::sync::OnceLock;
 /// 与 `tauri.conf.json` 中 `identifier` 一致，用于定位 `%LOCALAPPDATA%\com.jachin.desktop`。
 pub const TAURI_APP_IDENTIFIER_DIR: &str = "com.jachin.desktop";
 
-/// 热更新调试日志目录：环境变量 `JACHIN_HOT_UPDATE_DEBUG_DIR`（非空）优先，否则默认 `D:\zzz\jachin`（与历史约定一致）。
+/// 热更新调试日志目录：环境变量 `JACHIN_HOT_UPDATE_DEBUG_DIR`（非空）优先，否则默认 `%USERPROFILE%\.jachin\jachin_debug`。
 pub fn hot_update_debug_log_dir() -> PathBuf {
     std::env::var("JACHIN_HOT_UPDATE_DEBUG_DIR")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"D:\zzz\jachin"))
+        .unwrap_or_else(|| {
+            let base = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .unwrap_or_else(|_| "C:\\Users\\Public".to_string());
+            PathBuf::from(base).join(".jachin").join("jachin_debug")
+        })
 }
 
 /// 下载物 SHA256（十六进制），用于与发布端核对是否下错包。

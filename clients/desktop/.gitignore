@@ -31,3 +31,6 @@ src-tauri/bin/jachin-updater-helper-*.exe
 # Updater 私钥（勿提交；与 tauri.conf.json pubkey 成对）
 tauri-desktop-updater.key
 *.updater.key
+
+# 打包进安装包的 .env 来源路径（单行绝对路径，见 jachin_bundle_env_path.example）
+.jachin_bundle_env_path
