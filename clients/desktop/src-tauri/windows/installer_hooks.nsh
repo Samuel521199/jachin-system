@@ -55,7 +55,20 @@ skip_dotenv:
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  ; CheckIfAppIsRunning 只结束主程序 jachin-desktop.exe，不会结束 L3 侧车（externalBin → l3_node-<triple>.exe）。
+  ; 侧车若仍占用 $INSTDIR\bin\*.exe，卸载无法删文件，且 run_l3 弹出的控制台可能仍挂在 cmd 子树上。
+  ; 忽略 taskkill 退出码（未运行时返回非 0）。
+  DetailPrint "Stopping L3 sidecar (l3_node-*.exe) if running..."
+  nsExec::ExecToLog 'cmd /c taskkill /F /IM l3_node-x86_64-pc-windows-msvc.exe /T >nul 2>&1 & taskkill /F /IM l3_node-aarch64-pc-windows-msvc.exe /T >nul 2>&1 & exit /b 0'
+  Pop $0
+  Sleep 400
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; POSTINSTALL 中 robocopy 写入的 $INSTDIR\bin 等不在 NSIS 安装清单内，默认卸载不会删侧车 exe。
+  ; 侧车仅用于本应用，卸载时应一并移除。
+  IfFileExists "$INSTDIR\bin" 0 skip_rm_l3bin
+    DetailPrint "Removing L3 bin directory (sidecar not tracked by NSIS)..."
+    RMDir /r "$INSTDIR\bin"
+  skip_rm_l3bin:
 !macroend

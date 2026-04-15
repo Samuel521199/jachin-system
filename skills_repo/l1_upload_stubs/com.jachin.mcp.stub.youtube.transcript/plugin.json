@@ -1,8 +1,8 @@
 ﻿{
   "id": "com.jachin.mcp.stub.youtube.transcript",
-  "name": "YouTube Transcript（uvx MCP）",
-  "version": "1.1.0",
-  "description": "jkawamoto/mcp-youtube-transcript。工具 get_transcript；需在 ~/.jachin/mcp_servers.json 手动配置 id=youtube-transcript（推荐 __JACHIN_MCP_PYTHON__ -m uv tool run --from git+…，见 config/mcp_servers.json.example），并设置 HTTP_PROXY/HTTPS_PROXY。",
+  "name": "【暂不可用】YouTube Transcript（uvx MCP）",
+  "version": "1.1.1",
+  "description": "【暂不可用】本 MCP 货架条目维护中，请暂勿订阅；恢复后将通过商店更新。——jkawamoto/mcp-youtube-transcript。工具 get_transcript；需在 ~/.jachin/mcp_servers.json 手动配置 id=youtube-transcript（推荐 __JACHIN_MCP_PYTHON__ -m uv tool run --from git+…，见 config/mcp_servers.json.example），并设置 HTTP_PROXY/HTTPS_PROXY。",
   "item_type": "MCP",
   "type": "MCP",
   "runtime_tier": "L3_LOCAL",

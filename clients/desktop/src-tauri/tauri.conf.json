@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.12",
+  "version": "0.9.13",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -132,7 +132,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "http://127.0.0.1:3000/api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}"
+        "http://47.86.39.173:3000/api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwNjk4MzVEMkREMzA2RjQKUlZUMEJ0TXRYWU5wRURMMXVRS1h4YjhjQ05OOXg2azdGVCtYT21nQSttMnpncitCYmNXNHdNbTgK",
       "dangerousInsecureTransportProtocol": true
