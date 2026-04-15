@@ -1,4 +1,4 @@
-﻿"""
+"""
 全球标的（美股 / 加密货币 / 外汇对等 Yahoo 符号）— Native Tool（非 MCP）。
 
 依赖：pip install yfinance（见 core/requirements.txt）。
@@ -9,9 +9,33 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Yahoo 公开接口易触发限流；有限次退避后须换策略或人工稍后重试（见 080 韧性）
+_YF_MAX_ATTEMPTS = 4
+_YF_BACKOFF_SEC = (2.0, 5.0, 10.0)
+
+
+def _is_yahoo_rate_limit(exc: BaseException | None, msg: str = "") -> bool:
+    s = f"{exc} {msg}".lower()
+    return any(
+        x in s
+        for x in (
+            "rate limit",
+            "too many requests",
+            "429",
+            "temporarily unavailable",
+            "unexpected content",
+        )
+    )
+
+
+def _backoff_sleep(attempt_idx: int) -> None:
+    i = min(max(attempt_idx, 0), len(_YF_BACKOFF_SEC) - 1)
+    time.sleep(_YF_BACKOFF_SEC[i])
 
 # 供 loader.NATIVE_TOOLS 扩展
 YFINANCE_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
@@ -127,11 +151,23 @@ def get_global_market_hist(
     if iv not in _VALID_INTERVAL:
         return {"ok": False, "error_class": "config", "error": f"不支持的 interval: {iv}，可选 {_VALID_INTERVAL}"}
 
-    try:
-        tk = yf.Ticker(sym)
-        df = tk.history(period=per, interval=iv, auto_adjust=True)
-        rows = _df_to_records(df, max_rows=2500)
-        if not rows:
+    for attempt in range(_YF_MAX_ATTEMPTS):
+        try:
+            tk = yf.Ticker(sym)
+            df = tk.history(period=per, interval=iv, auto_adjust=True)
+            rows = _df_to_records(df, max_rows=2500)
+            if rows:
+                out: dict[str, Any] = {
+                    "ok": True,
+                    "ticker": sym,
+                    "period": per,
+                    "interval": iv,
+                    "row_count": len(rows),
+                    "bars": rows,
+                }
+                if attempt > 0:
+                    out["retries_used"] = attempt
+                return out
             return {
                 "ok": False,
                 "error_class": "per_item",
@@ -140,24 +176,29 @@ def get_global_market_hist(
                 "period": per,
                 "interval": iv,
             }
-        return {
-            "ok": True,
-            "ticker": sym,
-            "period": per,
-            "interval": iv,
-            "row_count": len(rows),
-            "bars": rows,
-        }
-    except Exception as e:
-        err_s = str(e)
-        logger.warning("[yfinance_tools] history 失败 ticker=%s: %s", sym, e)
-        low = err_s.lower()
-        ec = (
-            "per_item"
-            if ("invalid" in low or "not found" in low)
-            else "transient"
-        )
-        return {"ok": False, "error_class": ec, "error": err_s, "ticker": sym}
+        except Exception as e:
+            err_s = str(e)
+            logger.warning(
+                "[yfinance_tools] history 失败 ticker=%s attempt=%s/%s: %s",
+                sym,
+                attempt + 1,
+                _YF_MAX_ATTEMPTS,
+                e,
+            )
+            if _is_yahoo_rate_limit(e) and attempt < _YF_MAX_ATTEMPTS - 1:
+                _backoff_sleep(attempt)
+                continue
+            low = err_s.lower()
+            ec = "per_item" if ("invalid" in low or "not found" in low) else "transient"
+            if _is_yahoo_rate_limit(e):
+                ec = "transient"
+                err_s = (
+                    "Yahoo Finance 限流或暂时不可用，请隔几分钟再试或减少连续请求。"
+                    f" 原始错误：{err_s}"
+                )
+            return {"ok": False, "error_class": ec, "error": err_s, "ticker": sym}
+
+    return {"ok": False, "error_class": "transient", "error": "Yahoo Finance 历史行情请求未返回结果", "ticker": sym}
 
 
 def _merge_fast_into_info(ticker_obj: Any, info: dict[str, Any]) -> dict[str, Any]:
@@ -204,36 +245,80 @@ def get_ticker_info(ticker: str) -> dict[str, Any]:
     except ValueError as e:
         return {"ok": False, "error_class": "config", "error": str(e)}
 
-    try:
-        tk = yf.Ticker(sym)
-        info: dict[str, Any] = {}
+    had_rate_limit = False
+    for attempt in range(_YF_MAX_ATTEMPTS):
         try:
-            raw = tk.info
-            if isinstance(raw, dict):
-                info = raw
-        except Exception as e:
-            logger.warning("[yfinance_tools] ticker.info 失败 %s: %s", sym, e)
-        info = _merge_fast_into_info(tk, info)
-        core = _pick_core_fields(info)
-        if not core and not info:
+            tk = yf.Ticker(sym)
+            info: dict[str, Any] = {}
+            try:
+                raw = tk.info
+                if isinstance(raw, dict):
+                    info = raw
+            except Exception as e:
+                logger.warning("[yfinance_tools] ticker.info 失败 %s: %s", sym, e)
+                if _is_yahoo_rate_limit(e):
+                    had_rate_limit = True
+                    if attempt < _YF_MAX_ATTEMPTS - 1:
+                        _backoff_sleep(attempt)
+                        continue
+                info = {}
+            info = _merge_fast_into_info(tk, info)
+            core = _pick_core_fields(info)
+            if core or info:
+                out = {
+                    "ok": True,
+                    "ticker": sym,
+                    "core_fields": core,
+                    "info_key_count": len(info),
+                }
+                if attempt > 0:
+                    out["retries_used"] = attempt
+                return out
+            if had_rate_limit and attempt < _YF_MAX_ATTEMPTS - 1:
+                _backoff_sleep(attempt)
+                continue
+            if had_rate_limit:
+                return {
+                    "ok": False,
+                    "error_class": "transient",
+                    "error": "Yahoo Finance 限流或暂时不可用，请隔几分钟再试。若连续调用 hist 与 info，建议间隔数秒。",
+                    "ticker": sym,
+                }
             return {
                 "ok": False,
                 "error_class": "per_item",
                 "error": "无法获取标的信息：代码可能无效或数据源暂无数据",
                 "ticker": sym,
             }
-        return {
-            "ok": True,
-            "ticker": sym,
-            "core_fields": core,
-            "info_key_count": len(info),
-        }
-    except Exception as e:
-        err_s = str(e)
-        logger.warning("[yfinance_tools] get_ticker_info 失败 ticker=%s: %s", sym, e)
-        low = err_s.lower()
-        ec = "transient" if "timeout" in low or "connection" in low else "permanent"
-        return {"ok": False, "error_class": ec, "error": err_s, "ticker": sym}
+        except Exception as e:
+            err_s = str(e)
+            logger.warning(
+                "[yfinance_tools] get_ticker_info 失败 ticker=%s attempt=%s: %s",
+                sym,
+                attempt + 1,
+                e,
+            )
+            if _is_yahoo_rate_limit(e):
+                had_rate_limit = True
+                if attempt < _YF_MAX_ATTEMPTS - 1:
+                    _backoff_sleep(attempt)
+                    continue
+                return {
+                    "ok": False,
+                    "error_class": "transient",
+                    "error": f"Yahoo Finance 限流：{err_s}",
+                    "ticker": sym,
+                }
+            low = err_s.lower()
+            ec = "transient" if any(x in low for x in ("timeout", "connection", "remote")) else "permanent"
+            return {"ok": False, "error_class": ec, "error": err_s, "ticker": sym}
+
+    return {
+        "ok": False,
+        "error_class": "transient",
+        "error": "Yahoo Finance 多次重试后仍无法获取标的信息。",
+        "ticker": sym,
+    }
 
 
 def dispatch_yfinance_core(tool_id: str, **kwargs: Any) -> dict[str, Any]:

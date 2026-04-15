@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
 
 供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
@@ -1664,7 +1664,7 @@ def run_list_env_safe(**kwargs: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Office：Word / Excel 原生二进制（util:generate_office_doc）
+# Office：Word / Excel / CSV（util:generate_office_doc）
 # ---------------------------------------------------------------------------
 
 try:
@@ -1714,17 +1714,41 @@ def _xlsx_safe_sheet_name(name: str) -> str:
     return base[:31] if len(base) > 31 else base
 
 
+def _tabular_2d_for_csv(cj: dict[str, Any]) -> tuple[list[list[Any]] | None, str | None]:
+    """
+    从 content_json 取二维表：优先顶层 data；否则取 sheets[0].data（与 xlsx 同结构，多表时 CSV 仅导出第一张）。
+    成功返回 (rows, None)，失败返回 (None, err)。
+    """
+    data = cj.get("data")
+    if isinstance(data, list) and data:
+        if not all(isinstance(r, list) for r in data):
+            return None, "csv 的 content_json.data 须为非空二维数组（每行为数组）"
+        return data, None
+    sheets = cj.get("sheets")
+    if isinstance(sheets, list) and sheets:
+        sh0 = sheets[0]
+        if isinstance(sh0, dict):
+            d2 = sh0.get("data")
+            if isinstance(d2, list) and d2 and all(isinstance(r, list) for r in d2):
+                return d2, None
+    return (
+        None,
+        "csv 的 content_json 须包含非空 data 二维数组，或与 xlsx 相同结构的 sheets[0].data（多表时仅导出首表）",
+    )
+
+
 def run_generate_office_doc(**kwargs: Any) -> dict[str, Any]:
     """
-    util:generate_office_doc — 格式转换层：由 content_json 渲染原生 .docx / .xlsx。
-    参数：file_format（docx|xlsx，兼容旧名 file_type）、file_path、content_json（兼容旧名 content_data）。
+    util:generate_office_doc — 格式转换层：由 content_json 渲染原生 .docx / .xlsx / .csv。
+    参数：file_format（docx|xlsx|csv，兼容旧名 file_type）、file_path、content_json（兼容旧名 content_data）。
     docx：content_json.blocks[]，块 type 为 h1|h2|h3|p|bullet|table。
-    xlsx：content_json.sheets[]，每项含 sheet_name 与 data 二维数组。
+    xlsx：Excel/电子表格；content_json.sheets[]，每项含 sheet_name 与 data 二维数组。
+    csv：用户明确要求 CSV/逗号分隔时；content_json.data 二维数组，或 sheets[0].data。
     """
     try:
         fmt = str(kwargs.get("file_format") or kwargs.get("file_type") or "").strip().lower()
-        if fmt not in ("docx", "xlsx"):
-            return _err('file_format 须为 "docx" 或 "xlsx"（也可用旧字段 file_type）')
+        if fmt not in ("docx", "xlsx", "csv"):
+            return _err('file_format 须为 "docx"、"xlsx" 或 "csv"（也可用旧字段 file_type）')
         raw_fp = str(kwargs.get("file_path") or "").strip()
         if not raw_fp:
             return _err("file_path 不能为空")
@@ -1735,7 +1759,7 @@ def run_generate_office_doc(**kwargs: Any) -> dict[str, Any]:
             return _err("缺少依赖 openpyxl，请执行: pip install openpyxl")
 
         fp = _resolve_safe_output_path(raw_fp)
-        want_ext = ".docx" if fmt == "docx" else ".xlsx"
+        want_ext = ".docx" if fmt == "docx" else (".csv" if fmt == "csv" else ".xlsx")
         if fp.suffix.lower() != want_ext:
             return _err(f"file_path 扩展名须为 {want_ext}")
 
@@ -1746,6 +1770,19 @@ def run_generate_office_doc(**kwargs: Any) -> dict[str, Any]:
             return _err("content_json 须为 JSON 对象（或可解析的 JSON 字符串；兼容旧字段 content_data）")
 
         fp.parent.mkdir(parents=True, exist_ok=True)
+
+        if fmt == "csv":
+            import csv as _csv
+
+            rows_2d, terr = _tabular_2d_for_csv(cj)
+            if terr:
+                return _err(terr)
+            assert rows_2d is not None
+            with open(fp, "w", newline="", encoding="utf-8-sig") as f:
+                w = _csv.writer(f)
+                for row in rows_2d:
+                    w.writerow(["" if c is None else c for c in row])
+            return {"ok": True, "file_path": str(fp.resolve())}
 
         if fmt == "docx":
             assert _DocxDocument is not None
@@ -2083,8 +2120,10 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
     {
         "id": "util:generate_office_doc",
         "label": "util:generate_office_doc",
-        "desc": "【强制】生成原生 Word/Excel；**绝对禁止**用 core:fs_write 写 .docx/.xlsx。"
-        "参数：file_format（docx|xlsx）、file_path、content_json。"
+        "desc": "【强制】生成原生 Word/Excel/CSV；**绝对禁止**用 core:fs_write 写 .docx/.xlsx/.csv。"
+        "参数：file_format（docx|xlsx|csv）、file_path、content_json。"
+        "用户要 Excel/电子表格/表格文件但未明确要求 CSV → file_format=xlsx，扩展名 .xlsx。"
+        "用户明确要求 CSV/逗号分隔 → file_format=csv，扩展名 .csv，content_json 用 data 二维数组或 sheets[0].data。"
         "docx：content_json.blocks[]，type 为 h1|h2|h3|p|bullet|table（table 用 data 二维数组）。"
         "xlsx：content_json.sheets[]，每项 sheet_name + data 二维数组。"
         "【路径特权】file_path 可为 workspace 相对路径，或 ~/Desktop/、~/Downloads/、~/Documents/ 下的绝对路径（与 core:fs_write 白名单一致）。",
@@ -2321,33 +2360,40 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
     "util:generate_office_doc": {
         "name": "util:generate_office_doc",
         "description": (
-            "用于生成原生的 Word (.docx) 报告或 Excel (.xlsx) 数据表。"
-            "绝对禁止用 core:fs_write（或等价写入）生成 .docx/.xlsx 富文本后缀文件；必须构造符合要求的 JSON（content_json）交给本工具渲染。"
-            "【路径特权】可将文件保存到默认 workspace，或用户真实桌面/下载/文档目录，例如 ~/Desktop/文件名.xlsx、~/Downloads/导出.xlsx、~/Documents/报表.docx。"
-            "依赖：pip install python-docx openpyxl。"
+            "用于生成原生的 Word (.docx)、Excel (.xlsx) 或逗号分隔 (.csv)。"
+            "表格场景：用户要 Excel/电子表格/表格文件且未明确要求 CSV → 使用 xlsx；用户明确要求 CSV/逗号分隔 → 使用 csv。"
+            "绝对禁止用 core:fs_write（或等价写入）直接写这些后缀；须用 content_json 交给本工具渲染。"
+            "【路径特权】可将文件保存到 workspace 或 ~/Desktop、~/Downloads、~/Documents 等。"
+            "依赖：docx 需 python-docx；xlsx 需 openpyxl；csv 仅标准库。"
         ),
         "inputSchema": _schema_obj(
             {
                 "file_format": {
                     "type": "string",
-                    "enum": ["docx", "xlsx"],
+                    "enum": ["docx", "xlsx", "csv"],
                     "description": "目标格式；兼容旧字段 file_type",
                 },
                 "file_path": {
                     "type": "string",
                     "description": (
                         "保存路径：相对路径相对于 workspace；或 ~/Desktop、~/Downloads、~/Documents 等白名单绝对路径。"
-                        "扩展名须与 file_format 一致。"
+                        "扩展名须与 file_format 一致（.docx / .xlsx / .csv）。"
                     ),
                 },
                 "content_json": {
                     "type": "object",
                     "description": (
                         "docx：必须包含 blocks（顺序块数组）。"
-                        "xlsx：必须包含 sheets（多工作表；首表会复用 Workbook 默认表并改名）。"
+                        "xlsx：必须包含 sheets（多工作表）。"
+                        "csv：须包含非空 data 二维数组，或与 xlsx 相同的 sheets[0].data（多表时只导出第一张）。"
                         "兼容旧字段名 content_data。"
                     ),
                     "properties": {
+                        "data": {
+                            "type": "array",
+                            "items": {"type": "array"},
+                            "description": "仅 csv：顶层二维表；也可复用 sheets[0].data",
+                        },
                         "blocks": {
                             "type": "array",
                             "description": "仅 docx：按顺序渲染",
@@ -2374,7 +2420,7 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                         },
                         "sheets": {
                             "type": "array",
-                            "description": "仅 xlsx：多个工作表",
+                            "description": "xlsx：多个工作表；csv 时可只取第一张表的 data",
                             "items": {
                                 "type": "object",
                                 "properties": {

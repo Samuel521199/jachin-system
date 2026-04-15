@@ -1,4 +1,4 @@
-﻿"""
+"""
 AKShare A 股数据 — Native Tool（非 MCP）。
 
 依赖：pip install akshare（见 core/requirements.txt）。
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,8 @@ AKSHARE_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
         "desc": (
             "【A 股行情 · 优先】用户问 A 股走势、K 线、日线/周线、某代码区间涨跌时必须先用本工具取结构化数据；"
             "**禁止**用 mcp:fetch 编造财经网站 URL 代替。"
-            "AKShare 历史 K 线。JSON：symbol（6 位如 600519）、start_date、end_date；"
+            "AKShare 历史 K 线（默认东财；**日线**在东财不可达时可自动降级腾讯 stock_zh_a_hist_tx，返回中可能含 data_source/fallback_used）。"
+            "JSON：symbol（6 位如 600519）、start_date、end_date；"
             "可选 period（daily|weekly|monthly，默认 daily）、adjust（qfq|hfq|，默认 qfq）。"
             "日期支持 YYYYMMDD 或 YYYY-MM-DD。"
         ),
@@ -51,6 +53,37 @@ def _normalize_yyyymmdd(s: str) -> str:
     if len(t) == 8 and t.isdigit():
         return t
     raise ValueError("start_date/end_date 须为 YYYYMMDD 或 YYYY-MM-DD")
+
+
+def _qq_symbol_for_hist_tx(code: str) -> str:
+    """腾讯日频 K 线 stock_zh_a_hist_tx 要求 sh600519 / sz000001 / bjxxxxxx。"""
+    if len(code) != 6 or not code.isdigit():
+        raise ValueError("symbol 须为 6 位数字")
+    if code[0] == "6":
+        return f"sh{code}"
+    if code[0] in ("0", "3"):
+        return f"sz{code}"
+    if code[0] in ("4", "8"):
+        return f"bj{code}"
+    return f"sz{code}"
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """东财等接口易出现断连/超时；有限次重试仅针对此类错误。"""
+    s = str(exc).lower()
+    needles = (
+        "timeout",
+        "timed out",
+        "connection",
+        "remote",
+        "disconnected",
+        "aborted",
+        "reset",
+        "temporarily",
+        "eof",
+        "broken pipe",
+    )
+    return any(n in s for n in needles)
 
 
 def _df_to_records(df: Any, *, max_rows: int) -> list[dict[str, Any]]:
@@ -95,27 +128,94 @@ def get_a_share_hist(
     if adj not in ("", "qfq", "hfq"):
         return {"ok": False, "error_class": "config", "error": f"不支持的 adjust: {adj}"}
 
-    try:
-        df = ak.stock_zh_a_hist(symbol=code, period=per, start_date=sd, end_date=ed, adjust=adj)
-        rows = _df_to_records(df, max_rows=2000)
-        return {
-            "ok": True,
-            "symbol": code,
-            "period": per,
-            "adjust": adj,
-            "start_date": sd,
-            "end_date": ed,
-            "row_count": len(rows),
-            "bars": rows,
-        }
-    except Exception as e:
-        logger.warning("[akshare_tools] stock_zh_a_hist 失败 symbol=%s: %s", code, e)
-        return {
-            "ok": False,
-            "error_class": "transient" if "timeout" in str(e).lower() or "connection" in str(e).lower() else "permanent",
-            "error": str(e),
-            "symbol": code,
-        }
+    last_exc: Exception | None = None
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            df = ak.stock_zh_a_hist(symbol=code, period=per, start_date=sd, end_date=ed, adjust=adj)
+            rows = _df_to_records(df, max_rows=2000)
+            out: dict[str, Any] = {
+                "ok": True,
+                "symbol": code,
+                "period": per,
+                "adjust": adj,
+                "start_date": sd,
+                "end_date": ed,
+                "row_count": len(rows),
+                "bars": rows,
+            }
+            if attempt > 1:
+                out["retries_used"] = attempt - 1
+            return out
+        except Exception as e:
+            last_exc = e
+            logger.warning(
+                "[akshare_tools] stock_zh_a_hist 失败 symbol=%s attempt=%s/%s: %s",
+                code,
+                attempt,
+                max_attempts,
+                e,
+            )
+            if attempt < max_attempts and _is_transient_network_error(e):
+                time.sleep(0.8 * attempt)
+                continue
+            break
+
+    assert last_exc is not None
+    e = last_exc
+
+    # 策略切换：东财 push2his 在部分网络下长期断连；日线可降级 AKShare 的腾讯接口（不同源，仅日频）
+    if per == "daily" and hasattr(ak, "stock_zh_a_hist_tx"):
+        try:
+            qq = _qq_symbol_for_hist_tx(code)
+            logger.info(
+                "[StrategyShift] akshare eastmoney 不可用，改 stock_zh_a_hist_tx: %s",
+                qq,
+            )
+            df_tx = ak.stock_zh_a_hist_tx(
+                symbol=qq,
+                start_date=sd,
+                end_date=ed,
+                adjust=adj,
+                timeout=60.0,
+            )
+            rows = _df_to_records(df_tx, max_rows=2000)
+            if rows:
+                return {
+                    "ok": True,
+                    "symbol": code,
+                    "period": per,
+                    "adjust": adj,
+                    "start_date": sd,
+                    "end_date": ed,
+                    "row_count": len(rows),
+                    "bars": rows,
+                    "data_source": "tencent_qq",
+                    "fallback_used": True,
+                    "eastmoney_last_error": str(e),
+                }
+            logger.warning("[akshare_tools] stock_zh_a_hist_tx 返回空 symbol=%s", qq)
+        except Exception as e2:
+            logger.warning("[akshare_tools] stock_zh_a_hist_tx 失败 symbol=%s: %s", code, e2)
+            return {
+                "ok": False,
+                "error_class": "transient"
+                if (_is_transient_network_error(e) or _is_transient_network_error(e2))
+                else "permanent",
+                "error": f"东财与腾讯行情均失败：东财={e}；腾讯={e2}",
+                "symbol": code,
+                "attempts": max_attempts,
+                "eastmoney_error": str(e),
+                "fallback_error": str(e2),
+            }
+
+    return {
+        "ok": False,
+        "error_class": "transient" if _is_transient_network_error(e) else "permanent",
+        "error": str(e),
+        "symbol": code,
+        "attempts": max_attempts,
+    }
 
 
 def get_company_info(symbol: str, *, report_rows: int = 12) -> dict[str, Any]:

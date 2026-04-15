@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.8.118] - 2026-04-13
+
+### Added / Changed
+
+- 表格格式修复。
+- **Version**: Desktop、core CLI 与 `core/main` 版本号 **0.8.118**。
+
+---
+
 ## [v0.8.117] - 2026-04-15
 
 ### Added / Changed

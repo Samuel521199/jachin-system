@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -1432,6 +1432,63 @@ def run_tool(
                 pass
         if not params.get("url"):
             params["url"] = inp.strip()
+    elif tool_id == "core:akshare_a_share_hist":
+        params = {
+            "symbol": "",
+            "start_date": "",
+            "end_date": "",
+            "period": "daily",
+            "adjust": "qfq",
+        }
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["symbol"] = str(o.get("symbol") or "")
+                    params["start_date"] = str(o.get("start_date") or "")
+                    params["end_date"] = str(o.get("end_date") or "")
+                    if o.get("period") is not None:
+                        params["period"] = str(o.get("period") or "daily")
+                    if o.get("adjust") is not None:
+                        params["adjust"] = str(o.get("adjust") or "qfq")
+            except json.JSONDecodeError:
+                pass
+    elif tool_id == "core:akshare_company_info":
+        params = {"symbol": "", "report_rows": 12}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["symbol"] = str(o.get("symbol") or "")
+                    if o.get("report_rows") is not None:
+                        try:
+                            params["report_rows"] = int(o.get("report_rows"))
+                        except (TypeError, ValueError):
+                            params["report_rows"] = 12
+            except json.JSONDecodeError:
+                pass
+    elif tool_id == "core:yfinance_global_market_hist":
+        params = {"ticker": "", "period": "1mo", "interval": "1d"}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["ticker"] = str(o.get("ticker") or "")
+                    if o.get("period") is not None:
+                        params["period"] = str(o.get("period") or "1mo")
+                    if o.get("interval") is not None:
+                        params["interval"] = str(o.get("interval") or "1d")
+            except json.JSONDecodeError:
+                pass
+    elif tool_id == "core:yfinance_ticker_info":
+        params = {"ticker": ""}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["ticker"] = str(o.get("ticker") or "")
+            except json.JSONDecodeError:
+                pass
     elif tool_id == "core:fs_write":
         parsed_fs = False
         if inp.strip().startswith("{"):
@@ -1501,6 +1558,10 @@ def run_tool(
                 "core:safety_lock_list_pending",
                 "core:safety_lock_remove",
                 "core:youtube_transcript",
+                "core:akshare_a_share_hist",
+                "core:akshare_company_info",
+                "core:yfinance_global_market_hist",
+                "core:yfinance_ticker_info",
             ):
                 return json.dumps(result, ensure_ascii=False, indent=2)
             if result.get("background") and result.get("job_id"):

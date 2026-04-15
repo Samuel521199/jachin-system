@@ -346,7 +346,6 @@ function ChatApp() {
   useEffect(() => {
     if (!zombieTasksPending || zombieTasksPending.count < 1) return;
     void maybeNotifyJachinAssistantDone(
-      companionModeRef.current,
       `断电遗留 ${zombieTasksPending.count} 条后台任务未闭环，可让助手调用 core:check_interrupted_tasks`,
       "answer",
     );

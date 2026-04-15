@@ -2,15 +2,22 @@
 # 构建：docker build --platform linux/amd64 -f docker/l1-nexus.Dockerfile -t jachin-l1:latest .
 # 默认 NODE_IMAGE 为 DaoCloud 同步的 node（国内直连 docker.io 易超时）；要改用官方：
 #   docker build --build-arg NODE_IMAGE=node:20-bookworm-slim ...
+# npm ci 访问 registry.npmjs.org 易 ECONNRESET：默认用 npmmirror；海外或需官方源时：
+#   docker build --build-arg NPM_REGISTRY=https://registry.npmjs.org ...
 # 单机运行：docker run --rm -p 3000:3000 --add-host=host.docker.internal:host-gateway --env-file docker/l1.env jachin-l1:latest
 #
 ARG NODE_IMAGE=docker.m.daocloud.io/library/node:20-bookworm-slim
 FROM ${NODE_IMAGE} AS builder
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /src
 COPY cloud/nexus ./nexus
 COPY scripts/packaging/l1-linux/start.sh ./nexus/start.sh
 WORKDIR /src/nexus
-RUN npm ci
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+RUN npm config set fetch-retries 8 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000 \
+    && npm ci
 ENV NODE_ENV=production
 RUN npm run build
 

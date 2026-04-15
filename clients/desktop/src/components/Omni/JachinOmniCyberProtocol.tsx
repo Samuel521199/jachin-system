@@ -504,7 +504,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             style={{ pointerEvents: "auto" }}
           >
           <input
-            ref={fileInputRef}
+            ref={fileInputRef as React.RefObject<HTMLInputElement>}
             type="file"
             multiple
             accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt"

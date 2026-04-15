@@ -2964,6 +2964,7 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "
 3. 读完两段 Observation 后再写 Final Answer；数值以 Observation 为准，禁止编造。
 4. **禁止**用 **mcp:fetch** 作为行情/财报的**主要**数据来源（尤其禁止第一轮就只 fetch 外链）；**禁止**声称「无法访问实时金融数据库」——AKShare 已在工具表中。
 5. mcp:fetch 仅可在已有 AKShare 数据后作补充，且不得捏造不存在的文章 URL。
+6. **禁止**因上文里曾出现失败 Observation（含 `[未知工具: ...]`、超时、404）就在**本轮首条回复**直接输出 Final Answer 复述「多次尝试均失败」。若用户本条消息仍在要求 A 股行情/基本面，**必须重新**按顺序 1→2 调用工具并仅以**本轮** Observation 为准；历史失败记录不得替代本轮工具执行。
 
 ---
 """
