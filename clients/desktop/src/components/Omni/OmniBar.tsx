@@ -1,8 +1,8 @@
-﻿/**
+/**
  * Omni-Bar — Raycast 风格悬浮条：Jachin Core + 输入 + 流式面板 + HITL
  */
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Mic, Square, Radio, LayoutDashboard, Settings2 } from "lucide-react";
 import { WindowControls } from "../Chat/WindowControls";
@@ -78,7 +78,21 @@ export const OmniBar: React.FC<OmniBarProps> = ({
   onToolUiResult,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const adjustHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const minPx = 44;
+    const maxPx = 200;
+    const next = Math.min(Math.max(textarea.scrollHeight, minPx), maxPx);
+    textarea.style.height = `${next}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    adjustHeight();
+  }, [input, adjustHeight]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -241,67 +255,28 @@ export const OmniBar: React.FC<OmniBarProps> = ({
           </div>
         )}
 
-        {/* 勿在容器上对 mousedown/pointerdown 调用 preventDefault，否则从 input 冒泡后会取消默认聚焦，WebView 内表现为无法输入 */}
+        {/* 勿在容器上对 mousedown/pointerdown 调用 preventDefault，否则从输入框冒泡后会取消默认聚焦，WebView 内表现为无法输入 */}
         <div
           data-chat-interactive
-          className="flex items-center gap-2 px-3 pb-3 pt-1 flex-shrink-0 relative z-20"
+          className="relative z-20 flex shrink-0 flex-col px-3 pb-3 pt-1"
           style={{ pointerEvents: "auto" }}
         >
-          <JachinCore state={coreState} toolFlash={toolFlash} />
-
-          {onVadToggle != null && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onVadToggle();
-              }}
-              disabled={disabled || isLoading}
-              className={`px-2 py-2 rounded-full border flex-shrink-0 flex items-center gap-1 ${
-                isVadActive
-                  ? "bg-amber-500/25 text-amber-300 border-amber-500/40"
-                  : "bg-white/10 border-white/20 text-slate-400"
-              }`}
-            >
-              <Radio className="w-4 h-4" />
-              <span className="text-[10px] font-medium uppercase">VAD</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (canVoice && !isRecording) onVoiceStart();
-            }}
-            onMouseUp={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isRecording) onVoiceStop();
-            }}
-            onMouseLeave={() => isRecording && onVoiceStop()}
-            disabled={!canVoice}
-            className={`p-2.5 rounded-full border flex-shrink-0 ${
-              isRecording
-                ? "bg-red-500/25 text-red-300 border-red-500/40"
-                : "bg-white/10 border-cyan-400/30 text-cyan-400"
-            }`}
-          >
-            {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-          </button>
-
-          <div className="flex-1 min-w-0 flex flex-col justify-center">
+          {/* Layer 1：主输入区 */}
+          <div className="min-w-0 w-full">
             {voiceVisual ? (
-              <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
+              <div className="flex min-h-[44px] w-full items-center justify-center border-b border-cyan-800/30 py-3">
+                <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
+              </div>
             ) : (
-              <div className="relative group min-w-0">
-                <input
-                  ref={inputRef}
-                  type="text"
+              <div className="w-full border-b border-cyan-800/30">
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
                   value={input}
-                  onChange={(e) => onInputChange(e.target.value)}
+                  onChange={(e) => {
+                    onInputChange(e.target.value);
+                    queueMicrotask(() => adjustHeight());
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -313,55 +288,118 @@ export const OmniBar: React.FC<OmniBarProps> = ({
                   disabled={disabled}
                   autoComplete="off"
                   spellCheck={false}
-                  className="w-full bg-transparent border-none py-2 pl-2 pr-2 text-sm text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50"
+                  className="w-full min-h-[44px] max-h-[200px] resize-none overflow-y-auto bg-transparent px-0 py-3 text-sm leading-relaxed text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
                 />
-                <div className="absolute bottom-0 left-0 right-0 h-px bg-white/10" />
               </div>
             )}
           </div>
 
-          {!voiceVisual && (
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                e.preventDefault();
-                e.stopPropagation();
-                if (canSend) onSend();
-              }}
-              disabled={!canSend}
-              className="p-2 rounded-full text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/20 disabled:opacity-40"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          )}
+          {/* Layer 2：控制台 */}
+          <div className="mt-2 grid w-full min-h-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-2">
+            <div className="flex min-w-0 flex-wrap items-center justify-start gap-2">
+              {onVadToggle != null && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onVadToggle();
+                  }}
+                  disabled={disabled || isLoading}
+                  className={`flex h-10 shrink-0 items-center gap-1 rounded-full border px-3 ${
+                    isVadActive
+                      ? "border-amber-500/40 bg-amber-500/25 text-amber-300"
+                      : "border-white/20 bg-white/10 text-slate-400"
+                  }`}
+                >
+                  <Radio className="h-4 w-4 shrink-0" />
+                  <span className="text-[10px] font-medium uppercase">VAD</span>
+                </button>
+              )}
 
-          {onOpenConsole && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onOpenConsole();
-              }}
-              title="大控制台"
-              className="p-2 rounded-full text-slate-400 border border-white/10 hover:text-cyan-300"
-            >
-              <LayoutDashboard className="w-4 h-4" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onOpenConsole?.();
-            }}
-            title="设置（控制台）"
-            className="p-2 rounded-full text-slate-500 border border-white/10 hover:text-cyan-300"
-          >
-            <Settings2 className="w-4 h-4" />
-          </button>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (canVoice && !isRecording) onVoiceStart();
+                }}
+                onMouseUp={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (isRecording) onVoiceStop();
+                }}
+                onMouseLeave={() => isRecording && onVoiceStop()}
+                disabled={!canVoice}
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${
+                  isRecording
+                    ? "border-red-500/40 bg-red-500/25 text-red-300"
+                    : "border-cyan-400/30 bg-white/10 text-cyan-400"
+                }`}
+              >
+                {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              </button>
+            </div>
+
+            <div className="flex min-w-0 flex-col items-center justify-center gap-1 px-1">
+              <JachinCore state={coreState} toolFlash={toolFlash} />
+              {placeholder.includes("·") ? (
+                <span className="max-w-[min(200px,38vw)] truncate text-center text-[9px] font-mono tracking-tight text-cyan-500/45">
+                  {placeholder.split("·")[0]?.trim()}
+                </span>
+              ) : (
+                <span
+                  className="h-px w-14 max-w-[40vw] rounded-full bg-gradient-to-r from-transparent via-cyan-400/35 to-transparent"
+                  aria-hidden
+                />
+              )}
+            </div>
+
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+              {!voiceVisual && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (canSend) onSend();
+                  }}
+                  disabled={!canSend}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 text-cyan-400 transition hover:bg-cyan-500/20 disabled:opacity-40"
+                >
+                  <Send className="h-4 w-4" strokeWidth={2.25} />
+                </button>
+              )}
+
+              {onOpenConsole && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onOpenConsole();
+                  }}
+                  title="大控制台"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-400 transition hover:bg-white/[0.06] hover:text-cyan-300"
+                >
+                  <LayoutDashboard className="h-4 w-4" strokeWidth={2.25} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenConsole?.();
+                }}
+                title="设置（控制台）"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-500 transition hover:bg-white/[0.06] hover:text-cyan-300"
+              >
+                <Settings2 className="h-4 w-4" strokeWidth={2.25} />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

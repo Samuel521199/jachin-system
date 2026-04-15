@@ -2,7 +2,7 @@
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send,
@@ -159,6 +159,21 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputLocalRef = useRef<HTMLInputElement>(null);
   const fileInputRef = fileInputRefProp ?? fileInputLocalRef;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const adjustHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const minPx = 44;
+    const maxPx = 200;
+    const next = Math.min(Math.max(textarea.scrollHeight, minPx), maxPx);
+    textarea.style.height = `${next}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    adjustHeight();
+  }, [input, adjustHeight]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -497,176 +512,202 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             </div>
           )}
 
-          {/* Omni-Bar：永远贴底，禁止被压缩 */}
+          {/* 底栏双层：附件预览条已在上方；此处为 文本层 → 控制台层 */}
           <div
             data-chat-interactive
-            className="relative z-20 flex shrink-0 items-center gap-2 px-3 pb-3 pt-1"
+            className="relative z-20 flex shrink-0 flex-col px-3 pb-3 pt-1"
             style={{ pointerEvents: "auto" }}
           >
-          <input
-            ref={fileInputRef as React.RefObject<HTMLInputElement>}
-            type="file"
-            multiple
-            accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt"
-            className="hidden"
-            onChange={(e) => {
-              const fl = e.target.files;
-              if (fl?.length && onMergePendingFiles) onMergePendingFiles(Array.from(fl));
-              e.target.value = "";
-            }}
-          />
-          <JachinCore state={coreState} machineState={jachinMachineState} toolFlash={thinkingToolFlash} />
-
-          {onMergePendingFiles != null && (
-            <button
-              type="button"
-              title="添加附件"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                fileInputRef.current?.click();
+            <input
+              ref={fileInputRef as React.RefObject<HTMLInputElement>}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.txt"
+              className="hidden"
+              onChange={(e) => {
+                const fl = e.target.files;
+                if (fl?.length && onMergePendingFiles) onMergePendingFiles(Array.from(fl));
+                e.target.value = "";
               }}
-              disabled={disabled || isLoading}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/35 bg-slate-900/60 text-cyan-300 transition hover:border-cyan-400/55 hover:bg-cyan-500/10 disabled:opacity-40"
-            >
-              <Plus className="h-5 w-5" strokeWidth={2.25} />
-            </button>
-          )}
+            />
 
-          {onVadToggle != null && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onVadToggle();
-              }}
-              disabled={disabled || isLoading}
-              className={`px-2 py-2 rounded-full border flex-shrink-0 flex items-center gap-1 ${
-                isVadActive
-                  ? "bg-amber-500/25 text-amber-300 border-amber-500/40"
-                  : "bg-white/10 border-white/20 text-slate-400"
-              }`}
-            >
-              <Radio className="w-4 h-4" />
-              <span className="text-[10px] font-medium uppercase">VAD</span>
-            </button>
-          )}
+            {/* Layer 1：主输入区（独占宽度） */}
+            <div className="min-w-0 w-full">
+              {voiceVisual ? (
+                <div className="flex min-h-[44px] w-full items-center justify-center border-b border-cyan-800/30 py-3">
+                  <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
+                </div>
+              ) : (
+                <div className="w-full border-b border-cyan-800/30">
+                  <textarea
+                    ref={textareaRef}
+                    rows={1}
+                    value={input}
+                    onChange={(e) => {
+                      onInputChange(e.target.value);
+                      queueMicrotask(() => adjustHeight());
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void onRequestDismiss?.();
+                        return;
+                      }
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (canSend) onSend();
+                      }
+                    }}
+                    placeholder={placeholder}
+                    readOnly={isLoading}
+                    disabled={disabled}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full min-h-[44px] max-h-[200px] resize-none overflow-y-auto bg-transparent px-0 py-3 text-sm leading-relaxed text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                  />
+                </div>
+              )}
+            </div>
 
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (canVoice && !isRecording) onVoiceStart();
-            }}
-            onMouseUp={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isRecording) onVoiceStop();
-            }}
-            onMouseLeave={() => isRecording && onVoiceStop()}
-            disabled={!canVoice}
-            className={`p-2.5 rounded-full border flex-shrink-0 ${
-              isRecording
-                ? "bg-red-500/25 text-red-300 border-red-500/40"
-                : "bg-white/10 border-cyan-400/30 text-cyan-400"
-            }`}
-          >
-            {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-          </button>
-
-          <div className="flex-1 min-w-0 flex flex-col justify-center">
-            {voiceVisual ? (
-              <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
-            ) : (
-              <div className="relative group min-w-0">
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => onInputChange(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
+            {/* Layer 2：控制台（左操作 / 中信息 / 右发射） */}
+            <div className="mt-2 grid w-full min-h-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-2">
+              <div className="flex min-w-0 flex-wrap items-center justify-start gap-2">
+                {onMergePendingFiles != null && (
+                  <button
+                    type="button"
+                    title="添加附件"
+                    onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      void onRequestDismiss?.();
-                      return;
-                    }
-                    if (e.key === "Enter" && !e.shiftKey) {
+                      fileInputRef.current?.click();
+                    }}
+                    disabled={disabled || isLoading}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/35 bg-slate-900/60 text-cyan-300 transition hover:border-cyan-400/55 hover:bg-cyan-500/10 disabled:opacity-40"
+                  >
+                    <Plus className="h-5 w-5" strokeWidth={2.25} />
+                  </button>
+                )}
+
+                {onVadToggle != null && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
                       e.preventDefault();
-                      if (canSend) onSend();
-                    }
+                      e.stopPropagation();
+                      onVadToggle();
+                    }}
+                    disabled={disabled || isLoading}
+                    className={`flex h-10 shrink-0 items-center gap-1 rounded-full border px-3 ${
+                      isVadActive
+                        ? "border-amber-500/40 bg-amber-500/25 text-amber-300"
+                        : "border-white/20 bg-white/10 text-slate-400"
+                    }`}
+                  >
+                    <Radio className="h-4 w-4 shrink-0" />
+                    <span className="text-[10px] font-medium uppercase">VAD</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (canVoice && !isRecording) onVoiceStart();
                   }}
-                  placeholder={placeholder}
-                  readOnly={isLoading}
-                  disabled={disabled}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="w-full bg-transparent border-none py-2 pl-2 pr-2 text-sm text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50"
-                />
-                <div className="absolute bottom-0 left-0 right-0 h-px bg-white/10" />
+                  onMouseUp={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (isRecording) onVoiceStop();
+                  }}
+                  onMouseLeave={() => isRecording && onVoiceStop()}
+                  disabled={!canVoice}
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${
+                    isRecording
+                      ? "border-red-500/40 bg-red-500/25 text-red-300"
+                      : "border-cyan-400/30 bg-white/10 text-cyan-400"
+                  }`}
+                >
+                  {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </button>
               </div>
-            )}
+
+              <div className="flex min-w-0 flex-col items-center justify-center gap-1 px-1">
+                <JachinCore state={coreState} machineState={jachinMachineState} toolFlash={thinkingToolFlash} />
+                {placeholder.includes("·") ? (
+                  <span className="max-w-[min(200px,38vw)] truncate text-center text-[9px] font-mono tracking-tight text-cyan-500/45">
+                    {placeholder.split("·")[0]?.trim()}
+                  </span>
+                ) : (
+                  <span
+                    className="h-px w-14 max-w-[40vw] rounded-full bg-gradient-to-r from-transparent via-cyan-400/35 to-transparent"
+                    aria-hidden
+                  />
+                )}
+              </div>
+
+              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                {!voiceVisual &&
+                  (stopMode ? (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        if (e.button !== 0) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onStopGeneration?.();
+                      }}
+                      title={ui.stopGeneration}
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/5 bg-white/5 text-purple-400/80 transition-all duration-300 hover:bg-purple-500/20 hover:text-white hover:shadow-[0_0_15px_rgba(168,85,247,0.3)]"
+                    >
+                      <Square className="h-4 w-4 fill-current" strokeWidth={2.25} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        if (e.button !== 0) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (canSend) onSend();
+                      }}
+                      disabled={!canSend}
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 text-cyan-400 transition-all duration-300 hover:bg-cyan-500/20 disabled:opacity-40"
+                    >
+                      <Send className="h-4 w-4" strokeWidth={2.25} />
+                    </button>
+                  ))}
+
+                {onOpenConsole && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onOpenConsole();
+                    }}
+                    title={ui.largeConsole}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-400 transition hover:bg-white/[0.06] hover:text-cyan-300"
+                  >
+                    <LayoutDashboard className="h-4 w-4" strokeWidth={2.25} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onOpenConsole?.();
+                  }}
+                  title={ui.settingsConsole}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-500 transition hover:bg-white/[0.06] hover:text-cyan-300"
+                >
+                  <Settings2 className="h-4 w-4" strokeWidth={2.25} />
+                </button>
+              </div>
+            </div>
           </div>
-
-          {!voiceVisual &&
-            (stopMode ? (
-              <button
-                type="button"
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onStopGeneration?.();
-                }}
-                title={ui.stopGeneration}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/5 bg-white/5 text-purple-400/80 transition-all duration-300 hover:bg-purple-500/20 hover:text-white hover:shadow-[0_0_15px_rgba(168,85,247,0.3)]"
-              >
-                <Square className="h-4 w-4 fill-current" strokeWidth={2.25} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onMouseDown={(e) => {
-                  if (e.button !== 0) return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (canSend) onSend();
-                }}
-                disabled={!canSend}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 text-cyan-400 transition-all duration-300 hover:bg-cyan-500/20 disabled:opacity-40"
-              >
-                <Send className="h-4 w-4" />
-              </button>
-            ))}
-
-          {onOpenConsole && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onOpenConsole();
-              }}
-              title={ui.largeConsole}
-              className="p-2 rounded-full text-slate-400 border border-white/10 hover:text-cyan-300"
-            >
-              <LayoutDashboard className="w-4 h-4" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onOpenConsole?.();
-            }}
-            title={ui.settingsConsole}
-            className="p-2 rounded-full text-slate-500 border border-white/10 hover:text-cyan-300"
-          >
-            <Settings2 className="w-4 h-4" />
-          </button>
-        </div>
         </div>
       </div>
 
