@@ -1,4 +1,4 @@
-﻿import type { DesktopUiLang } from "./desktopUiLang";
+import type { DesktopUiLang } from "./desktopUiLang";
 
 /** Horizon 顶栏 */
 export const desktopHorizon = {

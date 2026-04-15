@@ -371,7 +371,15 @@ def _user_text_requests_workspace_sqlite_verification(text: str) -> bool:
 
 
 # ReAct：写入对话历史、供主模型消费的 Observation 文本长度上限（防 MCP/Fetch/大文件撑爆上下文）
-MAX_REACT_OBSERVATION_FOR_LLM = 15000
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int((os.environ.get(name) or str(default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+# 可由 JACHIN_REACT_OBSERVATION_MAX_CHARS 覆盖（默认 15000）
+MAX_REACT_OBSERVATION_FOR_LLM = _env_int("JACHIN_REACT_OBSERVATION_MAX_CHARS", 15000)
 # Playwright MCP（browser_snapshot / click）返回 YAML 快照可达数万～十万字；按默认 15k 截断会砍掉 #content_left 内标题链接，导致模型误点 [id="1"] 容器或瞎猜 ref。
 MAX_REACT_OBSERVATION_PLAYWRIGHT_MCP = 100000
 
@@ -387,10 +395,19 @@ def _observation_looks_like_playwright_mcp(s: str) -> bool:
     return False
 
 
-def _effective_observation_max_len(s: str) -> int:
+def _react_observation_cap_for_tool(tool: str | None) -> int:
+    """按工具类型选择 Observation 送入 LLM 的上限（与日志截断 truncate_large_strings_for_log 无关）。"""
+    t = (tool or "").strip().lower()
+    if t == "mcp:fetch":
+        # 需容纳宿主侧注入的较大 max_length（见 enrich_mcp_fetch_invoke_args）；默认 120000
+        return _env_int("JACHIN_REACT_OBSERVATION_MCP_FETCH_MAX", 120000)
+    return MAX_REACT_OBSERVATION_FOR_LLM
+
+
+def _effective_observation_max_len(s: str, tool: str | None = None) -> int:
     if _observation_looks_like_playwright_mcp(s):
         return MAX_REACT_OBSERVATION_PLAYWRIGHT_MCP
-    return MAX_REACT_OBSERVATION_FOR_LLM
+    return _react_observation_cap_for_tool(tool)
 
 
 _OBS_TRUNCATION_SUFFIX_FOR_LLM = (
@@ -426,13 +443,13 @@ def _maybe_shrink_shell_exec_observation(obs: str, tool: str) -> str:
     )
 
 
-def _truncate_observation_for_llm(text: Any) -> str:
+def _truncate_observation_for_llm(text: Any, tool: str | None = None) -> str:
     """
     仅截断**即将进入 messages、供主模型读取的 Observation 字符串**。
     工具层 run_tool / MCP invoke 返回的原始对象未被修改；此处为展示层护城河。
     """
     s = str(text or "")
-    max_len = _effective_observation_max_len(s)
+    max_len = _effective_observation_max_len(s, tool=tool)
     if len(s) <= max_len:
         return s
     suf = _OBS_TRUNCATION_SUFFIX_FOR_LLM
@@ -3099,6 +3116,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 【短时查询勿投递后台】查某地**当日实况天气、气温**等，**必须**在当前会话前台 **Action: util:get_weather_lite**（勿将 require_skills 仅填 util:get_weather_lite 后 submit_background_task——宿主会拒绝），避免用户先看到「任务已排队」又与前台即时结果矛盾。后台任务完成事件可由客户端订阅 WebSocket 推送，但不应替代短时天气的前台直查。
 【联网检索·优先级】需要**全网时效/新闻/综合检索**时：**优先**使用工具列表中名称含 **tavily** 的 MCP 工具（语义搜索）；系统可能已在上下文中注入 `<realtime_web_search_results>`，请与之对齐，避免重复无效抓取。**mcp:fetch** 仅用于获取**单一已知 URL**的原文（兜底）；勿首选 fetch 拉 RSS/门户整页代替检索。
 【单页 URL 抓取】用户给出**具体 https 文章/网页链接**要抓正文、保存为文件时，**必须**使用 **mcp:fetch**（工具列表中可能显示为 ``fetch``），JSON 含 **url**。**禁止**为此调用 **mcp:atom_web_scraper**：后者为 BI/表格 SPA，依赖 Chrome **9222** 调试端口，用于普通头条/新闻页会误报 ECONNREFUSED。
+【mcp:fetch·分页】若 Observation 末尾出现 ``<error>Content truncated`` 或提示 ``start_index``：说明单段正文未取完。**禁止**据此宣称「数据不足」并放弃；**必须**用**同一 url** 再调 **mcp:fetch**，在 Action Input 中设置 **start_index** 为提示中的数字（及可选 **max_length**），重复直到取完或明确无更多内容。**禁止**将仅用于终端/WebSocket 展示的日志截断与「页面无数据」混淆。
 【前台同步预算】默认非豁免工具单次执行约 **5s** 超时；超时 Observation 会提示改走后台任务。
 【工具结果真实性·落盘与 Shell】凡本机写 Word/文件、执行 **core:shell_exec**：**仅当本轮已出现工具 Observation 且表明成功**（如 **util:generate_office_doc** 返回 `"ok": true` 与 `file_path`；shell 的 `returncode` 为 **0** 且无未处理 stderr）时，Final Answer 才可用「已成功创建」「已执行」等措辞。**禁止**在从未收到成功 Observation、或上一轮工具失败/超时时，凭想象或历史摘要谎称已落盘。
 **core:shell_exec**：若 Observation 含 **returncode≠0**、stderr 含 `Traceback` / `ModuleNotFoundError` / `Error`，须视为失败并如实说明；可建议 `pip install` 缺失模块，或改用 **util:generate_office_doc** 等宿主工具；**禁止**忽略报错宣称成功。
@@ -3110,6 +3128,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
             "查实况天气须前台 **util:get_weather_lite**，勿仅为此投递后台（会被拒绝）。"
             "联网检索优先 **tavily** 类 MCP；**mcp:fetch** 仅兜底已知 URL。"
             "单页 URL 正文用 **mcp:fetch**，勿用 **atom_web_scraper**（需 Chrome 9222）。"
+            "fetch 若出现 Content truncated 须用 start_index 分页续抓，勿放弃。"
             "前台同步工具默认约 5s 超时。"
             "写盘/shell：须 ok:true 或 returncode 0 才宣称成功；shell 报错勿谎称成功；长 docx 勿塞爆命令行。\n"
         )
@@ -5548,7 +5567,7 @@ async def _run_react_core(
                 _react_mark_workspace_io_flags(ctx, tool, observation_full)
             except Exception as _mwf:
                 logger.debug("[L3 Agent] _react_mark_workspace_io_flags 跳过: %s", _mwf)
-            _eff_obs_max = _effective_observation_max_len(observation_full)
+            _eff_obs_max = _effective_observation_max_len(observation_full, tool=tool)
             if len(observation_full) > _eff_obs_max:
                 logger.info(
                     "[L3 Agent] Observation 超长已截断供 LLM：tool=%s full_len=%d max=%d (playwright_mcp=%s)",
@@ -5557,7 +5576,7 @@ async def _run_react_core(
                     _eff_obs_max,
                     _observation_looks_like_playwright_mcp(observation_full),
                 )
-            observation = _truncate_observation_for_llm(observation_full)
+            observation = _truncate_observation_for_llm(observation_full, tool=tool)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, (tool or "native").strip(), observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)

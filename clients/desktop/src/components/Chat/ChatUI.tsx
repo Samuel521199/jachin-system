@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ChatUI — 独立 Chat 窗口用全息风格 UI（单文件、结构清晰，保证输入/按钮可响应）
  *
  * 结构：根 pointer-events-none → 面板 pointer-events-auto
@@ -218,7 +218,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
           </div>
         )}
 
-        {/* 输入区：双轨 — VAD 开关 + 按键录音 Mic（按住说话） */}
+        {/* 输入区：双轨 — VAD 开关 + 按键录音 Mic */}
         <div
           data-chat-interactive
           className="flex items-center gap-2 p-4 pt-2 pb-4 flex-shrink-0 relative z-20"
@@ -286,8 +286,8 @@ export const ChatUI: React.FC<ChatUIProps> = ({
               if (isRecording) onVoiceStop();
             }}
             disabled={!canVoice}
-            aria-label={isRecording ? "松开发送" : "按住说话"}
-            title={isRecording ? "松开发送" : "按住说话 (PTT)"}
+            aria-label={isRecording ? "松开发送" : "麦克风"}
+            title={isRecording ? "松开发送" : "麦克风"}
             className={`p-2.5 rounded-full border transition-all flex-shrink-0 cursor-pointer select-none ${
               isRecording
                 ? "bg-red-500/25 text-red-300 border-red-500/40"

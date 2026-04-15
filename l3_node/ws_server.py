@@ -296,7 +296,20 @@ def _make_on_step(websocket, run_id: str, chat_id: str, broadcast: bool):
     表现为一直转圈直至超时或中断。此处始终使用本 WS 消息轮次的 ``run_id``。
     """
     def on_step(step_type: str, content: str, _ctx_run_id: str) -> None:
-        payload = {"step_type": step_type, "content": content, "run_id": run_id}
+        # 中间步骤（尤其 observation）可能含超大工具输出；仅压缩发往 WS 的副本，不影响执行链路。
+        safe = content
+        if step_type in ("observation", "action", "thought"):
+            try:
+                from core.utils.log_utils import truncate_jsonish_text_for_ws_or_log
+
+                safe = truncate_jsonish_text_for_ws_or_log(content or "")
+            except Exception:
+                _c = content or ""
+                if len(_c) > 120_000:
+                    safe = _c[:120_000] + f"\n... [已截断，原长度: {len(_c)} 字符]"
+                else:
+                    safe = _c
+        payload = {"step_type": step_type, "content": safe, "run_id": run_id}
         asyncio.create_task(_send_safe(websocket, payload))
         if broadcast and chat_id:
             asyncio.create_task(_broadcast_to_mirror_subscribers(chat_id, payload))

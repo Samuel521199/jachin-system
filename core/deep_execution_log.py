@@ -17,6 +17,8 @@ import os
 import re
 from typing import Any, Mapping, Sequence
 
+from core.utils.log_utils import truncate_large_strings_for_log
+
 _LOG = logging.getLogger("jachin.deep")
 
 
@@ -164,11 +166,30 @@ def format_tools_brief(tools: Sequence[Mapping[str, Any]] | None, *, max_names: 
     return f"n={len(tools)} names={names}{extra}"
 
 
+def _compact_body_for_emit_block(body: str) -> str:
+    """超长正文：优先对 JSON 做字段级截断，避免单条日志仍含数 MB 字符串。"""
+    b = redact_secrets(body)
+    if len(b) <= 200_000:
+        return b
+    try:
+        if b.strip()[:1] in "{[":
+            parsed = json.loads(b)
+            dumped = json.dumps(
+                truncate_large_strings_for_log(parsed, max_len=500),
+                ensure_ascii=False,
+                default=str,
+            )
+            return _truncate(dumped, 120_000)
+    except Exception:
+        pass
+    return _truncate(b, 120_000)
+
+
 def emit_block(title: str, body: str) -> None:
     """写入一条大块深度日志（脱敏 + 控制台/文件/SSE 由 logging 配置决定）。"""
     if not deep_log_enabled():
         return
-    text = f"========== {title} ==========\n{redact_secrets(body)}\n========== end {title} =========="
+    text = f"========== {title} ==========\n{_compact_body_for_emit_block(body)}\n========== end {title} =========="
     try:
         _LOG.info("%s", text)
     except Exception:
@@ -218,6 +239,25 @@ def log_llm_completion(
     emit_block(f"LLM {purpose} ({'stream' if stream else 'complete'})", body)
 
 
+def _format_tool_payload_for_deep_log(raw: str, *, outer_cap: int) -> str:
+    """仅用于深度日志展示：脱敏 + 嵌套 str 截断 + 外层总长上限。不改变调用方真实入参/出参。"""
+    s = redact_secrets(raw or "")
+    if not s:
+        return ""
+    try:
+        if s.strip()[:1] in "{[":
+            parsed = json.loads(s)
+            dumped = json.dumps(
+                truncate_large_strings_for_log(parsed, max_len=500),
+                ensure_ascii=False,
+                default=str,
+            )
+            return _truncate(dumped, outer_cap)
+    except Exception:
+        pass
+    return _truncate(s, outer_cap)
+
+
 def log_tool_execution(
     *,
     trace: str,
@@ -241,9 +281,9 @@ def log_tool_execution(
             f"mcp={mcp}",
             f"elapsed_ms={elapsed_ms:.1f}",
             f"action_input_len={len(action_input or '')}",
-            "[ACTION_INPUT]\n" + _truncate(redact_secrets(action_input or ""), ai_cap),
+            "[ACTION_INPUT]\n" + _format_tool_payload_for_deep_log(action_input, outer_cap=ai_cap),
             f"output_len={len(output or '')}",
-            "[OUTPUT]\n" + _truncate(redact_secrets(output or ""), out_cap),
+            "[OUTPUT]\n" + _format_tool_payload_for_deep_log(output, outer_cap=out_cap),
         ]
     )
     emit_block(f"TOOL {tool}", body)
@@ -339,7 +379,19 @@ def log_run_agent_start(
 def log_pipeline_phase(phase: str, detail: str) -> None:
     if not deep_log_enabled():
         return
-    emit_block(f"Pipeline {phase}", redact_secrets(detail))
+    d = redact_secrets(detail or "")
+    if d.strip()[:1] in "{[":
+        try:
+            d = json.dumps(
+                truncate_large_strings_for_log(json.loads(d), max_len=500),
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            d = _truncate(d, 16_000)
+    else:
+        d = _truncate(d, 16_000)
+    emit_block(f"Pipeline {phase}", d)
 
 
 def summarize_parsed_action(parsed: Any) -> str:

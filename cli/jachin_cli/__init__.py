@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin CLI - 极客范十足的 Layer 2 命令行工具
 
 用法:
@@ -7,4 +7,4 @@ Jachin CLI - 极客范十足的 Layer 2 命令行工具
     jachin status    - 查看配对状态
 """
 
-__version__ = "0.8.119"
+__version__ = "0.9.14"

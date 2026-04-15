@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
@@ -274,6 +274,26 @@ def normalize_mcp_fetch_arguments(
         if got:
             out["url"] = got
             return out
+    return out
+
+
+def enrich_mcp_fetch_invoke_args(arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    官方 ``mcp-server-fetch`` 的 ``Fetch`` 模型默认 ``max_length=5000``，长页会在文末附加
+    ``<error>Content truncated. Call the fetch tool with a start_index of …</error>``。
+    若模型未显式传入 ``max_length``，则注入环境变量 ``JACHIN_MCP_FETCH_DEFAULT_MAX_LENGTH``
+    （默认 30000，且受 Pydantic 上界 <1000000 约束）。
+    """
+    out = dict(arguments) if isinstance(arguments, dict) else {}
+    if out.get("max_length") is not None and str(out.get("max_length")).strip() != "":
+        return out
+    raw = (os.environ.get("JACHIN_MCP_FETCH_DEFAULT_MAX_LENGTH") or "30000").strip()
+    try:
+        ml = int(raw)
+    except (TypeError, ValueError):
+        ml = 30000
+    ml = max(1000, min(ml, 999_999))
+    out["max_length"] = ml
     return out
 
 
@@ -2388,6 +2408,7 @@ class MCPToolRegistry:
                         )
                 if _rn == "fetch":
                     _args = normalize_mcp_fetch_arguments(_args, fallback_text=action_input or "")
+                    _args = enrich_mcp_fetch_invoke_args(_args)
                     if not (str(_args.get("url") or "").strip()):
                         return (
                             "[MCP] fetch 缺少 url：请让 Action Input 为合法 JSON，例如 "
@@ -2485,6 +2506,7 @@ class MCPToolRegistry:
 
         if raw_name == "fetch":
             arguments = normalize_mcp_fetch_arguments(arguments, fallback_text=inp)
+            arguments = enrich_mcp_fetch_invoke_args(arguments)
         _parsed_before_alias = dict(arguments) if isinstance(arguments, dict) else {}
         try:
             from core.mcp_client import normalize_mcp_schema_aliases

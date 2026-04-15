@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.utils.log_utils import truncate_jsonish_text_for_ws_or_log
+
 logger = logging.getLogger("l3_node")
+
+# 全息广播单条消息上限（先字段级截断再入队，避免 SSE/终端同步写卡死）
+_BROADCAST_MESSAGE_MAX_TOTAL = 48_000
 
 # 线程安全队列，供 SSE 生成器消费（加大容量以承载深度执行日志分片）
 _log_queue: queue.Queue[tuple[str, str, float]] = queue.Queue(maxsize=4000)
@@ -44,6 +49,16 @@ def broadcast_log(message: str, level: str = "INFO", *, console: bool = True) ->
     level = (level or "INFO").upper()
     if level not in _COLORS:
         level = "INFO"
+    _msg_len = len(message)
+    if _msg_len > _BROADCAST_MESSAGE_MAX_TOTAL:
+        try:
+            message = truncate_jsonish_text_for_ws_or_log(
+                message,
+                max_field_len=500,
+                max_total=_BROADCAST_MESSAGE_MAX_TOTAL,
+            )
+        except Exception:
+            message = message[:_BROADCAST_MESSAGE_MAX_TOTAL] + f"... [已截断，原长度: {_msg_len} 字符]"
     ts = datetime.now().timestamp()
     # 1. 打印到 PowerShell（带颜色 + UTC 时间），仅当 console=True
     if console:

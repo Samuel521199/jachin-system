@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin-System Backend - 主应用入口
 
 FastAPI 应用，整合所有 API 路由和中间件。
@@ -341,13 +341,13 @@ async def lifespan(app: FastAPI):
         await request_shutdown_and_wait()
     except Exception as e:
         logger.warning("InventoryReloader 关闭异常: %s", e)
-    logger.info("Shutting down Jachin Nexus v0.8.119 (Singularity OS)...")
+    logger.info("Shutting down Jachin Nexus v0.9.14 (Singularity OS)...")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Jachin-System Backend",
-    version="0.8.119",
+    version="0.9.14",
     description="Jachin-System AI Agent Backend API v3.2",
     lifespan=lifespan,
     # 确保 JSON 响应使用 UTF-8 编码
