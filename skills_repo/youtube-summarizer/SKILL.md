@@ -1,58 +1,57 @@
 ﻿---
 name: youtube_summarizer
-version: "1.1.0"
-description: "YouTube 知识提炼：用 Python 原生工具拉取字幕长文本，再由 LLM 提炼为结构化中文要点（如 5 条人生建议/知识点）。"
+version: "1.3.0"
+description: "YouTube 知识提炼：通过 MCP get_transcript 拉取字幕长文本，再由 LLM 提炼为结构化中文要点（如 5 条人生建议/知识点）。"
 author: "Jachin"
 persona: 耐心、结构化的学习助手，忠实于字幕内容，不臆造视频未出现的信息
-# 字幕已改为原生 core:youtube_transcript（非 MCP）；mcp_tools 留空以兼容旧解析器
-mcp_tools: []
-native_tools:
-  - core:youtube_transcript
+mcp_tools:
+  - youtube-transcript
 tools:
-  - prefer: "core:youtube_transcript"
+  - prefer: "mcp:get_transcript"
 ---
 
 # YouTube 知识提炼（Layer 3 终端 / ReAct）
 
-本技能面向 [07_LAYER3_TERMINAL.md](../../docs/whitepaper/07_LAYER3_TERMINAL.md) 所述 **L3 单体执行**：字幕获取使用 **原生工具** **`core:youtube_transcript`**（`youtube-transcript-api`，见 `l3_node/skills/native_tools/youtube_transcript_tools.py`），**不再依赖** npm `mcp-server-youtube-transcript`（Node 子进程内 fetch 在 Windows/代理环境下易 `fetch failed`）。长篇归纳由本节点 LLM 完成。
+本技能面向 [07_LAYER3_TERMINAL.md](../../docs/whitepaper/07_LAYER3_TERMINAL.md) 所述 **L3 单体执行**：字幕获取使用 **[jkawamoto/mcp-youtube-transcript](https://github.com/jkawamoto/mcp-youtube-transcript)**（工具 **`get_transcript`**，模型侧多为 **`mcp:get_transcript`**）。**推荐**在 `~/.jachin/mcp_servers.json` 使用 **`__JACHIN_MCP_PYTHON__`** + **`python -m uv tool run --from git+... mcp-youtube-transcript`**（见 `config/mcp_servers.json.example`），避免 Windows 下 **`uvx` 不在 PATH / 无法解析 uvx.cmd** 导致 MCP 静默失败；需 **`pip install uv`**。宿主**不会**再自动注入该 MCP，须你手动合并配置并重启 L3。
 
-**依赖**：`pip install youtube-transcript-api`（已列入 `core/requirements.txt`）。
+**代理**：在 `.env` 或系统环境中设置 **HTTP_PROXY** / **HTTPS_PROXY**（例如 `http://127.0.0.1:8800`）；`mcp_servers.json` 的 `env` 可用 `${HTTP_PROXY}` / `${HTTPS_PROXY}` 占位。
 
 ## 触发条件
 
 用户给出 **YouTube 视频链接**（`watch`、`youtu.be`、`/shorts/`），并希望得到「要点 / 笔记 / 知识提炼 / 人生建议 / 摘要」类结果。
 
+## 最高优先级 / 工具缺失时的唯一合法回复
+
+- 若在**当前轮可用工具列表**中**找不到** **`mcp:get_transcript`**，也**找不到**任何名称或描述中明确包含 **youtube**、**transcript**、**字幕** 且可用于拉取 YouTube 字幕的 MCP 工具：你**必须**在 Final Answer 中**只**回复一句 **`工具未挂载成功`**（可加一行说明：请检查 `~/.jachin/mcp_servers.json` 是否已按示例配置 **youtube-transcript**、`pip install uv`、代理与 L3 重启）。
+- 在上述缺失情况下：**绝对禁止**调用 **`core:submit_background_task`**（**禁止**以任何 intent 文案「异步拉字幕」「获取字幕」等理由调用）；**禁止**编造字幕或凭标题写建议。
+
+## CRITICAL / 绝对铁律（违反即失败）
+
+- **绝对禁止**调用 **`core:submit_background_task`** 处理本技能（拉字幕、提炼、翻译 YouTube 等）。无论用户或系统是否提到「后台」「队列」「任务 ID」，**一律禁止**；本技能**只能**在前台 ReAct 内 **`mcp:get_transcript` → Final Answer**。
+- 若工具齐全：先 **`mcp:get_transcript`**，再提炼；**不得**转后台。
+
 ## 致命错误路由（必须避免）
 
-- **禁止**用 **`mcp:fetch`**、**`util:stealth_extract`** 去「抓 YouTube 页面」当作视频内容：返回几乎只有 **标题 + 页脚**，**没有字幕**。
-- **必须**使用 **`core:youtube_transcript`** 拉取字幕，再提炼。**禁止**为「省事」改投 **`core:submit_background_task`** 去异步拉字幕（除非用户明确要求异步长任务）；正常对话应 **前台** `core:youtube_transcript` → 再 Final Answer。
+- **禁止**用 **`mcp:fetch`**、**`util:stealth_extract`** 当视频正文来源（只有壳页面）。
+- **必须**使用 **`mcp:get_transcript`** 拉取字幕，再提炼。
 
 ### CRITICAL（传参铁律）
 
-- 调用 **`core:youtube_transcript`** 时，**`url` 必须传入完整 `https://` 链接**（`https://www.youtube.com/watch?v=...`、`/shorts/...`、`https://youtu.be/...`）。
-- **绝对禁止**只把裸 **Video ID** 当作 `url`；若用户只给 ID，须在模型侧拼成上述完整 URL 再调用。
+- **`url`** 须为完整 **`https://` 链接**；可选 **`lang`**。禁止只传裸 Video ID。
 
 ## 工作流（必须按顺序）
 
-1. **解析意图**  
-   确认用户提供的字符串为可识别的视频 URL；若缺失则一句追问。
-
-2. **获取字幕（工具调用）**  
-   调用 **`core:youtube_transcript`**，Action Input 为 JSON，例如：`{"url": "https://www.youtube.com/watch?v=xxxx"}`。  
-   阅读返回 JSON：`ok` 为真时使用 **`transcript`** 字段全文；失败时根据 **`error`** 向用户说明（无字幕、地区、网络、未安装依赖等），**不要编造**正文。
-
-3. **LLM 提炼**  
-   仅以 `transcript` 为依据输出用户要求的条数与体裁（如 **5 条中文核心人生建议**、加粗小标题等）；区分事实与推断。
-
-4. **（可选）Notion**  
-   若工具池中存在 Notion 类 MCP，可在完成后询问用户是否写入；**无工具则跳过**。
+1. **解析意图** — 确认 URL；缺失则追问。  
+2. **获取字幕** — **`mcp:get_transcript`**，`{"url": "https://..."}`；有 **`next_cursor`** 则续拉。  
+3. **LLM 提炼** — 仅依据字幕输出（如 **5 条中文核心人生建议**）。  
+4. **（可选）Notion** — 有工具再提写入。
 
 ## 合规与安全
 
-- 输出为用户个人学习笔记风格；不鼓励未授权再分发完整字幕。
+- 个人学习笔记风格；不鼓励未授权再分发完整字幕。
 
 ## 示例
 
-**用户**：请总结这个视频的人生建议：https://www.youtube.com/watch?v=xxxx  
+**用户**：请总结：https://www.youtube.com/watch?v=xxxx  
 
-**Agent**：`Action: core:youtube_transcript` → `Action Input: {"url": "https://..."}` → 根据 Observation 的 `transcript` 输出 **5 条中文结构化建议**。
+**Agent**：`Action: mcp:get_transcript` → `Action Input: {"url": "https://..."}` → 输出 **5 条中文结构化建议**。

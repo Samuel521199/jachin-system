@@ -199,9 +199,9 @@ const skillDefs = [
     id: "com.jachin.skill.youtube.summarizer",
     name: "YouTube 知识提炼",
     description:
-      "用 L3 原生 core:youtube_transcript 拉字幕，再由模型提炼要点；勿用 fetch 当字幕来源。",
+      "用 MCP mcp:get_transcript（jkawamoto；推荐 python -m uv tool run 配置）拉字幕，再由模型提炼要点；勿用 fetch / 勿用后台任务代拉字幕。",
     skillMd: "youtube-summarizer/SKILL.md",
-    version: "1.1.0",
+    version: "1.3.0",
     required_mcps: [],
   },
 ];

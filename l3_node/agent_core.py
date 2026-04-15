@@ -197,14 +197,14 @@ REACT_FOOTER_LARK_PUSH_BLOCK_SLIM = (
 REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK = (
     "【YouTube 视频正文与字幕】用户给出 youtube.com / youtu.be 并要求总结、知识点、字幕时："
     "**禁止**用 **mcp:fetch** 当作视频内容来源（fetch 只能拿到标题/壳页面）。"
-    "必须先 **core:youtube_transcript**（Python 原生，依赖 pip youtube-transcript-api，走系统/环境代理）。"
-    "Action Input 须为 JSON：**url** = 完整 https 链接；禁止只传裸 video id。"
-    "若无字幕或工具不可用，须在 Final Answer 如实说明，**禁止**仅凭标题或话题标签编造「视频内步骤/独家信息」。"
-    "**禁止**为省轮次把字幕任务改投 **core:submit_background_task**（须前台先取字幕再提炼）。\n"
+    "必须先 **mcp:get_transcript**（MCP **youtube-transcript**，推荐配置见仓库 ``config/mcp_servers.json.example``：``__JACHIN_MCP_PYTHON__`` + ``-m uv tool run --from git+…``；需 **pip install uv**；**HTTP_PROXY/HTTPS_PROXY**）。"
+    "Action Input 须为 JSON：**url** = 完整 https 链接；可选 **lang**；禁止只传裸 video id。"
+    "若无 **mcp:get_transcript** 或不可用，须如实说明（可答「工具未挂载成功」），**禁止**仅凭标题编造内容。"
+    "**绝对禁止**用 **core:submit_background_task** 代替拉字幕（前台必须直接调字幕工具）。\n"
 )
 REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK_SLIM = (
-    "【YouTube】总结/字幕：**禁止** **mcp:fetch**（仅壳）；须 **core:youtube_transcript**；"
-    "**url** 完整 https；禁只传 id；禁后台任务代替取字幕；无字幕则明说。\n"
+    "【YouTube】总结/字幕：**禁止** **mcp:fetch**；须 **mcp:get_transcript**；禁 **core:submit_background_task** 代拉字幕；"
+    "**url** 完整 https；无工具则答未挂载。\n"
 )
 
 # L5 本地记忆梦境合并：用户问「触发条件」时易与 150 条阈值混淆，须置顶强调 force 路径（与 memory_compactor / ws_server 一致）
@@ -3619,7 +3619,7 @@ def _youtube_video_id_from_url(url: str) -> str:
 def _react_block_mcp_fetch_if_youtube_url(tool: str, action_input: str) -> str | None:
     """
     mcp:fetch 无法拿到 YouTube 字幕与口播，只会诱导模型凭标题「补全」知识点。
-    对已识别的油管播放页/Shorts 拦截 fetch，引导 core:youtube_transcript。
+    对已识别的油管播放页/Shorts 拦截 fetch，引导 mcp:get_transcript。
     """
     tid = (tool or "").strip().lower()
     if tid not in ("mcp:fetch", "fetch"):
@@ -3637,15 +3637,15 @@ def _react_block_mcp_fetch_if_youtube_url(tool: str, action_input: str) -> str |
         return None
     example_url = url.strip()
     vid_line = (
-        f'请先调用 **core:youtube_transcript**，Action Input 示例：{{"url": "{example_url}"}}（须完整 https）。'
+        f'请先调用 **mcp:get_transcript**，Action Input 示例：{{"url": "{example_url}"}}（须完整 https）。'
         if example_url
-        else '请先调用 **core:youtube_transcript**，Action Input：{{"url": "https://www.youtube.com/watch?v=..."}}。'
+        else '请先调用 **mcp:get_transcript**，Action Input：{{"url": "https://www.youtube.com/watch?v=..."}}。'
     )
     return (
         "[Jachin·YouTube] 已拦截 **mcp:fetch**：YouTube 页面仅能返回标题/壳 HTML，无法获得字幕或口播正文，"
         "继续 fetch 会导致模型仅凭标题臆测「视频知识点」。\n\n"
         f"{vid_line}\n\n"
-        "若提示未安装依赖，请在本机执行：`pip install youtube-transcript-api` 后重启 L3。\n\n"
+        "若工具不可用：请确认 **pip install uv**，且 ``~/.jachin/mcp_servers.json`` **手动**含 **youtube-transcript**（推荐 ``__JACHIN_MCP_PYTHON__ -m uv tool run --from git+https://github.com/jkawamoto/mcp-youtube-transcript mcp-youtube-transcript``），并设置 **HTTP_PROXY/HTTPS_PROXY** 后重启 L3。**禁止**用 **core:submit_background_task** 拉字幕。\n\n"
         "**禁止**在仅看过标题/标签的情况下输出看似具体的步骤或「视频内独家信息」；"
         "若无字幕或工具不可用，须在 Final Answer 中如实说明无法从视频提炼。"
     )
@@ -3820,7 +3820,7 @@ async def _invoke_react_tool(
     _yt_block = _react_block_mcp_fetch_if_youtube_url(tool, _invoke_inp)
     if _yt_block is not None:
         logger.info(
-            "[L3 Agent][工具路由] trace=%s YouTube URL：已拦截 mcp:fetch，引导 core:youtube_transcript",
+            "[L3 Agent][工具路由] trace=%s YouTube URL：已拦截 mcp:fetch，引导 mcp:get_transcript",
             _rtrace,
         )
         if _lark_cv_tok is not None:

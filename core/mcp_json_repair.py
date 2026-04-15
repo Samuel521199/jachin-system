@@ -13,8 +13,8 @@
 
 **SQLite 生活库**：若尚未配置 ``uvx mcp-server-sqlite``（``sqlite_manager``），可由 ``ensure_sqlite_manager_life_db_mcp`` 自动合并一条（需本机 ``uv``/``uvx``）。
 
-**YouTube 字幕**：已改为 L3 **原生工具** ``core:youtube_transcript``（``youtube-transcript-api``，见 ``l3_node/skills/native_tools/youtube_transcript_tools.py``），
-不再由本文件自动注入 npm ``youtube-transcript`` MCP。
+**YouTube 字幕**：**不再**由本文件自动注入 ``youtube-transcript``（``ensure_youtube_transcript_uvx_mcp`` / ``repair_youtube_transcript_uvx_windows_use_cmd`` 已停用）。
+请在 ``~/.jachin/mcp_servers.json`` **手动**添加条目，推荐 ``__JACHIN_MCP_PYTHON__`` + ``-m uv tool run --from git+https://github.com/jkawamoto/mcp-youtube-transcript mcp-youtube-transcript``（见 ``config/mcp_servers.json.example``），避免依赖 ``uvx``/``PATH``；需 ``pip install uv``。
 """
 from __future__ import annotations
 
@@ -498,3 +498,17 @@ def ensure_sqlite_manager_life_db_mcp() -> bool:
         cfg_path,
     )
     return True
+
+
+def ensure_youtube_transcript_uvx_mcp() -> bool:
+    """
+    已停用：不再自动向 ``~/.jachin/mcp_servers.json`` 注入 **youtube-transcript**（避免静默失败与模型误走后台任务）。
+
+    请手动合并 ``config/mcp_servers.json.example`` 中的推荐条目（``__JACHIN_MCP_PYTHON__`` + ``-m uv tool run …``）。
+    """
+    return False
+
+
+def repair_youtube_transcript_uvx_windows_use_cmd() -> bool:
+    """已停用：不再自动改写 uvx / cmd 形式的 youtube-transcript 配置。"""
+    return False

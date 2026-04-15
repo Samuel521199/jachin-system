@@ -471,10 +471,6 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
         from l3_node.skills.native_tools.akshare_tools import dispatch_akshare_core
 
         return dispatch_akshare_core(tool_id, **kwargs)
-    if tool_id == "core:youtube_transcript":
-        from l3_node.skills.native_tools.youtube_transcript_tools import dispatch_youtube_transcript_core
-
-        return dispatch_youtube_transcript_core(tool_id, **kwargs)
     raise ValueError(f"Unknown Native Core tool: {tool_id}")
 
 

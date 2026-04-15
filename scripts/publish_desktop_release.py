@@ -13,6 +13,10 @@
   DESKTOP_RELEASES_S3_PRESIGN_ENDPOINT  可选；L1 生成给用户浏览器的预签名链若需公网 MinIO，在 l1.env 设为 http://公网IP:9000
   DESKTOP_RELEASES_S3_REGION         默认 us-east-1
   DESKTOP_RELEASES_S3_FORCE_PATH_STYLE  默认 true
+  DESKTOP_RELEASES_S3_DISABLE_PROXY    默认视为开启：上传时直连 MinIO/S3（清环境变量代理 + botocore 禁用 proxies）。
+                                       Windows 即使未设 HTTP_PROXY，系统代理（注册表/127.0.0.1:8800）也会让 boto 中途失败；
+                                       若必须经 HTTP 代理访问 S3，请设为 0/false。
+  DESKTOP_PUBLISH_LOG_DIR              发布/上传诊断日志目录（默认 Windows: D:\\zzz\\jachin\\打包）
 
   NEXUS_BASE_URL                     例: http://localhost:3000（无尾斜杠）
   NEXUS_ADMIN_SECRET                 与 NEXUS_ADMIN_SECRET / X-Admin-Token 一致
@@ -79,8 +83,12 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
+import traceback
 import urllib.error
 import urllib.request
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -368,7 +376,174 @@ def ensure_jachin_updater_helper_beside_main(main_exe: Path) -> None:
     print(f"[OK] 热更新助手: {helper}", file=sys.stderr)
 
 
-def make_s3_client():
+@contextmanager
+def _without_http_proxy_env():
+    """临时去掉 HTTP(S)_PROXY，避免 boto/urllib3 走本机代理连 MinIO 时出现 ProxyConnectionError。"""
+    keys = (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    )
+    saved = {k: os.environ[k] for k in keys if k in os.environ}
+    for k in saved:
+        del os.environ[k]
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+def publish_upload_log_dir() -> Path:
+    """上传诊断日志目录：DESKTOP_PUBLISH_LOG_DIR；默认 Windows 为 D:\\zzz\\jachin\\打包。"""
+    raw = (_env("DESKTOP_PUBLISH_LOG_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    if sys.platform == "win32":
+        return Path(r"D:\zzz\jachin\打包")
+    return Path.home() / ".jachin" / "publish_upload_logs"
+
+
+class _S3UploadDiag:
+    """MinIO/S3 上传：详细文件日志 + 进度（multipart 回调可能来自多线程）。"""
+
+    def __init__(self, log_path: Path, local_path: Path, object_key: str, bucket: str):
+        self.log_path = log_path
+        self.local_path = local_path
+        self.object_key = object_key
+        self.bucket = bucket
+        self.total = local_path.stat().st_size
+        self.accumulated = 0
+        self._lock = threading.Lock()
+        self._start = time.perf_counter()
+        self._last_log_mono = self._start
+        self._chunk_calls = 0
+        self._last_progress_bytes = 0
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _emit(self, msg: str, *, to_stderr: bool = True) -> None:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        line = f"[{ts}] {msg}"
+        with self.log_path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+        if to_stderr:
+            print(line, file=sys.stderr)
+
+    def write_header(
+        self,
+        *,
+        endpoint: str | None,
+        region: str,
+        force_path_style: bool,
+        bypass_proxy: bool,
+    ) -> None:
+        import platform as plat
+
+        try:
+            import boto3  # type: ignore
+
+            boto_ver = getattr(boto3, "__version__", "?")
+        except Exception:
+            boto_ver = "?"
+        try:
+            import botocore  # type: ignore
+
+            bc_ver = getattr(botocore, "__version__", "?")
+        except Exception:
+            bc_ver = "?"
+
+        st = self.local_path.stat()
+        lines = [
+            "=" * 72,
+            "publish_desktop_release.py — S3/MinIO 上传诊断日志",
+            f"python: {sys.version.split()[0]}  platform: {plat.platform()}",
+            f"boto3: {boto_ver}  botocore: {bc_ver}",
+            f"cwd: {Path.cwd()}",
+            f"local_file: {self.local_path}",
+            f"local_size_bytes: {self.total}",
+            f"local_mtime_utc: {datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()}",
+            f"s3_bucket: {self.bucket}",
+            f"s3_key: {self.object_key}",
+            f"s3_uri: s3://{self.bucket}/{self.object_key}",
+            f"endpoint: {endpoint!r}",
+            f"region: {region}",
+            f"force_path_style: {force_path_style}",
+            f"bypass_proxy_for_upload: {bypass_proxy}",
+            "proxy_env: "
+            + ", ".join(
+                f"{k}={os.environ.get(k, '<unset>')!r}"
+                for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy")
+            ),
+            (
+                "urllib.request.getproxies(): "
+                + repr(urllib.request.getproxies())
+            ),
+            f"log_file: {self.log_path}",
+            "hint: 若长时间无 progress 行，多为网络到 endpoint 慢、安全组未放行、或上行带宽小（~400MB 需数分钟至数十分钟）",
+            "progress: 约每 15 秒或每 32MiB 追加一行",
+            "=" * 72,
+        ]
+        self.log_path.write_text("", encoding="utf-8")
+        for ln in lines:
+            self._emit(ln)
+
+    def on_chunk(self, delta: int) -> None:
+        with self._lock:
+            self._chunk_calls += 1
+            self.accumulated += delta
+            now = time.perf_counter()
+            pct = 100.0 * self.accumulated / self.total if self.total else 0.0
+            stepped = self.accumulated - self._last_progress_bytes
+            should_log = (
+                self.accumulated >= self.total
+                or now - self._last_log_mono >= 15.0
+                or stepped >= 32 * 1024 * 1024
+            )
+            if should_log:
+                self._last_progress_bytes = self.accumulated
+                elapsed = now - self._start
+                rate = self.accumulated / elapsed if elapsed > 0 else 0.0
+                mb_s = rate / (1024 * 1024)
+                self._emit(
+                    f"progress bytes={self.accumulated}/{self.total} ({pct:.2f}%) "
+                    f"callback_n={self._chunk_calls} elapsed_s={elapsed:.1f} ~{mb_s:.2f} MiB/s"
+                )
+                self._last_log_mono = now
+
+    def success(self) -> None:
+        elapsed = time.perf_counter() - self._start
+        avg = (self.accumulated / elapsed / (1024 * 1024)) if elapsed > 0 else 0.0
+        self._emit(
+            f"DONE upload_ok total_bytes={self.accumulated} elapsed_s={elapsed:.1f} avg_MiB_s={avg:.2f}"
+        )
+
+    def failure(self, exc: BaseException) -> None:
+        self._emit("FAILED " + repr(exc))
+        tb = traceback.format_exc()
+        self._emit(tb, to_stderr=False)
+        with self.log_path.open("a", encoding="utf-8") as f:
+            f.write(tb + "\n")
+            f.flush()
+        print(f"[ERROR] 上传失败；完整 traceback 已写入: {self.log_path}", file=sys.stderr)
+
+
+def _s3_upload_should_bypass_proxy() -> bool:
+    """
+    是否直连 MinIO/S3（清环境变量代理 + botocore Config 禁用 proxies）。
+
+    Windows 下即使未设置 HTTP_PROXY，urllib 仍可能使用「系统代理」（注册表），multipart 传到一半才经 127.0.0.1:8800 失败。
+    因此默认 **始终直连**，除非用户显式关闭。
+    """
+    raw = (_env("DESKTOP_RELEASES_S3_DISABLE_PROXY") or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def make_s3_client(*, force_direct: bool | None = None) -> tuple[Any, str]:
     try:
         import boto3  # type: ignore
         from botocore.client import Config  # type: ignore
@@ -393,6 +568,24 @@ def make_s3_client():
         "yes",
     )
 
+    if force_direct is None:
+        force_direct = _s3_upload_should_bypass_proxy()
+
+    # 禁用系统/环境代理：仅靠清 os.environ 不足以覆盖 Windows 注册表代理
+    cfg_kw: dict[str, Any] = {
+        "signature_version": "s3v4",
+        "s3": {"addressing_style": "path" if force_path else "auto"},
+    }
+    if force_direct:
+        cfg_kw["proxies"] = {"http": None, "https": None}
+
+    try:
+        bc = Config(**cfg_kw)
+    except TypeError:
+        # 极旧 botocore 无 proxies 参数
+        del cfg_kw["proxies"]
+        bc = Config(**cfg_kw)
+
     session = boto3.session.Session()
     return session.client(
         "s3",
@@ -400,7 +593,7 @@ def make_s3_client():
         region_name=region,
         aws_access_key_id=ak,
         aws_secret_access_key=sk,
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path" if force_path else "auto"}),
+        config=bc,
     ), bucket
 
 
@@ -412,13 +605,66 @@ def upload_file_s3(
     if dry_run:
         print(f"[dry-run] PUT s3://<bucket>/{object_key} <= {local_path}")
         return
-    client, bucket = make_s3_client()
     extra: dict[str, Any] = {}
     ct = _guess_content_type(local_path.name)
     if ct:
         extra["ContentType"] = ct
-    print(f"上传 {local_path.name} -> s3://{bucket}/{object_key} ({local_path.stat().st_size} bytes) ...")
-    client.upload_file(str(local_path), bucket, object_key, ExtraArgs=extra or None)
+    bypass_proxy = _s3_upload_should_bypass_proxy()
+    if bypass_proxy:
+        print(
+            "[INFO] S3 上传使用直连（已清 HTTP(S)_PROXY 环境变量 + botocore 禁用 proxies），"
+            "避免 Windows 系统代理/127.0.0.1:8800 导致 multipart 中途失败。"
+            "若必须经 HTTP 代理访问 S3，请设 DESKTOP_RELEASES_S3_DISABLE_PROXY=0",
+            file=sys.stderr,
+        )
+
+    log_dir = publish_upload_log_dir()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"publish_desktop_upload_{ts}.log"
+
+    cm = _without_http_proxy_env() if bypass_proxy else nullcontext()
+    with cm:
+        client, bucket = make_s3_client(force_direct=bypass_proxy)
+        diag = _S3UploadDiag(log_path, local_path, object_key, bucket)
+        ep = _env("DESKTOP_RELEASES_S3_ENDPOINT") or None
+        reg = _env("DESKTOP_RELEASES_S3_REGION") or "us-east-1"
+        fp = (_env("DESKTOP_RELEASES_S3_FORCE_PATH_STYLE") or "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        diag.write_header(
+            endpoint=ep,
+            region=reg,
+            force_path_style=fp,
+            bypass_proxy=bypass_proxy,
+        )
+        print(
+            f"上传 {local_path.name} -> s3://{bucket}/{object_key} ({local_path.stat().st_size} bytes) ..."
+        )
+        print(f"[INFO] 详细进度 / 异常栈见日志: {log_path}", file=sys.stderr)
+        try:
+            from boto3.s3.transfer import TransferConfig  # type: ignore
+
+            tcfg = TransferConfig(
+                multipart_threshold=8 * 1024 * 1024,
+                multipart_chunksize=16 * 1024 * 1024,
+                max_concurrency=10,
+                use_threads=True,
+            )
+            diag._emit("invoke client.upload_file (multipart, Callback=progress)")
+            client.upload_file(
+                str(local_path),
+                bucket,
+                object_key,
+                ExtraArgs=extra or None,
+                Config=tcfg,
+                Callback=diag.on_chunk,
+            )
+            diag.success()
+        except BaseException as exc:
+            diag.failure(exc)
+            raise
 
 
 def _guess_content_type(name: str) -> str | None:

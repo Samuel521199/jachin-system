@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -231,14 +231,6 @@ try:
     NATIVE_TOOLS.extend(YFINANCE_NATIVE_TOOLS_LIST)
 except Exception as e:
     logger.debug("[Skills] yfinance 原生工具未挂载: %s", e)
-
-try:
-    from l3_node.skills.native_tools.youtube_transcript_tools import YOUTUBE_NATIVE_TOOLS_LIST
-
-    NATIVE_TOOLS.extend(YOUTUBE_NATIVE_TOOLS_LIST)
-except Exception as e:
-    logger.debug("[Skills] YouTube 字幕原生工具未挂载: %s", e)
-
 
 def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
     """

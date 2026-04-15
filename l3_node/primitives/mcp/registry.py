@@ -2,7 +2,7 @@
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
-在 ``~/.jachin/mcp_servers.json`` 增加条目（如 ``youtube-transcript`` → npx ``@kimtaeyoon83/mcp-server-youtube-transcript``）后，
+在 ``~/.jachin/mcp_servers.json`` 增加条目（推荐 ``youtube-transcript`` → ``__JACHIN_MCP_PYTHON__`` + ``-m uv tool run …`` / jkawamoto，见 ``config/mcp_servers.json.example``）后，
 ``MCPManager`` 握手 ``list_tools`` 即可动态暴露 ``get_transcript`` 等，**无须**在本文件硬编码白名单。
 向模型提供 OpenAI/Anthropic 标准 tools 格式。
 

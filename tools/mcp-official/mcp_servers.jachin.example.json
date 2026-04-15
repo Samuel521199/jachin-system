@@ -93,10 +93,18 @@
       }
     },
     {
-      "id": "youtube-transcript",
-      "name": "YouTube Transcript（@kimtaeyoon83/mcp-server-youtube-transcript）",
+      "id": "bilibili-mcp",
+      "name": "Bilibili（@xzxzzx/bilibili-mcp · 字幕与评论；需 BILIBILI_* 见仓库 .env.example）",
       "command": "npx",
-      "args": ["-y", "@kimtaeyoon83/mcp-server-youtube-transcript"]
+      "args": [
+        "-y",
+        "@xzxzzx/bilibili-mcp"
+      ],
+      "env": {
+        "BILIBILI_SESSDATA": "${BILIBILI_SESSDATA}",
+        "BILIBILI_BILI_JCT": "${BILIBILI_BILI_JCT}",
+        "BILIBILI_DEDEUSERID": "${BILIBILI_DEDEUSERID}"
+      }
     },
     {
       "id": "playwright-browser-npx",

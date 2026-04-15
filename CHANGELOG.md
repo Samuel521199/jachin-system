@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.8.119] - 2026-04-17
+
+### Added / Changed
+
+- 本地整合：环境示例、MCP 示例与注册表、`publish_desktop_release`、YouTube/B 站相关 skill stub、loader 与依赖调整。
+- **Version**: Desktop、core CLI 与 `core/main` 版本号 **0.8.119**。
+
+---
 
 ## [v0.8.118] - 2026-04-13
 
