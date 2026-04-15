@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -163,6 +163,7 @@ function ChatApp() {
     dismissMemoryCompactSuggest,
     zombieTasksPending,
     dismissZombieTasksPending,
+    backgroundTaskPulse,
   } = sensory;
 
   const messages = useMemo(
@@ -1562,6 +1563,23 @@ function ChatApp() {
       <SensoryOverlay sensory={sensory} variant="minimal" />
       <div className="pointer-events-none flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
+          {backgroundTaskPulse && (
+            <div
+              className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-emerald-500/40 bg-slate-950/95 px-3 py-2.5 text-[11px] leading-tight text-slate-200 shadow-lg backdrop-blur-sm"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <span className="shrink-0 font-medium text-emerald-300/95">后台任务执行中</span>
+                <code className="shrink-0 rounded bg-slate-800/90 px-1.5 py-0.5 text-[10px] text-emerald-200/90">
+                  {backgroundTaskPulse.taskId}
+                </code>
+              </div>
+              <div className="min-h-[1.1em] overflow-hidden font-mono text-[13px] tracking-wider text-emerald-400/95">
+                {backgroundTaskPulse.line.length > 0 ? backgroundTaskPulse.line : "\u00a0"}
+              </div>
+            </div>
+          )}
           {zombieTasksPending && zombieTasksPending.count > 0 && (
             <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-rose-500/50 bg-rose-950/95 px-3 py-2.5 text-xs text-rose-100 shadow-lg backdrop-blur-sm">
               <p className="mb-1 flex flex-wrap items-center gap-2 font-medium text-rose-50">

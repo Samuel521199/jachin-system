@@ -559,21 +559,33 @@ def sanitize_llm_fallback_models(models: list[str]) -> list[str]:
     return out
 
 
-def _apply_purpose_timeout_overrides(
+def _resolve_litellm_http_timeout_sec(
     call_purpose: str,
-    timeout: float,
+    *,
+    stream: bool,
+    base_timeout: float,
     llm_cfg: dict[str, Any],
 ) -> float:
     """
-    按调用目的抬高 litellm 的 HTTP timeout：compaction / 长文拼装等单次可能极慢，
-    若仍用默认 60s 会频繁触发外层 asyncio.wait_for，误判为失败并降级备用模型。
+    注入 litellm ``timeout``（秒），防止公网/API 静默挂起死等。
+
+    下限策略（可被 ``nexus_config.json`` 与环境变量抬高，不单方面压低用户配置）：
+    - **非流式**、非长文专 purpose：至少 **180**
+    - **流式**或 ``util_compose_long_document``：至少 **600**（长文另可读 ``JACHIN_LLM_LONG_DOCUMENT_TIMEOUT_SEC``）
+    - ``compaction_*``：``llm.compaction_timeout_seconds`` 或至少 **180**
     """
     cp = str(call_purpose)
-    t = float(timeout)
+    t = max(1.0, float(base_timeout))
     if cp.startswith("compaction_"):
         _cts = llm_cfg.get("compaction_timeout_seconds")
-        return float(_cts) if _cts is not None else max(t, 180.0)
-    if cp == "util_compose_long_document":
+        if _cts is not None:
+            try:
+                return max(float(_cts), t, 180.0)
+            except (TypeError, ValueError):
+                pass
+        return max(t, 180.0)
+    long_or_stream = bool(stream) or cp == "util_compose_long_document"
+    if long_or_stream:
         _env = (os.environ.get("JACHIN_LLM_LONG_DOCUMENT_TIMEOUT_SEC") or "").strip()
         if _env:
             try:
@@ -586,8 +598,8 @@ def _apply_purpose_timeout_overrides(
                 return max(t, float(_ld))
             except (TypeError, ValueError):
                 pass
-        return max(t, 300.0)
-    return t
+        return max(t, 600.0)
+    return max(t, 180.0)
 
 
 def _asyncio_wait_slack_for_purpose(call_purpose: str) -> float:
@@ -735,7 +747,9 @@ class LiteLLMEngine:
         _nexus_cfg = _load_nexus_config()
         max_attempts, fallback_models, timeout = _get_retry_config(_nexus_cfg)
         _llm_cfg = (_nexus_cfg.get("llm") or {}) if isinstance(_nexus_cfg.get("llm"), dict) else {}
-        timeout = _apply_purpose_timeout_overrides(call_purpose, timeout, _llm_cfg)
+        timeout = _resolve_litellm_http_timeout_sec(
+            call_purpose, stream=False, base_timeout=timeout, llm_cfg=_llm_cfg
+        )
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 
@@ -912,7 +926,9 @@ class LiteLLMEngine:
         _nexus_cfg = _load_nexus_config()
         max_attempts, fallback_models, timeout = _get_retry_config(_nexus_cfg)
         _llm_cfg = (_nexus_cfg.get("llm") or {}) if isinstance(_nexus_cfg.get("llm"), dict) else {}
-        timeout = _apply_purpose_timeout_overrides(call_purpose, timeout, _llm_cfg)
+        timeout = _resolve_litellm_http_timeout_sec(
+            call_purpose, stream=True, base_timeout=timeout, llm_cfg=_llm_cfg
+        )
         models_to_try = [self.model_name] + [m for m in fallback_models if m != self.model_name]
         last_error: Exception | None = None
 
@@ -939,7 +955,6 @@ class LiteLLMEngine:
                 model,
                 next_if_fail or "-",
             )
-            full_content: list[str] = []
             try:
                 t0 = time.perf_counter()
                 kwargs_chat: dict[str, Any] = {
@@ -957,21 +972,32 @@ class LiteLLMEngine:
                 merge_dashscope_stream_incremental_hint(model, kwargs_chat)
                 litellm_apply_dashscope_credentials(model, kwargs_chat)
                 # 与 l3_node.llm_client 一致：默认识别增量/累积帧，避免 UI 复读。
-                response = await litellm.acompletion(**kwargs_chat)
-                _norm = StreamDeltaNormalizer()
-                async for chunk in response:
-                    choice = chunk.choices[0] if chunk.choices else None
-                    if not choice or not hasattr(choice, "delta"):
-                        continue
-                    delta = getattr(choice.delta, "content", None) or ""
-                    if not delta:
-                        continue
-                    piece = _norm.feed(delta)
-                    if piece:
-                        full_content.append(piece)
-                        if chunk_callback:
-                            await chunk_callback(piece)
-                out = "".join(full_content).strip()
+                async def _consume_litellm_stream() -> str:
+                    response_inner = await litellm.acompletion(**kwargs_chat)
+                    _norm = StreamDeltaNormalizer()
+                    parts: list[str] = []
+                    async for chunk in response_inner:
+                        choice = chunk.choices[0] if chunk.choices else None
+                        if not choice or not hasattr(choice, "delta"):
+                            continue
+                        delta = getattr(choice.delta, "content", None) or ""
+                        if not delta:
+                            continue
+                        piece = _norm.feed(delta)
+                        if piece:
+                            parts.append(piece)
+                            if chunk_callback:
+                                await chunk_callback(piece)
+                    return "".join(parts).strip()
+
+                _cap_total = float(timeout) + float(_asyncio_wait_slack_for_purpose(call_purpose))
+                try:
+                    out = await asyncio.wait_for(_consume_litellm_stream(), timeout=_cap_total)
+                except asyncio.TimeoutError as te:
+                    raise TimeoutError(
+                        f"LLM 流式整段逾时 (>{_cap_total:.0f}s, litellm_timeout={timeout:.0f}s, "
+                        f"purpose={call_purpose}, model={model})"
+                    ) from te
                 logger.info(
                     "[LLM][调度] purpose=%s result=ok model_used=%s outcome=stream chars=%d",
                     call_purpose,

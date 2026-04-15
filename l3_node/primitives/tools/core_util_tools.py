@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 import platform
 import re
 import socket
@@ -1883,6 +1884,39 @@ def _parse_outline_sections(raw: Any) -> tuple[list[str], str | None]:
     return [], "outline_sections 须为字符串数组或可解析的 JSON 数组字符串"
 
 
+def _compose_long_doc_stream_heartbeat():
+    """
+    长文流式生成时：每 ≥100ms 或每累计 500 字符向 stderr 输出一个 ``.``，避免「静默断连」时误以为进程死锁。
+    """
+    last_t = [time.monotonic()]
+    acc = [0]
+
+    async def _cb(piece: str) -> None:
+        if not piece:
+            return
+        acc[0] += len(piece)
+        now = time.monotonic()
+        if acc[0] >= 500 or (now - last_t[0]) >= 0.1:
+            acc[0] = 0
+            last_t[0] = now
+            try:
+                sys.stderr.write(".")
+                sys.stderr.flush()
+            except Exception:
+                pass
+            try:
+                from core.deep_execution_log import deep_log_enabled
+
+                if deep_log_enabled():
+                    import logging
+
+                    logging.getLogger("jachin.deep").debug("[util_compose_long_document] stream_ping")
+            except Exception:
+                pass
+
+    return _cb
+
+
 def _run_coroutine_in_fresh_loop(coro):
     """在无非运行事件循环的上下文中执行协程；若当前线程已有 loop，则放到独立线程里 asyncio.run。"""
     import asyncio
@@ -1941,15 +1975,14 @@ def run_compose_long_document(**kwargs: Any) -> dict[str, Any]:
             async def _one_chapter(
                 _prompt: str = chapter_prompt,
             ) -> str:
-                out = await eng.generate_response(
+                # 流式接收 + 组装：降低公网中间件对「长时间无字节」静默断连的概率；超时由 llm_provider 注入。
+                out = await eng.generate_response_stream(
                     [{"role": "user", "content": _prompt}],
-                    tools=None,
+                    _compose_long_doc_stream_heartbeat(),
                     temperature=0.75,
                     max_tokens=8192,
                     call_purpose="util_compose_long_document",
                 )
-                if isinstance(out, dict):
-                    return str(out.get("content") or "").strip()
                 return str(out or "").strip()
 
             chapter = _run_coroutine_in_fresh_loop(_one_chapter())

@@ -77,6 +77,36 @@ def _effective_max_tokens_for_model(model: str, requested: int) -> int:
     return n
 
 
+def _litellm_dispatch_timeout_l3(purpose: str, *, stream: bool, base: float) -> float:
+    """与 ``core.llm_provider._resolve_litellm_http_timeout_sec`` 对齐的 litellm HTTP 超时（秒）。"""
+    try:
+        from core.llm_provider import _load_nexus_config, _resolve_litellm_http_timeout_sec
+
+        cfg = _load_nexus_config()
+        llm_cfg = (cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {}
+        return _resolve_litellm_http_timeout_sec(
+            str(purpose), stream=stream, base_timeout=float(base), llm_cfg=llm_cfg
+        )
+    except Exception:
+        p = str(purpose or "")
+        bt = float(base)
+        if p.startswith("compaction_"):
+            return max(bt, 180.0)
+        if stream or p == "util_compose_long_document":
+            return max(bt, 600.0)
+        return max(bt, 180.0)
+
+
+def _l3_asyncio_cap_after_litellm_timeout(purpose: str, htt: float) -> float:
+    """``asyncio.wait_for`` 相对 litellm ``timeout`` 的余量（与 core.llm_provider 一致）。"""
+    try:
+        from core.llm_provider import _asyncio_wait_slack_for_purpose
+
+        return float(htt) + float(_asyncio_wait_slack_for_purpose(str(purpose)))
+    except Exception:
+        return float(htt) + 120.0
+
+
 def _is_probably_network_llm_error(err: BaseException) -> bool:
     """避免把 InvalidParameter/max_tokens 等 400 误报成「网络不可达」。"""
     msg = str(err).lower()
@@ -660,12 +690,13 @@ class LiteLLMEngine:
                     )
                 except Exception:
                     _msgs_api = list(messages or [])
+                _htt = _litellm_dispatch_timeout_l3(purpose, stream=False, base=self.timeout)
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
                     "messages": _msgs_api,
                     "temperature": temperature,
                     "max_tokens": _mt,
-                    "timeout": self.timeout,
+                    "timeout": _htt,
                 }
                 if tools:
                     try:
@@ -718,7 +749,7 @@ class LiteLLMEngine:
                 except Exception:
                     pass
 
-                _cap = float(self.timeout) + 45.0
+                _cap = _l3_asyncio_cap_after_litellm_timeout(purpose, _htt)
                 try:
                     response = await asyncio.wait_for(
                         litellm.acompletion(**kwargs_chat),
@@ -726,7 +757,7 @@ class LiteLLMEngine:
                     )
                 except asyncio.TimeoutError as te:
                     raise TimeoutError(
-                        f"L3 LLM 非流式逾时 (>{_cap:.0f}s, purpose={purpose}, model={model})"
+                        f"L3 LLM 非流式逾时 (>{_cap:.0f}s, litellm_timeout={_htt:.0f}s, purpose={purpose}, model={model})"
                     ) from te
                 _apply_usage_budget(response, _acc, _budget)
                 choice = response.choices[0] if response.choices else None
@@ -980,13 +1011,14 @@ class LiteLLMEngine:
                     )
                 except Exception:
                     _msgs_api_s = list(messages or [])
+                _htt_s = _litellm_dispatch_timeout_l3(purpose, stream=True, base=self.timeout)
                 kwargs_chat: dict[str, Any] = {
                     "model": model,
                     "messages": _msgs_api_s,
                     "stream": True,
                     "temperature": temperature,
                     "max_tokens": _mt,
-                    "timeout": self.timeout,
+                    "timeout": _htt_s,
                 }
                 if tools:
                     try:
@@ -1091,8 +1123,22 @@ class LiteLLMEngine:
                 _stream_task = asyncio.create_task(_consume_stream())
                 if _stream_run_id:
                     _agent_cancel_mod.register_stream_task(str(_stream_run_id), _stream_task)
+                _stream_cap = _l3_asyncio_cap_after_litellm_timeout(purpose, _htt_s)
                 try:
-                    pieces, _last_usage_chunk = await _stream_task
+                    try:
+                        pieces, _last_usage_chunk = await asyncio.wait_for(
+                            _stream_task, timeout=_stream_cap
+                        )
+                    except asyncio.TimeoutError as te:
+                        _stream_task.cancel()
+                        try:
+                            await _stream_task
+                        except Exception:
+                            pass
+                        raise TimeoutError(
+                            f"L3 LLM 流式整段逾时 (>{_stream_cap:.0f}s, litellm_timeout={_htt_s:.0f}s, "
+                            f"purpose={purpose}, model={model})"
+                        ) from te
                 except asyncio.CancelledError:
                     raise RunCancelledError("l3_llm_stream_task_cancelled") from None
                 finally:

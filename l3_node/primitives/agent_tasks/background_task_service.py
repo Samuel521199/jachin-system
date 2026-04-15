@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -13,6 +14,125 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class BackgroundTaskStderrPulse:
+    """
+    后台 ``run_agent`` 执行期间：
+    - **stderr**：单行 ``.``（终端仍可见）；
+    - **前台 WebSocket**：同逻辑通过 ``event=pulse`` + ``pulse_line`` 推送，供桌面聊天页展示。
+
+    规则（与产品约定一致）：
+    - 每 **≥500ms** 或 LLM **流式累计 ≥500 字符** 输出一个 ``.``；
+    - **仅一行**：写满 ``JACHIN_BG_TASK_STDERR_PULSE_WIDTH``（默认 120）后回卷，``pulse_line`` 为空串表示行已清空；
+    - 任务结束 ``stop()`` 时 stderr 换行；完成/失败由 ``completed``/``failed`` 帧清 UI。
+
+    关闭：``JACHIN_BG_TASK_STDERR_PULSE=0``（stderr 与 WS 均关闭）。
+    """
+
+    def __init__(self, task_id: str) -> None:
+        self.task_id = str(task_id)
+        raw_w = (os.environ.get("JACHIN_BG_TASK_STDERR_PULSE_WIDTH") or "").strip()
+        try:
+            self._width = max(16, min(500, int(raw_w))) if raw_w else 120
+        except ValueError:
+            self._width = 120
+        self._col = 0
+        self._chars_acc = 0
+        self._last_emit = time.monotonic()
+        self._stop = asyncio.Event()
+        self._tick_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+
+    def enabled(self) -> bool:
+        return os.environ.get("JACHIN_BG_TASK_STDERR_PULSE", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+
+    async def start(self) -> None:
+        if not self.enabled():
+            return
+        self._tick_task = asyncio.create_task(
+            self._time_tick_loop(), name=f"jachin-bg-stderr-pulse-{self.task_id[:12]}"
+        )
+
+    async def _time_tick_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=0.5)
+                return
+            except asyncio.TimeoutError:
+                await self._emit_if_due_time()
+
+    async def _emit_if_due_time(self) -> None:
+        pl: str | None = None
+        async with self._lock:
+            now = time.monotonic()
+            if now - self._last_emit >= 0.5:
+                pl = self._emit_dot_nolock()
+                self._last_emit = time.monotonic()
+        if pl is not None:
+            await self._emit_ui_pulse(pl)
+
+    async def note_stream_chars(self, n: int) -> None:
+        if not self.enabled() or n <= 0:
+            return
+        last_pl: str | None = None
+        async with self._lock:
+            self._chars_acc += n
+            while self._chars_acc >= 500:
+                self._chars_acc -= 500
+                last_pl = self._emit_dot_nolock()
+                self._last_emit = time.monotonic()
+        if last_pl is not None:
+            await self._emit_ui_pulse(last_pl)
+
+    def _emit_dot_nolock(self) -> str:
+        """写 stderr；返回当前单行展示串（行满回卷后为 ``\"\"``）。"""
+        try:
+            sys.stderr.write(".")
+            self._col += 1
+            if self._col >= self._width:
+                sys.stderr.write("\r")
+                self._col = 0
+                sys.stderr.flush()
+                return ""
+            sys.stderr.flush()
+            return "." * self._col
+        except Exception:
+            return "." * max(0, self._col)
+
+    async def _emit_ui_pulse(self, pulse_line: str) -> None:
+        if not self.enabled():
+            return
+        try:
+            await _emit("pulse", self.task_id, pulse_line=pulse_line)
+        except Exception:
+            pass
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._tick_task:
+            try:
+                await asyncio.wait_for(self._tick_task, timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                self._tick_task.cancel()
+                try:
+                    await self._tick_task
+                except asyncio.CancelledError:
+                    pass
+            except Exception:
+                pass
+            self._tick_task = None
+        try:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
 
 # zombie_tasks.json 追加与读取共用锁（同进程内并发；跨进程靠原子 replace）
 _zombie_tasks_file_lock = threading.Lock()
@@ -309,6 +429,15 @@ async def _run_job(job: BackgroundJob) -> None:
     if job.require_skills:
         intent = f"[后台任务·领域偏好: {', '.join(job.require_skills)}]\n\n{intent}"
 
+    _pulse = BackgroundTaskStderrPulse(tid)
+    pulse: BackgroundTaskStderrPulse | None = _pulse if _pulse.enabled() else None
+    if pulse:
+        await pulse.start()
+
+    async def _bg_on_chunk(chunk: str) -> None:
+        if pulse:
+            await pulse.note_stream_chars(len(chunk or ""))
+
     try:
         from l3_node.agent_core import run_agent
 
@@ -321,6 +450,7 @@ async def _run_job(job: BackgroundJob) -> None:
                 "task_id": tid,
             },
             _allowed_skills_override=job.allowed_skills,
+            on_chunk=_bg_on_chunk if pulse else None,
         )
         rec.update(
             {
@@ -349,6 +479,9 @@ async def _run_job(job: BackgroundJob) -> None:
         _append_tasks_index(rec, "failed")
         await _emit("failed", tid, message=str(e))
         await _append_progress_line_async(f"- [后台任务 {tid}] 失败：{e}")
+    finally:
+        if pulse:
+            await pulse.stop()
 
 
 def _job_from_sqlite_payload(data: dict[str, Any]) -> BackgroundJob:

@@ -52,6 +52,7 @@ export default function ChatPanel() {
     dismissMemoryCompactSuggest,
     zombieTasksPending,
     dismissZombieTasksPending,
+    backgroundTaskPulse,
   } = sensory;
   const [isVoiceCaptureRunning, setIsVoiceCaptureRunning] = useState(false);
 
@@ -740,6 +741,23 @@ export default function ChatPanel() {
 
       {/* 输入区域 */}
       <div className="border-t border-purple-500/20 p-4">
+        {backgroundTaskPulse && (
+          <div
+            className="mb-3 rounded-lg border border-emerald-500/35 bg-slate-900/95 px-3 py-2 text-[11px] leading-tight text-slate-200 shadow-md"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="shrink-0 font-medium text-emerald-300/95">后台任务执行中</span>
+              <code className="shrink-0 rounded bg-slate-800/90 px-1.5 py-0.5 text-[10px] text-emerald-200/90">
+                {backgroundTaskPulse.taskId}
+              </code>
+            </div>
+            <div className="min-h-[1.1em] overflow-hidden font-mono text-[13px] tracking-wider text-emerald-400/95">
+              {backgroundTaskPulse.line.length > 0 ? backgroundTaskPulse.line : "\u00a0"}
+            </div>
+          </div>
+        )}
         {zombieTasksPending && zombieTasksPending.count > 0 && (
           <div className="mb-3 rounded-lg border border-rose-500/45 bg-rose-950/90 px-3 py-2 text-xs text-rose-100">
             <p className="mb-1 flex flex-wrap items-center gap-2 font-medium text-rose-50">

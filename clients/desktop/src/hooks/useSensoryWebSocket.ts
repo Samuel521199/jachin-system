@@ -75,10 +75,23 @@ export interface ZombieTaskSummary {
   previous_status?: string;
 }
 
+/** 后台任务单行进度（与 L3 ``pulse_line`` 一致，仅 ``.``；行满回卷时为空串） */
+export interface BackgroundTaskPulseState {
+  taskId: string;
+  line: string;
+}
+
 /** L3 `l3_event_bus` 推送的后台任务事件（须先 `subscribe_background_tasks`） */
 export interface BackgroundTaskEventPayload {
   type: "background_task";
-  event: "queued" | "started" | "completed" | "failed" | "cancelled" | "zombie_tasks_pending";
+  event:
+    | "queued"
+    | "started"
+    | "pulse"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "zombie_tasks_pending";
   /** 生命周期事件必填；`zombie_tasks_pending` 无此项 */
   task_id?: string;
   ts?: number;
@@ -86,6 +99,8 @@ export interface BackgroundTaskEventPayload {
   message?: string;
   intent_preview?: string;
   queue_hint?: string;
+  /** `event === "pulse"`：当前行已展示的 ``.`` 串（回卷后可能为 `""`） */
+  pulse_line?: string;
   /** 仅 `event === "zombie_tasks_pending"` */
   count?: number;
   tasks?: ZombieTaskSummary[];
@@ -166,6 +181,8 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const [memoryCompactSuggest, setMemoryCompactSuggest] = useState<MemoryCompactSuggestState | null>(null);
   /** L3 启动时推送：上次未闭环的后台任务（zombie_tasks.json） */
   const [zombieTasksPending, setZombieTasksPending] = useState<ZombieTasksPendingBanner | null>(null);
+  /** 后台任务执行中单行 ``.`` 进度（`started` / `pulse` 更新，`completed` 等清除） */
+  const [backgroundTaskPulse, setBackgroundTaskPulse] = useState<BackgroundTaskPulseState | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChunkRef = useRef<((chunk: string, runId: string, meta?: SensoryChunkMeta) => void) | null>(
@@ -311,15 +328,25 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             return;
           }
           if (raw.type === "background_task" && typeof raw.event === "string" && typeof raw.task_id === "string") {
+            const tid = raw.task_id as string;
+            const evName = raw.event as string;
+            if (evName === "started") {
+              setBackgroundTaskPulse({ taskId: tid, line: "" });
+            } else if (evName === "pulse" && typeof raw.pulse_line === "string") {
+              setBackgroundTaskPulse({ taskId: tid, line: raw.pulse_line });
+            } else if (evName === "completed" || evName === "failed" || evName === "cancelled") {
+              setBackgroundTaskPulse((prev) => (prev?.taskId === tid ? null : prev));
+            }
             const ev: BackgroundTaskEventPayload = {
               type: "background_task",
               event: raw.event as BackgroundTaskEventPayload["event"],
-              task_id: raw.task_id,
+              task_id: tid,
               ts: typeof raw.ts === "number" ? raw.ts : undefined,
               result_preview: typeof raw.result_preview === "string" ? raw.result_preview : undefined,
               message: typeof raw.message === "string" ? raw.message : undefined,
               intent_preview: typeof raw.intent_preview === "string" ? raw.intent_preview : undefined,
               queue_hint: typeof raw.queue_hint === "string" ? raw.queue_hint : undefined,
+              pulse_line: typeof raw.pulse_line === "string" ? raw.pulse_line : undefined,
             };
             onBackgroundTaskRef.current?.(ev);
             return;
@@ -768,5 +795,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     /** 断电遗留后台任务横幅（L3 zombie_tasks_pending） */
     zombieTasksPending,
     dismissZombieTasksPending,
+    /** 后台任务单行进度（桌面聊天输入区上方展示） */
+    backgroundTaskPulse,
   };
 }
