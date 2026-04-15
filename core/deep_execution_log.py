@@ -4,9 +4,13 @@ Jachin 深度执行日志 — 面向排障与全息监控的「全量轨迹」�
 - 默认开启（环境变量 JACHIN_L3_DEEP_LOG=0/false/no/off 可关闭）。
 - 使用 logger「jachin.deep」：由 l3_node/__main__.py 挂载控制台、l3_debug.log、全息 SSE。
 - 内容可能极长；API Key / Bearer 等会做简单脱敏，但仍勿在不可信环境分享整段日志。
+
+- **热路径默认不再打印完整 messages/tools/schema**（避免同步写日志阻塞主线程 / 桌面 IPC 卡顿）。
+  设置 JACHIN_L3_DEEP_LOG_FULL_PAYLOAD=1（或旧名 JACHIN_L3_DEEP_LOG_FULL_REQUEST=1）恢复旧版「全量请求体」行为。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +23,68 @@ _LOG = logging.getLogger("jachin.deep")
 def deep_log_enabled() -> bool:
     v = (os.environ.get("JACHIN_L3_DEEP_LOG") or "1").strip().lower()
     return v not in ("0", "false", "no", "off")
+
+
+def deep_log_full_payload_enabled() -> bool:
+    """
+    为真时：log_llm_completion 打印完整 messages（截断上限仍生效）、ReAct 原始输出大上限等，与旧版一致。
+    为假（默认）：仅打印条数、各 role 长度、tools 数量与摘要 hash，避免巨型日志阻塞。
+    兼容旧环境变量名 JACHIN_L3_DEEP_LOG_FULL_REQUEST。
+    """
+    for key in ("JACHIN_L3_DEEP_LOG_FULL_PAYLOAD", "JACHIN_L3_DEEP_LOG_FULL_REQUEST"):
+        v = (os.environ.get(key) or "").strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
+def _content_len(msg: Mapping[str, Any]) -> int:
+    c = msg.get("content")
+    if c is None:
+        return 0
+    if isinstance(c, str):
+        return len(c)
+    try:
+        return len(json.dumps(c, ensure_ascii=False, default=str))
+    except Exception:
+        return len(str(c))
+
+
+def summarize_messages_and_tools_for_deep(
+    messages: Sequence[Mapping[str, Any]] | None,
+    tools: Sequence[Mapping[str, Any]] | None,
+) -> str:
+    """单行可检索摘要：条数、按 role 的长度列表、tools 数与名称指纹（非全量 schema）。"""
+    lines: list[str] = []
+    msgs = list(messages or [])
+    lines.append(f"n_messages={len(msgs)}")
+    role_chunks: dict[str, list[int]] = {}
+    for i, m in enumerate(msgs):
+        if not isinstance(m, Mapping):
+            lines.append(f"  [{i}] non_mapping={type(m).__name__}")
+            continue
+        role = str(m.get("role") or "?")
+        L = _content_len(m)
+        role_chunks.setdefault(role, []).append(L)
+    for role, lens in sorted(role_chunks.items()):
+        s = sum(lens)
+        mx = max(lens) if lens else 0
+        lines.append(f"  role={role} count={len(lens)} total_chars={s} max_msg_chars={mx}")
+    if tools is not None:
+        names: list[str] = []
+        for t in tools:
+            if not isinstance(t, Mapping):
+                continue
+            fn = t.get("function") if isinstance(t.get("function"), Mapping) else {}
+            nm = str((fn or {}).get("name") or t.get("name") or "?")
+            names.append(nm)
+        blob = "\n".join(names)
+        h = hashlib.sha256(blob.encode("utf-8", errors="replace")).hexdigest()[:16]
+        head = [(n[:40] + "…") if len(n) > 40 else n for n in names[:20]]
+        lines.append(f"n_tools={len(tools)} name_list_sha256_16={h} tool_names_head={head!r}")
+    else:
+        lines.append("n_tools=(omitted)")
+    return "\n".join(lines)
 
 
 _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -132,17 +198,23 @@ def log_llm_completion(
         f"model={model}",
         f"stream={stream}",
         f"elapsed_ms={elapsed_ms:.1f}",
+        f"deep_full_payload={deep_log_full_payload_enabled()}",
     ]
     if error:
         parts.append(f"ERROR={error}")
     body = "\n".join(parts)
-    body += "\n\n[REQUEST messages]\n" + format_messages_for_deep(messages)
-    if tools is not None:
-        body += "\n\n[REQUEST tools]\n" + format_tools_brief(tools)
+    if deep_log_full_payload_enabled():
+        body += "\n\n[REQUEST messages]\n" + format_messages_for_deep(messages)
+        if tools is not None:
+            body += "\n\n[REQUEST tools]\n" + format_tools_brief(tools)
+    else:
+        body += "\n\n[REQUEST summary — 全量正文已省略，设 JACHIN_L3_DEEP_LOG_FULL_PAYLOAD=1 可恢复]\n"
+        body += summarize_messages_and_tools_for_deep(messages, tools)
     if response_dict_summary:
         body += "\n\n[RESPONSE summary]\n" + redact_secrets(response_dict_summary)
     if response_text is not None:
-        body += "\n\n[RESPONSE text]\n" + _truncate(redact_secrets(response_text), 120_000)
+        cap = 120_000 if deep_log_full_payload_enabled() else 12_000
+        body += "\n\n[RESPONSE text]\n" + _truncate(redact_secrets(response_text), cap)
     emit_block(f"LLM {purpose} ({'stream' if stream else 'complete'})", body)
 
 
@@ -158,6 +230,9 @@ def log_tool_execution(
 ) -> None:
     if not deep_log_enabled():
         return
+    full = deep_log_full_payload_enabled()
+    ai_cap = 80_000 if full else 8_000
+    out_cap = 120_000 if full else 16_000
     body = "\n".join(
         [
             f"trace={trace}",
@@ -166,9 +241,9 @@ def log_tool_execution(
             f"mcp={mcp}",
             f"elapsed_ms={elapsed_ms:.1f}",
             f"action_input_len={len(action_input or '')}",
-            "[ACTION_INPUT]\n" + _truncate(redact_secrets(action_input or ""), 80_000),
+            "[ACTION_INPUT]\n" + _truncate(redact_secrets(action_input or ""), ai_cap),
             f"output_len={len(output or '')}",
-            "[OUTPUT]\n" + _truncate(redact_secrets(output or ""), 120_000),
+            "[OUTPUT]\n" + _truncate(redact_secrets(output or ""), out_cap),
         ]
     )
     emit_block(f"TOOL {tool}", body)
@@ -210,12 +285,14 @@ def log_react_llm_result(
 ) -> None:
     if not deep_log_enabled():
         return
+    cap = 200_000 if deep_log_full_payload_enabled() else 12_000
     body = "\n".join(
         [
             f"trace={trace}",
             f"iteration={iteration}",
             f"response_len={response_len}",
-            "[RAW_MODEL_OUTPUT]\n" + _truncate(redact_secrets(response_full or ""), 200_000),
+            f"raw_logged_max_chars={cap}",
+            "[RAW_MODEL_OUTPUT]\n" + _truncate(redact_secrets(response_full or ""), cap),
         ]
     )
     emit_block("ReAct LLM raw output", body)

@@ -169,9 +169,20 @@ def install_deep_log_handlers(*, stream_handler: logging.Handler | None = None) 
         from l3_node.early_log import attach_file_handler_to_logger
 
         attach_file_handler_to_logger(dlg)
-        _fh = next((h for h in dlg.handlers if isinstance(h, logging.FileHandler)), None)
-        if _fh is not None and _fh.formatter is None:
-            _fh.setFormatter(fmt_deep)
+        try:
+            from l3_node.async_file_log import get_batched_file_handler
+
+            _bfh = get_batched_file_handler()
+            if _bfh is not None:
+                _bfh.setFormatter(fmt_deep)
+            else:
+                _fh = next((h for h in dlg.handlers if isinstance(h, logging.FileHandler)), None)
+                if _fh is not None and _fh.formatter is None:
+                    _fh.setFormatter(fmt_deep)
+        except ImportError:
+            _fh = next((h for h in dlg.handlers if isinstance(h, logging.FileHandler)), None)
+            if _fh is not None and _fh.formatter is None:
+                _fh.setFormatter(fmt_deep)
     except Exception:
         pass
     dbh = DeepLogBroadcastHandler()

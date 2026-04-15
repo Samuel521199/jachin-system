@@ -13,6 +13,10 @@ L3 最早阶段调试日志 - 仅用 stdlib，不依赖 dotenv
   - 设置环境变量 ``JACHIN_L3_DEBUG=1`` 或 ``L3_VERBOSE_LOG=1``：根日志级别 DEBUG，
     并抬高 ``l3_node.*``、``l3_node.ws_server``、``l3_node.llm_client`` 等输出；
     仍抑制 ``httpcore``/``websockets`` 等第三方刷屏。
+
+异步落盘（默认开启）：
+  - ``JACHIN_L3_LOG_ASYNC=0``：禁用 QueueListener，改回同步 ``FileHandler``（极端排障）。
+  - ``JACHIN_L3_LOG_ASYNC_BATCH_CHARS`` / ``JACHIN_L3_LOG_ASYNC_FLUSH_SEC``：批量写阈值与时间窗。
 """
 from __future__ import annotations
 
@@ -139,19 +143,38 @@ def setup_early_logging() -> str:
     except OSError:
         pass
 
-    # 挂载 FileHandler 到 root logger（完整格式：时间 + 级别 + logger + 消息，便于离线排查）
+    # 挂载文件日志：默认 QueueHandler + 后台批量写盘（见 l3_node.async_file_log），避免主线程同步写阻塞
     try:
-        _FILE_HANDLER = logging.FileHandler(_LOG_PATH, mode="a", encoding="utf-8")
-        _FILE_HANDLER.setLevel(logging.DEBUG)
-        _FILE_HANDLER.setFormatter(
-            _UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
-        logging.getLogger().addHandler(_FILE_HANDLER)
-        with open(_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(
-                f"{datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')} "
-                f"[L3 DEBUG] FileHandler attached (UTC format); set JACHIN_L3_DEBUG=1 for maximum detail\n"
-            )
+        _fmt = _UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        use_async = False
+        install_async_file_sink = None
+        try:
+            from l3_node.async_file_log import async_file_log_enabled, install_async_file_sink
+
+            use_async = bool(async_file_log_enabled() and install_async_file_sink is not None)
+        except ImportError:
+            pass
+
+        if use_async:
+            _FILE_HANDLER = install_async_file_sink(_LOG_PATH, fmt=_fmt)
+            _FILE_HANDLER.setLevel(logging.DEBUG)
+            logging.getLogger().addHandler(_FILE_HANDLER)
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(
+                    f"{datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')} "
+                    f"[L3 DEBUG] Async file log (QueueHandler+BatchedFile); "
+                    f"JACHIN_L3_LOG_ASYNC=0 sync FileHandler; set JACHIN_L3_DEBUG=1 for maximum detail\n"
+                )
+        else:
+            _FILE_HANDLER = logging.FileHandler(_LOG_PATH, mode="a", encoding="utf-8")
+            _FILE_HANDLER.setLevel(logging.DEBUG)
+            _FILE_HANDLER.setFormatter(_fmt)
+            logging.getLogger().addHandler(_FILE_HANDLER)
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(
+                    f"{datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')} "
+                    f"[L3 DEBUG] FileHandler attached sync (UTC format); set JACHIN_L3_DEBUG=1 for maximum detail\n"
+                )
     except OSError:
         pass
 
@@ -232,6 +255,23 @@ def configure_l3_runtime_diagnostics() -> None:
         logging.getLogger("l3_node.llm_client").setLevel(logging.INFO)
 
     install_websocket_handshake_noise_filters()
+    suppress_third_party_llm_client_noise()
+
+
+def suppress_third_party_llm_client_noise() -> None:
+    """
+    抑制 OpenAI Python SDK / LiteLLM 在 DEBUG 下打印「Request options」全量 json_data（含 tools schema），
+    避免同步写 stderr/管道阻塞主线程，及打包后无控制台时管道背压。
+    不影响 Jachin 自有 logger（l3_node、jachin.deep）。
+    """
+    for name in (
+        "openai",
+        "openai._base_client",
+        "openai.resources",
+        "openai.resources.chat",
+        "openai.resources.completions",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def attach_file_handler_to_logger(lg: logging.Logger) -> None:

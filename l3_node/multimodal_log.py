@@ -2,8 +2,8 @@
 多模态调试：日志中摘要 user.content / messages，避免打印整段 base64。
 
 完整结构（脱敏）：
-- 默认 INFO：`format_litellm_messages_detailed` 逐条、逐块说明 role / content 形态。
-- `JACHIN_L3_LOG_LITELLM_JSON=1`：额外输出与 LiteLLM 请求同构的 JSON（字符串已脱敏），便于对照百炼文档。
+- 默认关闭逐条详细：`JACHIN_L3_LOG_LITELLM_DETAIL=1` 时 `format_litellm_messages_detailed` 逐条说明 role / content 形态。
+- `JACHIN_L3_LOG_LITELLM_JSON=1`：额外输出与 LiteLLM 请求同构的 JSON（字符串已脱敏），体积大，仅排障开。
 """
 from __future__ import annotations
 
@@ -264,7 +264,7 @@ def log_litellm_outbound_messages(
     """
     if not messages:
         return
-    if os.environ.get("JACHIN_L3_LOG_LITELLM_DETAIL", "1").strip().lower() in ("0", "false", "no"):
+    if os.environ.get("JACHIN_L3_LOG_LITELLM_DETAIL", "0").strip().lower() in ("0", "false", "no"):
         return
     tag = "[L3 LLM][outbound_detail]"
     if stream:

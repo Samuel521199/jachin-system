@@ -17,8 +17,15 @@ L3 节点独立运行入口
   JACHIN_L3_CONSOLE: Windows 下是否弹出独立控制台。1/true 强制开启；0/false 强制关闭。
     未设置时：PyInstaller 打包 exe 默认开启（便于目标机看日志）；源码运行默认关闭。
   JACHIN_EXEC_TRACE_STDERR: 0/false/off 关闭 [JachinExec] 执行里程碑的 stderr 同步打印（默认开启，便于 PowerShell 排障）。
-  JACHIN_L3_DEEP_LOG: 0/false/off 关闭「深度执行日志」logger（jachin.deep）：默认开启，将 ReAct/LLM 请求全文、模型输出、
+  JACHIN_L3_DEEP_LOG: 0/false/off 关闭「深度执行日志」logger（jachin.deep）：默认开启，将 ReAct/LLM 轨迹、模型输出、
     工具入参/出参、耗时等写入 PowerShell、~/.jachin/l3_debug.log 与全息 SSE（分片推送）。
+  JACHIN_L3_DEEP_LOG_FULL_PAYLOAD: 1/true 时恢复「全量请求体」深度日志（完整 messages 块 + tools 名称列表长文、大段 RESPONSE text）；
+    未设置则仅记录条数/各 role 长度/tools 数与名称哈希等摘要（推荐桌面/打包，避免同步写日志阻塞）。
+    旧名 JACHIN_L3_DEEP_LOG_FULL_REQUEST 仍有效。
+  JACHIN_L3_LOG_LITELLM_DETAIL: 默认 0；为 1 时逐条打印发往 LiteLLM 的消息结构（体积大，仅深度排障开）。
+  打包后即使控制台在后台（或无控制台），子进程若仍向 stdout/stderr 管道同步写巨量日志，同样可能背压阻塞 —— 与前台终端「快速编辑暂停」不同，但现象类似（需 Ctrl+C / 减压日志）。
+  JACHIN_L3_LOG_ASYNC: 默认 1，l3_debug.log 经 QueueHandler + 后台线程批量写盘；0 为同步 FileHandler。
+  JACHIN_L3_LOG_ASYNC_BATCH_CHARS / JACHIN_L3_LOG_ASYNC_FLUSH_SEC: 批量写与刷新间隔（见 l3_node/async_file_log.py）。
   LOG_LEVEL: 根 logger 级别（默认 INFO）。设为 WARNING 时可压低第三方库噪音。
   JACHIN_LOG_LEVEL: 可选，显式指定 Jachin 自有 logger（l3_node、core）级别；未设置且 LOG_LEVEL≥WARNING 时默认 INFO，
     以便控制台与 l3_debug.log 仍能看到 [L3 Agent] 等 INFO 行。
@@ -33,6 +40,9 @@ from __future__ import annotations
 import logging
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.INFO)
+# OpenAI SDK DEBUG 会打印整段 Request options（含全量 tools）；与 jachin.deep 叠加易阻塞管道
+for _lg in ("openai", "openai._base_client"):
+    logging.getLogger(_lg).setLevel(logging.WARNING)
 
 import argparse
 import asyncio
