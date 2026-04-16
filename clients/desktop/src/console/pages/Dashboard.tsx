@@ -1,6 +1,6 @@
 ﻿/**
  * Dashboard - 战情室 (Situation Room)
- * Top 30% MindStream | Middle 40% ComputeTopology + Quick Actions | Bottom 30% ProactiveSuggestions
+ * MindStream | 中区固定约 3/5 原高度带（ComputeTopology + Quick Actions）| Agenda
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
@@ -254,7 +254,7 @@ export function Dashboard({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 p-5 sm:p-6">
       {/* Mind Stream：视口比例 + 下限，为 Agenda 留出纵向空间 */}
       <section className="h-[min(32vh,320px)] min-h-[180px] shrink-0">
         <MindStream
@@ -268,17 +268,18 @@ export function Dashboard({
         />
       </section>
 
-      {/* Compute + Quick Actions：与 Agenda 共享剩余高度时优先 min-h-0 可压缩 */}
-      <section className="flex min-h-0 flex-[2] items-stretch gap-8">
+      {/* 中区高度 ≈ 原 min(42vh,360px) 的 3/5；内部紧凑 + 溢出滚动，避免大块留白与堆叠 */}
+      <section className="flex h-[min(25.2vh,216px)] shrink-0 items-stretch gap-4 md:gap-5">
         <motion.div
-          className="console-fiber-host console-holo-slab flex min-h-0 min-w-0 flex-1 flex-col p-5 sm:p-6"
+          className="dashboard-holo-fiber console-fiber-host console-holo-slab flex h-full min-h-0 min-w-0 flex-1 flex-col p-3 sm:p-4"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35 }}
         >
           <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto overflow-x-hidden [-webkit-overflow-scrolling:touch]">
-            <div className="flex w-full max-w-md flex-shrink-0 flex-col items-center gap-4 pb-3">
+            <div className="flex w-full max-w-md flex-shrink-0 flex-col items-center gap-1.5 pb-1">
               <ComputeTopology
+                compact
                 workerCount={Math.max(0, (clusterStats?.nodes?.total ?? 1) - 1)}
                 activeWorkerIndex={(clusterStats?.tasks?.running ?? 0) > 0 ? 0 : (cpuPercent > 25 ? 0 : -1)}
                 cpuPercent={cpuPercent}
@@ -291,20 +292,19 @@ export function Dashboard({
           </div>
         </motion.div>
         <motion.div
-          className="console-fiber-host console-holo-slab flex h-full min-h-0 w-[min(20rem,100%)] max-w-sm flex-shrink-0 flex-col overflow-hidden p-5"
+          className="dashboard-holo-fiber console-fiber-host console-holo-slab flex h-full min-h-0 w-[min(19rem,100%)] max-w-[19rem] flex-shrink-0 flex-col p-3 sm:p-4"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, delay: 0.05 }}
         >
           <h2
-            className="mb-3 shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-600/90"
+            className="mb-1.5 shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-600/90"
             style={{ fontFamily: "Orbitron, sans-serif" }}
           >
             {c.dashboard.quickActionsTitle}
           </h2>
-          {/* content-start + auto-rows-min：避免 grid 在 flex 剩余高度下被 stretch，导致六边形与下方 VAD 重叠 */}
-          <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overflow-x-hidden pr-0.5">
-            <div className="isolate grid w-full max-w-[19rem] shrink-0 grid-cols-2 auto-rows-min content-start justify-items-center gap-x-3 gap-y-4 self-center py-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto overflow-x-hidden pr-0.5">
+            <div className="isolate grid w-full max-w-[17.5rem] shrink-0 grid-cols-2 auto-rows-min content-start justify-items-center gap-x-2 gap-y-2 self-center py-0.5">
               {quickActions.map((action) => {
                 const isOn =
                   (action.id === "privacy" && privacyMode) ||
@@ -318,7 +318,7 @@ export function Dashboard({
                     onClick={() => runQuickAction(action.cmd, action.isToggle)}
                     title={action.title}
                     className={cn(
-                      "console-hex-btn flex h-[86px] w-[82px] max-h-[86px] max-w-[82px] shrink-0 flex-col items-center justify-center gap-0.5 overflow-hidden border text-[9px] font-semibold uppercase leading-tight tracking-wide transition-all disabled:opacity-60",
+                      "console-hex-btn flex h-[72px] w-[68px] max-h-[72px] max-w-[68px] shrink-0 flex-col items-center justify-center gap-0 border text-[8px] font-semibold uppercase leading-tight tracking-wide transition-all disabled:opacity-60",
                       "border-cyan-500/30 bg-black/50 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.08)]",
                       isOn
                         ? "border-emerald-400/60 text-emerald-300 shadow-[inset_0_0_22px_rgba(16,185,129,0.35),0_0_20px_rgba(52,211,153,0.2)]"
@@ -327,17 +327,17 @@ export function Dashboard({
                     whileHover={{ scale: actionLoading ? 1 : 1.03 }}
                     whileTap={{ scale: 0.96 }}
                   >
-                    <span className="text-base">{action.icon}</span>
-                    <span className="max-w-[4rem] px-0.5 text-center leading-tight">
+                    <span className="text-sm">{action.icon}</span>
+                    <span className="max-w-[3.5rem] px-0.5 text-center leading-tight">
                       {isOn ? c.dashboard.quickToggleOn : action.label}
                     </span>
                   </motion.button>
                 );
               })}
             </div>
-            <div className="relative z-10 mt-auto shrink-0 border border-cyan-500/25 bg-black/55 p-4 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.06)]">
-              <p className="mb-3 font-mono text-[10px] uppercase tracking-wider text-slate-400">{c.dashboard.vadHeading}</p>
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative z-10 shrink-0 border border-cyan-500/25 bg-black/55 p-2.5 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.06)]">
+              <p className="mb-1.5 font-mono text-[9px] uppercase tracking-wider text-slate-400">{c.dashboard.vadHeading}</p>
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                 {!isVoiceCaptureRunning ? (
                   <button
                     type="button"
@@ -349,7 +349,7 @@ export function Dashboard({
                         console.error(e);
                       }
                     }}
-                    className="flex w-full items-center justify-center gap-2 border border-amber-500/45 bg-black/50 px-4 py-2.5 font-mono text-[10px] font-medium uppercase tracking-wider text-amber-300 transition-all [clip-path:polygon(0_0,calc(100%-10px)_0,100%_10px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(245,158,11,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
+                    className="flex w-full items-center justify-center gap-1.5 border border-amber-500/45 bg-black/50 px-3 py-2 font-mono text-[9px] font-medium uppercase tracking-wider text-amber-300 transition-all [clip-path:polygon(0_0,calc(100%-8px)_0,100%_8px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(245,158,11,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
                   >
                     <span>🎤</span> {c.dashboard.vadStart}
                   </button>
@@ -364,7 +364,7 @@ export function Dashboard({
                         console.error(e);
                       }
                     }}
-                    className="flex w-full items-center justify-center gap-2 border border-rose-500/45 bg-black/50 px-4 py-2.5 font-mono text-[10px] font-medium uppercase tracking-wider text-rose-300 transition-all [clip-path:polygon(0_0,calc(100%-10px)_0,100%_10px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(244,63,94,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
+                    className="flex w-full items-center justify-center gap-1.5 border border-rose-500/45 bg-black/50 px-3 py-2 font-mono text-[9px] font-medium uppercase tracking-wider text-rose-300 transition-all [clip-path:polygon(0_0,calc(100%-8px)_0,100%_8px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(244,63,94,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
                   >
                     <span>⏹</span> {c.dashboard.vadStop}
                   </button>

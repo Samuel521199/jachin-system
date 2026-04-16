@@ -35,6 +35,8 @@ export function ComputeTopology({
   nodes = [],
   tasks = [],
   className,
+  /** Dashboard 紧凑带：缩 SVG/间距，适配较低中区高度 */
+  compact = false,
 }: {
   workerCount?: number;
   activeWorkerIndex?: number;
@@ -46,6 +48,7 @@ export function ComputeTopology({
   /** 集群任务详情 */
   tasks?: ClusterTaskInfo[];
   className?: string;
+  compact?: boolean;
 }) {
   const [lang] = useDesktopUiLang();
   const c = useMemo(() => getDesktopConsole(lang), [lang]);
@@ -90,17 +93,28 @@ export function ComputeTopology({
   );
 
   return (
-    <div className={cn("flex w-full flex-col items-center gap-3", className)}>
+    <div className={cn("flex w-full flex-col items-center", compact ? "gap-1" : "gap-3", className)}>
       <h2
-        className="w-full shrink-0 text-center font-mono text-xs font-semibold uppercase tracking-[0.28em] text-cyan-600/90 [text-shadow:0_0_12px_rgba(6,182,212,0.2)]"
+        className={cn(
+          "w-full shrink-0 text-center font-mono font-semibold uppercase text-cyan-600/90 [text-shadow:0_0_12px_rgba(6,182,212,0.2)]",
+          compact ? "text-[10px] tracking-[0.2em]" : "text-xs tracking-[0.28em]"
+        )}
         style={{ fontFamily: "Orbitron, sans-serif" }}
       >
         Compute Topology
       </h2>
-      <div className="relative flex w-full max-w-[240px] shrink-0 items-center justify-center">
+      <div
+        className={cn(
+          "relative flex w-full shrink-0 items-center justify-center",
+          compact ? "max-w-[168px]" : "max-w-[240px]"
+        )}
+      >
         <svg
           viewBox={`0 0 ${VIEW_SIZE} ${VIEW_SIZE}`}
-          className="h-auto w-full max-h-[220px] max-w-[240px]"
+          className={cn(
+            "h-auto w-full",
+            compact ? "max-h-[118px] max-w-[168px]" : "max-h-[220px] max-w-[240px]"
+          )}
           aria-hidden
         >
           <defs>
@@ -221,37 +235,73 @@ export function ComputeTopology({
           </text>
         </svg>
       </div>
-      <p className="w-full max-w-[260px] shrink-0 text-center font-mono text-[10px] uppercase tracking-wider text-slate-500">
+      <p
+        className={cn(
+          "w-full shrink-0 text-center font-mono uppercase tracking-wider text-slate-500",
+          compact ? "max-w-[220px] text-[9px]" : "max-w-[260px] text-[10px]"
+        )}
+      >
         Ray Cluster · {workerCount + 1} nodes
         {gpuStats?.length ? ` · ${gpuStats.length} GPU${gpuStats.length > 1 ? "s" : ""}` : " · 1 GPU"}
       </p>
-      <div className="flex w-full max-w-[260px] shrink-0 flex-col gap-2 px-1">
+      <div className={cn("flex w-full shrink-0 flex-col px-1", compact ? "max-w-[220px] gap-1" : "max-w-[260px] gap-2")}>
         <div className="flex w-full items-center gap-2 font-mono">
-          <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-500">CPU</span>
+          <span className={cn("shrink-0 uppercase tracking-wider text-slate-500", compact ? "text-[9px]" : "text-[10px]")}>
+            CPU
+          </span>
           <span className="h-px min-w-[12px] flex-1 border-b border-dotted border-cyan-500/40 opacity-90" aria-hidden />
-          <span className="shrink-0 text-lg tabular-nums leading-none text-rose-400 drop-shadow-[0_0_10px_rgba(251,113,133,0.35)]">
+          <span
+            className={cn(
+              "shrink-0 tabular-nums leading-none text-rose-400 drop-shadow-[0_0_10px_rgba(251,113,133,0.35)]",
+              compact ? "text-sm" : "text-lg"
+            )}
+          >
             {cpuPercent}%
           </span>
         </div>
         <div className="flex w-full items-center gap-2 font-mono">
-          <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-500">RAM</span>
+          <span className={cn("shrink-0 uppercase tracking-wider text-slate-500", compact ? "text-[9px]" : "text-[10px]")}>
+            RAM
+          </span>
           <span className="h-px min-w-[12px] flex-1 border-b border-dotted border-cyan-500/40 opacity-90" aria-hidden />
-          <span className="shrink-0 text-lg tabular-nums leading-none text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.3)]">
+          <span
+            className={cn(
+              "shrink-0 tabular-nums leading-none text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.3)]",
+              compact ? "text-sm" : "text-lg"
+            )}
+          >
             {ramPercent}%
           </span>
         </div>
         {gpuStats?.length ? (
           <div className="flex w-full items-center gap-2 font-mono">
-            <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-500">GPU</span>
+            <span className={cn("shrink-0 uppercase tracking-wider text-slate-500", compact ? "text-[9px]" : "text-[10px]")}>
+              GPU
+            </span>
             <span className="h-px min-w-[12px] flex-1 border-b border-dotted border-cyan-500/40 opacity-90" aria-hidden />
-            <span className="shrink-0 text-lg tabular-nums leading-none text-amber-400 drop-shadow-[0_0_10px_rgba(251,191,36,0.35)]">
+            <span
+              className={cn(
+                "shrink-0 tabular-nums leading-none text-amber-400 drop-shadow-[0_0_10px_rgba(251,191,36,0.35)]",
+                compact ? "text-sm" : "text-lg"
+              )}
+            >
               {gpuStats[0].utilization_gpu ?? 0}%
             </span>
           </div>
         ) : null}
       </div>
-      <div className="mt-1 flex w-full max-w-[280px] shrink-0 flex-wrap items-center justify-center gap-1.5">
-        <span className="self-center font-mono text-[10px] uppercase tracking-wider text-slate-500">
+      <div
+        className={cn(
+          "flex w-full shrink-0 flex-wrap items-center justify-center",
+          compact ? "mt-0 max-w-[240px] gap-1" : "mt-1 max-w-[280px] gap-1.5"
+        )}
+      >
+        <span
+          className={cn(
+            "self-center font-mono uppercase tracking-wider text-slate-500",
+            compact ? "text-[9px]" : "text-[10px]"
+          )}
+        >
           {c.topology.runMode}
         </span>
         {strategyOptions.map((opt) => (
@@ -260,8 +310,9 @@ export function ComputeTopology({
             type="button"
             onClick={() => handleStrategyChange(opt.id)}
             className={cn(
-              "border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider transition-all",
+              "border font-mono uppercase tracking-wider transition-all",
               "[clip-path:polygon(4px_0,calc(100%-4px)_0,100%_4px,100%_calc(100%-4px),calc(100%-4px)_100%,4px_100%,0_calc(100%-4px),0_4px)]",
+              compact ? "px-1.5 py-0.5 text-[9px]" : "px-2.5 py-1 text-[10px]",
               strategyMode === opt.id
                 ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.25),inset_0_0_12px_rgba(6,182,212,0.2)]"
                 : "border-cyan-500/20 bg-black/40 text-slate-500 hover:border-cyan-400/40 hover:text-slate-300"
@@ -272,7 +323,7 @@ export function ComputeTopology({
         ))}
       </div>
       {(nodes.length > 0 || tasks.length > 0) && (
-        <div className="w-full mt-2">
+        <div className={cn("w-full", compact ? "mt-1" : "mt-2")}>
           <button
             type="button"
             onClick={() => setShowDetails(!showDetails)}

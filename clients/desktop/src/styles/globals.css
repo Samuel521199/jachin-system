@@ -512,6 +512,21 @@ body:has(#chat-root),
   overflow: hidden;
 }
 
+/* Dashboard 中区：禁止 fiber 裁切 + 去掉 holo 斜切裁边，避免拓扑/快捷操作被「剪没」 */
+.dashboard-holo-fiber.console-fiber-host.console-holo-slab {
+  overflow: visible;
+  clip-path: none;
+}
+
+.dashboard-holo-fiber.console-fiber-host.console-holo-slab::after {
+  z-index: 0;
+}
+
+.dashboard-holo-fiber.console-fiber-host.console-holo-slab > * {
+  position: relative;
+  z-index: 1;
+}
+
 .console-fiber-host::after {
   content: "";
   position: absolute;
