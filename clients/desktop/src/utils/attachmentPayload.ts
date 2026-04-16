@@ -1,36 +1,31 @@
 /**
  * Omni 附件 → L3 WebSocket `attachments_metadata`（与 multimodal_attachments.py 对齐）
+ * 重 CPU 路径（读文件 + Base64 + 组装）在 Web Worker 中执行，主线程仅做 Promise 等待与派发。
  */
 
-/** 单次对话（一轮发送）最多附件个数 */
-export const OMNI_ATTACHMENT_MAX_FILES = 5;
-/** 单个文件大小上限 */
-export const OMNI_ATTACHMENT_MAX_FILE_BYTES = 5 * 1024 * 1024;
-/** 一轮内附件总大小上限（= 个数 × 单文件上限，便于与后端一致） */
-export const OMNI_ATTACHMENT_MAX_BATCH_BYTES = OMNI_ATTACHMENT_MAX_FILES * OMNI_ATTACHMENT_MAX_FILE_BYTES;
+import type { BuildAttachmentsResult } from "./attachmentPayloadCore";
+import {
+  OMNI_ATTACHMENT_MAX_BATCH_BYTES,
+  OMNI_ATTACHMENT_MAX_FILE_BYTES,
+  OMNI_ATTACHMENT_MAX_FILES,
+  isAllowedAttachmentFile,
+  totalBytes,
+} from "./attachmentPayloadCore";
 
-const EXT_OK = new Set(["pdf", "doc", "docx", "xlsx", "xls", "txt", "md", "csv", "log"]);
+export {
+  OMNI_ATTACHMENT_MAX_BATCH_BYTES,
+  OMNI_ATTACHMENT_MAX_FILE_BYTES,
+  OMNI_ATTACHMENT_MAX_FILES,
+  isAllowedAttachmentFile,
+  totalBytes,
+} from "./attachmentPayloadCore";
 
-export function isAllowedAttachmentFile(file: File): boolean {
-  const t = (file.type || "").toLowerCase();
-  if (t.startsWith("image/")) return true;
-  if (
-    t === "application/pdf" ||
-    t === "application/msword" ||
-    t === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    t === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-    t === "application/vnd.ms-excel" ||
-    t === "text/plain"
-  ) {
-    return true;
-  }
-  const ext = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() ?? "" : "";
-  return EXT_OK.has(ext);
-}
+export type {
+  AttachmentMetadataPayload,
+  BuildAttachmentsResult,
+} from "./attachmentPayloadCore";
 
-export function totalBytes(files: File[]): number {
-  return files.reduce((s, f) => s + f.size, 0);
-}
+export { fileToBase64 } from "./attachmentPayloadCore";
 
 export type MergePendingFilesResult = { next: File[]; hint: string | null };
 
@@ -85,80 +80,44 @@ export function mergePendingAttachmentFiles(prev: File[], incoming: File[]): Mer
   return { next: [...prev, ...toAdd], hint: hints.length ? hints.join("；") : null };
 }
 
-/** 原始 Base64（无 data: 前缀），与后端 `base64` 字段一致 */
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => {
-      const dataUrl = r.result as string;
-      const i = dataUrl.indexOf(",");
-      resolve(i >= 0 ? dataUrl.slice(i + 1) : "");
+let _workerSeq = 0;
+
+function runAttachmentWorker(files: File[]): Promise<BuildAttachmentsResult> {
+  return new Promise((resolve) => {
+    const id = ++_workerSeq;
+    const worker = new Worker(new URL("../workers/attachment.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    const finish = (result: BuildAttachmentsResult) => {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate();
+      resolve(result);
     };
-    r.onerror = () => reject(new Error("file_read_failed"));
-    r.readAsDataURL(file);
+    worker.onmessage = (ev: MessageEvent<{ id: number; result: BuildAttachmentsResult }>) => {
+      const data = ev.data;
+      if (!data || data.id !== id) return;
+      finish(data.result);
+    };
+    worker.onerror = (evt) => {
+      evt.preventDefault();
+      finish({
+        ok: false,
+        error: evt.message || "读取附件失败，请重试",
+      });
+    };
+    try {
+      worker.postMessage({ id, files });
+    } catch {
+      finish({ ok: false, error: "读取附件失败，请重试" });
+    }
   });
 }
 
-export type AttachmentMetadataPayload = {
-  name: string;
-  size_bytes: number;
-  mime: string;
-  has_image: boolean;
-  base64: string;
-};
-
-export type BuildAttachmentsResult =
-  | { ok: true; items: AttachmentMetadataPayload[] }
-  | { ok: false; error: string };
-
 /**
- * 校验总体积与类型，并并行转 Base64。
+ * 校验总体积与类型，并并行转 Base64（在 Web Worker 内执行，不阻塞主线程）。
  */
 export async function buildAttachmentsMetadataPayload(files: File[]): Promise<BuildAttachmentsResult> {
   if (files.length === 0) return { ok: true, items: [] };
-  if (files.length > OMNI_ATTACHMENT_MAX_FILES) {
-    return {
-      ok: false,
-      error: `每次最多 ${OMNI_ATTACHMENT_MAX_FILES} 个附件，请移除多余文件后重试`,
-    };
-  }
-  const rejected = files.filter((f) => !isAllowedAttachmentFile(f));
-  if (rejected.length > 0) {
-    return {
-      ok: false,
-      error: `不支持的格式：${rejected.map((f) => f.name).join(", ")}（允许图片、PDF、Word、Excel、TXT）`,
-    };
-  }
-  const oversized = files.filter((f) => f.size > OMNI_ATTACHMENT_MAX_FILE_BYTES);
-  if (oversized.length > 0) {
-    return {
-      ok: false,
-      error: `单文件须 ≤ ${OMNI_ATTACHMENT_MAX_FILE_BYTES / 1024 / 1024}MB：${oversized.map((f) => f.name).join(", ")}`,
-    };
-  }
-  const sum = totalBytes(files);
-  if (sum > OMNI_ATTACHMENT_MAX_BATCH_BYTES) {
-    return {
-      ok: false,
-      error: `附件总大小超过 ${Math.floor(OMNI_ATTACHMENT_MAX_BATCH_BYTES / 1024 / 1024)}MB，请减少文件或分批发送`,
-    };
-  }
-  try {
-    const items: AttachmentMetadataPayload[] = await Promise.all(
-      files.map(async (file) => {
-        const base64 = await fileToBase64(file);
-        const mime = file.type || "application/octet-stream";
-        return {
-          name: file.name,
-          size_bytes: file.size,
-          mime,
-          has_image: mime.startsWith("image/"),
-          base64,
-        };
-      }),
-    );
-    return { ok: true, items };
-  } catch {
-    return { ok: false, error: "读取附件失败，请重试" };
-  }
+  return runAttachmentWorker(files);
 }

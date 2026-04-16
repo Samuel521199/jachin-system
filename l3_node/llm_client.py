@@ -37,7 +37,7 @@ def _dashscope_econ_fallback() -> str:
 
         return DASHSCOPE_ECON_FALLBACK_MODEL
     except ImportError:
-        return "dashscope/qwen3.5-flash-2026-02-23"
+        return "dashscope/qwen3.5-flash"
 
 
 _L3_DEFAULT_REASONING_MODEL = "qwen3.5-plus"

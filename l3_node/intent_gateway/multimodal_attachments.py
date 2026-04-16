@@ -2,7 +2,7 @@
 将 WebSocket / 网关传入的附件实体转为 OpenAI 兼容的 user content（纯文本或 text+image_url 列表）。
 
 - 图片：读本地路径或 base64 → 可选 Pillow 缩放 → data:image/...;base64,...
-- 文档：PDF（PyMuPDF 优先）/ docx / xlsx（openpyxl）/ 纯文本 → 截断后拼入 text 段
+- 文档：PDF / docx / xlsx / 纯文本（txt、md、csv、log 等）→ 预限流后再 _truncate_doc 拼入 text 段
 
 失败单条附件不拖死整轮：记录日志并跳过该条。
 """
@@ -19,6 +19,22 @@ from urllib.parse import unquote
 logger = logging.getLogger(__name__)
 
 MAX_DOC_EXTRACT_CHARS = 10_000
+# xlsx 在截断为 MAX_DOC_EXTRACT_CHARS 之前，若先拼接整表再截断会长时间占用 CPU/内存（大表可达数十秒）
+MAX_XLSX_PRE_TRUNCATE_CHARS = 80_000
+MAX_XLSX_ROWS_PER_SHEET = 2_500
+MAX_XLSX_SHEETS = 20
+# docx：须在 _truncate_doc 之前限流，否则大文档遍历全段落/全表可达数十秒（与 xlsx 同类问题）
+MAX_DOCX_PRE_TRUNCATE_CHARS = 80_000
+MAX_DOCX_PARAGRAPHS = 4_000
+MAX_DOCX_TABLES = 60
+MAX_DOCX_ROWS_PER_TABLE = 600
+MAX_DOCX_CELLS_PER_ROW = 64
+# txt / md / csv / log / 通用 UTF-8 字节解码：先限读再限字，避免超大附件一次读入内存
+MAX_PLAIN_TEXT_READ_BYTES = 512_000
+MAX_PLAIN_TEXT_PRE_TRUNCATE_CHARS = 80_000
+# PDF：多页逐页抽取在无上限时可达数十秒；与纯文本共用字符预算量级
+MAX_PDF_PAGES = 120
+MAX_PDF_PRE_TRUNCATE_CHARS = 80_000
 MAX_IMAGE_READ_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_LONG_EDGE = 1536
 JPEG_QUALITY = 82
@@ -232,6 +248,25 @@ def _truncate_doc(s: str) -> str:
     return s[: MAX_DOC_EXTRACT_CHARS - 20] + "\n…(已截断)"
 
 
+_PLAIN_BUDGET_TAIL = "\n…(文本体量过大，仅提取前段；需要全量请用工具读文件)…"
+
+
+def _budget_unicode_text(
+    s: str,
+    max_chars: int,
+    *,
+    tail: str = _PLAIN_BUDGET_TAIL,
+) -> str:
+    """在写入 prompt 前限制字符串体量，避免超长文本占用 CPU/内存（与 xlsx 预截断同策略）。"""
+    s = s or ""
+    if len(s) <= max_chars:
+        return s
+    room = max_chars - len(tail) - 1
+    if room < 32:
+        return s[:max_chars]
+    return s[:room].rstrip() + tail
+
+
 def _extract_pdf_text(path: Path | None, data: bytes | None) -> str:
     try:
         import fitz  # PyMuPDF
@@ -246,9 +281,25 @@ def _extract_pdf_text(path: Path | None, data: bytes | None) -> str:
             )
             try:
                 parts: list[str] = []
-                for i in range(len(doc)):
-                    parts.append(doc[i].get_text() or "")
-                return "\n".join(parts)
+                acc_len = 0
+                n_pages = len(doc)
+                last_i = -1
+                char_capped = False
+                for i in range(n_pages):
+                    if i >= MAX_PDF_PAGES:
+                        parts.append(f"(PDF 仅解析前 {MAX_PDF_PAGES} 页，共 {n_pages} 页…)")
+                        break
+                    t = doc[i].get_text() or ""
+                    parts.append(t)
+                    acc_len += len(t) + 1
+                    last_i = i
+                    if acc_len >= MAX_PDF_PRE_TRUNCATE_CHARS:
+                        parts.append("…(PDF 正文过长，仅提取前段…)")
+                        char_capped = True
+                        break
+                if char_capped and last_i >= 0 and last_i < n_pages - 1:
+                    parts.append(f"(另有 {n_pages - last_i - 1} 页 PDF 未读…)")
+                return _budget_unicode_text("\n".join(parts), MAX_PDF_PRE_TRUNCATE_CHARS)
             finally:
                 doc.close()
         except Exception as e:
@@ -260,10 +311,26 @@ def _extract_pdf_text(path: Path | None, data: bytes | None) -> str:
     try:
         bio = BytesIO(data) if data is not None else None
         reader = PdfReader(bio if bio is not None else str(path))
-        parts = []
-        for page in reader.pages:
-            parts.append(page.extract_text() or "")
-        return "\n".join(parts)
+        parts: list[str] = []
+        acc_len = 0
+        n_pdf = len(reader.pages)
+        char_capped = False
+        last_pi = -1
+        for pi, page in enumerate(reader.pages):
+            if pi >= MAX_PDF_PAGES:
+                parts.append(f"(PDF 仅解析前 {MAX_PDF_PAGES} 页，共 {n_pdf} 页…)")
+                break
+            t = page.extract_text() or ""
+            parts.append(t)
+            acc_len += len(t) + 1
+            last_pi = pi
+            if acc_len >= MAX_PDF_PRE_TRUNCATE_CHARS:
+                parts.append("…(PDF 正文过长，仅提取前段…)")
+                char_capped = True
+                break
+        if char_capped and last_pi >= 0 and last_pi < n_pdf - 1:
+            parts.append(f"(另有 {n_pdf - last_pi - 1} 页 PDF 未读…)")
+        return _budget_unicode_text("\n".join(parts), MAX_PDF_PRE_TRUNCATE_CHARS)
     except Exception as e:
         logger.debug("[multimodal] pypdf 解析失败 err=%s", e)
         return ""
@@ -282,16 +349,47 @@ def _extract_docx_text(path: Path | None, data: bytes | None) -> str:
         else:
             return ""
         parts: list[str] = []
+        acc_len = 0
+        npara = 0
         for p in d.paragraphs:
+            npara += 1
+            if npara > MAX_DOCX_PARAGRAPHS:
+                parts.append("…(段落数量过多已省略…)")
+                break
             t = (p.text or "").strip()
             if t:
                 parts.append(t)
-        for table in d.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    ct = (cell.text or "").strip()
-                    if ct:
-                        parts.append(ct)
+                acc_len += len(t) + 1
+            if acc_len >= MAX_DOCX_PRE_TRUNCATE_CHARS:
+                parts.append("…(Word 正文过长，仅提取前段供模型参考；需要全量请用工具读文件)…")
+                break
+        nt = 0
+        if acc_len < MAX_DOCX_PRE_TRUNCATE_CHARS:
+            for table in d.tables:
+                nt += 1
+                if nt > MAX_DOCX_TABLES:
+                    parts.append("…(表格数量过多已省略…)")
+                    break
+                for ri, row in enumerate(table.rows):
+                    if ri >= MAX_DOCX_ROWS_PER_TABLE:
+                        parts.append("(本表行数过多已省略…)")
+                        break
+                    cells: list[str] = []
+                    for ci, cell in enumerate(row.cells):
+                        if ci >= MAX_DOCX_CELLS_PER_ROW:
+                            cells.append("…")
+                            break
+                        ct = (cell.text or "").strip()
+                        cells.append(ct)
+                    line = "\t".join(cells).rstrip()
+                    if line:
+                        parts.append(line)
+                        acc_len += len(line) + 1
+                    if acc_len >= MAX_DOCX_PRE_TRUNCATE_CHARS:
+                        parts.append("…(表格内容过长，已截断…)")
+                        break
+                if acc_len >= MAX_DOCX_PRE_TRUNCATE_CHARS:
+                    break
         return "\n".join(parts)
     except Exception as e:
         logger.debug("[multimodal] docx 解析失败 err=%s", e)
@@ -311,17 +409,19 @@ def _extract_xlsx_text(path: Path | None, data: bytes | None) -> str:
         else:
             return ""
         parts: list[str] = []
-        max_sheets = 40
+        acc_len = 0
         for si, ws in enumerate(wb.worksheets):
-            if si >= max_sheets:
+            if si >= MAX_XLSX_SHEETS:
                 parts.append("(另有工作表已省略…)")
                 break
             parts.append(f"=== Sheet: {ws.title} ===")
+            acc_len += len(parts[-1]) + 1
             row_i = 0
             for row in ws.iter_rows(values_only=True):
                 row_i += 1
-                if row_i > 8000:
+                if row_i > MAX_XLSX_ROWS_PER_SHEET:
                     parts.append("(本表行数过多已省略…)")
+                    acc_len += 24
                     break
                 cells: list[str] = []
                 for v in row:
@@ -332,6 +432,12 @@ def _extract_xlsx_text(path: Path | None, data: bytes | None) -> str:
                 line = "\t".join(cells).rstrip()
                 if line:
                     parts.append(line)
+                    acc_len += len(line) + 1
+                if acc_len >= MAX_XLSX_PRE_TRUNCATE_CHARS:
+                    parts.append("…(表格体量过大，仅提取前段供模型参考；需要全量请用工具读文件或拆分上传)")
+                    break
+            if acc_len >= MAX_XLSX_PRE_TRUNCATE_CHARS:
+                break
         try:
             wb.close()
         except Exception:
@@ -343,14 +449,23 @@ def _extract_xlsx_text(path: Path | None, data: bytes | None) -> str:
 
 
 def _extract_plain_text(path: Path | None, data: bytes | None) -> str:
-    if path is not None and path.suffix.lower() in (".txt", ".md", ".csv", ".log"):
-        try:
-            return path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            pass
-    if data is not None:
-        return data.decode("utf-8", errors="replace")
-    return ""
+    """
+    .txt / .md / .csv / .log 及回退路径下的原始字节 UTF-8 解码。
+    先限制读取字节数再限制字符数，避免单附件内嵌超大日志/CSV 拖慢 to_thread。
+    """
+    raw: bytes | None = None
+    try:
+        if data is not None:
+            raw = data[:MAX_PLAIN_TEXT_READ_BYTES]
+        elif path is not None:
+            with path.open("rb") as f:
+                raw = f.read(MAX_PLAIN_TEXT_READ_BYTES)
+    except OSError:
+        return ""
+    if raw is None:
+        return ""
+    text = raw.decode("utf-8", errors="replace")
+    return _budget_unicode_text(text, MAX_PLAIN_TEXT_PRE_TRUNCATE_CHARS)
 
 
 def _is_image_mime(mime: str, path: Path | None, att: dict[str, Any]) -> bool:

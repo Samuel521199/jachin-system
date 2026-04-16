@@ -30,6 +30,19 @@ logger = logging.getLogger(__name__)
 
 from l3_node.lark_session import load_lark_session as _load_lark_session, save_lark_session as _save_lark_session
 
+# 含大段 base64 的附件帧可达数 MB，同步 json.loads 会长时间阻塞 asyncio 事件环，导致全节点 WS「假死」
+_WS_JSON_LARGE_BYTES = 150_000
+
+
+async def _ws_json_loads(raw: str | bytes) -> Any:
+    if isinstance(raw, bytes):
+        s = raw.decode("utf-8", errors="replace")
+    else:
+        s = raw
+    if len(s) >= _WS_JSON_LARGE_BYTES:
+        return await asyncio.to_thread(json.loads, s)
+    return json.loads(s)
+
 
 def _ws_msg_session_key(msg: dict) -> str:
     """桌面 Omni 多会话：`session_id` 与 `chat_id` 同义，分区键写入 l3_lark_sessions.json。"""
@@ -546,7 +559,10 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
     try:
         async for raw in websocket:
             try:
-                msg = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(raw, (str, bytes)):
+                    msg = await _ws_json_loads(raw)
+                else:
+                    msg = raw
             except (json.JSONDecodeError, TypeError):
                 continue
             msg_type = msg.get("type") or msg.get("action", "")

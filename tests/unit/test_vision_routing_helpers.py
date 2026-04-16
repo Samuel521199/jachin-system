@@ -22,7 +22,7 @@ def test_litellm_model_supports_openai_multimodal_chat():
     assert litellm_model_supports_openai_multimodal_chat("dashscope/qwen-vl-max")
     assert litellm_model_supports_openai_multimodal_chat("dashscope/qwen2-vl-7b-instruct")
     assert litellm_model_supports_openai_multimodal_chat("dashscope/qwen3.5-plus")
-    assert not litellm_model_supports_openai_multimodal_chat("dashscope/qwen3.5-flash-2026-02-23")
+    assert not litellm_model_supports_openai_multimodal_chat("dashscope/qwen3.5-flash")
 
 
 def test_dashscope_vl_should_omit_openai_tools_for_multimodal():
@@ -55,7 +55,7 @@ def test_vision_safe_litellm_fallback_models_strips_text_only_fallbacks():
     fb = vision_safe_litellm_fallback_models(
         primary="dashscope/qwen-vl-max",
         base_fallbacks=[
-            "dashscope/qwen3.5-flash-2026-02-23",
+            "dashscope/qwen3.5-flash",
             "dashscope/qwen-vl-plus",
         ],
     )

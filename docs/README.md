@@ -1,4 +1,4 @@
-﻿# Jachin 文档
+# Jachin 文档
 
 **版本**: V2 (2026-04)  
 **架构**: 云边协同数字发行操作系统 (Cloud-Edge AI OS)
@@ -46,6 +46,7 @@
 | [VOICE_AND_TTS_GUIDE.md](./VOICE_AND_TTS_GUIDE.md) | 语音与 TTS |
 | [TESTING_GUIDE.md](./TESTING_GUIDE.md) | 测试指南 |
 | [L3_LARK_CONFIG_SINGLE_SOURCE.md](./L3_LARK_CONFIG_SINGLE_SOURCE.md) | **L3 × 飞书**：`plugin/.env`、`im_channels.yaml`、终端 WS、工具发信 — **单一说明** |
+| [architecture/DESKTOP_OMNI_MULTIMODAL_ATTACHMENT_PERFORMANCE.md](./architecture/DESKTOP_OMNI_MULTIMODAL_ATTACHMENT_PERFORMANCE.md) | **桌面 Omni 多模态附件**：大附件卡顿/假死根因、Worker 与 L3 WS 大帧解析、xlsx 提取限额 — **排障 SSOT** |
 
 ---
 

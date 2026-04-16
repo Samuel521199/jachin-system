@@ -355,7 +355,7 @@ def _create_engine_standalone():
 
                 fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
             except ImportError:
-                fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+                fallback = ["dashscope/qwen3.5-flash"]
             default_model = os.environ.get("LLM_MODEL", "qwen3.5-plus")
         _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
         engine = LiteLLMEngine(

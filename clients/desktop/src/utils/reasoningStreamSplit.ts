@@ -1,4 +1,4 @@
-﻿/** 流式解析：将正文与 <redacted_thinking>...</redacted_thinking> 隔离到不同字段 */
+/** 流式解析：将正文与 <redacted_thinking>...</redacted_thinking> 隔离到不同字段 */
 
 const OPEN = "<redacted_thinking>";
 const CLOSE = "</redacted_thinking>";
@@ -186,6 +186,8 @@ function looksLikeThinkingProcessStyle(text: string): boolean {
 
 function traceLineRe(line: string): boolean {
   return (
+    /^\s*\[[^\]\n]{1,32}\]\s*\[jachin:heartbeat\]/i.test(line) ||
+    /^\s*\[jachin:heartbeat\]/i.test(line) ||
     /^\s*(Thought|Thinking)\b/i.test(line) ||
     /^\s*Action\s*:/i.test(line) ||
     /^\s*Action\s+Input\s*:/i.test(line) ||
@@ -206,6 +208,7 @@ function traceLineRe(line: string): boolean {
 /** 流式早期即可命中：不要求 Action 后必有非空 token */
 function hasToolTraceSignal(t: string): boolean {
   return (
+    /\[jachin:heartbeat\]/i.test(t) ||
     /(?:^|\n)\s*Action\s*:/im.test(t) ||
     /Action\s+Input\s*:/i.test(t) ||
     /(?:^|\n)\s*Observation\s*:/im.test(t) ||
@@ -544,8 +547,16 @@ export function normalizeAssistantOutput(text: string): { content: string; reaso
   };
 }
 
+/** 管道对齐的 Markdown 表格（含 GFM）：竖线重复易被误判为「口吃」，不得清空主文、不得 strip 破坏 */
+function looksLikeMarkdownPipeTable(t: string): boolean {
+  if (!t || t.length < 24) return false;
+  const lines = t.split(/\r?\n/).filter((l) => /^\s*[|｜]/.test(l));
+  return lines.length >= 3;
+}
+
 /** 流式/模型异常：同一片段重复拼接，应从主文移除并仅保留在思考链 */
 function stripStreamEchoStutter(text: string): string {
+  if (looksLikeMarkdownPipeTable(text)) return text.replace(/\r\n/g, "\n").trim();
   let s = text.replace(/\r\n/g, "\n");
   for (let pass = 0; pass < 12; pass++) {
     const next = s.replace(/([\u4e00-\u9fffA-Za-z0-9，。、；：！？\s]{4,80})(\1){1,4}/u, "$1");
@@ -557,6 +568,7 @@ function stripStreamEchoStutter(text: string): string {
 
 /** 是否像「我来我来」「帮您完成帮您完成」类内部草稿泄漏到 content */
 export function looksLikeStreamStutterEcho(t: string): boolean {
+  if (looksLikeMarkdownPipeTable(t)) return false;
   const s = t.replace(/\s/g, "");
   if (s.length < 18) return false;
   if (/(.{5,40})\1{1,3}/u.test(s)) return true;
@@ -568,31 +580,89 @@ export function looksLikeStreamStutterEcho(t: string): boolean {
   return false;
 }
 
+/** 桌面端注入的 Sensory 心跳行，仅应出现在思考链；若误入主文则剔除 */
+export function stripSensoryHeartbeatLines(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      if (!t) return true;
+      if (/^\[[^\]\n]{1,32}\]\s*\[jachin:heartbeat\]/i.test(t)) return false;
+      if (/^\[jachin:heartbeat\]/i.test(t)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** 仅用于 UI：与持久化字段解耦，保证主气泡 Markdown 不再重复展示已归入思考链的调度文本 */
 export function getAssistantMainBodyForDisplay(msg: { content?: string; reasoning?: string }): string {
-  const raw = String(msg.content ?? "").replace(/\r\n/g, "\n").trim();
+  const finish = (s: string) => stripSensoryHeartbeatLines(stripThinkingControlMarkers(s).trim());
+
+  const contentOnly = String(msg.content ?? "").replace(/\r\n/g, "\n").trim();
+  const storedR = String(msg.reasoning ?? "").replace(/\r\n/g, "\n").trim();
+  /** 与收尾 normalize 一致：合并后再切 Final Answer，避免「正文只在 reasoning、content 为空」时主气泡空白 */
+  const flatMerged = [storedR, contentOnly].filter(Boolean).join("\n\n").trim();
+
+  /** 优先：在「思考链 + 正文」合并串上直接按 `Final Answer:` 取段（与 L3 ReAct 一致），避免后续启发式误伤表格 */
+  if (flatMerged) {
+    const fa = partitionByFinalAnswerMarker(flatMerged);
+    if (fa.hasMarker && fa.content.trim()) {
+      return finish(fa.content);
+    }
+  }
+
+  let raw = contentOnly;
+  if (!raw && flatMerged) {
+    raw = normalizeAssistantOutput(flatMerged).content.trim();
+  }
+
   if (!raw) return "";
 
-  // 整段为流式重复/口吃草稿：主文强制为空，全文仅在思考链展示
+  // 整段为流式重复/口吃草稿：尝试用合并串再切一次（表格等易被误判）；仍不行则仅在思考链展示
   if (looksLikeStreamStutterEcho(raw)) {
-    return "";
+    if (flatMerged && flatMerged.length > raw.length) {
+      const alt = normalizeAssistantOutput(flatMerged).content.trim();
+      if (alt && !looksLikeStreamStutterEcho(alt)) {
+        raw = alt;
+      } else {
+        return "";
+      }
+    } else {
+      const alt = normalizeAssistantOutput(raw).content.trim();
+      if (alt && !looksLikeStreamStutterEcho(alt)) {
+        raw = alt;
+      } else {
+        return "";
+      }
+    }
   }
 
   const unstuttered = stripStreamEchoStutter(raw);
   const p0 = partitionReactStyleOutput(unstuttered);
   if (p0 && p0.content.trim().length > 0 && !looksLikeStreamStutterEcho(p0.content)) {
-    return stripThinkingControlMarkers(p0.content).trim();
+    return finish(p0.content);
   }
 
   const p = partitionReactStyleOutput(raw);
-  if (p) return stripThinkingControlMarkers(p.content).trim();
-  return stripThinkingControlMarkers(normalizeAssistantOutput(raw).content).trim();
+  if (p) return finish(p.content);
+  return finish(normalizeAssistantOutput(raw).content);
 }
 
 /** 思考链展示：合并持久化 reasoning + 从 content 再解析出的过程段，并去重 */
 export function getAssistantReasoningForDisplay(msg: { content?: string; reasoning?: string }): string {
   const raw = String(msg.content ?? "").replace(/\r\n/g, "\n").trim();
-  const stored = (msg.reasoning ?? "").trim();
+  const stored = String(msg.reasoning ?? "").replace(/\r\n/g, "\n").trim();
+
+  /** content 为空但 reasoning 内含 Final Answer 时：主气泡会从合并串取正文，思考链只展示过程段，避免与表格重复 */
+  if (!raw && stored) {
+    const n = normalizeAssistantOutput(stored);
+    const chain = n.reasoning.trim();
+    if (chain) return stripThinkingControlMarkers(chain);
+  }
 
   if (looksLikeStreamStutterEcho(raw)) {
     if (!stored) return stripThinkingControlMarkers(raw);

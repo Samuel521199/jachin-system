@@ -416,8 +416,8 @@ def _bi_reconcile_llm_engine_ref_with_agent() -> None:
         fallback = None
         default_model = "gpt-4o-mini"
         if ctx.get_key("dashscope"):
-            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
-            default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash-2026-02-23")
+            fallback = ["dashscope/qwen3.5-flash"]
+            default_model = os.environ.get("LLM_MODEL", "qwen3.5-flash")
         _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
         new_eng = LiteLLMEngine(
             security_context=ctx,

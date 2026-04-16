@@ -58,7 +58,7 @@ _NEXUS_CONFIG = Path.home() / ".jachin" / "nexus_config.json"
 DASHSCOPE_REASONING_MODEL = "dashscope/qwen3.5-plus"
 DASHSCOPE_CODER_MODEL = "dashscope/qwen3-coder-plus"
 DASHSCOPE_COMPLEX_MODEL = "dashscope/qwen-max"
-DASHSCOPE_ECON_FALLBACK_MODEL = "dashscope/qwen3.5-flash-2026-02-23"
+DASHSCOPE_ECON_FALLBACK_MODEL = "dashscope/qwen3.5-flash"
 
 _IGNITION_EMITTED = False
 _IGNITION_CODER_EMITTED = False
@@ -226,8 +226,36 @@ def _model_needs_key(model: str) -> tuple[bool, str | None]:
     return True, "OPENAI_API_KEY"
 
 
+# 百炼控制台偶发「快照」模型 id：带 -YYYY-MM-DD 后缀；稳定版应为无日期名（如 qwen3-max）。
+_QWEN_SNAPSHOT_DATE_SUFFIX = re.compile(r"-20\d{2}-\d{2}-\d{2}$")
+
+
+def _strip_dashscope_qwen_snapshot_date_suffix(model: str) -> str:
+    """
+    去掉 DashScope/通义模型名末尾的 ``-YYYY-MM-DD`` 快照后缀。
+
+    配置中若误写 ``qwen3-max-2026-01-23``，日志与 LiteLLM 会长期显示快照名；统一剥除后
+    与控制台「稳定版」模型 id 对齐（不改变 ollama/*、非 qwen 尾名）。
+    """
+    m = (model or "").strip()
+    if not m:
+        return m
+    if "/" in m:
+        prefix, tail = m.rsplit("/", 1)
+        if prefix.lower() not in ("dashscope", "qwen"):
+            return m
+    else:
+        prefix, tail = "", m
+    if not tail.lower().startswith("qwen"):
+        return m
+    new_tail = _QWEN_SNAPSHOT_DATE_SUFFIX.sub("", tail)
+    if new_tail == tail:
+        return m
+    return f"{prefix}/{new_tail}" if prefix else new_tail
+
+
 def _normalize_model_for_litellm(model: str) -> str:
-    """将裸模型名转为 LiteLLM 所需格式，如 qwen-max -> dashscope/qwen-max"""
+    """将裸模型名转为 LiteLLM 所需格式，如 qwen-max -> dashscope/qwen-max；并剥除通义快照日期后缀。"""
     m = (model or "").strip()
     if not m:
         return m
@@ -235,8 +263,8 @@ def _normalize_model_for_litellm(model: str) -> str:
     if ml.startswith("ollama/") or ml.startswith("ollama:"):
         return m
     if ml.startswith("qwen") and not ml.startswith("qwen/") and not ml.startswith("dashscope/"):
-        return f"dashscope/{m}"
-    return m
+        m = f"dashscope/{m}"
+    return _strip_dashscope_qwen_snapshot_date_suffix(m)
 
 
 def get_coder_model_litellm_id(config: dict[str, Any] | None = None) -> str:

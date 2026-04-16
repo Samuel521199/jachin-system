@@ -788,12 +788,29 @@ function ChatApp() {
     }
 
     const filesSnapshot = [...attachmentFiles];
+    /** 大附件 Base64 期间须先进入加载态，否则主线程长时间无反馈像「卡死」 */
+    const hasAttachments = filesSnapshot.length > 0;
+    if (hasAttachments) {
+      setIsLoading(true);
+      setIsTyping(true);
+      setState("thinking");
+    }
     const attBuilt = await buildAttachmentsMetadataPayload(filesSnapshot);
     if (!attBuilt.ok) {
+      if (hasAttachments) {
+        setIsLoading(false);
+        setIsTyping(false);
+        setState("idle");
+      }
       setAttachmentHint(attBuilt.error);
       return;
     }
     if (filesSnapshot.length > 0 && !sensory.connected) {
+      if (hasAttachments) {
+        setIsLoading(false);
+        setIsTyping(false);
+        setState("idle");
+      }
       setAttachmentHint("发送附件需已连接 Layer 3（Sensory WebSocket，ws://localhost:18981）");
       return;
     }
@@ -813,7 +830,7 @@ function ChatApp() {
     setIsLoading(true);
     setRiskLevel("safe");
     setState("thinking");
-    setIsTyping(true);
+    setIsTyping(true); /* 无附件时此处首次进入 typing；有附件时与编码阶段一致保持为 true */
     l3ActiveRunIdRef.current = "";
     chatTurnTokenRef.current += 1;
     const myTurnToken = chatTurnTokenRef.current;
@@ -953,7 +970,8 @@ function ChatApp() {
       });
     };
 
-    const REASONING_PULSE_MS = 1000;
+    /** 无 chunk 时轻提示；过密会刷屏、撑大 reasoning 串并拖慢渲染，与「仅思考链展示」的预期不符 */
+    const REASONING_PULSE_MS = 3500;
     const pulseHints = [
       "调度管线等待上游 token（chunk 流式）…",
       "Sensory WebSocket 已连接；若长时间无输出多为模型或工具阻塞。",

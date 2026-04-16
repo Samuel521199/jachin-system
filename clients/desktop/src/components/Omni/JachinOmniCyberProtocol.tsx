@@ -2,7 +2,7 @@
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
-import React, { useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send,
@@ -174,6 +174,81 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   const fileInputLocalRef = useRef<HTMLInputElement>(null);
   const fileInputRef = fileInputRefProp ?? fileInputLocalRef;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** 本壳层本地 UI：刚通过剪贴板粘贴加入的附件（用于琥珀色脉冲边，不影响父级 pendingFiles 语义） */
+  const [pulsingAttachmentKeys, setPulsingAttachmentKeys] = useState<Set<string>>(() => new Set());
+  const pulseClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const formatClipboardScreenshotName = useCallback((mime: string, indexInBatch: number, batchSize: number) => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+    const lower = mime.toLowerCase();
+    const ext =
+      lower.includes("png") ? "png"
+      : lower.includes("jpeg") || lower.includes("jpg") ? "jpg"
+      : lower.includes("webp") ? "webp"
+      : lower.includes("gif") ? "gif"
+      : "png";
+    if (batchSize > 1) {
+      return `Screenshot_${stamp}_${indexInBatch + 1}.${ext}`;
+    }
+    return `Screenshot_${stamp}.${ext}`;
+  }, []);
+
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (!onMergePendingFiles || disabled || isLoading) return;
+
+      const collected: File[] = [];
+      const dt = event.clipboardData;
+      if (!dt) return;
+
+      if (dt.files?.length) {
+        for (let i = 0; i < dt.files.length; i++) {
+          const f = dt.files.item(i);
+          if (f && f.type.startsWith("image/")) collected.push(f);
+        }
+      }
+      if (collected.length === 0 && dt.items?.length) {
+        for (let i = 0; i < dt.items.length; i++) {
+          const it = dt.items[i];
+          if (it.kind !== "file") continue;
+          const t = it.type || "";
+          if (!t.startsWith("image/")) continue;
+          const f = it.getAsFile();
+          if (f) collected.push(f);
+        }
+      }
+
+      if (collected.length === 0) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const batchSize = collected.length;
+      const renamed: File[] = collected.map((f, idx) => {
+        const name = formatClipboardScreenshotName(f.type || "image/png", idx, batchSize);
+        return new File([f], name, { type: f.type || "image/png" });
+      });
+
+      const pulseKeys = new Set(renamed.map((f) => `${f.name}-${f.size}`));
+      if (pulseClearTimerRef.current) clearTimeout(pulseClearTimerRef.current);
+      setPulsingAttachmentKeys(pulseKeys);
+      pulseClearTimerRef.current = setTimeout(() => {
+        setPulsingAttachmentKeys(new Set());
+        pulseClearTimerRef.current = null;
+      }, 2200);
+
+      onMergePendingFiles(renamed);
+    },
+    [onMergePendingFiles, disabled, isLoading, formatClipboardScreenshotName],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (pulseClearTimerRef.current) clearTimeout(pulseClearTimerRef.current);
+    };
+  }, []);
 
   const adjustHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -558,10 +633,16 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   pendingFiles.map((file, idx) => {
                     const isImg = file.type.startsWith("image/");
                     const url = isImg ? URL.createObjectURL(file) : "";
+                    const tagKey = `${file.name}-${file.size}`;
+                    const pulseClipboard = pulsingAttachmentKeys.has(tagKey);
                     return (
                       <div
                         key={`${file.name}-${file.size}-${idx}`}
-                        className="group relative inline-flex max-w-[11rem] items-center gap-1.5 bg-cyan-950/12 py-0.5 pl-2 pr-6 text-[10px] text-cyan-100/90 shadow-[0_8px_28px_rgba(0,0,0,0.35)]"
+                        className={`group relative inline-flex max-w-[11rem] items-center gap-1.5 bg-cyan-950/12 py-0.5 pl-2 pr-6 text-[10px] text-cyan-100/90 shadow-[0_8px_28px_rgba(0,0,0,0.35)] ${
+                          pulseClipboard
+                            ? "ring-1 ring-amber-400/45 shadow-[0_0_18px_rgba(245,158,11,0.32),0_8px_28px_rgba(0,0,0,0.35)] animate-pulse"
+                            : ""
+                        }`}
                       >
                         <OmniHologramCorners />
                         <span className="relative z-[2] flex items-center gap-1.5">
@@ -681,6 +762,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                       ref={textareaRef}
                       rows={1}
                       value={input}
+                      onPaste={handlePaste}
                       onChange={(e) => {
                         onInputChange(e.target.value);
                         queueMicrotask(() => adjustHeight());

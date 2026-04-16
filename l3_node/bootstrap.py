@@ -335,7 +335,7 @@ async def bootstrap_l3_gateway_pending(
 
             fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
         except ImportError:
-            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+            fallback = ["dashscope/qwen3.5-flash"]
         if "gpt" in (model_name or "").lower() or "openai" in (model_name or "").lower():
             model_name = os.environ.get("LLM_MODEL", "qwen3.5-plus")
     else:
@@ -459,7 +459,7 @@ async def bootstrap_l3_node(
 
             fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
         except ImportError:
-            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+            fallback = ["dashscope/qwen3.5-flash"]
     else:
         fallback = None
     _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))

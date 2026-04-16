@@ -79,7 +79,7 @@ def _build_polish_engine():
 
             fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
         except ImportError:
-            fallback = ["dashscope/qwen3.5-flash-2026-02-23"]
+            fallback = ["dashscope/qwen3.5-flash"]
         default_model = os.environ.get("LLM_MODEL", "qwen3.5-plus")
 
     model_name = (os.environ.get("JACHIN_HR_LARK_LLM_MODEL") or os.environ.get("L3_MODEL") or default_model).strip()

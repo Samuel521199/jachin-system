@@ -119,7 +119,7 @@ def _get_memory_flush_model() -> str:
 
         return DASHSCOPE_ECON_FALLBACK_MODEL
     except ImportError:
-        return "dashscope/qwen3.5-flash-2026-02-23"
+        return "dashscope/qwen3.5-flash"
 
 
 def _dashscope_extra_no_thinking(model_name: str) -> dict[str, Any]:
@@ -143,7 +143,7 @@ def _get_compaction_context_summary_model() -> str:
 
         return DASHSCOPE_ECON_FALLBACK_MODEL
     except ImportError:
-        return "dashscope/qwen3.5-flash-2026-02-23"
+        return "dashscope/qwen3.5-flash"
 
 
 def _get_memory_flush_config() -> tuple[bool, int]:

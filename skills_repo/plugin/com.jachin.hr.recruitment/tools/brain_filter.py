@@ -30,7 +30,7 @@ def brain_filter(online_resume_text: str = "", resume_text: str = "", hr_criteri
         model = plugin_brain_filter_model_openai_compat()
     except ImportError:
         api_key = (os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY") or "").strip()
-        model = "qwen3.5-flash-2026-02-23"
+        model = "qwen3.5-flash"
 
     if not api_key:
         return _rule_fallback(text, hr_criteria)

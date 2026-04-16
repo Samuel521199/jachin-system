@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def _requires_multimodal_endpoint(model: str) -> bool:
-    """qwen3.5-flash-2026-02-23、qwen3.5-plus 等原生多模态模型需走 MultiModalConversation 端点，否则报 url error"""
+    """qwen3.5-flash、qwen3.5-plus 等原生多模态模型需走 MultiModalConversation 端点，否则报 url error"""
     m = (model or "").lower()
     return m.startswith("qwen3.5-") or m.startswith("qwen3-vl-") or "qwen3-vl" in m
 
