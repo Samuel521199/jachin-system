@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.17",
+  "version": "0.9.18",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -48,8 +48,8 @@
       {
         "label": "chat",
         "title": "Jachin Omni",
-        "width": 440,
-        "height": 520,
+        "width": 820,
+        "height": 640,
         "minWidth": 360,
         "minHeight": 280,
         "resizable": true,

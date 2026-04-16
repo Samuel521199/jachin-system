@@ -1,4 +1,4 @@
-﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -268,8 +268,9 @@ static CHAT_COMPANION_MODE: AtomicBool = AtomicBool::new(false);
 /// 进入陪伴模式前记录的外尺寸，用于恢复用户拖拽后的大小
 static CHAT_RESTORE_SIZE: std::sync::Mutex<Option<(u32, u32)>> = std::sync::Mutex::new(None);
 
-const CHAT_DEFAULT_WIDTH: u32 = 440;
-const CHAT_DEFAULT_HEIGHT: u32 = 520;
+/// 无法取得显示器时的兜底外尺寸（物理像素，与 tauri.conf 首帧接近）
+const CHAT_DEFAULT_WIDTH: u32 = 820;
+const CHAT_DEFAULT_HEIGHT: u32 = 640;
 const CHAT_MIN_WIDTH: u32 = 360;
 const CHAT_MIN_HEIGHT: u32 = 280;
 /// 陪伴条略宽于球体，贴边缩进后仍有一條可悬停的透明区（类似网盘角标）
@@ -282,8 +283,43 @@ const COMPANION_PEEK_VISIBLE_PX: i32 = 10;
 /// 「dock」= 小球完全露出时的左上角；peek 只改窗口位置不改此值
 static COMPANION_DOCK_POSITION: StdMutex<Option<(i32, i32)>> = StdMutex::new(None);
 
-/// Omni 双栏所需最小 **逻辑宽度**（左列 450 + 右画布 + 边距）；`outer_size` 为物理像素，须乘 `scale_factor`
-const CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL: f64 = 1040.0;
+/// Omni 双栏所需最小 **逻辑宽度**（左列约 420 + 右画布 + 边距）；`outer_size` 为物理像素，须乘 `scale_factor`
+const CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL: f64 = 980.0;
+
+/// 未记忆用户外尺寸时：主显示器 **逻辑** 宽 55%、高约 82%；宽 clamp 760–1280（逻辑）；再乘 `scale_factor` 得物理像素。
+fn chat_omni_ideal_physical_size_from_monitor_dimensions(
+    monitor_width_px: u32,
+    monitor_height_px: u32,
+    scale_factor: f64,
+) -> (u32, u32) {
+    let f = scale_factor.max(0.01);
+    let mw = monitor_width_px as f64;
+    let mh = monitor_height_px as f64;
+    let lw = mw / f;
+    let lh = mh / f;
+    let mut w_log = (lw * 0.55).round();
+    w_log = w_log.max(760.0).min(1280.0);
+    let mut h_log = (lh * 0.82).round();
+    h_log = h_log.min(lh * 0.88).max(340.0);
+    let w_px = (w_log * f).round().max(CHAT_MIN_WIDTH as f64) as u32;
+    let h_px = (h_log * f).round().max(CHAT_MIN_HEIGHT as f64) as u32;
+    (w_px, h_px)
+}
+
+/// 有「恢复尺寸」则用记忆值；否则按当前屏黄金比例；再失败用 CHAT_DEFAULT_*。
+fn resolve_chat_omni_outer_size(chat: &tauri::WebviewWindow) -> (u32, u32) {
+    if let Ok(guard) = CHAT_RESTORE_SIZE.lock() {
+        if let Some((w, h)) = *guard {
+            return (w.max(CHAT_MIN_WIDTH), h.max(CHAT_MIN_HEIGHT));
+        }
+    }
+    let sf = chat.scale_factor().unwrap_or(1.0);
+    if let Ok(Some(m)) = chat.current_monitor() {
+        let s = m.size();
+        return chat_omni_ideal_physical_size_from_monitor_dimensions(s.width, s.height, sf);
+    }
+    (CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT)
+}
 
 /// Skill 画布打开前记录的外宽度，关闭时还原（避免用户误以为需手动拖窗）
 static CHAT_WIDTH_BEFORE_SKILL_CANVAS: StdMutex<Option<u32>> = StdMutex::new(None);
@@ -393,13 +429,7 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
                 CHAT_MIN_WIDTH,
                 CHAT_MIN_HEIGHT,
             ))));
-            let (w, h) = CHAT_RESTORE_SIZE
-                .lock()
-                .ok()
-                .and_then(|g| *g)
-                .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
-            let w = w.max(CHAT_MIN_WIDTH);
-            let h = h.max(CHAT_MIN_HEIGHT);
+            let (w, h) = resolve_chat_omni_outer_size(&chat);
             let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, h)));
             let _ = position_chat_omni_bar(&app);
             CHAT_COMPANION_MODE.store(false, Ordering::Relaxed);
@@ -417,7 +447,7 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(next)
 }
 
-/// 将 Omni 输入条置于主显示器水平居中、垂直约 2/3（Raycast / Spotlight 风格）
+/// 将 Omni 输入条置于主显示器水平、垂直居中（尺寸已由 `resolve_chat_omni_outer_size` 定好后再调用）
 fn position_chat_omni_bar(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(chat) = app.get_webview_window("chat") else {
         return Err("chat window missing".into());
@@ -430,7 +460,7 @@ fn position_chat_omni_bar(app: &tauri::AppHandle) -> Result<(), String> {
     let mon_size = monitor.size();
     let win_size = chat.outer_size().map_err(|e| e.to_string())?;
     let x = mon_pos.x + (mon_size.width as i32 - win_size.width as i32) / 2;
-    let y = mon_pos.y + (mon_size.height as i32 - win_size.height as i32) * 2 / 3;
+    let y = mon_pos.y + (mon_size.height as i32 - win_size.height as i32) / 2;
     chat.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -684,13 +714,7 @@ fn restore_chat_full_omni(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(chat) = app.get_webview_window("chat") else {
         return Err("chat window missing".into());
     };
-    let (w, h) = CHAT_RESTORE_SIZE
-        .lock()
-        .ok()
-        .and_then(|g| *g)
-        .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
-    let w = w.max(CHAT_MIN_WIDTH);
-    let h = h.max(CHAT_MIN_HEIGHT);
+    let (w, h) = resolve_chat_omni_outer_size(&chat);
     chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
         CHAT_MIN_WIDTH,
         CHAT_MIN_HEIGHT,
@@ -738,13 +762,7 @@ fn toggle_chat_omni(app: &tauri::AppHandle) {
                     CHAT_MIN_WIDTH,
                     CHAT_MIN_HEIGHT,
                 ))));
-                let (w, h) = CHAT_RESTORE_SIZE
-                    .lock()
-                    .ok()
-                    .and_then(|g| *g)
-                    .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
-                let w = w.max(CHAT_MIN_WIDTH);
-                let h = h.max(CHAT_MIN_HEIGHT);
+                let (w, h) = resolve_chat_omni_outer_size(&chat);
                 let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, h)));
                 let _ = position_chat_omni_bar(&app_clone);
                 CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
@@ -1346,13 +1364,7 @@ fn show_omni_chat_window(app: &tauri::AppHandle) {
                 CHAT_MIN_WIDTH,
                 CHAT_MIN_HEIGHT,
             ))));
-            let (w, h) = CHAT_RESTORE_SIZE
-                .lock()
-                .ok()
-                .and_then(|g| *g)
-                .unwrap_or((CHAT_DEFAULT_WIDTH, CHAT_DEFAULT_HEIGHT));
-            let w = w.max(CHAT_MIN_WIDTH);
-            let h = h.max(CHAT_MIN_HEIGHT);
+            let (w, h) = resolve_chat_omni_outer_size(&chat_window);
             let _ = chat_window.set_size(Size::Physical(PhysicalSize::new(w, h)));
             let _ = position_chat_omni_bar(app);
         } else {
