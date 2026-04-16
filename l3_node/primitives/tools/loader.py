@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -82,8 +82,8 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "id": "core:fs_read",
         "label": "core:fs_read",
         "desc": (
-            "读取本机已存在文件。路径须在允许范围：~/.jachin/workspace/、HR 白名单目录、或本机 Desktop/Downloads/Documents 的真实路径。"
-            "**禁止**在用户通过聊天/Omni 上传附件后，臆造 ~/Downloads/同名路径再读：附件正文若已出现在用户消息「[附件: 文件名 内容]」中，应直接使用该段文字，勿再调用本工具。"
+            "可以读取本机绝大多数常规目录（如 D:\\\\业务数据\\\\ 等）下的文本文件。严禁读取系统级敏感目录。"
+            "若用户消息中已附带 [附件: ...]，请直接使用消息正文，勿重复调用本工具。"
             "参数: file_path"
         ),
         "params": ["file_path"],
@@ -444,6 +444,7 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
     _hr_allowed = [_l3_volume, (proj / "data" / "hr_resumes").resolve(), get_hr_jds_dir(proj).resolve()]
 
     from l3_node.primitives.native_write_allowlist import (
+        assert_path_allowed_for_native_read,
         assert_path_allowed_for_native_write,
         path_is_under_allowed_write_roots,
     )
@@ -465,6 +466,13 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
                 return ""
         return p.read_text(encoding="utf-8", errors="replace")
 
+    def _read_after_read_policy(p: Path) -> str:
+        try:
+            assert_path_allowed_for_native_read(p)
+        except ValueError as e:
+            return f"[执行失败: {e}]"
+        return _read_file_content(p)
+
     if tool_id == "core:fs_read":
         raw = (kwargs.get("file_path", "") or "").strip().replace("\\", "/")
         fp = Path(raw).expanduser()
@@ -472,19 +480,18 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
             # L3 数据卷相对路径：global_resume_pool/Java_杭州 4-6K/xxx.pdf
             cand_vol = (_l3_volume / raw.lstrip("/")).resolve()
             if cand_vol.exists() and cand_vol.is_file() and _under_hr(cand_vol):
-                return _read_file_content(cand_vol)
+                return _read_after_read_policy(cand_vol)
             for base in _hr_allowed:
                 cand = (base / fp.name).resolve()
                 if cand.exists() and _under_hr(cand):
-                    return _read_file_content(cand)
+                    return _read_after_read_policy(cand)
             cand = (proj / raw.lstrip("/")).resolve()
             if cand.exists() and _under_hr(cand):
-                return _read_file_content(cand)
+                return _read_after_read_policy(cand)
             fp = (workspace / raw).resolve()
         if _under_hr(fp):
-            return _read_file_content(fp)
-        _assert_under(fp)
-        return _read_file_content(fp)
+            return _read_after_read_policy(fp)
+        return _read_after_read_policy(fp)
     if tool_id == "core:fs_write":
         fp = Path(kwargs.get("file_path", "")).expanduser()
         if not fp.is_absolute():

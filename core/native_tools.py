@@ -1,9 +1,9 @@
-﻿"""
+"""
 Jachin Nexus v8.0 - Native Core 内置标准库
 
-写路径白名单见 l3_node.primitives.native_write_allowlist（workspace、HR 数据卷、Desktop/Downloads/Documents 等），
-供 MCP 瘫痪时的 Fallback 使用。
-HR 透析镜读取：仍允许项目 data/hr_resumes、config/hr_jds（解决工作目录与配置文件路径冲突）。
+写路径白名单见 l3_node.primitives.native_write_allowlist（workspace、HR 数据卷、Desktop/Downloads/Documents 等）。
+读路径：与写解耦，仅受 l3_node.primitives.fs_path_blacklist 敏感路径拦截（非黑名单即可读，含各盘符业务目录）。
+HR 透析镜相对路径解析不变。
 越界访问抛出 SecurityException。
 """
 from __future__ import annotations
@@ -69,6 +69,16 @@ def _assert_under_workspace(path: Path) -> None:
         raise SecurityException(str(e)) from e
 
 
+def _assert_read_allowed(path: Path) -> None:
+    """读取：仅敏感路径黑名单；通过则放行（含 D:\\、E:\\ 等业务路径）。"""
+    from l3_node.primitives.native_write_allowlist import assert_path_allowed_for_native_read
+
+    try:
+        assert_path_allowed_for_native_read(path)
+    except ValueError as e:
+        raise SecurityException(str(e)) from e
+
+
 def _fs_read_file_not_found_hint(resolved: Path) -> str:
     """文件不存在时返回可检索提示，引导模型使用对话内已注入的附件正文，勿臆造 Downloads 路径。"""
     return (
@@ -82,9 +92,9 @@ def _fs_read_file_not_found_hint(resolved: Path) -> str:
 
 def core_fs_read(file_path: str) -> str:
     """
-    读取文件内容。路径必须位于 ~/.jachin/workspace/ 下，
-    或 HR 透析镜白名单（data/hr_resumes、config/skills/.../hr_jds）下。
-    PDF 文件自动提取纯文本，与 mcp_read_file 行为一致。
+    读取本机已存在文件。默认允许常规盘符与业务目录；仅拒绝敏感路径黑名单（密钥、系统目录等，见 fs_path_blacklist）。
+    相对路径仍先按 HR 透析镜与 workspace 规则解析。
+    PDF 自动提取纯文本。
 
     Args:
         file_path: 相对或绝对路径
@@ -93,7 +103,7 @@ def core_fs_read(file_path: str) -> str:
         文件内容
 
     Raises:
-        SecurityException: 路径越界
+        SecurityException: 命中敏感路径黑名单
     """
     raw_in = (file_path or "").strip()
     if len(raw_in) >= 2 and (
@@ -116,12 +126,14 @@ def core_fs_read(file_path: str) -> str:
         for base in _hr_allowed():
             cand = (base / p.name).resolve()
             if cand.exists() and _is_under_hr_whitelist(cand):
+                _assert_read_allowed(cand)
                 if cand.suffix.lower() == ".pdf":
                     from core.pdf_extractor import extract_pdf_text
                     return extract_pdf_text(cand) or ""
                 return cand.read_text(encoding="utf-8", errors="replace")
         cand = (_PROJ_ROOT / raw.lstrip("/")).resolve()
         if cand.exists() and _is_under_hr_whitelist(cand):
+            _assert_read_allowed(cand)
             if cand.suffix.lower() == ".pdf":
                 from core.pdf_extractor import extract_pdf_text
                 return extract_pdf_text(cand) or ""
@@ -130,13 +142,14 @@ def core_fs_read(file_path: str) -> str:
 
         p = (get_effective_workspace_root() / raw).resolve()
     if _is_under_hr_whitelist(p):
+        _assert_read_allowed(p)
         if not p.exists():
             return _fs_read_file_not_found_hint(p)
         if p.suffix.lower() == ".pdf":
             from core.pdf_extractor import extract_pdf_text
             return extract_pdf_text(p) or ""
         return p.read_text(encoding="utf-8", errors="replace")
-    _assert_under_workspace(p)
+    _assert_read_allowed(p)
     if not p.exists():
         return _fs_read_file_not_found_hint(p)
     if p.suffix.lower() == ".pdf":

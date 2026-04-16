@@ -895,6 +895,8 @@ fn main() {
             commands::settings::update_user_settings,
             commands::settings::get_desktop_ui_lang,
             commands::settings::set_desktop_ui_lang,
+            commands::native_fs_policy::native_fs_policy_get,
+            commands::native_fs_policy::native_fs_policy_set,
             commands::pairing::is_gateway_paired,
             commands::pairing::read_l2_gateway_config,
             commands::pairing::read_l2_gateway_url,

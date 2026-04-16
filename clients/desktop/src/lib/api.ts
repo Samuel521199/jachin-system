@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -616,7 +616,12 @@ async function invokeL3Skills<T>(
     try {
       const res = await fetch(`${L3_DEV_PROXY}${path}`, options);
       if (res.ok) return res.json();
-      throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      // 404：对端可能是旧 L3 或未注册路由，继续尝试直连多端口
+      if (res.status === 404) {
+        /* fall through to direct */
+      } else {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
     } catch (e) {
       if ((e as Error)?.message?.includes("Failed to fetch") || (e as Error)?.message?.includes("NetworkError")) {
         /* fall through to direct */
@@ -636,10 +641,15 @@ async function invokeL3Skills<T>(
       return res.json();
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e));
-      if ((e as Error)?.message?.includes("Failed to fetch") || (e as Error)?.message?.includes("NetworkError")) {
-        continue; // 连接失败，尝试下一端口
+      const msg = (e as Error)?.message ?? "";
+      if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        continue;
       }
-      throw e; // 非连接错误（如 4xx/5xx）直接抛出
+      // 404：该端口可能不是本仓库 L3 或路由未注册，尝试下一端口
+      if (msg.includes("HTTP 404")) {
+        continue;
+      }
+      throw e;
     }
   }
   throw lastErr ?? new Error("L3 技能 API 不可达");
@@ -1011,6 +1021,62 @@ export async function listSkills(): Promise<SkillInfo[]> {
     console.warn("[Skills] L3 不可用，回退 L2:", e);
     const list = await invokeBackend<SkillInfo[]>("/api/v3/skills", undefined, "GET");
     return Array.isArray(list) ? list : [];
+  }
+}
+
+/** GET /api/v3/config/native-fs-policy — 内置与用户扩展的 Native 读写路径策略 */
+export interface NativeFsPolicyPayload {
+  ok?: boolean;
+  policy_file?: string;
+  builtin_write_roots?: string[];
+  custom_write_roots?: string[];
+  builtin_read_blacklist_lines?: string[];
+  custom_read_blacklist_roots?: string[];
+  error?: string;
+}
+
+async function nativeFsPolicyGetViaTauri(): Promise<NativeFsPolicyPayload> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeFsPolicyPayload>("native_fs_policy_get");
+}
+
+async function nativeFsPolicySetViaTauri(body: {
+  write_allowlist_extra: string[];
+  read_blacklist_extra: string[];
+}): Promise<{ ok?: boolean; error?: string; message?: string }> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("native_fs_policy_set", { input: body });
+}
+
+/**
+ * 优先 L3 HTTP（含解析后的内置写入根）；失败时回退 Tauri 直连 `~/.jachin/config/native_fs_policy.json`（与 Python 共用）。
+ */
+export async function fetchNativeFsPolicy(): Promise<NativeFsPolicyPayload> {
+  try {
+    const p = await invokeL3Skills<NativeFsPolicyPayload>(
+      "/api/v3/config/native-fs-policy",
+      undefined,
+      "GET"
+    );
+    if (p && p.ok !== false) return p;
+  } catch {
+    /* 无 L3 / 404 / 网络错误 → 桌面端读本地文件 */
+  }
+  return nativeFsPolicyGetViaTauri();
+}
+
+export async function saveNativeFsPolicy(body: {
+  write_allowlist_extra: string[];
+  read_blacklist_extra: string[];
+}): Promise<{ ok?: boolean; error?: string; message?: string }> {
+  try {
+    return await invokeL3Skills<{ ok?: boolean; error?: string; message?: string }>(
+      "/api/v3/config/native-fs-policy",
+      body,
+      "POST"
+    );
+  } catch {
+    return nativeFsPolicySetViaTauri(body);
   }
 }
 

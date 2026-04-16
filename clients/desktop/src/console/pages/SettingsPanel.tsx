@@ -10,8 +10,19 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Settings, Loader2, RefreshCw, Save, Key } from "lucide-react";
-import { saveApiKey } from "../../lib/api";
+import {
+  Settings,
+  Loader2,
+  RefreshCw,
+  Save,
+  Key,
+  Shield,
+  ShieldOff,
+  FolderOpen,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import { fetchNativeFsPolicy, saveApiKey, saveNativeFsPolicy, type NativeFsPolicyPayload } from "../../lib/api";
 import { cn } from "../../utils/cn";
 
 /** 桌面精灵语音模式：三层架构 */
@@ -68,6 +79,18 @@ const SPRITE_VOICE_MODE_OPTIONS = [
   { value: "continuous", label: "C. 识别模式 (Continuous)" },
 ] as const;
 
+/** L3 不可用时用于展示的内置读取黑名单说明（与 fs_path_blacklist 简述对齐） */
+const READ_BLACKLIST_BUILTIN_FALLBACK: string[] = [
+  "密钥与云凭证目录：.ssh、.aws、.kube、.gnupg",
+  "环境变量文件：路径段含 .env 或 credentials",
+  "Windows 系统目录（含 System32、SysWOW64、WindowsApps 及 C:\\Windows\\…）",
+  "SAM/SECURITY 注册表配置单元",
+  "路径段名为 etc（含 C:\\etc、/etc/…）",
+  "Linux /boot（根下 boot 段）及盘符根下 Boot",
+  "/var/log 及 /etc/shadow、/etc/passwd",
+  "Chromium 系浏览器用户数据中的 Cookies / Login Data",
+];
+
 export function SettingsPanel() {
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [settings, setSettings] = useState<UserSettings | null>(null);
@@ -77,6 +100,36 @@ export function SettingsPanel() {
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [apiKeySaved, setApiKeySaved] = useState(false);
+
+  const [fsPolicy, setFsPolicy] = useState<NativeFsPolicyPayload | null>(null);
+  const [fsPolicyLoading, setFsPolicyLoading] = useState(false);
+  const [fsPolicyError, setFsPolicyError] = useState<string | null>(null);
+  const [customWriteRoots, setCustomWriteRoots] = useState<string[]>([]);
+  const [customReadBlacklist, setCustomReadBlacklist] = useState<string[]>([]);
+  const [writePathDraft, setWritePathDraft] = useState("");
+  const [readPathDraft, setReadPathDraft] = useState("");
+  const [fsPolicySaving, setFsPolicySaving] = useState(false);
+  const [fsPolicySavedHint, setFsPolicySavedHint] = useState(false);
+
+  const loadFsPolicy = async () => {
+    setFsPolicyLoading(true);
+    setFsPolicyError(null);
+    try {
+      const p = await fetchNativeFsPolicy();
+      if (p?.ok === false && p.error) {
+        setFsPolicyError(p.error);
+        return;
+      }
+      setFsPolicy(p);
+      setCustomWriteRoots([...(p.custom_write_roots ?? [])]);
+      setCustomReadBlacklist([...(p.custom_read_blacklist_roots ?? [])]);
+    } catch (e) {
+      setFsPolicy(null);
+      setFsPolicyError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFsPolicyLoading(false);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -93,6 +146,7 @@ export function SettingsPanel() {
     } finally {
       setLoading(false);
     }
+    void loadFsPolicy();
   };
 
   useEffect(() => {
@@ -192,6 +246,42 @@ export function SettingsPanel() {
     }
   };
 
+  const handleSaveFsPolicy = async () => {
+    if (fsPolicySaving) return;
+    setFsPolicySaving(true);
+    setFsPolicySavedHint(false);
+    try {
+      const res = await saveNativeFsPolicy({
+        write_allowlist_extra: customWriteRoots,
+        read_blacklist_extra: customReadBlacklist,
+      });
+      if (res.ok === false || res.error) {
+        setFsPolicyError(res.error ?? "保存失败");
+        return;
+      }
+      setFsPolicySavedHint(true);
+      await loadFsPolicy();
+    } catch (e) {
+      setFsPolicyError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFsPolicySaving(false);
+    }
+  };
+
+  const addCustomWriteRoot = () => {
+    const t = writePathDraft.trim();
+    if (!t) return;
+    setCustomWriteRoots((prev) => (prev.includes(t) ? prev : [...prev, t]));
+    setWritePathDraft("");
+  };
+
+  const addCustomReadBlacklist = () => {
+    const t = readPathDraft.trim();
+    if (!t) return;
+    setCustomReadBlacklist((prev) => (prev.includes(t) ? prev : [...prev, t]));
+    setReadPathDraft("");
+  };
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center p-6">
@@ -251,6 +341,224 @@ export function SettingsPanel() {
                 <div>Run Mode: {config.run_mode}</div>
               </>
             )}
+          </div>
+        </motion.section>
+
+        <motion.section
+          className="glass-panel rounded-xl overflow-hidden"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.04 }}
+        >
+          <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2">
+            <FolderOpen className="w-4 h-4 text-cyan-400/80" />
+            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
+              Native 文件系统策略
+            </span>
+            <button
+              type="button"
+              onClick={() => void loadFsPolicy()}
+              disabled={fsPolicyLoading}
+              className="ml-auto p-1 rounded text-slate-400 hover:text-cyan-400 transition-colors disabled:opacity-40"
+              title="从 L3 刷新"
+            >
+              {fsPolicyLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )}
+            </button>
+          </div>
+          <div className="p-4 space-y-6 text-sm">
+            {fsPolicy?.policy_file && (
+              <p className="text-xs text-slate-500 font-mono break-all">
+                配置：{fsPolicy.policy_file}
+              </p>
+            )}
+            {fsPolicyError && (
+              <p className="text-xs text-amber-400/90 leading-relaxed">{fsPolicyError}</p>
+            )}
+
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <Shield className="w-4 h-4 text-emerald-400/90" />
+                <span className="font-mono text-slate-300">写入白名单（内置）</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-2">
+                系统内置允许 Native 写入的根目录（如 workspace、client_volumes、HR 数据、用户文档目录等），不可在此页移除。
+              </p>
+              <ul className="text-xs font-mono text-slate-400 space-y-1 max-h-36 overflow-y-auto rounded border border-white/10 p-2 bg-black/20">
+                {(fsPolicy?.builtin_write_roots ?? []).length === 0 ? (
+                  <li className="text-slate-500">
+                    {fsPolicyError
+                      ? "（需连接 L3 以显示解析后的内置绝对路径）"
+                      : "（内置绝对路径由 L3 在线时填充；下方「额外」列表已可从本机策略文件加载）"}
+                  </li>
+                ) : (
+                  (fsPolicy?.builtin_write_roots ?? []).map((p) => <li key={p}>{p}</li>)
+                )}
+              </ul>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <Shield className="w-4 h-4 text-cyan-400/90" />
+                <span className="font-mono text-slate-300">写入白名单（额外）</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-2">
+                在此追加允许写入的目录根；保存后经后端校验并合并进白名单，影响 core:fs_write 等工具。
+              </p>
+              <ul className="text-xs font-mono text-slate-300 space-y-1 mb-2">
+                {customWriteRoots.map((p) => (
+                  <li
+                    key={p}
+                    className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 bg-white/5"
+                  >
+                    <span className="flex-1 truncate" title={p}>
+                      {p}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCustomWriteRoots((prev) => prev.filter((x) => x !== p))}
+                      className="p-1 rounded text-slate-500 hover:text-rose-400"
+                      title="移除此项"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                ))}
+                {customWriteRoots.length === 0 && (
+                  <li className="text-slate-500 text-xs">暂无额外路径</li>
+                )}
+              </ul>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={writePathDraft}
+                  onChange={(e) => setWritePathDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustomWriteRoot();
+                    }
+                  }}
+                  placeholder="绝对路径，如 D:\\Projects\\my-data"
+                  className={cn(
+                    "flex-1 px-3 py-2 rounded border bg-white/5 text-slate-200 text-xs font-mono",
+                    "border-white/10 focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30",
+                    "placeholder:text-slate-600"
+                  )}
+                />
+                <button
+                  type="button"
+                  onClick={addCustomWriteRoot}
+                  className={cn(
+                    "px-3 py-2 rounded font-mono text-xs flex items-center gap-1.5 shrink-0",
+                    "bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/35 text-cyan-200"
+                  )}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  添加
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <ShieldOff className="w-4 h-4 text-rose-400/80" />
+                <span className="font-mono text-slate-300">读取黑名单（内置）</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-2">
+                下列类型的路径禁止通过 Native 读取（底线规则，不可关闭）：
+              </p>
+              <ul className="text-xs text-slate-400 space-y-1 list-disc list-inside leading-relaxed">
+                {(fsPolicy?.builtin_read_blacklist_lines ?? READ_BLACKLIST_BUILTIN_FALLBACK).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <ShieldOff className="w-4 h-4 text-orange-400/90" />
+                <span className="font-mono text-slate-300">读取黑名单（额外）</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-2">
+                在此追加禁止读取的目录根：位于其下的任意路径均会被 core:fs_read 拒绝。
+              </p>
+              <ul className="text-xs font-mono text-slate-300 space-y-1 mb-2">
+                {customReadBlacklist.map((p) => (
+                  <li
+                    key={p}
+                    className="flex items-center gap-2 rounded border border-white/10 px-2 py-1 bg-white/5"
+                  >
+                    <span className="flex-1 truncate" title={p}>
+                      {p}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCustomReadBlacklist((prev) => prev.filter((x) => x !== p))}
+                      className="p-1 rounded text-slate-500 hover:text-rose-400"
+                      title="移除此项"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                ))}
+                {customReadBlacklist.length === 0 && (
+                  <li className="text-slate-500 text-xs">暂无额外禁止路径</li>
+                )}
+              </ul>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={readPathDraft}
+                  onChange={(e) => setReadPathDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustomReadBlacklist();
+                    }
+                  }}
+                  placeholder="绝对路径，如 D:\\Secrets"
+                  className={cn(
+                    "flex-1 px-3 py-2 rounded border bg-white/5 text-slate-200 text-xs font-mono",
+                    "border-white/10 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/30",
+                    "placeholder:text-slate-600"
+                  )}
+                />
+                <button
+                  type="button"
+                  onClick={addCustomReadBlacklist}
+                  className={cn(
+                    "px-3 py-2 rounded font-mono text-xs flex items-center gap-1.5 shrink-0",
+                    "bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/35 text-orange-200"
+                  )}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  添加
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => void handleSaveFsPolicy()}
+                disabled={fsPolicySaving}
+                className={cn(
+                  "px-4 py-2 rounded font-mono text-sm flex items-center gap-2",
+                  "bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200",
+                  "disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                )}
+              >
+                {fsPolicySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                保存路径策略
+              </button>
+              {fsPolicySavedHint && (
+                <span className="text-xs text-emerald-400">已保存，L3 将重新加载策略文件</span>
+              )}
+            </div>
           </div>
         </motion.section>
 

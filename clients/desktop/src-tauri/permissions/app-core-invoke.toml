@@ -1,4 +1,4 @@
-﻿[[permission]]
+[[permission]]
 identifier = "allow-app-core-invoke"
 description = "Allow IPC to application custom commands (L2 gateway pairing, L3, settings, chat windows, TTS/STT, hot update)."
 commands.allow = [
@@ -32,6 +32,8 @@ commands.allow = [
   "is_l3_engine_ready",
   "is_skill_sync_in_progress",
   "is_voice_capture_running",
+  "native_fs_policy_get",
+  "native_fs_policy_set",
   "perform_startup_sync",
   "quick_action_clear_memory",
   "quick_action_eagle_eye",

@@ -994,6 +994,60 @@ async def _handle_safety_lock_reject(request: Any) -> "aiohttp.web.Response":
     return _json_response(result, status=status)
 
 
+async def _handle_native_fs_policy_get(request: Any) -> "aiohttp.web.Response":
+    """GET /api/v3/config/native-fs-policy — 内置与用户扩展的读写策略展示（与桌面设置页对齐）。"""
+    try:
+        from l3_node.primitives.fs_path_blacklist import READ_BLACKLIST_BUILTIN_LINES
+        from l3_node.primitives.native_fs_policy_store import (
+            get_read_blacklist_extra_roots,
+            get_write_allowlist_extra_roots,
+            policy_path,
+        )
+        from l3_node.primitives.native_write_allowlist import get_builtin_native_write_roots
+
+        custom_w = [str(p) for p in get_write_allowlist_extra_roots()]
+        custom_r = [str(p) for p in get_read_blacklist_extra_roots()]
+        return _json_response(
+            {
+                "ok": True,
+                "policy_file": str(policy_path()),
+                "builtin_write_roots": [str(p) for p in get_builtin_native_write_roots()],
+                "custom_write_roots": custom_w,
+                "builtin_read_blacklist_lines": list(READ_BLACKLIST_BUILTIN_LINES),
+                "custom_read_blacklist_roots": custom_r,
+            }
+        )
+    except Exception as e:
+        logger.warning("[L3 HTTP] native-fs-policy get failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_native_fs_policy_post(request: Any) -> "aiohttp.web.Response":
+    """POST /api/v3/config/native-fs-policy — 保存用户扩展路径（JSON body）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid_json"}, status=400)
+    w = body.get("write_allowlist_extra") or body.get("writeAllowlistExtra")
+    r = body.get("read_blacklist_extra") or body.get("readBlacklistExtra")
+    if w is not None and not isinstance(w, list):
+        return _json_response({"ok": False, "error": "write_allowlist_extra must be a list"}, status=400)
+    if r is not None and not isinstance(r, list):
+        return _json_response({"ok": False, "error": "read_blacklist_extra must be a list"}, status=400)
+    ws = [str(x) for x in (w or []) if isinstance(x, str)]
+    rs = [str(x) for x in (r or []) if isinstance(x, str)]
+    try:
+        from l3_node.primitives.native_fs_policy_store import save_policy
+
+        ok, msg = save_policy(ws, rs)
+        if not ok:
+            return _json_response({"ok": False, "error": msg}, status=400)
+        return _json_response({"ok": True, "message": msg})
+    except Exception as e:
+        logger.warning("[L3 HTTP] native-fs-policy post failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
 def _json_response(data: Any, status: int = 200) -> "aiohttp.web.Response":
     import aiohttp.web
     return aiohttp.web.json_response(data, status=status, dumps=lambda o: json.dumps(o, ensure_ascii=False))
@@ -1070,6 +1124,8 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v3/safety-lock/pending", _handle_safety_lock_pending)
     app.router.add_post("/api/v3/safety-lock/approve", _handle_safety_lock_approve)
     app.router.add_post("/api/v3/safety-lock/reject", _handle_safety_lock_reject)
+    app.router.add_get("/api/v3/config/native-fs-policy", _handle_native_fs_policy_get)
+    app.router.add_post("/api/v3/config/native-fs-policy", _handle_native_fs_policy_post)
 
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):
