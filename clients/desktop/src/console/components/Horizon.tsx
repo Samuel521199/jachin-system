@@ -1,9 +1,10 @@
 ﻿/**
- * Horizon - 顶部状态栏 (The Horizon)
- * 设计愿景 2.3：环境、算力池、当前大脑模型
+ * Horizon - 战术视野：极简悬浮状态条 + 等宽大写终端风
+ * 环境、算力池、当前大脑模型
  */
 
 import { useState, useEffect, useCallback } from "react";
+import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getClusterStats, getGpuStats } from "../../lib/api";
 import { cn } from "../../utils/cn";
@@ -64,43 +65,66 @@ export function Horizon({
   return (
     <header
       className={cn(
-        // z-index：语言下拉面板的第二项会落入下方 Outlet 区域，必须与主内容分层否则会被盖住
-        "relative z-[100] flex-shrink-0 h-9 px-4 flex items-center gap-6 border-b border-white/10 bg-black/20 backdrop-blur-sm",
-        "font-mono text-xs text-slate-400",
-        gpuOverheat && "border-amber-500/40",
+        "relative z-[100] flex-shrink-0 w-full flex justify-end px-4 pt-2 pb-1 pointer-events-none",
         className
       )}
     >
-      {gpuOverheat && (
-        <span className="text-amber-400" title={hz.gpuHotTitle}>
-          {hz.gpuHot}
-        </span>
-      )}
-      <span className="text-slate-500" title="当前环境">
-        {environment}
-      </span>
-      <span className="text-slate-600">|</span>
-      <span
-        className={clusterSummary ? "text-cyan-400/90" : "text-slate-500"}
-        title="算力池状态"
+      <motion.div
+        layout
+        className={cn(
+          "pointer-events-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-1 border border-cyan-500/25 bg-black/50 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-slate-400 backdrop-blur-md",
+          "shadow-[0_0_24px_rgba(0,0,0,0.65),inset_0_0_0_1px_rgba(6,182,212,0.12)]",
+          "[clip-path:polygon(0_0,calc(100%-14px)_0,100%_14px,100%_100%,14px_100%,0_calc(100%-14px))]",
+          gpuOverheat && "border-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.25),inset_0_0_0_1px_rgba(248,113,113,0.2)]"
+        )}
+        {...(gpuOverheat
+          ? {
+              animate: {
+                boxShadow: [
+                  "0 0 16px rgba(239,68,68,0.2)",
+                  "0 0 28px rgba(239,68,68,0.45)",
+                  "0 0 16px rgba(239,68,68,0.2)",
+                ],
+              },
+              transition: { duration: 1.2, repeat: Infinity as number, ease: "easeInOut" as const },
+            }
+          : {})}
       >
-        {clusterSummary ?? "Ray: —"}
-      </span>
-      <span className="text-slate-600">|</span>
-      <span className="text-slate-500" title="当前大脑模型">
-        Brain: {modelName}
-      </span>
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        <DesktopLanguageMenu />
-        <button
-          type="button"
-          className="rounded px-2 py-0.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-rose-300/90"
-          title={hz.exitTitle}
-          onClick={() => void invoke("app_exit")}
+        {gpuOverheat && (
+          <span
+            className="text-red-400/95 animate-pulse drop-shadow-[0_0_10px_rgba(248,113,113,0.9)]"
+            title={hz.gpuHotTitle}
+          >
+            {hz.gpuHot}
+          </span>
+        )}
+        <span className="text-slate-500 max-w-[200px] truncate" title="当前环境">
+          {environment}
+        </span>
+        <span className="text-cyan-800/80">│</span>
+        <span
+          className={clusterSummary ? "text-cyan-300/95 drop-shadow-[0_0_6px_rgba(34,211,238,0.35)]" : "text-slate-600"}
+          title="算力池状态"
         >
-          {hz.exit}
-        </button>
-      </div>
+          {clusterSummary ?? "Ray: —"}
+        </span>
+        <span className="text-cyan-800/80">│</span>
+        <span className="text-slate-500 max-w-[220px] truncate" title="当前大脑模型">
+          Brain: {modelName}
+        </span>
+        <span className="text-cyan-800/60">│</span>
+        <div className="flex shrink-0 items-center gap-2 normal-case tracking-normal [&_button]:uppercase [&_button]:tracking-[0.12em]">
+          <DesktopLanguageMenu />
+          <button
+            type="button"
+            className="border border-white/10 bg-black/30 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.15em] text-slate-500 transition-all hover:border-rose-400/50 hover:text-rose-300/95 hover:shadow-[inset_0_0_12px_rgba(244,63,94,0.15)] active:shadow-[inset_0_0_16px_rgba(6,182,212,0.25)]"
+            title={hz.exitTitle}
+            onClick={() => void invoke("app_exit")}
+          >
+            {hz.exit}
+          </button>
+        </div>
+      </motion.div>
     </header>
   );
 }

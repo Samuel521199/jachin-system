@@ -106,6 +106,9 @@ export const desktopConsole = {
       vadStop: "停止 VAD",
       vadCapturing: "采集中",
       agendaTitle: "Agenda & Suggestions",
+      agendaSubtitle: "调度 · 系统 · 记忆 — 可执行建议（无后端时为本地演示）",
+      agendaEmpty: "暂无建议条目",
+      agendaStat: "共 {n} 条",
     },
     demoSuggestions: [
       {
@@ -126,12 +129,33 @@ export const desktopConsole = {
         action: "查看",
         type: "task",
       },
+      {
+        id: "4",
+        text: "L3 推理策略当前为「默认」，是否切换为「高性能」以缩短响应？",
+        action: "sync",
+        type: "strategy",
+      },
+      {
+        id: "5",
+        text: "检测到长时间未同步技能清单，是否从网关拉取最新库存？",
+        action: "later",
+        type: "inventory",
+      },
+      {
+        id: "6",
+        text: "有一条低优先级提醒：今日步数目标未设置，要忽略此类健康提示吗？",
+        action: "dismiss",
+        type: "health",
+      },
     ] as const,
     suggestionActionLabels: {
       执行: "执行",
       清理: "清理",
       查看: "查看",
       添加: "添加",
+      later: "稍后",
+      sync: "应用",
+      dismiss: "忽略",
     } as Record<string, string>,
     mind: {
       waiting1: "等待连接…",
@@ -183,6 +207,9 @@ export const desktopConsole = {
       vadStop: "Stop VAD",
       vadCapturing: "Capturing",
       agendaTitle: "Agenda & Suggestions",
+      agendaSubtitle: "Schedule · system · memory — actionable cards (local demo if API empty)",
+      agendaEmpty: "No suggestions yet",
+      agendaStat: "{n} items",
     },
     demoSuggestions: [
       {
@@ -203,12 +230,33 @@ export const desktopConsole = {
         action: "查看",
         type: "task",
       },
+      {
+        id: "4",
+        text: "L3 inference profile is Default — switch to Performance for lower latency?",
+        action: "sync",
+        type: "strategy",
+      },
+      {
+        id: "5",
+        text: "Skills inventory has not synced for a while — pull latest from gateway now?",
+        action: "later",
+        type: "inventory",
+      },
+      {
+        id: "6",
+        text: "Low-priority nudge: daily step goal not set — dismiss health tips like this?",
+        action: "dismiss",
+        type: "health",
+      },
     ] as const,
     suggestionActionLabels: {
       执行: "Run",
       清理: "Clean",
       查看: "Open",
       添加: "Add",
+      later: "Later",
+      sync: "Apply",
+      dismiss: "Dismiss",
     } as Record<string, string>,
     mind: {
       waiting1: "Waiting for connection…",

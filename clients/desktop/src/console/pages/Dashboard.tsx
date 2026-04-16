@@ -254,11 +254,11 @@ export function Dashboard({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 p-6 gap-6">
-      {/* Top 30%: Mind Stream */}
-      <section className="h-[30%] min-h-[200px] flex-shrink-0">
+    <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
+      {/* Mind Stream：视口比例 + 下限，为 Agenda 留出纵向空间 */}
+      <section className="h-[min(32vh,320px)] min-h-[180px] shrink-0">
         <MindStream
-          className="h-full"
+          className="h-full min-h-0"
           maxLines={6}
           demoLoop
           liveStatsLines={liveStatsLines}
@@ -268,131 +268,168 @@ export function Dashboard({
         />
       </section>
 
-      {/* Middle 40%: Compute Topology + Quick Actions */}
-      <section className="flex-[4] min-h-0 flex gap-6">
+      {/* Compute + Quick Actions：与 Agenda 共享剩余高度时优先 min-h-0 可压缩 */}
+      <section className="flex min-h-0 flex-[2] items-stretch gap-8">
         <motion.div
-          layout
-          className="flex-1 glass-panel rounded-xl p-6 flex flex-col items-center justify-center min-h-0"
+          className="console-fiber-host console-holo-slab flex min-h-0 min-w-0 flex-1 flex-col p-5 sm:p-6"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35 }}
         >
-          <ComputeTopology
-            workerCount={Math.max(0, (clusterStats?.nodes?.total ?? 1) - 1)}
-            activeWorkerIndex={(clusterStats?.tasks?.running ?? 0) > 0 ? 0 : (cpuPercent > 25 ? 0 : -1)}
-            cpuPercent={cpuPercent}
-            ramPercent={ramPercent}
-            gpuStats={gpuStats?.gpus ?? undefined}
-            nodes={clusterNodes}
-            tasks={clusterTasks}
-          />
+          <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto overflow-x-hidden [-webkit-overflow-scrolling:touch]">
+            <div className="flex w-full max-w-md flex-shrink-0 flex-col items-center gap-4 pb-3">
+              <ComputeTopology
+                workerCount={Math.max(0, (clusterStats?.nodes?.total ?? 1) - 1)}
+                activeWorkerIndex={(clusterStats?.tasks?.running ?? 0) > 0 ? 0 : (cpuPercent > 25 ? 0 : -1)}
+                cpuPercent={cpuPercent}
+                ramPercent={ramPercent}
+                gpuStats={gpuStats?.gpus ?? undefined}
+                nodes={clusterNodes}
+                tasks={clusterTasks}
+              />
+            </div>
+          </div>
         </motion.div>
         <motion.div
-          layout
-          className="w-80 flex-shrink-0 glass-panel rounded-xl p-4 flex flex-col min-h-0"
+          className="console-fiber-host console-holo-slab flex h-full min-h-0 w-[min(20rem,100%)] max-w-sm flex-shrink-0 flex-col overflow-hidden p-5"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, delay: 0.05 }}
         >
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3" style={{ fontFamily: "Orbitron, sans-serif" }}>
+          <h2
+            className="mb-3 shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-600/90"
+            style={{ fontFamily: "Orbitron, sans-serif" }}
+          >
             {c.dashboard.quickActionsTitle}
           </h2>
-          <div className="grid grid-cols-2 gap-2">
-            {quickActions.map((action, i) => {
-              const isOn = (action.id === "privacy" && privacyMode) || (action.id === "eagle" && eagleEyeOn) || (action.id === "sleep" && hibernateOn);
-              return (
-                <motion.button
-                  key={action.id}
-                  type="button"
-                  disabled={actionLoading !== null}
-                  onClick={() => runQuickAction(action.cmd, action.isToggle)}
-                  title={action.title}
-                  className={cn(
-                    "flex flex-col items-center justify-center gap-1 py-3 px-2 rounded-lg border text-xs font-medium transition-colors disabled:opacity-60",
-                    isOn ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-white/10 text-slate-300 hover:bg-rose-500/20 hover:border-rose-500/40"
-                  )}
-                  whileHover={{ scale: actionLoading ? 1 : 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                >
-                  <span className="text-lg">{action.icon}</span>
-                  <span className="leading-tight">{isOn ? c.dashboard.quickToggleOn : action.label}</span>
-                </motion.button>
-              );
-            })}
-          </div>
-          <div className="mt-4 pt-4 border-t border-white/10">
-            <p className="text-xs text-slate-500 mb-2">{c.dashboard.vadHeading}</p>
-            <div className="flex items-center gap-2">
-              {!isVoiceCaptureRunning ? (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await invoke("start_voice_capture");
-                      setIsVoiceCaptureRunning(true);
-                    } catch (e) {
-                      console.error(e);
-                    }
-                  }}
-                  className="px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/15 text-amber-300 text-xs font-medium hover:bg-amber-500/25 flex items-center gap-1.5"
-                >
-                  <span>🎤</span> {c.dashboard.vadStart}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await invoke("stop_voice_capture");
-                      setIsVoiceCaptureRunning(false);
-                    } catch (e) {
-                      console.error(e);
-                    }
-                  }}
-                  className="px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/15 text-rose-300 text-xs font-medium hover:bg-rose-500/25 flex items-center gap-1.5"
-                >
-                  <span>⏹</span> {c.dashboard.vadStop}
-                </button>
-              )}
-              {isVoiceCaptureRunning && (
-                <span className="text-xs text-amber-400 flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                  {c.dashboard.vadCapturing}
-                </span>
-              )}
+          {/* content-start + auto-rows-min：避免 grid 在 flex 剩余高度下被 stretch，导致六边形与下方 VAD 重叠 */}
+          <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overflow-x-hidden pr-0.5">
+            <div className="isolate grid w-full max-w-[19rem] shrink-0 grid-cols-2 auto-rows-min content-start justify-items-center gap-x-3 gap-y-4 self-center py-1">
+              {quickActions.map((action) => {
+                const isOn =
+                  (action.id === "privacy" && privacyMode) ||
+                  (action.id === "eagle" && eagleEyeOn) ||
+                  (action.id === "sleep" && hibernateOn);
+                return (
+                  <motion.button
+                    key={action.id}
+                    type="button"
+                    disabled={actionLoading !== null}
+                    onClick={() => runQuickAction(action.cmd, action.isToggle)}
+                    title={action.title}
+                    className={cn(
+                      "console-hex-btn flex h-[86px] w-[82px] max-h-[86px] max-w-[82px] shrink-0 flex-col items-center justify-center gap-0.5 overflow-hidden border text-[9px] font-semibold uppercase leading-tight tracking-wide transition-all disabled:opacity-60",
+                      "border-cyan-500/30 bg-black/50 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.08)]",
+                      isOn
+                        ? "border-emerald-400/60 text-emerald-300 shadow-[inset_0_0_22px_rgba(16,185,129,0.35),0_0_20px_rgba(52,211,153,0.2)]"
+                        : "text-slate-400 hover:border-cyan-400/50 hover:text-cyan-200/90 hover:shadow-[0_0_18px_rgba(6,182,212,0.15)]"
+                    )}
+                    whileHover={{ scale: actionLoading ? 1 : 1.03 }}
+                    whileTap={{ scale: 0.96 }}
+                  >
+                    <span className="text-base">{action.icon}</span>
+                    <span className="max-w-[4rem] px-0.5 text-center leading-tight">
+                      {isOn ? c.dashboard.quickToggleOn : action.label}
+                    </span>
+                  </motion.button>
+                );
+              })}
+            </div>
+            <div className="relative z-10 mt-auto shrink-0 border border-cyan-500/25 bg-black/55 p-4 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.06)]">
+              <p className="mb-3 font-mono text-[10px] uppercase tracking-wider text-slate-400">{c.dashboard.vadHeading}</p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                {!isVoiceCaptureRunning ? (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await invoke("start_voice_capture");
+                        setIsVoiceCaptureRunning(true);
+                      } catch (e) {
+                        console.error(e);
+                      }
+                    }}
+                    className="flex w-full items-center justify-center gap-2 border border-amber-500/45 bg-black/50 px-4 py-2.5 font-mono text-[10px] font-medium uppercase tracking-wider text-amber-300 transition-all [clip-path:polygon(0_0,calc(100%-10px)_0,100%_10px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(245,158,11,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
+                  >
+                    <span>🎤</span> {c.dashboard.vadStart}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await invoke("stop_voice_capture");
+                        setIsVoiceCaptureRunning(false);
+                      } catch (e) {
+                        console.error(e);
+                      }
+                    }}
+                    className="flex w-full items-center justify-center gap-2 border border-rose-500/45 bg-black/50 px-4 py-2.5 font-mono text-[10px] font-medium uppercase tracking-wider text-rose-300 transition-all [clip-path:polygon(0_0,calc(100%-10px)_0,100%_10px,100%_100%,0_100%)] hover:shadow-[inset_0_0_16px_rgba(244,63,94,0.2)] active:shadow-[inset_0_0_20px_rgba(6,182,212,0.45)] sm:w-auto"
+                  >
+                    <span>⏹</span> {c.dashboard.vadStop}
+                  </button>
+                )}
+                {isVoiceCaptureRunning && (
+                  <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
+                    <span className="h-1.5 w-1.5 animate-pulse bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)]" />
+                    {c.dashboard.vadCapturing}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </motion.div>
       </section>
 
-      {/* Bottom 30%: Proactive Suggestions */}
-      <section className="h-[30%] min-h-[140px] flex-shrink-0">
-        <div className="h-full flex flex-col glass-panel rounded-xl overflow-hidden">
-          <div className="flex-shrink-0 px-4 py-2 border-b border-white/10 flex items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400" style={{ fontFamily: "Orbitron, sans-serif" }}>
-              {c.dashboard.agendaTitle}
+      {/* Bottom: Agenda — flex-1 保证在常见视口下可见；卡片区可横/纵滚动 */}
+      <section className="flex min-h-[200px] flex-1 flex-col py-1">
+        <div className="console-fiber-host console-holo-slab flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex flex-shrink-0 flex-col gap-1 border-b border-cyan-500/20 px-4 py-3 sm:flex-row sm:items-end sm:justify-between">
+            <div className="min-w-0">
+              <span
+                className="font-mono text-[10px] font-semibold uppercase tracking-[0.28em] text-cyan-600/90"
+                style={{ fontFamily: "Orbitron, sans-serif" }}
+              >
+                {c.dashboard.agendaTitle}
+              </span>
+              <p className="mt-1 max-w-2xl font-mono text-[9px] uppercase leading-relaxed tracking-wider text-slate-600">
+                {c.dashboard.agendaSubtitle}
+              </p>
+            </div>
+            <span className="shrink-0 font-mono text-[10px] tabular-nums text-cyan-700/80">
+              {c.dashboard.agendaStat.replace("{n}", String(displaySuggestions.length))}
             </span>
           </div>
-          <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-4 p-4 custom-scrollbar">
-            {displaySuggestions.map((s, i) => (
-              <motion.div
-                key={s.id}
-                layout
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.1 + i * 0.05 }}
-                className="flex-shrink-0 w-72 rounded-xl border border-white/10 bg-white/5 p-4 flex flex-col justify-between hover:bg-white/10 hover:border-rose-500/20 transition-colors"
-              >
-                <p className="text-sm text-slate-300 mb-3 line-clamp-2">{s.text}</p>
-                <button
-                  type="button"
-                  onClick={() => handleSuggestionAction(s.id, s.action)}
-                  className="self-start px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-400 text-xs font-medium border border-rose-500/30 hover:bg-rose-500/30 transition-colors"
+          <div className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-auto px-4 py-4 sm:flex-row sm:gap-8">
+            {displaySuggestions.length === 0 ? (
+              <p className="font-mono text-xs uppercase tracking-wider text-slate-600">{c.dashboard.agendaEmpty}</p>
+            ) : (
+              displaySuggestions.map((s, i) => (
+                <motion.div
+                  key={s.id}
+                  initial={{ opacity: 0, x: -16 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.05 + i * 0.04 }}
+                  className="flex w-full min-w-[min(18rem,85vw)] max-w-md shrink-0 flex-col justify-between border-l-2 border-cyan-500/35 bg-black/35 py-4 pl-5 pr-4 shadow-[inset_0_0_0_1px_rgba(6,182,212,0.06),8px_0_32px_rgba(0,0,0,0.35)] backdrop-blur-md transition-all hover:border-cyan-400/55 hover:shadow-[0_0_24px_rgba(6,182,212,0.08)] sm:min-w-[17rem]"
                 >
-                  {c.suggestionActionLabels[s.action] ?? s.action}
-                </button>
-              </motion.div>
-            ))}
+                  {s.type ? (
+                    <span className="mb-2 inline-flex w-fit border border-cyan-500/25 bg-cyan-950/40 px-2 py-0.5 font-mono text-[9px] uppercase tracking-widest text-cyan-500/90">
+                      {s.type}
+                    </span>
+                  ) : null}
+                  <p className="mb-4 line-clamp-4 font-mono text-sm leading-relaxed text-slate-300 [text-shadow:0_0_16px_rgba(0,0,0,0.8)]">
+                    {s.text}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleSuggestionAction(s.id, s.action)}
+                    className="self-start border border-rose-500/40 bg-rose-500/10 px-4 py-2 font-mono text-[10px] font-semibold uppercase tracking-wider text-rose-300 transition-all [clip-path:polygon(0_0,calc(100%-8px)_0,100%_8px,100%_100%,8px_100%,0_calc(100%-8px))] hover:bg-rose-500/20 active:shadow-[inset_0_0_18px_rgba(6,182,212,0.35)]"
+                  >
+                    {c.suggestionActionLabels[s.action] ?? s.action}
+                  </button>
+                </motion.div>
+              ))
+            )}
           </div>
         </div>
       </section>

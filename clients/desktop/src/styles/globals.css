@@ -111,25 +111,43 @@ body:has(#chat-root),
   /* 深空背景 (Deep Space): 中心午夜蓝 #0f172a → 边缘纯黑 #000，叠加 0.05 透明度网格 */
   /* 主题变体：cyber-heart 默认深色，cyber-light 浅色，cyber-neon 霓虹强调 */
   .console-deep-space[data-theme="cyber-heart"] {
-    background-color: #000000;
+    background-color: #020617;
     background-image:
-      radial-gradient(ellipse 80% 80% at 50% 50%, #0f172a 0%, #070a12 40%, #000000 100%),
-      linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      radial-gradient(ellipse 90% 70% at 50% 40%, #0c1929 0%, #020617 55%, #000000 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      linear-gradient(rgba(6, 182, 212, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(6, 182, 212, 0.04) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 18px 18px, 18px 18px;
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+    animation: grid-drift 24s linear infinite;
   }
   .console-deep-space[data-theme="cyber-light"] {
     background-color: #1e293b;
     background-image:
       radial-gradient(ellipse 80% 80% at 50% 50%, #334155 0%, #1e293b 50%, #0f172a 100%),
-      linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      linear-gradient(rgba(6, 182, 212, 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(6, 182, 212, 0.05) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 18px 18px, 18px 18px;
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+    animation: grid-drift 24s linear infinite;
   }
   .console-deep-space[data-theme="cyber-neon"] {
     background-color: #020617;
     background-image:
-      radial-gradient(ellipse 80% 80% at 50% 50%, rgba(0, 240, 255, 0.08) 0%, #0f172a 40%, #020617 100%),
-      linear-gradient(rgba(0, 240, 255, 0.06) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(0, 240, 255, 0.06) 1px, transparent 1px);
+      radial-gradient(ellipse 80% 80% at 50% 50%, rgba(0, 240, 255, 0.1) 0%, #0f172a 40%, #020617 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      radial-gradient(ellipse 0% 0% at 50% 50%, transparent 0%, transparent 100%),
+      linear-gradient(rgba(0, 240, 255, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 240, 255, 0.07) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 18px 18px, 18px 18px;
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+    animation: grid-drift 22s linear infinite;
   }
   .console-deep-space[data-theme="cyber-neon"] .glass-panel {
     box-shadow: 0 0 20px rgba(0, 240, 255, 0.15), inset 0 0 0 1px rgba(0, 240, 255, 0.2);
@@ -432,24 +450,94 @@ body:has(#chat-root),
 /* HUD / Commander's Deck: 深空背景网格动画 */
 @keyframes grid-drift {
   0% {
-    background-position: 0 0, 0 0;
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
   }
   100% {
-    background-position: 24px 0, 0 24px;
+    background-position: 0 0, 0 0, 0 0, 0 0, 18px 0, 0 18px;
   }
 }
 
 .console-deep-space {
-  background-color: #030712;
+  background-color: #020617;
   background-image:
-    radial-gradient(ellipse 120% 80% at 50% 0%, rgba(59, 7, 100, 0.25) 0%, transparent 50%),
-    radial-gradient(ellipse 80% 60% at 80% 60%, rgba(6, 78, 59, 0.12) 0%, transparent 45%),
-    radial-gradient(ellipse 60% 80% at 20% 80%, rgba(124, 58, 237, 0.08) 0%, transparent 45%),
-    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
-  background-size: 100% 100%, 100% 100%, 100% 100%, 24px 24px, 24px 24px;
-  background-position: 0 0, 0 0, 0 0, 0 0, 0 0;
-  animation: grid-drift 20s linear infinite;
+    radial-gradient(ellipse 140% 90% at 50% 120%, rgba(2, 6, 23, 0.95) 0%, transparent 55%),
+    radial-gradient(ellipse 100% 70% at 50% 0%, rgba(8, 47, 73, 0.35) 0%, transparent 50%),
+    radial-gradient(ellipse 80% 60% at 80% 60%, rgba(6, 78, 59, 0.1) 0%, transparent 45%),
+    radial-gradient(ellipse 60% 80% at 15% 75%, rgba(88, 28, 135, 0.12) 0%, transparent 45%),
+    linear-gradient(rgba(6, 182, 212, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6, 182, 212, 0.035) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 18px 18px, 18px 18px;
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+  animation: grid-drift 24s linear infinite;
+}
+
+/** 星图室：全息板（无圆角，斜切） */
+.console-holo-slab {
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(6, 182, 212, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6) inset,
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    0 0 24px rgba(6, 182, 212, 0.06);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%);
+}
+
+.console-holo-slab:hover {
+  border-color: rgba(6, 182, 212, 0.35);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.55) inset,
+    0 12px 48px rgba(0, 0, 0, 0.5),
+    0 0 32px rgba(6, 182, 212, 0.12);
+}
+
+/** 光纤扫边（悬停父级 .console-fiber-host 时触发） */
+@keyframes console-fiber-sweep {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateX(200%);
+    opacity: 0.2;
+  }
+}
+
+.console-fiber-host {
+  position: relative;
+  overflow: hidden;
+}
+
+.console-fiber-host::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    transparent 42%,
+    rgba(34, 211, 238, 0.55) 50%,
+    transparent 58%,
+    transparent 100%
+  );
+  width: 55%;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.console-fiber-host:hover::after {
+  opacity: 1;
+  animation: console-fiber-sweep 1.8s ease-in-out infinite;
+}
+
+/** 战术六边形按钮（clip） */
+.console-hex-btn {
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
 }
 
 /** 背景星空节点缓慢漂移 (Void 2.1) */

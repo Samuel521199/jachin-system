@@ -1,6 +1,6 @@
 ﻿/**
- * Sidebar - 悬浮玻璃侧栏 (The Bridge)
- * 默认仅图标 w-20，悬停展开 w-64，底部 SystemHeartbeat
+ * Sidebar - 侧舷航行桥 (The Bridge)
+ * 全息悬浮板 + 导航左侧光柱激活态 + 底部 SystemHeartbeat
  */
 
 import { NavLink } from "react-router-dom";
@@ -54,55 +54,53 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "group flex-shrink-0 flex flex-col transition-[width] duration-300 ease-out overflow-hidden z-10",
-        "glass-panel rounded-none border-r border-white/10",
-        "w-20 hover:w-64"
+        "console-fiber-host group flex flex-shrink-0 flex-col overflow-hidden transition-[width] duration-300 ease-out",
+        "z-10 w-20 bg-slate-900/50 shadow-[10px_0_40px_rgba(0,0,0,0.55)] backdrop-blur-xl hover:w-64",
+        "border-r-0"
       )}
     >
-      <div className="flex-shrink-0 p-4 border-b border-white/10 flex items-center gap-3 min-w-0">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-500/30 to-cyan-500/30 flex items-center justify-center flex-shrink-0 border border-white/10">
-          <span className="text-sm font-bold text-rose-400" style={{ fontFamily: "Orbitron, sans-serif" }}>J</span>
+      <div className="flex min-w-0 flex-shrink-0 items-center gap-3 border-b border-cyan-500/15 p-4">
+        <div
+          className="flex h-8 w-8 flex-shrink-0 items-center justify-center border border-cyan-500/25 bg-gradient-to-br from-rose-500/25 to-cyan-500/20 [clip-path:polygon(0_0,calc(100%-4px)_0,100%_4px,100%_100%,4px_100%,0_calc(100%-4px))]"
+          style={{ fontFamily: "Orbitron, sans-serif" }}
+        >
+          <span className="text-sm font-bold text-rose-400">J</span>
         </div>
         <h1
-          className="font-sci-fi font-bold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-rose-400 to-rose-600 whitespace-nowrap overflow-hidden opacity-0 w-0 group-hover:opacity-100 group-hover:w-auto transition-all duration-300"
+          className="font-sci-fi w-0 overflow-hidden whitespace-nowrap bg-gradient-to-r from-rose-400 to-rose-600 bg-clip-text font-bold tracking-wider text-transparent opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100"
           style={{ fontFamily: "Orbitron, sans-serif" }}
         >
           CONSOLE
         </h1>
       </div>
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto min-h-0">
+      <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const label =
-            "label" in item
-              ? item.label
-              : c.sidebar[item.labelKey];
-          const title =
-            "title" in item
-              ? item.title
-              : c.sidebar[item.titleKey];
+          const label = "label" in item ? item.label : c.sidebar[item.labelKey];
+          const title = "title" in item ? item.title : c.sidebar[item.titleKey];
           const path = item.path;
           return (
-          <NavLink
-            key={path}
-            to={path}
-            end={path === "/dashboard"}
-            title={title}
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-medium transition-all duration-200",
-                "border border-transparent",
-                isActive
-                  ? "bg-rose-500/20 text-rose-400 border-rose-500/40 shadow-[0_0_20px_rgba(244,63,94,0.15)]"
-                  : "text-slate-400 hover:bg-white/10 hover:text-slate-200 hover:border-white/10"
-              )
-            }
-          >
-            <Icon className="w-5 h-5 flex-shrink-0" />
-            <span className="whitespace-nowrap overflow-hidden opacity-0 w-0 group-hover:opacity-100 group-hover:w-auto transition-all duration-300">
-              {label}
-            </span>
-          </NavLink>
+            <NavLink
+              key={path}
+              to={path}
+              end={path === "/dashboard"}
+              title={title}
+              className={({ isActive }) =>
+                cn(
+                  "relative flex items-center gap-3 border-y border-r border-transparent py-3 pl-3 pr-2 text-sm font-medium transition-all duration-200",
+                  "[clip-path:polygon(0_0,100%_0,100%_calc(100%-8px),calc(100%-8px)_100%,0_100%)]",
+                  "border-l-2",
+                  isActive
+                    ? "border-amber-400 text-cyan-300 drop-shadow-[0_0_10px_rgba(6,182,212,0.75)]"
+                    : "border-transparent text-cyan-900/80 hover:border-amber-400/90 hover:text-cyan-300 hover:drop-shadow-[0_0_8px_rgba(6,182,212,0.55)]"
+                )
+              }
+            >
+              <Icon className="h-5 w-5 flex-shrink-0" />
+              <span className="w-0 overflow-hidden whitespace-nowrap opacity-0 transition-all duration-300 group-hover:w-auto group-hover:opacity-100">
+                {label}
+              </span>
+            </NavLink>
           );
         })}
       </nav>
