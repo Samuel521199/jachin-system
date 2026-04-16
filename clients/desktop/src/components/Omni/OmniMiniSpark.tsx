@@ -180,22 +180,44 @@ export const OmniMiniSpark: React.FC<OmniMiniSparkProps> = ({ onExpandFull }) =>
     >
       <motion.div
         aria-hidden
-        animate={{
-          scale: [1, 1.12, 1],
-          opacity: [0.72, 1, 0.72],
-          boxShadow: [
-            "0 0 8px rgba(34,211,238,0.35), 0 0 18px rgba(139,92,246,0.25), inset 0 0 12px rgba(34,211,238,0.15)",
-            "0 0 14px rgba(34,211,238,0.65), 0 0 28px rgba(139,92,246,0.45), inset 0 0 14px rgba(167,139,250,0.2)",
-            "0 0 8px rgba(34,211,238,0.35), 0 0 18px rgba(139,92,246,0.25), inset 0 0 12px rgba(34,211,238,0.15)",
-          ],
-        }}
-        transition={{ duration: 3.6, repeat: Infinity, ease: "easeInOut" }}
-        className="pointer-events-none h-[30px] w-[30px] shrink-0 rounded-full border border-cyan-400/45"
-        style={{
-          background:
-            "radial-gradient(circle at 35% 30%, rgba(167,139,250,0.95) 0%, rgba(34,211,238,0.55) 45%, rgba(6,182,212,0.25) 100%)",
-        }}
-      />
+        className="pointer-events-none relative flex h-[34px] w-[34px] shrink-0 items-center justify-center"
+        animate={{ rotate: [0, 360] }}
+        transition={{ duration: 28, repeat: Infinity, ease: "linear" }}
+      >
+        <motion.span
+          className="absolute inset-0 rounded-full border border-cyan-400/25"
+          animate={{
+            scale: [1, 1.35, 1],
+            opacity: [0.35, 0.08, 0.35],
+          }}
+          transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <motion.span
+          className="absolute inset-[-3px] rounded-full border border-violet-400/20"
+          animate={{
+            scale: [1.15, 1, 1.15],
+            opacity: [0.12, 0.35, 0.12],
+          }}
+          transition={{ duration: 3.4, repeat: Infinity, ease: "easeInOut", delay: 0.4 }}
+        />
+        <motion.div
+          animate={{
+            scale: [1, 1.12, 1],
+            opacity: [0.72, 1, 0.72],
+            boxShadow: [
+              "0 0 8px rgba(34,211,238,0.35), 0 0 18px rgba(139,92,246,0.25), inset 0 0 12px rgba(34,211,238,0.15)",
+              "0 0 14px rgba(34,211,238,0.65), 0 0 28px rgba(139,92,246,0.45), inset 0 0 14px rgba(167,139,250,0.2)",
+              "0 0 8px rgba(34,211,238,0.35), 0 0 18px rgba(139,92,246,0.25), inset 0 0 12px rgba(34,211,238,0.15)",
+            ],
+          }}
+          transition={{ duration: 3.6, repeat: Infinity, ease: "easeInOut" }}
+          className="relative h-[30px] w-[30px] rounded-full border border-cyan-400/45"
+          style={{
+            background:
+              "radial-gradient(circle at 35% 30%, rgba(167,139,250,0.95) 0%, rgba(34,211,238,0.55) 45%, rgba(6,182,212,0.25) 100%)",
+          }}
+        />
+      </motion.div>
     </motion.div>
   );
 };

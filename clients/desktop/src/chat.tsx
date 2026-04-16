@@ -58,6 +58,8 @@ import {
 } from "./utils/reasoningStreamSplit";
 import type { WavePhase } from "./components/Chat/VoiceWaveform";
 import { OmniCyberChatShell, CorePhase } from "./components/Omni/JachinOmniCyberProtocol";
+import { OmniDynamicHud } from "./components/Omni/OmniDynamicHud";
+import { OmniTacticalVoidDecor } from "./components/Omni/OmniTacticalVoidDecor";
 import type { JachinCoreMachineState } from "./components/Omni/JachinCore";
 import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
 import { OmniMiniSpark } from "./components/Omni/OmniMiniSpark";
@@ -109,6 +111,7 @@ function ChatApp() {
   const [sessions, setSessions] = useState<ChatSession[]>(boot.sessions);
   const [currentSessionId, setCurrentSessionId] = useState(boot.currentId);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
+  const [omniHudExpanded, setOmniHudExpanded] = useState(false);
 
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
@@ -165,6 +168,19 @@ function ChatApp() {
     dismissZombieTasksPending,
     backgroundTaskPulse,
   } = sensory;
+
+  /** 首次出现 HUD 信号（后台/Zombie/记忆）时自动展开动态岛；全部清除后可再次触发 */
+  const hudHadSignalRef = useRef(false);
+  useEffect(() => {
+    const zombieActive = zombieTasksPending != null && zombieTasksPending.count > 0;
+    const hasHudSignal =
+      Boolean(backgroundTaskPulse) || zombieActive || Boolean(memoryCompactSuggest);
+    if (hasHudSignal && !hudHadSignalRef.current) {
+      setOmniHudExpanded(true);
+      hudHadSignalRef.current = true;
+    }
+    if (!hasHudSignal) hudHadSignalRef.current = false;
+  }, [backgroundTaskPulse, zombieTasksPending, memoryCompactSuggest]);
 
   const messages = useMemo(
     () => sessions.find((s) => s.id === currentSessionId)?.messages ?? [],
@@ -1527,7 +1543,7 @@ function ChatApp() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
-            className="relative flex h-full min-h-0 w-full flex-col overflow-hidden"
+            className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-slate-950"
             onDragEnter={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -1558,106 +1574,23 @@ function ChatApp() {
               if (fl?.length) mergeOmniPendingFiles(Array.from(fl));
             }}
           >
+      <OmniTacticalVoidDecor />
       <WindowResizeHandles />
       {/* v8.0 全息感官：Handoff + Swarm + HITL 等 */}
       <SensoryOverlay sensory={sensory} variant="minimal" />
       <div className="pointer-events-none flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
-          {backgroundTaskPulse && (
-            <div
-              className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-emerald-500/40 bg-slate-950/95 px-3 py-2.5 text-[11px] leading-tight text-slate-200 shadow-lg backdrop-blur-sm"
-              role="status"
-              aria-live="polite"
-            >
-              <div className="mb-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="shrink-0 font-medium text-emerald-300/95">后台任务执行中</span>
-                <code className="shrink-0 rounded bg-slate-800/90 px-1.5 py-0.5 text-[10px] text-emerald-200/90">
-                  {backgroundTaskPulse.taskId}
-                </code>
-              </div>
-              <div className="min-h-[1.1em] overflow-hidden font-mono text-[13px] tracking-wider text-emerald-400/95">
-                {backgroundTaskPulse.line.length > 0 ? backgroundTaskPulse.line : "\u00a0"}
-              </div>
-            </div>
-          )}
-          {zombieTasksPending && zombieTasksPending.count > 0 && (
-            <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-rose-500/50 bg-rose-950/95 px-3 py-2.5 text-xs text-rose-100 shadow-lg backdrop-blur-sm">
-              <p className="mb-1 flex flex-wrap items-center gap-2 font-medium text-rose-50">
-                <span
-                  className="inline-flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[11px] font-bold text-rose-950"
-                  aria-label="未闭环任务条数"
-                >
-                  {zombieTasksPending.count}
-                </span>
-                上次断电或崩溃未闭环的后台任务
-              </p>
-              <ul className="mb-2 max-h-28 overflow-y-auto text-[11px] leading-snug text-rose-100/90">
-                {zombieTasksPending.tasks.slice(0, 6).map((t, i) => (
-                  <li key={`${t.task_id ?? "t"}-${i}`} className="truncate border-b border-rose-500/15 py-0.5 font-mono last:border-b-0">
-                    <span className="text-rose-200/90">{t.task_id ?? "?"}</span>
-                    {(t.task_prompt ?? "").trim()
-                      ? ` — ${(t.task_prompt ?? "").slice(0, 96)}${(t.task_prompt ?? "").length > 96 ? "…" : ""}`
-                      : ""}
-                  </li>
-                ))}
-              </ul>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className="rounded-md bg-rose-500/90 px-2.5 py-1 text-[11px] font-medium text-rose-950 hover:bg-rose-400"
-                  onClick={() => {
-                    setInput(
-                      "请调用 core:check_interrupted_tasks，列出上次断电遗留的后台任务摘要，并问我是否需要用 core:submit_background_task 重新排队执行。",
-                    );
-                    dismissZombieTasksPending();
-                  }}
-                >
-                  填入追问指令
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md bg-white/10 px-2.5 py-1 text-[11px] text-rose-100 hover:bg-white/15"
-                  onClick={() => dismissZombieTasksPending()}
-                >
-                  知道了
-                </button>
-              </div>
-            </div>
-          )}
-          {memoryCompactSuggest && (
-            <div className="z-30 mx-2 mt-2 shrink-0 rounded-lg border border-amber-500/45 bg-amber-950/95 px-3 py-2.5 text-xs text-amber-100 shadow-lg backdrop-blur-sm">
-              <p className="mb-1 font-medium text-amber-50">记忆整理提醒</p>
-              <p className="mb-2 leading-relaxed text-amber-100/90">{memoryCompactSuggest.content}</p>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-amber-200/85">
-                  {memoryCompactSuggest.remainingSec > 0
-                    ? `${memoryCompactSuggest.remainingSec} 秒后自动开始整理（后台）…`
-                    : "正在请求启动…"}
-                </span>
-                <button
-                  type="button"
-                  className="rounded-md bg-amber-500/90 px-2.5 py-1 text-[11px] font-medium text-amber-950 hover:bg-amber-400"
-                  onClick={() => sendMemoryCompactControl("memory_compact_confirm")}
-                >
-                  立即开始
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md bg-white/10 px-2.5 py-1 text-[11px] text-amber-100 hover:bg-white/15"
-                  onClick={() => sendMemoryCompactControl("memory_compact_defer", 24)}
-                >
-                  推迟 24 小时
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md px-2 py-1 text-[11px] text-amber-200/70 hover:text-amber-100"
-                  onClick={() => dismissMemoryCompactSuggest()}
-                >
-                  关闭提示
-                </button>
-              </div>
-            </div>
-          )}
+        <div className="relative z-10 flex h-full min-h-0 flex-1 flex-col overflow-hidden pointer-events-auto">
+          <OmniDynamicHud
+            expanded={omniHudExpanded}
+            onExpandedChange={setOmniHudExpanded}
+            backgroundTaskPulse={backgroundTaskPulse}
+            zombieTasksPending={zombieTasksPending}
+            dismissZombieTasksPending={dismissZombieTasksPending}
+            memoryCompactSuggest={memoryCompactSuggest}
+            sendMemoryCompactControl={sendMemoryCompactControl}
+            dismissMemoryCompactSuggest={dismissMemoryCompactSuggest}
+            setInput={setInput}
+          />
           {/* 无画布：单栏 Omni 随窗口伸缩；有画布：左固定宽 + 右画布（与扩窗命令隔离，仅靠 activeSkillCanvas 切换布局） */}
           <div className="flex h-full min-h-0 w-full flex-1 flex-row items-stretch overflow-hidden">
             <div
@@ -1769,7 +1702,7 @@ function ChatApp() {
               />
             </div>
             {activeSkillCanvas ? (
-              <div className="flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden border-l border-white/10">
+              <div className="relative flex min-h-0 min-w-[280px] flex-1 flex-col overflow-hidden bg-gradient-to-r from-cyan-500/[0.06] via-transparent to-transparent shadow-[inset_12px_0_24px_-8px_rgba(34,211,238,0.12)]">
                 <SkillCanvasPane
                   key={`${activeSkillCanvas.toolCallId ?? ""}-${activeSkillCanvas.toolName}`}
                   active={activeSkillCanvas}

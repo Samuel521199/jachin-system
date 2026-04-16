@@ -462,6 +462,30 @@ body:has(#chat-root),
   }
 }
 
+/** Omni 神经数据流：左侧竖线高光上下淌动 */
+@keyframes omni-neural-vein-flow {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 0% 200%;
+  }
+}
+
+.omni-neural-vein {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(34, 211, 238, 0.12) 38%,
+    rgba(34, 211, 238, 0.92) 50%,
+    rgba(34, 211, 238, 0.12) 62%,
+    transparent 100%
+  );
+  background-size: 100% 45%;
+  background-repeat: repeat-y;
+  animation: omni-neural-vein-flow 2.8s linear infinite;
+}
+
 @layer components {
   /** 通用玻璃面板，替代实色卡片背景 (Sci-Fi HUD) */
   .glass-panel {

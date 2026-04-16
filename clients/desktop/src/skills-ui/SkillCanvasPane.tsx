@@ -22,12 +22,20 @@ export const SkillCanvasPane: React.FC<SkillCanvasPaneProps> = ({ active, onTool
 
   return (
     <div
-      className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-slate-950/60"
+      className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-cyan-950/[0.08]"
       aria-label="Skill 画布"
     >
-      <header className="flex shrink-0 items-start justify-between gap-2 border-b border-white/10 px-3 py-2">
+      <span
+        className="pointer-events-none absolute left-2 top-2 z-[1] h-2.5 w-2.5 border-l-2 border-t-2 border-cyan-400/70 [box-shadow:0_0_10px_rgba(34,211,238,0.2)]"
+        aria-hidden
+      />
+      <span
+        className="pointer-events-none absolute right-2 top-2 z-[1] h-2.5 w-2.5 border-r-2 border-t-2 border-cyan-400/70 [box-shadow:0_0_10px_rgba(34,211,238,0.2)]"
+        aria-hidden
+      />
+      <header className="relative z-[2] flex shrink-0 items-start justify-between gap-2 bg-gradient-to-b from-cyan-950/20 to-transparent px-3 py-2">
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-500/75">Skill 画布</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-500/80">Skill 画布</p>
           <p className="truncate font-mono text-xs text-slate-400">{active.toolName}</p>
         </div>
         {onRequestClose != null && (
@@ -36,14 +44,14 @@ export const SkillCanvasPane: React.FC<SkillCanvasPaneProps> = ({ active, onTool
             title="关闭画布"
             aria-label="关闭画布"
             onClick={() => onRequestClose()}
-            className="shrink-0 rounded-lg border border-white/15 p-1.5 text-slate-400 transition hover:border-white/25 hover:bg-white/10 hover:text-cyan-200"
+            className="shrink-0 bg-transparent p-1.5 text-slate-500 opacity-40 transition-[opacity,filter] duration-200 hover:opacity-100 hover:text-cyan-200 hover:drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]"
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
         )}
       </header>
       {/* 红框内滚动：仅本区域 overflow-y-auto，不撑开窗口 */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2">
+      <div className="relative z-[2] min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2">
         <Panel
           toolName={active.toolName}
           toolCallId={active.toolCallId}

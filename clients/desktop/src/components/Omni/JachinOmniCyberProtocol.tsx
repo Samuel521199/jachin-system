@@ -54,6 +54,20 @@ function phaseToCoreVisual(
   }
 }
 
+/** 全息角标 — 四角 ⌜⌝ 细线锚定，无封闭卡片框 */
+function OmniHologramCorners() {
+  const c =
+    "pointer-events-none absolute z-[1] h-2.5 w-2.5 border-cyan-400/80 [box-shadow:0_0_10px_rgba(34,211,238,0.25)]";
+  return (
+    <>
+      <span className={`${c} left-0 top-0 border-l-2 border-t-2`} aria-hidden />
+      <span className={`${c} right-0 top-0 border-r-2 border-t-2`} aria-hidden />
+      <span className={`${c} bottom-0 left-0 border-b-2 border-l-2 border-cyan-400/60`} aria-hidden />
+      <span className={`${c} bottom-0 right-0 border-b-2 border-r-2 border-cyan-400/60`} aria-hidden />
+    </>
+  );
+}
+
 export interface OmniCyberChatShellProps {
   phase: CorePhase;
   /** 与气泡 Thought Process / 正文流式同步，驱动 JachinCore 呼吸环 */
@@ -197,21 +211,24 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
 
   const coreState = phaseToCoreVisual(phase, hitlPending);
 
+  const clipMain =
+    "[clip-path:polygon(10px_0,calc(100%-10px)_0,100%_10px,100%_calc(100%-8px),calc(100%-8px)_100%,8px_100%,0_calc(100%-8px),0_10px)]";
+
   return (
     <div
-      className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-none ${riskBorder}`}
+      className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden pointer-events-none ${riskBorder} ${clipMain}`}
       style={{ background: "transparent" }}
     >
-      <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl pointer-events-auto">
+      <div className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden pointer-events-auto ${clipMain}`}>
         <div
-          className="pointer-events-none absolute inset-0 rounded-2xl"
+          className="pointer-events-none absolute inset-0"
           style={{
-            backgroundColor: "rgba(6, 14, 32, 0.5)",
-            backdropFilter: "blur(20px) saturate(1.15)",
-            WebkitBackdropFilter: "blur(20px) saturate(1.15)",
+            backgroundColor: "rgba(4, 12, 24, 0.72)",
+            backdropFilter: "blur(18px) saturate(1.2)",
+            WebkitBackdropFilter: "blur(18px) saturate(1.2)",
           }}
         />
-        <div className="pointer-events-none absolute inset-0 rounded-2xl shadow-[inset_0_0_48px_rgba(34,211,238,0.06)]" />
+        <div className="pointer-events-none absolute inset-0 shadow-[inset_0_0_60px_rgba(6,182,212,0.08),0_0_40px_rgba(6,182,212,0.06)]" />
 
         <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
           <AnimatePresence>
@@ -348,79 +365,71 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             </div>
           </div>
 
-          {/* 中部可滚动：HITL / 流式 / 状态，撑满剩余高度，绝不挤出底栏（min-h-0 保证 flex 子项可收缩，否则表现为「只显示一半」） */}
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain">
-            <AnimatePresence>
-              {hitlPending && (
-                <motion.div
-                  key="hitl-panel"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="relative z-20 overflow-hidden border-t border-red-500/30"
-                >
-                  <div className="space-y-3 bg-red-950/40 p-3">
-                    <p className="text-center text-xs font-semibold tracking-wide text-red-300">{ui.hitlTitle}</p>
-                    <p className="max-h-24 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-slate-300">
-                      {hitlPending.content || ui.hitlFallback}
-                    </p>
-                    <div className="flex justify-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-lg bg-emerald-600/80 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-                        onClick={() => onHitlResolve(true)}
-                      >
-                        {ui.hitlApprove}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-100 hover:bg-slate-600"
-                        onClick={() => onHitlResolve(false)}
-                      >
-                        {ui.hitlReject}
-                      </button>
-                    </div>
-                  </div>
-                </motion.div>
+          {/* 中部：沉浸式消息流；HITL 时全屏雾 + 中央审批台 */}
+          <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain">
+            <div
+              className={`relative z-10 flex min-h-full flex-col gap-3 px-4 py-3 transition-[filter,opacity] duration-300 ${
+                hitlPending ? "pointer-events-none blur-[2px] brightness-[0.88] saturate-[0.85]" : ""
+              }`}
+            >
+              {messages.length === 0 && !hitlPending && (
+                <p className="py-8 text-center text-[11px] font-mono tracking-[0.28em] text-cyan-500/40 [text-shadow:0_0_12px_rgba(6,182,212,0.25)]">
+                  {ui.emptyThreadHint}
+                </p>
               )}
-            </AnimatePresence>
-
-            {!hitlPending && (
-              <div className="relative z-10 flex flex-col gap-2 px-3 py-2">
-                {messages.length === 0 && (
-                  <p className="text-center text-[11px] text-cyan-500/40 font-mono tracking-wide">
-                    {ui.emptyThreadHint}
-                  </p>
-                )}
-                {messages.map((msg, idx) => {
-                  const isLastAssistant =
-                    msg.role === "assistant" && idx === messages.length - 1;
-                  if (msg.role === "user") {
-                    return (
-                      <div key={`${msg.timestamp}-${idx}`} className="flex justify-end">
-                        <div className="max-w-[88%] rounded-2xl border border-cyan-500/25 bg-cyan-950/35 px-3 py-2 text-sm text-cyan-100/95 shadow-[0_0_20px_rgba(34,211,238,0.06)]">
-                          <div className="break-words whitespace-pre-wrap leading-relaxed">{msg.content}</div>
-                        </div>
+              {messages.map((msg, idx) => {
+                const isLastAssistant = msg.role === "assistant" && idx === messages.length - 1;
+                const tel = `0x${(((msg.timestamp ?? 0) ^ idx * 7919) & 0xffffff).toString(16).toUpperCase().padStart(6, "0")}`;
+                if (msg.role === "user") {
+                  return (
+                    <div key={`${msg.timestamp}-${idx}`} className="flex justify-end gap-2">
+                      <motion.div
+                        initial={{ opacity: 0, x: 16, filter: "blur(4px)" }}
+                        animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+                        transition={{ type: "spring", stiffness: 480, damping: 32 }}
+                        className="relative max-w-[min(100%,42rem)] bg-cyan-950/10 px-4 py-2.5 text-sm text-cyan-50/95 shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
+                      >
+                        <OmniHologramCorners />
+                        <div className="relative z-[2] break-words whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+                      </motion.div>
+                      <div className="flex w-8 shrink-0 flex-col items-center pt-1">
+                        <div className="h-full min-h-[2rem] w-px shrink-0 omni-neural-vein shadow-[0_0_8px_rgba(34,211,238,0.35)]" />
+                        <span className="mt-1 font-mono text-[7px] leading-none text-cyan-600/70">{tel}</span>
                       </div>
-                    );
-                  }
-                  if (msg.role === "assistant") {
-                    const reasoningChainText = getAssistantReasoningForDisplay(msg);
-                    return (
-                      <div key={`${msg.timestamp}-${idx}`} className="flex justify-start">
-                        <div className="max-w-[92%] rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-sm shadow-inner">
+                    </div>
+                  );
+                }
+                if (msg.role === "assistant") {
+                  const reasoningChainText = getAssistantReasoningForDisplay(msg);
+                  return (
+                    <motion.div
+                      key={`${msg.timestamp}-${idx}`}
+                      className="flex justify-start gap-2"
+                      initial={{ opacity: 0, x: -18, filter: "blur(6px)" }}
+                      animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
+                      transition={{ type: "spring", stiffness: 520, damping: 34 }}
+                    >
+                      <div className="flex w-8 shrink-0 flex-col items-center pt-1">
+                        <div className="h-full min-h-[2rem] w-px shrink-0 omni-neural-vein shadow-[0_0_10px_rgba(34,211,238,0.45)]" />
+                        <span className="mt-1 font-mono text-[7px] leading-none text-cyan-500/60">{tel}</span>
+                      </div>
+                      <div className="relative w-full max-w-[min(100%,52rem)] bg-cyan-950/10 py-2 pl-3 pr-3 text-sm shadow-[0_12px_40px_rgba(0,0,0,0.3)]">
+                        <OmniHologramCorners />
+                        <div className="relative z-[2]">
                           {!!reasoningChainText.trim() && (
-                            <OmniReasoningChain
-                              text={reasoningChainText}
-                              isStreaming={isLastAssistant && isTyping}
-                              labels={{
-                                chain: ui.reasoningChain,
-                                expand: ui.reasoningExpand,
-                                updating: ui.reasoningUpdating,
-                              }}
-                            />
+                            <div className="mb-2 opacity-75">
+                              <OmniReasoningChain
+                                text={reasoningChainText}
+                                isStreaming={isLastAssistant && isTyping}
+                                labels={{
+                                  chain: ui.reasoningChain,
+                                  expand: ui.reasoningExpand,
+                                  updating: ui.reasoningUpdating,
+                                }}
+                              />
+                            </div>
                           )}
-                          <div className="break-words leading-relaxed text-cyan-50/95 [&_.markdown-content]:font-medium">
+                          <div className="break-words leading-relaxed text-cyan-50/[0.93] [&_.markdown-content]:font-medium">
                             <AssistantMessageContent
                               message={msg}
                               isLastAssistant={isLastAssistant}
@@ -431,25 +440,25 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                           </div>
                         </div>
                       </div>
-                    );
-                  }
-                  return null;
-                })}
-                <div ref={messagesEndRef} className="h-px shrink-0" />
-              </div>
-            )}
+                    </motion.div>
+                  );
+                }
+                return null;
+              })}
+              <div ref={messagesEndRef} className="h-px shrink-0" />
+            </div>
 
             {(recordingStatus || listeningText || isVadActive) && (
-              <div className="relative z-10 mx-3 mb-2 flex flex-col gap-1 text-[10px]">
+              <div className="relative z-20 mx-4 mb-1 flex flex-col gap-1 text-[10px]">
                 {isVadActive && (
-                  <div className="rounded border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-amber-300/90">
+                  <div className="border border-amber-500/35 bg-amber-950/30 px-2 py-1 text-amber-200/90 shadow-[0_0_16px_rgba(245,158,11,0.2)] [clip-path:polygon(6px_0,calc(100%-6px)_0,100%_6px,100%_calc(100%-6px),calc(100%-6px)_100%,6px_100%,0_calc(100%-6px),0_6px)]">
                     {ui.vadListening}
                   </div>
                 )}
                 {recordingStatus && (
                   <div
                     className={
-                      /错误|error/i.test(recordingStatus) ? "text-red-300" : "text-cyan-300/90"
+                      /错误|error/i.test(recordingStatus) ? "text-red-300/95" : "text-cyan-300/85"
                     }
                   >
                     {recordingStatus}
@@ -457,67 +466,76 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                 )}
               </div>
             )}
+
+            <AnimatePresence>
+              {hitlPending && (
+                <>
+                  <motion.div
+                    key="hitl-scrim"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className="pointer-events-auto absolute inset-0 z-30 bg-red-950/30 backdrop-blur-md"
+                  />
+                  <motion.div
+                    key="hitl-console"
+                    initial={{ opacity: 0, scale: 0.94, y: 8 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.96, y: 6 }}
+                    transition={{ type: "spring", stiffness: 380, damping: 28 }}
+                    className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center p-5"
+                  >
+                    <div className="pointer-events-auto w-full max-w-md border border-red-400/50 bg-black/70 p-5 shadow-[0_0_56px_rgba(239,68,68,0.38),inset_0_0_36px_rgba(239,68,68,0.07)] backdrop-blur-xl [clip-path:polygon(14px_0,calc(100%-14px)_0,100%_14px,100%_calc(100%-14px),calc(100%-14px)_100%,14px_100%,0_calc(100%-14px),0_14px)]">
+                      <p className="mb-2 text-center text-[11px] font-semibold uppercase tracking-[0.28em] text-red-300/95 [text-shadow:0_0_14px_rgba(248,113,113,0.55)]">
+                        {ui.hitlTitle}
+                      </p>
+                      <p className="mb-4 max-h-32 overflow-y-auto whitespace-pre-wrap border border-red-500/25 bg-red-950/20 px-3 py-2 font-mono text-xs leading-relaxed text-slate-200/95 shadow-[inset_0_0_20px_rgba(239,68,68,0.06)]">
+                        {hitlPending.content || ui.hitlFallback}
+                      </p>
+                      <div className="flex justify-center gap-3">
+                        <button
+                          type="button"
+                          className="border border-emerald-400/55 bg-emerald-950/25 px-5 py-2.5 text-sm font-medium text-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.22),inset_0_0_16px_rgba(52,211,153,0.06)] transition hover:border-emerald-300/80 hover:bg-emerald-500/15 hover:shadow-[0_0_32px_rgba(52,211,153,0.32)] [clip-path:polygon(8px_0,calc(100%-8px)_0,100%_8px,100%_calc(100%-8px),calc(100%-8px)_100%,8px_100%,0_calc(100%-8px),0_8px)]"
+                          onClick={() => onHitlResolve(true)}
+                        >
+                          {ui.hitlApprove}
+                        </button>
+                        <button
+                          type="button"
+                          className="border border-slate-500/55 bg-slate-950/40 px-5 py-2.5 text-sm text-slate-200/95 shadow-[0_0_18px_rgba(148,163,184,0.14)] transition hover:border-slate-400/70 hover:bg-white/5 [clip-path:polygon(8px_0,calc(100%-8px)_0,100%_8px,100%_calc(100%-8px),calc(100%-8px)_100%,8px_100%,0_calc(100%-8px),0_8px)]"
+                          onClick={() => onHitlResolve(false)}
+                        >
+                          {ui.hitlReject}
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </div>
 
-          {/* 附件预览条（在输入条上方） */}
-          {(hasPendingFiles || attachmentHint) && (
-            <div className="relative z-20 shrink-0 border-t border-cyan-500/15 bg-slate-950/40 px-3 pb-2 pt-2">
-              {attachmentHint ? (
-                <p className="mb-2 text-[11px] text-amber-300/90">{attachmentHint}</p>
-              ) : null}
-              {hasPendingFiles ? (
-                <div className="flex flex-wrap gap-2">
-                  {pendingFiles.map((file, idx) => {
-                    const isImg = file.type.startsWith("image/");
-                    const url = isImg ? URL.createObjectURL(file) : "";
-                    return (
-                      <div
-                        key={`${file.name}-${file.size}-${idx}`}
-                        className="group relative flex max-w-[140px] items-center gap-2 rounded-lg border border-cyan-500/35 bg-slate-800/50 px-2 py-1.5 shadow-[0_0_12px_rgba(34,211,238,0.08)]"
-                      >
-                        {isImg ? (
-                          <img src={url} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
-                        ) : (
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-slate-900/80 text-cyan-400/90">
-                            <FileText className="h-5 w-5" />
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-mono text-[10px] text-cyan-100/90" title={file.name}>
-                            {file.name}
-                          </p>
-                          <p className="font-mono text-[9px] text-slate-500">
-                            {(file.size / 1024).toFixed(1)} KB
-                          </p>
-                        </div>
-                        {onRemovePendingFile != null ? (
-                          <button
-                            type="button"
-                            className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-cyan-500/40 bg-slate-950 text-cyan-200 opacity-0 shadow transition hover:bg-red-950/90 hover:text-red-100 group-hover:opacity-100"
-                            aria-label="移除附件"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              onRemovePendingFile(idx);
-                            }}
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          )}
-
-          {/* 底栏双层：附件预览条已在上方；此处为 文本层 → 控制台层 */}
-          <div
+          {/* 底部：外圈流星蛇仅见于 margin 环；内舱实色不透，不受锥形污染 */}
+          <motion.div
+            layout
+            transition={{ type: "spring", stiffness: 420, damping: 32 }}
             data-chat-interactive
-            className="relative z-20 flex shrink-0 flex-col px-3 pb-3 pt-1"
+            className="relative z-20 mx-2 mb-4 mt-1 shrink-0"
             style={{ pointerEvents: "auto" }}
           >
+            <div className="relative isolate overflow-hidden rounded-md border border-cyan-500/25 shadow-[0_20px_48px_rgba(0,0,0,0.55)]">
+              <motion.div
+                aria-hidden
+                className="pointer-events-none absolute inset-0 z-0 will-change-transform"
+                style={{
+                  background:
+                    "conic-gradient(from 0deg, transparent 0deg, transparent 282deg, rgba(6,182,212,0.14) 292deg, rgba(34,211,238,0.22) 300deg, rgba(45,212,191,0.38) 306deg, rgba(207,250,254,0.82) 312deg, rgba(240,249,255,0.92) 316deg, rgba(34,211,238,0.62) 322deg, rgba(6,182,212,0.28) 330deg, rgba(34,211,238,0.16) 338deg, transparent 348deg, transparent 360deg)",
+                }}
+                animate={{ rotate: [0, 360] }}
+                transition={{ duration: 14.5, repeat: Infinity, ease: "linear" }}
+              />
+              <div className="relative z-[1] m-[4px] min-h-0 rounded-md bg-[#030712] px-2.5 pb-2.5 pt-2">
             <input
               ref={fileInputRef as React.RefObject<HTMLInputElement>}
               type="file"
@@ -531,48 +549,53 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               }}
             />
 
-            {/* Layer 1：主输入区（独占宽度） */}
-            <div className="min-w-0 w-full">
-              {voiceVisual ? (
-                <div className="flex min-h-[44px] w-full items-center justify-center border-b border-cyan-800/30 py-3">
-                  <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
-                </div>
-              ) : (
-                <div className="w-full border-b border-cyan-800/30">
-                  <textarea
-                    ref={textareaRef}
-                    rows={1}
-                    value={input}
-                    onChange={(e) => {
-                      onInputChange(e.target.value);
-                      queueMicrotask(() => adjustHeight());
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        void onRequestDismiss?.();
-                        return;
-                      }
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        if (canSend) onSend();
-                      }
-                    }}
-                    placeholder={placeholder}
-                    readOnly={isLoading}
-                    disabled={disabled}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="w-full min-h-[44px] max-h-[200px] resize-none overflow-y-auto bg-transparent px-0 py-3 text-sm leading-relaxed text-cyan-100 placeholder-cyan-400/50 focus:outline-none disabled:opacity-50 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-                  />
-                </div>
-              )}
-            </div>
+            {(hasPendingFiles || attachmentHint) && (
+              <div className="mb-2 flex min-h-0 flex-wrap items-center gap-1.5 px-1">
+                {attachmentHint ? (
+                  <p className="w-full text-[10px] text-amber-300/90">{attachmentHint}</p>
+                ) : null}
+                {hasPendingFiles &&
+                  pendingFiles.map((file, idx) => {
+                    const isImg = file.type.startsWith("image/");
+                    const url = isImg ? URL.createObjectURL(file) : "";
+                    return (
+                      <div
+                        key={`${file.name}-${file.size}-${idx}`}
+                        className="group relative inline-flex max-w-[11rem] items-center gap-1.5 bg-cyan-950/12 py-0.5 pl-2 pr-6 text-[10px] text-cyan-100/90 shadow-[0_8px_28px_rgba(0,0,0,0.35)]"
+                      >
+                        <OmniHologramCorners />
+                        <span className="relative z-[2] flex items-center gap-1.5">
+                        {isImg ? (
+                          <img src={url} alt="" className="h-5 w-5 shrink-0 object-cover opacity-90" />
+                        ) : (
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-cyan-300/80" strokeWidth={2} />
+                        )}
+                        <span className="truncate font-mono" title={file.name}>
+                          {file.name}
+                        </span>
+                        {onRemovePendingFile != null ? (
+                          <button
+                            type="button"
+                            className="absolute right-0.5 top-1/2 z-[5] flex h-5 w-5 -translate-y-1/2 items-center justify-center text-cyan-200/80 opacity-70 transition-[opacity,filter] hover:text-red-200 hover:opacity-100 hover:drop-shadow-[0_0_6px_rgba(248,113,113,0.6)]"
+                            aria-label="移除附件"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onRemovePendingFile(idx);
+                            }}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        ) : null}
+                        </span>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
 
-            {/* Layer 2：控制台（左操作 / 中信息 / 右发射） */}
-            <div className="mt-2 grid w-full min-h-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-2">
-              <div className="flex min-w-0 flex-wrap items-center justify-start gap-2">
+            <div className="flex min-h-0 w-full flex-row items-stretch gap-2">
+              <div className="flex shrink-0 flex-col justify-end gap-1.5 pb-1">
                 {onMergePendingFiles != null && (
                   <button
                     type="button"
@@ -583,12 +606,11 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                       fileInputRef.current?.click();
                     }}
                     disabled={disabled || isLoading}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/35 bg-slate-900/60 text-cyan-300 transition hover:border-cyan-400/55 hover:bg-cyan-500/10 disabled:opacity-40"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center bg-transparent text-cyan-300 opacity-30 transition-[opacity,filter] duration-200 hover:opacity-100 hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.95)] disabled:opacity-20"
                   >
-                    <Plus className="h-5 w-5" strokeWidth={2.25} />
+                    <Plus className="h-4 w-4" strokeWidth={2.25} />
                   </button>
                 )}
-
                 {onVadToggle != null && (
                   <button
                     type="button"
@@ -598,17 +620,16 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                       onVadToggle();
                     }}
                     disabled={disabled || isLoading}
-                    className={`flex h-10 shrink-0 items-center gap-1 rounded-full border px-3 ${
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center bg-transparent transition-[opacity,filter] duration-200 hover:drop-shadow-[0_0_10px_rgba(251,191,36,0.85)] disabled:opacity-20 ${
                       isVadActive
-                        ? "border-amber-500/40 bg-amber-500/25 text-amber-300"
-                        : "border-white/20 bg-white/10 text-slate-400"
+                        ? "text-amber-200 opacity-100 drop-shadow-[0_0_12px_rgba(251,191,36,0.55)]"
+                        : "text-slate-500 opacity-30 hover:opacity-100"
                     }`}
+                    title="VAD"
                   >
-                    <Radio className="h-4 w-4 shrink-0" />
-                    <span className="text-[10px] font-medium uppercase">VAD</span>
+                    <Radio className="h-3.5 w-3.5 shrink-0" />
                   </button>
                 )}
-
                 <button
                   type="button"
                   onMouseDown={(e) => {
@@ -623,31 +644,71 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   }}
                   onMouseLeave={() => isRecording && onVoiceStop()}
                   disabled={!canVoice}
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center bg-transparent transition-[opacity,filter] duration-200 disabled:opacity-20 ${
                     isRecording
-                      ? "border-red-500/40 bg-red-500/25 text-red-300"
-                      : "border-cyan-400/30 bg-white/10 text-cyan-400"
+                      ? "text-red-200 opacity-100 drop-shadow-[0_0_12px_rgba(248,113,113,0.55)]"
+                      : "text-cyan-300 opacity-30 hover:opacity-100 hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.9)]"
                   }`}
                 >
-                  {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  {isRecording ? <Square className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
                 </button>
               </div>
 
-              <div className="flex min-w-0 flex-col items-center justify-center gap-1 px-1">
-                <JachinCore state={coreState} machineState={jachinMachineState} toolFlash={thinkingToolFlash} />
-                {placeholder.includes("·") ? (
-                  <span className="max-w-[min(200px,38vw)] truncate text-center text-[9px] font-mono tracking-tight text-cyan-500/45">
-                    {placeholder.split("·")[0]?.trim()}
-                  </span>
-                ) : (
-                  <span
-                    className="h-px w-14 max-w-[40vw] rounded-full bg-gradient-to-r from-transparent via-cyan-400/35 to-transparent"
-                    aria-hidden
+              <div className="min-w-0 flex-1 flex flex-col gap-1">
+                <div className="flex items-center justify-center gap-2 pb-0.5">
+                  <JachinCore
+                    state={coreState}
+                    machineState={jachinMachineState}
+                    toolFlash={thinkingToolFlash}
+                    className="!h-9 !w-9 scale-95"
                   />
+                  {placeholder.includes("·") ? (
+                    <span className="max-w-[min(220px,40vw)] truncate text-center text-[9px] font-mono tracking-tight text-cyan-500/40">
+                      {placeholder.split("·")[0]?.trim()}
+                    </span>
+                  ) : null}
+                </div>
+                {voiceVisual ? (
+                  <div className="relative flex min-h-[48px] w-full items-center justify-center bg-transparent py-2">
+                    <OmniHologramCorners />
+                    <div className="relative z-[2] w-full">
+                      <VoiceWaveform phase={wavePhase} micLevel={micLevel} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <textarea
+                      ref={textareaRef}
+                      rows={1}
+                      value={input}
+                      onChange={(e) => {
+                        onInputChange(e.target.value);
+                        queueMicrotask(() => adjustHeight());
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void onRequestDismiss?.();
+                          return;
+                        }
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          if (canSend) onSend();
+                        }
+                      }}
+                      placeholder={placeholder}
+                      readOnly={isLoading}
+                      disabled={disabled}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="w-full min-h-[48px] max-h-[200px] resize-none overflow-y-auto border-0 bg-transparent px-3 py-2.5 text-sm leading-relaxed text-cyan-50/95 placeholder:text-cyan-500/40 focus:outline-none focus:ring-0 disabled:opacity-50 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                    />
+                  </div>
                 )}
               </div>
 
-              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+              <div className="flex shrink-0 flex-col justify-end gap-1.5 pb-1">
                 {!voiceVisual &&
                   (stopMode ? (
                     <button
@@ -659,9 +720,9 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                         onStopGeneration?.();
                       }}
                       title={ui.stopGeneration}
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/5 bg-white/5 text-purple-400/80 transition-all duration-300 hover:bg-purple-500/20 hover:text-white hover:shadow-[0_0_15px_rgba(168,85,247,0.3)]"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center bg-transparent text-violet-300/95 opacity-100 transition-[opacity,filter] duration-200 hover:drop-shadow-[0_0_12px_rgba(167,139,250,0.85)]"
                     >
-                      <Square className="h-4 w-4 fill-current" strokeWidth={2.25} />
+                      <Square className="h-3.5 w-3.5 fill-current" strokeWidth={2.25} />
                     </button>
                   ) : (
                     <button
@@ -673,12 +734,14 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                         if (canSend) onSend();
                       }}
                       disabled={!canSend}
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 text-cyan-400 transition-all duration-300 hover:bg-cyan-500/20 disabled:opacity-40"
+                      title="发送"
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center bg-transparent text-cyan-200 transition-[opacity,filter] duration-200 hover:drop-shadow-[0_0_12px_rgba(34,211,238,0.95)] ${
+                        canSend ? "opacity-100" : "opacity-25"
+                      }`}
                     >
-                      <Send className="h-4 w-4" strokeWidth={2.25} />
+                      <Send className="h-3.5 w-3.5" strokeWidth={2.25} />
                     </button>
                   ))}
-
                 {onOpenConsole && (
                   <button
                     type="button"
@@ -688,9 +751,9 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                       onOpenConsole();
                     }}
                     title={ui.largeConsole}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-400 transition hover:bg-white/[0.06] hover:text-cyan-300"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center bg-transparent text-slate-500 opacity-30 transition-[opacity,filter] duration-200 hover:opacity-100 hover:text-cyan-200 hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.75)]"
                   >
-                    <LayoutDashboard className="h-4 w-4" strokeWidth={2.25} />
+                    <LayoutDashboard className="h-3.5 w-3.5" strokeWidth={2.25} />
                   </button>
                 )}
                 <button
@@ -701,25 +764,34 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                     onOpenConsole?.();
                   }}
                   title={ui.settingsConsole}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-500 transition hover:bg-white/[0.06] hover:text-cyan-300"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center bg-transparent text-slate-500 opacity-30 transition-[opacity,filter] duration-200 hover:opacity-100 hover:text-cyan-200 hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.75)]"
                 >
-                  <Settings2 className="h-4 w-4" strokeWidth={2.25} />
+                  <Settings2 className="h-3.5 w-3.5" strokeWidth={2.25} />
                 </button>
               </div>
             </div>
-          </div>
+              </div>
+            </div>
+          </motion.div>
         </div>
       </div>
 
       {dragOverlayActive ? (
         <div
-          className="pointer-events-none absolute inset-0 z-[60] flex items-center justify-center rounded-2xl border-2 border-dashed border-cyan-400/50 bg-cyan-500/10 backdrop-blur-[2px]"
+          className="pointer-events-none absolute inset-0 z-[60] flex items-center justify-center bg-cyan-950/40 backdrop-blur-sm"
           aria-hidden
         >
-          <div className="rounded-xl border border-cyan-400/40 bg-slate-950/80 px-6 py-4 text-center shadow-[0_0_32px_rgba(34,211,238,0.2)]">
-            <ImageIcon className="mx-auto mb-2 h-10 w-10 text-cyan-300/90" />
-            <p className="font-mono text-sm font-medium text-cyan-100">松开以添加至会话</p>
-            <p className="mt-1 font-mono text-[10px] text-cyan-400/70">图片 / PDF / Word / Excel / TXT · 最多 5 个 · 单文件 ≤ 5MB</p>
+          <span className="absolute left-4 top-4 h-16 w-16 border-l-[3px] border-t-[3px] border-cyan-300 shadow-[0_0_22px_rgba(34,211,238,0.65)]" />
+          <span className="absolute right-4 top-4 h-16 w-16 border-r-[3px] border-t-[3px] border-cyan-300 shadow-[0_0_22px_rgba(34,211,238,0.65)]" />
+          <span className="absolute bottom-4 left-4 h-16 w-16 border-b-[3px] border-l-[3px] border-cyan-300 shadow-[0_0_22px_rgba(34,211,238,0.65)]" />
+          <span className="absolute bottom-4 right-4 h-16 w-16 border-b-[3px] border-r-[3px] border-cyan-300 shadow-[0_0_22px_rgba(34,211,238,0.65)]" />
+          <div className="border border-cyan-400/45 bg-black/60 px-8 py-5 text-center shadow-[0_0_48px_rgba(34,211,238,0.35),inset_0_0_32px_rgba(6,182,212,0.08)] backdrop-blur-md [clip-path:polygon(16px_0,calc(100%-16px)_0,100%_16px,100%_calc(100%-16px),calc(100%-16px)_100%,16px_100%,0_calc(100%-16px),0_16px)]">
+            <ImageIcon className="mx-auto mb-2 h-10 w-10 text-cyan-300 drop-shadow-[0_0_12px_rgba(34,211,238,0.6)]" />
+            <p className="font-mono text-sm font-semibold tracking-wide text-cyan-100 drop-shadow-[0_0_14px_rgba(34,211,238,0.85)]">
+              Drop files to upload
+            </p>
+            <p className="mt-1 font-mono text-[11px] text-cyan-200/75">松开以添加至会话 · 图片 / PDF / Word / Excel / TXT</p>
+            <p className="mt-0.5 font-mono text-[10px] text-cyan-400/60">最多 5 个 · 单文件 ≤ 5MB</p>
           </div>
         </div>
       ) : null}

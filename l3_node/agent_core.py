@@ -1261,7 +1261,7 @@ _sub_agent_registry: dict[str, "SubAgent"] = {}
 
 
 def _fuzzy_action_tool_pattern_fragment(canonical_tool_id: str) -> str:
-    """
+    r"""
     将注册工具 id 转为 Action 行内可匹配的「标点容错」片段（不含 Action: 前缀）。
     按连续字母数字切 token，token 之间用 [\W_]+ 连接，容忍 LLM 把 : - . 等写成 _ 或混用。
     匹配成功后仍应使用原始 canonical_tool_id 调用 run_tool。

@@ -1,5 +1,5 @@
 ﻿/**
- * Jachin Core — 流光核心：Sensory 状态机驱动的赛博语义光环
+ * Jachin Core — 数字心脏：双层反向旋转环 + 中心光点心跳（Sensory / 工具闪态）
  */
 
 import React from "react";
@@ -28,75 +28,91 @@ export const JachinCore: React.FC<JachinCoreProps> = ({
     machineStateProp ??
     (state === "thinking" ? "THINKING" : state === "streaming" ? "STREAMING" : "IDLE");
 
-  /** HITL / 自愈：保留配色，动效走 IDLE 脉冲 */
   const ringMachine: JachinCoreMachineState =
     state === "hitl" || state === "self_heal" ? "IDLE" : machineState;
 
   const thinking = ringMachine === "THINKING";
+  const streaming = ringMachine === "STREAMING";
 
-  const ringClass =
+  const dashedBorder =
     state === "hitl"
-      ? "border-solid border-red-500/70 bg-red-950/50"
+      ? "border-red-400/50"
       : state === "self_heal"
-        ? "border-solid border-amber-500/70 bg-amber-950/35"
-        : ringMachine === "THINKING"
-          ? "border-purple-500 border-t-transparent border-l-purple-400 bg-slate-950/85 shadow-[0_0_20px_rgba(168,85,247,0.6)]"
-          : ringMachine === "STREAMING"
-            ? "border-solid border-cyan-500/50 bg-slate-950/70"
-            : "border-solid border-cyan-500/50 bg-slate-950/80";
+        ? "border-amber-400/45"
+        : thinking
+          ? "border-amber-400/55"
+          : "border-cyan-400/35";
 
-  const animate =
-    ringMachine === "IDLE"
-      ? {
-          scale: [1, 1.05, 1],
-          opacity: [0.6, 1, 0.6],
-          boxShadow: [
-            "0 0 10px rgba(0,240,255,0.2)",
-            "0 0 18px rgba(0,240,255,0.42)",
-            "0 0 10px rgba(0,240,255,0.2)",
-          ],
-        }
-      : ringMachine === "THINKING"
-        ? {
-            rotate: [0, 360],
-            scale: [1, 1.1, 1],
-            boxShadow: [
-              "0 0 15px rgba(168,85,247,0.5)",
-              "0 0 25px rgba(168,85,247,0.8)",
-              "0 0 15px rgba(168,85,247,0.5)",
-            ],
-          }
-        : {
-            scale: 1,
-            opacity: 1,
-            boxShadow: "0 0 15px rgba(0,240,255,0.6)",
-          };
+  const thinBorder =
+    state === "hitl"
+      ? "border-red-400/30"
+      : state === "self_heal"
+        ? "border-amber-400/25"
+        : thinking
+          ? "border-amber-300/35"
+          : "border-cyan-400/22";
 
-  const transition =
-    ringMachine === "THINKING"
-      ? {
-          rotate: { duration: 1.5, repeat: Infinity, ease: "linear" },
-          scale: { duration: 0.8, repeat: Infinity, ease: "easeInOut" },
-          boxShadow: { duration: 0.8, repeat: Infinity, ease: "easeInOut" },
-        }
-      : { duration: 3, repeat: Infinity, ease: "easeInOut" };
+  const heartDuration = thinking ? 0.52 : streaming ? 0.85 : 1.18;
+  const heartColor =
+    state === "hitl"
+      ? "bg-red-400"
+      : state === "self_heal"
+        ? "bg-amber-400"
+        : thinking
+          ? "bg-amber-300"
+          : "bg-cyan-200";
+
+  const heartShadow =
+    state === "hitl"
+      ? ["0 0 6px rgba(248,113,113,0.85)", "0 0 18px rgba(248,113,113,1)", "0 0 6px rgba(248,113,113,0.85)"]
+      : state === "self_heal"
+        ? ["0 0 6px rgba(251,191,36,0.75)", "0 0 16px rgba(245,158,11,0.95)", "0 0 6px rgba(251,191,36,0.75)"]
+        : thinking
+          ? ["0 0 8px rgba(251,191,36,0.9)", "0 0 22px rgba(251,191,36,1)", "0 0 8px rgba(251,191,36,0.9)"]
+          : ["0 0 6px rgba(34,211,238,0.65)", "0 0 16px rgba(34,211,238,0.95)", "0 0 6px rgba(34,211,238,0.65)"];
+
+  const outerRotate = thinking ? 9 : 18;
+  const innerRotate = thinking ? 7 : 12;
 
   return (
     <div className={`relative h-11 w-11 flex-shrink-0 ${className}`} aria-hidden>
-      <div className="relative h-full w-full flex items-center justify-center">
+      <div className="relative flex h-full w-full items-center justify-center">
+        {/* 外层：虚线，顺时针 */}
         <motion.div
-          key={ringMachine}
-          className={`pointer-events-none absolute inset-0 z-[1] rounded-full border-2 backdrop-blur-md ${ringClass}`}
-          animate={animate}
-          transition={transition}
+          className={`pointer-events-none absolute inset-[-7px] z-0 rounded-full border border-dashed ${dashedBorder}`}
+          animate={{ rotate: [0, 360] }}
+          transition={{ duration: outerRotate, repeat: Infinity, ease: "linear" }}
+        />
+        {/* 中层：极细实线，逆时针 */}
+        <motion.div
+          className={`pointer-events-none absolute inset-[-2px] z-[1] rounded-full border ${thinBorder}`}
+          animate={{ rotate: [0, -360] }}
+          transition={{ duration: innerRotate, repeat: Infinity, ease: "linear" }}
         />
 
-        <div className="relative z-[2] flex h-full w-full items-center justify-center">
+        {/* 数字心脏：中心光点（思考时由脑图标承载高能态，避免与图标叠糊） */}
+        {!toolFlash && !thinking && (
+          <motion.div
+            className={`pointer-events-none absolute left-1/2 top-1/2 z-[2] h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ${heartColor}`}
+            animate={{
+              scale: [1, 1.28, 1],
+              opacity: [0.75, 1, 0.78],
+              boxShadow: heartShadow,
+            }}
+            transition={{
+              duration: heartDuration,
+              repeat: Infinity,
+              ease: [0.45, 0, 0.55, 1],
+            }}
+          />
+        )}
+
+        <div className="relative z-[4] flex h-full w-full items-center justify-center">
           <AnimatePresence mode="wait">
             {toolFlash === "terminal" && (
               <motion.div
                 key="tf-term"
-                className="text-cyan-200"
+                className="text-cyan-200 drop-shadow-[0_0_8px_rgba(34,211,238,0.75)]"
                 initial={{ opacity: 0, scale: 0.6 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.7 }}
@@ -108,7 +124,7 @@ export const JachinCore: React.FC<JachinCoreProps> = ({
             {toolFlash === "database" && (
               <motion.div
                 key="tf-db"
-                className="text-violet-200"
+                className="text-violet-200 drop-shadow-[0_0_8px_rgba(167,139,250,0.7)]"
                 initial={{ opacity: 0, scale: 0.6 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.7 }}
@@ -120,11 +136,11 @@ export const JachinCore: React.FC<JachinCoreProps> = ({
             {thinking && !toolFlash && (
               <motion.div
                 key="core-brain"
-                className="text-cyan-200/90"
+                className="text-amber-200/95 drop-shadow-[0_0_10px_rgba(251,191,36,0.65)]"
                 initial={{ opacity: 0.6, scale: 0.85 }}
-                animate={{ opacity: [0.75, 1, 0.75], rotate: [0, 360] }}
+                animate={{ opacity: [0.85, 1, 0.85], rotate: [0, 360] }}
                 transition={{
-                  opacity: { duration: 0.55, repeat: Infinity, ease: "easeInOut" },
+                  opacity: { duration: 0.45, repeat: Infinity, ease: "easeInOut" },
                   rotate: { duration: 8, repeat: Infinity, ease: "linear" },
                 }}
               >
