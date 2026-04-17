@@ -963,6 +963,7 @@ fn main() {
         ])
         .setup(|app| {
             updater_debug_log::log_startup_rust(&app.package_info().version.to_string());
+            nexus_config::ensure_default_nexus_config_from_example(app.handle());
 
             // L3 引擎生命周期：静默启动 l3_node Sidecar（--ws-only），Ctrl+C 时 kill 释放端口
             match l3_spawn::spawn_l3_node(&*app) {

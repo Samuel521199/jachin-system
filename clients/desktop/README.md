@@ -111,7 +111,7 @@ npm run sync-version
 #### 签名是什么、从哪来
 
 - **不是** HTTPS 证书，而是 **minisign** 对「最终上传的那一个 `.exe` / `.msi`」生成的 **detached signature**（一个文本文件，通常名为 `xxx.exe.sig`）。
-- **公钥**：在 **`src-tauri/tauri.conf.json`** 的 **`pubkey`** 字段（随应用编译进客户端）。
+- **公钥**：在 **`src-tauri/tauri.conf.json`** 的 **`pubkey`** 字段（随应用编译进客户端）。必须是 minisign **`.pub` 文件的第二行**（单行、约 56 字符、以 `RWT+` 或 `RW` 开头），与 `clients/desktop/src-tauri/updater.key.pub` 同格式。**禁止**填入：`tauri signer sign` 输出里的 **`Public signature:`**（以 `dW50…` 开头、会变）；也**禁止**把整份 `.pub` 再做一层 Base64 塞进 `pubkey`（同样常以 `dW50…` 开头）。错填会导致 `Could not fetch a valid release JSON` 等 updater 初始化失败。
 - **私钥**：只在你本机或 CI 密钥库里；**绝不能**提交到 Git。用私钥对安装包执行 `tauri signer sign` 得到 `.sig`。
 
 #### 推荐流程（Windows，在 `clients/desktop` 目录）

@@ -87,12 +87,11 @@ export function Sidebar() {
               title={title}
               className={({ isActive }) =>
                 cn(
-                  "relative flex items-center gap-3 border-y border-r border-transparent py-3 pl-3 pr-2 text-sm font-medium transition-all duration-200",
-                  "[clip-path:polygon(0_0,100%_0,100%_calc(100%-8px),calc(100%-8px)_100%,0_100%)]",
+                  "relative flex items-center gap-3 rounded-r-lg border border-y-0 border-r-0 border-transparent py-3 pl-3 pr-2 text-sm font-medium transition-all duration-200",
                   "border-l-2",
                   isActive
-                    ? "border-amber-400 text-cyan-300 drop-shadow-[0_0_10px_rgba(6,182,212,0.75)]"
-                    : "border-transparent text-cyan-900/80 hover:border-amber-400/90 hover:text-cyan-300 hover:drop-shadow-[0_0_8px_rgba(6,182,212,0.55)]"
+                    ? "border-cyan-400/45 bg-cyan-500/[0.08] text-cyan-200/95 shadow-[inset_0_0_20px_rgba(34,211,238,0.06)] drop-shadow-[0_0_6px_rgba(34,211,238,0.25)]"
+                    : "border-transparent text-cyan-900/80 hover:border-cyan-500/35 hover:bg-cyan-500/[0.05] hover:text-cyan-300 hover:shadow-[inset_0_0_16px_rgba(34,211,238,0.04)] hover:drop-shadow-[0_0_5px_rgba(34,211,238,0.2)]"
                 )
               }
             >

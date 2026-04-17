@@ -1,4 +1,4 @@
-"""
+﻿"""
 L4 动态经验飞轮（Experience RAG-lite）：本地 JSONL + 纯标准库相似度检索，无向量库、无 numpy。
 
 架构 SSOT：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md §6。
@@ -139,6 +139,9 @@ def retrieve_experience(user_intent: str, top_k: int = 2) -> list[dict[str, Any]
     """
     if not experience_rag_enabled():
         return []
+    # 与网关 classification_text 对齐：极短句不做检索，避免「好了」「重试」误命中错误范例
+    if should_bypass_experience_rag_for_intent(user_intent):
+        return []
     path = _experience_path()
     try:
         with _LOCK:
@@ -184,6 +187,8 @@ def _format_payload_for_prompt(payload: dict[str, Any]) -> str:
 
 def format_experience_block_for_prompt(user_intent: str, *, top_k: int = 2) -> str:
     """注入 system 的 [HISTORY_FEW_SHOTS]；无命中返回空串。"""
+    if should_bypass_experience_rag_for_intent(user_intent):
+        return ""
     rows = retrieve_experience(user_intent, top_k=top_k)
     if not rows:
         return ""

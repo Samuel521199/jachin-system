@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MarkdownMessage - 将 Markdown 文本渲染为格式化的 HTML
  * 用于 HR 透析镜等技能输出的 # 标题、**粗体**、表格等正确展示
  */
@@ -85,7 +85,9 @@ export interface MarkdownMessageProps {
 export function MarkdownMessage({ content, className = "" }: MarkdownMessageProps) {
   if (!content || typeof content !== "string") return null;
   return (
-    <div className={`markdown-content text-sm ${className}`}>
+    <div
+      className={`markdown-content min-w-0 max-w-full overflow-x-hidden text-sm break-words [overflow-wrap:anywhere] ${className}`}
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
@@ -291,10 +291,12 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
 
   return (
     <div
-      className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden pointer-events-none ${riskBorder} ${clipMain}`}
+      className={`relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden pointer-events-none ${riskBorder} ${clipMain}`}
       style={{ background: "transparent" }}
     >
-      <div className={`relative flex h-full min-h-0 w-full flex-col overflow-hidden pointer-events-auto ${clipMain}`}>
+      <div
+        className={`relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden pointer-events-auto ${clipMain}`}
+      >
         <div
           className="pointer-events-none absolute inset-0"
           style={{
@@ -305,7 +307,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
         />
         <div className="pointer-events-none absolute inset-0 shadow-[inset_0_0_60px_rgba(6,182,212,0.08),0_0_40px_rgba(6,182,212,0.06)]" />
 
-        <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
+        <div className="relative z-10 flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           <AnimatePresence>
             {sessionDrawerOpen && onToggleSessionDrawer != null && (
               <>
@@ -387,10 +389,10 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             )}
           </AnimatePresence>
           {/* 拖拽区勿包住窗口按钮：否则 WebView2 会吞掉首次点击，× / 最小化无响应 */}
-          <div className="flex shrink-0 select-none items-center justify-between gap-2 px-3 pb-1.5 pt-2">
+          <div className="flex min-w-0 shrink-0 select-none items-center justify-between gap-1 px-2 pb-1.5 pt-2 sm:gap-2 sm:px-3">
             <div
               data-tauri-drag-region
-              className="flex min-w-0 flex-1 items-center gap-2"
+              className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2"
             >
               <span className="pointer-events-none text-[10px] font-medium uppercase tracking-[0.2em] text-cyan-400/80">
                 Omni
@@ -441,9 +443,9 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
           </div>
 
           {/* 中部：沉浸式消息流；HITL 时全屏雾 + 中央审批台 */}
-          <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain">
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain">
             <div
-              className={`relative z-10 flex min-h-full flex-col gap-3 px-4 py-3 transition-[filter,opacity] duration-300 ${
+              className={`relative z-10 flex min-h-full min-w-0 max-w-full flex-col gap-3 px-3 py-3 transition-[filter,opacity] duration-300 sm:px-4 ${
                 hitlPending ? "pointer-events-none blur-[2px] brightness-[0.88] saturate-[0.85]" : ""
               }`}
             >
@@ -457,15 +459,17 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                 const tel = `0x${(((msg.timestamp ?? 0) ^ idx * 7919) & 0xffffff).toString(16).toUpperCase().padStart(6, "0")}`;
                 if (msg.role === "user") {
                   return (
-                    <div key={`${msg.timestamp}-${idx}`} className="flex justify-end gap-2">
+                    <div key={`${msg.timestamp}-${idx}`} className="flex min-w-0 justify-end gap-2">
                       <motion.div
                         initial={{ opacity: 0, x: 16, filter: "blur(4px)" }}
                         animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
                         transition={{ type: "spring", stiffness: 480, damping: 32 }}
-                        className="relative max-w-[min(100%,42rem)] bg-cyan-950/10 px-4 py-2.5 text-sm text-cyan-50/95 shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
+                        className="relative min-w-0 max-w-[min(100%,42rem)] bg-cyan-950/10 px-3 py-2.5 text-sm text-cyan-50/95 shadow-[0_12px_40px_rgba(0,0,0,0.35)] sm:px-4"
                       >
                         <OmniHologramCorners />
-                        <div className="relative z-[2] break-words whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+                        <div className="relative z-[2] min-w-0 max-w-full break-words whitespace-pre-wrap [overflow-wrap:anywhere] leading-relaxed">
+                          {msg.content}
+                        </div>
                       </motion.div>
                       <div className="flex w-8 shrink-0 flex-col items-center pt-1">
                         <div className="h-full min-h-[2rem] w-px shrink-0 omni-neural-vein shadow-[0_0_8px_rgba(34,211,238,0.35)]" />
@@ -479,7 +483,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                   return (
                     <motion.div
                       key={`${msg.timestamp}-${idx}`}
-                      className="flex justify-start gap-2"
+                      className="flex min-w-0 justify-start gap-2"
                       initial={{ opacity: 0, x: -18, filter: "blur(6px)" }}
                       animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
                       transition={{ type: "spring", stiffness: 520, damping: 34 }}
@@ -488,11 +492,11 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                         <div className="h-full min-h-[2rem] w-px shrink-0 omni-neural-vein shadow-[0_0_10px_rgba(34,211,238,0.45)]" />
                         <span className="mt-1 font-mono text-[7px] leading-none text-cyan-500/60">{tel}</span>
                       </div>
-                      <div className="relative w-full max-w-[min(100%,52rem)] bg-cyan-950/10 py-2 pl-3 pr-3 text-sm shadow-[0_12px_40px_rgba(0,0,0,0.3)]">
+                      <div className="relative min-w-0 flex-1 max-w-[min(100%,52rem)] bg-cyan-950/10 py-2 pl-2 pr-2 text-sm shadow-[0_12px_40px_rgba(0,0,0,0.3)] sm:pl-3 sm:pr-3">
                         <OmniHologramCorners />
-                        <div className="relative z-[2]">
+                        <div className="relative z-[2] min-w-0 max-w-full">
                           {!!reasoningChainText.trim() && (
-                            <div className="mb-2 opacity-75">
+                            <div className="mb-2 min-w-0 opacity-75">
                               <OmniReasoningChain
                                 text={reasoningChainText}
                                 isStreaming={isLastAssistant && isTyping}
@@ -504,7 +508,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                               />
                             </div>
                           )}
-                          <div className="break-words leading-relaxed text-cyan-50/[0.93] [&_.markdown-content]:font-medium">
+                          <div className="min-w-0 max-w-full break-words leading-relaxed text-cyan-50/[0.93] [overflow-wrap:anywhere] [&_.markdown-content]:font-medium">
                             <AssistantMessageContent
                               message={msg}
                               isLastAssistant={isLastAssistant}
@@ -524,7 +528,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             </div>
 
             {(recordingStatus || listeningText || isVadActive) && (
-              <div className="relative z-20 mx-4 mb-1 flex flex-col gap-1 text-[10px]">
+              <div className="relative z-20 mx-3 mb-1 flex min-w-0 flex-col gap-1 break-words text-[10px] [overflow-wrap:anywhere] sm:mx-4">
                 {isVadActive && (
                   <div className="border border-amber-500/35 bg-amber-950/30 px-2 py-1 text-amber-200/90 shadow-[0_0_16px_rgba(245,158,11,0.2)] [clip-path:polygon(6px_0,calc(100%-6px)_0,100%_6px,100%_calc(100%-6px),calc(100%-6px)_100%,6px_100%,0_calc(100%-6px),0_6px)]">
                     {ui.vadListening}
@@ -596,7 +600,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
             layout
             transition={{ type: "spring", stiffness: 420, damping: 32 }}
             data-chat-interactive
-            className="relative z-20 mx-2 mb-4 mt-1 shrink-0"
+            className="relative z-20 mx-1 mb-3 mt-1 min-w-0 shrink-0 sm:mx-2 sm:mb-4"
             style={{ pointerEvents: "auto" }}
           >
             <div className="relative isolate overflow-hidden rounded-md border border-cyan-500/25 shadow-[0_20px_48px_rgba(0,0,0,0.55)]">
@@ -610,7 +614,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                 animate={{ rotate: [0, 360] }}
                 transition={{ duration: 14.5, repeat: Infinity, ease: "linear" }}
               />
-              <div className="relative z-[1] m-[4px] min-h-0 rounded-md bg-[#030712] px-2.5 pb-2.5 pt-2">
+              <div className="relative z-[1] m-[3px] min-h-0 rounded-md bg-[#030712] px-2 pb-2 pt-1.5 sm:m-[4px] sm:px-2.5 sm:pb-2.5 sm:pt-2">
             <input
               ref={fileInputRef as React.RefObject<HTMLInputElement>}
               type="file"
@@ -675,8 +679,8 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               </div>
             )}
 
-            <div className="flex min-h-0 w-full flex-row items-stretch gap-2">
-              <div className="flex shrink-0 flex-col justify-end gap-1.5 pb-1">
+            <div className="flex min-h-0 min-w-0 w-full flex-row items-stretch gap-1.5 sm:gap-2">
+              <div className="flex shrink-0 flex-col justify-end gap-1 pb-1 sm:gap-1.5">
                 {onMergePendingFiles != null && (
                   <button
                     type="button"
@@ -736,15 +740,15 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
               </div>
 
               <div className="min-w-0 flex-1 flex flex-col gap-1">
-                <div className="flex items-center justify-center gap-2 pb-0.5">
+                <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5 pb-0.5 sm:gap-2">
                   <JachinCore
                     state={coreState}
                     machineState={jachinMachineState}
                     toolFlash={thinkingToolFlash}
-                    className="!h-9 !w-9 scale-95"
+                    className="!h-9 !w-9 shrink-0 scale-95"
                   />
                   {placeholder.includes("·") ? (
-                    <span className="max-w-[min(220px,40vw)] truncate text-center text-[9px] font-mono tracking-tight text-cyan-500/40">
+                    <span className="min-w-0 max-w-full truncate text-center text-[9px] font-mono tracking-tight text-cyan-500/40 sm:max-w-[min(220px,50vw)]">
                       {placeholder.split("·")[0]?.trim()}
                     </span>
                   ) : null}
@@ -784,13 +788,13 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                       disabled={disabled}
                       autoComplete="off"
                       spellCheck={false}
-                      className="w-full min-h-[48px] max-h-[200px] resize-none overflow-y-auto border-0 bg-transparent px-3 py-2.5 text-sm leading-relaxed text-cyan-50/95 placeholder:text-cyan-500/40 focus:outline-none focus:ring-0 disabled:opacity-50 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                      className="w-full min-h-[48px] min-w-0 max-h-[200px] resize-none overflow-y-auto break-words border-0 bg-transparent px-2 py-2 text-sm leading-relaxed text-cyan-50/95 placeholder:text-cyan-500/40 focus:outline-none focus:ring-0 disabled:opacity-50 [overflow-wrap:anywhere] [scrollbar-width:none] [-ms-overflow-style:none] sm:px-3 sm:py-2.5 [&::-webkit-scrollbar]:hidden"
                     />
                   </div>
                 )}
               </div>
 
-              <div className="flex shrink-0 flex-col justify-end gap-1.5 pb-1">
+              <div className="flex shrink-0 flex-col justify-end gap-1 pb-1 sm:gap-1.5">
                 {!voiceVisual &&
                   (stopMode ? (
                     <button

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -3674,6 +3674,22 @@ def _youtube_video_id_from_url(url: str) -> str:
     return m2.group(1) if m2 else ""
 
 
+def _react_block_mcp_fetch_if_vision_priority_turn(tool: str, ctx: PipelineContext) -> str | None:
+    """
+    多模态读图轮：已从工具池移除 fetch，但若模型仍按会话历史里的旧 URL 输出 Action，在此硬拦截。
+    """
+    tid = (tool or "").strip().lower()
+    if tid not in ("mcp:fetch", "fetch"):
+        return None
+    if not bool(ctx.metadata.get("_forbid_web_fetch_for_vision_turn")):
+        return None
+    return (
+        "[Jachin·多模态] 已拦截 **mcp:fetch**：本轮用户已上传图片；须**直接依据本轮消息中的 image 块**完成读图/OCR，"
+        "**禁止**用网页抓取或会话历史中的 URL（如先前测试留下的链接）代替看图。\n\n"
+        "请输出 **Final Answer**，逐条写出图中可见的中文菜单/按钮文字与角标数字；勿复述无关网页正文。"
+    )
+
+
 def _react_block_mcp_fetch_if_youtube_url(tool: str, action_input: str) -> str | None:
     """
     mcp:fetch 无法拿到 YouTube 字幕与口播，只会诱导模型凭标题「补全」知识点。
@@ -3889,6 +3905,20 @@ async def _invoke_react_tool(
             except Exception:
                 pass
         return _yt_block
+    _vision_fetch_block = _react_block_mcp_fetch_if_vision_priority_turn(tool, ctx)
+    if _vision_fetch_block is not None:
+        logger.info(
+            "[L3 Agent][工具路由] trace=%s 多模态读图轮：已拦截 mcp:fetch",
+            _rtrace,
+        )
+        if _lark_cv_tok is not None:
+            try:
+                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
+
+                reset_lark_chat_id_for_tools(_lark_cv_tok)
+            except Exception:
+                pass
+        return _vision_fetch_block
     _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
@@ -6228,7 +6258,32 @@ async def run_agent(
             from l3_node.intent_gateway.config import get_intent_gateway_config
 
             _ig_rt = get_intent_gateway_config()
-            if bool(_ig_rt.get("realtime_knowledge_llm_enabled", True)):
+            _skip_rt_for_multimodal_image = False
+            try:
+                for _x in attachments_metadata or []:
+                    if not isinstance(_x, dict):
+                        continue
+                    if _x.get("has_image"):
+                        _skip_rt_for_multimodal_image = True
+                        break
+                    _m = str(_x.get("mime") or "").lower()
+                    if _m.startswith("image/"):
+                        _skip_rt_for_multimodal_image = True
+                        break
+                if not _skip_rt_for_multimodal_image:
+                    for _sm in getattr(_gateway_bundle, "attachments_sanitized", None) or []:
+                        if getattr(_sm, "has_image", False):
+                            _skip_rt_for_multimodal_image = True
+                            break
+            except Exception:
+                pass
+            if _skip_rt_for_multimodal_image:
+                _gateway_bundle.requires_realtime_knowledge = False
+                _gateway_bundle.extra["requires_realtime_knowledge"] = False
+                logger.info(
+                    "[IntentGatewayObs] requires_realtime_knowledge=False（本轮含图片附件，跳过 Tavily 预取以免与会话摘要串味）"
+                )
+            elif bool(_ig_rt.get("realtime_knowledge_llm_enabled", True)):
                 try:
                     _to_rt = float(_ig_rt.get("realtime_knowledge_llm_timeout_sec", 2.5))
                 except (TypeError, ValueError):
@@ -6281,6 +6336,7 @@ async def run_agent(
         except Exception:
             _domain_experts_list = []
 
+    _vision_forbid_web_fetch = False
     try:
         tools = await assemble_tool_pool(
             allowed_skills=allowed,
@@ -6289,6 +6345,16 @@ async def run_agent(
             logger=logger,
             allowlist_diag_source=allowlist_diag_source,
         )
+        try:
+            from l3_node.multimodal_tool_policy import filter_tools_for_vision_image_turn
+
+            tools, _vision_forbid_web_fetch = filter_tools_for_vision_image_turn(
+                tools,
+                user_input=user_input or "",
+                attachments_metadata=attachments_metadata,
+            )
+        except Exception as _mtp_e:
+            logger.debug("[L3 Agent] multimodal_tool_policy 跳过: %s", _mtp_e)
     except Exception as _pool_ex:
         import traceback
 
@@ -6303,6 +6369,7 @@ async def run_agent(
         except Exception:
             pass
         tools = load_tools(allowed_skills=allowed)
+        _vision_forbid_web_fetch = False
     exec_trace(
         logger,
         "工具列表就绪 run_id=%s count=%d bg_channel=%s",
@@ -6571,6 +6638,10 @@ async def run_agent(
         if _gateway_bundle is not None
         else _exp_query
     )
+    # 经验检索 query：与纯净意图面一致（勿用含摘要的拼接串）；无网关时回退 user_input
+    _exp_rag_query = (
+        _exp_intent_surface if (_exp_intent_surface or "").strip() else _exp_query
+    )
     _attachment_has_image = bool(_gateway_bundle and _gateway_bundle.extra.get("attachment_has_image"))
     try:
         from l3_node.experience_memory import (
@@ -6605,7 +6676,7 @@ async def run_agent(
             and not _attachment_has_image
             and not _exp_bypass_short
         ):
-            _experience_few_shots = format_experience_block_for_prompt(_exp_query[:8000], top_k=2)
+            _experience_few_shots = format_experience_block_for_prompt(_exp_rag_query[:8000], top_k=2)
     except Exception:
         _experience_few_shots = ""
 
@@ -7194,6 +7265,7 @@ async def run_agent(
             "_skills_unfiltered": list(tools),
             "_allowed_skills": allowed,
             "_use_mock": False,
+            "_forbid_web_fetch_for_vision_turn": bool(_vision_forbid_web_fetch),
             "_max_iterations": max_iterations,
             "_on_step": on_step,
             "_system_prompt_extras": {

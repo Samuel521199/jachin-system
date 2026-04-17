@@ -1,4 +1,4 @@
-"""
+﻿"""
 将 WebSocket / 网关传入的附件实体转为 OpenAI 兼容的 user content（纯文本或 text+image_url 列表）。
 
 - 图片：读本地路径或 base64 → 可选 Pillow 缩放 → data:image/...;base64,...
@@ -38,6 +38,14 @@ MAX_PDF_PRE_TRUNCATE_CHARS = 80_000
 MAX_IMAGE_READ_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_LONG_EDGE = 1536
 JPEG_QUALITY = 82
+
+# 含图时追加到 user 文本段：避免 VL 在 ReAct 下误调网页抓取、或否认「能看见图」
+_MULTIMODAL_VISION_HINT_ZH = (
+    "\n\n【多模态】本条用户消息含上传图片，请直接依据图像作答（含图中文字/OCR）；"
+    "不要声称无法读图或缺少图像识别能力。"
+    "请勿仅因会话历史中出现 http(s) 链接或旧轮 Observation 就调用网页抓取；"
+    "历史里的新浪/新闻正文与当前截图无关。除非用户在本轮明确给出要你抓取的 URL。"
+)
 
 _EXT_MIME = {
     ".jpg": "image/jpeg",
@@ -598,6 +606,8 @@ def build_openai_user_content(user_text: str, attachments: list[dict[str, Any]])
 
     if not combined_text:
         combined_text = "（用户未附带文字说明）"
+
+    combined_text = combined_text + _MULTIMODAL_VISION_HINT_ZH
 
     # 与 DashScope 官方 MultiModalConversation 示例一致：先图后文（避免兼容层忽略 image_url）
     return [*image_parts, {"type": "text", "text": combined_text}]

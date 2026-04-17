@@ -67,12 +67,12 @@ export const OmniReasoningChain: React.FC<OmniReasoningChainProps> = ({
         e.stopPropagation();
         setOpen((e.target as HTMLDetailsElement).open);
       }}
-      className="omni-reasoning-chain group mb-2.5 w-full max-w-full rounded-xl border border-white/10 bg-black/40 outline-none ring-0 focus:outline-none focus-visible:outline-none"
+      className="omni-reasoning-chain group mb-2.5 w-full min-w-0 max-w-full rounded-xl border border-white/10 bg-black/40 outline-none ring-0 focus:outline-none focus-visible:outline-none"
     >
-      <summary className="flex cursor-pointer select-none list-none items-center gap-2 rounded-t-xl border-b border-white/5 bg-white/5 px-3 py-2 text-left outline-none [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-w-0 cursor-pointer select-none list-none items-center gap-2 rounded-t-xl border-b border-white/5 bg-white/5 px-2 py-2 text-left outline-none sm:px-3 [&::-webkit-details-marker]:hidden">
         <Sparkles className="h-3.5 w-3.5 shrink-0 text-cyan-500/50" aria-hidden />
-        <span className="text-[12px] font-medium tracking-wide text-cyan-400/80">{labels.chain}</span>
-        <span className="text-[10px] text-cyan-500/45">{labels.expand}</span>
+        <span className="min-w-0 shrink text-[12px] font-medium tracking-wide text-cyan-400/80">{labels.chain}</span>
+        <span className="hidden shrink-0 text-[10px] text-cyan-500/45 sm:inline">{labels.expand}</span>
         {isStreaming ? (
           <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-mono text-cyan-400/55">
             {labels.updating}

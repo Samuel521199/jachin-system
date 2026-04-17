@@ -1,4 +1,4 @@
-"""
+﻿"""
 GatewayContextBundle：统一入站上下文，替代裸字符串贯穿网关算子。
 """
 from __future__ import annotations
@@ -65,11 +65,17 @@ class GatewayContextBundle:
         return out
 
     def rebuild_classification_text(self) -> None:
+        """
+        意图分类面（Intent-Context Decoupling）：
+        **仅**截断 ``routing_utterance`` 或 ``user_input``。
+        ``short_memory_context`` 仍保留在 Bundle 上，供 System Prompt / 嗅探等**独立**注入，
+        但**不得**拼入本字段（旧逻辑 ``short_memory + "---" + tail`` 已移除），以免污染
+        路由、Semantic Cache 键、Embedding、Experience RAG 门控面。
+        """
         cfg = get_intent_gateway_config()
         max_tok = int(cfg.get("classification_max_tokens", 2000))
         head = int(cfg.get("classification_head_tokens", 1000))
         tail = int(cfg.get("classification_tail_tokens", 1000))
-        # 意图分类面：仅本轮用户/路由句，不与 short_memory 拼接（避免旧任务污染路由、缓存键与向量检索）
         intent_only = (self.routing_utterance or self.user_input or "").strip()
         self.classification_text, self.classification_truncated = truncate_for_gateway_classification(
             intent_only,

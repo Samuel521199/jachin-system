@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.23",
+  "version": "0.9.24",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -40,7 +40,7 @@
         "transparent": true,
         "decorations": false,
         "shadow": false,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "skipTaskbar": true,
         "visible": false,
         "url": "sprite.html"
@@ -57,7 +57,7 @@
         "transparent": true,
         "decorations": false,
         "shadow": false,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "skipTaskbar": true,
         "visible": false,
         "url": "chat.html",
@@ -77,7 +77,7 @@
         "transparent": true,
         "decorations": false,
         "shadow": false,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "skipTaskbar": true,
         "visible": false,
         "url": "notification.html"
@@ -117,7 +117,8 @@
       "../../../dist_jachin_desktop/.env.sea.example": ".env.sea.example",
       "../../../dist_jachin_desktop/README_DEPLOY.md": "README_DEPLOY.md",
       "../../../dist_jachin_desktop/run_l3.bat": "run_l3.bat",
-      "../../../dist_jachin_desktop/run_l3_standalone.bat": "run_l3_standalone.bat"
+      "../../../dist_jachin_desktop/run_l3_standalone.bat": "run_l3_standalone.bat",
+      "../nexus_config.example.json": "nexus_config.example.json"
     },
     "windows": {
       "nsis": {
@@ -134,7 +135,7 @@
       "endpoints": [
         "http://47.86.39.173:3000/api/v1/update/desktop?target={{target}}&arch={{arch}}&current_version={{current_version}}"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwNjk4MzVEMkREMzA2RjQKUlZUMEJ0TXRYWU5wRURMMXVRS1h4YjhjQ05OOXg2azdGVCtYT21nQSttMnpncitCYmNXNHdNbTgK",
+      "pubkey": "RWT+Ht4hSDqsCEoNM84poJhl0iQDXHPuU3lChuRTZ+ArkkyRGrvnF7ea",
       "dangerousInsecureTransportProtocol": true
     }
   }

@@ -1,7 +1,8 @@
-"""
+﻿"""
 §10.4 语义缓存：只存「意图骨架」相关可序列化快照，不存实体 ID。
-当前实现：进程内 TTL LRU，键 = tenant + registry +（可选 session 隔离）+ hash(classification_text)。
-classification_text 须为纯净意图面（不含会话摘要），见 bundle.rebuild_classification_text。
+当前实现：进程内 TTL LRU，键 = tenant + registry + hash(classification_text)，
+若传入 ``session_id`` 则一并参与哈希（会话硬隔离，避免跨会话误命中）。
+``classification_text`` 须为纯净意图面（不含 short_memory），见 ``bundle.rebuild_classification_text``。
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 {
   "name": "jachin-desktop",
-  "version": "0.9.23",
+  "version": "0.9.24",
   "private": true,
   "type": "module",
   "description": "Jachin-System Desktop Console - Tauri v2 + React + TypeScript",
@@ -9,7 +9,7 @@
     "build": "npm run ensure-json-no-bom && tsc && vite build",
     "build:l3-sidecar": "python ../../scripts/build_l3_sidecar.py",
     "ensure-l3-sidecar-stub": "python ../../scripts/create_l3_stub.py --if-missing",
-    "ensure-updater-helper": "cargo build --manifest-path src-tauri/Cargo.toml --bin jachin-updater-helper",
+    "ensure-updater-helper": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin jachin-updater-helper",
     "ensure-updater-helper-sidecar": "node scripts/ensure-updater-helper-sidecar.mjs",
     "prepare-installer-payload": "node scripts/prepare-installer-payload.mjs",
     "ensure-l3-sidecar-for-bundle": "node scripts/ensure-l3-sidecar-for-bundle.mjs",

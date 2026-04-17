@@ -29,6 +29,18 @@ Tauri 从此目录加载 `l3_node` Sidecar 引擎。
 
 `tauri.conf.json` 的 `bundle.externalBin` 为 `bin/l3_node`，与 `l3_node-<triple>` 文件名对应。热更新助手 `jachin-updater-helper.exe` 不在此外部二进制列表中。日常 `npm run tauri:dev` 不自动编译助手；若要本机测「立即更新」，请先 `npm run ensure-updater-helper` 或使用 `npm run tauri:dev:with-updater`。发布流程仍用 `npm run publish-desktop-release`（仓库根）或从 `target/release` 拷贝助手与主程序同目录。
 
+### 只编译热更新助手（不跑完整 `tauri build`）
+
+在仓库根或 `clients/desktop` 下：
+
+```bash
+cargo build --release --manifest-path clients/desktop/src-tauri/Cargo.toml --bin jachin-updater-helper
+```
+
+产物：`clients/desktop/src-tauri/target/release/jachin-updater-helper.exe`（与主程序同目录分发）。
+
+助手下载安装包时：**先直连**（`reqwest` 显式 `no_proxy()`，不受系统 HTTP 代理干扰）；失败则自动经 **`http://127.0.0.1:8800`** 重试（常见本机 Clash HTTP 端口）。可用环境变量：`JACHIN_UPDATER_HELPER_HTTP_PROXY`（默认 `http://127.0.0.1:8800`）、`JACHIN_UPDATER_HELPER_NO_PROXY_FALLBACK=1`（禁用代理回退）。
+
 ## 注意
 
 - 占位符仅用于通过构建，不提供 L3 功能

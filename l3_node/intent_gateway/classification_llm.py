@@ -1,4 +1,4 @@
-"""
+﻿"""
 §6.1 小模型 JSON 路由扩写（可选）：在严格超时内产出 routing_utterance 候选，失败则保持原文。
 """
 from __future__ import annotations
@@ -111,7 +111,10 @@ async def infer_requires_realtime_knowledge_async(
     """
     from l3_node.intent_gateway.config import get_intent_gateway_config
     from l3_node.intent_gateway.model_resolve import get_classification_model_litellm_id
-    from l3_node.intent_gateway.realtime_knowledge_heuristic import heuristic_requires_realtime_knowledge
+    from l3_node.intent_gateway.realtime_knowledge_heuristic import (
+        heuristic_requires_realtime_knowledge,
+        user_input_should_skip_realtime_prefetch_for_vision,
+    )
 
     cfg = get_intent_gateway_config()
     if not bool(cfg.get("realtime_knowledge_llm_enabled", True)):
@@ -119,8 +122,10 @@ async def infer_requires_realtime_knowledge_async(
 
     ui = (user_input or "").strip()
     ct = (classification_text or "").strip()
-    surf = ct if len(ct) >= 8 else ui
-    if len(surf) < 4:
+    if user_input_should_skip_realtime_prefetch_for_vision(ui):
+        logger.info("[IntentGateway] realtime_knowledge 跳过：本轮为本地看图/OCR 意图")
+        return False
+    if len(ui) < 4 and len(ct) < 4:
         return False
 
     if heuristic_requires_realtime_knowledge(ui, ct):
@@ -151,9 +156,13 @@ async def infer_requires_realtime_knowledge_async(
         "你是意图分类器。只输出一个 JSON 对象，不要其它文字。"
         '键 requires_realtime_knowledge：布尔值。含义：当用户问题依赖「当前互联网上较新或较细」的外部事实时为 true，'
         "例如：最新时事/政策/发布、股票或行情、某产品/API 最新文档版本、天气实况、赛程比分、具体外部实体近况等。"
-        "若主要是闲聊、编程通用知识、本地文件/仓库操作、或无需联网即可回答，则为 false。"
+        "若主要是闲聊、编程通用知识、本地文件/仓库操作、识别用户上传图片中的文字/描述截图、或无需联网即可回答，则为 false。"
+        "勿因「会话摘要」里出现过旧新闻链接就判为 true，须看【本轮用户句】是否真的在问时效外部事实。"
     )
-    user_block = f"【分类面/用户句】\n{surf[:3500]}"
+    user_block = (
+        f"【本轮用户句】\n{ui[:3500]}\n\n"
+        f"【会话分类面摘要（仅弱参考；旧任务里的「新闻」等勿单独作为联网依据）】\n{ct[:2000]}"
+    )
     messages = [
         {"role": "system", "content": sys_p},
         {"role": "user", "content": user_block},

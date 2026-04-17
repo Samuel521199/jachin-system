@@ -12,6 +12,7 @@ use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::Client;
+use reqwest::Proxy;
 use sysinfo::{Pid, System};
 
 use updater_common::{
@@ -365,29 +366,75 @@ fn fail_prepare(path: &Path, new_version: &str, msg: String) -> Result<(), Strin
     Err(msg)
 }
 
+/// 本机 HTTP(S) 代理回退地址（Clash / V2Ray 等常见 HTTP 端口）。可用 `JACHIN_UPDATER_HELPER_HTTP_PROXY` 覆盖。
+fn fallback_http_proxy_url() -> String {
+    std::env::var("JACHIN_UPDATER_HELPER_HTTP_PROXY")
+        .unwrap_or_else(|_| "http://127.0.0.1:8800".to_string())
+        .trim()
+        .to_string()
+}
+
+fn skip_proxy_fallback() -> bool {
+    std::env::var("JACHIN_UPDATER_HELPER_NO_PROXY_FALLBACK")
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        })
+        .unwrap_or(false)
+}
+
+fn fetch_installer_bytes(url: &str, label: &str, client: &Client) -> Result<Vec<u8>, String> {
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("{label} 下载请求失败: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("{label} 下载 HTTP 错误: {e}"))?;
+    Ok(resp
+        .bytes()
+        .map_err(|e| format!("{label} 读取响应体: {e}"))?
+        .to_vec())
+}
+
 fn download_verify_to_tmp(job: &HotUpdateJob, tmp: &Path) -> Result<(), String> {
     if tmp.exists() {
         let _ = fs::remove_file(tmp);
     }
-    log_line("downloading...");
-    let client = Client::builder()
+    log_line("downloading (direct first; on failure retry via local HTTP proxy)...");
+
+    let direct = Client::builder()
         .user_agent("jachin-updater-helper/1")
         .timeout(Duration::from_secs(900))
         .danger_accept_invalid_certs(false)
+        .no_proxy()
         .build()
-        .map_err(|e| format!("http client: {e}"))?;
+        .map_err(|e| format!("http client direct: {e}"))?;
 
-    let resp = client
-        .get(&job.download_url)
-        .send()
-        .map_err(|e| format!("下载请求失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("下载 HTTP 错误: {e}"))?;
+    let proxy_url = fallback_http_proxy_url();
+    let bytes = match fetch_installer_bytes(&job.download_url, "direct", &direct) {
+        Ok(b) => b,
+        Err(e1) => {
+            if skip_proxy_fallback() {
+                return Err(e1);
+            }
+            log_line(&format!(
+                "direct failed; retrying via proxy={} first_err={}",
+                proxy_url, e1
+            ));
+            let proxy = Proxy::all(proxy_url.as_str())
+                .map_err(|e| format!("proxy invalid ({proxy_url}): {e}"))?;
+            let proxied = Client::builder()
+                .user_agent("jachin-updater-helper/1")
+                .timeout(Duration::from_secs(900))
+                .danger_accept_invalid_certs(false)
+                .proxy(proxy)
+                .build()
+                .map_err(|e| format!("http client proxy: {e}"))?;
+            fetch_installer_bytes(&job.download_url, "proxy", &proxied)
+                .map_err(|e2| format!("直连失败: {e1} | 代理重试仍失败: {e2}"))?
+        }
+    };
 
-    let bytes = resp
-        .bytes()
-        .map_err(|e| format!("读取响应体: {e}"))?
-        .to_vec();
     fs::write(tmp, &bytes).map_err(|e| format!("写入临时文件: {e}"))?;
     log_line(&format!(
         "downloaded bytes={} sha256={} verifying minisign (traced)...",
