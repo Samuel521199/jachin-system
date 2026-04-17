@@ -113,7 +113,9 @@ def _get_memory_flush_model() -> str:
     mf = (llm.get("memory_flush") or {}) if isinstance(llm.get("memory_flush"), dict) else {}
     raw = str(mf.get("model") or mf.get("memory_flush_model") or "").strip()
     if raw:
-        return raw
+        from core.llm_provider import _normalize_model_for_litellm
+
+        return _normalize_model_for_litellm(raw)
     try:
         from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
 
@@ -137,7 +139,9 @@ def _get_compaction_context_summary_model() -> str:
     for key in ("compaction_summary_model", "compaction_fast_model"):
         raw = str(llm.get(key) or "").strip()
         if raw:
-            return raw
+            from core.llm_provider import _normalize_model_for_litellm
+
+            return _normalize_model_for_litellm(raw)
     try:
         from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
 

@@ -1,6 +1,7 @@
 """
 §10.4 语义缓存：只存「意图骨架」相关可序列化快照，不存实体 ID。
-当前实现：进程内 TTL LRU，键 = tenant + hash(classification_text)。
+当前实现：进程内 TTL LRU，键 = tenant + registry +（可选 session 隔离）+ hash(classification_text)。
+classification_text 须为纯净意图面（不含会话摘要），见 bundle.rebuild_classification_text。
 """
 from __future__ import annotations
 
@@ -39,11 +40,19 @@ class SemanticIntentShapeCache:
         self._order.append(key)
 
     @staticmethod
-    def make_key(tenant_id: str, classification_text: str, registry_version: str = "rv0") -> str:
-        h = hashlib.sha256(
-            f"{tenant_id}\n{registry_version}\n{classification_text}".encode("utf-8", errors="replace")
-        ).hexdigest()
-        return h
+    def make_key(
+        tenant_id: str,
+        classification_text: str,
+        registry_version: str = "rv0",
+        *,
+        session_id: str = "",
+    ) -> str:
+        sid = (session_id or "").strip()
+        if sid:
+            payload = f"{tenant_id}\n{registry_version}\n{sid}\n{classification_text}"
+        else:
+            payload = f"{tenant_id}\n{registry_version}\n{classification_text}"
+        return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
     def get(self, key: str) -> Optional[dict[str, Any]]:
         now = time.monotonic()

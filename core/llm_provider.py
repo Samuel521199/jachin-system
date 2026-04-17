@@ -571,6 +571,7 @@ def sanitize_llm_fallback_models(models: list[str]) -> list[str]:
     """
     将链中的 ollama/* 替换为 DASHSCOPE_REASONING_MODEL（qwen3.5-plus），去重并保持顺序。
     避免本机未启动 Ollama 时长时间 TCP 等待。
+    同时对每条应用 ``_normalize_model_for_litellm``（含通义快照 ``-YYYY-MM-DD`` 剥离）。
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -578,6 +579,7 @@ def sanitize_llm_fallback_models(models: list[str]) -> list[str]:
         s = str(m).strip()
         if not s:
             continue
+        s = _normalize_model_for_litellm(s)
         sl = s.lower()
         if sl.startswith("ollama/") or sl.startswith("ollama:"):
             s = DASHSCOPE_REASONING_MODEL

@@ -38,6 +38,8 @@ class GatewayContextBundle:
     attachments_raw: list[dict[str, Any]] = field(default_factory=list)
     attachments_sanitized: list[SanitizedFileMeta] = field(default_factory=list)
     routing_utterance: str = ""  # §6.1 供分类/L2 的路由文本（澄清挂接时可异于 user_input）
+    #: 仅本轮意图表面句（routing_utterance / user_input）经截断后的文本；**不含** short_memory。
+    #: 供路由、OOD、语义缓存键、embedding 分类面等；与 LLM 最终 system 中可单独注入的摘要解耦。
     classification_text: str = ""
     classification_truncated: bool = False
     #: 网关小模型判定：本轮是否需要实时外部知识（新闻/行情/文档/天气事实等）
@@ -67,14 +69,10 @@ class GatewayContextBundle:
         max_tok = int(cfg.get("classification_max_tokens", 2000))
         head = int(cfg.get("classification_head_tokens", 1000))
         tail = int(cfg.get("classification_tail_tokens", 1000))
-        tail = (self.routing_utterance or self.user_input or "").strip()
-        merged = (self.short_memory_context or "").strip()
-        if merged:
-            merged = merged + "\n---\n" + tail
-        else:
-            merged = tail
+        # 意图分类面：仅本轮用户/路由句，不与 short_memory 拼接（避免旧任务污染路由、缓存键与向量检索）
+        intent_only = (self.routing_utterance or self.user_input or "").strip()
         self.classification_text, self.classification_truncated = truncate_for_gateway_classification(
-            merged,
+            intent_only,
             max_tokens=max_tok,
             head_tokens=head,
             tail_tokens=tail,

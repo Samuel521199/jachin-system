@@ -12,6 +12,19 @@ def build_gateway_system_inject(bundle: Any) -> str:
         return ""
     parts: list[str] = []
 
+    # 多模态：必须锚定「本轮」图文，避免模型被会话历史里的其它任务（写文档/报表等）带偏
+    if bool(bundle.extra.get("attachment_has_image")):
+        parts.append(
+            "【多模态·本轮锚定】本轮用户消息**包含图像**。你必须仅依据**本轮用户文字**与**图像本身**"
+            "（含截图内文字与界面）作答。\n"
+            "禁止续写、收尾或复述**会话历史中**与本轮问题无关的先前任务（例如曾要求的「创建/保存文档」、"
+            "招聘流程、表格生成等），除非用户**本轮**明确要求对照或延续该任务。\n"
+            "若本轮仅为「图中是什么/描述截图/识别图片内容」等，应直接描述图像，"
+            "**不得**输出与图像无关的文档创建、落盘路径或其它任务式 Final Answer。\n"
+            "【输出格式】给用户看的结论必须以单独一行 **`Final Answer:`** 开头；"
+            "推理可写在 `Thought:`，但**禁止**仅输出 `Thought:` 而无 `Final Answer:`（否则用户会看到未脱壳的思考过程）。"
+        )
+
     nodes = bundle.extra.get("validated_subintents")
     if isinstance(nodes, list) and nodes:
         parts.append("【网关·子意图 DAG】请按依赖顺序处理各子句；未完成前一项前勿跳过。")

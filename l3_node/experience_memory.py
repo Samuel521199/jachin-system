@@ -28,6 +28,18 @@ def experience_rag_enabled() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+# 与网关纯净意图面一致：极短句不做经验检索，避免「重试」「好了」等与历史范例误匹配
+EXPERIENCE_RAG_MIN_INTENT_CHARS = 6
+
+
+def should_bypass_experience_rag_for_intent(intent_surface: str) -> bool:
+    """
+    是否跳过 Experience RAG（不检索 JSONL）。
+    intent_surface：本轮意图表面串，须与 GatewayContextBundle.classification_text / 用户句对齐，**不含**会话摘要。
+    """
+    return len((intent_surface or "").strip()) < EXPERIENCE_RAG_MIN_INTENT_CHARS
+
+
 def _experience_path() -> Path:
     raw = (os.environ.get("JACHIN_EXPERIENCE_JSONL") or "").strip()
     if raw:

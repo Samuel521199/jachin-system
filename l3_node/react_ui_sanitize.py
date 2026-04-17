@@ -1,4 +1,4 @@
-﻿"""
+"""
 WebSocket / 终端 UI 推送前的回复净化：减少 Thought、ReAct 标签与口吃式重复泄漏到用户可见区。
 
 环境变量：
@@ -24,6 +24,16 @@ _RE_ACTION_INPUT_BLOCK = re.compile(
 )
 _RE_OBSERVATION_LINE = re.compile(r"(?im)^\s*Observation\s*:\s*.+$", re.MULTILINE)
 _RE_FINAL_ANSWER_PREFIX = re.compile(r"(?im)^\s*Final\s+Answer\s*:\s*", re.MULTILINE)
+# 模型漏写 Final Answer、整段贴在 Thought: 后时，行首标签须剥离（_RE_THOUGHT_LINE 对长单段偶发匹配不全）
+_LEADING_THOUGHT_TAG = re.compile(r"(?is)^\s*Thought\s*:\s*")
+
+
+def strip_leading_thought_tag(text: str) -> str:
+    """去掉答复开头的 ``Thought:`` 标签，保留其后正文（不删 Final Answer: 段）。"""
+    s = (text or "").strip()
+    if not s:
+        return text or ""
+    return _LEADING_THOUGHT_TAG.sub("", s, count=1).strip()
 
 # 连续重复同一短句（口吃复读），保留一遍
 _RE_STUTTER = re.compile(r"(.{8,120})(\s*\1\s*){2,}", re.DOTALL)
@@ -87,6 +97,8 @@ def sanitize_final_answer_for_ui(text: str) -> str:
     if not (text or "").strip():
         return text
     s = text.strip()
+    # 先去掉误当整段答案的 Thought: 行首标签（再处理 Final Answer:）
+    s = strip_leading_thought_tag(s)
     # 若整段以 Final Answer: 开头，去掉标签
     s = _RE_FINAL_ANSWER_PREFIX.sub("", s, count=1)
     s = _RE_THOUGHT_LINE.sub("", s)

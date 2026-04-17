@@ -47,6 +47,7 @@
 | [TESTING_GUIDE.md](./TESTING_GUIDE.md) | 测试指南 |
 | [L3_LARK_CONFIG_SINGLE_SOURCE.md](./L3_LARK_CONFIG_SINGLE_SOURCE.md) | **L3 × 飞书**：`plugin/.env`、`im_channels.yaml`、终端 WS、工具发信 — **单一说明** |
 | [architecture/DESKTOP_OMNI_MULTIMODAL_ATTACHMENT_PERFORMANCE.md](./architecture/DESKTOP_OMNI_MULTIMODAL_ATTACHMENT_PERFORMANCE.md) | **桌面 Omni 多模态附件**：大附件卡顿/假死根因、Worker 与 L3 WS 大帧解析、xlsx 提取限额 — **排障 SSOT** |
+| [RELEASE_NOTES_RECENT_v0.9.12_v0.9.22.md](./RELEASE_NOTES_RECENT_v0.9.12_v0.9.22.md) | **近期版本摘要（示例清单）**：v0.9.12～v0.9.22 主要变更与文件锚点 |
 
 ---
 

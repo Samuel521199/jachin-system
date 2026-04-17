@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -1342,6 +1342,37 @@ def _try_coerce_json_tool_intent_to_native(text: str) -> dict[str, Any] | None:
     return {"type": "native", "tool": tid, "input": inp_str}
 
 
+def _extract_line_anchored_final_answer_block(text: str) -> str | None:
+    """
+    仅解析「单独成行」的 Final Answer:/Answer:。
+    禁止用全文子串匹配：Thought 里常见「没写 Final Answer:」「必须以 Final Answer: 开头」等，
+    会误把其后正文当成 Final Answer 起点，导致日志里 preview 以「，于是…」开头、与流式/前台错位。
+    """
+    t = text or ""
+    if not t.strip():
+        return None
+    _flags = re.DOTALL | re.MULTILINE | re.IGNORECASE
+    m = re.search(
+        r"^\s*Final\s+Answer\s*:\s*(.*?)(?=^\s*(?:Thought|Action|Observation)\s*:|\Z)",
+        t,
+        _flags,
+    )
+    if m:
+        c = (m.group(1) or "").strip()
+        if c:
+            return c
+    m2 = re.search(
+        r"^\s*Answer\s*:\s*(.*?)(?=^\s*(?:Thought|Action|Observation|Final)\s*:|\Z)",
+        t,
+        _flags,
+    )
+    if m2:
+        c = (m2.group(1) or "").strip()
+        if c:
+            return c
+    return None
+
+
 def _parse_action(
     llm_output: str,
     skills: list[dict[str, Any]],
@@ -1467,10 +1498,9 @@ def _parse_action(
             if re.search(pat, text, re.IGNORECASE):
                 return {"type": "native", "tool": tool_id, "input": _extract_input_after_action(pat)}
     # 仅当本轮未识别到任何 Action 时，再接受 Final Answer / Answer（避免与上文「同轮伪 ReAct 剧」冲突）
-    for pattern in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        if m:
-            return {"type": "answer", "content": m.group(1).strip()}
+    _line_fa = _extract_line_anchored_final_answer_block(text)
+    if _line_fa is not None:
+        return {"type": "answer", "content": _line_fa}
     # ReAct 裸文本兜底：无 Final Answer 捕获且无 Action: 行时，避免解析失败拖死循环（如后台报告漏前缀）
     if not pure_json_contract:
         try:
@@ -1478,7 +1508,16 @@ def _parse_action(
         except (TypeError, ValueError):
             _min_naked = 20
         if len(text) > _min_naked and not re.search(r"(?i)\bAction\s*:", text):
-            return {"type": "answer", "content": text}
+            # 裸文本兜底：模型常只写 Thought: 却漏写 Final Answer:，勿把「Thought:」标签连同脚手架泄漏给用户
+            try:
+                from l3_node.react_ui_sanitize import strip_leading_thought_tag
+
+                _stripped = strip_leading_thought_tag(text)
+            except Exception:
+                _stripped = text
+            if not (_stripped or "").strip():
+                return None
+            return {"type": "answer", "content": _stripped}
     return None
 
 
@@ -6121,6 +6160,7 @@ async def run_agent(
                         _gateway_bundle.tenant_id or "default",
                         _ct0_key,
                         _gateway_bundle.registry_version,
+                        session_id=_gateway_bundle.session_id or "",
                     )
                     _snap0 = _c0.get(_k0)
                     if isinstance(_snap0, dict) and isinstance(_snap0.get("output_format_signals"), dict):
@@ -6147,6 +6187,7 @@ async def run_agent(
                             _gateway_bundle.tenant_id or "default",
                             _ct0_key,
                             _gateway_bundle.registry_version,
+                            session_id=_gateway_bundle.session_id or "",
                         )
                         _ge_snap = {
                             k: _gateway_bundle.extra.get(k)
@@ -6345,6 +6386,7 @@ async def run_agent(
                     _gateway_bundle.tenant_id or "default",
                     _classify_text,
                     _gateway_bundle.registry_version,
+                    session_id=_gateway_bundle.session_id or "",
                 )
                 _cached = _cache.get(_ck)
                 if _cached and isinstance(_cached.get("output_format_signals"), dict):
@@ -6357,6 +6399,7 @@ async def run_agent(
                         _gateway_bundle.tenant_id or "default",
                         _classify_text,
                         _gateway_bundle.registry_version,
+                        session_id=_gateway_bundle.session_id or "",
                     )
                     _cache.set(_ck, {"output_format_signals": format_signals_to_dict(_fmt_sig_opt)})
             _fmt_sig = _fmt_sig_opt
@@ -6498,6 +6541,16 @@ async def run_agent(
             _ig_adv = get_intent_gateway_config()
             if not bool(_ig_adv.get("chief_advisor_prompt_enabled", True)):
                 _chief_advisor_mode = False
+            # 含图且短句看图问答：关闭「统帅顾问」复合口吻，减少续写会话里无关长任务（如曾要求的写文档）
+            if _chief_advisor_mode and bool(_gateway_bundle.extra.get("attachment_has_image")):
+                import re as _re_mmqa
+
+                _u_mm = (user_input or "").strip()
+                if len(_u_mm) < 220 and _re_mmqa.search(
+                    r"图(?:片|里|中|上)|截(?:图|屏)|(?:什么|啥)内容|描述.*图|看图",
+                    _u_mm,
+                ):
+                    _chief_advisor_mode = False
     except Exception as _adv_ex:
         logger.debug("[L3 Agent] environment_report / chief_advisor 片段跳过: %s", _adv_ex)
 
@@ -6509,15 +6562,33 @@ async def run_agent(
 
     _experience_few_shots = ""
     _exp_query = (user_input or "").strip()
+    # 仅用本轮用户表面句做经验检索 query 文本
     if not _exp_query and _gateway_bundle is not None:
-        _exp_query = (
-            str(_gateway_bundle.classification_text or _gateway_bundle.user_input or "").strip()
-        )
+        _exp_query = str(_gateway_bundle.user_input or _gateway_bundle.routing_utterance or "").strip()
+    # 门控表面：与网关纯净 classification_text 对齐（与 short_memory 解耦，见 bundle.rebuild_classification_text）
+    _exp_intent_surface = (
+        str(_gateway_bundle.classification_text or "").strip()
+        if _gateway_bundle is not None
+        else _exp_query
+    )
+    _attachment_has_image = bool(_gateway_bundle and _gateway_bundle.extra.get("attachment_has_image"))
     try:
-        from l3_node.experience_memory import experience_rag_enabled, format_experience_block_for_prompt
+        from l3_node.experience_memory import (
+            experience_rag_enabled,
+            format_experience_block_for_prompt,
+            should_bypass_experience_rag_for_intent,
+        )
 
+        _exp_bypass_short = should_bypass_experience_rag_for_intent(_exp_intent_surface)
         # 直连 completion 不走带工具的 system；纯寒暄也不拉经验库（易混入招聘等域 Few-Shot）
-        if experience_rag_enabled() and on_step and not _try_direct and not _trivial_chitchat:
+        if (
+            experience_rag_enabled()
+            and on_step
+            and not _try_direct
+            and not _trivial_chitchat
+            and not _attachment_has_image
+            and not _exp_bypass_short
+        ):
             try:
                 on_step(
                     "system_status",
@@ -6526,7 +6597,14 @@ async def run_agent(
                 )
             except Exception:
                 pass
-        if experience_rag_enabled() and not _try_direct and not _trivial_chitchat:
+        # 含图像时禁用经验 Few-Shot；极短意图跳过检索（避免误命中 Few-Shot）
+        if (
+            experience_rag_enabled()
+            and not _try_direct
+            and not _trivial_chitchat
+            and not _attachment_has_image
+            and not _exp_bypass_short
+        ):
             _experience_few_shots = format_experience_block_for_prompt(_exp_query[:8000], top_k=2)
     except Exception:
         _experience_few_shots = ""
