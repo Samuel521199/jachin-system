@@ -1,6 +1,6 @@
 {
   "name": "jachin-desktop",
-  "version": "0.9.24",
+  "version": "0.9.3",
   "private": true,
   "type": "module",
   "description": "Jachin-System Desktop Console - Tauri v2 + React + TypeScript",

@@ -1,4 +1,4 @@
-{
+﻿{
   "mcp_servers": [
     {
       "id": "official-fetch",
@@ -113,10 +113,44 @@
       "args": ["-y", "@playwright/mcp@latest"]
     },
     {
+      "id": "official-mcp-puppeteer",
+      "name": "MCP Puppeteer（Anthropic 官方 @modelcontextprotocol/server-puppeteer）",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+    },
+    {
+      "id": "browser-use",
+      "name": "Browser-Use（Agent 级浏览器 MCP · browser-use[cli]）",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "browser-use[cli]",
+        "browser-use",
+        "--mcp"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+        "BROWSER_USE_HEADLESS": "${BROWSER_USE_HEADLESS}",
+        "HTTP_PROXY": "${HTTP_PROXY}",
+        "HTTPS_PROXY": "${HTTPS_PROXY}"
+      }
+    },
+    {
       "id": "notion-remote-oauth",
       "name": "Notion 托管 MCP（OAuth；mcp-remote 桥接 Streamable HTTP）",
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+    },
+    {
+      "id": "mcp-pyautogui-server",
+      "name": "桌面物理自动化（mcp-pyautogui-server / PyAutoGUI）",
+      "command": "uvx",
+      "args": ["mcp-pyautogui-server"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
     }
   ]
 }

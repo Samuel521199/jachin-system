@@ -1,0 +1,17 @@
+﻿{
+  "id": "com.jachin.mcp.stub.desktop.physics.automation",
+  "name": "桌面物理自动化 MCP（mcp-pyautogui-server）",
+  "version": "1.0.0",
+  "description": "PyAutoGUI stdio MCP：截屏、图像定位、键鼠；Canvas/无 DOM。PyPI mcp-pyautogui-server。替代已不可用的 v88/desktop-controller。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "mcp-pyautogui-server",
+    "command": "uvx",
+    "args": ["mcp-pyautogui-server"],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}

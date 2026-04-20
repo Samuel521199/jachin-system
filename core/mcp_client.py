@@ -323,6 +323,23 @@ def _stdio_args_reference_missing_py_file(args: Any) -> Optional[str]:
     return None
 
 
+def _stdio_command_is_bare_executable_name(command: str) -> bool:
+    """
+    裸命令名（如 python、uvx）须交给 PATH / CreateProcess 解析。
+    若误用 Path(command).is_file()，在 L3 cwd=仓库根时会把根目录下同名空文件/占位文件当成解释器，Windows 上触发 WinError 193。
+    """
+    s = (command or "").strip()
+    if not s:
+        return False
+    if sys.platform == "win32":
+        if s.startswith("\\\\"):
+            return False
+        if len(s) > 1 and s[1] == ":":
+            return False
+        return "\\" not in s and "/" not in s
+    return "/" not in s and not s.startswith(("./", "../"))
+
+
 def _resolve_stdio_command(command: str) -> str:
     """
     Windows 下 npx/npm 常为 .cmd，部分环境下需绝对路径才能稳定拉起 stdio 子进程。
@@ -332,7 +349,8 @@ def _resolve_stdio_command(command: str) -> str:
         return command
     try:
         p = Path(command)
-        if p.is_file():
+        # 仅对显式路径（绝对路径或含路径分隔符）做「已是文件则定型为绝对路径」
+        if not _stdio_command_is_bare_executable_name(command) and p.is_file():
             return str(p.resolve())
     except OSError:
         pass

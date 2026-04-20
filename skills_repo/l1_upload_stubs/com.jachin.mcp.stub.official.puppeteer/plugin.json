@@ -1,0 +1,14 @@
+﻿{
+  "id": "com.jachin.mcp.stub.official.puppeteer",
+  "name": "MCP Puppeteer 官方（stub）",
+  "version": "1.0.0",
+  "description": "Anthropic @modelcontextprotocol/server-puppeteer：无头浏览器、Console、截图与 DOM 操作。",
+  "type": "mcp",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "official-mcp-puppeteer",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+  }
+}

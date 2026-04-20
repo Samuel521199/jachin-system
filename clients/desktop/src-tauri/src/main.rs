@@ -1,4 +1,4 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -17,6 +17,7 @@ mod reminder_scheduler;
 mod stt;
 mod tts;
 mod window;
+mod omni_hotkey_mirror_trace;
 
 #[cfg(windows)]
 #[link(name = "user32")]
@@ -751,7 +752,7 @@ fn hide_chat_fully_reset(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 切换 Omni 条显示；由托盘、全局快捷键等调用
-fn toggle_chat_omni(app: &tauri::AppHandle) {
+pub(crate) fn toggle_chat_omni(app: &tauri::AppHandle) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(chat) = app_clone.get_webview_window("chat") {
@@ -768,12 +769,14 @@ fn toggle_chat_omni(app: &tauri::AppHandle) {
                 CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
                 emit_omni_companion_ui(&app_clone, false);
                 let _ = chat.show();
-                let _ = chat.set_focus();
+                let fr = chat.set_focus();
+                omni_hotkey_mirror_trace::trace_set_focus_result("toggle_show_from_hidden", &fr);
                 return;
             }
             if companion {
                 let _ = restore_chat_full_omni(&app_clone);
-                let _ = chat.set_focus();
+                let fr = chat.set_focus();
+                omni_hotkey_mirror_trace::trace_set_focus_result("toggle_restore_from_companion", &fr);
                 return;
             }
             let _ = minimize_chat_to_companion(&app_clone);
@@ -781,27 +784,60 @@ fn toggle_chat_omni(app: &tauri::AppHandle) {
     });
 }
 
-/// 注册 Omni 全局快捷键（PowerToys Run 等常占用 Alt+Space，故做多候选，失败不崩溃）
+/// 注册 Omni 全局快捷键：按顺序尝试，被占用则换下一个（失败不崩溃）
 fn register_omni_hotkeys(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    const CANDIDATES: &[&str] = &["alt+shift+space", "ctrl+shift+space", "alt+space"];
+    omni_hotkey_mirror_trace::trace(
+        "MIRROR_TRACE_SESSION",
+        serde_json::json!({
+            "log_file": omni_hotkey_mirror_trace::resolved_log_file().to_string_lossy(),
+            "note": "grep HOTKEY_TRACE or Event: for A/B machine diff",
+        }),
+    );
+    let _ = app.global_shortcut().unregister_all();
+
+    const CANDIDATES: &[&str] = &[
+        "ctrl+alt+x",
+        "alt+q",
+        "ctrl+shift+space",
+        "alt+space",
+    ];
     let mut registered = false;
     for combo in CANDIDATES {
-        match app.global_shortcut().on_shortcut(*combo, |app, _, event| {
+        let r = app.global_shortcut().on_shortcut(*combo, |app, shortcut, event| {
+            let state_s = match event.state {
+                ShortcutState::Pressed => "Pressed",
+                ShortcutState::Released => "Released",
+            };
+            let shortcut_hint = format!("{:?}", shortcut);
+            omni_hotkey_mirror_trace::trace_raw_hotkey(&shortcut_hint, state_s);
             if event.state != ShortcutState::Pressed {
                 return;
             }
+            omni_hotkey_mirror_trace::trace_signal_received_by_rust(app, &shortcut_hint);
             toggle_chat_omni(app);
-        }) {
+        });
+        match &r {
             Ok(()) => {
-                eprintln!("[Omni] 全局快捷键已注册: {}（若需 Alt+Space，请在 PowerToys 中改掉「Run」占用）", combo);
+                omni_hotkey_mirror_trace::trace_registration(combo, true, None);
+                eprintln!(
+                    "[Omni] 全局快捷键已注册: {}（前者被占用时会自动尝试列表中的下一个）",
+                    combo
+                );
                 registered = true;
                 break;
             }
-            Err(e) => eprintln!("[Omni] 跳过 {}: {}", combo, e),
+            Err(e) => {
+                omni_hotkey_mirror_trace::trace_registration(combo, false, Some(&e.to_string()));
+                eprintln!("[Omni] 跳过 {}: {}", combo, e);
+            }
         }
     }
     if !registered {
+        omni_hotkey_mirror_trace::trace(
+            "HOTKEY_REGISTER_ALL_FAILED",
+            serde_json::json!({ "note": "no_candidate_registered" }),
+        );
         eprintln!(
             "[Omni] 未能注册全局快捷键，请使用托盘图标左键打开 Omni 条，或释放 Alt+Space 后再试。"
         );
@@ -1149,9 +1185,16 @@ fn main() {
                 }
             });
             
-            // 系统托盘：左键 Omni；右键为系统上下文菜单（打开控制台 / 退出）
+            // 系统托盘：左键切换 Omni；右键菜单可打开交互界面 / 控制台 / 退出
             if let Some(icon) = app.default_window_icon() {
                 let tray_build = (|| -> Result<(), tauri::Error> {
+                    let item_chat = MenuItem::with_id(
+                        app,
+                        "tray_chat",
+                        "打开交互界面",
+                        true,
+                        None::<&str>,
+                    )?;
                     let item_console = MenuItem::with_id(
                         app,
                         "tray_console",
@@ -1162,6 +1205,7 @@ fn main() {
                     let item_quit =
                         MenuItem::with_id(app, "tray_quit", "退出 Jachin", true, None::<&str>)?;
                     let tray_menu = MenuBuilder::new(app)
+                        .item(&item_chat)
                         .item(&item_console)
                         .item(&item_quit)
                         .build()?;
@@ -1169,11 +1213,14 @@ fn main() {
                     let _tray = TrayIconBuilder::new()
                         .icon(icon.clone())
                         .tooltip(
-                            "Jachin · 左键打开 Omni · 右键菜单可打开控制台或退出 · Alt+Shift+Space",
+                            "Jachin · 左键切换 Omni · 右键可打开交互界面或控制台 · 快捷键 Ctrl+Alt+X 等",
                         )
                         .menu(&tray_menu)
                         .on_menu_event(|app, event| {
                             match event.id.as_ref() {
+                                "tray_chat" => {
+                                    toggle_chat_omni(app.app_handle());
+                                }
                                 "tray_console" => {
                                     let ah = app.app_handle().clone();
                                     let ah_focus = ah.clone();

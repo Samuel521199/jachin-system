@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -701,10 +701,15 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
             _gw_dl = 0.0
         _sniff_ws = body.get("gateway_workspace_dir") or body.get("git_workspace_dir")
         _sniff_ws = str(_sniff_ws).strip() if _sniff_ws else None
+        try:
+            _mi = int(body.get("max_iterations") or 8)
+        except (TypeError, ValueError):
+            _mi = 8
+        _mi = max(1, min(_mi, 48))
         answer = await run_agent(
             user_input,
             engine,
-            max_iterations=8,
+            max_iterations=_mi,
             implicit_signals=_isig,
             implicit_attribution=_iatt,
             attachments_metadata=_att_meta,

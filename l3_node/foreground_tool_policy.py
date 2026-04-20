@@ -1,4 +1,4 @@
-"""前台同步工具超时策略（默认 5s，可配置与豁免）。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
+﻿"""前台同步工具超时策略（默认 5s，可配置与豁免）。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
 from __future__ import annotations
 
 import json
@@ -17,6 +17,8 @@ _DEFAULT_ALLOW_PREFIXES = (
     "core:submit_background_task",
     "core:check_background_task",
     "core:check_interrupted_tasks",
+    # Anthropic 官方 Puppeteer MCP：navigate/screenshot 常 >5s，默认前台同步预算会误杀
+    "mcp:puppeteer",
 )
 
 # 已废弃默认子串豁免（易误伤如 mcp:atom_download_*）；请改用 MCP 工具元数据 long_running 或 long_running_tool_ids。
@@ -41,8 +43,22 @@ def load_foreground_tools_config() -> dict[str, Any]:
         "exempt_channels": list(_DEFAULT_EXEMPT_CHANNELS),
         "allow_prefixes": list(_DEFAULT_ALLOW_PREFIXES),
         "allow_substrings": list(_DEFAULT_ALLOW_SUBSTRINGS),
-        # mcp:fetch 常拉取大页/XML，易超默认 5s；Tavily 等检索工具由 MCP 元数据 long_running 声明
-        "long_running_tool_ids": ["mcp:fetch"],
+        # mcp:fetch 常拉取大页/XML；无头浏览器与物理键鼠单次调用常 >5s（冷启动/截屏/导航）
+        "long_running_tool_ids": [
+            "mcp:fetch",
+            "mcp:puppeteer_navigate",
+            "mcp:puppeteer_screenshot",
+            "mcp:puppeteer_evaluate",
+            "mcp:puppeteer_click",
+            "mcp:puppeteer_fill",
+            "mcp:puppeteer_hover",
+            "mcp:screenshot",
+            "mcp:move_mouse",
+            "mcp:click_mouse",
+            "mcp:double_click_mouse",
+            "mcp:scroll_up",
+            "mcp:scroll_down",
+        ],
     }
     p = _nexus_path()
     if not p.exists():
