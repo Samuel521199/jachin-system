@@ -1,4 +1,4 @@
-﻿{
+{
   "mcp_servers": [
     {
       "id": "official-fetch",
@@ -150,6 +150,20 @@
       "args": ["mcp-pyautogui-server"],
       "env": {
         "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "kalaroko_monitor",
+      "name": "Kalaroko Web 性能监控（仓库 l3_client/local_mcps/kalaroko_monitor）",
+      "command": "__JACHIN_MCP_PYTHON__",
+      "args": [
+        "-m",
+        "l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor"
+      ],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "KALAROKO_MONITOR_ALLOWED_HOSTS": "kalaroko.com,www.kalaroko.com,gwp.heronpro.xin",
+        "KALAROKO_PERF_HISTORY_PATH": "__JACHIN_WORKSPACE__/kalaroko_perf/history.jsonl"
       }
     }
   ]

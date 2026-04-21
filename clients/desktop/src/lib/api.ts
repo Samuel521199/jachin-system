@@ -1136,6 +1136,28 @@ export function getL3LogsStreamUrls(): string[] {
   return [...new Set(urls)];
 }
 
+/** Kalaroko E2E 巡检 SSE（与 getL3LogsStreamUrl 同源 base / 代理逻辑） */
+export function getKalarokoMonitorStreamUrl(opts?: {
+  runs?: number;
+  interval?: number;
+  skipPlaywright?: boolean;
+}): string {
+  const sp = new URLSearchParams();
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
+  if (opts?.skipPlaywright) sp.set("skip_playwright", "1");
+  const q = sp.toString();
+  const path = `/api/v1/monitor/stream${q ? `?${q}` : ""}`;
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return `${envUrl.replace(/\/$/, "")}${path}`;
+  }
+  if (L3_DEV_PROXY) {
+    return `${L3_DEV_PROXY}${path}`;
+  }
+  return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
+}
+
 /**
  * 获取 L3 技能 API 的 base URL（与 invokeL3Skills 逻辑一致，供流式等复用）
  */

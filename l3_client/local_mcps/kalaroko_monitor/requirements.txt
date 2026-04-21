@@ -1,0 +1,6 @@
+# 本目录 MCP 最小依赖（亦可使用仓库根 requirements_kalaroko.txt）
+# 部署后必须执行: playwright install chromium
+
+mcp>=1.0.0
+httpx>=0.25.0
+playwright>=1.40.0

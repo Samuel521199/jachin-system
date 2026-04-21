@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Sidebar - 侧舷航行桥 (The Bridge)
  * 全息悬浮板 + 导航左侧光柱激活态 + 底部 SystemHeartbeat
  */
@@ -13,6 +13,7 @@ import {
   Settings,
   Calendar as CalIcon,
   Mic,
+  Radar,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "../utils/cn";
@@ -37,6 +38,12 @@ const navItems = [
     labelKey: "wakeMode" as const,
     titleKey: "wakeModeTitle" as const,
     icon: Mic,
+  },
+  {
+    path: "/monitor",
+    label: "巡检中枢",
+    icon: Radar,
+    title: "Kalaroko 全链路多轮巡检、实时日志与 AI 综合分析",
   },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
   {

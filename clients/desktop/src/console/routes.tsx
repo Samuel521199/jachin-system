@@ -13,6 +13,7 @@ import { Persona } from "./pages/Persona";
 import { SettingsPanel } from "./pages/SettingsPanel";
 import { WakeModePanel } from "./pages/WakeModePanel";
 import { SafetyLockApproval } from "./pages/SafetyLockApproval";
+import { MonitorMatrix } from "./pages/MonitorMatrix";
 
 export const consoleRoutes = [
   {
@@ -25,6 +26,7 @@ export const consoleRoutes = [
       { path: "safety-lock", element: <SafetyLockApproval /> },
       { path: "calendar", element: <Calendar /> },
       { path: "skills", element: <SkillMatrix /> },
+      { path: "monitor", element: <MonitorMatrix /> },
       { path: "network", element: <JachinLink /> },
       { path: "wake", element: <WakeModePanel /> },
       { path: "settings", element: <Persona /> },

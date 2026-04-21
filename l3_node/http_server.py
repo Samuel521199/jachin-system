@@ -457,6 +457,111 @@ async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
     return response
 
 
+async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamResponse":
+    """GET /api/v1/monitor/stream — Kalaroko 默认场景多轮 E2E + 末尾 Qwen 分析，SSE 实时行日志。"""
+    import importlib.util
+    import sys
+    import time
+
+    try:
+        runs = int(request.query.get("runs", "4"))
+    except ValueError:
+        runs = 4
+    try:
+        interval = int(request.query.get("interval", "30"))
+    except ValueError:
+        interval = 30
+    skip_pw = str(request.query.get("skip_playwright", "")).lower() in ("1", "true", "yes", "on")
+
+    response = _stream_response()
+    await response.prepare(request)
+
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+    line_q: asyncio.Queue = asyncio.Queue()
+
+    def line_sink(line: str) -> None:
+        try:
+            line_q.put_nowait(line)
+        except Exception:
+            pass
+
+    async def _load_and_run() -> dict[str, Any]:
+        script = root / "scripts" / "test_kalaroko_default_scenarios_e2e.py"
+        spec = importlib.util.spec_from_file_location("_kalaroko_e2e_sse", script)
+        if spec is None or spec.loader is None:
+            return {
+                "ok": False,
+                "exit_code": 2,
+                "error": "无法加载 scripts/test_kalaroko_default_scenarios_e2e.py",
+                "markdown_report": None,
+                "llm_analysis": None,
+            }
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        run_fn = getattr(mod, "run_kalaroko_batch_test", None)
+        if run_fn is None:
+            return {
+                "ok": False,
+                "exit_code": 2,
+                "error": "脚本缺少 run_kalaroko_batch_test",
+                "markdown_report": None,
+                "llm_analysis": None,
+            }
+        return await run_fn(runs, interval, skip_playwright=skip_pw, line_sink=line_sink)
+
+    task = asyncio.create_task(_load_and_run())
+    last_keepalive = time.monotonic()
+    keepalive_sec = 15.0
+
+    async def _write_line_obj(line: str) -> None:
+        payload = {"line": line}
+        await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+        if hasattr(response, "drain"):
+            await response.drain()
+
+    try:
+        await _write_line_obj("[E2E] Kalaroko 全链路巡检任务已排队执行…")
+        while True:
+            try:
+                line = await asyncio.wait_for(line_q.get(), timeout=0.35)
+                await _write_line_obj(line)
+                last_keepalive = time.monotonic()
+            except asyncio.TimeoutError:
+                if task.done():
+                    break
+                if time.monotonic() - last_keepalive >= keepalive_sec:
+                    await response.write(b": keepalive\n\n")
+                    last_keepalive = time.monotonic()
+
+        while True:
+            try:
+                line = line_q.get_nowait()
+                await _write_line_obj(line)
+            except asyncio.QueueEmpty:
+                break
+
+        exc = task.exception()
+        if exc is not None:
+            payload = {"type": "error", "message": str(exc)}
+            await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+        else:
+            result = task.result()
+            payload = {"type": "done", **result}
+            await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+    except (ConnectionResetError, asyncio.CancelledError):
+        task.cancel()
+    except Exception as e:
+        logger.warning("[L3 HTTP] monitor stream failed: %s", e)
+        try:
+            await response.write(f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n".encode("utf-8"))
+        except Exception:
+            pass
+    return response
+
+
 async def _handle_health(request) -> "aiohttp.web.Response":
     """GET /api/health - 健康检查，含 L2 连接状态（供 run_l3.ps1 等轮询）"""
     import os
@@ -1117,6 +1222,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/scheduler/list_jobs", _handle_scheduler_list_jobs)
     app.router.add_get("/api/health", _handle_health)
     app.router.add_get("/api/system/logs/stream", _handle_system_logs_stream)
+    app.router.add_get("/api/v1/monitor/stream", _handle_monitor_kalaroko_stream)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
