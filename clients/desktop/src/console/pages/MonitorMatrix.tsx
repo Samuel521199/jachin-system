@@ -1,5 +1,5 @@
 /**
- * 巡检中枢 — Kalaroko 默认场景多轮 E2E + Qwen 综合分析（SSE / Mind Stream）
+ * 巡检中枢 — Kalaroko 默认场景多轮 E2E + AI 综合分析（SSE / Mind Stream）
  * SSE URL 经由 getKalarokoMonitorStreamUrl：开发环境走 Vite `/l3` 代理，避免直连端口跨域。
  */
 
@@ -8,7 +8,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Radar } from "lucide-react";
 import { cn } from "../../utils/cn";
-import { getKalarokoMonitorStreamUrl } from "../../lib/api";
+import { getKalarokoMonitorStreamUrl, getL3MonitorApiUrl } from "../../lib/api";
 
 export function MonitorMatrix() {
   const [runs, setRuns] = useState(4);
@@ -19,12 +19,75 @@ export function MonitorMatrix() {
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [doneOk, setDoneOk] = useState<boolean | null>(null);
   const [showNotify, setShowNotify] = useState(false);
+  const [schedulerActive, setSchedulerActive] = useState(false);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(
     () => () => {
       esRef.current?.close();
+    },
+    []
+  );
+
+  const refreshScheduleStatus = useCallback(async () => {
+    try {
+      const url = getL3MonitorApiUrl("/api/v1/monitor/schedule/status");
+      const res = await fetch(url);
+      const data = (await res.json()) as { ok?: boolean; active?: boolean };
+      if (typeof data.active === "boolean") {
+        setSchedulerActive(data.active);
+      }
+    } catch {
+      setSchedulerActive(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void refreshScheduleStatus();
+    const id = window.setInterval(() => {
+      if (!cancelled) void refreshScheduleStatus();
+    }, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [refreshScheduleStatus]);
+
+  const handleStopInspection = useCallback(async () => {
+    try {
+      const url = getL3MonitorApiUrl("/api/v1/monitor/stop");
+      const res = await fetch(url, { method: "POST" });
+      const ok = res.ok;
+      setLogs((prev) => [...prev, ok ? "> 已发送停止信号（下一检查点生效）…" : "> 停止请求失败（HTTP）。"]);
+    } catch {
+      setLogs((prev) => [...prev, "> 停止请求失败（网络）。"]);
+    }
+  }, []);
+
+  const handleScheduleToggle = useCallback(
+    async (enabled: boolean) => {
+      setScheduleLoading(true);
+      try {
+        const url = getL3MonitorApiUrl("/api/v1/monitor/schedule/toggle");
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          enabled?: boolean;
+          active?: boolean;
+        };
+        const on = typeof data.enabled === "boolean" ? data.enabled : typeof data.active === "boolean" ? data.active : enabled;
+        setSchedulerActive(on);
+      } catch {
+        setLogs((prev) => [...prev, "> [WARN] 定时守护开关请求失败。"]);
+      } finally {
+        setScheduleLoading(false);
+      }
     },
     []
   );
@@ -58,7 +121,11 @@ export function MonitorMatrix() {
         const data = JSON.parse(event.data) as Record<string, unknown>;
         if (data.type === "done") {
           const ok = data.ok === true;
+          const cancelled = data.cancelled === true;
           setDoneOk(ok);
+          if (cancelled) {
+            setLogs((prev) => [...prev, "> █ 巡检已由用户停止（部分轮次结果可能已生成）。"]);
+          }
           const md = data.markdown_report;
           if (typeof md === "string" && md.length > 0) {
             setReportMarkdown(md);
@@ -129,49 +196,93 @@ export function MonitorMatrix() {
           >
             ■ Kalaroko E2E 巡检雷达
           </h2>
-          <p className="text-xs text-cyan-700/90">巡检中枢 · Mind Stream · Qwen 综合分析</p>
+          <p className="text-xs text-cyan-700/90">巡检中枢 · Mind Stream · AI 综合分析</p>
         </div>
       </header>
 
       {/* 控制台区：极简表单 */}
-      <section className="flex flex-shrink-0 flex-wrap items-end gap-4 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.05] p-4">
-        <label className="flex flex-col gap-1 text-xs text-cyan-600/90">
-          执行轮数 (Runs)
-          <input
-            type="number"
-            min={1}
-            max={99}
-            value={runs}
-            disabled={running}
-            onChange={(e) => setRuns(Number(e.target.value))}
-            className="w-24 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-cyan-600/90">
-          轮次间隔 (秒)
-          <input
-            type="number"
-            min={0}
-            max={3600}
-            value={intervalSec}
-            disabled={running}
-            onChange={(e) => setIntervalSec(Number(e.target.value))}
-            className="w-28 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
-          />
-        </label>
-        <button
-          type="button"
-          disabled={running}
-          onClick={handleStart}
-          className={cn(
-            "ml-auto rounded-lg px-5 py-2.5 text-sm font-bold transition-all",
-            running
-              ? "cursor-not-allowed bg-slate-800 text-slate-500"
-              : "bg-cyan-400 text-black shadow-[0_0_24px_rgba(34,211,238,0.35)] hover:bg-cyan-300"
-          )}
-        >
-          {running ? "巡检中…" : "🚀 启动全链路巡检"}
-        </button>
+      <section className="flex flex-shrink-0 flex-col gap-4 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.05] p-4">
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1 text-xs text-cyan-600/90">
+            执行轮数 (Runs)
+            <input
+              type="number"
+              min={1}
+              max={99}
+              value={runs}
+              disabled={running}
+              onChange={(e) => setRuns(Number(e.target.value))}
+              className="w-24 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-cyan-600/90">
+            轮次间隔 (秒)
+            <input
+              type="number"
+              min={0}
+              max={3600}
+              value={intervalSec}
+              disabled={running}
+              onChange={(e) => setIntervalSec(Number(e.target.value))}
+              className="w-28 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
+            />
+          </label>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={running}
+              onClick={handleStart}
+              className={cn(
+                "rounded-lg px-5 py-2.5 text-sm font-bold transition-all",
+                running
+                  ? "cursor-not-allowed bg-slate-800 text-slate-500"
+                  : "bg-cyan-400 text-black shadow-[0_0_24px_rgba(34,211,238,0.35)] hover:bg-cyan-300"
+              )}
+            >
+              {running ? "巡检中…" : "🚀 启动全链路巡检"}
+            </button>
+            <button
+              type="button"
+              disabled={!running}
+              onClick={() => void handleStopInspection()}
+              className={cn(
+                "rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all",
+                running
+                  ? "border-rose-500/50 bg-rose-950/40 text-rose-200 hover:bg-rose-900/50"
+                  : "cursor-not-allowed border-slate-700 bg-slate-900/40 text-slate-600"
+              )}
+            >
+              🛑 停止巡检
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-4 border-t border-cyan-500/15 pt-4">
+          <div className="text-xs font-medium text-cyan-500/90">⏲️ 定时守护进程</div>
+          <div
+            className="flex items-center gap-2"
+            title="每小时自动巡检（4 轮）与每日北京时间 08:00 晨报（Cron 使用 UTC 00:00，L3 内 APScheduler）"
+          >
+            <span
+              className={cn(
+                "inline-block h-2.5 w-2.5 shrink-0 rounded-full",
+                schedulerActive === true ? "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.7)]" : "bg-slate-600"
+              )}
+              aria-hidden
+            />
+            <span className="text-xs text-cyan-600/85">{schedulerActive ? "Active" : "Inactive"}</span>
+          </div>
+          <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-cyan-600/90">
+            <span className="select-none">每小时巡检 &amp; 每日 8:00 晨报</span>
+            <input
+              type="checkbox"
+              role="switch"
+              className="h-4 w-9 cursor-pointer appearance-none rounded-full border border-cyan-500/40 bg-black/70 transition checked:bg-emerald-600/80 disabled:opacity-40"
+              checked={schedulerActive}
+              disabled={scheduleLoading}
+              onChange={(e) => void handleScheduleToggle(e.target.checked)}
+            />
+          </label>
+        </div>
       </section>
 
       {/* Mind Stream 终端 */}
@@ -235,13 +346,13 @@ export function MonitorMatrix() {
         </section>
       )}
 
-      {/* Qwen 结论（在多轮实测报告之后） */}
+      {/* AI 综合分析结论（在多轮实测报告之后） */}
       {llmSummary != null && llmSummary !== "" && (
         <section
           className="flex-shrink-0 border-l-4 border-cyan-400 bg-white/[0.04] px-4 py-3"
           style={{ marginTop: "4px" }}
         >
-          <h3 className="mt-0 mb-2 text-base font-semibold text-white">🧠 Qwen-Max 综合分析结论</h3>
+          <h3 className="mt-0 mb-2 text-base font-semibold text-white">🧠 AI 综合分析结论</h3>
           <p className="m-0 whitespace-pre-wrap leading-relaxed text-slate-300">{llmSummary}</p>
         </section>
       )}

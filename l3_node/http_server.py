@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -458,7 +458,7 @@ async def _handle_system_logs_stream(request) -> "aiohttp.web.StreamResponse":
 
 
 async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamResponse":
-    """GET /api/v1/monitor/stream — Kalaroko 默认场景多轮 E2E + 末尾 Qwen 分析，SSE 实时行日志。"""
+    """GET /api/v1/monitor/stream — Kalaroko 默认场景多轮 E2E + 末尾 AI 综合分析，SSE 实时行日志。"""
     import importlib.util
     import sys
     import time
@@ -560,6 +560,49 @@ async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamRespons
         except Exception:
             pass
     return response
+
+
+async def _handle_monitor_stop(request) -> "aiohttp.web.Response":
+    """POST /api/v1/monitor/stop — 中断当前手动巡检主循环。"""
+    try:
+        from l3_node.kalaroko_e2e_control import stop_manual_run
+
+        stop_manual_run()
+    except Exception as e:
+        logger.warning("[L3 HTTP] monitor stop failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, "message": "已发送停止信号"})
+
+
+async def _handle_monitor_schedule_toggle(request) -> "aiohttp.web.Response":
+    """POST /api/v1/monitor/schedule/toggle — JSON body: {\"enabled\": true|false}"""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"JSON 解析失败: {e}"}, status=400)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return _json_response({"ok": False, "error": "缺少布尔字段 enabled"}, status=400)
+    try:
+        from l3_node.jobs.kalaroko_scheduler import start_scheduler, stop_scheduler, scheduler_status
+
+        r = start_scheduler() if enabled else stop_scheduler()
+        st = scheduler_status()
+        return _json_response({"ok": True, "enabled": st.get("active", False), **r})
+    except Exception as e:
+        logger.warning("[L3 HTTP] monitor schedule toggle failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_monitor_schedule_status(request) -> "aiohttp.web.Response":
+    """GET /api/v1/monitor/schedule/status"""
+    try:
+        from l3_node.jobs.kalaroko_scheduler import scheduler_status
+
+        return _json_response({"ok": True, **scheduler_status()})
+    except Exception as e:
+        logger.warning("[L3 HTTP] monitor schedule status failed: %s", e)
+        return _json_response({"ok": False, "active": False, "error": str(e)}, status=500)
 
 
 async def _handle_health(request) -> "aiohttp.web.Response":
@@ -1223,6 +1266,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/health", _handle_health)
     app.router.add_get("/api/system/logs/stream", _handle_system_logs_stream)
     app.router.add_get("/api/v1/monitor/stream", _handle_monitor_kalaroko_stream)
+    app.router.add_post("/api/v1/monitor/stop", _handle_monitor_stop)
+    app.router.add_post("/api/v1/monitor/schedule/toggle", _handle_monitor_schedule_toggle)
+    app.router.add_get("/api/v1/monitor/schedule/status", _handle_monitor_schedule_status)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)

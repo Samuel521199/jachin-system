@@ -69,7 +69,7 @@
 
 ---
 
-## 5. 环境与密钥（5 项）
+## 5. 环境与密钥（6 项）
 
 | 项 | 工作说明 | 验证方式 | 状态 |
 |----|----------|----------|------|
@@ -78,6 +78,7 @@
 | 5.3 | **`LLM_COMPLEX_MODEL`** 与 E2E 摘要模型对齐（如 `qwen3-max`）。 | `.env` | 已落实 |
 | 5.4 | Tauri 子进程白名单注入上述变量（桌面场景）。 | `clients/desktop/src-tauri/src/l3_spawn.rs` | 已落实 |
 | 5.5 | Playwright/CDP：按需 **`KALAROKO_CDP_ENDPOINT`** 等，见脚本头注释。 | 本地 Chrome 调试 | 按需 |
+| 5.6 | **Lark 群推送（可选）**：`KALAROKO_INSPECT_LARK_WEBHOOK_URL`（或回退 `LARK_WEBHOOK_URL`）；巡检成功后 **`send_markdown` 分条**推送 Markdown + Qwen。 | `.env.example`、`l3_node/channels/lark/kalaroko_inspection_notify.py` | 已落实 |
 
 ---
 
@@ -100,7 +101,7 @@
 |----|------|--------|
 | R1 | **`done` 单次载荷过大**（超长 Markdown）：浏览器/反代 Payload 上限；可考虑 **报告下载接口**或 **gzip 分块**。 | 低（现网量级通常可接受） |
 | R2 | 巡检**中途失败**：`markdown_report` 可能为 **`null`**；若需「失败前已产出部分报告」需改异常路径收集。 | 按需 |
-| R3 | Lark 推送管道：当前为**文案占位**，未接 webhook。 | 业务排期 |
+| R3 | Lark 推送：已接 **Webhook 分条**；若需@人或审批流再扩展。 | 低 |
 | R4 | 文档与 **`KALAROKO_WEB_PERF_MONITOR_TDD.md`**：前者管「控制台+SSE+报告交付」，后者管 MCP/Playwright 细则；避免重复维护时二选一引用。 | 文档 |
 
 ---
@@ -110,6 +111,7 @@
 ```
 scripts/test_kalaroko_default_scenarios_e2e.py   # E2E + markdown_report + LLM
 l3_node/http_server.py                           # GET /api/v1/monitor/stream
+l3_node/channels/lark/kalaroko_inspection_notify.py
 clients/desktop/src/console/pages/MonitorMatrix.tsx
 clients/desktop/src/lib/api.ts                 # getKalarokoMonitorStreamUrl
 clients/desktop/src/console/routes.tsx

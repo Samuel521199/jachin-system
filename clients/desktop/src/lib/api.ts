@@ -1158,6 +1158,19 @@ export function getKalarokoMonitorStreamUrl(opts?: {
   return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
 }
 
+/** L3 巡检控制台 REST（停止 / 定时调度），base 逻辑与 ``getKalarokoMonitorStreamUrl`` 一致 */
+export function getL3MonitorApiUrl(apiPath: string): string {
+  const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return `${envUrl.replace(/\/$/, "")}${path}`;
+  }
+  if (L3_DEV_PROXY) {
+    return `${L3_DEV_PROXY}${path}`;
+  }
+  return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
+}
+
 /**
  * 获取 L3 技能 API 的 base URL（与 invokeL3Skills 逻辑一致，供流式等复用）
  */
