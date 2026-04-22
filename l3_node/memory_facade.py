@@ -1,5 +1,5 @@
 """
-记忆统一门面：被动注入与 local_memory_search 共用数据源与排序策略。
+记忆统一门面：``snapshot_for_prompt`` 与 L1 Memory Nexus 对齐；``load_merged_local_entries`` 仅 **遗留 JSON** 读取；检索走 **deep_search**。
 """
 from __future__ import annotations
 

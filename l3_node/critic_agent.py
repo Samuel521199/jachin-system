@@ -1,4 +1,4 @@
-﻿"""
+"""
 L4 内联 Action Critic（非独立 Agent）：在 **同一条 run_agent ReAct 循环** 内、真正调用 MCP/Native 前，
 用轻量 LLM 审查 Action 与用户意图、业务语义层是否一致。
 
@@ -220,7 +220,7 @@ def _critic_deterministic_pass(
                 False,
                 (
                     "打回！本条属于日常偏好/项目情报，禁止使用 core:safety_lock_append。"
-                    "请改用 **core:local_memory_append**（content JSON）写入 l3_local.json，或 recall_memory / core:local_memory_search；"
+                    "请改用 **core:local_memory_append**（content JSON）写入 Memory Nexus，或 **core:local_memory_search** / **recall_memory**（同源 Nexus）检索；"
                     "仅「禁止高危操作、核心安防」才允许 safety_lock_append。"
                 ),
             )
@@ -323,7 +323,7 @@ async def evaluate_action(
             "一律 ok=true（critique 空字符串）。\n"
             "D) 不要臆造表名；若仅缺 Schema，可 ok=true；若 Actor 在缺 Schema 时直接写破坏性 DML，必须 ok=false 并按纪律 4 命令其先探查/只读。\n"
             "6) **core:safety_lock_append 专用**：若 action 内容仅为日常偏好、项目代号、框架喜好、饮食习惯等非安防信息，必须 ok=false，"
-            "命令 Actor 改用 **core:local_memory_append**（content JSON）或 recall_memory；仅「禁止高危操作、核心底层安防」才允许本工具。"
+            "命令 Actor 改用 **core:local_memory_append**（Memory Nexus）或 **core:local_memory_search** / **recall_memory**；仅「禁止高危操作、核心底层安防」才允许本工具。"
         )
         payload = {
             "user_intent": (user_intent or "")[:6000],

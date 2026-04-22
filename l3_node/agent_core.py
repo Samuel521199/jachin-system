@@ -1,5 +1,5 @@
-﻿"""
-Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）与记忆同步；可选 delegate 子 Agent。
+"""
+Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（Chroma）** 在 L3 内闭环；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
 
@@ -58,6 +58,12 @@ from l3_node.primitives.tools.tool_pool import (
 from l3_node.intent_gateway.pushback_copy import (
     L3_SERVICE_ETHOS_RETRY_BLOCK,
     L3_SERVICE_ETHOS_RETRY_BLOCK_SLIM,
+)
+from l3_client.local_mcps.jachin_memory_nexus.memory_backend import recall_room
+from l3_node.memory_nexus_bridge import (
+    async_build_l0_persona_block,
+    async_build_l1_system_memory_block,
+    schedule_nexus_turn_commit_async,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,12 +213,12 @@ REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK_SLIM = (
     "**url** 完整 https；无工具则答未挂载。\n"
 )
 
-# L5 本地记忆梦境合并：用户问「触发条件」时易与 150 条阈值混淆，须置顶强调 force 路径（与 memory_compactor / ws_server 一致）
+# Memory Nexus：旧版 JSON「梦境合并」已全局停用；页脚仅保留正确的产品口径，避免模型复述 150 条/横幅等失效机制。
 REACT_FOOTER_L5_MEMORY_COMPACT_FACTS = (
-    "【L5·记忆坍缩·条件·最高优先】统帅问「何时整理/压缩/坍缩」时：**禁止**把「须超 150 条」说成适用于**所有**情况。"
-    "**显式口令**（整理本地记忆、梦境合并、立即整理记忆等）与 **桌面横幅**「立即开始」或倒计时自动开始 → 系统 **force 立即合并**，**不要求**已满 150 条（主库空数组则不调 LLM，仅提示无条目）。"
-    "**仅**在设置 **JACHIN_MEMORY_COMPACT_ON_SESSION=1** 且用户**未**下整理口令时，每条消息后的**静默检查**才要求 **条目数 > 默认 150** 才调用 LLM 写回。"
-    "定时见 ~/.jachin/memory/compact_schedule.json（约 3 天）；**JACHIN_MEMORY_COMPACT_ENABLED=0** 关闭。详见 .env.example、docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §4.1.1。**禁止**编造 task_id。\n"
+    "【记忆架构·现行】跨会话宿主记忆在 **Memory Nexus（SQLite+FastEmbed，~/.jachin/palace_db）**："
+    "`core:local_memory_search` 为语义检索，`core:local_memory_append` 写入翼区抽屉；"
+    "system 中「系统近期核心记忆」来自固定翼区 recall。**不再**使用本地 `l3_local.json` 的 LLM「梦境合并」；"
+    "若用户问起「整理/坍缩旧 JSON」，如实说明已迁移 Nexus，勿编造 task_id 或 150 条阈值剧情。\n"
 )
 
 # L4：数据/MCP 库操作 SOP（与业务语义层 YAML 配套；见 docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md）
@@ -2644,37 +2650,49 @@ def _get_service_switches() -> list[str] | None:
     return list(switches) if isinstance(switches, list) else []
 
 
-async def _recall_memory_search(query: str, config: dict[str, str]) -> str:
-    """向 L2 检索记忆。"""
+async def _recall_memory_search(query: str) -> str:
+    """
+    检索 Memory Nexus（Chroma / deep_search），与 ``core:local_memory_search`` 同源。
+    不依赖 L2；伪动作 ``recall_memory`` 仅为 ReAct 兼容别名。
+    """
     import json
-
-    import httpx
 
     from l3_node.tool_call_cache import store_if_cacheable, try_get_cached
 
     qn = (query or "").strip()
-    cache_inp = json.dumps({"q": qn, "node_id": config.get("node_id", "")}, sort_keys=True, ensure_ascii=False)
+    cache_inp = json.dumps({"q": qn, "backend": "memory_nexus"}, sort_keys=True, ensure_ascii=False)
     hit = try_get_cached("recall_memory", cache_inp)
     if hit is not None:
         return hit
 
-    url = f"{config['l2_base_url']}/api/v2/memory/search"
-    params = {"q": query, "limit": 10}
-    if config.get("node_id"):
-        params["node_id"] = config["node_id"]
-    headers = {"X-Sub-Account-Id": config.get("sub_account_id", "")}
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.get(url, params=params, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-        results = data.get("results", [])
-        if not results:
-            return store_if_cacheable("recall_memory", cache_inp, "[未找到相关记忆]")
-        parts = [f"- {r.get('content', '')[:300]}..." for r in results[:5]]
-        return store_if_cacheable("recall_memory", cache_inp, "\n".join(parts))
+        from l3_node.local_memory_search import async_search_local_memories, get_local_memory_search_timeout_sec
+
+        _sl = max(2.0, get_local_memory_search_timeout_sec() * 0.1 + 1.0)
+        res = await asyncio.wait_for(
+            async_search_local_memories(qn, top_k=10, candidate_pool=48),
+            timeout=get_local_memory_search_timeout_sec() + _sl,
+        )
+        if not res.get("ok"):
+            err = res.get("error") or "unknown"
+            out = f"[记忆检索失败: {err}]"
+        else:
+            nar = (res.get("formatted_text") or "").strip()
+            if not nar:
+                out = "[未找到相关记忆]"
+            elif "[memory_nexus] 未找到相关记忆" in nar:
+                out = "[未找到相关记忆]"
+            else:
+                out = nar
+        return store_if_cacheable("recall_memory", cache_inp, out)
+    except asyncio.TimeoutError:
+        return store_if_cacheable(
+            "recall_memory",
+            cache_inp,
+            "[记忆检索失败: timeout]",
+        )
     except Exception as e:
-        return f"[记忆检索失败: {e}]"
+        return store_if_cacheable("recall_memory", cache_inp, f"[记忆检索失败: {e}]")
 
 
 async def _coordinate_task(
@@ -2870,7 +2888,7 @@ async def _coordinate_task(
     return f"[协同超时: {max_wait}s 内未完成]"
 
 
-def _build_system_prompt(
+async def _build_system_prompt(
     tools: list[dict[str, Any]] | None = None,
     allow_delegate: bool = True,
     allow_recall: bool = True,
@@ -2897,6 +2915,29 @@ def _build_system_prompt(
         load_system_prompt_total_max_chars,
         sort_tools_by_id,
     )
+    from l3_node.routing.output_format_signals import heuristic_trivial_chitchat_only
+
+    _surf_user = (safety_lock_user_text or "").strip()
+    _nexus_prompt_disabled = os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # 纯寒暄 / 显式关断：不碰 Chroma，主流程优先
+    _skip_nexus_l0_l1 = _nexus_prompt_disabled or heuristic_trivial_chitchat_only(_surf_user)
+
+    l0_persona_header = ""
+    if not _skip_nexus_l0_l1:
+        try:
+            _pc = await async_build_l0_persona_block()
+            if (_pc or "").strip():
+                l0_persona_header = (
+                    "你是 Jachin AI OS。以下是你的最高指挥官(统帅)的专属行为侧写与偏好，你必须在接下来的所有交互中严格遵守这些习惯：\n"
+                    f"{_pc.strip()}\n\n"
+                )
+        except Exception as e:
+            logger.debug("[Memory Nexus] L0 灵魂侧写栈注入失败: %s", e)
 
     # L5：按本轮用户表面文本做启发式路由（与 run_agent 传入的 safety_lock_user_text 对齐）
     _mem_route = _memory_attention_route_mode(safety_lock_user_text or "")
@@ -2957,17 +2998,17 @@ Action: ...
     recall_hint = ""
     if allow_recall and _get_l2_config():
         recall_hint = (
-            "\n- recall_memory: 向 L2 检索历史记忆。参数: 查询关键词。当需要回忆过往对话或上下文时使用。"
-            "\n- core:local_memory_search: L3 本地记忆检索（断网/无 L2 时优先）。Action Input JSON："
-            '{"query":"关键词","top_k":8}；可选 mmr_lambda、half_life_days、include_memory_md。'
-            "\n- core:local_memory_append: 将事实/偏好**写入** ~/.jachin/memory/l3_local.json。JSON："
+            "\n- recall_memory: 检索本地 Memory Nexus（Chroma），与 core:local_memory_search 同源。参数: 查询关键词。"
+            "\n- core:local_memory_search: L3 本地记忆语义检索（Memory Nexus / Chroma，`deep_search`）。Action Input JSON："
+            '{"query":"关键词","top_k":8}；可选 mmr_lambda、half_life_days、include_memory_md（兼容字段，后端以向量检索为准）。'
+            "\n- core:local_memory_append: 将事实/偏好**写入** Memory Nexus（User_Persona / Learned_Skills）。JSON："
             '{"content":"要记住的文本","tags":["可选"]}。'
         )
     else:
         recall_hint = (
-            "\n- core:local_memory_search: 本地记忆检索（l3_local + 可选 MEMORY.md，含衰减与 MMR）。"
-            ' JSON：{"query":"..."}，可选 top_k、mmr_lambda。'
-            "\n- core:local_memory_append: 写入本地 JSON 记忆库。JSON："
+            "\n- core:local_memory_search: 本地记忆语义检索（Memory Nexus / Chroma，`deep_search`）。"
+            ' JSON：{"query":"..."}，可选 top_k。'
+            "\n- core:local_memory_append: 写入 Memory Nexus（User_Persona / Learned_Skills）。JSON："
             '{"content":"...","tags":["可选"]}。'
         )
     coordinate_hint = ""
@@ -3052,16 +3093,13 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
             "【HR·动态收敛】未检测到本轮与招聘强相关意图时勿调用招聘 MCP；"
             "用户谈到职位、简历、Boss、透析、收网、飞书调度等再按需使用工具。\n"
         )
-    # L3 本地记忆注入（智能化升级 P0：断网/无 L2 时仍可用）
-    local_mem = ""
-    try:
-        from l3_node.local_memory import get_local_memory_for_prompt
-
-        local_mem = get_local_memory_for_prompt(
-            limit=6 if slim_mode else 12, prompt_cycle=prompt_cycle
-        )
-    except ImportError:
-        pass
+    # L1 唤醒栈：Memory Nexus（Chroma）动态拉取近期巡检与用户侧记忆
+    l1_system_memory = ""
+    if not _skip_nexus_l0_l1:
+        try:
+            l1_system_memory = await async_build_l1_system_memory_block(recall_room)
+        except Exception as e:
+            logger.debug("[Memory Nexus] L1 唤醒注入失败: %s", e)
     jachin_rules = ""
     try:
         from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
@@ -3193,7 +3231,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 
     # 前缀缓存友好：静态/半静态在前，随会话变化的记忆与长 SOP 在后（工具段可单独截断以配合总硬帽）
     if pure_json_contract:
-        _prefix_before_tools = f"""{_expert_identity_block}你是助手；优先遵守用户消息中的格式要求；不要寒暄，不要用 Markdown 章节标题当开场。
+        _prefix_before_tools = f"""{l0_persona_header}{_expert_identity_block}你是助手；优先遵守用户消息中的格式要求；不要寒暄，不要用 Markdown 章节标题当开场。
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM}
@@ -3201,7 +3239,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 可用工具：
 """
     elif slim_mode:
-        _prefix_before_tools = f"""{_expert_identity_block}你是智能助手。**用户对本轮「最终可见回复」有强格式要求时，你必须优先服从用户消息**：不要寒暄，以及用 Markdown 章节标题当开场。
+        _prefix_before_tools = f"""{l0_persona_header}{_expert_identity_block}你是智能助手。**用户对本轮「最终可见回复」有强格式要求时，你必须优先服从用户消息**：不要寒暄，以及用 Markdown 章节标题当开场。
 若任务需要读文件、执行命令等，仍使用下方 Thought / Action / Observation；工具用完后，只输出用户要求的正文（若用户要求仅 JSON，勿加 markdown 围栏与解释性前言）。
 {intel_b}
 {chat_task_hint}
@@ -3210,7 +3248,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 可用工具：
 """
     else:
-        _prefix_before_tools = f"""{_expert_identity_block}你是一个智能助手，使用 ReAct 格式思考。
+        _prefix_before_tools = f"""{l0_persona_header}{_expert_identity_block}你是一个智能助手，使用 ReAct 格式思考。
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK}
@@ -3221,8 +3259,8 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
     if pure_json_contract:
         if (safety_lock_txt or "").strip():
             _pure_mem_rules += f"\n{safety_lock_txt.strip()}\n"
-        if (local_mem or "").strip():
-            _pure_mem_rules += f"\n【本地记忆】\n{local_mem.strip()}\n"
+        if (l1_system_memory or "").strip():
+            _pure_mem_rules += f"\n{l1_system_memory.strip()}\n"
         if (jachin_rules or "").strip():
             _pure_mem_rules += f"\n【工作区规则】\n{jachin_rules.strip()}\n"
 
@@ -3372,9 +3410,14 @@ Final Answer: <最终回复>
         except ImportError:
             pass
     if not pure_json_contract:
-        if (local_mem or "").strip():
+        if (l1_system_memory or "").strip():
             suffix_chunks.append(
-                SuffixChunk("low", "passive_local_memory", f"\n{local_mem}\n", eviction_rank=_rank_passive_local)
+                SuffixChunk(
+                    "low",
+                    "passive_local_memory",
+                    f"\n{l1_system_memory}\n",
+                    eviction_rank=_rank_passive_local,
+                )
             )
         if (jachin_rules or "").strip():
             suffix_chunks.append(
@@ -3424,8 +3467,8 @@ Final Answer: <最终回复>
                     pass
             _react_footer_body = (
                 REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
-                + "【记忆】被动注入仅供参考；事实以 recall_memory / core:local_memory_search 为准。\n"
-                "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 l3_local.json，"
+                + "【记忆】被动注入仅供参考；事实以 core:local_memory_search 或 recall_memory（同源 Nexus）检索为准。\n"
+                "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 Memory Nexus（Chroma），"
                 "**禁止**幻觉写 MEMORY.md、**禁止** core:safety_lock_append；仅「禁止高危操作、核心安防」才用 safety_lock_append。\n"
                 "【记忆整理纪律】统帅**下令**整理时：系统常**异步**执行合并（非必有可轮询的 background_task）。**禁止**在对话中输出整份 Markdown 记忆清单；"
                 "若存在已登记的 background_task 可用 **core:check_background_task**；否则 Final Answer 简短说明已完成（显式口令/横幅路径会尝试合并，勿谎称「未达 150 条未触发」）。\n"
@@ -3440,10 +3483,10 @@ Final Answer: <最终回复>
         else:
             _react_footer_body = (
                 REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
-                + "【记忆 SSOT】被动「本地记忆」仅为提示；事实以 recall_memory / core:local_memory_search 检索为准。\n"
+                + "【记忆 SSOT】被动「系统近期核心记忆」仅为提示；事实以 core:local_memory_search / recall_memory（Nexus）检索为准。\n"
                 "【记忆分级写入铁律】\n"
                 "1. **个人偏好与项目情报（免审批）**：当统帅告诉你业务代号、框架偏好等日常记忆时，"
-                "**绝对禁止**幻觉写入 MEMORY.md！你**必须且只能使用 core:local_memory_append** 工具将事实存入底层 JSON 库（~/.jachin/memory/l3_local.json）。"
+                "**绝对禁止**幻觉写入 MEMORY.md！你**必须且只能使用 core:local_memory_append** 工具将事实存入 Memory Nexus（User_Persona / Learned_Skills）。"
                 "存完后向统帅简短汇报即可。**禁止**为此使用 **core:safety_lock_append**。\n"
                 "2. **系统级安防规则（需审批 / TOFU）**：仅当涉及「禁止某项高危操作」「核心底层逻辑变更」等安防约束时，才允许使用 **core:safety_lock_append**；"
                 "并尽量提供稳定 **category**（如 backend_framework、shell_policy）。该 category **首条**人工批准后，同 category 再次提交将自动覆盖旧规则（同类二次免批）。\n"
@@ -3919,6 +3962,96 @@ async def _invoke_react_tool(
             except Exception:
                 pass
         return _vision_fetch_block
+    # Memory Nexus 工具：主循环内 await 异步实现 + 硬超时，避免 to_thread(run_tool) 内仍占满默认短超时或线程假死
+    _memtid = (tool or "").strip().lower()
+    if _memtid == "core:local_memory_search":
+        try:
+            import json as _json_mem
+
+            from l3_node.local_memory_search import (
+                async_search_local_memories,
+                get_local_memory_search_timeout_sec,
+                parse_core_local_memory_search_action_input,
+            )
+
+            _kw = parse_core_local_memory_search_action_input(_invoke_inp)
+            _mem_slack = max(2.0, get_local_memory_search_timeout_sec() * 0.1 + 1.0)
+            _mem_out = await asyncio.wait_for(
+                async_search_local_memories(**_kw),
+                timeout=get_local_memory_search_timeout_sec() + _mem_slack,
+            )
+            if isinstance(_mem_out, dict) and _mem_out.get("ok") and _mem_out.get("hits"):
+                try:
+                    from l3_node.local_memory import touch_entries_from_search_hits
+
+                    touch_entries_from_search_hits(list(_mem_out["hits"]))
+                except Exception:
+                    pass
+            _out_mem = _json_mem.dumps(_mem_out, ensure_ascii=False, indent=2)
+        except asyncio.TimeoutError:
+            logger.warning("[L3 Agent] core:local_memory_search 外层超时，已降级 Observation")
+            _out_mem = _json_mem.dumps(
+                {
+                    "ok": False,
+                    "error": "outer_timeout",
+                    "hits": [],
+                    "formatted_text": "[系统提示] 本地记忆检索超时，请稍后再试。",
+                },
+                ensure_ascii=False,
+            )
+        except Exception as _mem_e:
+            logger.warning("[L3 Agent] core:local_memory_search 异常: %s", _mem_e)
+            _out_mem = _json_mem.dumps(
+                {
+                    "ok": False,
+                    "error": "invoke_failed",
+                    "hits": [],
+                    "formatted_text": f"[系统提示] 本地记忆检索失败: {_mem_e}",
+                },
+                ensure_ascii=False,
+            )
+        if _lark_cv_tok is not None:
+            try:
+                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
+
+                reset_lark_chat_id_for_tools(_lark_cv_tok)
+            except Exception:
+                pass
+        return _out_mem
+    if _memtid == "core:local_memory_append":
+        try:
+            import json as _json_mem2
+
+            from l3_node.tools.core_local_memory_append import (
+                async_run_local_memory_append,
+                get_local_memory_append_timeout_sec,
+                parse_core_local_memory_append_action_input,
+            )
+
+            _body, _tags = parse_core_local_memory_append_action_input(_invoke_inp)
+            _ap_to = get_local_memory_append_timeout_sec()
+            _mem_append = await asyncio.wait_for(
+                async_run_local_memory_append(content=_body, tags=_tags),
+                timeout=_ap_to + 3.0,
+            )
+            _out_mem2 = _json_mem2.dumps(_mem_append, ensure_ascii=False, indent=2)
+        except asyncio.TimeoutError:
+            logger.warning("[L3 Agent] core:local_memory_append 外层超时")
+            _out_mem2 = '{"ok":false,"error":"outer_timeout","message":"[系统提示] 本地记忆写入超时，请稍后再试。"}'
+        except Exception as _mem_e2:
+            logger.warning("[L3 Agent] core:local_memory_append 异常: %s", _mem_e2)
+            _out_mem2 = _json_mem2.dumps(
+                {"ok": False, "error": "invoke_failed", "message": str(_mem_e2)},
+                ensure_ascii=False,
+            )
+        if _lark_cv_tok is not None:
+            try:
+                from l3_node.channels.lark.turn_chat_context import reset_lark_chat_id_for_tools
+
+                reset_lark_chat_id_for_tools(_lark_cv_tok)
+            except Exception:
+                pass
+        return _out_mem2
     _t0 = time.perf_counter()
     try:
         _gb = ctx.metadata.get("_gateway_bundle")
@@ -4187,7 +4320,7 @@ async def _run_react_core(
                 _sl_verify_d: dict[str, Any] = _sl_verify if isinstance(_sl_verify, dict) else {}
                 _exp_verify = str(_spe.get("experience_few_shots") or "")
                 _hr_act = bool(_spe.get("hr_domain_prompt_active", True))
-                ctx.system_prompt = _build_system_prompt(
+                ctx.system_prompt = await _build_system_prompt(
                     tools=skills,
                     allow_delegate=False,
                     allow_recall=True,
@@ -5160,10 +5293,9 @@ async def _run_react_core(
             })
             continue
 
-        # recall_memory：向 L2 检索记忆
+        # recall_memory：ReAct 伪动作 → Memory Nexus（与 core:local_memory_search 同源）
         if parsed["type"] == "recall":
             query = parsed.get("query", "")
-            config = _get_l2_config()
             _emit("action", f"recall_memory {query}".strip())
             try:
                 from l3_node.terminal_turn_debug_log import log_tool_call_full
@@ -5172,26 +5304,14 @@ async def _run_react_core(
                     iteration + 1,
                     "recall_memory",
                     str(query or ""),
-                    note="L2 recall",
+                    note="Memory Nexus",
                 )
             except Exception:
                 pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
-            if not config:
-                observation = "[recall_memory 不可用：未连接 L2 或未配对]"
-            else:
-                observation = await _recall_memory_search(query, config)
-                # 智能化 P0：L2 检索结果合并到本地，断网时可用
-                if observation and "[未找到" not in observation:
-                    try:
-                        from l3_node.local_memory import merge_from_l2
-                        items = [{"content": ln.lstrip("- ").strip(), "tag": "l2_recall"} for ln in observation.split("\n") if ln.strip().startswith("-")]
-                        if items:
-                            merge_from_l2(items)
-                    except ImportError:
-                        pass
+            observation = await _recall_memory_search(query)
             _obs_recall_raw = str(observation or "")
             observation = _truncate_observation_for_llm(_obs_recall_raw)
             ctx.observation = observation
@@ -5887,41 +6007,77 @@ async def _run_react_core(
     ctx.final_answer = "[ReAct 循环达到上限]"
 
 
-def _build_direct_system_prompt(
+async def _build_direct_system_prompt(
     *,
     prompt_cycle: int | None,
     json_mode: bool,
     general_chitchat: bool = False,
 ) -> str:
     """直连 LLM：无 ReAct、无工具表；保留记忆与工作区规则（保密约束等）。"""
+    # prompt_cycle：保留与调用方签名对齐（当前直连模板未使用）。
+    _ = prompt_cycle
+    _nexus_prompt_disabled = os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # 【闲聊避让】纯寒暄且非 JSON：跳过 L0/L1（Chroma），仅轻量 system + 工作区规则
     if general_chitchat and not json_mode:
-        lines = [
+        lines: list[str] = [
             "你是 Jachin 通用智能助手，语气自然、简洁、友善。",
             "用户本轮多为寒暄或简短礼貌用语：用一两句自然中文回应即可，可适度用常见礼貌用语。",
             "围绕用户话题简短回应，避免主动引入与当前消息无关的长篇领域话术。",
             "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 标签行。",
         ]
-    else:
-        lines = [
+        lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
+        try:
+            from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
+
+            jr = get_jachin_workspace_rules_snippet()
+            if (jr or "").strip():
+                lines.append("\n【工作区规则摘录】\n" + jr.strip())
+        except ImportError:
+            pass
+        return "\n".join(lines)
+
+    l0_persona_prefix = ""
+    if not _nexus_prompt_disabled:
+        try:
+            _pc = await async_build_l0_persona_block()
+            if (_pc or "").strip():
+                l0_persona_prefix = (
+                    "你是 Jachin AI OS。以下是你的最高指挥官(统帅)的专属行为侧写与偏好，你必须在接下来的所有交互中严格遵守这些习惯：\n"
+                    f"{_pc.strip()}\n\n"
+                )
+        except Exception as e:
+            logger.debug("[Memory Nexus] L0 直连灵魂侧写注入失败: %s", e)
+
+    lines: list[str] = []
+    if (l0_persona_prefix or "").strip():
+        lines.append(l0_persona_prefix.rstrip())
+    lines.extend(
+        [
             "你是高精度指令遵从助手。不要问候语，不要输出可见的思考过程，不要使用 Markdown 章节标题行作开场。",
             "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 套话。",
         ]
-        if json_mode:
-            lines.append(
-                "你只输出一个合法 JSON 对象。不要 markdown 代码围栏，不要解释性前后缀，除非用户明确要求。"
-            )
-        else:
-            lines.append("只输出用户要求的正文。")
+    )
+    if json_mode:
+        lines.append(
+            "你只输出一个合法 JSON 对象。不要 markdown 代码围栏，不要解释性前后缀，除非用户明确要求。"
+        )
+    else:
+        lines.append("只输出用户要求的正文。")
     lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
-    if not (general_chitchat and not json_mode):
-        try:
-            from l3_node.local_memory import get_local_memory_for_prompt
 
-            lm = get_local_memory_for_prompt(limit=8, prompt_cycle=prompt_cycle)
+    if not _nexus_prompt_disabled:
+        try:
+            lm = await async_build_l1_system_memory_block(recall_room)
             if (lm or "").strip():
-                lines.append("\n【本地记忆摘要】\n" + lm.strip())
-        except ImportError:
-            pass
+                lines.append("\n" + lm.strip())
+        except Exception as e:
+            logger.debug("[Memory Nexus] L1 直连 system 注入失败: %s", e)
+
     try:
         from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
 
@@ -5947,7 +6103,7 @@ async def _run_direct_llm_completion(
     model_override: str | None = None,
     general_chitchat: bool = False,
 ) -> str:
-    sys_p = _build_direct_system_prompt(
+    sys_p = await _build_direct_system_prompt(
         prompt_cycle=prompt_cycle,
         json_mode=json_mode,
         general_chitchat=general_chitchat,
@@ -6355,6 +6511,33 @@ async def run_agent(
             )
         except Exception as _mtp_e:
             logger.debug("[L3 Agent] multimodal_tool_policy 跳过: %s", _mtp_e)
+
+        try:
+            if (_bg_channel or "") != "background_task":
+                from l3_node.memory_nexus_bridge import (
+                    async_filter_tools_for_dynamic_retrieval,
+                    dynamic_tool_retrieval_enabled,
+                )
+
+                if dynamic_tool_retrieval_enabled():
+                    _raw_k = (os.environ.get("JACHIN_DYNAMIC_TOOL_TOP_K") or "5").strip()
+                    try:
+                        _top_k = int(_raw_k or "5")
+                    except ValueError:
+                        _top_k = 5
+                    try:
+                        tools = await async_filter_tools_for_dynamic_retrieval(
+                            tools,
+                            user_input or "",
+                            limit=_top_k,
+                        )
+                    except Exception as _dtr_inner:
+                        logger.warning(
+                            "[L3 Agent] 动态工具检索异常，保持全量工具池: %s",
+                            _dtr_inner,
+                        )
+        except Exception as _dtr_e:
+            logger.debug("[L3 Agent] 动态工具检索跳过（保持全量池）: %s", _dtr_e)
     except Exception as _pool_ex:
         import traceback
 
@@ -6714,7 +6897,7 @@ async def run_agent(
     elif _try_direct:
         system_prompt = ""
     elif _bg_channel == "background_task":
-        system_prompt = _build_system_prompt(
+        system_prompt = await _build_system_prompt(
             tools=tools,
             allow_delegate=False,
             allow_coordinate=False,
@@ -6733,7 +6916,7 @@ async def run_agent(
             domain_experts=_domain_experts_list,
         )
     else:
-        system_prompt = _build_system_prompt(
+        system_prompt = await _build_system_prompt(
             tools=tools,
             allow_delegate=True,
             prompt_cycle=_mem_cycle,
@@ -6924,17 +7107,17 @@ async def run_agent(
     except Exception as _sem_ex:
         logger.debug("[L3 Agent] semantic_ood 评估跳过: %s", _sem_ex)
 
-    try:
-        from l3_node.memory_compact_schedule import try_apply_chat_command
-
-        _sched_note = try_apply_chat_command(user_input or "")
-        if _sched_note:
-            messages.append({"role": "system", "content": _sched_note})
-    except ImportError:
-        pass
+    # Memory Nexus：旧版 JSON「梦境合并」调度与聊天侧间隔配置已停用（见 memory_compactor / memory_compact_schedule）。
+    # try:
+    #     from l3_node.memory_compact_schedule import try_apply_chat_command
+    #     _sched_note = try_apply_chat_command(user_input or "")
+    #     if _sched_note:
+    #         messages.append({"role": "system", "content": _sched_note})
+    # except ImportError:
+    #     pass
 
     messages.append({"role": "user", "content": _user_llm_content})
-    _schedule_local_memory_compaction_background(user_input or "")
+    # _schedule_local_memory_compaction_background(user_input or "")
 
     text_implicit_types: set[str] = set()
     # 隐式信号 → intelligence_events（§4.3；见 docs/IMPLICIT_SIGNALS.md）
@@ -7164,6 +7347,10 @@ async def run_agent(
                     _recent_db = messages[-30:] if len(messages) > 30 else messages
                     _session_messages.extend(_recent_db)
                 exec_trace(logger, "direct_llm_bypass 完成 run_id=%s out_len=%d", run_id[:12], len(_db_out or ""))
+                try:
+                    schedule_nexus_turn_commit_async(user_input or "", _db_out or "")
+                except Exception:
+                    pass
                 return _apply_hr_recruitment_final_answer_table_sync(_db_out, _DirectBypassCtx())
             except Exception as _e_db:
                 logger.warning("[L3 Agent] direct_llm_bypass 失败，回退 ReAct: %s", _e_db)
@@ -7184,7 +7371,7 @@ async def run_agent(
                     except Exception:
                         pass
                 if _bg_channel == "background_task":
-                    system_prompt = _build_system_prompt(
+                    system_prompt = await _build_system_prompt(
                         tools=tools,
                         allow_delegate=False,
                         allow_coordinate=False,
@@ -7203,7 +7390,7 @@ async def run_agent(
                         domain_experts=_domain_experts_list,
                     )
                 else:
-                    system_prompt = _build_system_prompt(
+                    system_prompt = await _build_system_prompt(
                         tools=tools,
                         allow_delegate=True,
                         prompt_cycle=_mem_cycle,
@@ -7223,7 +7410,7 @@ async def run_agent(
 
         if not system_prompt and _system_prompt_override is None:
             if _bg_channel == "background_task":
-                system_prompt = _build_system_prompt(
+                system_prompt = await _build_system_prompt(
                     tools=tools,
                     allow_delegate=False,
                     allow_coordinate=False,
@@ -7242,7 +7429,7 @@ async def run_agent(
                     domain_experts=_domain_experts_list,
                 )
             else:
-                system_prompt = _build_system_prompt(
+                system_prompt = await _build_system_prompt(
                     tools=tools,
                     allow_delegate=True,
                     prompt_cycle=_mem_cycle,
@@ -7361,6 +7548,11 @@ async def run_agent(
             _session_messages.extend(recent)
 
         out = ctx.final_answer or "[未产出回复]"
+        try:
+            if not bool(getattr(ctx, "aborted", False)):
+                schedule_nexus_turn_commit_async(user_input or "", out)
+        except Exception:
+            pass
         return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
     finally:
         unregister_cancel_event(run_id)
@@ -7381,207 +7573,22 @@ async def run_agent(
 
 
 # ---------------------------------------------------------------------------
-# L5 本地记忆梦境合并（后台调度，fail-open，不阻塞 ReAct）
+# L5 本地记忆梦境合并（后台调度）— **已停用**，见 Memory Nexus / memory_compactor。
 # ---------------------------------------------------------------------------
-
-_MEMORY_COMPACT_SESSION_DEBOUNCE_SEC = 600.0
-_last_scheduled_memory_compact_mono: float = 0.0
-
-
-def _user_explicit_memory_compact_intent(text: str) -> bool:
-    t = (text or "").strip()
-    if not t:
-        return False
-    keys = (
-        "整理本地记忆",
-        "压缩本地记忆",
-        "梦境合并",
-        "坍缩记忆",
-        "合并记忆碎片",
-        "记忆坍缩",
-        "本地记忆整理",
-        "合并本地记忆",
-        "立即整理记忆",
-        "立即整理本地记忆",
-        "开始记忆整理",
-        "现在开始整理记忆",
-    )
-    return any(k in t for k in keys)
 
 
 def _schedule_local_memory_compaction_background(user_input: str) -> None:
-    """显式口令或 JACHIN_MEMORY_COMPACT_ON_SESSION=1 时异步尝试 compact_local_memory_if_needed。"""
-    global _last_scheduled_memory_compact_mono
-    try:
-        from l3_node.memory_compact_schedule import try_parse_defer_command
-
-        if try_parse_defer_command(user_input or ""):
-            return
-    except ImportError:
-        pass
-    try:
-        explicit = _user_explicit_memory_compact_intent(user_input)
-        on_session = str(os.environ.get("JACHIN_MEMORY_COMPACT_ON_SESSION", "")).strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        if not explicit and not on_session:
-            return
-        now = time.monotonic()
-        if explicit:
-            _last_scheduled_memory_compact_mono = now
-        else:
-            if now - _last_scheduled_memory_compact_mono < _MEMORY_COMPACT_SESSION_DEBOUNCE_SEC:
-                return
-            _last_scheduled_memory_compact_mono = now
-
-        async def _runner() -> None:
-            try:
-                from l3_node.memory_compactor import compact_local_memory_if_needed
-                from l3_node.local_memory import main_local_memory_json_path
-
-                _cr = await compact_local_memory_if_needed(
-                    str(main_local_memory_json_path()),
-                    force=explicit,
-                )
-                if (_cr or "").strip():
-                    logger.info("[MemoryCompact] %s", (_cr or "").strip())
-            except Exception as _ex:
-                logger.debug("[MemoryCompact] 后台跳过: %s", _ex)
-
-        asyncio.get_running_loop().create_task(_runner())
-    except RuntimeError:
-        pass
-    except Exception as _ex:
-        logger.debug("[MemoryCompact] schedule 跳过: %s", _ex)
+    """[已停用] 原：显式口令或 JACHIN_MEMORY_COMPACT_ON_SESSION 触发 JSON 梦境合并；现由 Memory Nexus 取代。"""
+    logger.debug(
+        "[MemoryCompact] 后台调度已禁用（忽略本轮）chars=%d",
+        len(user_input or ""),
+    )
+    return
 
 
 # ---------------------------------------------------------------------------
-# MemorySyncDaemon
+# 记忆：已移除 L2 /memory/sync 守护进程；跨会话 SSOT 为 Memory Nexus（Chroma），见 memory_nexus_bridge。
 # ---------------------------------------------------------------------------
-
-MEMORY_PATH = Path.home() / ".jachin" / "l3_memory.json"
-
-
-def _load_local_memory() -> dict[str, Any]:
-    if MEMORY_PATH.exists():
-        try:
-            return json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {"entries": [], "updated_at": None}
-
-
-def _save_local_memory(data: dict[str, Any]) -> None:
-    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    import time
-    data["updated_at"] = time.time()
-    MEMORY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-async def sync_memory_to_l2(
-    l2_base_url: str,
-    sub_account_id: str,
-    node_id: str,
-) -> bool:
-    """
-    将本地记忆同步至 L2，拉取梦境优化结果覆盖本地。
-    """
-    import httpx
-
-    local = _load_local_memory()
-    url = f"{l2_base_url.rstrip('/')}/api/v2/memory/sync"
-    headers = {"X-Sub-Account-Id": sub_account_id, "Content-Type": "application/json"}
-    payload = {
-        "node_id": node_id,
-        "local_memory": local,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-        optimized = data.get("optimized_memory", local)
-        _save_local_memory(optimized)
-        logger.info("[MemorySync] 同步完成，已覆盖本地")
-        return True
-    except Exception as e:
-        logger.warning("[MemorySync] 同步失败: %s", e)
-        return False
-
-
-class MemorySyncDaemon:
-    """
-    记忆同步守护进程。
-    每隔 interval_seconds 将本地记忆同步至 L2。
-    """
-
-    def __init__(
-        self,
-        l2_base_url: str,
-        sub_account_id: str,
-        node_id: str,
-        interval_seconds: float = 300.0,
-    ) -> None:
-        self.l2_base_url = l2_base_url
-        self.sub_account_id = sub_account_id
-        self.node_id = node_id
-        self.interval = interval_seconds
-        self._task: Optional[asyncio.Task] = None
-        self._stop = asyncio.Event()
-        self._last_urgent_gen: int = 0
-
-    async def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await sync_memory_to_l2(
-                    self.l2_base_url,
-                    self.sub_account_id,
-                    self.node_id,
-                )
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning("[MemorySyncDaemon] %s", e)
-            try:
-                from l3_node.memory_sync_signals import get_urgent_sync_generation
-
-                self._last_urgent_gen = get_urgent_sync_generation()
-            except Exception as e:
-                logger.debug("[MemorySyncDaemon] urgent gen 读取跳过: %s", e)
-
-            remaining = float(self.interval)
-            chunk = 10.0
-            while remaining > 0 and not self._stop.is_set():
-                try:
-                    from l3_node.memory_sync_signals import get_urgent_sync_generation
-
-                    if get_urgent_sync_generation() > self._last_urgent_gen:
-                        break
-                except Exception:
-                    pass
-                step = min(chunk, remaining)
-                await asyncio.wait(
-                    [self._stop.wait(), asyncio.sleep(step)],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if self._stop.is_set():
-                    break
-                remaining -= step
-
-    def start(self) -> None:
-        if self._task is None or self._task.done():
-            self._stop.clear()
-            self._task = asyncio.create_task(self._loop())
-            logger.info("[MemorySyncDaemon] 已启动，间隔 %.0fs", self.interval)
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._task and not self._task.done():
-            self._task.cancel()
 
 
 # 注册 L3 神盾 Compaction（阶段 A：锚点/审计与 L3 共用）

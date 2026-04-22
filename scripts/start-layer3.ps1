@@ -37,6 +37,25 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
+# 尽量让传统 conhost 用 UTF-8 代码页输出中文（Windows Terminal 通常已 OK）
+try {
+    if ($env:OS -match 'Windows') {
+        & cmd.exe /c "chcp 65001>nul" 2>$null
+    }
+} catch { }
+
+function Resolve-PythonExePath {
+    $c = @(Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1)[0]
+    if (-not $c) { return $null }
+    foreach ($p in @($c.Source, $c.Path, $c.Definition)) {
+        if ($p -and ($p -match '\.(exe|EXE)$') -and (Test-Path -LiteralPath $p)) { return $p }
+    }
+    foreach ($p in @($c.Source, $c.Path, $c.Definition)) {
+        if ($p) { return $p }
+    }
+    return $null
+}
+
 if ($SourceOnly -and $DesktopOnly) {
     Write-Host "[Layer3] ERROR: use -SourceOnly OR -DesktopOnly, not both." -ForegroundColor Red
     exit 1
@@ -69,6 +88,17 @@ if ($DesktopOnly) {
 
 if ($ShowOmni) {
     Write-Host "[Layer3] -ShowOmni 已省略效：桌面默认会打开 Omni 与控制台" -ForegroundColor DarkGray
+}
+
+# Memory Nexus：须与「本脚本将调用的 python」同一解释器安装 fastembed（避免 base 里装了但 PATH 指向别的 python）
+Write-Host "[Layer3] Python probe (pip install fastembed must target same exe):" -ForegroundColor Gray
+try {
+    $pyProbe = Resolve-PythonExePath
+    if (-not $pyProbe) { throw "python not in PATH" }
+    Write-Host "  python -> $pyProbe" -ForegroundColor Gray
+    & $pyProbe -c "import sys, importlib.util as u; print('  sys.executable =', sys.executable); print('  fastembed_find_spec =', bool(u.find_spec('fastembed')))"
+} catch {
+    Write-Host "  [WARN] python probe failed: $_" -ForegroundColor Yellow
 }
 
 function Start-L3SourceForeground {
@@ -134,27 +164,17 @@ try {
                 )
             } else {
                 Write-Host "[Layer3] same console: python -m l3_node $pyMode (L3 logs below mix with npm)" -ForegroundColor Cyan
-                $pyCmd = Get-Command python -ErrorAction Stop
+                $pyExe = Resolve-PythonExePath
+                if (-not $pyExe) {
+                    Write-Host "[Layer3] ERROR: python not found in PATH." -ForegroundColor Red
+                    exit 1
+                }
                 $argList = @("-m", "l3_node")
                 if ($WsOnly) { $argList += "--ws-only" } else { $argList += "--gateway" }
-                # 显式复制当前进程环境并写入 JACHIN_*，避免少数环境下 Start-Process 子进程未继承导致
-                # packaged_stdio=0 / HR 找不到 skills_repo（见 l3_node.paths.get_app_root）。
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = $pyCmd.Source
-                $psi.Arguments = ($argList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
-                $psi.WorkingDirectory = $ProjectRoot
-                $psi.UseShellExecute = $false
-                $psi.CreateNoWindow = $false
-                $ev = $psi.EnvironmentVariables
-                foreach ($de in [System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Process).GetEnumerator()) {
-                    try {
-                        $ev[$de.Key.ToString()] = $de.Value.ToString()
-                    } catch { }
-                }
-                $ev["JACHIN_APP_ROOT"] = $ProjectRoot
-                $ev["JACHIN_DEV_HR_FIRST"] = "1"
-                $ev["PYTHONUTF8"] = "1"
-                [void][System.Diagnostics.Process]::Start($psi)
+                # 子进程继承当前 PowerShell 的环境（脚本已设置 JACHIN_APP_ROOT 等）。
+                # 不用 ProcessStartInfo：部分 Windows PowerShell 上 New-Object 得到的对象无 FileName 属性（.NET/宿主差异）。
+                Write-Host "[Layer3] Start-Process: $pyExe $($argList -join ' ')" -ForegroundColor Gray
+                Start-Process -FilePath $pyExe -WorkingDirectory $ProjectRoot -ArgumentList $argList -NoNewWindow
             }
             Start-Sleep -Seconds 2
             Write-Host "[Layer3] JACHIN_SKIP_L3_SPAWN=1 (Tauri window does not spawn second L3)" -ForegroundColor Gray

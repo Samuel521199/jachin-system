@@ -1,6 +1,6 @@
 # Four primitives — canonical index
 
-**现行系统总览（实现索引，2026-04）**: [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)
+**现行系统总览（实现索引，2026-04）**: [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md) · **L3 Memory Nexus（Chroma）**: [architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)
 
 **混合架构白皮书（L3 单主轴 ReAct + L4 语义层 / 内联 Critic / Experience RAG）**: [architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)
 

@@ -53,7 +53,7 @@ flowchart LR
 |-------------------------|-------------|-------------|------|
 | **CLAUDE.md 族** | 层级合并、`@include` | **`JACHIN.md` / `workspace/.jachin/rules.md`** → `jachin_workspace_rules.py` 注入 system；另：P1 偏好、域 `SKILL.md`、IDE `.cursor/rules` | 无 **cwd 向上多级**与 **`@include` 级联**（未实现） |
 | **Git / 环境快照** | `appendSystemContext` | **未**一等实现 | 可选后续 |
-| **结构化长期记忆** | memdir / `MEMORY.md` 索引 | L2 记忆、Dream Weaver、**`l3_local.json`**、`get_local_memory_for_prompt` | 偏服务化 / JSON，非 memdir 单范式 |
+| **结构化长期记忆** | memdir / `MEMORY.md` 索引 | **Memory Nexus（Chroma）**、`build_l1_system_memory_block` / `get_local_memory_for_prompt`；Dream Weaver / `core_memory` 为旁路 | **palace_db** Wing/Room；宿主记忆 **不**以 L2 为默认 SSOT |
 | **工具后附件预取** | sideQuery + `relevant_memories` | **`context_prefetch.build_prefetch_attachment`**：workspace `*.md` 摘录 + 路径/字节去重，拼在 Observation 后 | 无 **side-LLM 选文件**；规则扫描 |
 | **Session 笔记** | fork 子循环写 md | **task_plan / progress / findings**、后台任务写 **progress.md** 一行 | 非独立 session_memory 进程模型 |
 | **Agent 记忆目录** | per-agent `MEMORY.md` | **SubAgent** + `implicit_attribution`；RBAC 路径 | 无全局 agent-memory 文件树 |
@@ -61,7 +61,7 @@ flowchart LR
 ### 3.2 System prompt 拼接（`agent_core._build_system_prompt`）
 
 - **前半（相对稳定）**：执行范式（`intelligence_b`）、前台/后台说明、**工具表**、recall/coordinate/delegate、输出格式模板。  
-- **后半（动态）**：本地记忆、JACHIN 规则摘录、task_plan 注入、**能力总目录**、HR `SKILL.md` 长文、P1、HR 运行时等。  
+- **后半（动态）**：**Memory Nexus L1**、JACHIN 规则摘录、task_plan 注入、**能力总目录**、HR `SKILL.md` 长文、P1、HR 运行时等。  
 
 整体仍为单次字符串拼接；顺序已按 **前缀缓存友好** 切分（见 [前台隔离规格](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md) §5）。
 

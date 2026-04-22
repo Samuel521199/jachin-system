@@ -1,5 +1,8 @@
-﻿//! Mirror-Trace：两台机器对比用的统一热键诊断格式（落盘 + stdout）。
+//! Mirror-Trace：两台机器对比用的统一热键诊断格式（落盘 + stdout）。
 //! 格式：`[HOTKEY_TRACE] | Event: {name} | PID: {pid} | Data: {json}`
+//!
+//! `trace_raw_hotkey` 等导出函数为按需接线的诊断钩子；未从热键路径调用时保留 API，避免 rustc 误报。
+#![allow(dead_code)]
 
 use serde_json::{json, Value};
 use tauri::Manager;

@@ -256,6 +256,12 @@ export function MonitorMatrix() {
             </button>
           </div>
         </div>
+        <p className="text-[11px] leading-relaxed text-cyan-600/75">
+          「启动全链路巡检」为<strong className="text-cyan-500/90">手动单次</strong>：按上方轮数跑完即结束（含报告 / 飞书）。
+          需要<strong className="text-cyan-500/90">长期定时</strong>请打开下方「定时守护」— 首跑在开启后很快开始，之后
+          <strong className="text-cyan-500/90">每小时</strong>一批（默认 4 轮×30s）；日志里可搜
+          <code className="text-cyan-500/80">[kalaroko_scheduler]</code>，L3 进程需保持运行。
+        </p>
         <div className="flex flex-wrap items-center gap-4 border-t border-cyan-500/15 pt-4">
           <div className="text-xs font-medium text-cyan-500/90">⏲️ 定时守护进程</div>
           <div

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
@@ -83,6 +83,11 @@ export interface OmniCyberChatShellProps {
   onStopGeneration?: () => void;
   placeholder?: string;
   disabled?: boolean;
+  /**
+   * 麦克风/VAD 是否要求至少一条后端链路（L3 WS 或 L2）。
+   * 当父级将 `disabled=false` 以放行键盘输入时，应传入 `sensory.connected || l2Available`，避免离线误触语音。
+   */
+  voiceBackendOk?: boolean;
   isLoading: boolean;
   isTyping: boolean;
   isRecording: boolean;
@@ -137,6 +142,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   onStopGeneration,
   placeholder = "输入指令…",
   disabled = false,
+  voiceBackendOk,
   isLoading,
   isTyping,
   messages,
@@ -197,7 +203,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      if (!onMergePendingFiles || disabled || isLoading) return;
+      if (!onMergePendingFiles || isLoading) return;
 
       const collected: File[] = [];
       const dt = event.clipboardData;
@@ -241,7 +247,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
 
       onMergePendingFiles(renamed);
     },
-    [onMergePendingFiles, disabled, isLoading, formatClipboardScreenshotName],
+    [onMergePendingFiles, isLoading, formatClipboardScreenshotName],
   );
 
   useEffect(() => {
@@ -273,7 +279,8 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   const stopMode =
     onStopGeneration != null &&
     (jachinMachineState === "THINKING" || jachinMachineState === "STREAMING");
-  const canVoice = !disabled && !isLoading;
+  const voiceGate = voiceBackendOk !== undefined ? voiceBackendOk : !disabled;
+  const canVoice = voiceGate && !isLoading;
   const voiceVisual = interactionPhase !== "text";
   const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
 

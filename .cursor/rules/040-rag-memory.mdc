@@ -1,6 +1,6 @@
 ---
 description: v8.0 量子记忆 (Quantum Memory) — 生物学 + 向量 + 自我修复 + Dream Weaver 梦境重塑
-globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/memory_store.py, core/db/l2_memory_lancedb.py, core/vector_router.py, core/embedding/, core/intelligence_implicit.py, core/intelligence_implicit_embedding.py, l3_node/local_memory_search.py, docs/MEMORY_SCORING.md, docs/IMPLICIT_SIGNALS.md
+globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/memory_store.py, core/db/l2_memory_lancedb.py, core/vector_router.py, core/embedding/, core/intelligence_implicit.py, core/intelligence_implicit_embedding.py, l3_client/local_mcps/jachin_memory_nexus/memory_backend.py, l3_node/memory_nexus_bridge.py, l3_node/local_memory_search.py, docs/MEMORY_SCORING.md, docs/architecture/MEMORY_NEXUS_L3.md, docs/IMPLICIT_SIGNALS.md
 ---
 # Quantum Memory Pipeline (v8.0)
 
@@ -32,13 +32,13 @@ globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/me
 5. **Prompt 注入**：`get_core_memory_for_prompt(limit=20)` + 向量检索结果拼接到 System Prompt。
 6. **清理**：`prune_short_term_older_than_24h()`、`delete_short_term_after_dream()`。
 7. **v8.0 Dream Weaver Consolidation（梦境重塑与记忆自愈）**：设备空闲时，利用边缘轻量级 LLM 对 LanceDB 中的近期记忆进行聚类、去重、时间线衰减（忘却机制）和逻辑压缩。若发现记忆冲突，打上「需用户澄清」标签。详见 `docs/whitepaper/V8_SINGULARITY_OS.md`。
-8. **混合检索（Hybrid Search）**：L2 记忆检索支持向量 + BM25 + 可选 **MMR**；权重与 MMR 见 `nexus_config.json` → **`memory_scoring`**，公式见 **`docs/MEMORY_SCORING.md`**。`GET /api/v2/memory/search?hybrid=true`；**可解释分量**：`GET /api/v2/memory/search?explain=true`（与 hybrid 可同用）。
+8. **混合检索（Hybrid Search）**：**若部署 L2 控制面**，其 `GET /api/v2/memory/search` 支持向量 + BM25 + 可选 **MMR**；与 **L3 Memory Nexus**（`deep_search`）分立。权重与 MMR 见 `nexus_config.json` → **`memory_scoring`**，公式见 **`docs/MEMORY_SCORING.md`**。
 9. **主动记忆刷新（Memory Flush）**：神盾 Compaction 前，当 token 接近上限时静默 LLM 回合，提醒模型写入 core_memory。配置 `llm.memory_flush.enabled`、`llm.memory_flush.soft_threshold`。
 10. **Markdown 导出**：`export_core_memory_to_markdown()` 将 core_memory 导出至 `~/.jachin/memory/MEMORY.md`，梦境完成后自动执行；`GET /api/v3/memory/export-markdown` 手动触发。
-11. **L3 本地记忆（P0）**：`l3_node/local_memory.py` → `~/.jachin/memory/l3_local.json`，断网/无 L2 时注入 System Prompt；recall 后与 L2 `merge_from_l2`。**检索工具**：`core:local_memory_search`（`l3_node/local_memory_search.py`，半衰 + MMR，可选 `MEMORY.md` 分块）。
-11b. **L5 本地记忆「梦境合并/坍缩」**（`l3_node/memory_compactor.py`，与上下文 compaction **不同**）：向用户说明触发条件时，**显式口令**（整理本地记忆、梦境合并、立即整理记忆等）与 **桌面横幅** 确认 = **`force` 立即合并，不要求已满 150 条**（空库不调 LLM）；**仅** `JACHIN_MEMORY_COMPACT_ON_SESSION=1` 的静默轮询才要求 **>150 条**。SSOT：`docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md` §4.1.1；ReAct 页脚常量 `REACT_FOOTER_L5_MEMORY_COMPACT_FACTS`（`agent_core.py`）。
+11. **L3 Memory Nexus（现行）**：Chroma **`~/.jachin/palace_db`**，`l3_client/.../memory_backend.py`（`commit_drawer` / `recall_room` / `deep_search`）；L1 注入 · `core:local_memory_*` · 回合末异步 commit。可选 **`CHROMA_USE_HTTP_CLIENT`**。SSOT：**`docs/architecture/MEMORY_NEXUS_L3.md`**。
+11b. **JSON「梦境合并」（已停用）**：`compact_local_memory_if_needed` 为 **no-op**；旧 `l3_local.json` LLM 合并调度已关闭。勿向用户灌输 150 条 banners 等旧口径；上下文 compaction 仍指 **`core/compaction_hook.py`**。
 12. **Pre-reset 刷新（P0）**：`POST /api/v3/llm/context/reset` 前 `run_pre_reset_memory_flush()`（`core/compaction_hook.py`）。
-13. **阶段 A（MVP）**：`llm.memory_flush.workspace_must_update` 锚点校验、`post_compaction_audit`、compaction 后 `findings` checkpoint + `l3_local`；L3 与 core 共用 `compaction_before_llm_think`（`l3_node/l3_compaction_bridge.py`）。见总览 §5.2、**078**。
+13. **阶段 A（MVP）**：`llm.memory_flush.workspace_must_update` 锚点校验、`post_compaction_audit`、compaction 后 `findings` checkpoint（可选 **Nexus** `commit_drawer` 摘要，非旧 JSON 坍缩）；L3 与 core 共用 `compaction_before_llm_think`（`l3_node/l3_compaction_bridge.py`）。见总览 §5.2、**078**。
 14. **P1 / P2（摘要）**：用户偏好与澄清队列、只读工具 TTL 缓存（`intelligence_p1.py`、`tool_call_cache.py`）；修正意图、意图-技能统计、检索强化分 + `POST /api/v2/memory/reinforce`（`intelligence_p2.py`）。**总表**：`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`。
 15. **§4.3 隐式学习（越用越聪明）**：`core/intelligence_implicit.py`、`intelligence_implicit_embedding.py`；全端 **`implicit_turn_attribution`** + `POST /api/v2/intelligence/implicit-signal`；消费侧 **`intelligence_e`**。权威说明 **`docs/IMPLICIT_SIGNALS.md`**；与总览 **v1.9**、规则 **078** 一致。
 

@@ -1,7 +1,8 @@
-﻿"""
-L3 本地记忆持久化（主文件 l3_local.json + delegate 分片 l3_local_shard_*.json）。
+"""
+L3 记忆宿主：核心写入已迁移 **Memory Nexus（Chroma）**；**l3_local.json 仅保留读取/合并器/历史诊断**。
 
-供 run_agent 被动注入与 core:local_memory_search；与 L2 recall merge；断网可用。
+- 被动注入：见 `memory_nexus_bridge.build_l1_system_memory_block` / `get_local_memory_for_prompt`
+- `add_local_memory` → `commit_drawer`（User_Persona / Learned_Skills）
 架构说明: docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §4；治理路线与快照: docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md（§〇、§4）。
 """
 from __future__ import annotations
@@ -128,69 +129,51 @@ def add_local_memory(
     *,
     source: str = "agent",
     tags_list: list[str] | None = None,
-) -> None:
+) -> bool:
     """
-    写入一条 L3 本地核心记忆。
-    tag: preference | user_habit | config_hint | fact 等
-    tags_list: 可选，完整标签列表（含与 tag 一致的首项），存入条目 tags 字段供检索/展示。
+    写入一条核心记忆：**已迁移至 Memory Nexus（Chroma）** User_Persona / Learned_Skills。
+    （历史 l3_local.json 写入路径已废弃，保留 load 仅兼容旧 compaction/诊断。）
+
+    tag: preference | user_habit | config_hint | fact | task_checkpoint 等
+    tags_list: 可选；写入 extra_meta。
+
+    Returns:
+        True 若已提交 Nexus；False 仅当参数无效（空 content/tag）。commit_drawer 失败时抛出异常（携带底层原因）。
     """
     content = (content or "").strip()
     tag = (tag or "general").strip()
     if not content or not tag:
-        return
-    entries = _load_raw()
-    rec: dict[str, Any] = {
-        "tag": tag,
-        "content": content,
-        "source": source,
-        "timestamp": time.time(),
-    }
+        return False
+    extra_meta: dict[str, Any] = {"tag": tag, "source": source}
     if tags_list:
         clean = [str(t).strip() for t in tags_list if str(t).strip()][:32]
         if clean:
-            rec["tags"] = clean
-    entries.append(rec)
-    # 按时间倒序，保留最近 MAX
-    entries.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-    if len(entries) > _MAX_ENTRIES:
-        entries = entries[:_MAX_ENTRIES]
-    _save_raw(entries)
-    logger.debug("[L3 LocalMemory] 已写入 tag=%s", tag)
-    if str(tag).lower() in ("fact", "correction", "preference", "user_habit"):
-        try:
-            from l3_node.memory_sync_signals import bump_urgent_l3_local_sync
+            extra_meta["tags_json"] = json.dumps(clean, ensure_ascii=False)
+    try:
+        from l3_client.local_mcps.jachin_memory_nexus.memory_backend import commit_drawer
 
-            bump_urgent_l3_local_sync()
-        except ImportError:
-            pass
+        commit_drawer(
+            text=f"[{tag}] {content}",
+            wing="User_Persona",
+            room="Learned_Skills",
+            extra_meta=extra_meta,
+        )
+    except Exception as e:
+        logger.warning(
+            "[L3 LocalMemory] Memory Nexus commit_drawer 失败，底层: %s",
+            e,
+            exc_info=True,
+        )
+        raise
+    logger.debug("[L3 LocalMemory] 已写入 Nexus tag=%s", tag)
+    return True
 
 
 def touch_entries_from_search_hits(hits: list[dict]) -> None:
-    """local_memory_search 命中后刷新条目的访问时间，供衰减与门面共用。"""
+    """Memory Nexus 迁移后检索不再写回 l3_local.json；保留 API 以利旧调用链 no-op。"""
     if not hits:
         return
-    snippets: list[str] = []
-    for h in hits:
-        c = (h.get("content") or "").strip()
-        if len(c) >= 12:
-            snippets.append(c[:120])
-    if not snippets:
-        return
-    entries = _load_raw()
-    now = time.time()
-    changed = False
-    for e in entries:
-        c = (e.get("content") or "").strip()
-        if len(c) < 12:
-            continue
-        pre = c[:120]
-        for sn in snippets:
-            if sn in c or pre in sn:
-                e["last_access_ts"] = now
-                changed = True
-                break
-    if changed:
-        _save_raw(entries)
+    return
 
 
 def get_local_memory_for_prompt(
@@ -200,93 +183,27 @@ def get_local_memory_for_prompt(
     max_idle_prompt_cycles: int | None = None,
 ) -> str:
     """
-    获取最近 N 条本地记忆，格式化为 System Prompt 片段。
-    供 run_agent 在 L2 recall 不可用时注入。
-    若传入 prompt_cycle，则对「非 correction」条目做被动衰减：超过 max_idle 轮未注入则不再展示；
-    本次实际注入的条目会写回 last_prompt_inject_cycle。
+    兼容旧 API：现为 L1 Memory Nexus 块（与 agent_core 中 `build_l1_system_memory_block` 一致）。
+    limit / prompt_cycle 等 JSON 衰减参数已失效。
     """
-    entries = _load_raw()
-    if not entries:
+    try:
+        from l3_client.local_mcps.jachin_memory_nexus.memory_backend import recall_room as _recall_room
+        from l3_node.memory_nexus_bridge import build_l1_system_memory_block
+
+        return build_l1_system_memory_block(recall_room_fn=_recall_room)
+    except Exception as e:
+        logger.debug("[L3 LocalMemory] get_local_memory_for_prompt Nexus 路径失败: %s", e)
         return ""
-    max_idle = max_idle_prompt_cycles if max_idle_prompt_cycles is not None else _memory_passive_max_idle()
-
-    def eligible(e: dict) -> bool:
-        if str(e.get("tag", "")).lower() == "correction":
-            return True
-        if prompt_cycle is None:
-            return True
-        lp = e.get("last_prompt_inject_cycle")
-        if lp is None:
-            return True
-        try:
-            return (int(prompt_cycle) - int(lp)) <= max_idle
-        except Exception:
-            return True
-
-    from l3_node.local_memory_ranking import sort_entries_by_agent_priority
-
-    pool = sort_entries_by_agent_priority(entries)
-    selected: list[dict] = []
-    for e in pool:
-        if not eligible(e):
-            continue
-        if str(e.get("tag", "")).strip().lower() in _TAGS_EXCLUDE_FROM_PASSIVE_PROMPT:
-            continue
-        if not (e.get("content") or "").strip():
-            continue
-        selected.append(e)
-        if len(selected) >= limit:
-            break
-
-    if prompt_cycle is not None and selected:
-        sigs = {(str(e.get("content"))[:120], float(e.get("timestamp", 0) or 0)) for e in selected}
-        all_e = _load_raw()
-        changed = False
-        for e in all_e:
-            sig = (str(e.get("content"))[:120], float(e.get("timestamp", 0) or 0))
-            if sig in sigs:
-                e["last_prompt_inject_cycle"] = int(prompt_cycle)
-                changed = True
-        if changed:
-            _save_raw(all_e)
-
-    if not selected:
-        return ""
-    lines = ["【本地记忆】"]
-    for e in selected:
-        tag = e.get("tag", "general")
-        content = (e.get("content") or "")[:300]
-        if content:
-            lines.append(f"- [{tag}] {content}")
-    return "\n".join(lines) + "\n"
 
 
 def merge_from_l2(items: list[dict]) -> None:
     """
-    从 L2 同步合并记忆。L2 检索结果写入本地，避免断网时丢失。
-    items: [{"content": "...", "tag": "?"}, ...]
+    已移除：L3 记忆不再经 L2 回灌；跨会话 SSOT 为 Memory Nexus（Chroma）。
+    保留空实现以免旧调用链 import 报错。
     """
     if not items:
         return
-    entries = _load_raw()
-    seen = {e.get("content", "")[:100] for e in entries}
-    now = time.time()
-    for it in items:
-        c = (it.get("content") or "").strip()
-        if not c or c[:100] in seen:
-            continue
-        seen.add(c[:100])
-        entries.append({
-            "tag": it.get("tag", "l2_sync"),
-            "content": c,
-            "source": "l2_sync",
-            "timestamp": now,
-        })
-    entries.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-    if len(entries) > _MAX_ENTRIES:
-        entries = entries[:_MAX_ENTRIES]
-    _save_raw(entries)
-    logger.debug("[L3 LocalMemory] 已合并 %d 条 L2 记忆", len(items))
+    logger.debug("[L3 LocalMemory] merge_from_l2 已移除（L3-only 记忆），忽略 %d 条", len(items))
 
 
 # -----------------------------------------------------------------------------
@@ -702,5 +619,5 @@ def clear_stop_harvest_from_workflow_state(workflow_id: str) -> int:
 
 
 def main_local_memory_json_path() -> Path:
-    """主会话 `l3_local.json` 绝对路径（非 delegate 分片）；供梦境合并等模块使用。"""
+    """主会话 `l3_local.json` 绝对路径（非 delegate 分片）；遗留诊断/少数仍读 JSON 的路径；**非** Memory Nexus 主存储。"""
     return _LOCAL_DB.expanduser().resolve()

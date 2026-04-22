@@ -78,9 +78,9 @@ reinforce_bonus = reinforce_weight * (1 - exp(-merged_raw))
 - **UI 闭环（推荐）**：`POST /api/v2/memory/feedback`，body：`{ "memory_id": "...", "vote": "up"|"down" }`，可选 `delta` 覆盖默认；默认增量可在 `intelligence_ui.memory_feedback_up` / `memory_feedback_down` 配置。
 - 请求会写入侧车并追加 `intelligence_events.jsonl` 类型 `ui_memory_thumbs_up` / `ui_memory_thumbs_down`（**不再**经 `intelligence_e` 聚合到 `_intel_from_events`，避免与单条 `memory_id` 双计）。
 
-## 5. L3 本地检索（断网）
+## 5. L3 本地检索（断网 / Memory Nexus）
 
-工具 **`core:local_memory_search`**：`l3_node/local_memory_search.py`，数据源为 `l3_local.json` + 可选 `MEMORY.md` 分块；打分 = 关键词重叠 + 时间半衰 + **MMR**，与 L2 公式独立但产品位对标 OpenClaw `memory_search` 的「单工具 + 衰减 + 多样性」。
+工具 **`core:local_memory_search`**：`l3_node/local_memory_search.py` → **`deep_search`**（Chroma **`~/.jachin/palace_db`**），按查询做 **向量语义检索**，返回 `matches[]`（含 `wing`/`room`/距离）。与 L2 hybrid 公式独立；产品位对标「单工具语义检索」。权威说明：**[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**。
 
 ## 6. apply_patch 与 Python AST
 

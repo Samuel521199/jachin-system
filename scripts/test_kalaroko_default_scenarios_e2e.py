@@ -61,6 +61,11 @@ if sys.platform == "win32":
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from core.kalaroko_e2e_jsonl_store import (  # noqa: E402
+    KALAROKO_E2E_JSONL_PATH,
+    kalaroko_e2e_jsonl_lock,
+)
+
 # 与 run_bi_* 等脚本一致：合并仓库根 .env，否则 CHROME_* / KALAROKO_* 写在 .env 里也不会进 os.environ
 try:
     from dotenv import load_dotenv
@@ -80,7 +85,7 @@ os.environ.setdefault(
 # 持久化 E2E 落库（供 7x24 调度、晨报与历史 query_recent）
 DATA_DIR = Path.home() / ".jachin" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-KALAROKO_E2E_JSONL = DATA_DIR / "kalaroko_e2e.jsonl"
+KALAROKO_E2E_JSONL = KALAROKO_E2E_JSONL_PATH
 
 # 串行化 Playwright/落库，避免与定时任务交错写 JSONL
 _E2E_SERIAL_LOCK = asyncio.Lock()
@@ -459,6 +464,78 @@ def compact_record_for_daily_llm(record: dict) -> dict[str, Any]:
     }
 
 
+def _round_e2e_structural_green(pw: dict, fh: dict) -> bool:
+    """单轮结构是否全绿：Playwright 成功、首页与各游戏 success、API 均 healthy。"""
+    if pw.get("ok") is not True:
+        return False
+    hp = pw.get("homepage") or {}
+    if hp.get("load_status") != "success":
+        return False
+    for g in pw.get("games") or []:
+        if g.get("load_status") != "success":
+            return False
+    for it in fh.get("items") or []:
+        if not it.get("healthy"):
+            return False
+    return True
+
+
+def _llm_analysis_indicates_issue_or_special(text: str) -> bool:
+    """
+    多轮综合分析是否值得入库：配置/调用失败、显式告警符号、或明显负面语义。
+    全绿平稳结论（无下列触发词）返回 False，避免向量库被小时巡检刷屏。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if "未配置" in s and "Key" in s:
+        return True
+    if "跳过" in s and ("大模型" in s or "DashScope" in s):
+        return True
+    if "❌" in s or "⚠️" in s:
+        return True
+    keywords = (
+        "失败",
+        "异常",
+        "不健康",
+        "超时",
+        "报错",
+        "部分成功",
+        "退化",
+        "飙升",
+        "不可用",
+        "风险",
+        "故障",
+        "急剧",
+        "恶化",
+        "骤降",
+        "骤升",
+        "剧烈波动",
+        "明显波动",
+    )
+    if any(k in s for k in keywords):
+        return True
+    low = s.lower()
+    if "unhealthy" in low or "timeout" in low or "degraded" in low:
+        return True
+    return False
+
+
+def _should_commit_kalaroko_e2e_memory_nexus(
+    *,
+    skip_playwright: bool,
+    had_round_exception: bool,
+    structural_all_ok: bool,
+    llm_analysis: str | None,
+) -> bool:
+    """仅异常/退化/特殊 LLM 结论时入库；全绿且摘要平稳则跳过。"""
+    if skip_playwright:
+        return False
+    if had_round_exception or not structural_all_ok:
+        return True
+    return _llm_analysis_indicates_issue_or_special(llm_analysis or "")
+
+
 def jsonl_records_last_hours(
     jsonl_path: str | Path,
     *,
@@ -470,7 +547,8 @@ def jsonl_records_last_hours(
     if not p.is_file():
         return []
     try:
-        raw = p.read_text(encoding="utf-8", errors="replace")
+        with kalaroko_e2e_jsonl_lock(p):
+            raw = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     now = datetime.now(timezone.utc)
@@ -582,109 +660,166 @@ JSON 数据:
                     },
                 }
             )
-        n_rounds = len(payload)
-        prompt = f"""
-你是一个资深的 QA 性能测试专家。请根据以下 {n_rounds} 轮的 E2E 自动化测试时序数据，给出一份简明扼要的综合分析总结。
+
+        record_count = len(payload)
+        ch_json = json.dumps(compact_history, ensure_ascii=False)
+
+        if record_count <= 10:
+            prompt = f"""
+你是一个资深的 QA 性能测试专家。请根据以下 {record_count} 轮的 E2E 自动化测试时序数据，给出一份简明扼要的综合分析总结。
 数据包含首页和各款游戏的 TTFB (首字节时间)、页面完全加载时间以及成功状态。
 
 测试数据 (JSON):
-{json.dumps(compact_history, ensure_ascii=False)}
-
-参考输出示例风格：
-"kalaroko.com 在四轮测试中继续保持稳定健康状态。三款核心游戏均成功完成完整的'首页 → 游戏点击 → 进入牌桌'流程，Royal Pusoy 和 Color Blitz Social 加载时间在第四轮达到最优。Color Blitz Social 的 iframe TTFB 出现一次偏高（1,646ms），但总加载时间仍保持平稳，建议后续持续关注。所有 API 全量健康，无 HTTP 错误、无业务层 Console 错误。"
+{ch_json}
 
 任务要求：
 1. 总结整体稳定性（是否全量成功）。
 2. 指出最优表现（哪一轮/哪个游戏最快）。
 3. 精准捕捉异常波动（如果某轮的 TTFB 或 Load 突然飙升，必须点出具体数值和游戏）。
-4. 语言专业、精炼，直接输出分析结论段落，不要使用 Markdown 代码块包裹，不要多余的寒暄。
+4. 语言专业、精炼，直接输出一段分析结论，不要使用 Markdown 代码块包裹。
 """
-        sys_msg = "你是专业的 QA 数据分析师。"
-        log_n = n_rounds
+            sys_msg = "你是专业的 QA 数据分析师。"
+        else:
+            prompt = f"""
+你是 Jachin AI OS 的首席 SRE (站点可靠性工程师)。你现在需要向上级汇报过去 24 小时内，Kalaroko 平台的 E2E 自动化巡检全天大盘监控报告。
+以下是过去 24 小时内抽样提取的 {record_count} 次测试指标。
 
-    print(
-        f"\n[LLM 分析] 正在调用大模型 ({model}) mode={mode} items={log_n} …",
-        flush=True,
-    )
-    timeout_s = 95.0 if mode == "daily_24h" else 45.0
+测试数据 (JSON):
+{ch_json}
+
+任务要求：
+1. 【全天可用性定调】：用一句话总结过去 24 小时系统的整体可用性和健康度（如：全天运行平稳，或夜间出现剧烈波动）。
+2. 【极端异常点名】：不要报流水账！只挑出全天数据中**最慢的加载时间**、**异常的 TTFB 飙升**或**非 success 的失败记录**。明确指出是哪个游戏、在第几次测试中出现的。如果全天数据极度健康，请直接说明「全天无异常超时或报错」。
+3. 【趋势建议】：基于 24 小时的数据走向，给出 1-2 条运维视角的建议。
+4. 语言要求：必须具备高管汇报的专业性（Executive Summary 风格），客观冷酷，不讲废话，直接输出结论段落，切勿使用 Markdown 代码块包裹。
+"""
+            sys_msg = (
+                "你是 Jachin AI OS 的首席站点可靠性工程师，面向管理层撰写客观、精炼的技术运维汇报。"
+            )
+
+        log_n = record_count
+        print(
+            f"\n[LLM 分析] 正在调用大模型 ({model}) 分析 {record_count} 条时序数据…",
+            flush=True,
+        )
+
+    if mode == "daily_24h":
+        print(
+            f"\n[LLM 分析] 正在调用大模型 ({model}) mode={mode} items={log_n} …",
+            flush=True,
+        )
+
+    if mode != "daily_24h":
+        timeout_s = 95.0 if record_count > 10 else 45.0
+    else:
+        timeout_s = 95.0
     print(f"[LLM] endpoint={url}", flush=True)
     print(
         f"[LLM] 请求规模: mode={mode} items={log_n}, user_prompt_chars={len(prompt)}",
         flush=True,
     )
 
+    _retry_delays_s = [2.0, 4.0, 8.0]
+
     try:
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            print(
-                f"[LLM] POST chat/completions timeout={timeout_s}s …",
-                flush=True,
-            )
-            t0 = time.monotonic()
-            resp = await client.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": sys_msg},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                },
-            )
-            elapsed_ms = (time.monotonic() - t0) * 1000.0
-            print(
-                f"[LLM] HTTP status={resp.status_code} elapsed_ms={elapsed_ms:.0f}",
-                flush=True,
-            )
+        for attempt in range(4):
+            try:
+                async with httpx.AsyncClient(timeout=timeout_s) as client:
+                    print(
+                        f"[LLM] POST chat/completions timeout={timeout_s}s "
+                        f"(attempt {attempt + 1}/4) …",
+                        flush=True,
+                    )
+                    t0 = time.monotonic()
+                    resp = await client.post(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": [
+                                {"role": "system", "content": sys_msg},
+                                {"role": "user", "content": prompt},
+                            ],
+                            "temperature": 0.2,
+                        },
+                    )
+                    elapsed_ms = (time.monotonic() - t0) * 1000.0
+                    print(
+                        f"[LLM] HTTP status={resp.status_code} elapsed_ms={elapsed_ms:.0f}",
+                        flush=True,
+                    )
 
-            if resp.status_code >= 400:
-                snippet = (resp.text or "")[:1500]
-                print(f"[LLM] 非成功状态，响应体（截断）:\n{snippet}", flush=True)
+                    if resp.status_code >= 400:
+                        snippet = (resp.text or "")[:1500]
+                        print(f"[LLM] 非成功状态，响应体（截断）:\n{snippet}", flush=True)
 
-            resp.raise_for_status()
-            data = resp.json()
+                    resp.raise_for_status()
+                    data = resp.json()
 
-            if isinstance(data, dict) and data.get("error"):
-                err_obj = data["error"]
-                print(f"[LLM] JSON 内含 error 字段: {err_obj!r}", flush=True)
-                return f"> ❌ DashScope API 错误: {err_obj}"
+                    if isinstance(data, dict) and data.get("error"):
+                        err_obj = data["error"]
+                        print(f"[LLM] JSON 内含 error 字段: {err_obj!r}", flush=True)
+                        return f"> ❌ DashScope API 错误: {err_obj}"
 
-            choices = data.get("choices")
-            if not isinstance(choices, list) or not choices:
-                keys = list(data.keys()) if isinstance(data, dict) else type(data)
-                print(f"[LLM] choices 缺失或为空，顶层 keys={keys}", flush=True)
-                body_preview = json.dumps(data, ensure_ascii=False)[:800]
-                print(f"[LLM] body 预览: {body_preview}", flush=True)
-                return "> ❌ 大模型综合分析调用失败: 响应无 choices"
+                    choices = data.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        keys = (
+                            list(data.keys()) if isinstance(data, dict) else type(data)
+                        )
+                        print(f"[LLM] choices 缺失或为空，顶层 keys={keys}", flush=True)
+                        body_preview = json.dumps(data, ensure_ascii=False)[:800]
+                        print(f"[LLM] body 预览: {body_preview}", flush=True)
+                        return "> ❌ 大模型综合分析调用失败: 响应无 choices"
 
-            msg0 = (choices[0] or {}).get("message") or {}
-            content = msg0.get("content")
-            if content is None:
-                print(f"[LLM] message.content 为 None，choices[0]={choices[0]!r}", flush=True)
-                return "> ❌ 大模型综合分析调用失败: 无 assistant content"
+                    msg0 = (choices[0] or {}).get("message") or {}
+                    content = msg0.get("content")
+                    if content is None:
+                        print(
+                            f"[LLM] message.content 为 None，choices[0]={choices[0]!r}",
+                            flush=True,
+                        )
+                        return "> ❌ 大模型综合分析调用失败: 无 assistant content"
 
-            out = str(content).strip()
-            print(
-                f"[LLM] 解析成功: assistant 回复长度={len(out)} 字符",
-                flush=True,
-            )
-            return out
+                    out = str(content).strip()
+                    print(
+                        f"[LLM] 解析成功: assistant 回复长度={len(out)} 字符",
+                        flush=True,
+                    )
+                    return out
 
-    except httpx.HTTPStatusError as e:
-        tb = ""
-        try:
-            tb = (e.response.text or "")[:1500]
-        except Exception:
-            tb = "(无法读取 response.text)"
-        print(
-            f"[LLM] HTTPStatusError: {e!r} body_trunc=\n{tb}",
-            flush=True,
-        )
-        return f"> ❌ 大模型综合分析调用失败: HTTP {e.response.status_code if e.response else '?'} {tb[:500]}"
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                print(
+                    f"[LLM] 可重试错误 ({type(e).__name__}) attempt={attempt + 1}: {e!r}",
+                    flush=True,
+                )
+                if attempt < 3:
+                    delay = _retry_delays_s[attempt]
+                    print(f"[LLM] {delay}s 后重试…", flush=True)
+                    await asyncio.sleep(delay)
+                    continue
+                # 第 4 次仍失败：按原逻辑返回错误文案
+                if isinstance(e, httpx.HTTPStatusError):
+                    tb = ""
+                    try:
+                        tb = (e.response.text or "")[:1500]
+                    except Exception:
+                        tb = "(无法读取 response.text)"
+                    print(
+                        f"[LLM] HTTPStatusError 重试耗尽: {e!r} body_trunc=\n{tb}",
+                        flush=True,
+                    )
+                    return (
+                        f"> ❌ 大模型综合分析调用失败: HTTP "
+                        f"{e.response.status_code if e.response else '?'} {tb[:500]}"
+                    )
+                print(f"[LLM] TimeoutException 重试耗尽: {e!r}", flush=True)
+                return (
+                    "> ❌ 大模型综合分析调用失败: 请求超时（已多次重试） "
+                    f"{type(e).__name__}: {e}"
+                )
 
     except httpx.RequestError as e:
         print(f"[LLM] RequestError: {type(e).__name__}: {e!r}", flush=True)
@@ -1058,6 +1193,7 @@ def render_report_md(
 
 async def _run_playwright() -> dict:
     from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+        emergency_kalaroko_playwright_cleanup,
         execute_playwright_perf_test,
         set_playwright_progress_callback,
     )
@@ -1076,6 +1212,16 @@ async def _run_playwright() -> dict:
         )
     finally:
         set_playwright_progress_callback(None)
+        try:
+            await emergency_kalaroko_playwright_cleanup()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:
+            print(
+                f"[e2e] emergency_kalaroko_playwright_cleanup: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
     print(_j(out, limit=None), flush=True)
     return out
 
@@ -1232,6 +1378,8 @@ async def _run_full_cycle(
     all_metrics_history: list[dict] = []
     markdown_rounds: list[str] = []
     cancelled = False
+    structural_all_ok = True
+    had_round_exception = False
 
     jsonl_path = str(KALAROKO_E2E_JSONL)
 
@@ -1245,99 +1393,123 @@ async def _run_full_cycle(
             cancelled = True
             break
 
-        if skip_playwright:
-            pw = {
-                "ok": True,
-                "schema_version": "1.0.0",
-                "run_id": "e2e-skip-pw",
-                "captured_at": "1970-01-01T00:00:00Z",
-                "network_profile": "wifi",
-                "homepage": {
-                    "url": "https://kalaroko.com/",
-                    "load_status": "skipped",
-                    "metrics": {
-                        "ttfb_ms": None,
-                        "fcp_ms": None,
-                        "dom_content_loaded_ms": None,
-                        "page_load_ms": None,
-                        "total_resources": 0,
-                        "failed_resources": 0,
-                        "protocol": "UNKNOWN",
+        try:
+            if skip_playwright:
+                pw = {
+                    "ok": True,
+                    "schema_version": "1.0.0",
+                    "run_id": "e2e-skip-pw",
+                    "captured_at": "1970-01-01T00:00:00Z",
+                    "network_profile": "wifi",
+                    "homepage": {
+                        "url": "https://kalaroko.com/",
+                        "load_status": "skipped",
+                        "metrics": {
+                            "ttfb_ms": None,
+                            "fcp_ms": None,
+                            "dom_content_loaded_ms": None,
+                            "page_load_ms": None,
+                            "total_resources": 0,
+                            "failed_resources": 0,
+                            "protocol": "UNKNOWN",
+                        },
+                        "web_vitals": {
+                            "lcp_ms": None,
+                            "fid_ms": None,
+                            "cls": None,
+                            "inp_ms": None,
+                            "ttfb_ms": None,
+                            "fcp_ms": None,
+                        },
+                        "navigation_timing": {},
                     },
-                    "web_vitals": {
-                        "lcp_ms": None,
-                        "fid_ms": None,
-                        "cls": None,
-                        "inp_ms": None,
-                        "ttfb_ms": None,
-                        "fcp_ms": None,
-                    },
-                    "navigation_timing": {},
-                },
-                "games": [],
-                "browser_exceptions": [],
-                "aggregation_notes": [
-                    "--skip-playwright：未执行真实 KALAROKO_DEFAULT_SCENARIOS"
-                ],
-            }
-            _e2e_echo("[INFO] 已跳过 Playwright，使用占位 pw 载荷")
-        else:
-            pw = await _run_playwright()
-            _assert_playwright_shape(pw)
+                    "games": [],
+                    "browser_exceptions": [],
+                    "aggregation_notes": [
+                        "--skip-playwright：未执行真实 KALAROKO_DEFAULT_SCENARIOS"
+                    ],
+                }
+                _e2e_echo("[INFO] 已跳过 Playwright，使用占位 pw 载荷")
+            else:
+                pw = await _run_playwright()
+                if isinstance(pw, dict) and pw.get("error_code") == "USER_CANCELLED":
+                    cancelled = True
+                    break
+                _assert_playwright_shape(pw)
 
-        if is_manual_run_cancel_requested():
-            cancelled = True
-            break
-
-        fh = await _run_fetch()
-        if fh.get("ok") is not True:
-            raise AssertionError(f"fetch_api_health 失败: {fh}")
-
-        if is_manual_run_cancel_requested():
-            cancelled = True
-            break
-
-        record, query_recent = _run_history(pw, fh, jsonl_path)
-
-        if is_manual_run_cancel_requested():
-            cancelled = True
-            break
-
-        current_metrics = (
-            _extract_comparison_metrics(pw) if not skip_playwright else {}
-        )
-        all_metrics_history.append(current_metrics)
-
-        print("\n", flush=True)
-        _e2e_progress(
-            f"生成 Markdown 报告（stdout，第 {current_run}/{runs} 轮）…"
-        )
-        md_round = render_report_md(
-            pw,
-            fh,
-            query_recent,
-            record,
-            current_run=current_run,
-            all_metrics_history=all_metrics_history,
-        )
-        markdown_rounds.append(md_round)
-        _e2e_echo(
-            f"[报告] 第 {current_run}/{runs} 轮 Markdown 已生成（{len(md_round)} 字符）；"
-            "完整一至七节在任务结束时的 markdown_report 中汇总。"
-        )
-
-        if is_manual_run_cancel_requested():
-            cancelled = True
-            break
-
-        if current_run < runs:
-            _e2e_echo(
-                f"\n⏳ 第 {current_run} 轮执行完毕。等待 {interval} 秒后进行下一轮…\n"
-            )
-            await asyncio.sleep(interval)
             if is_manual_run_cancel_requested():
                 cancelled = True
                 break
+
+            fh = await _run_fetch()
+            if fh.get("ok") is not True:
+                raise AssertionError(f"fetch_api_health 失败: {fh}")
+
+            if not skip_playwright:
+                structural_all_ok = structural_all_ok and _round_e2e_structural_green(
+                    pw, fh
+                )
+
+            if is_manual_run_cancel_requested():
+                cancelled = True
+                break
+
+            record, query_recent = _run_history(pw, fh, jsonl_path)
+
+            if is_manual_run_cancel_requested():
+                cancelled = True
+                break
+
+            current_metrics = (
+                _extract_comparison_metrics(pw) if not skip_playwright else {}
+            )
+            all_metrics_history.append(current_metrics)
+
+            print("\n", flush=True)
+            _e2e_progress(
+                f"生成 Markdown 报告（stdout，第 {current_run}/{runs} 轮）…"
+            )
+            md_round = render_report_md(
+                pw,
+                fh,
+                query_recent,
+                record,
+                current_run=current_run,
+                all_metrics_history=all_metrics_history,
+            )
+            markdown_rounds.append(md_round)
+            _e2e_echo(
+                f"[报告] 第 {current_run}/{runs} 轮 Markdown 已生成（{len(md_round)} 字符）；"
+                "完整一至七节在任务结束时的 markdown_report 中汇总。"
+            )
+
+            if is_manual_run_cancel_requested():
+                cancelled = True
+                break
+
+            if current_run < runs:
+                _e2e_echo(
+                    f"\n⏳ 第 {current_run} 轮执行完毕。等待 {interval} 秒后进行下一轮…\n"
+                )
+                await asyncio.sleep(interval)
+                if is_manual_run_cancel_requested():
+                    cancelled = True
+                    break
+
+        except Exception as round_exc:
+            had_round_exception = True
+            msg = f"{type(round_exc).__name__}: {round_exc}"
+            _e2e_echo(
+                f"[E2E] 第 {current_run}/{runs} 轮异常，已记入报告并继续下一轮：{msg[:600]}"
+            )
+            markdown_rounds.append(
+                f"# Kalaroko PH 本地网络情况监控报告（第 {current_run} 轮 · 异常中断）\n\n"
+                f"本轮流水线失败（可能含 Page Closed / CDP 断开 / fetch 失败等）。\n\n"
+                f"```\n{msg}\n```\n\n"
+                f"```\n{traceback.format_exc()[:8000]}\n```\n"
+            )
+            all_metrics_history.append({})
+            continue
 
     if cancelled:
         combined_md = "\n\n---\n\n".join(markdown_rounds) if markdown_rounds else ""
@@ -1396,6 +1568,58 @@ async def _run_full_cycle(
         )
     except Exception as e:
         print(f"[Lark inspect] 推送跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
+
+    # 记忆宫殿：仅异常/退化/特殊 LLM 结论时 verbatim 入库；全绿平稳则跳过（24h 晨报由调度器单独浓缩）
+    _want_mem = _should_commit_kalaroko_e2e_memory_nexus(
+        skip_playwright=skip_playwright,
+        had_round_exception=had_round_exception,
+        structural_all_ok=structural_all_ok,
+        llm_analysis=llm_analysis,
+    )
+    if (
+        _want_mem
+        and (combined_md or "").strip()
+        and (llm_analysis or "").strip()
+    ):
+        try:
+            from l3_client.local_mcps.jachin_memory_nexus.memory_backend import commit_drawer
+
+            mem_blob = f"{llm_analysis}\n\n{combined_md}"
+            extra_meta = {
+                "source": "kalaroko_e2e",
+                "runs": runs,
+                "interval_sec": interval,
+                "summary_model": _e2e_summary_model(),
+                "skip_playwright": skip_playwright,
+                "memory_commit_reason": "anomaly_or_special_llm",
+            }
+
+            def _sync_commit() -> str:
+                return commit_drawer(
+                    text=mem_blob,
+                    wing="E2E_Monitors",
+                    room="Kalaroko_Default",
+                    extra_meta=extra_meta,
+                )
+
+            drawer_id = await asyncio.to_thread(_sync_commit)
+            _e2e_echo(
+                f"[Memory] 已写入 palace_db drawer_id={drawer_id} "
+                "(wing=E2E_Monitors room=Kalaroko_Default)"
+            )
+            if line_sink:
+                try:
+                    line_sink(
+                        f"[Memory] Verbatim 已入库 drawer_id={drawer_id}"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[Memory] Nexus 写入跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
+    elif (combined_md or "").strip() and (llm_analysis or "").strip():
+        _e2e_echo(
+            "[Memory] 本轮全绿平稳，跳过 Memory Nexus 写入（避免向量库膨胀）"
+        )
 
     return {
         "ok": True,

@@ -15,7 +15,7 @@ OpenClaw 在社区叙事上强在 **memoryFlush**、**MEMORY.md**、**planning-f
 | **工作区必须更新** | `workspace_must_update` + mtime 校验 | `llm.memory_flush.workspace_must_update` |
 | **锚点仍 stale** | `second_llm` / `touch_workspace_anchors` | `anchor_remediate` |
 | **专用静默写文件（可选）** | `silent_anchor_file_round`：白名单路径 JSON 直写 | `llm.memory_flush.silent_anchor_file_round` |
-| **压缩后审计** | `post_compaction_audit`、`findings` MACHINE_CHECKPOINT、`l3_local` | `post_compaction_audit` |
+| **压缩后审计** | `post_compaction_audit`、`findings` MACHINE_CHECKPOINT、可选写入 **Nexus**（原 `l3_local` checkpoint 语义进化） | `post_compaction_audit` |
 
 **相对 OpenClaw**：Jachin 多 **L2 梦境提纯**、**子账号/命名空间**、**多节点**；叙事上强调 **「可配置 + 可验收（审计 JSONL）」** 而非仅「模型自觉写文件」。
 

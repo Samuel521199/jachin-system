@@ -117,6 +117,13 @@ def merge_l3_dotenv_into_os(
                     _env_loaded = True
                     _t(".env loaded from %s", p)
                     break
+            # 仓库 clients/desktop/.env：与 Tauri 桌面同目录配置对齐，覆盖项目根 .env 同名键（如 JACHIN_MEMORY_*）
+            if l3_project_root:
+                _desk = Path(l3_project_root).expanduser().resolve() / "clients" / "desktop" / ".env"
+                if _desk.is_file():
+                    load_dotenv(_desk, encoding="utf-8", override=True)
+                    _env_loaded = True
+                    _t(".env merged desktop overlay from %s", _desk)
             if not _env_loaded:
                 _cwd = Path.cwd().resolve()
                 for _ in range(8):

@@ -77,7 +77,7 @@
 | 维度 | OpenClaw | Jachin 现状 |
 |------|----------|-------------|
 | **workspace 级 FLUSH 指令** | 可配置「必须更新的文件」列表，flush 时强制覆盖 | **已落地**：`workspace_must_update` + mtime；**`anchor_remediate`**；`MEMORY.md` 自动导出；可选 **`silent_anchor_file_round`**（静默锚点 JSON 直写）。**仍差**：与 OpenClaw 完全同构的 **产品开关/观测** 叙事 |
-| **Post-compaction 审计** | 压缩后检查关键文件是否更新 | **MVP 已落地**：`post_compaction_audit` + `findings` MACHINE_CHECKPOINT + `l3_local`；**`remediation`** 含 `memory_flush_retry`（对折叠前消息快照再 `memory_flush`）；`progress.md` 未完成项注入 compaction **续跑提示** |
+| **Post-compaction 审计** | 压缩后检查关键文件是否更新 | **MVP 已落地**：`post_compaction_audit` + `findings` MACHINE_CHECKPOINT + Nexus/`add_local_memory` 摘要；**`remediation`** 含 `memory_flush_retry`（对折叠前消息快照再 `memory_flush`）；`progress.md` 未完成项注入 compaction **续跑提示** |
 | **结构化多文件编辑** | `apply_patch` 等 | **已落地**：备份/回滚/审计；**Python `ast.parse` 预检**（`apply_patch.python_ast_validate` / 单次参数）。**仍弱于** OpenClaw：**语言服务**级校验、**影子 git**、与 **特定模型多文件编辑流** 的一体优化 |
 | **exec 沙箱 / OS 级 HITL 审批链** | sandbox、gateway、approval 细粒度 | P1+ 已有 shell；**MVP**：`sandbox_profile` → `workspace/sandboxes/<id>/` cwd；`shell_hitl` + **`core:shell_hitl_approve`**（hash/command/pending_id）+ `pending_shell_approvals.json`。**仍无**：Docker/WSL/OS 级隔离、**Lark/Console 守护进程式**批准后自动执行、与 OpenClaw **gateway** 同级「一键安全策略」产品面 |
 | **Skill 生态规模** | ClawHub 万级 skill | MCP + SKILL + JPP，**数量与一键迁移仍弱** |
@@ -94,7 +94,7 @@
 | **工具结果短期复用** | 未写 | **P1**：只读类工具 TTL 缓存（`tool_invoke_cache.json`）。 |
 | **冲突 / 待澄清** | 未写 | **P1**：`clarification_pending.json` + 梦境入队 + System Prompt 注入。 |
 | **梦境仅凌晨** | — | **P0**：`fragment_threshold` 达阈值即跑 Dream Weaver。 |
-| **L3 断网无记忆** | — | **P0**：`l3_local.json` + Prompt 注入，recall 后与 L2 merge。 |
+| **L3 断网无记忆** | — | **P0**：**Memory Nexus（Chroma `~/.jachin/palace_db`）** + L1 注入 + `core:local_memory_*` / **`recall_memory`（同源）**；**不**依赖 L2 记忆 API。见 [MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)。 |
 | **修正 / 检索越用越准** | — | **P2 MVP**：修正意图、意图-技能 JSONL、强化检索 + `POST /memory/reinforce`。 |
 | **隐式事件 → 检索加权** | 社区多靠插件/脚本 | **已落地**：JSONL + **`intelligence_e`**；**[MEMORY_SCORING.md](./MEMORY_SCORING.md)** + **`/memory/feedback`**；**[IMPLICIT_SIGNALS.md](./IMPLICIT_SIGNALS.md)**（文本+向量+**`implicit_turn_attribution`** 全端默认打标+HTTP 埋点）。**仍差**：IM **停留/跳过** 与业务看板 **全量** 对接 |
 | **上万 Skill 与编排** | 单图挂全量 skill | **L1**：`l3_node/orchestration/skill_routing.py` 封装向量收窄；**L2**：`register_domain` / `run_domain`；**L3**：YAML **`domain_ref`** + **`core:domain_workflow_run`**。见 [ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md) |
@@ -108,7 +108,7 @@
 | 1 | **Skill / 插件生态规模** | ClawHub 万级、开箱即用 | MCP + JPP + 自建，**数量与迁移成本**仍落后 |
 | 2 | **单机极简上手** | 单 CLI、少依赖 | 完整能力常需 **L2 配对**，运维与心智负担更高 |
 | 3 | **exec 安全产品面** | sandbox、gateway、`security=` 档位、审批与审计叙事成熟 | 有 **子目录沙箱 cwd** + **哈希 HITL** + 批准工具；**无** OS/容器级隔离、**无** 与 IM 深度集成的 **守护式** 批核执行链 |
-| 4 | **记忆检索「一站式」体验（尤其 L3 断网）** | `memory_search` 产品化（MMR、衰减、单工具心智） | **已补**：`core:local_memory_search` + L2 **MMR**；**仍差**：社区默认心智、调试面板、与 OpenClaw **完全同档**的运营叙事 |
+| 4 | **记忆检索「一站式」体验（尤其 L3 断网）** | `memory_search` 产品化（MMR、衰减、单工具心智） | **已补**：`core:local_memory_search` / `recall_memory`（**deep_search**/Chroma）；若部署 L2 可有 **MMR** 等增强；**仍差**：社区默认心智、调试面板、与 OpenClaw **完全同档**的运营叙事 |
 | 5 | **统一排序公式与可解释性** | 社区讨论与实现较集中 | **已文档化** `MEMORY_SCORING.md` + **`memory_scoring.profile` A/B**；实现上侧车与行内仍 **双源**，以 **merged_raw** 统一进饱和 bonus |
 | 6 | **隐式信号（§4.3）** | 部分场景有插件埋点 | **已系统化**：标准 type + HTTP + **向量级** 复述/回声（`intelligence_implicit_embedding`）+ **每轮 `implicit_turn_attribution`**（Lark/WS/HTTP/HR/子 Agent 默认打标）；**仍差**：业务侧 **停留/跳过** 与 IM SDK 的 **全量** 对接与看板 |
 | 7 | **通用任务 DAG 引擎（产品化深度）** | agent-task-manager：社区模板量、仪表、统一限流叙事 | **已有**：YAML **`depends_on` + 持久化**（`.workflow_state/`、`on_failure`/`retry`/`resume`）+ **L2 领域注册**（`domain_ref` / `core:domain_workflow_run`）+ HR **`DAGWorkflow`**。**仍差**：与 OpenClaw 生态 **开箱 DAG 模板数量**、**跨工具一站式监控** 相比仍弱 |
@@ -203,7 +203,7 @@
 
 | 能力 | 现状 | 差距 | 补足方案 |
 |------|------|------|----------|
-| **对话持久化** | short_term → core_memory，L2 LanceDB | 离线仅靠 L3 时需本地兜底 | P0：`l3_local.json`（见 `l3_node/local_memory.py`）+ 与 L2 合并 |
+| **对话持久化** | short_term → core_memory，L2 LanceDB | 离线仅靠 L3 时需本地兜底 | P0：**Memory Nexus**（`palace_db`）+ L1 注入；L2 **不**强制 merge 进本地 JSON |
 | **偏好持久化** | remember_core_fact、梦境 tag；**P1**：`~/.jachin/config/user_preferences.json` + Prompt 注入 | 若需 DB/多租户表形态可再演进 | **文件形态已落地**（`l3_node/intelligence_p1.py`） |
 | **工具调用结果** | Observation 当轮；**P1**：只读类工具短期缓存（TTL，白名单） | 非白名单工具、写操作仍无缓存 | **已实现** `l3_node/tool_call_cache.py`；扩展白名单见 `nexus_config.intelligence_p1` |
 | **错误模式** | 梦境可生成 bug_fix 规则 | 未系统化 | 梦境阶段显式输出 `error_pattern` → core_memory |
@@ -232,7 +232,7 @@
 | 能力 | 现状 | 差距 | 补足方案 |
 |------|------|------|----------|
 | **会话恢复** | 多轮 message 在 session 内 | 新 session 丢失上文 | 会话结束前 memoryFlush，新 session 预加载最近 core_memory |
-| **跨设备记忆** | L2 集中，L3 同步 | L3 离线时无本地兜底 | L3 本地 cache 最近 N 条核心记忆，断网可用 |
+| **跨设备记忆** | 多 L3 各自 Nexus，无默认集中 | 跨机一致需另行设计同步 | 可外挂备份/同步层；单机以 **palace_db** 为 SSOT |
 | **身份绑定** | sub_account_id、node_id | 无「主人」级统一身份 | 主账号下多 L3 共享同一记忆 namespace |
 
 ---
@@ -241,10 +241,10 @@
 
 ### P0：基础补齐 — **已实现**（详见 [INTELLIGENCE_UPGRADE_OVERVIEW.md §一](./INTELLIGENCE_UPGRADE_OVERVIEW.md)）
 
-1. **L3 本地记忆持久化**
-   - 路径：`~/.jachin/memory/l3_local.json` 或 SQLite
-   - 结构：`{tag, content, timestamp}`，与 L2 同步时 merge
-   - 触发：run_agent 结束前可选 flush；梦境时 L2 回传
+1. **L3 Memory Nexus 持久化**
+   - 路径：**`~/.jachin/palace_db`**（Chroma）；可选 HTTP 客户端
+   - 结构：Wing/Room **Drawer** 向量库；宿主工具 `commit_drawer` / `deep_search`
+   - 触发：回合末异步 commit；**不向 L2 同步宿主记忆**（与 `palace_db` 一体闭环）
 
 2. **Pre-reset / Pre-new 记忆刷新**
    - 在 `/new`、`/reset`、每日重置前执行一次 memoryFlush
@@ -296,7 +296,7 @@
 | **记忆提纯** | 无 | Dream Weaver 聚类 + 冲突消解 | **已达** |
 | **记忆检索** | 混合 search | 混合 + 反馈加权 + 时间衰减 | **大部已达**：混合 + P2-9 强化；OpenClaw 式 MMR/衰减「单工具」产品体验可继续磨 |
 | **越用越聪明** | 依赖用户显式「记住」 | 显式 + 隐式（修正、跳过、重复追问）| **已达**：文本+向量检测、HTTP 埋点、**全端 turn 打标**、**`intelligence_e`** 含 embedding 类 delta；**仍差**：IM **停留/跳过** 与运营看板 **全量** 闭环 |
-| **跨会话** | 文件持久 | 文件 + L2 + L3 本地 cache | **已达**：三文件 + HR 子目录 + `l3_local.json` + L2 |
+| **跨会话** | 文件持久 | 文件 + L2 + L3 **Memory Nexus** + 遗留 JSON | **已达**：三文件 + HR 子目录 + **palace_db** / 可选 `l3_local*.json`（遗留） + L2 |
 | **多节点** | 无 | L2 调度多 L3 协同 | **已达** |
 | **安全** | 裸跑 | MCP + Wasm 零信任 | **已达（模型）**；exec **子目录沙箱 cwd + 哈希 HITL + 批准工具**已 MVP；**OS/容器级**沙箱与 gateway 级产品面仍弱于 OpenClaw |
 | **生态** | 10,700+ 无沙箱 | MCP + SKILL + JPP 可扩展 | **进行中**：规模仍落后，安全模型领先 |

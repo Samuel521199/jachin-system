@@ -1,127 +1,150 @@
 """
-L3 本地记忆检索（断网侧）：对标 OpenClaw memory_search 的产品封装。
+L3 本地记忆检索：Memory Nexus（Chroma）`deep_search` 全库向量检索。
 
-- 数据源：~/.jachin/memory/l3_local.json + 可选 memory/MEMORY.md 分块
-- 打分：简易关键词重叠 + 时间半衰衰减
-- 重排：MMR（最大边际相关性）降低冗余
+已废弃 l3_local.json + MMR/半衰 旧实现；`mmr_lambda` / `half_life_days` / `include_memory_md` 仅作 API 兼容字段。
 
-供 Native 工具 core:local_memory_search 调用。
+- **async_search_local_memories**：主事件循环路径应使用，带 ``wait_for`` + ``to_thread`` 熔断。
+- **search_local_memories**：同步封装（已在 ``asyncio.to_thread`` 内调用时安全）。
 """
+
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import math
-import re
-import time
-from pathlib import Path
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_JACHIN_ROOT = Path.home() / ".jachin"
-_MEMORY_DIR = _JACHIN_ROOT / "memory"
-_LOCAL_DB = _MEMORY_DIR / "l3_local.json"
-_MEMORY_MD = _MEMORY_DIR / "MEMORY.md"
+
+def get_local_memory_search_timeout_sec() -> float:
+    """供 ``agent_core`` 外层 ``wait_for`` 留出余量。"""
+    return _local_memory_search_timeout_sec()
 
 
-def _tokenize(text: str) -> list[str]:
-    if not text or not isinstance(text, str):
-        return []
-    tokens = re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]|\w+", text)
-    return [t.lower() for t in tokens if t]
-
-
-def _jaccard(a: set[str], b: set[str]) -> float:
-    if not a or not b:
-        return 0.0
-    inter = len(a & b)
-    union = len(a | b)
-    return inter / union if union else 0.0
-
-
-def _age_decay(ts: float, *, half_life_days: float) -> float:
-    if half_life_days <= 0:
-        return 1.0
-    age_sec = max(0.0, time.time() - float(ts or 0))
-    age_days = age_sec / 86400.0
-    return math.exp(-age_days * math.log(2) / half_life_days)
-
-
-def _chunks_from_memory_md(max_chunks: int = 24) -> list[dict[str, Any]]:
-    if not _MEMORY_MD.exists():
-        return []
+def _local_memory_search_timeout_sec() -> float:
+    raw = (os.environ.get("JACHIN_LOCAL_MEMORY_SEARCH_TIMEOUT_SEC") or "30").strip()
     try:
-        raw = _MEMORY_MD.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        logger.debug("[L3Search] MEMORY.md 读取失败: %s", e)
-        return []
-    parts = re.split(r"\n(?=#{1,6}\s)", raw)
-    out: list[dict[str, Any]] = []
-    for i, block in enumerate(parts):
-        block = (block or "").strip()
-        if len(block) < 20:
-            continue
-        out.append({
-            "id": f"memory_md#{i}",
-            "tag": "MEMORY.md",
-            "content": block[:8000],
-            "timestamp": _MEMORY_MD.stat().st_mtime if _MEMORY_MD.exists() else time.time(),
-            "source": "memory_md",
-        })
-        if len(out) >= max_chunks:
-            break
-    return out
+        v = float(raw)
+    except ValueError:
+        v = 30.0
+    return max(1.0, min(v, 120.0))
 
 
-def _load_l3_entries() -> list[dict[str, Any]]:
-    from l3_node.local_memory import load_raw_entries
-    from l3_node.local_memory_ranking import sort_entries_by_agent_priority
-
-    try:
-        raw = load_raw_entries()
-    except Exception as e:
-        logger.debug("[L3Search] l3_local 加载失败: %s", e)
-        return []
-    return sort_entries_by_agent_priority(raw)
-
-
-def _mmr_select(
-    ranked: list[tuple[float, dict[str, Any]]],
-    query_toks: set[str],
+def _search_local_memories_sync(
+    query: str,
     *,
-    top_k: int,
-    lambda_mult: float,
-) -> list[dict[str, Any]]:
-    """ranked: (relevance_score, doc) 已按分数降序；MMR 贪心选 top_k。"""
-    if not ranked:
-        return []
-    lam = max(0.0, min(1.0, lambda_mult))
-    candidates = list(ranked)
-    selected: list[dict[str, Any]] = []
-    selected_toks: list[set[str]] = []
+    top_k: int = 8,
+    mmr_lambda: float = 0.55,
+    half_life_days: float = 30.0,
+    include_memory_md: bool = True,
+    candidate_pool: int = 32,
+) -> dict[str, Any]:
+    """同步执行 Chroma deep_search + 结果整形（供 to_thread 使用）。"""
+    q = (query or "").strip()
+    if not q:
+        return {"ok": False, "error": "query 为空", "hits": []}
 
-    def doc_toks(d: dict[str, Any]) -> set[str]:
-        return set(_tokenize((d.get("content") or "") + " " + str(d.get("tag", ""))))
+    lim = max(1, min(50, int(top_k or 8)))
+    try:
+        from l3_client.local_mcps.jachin_memory_nexus.memory_backend import deep_search
+        from l3_node.memory_nexus_bridge import format_deep_search_matches_for_agent
 
-    while candidates and len(selected) < top_k:
-        best_i = -1
-        best_mm = -1e9
-        for i, (rel, doc) in enumerate(candidates):
-            dt = doc_toks(doc)
-            div = 0.0
-            if selected_toks:
-                div = max(_jaccard(dt, st) for st in selected_toks)
-            mmr = lam * rel - (1.0 - lam) * div
-            if mmr > best_mm:
-                best_mm = mmr
-                best_i = i
-        if best_i < 0:
-            break
-        _, doc = candidates.pop(best_i)
-        selected.append(doc)
-        selected_toks.append(doc_toks(doc))
-    return selected
+        res = deep_search(query=q, wing=None, limit=lim)
+        narrative = format_deep_search_matches_for_agent(res)
+    except Exception as e:
+        logger.warning("[L3Search] deep_search 失败: %s", e, exc_info=True)
+        return {"ok": False, "error": str(e), "hits": [], "meta": {}}
+
+    hits: list[dict[str, Any]] = []
+    if res.get("ok"):
+        for m in res.get("matches") or []:
+            meta = m.get("metadata") or {}
+            wing = meta.get("wing") or ""
+            room = meta.get("room") or ""
+            text = (m.get("text") or "").strip()
+            dist = m.get("distance")
+            score = None
+            if dist is not None:
+                try:
+                    score = max(0.0, 1.0 / (1.0 + float(dist)))
+                except (TypeError, ValueError):
+                    score = None
+            hits.append({
+                "id": m.get("id"),
+                "tag": f"{wing}/{room}",
+                "content": text[:8000],
+                "score": score,
+                "source": "memory_nexus_chroma",
+                "wing": wing,
+                "room": room,
+                "distance": dist,
+            })
+
+    return {
+        "ok": bool(res.get("ok")),
+        "query": q,
+        "hits": hits,
+        "formatted_text": narrative,
+        "meta": {
+            "backend": "memory_nexus_deep_search",
+            "limit": lim,
+            "legacy_compat": {
+                "mmr_lambda": mmr_lambda,
+                "half_life_days": half_life_days,
+                "include_memory_md": include_memory_md,
+                "candidate_pool": candidate_pool,
+            },
+        },
+    }
+
+
+async def async_search_local_memories(
+    query: str,
+    *,
+    top_k: int = 8,
+    mmr_lambda: float = 0.55,
+    half_life_days: float = 30.0,
+    include_memory_md: bool = True,
+    candidate_pool: int = 32,
+) -> dict[str, Any]:
+    """
+    异步检索：``to_thread`` 执行同步 Chroma 路径，外层 ``wait_for`` 防止线程永久挂起。
+    超时 / 异常 fail-open 返回可序列化 dict（不向外抛）。
+    """
+    _tmo = _local_memory_search_timeout_sec()
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                _search_local_memories_sync,
+                query,
+                top_k=top_k,
+                mmr_lambda=mmr_lambda,
+                half_life_days=half_life_days,
+                include_memory_md=include_memory_md,
+                candidate_pool=candidate_pool,
+            ),
+            timeout=_tmo,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[L3Search] 本地记忆检索硬超时（%.1fs）", _tmo)
+        return {
+            "ok": False,
+            "error": "timeout",
+            "hits": [],
+            "formatted_text": "[系统提示] 本地记忆检索超时，请稍后再试。",
+            "meta": {"backend": "timeout"},
+        }
+    except Exception as e:
+        logger.warning("[L3Search] async 检索异常: %s", e, exc_info=True)
+        return {
+            "ok": False,
+            "error": str(e),
+            "hits": [],
+            "formatted_text": f"[系统提示] 本地记忆检索失败: {e}",
+            "meta": {"backend": "error"},
+        }
 
 
 def search_local_memories(
@@ -134,59 +157,68 @@ def search_local_memories(
     candidate_pool: int = 32,
 ) -> dict[str, Any]:
     """
-    对 L3 本地记忆执行检索 + 衰减 + MMR。
-
-    返回 { ok, query, hits: [{id, tag, content, score, source}], meta }
+    同步 API：在**已处于工作线程**或非 asyncio 上下文时调用。
+    若在主事件循环线程调用，请改用 ``async_search_local_memories``。
     """
-    q = (query or "").strip()
-    if not q:
-        return {"ok": False, "error": "query 为空", "hits": []}
+    return _search_local_memories_sync(
+        query,
+        top_k=top_k,
+        mmr_lambda=mmr_lambda,
+        half_life_days=half_life_days,
+        include_memory_md=include_memory_md,
+        candidate_pool=candidate_pool,
+    )
 
-    qset = set(_tokenize(q))
-    if not qset:
-        return {"ok": True, "query": q, "hits": [], "meta": {"reason": "no_query_tokens"}}
 
-    docs: list[dict[str, Any]] = []
-    for idx, e in enumerate(_load_l3_entries()):
-        cid = str(e.get("id") or f"l3#{idx}")
-        docs.append({
-            "id": cid,
-            "tag": e.get("tag", "general"),
-            "content": (e.get("content") or "")[:8000],
-            "timestamp": float(e.get("timestamp", 0) or 0),
-            "source": str(e.get("source", "l3_local")),
-        })
-    if include_memory_md:
-        docs.extend(_chunks_from_memory_md())
-
-    scored: list[tuple[float, dict[str, Any]]] = []
-    for d in docs:
-        text = (d.get("content") or "") + " " + str(d.get("tag", ""))
-        tset = set(_tokenize(text))
-        overlap = _jaccard(qset, tset)
-        # 轻量 BM25 风格：重复 query token 加权
-        bonus = 0.0
-        for tok in qset:
-            if len(tok) >= 2 and tok in text.lower():
-                bonus += 0.04
-        base = min(1.0, overlap * 1.2 + bonus)
-        decay = _age_decay(float(d.get("timestamp", 0) or 0), half_life_days=half_life_days)
-        rel = base * (0.35 + 0.65 * decay)
-        if rel > 0.01:
-            d2 = {**d, "score": round(rel, 4)}
-            scored.append((rel, d2))
-
-    scored.sort(key=lambda x: -x[0])
-    pool = scored[: max(top_k * 4, candidate_pool)]
-    hits = _mmr_select(pool, qset, top_k=top_k, lambda_mult=mmr_lambda)
+def parse_core_local_memory_search_action_input(action_input: str) -> dict[str, Any]:
+    """从 ReAct Action Input 解析 ``core:local_memory_search`` 参数（与 native_tools 行为对齐）。"""
+    inp = (action_input or "").strip()
+    q = ""
+    top_k = 8
+    mmr_l = 0.55
+    half = 30.0
+    inc_md = True
+    cand = 32
+    if inp.startswith("{"):
+        try:
+            o = json.loads(inp)
+            if isinstance(o, dict):
+                q = str(o.get("query") or o.get("q") or "").strip()
+                if o.get("top_k") is not None:
+                    try:
+                        top_k = int(o["top_k"])
+                    except (TypeError, ValueError):
+                        top_k = 8
+                if o.get("mmr_lambda") is not None:
+                    try:
+                        mmr_l = float(o["mmr_lambda"])
+                    except (TypeError, ValueError):
+                        mmr_l = 0.55
+                if o.get("half_life_days") is not None:
+                    try:
+                        half = float(o["half_life_days"])
+                    except (TypeError, ValueError):
+                        half = 30.0
+                if "include_memory_md" in o:
+                    v = o["include_memory_md"]
+                    if isinstance(v, str):
+                        inc_md = v.lower() in ("1", "true", "yes")
+                    else:
+                        inc_md = bool(v)
+                if o.get("candidate_pool") is not None:
+                    try:
+                        cand = int(o["candidate_pool"])
+                    except (TypeError, ValueError):
+                        cand = 32
+        except json.JSONDecodeError:
+            q = inp
+    else:
+        q = inp
     return {
-        "ok": True,
         "query": q,
-        "hits": hits,
-        "meta": {
-            "mmr_lambda": mmr_lambda,
-            "half_life_days": half_life_days,
-            "pool": len(pool),
-            "include_memory_md": include_memory_md,
-        },
+        "top_k": max(1, min(32, top_k)),
+        "mmr_lambda": mmr_l,
+        "half_life_days": half,
+        "include_memory_md": inc_md,
+        "candidate_pool": cand,
     }

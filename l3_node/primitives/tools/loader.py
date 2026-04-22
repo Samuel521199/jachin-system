@@ -139,14 +139,14 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
     {
         "id": "core:local_memory_search",
         "label": "core:local_memory_search",
-        "desc": "L3 断网检索：本地 l3_local.json + 可选 MEMORY.md，关键词+时间衰减+MMR。JSON：query；可选 top_k、mmr_lambda、half_life_days、include_memory_md",
+        "desc": "L3 Memory Nexus：SQLite+FastEmbed deep_search 语义检索（~/.jachin/palace_db）。JSON：query；可选 top_k（legacy mmr/half_life 字段兼容忽略）",
         "params": ["query"],
     },
     {
         "id": "core:local_memory_append",
         "label": "core:local_memory_append",
         "desc": (
-            "向 ~/.jachin/memory/l3_local.json **追加一条**本地记忆（事实/偏好）；带时间戳，立即可被 local_memory_search 命中。"
+            "向 Memory Nexus（User_Persona/Learned_Skills）commit 一条抽屉；立即可被 core:local_memory_search（deep_search）命中。"
             "**禁止**幻觉写入 MEMORY.md。JSON：content（必填）；可选 tags 字符串数组。"
         ),
         "params": ["content"],
@@ -156,7 +156,7 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "label": "core:safety_lock_append",
         "desc": (
             "提交「系统级安防规则」：默认进入 **待审批队列**（不写正式 MD），管理员用 CLI 或控制台「安全锁审批」刷入；"
-            "勿尝试提供「管理员密钥」。**日常偏好/项目代号/技术栈喜好禁止走本工具**，应使用 **core:local_memory_append** 写入 l3_local.json 或 recall_memory / core:local_memory_search。"
+            "勿尝试提供「管理员密钥」。**日常偏好/项目代号/技术栈喜好禁止走本工具**，应使用 **core:local_memory_append** 写入 Nexus，或用 **core:local_memory_search** / **recall_memory**（同源 Memory Nexus）检索。"
             "可选 **category**（如 backend_framework）：某 category 首条人工批准后，同 category 再次提交将 **自动覆盖** 旧规则（TOFU 同类二次免批）。"
             "JSON：body 或 content（必填）；可选 source、tags、category。"
         ),

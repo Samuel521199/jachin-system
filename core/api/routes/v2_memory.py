@@ -1,5 +1,7 @@
 """
-Jachin Nexus V2 - L2 记忆同步与检索 API
+Jachin Nexus V2 - L2 侧记忆同步与检索 API（控制面 / 多租户可选）
+
+**说明**：当前 **L3 宿主跨会话记忆**默认在 **Memory Nexus（Chroma，`~/.jachin/palace_db`）** 闭环，不依赖本模块作为默认路径；本路由供 L2 进程、集中式记忆或历史客户端使用。
 
 POST /api/v2/memory/sync: L3 上报本地记忆，L2 向量梦境引擎语义消解后写入 LanceDB。
 GET /api/v2/memory/search: L3 检索记忆，LanceDB 向量相似度搜索，权限隔离（仅本子账号）。

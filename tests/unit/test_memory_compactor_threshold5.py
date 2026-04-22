@@ -1,12 +1,7 @@
 """
 记忆坍缩（梦境合并）：阈值为 5 条时触发 compact_local_memory_if_needed。
 
-- 使用临时文件，不碰 ~/.jachin/memory/l3_local.json
-- Mock litellm.acompletion，无需真实 API Key
-- Mock record_compact_completed，不写 compact_schedule.json
-
-运行：
-  pytest tests/unit/test_memory_compactor_threshold5.py -v
+[已跳过] Memory Nexus 迁移后 ``compact_local_memory_if_needed`` 全局提前返回，旧 JSON 坍缩测试不再适用。
 """
 from __future__ import annotations
 
@@ -15,6 +10,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="JSON memory compactor deprecated; compact_local_memory_if_needed is a no-op")
 
 from l3_node.memory_compactor import _MEMORY_COMPACT_JSON_KEY
 

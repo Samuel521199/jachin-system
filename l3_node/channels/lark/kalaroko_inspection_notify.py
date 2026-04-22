@@ -92,6 +92,18 @@ async def send_kalaroko_inspection_to_lark(
             emit(f"发送异常: {e!r}")
             return False
 
+    async def _one_retry(title: str, md: str) -> bool:
+        """每条消息最多 4 次尝试，间隔 2s / 4s / 8s（网络抖动容错）。"""
+        delays = [2.0, 4.0, 8.0]
+        for attempt in range(4):
+            ok = await _one(title, md)
+            if ok:
+                return True
+            if attempt < 3:
+                emit(f"准备重试 ({attempt + 1}/3 次间隔 {delays[attempt]}s)…")
+                await asyncio.sleep(delays[attempt])
+        return False
+
     emit("开始向 Lark 推送巡检结果…")
 
     header_md = (
@@ -100,7 +112,7 @@ async def send_kalaroko_inspection_to_lark(
         f"- 摘要模型（LLM_COMPLEX_MODEL）：`{summary_model or 'N/A'}`\n"
         f"- 含：各轮 Markdown 一至七节；多轮时另附 AI 综合分析（若已生成）。\n"
     )
-    await _one("巡检 · 概要", header_md)
+    await _one_retry("巡检 · 概要", header_md)
     await asyncio.sleep(delay_sec)
 
     md_body = (markdown_report or "").strip()
@@ -109,7 +121,7 @@ async def send_kalaroko_inspection_to_lark(
         total = len(parts)
         for i, part in enumerate(parts, start=1):
             title = f"巡检 · Markdown 报告 ({i}/{total})"
-            await _one(title, part)
+            await _one_retry(title, part)
             await asyncio.sleep(delay_sec)
     else:
         emit("无 markdown_report，跳过报告正文推送")
@@ -121,7 +133,7 @@ async def send_kalaroko_inspection_to_lark(
         total = len(parts)
         for i, part in enumerate(parts, start=1):
             title = f"巡检 · AI 分析 ({i}/{total})"
-            await _one(title, part)
+            await _one_retry(title, part)
             await asyncio.sleep(delay_sec)
 
     emit("Lark 推送流程结束")

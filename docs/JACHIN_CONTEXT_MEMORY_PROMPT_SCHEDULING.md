@@ -1,7 +1,7 @@
 # Jachin：上下文、记忆、提示词与核心调度框架
 
-**版本**：与仓库当前实现对齐（2026-04）  
-**深度姊妹篇**：[L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md](./L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md)（Agent/ReAct/工具/记忆条目级）  
+**版本**：与仓库当前实现对齐（2026-04-17）  
+**深度姊妹篇**：[L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md](./L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md) · [architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)（L3 Memory Nexus）  
 **意图路由**：[USER_INTENT_RECOGNITION_ARCHITECTURE.md](./USER_INTENT_RECOGNITION_ARCHITECTURE.md)  
 **执行韧性**：[JACHIN_EXECUTION_RESILIENCE_CONTRACT.md](./JACHIN_EXECUTION_RESILIENCE_CONTRACT.md) 及 `.cursor/rules/080-jachin-execution-resilience.mdc`
 
@@ -17,7 +17,7 @@
 | 上下文预检与短路 | `l3_node/agent_preflight.py`、`l3_node/routing/plugins.py` |
 | 工具后预取 / 账本 | `l3_node/context_prefetch.py`、`l3_node/context_path_ledger.py` |
 | System 后缀驱逐与总帽 | `l3_node/prompt_compose.py`（`SuffixChunk`、`apply_system_prompt_total_cap`） |
-| 本地记忆文件 | `l3_node/local_memory.py`（`~/.jachin/memory/l3_local.json`、shard） |
+| L3 Memory Nexus（Chroma） | `l3_client/.../memory_backend.py`、`l3_node/memory_nexus_bridge.py`（`~/.jachin/palace_db`；可选 HTTP） |
 | 核心记忆（SQLite） | `core/biological_memory.py`（`get_core_memory_for_prompt` 等） |
 | 上下文折叠 / 记忆刷新 | `core/compaction_hook.py`（挂 `HOOK_BEFORE_LLM_THINK`） |
 | L3 侧注册 compaction | `l3_node/l3_compaction_bridge.py` |
@@ -55,50 +55,54 @@
 
 - **Prefetch**：`context_prefetch.build_prefetch_attachment` 按关键词从工作区 `*.md` 摘段，附在 **Observation** 后（`【relevant_context_prefetch】`）；与 **`context_path_ledger`** 滑窗去重；**`background_task` 通道跳过**。  
 - **`observation_dedup`**：同 run 内大块 Observation 可折叠为引用，减轻下一轮 prompt 压力。  
-- **`bump_memory_inject_cycle_for_content_hit`**：工具读到与本地记忆重叠的片段时，刷新该条 **被动注入轮次**，减缓误衰减（`local_memory.py`）。
+- **`bump_memory_inject_cycle_for_content_hit`**：历史上用于 JSON 被动注入轮次；Nexus 主路径下多为 **兼容 no-op**（仍可调用于旧条目探测）。
 
 ### 2.5 与「记忆」的边界
 
 - **上下文**偏 **本轮可消费的 token 预算内的可见文本**。  
-- **记忆**偏 **跨轮持久化存储 + 选择性注入**；L2 `recall_memory` 检索结果既可进 **消息/Observation**，也可 **merge 进本地 JSON**（见 §4）。
+- **记忆**偏 **跨轮持久化存储 + 选择性注入**；L3 宿主长期记忆 **仅在 Memory Nexus（Chroma）**；`recall_memory` 伪动作与 `core:local_memory_search` **同源**，结果进 **Observation**（见 §4）。
 
 ---
 
 ## 3. 记忆（Memory）
 
-实现上是 **多源并列**，职责不同；拼装进 prompt 时由 `_build_system_prompt` + `memory_facade` / 排序逻辑统一择要。
+实现上是 **多源并列**，职责不同；拼装进 prompt 时由 `_build_system_prompt` + **`memory_facade.snapshot_for_prompt`（L1 Nexus）** 等统一择要。
 
-### 3.1 L3 本地 JSON（主路径）
+### 3.1 L3 Memory Nexus（Chroma，主路径）
 
-- **路径**：`~/.jachin/memory/l3_local.json`；**delegate 子会话**：`l3_local_shard_<id>.json`（`ContextVar`）。  
-- **API**：`add_local_memory`、`get_local_memory_for_prompt`、`core:local_memory_search`（运行时检索）。  
-- **策略**：条目数上限、`next_prompt_cycle`、**被动注入衰减**（`nexus_config` → `memory.passive_max_idle_runs`）、**correction 优先** 等（详见 `local_memory.py` 与 L3 文档 §4）。
+- **路径**：默认 **`~/.jachin/palace_db`**（`chromadb.PersistentClient`）；可选 **`CHROMA_USE_HTTP_CLIENT`** 连接远程服务。  
+- **API**：`commit_drawer` / `recall_room` / `deep_search`（`memory_backend.py`）；宿主侧 **`core:local_memory_search`**、**`core:local_memory_append`**；L1 注入 **`build_l1_system_memory_block`**；`get_local_memory_for_prompt` 与门面 **对齐同一 L1 块**。  
+- **策略**：翼区 **Wing/Room** 过滤；回合末异步 commit；详见 **[MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**。
 
-### 3.2 L2 向量 / 服务记忆
+### 3.2 L3 遗留 `l3_local.json`
 
-- **`recall_memory`**：由 ReAct 解析层特殊处理，HTTP 调 L2；可 **`merge_from_l2`** 写入 `l3_local.json`，支持断网后仍有摘要。
+- **仅**：遗留读取 / HR 指针 / 诊断；**核心写入已在 Nexus**。JSON **梦境合并**（`memory_compactor`）**已停用**。
 
-### 3.3 同步侧车文件 `l3_memory.json`
+### 3.3 ReAct 伪动作 `recall_memory`
 
-- 与 L2 **`/api/v2/memory/sync`**、`MemorySyncDaemon` 协同；**与 `l3_local.json` 不是同一文件**（见 `agent_core` 内 `_load_local_memory` 注释）。
+- 由 ReAct 解析层特殊处理，**`agent_core._recall_memory_search` → `search_local_memories`（Nexus）**；与 **`core:local_memory_search`** 同后端。
 
-### 3.4 核心记忆 SQLite（`core_memory`）
+### 3.4 ~~`l3_memory.json` / L2 memory sync~~（已移除）
 
-- `core/biological_memory.py`：`add_core_memory`、`get_core_memory_for_prompt`；Compaction **memory flush** 回合可写入；供 **Core Agent / 部分 Nexus 路径** 使用，与 L3 本地 JSON **并存**。
+- L3 不再维护向 L2 的周期性记忆同步侧车；跨会话 SSOT 为 **`palace_db`**。
 
-### 3.5 工作区「规划记忆」
+### 3.5 核心记忆 SQLite（`core_memory`）
+
+- `core/biological_memory.py`：`add_core_memory`、`get_core_memory_for_prompt`；Compaction **memory flush** 回合可写入；供 **Core Agent / 部分 Nexus 路径** 使用；与 **Memory Nexus（Chroma）并行存在**。
+
+### 3.6 工作区「规划记忆」
 
 - **`task_plan.md` / `progress.md` / `findings.md`**：`task_planning.get_planning_context_for_prompt()` → system **后缀**；`task_plan_policy` 可做 **计划门禁**（未写计划则限制危险工具）。
 
-### 3.6 工作区规则摘录
+### 3.7 工作区规则摘录
 
 - **`jachin_workspace_rules.py`**：从 `JACHIN.md`、`jachin.md`、`.jachin/rules.md` 等读取，进后缀，带长度截断。
 
-### 3.7 HR 运行时上下文
+### 3.8 HR 运行时上下文
 
 - **`hr_prompt_context.py`**：scheduler 等摘要 → system 后缀。
 
-### 3.8 Compaction 与记忆刷新
+### 3.9 Compaction 与记忆刷新
 
 - 超 token 阈值：**先**可选 **memory flush**（提醒模型写入 `core_memory` 等），**再** LLM 生成 **历史摘要** 替换中间消息（`compaction_hook.py`）。  
 - 「历史摘要」模型默认倾向 **经济型 flash**（`compaction_summary_model` / `_get_compaction_context_summary_model`），与 memory_flush 所用模型可不同。
@@ -111,7 +115,7 @@
 
 - **单段 `system_prompt` = `prompt_prefix` + `prompt_suffix`**（逻辑上；总帽阶段可能再截断）。  
 - **前缀**（相对静态、利于 API 前缀缓存）：ReAct 说明、`intelligence_b` 计划/头脑风暴约束、前台超时提示、`build_tools_description`、recall/coordinate/delegate 说明、**输出格式**（Thought/Action/… 或 **纯 JSON 契约**）。  
-- **后缀**（易变）：本地记忆、工作区规则、task_plan、HR 上下文、P1 注入、能力目录、HR SOP、`react_footer` 等。
+- **后缀**（易变）：**Memory Nexus L1**、工作区规则、task_plan、HR 上下文、P1 注入、能力目录、HR SOP、`react_footer` 等。
 
 ### 4.2 纯 JSON / 用户强约束（`pure_json_contract`）
 
@@ -210,7 +214,7 @@ flowchart TB
   end
 
   subgraph memprompt["记忆与提示词"]
-    LM[l3_local / recall / task_plan / rules]
+    LM[Memory Nexus L1 / recall / task_plan / rules]
     PC[prompt_compose 驱逐与总帽]
     CP[compaction_hook]
   end

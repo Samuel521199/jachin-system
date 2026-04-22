@@ -302,7 +302,7 @@ async def delete_calendar_item(item_id: str):
     return {"ok": True}
 
 
-# --- 记忆（V2 生物学记忆 + L2 向量）---
+# --- 记忆（core_memory / compaction；宿主跨会话见 L3 Memory Nexus）---
 @router.get("/memory/export-markdown")
 async def export_memory_markdown():
     """

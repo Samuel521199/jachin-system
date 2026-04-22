@@ -9,7 +9,8 @@ import { formatAssistantStepPayload } from "../utils/sensoryStepFormat";
 import { mergeStreamChunk } from "../utils/streamChunkMerge";
 
 const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18981";
-const SENSORY_WS_HOST = import.meta.env.VITE_SENSORY_WS_HOST || "127.0.0.1";
+/** 与提示文案 ws://localhost:18981 一致；部分 Windows/Tauri WebView 下 localhost 比 127.0.0.1 更稳 */
+const SENSORY_WS_HOST = import.meta.env.VITE_SENSORY_WS_HOST || "localhost";
 const SENSORY_WS_URL = `ws://${SENSORY_WS_HOST}:${SENSORY_WS_PORT}/sensory`;
 const RECONNECT_DELAY_MS = 3000;
 

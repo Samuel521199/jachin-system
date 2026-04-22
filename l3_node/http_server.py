@@ -1284,6 +1284,49 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v3/config/native-fs-policy", _handle_native_fs_policy_get)
     app.router.add_post("/api/v3/config/native-fs-policy", _handle_native_fs_policy_post)
 
+    async def _on_startup_kalaroko_scheduler(app):
+        """L3 重启后恢复 Kalaroko 定时巡检（状态见 ~/.jachin/data/kalaroko_scheduler_state.json）。"""
+        try:
+            from l3_node.jobs.kalaroko_scheduler import init_auto_start_scheduler
+
+            init_auto_start_scheduler()
+        except Exception as e:
+            logger.warning("[L3 HTTP] Kalaroko scheduler auto-start skipped: %s", e)
+
+    async def _on_startup_skill_matrix_sync(_app):
+        """启动时将全量工具描述写入 Memory Nexus Skill_Matrix（后台任务，勿阻塞 runner.setup）。
+
+        若在 on_startup 内 await assemble_tool_pool，会与 MCP 全量合并同链路易阻塞十余秒，
+        导致 HTTP 尚未 listen、gateway 主流程无法进入 run_ws_server，桌面 WebSocket 18981 一直不可用。
+        """
+        v = (os.environ.get("JACHIN_SKILL_MATRIX_SYNC_ON_STARTUP") or "1").strip().lower()
+        if v in ("0", "false", "no", "off"):
+            return
+
+        async def _skill_matrix_sync_bg() -> None:
+            try:
+                from l3_node.memory_nexus_bridge import sync_all_tools_to_nexus
+                from l3_node.primitives.tools.tool_pool import assemble_tool_pool
+
+                _tools = await assemble_tool_pool(
+                    allowed_skills=None,
+                    gateway_bundle=None,
+                    bg_channel=None,
+                    logger=logger,
+                )
+                r = await asyncio.to_thread(sync_all_tools_to_nexus, _tools)
+                if r.get("ok"):
+                    logger.info("[L3 HTTP] Skill matrix sync ok: count=%s", r.get("count"))
+                else:
+                    logger.warning("[L3 HTTP] Skill matrix sync: %s", r)
+            except Exception as e:
+                logger.warning("[L3 HTTP] Skill matrix sync skipped: %s", e)
+
+        asyncio.create_task(_skill_matrix_sync_bg(), name="jachin-skill-matrix-sync")
+
+    app.on_startup.append(_on_startup_kalaroko_scheduler)
+    app.on_startup.append(_on_startup_skill_matrix_sync)
+
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):
             return getattr(e, "errno", None) in (10048, 98)

@@ -48,6 +48,7 @@ import {
 } from "./lib/jachinSentryNotify";
 import { desktopDiagLog } from "./lib/desktopDiagLog";
 import { mergeStreamChunk } from "./utils/streamChunkMerge";
+import { l3RunIdsSameTurn } from "./utils/l3RunIdCompat";
 import {
   buildAttachmentsMetadataPayload,
   mergePendingAttachmentFiles,
@@ -702,7 +703,7 @@ function ChatApp() {
       };
       const answerHandler = (answerContent: string, meta?: SensoryAnswerMeta) => {
         const rid = meta?.runId ?? "";
-        if (rid && mirrorRunIdRef.current && rid !== mirrorRunIdRef.current) return;
+        if (rid && mirrorRunIdRef.current && !l3RunIdsSameTurn(rid, mirrorRunIdRef.current)) return;
         const hadStream = meta?.hadStreamChunks ?? false;
         const useServerFinal = hadStream && !!(answerContent || "").trim();
         updateSessionMessagesById(mirrorSid, (prev) => {
@@ -1026,7 +1027,7 @@ function ChatApp() {
     registerAnswerHandler((answerContent, meta) => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
       const rid = meta?.runId ?? "";
-      if (rid && l3ActiveRunIdRef.current && rid !== l3ActiveRunIdRef.current) {
+      if (rid && l3ActiveRunIdRef.current && !l3RunIdsSameTurn(rid, l3ActiveRunIdRef.current)) {
         console.debug("[Chat] 忽略陈旧 answer runId=%s 期望=%s", rid, l3ActiveRunIdRef.current);
         return;
       }
@@ -1647,7 +1648,8 @@ function ChatApp() {
                       : desktopUi.placeholderWait
                 }
                 ui={desktopUi}
-                disabled={!sensory.connected && !l2Available}
+                disabled={false}
+                voiceBackendOk={sensory.connected || l2Available}
                 isLoading={isLoading}
                 isTyping={isTyping}
                 isRecording={isRecording}

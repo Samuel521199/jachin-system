@@ -14,9 +14,9 @@
 |------|-------------------|
 | **§1 队列 / WAL / 停机** | 入队 **`background_task_sqlite.insert_pending`**（SQLite WAL）与内存队列双写；启动 **`reconcile_stale_background_tasks_on_startup`**；停机 **`flush_background_tasks_to_persistent_queue`**（经 `graceful_shutdown` 钩子）；**`tasks_index.jsonl`** 事件时间线；非 Windows 下 **`ws_server` SIGINT/SIGTERM → `server.close()`**，进而 **`run_shutdown_hooks`** |
 | **§1 Cancel** | **`l3_node/agent_cancel`**：`metadata` 注入 cancel **`Event`**；流式 **`register_stream_task` + `task.cancel()`**（与 `RunCancelledError` 路径配合） |
-| **§2 沙箱 / 预算** | **`workspace_context`**：子 Agent 工作区落在 `workspace/sandboxes/...`；**`local_memory` shard**（`l3_local_shard_*.json`）；**`llm_budget` + `agent.sub_agent_max_total_tokens` / `main_max_total_tokens`**；**`max_delegate_depth`** 超限禁止继续 delegate |
+| **§2 沙箱 / 预算** | **`workspace_context`**：子 Agent 工作区落在 `workspace/sandboxes/...`；宿主记忆以 **Memory Nexus** 为主 + 遗留 **`l3_local_shard_*.json`** 隔离；**`llm_budget` + `agent.sub_agent_max_total_tokens` / `main_max_total_tokens`**；**`max_delegate_depth`** 超限禁止继续 delegate |
 | **§3 去重** | **`context_path_ledger` + `context_prefetch`**（`ledger_iteration_window`、`metadata._react_iteration`）；路径滑窗 **`_prefetch_paths_shown`**；**`mcp:read_file` 与 `core:fs_read` 同路径登记**；**`observation_dedup`** 同 run 大块 hash 引用（非 shell 正文级去重） |
-| **§4 记忆** | **`local_memory_ranking`**、**`memory_facade`**；高价值写入 **`memory_sync_signals`** + **`MemorySyncDaemon`** 分片睡眠内检测代数提前再同步；**`passive_max_idle_runs` / `last_prompt_inject_cycle`** 等与被动注入衰减联动（见 `nexus_config` `memory`） |
+| **§4 记忆** | **`memory_facade`**、**Memory Nexus（Chroma）**；`memory_sync_signals` 仅为历史兼容占位；**`passive_max_idle_runs` / `last_prompt_inject_cycle`** 对 JSON 主路径已弱化（见 `nexus_config` `memory`） |
 | **§5 Prompt** | **`agent_preflight` + `l3_node/routing/`** 插件链；**`prompt_compose`** 后缀预算与 **`prompt_suffix_eviction`** 日志；招聘域 **动态后缀**（`intent_signals` + `recruitment_longform` / 短 `hr_hint`） |
 
 **仍开放（文档不宣称已解决）**：线程池 **Prometheus/深度指标**（§1 P0）；广谱 **Native 子进程 kill**（§1 P1）；**进程级后台 Worker**（§1 P2）；LiteLLM **`cache_control` 多段 system**（§3 P1）；L2 **webhook 强制 flush**（§4 P2）；子 Agent 通道当前 **`allow_delegate` 仍与主会话同为 True**（仅深度卡死递归，与 §2 P0「默认禁嵌套 delegate」尚有差距）。
@@ -101,7 +101,7 @@
 
 2. **沙箱与隔离（已部分落地）**  
    - **工作区**：`delegate` 深度大于 0 时 **`workspace_context`** 将默认根设为 `workspace/sandboxes/<sub>/`（与主会话隔离写入）。**进程内**仍共享 MCP Manager、技能缓存等（非 OS 级隔离）。  
-   - **记忆**：**`local_memory` shard 文件**（`l3_local_shard_*.json`）与子 Agent 关联，避免与主会话共写同一 `l3_local.json`。
+   - **记忆**：宿主长期记忆以 **Memory Nexus（Chroma）** 为主；遗留 **`l3_local_shard_*.json`** 与子 Agent 隔离，避免与主会话混写同一 JSON 文件（见 `docs/architecture/MEMORY_NEXUS_L3.md`）。
 
 3. **可观测性**  
    - 后台：`l3_event_bus` + WS + **`tasks_index.jsonl`**（queued/started/completed 等事件行）+ `progress.md`。**强制终止**仍弱：同进程 `run_agent` 依赖 cancel Event / 流式 cancel，非子进程级 SIGKILL。
@@ -125,7 +125,7 @@
 
 **P2**
 
-- **独立 agent-memory 存储**：**已实现** shard 文件 **`l3_local_shard_<id>.json`**；merge 回主会话规则仍可配置化（当前以 delegate 子路径为主）。  
+- **独立 agent-memory 存储**：**已实现** shard 文件 **`l3_local_shard_<id>.json`**（遗留 JSON 路径）；宿主长期记忆以 **Nexus** 为主（见 **MEMORY_NEXUS_L3.md**）。  
 - **Cancel API + 生成级中断**：**流式路径已实现** `register_stream_task` + **`task.cancel()`**；非流式仍依赖短超时或改流式。
 
 ### 2.3 最终定案（Agents）
@@ -204,7 +204,7 @@
 ### 4.1 问题诊断
 
 - **被动 vs 主动**：**`memory_facade` + `local_memory_ranking`** 统一排序策略；Prompt 内 **SSOT 一行规则**（以主动检索为准等）见 `L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md`。残余风险：截断条数与 MMR 细节仍可能不完全一致。  
-- **MemorySyncDaemon**：仍以定时为主，但 **`memory_sync_signals` + 守护进程分片睡眠**可在高价值写入后 **提前**进入下一轮同步（非完整「防抖队列 30s」独立模块）。  
+- **~~MemorySyncDaemon~~（已移除）**：L3 宿主记忆不再周期性同步 L2；跨会话 SSOT 为 **Memory Nexus**。  
 - **注意力**：**`passive_max_idle_runs` / `last_prompt_inject_cycle` / `next_prompt_cycle`** 等与被动注入衰减联动（见 `local_memory`、`nexus_config` `memory`）。
 
 ### 4.2 解决方案（分阶段）
@@ -217,7 +217,7 @@
 **P1**
 
 - **门面 API**：**已实现** `memory_facade.py`（与 `load_raw_entries` / shard 一致）。  
-- **防抖 + 急迫同步**：**已实现信号代数 + MemorySyncDaemon 轮询提前唤醒**；非独立 30s 防抖队列模块。  
+- **防抖 + 急迫同步**：原 L2 记忆同步路径已移除；若需多副本可自行外挂同步，非本仓库默认。  
 - **记忆注意力衰减**：**已实现**基于 **`next_prompt_cycle`** 与条目字段（如 **`last_prompt_inject_cycle`**、**`last_accessed_turn`**）及 **`passive_max_idle_runs`**；`local_memory_search` 侧有 **半衰** 等评分（`local_memory_search.py`）。
 
 **P2**

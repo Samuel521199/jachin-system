@@ -604,7 +604,11 @@ async def compaction_before_llm_think(ctx: PipelineContext) -> None:
                     source="compaction_hook",
                 )
             except Exception as e:
-                logger.debug("[Compaction] l3_local checkpoint 跳过: %s", e)
+                logger.debug(
+                    "[Compaction] Memory Nexus checkpoint 跳过，底层: %s",
+                    e,
+                    exc_info=True,
+                )
         if post_audit_enabled:
             audit_ok = True
             if write_ck:

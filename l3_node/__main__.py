@@ -134,6 +134,18 @@ trace(
     _mask_key(_sl_admin) if _sl_admin else "(空)",
 )
 
+try:
+    import importlib.util as _ilu
+
+    _fe_spec = _ilu.find_spec("fastembed")
+except Exception:
+    _fe_spec = None
+trace(
+    "Python sys.executable=%s fastembed_find_spec=%s（pip 须装到与 L3 相同的解释器；导入失败时见 Memory Nexus 日志 exc_info）",
+    sys.executable,
+    bool(_fe_spec),
+)
+
 
 def _is_sensitive_env_key(name: str) -> bool:
     u = (name or "").upper()

@@ -8,8 +8,10 @@ Jachin Nexus V2 - L3 本地解密与直连 LLM
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -105,6 +107,86 @@ def _l3_asyncio_cap_after_litellm_timeout(purpose: str, htt: float) -> float:
         return float(htt) + float(_asyncio_wait_slack_for_purpose(str(purpose)))
     except Exception:
         return float(htt) + 120.0
+
+
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+
+
+def _llm_ignore_http_proxy_pref() -> bool:
+    return os.environ.get("JACHIN_LLM_IGNORE_HTTP_PROXY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+@contextlib.contextmanager
+def _litellm_ephemeral_strip_http_proxy() -> Any:
+    """临时清除进程级代理变量，供 LiteLLM/httpx 下一次建连使用。"""
+    saved: dict[str, str | None] = {k: os.environ.get(k) for k in _PROXY_ENV_KEYS}
+    try:
+        for k in _PROXY_ENV_KEYS:
+            os.environ.pop(k, None)
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _is_proxy_tunnel_failure(err: BaseException, *, _depth: int = 0) -> bool:
+    """HTTP(S)_PROXY 指向未监听端口时常见：ProxyError / ClientProxyConnectionError / 拒绝连接。"""
+    if _depth > 8:
+        return False
+    msg_l = str(err).lower()
+    name_l = type(err).__name__.lower()
+    if "proxy" in name_l:
+        return True
+    if "proxy" in msg_l and (
+        "127.0.0.1" in msg_l
+        or "localhost" in msg_l
+        or "refused" in msg_l
+        or "拒绝" in str(err)
+    ):
+        return True
+    if "clientproxyconnectionerror" in name_l:
+        return True
+    if "cannot connect to host" in msg_l and ("127.0.0.1" in msg_l or "localhost" in msg_l):
+        return True
+    c = getattr(err, "__cause__", None)
+    if c is not None and c is not err:
+        return _is_proxy_tunnel_failure(c, _depth=_depth + 1)
+    return False
+
+
+async def _litellm_acompletion_with_proxy_fallback(kwargs_chat: dict[str, Any]) -> Any:
+    """优先尊重环境代理；若明确配置忽略代理或首次因代理隧道失败，则在无代理环境下调用。"""
+    import litellm
+
+    if _llm_ignore_http_proxy_pref():
+        with _litellm_ephemeral_strip_http_proxy():
+            return await litellm.acompletion(**kwargs_chat)
+    try:
+        return await litellm.acompletion(**kwargs_chat)
+    except Exception as e:
+        if not _is_proxy_tunnel_failure(e):
+            raise
+        logger.warning(
+            "[L3 LLM] 代理不可用（常见于 HTTP_PROXY/HTTPS_PROXY 指向未启动的本机端口），"
+            "已在无代理环境下重试一次；或永久设 JACHIN_LLM_IGNORE_HTTP_PROXY=1 / 注释 .env 中代理行"
+        )
+        with _litellm_ephemeral_strip_http_proxy():
+            return await litellm.acompletion(**kwargs_chat)
 
 
 def _is_probably_network_llm_error(err: BaseException) -> bool:
@@ -752,7 +834,7 @@ class LiteLLMEngine:
                 _cap = _l3_asyncio_cap_after_litellm_timeout(purpose, _htt)
                 try:
                     response = await asyncio.wait_for(
-                        litellm.acompletion(**kwargs_chat),
+                        _litellm_acompletion_with_proxy_fallback(kwargs_chat),
                         timeout=_cap,
                     )
                 except asyncio.TimeoutError as te:
@@ -1074,7 +1156,7 @@ class LiteLLMEngine:
                 except Exception:
                     pass
 
-                response = await litellm.acompletion(**kwargs_chat)
+                response = await _litellm_acompletion_with_proxy_fallback(kwargs_chat)
 
                 _tcall_acc: dict[int, dict[str, str]] = {}
 

@@ -11,7 +11,7 @@
 | 定时 / 事件触发 | L3 **Skill** `com.jachin.pmo.bmo`（`run_pmo_knowledge_sync` 等）；飞书对话走现有 **长连接 → L3 Agent**（与 BI/HR 同体系） |
 | 文档 / Wiki 只读拉取 | **`mcp:atom_pmo_lark_doc`**（`operation=sync` 等同 BI 侧 `sync_bi_project_context`，默认输出 `docs/pmo_bmo_plugin/synced/`）；亦支持 `list_nodes` / `read_doc` |
 | 分块与向量预览、落盘 corpus | **`mcp:atom_pmo_knowledge_base`**（`operation=ingest`）→ `docs/pmo_bmo_plugin/corpus/` |
-| 向量检索「公司项目文档」（可选进阶） | **L2**：`POST /api/v2/memory/sync` + `namespace=pmo_corpus`（见 [02_MCP_DESIGN.md](./02_MCP_DESIGN.md)） |
+| 向量检索「公司项目文档」（可选进阶） | **集中式**：`POST /api/v2/memory/sync` + `namespace=pmo_corpus`（L2 路由，见 [02_MCP_DESIGN.md](./02_MCP_DESIGN.md)）；与 L3 默认 **Memory Nexus** 宿主记忆分立 |
 | 催办状态 / Wait_For_Action | **L2**：`namespace=pmo_action`（Pipeline B 扩展） |
 | 推送到飞书 | **复用 `mcp:atom_lark_notifier`**（与 BI 共用实现，勿复制代码） |
 | 多维表读写（需求池/调配） | **`mcp:atom_pmo_bitable`**（规划中，见设计文档） |

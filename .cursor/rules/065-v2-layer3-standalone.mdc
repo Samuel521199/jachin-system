@@ -15,7 +15,7 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 
 ## 核心原则
 
-1. **L2 不代理推理**：L2 只管理 API Key（密文下发）、记忆、权限、L3 协同调度
+1. **L2 不代理推理**：L2 管理 API Key（密文下发）、权限、L3 协同调度等控制面；**L3 宿主跨会话记忆在本地 Memory Nexus（Chroma）闭环**，不依赖 L2 `/memory/*` 作为默认路径
 2. **L3 直连 LLM**：L3 持密文 Key，请求时解密后自行调用 api.openai.com 等
 3. **L3 执行面**：多 Agent、多 Skill、本地记忆、ReAct、YAML 工作流与 **领域子图委托**（`l3_node/orchestration/`、`core:domain_workflow_run`）；**前台超时 / 后台任务队列 / 工具后预取 / 规划链** 见 **`docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`**；与 OpenClaw **对标**见 `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` §五、**`docs/ORCHESTRATION_ARCHITECTURE.md`**
 
@@ -25,13 +25,13 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 - `GET /api/v2/auth/poll?node_id=xxx` — L3 轮询审批状态（pending/approved + encrypted_api_keys）
 - `GET /api/v2/keys` — L3 拉取密文 Key（需 sub_account_id）
 - `POST /api/v2/admin/nodes/assign` — 管理员将节点分配给子账号
-- `POST /api/v2/memory/sync` — L3 记忆同步
+- `POST /api/v2/memory/sync` — 可选（多租户/集中式部署）；**本仓库 L3 默认不向 L2 同步宿主记忆**
 - `POST /api/v2/admin/*` — 子账号、Key 管理
 
 ## L3 目录 (l3_node/)
 
 - `llm_client.py` — SecurityContext + LiteLLMEngine
-- `agent_core.py` — ReAct Agent + MemorySyncDaemon
+- `agent_core.py` — ReAct Agent（跨会话记忆：Memory Nexus，无 L2 记忆同步守护）
 - `background_task_service.py`、`l3_event_bus.py`、`context_prefetch.py`、`foreground_tool_policy.py` — 见 `docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`
 - `bootstrap.py` — 注册、拉 Key、创建引擎
 - `capability_catalog.py` — 能力总目录注入（`DOMAIN_REGISTRY`）；新 MCP/域见规则 **079**

@@ -147,20 +147,9 @@ async def _send_safe(websocket, payload: dict) -> None:
 
 
 async def _maybe_push_memory_compact_suggest(websocket) -> None:
-    """连接建立后：若到达整理周期，推送倒计时提示（由前端决定是否自动开始）。"""
-    try:
-        from l3_node.memory_compact_schedule import (
-            build_ws_prompt_payload,
-            record_prompt_sent,
-            should_send_prompt_now,
-        )
-
-        if not should_send_prompt_now():
-            return
-        await _send_safe(websocket, build_ws_prompt_payload())
-        record_prompt_sent()
-    except Exception as e:
-        logger.debug("[L3 WS] memory_compact_suggest 跳过: %s", e)
+    """[已停用] 原：定时推送 JSON 梦境合并横幅；Memory Nexus 下不再推送。"""
+    logger.debug("[L3 WS] memory_compact_suggest 已全局禁用（Memory Nexus）")
+    return
 
 
 async def _maybe_push_zombie_tasks_snapshot(websocket) -> None:
@@ -194,21 +183,9 @@ async def _maybe_push_zombie_tasks_snapshot(websocket) -> None:
 
 
 async def _run_scheduled_memory_compact_background(*, force: bool = True) -> None:
-    """用户点「立即开始」或倒计时 auto_start：force=True，无视默认条数阈值。"""
-    try:
-        from l3_node.memory_compact_control import reset_memory_compact_cancel
-        from l3_node.memory_compactor import compact_local_memory_if_needed
-        from l3_node.local_memory import main_local_memory_json_path
-
-        reset_memory_compact_cancel()
-        report = await compact_local_memory_if_needed(
-            str(main_local_memory_json_path()),
-            force=force,
-        )
-        if (report or "").strip():
-            logger.info("[MemoryCompact] %s", report.strip())
-    except Exception as e:
-        logger.debug("[MemoryCompact] 后台整理失败: %s", e)
+    """[已停用] 原：WS 确认后后台跑 JSON 合并；入口保留以兼容旧客户端消息类型。"""
+    logger.debug("[L3 WS] memory_compact 后台任务已禁用 force=%s（Memory Nexus）", force)
+    return
 
 
 async def _broadcast_to_mirror_subscribers(chat_id: str, payload: dict) -> None:
@@ -828,8 +805,10 @@ async def run_ws_server(
                 handler,
                 host,
                 try_port,
-                ping_interval=20,
-                ping_timeout=10,
+                # ReAct + 多模态单轮可 30s+；事件环若短暂卡顿（Chroma/GIL 等）须避免误杀连接，
+                # 否则桌面端会双断连 → 占位「等待 L3 或 L2」且输入被硬禁用。
+                ping_interval=30,
+                ping_timeout=120,
                 close_timeout=5,
             )
             if i > 0:

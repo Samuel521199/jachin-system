@@ -5,7 +5,7 @@ Jachin Nexus V2 - L3 节点引导（L2↔L3 配对，不经 L1）
 2. 向 **L2** 注册：POST /api/v2/auth/sync（含 organization_id 或 organization_slug，须落在 L2 sync_tenant_ids 内）
 3. 轮询 GET /api/v2/auth/poll 等待 **L2 网关** 管理员审批
 4. 拉取密文 Key，本地解密，填充 SecurityContext
-5. 创建 LiteLLMEngine，可选启动 MemorySyncDaemon
+5. 创建 LiteLLMEngine（跨会话记忆由 L3 Memory Nexus 闭环，不再向 L2 同步记忆）
 
 工作区列表可从 L1 GET /api/v1/me/workspaces 拉取填表，属元数据，非 L1↔L3 配对。
 """
@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from l3_node.agent_core import MemorySyncDaemon, run_agent
+from l3_node.agent_core import run_agent
 from l3_node.llm_client import (
     LiteLLMEngine,
     SecurityContext,
@@ -407,14 +407,12 @@ async def bootstrap_l3_node(
     node_id: Optional[str] = None,
     device_fingerprint: str = "",
     model_name: str = "gpt-4o-mini",
-    start_memory_sync: bool = True,
-    memory_sync_interval: float = 300.0,
-) -> tuple[LiteLLMEngine, Optional[MemorySyncDaemon], str]:
+) -> tuple[LiteLLMEngine, str]:
     """
     引导 L3 节点：注册、拉取 Key、解密、创建引擎。
 
     Returns:
-        (engine, memory_daemon, node_id)
+        (engine, node_id)
     """
     from l3_node.crypto import generate_rsa_keypair
 
@@ -474,16 +472,6 @@ async def bootstrap_l3_node(
     from core.wasm_runner import register_host_services
     register_host_services(llm_engine=engine, l2_base_url=l2_base_url)
 
-    memory_daemon: Optional[MemorySyncDaemon] = None
-    if start_memory_sync:
-        memory_daemon = MemorySyncDaemon(
-            l2_base_url=l2_base_url,
-            sub_account_id=sub_account_id,
-            node_id=resolved_node_id,
-            interval_seconds=memory_sync_interval,
-        )
-        memory_daemon.start()
-
     try:
         from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
 
@@ -491,7 +479,7 @@ async def bootstrap_l3_node(
     except Exception as e:
         logger.warning("[L3 Bootstrap] stdio MCP 宿主启动异常: %s", e, exc_info=True)
 
-    return engine, memory_daemon, resolved_node_id
+    return engine, resolved_node_id
 
 
 async def run_l3_agent(

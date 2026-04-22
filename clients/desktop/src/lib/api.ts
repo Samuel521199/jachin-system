@@ -360,7 +360,7 @@ export async function getGpuStats(): Promise<{
 }
 
 /**
- * 获取记忆数量（V2：记忆由 L2 生物学记忆 + LanceDB 管理，本地控制台返回 0）
+ * 获取记忆数量（宿主记忆在 L3 Memory Nexus；本地控制台未接 palace 统计时返回 0）
  */
 export async function getMemoryCount(): Promise<{ count: number }> {
   return { count: 0 };
@@ -413,12 +413,12 @@ export interface MemorySearchResult {
 }
 
 /**
- * 记忆搜索（V2：记忆检索由 L2 GET /api/v2/memory/search 提供，需 X-Sub-Account-Id）
+ * 记忆搜索（宿主记忆由 L3 Agent 侧 `core:local_memory_search` / Memory Nexus；此处占位未接 HTTP）
  */
 export async function searchMemory(
   _q: string
 ): Promise<{ results: MemorySearchResult[]; message?: string }> {
-  return { results: [], message: "记忆检索请使用 L2 API (X-Sub-Account-Id)" };
+  return { results: [], message: "记忆检索由 L3 Memory Nexus（对话内工具）完成" };
 }
 
 /** 模型项 */
@@ -532,19 +532,19 @@ export async function deleteCalendarItem(itemId: string): Promise<{ ok: boolean 
 }
 
 /**
- * 批量删除记忆（V2 已废弃，记忆由 L2 管理）
+ * 批量删除记忆（控制台未接 Chroma 管理 API 时为占位）
  */
 export async function batchDeleteMemory(
   _memoryIds: string[]
 ): Promise<{ ok: boolean; deleted?: number; message?: string }> {
-  return { ok: false, deleted: 0, message: "记忆由 L2 管理" };
+  return { ok: false, deleted: 0, message: "宿主记忆在 L3 Memory Nexus；批量删除请走运维/后续 API" };
 }
 
 /**
- * 删除记忆（V2 已废弃，记忆由 L2 管理）
+ * 删除记忆（控制台未接 Chroma 管理 API 时为占位）
  */
 export async function deleteMemory(_memoryId: string): Promise<{ ok: boolean; message?: string }> {
-  return { ok: false, message: "记忆由 L2 管理" };
+  return { ok: false, message: "宿主记忆在 L3 Memory Nexus；单条删除请走运维/后续 API" };
 }
 
 /**

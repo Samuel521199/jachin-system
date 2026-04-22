@@ -1,4 +1,4 @@
-﻿# L3 能力总目录（Jachin 执行节点）
+# L3 能力总目录（Jachin 执行节点）
 
 **定位**：与具体业务域**解耦**的元层文档——说明系统身份、软/硬路由分工、**如何注册新 MCP/Skill 域**，供人工与 Agent 查阅。  
 **各域细节**（工具映射、飞书硬指令、注入正文）放在 **`docs/capability_domains/*.md`**，由 `l3_node/capability_catalog.py` 按当前「可用工具」自动拼接。
@@ -18,7 +18,7 @@
 
 | 项 | 说明 |
 |----|------|
-| **角色** | Layer 3 执行节点：ReAct Agent + 本地/订阅 MCP + Wasm 技能 +（可选）L2 记忆与协同 |
+| **角色** | Layer 3 执行节点：ReAct Agent + 本地/订阅 MCP + Wasm 技能 + Memory Nexus（Chroma）+（可选）L2 协同等控制面 |
 | **典型通道** | 飞书 IM、WebSocket 控制台、HTTP `agent/run` |
 | **边界** | 不臆测外部系统已登录/已连接；以工具返回值与配置为准 |
 

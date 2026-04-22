@@ -203,7 +203,7 @@ jachin-system/
 ├── clients/desktop/         # Layer 3 终端 (Tauri)
 ├── l3_node/                 # L3 单体执行引擎
 │   ├── llm_client.py        # SecurityContext + LiteLLMEngine 直连
-│   ├── agent_core.py        # ReAct + SubAgent 分身 + MemorySyncDaemon
+│   ├── agent_core.py        # ReAct + SubAgent 分身 + Memory Nexus
 │   ├── bootstrap.py         # 引导：注册、拉 Key、创建引擎
 │   └── skills/              # MCP + SKILL.md + JPP .wasm
 └── docs/

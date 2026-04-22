@@ -10,17 +10,18 @@
 
 ## 一、P0 已实现（2026-03-17）
 
-### 1.1 L3 本地记忆持久化
+### 1.1 L3 Memory Nexus（Chroma）与遗留 JSON
 
 | 组件 | 路径 | 说明 |
 |------|------|------|
-| **存储** | `~/.jachin/memory/l3_local.json` | 本地核心记忆，最多 200 条 |
-| **注入** | System Prompt | `get_local_memory_for_prompt(limit=12)` 断网/无 L2 时仍可用 |
-| **合并** | recall_memory 成功后 | L2 检索结果自动 `merge_from_l2` |
+| **存储（现行）** | `~/.jachin/palace_db` | Chroma 集合 `jachin_drawers`；可选 `CHROMA_USE_HTTP_CLIENT` |
+| **注入** | System Prompt | L1 块 `build_l1_system_memory_block` / `get_local_memory_for_prompt`（同内容） |
+| **工具** | Native | `core:local_memory_search`（`deep_search`）、`core:local_memory_append`（`commit_drawer`） |
+| **遗留** | `~/.jachin/memory/l3_local*.json` | 只读/诊断为主；**不再** `merge_from_l2`；JSON 梦境合并已停用 |
 
-**代码**: `l3_node/local_memory.py`
+**代码**: `l3_client/.../memory_backend.py`、`l3_node/memory_nexus_bridge.py`、`l3_node/local_memory.py` · SSOT：**[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**
 
-**补充（现行 v1.9，合并 v1.7～v1.9）**：**`core:local_memory_search`**（半衰 + **MMR**）；L2 **`memory_scoring`** + **[MEMORY_SCORING.md](./MEMORY_SCORING.md)**；**`GET /api/v2/memory/search?explain=true`**；Compaction **`silent_anchor_file_round`**；**`POST /api/v2/memory/feedback`**；**`apply_patch.python_ast_validate`**。§4.3 **[IMPLICIT_SIGNALS.md](./IMPLICIT_SIGNALS.md)** + **`POST /api/v2/intelligence/implicit-signal`** + 文本/向量复述 + **`implicit_turn_attribution`**（全端默认）+ WS **`implicit_signals`**；`intelligence_e`（**repeat_followup_delta**、**embedding_*_delta**）；叙事 **[MEMORY_WRITE_AND_SCORE_NARRATIVE.md](./MEMORY_WRITE_AND_SCORE_NARRATIVE.md)**。
+**补充（现行 v1.9，合并 v1.7～v1.9）**：**`core:local_memory_search`** / **`recall_memory`**（同源 Chroma **`deep_search`**）；若部署 L2，其 **`memory_scoring`** + **[MEMORY_SCORING.md](./MEMORY_SCORING.md)**、**`GET /api/v2/memory/search?explain=true`** 等属**控制面/多租户**能力，**不是** L3 默认宿主记忆路径。另有 Compaction **`silent_anchor_file_round`**；**`POST /api/v2/memory/feedback`**；**`apply_patch.python_ast_validate`**。§4.3 **[IMPLICIT_SIGNALS.md](./IMPLICIT_SIGNALS.md)** + **`POST /api/v2/intelligence/implicit-signal`** + 文本/向量复述 + **`implicit_turn_attribution`**（全端默认）+ WS **`implicit_signals`**；`intelligence_e`（**repeat_followup_delta**、**embedding_*_delta**）；叙事 **[MEMORY_WRITE_AND_SCORE_NARRATIVE.md](./MEMORY_WRITE_AND_SCORE_NARRATIVE.md)**。
 
 ### 1.2 Pre-reset / Pre-new 记忆刷新
 
@@ -92,7 +93,7 @@
 |------|-----------|
 | **用户偏好结构化** | `~/.jachin/config/user_preferences.json`；`l3_node/intelligence_p1.py`；Lance 梦境末尾 `PREFERENCE_JSON:`；v8 梦境 JSON 可选 `preferences` |
 | **冲突澄清闭环** | `~/.jachin/workspace/clarification_pending.json`；梦境 `needs_clarification` / `CLARIFICATION:` 入队；`agent_core` System Prompt 注入「有待澄清」 |
-| **工具调用缓存** | `~/.jachin/cache/tool_invoke_cache.json`；默认缓存 `mcp:read_file`、`core:fs_read`、`recall_memory`；TTL 默认 3600s；`mcp_registry.invoke` + `_recall_memory_search` |
+| **工具调用缓存** | `~/.jachin/cache/tool_invoke_cache.json`；默认缓存 `mcp:read_file`、`core:fs_read`、`recall_memory`（Nexus 检索）；TTL 默认 3600s；`mcp_registry.invoke` + `_recall_memory_search` |
 | **exec 最小增强** | `core:shell_exec` 默认危险子串拦截；可选 `intelligence_p1.shell_exec_mode=restricted` + `shell_exec_allowlist_prefixes` |
 
 ### P1+（exec 后台 / 多节点原生派发）
@@ -130,7 +131,7 @@
 
 | 项 | 说明 |
 |----|------|
-| **P2-7 修正意图** | `l3_node/intelligence_p2.py`：关键词检测 → `tag=correction` 写入 `l3_local.json`；可选 `core.memory_store.add_memory_fragment`（v8 梦境）；`l3_memory.json` 条目供同步 L2；梦境 Prompt + 碎片/簇内排序优先（`core/dream_weaver.py`、`core/db/dream_weaver.py`） |
+| **P2-7 修正意图** | `l3_node/intelligence_p2.py`：关键词检测 → `tag=correction` 经 **`add_local_memory` → Memory Nexus**；可选 `core.memory_store.add_memory_fragment`（v8 梦境）；梦境 Prompt + 碎片/簇内排序优先（`core/dream_weaver.py`、`core/db/dream_weaver.py`） |
 | **P2-8 意图-技能统计** | `~/.jachin/cache/intent_skill_stats.jsonl`；`agent_core` 在 recall / coordinate / delegate / native&MCP 工具后写入 `(intent_hash, skill_id, success)` |
 | **P2-9 检索强化** | `~/.jachin/memory/memory_reinforcement.json` 侧车；`l2_memory_lancedb._hybrid_search` 与纯向量分支加权；新库 `memories` 表 init 行含 `reinforce_score`；`POST /api/v2/memory/reinforce` |
 
@@ -142,7 +143,6 @@
     "correction_detection_enabled": true,
     "correction_min_user_chars": 4,
     "correction_write_vector_fragment": true,
-    "correction_write_l3_sync": true,
     "dream_prioritize_correction": true,
     "intent_stats_enabled": true,
     "intent_stats_max_file_mb": 4,

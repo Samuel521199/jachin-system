@@ -1,4 +1,4 @@
-"""高价值本地记忆写入 bump 代数，供 MemorySyncDaemon 分片睡眠内提前唤醒同步。"""
+"""[遗留] 原 L2 记忆同步守护用的 urgent 代数；L3 记忆已闭环于 Memory Nexus，bump 恒为 no-op。"""
 from __future__ import annotations
 
 import time
@@ -10,11 +10,8 @@ _last_emit_ts = 0.0
 
 
 def bump_urgent_l3_local_sync() -> int:
-    """返回单调代数；守护进程可对比是否需提前唤醒。"""
-    global _urgent_generation, _last_emit_ts
+    """兼容占位：已不再向 L2 同步记忆，恒不递增。"""
     with _urgent_lock:
-        _urgent_generation += 1
-        _last_emit_ts = time.time()
         return _urgent_generation
 
 

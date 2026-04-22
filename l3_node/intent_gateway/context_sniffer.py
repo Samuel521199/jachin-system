@@ -1,6 +1,10 @@
-﻿"""
-Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + 本地记忆 Top 命中 + db_semantics.md / golden_sql），
+"""
+Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + db_semantics.md / golden_sql），
 硬字符预算，写入 bundle.extra["environment_report"]；并解析 db_semantics.yaml → report["semantic_layer"]（见 workspace_db_context）。
+
+**不在此模块调用 Memory Nexus / Chroma**（曾导致 Windows 上阻塞整条网关入站）。跨会话记忆请走 ReAct 内
+``core:local_memory_search`` / ``core:local_memory_append``。若需在嗅探中恢复旧行为（不推荐），见
+``intent_gateway.context_sniffer_memory_chroma_enabled``（默认 false，见 l3_node/intent_gateway/config.py）。
 
 与混合架构关系：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md §4。
 """
@@ -9,13 +13,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# 整份报告正文（git 块 + 安全锁 + 记忆摘录）总预算
+# 整份报告正文（git 块 + 安全锁；memory_excerpt 字段保留为空以兼容下游）总预算
 _MAX_TOTAL_CHARS = 1500
 # Git status + diff --stat 合并上限
 _MAX_GIT_CHARS = 500
@@ -81,43 +86,6 @@ def _git_workspace_snippet(workspace_dir: str, max_chars: int) -> dict[str, Any]
         out["error"] = str(e)[:120]
         logger.debug("[ContextSniffer] git 采集失败: %s", e)
     return out
-
-
-def _memory_excerpt(query: str, *, max_chars: int, top_k: int = 2) -> tuple[str, list[dict[str, Any]]]:
-    try:
-        from l3_node.local_memory_search import search_local_memories
-
-        # 多取候选再过滤：排除 compaction 的 task_checkpoint（含过时目录快照，勿当「环境事实」）
-        res = search_local_memories(
-            query or "", top_k=max(top_k * 12, 16), candidate_pool=64
-        )
-        hits = res.get("hits") if isinstance(res, dict) else []
-        if not isinstance(hits, list):
-            return "", []
-        hits = [
-            h
-            for h in hits
-            if isinstance(h, dict) and str(h.get("tag") or "").strip().lower() != "task_checkpoint"
-        ][:top_k]
-        lines: list[str] = []
-        used = 0
-        slim_hits: list[dict[str, Any]] = []
-        for h in hits[:top_k]:
-            if not isinstance(h, dict):
-                continue
-            tag = str(h.get("tag") or h.get("id") or "")
-            body = str(h.get("content") or "").strip().replace("\r\n", "\n")
-            chunk, _ = _truncate(body, min(400, max(80, max_chars - used - 40)))
-            line = f"- [{tag}] {chunk}"
-            if used + len(line) > max_chars:
-                break
-            lines.append(line)
-            used += len(line) + 1
-            slim_hits.append({"id": h.get("id"), "tag": tag, "score": h.get("score")})
-        return "\n".join(lines), slim_hits
-    except Exception as e:
-        logger.debug("[ContextSniffer] memory 检索失败: %s", e)
-        return "", []
 
 
 def _apply_total_budget(
@@ -212,7 +180,7 @@ async def build_environment_report(
     异步构建环境报告（Git 在线程中跑子进程，避免阻塞 loop）。
     总字符预算默认 1500；Git 段默认最多 500。
     """
-    _emit_status(on_step, run_id, "⏳ 正在嗅探环境（Git / 安全锁 / 本地记忆）…")
+    _emit_status(on_step, run_id, "⏳ 正在嗅探环境（Git / 安全锁）…")
     ui = (user_input or "").strip()
 
     git_task = asyncio.to_thread(_git_workspace_snippet, workspace_dir, max_git_chars)
@@ -229,18 +197,66 @@ async def build_environment_report(
     _emit_status(on_step, run_id, "⏳ 正在加载 JACHIN_SAFETY_LOCK 相关摘要…")
     safety_task = asyncio.to_thread(_safety)
 
-    _mem_cap = min(700, max(120, int(max_total_chars) * 2 // 5))
+    mem_text, mem_hits = "", []
+    _mem_on = False
+    try:
+        from l3_node.intent_gateway.config import get_intent_gateway_config
 
-    def _mem() -> tuple[str, list[dict[str, Any]]]:
-        return _memory_excerpt(ui, max_chars=_mem_cap, top_k=2)
+        _mem_on = bool(get_intent_gateway_config().get("context_sniffer_memory_chroma_enabled"))
+    except Exception:
+        pass
 
-    mem_task = asyncio.to_thread(_mem)
+    mem_future: asyncio.Task | None = None
+    if _mem_on:
+        _mem_cap = min(700, max(120, int(max_total_chars) * 2 // 5))
 
-    git_info, safety_raw, (mem_text, mem_hits) = await asyncio.gather(
-        git_task,
-        safety_task,
-        mem_task,
-    )
+        def _mem() -> tuple[str, list[dict[str, Any]]]:
+            try:
+                from l3_node.local_memory_search import search_local_memories
+
+                res = search_local_memories(ui or "", top_k=max(2 * 12, 16), candidate_pool=64)
+                hits = res.get("hits") if isinstance(res, dict) else []
+                if not isinstance(hits, list):
+                    return "", []
+                hits = [
+                    h
+                    for h in hits
+                    if isinstance(h, dict) and str(h.get("tag") or "").strip().lower() != "task_checkpoint"
+                ][:2]
+                lines: list[str] = []
+                used = 0
+                slim_hits: list[dict[str, Any]] = []
+                for h in hits[:2]:
+                    if not isinstance(h, dict):
+                        continue
+                    tag = str(h.get("tag") or h.get("id") or "")
+                    body = str(h.get("content") or "").strip().replace("\r\n", "\n")
+                    chunk, _ = _truncate(body, min(400, max(80, _mem_cap - used - 40)))
+                    line = f"- [{tag}] {chunk}"
+                    if used + len(line) > _mem_cap:
+                        break
+                    lines.append(line)
+                    used += len(line) + 1
+                    slim_hits.append({"id": h.get("id"), "tag": tag, "score": h.get("score")})
+                return "\n".join(lines), slim_hits
+            except Exception as e:
+                logger.debug("[ContextSniffer] memory 检索失败: %s", e)
+                return "", []
+
+        try:
+            _to = float((os.environ.get("JACHIN_CONTEXT_SNIFFER_MEMORY_TIMEOUT_SEC") or "2.5").strip())
+        except ValueError:
+            _to = 2.5
+        _to = max(0.35, min(_to, 15.0))
+        mem_future = asyncio.create_task(asyncio.wait_for(asyncio.to_thread(_mem), timeout=_to))
+
+    git_info, safety_raw = await asyncio.gather(git_task, safety_task)
+    if mem_future is not None:
+        try:
+            mem_text, mem_hits = await mem_future
+        except asyncio.TimeoutError:
+            logger.warning("[ContextSniffer] 本地记忆嗅探超时（%.1fs），已跳过", _to)
+            mem_text, mem_hits = "", []
 
     try:
         from l3_node.intent_gateway.config import get_intent_gateway_config

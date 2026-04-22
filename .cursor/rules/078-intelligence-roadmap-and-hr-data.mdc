@@ -24,7 +24,7 @@ alwaysApply: false
 
 ### 阶段 0（当前生产能力，≈ v0.8.46）
 
-- **P0**：`l3_node/local_memory.py`（`~/.jachin/memory/l3_local.json`）、`core/compaction_hook.py`（memory flush + **pre-reset** `run_pre_reset_memory_flush`）、梦境 **`dream_weaver.fragment_threshold`**、`l3_node/task_planning.py`（`task_plan.md` / `progress.md` / `findings.md` + HR 子目录）
+- **P0**：Memory Nexus **`l3_client/.../memory_backend.py`** + **`l3_node/memory_nexus_bridge.py`**（`docs/architecture/MEMORY_NEXUS_L3.md`）、`core/compaction_hook.py`（memory flush + **pre-reset** `run_pre_reset_memory_flush`）、梦境 **`dream_weaver.fragment_threshold`**、`l3_node/task_planning.py`（`task_plan.md` / `progress.md` / `findings.md` + HR 子目录）
 - **P1 / P1+**：`l3_node/intelligence_p1.py`、`l3_node/tool_call_cache.py`、澄清队列、`core:shell_exec` 策略、后台 shell、`shell_job_*`、coordinate **`native_tool`** 直派
 - **P2 MVP**：`l3_node/intelligence_p2.py`（修正意图）、意图-技能 JSONL、检索强化 + `POST /api/v2/memory/reinforce`
 

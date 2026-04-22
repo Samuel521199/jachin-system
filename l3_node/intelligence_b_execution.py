@@ -79,7 +79,7 @@ def get_enforce_readonly_verify_round() -> bool:
 
 
 def get_allow_recall_before_plan_gates() -> bool:
-    """计划卡 / brainstorm 门禁前是否允许 recall_memory。"""
+    """计划卡 / brainstorm 门禁前是否允许 recall_memory（本地 Nexus 检索）。"""
     return bool(load_intelligence_b_config().get("allow_recall_before_plan_gates", True))
 
 

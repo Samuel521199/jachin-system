@@ -1,7 +1,7 @@
 # L3 执行面深度架构：Agent、上下文、记忆与 Prompt
 
-**版本**: 2026-04-07  
-**定位**: 基于当前仓库实现的 **代码级** 说明（非愿景文档）。与 [ARCHITECTURE.md](./ARCHITECTURE.md)（三层产品架构）、[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)（**L3 执行主轴 + L4 挂载 SSOT**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)（前台/后台与超时）、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)（智能化里程碑）互补。  
+**版本**: 2026-04-17  
+**定位**: 基于当前仓库实现的 **代码级** 说明（非愿景文档）。与 [ARCHITECTURE.md](./ARCHITECTURE.md)（三层产品架构）、[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)（**L3 执行主轴 + L4 挂载 SSOT**）、[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)（**L3 Memory Nexus / Chroma**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)（前台/后台与超时）、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)（智能化里程碑）互补。  
 **薄弱点、路线图与「实现快照」**: [L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md](./L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md)（文内 **§〇** 与仓库同步）。
 
 **主入口代码**: `l3_node/agent_core.py`（`run_agent`、`_build_system_prompt`、`_run_react_core`、`SubAgent`）；内联 Critic / 经验飞轮见同文件与 `critic_agent.py`、`experience_memory.py`。
@@ -42,9 +42,9 @@
 
 - **三档模型路由**: `_react_engine_for_iteration` — 编程档（`_l3_coder_mode`，`LLM_CODER_MODEL`）优先；否则满足阈值或 intelligence planned/strict 时用 `LLM_COMPLEX_MODEL`（默认 qwen-max）；否则 `LLM_MODEL`（默认 qwen3.5-plus）。详见 `.cursor/rules/063-l3-qwen-tri-model-routing.mdc`。
 
-### 2.2 伪工具与 L2（非 `run_tool`）
+### 2.2 伪工具与专用分支（非 `run_tool`）
 
-- **`recall_memory`**: 解析为 `type: recall` → `_recall_memory_search`（HTTP 调 L2）；成功后可 **`merge_from_l2`** 写入本地记忆文件（见 §4.2）。
+- **`recall_memory`**: 解析为 `type: recall` → `_recall_memory_search` → **`search_local_memories` / Memory Nexus**（与 `core:local_memory_search` 同源，**不**调 L2）。
 - **`coordinate`**: 解析为 `type: coordinate` → `_coordinate_task`（L2 编排 API + 子任务轮询）；**strict·verify 轮** 等场景下可能被禁止。
 - **`delegate`**: 解析为 `type: delegate` → 并行/串行 `_run_sub_agent`；子任务结果拼成 Observation。
 
@@ -106,57 +106,50 @@
 
 ## 4. 记忆（Memory）
 
-实现上是 **多条并列链路**，用途不同，勿混为一谈。
+实现上是 **多条并列链路**，用途不同，勿混为一谈。**L3 跨会话宿主记忆 SSOT**：**[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**。
 
-### 4.1 `~/.jachin/memory/l3_local.json` 与 shard（`l3_node/local_memory.py`）
+### 4.1 Memory Nexus（Chroma / MemPalace）
 
-- **主文件**: `~/.jachin/memory/l3_local.json`。 **子 Agent / delegate**: 同目录 **`l3_local_shard_<id>.json`**（`ContextVar` 分片，避免与主会话混写）。
-- **形态**: JSON 数组条目 `{tag, content, source, timestamp, ...}`（可含 `last_prompt_inject_cycle`、`last_accessed_turn` 等），上限约 200 条/文件。
-- **写入**: `add_local_memory`；**L2 recall 成功后** `merge_from_l2` 去重合并。
-- **注入 Prompt**: `get_local_memory_for_prompt`（经 **`memory_facade` / 统一排序 `local_memory_ranking`**）→ system 后缀 `【本地记忆】`；**correction 优先**；**被动衰减** 与 **`next_prompt_cycle`、`passive_max_idle_runs`**（`nexus_config` → `memory`）联动。
+- **底座**: `l3_client/local_mcps/jachin_memory_nexus/memory_backend.py` — `commit_drawer`、`recall_room`、`deep_search`；持久化默认 **`~/.jachin/palace_db`**，collection **`jachin_drawers`**。可选 **`CHROMA_USE_HTTP_CLIENT`** 连接远程 Chroma。
+- **L1 注入**: `l3_node/memory_nexus_bridge.build_l1_system_memory_block` → system 后缀 **「系统近期核心记忆」**（如巡检翼区 `E2E_Monitors/Kalaroko_Default`、用户侧 `User_Persona/General_Chat`）。
+- **工具**: `core:local_memory_search` → **`deep_search`**（语义检索，`matches[]`）；`core:local_memory_append` → **`commit_drawer`**（默认翼区 **`User_Persona/Learned_Skills`**）。
+- **回合末**: `schedule_nexus_turn_commit_async` 异步写入 `User_Persona/General_Chat`（启发式长度阈值，fail-open）。
 
-#### 4.1.1 梦境合并 / 本地记忆坍缩（L5，`l3_node/memory_compactor.py`）
+### 4.2 遗留文件 `l3_local.json` 与 shard（只读/诊断）
 
-与 **上下文 compaction**（`core/compaction_hook.py`）**不是同一机制**。向用户说明触发条件时应包含 **条数 + 时间 + 口令**，避免只回答「下口令、Daemon 接管」等模糊说法。
+- **路径**: `~/.jachin/memory/l3_local.json`；delegate 仍可有 **`l3_local_shard_<id>.json`**。
+- **现状**: **核心写入已迁至 Chroma**；文件若存在可用于 **旧数据/HR 指针/诊断**。`get_local_memory_for_prompt` **已委托 L1 Nexus 块**，不再依赖 JSON 被动衰减排序做主路径。
+- **JSON「梦境合并」**：`compact_local_memory_if_needed` **已全局停用**（不调用 LLM 破坏性合并）；桌面横幅 / 会话静默调度已禁用，见 `memory_compactor.py`、`agent_core`。
 
-| 维度 | 说明 |
-|------|------|
-| **条数阈值（仅静默路径）** | `compact_local_memory_if_needed(..., force=False)`：仅当主库 JSON **数组长度 > threshold**（默认 **150**）时才调用轻量 LLM 并写回。用于 **`JACHIN_MEMORY_COMPACT_ON_SESSION=1`** 时每条消息后的静默检查；未达标不改写。 |
-| **定时 + 桌面横幅** | `compact_schedule.json` + L3 WS `memory_compact_suggest`；用户点「立即开始」或倒计时 **auto_start** → 以 **`force=True`** 调用合并，**无视 150 条阈值**（主库 **空数组** 时不调 LLM，返回简短说明）。 |
-| **显式聊天口令** | 「整理本地记忆」「梦境合并」「立即整理记忆」等：`agent_core` 调度合并时 **`force=True`**，**立即尝试合并，无视 150 条阈值**（空库同上）。 |
-| **可选** | `JACHIN_MEMORY_COMPACT_ON_SESSION=1`：静默路径，**仍受** threshold；`JACHIN_MEMORY_COMPACT_ENABLED=0` 关闭整个坍缩。 |
-| **双缓冲** | 合并在影子副本上进行，成功后再替换主文件；详见 `memory_compactor.py` 与 `memory_compact_control.py`。 |
+### 4.3 ReAct 伪动作：`recall_memory`
 
-### 4.2 L2 向量/服务记忆：`recall_memory`
+- **非注册工具名**：由 `_parse_action` 特殊解析，走 `_recall_memory_search`（`asyncio.to_thread` + `search_local_memories`，带 `tool_call_cache`）。
+- **语义**: 与 **`core:local_memory_search`** 相同后端（**`deep_search`**）；仅供模型习惯 `Action: recall_memory` 时的兼容别名。
 
-- **非注册工具名**：由 `_parse_action` 特殊解析，走 `_recall_memory_search`（带 `tool_call_cache`）。
-- **与本地关系**: 检索结果可合并进 `l3_local.json`，支持断网后仍有一部分上下文。
+### 4.4 `core:local_memory_search`（Native 工具）
 
-### 4.3 `core:local_memory_search`（Native 工具）
+- **语义**: **`deep_search`** 全库（可选 wing）向量检索；返回见 `memory_backend.deep_search`（`matches`、`metadata.wing`/`room`）。
 
-- **语义**: 运行时 **按查询** 检索本地记忆与可选 `MEMORY.md` 等（半衰、MMR 等在 `local_memory_search.py`）；与 **prompt 被动注入** 互补。Prompt 中通常有 **一行 SSOT**（以主动检索为准、被动仅为提示），减少两路摘要冲突感。
+### 4.5 ~~`l3_memory.json` + MemorySyncDaemon~~（已移除）
 
-### 4.4 `~/.jachin/l3_memory.json` + `MemorySyncDaemon`
+- L3 跨会话记忆已 **仅在 Nexus 闭环**；原 L2 `/memory/sync` 守护进程与 `agent_core` 内载荷逻辑已删除。
 
-- **用途**: 与 L2 **`/api/v2/memory/sync`** 的 **同步载荷**（含梦境优化回写）；结构为 `{"entries": [...], "updated_at"}` 类（见 `agent_core` 内 `_load_local_memory`）。
-- **守护**: `MemorySyncDaemon` 定时 `sync_memory_to_l2`；高价值本地写入可通过 **`memory_sync_signals`**  bump 代数，使守护进程在 **分片睡眠** 内提前进入下一轮同步。与 `l3_local.json` **不是同一文件**。
-
-### 4.5 工作区「规划记忆」：`task_planning.py`
+### 4.6 工作区「规划记忆」：`task_planning.py`
 
 - **文件**: `~/.jachin/workspace/task_plan.md`、`progress.md`、`findings.md`（及 HR 子目录变体）。
 - **注入**: `get_planning_context_for_prompt()` → system 后缀；用于 **跨会话续任务**。
 - **门禁**: `task_plan_policy` 可要求先写 `task_plan.md` 才允许写文件/Shell/delegate/coordinate。
 
-### 4.6 工作区规则摘录：`jachin_workspace_rules.py`
+### 4.7 工作区规则摘录：`jachin_workspace_rules.py`
 
 - **来源**: `workspace/JACHIN.md`、`jachin.md`、`.jachin/rules.md`。
 - **注入**: system 后缀，有最大字符截断。
 
-### 4.7 HR 运行时摘要：`hr_prompt_context.py`
+### 4.8 HR 运行时摘要：`hr_prompt_context.py`
 
 - **注入**: `get_hr_recruitment_runtime_context_for_prompt()` → system 后缀（scheduler 状态等）。
 
-### 4.8 隐式信号与情报事件
+### 4.9 隐式信号与情报事件
 
 - `implicit_signals` / `implicit_attribution` → `emit_intelligence_event`、`apply_session_implicit_events`、`emit_embedding_implicit_signals` 等（详见 [IMPLICIT_SIGNALS.md](./IMPLICIT_SIGNALS.md)）。**不等同于**长期记忆库，偏 **会话与产品分析管线**。
 
@@ -171,14 +164,14 @@
   - `intelligence_b`：`execution_mode`（react/planned/strict）、`force_universal_planning_chain`、brainstorm/计划卡要求、strict 下 verify 说明  
   - 前台/后台隔离与同步超时预算（`chat_task_hint`）  
   - **可用工具表** `build_tools_description(tools)`  
-  - `recall_memory` / `core:local_memory_search` 提示（视 L2 配置）  
+  - `recall_memory` / `core:local_memory_search` 提示（Memory Nexus）  
   - `coordinate`、`delegate` 提示（视开关）  
   - 固定 **输出格式**：Thought / Action / Action Input / Observation / Final Answer  
   - 分隔说明：`--- 以下段落随会话、记忆与域状态变化 ---`
 
 - **后缀 `prompt_suffix`（易变、宜靠后）**  
   - 经 **`prompt_compose.compose_suffix_with_eviction`** 按 **tier** 组装，并受 **`nexus_config` → `prompt_suffix_max_chars`** 硬帽约束，超标时打 **`prompt_suffix_eviction`** 日志（低优先级先裁）。  
-  - **本地记忆** `get_local_memory_for_prompt`（与 facade/排序一致）  
+  - **Memory Nexus L1** `build_l1_system_memory_block` / `get_local_memory_for_prompt`（同一 L1 块）  
   - **JACHIN 工作区规则**  
   - **task_plan / progress 上下文** `get_planning_context_for_prompt`  
   - **HR 运行时上下文**  
@@ -199,7 +192,7 @@
 - **`nexus_config.json` → `intelligence_b`**: `execution_mode`、`force_universal_planning_chain`、`require_brainstorm_card`、`verify_round_extra_tools` 等（`intelligence_b_execution.py`）。  
 - **`foreground_tools`**: 同步超时、豁免列表、MCP `long_running` 元数据（见前台隔离文档）。  
 - **`context_prefetch`**: 预取条数、字节上限、**`path_sliding_window_size`**、**`ledger_iteration_window`**。  
-- **`memory`**: **`passive_max_idle_runs`** 等被动注入衰减。  
+- **`memory`**: 历史上 **`passive_max_idle_runs`** 用于 JSON 被动注入；Nexus L1 路径**不再**依赖该项（配置可保留无害）。  
 - **`prompt_suffix_max_chars`**: 后缀硬帽（`prompt_compose`）。
 
 ---
@@ -224,12 +217,12 @@ flowchart TB
   CR -->|未通过| FB[伪造 Observation 打回]
   CR -->|通过/跳过| Exec[run_tool / invoke]
   Tool -->|其它 Native/Wasm| Exec
-  Tool -->|recall| L2R[_recall_memory_search]
+  Tool -->|recall| NX[_recall_memory_search → Nexus]
   Tool -->|coordinate| L2C[_coordinate_task]
   Tool -->|delegate| SA[SubAgent / run_agent 嵌套]
   FB --> LLM
   Exec --> Obs[Observation + prefetch + hooks + 可选经验写入]
-  L2R --> Obs
+  NX --> Obs
   L2C --> Obs
   SA --> Obs
   Obs --> LLM
@@ -245,3 +238,5 @@ flowchart TB
 | 2026-04-02 | 预检/插件、metadata 账本与 prefetch/dedup、shard 记忆、`prompt_compose` 硬帽、MemorySync 急迫信号；与路线图 §〇 一致 |
 | 2026-04-02 | 增补四大原语（Tools/MCP/Skills/Agent Tasks）引用与文内说明 |
 | 2026-04-07 | 对齐混合架构白皮书：网关/语义层、Experience RAG、内联 Critic、metadata 键与 Mermaid 主路径 |
+| 2026-04-17 | §4 迁移为 Memory Nexus（Chroma）；停用 l3_local 主编译 / merge_from_l2 / JSON compactor 描述；链接 MEMORY_NEXUS_L3.md |
+| 2026-04-21 | `recall_memory` 改走 Nexus；移除 MemorySyncDaemon / l3_memory.json 记忆同步描述。 |

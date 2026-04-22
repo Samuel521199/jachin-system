@@ -1,11 +1,22 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.33] - 2026-04-21
+
+### Added / Changed
+
+- **Kalaroko 定时守护**：小时巡检首跑尽快执行、启动时打印下次计划时间；小时任务开始/结束 INFO 日志；巡检控制台说明文案。
+- **日报 / 小时报**：晨报写入 Memory Nexus、JSONL 锁与 E2E 记忆提交策略等相关实现（与调度器、MCP、脚本联动）。
+- **Version**: Desktop **0.9.33**（`clients/desktop/VERSION` 与 `sync-version` 产物）。
+
+---
 
 ## [v0.8.119] - 2026-04-17
 
 ### Added / Changed
 
+- **Memory Nexus**：新增 **SSOT** 文档 `docs/architecture/MEMORY_NEXUS_L3.md`；更新 L3 记忆相关文档/规则/工具描述以反映 **Chroma** 主路径；旧 **`l3_local.json` LLM 合并**口径删除或标注停用。
 - 本地整合：环境示例、MCP 示例与注册表、`publish_desktop_release`、YouTube/B 站相关 skill stub、loader 与依赖调整。
 - **Version**: Desktop、core CLI 与 `core/main` 版本号 **0.8.119**。
 
@@ -151,7 +162,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **L5 记忆坍缩（梦境合并）**：`l3_local.json` 超阈值时轻量 LLM 合并；**双缓冲（影子副本）**、**原子覆写**、`memory_compact_control` 取消标记、快照后主库增量合并（`memory_compactor.py`）
+- **（续 2026-04-17 说明）** 下述 L5 JSON 梦境合并与定时整理**已废弃**；L3 主记忆为 **Memory Nexus / Chroma**（`docs/architecture/MEMORY_NEXUS_L3.md`），`compact_local_memory_if_needed` 为 no-op。
+- **L5 记忆坍缩（梦境合并）**（**已废弃，见上**）：`l3_local.json` 超阈值时轻量 LLM 合并；**双缓冲（影子副本）**、**原子覆写**、`memory_compact_control` 取消标记、快照后主库增量合并（`memory_compactor.py`）
 - **定时整理与 WS**：`memory_compact_schedule.py`（`~/.jachin/memory/compact_schedule.json`）、`ws_server` 在 manifest 后推送 `memory_compact_suggest`；控制帧 `memory_compact_confirm` / `defer` / `auto_start` / `cancel`
 - **桌面端**：`useSensoryWebSocket` 倒计时横幅；`chat.tsx` / `ChatPanel` 操作入口
 - **聊天调度**：间隔天数、倒计时秒、推迟整理等话术解析（`agent_core` 注入 system 确认）

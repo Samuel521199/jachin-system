@@ -2,21 +2,19 @@
 智能化 P2：修正意图（P2-7）、意图-技能统计（P2-8）配置与入口。
 
 - 配置：`~/.jachin/nexus_config.json` → `intelligence_p2`
-- 修正记忆写入：`l3_local.json`（tag=correction）、可选 v8 向量碎片、`l3_memory.json` 同步条目
+- 修正记忆写入：经 `add_local_memory` → **Memory Nexus（Chroma）**；可选 v8 向量碎片（`core_memory`）
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-import time
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _NEXUS = Path.home() / ".jachin" / "nexus_config.json"
-_L3_SYNC_MEMORY = Path.home() / ".jachin" / "l3_memory.json"
 
 # 与梦境排序、Prompt 一致的标记前缀（勿改，否则 dream 优先级失效）
 CORRECTION_TEXT_PREFIX = "【用户修正】【p2】"
@@ -100,30 +98,6 @@ def format_correction_memory(user_text: str) -> str:
     return f"{CORRECTION_TEXT_PREFIX}\n期望：{exp}\n原话摘要：{user_text.strip()[:400]}"
 
 
-def _append_l3_sync_memory_entry(content: str) -> None:
-    """写入 l3_memory.json，供 MemorySyncDaemon 同步到 L2 short_term。"""
-    content = (content or "").strip()
-    if not content:
-        return
-    _L3_SYNC_MEMORY.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if _L3_SYNC_MEMORY.exists():
-            data = json.loads(_L3_SYNC_MEMORY.read_text(encoding="utf-8"))
-        else:
-            data = {"entries": []}
-        entries = data.get("entries")
-        if not isinstance(entries, list):
-            entries = []
-        entries.append({"content": content, "source": "p2_correction", "ts": time.time()})
-        # 控制体积
-        max_e = int(get_intel_p2_config().get("l3_sync_correction_max_entries", 200) or 200)
-        entries = entries[-max_e:]
-        data["entries"] = entries
-        _L3_SYNC_MEMORY.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.warning("[P2] 写入 l3_memory.json 失败: %s", e)
-
-
 def maybe_record_user_correction(user_text: str) -> None:
     """
     run_agent 收到用户句后调用：检测修正意图并落盘。
@@ -137,11 +111,10 @@ def maybe_record_user_correction(user_text: str) -> None:
         add_local_memory("correction", formatted, source="p2-7")
     except ImportError:
         pass
+    except Exception as e:
+        logger.debug("[P2-7] Memory Nexus 未写入: %s", e)
 
     cfg = get_intel_p2_config()
-    if cfg.get("correction_write_l3_sync", True) is not False:
-        _append_l3_sync_memory_entry(formatted)
-
     if cfg.get("correction_write_vector_fragment", True) is not False:
         try:
             from core.memory_store import add_memory_fragment

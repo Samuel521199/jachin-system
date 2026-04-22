@@ -1,0 +1,16 @@
+# Jachin Memory Nexus MCP: SQLite + NumPy + FastEmbed (no Chroma). ASCII-only for Windows GBK pip.
+#
+# If pip -r fails with SSLError on fastembed (common with some mirrors, e.g. tuna), use official PyPI once:
+#   powershell -ExecutionPolicy Bypass -File l3_client/local_mcps/jachin_memory_nexus/install_deps_official_pypi.ps1
+# Or one-liner:
+#   python -m pip install "fastembed>=0.4.0" -i https://pypi.org/simple --trusted-host pypi.org
+# Then: pip install -r l3_client/local_mcps/jachin_memory_nexus/requirements.txt
+#
+mcp>=1.0.0
+numpy>=1.24.0,<2
+# onnxruntime: FastEmbed dep; Windows DLL issues -> scripts/repair-onnxruntime-windows.ps1
+onnxruntime>=1.17.3,<1.24
+fastembed>=0.4.0
+# After fastembed, pin HF stack so transformers>=5.3 (hub>=1.3) does not conflict with resolver-picked hub 0.36.x
+huggingface-hub>=1.3.0,<2.0
+tokenizers>=0.22.0,<=0.23.0

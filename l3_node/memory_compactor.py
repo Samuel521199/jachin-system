@@ -1,18 +1,15 @@
 """
-L5 本地记忆「梦境合并」：l3_local.json 超阈值时由轻量 LLM 去重、消解冲突并原子覆写。
+L5 本地记忆「梦境合并」（**已全局停用**）：原 l3_local.json LLM 合并管线。
 
-- 与 critic_agent 共用分类/轻量模型（JACHIN_CRITIC_MODEL 等）。
-- 仅写入经 json.loads 校验的 JSON 数组（对象元素）；绝不写入 Markdown 污染。
-- 失败 fail-open，不破坏主 ReAct 循环。
+入口 ``compact_local_memory_if_needed`` 现为 no-op（Memory Nexus / Chroma 取代）。
+下文解析/原子写等辅助函数仍保留，供查阅或零星脚本引用。
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -21,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 # 与 local_memory._MAX_ENTRIES 对齐：合并后再截断，避免无限增长
 _MAX_FINAL_ENTRIES = 200
-
-_compact_lock = asyncio.Lock()
 
 _MAX_LLM_INPUT_CHARS = 52_000
 _MAX_OUTPUT_ENTRIES = 120
@@ -210,230 +205,11 @@ async def compact_local_memory_if_needed(
     Returns:
         成功：简短中文报告；未触发/失败：空字符串（fail-open，不抛错）。
     """
-    v = (os.environ.get("JACHIN_MEMORY_COMPACT_ENABLED") or "1").strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return ""
-
-    async with _compact_lock:
-        try:
-            from l3_node.memory_compact_control import (
-                is_memory_compact_cancel_requested,
-                reset_memory_compact_cancel,
-            )
-
-            reset_memory_compact_cancel()
-        except ImportError:
-            def is_memory_compact_cancel_requested() -> bool:
-                return False
-
-            reset_memory_compact_cancel = lambda: None  # noqa: E731
-
-        path = Path(file_path).expanduser().resolve()
-        shadow = _shadow_path(path)
-        _unlink_quiet(shadow)
-
-        if not path.exists():
-            return ""
-
-        try:
-            raw_text = path.read_text(encoding="utf-8")
-            entries = json.loads(raw_text)
-        except Exception as e:
-            logger.debug("[MemoryCompact] 读取/解析跳过: %s", e)
-            return ""
-
-        if not isinstance(entries, list):
-            return ""
-
-        n_before = len(entries)
-        if n_before == 0:
-            if force:
-                return "本地记忆暂无条目，无需合并。"
-            return ""
-
-        if not force and n_before <= threshold:
-            return ""
-
-        snapshot_ts = time.time()
-        try:
-            shutil.copy2(path, shadow)
-        except OSError as e:
-            logger.warning("[MemoryCompact] 无法建立影子副本，降级为直接读主库: %s", e)
-            snapshot_ts = time.time()
-
-        if is_memory_compact_cancel_requested():
-            _unlink_quiet(shadow)
-            return ""
-
-        try:
-            from l3_node.critic_agent import critic_model_litellm_id
-
-            model = critic_model_litellm_id()
-        except Exception:
-            model = "dashscope/qwen-turbo"
-
-        try:
-            work_text = shadow.read_text(encoding="utf-8") if shadow.exists() else raw_text
-            work_entries = json.loads(work_text)
-            if not isinstance(work_entries, list):
-                work_entries = entries
-        except Exception:
-            work_entries = entries
-
-        dump = json.dumps(work_entries, ensure_ascii=False)
-        if len(dump) > _MAX_LLM_INPUT_CHARS:
-            dump = dump[:_MAX_LLM_INPUT_CHARS] + "\n…(truncated for LLM)"
-
-        system = (
-            "你是 Jachin AI OS 的本地记忆治理模块。\n"
-            "**只输出合法 JSON，禁止 Markdown（禁止 ```、禁止 # 标题、禁止任何解释性文字前后缀）。**\n"
-            "输出必须是 **单个 JSON 对象**，且 **仅含一个键** `"
-            + _MEMORY_COMPACT_JSON_KEY
-            + "`，值为对象数组；元素尽量保留 tag、content、source、timestamp 等键；"
-            "合并重复与冲突事实（新版本覆盖旧版本），删除废话与冗余。\n"
-            "示例（结构示意，勿照抄内容）："
-            '{"'
-            + _MEMORY_COMPACT_JSON_KEY
-            + '":[{"tag":"fact","content":"…"}]}'
-        )
-        user = (
-            "以下是一份冗长的系统本地记忆 JSON 数组。请输出合并后的 `"
-            + _MEMORY_COMPACT_JSON_KEY
-            + "` 数组（包装在上述单键对象内）。\n"
-            "禁止输出数组以外的 Markdown 或自然语言。\n\n"
-            f"输入（JSON 数组）：\n{dump}"
-        )
-
-        try:
-            import litellm
-        except ImportError:
-            logger.debug("[MemoryCompact] litellm 未安装，跳过")
-            _unlink_quiet(shadow)
-            return ""
-
-        try:
-            from l3_node.llm_client import _effective_max_tokens_for_model
-
-            max_t = _effective_max_tokens_for_model(model, 4096)
-        except Exception:
-            max_t = 4096
-
-        try:
-            timeout = float(os.environ.get("JACHIN_MEMORY_COMPACT_TIMEOUT_SEC") or str(_COMPACT_TIMEOUT_SEC))
-        except (TypeError, ValueError):
-            timeout = _COMPACT_TIMEOUT_SEC
-
-        use_json_object = str(os.environ.get("JACHIN_MEMORY_COMPACT_RESPONSE_JSON", "1")).strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-
-        async def _do_call(extra: dict[str, Any] | None) -> Any:
-            kw: dict[str, Any] = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0.0,
-                "max_tokens": max_t,
-                "timeout": timeout,
-                "stream": False,
-            }
-            if extra:
-                kw.update(extra)
-            try:
-                from core.llm_provider import _inject_api_keys
-                from core.brain.llm.dashscope_regional import litellm_apply_dashscope_credentials
-
-                _inject_api_keys()
-                litellm_apply_dashscope_credentials(model, kw)
-            except ImportError:
-                pass
-            return await litellm.acompletion(**kw)
-
-        if is_memory_compact_cancel_requested():
-            _unlink_quiet(shadow)
-            return ""
-
-        resp = None
-        try:
-            if use_json_object:
-                try:
-                    resp = await _do_call({"response_format": {"type": "json_object"}})
-                except Exception as e1:
-                    logger.debug("[MemoryCompact] response_format 不可用，重试无该参数: %s", e1)
-                    resp = await _do_call(None)
-            else:
-                resp = await _do_call(None)
-        except Exception as e:
-            logger.warning("[MemoryCompact] LLM 调用失败，fail-open: %s", e)
-            _unlink_quiet(shadow)
-            return ""
-
-        if is_memory_compact_cancel_requested():
-            _unlink_quiet(shadow)
-            return ""
-
-        try:
-            choice0 = resp.choices[0] if resp and getattr(resp, "choices", None) else None
-            msg = getattr(choice0, "message", None) if choice0 else None
-            content = (getattr(msg, "content", None) or "") if msg else ""
-            if isinstance(content, list):
-                content = "".join(
-                    str(x.get("text", x)) if isinstance(x, dict) else str(x) for x in content
-                )
-        except Exception as e:
-            logger.warning("[MemoryCompact] 读取响应失败: %s", e)
-            _unlink_quiet(shadow)
-            return ""
-
-        merged = _parse_llm_memory_json(str(content))
-        if not merged:
-            logger.warning("[MemoryCompact] 无法解析为合法 JSON 对象列表，不覆写")
-            _unlink_quiet(shadow)
-            return ""
-
-        if len(merged) > _MAX_OUTPUT_ENTRIES:
-            merged = merged[:_MAX_OUTPUT_ENTRIES]
-
-        if not _validate_roundtrip(merged):
-            logger.warning("[MemoryCompact] 结果无法 json 序列化，不覆写")
-            _unlink_quiet(shadow)
-            return ""
-
-        live_main: list[dict[str, Any]] = []
-        try:
-            live_raw = path.read_text(encoding="utf-8")
-            live_obj = json.loads(live_raw)
-            if isinstance(live_obj, list):
-                live_main = [x for x in live_obj if isinstance(x, dict)]
-        except Exception as e:
-            logger.debug("[MemoryCompact] 重读主库合并尾部跳过: %s", e)
-
-        merged = _merge_post_snapshot_entries(merged, live_main, snapshot_ts)
-
-        if is_memory_compact_cancel_requested():
-            _unlink_quiet(shadow)
-            return ""
-
-        try:
-            _atomic_write_json_array(path, merged)
-        except Exception as e:
-            logger.warning("[MemoryCompact] 原子写入失败: %s", e)
-            _unlink_quiet(shadow)
-            return ""
-
-        _unlink_quiet(shadow)
-
-        n_after = len(merged)
-        logger.info("[MemoryCompact] 已合并写入（双缓冲+尾部合并）%s 条 → %s 条", n_before, n_after)
-        try:
-            from l3_node.memory_compact_schedule import record_compact_completed
-
-            record_compact_completed()
-        except ImportError:
-            pass
-        return f"本地记忆坍缩完成。原条目数: {n_before}，压缩后条目数: {n_after}。请向统帅汇报已完成。"
+    # [DEPRECATED] 系统已全面迁移至 Memory Nexus（Chroma）。保留 Drawer 原文，不再对 l3_local.json 做破坏性 LLM 合并。
+    logger.debug(
+        "[Memory Compactor] 触发已拦截（旧 JSON 坍缩全局停用），file=%s threshold=%s force=%s",
+        file_path,
+        threshold,
+        force,
+    )
+    return ""
