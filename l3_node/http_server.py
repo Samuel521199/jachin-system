@@ -17,6 +17,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from l3_node.paths import kalaroko_default_e2e_script_path
+
 logger = logging.getLogger("l3_node")
 
 L3_HTTP_PORT = 18991
@@ -489,13 +491,21 @@ async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamRespons
             pass
 
     async def _load_and_run() -> dict[str, Any]:
-        script = root / "scripts" / "test_kalaroko_default_scenarios_e2e.py"
+        script = kalaroko_default_e2e_script_path()
+        if not script.is_file():
+            return {
+                "ok": False,
+                "exit_code": 2,
+                "error": f"缺少巡检脚本: {script}（frozen 请重新执行 python scripts/build_l3_sidecar.py）",
+                "markdown_report": None,
+                "llm_analysis": None,
+            }
         spec = importlib.util.spec_from_file_location("_kalaroko_e2e_sse", script)
         if spec is None or spec.loader is None:
             return {
                 "ok": False,
                 "exit_code": 2,
-                "error": "无法加载 scripts/test_kalaroko_default_scenarios_e2e.py",
+                "error": "无法加载 test_kalaroko_default_scenarios_e2e.py",
                 "markdown_report": None,
                 "llm_analysis": None,
             }

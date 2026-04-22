@@ -1,7 +1,7 @@
-# Kalaroko Web 性能监控哨兵 — MCP 依赖片段（可 pip install -r 本文件）
-# 若已安装主仓 core/requirements.txt，则下列多数已满足，仅需确认版本。
+# Kalaroko web perf monitor MCP - optional extras for E2E / sidecar build.
+# If you already installed core/requirements.txt, most pins below overlap; verify versions.
 #
-# 【必做】安装 Playwright 浏览器内核（否则 execute_playwright_perf_test 无法启动 Chromium）：
+# Required for Playwright E2E (Chromium); run after pip install:
 #   playwright install chromium
 
 mcp>=1.0.0
@@ -11,5 +11,5 @@ fastembed>=0.4.0
 httpx>=0.25.0
 python-dotenv>=1.0.0
 playwright>=1.40.0
-# execute_playwright_perf_test：BrowserContext 级隐身（可选；未安装则跳过）
+# Optional: BrowserContext stealth (execute_playwright_perf_test); skip if not installed
 playwright-stealth>=1.0.0

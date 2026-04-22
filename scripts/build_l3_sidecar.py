@@ -10,6 +10,9 @@ L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
   clients/desktop/src-tauri/bin/l3_node-{target_triple}[.exe]
   （与 tauri.conf.json 的 bundle.externalBin: bin/l3_node 对应）
 
+  便携包基线：成功后将仓库根 ``.env.example`` 复制为 ``dist_jachin_desktop/.env.example``，
+  与桌面安装/巡检中枢（Kalaroko CDP、Lark、LLM 等）说明保持同源，避免 dist 与仓库脱节。
+
   部署时若需 npx 类 MCP 且无系统 Node：将官方 Node zip 解压到
   「exe 同目录/runtime/node/」（含 node.exe、npx.cmd），见 docs/L3_EMBEDDED_RUNTIME.md。
 
@@ -30,6 +33,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR = ROOT / "clients" / "desktop" / "src-tauri" / "bin"
 SIDECAR_NAME = "l3_node"
+
+
+def _sync_dist_jachin_desktop_env_example() -> None:
+    """
+    将仓库根 ``.env.example`` 同步到 ``dist_jachin_desktop/.env.example``。
+
+    巡检中枢（/api/v1/monitor/*、Kalaroko MCP、定时巡检/晨报）依赖的键说明以根文件为 SSOT；
+    每次打 sidecar 时刷新便携目录，避免旧 dist 缺键。
+    """
+    src = ROOT / ".env.example"
+    dst = ROOT / "dist_jachin_desktop" / ".env.example"
+    if not src.is_file():
+        print(f"      [WARN] 未找到 {src}，跳过 dist_jachin_desktop/.env.example 同步")
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(src, dst)
+        print(f"      已同步便携基线 .env.example → {dst}")
+    except OSError as e:
+        print(f"      [WARN] 复制 .env.example 到 dist_jachin_desktop 失败: {e}")
 
 
 def get_target_triple() -> str:
@@ -135,6 +158,10 @@ def main() -> int:
         cmd.extend(["--add-data", f"{_cat_md}{_docs_sep}docs"])
     if _domains.is_dir():
         cmd.extend(["--add-data", f"{_domains}{_docs_sep}docs/capability_domains"])
+    # Kalaroko 巡检中枢 / SSE：运行时按路径 load 该脚本（frozen 下须在 _MEIPASS/scripts/）
+    _kalaroko_e2e = ROOT / "scripts" / "test_kalaroko_default_scenarios_e2e.py"
+    if _kalaroko_e2e.is_file():
+        cmd.extend(["--add-data", f"{_kalaroko_e2e}{_docs_sep}scripts"])
     cmd += [
         "--hidden-import", "l3_node",
         "--hidden-import", "l3_node.win_console",
@@ -177,8 +204,24 @@ def main() -> int:
         "--hidden-import", "cryptography",
         "--hidden-import", "playwright",
         "--hidden-import", "playwright.sync_api",
+        "--hidden-import", "playwright.async_api",
+        "--hidden-import", "playwright_stealth",
+        # Kalaroko E2E / 巡检中枢：脚本内动态 import l3_client.*；须显式打入 frozen
+        "--collect-submodules", "l3_client",
+        "--hidden-import", "l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor",
+        "--hidden-import", "l3_client.local_mcps.jachin_memory_nexus.memory_backend",
+        "--hidden-import", "l3_node.kalaroko_e2e_control",
+        "--hidden-import", "l3_node.channels.lark.kalaroko_inspection_notify",
+        "--hidden-import", "mcp.server.fastmcp",
+        "--hidden-import", "dotenv",
+        # Memory Nexus commit_drawer（E2E 异常入库时；lazy import 须显式收集）
+        "--hidden-import", "fastembed.text.text_embedding",
+        "--hidden-import", "numpy",
         str(l3_main),
     ]
+    if sys.platform == "win32":
+        # mcp stdio 路径会触达 pywintypes（见 core/requirements.txt 注释）
+        cmd.extend(["--hidden-import", "pywintypes"])
 
     # 彻底清理并预创建构建目录，避免 FileNotFoundError: base_library.zip（父目录不存在）
     for d in ["dist_l3", "build_l3"]:
@@ -228,6 +271,8 @@ def main() -> int:
             print("      请关闭 L3 后执行: ren 或 move 将 .new 替换为正式文件")
     except Exception as e:
         print(f"      [ERR] 复制到 dist_jachin_desktop 失败: {e}")
+
+    _sync_dist_jachin_desktop_env_example()
 
     # 清理临时目录
     for d in ["dist_l3", "build_l3"]:

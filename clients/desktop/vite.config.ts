@@ -1,4 +1,4 @@
-﻿import { defineConfig } from "vite";
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { Readable } from "stream";
@@ -125,6 +125,8 @@ export default defineConfig(async () => ({
 
   // 多页入口：main 窗口用 console.html
   build: {
+    // 控制台含 Mermaid/Cytoscape/大屏块等，500kB 默认阈值会持续误报；桌面 Tauri 可接受较大初始 chunk
+    chunkSizeWarningLimit: 1600,
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),

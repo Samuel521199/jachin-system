@@ -43,3 +43,22 @@ def get_app_root() -> Path:
                 return cand
         return parent
     return Path(__file__).resolve().parent.parent
+
+
+def kalaroko_default_e2e_script_path() -> Path:
+    """
+    ``scripts/test_kalaroko_default_scenarios_e2e.py`` 的绝对路径。
+
+    - **frozen**：PyInstaller 将脚本 ``--add-data`` 到 ``sys._MEIPASS/scripts/``（见 ``build_l3_sidecar.py``）。
+    - **便携目录**：若 ``get_app_root()/scripts/`` 下存在同名文件（如手工拷贝），优先使用。
+    - **开发**：仓库根 ``<repo>/scripts/``。
+    """
+    fname = "test_kalaroko_default_scenarios_e2e.py"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = get_app_root() / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return Path(__file__).resolve().parent.parent / "scripts" / fname

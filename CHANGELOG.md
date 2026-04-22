@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.36] - 2026-04-22
+
+### Added / Changed
+
+- **L3 小时报 / 日报与侧车打包**：Kalaroko E2E 在 PyInstaller frozen 下可加载（脚本与 `l3_client` 等依赖打入侧车）；`requirements_kalaroko.txt` 注释改为 ASCII 以避免 Windows GBK 下 pip 解码失败；桌面构建相关小修（Vite chunk 告警阈值、冗余 Rust 诊断函数移除）。
+- **Version**: Desktop **0.9.36**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.35] - 2026-04-22
 
 ### Added / Changed
