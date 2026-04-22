@@ -7,9 +7,9 @@ Kalaroko Monitor MCP — 默认四场景（KALAROKO_DEFAULT_SCENARIOS）全流�
   2) fetch_api_health（探测 gwp.heronpro.xin 大厅后端 API 列表 + summary）
   3) manage_perf_history（持久 JSONL：append + query_recent，路径 ``~/.jachin/data/kalaroko_e2e.jsonl``）
 
-最终控制台输出结构与《Kalaroko PH 本地网络情况监控报告》Word 版章节对齐（一至七；多轮时第 2 轮起可含「五、多轮测试加载汇总与对比」）。
-第七节「异常」仅展示 **至多 2 条精简摘要**（`type` / `net` / `target`，过滤常见埋点）；附录 JSON 中 `browser_exceptions` 为同等精简抽样，
-**落库 jsonl 仍写入全量** `browser_exceptions`（见 `_run_history` 中的 `record` 构造）。
+巡检时间展示时区由 ``KALAROKO_REPORT_TZ`` 控制（默认 ``utc8``=北京时间 UTC+8；``malaysia``=马来西亚时间 UTC+8）。
+单轮 Markdown 报告（``render_report_md``）为 **飞书看板卡片式**：分隔线 + 树状符号（├└）+ 全量秒数加粗；无表格、正文不展示 run_id/game_id。
+多轮时追加「📈 多轮趋势对比」；异常区为单行简报 + jsonl 提示。**落库 jsonl 仍写入全量** ``browser_exceptions``（见 ``_run_history``）。
 
 前置（仓库根）：
   pip install -r requirements_kalaroko.txt
@@ -130,7 +130,6 @@ _DISCLAIMER_GAME_FRAME = (
 
 # 报告第六节 / 附录中展示的浏览器异常条数上限（正文仅 1～2 条精简摘要）
 REPORT_BROWSER_EXCEPTION_SAMPLE_MAX = 2
-
 _NET_ERR_RE = re.compile(r"net::[A-Z0-9_]+")
 
 
@@ -348,6 +347,9 @@ def _api_summary_status_codes_cell(summary: dict) -> str:
     return ", ".join("null" if c is None else str(c) for c in sc)
 
 
+_CMP_LLM_META_KEYS = frozenset({"inspection_time", "captured_at"})
+
+
 def _extract_comparison_metrics(pw_data: dict) -> dict:
     """提取当前轮次的核心加载指标，用于多轮对比。"""
     m: dict[str, Any] = {}
@@ -356,6 +358,13 @@ def _extract_comparison_metrics(pw_data: dict) -> dict:
     m["page_ttfb"] = hp_metrics.get("ttfb_ms")
     m["page_load"] = hp_metrics.get("page_load_ms")
     m["page_success"] = hp.get("load_status") == "success"
+
+    cat = pw_data.get("captured_at")
+    m["captured_at"] = cat
+    if cat:
+        m["inspection_time"] = _format_inspection_timestamp(pw_data, None)
+    else:
+        m["inspection_time"] = "N/A（无 captured_at）"
 
     for g in pw_data.get("games") or []:
         gid = str(g.get("game_id") or "")
@@ -375,6 +384,107 @@ def _fmt_cmp_ms(val: Any) -> str:
         return f"{int(round(float(val))):,}ms"
     except (TypeError, ValueError):
         return "N/A"
+
+
+def _fmt_ms_as_s(val: Any) -> str:
+    """毫秒 → 秒，保留两位小数 + s；无效为 N/A。"""
+    if val is None:
+        return "N/A"
+    try:
+        return f"{float(val) / 1000.0:.2f}s"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _fmt_cmp_s(val: Any) -> str:
+    """对比表：毫秒值格式化为秒（两位小数）。"""
+    if val is None:
+        return "N/A"
+    try:
+        return f"{float(val) / 1000.0:.2f}s"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _load_status_zh(st: Any) -> str:
+    s = str(st or "").strip().lower()
+    if s == "success":
+        return "成功"
+    if s == "partial":
+        return "部分成功"
+    if s in ("failed", "failure"):
+        return "失败"
+    if s == "timeout":
+        return "超时"
+    if s == "skipped":
+        return "跳过"
+    if not s or s in ("none", "null"):
+        return "未知"
+    return str(st)
+
+
+def _summary_remark_homepage(hp: dict) -> str:
+    st = hp.get("load_status")
+    if st == "success":
+        return ""
+    if st == "partial":
+        return "首页未完全就绪，详见第二节"
+    if st in ("failed", "timeout"):
+        return f"首页加载异常（{st}）"
+    if st == "skipped":
+        return "已跳过浏览器巡检"
+    return f"load_status={st}" if st else ""
+
+
+def _kalaroko_report_tzinfo() -> tuple[Any, str]:
+    """
+    巡检报告「巡检时间」展示用 IANA 时区 + 文案。
+
+    环境变量 ``KALAROKO_REPORT_TZ``（不区分大小写）：
+    - ``utc8`` / ``china`` / ``cn`` / ``asia/shanghai``（默认）：北京时间，UTC+8
+    - ``malaysia`` / ``my`` / ``asia/kuala_lumpur``：马来西亚时间，同为 UTC+8（标注不同）
+    """
+    raw = (os.environ.get("KALAROKO_REPORT_TZ") or "utc8").strip().lower()
+    malaysia_keys = frozenset(
+        {
+            "malaysia",
+            "my",
+            "asia/kuala_lumpur",
+            "kuala_lumpur",
+        }
+    )
+    try:
+        from zoneinfo import ZoneInfo
+
+        if raw in malaysia_keys:
+            return ZoneInfo("Asia/Kuala_Lumpur"), "马来西亚时间 (UTC+8)"
+        return ZoneInfo("Asia/Shanghai"), "北京时间 (UTC+8)"
+    except Exception:
+        tz8 = timezone(timedelta(hours=8))
+        if raw in malaysia_keys:
+            return tz8, "马来西亚时间 (UTC+8)"
+        return tz8, "北京时间 (UTC+8)"
+
+
+def _format_inspection_timestamp(pw: dict, record: dict | None) -> str:
+    """将 ``captured_at``（通常 UTC）换算为配置时区并带时区说明。"""
+    tz, tz_label = _kalaroko_report_tzinfo()
+    raw = pw.get("captured_at") or ((record or {}).get("captured_at"))
+    if not raw:
+        dt = datetime.now(timezone.utc).astimezone(tz)
+        return f"{dt.strftime('%Y-%m-%d %H:%M:%S')} ({tz_label})"
+    s = str(raw).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(tz)
+        return f"{local.strftime('%Y-%m-%d %H:%M:%S')} ({tz_label})"
+    except ValueError:
+        head = s[:19] if len(s) >= 19 else s
+        return f"{head} ({tz_label})"
 
 
 def _e2e_summary_model() -> str:
@@ -453,8 +563,15 @@ def compact_record_for_daily_llm(record: dict) -> dict[str, Any]:
                 "real_engine_load_ms": g.get("real_engine_load_ms"),
             }
         )
+    cat = record.get("captured_at")
+    inspection_time = (
+        _format_inspection_timestamp(record, None)
+        if cat
+        else "N/A（无 captured_at）"
+    )
     return {
-        "captured_at": record.get("captured_at"),
+        "captured_at": cat,
+        "inspection_time": inspection_time,
         "run_id": record.get("run_id"),
         "homepage_url": hp.get("url"),
         "homepage_load_status": hp.get("load_status"),
@@ -585,7 +702,11 @@ async def generate_llm_daily_report_from_jsonl(
     """晨报：聚合过去 24h jsonl → 调用 LLM（mode=daily_24h）。"""
     path = Path(jsonl_path or KALAROKO_E2E_JSONL)
     records = jsonl_records_last_hours(path, hours=hours)
-    compact = [compact_record_for_daily_llm(r) for r in records]
+    compact: list[dict[str, Any]] = []
+    for i, r in enumerate(records):
+        row = compact_record_for_daily_llm(r)
+        row["sequence_in_24h"] = i + 1
+        compact.append(row)
     if not compact:
         return (
             "> ⚠️ 过去 24 小时内持久化库中无采样记录（或 captured_at 不可解析），"
@@ -632,7 +753,7 @@ async def _generate_llm_summary(
             payload_json = payload_json[:280_000] + "\n…(截断，仅保留前 280KB 字符)"
         prompt = f"""
 你是资深 QA / SRE。以下为过去约 24 小时内 Kalaroko E2E 自动化巡检写入持久化库的**采样记录**（JSON 数组）。
-每条包含 captured_at、首页与各游戏的核心加载指标（TTFB、完全加载耗时、成功状态）。
+每条包含 sequence_in_24h（按时间排序后的序号）、captured_at、inspection_time（已按巡检报告时区换算）、首页与各游戏的核心加载指标（TTFB、完全加载耗时、成功状态）。
 数据可能较多：请先归纳**整体稳定性与趋势**，再指出**异常尖峰**（具体时间窗、游戏、毫秒级数值），最后给执行层可执行的 2～4 条建议。
 
 记录条数（采样后）: {n_samples}
@@ -643,7 +764,8 @@ JSON 数据:
 任务要求：
 1. 用一段话描述 24h 内的健康度与波动（高峰/低谷若可辨识）。
 2. 点出最值得关注的异常或退化（若有），含数值与时间点/游戏。
-3. 语言精炼、专业，直接输出晨报结论，不要用 Markdown 代码块，不要寒暄。
+3. **按序号或「第 N 条/轮」指称某次巡检时，必须写出该条 JSON 中的 inspection_time（与 sequence_in_24h 对应，原文照抄，禁止编造）**；列举多轮失败/峰值时建议用「第 10 条（inspection_time 原文）」形式，便于对照 jsonl。
+4. 语言精炼、专业，直接输出晨报结论，不要用 Markdown 代码块，不要寒暄。
 """
         sys_msg = "你是专业的 QA/SRE 数据分析师，擅长长时序性能晨报。"
         log_n = n_samples
@@ -653,10 +775,15 @@ JSON 数据:
             compact_history.append(
                 {
                     "round": i + 1,
+                    "inspection_time": m.get("inspection_time"),
+                    "captured_at": m.get("captured_at"),
                     "page_ttfb_ms": m.get("page_ttfb"),
                     "page_load_ms": m.get("page_load"),
                     "games_metrics": {
-                        k: v for k, v in m.items() if not str(k).startswith("page_")
+                        k: v
+                        for k, v in m.items()
+                        if not str(k).startswith("page_")
+                        and k not in _CMP_LLM_META_KEYS
                     },
                 }
             )
@@ -666,19 +793,23 @@ JSON 数据:
 
         if record_count <= 10:
             prompt = f"""
-你是一个资深的 QA 性能测试专家。请根据以下 {record_count} 轮的 E2E 自动化测试时序数据，给出一份简明扼要的综合分析总结。
-数据包含首页和各款游戏的 TTFB (首字节时间)、页面完全加载时间以及成功状态。
+你是资深的产品体验官兼 QA 负责人。请根据以下 {record_count} 轮的 E2E 自动化巡检时序数据，给出一份简明扼要的综合分析。
+数据包含首页与各游戏的核心耗时（内部为毫秒，请你自行换算为秒 s 向读者表述）及成功状态。
 
 测试数据 (JSON):
 {ch_json}
 
 任务要求：
-1. 总结整体稳定性（是否全量成功）。
-2. 指出最优表现（哪一轮/哪个游戏最快）。
-3. 精准捕捉异常波动（如果某轮的 TTFB 或 Load 突然飙升，必须点出具体数值和游戏）。
-4. 语言专业、精炼，直接输出一段分析结论，不要使用 Markdown 代码块包裹。
+1. 请用产品经理友好的业务语言进行总结。
+2. 结论置顶：首先给出这段时间内的整体业务可用性定性结论（是否可认为玩家可正常访问大厅与进入游戏）。
+3. 不要在正文里罗列枯燥的毫秒级时序数据；请将核心耗时转换为秒（s）进行表述，并点出相对偏慢或偏快的轮次/页面。
+4. 如果有异常，请指出对玩家体验的实际影响（如进入大厅变慢、某款游戏多次未就绪等）。
+5. **凡按「第 N 轮」或轮次指称失败、峰值、最慢加载等，必须在紧挨轮次处括号写出该条 JSON 的 inspection_time（与 round 对应，原文照抄，禁止编造）**；多轮并列时示例：第 10 轮（2026-04-21 03:12:00（北京时间 (UTC+8)））、第 16 轮（…）。
+6. 可简要补充最优表现（哪一轮/哪个环节相对最快）。不要 Markdown 代码块包裹。
 """
-            sys_msg = "你是专业的 QA 数据分析师。"
+            sys_msg = (
+                "你是资深的产品体验官兼 QA 负责人，擅长把技术指标翻译为业务与体验语言。"
+            )
         else:
             prompt = f"""
 你是 Jachin AI OS 的首席 SRE (站点可靠性工程师)。你现在需要向上级汇报过去 24 小时内，Kalaroko 平台的 E2E 自动化巡检全天大盘监控报告。
@@ -689,7 +820,7 @@ JSON 数据:
 
 任务要求：
 1. 【全天可用性定调】：用一句话总结过去 24 小时系统的整体可用性和健康度（如：全天运行平稳，或夜间出现剧烈波动）。
-2. 【极端异常点名】：不要报流水账！只挑出全天数据中**最慢的加载时间**、**异常的 TTFB 飙升**或**非 success 的失败记录**。明确指出是哪个游戏、在第几次测试中出现的。如果全天数据极度健康，请直接说明「全天无异常超时或报错」。
+2. 【极端异常点名】：不要报流水账！只挑出全天数据中**最慢的加载时间**、**异常的 TTFB 飙升**或**非 success 的失败记录**。明确指出是哪个游戏、在第几次测试中出现的。**凡写出「第 N 轮」或轮次编号，必须紧跟括号写出该条 JSON 的 inspection_time（与 round 对应，原文照抄，禁止编造）**，便于按时间回溯 jsonl/CDN 日志。如果全天数据极度健康，请直接说明「全天无异常超时或报错」。
 3. 【趋势建议】：基于 24 小时的数据走向，给出 1-2 条运维视角的建议。
 4. 语言要求：必须具备高管汇报的专业性（Executive Summary 风格），客观冷酷，不讲废话，直接输出结论段落，切勿使用 Markdown 代码块包裹。
 """
@@ -835,6 +966,206 @@ JSON 数据:
         return f"> ❌ 大模型综合分析调用失败: {detail}"
 
 
+def _bold_duration_s(val: Any) -> str:
+    """时长（ms 入参）→ 加粗的「X.XXs」或 **N/A**。"""
+    inner = _fmt_ms_as_s(val)
+    if inner == "N/A":
+        return "**N/A**"
+    return f"**{inner}**"
+
+
+def _status_dot_normal(load_status: Any) -> str:
+    """看板用：成功 🟢 正常，否则 🔴 失败。"""
+    st = str(load_status or "").strip().lower()
+    return "🟢 正常" if st == "success" else "🔴 失败"
+
+
+def _game_dot_emoji(g: dict | None) -> str:
+    if not g:
+        return "🔴"
+    st = str(g.get("load_status") or "").strip().lower()
+    return "🟢" if st == "success" else "🔴"
+
+
+def _homepage_failed_resources(mcore: dict) -> int:
+    raw = mcore.get("failed_resources", 0)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _avg_three_games_load_ms(row: dict) -> float | None:
+    """多轮 hist 单行：三款游戏 real_engine_load_ms 的算术平均（毫秒）。"""
+    acc = 0.0
+    n = 0
+    for gid in ("tongits_king", "royal_pusoy", "color_blitz"):
+        v = row.get(f"{gid}_load")
+        if v is None:
+            continue
+        try:
+            acc += float(v)
+            n += 1
+        except (TypeError, ValueError):
+            continue
+    if n == 0:
+        return None
+    return acc / n
+
+
+def _first_exception_summary_line(bex: list) -> str:
+    ranked = select_key_browser_exceptions(bex, 1)
+    if not ranked:
+        return "（无可用摘要）"
+    ex = ranked[0]
+    comp = compact_browser_exception(ex)
+    parts = [str(comp.get("net") or ""), str(comp.get("type") or ""), str(comp.get("target") or "")]
+    raw = " — ".join(p for p in parts if p).strip()
+    msg = str(ex.get("message") or "").replace("\n", " ").strip()
+    pick = raw if len(raw) >= 8 else (msg[:200] if msg else raw)
+    return (pick or "unknown")[:220]
+
+
+def _fmt_ms_inline_s(val: Any) -> str:
+    """毫秒 → 反引号包裹的秒数字符串（两位小数）；无效为 `null` / `N/A`。"""
+    if val is None:
+        return "`null`"
+    try:
+        return f"`{float(val) / 1000.0:.2f}s`"
+    except (TypeError, ValueError):
+        return "`N/A`"
+
+
+def _inline_scalar(val: Any, *, max_len: int = 220) -> str:
+    """标量转飞书内联代码；空为 `null`。"""
+    if val is None:
+        return "`null`"
+    t = str(val).strip()
+    if not t:
+        return "`null`"
+    t = t.replace("`", "'")[:max_len]
+    return f"`{t}`"
+
+
+def _format_online_players_detail(g: dict) -> str:
+    """与采数逻辑一致的人类可读在线人数文案（无表格）。"""
+    online_data = g.get("online_players")
+    display_parts: list[str] = []
+    game_key = str(g.get("game_id") or "")
+    ug = g.get("url_game_id")
+    ug_s = "" if ug is None else str(ug).strip()
+
+    if isinstance(online_data, dict):
+        table_val = online_data.get("table")
+        lobby_val = online_data.get("lobby")
+        is_color = "color_blitz" in game_key or ug_s == "6"
+        if is_color:
+            if lobby_val:
+                display_parts.append(f"{lobby_val} 人")
+            elif table_val and "/" in str(table_val):
+                display_parts.append(f"{str(table_val).split('/')[0].strip()} 人")
+            elif table_val:
+                display_parts.append(f"{str(table_val).strip()} 人")
+        else:
+            if table_val and "/" in str(table_val):
+                current_num = str(table_val).split("/")[0].strip()
+                display_parts.append(f"{current_num} 人（牌桌）")
+            if lobby_val:
+                display_parts.append(f"{lobby_val} 人（大厅）")
+    elif (
+        isinstance(online_data, str)
+        and online_data.strip()
+        and online_data not in ("N/A", "None")
+    ):
+        display_parts.append(str(online_data).strip())
+    return " + ".join(display_parts) if display_parts else "N/A"
+
+
+def _append_developer_details_section(
+    lines: list[str],
+    hp: dict,
+    mcore: dict,
+    wv: dict,
+    games_by_id: dict[str, dict],
+) -> None:
+    """单轮报告末尾附录：树状 + 内联代码，无 Markdown 表格。"""
+    lines.append("## 📊 详细诊断数据 (Developer Details)")
+    lines.append("")
+
+    proto = mcore.get("protocol")
+    lines.append("**1. 首页加载详情 (kalaroko.com)**")
+    lines.append(
+        f"▪️ 网络与资源：协议 {_inline_scalar(proto)} | 总资源 {_inline_scalar(mcore.get('total_resources'))} | 失败 {_inline_scalar(mcore.get('failed_resources'))}"
+    )
+    fcp_ms = mcore.get("fcp_ms")
+    if fcp_ms is None:
+        fcp_ms = wv.get("fcp_ms")
+    dom_ms = mcore.get("dom_content_loaded_ms")
+    lines.append(
+        f"▪️ 渲染生命周期：TTFB {_fmt_ms_inline_s(mcore.get('ttfb_ms') if mcore.get('ttfb_ms') is not None else wv.get('ttfb_ms'))} | "
+        f"FCP {_fmt_ms_inline_s(fcp_ms)} | DOMContentLoaded {_fmt_ms_inline_s(dom_ms)} | 完全加载 {_fmt_ms_inline_s(mcore.get('page_load_ms'))}"
+    )
+    lines.append("")
+
+    lines.append("**2. 游戏牌桌详情**")
+    lines.append("")
+    for gid_key, disp in (
+        ("tongits_king", "Tongits King"),
+        ("royal_pusoy", "Royal Pusoy"),
+        ("color_blitz", "Color Blitz Social"),
+    ):
+        gg = games_by_id.get(gid_key)
+        lines.append(f"🔹 **{disp}**")
+        if gg is None:
+            lines.append("   ├ 耗时详情：总加载 `N/A` (TTFB `N/A`)")
+            lines.append("   ├ 房间状态：房间 ID `N/A` | 在线 `N/A`")
+            lines.append("   ├ 资源加载：请求数 `N/A` | 失败 `N/A`")
+            lines.append("   └ 业务报错：`N/A`（未采集）")
+            lines.append("")
+            continue
+        ttfb_ms = gg.get("shell_navigation_ttfb_ms")
+        if ttfb_ms is None:
+            ttfb_ms = gg.get("ttfb_ms")
+        load_ms = gg.get("real_engine_load_ms")
+        room_id = gg.get("room_id")
+        if room_id is not None and str(room_id).strip() == "":
+            room_id = None
+        online_txt = _format_online_players_detail(gg)
+        total_req = gg.get("total_requests")
+        if total_req is not None:
+            try:
+                req_disp = f"{int(total_req)}+"
+            except (TypeError, ValueError):
+                req_disp = "N/A"
+        else:
+            req_disp = "N/A"
+        try:
+            failed_res = int(gg.get("resource_errors_count", 0))
+        except (TypeError, ValueError):
+            failed_res = 0
+        try:
+            console_errs = int(gg.get("console_errors_count", 0))
+        except (TypeError, ValueError):
+            console_errs = 0
+        if console_errs == 0:
+            console_disp = "`0`（控制台无 error）"
+        else:
+            console_disp = _inline_scalar(console_errs)
+
+        lines.append(
+            f"   ├ 耗时详情：总加载 {_fmt_ms_inline_s(load_ms)} (TTFB {_fmt_ms_inline_s(ttfb_ms)})"
+        )
+        lines.append(
+            f"   ├ 房间状态：房间 ID {_inline_scalar(room_id)} | 在线 {_inline_scalar(online_txt)}"
+        )
+        lines.append(
+            f"   ├ 资源加载：请求数 `{req_disp}` | 失败 {_inline_scalar(failed_res)}"
+        )
+        lines.append(f"   └ 业务报错：{console_disp}")
+        lines.append("")
+    lines.append("")
+
+
 def render_report_md(
     pw: dict,
     fh: dict,
@@ -844,347 +1175,168 @@ def render_report_md(
     current_run: int = 1,
     all_metrics_history: list[dict] | None = None,
 ) -> str:
-    """按《Kalaroko PH 本地网络情况监控报告》章节输出 Markdown（一至七节；第五节为全量多轮对比；不含附录 JSON）。返回全文供 API/L3 汇总。"""
+    """飞书看板卡片式：无表格、无冗余 ID；时长 ms→s 两位小数并加粗。返回全文供 API/L3 汇总。"""
     hp = pw.get("homepage") or {}
     wv = hp.get("web_vitals") or {}
     mcore = hp.get("metrics") or {}
     games = pw.get("games") or []
     bex = pw.get("browser_exceptions") or []
-    bex_sample = select_key_browser_exceptions(bex, REPORT_BROWSER_EXCEPTION_SAMPLE_MAX)
-    bex_compact = [compact_browser_exception(x) for x in bex_sample]
     items = fh.get("items") or []
     api_sum = fh.get("summary") or {}
     lines: list[str] = []
-    lines.append(f"# Kalaroko PH 本地网络情况监控报告（第 {current_run} 轮）")
+
+    ts_line = _format_inspection_timestamp(pw, record)
+    lines.append("---")
+    lines.append(f"**🚀 Kalaroko PH 巡检快报 | 第 {current_run} 轮**")
+    lines.append(f"📅 巡检时间: {ts_line}")
+    lines.append("---")
     lines.append("")
 
-    # 一、首页加载性能
-    lines.append("## 一、首页加载性能（Page）")
+    page_ttfb_ms = mcore.get("ttfb_ms")
+    if page_ttfb_ms is None:
+        page_ttfb_ms = wv.get("ttfb_ms")
+    hp_fr = _homepage_failed_resources(mcore)
+    lines.append("**🌐 首页加载 (kalaroko.com)**")
+    lines.append(f"├ 状态: {_status_dot_normal(hp.get('load_status'))}")
+    lines.append(
+        f"├ 响应: {_bold_duration_s(mcore.get('page_load_ms'))} (首字节: {_bold_duration_s(page_ttfb_ms)})"
+    )
+    lines.append(f"└ 资源: 失败 {hp_fr} 个")
+    hp_rm = _summary_remark_homepage(hp)
+    if hp_rm:
+        lines.append(f"　⚠️ {hp_rm}")
     lines.append("")
-    lines.append("| 字段 | 值 |")
-    lines.append("|------|-----|")
-    lines.append(f"| url | `{_fmt_v(hp.get('url'))}` |")
-    lines.append(f"| load_status | `{_fmt_v(hp.get('load_status'))}` |")
-    if mcore:
-        for mk, mlabel in (
-            ("ttfb_ms", "metrics.ttfb_ms（首字节）"),
-            ("fcp_ms", "metrics.fcp_ms（首次内容绘制）"),
-            ("dom_content_loaded_ms", "metrics.dom_content_loaded_ms"),
-            ("page_load_ms", "metrics.page_load_ms（完全加载）"),
-            ("total_resources", "metrics.total_resources"),
-            ("failed_resources", "metrics.failed_resources"),
-            ("protocol", "metrics.protocol（ALPN）"),
-        ):
-            lines.append(f"| {mlabel} | `{_fmt_v(mcore.get(mk))}` |")
-    # 仅输出与 metrics 互补的 ttfb_ms / fcp_ms；不展示 LCP/FID/CLS/INP（探针常为 null）
-    for k in ("ttfb_ms", "fcp_ms"):
-        if k == "fcp_ms" and mcore.get("fcp_ms") is not None:
+
+    lines.append("**🃏 游戏加载实测**")
+    games_by_id = {str(g.get("game_id") or ""): g for g in games}
+    _game_rows = [
+        ("tongits_king", "Tongits King", "├"),
+        ("royal_pusoy", "Royal Pusoy", "├"),
+        ("color_blitz", "Color Blitz", "└"),
+    ]
+    for _, (gid_key, label, branch) in enumerate(_game_rows):
+        gg = games_by_id.get(gid_key)
+        if gg is None:
+            lines.append(f"{branch} {label}: 🔴 **N/A**（未采集）")
             continue
-        if k == "ttfb_ms" and mcore.get("ttfb_ms") is not None:
-            continue
-        lines.append(f"| web_vitals.{k} | `{_fmt_v(wv.get(k))}` |")
-    lines.append("")
-    lines.append(_conclusion_homepage(hp))
+        dot = _game_dot_emoji(gg)
+        lines.append(f"{branch} {label}: {dot} {_bold_duration_s(gg.get('real_engine_load_ms'))}")
     lines.append("")
 
-    # 二、后端 API 健康（总览 + 端点明细，对齐 APM 大盘）
-    lines.append("## 二、后端 API 健康状态")
-    lines.append("")
-    lines.append("### 2.1 总览统计（`fetch_api_health.summary`）")
-    lines.append("")
-    lines.append("| 指标 | 数值 |")
-    lines.append("|------|------|")
-    lines.append(f"| API 总调用数 | `{api_sum.get('total_calls')}` |")
-    lines.append(f"| 失败数 | `{api_sum.get('failed_calls')}` |")
-    _avg = api_sum.get("avg_latency_ms")
-    _min = api_sum.get("min_latency_ms")
-    _max = api_sum.get("max_latency_ms")
-    lines.append(
-        "| 平均响应时间 | `{}` |".format(f"{_avg}ms" if _avg is not None else "N/A")
-    )
-    lines.append(
-        "| 最快响应 | `{}` |".format(f"{_min}ms" if _min is not None else "N/A")
-    )
-    lines.append(
-        "| 最慢响应 | `{}` |".format(f"{_max}ms" if _max is not None else "N/A")
-    )
-    lines.append(f"| 状态码 | `{_api_summary_status_codes_cell(api_sum)}` |")
-    lines.append("")
-    lines.append("### 2.2 端点明细")
-    lines.append("")
-    lines.append("| 端点 | 状态 | 响应时间 |")
-    lines.append("|------|------|---------|")
-    for it in items:
-        path = urlparse(it.get("url") or "").path or "/"
-        code = it.get("status_code")
-        code_s = _fmt_v(code)
-        if it.get("healthy"):
-            st_cell = f"{code_s} ✅"
-        else:
-            st_cell = f"{code_s} ❌"
-        lat = it.get("latency_ms")
-        try:
-            lat_num = float(lat) if lat is not None else None
-        except (TypeError, ValueError):
-            lat_num = None
-        lat_cell = f"{round(lat_num, 3)}ms" if lat_num is not None else "null"
-        esc_path = path.replace("|", "\\|")
-        lines.append(f"| `{esc_path}` | {st_cell} | {lat_cell} |")
-    lines.append("")
-    lines.append(_conclusion_api(items))
-    lines.append("")
-
-    # 三、游戏牌桌加载（QA 业务模板：指标 / 数值，与 Word 嵌入表口径对齐）
-    lines.append("## 三、游戏牌桌加载测试")
-    lines.append("")
-    for g in games:
-        lines.append(_game_heading(g))
-        lines.append("")
-
-        load_st = g.get("load_status")
-        is_success = "✅ 是" if load_st == "success" else "❌ 否"
-
-        engine_str = _fmt_ms_business(g.get("real_engine_load_ms"))
-
-        ttfb_str = _fmt_ms_business(g.get("shell_navigation_ttfb_ms"))
-
-        total_req = g.get("total_requests")
-        if total_req is not None:
+    bad_items = [x for x in items if not x.get("healthy")]
+    codes = _api_summary_status_codes_cell(api_sum)
+    lines.append("**🔌 后端 API 探活**")
+    if not items:
+        lines.append("├ 状态: （无探测数据）")
+        lines.append("├ 均耗: **N/A**")
+        lines.append("└ 瓶颈: **N/A**")
+    elif not bad_items and codes == "全部 200":
+        lines.append("├ 状态: 💯 全部正常 (200 OK)")
+        _avg = api_sum.get("avg_latency_ms")
+        lines.append(f"├ 均耗: {_bold_duration_s(_avg) if _avg is not None else '**N/A**'}")
+        slowest_path = "N/A"
+        slowest_ms: float | None = None
+        for it in items:
+            lat = it.get("latency_ms")
             try:
-                total_req_str = f"{int(total_req)}+"
+                lat_num = float(lat) if lat is not None else None
             except (TypeError, ValueError):
-                total_req_str = "N/A"
+                lat_num = None
+            if lat_num is None:
+                continue
+            if slowest_ms is None or lat_num > slowest_ms:
+                slowest_ms = lat_num
+                p = urlparse(it.get("url") or "").path or "/"
+                slowest_path = p.replace("|", "／").strip()[:120] or "N/A"
+        if slowest_ms is not None:
+            lines.append(
+                f"└ 瓶颈: `{slowest_path}` ({_bold_duration_s(slowest_ms)})"
+            )
         else:
-            total_req_str = "N/A"
-
-        failed_raw = g.get("resource_errors_count", 0)
-        try:
-            failed_res = int(failed_raw)
-        except (TypeError, ValueError):
-            failed_res = 0
-
-        room_id = g.get("room_id") or "N/A"
-        if str(room_id).strip() == "":
-            room_id = "N/A"
-
-        console_raw = g.get("console_errors_count", 0)
-        try:
-            console_errs = int(console_raw)
-        except (TypeError, ValueError):
-            console_errs = 0
-        console_str = (
-            "无业务错误"
-            if console_errs == 0
-            else f"❌ 发现 {console_errs} 个报错"
-        )
-
-        # 智能解析在线玩家（牌桌 + 大厅双轨合并展示；兼容旧 str 单值）
-        online_data = g.get("online_players")
-        display_parts: list[str] = []
-        game_key = str(g.get("game_id") or "")
-        ug = g.get("url_game_id")
-        ug_s = "" if ug is None else str(ug).strip()
-
-        if isinstance(online_data, dict):
-            table_val = online_data.get("table")
-            lobby_val = online_data.get("lobby")
-            is_color = "color_blitz" in game_key or ug_s == "6"
-            if is_color:
-                if lobby_val:
-                    display_parts.append(f"{lobby_val} 人")
-                elif table_val and "/" in str(table_val):
-                    display_parts.append(
-                        f"{str(table_val).split('/')[0].strip()} 人"
-                    )
-                elif table_val:
-                    display_parts.append(f"{str(table_val).strip()} 人")
-            else:
-                if table_val and "/" in str(table_val):
-                    current_num = str(table_val).split("/")[0].strip()
-                    display_parts.append(f"{current_num} 人（牌桌）")
-                if lobby_val:
-                    display_parts.append(f"{lobby_val} 人（大厅）")
-        elif (
-            isinstance(online_data, str)
-            and online_data.strip()
-            and online_data not in ("N/A", "None")
-        ):
-            display_parts.append(str(online_data).strip())
-
-        online_display = " + ".join(display_parts) if display_parts else "N/A"
-
-        lines.append("| 指标 | 数值 |")
-        lines.append("|---|---|")
-        lines.append(f"| 成功进入牌桌 | {is_success} |")
-        lines.append(f"| game-frame 页面加载 | {engine_str} |")
-        lines.append(f"| TTFB | {ttfb_str} |")
-        lines.append(f"| 游戏资源请求数 | {total_req_str} |")
-        lines.append(f"| 失败资源 | {failed_res} |")
-        lines.append(f"| 房间 ID | {room_id} |")
-        lines.append(f"| 在线玩家 | {online_display} |")
-        lines.append(f"| Console 错误 | {console_str} |")
-        lines.append("")
-    lines.append(_DISCLAIMER_GAME_FRAME)
-    lines.append("")
-
-    # 四、游戏加载汇总
-    lines.append("## 四、游戏加载汇总")
-    lines.append("")
-    lines.append(
-        "| game_id（key） | 展示名 | document_game_id | url_game_id | ttfb_ms | load_status | resource_errors_count |"
-    )
-    lines.append(
-        "|----------------|--------|------------------|-------------|---------|-------------|------------------------|"
-    )
-    for g in games:
-        gid = str(g.get("game_id") or "")
-        disp = _GAME_LABEL.get(gid, gid)
-        lines.append(
-            f"| `{gid}` | {disp} | {_fmt_v(g.get('document_game_id'))} | {_fmt_v(g.get('url_game_id'))} | "
-            f"{_fmt_v(g.get('ttfb_ms'))} | {_fmt_v(g.get('load_status'))} | {_fmt_v(g.get('resource_errors_count'))} |"
-        )
+            lines.append("└ 瓶颈: **N/A**")
+    elif not bad_items:
+        lines.append(f"├ 状态: ✅ 端点均 healthy（码: {codes}）")
+        _avg = api_sum.get("avg_latency_ms")
+        lines.append(f"├ 均耗: {_bold_duration_s(_avg) if _avg is not None else '**N/A**'}")
+        slowest_path, slowest_ms = "N/A", None
+        for it in items:
+            lat = it.get("latency_ms")
+            try:
+                lat_num = float(lat) if lat is not None else None
+            except (TypeError, ValueError):
+                lat_num = None
+            if lat_num is None:
+                continue
+            if slowest_ms is None or lat_num > slowest_ms:
+                slowest_ms = lat_num
+                p = urlparse(it.get("url") or "").path or "/"
+                slowest_path = p.replace("|", "／").strip()[:120] or "N/A"
+        if slowest_ms is not None:
+            lines.append(f"└ 瓶颈: `{slowest_path}` ({_bold_duration_s(slowest_ms)})")
+        else:
+            lines.append("└ 瓶颈: **N/A**")
+    else:
+        lines.append(f"├ 状态: ⚠️ {len(bad_items)} 个端点异常")
+        _avg = api_sum.get("avg_latency_ms")
+        lines.append(f"├ 均耗: {_bold_duration_s(_avg) if _avg is not None else '**N/A**'}")
+        slowest_path, slowest_ms = "N/A", None
+        for it in items:
+            lat = it.get("latency_ms")
+            try:
+                lat_num = float(lat) if lat is not None else None
+            except (TypeError, ValueError):
+                lat_num = None
+            if lat_num is None:
+                continue
+            if slowest_ms is None or lat_num > slowest_ms:
+                slowest_ms = lat_num
+                p = urlparse(it.get("url") or "").path or "/"
+                slowest_path = p.replace("|", "／").strip()[:120] or "N/A"
+        if slowest_ms is not None:
+            lines.append(f"└ 瓶颈: `{slowest_path}` ({_bold_duration_s(slowest_ms)})")
+        else:
+            lines.append("└ 瓶颈: **N/A**")
     lines.append("")
 
     hist = all_metrics_history or []
-    # 五、多轮加载汇总与对比（本轮报告显示截至目前已完成的全部轮次）
     if len(hist) > 1:
-        total_rounds = len(hist)
-
-        def _fmt_rate(succ: Any) -> str:
-            if succ is None:
-                return "N/A"
-            return "100% (1/1)" if succ else "0% (0/1)"
-
-        lines.append(
-            f"## 五、多轮测试加载汇总与 {total_rounds} 轮对比"
+        lines.append(f"## 📈 多轮趋势对比 (R1 → R{current_run})")
+        lines.append("")
+        home_chain = " → ".join(
+            _bold_duration_s(hist[i].get("page_load")) for i in range(len(hist))
         )
+        lines.append(f"• 首页时长: {home_chain}")
+        avg_parts: list[str] = []
+        for i in range(len(hist)):
+            ams = _avg_three_games_load_ms(hist[i])
+            avg_parts.append(_bold_duration_s(ams))
+        lines.append(f"• 游戏平均: {' → '.join(avg_parts)}")
         lines.append("")
 
-        games_list: list[tuple[str, str]] = [("Page（首页）", "page")]
-        for g in games:
-            gid = str(g.get("game_id") or "")
-            disp = _GAME_LABEL.get(gid, gid)
-            games_list.append((disp, gid))
-
-        if total_rounds <= 3:
-            header_cols = (
-                ["游戏"]
-                + [f"R{i} TTFB" for i in range(1, total_rounds + 1)]
-                + [f"R{i} 加载" for i in range(1, total_rounds + 1)]
-            )
-            lines.append("| " + " | ".join(header_cols) + " |")
-            lines.append("|" + "|".join(["---"] * len(header_cols)) + "|")
-            for disp_name, key in games_list:
-                row: list[str] = [disp_name]
-                row.extend(
-                    _fmt_cmp_ms(hist[i].get(f"{key}_ttfb"))
-                    for i in range(total_rounds)
-                )
-                row.extend(
-                    _fmt_cmp_ms(hist[i].get(f"{key}_load"))
-                    for i in range(total_rounds)
-                )
-                lines.append("| " + " | ".join(row) + " |")
-            lines.append("")
-        else:
-            lines.append("### TTFB 对比（iframe / 文档首字节）")
-            lines.append("")
-            h_ttfb = ["游戏"] + [f"R{i} TTFB" for i in range(1, total_rounds + 1)]
-            lines.append("| " + " | ".join(h_ttfb) + " |")
-            lines.append("|" + "|".join(["---"] * len(h_ttfb)) + "|")
-            for disp_name, key in games_list:
-                rr = [disp_name] + [
-                    _fmt_cmp_ms(hist[i].get(f"{key}_ttfb"))
-                    for i in range(total_rounds)
-                ]
-                lines.append("| " + " | ".join(rr) + " |")
-            lines.append("")
-
-            lines.append("### 页面加载时间对比")
-            lines.append("")
-            h_load = ["游戏"] + [f"R{i} 加载" for i in range(1, total_rounds + 1)]
-            lines.append("| " + " | ".join(h_load) + " |")
-            lines.append("|" + "|".join(["---"] * len(h_load)) + "|")
-            for disp_name, key in games_list:
-                rr = [disp_name] + [
-                    _fmt_cmp_ms(hist[i].get(f"{key}_load"))
-                    for i in range(total_rounds)
-                ]
-                lines.append("| " + " | ".join(rr) + " |")
-            lines.append("")
-
-            lines.append("### 成功率")
-            lines.append("")
-            h_succ = ["游戏"] + [f"R{i}" for i in range(1, total_rounds + 1)]
-            lines.append("| " + " | ".join(h_succ) + " |")
-            lines.append("|" + "|".join(["---"] * len(h_succ)) + "|")
-            for disp_name, key in games_list:
-                rr = [disp_name] + [
-                    _fmt_rate(hist[i].get(f"{key}_success"))
-                    for i in range(total_rounds)
-                ]
-                lines.append("| " + " | ".join(rr) + " |")
-            lines.append("")
-
-    # 六、与历史报告对比（与 Word「与 xx 报告对比」章节对齐）
-    lines.append("## 六、与历史报告对比")
-    lines.append("")
-    hp = (record or {}).get("homepage") or {}
-    hp_wv = hp.get("web_vitals") or {}
-    lines.append(
-        "说明：若 `Kalaroko PH本地网络情况监控报告*.docx` 中本节为**嵌入图片表格**，本脚本输出以下方指标表为准；"
-        "「基线」列需对照历史归档手工填写，未填时记为 `N/A`。"
-    )
-    lines.append("")
-    lines.append("| 指标 | 本期 | 基线（如 04-13 归档） | 变化 |")
-    lines.append("|------|------|----------------------|------|")
-    lines.append(
-        f"| 首页 TTFB (ms) | `{_fmt_v(hp_wv.get('ttfb_ms'))}` | N/A | N/A |"
-    )
-    for g in games:
-        gid = str(g.get("game_id") or "")
-        disp = _GAME_LABEL.get(gid, gid)
-        doc = g.get("document_game_id")
-        label = f"{disp}（文档 game_id={doc}）" if doc is not None else disp
-        lines.append(f"| {label} TTFB (ms) | `{_fmt_v(g.get('ttfb_ms'))}` | N/A | N/A |")
-    lines.append("")
-    recs = (query_recent or {}).get("records") or []
-    if not recs:
-        lines.append("本次为 E2E 临时 jsonl，**无多期历史**，仅保留当前快照一条；若需与固定日期（如 04-13）对比，请使用持久化历史路径并多次 append。")
-    else:
-        lines.append(f"最近查询到 **{len(recs)}** 条记录（完整记录见 jsonl / 历史查询输出）。")
-        for i, r in enumerate(recs):
-            lines.append(f"- 记录[{i}] run_id=`{_fmt_v(r.get('run_id'))}` captured_at=`{_fmt_v(r.get('captured_at'))}`")
-    lines.append("")
-
-    # 七、异常与注意事项（抽样：对齐 Word 主文可读性，避免埋点 ERR_ABORTED 刷屏）
-    lines.append("## 七、异常与注意事项")
-    lines.append("")
-    lines.append(
-        f"**browser_exceptions**：全量 **{len(bex)}** 条（导航切换、战术撤离时常见 `net::ERR_ABORTED`，"
-        "多为统计/埋点请求被中断，**不一定表示业务故障**）。"
-    )
-    lines.append("")
-    lines.append(
-        f"下列仅 **{REPORT_BROWSER_EXCEPTION_SAMPLE_MAX} 条以内** 的**精简摘要**（`type` / `net` / `target`），"
-        "优先业务域名（大厅 API 等），已过滤常见埋点域名。完整列表见 jsonl **`record.browser_exceptions`**。"
-    )
+    lines.append("## 🔍 异常诊断")
     lines.append("")
     if not bex:
-        lines.append("（本期无浏览器侧异常记录。）")
-        lines.append("")
-    elif not bex_compact:
-        lines.append("（抽样为空：请查看落库全量或降低噪声过滤规则。）")
-        lines.append("")
+        lines.append("✅ 暂无影响业务的异常日志。")
     else:
-        lines.append("| # | type | net | target |")
-        lines.append("|---|------|-----|--------|")
-        for i, row in enumerate(bex_compact):
-            t = str(row.get("type") or "").replace("|", "\\|")
-            n = str(row.get("net") or "—").replace("|", "\\|")
-            tg = str(row.get("target") or "").replace("|", "\\|")
-            lines.append(f"| {i + 1} | {t} | {n} | `{tg}` |")
+        first_line = _first_exception_summary_line(bex)
+        lines.append(
+            f"🚨 拦截到 {len(bex)} 条异常，首条：{first_line}。"
+        )
         lines.append("")
+        lines.append("_完整日志见本地 jsonl；导航/埋点常见中断不一定为故障。_")
+    lines.append("")
+
+    recs = (query_recent or {}).get("records") or []
+    if recs:
+        lines.append(f"📦 本地已保留 **{len(recs)}** 条巡检快照（详见 jsonl，正文不展示技术 ID）。")
+    else:
+        lines.append("📦 本地尚无多期 jsonl 快照。")
+    lines.append("")
+
+    _append_developer_details_section(lines, hp, mcore, wv, games_by_id)
+
+    lines.append(f"📎 {_DISCLAIMER_GAME_FRAME}")
+    lines.append("")
 
     text = "\n".join(lines)
     print(text, flush=True)
@@ -1209,6 +1361,7 @@ async def _run_playwright() -> dict:
             base_url=None,
             scenarios=[],
             collect_console=True,
+            headless=False,
         )
     finally:
         set_playwright_progress_callback(None)
@@ -1467,7 +1620,7 @@ async def _run_full_cycle(
 
             print("\n", flush=True)
             _e2e_progress(
-                f"生成 Markdown 报告（stdout，第 {current_run}/{runs} 轮）…"
+                f"生成巡检快报（stdout，第 {current_run}/{runs} 轮）…"
             )
             md_round = render_report_md(
                 pw,
@@ -1479,8 +1632,8 @@ async def _run_full_cycle(
             )
             markdown_rounds.append(md_round)
             _e2e_echo(
-                f"[报告] 第 {current_run}/{runs} 轮 Markdown 已生成（{len(md_round)} 字符）；"
-                "完整一至七节在任务结束时的 markdown_report 中汇总。"
+                f"[报告] 第 {current_run}/{runs} 轮巡检快报已生成（{len(md_round)} 字符）；"
+                "飞书与 done.markdown_report 均为扁平 Emoji 格式。"
             )
 
             if is_manual_run_cancel_requested():
@@ -1503,7 +1656,7 @@ async def _run_full_cycle(
                 f"[E2E] 第 {current_run}/{runs} 轮异常，已记入报告并继续下一轮：{msg[:600]}"
             )
             markdown_rounds.append(
-                f"# Kalaroko PH 本地网络情况监控报告（第 {current_run} 轮 · 异常中断）\n\n"
+                f"# Kalaroko PH 巡检快报 (第 {current_run} 轮 · 异常中断)\n\n"
                 f"本轮流水线失败（可能含 Page Closed / CDP 断开 / fetch 失败等）。\n\n"
                 f"```\n{msg}\n```\n\n"
                 f"```\n{traceback.format_exc()[:8000]}\n```\n"

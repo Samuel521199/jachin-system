@@ -1,6 +1,15 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.35] - 2026-04-22
+
+### Added / Changed
+
+- **Kalaroko 小时报 / 巡检报告**：小时报与单轮 Markdown 格式调整（飞书友好排版、详细诊断附录、晨报轮次带巡检时间等）；相关 Lark 通知、调度器与 E2E 脚本联动。
+- **Version**: Desktop **0.9.35**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.34] - 2026-04-22
 

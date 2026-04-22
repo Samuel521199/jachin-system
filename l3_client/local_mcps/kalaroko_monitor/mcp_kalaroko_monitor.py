@@ -2215,13 +2215,13 @@ async def _launch_kalaroko_browser_context(
             endpoint,
             str(e)[:400],
         )
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=headless)
         context = await browser.new_context(viewport=vp, device_scale_factor=dsf)
         await _apply_stealth_to_context(context)
         page = await context.new_page()
         logger.info(
             "[kalaroko_monitor] 已 launch 独立 Chromium（headless=%s），新建 context + page",
-            True,
+            headless,
         )
         return browser, context, page, True
 
@@ -2383,6 +2383,7 @@ async def execute_playwright_perf_test(
     viewport: dict | None = None,
     collect_console: bool = True,
     max_games: int | None = None,
+    headless: bool = True,
 ) -> dict[str, Any]:
     """
     使用 Playwright 按场景采集首页 **W3C Navigation/Paint + ALPN** 与游戏入口性能，
@@ -2410,6 +2411,7 @@ async def execute_playwright_perf_test(
         viewport: 可选 width/height/device_scale_factor
         collect_console: 是否采集 console / pageerror
         max_games: 限制「游戏」场景数量（首页后的场景）
+        headless: 是否无头运行。``False`` 时在回退 ``chromium.launch`` 路径下显示浏览器窗口；CDP 连接已有 Chrome 时由该实例是否可见决定，此参数主要影响 launch 回退。
 
     阶段性人可读输出（不影响返回 JSON）：本机脚本可调用 ``set_playwright_progress_callback`` 注册回调。
     """
@@ -2448,7 +2450,7 @@ async def execute_playwright_perf_test(
     if max_games is not None and max_games >= 0:
         game_scenarios = game_scenarios[: int(max_games)]
 
-    _log_browser_launch_plan(_env_headless(), w, h, dsf)
+    _log_browser_launch_plan(headless, w, h, dsf)
 
     _progress(
         f"场景计划：1 个首页 + {len(game_scenarios)} 个游戏"
@@ -2461,7 +2463,7 @@ async def execute_playwright_perf_test(
     req_fail_slot: list[int] = [0]
 
     async with async_playwright() as p:
-        _hl = _env_headless()
+        _hl = headless
         browser: Any | None = None
         context: Any | None = None
         page: Any | None = None

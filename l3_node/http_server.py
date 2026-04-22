@@ -499,6 +499,8 @@ async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamRespons
                 "markdown_report": None,
                 "llm_analysis": None,
             }
+        # 避免 sys.modules 命中旧模块：否则飞书仍推送历史「表格版」render_report_md
+        sys.modules.pop(spec.name, None)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         run_fn = getattr(mod, "run_kalaroko_batch_test", None)

@@ -138,6 +138,7 @@ async def hourly_inspection_job() -> None:
         spec = importlib.util.spec_from_file_location("_kalaroko_sched_hourly", script)
         if spec is None or spec.loader is None:
             raise RuntimeError("无法加载 test_kalaroko_default_scenarios_e2e.py")
+        sys.modules.pop(spec.name, None)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         run_fn = getattr(mod, "run_kalaroko_batch_test", None)
@@ -302,6 +303,7 @@ async def daily_morning_report_job() -> None:
         spec = importlib.util.spec_from_file_location("_kalaroko_sched_daily", script)
         if spec is None or spec.loader is None:
             raise RuntimeError("无法加载 test_kalaroko_default_scenarios_e2e.py")
+        sys.modules.pop(spec.name, None)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         extract_cmp = getattr(mod, "_extract_comparison_metrics", None)

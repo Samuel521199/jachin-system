@@ -110,21 +110,10 @@ async def send_kalaroko_inspection_to_lark(
         f"**Kalaroko E2E 巡检已完成**\n\n"
         f"- 轮数：**{runs}** · 间隔：**{interval}s**\n"
         f"- 摘要模型（LLM_COMPLEX_MODEL）：`{summary_model or 'N/A'}`\n"
-        f"- 含：各轮 Markdown 一至七节；多轮时另附 AI 综合分析（若已生成）。\n"
+        f"- 推送顺序：**先 AI 综合分析，后各轮 Markdown 详单**（结论先行）。\n"
     )
     await _one_retry("巡检 · 概要", header_md)
     await asyncio.sleep(delay_sec)
-
-    md_body = (markdown_report or "").strip()
-    if md_body:
-        parts = _chunk_text(md_body, chunk_chars)
-        total = len(parts)
-        for i, part in enumerate(parts, start=1):
-            title = f"巡检 · Markdown 报告 ({i}/{total})"
-            await _one_retry(title, part)
-            await asyncio.sleep(delay_sec)
-    else:
-        emit("无 markdown_report，跳过报告正文推送")
 
     llm = (llm_analysis or "").strip()
     if llm:
@@ -135,5 +124,18 @@ async def send_kalaroko_inspection_to_lark(
             title = f"巡检 · AI 分析 ({i}/{total})"
             await _one_retry(title, part)
             await asyncio.sleep(delay_sec)
+    else:
+        emit("无 llm_analysis，跳过 AI 综合分析推送")
+
+    md_body = (markdown_report or "").strip()
+    if md_body:
+        parts = _chunk_text(md_body, chunk_chars)
+        total = len(parts)
+        for i, part in enumerate(parts, start=1):
+            title = f"巡检 · 快报正文 ({i}/{total})"
+            await _one_retry(title, part)
+            await asyncio.sleep(delay_sec)
+    else:
+        emit("无 markdown_report，跳过报告正文推送")
 
     emit("Lark 推送流程结束")
