@@ -1,4 +1,4 @@
-# L3 独立运行脚本 - 在 PowerShell 中查看完整日志
+﻿# L3 独立运行脚本 - 在 PowerShell 中查看完整日志
 # 用法: 默认 --ws-only（不依赖 L2）。需 L2 配对/心跳时: .\scripts\run_l3.ps1 --gateway
 # 需 .env 有 DASHSCOPE_API_KEY（或 OPENAI_API_KEY）
 # 打包模式：无 Python 时自动调用 bin/l3_node-*.exe
@@ -37,6 +37,7 @@ $env:JACHIN_L3_DEEP_LOG = "1"
 # 与 start-layer3 一致：避免 l3_mcp_cache 旧 HR 包盖过仓库 recruitment_scheduler
 $env:JACHIN_APP_ROOT = $appRoot
 $env:JACHIN_DEV_HR_FIRST = "1"
+$env:JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL = "1"
 
 # 便携包模式：日志写入 logs/，应用根目录明确，便于移植
 $binDir = Join-Path $appRoot "bin"

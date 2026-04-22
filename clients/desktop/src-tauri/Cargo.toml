@@ -1,6 +1,6 @@
 [package]
 name = "jachin-desktop"
-version = "0.9.33"
+version = "0.9.34"
 description = "Jachin-System Desktop Console"
 authors = ["Jachin Team"]
 license = ""

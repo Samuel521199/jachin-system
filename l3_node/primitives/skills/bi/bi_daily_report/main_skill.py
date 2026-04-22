@@ -1,4 +1,4 @@
-"""
+﻿"""
 BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 
 本 skill 完成 BI 日报全流程：数据新鲜度检查、抓取更新、提纯输出 CSV、同步飞书多维表。
@@ -248,6 +248,17 @@ def _merge_lark_tables_from_project_yaml(result: dict[str, Any], proj_raw: dict[
     result.setdefault("lark_bitable", {})["tables"] = merged
 
 
+def _merge_lark_bitable_replace_from_project_yaml(result: dict[str, Any], proj_raw: dict[str, Any]) -> None:
+    """项目仓库 bi_daily_report.yaml 若声明 lark_bitable.replace_table: true，则覆盖本机 ~/.jachin 中误留的 false。
+    每日战报期望「先 batch_delete 再写入」；本机旧配置常因避 403 写成 false 导致仅追加。"""
+    lb_p = proj_raw.get("lark_bitable") or {}
+    if lb_p.get("replace_table") is not True:
+        return
+    lb = dict(result.get("lark_bitable") or {})
+    lb["replace_table"] = True
+    result["lark_bitable"] = lb
+
+
 def _merge_dashboards_by_name_from_project(result: dict[str, Any], proj_raw: dict[str, Any]) -> None:
     """用户目录仅配置了 3 个仪表盘时，按 name 从项目 YAML 追加缺失项（如 仪表盘_游戏情况）。"""
     da_u = result.get("dashboard_automation") or {}
@@ -296,6 +307,7 @@ def _load_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
                         proj_raw = {}
                 if proj_raw:
                     _merge_lark_tables_from_project_yaml(result, proj_raw)
+                    _merge_lark_bitable_replace_from_project_yaml(result, proj_raw)
                     _merge_dashboards_by_name_from_project(result, proj_raw)
                 da = result.get("dashboard_automation") or {}
                 # 若 dashboard_automation 为空（用户目录配置较旧未同步该块），从另一处补全
@@ -2709,16 +2721,24 @@ def _sync_refiner_to_lark(
         return (0, [], [])
     _cid = (lark_bitable_config.get("app_id") or "").strip()
     _csec = (lark_bitable_config.get("app_secret") or "").strip()
-    if _cid and _csec:
-        os.environ.setdefault("LARK_APP_ID", _cid)
-        os.environ.setdefault("LARK_APP_SECRET", _csec)
+    # 与多维表域名一致：国际版 sg.larksuite.com → 须 false 走 open.larksuite.com；飞书中国版才 true
     if lark_bitable_config.get("lark_use_feishu"):
         os.environ["LARK_USE_FEISHU"] = "1"
+    else:
+        os.environ.pop("LARK_USE_FEISHU", None)
 
     app_token = (lark_bitable_config.get("app_token") or "").strip() or None
     tables_map = lark_bitable_config.get("tables") or {}
     if not app_token or not tables_map:
         return (0, ["lark_bitable.app_token 或 tables 未配置"], [])
+
+    # atom_lark_bitable_sync 优先读 BI_LARK_APP_*；勿用 setdefault(LARK_APP_ID)，否则 .env 里 L3 主应用会覆盖 YAML 里的 BI 应用 → 全盘 403
+    _bi_env_snap: dict[str, str | None] = {}
+    if _cid and _csec:
+        _bi_env_snap["BI_LARK_APP_ID"] = os.environ.get("BI_LARK_APP_ID")
+        _bi_env_snap["BI_LARK_APP_SECRET"] = os.environ.get("BI_LARK_APP_SECRET")
+        os.environ["BI_LARK_APP_ID"] = _cid
+        os.environ["BI_LARK_APP_SECRET"] = _csec
 
     try:
         import sys
@@ -2728,89 +2748,108 @@ def _sync_refiner_to_lark(
             sys.path.insert(0, str(plugin_root))
         from tools.atom_lark_bitable_sync import sync_csv_to_bitable  # type: ignore[import-untyped]
     except ImportError as e:
+        for _k, _v in _bi_env_snap.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
         return (0, [f"无法导入 atom_lark_bitable_sync: {e}"], [])
 
-    ok_count = 0
-    errors: list[str] = []
-    skipped: list[tuple[str, str]] = []
-    default_text_columns = {
-        "10_充值_付费人数按SKU.csv": ["不同充值金额分等级"],
-        "11_充值_付费金额按SKU.csv": ["不同充值金额分等级"],
-        "12_用户活跃_日活占比.csv": ["用户"],
-        "17_游戏_完成局数.csv": ["游戏类型"],
-        "18_游戏_用户获胜.csv": ["游戏类型"],
-        "19_游戏_RTP_GGR.csv": ["游戏类型"],
-        "20_游戏_游戏深度参与情况.csv": ["游戏类型"],
-        "21_漏斗_Tongits_King_全平台.csv": ["类型"],
-        "22_漏斗_Tongits_King_老用户.csv": ["类型"],
-        "23_漏斗_Tongits_King_新用户.csv": ["类型"],
-        "24_漏斗_Color_Blitz_Social_全平台.csv": ["类型"],
-        "25_漏斗_Color_Blitz_Social_老用户.csv": ["类型"],
-        "26_漏斗_Color_Blitz_Social_新用户.csv": ["类型"],
-        "08b_消耗_金币_渠道层.csv": ["渠道"],
-        # 07「留存率」无数据时 CSV 为「-」；同步层对数字列会跳过「-」留空。勿把整列放 text_columns。
-    }
-    text_cols_per_table = lark_bitable_config.get("text_columns") or {}
-    field_mapping_per_table = dict(lark_bitable_config.get("field_mapping") or {})
-    # 01 表列名已与 Lark 统一为「增幅（%）」；06 表为「留存率（%）」。若 Lark 表用其他字段名，可在 field_mapping 中配置
-    # 10/11 若 Lark 列名与 CSV 不一致（如「不同充值金分等级」），须在 bi_daily_report.yaml 的 field_mapping 中按 CSV→Lark 配置
-
-    replace_table_default = lark_bitable_config.get("replace_table", False)
-    # replace_tables 为 [] 时原先会变成 set()，导致整表 do_replace=False、仅追加记录，多维表旧行不刷新
-    _rt_raw = lark_bitable_config.get("replace_tables")
-    if _rt_raw is None or (isinstance(_rt_raw, (list, tuple)) and len(_rt_raw) == 0):
-        replace_tables = None
-    else:
-        replace_tables = set(_rt_raw)
-    # 充值分档两表、GameRTP/GGR（含末行当日总计）须整表删旧写新；否则仅追加时旧行残留或合计行不刷新
-    _recharge_tier_csv = frozenset(
-        {"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv", "19_游戏_RTP_GGR.csv"}
-    )
-    total = len([p for p in written_paths if (tables_map.get(p.name) or "").strip()])
-    idx = 0
-    for p in written_paths:
-        name = p.name
-        table_id = (tables_map.get(name) or "").strip()
-        if not table_id:
-            skipped.append((name, "未配置 table_id"))
-            if on_table:
-                on_table("skip", name, "未配置 table_id")
-            continue
-        idx += 1
-        if on_table:
-            on_table("start", name, f"[{idx}/{total}] table_id={table_id}")
-        text_cols = text_cols_per_table.get(name) or default_text_columns.get(name)
-        col_mapping = field_mapping_per_table.get(name)
-        # replace_tables 未配置或空列表时：全部表先清空再写入（覆盖）；非空名单则按 replace_table ∪ 名单
-        if replace_tables is None:
-            do_replace = True  # 未配置 replace_tables 时，默认全部覆盖
-        else:
-            do_replace = replace_table_default or (name in replace_tables)
-        if name in _recharge_tier_csv:
-            do_replace = True
-        # 10/11/19：勿自动建列，避免 CSV 表头与 Lark 已有字段微差时多维表侧出现「新字段」
-        _ensure = bool(lark_bitable_config.get("ensure_columns", False))
-        if name in frozenset({"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv", "19_游戏_RTP_GGR.csv"}):
-            _ensure = False
-        result = sync_csv_to_bitable(
-            csv_path=str(p),
-            app_token=app_token,
-            table_id=table_id,
-            replace_table=do_replace,
-            ensure_columns=_ensure,
-            text_columns=text_cols,
-            field_mapping=col_mapping,
+    try:
+        ok_count = 0
+        errors: list[str] = []
+        skipped: list[tuple[str, str]] = []
+        default_text_columns = {
+            "10_充值_付费人数按SKU.csv": ["不同充值金额分等级"],
+            "11_充值_付费金额按SKU.csv": ["不同充值金额分等级"],
+            "12_用户活跃_日活占比.csv": ["用户"],
+            "17_游戏_完成局数.csv": ["游戏类型"],
+            "18_游戏_用户获胜.csv": ["游戏类型"],
+            "19_游戏_RTP_GGR.csv": ["游戏类型"],
+            "20_游戏_游戏深度参与情况.csv": ["游戏类型"],
+            "21_漏斗_Tongits_King_全平台.csv": ["类型"],
+            "22_漏斗_Tongits_King_老用户.csv": ["类型"],
+            "23_漏斗_Tongits_King_新用户.csv": ["类型"],
+            "24_漏斗_Color_Blitz_Social_全平台.csv": ["类型"],
+            "25_漏斗_Color_Blitz_Social_老用户.csv": ["类型"],
+            "26_漏斗_Color_Blitz_Social_新用户.csv": ["类型"],
+            "08b_消耗_金币_渠道层.csv": ["渠道"],
+            # 07「留存率」无数据时 CSV 为「-」；同步层对数字列会跳过「-」留空。勿把整列放 text_columns。
+        }
+        text_cols_per_table = lark_bitable_config.get("text_columns") or {}
+        field_mapping_per_table = dict(lark_bitable_config.get("field_mapping") or {})
+        # 01 表列名已与 Lark 统一为「增幅（%）」；06 表为「留存率（%）」。若 Lark 表用其他字段名，可在 field_mapping 中配置
+        # 10/11 若 Lark 列名与 CSV 不一致（如「不同充值金分等级」），须在 bi_daily_report.yaml 的 field_mapping 中按 CSV→Lark 配置
+    
+        _lb = lark_bitable_config or {}
+        # 仅当 YAML 显式写了 replace_table 时才尊重其布尔值；未写该键时保持旧行为（见下方 do_replace）
+        _has_replace_table_key = "replace_table" in _lb
+        replace_table_default = (
+            bool(_lb.get("replace_table", False)) if _has_replace_table_key else None
         )
-        if result.get("success"):
-            ok_count += 1
-            if on_table:
-                on_table("ok", name, "同步成功")
+        # replace_tables 为 [] 时原先会变成 set()，导致整表 do_replace=False、仅追加记录，多维表旧行不刷新
+        _rt_raw = _lb.get("replace_tables")
+        if _rt_raw is None or (isinstance(_rt_raw, (list, tuple)) and len(_rt_raw) == 0):
+            replace_tables = None
         else:
-            err = result.get("error", "未知错误")
-            errors.append(f"{name}: {err}")
+            replace_tables = set(_rt_raw)
+        # 充值分档两表、GameRTP/GGR（含末行当日总计）须整表删旧写新；否则仅追加时旧行残留或合计行不刷新
+        _recharge_tier_csv = frozenset(
+            {"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv", "19_游戏_RTP_GGR.csv"}
+        )
+        total = len([p for p in written_paths if (tables_map.get(p.name) or "").strip()])
+        idx = 0
+        for p in written_paths:
+            name = p.name
+            table_id = (tables_map.get(name) or "").strip()
+            if not table_id:
+                skipped.append((name, "未配置 table_id"))
+                if on_table:
+                    on_table("skip", name, "未配置 table_id")
+                continue
+            idx += 1
             if on_table:
-                on_table("fail", name, err)
-    return (ok_count, errors, skipped)
+                on_table("start", name, f"[{idx}/{total}] table_id={table_id}")
+            text_cols = text_cols_per_table.get(name) or default_text_columns.get(name)
+            col_mapping = field_mapping_per_table.get(name)
+            # replace_tables 未配置或空列表时：若未写 replace_table 则默认整表清空再写（兼容旧配置）；若写了 replace_table:false 则只追加不写 batch_delete
+            if replace_tables is None:
+                do_replace = True if replace_table_default is None else bool(replace_table_default)
+            else:
+                do_replace = bool(replace_table_default) or (name in replace_tables)
+            # 10/11/19 默认整表删旧写新；若显式 replace_table:false 则不再强制（避免无删权限时 403）
+            if name in _recharge_tier_csv and replace_table_default is not False:
+                do_replace = True
+            # 10/11/19：勿自动建列，避免 CSV 表头与 Lark 已有字段微差时多维表侧出现「新字段」
+            _ensure = bool(lark_bitable_config.get("ensure_columns", False))
+            if name in frozenset({"10_充值_付费人数按SKU.csv", "11_充值_付费金额按SKU.csv", "19_游戏_RTP_GGR.csv"}):
+                _ensure = False
+            result = sync_csv_to_bitable(
+                csv_path=str(p),
+                app_token=app_token,
+                table_id=table_id,
+                replace_table=do_replace,
+                ensure_columns=_ensure,
+                text_columns=text_cols,
+                field_mapping=col_mapping,
+            )
+            if result.get("success"):
+                ok_count += 1
+                if on_table:
+                    on_table("ok", name, "同步成功")
+            else:
+                err = result.get("error", "未知错误")
+                errors.append(f"{name}: {err}")
+                if on_table:
+                    on_table("fail", name, err)
+        return (ok_count, errors, skipped)
+    finally:
+        for _k, _v in _bi_env_snap.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+
 
 
 def _load_output_csv_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -3849,6 +3888,17 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
         _bi_log("Step 3: 正在将 CSV 同步到 Lark 多维表格（atom_lark_bitable_sync）...", progress=True)
         _bi_log("Step 3: 待同步文件列表", detail=", ".join(Path(p).name for p in result["output_paths"]))
 
+        _lb = lark_bitable or {}
+        if _lb.get("replace_table") is False:
+            _bi_log(
+                "Step 3 警告",
+                detail="lark_bitable.replace_table=false：同步前不会清空子表（不调用 batch_delete），新数据将追加在旧记录之后，并非整表覆盖。若需先删后写请改为 replace_table: true，并在开放平台为应用开通删除权限、在多维表内添加文档应用。",
+                progress=True,
+            )
+            logger.warning(
+                "[BI] Step3 replace_table=false：追加模式，旧行不会被 API 删除；与「整表覆盖」预期不一致时请勿依赖当前配置。"
+            )
+
         def _on_table(status: str, name: str, detail: str) -> None:
             if status == "skip":
                 _bi_log("Step 3: 跳过表", detail=f"{name} — {detail}")
@@ -3876,17 +3926,26 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                 _bi_log("Step 3 跳过汇总", detail="; ".join(f"{n}: {r}" for n, r in sync_skipped) + " — 请在 bi_daily_report.yaml 的 lark_bitable.tables 中为对应 CSV 配置 table_id（从 Lark 子表 URL 的 ?table=tblXXX 获取）")
             if sync_errs:
                 _bi_log("Step 3 结果: 部分成功", detail=f"成功={sync_ok} 错误={sync_errs}")
+                logger.error(
+                    "[BI] Lark 多维表同步失败 %d 项（流程将标记为失败）: %s",
+                    len(sync_errs),
+                    sync_errs[:8],
+                )
             else:
                 _bi_log("Step 3 结果: 全部同步成功", detail=f"成功表数={sync_ok}", progress=True)
         except Exception as e:
             _bi_debug("Step 3", "exception", exc=e, data={"lark_sync_errors": [str(e)]})
             result["lark_sync_errors"] = [str(e)]
             _bi_log("Step 3 报错: Lark 同步异常", detail=str(e))
+            logger.exception("[BI] Step 3 Lark 同步异常: %s", e)
     else:
         if not lark_bitable.get("enabled"):
             _bi_log("Step 3: 已跳过 Lark 同步 (lark_bitable.enabled=false)")
         elif not result["output_paths"]:
             _bi_log("Step 3: 已跳过 Lark 同步 (无输出文件)")
+
+    if lark_bitable.get("enabled") and (lark_bitable.get("replace_table") is False):
+        result["lark_sync_append_only"] = True
 
     # Step 3.4: 多维表同步完成后、战略大战报前 — 推送 KPI 快照卡片（读 output CSV，与 Lark 表同源）
     snap_cfg = cfg.get("kpi_snapshot_card") or {}
@@ -4311,14 +4370,41 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     elif isinstance(email_cfg, dict) and email_cfg.get("enabled") is False:
         _bi_log("Step 3.6: 已跳过 (distribution.email.enabled=false)")
 
-    result["success"] = True
+    lark_errs_final = result.get("lark_sync_errors") or []
+    if lark_errs_final:
+        result["success"] = False
+        err_summary = "; ".join(str(e) for e in lark_errs_final[:12])
+        if len(lark_errs_final) > 12:
+            err_summary += f" ... (+{len(lark_errs_final) - 12} 项)"
+        if not (result.get("error") or "").strip():
+            result["error"] = f"Lark 多维表同步失败（{len(lark_errs_final)} 项）: {err_summary}"
+        logger.error("[BI] success=false：lark_sync_errors 共 %d 条 — %s", len(lark_errs_final), err_summary[:500])
+    else:
+        result["success"] = True
     result["stage"] = "done"
     result["report_sent"] = result["lark_sync_ok"] > 0
     result["lark_ok"] = result["lark_sync_ok"] > 0 and not result["lark_sync_errors"]
 
     _bi_debug("_run_bi_daily_report_async", "exit", data={"stage": result["stage"], "success": result["success"], "output_count": len(result["output_paths"])})
-    _bi_log("========== BI 流程完成 ==========", progress=True)
-    summary = {"success": result["success"], "stage": result["stage"], "output_count": len(result["output_paths"]), "lark_sync_ok": result["lark_sync_ok"], "lark_sync_errors": result["lark_sync_errors"], "strategic_report_sent": result.get("strategic_report_sent", False), "dashboard_analysis_sent": result.get("dashboard_analysis_sent", False), "email_ok": result.get("email_ok", False)}
+    if result.get("success"):
+        _bi_log("========== BI 流程完成 ==========", progress=True)
+    else:
+        _bi_log(
+            "========== BI 流程结束（success=false，含 Lark 同步失败或其它错误）==========",
+            detail=(result.get("error") or "")[:2000],
+            progress=True,
+        )
+    summary = {
+        "success": result["success"],
+        "stage": result["stage"],
+        "output_count": len(result["output_paths"]),
+        "lark_sync_ok": result["lark_sync_ok"],
+        "lark_sync_errors": result["lark_sync_errors"],
+        "lark_sync_append_only": result.get("lark_sync_append_only"),
+        "strategic_report_sent": result.get("strategic_report_sent", False),
+        "dashboard_analysis_sent": result.get("dashboard_analysis_sent", False),
+        "email_ok": result.get("email_ok", False),
+    }
     _bi_log("最终结果", detail=json.dumps(summary, ensure_ascii=False, indent=2))
     _bi_log("日志文件", detail=str(_BI_LOG_RUN_FILE or ""))
     return result

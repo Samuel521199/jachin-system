@@ -14,8 +14,8 @@ MCP stdio 子进程用的嵌入式 Python / Node 路径解析与预检。
 便携包 JACHIN_APP_ROOT/runtime → ~/.jachin/runtime →
 frozen 下 exe 旁 runtime/ → 系统 PATH（python/python3/node/npx）。
 
-占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__、__JACHIN_MCP_NPX__、__JACHIN_WORKSPACE__
-（后者展开为 ``~/.jachin/workspace`` 或 ``$JACHIN_HOME/workspace`` 的绝对路径，供 MCP 如 server-sqlite 的 ``--db-path``）
+占位符（command / args / env 字符串）：__JACHIN_MCP_PYTHON__、__JACHIN_MCP_NODE__、__JACHIN_MCP_NPX__、__JACHIN_WORKSPACE__、__JACHIN_REPO_ROOT__
+（``__JACHIN_WORKSPACE__`` → ``~/.jachin/workspace``；``__JACHIN_REPO_ROOT__`` → 本仓库根目录，供 ``tools/mcp-jachin-puppeteer-cdp/index.mjs`` 等）
 
 **npx**：官方 MCP 常用 ``command: npx``；若已将 Node 便携包解压到 ``runtime/node/``（含 ``npx.cmd`` / ``npx``），
 则裸 ``npx`` / ``npm`` 会解析到该路径，无需系统安装 Node。见 ``tools/mcp-runtime/README.txt``。
@@ -24,6 +24,7 @@ env 值中可使用 ``${VAR_NAME}``，在拉起子进程前从 **当前进程** 
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -38,6 +39,12 @@ TOKEN_PYTHON = "__JACHIN_MCP_PYTHON__"
 TOKEN_NODE = "__JACHIN_MCP_NODE__"
 TOKEN_NPX = "__JACHIN_MCP_NPX__"
 TOKEN_WORKSPACE = "__JACHIN_WORKSPACE__"
+TOKEN_REPO_ROOT = "__JACHIN_REPO_ROOT__"
+
+
+def _jachin_repo_root() -> Path:
+    """本仓库根目录（含 ``core/`` 的上一级），供 MCP 配置引用 ``tools/mcp-jachin-puppeteer-cdp`` 等。"""
+    return Path(__file__).resolve().parent.parent
 
 
 def _jachin_home() -> Path:
@@ -262,6 +269,8 @@ def inject_embedded_tokens(s: str) -> str:
             pass
         ws = str(ws_path.resolve())
         out = out.replace(TOKEN_WORKSPACE, ws)
+    if TOKEN_REPO_ROOT in out:
+        out = out.replace(TOKEN_REPO_ROOT, str(_jachin_repo_root().resolve()))
     return out
 
 
@@ -496,6 +505,78 @@ def is_google_maps_stdio_server(server_id: str, args: Any) -> bool:
     return _is_google_maps_stdio_cfg({"id": server_id, "args": args if isinstance(args, list) else []})
 
 
+def _is_browser_use_stdio_cfg(out: dict[str, Any]) -> bool:
+    """PyPI ``browser-use`` MCP（常见 ``uvx … browser-use --mcp``）；附加既有 Chrome 依赖 ``BROWSER_USE_CONFIG_PATH``。"""
+    sid = str(out.get("id") or out.get("name") or "").strip().lower()
+    if sid in ("browser-use", "browser_use"):
+        return True
+    if "browser" in sid and "use" in sid:
+        return True
+    args = out.get("args")
+    if isinstance(args, list):
+        flat = " ".join(str(a) for a in args if isinstance(a, str)).lower()
+        # 与 scripts/run_k11_p1_modules_l3.py 一致：不必同时含 --mcp（部分配置会省略）
+        if "browser-use" in flat or "browser_use" in flat:
+            return True
+    cmd = str(out.get("command") or "").lower()
+    if "browser-use" in cmd or "browser_use" in cmd:
+        return True
+    return False
+
+
+def _default_browser_use_attach_config_path() -> Path:
+    """K11 脚本等写入的固定附加配置；可用 ``JACHIN_BROWSER_USE_ATTACH_CONFIG`` 覆盖路径。"""
+    override = (os.environ.get("JACHIN_BROWSER_USE_ATTACH_CONFIG") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return _jachin_home() / "runtime" / "browser-use-attach-cdp.json"
+
+
+def _first_cdp_url_from_jachin_attach_json() -> Optional[str]:
+    """读取 ``browser-use-attach-cdp.json`` 中首个 ``cdp_url``（与 K11/browser-use 共用文件）。"""
+    p = _default_browser_use_attach_config_path()
+    try:
+        if not p.is_file():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    bp = data.get("browser_profile")
+    if not isinstance(bp, dict):
+        return None
+    for _k, prof in bp.items():
+        if isinstance(prof, dict):
+            u = prof.get("cdp_url")
+            if isinstance(u, str) and u.strip():
+                return u.strip()
+    return None
+
+
+def _is_jachin_puppeteer_cdp_stdio_cfg(out: dict[str, Any]) -> bool:
+    """Jachin 版 Puppeteer MCP（``tools/mcp-jachin-puppeteer-cdp``）：支持 ``PUPPETEER_BROWSER_URL`` 连接 9222。"""
+    sid = str(out.get("id") or out.get("name") or "").strip().lower().replace("_", "-")
+    if "jachin-puppeteer-cdp" in sid:
+        return True
+    args = out.get("args")
+    if isinstance(args, list):
+        flat = " ".join(str(a) for a in args if isinstance(a, str)).lower()
+        if "mcp-jachin-puppeteer-cdp" in flat:
+            return True
+    return False
+
+
+def is_browser_use_stdio_server(
+    server_id: str, args: Any, command: str | None = None
+) -> bool:
+    d: dict[str, Any] = {
+        "id": server_id,
+        "args": args if isinstance(args, list) else [],
+    }
+    if command:
+        d["command"] = str(command)
+    return _is_browser_use_stdio_cfg(d)
+
+
 def _google_maps_api_key_from_os() -> str:
     """npm 包读 ``GOOGLE_MAPS_API_KEY``；兼容用户别名 ``Maps_API_KEY`` / ``MAPS_API_KEY``。"""
     k = (os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
@@ -508,6 +589,8 @@ def effective_stdio_env_for_sdk(
     server_id: str,
     args: Any,
     raw_env: dict[str, Any] | None,
+    *,
+    command: str | None = None,
 ) -> dict[str, str] | None:
     """
     生成传给 ``mcp.StdioServerParameters.env`` 的值。
@@ -547,6 +630,21 @@ def effective_stdio_env_for_sdk(
                 "[GoogleMapsMCP] effective_stdio_env: 父进程无 GOOGLE_MAPS_API_KEY（可在 .env 设 Maps_API_KEY 别名），地图工具将不可用"
             )
         return out
+    if is_browser_use_stdio_server(server_id, args, command):
+        # browser-use 的 MCP 入口 **不会** 把 CLI 的 --cdp-url 传给 mcp_main；子进程仅认 BROWSER_USE_CONFIG_PATH
+        # 指向的 JSON（内含 cdp_url）。此处二次补全，避免仅部分代码路径调用 resolve_mcp_cfg_placeholders、或 env 值为空串。
+        try:
+            attach = _default_browser_use_attach_config_path().resolve()
+        except OSError:
+            attach = _default_browser_use_attach_config_path()
+        if attach.is_file():
+            cur = (out.get("BROWSER_USE_CONFIG_PATH") or "").strip()
+            if not cur:
+                out["BROWSER_USE_CONFIG_PATH"] = str(attach)
+                logger.info(
+                    "[BrowserUseMCP] effective_stdio_env: 补全 BROWSER_USE_CONFIG_PATH=%s",
+                    attach,
+                )
     return out if out else None
 
 
@@ -759,6 +857,44 @@ def resolve_mcp_cfg_placeholders(cfg: dict[str, Any]) -> dict[str, Any]:
             logger.warning(
                 "[GoogleMapsMCP] 未配置 GOOGLE_MAPS_API_KEY（或别名 Maps_API_KEY）；请写入仓库或 ~/.jachin/.env"
             )
+    if _is_browser_use_stdio_cfg(out):
+        if not isinstance(out.get("env"), dict):
+            out["env"] = {}
+        bu_cur = str(out["env"].get("BROWSER_USE_CONFIG_PATH") or "").strip()
+        if not bu_cur:
+            attach_path = _default_browser_use_attach_config_path()
+            try:
+                resolved_bu = attach_path.resolve()
+            except OSError:
+                resolved_bu = attach_path
+            if resolved_bu.is_file():
+                out["env"]["BROWSER_USE_CONFIG_PATH"] = str(resolved_bu)
+                logger.info(
+                    "[BrowserUseMCP] 已注入 BROWSER_USE_CONFIG_PATH=%s（本地附加配置已存在；"
+                    "避免 JSON 中 ${BROWSER_USE_CONFIG_PATH} 未展开时子进程再启独立浏览器）",
+                    resolved_bu,
+                )
+    if _is_jachin_puppeteer_cdp_stdio_cfg(out):
+        if not isinstance(out.get("env"), dict):
+            out["env"] = {}
+        bu = str(out["env"].get("PUPPETEER_BROWSER_URL") or "").strip()
+        if not bu:
+            u = (
+                (os.environ.get("KALAROKO_CDP_ENDPOINT") or "")
+                or (os.environ.get("K11_CDP_HTTP") or "")
+                or (os.environ.get("PUPPETEER_BROWSER_URL") or "")
+            ).strip()
+            if u and not u.startswith("http://") and not u.startswith("https://"):
+                u = "http://" + u.lstrip("/")
+            if not u:
+                u2 = _first_cdp_url_from_jachin_attach_json()
+                u = u2 if u2 else "http://127.0.0.1:9222"
+            out["env"]["PUPPETEER_BROWSER_URL"] = u
+        logger.info(
+            "[JachinPuppeteerCDP] PUPPETEER_BROWSER_URL=%s（connect 既有 Chrome；"
+            "官方 @modelcontextprotocol/server-puppeteer 无此能力）",
+            out["env"].get("PUPPETEER_BROWSER_URL"),
+        )
     return out
 
 

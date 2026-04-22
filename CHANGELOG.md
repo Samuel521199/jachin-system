@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.34] - 2026-04-22
+
+### Added / Changed
+
+- 冒烟测试完成 23 个；修复 BI 部分问题（含 `start-layer3` 子进程环境与桌面版本等）。
+- **Version**: Desktop **0.9.34**（`clients/desktop/VERSION` 与 `sync-version` 产物）。
+
+---
 
 ## [v0.9.33] - 2026-04-21
 

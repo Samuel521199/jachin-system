@@ -417,7 +417,9 @@ class MCPServerInstance:
             resolve_tavily_stdio_cwd,
         )
 
-        eff_env = effective_stdio_env_for_sdk(self.server_id, self.args, self.env)
+        eff_env = effective_stdio_env_for_sdk(
+            self.server_id, self.args, self.env, command=self.command
+        )
         eff_env = expand_stdio_env_windows_npx_tavily(self.server_id, self.args, eff_env)
         eff_env = expand_stdio_env_windows_npx_google_maps(self.server_id, self.args, eff_env)
         if _is_npx_server_filesystem_args(self.args):

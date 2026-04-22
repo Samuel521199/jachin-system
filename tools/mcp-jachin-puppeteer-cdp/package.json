@@ -1,0 +1,15 @@
+{
+  "name": "jachin-mcp-puppeteer-cdp",
+  "version": "2025.5.12+jachin.cdp1",
+  "private": true,
+  "type": "module",
+  "description": "Anthropic server-puppeteer fork: PUPPETEER_BROWSER_URL connects to existing Chrome",
+  "license": "MIT",
+  "bin": {
+    "jachin-mcp-puppeteer-cdp": "./index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.0.1",
+    "puppeteer": "^23.4.0"
+  }
+}

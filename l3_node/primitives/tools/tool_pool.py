@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 工具池：内置（Native + jpp）与 MCP 合并，供 run_agent 等单点调用。
 
 规范见 docs/architecture/L3_TOOL_POOL_AND_MCP_ASSEMBLY.md。
@@ -6,6 +6,10 @@ L3 工具池：内置（Native + jpp）与 MCP 合并，供 run_agent 等单点�
 SQLite：stdio 的 mcp:read_query 或 npm「mcp-sqlite」的 mcp:query 等常因 allowed_skills 未列名被合并阶段剔除。
 - 官方 @modelcontextprotocol/server-sqlite 在 npm 上不存在（404），请使用 npx -y mcp-sqlite <db路径>。
 - 修复：JACHIN_MERGE_SQLITE_READ_INTO_TOOL_POOL=1 或 nexus agent.merge_sqlite_read_into_tool_pool=true。
+
+本地 MCP（Puppeteer / browser-use 等）：配对 L2 且 permissions_snapshot.allowed_skills 非空时，
+未写入白名单的 mcp: 工具会在合并阶段被剔除（常见症状：Agent 只见 PowerPoint 等少数 MCP）。
+- 修复：JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL=1 或 nexus agent.merge_local_mcp_into_tool_pool=true（须设置在 **L3 进程** 环境并重启）。
 """
 from __future__ import annotations
 
@@ -24,6 +28,41 @@ if TYPE_CHECKING:
     from l3_node.primitives.mcp.registry import MCPToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def implicit_local_mcp_merge_enabled() -> bool:
+    """与 SQLite 同理：把 mcp:* 并入白名单，放行本地 mcp_servers 已注册的全部 MCP 工具 id。"""
+    v = (os.environ.get("JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL") or "").strip().lower()
+    if v in ("1", "true", "yes"):
+        return True
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        agent = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        return bool(agent.get("merge_local_mcp_into_tool_pool", False))
+    except Exception:
+        return False
+
+
+def expand_allowed_skills_with_local_mcp(allowed: list[str] | None) -> list[str] | None:
+    """
+    将 ``mcp:*`` 并入 allowed_skills，使 is_tool_allowed 放行任意 ``mcp:…`` 工具（仍须 MCP 子进程启动成功）。
+    allowed 为 None（未配对/全开）时不修改。
+    """
+    if allowed is None:
+        return None
+    if not implicit_local_mcp_merge_enabled():
+        return allowed
+    seen = {str(x).strip().lower() for x in allowed if str(x).strip()}
+    if "mcp:*" in seen:
+        return allowed
+    out = list(allowed) + ["mcp:*"]
+    logger.info(
+        "[L3 Agent] merge_local_mcp：已将 mcp:* 并入本 run 白名单 "
+        "（JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL 或 nexus agent.merge_local_mcp_into_tool_pool）"
+    )
+    return out
 
 
 def implicit_sqlite_read_merge_enabled() -> bool:

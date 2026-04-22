@@ -54,6 +54,7 @@ from l3_node.primitives.tools.loader import tool_entry_looks_like_sqlite_family
 from l3_node.primitives.tools.tool_pool import (
     assemble_tool_pool,
     expand_allowed_skills_with_implicit_sqlite_read,
+    expand_allowed_skills_with_local_mcp,
 )
 from l3_node.intent_gateway.pushback_copy import (
     L3_SERVICE_ETHOS_RETRY_BLOCK,
@@ -6260,6 +6261,7 @@ async def run_agent(
     allowed = _allowed_skills_override if _allowed_skills_override is not None else _get_allowed_skills()
     allowlist_diag_source: list[str] | None = list(allowed) if allowed is not None else None
     allowed = expand_allowed_skills_with_implicit_sqlite_read(allowed)
+    allowed = expand_allowed_skills_with_local_mcp(allowed)
     # 优先使用 _session_messages（多轮对话），否则用 _initial_messages（须先于 MCP 拉取与 Gateway 流水线）
     if _session_messages is not None:
         messages = list(_session_messages)

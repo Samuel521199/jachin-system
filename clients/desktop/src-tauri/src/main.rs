@@ -30,27 +30,6 @@ extern "system" {
     ) -> i32;
 }
 
-// 热键 Mirror-Trace：与 UI 主线程 GetCurrentThreadId 对照（仅 Windows）
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetCurrentThreadId() -> u32;
-}
-
-#[inline]
-fn os_thread_id() -> u32 {
-    #[cfg(windows)]
-    {
-        unsafe { GetCurrentThreadId() }
-    }
-    #[cfg(not(windows))]
-    {
-        0
-    }
-}
-
-static MAIN_UI_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-
 /// 未启用 ambient 时的占位命令，返回明确错误或 false。
 #[cfg(not(feature = "ambient"))]
 mod stt_voice_stub {
@@ -81,10 +60,9 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use serde_json::json;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 /// [v5.0 已废弃] 原 Dapr 调用，现由 Layer 1 HTTP 心跳与云端 API 取代
@@ -773,172 +751,36 @@ fn hide_chat_fully_reset(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn unix_ms_now() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-}
-
-/// `[HOTKEY_TRACE] | Event: ... | PID: ... | Data: ...` → `omni_hotkey_interaction.log` + stdout
-fn hotkey_trace_emit_line(event_name: &str, data: serde_json::Value) {
-    let pid = std::process::id();
-    let data_str = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into());
-    let line = format!(
-        "[HOTKEY_TRACE] | Event: {} | PID: {} | Data: {}",
-        event_name, pid, data_str
-    );
-    println!("{}", line);
-    l3_spawn::append_omni_hotkey_interaction_line(&line);
-}
-
-/// 从全局热键线程向 UI 主线程投递空闭包，用于 `app_responsive`（收到执行即 `PONG`）。
-fn dispatch_main_thread_ping(app: &tauri::AppHandle) -> &'static str {
-    #[cfg(windows)]
-    {
-        let cur = os_thread_id();
-        let main = MAIN_UI_THREAD_ID.load(Ordering::Acquire);
-        if main != 0 && cur == main {
-            return "PONG";
-        }
-    }
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    if app
-        .run_on_main_thread(move || {
-            let _ = tx.send(());
-        })
-        .is_err()
-    {
-        return "DISPATCH_ERR";
-    }
-    match rx.recv_timeout(Duration::from_millis(500)) {
-        Ok(()) => "PONG",
-        Err(_) => "TIMEOUT",
-    }
-}
-
-fn mirror_trace_set_focus_chat(chat: &tauri::WebviewWindow, stage: &str) {
-    let r = chat.set_focus();
-    let ok = r.is_ok();
-    let err_str = r.as_ref().err().map(|e| e.to_string());
-    let last_os = std::io::Error::last_os_error();
-    hotkey_trace_emit_line(
-        "WINDOW_SET_FOCUS",
-        json!({
-            "stage": stage,
-            "set_focus_ok": ok,
-            "set_focus_err": err_str,
-            "last_os_error": format!("{}", last_os),
-            "last_os_error_raw": last_os.raw_os_error(),
-        }),
-    );
-}
-
-/// 切换 Omni 条核心逻辑；`mirror_focus_trace` 为热键诊断路径，对每次 `set_focus` 落 Mirror-Trace。
-fn toggle_chat_omni_inner(app: &tauri::AppHandle, mirror_focus_trace: bool) {
-    if let Some(chat) = app.get_webview_window("chat") {
-        let visible = chat.is_visible().unwrap_or(false);
-        let companion = CHAT_COMPANION_MODE.load(Ordering::Relaxed);
-        if !visible {
-            let _ = chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
-                CHAT_MIN_WIDTH,
-                CHAT_MIN_HEIGHT,
-            ))));
-            let (w, h) = resolve_chat_omni_outer_size(&chat);
-            let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, h)));
-            let _ = position_chat_omni_bar(app);
-            CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
-            emit_omni_companion_ui(app, false);
-            let _ = chat.show();
-            if mirror_focus_trace {
-                mirror_trace_set_focus_chat(&chat, "after_show_not_visible_branch");
-            } else {
-                let _ = chat.set_focus();
-            }
-            return;
-        }
-        if companion {
-            let _ = restore_chat_full_omni(app);
-            if mirror_focus_trace {
-                mirror_trace_set_focus_chat(&chat, "after_restore_companion_branch");
-            } else {
-                let _ = chat.set_focus();
-            }
-            return;
-        }
-        let _ = minimize_chat_to_companion(app);
-    }
-}
-
-/// 全局热键：OS 信号已进入 Rust 后先做 Mirror-Trace，再执行 `toggle_chat_omni_inner`。
-fn omni_hotkey_mirror_trace_and_toggle(
-    app: &tauri::AppHandle,
-    combo_registered: &str,
-    shortcut_parsed: &str,
-    global_hotkey_event_id: u32,
-) {
-    let ts_ms = unix_ms_now();
-    let callback_tid = os_thread_id();
-    let main_tid = MAIN_UI_THREAD_ID.load(Ordering::Acquire);
-    let callback_on_main = main_tid != 0 && callback_tid == main_tid;
-
-    hotkey_trace_emit_line(
-        "HOTKEY_SIGNAL_RECEIVED_BY_RUST",
-        json!({
-            "ts_ms": ts_ms,
-            "thread_id": callback_tid,
-            "main_thread_id": main_tid,
-            "callback_on_main_thread": callback_on_main,
-            "combo_registered": combo_registered,
-            "shortcut_parsed": shortcut_parsed,
-            "global_hotkey_event_id": global_hotkey_event_id,
-            "phase": "precheck",
-        }),
-    );
-
-    let app_resp = dispatch_main_thread_ping(app).to_string();
-
-    let app_clone = app.clone();
-    let combo_owned = combo_registered.to_string();
-    let shortcut_owned = shortcut_parsed.to_string();
-    let callback_tid_c = callback_tid;
-
-    let _ = app.run_on_main_thread(move || {
-        let ts_main_ms = unix_ms_now();
-        let tid_here = os_thread_id();
-        let stored_main = MAIN_UI_THREAD_ID.load(Ordering::Relaxed);
-        let chat = app_clone.get_webview_window("chat");
-        let window_exists = chat.is_some();
-        let window_visible = chat
-            .as_ref()
-            .map(|w| w.is_visible().unwrap_or(false))
-            .unwrap_or(false);
-
-        hotkey_trace_emit_line(
-            "HOTKEY_TRACE_SNAPSHOT",
-            json!({
-                "ts_ms": ts_main_ms,
-                "thread_id": callback_tid_c,
-                "execution_thread_id": tid_here,
-                "main_thread_id": stored_main,
-                "callback_on_main_thread": stored_main != 0 && callback_tid_c == stored_main,
-                "window_exists": window_exists,
-                "window_visible": window_visible,
-                "app_responsive": app_resp,
-                "combo_registered": combo_owned,
-                "shortcut_parsed": shortcut_owned,
-            }),
-        );
-
-        toggle_chat_omni_inner(&app_clone, true);
-    });
-}
-
 /// 切换 Omni 条显示；由托盘、全局快捷键等调用
 pub(crate) fn toggle_chat_omni(app: &tauri::AppHandle) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        toggle_chat_omni_inner(&app_clone, false);
+        if let Some(chat) = app_clone.get_webview_window("chat") {
+            let visible = chat.is_visible().unwrap_or(false);
+            let companion = CHAT_COMPANION_MODE.load(Ordering::Relaxed);
+            if !visible {
+                let _ = chat.set_min_size(Some(Size::Physical(PhysicalSize::new(
+                    CHAT_MIN_WIDTH,
+                    CHAT_MIN_HEIGHT,
+                ))));
+                let (w, h) = resolve_chat_omni_outer_size(&chat);
+                let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, h)));
+                let _ = position_chat_omni_bar(&app_clone);
+                CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
+                emit_omni_companion_ui(&app_clone, false);
+                let _ = chat.show();
+                let fr = chat.set_focus();
+                omni_hotkey_mirror_trace::trace_set_focus_result("toggle_show_from_hidden", &fr);
+                return;
+            }
+            if companion {
+                let _ = restore_chat_full_omni(&app_clone);
+                let fr = chat.set_focus();
+                omni_hotkey_mirror_trace::trace_set_focus_result("toggle_restore_from_companion", &fr);
+                return;
+            }
+            let _ = minimize_chat_to_companion(&app_clone);
+        }
     });
 }
 
@@ -962,15 +804,20 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
     ];
     let mut registered = false;
     for combo in CANDIDATES {
-        let combo_label = (*combo).to_string();
-        let r = app.global_shortcut().on_shortcut(*combo, move |app, shortcut, event| {
+        let r = app.global_shortcut().on_shortcut(*combo, |app, shortcut, event| {
+            let state_s = match event.state {
+                ShortcutState::Pressed => "Pressed",
+                ShortcutState::Released => "Released",
+            };
+            let shortcut_hint = format!("{:?}", shortcut);
+            omni_hotkey_mirror_trace::trace_raw_hotkey(&shortcut_hint, state_s);
             if event.state != ShortcutState::Pressed {
                 return;
             }
-            let shortcut_str = format!("{:?}", shortcut);
-            omni_hotkey_mirror_trace_and_toggle(app, &combo_label, &shortcut_str, event.id);
+            omni_hotkey_mirror_trace::trace_signal_received_by_rust(app, &shortcut_hint);
+            toggle_chat_omni(app);
         });
-        match r {
+        match &r {
             Ok(()) => {
                 omni_hotkey_mirror_trace::trace_registration(combo, true, None);
                 eprintln!(
@@ -1151,8 +998,6 @@ fn main() {
             updater_debug_log::updater_debug_append,
         ])
         .setup(|app| {
-            #[cfg(windows)]
-            MAIN_UI_THREAD_ID.store(os_thread_id(), Ordering::Release);
             updater_debug_log::log_startup_rust(&app.package_info().version.to_string());
             nexus_config::ensure_default_nexus_config_from_example(app.handle());
 

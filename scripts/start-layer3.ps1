@@ -63,6 +63,8 @@ if ($SourceOnly -and $DesktopOnly) {
 
 $env:JACHIN_APP_ROOT = $ProjectRoot
 $env:JACHIN_DEV_HR_FIRST = "1"
+# L2 白名单非空时放行本地已注册 MCP（Puppeteer / browser-use / K11）；与 l3_node tool_pool.expand_allowed_skills_with_local_mcp 一致
+$env:JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL = "1"
 $ErrorActionPreference = "Continue"
 
 # 修正 ~/.jachin/mcp_servers.json 里过期的 hr-atomic-tools 路径（换仓库目录名后常见），避免拖死整轮 MCP 握手
@@ -156,7 +158,7 @@ try {
                 $prEsc = $ProjectRoot.Replace("'", "''")
                 $setEnc = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8'
                 $psCmd = (
-                    '$Host.UI.RawUI.WindowTitle = ''Jachin L3 (source)''; Set-Location -LiteralPath ''{0}''; $env:JACHIN_APP_ROOT = ''{0}''; $env:JACHIN_DEV_HR_FIRST = 1; $env:PYTHONUTF8 = 1; {1}; & python -m l3_node {2}' `
+                    '$Host.UI.RawUI.WindowTitle = ''Jachin L3 (source)''; Set-Location -LiteralPath ''{0}''; $env:JACHIN_APP_ROOT = ''{0}''; $env:JACHIN_DEV_HR_FIRST = 1; $env:JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL = ''1''; $env:PYTHONUTF8 = 1; {1}; & python -m l3_node {2}' `
                         -f $prEsc, $setEnc, $pyMode
                 )
                 Start-Process -FilePath "powershell.exe" -ArgumentList @(
@@ -171,10 +173,32 @@ try {
                 }
                 $argList = @("-m", "l3_node")
                 if ($WsOnly) { $argList += "--ws-only" } else { $argList += "--gateway" }
-                # 子进程继承当前 PowerShell 的环境（脚本已设置 JACHIN_APP_ROOT 等）。
-                # 不用 ProcessStartInfo：部分 Windows PowerShell 上 New-Object 得到的对象无 FileName 属性（.NET/宿主差异）。
-                Write-Host "[Layer3] Start-Process: $pyExe $($argList -join ' ')" -ForegroundColor Gray
-                Start-Process -FilePath $pyExe -WorkingDirectory $ProjectRoot -ArgumentList $argList -NoNewWindow
+                # 优先用 ProcessStartInfo 显式复制本进程环境并写入 JACHIN_*，避免少数机器上子进程未继承 $env:。
+                # FileName 一律用上面的 $pyExe（与 Resolve-PythonExePath 一致，勿用未解析变量）。
+                $argLine = $argList -join ' '
+                Write-Host "[Layer3] python child: $pyExe $argLine" -ForegroundColor Gray
+                try {
+                    $psi = New-Object System.Diagnostics.ProcessStartInfo
+                    $psi.FileName = $pyExe
+                    $psi.Arguments = $argLine
+                    $psi.WorkingDirectory = $ProjectRoot
+                    $psi.UseShellExecute = $false
+                    $psi.CreateNoWindow = $false
+                    $evs = $psi.EnvironmentVariables
+                    foreach ($de in [System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Process).GetEnumerator()) {
+                        $k = $de.Key.ToString()
+                        try { $evs[$k] = $de.Value.ToString() } catch { }
+                    }
+                    $evs["JACHIN_APP_ROOT"] = $ProjectRoot
+                    $evs["JACHIN_DEV_HR_FIRST"] = "1"
+                    $evs["JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL"] = "1"
+                    $evs["PYTHONUTF8"] = "1"
+                    $proc = [System.Diagnostics.Process]::Start($psi)
+                    if ($null -ne $proc) { [void]$proc.Id }
+                } catch {
+                    Write-Host "[Layer3] ProcessStartInfo 启动失败，回退 Start-Process: $_" -ForegroundColor Yellow
+                    Start-Process -FilePath $pyExe -WorkingDirectory $ProjectRoot -ArgumentList $argList -NoNewWindow
+                }
             }
             Start-Sleep -Seconds 2
             Write-Host "[Layer3] JACHIN_SKIP_L3_SPAWN=1 (Tauri window does not spawn second L3)" -ForegroundColor Gray

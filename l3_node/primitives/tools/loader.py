@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 技能加载器
 
 扫描并加载 Native Core、JPP Wasm 插件与本地技能，转化为 LiteLLM 可用的 tools 格式。
@@ -1738,6 +1738,9 @@ def is_tool_allowed(tool_id: str, allowed_skills: Optional[list[str]]) -> bool:
     if tid.startswith("util:") or tid.startswith("sys:"):
         if "native:utility_tools" in allowed_ids or "util:*" in allowed_ids or "sys:*" in allowed_ids:
             return True
+    # L2 白名单非空时，默认仅放行列表内 id；显式加入 mcp:* 可放行已在 mcp_servers.json 注册的 MCP（见 tool_pool.merge_local_mcp）
+    if tid.startswith("mcp:") and "mcp:*" in allowed_ids:
+        return True
     return False
 
 

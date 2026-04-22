@@ -350,7 +350,7 @@ def _write_temp_browser_use_config_for_cdp(cdp_http: str) -> Path:
                 "default": True,
                 "created_at": ts,
                 "headless": False,
-                "user_data_dir": None,
+                "is_local": False,
                 "cdp_url": cdp_http.strip().rstrip("/"),
                 "keep_alive": True,
             }

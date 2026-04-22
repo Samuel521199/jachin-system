@@ -1,4 +1,4 @@
-{
+﻿{
   "mcp_servers": [
     {
       "id": "official-fetch",
@@ -107,16 +107,24 @@
       }
     },
     {
+      "id": "jachin-puppeteer-cdp",
+      "name": "Puppeteer MCP（Jachin CDP 附加版 · connect 远程调试 Chrome；主轨，替代官方 npx puppeteer）",
+      "command": "node",
+      "args": [
+        "__JACHIN_REPO_ROOT__/tools/mcp-jachin-puppeteer-cdp/index.mjs"
+      ],
+      "env": {
+        "PUPPETEER_BROWSER_URL": "${KALAROKO_CDP_ENDPOINT}",
+        "ALLOW_DANGEROUS": "true",
+        "HTTP_PROXY": "${HTTP_PROXY}",
+        "HTTPS_PROXY": "${HTTPS_PROXY}"
+      }
+    },
+    {
       "id": "playwright-browser-npx",
       "name": "MCP Playwright（最新版浏览器操控）",
       "command": "npx",
       "args": ["-y", "@playwright/mcp@latest"]
-    },
-    {
-      "id": "official-mcp-puppeteer",
-      "name": "MCP Puppeteer（Anthropic 官方 @modelcontextprotocol/server-puppeteer）",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
     },
     {
       "id": "browser-use",
@@ -133,6 +141,7 @@
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
         "BROWSER_USE_HEADLESS": "${BROWSER_USE_HEADLESS}",
+        "BROWSER_USE_CONFIG_PATH": "${BROWSER_USE_CONFIG_PATH}",
         "HTTP_PROXY": "${HTTP_PROXY}",
         "HTTPS_PROXY": "${HTTPS_PROXY}"
       }
