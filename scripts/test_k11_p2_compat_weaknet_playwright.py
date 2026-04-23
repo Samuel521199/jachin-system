@@ -589,7 +589,9 @@ async def handle_weak_network_test(
 ) -> tuple[str, str, dict[str, Any]]:
     """
     CDP 弱网：记录限速下导航/首可感知时间并评价；**默认 PASS**（仅真正导航失败为 FAIL）。聚合 page.frames。
-    在 finally 中恢复网络并 clearBrowserCache。
+    在 finally 中恢复网络、关闭「禁用缓存」并 clearBrowserCache。
+
+    与统合版一致：导航前禁用缓存并经 ``about:blank`` 冷启动，避免同 URL 瞬时返回导致限速未生效。
 
     返回 (verdict, detail, extra_observations)
     """
@@ -624,6 +626,10 @@ async def handle_weak_network_test(
         except Exception as re:
             log(f"  [弱网] 恢复无节流失败（可忽略）：{_brief_exc(re)}")
         try:
+            await cdp.send("Network.setCacheDisabled", {"cacheDisabled": False})
+        except Exception:
+            pass
+        try:
             await cdp.send("Network.clearBrowserCache", {})
         except Exception as ce:
             log(f"  [弱网] clearBrowserCache 失败（可忽略）：{_brief_exc(ce)}")
@@ -640,8 +646,23 @@ async def handle_weak_network_test(
             pass
         cdp = await page.context.new_cdp_session(page)
         await cdp.send("Network.enable", {})
+        # 与统合版一致：避免同 URL 瞬时返回导致「弱网」未真实走网。
+        try:
+            await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+        except Exception as e:
+            log(f"  [弱网] Network.setCacheDisabled 失败（继续）：{_brief_exc(e)}")
+        try:
+            await cdp.send("Network.clearBrowserCache", {})
+        except Exception as e:
+            log(f"  [弱网] 导航前 clearBrowserCache：{_brief_exc(e)}")
         log("  [弱网] Network.emulateNetworkConditions（Slow3G 类）…")
         await cdp.send("Network.emulateNetworkConditions", _THROTTLE)
+        log("  [弱网] 冷导航：about:blank → 目标页（强制走网络，使限速生效）…")
+        try:
+            await page.goto("about:blank", wait_until="commit", timeout=15_000)
+        except Exception as e:
+            log(f"  [弱网] about:blank 提示：{_brief_exc(e)}")
+        observations["weak_net_cold_navigation"] = True
 
         # —— 限速下导航 + 首包耗时 + 仅观测用阶梯（不 6s/10s 判死）——
         t0 = time.monotonic()

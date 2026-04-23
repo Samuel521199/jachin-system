@@ -580,6 +580,44 @@ def _goto_policy_chain(wait_until: str) -> list[str]:
     return [p, "domcontentloaded", "commit"]
 
 
+async def _kalaroko_ui_breathe(
+    page: Any,
+    pace_ms: int,
+    *,
+    progress: Callable[[str], None] | None = None,
+    hint: str = "",
+) -> None:
+    """关键步骤间暂停并顶到前台，便于 CDP 附着时肉眼观察（不影响指标采集逻辑）。"""
+    if pace_ms <= 0:
+        return
+    try:
+        await page.bring_to_front()
+    except Exception:
+        pass
+    if hint and progress:
+        try:
+            progress(hint)
+        except Exception:
+            pass
+    await asyncio.sleep(min(30.0, pace_ms / 1000.0))
+
+
+async def _kalaroko_ui_move_mouse_to_locator(page: Any, target: Any, pace_ms: int) -> None:
+    """分步移动鼠标到目标中心，使真实 Chrome 里能看到指针轨迹（pace_ms 越大步数略多）。"""
+    if pace_ms <= 0:
+        return
+    try:
+        box = await target.bounding_box()
+        if not box:
+            return
+        cx = box["x"] + box["width"] / 2
+        cy = box["y"] + box["height"] / 2
+        steps = max(12, min(56, pace_ms // 18))
+        await page.mouse.move(cx, cy, steps=steps)
+    except Exception:
+        pass
+
+
 async def _goto_resilient(
     page: Any,
     url: str,
@@ -795,6 +833,8 @@ async def _diagnose_and_click_kalaroko_game_entry(
     scenario_name: str,
     scenario: dict[str, Any] | None = None,
     progress: Callable[[str], None] | None = None,
+    ui_pace_ms: int = 0,
+    ui_cursor_moves: bool = False,
 ) -> dict[str, str | None]:
     """
     大厅游戏入口点击：先打诊断日志，再 scroll_into_view + 常规 click；
@@ -936,7 +976,20 @@ async def _diagnose_and_click_kalaroko_game_entry(
         if suppress_tabbar:
             await _set_bottom_tabbar_pointer_events_enabled(page, suppress=True)
 
-        await target.click(timeout=click_timeout_ms)
+        _click_delay = 0
+        if ui_pace_ms > 0:
+            _click_delay = max(50, min(800, ui_pace_ms // 2))
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
+            if ui_cursor_moves:
+                await _kalaroko_ui_move_mouse_to_locator(page, target, ui_pace_ms)
+            await asyncio.sleep(min(1.2, ui_pace_ms / 1000.0 * 0.45))
+        _clk_kw: dict[str, Any] = {"timeout": click_timeout_ms}
+        if _click_delay > 0:
+            _clk_kw["delay"] = _click_delay
+        await target.click(**_clk_kw)
         logger.info("[kalaroko_monitor] 【%s】Playwright 常规 click() 成功", scenario_name)
     except Exception as e_click:
         err_first = e_click
@@ -952,10 +1005,21 @@ async def _diagnose_and_click_kalaroko_game_entry(
                 scenario_name=scenario_name,
                 reserve_px=min(240, bottom_reserve + 40),
             )
-            await target.click(
-                timeout=max(3000, min(int(click_timeout_ms), 15000)),
-                force=True,
-            )
+            _fto = max(3000, min(int(click_timeout_ms), 15000))
+            _fcd = 0
+            if ui_pace_ms > 0:
+                _fcd = max(50, min(800, ui_pace_ms // 2))
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
+                if ui_cursor_moves:
+                    await _kalaroko_ui_move_mouse_to_locator(page, target, ui_pace_ms)
+                await asyncio.sleep(min(1.2, ui_pace_ms / 1000.0 * 0.45))
+            _fkw: dict[str, Any] = {"timeout": _fto, "force": True}
+            if _fcd > 0:
+                _fkw["delay"] = _fcd
+            await target.click(**_fkw)
             logger.info(
                 "[kalaroko_monitor] 【%s】force click() 成功（绕开遮挡/命中语义）",
                 scenario_name,
@@ -2145,21 +2209,64 @@ def _log_browser_launch_plan(
     )
 
 
-async def _pick_or_create_cdp_page(context: Any) -> Any:
+def _cdp_tab_url_driver_safe(url: str) -> bool:
+    """排除 DevTools / 扩展页：与 K11 ``test_k11_unified_platform_smoke_playwright._cdp_tab_url_driver_safe`` 一致。"""
+    u = (url or "").strip().lower()
+    if u.startswith("devtools://") or u.startswith("chrome-devtools://"):
+        return False
+    if u.startswith("chrome-extension://") or u.startswith("moz-extension://"):
+        return False
+    if u.startswith("ms-browser-extension://"):
+        return False
+    return True
+
+
+def _cdp_page_url_matches_preferred_host(page_url: str, preferred_host: str) -> bool:
     """
-    CDP 会话下选用 **仍可导航** 的页面。
+    是否与巡检 base_url 的主机「同属一站」：整串 host 或去掉 www. 后的根域出现在 URL 中
+    （对齐 K11 ``host in u.lower()``，并兼容 ``www.`` / 无 www）。
+    """
+    u = (page_url or "").lower()
+    ph = (preferred_host or "").strip().lower()
+    if not ph or not u:
+        return False
+    if ph in u:
+        return True
+    core = ph[4:] if ph.startswith("www.") else ph
+    return bool(core and core in u)
 
-    仅靠 ``is_closed()`` 不够：多标签场景下常见 **僵尸 Tab**（显示未关但 Target 已失效），
-    首个 ``goto`` 即 ``Target.*closed``，表现为「一秒内全场失败、完全没见进游戏」。
-    此处对每个候选页做一次 **evaluate 探活**；从 **列表末尾往前** 试（新开的标签往往在队尾）。
 
-    环境变量 ``KALAROKO_CDP_NEW_TAB=1``：强制每次巡检新建一页（最稳，推荐自动化/E2E）。
+async def _probe_cdp_page_alive(pg: Any) -> bool:
+    try:
+        if pg.is_closed():
+            return False
+        await asyncio.wait_for(pg.evaluate("() => 1"), timeout=2.5)
+        return True
+    except (asyncio.TimeoutError, Exception):
+        return False
 
-    注：部分旧版 Playwright 的 ``Page.evaluate`` 无 ``timeout=`` 参数，探活统一用 ``asyncio.wait_for``。
+
+async def _pick_kalaroko_cdp_context_and_page(
+    browser: Any,
+    *,
+    preferred_host: str | None,
+) -> tuple[Any, Any]:
+    """
+    选用 **BrowserContext + Page**（与 K11 ``_acquire_cdp_target_page`` 同思路）：
+
+    - 扫描 **全部** ``browser.contexts``（不再只认 ``contexts[0]``，避免多窗口时绑错实例）。
+    - **优先** URL 含 ``preferred_host``（来自本轮 ``base_url``）且可探活的标签（用户盯大厅时通常即此 Tab）。
+    - 否则在可自动化 URL 上按 ``KALAROKO_CDP_PREFER_VISIBLE_TAB`` 做可见性/焦点排序（与旧逻辑一致）。
+    - ``KALAROKO_CDP_NEW_TAB=1``：在首个 context 上 ``new_page()``。
+
+    仅靠 ``is_closed()`` 不够：多标签下常有僵尸 Tab，须 evaluate 探活。
     """
     raw = (os.environ.get("KALAROKO_CDP_NEW_TAB") or "").strip().lower()
     if raw in ("1", "true", "yes", "on"):
-        pg = await context.new_page()
+        if not getattr(browser, "contexts", None):
+            raise RuntimeError("CDP 已连接但 browser.contexts 为空，无法 new_page")
+        ctx0 = browser.contexts[0]
+        pg = await ctx0.new_page()
         logger.info("[kalaroko_monitor] KALAROKO_CDP_NEW_TAB 已启用：新建专用于巡检的标签页")
         try:
             await asyncio.wait_for(pg.evaluate("() => 1"), timeout=10.0)
@@ -2167,47 +2274,115 @@ async def _pick_or_create_cdp_page(context: Any) -> Any:
             logger.error("[kalaroko_monitor] NEW_TAB 新建页 evaluate 超时，Chrome/CDP 可能卡住")
             raise
         except Exception as e:
-            logger.error("[kalaroko_monitor] NEW_TAB 新建页 evaluate 失败: %s", str(e)[:400])
-            raise
-        return pg
-    try:
-        pages = list(getattr(context, "pages", []) or [])
-    except Exception:
-        pages = []
-
-    async def _probe(pg: Any) -> bool:
-        try:
-            if pg.is_closed():
-                return False
-            await asyncio.wait_for(pg.evaluate("() => 1"), timeout=2.5)
-            return True
-        except (asyncio.TimeoutError, Exception):
-            return False
-
-    # 从后往前：用户新开调试页多在末尾；避免命中第一个已僵死的 tab
-    for idx in range(len(pages) - 1, -1, -1):
-        pg = pages[idx]
-        try:
-            ok = await _probe(pg)
-        except Exception:
-            ok = False
-        if ok:
-            logger.info(
-                "[kalaroko_monitor] CDP 复用可操作标签页 index=%s/%s（evaluate 探活通过）",
-                idx,
-                len(pages) - 1,
+            logger.error(
+                "[kalaroko_monitor] NEW_TAB 新建页 evaluate 失败: %s", str(e)[:400]
             )
-            return pg
-        logger.debug(
-            "[kalaroko_monitor] CDP 跳过不可操作标签页 index=%s（僵尸页或 Target 已失效）",
-            idx,
-        )
+            raise
+        return ctx0, pg
 
-    pg = await context.new_page()
+    ph = (preferred_host or "").strip().lower() or None
+    prefer_visible = _env_bool("KALAROKO_CDP_PREFER_VISIBLE_TAB", True)
+
+    # —— 阶段 A：与 K11 一致，优先 URL 命中目标域（多 context、从右往左扫标签）——
+    if ph:
+        for ctx in list(getattr(browser, "contexts", []) or []):
+            pages = list(getattr(ctx, "pages", []) or [])
+            for pg in reversed(pages):
+                try:
+                    u = str(getattr(pg, "url", "") or "").strip()
+                except Exception:
+                    u = ""
+                if not _cdp_tab_url_driver_safe(u):
+                    continue
+                if not await _probe_cdp_page_alive(pg):
+                    continue
+                if _cdp_page_url_matches_preferred_host(u, ph):
+                    logger.info(
+                        "[kalaroko_monitor] CDP 选用标签页（URL 含目标域 %s，对齐 K11 host 匹配）: %s",
+                        ph,
+                        u[:160],
+                    )
+                    return ctx, pg
+
+    # —— 阶段 B：未命中目标域时，全部 context 的页签上做可见性排序 ——
+    scored: list[tuple[int, int, int, int, int, Any, Any]] = []
+    for ci, ctx in enumerate(list(getattr(browser, "contexts", []) or [])):
+        pages = list(getattr(ctx, "pages", []) or [])
+        if not prefer_visible:
+            for idx in range(len(pages) - 1, -1, -1):
+                pg = pages[idx]
+                try:
+                    u = str(getattr(pg, "url", "") or "").strip()
+                except Exception:
+                    u = ""
+                if not _cdp_tab_url_driver_safe(u):
+                    continue
+                if not await _probe_cdp_page_alive(pg):
+                    continue
+                logger.info(
+                    "[kalaroko_monitor] CDP 复用标签（PREFER_VISIBLE_TAB=0）ctx=%s index=%s url=%s",
+                    ci,
+                    idx,
+                    u[:120],
+                )
+                return ctx, pg
+            continue
+
+        for idx in range(len(pages) - 1, -1, -1):
+            pg = pages[idx]
+            try:
+                u = str(getattr(pg, "url", "") or "").strip()
+            except Exception:
+                u = ""
+            if not _cdp_tab_url_driver_safe(u):
+                continue
+            if not await _probe_cdp_page_alive(pg):
+                continue
+            vis_st = "hidden"
+            has_foc = False
+            try:
+                pair = await asyncio.wait_for(
+                    pg.evaluate(
+                        "() => [document.visibilityState, document.hasFocus()]"
+                    ),
+                    timeout=2.5,
+                )
+                if (
+                    isinstance(pair, (list, tuple))
+                    and len(pair) >= 2
+                    and isinstance(pair[0], str)
+                ):
+                    vis_st = pair[0]
+                    has_foc = bool(pair[1])
+            except Exception:
+                pass
+            vis_tier = 0 if vis_st == "visible" else 1
+            foc_tier = 0 if has_foc else 1
+            scored.append((vis_tier, foc_tier, -ci, -idx, ci, ctx, pg))
+
+    scored.sort()
+    if scored:
+        _vt, _ft, _nc, _ni, ci, ctx, pg = scored[0]
+        try:
+            _u = str(getattr(pg, "url", "") or "")[:120]
+        except Exception:
+            _u = ""
+        logger.info(
+            "[kalaroko_monitor] CDP 选用标签页 ctx=%s（探活 | visibility 优先）url=%s",
+            ci,
+            _u,
+        )
+        return ctx, pg
+
+    # —— 阶段 C：new_page ——
+    if not getattr(browser, "contexts", None):
+        raise RuntimeError("CDP browser.contexts 为空，无法 new_page")
+    ctx_fallback = browser.contexts[0]
     logger.warning(
-        "[kalaroko_monitor] CDP 现有标签均不可 navigate（已全部探活失败），已 new_page；"
-        "若不想再遇到僵尸页，可在 .env 设置 KALAROKO_CDP_NEW_TAB=1"
+        "[kalaroko_monitor] CDP 无可用复用页签，已 new_page；"
+        "若常遇僵尸页可设 KALAROKO_CDP_NEW_TAB=1"
     )
+    pg = await ctx_fallback.new_page()
     try:
         await asyncio.wait_for(pg.evaluate("() => 1"), timeout=8.0)
     except asyncio.TimeoutError:
@@ -2219,8 +2394,7 @@ async def _pick_or_create_cdp_page(context: Any) -> Any:
             str(e)[:400],
         )
         raise
-
-    return pg
+    return ctx_fallback, pg
 
 
 async def _launch_kalaroko_browser_context(
@@ -2230,9 +2404,13 @@ async def _launch_kalaroko_browser_context(
     viewport_height: int,
     device_scale_factor: float,
     headless: bool,
+    preferred_host: str | None = None,
 ) -> tuple[Any, Any, Any, bool]:
     """
     优先 **CDP** 连接已有 Chrome；失败或超时则 **回退** ``chromium.launch(headless=True)`` 独立进程。
+
+    ``preferred_host``：本轮巡检 ``base_url`` 的主机名（小写），用于与 K11 冒烟一致地 **优先绑定含该域的 Tab**，
+    避免打在 DevTools/其他站/空白页上却仍能「出数」。
 
     返回 ``(browser, context, page, must_close_context)``：
     - ``must_close_context=True``：本轮在 ``finally`` 中必须 ``await context.close()``（自建 context 或 launch 实例），防泄漏。
@@ -2271,9 +2449,13 @@ async def _launch_kalaroko_browser_context(
     )
 
     context: Any
+    page: Any
     must_close_context = False
     if browser.contexts and len(browser.contexts) > 0:
-        context = browser.contexts[0]
+        context, page = await _pick_kalaroko_cdp_context_and_page(
+            browser,
+            preferred_host=preferred_host,
+        )
     else:
         context = await browser.new_context(
             viewport=vp,
@@ -2281,10 +2463,22 @@ async def _launch_kalaroko_browser_context(
         )
         must_close_context = True
         logger.info("[kalaroko_monitor] CDP 下无现有 context，已新建 context（viewport 已应用）")
+        page = await context.new_page()
 
+    # stealth 必须落在 **实际驱动** 的 context 上（可能与旧版仅 contexts[0] 不一致）
     await _apply_stealth_to_context(context)
 
-    page = await _pick_or_create_cdp_page(context)
+    # CDP 复用已有标签时，Chrome 当前焦点可能在**别的 Tab**；不 bring_to_front 会导致
+    # 「终端有 JSON/指标但眼前窗口一动不动」。launch 新页路径下同样无害。
+    try:
+        await page.bring_to_front()
+        logger.info(
+            "[kalaroko_monitor] 已将本轮绑定的 Page bring_to_front（请确认 Chrome 窗口未最小化）"
+        )
+    except Exception as _bf_e:
+        logger.debug(
+            "[kalaroko_monitor] bring_to_front 跳过: %s", str(_bf_e)[:160]
+        )
 
     return browser, context, page, must_close_context
 
@@ -2423,6 +2617,8 @@ async def execute_playwright_perf_test(
     collect_console: bool = True,
     max_games: int | None = None,
     headless: bool = True,
+    ui_pace_ms: int | None = None,
+    ui_cursor_moves: bool = True,
 ) -> dict[str, Any]:
     """
     使用 Playwright 按场景采集首页 **W3C Navigation/Paint + ALPN** 与游戏入口性能，
@@ -2451,6 +2647,9 @@ async def execute_playwright_perf_test(
         collect_console: 是否采集 console / pageerror
         max_games: 限制「游戏」场景数量（首页后的场景）
         headless: 是否无头运行。``False`` 时在回退 ``chromium.launch`` 路径下显示浏览器窗口；CDP 连接已有 Chrome 时由该实例是否可见决定，此参数主要影响 launch 回退。
+        ui_pace_ms: 大于 0 时在导航/准备/点击等步骤之间额外 ``sleep`` 并 ``bring_to_front``，便于肉眼观察。
+            传 ``None`` 时读环境变量 ``KALAROKO_E2E_UI_PACE_MS``（默认 0，保持历史行为）。
+        ui_cursor_moves: 当 ``ui_pace_ms>0`` 时，游戏入口点击前用 ``mouse.move(..., steps=…)`` 画出指针轨迹，并拉长 click 的 ``delay``。
 
     阶段性人可读输出（不影响返回 JSON）：本机脚本可调用 ``set_playwright_progress_callback`` 注册回调。
     """
@@ -2477,12 +2676,21 @@ async def execute_playwright_perf_test(
     if not _host_allowed(base):
         return _err("HOST_NOT_ALLOWED", f"base_url 主机不在白名单: {sorted(_allowed_hosts())}")
 
+    # 与 K11 统合冒烟 ``_acquire_cdp_target_page`` 一致：CDP 优先绑定 URL 含本站 host 的 Tab
+    cdp_preferred_host = (urlparse(base).hostname or "").strip().lower() or None
+
     rid = (run_id or str(uuid.uuid4())).strip()
     net_label = _normalize_network_profile(network_profile)
     vw = viewport if isinstance(viewport, dict) else {}
     w = int(vw.get("width", 390))
     h = int(vw.get("height", 844))
     dsf = float(vw.get("device_scale_factor", 2))
+
+    if ui_pace_ms is not None:
+        pace = max(0, min(120_000, int(ui_pace_ms)))
+    else:
+        pace = _env_int("KALAROKO_E2E_UI_PACE_MS", 0, vmin=0, vmax=120_000)
+    cursor_mv = bool(ui_cursor_moves)
 
     home_sc = scenarios[0]
     game_scenarios = list(scenarios[1:])
@@ -2516,6 +2724,7 @@ async def execute_playwright_perf_test(
                         viewport_height=h,
                         device_scale_factor=dsf,
                         headless=_hl,
+                        preferred_host=cdp_preferred_host,
                     )
                 )
                 _kalaroko_register_playwright_session(
@@ -2581,6 +2790,14 @@ async def execute_playwright_perf_test(
                 page.on("requestfailed", _on_request_failed)
 
             _progress("已通过 CDP 绑定浏览器（未新起进程），页面对象就绪；即将采集首页…")
+            await _kalaroko_ui_breathe(
+                page,
+                pace,
+                progress=_progress,
+                hint=f"[UI 节奏] 每步间隔约 {pace} ms（可设 KALAROKO_E2E_UI_PACE_MS 或传 ui_pace_ms）"
+                if pace > 0
+                else "",
+            )
             if _e2e_user_cancel_requested():
                 _progress("用户已请求停止巡检（采集首页前）…")
                 return _err(
@@ -2594,6 +2811,17 @@ async def execute_playwright_perf_test(
                 name = str(scenario.get("name") or "scenario")
                 if _e2e_user_cancel_requested():
                     raise KalarokoE2EUserCancelled()
+                # 多场景串联时用户可能中途切走 Tab；每场景前再聚焦一次，避免「有结果但界面像没动」
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
+                await _kalaroko_ui_breathe(
+                    page,
+                    pace,
+                    progress=_progress,
+                    hint=f"[UI 节奏] 场景「{name}」开始…" if pace > 0 else "",
+                )
                 wait_until = str(scenario.get("wait_until") or "load")
                 timeout_ms = int(scenario.get("timeout_ms") or 60000)
                 url = _scenario_url(base, scenario)
@@ -2653,9 +2881,21 @@ async def execute_playwright_perf_test(
                             except Exception:
                                 pass
 
+                        await _kalaroko_ui_breathe(
+                            page,
+                            pace,
+                            progress=_progress,
+                            hint="[UI 节奏] 首页导航完成…" if pace > 0 else "",
+                        )
                         # 先访客登录并去掉通知/subscribers 遮挡，再采首页指标（与真实可玩大厅一致）
                         await _prepare_kalaroko_lobby_after_navigation(
                             page, progress=_progress
+                        )
+                        await _kalaroko_ui_breathe(
+                            page,
+                            pace,
+                            progress=_progress,
+                            hint="[UI 节奏] 大厅遮挡处理完毕…" if pace > 0 else "",
                         )
                         status = response.status if response else None
                         data = await _evaluate_metrics_with_retry(page)
@@ -2691,9 +2931,21 @@ async def execute_playwright_perf_test(
                                     pass
 
                             response = await _goto_resilient(page, entry_url, entry_wait, timeout_ms)
+                            await _kalaroko_ui_breathe(
+                                page,
+                                pace,
+                                progress=_progress,
+                                hint=f"[UI 节奏] 「{name}」大厅 URL 已打开…" if pace > 0 else "",
+                            )
                             # 通知条 → Guest → 再扫遮挡；再点游戏入口（无 auth.json 时）
                             await _prepare_kalaroko_lobby_after_navigation(
                                 page, progress=_progress
+                            )
+                            await _kalaroko_ui_breathe(
+                                page,
+                                pace,
+                                progress=_progress,
+                                hint=f"[UI 节奏] 即将点击「{name}」游戏入口…" if pace > 0 else "",
                             )
                             game_req_count = {"count": 0}
                             game_req_fail_count = {"count": 0}
@@ -2729,6 +2981,8 @@ async def execute_playwright_perf_test(
                                     scenario_name=name,
                                     scenario=scenario,
                                     progress=_progress,
+                                    ui_pace_ms=pace,
+                                    ui_cursor_moves=cursor_mv,
                                 )
                                 status = response.status if response else None
                                 try:

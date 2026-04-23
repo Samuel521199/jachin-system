@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.39] - 2026-04-22
+
+### Added / Changed
+
+- 完成冒烟测试除游戏测试外所有测试的连接。
+- **Version**: Desktop **0.9.39**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.38] - 2026-04-22
 

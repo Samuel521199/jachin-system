@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Kalaroko Monitor MCP — 默认四场景（KALAROKO_DEFAULT_SCENARIOS）全流程联调。
 
@@ -19,10 +19,15 @@ Kalaroko Monitor MCP — 默认四场景（KALAROKO_DEFAULT_SCENARIOS）全流�
 Playwright 巡检 **仅连接 CDP**：请在运行前启动带 ``--remote-debugging-port`` 的 Chrome（如 ``scripts/launch_chrome_debug.ps1``），
 并在 ``.env`` 中设置 ``KALAROKO_CDP_ENDPOINT=http://127.0.0.1:9222``（与端口一致）。MCP **不会**每次新起浏览器进程。
 
+**为何终端有结果但浏览器「好像没动」？** 与 K11 统合冒烟 ``test_k11_unified_platform_smoke_playwright.py`` 的 CDP 策略对齐：MCP 会 **扫描全部 BrowserContext**，并 **优先绑定 URL 含本轮 base_url 主机名**（如 ``kalaroko.com``）的活标签，避免打在 DevTools/扩展页/其它站上却仍「出数」；再辅以可见性排序。仍异常时请设 ``KALAROKO_CDP_NEW_TAB=1``，或看日志里 ``CDP 选用标签页（URL 含目标域 …）`` / ``url=…``。
+（2）Chrome 窗口**最小化或被其它窗口挡住**。``headless=false`` 只影响「回退 launch」路径，CDP 模式下是否可见由你已打开的 Chrome 决定。
+（3）Playwright 多为**程序化点击**，系统鼠标指针不一定跟着动，属正常（可开 ``--ui-pace-ms`` 与鼠标轨迹便于观察）。
+
 用法：
   python scripts/test_kalaroko_default_scenarios_e2e.py
   python scripts/test_kalaroko_default_scenarios_e2e.py --runs 3 --interval 60   # 共 3 轮（默认 4 轮），轮间隔 60 秒
   python scripts/test_kalaroko_default_scenarios_e2e.py --skip-playwright   # 仅测 HTTP + 历史，跳过浏览器（更快）
+  python scripts/test_kalaroko_default_scenarios_e2e.py --ui-pace-ms 0 --no-ui-cursor-moves   # 最快、无刻意停顿与鼠标轨迹
   python scripts/test_qwen_llm_probe.py   # 仅探测 LLM_COMPLEX_MODEL（如 qwen3-max）DashScope 调用是否可用（与 E2E 同源）
 
 脚本默认 ``KALAROKO_HEADLESS=false``（对 CDP 仅作标注）；是否显示窗口由已打开的 Chrome 决定。
@@ -1343,7 +1348,11 @@ def render_report_md(
     return text
 
 
-async def _run_playwright() -> dict:
+async def _run_playwright(
+    *,
+    ui_pace_ms: int | None = None,
+    ui_cursor_moves: bool = True,
+) -> dict:
     from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
         emergency_kalaroko_playwright_cleanup,
         execute_playwright_perf_test,
@@ -1362,6 +1371,8 @@ async def _run_playwright() -> dict:
             scenarios=[],
             collect_console=True,
             headless=False,
+            ui_pace_ms=ui_pace_ms,
+            ui_cursor_moves=ui_cursor_moves,
         )
     finally:
         set_playwright_progress_callback(None)
@@ -1514,6 +1525,8 @@ async def _run_full_cycle(
     *,
     skip_playwright: bool,
     line_sink: Callable[[str], None] | None = None,
+    ui_pace_ms: int | None = None,
+    ui_cursor_moves: bool = True,
 ) -> dict[str, Any]:
     """执行 N 轮 E2E 循环；多轮时生成末尾 AI 综合分析。供 CLI 与 L3 API 共用。"""
     reset_manual_run_flag()
@@ -1584,7 +1597,10 @@ async def _run_full_cycle(
                 }
                 _e2e_echo("[INFO] 已跳过 Playwright，使用占位 pw 载荷")
             else:
-                pw = await _run_playwright()
+                pw = await _run_playwright(
+                    ui_pace_ms=ui_pace_ms,
+                    ui_cursor_moves=ui_cursor_moves,
+                )
                 if isinstance(pw, dict) and pw.get("error_code") == "USER_CANCELLED":
                     cancelled = True
                     break
@@ -1791,6 +1807,8 @@ async def run_kalaroko_batch_test(
     *,
     skip_playwright: bool = False,
     line_sink: Callable[[str], None] | None = None,
+    ui_pace_ms: int | None = None,
+    ui_cursor_moves: bool = True,
 ) -> dict[str, Any]:
     """L3 HTTP/SSE：多轮 Kalaroko 默认场景 E2E；`line_sink` 可接收与 stdout 同步的文本行（不含 Playwright 大 JSON）。"""
     global _e2e_line_sink
@@ -1820,6 +1838,8 @@ async def run_kalaroko_batch_test(
                     interval,
                     skip_playwright=skip_playwright,
                     line_sink=line_sink,
+                    ui_pace_ms=ui_pace_ms,
+                    ui_cursor_moves=ui_cursor_moves,
                 )
         except AssertionError as e:
             msg = str(e)
@@ -1866,12 +1886,34 @@ async def main() -> int:
         default=30,
         help="两轮测试之间的间隔秒数（默认 30）",
     )
+    ap.add_argument(
+        "--ui-pace-ms",
+        type=int,
+        default=400,
+        metavar="MS",
+        help="步骤间额外 sleep（毫秒）+ 顶前台，便于观察 CDP 页签；0 关闭。默认 400",
+    )
+    ap.add_argument(
+        "--no-ui-pace",
+        action="store_true",
+        help="等价于 --ui-pace-ms 0（最快、界面几乎不刻意停顿）",
+    )
+    ap.add_argument(
+        "--no-ui-cursor-moves",
+        action="store_true",
+        help="关闭游戏入口点击前的鼠标轨迹移动（仍可有 ui-pace 的 sleep）",
+    )
     args = ap.parse_args()
+
+    _pace = 0 if args.no_ui_pace else max(0, int(args.ui_pace_ms))
+    _cursor = not args.no_ui_cursor_moves
 
     r = await run_kalaroko_batch_test(
         args.runs,
         args.interval,
         skip_playwright=args.skip_playwright,
+        ui_pace_ms=_pace,
+        ui_cursor_moves=_cursor,
     )
     return int(r.get("exit_code", 2))
 
