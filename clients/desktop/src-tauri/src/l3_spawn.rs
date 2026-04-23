@@ -52,41 +52,7 @@ pub fn jachin_shared_l3_debug_path() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("l3_debug.log"))
 }
 
-/// Omni 全局热键 Mirror-Trace：`JACHIN_LOG_DIR/omni_hotkey_interaction.log` 或 `~/.jachin/omni_hotkey_interaction.log`
-pub fn omni_hotkey_interaction_log_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("JACHIN_LOG_DIR") {
-        return PathBuf::from(dir).join("omni_hotkey_interaction.log");
-    }
-    BaseDirs::new()
-        .map(|b| b.home_dir().join(".jachin").join("omni_hotkey_interaction.log"))
-        .unwrap_or_else(|| std::env::temp_dir().join("omni_hotkey_interaction.log"))
-}
-
-/// 追加一行 UTF-8（Mirror-Trace 单行；换行压成 ` | `）。
-pub fn append_omni_hotkey_interaction_line(line: &str) {
-    let path = omni_hotkey_interaction_log_path();
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!(
-                "[OmniHotkey] mkdir for omni_hotkey_interaction.log failed: {} ({})",
-                e,
-                parent.display()
-            );
-            return;
-        }
-    }
-    let sanitized = line.replace('\r', " ").replace('\n', " | ");
-    let out = format!("{}\n", sanitized);
-    match fs::OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(mut f) => {
-            if let Err(e) = f.write_all(out.as_bytes()) {
-                eprintln!("[OmniHotkey] write {}: {}", path.display(), e);
-            }
-            let _ = f.flush();
-        }
-        Err(e) => eprintln!("[OmniHotkey] open {}: {}", path.display(), e),
-    }
-}
+// Omni 热键落盘见 `omni_hotkey_mirror_trace`（避免与 `l3_spawn` 重复两套路径逻辑）。
 
 /// 追加一行 UTF-8（自动建目录）；单行内换行会压成 ` | `，便于与 L3 日志混排检索。
 pub fn write_jachin_shared_l3_debug(category: &str, message: &str) {

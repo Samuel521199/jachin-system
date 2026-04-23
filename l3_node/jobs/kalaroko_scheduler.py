@@ -19,6 +19,7 @@ from core.kalaroko_e2e_jsonl_store import (
     atomic_replace_path,
     kalaroko_e2e_jsonl_lock,
 )
+from l3_node.paths import kalaroko_default_e2e_script_path
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,12 @@ async def hourly_inspection_job() -> None:
         sys.path.insert(0, str(root))
 
     try:
-        script = root / "scripts" / "test_kalaroko_default_scenarios_e2e.py"
+        script = kalaroko_default_e2e_script_path()
+        if not script.is_file():
+            raise RuntimeError(
+                f"缺少 test_kalaroko_default_scenarios_e2e.py: {script} "
+                "（打包侧车请确认 build_l3_sidecar 已 --add-data 该脚本）"
+            )
         spec = importlib.util.spec_from_file_location("_kalaroko_sched_hourly", script)
         if spec is None or spec.loader is None:
             raise RuntimeError("无法加载 test_kalaroko_default_scenarios_e2e.py")
@@ -299,7 +305,12 @@ async def daily_morning_report_job() -> None:
         sys.path.insert(0, str(root))
 
     try:
-        script = root / "scripts" / "test_kalaroko_default_scenarios_e2e.py"
+        script = kalaroko_default_e2e_script_path()
+        if not script.is_file():
+            raise RuntimeError(
+                f"缺少 test_kalaroko_default_scenarios_e2e.py: {script} "
+                "（打包侧车请确认 build_l3_sidecar 已 --add-data 该脚本）"
+            )
         spec = importlib.util.spec_from_file_location("_kalaroko_sched_daily", script)
         if spec is None or spec.loader is None:
             raise RuntimeError("无法加载 test_kalaroko_default_scenarios_e2e.py")
