@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
 
@@ -649,6 +649,31 @@ def _regex_from_playwright_text_selector(sel: str) -> re.Pattern[str] | None:
         return None
 
 
+async def _kalaroko_plain_text_hit_is_lobby_entry(cand: Any) -> bool:
+    """
+    排除 Party Hubs 等「同名游戏只读标题」节点：全局 text= 命中过多时 .last 常为
+    ``_party_card_game_name_*`` span，无有效导航或点击不进门。
+    """
+    try:
+        return await cand.evaluate(
+            """el => {
+              if (!el || !el.closest) return false;
+              if (el.closest('[class*="party_card"]')) return false;
+              const nav = el.closest(
+                'a[href], [role="link"], [role="button"], button, [data-href]'
+              );
+              if (!nav) return false;
+              if (nav.tagName === 'A' || nav.getAttribute('role') === 'link') {
+                const h = nav.getAttribute('href') || '';
+                if (!h || h === '#' || h.toLowerCase().startsWith('javascript:')) return false;
+              }
+              return true;
+            }"""
+        )
+    except Exception:
+        return False
+
+
 async def _resolve_kalaroko_game_entry_locator(
     page: Any,
     *,
@@ -657,7 +682,8 @@ async def _resolve_kalaroko_game_entry_locator(
     scenario: dict[str, Any] | None,
 ) -> tuple[Any, str]:
     """
-    解析「要点的大厅入口」定位器：优先 document_game_id / 可导航链接，其次宽松 text= 的 .last。
+    解析「要点的大厅入口」定位器：优先 document_game_id / 可导航链接，其次宽松 text=。
+    多处命中时优先选用「非 Party 卡片 + 含可导航祖先」的项，避免 .last 点到 Party 只读标题。
     """
     scen = scenario or {}
     gid_raw = scen.get("document_game_id")
@@ -737,10 +763,23 @@ async def _resolve_kalaroko_game_entry_locator(
         logger.error("[kalaroko_monitor] 【%s】%s", scenario_name, msg)
         raise RuntimeError(f"[{scenario_name}] {msg}")
 
-    # 命中多处时 .first 常为轮播/插图里的重复标题；≥3 全局取 .last；场景 prefer_last 时 ≥2 亦取 .last
+    # 命中多处：.first 易为轮播；原 .last 在「首页列表 + Party 同名」并存时会点到 Party 只读 span。
     if cnt >= 3 or (ambig_last and cnt >= 2):
+        for idx in range(cnt):
+            cand = loc.nth(idx)
+            try:
+                if await _kalaroko_plain_text_hit_is_lobby_entry(cand):
+                    logger.info(
+                        "[kalaroko_monitor] 【%s】文案命中 %s 处，跳过 Party/无导航项，选用 nth=%s",
+                        scenario_name,
+                        cnt,
+                        idx,
+                    )
+                    return cand, f"text locator nth={idx} (feed-like, count={cnt})"
+            except Exception:
+                continue
         logger.info(
-            "[kalaroko_monitor] 【%s】文案选择器命中 %s 处，改用 .last（降低点到横幅/轮播首层概率）",
+            "[kalaroko_monitor] 【%s】文案选择器命中 %s 处，无 feed-like 单项，回退 .last",
             scenario_name,
             cnt,
         )

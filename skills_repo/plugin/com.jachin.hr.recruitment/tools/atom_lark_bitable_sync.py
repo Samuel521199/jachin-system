@@ -24,6 +24,45 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _format_lark_open_api_business_error(data: dict[str, Any], operation: str) -> str:
+    """
+    飞书/Lark open-apis 非 0 业务响应：拼出顶层 code、msg、error 子结构及常见 code 判读。
+    常见：91403 文档/数据侧无权限；1254007 表级权限；1254002 应用授权。
+    """
+    code = data.get("code")
+    msg = data.get("msg", "")
+    lines: list[str] = [
+        f"{operation}（Lark 业务错误）",
+        f"  顶层: code={code!r} msg={msg!r}",
+    ]
+    err_obj = data.get("error")
+    if err_obj is not None:
+        if isinstance(err_obj, dict):
+            ec = err_obj.get("code")
+            em = err_obj.get("message") or err_obj.get("msg")
+            lines.append(
+                f"  error 子结构: error.code={ec!r} message={em!r} 全量={json.dumps(err_obj, ensure_ascii=False)}"
+            )
+        else:
+            lines.append(f"  error: {err_obj!r}")
+    try:
+        c_int = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        c_int = None
+    if c_int == 91403:
+        lines.append(
+            "  判读: code=91403 + Forbidden → 多为「该多维表/文档未把本应用当协作者」或"
+            "应用对该数据无删改权（与是否“重新发版”无关，须在 Base 内添加企业自建应用并授予可管理/可编辑+删除；另查开放平台已勾选 bitable 记录类权限）。"
+        )
+    elif c_int == 1254007:
+        lines.append("  判读: code=1254007 → 多为表级权限问题（子表/文档对应用的协作或高级权限等）。")
+    elif c_int == 1254002:
+        lines.append("  判读: code=1254002 → 多为应用授权问题（企业内安装/可见范围/能力发布与审核等）。")
+    lines.append("  完整响应 JSON: " + json.dumps(data, ensure_ascii=False))
+    return "\n".join(lines)
+
+
 # 默认多维表（从用户提供的 URL 解析）
 # https://ssgkm409t6q5.sg.larksuite.com/base/RJgcbE9LtaBPILsnttmlS8iHgbf?table=tblzQatxI7op9oBp
 DEFAULT_APP_TOKEN = "RJgcbE9LtaBPILsnttmlS8iHgbf"
@@ -113,11 +152,24 @@ def _ensure_dotenv_loaded() -> None:
 
 
 def _get_tenant_access_token() -> str:
-    """获取 Lark tenant_access_token。HR 招聘场景使用 HR_LARK_APP_*（与通用 LARK_APP_ID 分离）。"""
+    """获取 Lark tenant_access_token。
+
+    优先级：BI 多维表 **BI_LARK_APP_***（main_skill 在 Step3 前按 bi_daily_report.yaml 写入，须与文档协作者为同一 app）→
+    HR 招聘 **HR_LARK_APP_*** → 通用 **LARK_APP_ID**。
+    若仅写 BI_ 到环境却此前一直走 HR/LARK 换 token，会导致 91403（文档里加的是 BI 应用、请求却是另一应用）。
+    """
     _ensure_dotenv_loaded()
     _ensure_l3_importable()
     from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token, resolve_hr_lark_credentials
 
+    bi_aid = (os.environ.get("BI_LARK_APP_ID") or "").strip()
+    bi_sec = (os.environ.get("BI_LARK_APP_SECRET") or "").strip()
+    if bi_aid and bi_sec:
+        return get_tenant_access_token(
+            app_id=bi_aid,
+            app_secret=bi_sec,
+            api_base=get_lark_api_base(),
+        )
     aid, sec, yb = resolve_hr_lark_credentials()
     base = yb or get_lark_api_base()
     if aid and sec:
@@ -283,9 +335,22 @@ def _batch_delete_records(
             json=payload,
             timeout=15,
         )
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception:
+            t = (resp.text or "")[:4000]
+            logger.error("batch_delete HTTP %s 响应非JSON: %s", resp.status_code, t)
+            raise RuntimeError(
+                f"批量删除失败: HTTP {resp.status_code} 响应非JSON（前4000字）: {t!r}"
+            ) from None
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"批量删除失败: HTTP {resp.status_code} 非对象JSON: {resp.text[:2000]!r}"
+            )
         if data.get("code") != 0:
-            raise RuntimeError(f"批量删除失败: {data.get('msg', data)}")
+            detail = _format_lark_open_api_business_error(data, "批量删除记录 batch_delete")
+            logger.error("%s", detail)
+            raise RuntimeError(detail)
     return True
 
 

@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.37] - 2026-04-22
+
+### Added / Changed
+
+- 完成冒烟测试除游戏外测试，添加结果写入表格功能。
+- **Version**: Desktop **0.9.37**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.35] - 2026-04-22
 

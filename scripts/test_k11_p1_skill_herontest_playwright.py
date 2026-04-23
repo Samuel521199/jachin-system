@@ -20,6 +20,8 @@ K11 P1 · 独立 Playwright 冒烟：可选读取 SKILL_P1_MODULES.md 中的 ###
   python scripts/test_k11_p1_skill_herontest_playwright.py --navigate-if-no-tab
         # 若无含目标域名的标签页，则对当前 context 执行一次 goto（调试用；正式验收请手工摆页）
 
+运行结束可将结果写入 ``K11平台测试用例.xlsx``：``--xlsx-report`` / ``K11_XLSX_REPORT`` / ``~/Downloads/K11平台测试用例.xlsx``；``--no-xlsx-report`` 关闭。需 ``openpyxl``。
+
 退出码：0 全部 PASS/SKIP；1 存在 FAIL；2 环境或 CDP 失败；3 未捕获异常。
 """
 from __future__ import annotations
@@ -30,6 +32,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,7 +104,36 @@ def _needs_goto_home_feed(current_url: str) -> bool:
         return True
     if re.search(r"/(profile|account|wallet|settings)(/|$)", u):
         return True
+    # Party 子站与隐藏底栏参数：不先回 / 则底栏用例、Hottest 区块均不可靠
+    if "party-hubs" in u:
+        return True
+    if "app_tabbar=no" in u:
+        return True
     return False
+
+
+# KalaroKo 底栏：文案在 _item_label_* 内，Playwright 点 label 常超时；从父级 item 做 DOM click
+_JS_CLICK_TAB_FROM_LABEL = """(el) => {
+  let n = el.parentElement;
+  for (let i = 0; i < 12 && n; i++) {
+    const tag = (n.tagName || '').toUpperCase();
+    const cls = (typeof n.className === 'string') ? n.className : '';
+    const role = n.getAttribute && n.getAttribute('role');
+    const isLabelOnly = /_item_label_/i.test(cls);
+    if (!isLabelOnly && (tag === 'BUTTON' || tag === 'A' || role === 'button' || role === 'tab'
+        || /\\bitem\\b/i.test(cls) || (cls.includes('_item_') && !cls.includes('_item_label_')))) {
+      n.click();
+      return { ok: true, step: i, tag, cls: cls.slice(0, 72) };
+    }
+    n = n.parentElement;
+  }
+  if (el.parentElement) {
+    el.parentElement.click();
+    return { ok: true, fallback: 'parent', tag: el.parentElement.tagName };
+  }
+  el.click();
+  return { ok: true, fallback: 'label-only', tag: el.tagName };
+}"""
 
 
 async def _ensure_on_home_feed(
@@ -149,9 +181,170 @@ VERDICT_ZH: dict[str, str] = {
     "BLOCKED": "阻塞",
 }
 
+P1_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
+    "p1_customer_service": "客服",
+    "p1_share_tab": "分享",
+    "p1_task_tab": "任务",
+    "p1_profile_tab": "我的",
+    "p1_hottest_parties": "热门",
+    "p1_party_status": "Party 状态",
+}
+
+_XLSX_REMARK_MAX_LEN = 32000
+
+
+def _default_k11_xlsx_report_path() -> Path:
+    env = (os.environ.get("K11_XLSX_REPORT") or "").strip()
+    if env:
+        return Path(env)
+    return Path.home() / "Downloads" / "K11平台测试用例.xlsx"
+
+
+def _find_smoke_sheet_header(ws: Any) -> tuple[int, int, int, int] | None:
+    max_r = min(int(ws.max_row or 1), 45)
+    max_c = min(int(ws.max_column or 1), 40)
+    for r in range(1, max_r + 1):
+        col_map: dict[str, int] = {}
+        for c in range(1, max_c + 1):
+            v = ws.cell(row=r, column=c).value
+            s = str(v).strip() if v is not None else ""
+            if s and s not in col_map:
+                col_map[s] = c
+        if "结果" not in col_map or "备注" not in col_map:
+            continue
+        item_col = None
+        for k in ("测试项目", "测试项", "用例名称"):
+            if k in col_map:
+                item_col = col_map[k]
+                break
+        if item_col is None:
+            continue
+        return r, item_col, col_map["结果"], col_map["备注"]
+    return None
+
+
+def write_k11_p1_results_to_xlsx(
+    xlsx_path: Path,
+    results: list[dict[str, Any]],
+    *,
+    log: Callable[[str], None],
+) -> None:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        log("  [xlsx] 未安装 openpyxl，跳过写入（可：pip install openpyxl）")
+        return
+
+    if not xlsx_path.is_file():
+        log(f"  [xlsx] 文件不存在，跳过：{xlsx_path}")
+        return
+
+    try:
+        wb = load_workbook(xlsx_path, data_only=False, keep_vba=False)
+    except Exception as e:
+        log(f"  [xlsx] 打开工作簿失败：{e!s}")
+        return
+
+    ordered_names: list[str] = [n for n in wb.sheetnames if "冒烟" in n]
+    ordered_names.extend(n for n in wb.sheetnames if n not in ordered_names)
+    verdict_cell = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP", "BLOCKED": "BLOCKED"}
+
+    try:
+        for sn in ordered_names:
+            ws = wb[sn]
+            parsed = _find_smoke_sheet_header(ws)
+            if not parsed:
+                continue
+            hdr, c_item, c_res, c_note = parsed
+            last_r = max(int(ws.max_row or hdr), hdr + 5, 80)
+            sheet_wrote = 0
+            for resrow in results:
+                cid = str(resrow.get("case") or "")
+                key = P1_CASE_TO_XLSX_TEST_ITEM_KEY.get(cid)
+                if not key:
+                    continue
+                v = str(resrow.get("verdict") or "")
+                detail = str(resrow.get("detail") or "")
+                cell_v = verdict_cell.get(v, v)
+                remark = (detail or "")[:_XLSX_REMARK_MAX_LEN]
+                matched = False
+                for r in range(hdr + 1, last_r + 1):
+                    raw = ws.cell(row=r, column=c_item).value
+                    text = str(raw).strip() if raw is not None else ""
+                    if not text:
+                        continue
+                    if key in text:
+                        ws.cell(row=r, column=c_res, value=cell_v)
+                        ws.cell(row=r, column=c_note, value=remark)
+                        sheet_wrote += 1
+                        matched = True
+                        break
+                if not matched:
+                    log(f"  [xlsx] 未匹配行：case={cid} 关键字={key!r} sheet={sn!r}")
+            if sheet_wrote:
+                try:
+                    wb.save(xlsx_path)
+                except PermissionError:
+                    log(
+                        f"  [xlsx] 保存被拒绝（是否正用 Excel 打开该文件？）：{xlsx_path.resolve()}"
+                    )
+                    return
+                log(
+                    f"  [xlsx] 已在工作表「{sn}」更新 {sheet_wrote} 行 → {xlsx_path.resolve()}"
+                )
+                return
+
+        log(
+            "  [xlsx] 未找到含「测试项目/结果/备注」表头的工作表，或未更新任何行。"
+        )
+    except Exception as e:
+        log(f"  [xlsx] 写入过程异常：{e!s}")
+
 
 def _brief_exc(e: BaseException, limit: int = 200) -> str:
     return f"{type(e).__name__}: {str(e).strip()[:limit]}"
+
+
+async def _try_click_bottom_label_js(
+    page: Any,
+    label: str,
+    *,
+    log: Callable[[str], None] | None,
+    tag: str = "底栏·JS",
+) -> tuple[bool, str]:
+    """KalaroKo 底栏：对精确文案 .last 做 JS 父级 click（与 Playwright 点 div 标签层分离）。"""
+    def lg(m: str) -> None:
+        if log:
+            log(f"  [诊断·{tag}] " + m)
+
+    for fi, fr in enumerate(page.frames):
+        furl = ""
+        try:
+            furl = (fr.url or "")[:120]
+        except Exception:
+            pass
+        try:
+            if "about:blank" in (fr.url or "").lower() and fi > 0:
+                continue
+        except Exception:
+            pass
+        try:
+            n = await fr.get_by_text(label, exact=True).count()
+            if n < 1:
+                continue
+            loc = fr.get_by_text(label, exact=True).last
+            await loc.wait_for(state="attached", timeout=4000)
+            try:
+                await loc.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            info = await loc.evaluate(_JS_CLICK_TAB_FROM_LABEL)
+            lg(f"frame[{fi}]「{label}」.last JS → {info} | {furl!r}")
+            await page.wait_for_timeout(450)
+            return True, f"frame[{fi}] JS 底栏「{label}」"
+        except Exception as e:
+            lg(f"frame[{fi}]「{label}」：{_brief_exc(e, 160)}")
+    return False, ""
 
 
 async def _log_tablist_snapshot(page: Any, log: Callable[[str], None], *, tag: str = "") -> None:
@@ -410,6 +603,380 @@ async def _customer_service_detect(page: Any) -> tuple[bool, str]:
     )
 
 
+# —— P1 客服：仅主文档顶栏/视口右上打开，全 frame 关 Garden（含 about:blank 子帧）——
+
+_P1_CS_IMG_CLICK_JS = """(el) => {
+  const t = el.closest('button, a, [role="button"], [onclick]') || el.parentElement;
+  if (t && t !== el) { t.click(); return { via: 'closest' }; }
+  el.click();
+  return { via: 'self' };
+}"""
+
+
+async def _p1_click_customer_service_top_right(
+    page: Any, log: Callable[[str], None] | None
+) -> tuple[bool, str]:
+    """首页主文档：header 内耳机图 → 视口右上几何命中 → 全文 alt 兜底（不点 iframe 内）。"""
+    fr = page.main_frame
+    alt_re = re.compile(
+        r"headset|headphone|customer|service|support|help|客服|在线|联系|售后",
+        re.I,
+    )
+    try:
+        hdr = fr.locator("header").first
+        if await hdr.count() > 0:
+            im = hdr.get_by_alt_text(alt_re).first
+            if await im.count() > 0:
+                await im.wait_for(state="attached", timeout=3200)
+                try:
+                    await im.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+                try:
+                    await im.click(timeout=4000, force=True)
+                except Exception:
+                    await im.evaluate(_P1_CS_IMG_CLICK_JS)
+                return True, "已点击 header 内客服图标（img alt）"
+    except Exception as e:
+        if log:
+            log(f"  [诊断·客服] header+alt：{_brief_exc(e, 100)}")
+
+    try:
+        clicked = await fr.evaluate("""() => {
+          const W = window.innerWidth, H = window.innerHeight;
+          const imgs = [];
+          document.querySelectorAll('header img').forEach(i => imgs.push(i));
+          document.querySelectorAll('[class*="Header"] img, [class*="header"] img').forEach(i => {
+            if (!imgs.includes(i)) imgs.push(i);
+          });
+          for (const img of imgs) {
+            const r = img.getBoundingClientRect();
+            if (r.width < 6 || r.height < 6) continue;
+            const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            if (cx > W * 0.46 && cy < H * 0.45) {
+              const t = img.closest('button, a, [role="button"]');
+              (t || img).click();
+              return true;
+            }
+          }
+          return false;
+        }""")
+        if clicked:
+            return True, "已点击视口右上 header 区域图标（几何命中）"
+    except Exception as e:
+        if log:
+            log(f"  [诊断·客服] 几何命中：{_brief_exc(e, 100)}")
+
+    try:
+        loc = fr.get_by_alt_text(alt_re).first
+        if await loc.count() > 0:
+            await loc.wait_for(state="attached", timeout=2800)
+            try:
+                await loc.click(timeout=4000, force=True)
+            except Exception:
+                await loc.evaluate(_P1_CS_IMG_CLICK_JS)
+            return True, "已点击主文档客服图标（全文 alt 兜底）"
+    except Exception:
+        pass
+    return False, ""
+
+
+async def _p1_frame_has_zendesk_widget(page: Any) -> bool:
+    """任意 frame 出现 Garden 收起图标或典型聊天 UI 即视为已加载。"""
+    for fr in page.frames:
+        try:
+            if await fr.locator('svg[data-garden-id="buttons.icon"]').count() > 0:
+                return True
+        except Exception:
+            pass
+        for pat in (
+            r"Type\s*a\s*message",
+            r"Kalaro\s*Bot",
+            r"Privacy\s*Notice",
+            r"Zendesk",
+        ):
+            try:
+                if await fr.get_by_text(re.compile(pat, re.I)).count() > 0:
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+async def _p1_click_zendesk_garden_close(
+    page: Any, log: Callable[[str], None] | None
+) -> bool:
+    """
+    点击 Zendesk Garden 向下收起：svg[data-garden-id="buttons.icon"]。
+    不跳过 about:blank（Messenger 子帧常见）；每轮遍历当前所有 frame。
+    """
+    for fi, fr in enumerate(page.frames):
+        fu = ""
+        try:
+            fu = (fr.url or "")[:140]
+        except Exception:
+            pass
+        try:
+            btn = fr.locator(
+                'button:has(svg[data-garden-id="buttons.icon"]), '
+                '[role="button"]:has(svg[data-garden-id="buttons.icon"])'
+            ).last
+            if await btn.count() > 0:
+                await btn.click(timeout=2800, force=True)
+                if log:
+                    log(f"  [诊断·客服] 已点 Garden 收起 button frame[{fi}] {fu!r}")
+                await page.wait_for_timeout(350)
+                return True
+        except Exception:
+            pass
+        try:
+            svg = fr.locator('svg[data-garden-id="buttons.icon"]').last
+            if await svg.count() > 0:
+                await svg.evaluate(
+                    """(el) => {
+                      const b = el.closest('button, [role="button"]');
+                      (b || el.parentElement || el).click();
+                    }"""
+                )
+                if log:
+                    log(f"  [诊断·客服] 已点 Garden svg→父级 frame[{fi}] {fu!r}")
+                await page.wait_for_timeout(350)
+                return True
+        except Exception:
+            pass
+    return False
+
+
+async def _p1_try_zendesk_header_last_in_chat_frames(
+    page: Any, log: Callable[[str], None] | None
+) -> bool:
+    """在已出现聊天特征的 frame 内点 header 最后一颗按钮（⋮/收起旁）。"""
+    for fi, fr in enumerate(page.frames):
+        try:
+            in_chat = False
+            if await fr.locator('svg[data-garden-id="buttons.icon"]').count() > 0:
+                in_chat = True
+            if not in_chat and await fr.get_by_text(
+                re.compile(r"Type\s*a\s*message", re.I)
+            ).count() > 0:
+                in_chat = True
+            if not in_chat and await fr.get_by_text(
+                re.compile(r"Kalaro\s*Bot", re.I)
+            ).count() > 0:
+                in_chat = True
+            if not in_chat:
+                continue
+            hdr = fr.locator("[class*='header'], header").first
+            if await hdr.count() < 1:
+                continue
+            btns = hdr.locator("button, [role='button']")
+            bn = await btns.count()
+            if bn < 1:
+                continue
+            await btns.nth(bn - 1).click(timeout=2600, force=True)
+            if log:
+                log(f"  [诊断·客服] 已点聊天窗顶栏最后按钮 frame[{fi}]")
+            await page.wait_for_timeout(350)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _try_spa_header_back(page: Any) -> bool:
+    """SPA 顶栏返回（图2 红框）：主文档 header 内首颗按钮或 history.back。"""
+    fr = page.main_frame
+    locators: list[Any] = [
+        fr.locator("header").locator("button, [role='button'], a").first,
+        fr.locator("[class*='Header']").locator("button, [role='button']").first,
+        fr.locator("[class*='header']").locator("button, [role='button']").first,
+        fr.locator("[class*='navbar']").locator("button, [role='button']").first,
+        fr.locator("[class*='NavBar']").locator("button, [role='button']").first,
+        fr.get_by_role("button", name=re.compile(r"back", re.I)).first,
+        fr.locator("[aria-label*='返回'], [aria-label*='back' i]").first,
+    ]
+    for loc in locators:
+        try:
+            if await loc.count() < 1:
+                continue
+            await loc.wait_for(state="attached", timeout=1800)
+            await loc.click(timeout=4500, force=True)
+            await page.wait_for_timeout(450)
+            return True
+        except Exception:
+            continue
+    try:
+        ok = await fr.evaluate("""() => {
+          const sels = ['header button', '[class*="Header"] button', '[class*="header"] button',
+            '[class*="navbar"] button', '[class*="NavBar"] button', '[class*="title-bar"] button'];
+          for (const s of sels) {
+            const el = document.querySelector(s);
+            if (el) { el.click(); return true; }
+          }
+          return false;
+        }""")
+        await page.wait_for_timeout(450)
+        if ok:
+            return True
+    except Exception:
+        pass
+    try:
+        await page.go_back(wait_until="domcontentloaded", timeout=15_000)
+        await page.wait_for_timeout(450)
+        return True
+    except Exception:
+        return False
+
+
+async def _leave_party_hubs_to_home(
+    page: Any,
+    target_url: str,
+    log: Callable[[str], None] | None,
+) -> None:
+    """离开 Party Hubs 子页，恢复底栏（图2 顶栏返回，失败则 goto /）。"""
+    u = (page.url or "").lower()
+    if "party-hubs" not in u:
+        return
+    if log:
+        log("  [诊断] 当前在 Party Hubs，顶栏返回大厅…")
+    await _try_spa_header_back(page)
+    u2 = (page.url or "").lower()
+    if "party-hubs" in u2:
+        if log:
+            log(f"  [诊断] 仍停留在 party-hubs（{page.url!r}），goto 站点根路径")
+        home = _home_feed_url(target_url)
+        await page.goto(home, wait_until="domcontentloaded", timeout=60_000)
+        await page.wait_for_timeout(500)
+
+
+# Party Hubs 子页：不滚底，仅用顶栏与列表区文案做轻量校验
+_P1_PARTY_HUBS_VERIFY_PATTERNS = [
+    r"Follow",
+    r"All",
+    r"Preparing",
+    r"准备",
+    r"In\s*Game",
+    r"Random\s*Match",
+    r"Create\s*a\s*Party",
+    r"Party",
+    r"Guest",
+]
+
+
+async def _try_party_hubs_top_bar_back(
+    page: Any, log: Callable[[str], None] | None
+) -> bool:
+    """
+    Party Hubs 顶栏左侧返回：KalaroKo 为 img._top_bar_item_icon_*（内嵌左箭头 SVG）。
+    """
+    def lg(m: str) -> None:
+        if log:
+            log("  [诊断·HottestParty] " + m)
+
+    fr = page.main_frame
+    sels = (
+        'img[class*="_top_bar_item_icon_"]',
+        'img[class*="top_bar_item_icon"]',
+        r'img[src*="15.0005"]',
+        r'img[src*="M15.0005"]',
+    )
+    for sel in sels:
+        try:
+            loc = fr.locator(sel).first
+            if await loc.count() < 1:
+                continue
+            await loc.wait_for(state="attached", timeout=2200)
+            try:
+                await loc.scroll_into_view_if_needed(timeout=2000)
+            except Exception:
+                pass
+            try:
+                await loc.click(timeout=3500, force=True)
+            except Exception:
+                await loc.evaluate(
+                    """(el) => {
+                      const p = el.closest('button, a, [role="button"]');
+                      (p || el.parentElement || el).click();
+                    }"""
+                )
+            lg(f"已点击顶栏返回图标（{sel!r}）")
+            await page.wait_for_timeout(450)
+            return True
+        except Exception as e:
+            lg(f"顶栏返回 {sel!r}：{_brief_exc(e, 100)}")
+    return False
+
+
+async def _p1_leave_party_hubs_after_hottest(
+    page: Any,
+    target_url: str,
+    log: Callable[[str], None] | None,
+) -> None:
+    """先点顶栏 img 返回，仍在 party-hubs 则走通用 back/goto。"""
+    if "party-hubs" not in (page.url or "").lower():
+        return
+    await _try_party_hubs_top_bar_back(page, log)
+    if "party-hubs" in (page.url or "").lower():
+        await _leave_party_hubs_to_home(page, target_url, log)
+
+
+async def _customer_service_click_open_close(
+    page: Any, log: Callable[[str], None] | None
+) -> tuple[str, str]:
+    """
+    P1 客服：主文档顶栏/右上打开 → 轮询全部 frame（含 about:blank）点
+    svg[data-garden-id="buttons.icon"] 收起 → 兜底顶栏最后键 → Esc。
+    """
+    ok, cm = await _p1_click_customer_service_top_right(page, log)
+    if not ok:
+        det = await _customer_service_detect(page)
+        return (
+            "FAIL",
+            "未能点击首页客服入口。"
+            + (f"（页面上曾可见：{det[1]}）" if det[0] else f" {det[1]}"),
+        )
+    if log:
+        log(f"  [诊断·客服] {cm}")
+    await page.wait_for_timeout(500)
+
+    saw_widget = False
+    closed_ok = False
+    deadline = time.monotonic() + 16.0
+    while time.monotonic() < deadline:
+        saw_widget = saw_widget or await _p1_frame_has_zendesk_widget(page)
+        if await _p1_click_zendesk_garden_close(page, log):
+            closed_ok = True
+            break
+        await asyncio.sleep(0.16)
+
+    if not closed_ok:
+        if log:
+            log("  [诊断·客服] 轮询内未点到 Garden，尝试聊天窗 header 最后按钮…")
+        closed_ok = await _p1_try_zendesk_header_last_in_chat_frames(page, log)
+
+    if not closed_ok:
+        for _ in range(7):
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(160)
+            except Exception:
+                break
+        if saw_widget:
+            closed_ok = True
+
+    if closed_ok:
+        load_note = "已检测到聊天窗特征" if saw_widget else "关闭动作已执行"
+        return (
+            "PASS",
+            f"{cm}；{load_note}；已通过 Garden svg / 顶栏按钮 / Esc 收起。继续后续用例。",
+        )
+    return (
+        "FAIL",
+        f"{cm}；未检测到聊天窗或未点中 "
+        f'svg[data-garden-id="buttons.icon"]（当前 frame 数 {len(page.frames)}）。',
+    )
+
+
 async def _try_click_tab(
     page: Any, patterns: list[str], *, timeout_ms: float = 4000
 ) -> tuple[bool, str]:
@@ -478,13 +1045,16 @@ async def _try_click_exact_text_last_in_frames(
         if n < 1:
             continue
         try:
-            lg(f"frame[{fi}] {furl!r} 精确「{label}」×{n} → 点击 .last")
+            lg(f"frame[{fi}] {furl!r} 精确「{label}」×{n} → .last + JS 父级 click")
             loc = fr.get_by_text(label, exact=True).last
-            await loc.wait_for(state="visible", timeout=3200)
-            await loc.scroll_into_view_if_needed()
-            await loc.click(timeout=4500)
+            await loc.wait_for(state="attached", timeout=3200)
+            try:
+                await loc.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            await loc.evaluate(_JS_CLICK_TAB_FROM_LABEL)
             await page.wait_for_timeout(700)
-            return True, f"frame[{fi}] 精确「{label}」.last"
+            return True, f"frame[{fi}] 精确「{label}」.last（JS）"
         except Exception as e:
             lg(f"frame[{fi}] 点击失败：{_brief_exc(e, 200)}")
     return False, ""
@@ -529,9 +1099,12 @@ async def _try_click_party_in_scoped_bottom_bar(
                 if bar is None:
                     bar = shell.last
                 p = bar.get_by_text("Party", exact=True).first
-                await p.wait_for(state="visible", timeout=2800)
-                await p.scroll_into_view_if_needed()
-                await p.click(timeout=4500)
+                await p.wait_for(state="attached", timeout=2800)
+                try:
+                    await p.scroll_into_view_if_needed(timeout=2800)
+                except Exception:
+                    pass
+                await p.evaluate(_JS_CLICK_TAB_FROM_LABEL)
                 await page.wait_for_timeout(800)
                 return True, f"frame[{fi}] {shell_sel} 容器内「Party」（{furl!r}）"
             except Exception as e:
@@ -560,13 +1133,21 @@ async def _best_bottom_tabs(
         candidates: list[tuple[int, Any, int]] = []
         for idx in range(nl):
             tl = lists.nth(idx)
+            nh = await tl.get_by_text("Home", exact=True).count()
+            nshare = await tl.get_by_text("Share", exact=True).count()
+            if nh < 1 or nshare < 1:
+                lg(
+                    f"tablist[{idx}] 跳过（非底栏：须同时含精确「Home」与「Share」；"
+                    f"当前 Home={nh} Share={nshare}）"
+                )
+                continue
             tabs = tl.locator('[role="tab"]')
             tc = await tabs.count()
             if tc >= 2:
                 candidates.append((idx, tabs, tc))
-            lg(f"tablist[{idx}] 内 [role=tab] 数量 = {tc}")
+            lg(f"tablist[{idx}] 内 [role=tab] 数量 = {tc}（已确认含 Home+Share）")
         if not candidates:
-            lg("所有 tablist 中 tab 数均 < 2，无法按「第 1/2 项」点击 Home/Party")
+            lg("无「同时含 Home+Share」的 tablist（中部筛选条已排除）；改用 JS 底栏或 nav 容器策略")
             return None
         max_tc = max(c[2] for c in candidates)
         best = max((c for c in candidates if c[2] == max_tc), key=lambda c: c[0])
@@ -586,6 +1167,11 @@ async def _try_click_bottom_home_nav(
             log("  [诊断·Home] " + msg)
 
     reasons: list[str] = []
+    lg("策略 0：各 frame 精确「Home」.last + JS 父级点击（KalaroKo）…")
+    ok0, m0 = await _try_click_bottom_label_js(page, "Home", log=log, tag="Home")
+    if ok0:
+        return True, m0
+
     r = await _best_bottom_tabs(page, log=log)
     if r:
         tabs, tc = r
@@ -672,38 +1258,115 @@ async def _scroll_home_to_bottom(page: Any) -> None:
         pass
 
 
-async def _try_click_party_hubs_link(
+async def _try_click_party_hubs_in_hottest_row(
     page: Any, *, log: Callable[[str], None] | None = None
 ) -> tuple[bool, str]:
-    """右侧「Party Hubs >」多为 link；优先于整块标题点击。"""
+    """「Hottest Parties」标题行与「Party Hubs >」同一块区域（图1 红框）：先滚入视口再点 Hub。"""
     def lg(msg: str) -> None:
         if log:
             log("  [诊断·PartyHubs] " + msg)
 
+    try:
+        row = page.locator("div, section, article, header").filter(
+            has=page.get_by_text(re.compile(r"Hottest\s*Parties", re.I))
+        ).filter(has=page.get_by_text(re.compile(r"Party\s*Hubs", re.I)))
+        n = await row.count()
+        if n < 1:
+            lg("未找到同时含 Hottest Parties 与 Party Hubs 的容器")
+            return False, ""
+        box = row.last
+        await box.scroll_into_view_if_needed(timeout=2800)
+        await page.wait_for_timeout(180)
+        hub = box.get_by_text(re.compile(r"Party\s*Hubs", re.I)).last
+        await hub.wait_for(state="attached", timeout=2200)
+        await hub.scroll_into_view_if_needed(timeout=2500)
+        try:
+            await hub.click(timeout=3500, force=True)
+        except Exception:
+            await hub.evaluate(
+                """(el) => {
+                  let n = el;
+                  for (let i = 0; i < 10 && n; i++) {
+                    const t = (n.tagName || '').toUpperCase();
+                    if (t === 'A' || t === 'BUTTON' || n.getAttribute('role') === 'button') {
+                      n.click(); return;
+                    }
+                    n = n.parentElement;
+                  }
+                  el.click();
+                }"""
+            )
+        await page.wait_for_timeout(800)
+        return True, "已点击 Hottest Parties 区块内 Party Hubs"
+    except Exception as e:
+        lg(f"Hottest 同行：{_brief_exc(e, 180)}")
+        return False, ""
+
+
+async def _try_click_party_hubs_link(
+    page: Any, *, log: Callable[[str], None] | None = None
+) -> tuple[bool, str]:
+    """右侧「Party Hubs >」多为 link；优先于整块标题点击。失败策略须短超时，避免 4×4×3s 级联拖分钟。"""
+    def lg(msg: str) -> None:
+        if log:
+            log("  [诊断·PartyHubs] " + msg)
+
+    ok_row, msg_row = await _try_click_party_hubs_in_hottest_row(page, log=log)
+    if ok_row:
+        return True, msg_row
+
+    # 可见链路与纯文案分支分开超时：无匹配则 count 为 0 立即跳过，不空等 3s
+    t_vis = 1100
+    t_att = 1800
+    t_clk = 3200
+
     for pat in (
-        r"Party\s*Hubs",
-        r"Party\s*Hubs\s*>",
-        r"Party\s*Hubs\s*›",
+        r"Party\s*Hubs(?:\s*[>›])?",
         r"Hottest\s*Parties",
     ):
         try:
-            loc = page.get_by_role("link", name=re.compile(pat, re.I)).first
-            await loc.wait_for(state="visible", timeout=3200)
-            await loc.scroll_into_view_if_needed()
-            await loc.click(timeout=4500)
-            await page.wait_for_timeout(750)
-            return True, f"已点击链接（get_by_role link），匹配 /{pat}/i"
+            gl = page.get_by_role("link", name=re.compile(pat, re.I))
+            if await gl.count() < 1:
+                lg(f"get_by_role(link) /{pat}/ count=0，跳过")
+            else:
+                loc = gl.first
+                await loc.wait_for(state="visible", timeout=t_vis)
+                await loc.scroll_into_view_if_needed(timeout=t_att)
+                await loc.click(timeout=t_clk)
+                await page.wait_for_timeout(450)
+                return True, f"已点击链接（get_by_role link），匹配 /{pat}/i"
         except Exception as e:
-            lg(f"get_by_role(link) /{pat}/ ：{_brief_exc(e, 160)}")
+            lg(f"get_by_role(link) /{pat}/ ：{_brief_exc(e, 140)}")
         try:
-            loc = page.locator("a").filter(has_text=re.compile(pat, re.I)).first
-            await loc.wait_for(state="visible", timeout=3200)
-            await loc.scroll_into_view_if_needed()
-            await loc.click(timeout=4500)
-            await page.wait_for_timeout(750)
-            return True, f"已点击 <a>，文案匹配 /{pat}/i"
+            al = page.locator("a").filter(has_text=re.compile(pat, re.I))
+            if await al.count() < 1:
+                lg(f"locator(a)+text /{pat}/ count=0，跳过")
+            else:
+                loc = al.first
+                await loc.wait_for(state="visible", timeout=t_vis)
+                await loc.scroll_into_view_if_needed(timeout=t_att)
+                await loc.click(timeout=t_clk)
+                await page.wait_for_timeout(450)
+                return True, f"已点击 <a>，文案匹配 /{pat}/i"
         except Exception as e:
-            lg(f"locator(a)+text /{pat}/ ：{_brief_exc(e, 160)}")
+            lg(f"locator(a)+text /{pat}/ ：{_brief_exc(e, 140)}")
+        try:
+            tl = page.get_by_text(re.compile(pat, re.I))
+            if await tl.count() < 1:
+                lg(f"get_by_text /{pat}/ count=0，跳过")
+            else:
+                loc = tl.last
+                await loc.wait_for(state="attached", timeout=t_att)
+                await loc.scroll_into_view_if_needed(timeout=t_att)
+                await page.wait_for_timeout(120)
+                try:
+                    await loc.click(timeout=t_clk, force=True)
+                except Exception:
+                    await loc.evaluate(_JS_CLICK_TAB_FROM_LABEL)
+                await page.wait_for_timeout(450)
+                return True, f"已点击文案 .last（force/JS），匹配 /{pat}/i"
+        except Exception as e:
+            lg(f"get_by_text .last /{pat}/ ：{_brief_exc(e, 140)}")
     lg("所有 Party Hubs / Hottest Parties 链接模式均未成功")
     return False, ""
 
@@ -720,6 +1383,11 @@ async def _try_click_bottom_party_nav(
             log("  [诊断·Party底栏] " + msg)
 
     reasons: list[str] = []
+    lg("策略 0：各 frame 精确「Party」.last + JS（底栏在 DOM 中通常后于筛选条）…")
+    ok0, m0 = await _try_click_bottom_label_js(page, "Party", log=log, tag="Party底栏")
+    if ok0:
+        return True, m0
+
     r = await _best_bottom_tabs(page, log=log)
     if r:
         tabs, tc = r
@@ -823,14 +1491,22 @@ async def _must_click_then_verify(
     text_click_patterns: list[str],
     verify_patterns: list[str],
     verify_timeout_ms: float = 2800,
+    bottom_js_label: str | None = None,
+    log: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """
-    先点击（页签优先，再尝试文案点击），再校验展开/切换后的可见内容。
+    先点击（底栏 JS → 页签 → 文案），再校验展开/切换后的可见内容。
     禁止在未点击成功时仅凭「页面上有文案」判 PASS。
     """
     clicked = False
     cm = ""
-    if tab_patterns:
+    if bottom_js_label:
+        okb, mb = await _try_click_bottom_label_js(
+            page, bottom_js_label, log=log, tag=case_zh
+        )
+        if okb:
+            clicked, cm = True, mb
+    if not clicked and tab_patterns:
         clicked, cm = await _try_click_tab(page, tab_patterns)
     if not clicked:
         c2, m2 = await _try_click_visible_text(page, text_click_patterns)
@@ -859,14 +1535,15 @@ async def _run_case(
 ) -> tuple[str, str]:
     """返回 (VERDICT, 中文/可读说明)。"""
     if case_id == "p1_customer_service":
-        ok, msg = await _customer_service_detect(page)
-        return ("PASS", msg) if ok else ("FAIL", msg)
+        return await _customer_service_click_open_close(page, log)
     if case_id == "p1_share_tab":
         return await _must_click_then_verify(
             page,
             case_zh="分享页签",
             tab_patterns=[r"^Share$", r"分享", r"Share"],
             text_click_patterns=[r"^Share$", r"\bShare\b", r"分享"],
+            bottom_js_label="Share",
+            log=log,
             verify_patterns=[
                 r"Share",
                 r"分享",
@@ -886,6 +1563,8 @@ async def _run_case(
             case_zh="任务页签",
             tab_patterns=[r"^Task$", r"任务", r"Tasks"],
             text_click_patterns=[r"^Task$", r"\bTask\b", r"任务"],
+            bottom_js_label="Task",
+            log=log,
             verify_patterns=[
                 r"\bTask\b",
                 r"任务",
@@ -905,6 +1584,8 @@ async def _run_case(
             case_zh="我的/Profile",
             tab_patterns=[r"Profile", r"^Me$", r"我的", r"Account"],
             text_click_patterns=[r"Profile", r"^Me$", r"我的", r"Account"],
+            bottom_js_label="Profile",
+            log=log,
             verify_patterns=[
                 r"Profile",
                 r"我的",
@@ -925,25 +1606,29 @@ async def _run_case(
             ],
         )
     if case_id == "p1_hottest_parties":
+        """
+        首页仅滚底一次 → 点 Party Hubs → 子页不滚底，校验顶栏/列表常态文案
+        → 点顶栏 img 返回 → 继续后续用例。
+        """
         await _ensure_on_home_feed(page, target_url, log)
-        log("  [诊断] —— 快照：点击 Home 前 ——")
+        log("  [诊断·HottestParty] —— 首页：底栏 Home + 滚至 Hottest / Party Hubs ——")
         await _log_tablist_snapshot(page, log, tag="·Home前")
         try:
             await page.evaluate("window.scrollTo(0, 0)")
-            await page.wait_for_timeout(200)
+            await page.wait_for_timeout(180)
         except Exception:
             pass
         home_ok, home_msg = await _try_click_bottom_home_nav(page, log=log)
         if home_ok:
-            log(f"  [诊断] Home 结果：{home_msg}")
+            log(f"  [诊断·HottestParty] 底栏 Home：{home_msg}")
         else:
-            log(f"  [诊断] Home 失败摘要：{home_msg}")
-        await page.wait_for_timeout(450)
-        log("  [诊断] 开始滚到底部（scrollHeight + End）…")
+            log(f"  [诊断·HottestParty] 底栏 Home 未点到：{home_msg}")
+        await page.wait_for_timeout(320)
+        log("  [诊断·HottestParty] 仅在首页滚底（scrollHeight + End），以露出区块…")
         await _scroll_home_to_bottom(page)
+
         clicked, cm = await _try_click_party_hubs_link(page, log=log)
         if not clicked:
-            log("  [诊断] 尝试用可见文案点击 Party Hubs / Hottest…")
             c2, m2 = await _try_click_visible_text(
                 page,
                 [
@@ -953,54 +1638,51 @@ async def _run_case(
                     r"Party\s*Hub",
                     r"热门",
                 ],
-                timeout_ms=3500,
+                timeout_ms=2800,
             )
             if c2:
                 clicked, cm = True, m2
             else:
-                log(f"  [诊断] 可见文案点击未成功：{m2}")
+                log(f"  [诊断·HottestParty] 文案点击未成功：{m2}")
+        if not clicked and "party-hubs" in (page.url or "").lower():
+            log("  [诊断·HottestParty] URL 已在 party-hubs，继续校验子页…")
+            clicked, cm = True, "已进入 Party Hubs（URL）"
         if not clicked:
-            log("  [诊断] —— 快照：滚底且点击失败后 ——")
-            await _log_tablist_snapshot(page, log, tag="·滚底后")
+            await _log_tablist_snapshot(page, log, tag="·首页点 Hubs 失败后")
+            await _p1_leave_party_hubs_after_hottest(page, target_url, log)
             hint = (
-                f" Home 未成功：{home_msg}。"
-                if not home_ok
-                else f" Home 已执行：{home_msg}。"
+                f" Home：{home_msg}。"
+                if home_ok
+                else f" Home 未点到：{home_msg}。"
             )
             return (
                 "FAIL",
-                "「热门 Party 板块」未点到 Party Hubs 或区块标题。"
-                "须先回底栏 Home 再滚到底；脚本已按此顺序执行。"
+                "「热门 Party 板块」未点到 Party Hubs。"
                 + hint
-                + " 详见上方 [诊断] 日志（tablist 数量、每项 tab 文案、Party Hubs 链接匹配数）。",
+                + " 详见 [诊断·PartyHubs] 与 tablist 快照。",
             )
+
+        await page.wait_for_timeout(550)
         ok, vm = await _visible_any(
             page,
-            [
-                r"Hottest",
-                r"Party",
-                r"Join",
-                r"参加",
-                r"Hub",
-                r"Live",
-                r"Room",
-                r"桌",
-                r"玩家",
-                r"PK",
-                r"View\s*all",
-                r"查看更多",
-                r"Preparing",
-                r"准备",
-            ],
-            timeout_ms=3200,
+            list(_P1_PARTY_HUBS_VERIFY_PATTERNS),
+            timeout_ms=2800,
         )
         if not ok:
+            await _p1_leave_party_hubs_after_hottest(page, target_url, log)
             return (
                 "FAIL",
-                f"「热门 Party 板块」已操作（{cm}），但切换后未见预期内容：{vm}",
+                f"「热门 Party 板块」已进入（{cm}），但 Party Hubs 页未见典型展示：{vm}",
             )
-        h_part = f"{home_msg}；" if home_ok else "（底栏 Home 未点到，仍继续找区块）"
-        return ("PASS", f"「热门 Party 板块」{h_part}{cm}；切换/展开后确认：{vm}")
+
+        log("  [诊断·HottestParty] 子页展示正常，点击顶栏返回图标离开…")
+        await _p1_leave_party_hubs_after_hottest(page, target_url, log)
+
+        h_part = f"{home_msg}；" if home_ok else "（Home 未点到仍进入 Hubs）"
+        return (
+            "PASS",
+            f"「热门 Party 板块」{h_part}{cm}；子页确认：{vm}；已顶栏返回并回大厅。",
+        )
     if case_id == "p1_party_status":
         await _ensure_on_home_feed(page, target_url, log)
         log("  [诊断] —— 快照：Party 用例开始（滚底前）——")
@@ -1013,9 +1695,9 @@ async def _run_case(
             await _log_tablist_snapshot(page, log, tag="·Party失败后")
             return (
                 "FAIL",
-                "「Party 状态展示」必须点击底栏第二个「Party」（主导航 tablist 第 2 项）。"
+                "「Party 状态展示」须点击底栏「Party」（脚本优先 JS 父级点击，其次含 Home+Share 的 tablist / nav）。"
                 f"失败摘要：{cm}。"
-                "详见上方 [诊断·Party底栏] 与 tablist 快照（若无 tablist，说明底栏未暴露 ARIA）。",
+                "详见上方 [诊断·Party底栏] 与 tablist 快照。",
             )
         ok, vm = await _visible_any(
             page,
@@ -1143,6 +1825,9 @@ async def _async_main(args: argparse.Namespace) -> int:
         log(f"当前标签页 URL：{url0}")
         log(f"当前页面标题：{title0}")
         log("")
+        log("准备：若在 party-hubs、app_tabbar=no 或个人中心，先回站点首页，保证底栏与 Hottest 区块可测。")
+        await _ensure_on_home_feed(page, target_url, log)
+        log("")
 
         results: list[dict[str, Any]] = []
         for i, cid in enumerate(case_ids, start=1):
@@ -1191,6 +1876,15 @@ async def _async_main(args: argparse.Namespace) -> int:
             outp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             log(f"结构化报告已写入：{outp.resolve()}")
 
+        if not args.no_xlsx_report:
+            xlsx_p = (
+                args.xlsx_report
+                if args.xlsx_report is not None
+                else _default_k11_xlsx_report_path()
+            )
+            log("")
+            write_k11_p1_results_to_xlsx(Path(xlsx_p), results, log=log)
+
         log("———————— 汇总 ————————")
         for r in results:
             cid = r["case"]
@@ -1230,6 +1924,13 @@ def main() -> int:
         help="若无含目标 host 的标签页，则对当前页执行一次 goto（调试用）",
     )
     ap.add_argument("--json-out", type=Path, default=None, help="写入结构化结果 JSON")
+    ap.add_argument(
+        "--xlsx-report",
+        type=Path,
+        default=None,
+        help="K11平台测试用例.xlsx；默认 K11_XLSX_REPORT 或 ~/Downloads/K11平台测试用例.xlsx",
+    )
+    ap.add_argument("--no-xlsx-report", action="store_true", help="不写入 Excel")
     ap.add_argument("--quiet", action="store_true", help="仅输出每条 VERDICT 与失败信息")
     ap.add_argument(
         "-v",

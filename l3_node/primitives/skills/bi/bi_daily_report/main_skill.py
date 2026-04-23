@@ -233,6 +233,17 @@ def _nonempty_str(v: Any) -> bool:
     return isinstance(v, str) and bool(v.strip())
 
 
+def _yaml_coerce_true(v: Any) -> bool:
+    """与 YAML/历史配置兼容：true、yes、1、\"true\" 等视为真（用于 lark_bitable.replace_table）。"""
+    if v is True:
+        return True
+    if isinstance(v, (int, float)) and v == 1:
+        return True
+    if isinstance(v, str) and v.strip().lower() in ("true", "yes", "1", "on"):
+        return True
+    return False
+
+
 def _merge_lark_tables_from_project_yaml(result: dict[str, Any], proj_raw: dict[str, Any]) -> None:
     """~/.jachin 下 YAML 里 table_id 为空的项，用项目 config 中的非空 table_id 补齐（避免本机配置落后导致大量「未配置 table_id」）。"""
     tables_user = (result.get("lark_bitable") or {}).get("tables")
@@ -249,10 +260,10 @@ def _merge_lark_tables_from_project_yaml(result: dict[str, Any], proj_raw: dict[
 
 
 def _merge_lark_bitable_replace_from_project_yaml(result: dict[str, Any], proj_raw: dict[str, Any]) -> None:
-    """项目仓库 bi_daily_report.yaml 若声明 lark_bitable.replace_table: true，则覆盖本机 ~/.jachin 中误留的 false。
+    """项目仓库 bi_daily_report.yaml 若声明 lark_bitable.replace_table 为真，则覆盖本机 ~/.jachin 中误留的 false。
     每日战报期望「先 batch_delete 再写入」；本机旧配置常因避 403 写成 false 导致仅追加。"""
     lb_p = proj_raw.get("lark_bitable") or {}
-    if lb_p.get("replace_table") is not True:
+    if not _yaml_coerce_true(lb_p.get("replace_table")):
         return
     lb = dict(result.get("lark_bitable") or {})
     lb["replace_table"] = True
@@ -297,9 +308,10 @@ def _load_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
                 with open(path, encoding="utf-8") as f:
                     raw = yaml.safe_load(f) or {}
                 result = _resolve_config_values(raw)
-                # 本机优先读 ~/.jachin 时：用项目仓库 YAML 补全空的 table_id、缺的仪表盘 URL
+                # 项目仓库 config/.../bi_daily_report.yaml 存在则始终读入，用于：补全 table_id、
+                # 以 replace_table: true 覆盖本机 false（勿仅在 path==~/.jachin 时加载，避免合并被跳过仍追加写入）
                 proj_raw: dict[str, Any] = {}
-                if path == candidates[0] and candidates[1].exists():
+                if candidates[1].exists():
                     try:
                         with open(candidates[1], encoding="utf-8") as pf:
                             proj_raw = yaml.safe_load(pf) or {}

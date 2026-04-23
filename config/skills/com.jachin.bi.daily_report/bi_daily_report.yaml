@@ -125,7 +125,7 @@ lark_bitable:
   app_token: "HCvubvsubak2WPs2GbClYq68gjh"
   ensure_columns: true    # 改为 true 可自动建列，解决 01_用户活跃_增幅表 FieldNameNotFound
   # true：同步前 batch_delete 清空该子表再写入（每日战报默认）。需应用具备删除记录权限。
-  # 若本机 ~/.jachin 同名 YAML 曾写 replace_table: false，加载配置时仍以「项目本文件」为 true 则强制整表覆盖（见 _merge_lark_bitable_replace_from_project_yaml）
+  # 若本机 ~/.jachin 曾写 replace_table: false：只要仓库内本文件存在且为 true，_load_config 会加载并合并、强制整表覆盖（不依赖先读哪一路 YAML）
   replace_table: true
   # CSV 文件 -> table_id（在 Lark 中打开子表，URL ?table=tblXXX 即 table_id）
   # 表名与 Lark 多维表格侧栏一一对应，填对应子表的 table_id

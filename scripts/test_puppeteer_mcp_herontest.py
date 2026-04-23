@@ -20,15 +20,24 @@ Herontest 站点验收：通过 **L3 大模型 + Puppeteer MCP**（或直连 MCP
 
 3) **mcp-execute**：``POST /api/v3/mcp/execute`` 单次调工具；需 ``JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1``（开发）。
 
+**浏览器：附加既有 Chrome（与** ``test_k11_platform_smoke_extended_playwright.py`` **一致）**  
+  默认**不**让 Puppeteer 自己 launch，而是经 **CDP** 连接你已用 ``--remote-debugging-port=9222`` 等方式启动的 Chrome。  
+  解析顺序：``--cdp-url`` > 环境 ``KALAROKO_CDP_ENDPOINT`` / ``PUPPETEER_BROWSER_URL`` > ``http://127.0.0.1:9222``。  
+  direct-stdio 模式使用仓库 ``tools/mcp-jachin-puppeteer-cdp``（设 ``PUPPETEER_BROWSER_URL``，见该目录 README），**不再**用官方包单独起新浏览器。  
+  若需旧行为：``--launch-browser``。  
+  **L3 模式**下连接串由 L3 子进程内 MCP 配置决定，请在本机 ``~/.jachin/mcp_servers.json`` 等为 **jachin-puppeteer-cdp** 配置 ``PUPPETEER_BROWSER_URL``（可与 ``${KALAROKO_CDP_ENDPOINT}`` 同值）；本脚本会打印提示与在 user 提示词中说明。
+
 前置（direct-stdio / 部分 L3 侧）：
-  - Node.js + npx；pip install mcp>=1.0.0（仅 direct-stdio 必需）
-  - Chromium：``PUPPETEER_EXECUTABLE_PATH`` 或 ``npx puppeteer browsers install chrome``
+  - Node.js； ``tools/mcp-jachin-puppeteer-cdp`` 内 ``npm install``（附加 CDP 时）；pip install mcp>=1.0.0（仅 direct-stdio 必需）
+  - 仅 ``--launch-browser`` 时：Chromium 经 ``PUPPETEER_EXECUTABLE_PATH`` 或 npx 下载
 
 用法（仓库根目录）：
   python -m l3_node --ws-only   # 另开终端先起 L3（HTTP API 默认 18991）
   python scripts/test_puppeteer_mcp_herontest.py
   python scripts/test_puppeteer_mcp_herontest.py --l3-base http://127.0.0.1:18991 --max-iterations 36
   python scripts/test_puppeteer_mcp_herontest.py --direct-stdio
+  python scripts/test_puppeteer_mcp_herontest.py --direct-stdio --launch-browser
+  python scripts/test_puppeteer_mcp_herontest.py --cdp-url http://127.0.0.1:9222
   set JACHIN_L3_MCP_EXECUTE_ALLOW_LEGACY=1 && python scripts/test_puppeteer_mcp_herontest.py --mcp-execute
 """
 from __future__ import annotations
@@ -38,6 +47,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -54,6 +64,38 @@ if sys.platform == "win32":
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# 与 test_k11_platform_smoke_extended_playwright._kalaroko_cdp 一致：附加已启动的 Chrome
+_JACHIN_PUPPETEER_CDP_DIR = ROOT / "tools" / "mcp-jachin-puppeteer-cdp"
+_JACHIN_PUPPETEER_CDP_INDEX = _JACHIN_PUPPETEER_CDP_DIR / "index.mjs"
+
+
+def _normalize_cdp_http_url(raw: str | None) -> str:
+    """与 extended playwright 一致：补全 http(s) 前缀并去尾斜杠。"""
+    t = (raw or "").strip()
+    if not t:
+        t = "http://127.0.0.1:9222"
+    if not t.startswith("http://") and not t.startswith("https://"):
+        t = "http://" + t.lstrip("/")
+    return t.rstrip("/")
+
+
+def _resolve_puppeteer_cdp_url(
+    cdp_url_cli: str | None, *, self_launch_browser: bool
+) -> str | None:
+    """
+    若 self_launch_browser：返回 None，使用官方 MCP 自举浏览器。
+    否则：CLI > KALAROKO_CDP_ENDPOINT > PUPPETEER_BROWSER_URL > 默认 9222。
+    """
+    if self_launch_browser:
+        return None
+    raw = (cdp_url_cli or "").strip()
+    if not raw:
+        raw = (
+            (os.environ.get("KALAROKO_CDP_ENDPOINT") or "").strip()
+            or (os.environ.get("PUPPETEER_BROWSER_URL") or "").strip()
+        )
+    return _normalize_cdp_http_url(raw or None)
+
 
 def _load_dotenv_for_test() -> None:
     """与 L3 类似：合并仓库根 .env 与 ~/.jachin/.env，使 PUPPETEER_EXECUTABLE_PATH 等生效。"""
@@ -66,17 +108,33 @@ def _load_dotenv_for_test() -> None:
             load_dotenv(p, encoding="utf-8")
 
 
-def _log_puppeteer_browser_env() -> None:
+def _log_puppeteer_browser_env(*, cdp_url: str | None, self_launch: bool) -> None:
+    if cdp_url and not self_launch:
+        print(
+            f"[puppeteer-test] 将**附加**既有 Chrome（CDP）：PUPPETEER_BROWSER_URL={cdp_url}",
+            flush=True,
+        )
+        print(
+            "[puppeteer-test] 与 test_k11_platform_smoke_extended_playwright 相同："
+            "请已用带远程调试的 Chrome 启动（如 9222）。direct-stdio 使用 tools/mcp-jachin-puppeteer-cdp。",
+            flush=True,
+        )
+        if not _JACHIN_PUPPETEER_CDP_INDEX.is_file():
+            print(
+                f"[puppeteer-test] 警告: 未找到 {_JACHIN_PUPPETEER_CDP_INDEX}，"
+                "请确认仓库子模块/路径完整。",
+                file=sys.stderr,
+                flush=True,
+            )
+        return
     pep = (os.environ.get("PUPPETEER_EXECUTABLE_PATH") or "").strip()
     if pep:
         short = pep if len(pep) <= 60 else pep[:28] + "…" + pep[-24:]
-        print(f"[puppeteer-test] 将使用 PUPPETEER_EXECUTABLE_PATH={short}", flush=True)
+        print(f"[puppeteer-test] 将使用 PUPPETEER_EXECUTABLE_PATH={short}（--launch-browser 自举）", flush=True)
     else:
         print(
             "[puppeteer-test] 当前进程**未**设置 PUPPETEER_EXECUTABLE_PATH。"
-            "若你只改了「系统环境变量」，请**关闭并重新打开 PowerShell**后再运行；"
-            "若写在 .env，请确认路径为仓库根或 ~/.jachin/.env（本脚本已尝试加载）。"
-            "使用 L3 时还须在 mcp_servers.json 的 official-mcp-puppeteer.env 里声明。",
+            "若只使用 --launch-browser，请配置 Chrome 路径或 npx 安装 Chromium。",
             flush=True,
         )
 
@@ -115,8 +173,18 @@ def _http_post_json(
         return code, raw
 
 
-def _build_l3_agent_user_input(target_url: str) -> str:
-    return (
+def _build_l3_agent_user_input(target_url: str, *, cdp_url: str | None = None) -> str:
+    cdp_block = ""
+    if cdp_url:
+        cdp_block = (
+            "**浏览器连接（必读）**：本任务须由 **mcp:puppeteer_*** 在**已用 CDP 附加的既有 Chrome** 中执行，"
+            f"目标调试根为 **{cdp_url}**（与 .env 中 **KALAROKO_CDP_ENDPOINT** / **PUPPETEER_BROWSER_URL** 一致，"
+            f"同 `test_k11_platform_smoke_extended_playwright`）。"
+            "若 Observation 显示无法连接 9222 或显然**新启动**了独立 Chromium，"
+            "请在 L3 使用的 ``~/.jachin/mcp_servers.json`` 中为 **jachin-puppeteer-cdp** 配置 **PUPPETEER_BROWSER_URL** 后重启 L3。"
+            "禁止在未连接既有浏览器的实例上仅依据猜测输出结论。\n\n"
+        )
+    return cdp_block + (
         "【最高优先级·必读】测试7（Console/运行时错误）**禁止**以「工具清单没有 Console 工具」「无日志相关工具」"
         "「无法完全验证」等理由输出 pass=false——此类理由视为**无效、违规**，因官方 MCP 本就不提供 get_console_logs。"
         "测试7**唯一**验收路径：用 **mcp:puppeteer_evaluate** 执行下文「脚本A」与「脚本B」。"
@@ -348,11 +416,13 @@ def _run_l3_agent_herontest(
     max_iterations: int,
     *,
     soft_pass_legacy_test7: bool = False,
+    cdp_url: str | None = None,
+    self_launch_browser: bool = False,
 ) -> int:
     base = l3_base.rstrip("/")
     url = f"{base}/api/v3/agent/run"
     body: dict[str, Any] = {
-        "user_input": _build_l3_agent_user_input(target_url),
+        "user_input": _build_l3_agent_user_input(target_url, cdp_url=cdp_url),
         "max_iterations": max_iterations,
         "implicit_attribution": {"channel": "http_herontest_puppeteer_script"},
     }
@@ -361,6 +431,14 @@ def _run_l3_agent_herontest(
         flush=True,
     )
     print(f"[puppeteer-test] target_url={target_url!r}", flush=True)
+    if cdp_url and not self_launch_browser:
+        print(
+            f"[puppeteer-test] L3 需附加既有 Chrome：请确认 MCP 已设 PUPPETEER_BROWSER_URL={cdp_url} "
+            f"（与 {cdp_url!r} 一致）。",
+            flush=True,
+        )
+    if self_launch_browser:
+        print("[puppeteer-test] 提示: 已按 --launch-browser 不在提示词中要求 CDP（由服务端 MCP 自举）。", flush=True)
     _print_l3_foreground_debug()
     t0 = time.perf_counter()
     code, payload = _http_post_json(url, body, timeout=600.0)
@@ -582,22 +660,60 @@ def install_puppeteer_chrome_cache() -> int:
     return r.returncode
 
 
-def _stdio_params_puppeteer() -> StdioServerParameters:
-    """与 config/mcp_servers.json.example 中 official-mcp-puppeteer 对齐。"""
+def _stdio_params_puppeteer(
+    *, self_launch: bool, cdp_url: str | None
+) -> StdioServerParameters:
+    """
+    附加既有 Chrome：``tools/mcp-jachin-puppeteer-cdp`` + ``PUPPETEER_BROWSER_URL``（MCP id 示例见
+    ``tools/mcp-official/mcp_servers.jachin.example.json`` 的 **jachin-puppeteer-cdp**）。
+    自举：官方 @modelcontextprotocol/server-puppeteer（与旧行为一致）。
+    """
     env: dict[str, str] = {k: str(v) if v is not None else "" for k, v in os.environ.items()}
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    _apply_proxy_to_puppeteer_launch_options(env)
+    if not self_launch and cdp_url:
+        env["PUPPETEER_BROWSER_URL"] = cdp_url
+        for key in (
+            "PUPPETEER_BROWSER_WS_ENDPOINT",  # 避免与 HTTP CDP 混用
+        ):
+            env.pop(key, None)
+    elif self_launch:
+        env.pop("PUPPETEER_BROWSER_URL", None)
+        _apply_proxy_to_puppeteer_launch_options(env)
+
+    if self_launch or not cdp_url:
+        if sys.platform == "win32":
+            return StdioServerParameters(
+                command="cmd.exe",
+                args=["/c", "npx", "-y", "@modelcontextprotocol/server-puppeteer"],
+                env=env,
+            )
+        return StdioServerParameters(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-puppeteer"],
+            env=env,
+        )
+
+    if not _JACHIN_PUPPETEER_CDP_INDEX.is_file():
+        raise FileNotFoundError(
+            f"未找到 jachin CDP 入口: {_JACHIN_PUPPETEER_CDP_INDEX}；请检查仓库或执行 cd tools/mcp-jachin-puppeteer-cdp && npm install"
+        )
+    node = shutil.which("node")
+    if not node:
+        raise FileNotFoundError("未在 PATH 中找到 node，无法启动 mcp-jachin-puppeteer-cdp")
+    idx = str(_JACHIN_PUPPETEER_CDP_INDEX.resolve())
+    tool_cwd = str(_JACHIN_PUPPETEER_CDP_DIR.resolve())
+    print(
+        f"[puppeteer-test] stdio: node {idx}  cwd={tool_cwd}  PUPPETEER_BROWSER_URL={cdp_url}",
+        flush=True,
+    )
     if sys.platform == "win32":
         return StdioServerParameters(
             command="cmd.exe",
-            args=["/c", "npx", "-y", "@modelcontextprotocol/server-puppeteer"],
+            args=["/c", node, idx],
             env=env,
+            cwd=tool_cwd,
         )
-    return StdioServerParameters(
-        command="npx",
-        args=["-y", "@modelcontextprotocol/server-puppeteer"],
-        env=env,
-    )
+    return StdioServerParameters(command=node, args=[idx], env=env, cwd=tool_cwd)
 
 
 async def _navigate_or_bail(session: Any, nav: str, url: str) -> tuple[bool, str]:
@@ -615,10 +731,25 @@ async def _navigate_or_bail(session: Any, nav: str, url: str) -> tuple[bool, str
         raise
 
 
-async def _run_stdio_herontest(target_url: str, smoke_url: str | None) -> int:
+async def _run_stdio_herontest(
+    target_url: str,
+    smoke_url: str | None,
+    *,
+    self_launch: bool,
+    cdp_url: str | None,
+) -> int:
     _ensure_mcp_sdk()
-    params = _stdio_params_puppeteer()
-    print("[puppeteer-test] 启动 MCP stdio（npx @modelcontextprotocol/server-puppeteer）…", flush=True)
+    params = _stdio_params_puppeteer(self_launch=self_launch, cdp_url=cdp_url)
+    if self_launch or not cdp_url:
+        print(
+            "[puppeteer-test] 启动 MCP stdio（@modelcontextprotocol/server-puppeteer，自举浏览器）…",
+            flush=True,
+        )
+    else:
+        print(
+            f"[puppeteer-test] 启动 MCP stdio（mcp-jachin-puppeteer-cdp，连接 {cdp_url}）…",
+            flush=True,
+        )
     try:
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -765,26 +896,59 @@ def main() -> int:
         action="store_true",
         help="direct-stdio：跳过探针页",
     )
+    ap.add_argument(
+        "--cdp-url",
+        default="",
+        metavar="URL",
+        help="既有 Chrome 远程调试根，如 http://127.0.0.1:9222；默认同 env：KALAROKO_CDP_ENDPOINT、PUPPETEER_BROWSER_URL，再默认 9222",
+    )
+    ap.add_argument(
+        "--launch-browser",
+        action="store_true",
+        help="不附加 CDP，由 Puppeteer 自举新浏览器（旧行为；与 extended playwright 默认相反）",
+    )
     args = ap.parse_args()
 
     _load_dotenv_for_test()
-    _log_puppeteer_browser_env()
+    cdp_resolved = _resolve_puppeteer_cdp_url(
+        (args.cdp_url or "").strip() or None,
+        self_launch_browser=bool(args.launch_browser),
+    )
+    _log_puppeteer_browser_env(
+        cdp_url=cdp_resolved,
+        self_launch=bool(args.launch_browser),
+    )
 
     if args.install_chrome:
-        rc = install_puppeteer_chrome_cache()
-        if rc != 0:
-            return rc
+        if cdp_resolved and not args.launch_browser:
+            print(
+                "[puppeteer-test] 已使用 CDP 附加模式，跳过 --install-chrome（无需单独下载 Chromium）。",
+                flush=True,
+            )
+        else:
+            rc = install_puppeteer_chrome_cache()
+            if rc != 0:
+                return rc
 
     if args.mcp_execute or args.via_http:
         return _run_mcp_execute(args.target_url, args.l3_base)
     if args.direct_stdio:
         smoke = None if args.no_smoke else (args.smoke_url or "").strip() or None
-        return asyncio.run(_run_stdio_herontest(args.target_url, smoke))
+        return asyncio.run(
+            _run_stdio_herontest(
+                args.target_url,
+                smoke,
+                self_launch=bool(args.launch_browser),
+                cdp_url=cdp_resolved,
+            )
+        )
     return _run_l3_agent_herontest(
         args.target_url,
         args.l3_base,
         args.max_iterations,
         soft_pass_legacy_test7=args.soft_pass_legacy_test7,
+        cdp_url=cdp_resolved,
+        self_launch_browser=bool(args.launch_browser),
     )
 
 
