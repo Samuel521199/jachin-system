@@ -11,7 +11,10 @@ L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
   （与 tauri.conf.json 的 bundle.externalBin: bin/l3_node 对应）
 
   便携包基线：成功后将仓库根 ``.env.example`` 复制为 ``dist_jachin_desktop/.env.example``，
-  与桌面安装/巡检中枢（Kalaroko CDP、Lark、LLM 等）说明保持同源，避免 dist 与仓库脱节。
+  与桌面安装/巡检中枢（Kalaroko CDP、Lark、LLM、Healthchecks 看门狗等）说明保持同源，避免 dist 与仓库脱节。
+
+  Healthchecks 看门狗（``l3_node/jobs/healthchecks_watchdog.py``）经 ``--hidden-import`` 与 ``requests``/``urllib3``
+  一并打入单文件 exe，避免 frozen 下缺模块导致启动后无心跳。
 
   部署时若需 npx 类 MCP 且无系统 Node：将官方 Node zip 解压到
   「exe 同目录/runtime/node/」（含 node.exe、npx.cmd），见 docs/L3_EMBEDDED_RUNTIME.md。
@@ -201,6 +204,10 @@ def main() -> int:
         "--collect-all", "tiktoken_ext",
         "--hidden-import", "openai",
         "--hidden-import", "httpx",
+        "--hidden-import", "requests",
+        "--hidden-import", "urllib3",
+        # Healthchecks.io 看门狗（http_server on_startup 内动态 import，须显式打入 frozen）
+        "--hidden-import", "l3_node.jobs.healthchecks_watchdog",
         "--hidden-import", "cryptography",
         "--hidden-import", "playwright",
         "--hidden-import", "playwright.sync_api",

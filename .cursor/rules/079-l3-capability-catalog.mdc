@@ -45,6 +45,7 @@ Agent 通过 `build_capability_prompt_inject_for_tools()` 将 **CORE + 命中域
 - 已用 PyInstaller `--add-data` 将下列路径打入 `sys._MEIPASS/docs/`，与 `l3_node/capability_catalog._docs_dirs()` 的 frozen 分支一致：  
   - `docs/L3_CAPABILITY_CATALOG.md` → `docs/`  
   - `docs/capability_domains/` → `docs/capability_domains/`  
+- Healthchecks 看门狗：`--hidden-import l3_node.jobs.healthchecks_watchdog` 与 `requests` / `urllib3`（`http_server` 内动态 import，须显式收集）。
 
 **修改总目录或域 md 后**：须重新执行 `python scripts/build_l3_sidecar.py`（或 CI 等价步骤），否则 exe 内仍为旧文案。
 

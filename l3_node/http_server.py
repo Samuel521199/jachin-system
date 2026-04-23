@@ -1305,6 +1305,15 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except Exception as e:
             logger.warning("[L3 HTTP] Kalaroko scheduler auto-start skipped: %s", e)
 
+    async def _on_startup_healthchecks_watchdog(_app):
+        """Healthchecks.io 周期 ping（独立线程，不阻塞 asyncio）。"""
+        try:
+            from l3_node.jobs.healthchecks_watchdog import start_healthchecks_watchdog
+
+            start_healthchecks_watchdog()
+        except Exception as e:
+            logger.warning("[L3 HTTP] Healthchecks watchdog skipped: %s", e)
+
     async def _on_startup_skill_matrix_sync(_app):
         """启动时将全量工具描述写入 Memory Nexus Skill_Matrix（后台任务，勿阻塞 runner.setup）。
 
@@ -1337,6 +1346,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         asyncio.create_task(_skill_matrix_sync_bg(), name="jachin-skill-matrix-sync")
 
     app.on_startup.append(_on_startup_kalaroko_scheduler)
+    app.on_startup.append(_on_startup_healthchecks_watchdog)
     app.on_startup.append(_on_startup_skill_matrix_sync)
 
     def _is_port_in_use(e: BaseException) -> bool:

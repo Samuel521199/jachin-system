@@ -1,6 +1,15 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.38] - 2026-04-22
+
+### Added / Changed
+
+- **L3 存活看门狗（断电/死机外置告警）**：可选 Healthchecks.io 周期 GET ping（`JACHIN_HEALTHCHECKS_PING_URL`）；`http_server` 启动时后台 daemon 线程；PyInstaller 侧车显式收集 `healthchecks_watchdog` 与 `requests`/`urllib3`；`.env.example` 说明。
+- **Version**: Desktop **0.9.38**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.37] - 2026-04-22
 
