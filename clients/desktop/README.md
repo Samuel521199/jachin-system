@@ -102,6 +102,8 @@ npm run sync-version
 
 会将版本同步到 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。也可直接指定版本：`npm run sync-version -- 0.8.17`。
 
+**开发中**若正开着 `tauri dev`，完整同步会改动 `tauri.conf.json` / `Cargo.toml`，触发 Cargo 重建与 **L3 sidecar 重启**。此时可先用仅前端/清单版本：`npm run sync-version:soft -- 0.8.17`（只写 `VERSION` + `package.json`）；**打包发版前务必再执行一次**完整 `npm run sync-version -- <版本>`。
+
 ### Tauri 热更新（控制台顶栏提示）
 
 1. **L1 Nexus** 运行，且 `.env` 配置 `DESKTOP_UPDATE_BEARER`（与下方 token 一致）。

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Sidebar - 侧舷航行桥 (The Bridge)
  * 全息悬浮板 + 导航左侧光柱激活态 + 底部 SystemHeartbeat
  */
@@ -14,6 +14,7 @@ import {
   Calendar as CalIcon,
   Mic,
   Radar,
+  FlaskConical,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "../utils/cn";
@@ -44,6 +45,12 @@ const navItems = [
     label: "巡检中枢",
     icon: Radar,
     title: "Kalaroko 全链路多轮巡检、实时日志与 AI 综合分析",
+  },
+  {
+    path: "/k11-smoke",
+    label: "冒烟测试",
+    icon: FlaskConical,
+    title: "K11 统合平台 Playwright 冒烟（scripts/test_k11_unified_platform_smoke_playwright.py）",
   },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
   {

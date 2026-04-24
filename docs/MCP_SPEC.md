@@ -101,7 +101,7 @@
 | **易混点** | JSON 里的 **`id`**（如 `tavily-search`）是 Jachin 侧标识，**不等于** npm 包名；**包名**只看 `args` 里传给 `npx -y` 的字符串。 |
 | **已踩坑案例（反例）** | `@tavily/mcp-server` → **npm 404，包不存在**。Tavily 官方本地 MCP 包名为 **`tavily-mcp`**（示例：`npx -y tavily-mcp@latest`）。 |
 | **替代形态** | 部分厂商提供 **远程 MCP URL**（HTTPS + `mcp-remote` 等），与本地 `npx` 二选一；若采用须在文档中写清命令与鉴权，同样不得臆造 URL。 |
-| **Notion 托管 MCP** | 官方端点 `https://mcp.notion.com/mcp`（OAuth，无长期 API Token）。Jachin 当前宿主仅 **stdio**，请用 **`npx -y mcp-remote https://mcp.notion.com/mcp`** 桥接（`npm view mcp-remote version` 核验包名）。首次连接按 `mcp-remote` 提示在浏览器完成 OAuth。 |
+| **Notion 托管 MCP** | 官方端点 `https://mcp.notion.com/mcp`（OAuth，无长期 API Token）。Jachin 当前宿主仅 **stdio**，请用 **`npx -y mcp-remote https://mcp.notion.com/mcp`** 桥接（`npm view mcp-remote version` 核验包名）。首次连接按 `mcp-remote` 提示在浏览器完成 OAuth。**勿让该条目随 L3 默认自启**：示例里 `notion-remote-oauth` 为 `"auto_start": false`；否则每次启动 L3 可能自动打开 Notion 安装/OAuth 页。需要时在 `~/.jachin/mcp_servers.json` 改为 `true`，或设环境变量 `JACHIN_MCP_SKIP_IDS=notion-remote-oauth`。 |
 
 **自检命令示例**（开发机执行）：
 

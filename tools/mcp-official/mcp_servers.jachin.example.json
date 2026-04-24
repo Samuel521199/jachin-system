@@ -150,7 +150,8 @@
       "id": "notion-remote-oauth",
       "name": "Notion 托管 MCP（OAuth；mcp-remote 桥接 Streamable HTTP）",
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+      "args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"],
+      "auto_start": false
     },
     {
       "id": "mcp-pyautogui-server",

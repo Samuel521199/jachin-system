@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -1161,6 +1161,56 @@ export function getKalarokoMonitorStreamUrl(opts?: {
 /** L3 巡检控制台 REST（停止 / 定时调度），base 逻辑与 ``getKalarokoMonitorStreamUrl`` 一致 */
 export function getL3MonitorApiUrl(apiPath: string): string {
   const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return `${envUrl.replace(/\/$/, "")}${path}`;
+  }
+  if (L3_DEV_PROXY) {
+    return `${L3_DEV_PROXY}${path}`;
+  }
+  return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
+}
+
+/** K11 统合平台冒烟（Playwright）SSE，base 与 Kalaroko 巡检一致 */
+export function getK11UnifiedSmokeStreamUrl(opts?: {
+  targetUrl?: string;
+  cdpHttp?: string;
+  verbose?: boolean;
+  noLarkReport?: boolean;
+}): string {
+  const sp = new URLSearchParams();
+  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  const q = sp.toString();
+  const path = `/api/v1/k11-unified-smoke/stream${q ? `?${q}` : ""}`;
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    return `${envUrl.replace(/\/$/, "")}${path}`;
+  }
+  if (L3_DEV_PROXY) {
+    return `${L3_DEV_PROXY}${path}`;
+  }
+  return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
+}
+
+/** P2 仅「浏览器兼容」段（`--only-compat`） */
+export function getK11P2CompatOnlyStreamUrl(opts?: {
+  targetUrl?: string;
+  cdpHttp?: string;
+  verbose?: boolean;
+  noLarkReport?: boolean;
+  headless?: boolean;
+}): string {
+  const sp = new URLSearchParams();
+  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.headless) sp.set("headless", "1");
+  const q = sp.toString();
+  const path = `/api/v1/k11-p2-compat-only/stream${q ? `?${q}` : ""}`;
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
   if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
     return `${envUrl.replace(/\/$/, "")}${path}`;

@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -9,6 +9,7 @@ HR 透析镜执行成功后，分析报告写入 data/hr_analysis/ 及 ~/.jachin
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -22,6 +23,11 @@ from l3_node.paths import kalaroko_default_e2e_script_path
 logger = logging.getLogger("l3_node")
 
 L3_HTTP_PORT = 18991
+
+# K11 统合冒烟：单路 SSE 子进程（与 /api/v1/monitor/stream 同形态）
+_k11_unified_smoke_stream_active: bool = False
+_k11_unified_smoke_start_lock: asyncio.Lock = asyncio.Lock()
+_k11_unified_smoke_proc: "asyncio.subprocess.Process | None" = None
 
 
 _HR_SKILL_IDS = (
@@ -615,6 +621,303 @@ async def _handle_monitor_schedule_status(request) -> "aiohttp.web.Response":
     except Exception as e:
         logger.warning("[L3 HTTP] monitor schedule status failed: %s", e)
         return _json_response({"ok": False, "active": False, "error": str(e)}, status=500)
+
+
+def _k11_smoke_stream_parse_query(request) -> (
+    tuple[tuple[str, str, bool, bool, bool] | None, "aiohttp.web.Response | None"]
+):
+    """返回 ((target_url, cdp_http, verbose, no_lark_report, headless), None) 或 (None, error_response)。"""
+    from urllib.parse import urlparse
+
+    target_url = (request.query.get("target_url") or "").strip()
+    if target_url:
+        p0 = urlparse(target_url)
+        if p0.scheme not in ("http", "https") or not p0.netloc:
+            r = _json_response(
+                {"ok": False, "error": "target_url 须为有效 http(s) URL"},
+                status=400,
+            )
+            return (None, r)
+
+    cdp_http = (request.query.get("cdp_http") or "").strip()
+    if cdp_http:
+        p1 = urlparse(cdp_http)
+        if p1.scheme not in ("http", "https") or not p1.netloc:
+            r = _json_response(
+                {"ok": False, "error": "cdp_http 须为有效 http(s) URL"},
+                status=400,
+            )
+            return (None, r)
+
+    verbose = str(request.query.get("verbose", "")).lower() in ("1", "true", "yes", "on")
+    no_lark = str(request.query.get("no_lark_report", "")).lower() in ("1", "true", "yes", "on")
+    headless = str(request.query.get("headless", "")).lower() in ("1", "true", "yes", "on")
+    return ((target_url, cdp_http, verbose, no_lark, headless), None)
+
+
+async def _k11_smoke_subprocess_sse_stream(
+    request: Any,
+    root: Path,
+    cmd: list[str],
+    start_line: str,
+    log_event: str,
+) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
+    """K11 Playwright 脚本通用 SSE 子进程（与统合冒烟共用锁与停止通道）。"""
+    import time
+
+    global _k11_unified_smoke_stream_active, _k11_unified_smoke_proc
+
+    async with _k11_unified_smoke_start_lock:
+        if _k11_unified_smoke_stream_active:
+            response0 = _stream_response()
+            await response0.prepare(request)
+            err = json.dumps(
+                {
+                    "type": "error",
+                    "message": "K11 冒烟相关任务已在执行中，请待当前完成后再试。",
+                },
+                ensure_ascii=False,
+            )
+            await response0.write(f"data: {err}\n\n".encode("utf-8"))
+            return response0
+        _k11_unified_smoke_stream_active = True
+
+    line_q: asyncio.Queue[str] = asyncio.Queue()
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    sub_task: asyncio.Task[int] | None = None
+    response = _stream_response()
+
+    async def _pump() -> int:
+        global _k11_unified_smoke_proc
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(root),
+            env=env,
+        )
+        _k11_unified_smoke_proc = proc
+        code = 1
+        try:
+            if proc.stdout is None:
+                if proc.returncode is None:
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+                return 2
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\n\r")
+                try:
+                    line_q.put_nowait(text)
+                except Exception:
+                    pass
+            code = await proc.wait()
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=6.0)
+                except (asyncio.TimeoutError, Exception):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
+            code = 130
+            raise
+        finally:
+            _k11_unified_smoke_proc = None
+        return code
+
+    last_keepalive = time.monotonic()
+    keepalive_sec = 15.0
+
+    async def _write_line_obj(line: str) -> None:
+        payload = {"line": line}
+        await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+        if hasattr(response, "drain"):
+            await response.drain()
+
+    try:
+        await response.prepare(request)
+        sub_task = asyncio.create_task(_pump())
+        await _write_line_obj(start_line)
+        while True:
+            try:
+                line = await asyncio.wait_for(line_q.get(), timeout=0.35)
+                await _write_line_obj(line)
+                last_keepalive = time.monotonic()
+            except asyncio.TimeoutError:
+                assert sub_task is not None
+                if sub_task.done():
+                    break
+                if time.monotonic() - last_keepalive >= keepalive_sec:
+                    await response.write(b": keepalive\n\n")
+                    last_keepalive = time.monotonic()
+
+        while True:
+            try:
+                l2 = line_q.get_nowait()
+                await _write_line_obj(l2)
+            except asyncio.QueueEmpty:
+                break
+
+        assert sub_task is not None
+        if sub_task.cancelled():
+            payload = {
+                "type": "done",
+                "ok": False,
+                "exit_code": 130,
+                "cancelled": True,
+                "markdown_report": None,
+                "llm_analysis": None,
+            }
+            await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+        else:
+            exc = sub_task.exception()
+            if exc is not None:
+                if isinstance(exc, asyncio.CancelledError):
+                    payload = {
+                        "type": "done",
+                        "ok": False,
+                        "exit_code": 130,
+                        "cancelled": True,
+                        "markdown_report": None,
+                        "llm_analysis": None,
+                    }
+                    await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                else:
+                    payload = {"type": "error", "message": str(exc)}
+                    await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            else:
+                code = sub_task.result()
+                payload = {
+                    "type": "done",
+                    "ok": code == 0,
+                    "exit_code": code,
+                    "markdown_report": None,
+                    "llm_analysis": None,
+                }
+                await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+    except (ConnectionResetError, asyncio.CancelledError):
+        if sub_task is not None and not sub_task.done():
+            sub_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await sub_task
+    except Exception as e:
+        logger.warning("[L3 HTTP] %s stream failed: %s", log_event, e)
+        try:
+            await response.write(
+                f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n".encode("utf-8")
+            )
+        except Exception:
+            pass
+    finally:
+        if sub_task is not None and not sub_task.done():
+            sub_task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await sub_task
+        _k11_unified_smoke_stream_active = False
+    return response
+
+
+async def _handle_k11_unified_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
+    """GET /api/v1/k11-unified-smoke/stream — 执行 ``scripts/test_k11_unified_platform_smoke_playwright.py``，SSE 行日志。"""
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    script = root / "scripts" / "test_k11_unified_platform_smoke_playwright.py"
+    if not script.is_file():
+        return _json_response(
+            {"ok": False, "error": f"缺少 K11 统合冒烟脚本: {script}（需仓库根下 scripts/）"},
+            status=500,
+        )
+
+    params, err = _k11_smoke_stream_parse_query(request)
+    if err is not None:
+        return err
+    assert params is not None
+    target_url, cdp_http, verbose, no_lark, _head = params
+
+    cmd: list[str] = [sys.executable, str(script)]
+    if target_url:
+        cmd.extend(["--target-url", target_url])
+    if cdp_http:
+        cmd.extend(["--cdp-http", cdp_http])
+    if verbose:
+        cmd.append("-v")
+    if no_lark:
+        cmd.append("--no-lark-report")
+
+    return await _k11_smoke_subprocess_sse_stream(
+        request,
+        root,
+        cmd,
+        f"[K11] 统合冒烟已启动: {script.name}",
+        "k11 unified smoke",
+    )
+
+
+async def _handle_k11_p2_compat_only_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
+    """GET /api/v1/k11-p2-compat-only/stream — ``--only-compat`` 浏览器兼容段，SSE 行日志。"""
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    script = root / "scripts" / "test_k11_p2_compat_weaknet_playwright.py"
+    if not script.is_file():
+        return _json_response(
+            {"ok": False, "error": f"缺少脚本: {script}（需仓库根下 scripts/）"},
+            status=500,
+        )
+
+    params, err = _k11_smoke_stream_parse_query(request)
+    if err is not None:
+        return err
+    assert params is not None
+    target_url, cdp_http, verbose, no_lark, headless = params
+
+    cmd: list[str] = [sys.executable, str(script), "--only-compat"]
+    if headless:
+        cmd.append("--headless")
+    if target_url:
+        cmd.extend(["--target-url", target_url])
+    if cdp_http:
+        cmd.extend(["--cdp-http", cdp_http])
+    if verbose:
+        cmd.append("-v")
+    if no_lark:
+        cmd.append("--no-lark-report")
+
+    return await _k11_smoke_subprocess_sse_stream(
+        request,
+        root,
+        cmd,
+        f"[K11] P2 浏览器兼容已启动: {script.name} --only-compat",
+        "k11 p2 compat",
+    )
+
+
+async def _handle_k11_unified_smoke_stop(request) -> "aiohttp.web.Response":
+    """POST /api/v1/k11-unified-smoke/stop — 终止统合冒烟子进程（Playwright 链）。"""
+    global _k11_unified_smoke_proc
+    p = _k11_unified_smoke_proc
+    if p is None or p.returncode is not None:
+        return _json_response({"ok": True, "message": "无运行中的 K11 冒烟/Playwright 子进程"})
+    try:
+        p.terminate()
+        try:
+            await asyncio.wait_for(p.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            p.kill()
+            await p.wait()
+    except Exception as e:
+        logger.warning("[L3 HTTP] k11 unified smoke stop failed: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, "message": "已发送停止信号"})
 
 
 async def _handle_health(request) -> "aiohttp.web.Response":
@@ -1281,6 +1584,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/v1/monitor/stop", _handle_monitor_stop)
     app.router.add_post("/api/v1/monitor/schedule/toggle", _handle_monitor_schedule_toggle)
     app.router.add_get("/api/v1/monitor/schedule/status", _handle_monitor_schedule_status)
+    app.router.add_get("/api/v1/k11-unified-smoke/stream", _handle_k11_unified_smoke_stream)
+    app.router.add_get("/api/v1/k11-p2-compat-only/stream", _handle_k11_p2_compat_only_stream)
+    app.router.add_post("/api/v1/k11-unified-smoke/stop", _handle_k11_unified_smoke_stop)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)

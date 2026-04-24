@@ -34,6 +34,28 @@ from mcp.client.stdio import stdio_client
 logger = logging.getLogger(__name__)
 
 
+def _mcp_entry_should_connect_at_startup(cfg: dict[str, Any]) -> bool:
+    """
+    是否在本轮 MCPManager.start() 中连接该 stdio 条目。
+
+    - ``auto_start: false``：不随 L3 自启（用于 notion-remote-oauth 等，避免 mcp-remote 拉浏览器走 OAuth）。
+    - ``enabled: false``：等同禁用（可选键）。
+    - 环境 ``JACHIN_MCP_SKIP_IDS``：逗号分隔的 server id，跳过自启（便于不改 JSON 时临时排除）。
+    """
+    if cfg.get("enabled") is False:
+        return False
+    if "auto_start" in cfg and cfg.get("auto_start") is False:
+        return False
+    sid = str(cfg.get("id") or cfg.get("name") or "").strip()
+    if not sid:
+        return True
+    raw = (os.environ.get("JACHIN_MCP_SKIP_IDS") or os.environ.get("JACHIN_MCP_EXCLUDE_IDS") or "").strip()
+    for part in raw.split(","):
+        if part.strip() == sid:
+            return False
+    return True
+
+
 def _log_tavily_before_stdio_connect(server_id: str, args: Any, env: Optional[dict[str, Any]]) -> None:
     sid = (server_id or "").lower()
     if "tavily" not in sid and not (
@@ -811,11 +833,13 @@ class MCPManager:
 
             from core.mcp_json_repair import (
                 repair_hr_atomic_tools_path,
+                repair_notion_mcp_remote_default_no_autostart,
                 repair_official_fetch_ignore_robots_arg,
             )
 
             _cfg_repaired = repair_hr_atomic_tools_path(get_app_root())
             _cfg_repaired = repair_official_fetch_ignore_robots_arg() or _cfg_repaired
+            _cfg_repaired = repair_notion_mcp_remote_default_no_autostart() or _cfg_repaired
             if _cfg_repaired:
                 self._mcp_cfg_loaded_mtime = None
                 logger.info("[MCP] mcp_json_repair 已更新 ~/.jachin/mcp_servers.json，将重载 stdio 配置")
@@ -861,6 +885,12 @@ class MCPManager:
             # 串行连接：多路 npx @modelcontextprotocol/server-filesystem 并发时，Windows 上 npm 缓存/
             # 子进程握手易竞态，表现为 initialize 阶段 Connection closed（见 inventory 与默认 workspace FS）。
             for c in id_to_cfg.values():
+                if not _mcp_entry_should_connect_at_startup(c):
+                    logger.info(
+                        "[MCP] 跳过自启（auto_start/enabled 或 JACHIN_MCP_SKIP_IDS）server_id=%s",
+                        c.get("id"),
+                    )
+                    continue
                 try:
                     await self._connect_single_stdio_server(c)
                 except Exception as e:

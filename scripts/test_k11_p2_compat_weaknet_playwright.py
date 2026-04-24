@@ -29,8 +29,12 @@ K11 平台冒烟 · P2：浏览器兼容 + 弱网体验
   python scripts/test_k11_p2_compat_weaknet_playwright.py --only-weak
   python scripts/test_k11_p2_compat_weaknet_playwright.py --only-compat --headless
 
-运行结束可将结果写入 ``K11平台测试用例.xlsx``（浏览器兼容两条 Chrome/Edge 合并为一行「浏览器兼容」）：
-  ``--xlsx-report`` / ``K11_XLSX_REPORT`` / ``~/Downloads/K11平台测试用例.xlsx``；``--no-xlsx-report`` 关闭。需 ``openpyxl``。
+**飞书/Lark 报告**（与统合版同逻辑：Wiki 内嵌表 + 完成通知卡）：在 ``.env`` 配
+``K11_SMOKE_LARK_*`` / ``LARK_APP_*`` 等，见 ``scripts/k11_lark_smoke_report.py``。
+默认只同步飞书、不写本机 xlsx；加 ``--no-lark-report`` 可不发飞书。
+
+本机 xlsx（浏览器兼容 Chrome/Edge 合并为一行「浏览器兼容」）：加 ``--write-local-xlsx`` 写入
+``--xlsx-report`` / ``K11_XLSX_REPORT`` / ``~/Downloads/K11平台测试用例.xlsx``；``--no-xlsx-report`` 仍表示强制不写本地表（与旧版兼容）。需 ``openpyxl``。
 
 退出码：0 无 FAIL；1 存在 FAIL；2 环境/依赖；3 未捕获异常。
 """
@@ -38,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import re
@@ -69,6 +74,11 @@ except OSError:
 
 DEFAULT_TARGET = "https://www.herontest.xin/"
 
+# 与 ``scripts/k11_lark_smoke_report`` 及统合版脚本同链（环境变量/CLI 可覆盖）
+K11_DEFAULT_LARK_WIKI_URL = (
+    "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZyWlwhdW1iNQuykvy7qlw93sgTe"
+)
+
 VERDICT_ZH = {
     "PASS": "通过",
     "FAIL": "未通过",
@@ -81,6 +91,31 @@ P2_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
 }
 
 _XLSX_REMARK_MAX_LEN = 32000
+
+
+def _p2_all_rows_to_lark_results(
+    all_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """与 ``test_k11_unified_platform_smoke`` 的 results 行结构对齐，供飞书表与消息卡片复用。"""
+    norm = _p2_normalize_rows_for_xlsx(all_rows)
+    out: list[dict[str, Any]] = []
+    for row in norm:
+        cid = str(row.get("case") or "")
+        title = (P2_CASE_TO_XLSX_TEST_ITEM_KEY.get(cid) or cid or "").strip()
+        v = str(row.get("verdict") or "")
+        detail = str(row.get("detail") or "")
+        vzh = VERDICT_ZH.get(v, v)
+        out.append(
+            {
+                "case": cid,
+                "tier": "P2",
+                "case_title_zh": title,
+                "verdict": v,
+                "verdict_zh": vzh,
+                "detail": detail,
+            }
+        )
+    return out
 
 
 def _default_k11_xlsx_report_path() -> Path:
@@ -1145,15 +1180,67 @@ async def _async_main(args: argparse.Namespace) -> int:
         outp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         log(f"JSON：{outp.resolve()}")
 
-    if not args.no_xlsx_report:
+    if getattr(args, "write_local_xlsx", False) and not args.no_xlsx_report:
         xlsx_p = (
             args.xlsx_report
             if args.xlsx_report is not None
             else _default_k11_xlsx_report_path()
         )
         log("")
+        log("—— 本地 Excel（可选）——")
         norm = _p2_normalize_rows_for_xlsx(all_rows)
         write_k11_p2_results_to_xlsx(Path(xlsx_p), norm, log=log)
+
+    if not args.no_lark_report:
+        _lark_path = ROOT / "scripts" / "k11_lark_smoke_report.py"
+        k11_lark: Any = None
+        if _lark_path.is_file():
+            _spec = importlib.util.spec_from_file_location(
+                "k11_lark_smoke_report", _lark_path
+            )
+            if _spec and _spec.loader:
+                k11_lark = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(k11_lark)
+        if k11_lark:
+            _wiki = (
+                (getattr(args, "lark_wiki_url", "") or "").strip()
+                or (os.environ.get("K11_SMOKE_LARK_WIKI_URL") or "").strip()
+                or K11_DEFAULT_LARK_WIKI_URL
+            )
+            if not _wiki and hasattr(k11_lark, "_DEFAULT_WIKI_URL"):
+                _wiki = str(k11_lark._DEFAULT_WIKI_URL)
+            log("")
+            log("—— 飞书：同步到 Wiki/表格 ——")
+            log(f"  目标：{_wiki}")
+            _aid = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
+            _sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
+            _tbl = (os.environ.get("K11_SMOKE_LARK_TABLE_ID") or "").strip() or None
+            _chat = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
+            if not _chat and hasattr(k11_lark, "_DEFAULT_NOTIFY_CHAT_ID"):
+                _chat = str(k11_lark._DEFAULT_NOTIFY_CHAT_ID)
+            lark_results = _p2_all_rows_to_lark_results(all_rows)
+            log("")
+            _nw = k11_lark.write_k11_unified_results_to_lark_bitable(  # type: ignore[attr-defined]
+                case_to_item_key=P2_CASE_TO_XLSX_TEST_ITEM_KEY,
+                results=lark_results,
+                wiki_url=_wiki,
+                app_id=_aid,
+                app_secret=_sec,
+                table_id=_tbl,
+                log=log,
+            )
+            k11_lark.send_k11_smoke_lark_notification(  # type: ignore[attr-defined]
+                results=lark_results,
+                target_url=target_url,
+                wiki_url=_wiki,
+                lark_wrote=int(_nw or 0),
+                app_id=_aid,
+                app_secret=_sec,
+                chat_id=_chat,
+                log=log,
+            )
+        else:
+            log("  [lark] 未找到 scripts/k11_lark_smoke_report.py，跳过飞书同步")
 
     log("———————— 汇总（VERDICT 行与下文一致）————————")
     for r in all_rows:
@@ -1188,11 +1275,38 @@ def main() -> None:
         "--xlsx-report",
         type=Path,
         default=None,
-        help="K11平台测试用例.xlsx；默认 K11_XLSX_REPORT 或 ~/Downloads/K11平台测试用例.xlsx",
+        help="与 --write-local-xlsx 联用；K11平台测试用例.xlsx；默认 K11_XLSX_REPORT 或 ~/Downloads/…",
     )
-    ap.add_argument("--no-xlsx-report", action="store_true", help="不写入 Excel")
+    ap.add_argument(
+        "--write-local-xlsx",
+        action="store_true",
+        help="写本机 K11 平台测试用例 xlsx；默认不写（与统合版：默认飞书、不写本机表）",
+    )
+    ap.add_argument(
+        "--no-xlsx-report",
+        action="store_true",
+        help="不写入本机 Excel（与旧版兼容；若需写本机表仍请先设 --write-local-xlsx）",
+    )
+    ap.add_argument(
+        "--no-lark-report",
+        action="store_true",
+        help="不写入飞书 Wiki、不发完成通知（与统合版同义）",
+    )
+    ap.add_argument(
+        "--lark-wiki-url",
+        default="",
+        help="飞书 Wiki 节点；默认用环境 K11_SMOKE_LARK_WIKI_URL 或内置同统合版",
+    )
+    ap.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="详细输出（与统合冒烟 / L3 控制台参数对齐；指定时等同不启用 --quiet）",
+    )
     ap.add_argument("--quiet", action="store_true", help="减少过程日志")
     args = ap.parse_args()
+    if getattr(args, "verbose", False):
+        args.quiet = False
     if args.only_compat and args.only_weak:
         print("--only-compat 与 --only-weak 互斥", file=sys.stderr)
         sys.exit(2)

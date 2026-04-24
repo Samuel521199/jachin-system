@@ -1,4 +1,4 @@
-"""
+﻿"""
 启动时修正 ~/.jachin/mcp_servers.json 中过期的 hr-atomic-tools 路径，避免整条 MCP 握手被无效配置干扰；
 并在用户尚未配置任何官方 server-filesystem 时，自动追加一条默认条目（与 skills_repo 插件同 id，避免双实例）；
 尚未配置 **mcp-server-fetch**（``python -m mcp_server_fetch``）时追加官方 URL 抓取 MCP（工具名多为 ``fetch``）。
@@ -512,3 +512,59 @@ def ensure_youtube_transcript_uvx_mcp() -> bool:
 def repair_youtube_transcript_uvx_windows_use_cmd() -> bool:
     """已停用：不再自动改写 uvx / cmd 形式的 youtube-transcript 配置。"""
     return False
+
+
+def repair_notion_mcp_remote_default_no_autostart() -> bool:
+    """
+    若 ``~/.jachin/mcp_servers.json`` 中已有 ``id`` 为 ``notion-remote-oauth`` 且 args 含 ``mcp.notion.com``，
+    但条目上**没有**显式写 ``auto_start`` 字段，则补写 ``"auto_start": false`` 并回写一次。
+
+    原因：``npx mcp-remote https://mcp.notion.com/mcp`` 随 L3 自启时会走 OAuth 并**自动打开**
+    浏览器到 Notion 安装页。需要 Notion 时将该条改为 ``"auto_start": true`` 或于对话里显式重连/按需启动。
+    """
+    cfg_path = Path.home() / ".jachin" / "mcp_servers.json"
+    if not cfg_path.is_file():
+        return False
+    try:
+        parsed: Any = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.debug("[mcp_json_repair] notion autostart: 读配置失败 %s", e)
+        return False
+    if isinstance(parsed, dict):
+        servers = parsed.get("mcp_servers")
+        if not isinstance(servers, list):
+            return False
+        out_blob: Any = parsed
+    elif isinstance(parsed, list):
+        servers = parsed
+        out_blob = parsed
+    else:
+        return False
+    changed = False
+    for e in servers:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("id") or "") != "notion-remote-oauth":
+            continue
+        args = e.get("args")
+        if not isinstance(args, list) or not any("mcp.notion.com" in str(a) for a in args):
+            continue
+        if "auto_start" in e:
+            continue
+        e["auto_start"] = False
+        changed = True
+    if not changed:
+        return False
+    try:
+        cfg_path.write_text(
+            json.dumps(out_blob, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as e:
+        logger.warning("[mcp_json_repair] 写入 notion auto_start 失败: %s", e)
+        return False
+    logger.info(
+        "[mcp_json_repair] 已为 %s 中 notion-remote-oauth 设置 auto_start=false，"
+        "避免 L3 启动时 mcp-remote 自动打开 Notion 浏览器。需要时在条目上设 auto_start: true。",
+        cfg_path,
+    )
+    return True

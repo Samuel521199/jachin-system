@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.40] - 2026-04-22
+
+### Added / Changed
+
+- 串联除游戏外的所有冒烟测试，同步 Lark 表格，发送消息卡片。
+- **Version**: Desktop **0.9.40**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.39] - 2026-04-22
 
 ### Added / Changed
