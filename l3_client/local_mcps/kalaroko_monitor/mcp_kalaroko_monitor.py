@@ -9,7 +9,8 @@ Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
   或
   python l3_client/local_mcps/kalaroko_monitor/mcp_kalaroko_monitor.py
 
-依赖：mcp, playwright, httpx（需 `playwright install chromium`）。巡检浏览器：须设置 `KALAROKO_CDP_ENDPOINT` 并预先以远程调试端口启动 Chrome（`connect_over_cdp`，不自动 launch）。
+依赖：mcp, playwright, httpx（需 `playwright install chromium`）。巡检浏览器：须设置 `KALAROKO_CDP_ENDPOINT` 并预先以远程调试端口启动 Chrome（`connect_over_cdp`）。
+CDP 首次连接失败时，可经 ``KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL`` 尝试 **OS 级拉起本机 Chrome** 绑定同一调试端口后再连；仍失败才回退 ``chromium.launch``。
 """
 from __future__ import annotations
 
@@ -17,9 +18,13 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -242,7 +247,7 @@ except ImportError:
 _SCHEMA_VERSION = "1.0.0"
 _DEFAULT_BASE = "https://kalaroko.com"
 
-# 默认监控任务：首页 + 三款游戏。
+# 默认监控任务：首页 + 四款游戏。
 # 游戏入口改为「首页 start_url + UI 点击流」，避免带 partyId/token 的 game-frame 直链被 WAF/业务网关拦截。
 # click_selector 须随前端 DOM 调整；可用 Playwright 文本选择器或 CSS（见 Playwright selector 语法）。
 # UI 点击流默认 require_game_frame_url=True：采数结束须出现 /game-frame 主文档 URL，否则 load_status=failed（防未真开游戏壳仍 success）。
@@ -283,6 +288,17 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "prefer_last_on_ambiguous_entry": True,
         "start_url": _DEFAULT_START,
         "click_selector": r"text=/Color\s*Blitz\s*Social/i",
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "bingo_showdown",
+        "document_game_id": 10,
+        "prefer_last_on_ambiguous_entry": True,
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Bingo\s*Showdown/i",
         "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
         "wait_until": "domcontentloaded",
@@ -2605,6 +2621,415 @@ def _chrome_executable_path() -> str | None:
     return str(p)
 
 
+def _cdp_http_port_from_endpoint(endpoint: str) -> int:
+    """从 ``KALAROKO_CDP_ENDPOINT`` 解析 HTTP 端口；无端口时默认 9222。"""
+    try:
+        parsed = urlparse((endpoint or "").strip())
+        if parsed.port is not None:
+            return int(parsed.port)
+    except (TypeError, ValueError):
+        pass
+    return 9222
+
+
+def _resolve_host_chrome_executable_for_revive() -> str | None:
+    """复活 OS Chrome 时的可执行路径：优先 ``CHROME_EXECUTABLE_PATH``，否则按平台探测。"""
+    configured = _chrome_executable_path()
+    if configured:
+        try:
+            if Path(configured).is_file():
+                return configured
+        except OSError:
+            pass
+    system = platform.system()
+    if system == "Windows":
+        for c in (
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ):
+            try:
+                if Path(c).is_file():
+                    return c
+            except OSError:
+                continue
+        return None
+    if system == "Darwin":
+        p = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        return str(p) if p.is_file() else None
+    for name in (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+    ):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+async def _async_wait_cdp_http_json_version(
+    endpoint: str, *, total_sec: float, tick: float
+) -> bool:
+    """
+    轮询 Chrome DevTools HTTP 根（``/json/version``），直到可访问或超时。
+    比单纯 ``sleep`` 可靠：冷启动 / 磁盘慢时 6s 内端口常仍未监听。
+    """
+    ep = (endpoint or "").strip() or "http://127.0.0.1:9222"
+    parsed = urlparse(ep if "://" in ep else "http://" + ep.lstrip("/"))
+    scheme = (parsed.scheme or "http").lower()
+    if scheme not in ("http", "https"):
+        scheme = "http"
+    host = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port or _cdp_http_port_from_endpoint(ep))
+    base = f"{scheme}://{host}:{port}".rstrip("/")
+    url = base + "/json/version"
+    deadline = time.perf_counter() + max(0.5, float(total_sec))
+    tick = max(0.08, min(2.0, float(tick)))
+
+    def _once() -> bool:
+        try:
+            from urllib.request import Request, urlopen
+
+            req = Request(
+                url,
+                headers={"User-Agent": "Jachin-Kalaroko-CDP-Revive-Probe/1"},
+            )
+            with urlopen(req, timeout=min(3.0, tick * 4 + 1.0)) as resp:
+                code = int(getattr(resp, "status", 200))
+                return 200 <= code < 500
+        except Exception:
+            return False
+
+    while time.perf_counter() < deadline:
+        # Python 3.9+；避免阻塞 MCP 事件循环
+        ok = await asyncio.to_thread(_once)
+        if ok:
+            return True
+        await asyncio.sleep(tick)
+    return False
+
+
+def _isolated_kalaroko_cdp_revive_user_data_dir(port: int) -> str:
+    """
+    与「日常零售 Chrome」并存的 **独立** 用户数据目录，仅用于 CDP 复活拉起第二实例，
+    避免与已打开的无调试 Chrome 争用同一 profile（SingletonLock → 进程秒退、9222 永不监听）。
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or tempfile.gettempdir()
+    else:
+        base = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    root = Path(os.path.expandvars(str(base)))
+    d = root / "jachin-kalaroko-cdp-revive" / f"p{int(port)}"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(d.resolve())
+
+
+def _popen_detached_chrome(argv: list[str]) -> None:
+    """非阻塞拉起 Chrome GUI：Windows 用 DETACHED_PROCESS；Unix 用 start_new_session。"""
+    popen_kw: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        # 勿用 shell=True；与当前 Python 进程解耦，避免阻塞 MCP stdio
+        popen_kw["close_fds"] = False
+        popen_kw["creationflags"] = int(
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        popen_kw["close_fds"] = True
+        popen_kw["start_new_session"] = True
+    subprocess.Popen(argv, **popen_kw)
+
+
+async def _send_feishu_system_alert(
+    title: str, message: str, *, is_critical: bool = False
+) -> None:
+    """
+    飞书（开放平台）系统级告警：租户 token + 群聊发 **interactive** 卡片。
+
+    - 环境变量：``FEISHU_APP_ID``、``FEISHU_APP_SECRET``、``FEISHU_CHAT_ID``（缺一则静默跳过）。
+    - **Fire-and-forget**：仅 ``create_task`` 调度后台协程，本函数立即返回；任何网络/解析异常均吞掉，不影响 CDP 主路径。
+    - 可用 ``KALAROKO_FEISHU_SYSTEM_ALERT=0`` 显式关闭（仍不要求配置飞书）。
+    """
+    if not _env_bool("KALAROKO_FEISHU_SYSTEM_ALERT", True):
+        return
+
+    app_id = (os.environ.get("FEISHU_APP_ID") or "").strip()
+    app_secret = (os.environ.get("FEISHU_APP_SECRET") or "").strip()
+    chat_id = (os.environ.get("FEISHU_CHAT_ID") or "").strip()
+    if not (app_id and app_secret and chat_id):
+        logger.debug(
+            "[kalaroko_monitor] 飞书系统告警未配置（FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_CHAT_ID），跳过"
+        )
+        return
+
+    tpl = "red" if is_critical else "orange"
+    title_s = (title or "Kalaroko").strip()[:256]
+    body_md = (message or "").strip()[:8000]
+
+    def _sync_send() -> None:
+        try:
+            import httpx
+        except ImportError:
+            logger.warning(
+                "[kalaroko_monitor] 未安装 httpx，无法发送飞书告警；请 pip install httpx"
+            )
+            return
+        try:
+            token_url = (
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+            )
+            with httpx.Client(timeout=8.0) as client:
+                tr = client.post(
+                    token_url,
+                    json={"app_id": app_id, "app_secret": app_secret},
+                )
+                tj = tr.json()
+                if int(tj.get("code", -1)) != 0:
+                    logger.warning(
+                        "[kalaroko_monitor] 飞书 tenant_access_token 失败: %s",
+                        str(tj)[:400],
+                    )
+                    return
+                token = (tj.get("tenant_access_token") or "").strip()
+                if not token:
+                    logger.warning(
+                        "[kalaroko_monitor] 飞书响应无 tenant_access_token: %s",
+                        str(tj)[:400],
+                    )
+                    return
+
+                card = {
+                    "schema": "2.0",
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": tpl,
+                        "title": {"tag": "plain_text", "content": title_s},
+                    },
+                    "body": {
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "lark_md",
+                                    "content": body_md,
+                                },
+                            }
+                        ]
+                    },
+                }
+                send_url = (
+                    "https://open.feishu.cn/open-apis/im/v1/messages"
+                    "?receive_id_type=chat_id"
+                )
+                payload = {
+                    "receive_id": chat_id,
+                    "msg_type": "interactive",
+                    "content": json.dumps(card, ensure_ascii=False),
+                }
+                sr = client.post(
+                    send_url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json; charset=utf-8",
+                    },
+                    json=payload,
+                )
+                sj = sr.json()
+                if int(sj.get("code", -1)) != 0:
+                    logger.warning(
+                        "[kalaroko_monitor] 飞书发消息失败: %s", str(sj)[:500]
+                    )
+        except Exception as e:
+            logger.warning(
+                "[kalaroko_monitor] 飞书系统告警发送异常（已吞）: %s", str(e)[:400]
+            )
+
+    async def _runner() -> None:
+        try:
+            await asyncio.to_thread(_sync_send)
+        except Exception as e:
+            logger.warning(
+                "[kalaroko_monitor] 飞书告警后台任务异常（已吞）: %s", str(e)[:300]
+            )
+
+    try:
+        asyncio.get_running_loop().create_task(_runner())
+    except RuntimeError:
+        try:
+            _sync_send()
+        except Exception:
+            pass
+
+
+async def _revive_external_chrome_on_9222(*, endpoint: str) -> tuple[bool, bool]:
+    """
+    当 CDP HTTP 端口不可连时，尝试用 **操作系统命令行** 拉起带 ``--remote-debugging-port`` 的 Google Chrome。
+
+    返回 ``(spawned_any, cdp_http_ready)``：
+    - ``spawned_any``：是否至少派发过一次 Popen（用于调用方区分「未尝试」与「尝试了但未就绪」）。
+    - ``cdp_http_ready``：``/json/version`` 已可访问，调用方应再 ``connect_over_cdp``。
+
+    **双档 user-data-dir（关键）**：若本机已有**未开远程调试**的 Chrome 占着默认/同一 profile，
+    再带 ``--user-data-dir=同一目录`` 启动会 **SingletonLock 秒退**，9222 永不监听。
+    因此默认先（可选）尝试 ``CHROME_USER_DATA_DIR``，失败再 **独立目录** ``…/jachin-kalaroko-cdp-revive/p<port>``，
+    与零售实例并存，仅该副实例挂 CDP。
+
+    - ``KALAROKO_CDP_REVIVE_TRY_CONFIGURED_PROFILE_FIRST``（默认 1）：有 ``CHROME_USER_DATA_DIR`` 时先尝试之。
+    - ``KALAROKO_CDP_REVIVE_START_URL``：未设置环境变量时 **默认不打开站点**（尽快占端口）；显式设空字符串亦不加 URL。
+    - ``KALAROKO_CDP_REVIVE_READY_TIMEOUT_SEC``：**每一档** 轮询 ``/json/version`` 的最长秒数（默认 18）。
+    - ``KALAROKO_CDP_REVIVE_WAIT_SEC``：每档 Popen 后短睡再探测（默认 1s）。
+    - 关闭复活：``KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL=0`` → 返回 ``(False, False)``。
+    - 飞书系统告警（可选）：``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` / ``FEISHU_CHAT_ID``；
+      关闭告警：``KALAROKO_FEISHU_SYSTEM_ALERT=0``。
+    """
+    if not _env_bool("KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL", True):
+        logger.info(
+            "[kalaroko_monitor] CDP 复活已跳过（KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL=0）"
+        )
+        return False, False
+
+    logger.warning(
+        "[kalaroko_monitor] CDP 无法连接（%s），外部 Chrome 可能已退出；尝试 OS 级复活（Daemon Reviver）…",
+        (endpoint or "")[:120],
+    )
+
+    exe = _resolve_host_chrome_executable_for_revive()
+    if not exe:
+        logger.error(
+            "[kalaroko_monitor] 未找到本机 Google Chrome 可执行文件；"
+            "请设置 CHROME_EXECUTABLE_PATH 或将 chrome 加入 PATH"
+        )
+        return False, False
+
+    port = _cdp_http_port_from_endpoint(endpoint)
+    raw_su = os.environ.get("KALAROKO_CDP_REVIVE_START_URL")
+    if raw_su is None:
+        start_url = ""
+    else:
+        start_url = (raw_su or "").strip()
+
+    initial_sleep = float(_env_int("KALAROKO_CDP_REVIVE_WAIT_SEC", 1, vmin=0, vmax=30))
+    per_attempt = float(
+        _env_int("KALAROKO_CDP_REVIVE_READY_TIMEOUT_SEC", 18, vmin=4, vmax=120)
+    )
+    poll_ms = _env_int("KALAROKO_CDP_REVIVE_READY_POLL_MS", 400, vmin=100, vmax=3000)
+    tick = poll_ms / 1000.0
+
+    await _send_feishu_system_alert(
+        title="⚠️ Kalaroko 巡检节点异常",
+        message=(
+            "**状态**: 宿主 Chrome 进程崩溃或不可达，9222 / CDP 已丢失或不可连接！\n"
+            f"**CDP 入口**: `{str(endpoint)[:220]}`\n"
+            "**动作**: 正在执行操作系统级复活 (OS Spawn)…"
+        ),
+        is_critical=False,
+    )
+
+    spawned_any = False
+
+    async def _spawn_tier(*, user_data_dir: str, tier_label: str) -> bool:
+        nonlocal spawned_any
+        argv: list[str] = [
+            exe,
+            f"--remote-debugging-port={port}",
+            "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-default-browser-check",
+            f"--user-data-dir={user_data_dir}",
+        ]
+        if start_url:
+            argv.append(start_url)
+        logger.info(
+            "[kalaroko_monitor] 复活 %s：user-data-dir=%s …",
+            tier_label,
+            user_data_dir[:160],
+        )
+        try:
+            _popen_detached_chrome(argv)
+        except Exception as e:
+            logger.error(
+                "[kalaroko_monitor] 复活 Popen 失败（%s）: %s",
+                tier_label,
+                str(e)[:400],
+            )
+            return False
+        spawned_any = True
+        if initial_sleep > 0:
+            await asyncio.sleep(initial_sleep)
+        logger.info(
+            "[kalaroko_monitor] 复活 %s：轮询 /json/version（最多 %.0fs，间隔 %.2fs）…",
+            tier_label,
+            per_attempt,
+            tick,
+        )
+        return await _async_wait_cdp_http_json_version(
+            endpoint, total_sec=per_attempt, tick=tick
+        )
+
+    cfg = _chrome_user_data_dir()
+    if cfg and _env_bool("KALAROKO_CDP_REVIVE_TRY_CONFIGURED_PROFILE_FIRST", True):
+        if await _spawn_tier(user_data_dir=cfg, tier_label="tier-1（CHROME_USER_DATA_DIR）"):
+            logger.info(
+                "[kalaroko_monitor] CDP HTTP 已就绪（配置 profile），准备 connect_over_cdp"
+            )
+            await _send_feishu_system_alert(
+                title="✅ Kalaroko 巡检节点恢复",
+                message=(
+                    "**状态**: 宿主 Chrome 死者苏生成功！\n"
+                    f"**说明**: 端口 `{port}` 已重新绑定（/json/version 就绪），巡检将继续。"
+                    "建议稍后检查本机内存与 H5 标签页数量。"
+                ),
+                is_critical=False,
+            )
+            return True, True
+        logger.warning(
+            "[kalaroko_monitor] tier-1 未在 %.0fs 内就绪（常被已开 Chrome 占 profile）；"
+            "尝试 tier-2 独立 profile…",
+            per_attempt,
+        )
+
+    iso = _isolated_kalaroko_cdp_revive_user_data_dir(port)
+    if await _spawn_tier(user_data_dir=iso, tier_label="tier-2（独立 profile，可与零售 Chrome 并存）"):
+        logger.info("[kalaroko_monitor] CDP HTTP 已就绪（独立 profile），准备 connect_over_cdp")
+        await _send_feishu_system_alert(
+            title="✅ Kalaroko 巡检节点恢复",
+            message=(
+                "**状态**: 宿主 Chrome 死者苏生成功！\n"
+                f"**说明**: 端口 `{port}` 已重新绑定（独立 profile，/json/version 就绪），巡检将继续。"
+                "建议稍后检查本机内存与 H5 标签页数量。"
+            ),
+            is_critical=False,
+        )
+        return True, True
+
+    logger.error(
+        "[kalaroko_monitor] 复活两档均未在 %.0fs 内使 /json/version 就绪（端口 %s）。"
+        "若仍失败请检查杀毒/策略或手动启动带 --remote-debugging-port 的 Chrome。",
+        per_attempt,
+        port,
+    )
+    await _send_feishu_system_alert(
+        title="🚨 Kalaroko 巡检致命故障",
+        message=(
+            "**状态**: Chrome 进程复活失败（/json/version 在时限内未就绪）！\n"
+            f"**端口**: `{port}`\n"
+            "**动作要求**: 巡检将回退至无状态临时 Chromium，**无法保持原登录态**。\n"
+            "<at user_id=\"all\"></at> **请立即登录服务器进行人工干预排查！**"
+        ),
+        is_critical=True,
+    )
+    return spawned_any, False
+
+
 _KALAROKO_REPO_DOTENV_TRIED = False
 
 
@@ -2721,13 +3146,35 @@ def _cdp_page_url_matches_preferred_host(page_url: str, preferred_host: str) -> 
     return bool(core and core in u)
 
 
-async def _probe_cdp_page_alive(pg: Any) -> bool:
+def _cdp_tab_probe_timeout_sec() -> float:
+    """单标签 JS 探活超时（秒），用于斩杀 Aw Snap / 渲染器僵死页。"""
+    ms = _env_int("KALAROKO_CDP_TAB_PROBE_MS", 3000, vmin=500, vmax=20_000)
+    return max(0.5, ms / 1000.0)
+
+
+async def _cdp_tab_health_probe_or_slaughter(pg: Any) -> bool:
+    """
+    CDP 下标签页 JS 探活；失败则视为僵尸/崩溃页（Aw Snap、Target closed 等）并 ``page.close()``，
+    避免下一轮仍命中同一死签导致巡检瘫痪。
+    """
     try:
         if pg.is_closed():
             return False
-        await asyncio.wait_for(pg.evaluate("() => 1"), timeout=2.5)
+    except Exception:
+        return False
+    tmo = _cdp_tab_probe_timeout_sec()
+    try:
+        await asyncio.wait_for(pg.evaluate("() => (1 + 1)"), timeout=tmo)
         return True
-    except (asyncio.TimeoutError, Exception):
+    except Exception as e:
+        logger.warning(
+            "[kalaroko_monitor] CDP 标签探活失败，判定为僵尸/崩溃页并尝试关闭: %s",
+            str(e)[:360],
+        )
+        try:
+            await pg.close()
+        except Exception:
+            pass
         return False
 
 
@@ -2744,7 +3191,7 @@ async def _pick_kalaroko_cdp_context_and_page(
     - 否则在可自动化 URL 上按 ``KALAROKO_CDP_PREFER_VISIBLE_TAB`` 做可见性/焦点排序（与旧逻辑一致）。
     - ``KALAROKO_CDP_NEW_TAB=1``：在首个 context 上 ``new_page()``。
 
-    仅靠 ``is_closed()`` 不够：多标签下常有僵尸 Tab，须 evaluate 探活。
+    仅靠 ``is_closed()`` 不够：多标签下常有僵尸 Tab；须 **JS 探活**，失败则 **close** 斩杀以免反复命中死页。
     """
     raw = (os.environ.get("KALAROKO_CDP_NEW_TAB") or "").strip().lower()
     if raw in ("1", "true", "yes", "on"):
@@ -2779,15 +3226,16 @@ async def _pick_kalaroko_cdp_context_and_page(
                     u = ""
                 if not _cdp_tab_url_driver_safe(u):
                     continue
-                if not await _probe_cdp_page_alive(pg):
+                if not await _cdp_tab_health_probe_or_slaughter(pg):
                     continue
-                if _cdp_page_url_matches_preferred_host(u, ph):
-                    logger.info(
-                        "[kalaroko_monitor] CDP 选用标签页（URL 含目标域 %s，对齐 K11 host 匹配）: %s",
-                        ph,
-                        u[:160],
-                    )
-                    return ctx, pg
+                if not _cdp_page_url_matches_preferred_host(u, ph):
+                    continue
+                logger.info(
+                    "[kalaroko_monitor] CDP 选用标签页（URL 含目标域 %s，探活通过，对齐 K11 host 匹配）: %s",
+                    ph,
+                    u[:160],
+                )
+                return ctx, pg
 
     # —— 阶段 B：未命中目标域时，全部 context 的页签上做可见性排序 ——
     scored: list[tuple[int, int, int, int, int, Any, Any]] = []
@@ -2802,7 +3250,7 @@ async def _pick_kalaroko_cdp_context_and_page(
                     u = ""
                 if not _cdp_tab_url_driver_safe(u):
                     continue
-                if not await _probe_cdp_page_alive(pg):
+                if not await _cdp_tab_health_probe_or_slaughter(pg):
                     continue
                 logger.info(
                     "[kalaroko_monitor] CDP 复用标签（PREFER_VISIBLE_TAB=0）ctx=%s index=%s url=%s",
@@ -2821,7 +3269,7 @@ async def _pick_kalaroko_cdp_context_and_page(
                 u = ""
             if not _cdp_tab_url_driver_safe(u):
                 continue
-            if not await _probe_cdp_page_alive(pg):
+            if not await _cdp_tab_health_probe_or_slaughter(pg):
                 continue
             vis_st = "hidden"
             has_foc = False
@@ -2845,9 +3293,15 @@ async def _pick_kalaroko_cdp_context_and_page(
             foc_tier = 0 if has_foc else 1
             scored.append((vis_tier, foc_tier, -ci, -idx, ci, ctx, pg))
 
-    scored.sort()
-    if scored:
+    while scored:
+        scored.sort()
         _vt, _ft, _nc, _ni, ci, ctx, pg = scored[0]
+        if not await _cdp_tab_health_probe_or_slaughter(pg):
+            logger.warning(
+                "[kalaroko_monitor] CDP visibility 排序候选项探活失败（或已斩杀），跳过下一条"
+            )
+            scored.pop(0)
+            continue
         try:
             _u = str(getattr(pg, "url", "") or "")[:120]
         except Exception:
@@ -2892,7 +3346,8 @@ async def _launch_kalaroko_browser_context(
     preferred_host: str | None = None,
 ) -> tuple[Any, Any, Any, bool]:
     """
-    优先 **CDP** 连接已有 Chrome；失败或超时则 **回退** ``chromium.launch(headless=True)`` 独立进程。
+    优先 **CDP** 连接已有 Chrome；首次失败时可 **OS 级复活** 本机 Chrome 再连；仍失败才 **回退**
+    ``chromium.launch(headless=...)`` 独立进程（会丢失 CDP 登录态，仅作最后手段）。
 
     ``preferred_host``：本轮巡检 ``base_url`` 的主机名（小写），用于与 K11 冒烟一致地 **优先绑定含该域的 Tab**，
     避免打在 DevTools/其他站/空白页上却仍能「出数」。
@@ -2905,27 +3360,84 @@ async def _launch_kalaroko_browser_context(
     dsf = float(device_scale_factor)
 
     endpoint = (_kalaroko_cdp_endpoint() or "").strip() or "http://127.0.0.1:9222"
+    connect_sec = float(
+        _env_int("KALAROKO_CDP_CONNECT_TIMEOUT_SEC", 15, vmin=5, vmax=120)
+    )
 
-    try:
-        browser = await asyncio.wait_for(
+    async def _connect_over_cdp_once() -> Any:
+        return await asyncio.wait_for(
             playwright.chromium.connect_over_cdp(endpoint),
-            timeout=30.0,
+            timeout=connect_sec,
         )
+
+    browser: Any | None = None
+    try:
+        browser = await _connect_over_cdp_once()
     except Exception as e:
         logger.warning(
-            "[kalaroko_monitor] CDP 连接失败或超时 (%s)，回退 Playwright launch：%s",
+            "[kalaroko_monitor] CDP 首次 connect_over_cdp 失败（%s）: %s",
             endpoint,
             str(e)[:400],
         )
-        browser = await playwright.chromium.launch(headless=headless)
-        context = await browser.new_context(viewport=vp, device_scale_factor=dsf)
-        await _apply_stealth_to_context(context)
-        page = await context.new_page()
-        logger.info(
-            "[kalaroko_monitor] 已 launch 独立 Chromium（headless=%s），新建 context + page",
-            headless,
-        )
-        return browser, context, page, True
+        spawned, http_ready = await _revive_external_chrome_on_9222(endpoint=endpoint)
+        if spawned and http_ready:
+            attempts = _env_int(
+                "KALAROKO_CDP_POST_REVIVE_CONNECT_ATTEMPTS", 3, vmin=1, vmax=12
+            )
+            gap = float(
+                _env_int("KALAROKO_CDP_POST_REVIVE_CONNECT_GAP_MS", 500, vmin=0, vmax=5000)
+            )
+            gap = gap / 1000.0
+            last_e2: BaseException | None = None
+            browser = None
+            post_to = min(
+                float(connect_sec),
+                float(
+                    _env_int(
+                        "KALAROKO_CDP_POST_REVIVE_CONNECT_TIMEOUT_SEC",
+                        20,
+                        vmin=5,
+                        vmax=120,
+                    )
+                ),
+            )
+            for att in range(attempts):
+                try:
+                    browser = await asyncio.wait_for(
+                        playwright.chromium.connect_over_cdp(endpoint),
+                        timeout=post_to,
+                    )
+                    last_e2 = None
+                    break
+                except BaseException as e2:
+                    last_e2 = e2
+                    if att + 1 < attempts and gap > 0:
+                        await asyncio.sleep(gap)
+            if browser is None and last_e2 is not None:
+                logger.error(
+                    "[kalaroko_monitor] Chrome 复活后 %s 次 connect_over_cdp 仍失败，回退 Playwright launch: %s",
+                    attempts,
+                    str(last_e2)[:400],
+                )
+        elif spawned and not http_ready:
+            logger.error(
+                "[kalaroko_monitor] 复活已派发但 /json/version 未就绪；"
+                "跳过 connect_over_cdp 连打（避免长时间卡死），直接 Playwright launch 兜底"
+            )
+            browser = None
+        else:
+            browser = None
+
+        if browser is None:
+            browser = await playwright.chromium.launch(headless=headless)
+            context = await browser.new_context(viewport=vp, device_scale_factor=dsf)
+            await _apply_stealth_to_context(context)
+            page = await context.new_page()
+            logger.info(
+                "[kalaroko_monitor] 已 launch 独立 Chromium（headless=%s），新建 context + page",
+                headless,
+            )
+            return browser, context, page, True
 
     logger.info(
         "[kalaroko_monitor] 已连接 CDP → %s，context 数=%s",
@@ -3121,7 +3633,7 @@ async def execute_playwright_perf_test(
             点击流可选 **require_game_frame_url**（默认 True）：采数结束前主文档 URL 须含 ``game-frame``，
             否则本条 **load_status=failed**，避免未见游戏打开仍上报 success）。
             游戏场景可选 **document_game_id** 与 Word/BI 报告小节 game_id 对齐）。**传 null 或 [] 时自动使用**
-            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 三款游戏；游戏默认从首页点击进入）。浏览器：
+            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 四款游戏；游戏默认从首页点击进入）。浏览器：
             **必须**设置 ``KALAROKO_CDP_ENDPOINT``（如 ``http://127.0.0.1:9222``），并预先以 ``--remote-debugging-port``
             启动 Chrome（仓库 ``scripts/launch_chrome_debug.ps1``）；Playwright 仅 ``connect_over_cdp``，**不再**
             自动 ``launch`` 新浏览器。会话/Cookie 由该 Chrome 实例与用户数据目录决定。无登录态时若出现
@@ -3922,7 +4434,7 @@ async def execute_playwright_perf_test(
                 "games": games_out,
                 "browser_exceptions": browser_exceptions,
                 "aggregation_notes": (
-                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 3 款游戏）"]
+                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 4 款游戏）"]
                     if used_default_scenarios
                     else []
                 ),
@@ -3936,6 +4448,28 @@ async def execute_playwright_perf_test(
                 "巡检已由用户停止（下一检查点前已中止 Playwright）",
             )
         finally:
+            # CDP 复用用户默认 context：可选「阅后即焚」关闭本轮巡检占用的标签，减轻 H5 长时内存泄漏
+            #（会关掉该 Tab；仅无人值守/专用巡检 Tab 或已配合 KALAROKO_CDP_NEW_TAB 时建议开启）
+            try:
+                if (
+                    not must_close_context
+                    and page is not None
+                    and _env_bool("KALAROKO_CDP_CLOSE_INSPECTION_TAB_AFTER_RUN", False)
+                ):
+                    try:
+                        closed = bool(page.is_closed())
+                    except Exception:
+                        closed = True
+                    if not closed:
+                        await page.close()
+                        logger.info(
+                            "[kalaroko_monitor] CDP 阅后即焚：已关闭本轮巡检标签（"
+                            "KALAROKO_CDP_CLOSE_INSPECTION_TAB_AFTER_RUN）"
+                        )
+            except Exception as e:
+                logger.warning(
+                    "[kalaroko_monitor] CDP 阅后即焚 page.close 失败: %s", str(e)[:300]
+                )
             # 自建 / launch 的 context 必须显式 close，减轻 OOM；复用 CDP 用户默认 context 时不关
             try:
                 if context is not None and must_close_context:

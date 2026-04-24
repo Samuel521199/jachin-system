@@ -206,8 +206,8 @@ def _build_summary_table_md(hist: list[dict[str, Any]]) -> str:
     lines = [
         f"**📅 巡检时间（{tz_label}）：{now}**",
         "",
-        "| 巡检轮次 | 巡检时间 | 首页 | Tongits King | Color Blitz | Royal Pusoy |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| 巡检轮次 | 巡检时间 | 首页 | Tongits King | Color Blitz | Royal Pusoy | Bingo Showdown |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for i, row in enumerate(hist or []):
         r = i + 1
@@ -216,9 +216,10 @@ def _build_summary_table_md(hist: list[dict[str, Any]]) -> str:
         tg = _cell_round_trip(row, "tongits_king_load", "tongits_king_success")
         cb = _cell_round_trip(row, "color_blitz_load", "color_blitz_success")
         rp = _cell_round_trip(row, "royal_pusoy_load", "royal_pusoy_success")
-        lines.append(f"| {r} | {time_cell} | {home} | {tg} | {cb} | {rp} |")
+        bingo = _cell_round_trip(row, "bingo_showdown_load", "bingo_showdown_success")
+        lines.append(f"| {r} | {time_cell} | {home} | {tg} | {cb} | {rp} | {bingo} |")
     if not hist:
-        lines.append("| — | - | （无多轮指标） | — | — | — |")
+        lines.append("| — | - | （无多轮指标） | — | — | — | — |")
     return "\n".join(lines)
 
 
