@@ -95,6 +95,15 @@ KALAROKO_E2E_JSONL = KALAROKO_E2E_JSONL_PATH
 # 串行化 Playwright/落库，避免与定时任务交错写 JSONL
 _E2E_SERIAL_LOCK = asyncio.Lock()
 
+
+async def _try_acquire_e2e_lock(timeout_sec: float) -> bool:
+    """避免与定时小时任务无限排队：超时则快速失败（exit_code=11）。"""
+    try:
+        await asyncio.wait_for(_E2E_SERIAL_LOCK.acquire(), timeout=timeout_sec)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
 # 停止标志在 `l3_node.kalaroko_e2e_control`（与 HTTP / importlib 加载路径解耦）
 from l3_node.kalaroko_e2e_control import (  # noqa: E402
     is_manual_run_cancel_requested,
@@ -355,13 +364,23 @@ def _api_summary_status_codes_cell(summary: dict) -> str:
 _CMP_LLM_META_KEYS = frozenset({"inspection_time", "captured_at"})
 
 
+def _effective_homepage_load_ms(mcore: dict | None) -> Any:
+    """看板「响应」与趋势：``load`` 未触发时 ``page_load_ms`` 常为空，用 DOMContentLoaded 兜底。"""
+    if not isinstance(mcore, dict):
+        return None
+    pl = mcore.get("page_load_ms")
+    if pl is not None:
+        return pl
+    return mcore.get("dom_content_loaded_ms")
+
+
 def _extract_comparison_metrics(pw_data: dict) -> dict:
     """提取当前轮次的核心加载指标，用于多轮对比。"""
     m: dict[str, Any] = {}
     hp = pw_data.get("homepage") or {}
     hp_metrics = hp.get("metrics") or {}
     m["page_ttfb"] = hp_metrics.get("ttfb_ms")
-    m["page_load"] = hp_metrics.get("page_load_ms")
+    m["page_load"] = _effective_homepage_load_ms(hp_metrics)
     m["page_success"] = hp.get("load_status") == "success"
 
     cat = pw_data.get("captured_at")
@@ -1166,7 +1185,14 @@ def _append_developer_details_section(
         lines.append(
             f"   ├ 资源加载：请求数 `{req_disp}` | 失败 {_inline_scalar(failed_res)}"
         )
-        lines.append(f"   └ 业务报错：{console_disp}")
+        lines.append(f"   ├ 业务报错：{console_disp}")
+        timeline_list = gg.get("debug_timeline") or []
+        if isinstance(timeline_list, list) and timeline_list:
+            lines.append("   ├ ⏱️ 耗时追踪 (Timeline):")
+            for trace in timeline_list:
+                ts = trace if isinstance(trace, str) else str(trace)
+                lines.append(f"   │   - `{ts}`")
+        lines.append("   └")
         lines.append("")
     lines.append("")
 
@@ -1201,10 +1227,11 @@ def render_report_md(
     if page_ttfb_ms is None:
         page_ttfb_ms = wv.get("ttfb_ms")
     hp_fr = _homepage_failed_resources(mcore)
+    effective_page_load_ms = _effective_homepage_load_ms(mcore)
     lines.append("**🌐 首页加载 (kalaroko.com)**")
     lines.append(f"├ 状态: {_status_dot_normal(hp.get('load_status'))}")
     lines.append(
-        f"├ 响应: {_bold_duration_s(mcore.get('page_load_ms'))} (首字节: {_bold_duration_s(page_ttfb_ms)})"
+        f"├ 响应: {_bold_duration_s(effective_page_load_ms)} (首字节: {_bold_duration_s(page_ttfb_ms)})"
     )
     lines.append(f"└ 资源: 失败 {hp_fr} 个")
     hp_rm = _summary_remark_homepage(hp)
@@ -1734,6 +1761,7 @@ async def _run_full_cycle(
             interval=interval,
             summary_model=_e2e_summary_model(),
             line_sink=line_sink,
+            all_metrics_history=all_metrics_history,
         )
     except Exception as e:
         print(f"[Lark inspect] 推送跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
@@ -1753,6 +1781,9 @@ async def _run_full_cycle(
         try:
             from l3_client.local_mcps.jachin_memory_nexus.memory_backend import commit_drawer
 
+            _e2e_echo(
+                "[Memory] 准备写入 Memory Nexus（后台线程；首次可能下载 FastEmbed 权重，需数十秒属正常）…"
+            )
             mem_blob = f"{llm_analysis}\n\n{combined_md}"
             extra_meta = {
                 "source": "kalaroko_e2e",
@@ -1832,7 +1863,23 @@ async def run_kalaroko_batch_test(
                 "llm_analysis": None,
             }
         try:
-            async with _E2E_SERIAL_LOCK:
+            lock_wait = float(os.environ.get("KALAROKO_E2E_LOCK_ACQUIRE_SEC", "20") or "20")
+            lock_wait = max(0.5, min(lock_wait, 600.0))
+            if not await _try_acquire_e2e_lock(lock_wait):
+                msg = (
+                    f"未在 {lock_wait:.0f}s 内取得巡检串行锁（可能正跑定时小时任务或其它 "
+                    f"SSE/CLI 巡检）；可稍后重试或 POST /api/v1/monitor/stop 后重开"
+                )
+                print(f"\n[E2E BUSY] {msg}", file=sys.stderr, flush=True)
+                _e2e_progress(msg)
+                return {
+                    "ok": False,
+                    "exit_code": 11,
+                    "error": msg,
+                    "markdown_report": None,
+                    "llm_analysis": None,
+                }
+            try:
                 return await _run_full_cycle(
                     runs,
                     interval,
@@ -1841,6 +1888,8 @@ async def run_kalaroko_batch_test(
                     ui_pace_ms=ui_pace_ms,
                     ui_cursor_moves=ui_cursor_moves,
                 )
+            finally:
+                _E2E_SERIAL_LOCK.release()
         except AssertionError as e:
             msg = str(e)
             print(f"\n[E2E FAIL] {msg}", file=sys.stderr, flush=True)

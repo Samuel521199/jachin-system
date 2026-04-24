@@ -33,7 +33,9 @@ im_channels:
     # 多机共享：本节点只处理这些 chat_id，空则处理全部
     # 非空时，仅处理列表中的会话，避免回复到其他机器
     chat_ids: []
-    domain: "https://open.feishu.cn"   # 飞书中国版；国际版用 https://open.larksuite.com
+    # 机器人 WebSocket 须与应用创建平台一致。国际版默认 larksuite；仅「飞书中国自建应用 + 入耳长连接」时改为
+    # https://open.feishu.cn 并在环境变量设 LARK_USE_FEISHU=1（勿与仅用于巡检 Open API 的 FEISHU_* 混推域名）
+    domain: "https://open.larksuite.com"
   telegram:
     enabled: false
     # bot_token: ""

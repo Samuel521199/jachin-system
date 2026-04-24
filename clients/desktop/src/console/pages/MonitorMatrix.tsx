@@ -1,6 +1,6 @@
 /**
  * 巡检中枢 — Kalaroko 默认场景多轮 E2E + AI 综合分析（SSE / Mind Stream）
- * SSE URL 经由 getKalarokoMonitorStreamUrl：开发环境走 Vite `/l3` 代理，避免直连端口跨域。
+ * SSE URL 经由 resolveKalarokoMonitorStreamUrl：先短超时探测 L3 端口再 EventSource，避免首连卡死。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Radar } from "lucide-react";
 import { cn } from "../../utils/cn";
-import { getKalarokoMonitorStreamUrl, getL3MonitorApiUrl } from "../../lib/api";
+import { resolveKalarokoMonitorStreamUrl, resolveL3MonitorApiUrl } from "../../lib/api";
 
 export function MonitorMatrix() {
   const [runs, setRuns] = useState(4);
@@ -33,7 +33,7 @@ export function MonitorMatrix() {
 
   const refreshScheduleStatus = useCallback(async () => {
     try {
-      const url = getL3MonitorApiUrl("/api/v1/monitor/schedule/status");
+      const url = await resolveL3MonitorApiUrl("/api/v1/monitor/schedule/status");
       const res = await fetch(url);
       const data = (await res.json()) as { ok?: boolean; active?: boolean };
       if (typeof data.active === "boolean") {
@@ -58,7 +58,7 @@ export function MonitorMatrix() {
 
   const handleStopInspection = useCallback(async () => {
     try {
-      const url = getL3MonitorApiUrl("/api/v1/monitor/stop");
+      const url = await resolveL3MonitorApiUrl("/api/v1/monitor/stop");
       const res = await fetch(url, { method: "POST" });
       const ok = res.ok;
       setLogs((prev) => [...prev, ok ? "> 已发送停止信号（下一检查点生效）…" : "> 停止请求失败（HTTP）。"]);
@@ -71,7 +71,7 @@ export function MonitorMatrix() {
     async (enabled: boolean) => {
       setScheduleLoading(true);
       try {
-        const url = getL3MonitorApiUrl("/api/v1/monitor/schedule/toggle");
+        const url = await resolveL3MonitorApiUrl("/api/v1/monitor/schedule/toggle");
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -108,67 +108,79 @@ export function MonitorMatrix() {
     setDoneOk(null);
     setShowNotify(false);
 
-    const streamUrl = getKalarokoMonitorStreamUrl({
-      runs: Number.isFinite(runs) ? runs : 4,
-      interval: Number.isFinite(intervalSec) ? intervalSec : 30,
-    });
-    const eventSource = new EventSource(streamUrl);
-    esRef.current = eventSource;
     setRunning(true);
 
-    eventSource.onmessage = (event: MessageEvent<string>) => {
+    void (async () => {
+      let streamUrl: string;
       try {
-        const data = JSON.parse(event.data) as Record<string, unknown>;
-        if (data.type === "done") {
-          const ok = data.ok === true;
-          const cancelled = data.cancelled === true;
-          setDoneOk(ok);
-          if (cancelled) {
-            setLogs((prev) => [...prev, "> █ 巡检已由用户停止（部分轮次结果可能已生成）。"]);
-          }
-          const md = data.markdown_report;
-          if (typeof md === "string" && md.length > 0) {
-            setReportMarkdown(md);
-          } else {
-            setReportMarkdown(null);
-          }
-          const analysis = data.llm_analysis;
-          if (typeof analysis === "string" && analysis.length > 0) {
-            setLlmSummary(analysis);
-          } else {
-            setLlmSummary(null);
-          }
-          setLogs((prev) => [...prev, "> █ 巡检任务全链路执行完毕。"]);
-          setRunning(false);
-          eventSource.close();
-          if (ok) {
-            setShowNotify(true);
-            window.setTimeout(() => setShowNotify(false), 9000);
-          }
-          return;
-        }
-        if (data.type === "error") {
-          const msg = typeof data.message === "string" ? data.message : "未知错误";
-          setLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
-          setRunning(false);
-          setDoneOk(false);
-          eventSource.close();
-          return;
-        }
-        if (typeof data.line === "string") {
-          setLogs((prev) => [...prev, `> ${data.line}`]);
-        }
-      } catch {
-        /* ignore malformed SSE chunk */
+        streamUrl = await resolveKalarokoMonitorStreamUrl({
+          runs: Number.isFinite(runs) ? runs : 4,
+          interval: Number.isFinite(intervalSec) ? intervalSec : 30,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setLogs((prev) => [...prev, `> [ERROR] 无法连接 L3（已探测多端口，${msg}）`]);
+        setRunning(false);
+        return;
       }
-    };
 
-    eventSource.onerror = () => {
-      setLogs((prev) => [...prev, "> [WARN] 巡检流意外中断（请确认 L3 已启动且 `/l3` 代理可用）。"]);
-      setRunning(false);
-      setDoneOk(false);
-      eventSource.close();
-    };
+      const eventSource = new EventSource(streamUrl);
+      esRef.current = eventSource;
+
+      eventSource.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const data = JSON.parse(event.data) as Record<string, unknown>;
+          if (data.type === "done") {
+            const ok = data.ok === true;
+            const cancelled = data.cancelled === true;
+            setDoneOk(ok);
+            if (cancelled) {
+              setLogs((prev) => [...prev, "> █ 巡检已由用户停止（部分轮次结果可能已生成）。"]);
+            }
+            const md = data.markdown_report;
+            if (typeof md === "string" && md.length > 0) {
+              setReportMarkdown(md);
+            } else {
+              setReportMarkdown(null);
+            }
+            const analysis = data.llm_analysis;
+            if (typeof analysis === "string" && analysis.length > 0) {
+              setLlmSummary(analysis);
+            } else {
+              setLlmSummary(null);
+            }
+            setLogs((prev) => [...prev, "> █ 巡检任务全链路执行完毕。"]);
+            setRunning(false);
+            eventSource.close();
+            if (ok) {
+              setShowNotify(true);
+              window.setTimeout(() => setShowNotify(false), 9000);
+            }
+            return;
+          }
+          if (data.type === "error") {
+            const msg = typeof data.message === "string" ? data.message : "未知错误";
+            setLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
+            setRunning(false);
+            setDoneOk(false);
+            eventSource.close();
+            return;
+          }
+          if (typeof data.line === "string") {
+            setLogs((prev) => [...prev, `> ${data.line}`]);
+          }
+        } catch {
+          /* ignore malformed SSE chunk */
+        }
+      };
+
+      eventSource.onerror = () => {
+        setLogs((prev) => [...prev, "> [WARN] 巡检流意外中断（请确认 L3 已启动且 `/l3` 代理可用）。"]);
+        setRunning(false);
+        setDoneOk(false);
+        eventSource.close();
+      };
+    })();
   }, [runs, intervalSec]);
 
   return (

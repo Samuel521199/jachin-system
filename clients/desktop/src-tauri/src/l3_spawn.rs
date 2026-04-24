@@ -200,9 +200,10 @@ const L3_ENV_KEYS: &[&str] = &[
     // 安全锁：控制台「安全锁审批」与 CLI approve 均依赖 L3 进程内该变量；须从项目 .env 注入子进程（原白名单未包含会导致 503 admin_token_not_configured）
     "JACHIN_SAFETY_LOCK_ADMIN_TOKEN",
     "JACHIN_SAFETY_LOCK_LEARN",
-    // Kalaroko 巡检完成后 Lark Webhook（与 desktop .env 同步注入 L3 侧车）
-    "KALAROKO_INSPECT_LARK_WEBHOOK_URL",
-    "LARK_WEBHOOK_URL",
+    // Kalaroko 巡检飞书自建应用 Open API（卡片 + 话题回复；与 desktop .env 同步注入 L3 侧车）
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_CHAT_ID",
 ];
 
 fn parse_env_file(path: &PathBuf) -> Vec<(String, String)> {

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -10,11 +10,39 @@ export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost
 /** L3 技能 API 默认端口（与 l3_node/http_server.py 端口回退一致） */
 const L3_SKILLS_PORTS = [18991, 18990, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999];
 
-/** L3 技能 API base URL（若 VITE_L3_SKILLS_URL 含端口则只用该 URL，否则会尝试多端口。用 127.0.0.1 避免 localhost 解析到 IPv6 导致连接失败） */
+/**
+ * 可选构建时变量 **VITE_L3_SKILLS_URL**：打包进前端的 L3 HTTP 根（如 `http://127.0.0.1:18991` 或海外 `https://l3.example.com`）。
+ * **不必设置**：未设置时对多端口 **并行** 短探测 + 成功后 **内存缓存**（约 90s），避免串行扫端口拖死主流程。
+ */
 const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://127.0.0.1";
 
 /** 开发模式下使用 Vite 代理 /l3 -> L3，避免跨域 Failed to fetch */
 const L3_DEV_PROXY = import.meta.env.DEV ? "/l3" : "";
+
+/** 单端口探测超时（毫秒）；多端口 **并行** 发起，总等待约本值量级而非端口数×本值 */
+const L3_PROBE_FETCH_MS = 2200;
+
+/** 探测到的 L3 base 在内存中复用时长，减轻巡检页定时轮询等对主线程的压力 */
+const L3_BASE_CACHE_MS = 90_000;
+
+let _l3BaseUrlCache: { url: string; until: number } | null = null;
+
+async function fetchL3ProbeOk(url: string): Promise<boolean> {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), L3_PROBE_FETCH_MS);
+  try {
+    const r = await fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: ac.signal,
+    });
+    return r.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 /** 保存 API Key 到后端（持久化到 ~/.jachin/.qwen_api_key，覆盖 .env） */
 export async function saveApiKey(qwenApiKey: string | null): Promise<{ ok: boolean; message: string }> {
@@ -1136,7 +1164,7 @@ export function getL3LogsStreamUrls(): string[] {
   return [...new Set(urls)];
 }
 
-/** Kalaroko E2E 巡检 SSE（与 getL3LogsStreamUrl 同源 base / 代理逻辑） */
+/** Kalaroko E2E 巡检 SSE（同步版仅猜首端口；生产/海外请用 ``resolveKalarokoMonitorStreamUrl``） */
 export function getKalarokoMonitorStreamUrl(opts?: {
   runs?: number;
   interval?: number;
@@ -1158,6 +1186,21 @@ export function getKalarokoMonitorStreamUrl(opts?: {
   return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
 }
 
+/** 巡检 SSE 完整 URL：先 ``getL3SkillsBaseUrl`` 短超时探测，再拼 path（推荐巡检页使用） */
+export async function resolveKalarokoMonitorStreamUrl(opts?: {
+  runs?: number;
+  interval?: number;
+  skipPlaywright?: boolean;
+}): Promise<string> {
+  const base = await getL3SkillsBaseUrl();
+  const sp = new URLSearchParams();
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
+  if (opts?.skipPlaywright) sp.set("skip_playwright", "1");
+  const q = sp.toString();
+  return `${base}/api/v1/monitor/stream${q ? `?${q}` : ""}`;
+}
+
 /** L3 巡检控制台 REST（停止 / 定时调度），base 逻辑与 ``getKalarokoMonitorStreamUrl`` 一致 */
 export function getL3MonitorApiUrl(apiPath: string): string {
   const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
@@ -1169,6 +1212,13 @@ export function getL3MonitorApiUrl(apiPath: string): string {
     return `${L3_DEV_PROXY}${path}`;
   }
   return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${L3_SKILLS_PORTS[0]}${path}`;
+}
+
+/** 异步解析 REST 完整 URL（与 ``resolveKalarokoMonitorStreamUrl`` 同源探测，推荐巡检页使用） */
+export async function resolveL3MonitorApiUrl(apiPath: string): Promise<string> {
+  const base = await getL3SkillsBaseUrl();
+  const p = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  return `${base}${p}`;
 }
 
 /** K11 统合平台冒烟（Playwright）SSE，base 与 Kalaroko 巡检一致 */
@@ -1222,33 +1272,51 @@ export function getK11P2CompatOnlyStreamUrl(opts?: {
 }
 
 /**
- * 获取 L3 技能 API 的 base URL（与 invokeL3Skills 逻辑一致，供流式等复用）
+ * 获取 L3 HTTP base（与 invokeL3Skills / 巡检 SSE 同源）。
+ * 未配 ``VITE_L3_SKILLS_URL`` 时：并行短探测 + 成功后短期缓存；不依赖该变量即可使用。
+ *
+ * @param opts.bypassCache 为 true 时跳过缓存（例如 L3 刚重启换端口）
  */
-async function getL3SkillsBaseUrl(): Promise<string> {
+export async function getL3SkillsBaseUrl(opts?: { bypassCache?: boolean }): Promise<string> {
   const path = "/api/v3/skills";
+  const now = Date.now();
+  if (!opts?.bypassCache && _l3BaseUrlCache && now < _l3BaseUrlCache.until) {
+    return _l3BaseUrlCache.url;
+  }
+
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
   if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
-    return envUrl.replace(/\/$/, "");
+    const u = envUrl.replace(/\/$/, "");
+    _l3BaseUrlCache = { url: u, until: now + L3_BASE_CACHE_MS };
+    return u;
   }
   if (L3_DEV_PROXY) {
-    try {
-      const url = `${L3_DEV_PROXY}${path}`;
-      const r = await fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } });
-      if (r.ok) return L3_DEV_PROXY;
-    } catch {
-      /* fall through to direct */
+    const url = `${L3_DEV_PROXY}${path}`;
+    if (await fetchL3ProbeOk(url)) {
+      _l3BaseUrlCache = { url: L3_DEV_PROXY, until: now + L3_BASE_CACHE_MS };
+      return L3_DEV_PROXY;
     }
   }
-  for (const port of L3_SKILLS_PORTS) {
-    try {
-      const url = `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}${path}`;
-      const r = await fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } });
-      if (r.ok) return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}`;
-    } catch {
-      continue;
-    }
+  const host = L3_SKILLS_BASE.replace(/:\d+$/, "");
+  const bases = await Promise.all(
+    L3_SKILLS_PORTS.map(async (port) => {
+      const base = `${host}:${port}`;
+      const ok = await fetchL3ProbeOk(`${base}${path}`);
+      return ok ? base : null;
+    }),
+  );
+  const found = bases.find((b) => b != null);
+  if (found) {
+    _l3BaseUrlCache = { url: found, until: Date.now() + L3_BASE_CACHE_MS };
+    return found;
   }
+  _l3BaseUrlCache = null;
   throw new Error("L3 技能 API 不可达，请确认 L3 已启动（端口 18991 等）");
+}
+
+/** 清除 L3 base 探测缓存（L3 重启/换端口后可调用） */
+export function clearL3SkillsBaseUrlCache(): void {
+  _l3BaseUrlCache = null;
 }
 
 /**

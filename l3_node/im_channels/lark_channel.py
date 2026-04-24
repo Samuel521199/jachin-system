@@ -13,6 +13,27 @@ from l3_node.im_channels.base import InboundIMChannel
 logger = logging.getLogger(__name__)
 
 
+def _resolve_lark_im_domain(config: dict[str, Any]) -> str:
+    """
+    入站长连接 / IM 文本回覆使用的开放平台 ``domain``。
+
+    **勿**在未设置 ``LARK_USE_FEISHU`` 时退回到 ``FEISHU_DOMAIN``：巡检推送可走飞书中国 Open API
+    （``FEISHU_*``），而机器人 WebSocket 仍可能是 Lark 国际版应用，误连 ``open.feishu.cn`` 会触发
+    ``1000040351 Incorrect domain name``。
+    """
+    import os
+
+    cd = (config.get("domain") or "").strip()
+    if cd:
+        return cd
+    lark_dom = os.environ.get("LARK_DOMAIN", "").strip()
+    if lark_dom:
+        return lark_dom
+    if os.environ.get("LARK_USE_FEISHU", "").lower() in ("1", "true", "yes"):
+        return (os.environ.get("FEISHU_DOMAIN", "").strip() or "https://open.feishu.cn")
+    return "https://open.larksuite.com"
+
+
 class LarkInboundChannel(InboundIMChannel):
     """Lark 入站通道 — 长连接模式"""
 
@@ -55,12 +76,7 @@ class LarkInboundChannel(InboundIMChannel):
             except Exception:
                 logger.exception("[IM Lark] on_message 异常")
 
-        domain = (
-            (config.get("domain") or "").strip()
-            or os.environ.get("LARK_DOMAIN", "").strip()
-            or os.environ.get("FEISHU_DOMAIN", "").strip()
-            or "https://open.larksuite.com"
-        )
+        domain = _resolve_lark_im_domain(config)
         try:
             from l3_node.channels.lark.long_connection import start_long_connection
         except ImportError as e:
@@ -87,12 +103,7 @@ def create_lark_send_reply(config: dict[str, Any]) -> Callable[[str, str], bool]
     import os
     app_id = (config.get("app_id") or os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID") or "").strip()
     app_secret = (config.get("app_secret") or os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET") or "").strip()
-    domain = (
-        (config.get("domain") or "").strip()
-        or os.environ.get("LARK_DOMAIN", "").strip()
-        or os.environ.get("FEISHU_DOMAIN", "").strip()
-        or "https://open.larksuite.com"
-    )
+    domain = _resolve_lark_im_domain(config)
     api_base = _api_base_from_domain(domain)
 
     def send(chat_id: str, text: str) -> bool:

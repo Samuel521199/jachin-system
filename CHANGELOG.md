@@ -1,12 +1,15 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
 
-## [v0.9.40] - 2026-04-22
+## [v0.9.40] - 2026-04-24
 
 ### Added / Changed
 
 - 串联除游戏外的所有冒烟测试，同步 Lark 表格，发送消息卡片。
+- **Kalaroko 游戏墙钟**：点击流场景下 ``real_engine_load_ms`` 零点改为「点击游戏入口完成之后」，不含大厅寻址/点击耗时；E2E 报告首页 ``page_load_ms`` 为空时用 ``dom_content_loaded_ms`` 兜底展示与趋势。
+- **Kalaroko 进桌竞速**：后置 API 白名单仅保留 Agora / 成员列表；HTTP 先胜出时 ``finally`` 不再 ``await`` UI 子任务，避免死锁；服务端巡检 SSE 先发首包再加载 E2E 脚本。
+- **桌面巡检页**：L3 地址并行短探测 + 内存缓存；可选 ``VITE_L3_SKILLS_URL`` 固定 L3 base；Lark 入站 WS 域名与飞书巡检 Open API 解耦（``LARK_USE_FEISHU`` / ``_resolve_lark_im_domain``）。
 - **Version**: Desktop **0.9.40**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
 
 ---
