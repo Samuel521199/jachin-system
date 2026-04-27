@@ -1,105 +1,187 @@
 #!/usr/bin/env python3
 """
-向 Lark / 飞书「自定义机器人」Webhook 发送一条测试消息。
+飞书自建应用 Open API 连通性自检（tenant_access_token + im/v1/messages）。
 
-飞书开放平台要求 POST JSON，且必须包含 ``msg_type``；否则会返回
-``{"code":19002,"msg":"params error, msg_type need"}``。
+历史：本脚本曾用于「自定义机器人 Webhook」；仓库已统一巡检等通道为 Open API，
+此处改为验证 ``FEISHU_*`` 凭证（与 ``l3_node/channels/lark/kalaroko_inspection_notify.py`` 一致）。
 
-用法（任选其一）::
+环境变量::
 
-    # 推荐：环境变量（勿把 Webhook URL 提交到 Git）
-    set LARK_WEBHOOK_URL=https://open.larksuite.com/open-apis/bot/v2/hook/xxxx
+    FEISHU_APP_ID
+    FEISHU_APP_SECRET   # 必填（勿提交 Git）
+    FEISHU_CHAT_ID      # 群 chat_id（oc_...）
+
+用法::
+
     python scripts/test_lark_webhook_send.py
 
-    # 或命令行传入（同一 URL）
-    python scripts/test_lark_webhook_send.py "https://open.larksuite.com/open-apis/bot/v2/hook/xxxx"
+脚本会**自动**合并加载项目根 ``.env``（及 ``~/.jachin/.env``，与 ``core.l3_dotenv_merge`` 一致），无需事先 ``export``。
 
-可选：第二个参数改为 ``text`` 则发送纯文本（``msg_type=text``），默认发送交互卡片（与仓库 ``l3_node/channels/lark/webhook.py`` 一致）。
+    # 仅模拟成功响应（不调 Open API，供 CI / 无密钥环境）
+    python scripts/test_lark_webhook_send.py --mock
+
+可选：末尾 ``text`` 发送纯文本（默认）；``interactive`` 发送一条极简 schema 2.0 卡片。
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+_MESSAGES_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 
 
-def _send_interactive(webhook_url: str) -> dict:
-    """msg_type=interactive + card（lark_md）"""
-    card: dict = {
-        "config": {"wide_screen_mode": True, "enable_forward": True},
-        "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        "✅ **Jachin Webhook 连通测试**\n\n"
-                        "- 脚本：`scripts/test_lark_webhook_send.py`\n"
-                        "- 格式：`msg_type` + `interactive` 卡片\n\n"
-                        "若本消息出现在群内，说明 Webhook 可用。"
-                    ),
-                },
-            },
-        ],
+def _load_project_dotenv() -> None:
+    """把仓库根（含 ``scripts/`` 的父目录）加入 path，并合并 ``.env`` 到 ``os.environ``。"""
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from core.l3_dotenv_merge import merge_l3_dotenv_into_os
+
+        merge_l3_dotenv_into_os(l3_project_root=str(root))
+    except Exception:
+        try:
+            from dotenv import load_dotenv
+
+            for p in (root / ".env", Path.home() / ".jachin" / ".env"):
+                if p.is_file():
+                    load_dotenv(p, encoding="utf-8")
+        except ImportError:
+            pass
+
+
+def _post_json(
+    url: str,
+    body: dict,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> dict:
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    h = {"Content-Type": "application/json; charset=utf-8"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=data, headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    return json.loads(raw) if raw.strip() else {}
+
+
+def _get_token(app_id: str, app_secret: str) -> str:
+    j = _post_json(_TOKEN_URL, {"app_id": app_id, "app_secret": app_secret}, timeout=25.0)
+    if int(j.get("code", -1)) != 0:
+        raise RuntimeError(f"tenant_token 失败: {j}")
+    tok = (j.get("tenant_access_token") or "").strip()
+    if not tok:
+        raise RuntimeError(f"tenant_token 空: {j}")
+    return tok
+
+
+def _send_text(token: str, chat_id: str, text: str) -> dict:
+    url = f"{_MESSAGES_URL}?receive_id_type=chat_id"
+    payload = {
+        "receive_id": chat_id,
+        "msg_type": "text",
+        "content": json.dumps({"text": text}, ensure_ascii=False),
+    }
+    return _post_json(
+        url,
+        payload,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=45.0,
+    )
+
+
+def _send_interactive_smoke(token: str, chat_id: str) -> dict:
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "Webhook 测试"},
+            "title": {"tag": "plain_text", "content": "Open API 连通测试"},
+            "template": "green",
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": "✅ **Jachin Feishu Open API**\n\n脚本：`scripts/test_lark_webhook_send.py`",
+                }
+            ],
         },
     }
-    payload = {"msg_type": "interactive", "card": card}
-    return _post_json(webhook_url, payload)
-
-
-def _send_text(webhook_url: str) -> dict:
-    """msg_type=text（部分老机器人/简单场景）"""
-    text = (
-        "【Jachin Webhook 测试】\n"
-        "这是一条纯文本测试消息（msg_type=text）。"
+    url = f"{_MESSAGES_URL}?receive_id_type=chat_id"
+    payload = {
+        "receive_id": chat_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card, ensure_ascii=False),
+    }
+    return _post_json(
+        url,
+        payload,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=45.0,
     )
-    payload = {"msg_type": "text", "content": json.dumps({"text": text})}
-    return _post_json(webhook_url, payload)
-
-
-def _post_json(webhook_url: str, payload: dict) -> dict:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url.strip(),
-        data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-    try:
-        return json.loads(body) if body.strip() else {}
-    except json.JSONDecodeError:
-        return {"raw": body}
 
 
 def main() -> int:
-    argv = [a for a in sys.argv[1:] if a]
-    mode = "interactive"
-    if argv and argv[-1] in ("text", "interactive"):
-        mode = argv.pop()
-    url = (os.environ.get("LARK_WEBHOOK_URL") or "").strip()
-    if argv:
-        url = argv[0].strip()
-    if not url:
+    ap = argparse.ArgumentParser(description="飞书 Open API 连通自检")
+    ap.add_argument(
+        "--mock",
+        action="store_true",
+        help="不调真实接口，打印模拟成功 JSON（CI / 无密钥）",
+    )
+    ap.add_argument(
+        "mode",
+        nargs="?",
+        default="text",
+        choices=("text", "interactive"),
+        help="发送类型（默认 text）",
+    )
+    args = ap.parse_args()
+    _load_project_dotenv()
+
+    if args.mock:
+        fake = {
+            "mock": True,
+            "tenant_access_token": "mock_tenant_xxx",
+            "send": {"code": 0, "data": {"message_id": "mock_om_xxx"}},
+        }
+        print(json.dumps(fake, ensure_ascii=False, indent=2))
+        return 0
+
+    app_id = (os.environ.get("FEISHU_APP_ID") or "").strip()
+    secret = (os.environ.get("FEISHU_APP_SECRET") or "").strip()
+    chat_id = (os.environ.get("FEISHU_CHAT_ID") or "").strip()
+    if not (app_id and secret and chat_id):
         print(
-            "用法: set LARK_WEBHOOK_URL=<webhook> 后运行，或:\n"
-            '  python scripts/test_lark_webhook_send.py "https://open.larksuite.com/open-apis/bot/v2/hook/..."\n'
-            "可选末尾参数: text | interactive（默认 interactive）",
+            "请配置 FEISHU_APP_ID、FEISHU_APP_SECRET、FEISHU_CHAT_ID 后重试，或加 --mock。\n"
+            "说明见脚本顶部文档字符串。",
             file=sys.stderr,
         )
         return 2
 
     try:
-        if mode == "text":
-            result = _send_text(url)
+        token = _get_token(app_id, secret)
+    except Exception as e:
+        print(f"取 token 失败: {e}", file=sys.stderr)
+        return 1
+
+    body = (
+        "【Jachin Open API 测试】\n"
+        "这是一条纯文本自检（im/v1/messages · msg_type=text）。"
+    )
+    try:
+        if args.mode == "interactive":
+            result = _send_interactive_smoke(token, chat_id)
         else:
-            result = _send_interactive(url)
+            result = _send_text(token, chat_id, body)
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
         print(f"HTTP {e.code}: {err}", file=sys.stderr)
@@ -107,13 +189,13 @@ def main() -> int:
     except urllib.error.URLError as e:
         print(f"网络错误: {e.reason}", file=sys.stderr)
         return 1
+    except Exception as e:
+        print(f"发送失败: {e}", file=sys.stderr)
+        return 1
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    code = result.get("code")
-    # Lark 成功通常为 code 0 或 HTTP 200 且 StatusCode 在 body（视版本）
-    if code is not None and int(code) != 0:
-        # 部分接口 code 在 data 内；19021 等亦为失败
-        print(f"Lark 返回非零 code={code} msg={result.get('msg')}", file=sys.stderr)
+    if int(result.get("code", -1)) != 0:
+        print(f"飞书返回非零 code={result.get('code')} msg={result.get('msg')}", file=sys.stderr)
         return 1
     return 0
 

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
 
@@ -9,7 +9,8 @@ Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
   或
   python l3_client/local_mcps/kalaroko_monitor/mcp_kalaroko_monitor.py
 
-依赖：mcp, playwright, httpx（需 `playwright install chromium`）。巡检浏览器：须设置 `KALAROKO_CDP_ENDPOINT` 并预先以远程调试端口启动 Chrome（`connect_over_cdp`，不自动 launch）。
+依赖：mcp, playwright, httpx（需 `playwright install chromium`）。巡检浏览器：须设置 `KALAROKO_CDP_ENDPOINT` 并预先以远程调试端口启动 Chrome（`connect_over_cdp`）。
+CDP 首次连接失败时，可经 ``KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL`` 尝试 **OS 级拉起本机 Chrome** 绑定同一调试端口后再连；仍失败才回退 ``chromium.launch``。
 """
 from __future__ import annotations
 
@@ -17,9 +18,13 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -100,6 +105,20 @@ def _e2e_user_cancel_requested() -> bool:
         return False
 
 
+def _make_timeline_mark(
+    timeline: list[str], t_start_wall: float, game_id: str
+) -> Callable[[str], None]:
+    """毫秒级墙钟时间线（与 ``real_engine_load_ms`` 的 perf_counter 锚点分离，便于 SRE 读日志）。"""
+
+    def mark_time(step_name: str) -> None:
+        elapsed = time.time() - t_start_wall
+        msg = f"[{elapsed:.2f}s] {step_name}"
+        timeline.append(msg)
+        logger.info("[Timeline] %s -> %s", game_id, msg)
+
+    return mark_time
+
+
 async def _abortable_wait_for_timeout(page: Any, total_ms: int, chunk_ms: int = 450) -> bool:
     """分段 ``wait_for_timeout``，其间轮询停止信号；返回 True 表示用户已请求中止。"""
     remain = max(0, int(total_ms))
@@ -173,6 +192,7 @@ async def _nudge_locator_clear_bottom_chrome(
               }
             }""",
             reserve_px,
+            timeout=_env_int("KALAROKO_NUDGE_SCROLL_EVAL_MS", 2000, vmin=400, vmax=8000),
         )
     except Exception as ex:
         logger.debug(
@@ -227,7 +247,7 @@ except ImportError:
 _SCHEMA_VERSION = "1.0.0"
 _DEFAULT_BASE = "https://kalaroko.com"
 
-# 默认监控任务：首页 + 三款游戏。
+# 默认监控任务：首页 + 四款游戏。
 # 游戏入口改为「首页 start_url + UI 点击流」，避免带 partyId/token 的 game-frame 直链被 WAF/业务网关拦截。
 # click_selector 须随前端 DOM 调整；可用 Playwright 文本选择器或 CSS（见 Playwright selector 语法）。
 # UI 点击流默认 require_game_frame_url=True：采数结束须出现 /game-frame 主文档 URL，否则 load_status=failed（防未真开游戏壳仍 success）。
@@ -236,7 +256,7 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
     {
         "name": "homepage",
         "start_url": _DEFAULT_START,
-        "wait_until": "load",
+        "wait_until": "domcontentloaded",
         "timeout_ms": 60000,
     },
     {
@@ -245,9 +265,10 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "start_url": _DEFAULT_START,
         # 首页卡片常为「插图 + 底部标题」：精确 text='…' 易点到不可交互文案节点；正则略宽松
         "click_selector": r"text=/Tongits\s*King/i",
-        "entry_wait_until": "load",
+        "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
-        "wait_until": "networkidle",
+        # 游戏壳：goto 仅用 domcontentloaded（避免 BGM/WebM 等拖满 load）；就绪由仿生竞速（HTTP/WS/Canvas）判定
+        "wait_until": "domcontentloaded",
         "timeout_ms": 90000,
     },
     {
@@ -255,9 +276,9 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "document_game_id": 7,
         "start_url": _DEFAULT_START,
         "click_selector": r"text=/Royal\s*Pusoy/i",
-        "entry_wait_until": "load",
+        "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
-        "wait_until": "networkidle",
+        "wait_until": "domcontentloaded",
         "timeout_ms": 90000,
     },
     {
@@ -267,9 +288,20 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "prefer_last_on_ambiguous_entry": True,
         "start_url": _DEFAULT_START,
         "click_selector": r"text=/Color\s*Blitz\s*Social/i",
-        "entry_wait_until": "load",
+        "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
-        "wait_until": "networkidle",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "bingo_showdown",
+        "document_game_id": 10,
+        "prefer_last_on_ambiguous_entry": True,
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Bingo\s*Showdown/i",
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
         "timeout_ms": 90000,
     },
 )
@@ -465,18 +497,20 @@ async def _lobby_game_entry_text_for_players_hint(target: Any) -> str:
     """
     聚合入口节点及周边 DOM 文案，供人数正则匹配。
 
-    失败根因常为：(1) 人数异步写入 —— 由调用方在 visible 后追加等待；
+    失败根因常为：(1) 人数异步写入 —— 由调用方短超时 ``inner_text``/``evaluate`` 尽力读取；
     (2) ``innerText`` 不含隐藏/未排版节点 —— 补充 ``textContent``；
     (3) 人数在兄弟列/另一行 —— 向上遍历（最多 6 层）并合并父级 **所有子节点** 文案；
     (4) 仅在 ``data-*`` / ``title`` —— 一并拼接。
     向上遍历时若某层 ``innerText`` 长度超过 150，视为已进到游戏列表等大容器，停止爬升以免串台。
     """
     parts: list[str] = []
+    _txt_ms = _env_int("KALAROKO_LOBBY_HINT_INNER_TEXT_MS", 1200, vmin=200, vmax=8000)
     try:
-        parts.append((await target.inner_text()).strip())
+        parts.append((await target.inner_text(timeout=_txt_ms)).strip())
     except Exception:
         pass
     try:
+        _ev_ms = _env_int("KALAROKO_LOBBY_HINT_EVALUATE_MS", 1800, vmin=300, vmax=10000)
         blob = await target.evaluate(
             r"""(el) => {
               if (!el) return '';
@@ -524,7 +558,8 @@ async def _lobby_game_entry_text_for_players_hint(target: Any) -> str:
                 n = n.parentElement;
               }
               return [...new Set(out)].join('\n');
-            }"""
+            }""",
+            timeout=_ev_ms,
         )
         if blob:
             parts.append(str(blob).strip())
@@ -571,13 +606,17 @@ def _game_id_snapshot_fields(scenario: dict[str, Any], url: str) -> dict[str, An
 
 
 def _goto_policy_chain(wait_until: str) -> list[str]:
-    """goto 降级顺序：游戏默认 networkidle → load → domcontentloaded → commit。"""
-    p = (wait_until or "load").strip().lower()
-    if p == "networkidle":
-        return ["networkidle", "load", "domcontentloaded", "commit"]
-    if p == "load":
-        return ["load", "domcontentloaded", "commit"]
-    return [p, "domcontentloaded", "commit"]
+    """
+    goto 降级顺序。
+
+    默认以 **domcontentloaded** 为先，避免 ``load`` 被跨国音视频等大资源拖死；进桌就绪由
+    ``_game_deep_wait_after_goto`` 晚期竞速（**晚期 UI DOM** 与 **后置遥测 XHR** 均可停表）判定。显式 ``load`` / ``networkidle``
+    仍先尝试 dcl，再 ``commit``，最后才回退 ``load``（兼容极少数壳页）。
+    """
+    p = (wait_until or "domcontentloaded").strip().lower()
+    if p in ("networkidle", "load", "domcontentloaded"):
+        return ["domcontentloaded", "commit", "load"]
+    return [p, "domcontentloaded", "commit", "load"]
 
 
 async def _kalaroko_ui_breathe(
@@ -626,7 +665,7 @@ async def _goto_resilient(
     policy_chain: list[str] | None = None,
 ) -> Any:
     """
-    导航到 url：优先使用调用方 wait_until；若遇 net::ERR_ABORTED 等中断，按策略链降级。
+    导航到 url：优先使用调用方 wait_until（游戏/大厅默认 ``domcontentloaded``）；若遇 net::ERR_ABORTED 等中断，按策略链降级。
     """
     policies = policy_chain if policy_chain is not None else _goto_policy_chain(wait_until)
     seen: list[str] = []
@@ -693,6 +732,7 @@ async def _kalaroko_plain_text_hit_is_lobby_entry(cand: Any) -> bool:
     ``_party_card_game_name_*`` span，无有效导航或点击不进门。
     """
     try:
+        # 显式短超时：避免缺帧/离屏 nth 在部分 CDP 环境下 evaluate 长时间挂死
         return await cand.evaluate(
             """el => {
               if (!el || !el.closest) return false;
@@ -706,10 +746,31 @@ async def _kalaroko_plain_text_hit_is_lobby_entry(cand: Any) -> bool:
                 if (!h || h === '#' || h.toLowerCase().startsWith('javascript:')) return false;
               }
               return true;
-            }"""
+            }""",
+            timeout=_env_int(
+                "KALAROKO_ENTRY_DISAMBIG_EVAL_MS", 2000, vmin=200, vmax=15000
+            ),
         )
     except Exception:
         return False
+
+
+def _skip_game_id_href_lazy_gate(
+    scenario: dict[str, Any] | None, click_selector: str
+) -> bool:
+    """
+    卡片入口未必带 ``game_id=`` 的 ``<a href>``（或懒加载极慢），却配置了 ``text=/…/`` +
+    ``prefer_last_on_ambiguous_entry``（如 Color Blitz）时，盲等 href 会白烧 15s+8s。
+    此时跳过 href 门闩，直接走文案 / link 角色解析。
+    """
+    if not scenario:
+        return False
+    pl = scenario.get("prefer_last_on_ambiguous_entry")
+    if isinstance(pl, str):
+        pl = pl.strip().lower() not in ("0", "false", "no", "off")
+    if not bool(pl):
+        return False
+    return str(click_selector or "").strip().startswith("text=/")
 
 
 async def _resolve_kalaroko_game_entry_locator(
@@ -803,7 +864,11 @@ async def _resolve_kalaroko_game_entry_locator(
 
     # 命中多处：.first 易为轮播；原 .last 在「首页列表 + Party 同名」并存时会点到 Party 只读 span。
     if cnt >= 3 or (ambig_last and cnt >= 2):
-        for idx in range(cnt):
+        max_probe = min(
+            cnt,
+            _env_int("KALAROKO_ENTRY_DISAMBIG_MAX_NTH", 8, vmin=1, vmax=24),
+        )
+        for idx in range(max_probe):
             cand = loc.nth(idx)
             try:
                 if await _kalaroko_plain_text_hit_is_lobby_entry(cand):
@@ -837,8 +902,9 @@ async def _diagnose_and_click_kalaroko_game_entry(
     ui_cursor_moves: bool = False,
 ) -> dict[str, str | None]:
     """
-    大厅游戏入口点击：先打诊断日志，再 scroll_into_view + 常规 click；
-    失败时用 JS 在「可点击祖先 / 卡片容器」上触发 click（应对标题 div 不接收点击、事件绑在外层的情况）。
+    大厅游戏入口点击：短 ``scroll_into_view`` + ``attached``（**不**等 visible/actionability），
+    首击即 ``force=True`` + ``no_wait_after=True``；失败时重试与 JS 祖先兜底。
+    人数文案在点击**之后**尽力读取，避免 ``inner_text`` 在点击前阻塞数十秒。
 
     Returns:
         ``online_players`` 双轨字典 ``{"table": ..., "lobby": ...}``（大厅卡片并联提取）；
@@ -881,26 +947,47 @@ async def _diagnose_and_click_kalaroko_game_entry(
             gid_wait = int(dg)
     except (TypeError, ValueError):
         gid_wait = None
-    if gid_wait is not None:
+    skip_gid_href_gate = _skip_game_id_href_lazy_gate(scenario, click_selector)
+    if gid_wait is not None and skip_gid_href_gate:
+        logger.info(
+            "[kalaroko_monitor] 【%s】跳过 game_id <a href> 懒加载门闩（prefer_last + text=，避免白等数十秒）",
+            scenario_name,
+        )
+    if gid_wait is not None and not skip_gid_href_gate:
         href_union = ",".join(_href_anchor_selectors_for_document_game_id(gid_wait))
+        href_ms = _env_int(
+            "KALAROKO_GAME_ENTRY_HREF_WAIT_MS", 3500, vmin=0, vmax=30000
+        )
         found_href, cancelled_href = await _abortable_wait_for_selector_attached(
-            page, href_union, 15000
+            page, href_union, href_ms
         )
         if cancelled_href:
             raise KalarokoE2EUserCancelled()
         if not found_href:
             logger.debug(
-                "[kalaroko_monitor] 【%s】未在 15s 内等到含 game_id 的入口链接（列表可能懒加载），尝试滚动后再等 …",
+                "[kalaroko_monitor] 【%s】未在 %sms 内等到含 game_id 的入口链接（列表可能懒加载），尝试滚动后再等 …",
                 scenario_name,
+                href_ms,
             )
             try:
                 await page.evaluate(
                     "() => { try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {} }"
                 )
-                if await _abortable_wait_for_timeout(page, 600):
+                scroll_settle = _env_int(
+                    "KALAROKO_GAME_ENTRY_HREF_SCROLL_SETTLE_MS", 350, vmin=0, vmax=3000
+                )
+                if scroll_settle and await _abortable_wait_for_timeout(
+                    page, scroll_settle
+                ):
                     raise KalarokoE2EUserCancelled()
+                href_retry_ms = _env_int(
+                    "KALAROKO_GAME_ENTRY_HREF_SCROLL_RETRY_MS",
+                    2500,
+                    vmin=0,
+                    vmax=30000,
+                )
                 found2, cancelled2 = await _abortable_wait_for_selector_attached(
-                    page, href_union, 8000
+                    page, href_union, href_retry_ms
                 )
                 if cancelled2:
                     raise KalarokoE2EUserCancelled()
@@ -939,13 +1026,27 @@ async def _diagnose_and_click_kalaroko_game_entry(
 
     _raise_if_e2e_cancelled()
 
-    st_to = max(4000, min(int(click_timeout_ms), 120000))
-    await target.scroll_into_view_if_needed(timeout=st_to)
+    # 禁止 wait visible：Actionability 在动画/遮挡/轮播下可卡满默认级超时（数十秒）。
+    scroll_cap = _env_int(
+        "KALAROKO_GAME_ENTRY_SCROLL_MS", 2500, vmin=400, vmax=20000
+    )
+    await target.scroll_into_view_if_needed(timeout=scroll_cap)
     _raise_if_e2e_cancelled()
-    await target.wait_for(state="visible", timeout=st_to)
-    logger.info("[kalaroko_monitor] 【%s】已完成 scroll_into_view + wait visible", scenario_name)
+    attach_ms = _env_int("KALAROKO_GAME_ENTRY_ATTACH_MS", 900, vmin=0, vmax=8000)
+    if attach_ms > 0:
+        try:
+            await target.wait_for(state="attached", timeout=attach_ms)
+        except Exception:
+            pass
+    logger.info(
+        "[kalaroko_monitor] 【%s】已完成 scroll_into_view + attached（无 visible 门闩）",
+        scenario_name,
+    )
 
-    stats_wait = _env_int("KALAROKO_LOBBY_STATS_WAIT_MS", 2000, vmin=0, vmax=12000)
+    # 点击前人数文案：独立短超时 env，默认 0（不在此处硬等统计异步）
+    stats_wait = _env_int(
+        "KALAROKO_GAME_ENTRY_PRECLICK_STATS_MS", 0, vmin=0, vmax=12000
+    )
     if stats_wait:
         if progress:
             progress(
@@ -954,21 +1055,10 @@ async def _diagnose_and_click_kalaroko_game_entry(
         if await _abortable_wait_for_timeout(page, stats_wait):
             raise KalarokoE2EUserCancelled()
 
-    try:
-        raw_combined = await _lobby_game_entry_text_for_players_hint(target)
-        online_hint = _extract_online_players_hint(raw_combined)
-        if not (online_hint.get("table") or online_hint.get("lobby")) and raw_combined:
-            logger.debug(
-                "[kalaroko_monitor] 【%s】人数文案未命中正则，卡片聚合文本前 240 字: %s",
-                scenario_name,
-                raw_combined[:240].replace("\n", " "),
-            )
-    except Exception:
-        pass
-
     bottom_reserve = _env_int("KALAROKO_BOTTOM_CHROME_RESERVE_PX", 112, vmin=56, vmax=240)
     suppress_tabbar = _env_bool("KALAROKO_SUPPRESS_TABBAR_PE", True)
     err_first: Exception | None = None
+    tap_to = min(12000, max(1500, int(click_timeout_ms)))
     try:
         await _nudge_locator_clear_bottom_chrome(
             target, scenario_name=scenario_name, reserve_px=bottom_reserve
@@ -986,16 +1076,22 @@ async def _diagnose_and_click_kalaroko_game_entry(
             if ui_cursor_moves:
                 await _kalaroko_ui_move_mouse_to_locator(page, target, ui_pace_ms)
             await asyncio.sleep(min(1.2, ui_pace_ms / 1000.0 * 0.45))
-        _clk_kw: dict[str, Any] = {"timeout": click_timeout_ms}
+        _clk_kw: dict[str, Any] = {
+            "timeout": tap_to,
+            "force": True,
+            "no_wait_after": True,
+        }
         if _click_delay > 0:
             _clk_kw["delay"] = _click_delay
         await target.click(**_clk_kw)
-        logger.info("[kalaroko_monitor] 【%s】Playwright 常规 click() 成功", scenario_name)
+        logger.info(
+            "[kalaroko_monitor] 【%s】Playwright force+no_wait_after click() 成功",
+            scenario_name,
+        )
     except Exception as e_click:
         err_first = e_click
         logger.warning(
-            "[kalaroko_monitor] 【%s】常规 click 失败（常为底栏 _app_tabbar 截获命中或文案层不可点），"
-            "尝试更大避让 + force 点击: %s",
+            "[kalaroko_monitor] 【%s】首击 force+no_wait_after 仍失败，尝试更大避让后重试: %s",
             scenario_name,
             str(e_click)[:480],
         )
@@ -1016,7 +1112,11 @@ async def _diagnose_and_click_kalaroko_game_entry(
                 if ui_cursor_moves:
                     await _kalaroko_ui_move_mouse_to_locator(page, target, ui_pace_ms)
                 await asyncio.sleep(min(1.2, ui_pace_ms / 1000.0 * 0.45))
-            _fkw: dict[str, Any] = {"timeout": _fto, "force": True}
+            _fkw: dict[str, Any] = {
+                "timeout": min(_fto, tap_to),
+                "force": True,
+                "no_wait_after": True,
+            }
             if _fcd > 0:
                 _fkw["delay"] = _fcd
             await target.click(**_fkw)
@@ -1033,7 +1133,9 @@ async def _diagnose_and_click_kalaroko_game_entry(
             if progress:
                 progress(f"「{scenario_name}」常规/force 点击失败，尝试卡片/链接层兜底 …")
             try:
-                handle = await target.element_handle(timeout=8000)
+                handle = await target.element_handle(
+                    timeout=_env_int("KALAROKO_GAME_ENTRY_JS_FALLBACK_HANDLE_MS", 2000, vmin=400, vmax=15000)
+                )
                 if handle is None:
                     raise RuntimeError("element_handle 为空")
                 await page.evaluate(
@@ -1062,6 +1164,9 @@ async def _diagnose_and_click_kalaroko_game_entry(
                   );
                 }""",
                     handle,
+                    timeout=_env_int(
+                        "KALAROKO_GAME_ENTRY_JS_FALLBACK_EVAL_MS", 2500, vmin=400, vmax=12000
+                    ),
                 )
                 logger.info(
                     "[kalaroko_monitor] 【%s】兜底：已在祖先/卡片节点触发 click",
@@ -1078,8 +1183,22 @@ async def _diagnose_and_click_kalaroko_game_entry(
         if suppress_tabbar:
             await _set_bottom_tabbar_pointer_events_enabled(page, suppress=False)
 
+    # 人数文案移到点击之后：避免 inner_text/evaluate 在点击前吃满 actionability 超时（曾达 ~26s）
     try:
-        if await _abortable_wait_for_timeout(page, 320):
+        raw_combined = await _lobby_game_entry_text_for_players_hint(target)
+        online_hint = _extract_online_players_hint(raw_combined)
+        if not (online_hint.get("table") or online_hint.get("lobby")) and raw_combined:
+            logger.debug(
+                "[kalaroko_monitor] 【%s】人数文案未命中正则，卡片聚合文本前 240 字: %s",
+                scenario_name,
+                raw_combined[:240].replace("\n", " "),
+            )
+    except Exception:
+        pass
+
+    try:
+        # 点击后不再 wait_for_timeout：竞速与指标采集侧承担 settle
+        if _e2e_user_cancel_requested():
             raise KalarokoE2EUserCancelled()
         au = (page.url or "")[:320]
         logger.info("[kalaroko_monitor] 【%s】点击后短 settle，当前 url=%s", scenario_name, au)
@@ -1091,17 +1210,253 @@ async def _diagnose_and_click_kalaroko_game_entry(
     return online_hint
 
 
-async def _await_first_websocket_or_deadline(ws_times: list[float], deadline: float) -> None:
-    """在 deadline 前轮询，直到 ws_times 非空（由 page.on('websocket') 填充）。"""
+def _game_table_late_http_response_predicate(resp: Any) -> bool:
+    """
+    **晚期**牌桌/场景类 HTTP 命中（2xx）：排除大厅/登录/心跳等噪声，仅认更接近「上桌后」的 URL。
+    """
     try:
-        while time.perf_counter() < deadline:
-            if _e2e_user_cancel_requested():
-                raise KalarokoE2EUserCancelled()
-            if ws_times:
-                return
-            await asyncio.sleep(0.05)
-    except KalarokoE2EUserCancelled:
-        raise
+        st = resp.status
+        if st is None or int(st) < 200 or int(st) >= 300:
+            return False
+        u = (resp.url or "").lower()
+        if not u:
+            return False
+        if any(
+            x in u
+            for x in (
+                "google-analytics",
+                "/g/collect",
+                "googletagmanager",
+                "doubleclick",
+                "facebook.net",
+            )
+        ):
+            return False
+        # 排除：大厅 / 登录 / 鉴权 / 心跳 / ping 类（避免白屏阶段误命中）
+        if "lobby" in u or "login" in u:
+            return False
+        if "heartbeat" in u:
+            return False
+        if "/auth" in u or "/oauth" in u or "auth/" in u or "/authorize" in u:
+            return False
+        if "/ping" in u or "ping?" in u or u.rstrip("/").endswith("/ping"):
+            return False
+
+        # 进桌后常见：URL 查询带 room_id（含 gweb iframe 内 game?...&room_id=）
+        if "room_id=" in u or "room_id%3d" in u:
+            return True
+        # gweb 壳页：/game 或 game? 与 room 参数同现（避免仅靠早期空壳）
+        if "gweb.kalaroko.com" in u and (
+            "/game" in u or "game?" in u or "%2fgame" in u or "%2fgame%3f" in u
+        ):
+            return True
+
+        positives = (
+            "/table",
+            "/seat",
+            "/scene",
+            "jointable",
+            "join_table",
+            "/game_info",
+            "game_info",
+            "room_info",
+            "/room_info",
+            "/enter",
+            "/match",
+            "/play",
+            "/sync",
+            "/room/enter",
+            "/api/room",
+            "room/enter",
+            "/api/match",
+            "/match/enter",
+        )
+        if any(p in u for p in positives):
+            return True
+        if "gweb.kalaroko.com" in u and any(p in u for p in positives):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _is_post_load_api(url: str) -> bool:
+    """
+    纯 Canvas 牌桌无可靠 DOM 时，用「牌桌渲染完毕后才出现」的 XHR/fetch 作为停表信号。
+
+    刻意不包含 BI 埋点（如 ``event/batch``）：会在白屏/早期加载阶段触发，易误停表。
+    仅认：声网语音上报、桌上成员列表等强业务晚期请求。
+    """
+    url_lower = (url or "").lower()
+    post_load_keywords = (
+        "agora.io/events/messages",
+        "party/v1/party/member-list",
+    )
+    return any(kw in url_lower for kw in post_load_keywords)
+
+
+# 游戏壳 iframe：优先 gweb / game-frame，再退回任意 iframe（穿透 DOM 嗅探）
+_GAME_LATE_UI_IFRAME_SELECTOR = (
+    "iframe[src*='gweb.kalaroko.com'], iframe[src*='gweb'], "
+    "iframe[src*='game-frame'], iframe[src*='heronpro'], iframe"
+)
+
+
+async def _wait_for_late_game_ui(page: Any, *, deadline_perf: float | None) -> str:
+    """
+    晚期 DOM：优先「You can chat now」类聊天就绪文案，否则兜底聊天输入 / 设置 / 头像等壳上控件。
+
+    **穿透 iframe**：依次在（1）gweb/game-frame 定向 ``frame_locator``、（2）**任意** ``iframe``、
+    （3）主文档上查找，避免壳内 DOM 与大厅 DOM 混用导致永远不可见。
+    ``deadline_perf``：perf_counter 上限，用于收缩各段 wait_for 的毫秒超时。
+    """
+    def _cap_ms(default_ms: int) -> int:
+        if deadline_perf is None:
+            return default_ms
+        ms = int(max(250, (deadline_perf - time.perf_counter()) * 1000))
+        return min(default_ms, ms)
+
+    _fallback_sel = ".chat-input, .game-setting-btn, [class*='avatar']"
+    # (label, frame_locator_first) — label 写入 Timeline；None 表示主文档
+    _frame_tiers: list[tuple[str, Any]] = [
+        ("iframe_gweb_shell", page.frame_locator(_GAME_LATE_UI_IFRAME_SELECTOR).first),
+        ("iframe_any", page.frame_locator("iframe").first),
+    ]
+
+    for label, fl in _frame_tiers:
+        try:
+            tmo = _cap_ms(30_000)
+            if tmo < 400:
+                break
+            await fl.get_by_text("You can chat now", exact=False).first.wait_for(
+                state="visible", timeout=tmo
+            )
+            return f"ui_ready_{label}"
+        except Exception:
+            continue
+
+    try:
+        tmo = _cap_ms(30_000)
+        if tmo >= 400:
+            await page.get_by_text("You can chat now", exact=False).first.wait_for(
+                state="visible", timeout=tmo
+            )
+            return "ui_ready_root"
+    except Exception:
+        pass
+
+    for label, fl in _frame_tiers:
+        try:
+            tmo2 = _cap_ms(10_000)
+            if tmo2 < 400:
+                break
+            await fl.locator(_fallback_sel).first.wait_for(state="visible", timeout=tmo2)
+            return f"ui_ready_fallback_{label}"
+        except Exception:
+            continue
+
+    try:
+        tmo2 = _cap_ms(10_000)
+        if tmo2 >= 400:
+            await page.locator(_fallback_sel).first.wait_for(
+                state="visible", timeout=tmo2
+            )
+            return "ui_ready_fallback_root"
+    except Exception:
+        pass
+
+    raise RuntimeError("late_ui_not_found")
+
+
+def _playwright_transient_eval_error(msg: str) -> bool:
+    """子导航 / 切 frame 后常见的可恢复 evaluate 失败（应重试而非整轮失败）。"""
+    es = (msg or "").lower()
+    needles = (
+        "execution context was destroyed",
+        "cannot find context",
+        "target closed",
+        "frame was detached",
+        "most likely because of a navigation",
+        "navigation interrupted",
+        "context was destroyed",
+        "has been closed",
+    )
+    return any(n in es for n in needles)
+
+
+async def _page_evaluate_nav_resilient(
+    page: Any,
+    expression: str,
+    *,
+    arg: Any | None = None,
+    attempts: int | None = None,
+) -> Any:
+    """
+    ``page.evaluate`` 与 SPA 导航竞态时上下文会被销毁；在 domcontentloaded settle 后多段退避重试。
+    """
+    n = attempts or _env_int("KALAROKO_PAGE_EVAL_NAV_RETRIES", 10, vmin=3, vmax=24)
+    last: Exception | None = None
+    for i in range(n):
+        if _e2e_user_cancel_requested():
+            raise KalarokoE2EUserCancelled()
+        try:
+            if i == 0:
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception:
+                    pass
+            if arg is not None:
+                return await page.evaluate(expression, arg)
+            return await page.evaluate(expression)
+        except Exception as e:
+            last = e
+            if not _playwright_transient_eval_error(str(e)):
+                raise
+            await asyncio.sleep(min(2.0, 0.1 + 0.2 * i + 0.04 * (i * i)))
+    assert last is not None
+    raise last
+
+
+async def _page_in_game_frame_shell(page: Any) -> bool:
+    """
+    是否已进入游戏壳上下文：主文档 URL 含 game-frame，或大厅内已挂载指向 game-frame 的 iframe
+    （壳常先于主文档 URL 更新完成，避免死等 load / 仅靠 URL 轮询）。
+    """
+    try:
+        if "game-frame" in (page.url or "").lower():
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(
+            await _page_evaluate_nav_resilient(
+                page,
+                """() => {
+          const hs = (s) => String(s || '').toLowerCase().includes('game-frame');
+          if (hs(location.href)) return true;
+          for (const el of document.querySelectorAll('iframe[src]')) {
+            if (hs(el.getAttribute('src'))) return true;
+          }
+          return false;
+        }""",
+                attempts=_env_int("KALAROKO_SHELL_EVAL_RETRIES", 8, vmin=2, vmax=20),
+            )
+        )
+    except Exception:
+        return False
+
+
+def _silently_detach_ui_race_task(task: asyncio.Task) -> None:
+    """
+    竞速 ``finally`` 中不 ``await`` UI Task 时，用回调取回 outcome，避免
+    ``Task exception was never retrieved``；吞掉取消与 Playwright 侧残余异常。
+    """
+    try:
+        if task.cancelled():
+            return
+        _ = task.exception()
+    except asyncio.CancelledError:
+        pass
     except Exception:
         pass
 
@@ -1113,111 +1468,245 @@ async def _game_deep_wait_after_goto(
     ws_times: list[float],
     *,
     click_flow: bool = False,
-) -> tuple[float, bool]:
+    timeline_mark: Callable[[str], None] | None = None,
+) -> tuple[float, bool, str]:
     """
-    goto 返回后继续：可选等待首个 WebSocket、canvas。
-    若 ``click_flow`` 为真：先短暂等待导航到 ``game-frame``（与大厅直链 SPA 对齐）；
-    且当 URL 仍不含 ``game-frame`` 时**不**用全页第一个 ``canvas`` 当作引擎就绪（避免轮播/广告 canvas 导致 41ms 假阳性）。
+    goto / 点击进游戏后：**晚期就绪竞速**（截取 ``t_end`` 用于 ``real_engine_load_ms``）。
 
-    返回 (t_end_perf, canvas_seen)。
+    不再将「首条 WebSocket」「早期宽松 HTTP」「短时 Canvas」视为就绪，避免白屏/进度条阶段即结束。
+
+    - **阶段 1（仅 click_flow）**：轮询直至进入 ``game-frame`` 壳或 ``KALAROKO_GAME_FRAME_POLL_MS`` 用尽。
+    - **阶段 2**：**晚期 UI DOM**（聊天就绪文案或兜底控件）或 **后置遥测 XHR**（见 ``_is_post_load_api``，
+      仅 2xx）任一先命中即截取 ``t_end``；其它 HTTP 仍仅写入排障列表（``_on_late_http_trace_only``），
+      避免白屏阶段 ``game_info``/``room_info`` 等泛 URL 误停表。
+    - **预算**：``min(t_start + timeout_ms, now + KALAROKO_GAME_LATE_READY_RACE_MS)``（默认 80s），可配。
+    - **Timeout 排障**：XHR/Fetch 窃听 + 晚期 HTTP URL 样本写入 Timeline，便于对照真实进桌接口。
+    - **事件循环**：阶段 2 使用 ``asyncio.wait(..., timeout=…)`` 轮询（默认片约 120ms，``KALAROKO_LATE_RACE_POLL_TICK_MS``），
+      避免无 ``await`` 的紧轮询；``finally`` 内仅 ``cancel`` UI 子任务并 ``add_done_callback`` 静默收尾，
+      **绝不** ``await`` 该 Task（否则 HTTP 先胜出时可能被 Playwright 内阻塞拖死整段协程）。
+
+    ``ws_times`` 仍由调用方注册 websocket 监听，本函数**不再**以其作为竞速胜利条件。
+
+    返回 ``(t_end_perf, canvas_seen, race_end_reason)``；``race_end_reason`` 为 ``post_load_api``、``late_ui`` 或 ``timeout``；
+    ``canvas_seen`` 恒为 ``False``（保留签名兼容）。
     """
-    deadline = t_start + max(0.001, timeout_ms / 1000.0)
-    t_nav = time.perf_counter()
+    _ = ws_times  # 保留参数：调用方仍注册 WS 用于排障，不再作为竞速胜利条件
+    global_deadline = t_start + max(0.001, timeout_ms / 1000.0)
+    race_cap_ms = _env_int(
+        "KALAROKO_GAME_LATE_READY_RACE_MS", 80_000, vmin=15_000, vmax=120_000
+    )
+    race_deadline = min(global_deadline, time.perf_counter() + race_cap_ms / 1000.0)
+
     if _e2e_user_cancel_requested():
         raise KalarokoE2EUserCancelled()
+
+    click_shell_seen = not click_flow
+    phase1_cap_ms = _env_int(
+        "KALAROKO_GAME_FRAME_POLL_MS", 8000, vmin=1500, vmax=30_000
+    )
+    shell_timeline_logged = False
     if click_flow:
-        # 等到主文档 URL 进入 game-frame（与业务「游戏壳」一致）；分段轮询以便响应停止巡检
+        p1_end = min(race_deadline, time.perf_counter() + phase1_cap_ms / 1000.0)
+        while time.perf_counter() < p1_end:
+            if _e2e_user_cancel_requested():
+                raise KalarokoE2EUserCancelled()
+            try:
+                if await _page_in_game_frame_shell(page):
+                    click_shell_seen = True
+                    if timeline_mark and not shell_timeline_logged:
+                        timeline_mark("检测到 game-frame 壳 (主文档 URL 或 iframe src)")
+                        shell_timeline_logged = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+
+    late_http_trace: list[str] = []
+    captured_apis: list[str] = []
+    post_load_api_ready = asyncio.Event()
+    post_load_hit_url: list[str] = []
+
+    def _debug_on_response(response: Any) -> None:
+        """记录业务 XHR/fetch；命中后置遥测白名单且 2xx 时用于竞速停表。"""
         try:
-            rem_url = deadline - time.perf_counter()
-            if rem_url > 0:
-                cap_ms = int(min(float(timeout_ms), rem_url * 1000))
-                if cap_ms >= 400:
-                    nav_deadline = time.perf_counter() + cap_ms / 1000.0
-                    while time.perf_counter() < nav_deadline:
-                        if _e2e_user_cancel_requested():
-                            raise KalarokoE2EUserCancelled()
-                        try:
-                            u = (page.url or "").lower()
-                            if "game-frame" in u:
-                                break
-                        except Exception:
-                            pass
-                        await asyncio.sleep(0.2)
-        except KalarokoE2EUserCancelled:
-            raise
+            req = response.request
+            rt = (getattr(req, "resource_type", None) or "").lower()
+            if rt not in ("fetch", "xhr"):
+                return
+            url = (response.url or "").strip()
+            if not url:
+                return
+            if _is_post_load_api(url):
+                ok = True
+                try:
+                    st = response.status
+                    if st is not None and (int(st) < 200 or int(st) >= 300):
+                        ok = False
+                except Exception:
+                    pass
+                if ok:
+                    if not post_load_hit_url:
+                        post_load_hit_url.append(url[:800])
+                    post_load_api_ready.set()
+            low = url.lower()
+            static_ext = (
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".mp3",
+                ".webm",
+                ".webp",
+                ".woff",
+                ".woff2",
+                ".gif",
+                ".svg",
+                ".ico",
+                ".m4a",
+            )
+            if any(ext in low for ext in static_ext):
+                return
+            captured_apis.append(url[:800])
+            if len(captured_apis) > 500:
+                del captured_apis[:250]
         except Exception:
             pass
 
+    def _on_late_http_trace_only(resp: Any) -> None:
+        """晚期 HTTP 仅排障记录，绝不触发停表。"""
+        try:
+            if not _game_table_late_http_response_predicate(resp):
+                return
+            u = (resp.url or "").strip()[:500]
+            if not u:
+                return
+            if len(late_http_trace) < 12 and (not late_http_trace or late_http_trace[-1] != u):
+                late_http_trace.append(u)
+        except Exception:
+            pass
+
+    ui_task: asyncio.Task | None = None
     try:
-        rem = deadline - time.perf_counter()
-        if rem > 0 and not ws_times:
-            cap = min(25.0, rem)
-            await asyncio.wait_for(
-                _await_first_websocket_or_deadline(ws_times, min(deadline, time.perf_counter() + cap)),
-                timeout=cap,
+        try:
+            page.on("response", _debug_on_response)
+            page.on("response", _on_late_http_trace_only)
+        except Exception:
+            pass
+
+        if timeline_mark:
+            timeline_mark(
+                "进入晚期就绪竞速 (Race: **晚期 UI DOM** 或 **后置遥测 XHR 白名单** 可停表；其余 HTTP 仅排障)"
             )
-    except asyncio.TimeoutError:
-        pass
-    except Exception as e:
-        logger.warning("[kalaroko_monitor] post-goto ws wait: %s", str(e)[:200])
 
-    t_canvas: float | None = None
-    canvas_seen = False
-    try:
-        rem_c = deadline - time.perf_counter()
-        if rem_c > 0:
-            ms = min(15000, int(rem_c * 1000))
-            if ms >= 200:
-                url_now = ""
-                try:
-                    url_now = page.url or ""
-                except Exception:
-                    pass
-                skip_loose_canvas = click_flow and "game-frame" not in url_now
-                if skip_loose_canvas:
-                    pass
-                else:
-                    await asyncio.wait_for(
-                        page.wait_for_selector("canvas", timeout=ms, state="attached"),
-                        timeout=min(15.0, rem_c),
+        ui_task = asyncio.create_task(
+            _wait_for_late_game_ui(page, deadline_perf=race_deadline)
+        )
+        ui_branch_exhausted = False
+        # 每轮至少 ``await`` 一次，避免紧轮询占满 CPU；用 ``asyncio.wait`` 将「让出事件循环」与「等 UI Task」合一
+        _tick_ms = _env_int(
+            "KALAROKO_LATE_RACE_POLL_TICK_MS", 120, vmin=50, vmax=500
+        )
+        _tick_sec = max(0.05, min(0.5, _tick_ms / 1000.0))
+
+        while time.perf_counter() < race_deadline:
+            if _e2e_user_cancel_requested():
+                raise KalarokoE2EUserCancelled()
+
+            _rem = race_deadline - time.perf_counter()
+            if _rem <= 0:
+                break
+            _slice = min(_tick_sec, max(0.02, _rem))
+            await asyncio.wait(
+                {ui_task},
+                timeout=_slice,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if post_load_api_ready.is_set():
+                t_hit = time.perf_counter()
+                if timeline_mark:
+                    extra = ""
+                    if post_load_hit_url:
+                        u0 = post_load_hit_url[0].replace("`", "'")
+                        extra = f" | 首个命中: `{u0[:280]}`"
+                    timeline_mark(
+                        "竞速结束: 终极后置 API 命中 (Agora 语音 / 成员列表就绪，牌桌已展现)"
+                        + extra
                     )
-                    t_canvas = time.perf_counter()
-                    canvas_seen = True
-    except asyncio.TimeoutError:
-        pass
-    except Exception:
-        pass
+                return t_hit, False, "post_load_api"
 
-    t_ws = max(ws_times) if ws_times else t_nav
-    t_end = max(t_nav, t_ws, t_canvas if t_canvas is not None else t_nav)
-    return (t_end, canvas_seen)
+            if ui_task.done() and not ui_branch_exhausted:
+                try:
+                    ui_reason = ui_task.result()
+                    t_hit = time.perf_counter()
+                    if timeline_mark:
+                        timeline_mark(
+                            f"竞速结束: 晚期 UI ({ui_reason})"
+                        )
+                    return t_hit, False, "late_ui"
+                except asyncio.CancelledError:
+                    ui_branch_exhausted = True
+                except Exception:
+                    ui_branch_exhausted = True
+                    if timeline_mark:
+                        timeline_mark(
+                            "晚期 UI 未命中（主文案与兜底选择器均未就绪），继续等待 UI 或总超时"
+                        )
+
+            if click_flow and not click_shell_seen:
+                try:
+                    click_shell_seen = await _page_in_game_frame_shell(page)
+                except Exception:
+                    click_shell_seen = False
+                if (
+                    click_shell_seen
+                    and timeline_mark
+                    and not shell_timeline_logged
+                ):
+                    timeline_mark(
+                        "检测到 game-frame 壳 (主文档 URL 或 iframe src)"
+                    )
+                    shell_timeline_logged = True
+
+        t_out = min(time.perf_counter(), race_deadline)
+        if timeline_mark:
+            last_apis = captured_apis[-5:] if captured_apis else []
+            apis_repr = repr(last_apis) if last_apis else "[]"
+            if len(apis_repr) > 2000:
+                apis_repr = apis_repr[:2000] + "…"
+            http_tail = ""
+            if late_http_trace:
+                ht = repr(late_http_trace[-3:])
+                if len(ht) > 900:
+                    ht = ht[:900] + "…"
+                http_tail = f" | 排障·晚期HTTP样本(≤3): {ht}"
+            timeline_mark(
+                "竞速结束: Timeout 兜底 (晚期 UI 与后置遥测 API 均未就绪). "
+                f"末批 XHR/Fetch(≤5): {apis_repr}{http_tail}"
+            )
+        return t_out, False, "timeout"
+    finally:
+        for _fn in (_on_late_http_trace_only, _debug_on_response):
+            try:
+                page.remove_listener("response", _fn)
+            except Exception:
+                pass
+        # Fire-and-forget：勿 await UI Task（post_load 先返回时，await 可能长时间阻塞 → 死锁）
+        if ui_task is not None:
+            if not ui_task.done():
+                ui_task.cancel()
+            ui_task.add_done_callback(_silently_detach_ui_race_task)
 
 
 async def _evaluate_metrics_with_retry(page: Any) -> Any:
     """
     game-frame 等页面可能在 domcontentloaded 后仍发生子导航，导致 evaluate 时上下文被销毁；
-    短暂 settle + 有限次重试，避免单场景误报失败。
+    短暂 settle + ``_page_evaluate_nav_resilient`` 多段重试，避免单场景误报失败。
     """
-    if await _abortable_wait_for_timeout(page, 600):
+    if await _abortable_wait_for_timeout(page, 450):
         raise KalarokoE2EUserCancelled()
-    last_err: Exception | None = None
-    for attempt in range(4):
-        if _e2e_user_cancel_requested():
-            raise KalarokoE2EUserCancelled()
-        try:
-            return await page.evaluate(_METRICS_JS)
-        except Exception as e:
-            last_err = e
-            es = str(e).lower()
-            if (
-                "execution context was destroyed" not in es
-                and "cannot find context" not in es
-                and "target closed" not in es
-            ):
-                raise
-            await page.wait_for_timeout(350 * (attempt + 1))
-    assert last_err is not None
-    raise last_err
+    if _e2e_user_cancel_requested():
+        raise KalarokoE2EUserCancelled()
+    return await _page_evaluate_nav_resilient(page, _METRICS_JS)
 
 
 def _coerce_scenarios(scenarios: Any) -> tuple[list[dict[str, Any]], bool]:
@@ -1280,12 +1769,12 @@ async def _dismiss_kalaroko_blocking_promos(
         try:
             if await loc.count() <= 0:
                 return False
-            await loc.first.click(timeout=clk)
+            await loc.first.click(timeout=clk, no_wait_after=True)
             dismissed += 1
             logger.info("[kalaroko_monitor] %s", label)
             if progress:
                 progress(label)
-            await page.wait_for_timeout(280)
+            await page.wait_for_timeout(150)
             return True
         except Exception:
             return False
@@ -1408,8 +1897,8 @@ async def _dismiss_kalaroko_resume_session_popup(
                 await enter_w.wait_for(state="visible", timeout=1400)
                 if progress:
                     progress("检测到遮挡弹窗（Enter/Continue），点击解除 …")
-                await enter_w.click(timeout=clk)
-                await page.wait_for_timeout(380)
+                await enter_w.click(timeout=clk, no_wait_after=True)
+                await page.wait_for_timeout(200)
                 logger.info(
                     "[kalaroko_monitor] 已关闭 adm-center-popup（Enter/Continue，宽匹配 #%s）",
                     wi,
@@ -1460,8 +1949,8 @@ async def _dismiss_kalaroko_resume_session_popup(
             await enter_btn.wait_for(state="visible", timeout=1500)
         if progress:
             progress("检测到「继续上一局 / 掉线重连」弹窗，点击 Enter 解除遮挡 …")
-        await enter_btn.click(timeout=clk)
-        await page.wait_for_timeout(420)
+        await enter_btn.click(timeout=clk, no_wait_after=True)
+        await page.wait_for_timeout(220)
         logger.info("[kalaroko_monitor] 已关闭掉线重进弹窗（Enter），大厅恢复可点击")
         return True
     except Exception as e:
@@ -1511,8 +2000,8 @@ async def _dismiss_kalaroko_ghost_session_overlay(
         )
         try:
             if await exit_btn.is_visible(timeout=500):
-                await exit_btn.click(force=True)
-                await page.wait_for_timeout(500)
+                await exit_btn.click(force=True, no_wait_after=True)
+                await page.wait_for_timeout(280)
         except Exception:
             pass
 
@@ -1582,14 +2071,17 @@ async def _prepare_kalaroko_lobby_after_navigation(
     升级版大厅清场：使用多轮动态扫荡，对付延迟渲染和多层叠加的弹窗/遮罩。
 
     每轮顺序：推广/通知条与 subscribers → Guest 登录 → 掉线 Enter(Resume) → 幽灵会话遮罩；
-    若本轮消除过任一障碍，等待 1.5s 后复扫（最多 3 轮），最后再等 1s 让 DOM 稳定。
+    若本轮消除过任一障碍，短暂 settle 后复扫（最多 3 轮），最后再短等让 DOM 稳定。
+    墙钟预算显著收紧（相对旧版 2.5s+ 多轮 1.5s），避免阻塞游戏入口竞速。
 
     返回：是否曾在任一轮成功点击过 Continue with Guest（无登录框时 False）。
     """
     if progress:
         progress("开始大厅环境动态清场…")
 
-    await page.wait_for_timeout(2500)
+    await page.wait_for_timeout(
+        _env_int("KALAROKO_LOBBY_PREP_INITIAL_MS", 900, vmin=200, vmax=3000)
+    )
 
     guest_clicked = False
     max_sweeps = 3
@@ -1612,16 +2104,25 @@ async def _prepare_kalaroko_lobby_after_navigation(
 
         if cleared_something:
             if progress:
-                progress(
-                    f"第 {sweep + 1} 轮清场消灭了弹窗/遮罩，等待 1.5s 后复扫…"
+                settle_ms = _env_int(
+                    "KALAROKO_LOBBY_PREP_SWEEP_SETTLE_MS", 650, vmin=200, vmax=2500
                 )
-            await page.wait_for_timeout(1500)
+                progress(
+                    f"第 {sweep + 1} 轮清场消灭了弹窗/遮罩，等待 {settle_ms}ms 后复扫…"
+                )
+            await page.wait_for_timeout(
+                _env_int(
+                    "KALAROKO_LOBBY_PREP_SWEEP_SETTLE_MS", 650, vmin=200, vmax=2500
+                )
+            )
         else:
             if progress:
                 progress(f"第 {sweep + 1} 轮扫描大厅干净，清场完毕。")
             break
 
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(
+        _env_int("KALAROKO_LOBBY_PREP_FINAL_MS", 400, vmin=0, vmax=2000)
+    )
     return guest_clicked
 
 
@@ -1659,8 +2160,8 @@ async def _dismiss_kalaroko_guest_login_modal(
         try:
             if progress:
                 progress("检测到登录弹窗，正在点击 Continue with Guest …")
-            await locator.click(timeout=clk)
-            await page.wait_for_timeout(450)
+            await locator.click(timeout=clk, no_wait_after=True)
+            await page.wait_for_timeout(200)
             if progress:
                 progress("已以访客身份关闭登录弹窗，继续点击游戏入口 …")
             logger.info("[kalaroko_monitor] 已点击 Continue with Guest（访客入口）")
@@ -1718,8 +2219,8 @@ async def _dismiss_kalaroko_guest_login_modal(
         await legacy.wait_for(state="visible", timeout=vis)
         if progress:
             progress("Continue with Guest：尝试 force 点击 …")
-        await legacy.click(timeout=clk, force=True)
-        await page.wait_for_timeout(450)
+        await legacy.click(timeout=clk, force=True, no_wait_after=True)
+        await page.wait_for_timeout(200)
         if progress:
             progress("已以访客身份关闭登录弹窗（force），继续 …")
         logger.info("[kalaroko_monitor] 已点击 Continue with Guest（force）")
@@ -1880,7 +2381,7 @@ async def _kalaroko_exit_game_via_top_bar(
                 if await ex_loc.count() < 1:
                     continue
                 await ex_loc.first.scroll_into_view_if_needed(timeout=clk)
-                await ex_loc.first.click(timeout=clk)
+                await ex_loc.first.click(timeout=clk, no_wait_after=True)
                 tried_exit = True
                 logger.info("[kalaroko_monitor] 战术撤离 UI：已通过全页语义/aria 命中退出")
                 if progress:
@@ -1906,7 +2407,7 @@ async def _kalaroko_exit_game_via_top_bar(
         if not tried_exit and n >= 1:
             try:
                 await hdr_btns.nth(n - 1).scroll_into_view_if_needed(timeout=clk)
-                await hdr_btns.nth(n - 1).click(timeout=clk)
+                await hdr_btns.nth(n - 1).click(timeout=clk, no_wait_after=True)
                 logger.info("[kalaroko_monitor] 战术撤离 UI：已点顶栏最右侧按钮（大厅兜底 1）")
                 if progress:
                     progress("战术撤离：已点 shell 顶栏最右 …")
@@ -1924,7 +2425,7 @@ async def _kalaroko_exit_game_via_top_bar(
             if n2 >= 2:
                 try:
                     await hdr_btns.nth(n2 - 2).scroll_into_view_if_needed(timeout=clk)
-                    await hdr_btns.nth(n2 - 2).click(timeout=clk)
+                    await hdr_btns.nth(n2 - 2).click(timeout=clk, no_wait_after=True)
                     tried_exit = True
                     logger.info("[kalaroko_monitor] 战术撤离 UI：已点击顶栏倒数第二（大厅兜底 2）")
                     if progress:
@@ -1936,7 +2437,7 @@ async def _kalaroko_exit_game_via_top_bar(
                     )
             elif n2 == 1 and not tried_exit:
                 try:
-                    await hdr_btns.nth(0).click(timeout=clk)
+                    await hdr_btns.nth(0).click(timeout=clk, no_wait_after=True)
                     tried_exit = True
                     logger.info("[kalaroko_monitor] 战术撤离 UI：仅一枚顶栏按钮，已点击")
                 except Exception:
@@ -2120,6 +2621,415 @@ def _chrome_executable_path() -> str | None:
     return str(p)
 
 
+def _cdp_http_port_from_endpoint(endpoint: str) -> int:
+    """从 ``KALAROKO_CDP_ENDPOINT`` 解析 HTTP 端口；无端口时默认 9222。"""
+    try:
+        parsed = urlparse((endpoint or "").strip())
+        if parsed.port is not None:
+            return int(parsed.port)
+    except (TypeError, ValueError):
+        pass
+    return 9222
+
+
+def _resolve_host_chrome_executable_for_revive() -> str | None:
+    """复活 OS Chrome 时的可执行路径：优先 ``CHROME_EXECUTABLE_PATH``，否则按平台探测。"""
+    configured = _chrome_executable_path()
+    if configured:
+        try:
+            if Path(configured).is_file():
+                return configured
+        except OSError:
+            pass
+    system = platform.system()
+    if system == "Windows":
+        for c in (
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ):
+            try:
+                if Path(c).is_file():
+                    return c
+            except OSError:
+                continue
+        return None
+    if system == "Darwin":
+        p = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        return str(p) if p.is_file() else None
+    for name in (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+    ):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+async def _async_wait_cdp_http_json_version(
+    endpoint: str, *, total_sec: float, tick: float
+) -> bool:
+    """
+    轮询 Chrome DevTools HTTP 根（``/json/version``），直到可访问或超时。
+    比单纯 ``sleep`` 可靠：冷启动 / 磁盘慢时 6s 内端口常仍未监听。
+    """
+    ep = (endpoint or "").strip() or "http://127.0.0.1:9222"
+    parsed = urlparse(ep if "://" in ep else "http://" + ep.lstrip("/"))
+    scheme = (parsed.scheme or "http").lower()
+    if scheme not in ("http", "https"):
+        scheme = "http"
+    host = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port or _cdp_http_port_from_endpoint(ep))
+    base = f"{scheme}://{host}:{port}".rstrip("/")
+    url = base + "/json/version"
+    deadline = time.perf_counter() + max(0.5, float(total_sec))
+    tick = max(0.08, min(2.0, float(tick)))
+
+    def _once() -> bool:
+        try:
+            from urllib.request import Request, urlopen
+
+            req = Request(
+                url,
+                headers={"User-Agent": "Jachin-Kalaroko-CDP-Revive-Probe/1"},
+            )
+            with urlopen(req, timeout=min(3.0, tick * 4 + 1.0)) as resp:
+                code = int(getattr(resp, "status", 200))
+                return 200 <= code < 500
+        except Exception:
+            return False
+
+    while time.perf_counter() < deadline:
+        # Python 3.9+；避免阻塞 MCP 事件循环
+        ok = await asyncio.to_thread(_once)
+        if ok:
+            return True
+        await asyncio.sleep(tick)
+    return False
+
+
+def _isolated_kalaroko_cdp_revive_user_data_dir(port: int) -> str:
+    """
+    与「日常零售 Chrome」并存的 **独立** 用户数据目录，仅用于 CDP 复活拉起第二实例，
+    避免与已打开的无调试 Chrome 争用同一 profile（SingletonLock → 进程秒退、9222 永不监听）。
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or tempfile.gettempdir()
+    else:
+        base = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    root = Path(os.path.expandvars(str(base)))
+    d = root / "jachin-kalaroko-cdp-revive" / f"p{int(port)}"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(d.resolve())
+
+
+def _popen_detached_chrome(argv: list[str]) -> None:
+    """非阻塞拉起 Chrome GUI：Windows 用 DETACHED_PROCESS；Unix 用 start_new_session。"""
+    popen_kw: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        # 勿用 shell=True；与当前 Python 进程解耦，避免阻塞 MCP stdio
+        popen_kw["close_fds"] = False
+        popen_kw["creationflags"] = int(
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        popen_kw["close_fds"] = True
+        popen_kw["start_new_session"] = True
+    subprocess.Popen(argv, **popen_kw)
+
+
+async def _send_feishu_system_alert(
+    title: str, message: str, *, is_critical: bool = False
+) -> None:
+    """
+    飞书（开放平台）系统级告警：租户 token + 群聊发 **interactive** 卡片。
+
+    - 环境变量：``FEISHU_APP_ID``、``FEISHU_APP_SECRET``、``FEISHU_CHAT_ID``（缺一则静默跳过）。
+    - **Fire-and-forget**：仅 ``create_task`` 调度后台协程，本函数立即返回；任何网络/解析异常均吞掉，不影响 CDP 主路径。
+    - 可用 ``KALAROKO_FEISHU_SYSTEM_ALERT=0`` 显式关闭（仍不要求配置飞书）。
+    """
+    if not _env_bool("KALAROKO_FEISHU_SYSTEM_ALERT", True):
+        return
+
+    app_id = (os.environ.get("FEISHU_APP_ID") or "").strip()
+    app_secret = (os.environ.get("FEISHU_APP_SECRET") or "").strip()
+    chat_id = (os.environ.get("FEISHU_CHAT_ID") or "").strip()
+    if not (app_id and app_secret and chat_id):
+        logger.debug(
+            "[kalaroko_monitor] 飞书系统告警未配置（FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_CHAT_ID），跳过"
+        )
+        return
+
+    tpl = "red" if is_critical else "orange"
+    title_s = (title or "Kalaroko").strip()[:256]
+    body_md = (message or "").strip()[:8000]
+
+    def _sync_send() -> None:
+        try:
+            import httpx
+        except ImportError:
+            logger.warning(
+                "[kalaroko_monitor] 未安装 httpx，无法发送飞书告警；请 pip install httpx"
+            )
+            return
+        try:
+            token_url = (
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+            )
+            with httpx.Client(timeout=8.0) as client:
+                tr = client.post(
+                    token_url,
+                    json={"app_id": app_id, "app_secret": app_secret},
+                )
+                tj = tr.json()
+                if int(tj.get("code", -1)) != 0:
+                    logger.warning(
+                        "[kalaroko_monitor] 飞书 tenant_access_token 失败: %s",
+                        str(tj)[:400],
+                    )
+                    return
+                token = (tj.get("tenant_access_token") or "").strip()
+                if not token:
+                    logger.warning(
+                        "[kalaroko_monitor] 飞书响应无 tenant_access_token: %s",
+                        str(tj)[:400],
+                    )
+                    return
+
+                card = {
+                    "schema": "2.0",
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": tpl,
+                        "title": {"tag": "plain_text", "content": title_s},
+                    },
+                    "body": {
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "lark_md",
+                                    "content": body_md,
+                                },
+                            }
+                        ]
+                    },
+                }
+                send_url = (
+                    "https://open.feishu.cn/open-apis/im/v1/messages"
+                    "?receive_id_type=chat_id"
+                )
+                payload = {
+                    "receive_id": chat_id,
+                    "msg_type": "interactive",
+                    "content": json.dumps(card, ensure_ascii=False),
+                }
+                sr = client.post(
+                    send_url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json; charset=utf-8",
+                    },
+                    json=payload,
+                )
+                sj = sr.json()
+                if int(sj.get("code", -1)) != 0:
+                    logger.warning(
+                        "[kalaroko_monitor] 飞书发消息失败: %s", str(sj)[:500]
+                    )
+        except Exception as e:
+            logger.warning(
+                "[kalaroko_monitor] 飞书系统告警发送异常（已吞）: %s", str(e)[:400]
+            )
+
+    async def _runner() -> None:
+        try:
+            await asyncio.to_thread(_sync_send)
+        except Exception as e:
+            logger.warning(
+                "[kalaroko_monitor] 飞书告警后台任务异常（已吞）: %s", str(e)[:300]
+            )
+
+    try:
+        asyncio.get_running_loop().create_task(_runner())
+    except RuntimeError:
+        try:
+            _sync_send()
+        except Exception:
+            pass
+
+
+async def _revive_external_chrome_on_9222(*, endpoint: str) -> tuple[bool, bool]:
+    """
+    当 CDP HTTP 端口不可连时，尝试用 **操作系统命令行** 拉起带 ``--remote-debugging-port`` 的 Google Chrome。
+
+    返回 ``(spawned_any, cdp_http_ready)``：
+    - ``spawned_any``：是否至少派发过一次 Popen（用于调用方区分「未尝试」与「尝试了但未就绪」）。
+    - ``cdp_http_ready``：``/json/version`` 已可访问，调用方应再 ``connect_over_cdp``。
+
+    **双档 user-data-dir（关键）**：若本机已有**未开远程调试**的 Chrome 占着默认/同一 profile，
+    再带 ``--user-data-dir=同一目录`` 启动会 **SingletonLock 秒退**，9222 永不监听。
+    因此默认先（可选）尝试 ``CHROME_USER_DATA_DIR``，失败再 **独立目录** ``…/jachin-kalaroko-cdp-revive/p<port>``，
+    与零售实例并存，仅该副实例挂 CDP。
+
+    - ``KALAROKO_CDP_REVIVE_TRY_CONFIGURED_PROFILE_FIRST``（默认 1）：有 ``CHROME_USER_DATA_DIR`` 时先尝试之。
+    - ``KALAROKO_CDP_REVIVE_START_URL``：未设置环境变量时 **默认不打开站点**（尽快占端口）；显式设空字符串亦不加 URL。
+    - ``KALAROKO_CDP_REVIVE_READY_TIMEOUT_SEC``：**每一档** 轮询 ``/json/version`` 的最长秒数（默认 18）。
+    - ``KALAROKO_CDP_REVIVE_WAIT_SEC``：每档 Popen 后短睡再探测（默认 1s）。
+    - 关闭复活：``KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL=0`` → 返回 ``(False, False)``。
+    - 飞书系统告警（可选）：``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` / ``FEISHU_CHAT_ID``；
+      关闭告警：``KALAROKO_FEISHU_SYSTEM_ALERT=0``。
+    """
+    if not _env_bool("KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL", True):
+        logger.info(
+            "[kalaroko_monitor] CDP 复活已跳过（KALAROKO_CDP_REVIVE_ON_CONNECT_FAIL=0）"
+        )
+        return False, False
+
+    logger.warning(
+        "[kalaroko_monitor] CDP 无法连接（%s），外部 Chrome 可能已退出；尝试 OS 级复活（Daemon Reviver）…",
+        (endpoint or "")[:120],
+    )
+
+    exe = _resolve_host_chrome_executable_for_revive()
+    if not exe:
+        logger.error(
+            "[kalaroko_monitor] 未找到本机 Google Chrome 可执行文件；"
+            "请设置 CHROME_EXECUTABLE_PATH 或将 chrome 加入 PATH"
+        )
+        return False, False
+
+    port = _cdp_http_port_from_endpoint(endpoint)
+    raw_su = os.environ.get("KALAROKO_CDP_REVIVE_START_URL")
+    if raw_su is None:
+        start_url = ""
+    else:
+        start_url = (raw_su or "").strip()
+
+    initial_sleep = float(_env_int("KALAROKO_CDP_REVIVE_WAIT_SEC", 1, vmin=0, vmax=30))
+    per_attempt = float(
+        _env_int("KALAROKO_CDP_REVIVE_READY_TIMEOUT_SEC", 18, vmin=4, vmax=120)
+    )
+    poll_ms = _env_int("KALAROKO_CDP_REVIVE_READY_POLL_MS", 400, vmin=100, vmax=3000)
+    tick = poll_ms / 1000.0
+
+    await _send_feishu_system_alert(
+        title="⚠️ Kalaroko 巡检节点异常",
+        message=(
+            "**状态**: 宿主 Chrome 进程崩溃或不可达，9222 / CDP 已丢失或不可连接！\n"
+            f"**CDP 入口**: `{str(endpoint)[:220]}`\n"
+            "**动作**: 正在执行操作系统级复活 (OS Spawn)…"
+        ),
+        is_critical=False,
+    )
+
+    spawned_any = False
+
+    async def _spawn_tier(*, user_data_dir: str, tier_label: str) -> bool:
+        nonlocal spawned_any
+        argv: list[str] = [
+            exe,
+            f"--remote-debugging-port={port}",
+            "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-default-browser-check",
+            f"--user-data-dir={user_data_dir}",
+        ]
+        if start_url:
+            argv.append(start_url)
+        logger.info(
+            "[kalaroko_monitor] 复活 %s：user-data-dir=%s …",
+            tier_label,
+            user_data_dir[:160],
+        )
+        try:
+            _popen_detached_chrome(argv)
+        except Exception as e:
+            logger.error(
+                "[kalaroko_monitor] 复活 Popen 失败（%s）: %s",
+                tier_label,
+                str(e)[:400],
+            )
+            return False
+        spawned_any = True
+        if initial_sleep > 0:
+            await asyncio.sleep(initial_sleep)
+        logger.info(
+            "[kalaroko_monitor] 复活 %s：轮询 /json/version（最多 %.0fs，间隔 %.2fs）…",
+            tier_label,
+            per_attempt,
+            tick,
+        )
+        return await _async_wait_cdp_http_json_version(
+            endpoint, total_sec=per_attempt, tick=tick
+        )
+
+    cfg = _chrome_user_data_dir()
+    if cfg and _env_bool("KALAROKO_CDP_REVIVE_TRY_CONFIGURED_PROFILE_FIRST", True):
+        if await _spawn_tier(user_data_dir=cfg, tier_label="tier-1（CHROME_USER_DATA_DIR）"):
+            logger.info(
+                "[kalaroko_monitor] CDP HTTP 已就绪（配置 profile），准备 connect_over_cdp"
+            )
+            await _send_feishu_system_alert(
+                title="✅ Kalaroko 巡检节点恢复",
+                message=(
+                    "**状态**: 宿主 Chrome 死者苏生成功！\n"
+                    f"**说明**: 端口 `{port}` 已重新绑定（/json/version 就绪），巡检将继续。"
+                    "建议稍后检查本机内存与 H5 标签页数量。"
+                ),
+                is_critical=False,
+            )
+            return True, True
+        logger.warning(
+            "[kalaroko_monitor] tier-1 未在 %.0fs 内就绪（常被已开 Chrome 占 profile）；"
+            "尝试 tier-2 独立 profile…",
+            per_attempt,
+        )
+
+    iso = _isolated_kalaroko_cdp_revive_user_data_dir(port)
+    if await _spawn_tier(user_data_dir=iso, tier_label="tier-2（独立 profile，可与零售 Chrome 并存）"):
+        logger.info("[kalaroko_monitor] CDP HTTP 已就绪（独立 profile），准备 connect_over_cdp")
+        await _send_feishu_system_alert(
+            title="✅ Kalaroko 巡检节点恢复",
+            message=(
+                "**状态**: 宿主 Chrome 死者苏生成功！\n"
+                f"**说明**: 端口 `{port}` 已重新绑定（独立 profile，/json/version 就绪），巡检将继续。"
+                "建议稍后检查本机内存与 H5 标签页数量。"
+            ),
+            is_critical=False,
+        )
+        return True, True
+
+    logger.error(
+        "[kalaroko_monitor] 复活两档均未在 %.0fs 内使 /json/version 就绪（端口 %s）。"
+        "若仍失败请检查杀毒/策略或手动启动带 --remote-debugging-port 的 Chrome。",
+        per_attempt,
+        port,
+    )
+    await _send_feishu_system_alert(
+        title="🚨 Kalaroko 巡检致命故障",
+        message=(
+            "**状态**: Chrome 进程复活失败（/json/version 在时限内未就绪）！\n"
+            f"**端口**: `{port}`\n"
+            "**动作要求**: 巡检将回退至无状态临时 Chromium，**无法保持原登录态**。\n"
+            "<at user_id=\"all\"></at> **请立即登录服务器进行人工干预排查！**"
+        ),
+        is_critical=True,
+    )
+    return spawned_any, False
+
+
 _KALAROKO_REPO_DOTENV_TRIED = False
 
 
@@ -2236,13 +3146,35 @@ def _cdp_page_url_matches_preferred_host(page_url: str, preferred_host: str) -> 
     return bool(core and core in u)
 
 
-async def _probe_cdp_page_alive(pg: Any) -> bool:
+def _cdp_tab_probe_timeout_sec() -> float:
+    """单标签 JS 探活超时（秒），用于斩杀 Aw Snap / 渲染器僵死页。"""
+    ms = _env_int("KALAROKO_CDP_TAB_PROBE_MS", 3000, vmin=500, vmax=20_000)
+    return max(0.5, ms / 1000.0)
+
+
+async def _cdp_tab_health_probe_or_slaughter(pg: Any) -> bool:
+    """
+    CDP 下标签页 JS 探活；失败则视为僵尸/崩溃页（Aw Snap、Target closed 等）并 ``page.close()``，
+    避免下一轮仍命中同一死签导致巡检瘫痪。
+    """
     try:
         if pg.is_closed():
             return False
-        await asyncio.wait_for(pg.evaluate("() => 1"), timeout=2.5)
+    except Exception:
+        return False
+    tmo = _cdp_tab_probe_timeout_sec()
+    try:
+        await asyncio.wait_for(pg.evaluate("() => (1 + 1)"), timeout=tmo)
         return True
-    except (asyncio.TimeoutError, Exception):
+    except Exception as e:
+        logger.warning(
+            "[kalaroko_monitor] CDP 标签探活失败，判定为僵尸/崩溃页并尝试关闭: %s",
+            str(e)[:360],
+        )
+        try:
+            await pg.close()
+        except Exception:
+            pass
         return False
 
 
@@ -2259,7 +3191,7 @@ async def _pick_kalaroko_cdp_context_and_page(
     - 否则在可自动化 URL 上按 ``KALAROKO_CDP_PREFER_VISIBLE_TAB`` 做可见性/焦点排序（与旧逻辑一致）。
     - ``KALAROKO_CDP_NEW_TAB=1``：在首个 context 上 ``new_page()``。
 
-    仅靠 ``is_closed()`` 不够：多标签下常有僵尸 Tab，须 evaluate 探活。
+    仅靠 ``is_closed()`` 不够：多标签下常有僵尸 Tab；须 **JS 探活**，失败则 **close** 斩杀以免反复命中死页。
     """
     raw = (os.environ.get("KALAROKO_CDP_NEW_TAB") or "").strip().lower()
     if raw in ("1", "true", "yes", "on"):
@@ -2294,15 +3226,16 @@ async def _pick_kalaroko_cdp_context_and_page(
                     u = ""
                 if not _cdp_tab_url_driver_safe(u):
                     continue
-                if not await _probe_cdp_page_alive(pg):
+                if not await _cdp_tab_health_probe_or_slaughter(pg):
                     continue
-                if _cdp_page_url_matches_preferred_host(u, ph):
-                    logger.info(
-                        "[kalaroko_monitor] CDP 选用标签页（URL 含目标域 %s，对齐 K11 host 匹配）: %s",
-                        ph,
-                        u[:160],
-                    )
-                    return ctx, pg
+                if not _cdp_page_url_matches_preferred_host(u, ph):
+                    continue
+                logger.info(
+                    "[kalaroko_monitor] CDP 选用标签页（URL 含目标域 %s，探活通过，对齐 K11 host 匹配）: %s",
+                    ph,
+                    u[:160],
+                )
+                return ctx, pg
 
     # —— 阶段 B：未命中目标域时，全部 context 的页签上做可见性排序 ——
     scored: list[tuple[int, int, int, int, int, Any, Any]] = []
@@ -2317,7 +3250,7 @@ async def _pick_kalaroko_cdp_context_and_page(
                     u = ""
                 if not _cdp_tab_url_driver_safe(u):
                     continue
-                if not await _probe_cdp_page_alive(pg):
+                if not await _cdp_tab_health_probe_or_slaughter(pg):
                     continue
                 logger.info(
                     "[kalaroko_monitor] CDP 复用标签（PREFER_VISIBLE_TAB=0）ctx=%s index=%s url=%s",
@@ -2336,7 +3269,7 @@ async def _pick_kalaroko_cdp_context_and_page(
                 u = ""
             if not _cdp_tab_url_driver_safe(u):
                 continue
-            if not await _probe_cdp_page_alive(pg):
+            if not await _cdp_tab_health_probe_or_slaughter(pg):
                 continue
             vis_st = "hidden"
             has_foc = False
@@ -2360,9 +3293,15 @@ async def _pick_kalaroko_cdp_context_and_page(
             foc_tier = 0 if has_foc else 1
             scored.append((vis_tier, foc_tier, -ci, -idx, ci, ctx, pg))
 
-    scored.sort()
-    if scored:
+    while scored:
+        scored.sort()
         _vt, _ft, _nc, _ni, ci, ctx, pg = scored[0]
+        if not await _cdp_tab_health_probe_or_slaughter(pg):
+            logger.warning(
+                "[kalaroko_monitor] CDP visibility 排序候选项探活失败（或已斩杀），跳过下一条"
+            )
+            scored.pop(0)
+            continue
         try:
             _u = str(getattr(pg, "url", "") or "")[:120]
         except Exception:
@@ -2407,7 +3346,8 @@ async def _launch_kalaroko_browser_context(
     preferred_host: str | None = None,
 ) -> tuple[Any, Any, Any, bool]:
     """
-    优先 **CDP** 连接已有 Chrome；失败或超时则 **回退** ``chromium.launch(headless=True)`` 独立进程。
+    优先 **CDP** 连接已有 Chrome；首次失败时可 **OS 级复活** 本机 Chrome 再连；仍失败才 **回退**
+    ``chromium.launch(headless=...)`` 独立进程（会丢失 CDP 登录态，仅作最后手段）。
 
     ``preferred_host``：本轮巡检 ``base_url`` 的主机名（小写），用于与 K11 冒烟一致地 **优先绑定含该域的 Tab**，
     避免打在 DevTools/其他站/空白页上却仍能「出数」。
@@ -2420,27 +3360,84 @@ async def _launch_kalaroko_browser_context(
     dsf = float(device_scale_factor)
 
     endpoint = (_kalaroko_cdp_endpoint() or "").strip() or "http://127.0.0.1:9222"
+    connect_sec = float(
+        _env_int("KALAROKO_CDP_CONNECT_TIMEOUT_SEC", 15, vmin=5, vmax=120)
+    )
 
-    try:
-        browser = await asyncio.wait_for(
+    async def _connect_over_cdp_once() -> Any:
+        return await asyncio.wait_for(
             playwright.chromium.connect_over_cdp(endpoint),
-            timeout=30.0,
+            timeout=connect_sec,
         )
+
+    browser: Any | None = None
+    try:
+        browser = await _connect_over_cdp_once()
     except Exception as e:
         logger.warning(
-            "[kalaroko_monitor] CDP 连接失败或超时 (%s)，回退 Playwright launch：%s",
+            "[kalaroko_monitor] CDP 首次 connect_over_cdp 失败（%s）: %s",
             endpoint,
             str(e)[:400],
         )
-        browser = await playwright.chromium.launch(headless=headless)
-        context = await browser.new_context(viewport=vp, device_scale_factor=dsf)
-        await _apply_stealth_to_context(context)
-        page = await context.new_page()
-        logger.info(
-            "[kalaroko_monitor] 已 launch 独立 Chromium（headless=%s），新建 context + page",
-            headless,
-        )
-        return browser, context, page, True
+        spawned, http_ready = await _revive_external_chrome_on_9222(endpoint=endpoint)
+        if spawned and http_ready:
+            attempts = _env_int(
+                "KALAROKO_CDP_POST_REVIVE_CONNECT_ATTEMPTS", 3, vmin=1, vmax=12
+            )
+            gap = float(
+                _env_int("KALAROKO_CDP_POST_REVIVE_CONNECT_GAP_MS", 500, vmin=0, vmax=5000)
+            )
+            gap = gap / 1000.0
+            last_e2: BaseException | None = None
+            browser = None
+            post_to = min(
+                float(connect_sec),
+                float(
+                    _env_int(
+                        "KALAROKO_CDP_POST_REVIVE_CONNECT_TIMEOUT_SEC",
+                        20,
+                        vmin=5,
+                        vmax=120,
+                    )
+                ),
+            )
+            for att in range(attempts):
+                try:
+                    browser = await asyncio.wait_for(
+                        playwright.chromium.connect_over_cdp(endpoint),
+                        timeout=post_to,
+                    )
+                    last_e2 = None
+                    break
+                except BaseException as e2:
+                    last_e2 = e2
+                    if att + 1 < attempts and gap > 0:
+                        await asyncio.sleep(gap)
+            if browser is None and last_e2 is not None:
+                logger.error(
+                    "[kalaroko_monitor] Chrome 复活后 %s 次 connect_over_cdp 仍失败，回退 Playwright launch: %s",
+                    attempts,
+                    str(last_e2)[:400],
+                )
+        elif spawned and not http_ready:
+            logger.error(
+                "[kalaroko_monitor] 复活已派发但 /json/version 未就绪；"
+                "跳过 connect_over_cdp 连打（避免长时间卡死），直接 Playwright launch 兜底"
+            )
+            browser = None
+        else:
+            browser = None
+
+        if browser is None:
+            browser = await playwright.chromium.launch(headless=headless)
+            context = await browser.new_context(viewport=vp, device_scale_factor=dsf)
+            await _apply_stealth_to_context(context)
+            page = await context.new_page()
+            logger.info(
+                "[kalaroko_monitor] 已 launch 独立 Chromium（headless=%s），新建 context + page",
+                headless,
+            )
+            return browser, context, page, True
 
     logger.info(
         "[kalaroko_monitor] 已连接 CDP → %s，context 数=%s",
@@ -2624,8 +3621,9 @@ async def execute_playwright_perf_test(
     使用 Playwright 按场景采集首页 **W3C Navigation/Paint + ALPN** 与游戏入口性能，
     单场景失败不中断整轮；返回符合 TDD KalarokoPerfSnapshot 的载荷（api_health 为空数组）。
 
-    **游戏场景深度感知（缓解 H5「假加载」）**：默认 ``wait_until=networkidle``；导航前后监听
-    ``page.on("websocket")`` 记录首个 WebSocket；goto 后可选等待首个 WS（有界）与 ``canvas`` 出现；
+    **游戏场景深度感知（缓解 H5「假加载」）**：默认 ``wait_until=domcontentloaded``（不等待音视频等拖满 ``load``，亦不使用 ``networkidle`` 盲等）；
+    导航前后监听 ``page.on("websocket")``（排障用，**不再**作为就绪判据）；进房后使用 **晚期竞速**
+    （**仅**晚期 UI DOM 停表；牌桌类 HTTP 仅写入排障轨迹；预算默认 80s，``KALAROKO_GAME_LATE_READY_RACE_MS``）；
     墙钟 ``real_engine_load_ms`` 写入 JSON，并用其覆盖游戏条目的 **ttfb_ms**（原 Navigation Timing
     保留在 **shell_navigation_ttfb_ms** 供对照）。失败路径均有 try/except，避免无限阻塞。
 
@@ -2635,7 +3633,7 @@ async def execute_playwright_perf_test(
             点击流可选 **require_game_frame_url**（默认 True）：采数结束前主文档 URL 须含 ``game-frame``，
             否则本条 **load_status=failed**，避免未见游戏打开仍上报 success）。
             游戏场景可选 **document_game_id** 与 Word/BI 报告小节 game_id 对齐）。**传 null 或 [] 时自动使用**
-            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 三款游戏；游戏默认从首页点击进入）。浏览器：
+            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 四款游戏；游戏默认从首页点击进入）。浏览器：
             **必须**设置 ``KALAROKO_CDP_ENDPOINT``（如 ``http://127.0.0.1:9222``），并预先以 ``--remote-debugging-port``
             启动 Chrome（仓库 ``scripts/launch_chrome_debug.ps1``）；Playwright 仅 ``connect_over_cdp``，**不再**
             自动 ``launch`` 新浏览器。会话/Cookie 由该 Chrome 实例与用户数据目录决定。无登录态时若出现
@@ -2822,7 +3820,7 @@ async def execute_playwright_perf_test(
                     progress=_progress,
                     hint=f"[UI 节奏] 场景「{name}」开始…" if pace > 0 else "",
                 )
-                wait_until = str(scenario.get("wait_until") or "load")
+                wait_until = str(scenario.get("wait_until") or "domcontentloaded")
                 timeout_ms = int(scenario.get("timeout_ms") or 60000)
                 url = _scenario_url(base, scenario)
                 if not _host_allowed(url):
@@ -2918,11 +3916,14 @@ async def execute_playwright_perf_test(
                     else:
                         _click_sel = str(scenario.get("click_selector") or "").strip()
                         if _click_sel:
-                            # 游戏（UI 点击流）：goto(start_url) → 注册 WS → t0 → click → 深度等待（避免 token 直链被 WAF 拦截）
+                            # 游戏（UI 点击流）：goto(start_url) → 注册 WS → click → t0（点击后零点）→ 深度等待（避免 token 直链被 WAF 拦截）
                             entry_url = _scenario_url(base, scenario)
-                            entry_wait = str(scenario.get("entry_wait_until") or "load")
+                            entry_wait = str(scenario.get("entry_wait_until") or "domcontentloaded")
                             click_to = int(scenario.get("click_timeout_ms") or 30000)
                             ws_times: list[float] = []
+                            debug_timeline: list[str] = []
+                            t_timeline0 = time.time()
+                            mark = _make_timeline_mark(debug_timeline, t_timeline0, name)
 
                             def _on_ws_click(_ws: Any) -> None:
                                 try:
@@ -2930,7 +3931,9 @@ async def execute_playwright_perf_test(
                                 except Exception:
                                     pass
 
+                            mark("点击流: 开始 goto 大厅 (start_url)")
                             response = await _goto_resilient(page, entry_url, entry_wait, timeout_ms)
+                            mark("点击流: goto 大厅返回 (wait_until 策略完成)")
                             await _kalaroko_ui_breathe(
                                 page,
                                 pace,
@@ -2941,6 +3944,7 @@ async def execute_playwright_perf_test(
                             await _prepare_kalaroko_lobby_after_navigation(
                                 page, progress=_progress
                             )
+                            mark("点击流: 大厅清场 (_prepare_kalaroko_lobby_after_navigation) 完成")
                             await _kalaroko_ui_breathe(
                                 page,
                                 pace,
@@ -2971,9 +3975,9 @@ async def execute_playwright_perf_test(
                             page.on("websocket", _on_ws_click)
                             # 丢弃点击前大厅阶段误捕获的 WS（否则会立刻满足「已有 WS」导致墙钟≈0）
                             ws_times.clear()
-                            t0 = time.perf_counter()
                             online_players: dict[str, str | None] = _empty_online_players_dict()
                             try:
+                                mark("点击流: 开始点击游戏入口 (Play / 卡片)")
                                 online_players = await _diagnose_and_click_kalaroko_game_entry(
                                     page,
                                     click_selector=_click_sel,
@@ -2984,25 +3988,44 @@ async def execute_playwright_perf_test(
                                     ui_pace_ms=pace,
                                     ui_cursor_moves=cursor_mv,
                                 )
+                                mark("点击流: 点击游戏入口 await 返回")
+                                # 引擎加载零点：从「点击完成、即将进壳/iframe」起算，不含大厅寻址与点击耗时
+                                t0 = time.perf_counter()
                                 status = response.status if response else None
                                 try:
-                                    t_end, _canvas_seen = await _game_deep_wait_after_goto(
-                                        page,
-                                        t0,
-                                        timeout_ms,
-                                        ws_times,
-                                        click_flow=True,
+                                    t_end, _canvas_seen, _race_reason = (
+                                        await _game_deep_wait_after_goto(
+                                            page,
+                                            t0,
+                                            timeout_ms,
+                                            ws_times,
+                                            click_flow=True,
+                                            timeline_mark=mark,
+                                        )
                                     )
                                 except KalarokoE2EUserCancelled:
                                     raise
                                 except Exception as e:
                                     logger.warning("[kalaroko_monitor] deep wait (click flow): %s", str(e)[:200])
                                     t_end = time.perf_counter()
+                                    mark(
+                                        "竞速等待异常: "
+                                        + str(e).replace("\n", " ")[:160]
+                                    )
                                 final_url = page.url or ""
                                 room_id = _extract_room_id_from_url(final_url)
                                 real_engine_load_ms = max(0.0, (t_end - t0) * 1000.0)
                                 real_i = int(round(real_engine_load_ms))
-                                data = await _evaluate_metrics_with_retry(page)
+                                mark("_evaluate_metrics_with_retry 开始 (含短 settle / 重试)")
+                                try:
+                                    data = await _evaluate_metrics_with_retry(page)
+                                except Exception as e:
+                                    mark(
+                                        "_evaluate_metrics_with_retry 异常: "
+                                        + str(e).replace("\n", " ")[:120]
+                                    )
+                                    raise
+                                mark("_evaluate_metrics_with_retry 完成")
                                 metrics = data if isinstance(data, dict) else {}
                                 shell_ttfb = metrics.get("ttfb_ms")
                                 # UI 点击进游戏：默认要求真的进入 game-frame；否则视为「未打开游戏壳」，禁止 success + 几十毫秒误报
@@ -3069,11 +4092,28 @@ async def execute_playwright_perf_test(
                                     "table_seat_players": None,
                                 }
                                 row.update(_game_id_snapshot_fields(scenario, final_url))
+                                row["debug_timeline"] = list(debug_timeline)
                                 games_out.append(row)
                                 # [战术撤离] 回平台首页，为下一游戏场景就位（非 about:blank）
-                                await _tactical_retreat_to_platform_home(
-                                    page, scenario, progress=_progress
-                                )
+                                mark("_tactical_retreat_to_platform_home 开始 (战术撤离→首页)")
+                                try:
+                                    await _tactical_retreat_to_platform_home(
+                                        page, scenario, progress=_progress
+                                    )
+                                    mark("_tactical_retreat_to_platform_home 完成")
+                                except Exception as e:
+                                    mark(
+                                        "_tactical_retreat_to_platform_home 异常: "
+                                        + str(e).replace("\n", " ")[:160]
+                                    )
+                                    raise
+                                finally:
+                                    try:
+                                        games_out[-1]["debug_timeline"] = list(
+                                            debug_timeline
+                                        )
+                                    except Exception:
+                                        pass
                                 if _req_gf and not shell_ok:
                                     _wall = "N/A（未进入 game-frame，未计有效墙钟）"
                                 else:
@@ -3101,8 +4141,11 @@ async def execute_playwright_perf_test(
                                     except Exception:
                                         pass
                         else:
-                            # 游戏（直链 goto）：networkidle + WebSocket 嗅探 + 可选 canvas
+                            # 游戏（直链 goto）：domcontentloaded + 仿生竞速（WS / HTTP / Canvas）
                             ws_times = []
+                            debug_timeline: list[str] = []
+                            t_timeline0 = time.time()
+                            mark = _make_timeline_mark(debug_timeline, t_timeline0, name)
 
                             def _on_ws(_ws: Any) -> None:
                                 try:
@@ -3132,6 +4175,7 @@ async def execute_playwright_perf_test(
                             page.on("console", _on_game_console_err_g)
 
                             page.on("websocket", _on_ws)
+                            mark("直链: 即将 page.goto 游戏 URL (wait_until 策略)")
                             t0 = time.perf_counter()
                             try:
                                 response = await _goto_resilient(page, url, wait_until, timeout_ms)
@@ -3140,23 +4184,43 @@ async def execute_playwright_perf_test(
                                     page.remove_listener("websocket", _on_ws)
                                 except Exception:
                                     pass
+                            mark("直链: goto 游戏 URL 返回")
 
                             try:
                                 status = response.status if response else None
                                 try:
-                                    t_end, _canvas_seen = await _game_deep_wait_after_goto(
-                                        page, t0, timeout_ms, ws_times
+                                    t_end, _canvas_seen, _race_reason = (
+                                        await _game_deep_wait_after_goto(
+                                            page,
+                                            t0,
+                                            timeout_ms,
+                                            ws_times,
+                                            timeline_mark=mark,
+                                        )
                                     )
                                 except KalarokoE2EUserCancelled:
                                     raise
                                 except Exception as e:
                                     logger.warning("[kalaroko_monitor] deep wait: %s", str(e)[:200])
                                     t_end = time.perf_counter()
+                                    mark(
+                                        "竞速等待异常: "
+                                        + str(e).replace("\n", " ")[:160]
+                                    )
 
                                 real_engine_load_ms = max(0.0, (t_end - t0) * 1000.0)
                                 real_i = int(round(real_engine_load_ms))
 
-                                data = await _evaluate_metrics_with_retry(page)
+                                mark("_evaluate_metrics_with_retry 开始 (含短 settle / 重试)")
+                                try:
+                                    data = await _evaluate_metrics_with_retry(page)
+                                except Exception as e:
+                                    mark(
+                                        "_evaluate_metrics_with_retry 异常: "
+                                        + str(e).replace("\n", " ")[:120]
+                                    )
+                                    raise
+                                mark("_evaluate_metrics_with_retry 完成")
                                 metrics = data if isinstance(data, dict) else {}
                                 shell_ttfb = metrics.get("ttfb_ms")
 
@@ -3189,11 +4253,28 @@ async def execute_playwright_perf_test(
                                     "table_seat_players": None,
                                 }
                                 row.update(_game_id_snapshot_fields(scenario, final_url or url))
+                                row["debug_timeline"] = list(debug_timeline)
                                 games_out.append(row)
                                 # [战术撤离] 回平台首页，为下一游戏场景就位（非 about:blank）
-                                await _tactical_retreat_to_platform_home(
-                                    page, scenario, progress=_progress
-                                )
+                                mark("_tactical_retreat_to_platform_home 开始 (战术撤离→首页)")
+                                try:
+                                    await _tactical_retreat_to_platform_home(
+                                        page, scenario, progress=_progress
+                                    )
+                                    mark("_tactical_retreat_to_platform_home 完成")
+                                except Exception as e:
+                                    mark(
+                                        "_tactical_retreat_to_platform_home 异常: "
+                                        + str(e).replace("\n", " ")[:160]
+                                    )
+                                    raise
+                                finally:
+                                    try:
+                                        games_out[-1]["debug_timeline"] = list(
+                                            debug_timeline
+                                        )
+                                    except Exception:
+                                        pass
                                 _progress(
                                     f"「{name}」采集结束：load_status={load_st}，墙钟≈{real_i}ms，"
                                     f"shell_navigation_ttfb_ms={shell_ttfb!s}，"
@@ -3353,7 +4434,7 @@ async def execute_playwright_perf_test(
                 "games": games_out,
                 "browser_exceptions": browser_exceptions,
                 "aggregation_notes": (
-                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 3 款游戏）"]
+                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 4 款游戏）"]
                     if used_default_scenarios
                     else []
                 ),
@@ -3367,6 +4448,28 @@ async def execute_playwright_perf_test(
                 "巡检已由用户停止（下一检查点前已中止 Playwright）",
             )
         finally:
+            # CDP 复用用户默认 context：可选「阅后即焚」关闭本轮巡检占用的标签，减轻 H5 长时内存泄漏
+            #（会关掉该 Tab；仅无人值守/专用巡检 Tab 或已配合 KALAROKO_CDP_NEW_TAB 时建议开启）
+            try:
+                if (
+                    not must_close_context
+                    and page is not None
+                    and _env_bool("KALAROKO_CDP_CLOSE_INSPECTION_TAB_AFTER_RUN", False)
+                ):
+                    try:
+                        closed = bool(page.is_closed())
+                    except Exception:
+                        closed = True
+                    if not closed:
+                        await page.close()
+                        logger.info(
+                            "[kalaroko_monitor] CDP 阅后即焚：已关闭本轮巡检标签（"
+                            "KALAROKO_CDP_CLOSE_INSPECTION_TAB_AFTER_RUN）"
+                        )
+            except Exception as e:
+                logger.warning(
+                    "[kalaroko_monitor] CDP 阅后即焚 page.close 失败: %s", str(e)[:300]
+                )
             # 自建 / launch 的 context 必须显式 close，减轻 OOM；复用 CDP 用户默认 context 时不关
             try:
                 if context is not None and must_close_context:

@@ -1,9 +1,9 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Kalaroko Monitor MCP — 默认四场景（KALAROKO_DEFAULT_SCENARIOS）全流程联调。
+Kalaroko Monitor MCP — 默认五场景（KALAROKO_DEFAULT_SCENARIOS：首页 + 四游戏）全流程联调。
 
 串联：
-  1) execute_playwright_perf_test（scenarios=[] → 内置首页 + 3 款游戏）
+  1) execute_playwright_perf_test（scenarios=[] → 内置首页 + 4 款游戏）
   2) fetch_api_health（探测 gwp.heronpro.xin 大厅后端 API 列表 + summary）
   3) manage_perf_history（持久 JSONL：append + query_recent，路径 ``~/.jachin/data/kalaroko_e2e.jsonl``）
 
@@ -95,6 +95,15 @@ KALAROKO_E2E_JSONL = KALAROKO_E2E_JSONL_PATH
 # 串行化 Playwright/落库，避免与定时任务交错写 JSONL
 _E2E_SERIAL_LOCK = asyncio.Lock()
 
+
+async def _try_acquire_e2e_lock(timeout_sec: float) -> bool:
+    """避免与定时小时任务无限排队：超时则快速失败（exit_code=11）。"""
+    try:
+        await asyncio.wait_for(_E2E_SERIAL_LOCK.acquire(), timeout=timeout_sec)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
 # 停止标志在 `l3_node.kalaroko_e2e_control`（与 HTTP / importlib 加载路径解耦）
 from l3_node.kalaroko_e2e_control import (  # noqa: E402
     is_manual_run_cancel_requested,
@@ -109,6 +118,7 @@ _GAME_LABEL: dict[str, str] = {
     "tongits_king": "Tongits King",
     "royal_pusoy": "Royal Pusoy",
     "color_blitz": "Color Blitz Social",
+    "bingo_showdown": "Bingo Showdown",
 }
 
 
@@ -355,13 +365,23 @@ def _api_summary_status_codes_cell(summary: dict) -> str:
 _CMP_LLM_META_KEYS = frozenset({"inspection_time", "captured_at"})
 
 
+def _effective_homepage_load_ms(mcore: dict | None) -> Any:
+    """看板「响应」与趋势：``load`` 未触发时 ``page_load_ms`` 常为空，用 DOMContentLoaded 兜底。"""
+    if not isinstance(mcore, dict):
+        return None
+    pl = mcore.get("page_load_ms")
+    if pl is not None:
+        return pl
+    return mcore.get("dom_content_loaded_ms")
+
+
 def _extract_comparison_metrics(pw_data: dict) -> dict:
     """提取当前轮次的核心加载指标，用于多轮对比。"""
     m: dict[str, Any] = {}
     hp = pw_data.get("homepage") or {}
     hp_metrics = hp.get("metrics") or {}
     m["page_ttfb"] = hp_metrics.get("ttfb_ms")
-    m["page_load"] = hp_metrics.get("page_load_ms")
+    m["page_load"] = _effective_homepage_load_ms(hp_metrics)
     m["page_success"] = hp.get("load_status") == "success"
 
     cat = pw_data.get("captured_at")
@@ -378,6 +398,22 @@ def _extract_comparison_metrics(pw_data: dict) -> dict:
         m[f"{gid}_ttfb"] = g.get("shell_navigation_ttfb_ms")
         m[f"{gid}_load"] = g.get("real_engine_load_ms")
         m[f"{gid}_success"] = g.get("load_status") == "success"
+        st = str(g.get("load_status") or "").strip().lower()
+        if st == "failed":
+            raw_tl = g.get("debug_timeline")
+            if isinstance(raw_tl, list) and raw_tl:
+                tail = [
+                    str(x).replace("\n", " ").strip()
+                    for x in raw_tl[-5:]
+                    if x is not None and str(x).strip()
+                ]
+                if tail:
+                    m[f"{gid}_last_traces"] = tail
+    # 与飞书汇总表列对齐：旧轮次 JSON 无某游戏时显式占位，避免下游 KeyError
+    for _gk in ("tongits_king", "royal_pusoy", "color_blitz", "bingo_showdown"):
+        m.setdefault(f"{_gk}_ttfb", None)
+        m.setdefault(f"{_gk}_load", None)
+        m.setdefault(f"{_gk}_success", None)
     return m
 
 
@@ -560,14 +596,23 @@ def compact_record_for_daily_llm(record: dict) -> dict[str, Any]:
     hm = hp.get("metrics") or {}
     games_out: list[dict[str, Any]] = []
     for g in record.get("games") or []:
-        games_out.append(
-            {
-                "game_id": g.get("game_id"),
-                "load_status": g.get("load_status"),
-                "shell_navigation_ttfb_ms": g.get("shell_navigation_ttfb_ms"),
-                "real_engine_load_ms": g.get("real_engine_load_ms"),
-            }
-        )
+        row_g: dict[str, Any] = {
+            "game_id": g.get("game_id"),
+            "load_status": g.get("load_status"),
+            "shell_navigation_ttfb_ms": g.get("shell_navigation_ttfb_ms"),
+            "real_engine_load_ms": g.get("real_engine_load_ms"),
+        }
+        if str(g.get("load_status") or "").strip().lower() == "failed":
+            tl = g.get("debug_timeline")
+            if isinstance(tl, list) and tl:
+                tail = [
+                    str(x).replace("\n", " ").strip()
+                    for x in tl[-5:]
+                    if x is not None and str(x).strip()
+                ]
+                if tail:
+                    row_g["last_traces"] = tail
+        games_out.append(row_g)
     cat = record.get("captured_at")
     inspection_time = (
         _format_inspection_timestamp(record, None)
@@ -758,8 +803,8 @@ async def _generate_llm_summary(
             payload_json = payload_json[:280_000] + "\n…(截断，仅保留前 280KB 字符)"
         prompt = f"""
 你是资深 QA / SRE。以下为过去约 24 小时内 Kalaroko E2E 自动化巡检写入持久化库的**采样记录**（JSON 数组）。
-每条包含 sequence_in_24h（按时间排序后的序号）、captured_at、inspection_time（已按巡检报告时区换算）、首页与各游戏的核心加载指标（TTFB、完全加载耗时、成功状态）。
-数据可能较多：请先归纳**整体稳定性与趋势**，再指出**异常尖峰**（具体时间窗、游戏、毫秒级数值），最后给执行层可执行的 2～4 条建议。
+每条包含 sequence_in_24h、captured_at、inspection_time、首页与各游戏 load 状态；**某游戏 load_status 为 failed 时**，同条 JSON 的 games[] 内可能含 **last_traces**（该游戏 debug_timeline 末 5 行，用于死因速览）。
+数据可能较多：先归纳**整体稳定性与趋势**，再点异常尖峰；**勿将零星单次失败夸大为全天瘫痪**。
 
 记录条数（采样后）: {n_samples}
 
@@ -767,12 +812,14 @@ JSON 数据:
 {payload_json}
 
 任务要求：
-1. 用一段话描述 24h 内的健康度与波动（高峰/低谷若可辨识）。
-2. 点出最值得关注的异常或退化（若有），含数值与时间点/游戏。
-3. **按序号或「第 N 条/轮」指称某次巡检时，必须写出该条 JSON 中的 inspection_time（与 sequence_in_24h 对应，原文照抄，禁止编造）**；列举多轮失败/峰值时建议用「第 10 条（inspection_time 原文）」形式，便于对照 jsonl。
-4. 语言精炼、专业，直接输出晨报结论，不要用 Markdown 代码块，不要寒暄。
+1. 用一段话描述 24h 健康度与波动；若多数时段正常、仅个别失败，须写明「整体健康、尖峰为偶发/非阻断」类定性。
+2. 点出最值得关注的异常（若有），含数值与时间点/游戏；失败项请结合 **last_traces** 判断是否更像脚本/网络超时还是疑似服务端问题。
+3. **按「第 N 条」指称时必须写出该条 JSON 的 inspection_time（原文照抄，禁止编造）**。
+4. 语言精炼，直接输出晨报结论，不要用 Markdown 代码块，不要寒暄。
 """
-        sys_msg = "你是专业的 QA/SRE 数据分析师，擅长长时序性能晨报。"
+        sys_msg = (
+            "你是专业的 QA/SRE 数据分析师，擅长长时序性能晨报；能区分持续故障与偶发抖动，对策划友好。"
+        )
         log_n = n_samples
     else:
         compact_history: list[dict[str, Any]] = []
@@ -798,39 +845,39 @@ JSON 数据:
 
         if record_count <= 10:
             prompt = f"""
-你是资深的产品体验官兼 QA 负责人。请根据以下 {record_count} 轮的 E2E 自动化巡检时序数据，给出一份简明扼要的综合分析。
-数据包含首页与各游戏的核心耗时（内部为毫秒，请你自行换算为秒 s 向读者表述）及成功状态。
+你是资深 Kalaroko 产品体验与 SRE。以下 JSON 为最近 {record_count} 轮 E2E 巡检对比数据（含首页与各游戏 success/load；**某游戏失败时** JSON 中可出现 **「game_id_last_traces」** 数组，为该游戏 debug_timeline 末 5 行，仅供死因速览）。
+耗时字段多为毫秒，向读者表述时换算为秒（s），勿堆砌原始数字。
 
 测试数据 (JSON):
 {ch_json}
 
-任务要求：
-1. 请用产品经理友好的业务语言进行总结。
-2. 结论置顶：首先给出这段时间内的整体业务可用性定性结论（是否可认为玩家可正常访问大厅与进入游戏）。
-3. 不要在正文里罗列枯燥的毫秒级时序数据；请将核心耗时转换为秒（s）进行表述，并点出相对偏慢或偏快的轮次/页面。
-4. 如果有异常，请指出对玩家体验的实际影响（如进入大厅变慢、某款游戏多次未就绪等）。
-5. **凡按「第 N 轮」或轮次指称失败、峰值、最慢加载等，必须在紧挨轮次处括号写出该条 JSON 的 inspection_time（与 round 对应，原文照抄，禁止编造）**；多轮并列时示例：第 10 轮（2026-04-21 03:12:00（北京时间 (UTC+8)））、第 16 轮（…）。
-6. 可简要补充最优表现（哪一轮/哪个环节相对最快）。不要 Markdown 代码块包裹。
+# 诊断逻辑与输出排版（必遵守）
+1. 【首段速报（仅当存在任一失败/非 success）】第一段必须以「🚨 **异常根因速报**：」起笔，一两句话定性：更像**真实服务/CDN 或业务大面积异常**，还是**偶发网络抖动 / 自动化脚本或超时预算导致**；**禁止**因 4 轮里仅 1 轮失败就写「完全无法加载」「全线瘫痪」。
+2. 【趋势防误报】若同一游戏多轮中**多数 success、仅 1 次或极少数失败**，必须明确写：「该游戏大盘整体健康，本次失败倾向偶发抖动或脚本/网络超时，**非阻断性业务故障**」，缓解产品与策划焦虑。
+3. 【死因溯源】失败轮次请结合对应 `*_last_traces`（若有）：若出现超时、未进 game-frame、竞速预算用尽等，说明是「**后端或 H5 未在巡检限定判据内就绪，脚本按契约判失败**」，不等于已证实游戏服宕机。
+4. 其后用产品友好语言写整体可用性、对玩家的实际影响；**凡写「第 N 轮」须紧挨括号给出该条 inspection_time（原文照抄）**。
+5. 全文精炼（优先 500 字内），不要 Markdown 代码块。
 """
             sys_msg = (
-                "你是资深的产品体验官兼 QA 负责人，擅长把技术指标翻译为业务与体验语言。"
+                "你是资深产品体验与 SRE，具备业务同理心：用多轮比例区分偶发失败与持续故障，"
+                "面向产品与策划输出可执行的定性结论。"
             )
         else:
             prompt = f"""
-你是 Jachin AI OS 的首席 SRE (站点可靠性工程师)。你现在需要向上级汇报过去 24 小时内，Kalaroko 平台的 E2E 自动化巡检全天大盘监控报告。
-以下是过去 24 小时内抽样提取的 {record_count} 次测试指标。
+你是 Jachin AI OS 的首席 SRE。以下为过去 24 小时内抽样 {record_count} 次 Kalaroko E2E 巡检指标（JSON）。
+字段含各轮首页/游戏 success 与 load；**失败游戏**可能含 **「game_id_last_traces」**（debug_timeline 末 5 行）。
 
 测试数据 (JSON):
 {ch_json}
 
 任务要求：
-1. 【全天可用性定调】：用一句话总结过去 24 小时系统的整体可用性和健康度（如：全天运行平稳，或夜间出现剧烈波动）。
-2. 【极端异常点名】：不要报流水账！只挑出全天数据中**最慢的加载时间**、**异常的 TTFB 飙升**或**非 success 的失败记录**。明确指出是哪个游戏、在第几次测试中出现的。**凡写出「第 N 轮」或轮次编号，必须紧跟括号写出该条 JSON 的 inspection_time（与 round 对应，原文照抄，禁止编造）**，便于按时间回溯 jsonl/CDN 日志。如果全天数据极度健康，请直接说明「全天无异常超时或报错」。
-3. 【趋势建议】：基于 24 小时的数据走向，给出 1-2 条运维视角的建议。
-4. 语言要求：必须具备高管汇报的专业性（Executive Summary 风格），客观冷酷，不讲废话，直接输出结论段落，切勿使用 Markdown 代码块包裹。
+1. 【全天可用性定调】一句话总结；若失败占比极低，须点明「**整体健康、尖峰为偶发/非阻断**」，勿夸大。
+2. 【极端异常点名】只挑最慢加载、明显 TTFB 异常或失败记录；结合 `*_last_traces` 区分**脚本/超时判据**与**疑似真实服务异常**。**写「第 N 轮」必须带 inspection_time 原文括号**。
+3. 【首段速报】若存在失败：第一段以「🚨 **异常根因速报**：」开头，定性根因倾向。
+4. 【趋势建议】1～2 条运维视角建议。Executive Summary 风格，勿 Markdown 代码块。
 """
             sys_msg = (
-                "你是 Jachin AI OS 的首席站点可靠性工程师，面向管理层撰写客观、精炼的技术运维汇报。"
+                "你是首席站点可靠性工程师，面向管理层：数据驱动、区分偶发与持续故障，措辞冷静不制造恐慌。"
             )
 
         log_n = record_count
@@ -1001,10 +1048,10 @@ def _homepage_failed_resources(mcore: dict) -> int:
 
 
 def _avg_three_games_load_ms(row: dict) -> float | None:
-    """多轮 hist 单行：三款游戏 real_engine_load_ms 的算术平均（毫秒）。"""
+    """多轮 hist 单行：四款游戏 real_engine_load_ms 的算术平均（毫秒）。"""
     acc = 0.0
     n = 0
-    for gid in ("tongits_king", "royal_pusoy", "color_blitz"):
+    for gid in ("tongits_king", "royal_pusoy", "color_blitz", "bingo_showdown"):
         v = row.get(f"{gid}_load")
         if v is None:
             continue
@@ -1118,6 +1165,7 @@ def _append_developer_details_section(
         ("tongits_king", "Tongits King"),
         ("royal_pusoy", "Royal Pusoy"),
         ("color_blitz", "Color Blitz Social"),
+        ("bingo_showdown", "Bingo Showdown"),
     ):
         gg = games_by_id.get(gid_key)
         lines.append(f"🔹 **{disp}**")
@@ -1166,7 +1214,14 @@ def _append_developer_details_section(
         lines.append(
             f"   ├ 资源加载：请求数 `{req_disp}` | 失败 {_inline_scalar(failed_res)}"
         )
-        lines.append(f"   └ 业务报错：{console_disp}")
+        lines.append(f"   ├ 业务报错：{console_disp}")
+        timeline_list = gg.get("debug_timeline") or []
+        if isinstance(timeline_list, list) and timeline_list:
+            lines.append("   ├ ⏱️ 耗时追踪 (Timeline):")
+            for trace in timeline_list:
+                ts = trace if isinstance(trace, str) else str(trace)
+                lines.append(f"   │   - `{ts}`")
+        lines.append("   └")
         lines.append("")
     lines.append("")
 
@@ -1201,10 +1256,11 @@ def render_report_md(
     if page_ttfb_ms is None:
         page_ttfb_ms = wv.get("ttfb_ms")
     hp_fr = _homepage_failed_resources(mcore)
+    effective_page_load_ms = _effective_homepage_load_ms(mcore)
     lines.append("**🌐 首页加载 (kalaroko.com)**")
     lines.append(f"├ 状态: {_status_dot_normal(hp.get('load_status'))}")
     lines.append(
-        f"├ 响应: {_bold_duration_s(mcore.get('page_load_ms'))} (首字节: {_bold_duration_s(page_ttfb_ms)})"
+        f"├ 响应: {_bold_duration_s(effective_page_load_ms)} (首字节: {_bold_duration_s(page_ttfb_ms)})"
     )
     lines.append(f"└ 资源: 失败 {hp_fr} 个")
     hp_rm = _summary_remark_homepage(hp)
@@ -1217,7 +1273,8 @@ def render_report_md(
     _game_rows = [
         ("tongits_king", "Tongits King", "├"),
         ("royal_pusoy", "Royal Pusoy", "├"),
-        ("color_blitz", "Color Blitz", "└"),
+        ("color_blitz", "Color Blitz", "├"),
+        ("bingo_showdown", "Bingo Showdown", "└"),
     ]
     for _, (gid_key, label, branch) in enumerate(_game_rows):
         gg = games_by_id.get(gid_key)
@@ -1506,16 +1563,16 @@ def _assert_playwright_shape(pw: dict) -> None:
     if not any("KALAROKO_DEFAULT_SCENARIOS" in str(x) for x in notes):
         raise AssertionError("期望 aggregation_notes 标明使用默认场景")
     games = pw.get("games") or []
-    if len(games) != 3:
-        raise AssertionError(f"期望 3 条游戏场景，实际 games 条数={len(games)}")
+    if len(games) != 4:
+        raise AssertionError(f"期望 4 条游戏场景，实际 games 条数={len(games)}")
     for g in games:
         if not g.get("game_id"):
             raise AssertionError(f"游戏项缺少 game_id: {g}")
         key = str(g.get("game_id"))
-        if key in ("tongits_king", "royal_pusoy", "color_blitz"):
+        if key in ("tongits_king", "royal_pusoy", "color_blitz", "bingo_showdown"):
             if g.get("url_game_id") is None or g.get("document_game_id") is None:
                 raise AssertionError(
-                    f"默认三游戏应含 document_game_id 与 url_game_id（对齐 Word 与 gweb URL）: {g}"
+                    f"默认四游戏应含 document_game_id 与 url_game_id（对齐 Word 与 gweb URL）: {g}"
                 )
 
 
@@ -1537,9 +1594,9 @@ async def _run_full_cycle(
     )
 
     n = len(KALAROKO_DEFAULT_SCENARIOS)
-    _e2e_echo(f"KALAROKO_DEFAULT_SCENARIOS 条数: {n}（期望 4：首页 + 3 游戏）")
-    if n != 4:
-        _e2e_echo("[WARN] 默认场景条数非 4，请检查 mcp_kalaroko_monitor.py 常量")
+    _e2e_echo(f"KALAROKO_DEFAULT_SCENARIOS 条数: {n}（期望 5：首页 + 4 游戏）")
+    if n != 5:
+        _e2e_echo("[WARN] 默认场景条数非 5，请检查 mcp_kalaroko_monitor.py 常量")
 
     all_metrics_history: list[dict] = []
     markdown_rounds: list[str] = []
@@ -1734,6 +1791,7 @@ async def _run_full_cycle(
             interval=interval,
             summary_model=_e2e_summary_model(),
             line_sink=line_sink,
+            all_metrics_history=all_metrics_history,
         )
     except Exception as e:
         print(f"[Lark inspect] 推送跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
@@ -1753,6 +1811,9 @@ async def _run_full_cycle(
         try:
             from l3_client.local_mcps.jachin_memory_nexus.memory_backend import commit_drawer
 
+            _e2e_echo(
+                "[Memory] 准备写入 Memory Nexus（后台线程；首次可能下载 FastEmbed 权重，需数十秒属正常）…"
+            )
             mem_blob = f"{llm_analysis}\n\n{combined_md}"
             extra_meta = {
                 "source": "kalaroko_e2e",
@@ -1832,7 +1893,23 @@ async def run_kalaroko_batch_test(
                 "llm_analysis": None,
             }
         try:
-            async with _E2E_SERIAL_LOCK:
+            lock_wait = float(os.environ.get("KALAROKO_E2E_LOCK_ACQUIRE_SEC", "20") or "20")
+            lock_wait = max(0.5, min(lock_wait, 600.0))
+            if not await _try_acquire_e2e_lock(lock_wait):
+                msg = (
+                    f"未在 {lock_wait:.0f}s 内取得巡检串行锁（可能正跑定时小时任务或其它 "
+                    f"SSE/CLI 巡检）；可稍后重试或 POST /api/v1/monitor/stop 后重开"
+                )
+                print(f"\n[E2E BUSY] {msg}", file=sys.stderr, flush=True)
+                _e2e_progress(msg)
+                return {
+                    "ok": False,
+                    "exit_code": 11,
+                    "error": msg,
+                    "markdown_report": None,
+                    "llm_analysis": None,
+                }
+            try:
                 return await _run_full_cycle(
                     runs,
                     interval,
@@ -1841,6 +1918,8 @@ async def run_kalaroko_batch_test(
                     ui_pace_ms=ui_pace_ms,
                     ui_cursor_moves=ui_cursor_moves,
                 )
+            finally:
+                _E2E_SERIAL_LOCK.release()
         except AssertionError as e:
             msg = str(e)
             print(f"\n[E2E FAIL] {msg}", file=sys.stderr, flush=True)

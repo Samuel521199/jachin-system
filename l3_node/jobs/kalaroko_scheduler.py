@@ -67,59 +67,26 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _chunk_md(text: str, max_chars: int = 2400) -> list[str]:
-    s = (text or "").strip()
-    if not s:
-        return []
-    out: list[str] = []
-    rest = s
-    while rest:
-        if len(rest) <= max_chars:
-            out.append(rest)
-            break
-        window = rest[:max_chars]
-        cut = window.rfind("\n\n")
-        if cut < max_chars // 4:
-            cut = window.rfind("\n")
-        if cut < max_chars // 4:
-            cut = max_chars
-        chunk = rest[:cut].strip()
-        if chunk:
-            out.append(chunk)
-        rest = rest[cut:].strip()
-    return out
-
-
 async def _send_lark_safe(markdown: str, title: str) -> None:
-    from l3_node.channels.lark.webhook import send_markdown
-
-    url = ""
     try:
         from l3_node.channels.lark.kalaroko_inspection_notify import (
-            inspection_lark_webhook_url,
+            inspection_lark_open_api_ready,
+            send_lark_alert_card_and_thread,
         )
-
-        url = inspection_lark_webhook_url() or ""
-    except Exception:
-        url = ""
-
-    if not url:
-        logger.warning("[kalaroko_scheduler] 未配置 Lark Webhook，跳过推送")
+    except Exception as e:
+        logger.warning("[kalaroko_scheduler] Lark 模块加载失败: %s", e)
         return
 
-    parts = _chunk_md(markdown)
-    total = len(parts) or 1
-    for i, part in enumerate(parts or [markdown]):
-        sub = title if total == 1 else f"{title} ({i + 1}/{total})"
+    if not inspection_lark_open_api_ready():
+        logger.warning(
+            "[kalaroko_scheduler] 未配置飞书 Open API（FEISHU_APP_SECRET 等），跳过推送"
+        )
+        return
 
-        def _sync() -> dict[str, Any]:
-            return send_markdown(webhook_url=url, markdown_content=part, title=sub)
-
-        try:
-            await asyncio.to_thread(_sync)
-        except Exception as e:
-            logger.warning("[kalaroko_scheduler] Lark 单条发送失败: %s", e)
-        await asyncio.sleep(0.35)
+    try:
+        await send_lark_alert_card_and_thread(title=title, markdown=markdown)
+    except Exception as e:
+        logger.warning("[kalaroko_scheduler] Lark Open API 推送失败: %s", e)
 
 
 async def hourly_inspection_job() -> None:
@@ -151,21 +118,46 @@ async def hourly_inspection_job() -> None:
         if run_fn is None:
             raise RuntimeError("脚本缺少 run_kalaroko_batch_test")
 
+        def _sched_e2e_line_sink(line: str) -> None:
+            """与 CLI/SSE 同源：``run_kalaroko_batch_test`` 的进度行写入 L3 日志（含 ``[E2E progress]``）。"""
+            try:
+                logger.info("%s", (line or "").rstrip("\n"))
+            except Exception:
+                pass
+
         async def _run_batch() -> None:
             await run_fn(
                 4,
                 30,
                 skip_playwright=False,
-                line_sink=None,
+                line_sink=_sched_e2e_line_sink,
             )
 
         await asyncio.wait_for(_run_batch(), timeout=2700.0)
         logger.info("[kalaroko_scheduler] 小时巡检正常结束（本小时批次已完成）")
     except asyncio.TimeoutError:
-        logger.error("[kalaroko_scheduler] 小时巡检超过 45 分钟，已终止")
+        logger.error(
+            "[kalaroko_scheduler] 小时巡检超过 asyncio 上限 2700s（45 分钟），已终止；"
+            "尝试中止脚本并释放 Playwright/CDP 会话"
+        )
+        try:
+            from l3_node.kalaroko_e2e_control import stop_manual_run
+
+            stop_manual_run()
+        except Exception as se:
+            logger.warning("[kalaroko_scheduler] stop_manual_run: %s", se)
+        try:
+            from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+                emergency_kalaroko_playwright_cleanup,
+            )
+
+            await emergency_kalaroko_playwright_cleanup()
+        except Exception as ce:
+            logger.warning("[kalaroko_scheduler] emergency_kalaroko_playwright_cleanup: %s", ce)
         md = (
-            "🚨 **[严重超时] Kalaroko 巡检任务挂起超过 45 分钟，已被调度器强制猎杀销毁！**\n\n"
-            "_单次任务上限 2700s；请检查 CDP Chrome、Playwright 或网络是否阻塞。_"
+            "🚨 **[严重超时] Kalaroko 巡检任务挂起超过 2700s（45 分钟），已被调度器终止；"
+            "已尝试释放 Playwright。**\n\n"
+            "_请检查 CDP Chrome、网络或串行锁上是否仍有未结束的手动巡检。_"
         )
         try:
             await _send_lark_safe(md, "巡检 · 严重超时")

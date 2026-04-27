@@ -60,7 +60,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `webhook_url` | string | 是 | 飞书群机器人「 incoming webhook」地址，或留空时用 `LARK_WEBHOOK_URL` 环境变量 |
+| `webhook_url` | string | 是 | 飞书群机器人「 incoming webhook」地址，或留空时用 `BI_LARK_WEBHOOK_URL` 环境变量（与技能 YAML 占位符一致） |
 | `markdown_content` | string | 是 | Markdown 格式正文 |
 | `title` | string | 否 | 卡片标题 |
 | `msg_type` | string | 否 | `markdown` \| `interactive`（富文本卡片），默认 `markdown` |

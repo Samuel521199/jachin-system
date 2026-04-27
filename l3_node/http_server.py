@@ -545,18 +545,21 @@ async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamRespons
             }
         return await run_fn(runs, interval, skip_playwright=skip_pw, line_sink=line_sink)
 
-    task = asyncio.create_task(_load_and_run())
-    last_keepalive = time.monotonic()
-    keepalive_sec = 15.0
-
     async def _write_line_obj(line: str) -> None:
         payload = {"line": line}
         await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
         if hasattr(response, "drain"):
             await response.drain()
 
+    # 必须先写出首条 SSE，再 ``create_task``：否则首轮 ``await`` 会让循环先跑
+    # ``_load_and_run`` 内的 ``exec_module``（同步重），长时间占满事件循环，客户端首连表现为卡死。
+    task: asyncio.Task | None = None
+    last_keepalive = time.monotonic()
+    keepalive_sec = 15.0
+
     try:
         await _write_line_obj("[E2E] Kalaroko 全链路巡检任务已排队执行…")
+        task = asyncio.create_task(_load_and_run())
         while True:
             try:
                 line = await asyncio.wait_for(line_q.get(), timeout=0.35)
@@ -576,6 +579,8 @@ async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamRespons
             except asyncio.QueueEmpty:
                 break
 
+        if task is None:
+            raise RuntimeError("internal: monitor stream task not started")
         exc = task.exception()
         if exc is not None:
             payload = {"type": "error", "message": str(exc)}
@@ -585,7 +590,8 @@ async def _handle_monitor_kalaroko_stream(request) -> "aiohttp.web.StreamRespons
             payload = {"type": "done", **result}
             await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
     except (ConnectionResetError, asyncio.CancelledError):
-        task.cancel()
+        if task is not None:
+            task.cancel()
     except Exception as e:
         logger.warning("[L3 HTTP] monitor stream failed: %s", e)
         try:

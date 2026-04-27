@@ -78,7 +78,7 @@
 | 5.3 | **`LLM_COMPLEX_MODEL`** 与 E2E 摘要模型对齐（如 `qwen3-max`）。 | `.env` | 已落实 |
 | 5.4 | Tauri 子进程白名单注入上述变量（桌面场景）。 | `clients/desktop/src-tauri/src/l3_spawn.rs` | 已落实 |
 | 5.5 | Playwright/CDP：按需 **`KALAROKO_CDP_ENDPOINT`** 等，见脚本头注释。 | 本地 Chrome 调试 | 按需 |
-| 5.6 | **Lark 群推送（可选）**：`KALAROKO_INSPECT_LARK_WEBHOOK_URL`（或回退 `LARK_WEBHOOK_URL`）；巡检成功后 **`send_markdown` 分条**推送 Markdown + Qwen。 | `.env.example`、`l3_node/channels/lark/kalaroko_inspection_notify.py` | 已落实 |
+| 5.6 | **飞书群推送（可选）**：`FEISHU_APP_ID` / **`FEISHU_APP_SECRET`** / `FEISHU_CHAT_ID`（自建应用 IM）；巡检成功后 **交互式卡片 + `reply` 盖楼**（表头 + 详单）；Webhook 路径已废弃。 | `.env.example`、`l3_spawn.rs` 白名单、`kalaroko_inspection_notify.py` | 已落实 |
 
 ---
 
