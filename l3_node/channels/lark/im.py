@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — IM 消息发送（需 App 凭证）
 
 通过 Lark Open API 向群聊/单聊发送文本消息。
@@ -153,12 +153,15 @@ def send_interactive_card(
     app_id: str | None = None,
     app_secret: str | None = None,
     api_base: str | None = None,
+    http_timeout: float = 15.0,
 ) -> dict[str, Any]:
     """
     通过 IM API 发送任意交互式卡片 JSON（支持 Schema 2.0：含 chart、button 等）。
 
     ``card`` 需为飞书可解析的完整卡片对象。发群消息建议用**卡片 JSON 1.0**（根级 ``config`` / ``header`` / ``elements``），
     与 ``send_markdown_card`` 一致；含 ``chart`` 时勿强依赖 Schema 2.0，以免 IM 端降级为图片预览。
+
+    ``http_timeout``：大表格等 JSON 体较大时建议 30～60s，避免仅因超时而误降级。
     """
     if not (receive_id or "").strip():
         return {"status": "error", "error": "receive_id 不能为空"}
@@ -187,13 +190,13 @@ def send_interactive_card(
             params=params,
             headers={"Authorization": f"Bearer {tkn}", "Content-Type": "application/json; charset=utf-8"},
             json=payload,
-            timeout=15,
+            timeout=float(http_timeout) if http_timeout and http_timeout > 0 else 15.0,
         )
         data = resp.json()
         if data.get("code") != 0:
             err = data.get("msg", str(data))
             logger.warning("Lark 交互卡片发送失败: %s", err)
-            return {"status": "error", "error": str(err)}
+            return {"status": "error", "error": str(err), "lark_code": data.get("code"), "lark_data": data}
         return {"status": "success", "msg": "飞书已送达", "data": data.get("data")}
     except Exception as e:
         logger.warning("Lark 交互卡片发送异常: %s", e)

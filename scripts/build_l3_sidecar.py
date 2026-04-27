@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
@@ -12,6 +12,9 @@ L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
   便携包基线：成功后将仓库根 ``.env.example`` 复制为 ``dist_jachin_desktop/.env.example``，
   与桌面安装/巡检中枢（Kalaroko CDP、Lark、LLM、Healthchecks 看门狗等）说明保持同源，避免 dist 与仓库脱节。
+
+  打侧车前会运行 ``emit_packaged_lark_env``：自仓库根 ``.env`` 提取 ``LARK_*`` / ``K11_SMOKE_LARK_*`` 等
+  写入 ``l3_node/packaged_lark_env_generated.py`` 并随 exe 内嵌（目标机可不再配 .env；仍可用安装目录 .env 覆盖）
 
   Healthchecks 看门狗（``l3_node/jobs/healthchecks_watchdog.py``）经 ``--hidden-import`` 与 ``requests``/``urllib3``
   一并打入单文件 exe，避免 frozen 下缺模块导致启动后无心跳。
@@ -106,6 +109,23 @@ def _patch_pyinstaller_create_base_library_zip() -> None:
 def main() -> int:
     os.chdir(ROOT)
 
+    # 自 .env 生成内嵌飞书键（Lark/K11），无 .env 则空表，PyInstaller 仍打入内嵌模块
+    _lp = ROOT / "scripts" / "emit_packaged_lark_env.py"
+    if _lp.is_file():
+        import importlib.util
+
+        _spec = importlib.util.spec_from_file_location("emit_packaged_lark_env", str(_lp))
+        if _spec and _spec.loader:
+            _m = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_m)
+            _emit = getattr(_m, "emit", None)
+            if callable(_emit):
+                _ec = int(_emit(ROOT))
+                if _ec != 0:
+                    return _ec
+    else:
+        print("      [WARN] 未找到 scripts/emit_packaged_lark_env.py，跳过内嵌 Lark 键")
+
     # 检查 PyInstaller
     try:
         import PyInstaller
@@ -132,8 +152,9 @@ def main() -> int:
             print(f"[跳过] 二进制已存在且比源码新: {dst}")
             return 0
 
-    # exe 仅含 agent+im 核心，MCP/Skill 通过订阅下载到 l3_mcp_cache/l3_skill_cache 使用
-    # 排除 Anaconda 中 L3 不需要的重型包（torch/transformers 等会触发 DLL 错误、pandas 等会拖慢构建）
+    # 排除 Anaconda 中 L3 不需要的重型包（torch/transformers 等会触发 DLL 错误、pandas 等会拖慢构建）；
+    # 不排除 l3_node.primitives.mcp.mcp_tools（K11 Lark 同步、registry 内建原子 MCP 依赖）。
+    # 远端 MCP/Skill 仍可通过订阅下载到 l3_mcp_cache/l3_skill_cache 使用
     exclude_modules = [
         "torch", "torchvision", "transformers",  # WinError 1114 DLL 初始化失败
         "pandas", "scipy", "sklearn", "dask", "distributed",  # 非 L3 依赖
@@ -152,7 +173,9 @@ def main() -> int:
     ]
     for mod in exclude_modules:
         cmd.extend(["--exclude-module", mod])
-    cmd.extend(["--exclude-module", "l3_node.primitives.mcp.mcp_tools"])
+    # 勿排除 l3_node.primitives.mcp.mcp_tools：frozen 下 ``scripts/k11_lark_smoke_report.py``（--add-data 内嵌）
+    # 会 import ``mcp_tools.pmo_bmo.*`` 同步 Wiki/多维表；排除会导致 No module named 'l3_node.primitives.mcp.mcp_tools'。
+    # 子树以 collect-submodules 打入，供 registry 懒加载的 L3 本地 MCP 原子工具同路径可用。
     # 能力总目录：供 capability_catalog 在 frozen 下从 sys._MEIPASS/docs 读取（与 l3_node/capability_catalog._docs_dirs 一致）
     _docs_sep = ";" if sys.platform == "win32" else ":"
     _cat_md = ROOT / "docs" / "L3_CAPABILITY_CATALOG.md"
@@ -165,6 +188,16 @@ def main() -> int:
     _kalaroko_e2e = ROOT / "scripts" / "test_kalaroko_default_scenarios_e2e.py"
     if _kalaroko_e2e.is_file():
         cmd.extend(["--add-data", f"{_kalaroko_e2e}{_docs_sep}scripts"])
+    # K11 统合 / P2 兼容：http_server 子进程入口依赖 _MEIPASS/scripts 内嵌副本（与 Kalaroko 巡检一致）
+    _k11_uni = ROOT / "scripts" / "test_k11_unified_platform_smoke_playwright.py"
+    if _k11_uni.is_file():
+        cmd.extend(["--add-data", f"{_k11_uni}{_docs_sep}scripts"])
+    _k11_p2 = ROOT / "scripts" / "test_k11_p2_compat_weaknet_playwright.py"
+    if _k11_p2.is_file():
+        cmd.extend(["--add-data", f"{_k11_p2}{_docs_sep}scripts"])
+    _k11_lark = ROOT / "scripts" / "k11_lark_smoke_report.py"
+    if _k11_lark.is_file():
+        cmd.extend(["--add-data", f"{_k11_lark}{_docs_sep}scripts"])
     cmd += [
         "--hidden-import", "l3_node",
         "--hidden-import", "l3_node.win_console",
@@ -179,9 +212,13 @@ def main() -> int:
         "--hidden-import", "l3_node.primitives",
         "--hidden-import", "l3_node.primitives.tools.loader",
         "--hidden-import", "l3_node.primitives.mcp.registry",
+        "--collect-submodules", "l3_node.primitives.mcp.mcp_tools",
         "--hidden-import", "l3_node.hr_loader",
         "--hidden-import", "l3_node.capability_catalog",
         "--hidden-import", "l3_node.http_server",
+        "--hidden-import", "l3_node.k11_subprocess_cli",
+        "--hidden-import", "l3_node.packaged_lark_env",
+        "--hidden-import", "l3_node.packaged_lark_env_generated",
         "--hidden-import", "l3_node.config_writeout",
         "--hidden-import", "l3_node.im_channels",
         "--hidden-import", "l3_node.im_channels.lark_channel",

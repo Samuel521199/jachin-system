@@ -41,6 +41,9 @@ ENV/
 .env.local
 .env.*.local
 
+# Lark/K11 内嵌键：由 scripts/emit_packaged_lark_env.py 从 .env 生成，含 secret，勿提交
+l3_node/packaged_lark_env_generated.py
+
 # Tauri updater signing key（勿提交私钥；公钥在 updater.key.pub / tauri.conf）
 clients/desktop/src-tauri/updater.key
 

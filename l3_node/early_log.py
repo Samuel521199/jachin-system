@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 最早阶段调试日志 - 仅用 stdlib，不依赖 dotenv
 
 每次 exe 启动时清空日志，便于排查打包问题。
@@ -14,6 +14,12 @@ L3 最早阶段调试日志 - 仅用 stdlib，不依赖 dotenv
     并抬高 ``l3_node.*``、``l3_node.ws_server``、``l3_node.llm_client`` 等输出；
     仍抑制 ``httpcore``/``websockets`` 等第三方刷屏。
 
+l3_debug.log 默认可定位性（无需开 JACHIN_L3_DEBUG）：
+  - 文件行默认带 ``文件名:行号 函数名``；``JACHIN_L3_DEBUG_LOG_FULL_PATH=1`` 时改为完整 ``pathname``。
+  - ``configure_l3_runtime_diagnostics`` 默认开启「扩展文件诊断」：业务 logger DEBUG 落盘、控制台仍按 ``LOG_LEVEL``/``JACHIN_LOG_LEVEL``；
+    若需恢复旧版较小日志体积，设 ``JACHIN_L3_FILE_LOG_COMPACT=1``。
+  - 未捕获异常会经 ``sys.excepthook`` / ``threading.excepthook``（若可用）写入本日志。
+
 异步落盘（默认开启）：
   - ``JACHIN_L3_LOG_ASYNC=0``：禁用 QueueListener，改回同步 ``FileHandler``（极端排障）。
   - ``JACHIN_L3_LOG_ASYNC_BATCH_CHARS`` / ``JACHIN_L3_LOG_ASYNC_FLUSH_SEC``：批量写阈值与时间窗。
@@ -22,13 +28,19 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import sys
+import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 _LOG_PATH: str | None = None
 _FILE_HANDLER: logging.FileHandler | None = None
 _WS_HANDSHAKE_NOISE_FILTER_INSTALLED: bool = False
+_EXCEPTHOOK_INSTALLED: bool = False
+_ORIG_SYS_EXCEPTHOOK = sys.excepthook
+_ORIG_THREADING_EXCEPTHOOK = getattr(threading, "excepthook", None)
 
 
 class _UTCFormatter(logging.Formatter):
@@ -49,6 +61,127 @@ def _env_truthy(name: str) -> bool:
 def is_l3_verbose() -> bool:
     """是否开启 L3 超详细诊断（WS/LLM 流式逐条等）。"""
     return _env_truthy("JACHIN_L3_DEBUG") or _env_truthy("L3_VERBOSE_LOG")
+
+
+def is_file_extended_detail() -> bool:
+    """
+    是否对 l3_debug.log 使用「扩展诊断」（默认开启）：更多 logger 的 DEBUG 仅通过文件 handler 落盘，
+    控制台仍按 LOG_LEVEL / JACHIN_LOG_LEVEL。设 JACHIN_L3_FILE_LOG_COMPACT=1 可关闭。
+    """
+    return not _env_truthy("JACHIN_L3_FILE_LOG_COMPACT")
+
+
+def _user_root_stream_level() -> int:
+    return getattr(logging, (os.environ.get("LOG_LEVEL") or "INFO").upper(), logging.INFO)
+
+
+def _console_level_for_l3_pkg() -> int:
+    """与 __main__ 中 l3_node/core 控制台级别一致，便于扩展文件诊断时只抬高文件、不刷屏控制台。"""
+    _log_level = _user_root_stream_level()
+    _je = (os.environ.get("JACHIN_LOG_LEVEL") or "").strip().upper()
+    _jachin = getattr(logging, _je, None) if _je else None
+    if _jachin is None:
+        return logging.INFO if _log_level >= logging.WARNING else _log_level
+    return int(_jachin)
+
+
+def _make_file_formatter() -> logging.Formatter:
+    if _env_truthy("JACHIN_L3_DEBUG_LOG_FULL_PATH"):
+        fmt = (
+            "%(asctime)s [%(levelname)s] %(name)s "
+            "%(pathname)s:%(lineno)d %(funcName)s — %(message)s"
+        )
+    else:
+        fmt = (
+            "%(asctime)s [%(levelname)s] %(name)s "
+            "%(filename)s:%(lineno)d %(funcName)s — %(message)s"
+        )
+    return _UTCFormatter(fmt)
+
+
+def _tune_handlers_for_file_vs_console() -> None:
+    """
+    扩展文件诊断（非 JACHIN_L3_DEBUG）时：logger 允许 DEBUG，文件/队列 handler 全收，
+    StreamHandler 仍按用户配置的 LOG_LEVEL / JACHIN_LOG_LEVEL，避免控制台被 DEBUG 淹没。
+    """
+    if is_l3_verbose() or not is_file_extended_detail():
+        return
+
+    root = logging.getLogger()
+    user_stream = _user_root_stream_level()
+    pkg_stream = _console_level_for_l3_pkg()
+
+    root.setLevel(logging.DEBUG)
+    for h in root.handlers:
+        if isinstance(h, logging.StreamHandler):
+            h.setLevel(user_stream)
+        else:
+            h.setLevel(logging.DEBUG)
+
+    for name in ("l3_node", "core"):
+        lg = logging.getLogger(name)
+        if not lg.handlers:
+            continue
+        lg.setLevel(logging.DEBUG)
+        for h in lg.handlers:
+            if isinstance(h, logging.StreamHandler):
+                h.setLevel(pkg_stream)
+            else:
+                h.setLevel(logging.DEBUG)
+
+
+def install_global_exception_hooks() -> None:
+    """未捕获异常写入 l3_debug.log（并走 logging CRITICAL），幂等。"""
+    global _EXCEPTHOOK_INSTALLED
+    if _EXCEPTHOOK_INSTALLED:
+        return
+    _EXCEPTHOOK_INSTALLED = True
+
+    def _log_uncaught(prefix: str, exc_type, exc, tb) -> None:
+        try:
+            logging.getLogger("jachin.uncaught").critical(
+                "%s: %s",
+                prefix,
+                exc,
+                exc_info=(exc_type, exc, tb),
+            )
+        except Exception:
+            pass
+        try:
+            if _LOG_PATH:
+                banner = f"\n{'=' * 72}\n{prefix}: {exc_type.__name__}: {exc}\n{'=' * 72}\n"
+                with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(banner)
+                    f.write("".join(traceback.format_exception(exc_type, exc, tb)))
+                    f.write("\n")
+        except OSError:
+            pass
+
+    def _sys_hook(exc_type, exc, tb):
+        if exc_type is not None:
+            _log_uncaught("Uncaught (sys.excepthook)", exc_type, exc, tb)
+        _ORIG_SYS_EXCEPTHOOK(exc_type, exc, tb)
+
+    sys.excepthook = _sys_hook
+
+    if _ORIG_THREADING_EXCEPTHOOK is not None:
+
+        def _thread_hook(args):  # type: ignore[no-untyped-def]
+            try:
+                _log_uncaught(
+                    f"Uncaught in thread {getattr(args, 'thread', None)!r}",
+                    args.exc_type,
+                    args.exc_value,
+                    args.exc_traceback,
+                )
+            except Exception:
+                pass
+            try:
+                _ORIG_THREADING_EXCEPTHOOK(args)
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_hook  # type: ignore[attr-defined]
 
 
 class _WebsocketHandshakeNoiseFilter(logging.Filter):
@@ -120,8 +253,16 @@ def setup_early_logging() -> str:
     try:
         with open(_LOG_PATH, "w", encoding="utf-8") as f:
             utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            try:
+                _host = socket.gethostname()
+            except OSError:
+                _host = "?"
             f.write(f"{utc} [L3 DEBUG] === L3 调试日志（每次启动清空）=== START\n")
             f.write(f"{utc} [L3 DEBUG] log_file={_LOG_PATH}\n")
+            f.write(f"{utc} [L3 DEBUG] pid={os.getpid()} ppid={getattr(os, 'getppid', lambda: -1)()} thread={threading.current_thread().name!r}\n")
+            f.write(f"{utc} [L3 DEBUG] argv={sys.argv[:16]}\n")
+            f.write(f"{utc} [L3 DEBUG] stdin_encoding={getattr(sys.stdin, 'encoding', '')} stdout_encoding={getattr(sys.stdout, 'encoding', '')}\n")
+            f.write(f"{utc} [L3 DEBUG] hostname={_host}\n")
             f.write(f"{utc} [L3 DEBUG] Python {sys.version.split()[0]} | {sys.version.split('|')[1].strip() if '|' in sys.version else ''}\n")
             f.write(f"{utc} [L3 DEBUG] platform={sys.platform}\n")
             f.write(f"{utc} [L3 DEBUG] executable={getattr(sys, 'executable', '')}\n")
@@ -130,8 +271,13 @@ def setup_early_logging() -> str:
             frozen = getattr(sys, "frozen", False)
             f.write(f"{utc} [L3 DEBUG] PyInstaller frozen={frozen}, _MEIPASS={os.environ.get('_MEIPASS', '')}\n")
             f.write(f"{utc} [L3 DEBUG] sys.path[:3]={sys.path[:3]}\n")
-            f.write(f"{utc} [L3 DEBUG] LOG_LEVEL={os.environ.get('LOG_LEVEL', '')}\n")
+            f.write(f"{utc} [L3 DEBUG] LOG_LEVEL={os.environ.get('LOG_LEVEL', '')} JACHIN_LOG_LEVEL={os.environ.get('JACHIN_LOG_LEVEL', '')}\n")
             f.write(f"{utc} [L3 DEBUG] JACHIN_L3_DEBUG={os.environ.get('JACHIN_L3_DEBUG', '')} L3_VERBOSE_LOG={os.environ.get('L3_VERBOSE_LOG', '')}\n")
+            f.write(f"{utc} [L3 DEBUG] JACHIN_L3_FILE_LOG_COMPACT={os.environ.get('JACHIN_L3_FILE_LOG_COMPACT', '')} (1=缩小默认文件诊断)\n")
+            f.write(f"{utc} [L3 DEBUG] JACHIN_ACTIVE_REGION={os.environ.get('JACHIN_ACTIVE_REGION', '')}\n")
+            for _pk in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+                _pv = os.environ.get(_pk) or ""
+                f.write(f"{utc} [L3 DEBUG] {_pk}={'set' if _pv else 'empty'} len={len(_pv)}\n")
             f.write(f"{utc} [L3 DEBUG] JACHIN_APP_ROOT={os.environ.get('JACHIN_APP_ROOT', '')}\n")
             f.write(f"{utc} [L3 DEBUG] L2_BASE_URL={os.environ.get('L2_BASE_URL', '')}\n")
             f.write(f"{utc} [L3 DEBUG] LLM_MODEL={os.environ.get('LLM_MODEL', '')} L3_MODEL={os.environ.get('L3_MODEL', '')}\n")
@@ -145,7 +291,6 @@ def setup_early_logging() -> str:
 
     # 挂载文件日志：默认 QueueHandler + 后台批量写盘（见 l3_node.async_file_log），避免主线程同步写阻塞
     try:
-        _fmt = _UTCFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         use_async = False
         install_async_file_sink = None
         try:
@@ -156,7 +301,7 @@ def setup_early_logging() -> str:
             pass
 
         if use_async:
-            _FILE_HANDLER = install_async_file_sink(_LOG_PATH, fmt=_fmt)
+            _FILE_HANDLER = install_async_file_sink(_LOG_PATH, fmt=_make_file_formatter())
             _FILE_HANDLER.setLevel(logging.DEBUG)
             logging.getLogger().addHandler(_FILE_HANDLER)
             with open(_LOG_PATH, "a", encoding="utf-8") as f:
@@ -168,7 +313,7 @@ def setup_early_logging() -> str:
         else:
             _FILE_HANDLER = logging.FileHandler(_LOG_PATH, mode="a", encoding="utf-8")
             _FILE_HANDLER.setLevel(logging.DEBUG)
-            _FILE_HANDLER.setFormatter(_fmt)
+            _FILE_HANDLER.setFormatter(_make_file_formatter())
             logging.getLogger().addHandler(_FILE_HANDLER)
             with open(_LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(
@@ -216,11 +361,13 @@ def configure_l3_runtime_diagnostics() -> None:
     """
     在 basicConfig + reattach_file_handler 之后调用。
 
-    - 无 JACHIN_L3_DEBUG：保持 LOG_LEVEL / INFO，文件已含完整格式。
-    - JACHIN_L3_DEBUG=1：根与子 logger DEBUG，WS/LLM 流式可逐条落盘；抑制 urllib3/httpcore 等刷屏。
+    - 默认：扩展文件诊断（is_file_extended_detail），业务 logger DEBUG 主要写入 l3_debug.log，控制台仍按 LOG_LEVEL。
+    - JACHIN_L3_FILE_LOG_COMPACT=1：退回较安静模式（l3_node 子树 INFO）。
+    - JACHIN_L3_DEBUG / L3_VERBOSE_LOG：控制台与文件均尽量详细。
     """
     root = logging.getLogger()
     verbose = is_l3_verbose()
+    extended = is_file_extended_detail()
 
     if verbose:
         root.setLevel(logging.DEBUG)
@@ -230,8 +377,10 @@ def configure_l3_runtime_diagnostics() -> None:
             "l3_node.llm_client",
             "l3_node.agent_core",
             "l3_node.bootstrap",
+            "core",
             "core.mcp_client",
             "core.inventory_scanner",
+            "l3_client",
         ):
             logging.getLogger(name).setLevel(logging.DEBUG)
         # 第三方：避免拖垮日志体积
@@ -248,12 +397,41 @@ def configure_l3_runtime_diagnostics() -> None:
             trace("configure_l3_runtime_diagnostics: JACHIN_L3_DEBUG/L3_VERBOSE_LOG enabled -> DEBUG for l3_node.*")
         except Exception:
             pass
+    elif extended:
+        for name in (
+            "l3_node",
+            "l3_node.ws_server",
+            "l3_node.llm_client",
+            "l3_node.agent_core",
+            "l3_node.bootstrap",
+            "core",
+            "core.mcp_client",
+            "core.inventory_scanner",
+            "l3_client",
+        ):
+            logging.getLogger(name).setLevel(logging.DEBUG)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.INFO)
+        logging.getLogger("websockets").setLevel(logging.WARNING)
+        logging.getLogger("websockets.server").setLevel(logging.WARNING)
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
+        logging.getLogger("LiteLLM").setLevel(logging.DEBUG)
+        logging.getLogger("litellm").setLevel(logging.DEBUG)
+        try:
+            trace(
+                "configure_l3_runtime_diagnostics: extended file detail -> DEBUG for core/l3_client/l3_node.* "
+                "and litellm (file); JACHIN_L3_FILE_LOG_COMPACT=1 to quiet; JACHIN_L3_DEBUG=1 for full console"
+            )
+        except Exception:
+            pass
     else:
-        # 非 verbose 也保证 l3_node 子树至少 INFO 进文件
         logging.getLogger("l3_node").setLevel(logging.INFO)
         logging.getLogger("l3_node.ws_server").setLevel(logging.INFO)
         logging.getLogger("l3_node.llm_client").setLevel(logging.INFO)
 
+    _tune_handlers_for_file_vs_console()
     install_websocket_handshake_noise_filters()
     suppress_third_party_llm_client_noise()
 

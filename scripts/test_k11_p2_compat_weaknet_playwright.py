@@ -60,7 +60,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-ROOT = Path(__file__).resolve().parent.parent
+_env_root = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+ROOT = Path(_env_root).resolve() if _env_root else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 try:
@@ -1202,6 +1203,12 @@ async def _async_main(args: argparse.Namespace) -> int:
                 k11_lark = importlib.util.module_from_spec(_spec)
                 _spec.loader.exec_module(k11_lark)
         if k11_lark:
+            try:
+                from l3_node.packaged_lark_env import apply_packaged_lark_to_os_environ
+
+                apply_packaged_lark_to_os_environ()
+            except Exception:
+                pass
             _wiki = (
                 (getattr(args, "lark_wiki_url", "") or "").strip()
                 or (os.environ.get("K11_SMOKE_LARK_WIKI_URL") or "").strip()

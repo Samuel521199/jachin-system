@@ -41,6 +41,20 @@ cargo build --release --manifest-path clients/desktop/src-tauri/Cargo.toml --bin
 
 助手下载安装包时：**先直连**（`reqwest` 显式 `no_proxy()`，不受系统 HTTP 代理干扰）；失败则自动经 **`http://127.0.0.1:8800`** 重试（常见本机 Clash HTTP 端口）。可用环境变量：`JACHIN_UPDATER_HELPER_HTTP_PROXY`（默认 `http://127.0.0.1:8800`）、`JACHIN_UPDATER_HELPER_NO_PROXY_FALLBACK=1`（禁用代理回退）。
 
+## Windows：侧车「一打开就闪退」
+
+PyInstaller 打出来的侧车带 **`--noconsole`**，在资源管理器里**双击**时，若进程在**弹出控制台窗口之前**就崩溃（常见：缺运行库、杀软拦截、DLL 加载失败），你会看到**窗口闪一下或直接没反应**。
+
+1. **请用命令行跑**（能看到报错或至少确认进程码）：
+   ```powershell
+   cd "$env:LOCALAPPDATA\Jachin Desktop Sprite\bin"
+   .\l3_node-x86_64-pc-windows-msvc.exe --ws-only
+   ```
+2. **看日志**：`%USERPROFILE%\.jachin\l3_debug.log`，或安装目录下的 `logs\l3_debug.log` / 根目录 `l3_debug.log`（见 `l3_node/early_log.py` 的解析顺序）。
+3. **安装 [VC++ 2015–2022 x64 可再发行组件](https://learn.microsoft.com/zh-cn/cpp/windows/latest-supported-vc-redist)**：onefile 依赖与 Python 扩展模块常与 `vcruntime140.dll`、`api-ms-win-crt-*.dll` 等绑定；新机未装时会在启动极早阶段失败。
+4. **杀毒/防护**：将 `Jachin Desktop Sprite` 安装目录加入白名单；隔离区里的 `l3_node-*.exe` 需恢复。
+5. **根目录的 `l3_node.exe`**：正规安装只应在 **`bin\l3_node-x86_64-pc-windows-msvc.exe`**。根目录若多了一个 `l3_node.exe`，多半是误拷、旧资源或第三方工具生成，**不作为受支持入口**；请以 `bin` 下带 triplet 文件名为准。
+
 ## 注意
 
 - 占位符仅用于通过构建，不提供 L3 功能

@@ -16,6 +16,28 @@ const L3_SKILLS_BASE = import.meta.env.VITE_L3_SKILLS_URL || "http://127.0.0.1";
 /** 开发模式下使用 Vite 代理 /l3 -> L3，避免跨域 Failed to fetch */
 const L3_DEV_PROXY = import.meta.env.DEV ? "/l3" : "";
 
+/**
+ * 探测 L3 技能 HTTP 时单次请求超时。无超时则对「无监听端口」的 TCP 会挂很久，
+ * 导致 getL3HttpBaseUrl / K11「启动统合冒烟」长时间停在「等待启动」且无新行。
+ */
+const L3_PROBE_FETCH_MS = 3500;
+
+async function l3ProbeGetSkills(url: string): Promise<Response | null> {
+  const c = new AbortController();
+  const t = window.setTimeout(() => c.abort(), L3_PROBE_FETCH_MS);
+  try {
+    return await fetch(url, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+      signal: c.signal,
+    });
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(t);
+  }
+}
+
 /** 保存 API Key 到后端（持久化到 ~/.jachin/.qwen_api_key，覆盖 .env） */
 export async function saveApiKey(qwenApiKey: string | null): Promise<{ ok: boolean; message: string }> {
   const res = await fetch(`${BACKEND_URL}/api/v3/config/apikey`, {
@@ -1177,12 +1199,18 @@ export function getK11UnifiedSmokeStreamUrl(opts?: {
   cdpHttp?: string;
   verbose?: boolean;
   noLarkReport?: boolean;
+  /** 执行轮次（多轮时轮次间隔为 interval 秒） */
+  runs?: number;
+  /** 轮次间隔（秒） */
+  interval?: number;
 }): string {
   const sp = new URLSearchParams();
   if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
   if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
   const q = sp.toString();
   const path = `/api/v1/k11-unified-smoke/stream${q ? `?${q}` : ""}`;
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
@@ -1202,6 +1230,8 @@ export function getK11P2CompatOnlyStreamUrl(opts?: {
   verbose?: boolean;
   noLarkReport?: boolean;
   headless?: boolean;
+  runs?: number;
+  interval?: number;
 }): string {
   const sp = new URLSearchParams();
   if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
@@ -1209,6 +1239,8 @@ export function getK11P2CompatOnlyStreamUrl(opts?: {
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
   if (opts?.headless) sp.set("headless", "1");
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
   const q = sp.toString();
   const path = `/api/v1/k11-p2-compat-only/stream${q ? `?${q}` : ""}`;
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
@@ -1222,9 +1254,10 @@ export function getK11P2CompatOnlyStreamUrl(opts?: {
 }
 
 /**
- * 获取 L3 技能 API 的 base URL（与 invokeL3Skills 逻辑一致，供流式等复用）
+ * 获取 L3 HTTP 根地址（与 invokeL3Skills 多端口探测一致，打包后 L3 可能落在 18990 等，不可写死 18991）。
+ * 开发环境在可用时可为 Vite 代理路径 `/l3`。
  */
-async function getL3SkillsBaseUrl(): Promise<string> {
+export async function getL3HttpBaseUrl(): Promise<string> {
   const path = "/api/v3/skills";
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
   if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
@@ -1233,22 +1266,106 @@ async function getL3SkillsBaseUrl(): Promise<string> {
   if (L3_DEV_PROXY) {
     try {
       const url = `${L3_DEV_PROXY}${path}`;
-      const r = await fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } });
-      if (r.ok) return L3_DEV_PROXY;
+      const r = await l3ProbeGetSkills(url);
+      if (r?.ok) return L3_DEV_PROXY;
     } catch {
       /* fall through to direct */
     }
   }
-  for (const port of L3_SKILLS_PORTS) {
-    try {
-      const url = `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}${path}`;
-      const r = await fetch(url, { method: "GET", headers: { "Content-Type": "application/json" } });
-      if (r.ok) return `${L3_SKILLS_BASE.replace(/:\d+$/, "")}:${port}`;
-    } catch {
-      continue;
+  const base = L3_SKILLS_BASE.replace(/:\d+$/, "");
+  // 并行探测（不依赖 Promise.any / ES2021），避免 10 端口串行 × 超时导致按钮长时间灰显
+  const outcomes = await Promise.allSettled(
+    L3_SKILLS_PORTS.map((port) => {
+      const url = `${base}:${port}${path}`;
+      return l3ProbeGetSkills(url).then((r) => {
+        if (r?.ok) return `${base}:${port}`;
+        throw new Error("unavailable");
+      });
+    })
+  );
+  for (const o of outcomes) {
+    if (o.status === "fulfilled") {
+      return o.value;
     }
   }
   throw new Error("L3 技能 API 不可达，请确认 L3 已启动（端口 18991 等）");
+}
+
+/** 巡检/冒烟 REST 与 L3 实际监听端口对齐（多端口回退，同 getL3HttpBaseUrl） */
+export async function getL3MonitorApiUrlAsync(apiPath: string): Promise<string> {
+  const path = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
+  return `${await getL3HttpBaseUrl()}${path}`;
+}
+
+/**
+ * K11 统合冒烟 SSE：先探测 L3 端口再拼 URL（避免 L3 落在 18990 时流连接失败）
+ */
+export async function getK11UnifiedSmokeStreamUrlAsync(opts?: {
+  targetUrl?: string;
+  cdpHttp?: string;
+  verbose?: boolean;
+  noLarkReport?: boolean;
+  runs?: number;
+  interval?: number;
+}): Promise<string> {
+  const sp = new URLSearchParams();
+  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
+  const q = sp.toString();
+  const rel = `/api/v1/k11-unified-smoke/stream${q ? `?${q}` : ""}`;
+  return `${await getL3HttpBaseUrl()}${rel}`;
+}
+
+/**
+ * P2 兼容段 SSE：先探测 L3 端口
+ */
+export async function getK11P2CompatOnlyStreamUrlAsync(opts?: {
+  targetUrl?: string;
+  cdpHttp?: string;
+  verbose?: boolean;
+  noLarkReport?: boolean;
+  headless?: boolean;
+  runs?: number;
+  interval?: number;
+}): Promise<string> {
+  const sp = new URLSearchParams();
+  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.headless) sp.set("headless", "1");
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
+  const q = sp.toString();
+  const rel = `/api/v1/k11-p2-compat-only/stream${q ? `?${q}` : ""}`;
+  return `${await getL3HttpBaseUrl()}${rel}`;
+}
+
+/**
+ * Kalaroko 巡检矩阵 SSE：先探测 L3 端口
+ */
+export async function getKalarokoMonitorStreamUrlAsync(opts?: {
+  runs?: number;
+  interval?: number;
+  skipPlaywright?: boolean;
+}): Promise<string> {
+  const sp = new URLSearchParams();
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
+  if (opts?.skipPlaywright) sp.set("skip_playwright", "1");
+  const q = sp.toString();
+  const rel = `/api/v1/monitor/stream${q ? `?${q}` : ""}`;
+  return `${await getL3HttpBaseUrl()}${rel}`;
+}
+
+/** 定时 K11 批跑日志（与手动的 /stream 并行，不抢锁；供 MIND STREAM 与桌面通知） */
+export async function getK11ScheduledSmokeLogStreamUrlAsync(): Promise<string> {
+  const base = await getL3HttpBaseUrl();
+  return `${base}/api/v1/k11-unified-smoke/schedule/log-stream`;
 }
 
 /**
@@ -1261,7 +1378,7 @@ export async function* executeSkillStream(
   capabilityName: string,
   inputData: Record<string, unknown> = {}
 ): AsyncGenerator<SkillStreamEvent> {
-  const baseUrl = await getL3SkillsBaseUrl();
+  const baseUrl = await getL3HttpBaseUrl();
   const path = `/api/v3/skills/${encodeURIComponent(skillId)}/execute/stream`;
   const url = `${baseUrl}${path}`;
   const body = JSON.stringify({

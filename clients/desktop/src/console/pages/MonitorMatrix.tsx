@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 巡检中枢 — Kalaroko 默认场景多轮 E2E + AI 综合分析（SSE / Mind Stream）
  * SSE URL 经由 getKalarokoMonitorStreamUrl：开发环境走 Vite `/l3` 代理，避免直连端口跨域。
  */
@@ -8,7 +8,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Radar } from "lucide-react";
 import { cn } from "../../utils/cn";
-import { getKalarokoMonitorStreamUrl, getL3MonitorApiUrl } from "../../lib/api";
+import { getKalarokoMonitorStreamUrlAsync, getL3MonitorApiUrlAsync } from "../../lib/api";
 
 export function MonitorMatrix() {
   const [runs, setRuns] = useState(4);
@@ -23,6 +23,7 @@ export function MonitorMatrix() {
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const esRef = useRef<EventSource | null>(null);
+  const sseTransientWarnAtRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -33,7 +34,7 @@ export function MonitorMatrix() {
 
   const refreshScheduleStatus = useCallback(async () => {
     try {
-      const url = getL3MonitorApiUrl("/api/v1/monitor/schedule/status");
+      const url = await getL3MonitorApiUrlAsync("/api/v1/monitor/schedule/status");
       const res = await fetch(url);
       const data = (await res.json()) as { ok?: boolean; active?: boolean };
       if (typeof data.active === "boolean") {
@@ -58,10 +59,15 @@ export function MonitorMatrix() {
 
   const handleStopInspection = useCallback(async () => {
     try {
-      const url = getL3MonitorApiUrl("/api/v1/monitor/stop");
+      const url = await getL3MonitorApiUrlAsync("/api/v1/monitor/stop");
       const res = await fetch(url, { method: "POST" });
       const ok = res.ok;
       setLogs((prev) => [...prev, ok ? "> 已发送停止信号（下一检查点生效）…" : "> 停止请求失败（HTTP）。"]);
+      if (ok) {
+        esRef.current?.close();
+        esRef.current = null;
+        setRunning(false);
+      }
     } catch {
       setLogs((prev) => [...prev, "> 停止请求失败（网络）。"]);
     }
@@ -71,7 +77,7 @@ export function MonitorMatrix() {
     async (enabled: boolean) => {
       setScheduleLoading(true);
       try {
-        const url = getL3MonitorApiUrl("/api/v1/monitor/schedule/toggle");
+        const url = await getL3MonitorApiUrlAsync("/api/v1/monitor/schedule/toggle");
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -97,24 +103,37 @@ export function MonitorMatrix() {
   }, [logs, llmSummary, reportMarkdown]);
 
   const handleStart = useCallback(() => {
-    esRef.current?.close();
-    setLogs([
-      "> 初始化 E2E 巡检矩阵…",
-      `> 计划执行: ${runs} 轮, 间隔: ${intervalSec} 秒`,
-      "> 连接 L3 SSE 流…",
-    ]);
-    setLlmSummary(null);
-    setReportMarkdown(null);
-    setDoneOk(null);
-    setShowNotify(false);
+    void (async () => {
+      esRef.current?.close();
+      setLogs([
+        "> 初始化 E2E 巡检矩阵…",
+        `> 计划执行: ${runs} 轮, 间隔: ${intervalSec} 秒`,
+        "> 正在探测 L3 并连接 SSE 流…",
+      ]);
+      setLlmSummary(null);
+      setReportMarkdown(null);
+      setDoneOk(null);
+      setShowNotify(false);
 
-    const streamUrl = getKalarokoMonitorStreamUrl({
-      runs: Number.isFinite(runs) ? runs : 4,
-      interval: Number.isFinite(intervalSec) ? intervalSec : 30,
-    });
-    const eventSource = new EventSource(streamUrl);
-    esRef.current = eventSource;
-    setRunning(true);
+      let streamUrl: string;
+      try {
+        streamUrl = await getKalarokoMonitorStreamUrlAsync({
+          runs: Number.isFinite(runs) ? runs : 4,
+          interval: Number.isFinite(intervalSec) ? intervalSec : 30,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setLogs((prev) => [
+          ...prev,
+          `> [ERROR] 连不上 L3：${msg}`,
+          "> 请确认 L3 已运行（同目录 run_l3.bat 或主程序随附 l3 侧车），并查看 l3_debug.log。",
+        ]);
+        return;
+      }
+      setLogs((prev) => [...prev, "> 连接 L3 SSE 流…"]);
+      const eventSource = new EventSource(streamUrl);
+      esRef.current = eventSource;
+      setRunning(true);
 
     eventSource.onmessage = (event: MessageEvent<string>) => {
       try {
@@ -164,11 +183,23 @@ export function MonitorMatrix() {
     };
 
     eventSource.onerror = () => {
-      setLogs((prev) => [...prev, "> [WARN] 巡检流意外中断（请确认 L3 已启动且 `/l3` 代理可用）。"]);
-      setRunning(false);
-      setDoneOk(false);
-      eventSource.close();
+      if (eventSource.readyState === EventSource.CLOSED) {
+        const hint = import.meta.env.DEV
+          ? "请确认 L3 与 /l3 开发代理可用。"
+          : "请确认本机 L3 已运行；若仅 SSE 已断、巡检仍在，请点「停止」。";
+        setLogs((prev) => [...prev, `> [WARN] SSE 已结束（无自动重连）。${hint}`]);
+        return;
+      }
+      const now = Date.now();
+      if (now - sseTransientWarnAtRef.current > 8000) {
+        sseTransientWarnAtRef.current = now;
+        setLogs((prev) => [
+          ...prev,
+          "> [INFO] SSE 连接异常或抖动（可能自动重试）；未收到结束信令前仍可点「停止」",
+        ]);
+      }
     };
+    })();
   }, [runs, intervalSec]);
 
   return (

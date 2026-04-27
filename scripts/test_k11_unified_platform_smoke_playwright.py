@@ -22,6 +22,8 @@ K11 平台冒烟 · 统合版（单次 CDP 会话顺序执行：P0 八条 + P1 �
 - ``K11_SMOKE_LARK_NOTIFY_CHAT_ID``（完成通知会话，默认见 ``k11_lark_smoke_report``）
 - 加 ``--no-lark-report`` 可不发飞书、不同步表格；加 ``--write-local-xlsx`` 才写入 ``~/Downloads/K11平台测试用例.xlsx``（需 ``openpyxl``）。
 - 群通知卡片样式在 ``scripts/k11_lark_smoke_report.send_k11_smoke_lark_notification``：原生 table 三列（测试项目 / 结果 / 备注），失败时降级 lark_md/纯文本。
+- 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」一行并入同一次 JSON/飞书表/群卡片。
+  随 L3 侧车 / ``l3_node.exe`` 跑统合时**禁止** ``l3_node.exe 某.py``（引导器不会当解释器），须用 ``--jachin-k11-p2-compat-subprocess`` 子命令（与 ``l3_node/http_server`` 一致）。
 
 行为对齐：P0/P1/扩展/弱网各段逻辑与对应单脚本一致（含 P0 Play Now 默认**不点击**）。
 若需对 Play Now 做真实点击，请加 ``--p0-play-now-really-click``（点击后自动回大厅）。
@@ -34,7 +36,9 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -48,7 +52,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-ROOT = Path(__file__).resolve().parent.parent
+_env_root = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+ROOT = Path(_env_root).resolve() if _env_root else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 try:
@@ -103,6 +108,53 @@ VERDICT_ZH: dict[str, str] = {
     "BLOCKED": "阻塞",
 }
 
+def _resolve_p2_compat_script_path() -> Path:
+    """
+    与 ``l3_node.paths.k11_p2_compat_weaknet_script_path`` 一致：开发用仓库 ``scripts/``，
+    PyInstaller 用 ``_MEIPASS/scripts/``，便携用 ``JACHIN_APP_ROOT/scripts/``。
+    """
+    fname = "test_k11_p2_compat_weaknet_playwright.py"
+    u = Path(__file__).resolve().parent / fname
+    if u.is_file():
+        return u
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = ROOT / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return ROOT / "scripts" / fname
+
+
+def _k11_p2_compat_subprocess_cmd(passthrough: list[str], p2_script: Path) -> list[str]:
+    """
+    frozen：``l3_node.exe --jachin-k11-p2-compat-subprocess ...``；
+    开发：``python -m l3_node --jachin-k11-p2-compat-subprocess ...``。
+    与 ``l3_node.http_server._k11_smoke_subprocess_cmd`` 一致，避免 ``exe script.py`` 失败。
+    若当前环境无法 ``import l3_node``（裸 ``python scripts/...``），回退为 ``python P2脚本.py ...``。
+    """
+    sent = "--jachin-k11-p2-compat-subprocess"
+    if getattr(sys, "frozen", False):
+        return [sys.executable, sent, *passthrough]
+    try:
+        import l3_node  # noqa: F401
+    except ImportError:
+        return [sys.executable, str(p2_script), *passthrough]
+    return [sys.executable, "-m", "l3_node", sent, *passthrough]
+
+
+def _resolve_k11_lark_smoke_report_path() -> Path:
+    """
+    开发：仓库根 ``scripts/k11_lark_smoke_report.py``；
+    打包/侧车：常与 ``本脚本`` 同目录（_MEI/.../scripts/），或 ``JACHIN_APP_ROOT/scripts/``。
+    """
+    u = Path(__file__).resolve().parent / "k11_lark_smoke_report.py"
+    if u.is_file():
+        return u
+    return ROOT / "scripts" / "k11_lark_smoke_report.py"
+
+
 UNIFIED_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
     "p0_env_access": "环境访问",
     "p0_home_load": "首页加载",
@@ -127,6 +179,8 @@ UNIFIED_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
     "ext_scroll_light": "滚动加载",
     "ext_static_console": "静态资源",
     "p2_weak_network": "弱网",
+    # 子进程 ``test_k11_p2_compat_weaknet_playwright.py --only-compat`` 合并行，与 P2 脚本一致
+    "p2_browser_compat_merged": "浏览器兼容",
 }
 
 _XLSX_REMARK_MAX_LEN = 32000
@@ -137,6 +191,194 @@ def _default_k11_xlsx_report_path() -> Path:
     if env:
         return Path(env)
     return Path.home() / "Downloads" / "K11平台测试用例.xlsx"
+
+
+def _run_p2_only_compat_subprocess(
+    *,
+    target_url: str,
+    project_root: Path,
+    log: Callable[[str], None],
+    headless: bool,
+    quiet_p2: bool,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """
+    子进程执行 ``scripts/test_k11_p2_compat_weaknet_playwright.py --only-compat``，
+    经 P2 内 ``_p2_all_rows_to_lark_results`` 转为与统合 ``results`` 同结构的行（通常 1 条：浏览器兼容）。
+    返回 (追加行列表, 子进程 exit code, 非 None 时为一行式错误原因)。
+    """
+    p2_script = _resolve_p2_compat_script_path()
+    if not p2_script.is_file():
+        return (
+            [
+                {
+                    "case": "p2_browser_compat_merged",
+                    "tier": "P2",
+                    "case_title_zh": "浏览器兼容",
+                    "verdict": "BLOCKED",
+                    "verdict_zh": "阻塞",
+                    "detail": (
+                        f"未找到脚本：{p2_script}（请把 test_k11_p2_compat_weaknet_playwright.py 放入 "
+                        "与统合脚本同目录的 scripts/ 或 JACHIN_APP_ROOT/scripts/；"
+                        "勿用 l3_node.exe 直接执行 .py，应随 L3 子命令加载。）"
+                    ),
+                }
+            ],
+            2,
+            "missing p2 script",
+        )
+
+    fd, jpath = tempfile.mkstemp(suffix="_k11_compat.json", text=True)
+    os.close(fd)
+    json_path = Path(jpath)
+    try:
+        passthrough: list[str] = [
+            "--only-compat",
+            "--no-lark-report",
+            "--json-out",
+            str(json_path),
+            "--target-url",
+            (target_url or "").strip() or "https://www.kalaroko.com/",
+        ]
+        if headless:
+            passthrough.append("--headless")
+        if quiet_p2:
+            passthrough.append("--quiet")
+        cmd = _k11_p2_compat_subprocess_cmd(passthrough, p2_script)
+        log(
+            "  [compat] 启动子进程：l3_node --jachin-k11-p2-compat-subprocess "
+            "（P2 --only-compat，自启 Chrome/Edge；与侧车 frozen 兼容）"
+        )
+        cp = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        rc = int(cp.returncode or 0)
+        err_tail = ""
+        out = (cp.stdout or "") + (cp.stderr or "")
+        if out.strip():
+            tail = out.strip()[-1200:]
+            err_tail = tail
+            if rc != 0 or (not json_path.is_file()):
+                log(f"  [compat] 子进程输出（尾部）：{tail}")
+        if not json_path.is_file():
+            extra = f" 子进程输出尾部：{err_tail[:600]}" if err_tail else ""
+            return (
+                [
+                    {
+                        "case": "p2_browser_compat_merged",
+                        "tier": "P2",
+                        "case_title_zh": "浏览器兼容",
+                        "verdict": "BLOCKED",
+                        "verdict_zh": "阻塞",
+                        "detail": (
+                            f"子进程结束 exit={rc} 但未生成 JSON 报告文件。"
+                            + (extra if extra.strip() else "")
+                        ),
+                    }
+                ],
+                rc,
+                "missing json",
+            )
+        raw = json_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        all_rows = data.get("results")
+        if not isinstance(all_rows, list):
+            return (
+                [
+                    {
+                        "case": "p2_browser_compat_merged",
+                        "tier": "P2",
+                        "case_title_zh": "浏览器兼容",
+                        "verdict": "BLOCKED",
+                        "verdict_zh": "阻塞",
+                        "detail": "子进程 JSON 中无有效 results 数组。",
+                    }
+                ],
+                rc,
+                "bad json",
+            )
+        _spec = importlib.util.spec_from_file_location(
+            "k11_p2_compat_unified_merge", p2_script
+        )
+        if not _spec or not _spec.loader:
+            return (
+                [
+                    {
+                        "case": "p2_browser_compat_merged",
+                        "tier": "P2",
+                        "case_title_zh": "浏览器兼容",
+                        "verdict": "BLOCKED",
+                        "verdict_zh": "阻塞",
+                        "detail": "无法加载 P2 脚本以归并结果。",
+                    }
+                ],
+                rc,
+                "import",
+            )
+        p2m = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(p2m)
+        merged: list[dict[str, Any]] = p2m._p2_all_rows_to_lark_results(  # type: ignore[attr-defined]
+            all_rows
+        )
+        if not merged and all_rows:
+            return (
+                [
+                    {
+                        "case": "p2_browser_compat_merged",
+                        "tier": "P2",
+                        "case_title_zh": "浏览器兼容",
+                        "verdict": "BLOCKED",
+                        "verdict_zh": "阻塞",
+                        "detail": "P2 归并结果为空。",
+                    }
+                ],
+                rc,
+                "empty merge",
+            )
+        if not merged:
+            log("  [compat] 子进程未返回可合并行，跳过追加。")
+            return [], rc, None
+        return merged, rc, None
+    except (json.JSONDecodeError, OSError) as e:
+        return (
+            [
+                {
+                    "case": "p2_browser_compat_merged",
+                    "tier": "P2",
+                    "case_title_zh": "浏览器兼容",
+                    "verdict": "BLOCKED",
+                    "verdict_zh": "阻塞",
+                    "detail": f"读取/解析子进程报告失败：{e!s}",
+                }
+            ],
+            2,
+            str(e),
+        )
+    except Exception as e:
+        return (
+            [
+                {
+                    "case": "p2_browser_compat_merged",
+                    "tier": "P2",
+                    "case_title_zh": "浏览器兼容",
+                    "verdict": "BLOCKED",
+                    "verdict_zh": "阻塞",
+                    "detail": f"浏览器兼容子进程链异常：{e!s}",
+                }
+            ],
+            2,
+            str(e),
+        )
+    finally:
+        try:
+            json_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _find_smoke_sheet_header(ws: Any) -> tuple[int, int, int, int] | None:
@@ -293,6 +535,69 @@ def _needs_goto_home_feed(current_url: str) -> bool:
     return False
 
 
+_KALAROKO_NOTIF_BANNER_RE = re.compile(
+    r"Turn on notifications|exclusive bonus|"
+    r"open notifications|claim .{0,32} bonus|"
+    r"打开通知|开启通知|领取.*奖",
+    re.I,
+)
+
+
+async def _dismiss_kalaroko_notification_prompt(
+    page: Any,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """
+    站內偶现底部浮层：「Turn on notifications to claim your exclusive bonus」+ Cancel/Agree。
+    点 Cancel 或 Esc 关闭，避免遮挡底栏与后续 Locator 超时。
+    """
+    try:
+        hint = page.get_by_text(_KALAROKO_NOTIF_BANNER_RE)
+        if await hint.count() < 1:
+            return
+    except Exception:
+        return
+    cancel_name = re.compile(r"^Cancel$", re.I)
+    frames: list[Any] = []
+    try:
+        frames = list(page.frames)
+    except Exception:
+        try:
+            frames = [page.main_frame]
+        except Exception:
+            return
+    for fr in frames:
+        try:
+            by_role = fr.get_by_role("button", name=cancel_name)
+            n = await by_role.count()
+            if n >= 1:
+                await by_role.last.click(timeout=3000, force=True)
+                if log:
+                    log("  [关弹窗] 已点 Cancel（站內通知/奖励推广）。")
+                await page.wait_for_timeout(250)
+                return
+        except Exception:
+            pass
+        try:
+            by_t = fr.get_by_text("Cancel", exact=True)
+            if await by_t.count() >= 1:
+                await by_t.last.click(timeout=3000, force=True)
+                if log:
+                    log("  [关弹窗] 已点 Cancel（站內通知，原文案节点）。")
+                await page.wait_for_timeout(250)
+                return
+        except Exception:
+            pass
+    try:
+        await page.keyboard.press("Escape")
+        if log:
+            log("  [关弹窗] 已发 Esc 尝试关闭通知推广层。")
+        await page.wait_for_timeout(200)
+    except Exception:
+        pass
+
+
 async def _ensure_on_home_feed(
     page: Any, target_url: str, log: Callable[[str], None] | None
 ) -> None:
@@ -304,11 +609,63 @@ async def _ensure_on_home_feed(
     if not _needs_goto_home_feed(cur):
         if log:
             log(f"  [诊断·P0] 无需回大厅：{cur!r}")
+        await _dismiss_kalaroko_notification_prompt(page, log=log)
         return
     if log:
         log(f"  [诊断·P0] 回大厅：{cur!r} → goto {home!r}")
-    await page.goto(home, wait_until="domcontentloaded", timeout=60_000)
-    await page.wait_for_timeout(600)
+    await _robust_goto_kalaroko_home(
+        page, home, log=log, tag="回大厅", settle_ms=600
+    )
+    await _dismiss_kalaroko_notification_prompt(page, log=log)
+
+
+async def _robust_goto_kalaroko_home(
+    page: Any,
+    url: str,
+    *,
+    log: Callable[[str], None] | None,
+    tag: str = "goto",
+    settle_ms: int = 600,
+) -> None:
+    """
+    单页/SPA 下 ``domcontentloaded`` 可能长期不触发或 CDP 偶发卡死；采用多段策略 + 多轮重试，避免一条 goto 拖死整轮统合（exit 3）。
+    """
+    last: BaseException | None = None
+    for round_i in range(3):
+        # 1) 首选 domcontentloaded（与历史一致，略放宽到 90s）
+        for phase, tmo, extra in (
+            ("domcontentloaded", 90_000, None),
+            ("commit", 22_000, "dcl"),  # 仅收到响应头后再等 DCL/短暂 settle
+        ):
+            try:
+                if extra == "dcl":
+                    await page.goto(url, wait_until="commit", timeout=tmo)
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=75_000)
+                    except Exception:
+                        # 部分 SPA 主文档不典型触发 DCL，短等让主线程推进
+                        await page.wait_for_timeout(1800)
+                else:
+                    await page.goto(url, wait_until=phase, timeout=tmo)
+                if log:
+                    log(f"  [nav] {tag} 成功：wait_until={phase!r}（第 {round_i + 1} 轮）")
+                if settle_ms > 0:
+                    await page.wait_for_timeout(settle_ms)
+                return
+            except Exception as e:
+                last = e
+                if log:
+                    log(
+                        f"  [nav] {tag} 第 {round_i + 1} 轮 {phase!r} 失败："
+                        f"{_brief_exc(e, 160)}"
+                    )
+        if round_i < 2:
+            if log:
+                log(f"  [nav] {tag} 第 {round_i + 1} 轮整轮重试，等待 {1.0 + round_i * 0.5:.1f}s…")
+            await page.wait_for_timeout(int(1000 + 500 * round_i))
+    if last is not None:
+        raise last
+    raise RuntimeError(f"{tag}：未知导航失败")
 
 
 # 分类条：文案有时在子节点内，与底栏相同策略（P1 _JS_CLICK_TAB_FROM_LABEL）
@@ -384,6 +741,7 @@ async def _eval_timeout(
     *,
     timeout: float = 15.0,
 ) -> Any:
+    """避免页面主线程卡死导致 evaluate 永久挂起；超时由 asyncio 控制。"""
     if arg is None:
         return await asyncio.wait_for(page.evaluate(expression), timeout=timeout)
     return await asyncio.wait_for(page.evaluate(expression, arg), timeout=timeout)
@@ -2147,80 +2505,95 @@ async def _run_p1_case(
         """
         首页仅滚底一次 → 点 Party Hubs → 子页不滚底，校验顶栏/列表常态文案
         → 点顶栏 img 返回 → 继续后续用例。
+
+        本用例链式定位曾依赖 Playwright 默认 30s 超时，易长时间无新日志、像“卡死”；
+        此处临时压到 10s，单步失败更快走降级策略。
         """
-        await _ensure_on_home_feed(page, target_url, log)
-        log("  [诊断·HottestParty] —— 首页：底栏 Home + 滚至 Hottest / Party Hubs ——")
-        await _log_tablist_snapshot(page, log, tag="·Home前")
+        _prev_tmo = 30_000
         try:
-            await page.evaluate("window.scrollTo(0, 0)")
-            await page.wait_for_timeout(180)
+            _prev_tmo = int(page.get_default_timeout())
         except Exception:
             pass
-        home_ok, home_msg = await _try_click_bottom_home_nav(page, log=log)
-        if home_ok:
-            log(f"  [诊断·HottestParty] 底栏 Home：{home_msg}")
-        else:
-            log(f"  [诊断·HottestParty] 底栏 Home 未点到：{home_msg}")
-        await page.wait_for_timeout(320)
-        log("  [诊断·HottestParty] 仅在首页滚底（scrollHeight + End），以露出区块…")
-        await _scroll_home_to_bottom(page)
+        try:
+            page.set_default_timeout(10_000)
+            await _ensure_on_home_feed(page, target_url, log)
+            log("  [诊断·HottestParty] —— 首页：底栏 Home + 滚至 Hottest / Party Hubs ——")
+            await _log_tablist_snapshot(page, log, tag="·Home前")
+            try:
+                await page.evaluate("window.scrollTo(0, 0)")
+                await page.wait_for_timeout(180)
+            except Exception:
+                pass
+            home_ok, home_msg = await _try_click_bottom_home_nav(page, log=log)
+            if home_ok:
+                log(f"  [诊断·HottestParty] 底栏 Home：{home_msg}")
+            else:
+                log(f"  [诊断·HottestParty] 底栏 Home 未点到：{home_msg}")
+            await page.wait_for_timeout(320)
+            log("  [诊断·HottestParty] 仅在首页滚底（scrollHeight + End），以露出区块…")
+            await _scroll_home_to_bottom(page)
 
-        clicked, cm = await _try_click_party_hubs_link(page, log=log)
-        if not clicked:
-            c2, m2 = await _try_click_visible_text(
+            clicked, cm = await _try_click_party_hubs_link(page, log=log)
+            if not clicked:
+                c2, m2 = await _try_click_visible_text(
+                    page,
+                    [
+                        r"Party\s*Hubs",
+                        r"Hottest\s*Parties",
+                        r"热门\s*Party",
+                        r"Party\s*Hub",
+                        r"热门",
+                    ],
+                    timeout_ms=2800,
+                )
+                if c2:
+                    clicked, cm = True, m2
+                else:
+                    log(f"  [诊断·HottestParty] 文案点击未成功：{m2}")
+            if not clicked and "party-hubs" in (page.url or "").lower():
+                log("  [诊断·HottestParty] URL 已在 party-hubs，继续校验子页…")
+                clicked, cm = True, "已进入 Party Hubs（URL）"
+            if not clicked:
+                await _log_tablist_snapshot(page, log, tag="·首页点 Hubs 失败后")
+                await _p1_leave_party_hubs_after_hottest(page, target_url, log)
+                hint = (
+                    f" Home：{home_msg}。"
+                    if home_ok
+                    else f" Home 未点到：{home_msg}。"
+                )
+                return (
+                    "FAIL",
+                    "「热门 Party 板块」未点到 Party Hubs。"
+                    + hint
+                    + " 详见 [诊断·PartyHubs] 与 tablist 快照。",
+                )
+
+            await page.wait_for_timeout(550)
+            ok, vm = await _visible_any(
                 page,
-                [
-                    r"Party\s*Hubs",
-                    r"Hottest\s*Parties",
-                    r"热门\s*Party",
-                    r"Party\s*Hub",
-                    r"热门",
-                ],
+                list(_P1_PARTY_HUBS_VERIFY_PATTERNS),
                 timeout_ms=2800,
             )
-            if c2:
-                clicked, cm = True, m2
-            else:
-                log(f"  [诊断·HottestParty] 文案点击未成功：{m2}")
-        if not clicked and "party-hubs" in (page.url or "").lower():
-            log("  [诊断·HottestParty] URL 已在 party-hubs，继续校验子页…")
-            clicked, cm = True, "已进入 Party Hubs（URL）"
-        if not clicked:
-            await _log_tablist_snapshot(page, log, tag="·首页点 Hubs 失败后")
+            if not ok:
+                await _p1_leave_party_hubs_after_hottest(page, target_url, log)
+                return (
+                    "FAIL",
+                    f"「热门 Party 板块」已进入（{cm}），但 Party Hubs 页未见典型展示：{vm}",
+                )
+
+            log("  [诊断·HottestParty] 子页展示正常，点击顶栏返回图标离开…")
             await _p1_leave_party_hubs_after_hottest(page, target_url, log)
-            hint = (
-                f" Home：{home_msg}。"
-                if home_ok
-                else f" Home 未点到：{home_msg}。"
-            )
+
+            h_part = f"{home_msg}；" if home_ok else "（Home 未点到仍进入 Hubs）"
             return (
-                "FAIL",
-                "「热门 Party 板块」未点到 Party Hubs。"
-                + hint
-                + " 详见 [诊断·PartyHubs] 与 tablist 快照。",
+                "PASS",
+                f"「热门 Party 板块」{h_part}{cm}；子页确认：{vm}；已顶栏返回并回大厅。",
             )
-
-        await page.wait_for_timeout(550)
-        ok, vm = await _visible_any(
-            page,
-            list(_P1_PARTY_HUBS_VERIFY_PATTERNS),
-            timeout_ms=2800,
-        )
-        if not ok:
-            await _p1_leave_party_hubs_after_hottest(page, target_url, log)
-            return (
-                "FAIL",
-                f"「热门 Party 板块」已进入（{cm}），但 Party Hubs 页未见典型展示：{vm}",
-            )
-
-        log("  [诊断·HottestParty] 子页展示正常，点击顶栏返回图标离开…")
-        await _p1_leave_party_hubs_after_hottest(page, target_url, log)
-
-        h_part = f"{home_msg}；" if home_ok else "（Home 未点到仍进入 Hubs）"
-        return (
-            "PASS",
-            f"「热门 Party 板块」{h_part}{cm}；子页确认：{vm}；已顶栏返回并回大厅。",
-        )
+        finally:
+            try:
+                page.set_default_timeout(_prev_tmo)
+            except Exception:
+                pass
     if case_id == "p1_party_status":
         await _ensure_on_home_feed(page, target_url, log)
         log("  [诊断] —— 快照：Party 用例开始（滚底前）——")
@@ -2260,21 +2633,6 @@ async def _run_p1_case(
             )
         return ("PASS", f"「Party 状态展示」{cm}；确认：{vm}")
     return ("BLOCKED", f"脚本未实现该用例：{case_id}")
-async def _eval_timeout(
-    page: Any,
-    expression: str,
-    arg: Any = None,
-    *,
-    timeout: float = 15.0,
-) -> Any:
-    """避免页面主线程卡死导致 evaluate 永久挂起。"""
-    if arg is None:
-        return await asyncio.wait_for(page.evaluate(expression), timeout=timeout)
-    return await asyncio.wait_for(page.evaluate(expression, arg), timeout=timeout)
-
-
-def _exc_tail(e: BaseException, lim: int = 200) -> str:
-    return f"{type(e).__name__}: {str(e).strip()[:lim]}"
 
 
 async def _log_bottom_nav_context(page: Any, log: Callable[[str], None], *, tag: str) -> None:
@@ -3441,7 +3799,11 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     log("———————— K11 平台冒烟 · 统合版（P0+P1+扩展+弱网）————————")
     log(f"CDP：{cdp}  目标：{target_url}  Party 切换阈值：{args.switch_ms} ms")
-    log(f"用例（共 {len(UNIFIED_CASE_DEFS)} 条）")
+    _skip_c = bool(getattr(args, "skip_browser_compat", False))
+    log(
+        f"用例主流程 {len(UNIFIED_CASE_DEFS)} 条；"
+        f"结束后{'不' if _skip_c else '将'}子进程跑浏览器兼容并并入结果"
+    )
     log("")
 
     console_bucket: list[str] = []
@@ -3487,36 +3849,49 @@ async def _async_main(args: argparse.Namespace) -> int:
         results: list[dict[str, Any]] = []
         for i, (cid, tier, title_zh) in enumerate(UNIFIED_CASE_DEFS, start=1):
             log(f"【{i}/{len(UNIFIED_CASE_DEFS)}】[{tier}] {title_zh}（{cid}）")
-            if cid == "p0_env_access":
-                v, detail = "PASS", env_detail
-            elif cid.startswith("p0_"):
-                v, detail = await _run_p0_case(
-                    cid,
-                    page,
-                    log=log,
-                    target_url=target_url,
-                    console_bucket=console_bucket,
-                    p0_play_now_really_click=bool(
-                        getattr(args, "p0_play_now_really_click", False)
-                    ),
-                )
-            elif cid.startswith("p1_"):
-                await _ensure_on_home_feed(page, target_url, log)
-                v, detail = await _run_p1_case(cid, page, log=log, target_url=target_url)
-            elif cid.startswith("ext_"):
-                await _ensure_on_home_feed(page, target_url, log)
-                v, detail = await _run_ext_case(
-                    cid,
-                    page,
-                    console_bucket=console_bucket,
-                    switch_ms=float(args.switch_ms),
-                    log=log,
-                    target_url=target_url,
-                )
-            elif cid == "p2_weak_network":
-                v, detail, _obs = await handle_weak_network_test(page, target_url, log=log)
-            else:
-                v, detail = "BLOCKED", f"未知用例：{cid}"
+            await _dismiss_kalaroko_notification_prompt(page, log=log)
+            v, detail = "BLOCKED", f"未执行：{cid}"
+            try:
+                if cid == "p0_env_access":
+                    v, detail = "PASS", env_detail
+                elif cid.startswith("p0_"):
+                    v, detail = await _run_p0_case(
+                        cid,
+                        page,
+                        log=log,
+                        target_url=target_url,
+                        console_bucket=console_bucket,
+                        p0_play_now_really_click=bool(
+                            getattr(args, "p0_play_now_really_click", False)
+                        ),
+                    )
+                elif cid.startswith("p1_"):
+                    await _ensure_on_home_feed(page, target_url, log)
+                    v, detail = await _run_p1_case(
+                        cid, page, log=log, target_url=target_url
+                    )
+                elif cid.startswith("ext_"):
+                    await _ensure_on_home_feed(page, target_url, log)
+                    v, detail = await _run_ext_case(
+                        cid,
+                        page,
+                        console_bucket=console_bucket,
+                        switch_ms=float(args.switch_ms),
+                        log=log,
+                        target_url=target_url,
+                    )
+                elif cid == "p2_weak_network":
+                    v, detail, _obs = await handle_weak_network_test(
+                        page, target_url, log=log
+                    )
+                else:
+                    v, detail = "BLOCKED", f"未知用例：{cid}"
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                raise
+            except Exception as e:
+                v, detail = "FAIL", f"用例执行异常：{_brief_exc(e, 480)}"
+                if log:
+                    log(f"  [错误] 本用例将记为 FAIL 并继续后续用例，避免整进程以 exit=3 退出。原因：{detail}")
 
             vzh = VERDICT_ZH.get(v, v)
             log(f"  观察说明：{detail}")
@@ -3535,12 +3910,22 @@ async def _async_main(args: argparse.Namespace) -> int:
 
             if cid == "p0_release_checklist":
                 log("—— P1 前：回大厅 ——")
-                await _ensure_on_home_feed(page, target_url, log)
+                try:
+                    await _ensure_on_home_feed(page, target_url, log)
+                except Exception as e:
+                    if log:
+                        log(f"  [警告] P1 前回大厅失败（已记录，继续跑）：{_brief_exc(e, 200)}")
             elif cid == "p1_party_status":
                 log("—— 扩展项前：回大厅并轻滚 ——")
-                await _ensure_on_home_feed(page, target_url, log)
                 try:
-                    await _eval_timeout(page, "() => window.scrollBy(0, 400)", timeout=6.0)
+                    await _ensure_on_home_feed(page, target_url, log)
+                except Exception as e:
+                    if log:
+                        log(f"  [警告] 扩展前回大厅失败（已记录，继续跑）：{_brief_exc(e, 200)}")
+                try:
+                    await _eval_timeout(
+                        page, "() => window.scrollBy(0, 400)", timeout=6.0
+                    )
                 except (Exception, asyncio.TimeoutError):
                     pass
                 await page.wait_for_timeout(400)
@@ -3559,61 +3944,124 @@ async def _async_main(args: argparse.Namespace) -> int:
                 log("  · " + s[:300])
             log("")
 
-        out = {
-            "schema": "k11_unified_platform_smoke_playwright/v1",
-            "ts_utc": datetime.now(timezone.utc).isoformat(),
-            "cdp": cdp,
-            "target_url": target_url,
-            "switch_ms_threshold": args.switch_ms,
-            "page_url_final": page.url,
-            "page_title_final": await page.title(),
-            "console_errors_filtered_sample": bad_console[:30],
-            "results": results,
-        }
-        if args.json_out:
-            outp = Path(args.json_out)
-            outp.parent.mkdir(parents=True, exist_ok=True)
-            outp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            log(f"JSON：{outp.resolve()}")
-
-        if args.write_local_xlsx:
-            xlsx_p = (
-                args.xlsx_report
-                if args.xlsx_report is not None
-                else _default_k11_xlsx_report_path()
+        compat_info: dict[str, Any] = {"skipped": True}
+        if not getattr(args, "skip_browser_compat", False):
+            log(
+                "———————— 附加：浏览器兼容（子进程 test_k11_p2_compat_weaknet_playwright.py --only-compat）————————"
             )
+            extra, crc, cerr = _run_p2_only_compat_subprocess(
+                target_url=target_url,
+                project_root=ROOT,
+                log=log,
+                headless=bool(getattr(args, "browser_compat_headless", False)),
+                quiet_p2=bool(args.quiet),
+            )
+            compat_info = {
+                "skipped": False,
+                "subprocess_exit_code": crc,
+                "merge_error": cerr,
+                "appended_count": len(extra),
+            }
+            for row in extra:
+                results.append(row)
+                v = str(row.get("verdict", ""))
+                vzh = str(row.get("verdict_zh", v))
+                log(
+                    f"  [compat] 并入用例 {row.get('case', '')!r}："
+                    f"{row.get('case_title_zh', '')} → {vzh}（{v}）"
+                )
+            if not extra:
+                log("  [compat] 未向 results 追加行（子进程无归并项）。")
             log("")
-            log("—— 本地 Excel（可选）——")
-            write_k11_unified_results_to_xlsx(Path(xlsx_p), results, log=log)
+        else:
+            log("  [compat] 已跳过：--skip-browser-compat")
+            log("")
 
-        if not args.no_lark_report:
-            _lark_path = ROOT / "scripts" / "k11_lark_smoke_report.py"
-            k11_lark: Any = None
-            if _lark_path.is_file():
-                _spec = importlib.util.spec_from_file_location(
-                    "k11_lark_smoke_report", _lark_path
-                )
-                if _spec and _spec.loader:
-                    k11_lark = importlib.util.module_from_spec(_spec)
+        # 收尾快照需在关闭 Playwright 前完成，但不得因 CDP/页签异常让「写盘+飞书」整段不执行
+        page_url_final = ""
+        page_title_final = ""
+        try:
+            page_url_final = (page.url or "").strip()
+        except Exception as e:
+            log(
+                f"  [警告] 无法读取 page.url（将写空字符串；不阻断飞书）：{_brief_exc(e, 200)}"
+            )
+        try:
+            page_title_final = (await page.title() or "").strip()
+        except Exception as e:
+            log(
+                f"  [警告] 无法读取 page.title（将写空字符串；不阻断飞书）：{_brief_exc(e, 200)}"
+            )
+
+    # 以下不依赖 CDP/浏览器：多轮 L3 调度下，每轮子进程结束时都应执行，避免只跑用例、无声退出
+    out = {
+        "schema": "k11_unified_platform_smoke_playwright/v2",
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "cdp": cdp,
+        "target_url": target_url,
+        "switch_ms_threshold": args.switch_ms,
+        "page_url_final": page_url_final,
+        "page_title_final": page_title_final,
+        "console_errors_filtered_sample": bad_console[:30],
+        "browser_compat_subprocess": compat_info,
+        "results": results,
+    }
+    if args.json_out:
+        outp = Path(args.json_out)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        outp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        log(f"JSON：{outp.resolve()}")
+
+    if args.write_local_xlsx:
+        xlsx_p = (
+            args.xlsx_report
+            if args.xlsx_report is not None
+            else _default_k11_xlsx_report_path()
+        )
+        log("")
+        log("—— 本地 Excel（可选）——")
+        write_k11_unified_results_to_xlsx(Path(xlsx_p), results, log=log)
+
+    if not args.no_lark_report:
+        _lark_path = _resolve_k11_lark_smoke_report_path()
+        k11_lark: Any = None
+        if _lark_path.is_file():
+            _spec = importlib.util.spec_from_file_location(
+                "k11_lark_smoke_report", _lark_path
+            )
+            if _spec and _spec.loader:
+                k11_lark = importlib.util.module_from_spec(_spec)
+                try:
                     _spec.loader.exec_module(k11_lark)
-            if k11_lark:
-                _wiki = (
-                    (args.lark_wiki_url or "").strip()
-                    or (os.environ.get("K11_SMOKE_LARK_WIKI_URL") or "").strip()
-                    or K11_DEFAULT_LARK_WIKI_URL
-                )
-                if not _wiki and hasattr(k11_lark, "_DEFAULT_WIKI_URL"):
-                    _wiki = str(k11_lark._DEFAULT_WIKI_URL)
-                log("")
-                log("—— 飞书：同步到 Wiki/表格 ——")
-                log(f"  目标：{_wiki}")
-                _aid = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
-                _sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
-                _tbl = (os.environ.get("K11_SMOKE_LARK_TABLE_ID") or "").strip() or None
-                _chat = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
-                if not _chat and hasattr(k11_lark, "_DEFAULT_NOTIFY_CHAT_ID"):
-                    _chat = str(k11_lark._DEFAULT_NOTIFY_CHAT_ID)
-                log("")
+                except Exception as e:
+                    k11_lark = None
+                    log(f"  [lark] 加载 k11_lark_smoke_report 失败，跳过：{_brief_exc(e, 320)}")
+        if k11_lark:
+            # 先注入侧车内嵌 Lark/K11 键，再读 os.environ（frozen 下内嵌覆盖陈旧环境，避免走错机器人）
+            try:
+                from l3_node.packaged_lark_env import apply_packaged_lark_to_os_environ
+
+                apply_packaged_lark_to_os_environ()
+            except Exception:
+                pass
+            _wiki = (
+                (args.lark_wiki_url or "").strip()
+                or (os.environ.get("K11_SMOKE_LARK_WIKI_URL") or "").strip()
+                or K11_DEFAULT_LARK_WIKI_URL
+            )
+            if not _wiki and hasattr(k11_lark, "_DEFAULT_WIKI_URL"):
+                _wiki = str(k11_lark._DEFAULT_WIKI_URL)
+            log("")
+            log("—— 飞书：同步到 Wiki/表格 ——")
+            log(f"  目标：{_wiki}")
+            _aid = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
+            _sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
+            _tbl = (os.environ.get("K11_SMOKE_LARK_TABLE_ID") or "").strip() or None
+            _chat = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
+            if not _chat and hasattr(k11_lark, "_DEFAULT_NOTIFY_CHAT_ID"):
+                _chat = str(k11_lark._DEFAULT_NOTIFY_CHAT_ID)
+            log("")
+            try:
                 _nw = k11_lark.write_k11_unified_results_to_lark_bitable(  # type: ignore[attr-defined]
                     case_to_item_key=UNIFIED_CASE_TO_XLSX_TEST_ITEM_KEY,
                     results=results,
@@ -3633,22 +4081,27 @@ async def _async_main(args: argparse.Namespace) -> int:
                     chat_id=_chat,
                     log=log,
                 )
-            else:
-                log("  [lark] 未找到 scripts/k11_lark_smoke_report.py，跳过飞书同步")
-
-        log("———————— 汇总 ————————")
-        for r in results:
-            m = "✓" if r["verdict"] == "PASS" else ("○" if r["verdict"] == "SKIP" else "✗")
+            except Exception as e:
+                log(f"  [lark] 同步表或发消息时异常（已记日志，不阻断汇总）：{_brief_exc(e, 480)}")
+        else:
             log(
-                f"  {m} [{r.get('tier', '')}] {r['case_title_zh']} → {r['verdict_zh']}"
+                f"  [lark] 未找到或无法加载 k11_lark_smoke_report（解析路径为 {_lark_path}），"
+                "跳过飞书同步；打包/便携请把该 .py 与统合脚本同放入 scripts/ 或 JACHIN_APP_ROOT/scripts/。"
             )
 
-        verdicts = {r["verdict"] for r in results}
-        if "FAIL" in verdicts or "BLOCKED" in verdicts:
-            log("\n最终结果：存在未通过或阻塞项，退出码 1。")
-            return 1
-        log("\n最终结果：无 FAIL/BLOCKED，退出码 0。")
-        return 0
+    log("———————— 汇总 ————————")
+    for r in results:
+        m = "✓" if r["verdict"] == "PASS" else ("○" if r["verdict"] == "SKIP" else "✗")
+        log(
+            f"  {m} [{r.get('tier', '')}] {r['case_title_zh']} → {r['verdict_zh']}"
+        )
+
+    verdicts = {r["verdict"] for r in results}
+    if "FAIL" in verdicts or "BLOCKED" in verdicts:
+        log("\n最终结果：存在未通过或阻塞项，退出码 1。")
+        return 1
+    log("\n最终结果：无 FAIL/BLOCKED，退出码 0。")
+    return 0
 
 
 def main() -> int:
@@ -3687,6 +4140,16 @@ def main() -> int:
         "--no-lark-report",
         action="store_true",
         help="不写入飞书 Wiki 多维表、不向会话发完成通知",
+    )
+    ap.add_argument(
+        "--skip-browser-compat",
+        action="store_true",
+        help="不在末尾子进程跑 test_k11_p2_compat_weaknet_playwright.py --only-compat",
+    )
+    ap.add_argument(
+        "--browser-compat-headless",
+        action="store_true",
+        help="浏览器兼容子进程内 Chrome/Edge 使用无头（传给 P2 的 --headless）",
     )
     ap.add_argument(
         "--lark-wiki-url",

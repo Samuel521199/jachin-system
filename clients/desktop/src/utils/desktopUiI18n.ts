@@ -1,4 +1,4 @@
-import type { DesktopUiLang } from "./desktopUiLang";
+﻿import type { DesktopUiLang } from "./desktopUiLang";
 
 /** Horizon 顶栏 */
 export const desktopHorizon = {
@@ -8,12 +8,32 @@ export const desktopHorizon = {
     exit: "退出",
     exitTitle:
       "完全退出 Jachin（结束进程；关闭主窗口仅会隐藏，请用此处或托盘菜单退出）",
+    inbox: {
+      title: "消息通知",
+      heading: "消息",
+      tabAll: "全部",
+      tabUnread: "未读",
+      tabRead: "已读",
+      markAll: "全部已读",
+      empty: "暂无哨兵消息（右下角 Jachin 弹窗会同步记录在此）",
+      loading: "加载中…",
+    },
   },
   en: {
     gpuHot: "⚠ GPU hot",
     gpuHotTitle: "GPU overheating — consider offloading to cloud",
     exit: "Exit",
     exitTitle: "Quit Jachin completely. Closing the main window only hides it; use here or the tray menu to exit.",
+    inbox: {
+      title: "Notifications",
+      heading: "Inbox",
+      tabAll: "All",
+      tabUnread: "Unread",
+      tabRead: "Read",
+      markAll: "Mark all read",
+      empty: "No sentry toasts yet (same log as bottom-right Jachin toasts).",
+      loading: "Loading…",
+    },
   },
 } as const;
 

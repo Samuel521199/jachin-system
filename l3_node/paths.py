@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 路径解析：支持 PyInstaller 打包与开发模式
 
 PyInstaller 时 __file__ 指向 _MEIPASS 临时目录，skills_repo 不在其中。
@@ -43,6 +43,37 @@ def get_app_root() -> Path:
                 return cand
         return parent
     return Path(__file__).resolve().parent.parent
+
+
+def k11_unified_smoke_script_path() -> Path:
+    """
+    ``scripts/test_k11_unified_platform_smoke_playwright.py``（统合冒烟 Playwright）。
+
+    规则同 ``kalaroko_default_e2e_script_path``：frozen 优先 ``_MEIPASS/scripts``，
+    否则便携目录 ``get_app_root()/scripts``，最后仓库根。
+    """
+    fname = "test_k11_unified_platform_smoke_playwright.py"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = get_app_root() / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return Path(__file__).resolve().parent.parent / "scripts" / fname
+
+
+def k11_p2_compat_weaknet_script_path() -> Path:
+    """``scripts/test_k11_p2_compat_weaknet_playwright.py``（P2 浏览器兼容段）。"""
+    fname = "test_k11_p2_compat_weaknet_playwright.py"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = get_app_root() / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return Path(__file__).resolve().parent.parent / "scripts" / fname
 
 
 def kalaroko_default_e2e_script_path() -> Path:

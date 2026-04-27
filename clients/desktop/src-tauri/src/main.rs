@@ -1,4 +1,4 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -18,6 +18,7 @@ mod stt;
 mod tts;
 mod window;
 mod omni_hotkey_mirror_trace;
+mod inbox_store;
 
 #[cfg(windows)]
 #[link(name = "user32")]
@@ -976,6 +977,9 @@ fn main() {
             schedule_jachin_reminder,
             cancel_jachin_reminder,
             list_jachin_reminders,
+            jachin_inbox_list,
+            jachin_inbox_mark_read,
+            jachin_inbox_mark_all_read,
             jachin_expand_main_from_notification,
             show_console_window,
             quick_action_privacy_mode,
@@ -1490,6 +1494,15 @@ pub(crate) fn show_sentry_toast_inner(
     if let Err(ref e) = show_res {
         eprintln!("[Sentry] notification show failed: {e}");
     }
+
+    // 控制台消息中心：持久化 + 广播，列表与 Omni 哨兵同源
+    match inbox_store::append_sentry_inbox(title.clone(), body.clone()) {
+        Ok(_) => {
+            let _ = app_handle.emit("jachin-inbox-updated", serde_json::json!({}));
+        }
+        Err(e) => eprintln!("[Sentry] inbox append failed: {e}"),
+    }
+
     let notif_vis_after = win.is_visible().unwrap_or(false);
     l3_spawn::write_jachin_shared_l3_debug(
         &format!("{log_prefix}_main_thread_done"),
@@ -1559,6 +1572,26 @@ fn list_jachin_reminders(
     reminders: tauri::State<'_, Arc<reminder_scheduler::ReminderService>>,
 ) -> Result<Vec<reminder_scheduler::Reminder>, String> {
     reminders.list()
+}
+
+/// L3 控制台消息中心：与右下角哨兵 toast 同源的持久化列表
+#[tauri::command]
+fn jachin_inbox_list() -> Result<Vec<inbox_store::InboxItem>, String> {
+    inbox_store::list_inbox()
+}
+
+#[tauri::command]
+fn jachin_inbox_mark_read(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    inbox_store::mark_inbox_read(id)?;
+    let _ = app.emit("jachin-inbox-updated", serde_json::json!({}));
+    Ok(())
+}
+
+#[tauri::command]
+fn jachin_inbox_mark_all_read(app: tauri::AppHandle) -> Result<(), String> {
+    inbox_store::mark_all_inbox_read()?;
+    let _ = app.emit("jachin-inbox-updated", serde_json::json!({}));
+    Ok(())
 }
 
 #[tauri::command]

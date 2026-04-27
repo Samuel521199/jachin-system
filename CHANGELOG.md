@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.45] - 2026-04-22
+
+### Added / Changed
+
+- 完成打包后冒烟测试的完整执行。
+- **Version**: Desktop **0.9.45**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.40] - 2026-04-22
 
 ### Added / Changed

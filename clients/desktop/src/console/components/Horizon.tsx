@@ -11,6 +11,7 @@ import { cn } from "../../utils/cn";
 import { useDesktopUiLang } from "../../hooks/useDesktopUiLang";
 import { desktopHorizon } from "../../utils/desktopUiI18n";
 import { DesktopLanguageMenu } from "../../components/DesktopLanguageMenu";
+import { ConsoleInboxCenter } from "./ConsoleInboxCenter";
 
 const GPU_OVERHEAT_THRESHOLD = 85;
 
@@ -114,6 +115,7 @@ export function Horizon({
         </span>
         <span className="text-cyan-800/60">│</span>
         <div className="flex shrink-0 items-center gap-2 normal-case tracking-normal [&_button]:uppercase [&_button]:tracking-[0.12em]">
+          <ConsoleInboxCenter lang={lang} />
           <DesktopLanguageMenu />
           <button
             type="button"

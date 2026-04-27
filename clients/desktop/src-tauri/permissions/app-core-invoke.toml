@@ -1,4 +1,4 @@
-[[permission]]
+﻿[[permission]]
 identifier = "allow-app-core-invoke"
 description = "Allow IPC to application custom commands (L2 gateway pairing, L3, settings, chat windows, TTS/STT, hot update)."
 commands.allow = [
@@ -26,6 +26,9 @@ commands.allow = [
   "schedule_jachin_reminder",
   "cancel_jachin_reminder",
   "list_jachin_reminders",
+  "jachin_inbox_list",
+  "jachin_inbox_mark_read",
+  "jachin_inbox_mark_all_read",
   "invoke_backend",
   "is_chat_companion_mode",
   "is_gateway_paired",

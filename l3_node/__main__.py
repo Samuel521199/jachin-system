@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 节点独立运行入口
 
 用法:
@@ -84,6 +84,17 @@ else:
 if _root and _root not in sys.path:
     sys.path.insert(0, _root)
 
+# K11 Playwright 冒烟子进程：frozen 下须用本入口加载 .py，禁止 ``l3_node.exe script.py``（bootloader 不会当 Python 解释器用）
+if __name__ == "__main__" and len(sys.argv) > 1:
+    if sys.argv[1] == "--jachin-k11-unified-smoke-subprocess":
+        from l3_node.k11_subprocess_cli import run_k11_unified_sync
+
+        raise SystemExit(run_k11_unified_sync())
+    if sys.argv[1] == "--jachin-k11-p2-compat-subprocess":
+        from l3_node.k11_subprocess_cli import run_k11_p2_compat_sync
+
+        raise SystemExit(run_k11_p2_compat_sync())
+
 # 桌面/GUI 拉起打包 exe 时无控制台：分配独立控制台（须在 logging 绑定 stdout 之前）
 if sys.platform == "win32":
     try:
@@ -100,8 +111,9 @@ if sys.platform == "win32":
         pass
 
 # 最早阶段：启动调试日志（在加载 dotenv 等之前，便于排查 exe 打包问题）
-from l3_node.early_log import setup_early_logging, trace, get_log_path
+from l3_node.early_log import install_global_exception_hooks, setup_early_logging, trace, get_log_path
 _log_path = setup_early_logging()
+install_global_exception_hooks()
 trace("early_log ready, log_path=%s", _log_path)
 
 # 尽早加载项目根 .env（逻辑在 core.l3_dotenv_merge，供 MCP 解析前再次合并共用）
@@ -114,6 +126,13 @@ except ImportError as e:
     trace("dotenv ImportError: %s", e)
 except Exception as e:
     trace("dotenv Exception: %s", e)
+
+try:
+    from l3_node.packaged_lark_env import apply_packaged_lark_to_os_environ
+
+    apply_packaged_lark_to_os_environ()
+except Exception as e:
+    trace("packaged_lark apply: %s", e)
 
 # 立即打印 API Key 状态到调试日志（脱敏：前8+后4字符，便于确认是否加载）
 def _mask_key(val: str) -> str:
@@ -445,31 +464,55 @@ async def main() -> None:
     sub_id = os.environ.get("SUB_ACCOUNT_ID", "")
 
     if args.ws_only:
+        # 与 --gateway 一致：先起 HTTP，再热线擎。否则 _create_engine_standalone 抛错时（密钥缺失、
+        # JACHIN_ACTIVE_REGION 与 DASHSCOPE_*_CN/_SEA 不匹配等）整进程在 run_http_server 之前就退出，
+        # 桌面探测 /api/v3/skills 全失败，误报「L3 技能 API 不可达」。
+        from l3_node.bootstrap import run_l3_agent
+        from l3_node.http_server import run_http_server, L3_HTTP_PORT
+        from l3_node.ws_server import run_ws_server
+
+        trace("main: ws-only mode, HTTP first then engine (same order as gateway)")
+        logger.info("L3 WebSocket 独立模式，端口 %d", args.port)
+        try:
+            await run_http_server(port=L3_HTTP_PORT)
+        except Exception:
+            logger.exception("[L3] HTTP 服务启动失败")
+            raise
+
         trace("main: ws-only mode, creating engine...")
-        engine = _create_engine_standalone()
+        try:
+            engine = _create_engine_standalone()
+        except Exception:
+            logger.exception(
+                "[L3] 独立模式引擎初始化失败（常见：未配置 DASHSCOPE_API_KEY / OPENAI_API_KEY；"
+                "或 JACHIN_ACTIVE_REGION=SEA 但仅配了国内 Key，反之亦然）。"
+                "HTTP 技能 API 已启动，可继续用控制台/K11 探测；聊天 WebSocket 须修复 .env 后重启 L3。"
+            )
+            _park = asyncio.Event()
+            await _park.wait()
+
         trace("main: engine created, loading agent_ref...")
         from l3_node.agent_ref import engine_ref
-        engine_ref["engine"] = engine
         from l3_node.background_task_service import start_background_task_runtime
 
+        engine_ref["engine"] = engine
         await start_background_task_runtime(engine)
-        from l3_node.bootstrap import run_l3_agent
-        from l3_node.ws_server import run_ws_server
-        from l3_node.http_server import run_http_server, L3_HTTP_PORT
 
-        logger.info("L3 WebSocket 独立模式，端口 %d", args.port)
         # IM 通道（Lark 长连接等）— 按 ~/.jachin/config/im_channels.yaml 启动
         try:
             from l3_node.im_channels import start_im_channels
             from l3_node.im_channels.config import ensure_config_dir
+
             ensure_config_dir()
             _loop = asyncio.get_running_loop()
             start_im_channels(run_l3_agent, engine, _loop)
             logger.info("[L3] 招聘测试请使用 Lark 长连接发消息（Lark 应用内直接与机器人对话）")
         except Exception as e:
-            logger.warning("[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml 的 app_id/app_secret", e)
+            logger.warning(
+                "[L3] IM 通道（Lark 长连接）启动跳过: %s；招聘测试需配置 ~/.jachin/config/im_channels.yaml 的 app_id/app_secret",
+                e,
+            )
         try:
-            await run_http_server(port=L3_HTTP_PORT)
             await run_ws_server(engine, run_l3_agent, port=args.port)
         finally:
             try:

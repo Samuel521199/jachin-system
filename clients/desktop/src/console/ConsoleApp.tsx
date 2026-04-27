@@ -10,6 +10,7 @@ import React, { Component, ErrorInfo, ReactNode, useState, useEffect } from "rea
 import { RouterProvider } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { consoleRouter } from "./routes";
+import { K11ScheduleLogProvider } from "./K11ScheduleLogContext";
 import { GatewayConnectScreen } from "../components/GatewayConnectScreen";
 import { UISyncProvider } from "../components/UISyncProvider";
 
@@ -116,9 +117,11 @@ export function ConsoleApp() {
 
   return (
     <ConsoleErrorBoundary>
-      <UISyncProvider>
-        <RouterProvider router={consoleRouter} />
-      </UISyncProvider>
+      <K11ScheduleLogProvider>
+        <UISyncProvider>
+          <RouterProvider router={consoleRouter} />
+        </UISyncProvider>
+      </K11ScheduleLogProvider>
     </ConsoleErrorBoundary>
   );
 }

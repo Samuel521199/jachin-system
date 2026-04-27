@@ -1,197 +1,387 @@
 ﻿/**
  * 冒烟测试 — K11 统合平台 Playwright 冒烟（子进程，SSE 日志）
- * 后端：L3 `GET /api/v1/k11-unified-smoke/stream` → `python scripts/test_k11_unified_platform_smoke_playwright.py`
+ * 多轮/间隔/定时 行为对齐「巡检中枢」；目标 URL 与 CDP 由 .env/脚本默认处理。
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlaskConical } from "lucide-react";
 import { cn } from "../../utils/cn";
-import { getK11P2CompatOnlyStreamUrl, getK11UnifiedSmokeStreamUrl, getL3MonitorApiUrl } from "../../lib/api";
+import { useK11ScheduleLogLines } from "../K11ScheduleLogContext";
+import {
+  getK11P2CompatOnlyStreamUrlAsync,
+  getK11UnifiedSmokeStreamUrlAsync,
+  getL3MonitorApiUrlAsync,
+} from "../../lib/api";
 
-const DEFAULT_TARGET = "https://www.kalaroko.com/";
+const DEFAULT_SMOKE_HOUR_BEIJING = 9;
+const DEFAULT_SMOKE_MINUTE_BEIJING = 0;
 
 export function K11UnifiedSmokeTest() {
-  const [targetUrl, setTargetUrl] = useState(DEFAULT_TARGET);
-  const [cdpHttp, setCdpHttp] = useState("");
+  const scheduleLogLines = useK11ScheduleLogLines();
+  const [runs, setRuns] = useState(4);
+  const [intervalSec, setIntervalSec] = useState(30);
   const [verbose, setVerbose] = useState(true);
   const [noLark, setNoLark] = useState(false);
   const [headlessP2, setHeadlessP2] = useState(false);
+  const [hourBeijing, setHourBeijing] = useState(DEFAULT_SMOKE_HOUR_BEIJING);
+  const [minuteBeijing, setMinuteBeijing] = useState(DEFAULT_SMOKE_MINUTE_BEIJING);
   const [running, setRunning] = useState(false);
+  /** 仅 L3 端口探测中；勿与 running 混用，否则未起 L3 时长时间禁用「启动」像卡死。 */
+  const [l3Probing, setL3Probing] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
+  const displayLogs = useMemo(
+    () => [...scheduleLogLines, ...logs],
+    [logs, scheduleLogLines]
+  );
   const [doneOk, setDoneOk] = useState<boolean | null>(null);
   const [showNotify, setShowNotify] = useState(false);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [notifyMsg, setNotifyMsg] = useState("K11 统合冒烟已完成（退出码 0）");
+  const [schedulerActive, setSchedulerActive] = useState(false);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [saveScheduleLoading, setSaveScheduleLoading] = useState(false);
+  const [scheduleSaveBanner, setScheduleSaveBanner] = useState<string | null>(null);
+  const scheduleSaveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const esRef = useRef<EventSource | null>(null);
+  /** 打包环境 WebView2 下 EventSource 可能因瞬时错误触发 onerror，勿据此结束任务；节流提示日志。 */
+  const sseTransientWarnAtRef = useRef(0);
 
   useEffect(
     () => () => {
       esRef.current?.close();
+      setRunning(false);
+      setL3Probing(false);
+    },
+    []
+  );
+
+  const refreshScheduleStatus = useCallback(async () => {
+    try {
+      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/status");
+      const res = await fetch(url);
+      const data = (await res.json()) as {
+        active?: boolean;
+        hour_beijing?: number;
+        minute_beijing?: number;
+        runs?: number;
+        interval_sec?: number;
+      };
+      if (typeof data.active === "boolean") {
+        setSchedulerActive(data.active);
+      }
+      if (typeof data.hour_beijing === "number") {
+        setHourBeijing(data.hour_beijing);
+      }
+      if (typeof data.minute_beijing === "number") {
+        setMinuteBeijing(data.minute_beijing);
+      }
+      if (typeof data.runs === "number") {
+        setRuns(data.runs);
+      }
+      if (typeof data.interval_sec === "number") {
+        setIntervalSec(data.interval_sec);
+      }
+    } catch {
+      setSchedulerActive(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void refreshScheduleStatus();
+    const id = window.setInterval(() => {
+      if (!cancelled) void refreshScheduleStatus();
+    }, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [refreshScheduleStatus]);
+
+  useEffect(
+    () => () => {
+      if (scheduleSaveTimerRef.current) window.clearTimeout(scheduleSaveTimerRef.current);
     },
     []
   );
 
   const handleStop = useCallback(async () => {
     try {
-      const url = getL3MonitorApiUrl("/api/v1/k11-unified-smoke/stop");
+      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/stop");
       const res = await fetch(url, { method: "POST" });
-      const ok = res.ok;
-      setLogs((prev) => [...prev, ok ? "> 已发送停止信号（子进程将尽快退出）…" : "> 停止请求失败（HTTP）。"]);
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        active_child?: boolean;
+        message?: string;
+      };
+      const ok = res.ok && data?.ok !== false;
+      setLogs((prev) => [
+        ...prev,
+        !ok
+          ? "> 停止请求失败（HTTP）。"
+          : data.active_child === false
+            ? `> ${String(data.message || "无运行中子进程；已记录停止或跳过排队轮次。")}`
+            : "> 已发送停止信号（子进程将尽快退出）…",
+      ]);
+      if (ok) {
+        esRef.current?.close();
+        esRef.current = null;
+        setRunning(false);
+      }
     } catch {
       setLogs((prev) => [...prev, "> 停止请求失败（网络）。"]);
     }
   }, []);
 
+  const handleScheduleToggle = useCallback(
+    async (enabled: boolean) => {
+      setScheduleLoading(true);
+      try {
+        const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle");
+        const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
+        const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
+        const h = Math.max(0, Math.min(23, Math.floor(hourBeijing) || DEFAULT_SMOKE_HOUR_BEIJING));
+        const m = Math.max(0, Math.min(59, Math.floor(minuteBeijing) || 0));
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled, hour_beijing: h, minute_beijing: m, runs: r, interval_sec: i }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          enabled?: boolean;
+          active?: boolean;
+        };
+        const on =
+          typeof data.enabled === "boolean"
+            ? data.enabled
+            : typeof data.active === "boolean"
+              ? data.active
+              : enabled;
+        setSchedulerActive(on);
+        void refreshScheduleStatus();
+      } catch {
+        setLogs((prev) => [...prev, "> [WARN] 冒烟定时任务开关请求失败。"]);
+      } finally {
+        setScheduleLoading(false);
+      }
+    },
+    [hourBeijing, intervalSec, minuteBeijing, refreshScheduleStatus, runs]
+  );
+
+  const handleSaveSchedule = useCallback(async () => {
+    setSaveScheduleLoading(true);
+    setScheduleSaveBanner(null);
+    try {
+      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle");
+      const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
+      const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
+      const h = Math.max(0, Math.min(23, Math.floor(hourBeijing) || DEFAULT_SMOKE_HOUR_BEIJING));
+      const m = Math.max(0, Math.min(59, Math.floor(minuteBeijing) || 0));
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: schedulerActive,
+          hour_beijing: h,
+          minute_beijing: m,
+          runs: r,
+          interval_sec: i,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; active?: boolean };
+      if (res.ok && data.ok !== false) {
+        if (typeof data.active === "boolean") {
+          setSchedulerActive(data.active);
+        }
+        const timeLabel = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+        setScheduleSaveBanner(
+          schedulerActive
+            ? `已保存并生效：每日北京时间 ${timeLabel} 开跑，${r} 轮、间隔 ${i} 秒。`
+            : `已保存定时：北京时间 ${timeLabel}（当前开关为关，打开「每日批跑」后会在该时刻执行）。`
+        );
+        if (scheduleSaveTimerRef.current) window.clearTimeout(scheduleSaveTimerRef.current);
+        scheduleSaveTimerRef.current = window.setTimeout(() => {
+          setScheduleSaveBanner(null);
+          scheduleSaveTimerRef.current = null;
+        }, 5000);
+        void refreshScheduleStatus();
+      } else {
+        setScheduleSaveBanner("保存失败，请重试或查看 L3 日志。");
+      }
+    } catch {
+      setScheduleSaveBanner("保存失败（网络或 L3 未就绪）。");
+    } finally {
+      setSaveScheduleLoading(false);
+    }
+  }, [hourBeijing, intervalSec, minuteBeijing, refreshScheduleStatus, runs, schedulerActive]);
+
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
+  }, [displayLogs]);
+
+  const connectSse = useCallback(
+    (streamUrl: string, initLogs: string[], notify: string) => {
+      setNotifyMsg(notify);
+      setLogs(initLogs);
+      setDoneOk(null);
+      setExitCode(null);
+      setShowNotify(false);
+      const eventSource = new EventSource(streamUrl);
+      esRef.current = eventSource;
+      setRunning(true);
+
+      eventSource.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const data = JSON.parse(event.data) as Record<string, unknown>;
+          if (data.type === "done") {
+            const ok = data.ok === true;
+            const cancelled = data.cancelled === true;
+            setDoneOk(ok);
+            if (typeof data.exit_code === "number") {
+              setExitCode(data.exit_code);
+            } else {
+              setExitCode(null);
+            }
+            if (cancelled) {
+              setLogs((prev) => [...prev, "> █ 已中断。"]);
+            }
+            setLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
+            setRunning(false);
+            eventSource.close();
+            if (ok) {
+              setShowNotify(true);
+              window.setTimeout(() => setShowNotify(false), 7000);
+            }
+            return;
+          }
+          if (data.type === "error") {
+            const msg = typeof data.message === "string" ? data.message : "未知错误";
+            setLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
+            setRunning(false);
+            setDoneOk(false);
+            eventSource.close();
+            return;
+          }
+          if (typeof data.line === "string") {
+            setLogs((prev) => [...prev, `> ${data.line}`]);
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      eventSource.onerror = () => {
+        // 规范下 onerror 在重连/抖动时也会触发；若此处 setRunning(false)+close 会导致「执行中但停止永灰」。
+        // 正常结束以 onmessage 的 type done / error 为准；主动停止见 handleStop。
+        if (eventSource.readyState === EventSource.CLOSED) {
+          const hint = import.meta.env.DEV
+            ? "请确认 L3 已启动且本页开发代理 /l3 可用。"
+            : "请确认本机 L3 已跑起来；若仅 SSE 已断、子进程仍在，请点「停止」。";
+          setLogs((prev) => [...prev, `> [WARN] SSE 已结束（无自动重连）。${hint}`]);
+          return;
+        }
+        const now = Date.now();
+        if (now - sseTransientWarnAtRef.current > 8000) {
+          sseTransientWarnAtRef.current = now;
+          setLogs((prev) => [
+            ...prev,
+            "> [INFO] SSE 连接异常或抖动（可能自动重试）；未收到任务结束信令前仍可点「停止」。",
+          ]);
+        }
+      };
+    },
+    []
+  );
 
   const handleStart = useCallback(() => {
-    esRef.current?.close();
-    setNotifyMsg("K11 统合冒烟已完成（退出码 0）");
-    setLogs([
-      "> 初始化 K11 统合平台冒烟（Playwright）…",
-      `> 目标: ${targetUrl.trim() || `（脚本默认 ${DEFAULT_TARGET}）`}`,
-      "> 连接 L3 SSE 流…",
-    ]);
-    setDoneOk(null);
-    setExitCode(null);
-    setShowNotify(false);
-
-    const u = targetUrl.trim();
-    const cdp = cdpHttp.trim();
-    const streamUrl = getK11UnifiedSmokeStreamUrl({
-      targetUrl: u || undefined,
-      cdpHttp: cdp || undefined,
-      verbose,
-      noLarkReport: noLark,
-    });
-    const eventSource = new EventSource(streamUrl);
-    esRef.current = eventSource;
-    setRunning(true);
-
-    eventSource.onmessage = (event: MessageEvent<string>) => {
+    void (async () => {
+      esRef.current?.close();
+      const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
+      const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
+      setL3Probing(true);
+      setDoneOk(null);
+      setExitCode(null);
+      setLogs([
+        "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行回退）…",
+        "> 若失败将很快报 [ERROR]；本机 L3 未起时请运行 run_l3.bat 或主程序同目录 l3 侧车。",
+      ]);
+      let streamUrl: string;
       try {
-        const data = JSON.parse(event.data) as Record<string, unknown>;
-        if (data.type === "done") {
-          const ok = data.ok === true;
-          const cancelled = data.cancelled === true;
-          setDoneOk(ok);
-          if (typeof data.exit_code === "number") {
-            setExitCode(data.exit_code);
-          } else {
-            setExitCode(null);
-          }
-          if (cancelled) {
-            setLogs((prev) => [...prev, "> █ 冒烟已中断（子进程/连接取消）。"]);
-          }
-          setLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
-          setRunning(false);
-          eventSource.close();
-          if (ok) {
-            setShowNotify(true);
-            window.setTimeout(() => setShowNotify(false), 7000);
-          }
-          return;
-        }
-        if (data.type === "error") {
-          const msg = typeof data.message === "string" ? data.message : "未知错误";
-          setLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
-          setRunning(false);
-          setDoneOk(false);
-          eventSource.close();
-          return;
-        }
-        if (typeof data.line === "string") {
-          setLogs((prev) => [...prev, `> ${data.line}`]);
-        }
-      } catch {
-        /* ignore */
+        streamUrl = await getK11UnifiedSmokeStreamUrlAsync({
+          verbose,
+          noLarkReport: noLark,
+          runs: r,
+          interval: i,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setLogs([
+          `> [ERROR] 连不上 L3：${msg}`,
+          "> 另一台电脑若未起 L3：请与 Jachin 主程序同目录运行 run_l3.bat，或确认主程序未禁用自动拉起（勿随意设 JACHIN_SKIP_L3_SPAWN=1）。查看同目录 l3_debug.log。",
+        ]);
+        return;
+      } finally {
+        setL3Probing(false);
       }
-    };
-
-    eventSource.onerror = () => {
-      setLogs((prev) => [...prev, "> [WARN] 流异常中断（请确认 L3 已启动且 `/l3` 代理可用）。"]);
-      setRunning(false);
-      setDoneOk(false);
-      eventSource.close();
-    };
-  }, [cdpHttp, noLark, targetUrl, verbose]);
+      connectSse(
+        streamUrl,
+        [
+          "> 初始化 K11 统合平台冒烟（Playwright）…",
+          `> 计划: ${r} 轮, 轮次间隔: ${i} 秒（目标/ CDP 由 .env 与脚本默认站）`,
+          "> 连接 L3 SSE 流…",
+        ],
+        "K11 统合冒烟已完成（退出码 0）"
+      );
+    })();
+  }, [connectSse, intervalSec, noLark, runs, verbose]);
 
   const handleStartP2CompatOnly = useCallback(() => {
-    esRef.current?.close();
-    setNotifyMsg("P2 浏览器兼容已完成（退出码 0）");
-    setLogs([
-      "> 模式：P2 浏览器兼容独立（--only-compat，Chrome/Edge 双通道）…",
-      `> 目标: ${targetUrl.trim() || "（脚本默认见 test_k11_p2_compat_weaknet_playwright 文档）"}`,
-      "> 等效: python scripts/test_k11_p2_compat_weaknet_playwright.py --only-compat",
-      "> 连接 L3 SSE 流…",
-    ]);
-    setDoneOk(null);
-    setExitCode(null);
-    setShowNotify(false);
-
-    const u = targetUrl.trim();
-    const cdp = cdpHttp.trim();
-    const streamUrl = getK11P2CompatOnlyStreamUrl({
-      targetUrl: u || undefined,
-      cdpHttp: cdp || undefined,
-      verbose,
-      noLarkReport: noLark,
-      headless: headlessP2,
-    });
-    const eventSource = new EventSource(streamUrl);
-    esRef.current = eventSource;
-    setRunning(true);
-
-    eventSource.onmessage = (event: MessageEvent<string>) => {
+    void (async () => {
+      esRef.current?.close();
+      const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
+      const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
+      setL3Probing(true);
+      setDoneOk(null);
+      setExitCode(null);
+      setLogs([
+        "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行）…",
+        "> 请确认 L3 已运行。",
+      ]);
+      let streamUrl: string;
       try {
-        const data = JSON.parse(event.data) as Record<string, unknown>;
-        if (data.type === "done") {
-          const ok = data.ok === true;
-          const cancelled = data.cancelled === true;
-          setDoneOk(ok);
-          if (typeof data.exit_code === "number") {
-            setExitCode(data.exit_code);
-          } else {
-            setExitCode(null);
-          }
-          if (cancelled) {
-            setLogs((prev) => [...prev, "> █ 已中断。"]);
-          }
-          setLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
-          setRunning(false);
-          eventSource.close();
-          if (ok) {
-            setShowNotify(true);
-            window.setTimeout(() => setShowNotify(false), 7000);
-          }
-          return;
-        }
-        if (data.type === "error") {
-          const msg = typeof data.message === "string" ? data.message : "未知错误";
-          setLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
-          setRunning(false);
-          setDoneOk(false);
-          eventSource.close();
-          return;
-        }
-        if (typeof data.line === "string") {
-          setLogs((prev) => [...prev, `> ${data.line}`]);
-        }
-      } catch {
-        /* ignore */
+        streamUrl = await getK11P2CompatOnlyStreamUrlAsync({
+          verbose,
+          noLarkReport: noLark,
+          headless: headlessP2,
+          runs: r,
+          interval: i,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setLogs([
+          `> [ERROR] 连不上 L3：${msg}`,
+          "> 请确认 L3 已运行（同目录 run_l3.bat 或主程序随附侧车），并见 l3_debug.log。",
+        ]);
+        return;
+      } finally {
+        setL3Probing(false);
       }
-    };
+      connectSse(
+        streamUrl,
+        [
+          "> 模式：P2 浏览器兼容（--only-compat）…",
+          `> 计划: ${r} 轮, 间隔: ${i} 秒`,
+          "> 等效: test_k11_p2_compat_weaknet_playwright.py --only-compat",
+          "> 连接 L3 SSE 流…",
+        ],
+        "P2 浏览器兼容已完成（退出码 0）"
+      );
+    })();
+  }, [connectSse, headlessP2, intervalSec, noLark, runs, verbose]);
 
-    eventSource.onerror = () => {
-      setLogs((prev) => [...prev, "> [WARN] 流异常中断（请确认 L3 已启动且 `/l3` 代理可用）。"]);
-      setRunning(false);
-      setDoneOk(false);
-      eventSource.close();
-    };
-  }, [cdpHttp, headlessP2, noLark, targetUrl, verbose]);
+  /** 探测 L3 与执行冒烟：合并后控制「启动」灰显，避免仅 running 在探测期误判为整轮执行中。 */
+  const l3OrRun = l3Probing || running;
 
   return (
     <div className="relative flex h-full min-h-0 flex-col gap-5 p-6 text-cyan-300">
@@ -218,32 +408,34 @@ export function K11UnifiedSmokeTest() {
           >
             ■ K11 统合平台冒烟
           </h2>
-          <p className="text-xs text-cyan-700/90">脚本：scripts/test_k11_unified_platform_smoke_playwright.py</p>
+          <p className="text-xs text-cyan-700/90">scripts/test_k11_unified_platform_smoke_playwright.py</p>
         </div>
       </header>
 
       <section className="flex flex-shrink-0 flex-col gap-4 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.05] p-4">
         <div className="flex flex-wrap items-end gap-4">
-          <label className="flex min-w-[220px] max-w-md flex-1 flex-col gap-1 text-xs text-cyan-600/90">
-            目标 URL（--target-url，空则由脚本使用默认站）
+          <label className="flex flex-col gap-1 text-xs text-cyan-600/90">
+            执行轮数 (Runs)
             <input
-              type="url"
-              value={targetUrl}
-              disabled={running}
-              onChange={(e) => setTargetUrl(e.target.value)}
-              placeholder={DEFAULT_TARGET}
-              className="rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
+              type="number"
+              min={1}
+              max={99}
+              value={runs}
+              disabled={l3OrRun}
+              onChange={(e) => setRuns(Number(e.target.value))}
+              className="w-24 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
             />
           </label>
-          <label className="flex min-w-[200px] max-w-md flex-1 flex-col gap-1 text-xs text-cyan-600/90">
-            CDP 端点（--cdp-http，可选，覆盖 KALAROKO_CDP_ENDPOINT）
+          <label className="flex flex-col gap-1 text-xs text-cyan-600/90">
+            轮次间隔 (秒)
             <input
-              type="url"
-              value={cdpHttp}
-              disabled={running}
-              onChange={(e) => setCdpHttp(e.target.value)}
-              placeholder="留空用环境/默认"
-              className="rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-sm text-cyan-100 outline-none focus:border-cyan-400/60"
+              type="number"
+              min={0}
+              max={3600}
+              value={intervalSec}
+              disabled={l3OrRun}
+              onChange={(e) => setIntervalSec(Number(e.target.value))}
+              className="w-28 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
             />
           </label>
         </div>
@@ -252,17 +444,17 @@ export function K11UnifiedSmokeTest() {
             <input
               type="checkbox"
               checked={verbose}
-              disabled={running}
+              disabled={l3OrRun}
               onChange={(e) => setVerbose(e.target.checked)}
               className="h-3.5 w-3.5"
             />
             详细输出 (-v)
           </label>
-          <label className="flex cursor-pointer items-center gap-2" title="脚本 --no-lark-report：不写飞书、不发完成通知">
+          <label className="flex cursor-pointer items-center gap-2" title="脚本 --no-lark-report">
             <input
               type="checkbox"
               checked={noLark}
-              disabled={running}
+              disabled={l3OrRun}
               onChange={(e) => setNoLark(e.target.checked)}
               className="h-3.5 w-3.5"
             />
@@ -273,38 +465,38 @@ export function K11UnifiedSmokeTest() {
           <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"
-              disabled={running}
+              disabled={l3OrRun}
               onClick={handleStart}
               className={cn(
                 "rounded-lg px-5 py-2.5 text-sm font-bold transition-all",
-                running
+                l3OrRun
                   ? "cursor-not-allowed bg-slate-800 text-slate-500"
                   : "bg-cyan-400 text-black shadow-[0_0_24px_rgba(34,211,238,0.35)] hover:bg-cyan-300"
               )}
             >
-              {running ? "执行中…" : "🚀 启动统合冒烟"}
+              {l3Probing ? "探测 L3 中…" : running ? "执行中…" : "🚀 启动统合冒烟"}
             </button>
             <button
               type="button"
-              disabled={running}
+              disabled={l3OrRun}
               onClick={handleStartP2CompatOnly}
               className={cn(
                 "rounded-lg border px-4 py-2.5 text-sm font-bold transition-all",
-                running
+                l3OrRun
                   ? "cursor-not-allowed border-slate-700 bg-slate-900/50 text-slate-600"
                   : "border-cyan-500/50 bg-cyan-950/40 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.2)] hover:bg-cyan-900/50"
               )}
-              title="等效：test_k11_p2_compat_weaknet_playwright.py --only-compat"
+              title="--only-compat"
             >
-              🧩 仅浏览器兼容
+              {l3Probing ? "探测 L3…" : "🧩 仅浏览器兼容"}
             </button>
             <button
               type="button"
-              disabled={!running}
+              disabled={!(running || l3Probing)}
               onClick={() => void handleStop()}
               className={cn(
                 "rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all",
-                running
+                running || l3Probing
                   ? "border-rose-500/50 bg-rose-950/40 text-rose-200 hover:bg-rose-900/50"
                   : "cursor-not-allowed border-slate-700 bg-slate-900/40 text-slate-600"
               )}
@@ -313,13 +505,13 @@ export function K11UnifiedSmokeTest() {
             </button>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3 text-[11px] text-cyan-600/80">
-            <span className="text-cyan-500/80">P2 兼容段</span>
+            <span className="text-cyan-500/80">P2 兼容</span>
             <label className="flex cursor-pointer items-center gap-1.5">
               <input
                 type="checkbox"
                 className="h-3.5 w-3.5"
                 checked={headlessP2}
-                disabled={running}
+                disabled={l3OrRun}
                 onChange={(e) => setHeadlessP2(e.target.checked)}
               />
               无头 (--headless)
@@ -327,11 +519,90 @@ export function K11UnifiedSmokeTest() {
           </div>
         </div>
         <p className="text-[11px] leading-relaxed text-cyan-600/75">
-          在 L3 本机以子进程跑上述脚本，日志经 SSE 推送到本页。统合冒烟需
-          <code className="text-cyan-500/85">KALAROKO_CDP_ENDPOINT</code>
-          等；P2 仅「浏览器兼容」段自行起 Chrome/Edge，一般 <strong>不依赖</strong> CDP。飞书表与完成卡与统合脚本共用{" "}
-          <code className="text-cyan-500/85">k11_lark_smoke_report</code>。
+          「启动统合冒烟」为<strong className="text-cyan-500/90">本页 SSE 流</strong>，按上列轮次与间隔串行多轮。目标/ CDP
+          由 <code className="text-cyan-500/85">.env</code> 与脚本默认。定时任务在 L3 本机、到点用当前轮次/间隔与{" "}
+          <code className="text-cyan-500/85">-v</code> 批跑，进程日志搜{" "}
+          <code className="text-cyan-500/80">[k11_unified_smoke_scheduler]</code>；完全不发飞书可设环境{" "}
+          <code className="text-cyan-500/80">K11_SCHEDULED_SMOKE_NO_LARK=1</code>（定时批跑）。
         </p>
+        <div className="flex flex-col gap-3 border-t border-cyan-500/15 pt-4">
+          <div className="text-xs font-medium text-cyan-500/90">⏲️ 每日统合冒烟（北京时间）</div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1 text-xs text-cyan-600/90" title="北京时，整点/任意分钟，到点在本机 L3 顺序执行上列轮次（无 SSE）">
+              时
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={hourBeijing}
+                disabled={l3OrRun}
+                onChange={(e) => setHourBeijing(Number(e.target.value))}
+                className="w-16 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
+              />
+            </label>
+            <span className="mb-2 text-cyan-500/50">:</span>
+            <label className="flex flex-col gap-1 text-xs text-cyan-600/90" title="0–59 分">
+              分
+              <input
+                type="number"
+                min={0}
+                max={59}
+                value={minuteBeijing}
+                disabled={l3OrRun}
+                onChange={(e) => setMinuteBeijing(Number(e.target.value))}
+                className="w-16 rounded border border-cyan-500/35 bg-black/60 px-2 py-1.5 font-mono text-cyan-100 outline-none focus:border-cyan-400/60"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={l3OrRun || saveScheduleLoading}
+              onClick={() => void handleSaveSchedule()}
+              className={cn(
+                "mb-0.5 rounded-lg border px-4 py-2 text-xs font-semibold transition",
+                l3OrRun || saveScheduleLoading
+                  ? "cursor-not-allowed border-slate-700 text-slate-500"
+                  : "border-cyan-500/50 bg-cyan-950/50 text-cyan-100 shadow-[0_0_12px_rgba(34,211,238,0.15)] hover:border-cyan-400/50 hover:bg-cyan-900/40"
+              )}
+            >
+              {saveScheduleLoading ? "保存中…" : "保存定时配置"}
+            </button>
+          </div>
+          {scheduleSaveBanner && (
+            <p className="text-xs leading-relaxed text-emerald-400/90" role="status">
+              {scheduleSaveBanner}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div
+              className="flex items-center gap-2"
+              title="已写入 L3 状态文件，保存定时后若开关为开会立即重排任务"
+            >
+              <span
+                className={cn(
+                  "inline-block h-2.5 w-2.5 shrink-0 rounded-full",
+                  schedulerActive === true ? "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.7)]" : "bg-slate-600"
+                )}
+                aria-hidden
+              />
+              <span className="text-xs text-cyan-600/85">
+                {schedulerActive ? "Active" : "Inactive"} · 北京{" "}
+                {`${String(hourBeijing).padStart(2, "0")}:${String(minuteBeijing).padStart(2, "0")}`}
+                （填好时刻后点「保存定时配置」写入 L3；再打开开关即按该时刻批跑）
+              </span>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-cyan-600/90">
+              <span className="select-none">开启每日到点批跑</span>
+              <input
+                type="checkbox"
+                role="switch"
+                className="h-4 w-9 cursor-pointer appearance-none rounded-full border border-cyan-500/40 bg-black/70 transition checked:bg-emerald-600/80 disabled:opacity-40"
+                checked={schedulerActive}
+                disabled={scheduleLoading}
+                onChange={(e) => void handleScheduleToggle(e.target.checked)}
+              />
+            </label>
+          </div>
+        </div>
       </section>
 
       <section className="flex min-h-0 flex-1 flex-col gap-2">
@@ -343,10 +614,19 @@ export function K11UnifiedSmokeTest() {
             "[text-shadow:0_0_10px_rgba(6,182,212,0.12)]"
           )}
         >
-          {logs.length === 0 && (
-            <div className="text-cyan-700/65">等待启动… 子进程标准输出将在此流式显示。</div>
+          {displayLogs.length === 0 && !l3OrRun && (
+            <div className="text-cyan-700/65">
+              等待启动…
+              点「启动统合冒烟」/「P2 浏览器兼容…」后，会先有「正在探测 L3…」行，再出 SSE 流。
+              未点按钮时，每日定时批跑若已开启，到点需 L3 在跑且本页在订阅定时日志，才会在此出现批跑行。
+            </div>
           )}
-          {logs.map((log, index) => (
+          {displayLogs.length === 0 && l3OrRun && (
+            <div className="text-cyan-600/80">
+              已请求（探测 L3 或已连 SSE）… 若长期无新行：本机 L3 未起、或 127.0.0.1:1899x 被拦截；侧车未随主程序启动时检查 run_l3.bat / 勿设 JACHIN_SKIP_L3_SPAWN=1。
+            </div>
+          )}
+          {displayLogs.map((log, index) => (
             <div key={`${index}-${log.slice(0, 48)}`} className="mb-1 break-words whitespace-pre-wrap">
               {log}
             </div>

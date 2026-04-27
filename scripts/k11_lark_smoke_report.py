@@ -15,6 +15,8 @@ K11 统合冒烟：将结果同步到 Lark 知识库内嵌「多维表 bitable�
 
 应用需具备：Wiki 读节点；多维表编辑或电子表格（sheets:spreadsheet）编辑等权限，且机器人有文档协作者权限。
 
+飞书 API code **230002** / ``Bot/User can NOT be out of the chat``：发消息/卡片的 **chat_id** 对应会话里**没有本应用机器人**（与打包无关）。请把机器人拉入目标群/话题，或把 ``K11_SMOKE_LARK_NOTIFY_CHAT_ID`` / ``LARK_CHAT_ID`` 改为已含该机器人的 ``oc_...`` 会话。
+
 电子表格若「结果」列为复选框，同步时写入 **1=勾选（PASS）** 与 **0=未选（非 PASS）**，不写字符串 "PASS"。
 """
 from __future__ import annotations
@@ -35,6 +37,11 @@ _DEFAULT_WIKI_URL = (
 )
 _DEFAULT_NOTIFY_CHAT_ID = "oc_b1b9cff6804517c79b7f5a617ab30483"
 
+# 战报标题：与业务侧「综合冒烟」用语一致；勿与「统合」脚本文件名混为显示名
+K11_LARK_CARD_TITLE = "【K11 综合冒烟】战报"
+# 飞书 IM 交互卡 content 过大时首包失败，会误退化为 lark_md 列表样式
+_K11_CARD_JSON_SOFT_MAX = 28_000
+
 
 def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
     """
@@ -42,9 +49,35 @@ def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
     优先 K11 专用，否则走 ``resolve_lark_credentials()``（.env 中 LARK_APP_* 与 ~/.jachin/config 等）。
     """
     try:
+        from l3_node.packaged_lark_env import apply_packaged_lark_to_os_environ
+
+        apply_packaged_lark_to_os_environ()
+    except Exception:
+        pass
+    try:
         from dotenv import load_dotenv
 
-        load_dotenv(ROOT / ".env", encoding="utf-8")
+        # 打包子进程里本文件可能在 _MEIPASS；须与统合脚本一致优先读 JACHIN_APP_ROOT/.env
+        _cands: list[Path] = []
+        _ja = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+        if _ja:
+            _cands.append(Path(_ja).expanduser().resolve() / ".env")
+        try:
+            from l3_node.paths import get_app_root
+
+            _cands.append(get_app_root() / ".env")
+        except Exception:
+            pass
+        _cands.append(ROOT / ".env")
+        _seen: set[str] = set()
+        for _p in _cands:
+            _k = str(_p)
+            if _k in _seen:
+                continue
+            _seen.add(_k)
+            if _p.is_file():
+                load_dotenv(_p, encoding="utf-8")
+                break
     except Exception:
         pass
     a = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
@@ -60,6 +93,64 @@ def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
     except Exception:
         pass
     return "", "", None
+
+
+def log_k11_lark_runtime_identity(
+    log: Callable[[str], None],
+    *,
+    phase: str,
+    effective_app_id: str,
+    effective_app_secret: str,
+    send_chat_id: str | None = None,
+) -> None:
+    """
+    冒烟回写/发消息前打一行诊断：生效的 app_id、会话 id、内嵌与进程环境对比。
+    打包子进程会先 ``apply_packaged_lark_to_os_environ``，再 ``load_dotenv(..., override=False)``，
+    故 **安装目录 .env 的 LARK_APP_ID 往往无法覆盖内嵌**（除非已设 K11_SMOKE_* 或未内嵌该键）。
+    """
+    k11_a = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
+    env_lark_a = (os.environ.get("LARK_APP_ID") or "").strip()
+    n_c = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
+    l_c = (os.environ.get("LARK_CHAT_ID") or "").strip()
+    ja = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+    app_root = ""
+    try:
+        from l3_node.paths import get_app_root
+
+        app_root = str(get_app_root())
+    except Exception:
+        pass
+    pkg_lark = ""
+    try:
+        from l3_node.packaged_lark_env_generated import PACKAGED_LARK_ENV
+
+        pkg_lark = str((PACKAGED_LARK_ENV.get("LARK_APP_ID") or "").strip())
+    except Exception:
+        pkg_lark = ""
+    if k11_a and k11_a == (effective_app_id or "").strip():
+        src_guess = "K11_SMOKE_LARK_APP_ID"
+    elif pkg_lark and pkg_lark == (effective_app_id or "").strip():
+        src_guess = "内嵌PACKAGED_LARK或同值环境"
+    elif env_lark_a == (effective_app_id or "").strip():
+        src_guess = "LARK_APP_ID环境/im_channels等"
+    else:
+        src_guess = "resolve_lark_credentials(其它)"
+    parts = [
+        f"  [lark·身份·{phase}] 生效_app_id={effective_app_id!r}",
+        f"app_secret_len={len(effective_app_secret)}",
+        f"推断来源≈{src_guess}",
+        f"env_K11_SMOKE_LARK_NOTIFY_CHAT_ID={n_c or '(未设)'}",
+        f"env_LARK_CHAT_ID={l_c or '(未设)'}",
+        f"JACHIN_APP_ROOT={ja or '(未设)'}",
+        f"get_app_root={app_root or '(n/a)'}",
+        f"内嵌generated_LARK_APP_ID={pkg_lark or '(无/未打包)'}",
+        f"进程LARK_APP_ID={(env_lark_a or '(未设)')!r}",
+    ]
+    if send_chat_id is not None:
+        parts.append(
+            f"发消息_receive_id(chat_id)={send_chat_id!r}（230002=机器人未进该会话）"
+        )
+    log(" | ".join(parts))
 
 
 def _lark_get(api_base: str, token: str, path: str, params: dict | None = None) -> dict[str, Any]:
@@ -503,6 +594,13 @@ def write_k11_unified_results_to_lark_bitable(
     if not (app_id or "").strip() or not (app_secret or "").strip():
         log("  [lark] 已使用 LARK_APP_ID / im_channels.lark 等通用凭证（非 K11_SMOKE_* 专用名）。")
 
+    log_k11_lark_runtime_identity(
+        log,
+        phase="写Wiki/表格",
+        effective_app_id=aid,
+        effective_app_secret=sec,
+    )
+
     try:
         import requests
     except ImportError:
@@ -712,27 +810,46 @@ def _k11_result_column_lark_md(verdict: str, verdict_zh: str) -> str:
     return f"🟡 {z}"
 
 
-def _build_k11_smoke_table_element(results: list[dict[str, Any]]) -> dict[str, Any]:
+def _k11_result_column_plain(verdict: str, verdict_zh: str) -> str:
+    """无 emoji，供「体积/兼容性」降级后的结果列（text）。"""
+    return _k11_lark_md_escape(str(verdict_zh or verdict or "").strip() or "—", 32)
+
+
+def _build_k11_smoke_table_element(
+    results: list[dict[str, Any]],
+    *,
+    title_max: int = 200,
+    remark_max: int = 240,
+    plain_result: bool = False,
+) -> dict[str, Any]:
     """
     飞书消息卡片 1.0 原生 table（需客户端 ≥7.4）。列：测试项目、结果、备注。
+
+    **备注/标题必须截断**：交互卡 ``content`` 有体积极限，行数一多+长 detail 会首包失败，触发旧版 lark_md 回退。
+
     文档：https://open.larksuite.com/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-components/content-components/table
     """
     rows: list[dict[str, Any]] = []
     for r in results:
         tzh = _k11_lark_md_escape(
-            str(r.get("case_title_zh") or r.get("case") or ""), 800
+            str(r.get("case_title_zh") or r.get("case") or ""), max(60, title_max)
         )
         v_raw = r.get("verdict")
         v = str(v_raw if v_raw is not None else "").strip()
         vzh = str(r.get("verdict_zh") or v or "").strip()
-        res_md = _k11_result_column_lark_md(v, vzh)
-        note = _k11_lark_md_escape(str(r.get("detail") or ""), 1200)
+        if plain_result:
+            res_val = _k11_result_column_plain(v, vzh)
+        else:
+            res_val = _k11_result_column_lark_md(v, vzh)
+        note = _k11_lark_md_escape(str(r.get("detail") or ""), max(40, remark_max))
         if not note:
             note = "—"
+        elif len(str(r.get("detail") or "")) > remark_max and remark_max > 0:
+            note = note.rstrip() + "（表内截断，全文见飞书/JSON）"
         rows.append(
             {
                 "c_item": tzh or "—",
-                "c_res": res_md,
+                "c_res": res_val,
                 "c_note": note,
             }
         )
@@ -740,6 +857,12 @@ def _build_k11_smoke_table_element(results: list[dict[str, Any]]) -> dict[str, A
         rows = [
             {"c_item": "—", "c_res": "—", "c_note": "无结果行"},
         ]
+    res_col: dict[str, Any] = {
+        "name": "c_res",
+        "display_name": "结果",
+        "data_type": "text" if plain_result else "lark_md",
+        "horizontal_align": "center",
+    }
     return {
         "tag": "table",
         "page_size": 10,
@@ -754,26 +877,27 @@ def _build_k11_smoke_table_element(results: list[dict[str, Any]]) -> dict[str, A
                 "name": "c_item",
                 "display_name": "测试项目",
                 "data_type": "text",
-                "width": "32%",
+                "width": "auto",
                 "horizontal_align": "left",
             },
-            {
-                "name": "c_res",
-                "display_name": "结果",
-                "data_type": "lark_md",
-                "width": "18%",
-                "horizontal_align": "center",
-            },
+            res_col,
             {
                 "name": "c_note",
                 "display_name": "备注",
                 "data_type": "text",
-                "width": "50%",
+                "width": "auto",
                 "horizontal_align": "left",
             },
         ],
         "rows": rows,
     }
+
+
+def _k11_card_table_json_size(card: dict[str, Any]) -> int:
+    try:
+        return len(json.dumps(card, ensure_ascii=False))
+    except Exception:
+        return 0
 
 
 def send_k11_smoke_lark_notification(
@@ -802,6 +926,13 @@ def send_k11_smoke_lark_notification(
         log("  [lark] 发消息：已使用通用 Lark 凭证。")
 
     cid = (chat_id or "").strip() or _DEFAULT_NOTIFY_CHAT_ID
+    log_k11_lark_runtime_identity(
+        log,
+        phase="发通知",
+        effective_app_id=aid,
+        effective_app_secret=sec,
+        send_chat_id=cid,
+    )
     try:
         from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token
         from l3_node.channels.lark.im import send_interactive_card, send_text
@@ -839,7 +970,7 @@ def send_k11_smoke_lark_notification(
 
     text_plain = "\n".join(
         [
-            "【K11 统合冒烟】已完成",
+            f"{K11_LARK_CARD_TITLE}（纯文本）",
             f"目标：{target_url}",
             f"飞书表更新：{lark_wrote} 行；Wiki：{wiki_url}",
             "",
@@ -864,40 +995,75 @@ def send_k11_smoke_lark_notification(
         [
             f"**目标** {_k11_lark_md_escape(target_url, 2000)}",
             f"**飞书表** 已回写 **{lark_wrote}** 行 · [打开 Wiki]({wiki_url})",
-            f"**汇总** {tail}（共 {len(results)} 条，下表每页最多 10 行可翻页）",
+            f"**汇总** {tail}（共 {len(results)} 条；下表备注在卡内已截断，完整见 Wiki/JSON）",
         ]
     )
-    table_el = _build_k11_smoke_table_element(results)
-    card_table: dict[str, Any] = {
-        "config": {"wide_screen_mode": True, "enable_forward": True},
-        "header": {
-            "template": "blue",
-            "title": {"tag": "plain_text", "content": "【K11 统合冒烟】战报"},
-        },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": summary_md}},
-            {"tag": "hr"},
-            table_el,
-        ],
-    }
-    r = send_interactive_card(
-        receive_id=cid,
-        card=card_table,
-        receive_id_type="chat_id",
-        token=token,
-        api_base=api_base,
-    )
-    if r.get("status") == "success":
-        log(
-            f"  [lark] 已发送完成通知（原生表格卡片，{len(results)} 行）到会话 {cid[:20]}…"
+
+    def _card_with_table(table: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "config": {"wide_screen_mode": True, "enable_forward": True},
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": K11_LARK_CARD_TITLE,
+                },
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": summary_md}},
+                {"tag": "hr"},
+                table,
+            ],
+        }
+
+    table_attempts: list[tuple[int, int, bool, str]] = [
+        (240, 200, False, "表格·默认截断"),
+        (120, 160, False, "表格·收紧备注"),
+        (64, 96, True, "表格·结果列改纯文本"),
+    ]
+    r: dict[str, Any] = {"status": "error", "error": "未尝试"}
+    for i, (rem, tit, plain, tag) in enumerate(table_attempts):
+        te = _build_k11_smoke_table_element(
+            results, remark_max=rem, title_max=tit, plain_result=plain
         )
-        return True
-    log(f"  [lark] 原生表格卡片失败，尝试纯 lark_md 卡片：{r.get('error', r)}")
+        card_table = _card_with_table(te)
+        jsz = _k11_card_table_json_size(card_table)
+        if jsz > _K11_CARD_JSON_SOFT_MAX and i < len(table_attempts) - 1:
+            log(
+                f"  [lark] 卡片 JSON≈{jsz}B（>{_K11_CARD_JSON_SOFT_MAX}），"
+                f"跳过本档，改用更紧截断…"
+            )
+            continue
+        r = send_interactive_card(
+            receive_id=cid,
+            card=card_table,
+            receive_id_type="chat_id",
+            token=token,
+            api_base=api_base,
+            http_timeout=55.0,
+        )
+        if r.get("status") == "success":
+            log(
+                f"  [lark] 已发送完成通知（原生表格·{tag}，{len(results)} 行，JSON≈{jsz}B）"
+                f"到会话 {cid[:20]}…"
+            )
+            return True
+        err = str(r.get("error", r))
+        lc = r.get("lark_code", "")
+        log(
+            f"  [lark] 原生表格失败（{tag}） err={err!r}"
+            + (f" code={lc!r}" if lc != "" else "")
+        )
+
+    log(
+        f"  [lark] 全部表格策略未成功，最后一次：{r.get('error', r)!r}；"
+        "降级 lark_md 列表（非表格）。"
+    )
     card_md_only: dict[str, Any] = {
         "config": {"wide_screen_mode": True, "enable_forward": True},
         "header": {
             "template": "blue",
-            "title": {"tag": "plain_text", "content": "【K11 统合冒烟】战报"},
+            "title": {"tag": "plain_text", "content": K11_LARK_CARD_TITLE},
         },
         "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": md}}],
     }
@@ -907,6 +1073,7 @@ def send_k11_smoke_lark_notification(
         receive_id_type="chat_id",
         token=token,
         api_base=api_base,
+        http_timeout=45.0,
     )
     if r_md.get("status") == "success":
         log(f"  [lark] 已发送完成通知（lark_md 卡片）到会话 {cid[:20]}…")
