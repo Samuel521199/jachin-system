@@ -1,6 +1,16 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.47] - 2026-04-21
+
+### Added / Changed
+
+- BI 每日战报：仓库默认关闭定时调度，避免与 Kalaroko 巡检争用 Chrome/CDP；无 YAML 时默认不再 8:00 触发；支持 ``BI_DAILY_REPORT_SCHEDULE=on`` 强制开启。
+- Kalaroko 调度：每日晨报默认改为 UTC 0:15（约北京 8:15）错峰；可通过 ``KALAROKO_DAILY_MORNING_REPORT=0`` 关闭晨报任务。
+- **Version**: Desktop **0.9.47**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.46] - 2026-04-24
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,14 @@ from core.kalaroko_e2e_jsonl_store import (
 from l3_node.paths import kalaroko_default_e2e_script_path
 
 logger = logging.getLogger(__name__)
+
+
+def _sched_env_bool(name: str, *, default: bool) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
 
 SCHEDULER_STATE_FILE = Path.home() / ".jachin" / "data" / "kalaroko_scheduler_state.json"
 _KALAROKO_E2E_JSONL = KALAROKO_E2E_JSONL_PATH
@@ -288,7 +297,10 @@ async def weekly_persona_profile_job() -> None:
 
 
 async def daily_morning_report_job() -> None:
-    """每日（UTC 0:00 = 北京 8:00）：24h 晨报 → Lark；成功后滚动清理 JSONL。"""
+    """每日（默认 UTC 0:15 ≈ 北京 8:15）：24h 晨报 → Lark；成功后滚动清理 JSONL。
+
+    与整点小时巡检、BI 默认定时（历史上常 08:00 上海）错开，降低 ``kalaroko_e2e.jsonl`` 文件锁争用与 Chrome/CDP 争抢。
+    """
     root = _repo_root()
     import importlib.util
     import sys
@@ -444,16 +456,21 @@ def start_scheduler() -> dict[str, Any]:
         coalesce=True,
         misfire_grace_time=120,
     )
-    # 北京 08:00 = 当日 00:00 UTC（不依赖 IANA 时区库，避免部分 Windows 环境缺 Asia/Shanghai）
-    sched.add_job(
-        daily_morning_report_job,
-        CronTrigger(hour=0, minute=0, timezone=timezone.utc),
-        id=_JOB_DAILY,
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
-    )
+    # 晨报默认 UTC 0:15（≈ 北京 8:15），与整点巡检 / 常见 BI 8:00 错峰；关闭：KALAROKO_DAILY_MORNING_REPORT=0
+    if _sched_env_bool("KALAROKO_DAILY_MORNING_REPORT", True):
+        sched.add_job(
+            daily_morning_report_job,
+            CronTrigger(hour=0, minute=15, timezone=timezone.utc),
+            id=_JOB_DAILY,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+    else:
+        logger.info(
+            "[kalaroko_scheduler] 已跳过每日晨报任务注册（KALAROKO_DAILY_MORNING_REPORT=0）"
+        )
     sched.add_job(
         weekly_persona_profile_job,
         CronTrigger(day_of_week="sun", hour=2, minute=0, timezone=timezone.utc),
@@ -468,7 +485,7 @@ def start_scheduler() -> dict[str, Any]:
     _scheduler_started = True
     _write_scheduler_state(True)
     logger.info(
-        "[kalaroko_scheduler] AsyncIOScheduler 已启动（小时巡检 + 每日 UTC0:00 晨报 + 每周日 UTC 02:00 Persona）"
+        "[kalaroko_scheduler] AsyncIOScheduler 已启动（小时巡检 + 每日 UTC0:15 晨报（可关）+ 每周日 UTC 02:00 Persona）"
     )
     try:
         jh = sched.get_job(_JOB_HOURLY)

@@ -8,7 +8,7 @@ BI 每日战报 — 专属定时调度器（L3 进程内 APScheduler，不依赖
   2) <项目根>/config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml（若上一步不存在则用此）
   可选覆盖文件（同上目录优先级）：bi_scheduler.yaml — 仅写 schedule_enabled / schedule 即可
 
-环境变量（可选）：BI_DAILY_REPORT_SCHEDULE=off|0|false — 强制关闭定时（便于本机不改 YAML）
+环境变量（可选）：BI_DAILY_REPORT_SCHEDULE=off|0|false 强制关；on|1|true 强制开（便于本机不改 YAML）
 """
 from __future__ import annotations
 
@@ -24,9 +24,10 @@ _BI_JOB_ID = "bi_daily_report"
 _bi_background_scheduler = None
 _bi_scheduler_started = False
 
-# 默认：每天 8:00 UTC+8
+# 默认：**关闭**定时（避免与 Kalaroko 巡检整点/晨报争用本机 Chrome、9222、DashScope 与磁盘锁）。
+# 需要 BI 自动跑时：在 bi_daily_report.yaml 设 schedule_enabled / schedule.enabled，或 export BI_DAILY_REPORT_SCHEDULE=on
 _DEFAULT_SCHEDULE = {
-    "enabled": True,
+    "enabled": False,
     "mode": "cron",
     "hour": 8,
     "minute": 0,
@@ -141,6 +142,13 @@ def _apply_env_schedule_disable(out: dict[str, Any]) -> None:
         out["enabled"] = False
 
 
+def _apply_env_schedule_enable(out: dict[str, Any]) -> None:
+    """显式开启（后于 disable 应用，便于 ``BI_DAILY_REPORT_SCHEDULE=on`` 覆盖默认关）。"""
+    v = (os.environ.get("BI_DAILY_REPORT_SCHEDULE") or "").strip().lower()
+    if v in ("on", "1", "true", "yes", "enabled"):
+        out["enabled"] = True
+
+
 def _load_schedule_config() -> dict[str, Any]:
     """合并 bi_daily_report.yaml + 可选 bi_scheduler.yaml，再应用环境变量关闭开关。"""
     merged_raw: dict[str, Any] = {}
@@ -163,6 +171,7 @@ def _load_schedule_config() -> dict[str, Any]:
     if not merged_raw:
         out = {**_DEFAULT_SCHEDULE}
         _apply_env_schedule_disable(out)
+        _apply_env_schedule_enable(out)
         return out
 
     sched = merged_raw.get("schedule") or {}
@@ -173,6 +182,7 @@ def _load_schedule_config() -> dict[str, Any]:
     sched_ok = sched.get("enabled", True)
     out["enabled"] = bool(top_ok and sched_ok)
     _apply_env_schedule_disable(out)
+    _apply_env_schedule_enable(out)
     return out
 
 
