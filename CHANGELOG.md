@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.46] - 2026-04-24
+
+### Added / Changed
+
+- 游戏脚本变手机尺寸。
+- **Version**: Desktop **0.9.46**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.45] - 2026-04-24
 
 ### Added / Changed

@@ -36,10 +36,14 @@ K11 · P0 关键卡片 + 多游戏可玩 + 金币（与 Kalaroko E2E / MCP 同�
 用法（仓库根）::
 
   python scripts/test_k11_p0_key_card_kalaroko_playwright.py
+  python scripts/test_k11_p0_key_card_kalaroko_playwright.py --no-mobile-viewport
   python scripts/test_k11_p0_key_card_kalaroko_playwright.py --single --game tongits_king
   python scripts/test_k11_p0_key_card_kalaroko_playwright.py -v --json-out out/k11_p0_key.json
   set K11_P0_ROUND_MAX_WAIT_SEC=900
   python scripts/test_k11_p0_key_card_kalaroko_playwright.py --round-max-wait-sec 900
+
+**视口（手机尺寸）**：默认在取到目标页后调用 Playwright ``set_viewport_size`` 为 **459×851**
+（与 Chrome F12「设备/响应式」下常见直板宽度同级；可 ``--viewport 390x844`` 或环境 ``K11_P0_VIEWPORT`` 覆盖；``--no-mobile-viewport`` 保留桌面视口）。
 
 输出：每款游戏有独立 **PASS/FAIL**；与《K11_平台冒烟测试用例》对应的三条 P0
 （关键卡片点击 / 各游戏正常运行 / 游戏金币同步）在控制台与 **JSON** 中分项列出。  
@@ -88,6 +92,55 @@ os.environ.setdefault(
 )
 
 DEFAULT_TARGET = "https://www.kalaroko.com/"
+
+# 与 Chrome 开发者工具中「设备工具条 / 响应式」下常见直板机宽度一致（用户示例约 459×851），便于大厅与 game-frame 走移动布局
+DEFAULT_VIEWPORT_W = 459
+DEFAULT_VIEWPORT_H = 851
+
+
+def _parse_viewport_wh(text: str | None) -> tuple[int, int] | None:
+    """
+    解析 "459x851" / "459×851"；宽高至少 200，避免误配。
+    """
+    if not text or not str(text).strip():
+        return None
+    t = str(text).strip().lower().replace("×", "x")
+    if "x" not in t:
+        return None
+    a, b = t.split("x", 1)
+    try:
+        w = int(a.strip())
+        h = int(b.strip())
+    except ValueError:
+        return None
+    if w < 200 or h < 200 or w > 5000 or h > 5000:
+        return None
+    return w, h
+
+
+def _default_viewport_str() -> str:
+    v = (os.environ.get("K11_P0_VIEWPORT") or "").strip()
+    if v:
+        return v
+    return f"{DEFAULT_VIEWPORT_W}x{DEFAULT_VIEWPORT_H}"
+
+
+async def _apply_mobile_viewport(
+    page: Any,
+    *,
+    width: int,
+    height: int,
+    log: Callable[[str], None],
+) -> None:
+    """
+    将 **布局视口** 固定为直板机尺寸（等价于在页面按 F12 后打开设备/响应式并选用相近宽高的效果），
+    不强制改本机窗口像素；Playwright 使用 ``set_viewport_size``。
+    """
+    try:
+        await page.set_viewport_size({"width": int(width), "height": int(height)})
+        log(f"视口已设为手机测试尺寸：{int(width)}×{int(height)}（与 K11 统合/大厅移动布局类场景对齐）")
+    except Exception as e:
+        log(f"  [warn] set_viewport_size 失败: {e}；后续仍用浏览器当前视口")
 
 # 与 MCP 内 ``_METRICS_JS`` 无关：仅用于大厅 / 壳内「余额/金币」粗采样（勿当财务审计）
 # 余额常在 header、nav、shadow 外层的兄弟节点；多扫 class / data 与正文正则
@@ -1201,6 +1254,16 @@ async def _async_main(args: argparse.Namespace) -> int:
             print(f"[失败] {env_detail}", file=sys.stderr)
             return 2
 
+        use_mobile_vp = not bool(getattr(args, "no_mobile_viewport", False))
+        vp_w, vp_h = DEFAULT_VIEWPORT_W, DEFAULT_VIEWPORT_H
+        parsed_vp = _parse_viewport_wh((getattr(args, "viewport", None) or "").strip())
+        if parsed_vp:
+            vp_w, vp_h = parsed_vp
+        if use_mobile_vp:
+            await _apply_mobile_viewport(page, width=vp_w, height=vp_h, log=log)
+        else:
+            log("已跳过手机视口（--no-mobile-viewport），沿用当前浏览器视口")
+
         log("准备：锚定大厅首页…")
         await p0._ensure_on_home_feed(page, target_url, log)
         try:
@@ -1472,6 +1535,11 @@ async def _async_main(args: argparse.Namespace) -> int:
             "schema": "k11_p0_key_card_kalaroko_playwright/v10",
             "ts_utc": datetime.now(timezone.utc).isoformat(),
             "cdp": cdp,
+            "viewport": {
+                "width": int(vp_w),
+                "height": int(vp_h),
+                "mobile_layout": bool(use_mobile_vp),
+            },
             "target_url": target_url,
             "home_url": home,
             "mode": "single" if args.single else "all_default_games",
@@ -1550,6 +1618,19 @@ def main() -> int:
         "--require-existing-tab",
         action="store_true",
         help="必须已有含目标域页签；默认允许自动 goto",
+    )
+    ap.add_argument(
+        "--viewport",
+        default=_default_viewport_str(),
+        help=(
+            f"手机测试视口 WxH，例如 459x851（默认与 Chrome 设备条/响应式常见直板尺寸一致；"
+            f"可设环境 K11_P0_VIEWPORT）"
+        ),
+    )
+    ap.add_argument(
+        "--no-mobile-viewport",
+        action="store_true",
+        help="不调用 set_viewport_size，沿用当前浏览器/窗口的视口（桌面布局）",
     )
     ap.add_argument(
         "--round-min-wait-sec",
