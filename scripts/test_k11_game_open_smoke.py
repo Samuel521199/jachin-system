@@ -446,7 +446,10 @@ async def _async_main(args: argparse.Namespace) -> int:
 
             await mcp._goto_resilient(page, TARGET_HOME, "domcontentloaded", 30_000)
 
-            for case in selected:
+            total_games = len(selected)
+            for idx, case in enumerate(selected, start=1):
+                print("", flush=True)
+                print(f"========== 游戏探查 [{idx}/{total_games}] {case.title} ==========", flush=True)
                 row = await _run_single_game(page, case, verbose=bool(args.verbose))
                 per_game.append(row)
                 load_sec = float(row["load_ms"]) / 1000.0
@@ -455,6 +458,14 @@ async def _async_main(args: argparse.Namespace) -> int:
                     f"[{mark}] {case.title} -> {row['verdict']} ({load_sec:.2f}s) | {row['detail']}",
                     flush=True,
                 )
+                print(
+                    "  [探查明细] "
+                    f"game_id={row.get('game_id')} | "
+                    f"race_end_reason={row.get('race_end_reason')} | "
+                    f"load_ms={row.get('load_ms')}",
+                    flush=True,
+                )
+                print("===========================================================", flush=True)
 
     except Exception as e:
         print(f"[失败] 执行异常: {type(e).__name__}: {e}", file=sys.stderr)
