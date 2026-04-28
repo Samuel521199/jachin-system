@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
@@ -195,6 +195,10 @@ def main() -> int:
     _k11_p2 = ROOT / "scripts" / "test_k11_p2_compat_weaknet_playwright.py"
     if _k11_p2.is_file():
         cmd.extend(["--add-data", f"{_k11_p2}{_docs_sep}scripts"])
+    # K11 游戏模块开门冒烟：与 paths.k11_game_open_smoke_script_path / http_server 子进程一致
+    _k11_game_open = ROOT / "scripts" / "test_k11_game_open_smoke.py"
+    if _k11_game_open.is_file():
+        cmd.extend(["--add-data", f"{_k11_game_open}{_docs_sep}scripts"])
     _k11_lark = ROOT / "scripts" / "k11_lark_smoke_report.py"
     if _k11_lark.is_file():
         cmd.extend(["--add-data", f"{_k11_lark}{_docs_sep}scripts"])

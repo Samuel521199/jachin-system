@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -20,6 +20,7 @@ from typing import Any
 
 from l3_node.paths import (
     get_app_root,
+    k11_game_open_smoke_script_path,
     k11_games_state_machine_smoke_script_path,
     k11_p2_compat_weaknet_script_path,
     k11_unified_smoke_script_path,
@@ -1100,8 +1101,59 @@ async def _handle_k11_games_state_machine_smoke_stream(request) -> "aiohttp.web.
     )
 
 
+async def _handle_k11_game_open_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
+    """GET /api/v1/k11-game-open-smoke/stream — 执行 ``scripts/test_k11_game_open_smoke.py``，SSE 行日志。"""
+    root = get_app_root()
+    script = k11_game_open_smoke_script_path()
+    if not script.is_file():
+        # 须返回 SSE（勿仅 JSON 500）：否则控制台 EventSource 读不到 body，只表现为「SSE 已结束」。
+        resp = _stream_response()
+        await resp.prepare(request)
+        payload = json.dumps(
+            {
+                "type": "error",
+                "message": (
+                    f"缺少脚本: {script}。frozen 侧车请重新执行 python scripts/build_l3_sidecar.py "
+                    "（须将 test_k11_game_open_smoke.py 打入 _MEIPASS/scripts）；"
+                    "或把该文件放到安装目录 scripts/ 下。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+        await resp.write(f"data: {payload}\n\n".encode("utf-8"))
+        return resp
+
+    params, err = _k11_smoke_stream_parse_query(request)
+    if err is not None:
+        return err
+    assert params is not None
+    _target_url, _cdp_http, verbose, no_lark, _headless = params
+    single_game = (request.query.get("single_game", "") or "").strip()
+
+    passthrough: list[str] = []
+    if verbose:
+        passthrough.append("-v")
+    if no_lark:
+        passthrough.append("--no-lark-report")
+    if single_game:
+        passthrough.extend(["--single-game", single_game])
+
+    cmd: list[str] = _k11_smoke_subprocess_cmd(
+        "--jachin-k11-game-open-smoke-subprocess", passthrough
+    )
+    return await _k11_smoke_subprocess_sse_stream(
+        request,
+        root,
+        cmd,
+        f"[K11] 游戏模块冒烟已启动: {script.name}",
+        "k11 game open smoke",
+        run_count=1,
+        interval_between_runs_sec=0,
+    )
+
+
 async def _handle_k11_unified_smoke_schedule_toggle(request) -> "aiohttp.web.Response":
-    """POST /api/v1/k11-unified-smoke/schedule/toggle — JSON: enabled, hour_beijing?, minute_beijing?, runs?, interval_sec?"""
+    """POST /api/v1/k11-unified-smoke/schedule/toggle — JSON: enabled, hour_beijing?, minute_beijing?, runs?, interval_sec?, hourly_recurring?"""
     try:
         body = await request.json() if request.body_exists else {}
     except Exception as e:
@@ -1121,12 +1173,19 @@ async def _handle_k11_unified_smoke_schedule_toggle(request) -> "aiohttp.web.Res
     mb = body.get("minute_beijing")
     runs = body.get("runs")
     iv = body.get("interval_sec")
+    hr = body.get("hourly_recurring")
+    hourly_recurring: bool | None = None
+    if isinstance(hr, bool):
+        hourly_recurring = hr
+    elif hr is not None and str(hr).strip() != "":
+        hourly_recurring = str(hr).lower() in ("1", "true", "yes", "on")
     r = apply_k11_unified_smoke_schedule(
         enabled=enabled,
         hour_beijing=int(hb) if hb is not None else None,
         minute_beijing=int(mb) if mb is not None else None,
         runs=int(runs) if runs is not None else None,
         interval_sec=int(iv) if iv is not None else None,
+        hourly_recurring=hourly_recurring,
     )
     st = scheduler_status()
     return _json_response({**r, "ok": True, **st})
@@ -1890,6 +1949,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         "/api/v1/k11-games-state-machine-smoke/stream",
         _handle_k11_games_state_machine_smoke_stream,
     )
+    app.router.add_get("/api/v1/k11-game-open-smoke/stream", _handle_k11_game_open_smoke_stream)
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/status", _handle_k11_unified_smoke_schedule_status)
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/log-stream", _handle_k11_unified_smoke_schedule_log_stream)
     app.router.add_post("/api/v1/k11-unified-smoke/schedule/toggle", _handle_k11_unified_smoke_schedule_toggle)

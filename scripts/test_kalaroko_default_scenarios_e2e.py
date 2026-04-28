@@ -713,6 +713,27 @@ def _should_commit_kalaroko_e2e_memory_nexus(
     return _llm_analysis_indicates_issue_or_special(llm_analysis or "")
 
 
+def _skip_lark_all_rounds_host_only_failure(
+    *,
+    skip_playwright: bool,
+    runs: int,
+    all_metrics_history: list[dict[str, Any]],
+    had_round_exception: bool,
+) -> bool:
+    """若每一轮都在产生指标前异常（history 全为 ``{}``），视为本机/打包环境问题，不推飞书。
+
+    典型：PyInstaller 单文件下 Playwright 未 ``playwright install``、Chromium 路径在 ``_MEI*`` 下不存在、
+    未起 CDP 却走了 launch 回退等——与线上站点 SLA 无关，连续推 Lark 只会刷屏。
+    ``--skip-playwright`` 时各轮也会是空 dict，此处显式不跳过（由调用方决定是否仍推飞书；当前脚本该模式不入此分支）。"""
+    if skip_playwright:
+        return False
+    if not had_round_exception or runs < 1:
+        return False
+    if len(all_metrics_history) != runs:
+        return False
+    return all(isinstance(h, dict) and len(h) == 0 for h in all_metrics_history)
+
+
 def jsonl_records_last_hours(
     jsonl_path: str | Path,
     *,
@@ -1791,7 +1812,23 @@ async def _run_full_cycle(
             "skip_playwright": skip_playwright,
         }
 
-    if all_metrics_history and len(all_metrics_history) > 1:
+    skip_lark_all_host_infra = _skip_lark_all_rounds_host_only_failure(
+        skip_playwright=skip_playwright,
+        runs=runs,
+        all_metrics_history=all_metrics_history,
+        had_round_exception=had_round_exception,
+    )
+    if skip_lark_all_host_infra:
+        _e2e_echo(
+            "[Lark inspect] 各轮均无有效采集指标（多为本机 Playwright/Chromium 未就绪或 CDP），"
+            "跳过飞书推送与多轮 LLM 摘要，避免刷屏与无效 token。"
+        )
+
+    if (
+        (not skip_lark_all_host_infra)
+        and all_metrics_history
+        and len(all_metrics_history) > 1
+    ):
         _e2e_echo(
             f"[LLM] main: 满足多轮条件 (history_len={len(all_metrics_history)})，"
             "开始调用 _generate_llm_summary"
@@ -1817,22 +1854,23 @@ async def _run_full_cycle(
     _e2e_echo("\n=== E2E 通过 ===")
     combined_md = "\n\n---\n\n".join(markdown_rounds) if markdown_rounds else ""
 
-    try:
-        from l3_node.channels.lark.kalaroko_inspection_notify import (
-            send_kalaroko_inspection_to_lark,
-        )
+    if not skip_lark_all_host_infra:
+        try:
+            from l3_node.channels.lark.kalaroko_inspection_notify import (
+                send_kalaroko_inspection_to_lark,
+            )
 
-        await send_kalaroko_inspection_to_lark(
-            markdown_report=combined_md or None,
-            llm_analysis=llm_analysis,
-            runs=runs,
-            interval=interval,
-            summary_model=_e2e_summary_model(),
-            line_sink=line_sink,
-            all_metrics_history=all_metrics_history,
-        )
-    except Exception as e:
-        print(f"[Lark inspect] 推送跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
+            await send_kalaroko_inspection_to_lark(
+                markdown_report=combined_md or None,
+                llm_analysis=llm_analysis,
+                runs=runs,
+                interval=interval,
+                summary_model=_e2e_summary_model(),
+                line_sink=line_sink,
+                all_metrics_history=all_metrics_history,
+            )
+        except Exception as e:
+            print(f"[Lark inspect] 推送跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
 
     # 记忆宫殿：仅异常/退化/特殊 LLM 结论时 verbatim 入库；全绿平稳则跳过（24h 晨报由调度器单独浓缩）
     _want_mem = _should_commit_kalaroko_e2e_memory_nexus(
@@ -1897,6 +1935,7 @@ async def _run_full_cycle(
         "runs": runs,
         "interval": interval,
         "skip_playwright": skip_playwright,
+        "lark_skipped_host_infra": skip_lark_all_host_infra,
     }
 
 

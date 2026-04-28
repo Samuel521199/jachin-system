@@ -457,7 +457,7 @@ def start_scheduler() -> dict[str, Any]:
         misfire_grace_time=120,
     )
     # 晨报默认 UTC 0:15（≈ 北京 8:15），与整点巡检 / 常见 BI 8:00 错峰；关闭：KALAROKO_DAILY_MORNING_REPORT=0
-    if _sched_env_bool("KALAROKO_DAILY_MORNING_REPORT", True):
+    if _sched_env_bool("KALAROKO_DAILY_MORNING_REPORT", default=True):
         sched.add_job(
             daily_morning_report_job,
             CronTrigger(hour=0, minute=15, timezone=timezone.utc),

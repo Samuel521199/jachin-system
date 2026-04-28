@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 平台冒烟 · 统合版（单次 CDP 会话顺序执行：P0 八条 + P1 六模块 + 扩展八条 + 弱网一条）
@@ -11,18 +11,17 @@ K11 平台冒烟 · 统合版（单次 CDP 会话顺序执行：P0 八条 + P1 �
 
 用法（仓库根）：
   python scripts/test_k11_unified_platform_smoke_playwright.py
-  python scripts/test_k11_unified_platform_smoke_playwright.py --target-url https://www.kalaroko.com/
+  python scripts/test_k11_unified_platform_smoke_playwright.py --target-url https://www.herontest.xin/
   python scripts/test_k11_unified_platform_smoke_playwright.py -v --json-out out/k11_unified.json
 
 **飞书/Lark 报告**（与 ``K11平台测试用例.xlsx`` 同表头的 Wiki 内嵌**电子表格或多维表**；**默认只同步飞书、不写本机 xlsx**）在 ``.env`` 可配：
 
-- ``LARK_APP_ID`` / ``LARK_APP_SECRET`` 或 ``K11_SMOKE_LARK_*``、``im_channels.lark``（见 ``scripts/k11_lark_smoke_report.py``）
+- 应用与会话（发卡片/写表）**仅** ``K11_SMOKE_LARK_APP_ID``、``K11_SMOKE_LARK_APP_SECRET``、``K11_SMOKE_LARK_NOTIFY_CHAT_ID``（见 ``scripts/k11_lark_smoke_report.py``）
 - ``K11_SMOKE_LARK_WIKI_URL``（可省略；与脚本内 ``K11_DEFAULT_LARK_WIKI_URL`` 同链时即同步到该表）
 - 可选：``K11_SMOKE_LARK_TABLE_ID`` / ``K11_SMOKE_LARK_SHEET_ID``（子表 id）
-- ``K11_SMOKE_LARK_NOTIFY_CHAT_ID``（完成通知会话，默认见 ``k11_lark_smoke_report``）
 - 加 ``--no-lark-report`` 可不发飞书、不同步表格；加 ``--write-local-xlsx`` 才写入 ``~/Downloads/K11平台测试用例.xlsx``（需 ``openpyxl``）。
 - 群通知卡片样式在 ``scripts/k11_lark_smoke_report.send_k11_smoke_lark_notification``：原生 table 三列（测试项目 / 结果 / 备注），失败时降级 lark_md/纯文本。
-- 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」一行并入同一次 JSON/飞书表/群卡片。
+- 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」并入结果；随后（除非 ``--skip-game-open-smoke``）在同一 CDP 页签上跑 ``test_k11_game_open_smoke`` 的 herontest 五款游戏开门探活，**追加行**到同一 ``results``，与前面用例一并写入飞书表并打在**同一张** Lark 消息卡片表格中。
   随 L3 侧车 / ``l3_node.exe`` 跑统合时**禁止** ``l3_node.exe 某.py``（引导器不会当解释器），须用 ``--jachin-k11-p2-compat-subprocess`` 子命令（与 ``l3_node/http_server`` 一致）。
 
 行为对齐：P0/P1/扩展/弱网各段逻辑与对应单脚本一致（含 P0 Play Now 默认**不点击**）。
@@ -65,7 +64,7 @@ except ImportError:
 except OSError:
     pass
 
-DEFAULT_TARGET = "https://www.kalaroko.com/"
+DEFAULT_TARGET = "https://www.herontest.xin/"
 
 # 与 ``scripts/k11_lark_smoke_report`` 中默认知识表一致；环境变量/CLI 可覆盖
 K11_DEFAULT_LARK_WIKI_URL = (
@@ -144,6 +143,47 @@ def _k11_p2_compat_subprocess_cmd(passthrough: list[str], p2_script: Path) -> li
     return [sys.executable, "-m", "l3_node", sent, *passthrough]
 
 
+def _resolve_game_open_smoke_script_path() -> Path:
+    """与 ``l3_node.paths.k11_game_open_smoke_script_path`` 对齐：frozen / 便携 / 仓库 scripts。"""
+    fname = "test_k11_game_open_smoke.py"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = ROOT / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return Path(__file__).resolve().parent / fname
+
+
+def _load_game_open_smoke_module(log: Callable[[str], None] | None = None) -> Any:
+    """
+    动态加载游戏开门脚本。须在 ``exec_module`` 前 ``sys.modules[spec.name] = mod``，
+    否则 Python 3.10+ 下 ``@dataclass`` 等会报 ``NoneType has no attribute '__dict__'`` 并静默失败。
+    """
+    p = _resolve_game_open_smoke_script_path()
+    if not p.is_file():
+        if log:
+            log(f"  [game_open] 脚本不存在：{p}")
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "k11_game_open_smoke_unified_embed", str(p.resolve())
+    )
+    if spec is None or spec.loader is None:
+        if log:
+            log("  [game_open] importlib spec/loader 创建失败")
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        if log:
+            log(f"  [game_open] 加载脚本失败：{_brief_exc(e, 480)}")
+        return None
+    return mod
+
+
 def _resolve_k11_lark_smoke_report_path() -> Path:
     """
     开发：仓库根 ``scripts/k11_lark_smoke_report.py``；
@@ -181,6 +221,12 @@ UNIFIED_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
     "p2_weak_network": "弱网",
     # 子进程 ``test_k11_p2_compat_weaknet_playwright.py --only-compat`` 合并行，与 P2 脚本一致
     "p2_browser_compat_merged": "浏览器兼容",
+    # ``test_k11_game_open_smoke`` 并入统合后的行（与游戏标题一致，便于 xlsx/多维表关键词匹配）
+    "game_open_bingo_showdown": "Bingo Showdown",
+    "game_open_infinity_9_ball": "Infinity 9 Ball",
+    "game_open_color_blitz_social": "Color Blitz Social",
+    "game_open_royal_pusoy": "Royal Pusoy",
+    "game_open_drama_crush": "Drama Crush",
 }
 
 _XLSX_REMARK_MAX_LEN = 32000
@@ -237,7 +283,7 @@ def _run_p2_only_compat_subprocess(
             "--json-out",
             str(json_path),
             "--target-url",
-            (target_url or "").strip() or "https://www.kalaroko.com/",
+            (target_url or "").strip() or "https://www.herontest.xin/",
         ]
         if headless:
             passthrough.append("--headless")
@@ -3800,9 +3846,11 @@ async def _async_main(args: argparse.Namespace) -> int:
     log("———————— K11 平台冒烟 · 统合版（P0+P1+扩展+弱网）————————")
     log(f"CDP：{cdp}  目标：{target_url}  Party 切换阈值：{args.switch_ms} ms")
     _skip_c = bool(getattr(args, "skip_browser_compat", False))
+    _skip_g = bool(getattr(args, "skip_game_open_smoke", False))
     log(
         f"用例主流程 {len(UNIFIED_CASE_DEFS)} 条；"
-        f"结束后{'不' if _skip_c else '将'}子进程跑浏览器兼容并并入结果"
+        f"结束后{'不' if _skip_c else '将'}子进程跑浏览器兼容并并入结果；"
+        f"随后{'不' if _skip_g else '将'}在同一 CDP 页签跑 herontest 游戏开门探活并并入结果"
     )
     log("")
 
@@ -3977,6 +4025,81 @@ async def _async_main(args: argparse.Namespace) -> int:
             log("  [compat] 已跳过：--skip-browser-compat")
             log("")
 
+        game_open_info: dict[str, Any] = {"skipped": True}
+        if not getattr(args, "skip_game_open_smoke", False):
+            log(
+                "———————— 附加：游戏模块开门探活（herontest · test_k11_game_open_smoke）————————"
+            )
+            gmod = _load_game_open_smoke_module(log=log)
+            if gmod is None or not hasattr(gmod, "run_game_open_smoke_on_existing_page"):
+                log(
+                    "  [game_open] 未找到或无法加载 test_k11_game_open_smoke.py（"
+                    f"路径 {_resolve_game_open_smoke_script_path()}），跳过。"
+                )
+                game_open_info = {"skipped": False, "error": "module_missing"}
+            else:
+                try:
+                    raw_rows: list[dict[str, Any]] = await gmod.run_game_open_smoke_on_existing_page(  # type: ignore[misc]
+                        page,
+                        verbose=bool(args.verbose),
+                        log=log,
+                    )
+                    game_open_info = {
+                        "skipped": False,
+                        "target": str(getattr(gmod, "TARGET_HOME", "")),
+                        "games_run": len(raw_rows),
+                    }
+                    for row in raw_rows:
+                        v = str(row.get("verdict", "FAIL")).upper()
+                        if v not in ("PASS", "FAIL", "SKIP", "BLOCKED"):
+                            v = "FAIL"
+                        vzh = VERDICT_ZH.get(v, v)
+                        gid = str(row.get("game_id") or "")
+                        cid = f"game_open_{gid}" if gid else "game_open_unknown"
+                        title = str(row.get("game_title") or gid or "游戏开门")
+                        detail = str(row.get("detail") or "")
+                        if row.get("load_ms") is not None:
+                            detail = f"{detail} (load_ms={row.get('load_ms')})"
+                        results.append(
+                            {
+                                "case": cid,
+                                "tier": "游戏开门",
+                                "case_title_zh": title,
+                                "verdict": v,
+                                "verdict_zh": vzh,
+                                "detail": detail,
+                            }
+                        )
+                        log(
+                            f"  [game_open] 并入 {cid!r}：{title} → {vzh}（{v}）"
+                        )
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    raise
+                except Exception as e:
+                    ber = _brief_exc(e, 480)
+                    log(
+                        f"  [game_open] 执行异常（已记 FAIL 占位，不阻断收尾）：{ber}"
+                    )
+                    game_open_info = {
+                        "skipped": False,
+                        "error": ber,
+                        "games_run": 0,
+                    }
+                    results.append(
+                        {
+                            "case": "game_open_suite",
+                            "tier": "游戏开门",
+                            "case_title_zh": "游戏开门探活（整段异常）",
+                            "verdict": "FAIL",
+                            "verdict_zh": "失败",
+                            "detail": ber,
+                        }
+                    )
+            log("")
+        else:
+            log("  [game_open] 已跳过：--skip-game-open-smoke")
+            log("")
+
         # 收尾快照需在关闭 Playwright 前完成，但不得因 CDP/页签异常让「写盘+飞书」整段不执行
         page_url_final = ""
         page_title_final = ""
@@ -4004,6 +4127,7 @@ async def _async_main(args: argparse.Namespace) -> int:
         "page_title_final": page_title_final,
         "console_errors_filtered_sample": bad_console[:30],
         "browser_compat_subprocess": compat_info,
+        "game_open_smoke": game_open_info,
         "results": results,
     }
     if args.json_out:
@@ -4058,8 +4182,6 @@ async def _async_main(args: argparse.Namespace) -> int:
             _sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
             _tbl = (os.environ.get("K11_SMOKE_LARK_TABLE_ID") or "").strip() or None
             _chat = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
-            if not _chat and hasattr(k11_lark, "_DEFAULT_NOTIFY_CHAT_ID"):
-                _chat = str(k11_lark._DEFAULT_NOTIFY_CHAT_ID)
             log("")
             try:
                 _nw = k11_lark.write_k11_unified_results_to_lark_bitable(  # type: ignore[attr-defined]
@@ -4145,6 +4267,11 @@ def main() -> int:
         "--skip-browser-compat",
         action="store_true",
         help="不在末尾子进程跑 test_k11_p2_compat_weaknet_playwright.py --only-compat",
+    )
+    ap.add_argument(
+        "--skip-game-open-smoke",
+        action="store_true",
+        help="不在浏览器兼容之后跑 test_k11_game_open_smoke（herontest 五款游戏开门探活）",
     )
     ap.add_argument(
         "--browser-compat-headless",

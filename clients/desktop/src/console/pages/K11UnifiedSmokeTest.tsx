@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 冒烟测试 — K11 统合平台 Playwright 冒烟（子进程，SSE 日志）
  * 多轮/间隔/定时 行为对齐「巡检中枢」；目标 URL 与 CDP 由 .env/脚本默认处理。
  */
@@ -8,8 +8,8 @@ import { FlaskConical } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { useK11ScheduleLogLines } from "../K11ScheduleLogContext";
 import {
+  getK11GameOpenSmokeStreamUrlAsync,
   getK11GamesStateMachineSmokeStreamUrlAsync,
-  getK11P2CompatOnlyStreamUrlAsync,
   getK11UnifiedSmokeStreamUrlAsync,
   getL3MonitorApiUrlAsync,
 } from "../../lib/api";
@@ -26,13 +26,14 @@ export function K11UnifiedSmokeTest() {
   const [intervalSec, setIntervalSec] = useState(30);
   const [verbose, setVerbose] = useState(true);
   const [noLark, setNoLark] = useState(false);
-  const [headlessP2, setHeadlessP2] = useState(false);
   const [hourBeijing, setHourBeijing] = useState(DEFAULT_SMOKE_HOUR_BEIJING);
   const [minuteBeijing, setMinuteBeijing] = useState(DEFAULT_SMOKE_MINUTE_BEIJING);
+  /** true：每个整点小时的「分」与下方「分」对齐时批跑；false：仅每日在「时:分」批跑一次 */
+  const [hourlyRecurring, setHourlyRecurring] = useState(false);
   const [running, setRunning] = useState(false);
   /** 仅 L3 端口探测中；勿与 running 混用，否则未起 L3 时长时间禁用「启动」像卡死。 */
   const [l3Probing, setL3Probing] = useState(false);
-  /** 统合冒烟 + P2 兼容 的 SSE 行（不含游戏脚本） */
+  /** 统合冒烟、游戏开门冒烟、P2/定时相关 SSE 行（不含游戏状态机独立标签） */
   const [unifiedLogs, setUnifiedLogs] = useState<string[]>([]);
   /** 游戏状态机脚本的 SSE 行 */
   const [gamesLogs, setGamesLogs] = useState<string[]>([]);
@@ -77,6 +78,7 @@ export function K11UnifiedSmokeTest() {
         minute_beijing?: number;
         runs?: number;
         interval_sec?: number;
+        hourly_recurring?: boolean;
       };
       if (typeof data.active === "boolean") {
         setSchedulerActive(data.active);
@@ -92,6 +94,9 @@ export function K11UnifiedSmokeTest() {
       }
       if (typeof data.interval_sec === "number") {
         setIntervalSec(data.interval_sec);
+      }
+      if (typeof data.hourly_recurring === "boolean") {
+        setHourlyRecurring(data.hourly_recurring);
       }
     } catch {
       setSchedulerActive(false);
@@ -128,9 +133,7 @@ export function K11UnifiedSmokeTest() {
       };
       const ok = res.ok && data?.ok !== false;
       const setActive =
-        sseChannelRef.current === "games"
-          ? setGamesLogs
-          : setUnifiedLogs;
+        sseChannelRef.current === "games" ? setGamesLogs : setUnifiedLogs;
       setActive((prev) => [
         ...prev,
         !ok
@@ -148,7 +151,7 @@ export function K11UnifiedSmokeTest() {
       const setActive = sseChannelRef.current === "games" ? setGamesLogs : setUnifiedLogs;
       setActive((prev) => [...prev, "> 停止请求失败（网络）。"]);
     }
-  }, []);
+  }, [setGamesLogs, setUnifiedLogs]);
 
   const handleScheduleToggle = useCallback(
     async (enabled: boolean) => {
@@ -162,7 +165,14 @@ export function K11UnifiedSmokeTest() {
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled, hour_beijing: h, minute_beijing: m, runs: r, interval_sec: i }),
+          body: JSON.stringify({
+            enabled,
+            hour_beijing: h,
+            minute_beijing: m,
+            runs: r,
+            interval_sec: i,
+            hourly_recurring: hourlyRecurring,
+          }),
         });
         const data = (await res.json().catch(() => ({}))) as {
           enabled?: boolean;
@@ -182,7 +192,7 @@ export function K11UnifiedSmokeTest() {
         setScheduleLoading(false);
       }
     },
-    [hourBeijing, intervalSec, minuteBeijing, refreshScheduleStatus, runs]
+    [hourBeijing, hourlyRecurring, intervalSec, minuteBeijing, refreshScheduleStatus, runs]
   );
 
   const handleSaveSchedule = useCallback(async () => {
@@ -203,6 +213,7 @@ export function K11UnifiedSmokeTest() {
           minute_beijing: m,
           runs: r,
           interval_sec: i,
+          hourly_recurring: hourlyRecurring,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; active?: boolean };
@@ -211,10 +222,15 @@ export function K11UnifiedSmokeTest() {
           setSchedulerActive(data.active);
         }
         const timeLabel = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+        const mm = String(m).padStart(2, "0");
         setScheduleSaveBanner(
           schedulerActive
-            ? `已保存并生效：每日北京时间 ${timeLabel} 开跑，${r} 轮、间隔 ${i} 秒。`
-            : `已保存定时：北京时间 ${timeLabel}（当前开关为关，打开「每日批跑」后会在该时刻执行）。`
+            ? hourlyRecurring
+              ? `已保存并生效：每小时北京 *:${mm} 批跑，${r} 轮、间隔 ${i} 秒。`
+              : `已保存并生效：每日北京时间 ${timeLabel} 开跑，${r} 轮、间隔 ${i} 秒。`
+            : hourlyRecurring
+              ? `已保存：每小时北京 *:${mm}（开关关闭时不会跑；打开「每日批跑」后按小时触发）。`
+              : `已保存定时：北京时间 ${timeLabel}（当前开关为关，打开「每日批跑」后会在该时刻执行）。`
         );
         if (scheduleSaveTimerRef.current) window.clearTimeout(scheduleSaveTimerRef.current);
         scheduleSaveTimerRef.current = window.setTimeout(() => {
@@ -230,7 +246,7 @@ export function K11UnifiedSmokeTest() {
     } finally {
       setSaveScheduleLoading(false);
     }
-  }, [hourBeijing, intervalSec, minuteBeijing, refreshScheduleStatus, runs, schedulerActive]);
+  }, [hourBeijing, hourlyRecurring, intervalSec, minuteBeijing, refreshScheduleStatus, runs, schedulerActive]);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -311,7 +327,7 @@ export function K11UnifiedSmokeTest() {
         }
       };
     },
-    []
+    [setGamesLogs, setUnifiedLogs]
   );
 
   const handleStart = useCallback(() => {
@@ -358,27 +374,22 @@ export function K11UnifiedSmokeTest() {
     })();
   }, [connectSse, intervalSec, noLark, runs, verbose]);
 
-  const handleStartP2CompatOnly = useCallback(() => {
+  const handleStartGameOpenSmoke = useCallback(() => {
     void (async () => {
       esRef.current?.close();
-      const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
-      const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
       setL3Probing(true);
       setDoneOk(null);
       setExitCode(null);
       setLogTab("unified");
       setUnifiedLogs([
         "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行）…",
-        "> 请确认 L3 已运行。",
+        "> 模式：游戏模块冒烟（test_k11_game_open_smoke.py -v）",
       ]);
       let streamUrl: string;
       try {
-        streamUrl = await getK11P2CompatOnlyStreamUrlAsync({
+        streamUrl = await getK11GameOpenSmokeStreamUrlAsync({
           verbose,
           noLarkReport: noLark,
-          headless: headlessP2,
-          runs: r,
-          interval: i,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -393,16 +404,15 @@ export function K11UnifiedSmokeTest() {
       connectSse(
         streamUrl,
         [
-          "> 模式：P2 浏览器兼容（--only-compat）…",
-          `> 计划: ${r} 轮, 间隔: ${i} 秒`,
-          "> 等效: test_k11_p2_compat_weaknet_playwright.py --only-compat",
+          "> 初始化 K11 游戏模块冒烟…",
+          "> 等效: python scripts/test_k11_game_open_smoke.py -v",
           "> 连接 L3 SSE 流…",
         ],
-        "P2 浏览器兼容已完成（退出码 0）",
+        "K11 游戏模块冒烟已完成（退出码 0）",
         "unified"
       );
     })();
-  }, [connectSse, headlessP2, intervalSec, noLark, runs, verbose]);
+  }, [connectSse, noLark, verbose]);
 
   const handleStartGamesStateMachine = useCallback(() => {
     void (async () => {
@@ -479,7 +489,10 @@ export function K11UnifiedSmokeTest() {
           <p className="text-xs text-cyan-700/90">
             统合：<span className="font-mono text-cyan-600/90">test_k11_unified_platform_smoke_playwright.py</span>
             {" · "}
-            游戏：
+            开门：
+            <span className="font-mono text-cyan-600/90">test_k11_game_open_smoke.py</span>
+            {" · "}
+            状态机：
             <span className="font-mono text-cyan-600/90">test_k11_smoke_games_state_machine_playwright.py</span>
           </p>
         </div>
@@ -552,16 +565,16 @@ export function K11UnifiedSmokeTest() {
             <button
               type="button"
               disabled={l3OrRun}
-              onClick={handleStartP2CompatOnly}
+              onClick={handleStartGameOpenSmoke}
               className={cn(
                 "rounded-lg border px-4 py-2.5 text-sm font-bold transition-all",
                 l3OrRun
                   ? "cursor-not-allowed border-slate-700 bg-slate-900/50 text-slate-600"
-                  : "border-cyan-500/50 bg-cyan-950/40 text-cyan-100 shadow-[0_0_16px_rgba(34,211,238,0.2)] hover:bg-cyan-900/50"
+                  : "border-violet-500/50 bg-violet-950/40 text-violet-100 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-900/50"
               )}
-              title="--only-compat"
+              title="python scripts/test_k11_game_open_smoke.py -v"
             >
-              {l3Probing ? "探测 L3…" : "🧩 仅浏览器兼容"}
+              {l3Probing ? "探测 L3…" : "🎮 游戏模块开门冒烟"}
             </button>
             <button
               type="button"
@@ -575,7 +588,7 @@ export function K11UnifiedSmokeTest() {
               )}
               title="test_k11_smoke_games_state_machine_playwright.py"
             >
-              {l3Probing ? "探测 L3…" : "🎮 游戏模块冒烟测试"}
+              {l3Probing ? "探测 L3…" : "🎮 游戏状态机冒烟"}
             </button>
             <button
               type="button"
@@ -590,19 +603,6 @@ export function K11UnifiedSmokeTest() {
             >
               🛑 停止
             </button>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-3 text-[11px] text-cyan-600/80">
-            <span className="text-cyan-500/80">P2 兼容</span>
-            <label className="flex cursor-pointer items-center gap-1.5">
-              <input
-                type="checkbox"
-                className="h-3.5 w-3.5"
-                checked={headlessP2}
-                disabled={l3OrRun}
-                onChange={(e) => setHeadlessP2(e.target.checked)}
-              />
-              无头 (--headless)
-            </label>
           </div>
         </div>
         <p className="text-[11px] leading-relaxed text-cyan-600/75">
@@ -654,6 +654,24 @@ export function K11UnifiedSmokeTest() {
               {saveScheduleLoading ? "保存中…" : "保存定时配置"}
             </button>
           </div>
+          <label
+            className="flex max-w-xl cursor-pointer items-start gap-2 text-xs text-cyan-600/90"
+            title="开启：北京时每个整点小时的「分」与上方「分」一致时批跑（如分=0 则每整点一次）。关闭：仅在上方「时:分」每日批跑一次。「时」在关闭本项时参与每日时刻；开启本项时仅「分」参与每小时对齐。"
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5 h-3.5 w-3.5 shrink-0"
+              checked={hourlyRecurring}
+              disabled={l3OrRun}
+              onChange={(e) => setHourlyRecurring(e.target.checked)}
+            />
+            <span>
+              <span className="font-medium text-cyan-500/90">每小时定点巡检</span>
+              <span className="text-cyan-600/75">
+                （开启后按「分」每个整点触发；不开启则仅在设定时刻每日一次）
+              </span>
+            </span>
+          </label>
           {scheduleSaveBanner && (
             <p className="text-xs leading-relaxed text-emerald-400/90" role="status">
               {scheduleSaveBanner}
@@ -672,9 +690,19 @@ export function K11UnifiedSmokeTest() {
                 aria-hidden
               />
               <span className="text-xs text-cyan-600/85">
-                {schedulerActive ? "Active" : "Inactive"} · 北京{" "}
-                {`${String(hourBeijing).padStart(2, "0")}:${String(minuteBeijing).padStart(2, "0")}`}
-                （填好时刻后点「保存定时配置」写入 L3；再打开开关即按该时刻批跑）
+                {schedulerActive ? "Active" : "Inactive"} ·{" "}
+                {hourlyRecurring ? (
+                  <>
+                    每小时 · 北京 *:{String(minuteBeijing).padStart(2, "0")}
+                  </>
+                ) : (
+                  <>
+                    北京 {`${String(hourBeijing).padStart(2, "0")}:${String(minuteBeijing).padStart(2, "0")}`}
+                  </>
+                )}
+                {hourlyRecurring
+                  ? "（每整点该分执行；关「每小时」后「时」用于每日一次）"
+                  : "（填好时刻后点「保存定时配置」写入 L3；再打开开关即按该时刻批跑）"}
               </span>
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-xs text-cyan-600/90">
@@ -714,7 +742,7 @@ export function K11UnifiedSmokeTest() {
                   : "text-cyan-600/80 hover:bg-white/5 hover:text-cyan-300"
               )}
             >
-              统合全量 / P2 / 定时
+              统合全量 / 开门冒烟 / 定时
             </button>
             <button
               type="button"
@@ -741,8 +769,9 @@ export function K11UnifiedSmokeTest() {
         >
           {displayLogs.length === 0 && !l3OrRun && logTab === "unified" && (
             <div className="text-cyan-700/65">
-              本页为<strong className="text-cyan-500/85">统合全量</strong>与定时批跑相关日志。点「启动统合冒烟」或「仅浏览器兼容」后会有探测 L3
-              行与 SSE；定时任务在开启且到点时由 L3 写入（见上方面板说明）。可用右侧标签切到
+              本页为<strong className="text-cyan-500/85">统合全量</strong>、<strong className="text-cyan-500/85">游戏开门冒烟</strong>
+              与定时批跑相关日志。点「启动统合冒烟」或「游戏模块开门冒烟」后会有探测 L3 行与 SSE；定时任务在开启且到点时由 L3
+              写入（见上方面板说明）。可用右侧标签切到
               <strong className="text-violet-400/85"> 游戏状态机 </strong>查看另一路输出。
             </div>
           )}
@@ -750,7 +779,7 @@ export function K11UnifiedSmokeTest() {
             <div className="text-violet-500/80">
               本标签仅显示
               <code className="mx-0.5 text-violet-300/90">test_k11_smoke_games_state_machine_playwright.py</code>
-              的 SSE 行。点「游戏模块冒烟测试」开始；与统合全量<strong className="font-normal"> 互斥</strong>
+              的 SSE 行。点「游戏状态机冒烟」开始；与统合全量<strong className="font-normal"> 互斥</strong>
               ，同一时间只跑一条子进程。
             </div>
           )}

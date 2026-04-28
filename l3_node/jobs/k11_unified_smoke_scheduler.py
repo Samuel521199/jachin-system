@@ -1,5 +1,8 @@
-﻿"""
-K11 统合平台冒烟 — 按北京时间每日固定点执行（多轮次 + 轮次间隔，与控制台配置一致）。
+"""
+K11 统合平台冒烟 — 按北京时间调度（多轮次 + 轮次间隔，与控制台配置一致）。
+
+- **每日一次**：在配置的「时:分」执行一轮（多子进程轮次仍由 runs/interval 控制）。
+- **每小时定点**（状态 ``hourly_recurring=true``）：自每个整点小时的该「分」执行（与 cron ``* * MM`` 对齐，``时`` 仍保存供切回每日模式时使用）。
 
 状态持久化 ``k11_unified_smoke_scheduler_state.json``；L3 重启后 ``init_k11_unified_smoke_auto_start()`` 可恢复。
 
@@ -195,11 +198,22 @@ async def k11_daily_unified_smoke_job() -> None:
     logger.info("[k11_unified_smoke_scheduler] 定时批跑全部结束")
 
 
+def _cron_trigger_for_state(st: dict[str, Any]) -> Any:
+    """根据状态生成 CronTrigger：每日一次或每小时（对齐「分」）。"""
+    from apscheduler.triggers.cron import CronTrigger
+
+    hour_bj = max(0, min(23, int(st.get("hour_beijing", DEFAULT_HOUR_BEIJING))))
+    minute_bj = max(0, min(59, int(st.get("minute_beijing", DEFAULT_MINUTE_BEIJING))))
+    hourly = bool(st.get("hourly_recurring"))
+    if hourly:
+        return CronTrigger(hour="*", minute=minute_bj, timezone=TZ_BEIJING)
+    return CronTrigger(hour=hour_bj, minute=minute_bj, timezone=TZ_BEIJING)
+
+
 def start_scheduler() -> dict[str, Any]:
     global _scheduler, _scheduler_started
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    from apscheduler.triggers.cron import CronTrigger
 
     if _scheduler_started and _scheduler is not None:
         _reschedule_daily_if_needed()
@@ -211,11 +225,13 @@ def start_scheduler() -> dict[str, Any]:
     st = _read_state()
     hour_bj = max(0, min(23, int(st.get("hour_beijing", DEFAULT_HOUR_BEIJING))))
     minute_bj = max(0, min(59, int(st.get("minute_beijing", DEFAULT_MINUTE_BEIJING))))
+    hourly = bool(st.get("hourly_recurring"))
+    trigger = _cron_trigger_for_state(st)
 
     sched = AsyncIOScheduler()
     sched.add_job(
         k11_daily_unified_smoke_job,
-        CronTrigger(hour=hour_bj, minute=minute_bj, timezone=TZ_BEIJING),
+        trigger,
         id=_JOB_DAILY,
         replace_existing=True,
         max_instances=1,
@@ -227,34 +243,48 @@ def start_scheduler() -> dict[str, Any]:
     _scheduler_started = True
     st = {**st, "enabled": True}
     _write_state(st)
-    logger.info(
-        "[k11_unified_smoke_scheduler] 已启动：每日北京时间 %02d:%02d 执行 K11 统合冒烟",
-        hour_bj,
-        minute_bj,
-    )
+    if hourly:
+        logger.info(
+            "[k11_unified_smoke_scheduler] 已启动：每小时北京时间 *:%02d 执行 K11 统合冒烟（保存的时=%02d 供每日模式）",
+            minute_bj,
+            hour_bj,
+        )
+    else:
+        logger.info(
+            "[k11_unified_smoke_scheduler] 已启动：每日北京时间 %02d:%02d 执行 K11 统合冒烟",
+            hour_bj,
+            minute_bj,
+        )
     return {"ok": True, "active": True, "message": "已启动"}
 
 
 def _reschedule_daily_if_needed() -> None:
-    """在运行中若用户改了“每日几点”，重建 Cron。"""
+    """在运行中若用户改了时刻或每小时开关，重建 Cron。"""
     global _scheduler, _scheduler_started
     if _scheduler is None or not _scheduler_started:
         return
     st = _read_state()
     hour_bj = max(0, min(23, int(st.get("hour_beijing", DEFAULT_HOUR_BEIJING))))
     minute_bj = max(0, min(59, int(st.get("minute_beijing", DEFAULT_MINUTE_BEIJING))))
-    from apscheduler.triggers.cron import CronTrigger
+    hourly = bool(st.get("hourly_recurring"))
+    trigger = _cron_trigger_for_state(st)
 
     try:
         _scheduler.reschedule_job(
             _JOB_DAILY,
-            trigger=CronTrigger(hour=hour_bj, minute=minute_bj, timezone=TZ_BEIJING),
+            trigger=trigger,
         )
-        logger.info(
-            "[k11_unified_smoke_scheduler] 已重排每日任务：北京 %02d:%02d",
-            hour_bj,
-            minute_bj,
-        )
+        if hourly:
+            logger.info(
+                "[k11_unified_smoke_scheduler] 已重排：每小时 *:%02d（北京）",
+                minute_bj,
+            )
+        else:
+            logger.info(
+                "[k11_unified_smoke_scheduler] 已重排每日任务：北京 %02d:%02d",
+                hour_bj,
+                minute_bj,
+            )
     except Exception as e:
         logger.warning("[k11_unified_smoke_scheduler] reschedule 失败: %s", e)
 
@@ -290,6 +320,7 @@ def scheduler_status() -> dict[str, Any]:
         "minute_beijing": int(st.get("minute_beijing", DEFAULT_MINUTE_BEIJING)),
         "runs": int(st.get("runs", DEFAULT_RUNS)),
         "interval_sec": int(st.get("interval_sec", DEFAULT_INTERVAL_SEC)),
+        "hourly_recurring": bool(st.get("hourly_recurring")),
     }
 
 
@@ -300,6 +331,7 @@ def apply_k11_unified_smoke_schedule(
     minute_beijing: int | None = None,
     runs: int | None = None,
     interval_sec: int | None = None,
+    hourly_recurring: bool | None = None,
 ) -> dict[str, Any]:
     """
     合并写入状态并启停调度；供 HTTP toggle 使用。
@@ -313,6 +345,8 @@ def apply_k11_unified_smoke_schedule(
         st["runs"] = max(1, min(99, int(runs)))
     if interval_sec is not None:
         st["interval_sec"] = max(0, min(3600, int(interval_sec)))
+    if hourly_recurring is not None:
+        st["hourly_recurring"] = bool(hourly_recurring)
     st["enabled"] = bool(enabled)
     _write_state(st)
     if enabled:

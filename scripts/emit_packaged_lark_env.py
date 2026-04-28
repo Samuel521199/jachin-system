@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 从仓库根 .env 提取 Lark/K11 飞书相关键，生成 ``l3_node/packaged_lark_env_generated.py``，

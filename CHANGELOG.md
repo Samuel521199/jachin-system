@@ -1,6 +1,15 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.51] - 2026-04-28
+
+### Added / Changed
+
+- 完成冒烟测试第一版交付。
+- **Version**: Desktop **0.9.51**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.50] - 2026-04-24
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 路径解析：支持 PyInstaller 打包与开发模式
 
 PyInstaller 时 __file__ 指向 _MEIPASS 临时目录，skills_repo 不在其中。
@@ -79,6 +79,19 @@ def k11_p2_compat_weaknet_script_path() -> Path:
 def k11_games_state_machine_smoke_script_path() -> Path:
     """``scripts/test_k11_smoke_games_state_machine_playwright.py``（游戏状态机轻量冒烟）。"""
     fname = "test_k11_smoke_games_state_machine_playwright.py"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = get_app_root() / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return Path(__file__).resolve().parent.parent / "scripts" / fname
+
+
+def k11_game_open_smoke_script_path() -> Path:
+    """``scripts/test_k11_game_open_smoke.py``（游戏模块开门冒烟）。"""
+    fname = "test_k11_game_open_smoke.py"
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         p = Path(sys._MEIPASS) / "scripts" / fname
         if p.is_file():

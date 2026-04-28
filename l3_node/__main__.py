@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 节点独立运行入口
 
 用法:
@@ -98,6 +98,10 @@ if __name__ == "__main__" and len(sys.argv) > 1:
         from l3_node.k11_subprocess_cli import run_k11_games_state_machine_sync
 
         raise SystemExit(run_k11_games_state_machine_sync())
+    if sys.argv[1] == "--jachin-k11-game-open-smoke-subprocess":
+        from l3_node.k11_subprocess_cli import run_k11_game_open_smoke_sync
+
+        raise SystemExit(run_k11_game_open_smoke_sync())
 
 # 桌面/GUI 拉起打包 exe 时无控制台：分配独立控制台（须在 logging 绑定 stdout 之前）
 if sys.platform == "win32":

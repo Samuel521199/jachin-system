@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -1393,6 +1393,22 @@ export async function getK11GamesStateMachineSmokeStreamUrlAsync(opts?: {
   if (opts?.interval != null) sp.set("interval", String(opts.interval));
   const q = sp.toString();
   const rel = `/api/v1/k11-games-state-machine-smoke/stream${q ? `?${q}` : ""}`;
+  const base = await getL3SkillsBaseUrl();
+  return `${base}${rel}`;
+}
+
+/** K11 游戏模块开门冒烟 SSE：执行 test_k11_game_open_smoke.py */
+export async function getK11GameOpenSmokeStreamUrlAsync(opts?: {
+  verbose?: boolean;
+  noLarkReport?: boolean;
+  singleGame?: string;
+}): Promise<string> {
+  const sp = new URLSearchParams();
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.singleGame) sp.set("single_game", opts.singleGame);
+  const q = sp.toString();
+  const rel = `/api/v1/k11-game-open-smoke/stream${q ? `?${q}` : ""}`;
   const base = await getL3SkillsBaseUrl();
   return `${base}${rel}`;
 }

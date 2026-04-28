@@ -1,21 +1,22 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 K11 统合冒烟：将结果同步到 Lark 知识库内嵌「多维表 bitable」或「电子表格 sheet」，
 并向指定会话发送完成通知。电子表格与本地 xlsx 相同：在含「测试项目/结果/备注」表头的工作表
 中按用例关键词匹配行并回写（见 ``test_k11_unified_platform_smoke_playwright.write_k11_unified_results_to_xlsx``）。
 
-凭据按优先级（勿把 app_secret 提交到 git）：
-  1) K11_SMOKE_LARK_APP_ID / K11_SMOKE_LARK_APP_SECRET
-  2) 与项目通用 Lark 相同：LARK_APP_ID + LARK_APP_SECRET 或 im_channels.lark（resolve_lark_credentials）
-可选：
+**发消息卡片 / 写 Wiki 表格** 的应用凭证与通知会话 **仅** 读取环境变量（与仓库根 ``.env`` 中 ``K11_SMOKE_LARK_*`` 一致，勿把 app_secret 提交到 git）：
+  - ``K11_SMOKE_LARK_APP_ID``
+  - ``K11_SMOKE_LARK_APP_SECRET``
+  - ``K11_SMOKE_LARK_NOTIFY_CHAT_ID``（发卡片/消息的 oc_ 会话；**不再**回退 ``LARK_CHAT_ID`` / 内置默认）
+
+可选（与表同步相关）：
   K11_SMOKE_LARK_WIKI_URL  知识库节点链接；多维表可带 table=；电子表格可带 sheet= 子表 id
   K11_SMOKE_LARK_TABLE_ID  仅多维表：子表 id（tbl...）；不填则按子表名「冒烟」等自动解析
   K11_SMOKE_LARK_SHEET_ID  仅电子表格：子表 sheet_id；不填则优先 URL 的 sheet=，否则选标题含「冒烟」的工作表
-  K11_SMOKE_LARK_NOTIFY_CHAT_ID  通知会话 chat_id（oc_ 开头）
 
 应用需具备：Wiki 读节点；多维表编辑或电子表格（sheets:spreadsheet）编辑等权限，且机器人有文档协作者权限。
 
-飞书 API code **230002** / ``Bot/User can NOT be out of the chat``：发消息/卡片的 **chat_id** 对应会话里**没有本应用机器人**（与打包无关）。请把机器人拉入目标群/话题，或把 ``K11_SMOKE_LARK_NOTIFY_CHAT_ID`` / ``LARK_CHAT_ID`` 改为已含该机器人的 ``oc_...`` 会话。
+飞书 API code **230002** / ``Bot/User can NOT be out of the chat``：发消息/卡片的 **chat_id** 对应会话里**没有本应用机器人**（与打包无关）。请把机器人拉入目标群/话题，或把 ``K11_SMOKE_LARK_NOTIFY_CHAT_ID`` 改为已含该机器人的 ``oc_...`` 会话。
 
 电子表格若「结果」列为复选框，同步时写入 **1=勾选（PASS）** 与 **0=未选（非 PASS）**，不写字符串 "PASS"。
 """
@@ -35,7 +36,6 @@ if str(ROOT) not in sys.path:
 _DEFAULT_WIKI_URL = (
     "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZyWlwhdW1iNQuykvy7qlw93sgTe"
 )
-_DEFAULT_NOTIFY_CHAT_ID = "oc_b1b9cff6804517c79b7f5a617ab30483"
 
 # 战报标题：与业务侧「综合冒烟」用语一致；勿与「统合」脚本文件名混为显示名
 K11_LARK_CARD_TITLE = "【K11 综合冒烟】战报"
@@ -43,10 +43,14 @@ K11_LARK_CARD_TITLE = "【K11 综合冒烟】战报"
 _K11_CARD_JSON_SOFT_MAX = 28_000
 
 
-def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
+def _apply_k11_smoke_lark_env() -> None:
     """
-    返回 (app_id, app_secret, api_base) 。api_base 有值时与 ``get_tenant_access_token`` 的 ``api_base`` 一致。
-    优先 K11 专用，否则走 ``resolve_lark_credentials()``（.env 中 LARK_APP_* 与 ~/.jachin/config 等）。
+    冒烟飞书三键 **只认应用根目录 .env**（与仓库根 ``.env`` 候选链一致）：
+
+    1. 先 ``apply_packaged_lark_to_os_environ``（frozen 下 **不会** 写入 ``K11_SMOKE_LARK_*``，见 packaged_lark_env）。
+    2. 再对首个存在的候选 ``.env`` 执行 ``load_dotenv(..., override=True)``，保证安装目录三行覆盖进程内任何旧值。
+
+    候选顺序：``JACHIN_APP_ROOT/.env`` → ``get_app_root()/.env`` → 本仓库 ``ROOT/.env``（开发机）。
     """
     try:
         from l3_node.packaged_lark_env import apply_packaged_lark_to_os_environ
@@ -57,7 +61,6 @@ def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
     try:
         from dotenv import load_dotenv
 
-        # 打包子进程里本文件可能在 _MEIPASS；须与统合脚本一致优先读 JACHIN_APP_ROOT/.env
         _cands: list[Path] = []
         _ja = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
         if _ja:
@@ -76,23 +79,22 @@ def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
                 continue
             _seen.add(_k)
             if _p.is_file():
-                load_dotenv(_p, encoding="utf-8")
+                # 必须与安装目录 .env 一致；override=True 否则 frozen 下其它路径已写入的占位不会被子进程里的 .env 覆盖
+                load_dotenv(_p, encoding="utf-8", override=True)
                 break
     except Exception:
         pass
+
+
+def resolve_k11_lark_app_credentials() -> tuple[str, str, str | None]:
+    """
+    仅返回 ``K11_SMOKE_LARK_APP_ID``、``K11_SMOKE_LARK_APP_SECRET`` 与 ``api_base=None``（走默认域）。
+    不再回退 ``LARK_APP_ID`` / ``resolve_lark_credentials``。
+    """
+    _apply_k11_smoke_lark_env()
     a = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
     s = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
-    if a and s:
-        return a, s, None
-    try:
-        from l3_node.channels.lark.client import resolve_lark_credentials
-
-        ra, rs, yb = resolve_lark_credentials()
-        if str(ra or "").strip() and str(rs or "").strip():
-            return str(ra or "").strip(), str(rs or "").strip(), yb
-    except Exception:
-        pass
-    return "", "", None
+    return a, s, None
 
 
 def log_k11_lark_runtime_identity(
@@ -103,15 +105,9 @@ def log_k11_lark_runtime_identity(
     effective_app_secret: str,
     send_chat_id: str | None = None,
 ) -> None:
-    """
-    冒烟回写/发消息前打一行诊断：生效的 app_id、会话 id、内嵌与进程环境对比。
-    打包子进程会先 ``apply_packaged_lark_to_os_environ``，再 ``load_dotenv(..., override=False)``，
-    故 **安装目录 .env 的 LARK_APP_ID 往往无法覆盖内嵌**（除非已设 K11_SMOKE_* 或未内嵌该键）。
-    """
+    """冒烟飞书：诊断行仅反映 K11_SMOKE_LARK_* 三键（与 .env 一致）。"""
     k11_a = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
-    env_lark_a = (os.environ.get("LARK_APP_ID") or "").strip()
     n_c = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
-    l_c = (os.environ.get("LARK_CHAT_ID") or "").strip()
     ja = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
     app_root = ""
     try:
@@ -120,31 +116,13 @@ def log_k11_lark_runtime_identity(
         app_root = str(get_app_root())
     except Exception:
         pass
-    pkg_lark = ""
-    try:
-        from l3_node.packaged_lark_env_generated import PACKAGED_LARK_ENV
-
-        pkg_lark = str((PACKAGED_LARK_ENV.get("LARK_APP_ID") or "").strip())
-    except Exception:
-        pkg_lark = ""
-    if k11_a and k11_a == (effective_app_id or "").strip():
-        src_guess = "K11_SMOKE_LARK_APP_ID"
-    elif pkg_lark and pkg_lark == (effective_app_id or "").strip():
-        src_guess = "内嵌PACKAGED_LARK或同值环境"
-    elif env_lark_a == (effective_app_id or "").strip():
-        src_guess = "LARK_APP_ID环境/im_channels等"
-    else:
-        src_guess = "resolve_lark_credentials(其它)"
     parts = [
         f"  [lark·身份·{phase}] 生效_app_id={effective_app_id!r}",
         f"app_secret_len={len(effective_app_secret)}",
-        f"推断来源≈{src_guess}",
+        f"env_K11_SMOKE_LARK_APP_ID={'(已设)' if k11_a else '(未设)'}",
         f"env_K11_SMOKE_LARK_NOTIFY_CHAT_ID={n_c or '(未设)'}",
-        f"env_LARK_CHAT_ID={l_c or '(未设)'}",
         f"JACHIN_APP_ROOT={ja or '(未设)'}",
         f"get_app_root={app_root or '(n/a)'}",
-        f"内嵌generated_LARK_APP_ID={pkg_lark or '(无/未打包)'}",
-        f"进程LARK_APP_ID={(env_lark_a or '(未设)')!r}",
     ]
     if send_chat_id is not None:
         parts.append(
@@ -580,19 +558,16 @@ def write_k11_unified_results_to_lark_bitable(
         log(f"  [lark] 导入 l3_node 失败，跳过：{e}")
         return 0
 
-    aid = (app_id or "").strip()
-    sec = (app_secret or "").strip()
+    # 写 Wiki/表：仅使用 .env 中 K11_SMOKE_LARK_APP_ID / K11_SMOKE_LARK_APP_SECRET（忽略调用方传入的 app_id/secret）
+    _apply_k11_smoke_lark_env()
+    aid = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
+    sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
     yb: str | None = None
     if not aid or not sec:
-        aid, sec, yb = resolve_k11_lark_app_credentials()
-    if not aid or not sec:
         log(
-            "  [lark] 无可用应用凭证；请在 .env 设置 K11_SMOKE_LARK_APP_ID/SECRET 或 LARK_APP_ID/SECRET，"
-            "或配置 ~/.jachin/config 中 im_channels.lark。跳过飞书写入。"
+            "  [lark] 无可用应用凭证；请在 .env 设置 K11_SMOKE_LARK_APP_ID 与 K11_SMOKE_LARK_APP_SECRET。跳过飞书写入。"
         )
         return 0
-    if not (app_id or "").strip() or not (app_secret or "").strip():
-        log("  [lark] 已使用 LARK_APP_ID / im_channels.lark 等通用凭证（非 K11_SMOKE_* 专用名）。")
 
     log_k11_lark_runtime_identity(
         log,
@@ -911,21 +886,24 @@ def send_k11_smoke_lark_notification(
     chat_id: str,
     log: Callable[[str], None],
 ) -> bool:
-    """发送完成通知：优先「原生 table + 表头 + 汇总」交互卡片，失败则降级 lark_md 块/纯文本。"""
-    aid = (app_id or "").strip()
-    sec = (app_secret or "").strip()
+    """发送完成通知：优先「原生 table + 表头 + 汇总」交互卡片，失败则降级 lark_md 块/纯文本。
+
+    应用与会话 **仅** 从环境变量读取：``K11_SMOKE_LARK_APP_ID``、``K11_SMOKE_LARK_APP_SECRET``、
+    ``K11_SMOKE_LARK_NOTIFY_CHAT_ID``（与调用方传入的 app_id/app_secret/chat_id 无关，避免与 LARK_APP_* 混淆）。
+    """
+    _apply_k11_smoke_lark_env()
+    aid = (os.environ.get("K11_SMOKE_LARK_APP_ID") or "").strip()
+    sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
     yb: str | None = None
     if not aid or not sec:
-        aid, sec, yb = resolve_k11_lark_app_credentials()
-    if not aid or not sec:
         log(
-            "  [lark] 发消息：无应用凭证（与写表相同：K11_SMOKE_* 或 LARK_APP_* / im_channels.lark），跳过通知。"
+            "  [lark] 发消息：无应用凭证。请在 .env 设置 K11_SMOKE_LARK_APP_ID 与 K11_SMOKE_LARK_APP_SECRET。跳过通知。"
         )
         return False
-    if not (app_id or "").strip() or not (app_secret or "").strip():
-        log("  [lark] 发消息：已使用通用 Lark 凭证。")
-
-    cid = (chat_id or "").strip() or _DEFAULT_NOTIFY_CHAT_ID
+    cid = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
+    if not cid:
+        log("  [lark] 发消息：未设置 K11_SMOKE_LARK_NOTIFY_CHAT_ID，跳过通知。")
+        return False
     log_k11_lark_runtime_identity(
         log,
         phase="发通知",

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 平台冒烟 · P2：浏览器兼容 + 弱网体验
@@ -30,7 +30,7 @@ K11 平台冒烟 · P2：浏览器兼容 + 弱网体验
   python scripts/test_k11_p2_compat_weaknet_playwright.py --only-compat --headless
 
 **飞书/Lark 报告**（与统合版同逻辑：Wiki 内嵌表 + 完成通知卡）：在 ``.env`` 配
-``K11_SMOKE_LARK_*`` / ``LARK_APP_*`` 等，见 ``scripts/k11_lark_smoke_report.py``。
+``K11_SMOKE_LARK_APP_ID`` / ``K11_SMOKE_LARK_APP_SECRET`` / ``K11_SMOKE_LARK_NOTIFY_CHAT_ID`` 等，见 ``scripts/k11_lark_smoke_report.py``。
 默认只同步飞书、不写本机 xlsx；加 ``--no-lark-report`` 可不发飞书。
 
 本机 xlsx（浏览器兼容 Chrome/Edge 合并为一行「浏览器兼容」）：加 ``--write-local-xlsx`` 写入
@@ -1223,8 +1223,6 @@ async def _async_main(args: argparse.Namespace) -> int:
             _sec = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
             _tbl = (os.environ.get("K11_SMOKE_LARK_TABLE_ID") or "").strip() or None
             _chat = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
-            if not _chat and hasattr(k11_lark, "_DEFAULT_NOTIFY_CHAT_ID"):
-                _chat = str(k11_lark._DEFAULT_NOTIFY_CHAT_ID)
             lark_results = _p2_all_rows_to_lark_results(all_rows)
             log("")
             _nw = k11_lark.write_k11_unified_results_to_lark_bitable(  # type: ignore[attr-defined]
