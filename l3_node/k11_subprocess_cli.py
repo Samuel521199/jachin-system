@@ -9,8 +9,15 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from pathlib import Path
+from types import ModuleType
 
-from l3_node.paths import get_app_root, k11_p2_compat_weaknet_script_path, k11_unified_smoke_script_path
+from l3_node.paths import (
+    get_app_root,
+    k11_games_state_machine_smoke_script_path,
+    k11_p2_compat_weaknet_script_path,
+    k11_unified_smoke_script_path,
+)
 
 
 def _bootstrap_k11_subprocess_env() -> None:
@@ -43,6 +50,24 @@ def _bootstrap_k11_subprocess_env() -> None:
         pass
 
 
+def _load_k11_script_module(script: Path, unique_module_name: str) -> ModuleType:
+    """
+    动态加载 Playwright 冒烟脚本模块。
+
+    **必须在 exec_module 前** 将模块挂入 ``sys.modules``，否则脚本里顶层的 ``@dataclass`` 等
+    在解析时会执行 ``sys.modules[cls.__module__]``，若未注册会得到 ``None`` 并触发::
+
+        AttributeError: 'NoneType' object has no attribute '__dict__'
+    """
+    spec = importlib.util.spec_from_file_location(unique_module_name, script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"spec failed for {script}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[unique_module_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def run_k11_unified_sync() -> int:
     _bootstrap_k11_subprocess_env()
     script = k11_unified_smoke_script_path()
@@ -51,12 +76,31 @@ def run_k11_unified_sync() -> int:
         return 2
     rest = list(sys.argv[2:])
     sys.argv = [script.name] + rest
-    spec = importlib.util.spec_from_file_location("_k11_unified_sse_subprocess", script)
-    if spec is None or spec.loader is None:
-        print("[FATAL] 无法加载 K11 统合冒烟模块", file=sys.stderr)
+    try:
+        mod = _load_k11_script_module(script, "_k11_unified_sse_subprocess")
+    except Exception as e:
+        print(f"[FATAL] 无法加载 K11 统合冒烟模块: {e}", file=sys.stderr)
         return 2
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    main_fn = getattr(mod, "main", None)
+    if main_fn is None:
+        print("[FATAL] 脚本缺少 main()", file=sys.stderr)
+        return 2
+    return int(main_fn())
+
+
+def run_k11_games_state_machine_sync() -> int:
+    _bootstrap_k11_subprocess_env()
+    script = k11_games_state_machine_smoke_script_path()
+    if not script.is_file():
+        print(f"[FATAL] 缺少 K11 游戏状态机冒烟脚本: {script}", file=sys.stderr)
+        return 2
+    rest = list(sys.argv[2:])
+    sys.argv = [script.name] + rest
+    try:
+        mod = _load_k11_script_module(script, "_k11_games_state_machine_sse_subprocess")
+    except Exception as e:
+        print(f"[FATAL] 无法加载 K11 游戏状态机脚本: {e}", file=sys.stderr)
+        return 2
     main_fn = getattr(mod, "main", None)
     if main_fn is None:
         print("[FATAL] 脚本缺少 main()", file=sys.stderr)
@@ -72,12 +116,11 @@ def run_k11_p2_compat_sync() -> int:
         return 2
     rest = list(sys.argv[2:])
     sys.argv = [script.name] + rest
-    spec = importlib.util.spec_from_file_location("_k11_p2_compat_sse_subprocess", script)
-    if spec is None or spec.loader is None:
-        print("[FATAL] 无法加载 K11 P2 脚本", file=sys.stderr)
+    try:
+        mod = _load_k11_script_module(script, "_k11_p2_compat_sse_subprocess")
+    except Exception as e:
+        print(f"[FATAL] 无法加载 K11 P2 脚本: {e}", file=sys.stderr)
         return 2
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     main_fn = getattr(mod, "main", None)
     if main_fn is None:
         print("[FATAL] 脚本缺少 main()", file=sys.stderr)

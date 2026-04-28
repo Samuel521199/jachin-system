@@ -9,7 +9,7 @@ K11 平台冒烟 · P0（文档《K11_平台冒烟测试用例》约 31–39 行
 覆盖（自动化能力范围内）：
   P0 环境访问、首页加载、页面标题、Play Now!、分类 All/1vs1/Party/Live、
   游戏卡片抽检、Console 抽样、本次更新点（SKIP 人工）
-  （「关键卡片点击」已不在本脚本执行，可用 ``test_k11_p0_key_card_kalaroko_playwright.py`` 单独跑。）
+  （「关键卡片长测」原独立脚本已移除；壳层辅助见 ``scripts/k11_kalaroko_shell_helpers.py``。）
 
 前置：
   - ``KALAROKO_CDP_ENDPOINT`` 或 ``--cdp-http``（默认 http://127.0.0.1:9222）

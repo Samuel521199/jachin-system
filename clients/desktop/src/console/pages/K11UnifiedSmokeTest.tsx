@@ -8,6 +8,7 @@ import { FlaskConical } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { useK11ScheduleLogLines } from "../K11ScheduleLogContext";
 import {
+  getK11GamesStateMachineSmokeStreamUrlAsync,
   getK11P2CompatOnlyStreamUrlAsync,
   getK11UnifiedSmokeStreamUrlAsync,
   getL3MonitorApiUrlAsync,
@@ -16,8 +17,11 @@ import {
 const DEFAULT_SMOKE_HOUR_BEIJING = 9;
 const DEFAULT_SMOKE_MINUTE_BEIJING = 0;
 
+type K11LogChannel = "unified" | "games";
+
 export function K11UnifiedSmokeTest() {
   const scheduleLogLines = useK11ScheduleLogLines();
+  const [logTab, setLogTab] = useState<K11LogChannel>("unified");
   const [runs, setRuns] = useState(4);
   const [intervalSec, setIntervalSec] = useState(30);
   const [verbose, setVerbose] = useState(true);
@@ -28,11 +32,18 @@ export function K11UnifiedSmokeTest() {
   const [running, setRunning] = useState(false);
   /** 仅 L3 端口探测中；勿与 running 混用，否则未起 L3 时长时间禁用「启动」像卡死。 */
   const [l3Probing, setL3Probing] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
-  const displayLogs = useMemo(
-    () => [...scheduleLogLines, ...logs],
-    [logs, scheduleLogLines]
-  );
+  /** 统合冒烟 + P2 兼容 的 SSE 行（不含游戏脚本） */
+  const [unifiedLogs, setUnifiedLogs] = useState<string[]>([]);
+  /** 游戏状态机脚本的 SSE 行 */
+  const [gamesLogs, setGamesLogs] = useState<string[]>([]);
+  /** 当前子进程输出写入哪一路（用于停止时的提示行） */
+  const sseChannelRef = useRef<K11LogChannel | null>(null);
+  const displayLogs = useMemo(() => {
+    if (logTab === "games") {
+      return gamesLogs;
+    }
+    return [...scheduleLogLines, ...unifiedLogs];
+  }, [gamesLogs, logTab, scheduleLogLines, unifiedLogs]);
   const [doneOk, setDoneOk] = useState<boolean | null>(null);
   const [showNotify, setShowNotify] = useState(false);
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -116,7 +127,11 @@ export function K11UnifiedSmokeTest() {
         message?: string;
       };
       const ok = res.ok && data?.ok !== false;
-      setLogs((prev) => [
+      const setActive =
+        sseChannelRef.current === "games"
+          ? setGamesLogs
+          : setUnifiedLogs;
+      setActive((prev) => [
         ...prev,
         !ok
           ? "> 停止请求失败（HTTP）。"
@@ -130,7 +145,8 @@ export function K11UnifiedSmokeTest() {
         setRunning(false);
       }
     } catch {
-      setLogs((prev) => [...prev, "> 停止请求失败（网络）。"]);
+      const setActive = sseChannelRef.current === "games" ? setGamesLogs : setUnifiedLogs;
+      setActive((prev) => [...prev, "> 停止请求失败（网络）。"]);
     }
   }, []);
 
@@ -161,7 +177,7 @@ export function K11UnifiedSmokeTest() {
         setSchedulerActive(on);
         void refreshScheduleStatus();
       } catch {
-        setLogs((prev) => [...prev, "> [WARN] 冒烟定时任务开关请求失败。"]);
+        setUnifiedLogs((prev) => [...prev, "> [WARN] 冒烟定时任务开关请求失败。"]);
       } finally {
         setScheduleLoading(false);
       }
@@ -221,9 +237,11 @@ export function K11UnifiedSmokeTest() {
   }, [displayLogs]);
 
   const connectSse = useCallback(
-    (streamUrl: string, initLogs: string[], notify: string) => {
+    (streamUrl: string, initLogs: string[], notify: string, channel: K11LogChannel) => {
+      const setChannelLogs = channel === "unified" ? setUnifiedLogs : setGamesLogs;
+      sseChannelRef.current = channel;
       setNotifyMsg(notify);
-      setLogs(initLogs);
+      setChannelLogs(initLogs);
       setDoneOk(null);
       setExitCode(null);
       setShowNotify(false);
@@ -244,10 +262,11 @@ export function K11UnifiedSmokeTest() {
               setExitCode(null);
             }
             if (cancelled) {
-              setLogs((prev) => [...prev, "> █ 已中断。"]);
+              setChannelLogs((prev) => [...prev, "> █ 已中断。"]);
             }
-            setLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
+            setChannelLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
             setRunning(false);
+            sseChannelRef.current = null;
             eventSource.close();
             if (ok) {
               setShowNotify(true);
@@ -257,14 +276,15 @@ export function K11UnifiedSmokeTest() {
           }
           if (data.type === "error") {
             const msg = typeof data.message === "string" ? data.message : "未知错误";
-            setLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
+            setChannelLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
             setRunning(false);
+            sseChannelRef.current = null;
             setDoneOk(false);
             eventSource.close();
             return;
           }
           if (typeof data.line === "string") {
-            setLogs((prev) => [...prev, `> ${data.line}`]);
+            setChannelLogs((prev) => [...prev, `> ${data.line}`]);
           }
         } catch {
           /* ignore */
@@ -278,13 +298,13 @@ export function K11UnifiedSmokeTest() {
           const hint = import.meta.env.DEV
             ? "请确认 L3 已启动且本页开发代理 /l3 可用。"
             : "请确认本机 L3 已跑起来；若仅 SSE 已断、子进程仍在，请点「停止」。";
-          setLogs((prev) => [...prev, `> [WARN] SSE 已结束（无自动重连）。${hint}`]);
+          setChannelLogs((prev) => [...prev, `> [WARN] SSE 已结束（无自动重连）。${hint}`]);
           return;
         }
         const now = Date.now();
         if (now - sseTransientWarnAtRef.current > 8000) {
           sseTransientWarnAtRef.current = now;
-          setLogs((prev) => [
+          setChannelLogs((prev) => [
             ...prev,
             "> [INFO] SSE 连接异常或抖动（可能自动重试）；未收到任务结束信令前仍可点「停止」。",
           ]);
@@ -302,7 +322,8 @@ export function K11UnifiedSmokeTest() {
       setL3Probing(true);
       setDoneOk(null);
       setExitCode(null);
-      setLogs([
+      setLogTab("unified");
+      setUnifiedLogs([
         "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行回退）…",
         "> 若失败将很快报 [ERROR]；本机 L3 未起时请运行 run_l3.bat 或主程序同目录 l3 侧车。",
       ]);
@@ -316,7 +337,7 @@ export function K11UnifiedSmokeTest() {
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        setLogs([
+        setUnifiedLogs([
           `> [ERROR] 连不上 L3：${msg}`,
           "> 另一台电脑若未起 L3：请与 Jachin 主程序同目录运行 run_l3.bat，或确认主程序未禁用自动拉起（勿随意设 JACHIN_SKIP_L3_SPAWN=1）。查看同目录 l3_debug.log。",
         ]);
@@ -331,7 +352,8 @@ export function K11UnifiedSmokeTest() {
           `> 计划: ${r} 轮, 轮次间隔: ${i} 秒（目标/ CDP 由 .env 与脚本默认站）`,
           "> 连接 L3 SSE 流…",
         ],
-        "K11 统合冒烟已完成（退出码 0）"
+        "K11 统合冒烟已完成（退出码 0）",
+        "unified"
       );
     })();
   }, [connectSse, intervalSec, noLark, runs, verbose]);
@@ -344,7 +366,8 @@ export function K11UnifiedSmokeTest() {
       setL3Probing(true);
       setDoneOk(null);
       setExitCode(null);
-      setLogs([
+      setLogTab("unified");
+      setUnifiedLogs([
         "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行）…",
         "> 请确认 L3 已运行。",
       ]);
@@ -359,7 +382,7 @@ export function K11UnifiedSmokeTest() {
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        setLogs([
+        setUnifiedLogs([
           `> [ERROR] 连不上 L3：${msg}`,
           "> 请确认 L3 已运行（同目录 run_l3.bat 或主程序随附侧车），并见 l3_debug.log。",
         ]);
@@ -375,10 +398,55 @@ export function K11UnifiedSmokeTest() {
           "> 等效: test_k11_p2_compat_weaknet_playwright.py --only-compat",
           "> 连接 L3 SSE 流…",
         ],
-        "P2 浏览器兼容已完成（退出码 0）"
+        "P2 浏览器兼容已完成（退出码 0）",
+        "unified"
       );
     })();
   }, [connectSse, headlessP2, intervalSec, noLark, runs, verbose]);
+
+  const handleStartGamesStateMachine = useCallback(() => {
+    void (async () => {
+      esRef.current?.close();
+      const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
+      const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
+      setL3Probing(true);
+      setDoneOk(null);
+      setExitCode(null);
+      setLogTab("games");
+      setGamesLogs([
+        "> 正在探测本机 L3 技能 HTTP（/api/v3/skills）…",
+        "> 将执行：scripts/test_k11_smoke_games_state_machine_playwright.py",
+      ]);
+      let streamUrl: string;
+      try {
+        streamUrl = await getK11GamesStateMachineSmokeStreamUrlAsync({
+          verbose,
+          noLarkReport: noLark,
+          runs: r,
+          interval: i,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setGamesLogs([
+          `> [ERROR] 连不上 L3：${msg}`,
+          "> 请确认 L3 已运行。",
+        ]);
+        return;
+      } finally {
+        setL3Probing(false);
+      }
+      connectSse(
+        streamUrl,
+        [
+          "> 初始化 K11 游戏状态机冒烟（Playwright）…",
+          `> 计划: ${r} 轮, 轮次间隔: ${i} 秒`,
+          "> 连接 L3 SSE 流…",
+        ],
+        "K11 游戏状态机冒烟已完成（退出码 0）",
+        "games"
+      );
+    })();
+  }, [connectSse, intervalSec, noLark, runs, verbose]);
 
   /** 探测 L3 与执行冒烟：合并后控制「启动」灰显，避免仅 running 在探测期误判为整轮执行中。 */
   const l3OrRun = l3Probing || running;
@@ -408,7 +476,12 @@ export function K11UnifiedSmokeTest() {
           >
             ■ K11 统合平台冒烟
           </h2>
-          <p className="text-xs text-cyan-700/90">scripts/test_k11_unified_platform_smoke_playwright.py</p>
+          <p className="text-xs text-cyan-700/90">
+            统合：<span className="font-mono text-cyan-600/90">test_k11_unified_platform_smoke_playwright.py</span>
+            {" · "}
+            游戏：
+            <span className="font-mono text-cyan-600/90">test_k11_smoke_games_state_machine_playwright.py</span>
+          </p>
         </div>
       </header>
 
@@ -489,6 +562,20 @@ export function K11UnifiedSmokeTest() {
               title="--only-compat"
             >
               {l3Probing ? "探测 L3…" : "🧩 仅浏览器兼容"}
+            </button>
+            <button
+              type="button"
+              disabled={l3OrRun}
+              onClick={handleStartGamesStateMachine}
+              className={cn(
+                "rounded-lg border px-4 py-2.5 text-sm font-bold transition-all",
+                l3OrRun
+                  ? "cursor-not-allowed border-slate-700 bg-slate-900/50 text-slate-600"
+                  : "border-violet-500/45 bg-violet-950/35 text-violet-100 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-900/45"
+              )}
+              title="test_k11_smoke_games_state_machine_playwright.py"
+            >
+              {l3Probing ? "探测 L3…" : "🎮 游戏模块冒烟测试"}
             </button>
             <button
               type="button"
@@ -606,7 +693,45 @@ export function K11UnifiedSmokeTest() {
       </section>
 
       <section className="flex min-h-0 flex-1 flex-col gap-2">
-        <div className="text-[11px] font-medium uppercase tracking-[0.2em] text-cyan-600/75"># MIND STREAM :: K11 SMOKE</div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-[11px] font-medium uppercase tracking-[0.2em] text-cyan-600/75">
+            # MIND STREAM :: K11 SMOKE
+          </div>
+          <div
+            className="flex w-full max-w-md gap-1 rounded-lg border border-cyan-500/20 bg-black/40 p-0.5 sm:w-auto"
+            role="tablist"
+            aria-label="日志来源"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={logTab === "unified"}
+              onClick={() => setLogTab("unified")}
+              className={cn(
+                "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-mono transition sm:flex-initial",
+                logTab === "unified"
+                  ? "bg-cyan-500/25 text-cyan-100 shadow-[inset_0_0_12px_rgba(34,211,238,0.12)]"
+                  : "text-cyan-600/80 hover:bg-white/5 hover:text-cyan-300"
+              )}
+            >
+              统合全量 / P2 / 定时
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={logTab === "games"}
+              onClick={() => setLogTab("games")}
+              className={cn(
+                "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-mono transition sm:flex-initial",
+                logTab === "games"
+                  ? "bg-violet-500/25 text-violet-100 shadow-[inset_0_0_12px_rgba(139,92,246,0.12)]"
+                  : "text-violet-600/80 hover:bg-white/5 hover:text-violet-200"
+              )}
+            >
+              游戏状态机
+            </button>
+          </div>
+        </div>
         <div
           className={cn(
             "flex min-h-[280px] flex-1 flex-col overflow-y-auto rounded-lg border border-cyan-500/25 p-4",
@@ -614,16 +739,25 @@ export function K11UnifiedSmokeTest() {
             "[text-shadow:0_0_10px_rgba(6,182,212,0.12)]"
           )}
         >
-          {displayLogs.length === 0 && !l3OrRun && (
+          {displayLogs.length === 0 && !l3OrRun && logTab === "unified" && (
             <div className="text-cyan-700/65">
-              等待启动…
-              点「启动统合冒烟」/「P2 浏览器兼容…」后，会先有「正在探测 L3…」行，再出 SSE 流。
-              未点按钮时，每日定时批跑若已开启，到点需 L3 在跑且本页在订阅定时日志，才会在此出现批跑行。
+              本页为<strong className="text-cyan-500/85">统合全量</strong>与定时批跑相关日志。点「启动统合冒烟」或「仅浏览器兼容」后会有探测 L3
+              行与 SSE；定时任务在开启且到点时由 L3 写入（见上方面板说明）。可用右侧标签切到
+              <strong className="text-violet-400/85"> 游戏状态机 </strong>查看另一路输出。
+            </div>
+          )}
+          {displayLogs.length === 0 && !l3OrRun && logTab === "games" && (
+            <div className="text-violet-500/80">
+              本标签仅显示
+              <code className="mx-0.5 text-violet-300/90">test_k11_smoke_games_state_machine_playwright.py</code>
+              的 SSE 行。点「游戏模块冒烟测试」开始；与统合全量<strong className="font-normal"> 互斥</strong>
+              ，同一时间只跑一条子进程。
             </div>
           )}
           {displayLogs.length === 0 && l3OrRun && (
             <div className="text-cyan-600/80">
-              已请求（探测 L3 或已连 SSE）… 若长期无新行：本机 L3 未起、或 127.0.0.1:1899x 被拦截；侧车未随主程序启动时检查 run_l3.bat / 勿设 JACHIN_SKIP_L3_SPAWN=1。
+              已请求（探测 L3 或已连 SSE）… 若长期无新行：本机 L3 未起、或 127.0.0.1:1899x 被拦截；侧车未随主程序启动时检查 run_l3.bat / 勿设
+              JACHIN_SKIP_L3_SPAWN=1。当前任务输出在对应来源标签下（可切换标签，执行中请留在正在跑的那一路）。
             </div>
           )}
           {displayLogs.map((log, index) => (

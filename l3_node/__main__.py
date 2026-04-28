@@ -94,6 +94,10 @@ if __name__ == "__main__" and len(sys.argv) > 1:
         from l3_node.k11_subprocess_cli import run_k11_p2_compat_sync
 
         raise SystemExit(run_k11_p2_compat_sync())
+    if sys.argv[1] == "--jachin-k11-games-state-machine-subprocess":
+        from l3_node.k11_subprocess_cli import run_k11_games_state_machine_sync
+
+        raise SystemExit(run_k11_games_state_machine_sync())
 
 # 桌面/GUI 拉起打包 exe 时无控制台：分配独立控制台（须在 logging 绑定 stdout 之前）
 if sys.platform == "win32":

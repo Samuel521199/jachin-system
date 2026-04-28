@@ -20,6 +20,7 @@ from typing import Any
 
 from l3_node.paths import (
     get_app_root,
+    k11_games_state_machine_smoke_script_path,
     k11_p2_compat_weaknet_script_path,
     k11_unified_smoke_script_path,
     kalaroko_default_e2e_script_path,
@@ -710,216 +711,218 @@ async def _k11_smoke_subprocess_sse_stream(
         _k11_unified_smoke_stream_active = True
     _k11_unified_smoke_user_abort = False
 
-    # 子进程会早退走 k11_subprocess_cli，须与 get_app_root() 一致并显式传入，避免仅继承错误 cwd/父 env
     try:
-        _ja = str(Path(root).resolve())
-    except Exception:
-        _ja = str(root)
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "JACHIN_APP_ROOT": _ja}
-    sub_task: asyncio.Task[int] | None = None
-    response = _stream_response()
-    keepalive_sec = 15.0
-    ended_with_error_event: bool = False
-
-    async def _write_line_obj(line: str) -> None:
-        payload = {"line": line}
-        await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
-        if hasattr(response, "drain"):
-            await response.drain()
-
-    try:
-        await response.prepare(request)
-        all_runs_ok = True
-        last_code = 0
-        for run_idx in range(1, run_count + 1):
-            if _k11_unified_smoke_user_abort:
-                await _write_line_obj("> 已按停止请求结束，不再执行后续轮次。")
-                break
-            line_q: asyncio.Queue[str] = asyncio.Queue()
-
-            async def _pump() -> int:
-                global _k11_unified_smoke_proc
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=str(root),
-                    env=env,
-                )
-                _k11_unified_smoke_proc = proc
-                code = 1
-                try:
-                    if proc.stdout is None:
-                        if proc.returncode is None:
-                            proc.kill()
-                        with contextlib.suppress(Exception):
-                            await proc.wait()
-                        return 2
-                    # 使用短超时 readline，使事件循环能穿插处理「停止」请求；否则子进程
-                    # 长时间不输出时，某些环境下停止信号与进程终止的调度会更难及时生效。
-                    while True:
-                        try:
-                            line = await asyncio.wait_for(
-                                proc.stdout.readline(), timeout=1.25
-                            )
-                        except asyncio.TimeoutError:
-                            if (
-                                _k11_unified_smoke_user_abort
-                                and proc.returncode is None
-                            ):
-                                with contextlib.suppress(Exception):
-                                    proc.terminate()
-                                with contextlib.suppress(
-                                    asyncio.TimeoutError, Exception
-                                ):
-                                    await asyncio.wait_for(proc.wait(), timeout=2.0)
-                                if proc.returncode is None:
-                                    with contextlib.suppress(Exception):
-                                        proc.kill()
-                                    with contextlib.suppress(Exception):
-                                        await proc.wait()
-                            continue
-                        if not line:
-                            break
-                        text = line.decode("utf-8", errors="replace").rstrip("\n\r")
-                        try:
-                            line_q.put_nowait(text)
-                        except Exception:
-                            pass
-                    code = await proc.wait()
-                except asyncio.CancelledError:
-                    if proc.returncode is None:
-                        try:
-                            proc.terminate()
-                            await asyncio.wait_for(proc.wait(), timeout=6.0)
-                        except (asyncio.TimeoutError, Exception):
-                            try:
+        # 子进程会早退走 k11_subprocess_cli，须与 get_app_root() 一致并显式传入，避免仅继承错误 cwd/父 env
+        try:
+            _ja = str(Path(root).resolve())
+        except Exception:
+            _ja = str(root)
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "JACHIN_APP_ROOT": _ja}
+        sub_task: asyncio.Task[int] | None = None
+        response = _stream_response()
+        keepalive_sec = 15.0
+        ended_with_error_event: bool = False
+    
+        async def _write_line_obj(line: str) -> None:
+            payload = {"line": line}
+            await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            if hasattr(response, "drain"):
+                await response.drain()
+    
+        try:
+            await response.prepare(request)
+            all_runs_ok = True
+            last_code = 0
+            for run_idx in range(1, run_count + 1):
+                if _k11_unified_smoke_user_abort:
+                    await _write_line_obj("> 已按停止请求结束，不再执行后续轮次。")
+                    break
+                line_q: asyncio.Queue[str] = asyncio.Queue()
+    
+                async def _pump() -> int:
+                    global _k11_unified_smoke_proc
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                        cwd=str(root),
+                        env=env,
+                    )
+                    _k11_unified_smoke_proc = proc
+                    code = 1
+                    try:
+                        if proc.stdout is None:
+                            if proc.returncode is None:
                                 proc.kill()
-                            except Exception:
-                                pass
                             with contextlib.suppress(Exception):
                                 await proc.wait()
-                    code = 130
-                    raise
-                finally:
-                    _k11_unified_smoke_proc = None
-                return code
-
-            if run_count > 1:
-                await _write_line_obj(
-                    f"[K11] ========== 第 {run_idx} / {run_count} 轮 =========="
-                )
-            sub_task = asyncio.create_task(_pump())
-            if run_idx == 1:
-                await _write_line_obj(start_line)
-            else:
-                await _write_line_obj(f"[K11] 子进程第 {run_idx} 轮已启动…")
-            last_keepalive = time.monotonic()
-            while True:
-                try:
-                    line = await asyncio.wait_for(line_q.get(), timeout=0.35)
-                    await _write_line_obj(line)
-                    last_keepalive = time.monotonic()
-                except asyncio.TimeoutError:
-                    assert sub_task is not None
-                    if sub_task.done():
-                        break
-                    if time.monotonic() - last_keepalive >= keepalive_sec:
-                        await response.write(b": keepalive\n\n")
+                            return 2
+                        # 使用短超时 readline，使事件循环能穿插处理「停止」请求；否则子进程
+                        # 长时间不输出时，某些环境下停止信号与进程终止的调度会更难及时生效。
+                        while True:
+                            try:
+                                line = await asyncio.wait_for(
+                                    proc.stdout.readline(), timeout=1.25
+                                )
+                            except asyncio.TimeoutError:
+                                if (
+                                    _k11_unified_smoke_user_abort
+                                    and proc.returncode is None
+                                ):
+                                    with contextlib.suppress(Exception):
+                                        proc.terminate()
+                                    with contextlib.suppress(
+                                        asyncio.TimeoutError, Exception
+                                    ):
+                                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                                    if proc.returncode is None:
+                                        with contextlib.suppress(Exception):
+                                            proc.kill()
+                                        with contextlib.suppress(Exception):
+                                            await proc.wait()
+                                continue
+                            if not line:
+                                break
+                            text = line.decode("utf-8", errors="replace").rstrip("\n\r")
+                            try:
+                                line_q.put_nowait(text)
+                            except Exception:
+                                pass
+                        code = await proc.wait()
+                    except asyncio.CancelledError:
+                        if proc.returncode is None:
+                            try:
+                                proc.terminate()
+                                await asyncio.wait_for(proc.wait(), timeout=6.0)
+                            except (asyncio.TimeoutError, Exception):
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
+                                with contextlib.suppress(Exception):
+                                    await proc.wait()
+                        code = 130
+                        raise
+                    finally:
+                        _k11_unified_smoke_proc = None
+                    return code
+    
+                if run_count > 1:
+                    await _write_line_obj(
+                        f"[K11] ========== 第 {run_idx} / {run_count} 轮 =========="
+                    )
+                sub_task = asyncio.create_task(_pump())
+                if run_idx == 1:
+                    await _write_line_obj(start_line)
+                else:
+                    await _write_line_obj(f"[K11] 子进程第 {run_idx} 轮已启动…")
+                last_keepalive = time.monotonic()
+                while True:
+                    try:
+                        line = await asyncio.wait_for(line_q.get(), timeout=0.35)
+                        await _write_line_obj(line)
                         last_keepalive = time.monotonic()
-
-            while True:
-                try:
-                    l2 = line_q.get_nowait()
-                    await _write_line_obj(l2)
-                except asyncio.QueueEmpty:
-                    break
-
-            assert sub_task is not None
-            if sub_task.cancelled():
-                last_code = 130
-                all_runs_ok = False
-                break
-            exc = sub_task.exception()
-            if exc is not None:
-                if isinstance(exc, asyncio.CancelledError):
+                    except asyncio.TimeoutError:
+                        assert sub_task is not None
+                        if sub_task.done():
+                            break
+                        if time.monotonic() - last_keepalive >= keepalive_sec:
+                            await response.write(b": keepalive\n\n")
+                            last_keepalive = time.monotonic()
+    
+                while True:
+                    try:
+                        l2 = line_q.get_nowait()
+                        await _write_line_obj(l2)
+                    except asyncio.QueueEmpty:
+                        break
+    
+                assert sub_task is not None
+                if sub_task.cancelled():
                     last_code = 130
                     all_runs_ok = False
-                else:
-                    err_pl = {"type": "error", "message": str(exc)}
-                    await response.write(
-                        f"data: {json.dumps(err_pl, ensure_ascii=False)}\n\n".encode("utf-8")
-                    )
-                    all_runs_ok = False
-                    last_code = 1
-                    ended_with_error_event = True
-                    sub_task = None
                     break
-            else:
-                last_code = int(sub_task.result())
-                if last_code != 0:
-                    all_runs_ok = False
-            sub_task = None
-
-            if _k11_unified_smoke_user_abort:
-                await _write_line_obj("> 已按停止请求结束，不再执行后续轮次。")
-                break
-            if run_idx < run_count and interval_between_runs_sec > 0:
-                await _write_line_obj(
-                    f"> 第 {run_idx} 轮结束 (exit {last_code})，"
-                    f"间隔 {interval_between_runs_sec} 秒后开始下一轮…"
-                )
-                await asyncio.sleep(float(interval_between_runs_sec))
-            elif run_idx < run_count and interval_between_runs_sec == 0:
-                await _write_line_obj(
-                    f"> 第 {run_idx} 轮结束 (exit {last_code})，立即开始下一轮…"
-                )
-
-        cancelled = _k11_unified_smoke_user_abort
-        if sub_task is not None and not sub_task.done():
-            sub_task.cancel()
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await sub_task
-        if not ended_with_error_event:
-            if cancelled:
-                payload = {
-                    "type": "done",
-                    "ok": False,
-                    "exit_code": 130,
-                    "cancelled": True,
-                    "markdown_report": None,
-                    "llm_analysis": None,
-                }
-                await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
-            else:
-                payload = {
-                    "type": "done",
-                    "ok": all_runs_ok and last_code == 0,
-                    "exit_code": last_code,
-                    "markdown_report": None,
-                    "llm_analysis": None,
-                }
+                exc = sub_task.exception()
+                if exc is not None:
+                    if isinstance(exc, asyncio.CancelledError):
+                        last_code = 130
+                        all_runs_ok = False
+                    else:
+                        err_pl = {"type": "error", "message": str(exc)}
+                        await response.write(
+                            f"data: {json.dumps(err_pl, ensure_ascii=False)}\n\n".encode("utf-8")
+                        )
+                        all_runs_ok = False
+                        last_code = 1
+                        ended_with_error_event = True
+                        sub_task = None
+                        break
+                else:
+                    last_code = int(sub_task.result())
+                    if last_code != 0:
+                        all_runs_ok = False
+                sub_task = None
+    
+                if _k11_unified_smoke_user_abort:
+                    await _write_line_obj("> 已按停止请求结束，不再执行后续轮次。")
+                    break
+                if run_idx < run_count and interval_between_runs_sec > 0:
+                    await _write_line_obj(
+                        f"> 第 {run_idx} 轮结束 (exit {last_code})，"
+                        f"间隔 {interval_between_runs_sec} 秒后开始下一轮…"
+                    )
+                    await asyncio.sleep(float(interval_between_runs_sec))
+                elif run_idx < run_count and interval_between_runs_sec == 0:
+                    await _write_line_obj(
+                        f"> 第 {run_idx} 轮结束 (exit {last_code})，立即开始下一轮…"
+                    )
+    
+            cancelled = _k11_unified_smoke_user_abort
+            if sub_task is not None and not sub_task.done():
+                sub_task.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await sub_task
+            if not ended_with_error_event:
+                if cancelled:
+                    payload = {
+                        "type": "done",
+                        "ok": False,
+                        "exit_code": 130,
+                        "cancelled": True,
+                        "markdown_report": None,
+                        "llm_analysis": None,
+                    }
+                    await response.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+                else:
+                    payload = {
+                        "type": "done",
+                        "ok": all_runs_ok and last_code == 0,
+                        "exit_code": last_code,
+                        "markdown_report": None,
+                        "llm_analysis": None,
+                    }
+                    await response.write(
+                        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+                    )
+        except (ConnectionResetError, asyncio.CancelledError):
+            if sub_task is not None and not sub_task.done():
+                sub_task.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await sub_task
+        except Exception as e:
+            logger.warning("[L3 HTTP] %s stream failed: %s", log_event, e)
+            try:
                 await response.write(
-                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+                    f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n".encode("utf-8")
                 )
-    except (ConnectionResetError, asyncio.CancelledError):
-        if sub_task is not None and not sub_task.done():
-            sub_task.cancel()
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await sub_task
-    except Exception as e:
-        logger.warning("[L3 HTTP] %s stream failed: %s", log_event, e)
-        try:
-            await response.write(
-                f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n".encode("utf-8")
-            )
-        except Exception:
-            pass
+            except Exception:
+                pass
+        finally:
+            if sub_task is not None and not sub_task.done():
+                sub_task.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await sub_task
     finally:
-        if sub_task is not None and not sub_task.done():
-            sub_task.cancel()
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await sub_task
         _k11_unified_smoke_user_abort = False
         _k11_unified_smoke_stream_active = False
     return response
@@ -1040,6 +1043,63 @@ async def _handle_k11_p2_compat_only_stream(request) -> "aiohttp.web.StreamRespo
     )
 
 
+async def _handle_k11_games_state_machine_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
+    """GET /api/v1/k11-games-state-machine-smoke/stream — ``test_k11_smoke_games_state_machine_playwright.py``，SSE 行日志。"""
+    root = get_app_root()
+    script = k11_games_state_machine_smoke_script_path()
+    if not script.is_file():
+        return _json_response(
+            {
+                "ok": False,
+                "error": f"缺少 K11 游戏状态机冒烟脚本: {script}",
+            },
+            status=500,
+        )
+
+    params, err = _k11_smoke_stream_parse_query(request)
+    if err is not None:
+        return err
+    assert params is not None
+    target_url, cdp_http, verbose, no_lark, _head = params
+
+    passthrough: list[str] = []
+    if target_url:
+        passthrough.extend(["--target-url", target_url])
+    if cdp_http:
+        passthrough.extend(["--cdp-http", cdp_http])
+    if verbose:
+        passthrough.append("-v")
+    if no_lark:
+        passthrough.append("--no-lark-report")
+
+    cmd: list[str] = _k11_smoke_subprocess_cmd(
+        "--jachin-k11-games-state-machine-subprocess", passthrough
+    )
+
+    try:
+        runs = int(request.query.get("runs", "1"))
+    except ValueError:
+        runs = 1
+    try:
+        interval_sec = int(request.query.get("interval", "0"))
+    except ValueError:
+        interval_sec = 0
+
+    start_msg = f"[K11] 游戏状态机冒烟已启动: {script.name}"
+    if runs > 1:
+        start_msg += f"（共 {runs} 轮，间隔 {interval_sec}s）"
+
+    return await _k11_smoke_subprocess_sse_stream(
+        request,
+        root,
+        cmd,
+        start_msg,
+        "k11 games state machine smoke",
+        run_count=runs,
+        interval_between_runs_sec=interval_sec,
+    )
+
+
 async def _handle_k11_unified_smoke_schedule_toggle(request) -> "aiohttp.web.Response":
     """POST /api/v1/k11-unified-smoke/schedule/toggle — JSON: enabled, hour_beijing?, minute_beijing?, runs?, interval_sec?"""
     try:
@@ -1124,16 +1184,21 @@ async def _handle_k11_unified_smoke_schedule_log_stream(request) -> "aiohttp.web
 
 async def _handle_k11_unified_smoke_stop(request) -> "aiohttp.web.Response":
     """POST /api/v1/k11-unified-smoke/stop — 终止统合冒烟子进程（Playwright 链）。"""
-    global _k11_unified_smoke_proc, _k11_unified_smoke_user_abort
+    global _k11_unified_smoke_proc, _k11_unified_smoke_user_abort, _k11_unified_smoke_stream_active
     p = _k11_unified_smoke_proc
     had_active = p is not None and p.returncode is None
     _k11_unified_smoke_user_abort = True
     if not had_active:
+        if _k11_unified_smoke_stream_active:
+            _k11_unified_smoke_stream_active = False
         return _json_response(
             {
                 "ok": True,
                 "active_child": False,
-                "message": "无运行中的 K11 子进程；已记录停止（若有多轮将跳过未开始的轮次）。",
+                "message": (
+                    "无运行中的 K11 子进程；已记录停止。若曾出现"
+                    "「已在执行中」但无子进程，已同时重置占用状态。"
+                ),
             }
         )
     try:
@@ -1821,6 +1886,10 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v1/monitor/schedule/status", _handle_monitor_schedule_status)
     app.router.add_get("/api/v1/k11-unified-smoke/stream", _handle_k11_unified_smoke_stream)
     app.router.add_get("/api/v1/k11-p2-compat-only/stream", _handle_k11_p2_compat_only_stream)
+    app.router.add_get(
+        "/api/v1/k11-games-state-machine-smoke/stream",
+        _handle_k11_games_state_machine_smoke_stream,
+    )
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/status", _handle_k11_unified_smoke_schedule_status)
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/log-stream", _handle_k11_unified_smoke_schedule_log_stream)
     app.router.add_post("/api/v1/k11-unified-smoke/schedule/toggle", _handle_k11_unified_smoke_schedule_toggle)

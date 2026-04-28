@@ -1375,6 +1375,28 @@ export async function getK11P2CompatOnlyStreamUrlAsync(opts?: {
   return `${base}${rel}`;
 }
 
+/** K11 游戏状态机轻量冒烟 SSE（`scripts/test_k11_smoke_games_state_machine_playwright.py`） */
+export async function getK11GamesStateMachineSmokeStreamUrlAsync(opts?: {
+  targetUrl?: string;
+  cdpHttp?: string;
+  verbose?: boolean;
+  noLarkReport?: boolean;
+  runs?: number;
+  interval?: number;
+}): Promise<string> {
+  const sp = new URLSearchParams();
+  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.runs != null) sp.set("runs", String(opts.runs));
+  if (opts?.interval != null) sp.set("interval", String(opts.interval));
+  const q = sp.toString();
+  const rel = `/api/v1/k11-games-state-machine-smoke/stream${q ? `?${q}` : ""}`;
+  const base = await getL3SkillsBaseUrl();
+  return `${base}${rel}`;
+}
+
 /** Kalaroko 巡检矩阵 SSE：先探测 L3（等同 ``resolveKalarokoMonitorStreamUrl``） */
 export async function getKalarokoMonitorStreamUrlAsync(opts?: {
   runs?: number;

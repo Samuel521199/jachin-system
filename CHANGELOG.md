@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.50] - 2026-04-24
+
+### Added / Changed
+
+- 除游戏测试外全量推送还是正常的。
+- **Version**: Desktop **0.9.50**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.47] - 2026-04-21
 

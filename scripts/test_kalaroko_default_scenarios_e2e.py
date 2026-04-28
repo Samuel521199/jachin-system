@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Kalaroko Monitor MCP — 默认五场景（KALAROKO_DEFAULT_SCENARIOS：首页 + 四游戏）全流程联调。
+Kalaroko Monitor MCP — 默认多场景（KALAROKO_DEFAULT_SCENARIOS：首页 + 七游戏）全流程联调。
 
 串联：
-  1) execute_playwright_perf_test（scenarios=[] → 内置首页 + 4 款游戏）
+  1) execute_playwright_perf_test（scenarios=[] → 内置首页 + 7 款游戏）
   2) fetch_api_health（探测 gwp.heronpro.xin 大厅后端 API 列表 + summary）
   3) manage_perf_history（持久 JSONL：append + query_recent，路径 ``~/.jachin/data/kalaroko_e2e.jsonl``）
 
@@ -116,9 +116,12 @@ os.environ.setdefault("KALAROKO_HEADLESS", "false")
 # 与 Word 模板展示名对齐；业务 game_id 以 MCP 返回的 document_game_id / url_game_id 为准
 _GAME_LABEL: dict[str, str] = {
     "tongits_king": "Tongits King",
-    "royal_pusoy": "Royal Pusoy",
-    "color_blitz": "Color Blitz Social",
-    "bingo_showdown": "Bingo Showdown",
+    "texas_holdem": "Texas Holdem",
+    "texas_holdem_plus": "Texas Holdem Plus",
+    "mines_clash": "Mines Clash",
+    "crazy_solitaire": "Crazy Solitaire",
+    "unleash_running": "Unleash Running",
+    "pinoy_monopoly": "Pinoy Monopoly",
 }
 
 
@@ -410,7 +413,14 @@ def _extract_comparison_metrics(pw_data: dict) -> dict:
                 if tail:
                     m[f"{gid}_last_traces"] = tail
     # 与飞书汇总表列对齐：旧轮次 JSON 无某游戏时显式占位，避免下游 KeyError
-    for _gk in ("tongits_king", "royal_pusoy", "color_blitz", "bingo_showdown"):
+    from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+        KALAROKO_DEFAULT_SCENARIOS,
+    )
+
+    for s in KALAROKO_DEFAULT_SCENARIOS:
+        _gk = str(s.get("name") or "")
+        if not _gk or _gk == "homepage":
+            continue
         m.setdefault(f"{_gk}_ttfb", None)
         m.setdefault(f"{_gk}_load", None)
         m.setdefault(f"{_gk}_success", None)
@@ -1048,10 +1058,17 @@ def _homepage_failed_resources(mcore: dict) -> int:
 
 
 def _avg_three_games_load_ms(row: dict) -> float | None:
-    """多轮 hist 单行：四款游戏 real_engine_load_ms 的算术平均（毫秒）。"""
+    """多轮 hist 单行：默认清单内各游戏 real_engine_load_ms 的算术平均（毫秒）。"""
+    from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+        KALAROKO_DEFAULT_SCENARIOS,
+    )
+
     acc = 0.0
     n = 0
-    for gid in ("tongits_king", "royal_pusoy", "color_blitz", "bingo_showdown"):
+    for s in KALAROKO_DEFAULT_SCENARIOS:
+        gid = str(s.get("name") or "")
+        if not gid or gid == "homepage":
+            continue
         v = row.get(f"{gid}_load")
         if v is None:
             continue
@@ -1110,8 +1127,8 @@ def _format_online_players_detail(g: dict) -> str:
     if isinstance(online_data, dict):
         table_val = online_data.get("table")
         lobby_val = online_data.get("lobby")
-        is_color = "color_blitz" in game_key or ug_s == "6"
-        if is_color:
+        is_social_lobby_style = "color_blitz" in game_key or ug_s == "6"
+        if is_social_lobby_style:
             if lobby_val:
                 display_parts.append(f"{lobby_val} 人")
             elif table_val and "/" in str(table_val):
@@ -1161,12 +1178,17 @@ def _append_developer_details_section(
 
     lines.append("**2. 游戏牌桌详情**")
     lines.append("")
-    for gid_key, disp in (
-        ("tongits_king", "Tongits King"),
-        ("royal_pusoy", "Royal Pusoy"),
-        ("color_blitz", "Color Blitz Social"),
-        ("bingo_showdown", "Bingo Showdown"),
-    ):
+    from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+        KALAROKO_DEFAULT_SCENARIOS,
+    )
+
+    _glist = [
+        str(s.get("name") or "")
+        for s in KALAROKO_DEFAULT_SCENARIOS
+        if str(s.get("name") or "") and str(s.get("name") or "") != "homepage"
+    ]
+    for gid_key in _glist:
+        disp = _GAME_LABEL.get(gid_key, gid_key)
         gg = games_by_id.get(gid_key)
         lines.append(f"🔹 **{disp}**")
         if gg is None:
@@ -1270,12 +1292,20 @@ def render_report_md(
 
     lines.append("**🃏 游戏加载实测**")
     games_by_id = {str(g.get("game_id") or ""): g for g in games}
-    _game_rows = [
-        ("tongits_king", "Tongits King", "├"),
-        ("royal_pusoy", "Royal Pusoy", "├"),
-        ("color_blitz", "Color Blitz", "├"),
-        ("bingo_showdown", "Bingo Showdown", "└"),
+    from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+        KALAROKO_DEFAULT_SCENARIOS,
+    )
+
+    _gk_order = [
+        str(s.get("name") or "")
+        for s in KALAROKO_DEFAULT_SCENARIOS
+        if str(s.get("name") or "") and str(s.get("name") or "") != "homepage"
     ]
+    _game_rows: list[tuple[str, str, str]] = []
+    for i, gid_key in enumerate(_gk_order):
+        label = _GAME_LABEL.get(gid_key, gid_key)
+        branch = "└" if i == len(_gk_order) - 1 else "├"
+        _game_rows.append((gid_key, label, branch))
     for _, (gid_key, label, branch) in enumerate(_game_rows):
         gg = games_by_id.get(gid_key)
         if gg is None:
@@ -1562,17 +1592,25 @@ def _assert_playwright_shape(pw: dict) -> None:
     notes = pw.get("aggregation_notes") or []
     if not any("KALAROKO_DEFAULT_SCENARIOS" in str(x) for x in notes):
         raise AssertionError("期望 aggregation_notes 标明使用默认场景")
+    from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+        KALAROKO_DEFAULT_SCENARIOS,
+    )
+
     games = pw.get("games") or []
-    if len(games) != 4:
-        raise AssertionError(f"期望 4 条游戏场景，实际 games 条数={len(games)}")
+    game_scenarios = [s for s in KALAROKO_DEFAULT_SCENARIOS if str(s.get("name") or "") != "homepage"]
+    if len(games) != len(game_scenarios):
+        raise AssertionError(
+            f"期望 {len(game_scenarios)} 条游戏场景，实际 games 条数={len(games)}"
+        )
     for g in games:
         if not g.get("game_id"):
             raise AssertionError(f"游戏项缺少 game_id: {g}")
         key = str(g.get("game_id"))
-        if key in ("tongits_king", "royal_pusoy", "color_blitz", "bingo_showdown"):
+        scen = next((x for x in game_scenarios if str(x.get("name") or "") == key), None)
+        if scen and scen.get("document_game_id") is not None:
             if g.get("url_game_id") is None or g.get("document_game_id") is None:
                 raise AssertionError(
-                    f"默认四游戏应含 document_game_id 与 url_game_id（对齐 Word 与 gweb URL）: {g}"
+                    f"场景含 document_game_id 时应同时有 url_game_id 与 document_game_id: {g}"
                 )
 
 
@@ -1594,9 +1632,9 @@ async def _run_full_cycle(
     )
 
     n = len(KALAROKO_DEFAULT_SCENARIOS)
-    _e2e_echo(f"KALAROKO_DEFAULT_SCENARIOS 条数: {n}（期望 5：首页 + 4 游戏）")
-    if n != 5:
-        _e2e_echo("[WARN] 默认场景条数非 5，请检查 mcp_kalaroko_monitor.py 常量")
+    _e2e_echo(f"KALAROKO_DEFAULT_SCENARIOS 条数: {n}（期望 8：首页 + 7 游戏）")
+    if n != 8:
+        _e2e_echo("[WARN] 默认场景条数非 8，请检查 mcp_kalaroko_monitor.py 常量")
 
     all_metrics_history: list[dict] = []
     markdown_rounds: list[str] = []

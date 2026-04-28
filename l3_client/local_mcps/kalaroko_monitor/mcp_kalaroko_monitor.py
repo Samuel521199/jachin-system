@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
 
@@ -202,6 +202,137 @@ async def _nudge_locator_clear_bottom_chrome(
         )
 
 
+async def _try_locator_js_synthetic_pointer_click(target: Any, scenario_name: str) -> bool:
+    """
+    窄视口 / 文字子节点上 Playwright click 管道易在「performing click action」卡满超时；
+    在**可点击祖先**（a/button/含 card/entry 等类名的容器）上派发事件；仅点小标题 span 时 SPA 常不导航。
+    """
+    try:
+        ok = await target.evaluate(
+            """(el) => {
+            if (!el) return false;
+            const pick = (node) => {
+              let n = node;
+              for (let i = 0; i < 12 && n; i++) {
+                const tag = (n.tagName || '').toLowerCase();
+                if (tag === 'a' || tag === 'button') return n;
+                const r = n.getAttribute && n.getAttribute('role');
+                if (r && String(r).toLowerCase() === 'button') return n;
+                if (n.getAttribute('onclick') || n.getAttribute('data-href') || n.getAttribute('data-to')) {
+                  return n;
+                }
+                const cls = (n.className && n.className.toString()) || '';
+                if (/(?:party_)?card|gamecard|game[_-]card|entry|tile|item|wrap|box|link|play|cover|banner|row|party_card/i.test(cls)) {
+                  return n;
+                }
+                n = n.parentElement;
+              }
+              return node;
+            };
+            const t = pick(el);
+            const r = t.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) return false;
+            const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            const ev = (type) => new MouseEvent(type, {
+              bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window
+            });
+            try { t.dispatchEvent(ev('mousedown')); } catch (e) {}
+            try { t.dispatchEvent(ev('mouseup')); } catch (e) {}
+            try { t.dispatchEvent(ev('click')); } catch (e) {}
+            if (typeof t.click === 'function') { try { t.click(); } catch (e2) {} }
+            return true;
+          }"""
+        )
+        if ok:
+            logger.info(
+                "[kalaroko_monitor] 【%s】JS 合成 mousedown/up/click 已派发（绕开 Playwright 命中管道）",
+                scenario_name,
+            )
+        return bool(ok)
+    except Exception as e:
+        logger.warning(
+            "[kalaroko_monitor] 【%s】JS 合成点击异常: %s",
+            scenario_name,
+            str(e)[:220],
+        )
+        return False
+
+
+async def _try_game_entry_mouse_center_click(
+    page: Any, target: Any, scenario_name: str
+) -> bool:
+    """
+    在**可点祖先**包围盒中心 ``page.mouse.click``（与 JS 合成同逻辑），
+    避免文字 span 的窄盒无法触发卡片导航。
+    """
+    try:
+        r = await target.evaluate(
+            """(el) => {
+            if (!el) return null;
+            const pick = (node) => {
+              let n = node;
+              for (let i = 0; i < 12 && n; i++) {
+                const tag = (n.tagName || '').toLowerCase();
+                if (tag === 'a' || tag === 'button') return n;
+                const r0 = n.getAttribute && n.getAttribute('role');
+                if (r0 && String(r0).toLowerCase() === 'button') return n;
+                if (n.getAttribute('onclick') || n.getAttribute('data-href') || n.getAttribute('data-to')) {
+                  return n;
+                }
+                const cls = (n.className && n.className.toString()) || '';
+                if (/(?:party_)?card|gamecard|game[_-]card|entry|tile|item|wrap|box|link|play|cover|banner|row|party_card/i.test(cls)) {
+                  return n;
+                }
+                n = n.parentElement;
+              }
+              return node;
+            };
+            const t = pick(el);
+            const b = t.getBoundingClientRect();
+            if (b.width < 2 || b.height < 2) return null;
+            return { x: b.left, y: b.top, w: b.width, h: b.height };
+          }"""
+        )
+        if not isinstance(r, dict) or "x" not in r:
+            box = await target.bounding_box()
+        else:
+            box = {
+                "x": float(r["x"]),
+                "y": float(r["y"]),
+                "width": float(r["w"]),
+                "height": float(r["h"]),
+            }
+        if not box or box.get("width", 0) < 2 or box.get("height", 0) < 2:
+            return False
+        x = float(box["x"]) + float(box["width"]) / 2.0
+        y = float(box["y"]) + float(box["height"]) / 2.0
+        try:
+            vp = page.viewport_size
+            if vp:
+                m = 3.0
+                x = max(m, min(x, float(vp["width"]) - m))
+                y = max(m, min(y, float(vp["height"]) - m))
+        except Exception:
+            pass
+        await page.mouse.move(x, y)
+        await asyncio.sleep(0.04)
+        await page.mouse.click(x, y, delay=35, button="left")
+        logger.info(
+            "[kalaroko_monitor] 【%s】viewport 坐标 mouse.click (%.0f, %.0f)",
+            scenario_name,
+            x,
+            y,
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "[kalaroko_monitor] 【%s】坐标 mouse.click 失败: %s",
+            scenario_name,
+            str(e)[:200],
+        )
+        return False
+
+
 async def _set_bottom_tabbar_pointer_events_enabled(page: Any, *, suppress: bool) -> None:
     """
     ``suppress=True``：注入样式，使底部 Tab 栏不接收指针事件（便于点到游戏卡片）。
@@ -247,9 +378,10 @@ except ImportError:
 _SCHEMA_VERSION = "1.0.0"
 _DEFAULT_BASE = "https://kalaroko.com"
 
-# 默认监控任务：首页 + 四款游戏。
+# 默认监控任务：首页 + 七款游戏（与 K11 P0 冒烟脚本同清单时可对齐）。
 # 游戏入口改为「首页 start_url + UI 点击流」，避免带 partyId/token 的 game-frame 直链被 WAF/业务网关拦截。
 # click_selector 须随前端 DOM 调整；可用 Playwright 文本选择器或 CSS（见 Playwright selector 语法）。
+# 未配 document_game_id 的项仅靠文案/链接定位，运行后 url_game_id 由 gweb frameUrl 反解析。
 # UI 点击流默认 require_game_frame_url=True：采数结束须出现 /game-frame 主文档 URL，否则 load_status=failed（防未真开游戏壳仍 success）。
 _DEFAULT_START = "https://kalaroko.com/"
 KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
@@ -261,7 +393,8 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "tongits_king",
-        "document_game_id": 5,
+        # 须与 gweb frameUrl / 大厅卡片 href 中 game_id 一致；曾误配 5 会导致仅退化为纯文案、.last 点到不可点 span
+        "document_game_id": 4,
         "start_url": _DEFAULT_START,
         # 首页卡片常为「插图 + 底部标题」：精确 text='…' 易点到不可交互文案节点；正则略宽松
         "click_selector": r"text=/Tongits\s*King/i",
@@ -272,33 +405,61 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "timeout_ms": 90000,
     },
     {
-        "name": "royal_pusoy",
-        "document_game_id": 7,
+        "name": "texas_holdem",
         "start_url": _DEFAULT_START,
-        "click_selector": r"text=/Royal\s*Pusoy/i",
+        # 与 Texas Holdem Plus 区分（负向前瞻，避免点到 Plus 卡）
+        "click_selector": r"text=/Texas\s*Holdem(?!\s*Plus)/i",
+        "prefer_last_on_ambiguous_entry": True,
         "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
         "wait_until": "domcontentloaded",
         "timeout_ms": 90000,
     },
     {
-        "name": "color_blitz",
-        "document_game_id": 6,
-        # 文案常 2～3 处重复（横幅/列表）；与 Tongits 的「多命中取 .last」同理，避免点到不可导航层
-        "prefer_last_on_ambiguous_entry": True,
+        "name": "texas_holdem_plus",
         "start_url": _DEFAULT_START,
-        "click_selector": r"text=/Color\s*Blitz\s*Social/i",
+        "click_selector": r"text=/Texas\s*Holdem\s*Plus/i",
+        "prefer_last_on_ambiguous_entry": True,
         "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
         "wait_until": "domcontentloaded",
         "timeout_ms": 90000,
     },
     {
-        "name": "bingo_showdown",
-        "document_game_id": 10,
-        "prefer_last_on_ambiguous_entry": True,
+        "name": "mines_clash",
         "start_url": _DEFAULT_START,
-        "click_selector": r"text=/Bingo\s*Showdown/i",
+        "click_selector": r"text=/Mines\s*Clash/i",
+        "prefer_last_on_ambiguous_entry": True,
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "crazy_solitaire",
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Crazy\s*Solitaire/i",
+        "prefer_last_on_ambiguous_entry": True,
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "unleash_running",
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Unleash\s*Running/i",
+        "prefer_last_on_ambiguous_entry": True,
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "pinoy_monopoly",
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Pinoy\s*Monopoly/i",
+        "prefer_last_on_ambiguous_entry": True,
         "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 10000,
         "wait_until": "domcontentloaded",
@@ -728,15 +889,17 @@ def _regex_from_playwright_text_selector(sel: str) -> re.Pattern[str] | None:
 
 async def _kalaroko_plain_text_hit_is_lobby_entry(cand: Any) -> bool:
     """
-    排除 Party Hubs 等「同名游戏只读标题」节点：全局 text= 命中过多时 .last 常为
-    ``_party_card_game_name_*`` span，无有效导航或点击不进门。
+    从「文案多命中」里筛可进游戏壳的项：需有可导航祖先（a[href] / button 等）。
+
+    注意：首页 **All 分类下游戏网格** 的卡片类名也常含 ``party_card``，不能一律排除，
+    否则所有 nth 探针均失败，只能回退 ``.last`` 点到不可交互 span（与 Kalaroko 大厅实际 DOM 一致）。
+    Party 独读标题若无可点链接，以下 link/href 检测会自然为 false。
     """
     try:
         # 显式短超时：避免缺帧/离屏 nth 在部分 CDP 环境下 evaluate 长时间挂死
         return await cand.evaluate(
             """el => {
               if (!el || !el.closest) return false;
-              if (el.closest('[class*="party_card"]')) return false;
               const nav = el.closest(
                 'a[href], [role="link"], [role="button"], button, [data-href]'
               );
@@ -753,6 +916,207 @@ async def _kalaroko_plain_text_hit_is_lobby_entry(cand: Any) -> bool:
         )
     except Exception:
         return False
+
+
+async def _ensure_kalaroko_lobby_home_all_tab(
+    page: Any,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> None:
+    """
+    在**非 game-frame** 时切：底栏 **Home** → 主区上方分类 **All**（全量游戏两列网），
+    再点游戏卡。若未切到 All，``text=/某游戏/`` 会先命中 **Hottest Parties/派对房** 等同名标签，
+    与产品期望（图2：Home → All → 网格）不一致。
+    """
+    try:
+        if "game-frame" in (page.url or "").lower():
+            return
+    except Exception:
+        pass
+
+    def _p(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    # 1) 滚到页顶，保证「All / Party / 1v1」分类条在视口内
+    try:
+        await page.evaluate(
+            r"""() => {
+            try {
+              window.scrollTo(0, 0);
+              const m = document.querySelector('main, [class*="content" i]');
+              if (m) { m.scrollTop = 0; }
+            } catch (e) {}
+          }"""
+        )
+        if await _abortable_wait_for_timeout(page, 300):
+            raise KalarokoE2EUserCancelled()
+    except KalarokoE2EUserCancelled:
+        raise
+    except Exception:
+        pass
+
+    # 2) 底栏 Home：优先 role=tab（与正文「Home」区分），多命中时**从后往前**点更易命中底栏
+    _home_factories: list[tuple[str, Callable[[], Any]]] = [
+        (
+            "tab",
+            lambda: page.get_by_role("tab", name=re.compile(r"^\s*Home\s*$", re.I)),
+        ),
+        (
+            "bottom_chrome",
+            lambda: page.locator(
+                "nav, [class*='bottom' i], [class*='TabBar' i], [class*='tab-bar' i], "
+                "[class*='tabbar' i], [class*='nav-bar' i], footer, [class*='footer' i]"
+            ).get_by_text(re.compile(r"^\s*Home\s*$", re.I)),
+        ),
+        (
+            "link",
+            lambda: page.get_by_role("link", name=re.compile(r"^\s*Home\s*$", re.I)),
+        ),
+        ("text", lambda: page.get_by_text("Home", exact=True)),
+    ]
+    for _h_label, factory in _home_factories:
+        try:
+            loc = factory()
+            n = await loc.count()
+            if n < 1:
+                continue
+            clicked = False
+            # n==1 时须用 [0]：range(0,-1,-1) 在 Python3 中为空
+            order = (
+                [0]
+                if n <= 1
+                else list(range(min(n, 8) - 1, -1, -1))
+            )
+            for idx in order:
+                try:
+                    el = loc.nth(idx)
+                    if not await el.is_visible(timeout=900):
+                        continue
+                    await el.click(timeout=2800, force=True)
+                    _p("  [lobby] 已点底部 Home，锚定大厅")
+                    if await _abortable_wait_for_timeout(
+                        page,
+                        _env_int("KALAROKO_HOME_TAB_SETTLE_MS", 550, vmin=0, vmax=3000),
+                    ):
+                        raise KalarokoE2EUserCancelled()
+                    clicked = True
+                    break
+                except KalarokoE2EUserCancelled:
+                    raise
+                except Exception:
+                    continue
+            if clicked:
+                break
+        except KalarokoE2EUserCancelled:
+            raise
+        except Exception:
+            continue
+
+    try:
+        await page.evaluate("() => { try { window.scrollTo(0,0); } catch(e){} }")
+        if await _abortable_wait_for_timeout(page, 240):
+            raise KalarokoE2EUserCancelled()
+    except KalarokoE2EUserCancelled:
+        raise
+    except Exception:
+        pass
+
+    async def _click_all_category_once() -> bool:
+        """点「All」分类一次；多策略适配非 role=tab 的 div 筛选器。"""
+
+        async def _try(lbl: str, g: Any) -> bool:
+            try:
+                c = await g.count()
+            except Exception:
+                return False
+            if c < 1:
+                return False
+            last = min(int(c), 6)
+            for j in range(last):
+                try:
+                    it = g.nth(j)
+                    if not await it.is_visible(timeout=1400):
+                        continue
+                    await it.scroll_into_view_if_needed(timeout=2200)
+                    await it.click(timeout=3200, force=True)
+                    logger.info(
+                        "[kalaroko_monitor] 大厅 All 已点（%s, nth=%s）", lbl, j
+                    )
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        if await _try(
+            "get_by_role_tab_All",
+            page.get_by_role("tab", name=re.compile(r"^\s*All\s*$", re.I)),
+        ):
+            return True
+        if await _try(
+            "filter_row",
+            page.locator(
+                "[class*='category' i], [class*='filter' i], [class*='segment' i], "
+                "[class*='Segment' i], [class*='GameTab' i], [class*='tab' i], "
+                "header, [class*='header' i]"
+            ).get_by_text(re.compile(r"^\s*All\s*$", re.I)),
+        ):
+            return True
+        if await _try(
+            "role_tab_list",
+            page.locator('[role="tab"]').filter(
+                has_text=re.compile(r"^\s*All\s*$", re.I)
+            ),
+        ):
+            return True
+        if await _try(
+            "get_by_text_All",
+            page.get_by_text(re.compile(r"^\s*All\s*$", re.I)),
+        ):
+            return True
+        return False
+
+    all_ok = False
+    try:
+        all_ok = await _click_all_category_once()
+        if all_ok:
+            _p("  [lobby] 已点分类 All（全量游戏网格）")
+            if await _abortable_wait_for_timeout(
+                page, _env_int("KALAROKO_ALL_TAB_SETTLE_MS", 700, vmin=0, vmax=5000)
+            ):
+                raise KalarokoE2EUserCancelled()
+    except KalarokoE2EUserCancelled:
+        raise
+    except Exception as e:
+        logger.debug(
+            "[kalaroko_monitor] 点 All 首轮异常: %s", str(e)[:200]
+        )
+
+    # 若仍停留在「Hottest Parties」区（未切到全量网格），再点一次 All
+    try:
+        hot = page.get_by_text(re.compile(r"Hottest\s+Parties", re.I))
+        if await hot.count() >= 1 and await hot.first.is_visible(timeout=700):
+            if await _click_all_category_once():
+                _p("  [lobby] 仍见 Hottest Parties，已补点 All 以切到游戏网格")
+                if await _abortable_wait_for_timeout(page, 500):
+                    raise KalarokoE2EUserCancelled()
+    except KalarokoE2EUserCancelled:
+        raise
+    except Exception:
+        pass
+
+    if _env_bool("KALAROKO_LOBBY_ALL_DOUBLE_TAP", False) and all_ok:
+        try:
+            if await _abortable_wait_for_timeout(page, 400):
+                raise KalarokoE2EUserCancelled()
+            if await _click_all_category_once():
+                _p("  [lobby] All 二次点击（KALAROKO_LOBBY_ALL_DOUBLE_TAP=1）")
+                if await _abortable_wait_for_timeout(page, 450):
+                    raise KalarokoE2EUserCancelled()
+        except KalarokoE2EUserCancelled:
+            raise
+        except Exception:
+            pass
 
 
 def _skip_game_id_href_lazy_gate(
@@ -782,7 +1146,7 @@ async def _resolve_kalaroko_game_entry_locator(
 ) -> tuple[Any, str]:
     """
     解析「要点的大厅入口」定位器：优先 document_game_id / 可导航链接，其次宽松 text=。
-    多处命中时优先选用「非 Party 卡片 + 含可导航祖先」的项，避免 .last 点到 Party 只读标题。
+    多处命中时优先选用「含可导航祖先」的项；此前误排除所有 ``party_card`` 会导致首页 All 下网格全军覆没、只能 .last。
     """
     scen = scenario or {}
     gid_raw = scen.get("document_game_id")
@@ -855,6 +1219,36 @@ async def _resolve_kalaroko_game_entry_locator(
     except Exception:
         cnt = -1
 
+    if cnt >= 3 and str(click_selector).strip().startswith("text="):
+        # 先收窄到**全量游戏网格**（All 下两列），再 main；**party_card 放后**——
+        # 「Hottest Parties」派对房卡与大厅网格可能同类名，误优先会点到图1 而非图2。
+        for scope in (
+            '[class*="GameGrid" i]',
+            '[class*="game_list" i]',
+            '[class*="game-grid" i]',
+            '[class*="gameGrid" i]',
+            "main",
+            '[class*="game-card"]',
+            '[class*="party_card"]',
+        ):
+            try:
+                sc_loc = page.locator(scope).locator(click_selector)
+                sc = await sc_loc.count()
+            except Exception:
+                continue
+            if sc < 1:
+                continue
+            if sc < cnt or (1 <= sc <= 16 and cnt > 8):
+                logger.info(
+                    "[kalaroko_monitor] 【%s】文案全局命中 %s 处，收窄到容器 %s (n=%s)",
+                    scenario_name,
+                    cnt,
+                    scope,
+                    sc,
+                )
+                loc, cnt = sc_loc, sc
+                break
+
     if cnt == 0:
         msg = (
             f"选择器未匹配任何 DOM（前端改版或语言/文案不一致）。当前 selector={click_selector!r}"
@@ -888,6 +1282,342 @@ async def _resolve_kalaroko_game_entry_locator(
         )
         return loc.last, f"text locator .last (count={cnt})"
     return loc.first, f"text locator .first (count={cnt})"
+
+
+# 点卡前“去遮罩”：历史上用 el.remove() 直接撕 DOM，易与 React 协调冲突
+#（下一拍 React 再 removeChild 时报 NotFoundError / removeChild 非子节点）。
+# 默认改为 CSS 隐藏，保留节点供 React 管理；回退可设 KALAROKO_STRIP_MASKS_MODE=remove|off
+_JS_STRIP_KALAROKO_ENTRY_MASKS = r"""(mode) => {
+  if (mode === "off") return 0;
+  const sels = [".mask", ".popup", ".notice", ".modal", ".overlay", ".backdrop", "[class*='mask' i]", "[class*='Mask']", "[class*='modal' i]"];
+  let n = 0;
+  for (const s of sels) {
+    try {
+      document.querySelectorAll(s).forEach((el) => {
+        try {
+          if (!el || !el.parentNode) return;
+          if (mode === "remove") {
+            el.remove();
+          } else {
+            el.style.setProperty("display", "none", "important");
+            el.style.setProperty("pointer-events", "none", "important");
+            el.style.setProperty("visibility", "hidden", "important");
+            el.setAttribute("data-kalaroko-masks-suppressed", "1");
+          }
+          n += 1;
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+  return n;
+}"""
+
+
+def _env_strip_masks_mode() -> str:
+    raw = (os.environ.get("KALAROKO_STRIP_MASKS_MODE") or "hide").strip().lower()
+    if raw in ("0", "off", "no", "false", "none", "skip"):
+        return "off"
+    if raw in ("1", "remove", "legacy", "detach"):
+        return "remove"
+    return "hide"
+
+
+def _page_url_contains_scenario_game_id(url: str, g: int) -> bool:
+    """主文档 URL 已带该游戏的 gameId / game_id（可跳过再点卡片区）。"""
+    s = (url or "").lower()
+    g = int(g)
+    for pat in (
+        rf"gameid={g}(?:\D|&|#|$)",
+        rf"game_id={g}(?:\D|&|#|$)",
+        rf"gameid%3d{g}(?:%|&|#|$)",
+        rf"game_id%3d{g}(?:%|&|#|$)",
+    ):
+        if re.search(pat, s, re.I):
+            return True
+    return False
+
+
+async def _kalaroko_strip_transient_entry_masks(page: Any, scenario_name: str) -> int:
+    """点游戏卡前处理常见透明/营销遮罩，避免 perform click 被挡满超时。
+
+    默认 **CSS 隐藏**（不 ``remove()``，以免破坏 React 虚拟 DOM 与真 DOM 一致）。
+    环境变量 ``KALAROKO_STRIP_MASKS_MODE``：``hide``（默认）| ``remove`` 旧行为 | ``off`` 关闭。
+    """
+    mode = _env_strip_masks_mode()
+    if mode == "off":
+        logger.info(
+            "[kalaroko_monitor] 【%s】去遮罩已按 KALAROKO_STRIP_MASKS_MODE=off 跳过",
+            scenario_name,
+        )
+        return 0
+    try:
+        n = await page.evaluate(_JS_STRIP_KALAROKO_ENTRY_MASKS, mode)
+        n = int(n) if n is not None else 0
+        if n:
+            if mode == "remove":
+                logger.info(
+                    "[kalaroko_monitor] 【%s】已移除可能挡点击的蒙层/弹窗约 %s 个（"
+                    "legacy remove；易引发 React removeChild 错误，见 KALAROKO_STRIP_MASKS_MODE）",
+                    scenario_name,
+                    n,
+                )
+            else:
+                logger.info(
+                    "[kalaroko_monitor] 【%s】已临时隐藏可能挡点击的蒙层/弹窗约 %s 个"
+                    "（CSS，未从 DOM 剥离，避免与 React 协调冲突）",
+                    scenario_name,
+                    n,
+                )
+        return n
+    except Exception as e:
+        logger.debug(
+            "[kalaroko_monitor] 【%s】去遮罩 JS 未执行: %s",
+            scenario_name,
+            str(e)[:120],
+        )
+        return 0
+
+
+def _game_entry_url_navigation_signal(before: str, after: str) -> bool:
+    """进桌/进壳时主 URL 常变化，或已出现 game-frame / 查询串进游戏态。"""
+    a = (after or "").strip()
+    b = (before or "").strip()
+    if a and a != b:
+        return True
+    al = a.lower()
+    if "game-frame" in al:
+        return True
+    if re.search(r"[?&](?:gameid|game_id)=\d+", al, re.I):
+        return True
+    if "gweb." in al:
+        return True
+    return False
+
+
+async def _wait_entry_url_change_signal(
+    page: Any, before: str, timeout_ms: int, *, scenario_name: str
+) -> bool:
+    t_end = time.monotonic() + max(0.05, timeout_ms / 1000.0)
+    while time.monotonic() < t_end:
+        try:
+            after = (page.url or "").strip()
+        except Exception:
+            after = ""
+        if _game_entry_url_navigation_signal(before, after):
+            logger.info(
+                "[kalaroko_monitor] 【%s】入口点击后 URL 已前进: %s",
+                scenario_name,
+                (after or "")[:160],
+            )
+            return True
+        await asyncio.sleep(0.16)
+    return False
+
+
+async def _collect_game_id_entry_click_candidates(
+    page: Any,
+    *,
+    g: int,
+    click_selector: str,
+    scenario_name: str,
+) -> list[tuple[Any, str]]:
+    """
+    不猜「第几个 Tongits 文案为真」：以 game_id 容器 / 可导航 href / 再退回文案多命中。
+    """
+    g = int(g)
+    max_n = _env_int("KALAROKO_GID_ENTRY_MAX_CANDIDATES", 24, vmin=2, vmax=64)
+    out: list[tuple[Any, str]] = []
+    seen: set[int] = set()
+
+    def _add(loc: Any, label: str) -> None:
+        try:
+            key = id(loc)
+        except Exception:
+            key = 0
+        if key in seen and key != 0:
+            return
+        if key:
+            seen.add(key)
+        out.append((loc, label))
+        if len(out) >= max_n:
+            return
+
+    for attr_sel in (
+        f'[data-game-id="{g}"]',
+        f'[data-game_id="{g}"]',
+        f'[data-gameid="{g}"]',
+    ):
+        try:
+            hl = page.locator(attr_sel)
+            c = min(await hl.count(), 20)
+            for i in range(c):
+                if len(out) >= max_n:
+                    break
+                _add(hl.nth(i), f"{attr_sel} nth={i}")
+        except Exception:
+            continue
+
+    for hs in _href_anchor_selectors_for_document_game_id(g):
+        try:
+            hl = page.locator(hs)
+            c = min(await hl.count(), 16)
+            for i in range(c):
+                if len(out) >= max_n:
+                    break
+                _add(hl.nth(i), f"href {hs!r} nth={i}")
+        except Exception:
+            continue
+
+    card_union = (
+        '[class*="gameCard" i], [class*="GameCard" i], [class*="game-card" i], '
+        '[class*="party_card" i], [class*="game_list" i]'
+    )
+    rx = _regex_from_playwright_text_selector(click_selector)
+    if rx is not None:
+        scope_specs: list[tuple[str, Any]] = [
+            (
+                "card_union+filter",
+                page.locator(card_union).filter(has_text=rx),
+            ),
+            (
+                "main+click_selector",
+                page.locator("main").locator(click_selector),
+            ),
+            (
+                "body+click_selector",
+                page.locator("body").locator(click_selector),
+            ),
+        ]
+        for sc_label, pl in scope_specs:
+            if len(out) >= max_n:
+                break
+            try:
+                c = min(await pl.count(), 20)
+                for i in range(c):
+                    if len(out) >= max_n:
+                        break
+                    _add(pl.nth(i), f"{sc_label} nth={i}")
+            except Exception:
+                continue
+    try:
+        pl2 = page.locator(click_selector)
+        c2 = min(await pl2.count(), 20)
+        for i in range(c2):
+            if len(out) >= max_n:
+                break
+            _add(pl2.nth(i), f"raw_click_selector nth={i}")
+    except Exception:
+        pass
+    if out:
+        logger.info(
+            "[kalaroko_monitor] 【%s】document_game_id=%s 收集入口候选 %s 个（依次可见性+点击+URL/壳信号）",
+            scenario_name,
+            g,
+            len(out),
+        )
+    return out
+
+
+async def _try_gid_entry_candidates_until_url_change(
+    page: Any,
+    *,
+    candidates: list[tuple[Any, str]],
+    scenario_name: str,
+    click_timeout_ms: int,
+    bottom_reserve: int,
+) -> tuple[bool, Any | None]:
+    """
+    多候选：可见则点 → 5s 内看 URL/壳是否前进；否则 JS 合成 → 再 2s；再 mouse 中点 → 2s。
+    直到 URL/壳信号变化或候选用尽。
+    """
+    if not candidates:
+        return False, None
+    tap_to = min(12000, max(1500, int(click_timeout_ms)))
+    for loc, label in candidates:
+        _raise_if_e2e_cancelled()
+        u_before = ""
+        try:
+            u_before = (page.url or "").strip()
+        except Exception:
+            u_before = ""
+        try:
+            await _nudge_locator_clear_bottom_chrome(
+                loc, scenario_name=scenario_name, reserve_px=bottom_reserve
+            )
+        except Exception:
+            pass
+        try:
+            await loc.scroll_into_view_if_needed(timeout=2500)
+        except Exception:
+            pass
+        vis = False
+        try:
+            vis = bool(await loc.is_visible(timeout=900))
+        except Exception:
+            vis = False
+        if not vis:
+            logger.info(
+                "[kalaroko_monitor] 【%s】候选不可见，跳过: %s",
+                scenario_name,
+                label,
+            )
+            continue
+        _raise_if_e2e_cancelled()
+        clicked = False
+        try:
+            await loc.click(
+                timeout=tap_to, force=True, no_wait_after=True
+            )
+            clicked = True
+        except Exception as e0:
+            logger.debug(
+                "[kalaroko_monitor] 【%s】候选首击失败 %s: %s",
+                scenario_name,
+                label,
+                str(e0)[:200],
+            )
+            try:
+                await loc.click(
+                    timeout=min(10000, tap_to), force=True, no_wait_after=True
+                )
+                clicked = True
+            except Exception as e1:
+                logger.debug(
+                    "[kalaroko_monitor] 【%s】候选重试仍失败 %s: %s",
+                    scenario_name,
+                    label,
+                    str(e1)[:200],
+                )
+        if clicked and await _wait_entry_url_change_signal(
+            page, u_before, 5000, scenario_name=scenario_name
+        ):
+            logger.info(
+                "[kalaroko_monitor] 【%s】gid 容器策略成功（%s，Playwright 点击后 URL/壳已前进）",
+                scenario_name,
+                label,
+            )
+            return True, loc
+        if await _try_locator_js_synthetic_pointer_click(loc, scenario_name):
+            if await _wait_entry_url_change_signal(
+                page, u_before, 2000, scenario_name=scenario_name
+            ):
+                logger.info(
+                    "[kalaroko_monitor] 【%s】gid 容器策略成功（%s，JS 合成后前进）",
+                    scenario_name,
+                    label,
+                )
+                return True, loc
+        if await _try_game_entry_mouse_center_click(page, loc, scenario_name):
+            if await _wait_entry_url_change_signal(
+                page, u_before, 2000, scenario_name=scenario_name
+            ):
+                logger.info(
+                    "[kalaroko_monitor] 【%s】gid 容器策略成功（%s，mouse 中点后前进）",
+                    scenario_name,
+                    label,
+                )
+                return True, loc
+    return False, None
 
 
 async def _diagnose_and_click_kalaroko_game_entry(
@@ -938,6 +1668,26 @@ async def _diagnose_and_click_kalaroko_game_entry(
     except Exception:
         pass
 
+    # 礼包/营销全屏层（如 Holy Week）会挡住卡片区点击；在入口 force 前再关一轮（含 iframe JS hammer + 视口盲击）
+    try:
+        await _dismiss_kalaroko_merch_package_modals(
+            page, progress=progress, click_timeout_ms=5000
+        )
+    except Exception:
+        pass
+
+    _raise_if_e2e_cancelled()
+
+    if not _env_bool("KALAROKO_SKIP_HOME_ALL_ENSURE", False):
+        try:
+            await _ensure_kalaroko_lobby_home_all_tab(page, progress=progress)
+        except KalarokoE2EUserCancelled:
+            raise
+        except Exception as e:
+            logger.debug(
+                "[kalaroko_monitor] _ensure_kalaroko_lobby_home_all_tab: %s", str(e)[:160]
+            )
+
     _raise_if_e2e_cancelled()
 
     gid_wait: int | None = None
@@ -947,6 +1697,22 @@ async def _diagnose_and_click_kalaroko_game_entry(
             gid_wait = int(dg)
     except (TypeError, ValueError):
         gid_wait = None
+    if gid_wait is not None:
+        try:
+            u_gate = str(page.url or "")
+            if _page_url_contains_scenario_game_id(u_gate, int(gid_wait)):
+                logger.info(
+                    "[kalaroko_monitor] 【%s】[INFO] 已在游戏路径内 (URL 含 gameId=%s)，跳过入口点击",
+                    scenario_name,
+                    gid_wait,
+                )
+                if progress:
+                    progress(
+                        f"「{scenario_name}」已在游戏路径内 (gameId={gid_wait})，跳过点击"
+                    )
+                return online_hint
+        except Exception:
+            pass
     skip_gid_href_gate = _skip_game_id_href_lazy_gate(scenario, click_selector)
     if gid_wait is not None and skip_gid_href_gate:
         logger.info(
@@ -1026,69 +1792,120 @@ async def _diagnose_and_click_kalaroko_game_entry(
 
     _raise_if_e2e_cancelled()
 
-    # 禁止 wait visible：Actionability 在动画/遮挡/轮播下可卡满默认级超时（数十秒）。
-    scroll_cap = _env_int(
-        "KALAROKO_GAME_ENTRY_SCROLL_MS", 2500, vmin=400, vmax=20000
-    )
-    await target.scroll_into_view_if_needed(timeout=scroll_cap)
+    await _kalaroko_strip_transient_entry_masks(page, scenario_name)
     _raise_if_e2e_cancelled()
-    attach_ms = _env_int("KALAROKO_GAME_ENTRY_ATTACH_MS", 900, vmin=0, vmax=8000)
-    if attach_ms > 0:
-        try:
-            await target.wait_for(state="attached", timeout=attach_ms)
-        except Exception:
-            pass
-    logger.info(
-        "[kalaroko_monitor] 【%s】已完成 scroll_into_view + attached（无 visible 门闩）",
-        scenario_name,
-    )
-
-    # 点击前人数文案：独立短超时 env，默认 0（不在此处硬等统计异步）
-    stats_wait = _env_int(
-        "KALAROKO_GAME_ENTRY_PRECLICK_STATS_MS", 0, vmin=0, vmax=12000
-    )
-    if stats_wait:
-        if progress:
-            progress(
-                f"「{scenario_name}」等待大厅在线人数/统计延迟加载（{stats_wait}ms）…"
-            )
-        if await _abortable_wait_for_timeout(page, stats_wait):
-            raise KalarokoE2EUserCancelled()
 
     bottom_reserve = _env_int("KALAROKO_BOTTOM_CHROME_RESERVE_PX", 112, vmin=56, vmax=240)
+    try:
+        _vpw0 = int((page.viewport_size or {}).get("width") or 9999)
+        if _vpw0 <= 520:
+            bottom_reserve = max(
+                bottom_reserve,
+                _env_int("KALAROKO_BOTTOM_CHROME_RESERVE_PX_MOBILE", 168, vmin=80, vmax=280),
+            )
+    except Exception:
+        pass
+
+    entry_via_gid = False
+    if gid_wait is not None:
+        cands = await _collect_game_id_entry_click_candidates(
+            page,
+            g=gid_wait,
+            click_selector=click_selector,
+            scenario_name=scenario_name,
+        )
+        if cands:
+            okg, t_use = await _try_gid_entry_candidates_until_url_change(
+                page,
+                candidates=cands,
+                scenario_name=scenario_name,
+                click_timeout_ms=click_timeout_ms,
+                bottom_reserve=bottom_reserve,
+            )
+            if okg and t_use is not None:
+                entry_via_gid = True
+                target = t_use
+                if progress:
+                    progress(
+                        f"「{scenario_name}」document_game_id 容器/多命中已触发进桌/URL 前进，不再走 .first 单点"
+                    )
+                logger.info(
+                    "[kalaroko_monitor] 【%s】document_game_id=%s 多候选策略已命中，省略 legacy 单定位点击",
+                    scenario_name,
+                    gid_wait,
+                )
+
+    if not entry_via_gid:
+        # 禁止 wait visible：Actionability 在动画/遮挡/轮播下可卡满默认级超时（数十秒）。
+        scroll_cap = _env_int(
+            "KALAROKO_GAME_ENTRY_SCROLL_MS", 2500, vmin=400, vmax=20000
+        )
+        await target.scroll_into_view_if_needed(timeout=scroll_cap)
+        _raise_if_e2e_cancelled()
+        attach_ms = _env_int("KALAROKO_GAME_ENTRY_ATTACH_MS", 900, vmin=0, vmax=8000)
+        if attach_ms > 0:
+            try:
+                await target.wait_for(state="attached", timeout=attach_ms)
+            except Exception:
+                pass
+        logger.info(
+            "[kalaroko_monitor] 【%s】已完成 scroll_into_view + attached（无 visible 门闩）",
+            scenario_name,
+        )
+
+        # 点击前人数文案：独立短超时 env，默认 0（不在此处硬等统计异步）
+        stats_wait = _env_int(
+            "KALAROKO_GAME_ENTRY_PRECLICK_STATS_MS", 0, vmin=0, vmax=12000
+        )
+        if stats_wait:
+            if progress:
+                progress(
+                    f"「{scenario_name}」等待大厅在线人数/统计延迟加载（{stats_wait}ms）…"
+                )
+            if await _abortable_wait_for_timeout(page, stats_wait):
+                raise KalarokoE2EUserCancelled()
+    else:
+        logger.info(
+            "[kalaroko_monitor] 【%s】已进桌（document_game_id 多候选），跳过 scroll/stats/legacy 首击",
+            scenario_name,
+        )
+
     suppress_tabbar = _env_bool("KALAROKO_SUPPRESS_TABBAR_PE", True)
     err_first: Exception | None = None
     tap_to = min(12000, max(1500, int(click_timeout_ms)))
     try:
-        await _nudge_locator_clear_bottom_chrome(
-            target, scenario_name=scenario_name, reserve_px=bottom_reserve
-        )
-        if suppress_tabbar:
+        if not entry_via_gid:
+            await _nudge_locator_clear_bottom_chrome(
+                target, scenario_name=scenario_name, reserve_px=bottom_reserve
+            )
+        if not entry_via_gid and suppress_tabbar:
             await _set_bottom_tabbar_pointer_events_enabled(page, suppress=True)
-
-        _click_delay = 0
-        if ui_pace_ms > 0:
-            _click_delay = max(50, min(800, ui_pace_ms // 2))
-            try:
-                await page.bring_to_front()
-            except Exception:
-                pass
-            if ui_cursor_moves:
-                await _kalaroko_ui_move_mouse_to_locator(page, target, ui_pace_ms)
-            await asyncio.sleep(min(1.2, ui_pace_ms / 1000.0 * 0.45))
-        _clk_kw: dict[str, Any] = {
-            "timeout": tap_to,
-            "force": True,
-            "no_wait_after": True,
-        }
-        if _click_delay > 0:
-            _clk_kw["delay"] = _click_delay
-        await target.click(**_clk_kw)
-        logger.info(
-            "[kalaroko_monitor] 【%s】Playwright force+no_wait_after click() 成功",
-            scenario_name,
-        )
+        if not entry_via_gid:
+            _click_delay = 0
+            if ui_pace_ms > 0:
+                _click_delay = max(50, min(800, ui_pace_ms // 2))
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
+                if ui_cursor_moves:
+                    await _kalaroko_ui_move_mouse_to_locator(page, target, ui_pace_ms)
+                await asyncio.sleep(min(1.2, ui_pace_ms / 1000.0 * 0.45))
+            _clk_kw: dict[str, Any] = {
+                "timeout": tap_to,
+                "force": True,
+                "no_wait_after": True,
+            }
+            if _click_delay > 0:
+                _clk_kw["delay"] = _click_delay
+            await target.click(**_clk_kw)
+            logger.info(
+                "[kalaroko_monitor] 【%s】Playwright force+no_wait_after click() 成功",
+                scenario_name,
+            )
     except Exception as e_click:
+        if entry_via_gid:
+            raise
         err_first = e_click
         logger.warning(
             "[kalaroko_monitor] 【%s】首击 force+no_wait_after 仍失败，尝试更大避让后重试: %s",
@@ -1126,20 +1943,27 @@ async def _diagnose_and_click_kalaroko_game_entry(
             )
         except Exception as e_force:
             logger.warning(
-                "[kalaroko_monitor] 【%s】force click 仍失败: %s — JS 祖先兜底",
+                "[kalaroko_monitor] 【%s】force click 仍失败: %s — 尝试 JS 合成 / 坐标点击 / 祖先兜底",
                 scenario_name,
                 str(e_force)[:320],
             )
             if progress:
-                progress(f"「{scenario_name}」常规/force 点击失败，尝试卡片/链接层兜底 …")
-            try:
-                handle = await target.element_handle(
-                    timeout=_env_int("KALAROKO_GAME_ENTRY_JS_FALLBACK_HANDLE_MS", 2000, vmin=400, vmax=15000)
+                progress(
+                    f"「{scenario_name}」常规/force 点击失败，尝试 JS 合成 / 坐标点击 / 卡片层兜底 …"
                 )
-                if handle is None:
-                    raise RuntimeError("element_handle 为空")
-                await page.evaluate(
-                    """(el) => {
+            recovered = False
+            if await _try_locator_js_synthetic_pointer_click(target, scenario_name):
+                recovered = True
+            elif await _try_game_entry_mouse_center_click(page, target, scenario_name):
+                recovered = True
+            if not recovered:
+                try:
+                    _ev_ms = _env_int(
+                        "KALAROKO_GAME_ENTRY_JS_FALLBACK_EVAL_MS", 4500, vmin=400, vmax=15000
+                    )
+                    await asyncio.wait_for(
+                        target.evaluate(
+                            """(el) => {
                   const clickable = el.closest(
                     'a[href], button, [role="button"], [onclick], [data-href]'
                   );
@@ -1157,28 +1981,27 @@ async def _diagnose_and_click_kalaroko_game_entry(
                       n = n.parentElement;
                     }
                   }
-                  const target = card || el;
-                  if (typeof target.click === 'function') target.click();
-                  else target.dispatchEvent(
+                  const clickNode = card || el;
+                  if (typeof clickNode.click === 'function') clickNode.click();
+                  else clickNode.dispatchEvent(
                     new MouseEvent('click', { bubbles: true, cancelable: true, view: window })
                   );
-                }""",
-                    handle,
-                    timeout=_env_int(
-                        "KALAROKO_GAME_ENTRY_JS_FALLBACK_EVAL_MS", 2500, vmin=400, vmax=12000
-                    ),
-                )
-                logger.info(
-                    "[kalaroko_monitor] 【%s】兜底：已在祖先/卡片节点触发 click",
-                    scenario_name,
-                )
-            except Exception as e2:
-                logger.error(
-                    "[kalaroko_monitor] 【%s】兜底点击仍失败: %s",
-                    scenario_name,
-                    str(e2)[:480],
-                )
-                raise err_first from e2
+                }"""
+                        ),
+                        timeout=max(1.0, _ev_ms / 1000.0),
+                    )
+                    logger.info(
+                        "[kalaroko_monitor] 【%s】兜底：已在祖先/卡片节点触发 click",
+                        scenario_name,
+                    )
+                    recovered = True
+                except Exception as e2:
+                    logger.error(
+                        "[kalaroko_monitor] 【%s】兜底点击仍失败: %s",
+                        scenario_name,
+                        str(e2)[:480],
+                    )
+                    raise err_first from e2
     finally:
         if suppress_tabbar:
             await _set_bottom_tabbar_pointer_events_enabled(page, suppress=False)
@@ -1487,7 +2310,8 @@ async def _game_deep_wait_after_goto(
 
     ``ws_times`` 仍由调用方注册 websocket 监听，本函数**不再**以其作为竞速胜利条件。
 
-    返回 ``(t_end_perf, canvas_seen, race_end_reason)``；``race_end_reason`` 为 ``post_load_api``、``late_ui`` 或 ``timeout``；
+    返回 ``(t_end_perf, canvas_seen, race_end_reason)``；``race_end_reason`` 为 ``post_load_api``、``late_ui``、
+    ``no_game_shell``（点击后始终未见 game-frame/iframe，提前结束，避免 80s 无日志空转）或 ``timeout``；
     ``canvas_seen`` 恒为 ``False``（保留签名兼容）。
     """
     _ = ws_times  # 保留参数：调用方仍注册 WS 用于排障，不再作为竞速胜利条件
@@ -1520,6 +2344,36 @@ async def _game_deep_wait_after_goto(
             except Exception:
                 pass
             await asyncio.sleep(0.05)
+
+    if click_flow and not click_shell_seen:
+        # 阶段 1 已用尽：再短等 iframe 晚挂载（常比主文档慢）
+        _grace = _env_int("KALAROKO_POST_CLICK_NO_SHELL_GRACE_MS", 3500, vmin=400, vmax=20_000)
+        g_end = min(race_deadline, time.perf_counter() + _grace / 1000.0)
+        while time.perf_counter() < g_end:
+            if _e2e_user_cancel_requested():
+                raise KalarokoE2EUserCancelled()
+            try:
+                if await _page_in_game_frame_shell(page):
+                    click_shell_seen = True
+                    if timeline_mark and not shell_timeline_logged:
+                        timeline_mark("检测到 game-frame 壳 (主文档 URL 或 iframe src)")
+                        shell_timeline_logged = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.08)
+
+    if click_flow and not click_shell_seen:
+        # 仍无进壳则**提前**返回，避免阶段 2 在「未导航」时白等 ~80s（仅日志停在「点击后短 settle」像卡死）
+        t_out = time.perf_counter()
+        if timeline_mark:
+            timeline_mark(
+                "竞速结束: 点击后未出现 game-frame 壳/iframe，提前结束深等（可检查点中的是否为纯文案节点或浮层）"
+            )
+        logger.info(
+            "[kalaroko_monitor] deep_wait 结束: no_game_shell（click 未带来进桌 URL/iframe）"
+        )
+        return t_out, False, "no_game_shell"
 
     late_http_trace: list[str] = []
     captured_apis: list[str] = []
@@ -1721,7 +2575,14 @@ _DEFAULT_JSONL = Path(os.environ.get("KALAROKO_PERF_HISTORY_PATH", "")) if os.en
 ) else (Path.home() / ".jachin" / "kalaroko_perf" / "history.jsonl")
 
 _ALLOWED_HOSTS_ENV = "KALAROKO_MONITOR_ALLOWED_HOSTS"
-_DEFAULT_ALLOWED = frozenset({"kalaroko.com", "www.kalaroko.com", "gwp.heronpro.xin"})
+_DEFAULT_ALLOWED = frozenset(
+    {
+        "kalaroko.com",
+        "www.kalaroko.com",
+        "gweb.kalaroko.com",
+        "gwp.heronpro.xin",
+    }
+)
 
 
 def _allowed_hosts() -> frozenset[str]:
@@ -1747,22 +2608,328 @@ def _page_is_kalaroko(page: Any) -> bool:
         return False
 
 
+def _merch_js_hammer_env_enabled() -> bool:
+    return os.environ.get("KALAROKO_MERCH_JS_HAMMER", "1").lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _merch_mouse_fallback_env_enabled() -> bool:
+    return os.environ.get("KALAROKO_MERCH_MOUSE_FALLBACK", "1").lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+# 在**各 frame 文档**内执行：不依赖 Playwright 的 get_by_text（canvas/拆分节点/高 z 蒙层时仍可能命中父容器文案）。
+_MERCH_HAMMER_JS = r"""
+() => {
+  const rx = /Holy\s*Week|WEEK\s*Package|Week\s*Package|45[\d,\s]*\s*GOLDS?|GOLDS?\b|82%\s*OFF|%\s*OFF|Offer\s*End|Top\s*Up|Limited|Special|Flash|Exclusive|Recharge|₱/i;
+  const click = (el) => {
+    if (!el) return false;
+    try {
+      el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, view: window, pointerId: 1, pointerType: "mouse" }));
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      if (typeof el.click === "function") el.click();
+      return true;
+    } catch (e) { return false; }
+  };
+  const vw = window.innerWidth || 400;
+  const vh = window.innerHeight || 700;
+  const cands = document.querySelectorAll("div, section, article, [role=dialog], aside");
+  for (const root of cands) {
+    let t = "";
+    try { t = (root.innerText || "").replace(/\s+/g, " ").trim(); } catch (e) { continue; }
+    if (t.length < 12) continue;
+    if (!rx.test(t.slice(0, 4000))) continue;
+    const r = root.getBoundingClientRect();
+    if (r.width < 90 || r.height < 70) continue;
+    if (r.width < vw * 0.35 && r.height < vh * 0.25) continue;
+    const btns = root.querySelectorAll("button, [role=button], a[role=button], [class*='close' i], [class*='dismiss' i], [class*='icon_close' i], [class*='btn_close' i]");
+    for (let i = btns.length - 1; i >= 0; i--) {
+      const b = btns[i];
+      const tr = b.getBoundingClientRect();
+      if (tr.width < 4 || tr.height < 4) continue;
+      const lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "");
+      const tx = (b.innerText || "").trim();
+      if (/close|dismiss|×/i.test(lab) || /^(×|✕|x|X|✖)?$/i.test(tx)) { if (click(b)) return 1; }
+    }
+    for (const b of root.querySelectorAll("button, [role=button]")) {
+      const tr = b.getBoundingClientRect();
+      if (tr.width > 0 && tr.width < 58 && tr.height > 0 && tr.height < 58) {
+        const tx2 = (b.innerText || "").trim();
+        if (tx2.length <= 1) { if (click(b)) return 1; }
+      }
+    }
+  }
+  return 0;
+}
+"""
+
+async def _merch_hammer_in_frame(
+    fr: Any,
+    *,
+    eval_timeout_sec: float = 4.0,
+) -> int:
+    """0/1：在单 frame 内用 JS 点击礼包关闭钮（同 origin 由 CDP 注入；跨域子 frame 仍常见可 evaluate）。"""
+    if not _merch_js_hammer_env_enabled():
+        return 0
+    if not hasattr(fr, "evaluate"):
+        return 0
+    try:
+        u = getattr(fr, "url", "") or ""
+    except Exception:
+        u = ""
+    if u and not _host_allowed(u):
+        return 0
+    tmo = max(0.4, min(float(eval_timeout_sec), 30.0))
+    try:
+        v = await asyncio.wait_for(
+            fr.evaluate(_MERCH_HAMMER_JS), timeout=tmo
+        )
+        return 1 if int(v or 0) > 0 else 0
+    except Exception as e:
+        logger.debug(
+            "[kalaroko_monitor] merch JS hammer: frame 跳过: %s",
+            (str(e) or type(e).__name__)[:200],
+        )
+        return 0
+
+
+async def _dismiss_merch_viewport_mouse_fallback(
+    page: Any,
+) -> None:
+    """主页面视口上若干点位的 blind click（不经过可点性检查，应对遮挡）。"""
+    if not _merch_mouse_fallback_env_enabled():
+        return
+    try:
+        vw = int(page.viewport_size.get("width", 0)) or 0
+        vh = int(page.viewport_size.get("height", 0)) or 0
+    except Exception:
+        return
+    if vw < 200 or vh < 200:
+        return
+    pts = ((0.78, 0.40), (0.84, 0.36), (0.72, 0.44), (0.80, 0.48))
+    for px, py in pts:
+        try:
+            await page.mouse.click(int(vw * px), int(vh * py), delay=18)
+            await page.wait_for_timeout(120)
+        except Exception:
+            break
+    logger.info(
+        "[kalaroko_monitor] merch：视口 mouse 试探点击 %d 点（礼包仍挡交互时可配合 JS hammer）",
+        len(pts),
+    )
+
+
+def _merch_frame_list_limited(
+    page: Any,
+    *,
+    max_frames: int,
+) -> list[Any]:
+    """主文档优先 + 前若干个 **非主** frame，避免广告/统计 iframe 数十个时全量 hammer 卡死数分钟。"""
+    mx = max(1, min(int(max_frames), 40))
+    try:
+        main = page.main_frame
+        others = [f for f in page.frames if f != main]
+    except Exception:
+        return [getattr(page, "main_frame", page)]
+    return [main] + others[: max(0, mx - 1)]
+
+
+async def _dismiss_kalaroko_merch_package_modals(
+    page: Any,
+    *,
+    progress: Callable[[str], None] | None = None,
+    click_timeout_ms: int = 5000,
+    lobby_fast: bool = False,
+) -> int:
+    """
+    关闭**礼包 / 节日促销 / Holy Week Package** 等全屏/半全屏营销弹层（主文档 + 子 frame 均扫）：
+    特征文案 + 关闭/×/Skip/aria-close；多轮可重复调用（壳内、对局中亦常弹出）。
+
+    **lobby_fast=True**（``_prepare_kalaroko_lobby_after_navigation`` 专用）：限制 frame 数、单遍 hammer、
+    主文档上跑 Playwright 补刀、**不**做视口盲击，避免第一屏有几十个 iframe 时墙钟被拖成分钟级且无任何日志。
+    """
+    if not _page_is_kalaroko(page):
+        return 0
+    if lobby_fast:
+        max_fr = _env_int("KALAROKO_LOBBY_MERCH_MAX_FRAMES", 5, vmin=1, vmax=20)
+        hammer_tmo = float(
+            (os.environ.get("KALAROKO_LOBBY_MERCH_HAMMER_SEC") or "1.25").strip() or 1.25
+        )
+        try:
+            hammer_tmo = max(0.5, min(hammer_tmo, 4.0))
+        except (TypeError, ValueError):
+            hammer_tmo = 1.25
+        sweeps = 1
+        modal_frame_cap = 1
+    else:
+        max_fr = 99
+        hammer_tmo = 4.0
+        sweeps = 2
+        modal_frame_cap = 9999
+    clk = max(500, min(int(click_timeout_ms), 15_000))
+    if lobby_fast:
+        clk = min(clk, 3200)
+    # 过宽会误中大厅/列表；用「周/礼包价」+ 金额/折扣/充值强特征
+    promo_re = re.compile(
+        r"Holy\s*Week|WEEK\s*Package|Week\s*Package|Offer\s*End|"
+        r"45[\d,\s]*\s*GOLDS?|GOLDS?\s*!\s*$|"
+        r"82%\s*OFF|%\s*OFF|₱\s*[\d.]+|"
+        r"Top\s*Up|Recharge|Limited\s*Offer|Special\s*Offer|Flash\s*Sale|Exclusive",
+        re.I,
+    )
+    close_name = re.compile(
+        r"^(Close|×|✕|Skip|Not now|No thanks?|Maybe later|Later|Dismiss|"
+        r"Remind me later|Ignore|I\s*\'?ll pass)$",
+        re.I,
+    )
+    n_closed = 0
+    try:
+        if lobby_fast:
+            frames = _merch_frame_list_limited(page, max_frames=max_fr)
+        else:
+            frames = [page.main_frame] + [
+                f for f in page.frames if f != page.main_frame
+            ]
+    except Exception:
+        frames = [getattr(page, "main_frame", page)]
+
+    for fr in frames:
+        for _sweep in range(sweeps):
+            h = await _merch_hammer_in_frame(fr, eval_timeout_sec=hammer_tmo)
+            if h:
+                n_closed += h
+                if progress:
+                    progress("已用 JS 关闭礼包/营销蒙层或 ×")
+                try:
+                    await page.wait_for_timeout(200)
+                except Exception:
+                    pass
+                break
+
+    modal_frames = frames[:modal_frame_cap] if lobby_fast else frames
+    for fr in modal_frames:
+        if not hasattr(fr, "locator"):
+            continue
+        if lobby_fast:
+            try:
+                if await fr.get_by_text(promo_re).count() == 0:
+                    continue
+            except Exception:
+                continue
+
+        modals = fr.locator("div,section,article").filter(has_text=promo_re)
+        try:
+            mc = min(6 if not lobby_fast else 3, await modals.count())
+        except Exception:
+            mc = 0
+        for i in range(mc):
+            m = modals.nth(i)
+            try:
+                if not await m.is_visible(timeout=500):
+                    continue
+            except Exception:
+                continue
+            clicked = False
+            for _rep in range(2):
+                if clicked:
+                    break
+                for spec in (
+                    m.get_by_role("button", name=close_name),
+                    m.get_by_role("button", name=re.compile(r"^x$", re.I)),
+                    m.locator("button[aria-label*='close' i]"),
+                    m.locator("button[title*='close' i]"),
+                    m.locator(
+                        "[class*='close' i][class*='button' i], [class*='icon_close' i], [class*='btn_close' i]"
+                    ),
+                ):
+                    if clicked:
+                        break
+                    try:
+                        if await spec.count() == 0:
+                            continue
+                        btn = spec.first
+                        if not await btn.is_visible(timeout=500):
+                            continue
+                        await btn.click(timeout=clk, force=True, no_wait_after=True)
+                        n_closed += 1
+                        clicked = True
+                        logger.info(
+                            "[kalaroko_monitor] 已点击礼包/营销弹层关闭控件（retry=%s）",
+                            _rep,
+                        )
+                        if progress:
+                            progress("已关闭礼包/全屏营销类弹层（Close/×）")
+                        await page.wait_for_timeout(200)
+                        break
+                    except Exception:
+                        continue
+            if not clicked:
+                try:
+                    btns = m.locator("button")
+                    bc = min(10, await btns.count())
+                    for bi in range(bc - 1, -1, -1):
+                        b = btns.nth(bi)
+                        if not await b.is_visible(timeout=280):
+                            continue
+                        try:
+                            t = (await b.inner_text(timeout=200) or "").strip()
+                        except Exception:
+                            t = ""
+                        if t in ("×", "✕", "x", "X", "") or len(t) <= 2:
+                            await b.click(timeout=clk, force=True, no_wait_after=True)
+                            n_closed += 1
+                            clicked = True
+                            if progress:
+                                progress("已关闭礼包弹层（×/小圆钮）")
+                            await page.wait_for_timeout(200)
+                            break
+                except Exception:
+                    pass
+            if not clicked:
+                try:
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(180)
+                except Exception:
+                    pass
+    if n_closed == 0 and not lobby_fast:
+        try:
+            await _dismiss_merch_viewport_mouse_fallback(page)
+        except Exception:
+            pass
+    if n_closed > 0:
+        logger.info(
+            "[kalaroko_monitor] 礼包/营销弹层本轮共关 %d 处",
+            n_closed,
+        )
+    return n_closed
+
+
 async def _dismiss_kalaroko_blocking_promos(
     page: Any,
     *,
     progress: Callable[[str], None] | None = None,
     click_timeout_ms: int = 5000,
+    lobby_fast: bool = False,
 ) -> int:
-    """
-    关闭挡在 Login / 游戏入口之上的推广层：
-    - 「开启通知领奖励」类横条：优先点 **Cancel**（避免 Agree 触发系统通知权限框）。
-    - subscribers-modal-*：优先点 Cancel / Later / Close，否则 Escape。
-    无遮挡或找不到控件时静默返回 0。
-    """
+    """Close lobby promos, notifications, subscribers, and merch modals (see _dismiss_kalaroko_merch_package_modals)."""
     if not _page_is_kalaroko(page):
         return 0
+    n_merch = await _dismiss_kalaroko_merch_package_modals(
+        page,
+        progress=progress,
+        click_timeout_ms=click_timeout_ms,
+        lobby_fast=lobby_fast,
+    )
     clk = max(800, min(int(click_timeout_ms), 15000))
-    dismissed = 0
+    dismissed = int(n_merch)
 
     async def _try_click(loc: Any, label: str) -> bool:
         nonlocal dismissed
@@ -2088,7 +3255,11 @@ async def _prepare_kalaroko_lobby_after_navigation(
     for sweep in range(max_sweeps):
         cleared_something = False
 
-        promo_n = await _dismiss_kalaroko_blocking_promos(page, progress=progress)
+        if progress:
+            progress("清场: 礼包/通知/subscribers（限时轻扫，不阻塞入口竞速）…")
+        promo_n = await _dismiss_kalaroko_blocking_promos(
+            page, progress=progress, lobby_fast=True
+        )
         if promo_n > 0:
             cleared_something = True
 
@@ -3633,7 +4804,7 @@ async def execute_playwright_perf_test(
             点击流可选 **require_game_frame_url**（默认 True）：采数结束前主文档 URL 须含 ``game-frame``，
             否则本条 **load_status=failed**，避免未见游戏打开仍上报 success）。
             游戏场景可选 **document_game_id** 与 Word/BI 报告小节 game_id 对齐）。**传 null 或 [] 时自动使用**
-            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 四款游戏；游戏默认从首页点击进入）。浏览器：
+            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 七款游戏；游戏默认从首页点击进入）。浏览器：
             **必须**设置 ``KALAROKO_CDP_ENDPOINT``（如 ``http://127.0.0.1:9222``），并预先以 ``--remote-debugging-port``
             启动 Chrome（仓库 ``scripts/launch_chrome_debug.ps1``）；Playwright 仅 ``connect_over_cdp``，**不再**
             自动 ``launch`` 新浏览器。会话/Cookie 由该 Chrome 实例与用户数据目录决定。无登录态时若出现
@@ -4434,7 +5605,7 @@ async def execute_playwright_perf_test(
                 "games": games_out,
                 "browser_exceptions": browser_exceptions,
                 "aggregation_notes": (
-                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 4 款游戏）"]
+                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 7 款游戏）"]
                     if used_default_scenarios
                     else []
                 ),
