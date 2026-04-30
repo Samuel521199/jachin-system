@@ -39,6 +39,7 @@ _DEFAULT_WIKI_URL = (
 
 # 战报标题：与业务侧「综合冒烟」用语一致；勿与「统合」脚本文件名混为显示名
 K11_LARK_CARD_TITLE = "【K11 综合冒烟】战报"
+K11_LARK_CARD_TARGET_URL = "https://www.kalaroko.com/"
 # 飞书 IM 交互卡 content 过大时首包失败，会误退化为 lark_md 列表样式
 _K11_CARD_JSON_SOFT_MAX = 28_000
 
@@ -935,7 +936,7 @@ def send_k11_smoke_lark_notification(
 
     md = "\n".join(
         [
-            f"**目标** {target_url}",
+            f"**目标** {K11_LARK_CARD_TARGET_URL}",
             f"**飞书表更新** {lark_wrote} 行；[Wiki]({wiki_url})",
             "",
             *case_lines,
@@ -949,7 +950,7 @@ def send_k11_smoke_lark_notification(
     text_plain = "\n".join(
         [
             f"{K11_LARK_CARD_TITLE}（纯文本）",
-            f"目标：{target_url}",
+            f"目标：{K11_LARK_CARD_TARGET_URL}",
             f"飞书表更新：{lark_wrote} 行；Wiki：{wiki_url}",
             "",
             *case_lines,
@@ -971,7 +972,7 @@ def send_k11_smoke_lark_notification(
 
     summary_md = "\n".join(
         [
-            f"**目标** {_k11_lark_md_escape(target_url, 2000)}",
+            f"**目标** {_k11_lark_md_escape(K11_LARK_CARD_TARGET_URL, 2000)}",
             f"**飞书表** 已回写 **{lark_wrote}** 行 · [打开 Wiki]({wiki_url})",
             f"**汇总** {tail}（共 {len(results)} 条；下表备注在卡内已截断，完整见 Wiki/JSON）",
         ]

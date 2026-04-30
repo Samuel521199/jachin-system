@@ -1,6 +1,6 @@
 /**
  * 冒烟测试 — K11 统合平台 Playwright 冒烟（子进程，SSE 日志）
- * 多轮/间隔/定时 行为对齐「巡检中枢」；目标 URL 与 CDP 由 .env/脚本默认处理。
+ * 手动脉冲的「多轮+间隔」与到点批跑解耦；目标 URL 与 CDP 由 .env/脚本默认处理。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -226,11 +226,11 @@ export function K11UnifiedSmokeTest() {
         setScheduleSaveBanner(
           schedulerActive
             ? hourlyRecurring
-              ? `已保存并生效：每小时北京 *:${mm} 批跑，${r} 轮、间隔 ${i} 秒。`
-              : `已保存并生效：每日北京时间 ${timeLabel} 开跑，${r} 轮、间隔 ${i} 秒。`
+              ? `已保存并生效：每小时北京 *:${mm} 到点各 1 轮。上方「执行轮数 / 间隔」仅影响「启动统合冒烟」手动脉冲。`
+              : `已保存并生效：每日北京时间 ${timeLabel} 到点 1 轮。轮次/间隔仅用于手动脉冲。`
             : hourlyRecurring
-              ? `已保存：每小时北京 *:${mm}（开关关闭时不会跑；打开「每日批跑」后按小时触发）。`
-              : `已保存定时：北京时间 ${timeLabel}（当前开关为关，打开「每日批跑」后会在该时刻执行）。`
+              ? `已保存：每小时北京 *:${mm}（开关关则不跑；打开后按整点该分各触发 1 轮，与手动脉冲轮次无关）。`
+              : `已保存定时：北京 ${timeLabel}（打开到点批跑开关后每触发 1 轮；与上方轮次/间隔无联动）。`
         );
         if (scheduleSaveTimerRef.current) window.clearTimeout(scheduleSaveTimerRef.current);
         scheduleSaveTimerRef.current = window.setTimeout(() => {
@@ -606,16 +606,18 @@ export function K11UnifiedSmokeTest() {
           </div>
         </div>
         <p className="text-[11px] leading-relaxed text-cyan-600/75">
-          「启动统合冒烟」为<strong className="text-cyan-500/90">本页 SSE 流</strong>，按上列轮次与间隔串行多轮。目标/ CDP
-          由 <code className="text-cyan-500/85">.env</code> 与脚本默认。定时任务在 L3 本机、到点用当前轮次/间隔与{" "}
-          <code className="text-cyan-500/85">-v</code> 批跑，进程日志搜{" "}
-          <code className="text-cyan-500/80">[k11_unified_smoke_scheduler]</code>；完全不发飞书可设环境{" "}
-          <code className="text-cyan-500/80">K11_SCHEDULED_SMOKE_NO_LARK=1</code>（定时批跑）。
+          「启动统合冒烟」为<strong className="text-cyan-500/90">本页 SSE 流</strong>，仅按上列「执行轮数 / 轮次间隔」串行多轮。目标/ CDP 由
+          <code className="text-cyan-500/85"> .env</code> 与脚本默认。L3
+          侧<strong className="text-cyan-500/88">到点批跑</strong>在开启开关后，按你选的「每日一次」或「每小时定点」各
+          <strong className="text-cyan-500/88">触发 1 轮</strong>，日志走「定时流」到本 MIND
+          STREAM。进程侧日志也搜
+          <code className="text-cyan-500/80">[k11_unified_smoke_scheduler]</code>。定时关飞书可设{" "}
+          <code className="text-cyan-500/80">K11_SCHEDULED_SMOKE_NO_LARK=1</code>。
         </p>
         <div className="flex flex-col gap-3 border-t border-cyan-500/15 pt-4">
           <div className="text-xs font-medium text-cyan-500/90">⏲️ 每日统合冒烟（北京时间）</div>
           <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-xs text-cyan-600/90" title="北京时，整点/任意分钟，到点在本机 L3 顺序执行上列轮次（无 SSE）">
+            <label className="flex flex-col gap-1 text-xs text-cyan-600/90" title="「时」在每日一次模式下用；开「每小时定点」时仅「分」参与每整点对齐。到点每次触发 1 轮，不读上方手动脉冲轮次。">
               时
               <input
                 type="number"
@@ -770,8 +772,8 @@ export function K11UnifiedSmokeTest() {
           {displayLogs.length === 0 && !l3OrRun && logTab === "unified" && (
             <div className="text-cyan-700/65">
               本页为<strong className="text-cyan-500/85">统合全量</strong>、<strong className="text-cyan-500/85">游戏开门冒烟</strong>
-              与定时批跑相关日志。点「启动统合冒烟」或「游戏模块开门冒烟」后会有探测 L3 行与 SSE；定时任务在开启且到点时由 L3
-              写入（见上方面板说明）。可用右侧标签切到
+              与「定时到点流」的合并区（上方先行）。点「启动统合冒烟」走手动脉冲
+              SSE；开「到点批跑」后，开关/到点/脚本输出会经定时 SSE 与上方说明一并出现在此。可用右侧标签切到
               <strong className="text-violet-400/85"> 游戏状态机 </strong>查看另一路输出。
             </div>
           )}

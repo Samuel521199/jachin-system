@@ -21,7 +21,7 @@ K11 平台冒烟 · 统合版（单次 CDP 会话顺序执行：P0 八条 + P1 �
 - 可选：``K11_SMOKE_LARK_TABLE_ID`` / ``K11_SMOKE_LARK_SHEET_ID``（子表 id）
 - 加 ``--no-lark-report`` 可不发飞书、不同步表格；加 ``--write-local-xlsx`` 才写入 ``~/Downloads/K11平台测试用例.xlsx``（需 ``openpyxl``）。
 - 群通知卡片样式在 ``scripts/k11_lark_smoke_report.send_k11_smoke_lark_notification``：原生 table 三列（测试项目 / 结果 / 备注），失败时降级 lark_md/纯文本。
-- 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」并入结果；随后（除非 ``--skip-game-open-smoke``）在同一 CDP 页签上跑 ``test_k11_game_open_smoke`` 的 herontest 五款游戏开门探活，**追加行**到同一 ``results``，与前面用例一并写入飞书表并打在**同一张** Lark 消息卡片表格中。
+- 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」并入结果；随后（除非 ``--skip-game-open-smoke``）在同一 CDP 页签上跑 ``test_k11_game_open_smoke`` 的四款游戏开门探活，**追加行**到同一 ``results``，与前面用例一并写入飞书表并打在**同一张** Lark 消息卡片表格中。
   随 L3 侧车 / ``l3_node.exe`` 跑统合时**禁止** ``l3_node.exe 某.py``（引导器不会当解释器），须用 ``--jachin-k11-p2-compat-subprocess`` 子命令（与 ``l3_node/http_server`` 一致）。
 
 行为对齐：P0/P1/扩展/弱网各段逻辑与对应单脚本一致（含 P0 Play Now 默认**不点击**）。
@@ -64,7 +64,7 @@ except ImportError:
 except OSError:
     pass
 
-DEFAULT_TARGET = "https://www.herontest.xin/"
+DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 # 与 ``scripts/k11_lark_smoke_report`` 中默认知识表一致；环境变量/CLI 可覆盖
 K11_DEFAULT_LARK_WIKI_URL = (
@@ -226,7 +226,6 @@ UNIFIED_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
     "game_open_infinity_9_ball": "Infinity 9 Ball",
     "game_open_color_blitz_social": "Color Blitz Social",
     "game_open_royal_pusoy": "Royal Pusoy",
-    "game_open_drama_crush": "Drama Crush",
 }
 
 _XLSX_REMARK_MAX_LEN = 32000
@@ -283,7 +282,7 @@ def _run_p2_only_compat_subprocess(
             "--json-out",
             str(json_path),
             "--target-url",
-            (target_url or "").strip() or "https://www.herontest.xin/",
+            (target_url or "").strip() or "https://www.kalaroko.com/",
         ]
         if headless:
             passthrough.append("--headless")
@@ -4271,7 +4270,7 @@ def main() -> int:
     ap.add_argument(
         "--skip-game-open-smoke",
         action="store_true",
-        help="不在浏览器兼容之后跑 test_k11_game_open_smoke（herontest 五款游戏开门探活）",
+        help="不在浏览器兼容之后跑 test_k11_game_open_smoke（四款游戏开门探活）",
     )
     ap.add_argument(
         "--browser-compat-headless",

@@ -1,14 +1,14 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-K11 平台冒烟 · 6 款游戏状态机轻量测（大厅扩展包：Tongits + 五款休闲/社交）
+K11 平台冒烟 · 5 款游戏状态机轻量测（大厅扩展包：Tongits + 四款休闲/社交）
 
 **与** ``test_k11_smoke_games_state_machine_playwright.py`` **同源实现**（import 后改游戏表与场景），
 对齐《K11_平台冒烟测试用例》P0 行 42-43：可运行性 + 金币粗测。
 
-本清单（6 款）：
+本清单（5 款）：
   Tongits King · Bingo Showdown · Infinity 9 Ball · Color Blitz Social ·
-  Royal Pusoy · Drama Crush
+  Royal Pusoy
 
 飞书完成通知卡片：与母脚本相同 ``send_k11_smoke_lark_notification``（``--no-lark-report`` 可关）。
 
@@ -60,7 +60,6 @@ SIX_CARD_GAME_ORDER: tuple[str, ...] = (
     "infinity_9_ball",
     "color_blitz_social",
     "royal_pusoy",
-    "drama_crush",
 )
 
 SIX_CARD_LOBBY_DISPLAY: dict[str, str] = {
@@ -69,7 +68,6 @@ SIX_CARD_LOBBY_DISPLAY: dict[str, str] = {
     "infinity_9_ball": "Infinity 9 Ball",
     "color_blitz_social": "Color Blitz Social",
     "royal_pusoy": "Royal Pusoy",
-    "drama_crush": "Drama Crush",
 }
 
 # 单局「智能等待」上限的每款默认秒数（与母脚本同键 GAME_DURATION_SEC）
@@ -79,7 +77,6 @@ SIX_CARD_DURATION_SEC: dict[str, int] = {
     "infinity_9_ball": 95,
     "color_blitz_social": 95,
     "royal_pusoy": 95,
-    "drama_crush": 95,
 }
 
 _SCHEMA_TAG = "k11_smoke_state_machine_six_card/v1"
@@ -109,7 +106,7 @@ def _tongits_scenario_from_mcp() -> dict[str, Any]:
     raise RuntimeError("KALAROKO_DEFAULT_SCENARIOS 中缺少 tongits_king")
 
 
-def _extra_five_scenarios(target_url: str) -> dict[str, dict[str, Any]]:
+def _extra_four_scenarios(target_url: str) -> dict[str, dict[str, Any]]:
     """
     与 ``test_k11_extra_games_shell_smoke_playwright.EXTRA_GAMES_SCENARIOS`` 同形；
     start_url 在运行时可被 home 覆盖。
@@ -155,16 +152,6 @@ def _extra_five_scenarios(target_url: str) -> dict[str, dict[str, Any]]:
             "wait_until": "domcontentloaded",
             "timeout_ms": 22_000,
         },
-        "drama_crush": {
-            "name": "drama_crush",
-            "start_url": target_url,
-            "click_selector": r"text=/Drama\s*Crush/i",
-            "prefer_last_on_ambiguous_entry": True,
-            "entry_wait_until": "domcontentloaded",
-            "click_timeout_ms": 9000,
-            "wait_until": "domcontentloaded",
-            "timeout_ms": 22_000,
-        },
     }
 
 
@@ -172,7 +159,7 @@ def _patch_state_machine_module(sm: Any, *, default_target: str) -> None:
     """覆写母脚本全局表，使 _run_one_game / argparse 使用本清单。"""
     scen_map: dict[str, dict[str, Any]] = {}
     scen_map["tongits_king"] = _tongits_scenario_from_mcp()
-    for k, v in _extra_five_scenarios(default_target).items():
+    for k, v in _extra_four_scenarios(default_target).items():
         scen_map[k] = v
 
     orig_sf = sm._scenario_for_game
@@ -211,7 +198,7 @@ def _maybe_bump_json_schema(args: argparse.Namespace) -> None:
 def _build_parser(sm: Any) -> argparse.ArgumentParser:
     g0 = SIX_CARD_GAME_ORDER[0]
     ap = argparse.ArgumentParser(
-        description="K11 状态机轻量 6 款（Tongits + Bingo/9Ball/Blitz/Pusoy/Drama）可运行 + 金币"
+        description="K11 状态机轻量 5 款（Tongits + Bingo/9Ball/Blitz/Pusoy）可运行 + 金币"
     )
     ap.add_argument("--target-url", default=sm.DEFAULT_TARGET)
     ap.add_argument("--cdp-http", default="")
@@ -277,7 +264,7 @@ def main() -> int:
     ap = _build_parser(sm)
     args = ap.parse_args()
     print(
-        "———————— K11 状态机 · 6 款（Tongits + 扩展五款）————————",
+        "———————— K11 状态机 · 5 款（Tongits + 扩展四款）————————",
         flush=True,
     )
     print("游戏: " + " · ".join(SIX_CARD_LOBBY_DISPLAY[g] for g in SIX_CARD_GAME_ORDER), flush=True)

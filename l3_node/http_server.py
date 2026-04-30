@@ -1127,10 +1127,12 @@ async def _handle_k11_game_open_smoke_stream(request) -> "aiohttp.web.StreamResp
     if err is not None:
         return err
     assert params is not None
-    _target_url, _cdp_http, verbose, no_lark, _headless = params
+    target_url, _cdp_http, verbose, no_lark, _headless = params
     single_game = (request.query.get("single_game", "") or "").strip()
 
     passthrough: list[str] = []
+    if target_url:
+        passthrough.extend(["--target-url", target_url])
     if verbose:
         passthrough.append("-v")
     if no_lark:

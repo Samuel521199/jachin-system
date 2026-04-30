@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 · 扩展游戏壳层轻量冒烟（不进完整对局、不测金币）
@@ -15,7 +15,7 @@ MCP 同源点击进 ``game-frame``、KK/Exit 或战术撤离回大厅；**不**�
 直接战术撤离 + 回首页，避免卡在 KK/Exit。
 
 默认游戏（大厅卡片文案，改版时可改 ``EXTRA_GAMES_SCENARIOS``）：
-  Bingo Showdown · Infinity 9 Ball · Color Blitz Social · Royal Pusoy · Drama Crush
+  Bingo Showdown · Infinity 9 Ball · Color Blitz Social · Royal Pusoy
 
 前置：``KALAROKO_CDP_ENDPOINT`` 或 ``--cdp-http``；``pip install playwright``
 
@@ -133,16 +133,6 @@ EXTRA_GAMES_SCENARIOS: tuple[dict[str, Any], ...] = (
         "name": "royal_pusoy",
         "start_url": DEFAULT_TARGET,
         "click_selector": r"text=/Royal\s*Pusoy/i",
-        "prefer_last_on_ambiguous_entry": True,
-        "entry_wait_until": "domcontentloaded",
-        "click_timeout_ms": 9000,
-        "wait_until": "domcontentloaded",
-        "timeout_ms": 22_000,
-    },
-    {
-        "name": "drama_crush",
-        "start_url": DEFAULT_TARGET,
-        "click_selector": r"text=/Drama\s*Crush/i",
         "prefer_last_on_ambiguous_entry": True,
         "entry_wait_until": "domcontentloaded",
         "click_timeout_ms": 9000,

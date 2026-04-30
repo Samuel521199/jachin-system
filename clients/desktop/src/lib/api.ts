@@ -1221,6 +1221,9 @@ export async function resolveL3MonitorApiUrl(apiPath: string): Promise<string> {
   return `${base}${p}`;
 }
 
+/** L3 控制台 K11 冒烟默认测试站（与 SSE `target_url` 查询参数一致，可被 opts.targetUrl 覆盖） */
+export const K11_SMOKE_DEFAULT_TARGET_URL = "https://www.kalaroko.com/";
+
 /** K11 统合平台冒烟（Playwright）SSE，base 与 Kalaroko 巡检一致 */
 export function getK11UnifiedSmokeStreamUrl(opts?: {
   targetUrl?: string;
@@ -1229,7 +1232,7 @@ export function getK11UnifiedSmokeStreamUrl(opts?: {
   noLarkReport?: boolean;
 }): string {
   const sp = new URLSearchParams();
-  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
   if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
@@ -1254,7 +1257,7 @@ export function getK11P2CompatOnlyStreamUrl(opts?: {
   headless?: boolean;
 }): string {
   const sp = new URLSearchParams();
-  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
   if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
@@ -1339,7 +1342,7 @@ export async function getK11UnifiedSmokeStreamUrlAsync(opts?: {
   interval?: number;
 }): Promise<string> {
   const sp = new URLSearchParams();
-  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
   if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
@@ -1362,7 +1365,7 @@ export async function getK11P2CompatOnlyStreamUrlAsync(opts?: {
   interval?: number;
 }): Promise<string> {
   const sp = new URLSearchParams();
-  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
   if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
@@ -1385,7 +1388,7 @@ export async function getK11GamesStateMachineSmokeStreamUrlAsync(opts?: {
   interval?: number;
 }): Promise<string> {
   const sp = new URLSearchParams();
-  if (opts?.targetUrl) sp.set("target_url", opts.targetUrl);
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
   if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
@@ -1399,11 +1402,13 @@ export async function getK11GamesStateMachineSmokeStreamUrlAsync(opts?: {
 
 /** K11 游戏模块开门冒烟 SSE：执行 test_k11_game_open_smoke.py */
 export async function getK11GameOpenSmokeStreamUrlAsync(opts?: {
+  targetUrl?: string;
   verbose?: boolean;
   noLarkReport?: boolean;
   singleGame?: string;
 }): Promise<string> {
   const sp = new URLSearchParams();
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
   if (opts?.verbose) sp.set("verbose", "1");
   if (opts?.noLarkReport) sp.set("no_lark_report", "1");
   if (opts?.singleGame) sp.set("single_game", opts.singleGame);

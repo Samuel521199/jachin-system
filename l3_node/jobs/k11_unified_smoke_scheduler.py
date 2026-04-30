@@ -1,10 +1,11 @@
 """
-K11 统合平台冒烟 — 按北京时间调度（多轮次 + 轮次间隔，与控制台配置一致）。
+K11 统合平台冒烟 — 按北京时间调度（APScheduler + CronTrigger）。
 
-- **每日一次**：在配置的「时:分」执行一轮（多子进程轮次仍由 runs/interval 控制）。
-- **每小时定点**（状态 ``hourly_recurring=true``）：自每个整点小时的该「分」执行（与 cron ``* * MM`` 对齐，``时`` 仍保存供切回每日模式时使用）。
+- **到点每触发 1 轮子进程**（**不**用状态里的 ``runs``/``interval_sec``；二项**仅**供控制台「手动脉冲 / 本页统合 SSE」用）。
+- **每日一次**：北京 ``时:分`` 各触发 1 轮。
+- **每小时定点**（``hourly_recurring=true``）：自每个整点小时对齐「分」触发 1 轮；``时`` 仍落盘，切回「每日一次」时再用。
 
-状态持久化 ``k11_unified_smoke_scheduler_state.json``；L3 重启后 ``init_k11_unified_smoke_auto_start()`` 可恢复。
+状态持久化 ``k11_unified_smoke_scheduler_state.json``；L3 重启后 ``init_k11_unified_smoke_auto_start()`` 可恢复。开关/重排时向 ``k11_scheduled_log_emit`` 写行，供桌面 MIND STREAM 与 ``/schedule/log-stream`` 可见。
 
 与 kalaroko_scheduler 独立，避免与巡检中枢调度混用。
 """
@@ -75,6 +76,26 @@ async def k11_scheduled_log_emit(obj: dict[str, Any]) -> None:
             pass
 
 
+def _try_emit_schedule_log(obj: dict[str, Any]) -> None:
+    """从 sync 的调度启停/重排 中推一条到 SSE 环形缓冲；无运行中事件循环则跳过。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        loop.create_task(k11_scheduled_log_emit(obj))
+    except Exception:
+        pass
+
+
+def _line_schedule_pattern(st: dict[str, Any]) -> str:
+    h = max(0, min(23, int(st.get("hour_beijing", DEFAULT_HOUR_BEIJING))))
+    m = max(0, min(59, int(st.get("minute_beijing", DEFAULT_MINUTE_BEIJING))))
+    if bool(st.get("hourly_recurring")):
+        return f"每小时 北京 *:{m:02d} 各触发 1 轮"
+    return f"每日 北京 {h:02d}:{m:02d} 到点 1 轮"
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -102,13 +123,16 @@ def _write_state(data: dict[str, Any]) -> None:
 
 async def k11_daily_unified_smoke_job() -> None:
     """
-    每日：按状态中的轮数 × 间隔，顺序执行 Playwright 脚本；stdout 广播到 /schedule/log-stream，供控制台 MIND STREAM 显示。
+    由 Cron 触发时执行：每触发 1 轮子进程（不读 state 的 runs/interval，二者仅用于手动脉冲/本页 SSE）。
+
+    子进程 stdout 广播到 /schedule/log-stream，供 MIND STREAM 显示。
     """
     st = _read_state()
     if st.get("enabled") is not True:
         return
-    runs = max(1, min(99, int(st.get("runs", DEFAULT_RUNS))))
-    interval_sec = max(0, min(3600, int(st.get("interval_sec", DEFAULT_INTERVAL_SEC))))
+    # 到点与「执行轮数 / 轮次间隔」手动脉冲解耦：定时侧固定单次执行
+    runs = 1
+    interval_sec = 0
     root = _repo_root()
     script = root / "scripts" / "test_k11_unified_platform_smoke_playwright.py"
     if not script.is_file():
@@ -124,9 +148,10 @@ async def k11_daily_unified_smoke_job() -> None:
         cmd_base.append("--no-lark-report")
 
     logger.info(
-        "[k11_unified_smoke_scheduler] 定时批跑开始: %d 轮, 间隔 %ds, script=%s",
+        "[k11_unified_smoke_scheduler] 定时批跑开始(每触发 %d 轮, 间 %ds): pattern=%s, script=%s",
         runs,
         interval_sec,
+        _line_schedule_pattern(st),
         script.name,
     )
     await k11_scheduled_log_emit(
@@ -210,7 +235,7 @@ def _cron_trigger_for_state(st: dict[str, Any]) -> Any:
     return CronTrigger(hour=hour_bj, minute=minute_bj, timezone=TZ_BEIJING)
 
 
-def start_scheduler() -> dict[str, Any]:
+def start_scheduler(*, from_persistent: bool = False) -> dict[str, Any]:
     global _scheduler, _scheduler_started
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -220,6 +245,11 @@ def start_scheduler() -> dict[str, Any]:
         st = _read_state()
         st["enabled"] = True
         _write_state(st)
+        _try_emit_schedule_log(
+            {
+                "line": f'[定时] 调度已在运行，已按当前配置重排：{ _line_schedule_pattern(st) }（到点每触发 1 轮，与「执行轮数/间隔」手动脉冲无关）。',
+            }
+        )
         return {"ok": True, "active": True, "message": "已在运行（已按当前配置重排）"}
 
     st = _read_state()
@@ -245,15 +275,27 @@ def start_scheduler() -> dict[str, Any]:
     _write_state(st)
     if hourly:
         logger.info(
-            "[k11_unified_smoke_scheduler] 已启动：每小时北京时间 *:%02d 执行 K11 统合冒烟（保存的时=%02d 供每日模式）",
+            "[k11_unified_smoke_scheduler] 已启动：每小时北京时间 *:%02d 到点 1 轮 K11 统合冒烟（保存的时=%02d 供每日模式）",
             minute_bj,
             hour_bj,
         )
     else:
         logger.info(
-            "[k11_unified_smoke_scheduler] 已启动：每日北京时间 %02d:%02d 执行 K11 统合冒烟",
+            "[k11_unified_smoke_scheduler] 已启动：每日北京时间 %02d:%02d 到点 1 轮 K11 统合冒烟",
             hour_bj,
             minute_bj,
+        )
+    if from_persistent:
+        _try_emit_schedule_log(
+            {
+                "line": f"[定时] L3 已从本机状态恢复并启用到点批跑：{_line_schedule_pattern(st)}（到点每触发 1 轮，与「执行轮数/间隔」手动脉冲无关）。",
+            }
+        )
+    else:
+        _try_emit_schedule_log(
+            {
+                "line": f'[定时] 已启用到点批跑：{ _line_schedule_pattern(st) }。输出见本页 MIND STREAM 定时流；到点每触发 1 轮。',
+            }
         )
     return {"ok": True, "active": True, "message": "已启动"}
 
@@ -276,12 +318,12 @@ def _reschedule_daily_if_needed() -> None:
         )
         if hourly:
             logger.info(
-                "[k11_unified_smoke_scheduler] 已重排：每小时 *:%02d（北京）",
+                "[k11_unified_smoke_scheduler] 已重排：每小时 *:%02d（北京）到点 1 轮",
                 minute_bj,
             )
         else:
             logger.info(
-                "[k11_unified_smoke_scheduler] 已重排每日任务：北京 %02d:%02d",
+                "[k11_unified_smoke_scheduler] 已重排每日任务：北京 %02d:%02d 到点 1 轮",
                 hour_bj,
                 minute_bj,
             )
@@ -297,6 +339,11 @@ def stop_scheduler() -> dict[str, Any]:
         st = _read_state()
         st["enabled"] = False
         _write_state(st)
+        _try_emit_schedule_log(
+            {
+                "line": "[定时] 已关闭到点批跑（调度器未在运行，仅同步状态）。",
+            }
+        )
         return {"ok": True, "active": False, "message": "未运行"}
 
     try:
@@ -309,6 +356,11 @@ def stop_scheduler() -> dict[str, Any]:
     st = _read_state()
     st["enabled"] = False
     _write_state(st)
+    _try_emit_schedule_log(
+        {
+            "line": "[定时] 已停止到点批跑。",
+        }
+    )
     return {"ok": True, "active": False, "message": "已停止"}
 
 
@@ -362,7 +414,7 @@ def init_k11_unified_smoke_auto_start() -> None:
         raw = SCHEDULER_STATE_FILE.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw else {}
         if data.get("enabled") is True:
-            start_scheduler()
+            start_scheduler(from_persistent=True)
             logger.info("[k11_unified_smoke_scheduler] 已从状态恢复定时（enabled=True）")
     except Exception as e:
         logger.warning("[k11_unified_smoke_scheduler] init 失败: %s", e)

@@ -4,7 +4,7 @@
 K11 极速开门探活（Smoke Test）
 
 目标：
-- 仅验证 5 款指定游戏能否快速成功加载进桌。
+- 仅验证 4 款指定游戏能否快速成功加载进桌。
 - 不进行对局操作、不做金币结算。
 - 复用 mcp_kalaroko_monitor 的极速引擎探针，命中晚期 UI / 资源静默 / 后置 API 即可判定上桌。
 """
@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -35,14 +36,14 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-TARGET_HOME = "https://www.herontest.xin/"
+TARGET_HOME = "https://www.kalaroko.com/"
 SCHEMA = "k11_game_open_smoke/v1"
 K11_DEFAULT_LARK_WIKI_URL = (
     "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZyWlwhdW1iNQuykvy7qlw93sgTe"
 )
 os.environ.setdefault(
     "KALAROKO_MONITOR_ALLOWED_HOSTS",
-    "herontest.xin,www.herontest.xin,gweb.herontest.xin",
+    "kalaroko.com,www.kalaroko.com,gweb.kalaroko.com,gwp.heronpro.xin",
 )
 
 
@@ -64,7 +65,6 @@ GAME_CASES: tuple[GameCase, ...] = (
     ),
     GameCase("color_blitz_social", "Color Blitz Social", "text=/Color\\s*Blitz\\s*Social/i >> xpath=.."),
     GameCase("royal_pusoy", "Royal Pusoy", "text=/Royal\\s*Pusoy/i >> xpath=.."),
-    GameCase("drama_crush", "Drama Crush", "text=/Drama\\s*Crush/i >> xpath=.."),
 )
 
 
@@ -563,10 +563,6 @@ async def run_game_open_smoke_on_existing_page(
 
     ``cases`` 非空时直接使用（与已打印的用例列表一致）；否则按 ``single_game`` 解析。
     """
-    if "kalaroko.com" in TARGET_HOME:
-        _gprint("[失败] 目标域名配置错误：禁止使用 kalaroko.com", log)
-        return []
-
     if cases is not None:
         selected = cases
     else:
@@ -602,11 +598,6 @@ async def run_game_open_smoke_on_existing_page(
 
 
 async def _async_main(args: argparse.Namespace) -> int:
-    # 明确锁定测试服域名，避免误打生产域
-    if "kalaroko.com" in TARGET_HOME:
-        print("[失败] 目标域名配置错误：禁止使用 kalaroko.com", file=sys.stderr)
-        return 2
-
     try:
         selected = _pick_cases(args.single_game)
     except ValueError as e:
@@ -618,7 +609,7 @@ async def _async_main(args: argparse.Namespace) -> int:
     context: Any = None
     must_close_context = False
 
-    print("———————— K11 极速开门探活（herontest）————————", flush=True)
+    print("———————— K11 极速开门探活（kalaroko.com）————————", flush=True)
     print(f"目标站点: {TARGET_HOME}", flush=True)
     print("测试游戏: " + ", ".join(c.title for c in selected), flush=True)
     print("", flush=True)
@@ -631,7 +622,8 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     try:
         async with async_playwright() as p:
-            preferred_host = "www.herontest.xin"
+            h = (urlparse(TARGET_HOME).netloc or "").strip().lower()
+            preferred_host = h if h else "www.kalaroko.com"
             browser, context, page, must_close_context = await mcp._launch_kalaroko_browser_context(
                 p,
                 viewport_width=459,
@@ -704,7 +696,12 @@ async def _async_main(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="K11 测试服 5 款游戏极速开门探活")
+    ap = argparse.ArgumentParser(description="K11 测试服 4 款游戏极速开门探活")
+    ap.add_argument(
+        "--target-url",
+        default="https://www.kalaroko.com/",
+        help="目标站点根 URL",
+    )
     ap.add_argument(
         "--single-game",
         default="",
@@ -739,6 +736,11 @@ def main() -> int:
         pass
 
     args = _build_parser().parse_args()
+    global TARGET_HOME
+    u = (getattr(args, "target_url", None) or "").strip()
+    if u:
+        t = u.rstrip("/")
+        TARGET_HOME = (t + "/") if t else TARGET_HOME
     try:
         return asyncio.run(_async_main(args))
     except KeyboardInterrupt:

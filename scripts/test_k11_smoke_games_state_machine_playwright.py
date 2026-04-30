@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 平台冒烟 · 6 款游戏状态机轻量测（独立脚本，不依赖已移除的 P0 key 长测）
@@ -57,11 +57,10 @@ except Exception:
 
 os.environ.setdefault(
     "KALAROKO_MONITOR_ALLOWED_HOSTS",
-    "kalaroko.com,www.kalaroko.com,gweb.kalaroko.com,gwp.heronpro.xin,"
-    "herontest.xin,www.herontest.xin,gweb.herontest.xin",
+    "kalaroko.com,www.kalaroko.com,gweb.kalaroko.com,gwp.heronpro.xin",
 )
 
-DEFAULT_TARGET = "https://www.herontest.xin/"
+DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 # 与 ``scripts/k11_lark_smoke_report.py`` / 统合冒烟脚本一致，用于飞书卡片内 Wiki 链接
 K11_DEFAULT_LARK_WIKI_URL = (

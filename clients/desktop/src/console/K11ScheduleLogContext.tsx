@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 订阅 L3 定时 K11 批跑 SSE，把行写入共享缓冲供 K11 页 MIND STREAM 展示，并在开始时刻发 Tauri 桌面通知。
  * 与手动「启动统合冒烟」的 EventSource 独立，挂在控制台整壳，不随子页卸载而丢失长连接。
  */
@@ -45,8 +45,11 @@ export function K11ScheduleLogProvider({ children }: { children: ReactNode }) {
               const iv = typeof data.interval_sec === "number" ? data.interval_sec : "?";
               const script = typeof data.script === "string" ? data.script : "smoke script";
               const ts = typeof data.ts === "number" ? data.ts : 0;
+              const oneShot = runs === 1;
               append(
-                `> [定时] 已按计划开始：共 ${String(runs)} 轮，轮次间隔 ${String(iv)} 秒（${script}）`
+                oneShot
+                  ? `> [定时] 到点已触发，执行 1 轮统合脚本（${script}）`
+                  : `> [定时] 已按计划开始：共 ${String(runs)} 轮，轮次间隔 ${String(iv)} 秒（${script}）`
               );
               const dedupeKey = `jachin_k11_sched_start_${ts.toFixed(0)}`;
               const isRecent = ts > 0 && Date.now() / 1000 - ts < 300;
@@ -61,7 +64,9 @@ export function K11ScheduleLogProvider({ children }: { children: ReactNode }) {
                     }
                     await sendNotification({
                       title: "K11 统合定时冒烟",
-                      body: `已开始：共 ${String(runs)} 轮，间隔 ${String(iv)} 秒。可在本页 MIND STREAM 查看输出。`,
+                      body: oneShot
+                        ? `到点已触发 1 轮。可在本页 MIND STREAM 查看输出。`
+                        : `已开始：共 ${String(runs)} 轮，间隔 ${String(iv)} 秒。可在本页 MIND STREAM 查看输出。`,
                     });
                   } catch {
                     /* 通知失败不阻断 */
