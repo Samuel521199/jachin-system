@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from l3_node.k11_subprocess_cli import build_k11_l3_subprocess_cmd as _k11_smoke_subprocess_cmd
 from l3_node.paths import (
     get_app_root,
     k11_game_open_smoke_script_path,
@@ -41,15 +42,6 @@ _k11_unified_smoke_user_abort: bool = False
 _HR_SKILL_IDS = (
     "jpp:com.jachin.hr.analyzer4",
 )
-
-
-def _k11_smoke_subprocess_cmd(sentinel: str, passthrough: list[str]) -> list[str]:
-    """frozen：``l3_node.exe <sentinel> ...``；开发：``python -m l3_node <sentinel> ...``。"""
-    import sys
-
-    if getattr(sys, "frozen", False):
-        return [sys.executable, sentinel, *passthrough]
-    return [sys.executable, "-m", "l3_node", sentinel, *passthrough]
 
 
 def _tools_to_skill_infos(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1156,12 +1148,33 @@ async def _handle_k11_game_open_smoke_stream(request) -> "aiohttp.web.StreamResp
 
 async def _handle_k11_unified_smoke_schedule_toggle(request) -> "aiohttp.web.Response":
     """POST /api/v1/k11-unified-smoke/schedule/toggle — JSON: enabled, hour_beijing?, minute_beijing?, runs?, interval_sec?, hourly_recurring?"""
+    from l3_node.k11_smoke_debug_log import (
+        k11_smoke_debug_init_once,
+        k11_smoke_debug_exc,
+        k11_smoke_debug_line,
+        k11_smoke_debug_mapping,
+    )
+
+    k11_smoke_debug_init_once()
+    k11_smoke_debug_line(
+        "POST schedule/toggle from=%s",
+        str(getattr(request, "remote", None) or request.headers.get("X-Real-IP") or "?"),
+    )
     try:
         body = await request.json() if request.body_exists else {}
     except Exception as e:
+        k11_smoke_debug_exc("schedule/toggle json", e)
         return _json_response({"ok": False, "error": f"JSON 解析失败: {e}"}, status=400)
+    try:
+        if isinstance(body, dict):
+            k11_smoke_debug_mapping("toggle json", body)
+        else:
+            k11_smoke_debug_line("toggle body (non-dict): %r", body)
+    except Exception:
+        pass
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
+        k11_smoke_debug_line("toggle 拒绝: enabled 非 bool")
         return _json_response({"ok": False, "error": "缺少布尔字段 enabled"}, status=400)
     try:
         from l3_node.jobs.k11_unified_smoke_scheduler import (
@@ -1169,6 +1182,7 @@ async def _handle_k11_unified_smoke_schedule_toggle(request) -> "aiohttp.web.Res
             scheduler_status,
         )
     except Exception as e:
+        k11_smoke_debug_exc("import k11_unified_smoke_scheduler", e)
         return _json_response({"ok": False, "error": str(e)}, status=500)
 
     hb = body.get("hour_beijing")
@@ -1181,15 +1195,21 @@ async def _handle_k11_unified_smoke_schedule_toggle(request) -> "aiohttp.web.Res
         hourly_recurring = hr
     elif hr is not None and str(hr).strip() != "":
         hourly_recurring = str(hr).lower() in ("1", "true", "yes", "on")
-    r = apply_k11_unified_smoke_schedule(
-        enabled=enabled,
-        hour_beijing=int(hb) if hb is not None else None,
-        minute_beijing=int(mb) if mb is not None else None,
-        runs=int(runs) if runs is not None else None,
-        interval_sec=int(iv) if iv is not None else None,
-        hourly_recurring=hourly_recurring,
-    )
+    try:
+        r = apply_k11_unified_smoke_schedule(
+            enabled=enabled,
+            hour_beijing=int(hb) if hb is not None else None,
+            minute_beijing=int(mb) if mb is not None else None,
+            runs=int(runs) if runs is not None else None,
+            interval_sec=int(iv) if iv is not None else None,
+            hourly_recurring=hourly_recurring,
+        )
+        k11_smoke_debug_line("apply_k11 result: %r", r)
+    except Exception as e:
+        k11_smoke_debug_exc("apply_k11_unified_smoke_schedule", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
     st = scheduler_status()
+    k11_smoke_debug_line("scheduler_status after toggle: %r", st)
     return _json_response({**r, "ok": True, **st})
 
 
@@ -1197,10 +1217,24 @@ async def _handle_k11_unified_smoke_schedule_status(request) -> "aiohttp.web.Res
     """GET /api/v1/k11-unified-smoke/schedule/status"""
     try:
         from l3_node.jobs.k11_unified_smoke_scheduler import scheduler_status
+        from l3_node.k11_smoke_debug_log import k11_smoke_debug_init_once, k11_smoke_debug_line
 
-        return _json_response({"ok": True, **scheduler_status()})
+        k11_smoke_debug_init_once()
+        k11_smoke_debug_line(
+            "GET schedule/status from=%s",
+            str(getattr(request, "remote", None) or request.headers.get("X-Real-IP") or "?"),
+        )
+        st = {**{"ok": True}, **scheduler_status()}
+        k11_smoke_debug_line("status payload: %r", st)
+        return _json_response(st)
     except Exception as e:
         logger.warning("[L3 HTTP] k11 smoke schedule status failed: %s", e)
+        try:
+            from l3_node.k11_smoke_debug_log import k11_smoke_debug_exc
+
+            k11_smoke_debug_exc("schedule_status", e)
+        except Exception:
+            pass
         return _json_response({"ok": False, "active": False, "error": str(e)}, status=500)
 
 
@@ -1214,6 +1248,17 @@ async def _handle_k11_unified_smoke_schedule_log_stream(request) -> "aiohttp.web
         )
     except Exception as e:
         return _json_response({"ok": False, "error": str(e)}, status=500)
+
+    try:
+        from l3_node.k11_smoke_debug_log import k11_smoke_debug_init_once, k11_smoke_debug_line
+
+        k11_smoke_debug_init_once()
+        k11_smoke_debug_line(
+            "GET schedule/log-stream (SSE) from=%s",
+            str(getattr(request, "remote", None) or request.headers.get("X-Real-IP") or "?"),
+        )
+    except Exception:
+        pass
 
     q = subscribe_k11_scheduled_log()
     response = _stream_response()

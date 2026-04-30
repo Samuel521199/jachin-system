@@ -21,6 +21,18 @@ from l3_node.paths import (
 )
 
 
+def build_k11_l3_subprocess_cmd(sentinel: str, passthrough: list[str]) -> list[str]:
+    """
+    构造 K11 Playwright 子进程命令行（与 ``l3_node.http_server`` 手动脉冲一致）。
+
+    PyInstaller onefile 下 ``sys.executable`` 为 ``l3_node.exe``，**禁止** ``exe path/to/script.py``（引导器不会当
+    Python 用）；须 ``l3_node.exe <sentinel> ...`` 或开发机 ``python -m l3_node <sentinel> ...``。
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, sentinel, *passthrough]
+    return [sys.executable, "-m", "l3_node", sentinel, *passthrough]
+
+
 def _bootstrap_k11_subprocess_env() -> None:
     """
     K11 子进程在 ``__main__`` 里会早于 ``merge_l3_dotenv_into_os`` 就 ``SystemExit``，

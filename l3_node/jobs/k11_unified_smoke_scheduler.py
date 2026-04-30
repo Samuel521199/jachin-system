@@ -15,12 +15,14 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from collections import deque
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from l3_node.k11_subprocess_cli import build_k11_l3_subprocess_cmd
+from l3_node.paths import get_app_root, k11_unified_smoke_script_path
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +98,6 @@ def _line_schedule_pattern(st: dict[str, Any]) -> str:
     return f"每日 北京 {h:02d}:{m:02d} 到点 1 轮"
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
 def _read_state() -> dict[str, Any]:
     if not SCHEDULER_STATE_FILE.is_file():
         return {}
@@ -133,19 +131,38 @@ async def k11_daily_unified_smoke_job() -> None:
     # 到点与「执行轮数 / 轮次间隔」手动脉冲解耦：定时侧固定单次执行
     runs = 1
     interval_sec = 0
-    root = _repo_root()
-    script = root / "scripts" / "test_k11_unified_platform_smoke_playwright.py"
+    root = get_app_root().resolve()
+    script = k11_unified_smoke_script_path()
     if not script.is_file():
-        logger.error("[k11_unified_smoke_scheduler] 缺少脚本: %s", script)
+        logger.error("[k11_unified_smoke_scheduler] 缺少统合冒烟脚本: %s", script)
         await k11_scheduled_log_emit(
             {"type": "error", "message": f"缺少脚本: {script}"}
         )
         return
 
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    cmd_base = [sys.executable, str(script), "-v"]
+    env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "JACHIN_APP_ROOT": str(root),
+    }
+    passthrough: list[str] = ["-v"]
     if str(os.environ.get("K11_SCHEDULED_SMOKE_NO_LARK", "")).lower() in ("1", "true", "yes", "on"):
-        cmd_base.append("--no-lark-report")
+        passthrough.append("--no-lark-report")
+    # frozen 下须 ``l3_node.exe --jachin-k11-unified-smoke-subprocess ...``，禁止 ``exe scripts/....py``（会拖垮主进程/临时目录）
+    cmd_base = build_k11_l3_subprocess_cmd("--jachin-k11-unified-smoke-subprocess", passthrough)
+    try:
+        from l3_node.k11_smoke_debug_log import k11_smoke_debug_init_once, k11_smoke_debug_line
+
+        k11_smoke_debug_init_once()
+        k11_smoke_debug_line(
+            "CRON 到点统合冒烟 | cmd=%r | cwd=%s | script=%s | pattern=%s",
+            cmd_base,
+            str(root),
+            str(script),
+            _line_schedule_pattern(st),
+        )
+    except Exception:
+        pass
 
     logger.info(
         "[k11_unified_smoke_scheduler] 定时批跑开始(每触发 %d 轮, 间 %ds): pattern=%s, script=%s",
@@ -189,6 +206,12 @@ async def k11_daily_unified_smoke_job() -> None:
         code = int(await proc.wait())
         if code != 0:
             all_ok = False
+        try:
+            from l3_node.k11_smoke_debug_log import k11_smoke_debug_line
+
+            k11_smoke_debug_line("定时子进程第 %d/%d 轮 exit_code=%s", i, runs, code)
+        except Exception:
+            pass
         await k11_scheduled_log_emit(
             {
                 "type": "scheduled_progress",

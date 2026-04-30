@@ -8,6 +8,7 @@ import { FlaskConical } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { useK11ScheduleLogLines } from "../K11ScheduleLogContext";
 import {
+  clearL3SkillsBaseUrlCache,
   getK11GameOpenSmokeStreamUrlAsync,
   getK11GamesStateMachineSmokeStreamUrlAsync,
   getK11UnifiedSmokeStreamUrlAsync,
@@ -69,8 +70,10 @@ export function K11UnifiedSmokeTest() {
   );
 
   const refreshScheduleStatus = useCallback(async () => {
-    try {
-      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/status");
+    const apply = async (bypass: boolean) => {
+      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/status", {
+        bypassCache: bypass,
+      });
       const res = await fetch(url);
       const data = (await res.json()) as {
         active?: boolean;
@@ -98,8 +101,16 @@ export function K11UnifiedSmokeTest() {
       if (typeof data.hourly_recurring === "boolean") {
         setHourlyRecurring(data.hourly_recurring);
       }
+    };
+    try {
+      await apply(false);
     } catch {
-      setSchedulerActive(false);
+      try {
+        clearL3SkillsBaseUrlCache();
+        await apply(true);
+      } catch {
+        setSchedulerActive(false);
+      }
     }
   }, []);
 
@@ -124,8 +135,13 @@ export function K11UnifiedSmokeTest() {
 
   const handleStop = useCallback(async () => {
     try {
-      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/stop");
-      const res = await fetch(url, { method: "POST" });
+      let url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/stop", { bypassCache: true });
+      let res = await fetch(url, { method: "POST" });
+      if (!res.ok) {
+        clearL3SkillsBaseUrlCache();
+        url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/stop", { bypassCache: true });
+        res = await fetch(url, { method: "POST" });
+      }
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         active_child?: boolean;
@@ -157,23 +173,37 @@ export function K11UnifiedSmokeTest() {
     async (enabled: boolean) => {
       setScheduleLoading(true);
       try {
-        const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle");
         const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
         const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
         const h = Math.max(0, Math.min(23, Math.floor(hourBeijing) || DEFAULT_SMOKE_HOUR_BEIJING));
         const m = Math.max(0, Math.min(59, Math.floor(minuteBeijing) || 0));
-        const res = await fetch(url, {
+        const body = JSON.stringify({
+          enabled,
+          hour_beijing: h,
+          minute_beijing: m,
+          runs: r,
+          interval_sec: i,
+          hourly_recurring: hourlyRecurring,
+        });
+        let url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle", {
+          bypassCache: true,
+        });
+        let res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            enabled,
-            hour_beijing: h,
-            minute_beijing: m,
-            runs: r,
-            interval_sec: i,
-            hourly_recurring: hourlyRecurring,
-          }),
+          body,
         });
+        if (!res.ok) {
+          clearL3SkillsBaseUrlCache();
+          url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle", {
+            bypassCache: true,
+          });
+          res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          });
+        }
         const data = (await res.json().catch(() => ({}))) as {
           enabled?: boolean;
           active?: boolean;
@@ -199,23 +229,37 @@ export function K11UnifiedSmokeTest() {
     setSaveScheduleLoading(true);
     setScheduleSaveBanner(null);
     try {
-      const url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle");
       const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
       const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
       const h = Math.max(0, Math.min(23, Math.floor(hourBeijing) || DEFAULT_SMOKE_HOUR_BEIJING));
       const m = Math.max(0, Math.min(59, Math.floor(minuteBeijing) || 0));
-      const res = await fetch(url, {
+      const body = JSON.stringify({
+        enabled: schedulerActive,
+        hour_beijing: h,
+        minute_beijing: m,
+        runs: r,
+        interval_sec: i,
+        hourly_recurring: hourlyRecurring,
+      });
+      let url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle", {
+        bypassCache: true,
+      });
+      let res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          enabled: schedulerActive,
-          hour_beijing: h,
-          minute_beijing: m,
-          runs: r,
-          interval_sec: i,
-          hourly_recurring: hourlyRecurring,
-        }),
+        body,
       });
+      if (!res.ok) {
+        clearL3SkillsBaseUrlCache();
+        url = await getL3MonitorApiUrlAsync("/api/v1/k11-unified-smoke/schedule/toggle", {
+          bypassCache: true,
+        });
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+      }
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; active?: boolean };
       if (res.ok && data.ok !== false) {
         if (typeof data.active === "boolean") {

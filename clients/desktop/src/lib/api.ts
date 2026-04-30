@@ -1215,10 +1215,21 @@ export function getL3MonitorApiUrl(apiPath: string): string {
 }
 
 /** 异步解析 REST 完整 URL（与 ``resolveKalarokoMonitorStreamUrl`` 同源探测，推荐巡检页使用） */
-export async function resolveL3MonitorApiUrl(apiPath: string): Promise<string> {
-  const base = await getL3SkillsBaseUrl();
+export async function resolveL3MonitorApiUrl(
+  apiPath: string,
+  opts?: { bypassCache?: boolean }
+): Promise<string> {
+  const base = await getL3SkillsBaseUrl(opts);
   const p = apiPath.startsWith("/") ? apiPath : `/${apiPath}`;
   return `${base}${p}`;
+}
+
+/** 巡检/冒烟 REST：先解析 L3 base 再拼 path；``bypassCache`` 避免缓存到已失效端口（定时保存/开关建议开） */
+export async function getL3MonitorApiUrlAsync(
+  apiPath: string,
+  opts?: { bypassCache?: boolean }
+): Promise<string> {
+  return resolveL3MonitorApiUrl(apiPath, opts);
 }
 
 /** L3 控制台 K11 冒烟默认测试站（与 SSE `target_url` 查询参数一致，可被 opts.targetUrl 覆盖） */
@@ -1275,11 +1286,17 @@ export function getK11P2CompatOnlyStreamUrl(opts?: {
 }
 
 /**
- * 获取 L3 HTTP base（与 invokeL3Skills / 巡检 SSE 同源）。
- * 未配 ``VITE_L3_SKILLS_URL`` 时：并行短探测 + 成功后短期缓存；不依赖该变量即可使用。
- *
- * @param opts.bypassCache 为 true 时跳过缓存（例如 L3 刚重启换端口）
+ * 判断构建时 ``VITE_L3_SKILLS_URL`` 是否像本机 L3（不可达时可回退端口扫描）
  */
+function isLocalL3BaseUrl(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    const h = u.hostname.toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "[::1]" || h === "::1";
+  } catch {
+    return true;
+  }
+}
 export async function getL3SkillsBaseUrl(opts?: { bypassCache?: boolean }): Promise<string> {
   const path = "/api/v3/skills";
   const now = Date.now();
@@ -1287,11 +1304,21 @@ export async function getL3SkillsBaseUrl(opts?: { bypassCache?: boolean }): Prom
     return _l3BaseUrlCache.url;
   }
 
-  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
-  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
-    const u = envUrl.replace(/\/$/, "");
-    _l3BaseUrlCache = { url: u, until: now + L3_BASE_CACHE_MS };
-    return u;
+  const envRaw = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envRaw && String(envRaw).includes("://")) {
+    const u = String(envRaw).replace(/\/$/, "");
+    if (await fetchL3ProbeOk(`${u}${path}`)) {
+      _l3BaseUrlCache = { url: u, until: now + L3_BASE_CACHE_MS };
+      return u;
+    }
+    if (isLocalL3BaseUrl(u)) {
+      // 本机环境变量端口与真实 L3 不一致（如打包固定 18991 但 L3 落在 18990）：继续走下方扫描
+    } else {
+      _l3BaseUrlCache = null;
+      throw new Error(
+        `L3 不可达（VITE_L3_SKILLS_URL=${u}），请检查远程 L3 或网络`
+      );
+    }
   }
   if (L3_DEV_PROXY) {
     const url = `${L3_DEV_PROXY}${path}`;
@@ -1325,11 +1352,6 @@ export function clearL3SkillsBaseUrlCache(): void {
 /** 与 ``getL3SkillsBaseUrl`` 等价；K11 / 旧调用兼容别名 */
 export async function getL3HttpBaseUrl(): Promise<string> {
   return getL3SkillsBaseUrl();
-}
-
-/** 巡检/冒烟 REST：先解析 L3 base 再拼 path（等同 ``resolveL3MonitorApiUrl``，供 K11 控制台） */
-export async function getL3MonitorApiUrlAsync(apiPath: string): Promise<string> {
-  return resolveL3MonitorApiUrl(apiPath);
 }
 
 /** K11 统合冒烟 SSE：先探测 L3 端口再拼 URL */
