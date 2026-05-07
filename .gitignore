@@ -38,6 +38,9 @@ ENV/
 # Environment variables
 .env
 .env.txt
+# FB Nexus 飞书密钥（与 scripts/fb_report_nexus.env.example 配套）
+scripts/fb_report_nexus.env
+
 .env.local
 .env.*.local
 
