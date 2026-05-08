@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 平台冒烟 · P2：浏览器兼容 + 弱网体验
@@ -25,7 +25,7 @@ K11 平台冒烟 · P2：浏览器兼容 + 弱网体验
 
 用法（仓库根）：
   python scripts/test_k11_p2_compat_weaknet_playwright.py
-  python scripts/test_k11_p2_compat_weaknet_playwright.py --target-url https://www.herontest.xin/
+  python scripts/test_k11_p2_compat_weaknet_playwright.py --target-url https://www.kalaroko.com/
   python scripts/test_k11_p2_compat_weaknet_playwright.py --only-weak
   python scripts/test_k11_p2_compat_weaknet_playwright.py --only-compat --headless
 
@@ -73,7 +73,7 @@ except ImportError:
 except OSError:
     pass
 
-DEFAULT_TARGET = "https://www.herontest.xin/"
+DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 # 与 ``scripts/k11_lark_smoke_report`` 及统合版脚本同链（环境变量/CLI 可覆盖）
 K11_DEFAULT_LARK_WIKI_URL = (
@@ -1264,7 +1264,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="K11 P2：浏览器自启兼容 + 弱网 CDP（与 K11_平台冒烟测试用例 55-57 行对应）"
     )
-    ap.add_argument("--target-url", default=DEFAULT_TARGET, help="验收 URL，默认 herontest")
+    ap.add_argument("--target-url", default=DEFAULT_TARGET, help="验收 URL，默认 www.kalaroko.com")
     ap.add_argument(
         "--cdp-http", default="", help="覆盖 KALAROKO_CDP_ENDPOINT（仅弱网段 connect_over_cdp）"
     )

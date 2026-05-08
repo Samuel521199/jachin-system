@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -22,7 +22,6 @@ from l3_node.k11_subprocess_cli import build_k11_l3_subprocess_cmd as _k11_smoke
 from l3_node.paths import (
     get_app_root,
     k11_game_open_smoke_script_path,
-    k11_games_state_machine_smoke_script_path,
     k11_p2_compat_weaknet_script_path,
     k11_unified_smoke_script_path,
     kalaroko_default_e2e_script_path,
@@ -1036,63 +1035,6 @@ async def _handle_k11_p2_compat_only_stream(request) -> "aiohttp.web.StreamRespo
     )
 
 
-async def _handle_k11_games_state_machine_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
-    """GET /api/v1/k11-games-state-machine-smoke/stream — ``test_k11_smoke_games_state_machine_playwright.py``，SSE 行日志。"""
-    root = get_app_root()
-    script = k11_games_state_machine_smoke_script_path()
-    if not script.is_file():
-        return _json_response(
-            {
-                "ok": False,
-                "error": f"缺少 K11 游戏状态机冒烟脚本: {script}",
-            },
-            status=500,
-        )
-
-    params, err = _k11_smoke_stream_parse_query(request)
-    if err is not None:
-        return err
-    assert params is not None
-    target_url, cdp_http, verbose, no_lark, _head = params
-
-    passthrough: list[str] = []
-    if target_url:
-        passthrough.extend(["--target-url", target_url])
-    if cdp_http:
-        passthrough.extend(["--cdp-http", cdp_http])
-    if verbose:
-        passthrough.append("-v")
-    if no_lark:
-        passthrough.append("--no-lark-report")
-
-    cmd: list[str] = _k11_smoke_subprocess_cmd(
-        "--jachin-k11-games-state-machine-subprocess", passthrough
-    )
-
-    try:
-        runs = int(request.query.get("runs", "1"))
-    except ValueError:
-        runs = 1
-    try:
-        interval_sec = int(request.query.get("interval", "0"))
-    except ValueError:
-        interval_sec = 0
-
-    start_msg = f"[K11] 游戏状态机冒烟已启动: {script.name}"
-    if runs > 1:
-        start_msg += f"（共 {runs} 轮，间隔 {interval_sec}s）"
-
-    return await _k11_smoke_subprocess_sse_stream(
-        request,
-        root,
-        cmd,
-        start_msg,
-        "k11 games state machine smoke",
-        run_count=runs,
-        interval_between_runs_sec=interval_sec,
-    )
-
-
 async def _handle_k11_game_open_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
     """GET /api/v1/k11-game-open-smoke/stream — 执行 ``scripts/test_k11_game_open_smoke.py``，SSE 行日志。"""
     root = get_app_root()
@@ -1324,6 +1266,100 @@ async def _handle_k11_unified_smoke_stop(request) -> "aiohttp.web.Response":
             "message": "已发送停止信号",
         }
     )
+
+
+async def _handle_cron_thinker_ingest_release(request) -> "aiohttp.web.Response":
+    """POST /api/v1/cron-thinker/ingest-release-announcement — 邮件转发原文等，对齐飞书公告规则。"""
+    tok = (os.environ.get("JACHIN_CRON_THINKER_INGEST_TOKEN") or "").strip()
+    if tok:
+        hdr = (request.headers.get("X-Jachin-Cron-Thinker-Token") or "").strip()
+        if hdr != tok:
+            return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "error": "body must be a json object"}, status=400)
+    text = body.get("text")
+    if text is None or not str(text).strip():
+        return _json_response({"ok": False, "error": "text required"}, status=400)
+    try:
+        from core.cron_thinker import _audit_log, _audit_trunc, feed_release_announcement_text
+
+        text_s = str(text).strip()
+        hdr_s = (request.headers.get("X-Jachin-Cron-Thinker-Token") or "").strip()
+        _audit_log(
+            "http_ingest_release",
+            remote=request.remote,
+            path=str(request.path_qs),
+            text_char_len=len(text_s),
+            text_head=_audit_trunc(text_s, 6000),
+            auth_configured=bool(tok),
+            auth_ok=(not tok or hdr_s == tok),
+        )
+        r = feed_release_announcement_text(text_s, source="http")
+    except Exception as e:
+        logger.warning("[L3 HTTP] cron_thinker ingest: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response(r, status=200)
+
+
+async def _handle_cron_thinker_release_smoke_status(request) -> "aiohttp.web.Response":
+    """GET /api/v1/cron-thinker/release-smoke-status — 发版次日冒烟调度摘要。"""
+    try:
+        from core.cron_thinker import cron_thinker_scheduler_status
+
+        return _json_response(cron_thinker_scheduler_status())
+    except Exception as e:
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_cron_thinker_bios_settings_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/cron-thinker/bios-settings — 发版公告生物钟（控制台）当前配置。"""
+    try:
+        from core.cron_thinker import _mail_poll_enabled, _release_smoke_enabled, load_bios_settings
+
+        return _json_response(
+            {
+                "ok": True,
+                "settings": load_bios_settings(),
+                "env": {
+                    "release_smoke": _release_smoke_enabled(),
+                    "mail_poll": _mail_poll_enabled(),
+                },
+            }
+        )
+    except Exception as e:
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_cron_thinker_bios_settings_post(request) -> "aiohttp.web.Response":
+    """POST /api/v1/cron-thinker/bios-settings — 合并保存生物钟开关/第几日/时刻，并重挂轮询（可选）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "error": "body must be a json object"}, status=400)
+    try:
+        from core.cron_thinker import _audit_log, apply_bios_runtime, save_bios_settings
+
+        keys = sorted(str(k) for k in body.keys())
+        apply_raw = str(body.get("apply_runtime", "1")).strip().lower()
+        ar = apply_raw not in ("0", "false", "no", "off")
+        _audit_log(
+            "http_bios_settings_post",
+            remote=request.remote,
+            body_keys=keys,
+            apply_runtime=ar,
+        )
+        saved = save_bios_settings(body)
+        rt = apply_bios_runtime() if ar else {"ok": True, "skipped_runtime": True}
+        return _json_response({"ok": True, "settings": saved, "runtime": rt})
+    except Exception as e:
+        logger.warning("[L3 HTTP] cron_thinker bios-settings POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
 
 
 async def _handle_health(request) -> "aiohttp.web.Response":
@@ -1973,7 +2009,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
             r = await handler(request)
         r.headers["Access-Control-Allow-Origin"] = "*"
         r.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-        r.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Jachin-Safety-Lock-Token"
+        r.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, X-Jachin-Safety-Lock-Token, X-Jachin-Cron-Thinker-Token"
+        )
         return r
 
     app = aiohttp.web.Application(middlewares=[cors_middleware])
@@ -1992,15 +2030,25 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v1/monitor/schedule/status", _handle_monitor_schedule_status)
     app.router.add_get("/api/v1/k11-unified-smoke/stream", _handle_k11_unified_smoke_stream)
     app.router.add_get("/api/v1/k11-p2-compat-only/stream", _handle_k11_p2_compat_only_stream)
-    app.router.add_get(
-        "/api/v1/k11-games-state-machine-smoke/stream",
-        _handle_k11_games_state_machine_smoke_stream,
-    )
     app.router.add_get("/api/v1/k11-game-open-smoke/stream", _handle_k11_game_open_smoke_stream)
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/status", _handle_k11_unified_smoke_schedule_status)
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/log-stream", _handle_k11_unified_smoke_schedule_log_stream)
     app.router.add_post("/api/v1/k11-unified-smoke/schedule/toggle", _handle_k11_unified_smoke_schedule_toggle)
     app.router.add_post("/api/v1/k11-unified-smoke/stop", _handle_k11_unified_smoke_stop)
+    try:
+        from l3_node.gameqa_http import register_gameqa_routes
+
+        register_gameqa_routes(app)
+    except Exception as e:
+        logger.warning("[L3 HTTP] GameQA routes skipped: %s", e)
+    app.router.add_post(
+        "/api/v1/cron-thinker/ingest-release-announcement", _handle_cron_thinker_ingest_release
+    )
+    app.router.add_get(
+        "/api/v1/cron-thinker/release-smoke-status", _handle_cron_thinker_release_smoke_status
+    )
+    app.router.add_get("/api/v1/cron-thinker/bios-settings", _handle_cron_thinker_bios_settings_get)
+    app.router.add_post("/api/v1/cron-thinker/bios-settings", _handle_cron_thinker_bios_settings_post)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
@@ -2015,6 +2063,15 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/v3/safety-lock/reject", _handle_safety_lock_reject)
     app.router.add_get("/api/v3/config/native-fs-policy", _handle_native_fs_policy_get)
     app.router.add_post("/api/v3/config/native-fs-policy", _handle_native_fs_policy_post)
+
+    async def _on_startup_register_k11_schedule_sse_loop(_app):
+        """绑定主 asyncio 循环，供 cron_thinker 等线程向 MIND STREAM / schedule SSE 推流。"""
+        try:
+            from l3_node.jobs.k11_unified_smoke_scheduler import register_k11_schedule_log_loop
+
+            register_k11_schedule_log_loop(asyncio.get_running_loop())
+        except Exception as e:
+            logger.warning("[L3 HTTP] register_k11_schedule_log_loop skipped: %s", e)
 
     async def _on_startup_kalaroko_scheduler(app):
         """L3 重启后恢复 Kalaroko 定时巡检（状态见 ~/.jachin/data/kalaroko_scheduler_state.json）。"""
@@ -2042,6 +2099,15 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
             start_healthchecks_watchdog()
         except Exception as e:
             logger.warning("[L3 HTTP] Healthchecks watchdog skipped: %s", e)
+
+    async def _on_startup_cron_thinker(_app):
+        """发版公告 → 次日统合冒烟：BackgroundScheduler + 持久化恢复。"""
+        try:
+            from core.cron_thinker import start_cron_thinker_daemon
+
+            start_cron_thinker_daemon()
+        except Exception as e:
+            logger.warning("[L3 HTTP] cron_thinker daemon skipped: %s", e)
 
     async def _on_startup_skill_matrix_sync(_app):
         """启动时将全量工具描述写入 Memory Nexus Skill_Matrix（后台任务，勿阻塞 runner.setup）。
@@ -2074,9 +2140,11 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
 
         asyncio.create_task(_skill_matrix_sync_bg(), name="jachin-skill-matrix-sync")
 
+    app.on_startup.append(_on_startup_register_k11_schedule_sse_loop)
     app.on_startup.append(_on_startup_kalaroko_scheduler)
     app.on_startup.append(_on_startup_k11_unified_smoke_scheduler)
     app.on_startup.append(_on_startup_healthchecks_watchdog)
+    app.on_startup.append(_on_startup_cron_thinker)
     app.on_startup.append(_on_startup_skill_matrix_sync)
 
     def _is_port_in_use(e: BaseException) -> bool:

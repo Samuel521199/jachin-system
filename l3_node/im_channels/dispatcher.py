@@ -1,4 +1,4 @@
-"""
+﻿"""
 IM 消息分发 — 收到消息后调用 Agent 并回传
 
 与具体通道解耦：dispatcher 只负责「执行 + 回复」逻辑，
@@ -315,6 +315,19 @@ def create_im_message_handler(
     def on_message(text: str, chat_id: str, user_id: str) -> None:
         if not (text or "").strip():
             return
+        try:
+            from core.cron_thinker import _audit_log, feed_release_announcement_text, release_title_present
+
+            _audit_log(
+                "lark_im_cron_thinker_probe",
+                chat_id=(chat_id or "")[:96],
+                user_id_prefix=(user_id or "")[:24],
+                text_len=len(text or ""),
+                title_needle_hit=release_title_present(text or ""),
+            )
+            feed_release_announcement_text(text, source="lark", chat_id=chat_id or None)
+        except Exception:
+            logger.debug("[IM Dispatcher] cron_thinker 公告 ingest 失败", exc_info=True)
         _AGENT_EXECUTOR.submit(
             _do_agent_work,
             text,

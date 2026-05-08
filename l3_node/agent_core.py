@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（Chroma）** 在 L3 内闭环；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -7222,6 +7222,7 @@ async def run_agent(
         lark_cid=_lark_cid,
         gateway_bundle=_gateway_bundle,
         engine=engine,
+        implicit_attribution=implicit_attribution,
     )
     if _early is not None:
         try:

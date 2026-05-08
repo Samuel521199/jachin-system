@@ -1,4 +1,4 @@
-"""
+﻿"""
 K11 Playwright 冒烟子进程入口：由同一 ``l3_node`` 可执行文件 / ``python -m l3_node`` 拉起。
 
 PyInstaller onefile 下 ``sys.executable`` 指向 ``l3_node.exe``，不能用于 ``exe script.py`` 解释 .py；
@@ -15,7 +15,6 @@ from types import ModuleType
 from l3_node.paths import (
     get_app_root,
     k11_game_open_smoke_script_path,
-    k11_games_state_machine_smoke_script_path,
     k11_p2_compat_weaknet_script_path,
     k11_unified_smoke_script_path,
 )
@@ -93,26 +92,6 @@ def run_k11_unified_sync() -> int:
         mod = _load_k11_script_module(script, "_k11_unified_sse_subprocess")
     except Exception as e:
         print(f"[FATAL] 无法加载 K11 统合冒烟模块: {e}", file=sys.stderr)
-        return 2
-    main_fn = getattr(mod, "main", None)
-    if main_fn is None:
-        print("[FATAL] 脚本缺少 main()", file=sys.stderr)
-        return 2
-    return int(main_fn())
-
-
-def run_k11_games_state_machine_sync() -> int:
-    _bootstrap_k11_subprocess_env()
-    script = k11_games_state_machine_smoke_script_path()
-    if not script.is_file():
-        print(f"[FATAL] 缺少 K11 游戏状态机冒烟脚本: {script}", file=sys.stderr)
-        return 2
-    rest = list(sys.argv[2:])
-    sys.argv = [script.name] + rest
-    try:
-        mod = _load_k11_script_module(script, "_k11_games_state_machine_sse_subprocess")
-    except Exception as e:
-        print(f"[FATAL] 无法加载 K11 游戏状态机脚本: {e}", file=sys.stderr)
         return 2
     main_fn = getattr(mod, "main", None)
     if main_fn is None:

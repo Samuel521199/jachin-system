@@ -3,7 +3,7 @@
 """
 Herontest 站点验收：通过 **L3 大模型 + Puppeteer MCP**（或直连 MCP）验证目标页。
 
-默认目标：https://www.herontest.xin/
+默认目标：https://www.kalaroko.com/
 
 验收项（对齐 ``docs/K11_平台冒烟测试用例.md`` 中 P0；L3 Agent 模式由模型调用 MCP 完成并输出 JSON）：
 
@@ -846,7 +846,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--target-url",
-        default="https://www.herontest.xin/",
+        default="https://www.kalaroko.com/",
         help="要验收的页面 URL",
     )
     mode = ap.add_mutually_exclusive_group()

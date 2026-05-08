@@ -2,9 +2,9 @@
 
 ```json
 {
-  "snapshot_date": "2026-04-02",
+  "snapshot_date": "2026-05-06",
   "slug": "art_tasks_completed",
-  "json_file": "C:\\Users\\Samuel\\.jachin\\client_volumes\\PMO\\raw\\2026-04-02_art_tasks_completed.json"
+  "json_file": "C:\\Users\\Samuel\\.jachin\\client_volumes\\PMO\\raw\\2026-05-06_art_tasks_completed.json"
 }
 ```
 
@@ -14,12 +14,77 @@
 
 - table_id: `tblDw87UlhddFIoY`
 - view_id: `vew5taB9H1`
-- 记录数: 85
+- 记录数: 152
 
-| 任务（交互动画注意问题请标注） | 需求人 | 任务发布日期 | 优先级 | 版本 | Sprint | 类型 | 需求描述/风险/问题 | 进度 | 相关文档 | 设计责任人 | 开始日期 | 交付日期 | 预计人天 | 实际交付日期 | 实际人天 | 需求图片 | 设计交付文档 | 父记录 | 程序对接人 | 程序对接日期 |
+| 任务（交互动画注意问题请标注） | 需求人 | 任务发布日期 | 优先级 | 版本 | Sprint | 类型 | 需求描述/风险/问题 | 进度 | 相关文档 | 设计责任人 | start date | Delivery Date | 预计人天 | Actual Delivery Date | 实际人天 | 需求图片 | 设计交付文档 | 父记录 | 程序对接人 | 程序对接日期 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-|  |  |  |  |  | 2026/03/23-Sprint |  |  |  |  |  | 1774022400000 |  | -32930 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
-|  |  |  |  |  | 2026/03/23-Sprint |  |  |  |  |  | 1774022400000 |  | -32930 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo Showdown-Feedback  | Haku |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776009600000 | 1776009600000 | 1 |  | -32946 | image.png; image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Add buttons for the platform loading page | Ethan |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776009600000 | 1776096000000 | 2 |  | -32946 | image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Add buttons for in game | Ethan |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776009600000 | 1776096000000 | 2 |  | -32946 | image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Adjust the horizontal-vertical screen layout in the game | Ethan |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776009600000 | 1776096000000 | 2 |  | -32946 | image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Leave the game pop-up window and return to the game pop-up  | Ethan |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776009600000 | 1776009600000 | 1 |  | -32946 | image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 会议视频 第一版 |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Makoto | 1776009600000 | 1776096000000 | 2 |  | -32946 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 会议视频 修改 |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Makoto | 1776182400000 | 1776441600000 | 3 |  | -32948 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingoflash LoadingScreen 动画 |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Makoto | 1776268800000 | 1776355200000 | 2 |  | -32949 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州扑克 winner |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Makoto | 1776268800000 | 1776355200000 | 2 |  | -32949 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 游戏ICON制作修改 |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | musk | 1776009600000 | 1776182400000 | 3 |  | -32946 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+|  |  |  |  |  | 2026/04/13-Sprint |  |  |  |  |  | 1776873600000 |  | -32954 |  | -32954 |  |  | 游戏ICON制作修改 |  |  |
+| Update UI poker hold'em feedback |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Lucy | 1776009600000 | 1776096000000 | 2 |  | -32946 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Update UI tongits new feedback |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775836800000 | 2 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 金币礼包入口 |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Lucy | 1775750400000 | 1776096000000 | 3 |  | -32945 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo Showndown Transition | Haku |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776096000000 | 1776096000000 | 1 |  | -32947 | image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Poker hold'em buttons new |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Lucy | 1776182400000 | 1776268800000 | 2 |  | -32948 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| bingo 快速房入口调整颜色 | Haku |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776268800000 | 1776268800000 | 1 |  | -32949 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Logo Larogo- detail |  |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776268800000 |  | -32949 |  | -32949 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| bingo 转场动画调整 | Haku |  |  |  | 2026/04/13-Sprint |  |  |  |  | Elara | 1776355200000 | 1776355200000 | 1 |  | -32950 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+|  |  |  |  |  | 2026/04/13-Sprint |  |  |  |  |  | 1776873600000 |  | -32954 |  | -32954 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingoflash 动画 |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Makoto | 1775491200000 | 1775664000000 | 3 |  | -32942 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo flash matching |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Makoto | 1776009600000 | 1775750400000 | -2 |  | -32946 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingoflash Win 动画 |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Makoto | 1776009600000 | 1775750400000 | -2 |  | -32946 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Logo LaroGo  |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Elara | 1775664000000 | 1775750400000 | 2 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo Showdown Logo Fix |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Elara | 1775750400000 | 1775750400000 | 1 |  | -32945 | image.png |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| tongits kong 主界面背景制作 |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | musk | 1775404800000 | 1775750400000 | 5 |  | -32941 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| tongits kong loading页制作 |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | musk | 1775664000000 | 1775750400000 | 2 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 游戏ICON草图设计 |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | musk | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Update UI poker hold'em |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775836800000 | 2 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Update UI tongits new |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775836800000 | 2 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| How to play screen |  |  |  |  | 2026/04/06-Sprint |  |  |  |  | Lucy | 1775491200000 | 1775664000000 | 3 |  | -32942 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo Logo 动画 | Haku |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1775059200000 | 1775491200000 | 4 |  | -32939 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo matching 动画 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1775145600000 | 1775491200000 | 3 |  | -32940 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo 中奖动画特效 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1775232000000 | 1775577600000 | 3 |  | -32940 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo Combo 动画特效 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1775318400000 | 1775577600000 | 3 |  | -32940 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo transition |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1775664000000 | 1775577600000 | -2 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Tongits king 轮出优化资源 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1775491200000 | 1775664000000 | 3 |  | -32942 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Logo Bingo Showdown |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Logo Bingo Flash |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Ingame Screen Bingo Flah |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Rules Bingo Showdown |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Rules Bingo Flash |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Transition Bingo Flash |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Holy Week- Top up icon |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Elara | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州短牌ui制作 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | musk | 1774800000000 | 1774972800000 | 3 |  | -32936 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| bingo 加载页修改，logo修改，进度条制作 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | musk | 1775059200000 | 1775145600000 | 2 |  | -32939 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州短牌4张入口图制作 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | musk | 1775145600000 | 1775145600000 | 1 |  | -32940 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo game icon Bingo win |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Lucy | 1775491200000 | 1775664000000 | 3 |  | -32942 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo game round over screen |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Poker Texas UI fix  |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo icon bingo and arlam |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo result screen |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| UI tongits update |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Lucy | 1775664000000 | 1775664000000 | 1 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| tongits 蓝色桌布皮肤 banner 图调整 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | summer | 1777824000000 |  | -32961 |  | -32961 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| tongits 蓝色桌布皮肤 动画调整 |  |  |  |  | 2026/03/30-Sprint |  |  |  |  | Makoto | 1777996800000 |  | -32963 |  | -32963 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州扑克 winner 动画 |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Makoto | 1774022400000 | 1775059200000 | 9 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州扑克 combo 动画 |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Makoto | 1774022400000 | 1775059200000 | 9 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州扑克 Loading 特效 |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Makoto | 1774454400000 | 1774972800000 | 5 |  | -32934 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Holy Week -Popup Invite Friends |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Elara | 1774195200000 | 1774195200000 | 1 |  | -32931 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Holy Week - 2 icon (PWA- Holy Week) |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Elara | 1774195200000 | 1774195200000 | 1 |  | -32931 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Label New and Hot for game 9 Ball, Tongits King |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Elara | 1774281600000 | 1774281600000 | 1 |  | -32932 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州短牌背景 |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | musk | 1774195200000 | 1774368000000 | 3 |  | -32931 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州短牌加载页，logo制作 |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | musk | 1774454400000 | 1774540800000 | 2 |  | -32934 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| holy week package pop up |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Lucy | 1774454400000 | 1774454400000 | 1 |  | -32934 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Banner April marketing |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Lucy | 1774454400000 | 1774454400000 | 1 |  | -32934 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 3 Banners marketing website |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Lucy | 1774454400000 | 1774454400000 | 1 |  | -32934 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| Bingo game win icon |  |  |  |  | 2026/03/23-Sprint |  |  |  |  | Lucy | 1774886400000 | 1774886400000 | 1 |  | -32937 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 德州动画 |  |  |  |  | 2026/03/16-Sprint |  |  |  |  | Makoto | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | Banner 木头人 |  |  |  |  | 2026/03/16-Sprint |  |  |  |  | Lucy | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | Banner color game |  |  |  |  | 2026/03/16-Sprint |  |  |  |  | Lucy | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
@@ -27,13 +92,15 @@
 | 德州封面图3张制作 |  |  |  |  | 2026/03/16-Sprint |  |  |  |  | musk | 1773936000000 |  | -32930 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | Bingo Showdown |  |  |  |  | 2026/03/16-Sprint |  |  |  |  | Elara | 1773936000000 |  | -32930 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 圣周活动四月前完成 |  |  |  |  | 2026/03/16-Sprint |  |  |  |  | Lucy | 1773936000000 |  | -32930 |  | -32930 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+|  |  |  |  |  | 2026/03/16-Sprint |  |  |  |  |  | 1774195200000 |  | -32931 |  | -32931 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+|  |  |  |  |  | 2026/03/16-Sprint |  |  |  |  |  | 1775664000000 |  | -32944 |  | -32944 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 优化加载动画资源 |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | Makoto | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | Bingo Showdown UI |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | Elara | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 任务模块宝箱问题 |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | Makoto | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 77 Optimize the homepage layout |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | Elara | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 德州初版设计稿修改调整 游戏背景/游戏UI |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | Lucy | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 会议封面图 |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | Lucy | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
-| 德州ui多张草稿制作，德州场景加载页制作细化 |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | musk | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州ui多张草稿制作，德州主界面背景图加载页制作细化 |  |  |  |  | 2026/03/09-Sprint |  |  |  |  | musk | 1773763200000 |  | -32928 |  | -32928 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 |  |  |  |  |  | 2026/03/09-Sprint |  |  |  |  |  | 1774281600000 |  | -32932 |  | -32932 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 |  |  |  |  |  | 2026/03/02-Sprint |  |  |  |  |  | 1772208000000 |  | -32915 |  | -32915 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | tongit 决战动画 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | Makoto | 1772380800000 | 1772467200000 | 2 |  | -32916 |  |  |  |  |  |
@@ -43,9 +110,9 @@
 | Color Blitz Social Double Up Bonus玩法 优化 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | musk | 1772380800000 | 1772467200000 | 2 |  | -32916 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 德州长牌短牌游戏 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | musk | 1772553600000 | 1773244800000 | 7 |  | -32918 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 平台角色形象相关图资源设计 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | Lucy | 1772467200000 | 1772553600000 | 2 |  | -32917 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
-| 德州长牌短牌游戏草图三方案 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | musk | 1773072000000 | 1773158400000 | 2 |  | -32922 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
-|  |  |  |  |  | 2026/03/02-Sprint |  |  |  |  |  | 1772553600000 |  | -32918 |  | -32918 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
-|  |  |  |  |  | 2026/03/02-Sprint |  |  |  |  |  | 1773072000000 |  | -32922 |  | -32922 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| 德州长牌短牌游戏草图三方案 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | musk | 1772553600000 | 1773158400000 | 6 |  | -32918 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| color的ui修改 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | musk | 1772380800000 |  | -32916 |  | -32916 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
+| color的桌面调整 |  |  |  |  | 2026/03/02-Sprint |  |  |  |  | musk | 1772467200000 |  | -32917 |  | -32917 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | 游戏 |  |  |  |  | 2026/02/23-Sprint |  |  |  |  |  | 1771862400000 |  | -32912 |  | -32912 |  |  | {"table_id": "tblDw87UlhddFIoY", "text_arr": [], "type": "text"} |  |  |
 | tongits king 动画 |  |  |  |  | 2026/02/23-Sprint |  |  |  |  | Makoto | 1771862400000 | 1772035200000 | 3 |  | -32912 |  |  | 游戏 |  |  |
 | Color 新增页面 |  |  |  |  | 2026/02/23-Sprint |  |  |  |  | Lucy | 1771862400000 | 1772380800000 | 5 |  | -32912 |  |  | 游戏 |  |  |

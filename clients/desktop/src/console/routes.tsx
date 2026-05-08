@@ -15,6 +15,7 @@ import { WakeModePanel } from "./pages/WakeModePanel";
 import { SafetyLockApproval } from "./pages/SafetyLockApproval";
 import { MonitorMatrix } from "./pages/MonitorMatrix";
 import { K11UnifiedSmokeTest } from "./pages/K11UnifiedSmokeTest";
+import { GameQAPanel } from "./pages/GameQAPanel";
 
 export const consoleRoutes = [
   {
@@ -29,6 +30,7 @@ export const consoleRoutes = [
       { path: "skills", element: <SkillMatrix /> },
       { path: "monitor", element: <MonitorMatrix /> },
       { path: "k11-smoke", element: <K11UnifiedSmokeTest /> },
+      { path: "gameqa", element: <GameQAPanel /> },
       { path: "network", element: <JachinLink /> },
       { path: "wake", element: <WakeModePanel /> },
       { path: "settings", element: <Persona /> },

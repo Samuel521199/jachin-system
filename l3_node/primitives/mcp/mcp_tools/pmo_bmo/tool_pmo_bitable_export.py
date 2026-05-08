@@ -1,8 +1,7 @@
-"""
+﻿"""
 PMO 多维表定向导出 — 由 atom_pmo_lark_doc operation=export_pmo_tables 调用
 
-- 默认：按固定 6 个 Wiki 链接（不同 table_id / view_id）拉取 Bitable 记录
-- 特例：`req_march_coarse` 可为 Wiki 内 **云文档表格块**（table=ldxv…），走 docx/v1 官方接口拉块并解析为与导出兼容的 records
+- 默认：按固定 **4** 个 Wiki 多维表链接拉取 Bitable 记录（含 **req_march_coarse** 需求主线子表；**不再**云文档逐格导出）
 - JSON → ~/.jachin/client_volumes/PMO/raw/{date}_{slug}.json
 - Markdown → 仓库 docs/pmo_bmo_plugin/raw/{slug}.md（固定文件名，每轮覆盖；JSON 仍为 ~/.jachin/.../raw/{date}_{slug}.json）
 - DuckDB → ~/.jachin/client_volumes/PMO/duckdb/pmo.duckdb（表 pmo_bitable_records / pmo_bitable_export_meta）
@@ -33,46 +32,37 @@ from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import (  # noq
     sanitize_wiki_url,
 )
 
-# 六张表：slug 用于文件名与 DuckDB；url 含 wiki 节点 + table + view（view 可省略）
+# 四张表：slug 用于文件名与 DuckDB；url 含 wiki 节点 + table + view（view 可省略）
+# wiki_url_fallbacks：可选；当主 url 的节点 get_node 失败时依次尝试（如 Wiki 迁址后旧 token 失效）
 # export_mode=docx_table：拉取 Wiki 云文档内表格块（docx/v1），非 Bitable；需 docx_table_block_id，可选 docx_document_id / docx_wiki_title
 # table_name_resolve：按子表名称在「该 Wiki 节点对应多维表」内解析真实 tbl_xxx（用于非 tbl 的分享链接）
 # table_id_override：Bitable 模式下 Wiki 链接里 table= 非 tbl 时，写真实 tbl_xxx；view_id_override 可覆盖 URL 中的 view
 PMO_SCHEDULED_BITABLES: list[dict[str, Any]] = [
     {
-        "slug": "req_march_fine",
-        "label": "3月需求细分",
-        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblozlbpzHlL8m8m&view=vew8TxMcSh",
+        "slug": "req_march_coarse",
+        "label": "3月需求主线（大需求总表）",
+        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxeuHgiN5L2gXBH",
+        # Wiki 上 table= 非 tbl_ 且无法按 slug/label 匹配时，按该 Wiki 节点下多维表**子表名称**解析（与 Lark 列表一致）
+        "table_name_resolve": "需求表（3.19）",
     },
     {
-        "slug": "req_march_coarse",
-        "label": "3月需求大表",
-        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxvjdZfkv69GwsB",
-        "export_mode": "docx_table",
-        "docx_table_block_id": "ldxvjdZfkv69GwsB",
-        # 当 Wiki 根节点为多维表时，在子节点/同级/空间根级查找标题匹配的 docx；也可配置 docx_document_id
-        "docx_wiki_title": "需求表3月",
-        # 云文档标题常为「未命名文档」，与侧栏名称不一致时作备选匹配
-        "docx_wiki_title_alt": ["未命名文档"],
+        "slug": "req_march_fine",
+        "label": "3月需求细分",
+        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblNdv7DIlycuqxp&view=vew8TxMcSh",
     },
     {
         "slug": "dev_tasks_view_core",
         "label": "开发任务（版本核心需求等视图）",
-        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewpI8lyYw",
-    },
-    {
-        "slug": "dev_tasks_by_assignee",
-        "label": "开发每人任务（执行人看板视图）",
-        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewCz1FFJi",
+        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
+        "wiki_url_fallbacks": [
+            "https://ssgkm409t6q5.sg.larksuite.com/wiki/ldxeuHgiN5L2gXBH?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
+            "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
+        ],
     },
     {
         "slug": "art_tasks_completed",
         "label": "美术任务（完成/列表视图）",
         "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1",
-    },
-    {
-        "slug": "art_tasks_by_designer",
-        "label": "美术每人任务（设计人看板视图）",
-        "url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vewdTHmbTM",
     },
 ]
 
@@ -720,6 +710,28 @@ def _resolve_table_id_by_name(tables: list[dict[str, Any]], needle: str) -> str 
     return None
 
 
+def _resolve_table_id_by_url_token(tables: list[dict[str, Any]], url_token: str) -> str | None:
+    """
+    Wiki 链接里 ``table=`` 有时为非 ``tbl`` 前缀 token（与开放平台子表 ``table_id`` 同值或为其子串）。
+    在按名称解析失败后再尝试本函数。
+    """
+    tok = (url_token or "").strip()
+    if not tok or tok.startswith("tbl"):
+        return None
+    tok_l = tok.lower()
+    for t in tables:
+        tid = str(t.get("table_id") or "").strip()
+        if not tid:
+            continue
+        if tid == tok or tid.lower() == tok_l:
+            return tid
+    for t in tables:
+        tid = str(t.get("table_id") or "").strip()
+        if len(tok) >= 8 and (tok in tid or tok_l in tid.lower()):
+            return tid
+    return None
+
+
 def _bitable_list_fields(
     api_base: str, token: str, app_token: str, table_id: str
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -945,11 +957,7 @@ def run_pmo_bitable_export(cfg: dict[str, Any], project_root: Path) -> dict[str,
     if env_docx and not (str(docx_ids_cfg.get("req_march_coarse") or "").strip()):
         docx_ids_cfg = dict(docx_ids_cfg)
         docx_ids_cfg["req_march_coarse"] = env_docx
-    # 与 main_skill.PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID 一致：K11「需求表3月」云文档
-    _default_march_docx = "ZcpedCREaoNrQUxvM7EluZGugWg"
-    if not (str(docx_ids_cfg.get("req_march_coarse") or "").strip()):
-        docx_ids_cfg = dict(docx_ids_cfg)
-        docx_ids_cfg["req_march_coarse"] = _default_march_docx
+    # 默认导出仅为三表 Bitable，不注入历史云文档 ID，避免日志误导；需 docx_table 时在 YAML / 环境变量显式配置
 
     for spec_raw in PMO_SCHEDULED_BITABLES:
         spec = dict(spec_raw)
@@ -958,24 +966,56 @@ def run_pmo_bitable_export(cfg: dict[str, Any], project_root: Path) -> dict[str,
         if oid:
             spec["docx_document_id"] = str(oid).strip()
         label = spec["label"]
-        su = sanitize_wiki_url(spec["url"])
-        parsed = parse_wiki_url(su)
-        node_token = parsed.get("node_token") or ""
-        table_id_from_url = (parsed.get("table_id") or "").strip()
-        view_id = parsed.get("view_id") or None
+        url_candidates: list[str] = [str(spec["url"] or "").strip()]
+        for fb in spec.get("wiki_url_fallbacks") or ():
+            if isinstance(fb, str):
+                sfb = fb.strip()
+                if sfb and sfb not in url_candidates:
+                    url_candidates.append(sfb)
+
+        su = ""
+        parsed: dict[str, Any] = {}
+        node_token = ""
+        table_id_from_url = ""
+        view_id = None
+        g: dict[str, Any] = {}
+        last_node_err: str | None = None
+        for try_url in url_candidates:
+            if not try_url:
+                continue
+            su_try = sanitize_wiki_url(try_url)
+            parsed_try = parse_wiki_url(su_try)
+            nt = parsed_try.get("node_token") or ""
+            if not nt:
+                last_node_err = "无法解析 wiki URL（缺少 node_token）"
+                continue
+            g_try = _lark_get(api_base, token, "/wiki/v2/spaces/get_node", {"token": nt})
+            if g_try.get("code") != 0:
+                last_node_err = f"get_node {g_try.get('msg')}"
+                continue
+            su = su_try
+            parsed = parsed_try
+            node_token = nt
+            table_id_from_url = (parsed.get("table_id") or "").strip()
+            view_id = parsed.get("view_id") or None
+            g = g_try
+            if len(url_candidates) > 1:
+                logger.info(
+                    "[pmo_bitable_export] %s: 使用 Wiki 链接（在 %s 个候选中成功）%s",
+                    slug,
+                    len(url_candidates),
+                    su[:80] + ("…" if len(su) > 80 else ""),
+                )
+            break
+        else:
+            errors.append(f"{slug}: {last_node_err or '无可用 Wiki URL'}")
+            continue
+
         v_override = (spec.get("view_id_override") or "").strip()
         if v_override:
             view_id = v_override
         spec_name_resolve = (spec.get("table_name_resolve") or "").strip()
         spec_table_id_override = (spec.get("table_id_override") or "").strip()
-        if not node_token:
-            errors.append(f"{slug}: 无法解析 wiki URL（缺少 node_token）")
-            continue
-
-        g = _lark_get(api_base, token, "/wiki/v2/spaces/get_node", {"token": node_token})
-        if g.get("code") != 0:
-            errors.append(f"{slug}: get_node {g.get('msg')}")
-            continue
         raw_d = g.get("data") or {}
         node = raw_d.get("node") if isinstance(raw_d.get("node"), dict) else raw_d
         if not isinstance(node, dict):
@@ -1045,12 +1085,20 @@ def run_pmo_bitable_export(cfg: dict[str, Any], project_root: Path) -> dict[str,
                 resolved = _resolve_table_id_by_name(tables, label) or _resolve_table_id_by_name(
                     tables, slug.replace("_", " ")
                 )
+                if not resolved:
+                    resolved = _resolve_table_id_by_url_token(tables, table_id_from_url)
                 if resolved:
                     table_id = resolved
+                    logger.info(
+                        "[pmo_bitable_export] %s: 已将 URL table=%s… 解析为 bitable 子表 %s",
+                        slug,
+                        str(table_id_from_url)[:18],
+                        table_id,
+                    )
                 else:
                     catalog = [(t.get("name"), t.get("table_id")) for t in tables]
                     errors.append(
-                        f"{slug}: table 参数非标准 tbl ID ({table_id!r})，且无法按名称匹配；"
+                        f"{slug}: table 参数非标准 tbl ID ({table_id!r})，且无法按名称/token 匹配；"
                         f"请配置 table_id_override（真实 tbl_）或 table_name_resolve。现有子表: {catalog}"
                     )
                     continue

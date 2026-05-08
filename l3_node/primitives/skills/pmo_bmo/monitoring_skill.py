@@ -1,7 +1,7 @@
 """
 PMO Monitoring_skill — 资源预警（按**自然周排期任务**的进度节奏：过载 / 过早清空）
 
-- **拉表策略**：运行时会先检查 ``~/.jachin/client_volumes/PMO/raw`` 是否存在且已有**本次快照日**的完整六表 JSON；若无则调用 ``main_skill.ensure_pmo_raw_for_monitoring`` → ``export_pmo_tables``。若已是最新完整快照则跳过拉取。
+- **拉表策略**：运行时会先检查 ``~/.jachin/client_volumes/PMO/raw`` 是否存在且已有**本次快照日**的完整四表 JSON（含 ``req_march_coarse``）；若无则调用 ``main_skill.ensure_pmo_raw_for_monitoring`` → ``export_pmo_tables``。若已是最新完整快照则跳过拉取。
 - **读数**：诊断读仓库 ``docs/pmo_bmo_plugin/raw`` 或回退 ``~/.jachin/.../PMO/raw``（与 main_skill 同源）。
 - **饱和度口径**：只统计「**开始/交付日期** 与 **快照所在自然周**（周一至周日）有交集」的产品/开发/美术任务（与 ``main_skill`` 周筛选一致），**不把历史未完成任务整表算入**。
 - **过载**：截至快照日，**已完成数** 明显低于按周历进度应有的期望（例：周四应对齐约 4/7 工作量，却只完成少量）。
@@ -11,7 +11,7 @@ PMO Monitoring_skill — 资源预警（按**自然周排期任务**的进度节
 
 **一体化测试（诊断 + 发飞书群，单条命令）**
 
-1. 准备数据：同一 ``YYYY-MM-DD`` 下存在三份 raw JSON（可先跑 ``python -m l3_node.primitives.skills.pmo_bmo.main_skill`` 导出六表，数据在 ``~/.jachin/.../PMO/raw``）。
+1. 准备数据：同一 ``YYYY-MM-DD`` 下存在四份 raw JSON（可先跑 ``python -m l3_node.primitives.skills.pmo_bmo.main_skill`` 导出计划表，数据在 ``~/.jachin/.../PMO/raw``）。
 2. 编辑 ``config/skills/com.jachin.pmo.bmo/pmo_bmo.yaml`` → ``pmo_resource_monitoring``：
    ``enabled: true``，``chat_id`` 为目标群，``receive_id_type: chat_id``；``lark`` 段 ``app_id``/``app_secret`` 有效。
 3. 确认应用机器人已加入该群且有发消息权限。
@@ -29,9 +29,9 @@ CLI 速查::
 
 **单独测监控（不发飞书，推荐先做）**
 
-1. 任选快照日 ``YYYY-MM-DD``；若 ``~/.jachin/.../PMO/raw`` 下尚无当日 **完整六表** JSON，本模块会先调 ``ensure_pmo_raw_for_monitoring`` 自动导出（需 Lark 凭证）。
+1. 任选快照日 ``YYYY-MM-DD``；若 ``~/.jachin/.../PMO/raw`` 下尚无当日 **完整四表** JSON，本模块会先调 ``ensure_pmo_raw_for_monitoring`` 自动导出（需 Lark 凭证）。
 2. 诊断读数优先 ``docs/pmo_bmo_plugin/raw/{日期}_*.json``，否则用上述 client raw；计算负荷至少需要三份：
-   ``req_march_fine``、``dev_tasks_view_core``、``art_tasks_completed``（与六表导出一致）。
+   ``req_march_coarse``、``req_march_fine``、``dev_tasks_view_core``、``art_tasks_completed``（与 ``export_pmo_tables`` 计划一致）。
 3. 执行 ``--dry-run``：**仍会** 拉表检查、聚合饱和度、生成 ``alerts`` / ``markdown``，**仅跳过** ``send_markdown_card``；JSON 里已有 ``lark_recipient``（可核对将发到哪）。
 4. 程序化调用：``run_pmo_resource_monitoring(..., dry_run=True)``（可传 ``snapshot_date='YYYY-MM-DD'``），返回值含 ``alerts``、``markdown``、``meta``、``pmo_raw_ensure``。
 
@@ -164,7 +164,7 @@ def _resolve_raw_dir(project_root: Path, snap: str) -> tuple[Path, str]:
     if (fallback / dev_name).is_file():
         return fallback, str(fallback)
     raise FileNotFoundError(
-        f"未找到 {dev_name}，请先导出六表或复制 raw 到 docs/pmo_bmo_plugin/raw"
+        f"未找到 {dev_name}，请先导出计划表或复制 raw 到 docs/pmo_bmo_plugin/raw"
     )
 
 
@@ -683,7 +683,7 @@ def run_pmo_resource_monitoring(
 
     snap = (snapshot_date or mon.get("snapshot_date") or date_cls.today().isoformat()).strip()[:10]
 
-    # 先检查本机 ~/.jachin/.../PMO/raw 是否有当日完整六表；缺则自动 export_pmo_tables（逻辑在 main_skill.ensure_pmo_raw_for_monitoring）
+    # 先检查本机 ~/.jachin/.../PMO/raw 是否有当日完整四表；缺则自动 export_pmo_tables（逻辑在 main_skill.ensure_pmo_raw_for_monitoring）
     pmo_raw_ensure = ensure_pmo_raw_for_monitoring(root, snap)
     cap = float(mon.get("weekly_capacity_units", 4.0))
     overload_pct = float(mon.get("overload_saturation_pct", 120.0))

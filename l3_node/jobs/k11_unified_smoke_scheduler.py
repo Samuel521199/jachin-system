@@ -1,4 +1,4 @@
-"""
+﻿"""
 K11 统合平台冒烟 — 按北京时间调度（APScheduler + CronTrigger）。
 
 - **到点每触发 1 轮子进程**（**不**用状态里的 ``runs``/``interval_sec``；二项**仅**供控制台「手动脉冲 / 本页统合 SSE」用）。
@@ -26,11 +26,20 @@ from l3_node.paths import get_app_root, k11_unified_smoke_script_path
 
 logger = logging.getLogger(__name__)
 
-SCHEDULER_STATE_FILE = Path.home() / ".jachin" / "data" / "k11_unified_smoke_scheduler_state.json"
+_SCHEDULER_STATE_FILE = Path.home() / ".jachin" / "data" / "k11_unified_smoke_scheduler_state.json"
 _JOB_DAILY = "k11_unified_smoke_daily"
 
 _scheduler: Any | None = None
 _scheduler_started = False
+
+# 供 cron_thinker 等非 asyncio 线程：`k11_scheduled_log_emit_from_thread` 投递到本循环
+_k11_schedule_sse_loop: asyncio.AbstractEventLoop | None = None
+
+
+def register_k11_schedule_log_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    """在 aiohttp on_startup 中注册主事件循环，便于生物钟等线程内推送 MIND STREAM / schedule SSE。"""
+    global _k11_schedule_sse_loop
+    _k11_schedule_sse_loop = loop
 
 DEFAULT_HOUR_BEIJING = 9
 DEFAULT_MINUTE_BEIJING = 0
@@ -59,9 +68,7 @@ def unsubscribe_k11_scheduled_log(q: asyncio.Queue) -> None:
     _schedule_subscribers.discard(q)
 
 
-async def k11_scheduled_log_emit(obj: dict[str, Any]) -> None:
-    """将定时任务行/元事件推送给所有已连接的 /schedule/log-stream SSE，并落环形缓冲供新连接重放。"""
-    _schedule_event_ring.append(obj)
+def _fanout_schedule_log_to_queues(obj: dict[str, Any]) -> None:
     for q in list(_schedule_subscribers):
         try:
             q.put_nowait(obj)
@@ -76,6 +83,27 @@ async def k11_scheduled_log_emit(obj: dict[str, Any]) -> None:
                 pass
         except Exception:
             pass
+
+
+async def k11_scheduled_log_emit(obj: dict[str, Any]) -> None:
+    """将定时任务行/元事件推送给所有已连接的 /schedule/log-stream SSE，并落环形缓冲供新连接重放。"""
+    _schedule_event_ring.append(obj)
+    _fanout_schedule_log_to_queues(obj)
+
+
+def k11_scheduled_log_emit_from_thread(obj: dict[str, Any]) -> None:
+    """
+    任意线程安全写入（如 APScheduler、cron_thinker）：先入环，再 threadsafe 投递到订阅队列。
+    须已由 ``register_k11_schedule_log_loop`` 绑定 L3 HTTP 主循环；未注册时仅环形缓冲、新连 SSE 可回放部分历史。
+    """
+    _schedule_event_ring.append(obj)
+    loop = _k11_schedule_sse_loop
+    if loop is None or not loop.is_running():
+        return
+    try:
+        loop.call_soon_threadsafe(_fanout_schedule_log_to_queues, obj)
+    except Exception:
+        pass
 
 
 def _try_emit_schedule_log(obj: dict[str, Any]) -> None:

@@ -9,7 +9,7 @@ K11 七款游戏冒烟（Agent-Executor 模式）
 - Agent（L3 HTTP）：POST {JACHIN_L3_HTTP_BASE}/api/v3/agent/run，根据页面文本摘要（及可选截图）
   输出 **单行 JSON 指令**，由 Executor 执行；不识别的交互交给 Agent 决策。
 
-默认站点：https://www.herontest.xin/（须先用 scripts/launch_chrome_debug.ps1 打开调试 Chrome，
+默认站点：https://www.kalaroko.com/（须先用 scripts/launch_chrome_debug.ps1 打开调试 Chrome，
 且 KALAROKO_CDP_ENDPOINT 指向同一 CDP；L3 须已启动且 engine 就绪）。
 
 用法（仓库根）：
@@ -46,7 +46,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-ROOT = Path(__file__).resolve().parent.parent
+_env_root = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+ROOT = Path(_env_root).resolve() if _env_root else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 try:
@@ -60,7 +61,7 @@ except OSError:
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-DEFAULT_SITE = "https://www.herontest.xin/"
+DEFAULT_SITE = "https://www.kalaroko.com/"
 DEFAULT_L3 = os.environ.get("JACHIN_L3_HTTP_BASE", "http://127.0.0.1:18991")
 
 _DIAG_DIR = Path(os.environ.get("K11_AGENT_EXEC_DIAG_DIR") or (ROOT / "logs" / "k11_agent_executor"))

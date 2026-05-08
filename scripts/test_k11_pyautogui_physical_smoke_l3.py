@@ -41,8 +41,18 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-ROOT = Path(__file__).resolve().parent.parent
+_env_root = (os.environ.get("JACHIN_APP_ROOT") or "").strip()
+ROOT = Path(_env_root).resolve() if _env_root else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env", encoding="utf-8")
+except ImportError:
+    pass
+except OSError:
+    pass
 
 
 def _http_post_json(

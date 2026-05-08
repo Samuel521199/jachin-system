@@ -1,20 +1,20 @@
-"""
+﻿"""
 PMO Lark 文档同步 — mcp:atom_pmo_lark_doc
 
 从配置的 Wiki 种子链接拉取 PRD、需求评审、排期等多维表/文档（与 BI 项目上下文同源实现），
-默认同步 **K11 三张核心表**（需求池、项目进度、美术/设计任务），并按日落盘到
+默认同步 **K11 四张核心表**（需求主线、需求细分、项目进度、美术/设计任务），并按日落盘到
 `docs/pmo_bmo_plugin/project_progress_daily/YYYY-MM-DD/`；亦支持仅浏览用的节点列表与单节点正文读取。
 
 核心动作：
 - operation=sync：全量同步（内部调用 sync_bi_project_context，配置键与 atom_bi_project_context 兼容）
 - operation=list_nodes：列出某父节点下子节点（需 space_id + 可选 parent_node_token）
 - operation=read_doc：读取单个 node_token 对应的节点信息与 docx 正文（若类型支持）
-- operation=export_pmo_tables：按固定 6 张 K11 表拉取 JSON→~/.jachin/client_volumes/PMO/raw/{date}_{slug}.json、MD→docs/pmo_bmo_plugin/raw/{slug}.md（固定名覆盖）、写入 pmo.duckdb（其中 req_march_coarse 为云文档表格块时用 docx/v1，其余为 Bitable；可选 docx_document_ids）
+- operation=export_pmo_tables：按固定 **4** 张 K11 多维表拉取 JSON→~/.jachin/client_volumes/PMO/raw/{date}_{slug}.json、MD→docs/pmo_bmo_plugin/raw/{slug}.md（固定名覆盖）、写入 pmo.duckdb
 
 配置: config/mcps/atom_pmo_lark_doc/config.yaml
 
 同步相关键：
-- use_k11_default_tables：默认 true；为 true 且未配置 wiki_urls 时使用内置三条 K11 Wiki 链接
+- use_k11_default_tables：默认 true；为 true 且未配置 wiki_urls 时使用内置四条 K11 Wiki 链接
 - daily_snapshot：默认 true；为 true 时输出目录为 project_progress_daily/{snapshot_date}
 - snapshot_date：可选，YYYY-MM-DD，默认当天（用于补跑历史日）
 """
@@ -38,10 +38,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_REL = "docs/pmo_bmo_plugin/synced"
 
-# K11：需求池、项目进度、美术/设计（与 BI 默认种子一致，便于 PMO 开箱）
+# K11：需求主线、需求细分、项目进度、美术/设计（与 BI 默认种子一致，便于 PMO 开箱）
 PMO_K11_DEFAULT_WIKI_URLS: list[str] = [
-    "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblozlbpzHlL8m8m&view=vew8TxMcSh",
-    "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewpI8lyYw",
+    "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxeuHgiN5L2gXBH",
+    "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblNdv7DIlycuqxp&view=vew8TxMcSh",
+    "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
     "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1",
 ]
 
@@ -49,8 +50,9 @@ PROJECT_PROGRESS_DAILY_ROOT = "docs/pmo_bmo_plugin/project_progress_daily"
 
 # 与种子 URL 片段对应，用于生成 00_K11_TABLES_INDEX.md
 PMO_K11_TABLE_INDEX: list[tuple[str, str, str]] = [
-    ("ZItbw4omRi6Sbsksb6jlwYq8gYq", "K11 需求池", "需求描述、Sprint、交付件、优先级、发起人/责任人、需求状态、开发状态、执行人等"),
-    ("GdQ7wTgSRiZ0olkXrNGlFcz0gad", "K11 项目进度", "任务树、优先级、Sprint、任务执行人、开始/交付日期、预计人天、状态等"),
+    ("ZItbw4omRi6Sbsksb6jlwYq8gYq", "K11 需求主线（大表）", "与 Wiki table=ldxeu… 同源；仪表盘/大需求对齐主线锚点"),
+    ("ZItbw4omRi6Sbsksb6jlwYq8gYq", "K11 需求池细分", "需求描述、Sprint、交付件、优先级、发起人/责任人、需求状态、开发状态、执行人等"),
+    ("B19Iww8tBiXZqfky1hhlIZ6kg0P", "K11 项目进度", "任务树、优先级、Sprint、任务执行人、开始/交付日期、预计人天、状态等"),
     ("DiSnwVB1OiDvPWkk0W9lzx6AgLd", "美术/设计任务", "任务、需求人、优先级、Sprint、设计责任人、起止日期、预计人天等"),
 ]
 

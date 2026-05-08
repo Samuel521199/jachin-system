@@ -15,6 +15,7 @@ import {
   Mic,
   Radar,
   FlaskConical,
+  Gamepad2,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "../utils/cn";
@@ -51,6 +52,12 @@ const navItems = [
     label: "冒烟测试",
     icon: FlaskConical,
     title: "K11 统合平台 Playwright 冒烟（scripts/test_k11_unified_platform_smoke_playwright.py）",
+  },
+  {
+    path: "/gameqa",
+    label: "游戏测试",
+    icon: Gamepad2,
+    title: "GameQA：本地 MCP 语义测试 / 影子示教（l3_client/local_mcps/gameqa_mcp）",
   },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
   {

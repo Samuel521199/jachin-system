@@ -1,5 +1,5 @@
-# com.jachin.pmo.bmo — 示例（可复制为 pmo_bmo.yaml 并填入真实值）
-# 单独测六表导出：在项目根执行  python -m l3_node.primitives.skills.pmo_bmo.main_skill（或兼容旧路径 l3_node.skills.pmo_bmo.main_skill）
+﻿# com.jachin.pmo.bmo — 示例（可复制为 pmo_bmo.yaml 并填入真实值）
+# 单独测三表导出：在项目根执行  python -m l3_node.primitives.skills.pmo_bmo.main_skill（或兼容旧路径 l3_node.skills.pmo_bmo.main_skill）
 skill_id: com.jachin.pmo.bmo
 display_name: PMO 知识库同步（BMO）
 
@@ -11,15 +11,15 @@ lark:
 
 pipeline:
   knowledge_sync_enabled: true
-  # 先导出六张 K11 多维表（JSON + MD + DuckDB），再跑 Wiki sync 与 knowledge ingest
+  # 先导出四张 K11 多维表（JSON + MD + DuckDB），再跑 Wiki sync 与 knowledge ingest
   export_scheduled_tables: true
   # pmo_export:
   #   max_export_records: 8000
   #   snapshot_date: "2026-03-30"
-  #   # req_march_coarse：Wiki 内「需求表3月」为云文档表格时填 document_id（/docx/<token>）；不写则用代码内置默认（K11）
+  #   # req_march_coarse：仅当 PMO 导出含 docx_table 模式时填云文档 document_id（/docx/<token>）；默认三表导出不注入
   #   docx_document_ids:
   #     req_march_coarse: "ZcpedCREaoNrQUxvM7EluZGugWg"
-  # 覆盖优先级：本处 > 环境变量 PMO_REQ_MARCH_COARSE_DOCX_ID > 内置默认（main_skill.PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID）
+  # 覆盖优先级：本处 > 环境变量 PMO_REQ_MARCH_COARSE_DOCX_ID（无代码内置默认，避免误导日志）
   lark_doc: {}
   knowledge_base: {}
   notify:

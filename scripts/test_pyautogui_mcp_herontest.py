@@ -3,7 +3,7 @@
 """
 测试 PyAutoGUI MCP（mcp-pyautogui-server）与真实浏览器 + 目标站点配合是否正常。
 
-默认目标：https://www.herontest.xin/
+默认目标：https://www.kalaroko.com/
 
 与 Puppeteer MCP 的区别：
   - PyAutoGUI 走 **操作系统物理层**（截屏、绝对坐标移动/点击），不读 DOM；
@@ -19,7 +19,7 @@
 
    用法（仓库根目录）::
      python scripts/test_pyautogui_mcp_herontest.py
-     python scripts/test_pyautogui_mcp_herontest.py --target-url https://www.herontest.xin/
+     python scripts/test_pyautogui_mcp_herontest.py --target-url https://www.kalaroko.com/
      python scripts/test_pyautogui_mcp_herontest.py --no-open-browser
      python scripts/test_pyautogui_mcp_herontest.py --wait-seconds 12
 
@@ -192,10 +192,10 @@ async def _run_stdio(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="mcp-pyautogui-server 与 herontest.xin 联调测试")
+    ap = argparse.ArgumentParser(description="mcp-pyautogui-server 与 www.kalaroko.com 联调测试")
     ap.add_argument(
         "--target-url",
-        default="https://www.herontest.xin/",
+        default="https://www.kalaroko.com/",
         help="用默认浏览器打开的 URL（仅当未使用 --no-open-browser）",
     )
     ap.add_argument(

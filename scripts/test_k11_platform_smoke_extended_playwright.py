@@ -57,7 +57,7 @@ except ImportError:
 except OSError:
     pass
 
-DEFAULT_TARGET = "https://www.herontest.xin/"
+DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 # 底栏常见不在语义 <nav> 内，而在自定义 class 容器
 BOTTOM_SHELL_SELECTORS = (

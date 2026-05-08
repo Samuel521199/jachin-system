@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 冒烟测试 — K11 统合平台 Playwright 冒烟（子进程，SSE 日志）
  * 手动脉冲的「多轮+间隔」与到点批跑解耦；目标 URL 与 CDP 由 .env/脚本默认处理。
  */
@@ -10,7 +10,6 @@ import { useK11ScheduleLogLines } from "../K11ScheduleLogContext";
 import {
   clearL3SkillsBaseUrlCache,
   getK11GameOpenSmokeStreamUrlAsync,
-  getK11GamesStateMachineSmokeStreamUrlAsync,
   getK11UnifiedSmokeStreamUrlAsync,
   getL3MonitorApiUrlAsync,
 } from "../../lib/api";
@@ -18,11 +17,23 @@ import {
 const DEFAULT_SMOKE_HOUR_BEIJING = 9;
 const DEFAULT_SMOKE_MINUTE_BEIJING = 0;
 
-type K11LogChannel = "unified" | "games";
+const DEFAULT_BIOS_HOUR_BEIJING = 10;
+const DEFAULT_BIOS_MINUTE_BEIJING = 0;
+const DEFAULT_BIOS_DAY_OFFSET = 1;
+
+function biosDayOptionLabel(offset: number): string {
+  if (offset <= 0) return "当日（维护日当天）";
+  if (offset === 1) return "次日";
+  return `第 ${offset + 1} 日`;
+}
+
+const BIOS_DAY_OFFSET_OPTIONS = Array.from({ length: 15 }, (_, i) => ({
+  value: i,
+  label: biosDayOptionLabel(i),
+}));
 
 export function K11UnifiedSmokeTest() {
   const scheduleLogLines = useK11ScheduleLogLines();
-  const [logTab, setLogTab] = useState<K11LogChannel>("unified");
   const [runs, setRuns] = useState(4);
   const [intervalSec, setIntervalSec] = useState(30);
   const [verbose, setVerbose] = useState(true);
@@ -34,18 +45,12 @@ export function K11UnifiedSmokeTest() {
   const [running, setRunning] = useState(false);
   /** 仅 L3 端口探测中；勿与 running 混用，否则未起 L3 时长时间禁用「启动」像卡死。 */
   const [l3Probing, setL3Probing] = useState(false);
-  /** 统合冒烟、游戏开门冒烟、P2/定时相关 SSE 行（不含游戏状态机独立标签） */
+  /** 统合冒烟、游戏开门冒烟、P2/定时相关 SSE 行 */
   const [unifiedLogs, setUnifiedLogs] = useState<string[]>([]);
-  /** 游戏状态机脚本的 SSE 行 */
-  const [gamesLogs, setGamesLogs] = useState<string[]>([]);
-  /** 当前子进程输出写入哪一路（用于停止时的提示行） */
-  const sseChannelRef = useRef<K11LogChannel | null>(null);
-  const displayLogs = useMemo(() => {
-    if (logTab === "games") {
-      return gamesLogs;
-    }
-    return [...scheduleLogLines, ...unifiedLogs];
-  }, [gamesLogs, logTab, scheduleLogLines, unifiedLogs]);
+  const displayLogs = useMemo(
+    () => [...scheduleLogLines, ...unifiedLogs],
+    [scheduleLogLines, unifiedLogs]
+  );
   const [doneOk, setDoneOk] = useState<boolean | null>(null);
   const [showNotify, setShowNotify] = useState(false);
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -55,6 +60,18 @@ export function K11UnifiedSmokeTest() {
   const [saveScheduleLoading, setSaveScheduleLoading] = useState(false);
   const [scheduleSaveBanner, setScheduleSaveBanner] = useState<string | null>(null);
   const scheduleSaveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  /** 发版公告生物钟（cron_thinker）：飞书邮箱/群 → 按维护日 + 偏移日 + 时刻登记统合冒烟 */
+  const [biosEnabled, setBiosEnabled] = useState(true);
+  const [biosDayOffset, setBiosDayOffset] = useState(DEFAULT_BIOS_DAY_OFFSET);
+  const [biosHourBeijing, setBiosHourBeijing] = useState(DEFAULT_BIOS_HOUR_BEIJING);
+  const [biosMinuteBeijing, setBiosMinuteBeijing] = useState(DEFAULT_BIOS_MINUTE_BEIJING);
+  const [biosEnvReleaseSmoke, setBiosEnvReleaseSmoke] = useState(true);
+  const [biosMailPollEnv, setBiosMailPollEnv] = useState(true);
+  const [biosSaveLoading, setBiosSaveLoading] = useState(false);
+  const [biosSaveBanner, setBiosSaveBanner] = useState<string | null>(null);
+  const [biosEnableLoading, setBiosEnableLoading] = useState(false);
+  const [biosSwitchLoading, setBiosSwitchLoading] = useState(false);
+  const biosSaveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const esRef = useRef<EventSource | null>(null);
   /** 打包环境 WebView2 下 EventSource 可能因瞬时错误触发 onerror，勿据此结束任务；节流提示日志。 */
@@ -65,6 +82,8 @@ export function K11UnifiedSmokeTest() {
       esRef.current?.close();
       setRunning(false);
       setL3Probing(false);
+      if (scheduleSaveTimerRef.current) window.clearTimeout(scheduleSaveTimerRef.current);
+      if (biosSaveTimerRef.current) window.clearTimeout(biosSaveTimerRef.current);
     },
     []
   );
@@ -114,24 +133,64 @@ export function K11UnifiedSmokeTest() {
     }
   }, []);
 
+  const refreshBiosSettings = useCallback(async () => {
+    const apply = async (bypass: boolean) => {
+      const url = await getL3MonitorApiUrlAsync("/api/v1/cron-thinker/bios-settings", {
+        bypassCache: bypass,
+      });
+      const res = await fetch(url);
+      const data = (await res.json()) as {
+        ok?: boolean;
+        settings?: {
+          enabled?: boolean;
+          day_offset?: number;
+          hour_beijing?: number;
+          minute_beijing?: number;
+        };
+        env?: { release_smoke?: boolean; mail_poll?: boolean };
+      };
+      if (data.settings) {
+        const s = data.settings;
+        if (typeof s.enabled === "boolean") setBiosEnabled(s.enabled);
+        if (typeof s.day_offset === "number")
+          setBiosDayOffset(Math.max(0, Math.min(14, s.day_offset)));
+        if (typeof s.hour_beijing === "number")
+          setBiosHourBeijing(Math.max(0, Math.min(23, s.hour_beijing)));
+        if (typeof s.minute_beijing === "number")
+          setBiosMinuteBeijing(Math.max(0, Math.min(59, s.minute_beijing)));
+      }
+      if (data.env) {
+        if (typeof data.env.release_smoke === "boolean") setBiosEnvReleaseSmoke(data.env.release_smoke);
+        if (typeof data.env.mail_poll === "boolean") setBiosMailPollEnv(data.env.mail_poll);
+      }
+    };
+    try {
+      await apply(false);
+    } catch {
+      try {
+        clearL3SkillsBaseUrlCache();
+        await apply(true);
+      } catch {
+        /* keep local state */
+      }
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void refreshScheduleStatus();
+    void refreshBiosSettings();
     const id = window.setInterval(() => {
-      if (!cancelled) void refreshScheduleStatus();
+      if (!cancelled) {
+        void refreshScheduleStatus();
+        void refreshBiosSettings();
+      }
     }, 15000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [refreshScheduleStatus]);
-
-  useEffect(
-    () => () => {
-      if (scheduleSaveTimerRef.current) window.clearTimeout(scheduleSaveTimerRef.current);
-    },
-    []
-  );
+  }, [refreshScheduleStatus, refreshBiosSettings]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -148,9 +207,7 @@ export function K11UnifiedSmokeTest() {
         message?: string;
       };
       const ok = res.ok && data?.ok !== false;
-      const setActive =
-        sseChannelRef.current === "games" ? setGamesLogs : setUnifiedLogs;
-      setActive((prev) => [
+      setUnifiedLogs((prev) => [
         ...prev,
         !ok
           ? "> 停止请求失败（HTTP）。"
@@ -164,10 +221,9 @@ export function K11UnifiedSmokeTest() {
         setRunning(false);
       }
     } catch {
-      const setActive = sseChannelRef.current === "games" ? setGamesLogs : setUnifiedLogs;
-      setActive((prev) => [...prev, "> 停止请求失败（网络）。"]);
+      setUnifiedLogs((prev) => [...prev, "> 停止请求失败（网络）。"]);
     }
-  }, [setGamesLogs, setUnifiedLogs]);
+  }, [setUnifiedLogs]);
 
   const handleScheduleToggle = useCallback(
     async (enabled: boolean) => {
@@ -292,16 +348,137 @@ export function K11UnifiedSmokeTest() {
     }
   }, [hourBeijing, hourlyRecurring, intervalSec, minuteBeijing, refreshScheduleStatus, runs, schedulerActive]);
 
+  const postBiosSettings = useCallback(async (patch: Record<string, unknown>) => {
+    const body = JSON.stringify({ ...patch, apply_runtime: true });
+    let url = await getL3MonitorApiUrlAsync("/api/v1/cron-thinker/bios-settings", { bypassCache: true });
+    let res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      clearL3SkillsBaseUrlCache();
+      url = await getL3MonitorApiUrlAsync("/api/v1/cron-thinker/bios-settings", { bypassCache: true });
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+    }
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      settings?: {
+        enabled?: boolean;
+        day_offset?: number;
+        hour_beijing?: number;
+        minute_beijing?: number;
+      };
+      runtime?: { ok?: boolean; reason?: string };
+    };
+    return { res, data };
+  }, []);
+
+  const handleSaveBiosTiming = useCallback(async () => {
+    setBiosSaveLoading(true);
+    setBiosSaveBanner(null);
+    try {
+      const d = Math.max(0, Math.min(14, Math.floor(biosDayOffset)));
+      const h = Math.max(0, Math.min(23, Math.floor(biosHourBeijing)));
+      const m = Math.max(0, Math.min(59, Math.floor(biosMinuteBeijing)));
+      const { res, data } = await postBiosSettings({
+        day_offset: d,
+        hour_beijing: h,
+        minute_beijing: m,
+      });
+      if (res.ok && data.ok !== false) {
+        const timeLabel = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+        const dayLbl = biosDayOptionLabel(d);
+        setBiosSaveBanner(
+          `已保存生物钟定时：维护日后 ${dayLbl} · 北京时间 ${timeLabel}（已写入本机配置并重挂轮询）。`
+        );
+        void refreshBiosSettings();
+      } else {
+        setBiosSaveBanner("保存失败，请重试或查看 L3 日志。");
+      }
+    } catch {
+      setBiosSaveBanner("保存失败（网络或 L3 未就绪）。");
+    } finally {
+      setBiosSaveLoading(false);
+      if (biosSaveTimerRef.current) window.clearTimeout(biosSaveTimerRef.current);
+      biosSaveTimerRef.current = window.setTimeout(() => {
+        setBiosSaveBanner(null);
+        biosSaveTimerRef.current = null;
+      }, 6000);
+    }
+  }, [biosDayOffset, biosHourBeijing, biosMinuteBeijing, postBiosSettings, refreshBiosSettings]);
+
+  const handleBiosSwitch = useCallback(
+    async (enabled: boolean) => {
+      setBiosSwitchLoading(true);
+      setBiosSaveBanner(null);
+      try {
+        const { res, data } = await postBiosSettings({ enabled });
+        if (res.ok && data.ok !== false) {
+          setBiosEnabled(enabled);
+          setBiosSaveBanner(
+            enabled
+              ? "生物钟已开启：识别到发版公告后将按已保存的「第几日 + 时刻」登记统合冒烟。"
+              : "生物钟已关闭：不再根据公告登记冒烟（邮箱轮询已停止）。"
+          );
+          void refreshBiosSettings();
+        } else {
+          setBiosSaveBanner("切换失败，请重试。");
+        }
+      } catch {
+        setBiosSaveBanner("切换失败（网络）。");
+      } finally {
+        setBiosSwitchLoading(false);
+        if (biosSaveTimerRef.current) window.clearTimeout(biosSaveTimerRef.current);
+        biosSaveTimerRef.current = window.setTimeout(() => {
+          setBiosSaveBanner(null);
+          biosSaveTimerRef.current = null;
+        }, 5000);
+      }
+    },
+    [postBiosSettings, refreshBiosSettings]
+  );
+
+  const handleBiosEnableNow = useCallback(async () => {
+    setBiosEnableLoading(true);
+    setBiosSaveBanner(null);
+    try {
+      const { res, data } = await postBiosSettings({ enabled: true });
+      if (res.ok && data.ok !== false) {
+        setBiosEnabled(true);
+        const rt = data.runtime;
+        const rtWarn =
+          rt && rt.ok === false && rt.reason === "cron_thinker_release_smoke_disabled"
+            ? " 提示：环境变量 JACHIN_CRON_THINKER_RELEASE_SMOKE 已关闭，整进程仍不会轮询公告。"
+            : "";
+        setBiosSaveBanner(`已执行「开启生物钟定时」并应用运行时。${rtWarn}`.trim());
+        void refreshBiosSettings();
+      } else {
+        setBiosSaveBanner("开启失败，请重试。");
+      }
+    } catch {
+      setBiosSaveBanner("开启失败（网络）。");
+    } finally {
+      setBiosEnableLoading(false);
+      if (biosSaveTimerRef.current) window.clearTimeout(biosSaveTimerRef.current);
+      biosSaveTimerRef.current = window.setTimeout(() => {
+        setBiosSaveBanner(null);
+        biosSaveTimerRef.current = null;
+      }, 6000);
+    }
+  }, [postBiosSettings, refreshBiosSettings]);
+
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [displayLogs]);
 
-  const connectSse = useCallback(
-    (streamUrl: string, initLogs: string[], notify: string, channel: K11LogChannel) => {
-      const setChannelLogs = channel === "unified" ? setUnifiedLogs : setGamesLogs;
-      sseChannelRef.current = channel;
+  const connectSse = useCallback((streamUrl: string, initLogs: string[], notify: string) => {
       setNotifyMsg(notify);
-      setChannelLogs(initLogs);
+      setUnifiedLogs(initLogs);
       setDoneOk(null);
       setExitCode(null);
       setShowNotify(false);
@@ -322,11 +499,10 @@ export function K11UnifiedSmokeTest() {
               setExitCode(null);
             }
             if (cancelled) {
-              setChannelLogs((prev) => [...prev, "> █ 已中断。"]);
+              setUnifiedLogs((prev) => [...prev, "> █ 已中断。"]);
             }
-            setChannelLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
+            setUnifiedLogs((prev) => [...prev, `> █ 任务结束，退出码: ${String(data.exit_code ?? "?")}。`]);
             setRunning(false);
-            sseChannelRef.current = null;
             eventSource.close();
             if (ok) {
               setShowNotify(true);
@@ -336,15 +512,14 @@ export function K11UnifiedSmokeTest() {
           }
           if (data.type === "error") {
             const msg = typeof data.message === "string" ? data.message : "未知错误";
-            setChannelLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
+            setUnifiedLogs((prev) => [...prev, `> [ERROR] ${msg}`]);
             setRunning(false);
-            sseChannelRef.current = null;
             setDoneOk(false);
             eventSource.close();
             return;
           }
           if (typeof data.line === "string") {
-            setChannelLogs((prev) => [...prev, `> ${data.line}`]);
+            setUnifiedLogs((prev) => [...prev, `> ${data.line}`]);
           }
         } catch {
           /* ignore */
@@ -358,20 +533,20 @@ export function K11UnifiedSmokeTest() {
           const hint = import.meta.env.DEV
             ? "请确认 L3 已启动且本页开发代理 /l3 可用。"
             : "请确认本机 L3 已跑起来；若仅 SSE 已断、子进程仍在，请点「停止」。";
-          setChannelLogs((prev) => [...prev, `> [WARN] SSE 已结束（无自动重连）。${hint}`]);
+          setUnifiedLogs((prev) => [...prev, `> [WARN] SSE 已结束（无自动重连）。${hint}`]);
           return;
         }
         const now = Date.now();
         if (now - sseTransientWarnAtRef.current > 8000) {
           sseTransientWarnAtRef.current = now;
-          setChannelLogs((prev) => [
+          setUnifiedLogs((prev) => [
             ...prev,
             "> [INFO] SSE 连接异常或抖动（可能自动重试）；未收到任务结束信令前仍可点「停止」。",
           ]);
         }
       };
     },
-    [setGamesLogs, setUnifiedLogs]
+    [setUnifiedLogs]
   );
 
   const handleStart = useCallback(() => {
@@ -382,7 +557,6 @@ export function K11UnifiedSmokeTest() {
       setL3Probing(true);
       setDoneOk(null);
       setExitCode(null);
-      setLogTab("unified");
       setUnifiedLogs([
         "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行回退）…",
         "> 若失败将很快报 [ERROR]；本机 L3 未起时请运行 run_l3.bat 或主程序同目录 l3 侧车。",
@@ -412,8 +586,7 @@ export function K11UnifiedSmokeTest() {
           `> 计划: ${r} 轮, 轮次间隔: ${i} 秒（目标/ CDP 由 .env 与脚本默认站）`,
           "> 连接 L3 SSE 流…",
         ],
-        "K11 统合冒烟已完成（退出码 0）",
-        "unified"
+        "K11 统合冒烟已完成（退出码 0）"
       );
     })();
   }, [connectSse, intervalSec, noLark, runs, verbose]);
@@ -424,7 +597,6 @@ export function K11UnifiedSmokeTest() {
       setL3Probing(true);
       setDoneOk(null);
       setExitCode(null);
-      setLogTab("unified");
       setUnifiedLogs([
         "> 正在探测本机 L3 技能 HTTP（/api/v3/skills，多端口并行）…",
         "> 模式：游戏模块冒烟（test_k11_game_open_smoke.py -v）",
@@ -452,55 +624,10 @@ export function K11UnifiedSmokeTest() {
           "> 等效: python scripts/test_k11_game_open_smoke.py -v",
           "> 连接 L3 SSE 流…",
         ],
-        "K11 游戏模块冒烟已完成（退出码 0）",
-        "unified"
+        "K11 游戏模块冒烟已完成（退出码 0）"
       );
     })();
   }, [connectSse, noLark, verbose]);
-
-  const handleStartGamesStateMachine = useCallback(() => {
-    void (async () => {
-      esRef.current?.close();
-      const r = Math.max(1, Math.min(99, Math.floor(runs) || 4));
-      const i = Math.max(0, Math.min(3600, Math.floor(intervalSec) || 0));
-      setL3Probing(true);
-      setDoneOk(null);
-      setExitCode(null);
-      setLogTab("games");
-      setGamesLogs([
-        "> 正在探测本机 L3 技能 HTTP（/api/v3/skills）…",
-        "> 将执行：scripts/test_k11_smoke_games_state_machine_playwright.py",
-      ]);
-      let streamUrl: string;
-      try {
-        streamUrl = await getK11GamesStateMachineSmokeStreamUrlAsync({
-          verbose,
-          noLarkReport: noLark,
-          runs: r,
-          interval: i,
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setGamesLogs([
-          `> [ERROR] 连不上 L3：${msg}`,
-          "> 请确认 L3 已运行。",
-        ]);
-        return;
-      } finally {
-        setL3Probing(false);
-      }
-      connectSse(
-        streamUrl,
-        [
-          "> 初始化 K11 游戏状态机冒烟（Playwright）…",
-          `> 计划: ${r} 轮, 轮次间隔: ${i} 秒`,
-          "> 连接 L3 SSE 流…",
-        ],
-        "K11 游戏状态机冒烟已完成（退出码 0）",
-        "games"
-      );
-    })();
-  }, [connectSse, intervalSec, noLark, runs, verbose]);
 
   /** 探测 L3 与执行冒烟：合并后控制「启动」灰显，避免仅 running 在探测期误判为整轮执行中。 */
   const l3OrRun = l3Probing || running;
@@ -535,9 +662,6 @@ export function K11UnifiedSmokeTest() {
             {" · "}
             开门：
             <span className="font-mono text-cyan-600/90">test_k11_game_open_smoke.py</span>
-            {" · "}
-            状态机：
-            <span className="font-mono text-cyan-600/90">test_k11_smoke_games_state_machine_playwright.py</span>
           </p>
         </div>
       </header>
@@ -619,20 +743,6 @@ export function K11UnifiedSmokeTest() {
               title="python scripts/test_k11_game_open_smoke.py -v"
             >
               {l3Probing ? "探测 L3…" : "🎮 游戏模块开门冒烟"}
-            </button>
-            <button
-              type="button"
-              disabled={l3OrRun}
-              onClick={handleStartGamesStateMachine}
-              className={cn(
-                "rounded-lg border px-4 py-2.5 text-sm font-bold transition-all",
-                l3OrRun
-                  ? "cursor-not-allowed border-slate-700 bg-slate-900/50 text-slate-600"
-                  : "border-violet-500/45 bg-violet-950/35 text-violet-100 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-900/45"
-              )}
-              title="test_k11_smoke_games_state_machine_playwright.py"
-            >
-              {l3Probing ? "探测 L3…" : "🎮 游戏状态机冒烟"}
             </button>
             <button
               type="button"
@@ -764,47 +874,123 @@ export function K11UnifiedSmokeTest() {
             </label>
           </div>
         </div>
+
+        <div className="flex flex-col gap-3 border-t border-amber-500/25 pt-4">
+          <div className="text-xs font-medium text-amber-200/90">🧬 发版公告生物钟（cron_thinker）</div>
+          <p className="text-[11px] leading-relaxed text-amber-700/90">
+            与上方「每日统合冒烟」独立：在识别到「生产环境发版维护公告」后，按维护日与下列「第几日 + 时刻」登记一次统合冒烟（飞书邮箱轮询 /
+            群消息 / HTTP 投递）。
+          </p>
+          <p className="text-[11px] leading-relaxed text-amber-600/85">
+            公告正文「【维护时间】」里<strong>只解析日期</strong>（年-月-日）作为维护日；下面「时 / 分」才是<strong>统合冒烟执行时刻</strong>（北京），与公告里的维护窗口钟点无关。若维护日选「当日」而该时刻已过，请先调晚时刻并保存，等待邮箱下一轮轮询重试；若仍不触发，可检查本机{" "}
+            <span className="font-mono text-amber-500/90">~/.jachin/data/cron_thinker_mail_seen.json</span> 是否曾错误标为已读。
+          </p>
+          {!biosEnvReleaseSmoke && (
+            <p className="text-xs text-rose-400/90">
+              当前环境变量 JACHIN_CRON_THINKER_RELEASE_SMOKE 已关闭，生物钟不会在 L3 进程内生效。
+            </p>
+          )}
+          {!biosMailPollEnv && biosEnvReleaseSmoke && (
+            <p className="text-xs text-amber-600/85">
+              环境变量已关闭邮箱轮询（JACHIN_CRON_THINKER_MAIL_POLL）；仍可通过飞书群或 HTTP 触发登记。
+            </p>
+          )}
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1 text-xs text-amber-600/85">
+              维护日后第几天执行
+              <select
+                value={biosDayOffset}
+                disabled={l3OrRun}
+                onChange={(e) => setBiosDayOffset(Number(e.target.value))}
+                className="min-w-[220px] rounded border border-amber-500/35 bg-black/60 px-2 py-1.5 text-amber-100 outline-none focus:border-amber-400/60"
+              >
+                {BIOS_DAY_OFFSET_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-amber-600/85">
+              时（北京）
+              <input
+                type="number"
+                min={0}
+                max={23}
+                value={biosHourBeijing}
+                disabled={l3OrRun}
+                onChange={(e) => setBiosHourBeijing(Number(e.target.value))}
+                className="w-16 rounded border border-amber-500/35 bg-black/60 px-2 py-1.5 font-mono text-amber-100 outline-none focus:border-amber-400/60"
+              />
+            </label>
+            <span className="mb-2 text-amber-500/50">:</span>
+            <label className="flex flex-col gap-1 text-xs text-amber-600/85">
+              分
+              <input
+                type="number"
+                min={0}
+                max={59}
+                value={biosMinuteBeijing}
+                disabled={l3OrRun}
+                onChange={(e) => setBiosMinuteBeijing(Number(e.target.value))}
+                className="w-16 rounded border border-amber-500/35 bg-black/60 px-2 py-1.5 font-mono text-amber-100 outline-none focus:border-amber-400/60"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={l3OrRun || biosSaveLoading}
+              onClick={() => void handleSaveBiosTiming()}
+              className={cn(
+                "mb-0.5 rounded-lg border px-4 py-2 text-xs font-semibold transition",
+                l3OrRun || biosSaveLoading
+                  ? "cursor-not-allowed border-slate-700 text-slate-500"
+                  : "border-amber-500/50 bg-amber-950/40 text-amber-100 hover:border-amber-400/50 hover:bg-amber-900/35"
+              )}
+            >
+              {biosSaveLoading ? "保存中…" : "保存生物钟定时"}
+            </button>
+            <button
+              type="button"
+              disabled={l3OrRun || biosEnableLoading}
+              onClick={() => void handleBiosEnableNow()}
+              title="打开生物钟并立即重挂邮箱轮询（与总开关一致）"
+              className={cn(
+                "mb-0.5 rounded-lg px-4 py-2 text-xs font-semibold transition",
+                l3OrRun || biosEnableLoading
+                  ? "cursor-not-allowed bg-slate-800 text-slate-500"
+                  : "bg-amber-500/90 text-black hover:bg-amber-400"
+              )}
+            >
+              {biosEnableLoading ? "开启中…" : "开启生物钟定时"}
+            </button>
+          </div>
+          {biosSaveBanner && (
+            <p className="text-xs leading-relaxed text-emerald-400/90" role="status">
+              {biosSaveBanner}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="max-w-xl text-xs text-amber-600/85">
+              关闭开关后：不再轮询邮箱，也不再根据公告登记新的冒烟任务（已登记的到期仍会执行）。
+            </span>
+            <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-amber-600/90">
+              <span className="select-none">生物钟总开关</span>
+              <input
+                type="checkbox"
+                role="switch"
+                className="h-4 w-9 cursor-pointer appearance-none rounded-full border border-amber-500/40 bg-black/70 transition checked:bg-amber-600/80 disabled:opacity-40"
+                checked={biosEnabled}
+                disabled={biosSwitchLoading}
+                onChange={(e) => void handleBiosSwitch(e.target.checked)}
+              />
+            </label>
+          </div>
+        </div>
       </section>
 
       <section className="flex min-h-0 flex-1 flex-col gap-2">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-[11px] font-medium uppercase tracking-[0.2em] text-cyan-600/75">
-            # MIND STREAM :: K11 SMOKE
-          </div>
-          <div
-            className="flex w-full max-w-md gap-1 rounded-lg border border-cyan-500/20 bg-black/40 p-0.5 sm:w-auto"
-            role="tablist"
-            aria-label="日志来源"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={logTab === "unified"}
-              onClick={() => setLogTab("unified")}
-              className={cn(
-                "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-mono transition sm:flex-initial",
-                logTab === "unified"
-                  ? "bg-cyan-500/25 text-cyan-100 shadow-[inset_0_0_12px_rgba(34,211,238,0.12)]"
-                  : "text-cyan-600/80 hover:bg-white/5 hover:text-cyan-300"
-              )}
-            >
-              统合全量 / 开门冒烟 / 定时
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={logTab === "games"}
-              onClick={() => setLogTab("games")}
-              className={cn(
-                "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-mono transition sm:flex-initial",
-                logTab === "games"
-                  ? "bg-violet-500/25 text-violet-100 shadow-[inset_0_0_12px_rgba(139,92,246,0.12)]"
-                  : "text-violet-600/80 hover:bg-white/5 hover:text-violet-200"
-              )}
-            >
-              游戏状态机
-            </button>
-          </div>
+        <div className="text-[11px] font-medium uppercase tracking-[0.2em] text-cyan-600/75">
+          # MIND STREAM :: K11 SMOKE（统合 / 开门 / 定时）
         </div>
         <div
           className={cn(
@@ -813,26 +999,17 @@ export function K11UnifiedSmokeTest() {
             "[text-shadow:0_0_10px_rgba(6,182,212,0.12)]"
           )}
         >
-          {displayLogs.length === 0 && !l3OrRun && logTab === "unified" && (
+          {displayLogs.length === 0 && !l3OrRun && (
             <div className="text-cyan-700/65">
               本页为<strong className="text-cyan-500/85">统合全量</strong>、<strong className="text-cyan-500/85">游戏开门冒烟</strong>
-              与「定时到点流」的合并区（上方先行）。点「启动统合冒烟」走手动脉冲
-              SSE；开「到点批跑」后，开关/到点/脚本输出会经定时 SSE 与上方说明一并出现在此。可用右侧标签切到
-              <strong className="text-violet-400/85"> 游戏状态机 </strong>查看另一路输出。
-            </div>
-          )}
-          {displayLogs.length === 0 && !l3OrRun && logTab === "games" && (
-            <div className="text-violet-500/80">
-              本标签仅显示
-              <code className="mx-0.5 text-violet-300/90">test_k11_smoke_games_state_machine_playwright.py</code>
-              的 SSE 行。点「游戏状态机冒烟」开始；与统合全量<strong className="font-normal"> 互斥</strong>
-              ，同一时间只跑一条子进程。
+              与「定时到点流」的合并区（上方先行）。点「启动统合冒烟」走手动脉冲 SSE；开「到点批跑」后，开关/到点/脚本输出会经定时
+              SSE 与上方说明一并出现在此。
             </div>
           )}
           {displayLogs.length === 0 && l3OrRun && (
             <div className="text-cyan-600/80">
               已请求（探测 L3 或已连 SSE）… 若长期无新行：本机 L3 未起、或 127.0.0.1:1899x 被拦截；侧车未随主程序启动时检查 run_l3.bat / 勿设
-              JACHIN_SKIP_L3_SPAWN=1。当前任务输出在对应来源标签下（可切换标签，执行中请留在正在跑的那一路）。
+              JACHIN_SKIP_L3_SPAWN=1。
             </div>
           )}
           {displayLogs.map((log, index) => (

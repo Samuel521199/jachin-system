@@ -1,0 +1,7 @@
+﻿# GameQA MCP（L3 本地 stdio）路径: l3_client/local_mcps/gameqa_mcp/
+mcp>=1.0.0
+playwright>=1.40.0
+filelock>=3.13.0
+# YOLO 视觉（可选）；未安装或未设 GAMEQA_YOLO_MODEL 时回退 Mock
+ultralytics>=8.3.48
+pillow>=9.5.0

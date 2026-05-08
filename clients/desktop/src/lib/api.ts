@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -1400,28 +1400,6 @@ export async function getK11P2CompatOnlyStreamUrlAsync(opts?: {
   return `${base}${rel}`;
 }
 
-/** K11 游戏状态机轻量冒烟 SSE（`scripts/test_k11_smoke_games_state_machine_playwright.py`） */
-export async function getK11GamesStateMachineSmokeStreamUrlAsync(opts?: {
-  targetUrl?: string;
-  cdpHttp?: string;
-  verbose?: boolean;
-  noLarkReport?: boolean;
-  runs?: number;
-  interval?: number;
-}): Promise<string> {
-  const sp = new URLSearchParams();
-  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
-  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
-  if (opts?.verbose) sp.set("verbose", "1");
-  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
-  if (opts?.runs != null) sp.set("runs", String(opts.runs));
-  if (opts?.interval != null) sp.set("interval", String(opts.interval));
-  const q = sp.toString();
-  const rel = `/api/v1/k11-games-state-machine-smoke/stream${q ? `?${q}` : ""}`;
-  const base = await getL3SkillsBaseUrl();
-  return `${base}${rel}`;
-}
-
 /** K11 游戏模块开门冒烟 SSE：执行 test_k11_game_open_smoke.py */
 export async function getK11GameOpenSmokeStreamUrlAsync(opts?: {
   targetUrl?: string;
@@ -1438,6 +1416,36 @@ export async function getK11GameOpenSmokeStreamUrlAsync(opts?: {
   const rel = `/api/v1/k11-game-open-smoke/stream${q ? `?${q}` : ""}`;
   const base = await getL3SkillsBaseUrl();
   return `${base}${rel}`;
+}
+
+/** GameQA：实时日志 SSE（L3 内 Playwright 会话 · 控制台 MIND STREAM） */
+export async function getGameQALogStreamUrlAsync(opts?: { bypassCache?: boolean }): Promise<string> {
+  const base = await getL3SkillsBaseUrl(opts);
+  return `${base}/api/v1/gameqa/log-stream`;
+}
+
+/** GameQA：POST JSON 到 ``/api/v1/gameqa/<suffix>``（suffix 如 ``launch-test``，勿带前缀斜杠时可带） */
+export async function postGameQAJson(
+  suffix: string,
+  body: Record<string, unknown>,
+  opts?: { bypassCache?: boolean }
+): Promise<Response> {
+  const s = suffix.replace(/^\//, "");
+  const url = await resolveL3MonitorApiUrl(`/api/v1/gameqa/${s}`, opts);
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** GameQA：GET 完整 URL ``/api/v1/gameqa/<suffix>?query`` */
+export async function getGameQAUrlRaw(
+  suffixAndQuery: string,
+  opts?: { bypassCache?: boolean }
+): Promise<string> {
+  const sq = suffixAndQuery.startsWith("/") ? suffixAndQuery.slice(1) : suffixAndQuery;
+  return resolveL3MonitorApiUrl(`/api/v1/gameqa/${sq}`, opts);
 }
 
 /** Kalaroko 巡检矩阵 SSE：先探测 L3（等同 ``resolveKalarokoMonitorStreamUrl``） */

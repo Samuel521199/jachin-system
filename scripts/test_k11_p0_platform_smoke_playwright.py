@@ -18,7 +18,7 @@ K11 平台冒烟 · P0（文档《K11_平台冒烟测试用例》约 31–39 行
 用法（仓库根）：
   python scripts/test_k11_p0_platform_smoke_playwright.py
   python scripts/test_k11_p0_platform_smoke_playwright.py --target-url https://www.kalaroko.com/
-  python scripts/test_k11_p0_platform_smoke_playwright.py --target-url https://www.herontest.xin/
+  python scripts/test_k11_p0_platform_smoke_playwright.py --target-url https://www.kalaroko.com/
   python scripts/test_k11_p0_platform_smoke_playwright.py --require-existing-tab
   python scripts/test_k11_p0_platform_smoke_playwright.py -v --json-out out/k11_p0.json
 
@@ -63,7 +63,7 @@ except ImportError:
 except OSError:
     pass
 
-# 与文档示例一致；可用 --target-url 指向 herontest 等
+# 与文档示例一致；可用 --target-url 指向 www.kalaroko.com 等
 DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 CASE_DEFS: list[tuple[str, str]] = [

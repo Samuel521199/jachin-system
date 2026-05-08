@@ -1,13 +1,13 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-K11 P1 · 独立 Playwright 冒烟：可选读取 SKILL_P1_MODULES.md 中的 ### p1_* 顺序；缺省文件时用内置 P1 用例列表。连接已由 launch_chrome_debug.ps1 启动的 Chrome，检测 herontest.xin。
+K11 P1 · 独立 Playwright 冒烟：可选读取 SKILL_P1_MODULES.md 中的 ### p1_* 顺序；缺省文件时用内置 P1 用例列表。连接已由 launch_chrome_debug.ps1 启动的 Chrome，默认站点 www.kalaroko.com。
 
 **不经过 L3**：仅用本机 Playwright CDP 附加，适合快速验证「调试 Chrome + 目标站」是否就绪。
 
 前置：
   1) 运行 ``scripts/launch_chrome_debug.ps1``（默认 ``--remote-debugging-port=9222``），可选传入 URL：
-       .\\scripts\\launch_chrome_debug.ps1 \"https://www.herontest.xin/\"
+       .\\scripts\\launch_chrome_debug.ps1 \"https://www.kalaroko.com/\"
   2) 仓库根 ``.env`` 设置 ``KALAROKO_CDP_ENDPOINT=http://127.0.0.1:9222``（端口与上一步一致）。
   3) ``pip install playwright`` 且 ``playwright install chromium``（connect_over_cdp 仍需浏览器驱动）。
 
@@ -15,7 +15,7 @@ K11 P1 · 独立 Playwright 冒烟：可选读取 SKILL_P1_MODULES.md 中的 ###
   python scripts/test_k11_p1_skill_herontest_playwright.py
   python scripts/test_k11_p1_skill_herontest_playwright.py -v
         # -v / --verbose：打印 [诊断] tablist 快照、Home/Party 各策略失败原因（定位底栏无 ARIA 等）
-  python scripts/test_k11_p1_skill_herontest_playwright.py --target-url https://www.herontest.xin/
+  python scripts/test_k11_p1_skill_herontest_playwright.py --target-url https://www.kalaroko.com/
   python scripts/test_k11_p1_skill_herontest_playwright.py --cdp-http http://127.0.0.1:9222
   python scripts/test_k11_p1_skill_herontest_playwright.py --navigate-if-no-tab
         # 若无含目标域名的标签页，则对当前 context 执行一次 goto（调试用；正式验收请手工摆页）
@@ -58,7 +58,7 @@ except OSError:
     pass
 
 DEFAULT_SKILL = ROOT / "skills_repo" / "k11-herontest-browser-qa" / "SKILL_P1_MODULES.md"
-DEFAULT_TARGET = "https://www.herontest.xin/"
+DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 
 def _kalaroko_cdp(cli: str | None) -> str:
@@ -1904,7 +1904,7 @@ async def _async_main(args: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="可选读取 SKILL Markdown 中的 ### p1_* 用例顺序；文件不存在时用内置 P1 列表。Playwright CDP 在已打开的 herontest.xin 上跑启发式验收",
+        description="可选读取 SKILL Markdown 中的 ### p1_* 用例顺序；文件不存在时用内置 P1 列表。Playwright CDP 在已打开的站点（默认 www.kalaroko.com）上跑启发式验收",
     )
     ap.add_argument(
         "--skill-md",
@@ -1915,7 +1915,7 @@ def main() -> int:
     ap.add_argument(
         "--target-url",
         default=DEFAULT_TARGET,
-        help="期望测试的站点（用于匹配标签页 host；默认 herontest.xin）",
+        help="期望测试的站点（用于匹配标签页 host；默认 www.kalaroko.com）",
     )
     ap.add_argument("--cdp-http", default="", help="覆盖 KALAROKO_CDP_ENDPOINT")
     ap.add_argument(

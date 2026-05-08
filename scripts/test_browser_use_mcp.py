@@ -1,8 +1,8 @@
 ﻿#!/usr/bin/env python3
 """
-Browser-Use MCP：以 Agent 为「手脚」执行 K11 / herontest 等平台 P0 冒烟用例，并输出测试结果。
+Browser-Use MCP：以 Agent 为「手脚」执行 K11 / www.kalaroko.com 等平台 P0 冒烟用例，并输出测试结果。
 
-默认站点：https://www.herontest.xin/
+默认站点：https://www.kalaroko.com/
 
 前置：
   pip install uv mcp python-dotenv（可选）
@@ -132,7 +132,7 @@ except ImportError:
     print("缺少 mcp SDK，请安装: pip install mcp>=1.0.0")
     sys.exit(1)
 
-DEFAULT_URL = "https://www.herontest.xin/"
+DEFAULT_URL = "https://www.kalaroko.com/"
 DEFAULT_CDP_HTTP = "http://127.0.0.1:9222"
 # browser-use 默认 TIMEOUT_NavigateToUrlEvent=30，SPA 切 Tab 时易误超时并写入 errors 列表
 DEFAULT_NAV_EVENT_TIMEOUT_SEC = 60.0

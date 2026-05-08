@@ -1,8 +1,8 @@
-"""
+﻿"""
 PMO/BMO 主技能 — Pipeline A
 
-0. （可选）operation=export_pmo_tables：六张 K11 多维表 → JSON ~/.jachin/client_volumes/PMO/raw、
-   MD docs/pmo_bmo_plugin/raw、DuckDB ~/.jachin/client_volumes/PMO/duckdb/pmo.duckdb
+0. （可选）operation=export_pmo_tables：**3** 张 K11 多维表（产品细表 + 开发 + 美术）→ JSON ~/.jachin/client_volumes/PMO/raw、
+   MD docs/pmo_bmo_plugin/raw、DuckDB ~/.jachin/client_volumes/PMO/duckdb/pmo.duckdb（**不再**拉取云文档「需求大表」以免耗时）
 1. mcp:atom_pmo_lark_doc sync — Wiki 全量同步 → project_progress_daily/ 等
 2. mcp:atom_pmo_knowledge_base — 分块 ingest → corpus/
 
@@ -20,7 +20,7 @@ PMO/BMO 主技能 — Pipeline A
 
 **大需求 ↔ 执行人员（按 dev_by_assignee / art_by_designer 视图 NL 匹配，脚本写 `PMO_需求人员参与明细.md`）**
 
-- `write_pmo_requirement_participants_markdown_from_raw()`：读取 coarse + `dev_tasks_by_assignee` + `art_tasks_by_designer`，将每人任务归到对应大需求下并估算完成度。
+- `write_pmo_requirement_participants_markdown_from_raw()`：锚点来自 coarse（若仍有旧 JSON）或 **req_march_fine**；开发/美术来自 core/completed 或按人视图。
 - `person-stats` / `full` 第三步在 raw 齐全时会 **额外尝试** 生成该文件；独立跑：`python -m l3_node.primitives.skills.pmo_bmo.main_skill req-participants`
 
 **领导视图与周负荷摘要（脚本写 `PMO_领导视图与周负荷摘要.md`，供飞书卡片文案与多维表提纯对齐）**
@@ -28,7 +28,7 @@ PMO/BMO 主技能 — Pipeline A
 - `write_pmo_leadership_weekly_brief_markdown_from_raw()`：汇总本周周负荷、细需求全表（按优先级）、大需求主线（可选 coarse）、Sprint→需求、产品责任人→细需求、可粘贴 lark_md 摘录块。
 - 在 `person-stats` / `full` 第三步中，在三张主 MD 之后 **自动生成**（依赖 fine + dev_core + art；coarse 缺失时跳过主线小节）。
 
-**业务一条龙（①六表拉取 → ②③生成 docs/pmo_bmo_plugin/output → ④仪表盘提纯 CSV + 可选 Lark）**
+**业务一条龙（①四表拉取 → ②③生成 docs/pmo_bmo_plugin/output → ④仪表盘提纯 CSV + 可选 Lark）**
 
 - `run_pmo_full_business_pipeline()`；CLI：`python -m l3_node.primitives.skills.pmo_bmo.main_skill full`（可加 `--skip-output-docs`：仅 ①+④，不跑 ②③）
 - **仅根据已有 raw 生成 output 文档（与拉表解耦）**：`run_pmo_output_docs_from_raw()`；CLI：`output-docs`
@@ -36,14 +36,14 @@ PMO/BMO 主技能 — Pipeline A
 配置: config/skills/com.jachin.pmo.bmo/pmo_bmo.yaml（lark、pipeline.export_scheduled_tables）。
 凭证写在 pmo_bmo.yaml 的 lark 即可；atom_pmo_lark_doc 会优先 MCP/环境变量，缺失或为 ${...} 占位时回退读该 YAML。
 
-大需求表（req_march_coarse）为云文档内表格时：优先 **pipeline.pmo_export.docx_document_ids.req_march_coarse**，其次环境变量 **PMO_REQ_MARCH_COARSE_DOCX_ID**，最后使用内置默认 **PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID**（K11「需求表3月」云文档 token，可被前两步覆盖）。
+（可选）若本地仍保留历史 ``req_march_coarse.json``：可配 ``pipeline.pmo_export.docx_document_ids`` / ``PMO_REQ_MARCH_COARSE_DOCX_ID``；默认导出流程**不再生成**该文件。
 
-单独测「只抓六表」：在项目根执行
+单独测「只抓三表」：在项目根执行
   python -m l3_node.primitives.skills.pmo_bmo.main_skill
 对齐任务单（导出 + 打印 JSON 上下文）：  python -m l3_node.primitives.skills.pmo_bmo.main_skill align
 人员任务统计任务单：  python -m l3_node.primitives.skills.pmo_bmo.main_skill person-stats
-  大需求执行人员明细（需 coarse + 按人/按设计人 三 JSON）：python -m l3_node.primitives.skills.pmo_bmo.main_skill req-participants
-**业务一条龙（推荐）**：按顺序执行 ①六表拉取 → ②大需求进度任务单 → ③按人任务分配任务单
+  大需求执行人员明细（锚点 coarse 或 fine + dev/art raw）：python -m l3_node.primitives.skills.pmo_bmo.main_skill req-participants
+**业务一条龙（推荐）**：按顺序执行 ①三表拉取 → ②大需求进度任务单 → ③按人任务分配任务单
   python -m l3_node.primitives.skills.pmo_bmo.main_skill full
   仅生成 docs/pmo_bmo_plugin/output（依赖已有 ~/.jachin/.../PMO/raw，不拉表）：python -m l3_node.primitives.skills.pmo_bmo.main_skill output-docs
   一条龙但跳过文档环节（只拉表+仪表盘）：python -m l3_node.primitives.skills.pmo_bmo.main_skill full --skip-output-docs
@@ -235,7 +235,7 @@ def _log_pmo_skill_json(lg: logging.Logger, label: str, payload: Any) -> None:
 def _log_pmo_skill_cli_entry(argv: list[str], log_path: Path) -> str:
     """
     记录 CLI 完整 argv 与路由结果。
-    默认无参数 = 仅六表导出，不会进入 align / person-stats，故日志中不会出现那两类任务单函数名。
+    默认无参数 = 仅计划表导出（四张），不会进入 align / person-stats，故日志中不会出现那两类任务单函数名。
     """
     lg = logging.getLogger("pmo_bmo_skill")
     lg.info("======== PMO skill CLI 路由诊断 ========")
@@ -251,7 +251,7 @@ def _log_pmo_skill_cli_entry(argv: list[str], log_path: Path) -> str:
         _skip_od = "--skip-output-docs" in _rest
         lg.info(
             "路由模式=【full】→ 将调用 run_pmo_full_business_pipeline(skip_output_docs=%s)："
-            "[1]六表拉取 → [2+3]output 文档（run_pmo_output_docs_from_raw，可跳过）→ [4]仪表盘提纯+Lark",
+            "[1]四表拉取 → [2+3]output 文档（run_pmo_output_docs_from_raw，可跳过）→ [4]仪表盘提纯+Lark",
             _skip_od,
         )
     elif a1l in ("output-docs", "pmo-output-docs", "gen-output-md", "output-md"):
@@ -293,14 +293,14 @@ def _log_pmo_skill_cli_entry(argv: list[str], log_path: Path) -> str:
         )
     elif a1 == "":
         mode = "export_only"
-        lg.info("路由模式=【export_only】→ 将调用 run_pmo_export_scheduled_tables_only()（仅六表导出）")
+        lg.info("路由模式=【export_only】→ 将调用 run_pmo_export_scheduled_tables_only()（仅四表导出）")
         lg.info(
             "重要: 默认命令【不会】执行大需求对齐或人员统计；"
             "这两项是独立子命令，仅在 align / person-stats 时进入对应函数并打任务单日志。"
         )
     else:
         mode = "export_only_fallback"
-        lg.warning("路由模式=【export_only】首参 argv[1]=%r 未识别，仍只执行六表导出", a1)
+        lg.warning("路由模式=【export_only】首参 argv[1]=%r 未识别，仍只执行四表导出", a1)
 
     lg.info(
         "子命令速查: 无参=仅导出 | full=业务一条龙(①→②③→④) | output-docs=仅生成 output MD(依赖已有 raw) | "
@@ -318,7 +318,7 @@ def _log_pmo_skill_cli_entry(argv: list[str], log_path: Path) -> str:
 def _log_pmo_skill_export_only_scope(slg: logging.Logger) -> None:
     """标明「仅导出」与其它 skill 能力的关系，避免日志误解。"""
     slg.info("---------- 本函数范围：run_pmo_export_scheduled_tables_only ----------")
-    slg.info("【会执行】run_pmo_lark_doc(operation=export_pmo_tables) → 六表 JSON/MD/DuckDB")
+    slg.info("【会执行】run_pmo_lark_doc(operation=export_pmo_tables) → 四表 JSON/MD/DuckDB")
     slg.info("【不会执行】run_pmo_big_requirement_alignment_task（大需求对齐任务单）")
     slg.info("【不会执行】run_pmo_person_task_stats_task（按人任务统计任务单）")
     slg.info("【不会执行】run_pmo_knowledge_sync（Wiki sync + knowledge_base ingest）")
@@ -343,17 +343,31 @@ def is_pmo_bmo_intent(text: str) -> bool:
 
 # 与 tool_pmo_bitable_export.PMO_SCHEDULED_BITABLES 中 slug 一致（用于 raw 完整性检查）
 PMO_SCHEDULED_EXPORT_SLUGS: tuple[str, ...] = (
-    "req_march_fine",
     "req_march_coarse",
+    "req_march_fine",
     "dev_tasks_view_core",
-    "dev_tasks_by_assignee",
     "art_tasks_completed",
-    "art_tasks_by_designer",
 )
 
 
+def _pmo_resolve_dev_raw_for_people(json_dir: Path, snap: str) -> Path:
+    """人员统计：存在则优先 ``dev_tasks_by_assignee``，否则 ``dev_tasks_view_core``（当前默认同三表导出）。"""
+    by_a = json_dir / f"{snap}_dev_tasks_by_assignee.json"
+    if by_a.is_file():
+        return by_a
+    return json_dir / f"{snap}_dev_tasks_view_core.json"
+
+
+def _pmo_resolve_art_raw_for_people(json_dir: Path, snap: str) -> Path:
+    """人员统计：存在则优先 ``art_tasks_by_designer``，否则 ``art_tasks_completed``。"""
+    by_d = json_dir / f"{snap}_art_tasks_by_designer.json"
+    if by_d.is_file():
+        return by_d
+    return json_dir / f"{snap}_art_tasks_completed.json"
+
+
 def pmo_client_raw_snapshot_complete(raw_dir: Path, snap: str) -> bool:
-    """``~/.jachin/.../PMO/raw`` 下是否存在 ``{snap}_<slug>.json`` 六张齐全。"""
+    """``~/.jachin/.../PMO/raw`` 下是否存在 ``{snap}_<slug>.json`` 计划导出四张表齐全。"""
     s = (snap or "").strip()[:10]
     if len(s) != 10:
         return False
@@ -371,11 +385,11 @@ def ensure_pmo_raw_for_monitoring(
 ) -> dict[str, Any]:
     """
     供 monitoring_skill 等调用：先检查本机 PMO raw（默认 ``~/.jachin/client_volumes/PMO/raw``）
-    是否已有本次 ``snapshot_date`` 的完整六表；否则调用 ``run_pmo_export_scheduled_tables_only`` 拉取。
+    是否已有本次 ``snapshot_date`` 的完整四表；否则调用 ``run_pmo_export_scheduled_tables_only`` 拉取。
 
     - 目录不存在 → 导出
-    - 六表任一缺失 → 导出
-    - 六表齐全但某 JSON 顶层 ``snapshot_date`` 与目标日不一致（或无法解析）→ 导出
+    - 四表任一缺失 → 导出
+    - 四表齐全但某 JSON 顶层 ``snapshot_date`` 与目标日不一致（或无法解析）→ 导出
     - 否则跳过导出
     """
     import json as _json
@@ -394,7 +408,7 @@ def ensure_pmo_raw_for_monitoring(
         detail.append("raw 目录不存在")
     elif not pmo_client_raw_snapshot_complete(raw_dir, snap):
         need_export = True
-        detail.append(f"缺少日期 {snap} 的完整六表 JSON")
+        detail.append(f"缺少日期 {snap} 的完整四表 JSON")
     else:
         bad = False
         for slug in PMO_SCHEDULED_EXPORT_SLUGS:
@@ -413,7 +427,7 @@ def ensure_pmo_raw_for_monitoring(
         if bad:
             need_export = True
         else:
-            detail.append("已存在当日完整六表且 snapshot_date 一致，跳过导出")
+            detail.append("已存在当日完整四表且 snapshot_date 一致，跳过导出")
 
     out: dict[str, Any] = {
         "raw_dir": str(raw_dir.resolve()),
@@ -438,7 +452,7 @@ def run_pmo_export_scheduled_tables_only(
     log_export_scope_notice: bool = True,
 ) -> dict[str, Any]:
     """
-    仅导出六张 PMO 多维表（读 pmo_bmo.yaml），不跑 Wiki 全文 sync、不做 knowledge ingest。
+    仅导出三张 PMO 多维表（读 pmo_bmo.yaml），不跑 Wiki 全文 sync、不做 knowledge ingest。
     L3 Agent 可只调本函数做「抓表」验证；凭证来自 YAML 的 lark（或由 extra / MCP 回退逻辑补全）。
 
     log_export_scope_notice: 为 False 时不写「本函数不会执行 align/person-stats」段（供对齐/人员任务单从内部调用导出时避免重复误导）。
@@ -520,7 +534,7 @@ def run_pmo_export_scheduled_tables_only(
     )
 
     try:
-        with _pmo_heartbeat_while("export_pmo_tables（六表 JSON→raw）"):
+        with _pmo_heartbeat_while("export_pmo_tables（四表 JSON→raw）"):
             result = run_pmo_lark_doc(export_args)
     except Exception:
         slg.error("run_pmo_lark_doc 抛出异常:\n%s", traceback.format_exc())
@@ -558,14 +572,14 @@ def _load_skill_yaml(project_root: Path) -> dict[str, Any]:
     return {}
 
 
-# K11「需求表3月」云文档：浏览器打开文档后 URL 为 .../docx/<token>/...
-# 与 Wiki 侧栏内嵌表格块 docx_table_block_id 配套使用；其它租户请在 YAML 或 PMO_REQ_MARCH_COARSE_DOCX_ID 覆盖。
+# K11「需求表3月」云文档 token（仅在你恢复 docx_table 导出或自定义流水线时使用）；常规四表 Bitable 导出无需配置。
 PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID = "ZcpedCREaoNrQUxvM7EluZGugWg"
 
 
 def _apply_pmo_req_march_coarse_docx_env(export_args: dict[str, Any]) -> None:
     """
-    合并 docx_document_ids.req_march_coarse：YAML 已有值不变；否则环境变量；再否则内置默认 PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID。
+    合并 docx_document_ids.req_march_coarse：仅 YAML 或环境变量 PMO_REQ_MARCH_COARSE_DOCX_ID；
+    不再注入内置默认，避免「仅四表 Bitable」日志里仍带云文档 ID。
     """
     d = export_args.get("docx_document_ids")
     if not isinstance(d, dict):
@@ -581,8 +595,11 @@ def _apply_pmo_req_march_coarse_docx_env(export_args: dict[str, Any]) -> None:
         d["req_march_coarse"] = eid
         export_args["docx_document_ids"] = d
         return
-    d["req_march_coarse"] = PMO_DEFAULT_REQ_MARCH_COARSE_DOCX_ID
-    export_args["docx_document_ids"] = d
+    d.pop("req_march_coarse", None)
+    if d:
+        export_args["docx_document_ids"] = d
+    else:
+        export_args.pop("docx_document_ids", None)
 
 
 # --- 大需求对齐：脚本写 MD + 可选 Agent 润色 ---
@@ -604,31 +621,30 @@ PMO_LEADERSHIP_BRIEF_FINE_CAP = 450
 
 def pmo_repo_raw_md_path(raw_dir: Path, slug: str) -> Path:
     """
-    仓库 ``docs/pmo_bmo_plugin/raw`` 下与六表导出一致的 Markdown 路径：``{slug}.md``（无日期前缀，每轮抓取覆盖）。
+    仓库 ``docs/pmo_bmo_plugin/raw`` 下与 **export_pmo_tables** 约定的 Markdown 路径：``{slug}.md``（无日期前缀，每轮抓取覆盖）。
     原始 JSON 仍在 ``~/.jachin/client_volumes/PMO/raw/{date}_{slug}.json``。
     """
     return raw_dir / f"{slug}.md"
 
 # 与 tool_pmo_bitable_export.PMO_SCHEDULED_BITABLES 及业务 Wiki 一致（供 Agent 对照）
 PMO_BIG_ALIGN_WIKI: dict[str, str] = {
-    "product_fine": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblozlbpzHlL8m8m&view=vew8TxMcSh",
-    "dev_core": "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewpI8lyYw",
+    "product_coarse": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxeuHgiN5L2gXBH",
+    "product_fine": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblNdv7DIlycuqxp&view=vew8TxMcSh",
+    "dev_core": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
     "art_completed": "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1",
-    # 大需求主线：req_march_coarse 为 Wiki 内云文档表格块（docx_table + block id）；document_id 见 pipeline.pmo_export.docx_document_ids
-    "master_coarse": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxvjdZfkv69GwsB",
 }
 
 # 导出文件名 {date}_<slug>.*
 PMO_BIG_ALIGN_SLUGS: dict[str, str] = {
-    "master_coarse": "req_march_coarse",
+    "product_coarse": "req_march_coarse",
     "product_fine": "req_march_fine",
     "dev_core": "dev_tasks_view_core",
     "art_completed": "art_tasks_completed",
 }
 
-# 大需求对齐报告仅依赖以下三份 JSON（产品细表不纳入匹配与生成）
+# 大需求对齐报告依赖 JSON（锚点：优先历史 req_march_coarse；否则用 req_march_fine）
 PMO_BIG_ALIGN_DATA_SLUGS: tuple[str, ...] = (
-    "req_march_coarse",
+    "req_march_fine",
     "dev_tasks_view_core",
     "art_tasks_completed",
 )
@@ -819,13 +835,108 @@ def _pmo_parse_coarse_requirements_rows(
     return out
 
 
+def _pmo_bitable_payload_records_display(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    ``export_pmo_tables`` 落盘的 JSON 中 ``records[].fields`` 键为飞书 **field_id**；
+    大需求对齐等逻辑按 **字段显示名**（如「需求内容」）读取，需先映射。
+    """
+    from l3_node.primitives.mcp.mcp_tools.pmo_bmo.tool_pmo_bitable_export import (
+        _norm_fields_map,
+        _record_to_display_row,
+    )
+
+    recs = doc.get("records") or []
+    fields_meta = doc.get("fields")
+    if not isinstance(fields_meta, list) or not fields_meta:
+        return recs if isinstance(recs, list) else []
+    fid_to_name, col_order = _norm_fields_map(fields_meta)
+    if not fid_to_name:
+        return recs if isinstance(recs, list) else []
+    out: list[dict[str, Any]] = []
+    for r in recs:
+        if not isinstance(r, dict):
+            continue
+        rr = dict(r)
+        rr["fields"] = _record_to_display_row(r.get("fields") or {}, fid_to_name, col_order)
+        out.append(rr)
+    return out
+
+
+def _pmo_fine_records_to_alignment_anchors(fine_recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将产品细表行转为与 ``_pmo_parse_coarse_requirements_rows`` 结构兼容的锚点（无云文档里程碑列）。"""
+    from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import _cell_to_text
+    from l3_node.primitives.mcp.mcp_tools.pmo_bmo.tool_data_visualizer import _pmo_req_title_cell
+
+    out: list[dict[str, Any]] = []
+    current_cat = ""
+    for r in fine_recs:
+        fld = r.get("fields") or {}
+        title = _pmo_req_title_cell(fld)
+        if not title:
+            continue
+        rt = _cell_to_text(fld.get("需求类型")).strip()
+        if rt:
+            current_cat = rt
+        ms: dict[str, Any] = {label: "" for _, label in PMO_COARSE_DOCX_MILESTONE_KEYS}
+        filled_flags: list[tuple[str, bool]] = [(label, False) for _, label in PMO_COARSE_DOCX_MILESTONE_KEYS]
+        out.append(
+            {
+                "record_id": str(r.get("record_id") or r.get("id") or ""),
+                "category": current_cat,
+                "title": title,
+                "owner": _cell_to_text(fld.get("责任人")).strip(),
+                "priority": _cell_to_text(fld.get("优先级")).strip(),
+                "analysis_report": "",
+                "prd_doc": "",
+                "milestones": ms,
+                "milestone_filled_flags": filled_flags,
+                "milestone_filled_count": 0,
+                "milestone_pct": 0.0,
+                "followup": "",
+                "workload": "",
+                "comm_out": "",
+                "status_note": _cell_to_text(fld.get("需求状态") or fld.get("状态")).strip(),
+                "flow_stage_label": "—",
+                "flow_stage_note": "锚点取自产品细表（req_march_fine）；已停用云文档「需求大表」逐格导出，无五列里程碑。",
+            }
+        )
+    return out
+
+
+def _pmo_load_alignment_anchors(json_dir: Path, snap: str) -> tuple[list[dict[str, Any]], str]:
+    """优先使用 ``req_march_coarse.json`` 有效行；否则使用 ``req_march_fine.json`` 推导锚点。返回 (列表, 来源标签)。"""
+    cp = json_dir / f"{snap}_req_march_coarse.json"
+    fp = json_dir / f"{snap}_req_march_fine.json"
+    if cp.is_file():
+        try:
+            doc = json.loads(cp.read_text(encoding="utf-8"))
+            recs = _pmo_bitable_payload_records_display(doc)
+            rows = _pmo_parse_coarse_requirements_rows(recs)
+            if not rows:
+                rows = _pmo_fine_records_to_alignment_anchors(recs)
+            if rows:
+                return rows, "req_march_coarse"
+        except (OSError, json.JSONDecodeError):
+            pass
+    if fp.is_file():
+        doc = json.loads(fp.read_text(encoding="utf-8"))
+        recs_disp = _pmo_bitable_payload_records_display(doc)
+        rows = _pmo_fine_records_to_alignment_anchors(recs_disp)
+        if rows:
+            return rows, "req_march_fine"
+    raise FileNotFoundError(
+        f"缺少大需求对齐锚点：{snap}_req_march_coarse.json 无有效行或不存在，且 "
+        f"{snap}_req_march_fine.json 缺失或无「需求内容/需求名称」列数据"
+    )
+
+
 def write_pmo_big_requirement_alignment_markdown_from_raw(
     project_root: Path, snapshot_date: str
 ) -> Path:
     """
-    以 **req_march_coarse** 每行「列2·需求内容」为唯一分类锚点，将 **开发 / 美术** 小任务经 NL 相似度匹配归类；
-    依据主线表「实施阶段」五列推断流程阶段与完成度；输出 ``docs/pmo_bmo_plugin/output/PMO_大需求对齐.md``（覆盖）。
-    不调用 LLM；**不**纳入产品细表（req_march_fine）。
+    以 **req_march_coarse**（若仍存在本地 JSON）或 **req_march_fine** 行为分类锚点，将 **开发 / 美术** 小任务经 NL 相似度匹配归类；
+    有大表时依据「实施阶段」五列推断流程阶段与完成度；输出 ``docs/pmo_bmo_plugin/output/PMO_大需求对齐.md``（覆盖）。
+    不调用 LLM；主线表缺失时锚点取自产品细表，里程碑小节为空/占位。
     """
     from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import _cell_to_text
     from l3_node.primitives.mcp.mcp_tools.pmo_bmo.paths import get_pmo_raw_dir
@@ -833,7 +944,6 @@ def write_pmo_big_requirement_alignment_markdown_from_raw(
     snap = snapshot_date.strip()[:10]
     json_dir = get_pmo_raw_dir()
     paths = {
-        "coarse": json_dir / f"{snap}_req_march_coarse.json",
         "dev": json_dir / f"{snap}_dev_tasks_view_core.json",
         "art": json_dir / f"{snap}_art_tasks_completed.json",
     }
@@ -841,13 +951,10 @@ def write_pmo_big_requirement_alignment_markdown_from_raw(
         if not p.is_file():
             raise FileNotFoundError(f"缺少大需求对齐 raw JSON ({k}): {p}")
 
-    coarse_doc = json.loads(paths["coarse"].read_text(encoding="utf-8"))
+    coarse_list, anchor_src = _pmo_load_alignment_anchors(json_dir, snap)
+
     dev_doc = json.loads(paths["dev"].read_text(encoding="utf-8"))
     art_doc = json.loads(paths["art"].read_text(encoding="utf-8"))
-
-    coarse_list = _pmo_parse_coarse_requirements_rows(coarse_doc.get("records") or [])
-    if not coarse_list:
-        raise ValueError("req_march_coarse 无有效需求行（列2 为空或仅表头）")
 
     ref_day = date.today()
     week_start, week_end = _pmo_report_week_bounds(ref_day)
@@ -945,7 +1052,12 @@ def write_pmo_big_requirement_alignment_markdown_from_raw(
         "## 数据源与方法",
         "",
         "- **流程依据**：`docs/pmo_bmo_plugin/04_PROCESS_FLOW_AND_OUTPUT_SPEC.md`（§1.6 期初—季度复盘与任务表关系）。",
-        f"- **大需求分类标准**：`{snap}_req_march_coarse.json`（云文档「3月需求大表」）中 **每行「列2·需求内容」** 一条主线；**列1·需求类型** 空行继承上一行的类型。",
+        f"- **大需求分类标准**：`{snap}_{anchor_src}.json`。"
+        + (
+            " 云文档大表 **列2·需求内容** 一条主线（列1·需求类型空行继承）。"
+            if anchor_src == "req_march_coarse"
+            else " **需求内容 / 需求名称** 一条锚点行（**需求类型** 空行继承上一行）。"
+        ),
         f"- **开发任务**：`{snap}_dev_tasks_view_core.json`（字段：任务、父记录、Sprint、状态、进度、日期…）。",
         f"- **美术任务**：`{snap}_art_tasks_completed.json`（设计任务表完成视图）。",
         "- **产品细表**：当前不纳入匹配与汇总（无数据或不在本次计算范围）。",
@@ -1071,10 +1183,9 @@ PMO_BIG_ALIGN_AGENT_INSTRUCTIONS = """\
 ## 自动生成（推荐）
 
 - 运行：`python -m l3_node.primitives.skills.pmo_bmo.main_skill align`（或 `run_pmo_big_requirement_alignment_task`）。
-- 脚本读取 ``~/.jachin/.../PMO/raw/{date}_req_march_coarse.json``、``..._dev_tasks_view_core.json``、``..._art_tasks_completed.json``，
-  以 **req_march_coarse 每行「列2·需求内容」** 为分类锚点，将开发/美术小任务做 **文本相似度匹配**，写入
-  ``docs/pmo_bmo_plugin/output/PMO_大需求对齐.md``（固定文件名，每次覆盖）。
-- **不纳入** 产品细表（req_march_fine）；产品条线无数据时不参与计算。
+- 脚本读取 ``~/.jachin/.../PMO/raw/{date}_req_march_fine.json``（及 dev/art），锚点优先使用**仍存在的**
+  ``req_march_coarse.json``（旧云文档导出），否则以 **req_march_fine** 的「需求内容/需求名称」行为锚点；
+  将开发/美术小任务做 **文本相似度匹配**，写入 ``docs/pmo_bmo_plugin/output/PMO_大需求对齐.md``（固定文件名，每次覆盖）。
 
 ## 若需人工补充
 
@@ -1090,7 +1201,7 @@ def get_pmo_big_requirement_alignment_task_spec() -> dict[str, Any]:
     """返回大需求对齐任务元数据 + Agent 说明全文（供编排层注入对话）。"""
     return {
         "task_id": "pmo_big_requirement_alignment",
-        "title": "PMO 大需求对齐（开发/美术 → 3月需求大表主线）",
+        "title": "PMO 大需求对齐（开发/美术 → 主线锚点：fine 或历史 coarse）",
         "process_flow_doc_relative": PMO_PROCESS_FLOW_DOC_REL,
         "output_dir_relative": PMO_OUTPUT_REL,
         "output_filename_pattern": PMO_BIG_ALIGN_OUTPUT_BASENAME,
@@ -1100,7 +1211,7 @@ def get_pmo_big_requirement_alignment_task_spec() -> dict[str, Any]:
             {
                 "mcp": "atom_pmo_lark_doc",
                 "operation": "export_pmo_tables",
-                "note": "不新增 MCP；拉取六表。大需求对齐生成器读取其中 req_march_coarse + dev_tasks_view_core + art_tasks_completed 三份 JSON。",
+                "note": "不新增 MCP；拉取四表（含 req_march_coarse 主线）。大需求对齐锚点优先 coarse，其次 req_march_fine + dev/art。",
             }
         ],
         "agent_instructions": PMO_BIG_ALIGN_AGENT_INSTRUCTIONS.strip(),
@@ -1112,7 +1223,7 @@ def build_pmo_big_requirement_alignment_context(
     snapshot_date: str | None = None,
 ) -> dict[str, Any]:
     """
-    解析 snapshot 日期的 raw / 规范 / 输出路径；**alignment_data_ready** 表示三表 JSON + 流程规范就绪，可生成大需求对齐 MD。
+    解析 snapshot 日期的 raw / 规范 / 输出路径；**alignment_data_ready** 表示 fine/dev/art 三份 JSON + 流程规范就绪；``req_march_coarse`` 另页展示在同目录 raw 清单中。
     """
     from l3_node.primitives.mcp.mcp_tools.pmo_bmo.paths import get_pmo_raw_dir
     from l3_node.paths import get_app_root
@@ -1179,7 +1290,7 @@ def run_pmo_big_requirement_alignment_task(
     extra_export: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    大需求对齐：可选先导出六表，再 **确定性生成** ``PMO_大需求对齐.md``（req_march_coarse 列2 为锚点 +
+    大需求对齐：可选先导出三表，再 **确定性生成** ``PMO_大需求对齐.md``（锚点：coarse 历史 JSON 或 **req_march_fine** +
     开发/美术相似度匹配）。不新增 MCP。
     """
     from l3_node.paths import get_app_root
@@ -1271,7 +1382,7 @@ PMO_DASHBOARD_CSV_REQUIREMENT_STATUS = "PMO_需求完成情况.csv"
 PMO_DASHBOARD_CSV_PERSON_ALLOC = "PMO_人员分配.csv"
 PMO_DASHBOARD_CSV_REQ_PARTICIPATION = "PMO_需求人员参与情况.csv"
 PMO_DASHBOARD_CSV_VERSION_RELEASE = "PMO_版本发布.csv"
-# 当 ~/.jachin/.../PMO/output 不可写（如 CSV 被 Excel 占用）时，四表与 manifest 回退到此相对目录
+# 当 ~/.jachin/.../PMO/output 不可写（如 CSV 被 Excel 占用）时，三表与 manifest 回退到此相对目录
 PMO_DASHBOARD_CSV_FALLBACK_REL = "docs/pmo_bmo_plugin/output_dashboard"
 
 # 同步到飞书时 CSV 列名 -> 多维表字段名（与 sync_csv_to_bitable 一致）。
@@ -1527,7 +1638,7 @@ def pmo_try_monthly_master_line_battle_bundle(
     art_recs: list[dict[str, Any]] = []
     rid_to_parent: dict[str, str | None] = {}
     rid_to_task: dict[str, str] = {}
-    dp = json_dir / f"{snap}_dev_tasks_by_assignee.json"
+    dp = _pmo_resolve_dev_raw_for_people(json_dir, snap)
     if dp.is_file():
         dd = json.loads(dp.read_text(encoding="utf-8"))
         dev_recs = list(dd.get("records") or [])
@@ -1540,7 +1651,7 @@ def pmo_try_monthly_master_line_battle_bundle(
             fld0 = r.get("fields") or {}
             rid_to_task[rid] = _ct(fld0.get("任务")).strip()
             rid_to_parent[rid] = _pmo_dev_parent_record_id(fld0)
-    ap = json_dir / f"{snap}_art_tasks_by_designer.json"
+    ap = _pmo_resolve_art_raw_for_people(json_dir, snap)
     if ap.is_file():
         ad = json.loads(ap.read_text(encoding="utf-8"))
         art_recs = list(ad.get("records") or [])
@@ -1710,10 +1821,10 @@ PMO_DOCX_COARSE_PIPELINE_KEY_TO_COL: dict[str, str] = {
     "生产发布": "列11",
 }
 
-# 与用户给出的三条 Wiki 一致；导出 slug 与 PMO 六表导出一致
+# 与用户给出的三条 Wiki 一致；导出 slug 与 PMO 三表导出一致
 PMO_PERSON_STATS_WIKI: dict[str, str] = {
-    "product_fine": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblozlbpzHlL8m8m&view=vew8TxMcSh",
-    "dev_core": "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewpI8lyYw",
+    "product_fine": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblNdv7DIlycuqxp&view=vew8TxMcSh",
+    "dev_core": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
     "art_completed": "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1",
 }
 
@@ -1845,7 +1956,7 @@ def get_pmo_person_task_stats_task_spec() -> dict[str, Any]:
             {
                 "mcp": "atom_pmo_lark_doc",
                 "operation": "export_pmo_tables",
-                "note": "拉取六表（含本任务所需三张）；不新增 MCP。",
+                "note": "拉取三表（含本任务所需三张）；不新增 MCP。",
             }
         ],
         "agent_instructions": PMO_PERSON_STATS_AGENT_INSTRUCTIONS.strip(),
@@ -2265,8 +2376,9 @@ def _pmo_infer_task_completion_percent(fld: dict[str, Any], *, is_dev: bool) -> 
 
 def write_pmo_requirement_participants_markdown_from_raw(project_root: Path, snapshot_date: str) -> Path:
     """
-    以 **req_march_coarse** 每行「列2·需求内容」为锚点，将 **dev_tasks_by_assignee** / **art_tasks_by_designer**
-    中每条任务经 NL 匹配归入大需求；按 **任务执行人** / **设计责任人** 列出其 **归属于该需求** 的任务与完成度估算。
+    以 **req_march_coarse**（若仍有本地 JSON）或 **req_march_fine** 推导的锚点，将开发/美术任务（默认
+    ``dev_tasks_view_core`` + ``art_tasks_completed``，若另有按人视图 JSON 则优先）
+    经 NL 匹配归入大需求；按 **任务执行人** / **设计责任人** 列出任务与完成度估算。
     输出 ``docs/pmo_bmo_plugin/output/PMO_需求人员参与明细.md``（覆盖）。
     """
     from collections import defaultdict
@@ -2276,22 +2388,17 @@ def write_pmo_requirement_participants_markdown_from_raw(project_root: Path, sna
 
     snap = snapshot_date.strip()[:10]
     json_dir = get_pmo_raw_dir()
-    paths = {
-        "coarse": json_dir / f"{snap}_req_march_coarse.json",
-        "dev_assign": json_dir / f"{snap}_dev_tasks_by_assignee.json",
-        "art_designer": json_dir / f"{snap}_art_tasks_by_designer.json",
-    }
-    for k, p in paths.items():
-        if not p.is_file():
-            raise FileNotFoundError(f"缺少需求人员参与 raw JSON ({k}): {p}")
+    dev_assign = _pmo_resolve_dev_raw_for_people(json_dir, snap)
+    art_designer = _pmo_resolve_art_raw_for_people(json_dir, snap)
+    if not dev_assign.is_file():
+        raise FileNotFoundError(f"缺少需求人员参与 raw JSON (dev): {dev_assign}")
+    if not art_designer.is_file():
+        raise FileNotFoundError(f"缺少需求人员参与 raw JSON (art): {art_designer}")
 
-    coarse_doc = json.loads(paths["coarse"].read_text(encoding="utf-8"))
-    dev_doc = json.loads(paths["dev_assign"].read_text(encoding="utf-8"))
-    art_doc = json.loads(paths["art_designer"].read_text(encoding="utf-8"))
+    coarse_list, anchor_src = _pmo_load_alignment_anchors(json_dir, snap)
 
-    coarse_list = _pmo_parse_coarse_requirements_rows(coarse_doc.get("records") or [])
-    if not coarse_list:
-        raise ValueError("req_march_coarse 无有效需求行（列2 为空或仅表头）")
+    dev_doc = json.loads(dev_assign.read_text(encoding="utf-8"))
+    art_doc = json.loads(art_designer.read_text(encoding="utf-8"))
 
     ref_day = date.today()
     week_start, week_end = _pmo_report_week_bounds(ref_day)
@@ -2412,9 +2519,9 @@ def write_pmo_requirement_participants_markdown_from_raw(project_root: Path, sna
         "",
         "## 数据源与方法",
         "",
-        f"- **大需求锚点**：`{snap}_req_march_coarse.json`（列2·需求内容；列1 继承），与 `PMO_大需求对齐.md` 一致。",
-        f"- **开发**：`{snap}_dev_tasks_by_assignee.json`（**任务执行人** 可多选）。",
-        f"- **美术**：`{snap}_art_tasks_by_designer.json`（**设计责任人** 可多选）。",
+        f"- **大需求锚点**：`{snap}_{anchor_src}.json`（与 `PMO_大需求对齐.md` 同源）。",
+        f"- **开发**：`{paths['dev_assign'].name}`（**任务执行人** 可多选；默认同核心开发表）。",
+        f"- **美术**：`{paths['art_designer'].name}`（**设计责任人** 可多选；默认同完成视图）。",
         f"- **匹配**：`需求类型 + 需求内容` vs 任务标题+父链+Sprint 等；阈值 **≥ {PMO_MATCH_MIN_SCORE:.2f}**（同 `PMO_MATCH_MIN_SCORE`）。",
         "- **完成度**：由进度/状态等 **启发式估算**，「—」表示无法从字段推断。",
         f"- **部门**：来自 `{PMO_STAKEHOLDER_DOC_REL}`（名称小写匹配）。",
@@ -3271,13 +3378,16 @@ def _pmo_coarse_fld_pipeline_val(fld: dict[str, Any], semantic_key: str) -> Any:
 
 
 def _pmo_coarse_req_title(fld: dict[str, Any]) -> str:
-    """主线表主键：Bitable「需求内容」/「需求简述」；docx 表为「列2」（与 _pmo_parse_coarse_requirements_rows 一致）。"""
+    """主线表主键：Bitable「需求内容」/「需求简述」/「需求名称」；docx 表为「列2」（与 _pmo_parse_coarse_requirements_rows 一致）。"""
     from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import _cell_to_text
 
     t = _cell_to_text(fld.get("需求内容")).strip()
     if t:
         return t
     t = _cell_to_text(fld.get("需求简述")).strip()
+    if t:
+        return t
+    t = _cell_to_text(fld.get("需求名称")).strip()
     if t:
         return t
     t = _cell_to_text(fld.get("列2")).strip()
@@ -3500,7 +3610,8 @@ def write_pmo_dashboard_csvs(
     若该目录不可写（如 CSV 被 Excel 占用），整批改写到仓库内 ``docs/pmo_bmo_plugin/output_dashboard/``。
 
     「人员分配」以仓库 ``K11_需求池_干系人.md`` 为行基准（人员/部门/职能），任务来自
-    ``{snap}_dev_tasks_by_assignee.json`` 与 ``{snap}_art_tasks_by_designer.json``（开发/美术每人视图），
+    **开发 / 美术 raw**（默认同 ``dev_tasks_view_core`` 与 ``art_tasks_completed`` 三表导出；若另行存在
+    ``dev_tasks_by_assignee`` / ``art_tasks_by_designer`` 则优先用其参与人视图），
     动态列 ``任务1``…``任务N``（与 Lark「人员分配」子表一致，同步时建议 ``ensure_columns: true``）。
     """
     from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import _cell_to_text
@@ -3516,9 +3627,9 @@ def write_pmo_dashboard_csvs(
     coarse_path = raw_dir / f"{snap}_req_march_coarse.json"
     dev_path = raw_dir / f"{snap}_dev_tasks_view_core.json"
     art_path = raw_dir / f"{snap}_art_tasks_completed.json"
-    dev_assign_path = raw_dir / f"{snap}_dev_tasks_by_assignee.json"
-    art_designer_path = raw_dir / f"{snap}_art_tasks_by_designer.json"
-    required_paths = (dev_path, art_path, dev_assign_path, art_designer_path)
+    dev_assign_path = _pmo_resolve_dev_raw_for_people(raw_dir, snap)
+    art_designer_path = _pmo_resolve_art_raw_for_people(raw_dir, snap)
+    required_paths = (dev_path, art_path)
     missing = [str(p) for p in required_paths if not p.is_file()]
     if missing:
         raise FileNotFoundError("缺少 raw JSON: " + "; ".join(missing))
@@ -3527,7 +3638,7 @@ def write_pmo_dashboard_csvs(
     if coarse_missing:
         logging.getLogger("pmo_bmo_skill").warning(
             "未找到 %s；需求完成情况/需求人员参与情况将为空，"
-            "版本发布仅按开发任务根标题聚合。请修复 Docx 权限后重新导出六表。",
+            "版本发布仅按开发任务根标题聚合。请运行 export_pmo_tables（含 req_march_coarse）后重试。",
             coarse_path,
         )
         coarse_doc: dict[str, Any] = {"records": []}
@@ -4161,7 +4272,7 @@ def run_pmo_person_task_stats_task(
     extra_export: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    按人任务统计任务单入口：可选先导出六表，再返回 spec + context，并由脚本写入 `PMO_人员任务统计.md`。
+    按人任务统计任务单入口：可选先导出三表，再返回 spec + context，并由脚本写入 `PMO_人员任务统计.md`。
     """
     from l3_node.paths import get_app_root
 
@@ -4264,8 +4375,8 @@ def run_pmo_requirement_participants_report_task(
     extra_export: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    仅生成 ``PMO_需求人员参与明细.md``：可选先六表导出，再读
-    ``req_march_coarse`` + ``dev_tasks_by_assignee`` + ``art_tasks_by_designer``。
+    仅生成 ``PMO_需求人员参与明细.md``：可选先三表导出，再读
+    ``req_march_coarse`` + 开发/美术任务 raw（``dev_tasks_view_core`` / ``art_tasks_completed`` 或按人视图 JSON）。
     """
     from l3_node.paths import get_app_root
 
@@ -4283,7 +4394,7 @@ def run_pmo_requirement_participants_report_task(
         snapshot_date=snap,
         ensure_export=ensure_export,
     )
-    slg.info("输出目标: %s（coarse + dev_tasks_by_assignee + art_tasks_by_designer）", PMO_REQ_PARTICIPANTS_OUTPUT_BASENAME)
+    slg.info("输出目标: %s（锚点 coarse|fine + dev/art 任务 raw）", PMO_REQ_PARTICIPANTS_OUTPUT_BASENAME)
 
     export_result: dict[str, Any] | None = None
     ex = dict(extra_export or {})
@@ -4328,7 +4439,7 @@ def run_pmo_output_docs_from_raw(
     **独立环节**：假定 ``~/.jachin/.../client_volumes/PMO/raw`` 已有当日快照 JSON，
     仅生成 ``docs/pmo_bmo_plugin/output`` 下任务单 Markdown（大需求对齐、按人任务统计、参与明细、领导视图等）。
 
-    **不**调用 ``export_pmo_tables``，**不**写仪表盘 CSV，**不**发 Lark。可与「仅六表导出」分先后由人工或 agent 编排。
+    **不**调用 ``export_pmo_tables``，**不**写仪表盘 CSV，**不**发 Lark。可与「仅三表导出」分先后由人工或 agent 编排。
     """
     from l3_node.paths import get_app_root
 
@@ -4414,7 +4525,7 @@ def run_pmo_full_business_pipeline(
     """
     业务顺序（一次跑完）：
 
-    1. **六表拉取** — `run_pmo_export_scheduled_tables_only`（`export_pmo_tables`）
+    1. **四表拉取** — `run_pmo_export_scheduled_tables_only`（`export_pmo_tables`）
     2+3. **output 文档** — `run_pmo_output_docs_from_raw`（与拉表解耦的独立函数；内部为对齐 + 按人统计等）→ ``docs/pmo_bmo_plugin/output``
     4. **仪表盘提纯 + 可选 Lark** — `run_pmo_dashboard_push(sync_lark=True, log_banner=False)`（读 raw JSON → `~/.jachin/.../PMO/output/*.csv`；同步受 `pmo_dashboard_push.enabled` 控制）
 
@@ -4441,7 +4552,7 @@ def run_pmo_full_business_pipeline(
         skip_output_docs=skip_output_docs,
     )
     slg.info(
-        "业务流水线顺序: [1/4] 六表拉取 → [2+3/4] output 文档(run_pmo_output_docs_from_raw，可跳过) → "
+        "业务流水线顺序: [1/4] 四表拉取 → [2+3/4] output 文档(run_pmo_output_docs_from_raw，可跳过) → "
         "[4/4] 仪表盘提纯 CSV + 可选 Lark 同步"
     )
     slg.info(
@@ -4459,7 +4570,7 @@ def run_pmo_full_business_pipeline(
     }
 
     if not skip_export:
-        slg.info("---------- [1/4] 六表拉取 ----------")
+        slg.info("---------- [1/4] 四表拉取 ----------")
         slg.info("全流水线内第 1 步：后续同进程将执行 [2+3][4]，故不打印「仅导出」独占说明。")
         try:
             r1 = run_pmo_export_scheduled_tables_only(
@@ -4657,14 +4768,14 @@ def run_pmo_knowledge_sync(project_root: Path | None = None, extra: dict[str, An
                 if extra.get(k) is not None:
                     export_args[k] = extra[k]
         _apply_pmo_req_march_coarse_docx_env(export_args)
-        _log_pmo_skill_json(slg, "六表导出 export_args", export_args)
+        _log_pmo_skill_json(slg, "四表导出 export_args", export_args)
         try:
-            with _pmo_heartbeat_while("export_pmo_tables（知识库流水线前置六表）"):
+            with _pmo_heartbeat_while("export_pmo_tables（知识库流水线前置四表）"):
                 r_export = run_pmo_lark_doc(export_args)
         except Exception:
-            slg.error("六表导出 run_pmo_lark_doc 异常:\n%s", traceback.format_exc())
+            slg.error("四表导出 run_pmo_lark_doc 异常:\n%s", traceback.format_exc())
             raise
-        _log_pmo_skill_json(slg, "六表导出返回 pmo_bitable_export", r_export)
+        _log_pmo_skill_json(slg, "四表导出返回 pmo_bitable_export", r_export)
 
     _log_pmo_skill_json(slg, "Wiki sync doc_args", doc_args)
     try:

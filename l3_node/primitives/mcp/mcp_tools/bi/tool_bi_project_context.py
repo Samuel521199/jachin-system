@@ -1,4 +1,4 @@
-"""
+﻿"""
 BI 项目上下文同步 — mcp:atom_bi_project_context
 
 从配置的一组 Lark 知识库 Wiki 链接拉取：节点元信息、多维表格全量（或指定子表）、
@@ -36,8 +36,9 @@ WIKI_LINK_RE = re.compile(
 def _default_wiki_urls() -> list[str]:
     """内置种子链接（已去掉一次性登录 token，仅保留业务 query）。"""
     return [
-        "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblozlbpzHlL8m8m&view=vew8TxMcSh",
-        "https://ssgkm409t6q5.sg.larksuite.com/wiki/GdQ7wTgSRiZ0olkXrNGlFcz0gad?table=tblhJN0G2EhRNwjZ&view=vewpI8lyYw",
+        "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxeuHgiN5L2gXBH",
+        "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=tblNdv7DIlycuqxp&view=vew8TxMcSh",
+        "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw",
         "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1",
         "https://ssgkm409t6q5.sg.larksuite.com/wiki/TO3twkDP3iPlBJklCHwln4FSgSc?table=tblsd9jtoIMhIskf&view=vewPvbGgis",
         "https://ssgkm409t6q5.sg.larksuite.com/wiki/HS8qw9XvDiN7u3kolkOlEplCgvb?sheet=3045da",

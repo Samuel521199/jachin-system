@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.55] - 2026-05-08
+
+### Added / Changed
+
+- 冒烟改为看版本号。
+- **Version**: Desktop **0.9.55**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.51] - 2026-04-28
 

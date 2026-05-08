@@ -1,4 +1,4 @@
-"""
+﻿"""
 入站确定性预检（招聘/BI/分支短路等）：从 agent_core 外提，供 run_agent 与路由层共用。
 说明见 docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §3.2、docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。
 """
@@ -10,6 +10,20 @@ import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _implicit_channel_skips_hr_keyword_preflight(implicit_attribution: Any) -> bool:
+    """
+    K11 Playwright executor 将 Skill 全文 + kalaroko DOM 快照拼入 user_input。
+    站内碎片文案常见「取消」「招聘」等与 HR 启发式冲突，误注入 stop_automated_recruitment。
+    对声明 channel 的 HTTP 自动化流量整条跳过 HR 关键词预检（Intent Registry 仍可先执行）。
+    """
+    if not implicit_attribution or not isinstance(implicit_attribution, dict):
+        return False
+    ch = str(implicit_attribution.get("channel") or "").strip()
+    if ch == "http_k11_l3_agent_games_smoke":
+        return True
+    return False
 
 
 def prepend_text_to_last_user_message(messages: list[dict[str, Any]], prefix: str) -> None:
@@ -48,6 +62,7 @@ async def apply_inbound_preflight(
     lark_cid: str,
     gateway_bundle: Any = None,
     engine: Any = None,
+    implicit_attribution: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     """
     若应短路直接返回用户可见字符串；否则返回 None（可能已就地改写 messages[-1]）。
@@ -74,6 +89,13 @@ async def apply_inbound_preflight(
                 return _reg_early
     except Exception as e:
         logger.warning("[AgentPreflight] Intent Registry preflight 跳过: %s", e)
+
+    if _implicit_channel_skips_hr_keyword_preflight(implicit_attribution):
+        logger.debug(
+            "[AgentPreflight] skip HR keyword heuristics (embedded DOM + skill); channel=%s",
+            (implicit_attribution or {}).get("channel"),
+        )
+        return None
 
     from l3_node.agent_core import (
         _branch_b_user_ab_choice,
@@ -125,7 +147,12 @@ async def apply_inbound_preflight(
         )
         prepend_text_to_last_user_message(messages, _pfx1b)
 
-    if re.search(r"关闭|停止|取消", ui) and re.search(r"招聘|无人值守|自动化", ui):
+    # 「自动化」单独匹配会与游戏/UI 文案（如「自动化侧重」「关闭结算按钮」）组合误触发招聘停表。
+    # 仅当与 **招聘语境**（招聘/无人值守/自动化+招聘复合）同现时注入。
+    if re.search(r"关闭|停止|取消", ui) and re.search(
+        r"招聘|无人值守|自动化\s*招聘|招聘\s*自动化|无人值守\s*自动化",
+        ui,
+    ):
         prefix = "【系统】用户要求关闭招聘流程。你必须输出 Action: mcp:stop_automated_recruitment，Action Input: {\"job_name\": \"\"}，以真正停止后台任务。禁止仅回复「已关闭」而不调用工具。\n\n"
         prepend_text_to_last_user_message(messages, prefix)
 
