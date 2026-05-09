@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
 
@@ -378,7 +378,7 @@ except ImportError:
 _SCHEMA_VERSION = "1.0.0"
 _DEFAULT_BASE = "https://kalaroko.com"
 
-# 默认监控任务：首页 + 七款游戏（与 K11 P0 冒烟脚本同清单时可对齐）。
+# 默认监控任务：首页 + 四款（PH 7x24 巡检与飞书战报列对齐）。
 # 游戏入口改为「首页 start_url + UI 点击流」，避免带 partyId/token 的 game-frame 直链被 WAF/业务网关拦截。
 # click_selector 须随前端 DOM 调整；可用 Playwright 文本选择器或 CSS（见 Playwright selector 语法）。
 # 未配 document_game_id 的项仅靠文案/链接定位，运行后 url_game_id 由 gweb frameUrl 反解析。
@@ -405,9 +405,43 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "timeout_ms": 90000,
     },
     {
+        "name": "royal_pusoy",
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Royal\s*Pusoy/i",
+        "prefer_last_on_ambiguous_entry": True,
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "color_blitz",
+        # 大厅展示常为「Color Blitz Social」；指标键与飞书表用 color_blitz_*
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Color\s*Blitz(?:\s*Social)?/i",
+        "prefer_last_on_ambiguous_entry": True,
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+    {
+        "name": "bingo_showdown",
+        "start_url": _DEFAULT_START,
+        "click_selector": r"text=/Bingo\s*Showdown/i",
+        "prefer_last_on_ambiguous_entry": True,
+        "entry_wait_until": "domcontentloaded",
+        "click_timeout_ms": 10000,
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 90000,
+    },
+)
+
+# K11 herontest 网格等脚本仍用的六款（已不在 PH 默认巡检内）；勿与 ``KALAROKO_DEFAULT_SCENARIOS`` 混为一条产品清单。
+KALAROKO_HERONTEST_GRID_SCENARIOS: tuple[dict[str, Any], ...] = (
+    {
         "name": "texas_holdem",
         "start_url": _DEFAULT_START,
-        # 与 Texas Holdem Plus 区分（负向前瞻，避免点到 Plus 卡）
         "click_selector": r"text=/Texas\s*Holdem(?!\s*Plus)/i",
         "prefer_last_on_ambiguous_entry": True,
         "entry_wait_until": "domcontentloaded",
@@ -466,6 +500,16 @@ KALAROKO_DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
         "timeout_ms": 90000,
     },
 )
+
+
+def kalaroko_scenario_dict_by_name(name: str) -> dict[str, Any]:
+    """按 ``name`` 解析大厅入口场景：先 PH 默认巡检表，再 herontest 网格六款。"""
+    key = str(name or "").strip()
+    for seq in (KALAROKO_DEFAULT_SCENARIOS, KALAROKO_HERONTEST_GRID_SCENARIOS):
+        for s in seq:
+            if str(s.get("name") or "") == key:
+                return dict(s)
+    raise ValueError(f"未知 Kalaroko 场景: {name!r}")
 
 
 def _href_anchor_selectors_for_document_game_id(g: int) -> tuple[str, ...]:
@@ -4804,7 +4848,7 @@ async def execute_playwright_perf_test(
             点击流可选 **require_game_frame_url**（默认 True）：采数结束前主文档 URL 须含 ``game-frame``，
             否则本条 **load_status=failed**，避免未见游戏打开仍上报 success）。
             游戏场景可选 **document_game_id** 与 Word/BI 报告小节 game_id 对齐）。**传 null 或 [] 时自动使用**
-            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 七款游戏；游戏默认从首页点击进入）。浏览器：
+            内置 ``KALAROKO_DEFAULT_SCENARIOS``（首页 + 四款游戏：Tongits King、Royal Pusoy、Color Blitz、Bingo Showdown；从首页点击进入）。浏览器：
             **必须**设置 ``KALAROKO_CDP_ENDPOINT``（如 ``http://127.0.0.1:9222``），并预先以 ``--remote-debugging-port``
             启动 Chrome（仓库 ``scripts/launch_chrome_debug.ps1``）；Playwright 仅 ``connect_over_cdp``，**不再**
             自动 ``launch`` 新浏览器。会话/Cookie 由该 Chrome 实例与用户数据目录决定。无登录态时若出现
@@ -4957,6 +5001,33 @@ async def execute_playwright_perf_test(
                 page.on("console", _on_console)
                 page.on("pageerror", _on_page_error)
                 page.on("requestfailed", _on_request_failed)
+
+            async def intercept_noise_requests(route: Any) -> None:
+                """降噪：拦截遥测像素 / GA 与重型视频，缓解 Networkidle 类长时间挂起。"""
+                try:
+                    url = route.request.url.lower()
+                except Exception:
+                    await route.continue_()
+                    return
+                if any(
+                    x in url
+                    for x in (
+                        "google-analytics.com",
+                        "facebook.com",
+                        "facebook.net",
+                        "connect.facebook.net",
+                        "events?cee=no",
+                    )
+                ):
+                    await route.abort("blockedbyclient")
+                    return
+                path_no_query = url.split("?", 1)[0]
+                if path_no_query.endswith((".webm", ".mp4")):
+                    await route.abort("blockedbyclient")
+                    return
+                await route.continue_()
+
+            await page.route("**/*", intercept_noise_requests)
 
             _progress("已通过 CDP 绑定浏览器（未新起进程），页面对象就绪；即将采集首页…")
             await _kalaroko_ui_breathe(
@@ -5605,7 +5676,7 @@ async def execute_playwright_perf_test(
                 "games": games_out,
                 "browser_exceptions": browser_exceptions,
                 "aggregation_notes": (
-                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 7 款游戏）"]
+                    ["使用内置默认场景 KALAROKO_DEFAULT_SCENARIOS（首页 + 4 款游戏）"]
                     if used_default_scenarios
                     else []
                 ),

@@ -1,9 +1,9 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Kalaroko Monitor MCP — 默认多场景（KALAROKO_DEFAULT_SCENARIOS：首页 + 七游戏）全流程联调。
+Kalaroko Monitor MCP — 默认多场景（KALAROKO_DEFAULT_SCENARIOS：首页 + 四游戏）全流程联调。
 
 串联：
-  1) execute_playwright_perf_test（scenarios=[] → 内置首页 + 7 款游戏）
+  1) execute_playwright_perf_test（scenarios=[] → 内置首页 + 4 款：Tongits King、Royal Pusoy、Color Blitz、Bingo Showdown）
   2) fetch_api_health（探测 gwp.heronpro.xin 大厅后端 API 列表 + summary）
   3) manage_perf_history（持久 JSONL：append + query_recent，路径 ``~/.jachin/data/kalaroko_e2e.jsonl``）
 
@@ -50,6 +50,7 @@ import time
 import httpx
 import sys
 import traceback
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -110,18 +111,57 @@ from l3_node.kalaroko_e2e_control import (  # noqa: E402
     reset_manual_run_flag,
     stop_manual_run,
 )
+
+try:
+    from l3_client.local_mcps.agentic_mesh.experts.error_triage import (  # noqa: E402
+        triage_error,
+    )
+except ImportError:
+    # PyInstaller / 精简发行包可能未打入 ``l3_client.local_mcps.agentic_mesh``（与仓库 MCP 树解耦）
+    async def triage_error(page: Any, exception: Exception) -> tuple[str, str]:
+        err_str = str(exception)
+        type_name = type(exception).__name__
+        if (
+            "Event loop is closed" in err_str
+            or "TargetClosedError" in type_name
+            or "TargetClosedError" in err_str
+            or "browser has been closed" in err_str.lower()
+            or "Browser closed" in err_str
+            or "Browser has been closed" in err_str
+        ):
+            return "[⚙️ 节点崩溃]", "宿主机或浏览器内核意外终止"
+        if (
+            "net::ERR_" in err_str
+            or "HTTP 50" in err_str
+            or "HTTP 502" in err_str
+            or "HTTP 503" in err_str
+            or "[OFFLINE_DETECTED]" in err_str
+            or "ERR_CONNECTION" in err_str
+            or "ERR_NAME_NOT_RESOLVED" in err_str
+        ):
+            snippet = err_str[:60] + ("…" if len(err_str) > 60 else "")
+            return "[🔴 线上故障]", f"网络阻断或服务器异常: {snippet}"
+        if "Timeout" in err_str and "locator" in err_str.lower():
+            page_title = "未知页面"
+            if page is not None:
+                try:
+                    page_title = await page.title()
+                except Exception:
+                    pass
+            return "[🟡 脚本脱轨]", f"UI可能改版，找不到目标元素。停留页面: {page_title}"
+        snippet = err_str[:60] + ("…" if len(err_str) > 60 else "")
+        return "[❓ 未知异常]", snippet
+
+
 # 联调默认有头，便于观察点击流与登录；CI/无人值守可显式设置 KALAROKO_HEADLESS=true
 os.environ.setdefault("KALAROKO_HEADLESS", "false")
 
 # 与 Word 模板展示名对齐；业务 game_id 以 MCP 返回的 document_game_id / url_game_id 为准
 _GAME_LABEL: dict[str, str] = {
     "tongits_king": "Tongits King",
-    "texas_holdem": "Texas Holdem",
-    "texas_holdem_plus": "Texas Holdem Plus",
-    "mines_clash": "Mines Clash",
-    "crazy_solitaire": "Crazy Solitaire",
-    "unleash_running": "Unleash Running",
-    "pinoy_monopoly": "Pinoy Monopoly",
+    "royal_pusoy": "Royal Pusoy",
+    "color_blitz": "Color Blitz",
+    "bingo_showdown": "Bingo Showdown",
 }
 
 
@@ -1635,6 +1675,85 @@ def _assert_playwright_shape(pw: dict) -> None:
                 )
 
 
+async def _collect_round_failures_minimal(
+    round_no: int,
+    pw: dict[str, Any],
+    fh: dict[str, Any],
+    rows_out: list[dict[str, str]],
+) -> None:
+    """
+    从单轮 pw/fh 收集非全绿项，经 ``triage_error`` 写入 ``rows_out``（供极简飞书）。
+    不改变 JSONL 结构；仅用于告警降噪侧展示。
+    """
+    notes_joined = " ".join(str(x) for x in (pw.get("aggregation_notes") or []))
+    if "--skip-playwright" in notes_joined:
+        for it in fh.get("items") or []:
+            if not it.get("healthy"):
+                err = it.get("error") or f"status={it.get('status_code')}"
+                label, reason = await triage_error(
+                    None,
+                    Exception((f"api {it.get('id')} {err}")[:2000]),
+                )
+                rows_out.append(
+                    {
+                        "game": f"第{round_no}轮·API·{it.get('id')}",
+                        "detail": f"{label} {reason}",
+                        "verdict": "FAIL",
+                    }
+                )
+        return
+    if pw.get("ok") is not True:
+        msg = str(pw.get("message") or pw.get("error_code") or pw)[:2000]
+        label, reason = await triage_error(None, Exception(msg))
+        rows_out.append(
+            {
+                "game": f"第{round_no}轮·Playwright",
+                "detail": f"{label} {reason}",
+                "verdict": "FAIL",
+            }
+        )
+        return
+    hp = pw.get("homepage") or {}
+    if (hp.get("load_status") or "") != "success":
+        hint = f"homepage load_status={hp.get('load_status')} url={(hp.get('url') or '')[:120]}"
+        label, reason = await triage_error(None, Exception(hint))
+        rows_out.append(
+            {
+                "game": f"第{round_no}轮·首页",
+                "detail": f"{label} {reason}",
+                "verdict": "FAIL",
+            }
+        )
+    for g in pw.get("games") or []:
+        if (g.get("load_status") or "") != "success":
+            gid = str(g.get("game_id") or "?")
+            game_label = _GAME_LABEL.get(gid, gid)
+            traces = g.get("last_traces") or g.get("error") or g.get("debug_timeline")
+            hint = f"{game_label} load_status={g.get('load_status')} {traces}"
+            label, reason = await triage_error(None, Exception(str(hint)[:2000]))
+            rows_out.append(
+                {
+                    "game": f"第{round_no}轮·{game_label}",
+                    "detail": f"{label} {reason}",
+                    "verdict": "FAIL",
+                }
+            )
+    for it in fh.get("items") or []:
+        if not it.get("healthy"):
+            err = it.get("error") or f"status={it.get('status_code')}"
+            label, reason = await triage_error(
+                None,
+                Exception((f"api {it.get('id')} {err}")[:2000]),
+            )
+            rows_out.append(
+                {
+                    "game": f"第{round_no}轮·API·{it.get('id')}",
+                    "detail": f"{label} {reason}",
+                    "verdict": "FAIL",
+                }
+            )
+
+
 async def _run_full_cycle(
     runs: int,
     interval: int,
@@ -1653,15 +1772,16 @@ async def _run_full_cycle(
     )
 
     n = len(KALAROKO_DEFAULT_SCENARIOS)
-    _e2e_echo(f"KALAROKO_DEFAULT_SCENARIOS 条数: {n}（期望 8：首页 + 7 游戏）")
-    if n != 8:
-        _e2e_echo("[WARN] 默认场景条数非 8，请检查 mcp_kalaroko_monitor.py 常量")
+    _e2e_echo(f"KALAROKO_DEFAULT_SCENARIOS 条数: {n}（期望 5：首页 + 4 游戏）")
+    if n != 5:
+        _e2e_echo("[WARN] 默认场景条数非 5（首页+4 游戏），请检查 mcp_kalaroko_monitor.py 常量")
 
     all_metrics_history: list[dict] = []
     markdown_rounds: list[str] = []
     cancelled = False
     structural_all_ok = True
     had_round_exception = False
+    batch_failure_rows: list[dict[str, str]] = []
 
     jsonl_path = str(KALAROKO_E2E_JSONL)
 
@@ -1750,6 +1870,10 @@ async def _run_full_cycle(
             )
             all_metrics_history.append(current_metrics)
 
+            await _collect_round_failures_minimal(
+                current_run, pw, fh, batch_failure_rows
+            )
+
             print("\n", flush=True)
             _e2e_progress(
                 f"生成巡检快报（stdout，第 {current_run}/{runs} 轮）…"
@@ -1765,7 +1889,7 @@ async def _run_full_cycle(
             markdown_rounds.append(md_round)
             _e2e_echo(
                 f"[报告] 第 {current_run}/{runs} 轮巡检快报已生成（{len(md_round)} 字符）；"
-                "飞书与 done.markdown_report 均为扁平 Emoji 格式。"
+                "stdout 仍为完整战报；飞书侧已改为「全绿静默 / 仅异常极简卡片」。"
             )
 
             if is_manual_run_cancel_requested():
@@ -1783,12 +1907,24 @@ async def _run_full_cycle(
 
         except Exception as round_exc:
             had_round_exception = True
+            try:
+                _lab, _reas = await triage_error(None, round_exc)
+            except Exception:
+                _lab, _reas = "[❓ 未知异常]", str(round_exc)[:200]
+            batch_failure_rows.append(
+                {
+                    "game": f"第{current_run}轮·流水线异常",
+                    "detail": f"{_lab} {_reas}",
+                    "verdict": "FAIL",
+                }
+            )
             msg = f"{type(round_exc).__name__}: {round_exc}"
             _e2e_echo(
                 f"[E2E] 第 {current_run}/{runs} 轮异常，已记入报告并继续下一轮：{msg[:600]}"
             )
             markdown_rounds.append(
                 f"# Kalaroko PH 巡检快报 (第 {current_run} 轮 · 异常中断)\n\n"
+                f"**SRE 分诊**: {_lab} {_reas}\n\n"
                 f"本轮流水线失败（可能含 Page Closed / CDP 断开 / fetch 失败等）。\n\n"
                 f"```\n{msg}\n```\n\n"
                 f"```\n{traceback.format_exc()[:8000]}\n```\n"
@@ -1855,22 +1991,78 @@ async def _run_full_cycle(
     combined_md = "\n\n---\n\n".join(markdown_rounds) if markdown_rounds else ""
 
     if not skip_lark_all_host_infra:
-        try:
-            from l3_node.channels.lark.kalaroko_inspection_notify import (
-                send_kalaroko_inspection_to_lark,
-            )
+        all_fails = [r for r in batch_failure_rows if r.get("verdict") == "FAIL"]
+        fail_groups: defaultdict[str, list[dict[str, str]]] = defaultdict(list)
+        for r in all_fails:
+            raw_name = r.get("game", "Unknown")
+            if not isinstance(raw_name, str):
+                raw_name = str(raw_name)
+            core_name = re.sub(r"^第\d+轮[·\-\s]*", "", raw_name)
+            fail_groups[core_name].append(r)
 
-            await send_kalaroko_inspection_to_lark(
-                markdown_report=combined_md or None,
-                llm_analysis=llm_analysis,
-                runs=runs,
-                interval=interval,
-                summary_model=_e2e_summary_model(),
-                line_sink=line_sink,
-                all_metrics_history=all_metrics_history,
+        failed_games: list[dict[str, str]] = []
+        for core_name, fail_records in fail_groups.items():
+            if len(fail_records) >= runs:
+                failed_games.append(fail_records[-1])
+            else:
+                print(
+                    f"⚠️ [防抖容错] '{core_name}' 失败 {len(fail_records)} 次 (需全败 {runs} 次)，视为网络抖动，免除告警。",
+                    flush=True,
+                )
+
+        if not failed_games:
+            print(
+                "\n[Lark] 巡检全部通过 (或已触发防抖容错)，当前批次静默，不发送飞书告警。",
+                flush=True,
             )
-        except Exception as e:
-            print(f"[Lark inspect] 推送跳过或失败（不影响 E2E 退出码）: {e!r}", flush=True)
+            # 全绿静默仍是完整业务产出：须向 Healthchecks 报平安，避免云端误判节点死亡
+            try:
+                from l3_node.jobs.healthchecks_watchdog import ping_healthchecks_if_configured
+
+                await asyncio.to_thread(ping_healthchecks_if_configured)
+                print("   [Healthchecks] 已发送全绿存活心跳。", flush=True)
+            except Exception as _hc:
+                print(
+                    f"   [Healthchecks] 全绿存活心跳失败（忽略）: {_hc!r}",
+                    flush=True,
+                )
+        else:
+            print(
+                f"\n[Lark] 发现 {len(failed_games)} 条异常项，准备发送极简告警…",
+                flush=True,
+            )
+            md_lines = ["**🚨 极简巡检异常预警**\n"]
+            for fg in failed_games:
+                md_lines.append(f"- **项**: {fg['game']}")
+                md_lines.append(f"  - **状态**: {fg.get('detail', '未知异常')}")
+            md_lines.append(
+                "\n*系统将继续下一轮巡检；详细日志与完整 Markdown 见本机 stdout / JSONL。*"
+            )
+            try:
+                from l3_node.channels.lark.kalaroko_inspection_notify import (
+                    send_lark_alert_card_and_thread,
+                )
+
+                await send_lark_alert_card_and_thread(
+                    title="巡检 · 极简异常预警",
+                    markdown="\n".join(md_lines),
+                )
+                try:
+                    from l3_node.jobs.healthchecks_watchdog import (
+                        ping_healthchecks_if_configured,
+                    )
+
+                    await asyncio.to_thread(ping_healthchecks_if_configured)
+                except Exception as _hc:
+                    print(
+                        f"[Healthchecks] 极简告警后心跳失败（忽略）: {_hc!r}",
+                        flush=True,
+                    )
+            except Exception as e:
+                print(
+                    f"[Lark inspect] 极简告警推送跳过或失败（不影响 E2E 退出码）: {e!r}",
+                    flush=True,
+                )
 
     # 记忆宫殿：仅异常/退化/特殊 LLM 结论时 verbatim 入库；全绿平稳则跳过（24h 晨报由调度器单独浓缩）
     _want_mem = _should_commit_kalaroko_e2e_memory_nexus(

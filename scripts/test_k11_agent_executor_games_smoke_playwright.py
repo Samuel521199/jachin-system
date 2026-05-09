@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 七款游戏冒烟（Agent-Executor 模式）
@@ -279,15 +279,12 @@ def _scenario_by_name(
     scenario_key: str, *, home: str
 ) -> dict[str, Any]:
     from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
-        KALAROKO_DEFAULT_SCENARIOS,
+        kalaroko_scenario_dict_by_name,
     )
 
-    for s in KALAROKO_DEFAULT_SCENARIOS:
-        if str(s.get("name") or "") == scenario_key:
-            d = dict(s)
-            d["start_url"] = home
-            return d
-    raise ValueError(f"未知 scenario: {scenario_key}")
+    d = kalaroko_scenario_dict_by_name(scenario_key)
+    d["start_url"] = home
+    return d
 
 
 GAME_CONFIGS: dict[str, dict[str, Any]] = {

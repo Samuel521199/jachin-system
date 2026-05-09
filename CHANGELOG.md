@@ -1,6 +1,15 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.56] - 2026-05-08
+
+### Added / Changed
+
+- Kalaroko 巡检与晨报：网络探活静默跳过、本地 08:15 错峰状态机补偿、互斥锁防重入、Playwright 遥测拦截等（详见本次提交）。
+- **Version**: Desktop **0.9.56**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.55] - 2026-05-08
 

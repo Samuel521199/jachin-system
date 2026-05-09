@@ -97,7 +97,7 @@ def _scenario_by_id(game_id: str) -> dict[str, Any]:
     )
 
 
-# 与 MCP 游戏项同形；仅用于本脚本的扩展列表（未写入 KALAROKO_DEFAULT_SCENARIOS）
+# 与 MCP 游戏项同形；仅用于本脚本的扩展列表（未并入 KALAROKO_DEFAULT_SCENARIOS；PH 默认巡检现为首页+四款）
 EXTRA_GAMES_SCENARIOS: tuple[dict[str, Any], ...] = (
     {
         "name": "bingo_showdown",

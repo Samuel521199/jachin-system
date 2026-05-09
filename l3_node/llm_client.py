@@ -580,6 +580,15 @@ def _merge_litellm_optional_penalties(kwargs_remaining: dict[str, Any], kwargs_c
         pass
 
 
+def _litellm_local_openai_exempt_no_key(model_id: str) -> bool:
+    """
+    ``openai/...`` + 环境变量 ``OPENAI_API_BASE``：允许无 SecurityContext / 无云端 Key，
+    直连本地或内网的 OpenAI 兼容接口（vLLM、Ollama OpenAI 模式等）。
+    """
+    m = (model_id or "").strip().lower()
+    return m.startswith("openai/") and bool((os.environ.get("OPENAI_API_BASE") or "").strip())
+
+
 class LiteLLMEngine:
     """
     L3 直连 LLM 引擎。
@@ -625,13 +634,6 @@ class LiteLLMEngine:
                 if (self.ctx.get_key("dashscope") or os.environ.get("DASHSCOPE_API_KEY"))
                 else [DASHSCOPE_REASONING_MODEL]
             )
-        mn = (self.model_name or "").lower()
-        if mn.startswith("ollama/") or mn.startswith("ollama:"):
-            self.model_name = os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
-            if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                self.model_name = (
-                    f"dashscope/{self.model_name}" if self.model_name else DASHSCOPE_REASONING_MODEL
-                )
         self.timeout = timeout
         self.max_attempts = max_attempts
 
@@ -672,6 +674,13 @@ class LiteLLMEngine:
             return f"dashscope/{m}"
         return m
 
+    def _primary_model_probe_normalized(self, override: Optional[str]) -> str:
+        """用于 Key 校验豁免：与首轮 ``models_to_try`` 的主模型解析一致（含 ``_normalize_model``）。"""
+        raw = (str(override).strip() if override else "").strip()
+        if not raw:
+            raw = (self.model_name or "").strip()
+        return self._normalize_model(raw)
+
     async def generate_response(
         self,
         messages: list[dict[str, Any]],
@@ -698,7 +707,7 @@ class LiteLLMEngine:
         _override_model = kwargs.pop("l3_override_model", None)
         openapi_fname_to_tool_id = kwargs.pop("openapi_fname_to_tool_id", openapi_fname_to_tool_id)
 
-        # 优先从 env 注入，确保有 DASHSCOPE 时绝不走 Ollama
+        # 从 env 注入 ctx Key（DashScope / OpenAI）
         _inject_env_keys_into_ctx(self.ctx)
         has_keys = self.ctx.has_any_key()
         logger.info(
@@ -715,20 +724,16 @@ class LiteLLMEngine:
         if not has_keys:
             logger.info("[L3] 从 L2 兜底拉取 API Key...")
             await try_fetch_keys_from_l2(self.ctx)
-        if not self.ctx.has_any_key():
+        _probe_model = self._primary_model_probe_normalized(_override_model)
+        _local_openai_exempt = _litellm_local_openai_exempt_no_key(_probe_model)
+        if not self.ctx.has_any_key() and not _local_openai_exempt:
             raise RuntimeError(
                 "未配置 API Key。请在 L2 管理为子账号添加 API Key，或在项目根 .env 中设置 DASHSCOPE_API_KEY"
             )
         try:
-            from core.llm_provider import DASHSCOPE_REASONING_MODEL, sanitize_llm_fallback_models
+            from core.llm_provider import sanitize_llm_fallback_models
 
             self.fallback_models = sanitize_llm_fallback_models(self.fallback_models or [])
-            if (self.model_name or "").lower().startswith(("ollama/", "ollama:")):
-                self.model_name = _os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
-                if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    self.model_name = (
-                        f"dashscope/{self.model_name}" if self.model_name else DASHSCOPE_REASONING_MODEL
-                    )
         except ImportError:
             pass
 
@@ -780,6 +785,8 @@ class LiteLLMEngine:
                     "max_tokens": _mt,
                     "timeout": _htt,
                 }
+                if _litellm_local_openai_exempt_no_key(model) and not self.ctx.has_any_key():
+                    kwargs_chat["api_key"] = "sk-local-dummy"
                 if tools:
                     try:
                         from core.llm_provider import dashscope_vl_should_omit_openai_tools_for_multimodal
@@ -1032,20 +1039,16 @@ class LiteLLMEngine:
         )
         if not has_keys:
             await try_fetch_keys_from_l2(self.ctx)
-        if not self.ctx.has_any_key():
+        _probe_model_s = self._primary_model_probe_normalized(_override_model_s)
+        _local_openai_exempt_s = _litellm_local_openai_exempt_no_key(_probe_model_s)
+        if not self.ctx.has_any_key() and not _local_openai_exempt_s:
             raise RuntimeError(
                 "未配置 API Key。请在 L2 管理为子账号添加 API Key，或在项目根 .env 中设置 DASHSCOPE_API_KEY"
             )
         try:
-            from core.llm_provider import DASHSCOPE_REASONING_MODEL, sanitize_llm_fallback_models
+            from core.llm_provider import sanitize_llm_fallback_models
 
             self.fallback_models = sanitize_llm_fallback_models(self.fallback_models or [])
-            if (self.model_name or "").lower().startswith(("ollama/", "ollama:")):
-                self.model_name = _os.environ.get("LLM_MODEL", _L3_DEFAULT_REASONING_MODEL)
-                if not (self.model_name or "").startswith(("dashscope/", "qwen")):
-                    self.model_name = (
-                        f"dashscope/{self.model_name}" if self.model_name else DASHSCOPE_REASONING_MODEL
-                    )
         except ImportError:
             pass
 
@@ -1102,6 +1105,8 @@ class LiteLLMEngine:
                     "max_tokens": _mt,
                     "timeout": _htt_s,
                 }
+                if _litellm_local_openai_exempt_no_key(model) and not self.ctx.has_any_key():
+                    kwargs_chat["api_key"] = "sk-local-dummy"
                 if tools:
                     try:
                         from core.llm_provider import dashscope_vl_should_omit_openai_tools_for_multimodal

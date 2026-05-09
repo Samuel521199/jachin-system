@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-通过 CDP（经 Ngrok）附加远端 Chrome，在 Facebook 广告管理后台导出 Campaign 表为 CSV。
+通过 CDP（经 Ngrok）附加远端 Chrome，在 Facebook 广告管理后台 **广告（Ads）** 层级导出表格为 CSV。
 
 依赖：
   pip install playwright httpx
@@ -16,6 +16,7 @@
   LARK_* — Lark 海外（详见 scripts/fb_report_nexus.env.example；API 根域见代码内 LARK_API_BASE）
 
   FB_REPORT_GOTO_TIMEOUT_MS — Ads Manager 首次 goto 超时（毫秒），默认 300000
+  FB_REPORT_PRESET — 报表区间：相对暗号或绝对单日 ``YYYY-MM-DD``（URL 中为 ``该日_次日``，无逗号后缀）；写入 ``date`` / ``insights_date``
 
 连接说明：
   Chrome 经 Ngrok（含 host-header=localhost）时，``webSocketDebuggerUrl`` 常指向 ``ws://localhost/...``，
@@ -32,10 +33,10 @@ import sys
 import traceback
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 from playwright.async_api import Browser
@@ -77,7 +78,7 @@ _load_fb_report_env_file()
 
 DEFAULT_CDP_URL = "https://nestor-gravelish-alix.ngrok-free.dev"
 DEFAULT_TARGET_URL = (
-    "https://adsmanager.facebook.com/adsmanager/manage/campaigns?"
+    "https://adsmanager.facebook.com/adsmanager/manage/ads?"
     "act=2117441032349622&business_id=1423598819502157&"
     "nav_entry_point=ads_ecosystem_navigation_menu&"
     "columns=name%2Cdelivery%2Crecommendations_guidance%2Cresults%2Ccost_per_result%2Cbudget%2Cspend%2Cimpressions%2Creach%2Cfrequency%2Ccpm%2Cactions%3Aomni_purchase%2Cschedule%2Cend_time%2Cattribution_setting%2Cbid%2Clast_significant_edit%2Cquality_score_organic%2Cquality_score_ectr%2Cquality_score_ecvr%2Ccampaign_name%2Cpurchase_roas%3Aomni_purchase&"
@@ -86,12 +87,143 @@ DEFAULT_TARGET_URL = (
 
 NGROK_HEADERS = {"ngrok-skip-browser-warning": "1"}
 
+# 调试截图：仅视口、禁用动画；跨国 CDP 下截图仍需较长等待（勿用过短的 10s）
+_DEBUG_SCREENSHOT_KW: dict = {
+    "full_page": False,
+    "timeout": 90_000,
+    "animations": "disabled",
+}
+
 # 默认超时 90s（跨境公网 / 大表渲染）
 DEFAULT_TIMEOUT_MS = 90_000
 CONNECT_TIMEOUT_MS = 90_000
 CONNECT_HTTP_TIMEOUT_SEC = 90
 # Ads Manager：跨国 + 重页面；domcontentloaded + 长超时；可用 FB_REPORT_GOTO_TIMEOUT_MS 覆盖
 FB_ADS_GOTO_TIMEOUT_MS_DEFAULT = 300_000
+
+# FB_REPORT_PRESET（解析后暗号）→ URL 中 date / insights_date 的区间与 preset 字段
+DEFAULT_FB_REPORT_PRESET = "last_7d"
+
+_FB_NATIVE_DATE_PRESETS: frozenset[str] = frozenset(
+    {
+        "today",
+        "yesterday",
+        "last_7d",
+        "last_14d",
+        "last_30d",
+        "this_month",
+        "last_month",
+        "maximum",
+    }
+)
+
+# 直观配置 / 简写 -> FB 原生 date_preset
+FB_REPORT_DATE_PRESET_ALIASES: dict[str, str] = {
+    "today": "today",
+    "yesterday": "yesterday",
+    "last_7d": "last_7d",
+    "last7d": "last_7d",
+    "7d": "last_7d",
+    "last_14d": "last_14d",
+    "last14d": "last_14d",
+    "14d": "last_14d",
+    "last_30d": "last_30d",
+    "last30d": "last_30d",
+    "30d": "last_30d",
+    "this_month": "this_month",
+    "thismonth": "this_month",
+    "last_month": "last_month",
+    "lastmonth": "last_month",
+    "maximum": "maximum",
+    "max": "maximum",
+}
+
+
+def build_fb_deep_link(base_url: str, preset: str = "last_7d") -> str:
+    """
+    基于 Ads Manager 路由：覆写 ``date``、``insights_date``。
+
+    协议对齐：
+    - **绝对日期**（``YYYY-MM-DD``）：``起始日_结束日``，结束日为起始日的次日；**无任何逗号或 preset 后缀**。
+    - **相对预设**：``起始_结束,preset``（如 ``,yesterday``、``,last_7d``）。
+    """
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", preset):
+        target_date = datetime.strptime(preset, "%Y-%m-%d").date()
+        next_day = target_date + timedelta(days=1)
+        date_param = (
+            f"{target_date.strftime('%Y-%m-%d')}_{next_day.strftime('%Y-%m-%d')}"
+        )
+    else:
+        today = datetime.now().date()
+
+        if preset == "yesterday":
+            start_d = today - timedelta(days=1)
+            end_d = today
+            out_preset = "yesterday"
+        elif preset == "today":
+            start_d = today
+            end_d = today + timedelta(days=1)
+            out_preset = "today"
+        elif preset == "last_30d":
+            start_d = today - timedelta(days=31)
+            end_d = today - timedelta(days=1)
+            out_preset = "last_30d"
+        elif preset == "last_14d":
+            start_d = today - timedelta(days=15)
+            end_d = today - timedelta(days=1)
+            out_preset = "last_14d"
+        elif preset == "last_7d":
+            start_d = today - timedelta(days=8)
+            end_d = today - timedelta(days=1)
+            out_preset = "last_7d"
+        elif preset == "this_month":
+            start_d = today.replace(day=1)
+            end_d = today
+            out_preset = "this_month"
+        elif preset == "last_month":
+            first_this = today.replace(day=1)
+            last_prev = first_this - timedelta(days=1)
+            start_d = last_prev.replace(day=1)
+            end_d = last_prev
+            out_preset = "last_month"
+        elif preset == "maximum":
+            start_d = today - timedelta(days=365 * 3)
+            end_d = today
+            out_preset = "maximum"
+        else:
+            start_d = today - timedelta(days=8)
+            end_d = today - timedelta(days=1)
+            out_preset = "last_7d"
+
+        start = start_d.strftime("%Y-%m-%d")
+        end = end_d.strftime("%Y-%m-%d")
+        date_param = f"{start}_{end},{out_preset}"
+
+    u = urlparse(base_url)
+    query = parse_qs(u.query, keep_blank_values=True)
+    for k in ("time_range", "date_preset", "date", "insights_date"):
+        query.pop(k, None)
+    query["date"] = [date_param]
+    query["insights_date"] = [date_param]
+    new_query = urlencode(query, doseq=True)
+    return u._replace(query=new_query).geturl()
+
+
+def resolve_fb_report_preset(raw: str) -> str:
+    """将环境变量或别名解析为 FB 区间暗号；未知值回退 DEFAULT_FB_REPORT_PRESET。
+    ``YYYY-MM-DD`` 原样返回，供 ``build_fb_deep_link`` 作绝对单日（无后缀，结束日为次日）。
+    """
+    s = (raw or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return s
+    key = s.lower().replace("-", "_")
+    if not key:
+        return DEFAULT_FB_REPORT_PRESET
+    if key in FB_REPORT_DATE_PRESET_ALIASES:
+        return FB_REPORT_DATE_PRESET_ALIASES[key]
+    if key in _FB_NATIVE_DATE_PRESETS:
+        return key
+    return DEFAULT_FB_REPORT_PRESET
 
 
 def _env_url(key: str, default: str) -> str:
@@ -110,7 +242,7 @@ def _env_int(key: str, default: int) -> int:
 
 
 CDP_URL = _env_url("FB_REPORT_CDP_URL", DEFAULT_CDP_URL)
-TARGET_URL = _env_url("FB_REPORT_TARGET_URL", DEFAULT_TARGET_URL)
+FB_REPORT_PRESET = resolve_fb_report_preset((os.environ.get("FB_REPORT_PRESET") or "").strip())
 FB_ADS_GOTO_TIMEOUT_MS = _env_int(
     "FB_REPORT_GOTO_TIMEOUT_MS", FB_ADS_GOTO_TIMEOUT_MS_DEFAULT
 )
@@ -332,6 +464,14 @@ async def upload_to_lark(file_path: str) -> None:
         raise
 
 
+async def _debug_screenshot(page: Page, path: str) -> None:
+    """尽力生成调试截图；失败仅告警，不阻断抓取主流程。"""
+    try:
+        await page.screenshot(path=path, **_DEBUG_SCREENSHOT_KW)
+    except Exception as e:
+        print(f"⚠️ 调试截图未生成 ({path})：{e!r}", file=sys.stderr)
+
+
 async def _pick_working_page(browser: Browser) -> Page:
     """在已连接的 Browser 上选取可用 Page（优先已有前台页）。"""
     for ctx in browser.contexts:
@@ -344,8 +484,8 @@ async def _pick_working_page(browser: Browser) -> Page:
     return await ctx.new_page()
 
 
-async def _export_campaign_csv(page: Page) -> Path:
-    """在已打开 Ads Manager 活动页的 Page 上执行导出并保存 CSV。"""
+async def _export_ads_csv(page: Page) -> Path:
+    """在已打开 Ads Manager **广告**层级页的 Page 上执行导出并保存 CSV。"""
     page.set_default_timeout(DEFAULT_TIMEOUT_MS)
     page.set_default_navigation_timeout(FB_ADS_GOTO_TIMEOUT_MS)
 
@@ -354,10 +494,14 @@ async def _export_campaign_csv(page: Page) -> Path:
         try:
             print(
                 "🚀 正在发起跨洋导航，目标：Ads Manager "
-                "(放宽等待至 DOMContentLoaded)..."
+                "(DOMContentLoaded + date/insights_date 深度链接)..."
+            )
+            nav_url = build_fb_deep_link(
+                _env_url("FB_REPORT_TARGET_URL", DEFAULT_TARGET_URL),
+                FB_REPORT_PRESET,
             )
             await page.goto(
-                TARGET_URL,
+                nav_url,
                 wait_until="domcontentloaded",
                 timeout=FB_ADS_GOTO_TIMEOUT_MS,
             )
@@ -371,19 +515,18 @@ async def _export_campaign_csv(page: Page) -> Path:
                 f"⚠️ 导航超时或网络波动（第 {nav_i + 1}/{nav_attempts} 次）：{e!r}"
             )
             print("⚠️ 尝试拍摄现场快照 (debug_nav_timeout.png)...")
-            try:
-                await page.screenshot(path="debug_nav_timeout.png")
-            except Exception:
-                pass
+            await _debug_screenshot(page, "debug_nav_timeout.png")
             if nav_i == nav_attempts - 1:
                 raise
             await asyncio.sleep(5)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest = Path.cwd() / f"fb_campaign_report_{ts}.csv"
+    filename = f"fb_ads_report_{FB_REPORT_PRESET}_{ts}.csv"
+    dest = Path(__file__).resolve().parent.parent / filename
+    print(f"📄 目标文件名已校准: {filename}")
 
-    print("📸 拍摄战地快照 (debug_before_click.png)...")
-    await page.screenshot(path="debug_before_click.png", full_page=True)
+    print("📸 拍摄战地快照 (当前视口，debug_before_click.png)...")
+    await _debug_screenshot(page, "debug_before_click.png")
 
     print("🎯 执行一击必杀（仅截获 URL，不依赖物理硬盘）...")
     hacker_page: Optional[Page] = None
@@ -434,7 +577,7 @@ async def _export_campaign_csv(page: Page) -> Path:
 
     except Exception:
         print("❌ 幽灵行动崩溃...", file=sys.stderr)
-        await page.screenshot(path="debug_download_failed.png", full_page=True)
+        await _debug_screenshot(page, "debug_download_failed.png")
         if hacker_page is not None:
             try:
                 await hacker_page.close()
@@ -475,7 +618,7 @@ async def main() -> int:
 
         try:
             page = await _pick_working_page(browser)
-            out_path = await _export_campaign_csv(page)
+            out_path = await _export_ads_csv(page)
             print(f"已保存：{out_path.resolve()}")
             await upload_to_lark(str(out_path.resolve()))
         finally:

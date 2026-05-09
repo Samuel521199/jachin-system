@@ -1,5 +1,9 @@
 """
-Kalaroko E2E — 小时巡检 + 每日晨报 + 每周统帅 Persona 侧写（AsyncIOScheduler，L3 事件循环内）。
+Kalaroko E2E — 小时巡检 + 每日晨报（本地 08:15 后状态机补偿）+ 每周统帅 Persona 侧写（AsyncIOScheduler，L3 事件循环内）。
+
+- 小时巡检前做 **TCP 探活**（默认 ``8.8.8.8:53``），无网则静默跳过、不发飞书。
+- 晨报不再依赖单次 UTC cron：``~/.jachin/data/.last_daily_report.txt`` 记录已成功发送的本地日期，
+  周期任务在 **本地已过 08:15** 且当日未记录时补发（休眠错过晨间窗口后唤醒可追上）。
 
 调度「开/关」持久化到 ``kalaroko_scheduler_state.json``；L3 重启后 ``init_auto_start_scheduler()`` 可恢复。
 """
@@ -10,10 +14,12 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from core.kalaroko_e2e_jsonl_store import (
     KALAROKO_E2E_JSONL_PATH,
@@ -33,6 +39,7 @@ def _sched_env_bool(name: str, *, default: bool) -> bool:
 
 
 SCHEDULER_STATE_FILE = Path.home() / ".jachin" / "data" / "kalaroko_scheduler_state.json"
+_LAST_DAILY_REPORT_FILE = Path.home() / ".jachin" / "data" / ".last_daily_report.txt"
 _KALAROKO_E2E_JSONL = KALAROKO_E2E_JSONL_PATH
 
 _JOB_HOURLY = "kalaroko_hourly_inspection"
@@ -41,6 +48,9 @@ _JOB_WEEKLY_PERSONA = "weekly_persona_profile"
 
 _scheduler: Any | None = None
 _scheduler_started = False
+
+# 晨报状态机：防 Interval 重叠触发导致的并发重入与重复投递（单进程内互斥）
+_DAILY_REPORT_LOCK = asyncio.Lock()
 
 
 def _write_scheduler_state(enabled: bool) -> None:
@@ -76,6 +86,54 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _daily_catchup_interval_minutes() -> int:
+    """晨报状态机轮询间隔（分钟）；环境变量 ``KALAROKO_DAILY_REPORT_CATCHUP_MINUTES``，默认 10，范围 1～60。"""
+    try:
+        v = int(os.environ.get("KALAROKO_DAILY_REPORT_CATCHUP_MINUTES", "10") or "10")
+        return max(1, min(60, v))
+    except ValueError:
+        return 10
+
+
+def _daily_report_local_tz() -> ZoneInfo:
+    """晨报日期边界与本地时钟所用时区（默认菲律宾办公时区）；放行时刻见 ``smart_trigger_daily_report_job``（08:15 后）。"""
+    raw = (
+        os.environ.get("KALAROKO_DAILY_REPORT_TZ")
+        or os.environ.get("KALAROKO_REPORT_TZ")
+        or "Asia/Manila"
+    ).strip()
+    try:
+        return ZoneInfo(raw)
+    except Exception:
+        return ZoneInfo("Asia/Manila")
+
+
+def is_network_connected(
+    host: str = "8.8.8.8",
+    port: int = 53,
+    timeout: float = 3.0,
+) -> bool:
+    """检查是否已连通互联网（防休眠唤醒后栈未就绪 / 无网误报巡检）。"""
+    prev = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(timeout)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            socket.setdefaulttimeout(prev)
+        except Exception:
+            pass
+
+
+async def wait_for_network_or_skip() -> bool:
+    """异步包装探活；无网返回 False（调用方静默跳过），不抛异常。"""
+    return await asyncio.to_thread(is_network_connected)
+
+
 async def _send_lark_safe(markdown: str, title: str) -> None:
     try:
         from l3_node.channels.lark.kalaroko_inspection_notify import (
@@ -100,6 +158,11 @@ async def _send_lark_safe(markdown: str, title: str) -> None:
 
 async def hourly_inspection_job() -> None:
     """每小时：4 轮 ×30s 间隔；异常则 Lark 严重预警。"""
+    if not await wait_for_network_or_skip():
+        logger.info(
+            "[kalaroko_scheduler] [网络防抖] 当前无网或探活失败，本次小时巡检静默跳过（不发飞书）。"
+        )
+        return
     logger.info(
         "[kalaroko_scheduler] 小时巡检开始（4 轮×30s，超时上限 2700s）"
     )
@@ -144,6 +207,7 @@ async def hourly_inspection_job() -> None:
 
         await asyncio.wait_for(_run_batch(), timeout=2700.0)
         logger.info("[kalaroko_scheduler] 小时巡检正常结束（本小时批次已完成）")
+        # Healthchecks 真实心跳：仅在 E2E 内 send_kalaroko_inspection_to_lark 完整成功后触发（无独立周期线程）
     except asyncio.TimeoutError:
         logger.error(
             "[kalaroko_scheduler] 小时巡检超过 asyncio 上限 2700s（45 分钟），已终止；"
@@ -296,10 +360,10 @@ async def weekly_persona_profile_job() -> None:
             logger.warning("[kalaroko_scheduler] Persona 宕机告警推送失败: %s", push_e)
 
 
-async def daily_morning_report_job() -> None:
-    """每日（默认 UTC 0:15 ≈ 北京 8:15）：24h 晨报 → Lark；成功后滚动清理 JSONL。
+async def daily_morning_report_job() -> bool:
+    """24h 晨报 → Lark；成功后滚动清理 JSONL。返回 True 表示已向 Lark 投递晨报正文（可写日期状态机）。
 
-    与整点小时巡检、BI 默认定时（历史上常 08:00 上海）错开，降低 ``kalaroko_e2e.jsonl`` 文件锁争用与 Chrome/CDP 争抢。
+    无时区「整点 cron」依赖：由 ``smart_trigger_daily_report_job`` 在本地 08:15 后补偿触发。
     """
     root = _repo_root()
     import importlib.util
@@ -367,7 +431,7 @@ async def daily_morning_report_job() -> None:
 
         if not recent_24h_records:
             logger.info("[kalaroko_scheduler] 过去 24 小时无巡检数据，跳过晨报生成。")
-            return
+            return False
 
         metrics_for_llm = [extract_cmp(rec) for rec in recent_24h_records]
         text = await gen_summary(metrics_for_llm, mode="multi_round")
@@ -413,6 +477,8 @@ async def daily_morning_report_job() -> None:
         except Exception as pe:
             logger.warning("[kalaroko_scheduler] JSONL 清理失败（不影响晨报成功）: %s", pe)
 
+        return True
+
     except asyncio.CancelledError:
         raise
     except BaseException as e:
@@ -429,6 +495,103 @@ async def daily_morning_report_job() -> None:
             await _send_lark_safe(md[:24000], "晨报 · 严重告警")
         except Exception as push_e:
             logger.warning("[kalaroko_scheduler] 晨报宕机告警推送失败: %s", push_e)
+        return False
+
+
+async def smart_trigger_daily_report_job() -> None:
+    """本地 08:15 后：若今日尚未在状态机落盘成功发晨报，且网络可用，则执行 ``daily_morning_report_job`` 并写日期。
+
+    用于办公机休眠错过原 UTC 定点后的 **catch-up**；无网静默等待下周期，不抛异常、不为此单独发飞书。
+    """
+    if _DAILY_REPORT_LOCK.locked():
+        logger.info(
+            "[kalaroko_scheduler] [日报调度] 前序晨报任务正在执行，本次轮询跳过（防重入）。"
+        )
+        return
+
+    try:
+        tz = _daily_report_local_tz()
+        now_local = datetime.now(tz)
+        is_time_to_fire = now_local.hour > 8 or (
+            now_local.hour == 8 and now_local.minute >= 15
+        )
+        if not is_time_to_fire:
+            return
+
+        today_str = now_local.date().isoformat()
+        state_path = _LAST_DAILY_REPORT_FILE
+        last_run = ""
+        if state_path.is_file():
+            try:
+                last_run = state_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                last_run = ""
+
+        if last_run == today_str:
+            return
+
+        if not await wait_for_network_or_skip():
+            logger.info(
+                "[kalaroko_scheduler] [日报调度] 本地已过 08:15 且今日尚未发晨报，但当前无网，下周期重试。"
+            )
+            return
+
+        async with _DAILY_REPORT_LOCK:
+            last_after = ""
+            if state_path.is_file():
+                try:
+                    last_after = state_path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    last_after = ""
+            if last_after == today_str:
+                logger.info(
+                    "[kalaroko_scheduler] [日报调度] 持锁双检：%s 已为 %r，跳过重复发送。",
+                    state_path,
+                    today_str,
+                )
+                return
+
+            logger.info(
+                "[kalaroko_scheduler] [日报调度] 已持锁，触发晨报发送逻辑（目标日=%s，预检 last=%r）。",
+                today_str,
+                last_run,
+            )
+            try:
+                sent = await daily_morning_report_job()
+                if not sent:
+                    logger.info(
+                        "[kalaroko_scheduler] [日报调度] 晨报任务返回 False（可能无 24h 数据），"
+                        "状态机未更新，等待下轮重试。"
+                    )
+                    return
+                try:
+                    state_path.parent.mkdir(parents=True, exist_ok=True)
+                    state_path.write_text(today_str, encoding="utf-8")
+                except OSError as oe:
+                    logger.warning(
+                        "[kalaroko_scheduler] [日报调度] 晨报已投递但状态机落盘失败（存在重复发送风险）: %s",
+                        oe,
+                    )
+                else:
+                    logger.info(
+                        "[kalaroko_scheduler] [日报调度] 晨报发送成功；状态机落盘完成 path=%s "
+                        "date=%r encoding=utf-8 payload_len=%s",
+                        state_path,
+                        today_str,
+                        len(today_str.encode("utf-8")),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[kalaroko_scheduler] [日报调度] 晨报链路异常，状态机未更新: %s",
+                    e,
+                )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(
+            "[kalaroko_scheduler] [日报调度] smart_trigger 外层异常（不更新状态）: %s",
+            e,
+        )
 
 
 def start_scheduler() -> dict[str, Any]:
@@ -456,12 +619,14 @@ def start_scheduler() -> dict[str, Any]:
         coalesce=True,
         misfire_grace_time=120,
     )
-    # 晨报默认 UTC 0:15（≈ 北京 8:15），与整点巡检 / 常见 BI 8:00 错峰；关闭：KALAROKO_DAILY_MORNING_REPORT=0
+    # 晨报：周期轮询 + 本地 08:15 后状态机（``_LAST_DAILY_REPORT_FILE``），休眠错过定点仍可补发；关闭：KALAROKO_DAILY_MORNING_REPORT=0
     if _sched_env_bool("KALAROKO_DAILY_MORNING_REPORT", default=True):
+        _catch_m = _daily_catchup_interval_minutes()
         sched.add_job(
-            daily_morning_report_job,
-            CronTrigger(hour=0, minute=15, timezone=timezone.utc),
+            smart_trigger_daily_report_job,
+            IntervalTrigger(minutes=_catch_m),
             id=_JOB_DAILY,
+            next_run_time=_now_utc,
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -485,7 +650,7 @@ def start_scheduler() -> dict[str, Any]:
     _scheduler_started = True
     _write_scheduler_state(True)
     logger.info(
-        "[kalaroko_scheduler] AsyncIOScheduler 已启动（小时巡检 + 每日 UTC0:15 晨报（可关）+ 每周日 UTC 02:00 Persona）"
+        "[kalaroko_scheduler] AsyncIOScheduler 已启动（小时巡检 + 晨报状态机补偿（可关）+ 每周日 UTC 02:00 Persona）"
     )
     try:
         jh = sched.get_job(_JOB_HOURLY)
@@ -497,7 +662,7 @@ def start_scheduler() -> dict[str, Any]:
             )
         if jd and getattr(jd, "next_run_time", None):
             logger.info(
-                "[kalaroko_scheduler] 下次每日晨报计划时间: %s (UTC)",
+                "[kalaroko_scheduler] 下次晨报状态机轮询: %s (UTC)",
                 jd.next_run_time,
             )
     except Exception as e:

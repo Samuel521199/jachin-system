@@ -330,6 +330,13 @@ async def send_kalaroko_inspection_to_lark(
                     await asyncio.sleep(max(0.0, float(delay_sec)))
 
         emit(f"推送完成 message_id={parent_id!r}")
+        # 真实业务心跳：仅主卡片 + 详单盖楼均成功后才 ping（无独立周期线程）
+        try:
+            from l3_node.jobs.healthchecks_watchdog import ping_healthchecks_if_configured
+
+            await asyncio.to_thread(ping_healthchecks_if_configured)
+        except Exception as hc_e:
+            logger.warning("[Healthchecks] 巡检后心跳触发失败（忽略）: %s", hc_e)
     except urllib.error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", errors="replace")[:800]

@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
