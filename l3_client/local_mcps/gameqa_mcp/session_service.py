@@ -1,8 +1,10 @@
 ﻿"""
 GameQA 会话：MCP 工具与 L3 HTTP 共用实现逻辑。
 
-CDP：`BrowserEngine` 首轮 launch 写入 ``cdp_http.txt``，其它进程可通过 ``connect_over_cdp``
-附着同一 Chromium（参见 ``GAMEQA_CDP_URL`` / ``GAMEQA_REMOTE_DEBUG_PORT``）。
+自治测试（``launch_test``）：默认在本进程 **直接 launch Playwright Chromium**（不 ``connect_over_cdp`` 到外部 Chrome），
+并与 YOLO/视口一致；需要附着脚本 Chrome 时请改用影子模式或自行设环境变量后再调通用 ``launch``。
+
+CDP：首轮 launch 可写入 ``cdp_http.txt``，其它进程可通过 ``connect_over_cdp`` 附着（参见 ``GAMEQA_CDP_URL``）。
 
 影子模式：拦截点击后 **异步截屏→视觉→对齐**，无需玩家事先「刷新语义状态」。
 """
@@ -21,6 +23,19 @@ from .core.ocr_engine import ocr_png_bytes_for_state
 from .core.vision_engine import VisionEngine
 
 logger = logging.getLogger("gameqa.session_service")
+
+
+def _launch_test_headless() -> bool:
+    """
+    自治测试默认 **有头**（便于观察点击与 HUD）。
+    设置 ``GAMEQA_LAUNCH_TEST_HEADLESS=1`` / ``true`` / ``yes`` / ``on`` 则无头。
+    """
+    return (os.environ.get("GAMEQA_LAUNCH_TEST_HEADLESS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _data_dir() -> Path:
@@ -238,17 +253,19 @@ class GameQAService:
             self.last_public_state.clear()
             self.mode = "test"
             await self.emit_log(
-                f"[gameqa] 自治测试：run_id={self.run_id} · 将按序尝试 CDP 附着（GAMEQA_CDP_URL / "
-                f"cdp_http.txt / 本机默认口），失败则本进程 launch Chromium 并写入 cdp_http.txt。"
+                f"[gameqa] 自治测试：run_id={self.run_id} · "
+                "本进程 **直接启动 Playwright Chromium**（不附着外部 Chrome/Cdp），避免与手开浏览器错页导致坐标错位。"
+                "默认 **有头窗口**；无头请设环境变量 GAMEQA_LAUNCH_TEST_HEADLESS=1。"
                 f"目标 URL={url!r}"
             )
             try:
                 msg = await self.browser.launch(
                     url,
-                    headless=True,
+                    headless=_launch_test_headless(),
                     shadow=False,
                     on_shadow_click=None,
                     emit=self.emit_log,
+                    skip_cdp_attach=True,
                 )
             except Exception as e:
                 logger.exception("launch_test")

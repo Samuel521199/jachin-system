@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.58] - 2026-05-11
+
+### Added / Changed
+
+- 改成执行物理点击前的版本。
+- **Version**: Desktop **0.9.58**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.57] - 2026-05-11
 
 ### Added / Changed

@@ -460,7 +460,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:tool_launch_test_mode",
         "label": "mcp:tool_launch_test_mode",
-        "desc": "[L3 本地·GameQA] 启动无头浏览器并打开 url（自治测试）。",
+        "desc": "[L3 本地·GameQA] 自治测试：本进程启动 Playwright Chromium（不附着外部 Chrome），默认有头；GAMEQA_LAUNCH_TEST_HEADLESS=1 则无头。",
         "params": ["url"],
         "long_running": True,
     },

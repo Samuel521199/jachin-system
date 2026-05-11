@@ -21,7 +21,8 @@ GameQA MCP Server — 本地物理网关（stdio / FastMCP）。
   GAMEQA_REMOTE_DEBUG_PORT / GAMEQA_REMOTE_DEBUG_HOST  launch 时开放 CDP（默认 127.0.0.1:9222，与 scripts/launch_chrome_debug.ps1 一致）
   GAMEQA_CDP_URL    跳过 launch，优先 connect_over_cdp
   KALAROKO_CDP_ENDPOINT  未设 GAMEQA_CDP_URL 时亦可作附着地址（与 .env / K11 冒烟共用）
-  GAMEQA_FORCE_NEW_BROWSER=1   丢弃共享端点文件并强制新起 Chromium（调试冲突时用）
+  GAMEQA_LAUNCH_TEST_HEADLESS=1   自治测试默认有头窗口；设此则为无头（CI）
+  GAMEQA_ATTACH_SCRIPT_CHROME_FIRST=0  影子/通用 launch 仍可先试附着脚本 Chrome；自治测试路径已改为直接 launch
   GAMEQA_YOLO_MODEL   （可选）Ultralytics/YOLO 权重路径或 hub 名（如 ``yolo11n.pt``）；未设则视觉为 Mock
   GAMEQA_YOLO_CONF / GAMEQA_YOLO_DEVICE / GAMEQA_YOLO_IMG_SIZE   参见 ``vision_engine.py``
 """
@@ -68,7 +69,7 @@ def tool_read_knowledge(file_path: str) -> str:
 
 @mcp.tool(name="tool_launch_test_mode")
 async def tool_launch_test_mode(url: str) -> str:
-    """启动无头浏览器，进入自治 QA 模式。"""
+    """启动自治 QA：本进程直接启动 Playwright Chromium（不附着外部 Chrome），默认有头窗口；GAMEQA_LAUNCH_TEST_HEADLESS=1 则无头。"""
     raw = await _svc().launch_test(url)
     return json.dumps(raw, ensure_ascii=False)
 

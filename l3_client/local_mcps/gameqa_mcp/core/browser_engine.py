@@ -72,12 +72,148 @@ def _snapshot_relevant_env() -> list[str]:
         "GAMEQA_OCR_MAX_CHARS",
         "GAMEQA_REFRESH_SOFT_RELOAD",
         "GAMEQA_REFRESH_SETTLE_MS",
+        "GAMEQA_VISIBLE_CLICK_MARKER",
+        "GAMEQA_VISIBLE_CLICK_MARKER_DELAY_MS",
+        "GAMEQA_ATTACH_SCRIPT_CHROME_FIRST",
+        "GAMEQA_LAUNCH_TEST_HEADLESS",
+        "GAMEQA_PLAYWRIGHT_USE_PROXY",
+        "GAMEQA_PROXY_URL",
+        "GAMEQA_PROXY_HOST",
+        "GAMEQA_PROXY_PORT",
+        "GAMEQA_PROXY_BYPASS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
     )
     out: list[str] = []
     for k in keys:
         v = (os.environ.get(k) or "").strip()
-        out.append(f"[gameqa][env] {k}={v!r}" if v else f"[gameqa][env] {k}=(unset)")
+        if k in ("HTTP_PROXY", "HTTPS_PROXY", "GAMEQA_PROXY_URL") and v:
+            try:
+                p = urlparse(v)
+                netloc = p.hostname or ""
+                if p.port:
+                    netloc = f"{netloc}:{p.port}"
+                safe = urlunparse((p.scheme, netloc, p.path or "", "", "", ""))
+                out.append(f"[gameqa][env] {k}={safe!r} (redacted)")
+            except Exception:
+                out.append(f"[gameqa][env] {k}=(set, parse failed)")
+        else:
+            out.append(f"[gameqa][env] {k}={v!r}" if v else f"[gameqa][env] {k}=(unset)")
+    user = (os.environ.get("GAMEQA_PROXY_USERNAME") or os.environ.get("GAMEQA_PROXY_USER") or "").strip()
+    out.append(
+        "[gameqa][env] GAMEQA_PROXY_USERNAME=(set)"
+        if user
+        else "[gameqa][env] GAMEQA_PROXY_USERNAME=(unset)"
+    )
+    out.append(
+        "[gameqa][env] GAMEQA_PROXY_PASSWORD=(set)"
+        if (os.environ.get("GAMEQA_PROXY_PASSWORD") or "").strip()
+        else "[gameqa][env] GAMEQA_PROXY_PASSWORD=(unset)"
+    )
     return out
+
+
+def _visible_click_marker_enabled() -> bool:
+    """
+    实验：点击前在页面**顶部**显示高对比 HUD（当前视口点击坐标），并在目标点画**放大环状靶心**，
+    便于确认 Playwright 控制的 tab / Canvas 层。
+
+    - 默认开启（unset 等价于 ``1``）；置 ``GAMEQA_VISIBLE_CLICK_MARKER=0`` / ``false`` / ``no`` / ``off`` 可关闭。
+    """
+    raw = (os.environ.get("GAMEQA_VISIBLE_CLICK_MARKER") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _visible_click_marker_delay_ms() -> int:
+    try:
+        return max(
+            0,
+            int((os.environ.get("GAMEQA_VISIBLE_CLICK_MARKER_DELAY_MS") or "150").strip()),
+        )
+    except ValueError:
+        return 150
+
+
+async def _inject_visible_click_marker(page: Any, x: float, y: float) -> tuple[bool, str]:
+    """
+    调试：点击前在**页面最顶**叠一层高对比 HUD（当前视口点击坐标），并在 (x,y) 叠大尺寸环状靶心。
+    与 ``mouse.click`` 同为 **viewport CSS 像素**；``pointer-events:none`` 不挡真实点击。
+    """
+    if not page:
+        return False, "no page"
+    try:
+        detail = await page.evaluate(
+            """([cx, cy]) => {
+              const mid = "gameqa-visible-click-marker";
+              const hid = "gameqa-click-hud";
+              const sid = "gameqa-click-marker-style";
+              const p1 = document.getElementById(mid);
+              if (p1) p1.remove();
+              const p2 = document.getElementById(hid);
+              if (p2) p2.remove();
+              const root = document.body || document.documentElement;
+              if (!root) return { ok: false, reason: "no body" };
+              if (!document.getElementById(sid)) {
+                const st = document.createElement("style");
+                st.id = sid;
+                st.textContent =
+                  "@keyframes gameqaHudPulse{0%,100%{opacity:1}" +
+                  "50%{opacity:.88}}" +
+                  "@keyframes gameqaTargetPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}" +
+                  "50%{transform:translate(-50%,-50%) scale(1.12)}}";
+                (document.documentElement || root).appendChild(st);
+              }
+              const xs = (typeof cx === "number" ? cx : parseFloat(cx)).toFixed(1);
+              const ys = (typeof cy === "number" ? cy : parseFloat(cy)).toFixed(1);
+              const hud = document.createElement("div");
+              hud.id = hid;
+              hud.setAttribute("role", "presentation");
+              hud.style.cssText =
+                "position:fixed;top:0;left:0;right:0;min-height:56px;padding:10px 14px 12px;" +
+                "background:linear-gradient(180deg,#c62828 0%,#8e0000 100%);color:#fff;" +
+                "font-family:system-ui,-apple-system,Segoe UI,sans-serif;z-index:2147483647;" +
+                "pointer-events:none;box-sizing:border-box;box-shadow:0 4px 16px rgba(0,0,0,.45);" +
+                "border-bottom:3px solid #ffeb3b;display:flex;flex-direction:column;justify-content:center;" +
+                "animation:gameqaHudPulse 1.2s ease-in-out infinite;";
+              const line1 = document.createElement("div");
+              line1.style.cssText =
+                "font-size:13px;font-weight:600;letter-spacing:.04em;opacity:.95;text-transform:uppercase;";
+              line1.textContent = "GameQA Agent · 即将点击（视口坐标）";
+              const line2 = document.createElement("div");
+              line2.style.cssText =
+                "font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:4px;" +
+                "text-shadow:0 1px 2px rgba(0,0,0,.4);";
+              line2.textContent = "x = " + xs + " px   ·   y = " + ys + " px";
+              hud.appendChild(line1);
+              hud.appendChild(line2);
+              root.appendChild(hud);
+              const m = document.createElement("div");
+              m.id = mid;
+              m.setAttribute("role", "presentation");
+              m.style.cssText =
+                "position:fixed;left:" + cx + "px;top:" + cy + "px;" +
+                "width:56px;height:56px;transform:translate(-50%,-50%);" +
+                "border-radius:50%;background:rgba(255,23,68,.3);border:5px solid #ff1744;" +
+                "box-shadow:0 0 0 4px #fff,0 0 28px 8px rgba(255,23,68,.85);" +
+                "z-index:2147483646;pointer-events:none;box-sizing:border-box;" +
+                "animation:gameqaTargetPulse 0.85s ease-in-out infinite;";
+              root.appendChild(m);
+              return {
+                ok: true,
+                reason: "hud+target",
+                left: cx,
+                top: cy,
+                xs: xs,
+                ys: ys,
+              };
+            }""",
+            [float(x), float(y)],
+        )
+        ok = isinstance(detail, dict) and bool(detail.get("ok"))
+        reason = repr(detail) if detail is not None else "None"
+        return ok, reason
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e!r}"
 
 
 async def _page_debug_line(emit: EmitFn, page: Any, tag: str) -> None:
@@ -154,6 +290,59 @@ def remote_debug_http() -> tuple[str, int]:
     return (f"http://{host}:{port}", port)
 
 
+def gameqa_playwright_proxy_config() -> dict[str, str] | None:
+    """
+    供 ``chromium.launch(proxy=…)`` 使用。本机手动开的 Chrome 若走了 Clash/VPN，Playwright **新起的 Chromium 默认仍不经代理**，
+    需在此配置与系统/浏览器一致的 HTTP(S) 或 SOCKS 入口。
+
+    - ``GAMEQA_PLAYWRIGHT_USE_PROXY=0``：显式关闭（本函数返回 ``None``）。
+    - **优先级**：``GAMEQA_PROXY_URL`` 完整 URL（``http(s)://`` 或 ``socks5://``）
+      → ``GAMEQA_PROXY_HOST`` + ``GAMEQA_PROXY_PORT``（仅端口时默认主机 ``127.0.0.1``）
+      → ``HTTPS_PROXY`` / ``HTTP_PROXY``
+      → ``GAMEQA_PLAYWRIGHT_USE_PROXY=1`` 且以上皆空时，默认 ``http://127.0.0.1:8800``。
+    - 可选：``GAMEQA_PROXY_BYPASS``（Playwright 的逗号分隔 bypass 列表）；
+      ``GAMEQA_PROXY_USERNAME`` + ``GAMEQA_PROXY_PASSWORD``（需认证的代理）。
+    """
+    off = (os.environ.get("GAMEQA_PLAYWRIGHT_USE_PROXY") or "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+        "none",
+    )
+    if off:
+        return None
+
+    server = (os.environ.get("GAMEQA_PROXY_URL") or "").strip()
+    if not server:
+        port = (os.environ.get("GAMEQA_PROXY_PORT") or "").strip()
+        if port.isdigit():
+            host = (os.environ.get("GAMEQA_PROXY_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+            server = f"http://{host}:{port}"
+    if not server:
+        server = (os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
+    if not server:
+        use = (os.environ.get("GAMEQA_PLAYWRIGHT_USE_PROXY") or "").strip().lower()
+        if use in ("1", "true", "yes", "on"):
+            server = "http://127.0.0.1:8800"
+    if not server:
+        return None
+    if "://" not in server:
+        server = "http://" + server.lstrip("/")
+
+    out: dict[str, str] = {"server": server}
+    bypass = (os.environ.get("GAMEQA_PROXY_BYPASS") or "").strip()
+    if bypass:
+        out["bypass"] = bypass
+    user = (os.environ.get("GAMEQA_PROXY_USERNAME") or os.environ.get("GAMEQA_PROXY_USER") or "").strip()
+    pw = (os.environ.get("GAMEQA_PROXY_PASSWORD") or "").strip()
+    if user:
+        out["username"] = user
+    if pw:
+        out["password"] = pw
+    return out
+
+
 def gameqa_playwright_viewport() -> dict[str, int]:
     """
     Playwright ``new_context(viewport=…)`` / ``page.set_viewport_size`` 使用的 CSS 视口。
@@ -181,6 +370,58 @@ def explicit_cdp_url() -> str:
         if v:
             return v
     return ""
+
+
+def prefer_attach_script_debug_chrome_first() -> bool:
+    """
+    未显式设置 ``GAMEQA_CDP_URL`` / ``KALAROKO_CDP_ENDPOINT`` 时，优先尝试默认远程调试口
+    （``GAMEQA_REMOTE_DEBUG_HOST`` / ``PORT``；默认 **9222**，与 ``scripts/launch_chrome_debug.ps1`` 一致），
+    然后再读 ``cdp_http.txt``。
+
+    - 默认开启（避免陈旧 ``cdp_http.txt`` 指向上一次 Playwright 实例而绕过桌面 Chrome）。
+    - ``GAMEQA_ATTACH_SCRIPT_CHROME_FIRST=0`` / ``false`` / ``no`` / ``off`` 恢复「先文件后默认」。
+    """
+    raw = (os.environ.get("GAMEQA_ATTACH_SCRIPT_CHROME_FIRST") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _cdp_attach_attempt_order(*, pinned: str, ep_file: str, def_http: str) -> list[tuple[str, str]]:
+    """
+    生成 CDP attach 序列 ``(attempt_label, endpoint)``（规范化 URL 去重）。
+
+    ``pinned``：非空时只附着该 endpoint（来自 ``explicit_cdp_url()``）。
+    """
+    out: list[tuple[str, str]] = []
+    seen_norm: set[str] = set()
+    prefer_first = prefer_attach_script_debug_chrome_first()
+
+    def _add(label: str, endpoint: str) -> None:
+        n = _normalize_cdp_http(endpoint)
+        if not n or n in seen_norm:
+            return
+        seen_norm.add(n)
+        out.append((label, endpoint))
+
+    pinned_s = (pinned or "").strip()
+    ep_f = (ep_file or "").strip()
+
+    if pinned_s:
+        _add("explicit_env", pinned_s)
+        return out
+
+    if prefer_first:
+        _add("prefer_script_debug_default", def_http)
+        if ep_f and _normalize_cdp_http(ep_f) != _normalize_cdp_http(def_http):
+            _add("cdp_http_txt", ep_f)
+    else:
+        if ep_f:
+            _add("cdp_http_txt", ep_f)
+        if not ep_f or _normalize_cdp_http(ep_f) != _normalize_cdp_http(def_http):
+            _add("legacy_default_debug", def_http)
+
+    if not out:
+        _add("fallback_default_debug_only", def_http)
+    return out
 
 
 def cdp_env_source_label() -> str:
@@ -637,12 +878,25 @@ class BrowserEngine:
             emit,
             f"[gameqa][browser] chromium.launch args={launch_args!r}",
         )
+        proxy_cfg = gameqa_playwright_proxy_config()
+        launch_kw: dict[str, Any] = {"headless": headless, "args": launch_args}
+        if proxy_cfg:
+            launch_kw["proxy"] = proxy_cfg
+            srv = proxy_cfg.get("server", "")
+            bits = [f"server={srv!r}"]
+            if proxy_cfg.get("bypass"):
+                bits.append(f"bypass={proxy_cfg['bypass']!r}")
+            if proxy_cfg.get("username"):
+                bits.append("proxy_auth=user+password")
+            await _emit_line(
+                emit,
+                "[gameqa][browser] chromium.launch proxy: " + " ".join(bits),
+            )
+        else:
+            await _emit_line(emit, "[gameqa][browser] chromium.launch proxy=(none)")
         await _emit_line(emit, "[gameqa][browser] playwright async_playwright().start() …")
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(
-            headless=headless,
-            args=launch_args,
-        )
+        self._browser = await self._pw.chromium.launch(**launch_kw)
         self._owns_browser_process = True
         out_file = gameqa_data_dir() / CDP_HTTP_FILE
         endpoint_file_write(cdp_http)
@@ -688,8 +942,13 @@ class BrowserEngine:
         shadow: bool,
         on_shadow_click: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         emit: EmitFn = None,
+        skip_cdp_attach: bool = False,
     ) -> str:
-        """启动或附着：先尝试 CDP 附着，失败再本进程 launch（带调试端口）。"""
+        """启动或附着：默认可先 CDP 附着，失败再本进程 launch（带调试端口）。
+
+        ``skip_cdp_attach=True``：不尝试 ``connect_over_cdp``，直接本进程 ``chromium.launch``（自治测试与外部
+        Chrome 坐标易错位时使用）。
+        """
 
         force_new = (os.environ.get("GAMEQA_FORCE_NEW_BROWSER") or "").strip() in (
             "1",
@@ -738,104 +997,87 @@ class BrowserEngine:
             )
             await _emit_line(
                 emit,
+                f"[gameqa][browser] skip_cdp_attach={skip_cdp_attach} "
+                f"（True=不附着外部 Chrome，仅本进程 launch Playwright Chromium）",
+            )
+            await _emit_line(
+                emit,
                 f"[gameqa][browser] 目标 navigate_url={url!r} headless={headless} shadow={shadow}",
             )
             await _emit_line(
                 emit,
-                f"[gameqa][browser] 清理本进程旧会话 close(discard_shared_endpoint_file={force_new}) …",
+                f"[gameqa][browser] 清理本进程旧会话 close(discard_shared_endpoint_file={bool(force_new or skip_cdp_attach)}) …",
             )
-            await self.close(discard_shared_endpoint_file=force_new)
+            await self.close(discard_shared_endpoint_file=bool(force_new or skip_cdp_attach))
+
+            pinned_s = explicit_cdp_url().strip()
+            if skip_cdp_attach:
+                await _emit_line(
+                    emit,
+                    "[gameqa][browser] 已跳过 CDP 附着序列，不尝试 connect_over_cdp",
+                )
+                attempts = []
+            else:
+                attempts = _cdp_attach_attempt_order(
+                    pinned=pinned_s,
+                    ep_file=ep_file,
+                    def_http=def_http,
+                )
+            await _emit_line(
+                emit,
+                (
+                    f"[gameqa][browser] CDP attach 顺序（去重）: "
+                    + (
+                        "（已跳过 — 仅 launch）"
+                        if skip_cdp_attach
+                        else (
+                            ", ".join(f"{lab}={ep!r}" for lab, ep in attempts)
+                            if attempts
+                            else "(empty — 将直接 launch)"
+                        )
+                    )
+                    + f" | prefer_script_first={prefer_attach_script_debug_chrome_first()!r}"
+                ),
+            )
 
             gameqa_cdp_only = (os.environ.get("GAMEQA_CDP_URL") or "").strip()
-            ep = explicit_cdp_url() or ep_file
-            if not force_new and ep:
-                await _emit_line(
-                    emit,
-                    f"[gameqa][browser] CDP 尝试 #1（环境或 cdp_http.txt） endpoint={ep!r}",
-                )
-                ok = await self._try_connect_over_cdp(
-                    ep,
-                    url,
-                    shadow=shadow,
-                    on_shadow_click=on_shadow_click,
-                    emit=emit,
-                    attempt_label="env_or_cdp_file",
-                )
-                if ok:
-                    self._headless = headless
-                    self._shadow_mode = shadow
+            if not force_new and not skip_cdp_attach:
+                for idx, (attempt_label, endpoint) in enumerate(attempts, start=1):
                     await _emit_line(
                         emit,
-                        "[gameqa][browser] ========== 结束：CDP 附着成功 (#1) ==========",
+                        f"[gameqa][browser] CDP 尝试 #{idx} ({attempt_label}) endpoint={endpoint!r}",
                     )
-                    return f"attached over CDP url={url!r} endpoint={ep!r} shadow={shadow}"
-                if gameqa_cdp_only:
-                    await _emit_line(
-                        emit,
-                        "[gameqa][browser] CDP #1 失败且已显式设置 GAMEQA_CDP_URL → 不回退其它口，将进入 launch",
+                    ok = await self._try_connect_over_cdp(
+                        endpoint,
+                        url,
+                        shadow=shadow,
+                        on_shadow_click=on_shadow_click,
+                        emit=emit,
+                        attempt_label=attempt_label,
                     )
-                elif ep_file and not env_ep:
-                    def_try, _ = remote_debug_http()
-                    if _normalize_cdp_http(ep_file) != _normalize_cdp_http(def_try):
+                    if ok:
+                        self._headless = headless
+                        self._shadow_mode = shadow
                         await _emit_line(
                             emit,
-                            (
-                                f"[gameqa][browser] CDP #1 失败：cdp_http.txt 端口与仓库默认调试口不一致 "
-                                f"（文件={ep_file!r} 默认={def_try!r}），尝试 #2 默认口以附着 launch_chrome_debug.ps1 等启动的 Chrome"
-                            ),
+                            f"[gameqa][browser] ========== 结束：CDP 附着成功 ({attempt_label}) ==========",
                         )
-                        ok2 = await self._try_connect_over_cdp(
-                            def_try,
-                            url,
-                            shadow=shadow,
-                            on_shadow_click=on_shadow_click,
-                            emit=emit,
-                            attempt_label="default_after_stale_cdp_file",
+                        hint = ""
+                        if attempt_label == "prefer_script_debug_default":
+                            hint = " [visible Chrome: launch_chrome_debug.ps1 / GAMEQA_REMOTE_DEBUG_PORT]"
+                        elif attempt_label == "cdp_http_txt":
+                            hint = " [cdp_http.txt]"
+                        elif attempt_label == "explicit_env" and cdp_env_source_label():
+                            hint = f" [{cdp_env_source_label()}]"
+                        return (
+                            f"attached over CDP url={url!r} endpoint={endpoint!r} shadow={shadow}{hint}"
                         )
-                        if ok2:
-                            self._headless = headless
-                            self._shadow_mode = shadow
-                            await _emit_line(
-                                emit,
-                                "[gameqa][browser] ========== 结束：CDP 附着成功 (#2 回退默认口) ==========",
-                            )
-                            return (
-                                f"attached over CDP url={url!r} endpoint={def_try!r} "
-                                f"(after stale cdp_http.txt {ep_file!r}) shadow={shadow}"
-                            )
-                    await _emit_line(
-                        emit,
-                        "[gameqa][browser] CDP #1 失败（已与默认调试口相同）→ 将进入 launch",
-                    )
-                else:
-                    await _emit_line(
-                        emit,
-                        "[gameqa][browser] "
-                        "CDP #1 失败（显式 endpoint 来自 KALAROKO_CDP_ENDPOINT 或已与默认相同）→ 将进入 launch",
-                    )
-
-            if not force_new and not ep:
-                cdp_http, _port = remote_debug_http()
-                await _emit_line(
-                    emit,
-                    f"[gameqa][browser] CDP 尝试 #2（本机默认调试口，无显式 endpoint） endpoint={cdp_http!r}",
-                )
-                ok = await self._try_connect_over_cdp(
-                    cdp_http,
-                    url,
-                    shadow=shadow,
-                    on_shadow_click=on_shadow_click,
-                    emit=emit,
-                    attempt_label="default_local_debug_port",
-                )
-                if ok:
-                    self._headless = headless
-                    self._shadow_mode = shadow
-                    await _emit_line(
-                        emit,
-                        "[gameqa][browser] ========== 结束：CDP 附着成功 (#2) ==========",
-                    )
-                    return f"attached over default CDP port url={url!r} endpoint={cdp_http!r} shadow={shadow}"
+                    if gameqa_cdp_only:
+                        await _emit_line(
+                            emit,
+                            "[gameqa][browser] GAMEQA_CDP_URL 已设置且附着失败 → 不回退其它 endpoint，将进入 launch",
+                        )
+                        break
 
             await _emit_line(
                 emit,
@@ -872,33 +1114,49 @@ class BrowserEngine:
         if self._page:
             await _emit_line(emit, "[gameqa][browser] attach_if: 已有活跃 page，跳过")
             return True
-        ep = explicit_cdp_url() or endpoint_file_read()
-        if not ep:
-            cdp_http, p = remote_debug_http()
-            ep = cdp_http
-            await _emit_line(
-                emit,
-                f"[gameqa][browser] attach_if: 无显式 CDP/file，fallback 默认 {ep!r} port={p}",
-            )
-        else:
-            src = cdp_env_source_label() or "cdp_http.txt"
-            await _emit_line(
-                emit,
-                f"[gameqa][browser] attach_if: endpoint={ep!r} source={src!r}",
-            )
-        ok = await self._try_connect_over_cdp(
-            ep,
-            "",
-            shadow=shadow,
-            on_shadow_click=on_shadow_click,
-            emit=emit,
-            attempt_label="attach_if",
+        pinned_s = explicit_cdp_url().strip()
+        ef = endpoint_file_read()
+        def_http, p = remote_debug_http()
+        attempts = _cdp_attach_attempt_order(
+            pinned=pinned_s,
+            ep_file=ef,
+            def_http=def_http,
         )
-        if ok:
-            await _emit_line(emit, "[gameqa][browser] attach_if: 成功")
-        else:
-            await _emit_line(emit, "[gameqa][browser] attach_if: 失败（无共享 Chromium 或端口不可达）")
-        return ok
+        await _emit_line(
+            emit,
+            (
+                "[gameqa][browser] attach_if: CDP attach 序列 "
+                f"prefer_script_first={prefer_attach_script_debug_chrome_first()!r} "
+                f"def_port={p} → "
+                + (", ".join(f"{lb}={ep!r}" for lb, ep in attempts) or "(none)")
+            ),
+        )
+        ok = False
+        gameqa_cdp_only_af = (os.environ.get("GAMEQA_CDP_URL") or "").strip()
+        for idx, (attempt_label, endpoint) in enumerate(attempts, start=1):
+            await _emit_line(
+                emit,
+                f"[gameqa][browser] attach_if: 尝试 #{idx} ({attempt_label}) endpoint={endpoint!r}",
+            )
+            ok = await self._try_connect_over_cdp(
+                endpoint,
+                "",
+                shadow=shadow,
+                on_shadow_click=on_shadow_click,
+                emit=emit,
+                attempt_label=f"attach_if.{attempt_label}",
+            )
+            if ok:
+                await _emit_line(emit, f"[gameqa][browser] attach_if: 成功 ({attempt_label})")
+                return True
+            if gameqa_cdp_only_af:
+                await _emit_line(
+                    emit,
+                    "[gameqa][browser] attach_if: GAMEQA_CDP_URL 已锁定且失败 → 不再回退其它 endpoint",
+                )
+                break
+        await _emit_line(emit, "[gameqa][browser] attach_if: 失败（无共享 Chromium 或端口不可达）")
+        return False
 
     async def screenshot_png(self) -> bytes:
         if not self._page:
@@ -996,6 +1254,22 @@ class BrowserEngine:
             )
         except Exception:
             pass
+
+        if _visible_click_marker_enabled():
+            _ok_m, _detail_m = await _inject_visible_click_marker(self._page, x, y)
+            try:
+                from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append as _skill_line
+
+                _skill_line(
+                    f"[CLICK][marker] HUD(顶栏)+靶心 ring@({x:.1f},{y:.1f})px "
+                    f"ok={_ok_m} detail={_detail_m} "
+                    f"(GAMEQA_VISIBLE_CLICK_MARKER_DELAY_MS={_visible_click_marker_delay_ms()})"
+                )
+            except Exception:
+                pass
+            _delay_s = _visible_click_marker_delay_ms() / 1000.0
+            if _delay_s > 0:
+                await asyncio.sleep(_delay_s)
 
         _t0 = _time.monotonic()
         await self._page.mouse.click(x, y)
