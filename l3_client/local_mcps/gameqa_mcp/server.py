@@ -2,6 +2,9 @@
 """
 GameQA MCP Server — 本地物理网关（stdio / FastMCP）。
 
+**L3 侧**：同名的 ``mcp:tool_*`` 已在 ``l3_node/primitives/mcp/registry.py`` 注册为 **进程内** 调用，
+与 HTTP ``/api/v1/gameqa``、``session_service`` 单例一致；本条目的 stdio 仍可供 Cursor / 外部 MCP 宿主使用。
+
 与同目录其他 L3 本地 MCP 一致（``l3_client/local_mcps/``）。
 
 运行（仓库根目录）::
@@ -15,8 +18,9 @@ GameQA MCP Server — 本地物理网关（stdio / FastMCP）。
 环境变量::
   GAMEQA_DATA_DIR   日志目录，默认 ~/.gameqa_mcp
   GAMEQA_KNOWLEDGE_ROOT  若设置，tool_read_knowledge 仅允许该目录下的 .md
-  GAMEQA_REMOTE_DEBUG_PORT / GAMEQA_REMOTE_DEBUG_HOST  launch 时开放 CDP（默认 127.0.0.1:9238）
-  GAMEQA_CDP_URL    跳过 launch，优先 connect_over_cdp（与 L3 / 其它 MCP 共用浏览器）
+  GAMEQA_REMOTE_DEBUG_PORT / GAMEQA_REMOTE_DEBUG_HOST  launch 时开放 CDP（默认 127.0.0.1:9222，与 scripts/launch_chrome_debug.ps1 一致）
+  GAMEQA_CDP_URL    跳过 launch，优先 connect_over_cdp
+  KALAROKO_CDP_ENDPOINT  未设 GAMEQA_CDP_URL 时亦可作附着地址（与 .env / K11 冒烟共用）
   GAMEQA_FORCE_NEW_BROWSER=1   丢弃共享端点文件并强制新起 Chromium（调试冲突时用）
   GAMEQA_YOLO_MODEL   （可选）Ultralytics/YOLO 权重路径或 hub 名（如 ``yolo11n.pt``）；未设则视觉为 Mock
   GAMEQA_YOLO_CONF / GAMEQA_YOLO_DEVICE / GAMEQA_YOLO_IMG_SIZE   参见 ``vision_engine.py``
@@ -73,6 +77,13 @@ async def tool_launch_test_mode(url: str) -> str:
 async def tool_launch_shadow_mode(url: str) -> str:
     """启动有头浏览器并注入点击监听，无感写入 training_data.jsonl。"""
     raw = await _svc().launch_shadow(url)
+    return json.dumps(raw, ensure_ascii=False)
+
+
+@mcp.tool(name="tool_refresh_view")
+async def tool_refresh_view(url: str = "") -> str:
+    """当前标签 K11 式刷新（稳健 goto / 冷导航）；url 空=硬刷新当前页，非空=goto；不经 launch / 文件锁。"""
+    raw = await _svc().refresh_view(url)
     return json.dumps(raw, ensure_ascii=False)
 
 

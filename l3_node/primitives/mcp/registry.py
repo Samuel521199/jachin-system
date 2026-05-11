@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
@@ -450,6 +450,54 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "params": ["config", "wiki_urls", "output_dir_relative", "max_records_per_table", "max_discovered_links", "recurse_children_depth"],
         "long_running": True,
     },
+    # GameQA（与 HTTP /api/v1/gameqa/* 共用进程内 GameQAService，禁止依赖独立 stdio 子进程）
+    {
+        "id": "mcp:tool_read_knowledge",
+        "label": "mcp:tool_read_knowledge",
+        "desc": "[L3 本地·GameQA] 读取规则 .md。file_path 可空，空则使用仓库 tongits_rules.md。",
+        "params": ["file_path"],
+    },
+    {
+        "id": "mcp:tool_launch_test_mode",
+        "label": "mcp:tool_launch_test_mode",
+        "desc": "[L3 本地·GameQA] 启动无头浏览器并打开 url（自治测试）。",
+        "params": ["url"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:tool_refresh_view",
+        "label": "mcp:tool_refresh_view",
+        "desc": "[L3 本地·GameQA] 已有页面上轻刷新（不经 launch 锁）：对齐 K11 统合脚本的稳健 goto + 同址/当前页 about:blank→goto 冷导航；url 空=当前 HTTP(S) 硬刷新，非空=goto。可选 env GAMEQA_REFRESH_SOFT_RELOAD=1 仅用 reload。",
+        "params": ["url"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:tool_launch_shadow_mode",
+        "label": "mcp:tool_launch_shadow_mode",
+        "desc": "[L3 本地·GameQA] 启动有头浏览器、影子记录 training_data.jsonl。",
+        "params": ["url"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:tool_get_semantic_state",
+        "label": "mcp:tool_get_semantic_state",
+        "desc": "[L3 本地·GameQA] 截图并更新语义映射，返回 JSON。",
+        "params": [],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:tool_execute_action",
+        "label": "mcp:tool_execute_action",
+        "desc": "[L3 本地·GameQA] 按语义 element_name 在视口点击。",
+        "params": ["element_name"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:tool_get_audit_log",
+        "label": "mcp:tool_get_audit_log",
+        "desc": "[L3 本地·GameQA] 读取 audit_trail JSONL 文本。",
+        "params": [],
+    },
 ]
 
 
@@ -492,6 +540,16 @@ def _normalize_apply_professional_design_args(args: dict[str, Any]) -> dict[str,
 def l3_local_mcp_raw_names() -> frozenset[str]:
     """L3 内置 MCP 的全部裸名（无 mcp: 前缀、小写）。用于去重 L2/stdio/缓存 重复登记。"""
     return frozenset(_mcp_id_raw_local_part(str(t.get("id", ""))) for t in L3_LOCAL_MCP_TOOLS if t.get("id"))
+
+
+def _gameqa_default_knowledge_md() -> str:
+    try:
+        p = get_app_root() / "l3_client" / "local_mcps" / "gameqa_mcp" / "knowledge" / "tongits_rules.md"
+        if p.is_file():
+            return str(p.resolve())
+    except Exception:
+        pass
+    return ""
 
 
 def _mcp_deny_tool_raw_names() -> frozenset[str]:
@@ -2344,6 +2402,98 @@ class MCPToolRegistry:
                     _invoke_atom_bi_project_context_local,
                     arguments if isinstance(arguments, dict) else {},
                 )
+
+            # GameQA：进程内会话，可与 /api/v1/gameqa/log-stream 共用单例
+            if raw_name == "tool_read_knowledge":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                fp = (arguments.get("file_path") or arguments.get("path") or "").strip()
+                if not str(fp).strip():
+                    fp = _gameqa_default_knowledge_md()
+                if not str(fp).strip():
+                    return json.dumps(
+                        {"ok": False, "error": "file_path empty and default tongits_rules.md not found"},
+                        ensure_ascii=False,
+                    )
+                raw = get_gameqa_service().read_knowledge(str(fp))
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_launch_test_mode":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                url = str(arguments.get("url") or "").strip()
+                if not url:
+                    return json.dumps({"ok": False, "error": "url required"}, ensure_ascii=False)
+                raw = await get_gameqa_service().launch_test(url)
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_refresh_view":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                raw = await get_gameqa_service().refresh_view(str(arguments.get("url") or ""))
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_launch_shadow_mode":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                url = str(arguments.get("url") or "").strip()
+                if not url:
+                    return json.dumps({"ok": False, "error": "url required"}, ensure_ascii=False)
+                raw = await get_gameqa_service().launch_shadow(url)
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_get_semantic_state":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                raw = await get_gameqa_service().get_semantic_state()
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_execute_action":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                en = str(arguments.get("element_name") or "").strip()
+                if not en:
+                    return json.dumps({"ok": False, "error": "element_name required"}, ensure_ascii=False)
+                try:
+                    from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append as _gq_skill_append
+
+                    _gq_skill_append(
+                        "[Registry tool_execute_action] 即将 await GameQAService.execute_action | "
+                        f"element_name={en!r} | action_input_len={len(action_input or '')} | "
+                        "提示: Agent 侧对此工具常 use_timeout=False（long_running）。"
+                    )
+                except Exception:
+                    pass
+                _t_exec = time.monotonic()
+                try:
+                    raw = await get_gameqa_service().execute_action(en)
+                except BaseException as _exec_e:
+                    try:
+                        from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import (
+                            append_exception as _gq_skill_exc,
+                        )
+
+                        _gq_skill_exc("[Registry tool_execute_action] execute_action 抛错", _exec_e)
+                    except Exception:
+                        pass
+                    raise
+                try:
+                    from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append as _gq_skill_append
+
+                    _raw_preview = raw.get("ok") if isinstance(raw, dict) else None
+                    _gq_skill_append(
+                        "[Registry tool_execute_action] execute_action 已返回 | "
+                        f"elapsed_ms={(time.monotonic() - _t_exec) * 1000.0:.1f} | raw_ok={_raw_preview!r}"
+                    )
+                except Exception:
+                    pass
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_get_audit_log":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                raw = get_gameqa_service().get_audit_log()
+                return json.dumps(raw, ensure_ascii=False)
 
         if tool_id in self._cache_invoke_map or self._raw_name(tool_id) in self._cache_invoke_map:
             cache_dir, module_path, func_name = self._cache_invoke_map.get(

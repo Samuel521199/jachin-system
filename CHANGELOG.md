@@ -1,6 +1,15 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [v0.9.57] - 2026-05-11
+
+### Added / Changed
+
+- 完成游戏自动测试初步流程通（GameQA：本地 MCP、Skill、HTTP 点火、YOLO/OCR 语义状态、诊断日志等）。
+- **Version**: Desktop **0.9.57**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
 
 ## [v0.9.56] - 2026-05-08
 

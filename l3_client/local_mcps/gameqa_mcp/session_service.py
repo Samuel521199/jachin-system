@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any
 
 from .core.browser_engine import BrowserEngine, CDP_HTTP_FILE, gameqa_data_dir
 from .core.shadow_logger import ShadowLogger, resolve_click_to_semantic
+from .core.ocr_engine import ocr_png_bytes_for_state
 from .core.vision_engine import VisionEngine
 
 logger = logging.getLogger("gameqa.session_service")
@@ -96,6 +98,114 @@ class GameQAService:
                 except asyncio.QueueFull:
                     pass
 
+    async def _skill_debug_log_active_page(self, tag: str) -> None:
+        """
+        将当前 Playwright 页的 url/title/viewport 写入 ``JACHIN_GAMEQA_SKILL_DEBUG_LOG`` 指向的文件。
+        仅 ``run_gameqa_skill.py`` 等设置该环境变量时生效；**不**经 emit_log / stdout。
+        """
+        try:
+            from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append, log_file_path
+
+            if not log_file_path():
+                return
+            pg = self.browser.page
+            if not pg:
+                append(
+                    f"[{tag}] 当前 Playwright 操作页 | page=None | run_id={self.run_id} | mode={self.mode!r}"
+                )
+                return
+            url_s = ""
+            title_s = ""
+            try:
+                url_s = pg.url
+            except Exception as e:
+                url_s = f"<url_err {e!r}>"
+            try:
+                title_s = await pg.title()
+            except Exception as e:
+                title_s = f"<title_err {e!r}>"
+            vp = None
+            try:
+                vp = pg.viewport_size
+            except Exception:
+                pass
+            append(
+                f"[{tag}] 当前 Playwright 操作页（语义检测/截图以此页为准）| url={url_s!r} | title={title_s!r} | "
+                f"viewport_css={vp!r} | run_id={self.run_id} | mode={self.mode!r} | "
+                f"cdp_http={self.browser.cdp_http!r} | owns_browser_process={self.browser.owns_browser_process}"
+            )
+        except Exception:
+            pass
+
+    def _write_perception_skill_log(
+        self,
+        banner: str,
+        vr: Any,
+        ocr_block: dict[str, Any] | None,
+        *,
+        ocr_mode: str = "full",
+    ) -> None:
+        """
+        将 YOLO（``vr.yolo_debug``）与 OCR 全文摘要写入 ``gameqa_skill_debug.log``。
+        ``ocr_mode=skipped_lazy``：影子对齐路径不跑 OCR，仅注明原因。
+        """
+        try:
+            from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append_perception_debug
+
+            lines: list[str] = [banner]
+            yd = (getattr(vr, "yolo_debug", None) or "").strip()
+            if yd:
+                lines.extend(yd.split("\n"))
+            else:
+                lines.append(f"  vision_notes={vr.raw_notes!r}")
+                lines.append("  elements (merged map):")
+                for k, (x, y) in sorted(vr.elements.items()):
+                    lines.append(f"    {k!r}: ({x:.1f}, {y:.1f})")
+
+            lines.append("---")
+            if ocr_mode == "skipped_lazy":
+                lines.extend(
+                    [
+                        "[OCR]",
+                        "  (skipped: shadow lazy_align — 仅 YOLO；完整 OCR 请调用 get_semantic_state)",
+                    ]
+                )
+            else:
+                ob = ocr_block or {}
+                lines.append("[OCR]")
+                lines.append(
+                    f"  ocr_enabled={ob.get('ocr_enabled')} "
+                    f"ocr_backend={ob.get('ocr_backend')!r}"
+                )
+                lines.append(f"  ocr_notes={ob.get('ocr_notes')!r}")
+                text = str(ob.get("ocr_text") or "")
+                try:
+                    lim = int((os.environ.get("GAMEQA_SKILL_DEBUG_OCR_LOG_CHARS") or "8000").strip())
+                except ValueError:
+                    lim = 8000
+                lim = max(0, min(lim, 200_000))
+                if not text:
+                    lines.append("  ocr_text=(empty)")
+                elif lim == 0:
+                    lines.append(
+                        f"  ocr_text total_len={len(text)} "
+                        "(GAMEQA_SKILL_DEBUG_OCR_LOG_CHARS=0, content omitted)"
+                    )
+                else:
+                    chunk = text[:lim]
+                    tail_note = (
+                        f" ...[log truncated, state has {len(text)} chars]"
+                        if len(text) > lim
+                        else ""
+                    )
+                    lines.append(f"  ocr_text ({len(text)} chars in state){tail_note}:")
+                    for sub in chunk.splitlines() or [chunk]:
+                        lines.append(f"    {sub}")
+
+            append_perception_debug(lines)
+        except Exception:
+            pass
+
     async def _ensure_live_page(self, *, for_shadow_attach: bool = False) -> tuple[bool, str]:
         if self.browser.page:
             return True, ""
@@ -144,6 +254,7 @@ class GameQAService:
                 logger.exception("launch_test")
                 await self.emit_log(f"[gameqa][ERROR] {e!r}")
                 return {"ok": False, "error": repr(e)}
+            await self._skill_debug_log_active_page("launch_test·会话就绪（对比 Agent 目标 URL 是否一致）")
             self.logger.append_audit(
                 {"event": "launch_test_mode", "run_id": self.run_id, "url": url, "detail": msg}
             )
@@ -153,6 +264,33 @@ class GameQAService:
                 "或设置环境变量 GAMEQA_CDP_URL。"
             )
             return {"ok": True, "run_id": self.run_id, "mode": "test", "message": msg}
+
+    async def refresh_view(self, url: str = "") -> dict[str, Any]:
+        """
+        当前标签页 reload 或 goto；**不**走 ``launch()``，避免重复抢占 ``gameqa_browser.launch.lock`` 导致超时。
+        """
+        async with self._op_lock:
+            ok, err = await self._ensure_live_page(for_shadow_attach=False)
+            if not ok:
+                return {"ok": False, "error": err}
+            self.semantic_map.clear()
+            self.last_public_state.clear()
+            try:
+                msg = await self.browser.refresh_current_page(url, emit=self.emit_log)
+            except Exception as e:
+                logger.exception("refresh_view")
+                await self.emit_log(f"[gameqa][ERROR] refresh_view: {e!r}")
+                return {"ok": False, "error": repr(e)}
+            self.logger.append_audit(
+                {
+                    "event": "refresh_view",
+                    "run_id": self.run_id,
+                    "url": (url or "").strip() or "(reload)",
+                    "detail": msg,
+                }
+            )
+            await self.emit_log(f"[gameqa] {msg}")
+            return {"ok": True, "run_id": self.run_id, "message": msg}
 
     async def _on_shadow_click_lazy(self, data: dict[str, object]) -> None:
         """绑定必须快返回；对齐在后台任务里完成（截屏 + 视觉）。"""
@@ -214,6 +352,13 @@ class GameQAService:
         await self.emit_log(
             f"[gameqa][shadow] lazy_align ({x:.0f},{y:.0f}) → {label!r} dist={dist:.1f} keys={list(fresh_map.keys())}"
         )
+        self._write_perception_skill_log(
+            f"=== perception · shadow_lazy_align run_id={self.run_id} "
+            f"click_xy=({x:.1f},{y:.1f}) matched_semantic={label!r} dist={dist:.1f} ===",
+            vr,
+            None,
+            ocr_mode="skipped_lazy",
+        )
 
     async def launch_shadow(self, url: str) -> dict[str, Any]:
         async with self._op_lock:
@@ -237,6 +382,7 @@ class GameQAService:
                 logger.exception("launch_shadow")
                 await self.emit_log(f"[gameqa][ERROR] {e!r}")
                 return {"ok": False, "error": repr(e)}
+            await self._skill_debug_log_active_page("launch_shadow·会话就绪（对比 Agent 目标 URL 是否一致）")
             self.logger.append_audit(
                 {"event": "launch_shadow_mode", "run_id": self.run_id, "url": url, "detail": msg}
             )
@@ -251,9 +397,13 @@ class GameQAService:
             ok, err = await self._ensure_live_page(for_shadow_attach=False)
             if not ok:
                 return {"ok": False, "error": err}
+            await self._skill_debug_log_active_page("semantic_state·截图与语义检测前")
             try:
                 png = await self.browser.screenshot_png()
-                vr = await self.vision.analyze_async(png)
+                vr, ocr_block = await asyncio.gather(
+                    self.vision.analyze_async(png),
+                    asyncio.to_thread(ocr_png_bytes_for_state, png),
+                )
                 self.semantic_map = dict(vr.elements)
                 extra_clicks = await self.browser.drain_shadow_clicks()
                 public: dict[str, Any] = {
@@ -261,6 +411,10 @@ class GameQAService:
                     "mode": self.mode,
                     "elements": vr.to_public_dict()["elements"],
                     "vision_notes": vr.raw_notes,
+                    "ocr_text": ocr_block.get("ocr_text", ""),
+                    "ocr_notes": ocr_block.get("ocr_notes", ""),
+                    "ocr_enabled": ocr_block.get("ocr_enabled", False),
+                    "ocr_backend": ocr_block.get("ocr_backend", "none"),
                     "pending_shadow_events": extra_clicks,
                     "cdp_http": self.browser.cdp_http,
                 }
@@ -273,7 +427,14 @@ class GameQAService:
                     }
                 )
                 await self.emit_log(
-                    f"[gameqa] 语义状态已更新 keys={list(self.semantic_map.keys())}"
+                    f"[gameqa] 语义状态已更新 keys={list(self.semantic_map.keys())} "
+                    f"ocr_backend={public.get('ocr_backend')!r} "
+                    f"ocr_chars={len(str(public.get('ocr_text') or ''))}"
+                )
+                self._write_perception_skill_log(
+                    f"=== perception · get_semantic_state run_id={self.run_id} mode={self.mode!r} ===",
+                    vr,
+                    ocr_block,
                 )
                 return {"ok": True, "state": public}
             except Exception as e:
@@ -297,6 +458,16 @@ class GameQAService:
                 }
             x, y = pos
             try:
+                try:
+                    from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append, log_file_path
+
+                    if log_file_path():
+                        await self._skill_debug_log_active_page("execute_action·点击前")
+                        append(
+                            f"[execute_action·点击前] 目标语义元素 element_name={key!r} viewport_xy=({x},{y})"
+                        )
+                except Exception:
+                    pass
                 click_msg = await self.browser.click_named_viewport(x, y)
             except Exception as e:
                 return {"ok": False, "error": repr(e)}

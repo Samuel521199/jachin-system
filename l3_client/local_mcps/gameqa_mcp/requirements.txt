@@ -5,3 +5,7 @@ filelock>=3.13.0
 # YOLO 视觉（可选）；未安装或未设 GAMEQA_YOLO_MODEL 时回退 Mock
 ultralytics>=8.3.48
 pillow>=9.5.0
+# OCR（与 core/pdf_extractor 策略一致）；未安装时 state 中 ocr_notes 会说明原因
+numpy>=1.24.0
+rapidocr-onnxruntime>=1.3.0
+easyocr>=1.7.0

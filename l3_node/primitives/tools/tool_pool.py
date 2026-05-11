@@ -57,6 +57,10 @@ def expand_allowed_skills_with_local_mcp(allowed: list[str] | None) -> list[str]
     seen = {str(x).strip().lower() for x in allowed if str(x).strip()}
     if "mcp:*" in seen:
         return allowed
+    # 若白名单已显式枚举具体 mcp:…（无 mcp:*），视为窄通道精确清单，**不再**自动并入 mcp:*
+    # （否则 GameQA run-skill 等仅 4～6 个 MCP 的场景会被放大为「任意 MCP 可见」）。
+    if seen and all(s.startswith("mcp:") and s != "mcp:*" for s in seen):
+        return allowed
     out = list(allowed) + ["mcp:*"]
     logger.info(
         "[L3 Agent] merge_local_mcp：已将 mcp:* 并入本 run 白名单 "

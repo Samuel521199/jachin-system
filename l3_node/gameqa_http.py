@@ -1,7 +1,8 @@
 ﻿"""
-GameQA HTTP API：供 Jachin 桌面控制台驱动「自治测试 / 影子训练」与实时日志 SSE。
+GameQA HTTP：桌面控制台 **点火器**（run-skill）+ SSE 日志 + 停止 / 训练抽样。
 
-与 MCP 工具共用 ``l3_client.local_mcps.gameqa_mcp.session_service`` 单例（L3 进程内）。
+业务闭环由 **L3 Agent** 读取 ``l3_node/skills/gameqa/*.md`` 并仅调用 **进程内** ``mcp:tool_*``（见 ``registry.L3_LOCAL_MCP_TOOLS``），
+与 ``session_service`` 单例对齐；禁止在此模块直接编排 Playwright 细粒度步骤。
 """
 from __future__ import annotations
 
@@ -11,26 +12,33 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+GAMEQA_MCP_ALLOWLIST_AUTO: list[str] = [
+    "mcp:tool_read_knowledge",
+    "mcp:tool_launch_test_mode",
+    "mcp:tool_refresh_view",
+    "mcp:tool_get_semantic_state",
+    "mcp:tool_execute_action",
+    "mcp:tool_get_audit_log",
+]
+
+GAMEQA_MCP_ALLOWLIST_SHADOW: list[str] = [
+    "mcp:tool_read_knowledge",
+    "mcp:tool_launch_shadow_mode",
+    "mcp:tool_get_semantic_state",
+    "mcp:tool_get_audit_log",
+]
+
+_gameqa_skill_task: asyncio.Task | None = None
 
 
 def _resp(data: dict, status: int = 200):
     import aiohttp.web
 
     return aiohttp.web.json_response(data, status=status)
-
-
-def _default_knowledge_path() -> str:
-    try:
-        from l3_node.paths import get_app_root
-
-        p = get_app_root() / "l3_client" / "local_mcps" / "gameqa_mcp" / "knowledge" / "tongits_rules.md"
-        if p.is_file():
-            return str(p)
-    except Exception as e:
-        logger.debug("[gameqa_http] default knowledge path: %s", e)
-    return ""
 
 
 def _svc():
@@ -48,6 +56,27 @@ def _stream_sse():
     r.headers["Connection"] = "keep-alive"
     r.headers["Access-Control-Allow-Origin"] = "*"
     return r
+
+
+def _resolve_skill_path(skill_name: str) -> Path | None:
+    sn = (skill_name or "").strip()
+    if not sn:
+        return None
+    p = Path(sn)
+    if p.is_file():
+        return p.resolve()
+    base = Path(__file__).resolve().parent / "skills" / "gameqa"
+    fn = sn if sn.endswith(".md") else f"{sn}.md"
+    cand = (base / fn).resolve()
+    if cand.is_file():
+        return cand
+    return None
+
+
+def _allowlist_for_skill(skill_path: Path) -> list[str]:
+    if "shadow" in skill_path.name.lower():
+        return list(GAMEQA_MCP_ALLOWLIST_SHADOW)
+    return list(GAMEQA_MCP_ALLOWLIST_AUTO)
 
 
 async def handle_log_stream(request):
@@ -100,86 +129,117 @@ async def handle_log_stream(request):
     return response
 
 
-async def handle_launch_test(request):
-    """POST /api/v1/gameqa/launch-test JSON {url}"""
+async def handle_run_skill(request):
+    """
+    POST /api/v1/gameqa/run-skill
+    JSON: { "skill_name", "url", "rules_path?": "", "max_iterations?": 32 }
+    异步启动 Agent；立即返回 ``started``（独占：同时仅允许一条 GameQA skill 跑）。
+    """
+    global _gameqa_skill_task
+    if _gameqa_skill_task and not _gameqa_skill_task.done():
+        return _resp({"ok": False, "error": "GameQA Agent 任务尚在运行"}, status=409)
     try:
         body = await request.json() if request.body_exists else {}
     except Exception:
         body = {}
+    skill_name = (body.get("skill_name") or "").strip()
     url = (body.get("url") or "").strip()
+    rules_path = (body.get("rules_path") or "").strip()
+    if not skill_name:
+        return _resp({"ok": False, "error": "skill_name required"}, status=400)
     if not url:
         return _resp({"ok": False, "error": "url required"}, status=400)
-    out = await _svc().launch_test(url)
-    return _resp(out, status=200 if out.get("ok") else 500)
-
-
-async def handle_launch_shadow(request):
-    """POST /api/v1/gameqa/launch-shadow JSON {url}"""
+    sp = _resolve_skill_path(skill_name)
+    if not sp:
+        return _resp({"ok": False, "error": f"skill file not found: {skill_name!r}"}, status=404)
     try:
-        body = await request.json() if request.body_exists else {}
-    except Exception:
-        body = {}
-    url = (body.get("url") or "").strip()
-    if not url:
-        return _resp({"ok": False, "error": "url required"}, status=400)
-    out = await _svc().launch_shadow(url)
-    return _resp(out, status=200 if out.get("ok") else 500)
+        mi = int(body.get("max_iterations") or 32)
+    except (TypeError, ValueError):
+        mi = 32
+    mi = max(1, min(mi, 48))
+    allow = _allowlist_for_skill(sp)
+
+    try:
+        skill_text = sp.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return _resp({"ok": False, "error": f"read skill: {e!r}"}, status=500)
+
+    user_input = (
+        f"[GameQA · run-skill 宿主上下文]\n"
+        f"target_url: {url}\n"
+        f"rules_path: {rules_path}\n"
+        f"skill_file: {sp}\n\n"
+        f"--- SKILL BEGIN ---\n{skill_text}\n--- SKILL END ---\n\n"
+        f"请严格按 SKILL 中的 Persona、工具白名单与 SOP 执行（ReAct）。\n"
+    )
+
+    async def _body() -> None:
+        svc = _svc()
+        await svc.emit_log(f"[gameqa][run-skill] 启动 Agent skill={sp.name!r} allowlist={allow}")
+
+        async def _on_chunk(s: str) -> None:
+            frag = (s or "").replace("\r", " ").replace("\n", " ")
+            if not frag.strip():
+                return
+            if len(frag) > 3600:
+                frag = frag[:3600] + "…"
+            await svc.emit_log(f"[gameqa][agent] {frag}")
+
+        try:
+            from l3_node.agent_ref import engine_ref
+
+            engine = engine_ref.get("engine")
+        except Exception:
+            engine = None
+        if not engine:
+            await svc.emit_log("[gameqa][run-skill] 失败：L3 engine 未就绪（请先连接 WebSocket 或完成 bootstrap）")
+            return
+        try:
+            from l3_node.agent_core import run_agent
+
+            ans = await run_agent(
+                user_input,
+                engine,
+                max_iterations=mi,
+                _allowed_skills_override=allow,
+                on_chunk=_on_chunk,
+                implicit_attribution={"channel": "gameqa_run_skill", "source": "gameqa_console"},
+            )
+            tail = (ans or "").strip()
+            if len(tail) > 4000:
+                tail = tail[:4000] + "…"
+            await svc.emit_log(f"[gameqa][agent] Final Answer 摘要: {tail or '(empty)'}")
+        except asyncio.CancelledError:
+            await svc.emit_log("[gameqa][run-skill] Agent 任务已取消")
+            raise
+        except Exception as e:
+            logger.exception("[gameqa] run-skill Agent")
+            await svc.emit_log(f"[gameqa][run-skill] Agent 异常: {e!r}")
+
+    t = asyncio.create_task(_body())
+
+    def _clear(_: asyncio.Task) -> None:
+        global _gameqa_skill_task
+        if _gameqa_skill_task is t:
+            _gameqa_skill_task = None
+
+    _gameqa_skill_task = t
+    t.add_done_callback(_clear)
+    return _resp(
+        {
+            "ok": True,
+            "started": True,
+            "skill_name": skill_name,
+            "skill_path": str(sp),
+            "max_iterations": mi,
+        }
+    )
 
 
 async def handle_stop(request):
-    """POST /api/v1/gameqa/stop"""
+    """POST /api/v1/gameqa/stop — 关闭浏览器会话；不取消后台 Agent 任务（如需可后续增加 cancel）。"""
     out = await _svc().stop()
     return _resp(out)
-
-
-async def handle_semantic_state(request):
-    """POST /api/v1/gameqa/semantic-state"""
-    out = await _svc().get_semantic_state()
-    return _resp(out, status=200 if out.get("ok") else 400)
-
-
-async def handle_execute(request):
-    """POST /api/v1/gameqa/execute JSON {element_name}"""
-    try:
-        body = await request.json() if request.body_exists else {}
-    except Exception:
-        body = {}
-    name = (body.get("element_name") or "").strip()
-    if not name:
-        return _resp({"ok": False, "error": "element_name required"}, status=400)
-    out = await _svc().execute_action(name)
-    return _resp(out, status=200 if out.get("ok") else 400)
-
-
-async def handle_read_knowledge(request):
-    """POST /api/v1/gameqa/read-knowledge JSON {file_path?: } 缺省时用仓库内 tongits_rules.md"""
-    try:
-        body = await request.json() if request.body_exists else {}
-    except Exception:
-        body = {}
-    fp = (body.get("file_path") or "").strip()
-    if not fp:
-        fp = _default_knowledge_path()
-    if not fp:
-        return _resp(
-            {"ok": False, "error": "file_path empty and default tongits_rules.md not found under app root"},
-            status=400,
-        )
-    raw = _svc().read_knowledge(fp)
-    # 避免巨大正文拖垮 UI：仅返回摘要长度，完整 content 仍给（Agent 场景需要）
-    if raw.get("ok") and isinstance(raw.get("content"), str):
-        c = raw["content"]
-        if len(c) > 120_000:
-            raw = {**raw, "content_truncated": True, "content": c[:120_000], "content_full_length": len(c)}
-    if raw.get("ok"):
-        await _svc().emit_log(f"[gameqa] 已读取知识文件 {fp}")
-    return _resp(raw, status=200 if raw.get("ok") else 400)
-
-
-async def handle_audit(request):
-    """GET /api/v1/gameqa/audit"""
-    raw = _svc().get_audit_log()
-    return _resp(raw)
 
 
 async def handle_training_tail(request):
@@ -193,22 +253,10 @@ async def handle_training_tail(request):
     return _resp(raw)
 
 
-async def handle_status(request):
-    """GET /api/v1/gameqa/status"""
-    svc = _svc()
-    return _resp(svc.status_payload())
-
-
 def register_gameqa_routes(app) -> None:
-    """注册 GameQA REST + SSE。"""
+    """GameQA：SSE + run-skill + stop + training-tail。"""
     app.router.add_get("/api/v1/gameqa/log-stream", handle_log_stream)
-    app.router.add_post("/api/v1/gameqa/launch-test", handle_launch_test)
-    app.router.add_post("/api/v1/gameqa/launch-shadow", handle_launch_shadow)
+    app.router.add_post("/api/v1/gameqa/run-skill", handle_run_skill)
     app.router.add_post("/api/v1/gameqa/stop", handle_stop)
-    app.router.add_post("/api/v1/gameqa/semantic-state", handle_semantic_state)
-    app.router.add_post("/api/v1/gameqa/execute", handle_execute)
-    app.router.add_post("/api/v1/gameqa/read-knowledge", handle_read_knowledge)
-    app.router.add_get("/api/v1/gameqa/audit", handle_audit)
     app.router.add_get("/api/v1/gameqa/training-tail", handle_training_tail)
-    app.router.add_get("/api/v1/gameqa/status", handle_status)
-    logger.info("[L3 HTTP] GameQA routes registered (/api/v1/gameqa/*)")
+    logger.info("[L3 HTTP] GameQA routes: log-stream, run-skill, stop, training-tail")

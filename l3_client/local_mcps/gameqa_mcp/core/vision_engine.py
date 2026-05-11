@@ -14,12 +14,36 @@ import time
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 logger = logging.getLogger("gameqa.vision_engine")
 
 # 语义 key：仅保留字母数字与下划线
 _SAFE_KEY_RE = re.compile(r"[^\w\-]+")
+
+
+def _read_gameqa_viewport_wh() -> tuple[int, int]:
+    """与 ``browser_engine.gameqa_playwright_viewport`` 默认值一致（360×760），便于 mock 坐标与视口对齐。"""
+    try:
+        w = int((os.environ.get("GAMEQA_VIEWPORT_WIDTH") or "360").strip())
+    except ValueError:
+        w = 360
+    try:
+        h = int((os.environ.get("GAMEQA_VIEWPORT_HEIGHT") or "760").strip())
+    except ValueError:
+        h = 760
+    return max(16, w), max(16, h)
+
+
+def _default_mock_elements() -> dict[str, tuple[float, float]]:
+    """无 YOLO 时的兜底语义坐标：按当前视口比例放在底栏与顶部中间（竖屏 H5）。"""
+    w, h = _read_gameqa_viewport_wh()
+    return {
+        "Btn_Fold": (w * 0.18, h * 0.93),
+        "Btn_Call": (w * 0.50, h * 0.93),
+        "Btn_Raise": (w * 0.82, h * 0.93),
+        "Pot_Label": (w * 0.50, h * 0.26),
+    }
 
 
 @dataclass
@@ -28,6 +52,8 @@ class VisionResult:
 
     elements: dict[str, tuple[float, float]]
     raw_notes: str
+    #: 多行可读摘要（供 ``gameqa_skill_debug.log``）；含每框 class/conf/bbox/映射后的 key。
+    yolo_debug: str = ""
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -62,18 +88,12 @@ class VisionEngine:
         GAMEQA_YOLO_DEVICE  可选 ``cpu`` / ``0`` / ``cuda:0``；不设则交由 ultralytics 自动选
         GAMEQA_YOLO_IMG_SIZE   可选 int，默认不强制（沿用模型预设）
 
-    ``GAMEQA_YOLO_MODEL`` 未设置或加载失败时，使用与原 Mock 一致的行为，便于无 GPU/无权重联调。
+    ``GAMEQA_YOLO_MODEL`` 未设置或加载失败时，使用与当前 ``GAMEQA_VIEWPORT_WIDTH/HEIGHT``（默认 360×760）
+    对齐的兜底坐标，便于无 GPU/无权重联调。
     """
 
-    _mock_fallback: ClassVar[dict[str, tuple[float, float]]] = {
-        "Btn_Fold": (180.0, 720.0),
-        "Btn_Call": (360.0, 720.0),
-        "Btn_Raise": (520.0, 720.0),
-        "Pot_Label": (640.0, 200.0),
-    }
-
     def __init__(self, *, mock_elements: dict[str, tuple[float, float]] | None = None) -> None:
-        self._mock = dict(mock_elements or self._mock_fallback)
+        self._mock = dict(mock_elements or _default_mock_elements())
 
     async def analyze_async(self, screenshot_png: bytes) -> VisionResult:
         """异步入口：YOLO/mock 均在 worker 线程执行。"""
@@ -81,7 +101,11 @@ class VisionEngine:
 
     def analyze_sync(self, screenshot_png: bytes) -> VisionResult:
         if not screenshot_png or len(screenshot_png) < 32:
-            return VisionResult(elements={}, raw_notes="empty_or_invalid_png")
+            return VisionResult(
+                elements={},
+                raw_notes="empty_or_invalid_png",
+                yolo_debug="[YOLO]\n  status: empty_or_invalid_png (screenshot too small or missing)",
+            )
 
         mp = (os.environ.get("GAMEQA_YOLO_MODEL") or "").strip()
         if not mp:
@@ -98,9 +122,18 @@ class VisionEngine:
         note = "mock_vision_fallback"
         if raw_suffix:
             note = f"{note}:{raw_suffix}"
+        el = dict(self._mock)
+        dbg_lines = [
+            "[YOLO · mock_fallback]",
+            f"  summary: {note}",
+            "  synthetic elements (not from real inference):",
+        ]
+        for k, (x, y) in sorted(el.items()):
+            dbg_lines.append(f"    {k!r} → center=({x:.1f}, {y:.1f})")
         return VisionResult(
-            elements=dict(self._mock),
+            elements=el,
             raw_notes=note,
+            yolo_debug="\n".join(dbg_lines),
         )
 
     def _ensure_yolo_loaded(self, model_spec: str) -> str:
@@ -195,13 +228,18 @@ class VisionEngine:
         boxes = getattr(r0, "boxes", None)
         elements: dict[str, tuple[float, float]] = {}
         if boxes is None or len(boxes) == 0:
-            return VisionResult(
-                elements={},
-                raw_notes=(
-                    f"yolo_ok boxes=0 latency_ms={elapsed_ms:.2f}; "
-                    f"model={_state.model_path} conf={conf}"
-                ),
+            rn = (
+                f"yolo_ok boxes=0 latency_ms={elapsed_ms:.2f}; "
+                f"model={_state.model_path} conf={conf}"
             )
+            ydbg = "\n".join(
+                [
+                    "[YOLO · ultralytics]",
+                    f"  summary: {rn}",
+                    "  detections: (none — 当前 conf/threshold 下无框)",
+                ]
+            )
+            return VisionResult(elements={}, raw_notes=rn, yolo_debug=ydbg)
 
         per_label_index: dict[str, int] = {}
         xyxy_tensor = boxes.xyxy
@@ -210,6 +248,12 @@ class VisionEngine:
         device_str = getattr(xyxy_tensor, "device", None)
         xyxy_np = xyxy_tensor.cpu().numpy() if hasattr(xyxy_tensor, "cpu") else xyxy_tensor.numpy()
         cls_np = cls_tensor.cpu().numpy() if hasattr(cls_tensor, "cpu") else cls_tensor.numpy()
+        conf_np = None
+        if getattr(boxes, "conf", None) is not None:
+            ct = boxes.conf
+            conf_np = ct.cpu().numpy() if hasattr(ct, "cpu") else ct.numpy()
+
+        dbg_lines: list[str] = []
 
         for i in range(n):
             x1, y1, x2, y2 = (float(xyxy_np[i][j]) for j in range(4))
@@ -217,6 +261,7 @@ class VisionEngine:
             cy = (y1 + y2) / 2.0
             cls_id = int(cls_np[i])
             raw_name = _state.names.get(cls_id, f"class_{cls_id}")
+            cf = float(conf_np[i]) if conf_np is not None and int(conf_np.shape[0]) > i else -1.0
             base = _sanitize_label_key(raw_name)
             idx = per_label_index.get(base, 0)
             per_label_index[base] = idx + 1
@@ -225,13 +270,27 @@ class VisionEngine:
                 key = f"{base}_{idx}_{i}"
 
             elements[key] = (cx, cy)
+            dbg_lines.append(
+                f"  [{i}] semantic_key={key!r} cls_id={cls_id} class_name={raw_name!r} "
+                f"conf={cf:.4f} xyxy=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}) "
+                f"center=({cx:.1f},{cy:.1f})"
+            )
 
         note = (
             f"yolo_ultralytics latency_ms={elapsed_ms:.2f} boxes={n} "
             f"device={device_str or _state.device or 'auto'} "
             f"model={Path(_state.model_path).name} conf={conf}"
         )
-        return VisionResult(elements=elements, raw_notes=note)
+        ydbg = "\n".join(
+            [
+                "[YOLO · ultralytics]",
+                f"  summary: {note}",
+                f"  merged_element_keys: {list(elements.keys())!r}",
+                "  per_detection:",
+                *dbg_lines,
+            ]
+        )
+        return VisionResult(elements=elements, raw_notes=note, yolo_debug=ydbg)
 
 
 def _sanitize_label_key(raw: str) -> str:
