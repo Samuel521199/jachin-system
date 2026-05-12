@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -159,9 +159,6 @@ docker/l1.env
 # ECS 一键部署包内预填的 l1.env（含数据库密码）
 deploy/l1-ecs-bundle/l1.env
 deploy/l2-ecs-bundle/l2.env
-
-# PMO/BMO 技能配置（含 Lark app_secret）
-config/skills/com.jachin.pmo.bmo/pmo_bmo.yaml
 
 # Local Docker image exports (large; do not commit)
 /jachin-*-latest.tar

@@ -1,4 +1,4 @@
-# BI 战报 MCP 工具依赖（可选）
+﻿# BI 战报 MCP 工具依赖（可选）
 # 开发者 A/B 本地开发时可 pip install -r l3_node/requirements-bi.txt
 # 统帅在组装阶段会合并到 core/requirements.txt
 
@@ -14,7 +14,7 @@ beautifulsoup4>=4.12.0
 # 干系人表 xlsx → Markdown（scripts/xlsx_to_bi_project_md.py）
 openpyxl>=3.1.0
 
-# PMO 仪表盘高清图（mcp_tools/pmo_bmo/tool_data_visualizer.py）
+# 可选：本地统计图 / 数据可视化脚本
 matplotlib>=3.7.0
 seaborn>=0.13.0
 numpy>=1.24.0

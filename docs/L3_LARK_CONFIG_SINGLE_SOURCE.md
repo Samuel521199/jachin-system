@@ -67,12 +67,11 @@
 
 ---
 
-## 7. BI / PMO / HR Skill 配置在哪
+## 7. BI / HR Skill 配置在哪
 
 与「L3 发一条飞书消息」正交，不重复展开，仅索引：
 
 - **BI**：`config/skills/com.jachin.bi.daily_report/bi_daily_report.yaml`（及 `~/.jachin/config/skills/...` 覆盖）；MCP 见 `~/.jachin/config/mcps/`。
-- **PMO**：`config/skills/com.jachin.pmo.bmo/pmo_bmo.yaml`（或 example + 用户副本）；MCP 同上。
 - **HR 透析镜等**：`config/skills/com.jachin.hr.analyzer4/`；招聘插件环境与 Lark 叠加仍归 **§2 表**。
 
 ---

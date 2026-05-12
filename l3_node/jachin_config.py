@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin 配置根 — 遵循 075-config-root-and-cloud-sync 规范
 
 配置必须写入 ~/.jachin/config/，支持 JACHIN_HOME 环境变量覆盖。
@@ -87,27 +87,6 @@ max_discovered_links: 40
 recurse_children_depth: 2
 # wiki_urls 省略时使用工具内置默认链接列表；若需自定义请取消下行注释并编辑
 # wiki_urls: []
-""",
-    "atom_pmo_lark_doc": """# atom_pmo_lark_doc — PMO Lark（默认 K11 三表 + 按日落盘 project_progress_daily/YYYY-MM-DD）
-app_id: "${LARK_APP_ID}"
-app_secret: "${LARK_APP_SECRET}"
-lark_use_feishu: false
-use_k11_default_tables: true
-daily_snapshot: true
-# snapshot_date: "2026-03-30"
-max_records_per_table: 2000
-max_discovered_links: 40
-recurse_children_depth: 2
-# daily_snapshot: false 时输出 docs/pmo_bmo_plugin/synced
-# wiki_urls: []  # 非空则覆盖默认三表
-# space_id: ""
-""",
-    "atom_pmo_knowledge_base": """# atom_pmo_knowledge_base — PMO 文档分块与 corpus 输出
-source_dir_relative: docs/pmo_bmo_plugin/synced
-corpus_dir_relative: docs/pmo_bmo_plugin/corpus
-chunk_max_chars: 2000
-chunk_overlap: 200
-embed: true
 """,
 }
 

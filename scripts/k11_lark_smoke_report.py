@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 K11 统合冒烟：将结果同步到 Lark 知识库内嵌「多维表 bitable」或「电子表格 sheet」，
 并向指定会话发送完成通知。电子表格与本地 xlsx 相同：在含「测试项目/结果/备注」表头的工作表
@@ -217,7 +217,7 @@ def _resolve_table_id(
     tid = (explicit or "").strip()
     if tid.startswith("tbl"):
         return tid
-    from l3_node.primitives.mcp.mcp_tools.pmo_bmo.tool_pmo_bitable_export import (
+    from l3_node.primitives.mcp.mcp_tools.bi.lark_bitable_client import (
         _resolve_table_id_by_name,
     )
 

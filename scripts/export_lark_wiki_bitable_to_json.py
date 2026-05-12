@@ -1,4 +1,4 @@
-"""
+﻿"""
 从飞书/Lark 知识库 Wiki 链接拉取嵌入的多维表（Bitable）子表记录，写入 JSON。
 
 依赖：与项目一致（requests）；凭证：LARK_APP_ID + LARK_APP_SECRET（.env 或 ~/.jachin/config/im_channels.yaml）。
@@ -26,7 +26,7 @@ if str(_ROOT) not in sys.path:
 
 from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token  # noqa: E402
 from l3_node.mcp_tools.bi.tool_bi_project_context import parse_wiki_url, sanitize_wiki_url  # noqa: E402
-from l3_node.primitives.mcp.mcp_tools.pmo_bmo.tool_pmo_bitable_export import (  # noqa: E402
+from l3_node.primitives.mcp.mcp_tools.bi.lark_bitable_client import (  # noqa: E402
     _bitable_list_fields,
     _bitable_list_records,
     _lark_get,

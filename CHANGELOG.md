@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.60] - 2026-05-12
+
+### Added / Changed
+
+- 完整PMO改Agent的初步全流程。
+- **Version**: Desktop **0.9.60**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.59] - 2026-05-12
 
 ### Added / Changed

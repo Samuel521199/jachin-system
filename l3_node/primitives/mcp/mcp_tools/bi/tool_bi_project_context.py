@@ -375,7 +375,8 @@ def sync_bi_project_context(
         urls = _default_wiki_urls()
 
     out_rel = (cfg.get("output_dir_relative") or DEFAULT_OUTPUT_REL).strip() or DEFAULT_OUTPUT_REL
-    out_dir = (root / out_rel).resolve()
+    outp = Path(out_rel).expanduser()
+    out_dir = outp.resolve() if outp.is_absolute() else (root / outp).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     max_records = int(cfg.get("max_records_per_table") or 2000)

@@ -1,19 +1,17 @@
-﻿# atom_lark_notifier MCP 配置（团队共享，已加入 .gitignore）
-# 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
-# BI 助手机器人：在飞书中对话完成 BI 分析流程
+﻿# atom_lark_notifier — PMO-Copilot / Lark 播报（与应用机器人 IM API）
+# 若 BI 战报仍需独立机器人：请将 BI 凭证放在 ~/.jachin/config/mcps/atom_lark_notifier/config.yaml（075 覆盖仓库）。
+#
+# 租户：国际版 Lark → open.larksuite.com（lark_use_feishu: false）
+# 推送目标（二选一优先）：① default_webhook_url ② default_chat_id（应用机器人须在目标群内）
+default_webhook_url: ""
 
-# 默认 Webhook URL（飞书群机器人 incoming webhook，BI 消息推送；无则用 app_id + chat_id）
-default_webhook_url: "${BI_LARK_WEBHOOK_URL}"
+robot_name: PMO-Copilot
+app_id: cli_a940990299f8ded2
+app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
 
-# BI 助手应用凭证（app_id: cli_a930e0054ecf5ed1）
-# 无 Webhook 时用 IM API 发消息；长连接接收 Lark 消息也需此凭证
-robot_name: "BI助手"
-app_id: "cli_a930e0054ecf5ed1"
-app_secret: "Unl7WW162ZCJdb1E0nKMZgXcSxRqRcvs"
-# BI 助手所在会话 chat_id，用于推送战报及 Lark↔终端镜像
-default_chat_id: "oc_bb2b468cb04acb709c2e7aa5683f8f08"
-# 飞书中国版（open.feishu.cn），BI 助手为 true
-lark_use_feishu: true
+# PMO 推送目标群 chat_id（须与本租户 OpenAPI 一致；机器人须已加入该群）
+default_chat_id: "oc_b1b9cff6804517c79b7f5a617ab30483"
 
-# Lark 消息转发目标：L3 WebSocket 地址（长连接/Webhook 收到消息后转发到此）
+lark_use_feishu: false
+
 l3_ws_url: "ws://127.0.0.1:18981/sensory"

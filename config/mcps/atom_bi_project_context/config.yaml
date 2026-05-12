@@ -1,0 +1,12 @@
+﻿# atom_bi_project_context — PMO-Copilot / Lark 读 Wiki·多维表（国际版 open.larksuite.com）
+# 与 skills_repo/pmo-copilot/SKILL.md 中 mcp:atom_bi_project_context 共用。
+# wiki_urls 可由运行时 Action Input 合并传入；此处不写死以免与 BI 默认种子混淆。
+#
+app_id: cli_a940990299f8ded2
+app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
+lark_use_feishu: false
+
+output_dir_relative: ~/.jachin/workspace/pmo_lark_pull
+max_records_per_table: 2000
+max_discovered_links: 40
+recurse_children_depth: 2

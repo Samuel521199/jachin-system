@@ -82,6 +82,10 @@ def send_markdown_card(
     title: str | None = None,
     receive_id_type: str = "chat_id",
     token: str | None = None,
+    *,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    api_base: str | None = None,
 ) -> dict[str, Any]:
     """
     通过 IM API 向群聊/单聊发送 Markdown 卡片（需 App 凭证）。
@@ -93,6 +97,8 @@ def send_markdown_card(
         title: 卡片标题（可选）
         receive_id_type: chat_id 或 user_id
         token: 可选
+        app_id / app_secret / api_base: 可选；由 atom_lark_notifier 等调用方传入时可覆盖环境变量，
+            并与 ``lark_use_feishu`` 推导的域名一致（国际 Lark vs 中国飞书）。
 
     Returns:
         {"status": "success", "msg": "..."} 或 {"status": "error", "error": "..."}
@@ -103,7 +109,10 @@ def send_markdown_card(
         return {"status": "error", "error": "markdown_content 不能为空"}
 
     try:
-        tkn = token or get_tenant_access_token()
+        base = api_base or get_lark_api_base()
+        tkn = token or get_tenant_access_token(
+            app_id=app_id, app_secret=app_secret, api_base=base
+        )
         try:
             import requests
         except ImportError:
@@ -119,7 +128,7 @@ def send_markdown_card(
         if card_title:
             card["header"] = {"title": {"tag": "plain_text", "content": card_title}}
 
-        url = f"{get_lark_api_base()}/im/v1/messages"
+        url = f"{base}/im/v1/messages"
         params = {"receive_id_type": receive_id_type or "chat_id"}
         payload = {
             "receive_id": receive_id.strip(),

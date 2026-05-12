@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 L3 节点 PyInstaller 打包脚本 — 产出 Tauri Sidecar 二进制
 
@@ -174,7 +174,7 @@ def main() -> int:
     for mod in exclude_modules:
         cmd.extend(["--exclude-module", mod])
     # 勿排除 l3_node.primitives.mcp.mcp_tools：frozen 下 ``scripts/k11_lark_smoke_report.py``（--add-data 内嵌）
-    # 会 import ``mcp_tools.pmo_bmo.*`` 同步 Wiki/多维表；排除会导致 No module named 'l3_node.primitives.mcp.mcp_tools'。
+    # 会 import ``primitives.mcp.mcp_tools.bi.lark_bitable_client`` 等；排除会导致缺子包。
     # 子树以 collect-submodules 打入，供 registry 懒加载的 L3 本地 MCP 原子工具同路径可用。
     # 能力总目录：供 capability_catalog 在 frozen 下从 sys._MEIPASS/docs 读取（与 l3_node/capability_catalog._docs_dirs 一致）
     _docs_sep = ";" if sys.platform == "win32" else ":"

@@ -1,13 +1,14 @@
-"""
+﻿"""
 飞书推送工具 — mcp:atom_lark_notifier
 
 契约: docs/bi_daily_report/01_PARALLEL_DEVELOPMENT_GUIDE.md
 使用 l3_node.channels.lark 通道层实现。
 支持两种模式：Webhook URL（群自定义机器人）或 chat_id + App 凭证（应用机器人）。
 
-配置: config/mcps/atom_lark_notifier/config.yaml
-  - app_id, app_secret: 无 Webhook 时用 IM API；环境变量未设置时从此读取
-  - default_chat_id: 未传 chat_id 时使用，支持 BI 机器人连接 L3 终端
+配置: config/mcps/atom_lark_notifier/config.yaml（或 ~/.jachin/config/mcps/atom_lark_notifier/）
+  - app_id, app_secret: IM API；可与进程内其它业务的 LARK_APP_ID 解耦——YAML 里有字面量时优先用于本工具
+  - lark_use_feishu: **覆盖**进程环境里的国际/国内域名选择（避免根 .env 残留 FEISHU=1 却把租户配在国际 Lark）
+  - default_chat_id: 未传 chat_id 时使用
 """
 from __future__ import annotations
 
@@ -24,23 +25,41 @@ from l3_node.channels.lark import send_markdown
 from l3_node.channels.lark.im import send_markdown_card
 
 
-def _ensure_lark_credentials_from_config() -> None:
-    """当环境变量未设置时，从 atom_lark_notifier config 注入 LARK_APP_ID/SECRET"""
-    if os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID"):
-        return
+def _load_atom_lark_notifier_config() -> dict[str, Any]:
     try:
         from l3_node.jachin_config import load_mcp_config
 
-        cfg = load_mcp_config("atom_lark_notifier", project_root=_root)
-        aid = (cfg.get("app_id") or "").strip()
-        asec = (cfg.get("app_secret") or "").strip()
-        if aid and asec and not str(aid).startswith("${"):
-            os.environ.setdefault("LARK_APP_ID", aid)
-            os.environ.setdefault("LARK_APP_SECRET", asec)
-        if cfg.get("lark_use_feishu") in (True, "true", "1", "yes"):
-            os.environ.setdefault("LARK_USE_FEISHU", "1")
+        return load_mcp_config("atom_lark_notifier", project_root=_root)
     except Exception:
-        pass
+        return {}
+
+
+def _cfg_app_pair(cfg: dict[str, Any]) -> tuple[str, str]:
+    aid = (cfg.get("app_id") or "").strip()
+    sec = (cfg.get("app_secret") or "").strip()
+    if str(aid).startswith("${"):
+        aid = ""
+    if str(sec).startswith("${"):
+        sec = ""
+    return aid, sec
+
+
+def _im_api_base_from_notifier_cfg(cfg: dict[str, Any]) -> str:
+    from l3_node.channels.lark.client import FEISHU_API_BASE, LARK_API_BASE_DEFAULT
+
+    if cfg.get("lark_use_feishu") in (True, "true", "1", "yes"):
+        return FEISHU_API_BASE
+    return LARK_API_BASE_DEFAULT
+
+
+def _inject_env_app_from_cfg_if_missing(cfg: dict[str, Any]) -> None:
+    """环境变量未配置应用凭证时，从 MCP YAML 写入（兼容占位符解析前的旧部署）。"""
+    if os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID"):
+        return
+    aid, sec = _cfg_app_pair(cfg)
+    if aid and sec:
+        os.environ.setdefault("LARK_APP_ID", aid)
+        os.environ.setdefault("LARK_APP_SECRET", sec)
 
 
 def send_lark_markdown(
@@ -73,26 +92,36 @@ def send_lark_markdown(
             title=title,
             chart_spec=chart_spec,
         )
-    # 有 chat_id 时用 IM API（应用机器人需在群内且有发消息权限）
+
+    cfg = _load_atom_lark_notifier_config()
+    api_base = _im_api_base_from_notifier_cfg(cfg)
+    os.environ["LARK_USE_FEISHU"] = (
+        "1" if cfg.get("lark_use_feishu") in (True, "true", "1", "yes") else "0"
+    )
+
     _chat_id = (chat_id or "").strip()
     if not _chat_id:
-        try:
-            from l3_node.jachin_config import load_mcp_config
+        _chat_id = (cfg.get("default_chat_id") or "").strip()
+        if str(_chat_id).startswith("${"):
+            _chat_id = ""
 
-            cfg = load_mcp_config("atom_lark_notifier", project_root=_root)
-            _chat_id = (cfg.get("default_chat_id") or "").strip()
-            if str(_chat_id).startswith("${"):
-                _chat_id = ""
-        except Exception:
-            pass
     if _chat_id:
-        _ensure_lark_credentials_from_config()
+        aid, sec = _cfg_app_pair(cfg)
+        card_kw: dict[str, Any] = {"api_base": api_base}
+        if aid and sec:
+            card_kw["app_id"] = aid
+            card_kw["app_secret"] = sec
+        else:
+            _inject_env_app_from_cfg_if_missing(cfg)
+
         return send_markdown_card(
             receive_id=_chat_id,
             markdown_content=markdown_content,
             title=title,
             receive_id_type="chat_id",
+            **card_kw,
         )
+
     if has_webhook and chart_spec:
         return send_markdown(
             webhook_url=webhook_url.strip(),
@@ -100,26 +129,28 @@ def send_lark_markdown(
             title=title,
             chart_spec=chart_spec,
         )
-    return {"status": "error", "error": "请配置 default_webhook_url、BI_LARK_WEBHOOK_URL，或在 config 中设置 default_chat_id / BI_LARK_CHAT_ID"}
+    return {
+        "status": "error",
+        "error": "请配置 default_webhook_url、BI_LARK_WEBHOOK_URL，或在 config 中设置 default_chat_id / BI_LARK_CHAT_ID",
+    }
 
 
 if __name__ == "__main__":
-    # 测试：优先 Webhook，无则用 config 的 default_chat_id + app 凭证
     try:
         from l3_node.jachin_config import load_mcp_config
 
         cfg = load_mcp_config("atom_lark_notifier", project_root=_root)
         webhook = (cfg.get("default_webhook_url") or "").strip()
-        chat_id = (cfg.get("default_chat_id") or "").strip()
+        cid = (cfg.get("default_chat_id") or "").strip()
         if str(webhook).startswith("${"):
             webhook = ""
     except Exception:
         webhook = ""
-        chat_id = ""
+        cid = ""
 
     SAMPLE_MD = """# 📊 每日 BI 深度分析战报 — Lark 通道测试
 
 本消息由 **tool_lark_notifier** (mcp:atom_lark_notifier) 发送。
 """
-    r1 = send_lark_markdown(webhook or "", SAMPLE_MD, title="BI 战报 Lark 测试", chat_id=chat_id or None)
+    r1 = send_lark_markdown(webhook or "", SAMPLE_MD, title="BI 战报 Lark 测试", chat_id=cid or None)
     print("lark (纯文):", r1)
