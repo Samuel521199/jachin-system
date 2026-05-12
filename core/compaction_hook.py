@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus v8.0 — 神盾 Compaction Hook（上下文时空折叠）
 
 注册到 HOOK_BEFORE_LLM_THINK，当 ctx.messages 超 token 阈值时：
@@ -211,6 +211,10 @@ async def _run_memory_flush(messages: list[dict[str, Any]], summary_model: str) 
             "[Compaction] memory_flush 使用模型 %s（nexus llm.memory_flush.model 可覆盖；默认 flash；compaction 主模型=%s）",
             mf_model,
             summary_model,
+        )
+        console.print(
+            "[bold cyan][Compaction][/bold cyan] "
+            "会话将压缩：正在调用 LLM 做「记忆刷新」(memory_flush)，通常数秒～十余秒，请勿误以为卡住。"
         )
         engine = LiteLLMEngine(model_name=mf_model)
         result = await engine.generate_response(
@@ -428,6 +432,14 @@ async def _generate_summary(middle_messages: list[dict[str, str]], summary_model
 {content_blob}
 
 历史摘要："""
+    logger.info(
+        "[Compaction] 开始生成「历史摘要」：中间片段约 %d 条，purpose=compaction_context_summary（接下来会看到 LiteLLM POST，属正常）",
+        len(middle_messages),
+    )
+    console.print(
+        "[bold cyan][Compaction][/bold cyan] "
+        "正在调用 LLM 生成「历史摘要」(compaction_context_summary)，请勿误以为进程卡住。"
+    )
     summary = await engine.generate_response(
         [{"role": "user", "content": summary_prompt}],
         temperature=0.3,
@@ -436,7 +448,12 @@ async def _generate_summary(middle_messages: list[dict[str, str]], summary_model
     )
     if isinstance(summary, dict):
         summary = summary.get("content", "") or ""
-    return (summary or "").strip() or "[对话已压缩]"
+    out = (summary or "").strip() or "[对话已压缩]"
+    logger.info(
+        "[Compaction] 「历史摘要」生成完成，长度=%d 字符",
+        len(out),
+    )
+    return out
 
 
 async def compaction_before_llm_think(ctx: PipelineContext) -> None:
@@ -453,6 +470,16 @@ async def compaction_before_llm_think(ctx: PipelineContext) -> None:
     estimated = await asyncio.to_thread(_estimate_tokens, messages)
     if estimated <= threshold:
         return
+
+    logger.info(
+        "[Compaction] token 估算=%s > 阈值=%s，进入折叠（可选 memory_flush → LLM 历史摘要）；日志中出现 compaction_* POST 属正常，非卡死",
+        estimated,
+        threshold,
+    )
+    console.print(
+        f"[bold cyan][Compaction][/bold cyan] "
+        f"上下文较长（估算≈{estimated} tokens > {threshold}），正在压缩管线中…"
+    )
 
     llm_cfg = _get_llm_section()
     anchor_paths = load_workspace_anchor_paths(llm_cfg)

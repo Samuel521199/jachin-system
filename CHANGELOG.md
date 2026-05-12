@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.61] - 2026-05-12
+
+### Added / Changed
+
+- PMO成功到发送消息卡片。
+- **Version**: Desktop **0.9.61**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.60] - 2026-05-12
 
 ### Added / Changed
