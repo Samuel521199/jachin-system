@@ -88,7 +88,7 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     rules_path = (args.rules_path or "").strip()
     allow = _allowlist_for_skill(sp)
-    mi = max(1, min(int(args.max_iterations), 48))
+    mi = max(1, min(int(args.max_iterations), 64))
 
     user_input = (
         f"[GameQA · run-skill 宿主上下文 · CLI]\n"
@@ -181,7 +181,7 @@ def main() -> int:
     )
     ap.add_argument("--url", default=DEFAULT_URL, help="目标站点 URL")
     ap.add_argument("--rules-path", default="", help="规则 MD 路径（可空）")
-    ap.add_argument("--max-iterations", type=int, default=32, help="Agent ReAct 上限（1～48）")
+    ap.add_argument("--max-iterations", type=int, default=42, help="Agent ReAct 上限（1～64）")
     ap.add_argument("--quiet", action="store_true", help="不在 stdout 打印流式 chunk（仍写 GameQA 日志队列）")
     args = ap.parse_args()
     try:

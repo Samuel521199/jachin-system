@@ -21,6 +21,7 @@ from .core.browser_engine import BrowserEngine, CDP_HTTP_FILE, gameqa_data_dir
 from .core.shadow_logger import ShadowLogger, resolve_click_to_semantic
 from .core.ocr_engine import ocr_png_bytes_for_state
 from .core.vision_engine import VisionEngine
+from .core.vision_fallback import apply_perception_fallbacks
 
 logger = logging.getLogger("gameqa.session_service")
 
@@ -75,6 +76,7 @@ class GameQAService:
         "run_id",
         "_op_lock",
         "_log_queues",
+        "_heuristic_dismiss_used",
     )
 
     def __init__(self) -> None:
@@ -87,6 +89,7 @@ class GameQAService:
         self.run_id: str = str(uuid.uuid4())
         self._op_lock = asyncio.Lock()
         self._log_queues: list[asyncio.Queue[str]] = []
+        self._heuristic_dismiss_used = False
 
     def subscribe_logs(self) -> asyncio.Queue[str]:
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=800)
@@ -159,10 +162,13 @@ class GameQAService:
         ocr_block: dict[str, Any] | None,
         *,
         ocr_mode: str = "full",
+        merged_elements: dict[str, tuple[float, float]] | None = None,
+        perception_extra: str = "",
     ) -> None:
         """
         将 YOLO（``vr.yolo_debug``）与 OCR 全文摘要写入 ``gameqa_skill_debug.log``。
         ``ocr_mode=skipped_lazy``：影子对齐路径不跑 OCR，仅注明原因。
+        ``merged_elements``：与 MCP 返回给 Agent 的最终 ``elements`` 一致（含 OCR/VL 锚点）。
         """
         try:
             from l3_client.local_mcps.gameqa_mcp.skill_cli_debug import append_perception_debug
@@ -173,8 +179,18 @@ class GameQAService:
                 lines.extend(yd.split("\n"))
             else:
                 lines.append(f"  vision_notes={vr.raw_notes!r}")
-                lines.append("  elements (merged map):")
+                lines.append("  elements (YOLO map):")
                 for k, (x, y) in sorted(vr.elements.items()):
+                    lines.append(f"    {k!r}: ({x:.1f}, {y:.1f})")
+
+            if merged_elements is not None and (
+                perception_extra or merged_elements != dict(getattr(vr, "elements", {}) or {})
+            ):
+                lines.append("[MERGED perception — YOLO + OCR/VL fallback]")
+                if perception_extra.strip():
+                    lines.append(f"  notes: {perception_extra.strip()}")
+                lines.append(f"  merged keys: {sorted(merged_elements.keys())!r}")
+                for k, (x, y) in sorted(merged_elements.items()):
                     lines.append(f"    {k!r}: ({x:.1f}, {y:.1f})")
 
             lines.append("---")
@@ -236,12 +252,28 @@ class GameQAService:
             "browser not live: start from 游戏测试 / launch-test / launch-shadow first, or set GAMEQA_CDP_URL",
         )
 
-    async def stop(self) -> dict[str, Any]:
+    async def _viewport_wh(self) -> tuple[int, int]:
+        try:
+            pg = self.browser.page
+            if pg:
+                vp = pg.viewport_size
+                if vp and vp.get("width") and vp.get("height"):
+                    return max(16, int(vp["width"])), max(16, int(vp["height"]))
+        except Exception:
+            pass
+        try:
+            w = int((os.environ.get("GAMEQA_VIEWPORT_WIDTH") or "360").strip())
+            h = int((os.environ.get("GAMEQA_VIEWPORT_HEIGHT") or "760").strip())
+            return max(16, w), max(16, h)
+        except ValueError:
+            return 360, 760
+
         async with self._op_lock:
             await self.browser.close()
             self.semantic_map.clear()
             self.last_public_state.clear()
             self.mode = "idle"
+            self._heuristic_dismiss_used = False
             await self.emit_log("[gameqa] 已停止：Playwright 已断开（若本进程拥有 Chromium 则进程已结束）。")
             return {"ok": True, "message": "stopped"}
 
@@ -252,6 +284,7 @@ class GameQAService:
             self.semantic_map.clear()
             self.last_public_state.clear()
             self.mode = "test"
+            self._heuristic_dismiss_used = False
             await self.emit_log(
                 f"[gameqa] 自治测试：run_id={self.run_id} · "
                 "本进程 **直接启动 Playwright Chromium**（不附着外部 Chrome/Cdp），避免与手开浏览器错页导致坐标错位。"
@@ -339,13 +372,31 @@ class GameQAService:
             return
 
         vr = await self.vision.analyze_async(png)
-        fresh_map = dict(vr.elements)
+        vw, vh = await self._viewport_wh()
+        merged, sources, extra_fb = await asyncio.to_thread(
+            lambda: apply_perception_fallbacks(
+                png,
+                dict(vr.elements),
+                raw_notes=vr.raw_notes,
+                viewport_wh=(vw, vh),
+            )
+        )
+        fresh_map = merged
+        vision_notes_out = vr.raw_notes.strip()
+        if extra_fb.strip():
+            vision_notes_out = (
+                f"{vision_notes_out} | {extra_fb}" if vision_notes_out else extra_fb
+            )
         name, dist = resolve_click_to_semantic(fresh_map, x, y)
         structured: dict[str, Any] = {
             "run_id": self.run_id,
             "mode": self.mode,
-            "elements": vr.to_public_dict()["elements"],
-            "vision_notes": vr.raw_notes,
+            "elements": {
+                k: [round(a, 2), round(b, 2)] for k, (a, b) in fresh_map.items()
+            },
+            "vision_notes": vision_notes_out,
+            "element_sources": sources,
+            "perception_fallback": extra_fb.strip(),
             "alignment": "lazy_post_click",
             "click_ts": ts,
             "click_xy": {"x": x, "y": y},
@@ -375,6 +426,8 @@ class GameQAService:
             vr,
             None,
             ocr_mode="skipped_lazy",
+            merged_elements=fresh_map,
+            perception_extra=extra_fb.strip(),
         )
 
     async def launch_shadow(self, url: str) -> dict[str, Any]:
@@ -384,6 +437,7 @@ class GameQAService:
             self.semantic_map.clear()
             self.last_public_state.clear()
             self.mode = "shadow"
+            self._heuristic_dismiss_used = False
             await self.emit_log(
                 f"[gameqa] 影子训练：run_id={self.run_id} · CDP 优先，否则新开有头 Chromium；目标 URL={url!r}"
             )
@@ -421,13 +475,32 @@ class GameQAService:
                     self.vision.analyze_async(png),
                     asyncio.to_thread(ocr_png_bytes_for_state, png),
                 )
-                self.semantic_map = dict(vr.elements)
+                vw, vh = await self._viewport_wh()
+                merged, sources, extra_fb = await asyncio.to_thread(
+                    lambda: apply_perception_fallbacks(
+                        png,
+                        dict(vr.elements),
+                        raw_notes=vr.raw_notes,
+                        viewport_wh=(vw, vh),
+                    )
+                )
+                self.semantic_map = merged
+                vision_notes_out = vr.raw_notes.strip()
+                if extra_fb.strip():
+                    vision_notes_out = (
+                        f"{vision_notes_out} | {extra_fb}" if vision_notes_out else extra_fb
+                    )
+                elem_public = {
+                    k: [round(a, 2), round(b, 2)] for k, (a, b) in merged.items()
+                }
                 extra_clicks = await self.browser.drain_shadow_clicks()
                 public: dict[str, Any] = {
                     "run_id": self.run_id,
                     "mode": self.mode,
-                    "elements": vr.to_public_dict()["elements"],
-                    "vision_notes": vr.raw_notes,
+                    "elements": elem_public,
+                    "vision_notes": vision_notes_out,
+                    "element_sources": sources,
+                    "perception_fallback": extra_fb.strip(),
                     "ocr_text": ocr_block.get("ocr_text", ""),
                     "ocr_notes": ocr_block.get("ocr_notes", ""),
                     "ocr_enabled": ocr_block.get("ocr_enabled", False),
@@ -452,11 +525,68 @@ class GameQAService:
                     f"=== perception · get_semantic_state run_id={self.run_id} mode={self.mode!r} ===",
                     vr,
                     ocr_block,
+                    merged_elements=merged,
+                    perception_extra=extra_fb.strip(),
                 )
                 return {"ok": True, "state": public}
             except Exception as e:
                 logger.exception("get_semantic_state")
                 return {"ok": False, "error": repr(e)}
+
+    async def heuristic_dismiss_once(self) -> dict[str, Any]:
+        """
+        每 ``run_id`` 至多一次的视口右上角附近点击（关广告 / 通用关闭试探）。
+
+        **非** OCR/YOLO 产物；须在 Final Answer 中如实写明「启发式点击」。
+        """
+        async with self._op_lock:
+            if self._heuristic_dismiss_used:
+                return {
+                    "ok": False,
+                    "error": "heuristic_dismiss_already_used_this_run",
+                    "run_id": self.run_id,
+                }
+            ok, err = await self._ensure_live_page(for_shadow_attach=False)
+            if not ok:
+                return {"ok": False, "error": err}
+            pg = self.browser.page
+            if not pg:
+                return {"ok": False, "error": "no page"}
+            try:
+                vp = pg.viewport_size or {}
+                w = int(vp.get("width") or 360)
+                h = int(vp.get("height") or 760)
+            except Exception:
+                w, h = 360, 760
+            try:
+                margin_x = float((os.environ.get("GAMEQA_HEURISTIC_DISMISS_MARGIN_X") or "28").strip())
+            except ValueError:
+                margin_x = 28.0
+            try:
+                top_y = float((os.environ.get("GAMEQA_HEURISTIC_DISMISS_TOP_Y") or "56").strip())
+            except ValueError:
+                top_y = 56.0
+            xf = float(w) - max(12.0, margin_x)
+            yf = min(max(24.0, top_y), float(h) * 0.22)
+            self._heuristic_dismiss_used = True
+            try:
+                click_msg = await self.browser.click_named_viewport(xf, yf)
+            except Exception as e:
+                self._heuristic_dismiss_used = False
+                return {"ok": False, "error": repr(e)}
+            rec: dict[str, Any] = {
+                "event": "heuristic_dismiss_once",
+                "run_id": self.run_id,
+                "viewport": [xf, yf],
+                "detail": click_msg,
+            }
+            self.logger.append_audit(rec)
+            await self.emit_log(f"[gameqa] heuristic_dismiss_once @ ({xf:.0f},{yf:.0f})")
+            return {
+                "ok": True,
+                "executed": rec,
+                "hint": "probe_only: confirm UI with tool_get_semantic_state; coordinate not from YOLO/OCR.",
+            }
 
     async def execute_action(self, element_name: str) -> dict[str, Any]:
         async with self._op_lock:

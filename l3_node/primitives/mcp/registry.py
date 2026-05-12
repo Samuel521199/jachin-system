@@ -481,7 +481,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:tool_get_semantic_state",
         "label": "mcp:tool_get_semantic_state",
-        "desc": "[L3 本地·GameQA] 截图并更新语义映射，返回 JSON。",
+        "desc": "[L3 本地·GameQA] 截图并更新语义映射，返回 JSON；YOLO 无框时可合并 OCR 锚点与（可选 GAMEQA_VL_FALLBACK）VL。",
         "params": [],
         "long_running": True,
     },
@@ -490,6 +490,13 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "label": "mcp:tool_execute_action",
         "desc": "[L3 本地·GameQA] 按语义 element_name 在视口点击。",
         "params": ["element_name"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:tool_heuristic_dismiss_once",
+        "label": "mcp:tool_heuristic_dismiss_once",
+        "desc": "[L3 本地·GameQA] 每 run_id 至多一次：视口右上附近试探点击（非 YOLO/OCR 坐标）；须后续 get_semantic_state 复核；可选 GAMEQA_HEURISTIC_DISMISS_MARGIN_X/TOP_Y。",
+        "params": [],
         "long_running": True,
     },
     {
@@ -2487,6 +2494,12 @@ class MCPToolRegistry:
                     )
                 except Exception:
                     pass
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name == "tool_heuristic_dismiss_once":
+                from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
+
+                raw = await get_gameqa_service().heuristic_dismiss_once()
                 return json.dumps(raw, ensure_ascii=False)
 
             if raw_name == "tool_get_audit_log":

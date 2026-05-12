@@ -1,5 +1,8 @@
-# 确保文本文件使用 UTF-8 编码，避免 GitHub 中文乱码
+﻿# 确保文本文件使用 UTF-8 编码，避免 GitHub 中文乱码
 * text=auto eol=lf
+# Windows 批处理需 CRLF，且勿与含括号的 python -c 写在同一行（易碎行）
+*.cmd text eol=crlf
+*.bat text eol=crlf
 *.md text eol=lf
 *.py text eol=lf
 *.yaml text eol=lf

@@ -22,6 +22,7 @@ GAMEQA_MCP_ALLOWLIST_AUTO: list[str] = [
     "mcp:tool_refresh_view",
     "mcp:tool_get_semantic_state",
     "mcp:tool_execute_action",
+    "mcp:tool_heuristic_dismiss_once",
     "mcp:tool_get_audit_log",
 ]
 
@@ -153,10 +154,10 @@ async def handle_run_skill(request):
     if not sp:
         return _resp({"ok": False, "error": f"skill file not found: {skill_name!r}"}, status=404)
     try:
-        mi = int(body.get("max_iterations") or 32)
+        mi = int(body.get("max_iterations") or 42)
     except (TypeError, ValueError):
-        mi = 32
-    mi = max(1, min(mi, 48))
+        mi = 42
+    mi = max(1, min(mi, 64))
     allow = _allowlist_for_skill(sp)
 
     try:

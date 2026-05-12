@@ -25,6 +25,8 @@ GameQA MCP Server — 本地物理网关（stdio / FastMCP）。
   GAMEQA_ATTACH_SCRIPT_CHROME_FIRST=0  影子/通用 launch 仍可先试附着脚本 Chrome；自治测试路径已改为直接 launch
   GAMEQA_YOLO_MODEL   （可选）Ultralytics/YOLO 权重路径或 hub 名（如 ``yolo11n.pt``）；未设则视觉为 Mock
   GAMEQA_YOLO_CONF / GAMEQA_YOLO_DEVICE / GAMEQA_YOLO_IMG_SIZE   参见 ``vision_engine.py``
+  GAMEQA_OCR_ANCHOR_ENABLED / GAMEQA_OCR_ANCHOR_MAP   参见 ``vision_fallback.py``
+  GAMEQA_VL_FALLBACK / GAMEQA_VL_MODEL / DASHSCOPE_API_KEY（或 GAMEQA_VL_API_KEY）
 """
 from __future__ import annotations
 
@@ -99,6 +101,13 @@ async def tool_get_semantic_state() -> str:
 async def tool_execute_action(element_name: str) -> str:
     """按语义名查表点击视口坐标，并追加 audit_trail.jsonl。"""
     raw = await _svc().execute_action(element_name)
+    return json.dumps(raw, ensure_ascii=False)
+
+
+@mcp.tool(name="tool_heuristic_dismiss_once")
+async def tool_heuristic_dismiss_once() -> str:
+    """每 run 至多一次：视口右上角附近试探点击（关广告 / 通用关闭）；须用下一轮 semantic_state 复核。"""
+    raw = await _svc().heuristic_dismiss_once()
     return json.dumps(raw, ensure_ascii=False)
 
 

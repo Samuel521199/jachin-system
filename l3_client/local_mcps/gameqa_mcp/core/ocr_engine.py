@@ -71,6 +71,149 @@ def _parse_rapid_result(result: Any) -> str:
     return ""
 
 
+def _polygon_centroid_xy(box: Any) -> tuple[float, float] | None:
+    """box: [[x,y]*4] / ndarray(4,2) / xyxy — 返回中心点。"""
+    try:
+        import numpy as np
+
+        arr = np.asarray(box, dtype=float)
+        if arr.size < 4:
+            return None
+        # 4x2 polygon
+        if arr.ndim == 2 and arr.shape[0] >= 2 and arr.shape[1] >= 2:
+            xs = arr[:, 0]
+            ys = arr[:, 1]
+            return float(xs.mean()), float(ys.mean())
+        # flat xyxy
+        if arr.ndim == 1 and arr.shape[0] >= 4:
+            x1, y1, x2, y2 = float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3])
+            return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    except Exception:
+        return None
+    return None
+
+
+def _rapid_boxes_list(result: Any) -> list[tuple[str, float, float, float]]:
+    """(text, cx, cy, score) from RapidOCR raw result。"""
+    rows: list[tuple[str, float, float, float]] = []
+    if not result:
+        return rows
+
+    def _push(box: Any, text: str, score: float = 1.0) -> None:
+        t = str(text or "").strip()
+        if not t:
+            return
+        c = _polygon_centroid_xy(box)
+        if c is None:
+            return
+        rows.append((t, c[0], c[1], float(score)))
+
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            if not item:
+                continue
+            if len(item) >= 3:
+                box, text, sc = item[0], item[1], item[2]
+                try:
+                    scf = float(sc) if sc is not None else 1.0
+                except (TypeError, ValueError):
+                    scf = 1.0
+                _push(box, str(text), scf)
+            elif len(item) >= 2:
+                _push(item[0], str(item[1]), 1.0)
+        return rows
+
+    if hasattr(result, "txts") and hasattr(result, "boxes"):
+        txts = list(getattr(result, "txts", None) or [])
+        boxes = list(getattr(result, "boxes") or [])
+        scores = list(getattr(result, "scores") or [])
+        for i, t in enumerate(txts):
+            if not t:
+                continue
+            box = boxes[i] if i < len(boxes) else None
+            sc = float(scores[i]) if i < len(scores) else 1.0
+            _push(box, str(t), sc)
+    return rows
+
+
+def _easy_boxes_list(img_np: Any) -> list[tuple[str, float, float, float]]:
+    rows: list[tuple[str, float, float, float]] = []
+    try:
+        reader = _get_easyocr_reader()
+        raw = reader.readtext(img_np)
+    except Exception:
+        return rows
+    for r in raw or []:
+        if not r or len(r) < 2:
+            continue
+        box, text = r[0], r[1]
+        sc = 1.0
+        if len(r) >= 3:
+            try:
+                sc = float(r[2])
+            except (TypeError, ValueError):
+                sc = 1.0
+        t = str(text or "").strip()
+        if not t:
+            continue
+        c = _polygon_centroid_xy(box)
+        if c is None:
+            continue
+        rows.append((t, c[0], c[1], sc))
+    return rows
+
+
+def ocr_line_boxes_from_png(png: bytes) -> tuple[list[dict[str, Any]], str]:
+    """
+    逐行 OCR（带框中心点），供 YOLO 无框时按关键词落锚点。
+
+    返回 (lines, notes)；lines 每项含 text, cx, cy, score, source(rapid|easy)。
+    """
+    if not gameqa_ocr_enabled():
+        return [], "ocr_disabled"
+    if not png or len(png) < 32:
+        return [], "empty_png"
+    try:
+        from PIL import Image
+        import numpy as np
+    except ImportError as e:
+        return [], f"pillow_numpy:{e}"
+
+    try:
+        img = Image.open(BytesIO(png)).convert("RGB")
+        img_np = np.array(img)
+    except Exception as e:
+        return [], f"decode_png:{e}"
+
+    try:
+        ocr = _get_rapid()
+        result, _elapsed = ocr(img_np)
+        rapid_rows = _rapid_boxes_list(result)
+    except Exception as e:
+        rapid_rows = []
+        err_rapid = repr(e)
+        return _rows_to_line_dicts(_easy_boxes_list(img_np), "easy", f"rapid_err:{err_rapid}")
+
+    if rapid_rows:
+        return _rows_to_line_dicts(rapid_rows, "rapid", "rapid_boxes")
+
+    rows = _easy_boxes_list(img_np)
+    return _rows_to_line_dicts(rows, "easy", "easy_boxes_after_rapid_empty")
+
+
+def _rows_to_line_dicts(
+    rows: list[tuple[str, float, float, float]],
+    source: str,
+    notes: str,
+) -> tuple[list[dict[str, Any]], str]:
+    out: list[dict[str, Any]] = [
+        {"text": t, "cx": cx, "cy": cy, "score": sc, "source": source} for t, cx, cy, sc in rows
+    ]
+    if not out:
+        return [], f"no_line_boxes:{notes}"
+    return out, notes
+
+
 def _ocr_numpy_rapid(img_np: Any) -> tuple[str, str]:
     try:
         ocr = _get_rapid()

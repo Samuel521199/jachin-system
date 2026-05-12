@@ -1,6 +1,9 @@
 ﻿# Chrome remote debugging for CDP (Kalaroko MCP, Boss Zhipin, GameQA attach, etc.)
-# 默认 9222 与 GameQA（GAMEQA_REMOTE_DEBUG_PORT / cdp_http.txt 回退）、KALAROKO_CDP_ENDPOINT 一致。
-# 1) Run this script. 2) Set KALAROKO_CDP_ENDPOINT=http://127.0.0.1:9222 in .env.
+# 默认 9222：与 GameQA（GAMEQA_REMOTE_DEBUG_PORT）、KALAROKO_CDP_ENDPOINT 一致。
+# GameQA（默认 GAMEQA_ATTACH_SCRIPT_CHROME_FIRST=1）会先尝试附着此处启动的桌面 Chrome，
+# 再回落到 cdp_http.txt；避免因陈旧 cdp_http.txt 而误开本机无头 Playwright Chromium。
+#
+# 1) 启动本脚本  2) 可选：.env 中 KALAROKO_CDP_ENDPOINT=http://127.0.0.1:9222（或留空仅凭默认口附着）
 # Uses %TEMP%\chrome-debug-boss as user-data-dir to avoid clashing with normal Chrome.
 # Usage: .\scripts\launch_chrome_debug.ps1  ["https://example.com/"]
 
