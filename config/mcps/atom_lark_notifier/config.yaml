@@ -15,3 +15,6 @@ default_chat_id: "oc_b1b9cff6804517c79b7f5a617ab30483"
 lark_use_feishu: false
 
 l3_ws_url: "ws://127.0.0.1:18981/sensory"
+
+# 为 true 时：正文内 GFM | 表 | 转为飞书 Schema 2.0 原生 table 组件（PMO 战报推荐开启）
+native_table_card: true

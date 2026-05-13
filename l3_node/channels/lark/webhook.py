@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — Webhook 推送（无需 App 凭证）
 
 通过飞书机器人 Webhook URL 发送 Markdown 卡片。
@@ -15,6 +15,40 @@ try:
     _HAS_URLLIB = True
 except ImportError:
     _HAS_URLLIB = False
+
+
+def post_interactive_card_webhook(webhook_url: str, card: dict[str, Any]) -> dict[str, Any]:
+    """
+    Webhook 发送任意交互式卡片 JSON（含 ``schema: \"2.0\"`` + ``body.elements`` 内 ``table``）。
+    """
+    if not _HAS_URLLIB:
+        return {"status": "error", "error": "urllib 不可用"}
+    if not (webhook_url or "").strip():
+        return {"status": "error", "error": "webhook_url 不能为空"}
+    if not isinstance(card, dict) or not card:
+        return {"status": "error", "error": "card 不能为空"}
+    try:
+        payload: dict[str, Any] = {"msg_type": "interactive", "card": card}
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url.strip(),
+            data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            result = json.loads(body) if body.strip() else {}
+            if result.get("code") and result.get("code") != 0:
+                return {"status": "error", "error": result.get("msg", str(result))}
+        return {"status": "success", "msg": "飞书已送达"}
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
+        return {"status": "error", "error": f"HTTP {e.code}: {err_body[:500]}"}
+    except urllib.error.URLError as e:
+        return {"status": "error", "error": f"网络错误: {e.reason}"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 def send_markdown(

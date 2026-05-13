@@ -9,6 +9,7 @@
   - app_id, app_secret: IM API；可与进程内其它业务的 LARK_APP_ID 解耦——YAML 里有字面量时优先用于本工具
   - lark_use_feishu: **覆盖**进程环境里的国际/国内域名选择（避免根 .env 残留 FEISHU=1 却把租户配在国际 Lark）
   - default_chat_id: 未传 chat_id 时使用
+  - native_table_card: 默认开启；若 ``markdown_content`` 含 GFM 表格则使用 **飞书卡片 2.0 / tag:table**（无表则与旧版同为单块 lark_md）。显式 ``false`` 或 ``JACHIN_LARK_NATIVE_TABLE_CARD=0`` 可关闭
 """
 from __future__ import annotations
 
@@ -22,7 +23,8 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from l3_node.channels.lark import send_markdown
-from l3_node.channels.lark.im import send_markdown_card
+from l3_node.channels.lark.im import send_interactive_card, send_markdown_card
+from l3_node.channels.lark.webhook import post_interactive_card_webhook
 
 
 def _load_atom_lark_notifier_config() -> dict[str, Any]:
@@ -62,12 +64,30 @@ def _inject_env_app_from_cfg_if_missing(cfg: dict[str, Any]) -> None:
         os.environ.setdefault("LARK_APP_SECRET", sec)
 
 
+def _truthy_native_table(flag: bool | None, cfg: dict[str, Any]) -> bool:
+    if flag is not None:
+        return bool(flag)
+    raw = cfg.get("native_table_card")
+    if raw in (True, "true", "1", "yes", "on"):
+        return True
+    if raw in (False, "false", "0", "no", "off", ""):
+        return False
+    env = (os.environ.get("JACHIN_LARK_NATIVE_TABLE_CARD") or "").strip().lower()
+    if env in ("1", "true", "yes", "on"):
+        return True
+    if env in ("0", "false", "no", "off"):
+        return False
+    # 配置与环境均未显式声明时默认开启（避免 ~/.jachin 旧 YAML 缺键时永远走 lark_md）
+    return True
+
+
 def send_lark_markdown(
     webhook_url: str,
     markdown_content: str,
     title: str | None = None,
     chart_spec: dict | None = None,
     chat_id: str | None = None,
+    native_table_card: bool | None = None,
 ) -> dict[str, Any]:
     """
     通过飞书发送 Markdown 消息。
@@ -79,13 +99,60 @@ def send_lark_markdown(
         title: 卡片标题（可选）
         chart_spec: 图表配置（可选），仅 Webhook 模式支持
         chat_id: 群 chat_id（如 oc_xxx），无 Webhook 时用于 IM API 推送
+        native_table_card: 为 True 且正文含 GFM ``|`` 表格时，使用 **卡片 JSON 2.0** 的 ``tag: table``
+            原生组件发送（Webhook / IM 均支持）。``None`` 时读 MCP ``native_table_card``、环境变量
+            ``JACHIN_LARK_NATIVE_TABLE_CARD``；均未设置时 **默认 True**（关闭请写 ``false`` / ``0``）。
 
     Returns:
         {"status": "success", "msg": "飞书已送达"} 或 {"status": "error", "error": "..."}
     """
-    # 有效 Webhook：非空且非占位符（不以 ${ 开头）
+    cfg = _load_atom_lark_notifier_config()
+    api_base = _im_api_base_from_notifier_cfg(cfg)
+    os.environ["LARK_USE_FEISHU"] = (
+        "1" if cfg.get("lark_use_feishu") in (True, "true", "1", "yes") else "0"
+    )
+
     has_webhook = (webhook_url or "").strip() and not str(webhook_url).strip().startswith("${")
-    if has_webhook and not chart_spec:
+    _chat_id = (chat_id or "").strip()
+    if not _chat_id:
+        _chat_id = (cfg.get("default_chat_id") or "").strip()
+        if str(_chat_id).startswith("${"):
+            _chat_id = ""
+
+    use_native = _truthy_native_table(native_table_card, cfg) and not chart_spec
+    if use_native:
+        from l3_node.channels.lark.md_native_table_card import build_schema_v2_card_from_markdown
+
+        try:
+            _mt = int((os.environ.get("JACHIN_LARK_NATIVE_TABLE_MAX") or "5").strip() or "5")
+        except ValueError:
+            _mt = 5
+        _mt = max(1, min(_mt, 5))
+        v2 = build_schema_v2_card_from_markdown(
+            markdown_content or "",
+            title,
+            max_tables=_mt,
+        )
+        if v2 is not None:
+            if has_webhook:
+                return post_interactive_card_webhook(webhook_url.strip(), v2)
+            if _chat_id:
+                aid, sec = _cfg_app_pair(cfg)
+                ic_kw: dict[str, Any] = {
+                    "receive_id": _chat_id,
+                    "card": v2,
+                    "receive_id_type": "chat_id",
+                    "api_base": api_base,
+                    "http_timeout": 60.0,
+                }
+                if aid and sec:
+                    ic_kw["app_id"] = aid
+                    ic_kw["app_secret"] = sec
+                else:
+                    _inject_env_app_from_cfg_if_missing(cfg)
+                return send_interactive_card(**ic_kw)
+
+    if chart_spec and has_webhook:
         return send_markdown(
             webhook_url=webhook_url.strip(),
             markdown_content=markdown_content,
@@ -93,17 +160,13 @@ def send_lark_markdown(
             chart_spec=chart_spec,
         )
 
-    cfg = _load_atom_lark_notifier_config()
-    api_base = _im_api_base_from_notifier_cfg(cfg)
-    os.environ["LARK_USE_FEISHU"] = (
-        "1" if cfg.get("lark_use_feishu") in (True, "true", "1", "yes") else "0"
-    )
-
-    _chat_id = (chat_id or "").strip()
-    if not _chat_id:
-        _chat_id = (cfg.get("default_chat_id") or "").strip()
-        if str(_chat_id).startswith("${"):
-            _chat_id = ""
+    if has_webhook and not chart_spec:
+        return send_markdown(
+            webhook_url=webhook_url.strip(),
+            markdown_content=markdown_content,
+            title=title,
+            chart_spec=chart_spec,
+        )
 
     if _chat_id:
         aid, sec = _cfg_app_pair(cfg)
@@ -122,13 +185,6 @@ def send_lark_markdown(
             **card_kw,
         )
 
-    if has_webhook and chart_spec:
-        return send_markdown(
-            webhook_url=webhook_url.strip(),
-            markdown_content=markdown_content,
-            title=title,
-            chart_spec=chart_spec,
-        )
     return {
         "status": "error",
         "error": "请配置 default_webhook_url、BI_LARK_WEBHOOK_URL，或在 config 中设置 default_chat_id / BI_LARK_CHAT_ID",

@@ -67,6 +67,8 @@ app_id: "${BI_LARK_APP_ID}"
 app_secret: "${BI_LARK_APP_SECRET}"
 default_chat_id: "${BI_LARK_CHAT_ID}"
 lark_use_feishu: true
+# 含 GFM 表时优先 Schema 2.0 tag:table；显式 false 或 JACHIN_LARK_NATIVE_TABLE_CARD=0 可关闭
+native_table_card: true
 """,
     "atom_email_sender": """# atom_email_sender MCP 配置
 smtp:
@@ -99,10 +101,13 @@ def load_mcp_config(
 ) -> dict[str, Any]:
     """
     加载 MCP 配置。优先 ~/.jachin/config/mcps/{mcp_id}/，若不存在则回退到项目 config/（团队共享）。
+    若已从 ~/.jachin 读取，则将项目 config 中「本地未出现的键」合并进来（团队仓库可维护 defaults，
+    用户 home 覆盖仍优先：同键不覆盖）。
     对字符串值中的 ${VAR} 做环境变量替换。
     """
     import yaml
-    path = get_mcp_config_dir(mcp_id) / config_name
+    home_cfg_path = get_mcp_config_dir(mcp_id) / config_name
+    path = home_cfg_path
     if not path.exists() or not path.is_file():
         # 回退：项目 config（团队共享，config.yaml 已 gitignore）
         if project_root:
@@ -119,6 +124,23 @@ def load_mcp_config(
             else:
                 return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if (
+        project_root
+        and path.resolve() == home_cfg_path.resolve()
+        and isinstance(raw, dict)
+    ):
+        proj_cfg = project_root / "config" / "mcps" / mcp_id / config_name
+        if not proj_cfg.is_file():
+            proj_cfg = project_root / "config" / "mcps" / mcp_id / (config_name + ".example")
+        if proj_cfg.is_file():
+            try:
+                proj_raw = yaml.safe_load(proj_cfg.read_text(encoding="utf-8")) or {}
+                if isinstance(proj_raw, dict):
+                    for k, v in proj_raw.items():
+                        if k not in raw:
+                            raw[k] = v
+            except Exception:
+                pass
     # 递归展开 ${VAR}
     def expand(obj: Any) -> Any:
         if isinstance(obj, dict):

@@ -61,6 +61,17 @@ DEFAULT_SKILL = ROOT / "skills_repo" / "k11-herontest-browser-qa" / "SKILL_P1_MO
 DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 
+def _k11_env_float(key: str, default: float, lo: float, hi: float) -> float:
+    raw = (os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        return default
+    return max(lo, min(hi, v))
+
+
 def _kalaroko_cdp(cli: str | None) -> str:
     raw = (cli or "").strip() or (os.environ.get("KALAROKO_CDP_ENDPOINT") or "").strip()
     if not raw:
@@ -927,6 +938,9 @@ async def _customer_service_click_open_close(
     P1 客服：主文档顶栏/右上打开 → 轮询全部 frame（含 about:blank）点
     svg[data-garden-id="buttons.icon"] 收起 → 兜底顶栏最后键 → Esc。
     """
+    poll_sec = _k11_env_float("K11_P1_CUSTOMER_SERVICE_POLL_SEC", 28.0, 8.0, 90.0)
+    initial_ms = int(_k11_env_float("K11_P1_CUSTOMER_SERVICE_INITIAL_MS", 900.0, 0.0, 8000.0))
+
     ok, cm = await _p1_click_customer_service_top_right(page, log)
     if not ok:
         det = await _customer_service_detect(page)
@@ -937,17 +951,22 @@ async def _customer_service_click_open_close(
         )
     if log:
         log(f"  [诊断·客服] {cm}")
-    await page.wait_for_timeout(500)
+    await page.wait_for_timeout(initial_ms)
 
     saw_widget = False
     closed_ok = False
-    deadline = time.monotonic() + 16.0
+    t_poll0 = time.monotonic()
+    deadline = t_poll0 + poll_sec
     while time.monotonic() < deadline:
         saw_widget = saw_widget or await _p1_frame_has_zendesk_widget(page)
         if await _p1_click_zendesk_garden_close(page, log):
             closed_ok = True
             break
         await asyncio.sleep(0.16)
+    poll_elapsed = time.monotonic() - t_poll0
+    wait_note = (
+        f"（客服：初始等待 {initial_ms / 1000:.1f}s，Garden 关闭轮询 {poll_elapsed:.1f}s / 上限 {poll_sec:.0f}s）"
+    )
 
     if not closed_ok:
         if log:
@@ -968,12 +987,12 @@ async def _customer_service_click_open_close(
         load_note = "已检测到聊天窗特征" if saw_widget else "关闭动作已执行"
         return (
             "PASS",
-            f"{cm}；{load_note}；已通过 Garden svg / 顶栏按钮 / Esc 收起。继续后续用例。",
+            f"{cm}；{load_note}；已通过 Garden svg / 顶栏按钮 / Esc 收起。继续后续用例。{wait_note}",
         )
     return (
         "FAIL",
         f"{cm}；未检测到聊天窗或未点中 "
-        f'svg[data-garden-id="buttons.icon"]（当前 frame 数 {len(page.frames)}）。',
+        f'svg[data-garden-id="buttons.icon"]（当前 frame 数 {len(page.frames)}）。{wait_note}',
     )
 
 
@@ -1259,7 +1278,10 @@ async def _scroll_home_to_bottom(page: Any) -> None:
 
 
 async def _try_click_party_hubs_in_hottest_row(
-    page: Any, *, log: Callable[[str], None] | None = None
+    page: Any,
+    *,
+    log: Callable[[str], None] | None = None,
+    slow_load: bool = False,
 ) -> tuple[bool, str]:
     """「Hottest Parties」标题行与「Party Hubs >」同一块区域（图1 红框）：先滚入视口再点 Hub。"""
     def lg(msg: str) -> None:
@@ -1275,13 +1297,19 @@ async def _try_click_party_hubs_in_hottest_row(
             lg("未找到同时含 Hottest Parties 与 Party Hubs 的容器")
             return False, ""
         box = row.last
-        await box.scroll_into_view_if_needed(timeout=2800)
-        await page.wait_for_timeout(180)
+        t_siv = 5200 if slow_load else 2800
+        t_w = 320 if slow_load else 180
+        t_att = 4000 if slow_load else 2200
+        t_siv2 = 4500 if slow_load else 2500
+        t_clk = 7000 if slow_load else 3500
+        t_post = 1200 if slow_load else 800
+        await box.scroll_into_view_if_needed(timeout=t_siv)
+        await page.wait_for_timeout(t_w)
         hub = box.get_by_text(re.compile(r"Party\s*Hubs", re.I)).last
-        await hub.wait_for(state="attached", timeout=2200)
-        await hub.scroll_into_view_if_needed(timeout=2500)
+        await hub.wait_for(state="attached", timeout=t_att)
+        await hub.scroll_into_view_if_needed(timeout=t_siv2)
         try:
-            await hub.click(timeout=3500, force=True)
+            await hub.click(timeout=t_clk, force=True)
         except Exception:
             await hub.evaluate(
                 """(el) => {
@@ -1296,7 +1324,7 @@ async def _try_click_party_hubs_in_hottest_row(
                   el.click();
                 }"""
             )
-        await page.wait_for_timeout(800)
+        await page.wait_for_timeout(t_post)
         return True, "已点击 Hottest Parties 区块内 Party Hubs"
     except Exception as e:
         lg(f"Hottest 同行：{_brief_exc(e, 180)}")
@@ -1304,21 +1332,27 @@ async def _try_click_party_hubs_in_hottest_row(
 
 
 async def _try_click_party_hubs_link(
-    page: Any, *, log: Callable[[str], None] | None = None
+    page: Any,
+    *,
+    log: Callable[[str], None] | None = None,
+    slow_load: bool = False,
 ) -> tuple[bool, str]:
     """右侧「Party Hubs >」多为 link；优先于整块标题点击。失败策略须短超时，避免 4×4×3s 级联拖分钟。"""
     def lg(msg: str) -> None:
         if log:
             log("  [诊断·PartyHubs] " + msg)
 
-    ok_row, msg_row = await _try_click_party_hubs_in_hottest_row(page, log=log)
+    ok_row, msg_row = await _try_click_party_hubs_in_hottest_row(
+        page, log=log, slow_load=slow_load
+    )
     if ok_row:
         return True, msg_row
 
     # 可见链路与纯文案分支分开超时：无匹配则 count 为 0 立即跳过，不空等 3s
-    t_vis = 1100
-    t_att = 1800
-    t_clk = 3200
+    if slow_load:
+        t_vis, t_att, t_clk = 4000, 5500, 9000
+    else:
+        t_vis, t_att, t_clk = 1100, 1800, 3200
 
     for pat in (
         r"Party\s*Hubs(?:\s*[>›])?",
@@ -1627,7 +1661,16 @@ async def _run_case(
         log("  [诊断·HottestParty] 仅在首页滚底（scrollHeight + End），以露出区块…")
         await _scroll_home_to_bottom(page)
 
-        clicked, cm = await _try_click_party_hubs_link(page, log=log)
+        settle_sec = _k11_env_float("K11_P1_HOTTEST_SETTLE_SEC", 5.0, 0.0, 25.0)
+        verify_ms = int(_k11_env_float("K11_P1_HOTTEST_VERIFY_MS", 5500.0, 2000.0, 20000.0))
+        hottest_click_ms = int(_k11_env_float("K11_P1_HOTTEST_CLICK_MS", 6500.0, 2000.0, 20000.0))
+        hottest_wait_note = f"（热门板块：滚底后等待 {settle_sec:.1f}s）"
+        log(
+            f"  [诊断·HottestParty] 滚底后等待 {settle_sec:.1f}s（env K11_P1_HOTTEST_SETTLE_SEC）再点 Party Hubs…"
+        )
+        await page.wait_for_timeout(int(settle_sec * 1000))
+
+        clicked, cm = await _try_click_party_hubs_link(page, log=log, slow_load=True)
         if not clicked:
             c2, m2 = await _try_click_visible_text(
                 page,
@@ -1638,7 +1681,7 @@ async def _run_case(
                     r"Party\s*Hub",
                     r"热门",
                 ],
-                timeout_ms=2800,
+                timeout_ms=hottest_click_ms,
             )
             if c2:
                 clicked, cm = True, m2
@@ -1659,20 +1702,21 @@ async def _run_case(
                 "FAIL",
                 "「热门 Party 板块」未点到 Party Hubs。"
                 + hint
-                + " 详见 [诊断·PartyHubs] 与 tablist 快照。",
+                + " 详见 [诊断·PartyHubs] 与 tablist 快照。"
+                + hottest_wait_note,
             )
 
         await page.wait_for_timeout(550)
         ok, vm = await _visible_any(
             page,
             list(_P1_PARTY_HUBS_VERIFY_PATTERNS),
-            timeout_ms=2800,
+            timeout_ms=verify_ms,
         )
         if not ok:
             await _p1_leave_party_hubs_after_hottest(page, target_url, log)
             return (
                 "FAIL",
-                f"「热门 Party 板块」已进入（{cm}），但 Party Hubs 页未见典型展示：{vm}",
+                f"「热门 Party 板块」已进入（{cm}），但 Party Hubs 页未见典型展示：{vm}{hottest_wait_note}",
             )
 
         log("  [诊断·HottestParty] 子页展示正常，点击顶栏返回图标离开…")
@@ -1681,7 +1725,7 @@ async def _run_case(
         h_part = f"{home_msg}；" if home_ok else "（Home 未点到仍进入 Hubs）"
         return (
             "PASS",
-            f"「热门 Party 板块」{h_part}{cm}；子页确认：{vm}；已顶栏返回并回大厅。",
+            f"「热门 Party 板块」{h_part}{cm}；子页确认：{vm}；已顶栏返回并回大厅。{hottest_wait_note}",
         )
     if case_id == "p1_party_status":
         await _ensure_on_home_feed(page, target_url, log)

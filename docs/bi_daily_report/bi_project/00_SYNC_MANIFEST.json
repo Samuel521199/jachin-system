@@ -1,10 +1,46 @@
 {
   "output_dir": "D:\\project\\jachin-system-main\\docs\\bi_daily_report\\bi_project",
   "files": [
-    "docs\\bi_daily_report\\bi_project\\01_设计专用_DiSnwVB1.md"
+    "docs\\bi_daily_report\\bi_project\\01_K11 需求池_ZItbw4om.md",
+    "docs\\bi_daily_report\\bi_project\\02_K11 项目进度 04.20_B19Iww8t.md",
+    "docs\\bi_daily_report\\bi_project\\03_设计专用_DiSnwVB1.md",
+    "docs\\bi_daily_report\\bi_project\\04_测试记录_TO3twkDP.md",
+    "docs\\bi_daily_report\\bi_project\\05_发版记录_HS8qw9Xv.md",
+    "docs\\bi_daily_report\\bi_project\\06_游戏问题反馈_FxOlwGQO.md",
+    "docs\\bi_daily_report\\bi_project\\07_平台各链接及操作说明_UVR8wY8N.md",
+    "docs\\bi_daily_report\\bi_project\\08_平台问题反馈_XlUMwIbP.md",
+    "docs\\bi_daily_report\\bi_project\\09_平台近期工作计划0813-0829_RqskwRfZ.md",
+    "docs\\bi_daily_report\\bi_project\\10_本地化翻译优化_ZxpDw9yM.md",
+    "docs\\bi_daily_report\\bi_project\\11_0.2结版方案-7.29_E4ZbwlNd.md",
+    "docs\\bi_daily_report\\bi_project\\12_第二期优化方案_IPJLw1LB.md",
+    "docs\\bi_daily_report\\bi_project\\13_待讨论问题_CvGfw6dS.md",
+    "docs\\bi_daily_report\\bi_project\\14_包体优化任务文档_JfyTwbuQ.md",
+    "docs\\bi_daily_report\\bi_project\\15_K11正式服账号_YyjEwhK6.md",
+    "docs\\bi_daily_report\\bi_project\\16_bundle修改前后大小表_BrC4wrJi.md",
+    "docs\\bi_daily_report\\bi_project\\17_资源优化任务协作分工状态及处理后数据汇总_X0OgwYvI.md"
   ],
   "errors": [],
   "nodes": [
+    {
+      "title": "K11 需求池",
+      "node_token": "ZItbw4omRi6Sbsksb6jlwYq8gYq",
+      "obj_type": "bitable",
+      "obj_token": "UyjbbTZd9a2RaDsnuBSl9obwgUb",
+      "space_id": "7511668436745863206",
+      "source": "seed",
+      "depth": 0,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq?table=ldxeuHgiN5L2gXBH"
+    },
+    {
+      "title": "K11 项目进度 04.20",
+      "node_token": "B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "obj_type": "bitable",
+      "obj_token": "RLRQbNrAeaRssusBz8IlMxYTg3b",
+      "space_id": "7511668436745863206",
+      "source": "seed",
+      "depth": 0,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
     {
       "title": "设计专用",
       "node_token": "DiSnwVB1OiDvPWkk0W9lzx6AgLd",
@@ -14,6 +50,146 @@
       "source": "seed",
       "depth": 0,
       "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1"
+    },
+    {
+      "title": "测试记录",
+      "node_token": "TO3twkDP3iPlBJklCHwln4FSgSc",
+      "obj_type": "bitable",
+      "obj_token": "RKIybp1vKapvijsGSmMluxtBgNg",
+      "space_id": "7511668436745863206",
+      "source": "seed",
+      "depth": 0,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/TO3twkDP3iPlBJklCHwln4FSgSc?table=tblsd9jtoIMhIskf&view=vewPvbGgis"
+    },
+    {
+      "title": "发版记录",
+      "node_token": "HS8qw9XvDiN7u3kolkOlEplCgvb",
+      "obj_type": "sheet",
+      "obj_token": "INpfsbAj0he0ArtsqxJluQyvgXB",
+      "space_id": "7511668436745863206",
+      "source": "seed",
+      "depth": 0,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/HS8qw9XvDiN7u3kolkOlEplCgvb?sheet=3045da"
+    },
+    {
+      "title": "游戏问题反馈",
+      "node_token": "FxOlwGQOniz5H2k5qiYl4Fzgggb",
+      "obj_type": "sheet",
+      "obj_token": "MXjUsHnERhhu0OtcQbNltwVIgug",
+      "space_id": "7511668436745863206",
+      "source": "seed",
+      "depth": 0,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/FxOlwGQOniz5H2k5qiYl4Fzgggb?sheet=eIdFLx"
+    },
+    {
+      "title": "平台各链接及操作说明",
+      "node_token": "UVR8wY8NUiyItnkA5dal4De7gUh",
+      "obj_type": "docx",
+      "obj_token": "B4emdSjTvoFOXWxvOgKlCmG2gpf",
+      "space_id": "7511668436745863206",
+      "source": "seed",
+      "depth": 0,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/UVR8wY8NUiyItnkA5dal4De7gUh"
+    },
+    {
+      "title": "平台问题反馈",
+      "node_token": "XlUMwIbPFib0mQk57VLlNZuZgmh",
+      "obj_type": "sheet",
+      "obj_token": "BZ0wsk7lYhuGiUtP8Abll1O8gSc",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "平台近期工作计划0813-0829",
+      "node_token": "RqskwRfZQiBFHlkVkcUl99QAg2d",
+      "obj_type": "docx",
+      "obj_token": "WtikdQ9Yvo1jTTxsOvjl1sRagZg",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "本地化翻译优化",
+      "node_token": "ZxpDw9yM0iRN4okQyDblCxASgQY",
+      "obj_type": "docx",
+      "obj_token": "QMgEdi16toHcGnxc3TslXbGYgtv",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "0.2结版方案-7.29",
+      "node_token": "E4ZbwlNdDiUGZqkBvF5lZebWg1g",
+      "obj_type": "docx",
+      "obj_token": "OOUjd7XB6ounDrxUVmulzBvOgOe",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "第二期优化方案",
+      "node_token": "IPJLw1LBTiZIsiki5beloCOWgEh",
+      "obj_type": "docx",
+      "obj_token": "AvZPdJ7DsomMAVx4QWBlCSnEgpX",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "待讨论问题",
+      "node_token": "CvGfw6dSLi7DS8kqXn7layLugxc",
+      "obj_type": "docx",
+      "obj_token": "KSgpdHa9ioFY7uxITA2lQgjvgLb",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "包体优化任务文档",
+      "node_token": "JfyTwbuQvijuAUkYZ5QlpQPighh",
+      "obj_type": "bitable",
+      "obj_token": "P9CEb53hbaUNrNsb0o4lsdCIgNh",
+      "space_id": "7511668436745863206",
+      "source": "child_of:B19Iww8tBiXZqfky1hhlIZ6kg0P",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "K11正式服账号",
+      "node_token": "YyjEwhK6oiWyEak7DxPlGOM7gpg",
+      "obj_type": "sheet",
+      "obj_token": "TB0isqyzLhCXOQtLkf8lKAVTgph",
+      "space_id": "7511668436745863206",
+      "source": "child_of:TO3twkDP3iPlBJklCHwln4FSgSc",
+      "depth": 1,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/TO3twkDP3iPlBJklCHwln4FSgSc?table=tblsd9jtoIMhIskf&view=vewPvbGgis"
+    },
+    {
+      "title": "bundle修改前后大小表",
+      "node_token": "BrC4wrJi8iKNIIkOvpilCkQfgWd",
+      "obj_type": "bitable",
+      "obj_token": "Uy93bndIraOehIsRLbJlOLI6grh",
+      "space_id": "7511668436745863206",
+      "source": "child_of:JfyTwbuQvijuAUkYZ5QlpQPighh",
+      "depth": 2,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
+    },
+    {
+      "title": "资源优化任务协作分工状态及处理后数据汇总",
+      "node_token": "X0OgwYvIBiLFPKk3YCklY6jpg0e",
+      "obj_type": "docx",
+      "obj_token": "ZNmFdDZwGo78jwxzspwlCyJsgSf",
+      "space_id": "7511668436745863206",
+      "source": "child_of:JfyTwbuQvijuAUkYZ5QlpQPighh",
+      "depth": 2,
+      "seed_url": "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw"
     }
   ]
 }

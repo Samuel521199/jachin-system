@@ -16,12 +16,16 @@ PMO-Copilot：CLI「一句话点火」—— 进程内拉起 L3 LiteLLM 引擎�
   python scripts/run_pmo_copilot_skill.py
   python scripts/run_pmo_copilot_skill.py -m "执行分支 A：定时宏观看板……"
 
+每次运行会在 ``%USERPROFILE%\\.jachin\\jachin_debug\\健康skill\\pmo_copilot_YYYYMMDD_HHMMSS.txt``
+写入 **仅落盘** 的调试摘要（抓取 URL、ReAct 步骤、Observation 节选、是否调 Lark）；不在控制台打印该内容。
+
 前置：``.env`` 中 LLM Key；飞书播报依赖 ``atom_lark_notifier`` 的 MCP 配置（``config/mcps/atom_lark_notifier/config.yaml`` 或 ``~/.jachin/config/...``），与 ``python -m l3_node`` 一致——**无需在本脚本写 Lark 变量**。
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import logging
 import os
 import re
@@ -49,9 +53,58 @@ except ImportError:
 DEFAULT_SKILL = ROOT / "skills_repo" / "pmo-copilot" / "SKILL.md"
 
 DEFAULT_MESSAGE = (
-    "请严格按系统提示中的 PMO-Copilot SKILL：按「分支 A / 定时宏观看板」拉取 §1.1 三张主表并汇总；"
+    "请严格按系统提示中的 PMO-Copilot SKILL：按「分支 A / 定时宏观看板」拉取 §1.1 全部种子链接并汇总"
+    "（含开发表 tblfK9… 的多个 view，须一次或分批 atom_bi_project_context 全覆盖）；"
     "若需推送则用 mcp:atom_lark_notifier 发 Markdown。"
 )
+
+
+def _pmo_debug_log_dir() -> Path:
+    """~/.jachin/jachin_debug/健康skill（例：C:\\Users\\Samuel\\.jachin\\jachin_debug\\健康skill）。"""
+    return Path.home() / ".jachin" / "jachin_debug" / "健康skill"
+
+
+def _open_pmo_file_debug(path: Path, *, correlation_id: str, user_msg: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    path.write_text(
+        "\n".join(
+            [
+                "PMO-Copilot / run_pmo_copilot_skill.py — 文件调试日志（以下不写入控制台）",
+                f"生成时间: {ts}",
+                f"correlation_id: {correlation_id}",
+                f"调试文件路径: {path}",
+                "",
+                "【本文件说明】",
+                "1) 抓取哪个地址：见各轮「ACTION 完整输入」中解析出的 wiki_urls；若无则可能走 MCP 内置默认 URL。",
+                "2) 执行流程：下方「on_step」时间线 + L3 写入的 ACTION / OBSERVATION 大块。",
+                "3) 如何综合成看板：对照各轮 thought 与 bi_project 的 OBSERVATION（manifest / 路径 / 摘要）。",
+                "4) 是否真实发 Lark：见 atom_lark_notifier 的 ACTION 摘要与 OBSERVATION 的 status。",
+                "",
+                "【用户输入】",
+                user_msg,
+                "",
+                "=" * 72,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _make_pmo_on_step_writer(debug_path: Path):
+    def _on_step(step_type: str, content: str, run_id: str) -> None:
+        try:
+            clip = (content or "").strip()
+            lim = 1200
+            if len(clip) > lim:
+                clip = clip[:lim] + f"\n... [on_step 截断，总长度 {len(content)}]"
+            with open(debug_path, "a", encoding="utf-8") as f:
+                f.write(f"\n>>> on_step [{step_type}] run_id={run_id[:12]}…\n{clip}\n")
+        except OSError:
+            pass
+
+    return _on_step
 
 
 def parse_skill_md(raw: str) -> tuple[dict[str, Any], str]:
@@ -126,6 +179,38 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     user_msg = (args.message or "").strip() or DEFAULT_MESSAGE
 
+    _debug_dir = _pmo_debug_log_dir()
+    _file_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _debug_path = _debug_dir / f"pmo_copilot_{_file_ts}.txt"
+    _prev_pmo_log_env = os.environ.get("JACHIN_PMO_COPILOT_DEBUG_LOG")
+    os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = str(_debug_path.resolve())
+
+    try:
+        return await _async_main_inner(
+            args,
+            user_msg,
+            _debug_path,
+            base_allow,
+            skill_path,
+            meta,
+            skill_body,
+        )
+    finally:
+        if _prev_pmo_log_env is not None:
+            os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = _prev_pmo_log_env
+        else:
+            os.environ.pop("JACHIN_PMO_COPILOT_DEBUG_LOG", None)
+
+
+async def _async_main_inner(
+    args: argparse.Namespace,
+    user_msg: str,
+    _debug_path: Path,
+    base_allow: list[str],
+    skill_path: Path,
+    meta: dict[str, Any],
+    skill_body: str,
+) -> int:
     from l3_node.intent_gateway.bundle import build_gateway_bundle
     from l3_node.primitives.tools.tool_pool import (
         assemble_tool_pool,
@@ -134,6 +219,7 @@ async def _async_main(args: argparse.Namespace) -> int:
     )
 
     correlation_id = str(uuid.uuid4())
+    _open_pmo_file_debug(_debug_path, correlation_id=correlation_id, user_msg=user_msg)
     implicit = {"channel": "pmo_copilot_cli", "source": "run_pmo_copilot_skill.py"}
     log = logging.getLogger("run_pmo_copilot_skill")
     bundle = build_gateway_bundle(
@@ -210,6 +296,7 @@ async def _async_main(args: argparse.Namespace) -> int:
     from l3_node.agent_core import run_agent
 
     mi = max(1, min(int(args.max_iterations), 64))
+    _pmo_step = _make_pmo_on_step_writer(_debug_path)
     ans = await run_agent(
         user_msg,
         engine,
@@ -218,7 +305,20 @@ async def _async_main(args: argparse.Namespace) -> int:
         _system_prompt_override=full_system,
         gateway_context_bundle=bundle,
         implicit_attribution=implicit,
+        on_step=_pmo_step,
     )
+    try:
+        with open(_debug_path, "a", encoding="utf-8") as _df:
+            _df.write(
+                "\n"
+                + "=" * 72
+                + "\n### 本轮 Final Answer（控制台也会打印）\n\n"
+                + (ans or "").strip()
+                + "\n"
+            )
+    except OSError:
+        pass
+
     print("\n--- Final Answer ---\n", (ans or "").strip())
     await asyncio.sleep(0.5)
     return 0

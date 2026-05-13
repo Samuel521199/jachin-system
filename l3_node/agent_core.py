@@ -747,6 +747,109 @@ def _reject_workspace_writeback_missing_guard(
     return True
 
 
+def _pmo_lark_push_guard_channel_active(ctx: PipelineContext) -> bool:
+    """PMO-Copilot CLI 或网关注入 PMO Skill 时启用「禁止谎称已发飞书」守卫。"""
+    ch = str(ctx.metadata.get("_implicit_channel") or "").strip()
+    if ch == "pmo_copilot_cli":
+        return True
+    inj = str(ctx.metadata.get("_gw_inject_stored") or "")
+    return "PMO-Copilot" in inj or "pmo-copilot-enterprise" in inj
+
+
+def _lark_notifier_observation_suggests_success(observation_full: str) -> bool:
+    """atom_lark_notifier / send_lark_markdown 典型返回 {\"status\": \"success\", ...}。"""
+    s = str(observation_full or "").strip()
+    if not s:
+        return False
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict) and str(obj.get("status") or "").lower() == "success":
+            return True
+    except json.JSONDecodeError:
+        pass
+    compact = s.replace(" ", "")
+    return "飞书已送达" in s and '"status"' in compact and "error" not in s[:400].lower()
+
+
+def _pmo_final_answer_falsely_claims_lark_sent(ans: str) -> bool:
+    """Final Answer 口头声称已发飞书/群，用于拦截未调 notifier 的幻觉。"""
+    s = str(ans or "").strip()
+    if not s:
+        return False
+    if re.search(
+        r"(未成功|发送失败|未能发送|无法发送|未调用|跳过.{0,6}推送|notifier.*失败|"
+        r"status[\"']?\s*:\s*[\"']?error|\"status\"\s*:\s*\"error\")",
+        s,
+        re.I,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"(已成功|已经).{0,40}(飞书|发送|送达|群聊)|"
+            r"通过飞书.{0,24}发送|"
+            r"发到(了)?指定群|"
+            r"发往.{0,12}群|"
+            r"卡片已发.{0,12}群|"
+            r"飞书.{0,16}成功|"
+            r"已发(?:往|送).{0,8}(?:群|飞书)",
+            s,
+        )
+    )
+
+
+def _reject_pmo_false_lark_sent_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """
+    PMO 场景：禁止未调用 atom_lark_notifier 成功却在 Final Answer 中声称已推送飞书。
+    返回 True 表示已注入 user 纠偏消息，外层须 continue。
+    """
+    if not _pmo_lark_push_guard_channel_active(ctx):
+        return False
+    if ctx.metadata.get("_pmo_atom_lark_notify_ok"):
+        return False
+    if not _pmo_final_answer_falsely_claims_lark_sent(ans):
+        return False
+    try:
+        n = int(ctx.metadata.get("_pmo_false_lark_sent_guard_count") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 4:
+        logger.warning(
+            "[L3 Agent][PMO 飞书校验] trace=%s via=%s 纠偏已达 %s 次，停止拦截",
+            str(ctx.metadata.get("_react_step_trace") or ""),
+            via,
+            n,
+        )
+        return False
+    ctx.metadata["_pmo_false_lark_sent_guard_count"] = n + 1
+    logger.warning(
+        "[L3 Agent][PMO 飞书校验] trace=%s via=%s Final Answer 声称已发飞书但未记录 notifier 成功，已注入纠偏",
+        str(ctx.metadata.get("_react_step_trace") or ""),
+        via,
+    )
+    messages.append({"role": "assistant", "content": response})
+    messages.append({
+        "role": "user",
+        "content": (
+            "【系统校验·PMO】你的 Final Answer 声称已通过飞书/群发报送，但本轮 **尚未**出现 "
+            "`mcp:atom_lark_notifier` 的成功 Observation（应含 `\"status\": \"success\"` 或「飞书已送达」）。\n"
+            "**禁止**在未调用该工具的情况下声称已推送。\n"
+            "请立即输出 ReAct（勿写 Final Answer）：\n"
+            "Thought: …\n"
+            "Action: mcp:atom_lark_notifier\n"
+            "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`（SKILL §1.3）。\n"
+            "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若推送失败须在 Final Answer **如实**写明 error，不得写已成功。"
+        ),
+    })
+    return True
+
+
 def _reject_ungrounded_sqlite_final_answer(
     ctx: PipelineContext,
     messages: list[dict[str, Any]],
@@ -4251,6 +4354,8 @@ async def _run_react_core(
     ctx.metadata["_react_did_workspace_read"] = False
     ctx.metadata["_react_did_workspace_write"] = False
     ctx.metadata.pop("_react_writeback_guard_retry_done", None)
+    ctx.metadata.pop("_pmo_atom_lark_notify_ok", None)
+    ctx.metadata.pop("_pmo_false_lark_sent_guard_count", None)
     ctx.metadata["_react_tool_invocations"] = 0
     try:
         from l3_node.primitives.mcp.registry import clear_last_add_automated_recruitment_task_payload
@@ -5009,6 +5114,10 @@ async def _run_react_core(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
+                            if _reject_pmo_false_lark_sent_guard(
+                                ctx, messages, response, ans, via="parsed_none+final_prefix"
+                            ):
+                                continue
                             _emit("answer", ans)
                             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
                             messages.append({"role": "assistant", "content": response})
@@ -5178,6 +5287,8 @@ async def _run_react_core(
             if _reject_workspace_writeback_missing_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
             if _reject_ungrounded_sqlite_final_answer(ctx, messages, response, ans, via="type=answer"):
+                continue
+            if _reject_pmo_false_lark_sent_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
             _emit("answer", ans)
             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
@@ -5537,6 +5648,17 @@ async def _run_react_core(
                     logger.debug("[L3 Agent] write_file path 推断跳过: %s", _wpe)
             _emit("action", f"{tool} {inp[:200]}{'...' if len(inp or '') > 200 else ''}".strip())
             try:
+                from l3_node.pmo_copilot_debug_file import append_pmo_debug_action
+
+                append_pmo_debug_action(
+                    tool=str(tool or ""),
+                    inp=str(inp or ""),
+                    iteration=iteration,
+                    run_id=str(ctx.run_id or ""),
+                )
+            except Exception:
+                pass
+            try:
                 from l3_node.terminal_turn_debug_log import log_tool_call_full
 
                 log_tool_call_full(
@@ -5778,6 +5900,12 @@ async def _run_react_core(
                 logger.debug("[L3 Agent] observation_dedup 跳过: %s", _ode)
             observation_full = _maybe_shrink_shell_exec_observation(str(observation or ""), tool)
             try:
+                if (tool or "").replace("mcp:", "").strip() == "atom_lark_notifier":
+                    if _lark_notifier_observation_suggests_success(observation_full):
+                        ctx.metadata["_pmo_atom_lark_notify_ok"] = True
+            except Exception:
+                pass
+            try:
                 _react_mark_workspace_io_flags(ctx, tool, observation_full)
             except Exception as _mwf:
                 logger.debug("[L3 Agent] _react_mark_workspace_io_flags 跳过: %s", _mwf)
@@ -5803,6 +5931,17 @@ async def _run_react_core(
                     observation_full,
                     sent_to_llm_len=len(observation or ""),
                     truncated_from_len=len(observation_full),
+                )
+            except Exception:
+                pass
+            try:
+                from l3_node.pmo_copilot_debug_file import append_pmo_debug_observation
+
+                append_pmo_debug_observation(
+                    tool=str(tool or ""),
+                    observation_full=str(observation_full or ""),
+                    iteration=iteration,
+                    run_id=str(ctx.run_id or ""),
                 )
             except Exception:
                 pass

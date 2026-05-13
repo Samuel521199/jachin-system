@@ -432,8 +432,8 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:atom_lark_notifier",
         "label": "mcp:atom_lark_notifier",
-        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title，发送 Markdown 消息。",
-        "params": ["webhook_url", "markdown_content", "title", "chat_id"],
+        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title；可选 native_table_card=true 且正文含 GFM 表格时，改为发送 Schema 2.0 原生 table 卡片（否则单块 lark_md）。",
+        "params": ["webhook_url", "markdown_content", "title", "chat_id", "native_table_card"],
         "long_running": True,
     },
     {
@@ -973,15 +973,27 @@ def _invoke_atom_lark_notifier_local(
     markdown_content: str = "",
     title: str = "",
     chat_id: str = "",
+    native_table_card: Any = None,
 ) -> str:
     """L3 本地执行 atom_lark_notifier，路由到 l3_node.primitives.mcp.mcp_tools.bi.tool_lark_notifier。"""
     try:
         from l3_node.primitives.mcp.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
+
+        _nt = native_table_card
+        if _nt is not None and not isinstance(_nt, bool):
+            s = str(_nt).strip().lower()
+            if s in ("1", "true", "yes", "on"):
+                _nt = True
+            elif s in ("0", "false", "no", "off", ""):
+                _nt = False
+            else:
+                _nt = None
         result = send_lark_markdown(
             webhook_url=webhook_url or "",
             markdown_content=markdown_content or "",
             title=title or None,
             chat_id=chat_id or None,
+            native_table_card=_nt if isinstance(_nt, bool) else None,
         )
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
@@ -2394,6 +2406,7 @@ class MCPToolRegistry:
                     markdown_content=arguments.get("markdown_content", ""),
                     title=arguments.get("title", ""),
                     chat_id=arguments.get("chat_id", ""),
+                    native_table_card=arguments.get("native_table_card"),
                 )
             if raw_name == "atom_email_sender":
                 return await asyncio.to_thread(
