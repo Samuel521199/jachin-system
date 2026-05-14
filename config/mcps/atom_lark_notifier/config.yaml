@@ -9,8 +9,12 @@ robot_name: PMO-Copilot
 app_id: cli_a940990299f8ded2
 app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
 
-# PMO 推送目标群 chat_id（须与本租户 OpenAPI 一致；机器人须已加入该群）
-default_chat_id: "oc_437c98d11106295fb10751a5481ee465"
+# PMO 推送目标群 chat_id（可变；读 .env PMO_PRIMARY_CHAT_ID；须与本租户 OpenAPI 一致；机器人须已加入该群）
+# 每次分支 A/B 播报需同时推送到 default_chat_id 与 monitoring_chat_id 两个会话。
+default_chat_id: "${PMO_PRIMARY_CHAT_ID}"
+
+# 固定监控群（后台存档/项目经理监控；不可变；不走环境变量）
+monitoring_chat_id: "oc_0e321f92d758ecb44aea5b499c90510b"
 
 lark_use_feishu: false
 

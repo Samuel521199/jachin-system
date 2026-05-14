@@ -34,6 +34,65 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ─── 安抚消息：方案B（qwen-turbo 意图摘要）+ 方案A 兜底 ─────────────────────────
+
+def _quick_task_summary(user_input: str, timeout_sec: float = 2.0) -> str:
+    """
+    用 qwen-turbo 在 timeout_sec 秒内生成 ≤15 字的任务意图描述。
+    超时或失败返回空字符串，调用方降级到截取原文。
+    """
+    import os
+    try:
+        from core.brain.llm.dashscope_regional import get_dashscope_regional_credentials
+        api_key, api_base = get_dashscope_regional_credentials()
+    except Exception:
+        api_key = (
+            os.environ.get("DASHSCOPE_API_KEY_SEA")
+            or os.environ.get("DASHSCOPE_API_KEY")
+            or ""
+        )
+        region = os.environ.get("JACHIN_ACTIVE_REGION", "CN").upper()
+        api_base = (
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+            if region == "SEA"
+            else "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+    if not api_key:
+        return ""
+
+    prompt = (
+        f"用15字以内描述以下消息的核心任务，只输出描述本身，不要解释或加标点：\n{user_input[:200]}"
+    )
+    try:
+        import litellm
+        resp = litellm.completion(
+            model="dashscope/qwen-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=20,
+            temperature=0.0,
+            timeout=timeout_sec,
+            api_key=api_key,
+            api_base=api_base,
+        )
+        return (resp.choices[0].message.content or "").strip()[:30]
+    except Exception as e:
+        logger.debug("[IM Dispatcher] 意图摘要 qwen-turbo 失败（降级截字）: %s", e)
+        return ""
+
+
+def _build_ack_message(user_input: str, summary: str) -> str:
+    """用意图摘要或截取原文构造安抚消息。"""
+    if summary:
+        return f"🤖 正在{summary}，请稍候…（复杂任务约需 1-2 分钟）"
+    snip = user_input.strip()
+    if len(snip) > 50:
+        snip = snip[:50] + "…"
+    return f"🤖 正在处理：「{snip}」，请稍候…（复杂任务约需 1-2 分钟）"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 # 线程池：Agent 工作在此执行，不阻塞 Lark WebSocket 线程
 _AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="im-agent")
 # 按 chat_id 串行化，避免同一会话并发导致 session 损坏
@@ -292,6 +351,8 @@ def _do_agent_work(
                     _iatt = {"channel": "lark_im_dispatcher"}
                     if cid:
                         _iatt["lark_chat_id"] = str(cid).strip()
+                    if user_id:
+                        _iatt["lark_user_id"] = str(user_id).strip()
                     future = asyncio.run_coroutine_threadsafe(
                         run_agent_fn(
                             intent,
@@ -301,8 +362,31 @@ def _do_agent_work(
                         ),
                         loop,
                     )
-                    reply = future.result(timeout=timeout)
-                    turn_status = "ok"
+                    # 延时安抚：12 秒后若 Agent 仍未返回，自动发送一条智能安抚消息
+                    # 快速任务（<12s）用户直接收到答案，不会被多余消息打扰
+                    _ack_cancelled = threading.Event()
+
+                    def _delayed_ack() -> None:
+                        if _ack_cancelled.is_set() or not cid:
+                            return
+                        try:
+                            _summary = _quick_task_summary(intent, timeout_sec=2.0)
+                            _ack = _build_ack_message(intent, _summary)
+                            send_reply_fn(cid, _ack)
+                        except Exception as _ae:
+                            logger.debug("[IM Dispatcher] 延时安抚发送失败: %s", _ae)
+
+                    _ACK_DELAY_SEC = 12.0
+                    _ack_timer = threading.Timer(_ACK_DELAY_SEC, _delayed_ack)
+                    _ack_timer.daemon = True
+                    _ack_timer.start()
+                    try:
+                        # 不设超时：Agent 跑多久都等；结果通过 send_reply_fn 直连 API 推回主群
+                        reply = future.result(timeout=None)
+                        turn_status = "ok"
+                    finally:
+                        _ack_cancelled.set()
+                        _ack_timer.cancel()
             except TimeoutError:
                 reply = "处理超时，请稍后重试。"
                 turn_status = "timeout"

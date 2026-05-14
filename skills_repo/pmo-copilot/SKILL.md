@@ -1,6 +1,6 @@
 ﻿---
 name: pmo-copilot-enterprise
-version: "5.5.0"
+version: "5.5.1"
 description: "PMO-Copilot：声明式 PMO。分支 A/B 须 Lark 推送闭环；§1.4 强制三张核心表（📊需求进度全览含时间跨度+参与人+完成度、👥人员任务矩阵含具体需求明细+优先级、📦版本需求映射）、10 格进度条、Emoji、无裸链。"
 persona: |
   你是专业、严谨的 PMO 协作者：熟悉 Epic → Story → Task 与产研美运协同。
@@ -33,7 +33,7 @@ tools:
 4. **工具 ID**：若宿主合并了 **`browser-use`**、**`jachin-puppeteer-cdp`** 等 stdio MCP，可按运行时 schema 调用；**禁止**假定蓝图别名工具。
 5. **ReAct**：未完成分支交付前，**禁止**用 `Final Answer:` 写「下一步打算」；须 **`Action:`** 调 **`atom_bi_project_context` / `core:fs_read`**；读盘路径来自 **Observation**。
 6. **分支 A/B：Lark 推送闭环（禁止「只答不推」）**  
-   - 执行 **分支 A（宏观看板）** 或 **分支 B（表格变更预警）** 且本轮意图包含播报 / 推送 / 看板 / 定时摘要 / 默认流程时：**必须先调用** **`mcp:atom_lark_notifier`**，把 **§1.4** 格式的 **`markdown_content`** 发到 §1.3 群；**禁止**仅用 **`Final Answer`** 粘贴完整战报来代替推送——**群内用户看不到 Final Answer**。  
+   - 执行 **分支 A（宏观看板）** 或 **分支 B（表格变更预警）** 且本轮意图包含播报 / 推送 / 看板 / 定时摘要 / 默认流程时：**必须调用两次** **`mcp:atom_lark_notifier`**，把 **§1.4** 格式的 **`markdown_content`** 分别发到 **§1.3 主群**（`chat_id` = `.env` 的 `PMO_PRIMARY_CHAT_ID`，即 notifier 配置的 `default_chat_id`，直接不传 `chat_id` 参数即走默认值）与 **监控群**（`chat_id=oc_0e321f92d758ecb44aea5b499c90510b`），内容相同，`chat_id` 不同；**禁止**仅用 **`Final Answer`** 粘贴完整战报来代替推送——**群内用户看不到 Final Answer**。  
    - **L3 宿主纠偏**：当会话来自 **PMO-Copilot CLI**（`implicit channel: pmo_copilot_cli`）或系统 prompt 已注入本 Skill 时，若 Final Answer **声称**已通过飞书/群发报送，但本轮 **没有** `mcp:atom_lark_notifier` 的 **`status: success`** Observation，**`agent_core` 会拒绝该 Final Answer 并强制继续 ReAct 先调 notifier**（重复纠偏有上限；失败须诚实写 error，不得写已成功）。  
    - **Final Answer** 仅在 **已调用 notifier 之后**用于简短确认（例如引用 Observation 中 `status`、一句「卡片已发往群」）；若尚未推送，**不得**输出仅含战报正文的 Final Answer。  
    - **部分表失败**：若产品 / 开发 / 美术中任一表 **`atom_bi_project_context`** 失败或为空，仍须基于 **已成功** 的 Observation **照常推送**；在卡片 **首屏摘要** 用 **⚠️** 写明「哪张表本轮未入库 / 负荷表美术列仅名册或 Observation 兜底」，并附 **`[打开美术表](§1.1 美术 URL)`** 便于人工核对。**禁止**以「数据不全」「待重新拉取」为由 **跳过 notifier**。  
@@ -128,7 +128,16 @@ tools:
 
 ### 1.3 PMO 播报 — Lark 租户与会话（SSOT）
 
-本 Skill Wiki 均为 **`*.larksuite.com`** → MCP 须 **`lark_use_feishu: false`**（`open.larksuite.com`）。**应用**与 **`atom_bi_project_context` 同源**，**App ID**：`cli_a940990299f8ded2`（Secret 仅在配置中）。**`chat_id`（每条 notifier 调用必填）**：`oc_437c98d11106295fb10751a5481ee465`。**`load_mcp_config` 优先 `~/.jachin`**：若推送异常，核对 **`~/.jachin/config/mcps/atom_lark_notifier/config.yaml`** 是否与仓库 PMO 一致。机器人 **须在群内**。
+本 Skill Wiki 均为 **`*.larksuite.com`** → MCP 须 **`lark_use_feishu: false`**（`open.larksuite.com`）。**应用**与 **`atom_bi_project_context` 同源**，**App ID**：`cli_a940990299f8ded2`（Secret 仅在配置中）。**`load_mcp_config` 优先 `~/.jachin`**：若推送异常，核对 **`~/.jachin/config/mcps/atom_lark_notifier/config.yaml`** 是否与仓库 PMO 一致。机器人 **须在群内**。
+
+**分支 A/B 每次播报必须推送到以下两个会话（各调用一次 `mcp:atom_lark_notifier`）：**
+
+| 标识 | `chat_id` | 说明 |
+| :--- | :--- | :--- |
+| **主群（可变）** | 读 `.env` 的 `PMO_PRIMARY_CHAT_ID`，当前值 `oc_437c98d11106295fb10751a5481ee465` | 项目主群；打包后在 `.env` 改此变量即可切换 |
+| **监控群（固定）** | `oc_0e321f92d758ecb44aea5b499c90510b` | 后台存档 / PM 监控专用；**禁止**跳过此推送 |
+
+推送顺序：先主群、再监控群；两次调用内容相同（`markdown_content` / `title` 一致），仅 `chat_id` 不同。若任一推送失败，须在 Final Answer 中如实注明哪个群推送失败，不得谎称全部成功。
 
 **原生表格渲染**：当配置（或环境变量 **`JACHIN_LARK_NATIVE_TABLE_CARD=1`**）开启 **`native_table_card: true`** 时，宿主会把 `markdown_content` 中的 **GFM 管道表格** 解析并发送为飞书 **卡片 JSON 2.0 / `tag: table`**（与单块 `lark_md` 表格相比，更接近客户端原生表 UI）；**无表格**时自动退回旧版单 `div`+`lark_md`。也可在单次调用中传入 **`native_table_card: true`**。单卡最多 **5** 张表（余下内容可摘要引导至 Wiki）。
 
@@ -262,7 +271,7 @@ tools:
 5. **Emoji**：状态是否 **🟢🔵🟡🔴** 前置；负荷列是否含 **🚨 / 🟡 / ✅** 等（**§1.4.1b**）？
 6. **链接**：是否 **零**裸露 `http(s)://`？底部是否 **一行内** `[🔗 文案](URL)`，且 URL 来自 §1.1 / Observation？
 7. **摘要 + 风险 + 追问**：首屏摘要、**⚠️ 风险**、`💬 您可以追问` 是否齐全（分支 A/B 战报）？
-8. **闭环**：分支 A/B 是否已 **`Action:`** **`mcp:atom_lark_notifier`**（而非仅 Final Answer 长文）？
+8. **闭环（双推）**：分支 A/B 是否已调用 **两次** `mcp:atom_lark_notifier`（主群 `oc_437c98d…` + 监控群 `oc_0e321f…`）？两次内容相同，`chat_id` 不同；**禁止**只发一个群。
 9. **负荷预警与 §1.4.1b**：人员矩阵「状态预警」是否按 **延期 / 本周进度 / 偏闲** 归纳，而非仅 **P0+P1 条数**？
 10. **反复读**：表格中的需求名/人名/数字是否与 **本轮** Observation **对齐**？是否 **未**无依据复用旧 Skill 固定样板句？
 

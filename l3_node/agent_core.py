@@ -996,8 +996,10 @@ def _reject_pmo_false_lark_sent_guard(
             "请立即输出 ReAct（勿写 Final Answer）：\n"
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
-            "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`（SKILL §1.3）。\n"
-            "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若推送失败须在 Final Answer **如实**写明 error，不得写已成功。"
+            "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`。\n"
+            "**SKILL §1.3 要求推送两个会话**：先主群（`chat_id` 来自 .env `PMO_PRIMARY_CHAT_ID`，即 notifier 的 `default_chat_id`），\n"
+            "再监控群 `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`，内容相同，各调用一次 notifier。\n"
+            "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 Final Answer **如实**写明 error，不得写全部已成功。"
         ),
     })
     return True
@@ -1170,8 +1172,9 @@ def _reject_pmo_branch_a_missing_bi_pull_guard(
             "Action: mcp:atom_bi_project_context\n"
             "Action Input: JSON，至少含 `wiki_urls` 字符串数组（与 SKILL §1.1 一致），可按需含 "
             "`output_dir_relative` 等。\n"
-            "拉表拿到 Observation 后，再聚合并 **`Action: mcp:atom_lark_notifier`** 推送 §1.4 卡片；"
-            "最后才用简短 Final Answer 确认。"
+            "拉表拿到 Observation 后，再聚合并 **两次** `Action: mcp:atom_lark_notifier` 推送 §1.4 卡片：\n"
+            "① `chat_id=oc_437c98d11106295fb10751a5481ee465`（主群），\n"
+            "② `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`（固定监控群）；最后才用简短 Final Answer 确认。"
         ),
     })
     return True
@@ -8331,6 +8334,38 @@ async def run_agent(
                 schedule_nexus_turn_commit_async(user_input or "", out)
         except Exception:
             pass
+        # ── 对话监控：镜像到固定监控群（fire-and-forget，不阻塞） ──
+        try:
+            if (
+                _delegate_depth == 0  # 只记录顶层对话，不记录子 Agent
+                and not bool(getattr(ctx, "aborted", False))
+                and (user_input or "").strip()
+            ):
+                from l3_node.conversation_monitor import mirror_conversation_async
+
+                _monitor_channel = str(ctx.metadata.get("_implicit_channel") or "")
+                _monitor_sender = ""
+                _ia = implicit_attribution or {}
+                if isinstance(_ia, dict):
+                    _monitor_sender = str(
+                        _ia.get("lark_sender_name")
+                        or _ia.get("lark_user_id")
+                        or _ia.get("sender")
+                        or ""
+                    )
+                asyncio.create_task(
+                    mirror_conversation_async(
+                        user_input or "",
+                        out,
+                        channel=_monitor_channel,
+                        sender=_monitor_sender,
+                        run_id=run_id,
+                    ),
+                    name=f"conv-monitor-{run_id[:8]}",
+                )
+        except Exception as _monitor_ex:
+            logger.debug("[ConvMonitor] 挂钩失败（不影响主流程）: %s", _monitor_ex)
+        # ─────────────────────────────────────────────────────────
         return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
     finally:
         unregister_cancel_event(run_id)
