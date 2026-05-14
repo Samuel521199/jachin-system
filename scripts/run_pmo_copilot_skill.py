@@ -16,7 +16,8 @@ PMO-Copilot：CLI「一句话点火」—— 进程内拉起 L3 LiteLLM 引擎�
   python scripts/run_pmo_copilot_skill.py
   python scripts/run_pmo_copilot_skill.py -m "执行分支 A：定时宏观看板……"
 
-每次运行会在 ``%USERPROFILE%\\.jachin\\jachin_debug\\健康skill\\pmo_copilot_YYYYMMDD_HHMMSS.txt``
+每次运行会在 ``%USERPROFILE%\\.jachin\\jachin_debug\\健康skill\\``
+新建 **独立** 文件 ``pmo_copilot_YYYYMMDD_HHMMSS_mmm_xxxxxxxx.txt``（毫秒 + 短 UUID，不覆盖同名旧文件），
 写入 **仅落盘** 的调试摘要（抓取 URL、ReAct 步骤、Observation 节选、是否调 Lark）；不在控制台打印该内容。
 
 前置：``.env`` 中 LLM Key；飞书播报依赖 ``atom_lark_notifier`` 的 MCP 配置（``config/mcps/atom_lark_notifier/config.yaml`` 或 ``~/.jachin/config/...``），与 ``python -m l3_node`` 一致——**无需在本脚本写 Lark 变量**。
@@ -180,8 +181,13 @@ async def _async_main(args: argparse.Namespace) -> int:
     user_msg = (args.message or "").strip() or DEFAULT_MESSAGE
 
     _debug_dir = _pmo_debug_log_dir()
-    _file_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    _debug_path = _debug_dir / f"pmo_copilot_{_file_ts}.txt"
+    _now = datetime.datetime.now()
+    _stamp = (
+        _now.strftime("%Y%m%d_%H%M%S")
+        + f"_{_now.microsecond // 1000:03d}"
+        + f"_{uuid.uuid4().hex[:8]}"
+    )
+    _debug_path = _debug_dir / f"pmo_copilot_{_stamp}.txt"
     _prev_pmo_log_env = os.environ.get("JACHIN_PMO_COPILOT_DEBUG_LOG")
     os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = str(_debug_path.resolve())
 

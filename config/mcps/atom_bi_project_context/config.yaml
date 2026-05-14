@@ -10,3 +10,17 @@ output_dir_relative: ~/.jachin/workspace/pmo_lark_pull
 max_records_per_table: 2000
 max_discovered_links: 40
 recurse_children_depth: 2
+
+# PMO：以下 Wiki node_token 前缀不参与同步（种子 / 子页面 / 正文内链均跳过），减少历史辅助表落盘与记忆噪声
+wiki_node_skip_tokens:
+  - JfyTwbuQ # 包体优化任务文档
+  - YyjEwhK6 # K11 正式服账号
+  - BrC4wrJi # bundle 修改前后大小表
+  - X0OgwYvI # 资源优化任务协作分工状态及处理后数据汇总
+  - XlUMwIbP # 平台问题反馈
+  - RqskwRfZ # 平台近期工作计划
+  - ZxpDw9yM # 本地化翻译优化
+  - E4ZbwlNd # 0.2 结版方案
+  - IPJLw1LB # 第二期优化方案
+  - CvGfw6dS # 待讨论问题
+  - TO3twkDP # 测试记录

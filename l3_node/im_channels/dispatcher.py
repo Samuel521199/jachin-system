@@ -18,14 +18,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from l3_node.im_channels.lark_interaction_hourly_log import append_lark_interaction_record
 from l3_node.lark_session import load_lark_session, save_lark_session
 
 if TYPE_CHECKING:
@@ -74,12 +75,13 @@ def _should_skip_duplicate_inbound(chat_id: str, text: str) -> bool:
     return False
 
 
-# 招聘类消息关键词：命中则走 HR process_lark_message
+# 招聘类消息关键词：命中则走 HR process_lark_message。
+# 禁止含「同步」「多维表」「bitable」等 PMO/飞书表常见词单独触达，否则通用群对话大量误进 HR。
 _HR_RECRUITMENT_KEYWORDS = [
     "招聘", "发布", "发职位", "职位", "JD", "岗位", "简历", "打招呼", "推荐牛人",
-    "同意", "确认", "确认发布", "直接发布", "收网", "抓取", "同步", "多维表",
+    "同意", "确认发布", "直接发布", "收网", "抓取简历", "抓简历",
     "清除岗位", "清除全部", "清空岗位", "删除岗位",
-    "post", "greet", "harvest", "bitable",
+    "post", "greet", "harvest",
 ]
 
 
@@ -161,6 +163,13 @@ def _is_recruitment_message(text: str) -> bool:
     """判断是否为招聘类消息"""
     if not text or not text.strip():
         return False
+    try:
+        from l3_node.routing.intent_signals import user_message_suggests_pmo_or_bi_context
+
+        if user_message_suggests_pmo_or_bi_context(text):
+            return False
+    except Exception:
+        pass
     if _line_parses_as_boss_job_select(text):
         return True
     t = text.strip().lower()
@@ -235,8 +244,21 @@ def _do_agent_work(
                 cid[:24] if cid else "",
                 intent[:48],
             )
+            append_lark_interaction_record(
+                "duplicate_inbound_suppressed",
+                chat_id=cid,
+                user_id=user_id or "",
+                user_text=intent,
+                route="im_dispatcher",
+                status="skipped_duplicate_within_ttl",
+            )
             return
         reply = ""
+        route = "unknown"
+        turn_status = "pending"
+        err_msg = ""
+        err_tb = ""
+        send_ok: bool | None = None
         _apply_hr_im_job_select_prelude(intent)
         try:
             from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
@@ -247,7 +269,9 @@ def _do_agent_work(
             cmd_reply = None
 
         if cmd_reply:
+            route = "lark_workflow_command"
             reply = cmd_reply
+            turn_status = "ok"
             if cid:
                 session_messages.append({"role": "user", "content": intent})
                 session_messages.append({"role": "assistant", "content": cmd_reply})
@@ -258,10 +282,13 @@ def _do_agent_work(
                         "[IM Dispatcher] 招聘类消息，走 HR process_lark_message chat_id=%s",
                         cid[:20] if cid else "",
                     )
+                    route = "hr_process_lark_message"
                     reply = _process_via_hr_package(
                         intent, cid, user_id, run_agent_fn, engine, loop, timeout, session_messages
                     )
+                    turn_status = "ok"
                 else:
+                    route = "run_agent"
                     _iatt = {"channel": "lark_im_dispatcher"}
                     if cid:
                         _iatt["lark_chat_id"] = str(cid).strip()
@@ -275,19 +302,40 @@ def _do_agent_work(
                         loop,
                     )
                     reply = future.result(timeout=timeout)
+                    turn_status = "ok"
             except TimeoutError:
                 reply = "处理超时，请稍后重试。"
+                turn_status = "timeout"
                 logger.warning("[IM Dispatcher] Agent 超时 chat_id=%s", cid[:20] if cid else "")
             except Exception as e:
                 logger.exception("[IM Dispatcher] Agent 异常: %s", e)
                 reply = "抱歉，处理时发生错误，请稍后重试。"
+                turn_status = "error"
+                err_msg = str(e)
+                err_tb = traceback.format_exc()
         if cid and session_messages:
             save_lark_session(cid, session_messages)
             logger.debug("[IM Dispatcher] chat_id=%s 已保存会话 %d 条", cid[:20], len(session_messages))
         if reply and cid:
             ok = send_reply_fn(cid, str(reply).strip())
+            send_ok = ok
             if not ok:
                 logger.warning("[IM Dispatcher] 回复发送失败 chat_id=%s", cid[:20])
+        elif cid and not (reply or "").strip():
+            turn_status = f"{turn_status}|empty_reply" if turn_status != "pending" else "empty_reply"
+
+        append_lark_interaction_record(
+            "turn_finished",
+            chat_id=cid,
+            user_id=user_id or "",
+            user_text=intent,
+            reply=(reply or "").strip(),
+            route=route,
+            status=turn_status,
+            error=err_msg,
+            error_trace=err_tb,
+            send_ok=send_ok,
+        )
 
 
 def create_im_message_handler(

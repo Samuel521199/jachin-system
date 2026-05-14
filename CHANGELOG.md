@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.63] - 2026-05-14
+
+### Added / Changed
+
+- 修复用户提问被上下文污染。
+- **Version**: Desktop **0.9.63**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.62] - 2026-05-13
 
 ### Added / Changed

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 入站通道 — 长连接优先，支持多机共享 chat_id 绑定
 """
 from __future__ import annotations
@@ -9,6 +9,7 @@ from typing import Any, Callable
 from l3_node.channels.lark.client import _api_base_from_domain, get_tenant_access_token
 from l3_node.channels.lark.im import send_text
 from l3_node.im_channels.base import InboundIMChannel
+from l3_node.im_channels.lark_interaction_hourly_log import append_lark_interaction_record
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,31 @@ class LarkInboundChannel(InboundIMChannel):
                     "[IM Lark] chat_id=%s 不在本节点 chat_ids 内，忽略（多机共享）",
                     (chat_id or "")[:20],
                 )
+                append_lark_interaction_record(
+                    "inbound_ignored_chat_id",
+                    chat_id=chat_id or "",
+                    user_id=user_id or "",
+                    user_text=text or "",
+                    route="lark_long_connection",
+                    status="skipped_not_in_chat_ids",
+                    extra=f"allowed_chat_ids={allowed[:8]!r}{'…' if len(allowed) > 8 else ''}",
+                )
                 return
+            append_lark_interaction_record(
+                "inbound_received",
+                chat_id=chat_id or "",
+                user_id=user_id or "",
+                user_text=text or "",
+                route="lark_long_connection",
+                status="queued_for_dispatcher",
+            )
             try:
                 on_message(text, chat_id, user_id)
-            except Exception:
+            except Exception as _ex:
                 logger.exception("[IM Lark] on_message 异常")
+                from l3_node.im_channels.lark_interaction_hourly_log import append_from_callback_exception
+
+                append_from_callback_exception(_ex, where="lark_channel.on_message", chat_id=chat_id, user_id=user_id)
 
         domain = _resolve_lark_im_domain(config)
         try:

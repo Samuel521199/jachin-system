@@ -446,7 +446,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:atom_bi_project_context",
         "label": "mcp:atom_bi_project_context",
-        "desc": "[L3 本地] 从配置的 Lark 知识库 Wiki 链接拉取多维表/文档/表格、子页面及文内 Wiki 链接，写入 docs/bi_daily_report/bi_project/，供 BI 理解项目背景。可选参数见 config/mcps/atom_bi_project_context/config.yaml。",
+        "desc": "[L3 本地] 从配置的 Lark Wiki 链接拉取多维表/文档等；**同一节点不同 view= 会分别落盘**，List Records 传 view_id 与飞书视图过滤一致。可选参数见 config/mcps/atom_bi_project_context/config.yaml。",
         "params": ["config", "wiki_urls", "output_dir_relative", "max_records_per_table", "max_discovered_links", "recurse_children_depth"],
         "long_running": True,
     },

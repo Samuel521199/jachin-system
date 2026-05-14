@@ -10,7 +10,7 @@ app_id: cli_a940990299f8ded2
 app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
 
 # PMO 推送目标群 chat_id（须与本租户 OpenAPI 一致；机器人须已加入该群）
-default_chat_id: "oc_b1b9cff6804517c79b7f5a617ab30483"
+default_chat_id: "oc_437c98d11106295fb10751a5481ee465"
 
 lark_use_feishu: false
 
