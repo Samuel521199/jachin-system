@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.64] - 2026-05-14
+
+### Added / Changed
+
+- 修复冒烟测试定时。
+- 修复冒烟测试 party 改版。
+- **Version**: Desktop **0.9.64**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.63] - 2026-05-14
 
 ### Added / Changed

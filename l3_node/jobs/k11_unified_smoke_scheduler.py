@@ -26,7 +26,7 @@ from l3_node.paths import get_app_root, k11_unified_smoke_script_path
 
 logger = logging.getLogger(__name__)
 
-_SCHEDULER_STATE_FILE = Path.home() / ".jachin" / "data" / "k11_unified_smoke_scheduler_state.json"
+SCHEDULER_STATE_FILE = Path.home() / ".jachin" / "data" / "k11_unified_smoke_scheduler_state.json"
 _JOB_DAILY = "k11_unified_smoke_daily"
 
 _scheduler: Any | None = None

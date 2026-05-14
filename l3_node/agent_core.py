@@ -1100,7 +1100,7 @@ def _pmo_final_answer_looks_like_lark_card_body(ans: str) -> bool:
     s = str(ans or "")
     if not s.strip():
         return False
-    if any(x in s for x in ("📊", "👥", "关键 Epic", "资源任务负荷", "Executive Summary")):
+    if any(x in s for x in ("📊", "👥", "📦", "关键 Epic", "需求进度全览", "人员任务矩阵", "版本发布需求映射", "资源任务负荷", "Executive Summary")):
         return True
     if re.search(r"\|\s* :---\s*\|", s) or re.search(r"\|\s*-{3,}\s*\|", s):
         return True
