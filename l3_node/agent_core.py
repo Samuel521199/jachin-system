@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（Chroma）** 在 L3 内闭环；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -94,6 +94,22 @@ def _max_delegate_depth_cfg() -> int:
         return max(0, int(ag.get("max_delegate_depth", 2)))
     except Exception:
         return 2
+
+
+def _delegate_max_concurrent_cfg() -> int:
+    """单次 delegate 最多同时并发运行的子 Agent 数（Semaphore 上限）。
+    可通过 nexus_config agent.delegate_max_concurrent 覆盖，默认 4。
+    设为 0 表示不限制（仅在已知子任务数较少时建议）。
+    """
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        ag = cfg.get("agent") or {}
+        v = int(ag.get("delegate_max_concurrent", 4))
+        return max(0, v)
+    except Exception:
+        return 4
 
 
 def _llm_token_budget_for_run(delegate_depth: int) -> int | None:
@@ -1775,18 +1791,85 @@ COORDINATE_TOOL_ID = "coordinate"
 
 # 子 Agent 角色预设（分身时使用）
 SUB_AGENT_PROMPTS: dict[str, str] = {
-    "coder": "你是资深程序员，只负责编写代码。使用 core:fs_read 读取文件，core:fs_write 写入代码。",
-    "writer": "你是技术文档工程师，只负责撰写文档。使用 core:fs_read 读取参考，core:fs_write 写入文档。",
-    "researcher": "你是研究员，负责查阅和分析。使用 core:fs_read 读取文件，core:shell_exec 执行查询命令。",
-    "default": "你是专业助手，完成指定子任务。可用工具：core:fs_read、core:fs_write、core:shell_exec、core:shell_job_status（查后台任务）。",
+    "coder": (
+        "你是资深程序员，只负责编写代码。"
+        "使用 core:fs_read 读取文件，core:fs_write 写入代码，core:shell_exec 运行测试命令。"
+        "完成后输出「代码已写入」及关键修改点摘要。"
+    ),
+    "writer": (
+        "你是技术文档工程师，只负责撰写或更新文档。"
+        "使用 core:fs_read 读取参考资料，core:fs_write 写入文档内容。"
+        "完成后输出「文档已更新」及内容要点。"
+    ),
+    "researcher": (
+        "你是研究员，负责查阅、分析和收集信息。"
+        "使用 core:fs_read 读取本地文件，core:shell_exec 执行查询命令。"
+        "完成后以结构化格式输出调研结论与数据来源。"
+    ),
+    "analyst": (
+        "你是数据分析师，专注于数据读取、统计与洞察提炼。"
+        "使用 core:fs_read 读取 CSV/JSON 数据，core:shell_exec 运行分析脚本。"
+        "完成后输出核心指标、趋势与异常点摘要，尽量使用表格格式。"
+    ),
+    "planner": (
+        "你是任务规划专家，负责将复杂任务拆解为可执行的子步骤并评估依赖关系。"
+        "使用 core:fs_read 读取相关文档和代码，理解上下文。"
+        "完成后以有序列表格式输出：任务步骤、每步的前置条件、预期产出和潜在风险。"
+    ),
+    "reviewer": (
+        "你是代码审查专家，负责检查代码质量、安全性和可维护性。"
+        "使用 core:fs_read 读取待审查文件，core:shell_exec 运行静态检查工具。"
+        "完成后按「严重/警告/建议」三级分类输出审查意见，并标注具体行号或文件路径。"
+    ),
+    "summarizer": (
+        "你是文档摘要专家，负责从大量文本中提炼关键信息。"
+        "使用 core:fs_read 读取文件内容。"
+        "完成后输出：核心要点（3-5条）、关键数字/日期、需要关注的风险或待办事项。"
+    ),
+    "data_processor": (
+        "你是数据处理专家，负责数据清洗、格式转换和批量处理。"
+        "使用 core:fs_read 读取原始数据，core:fs_write 写出处理结果，core:shell_exec 运行数据处理脚本。"
+        "完成后输出：处理记录数、成功/失败条数，以及输出文件路径。"
+    ),
+    "tester": (
+        "你是测试工程师，负责编写和执行测试用例，验证功能正确性。"
+        "使用 core:fs_read 读取代码和测试文件，core:shell_exec 执行测试命令，core:fs_write 写入测试报告。"
+        "完成后输出：测试通过/失败数量，失败用例详情与复现步骤。"
+    ),
+    "default": (
+        "你是专业助手，完成指定子任务。"
+        "可用工具：core:fs_read、core:fs_write、core:shell_exec、core:shell_job_status（查后台任务）。"
+        "任务完成后给出简洁的执行摘要。"
+    ),
 }
 
 # 子 Agent 独立工具集（按角色裁剪，绝不给发邮件等敏感技能）
 SUB_AGENT_ALLOWED_SKILLS: dict[str, list[str]] = {
-    "coder": ["core:fs_read", "core:fs_write", "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel"],
+    "coder": [
+        "core:fs_read", "core:fs_write", "core:apply_patch",
+        "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
+    ],
     "writer": ["core:fs_read", "core:fs_write"],
     "researcher": ["core:fs_read", "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel"],
-    "default": ["core:fs_read", "core:fs_write", "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel"],
+    "analyst": [
+        "core:fs_read", "core:shell_exec", "core:shell_job_status",
+        "core:local_memory_search",
+    ],
+    "planner": ["core:fs_read", "core:local_memory_search"],
+    "reviewer": ["core:fs_read", "core:shell_exec", "core:shell_job_status"],
+    "summarizer": ["core:fs_read", "core:local_memory_search"],
+    "data_processor": [
+        "core:fs_read", "core:fs_write",
+        "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
+    ],
+    "tester": [
+        "core:fs_read", "core:fs_write",
+        "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
+    ],
+    "default": [
+        "core:fs_read", "core:fs_write",
+        "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
+    ],
 }
 
 # 子 Agent 注册表：sub_agent_id -> SubAgent 实例，供复用
@@ -3549,10 +3632,26 @@ Action: ...
     delegate_hint = ""
     if allow_delegate:
         delegate_hint = """
-若任务需要多种能力（如同时写代码和写文档），可输出：
+若任务需要多种专业能力并行协作，可使用 delegate 将子任务分发给专业子 Agent：
 Action: delegate
-Action Input: {"sub_tasks": [{"role": "coder", "task": "编写 XXX"}, {"role": "writer", "task": "撰写文档"}]}
-将子任务交给专业子 Agent 并行执行。"""
+Action Input: {"sub_tasks": [{"role": "<角色>", "task": "<任务描述>", "context_data": "<可选附加数据>", "max_iterations": <可选迭代数>}]}
+
+**可用角色（role）**：
+- coder        → 编写/修改代码（可用 fs_read/fs_write/apply_patch/shell_exec）
+- writer       → 撰写或更新文档（可用 fs_read/fs_write）
+- researcher   → 查阅、调研、信息收集（可用 fs_read/shell_exec）
+- analyst      → 数据分析、指标提炼（可用 fs_read/shell_exec）
+- planner      → 复杂任务拆解与规划（可用 fs_read）
+- reviewer     → 代码审查、质量检查（可用 fs_read/shell_exec）
+- summarizer   → 文档摘要、要点提炼（可用 fs_read）
+- data_processor → 数据清洗与格式转换（可用 fs_read/fs_write/shell_exec）
+- tester       → 编写和执行测试用例（可用 fs_read/fs_write/shell_exec）
+- default      → 通用子任务（可用 fs_read/fs_write/shell_exec）
+
+**示例（三角色并行）**：
+{"sub_tasks": [{"role": "researcher", "task": "调研竞品 A 的技术架构"}, {"role": "analyst", "task": "分析用户行为数据", "context_data": "data/behavior.csv"}, {"role": "writer", "task": "撰写技术方案初稿"}]}
+
+注意：context_data 可传入字符串或 JSON 对象，会自动注入到子任务上下文；max_iterations 可控制子任务最大轮次（默认 3）。"""
     hr_hint = ""
     hr_ids = [t.get("id", "") for t in tools if "hr.analyzer" in (t.get("id") or "")]
     hr_preferred = next((x for x in hr_ids if "analyzer4" in x), None) or (hr_ids[0] if hr_ids else None)
@@ -4094,6 +4193,13 @@ class SubAgent:
 
 输出格式：Thought / Action / Action Input / Observation / Final Answer
 """
+        logger.debug(
+            "[SubAgent] sub_agent_id=%s max_iterations=%d delegate_depth=%d task_preview=%s",
+            self.sub_agent_id,
+            max_iterations,
+            delegate_depth,
+            task[:120],
+        )
         result = await run_agent(
             task,
             engine,
@@ -4144,10 +4250,29 @@ async def _run_sub_agent(
     *,
     delegate_depth: int = 1,
 ) -> str:
-    """运行子 Agent，完成指定子任务。内部调用 _spawn_sub_agent_async（一次性，不复用）。"""
+    """运行子 Agent，完成指定子任务。内部调用 _spawn_sub_agent_async（一次性，不复用）。
+
+    task_spec 支持字段：
+      - role: str        子 Agent 角色（coder/writer/researcher/analyst/planner/reviewer/summarizer/data_processor/tester/default）
+      - task: str        任务描述
+      - context_data: str|dict  附加上下文数据（如数据样本、前序结果等），追加到 task 末尾
+      - max_iterations: int  可选，覆盖此子任务的最大迭代次数
+    """
     role = (task_spec.get("role") or "default").lower()
     task = task_spec.get("task", "")
-    result, _ = await _spawn_sub_agent_async(role, task, engine, delegate_depth=delegate_depth)
+    # 支持 context_data：将附加数据注入到任务描述末尾，减少子 Agent 须自行读取的开销
+    ctx_data = task_spec.get("context_data")
+    if ctx_data:
+        if isinstance(ctx_data, dict):
+            ctx_str = json.dumps(ctx_data, ensure_ascii=False, indent=2)
+        else:
+            ctx_str = str(ctx_data)
+        task = f"{task}\n\n【上下文数据】\n{ctx_str[:4000]}"
+    result, _ = await _spawn_sub_agent_async(
+        role, task, engine,
+        delegate_depth=delegate_depth,
+        max_iterations=int(task_spec.get("max_iterations") or 0) or None,
+    )
     return result
 
 
@@ -4158,8 +4283,12 @@ async def _spawn_sub_agent_async(
     sub_agent_id: Optional[str] = None,
     *,
     delegate_depth: int = 1,
+    max_iterations: Optional[int] = None,
 ) -> tuple[str, str]:
-    """异步版 spawn_sub_agent，供 delegate 流程调用。"""
+    """异步版 spawn_sub_agent，供 delegate 流程调用。
+
+    max_iterations: 覆盖此次 SubAgent 运行的最大 ReAct 迭代次数；None 时使用 SubAgent.run_once 默认值（3）。
+    """
     switches = _get_service_switches()
     if switches is not None:
         if len(switches) == 0 or role.lower() not in switches:
@@ -4192,15 +4321,19 @@ async def _spawn_sub_agent_async(
     if global_allowed is not None:
         allowed = [s for s in allowed if s in _build_allowed_ids(global_allowed)]
 
+    _run_kwargs: dict[str, Any] = {"delegate_depth": delegate_depth}
+    if max_iterations and max_iterations > 0:
+        _run_kwargs["max_iterations"] = max_iterations
+
     if sub_agent_id and sub_agent_id in _sub_agent_registry:
         agent = _sub_agent_registry[sub_agent_id]
-        result = await agent.run_once(task, eff_engine, delegate_depth=delegate_depth)
+        result = await agent.run_once(task, eff_engine, **_run_kwargs)
         return result, sub_agent_id
 
     sid = sub_agent_id or f"sub-{uuid.uuid4().hex[:8]}"
     agent = SubAgent(sid, prompt, allowed)
     _sub_agent_registry[sid] = agent
-    result = await agent.run_once(task, eff_engine, delegate_depth=delegate_depth)
+    result = await agent.run_once(task, eff_engine, **_run_kwargs)
     return result, sid
 
 
@@ -5885,33 +6018,63 @@ async def _run_react_core(
             if ctx.aborted:
                 return
             _child_depth = _dd + 1
-            results = await asyncio.gather(
-                *[_run_sub_agent(t, engine, delegate_depth=_child_depth) for t in sub_tasks],
-                return_exceptions=True,
-            )
+            # 并发控制：防止大批子任务同时打爆 API 速率限制
+            _max_concurrent = _delegate_max_concurrent_cfg()
+            if _max_concurrent > 0 and len(sub_tasks) > _max_concurrent:
+                _sem = asyncio.Semaphore(_max_concurrent)
+
+                async def _run_with_sem(_t: dict[str, Any]) -> str:
+                    async with _sem:
+                        return await _run_sub_agent(_t, engine, delegate_depth=_child_depth)
+
+                results = await asyncio.gather(
+                    *[_run_with_sem(t) for t in sub_tasks],
+                    return_exceptions=True,
+                )
+            else:
+                results = await asyncio.gather(
+                    *[_run_sub_agent(t, engine, delegate_depth=_child_depth) for t in sub_tasks],
+                    return_exceptions=True,
+                )
+            # 结构化 RunReport：统计成功/失败数，便于下游模型准确归因
+            _ok_count = sum(1 for r in results if not isinstance(r, Exception))
+            _fail_count = len(results) - _ok_count
+            _failed_items: list[dict[str, Any]] = []
             parts = []
             for i, r in enumerate(results):
+                role_hint = (sub_tasks[i].get("role") or "default") if i < len(sub_tasks) else "?"
+                task_hint = str(sub_tasks[i].get("task", ""))[:80] if i < len(sub_tasks) else ""
                 if isinstance(r, Exception):
-                    parts.append(f"[子任务 {i+1} 失败: {r}]")
+                    _failed_items.append({
+                        "index": i + 1,
+                        "role": role_hint,
+                        "task_preview": task_hint,
+                        "error": str(r),
+                        "error_class": "transient" if "timeout" in str(r).lower() else "per_item",
+                    })
+                    parts.append(f"[子任务 {i+1}·{role_hint} 失败: {r}]")
                 else:
-                    parts.append(f"[子任务 {i+1}]\n{r}")
-            _obs_delegate_raw = "\n\n---\n\n".join(parts)
-            _mcap_del = _peek_react_observation_cap_for_upcoming_llm(
-                ctx=ctx,
-                base_engine=engine,
-                messages=messages,
-                iteration=iteration,
-                assistant_response=response,
-                observation_for_followup=_obs_delegate_raw,
-                tool="delegate",
-                skills=list(ctx.metadata.get("_skills") or []),
+                    parts.append(f"[子任务 {i+1}·{role_hint}]\n{r}")
+            _run_report = {
+                "status": "completed" if _fail_count == 0 else ("partial" if _ok_count > 0 else "failed"),
+                "ok_count": _ok_count,
+                "failed_count": _fail_count,
+                "total": len(sub_tasks),
+                "degraded": _fail_count > 0,
+                "failed_items": _failed_items,
+            }
+            _run_report_line = (
+                f"[delegate RunReport] 完成: {_ok_count}/{len(sub_tasks)} 成功"
+                + (f"，{_fail_count} 失败" if _fail_count else "")
+                + "\n"
             )
-            observation = _truncate_observation_for_llm(
-                _obs_delegate_raw,
-                model_cap=_mcap_del,
-                tool="delegate",
-                current_objective=_sticky_goal,
+            logger.info(
+                "[L3 Agent] delegate RunReport depth=%d %s",
+                _child_depth - 1,
+                json.dumps(_run_report, ensure_ascii=False),
             )
+            _obs_delegate_raw = _run_report_line + "\n\n---\n\n".join(parts)
+            observation = _truncate_observation_for_llm(_obs_delegate_raw)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "delegate", observation)
             await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)

@@ -16,6 +16,14 @@
   LARK_* — Lark 海外（详见 scripts/fb_report_nexus.env.example；API 根域见代码内 LARK_API_BASE）
 
   FB_REPORT_GOTO_TIMEOUT_MS — Ads Manager 首次 goto 超时（毫秒），默认 300000
+  FB_REPORT_DISPATCH_TIMEOUT_SEC — 导出点击链总预算（秒），默认 240（Ngrok/CDP 慢时勿过小；过短会导致兜底未执行就报预算用尽）
+  FB_REPORT_EVALUATE_TIMEOUT_SEC — 单段 page.evaluate 上限（秒），默认 25
+  FB_REPORT_DEBUG_SCREENSHOT_MS — 调试截图超时（毫秒），默认 12000（Ngrok CDP 截屏易超时，与是否「封面图」无关）
+  FB_REPORT_SKIP_DEBUG_SCREENSHOT — 设为 1/true 时跳过调试截图（加快失败重试）
+  FB_REPORT_DEBUG_MIN_REMAINING_SEC — 剩余点击链预算低于该秒数时跳过全息快照（优先留给兜底点击），默认 50
+  FB_REPORT_SKIP_HOLOGRAM — 设为 1/true 时始终跳过全息快照基因序列
+  FB_REPORT_FALLBACK_LOCATOR_WAIT_MS — 视觉兜底单次 locator 等待（毫秒），默认 20000
+  FB_REPORT_EXPORT_FOLLOWUP_SEC — 导出菜单二次点击搜索时长（秒），默认 18（首次点击常只开菜单）
   FB_REPORT_PRESET — 报表区间：相对暗号或绝对单日 ``YYYY-MM-DD``（URL 中为 ``该日_次日``，无逗号后缀）；写入 ``date`` / ``insights_date``
 
 连接说明：
@@ -35,7 +43,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -82,17 +90,13 @@ DEFAULT_TARGET_URL = (
     "act=2117441032349622&business_id=1423598819502157&"
     "nav_entry_point=ads_ecosystem_navigation_menu&"
     "columns=name%2Cdelivery%2Crecommendations_guidance%2Cresults%2Ccost_per_result%2Cbudget%2Cspend%2Cimpressions%2Creach%2Cfrequency%2Ccpm%2Cactions%3Aomni_purchase%2Cschedule%2Cend_time%2Cattribution_setting%2Cbid%2Clast_significant_edit%2Cquality_score_organic%2Cquality_score_ectr%2Cquality_score_ecvr%2Ccampaign_name%2Cpurchase_roas%3Aomni_purchase&"
-    "attribution_windows=default&nav_source=ads_manager"
+    "attribution_windows=default&"
+    "column_preset=122134082511140527&"
+    "comparison_date=&insights_comparison_date=&"
+    "nav_source=ads_manager"
 )
 
 NGROK_HEADERS = {"ngrok-skip-browser-warning": "1"}
-
-# 调试截图：仅视口、禁用动画；跨国 CDP 下截图仍需较长等待（勿用过短的 10s）
-_DEBUG_SCREENSHOT_KW: dict = {
-    "full_page": False,
-    "timeout": 90_000,
-    "animations": "disabled",
-}
 
 # 默认超时 90s（跨境公网 / 大表渲染）
 DEFAULT_TIMEOUT_MS = 90_000
@@ -201,10 +205,14 @@ def build_fb_deep_link(base_url: str, preset: str = "last_7d") -> str:
 
     u = urlparse(base_url)
     query = parse_qs(u.query, keep_blank_values=True)
-    for k in ("time_range", "date_preset", "date", "insights_date"):
+    for k in ("time_range", "date_preset", "date", "insights_date",
+              "comparison_date", "insights_comparison_date"):
         query.pop(k, None)
     query["date"] = [date_param]
     query["insights_date"] = [date_param]
+    # 对比区间始终置空（单日/单区间抓取，不需要同比）
+    query["comparison_date"] = [""]
+    query["insights_comparison_date"] = [""]
     new_query = urlencode(query, doseq=True)
     return u._replace(query=new_query).geturl()
 
@@ -237,6 +245,16 @@ def _env_int(key: str, default: int) -> int:
         return default
     try:
         return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
     except ValueError:
         return default
 
@@ -321,29 +339,58 @@ def _rewrite_wss_endpoint_from_json_version(public_http_base: str) -> str:
     return f"{scheme}://{pub.netloc}{suffix}"
 
 
+def _is_local_cdp(url: str) -> bool:
+    """判断 CDP URL 是否为本机直连（localhost / 127.x.x.x / ::1）。"""
+    host = urlparse(url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+
+
 def _print_wss_resolve_triage(exc: BaseException) -> None:
-    print(
-        "\n[分诊] 拉取 /json/version 或解析 webSocketDebuggerUrl 失败：\n"
-        f"  {exc!r}\n"
-        "建议：确认 Ngrok 在线；curl -sS -H 'ngrok-skip-browser-warning: 1' "
-        f"'{CDP_URL.rstrip('/')}/json/version'\n",
-        file=sys.stderr,
-    )
+    if _is_local_cdp(CDP_URL):
+        print(
+            "\n[分诊] 拉取本机 /json/version 失败：\n"
+            f"  {exc!r}\n"
+            f"建议：确认 Chrome 已以 --remote-debugging-port={urlparse(CDP_URL).port or 9223} 启动；\n"
+            f"  curl -sS '{CDP_URL.rstrip('/')}/json/version'\n",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "\n[分诊] 拉取 /json/version 或解析 webSocketDebuggerUrl 失败：\n"
+            f"  {exc!r}\n"
+            "建议：确认 Ngrok 在线；\n"
+            f"  curl -sS -H 'ngrok-skip-browser-warning: 1' '{CDP_URL.rstrip('/')}/json/version'\n",
+            file=sys.stderr,
+        )
     traceback.print_exc(file=sys.stderr)
 
 
 def _print_connection_triage(exc: BaseException) -> None:
+    local = _is_local_cdp(CDP_URL)
+    port = urlparse(CDP_URL).port or 9223
     print(
         "\n[分诊] CDP 连接在 "
         f"{CONNECT_TIMEOUT_MS // 1000} 秒内失败：{exc!r}\n"
-        "建议逐项排查：\n"
-        "  1) Ngrok：控制台是否在线、该隧道 URL 是否与脚本一致、免费域名是否过期。\n"
-        "  2) 物理机：Chrome/Chromium 是否以 --remote-debugging-port 启动且未被防火墙拦截。\n"
-        "  3) 本机：能否访问 "
-        f"{CDP_URL.rstrip('/')}/json/version（需带 Header ngrok-skip-browser-warning: 1）。\n"
-        "  4) Playwright 版本是否与远端 Chrome 主版本相差过大（必要时升级 Playwright）。\n",
+        "建议逐项排查：\n",
         file=sys.stderr,
     )
+    if local:
+        print(
+            f"  1) 本机 Chrome：是否以 --remote-debugging-port={port} 启动？\n"
+            f"     启动示例：chrome.exe --remote-debugging-port={port} --user-data-dir=\"C:\\ChromeProfile_FB\"\n"
+            f"  2) 防火墙 / 杀毒：是否拦截了 127.0.0.1:{port}？\n"
+            f"  3) 验证：curl -sS http://127.0.0.1:{port}/json/version\n"
+            "  4) Playwright 版本是否与本机 Chrome 主版本相差过大（必要时升级 Playwright）。\n",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "  1) Ngrok：控制台是否在线、该隧道 URL 是否与脚本一致、免费域名是否过期。\n"
+            "  2) 物理机：Chrome/Chromium 是否以 --remote-debugging-port 启动且未被防火墙拦截。\n"
+            f"  3) 验证：curl -sS -H 'ngrok-skip-browser-warning: 1' {CDP_URL.rstrip('/')}/json/version\n"
+            "  4) Playwright 版本是否与远端 Chrome 主版本相差过大（必要时升级 Playwright）。\n",
+            file=sys.stderr,
+        )
     traceback.print_exc(file=sys.stderr)
 
 
@@ -465,11 +512,23 @@ async def upload_to_lark(file_path: str) -> None:
 
 
 async def _debug_screenshot(page: Page, path: str) -> None:
-    """尽力生成调试截图；失败仅告警，不阻断抓取主流程。"""
+    """尽力生成调试截图；Ngrok/CDP 慢时常超时——默认 12s 快速失败（可调 FB_REPORT_DEBUG_SCREENSHOT_MS）；不设封面图也会超时。"""
+    if _truthy_env("FB_REPORT_SKIP_DEBUG_SCREENSHOT"):
+        return
+    ms = _env_int("FB_REPORT_DEBUG_SCREENSHOT_MS", 12_000)
+    ms = max(1_000, ms)
     try:
-        await page.screenshot(path=path, **_DEBUG_SCREENSHOT_KW)
+        await page.screenshot(
+            path=path,
+            timeout=ms,
+            full_page=False,
+            animations="disabled",
+        )
     except Exception as e:
-        print(f"⚠️ 调试截图未生成 ({path})：{e!r}", file=sys.stderr)
+        print(
+            f"⚠️ [熔断] 调试截图 ({path}) 超时或失败，已跳过: {e}",
+            file=sys.stderr,
+        )
 
 
 async def _pick_working_page(browser: Browser) -> Page:
@@ -482,6 +541,453 @@ async def _pick_working_page(browser: Browser) -> Page:
         return await browser.contexts[0].new_page()
     ctx = await browser.new_context()
     return await ctx.new_page()
+
+
+# 导出阶段：防止 CDP 慢导致 page.evaluate / expect_download 长时间无响应
+_EXPORT_DISPATCH_TIMEOUT_SEC = _env_float("FB_REPORT_DISPATCH_TIMEOUT_SEC", 240.0)
+_EXPORT_DOWNLOAD_TIMEOUT_MS = _env_int("FB_REPORT_DOWNLOAD_TIMEOUT_MS", 90_000)
+_EXPORT_EVALUATE_TIMEOUT_SEC = _env_float("FB_REPORT_EVALUATE_TIMEOUT_SEC", 25.0)
+_EXPORT_DEBUG_EVALUATE_TIMEOUT_SEC = _env_float(
+    "FB_REPORT_DEBUG_EVALUATE_TIMEOUT_SEC", 15.0
+)
+_EXPORT_FALLBACK_LOCATOR_WAIT_MS = _env_int(
+    "FB_REPORT_FALLBACK_LOCATOR_WAIT_MS", 20_000
+)
+# 剩余预算低于此时跳过「全息快照」：避免长_evaluate 塞满点击链预算后兜底无时间执行
+_EXPORT_DEBUG_MIN_REMAINING_SEC = _env_float(
+    "FB_REPORT_DEBUG_MIN_REMAINING_SEC", 50.0
+)
+
+
+def _truthy_env(key: str) -> bool:
+    return (os.environ.get(key) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+# 不要用 asyncio.wait_for 包裹整条点击链：超时会 CancelledError，打断 Playwright 的 locator 等待。
+_DISPATCH_DEADLINE_EXCEEDED_MSG = (
+    "导出点击链已超过预算时间（CDP 慢或导出未触发）；请确认 Ads Manager 工具栏可见且 Export 可点击。"
+)
+
+
+def _cap_wait_seconds(dispatch_deadline: Optional[float], cap_sec: float) -> float:
+    """收紧 asyncio.wait_for；预算用尽时抛 RuntimeError（不取消正在进行的 Playwright IO）。"""
+    if dispatch_deadline is None:
+        return cap_sec
+    rem = dispatch_deadline - asyncio.get_running_loop().time()
+    if rem <= 0:
+        raise RuntimeError(_DISPATCH_DEADLINE_EXCEEDED_MSG)
+    return min(cap_sec, max(0.25, rem))
+
+
+def _cap_locator_wait_ms(
+    dispatch_deadline: Optional[float], preferred_ms: int
+) -> int:
+    """locator.wait_for timeout：不超过剩余点击链预算。"""
+    if dispatch_deadline is None:
+        return preferred_ms
+    rem = dispatch_deadline - asyncio.get_running_loop().time()
+    if rem <= 0:
+        raise RuntimeError(_DISPATCH_DEADLINE_EXCEEDED_MSG)
+    cap_ms = int(rem * 1000)
+    return max(300, min(preferred_ms, cap_ms))
+
+
+async def _evaluate_wait_cap(
+    page: Page,
+    js: str,
+    dispatch_deadline: Optional[float],
+    cap_sec: float,
+) -> Any:
+    """
+    先调用 _cap_wait_seconds，再 asyncio.wait_for(page.evaluate(js))。
+    若把 _cap_wait_seconds 与 evaluate 写在同一层函数参数里，Python 会先求值 evaluate 产生协程，
+    再求第二参数；预算用尽时第二参数抛错会导致 evaluate 协程从未被 await（RuntimeWarning）。
+    """
+    timeout_sec = _cap_wait_seconds(dispatch_deadline, cap_sec)
+    return await asyncio.wait_for(page.evaluate(js), timeout_sec)
+
+
+# Ads Manager 工具栏：Columns → Breakdown → [Reports, Download, Chart]。
+# 必须在页面 **顶部窄带** 内解析 Breakdown，并排除 `right > ~88vw` 的全局导航/头像区，否则会点到右上角头像。
+_TOOLBAR_EXPORT_CLICK_JS = r"""() => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const visible = (el) => {
+        const st = window.getComputedStyle(el);
+        return (
+            el.offsetParent !== null &&
+            st.visibility !== "hidden" &&
+            st.display !== "none"
+        );
+    };
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const toolbarTopMax = vh * 0.26;
+    const iconRightMax = vw * 0.88;
+
+    const all = Array.from(
+        document.querySelectorAll('[role="button"],button,a[role="button"]')
+    ).filter(visible);
+
+    const bdCandidates = all.filter((el) => {
+        const t = norm(el.innerText);
+        const al = norm(el.getAttribute("aria-label") || "");
+        if (t.length >= 120) return false;
+        if (!/^breakdown\b/i.test(t) && !/^breakdown\b/i.test(al)) return false;
+        const r = el.getBoundingClientRect();
+        return (
+            r.top < toolbarTopMax &&
+            r.left < vw * 0.62 &&
+            r.width >= 36 &&
+            r.height >= 20
+        );
+    });
+
+    if (!bdCandidates.length) return false;
+
+    bdCandidates.sort((a, b) => {
+        const ra = a.getBoundingClientRect();
+        const rb = b.getBoundingClientRect();
+        if (Math.abs(ra.top - rb.top) > 28) return ra.top - rb.top;
+        return ra.left - rb.left;
+    });
+    const bd = bdCandidates[0];
+    const br = bd.getBoundingClientRect();
+
+    const icons = all
+        .filter((el) => el !== bd && el.querySelector("svg"))
+        .filter((el) => {
+            const r = el.getBoundingClientRect();
+            if (r.width < 8 || r.height < 8) return false;
+            if (r.right > iconRightMax) return false;
+            if (r.top > toolbarTopMax + 40) return false;
+            return (
+                r.left >= br.right - 24 &&
+                Math.abs(
+                    r.top + r.height / 2 - (br.top + br.height / 2)
+                ) < 52
+            );
+        })
+        .sort(
+            (a, b) =>
+                a.getBoundingClientRect().left - b.getBoundingClientRect().left
+        );
+
+    const tip = (el) =>
+        ((el.getAttribute("aria-label") || "") +
+            " " +
+            (el.getAttribute("data-tooltip-content") || "") +
+            " " +
+            (el.getAttribute("title") || "")).toLowerCase();
+
+    for (const el of icons) {
+        const t = tip(el);
+        if (
+            /download|export|导出|下载/.test(t) &&
+            !/chart|report\\s*run|analytics/i.test(t)
+        ) {
+            el.click();
+            return true;
+        }
+    }
+
+    if (icons.length >= 3) {
+        icons[1].click();
+        return true;
+    }
+    if (icons.length === 2) {
+        icons[1].click();
+        return true;
+    }
+    if (icons.length === 1) {
+        icons[0].click();
+        return true;
+    }
+    return false;
+}"""
+
+
+async def _try_click_export_via_playwright_aria(
+    page: Page, *, dispatch_deadline: Optional[float] = None
+) -> bool:
+    """
+    用 Playwright **无障碍名**（等价于 aria-label 等可访问名称）锁定工具栏「导出/下载」，
+    避免仅靠几何 nth 点到 Reports。
+    """
+    vw = 1920.0
+    try:
+        vw = float(
+            await asyncio.wait_for(
+                page.evaluate("() => window.innerWidth"),
+                5.0,
+            )
+        )
+    except Exception:
+        pass
+    # 可访问名称匹配（含英文 Export table / Download 等变体）
+    name_re = re.compile(
+        r"(download|export|导出|下载)",
+        re.I,
+    )
+    try:
+        cand = page.get_by_role("button", name=name_re)
+        count = await cand.count()
+    except Exception:
+        return False
+    for i in range(min(count, 40)):
+        loc = cand.nth(i)
+        try:
+            await loc.wait_for(
+                state="visible",
+                timeout=_cap_locator_wait_ms(dispatch_deadline, 4_000),
+            )
+            box = await loc.bounding_box()
+            if not box:
+                continue
+            if box["y"] > 360:
+                continue
+            if box["x"] > vw * 0.88:
+                continue
+            await loc.click(force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _try_click_export_via_breakdown_toolbar_js(
+    page: Page, *, dispatch_deadline: Optional[float] = None
+) -> bool:
+    """
+    工具栏几何：在页面顶部带状区域内定位「Breakdown」按钮，取其右侧同列 SVG 图标序列。
+    英文 Ads Manager 常见顺序：Reports → Download（导出）→ Chart；Download 为索引 1（至少 3 枚图标时）。
+    """
+    try:
+        return await _evaluate_wait_cap(
+            page,
+            _TOOLBAR_EXPORT_CLICK_JS,
+            dispatch_deadline,
+            _EXPORT_EVALUATE_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        print(
+            f"⚠️ [工具栏拓扑] evaluate 超时（>{_EXPORT_EVALUATE_TIMEOUT_SEC}s），改用后续策略",
+            flush=True,
+        )
+        return False
+
+
+async def _fallback_click_export_icon(
+    page: Page, *, dispatch_deadline: Optional[float] = None
+) -> None:
+    """
+    仅针对 **Ads 表格上方工具栏**：Breakdown 右侧图标列为 Reports → Download → Chart。
+    先用 Breakdown 的 CSS :right-of 点击 Download（通常为 nth=1），再用与主路径相同的
+    ``_TOOLBAR_EXPORT_CLICK_JS`` 二次尝试（避免首轮 evaluate 超时）。
+    已移除表格「Segment/细分」列锚与整页叶子文本几何，防止误点表格或右上角全局头像。
+    """
+    last_exc: Optional[BaseException] = None
+
+    breakdown_sel = (
+        'div[role="button"]:right-of(:has-text("Breakdown")), '
+        'button:right-of(:has-text("Breakdown")), '
+        'span[role="button"]:right-of(:has-text("Breakdown"))'
+    )
+
+    for label, sel in (("Breakdown工具栏", breakdown_sel),):
+        # nth=0 为 Reports，会触发「点了但无下载」；仅尝试 Download(1) 与 Chart 旁备选(2)。
+        for nth in (1, 2):
+            loc = page.locator(sel).filter(has=page.locator("svg")).nth(nth)
+            try:
+                await loc.wait_for(
+                    state="attached",
+                    timeout=_cap_locator_wait_ms(
+                        dispatch_deadline, _EXPORT_FALLBACK_LOCATOR_WAIT_MS
+                    ),
+                )
+                print(
+                    f"🎯 [视觉雷达·CSS:{label}·nth={nth}] 击发下载图标",
+                    flush=True,
+                )
+                await loc.click(force=True)
+                return
+            except Exception as e:
+                last_exc = e
+
+    try:
+        clicked = await _evaluate_wait_cap(
+            page,
+            _TOOLBAR_EXPORT_CLICK_JS,
+            dispatch_deadline,
+            min(12.0, _EXPORT_EVALUATE_TIMEOUT_SEC),
+        )
+    except asyncio.TimeoutError:
+        clicked = False
+        last_exc = last_exc or TimeoutError("工具栏兜底 evaluate 超时")
+    if clicked:
+        print(
+            "🎯 [工具栏兜底] 已用顶部带状几何脚本二次点击 Download",
+            flush=True,
+        )
+        return
+
+    if last_exc:
+        raise RuntimeError(
+            "导出图标兜底失败：未在工具栏 Breakdown 右侧点到 Download（下载箭头）。"
+            "请确认当前为「广告」列表页且顶部 Reports→Download→Chart 可见；"
+            "Ngrok/CDP 慢时可增大 FB_REPORT_FALLBACK_LOCATOR_WAIT_MS、"
+            "FB_REPORT_DISPATCH_TIMEOUT_SEC。"
+            f" 最后一次底层错误：{last_exc!r}"
+        ) from last_exc
+    raise RuntimeError("导出按钮兜底失败：工具栏未匹配到 Breakdown 右侧下载箭头")
+
+
+async def _dispatch_export_click_sequence(
+    page: Page, *, dispatch_deadline: Optional[float] = None
+) -> None:
+    """
+    导出点击链：
+    1) Playwright ``get_by_role(button, name=…)`` 锁定下载/导出（优先）；
+    2) 工具栏 JS：Breakdown 右侧图标带 aria 匹配，否则几何索引 1；
+    3) 全局 aria 雷达；
+    4) CSS Breakdown :right-of（仅 nth 1/2，跳过 Reports）+ 同 JS 兜底。
+    """
+    if await _try_click_export_via_playwright_aria(
+        page, dispatch_deadline=dispatch_deadline
+    ):
+        print(
+            "🎯 [Playwright] 已通过无障碍名称（get_by_role）锁定并点击导出控件",
+            flush=True,
+        )
+        return
+
+    if await _try_click_export_via_breakdown_toolbar_js(
+        page, dispatch_deadline=dispatch_deadline
+    ):
+        print(
+            "🎯 [工具栏拓扑] Breakdown 右侧 Download（Reports→Download→Chart 之中项）已点击",
+            flush=True,
+        )
+        return
+
+    export_btn = page.locator(
+        '[aria-label*="Export"], [aria-label*="export"], '
+        '[aria-label*="Download"], [aria-label*="download"], '
+        '[aria-label*="导出"], [aria-label*="下载"], '
+        '[data-tooltip-content*="Export"], [data-tooltip-content*="export"], '
+        '[data-tooltip-content*="Download"], [data-tooltip-content*="download"], '
+        '[data-testid*="export"], [data-testid*="download"]'
+    ).first
+    try:
+        await export_btn.wait_for(
+            state="attached",
+            timeout=_cap_locator_wait_ms(dispatch_deadline, 8_000),
+        )
+        print("🎯 [常规雷达] 锁定导出控件，强制击发！", flush=True)
+        await export_btn.click(force=True)
+        return
+    except Exception:
+        pass
+
+    print(
+        "⚠️ [常规雷达失效] 遭遇纯图标 / 无属性。启动【全息快照】与拓扑兜底...",
+        flush=True,
+    )
+
+    loop = asyncio.get_running_loop()
+    rem_budget = (
+        (dispatch_deadline - loop.time())
+        if dispatch_deadline is not None
+        else 1e9
+    )
+    skip_hologram = _truthy_env("FB_REPORT_SKIP_HOLOGRAM")
+    debug_info = ""
+    if skip_hologram:
+        print(
+            "⚠️ [全息快照] 已按 FB_REPORT_SKIP_HOLOGRAM 跳过基因序列（节省时间给兜底）",
+            flush=True,
+        )
+    elif rem_budget < _EXPORT_DEBUG_MIN_REMAINING_SEC:
+        print(
+            f"⚠️ [全息快照] 剩余点击链预算仅 {rem_budget:.1f}s，"
+            f"低于 {_EXPORT_DEBUG_MIN_REMAINING_SEC:.0f}s，跳过基因序列（优先兜底点击）",
+            flush=True,
+        )
+    else:
+        try:
+            debug_info = await _evaluate_wait_cap(
+                page,
+                """() => {
+            return Array.from(
+                document.querySelectorAll('div[role="button"], button')
+            )
+                .map((el) => {
+                    const label = el.getAttribute("aria-label") || "";
+                    const tooltip =
+                        el.getAttribute("data-tooltip-content") || "";
+                    const testid = el.getAttribute("data-testid") || "";
+                    const text = el.innerText.trim();
+                    return label || tooltip || testid
+                        ? `[Label:${label}|Tip:${tooltip}|ID:${testid}|Txt:${text}]`
+                        : null;
+                })
+                .filter(Boolean)
+                .join(String.fromCharCode(10));
+        }""",
+                dispatch_deadline,
+                _EXPORT_DEBUG_EVALUATE_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            debug_info = ""
+            print(
+                f"⚠️ [全息快照] evaluate 超时（>{_EXPORT_DEBUG_EVALUATE_TIMEOUT_SEC}s），跳过基因序列调试输出",
+                flush=True,
+            )
+    snippet = (debug_info or "")[:800]
+    print(f"🕵️ 战场真实组件基因序列 (前800字符):\n{snippet}...", flush=True)
+
+    print(
+        "👁️ 启动视觉制导：Breakdown 工具栏 CSS（nth 1/2）与几何兜底…",
+        flush=True,
+    )
+
+    await _fallback_click_export_icon(page, dispatch_deadline=dispatch_deadline)
+
+
+async def _fb_export_followup_menu_for_download(page: Page) -> None:
+    """
+    Ads Manager 常见交互：第一次点「导出」只打开菜单 / 选格式，
+    再选「Comma-separated values」「CSV」「Export table」等才真正触发 Chromium download。
+    若不跟进，界面看起来像已开始导出，但 ``expect_download`` 永远等不到事件。
+    """
+    await asyncio.sleep(0.55)
+    total_sec = _env_float("FB_REPORT_EXPORT_FOLLOWUP_SEC", 18.0)
+    deadline = asyncio.get_running_loop().time() + max(2.0, total_sec)
+    patterns = (
+        re.compile(r"(comma[- ]?separated|\.csv|^csv$)", re.I),
+        re.compile(r"(export\s+table|download\s+csv|table\s+data)", re.I),
+    )
+    roles = ("menuitem", "option", "menuitemradio", "button", "link")
+    while asyncio.get_running_loop().time() < deadline:
+        for pat in patterns:
+            for role in roles:
+                try:
+                    loc = page.get_by_role(role, name=pat)
+                    if await loc.count() == 0:
+                        continue
+                    await loc.first.click(timeout=3_000)
+                    print(
+                        f"🎯 [导出跟进] 二次点击（{role}）以触发浏览器下载事件",
+                        flush=True,
+                    )
+                    return
+                except Exception:
+                    continue
+        await asyncio.sleep(0.4)
 
 
 async def _export_ads_csv(page: Page) -> Path:
@@ -528,16 +1034,24 @@ async def _export_ads_csv(page: Page) -> Path:
     print("📸 拍摄战地快照 (当前视口，debug_before_click.png)...")
     await _debug_screenshot(page, "debug_before_click.png")
 
-    print("🎯 执行一击必杀（仅截获 URL，不依赖物理硬盘）...")
+    print(
+        "🎯 执行一击必杀（仅截获 URL，不依赖物理硬盘）；"
+        f"下载监听最长 {_EXPORT_DOWNLOAD_TIMEOUT_MS}ms，点击链最长 {_EXPORT_DISPATCH_TIMEOUT_SEC}s…",
+        flush=True,
+    )
     hacker_page: Optional[Page] = None
     try:
-        async with page.expect_download(timeout=60_000) as download_info:
-            export_btn = page.get_by_role(
-                "button", name=re.compile(r"export|download", re.IGNORECASE)
-            ).first
-            await export_btn.wait_for(state="visible", timeout=30_000)
-            # force=True：穿透引导遮罩等 pointer-events 拦截，强行派发点击
-            await export_btn.click(force=True)
+        # Playwright Python 仅在 Page 上提供 expect_download（BrowserContext 无同名 API）。
+        # 远端 CSV 导出仍由当前 Ads Manager 页触发，用 page 监听即可。
+        async with page.expect_download(
+            timeout=_EXPORT_DOWNLOAD_TIMEOUT_MS
+        ) as download_info:
+            loop = asyncio.get_running_loop()
+            dispatch_deadline = loop.time() + _EXPORT_DISPATCH_TIMEOUT_SEC
+            await _dispatch_export_click_sequence(
+                page, dispatch_deadline=dispatch_deadline
+            )
+            await _fb_export_followup_menu_for_download(page)
 
         download = await download_info.value
         target_url = download.url
@@ -589,31 +1103,61 @@ async def _export_ads_csv(page: Page) -> Path:
 
 
 async def main() -> int:
-    try:
-        wss_endpoint = await asyncio.get_running_loop().run_in_executor(
-            None, _rewrite_wss_endpoint_from_json_version, CDP_URL
-        )
-    except Exception as e:  # noqa: BLE001
-        _print_wss_resolve_triage(e)
-        return 2
-
-    print(
-        f"🔗 路由篡改成功，准备连接 WSS 通道: {wss_endpoint}",
-        file=sys.stderr,
-    )
-
     async with async_playwright() as p:
-        try:
-            browser = await p.chromium.connect_over_cdp(
-                wss_endpoint,
-                headers=NGROK_HEADERS,
-                timeout=CONNECT_TIMEOUT_MS,
-            )
-        except (PlaywrightError, PlaywrightTimeoutError, asyncio.TimeoutError, OSError) as e:
-            _print_connection_triage(e)
-            return 2
-        except Exception as e:  # noqa: BLE001 — 连接阶段兜底分诊
-            _print_connection_triage(e)
+        browser: Optional[Browser] = None
+        connect_attempts = 3
+        for attempt in range(1, connect_attempts + 1):
+            try:
+                wss_endpoint = await asyncio.get_running_loop().run_in_executor(
+                    None, _rewrite_wss_endpoint_from_json_version, CDP_URL
+                )
+            except Exception as e:  # noqa: BLE001 — /json/version 拉取失败
+                print(
+                    f"⚠️ [CDP] /json/version 失败 ({attempt}/{connect_attempts})：{e!r}",
+                    file=sys.stderr,
+                )
+                if attempt >= connect_attempts:
+                    _print_wss_resolve_triage(e)
+                    return 2
+                await asyncio.sleep(3)
+                continue
+
+            try:
+                print(
+                    f"🔗 [{attempt}/{connect_attempts}] 路由篡改成功，WSS: {wss_endpoint}",
+                    file=sys.stderr,
+                )
+                browser = await p.chromium.connect_over_cdp(
+                    wss_endpoint,
+                    headers=NGROK_HEADERS,
+                    timeout=CONNECT_TIMEOUT_MS,
+                )
+                break
+            except (
+                PlaywrightError,
+                PlaywrightTimeoutError,
+                asyncio.TimeoutError,
+                OSError,
+            ) as e:
+                print(
+                    f"⚠️ [CDP] WebSocket 连接失败 ({attempt}/{connect_attempts})：{e!r}",
+                    file=sys.stderr,
+                )
+                if attempt >= connect_attempts:
+                    _print_connection_triage(e)
+                    return 2
+                await asyncio.sleep(3)
+            except Exception as e:  # noqa: BLE001
+                print(
+                    f"⚠️ [CDP] 连接异常 ({attempt}/{connect_attempts})：{e!r}",
+                    file=sys.stderr,
+                )
+                if attempt >= connect_attempts:
+                    _print_connection_triage(e)
+                    return 2
+                await asyncio.sleep(3)
+
+        if browser is None:
             return 2
 
         try:

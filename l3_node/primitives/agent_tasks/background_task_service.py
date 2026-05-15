@@ -262,6 +262,12 @@ class BackgroundJob:
     max_iterations: int = 24
     allowed_skills: Optional[list[str]] = None
     created_at: float = field(default_factory=time.time)
+    # 优先级：0=普通，1=较高，2=紧急。Worker 按 FIFO 顺序处理，优先级仅用于插队排序（PriorityQueue 扩展预留）。
+    priority: int = 0
+    # 子 Agent 委托标识：由 delegate 路径提交的后台任务，用于可观测性归因
+    parent_run_id: Optional[str] = None
+    # 任务标签：便于 list_recent / 监控面板筛选
+    tags: list[str] = field(default_factory=list)
 
 
 def _persist_record(task_id: str, rec: dict[str, Any]) -> None:
@@ -728,6 +734,25 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
         except (TypeError, ValueError):
             pass
 
+    # 优先级（0=普通，1=较高，2=紧急）
+    priority = 0
+    if obj.get("priority") is not None:
+        try:
+            priority = max(0, min(2, int(obj["priority"])))
+        except (TypeError, ValueError):
+            pass
+
+    # 任务标签（便于监控面板筛选，如 ["delegate", "hr_recruitment"]）
+    tags: list[str] = []
+    raw_tags = obj.get("tags")
+    if isinstance(raw_tags, list):
+        tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+    elif isinstance(raw_tags, str) and raw_tags.strip():
+        tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
+    # 父任务 run_id（由 delegate 路径提交时注入，用于可观测性归因）
+    parent_run_id: Optional[str] = obj.get("parent_run_id") or None
+
     task_id = "T-" + uuid.uuid4().hex[:12]
     job = BackgroundJob(
         task_id=task_id,
@@ -735,6 +760,9 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
         require_skills=require_skills,
         max_iterations=max_it,
         allowed_skills=allowed_skills,
+        priority=priority,
+        parent_run_id=parent_run_id,
+        tags=tags,
     )
 
     rec = {
@@ -743,6 +771,9 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
         "intent": intent,
         "require_skills": require_skills,
         "max_iterations": max_it,
+        "priority": priority,
+        "tags": tags,
+        "parent_run_id": parent_run_id,
         "created_at": job.created_at,
         "queued_at": time.time(),
         "finished_at": None,
