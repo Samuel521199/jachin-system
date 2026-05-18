@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（Chroma）** 在 L3 内闭环；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -195,18 +195,31 @@ REACT_FOOTER_WEATHER_BLOCK_SLIM = (
 )
 
 REACT_FOOTER_DESKTOP_NOTIFY_BLOCK = (
-    "【本机弹窗/通知】用户要**立即**在电脑上弹出消息框、桌面通知、看得见摸得着的提醒时："
+    "【定时任务 · 核心】用户说「N分钟后帮我做某事」「X点提醒我吃药」「帮我创建文件」「明天下午3点查数据」等**任意**未来时刻执行的真实操作时：\n"
+    "若工具列表含 **util:schedule_task**，**必须**调用它来注册定时任务，**而非**立即执行操作或使用 util:schedule_desktop_reminder。\n"
+    "JSON 必填：**intent**（到点需执行的完整任务描述，越详细越好，等价于 run_agent 的 user_input）；\n"
+    "时刻四选一：**fire_at_iso**（ISO8601）| **fire_at_unix_ms**（Unix毫秒）| **delay_seconds**（相对秒数）| **fire_at_natural**（自然语言，如「上午11:23」）。\n"
+    "**飞书渠道关键规则**：若用户经**飞书/Lark**提问（channel 含 lark 或 implicit_attribution 含 lark_chat_id），"
+    "注册定时任务时**必须同时传 lark_chat_id**，且须与 **system 最上方「飞书 originating 会话」中的完整 oc_… ID 逐字相同**；"
+    "到点时宿主会把该次 Final Answer 自动推回该会话，而不是只弹桌面。\n"
+    "不确定时可问用户「您希望通过飞书消息还是桌面弹窗收到提醒？」。\n"
+    "例：用户经飞书请求「13:40 提醒我吃药」→ util:schedule_task："
+    "intent=\"提醒用户吃药：请通过飞书消息通知\"，fire_at_natural=\"13:40\"，lark_chat_id=\"oc_xxx\"。\n"
+    "**该工具无需桌面客户端**，L3 进程内 APScheduler 调度，到点由后台 Agent Worker 真实执行。\n"
+    "成功后告知用户已注册（展示 fire_at_display、通知渠道），不要尝试立即执行。\n"
+    "\n"
+    "【本机弹窗/通知】用户要**立即**在电脑上弹出消息框、桌面通知时："
     "若工具列表含 **util:desktop_message_box**，必须调用并传入 **message**（必填）、**title**（可选）；"
-    "**禁止**谎称「无法弹窗」「没有操作系统级消息」或仅能飞书/闹钟替代而不先检查本工具。"
-    "若用户要**指定时刻/延迟**在 Jachin 桌面端右下角哨兵弹出（本机 Jachin 桌面已运行）："
-    "若工具列表含 **util:schedule_desktop_reminder**，应调用并传入 **body**（必填）、**title**（可选），"
-    "以及 **fire_at_unix_ms**、**delay_seconds** 或 **fire_at_iso** 之一；"
-    "勿与仅立即弹窗的 **util:desktop_message_box** 混淆。"
-    "说明边界：无 Jachin 桌面或未监听 127.0.0.1:8002 时，定时注册会失败，可如实说明并请用户用系统闹钟或 **util:desktop_message_box** 立即提醒。\n"
+    "**禁止**谎称「无法弹窗」。"
+    "若需定时桌面哨兵气泡（须 Jachin 桌面 8002 在线）用 **util:schedule_desktop_reminder**。"
+    "**区别**：util:schedule_task 执行任意操作 + 回推飞书（无需桌面）；util:schedule_desktop_reminder 仅弹气泡（须桌面 8002）。\n"
+    "**例外**：定时 **/test** Skill 须用自然语言 **/test**+时刻或 `/test schedule HH:MM`，由 L3 内调度处理。\n"
 )
 REACT_FOOTER_DESKTOP_NOTIFY_BLOCK_SLIM = (
-    "【桌面提醒】立即弹窗用 **util:desktop_message_box**（message 必填）；"
-    "定时哨兵用 **util:schedule_desktop_reminder**（body + 时刻/延迟）；禁谎称无法弹窗。\n"
+    "【定时任务】「N分钟后/X时刻做某事/提醒我...」→ **util:schedule_task**（intent必填，时刻四选一；无需桌面，L3内真实执行）。"
+    "用户经**飞书**提问时须传 **lark_chat_id**，到点结果才会回推飞书而非只弹桌面。\n"
+    "【桌面通知】立即弹窗 **util:desktop_message_box**；定时哨兵气泡 **util:schedule_desktop_reminder**（须桌面 8002）。\n"
+    "定时 **/test** Skill 用自然语言 **/test**+时刻或 `/test schedule HH:MM`，勿用桌面提醒工具替代。\n"
 )
 REACT_FOOTER_LARK_PUSH_BLOCK = (
     "【飞书/Lark 推送】用户要「总结网页/文章并发到飞书、发到 Lark、发到我的飞书会话」等："
@@ -938,6 +951,81 @@ def _pmo_branch_a_notifier_markdown_is_complete(inp: str) -> bool:
     has_people = "人员任务矩阵" in mc or "👥" in mc
     has_version = "版本发布需求映射" in mc or "版本需求映射" in mc or "📦" in mc
     return has_demand and has_people and has_version
+
+
+def _pmo_notifier_extract_markdown_and_title(inp: str) -> tuple[str, str]:
+    raw = (inp or "").strip()
+    if not raw.startswith("{"):
+        return "", ""
+    try:
+        args = json.loads(raw)
+        if not isinstance(args, dict):
+            return "", ""
+        return str(args.get("markdown_content") or ""), str(args.get("title") or "")
+    except json.JSONDecodeError:
+        return "", ""
+
+
+def _pmo_notifier_falsely_claims_critical_sync_failure(markdown_content: str, title: str) -> bool:
+    """BI 已成功写入磁盘时，禁止卡片谎称核心种子表『未同步/同步失败』（多为读错了无前导零的文件名）。"""
+    t = f"{markdown_content}\n{title}"
+    deny = ("未成功同步", "未能同步", "同步失败", "同步可能没有完全成功", "没有被正确同步")
+    if not any(p in t for p in deny):
+        return False
+    scopes = (
+        "开发计划核心版本需求",
+        "vewpI8lyYw",
+        "需求池",
+        "人工看板",
+        "按员工任务",
+        "vewCz1FFJi",
+        "产品任务需求完成度",
+        "tblfK9gk6vTQpJtB",
+        "tblNdv7DIlycuqxp",
+    )
+    return any(s in t for s in scopes)
+
+
+def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineContext) -> str | None:
+    """
+    分支 A：不向飞书中途推送试错/半成品。返回 JSON observation 字符串则跳过真实 notifier 调用。
+    """
+    if not _pmo_branch_a_requires_bi_pull(ctx):
+        return None
+    mc, title = _pmo_notifier_extract_markdown_and_title(inp)
+    if not _pmo_branch_a_notifier_markdown_is_complete(inp):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_premature_notifier_blocked",
+                "msg": (
+                    "【宿主拦截】本条 **未发往飞书**（避免试错过程中打扰用户）。"
+                    "`markdown_content` 须 **同时包含** SKILL §1.4 三张核心区块：「📊 需求进度全览」「👥 人员任务矩阵」"
+                    "「📦 版本发布需求映射」；缺一不可时禁止推送。"
+                    "请根据本轮 `atom_bi_project_context` 的 Observation，从 `files[]` 或目录内 `00_SYNC_MANIFEST.json` 取得**确切文件名**"
+                    "后再 `mcp:read_file` / `core:fs_read`（注意常见坑：`03_...md` **不是** `3_...md`）。"
+                    "读全并重算后 **一次性**调用 `atom_lark_notifier`。"
+                    "需求进度表中须写入 `vewpI8lyYw` **全部**符合条件的一级大需求（非仅四条），分页由原生表 `native_table_page_size` 承担。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if ctx.metadata.get("_pmo_bi_project_context_ok") and _pmo_notifier_falsely_claims_critical_sync_failure(
+        mc, title
+    ):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_false_sync_claim_blocked",
+                "msg": (
+                    "【宿主拦截】本条 **未发往飞书**：本轮已成功执行 `atom_bi_project_context`，**禁止**谎称核心表「未成功同步」「同步失败」等。"
+                    "若读盘报错路径不存在，请核对 manifest **带前导零** 的文件名。"
+                    "在确认数据与三节表齐备前不要再次推送试错卡片。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return None
 
 
 def _pmo_forbidden_lark_title(title: str) -> bool:
@@ -6674,6 +6762,7 @@ async def _run_react_core(
                             inp = json.dumps(args, ensure_ascii=False)
                 except Exception as e:
                     logger.debug("[L3 Agent] add_automated_recruitment_task 纠正 job_name 跳过: %s", e)
+            _pmo_skip_lark_invoke = False
             if (
                 (tool or "").replace("mcp:", "").strip() == "atom_lark_notifier"
                 and _pmo_lark_push_guard_channel_active(ctx)
@@ -6687,8 +6776,19 @@ async def _run_react_core(
                         inp = inp_san
                 except Exception as _pmo_title_e:
                     logger.debug("[L3 Agent][PMO] atom_lark_notifier title 纠偏跳过: %s", _pmo_title_e)
-            # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
-            observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
+                try:
+                    _blk_obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+                    if _blk_obs:
+                        observation = _blk_obs
+                        logger.info(
+                            "[L3 Agent][PMO] 已拦截试错阶段飞书推送（分支 A 未完成§1.4或未纠正误报）"
+                        )
+                        _pmo_skip_lark_invoke = True
+                except Exception as _blk_e:
+                    logger.debug("[L3 Agent][PMO] premature_lark 拦截判断跳过: %s", _blk_e)
+            if not _pmo_skip_lark_invoke:
+                # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
+                observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
             try:
                 ctx.metadata["_react_tool_invocations"] = int(ctx.metadata.get("_react_tool_invocations") or 0) + 1
             except (TypeError, ValueError):
@@ -7716,6 +7816,15 @@ async def run_agent(
         channel=_bg_channel,
         raw_user_input=user_input or "",
     )
+    try:
+        from l3_node.slash_hash_skill_router import is_slash_hash_skill_invocation
+
+        if is_slash_hash_skill_invocation(user_input or ""):
+            _try_direct = False
+            if _gateway_bundle is not None:
+                _gateway_bundle.extra["slash_hash_skill_router"] = True
+    except Exception:
+        pass
     if _try_direct:
         try:
             from l3_node.intent_gateway.ood_signals import should_veto_direct_llm_bypass
@@ -7823,6 +7932,13 @@ async def run_agent(
             _gw_inject = build_gateway_system_inject(_gateway_bundle)
         except Exception:
             pass
+
+    try:
+        from l3_node.slash_hash_skill_router import augment_gateway_inject_for_slash_hash_skill
+
+        _gw_inject = augment_gateway_inject_for_slash_hash_skill(user_input or "", _gw_inject or "")
+    except Exception as _sh_ex:
+        logger.debug("[L3 Agent] /#/ skill router inject 跳过: %s", _sh_ex)
 
     _environment_report_block = ""
     _chief_advisor_mode = False
@@ -7985,6 +8101,50 @@ async def run_agent(
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
         )
+
+    _is_deferred_origin = _bg_channel in ("deferred_task_scheduler", "background_task")
+    # 飞书会话身份（前台）：插在 system **最前**，避免被长上下文淹没；由模型调用 util:schedule_task 时必须带上同一 lark_chat_id。
+    _FG_LARK_BIND_CHANNELS = frozenset(
+        {
+            "lark_im_dispatcher",
+            "websocket_lark",
+            "websocket_terminal",
+        }
+    )
+    if (
+        (_lark_cid or "").strip()
+        and (system_prompt or "").strip()
+        and not (_try_direct or (system_prompt is None))
+        and _bg_channel in _FG_LARK_BIND_CHANNELS
+    ):
+        _lc = (_lark_cid or "").strip()
+        _lark_identity_block = (
+            "【最高优先级｜飞书 originating 会话 identity】\n"
+            f"- 本条用户提问所在的飞书会话 ID（`receive_id_type=chat_id` 时的目标 chat_id）：\n"
+            f"  `{_lc}`\n"
+            "- 凡用户要在**未来某时刻**执行操作、提醒、发结果等：**必须本轮调用** "
+            "**util:schedule_task**，且参数 **lark_chat_id** 与上面 **`"
+            + _lc
+            + "`** 逐字相同（不要将环境变量默认群/LARK_USER_OPEN_ID 等其他 ID 混入）。\n"
+            "- **禁止**不调用工具、仅用 Final Answer 写「✅已注册定时任务」或编造 `deferred_task_…`——"
+            "以 **Observation 里 `\"ok\": true` 且含真实 job_id** 为准再向用户确认。\n"
+            "- 定时到点后，宿主将把该次执行的 Final Answer **自动推送**到上述会话；"
+            "除非你收到的是「发往另一会话」的显式新要求，否则不要自作主张 util:lark_send_text 到别处。\n\n"
+        )
+        system_prompt = _lark_identity_block + str(system_prompt or "")
+
+    # 延迟任务：与 deferred_task_scheduler + 程序化 Final Answer→Lark 推送一致（勿再误导模型强行走 lark_send_text）
+    if _is_deferred_origin and _lark_cid and system_prompt is not None:
+        _lc = (_lark_cid or "").strip()
+        _deferred_lark_hint = (
+            f"\n\n【⚠️ 延迟任务·渠道强制规则】本次由定时器/后台 Worker 触发；"
+            f"用户当初的飞书 originating 会话：**{_lc}**\n"
+            "把提醒或可交付结果写在 **Final Answer**（简短、可读）。\n"
+            "**禁止**调用 util:lark_send_text、util:desktop_message_box（除非本条 intent 明确要求发到**其他**指定会话）；\n"
+            f"系统会在本轮结束后自动将 Final Answer 推送到 **`{_lc}`**，"
+            "不要改发到监控群、PMO 默认群等其他 chat_id。\n"
+        )
+        system_prompt = str(system_prompt) + _deferred_lark_hint
 
     _user_llm_content: str | list[Any] = user_input or ""
     try:

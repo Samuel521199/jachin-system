@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 本地 WebSocket 服务
 
 监听 127.0.0.1:18981（189xx 系列，与 L2 18888、Sensory 18881 互不冲突），
@@ -379,6 +379,59 @@ async def _ws_execute_intent_turn(
             asyncio.create_task(_push_reply_to_lark(chat_id, cmd_reply))
         return
 
+    # 通用定时任务确定性拦截（可选；JACHIN_DISABLE_DEFERRED_TIMED_TASK_INTERCEPT=1 时关闭，改由 LLM 调 util:schedule_task）
+    _deferred_reply: str | None = None
+    _skip_def_ix = (
+        os.environ.get("JACHIN_DISABLE_DEFERRED_TIMED_TASK_INTERCEPT", "")
+        .strip()
+        .lower()
+        in ("1", "true", "yes", "on")
+    )
+    if not _skip_def_ix:
+        try:
+            from l3_node.deferred_task_scheduler import try_generic_timed_task_intercept
+
+            _deferred_reply = try_generic_timed_task_intercept(intent, lark_chat_id=chat_id or None)
+        except Exception:
+            _deferred_reply = None
+    if _deferred_reply is not None:
+        if chat_id:
+            messages.append({"role": "user", "content": intent})
+            messages.append({"role": "assistant", "content": _deferred_reply})
+            _save_lark_session(chat_id, messages)
+        ans_payload = {"step_type": "answer", "content": _deferred_reply, "run_id": run_id}
+        await _send_safe(websocket, ans_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+        if origin_terminal and chat_id:
+            asyncio.create_task(_push_reply_to_lark(chat_id, _deferred_reply))
+        return
+
+    # /test 与 L3 内定时：Lark 经 WS 镜像时不走 im_channels/dispatcher，此处对齐拦截
+    test_reply: str | None = None
+    try:
+        from l3_node.lark_test_file_skill import is_slash_test_command, try_test_lark_file_skill_intercept
+        from l3_node.lark_test_schedule import try_test_schedule_intercept
+
+        if is_slash_test_command(intent):
+            test_reply = try_test_lark_file_skill_intercept(intent)
+        else:
+            test_reply = try_test_schedule_intercept(intent)
+    except Exception:
+        test_reply = None
+    if test_reply is not None:
+        if chat_id:
+            messages.append({"role": "user", "content": intent})
+            messages.append({"role": "assistant", "content": test_reply})
+            _save_lark_session(chat_id, messages)
+        ans_payload = {"step_type": "answer", "content": test_reply, "run_id": run_id}
+        await _send_safe(websocket, ans_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+        if origin_terminal and chat_id:
+            asyncio.create_task(_push_reply_to_lark(chat_id, test_reply))
+        return
+
     try:
         from l3_node.terminal_turn_debug_log import begin_turn
 
@@ -476,6 +529,21 @@ async def _ws_execute_intent_turn(
             gateway_clarification_handle=_gw_ch,
             gateway_clarification_deadline_ts=_gw_dl,
         )
+        try:
+            from l3_node.deferred_task_scheduler import heal_schedule_reply_if_bogus
+
+            _healed = heal_schedule_reply_if_bogus(
+                intent, reply or "", lark_chat_id=chat_id or None
+            )
+            if _healed:
+                reply = _healed
+                if chat_id and messages:
+                    for _hi in range(len(messages) - 1, -1, -1):
+                        if messages[_hi].get("role") == "assistant":
+                            messages[_hi]["content"] = _healed
+                            break
+        except Exception as _h_ex:
+            logger.debug("[L3 WS] deferred heal 跳过: %s", _h_ex)
         if chat_id and messages:
             _save_lark_session(chat_id, messages)
             logger.debug("[L3 WS] chat_id=%s 已保存会话 %d 条", chat_id[:20], len(messages))

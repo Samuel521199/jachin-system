@@ -1,4 +1,4 @@
-"""
+﻿"""
 IM 消息分发 — 收到消息后调用 Agent 并回传
 
 与具体通道解耦：dispatcher 只负责「执行 + 回复」逻辑，
@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import sys
 import threading
 import time
@@ -335,20 +336,50 @@ def _do_agent_work(
                 session_messages.append({"role": "user", "content": intent})
                 session_messages.append({"role": "assistant", "content": cmd_reply})
         else:
+            # ── 通用定时任务确定性拦截（可选；关闭后完全由 LLM + util:schedule_task，见 JACHIN_DISABLE_DEFERRED_TIMED_TASK_INTERCEPT）
+            deferred_reply: str | None = None
+            _skip_def_ix = (
+                os.environ.get("JACHIN_DISABLE_DEFERRED_TIMED_TASK_INTERCEPT", "")
+                .strip()
+                .lower()
+                in ("1", "true", "yes", "on")
+            )
+            if not _skip_def_ix:
+                try:
+                    from l3_node.deferred_task_scheduler import try_generic_timed_task_intercept
+
+                    deferred_reply = try_generic_timed_task_intercept(intent, lark_chat_id=cid or None)
+                except Exception as _def_ex:
+                    logger.debug("[IM Dispatcher] 通用定时拦截跳过: %s", _def_ex)
+            else:
+                logger.debug(
+                    "[IM Dispatcher] 已按环境变量跳过通用定时拦截（走 LLM） chat_id=%s",
+                    cid[:20] if cid else "",
+                )
+
+            if deferred_reply is not None:
+                route = "deferred_task_scheduler"
+                reply = deferred_reply
+                turn_status = "ok"
+                if cid:
+                    session_messages.append({"role": "user", "content": intent})
+                    session_messages.append({"role": "assistant", "content": deferred_reply})
+
             # ── /test 模拟 Skill（落盘 + 指定会话卡片，用于联调）──
             test_reply: str | None = None
-            try:
-                from l3_node.lark_test_file_skill import is_slash_test_command, try_test_lark_file_skill_intercept
-                from l3_node.lark_test_schedule import try_test_schedule_intercept
+            if deferred_reply is None:
+                try:
+                    from l3_node.lark_test_file_skill import is_slash_test_command, try_test_lark_file_skill_intercept
+                    from l3_node.lark_test_schedule import try_test_schedule_intercept
 
-                if is_slash_test_command(intent):
-                    test_reply = try_test_lark_file_skill_intercept(intent)
-                else:
-                    test_reply = try_test_schedule_intercept(intent)
-                    if test_reply is not None:
-                        route = "test_lark_schedule"
-            except Exception as _test_ex:
-                logger.debug("[IM Dispatcher] /test 触发器跳过: %s", _test_ex)
+                    if is_slash_test_command(intent):
+                        test_reply = try_test_lark_file_skill_intercept(intent)
+                    else:
+                        test_reply = try_test_schedule_intercept(intent)
+                        if test_reply is not None:
+                            route = "test_lark_schedule"
+                except Exception as _test_ex:
+                    logger.debug("[IM Dispatcher] /test 触发器跳过: %s", _test_ex)
 
             if test_reply is not None and route == "unknown":
                 route = "test_lark_file_skill"
@@ -360,7 +391,7 @@ def _do_agent_work(
                     session_messages.append({"role": "assistant", "content": test_reply})
             # ── PMO 双重触发器（精确指令 / 模糊确认卡片 / 卡片回复）──
             pmo_reply: str | None = None
-            if test_reply is None:
+            if deferred_reply is None and test_reply is None:
                 try:
                     from l3_node.pmo_lark_trigger import try_pmo_lark_intercept
 
@@ -384,7 +415,7 @@ def _do_agent_work(
                 if cid:
                     session_messages.append({"role": "user", "content": intent})
                     session_messages.append({"role": "assistant", "content": pmo_reply})
-            elif test_reply is None:
+            elif deferred_reply is None and test_reply is None:
                 try:
                     if _is_hr_package_available() and _is_recruitment_message(intent):
                         logger.debug(
@@ -434,6 +465,23 @@ def _do_agent_work(
                             # 不设超时：Agent 跑多久都等；结果通过 send_reply_fn 直连 API 推回主群
                             reply = future.result(timeout=None)
                             turn_status = "ok"
+                            try:
+                                from l3_node.deferred_task_scheduler import (
+                                    heal_schedule_reply_if_bogus,
+                                )
+
+                                _healed = heal_schedule_reply_if_bogus(
+                                    intent, str(reply or ""), lark_chat_id=cid or None
+                                )
+                                if _healed:
+                                    reply = _healed
+                                    if session_messages:
+                                        for _hi in range(len(session_messages) - 1, -1, -1):
+                                            if session_messages[_hi].get("role") == "assistant":
+                                                session_messages[_hi]["content"] = _healed
+                                                break
+                            except Exception as _h_ex:
+                                logger.debug("[IM Dispatcher] deferred heal 跳过: %s", _h_ex)
                         finally:
                             _ack_cancelled.set()
                             _ack_timer.cancel()

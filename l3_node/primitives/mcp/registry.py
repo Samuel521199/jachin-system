@@ -434,7 +434,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:atom_lark_notifier",
         "label": "mcp:atom_lark_notifier",
-        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title；可选 native_table_card=true 且正文含 GFM 表格时，改为发送 Schema 2.0 原生 table 卡片（否则单块 lark_md）。",
+        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title；建议显式传入 native_table_card=true（与 PMO MCP 默认一致）；正文须为可被解析的裸 GFM 管道表时可发 Schema 2.0 tag:table（含右下角分页；page_size=native_table_page_size）。若为 lark_md 降级则无分页。",
         "params": ["webhook_url", "markdown_content", "title", "chat_id", "native_table_card"],
         "long_running": True,
     },

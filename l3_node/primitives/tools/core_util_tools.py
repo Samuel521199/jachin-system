@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin L3 — 原生轻量实用工具 (util:* / sys:*)
 
 供大模型补齐：绝对时间、安全算术、编解码、轻量网络与主机状态等。
@@ -2019,6 +2019,49 @@ def run_compose_long_document(**kwargs: Any) -> dict[str, Any]:
         return _err(str(e))
 
 
+def run_schedule_task(**kwargs: Any) -> dict[str, Any]:
+    """
+    util:schedule_task — L3 进程内通用定时任务（无需桌面客户端）。
+
+    在未来指定时刻执行任意 intent（通过后台 Agent Worker + 全工具池 run_agent）。
+    适合所有「X 时间后帮我做某事」场景：写文件、发飞书消息、查询数据等。
+    与 util:schedule_desktop_reminder（仅弹系统通知）**不同**，本工具会真实执行任务。
+
+    JSON 参数：
+      intent         （必填）到点须执行的完整任务描述，越详细越好。
+      fire_at_iso    ISO8601 时刻（如 "2026-05-18T11:23:00"，缺省 Asia/Shanghai 时区）
+      fire_at_unix_ms  Unix 毫秒时间戳
+      delay_seconds  相对延迟秒数
+      fire_at_natural 自然语言时刻（如 "上午11:23"、"30分钟后"、"明天下午3点"）
+
+    时刻四者任选其一；priority：fire_at_iso > fire_at_unix_ms > delay_seconds > fire_at_natural。
+    """
+    try:
+        from l3_node.deferred_task_scheduler import schedule_task
+
+        intent = str(kwargs.get("intent") or "").strip()
+        fire_at_iso = kwargs.get("fire_at_iso")
+        fire_at_unix_ms = kwargs.get("fire_at_unix_ms")
+        delay_seconds = kwargs.get("delay_seconds")
+        fire_at_natural = kwargs.get("fire_at_natural") or kwargs.get("fire_at_text")
+        lark_chat_id = str(kwargs.get("lark_chat_id") or "").strip() or None
+
+        if not intent:
+            return _err("intent 不能为空（请填入到点需执行的完整任务描述）")
+
+        result = schedule_task(
+            intent,
+            fire_at_iso=str(fire_at_iso).strip() if fire_at_iso is not None else None,
+            fire_at_unix_ms=int(fire_at_unix_ms) if fire_at_unix_ms is not None else None,
+            delay_seconds=float(delay_seconds) if delay_seconds is not None else None,
+            fire_at_natural=str(fire_at_natural).strip() if fire_at_natural else None,
+            lark_chat_id=lark_chat_id,
+        )
+        return result if isinstance(result, dict) else _ok(result)
+    except Exception as e:
+        return _err(f"util:schedule_task 异常: {e}")
+
+
 # ---------------------------------------------------------------------------
 # 分发与注册表（供 loader / native_tools 挂载）
 # ---------------------------------------------------------------------------
@@ -2043,6 +2086,7 @@ _UTIL_HANDLERS: dict[str, Any] = {
     "util:compose_long_document": run_compose_long_document,
     "util:desktop_message_box": run_desktop_message_box,
     "util:schedule_desktop_reminder": run_schedule_desktop_reminder,
+    "util:schedule_task": run_schedule_task,
     "util:lark_send_text": run_lark_send_text,
     "util:lark_search_user": run_lark_search_user,
     "util:lark_resolve_user": run_lark_resolve_user,
@@ -2234,6 +2278,19 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "label": "util:lark_resolve_user",
         "desc": "【飞书】用邮箱或手机号解析用户 open_id（batch_get_id）；display_name 仅当 LARK_DISPLAY_NAME_MAP 已映射。姓名无映射时优先 util:lark_search_user。",
         "params": ["email"],
+    },
+    {
+        "id": "util:schedule_task",
+        "label": "util:schedule_task",
+        "desc": (
+            "【L3 定时任务】在未来指定时刻执行任意 intent（run_agent + 全工具池），**无需桌面客户端**。"
+            "适合「上午11:23帮我写文件」「30分钟后发飞书消息」「明天下午3点查数据」等定时执行场景。"
+            "与 util:schedule_desktop_reminder（仅弹系统通知气泡）完全不同，本工具会真实执行任务。"
+            "JSON：intent（必填，越详细越好）；时刻四选一："
+            "fire_at_iso（ISO8601）| fire_at_unix_ms（Unix毫秒）| delay_seconds（相对秒数）| fire_at_natural（自然语言如「上午11:23」）。"
+            "成功返回 job_id 与 fire_at_display；任务持久化，L3 重启可恢复。"
+        ),
+        "params": ["intent"],
     },
 ]
 
@@ -2536,8 +2593,11 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
     "util:schedule_desktop_reminder": {
         "name": "util:schedule_desktop_reminder",
         "description": (
-            "向本机 Jachin 桌面（127.0.0.1:8002）注册定时右下角哨兵提醒；"
-            "须桌面端已运行。与立即弹窗的 util:desktop_message_box 不同。"
+            "向本机 **Jachin 桌面客户端** HTTP 127.0.0.1:8002 注册定时右下角哨兵提醒；"
+            "**未启动桌面端则会连接失败**。与立即弹窗的 util:desktop_message_box 不同。"
+            "**不要**用本工具代替「到点执行 /test 模拟 Skill」：若用户要在仅 L3（无桌面）环境下定时跑 /test（写 workspace 文件 + 发飞书卡片），"
+            "应让用户直接发飞书/终端自然语言（含 **/test** + 时刻，如「上午11:01触发/test这个任务」）或 `/test schedule 11:01`，由 L3 内 APScheduler 处理；"
+            "勿编造必须先开桌面端。"
         ),
         "inputSchema": _schema_obj(
             {
@@ -2612,6 +2672,55 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
                 },
             },
             required=[],
+        ),
+    },
+    "util:schedule_task": {
+        "name": "util:schedule_task",
+        "description": (
+            "【L3 进程内定时任务】到点真实执行 intent（run_agent + 全工具池），**无需桌面客户端**。\n"
+            "与 util:schedule_desktop_reminder（仅弹系统气泡，须桌面端）完全不同——本工具会调用 Agent 真正完成任务。\n"
+            "适合：「上午11:23帮我在 workspace 新建 txt 写游戏推荐」「30分钟后发飞书消息给 XXX」「明天下午3点查数据汇总」等。\n"
+            "若请求来自**飞书**（system 顶部有【飞书 originating 会话】），**必须**传 **lark_chat_id** 且与其中 **完整 oc_… 字符串逐字相同**；"
+            "到点时宿主会把该次 Final Answer 自动推回该会话，而不是仅弹桌面。\n"
+            "JSON 必填：intent；飞书来源时 **lark_chat_id 必填**。\n"
+            "时刻四选一（优先级顺序）：\n"
+            "  fire_at_iso（ISO8601，如 \"2026-05-18T11:23:00\"）\n"
+            "  fire_at_unix_ms（Unix 毫秒）\n"
+            "  delay_seconds（相对延迟秒数）\n"
+            "  fire_at_natural（自然语言，如 \"上午11:23\"、\"30分钟后\"、\"明天下午3点\"）\n"
+            "成功返回 job_id 与 fire_at_display；任务持久化，L3 重启恢复未过期任务。"
+        ),
+        "inputSchema": _schema_obj(
+            {
+                "intent": {
+                    "type": "string",
+                    "description": "到点须执行的完整任务描述（越详细越好，相当于 run_agent 的 user_input）",
+                },
+                "lark_chat_id": {
+                    "type": "string",
+                    "description": (
+                        "飞书来源时**必填**：与 system 最上方【飞书 originating 会话】中的 chat_id **完全一致**（通常 oc_ 开头）。"
+                        "到点由宿主把 Final Answer 推送到此会话；勿填监控群或其他默认环境变量 ID。"
+                    ),
+                },
+                "fire_at_iso": {
+                    "type": "string",
+                    "description": "ISO8601 时刻（如 \"2026-05-18T11:23:00\"，无时区默认 Asia/Shanghai）",
+                },
+                "fire_at_unix_ms": {
+                    "type": "integer",
+                    "description": "Unix 毫秒时间戳",
+                },
+                "delay_seconds": {
+                    "type": "number",
+                    "description": "相对延迟秒数（如 1800 = 30 分钟后）",
+                },
+                "fire_at_natural": {
+                    "type": "string",
+                    "description": "自然语言时刻（如 \"上午11:23\"、\"30分钟后\"、\"下午17:14\"、\"明天早上9点\"）",
+                },
+            },
+            required=["intent"],
         ),
     },
 }

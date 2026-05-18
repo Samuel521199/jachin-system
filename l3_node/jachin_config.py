@@ -69,6 +69,8 @@ default_chat_id: "${BI_LARK_CHAT_ID}"
 lark_use_feishu: true
 # 含 GFM 表时优先 Schema 2.0 tag:table；显式 false 或 JACHIN_LARK_NATIVE_TABLE_CARD=0 可关闭
 native_table_card: true
+# 可选：原生表每页行数 1～10；亦可 JACHIN_LARK_NATIVE_TABLE_PAGE_SIZE
+# native_table_page_size: 10
 """,
     "atom_email_sender": """# atom_email_sender MCP 配置
 smtp:

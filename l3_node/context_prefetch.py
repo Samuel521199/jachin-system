@@ -241,6 +241,11 @@ def build_prefetch_attachment(
         # PMO 批量拉盘目录：内含大量飞书多维表 Markdown，由模型显式 fs_read 读取；
         # 不允许自动 prefetch，否则旧批次/其他分支数据会污染当前轮上下文
         "pmo_lark_pull", "pmo_resource_monitor",
+        # pmo_docs / bi_project：BI 日报或旧版 PMO 同步落盘，数据滞后；
+        # context_prefetch 会把旧 Sprint 数据（如 2026/04/13）注入 Observation 前部，
+        # 导致模型误以为该 Sprint 是当前最新，产生「项目进度倒退」幻觉；
+        # PMO 分支 A 必须从 pmo_lark_pull 的本轮拉取结果读取，不得依赖 prefetch 旁路
+        "pmo_docs", "bi_project",
     }
     for p in sorted(root.rglob("*.md"), key=lambda x: x.stat().st_mtime_ns, reverse=True):
         if len(md_files) >= max_files:

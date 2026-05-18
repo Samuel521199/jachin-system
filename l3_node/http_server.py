@@ -1,4 +1,4 @@
-"""
+﻿"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -2003,6 +2003,13 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         ensure_test_schedule_scheduler_started()
     except Exception as e:
         logger.debug("[L3 HTTP] test-skill scheduler 启动跳过: %s", e)
+
+    try:
+        from l3_node.deferred_task_scheduler import ensure_deferred_scheduler_started
+
+        ensure_deferred_scheduler_started()
+    except Exception as e:
+        logger.debug("[L3 HTTP] deferred-task scheduler 启动跳过: %s", e)
 
     # stdio MCP 不得在「主 await 链」上同步拉起：Windows + frozen + mcp/anyio 子进程创建时可能抛出
     # asyncio.CancelledError（非 Exception 子类），会穿透 except Exception 并终止 asyncio.run(main)。

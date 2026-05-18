@@ -1,4 +1,4 @@
-"""L3 后台 Agent 任务队列与 Worker；事件经 l3_event_bus。规格与配置见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
+﻿"""L3 后台 Agent 任务队列与 Worker；事件经 l3_event_bus。规格与配置见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
 from __future__ import annotations
 
 import asyncio
@@ -268,6 +268,8 @@ class BackgroundJob:
     parent_run_id: Optional[str] = None
     # 任务标签：便于 list_recent / 监控面板筛选
     tags: list[str] = field(default_factory=list)
+    # 原始请求的 Lark 会话 ID；定时任务触发时用于把结果回推到正确飞书会话
+    lark_chat_id: Optional[str] = None
 
 
 def _persist_record(task_id: str, rec: dict[str, Any]) -> None:
@@ -445,19 +447,40 @@ async def _run_job(job: BackgroundJob) -> None:
             await pulse.note_stream_chars(len(chunk or ""))
 
     try:
-        from l3_node.agent_core import run_agent
+        # /pmo 指令：走完整 PMO Skill 执行路径，而不是普通 run_agent
+        _is_pmo = False
+        try:
+            from l3_node.deferred_task_scheduler import _is_pmo_command
+            _is_pmo = _is_pmo_command(intent)
+        except Exception:
+            pass
 
-        answer = await run_agent(
-            intent,
-            engine,
-            max_iterations=job.max_iterations,
-            implicit_attribution={
+        if _is_pmo:
+            logger.info("[BackgroundTasks] 检测到 /pmo 指令，走 PMO Skill 执行路径 task_id=%s", tid)
+            try:
+                from l3_node.deferred_task_scheduler import _run_pmo_deferred
+                answer = await _run_pmo_deferred(intent, engine, job.lark_chat_id)
+            except Exception as _pmo_ex:
+                logger.warning("[BackgroundTasks] PMO deferred 路径失败，回退 run_agent: %s", _pmo_ex)
+                _is_pmo = False
+
+        if not _is_pmo:
+            from l3_node.agent_core import run_agent
+
+            _implicit: dict[str, Any] = {
                 "channel": "background_task",
                 "task_id": tid,
-            },
-            _allowed_skills_override=job.allowed_skills,
-            on_chunk=_bg_on_chunk if pulse else None,
-        )
+            }
+            if job.lark_chat_id:
+                _implicit["lark_chat_id"] = job.lark_chat_id
+            answer = await run_agent(
+                intent,
+                engine,
+                max_iterations=job.max_iterations,
+                implicit_attribution=_implicit,
+                _allowed_skills_override=job.allowed_skills,
+                on_chunk=_bg_on_chunk if pulse else None,
+            )
         rec.update(
             {
                 "status": "completed",
@@ -470,6 +493,17 @@ async def _run_job(job: BackgroundJob) -> None:
         _append_tasks_index(rec, "completed")
         await _emit("completed", tid, result_preview=(answer or "")[:500])
         await _append_progress_line_async(f"- [后台任务 {tid}] 已完成。")
+        # 定时任务来源：由代码强制把结果推送到原始飞书会话（不依赖 LLM 自行填写 receive_id）
+        if job.lark_chat_id and answer and not str(answer).startswith("error:"):
+            try:
+                from l3_node.deferred_task_scheduler import _send_deferred_result_to_lark
+                await asyncio.to_thread(
+                    _send_deferred_result_to_lark,
+                    str(answer)[:4000],
+                    job.lark_chat_id,
+                )
+            except Exception as _lark_ex:
+                logger.warning("[BackgroundTasks] 定时任务 Lark 推送异常 task_id=%s: %s", tid, _lark_ex)
     except asyncio.CancelledError:
         rec.update({"status": "cancelled", "finished_at": time.time(), "error": "cancelled"})
         _merge_registry(rec)
@@ -753,6 +787,11 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
     # 父任务 run_id（由 delegate 路径提交时注入，用于可观测性归因）
     parent_run_id: Optional[str] = obj.get("parent_run_id") or None
 
+    # 原始 Lark 会话 ID（由 deferred_task_scheduler 触发时注入，确保结果回推到正确会话）
+    lark_chat_id_from_payload: Optional[str] = (
+        str(obj.get("lark_chat_id") or "").strip() or None
+    )
+
     task_id = "T-" + uuid.uuid4().hex[:12]
     job = BackgroundJob(
         task_id=task_id,
@@ -763,6 +802,7 @@ def submit_background_task_sync(inp: str, *, allowed_skills: Optional[list[str]]
         priority=priority,
         parent_run_id=parent_run_id,
         tags=tags,
+        lark_chat_id=lark_chat_id_from_payload,
     )
 
     rec = {

@@ -14,5 +14,8 @@ lark_use_feishu: true
 # true：将 markdown 内 GFM 表格解析为飞书卡片 2.0 的 tag:table（须正文含表；无表则仍走 lark_md）
 native_table_card: false
 
+# 可选：每张原生表每页可见行数 1～10；也可用环境变量 JACHIN_LARK_NATIVE_TABLE_PAGE_SIZE（PMO 常见 4）
+# native_table_page_size: 4
+
 # Lark 消息转发目标：L3 WebSocket 地址（长连接/Webhook 收到消息后转发到此）
 l3_ws_url: "${L3_WS_URL}"

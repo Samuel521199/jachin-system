@@ -10,13 +10,17 @@
   - lark_use_feishu: **覆盖**进程环境里的国际/国内域名选择（避免根 .env 残留 FEISHU=1 却把租户配在国际 Lark）
   - default_chat_id: 未传 chat_id 时使用
   - native_table_card: 默认开启；若 ``markdown_content`` 含 GFM 表格则使用 **飞书卡片 2.0 / tag:table**（无表则与旧版同为单块 lark_md）。显式 ``false`` 或 ``JACHIN_LARK_NATIVE_TABLE_CARD=0`` 可关闭
+  - native_table_page_size: （可选）每张原生表「每页可见行数」1～10，默认 10；也可用 ``JACHIN_LARK_NATIVE_TABLE_PAGE_SIZE`` 覆盖（PMO 宏观看板常见设为 4）
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _root = Path(__file__).resolve().parent.parent.parent.parent
 if str(_root) not in sys.path:
@@ -81,6 +85,23 @@ def _truthy_native_table(flag: bool | None, cfg: dict[str, Any]) -> bool:
     return True
 
 
+def _native_table_page_size(cfg: dict[str, Any]) -> int:
+    """飞书 tag:table 的 page_size（1～10）；优先环境变量，其次 MCP YAML。"""
+    env = (os.environ.get("JACHIN_LARK_NATIVE_TABLE_PAGE_SIZE") or "").strip()
+    if env:
+        try:
+            return max(1, min(int(env), 10))
+        except ValueError:
+            pass
+    raw = cfg.get("native_table_page_size")
+    if raw is not None:
+        try:
+            return max(1, min(int(raw), 10))
+        except (ValueError, TypeError):
+            pass
+    return 10
+
+
 def send_lark_markdown(
     webhook_url: str,
     markdown_content: str,
@@ -128,11 +149,21 @@ def send_lark_markdown(
         except ValueError:
             _mt = 5
         _mt = max(1, min(_mt, 5))
+        _ps = _native_table_page_size(cfg)
         v2 = build_schema_v2_card_from_markdown(
             markdown_content or "",
             title,
             max_tables=_mt,
+            table_page_size=_ps,
         )
+        if v2 is None:
+            mc = markdown_content or ""
+            if mc.count("|") >= 15:
+                logger.warning(
+                    "[atom_lark_notifier] native_table_card 已开启但正文未解析出可用 GFM 管道表 "
+                    "(可能缺分隔行 `| :--- | :--- |`、表被围栏 ``` 包住或非标 `|` 对齐)；降为 lark_md 整卡，"
+                    "**无右下角分页**。三节战报表须裸写于 markdown_content，勿置于代码围栏内。"
+                )
         if v2 is not None:
             if has_webhook:
                 return post_interactive_card_webhook(webhook_url.strip(), v2)

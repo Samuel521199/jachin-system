@@ -1,4 +1,4 @@
-"""
+﻿"""
 IM 通道层 — Lark/Telegram 等同维度
 
 L3 启动时按 ~/.jachin/config/im_channels.yaml 加载配置，
@@ -47,6 +47,13 @@ def start_im_channels(
         ensure_test_schedule_scheduler_started()
     except Exception as e:
         logger.debug("[IM Channels] /test 定时调度器启动跳过: %s", e)
+
+    try:
+        from l3_node.deferred_task_scheduler import ensure_deferred_scheduler_started
+
+        ensure_deferred_scheduler_started()
+    except Exception as e:
+        logger.debug("[IM Channels] deferred-task scheduler 启动跳过: %s", e)
 
     cfg = load_config()
     channels = cfg.get("im_channels") or {}

@@ -42,9 +42,9 @@ def message_contains_slash_test_token(text: str) -> bool:
     """
     消息中是否出现 **ASCII ``/test`` 词元**（须带斜杠）。
 
-    - ``下午17:14执行/test`` → True
-    - ``下午17:14执行test``、裸 ``test`` → False（与本 Skill 无必然联系）
-    - ``/testing`` → False（避免子串误匹配）
+    - ``下午17:14执行/test``、``触发/test这个任务`` → True（后跟中文标点/汉字不算英文词延续）
+    - ``下午17:14执行test``、裸 ``test`` → False
+    - ``/testing``、``/test123`` → False（仅 ASCII 字母数字视为同一英文词）
     """
     t = text or ""
     start = 0
@@ -53,9 +53,13 @@ def message_contains_slash_test_token(text: str) -> bool:
         if i < 0:
             return False
         after = i + _SLASH_TEST_TOKEN_LEN
-        if after >= len(t) or not t[after].isalnum():
+        if after >= len(t):
             return True
-        start = i + 1
+        ch = t[after]
+        if ch.isascii() and ch.isalnum():
+            start = i + 1
+            continue
+        return True
 
 
 def is_slash_test_command(text: str) -> bool:

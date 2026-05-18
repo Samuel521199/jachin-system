@@ -144,8 +144,8 @@ def _append_log(record: dict[str, Any]) -> None:
 
 async def _run_resource_monitor_async(run_type: str, focus_hint: str) -> dict[str, Any]:
     """运行一次资源预警巡检，返回结构化结果。"""
+    from l3_node.__main__ import _create_engine_standalone
     from l3_node.agent_core import _build_system_prompt, run_agent
-    from l3_node.bootstrap import get_engine
     from l3_node.intent_gateway.bundle import build_gateway_bundle
     from l3_node.primitives.tools.tool_pool import (
         assemble_tool_pool,
@@ -223,7 +223,15 @@ async def _run_resource_monitor_async(run_type: str, focus_hint: str) -> dict[st
         domain_experts=None,
     )
 
-    engine = get_engine()
+    try:
+        engine = _create_engine_standalone()
+    except Exception as e:
+        msg = f"引擎初始化失败: {e}"
+        logger.error("[pmo_resource_monitor] %s", msg)
+        rec = {"ok": False, "run_type": run_type, "error": msg, "started_at": started_at,
+               "finished_at": datetime.now(_BJT).isoformat()}
+        _append_log(rec)
+        return rec
 
     try:
         answer = await run_agent(

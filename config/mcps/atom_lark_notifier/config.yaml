@@ -22,3 +22,7 @@ l3_ws_url: "ws://127.0.0.1:18981/sensory"
 
 # 为 true 时：正文内 GFM | 表 | 转为飞书 Schema 2.0 原生 table 组件（PMO 战报推荐开启）
 native_table_card: true
+
+# 原生表格每页可见数据行数（1～10，飞书上限 10）；PMO「需求进度全览 / 人员矩阵」建议 4，与 SKILL 对齐（多出部分用表格右下角 1/N 翻页）
+# 其它播报若希望首屏多展示几行，可改大或设环境变量 JACHIN_LARK_NATIVE_TABLE_PAGE_SIZE
+native_table_page_size: 4
