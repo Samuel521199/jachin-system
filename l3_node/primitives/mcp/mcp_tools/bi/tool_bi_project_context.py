@@ -352,7 +352,7 @@ class _LarkProjectClient:
             if data.get("code") != 0:
                 logger.warning("[bi_project_context] list_children failed: %s", data.get("msg", data))
                 break
-            chunk = data.get("data", {}).get("items", [])
+            chunk: list[dict] = data.get("data", {}).get("items") or []
             items.extend(chunk)
             page_token = data.get("data", {}).get("page_token")
             if not data.get("data", {}).get("has_more") or not chunk:
@@ -390,7 +390,8 @@ class _LarkProjectClient:
             if data.get("code") != 0:
                 logger.warning("[bi_project_context] bitable list tables: %s", data.get("msg"))
                 break
-            items = data.get("data", {}).get("items", [])
+            # 用 `or []` 而非 `.get("items", [])` 防止 API 显式返回 null 时得到 None
+            items: list[dict] = data.get("data", {}).get("items") or []
             out.extend(items)
             page_token = data.get("data", {}).get("page_token")
             if not page_token or not items:
@@ -401,7 +402,8 @@ class _LarkProjectClient:
         data = self._get(f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields")
         if data.get("code") != 0:
             return []
-        return data.get("data", {}).get("items", [])
+        # 用 `or []` 防止 API 返回 `{"items": null}` 时 .get("items", []) 仍给出 None
+        return data.get("data", {}).get("items") or []
 
     def bitable_list_records(
         self,
@@ -427,7 +429,8 @@ class _LarkProjectClient:
             if data.get("code") != 0:
                 logger.warning("[bi_project_context] bitable records: %s", data.get("msg"))
                 break
-            items = data.get("data", {}).get("items", [])
+            # 用 `or []` 防止 API 显式返回 null 时 extend/for 抛 TypeError
+            items: list[dict] = data.get("data", {}).get("items") or []
             records.extend(items)
             page_token = data.get("data", {}).get("page_token")
             has_more = data.get("data", {}).get("has_more")
@@ -640,6 +643,14 @@ def sync_bi_project_context(
     cfg = _load_merge_config(config, root)
 
     urls = cfg.get("wiki_urls")
+    # 模型有时将 wiki_urls 序列化为 JSON 字符串而非数组，兼容性解析
+    if isinstance(urls, str):
+        try:
+            parsed = json.loads(urls)
+            if isinstance(parsed, list):
+                urls = parsed
+        except (json.JSONDecodeError, ValueError):
+            urls = None
     if not urls or not isinstance(urls, list):
         urls = _default_wiki_urls()
 

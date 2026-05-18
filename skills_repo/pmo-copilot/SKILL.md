@@ -111,9 +111,20 @@ tools:
 8. `https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewswB05Wi`（设计方任务）
 9. `https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vew0gcyAUk`（开发方任务）
 
-**美术（Art）** —— 飞书侧 Wiki **节点标题为「设计专用」**；§1.1 口语「美术表」= 该节点。拉表成功后 `files[]` 中必有含 **`设计专用_美术视图_vew5taB9H1`** 的文件名（前缀 `NN_` 以本轮为准），**用其完整路径 `fs_read` 即可，不要找「美术」开头的 md**。
+**美术（Art）数据来源——三张表，缺一不可，必须全部拉取并综合**
 
-`https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1`
+| 来源 | 说明 | `wiki_urls` 中对应条目 |
+| :--- | :--- | :--- |
+| ① **设计专用**（主表） | 美术独立任务：UI 设计、动效、图标、素材等 | `https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd?table=tblDw87UlhddFIoY&view=vew5taB9H1` |
+| ② **开发计划·核心版本需求**（交叉） | 含「美术执行人」「美术交付」等字段；功能需求级别的美术状态 | `https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewpI8lyYw` |
+| ③ **开发计划·设计方任务**（交叉） | 开发侧拆分的设计/美术子任务，与开发排期直接挂钩 | `https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P?table=tblfK9gk6vTQpJtB&view=vewswB05Wi` |
+
+拉表成功后 `files[]` 中对应：
+- ① 含 **`设计专用`** + **`DiSnwVB1`** + **`vew5taB9H1`** 片段的 md（美术独立需求主文件）
+- ② 含 **`开发计划核心版本需求`** + **`vewpI8lyYw`** 片段的 md（检索「美术执行人」列）
+- ③ 含 **`设计方任务`** + **`vewswB05Wi`** 片段的 md（设计/美术子任务排期）
+
+汇总美术板块时，**三份文件均须读取**；若某一份拉取失败，须在卡片 ⚠️ 中注明数据缺口，仍发报。**禁止**只读①就声称「美术表已全覆盖」。
 
 ### 1.2 辅轨 —— **API 不顺手时的页面可视抓取**
 

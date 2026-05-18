@@ -2,12 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v0.9.66] - 2026-05-18
+## [v0.9.67] - 2026-05-18
 
 ### Added / Changed
 
 - Agent 问答监控。
 - 增加控制台 PMO。
+- **Version**: Desktop **0.9.67**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
+## [v0.9.66] - 2026-05-14
+
+### Added / Changed
+
+- Agent 问答监控。
 - **Version**: Desktop **0.9.66**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
 
 ---
