@@ -26,6 +26,7 @@ commands.allow = [
   "schedule_jachin_reminder",
   "cancel_jachin_reminder",
   "list_jachin_reminders",
+  "launch_pmo_copilot_script",
   "jachin_inbox_list",
   "jachin_inbox_mark_read",
   "jachin_inbox_mark_all_read",

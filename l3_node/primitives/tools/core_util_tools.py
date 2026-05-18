@@ -1297,11 +1297,28 @@ def run_schedule_desktop_reminder(**kwargs: Any) -> dict[str, Any]:
     if not data.get("ok"):
         return _err(str(data.get("error") or data))
     rid = data.get("id")
+    extra: dict[str, Any] = {}
+    try:
+        from l3_node.lark_test_file_skill import is_slash_test_command
+        from l3_node.lark_test_schedule import schedule_test_skill_at_unix_ms
+
+        if is_slash_test_command(body):
+            sk = schedule_test_skill_at_unix_ms(target_ms, source="desktop_reminder_hook")
+            extra["slash_test_l3_schedule"] = sk
+    except Exception as e:
+        extra["slash_test_l3_schedule"] = {"ok": False, "error": str(e)}
+
+    hint = "提醒已写入桌面端；到点将弹出右下角哨兵（与立即弹窗的 util:desktop_message_box 不同）。"
+    if extra.get("slash_test_l3_schedule", {}).get("ok"):
+        hint += (
+            " 另：body 为 /test 时已同步注册 L3 定时任务，到点将执行写 workspace 文件 + 发飞书卡片（非仅弹窗）。"
+        )
     return _ok(
         {
             "id": rid,
             "fire_at_unix_ms": target_ms,
-            "hint": "提醒已写入桌面端；到点将弹出右下角哨兵（与立即弹窗的 util:desktop_message_box 不同）。",
+            "hint": hint,
+            **extra,
         }
     )
 

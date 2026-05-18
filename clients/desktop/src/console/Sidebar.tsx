@@ -17,6 +17,7 @@ import {
   FlaskConical,
   Gamepad2,
   ShieldCheck,
+  Briefcase,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -58,6 +59,12 @@ const navItems = [
     label: "游戏测试",
     icon: Gamepad2,
     title: "GameQA：本地 MCP 语义测试 / 影子示教（l3_client/local_mcps/gameqa_mcp）",
+  },
+  {
+    path: "/pmo",
+    label: "项目管理",
+    icon: Briefcase,
+    title: "项目管理：PMO Copilot 触发器与定时任务调度",
   },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
   {

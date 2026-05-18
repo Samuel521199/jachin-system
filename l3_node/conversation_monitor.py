@@ -1,4 +1,4 @@
-﻿"""
+"""
 对话监控 — 每轮 Agent 问答结束后，将用户提问与回答同步镜像到监控群。
 
 监控群 chat_id 写死为固定值（见 MONITOR_CHAT_ID），不随业务配置变化。
@@ -27,8 +27,12 @@ _MAX_ANSWER_CHARS = 3000
 # 渠道中文名映射
 _CHANNEL_LABEL: dict[str, str] = {
     "lark_im_dispatcher": "Lark 机器人",
+    "test_lark_file_skill": "Lark /test 模拟",
+    "test_lark_schedule": "Lark /test 定时",
+    "pmo_lark_trigger": "Lark PMO 触发",
     "websocket_terminal": "L3 控制台",
     "pmo_copilot_cli": "PMO 定时任务",
+    "pmo_resource_monitor_scheduler": "PMO 资源预警巡检",
     "gameqa_run_skill": "GameQA",
     "background_task": "后台任务",
     "http_agent_run": "HTTP API",

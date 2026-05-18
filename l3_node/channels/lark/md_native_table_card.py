@@ -1,7 +1,7 @@
 ﻿"""
 将 Markdown 中的 GFM 表格解析为飞书 **卡片 JSON 2.0** 的 ``tag: table`` 原生组件。
 
-与单块 ``lark_md`` 相比，客户端渲染为带表头样式、分页的表格，更接近「综合冒烟」战报的观感。
+与单块 ``lark_md`` 相比，客户端渲染为带表头样式、分页的表格，更接近 PMO 宏观看板式战报的观感。
 非表格段落保留为 ``tag: markdown``，顺序与原文一致。
 
 参见：https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/table

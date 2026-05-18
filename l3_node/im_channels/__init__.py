@@ -41,6 +41,13 @@ def start_im_channels(
     """
     from l3_node.im_channels.dispatcher import create_im_message_handler
 
+    try:
+        from l3_node.lark_test_schedule import ensure_test_schedule_scheduler_started
+
+        ensure_test_schedule_scheduler_started()
+    except Exception as e:
+        logger.debug("[IM Channels] /test 定时调度器启动跳过: %s", e)
+
     cfg = load_config()
     channels = cfg.get("im_channels") or {}
     threads: list[threading.Thread] = []

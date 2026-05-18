@@ -25,6 +25,8 @@ from typing import Any, Optional
 from l3_node.exec_trace import exec_trace
 from l3_node.paths import get_app_root
 
+from core.native_tools import try_resolve_workspace_file_if_missing
+
 logger = logging.getLogger(__name__)
 
 
@@ -1486,6 +1488,10 @@ def _invoke_read_file_local(path_raw: str) -> str:
         p_alt = Path(raw.replace("/", "\\"))
         if p_alt.exists():
             p = p_alt
+    if p.is_absolute() and not p.exists():
+        alt = try_resolve_workspace_file_if_missing(p)
+        if alt is not None and alt.exists():
+            p = alt
     path_obj = None
     if p.is_absolute() and p.exists():
         path_obj = p.resolve()
@@ -1508,7 +1514,14 @@ def _invoke_read_file_local(path_raw: str) -> str:
                 path_obj = cand
                 break
     if not path_obj or not path_obj.exists():
-        return f"[read_file] 路径无效或越界: {path_raw[:100]}"
+        disp = path_raw.strip()
+        if len(disp) > 500:
+            disp = disp[:500] + "…(路径过长已截断显示；完整路径见 Action Input)"
+        return (
+            "[read_file] 文件不存在或不在允许读取目录内: "
+            f"{disp}"
+            "。若路径来自历史同步，可用 core:shell_exec 对 output 目录做 dir /b 核对实际文件名。"
+        )
     try:
         if path_obj.suffix.lower() == ".pdf":
             content = extract_pdf_text(path_obj)

@@ -180,6 +180,8 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     user_msg = (args.message or "").strip() or DEFAULT_MESSAGE
 
+    print("[pmo-copilot] 正在启动（引擎初始化可能需要数十秒）…", flush=True)
+
     _debug_dir = _pmo_debug_log_dir()
     _now = datetime.datetime.now()
     _stamp = (
@@ -188,6 +190,7 @@ async def _async_main(args: argparse.Namespace) -> int:
         + f"_{uuid.uuid4().hex[:8]}"
     )
     _debug_path = _debug_dir / f"pmo_copilot_{_stamp}.txt"
+    print(f"[pmo-copilot] 详细调试日志: {_debug_path}", flush=True)
     _prev_pmo_log_env = os.environ.get("JACHIN_PMO_COPILOT_DEBUG_LOG")
     os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = str(_debug_path.resolve())
 

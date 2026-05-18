@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -1997,6 +1997,13 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     except Exception as e:
         logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
 
+    try:
+        from l3_node.lark_test_schedule import ensure_test_schedule_scheduler_started
+
+        ensure_test_schedule_scheduler_started()
+    except Exception as e:
+        logger.debug("[L3 HTTP] test-skill scheduler 启动跳过: %s", e)
+
     # stdio MCP 不得在「主 await 链」上同步拉起：Windows + frozen + mcp/anyio 子进程创建时可能抛出
     # asyncio.CancelledError（非 Exception 子类），会穿透 except Exception 并终止 asyncio.run(main)。
     # 在 HTTP 监听成功后再 create_task 后台引导，取消隔离在子任务内；详见 mcp_stdio_bootstrap。
@@ -2140,12 +2147,22 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
 
         asyncio.create_task(_skill_matrix_sync_bg(), name="jachin-skill-matrix-sync")
 
+    async def _on_startup_pmo_resource_monitor(_app):
+        """PMO 资源预警巡检：周三 09:30（延期+偏闲）+ 周四 14:00（延期+进度落后）。"""
+        try:
+            from l3_node.jobs.pmo_copilot_scheduler import init_pmo_resource_monitor_auto_start
+
+            init_pmo_resource_monitor_auto_start()
+        except Exception as e:
+            logger.warning("[L3 HTTP] PMO resource monitor scheduler skipped: %s", e)
+
     app.on_startup.append(_on_startup_register_k11_schedule_sse_loop)
     app.on_startup.append(_on_startup_kalaroko_scheduler)
     app.on_startup.append(_on_startup_k11_unified_smoke_scheduler)
     app.on_startup.append(_on_startup_healthchecks_watchdog)
     app.on_startup.append(_on_startup_cron_thinker)
     app.on_startup.append(_on_startup_skill_matrix_sync)
+    app.on_startup.append(_on_startup_pmo_resource_monitor)
 
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):

@@ -1,4 +1,4 @@
-//! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
+﻿//! L3 引擎生命周期：Tauri Sidecar 或 Python 回退启动 l3_node，应用退出时 kill
 
 use directories::BaseDirs;
 use std::fs;
@@ -158,7 +158,7 @@ fn should_use_gateway_mode() -> Option<String> {
 }
 
 /// 推断项目根目录（含 l3_node 包）
-fn project_root() -> Option<PathBuf> {
+pub fn project_root() -> Option<PathBuf> {
     // 1. 优先尝试当前工作目录（tauri dev 时多为 clients/desktop 或项目根）
     if let Ok(cwd) = std::env::current_dir() {
         let mut p = cwd.as_path();

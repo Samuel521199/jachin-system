@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus v8.0 - Native Core 内置标准库
 
 写路径白名单见 l3_node.primitives.native_write_allowlist（workspace、HR 数据卷、Desktop/Downloads/Documents 等）。
@@ -9,6 +9,7 @@ HR 透析镜相对路径解析不变。
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -16,6 +17,70 @@ from typing import Any
 
 # 工作目录根，绝对不可越界
 _WORKSPACE_ROOT = Path.home() / ".jachin" / "workspace"
+
+
+def try_resolve_workspace_file_if_missing(requested: Path) -> Path | None:
+    """
+    当请求路径位于 ~/.jachin/workspace 下但文件不存在时，按 basename（及同名父目录）在
+    pmo_lark_pull 与整 workspace 内回退查找，缓解 Manifest 序号/路径漂移与 Agent 复制路径误差。
+
+    返回解析到的真实 Path；无法匹配或未处于 workspace 下则返回 None。
+    """
+    try:
+        req = requested.expanduser()
+        if req.exists() and req.is_file():
+            return req.resolve()
+        ws = _WORKSPACE_ROOT.resolve()
+        try:
+            req.resolve().relative_to(ws)
+        except ValueError:
+            return None
+        bn = req.name
+        if not bn:
+            return None
+        want_parent = req.parent.name
+        candidates: list[Path] = []
+        pull = ws / "pmo_lark_pull"
+        if pull.is_dir():
+            try:
+                candidates.extend(pull.rglob(bn))
+            except OSError:
+                pass
+        if not candidates:
+            try:
+                candidates.extend(ws.rglob(bn))
+            except OSError:
+                pass
+        files = [c for c in candidates if c.is_file()]
+        if not files and re.search(r"_vew[a-zA-Z0-9]+\.md$", bn, re.I) and pull.is_dir():
+            ix = bn.lower().rfind("_vew")
+            if ix >= 0:
+                suffix_glob = f"*{bn[ix:]}"
+                try:
+                    for sub in pull.iterdir():
+                        if not sub.is_dir():
+                            continue
+                        if want_parent and sub.name != want_parent:
+                            continue
+                        for cand in sub.glob(suffix_glob):
+                            if cand.is_file():
+                                files.append(cand)
+                except OSError:
+                    pass
+        if not files:
+            return None
+        if len(files) == 1:
+            return files[0].resolve()
+        same_parent = [c for c in files if c.parent.name == want_parent]
+        if len(same_parent) == 1:
+            return same_parent[0].resolve()
+        try:
+            return max(same_parent or files, key=lambda x: x.stat().st_mtime).resolve()
+        except OSError:
+            return (same_parent[0] if same_parent else files[0]).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
 
 # 项目根（core 位于 project/core/）
 _PROJ_ROOT = Path(__file__).resolve().parent.parent
@@ -144,12 +209,20 @@ def core_fs_read(file_path: str) -> str:
     if _is_under_hr_whitelist(p):
         _assert_read_allowed(p)
         if not p.exists():
+            alt = try_resolve_workspace_file_if_missing(p)
+            if alt is not None and alt.exists():
+                p = alt
+        if not p.exists():
             return _fs_read_file_not_found_hint(p)
         if p.suffix.lower() == ".pdf":
             from core.pdf_extractor import extract_pdf_text
             return extract_pdf_text(p) or ""
         return p.read_text(encoding="utf-8", errors="replace")
     _assert_read_allowed(p)
+    if not p.exists():
+        alt = try_resolve_workspace_file_if_missing(p)
+        if alt is not None and alt.exists():
+            p = alt
     if not p.exists():
         return _fs_read_file_not_found_hint(p)
     if p.suffix.lower() == ".pdf":

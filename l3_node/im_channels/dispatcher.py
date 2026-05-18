@@ -1,4 +1,4 @@
-﻿"""
+"""
 IM 消息分发 — 收到消息后调用 Agent 并回传
 
 与具体通道解耦：dispatcher 只负责「执行 + 回复」逻辑，
@@ -335,68 +335,118 @@ def _do_agent_work(
                 session_messages.append({"role": "user", "content": intent})
                 session_messages.append({"role": "assistant", "content": cmd_reply})
         else:
+            # ── /test 模拟 Skill（落盘 + 指定会话卡片，用于联调）──
+            test_reply: str | None = None
             try:
-                if _is_hr_package_available() and _is_recruitment_message(intent):
-                    logger.debug(
-                        "[IM Dispatcher] 招聘类消息，走 HR process_lark_message chat_id=%s",
-                        cid[:20] if cid else "",
-                    )
-                    route = "hr_process_lark_message"
-                    reply = _process_via_hr_package(
-                        intent, cid, user_id, run_agent_fn, engine, loop, timeout, session_messages
-                    )
-                    turn_status = "ok"
+                from l3_node.lark_test_file_skill import is_slash_test_command, try_test_lark_file_skill_intercept
+                from l3_node.lark_test_schedule import try_test_schedule_intercept
+
+                if is_slash_test_command(intent):
+                    test_reply = try_test_lark_file_skill_intercept(intent)
                 else:
-                    route = "run_agent"
-                    _iatt = {"channel": "lark_im_dispatcher"}
-                    if cid:
-                        _iatt["lark_chat_id"] = str(cid).strip()
-                    if user_id:
-                        _iatt["lark_user_id"] = str(user_id).strip()
-                    future = asyncio.run_coroutine_threadsafe(
-                        run_agent_fn(
-                            intent,
-                            engine,
-                            _session_messages=session_messages,
-                            implicit_attribution=_iatt,
-                        ),
+                    test_reply = try_test_schedule_intercept(intent)
+                    if test_reply is not None:
+                        route = "test_lark_schedule"
+            except Exception as _test_ex:
+                logger.debug("[IM Dispatcher] /test 触发器跳过: %s", _test_ex)
+
+            if test_reply is not None and route == "unknown":
+                route = "test_lark_file_skill"
+            if test_reply is not None:
+                reply = test_reply
+                turn_status = "ok"
+                if cid:
+                    session_messages.append({"role": "user", "content": intent})
+                    session_messages.append({"role": "assistant", "content": test_reply})
+            # ── PMO 双重触发器（精确指令 / 模糊确认卡片 / 卡片回复）──
+            pmo_reply: str | None = None
+            if test_reply is None:
+                try:
+                    from l3_node.pmo_lark_trigger import try_pmo_lark_intercept
+
+                    pmo_reply = try_pmo_lark_intercept(
+                        intent,
+                        cid,
+                        user_id or "",
+                        send_reply_fn,
+                        run_agent_fn,
+                        engine,
                         loop,
+                        session_messages,
                     )
-                    # 延时安抚：12 秒后若 Agent 仍未返回，自动发送一条智能安抚消息
-                    # 快速任务（<12s）用户直接收到答案，不会被多余消息打扰
-                    _ack_cancelled = threading.Event()
+                except Exception as _pmo_ex:
+                    logger.debug("[IM Dispatcher] PMO 触发器跳过: %s", _pmo_ex)
 
-                    def _delayed_ack() -> None:
-                        if _ack_cancelled.is_set() or not cid:
-                            return
-                        try:
-                            _summary = _quick_task_summary(intent, timeout_sec=2.0)
-                            _ack = _build_ack_message(intent, _summary)
-                            send_reply_fn(cid, _ack)
-                        except Exception as _ae:
-                            logger.debug("[IM Dispatcher] 延时安抚发送失败: %s", _ae)
-
-                    _ACK_DELAY_SEC = 12.0
-                    _ack_timer = threading.Timer(_ACK_DELAY_SEC, _delayed_ack)
-                    _ack_timer.daemon = True
-                    _ack_timer.start()
-                    try:
-                        # 不设超时：Agent 跑多久都等；结果通过 send_reply_fn 直连 API 推回主群
-                        reply = future.result(timeout=None)
+            if test_reply is None and pmo_reply is not None:
+                route = "pmo_lark_trigger"
+                reply = pmo_reply
+                turn_status = "ok"
+                if cid:
+                    session_messages.append({"role": "user", "content": intent})
+                    session_messages.append({"role": "assistant", "content": pmo_reply})
+            elif test_reply is None:
+                try:
+                    if _is_hr_package_available() and _is_recruitment_message(intent):
+                        logger.debug(
+                            "[IM Dispatcher] 招聘类消息，走 HR process_lark_message chat_id=%s",
+                            cid[:20] if cid else "",
+                        )
+                        route = "hr_process_lark_message"
+                        reply = _process_via_hr_package(
+                            intent, cid, user_id, run_agent_fn, engine, loop, timeout, session_messages
+                        )
                         turn_status = "ok"
-                    finally:
-                        _ack_cancelled.set()
-                        _ack_timer.cancel()
-            except TimeoutError:
-                reply = "处理超时，请稍后重试。"
-                turn_status = "timeout"
-                logger.warning("[IM Dispatcher] Agent 超时 chat_id=%s", cid[:20] if cid else "")
-            except Exception as e:
-                logger.exception("[IM Dispatcher] Agent 异常: %s", e)
-                reply = "抱歉，处理时发生错误，请稍后重试。"
-                turn_status = "error"
-                err_msg = str(e)
-                err_tb = traceback.format_exc()
+                    else:
+                        route = "run_agent"
+                        _iatt = {"channel": "lark_im_dispatcher"}
+                        if cid:
+                            _iatt["lark_chat_id"] = str(cid).strip()
+                        if user_id:
+                            _iatt["lark_user_id"] = str(user_id).strip()
+                        future = asyncio.run_coroutine_threadsafe(
+                            run_agent_fn(
+                                intent,
+                                engine,
+                                _session_messages=session_messages,
+                                implicit_attribution=_iatt,
+                            ),
+                            loop,
+                        )
+                        # 延时安抚：12 秒后若 Agent 仍未返回，自动发送一条智能安抚消息
+                        # 快速任务（<12s）用户直接收到答案，不会被多余消息打扰
+                        _ack_cancelled = threading.Event()
+
+                        def _delayed_ack() -> None:
+                            if _ack_cancelled.is_set() or not cid:
+                                return
+                            try:
+                                _summary = _quick_task_summary(intent, timeout_sec=2.0)
+                                _ack = _build_ack_message(intent, _summary)
+                                send_reply_fn(cid, _ack)
+                            except Exception as _ae:
+                                logger.debug("[IM Dispatcher] 延时安抚发送失败: %s", _ae)
+
+                        _ACK_DELAY_SEC = 12.0
+                        _ack_timer = threading.Timer(_ACK_DELAY_SEC, _delayed_ack)
+                        _ack_timer.daemon = True
+                        _ack_timer.start()
+                        try:
+                            # 不设超时：Agent 跑多久都等；结果通过 send_reply_fn 直连 API 推回主群
+                            reply = future.result(timeout=None)
+                            turn_status = "ok"
+                        finally:
+                            _ack_cancelled.set()
+                            _ack_timer.cancel()
+                except TimeoutError:
+                    reply = "处理超时，请稍后重试。"
+                    turn_status = "timeout"
+                    logger.warning("[IM Dispatcher] Agent 超时 chat_id=%s", cid[:20] if cid else "")
+                except Exception as e:
+                    logger.exception("[IM Dispatcher] Agent 异常: %s", e)
+                    reply = "抱歉，处理时发生错误，请稍后重试。"
+                    turn_status = "error"
+                    err_msg = str(e)
+                    err_tb = traceback.format_exc()
         if cid and session_messages:
             save_lark_session(cid, session_messages)
             logger.debug("[IM Dispatcher] chat_id=%s 已保存会话 %d 条", cid[:20], len(session_messages))

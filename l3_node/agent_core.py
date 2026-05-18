@@ -925,6 +925,60 @@ def _pmo_lark_push_guard_channel_active(ctx: PipelineContext) -> bool:
     return "PMO-Copilot" in inj or "pmo-copilot-enterprise" in inj
 
 
+def _pmo_branch_a_notifier_markdown_is_complete(inp: str) -> bool:
+    """分支 A 的 notifier markdown_content 必须含三张核心表，否则视为残卡，不标记成功。"""
+    try:
+        args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
+        mc = str(args.get("markdown_content") or "")
+    except Exception:
+        mc = str(inp or "")
+    if not mc:
+        return False
+    has_demand = "需求进度全览" in mc or "📊" in mc
+    has_people = "人员任务矩阵" in mc or "👥" in mc
+    has_version = "版本发布需求映射" in mc or "版本需求映射" in mc or "📦" in mc
+    return has_demand and has_people and has_version
+
+
+def _pmo_forbidden_lark_title(title: str) -> bool:
+    """PMO 场景下禁止与自动化「冒烟测试」战报撞名的卡片标题（与 k11_lark_smoke_report 区分）。"""
+    t = str(title or "").strip()
+    if not t:
+        return True
+    if "冒烟" in t:
+        return True
+    low = t.lower()
+    if "smoke" in low and ("test" in low or "report" in low):
+        return True
+    return False
+
+
+def _pmo_default_lark_card_title() -> str:
+    from datetime import datetime
+
+    return f"【K11 · PMO 宏观看板】{datetime.now():%Y-%m-%d}"
+
+
+def _pmo_sanitize_atom_lark_notifier_inp(inp: str) -> str:
+    """修正 atom_lark_notifier 的 title，避免 PMO 误用「综合冒烟」类用语。"""
+    raw = (inp or "").strip()
+    if not raw.startswith("{"):
+        return inp
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError:
+        return inp
+    if not isinstance(args, dict):
+        return inp
+    title = args.get("title")
+    if not isinstance(title, str):
+        title = ""
+    if _pmo_forbidden_lark_title(title):
+        args["title"] = _pmo_default_lark_card_title()
+        return json.dumps(args, ensure_ascii=False)
+    return inp
+
+
 def _lark_notifier_observation_suggests_success(observation_full: str) -> bool:
     """atom_lark_notifier / send_lark_markdown 典型返回 {\"status\": \"success\", ...}。"""
     s = str(observation_full or "").strip()
@@ -946,7 +1000,7 @@ def _pmo_final_answer_falsely_claims_lark_sent(ans: str) -> bool:
     if not s:
         return False
     if re.search(
-        r"(未成功|发送失败|未能发送|无法发送|未调用|跳过.{0,6}推送|notifier.*失败|"
+        r"(未成功|发送失败|未能发送|无法发送|未调用|未发送|跳过.{0,6}推送|notifier.*失败|"
         r"status[\"']?\s*:\s*[\"']?error|\"status\"\s*:\s*\"error\")",
         s,
         re.I,
@@ -960,8 +1014,13 @@ def _pmo_final_answer_falsely_claims_lark_sent(ans: str) -> bool:
             r"发往.{0,12}群|"
             r"卡片已发.{0,12}群|"
             r"飞书.{0,16}成功|"
-            r"已发(?:往|送).{0,8}(?:群|飞书)",
+            r"已发(?:往|送).{0,8}(?:群|飞书)|"
+            # 常见漏网：「已通过 mcp:atom_lark_notifier 发送至飞书主群」（无 contiguous「已经发送」）
+            r"已通过.{0,240}(atom_lark_notifier|mcp:atom_lark_notifier)|"
+            r"(atom_lark_notifier|mcp:atom_lark_notifier).{0,160}已(经)?(发送|推送|送达)|"
+            r"已推送.{0,80}(飞书|主群|监控群|群聊)",
             s,
+            re.I,
         )
     )
 
@@ -1102,12 +1161,34 @@ def _pmo_final_answer_looks_like_futile_plan_only(ans: str) -> bool:
         r"(目录|列表|ls|文件名|路径)", s, re.I
     ):
         return True
-    if re.search(r"(路径错误|读不到|无法读取|找不到文件|不正确)", s) and re.search(
-        r"(美术|文件名|确认|目录列表|设计专用)", s
+    if re.search(
+        r"(路径错误|读不到|无法读取|找不到文件|不正确|未能成功读取|未能读取)",
+        s,
+    ) and re.search(r"(美术|文件名|确认|目录列表|设计专用|视图文件)", s):
+        return True
+    if re.search(r"(权限|访问限制)", s) and re.search(
+        r"(美术|设计专用|pmo_lark_pull|\.jachin\\workspace\\pmo)", s, re.I
     ):
         return True
     if re.search(r"(获得|确认).{0,16}(正确|准确).{0,10}(文件名|路径)", s) and re.search(
         r"(我将|然后再|再).{0,24}(读取|拉取|汇总|生成)", s
+    ):
+        return True
+    # 「先列目录 / 先确认文件名」——拉表 Observation 已含 files[]，禁止 Final Answer 空转
+    if re.search(r"pmo_lark_pull", s, re.I) and re.search(
+        r"(需要先|须先|让我先|先要|准备先).{0,32}(确认|列出|罗列|查看|核对|检查)",
+        s,
+    ):
+        return True
+    if re.search(r"pmo_lark_pull", s, re.I) and re.search(
+        r"(列出|罗列).{0,28}(该|此|以下|其中)?.{0,12}(目录|文件夹)",
+        s,
+    ):
+        return True
+    if (
+        re.search(r"我需要先", s)
+        and re.search(r"(确认|列出|核对)", s)
+        and re.search(r"(pmo|目录|文件名|需求池|产品任务|设计专用|workspace)", s, re.I)
     ):
         return True
     return False
@@ -1232,11 +1313,11 @@ def _reject_pmo_branch_a_post_bi_fs_stall_guard(
     messages.append({
         "role": "user",
         "content": (
-            "【系统校验·PMO·读盘】`atom_bi_project_context` 已 **success**，Observation 里 `files[]` + "
-            "`output_dir` 已是真源。**禁止** Final Answer 编造「美术表路径错误」「等目录列表结果」若本轮并无对应工具 Observation。\n"
-            "口语「美术表」= 飞书 Wiki 标题 **「设计专用」**；文件名片段含 **`设计专用_DiSnwVB1_vew5taB9H1`**（前缀序号以本轮为准）。\n"
-            "请立即 ReAct：`Action: core:fs_read`，`file_path` = `output_dir` + `files[]` 中该 md 的**完整绝对路径**。"
-            "读完后再 `mcp:atom_lark_notifier`；勿再空喊「确认文件名」。"
+            "【系统校验·PMO·读盘】`atom_bi_project_context` 已 **success**，Observation 里 **`files[]` + `output_dir` 已是完整文件名清单**，"
+            "**禁止**用 Final Answer 说「要先列出目录 / 要先确认文件名」——应直接按 `files[]` **逐字**拼绝对路径读盘。\n"
+            "**常见纠错**：「产品任务需求完成度」应对 `files[]` 中含 **`产品任务需求完成度`** + **`vew8TxMcSh`** 的那一条；前缀序号 **`NN_`（如 01_/02_/…）必须与清单完全一致**，禁止把 `02_…` 臆改成 `01_…`。\n"
+            "**美术** = **「设计专用」**：路径取 `files[]` 中带 **`设计专用`**、**`DiSnwVB1`**、**`vew5taB9H1`** 的条目。**不是**整张大开发计划表（`tblfK9`）；开发计划里 **`vewpI8lyYw`/`vewswB05Wi` 落盘 md** 仅作补充。\n"
+            "若 **`mcp:read_file`** 报错不在允许目录，改用 **`core:fs_read`** 传**同一路径**；读完再 **`mcp:atom_lark_notifier`**，勿再在 Final Answer 里承诺「下一步再 ls」。"
         ),
     })
     return True
@@ -1279,10 +1360,16 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
         "content": (
             "【系统校验·PMO】你已执行拉表，但 **宏观看板正文**须通过 **`mcp:atom_lark_notifier`** "
             "发到群内（`markdown_content` + `title` + `chat_id`），**禁止**把完整 §1.4 战报只写在 Final Answer。\n"
+            "**分支 A 的 `markdown_content` 必须同时包含三张核心表**（缺一不可）：\n"
+            "① `📊 需求进度全览`（每需求一行，含时间跨度+参与人+10格进度条+%+状态）\n"
+            "② `👥 人员任务矩阵`（每人一行，含逐条需求明细+优先级+状态预警）\n"
+            "③ `📦 版本发布需求映射`（按版本/Sprint归集，含每条需求当前状态）\n"
+            "**注意**：分支 D 的精简格式（只含人员矩阵）仅适用于 `resource_monitor` 触发词，**对分支 A 完全无效**。\n"
             "请立即输出 ReAct（勿写 Final Answer）：\n"
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
-            "Action Input: JSON（全文战报送 `markdown_content`）。\n"
+            "Action Input: JSON（全文三表战报送 `markdown_content`，`title` 用 `【K11 · PMO 宏观看板】` 类）。\n"
+            "**须调用两次**：先主群（`PMO_PRIMARY_CHAT_ID`）、再监控群（`oc_0e321f92d758ecb44aea5b499c90510b`）。\n"
             "推送成功后再用 ≤3 句 Final Answer 确认 Observation 状态即可。"
         ),
     })
@@ -6587,6 +6674,19 @@ async def _run_react_core(
                             inp = json.dumps(args, ensure_ascii=False)
                 except Exception as e:
                     logger.debug("[L3 Agent] add_automated_recruitment_task 纠正 job_name 跳过: %s", e)
+            if (
+                (tool or "").replace("mcp:", "").strip() == "atom_lark_notifier"
+                and _pmo_lark_push_guard_channel_active(ctx)
+            ):
+                try:
+                    inp_san = _pmo_sanitize_atom_lark_notifier_inp(inp)
+                    if inp_san != inp:
+                        logger.info(
+                            "[L3 Agent][PMO] atom_lark_notifier title 已纠偏（禁止冒烟/自动化测试战报撞名）"
+                        )
+                        inp = inp_san
+                except Exception as _pmo_title_e:
+                    logger.debug("[L3 Agent][PMO] atom_lark_notifier title 纠偏跳过: %s", _pmo_title_e)
             # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
             observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
             try:
@@ -6630,7 +6730,16 @@ async def _run_react_core(
                         ctx.metadata["_pmo_bi_project_context_ok"] = True
                 if (tool or "").replace("mcp:", "").strip() == "atom_lark_notifier":
                     if _lark_notifier_observation_suggests_success(observation_full):
-                        ctx.metadata["_pmo_atom_lark_notify_ok"] = True
+                        if _pmo_branch_a_requires_bi_pull(ctx):
+                            if _pmo_branch_a_notifier_markdown_is_complete(inp):
+                                ctx.metadata["_pmo_atom_lark_notify_ok"] = True
+                            else:
+                                logger.warning(
+                                    "[L3 Agent][PMO] notifier 推送成功但 markdown_content 缺少分支A三张核心表"
+                                    "（需求进度全览/人员任务矩阵/版本映射），不标记 notify_ok，继续纠偏"
+                                )
+                        else:
+                            ctx.metadata["_pmo_atom_lark_notify_ok"] = True
             except Exception:
                 pass
             try:
@@ -6872,7 +6981,7 @@ async def _run_react_core(
                 **_flkw,
             )
             resp = str(result or "").strip()
-            for pat in (r"Final\s+Answer:\s*(.+?)(?:\n\n|$)", r"Answer:\s*(.+?)(?:\n\n|$)"):
+            for pat in (r"Final\s+Answer:\s*(.+)", r"Answer:\s*(.+)"):
                 m = re.search(pat, resp, re.DOTALL | re.IGNORECASE)
                 if m:
                     ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(m.group(1).strip(), ctx)

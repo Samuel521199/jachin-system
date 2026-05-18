@@ -1,4 +1,4 @@
-"""工具后 workspace Markdown 摘录；路径滑窗 + ReAct 轮次账本（context_path_ledger）去重。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。"""
+﻿"""工具后 workspace Markdown 摘录；路径滑窗 + ReAct 轮次账本（context_path_ledger）去重。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md、docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。"""
 from __future__ import annotations
 
 import json
@@ -236,7 +236,12 @@ def build_prefetch_attachment(
     cap_total = int(cfg.get("max_total_chars") or 9000)
 
     md_files: list[Path] = []
-    skip_dirs = {".background_tasks", ".git", "node_modules", "sandboxes", "__pycache__"}
+    skip_dirs = {
+        ".background_tasks", ".git", "node_modules", "sandboxes", "__pycache__",
+        # PMO 批量拉盘目录：内含大量飞书多维表 Markdown，由模型显式 fs_read 读取；
+        # 不允许自动 prefetch，否则旧批次/其他分支数据会污染当前轮上下文
+        "pmo_lark_pull", "pmo_resource_monitor",
+    }
     for p in sorted(root.rglob("*.md"), key=lambda x: x.stat().st_mtime_ns, reverse=True):
         if len(md_files) >= max_files:
             break

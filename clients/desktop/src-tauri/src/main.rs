@@ -987,6 +987,7 @@ fn main() {
             quick_action_eagle_eye,
             quick_action_hibernate,
             handle_device_command,
+            launch_pmo_copilot_script,
             #[cfg(feature = "ambient")]
             stt::commands::start_voice_capture,
             #[cfg(feature = "ambient")]
@@ -1793,6 +1794,101 @@ async fn show_console_window(app: tauri::AppHandle) -> Result<(), String> {
         }
     })
     .map_err(|e| e.to_string())
+}
+
+/// PMO Copilot：在新终端窗口启动 scripts/run_pmo_copilot_skill.py
+/// 自动从项目根或 exe 相邻目录定位脚本；工作目录为项目根（脚本内相对路径可用）。
+#[tauri::command]
+async fn launch_pmo_copilot_script() -> Result<String, String> {
+    use std::path::PathBuf;
+    use std::process::Command as StdCommand;
+
+    // 尝试从项目根（含 l3_node 包）或 exe 相邻 scripts/ 目录定位脚本
+    let script_path = {
+        let from_root = l3_spawn::project_root()
+            .map(|r| r.join("scripts").join("run_pmo_copilot_skill.py"));
+        let from_exe = l3_spawn::exe_dir()
+            .map(|d| d.join("scripts").join("run_pmo_copilot_skill.py"));
+        from_root
+            .filter(|p| p.exists())
+            .or_else(|| from_exe.filter(|p| p.exists()))
+            .ok_or_else(|| {
+                "找不到 scripts/run_pmo_copilot_skill.py，请确认项目根目录包含该文件".to_string()
+            })?
+    };
+
+    // 项目根：优先 l3_spawn 推断，否则 scripts/ 的上一级
+    let project_root: PathBuf = l3_spawn::project_root().unwrap_or_else(|| {
+        script_path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| script_path.clone())
+    });
+
+    let script_str = script_path.to_string_lossy().into_owned();
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        // PowerShell -NoExit：执行完脚本后窗口保持打开，不会闪退。
+        // -Command 里用单引号包路径，避免 Windows 路径中空格/反斜杠问题。
+        // 若路径含单引号则 escape（''）；PYTHONUNBUFFERED 确保实时输出不缓冲。
+        let root_ps = project_root.to_string_lossy().replace('\'', "''");
+        let ps_cmd = format!(
+            "$env:PYTHONUNBUFFERED='1'; $env:PYTHONUTF8='1'; $env:JACHIN_APP_ROOT='{root}'; Set-Location '{root}'; Write-Host '=== PMO Copilot ===' -ForegroundColor Cyan; Write-Host ('工作目录: ' + (Get-Location)) -ForegroundColor DarkGray; Write-Host ''; python -u scripts/run_pmo_copilot_skill.py; Write-Host ''; Write-Host '[完成] 按任意键关闭...' -ForegroundColor Green; $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')",
+            root = root_ps,
+        );
+        StdCommand::new("powershell")
+            .args([
+                "-NoLogo",
+                "-NoExit",
+                "-Command",
+                &ps_cmd,
+            ])
+            .current_dir(&project_root)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map_err(|e| format!("启动 PMO Copilot 失败: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let root_esc = project_root.to_string_lossy().replace('\'', "\\'");
+        let apple_script = format!(
+            "tell application \"Terminal\" to do script \"cd '{}' && python scripts/run_pmo_copilot_skill.py\"",
+            root_esc
+        );
+        StdCommand::new("osascript")
+            .args(["-e", &apple_script])
+            .spawn()
+            .map_err(|e| format!("启动 PMO Copilot 失败: {e}"))?;
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let root_esc = project_root.to_string_lossy().replace('\'', "'\\''");
+        let cmd_str = format!(
+            "cd '{}' && python scripts/run_pmo_copilot_skill.py; read -p 'Press Enter to close...'",
+            root_esc
+        );
+        let launched = StdCommand::new("x-terminal-emulator")
+            .args(["-e", "bash", "-c", &cmd_str])
+            .spawn()
+            .is_ok()
+            || StdCommand::new("xterm")
+                .args(["-e", "bash", "-c", &cmd_str])
+                .spawn()
+                .is_ok();
+        if !launched {
+            return Err("找不到可用终端模拟器（尝试了 x-terminal-emulator / xterm）".to_string());
+        }
+    }
+
+    Ok(format!(
+        "已启动（cwd: {}）: {}",
+        project_root.to_string_lossy(),
+        script_str
+    ))
 }
 
 /// 处理设备指令（从 Dapr Pub/Sub 接收）
