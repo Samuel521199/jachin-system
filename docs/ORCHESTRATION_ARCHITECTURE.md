@@ -1,6 +1,10 @@
 # Jachin 长期编排架构（三层）
 
-**更新**: 2026-03-16（与总览、对标文 `JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、规则 **078** 同步）  
+> **[部分过时]** 本文档为 2026-03-16 版本，整体三层编排思路仍有效，  
+> 但文中对「JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md」及「INTELLIGENCE_UPGRADE_OVERVIEW.md」的引用  
+> 已指向已删除文档；**L3 能力全量现状** 请以 **[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)** 为准。
+
+**更新**: 2026-03-16（历史版本；L3 实现现状见 AGI_OPTIMIZATION_ROADMAP.md）  
 **代码入口**: `l3_node/orchestration/`、`l3_node/workflow_spec_runner.py`、`core/native_tools.py`（`core:domain_workflow_run`）  
 **与 HR 关系**: 招聘 **领域子图** 仍为 `l3_node/primitives/skills/hr_recruitment_dag.py` + `DAGWorkflow`（见 [HR_RECRUITMENT.md](./HR_RECRUITMENT.md)）；本架构 **不替换** HR 实现，只提供 **注册与调用面**。
 

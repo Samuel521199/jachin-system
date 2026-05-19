@@ -2,7 +2,8 @@
 
 **版本**: 2026-04  
 **状态**: 设计对照（Claude Code 侧为概念模型；Jachin 以本仓库代码为准）  
-**相关**: [ARCHITECTURE.md](./ARCHITECTURE.md)、[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)（Tools/MCP/Skills/Agent Tasks **Jachin 正式定义**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)、[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)、[ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md](./ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md)、[SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md)
+**相关**: [ARCHITECTURE.md](./ARCHITECTURE.md)、[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)（Tools/MCP/Skills/Agent Tasks **Jachin 正式定义**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)、[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)（L3 智能化现状，替代旧版总览文档）、[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)、[SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md)  
+> **注**：`INTELLIGENCE_UPGRADE_OVERVIEW.md` 与 `ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md` 已删除，相关内容见 `AGI_OPTIMIZATION_ROADMAP.md`。
 
 ---
 

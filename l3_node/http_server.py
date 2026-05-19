@@ -31,6 +31,60 @@ logger = logging.getLogger("l3_node")
 
 L3_HTTP_PORT = 18991
 
+# POST /api/v3/agent/run：同一 session_id / chat_id 串行化，避免并发 run_agent 撕裂共享 _session_messages
+_http_agent_session_locks: dict[str, asyncio.Lock] = {}
+_http_agent_session_locks_guard = asyncio.Lock()
+
+
+async def _http_agent_session_lock(session_key: str) -> asyncio.Lock:
+    sk = (session_key or "").strip()
+    async with _http_agent_session_locks_guard:
+        lock = _http_agent_session_locks.get(sk)
+        if lock is None:
+            lock = asyncio.Lock()
+            _http_agent_session_locks[sk] = lock
+        return lock
+
+
+async def _http_agent_session_lock_held(session_key: str) -> bool:
+    """同一 `chat_id`/`session_id` 是否已有 `/api/v3/agent/run` 持锁执行中（协程仍在 `async with lock` 内）。"""
+    sk = (session_key or "").strip()
+    if not sk:
+        return False
+    async with _http_agent_session_locks_guard:
+        lk = _http_agent_session_locks.get(sk)
+    if lk is None:
+        return False
+    return lk.locked()
+
+
+def _registry_diag_read_token() -> str:
+    return (
+        (os.environ.get("JACHIN_REGISTRY_DIAG_TOKEN") or "").strip()
+        or (os.environ.get("JACHIN_HOOK_EVENTS_READ_TOKEN") or "").strip()
+    )
+
+
+def _registry_diag_auth_failure(request) -> Any:
+    """未配置令牌 → 503；头不匹配 → 401；通过 → None。"""
+    tok = _registry_diag_read_token()
+    if not tok:
+        return _json_response(
+            {
+                "ok": False,
+                "error": "Set JACHIN_REGISTRY_DIAG_TOKEN or JACHIN_HOOK_EVENTS_READ_TOKEN",
+            },
+            status=503,
+        )
+    hdr = (
+        (request.headers.get("X-Jachin-Registry-Diag-Token") or "").strip()
+        or (request.headers.get("X-Jachin-Hook-Events-Token") or "").strip()
+    )
+    if hdr != tok:
+        return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+    return None
+
+
 # K11 统合冒烟：单路 SSE 子进程（与 /api/v1/monitor/stream 同形态）
 _k11_unified_smoke_stream_active: bool = False
 _k11_unified_smoke_start_lock: asyncio.Lock = asyncio.Lock()
@@ -1362,6 +1416,588 @@ async def _handle_cron_thinker_bios_settings_post(request) -> "aiohttp.web.Respo
         return _json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def _handle_registry_external_sched_hint_post(request) -> "aiohttp.web.Response":
+    """POST /api/v1/registry/external-sched-hint — 合并外部定时心跳（与 workspace/external_scheduled_hints.json 同源）。"""
+    tok = (os.environ.get("JACHIN_REGISTRY_EXTERNAL_SCHED_TOKEN") or "").strip()
+    if not tok:
+        return _json_response(
+            {
+                "ok": False,
+                "error": "Set JACHIN_REGISTRY_EXTERNAL_SCHED_TOKEN to enable this endpoint",
+            },
+            status=503,
+        )
+    hdr = (request.headers.get("X-Jachin-Registry-Token") or "").strip()
+    if hdr != tok:
+        return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "error": "body must be object"}, status=400)
+    pk = str(body.get("process_key") or "").strip()
+    if not pk or len(pk) > 120:
+        return _json_response({"ok": False, "error": "process_key required (max 120)"}, status=400)
+    title = str(body.get("title") or "").strip()
+    if not title:
+        return _json_response({"ok": False, "error": "title required"}, status=400)
+    sched_sum = str(body.get("schedule_summary") or "").strip()
+    pid_v: int | None = None
+    if body.get("pid") is not None:
+        try:
+            pid_v = int(body["pid"])
+        except (TypeError, ValueError):
+            pid_v = None
+    try:
+        from l3_node.task_runtime_registry import merge_external_scheduled_process_hint
+
+        merge_external_scheduled_process_hint(
+            process_key=pk,
+            title=title[:240],
+            schedule_summary=(sched_sum or "（HTTP 登记）")[:480],
+            pid=pid_v,
+        )
+    except Exception as e:
+        logger.warning("[L3 HTTP] registry external-sched-hint: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, "process_key": pk}, status=200)
+
+
+async def _handle_registry_external_sched_hint_delete(request) -> "aiohttp.web.Response":
+    """DELETE /api/v1/registry/external-sched-hint — JSON body `{ \"process_key\": \"...\" }`。"""
+    tok = (os.environ.get("JACHIN_REGISTRY_EXTERNAL_SCHED_TOKEN") or "").strip()
+    if not tok:
+        return _json_response(
+            {"ok": False, "error": "Set JACHIN_REGISTRY_EXTERNAL_SCHED_TOKEN to enable this endpoint"},
+            status=503,
+        )
+    hdr = (request.headers.get("X-Jachin-Registry-Token") or "").strip()
+    if hdr != tok:
+        return _json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "error": "body must be object"}, status=400)
+    pk = str(body.get("process_key") or "").strip()
+    if not pk:
+        return _json_response({"ok": False, "error": "process_key required"}, status=400)
+    try:
+        from l3_node.task_runtime_registry import remove_external_scheduled_process_hint
+
+        removed = remove_external_scheduled_process_hint(pk)
+    except Exception as e:
+        logger.warning("[L3 HTTP] registry external-sched-hint DELETE: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    if not removed:
+        return _json_response({"ok": False, "process_key": pk, "error": "not found"}, status=404)
+    return _json_response({"ok": True, "process_key": pk}, status=200)
+
+
+async def _handle_hook_events_recent_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/hook-events-recent?limit=50&hook=...&run_id=..."""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        lim = int(request.query.get("limit", "50"))
+    except ValueError:
+        lim = 50
+    hook_q = (request.query.get("hook") or "").strip() or None
+    run_q = (request.query.get("run_id") or "").strip() or None
+    run_exact = (request.query.get("run_id_exact") or "").strip().lower() in ("1", "true", "yes")
+    try:
+        from l3_node.engine.persistent_hook_log import read_recent_hook_events
+
+        rows = read_recent_hook_events(
+            limit=lim, hook=hook_q, run_id=run_q, run_id_exact=run_exact
+        )
+    except Exception as e:
+        logger.warning("[L3 HTTP] hook-events-recent: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, "count": len(rows), "events": rows}, status=200)
+
+
+async def _handle_registry_runtime_snapshot_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/runtime-snapshot?session_key=&chat_id=（后两者可选，用于 HTTP 同会话锁探针）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.task_runtime_registry import get_runtime_registry_snapshot_dict
+
+        snap = get_runtime_registry_snapshot_dict()
+    except Exception as e:
+        logger.warning("[L3 HTTP] runtime-snapshot: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    sk = (request.query.get("session_key") or request.query.get("chat_id") or "").strip()
+    if sk:
+        try:
+            from l3_node.session_hot_user_inject import peek_pending_session_user
+
+            _hot = peek_pending_session_user(sk)
+            if _hot:
+                snap["session_hot_user_pending"] = _hot
+        except Exception:
+            pass
+        try:
+            busy = await _http_agent_session_lock_held(sk)
+        except Exception as e:
+            logger.warning("[L3 HTTP] runtime-snapshot lock probe: %s", e)
+            busy = False
+        snap = {**snap, "http_agent_session": {"session_key": sk, "lock_held": busy}}
+    return _json_response({"ok": True, **snap}, status=200)
+
+
+async def _handle_registry_external_scheduled_hints_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/external-scheduled-hints — 只读 **M** 心跳文件。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.task_runtime_registry import read_external_scheduled_hints_dict
+
+        hint_body = read_external_scheduled_hints_dict()
+    except Exception as e:
+        logger.warning("[L3 HTTP] external-scheduled-hints GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, **hint_body}, status=200)
+
+
+async def _handle_registry_task_dag_active_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/task-dag-active — 只读 `workspace/task_dags/active.json`（**H**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.task_engine.task_dag import load_task_dag_dict
+
+        dag = load_task_dag_dict()
+    except Exception as e:
+        logger.warning("[L3 HTTP] task-dag-active GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, "dag": dag}, status=200)
+
+
+async def _handle_registry_dag_guardrails_get(request) -> "aiohttp.web.Response":
+    """
+    GET /api/v1/registry/dag-guardrails?dag_id=&limit= — DAG 级 Guardrails 预算状态（AP）。
+    dag_id 不传时列出最近活跃的所有 DAG 预算记录。
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    dag_id = (request.query.get("dag_id") or "").strip()
+    try:
+        limit = int(request.query.get("limit", "20"))
+    except ValueError:
+        limit = 20
+    try:
+        from l3_node.task_engine.dag_guardrails import (
+            DagGuardrailsChecker,
+            dag_guardrails_enabled,
+            list_active_dag_budgets,
+            load_dag_budget,
+        )
+        enabled = dag_guardrails_enabled()
+        if dag_id:
+            state = load_dag_budget(dag_id)
+            checker = DagGuardrailsChecker(dag_id)
+            violation = checker.check_dag_budget() if enabled else None
+            return _json_response({
+                "ok": True,
+                "enabled": enabled,
+                "budget": state.to_dict(),
+                "violation": {"rule": violation.rule, "message": violation.message} if violation else None,
+            }, status=200)
+        else:
+            budgets = list_active_dag_budgets(limit=limit)
+            return _json_response({"ok": True, "enabled": enabled, "budgets": budgets}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] dag-guardrails GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_registry_dag_handoff_export_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/dag-handoff/export — 导出当前 DAG Handoff Package（AR）。
+    Body JSON:
+      { "run_id": "...", "context_hint": "..." }
+    返回可直接 POST 到另一节点 /import 的 JSON 包。
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    run_id = (body.get("run_id") or request.query.get("run_id") or "").strip()
+    context_hint = (body.get("context_hint") or "").strip()
+    try:
+        from l3_node.task_engine.dag_handoff import export_dag_handoff
+
+        pkg = export_dag_handoff(run_id, context_hint=context_hint)
+        if pkg is None:
+            return _json_response({"ok": False, "error": "无法导出：active.json 不存在或 DAG 已完成"}, status=404)
+        return _json_response({"ok": True, "package": pkg.to_dict()}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] dag-handoff/export POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_registry_dag_handoff_import_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/dag-handoff/import — 导入 Handoff Package 并准备续跑（AR）。
+    Body JSON: DagHandoffPackage（直接传 /export 返回的 package 字段）
+    返回 HandoffImportResult + resume_intent 供调用方传给 run_agent。
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    # 支持直接传整个 export 响应（含 package 嵌套）或裸包
+    package_data = body.get("package") or body
+    try:
+        from l3_node.task_engine.dag_handoff import import_dag_handoff
+
+        result = import_dag_handoff(package_data)
+        return _json_response(result.to_dict(), status=200 if result.ok else 422)
+    except Exception as e:
+        logger.warning("[L3 HTTP] dag-handoff/import POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_registry_dag_handoff_list_get(request) -> "aiohttp.web.Response":
+    """
+    GET /api/v1/registry/dag-handoff/list — 列出 JACHIN_DAG_HANDOFF_DIR 中待导入的包（AR）。
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        limit = int(request.query.get("limit", "10"))
+    except ValueError:
+        limit = 10
+    try:
+        from l3_node.task_engine.dag_handoff import list_available_handoff_packages
+
+        packages = list_available_handoff_packages(limit=limit)
+        return _json_response({"ok": True, "packages": packages}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] dag-handoff/list GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_dag_handoff_auto_transfer_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/dag-handoff/auto-transfer — 自动将 DAG 转交给空闲对等节点（AS）。
+    Body JSON: { "run_id": "...", "context_hint": "...", "release_lock": true }
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    run_id = (body.get("run_id") or "").strip()
+    context_hint = (body.get("context_hint") or "").strip()
+    release_lock = bool(body.get("release_lock", True))
+    try:
+        from l3_node.task_engine.dag_handoff import auto_handoff_to_peer
+
+        result = await auto_handoff_to_peer(run_id, context_hint=context_hint, release_lock=release_lock)
+        return _json_response(result, status=200 if result.get("ok") else 503)
+    except Exception as e:
+        logger.warning("[L3 HTTP] dag-handoff/auto-transfer POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+# ---------------------------------------------------------------------------
+# AS — DAG Coordinator 端点
+# ---------------------------------------------------------------------------
+
+async def _handle_coordinator_info_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/coordinator/info — 本节点协调器状态摘要（AS）。"""
+    try:
+        from l3_node.task_engine.dag_coordinator import get_coordinator_info
+        return _json_response(get_coordinator_info(), status=200)
+    except Exception as e:
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_coordinator_peers_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/coordinator/peers?include_http=0 — 列出活跃对等节点（AS）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    include_http = request.query.get("include_http", "0") not in ("0", "false", "no")
+    try:
+        from l3_node.task_engine.dag_coordinator import discover_http_peers, list_alive_nodes
+
+        nodes = [n.to_dict() for n in list_alive_nodes()]
+        if include_http:
+            http_peers = await discover_http_peers()
+            existing_ids = {n["node_id"] for n in nodes}
+            for hp in http_peers:
+                if hp.node_id not in existing_ids:
+                    nodes.append(hp.to_dict())
+        return _json_response({"ok": True, "nodes": nodes, "count": len(nodes)}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] coordinator/peers GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_coordinator_register_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/coordinator/register — 节点自注册心跳（AS）。
+    Body JSON: { "node_id": "...", "http_url": "...", "load_score": 0.0 }
+    """
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    node_id = (body.get("node_id") or "").strip()
+    http_url = (body.get("http_url") or "").strip()
+    load_score = float(body.get("load_score") or 0.0)
+    if not node_id:
+        return _json_response({"ok": False, "error": "node_id required"}, status=400)
+    try:
+        from l3_node.task_engine.dag_coordinator import register_node
+        register_node(node_id, http_url, load_score=load_score)
+        return _json_response({"ok": True, "node_id": node_id}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] coordinator/register POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_coordinator_dag_claim_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/coordinator/dag-claim — 抢占 DAG 分布式锁（AS）。
+    Body JSON: { "dag_id": "...", "node_id": "..." }
+    Returns: { "ok": bool, "lock_token": "...", "message": "..." }
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    dag_id = (body.get("dag_id") or "").strip()
+    node_id = (body.get("node_id") or "").strip()
+    if not dag_id or not node_id:
+        return _json_response({"ok": False, "error": "dag_id and node_id required"}, status=400)
+    try:
+        from l3_node.task_engine.dag_coordinator import claim_dag
+        success, token = claim_dag(dag_id, node_id)
+        return _json_response({
+            "ok": success,
+            "lock_token": token if success else "",
+            "message": "锁获取成功" if success else f"DAG「{dag_id}」已被其他节点持有",
+        }, status=200 if success else 409)
+    except Exception as e:
+        logger.warning("[L3 HTTP] coordinator/dag-claim POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_coordinator_dag_release_delete(request) -> "aiohttp.web.Response":
+    """
+    DELETE /api/v1/registry/coordinator/dag-claim/{dag_id} — 释放 DAG 锁（AS）。
+    Body JSON: { "node_id": "...", "lock_token": "..." }
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    dag_id = request.match_info.get("dag_id", "").strip()
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    node_id = (body.get("node_id") or "").strip()
+    lock_token = (body.get("lock_token") or "").strip()
+    if not dag_id or not node_id or not lock_token:
+        return _json_response({"ok": False, "error": "dag_id, node_id and lock_token required"}, status=400)
+    try:
+        from l3_node.task_engine.dag_coordinator import release_dag
+        success = release_dag(dag_id, node_id, lock_token)
+        return _json_response({"ok": success}, status=200 if success else 403)
+    except Exception as e:
+        logger.warning("[L3 HTTP] coordinator/dag-claim DELETE: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_coordinator_dag_locks_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/coordinator/dag-locks — 列出当前有效的所有 DAG 锁（AS）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.task_engine.dag_coordinator import list_dag_locks
+        locks = [lk.to_dict() for lk in list_dag_locks()]
+        return _json_response({"ok": True, "locks": locks, "count": len(locks)}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] coordinator/dag-locks GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_registry_dag_resume_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/dag-resume — DAG 轻量续跑探测与应用（AO）。
+    Body JSON:
+      { "run_id": "<原始 run_id>", "dry_run": true }
+    dry_run=true（默认）只探测，不修改 active.json；
+    dry_run=false 时将待续跑节点重置为 pending 并更新 active.json。
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    run_id_param = (body.get("run_id") or request.query.get("run_id") or "").strip()
+    dry_run = bool(body.get("dry_run", True))
+    try:
+        from l3_node.task_engine.dag_resume import apply_dag_resume, probe_dag_resume
+
+        if dry_run:
+            result = probe_dag_resume(run_id_param)
+        else:
+            result = apply_dag_resume(run_id_param)
+    except Exception as e:
+        logger.warning("[L3 HTTP] dag-resume POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response(result.to_dict(), status=200)
+
+
+async def _handle_registry_im_channel_pending_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/im-channel-pending?chat_id=&limit= — 飞书 IM 线程池待处理深度（**W**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        lim = int(request.query.get("limit", "64"))
+    except ValueError:
+        lim = 64
+    chat_q = (request.query.get("chat_id") or "").strip() or None
+    try:
+        from l3_node.im_channels.dispatcher import get_im_dispatcher_inflight_snapshot
+
+        body = get_im_dispatcher_inflight_snapshot(chat_id=chat_q, limit=lim)
+    except Exception as e:
+        logger.warning("[L3 HTTP] im-channel-pending GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, **body}, status=200)
+
+
+async def _handle_autonomy_intents_list(request) -> "aiohttp.web.Response":
+    """GET /api/v1/autonomy/intents — 列出所有持久化意图（**Z**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    enabled_only = (request.query.get("enabled_only") or "").strip().lower() in ("1", "true")
+    try:
+        from l3_node.autonomy.intent_persister import get_intent_persister
+        intents = get_intent_persister().list_all(enabled_only=enabled_only)
+        return _json_response({"ok": True, "count": len(intents), "intents": [i.to_dict() for i in intents]})
+    except Exception as e:
+        logger.warning("[L3 HTTP] autonomy/intents GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_autonomy_intents_post(request) -> "aiohttp.web.Response":
+    """POST /api/v1/autonomy/intents — 创建持久化意图（**Z**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid JSON"}, status=400)
+    required = ("description", "action", "trigger_type")
+    for k in required:
+        if not body.get(k):
+            return _json_response({"ok": False, "error": f"missing field: {k}"}, status=400)
+    try:
+        from l3_node.autonomy.intent_persister import get_intent_persister
+        intent = get_intent_persister().create(
+            description=str(body["description"]),
+            action=str(body["action"]),
+            trigger_type=str(body["trigger_type"]),
+            cron=body.get("cron"),
+            event=body.get("event"),
+            condition=body.get("condition"),
+            interval_sec=body.get("interval_sec"),
+            failure_notification_channel=body.get("failure_notification_channel"),
+        )
+        return _json_response({"ok": True, "intent": intent.to_dict()}, status=201)
+    except Exception as e:
+        logger.warning("[L3 HTTP] autonomy/intents POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_autonomy_intent_patch(request) -> "aiohttp.web.Response":
+    """PATCH /api/v1/autonomy/intents/{intent_id} — 启用/禁用意图（**Z**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    intent_id = request.match_info.get("intent_id", "")
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_response({"ok": False, "error": "invalid JSON"}, status=400)
+    if "enabled" not in body:
+        return _json_response({"ok": False, "error": "missing field: enabled"}, status=400)
+    try:
+        from l3_node.autonomy.intent_persister import get_intent_persister
+        ok = get_intent_persister().set_enabled(intent_id, bool(body["enabled"]))
+        if not ok:
+            return _json_response({"ok": False, "error": "intent not found"}, status=404)
+        return _json_response({"ok": True, "intent_id": intent_id, "enabled": bool(body["enabled"])})
+    except Exception as e:
+        logger.warning("[L3 HTTP] autonomy/intents PATCH: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_autonomy_intent_delete(request) -> "aiohttp.web.Response":
+    """DELETE /api/v1/autonomy/intents/{intent_id} — 删除持久化意图（**Z**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    intent_id = request.match_info.get("intent_id", "")
+    try:
+        from l3_node.autonomy.intent_persister import get_intent_persister
+        ok = get_intent_persister().delete(intent_id)
+        if not ok:
+            return _json_response({"ok": False, "error": "intent not found"}, status=404)
+        return _json_response({"ok": True, "intent_id": intent_id, "deleted": True})
+    except Exception as e:
+        logger.warning("[L3 HTTP] autonomy/intents DELETE: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_autonomy_status_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/autonomy/status — 可观测性面板 JSON（**AD**）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.autonomy.dashboard import build_autonomy_status_dict
+
+        body = build_autonomy_status_dict()
+        return _json_response({"ok": True, **body}, status=200)
+    except Exception as e:
+        logger.warning("[L3 HTTP] autonomy/status GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def _handle_health(request) -> "aiohttp.web.Response":
     """GET /api/health - 健康检查，含 L2 连接状态（供 run_l3.ps1 等轮询）"""
     import os
@@ -1611,18 +2247,34 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         except (TypeError, ValueError):
             _mi = 8
         _mi = max(1, min(_mi, 48))
-        answer = await run_agent(
-            user_input,
-            engine,
-            max_iterations=_mi,
-            implicit_signals=_isig,
-            implicit_attribution=_iatt,
-            attachments_metadata=_att_meta,
-            gateway_system_state=_gw_st,
-            gateway_clarification_handle=_gw_ch,
-            gateway_clarification_deadline_ts=_gw_dl,
-            gateway_workspace_dir=_sniff_ws,
-        )
+
+        async def _invoke_agent() -> str:
+            return await run_agent(
+                user_input,
+                engine,
+                max_iterations=_mi,
+                implicit_signals=_isig,
+                implicit_attribution=_iatt,
+                attachments_metadata=_att_meta,
+                gateway_system_state=_gw_st,
+                gateway_clarification_handle=_gw_ch,
+                gateway_clarification_deadline_ts=_gw_dl,
+                gateway_workspace_dir=_sniff_ws,
+            )
+
+        if _ch_s:
+            try:
+                if await _http_agent_session_lock_held(_ch_s):
+                    from l3_node.session_hot_user_inject import record_pending_session_user_text
+
+                    record_pending_session_user_text(_ch_s, user_input)
+            except Exception:
+                pass
+            _lk = await _http_agent_session_lock(_ch_s)
+            async with _lk:
+                answer = await _invoke_agent()
+        else:
+            answer = await _invoke_agent()
         resp = {"answer": answer or ""}
         try:
             persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
@@ -2024,7 +2676,8 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         r.headers["Access-Control-Allow-Origin"] = "*"
         r.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
         r.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, X-Jachin-Safety-Lock-Token, X-Jachin-Cron-Thinker-Token"
+            "Content-Type, X-Jachin-Safety-Lock-Token, X-Jachin-Cron-Thinker-Token, "
+            "X-Jachin-Registry-Token, X-Jachin-Hook-Events-Token, X-Jachin-Registry-Diag-Token"
         )
         return r
 
@@ -2063,6 +2716,30 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     )
     app.router.add_get("/api/v1/cron-thinker/bios-settings", _handle_cron_thinker_bios_settings_get)
     app.router.add_post("/api/v1/cron-thinker/bios-settings", _handle_cron_thinker_bios_settings_post)
+    app.router.add_post("/api/v1/registry/external-sched-hint", _handle_registry_external_sched_hint_post)
+    app.router.add_delete("/api/v1/registry/external-sched-hint", _handle_registry_external_sched_hint_delete)
+    app.router.add_get("/api/v1/registry/hook-events-recent", _handle_hook_events_recent_get)
+    app.router.add_get("/api/v1/registry/runtime-snapshot", _handle_registry_runtime_snapshot_get)
+    app.router.add_get("/api/v1/registry/external-scheduled-hints", _handle_registry_external_scheduled_hints_get)
+    app.router.add_get("/api/v1/registry/task-dag-active", _handle_registry_task_dag_active_get)
+    app.router.add_get("/api/v1/registry/dag-guardrails", _handle_registry_dag_guardrails_get)
+    app.router.add_post("/api/v1/registry/dag-resume", _handle_registry_dag_resume_post)
+    app.router.add_post("/api/v1/registry/dag-handoff/export", _handle_registry_dag_handoff_export_post)
+    app.router.add_post("/api/v1/registry/dag-handoff/import", _handle_registry_dag_handoff_import_post)
+    app.router.add_get("/api/v1/registry/dag-handoff/list", _handle_registry_dag_handoff_list_get)
+    app.router.add_post("/api/v1/registry/dag-handoff/auto-transfer", _handle_dag_handoff_auto_transfer_post)
+    # AS — DAG Coordinator 端点
+    app.router.add_get("/api/v1/registry/coordinator/info", _handle_coordinator_info_get)
+    app.router.add_get("/api/v1/registry/coordinator/peers", _handle_coordinator_peers_get)
+    app.router.add_post("/api/v1/registry/coordinator/register", _handle_coordinator_register_post)
+    app.router.add_post("/api/v1/registry/coordinator/dag-claim", _handle_coordinator_dag_claim_post)
+    app.router.add_delete("/api/v1/registry/coordinator/dag-claim/{dag_id}", _handle_coordinator_dag_release_delete)
+    app.router.add_get("/api/v1/registry/coordinator/dag-locks", _handle_coordinator_dag_locks_get)
+    app.router.add_get("/api/v1/registry/im-channel-pending", _handle_registry_im_channel_pending_get)
+    app.router.add_get("/api/v1/autonomy/status", _handle_autonomy_status_get)
+    app.router.add_post("/api/v1/autonomy/intents", _handle_autonomy_intents_post)
+    app.router.add_patch("/api/v1/autonomy/intents/{intent_id}", _handle_autonomy_intent_patch)
+    app.router.add_delete("/api/v1/autonomy/intents/{intent_id}", _handle_autonomy_intent_delete)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
@@ -2123,6 +2800,14 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except Exception as e:
             logger.warning("[L3 HTTP] cron_thinker daemon skipped: %s", e)
 
+    async def _on_startup_dag_coordinator(_app):
+        """AS — DAG Coordinator 心跳循环（JACHIN_COORDINATOR_ENABLE=1 时激活）。"""
+        try:
+            from l3_node.task_engine.dag_coordinator import ensure_coordinator_started
+            ensure_coordinator_started(asyncio.get_running_loop())
+        except Exception as e:
+            logger.warning("[L3 HTTP] DAG Coordinator startup skipped: %s", e)
+
     async def _on_startup_skill_matrix_sync(_app):
         """启动时将全量工具描述写入 Memory Nexus Skill_Matrix（后台任务，勿阻塞 runner.setup）。
 
@@ -2163,13 +2848,23 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except Exception as e:
             logger.warning("[L3 HTTP] PMO resource monitor scheduler skipped: %s", e)
 
+    async def _on_startup_autonomy_services(_app):
+        """启动 AutonomousAwarenessLoop（§5 Layer 2）。若禁用则静默跳过。"""
+        try:
+            from l3_node.bootstrap import start_autonomy_services
+            start_autonomy_services()
+        except Exception as e:
+            logger.warning("[L3 HTTP] autonomy services startup skipped: %s", e)
+
     app.on_startup.append(_on_startup_register_k11_schedule_sse_loop)
     app.on_startup.append(_on_startup_kalaroko_scheduler)
     app.on_startup.append(_on_startup_k11_unified_smoke_scheduler)
     app.on_startup.append(_on_startup_healthchecks_watchdog)
     app.on_startup.append(_on_startup_cron_thinker)
+    app.on_startup.append(_on_startup_dag_coordinator)
     app.on_startup.append(_on_startup_skill_matrix_sync)
     app.on_startup.append(_on_startup_pmo_resource_monitor)
+    app.on_startup.append(_on_startup_autonomy_services)
 
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):

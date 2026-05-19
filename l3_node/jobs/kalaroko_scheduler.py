@@ -653,6 +653,31 @@ def start_scheduler() -> dict[str, Any]:
         "[kalaroko_scheduler] AsyncIOScheduler 已启动（小时巡检 + 晨报状态机补偿（可关）+ 每周日 UTC 02:00 Persona）"
     )
     try:
+        from l3_node.task_runtime_registry import register_scheduled_job_hint
+
+        register_scheduled_job_hint(
+            job_id=_JOB_HOURLY,
+            title="Kalaroko 小时巡检",
+            schedule_summary="约每 1 小时",
+            source="kalaroko_scheduler",
+        )
+        if _sched_env_bool("KALAROKO_DAILY_MORNING_REPORT", default=True):
+            _reg_m = _daily_catchup_interval_minutes()
+            register_scheduled_job_hint(
+                job_id=_JOB_DAILY,
+                title="Kalaroko 晨报状态机",
+                schedule_summary=f"每 {_reg_m} 分钟轮询（本地 08:15 后补发）",
+                source="kalaroko_scheduler",
+            )
+        register_scheduled_job_hint(
+            job_id=_JOB_WEEKLY_PERSONA,
+            title="统帅 Persona 侧写",
+            schedule_summary="每周日 UTC 02:00",
+            source="kalaroko_scheduler",
+        )
+    except Exception:
+        pass
+    try:
         jh = sched.get_job(_JOB_HOURLY)
         jd = sched.get_job(_JOB_DAILY)
         if jh and getattr(jh, "next_run_time", None):
@@ -687,6 +712,12 @@ def stop_scheduler() -> dict[str, Any]:
         _scheduler = None
         _scheduler_started = False
         _write_scheduler_state(False)
+        try:
+            from l3_node.task_runtime_registry import unregister_scheduled_job_hints_by_source
+
+            unregister_scheduled_job_hints_by_source("kalaroko_scheduler")
+        except Exception:
+            pass
     return {"ok": True, "active": False, "message": "已停止"}
 
 

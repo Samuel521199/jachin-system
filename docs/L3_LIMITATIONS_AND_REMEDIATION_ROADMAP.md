@@ -1,7 +1,11 @@
 # L3 架构薄弱点与治理路线图
 
-**版本**: 2026-04-02（文内「实现快照」与仓库同步；P0/P1/P2 仍作目标与缺口清单）  
-**性质**: 问题诊断 + **分阶段解决方案**（工程可执行，非口号）。  
+> **[已归档]** 本文档为 2026-04-02 快照，记录了当时的薄弱点与分阶段目标。  
+> **当前执行状态与完整实现进度** 请以 **[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)** 为准（版本 y，50 项 L3 功能已全部落地）；  
+> 本文仅作历史背景参考，**不再随代码更新**。
+
+**版本**: 2026-04-02（快照；后续演进见 AGI_OPTIMIZATION_ROADMAP.md）  
+**性质**: 问题诊断 + **分阶段解决方案**（历史记录）。  
 **相关**: [L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md](./L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md)、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)、[JACHIN_EXECUTION_RESILIENCE_CONTRACT.md](./JACHIN_EXECUTION_RESILIENCE_CONTRACT.md)、[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)（Tools/MCP/Skills/Agent Tasks）。
 
 ---

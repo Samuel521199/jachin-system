@@ -175,10 +175,49 @@ def format_deep_search_matches_for_agent(res: dict[str, Any]) -> str:
     return "\n---\n".join(lines)
 
 
+def _assistant_reply_too_low_value_for_nexus(ar: str) -> bool:
+    """有界退出 / 空输出 / 极短套话等不适合写入 General_Chat 记忆。"""
+    s = (ar or "").strip()
+    if not s:
+        return True
+    sl = s.lstrip()
+    if sl.startswith("[ExecutionBrief]"):
+        return True
+    if sl.startswith("[未产出回复]"):
+        return True
+    if sl.startswith("【需要补充信息】"):
+        return True
+    if sl.startswith("[System]") and len(s) < 160:
+        return True
+    s_low = s.lower()
+    if len(s) <= 8 and s_low in ("ok", "okay", "好的", "收到", "嗯", "好", "行", "嗯嗯"):
+        return True
+    return False
+
+
 def schedule_nexus_turn_commit_async(user_message: str, assistant_reply: str) -> None:
     """回合结束后异步写入 User_Persona / General_Chat；不阻塞、不向上抛错。"""
     um = (user_message or "").strip()
     ar = (assistant_reply or "").strip()
+    try:
+        raw = (os.environ.get("JACHIN_NEXUS_TURN_COMMIT_SKIP_CHITCHAT") or "1").strip().lower()
+        _skip_chitchat = raw not in ("0", "false", "no", "off")
+        if _skip_chitchat:
+            from l3_node.routing.output_format_signals import heuristic_trivial_chitchat_only
+
+            if heuristic_trivial_chitchat_only(um):
+                logger.debug("[Memory Nexus] turn commit 跳过（纯寒暄/致谢，JACHIN_NEXUS_TURN_COMMIT_SKIP_CHITCHAT）")
+                return
+    except Exception:
+        pass
+    try:
+        raw_lv = (os.environ.get("JACHIN_NEXUS_TURN_COMMIT_SKIP_LOW_VALUE") or "1").strip().lower()
+        _skip_lv = raw_lv not in ("0", "false", "no", "off")
+        if _skip_lv and _assistant_reply_too_low_value_for_nexus(ar):
+            logger.debug("[Memory Nexus] turn commit 跳过（低价值助手回复，JACHIN_NEXUS_TURN_COMMIT_SKIP_LOW_VALUE）")
+            return
+    except Exception:
+        pass
     if len(um) <= 10 and len(ar) <= 50:
         return
     text = f"User: {um[:12000]}\nJachin: {ar[:12000]}"

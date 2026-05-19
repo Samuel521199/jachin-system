@@ -43,6 +43,8 @@ tools:                                    # Native Core Fallback（防止 MCP �
 ---
 ```
 
+**P3 · 协同进化 peer（可选）**：可在 Frontmatter 增加 `evolution_peers`（或 `co_evolve_peers`）：字符串列表，取值为 `skills_repo` 目录名或 `find_skill_md_path` 可解析的 Skill 标识。主 Skill 被 `skill_evolver` **成功写盘**进化后，若 `JACHIN_SKILL_COEVOLVE_ENABLE=1`，引擎按**进化前** frontmatter 对至多 `JACHIN_SKILL_COEVOLVE_MAX_PEERS` 个 peer 各执行 **一跳** 协同补丁（peer 不再继续传播）。JSONL 日志：`trigger: co_evolve`，`co_evolve_from` 为源 Skill 名。
+
 **Native Core Fallback (原生降级路由)**：为防止 MCP 瘫痪导致技能失效，系统内置安全的宿主原生标准库（如 `core:fs_read`、`core:shell_exec`），权限死锁在 `~/.jachin/workspace/` 目录下。`core:shell_exec` 受 **P1** 策略约束（`nexus_config.json` → `intelligence_p1`：黑名单/可选受限前缀白名单；**P1+** 支持后台执行与 `core:shell_job_status` / `core:shell_job_cancel`）。当 `prefer` 工具调用失败时，自动无缝降级至 `fallback`。
 
 ### 3.2 正文：自然语言指令

@@ -1,6 +1,6 @@
 ---
 description: 智能化阶段编排（P0～E / Milestone）+ HR 招聘数据目录红线 + 关键代码入口
-globs: l3_node/**/*.py, l3_node/orchestration/**/*.py, l3_node/lark_workflow_command_interceptor.py, skills_repo/plugin/com.jachin.hr.recruitment/**/*.py, core/compaction_hook.py, core/intelligence_workspace.py, core/intelligence_implicit.py, core/intelligence_implicit_embedding.py, core/intelligence_e_consumer.py, core/apply_patch_unified.py, docs/INTELLIGENCE*.md, docs/JACHIN_VS_OPENCLAW*.md, docs/ORCHESTRATION_ARCHITECTURE.md, docs/HR_RECRUITMENT.md, docs/IMPLICIT_SIGNALS.md, docs/MEMORY_SCORING.md, docs/MEMORY_WRITE_AND_SCORE_NARRATIVE.md
+globs: l3_node/**/*.py, l3_node/orchestration/**/*.py, l3_node/lark_workflow_command_interceptor.py, skills_repo/plugin/com.jachin.hr.recruitment/**/*.py, core/compaction_hook.py, core/intelligence_workspace.py, core/intelligence_implicit.py, core/intelligence_implicit_embedding.py, core/intelligence_e_consumer.py, core/apply_patch_unified.py, docs/ORCHESTRATION_ARCHITECTURE.md, docs/HR_RECRUITMENT.md, docs/IMPLICIT_SIGNALS.md, docs/MEMORY_SCORING.md, docs/MEMORY_WRITE_AND_SCORE_NARRATIVE.md
 alwaysApply: false
 ---
 
@@ -12,9 +12,9 @@ alwaysApply: false
 
 | 文档 | 用途 |
 |------|------|
-| `docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` | **P0～P2 已实现**、**§5.0 Jachin OS 演进路线图**（基线 **v0.8.46 / Vanguard**，阶段 A～E 与 Milestone v0.8.50～v0.8.90）、并行策略与验收 |
-| `docs/ORCHESTRATION_ARCHITECTURE.md` | **长期三层编排**（L1 技能路由 / L2 领域子图注册与 HR 委托 / L3 YAML `domain_ref` + `core:domain_workflow_run`） |
-| `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md` | 对标 OpenClaw（现行）、**§九** 深度设计；**§9.10** 后续优先级与总览 / ORCHESTRATION 对齐 |
+| `docs/AGI_OPTIMIZATION_ROADMAP.md` | **L3 单体全量功能现状**（版本 y，50 项 A–AX 全部落地）；替代旧版「智能化总览」与「OpenClaw 对标」文档 |
+| `docs/L3_FEATURES_COMPLETE.md` | L3 功能完整清单（A–AX 逐项说明、环境变量速查） |
+| `docs/ORCHESTRATION_ARCHITECTURE.md` | **长期三层编排**（L1 技能路由 / L2 领域子图注册与 HR 委托 / L3 YAML `domain_ref` + `core:domain_workflow_run`）（注：历史版本 2026-03-16，整体架构仍有效） |
 | `docs/IMPLICIT_SIGNALS.md` | §4.3 隐式事件 type + **`POST /api/v2/intelligence/implicit-signal`** |
 | `docs/MEMORY_WRITE_AND_SCORE_NARRATIVE.md` | 记忆写入节奏 × **统一 memory_score** 对外叙事 |
 | `docs/MEMORY_SCORING.md` | L2 hybrid + reinforce **公式与 explain API** |
@@ -28,7 +28,7 @@ alwaysApply: false
 - **P1 / P1+**：`l3_node/intelligence_p1.py`、`l3_node/tool_call_cache.py`、澄清队列、`core:shell_exec` 策略、后台 shell、`shell_job_*`、coordinate **`native_tool`** 直派
 - **P2 MVP**：`l3_node/intelligence_p2.py`（修正意图）、意图-技能 JSONL、检索强化 + `POST /api/v2/memory/reinforce`
 
-### 阶段 A～E（MVP 完整闭环，见总览 **v1.9** §5.2 🟢）
+### 阶段 A～E（MVP 完整闭环；更完整的 L3 演进见 `docs/AGI_OPTIMIZATION_ROADMAP.md`）
 
 - **A**：锚点 `anchor_remediate`（`second_llm` / `touch_workspace_anchors`）、`post_compaction_audit.remediation` 含 `memory_flush_retry`；`progress.md` 未完成项注入 compaction 摘要
 - **B**：`planned` 计划卡；**`strict` + `VERIFY_PASS`**；可选 **`require_brainstorm_card`**、**`enforce_readonly_verify_round`**（strict 下默认 true，硬只读工具白名单）；可选 **`force_task_plan_file`** + `l3_node/task_plan_policy.py`（**HR 话术豁免**）
@@ -46,7 +46,7 @@ alwaysApply: false
 
 **禁止**：在文档中写「YAML 已替代 HR DAG」— HR 执行真相仍为 `hr_recruitment_dag` / 调度器；YAML 仅 **胶水**。
 
-企业级 OS 沙箱 / Lark 审批 UI / 统一 memory_score 公式等仍以总览 **§5.0** 为路线图。
+企业级 OS 沙箱 / Lark 审批 UI / 统一 memory_score 公式等见 `docs/AGI_OPTIMIZATION_ROADMAP.md`（L3 单体现状）与 `docs/ORCHESTRATION_ARCHITECTURE.md`（编排架构）。
 
 ## 三、HR 招聘数据目录（红线）
 

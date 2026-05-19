@@ -285,6 +285,12 @@ def register_bi_daily_report_job() -> bool:
             scheduler.remove_job(_BI_JOB_ID)
         except Exception:
             pass
+        try:
+            from l3_node.task_runtime_registry import unregister_scheduled_job_hint
+
+            unregister_scheduled_job_hint(_BI_JOB_ID)
+        except Exception:
+            pass
         return False
 
     mode = (cfg.get("mode") or "cron").lower()
@@ -306,6 +312,28 @@ def register_bi_daily_report_job() -> bool:
                     cfg.get("interval_seconds", 30),
                 )
                 _scheduler_audit_log("REGISTERED mode=loop (background thread)")
+                try:
+                    from l3_node.task_runtime_registry import register_scheduled_job_hint
+
+                    register_scheduled_job_hint(
+                        job_id=_BI_JOB_ID,
+                        title="BI 每日战报",
+                        schedule_summary=(
+                            f"loop 间隔 {int(cfg.get('interval_seconds', 30) or 30)}s，"
+                            f"锚点 {cfg.get('run_at_hour', 15)}:"
+                            f"{str(cfg.get('run_at_minute', 8)).zfill(2)}"
+                        ),
+                        source="bi_scheduler",
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    from l3_node.task_runtime_registry import unregister_scheduled_job_hint
+
+                    unregister_scheduled_job_hint(_BI_JOB_ID)
+                except Exception:
+                    pass
             return True
         # cron / interval 使用 APScheduler
         try:
@@ -333,6 +361,17 @@ def register_bi_daily_report_job() -> bool:
             )
             logger.info("[BI Scheduler] 已注册 BI 战报任务（interval %s）", desc)
             _scheduler_audit_log(f"REGISTERED job_id={_BI_JOB_ID} interval {desc}")
+            try:
+                from l3_node.task_runtime_registry import register_scheduled_job_hint
+
+                register_scheduled_job_hint(
+                    job_id=_BI_JOB_ID,
+                    title="BI 每日战报",
+                    schedule_summary=f"interval {desc}",
+                    source="bi_scheduler",
+                )
+            except Exception:
+                pass
         else:
             hour = int(cfg.get("hour", 8))
             minute = int(cfg.get("minute", 0))
@@ -357,8 +396,25 @@ def register_bi_daily_report_job() -> bool:
                 f"REGISTERED job_id={_BI_JOB_ID} cron hour={hour} minute={minute} tz={tz_name} "
                 f"(L3 进程须常驻；仅 python scripts/run_bi_daily_report.py 不会注册定时器)"
             )
+            try:
+                from l3_node.task_runtime_registry import register_scheduled_job_hint
+
+                register_scheduled_job_hint(
+                    job_id=_BI_JOB_ID,
+                    title="BI 每日战报",
+                    schedule_summary=f"每天 {hour:02d}:{minute:02d} {tz_name}",
+                    source="bi_scheduler",
+                )
+            except Exception:
+                pass
         return True
     except Exception as e:
         _scheduler_audit_log(f"REGISTER_FAILED {type(e).__name__}: {e}")
         logger.warning("[BI Scheduler] 注册任务失败: %s", e)
+        try:
+            from l3_node.task_runtime_registry import unregister_scheduled_job_hint
+
+            unregister_scheduled_job_hint(_BI_JOB_ID)
+        except Exception:
+            pass
         return False

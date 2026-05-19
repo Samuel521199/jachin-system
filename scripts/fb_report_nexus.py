@@ -39,6 +39,12 @@ import os
 import re
 import sys
 import traceback
+
+# Windows GBK 终端兼容：强制 stdout/stderr 使用 UTF-8，避免 emoji 导致 UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -416,99 +422,108 @@ async def upload_to_lark(file_path: str) -> None:
     print(f"[飞书] 收件人 ({len(receivers)} 人): {', '.join(receivers)}")
 
     headers_json = {"Content-Type": "application/json; charset=utf-8"}
+    # 跨境网络不稳定时的重试参数
+    _LARK_MAX_RETRIES = 4
+    _LARK_RETRY_DELAYS = [5, 15, 30, 60]  # 每次重试等待秒数
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            # 1) tenant_access_token
-            tok_resp = await client.post(
-                f"{LARK_API_BASE}/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": LARK_APP_ID, "app_secret": LARK_APP_SECRET},
-                headers=headers_json,
-            )
-            tok_resp.raise_for_status()
-            tok_json = tok_resp.json()
-            if tok_json.get("code") != 0:
-                raise RuntimeError(
-                    f"获取 tenant_access_token 失败：{tok_json}"
+    last_exc: Optional[BaseException] = None
+    for attempt in range(1, _LARK_MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                # 1) tenant_access_token（每次重试重新取，避免 token 过期）
+                tok_resp = await client.post(
+                    f"{LARK_API_BASE}/open-apis/auth/v3/tenant_access_token/internal",
+                    json={"app_id": LARK_APP_ID, "app_secret": LARK_APP_SECRET},
+                    headers=headers_json,
                 )
-            token = tok_json["tenant_access_token"]
-            print("[飞书] 获取 Token 成功")
-
-            auth = {"Authorization": f"Bearer {token}"}
-
-            # 2) 上传文件（multipart，一次上传多次投递）
-            file_bytes = p.read_bytes()
-            upload_url = f"{LARK_API_BASE}/open-apis/im/v1/files"
-            up_resp = await client.post(
-                upload_url,
-                headers=auth,
-                data={
-                    "file_type": "stream",
-                    "file_name": p.name,
-                },
-                files={
-                    "file": (
-                        p.name,
-                        file_bytes,
-                        "text/csv",
-                    )
-                },
-            )
-            up_resp.raise_for_status()
-            up_json = up_resp.json()
-            if up_json.get("code") != 0:
-                raise RuntimeError(f"上传文件失败：{up_json}")
-            file_key = (up_json.get("data") or {}).get("file_key")
-            if not file_key:
-                raise RuntimeError(f"响应缺少 file_key：{up_json}")
-            print(f"[飞书] 文件上传成功，file_key: {file_key}")
-
-            # 3) 逐人发送（同一 file_key 复用）
-            msg_url = f"{LARK_API_BASE}/open-apis/im/v1/messages"
-            file_payload = json.dumps(
-                {"file_key": file_key},
-                ensure_ascii=False,
-            )
-            for rid in receivers:
-                body = {
-                    "receive_id": rid,
-                    "msg_type": "file",
-                    "content": file_payload,
-                }
-                msg_resp = await client.post(
-                    msg_url,
-                    headers={**auth, **headers_json},
-                    params={"receive_id_type": LARK_RECEIVE_ID_TYPE},
-                    json=body,
-                )
-                msg_resp.raise_for_status()
-                msg_json = msg_resp.json()
-                if msg_json.get("code") != 0:
+                tok_resp.raise_for_status()
+                tok_json = tok_resp.json()
+                if tok_json.get("code") != 0:
                     raise RuntimeError(
-                        f"向 {rid} 发送消息失败：{msg_json}"
+                        f"获取 tenant_access_token 失败：{tok_json}"
                     )
-                print(f"[飞书] 已向 {rid} 投递成功")
+                token = tok_json["tenant_access_token"]
+                if attempt == 1:
+                    print("[飞书] 获取 Token 成功")
+                else:
+                    print(f"[飞书] 重试 {attempt}/{_LARK_MAX_RETRIES}：获取 Token 成功")
+
+                auth = {"Authorization": f"Bearer {token}"}
+
+                # 2) 上传文件（multipart，一次上传多次投递）
+                file_bytes = p.read_bytes()
+                upload_url = f"{LARK_API_BASE}/open-apis/im/v1/files"
+                up_resp = await client.post(
+                    upload_url,
+                    headers=auth,
+                    data={
+                        "file_type": "stream",
+                        "file_name": p.name,
+                    },
+                    files={
+                        "file": (
+                            p.name,
+                            file_bytes,
+                            "text/csv",
+                        )
+                    },
+                )
+                up_resp.raise_for_status()
+                up_json = up_resp.json()
+                if up_json.get("code") != 0:
+                    raise RuntimeError(f"上传文件失败：{up_json}")
+                file_key = (up_json.get("data") or {}).get("file_key")
+                if not file_key:
+                    raise RuntimeError(f"响应缺少 file_key：{up_json}")
+                print(f"[飞书] 文件上传成功，file_key: {file_key}")
+
+                # 3) 逐人发送（同一 file_key 复用）
+                msg_url = f"{LARK_API_BASE}/open-apis/im/v1/messages"
+                file_payload = json.dumps(
+                    {"file_key": file_key},
+                    ensure_ascii=False,
+                )
+                for rid in receivers:
+                    body = {
+                        "receive_id": rid,
+                        "msg_type": "file",
+                        "content": file_payload,
+                    }
+                    msg_resp = await client.post(
+                        msg_url,
+                        headers={**auth, **headers_json},
+                        params={"receive_id_type": LARK_RECEIVE_ID_TYPE},
+                        json=body,
+                    )
+                    msg_resp.raise_for_status()
+                    msg_json = msg_resp.json()
+                    if msg_json.get("code") != 0:
+                        raise RuntimeError(
+                            f"向 {rid} 发送消息失败：{msg_json}"
+                        )
+                    print(f"[飞书] 已向 {rid} 投递成功")
 
             print("[飞书] 飞书发送全部完成！")
+            return  # 成功，退出重试循环
 
-    except httpx.HTTPStatusError as e:
-        txt = ""
-        try:
-            txt = e.response.text[:800]
-        except Exception:
-            pass
-        print(
-            f"[飞书] HTTP 状态异常 {e.response.status_code}：{txt}",
-            file=sys.stderr,
-        )
-        raise
-    except httpx.RequestError as e:
-        print(f"[飞书] 网络请求失败：{e!r}", file=sys.stderr)
-        raise
-    except Exception as e:
-        print(f"[飞书] 作战失败：{e!r}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        raise
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _LARK_MAX_RETRIES:
+                wait = _LARK_RETRY_DELAYS[attempt - 1]
+                print(
+                    f"[飞书] 网络请求失败（{attempt}/{_LARK_MAX_RETRIES}）：{exc!r}，"
+                    f"{wait}s 后重试...",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(wait)
+            else:
+                print(
+                    f"[飞书] 已重试 {_LARK_MAX_RETRIES} 次仍失败，放弃发送。最终错误：{exc!r}",
+                    file=sys.stderr,
+                )
+
+    if last_exc is not None:
+        raise last_exc
 
 
 async def _debug_screenshot(page: Page, path: str) -> None:

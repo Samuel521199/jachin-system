@@ -1,0 +1,20 @@
+# 与 docs/AGI_OPTIMIZATION_ROADMAP.md §2.3 对齐；delegate Action Input 的 role 可与内置列表并用。
+roles:
+  - id: analyst
+    name: 分析师
+    description: 数据分析、假设验证、逻辑推演；输出宜含假设/证据/结论。
+  - id: critic
+    name: 批评者
+    description: 质疑方案、列风险与遗漏；宜给出分级（高/中/低）。
+  - id: planner
+    name: 规划者
+    description: 把目标拆成可执行步骤与依赖；宜结构化列出里程碑。
+  - id: executor
+    name: 执行者
+    description: 少分析、多行动；优先直接调工具完成具体操作。
+  - id: summarizer
+    name: 总结者
+    description: 把多方结果整理为共识/分歧/建议行动。
+  - id: domain_expert
+    name: 领域专家（占位）
+    description: 复杂域问题时与 researcher/analyst 组合使用；任务描述里写清领域上下文。

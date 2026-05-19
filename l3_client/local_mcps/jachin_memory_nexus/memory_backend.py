@@ -6,6 +6,17 @@ Memory Nexus 持久化底座：SQLite 单文件 + NumPy 向量相似度 + FastEm
 - 语义检索：在候选子集（默认最近 N 条，可环境变量覆盖）上做余弦相似度，返回与旧 API 兼容的 ``distance``（1 - cosine_sim，越小越近）
 
 ``CHROMA_USE_HTTP_CLIENT`` 等旧变量已忽略；若需换模型设 ``JACHIN_MEMORY_EMBED_MODEL``（FastEmbed 模型名）。
+
+跨 Agent 共享（AW）：
+  设 JACHIN_NEXUS_SHARED_PATH=/shared/path/memory_nexus.sqlite3 后，
+  所有 Agent（同机多进程或挂载同一共享文件系统）共用同一 SQLite 数据库，
+  实现记忆共享（SQLite WAL 模式保证并发读写安全）。
+  未设置时退回 ~/.jachin/palace_db/memory_nexus.sqlite3（原有行为不变）。
+
+向量主导检索（AW）：
+  设 JACHIN_NEXUS_VECTOR_LEAD=1 后，检索得分由纯向量余弦相似度主导，
+  时间衰减和 Wing 重要性仅作微权调整（各缩小为原权重的 0.3 倍）。
+  适合跨 Agent 共享场景——不同 Agent 的记忆时间戳差异大，纯时间衰减会导致偏差。
 """
 
 from __future__ import annotations
@@ -20,6 +31,12 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
+
+from l3_client.local_mcps.jachin_memory_nexus.wing_registry import (
+    normalize_wing,
+    wing_half_life_days,
+    wing_importance_mult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +56,15 @@ T = TypeVar("T")
 
 
 def _db_file() -> Path:
+    """返回 SQLite 文件路径。
+    若设置了 JACHIN_NEXUS_SHARED_PATH，使用共享路径（跨 Agent 共享记忆，AW）；
+    否则使用本地默认路径。
+    """
+    shared = (os.environ.get("JACHIN_NEXUS_SHARED_PATH") or "").strip()
+    if shared:
+        p = Path(shared)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     _PALACE_ROOT.mkdir(parents=True, exist_ok=True)
     return _PALACE_ROOT / _SQLITE_NAME
 
@@ -213,6 +239,38 @@ def _embed_one(text: str) -> Any:
     return v
 
 
+def embed_texts_normalized_list(texts: list[str]) -> list[Any]:
+    """
+    批量嵌入并逐条 L2 归一化为 float32 向量（list[np.ndarray]）。
+    供 Experience RAG 等对多条候选一次性推理；单条失败则整批交由调用方降级。
+    """
+    import numpy as np
+
+    if not texts:
+        return []
+    model = _get_embedder()
+    clean = [(t or "").strip() or " " for t in texts]
+    raw = model.embed(clean)
+    rows: list[Any]
+    if isinstance(raw, np.ndarray):
+        mat = np.asarray(raw, dtype=np.float32)
+        if mat.ndim == 1:
+            mat = mat.reshape(1, -1)
+        rows = [mat[i].reshape(-1) for i in range(mat.shape[0])]
+    else:
+        rows = []
+        for emb in raw:
+            v = np.asarray(emb, dtype=np.float32).reshape(-1)
+            rows.append(v)
+    out: list[Any] = []
+    for v in rows:
+        n = float(np.linalg.norm(v))
+        if n > 1e-12:
+            v = v / np.float32(n)
+        out.append(v)
+    return out
+
+
 def _embedding_to_blob(vec: Any) -> tuple[bytes, int]:
     import numpy as np
 
@@ -264,6 +322,8 @@ def commit_drawer(
     room: str,
     extra_meta: dict[str, Any] | None = None,
 ) -> str:
+    # AL: 写入时归一化 wing 名，消除旧名/别名不一致
+    wing = normalize_wing(wing)
     logger.info(
         "[Memory Nexus] commit_drawer 入口 wing=%s room=%s text_len=%d",
         wing,
@@ -336,6 +396,8 @@ def upsert_drawer(
     room: str,
     extra_meta: dict[str, Any] | None = None,
 ) -> str:
+    # AL: 写入时归一化 wing 名
+    wing = normalize_wing(wing)
     did = str(drawer_id).strip()
     if not did:
         raise ValueError("upsert_drawer: empty drawer_id")
@@ -424,6 +486,68 @@ def _deep_search_candidate_cap() -> int:
     return max(50, min(n, 50_000))
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 遗忘曲线时间衰减（§4 方案 D）+ Wing 重要性乘数（§4 P0 AI + AL Wing 全量重映射）
+#
+# AL（Wing 全量重映射）：
+#   半衰期和重要性系数统一从 wing_registry.WingMeta 读取，不再硬编码字典；
+#   写入时 wing 名通过 normalize_wing() 归一化，消除旧名/别名不一致问题。
+#
+# 环境变量：
+#   JACHIN_NEXUS_TIME_DECAY_WEIGHT  0~1（默认 0.2）；0 = 纯语义，不含时间权重
+#   JACHIN_NEXUS_WING_IMPORTANCE_WEIGHT  0~1（默认 0.15）；0 = 关闭乘数调权
+#   JACHIN_WING_IMPORTANCE_OVERRIDE  JSON 对象，可覆盖各 Wing 的重要性系数
+# ---------------------------------------------------------------------------
+
+
+def _time_decay_weight() -> float:
+    raw = (os.environ.get("JACHIN_NEXUS_TIME_DECAY_WEIGHT") or "0.2").strip()
+    try:
+        w = float(raw)
+    except ValueError:
+        w = 0.2
+    return max(0.0, min(w, 1.0))
+
+
+def _wing_importance_weight() -> float:
+    """Wing 重要性乘数的强度权重（0 = 完全关闭，1 = 按完整系数调权）。"""
+    raw = (os.environ.get("JACHIN_NEXUS_WING_IMPORTANCE_WEIGHT") or "0.15").strip()
+    try:
+        w = float(raw)
+    except ValueError:
+        w = 0.15
+    return max(0.0, min(w, 1.0))
+
+
+def _vector_lead_mode() -> bool:
+    """向量主导检索模式（AW）：开启后时间/Wing 权重各缩小为 0.3 倍，向量余弦相似度主导。
+    适合跨 Agent 共享场景，避免时间戳差异导致检索偏差。
+    环境变量：JACHIN_NEXUS_VECTOR_LEAD=1"""
+    return (os.environ.get("JACHIN_NEXUS_VECTOR_LEAD") or "").strip().lower() in (
+        "1", "true", "yes"
+    )
+
+
+def _compute_wing_importance(wing: str, importance_weight: float) -> float:
+    """返回最终乘数：lerp(1.0, wing_mult, importance_weight)。
+    wing_mult 来自 wing_registry，支持 JACHIN_WING_IMPORTANCE_OVERRIDE 覆盖。
+    """
+    if importance_weight <= 0.0:
+        return 1.0
+    mult = wing_importance_mult(normalize_wing(wing))
+    return 1.0 + (mult - 1.0) * importance_weight
+
+
+def _compute_time_decay(timestamp: float, now: float, wing: str = "") -> float:
+    """Ebbinghaus 简化遗忘曲线：decay = 0.5 ^ (age_days / half_life_days)。
+    半衰期从 wing_registry 读取（AL 全量重映射后支持 Inbox=7d / Core=180d 等）。
+    """
+    half_life = wing_half_life_days(normalize_wing(wing))
+    age_days = max(0.0, (now - timestamp) / 86400.0)
+    return float(0.5 ** (age_days / half_life))
+
+
 def deep_search(query: str, wing: str | None = None, limit: int = 5) -> dict[str, Any]:
     import numpy as np
 
@@ -441,11 +565,18 @@ def deep_search(query: str, wing: str | None = None, limit: int = 5) -> dict[str
         return {"ok": False, "error": repr(e), "matches": []}
     q_dim = int(qv.shape[0])
 
+    tdw = _time_decay_weight()    # 0 = 纯语义；>0 = 融合时间衰减
+    wiw = _wing_importance_weight()  # 0 = 不调 Wing 重要性权重
+    # 向量主导模式（AW）：跨 Agent 共享时缩小时间/Wing 权重，突出纯语义相似度
+    if _vector_lead_mode():
+        tdw = tdw * 0.3
+        wiw = wiw * 0.3
+
     def _search(conn: sqlite3.Connection) -> dict[str, Any]:
         if wing_f:
             cur = conn.execute(
                 """
-                SELECT drawer_id, wing, room, document, embedding, dim, extra_meta_json
+                SELECT drawer_id, wing, room, document, embedding, dim, timestamp, extra_meta_json
                 FROM drawers
                 WHERE wing = ?
                 ORDER BY timestamp DESC
@@ -456,7 +587,7 @@ def deep_search(query: str, wing: str | None = None, limit: int = 5) -> dict[str
         else:
             cur = conn.execute(
                 """
-                SELECT drawer_id, wing, room, document, embedding, dim, extra_meta_json
+                SELECT drawer_id, wing, room, document, embedding, dim, timestamp, extra_meta_json
                 FROM drawers
                 ORDER BY timestamp DESC
                 LIMIT ?
@@ -472,6 +603,8 @@ def deep_search(query: str, wing: str | None = None, limit: int = 5) -> dict[str
         metas: list[dict[str, Any]] = []
         ids: list[str] = []
         docs: list[str] = []
+        wings: list[str] = []
+        timestamps: list[float] = []
         for row in rows:
             d = int(row["dim"])
             if d != q_dim:
@@ -480,6 +613,12 @@ def deep_search(query: str, wing: str | None = None, limit: int = 5) -> dict[str
             dims.append(d)
             ids.append(str(row["drawer_id"]))
             docs.append(str(row["document"] or ""))
+            wings.append(str(row["wing"] or ""))
+            try:
+                ts = float(row["timestamp"] or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            timestamps.append(ts)
             try:
                 m = json.loads(row["extra_meta_json"] or "{}")
             except json.JSONDecodeError:
@@ -491,8 +630,33 @@ def deep_search(query: str, wing: str | None = None, limit: int = 5) -> dict[str
 
         mat = np.stack([_blob_to_vec(b, dims[0]) for b in blobs], axis=0)
         sims = mat @ qv.astype(np.float32)
-        # 与旧 Chroma 习惯对齐：distance 越小越相似（余弦距离）
-        dists = 1.0 - sims.astype(np.float64)
+
+        if tdw > 0.0:
+            # 融合时间衰减：final_score = sem*(1-w) + decay*w；score 越高越好
+            now_ts = __import__("time").time()
+            decays = np.array(
+                [_compute_time_decay(timestamps[i], now_ts, wings[i]) for i in range(len(blobs))],
+                dtype=np.float64,
+            )
+            sem_scores = sims.astype(np.float64)
+            combined = sem_scores * (1.0 - tdw) + decays * tdw
+        else:
+            # 纯语义（保持原始行为）
+            combined = sims.astype(np.float64)
+
+        # Wing 重要性分级乘数（AI）：对不同 Wing 记忆提权/降权
+        if wiw > 0.0:
+            importance_mults = np.array(
+                [_compute_wing_importance(wings[i], wiw) for i in range(len(blobs))],
+                dtype=np.float64,
+            )
+            combined = combined * importance_mults
+            # 限制在 [0, 1]，避免乘数超出 distance 约定范围
+            combined = np.clip(combined, 0.0, 1.0)
+
+        # distance 约定：越小越相似（与 Chroma 旧习惯一致）
+        dists = 1.0 - combined
+
         order = np.argsort(dists)[:n_out]
 
         matches: list[dict[str, Any]] = []

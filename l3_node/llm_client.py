@@ -350,12 +350,13 @@ def _pop_l3_runtime_controls(kwargs: dict[str, Any]) -> tuple[Any, Any, Any]:
 
 
 def _apply_usage_budget(response: object, acc: Any, budget: Any) -> None:
-    if acc is None or not isinstance(acc, dict):
-        return
     try:
-        from l3_node.llm_budget import accumulate_and_check, extract_usage_tokens
+        from l3_node.llm_budget import accumulate_and_check, extract_usage_tokens, record_daily_llm_usage
 
         pt, ct = extract_usage_tokens(response)
+        record_daily_llm_usage(pt, ct)
+        if acc is None or not isinstance(acc, dict):
+            return
         accumulate_and_check(acc, pt, ct, budget)
     except ImportError:
         pass

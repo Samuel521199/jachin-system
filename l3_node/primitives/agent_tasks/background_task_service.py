@@ -245,6 +245,54 @@ def _load_cfg() -> dict[str, Any]:
     return cfg
 
 
+def format_background_tasks_prompt_suffix() -> str:
+    """
+    供 agent_core._build_system_prompt 注入：一行后台任务负载（同步、仅读内存，无阻塞 I/O）。
+    与 docs/AGI_OPTIMIZATION_ROADMAP.md「方案 B」对齐。
+    """
+    if not _runtime_started or _queue is None or _env_disabled():
+        return ""
+    running = 0
+    for rec in _registry.values():
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("status") or "").lower() == "running":
+            running += 1
+    try:
+        q_wait = int(_queue.qsize())
+    except Exception:
+        q_wait = 0
+    if running <= 0 and q_wait <= 0:
+        return ""
+    parts: list[str] = []
+    if running > 0:
+        parts.append(f"后台 Worker 正在执行约 {running} 个任务")
+    if q_wait > 0:
+        parts.append(f"内存队列中约 {q_wait} 个待 Worker 领取")
+    body = "；".join(parts)
+    return (
+        f"【系统负载·后台任务（P3，core:submit_background_task）】{body}。"
+        "若用户询问系统是否繁忙或响应变慢，可如实说明当前存在后台任务。"
+    )
+
+
+def get_background_queue_metrics() -> dict[str, int]:
+    """供可观测性面板等只读查询：running 与内存队列等待数。"""
+    if not _runtime_started or _queue is None or _env_disabled():
+        return {"running": 0, "queued": 0}
+    running = 0
+    for rec in _registry.values():
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("status") or "").lower() == "running":
+            running += 1
+    try:
+        q_wait = int(_queue.qsize())
+    except Exception:
+        q_wait = 0
+    return {"running": int(running), "queued": int(q_wait)}
+
+
 def set_background_task_engine(engine: Any) -> None:
     global _ENGINE
     _ENGINE = engine

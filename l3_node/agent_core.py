@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
 from core.deep_execution_log import (
     log_pipeline_phase,
@@ -33,7 +33,14 @@ from l3_node.engine.hooks_pipeline import (
     HOOK_BEFORE_LLM_THINK,
     HOOK_BEFORE_RESPONSE,
     HOOK_BEFORE_TOOL_EXEC,
+    HOOK_ON_EXECUTION_BRIEF,
+    HOOK_ON_EXPERIENCE_LEARNED,
     HOOK_ON_INTENT_RECEIVED,
+    HOOK_ON_MEMORY_COMMIT,
+    HOOK_ON_RETRY,
+    HOOK_ON_TASK_DECOMPOSE,
+    HOOK_ON_TASK_NODE_DONE,
+    HOOK_ON_TASK_NODE_START,
     Pipeline,
     PipelineContext,
     global_hooks,
@@ -43,6 +50,11 @@ from l3_node.capability_catalog import (
     build_capability_prompt_inject_for_tools,
     tools_include_akshare_native,
     tools_include_recruitment,
+)
+from l3_node.skill_md_hot_reload import (
+    HR_SKILL_MD_BODY_END,
+    HR_SKILL_MD_BODY_START,
+    apply_hr_skill_md_hot_reload_to_react_ctx,
 )
 from l3_node.routing.intent_signals import (
     user_message_suggests_a_share_analysis,
@@ -110,6 +122,102 @@ def _delegate_max_concurrent_cfg() -> int:
         return max(0, v)
     except Exception:
         return 4
+
+
+def _discuss_max_rounds_cfg() -> int:
+    """mode: discuss 默认 max_rounds。环境变量 JACHIN_DISCUSS_MAX_ROUNDS 优先；
+    否则 nexus_config.json → multi_agent.max_discussion_rounds（默认 3，clamp 1..12）。
+    """
+    try:
+        raw = (os.environ.get("JACHIN_DISCUSS_MAX_ROUNDS") or "").strip()
+        if raw:
+            return max(1, min(12, int(raw)))
+    except Exception:
+        pass
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        ma = cfg.get("multi_agent") or {}
+        return max(1, min(12, int(ma.get("max_discussion_rounds", 3))))
+    except Exception:
+        return 3
+
+
+def _discuss_item_max_iterations_cfg() -> int:
+    """讨论模式每角色子任务 max_iterations。JACHIN_DISCUSS_ITEM_MAX_ITER 优先；
+    否则 multi_agent.discussion_item_max_iterations（默认 3，clamp 1..24）。
+    """
+    try:
+        raw = (os.environ.get("JACHIN_DISCUSS_ITEM_MAX_ITER") or "").strip()
+        if raw:
+            return max(1, min(24, int(raw)))
+    except Exception:
+        pass
+    try:
+        from l3_node.nexus_config import get_nexus_config
+
+        cfg = get_nexus_config() or {}
+        ma = cfg.get("multi_agent") or {}
+        return max(1, min(24, int(ma.get("discussion_item_max_iterations", 3))))
+    except Exception:
+        return 3
+
+
+def _intent_surface_for_experience(ctx: Any, messages: list[dict[str, Any]] | None) -> str:
+    ui = (getattr(ctx, "intent", None) or "").strip()
+    if ui:
+        return ui[:8000]
+    for _m in reversed(messages or []):
+        if isinstance(_m, dict) and _m.get("role") == "user":
+            return str(_m.get("content") or "").strip()[:4000]
+    return ""
+
+
+def _schedule_multi_agent_experience_record(
+    ctx: Any,
+    *,
+    kind: Literal["discuss", "parallel_delegate"],
+    intent_surface: str,
+    payload: dict[str, Any],
+) -> None:
+    """异步落盘 multi_agent 经验并触发 HOOK_ON_EXPERIENCE_LEARNED（失败静默）。"""
+    try:
+        from l3_node.experience_memory import (
+            experience_multi_agent_record_enabled,
+            save_multi_agent_episode,
+        )
+
+        if not experience_multi_agent_record_enabled():
+            return
+
+        async def _go() -> None:
+            try:
+
+                def _write() -> None:
+                    save_multi_agent_episode(
+                        kind=kind,
+                        intent_surface=intent_surface,
+                        payload=payload,
+                    )
+
+                await asyncio.to_thread(_write)
+            except Exception:
+                return
+            try:
+                _hc = PipelineContext(
+                    intent=(intent_surface or "")[:4000],
+                    source="l3_agent",
+                    run_id=str(getattr(ctx, "run_id", None) or ""),
+                    metadata={"executed_tool": f"multi_agent:{kind}", "path": "multi_agent_episode"},
+                )
+                await global_hooks.run(HOOK_ON_EXPERIENCE_LEARNED, _hc)
+            except Exception:
+                pass
+
+        asyncio.create_task(_go())
+    except Exception:
+        pass
 
 
 def _llm_token_budget_for_run(delegate_depth: int) -> int | None:
@@ -907,6 +1015,11 @@ def _reject_workspace_writeback_missing_guard(
     if not _user_intent_requests_workspace_writeback(messages):
         return False
     ctx.metadata["_react_writeback_guard_retry_done"] = True
+    ctx.metadata["_retry_reason"] = "workspace_writeback_guard"
+    try:
+        asyncio.get_running_loop().create_task(global_hooks.run(HOOK_ON_RETRY, ctx))
+    except RuntimeError:
+        pass
     logger.warning(
         "[L3 Agent][工作区写回校验] trace=%s via=%s 用户要求写回源文件但未见成功写盘，已注入纠偏续跑",
         str(ctx.metadata.get("_react_step_trace") or ""),
@@ -2011,6 +2124,16 @@ SUB_AGENT_PROMPTS: dict[str, str] = {
         "使用 core:fs_read 读取代码和测试文件，core:shell_exec 执行测试命令，core:fs_write 写入测试报告。"
         "完成后输出：测试通过/失败数量，失败用例详情与复现步骤。"
     ),
+    "critic": (
+        "你是严格的评审者与批评者，负责查找方案漏洞、风险与遗漏。"
+        "以只读工具核对事实为主；输出须含若干条「质疑点」及风险等级（高/中/低）。"
+    ),
+    "executor": (
+        "你是执行专家：少复述、多行动，优先直接调用工具完成子任务并给出结果摘要。"
+    ),
+    "domain_expert": (
+        "你是领域专家：严格依据任务描述中的业务上下文作答；不确定处明确说明，禁止臆造。"
+    ),
     "default": (
         "你是专业助手，完成指定子任务。"
         "可用工具：core:fs_read、core:fs_write、core:shell_exec、core:shell_job_status（查后台任务）。"
@@ -2041,6 +2164,12 @@ SUB_AGENT_ALLOWED_SKILLS: dict[str, list[str]] = {
         "core:fs_read", "core:fs_write",
         "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
     ],
+    "critic": ["core:fs_read", "core:local_memory_search"],
+    "executor": [
+        "core:fs_read", "core:fs_write",
+        "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
+    ],
+    "domain_expert": ["core:fs_read", "core:shell_exec", "core:shell_job_status", "core:local_memory_search"],
     "default": [
         "core:fs_read", "core:fs_write",
         "core:shell_exec", "core:shell_job_status", "core:shell_job_cancel",
@@ -3826,7 +3955,18 @@ Action Input: {"sub_tasks": [{"role": "<角色>", "task": "<任务描述>", "con
 **示例（三角色并行）**：
 {"sub_tasks": [{"role": "researcher", "task": "调研竞品 A 的技术架构"}, {"role": "analyst", "task": "分析用户行为数据", "context_data": "data/behavior.csv"}, {"role": "writer", "task": "撰写技术方案初稿"}]}
 
-注意：context_data 可传入字符串或 JSON 对象，会自动注入到子任务上下文；max_iterations 可控制子任务最大轮次（默认 3）。"""
+注意：context_data 可传入字符串或 JSON 对象，会自动注入到子任务上下文；max_iterations 可控制子任务最大轮次（默认 3）。
+
+**讨论/辩论模式（mode: discuss）** — 适用于需要多角度评审的复杂决策：
+Action: delegate
+Action Input: {"mode": "discuss", "topic": "议题描述", "context": "背景信息", "roles": ["planner", "critic"], "max_rounds": 3}
+多轮流程：planner 提初稿 → critic 质疑 → planner 修订（重复直到 critic 无新质疑或达到 max_rounds）→ summarizer 输出最终共识。"""
+        try:
+            from l3_node.agent_roles_loader import format_role_pool_delegate_addon
+
+            delegate_hint += format_role_pool_delegate_addon()
+        except Exception:
+            pass
     hr_hint = ""
     hr_ids = [t.get("id", "") for t in tools if "hr.analyzer" in (t.get("id") or "")]
     hr_preferred = next((x for x in hr_ids if "analyzer4" in x), None) or (hr_ids[0] if hr_ids else None)
@@ -3877,7 +4017,9 @@ Action Input: {"sub_tasks": [{"role": "<角色>", "task": "<任务描述>", "con
 **新岗 / 用户刚确认的 JD**：调用 `mcp:add_automated_recruitment_task` 时，`job_name` 必须与**上一轮 assistant 消息里 ```json``` 中的 `job_title` 完全一致**，禁止沿用系统摘要、指针或历史会话里的其它岗位名（如上一岗「Python」）。
 若 Final Answer 中用 Markdown 表列出「收网目标」与「自动分析/透析阈值」，两处份数须与 `add_automated_recruitment_task` 工具结果一致（系统会在下发前按注册任务自动对齐表格中的份数）。
 
+{HR_SKILL_MD_BODY_START}
 {skill_content}
+{HR_SKILL_MD_BODY_END}
 
 ---
 """
@@ -4138,6 +4280,27 @@ Final Answer: <最终回复>
         suffix_chunks.append(
             SuffixChunk("mid", "intent_gateway_execution_inject", f"\n{_gwi}\n", eviction_rank=28)
         )
+    if not pure_json_contract:
+        try:
+            from l3_node.task_runtime_registry import format_combined_runtime_prompt_suffix
+
+            _bg_runtime = (format_combined_runtime_prompt_suffix() or "").strip()
+        except Exception:
+            _bg_runtime = ""
+        if _bg_runtime:
+            suffix_chunks.append(
+                SuffixChunk("low", "runtime_background_tasks", f"\n{_bg_runtime}\n", eviction_rank=7)
+            )
+        try:
+            from l3_node.task_engine.task_dag import format_active_task_dag_prompt_suffix
+
+            _dag_s = (format_active_task_dag_prompt_suffix() or "").strip()
+        except Exception:
+            _dag_s = ""
+        if _dag_s:
+            suffix_chunks.append(
+                SuffixChunk("low", "task_dag_active_json", f"\n{_dag_s}\n", eviction_rank=8)
+            )
     # 业务语义字典：紧随网关注入之后、环境报告之前；eviction_rank 越大越晚被驱逐（见 prompt_compose）
     if not pure_json_contract and _sem_fmt:
         suffix_chunks.append(
@@ -4419,21 +4582,89 @@ def _build_allowed_ids(allowed_skills: list[str]) -> set[str]:
     return _loader_ids(allowed_skills)
 
 
+def _sanitize_inline_role(
+    role_spec: dict[str, Any],
+    parent_allowed_skills: list[str] | None,
+) -> tuple[str, str, list[str]]:
+    """
+    动态角色安全沙箱（§2.4 模式 C）。
+
+    将 delegate sub_tasks[i]["role"] 为 dict 的内联角色规格解析并校验：
+    - role_id：仅允许字母数字下划线
+    - system_prefix：移除常见提示注入字符
+    - allowed_tools：只能是主 Agent 当前工具集的子集（防升权）；不含 delegate（防递归）
+
+    返回 (role_id, system_prefix, allowed_tools)。
+    """
+    import re
+
+    raw_id = str(role_spec.get("id") or "dynamic_role").strip()
+    role_id = re.sub(r"[^a-z0-9_]", "_", raw_id.lower())[:32] or "dynamic_role"
+
+    # 防 prompt 注入：移除 Ignore previous instructions / system override 等危险词组
+    _DANGEROUS_PATTERNS = re.compile(
+        r"ignore\s+previous|system\s+override|forget\s+above|<\s*system\s*>|"
+        r"\[INST\]|\[\/INST\]|<\|im_start\|>|<\|im_end\|>",
+        re.IGNORECASE,
+    )
+    raw_prefix = str(role_spec.get("system_prefix") or "")
+    system_prefix = _DANGEROUS_PATTERNS.sub("[REDACTED]", raw_prefix)[:1200]
+
+    # allowed_tools 只能是父级工具子集，且不含 delegate
+    raw_tools = role_spec.get("allowed_tools")
+    if isinstance(raw_tools, str) and raw_tools.strip() == "*":
+        # "*" 意图全部工具：继承父级允许工具（但仍禁 delegate）
+        raw_tools_list = list(parent_allowed_skills or [])
+    elif isinstance(raw_tools, list):
+        raw_tools_list = [str(t) for t in raw_tools]
+    else:
+        raw_tools_list = list(parent_allowed_skills or [])
+
+    # 强制剔除 delegate（禁止动态角色再创建动态角色）
+    allowed_tools = [t for t in raw_tools_list if "delegate" not in t.lower()]
+    # 与父级白名单取交集（防升权）
+    if parent_allowed_skills is not None:
+        parent_ids = set(parent_allowed_skills)
+        allowed_tools = [t for t in allowed_tools if t in parent_ids]
+    return role_id, system_prefix, allowed_tools
+
+
 async def _run_sub_agent(
     task_spec: dict[str, Any],
     engine: LiteLLMEngine,
     *,
     delegate_depth: int = 1,
+    _parent_allowed_skills: list[str] | None = None,
 ) -> str:
     """运行子 Agent，完成指定子任务。内部调用 _spawn_sub_agent_async（一次性，不复用）。
 
     task_spec 支持字段：
-      - role: str        子 Agent 角色（coder/writer/researcher/analyst/planner/reviewer/summarizer/data_processor/tester/default）
+      - role: str | dict  子 Agent 角色（内置名称字符串，或动态角色 dict）
       - task: str        任务描述
       - context_data: str|dict  附加上下文数据（如数据样本、前序结果等），追加到 task 末尾
       - max_iterations: int  可选，覆盖此子任务的最大迭代次数
+
+    动态角色（role 为 dict）格式（§2.4 模式 C）：
+      {"id": "pricing_strategist", "name": "定价策略专家",
+       "system_prefix": "你是...", "allowed_tools": [...]}
     """
-    role = (task_spec.get("role") or "default").lower()
+    role_raw = task_spec.get("role") or "default"
+    _inline_prompt: str | None = None
+    _inline_allowed: list[str] | None = None
+
+    if isinstance(role_raw, dict):
+        # 动态角色：安全沙箱校验
+        _role_id, _inline_prompt, _inline_allowed = _sanitize_inline_role(
+            role_raw, _parent_allowed_skills
+        )
+        role = _role_id
+        logger.info(
+            "[L3 Agent] 动态角色 %s 已沙箱校验（prefix=%d chars, tools=%s）",
+            role, len(_inline_prompt), _inline_allowed[:5] if _inline_allowed else [],
+        )
+    else:
+        role = str(role_raw).lower()
+
     task = task_spec.get("task", "")
     # 支持 context_data：将附加数据注入到任务描述末尾，减少子 Agent 须自行读取的开销
     ctx_data = task_spec.get("context_data")
@@ -4447,8 +4678,76 @@ async def _run_sub_agent(
         role, task, engine,
         delegate_depth=delegate_depth,
         max_iterations=int(task_spec.get("max_iterations") or 0) or None,
+        _inline_system_prefix=_inline_prompt,
+        _inline_allowed_skills=_inline_allowed,
     )
     return result
+
+
+async def _run_sub_agent_hooked(
+    task_spec: dict[str, Any],
+    engine: LiteLLMEngine,
+    *,
+    delegate_depth: int,
+    node_index: int,
+    parent_ctx: PipelineContext,
+) -> str:
+    """delegate 子任务：在进入/离开 SubAgent 时触发 ON_TASK_NODE_START/DONE（无注册则无开销）。"""
+
+    def _parent_tools_from_ctx(ctx: PipelineContext) -> list[str] | None:
+        sk = (ctx.metadata or {}).get("_skills")
+        if sk is None:
+            return None
+        if isinstance(sk, (list, tuple)):
+            return [str(x) for x in sk if x]
+        return None
+
+    _meta = dict(parent_ctx.metadata or {})
+    _meta["delegate_sub_task_index"] = node_index
+    _meta["delegate_sub_task_role"] = str(task_spec.get("role") or "")
+    _sc = PipelineContext(
+        intent=parent_ctx.intent,
+        source=parent_ctx.source,
+        session_id=parent_ctx.session_id,
+        run_id=parent_ctx.run_id,
+        metadata=_meta,
+    )
+    try:
+        await global_hooks.run(HOOK_ON_TASK_NODE_START, _sc)
+    except Exception:
+        pass
+    try:
+        out = await _run_sub_agent(
+            task_spec,
+            engine,
+            delegate_depth=delegate_depth,
+            _parent_allowed_skills=_parent_tools_from_ctx(parent_ctx),
+        )
+    except Exception as ex:
+        _sd = PipelineContext(
+            intent=parent_ctx.intent,
+            source=parent_ctx.source,
+            session_id=parent_ctx.session_id,
+            run_id=parent_ctx.run_id,
+            metadata={**_meta, "task_node_error": str(ex)[:500]},
+        )
+        try:
+            await global_hooks.run(HOOK_ON_TASK_NODE_DONE, _sd)
+        except Exception:
+            pass
+        raise
+    _sd = PipelineContext(
+        intent=parent_ctx.intent,
+        source=parent_ctx.source,
+        session_id=parent_ctx.session_id,
+        run_id=parent_ctx.run_id,
+        metadata={**_meta, "task_node_result_preview": (out or "")[:800]},
+    )
+    try:
+        await global_hooks.run(HOOK_ON_TASK_NODE_DONE, _sd)
+    except Exception:
+        pass
+    return out
 
 
 async def _spawn_sub_agent_async(
@@ -4459,10 +4758,14 @@ async def _spawn_sub_agent_async(
     *,
     delegate_depth: int = 1,
     max_iterations: Optional[int] = None,
+    _inline_system_prefix: Optional[str] = None,
+    _inline_allowed_skills: Optional[list[str]] = None,
 ) -> tuple[str, str]:
     """异步版 spawn_sub_agent，供 delegate 流程调用。
 
     max_iterations: 覆盖此次 SubAgent 运行的最大 ReAct 迭代次数；None 时使用 SubAgent.run_once 默认值（3）。
+    _inline_system_prefix: 动态角色的 system prompt 前缀（已经安全沙箱处理），覆盖 SUB_AGENT_PROMPTS。
+    _inline_allowed_skills: 动态角色的工具白名单（已与父级取交集），覆盖 SUB_AGENT_ALLOWED_SKILLS。
     """
     switches = _get_service_switches()
     if switches is not None:
@@ -4490,8 +4793,17 @@ async def _spawn_sub_agent_async(
                 )
         except Exception as e:
             logger.debug("[L3 Agent] coder 模型切换跳过: %s", e)
-    prompt = SUB_AGENT_PROMPTS.get(role_lower, SUB_AGENT_PROMPTS["default"])
-    allowed = SUB_AGENT_ALLOWED_SKILLS.get(role_lower, SUB_AGENT_ALLOWED_SKILLS["default"])
+
+    # 动态角色：使用 inline prompt/tools；普通角色：使用内置字典
+    if _inline_system_prefix is not None:
+        prompt = _inline_system_prefix
+    else:
+        prompt = SUB_AGENT_PROMPTS.get(role_lower, SUB_AGENT_PROMPTS["default"])
+    if _inline_allowed_skills is not None:
+        allowed = _inline_allowed_skills
+    else:
+        allowed = SUB_AGENT_ALLOWED_SKILLS.get(role_lower, SUB_AGENT_ALLOWED_SKILLS["default"])
+
     global_allowed = _get_allowed_skills()
     if global_allowed is not None:
         allowed = [s for s in allowed if s in _build_allowed_ids(global_allowed)]
@@ -5093,6 +5405,14 @@ async def _run_react_core(
     ctx.metadata.pop("_pmo_branch_a_notifier_dump_guard_count", None)
     ctx.metadata.pop("_pmo_branch_a_post_bi_stall_guard_count", None)
     ctx.metadata["_react_tool_invocations"] = 0
+    # AN — Guardrails：初始化 checker（只在 JACHIN_GUARDRAILS_ENABLE=1 时激活）
+    try:
+        from l3_node.guardrails import GuardrailsChecker, GuardrailsState, guardrails_enabled
+        if guardrails_enabled():
+            ctx.metadata["_gr_checker"] = GuardrailsChecker(GuardrailsState())
+            logger.debug("[Guardrails] 已激活 max_iter=%d", ctx.metadata["_gr_checker"]._max_iter)
+    except Exception as _gr_init_e:
+        logger.debug("[Guardrails] 初始化跳过: %s", _gr_init_e)
     try:
         from l3_node.primitives.mcp.registry import clear_last_add_automated_recruitment_task_payload
 
@@ -5135,8 +5455,27 @@ async def _run_react_core(
     )
     # ──────────────────────────────────────────────────────────────────────
 
+    try:
+        from l3_node.skill_md_hot_reload import register_react_ctx_for_skill_inline
+
+        register_react_ctx_for_skill_inline(str(getattr(ctx, "run_id", "") or ""), ctx)
+    except Exception:
+        pass
+
     for iteration in range(max_iterations):
         ctx.metadata["_react_iteration"] = iteration + 1
+        # AN — Guardrails 迭代前检查（iterations / token budget）
+        try:
+            _gr_ck = ctx.metadata.get("_gr_checker")
+            if _gr_ck is not None:
+                _gr_ck.record_iteration()
+                _gr_pre_v = _gr_ck.check_all_pre_iteration()
+                if _gr_pre_v is not None:
+                    _gr_brief = _gr_ck.execution_brief()
+                    logger.warning("[Guardrails] pre-iteration truncate rule=%s iter=%d", _gr_pre_v.rule, iteration + 1)
+                    return f"Final Answer: {_gr_brief}"
+        except Exception as _gr_loop_e:
+            logger.debug("[Guardrails] pre-iteration 检查异常: %s", _gr_loop_e)
         # 每轮唯一 trace，便于 PowerShell 里对比「这一次 vs 下一次」日志
         ctx.metadata["_react_step_trace"] = (
             f"{(ctx.run_id or 'norun')}-i{iteration + 1}-t{time.time_ns():x}"
@@ -5214,6 +5553,10 @@ async def _run_react_core(
         except ImportError:
             pass
         try:
+            apply_hr_skill_md_hot_reload_to_react_ctx(ctx)
+        except Exception:
+            pass
+        try:
             from l3_node.intent_gateway.planning_gate_phase import filter_skills_for_planning_composite
 
             skills = filter_skills_for_planning_composite(skills, ctx)
@@ -5229,6 +5572,11 @@ async def _run_react_core(
         if _cev is not None and getattr(_cev, "is_set", lambda: False)():
             ctx.final_answer = "[ExecutionBrief] 运行已被取消（协作式 cancel）。"
             _emit("answer", ctx.final_answer)
+            try:
+                ctx.metadata["_execution_brief_reason"] = "cancel_event"
+                await global_hooks.run(HOOK_ON_EXECUTION_BRIEF, ctx)
+            except Exception:
+                pass
             return
 
         # ── 改造点 A：Sticky Goal 注入 ───────────────────────────────────────
@@ -5252,10 +5600,25 @@ async def _run_react_core(
                     "你的最终 Final Answer 必须直接回答上述目标。"
                 ),
             }
+        _hot_user_msgs: list[dict[str, Any]] = []
+        _hot_sk = str(ctx.metadata.get("_lark_chat_id") or "").strip()
+        if _hot_sk:
+            try:
+                from l3_node.session_hot_user_inject import drain_pending_session_user_texts
+
+                _hots = drain_pending_session_user_texts(_hot_sk, max_items=6)
+                if _hots:
+                    _body = "【会话新进线·热并入当前推理】用户在同一会话中另发消息（请合并理解，无需重复确认收到）：\n" + "\n".join(
+                        f"· {h}" for h in _hots
+                    )
+                    _hot_user_msgs.append({"role": "user", "content": _body})
+            except Exception:
+                pass
         full_messages = (
             [{"role": "system", "content": ctx.system_prompt}]
             + messages
             + ([_goal_reminder_msg] if _goal_reminder_msg else [])
+            + _hot_user_msgs
         )
         # ──────────────────────────────────────────────────────────────────
         logger.debug("[L3 Agent] ReAct iter=%d 调用 LLM stream=%s sticky_goal_inject=%s", iteration + 1, bool(on_chunk), bool(_goal_reminder_msg))
@@ -5370,6 +5733,11 @@ async def _run_react_core(
                 pass
             ctx.final_answer = "[ExecutionBrief] 运行已被取消（LLM 协作式中断）。"
             _emit("answer", ctx.final_answer)
+            try:
+                ctx.metadata["_execution_brief_reason"] = "llm_cancelled"
+                await global_hooks.run(HOOK_ON_EXECUTION_BRIEF, ctx)
+            except Exception:
+                pass
             return
         except Exception as e:
             _llm_ms = (time.perf_counter() - _llm_t0) * 1000.0
@@ -5402,6 +5770,11 @@ async def _run_react_core(
                         "可调整 ~/.jachin/nexus_config.json 中 agent.main_max_total_tokens / agent.sub_agent_max_total_tokens。"
                     )
                     _emit("answer", ctx.final_answer)
+                    try:
+                        ctx.metadata["_execution_brief_reason"] = "token_budget_exhausted"
+                        await global_hooks.run(HOOK_ON_EXECUTION_BRIEF, ctx)
+                    except Exception:
+                        pass
                     return
             except ImportError:
                 pass
@@ -5964,6 +6337,11 @@ async def _run_react_core(
                 and not ctx._executed_tools_this_run
             ):
                 ctx.metadata["_react_fake_mcp_error_retry_done"] = True
+                ctx.metadata["_retry_reason"] = "fake_mcp_error_json"
+                try:
+                    await global_hooks.run(HOOK_ON_RETRY, ctx)
+                except Exception:
+                    pass
                 logger.warning(
                     "[L3 Agent][纠偏] trace=%s 将注入系统消息并续跑 ReAct（仅一次）："
                     "Final Answer 为虚构 MCP 错误 JSON，且本轮尚未执行任何工具。",
@@ -5990,6 +6368,11 @@ async def _run_react_core(
                 and not ctx.metadata.get("_react_fake_weather_error_retry_done")
             ):
                 ctx.metadata["_react_fake_weather_error_retry_done"] = True
+                ctx.metadata["_retry_reason"] = "fake_weather_error_json"
+                try:
+                    await global_hooks.run(HOOK_ON_RETRY, ctx)
+                except Exception:
+                    pass
                 logger.warning(
                     "[L3 Agent][纠偏] trace=%s 将续跑 ReAct（仅一次）：Final Answer 为虚构天气服务错误 JSON，"
                     "须先调用 util:get_weather_lite。",
@@ -6121,15 +6504,24 @@ async def _run_react_core(
                 pass
             _dd = int(ctx.metadata.get("_delegate_depth", 0))
             _max_dd = _max_delegate_depth_cfg()
-            if _dd >= _max_dd:
+            _implicit_ch = str(ctx.metadata.get("_implicit_channel") or "")
+            _delegate_deny: str | None = None
+            if _implicit_ch == "delegate_sub_agent":
+                _delegate_deny = (
+                    "子 Agent 会话内禁止再次使用 Action: delegate。"
+                    "请直接使用当前白名单内工具完成子任务，或在 Final Answer 中说明需返回主会话处理的部分。"
+                )
+            elif _dd >= _max_dd:
+                _delegate_deny = (
+                    f"已达 max_delegate_depth={_max_dd}（当前深度 {_dd}），禁止继续 delegate。"
+                    "请合并子任务或由单 Agent 顺序执行。"
+                )
+            if _delegate_deny is not None:
                 observation = json.dumps(
                     {
                         "ok": False,
                         "error_class": "config",
-                        "message": (
-                            f"已达 max_delegate_depth={_max_dd}（当前深度 {_dd}），禁止继续 delegate。"
-                            "请合并子任务或由单 Agent 顺序执行。"
-                        ),
+                        "message": _delegate_deny,
                     },
                     ensure_ascii=False,
                 )
@@ -6172,7 +6564,83 @@ async def _run_react_core(
                     "content": f"Observation: {observation}\n\n请根据限制调整策略并给出 Final Answer:",
                 })
                 continue
+            # ── mode: discuss — 讨论/辩论模式（§2.4 模式 B）──────────────────
+            _delegate_mode = str(parsed.get("mode") or "parallel").strip().lower()
+            if _delegate_mode == "discuss":
+                _discuss_topic = str(parsed.get("topic") or ctx.intent or "")
+                _discuss_context = str(parsed.get("context") or "")
+                _discuss_roles = parsed.get("roles") or ["planner", "critic"]
+                _dmr_raw = parsed.get("max_rounds")
+                if _dmr_raw is None or (isinstance(_dmr_raw, str) and not str(_dmr_raw).strip()):
+                    _discuss_max_rounds = _discuss_max_rounds_cfg()
+                else:
+                    try:
+                        _discuss_max_rounds = max(1, min(12, int(_dmr_raw)))
+                    except (TypeError, ValueError):
+                        _discuss_max_rounds = _discuss_max_rounds_cfg()
+                _emit("action", f"discuss topic={_discuss_topic[:60]!r} rounds={_discuss_max_rounds}")
+                await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
+                if ctx.aborted:
+                    return
+                try:
+                    from l3_node.primitives.multi_agent.discussion import (
+                        DiscussionConfig,
+                        run_discussion,
+                    )
+
+                    _disc_cfg = DiscussionConfig(
+                        topic=_discuss_topic,
+                        context=_discuss_context,
+                        roles=_discuss_roles,
+                        max_rounds=_discuss_max_rounds,
+                        item_max_iterations=_discuss_item_max_iterations_cfg(),
+                    )
+                    _disc_result = await run_discussion(
+                        _disc_cfg, engine, delegate_depth=_dd + 1
+                    )
+                    observation = _truncate_observation_for_llm(
+                        f"{_disc_result.format_summary()}\n\n{_disc_result.final_output}"
+                    )
+                    _schedule_multi_agent_experience_record(
+                        ctx,
+                        kind="discuss",
+                        intent_surface=_intent_surface_for_experience(ctx, messages)
+                        or (f"[讨论]{_discuss_topic}"[:8000]),
+                        payload={
+                            "topic_preview": _discuss_topic[:500],
+                            "context_preview": _discuss_context[:300],
+                            "roles": [str(x) for x in (_discuss_roles or [])][:20],
+                            "rounds_completed": _disc_result.rounds_completed,
+                            "status": _disc_result.status,
+                            "elapsed_sec": round(_disc_result.elapsed_sec, 3),
+                            "final_preview": (_disc_result.final_output or "")[:1200],
+                        },
+                    )
+                except Exception as _disc_err:
+                    observation = f"[discuss 执行失败: {_disc_err}]"
+                ctx.observation = observation
+                _p2_record_skill_outcome(ctx, "delegate", observation)
+                await global_hooks.run(HOOK_AFTER_TOOL_EXEC, ctx)
+                _emit("observation", observation)
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": f"Observation: {observation}\n\n请根据讨论结果给出最终结论和 Final Answer:",
+                })
+                continue
+            # ── 普通并行 delegate ────────────────────────────────────────────
             sub_tasks = parsed.get("sub_tasks", [])
+            if sub_tasks:
+                try:
+                    ctx.metadata["_task_decompose_sub_count"] = len(sub_tasks)
+                    ctx.metadata["_task_decompose_roles_preview"] = ",".join(
+                        str((t or {}).get("role") or "") for t in sub_tasks[:12]
+                    )[:300]
+                    await global_hooks.run(HOOK_ON_TASK_DECOMPOSE, ctx)
+                except Exception:
+                    pass
+                if ctx.aborted:
+                    return
             _emit("action", f"delegate {len(sub_tasks)} 个子任务")
             try:
                 from l3_node.terminal_turn_debug_log import log_tool_call_full
@@ -6198,38 +6666,66 @@ async def _run_react_core(
             if _max_concurrent > 0 and len(sub_tasks) > _max_concurrent:
                 _sem = asyncio.Semaphore(_max_concurrent)
 
-                async def _run_with_sem(_t: dict[str, Any]) -> str:
+                async def _run_with_sem(_t: dict[str, Any], _idx: int) -> str:
                     async with _sem:
-                        return await _run_sub_agent(_t, engine, delegate_depth=_child_depth)
+                        return await _run_sub_agent_hooked(
+                            _t, engine, delegate_depth=_child_depth, node_index=_idx, parent_ctx=ctx
+                        )
 
                 results = await asyncio.gather(
-                    *[_run_with_sem(t) for t in sub_tasks],
+                    *[_run_with_sem(t, i) for i, t in enumerate(sub_tasks)],
                     return_exceptions=True,
                 )
             else:
                 results = await asyncio.gather(
-                    *[_run_sub_agent(t, engine, delegate_depth=_child_depth) for t in sub_tasks],
+                    *[
+                        _run_sub_agent_hooked(t, engine, delegate_depth=_child_depth, node_index=i, parent_ctx=ctx)
+                        for i, t in enumerate(sub_tasks)
+                    ],
                     return_exceptions=True,
                 )
             # 结构化 RunReport：统计成功/失败数，便于下游模型准确归因
             _ok_count = sum(1 for r in results if not isinstance(r, Exception))
             _fail_count = len(results) - _ok_count
             _failed_items: list[dict[str, Any]] = []
-            parts = []
+            from l3_node.primitives.multi_agent.result_merger import (
+                StructuredResultMerger,
+                SubAgentResult,
+            )
+
+            _parallel_sub_results: list[SubAgentResult] = []
             for i, r in enumerate(results):
-                role_hint = (sub_tasks[i].get("role") or "default") if i < len(sub_tasks) else "?"
-                task_hint = str(sub_tasks[i].get("task", ""))[:80] if i < len(sub_tasks) else ""
+                st = sub_tasks[i] if i < len(sub_tasks) else {}
+                role_hint = str(st.get("role") or "default")
+                task_full = str(st.get("task", ""))
+                task_preview = task_full[:80]
                 if isinstance(r, Exception):
                     _failed_items.append({
                         "index": i + 1,
                         "role": role_hint,
-                        "task_preview": task_hint,
+                        "task_preview": task_preview,
                         "error": str(r),
                         "error_class": "transient" if "timeout" in str(r).lower() else "per_item",
                     })
-                    parts.append(f"[子任务 {i+1}·{role_hint} 失败: {r}]")
+                    _parallel_sub_results.append(
+                        SubAgentResult(
+                            role_id=role_hint,
+                            task=task_full[:500],
+                            output=str(r),
+                            status="failed",
+                        )
+                    )
                 else:
-                    parts.append(f"[子任务 {i+1}·{role_hint}]\n{r}")
+                    _parallel_sub_results.append(
+                        SubAgentResult(
+                            role_id=role_hint,
+                            task=task_full[:500],
+                            output=str(r),
+                            status="success",
+                        )
+                    )
+            _merger = StructuredResultMerger()
+            _merged_parallel_body = _merger.merge_parallel(_parallel_sub_results)
             _run_report = {
                 "status": "completed" if _fail_count == 0 else ("partial" if _ok_count > 0 else "failed"),
                 "ok_count": _ok_count,
@@ -6248,7 +6744,23 @@ async def _run_react_core(
                 _child_depth - 1,
                 json.dumps(_run_report, ensure_ascii=False),
             )
-            _obs_delegate_raw = _run_report_line + "\n\n---\n\n".join(parts)
+            _obs_delegate_raw = _run_report_line + _merged_parallel_body
+            if sub_tasks:
+                _schedule_multi_agent_experience_record(
+                    ctx,
+                    kind="parallel_delegate",
+                    intent_surface=_intent_surface_for_experience(ctx, messages) or "[delegate并行]",
+                    payload={
+                        "subtask_roles": [
+                            str((sub_tasks[i] or {}).get("role") or "") for i in range(len(sub_tasks))
+                        ][:24],
+                        "ok_count": _ok_count,
+                        "failed_count": _fail_count,
+                        "total": len(sub_tasks),
+                        "run_report_status": _run_report["status"],
+                        "merged_preview": _merged_parallel_body[:2000],
+                    },
+                )
             observation = _truncate_observation_for_llm(_obs_delegate_raw)
             ctx.observation = observation
             _p2_record_skill_outcome(ctx, "delegate", observation)
@@ -6567,6 +7079,30 @@ async def _run_react_core(
                 )
             except Exception:
                 pass
+            # AN — Guardrails 工具前检查（forbidden / max_tool_calls / repeat）
+            try:
+                from l3_node.guardrails import GuardrailsAbortError, guardrails_enabled
+                if guardrails_enabled():
+                    _gr_checker = ctx.metadata.get("_gr_checker")
+                    if _gr_checker is not None:
+                        _gr_violation = _gr_checker.check_all_pre_tool(tool or "", inp or "")
+                        if _gr_violation is not None:
+                            if _gr_violation.action == "abort":
+                                raise GuardrailsAbortError(_gr_violation)
+                            if _gr_violation.action == "truncate":
+                                _gr_brief = _gr_checker.execution_brief()
+                                logger.warning("[Guardrails] truncate rule=%s", _gr_violation.rule)
+                                return f"Final Answer: {_gr_brief}"
+                            # warn：将警告追加到下一次 observation
+                            logger.warning("[Guardrails] warn rule=%s msg=%s", _gr_violation.rule, _gr_violation.message)
+                            inp = inp or ""  # warn 时继续执行
+            except GuardrailsAbortError:
+                raise
+            except ImportError:
+                pass
+            except Exception as _gr_e:
+                logger.debug("[Guardrails] 检查异常，跳过: %s", _gr_e)
+
             _tl_dbg = (tool or "").lower()
             if "write_file" in _tl_dbg or "edit_file" in _tl_dbg or "create_file" in _tl_dbg:
                 _inp_s = inp or ""
@@ -6929,18 +7465,26 @@ async def _run_react_core(
                         else:
                             _exp_pl = {"action_input": _inp_sv}
 
-                        def _experience_save_task() -> None:
+                        async def _exp_save_and_hook() -> None:
                             try:
-                                save_experience(_ui_sv, tool, _exp_pl)
+                                await asyncio.to_thread(save_experience, _ui_sv, tool, _exp_pl)
+                            except Exception:
+                                return
+                            try:
+                                _hc = PipelineContext(
+                                    intent=_ui_sv,
+                                    source="l3_agent",
+                                    run_id=str(ctx.run_id or ""),
+                                    metadata={"executed_tool": tool, "path": "l4_experience_sqlite"},
+                                )
+                                await global_hooks.run(HOOK_ON_EXPERIENCE_LEARNED, _hc)
                             except Exception:
                                 pass
 
                         try:
-                            asyncio.get_running_loop().create_task(asyncio.to_thread(_experience_save_task))
-                        except RuntimeError:
-                            import threading
-
-                            threading.Thread(target=_experience_save_task, daemon=True).start()
+                            asyncio.create_task(_exp_save_and_hook())
+                        except Exception:
+                            pass
             except Exception:
                 pass
             ctx.metadata["_l4_exp_save_gate"] = False
@@ -7332,6 +7876,12 @@ async def run_agent(
         workspace_dir / git_workspace_dir / effective_workspace_root，再回退 ~/.jachin/workspace。
     """
     run_id = str(uuid.uuid4())
+    try:
+        from l3_node.engine.persistent_hook_log import ensure_persistent_hook_log_registered
+
+        ensure_persistent_hook_log_registered()
+    except Exception:
+        pass
     _ws_tok = None
     _mem_shard_tok = None
     _lark_cid = ""
@@ -7408,6 +7958,17 @@ async def run_agent(
             _session_messages.clear()
         logger.info("[L3 Agent] /clear：已清空会话消息缓冲 run_id=%s", run_id[:12])
         return "[System] 后端上下文已强制清空。"
+
+    if (
+        implicit_attribution
+        and isinstance(implicit_attribution, dict)
+        and str(implicit_attribution.get("lark_busy_followup_kind") or "") == "supplement"
+    ):
+        user_input = (
+            "【飞书·排队补充意图】上一条主任务仍在执行时用户续发此条，话术上多为**对当前任务的补充/纠正**（未必是全新大任务）。"
+            "请与上文用户目标合并理解；若明确是新任务请先简要确认再分步处理。\n\n"
+            + (user_input or "")
+        )
 
     exec_trace(
         logger,
@@ -8516,6 +9077,35 @@ async def run_agent(
 
     _cancel_ev = asyncio.Event()
     register_cancel_event(run_id, _cancel_ev)
+    if _delegate_depth == 0 and _lark_cid and _bg_channel == "lark_im_dispatcher":
+        try:
+            from l3_node.foreground_run_registry import register_foreground_run
+
+            register_foreground_run(_lark_cid, run_id)
+        except Exception:
+            logger.debug("[L3 Agent] foreground_run_registry.register 跳过", exc_info=True)
+    if _delegate_depth == 0 and _bg_channel != "background_task":
+        try:
+            from l3_node.task_runtime_registry import register_foreground_task
+
+            _rtags: list[str] | None = None
+            if implicit_attribution and isinstance(implicit_attribution, dict):
+                raw = implicit_attribution.get("resource_tags")
+                if isinstance(raw, list):
+                    _rtags = [str(x).strip()[:64] for x in raw if str(x).strip()][:8]
+                elif raw is not None and str(raw).strip():
+                    _rtags = [str(raw).strip()[:64]]
+            if not _rtags:
+                _c = (_bg_channel or "unknown").strip()[:48] or "unknown"
+                _rtags = [f"channel:{_c}"]
+            register_foreground_task(
+                run_id=run_id,
+                channel=_bg_channel or "unknown",
+                session_key=_lark_cid,
+                resource_tags=_rtags,
+            )
+        except Exception:
+            logger.debug("[L3 Agent] task_runtime_registry.register 跳过", exc_info=True)
     _tok_cap = _llm_token_budget_for_run(_delegate_depth)
     _tok_acc: dict[str, int] = {"prompt": 0, "completion": 0}
 
@@ -8562,6 +9152,16 @@ async def run_agent(
                 exec_trace(logger, "direct_llm_bypass 完成 run_id=%s out_len=%d", run_id[:12], len(_db_out or ""))
                 try:
                     schedule_nexus_turn_commit_async(user_input or "", _db_out or "")
+                except Exception:
+                    pass
+                try:
+                    _mctx = PipelineContext(
+                        intent=user_input or "",
+                        source="l3_agent",
+                        run_id=run_id,
+                        metadata={"_implicit_channel": _bg_channel, "path": "direct_llm_bypass"},
+                    )
+                    await global_hooks.run(HOOK_ON_MEMORY_COMMIT, _mctx)
                 except Exception:
                     pass
                 return _apply_hr_recruitment_final_answer_table_sync(_db_out, _DirectBypassCtx())
@@ -8766,6 +9366,11 @@ async def run_agent(
                 schedule_nexus_turn_commit_async(user_input or "", out)
         except Exception:
             pass
+        try:
+            if not bool(getattr(ctx, "aborted", False)):
+                await global_hooks.run(HOOK_ON_MEMORY_COMMIT, ctx)
+        except Exception:
+            pass
         # ── 对话监控：镜像到固定监控群（fire-and-forget，不阻塞） ──
         try:
             if (
@@ -8801,6 +9406,20 @@ async def run_agent(
         return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
     finally:
         unregister_cancel_event(run_id)
+        if _delegate_depth == 0 and _lark_cid and _bg_channel == "lark_im_dispatcher":
+            try:
+                from l3_node.foreground_run_registry import unregister_foreground_run
+
+                unregister_foreground_run(_lark_cid, run_id)
+            except Exception:
+                logger.debug("[L3 Agent] foreground_run_registry.unregister 跳过", exc_info=True)
+        if _delegate_depth == 0 and _bg_channel != "background_task":
+            try:
+                from l3_node.task_runtime_registry import unregister_foreground_task
+
+                unregister_foreground_task(run_id)
+            except Exception:
+                logger.debug("[L3 Agent] task_runtime_registry.unregister 跳过", exc_info=True)
         if _ws_tok is not None:
             try:
                 from l3_node.workspace_context import reset_delegate_workspace_sandbox

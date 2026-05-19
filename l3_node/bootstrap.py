@@ -491,6 +491,20 @@ async def run_l3_agent(
     return await run_agent(user_input, engine, **kwargs)
 
 
+def start_autonomy_services() -> None:
+    """
+    启动自主性服务（§5）：AutonomousAwarenessLoop 后台扫描任务。
+    在 HTTP/WS server 启动后调用（需要 asyncio 事件循环已运行）。
+    若 JACHIN_AWARENESS_LOOP_DISABLE=1 则静默跳过。
+    """
+    try:
+        from l3_node.autonomy.awareness_loop import start_awareness_loop_if_enabled
+
+        start_awareness_loop_if_enabled()
+    except Exception as e:
+        logger.warning("[L3 Bootstrap] autonomy services start failed (non-fatal): %s", e)
+
+
 async def heartbeat_loop(
     l2_base_url: str,
     node_id: str,

@@ -1,0 +1,203 @@
+---
+description: Skill 自动进化（AY）— SKILL.md 唯一格式；进化引擎静默写入；L1 订阅 Skill 同步保护；修改相关代码时必须遵守的约束
+globs: l3_node/autonomy/skill_evolver.py, l3_node/autonomy/skill_sync_guard.py, l3_node/autonomy/awareness_loop.py, l3_node/autonomy/level3_healer.py, l3_node/skill_md_hot_reload.py, l3_node/agent_core.py, skills_repo/**/SKILL.md, docs/SKILL_MD_SPEC.md, docs/AGI_OPTIMIZATION_ROADMAP.md
+alwaysApply: false
+---
+
+# Skill 自动进化（AY）
+
+**路线图 SSOT**：`docs/AGI_OPTIMIZATION_ROADMAP.md` §六。  
+**格式 SSOT**：`docs/SKILL_MD_SPEC.md`（YAML Frontmatter + Markdown 正文）。  
+**实现锚点**：
+- `l3_node/autonomy/skill_evolver.py` — 核心进化引擎
+- `l3_node/autonomy/skill_sync_guard.py` — L1 上游同步保护
+- `l3_node/autonomy/awareness_loop.py` — 触发接入（`_try_skill_evolution_after_success`）
+- `l3_node/skill_md_hot_reload.py` — **P1** HR 标记段每轮热重载；**P2** inline notify + `_skill_sop_dirty`
+
+---
+
+## 1. SKILL.md 是唯一格式（强制）
+
+- 所有 Skill **必须**使用 `SKILL.md` 格式（YAML Frontmatter + Markdown 正文），不得用硬编码 Python 逻辑替代声明式 SOP。
+- Frontmatter 必须包含 `name`、`version`（语义版本 `x.y.z`）、`description`。
+- **禁止**在 Frontmatter 中写死业务判断逻辑；业务规则放正文 `# Rules` 段。
+- L1 订阅 Skill 安装到 `~/.jachin/skills/{plugin_id}/SKILL.md`；本地开发 Skill 在 `skills_repo/{name}/SKILL.md`。
+
+## 2. 两条触发路径（修改相关代码时的心智模型）
+
+```
+[healing 路径（优先）]
+  intent 失败 N 次
+    → level3_healer.run_level3_healing（AQ）
+    → _try_stage_skill_evolution → stage_evolution_candidate
+    → manifest.pending_evolution 预存候选
+    → 下次 intent 成功 → awareness_loop._try_skill_evolution_after_success
+    → consume_staged_evolution → 立即应用进化
+
+[proactive 路径（次要）]
+  intent 连续成功 N 次（JACHIN_SKILL_EVOLVE_MIN_SUCCESSES，默认 3）
+    → awareness_loop._try_skill_evolution_after_success
+    → run_skill_evolution_if_ready → analyze_and_evolve_skill
+    → Experience RAG retrieve → LLM patch → 验证 → 写入
+```
+
+两路最终都调用 `_apply_evolution`，差异仅在 evidence_summary 构造（`proactive` vs `healing` 模式）。
+
+## 3. P2：ReAct 中途 inline（`JACHIN_SKILL_MD_INLINE_ENABLE`，默认开）
+
+- 以下路径成功写入 **HR** `SKILL.md` 后须调用 `notify_skill_md_changed_from_disk_write(path)`（与路径来源无关，**同源入口**）：① `skill_evolver._apply_evolution`；② `skill_sync_guard.handle_upstream_update`（首次安装 / 无进化覆盖 / smart merge / 强制覆盖）。非 HR 路径由 `notify` 内部 no-op。
+- 主营 `run_agent` / `_run_react_core` 在首轮迭代前 `register_react_ctx_for_skill_inline(run_id, ctx)`（仅当 `system_prompt` 含 `JACHIN_HR_SKILL_MD_BODY`）；weakref 回调负责从注册表摘除。
+- `apply_hr_skill_md_hot_reload_to_react_ctx(ctx)` 在每个 ReAct 迭代 **`HOOK_BEFORE_LLM_THINK` 之前**调用：若 `_skill_sop_dirty` 或 inline **世代**落后，则 `force_disk_read` 刷新当前 `system_prompt` 与 `_react_system_prompt_full`。
+- 与 **P1** 每轮热重载叠加：P1 保障例行读盘；P2 保障「刚写盘」立即标记、下一轮 LLM 前必选中新正文。
+
+## 4. L1 订阅 Skill 同步保护
+
+**L1 下发新版本时，不能直接覆盖已进化的本地版本**，必须经过 `skill_sync_guard`：
+
+```python
+# 在 L3 mcp_sync / config_writeout 里接入：
+from l3_node.autonomy.skill_sync_guard import handle_upstream_update
+
+result = handle_upstream_update(
+    skill_name="com.jachin.bi.analysis",
+    new_upstream_content=downloaded_content,
+    new_upstream_version="1.5.0",
+    upstream_skill_id="com.jachin.bi.analysis",
+)
+# result.action: overwritten | merged | skipped | forced
+```
+
+| 情况 | 行为 |
+|------|------|
+| 本地无进化 | 直接覆盖（透明同步） |
+| 本地有进化 + auto_merge 开启（默认） | **3-way smart merge**：Frontmatter 取上游，Rules/Persona 保留本地进化 |
+| 本地有进化 + auto_merge 关闭 | 跳过覆盖，写 divergence 警告日志 |
+| `JACHIN_SKILL_SYNC_FORCE_OVERWRITE=1` | 强制覆盖（**丢失本地进化，危险**） |
+
+**HR 与前台 ReAct 对齐**：`action` 为 **`overwritten` / `merged` / `forced`** 时，成功写盘后会调用 `notify_skill_md_changed_from_disk_write`（与 §3 `skill_evolver` 同源；`skipped` 未覆盖磁盘，不调用）。
+
+**Smart merge 策略（3-way）**：
+- base = 上次从 L1 下载的快照（`skill_snapshots/{skill_name}/upstream/{version}.md`）
+- local = 当前本地版本（含进化）
+- upstream = 新版本
+- 冲突：保留 local，在段末追加 `## ⚠️上游更新` 注释供人工确认
+
+## 5. per-skill 状态清单（`.skill_evo_manifest.json`）
+
+每个 Skill 目录下自动创建，记录进化状态：
+
+```json
+{
+  "skill_name": "com.jachin.bi.analysis",
+  "skill_path": "/path/to/SKILL.md",
+  "origin": "l1_subscribed",
+  "upstream_skill_id": "com.jachin.bi.analysis",
+  "upstream_version": "1.0.0",
+  "upstream_last_synced": 1716000000.0,
+  "local_version": "1.0.3",
+  "local_evolution_count": 3,
+  "last_evolved_at": 1716001000.0,
+  "diverged_from_upstream": true,
+  "pending_evolution": null
+}
+```
+
+**`pending_evolution`** 非空时表示 healing 路径已预存候选，下次 intent 成功时消费。
+
+## 6. 三条硬性约束
+
+### 6.1 只改正文，绝不改 Frontmatter 结构字段
+进化引擎只允许修改 SKILL.md 正文（`# Rules`、`# Persona`、`# Examples`），**严禁**修改 `name`、`mcp_tools`、`tools`（`version` 除外，允许 +0.0.1）。违反时 `_validate_candidate` 拒绝 patch 写 `rejected` 日志。
+
+### 6.2 改动比例上限
+单次进化改动量 ≤ 原文件字符数的 **30%**（`JACHIN_SKILL_EVOLVE_MAX_PATCH_RATIO`）。超出则写 `rejected` 日志，不修改文件。
+
+### 6.3 进化前必须快照备份
+实际写入前必须先调用 `_snapshot_skill` 备份原版到 `skill_snapshots/` 目录。
+
+### 6.4 P3：多 Skill 协同进化（一跳）
+
+- **声明**：SKILL.md YAML 可选 `evolution_peers` 或 `co_evolve_peers`（字符串列表），值为 `find_skill_md_path` 可解析的标识（与 `docs/SKILL_MD_SPEC.md` 一致）。
+- **触发**：主技能在 **proactive / healing** 路径下 `_apply_evolution` **成功 `applied`**（非 dry-run）后，且 `JACHIN_SKILL_COEVOLVE_ENABLE=1`，读取**进化前**磁盘内容解析 peer 列表；对每个 peer 调用 `_apply_evolution(..., mode=co_evolve, trigger=co_evolve, propagate_co_evolve=False, co_evolve_from=<主技能名>)`。
+- **防递归**：协同调用固定 `propagate_co_evolve=False`；仅 **一跳**，不从 peer 再向其后继传播。
+- **上限**：单次主进化至多触发 `JACHIN_SKILL_COEVOLVE_MAX_PEERS`（默认 5，最大 20）个 peer；列表去重且排除自身。
+
+## 7. 进化日志格式（JSONL）
+
+所有事件（进化/拒绝/演练/同步分叉）均写入 `~/.jachin/workspace/skill_evolution.jsonl`：
+
+```json
+{
+  "evolution_id": "<uuid | sync_{ts}>",
+  "skill_name": "com.jachin.bi.analysis",
+  "status": "applied | rejected | dry_run | error | staged | sync_merged | sync_skipped",
+  "trigger": "proactive | healing | co_evolve | upstream_sync",
+  "change_summary": "新增规则：采集失败时重试 3 次",
+  "change_ratio": 0.08,
+  "origin": "l1_subscribed | local",
+  "upstream_version": "1.0.0",
+  "original_hash": "abc123",
+  "new_hash": "def456",
+  "snapshot_path": "~/.jachin/workspace/skill_snapshots/...",
+  "evidence_count": 5,
+  "confidence": 0.85,
+  "model": "qwen-plus",
+  "timestamp": 1716000000.0,
+  "co_evolve_from": ""
+}
+```
+
+`co_evolve_from`：仅 **P3** peer 进化时非空，为主技能 `skill_name`。
+
+```json
+{
+  "evolution_id": "…",
+  "skill_name": "peer-skill",
+  "status": "applied",
+  "trigger": "co_evolve",
+  "co_evolve_from": "primary-skill",
+  "change_summary": "…"
+}
+```
+
+## 8. 环境变量速查
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `JACHIN_SKILL_EVOLVE_ENABLE` | `0` | 开启 Skill 自动进化 |
+| `JACHIN_SKILL_EVOLVE_MIN_SUCCESSES` | `3` | proactive 路径触发阈值 |
+| `JACHIN_SKILL_EVOLVE_MAX_PATCH_RATIO` | `0.3` | 最大改动比例 |
+| `JACHIN_SKILL_EVOLVE_DRY_RUN` | `0` | 演练模式 |
+| `JACHIN_SKILL_EVOLVE_MODEL` | `LLM_MODEL` | 进化 LLM 模型 |
+| `JACHIN_SKILL_MD_HOT_RELOAD` | `1` | P1：ReAct 每轮刷新 HR SKILL 标记段 |
+| `JACHIN_SKILL_MD_INLINE_ENABLE` | `1` | P2：写盘 notify + dirty + 世代 |
+| `JACHIN_SKILL_L1_CACHE` | `~/.jachin/skills/` | L1 订阅 Skill 根目录 |
+| `JACHIN_SKILL_SYNC_AUTO_MERGE` | `1` | 上游同步时自动 smart merge |
+| `JACHIN_SKILL_SYNC_FORCE_OVERWRITE` | `0` | 强制覆盖本地进化（危险） |
+| `JACHIN_SKILL_COEVOLVE_ENABLE` | `0` | P3：主技能 applied 后向 `evolution_peers` 一跳协同进化 |
+| `JACHIN_SKILL_COEVOLVE_MAX_PEERS` | `5` | P3：单次主进化最多触发的 peer 数（1..20） |
+
+## 9. L1 订阅 Skill 首次安装接入方式
+
+在 L3 mcp_sync / config_writeout 中，订阅安装后调用：
+```python
+from l3_node.autonomy.skill_evolver import mark_skill_origin
+mark_skill_origin(
+    skill_name="com.jachin.bi.analysis",
+    skill_path=target_path,
+    origin="l1_subscribed",
+    upstream_skill_id=plugin_id,
+    upstream_version=plugin_version,
+)
+```
+
+后续 L1 推送新版本时调用 `skill_sync_guard.handle_upstream_update()`。
+
+## 10. PR 自检（修改相关代码时心里过一遍）
+
+- [ ] 新 Skill 使用 SKILL.md 格式（Frontmatter + 正文）？
+- [ ] L1 订阅 Skill 安装后是否调用了 `mark_skill_origin`？
+- [ ] L1 更新 Skill 时是否经过 `skill_sync_guard.handle_upstream_update`？
+- [ ] 自动化写 SKILL.md 前是否调用了 `_snapshot_skill`？
+- [ ] 改动比例在阈值内？Frontmatter name/mcp_tools/tools 未改动？
+- [ ] 进化日志是否写入？用户侧完全无感？

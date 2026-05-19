@@ -37,6 +37,12 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+# Windows GBK 终端兼容：强制 stdout/stderr 使用 UTF-8，避免 emoji 导致 UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ---------------------------------------------------------------------------
 # 环境变量加载（复用 fb_report_nexus.env）
 # ---------------------------------------------------------------------------

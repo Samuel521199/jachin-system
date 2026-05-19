@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -106,6 +107,180 @@ def _get_chat_lock(chat_id: str) -> threading.Lock:
         if chat_id not in _chat_locks:
             _chat_locks[chat_id] = threading.Lock()
         return _chat_locks[chat_id]
+
+
+# 每 chat 当前在线程池中有多少条「已提交尚未结束」的 IM 任务（用于第二条进线立即 ack）
+_im_chat_inflight: dict[str, int] = {}
+_im_chat_inflight_mutex = threading.Lock()
+
+
+def _adjust_im_chat_inflight(chat_id: str, delta: int) -> None:
+    cid = (chat_id or "").strip()
+    if not cid or delta == 0:
+        return
+    with _im_chat_inflight_mutex:
+        n = _im_chat_inflight.get(cid, 0) + delta
+        if n <= 0:
+            _im_chat_inflight.pop(cid, None)
+        else:
+            _im_chat_inflight[cid] = n
+
+
+_rollup_mutex = threading.Lock()
+_rollup: dict[str, deque[str]] = {}
+
+
+def _im_queue_rollup_disabled() -> bool:
+    return os.environ.get("JACHIN_IM_QUEUE_ROLLUP_DISABLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _im_append_queue_rollup(chat_id: str, user_text: str) -> None:
+    """prior>0 时摘录进线文案；持锁执行前合并进本轮 intent（轻量排队上下文，路线图 **X**）。"""
+    if _im_queue_rollup_disabled():
+        return
+    cid = (chat_id or "").strip()
+    if not cid:
+        return
+    snip = (user_text or "").strip()[:500]
+    if not snip:
+        return
+    with _rollup_mutex:
+        d = _rollup.setdefault(cid, deque(maxlen=12))
+        if d and d[-1] == snip:
+            return
+        d.append(snip)
+
+
+def _im_consume_queue_rollup_prefix(chat_id: str, current_intent_raw: str) -> str:
+    """取出并清空排队摘录，排除与本轮主句完全相同的重复。"""
+    cid = (chat_id or "").strip()
+    cur = (current_intent_raw or "").strip()
+    if not cid or not cur:
+        return ""
+    with _rollup_mutex:
+        d = _rollup.pop(cid, None)
+        items = list(d) if d else []
+    if not items:
+        return ""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for t in items:
+        st = (t or "").strip()
+        if not st or st == cur:
+            continue
+        if st in seen:
+            continue
+        seen.add(st)
+        parts.append(st)
+    if not parts:
+        return ""
+    return "【排队期间用户另发（请合并理解）】\n" + "\n".join(parts[:6]) + "\n\n"
+
+
+def _notify_im_when_prior_turn_inflight(
+    chat_id: str,
+    user_text: str,
+    send_reply_fn: Callable[[str, str], bool],
+) -> None:
+    cid = (chat_id or "").strip()
+    if not cid:
+        return
+    try:
+        from l3_node.im_second_instruction import (
+            classify_busy_followup,
+            analyze_second_im_intent_llm_sync,
+        )
+        from l3_node.foreground_run_registry import get_active_run_id
+        from l3_node.primitives.agent_tasks.agent_cancel import request_cancel_run
+
+        # AX：LLM 冲突仲裁（JACHIN_IM_LLM_CONFLICT_RESOLVE=1 时启用，否则退回规则版本）
+        try:
+            import os
+            if (os.environ.get("JACHIN_IM_LLM_CONFLICT_RESOLVE") or "").strip().lower() in (
+                "1", "true", "yes"
+            ):
+                _task_summary = getattr(
+                    __import__("l3_node.task_runtime_registry", fromlist=["format_combined_runtime_prompt_suffix"]),
+                    "format_combined_runtime_prompt_suffix",
+                    lambda: "",
+                )()
+                kind = analyze_second_im_intent_llm_sync(
+                    user_text, current_task_summary=_task_summary
+                )
+            else:
+                kind = classify_busy_followup(user_text)
+        except Exception:
+            kind = classify_busy_followup(user_text)
+        if kind == "interrupt":
+            rid = get_active_run_id(cid)
+            if rid and request_cancel_run(rid):
+                send_reply_fn(
+                    cid,
+                    "⏹️ 已请求停止当前任务；随后将开始处理你这条新消息"
+                    "（若底层同步调用无法立即终止，仍可能稍后才完全停下）。",
+                )
+                return
+            send_reply_fn(
+                cid,
+                "⏹️ 已记下你希望切换任务；若当前轮次无法立刻中止，将在本轮结束后处理本条消息。",
+            )
+            return
+        if kind == "parallel":
+            send_reply_fn(
+                cid,
+                "🔀 已记录新需求。本会话仍按顺序执行，本条将在上一任务结束后立即处理"
+                "（真·双轨并行见 AGI 路线图后续版本）。",
+            )
+            return
+        if kind == "supplement":
+            send_reply_fn(
+                cid,
+                "📝 已理解为对**当前正在进行任务**的补充或纠正；本条仍在队列中，"
+                "上轮结束后将携带此意合并处理（真·并行仍见路线图后续）。",
+            )
+            return
+        snip = (user_text or "").strip()
+        if len(snip) > 52:
+            snip = snip[:52] + "…"
+        send_reply_fn(
+            cid,
+            f"⏳ 上一任务仍在处理中，本条「{snip}」已排队，将在完成后立即执行。",
+        )
+    except Exception as e:
+        logger.debug("[IM Dispatcher] 第二条进线 ack 失败: %s", e)
+
+
+def _do_agent_work_tracked(
+    text: str,
+    chat_id: str,
+    user_id: str,
+    run_agent_fn: Callable[..., Any],
+    engine: Any,
+    loop: asyncio.AbstractEventLoop,
+    send_reply_fn: Callable[[str, str], bool],
+    timeout: float,
+    *,
+    prior_inflight_before: int = 0,
+) -> None:
+    try:
+        _do_agent_work(
+            text,
+            chat_id,
+            user_id,
+            run_agent_fn,
+            engine,
+            loop,
+            send_reply_fn,
+            timeout,
+            prior_inflight_before=prior_inflight_before,
+        )
+    finally:
+        _adjust_im_chat_inflight(chat_id, -1)
 
 
 _IM_INBOUND_RECENT: dict[str, float] = {}
@@ -288,6 +463,8 @@ def _do_agent_work(
     loop: asyncio.AbstractEventLoop,
     send_reply_fn: Callable[[str, str], bool],
     timeout: float,
+    *,
+    prior_inflight_before: int = 0,
 ) -> None:
     """
     在线程池中执行 Agent 工作，不阻塞 Lark WebSocket 线程。
@@ -297,22 +474,24 @@ def _do_agent_work(
     lock = _get_chat_lock(cid) if cid else threading.Lock()
     with lock:
         session_messages = load_lark_session(cid) if cid else []
-        intent = (text or "").strip()
-        if _should_skip_duplicate_inbound(cid, intent):
+        intent_raw = (text or "").strip()
+        if _should_skip_duplicate_inbound(cid, intent_raw):
             logger.info(
                 "[IM Dispatcher] 忽略短时重复投递（同会话同文案）chat_id=%s preview=%s",
                 cid[:24] if cid else "",
-                intent[:48],
+                intent_raw[:48],
             )
             append_lark_interaction_record(
                 "duplicate_inbound_suppressed",
                 chat_id=cid,
                 user_id=user_id or "",
-                user_text=intent,
+                user_text=intent_raw,
                 route="im_dispatcher",
                 status="skipped_duplicate_within_ttl",
             )
             return
+        rpfx = _im_consume_queue_rollup_prefix(cid, intent_raw)
+        intent = (rpfx + intent_raw) if rpfx else intent_raw
         reply = ""
         route = "unknown"
         turn_status = "pending"
@@ -434,6 +613,11 @@ def _do_agent_work(
                             _iatt["lark_chat_id"] = str(cid).strip()
                         if user_id:
                             _iatt["lark_user_id"] = str(user_id).strip()
+                        if prior_inflight_before > 0:
+                            from l3_node.im_second_instruction import classify_busy_followup
+
+                            _iatt["lark_busy_followup"] = True
+                            _iatt["lark_busy_followup_kind"] = classify_busy_followup(intent)
                         future = asyncio.run_coroutine_threadsafe(
                             run_agent_fn(
                                 intent,
@@ -520,6 +704,25 @@ def _do_agent_work(
         )
 
 
+def get_im_dispatcher_inflight_snapshot(
+    *,
+    chat_id: str | None = None,
+    limit: int = 64,
+) -> dict[str, Any]:
+    """飞书 IM 分发器：每 chat 已提交线程池且尚未析构的工单计数（与 `_im_chat_inflight` 同源）。"""
+    lim = max(1, min(256, int(limit)))
+    with _im_chat_inflight_mutex:
+        snap = dict(_im_chat_inflight)
+    cid = (chat_id or "").strip()
+    if cid:
+        return {"query_chat_id": cid, "threadpool_submitted_pending": snap.get(cid, 0)}
+    items = sorted(snap.items(), key=lambda kv: (-kv[1], kv[0]))[:lim]
+    return {
+        "chats_with_pending": len(snap),
+        "top": [{"chat_id": k, "threadpool_submitted_pending": v} for k, v in items],
+    }
+
+
 def create_im_message_handler(
     run_agent_fn: Callable[..., Any],
     engine: "LiteLLMEngine",
@@ -558,8 +761,28 @@ def create_im_message_handler(
             feed_release_announcement_text(text, source="lark", chat_id=chat_id or None)
         except Exception:
             logger.debug("[IM Dispatcher] cron_thinker 公告 ingest 失败", exc_info=True)
+        cid = (chat_id or "").strip()
+        prior_before = 0
+        if cid:
+            with _im_chat_inflight_mutex:
+                prior_before = _im_chat_inflight.get(cid, 0)
+                _im_chat_inflight[cid] = prior_before + 1
+            if prior_before > 0:
+                _notify_im_when_prior_turn_inflight(cid, text, send_reply_fn)
+                _im_append_queue_rollup(cid, text)
+                if (os.environ.get("JACHIN_IM_SESSION_HOT_INJECT") or "").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
+                    try:
+                        from l3_node.session_hot_user_inject import record_pending_session_user_text
+
+                        record_pending_session_user_text(cid, text)
+                    except Exception:
+                        pass
         _AGENT_EXECUTOR.submit(
-            _do_agent_work,
+            _do_agent_work_tracked,
             text,
             chat_id,
             user_id,
@@ -568,6 +791,7 @@ def create_im_message_handler(
             loop,
             send_reply_fn,
             timeout,
+            prior_inflight_before=prior_before,
         )
 
     return on_message

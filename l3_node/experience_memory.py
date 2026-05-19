@@ -16,7 +16,7 @@ import threading
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,32 @@ _LOCK = threading.Lock()
 def experience_rag_enabled() -> bool:
     v = (os.environ.get("JACHIN_EXPERIENCE_RAG_ENABLED") or "1").strip().lower()
     return v in ("1", "true", "yes", "on")
+
+
+def experience_multi_agent_record_enabled() -> bool:
+    """多 Agent（discuss / 并行 delegate）回合摘要写入 Experience JSONL；默认关闭避免撑爆文件。"""
+    v = (os.environ.get("JACHIN_EXPERIENCE_RECORD_MULTI_AGENT") or "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def save_multi_agent_episode(
+    *,
+    kind: Literal["discuss", "parallel_delegate"],
+    intent_surface: str,
+    payload: dict[str, Any],
+) -> None:
+    """
+    将多 Agent 编排结果以 executed_tool = multi_agent:{kind} 写入 JSONL，供 retrieve 按意图相似度命中。
+    需同时开启 experience_rag_enabled 与 experience_multi_agent_record_enabled。
+    """
+    if not experience_rag_enabled() or not experience_multi_agent_record_enabled():
+        return
+    ui = (intent_surface or "").strip()[:8000]
+    if not ui:
+        return
+    if not isinstance(payload, dict):
+        return
+    save_experience(ui, f"multi_agent:{kind}", payload)
 
 
 # 与网关纯净意图面一致：极短句不做经验检索，避免「重试」「好了」等与历史范例误匹配
@@ -55,11 +81,21 @@ def _similarity_threshold() -> float:
         return 0.4
 
 
-def _max_file_lines() -> int:
+def _experience_use_embed_rerank() -> bool:
+    """与 Memory Nexus 共用 FastEmbed；失败时 retrieve 自动降级为纯字符串相似度。"""
+    return (os.environ.get("JACHIN_EXPERIENCE_USE_EMBED") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _experience_embed_prefilter_limit() -> int:
     try:
-        return max(50, min(20_000, int(os.environ.get("JACHIN_EXPERIENCE_MAX_LINES") or "2000")))
+        return max(32, min(256, int(os.environ.get("JACHIN_EXPERIENCE_EMBED_PREFILTER") or "96")))
     except (TypeError, ValueError):
-        return 2000
+        return 96
 
 
 def _tokenize(text: str) -> list[str]:
@@ -157,12 +193,43 @@ def retrieve_experience(user_intent: str, top_k: int = 2) -> list[dict[str, Any]
     thr = _similarity_threshold()
     scored: list[tuple[float, dict[str, Any]]] = []
     try:
-        for r in recs:
-            doc = str(r.get("user_intent") or "")
-            sc = _intent_similarity(q, doc)
-            if sc >= thr:
-                scored.append((sc, r))
-        scored.sort(key=lambda x: -x[0])
+        if _experience_use_embed_rerank():
+            prelim: list[tuple[float, dict[str, Any]]] = []
+            for r in recs:
+                doc = str(r.get("user_intent") or "")
+                sc = _intent_similarity(q, doc)
+                prelim.append((sc, r))
+            prelim.sort(key=lambda x: -x[0])
+            lim = _experience_embed_prefilter_limit()
+            take = prelim[:lim]
+            if take:
+                try:
+                    import numpy as np
+
+                    from l3_client.local_mcps.jachin_memory_nexus.memory_backend import (
+                        embed_texts_normalized_list,
+                    )
+
+                    docs = [str(x[1].get("user_intent") or "") for x in take]
+                    vecs = embed_texts_normalized_list([q] + docs)
+                    if len(vecs) == len(docs) + 1:
+                        qv = vecs[0]
+                        for i, (sc_char, row) in enumerate(take):
+                            cos = float(np.dot(qv, vecs[i + 1]))
+                            comb = 0.42 * float(sc_char) + 0.58 * cos
+                            if comb >= thr:
+                                scored.append((comb, row))
+                        scored.sort(key=lambda x: -x[0])
+                except Exception as e:
+                    logger.debug("[ExperienceRAG] FastEmbed 重排失败，降级字符串相似度: %s", e)
+                    scored = []
+        if not scored:
+            for r in recs:
+                doc = str(r.get("user_intent") or "")
+                sc = _intent_similarity(q, doc)
+                if sc >= thr:
+                    scored.append((sc, r))
+            scored.sort(key=lambda x: -x[0])
     except Exception as e:
         logger.debug("[ExperienceRAG] 评分失败（静默跳过）: %s", e)
         return []
@@ -205,7 +272,13 @@ def format_experience_block_for_prompt(user_intent: str, *, top_k: int = 2) -> s
         pay_s = _format_payload_for_prompt(pl)
         ui_show = ui[:600] + ("…" if len(ui) > 600 else "")
         lines.append(f"- 用户意图: {ui_show}")
-        lines.append(f"  成功执行: 工具={tid}  payload={pay_s}")
+        if tid.startswith("multi_agent:"):
+            lines.append(
+                f"  多Agent范例: {tid}  摘要字段={pay_s[:900]}"
+                + ("…" if len(pay_s) > 900 else "")
+            )
+        else:
+            lines.append(f"  成功执行: 工具={tid}  payload={pay_s}")
     lines.append("[/HISTORY_FEW_SHOTS]")
     return "\n".join(lines)
 

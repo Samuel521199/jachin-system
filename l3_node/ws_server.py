@@ -797,6 +797,33 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                 }))
 
             if active_turn_task is not None and not active_turn_task.done():
+                if (os.environ.get("JACHIN_WS_SUPERSEDE_ACK", "1").strip().lower() not in ("0", "false", "no", "off")):
+                    _ss_msg = json.dumps(
+                        {
+                            "kind": "prior_turn_superseded",
+                            "message": "收到新输入：已停止当前生成并开始处理本轮。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    await _send_safe(
+                        websocket,
+                        {"step_type": "system_status", "content": _ss_msg, "run_id": ""},
+                    )
+                    if chat_id:
+                        await _broadcast_to_mirror_subscribers(
+                            chat_id,
+                            {
+                                "step_type": "system_status",
+                                "content": json.dumps(
+                                    {
+                                        "kind": "prior_turn_superseded",
+                                        "message": "（镜像）连接内因新输入已打断上一轮输出。",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                "run_id": "",
+                            },
+                        )
                 active_turn_task.cancel()
                 try:
                     await active_turn_task
