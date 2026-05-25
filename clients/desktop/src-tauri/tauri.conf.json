@@ -1,6 +1,6 @@
-﻿{
+{
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.70",
+  "version": "0.9.71",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
