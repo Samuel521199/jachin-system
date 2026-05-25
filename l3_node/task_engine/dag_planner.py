@@ -269,6 +269,12 @@ def _write_active_json(dag_id: str, title: str, nodes: list[PlanNode]) -> str:
         "planner_version": "AV",
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from l3_node.task_engine.task_plan_dag_bridge import mirror_active_json_to_task_plan_md
+
+        mirror_active_json_to_task_plan_md()
+    except Exception:
+        pass
     return str(path)
 
 

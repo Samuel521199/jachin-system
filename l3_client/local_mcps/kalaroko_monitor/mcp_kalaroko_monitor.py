@@ -4959,6 +4959,36 @@ async def execute_playwright_perf_test(
                 _kalaroko_register_playwright_session(
                     browser, context, must_close_context
                 )
+                # Popup 守卫：自动关闭巡检期间意外弹出的非本站标签页（如 youtube.com/@KalaroKo 的 subscribers 促销链接）
+                def _popup_guardian(new_page: Any) -> None:
+                    async def _close_if_off_domain() -> None:
+                        try:
+                            await asyncio.sleep(0.4)
+                            url = str(getattr(new_page, "url", "") or "")
+                            if url and url not in ("about:blank", "chrome://newtab/") and not _host_allowed(url):
+                                logger.warning(
+                                    "[kalaroko_monitor] [popup-guardian] 已关闭跳出本站的弹出标签页 url=%s",
+                                    url[:200],
+                                )
+                                try:
+                                    await new_page.close()
+                                except Exception:
+                                    pass
+                        except Exception as _eg:
+                            logger.debug(
+                                "[kalaroko_monitor] [popup-guardian] 清理异常: %s", str(_eg)[:200]
+                            )
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.ensure_future(_close_if_off_domain())
+                    except Exception:
+                        pass
+                try:
+                    context.on("page", _popup_guardian)
+                    logger.info("[kalaroko_monitor] [popup-guardian] 已注册：将自动关闭非本站弹出标签页")
+                except Exception as _pg_e:
+                    logger.debug("[kalaroko_monitor] [popup-guardian] 注册失败（忽略）: %s", str(_pg_e)[:200])
             except Exception as e:
                 if _is_chrome_profile_in_use_error(e):
                     return _err(

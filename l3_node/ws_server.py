@@ -796,6 +796,39 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                     "run_id": "",
                 }))
 
+            _ws_used_siq = False
+            if chat_id:
+                try:
+                    from l3_node.ws_siq_bridge import schedule_ws_turn_via_siq, ws_siq_enabled
+
+                    if ws_siq_enabled():
+                        _ws_sk = f"ws:{chat_id}"
+
+                        async def _ws_siq_factory(final_intent: str) -> None:
+                            await _ws_execute_intent_turn(
+                                websocket,
+                                engine,
+                                run_agent_fn,
+                                session_messages,
+                                msg,
+                                final_intent,
+                                chat_id,
+                                origin_terminal,
+                                attachments_metadata=attachments_for_turn,
+                            )
+
+                        _st = await schedule_ws_turn_via_siq(
+                            session_key=_ws_sk,
+                            intent=intent,
+                            execute_coro_factory=_ws_siq_factory,
+                        )
+                        if _st != "disabled":
+                            _ws_used_siq = True
+                except Exception as _ws_siq_ex:
+                    logger.debug("[L3 WS] SIQ 调度跳过: %s", _ws_siq_ex)
+            if _ws_used_siq:
+                continue
+
             if active_turn_task is not None and not active_turn_task.done():
                 if (os.environ.get("JACHIN_WS_SUPERSEDE_ACK", "1").strip().lower() not in ("0", "false", "no", "off")):
                     _ss_msg = json.dumps(

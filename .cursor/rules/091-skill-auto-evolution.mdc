@@ -176,6 +176,7 @@ result = handle_upstream_update(
 | `JACHIN_SKILL_SYNC_FORCE_OVERWRITE` | `0` | 强制覆盖本地进化（危险） |
 | `JACHIN_SKILL_COEVOLVE_ENABLE` | `0` | P3：主技能 applied 后向 `evolution_peers` 一跳协同进化 |
 | `JACHIN_SKILL_COEVOLVE_MAX_PEERS` | `5` | P3：单次主进化最多触发的 peer 数（1..20） |
+| `JACHIN_SKILL_MD_GENERIC_HOT_RELOAD` | `0` | skills_repo / L1 缓存 SKILL.md 写盘亦触发 inline dirty（需 ReAct 已注册） |
 
 ## 9. L1 订阅 Skill 首次安装接入方式
 

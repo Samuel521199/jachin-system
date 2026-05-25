@@ -234,3 +234,11 @@ def apply_dag_resume(run_id: str) -> DagResumeResult:
         len(result.pending_nodes),
     )
     return result
+
+
+def build_resume_intent_from_active_dag() -> str:
+    """仅依据 active.json 生成续跑前缀（无需 hook_events）。"""
+    result = probe_dag_resume("")
+    if not result.ok or not result.pending_nodes:
+        return ""
+    return (result.resume_intent or "").strip()

@@ -211,6 +211,17 @@ def get_bi_background_scheduler():
 def _run_bi_daily_report_job() -> None:
     """定时任务回调"""
     _scheduler_audit_log("JOB_FIRE bi_daily_report APScheduler callback entered")
+    from l3_node.scheduled_global_registry import scheduled_global_task_scope
+
+    with scheduled_global_task_scope(
+        "bi_scheduler",
+        _BI_JOB_ID,
+        title="BI 每日战报",
+    ):
+        _run_bi_daily_report_job_body()
+
+
+def _run_bi_daily_report_job_body() -> None:
     try:
         from l3_node.primitives.skills.bi.bi_daily_report.main_skill import run_bi_daily_report_scheduled
 

@@ -181,6 +181,25 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "params": ["yaml_path"],
     },
     {
+        "id": "core:task_dag_update",
+        "label": "core:task_dag_update",
+        "desc": (
+            "更新 ~/.jachin/workspace/task_dags/active.json 中节点状态。"
+            "JSON：node_id（必填）；status（pending|in_progress|completed|failed）；"
+            "error（可选）；或 action=next_pending 仅查询下一个待办节点。"
+        ),
+        "params": ["node_id"],
+    },
+    {
+        "id": "core:plan_task_dag",
+        "label": "core:plan_task_dag",
+        "desc": (
+            "LLM 将复杂意图拆解为 TaskDAG 并写入 workspace/task_dags/active.json。"
+            "JSON：intent（必填）；force（可选 true 跳过启发式）；dag_id（可选）。"
+        ),
+        "params": ["intent"],
+    },
+    {
         "id": "core:domain_workflow_run",
         "label": "core:domain_workflow_run",
         "desc": "长期架构 L2：执行已注册领域子图。JSON：domain_id（或 domain）+ 领域参数，如 HR：workflow_id, include_analyze, context",
@@ -547,6 +566,44 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
             if not isinstance(p, dict):
                 p = {}
             return dispatch_domain_workflow(did, p)
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+    if tool_id == "core:plan_task_dag":
+        try:
+            from l3_node.task_engine.dag_planner import plan_task_dag_sync
+
+            intent = str(kwargs.get("intent") or "").strip()
+            force = bool(kwargs.get("force", False))
+            result = plan_task_dag_sync(intent, force=force)
+            return {
+                "ok": result.ok,
+                "dag_id": result.dag_id,
+                "title": result.title,
+                "nodes": result.nodes,
+                "written_to": result.written_to,
+                "error": result.error,
+            }
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+    if tool_id == "core:task_dag_update":
+        try:
+            from l3_node.task_engine.dag_node_sync import (
+                get_next_pending_dag_node,
+                mark_dag_node_status,
+            )
+
+            action = str(kwargs.get("action") or "").strip().lower()
+            if action == "next_pending":
+                nxt = get_next_pending_dag_node()
+                return {"ok": True, "next_pending": nxt}
+            nid = str(kwargs.get("node_id") or "").strip()
+            st = str(kwargs.get("status") or "completed").strip()
+            err = kwargs.get("error")
+            return mark_dag_node_status(
+                nid,
+                st,
+                error=str(err)[:500] if err else None,
+            )
         except ImportError as e:
             return {"ok": False, "error": str(e)}
     if tool_id == "core:workflow_run":
@@ -1299,6 +1356,33 @@ def run_tool(
                 pass
         dom = str(body.pop("domain_id", "") or body.pop("domain", "") or "").strip()
         params = {"domain_id": dom, "params": body if body else {}}
+    elif tool_id == "core:plan_task_dag":
+        params = {"intent": inp.strip(), "force": False, "dag_id": None}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["intent"] = str(o.get("intent") or o.get("user_intent") or "")
+                    params["force"] = bool(o.get("force", False))
+                    if o.get("dag_id") is not None:
+                        params["dag_id"] = str(o.get("dag_id"))
+            except json.JSONDecodeError:
+                pass
+    elif tool_id == "core:task_dag_update":
+        params = {"node_id": "", "status": "completed", "action": "", "error": None}
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params["node_id"] = str(o.get("node_id") or o.get("id") or "")
+                    params["status"] = str(o.get("status") or "completed")
+                    params["action"] = str(o.get("action") or "")
+                    if o.get("error") is not None:
+                        params["error"] = str(o.get("error"))
+            except json.JSONDecodeError:
+                pass
+        elif inp.strip():
+            params["node_id"] = inp.strip()
     elif tool_id == "core:workflow_run":
         params["yaml_path"] = inp.strip()
         params["persistent"] = False

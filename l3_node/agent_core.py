@@ -4705,6 +4705,14 @@ async def _run_sub_agent_hooked(
     _meta = dict(parent_ctx.metadata or {})
     _meta["delegate_sub_task_index"] = node_index
     _meta["delegate_sub_task_role"] = str(task_spec.get("role") or "")
+    _nid = str(
+        task_spec.get("node_id")
+        or task_spec.get("dag_node_id")
+        or task_spec.get("task_dag_node_id")
+        or ""
+    ).strip()
+    if _nid:
+        _meta["task_dag_node_id"] = _nid
     _sc = PipelineContext(
         intent=parent_ctx.intent,
         source=parent_ctx.source,
@@ -5464,6 +5472,15 @@ async def _run_react_core(
 
     for iteration in range(max_iterations):
         ctx.metadata["_react_iteration"] = iteration + 1
+        try:
+            from l3_node.run_agent_l3_hooks import touch_global_registry_if_needed
+
+            touch_global_registry_if_needed(
+                str(getattr(ctx, "run_id", "") or ""),
+                react_iteration=iteration,
+            )
+        except Exception:
+            pass
         # AN — Guardrails 迭代前检查（iterations / token budget）
         try:
             _gr_ck = ctx.metadata.get("_gr_checker")
@@ -5473,7 +5490,22 @@ async def _run_react_core(
                 if _gr_pre_v is not None:
                     _gr_brief = _gr_ck.execution_brief()
                     logger.warning("[Guardrails] pre-iteration truncate rule=%s iter=%d", _gr_pre_v.rule, iteration + 1)
-                    return f"Final Answer: {_gr_brief}"
+                    if _gr_pre_v.action == "truncate":
+                        from l3_node.guardrails import emit_guardrails_execution_brief
+
+                        return await emit_guardrails_execution_brief(
+                            ctx,
+                            rule=_gr_pre_v.rule,
+                            brief_body=_gr_brief,
+                            violation=_gr_pre_v,
+                        )
+                    if _gr_pre_v.action == "abort":
+                        from l3_node.guardrails import emit_guardrails_abort_brief
+
+                        await emit_guardrails_abort_brief(ctx, _gr_pre_v)
+                        from l3_node.guardrails import GuardrailsAbortError
+
+                        raise GuardrailsAbortError(_gr_pre_v)
         except Exception as _gr_loop_e:
             logger.debug("[Guardrails] pre-iteration 检查异常: %s", _gr_loop_e)
         # 每轮唯一 trace，便于 PowerShell 里对比「这一次 vs 下一次」日志
@@ -5553,7 +5585,27 @@ async def _run_react_core(
         except ImportError:
             pass
         try:
-            apply_hr_skill_md_hot_reload_to_react_ctx(ctx)
+            from l3_node.skill_md_hot_reload import apply_skill_md_hot_reload_to_react_ctx
+
+            apply_skill_md_hot_reload_to_react_ctx(ctx)
+        except Exception:
+            pass
+        try:
+            from l3_node.task_engine.dag_replan import maybe_replan_during_react
+            from l3_node.session_hot_user_inject import peek_pending_session_user
+
+            _replan_hot_sk = str(ctx.metadata.get("_lark_chat_id") or "").strip()
+            _replan_hots: list[str] = []
+            if _replan_hot_sk:
+                _snap = peek_pending_session_user(_replan_hot_sk)
+                if _snap:
+                    _replan_hots = [str(x) for x in (_snap.get("previews") or []) if str(x).strip()]
+            await maybe_replan_during_react(
+                ctx,
+                iteration,
+                trigger="hot_inject" if _replan_hots else "periodic",
+                hot_user_lines=_replan_hots or None,
+            )
         except Exception:
             pass
         try:
@@ -5614,11 +5666,21 @@ async def _run_react_core(
                     _hot_user_msgs.append({"role": "user", "content": _body})
             except Exception:
                 pass
+        _strategy_msgs: list[dict[str, Any]] = []
+        try:
+            from l3_node.engine.execution_resilience_chain import pop_strategy_inject_message
+
+            _strat_msg = pop_strategy_inject_message(ctx)
+            if _strat_msg:
+                _strategy_msgs.append(_strat_msg)
+        except Exception:
+            pass
         full_messages = (
             [{"role": "system", "content": ctx.system_prompt}]
             + messages
             + ([_goal_reminder_msg] if _goal_reminder_msg else [])
             + _hot_user_msgs
+            + _strategy_msgs
         )
         # ──────────────────────────────────────────────────────────────────
         logger.debug("[L3 Agent] ReAct iter=%d 调用 LLM stream=%s sticky_goal_inject=%s", iteration + 1, bool(on_chunk), bool(_goal_reminder_msg))
@@ -7088,11 +7150,21 @@ async def _run_react_core(
                         _gr_violation = _gr_checker.check_all_pre_tool(tool or "", inp or "")
                         if _gr_violation is not None:
                             if _gr_violation.action == "abort":
+                                from l3_node.guardrails import emit_guardrails_abort_brief
+
+                                await emit_guardrails_abort_brief(ctx, _gr_violation)
                                 raise GuardrailsAbortError(_gr_violation)
                             if _gr_violation.action == "truncate":
                                 _gr_brief = _gr_checker.execution_brief()
                                 logger.warning("[Guardrails] truncate rule=%s", _gr_violation.rule)
-                                return f"Final Answer: {_gr_brief}"
+                                from l3_node.guardrails import emit_guardrails_execution_brief
+
+                                return await emit_guardrails_execution_brief(
+                                    ctx,
+                                    rule=_gr_violation.rule,
+                                    brief_body=_gr_brief,
+                                    violation=_gr_violation,
+                                )
                             # warn：将警告追加到下一次 observation
                             logger.warning("[Guardrails] warn rule=%s msg=%s", _gr_violation.rule, _gr_violation.message)
                             inp = inp or ""  # warn 时继续执行
@@ -7259,6 +7331,10 @@ async def _run_react_core(
                             ctx.metadata["_l4_exp_save_gate"] = True
                     except Exception:
                         pass
+            try:
+                ctx.metadata["executed_tool"] = str(base_tool or tool or "")
+            except Exception:
+                pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -7958,6 +8034,19 @@ async def run_agent(
             _session_messages.clear()
         logger.info("[L3 Agent] /clear：已清空会话消息缓冲 run_id=%s", run_id[:12])
         return "[System] 后端上下文已强制清空。"
+
+    try:
+        from l3_node.run_agent_l3_hooks import (
+            maybe_prepend_dag_resume_hint,
+            schedule_dag_auto_plan,
+            sync_task_plan_on_run_start,
+        )
+
+        sync_task_plan_on_run_start()
+        user_input = maybe_prepend_dag_resume_hint(user_input, delegate_depth=_delegate_depth)
+        schedule_dag_auto_plan(user_input, run_id=run_id, delegate_depth=_delegate_depth)
+    except Exception:
+        pass
 
     if (
         implicit_attribution
@@ -9086,7 +9175,7 @@ async def run_agent(
             logger.debug("[L3 Agent] foreground_run_registry.register 跳过", exc_info=True)
     if _delegate_depth == 0 and _bg_channel != "background_task":
         try:
-            from l3_node.task_runtime_registry import register_foreground_task
+            from l3_node.run_agent_l3_hooks import register_global_foreground_task
 
             _rtags: list[str] | None = None
             if implicit_attribution and isinstance(implicit_attribution, dict):
@@ -9095,17 +9184,15 @@ async def run_agent(
                     _rtags = [str(x).strip()[:64] for x in raw if str(x).strip()][:8]
                 elif raw is not None and str(raw).strip():
                     _rtags = [str(raw).strip()[:64]]
-            if not _rtags:
-                _c = (_bg_channel or "unknown").strip()[:48] or "unknown"
-                _rtags = [f"channel:{_c}"]
-            register_foreground_task(
-                run_id=run_id,
+            register_global_foreground_task(
+                run_id,
                 channel=_bg_channel or "unknown",
                 session_key=_lark_cid,
                 resource_tags=_rtags,
+                implicit_attribution=implicit_attribution if isinstance(implicit_attribution, dict) else None,
             )
         except Exception:
-            logger.debug("[L3 Agent] task_runtime_registry.register 跳过", exc_info=True)
+            logger.debug("[L3 Agent] global/task_runtime registry.register 跳过", exc_info=True)
     _tok_cap = _llm_token_budget_for_run(_delegate_depth)
     _tok_acc: dict[str, int] = {"prompt": 0, "completion": 0}
 
@@ -9295,6 +9382,16 @@ async def run_agent(
             _md_base["_user_granted_mcp_sqlite_write_ack"] = messages_history_has_write_ack_grant(messages)
         except Exception:
             _md_base["_user_granted_mcp_sqlite_write_ack"] = False
+        try:
+            from l3_node.skill_md_hot_reload import skill_md_generic_hot_reload_enabled
+
+            if skill_md_generic_hot_reload_enabled():
+                _md_base["_skill_md_generic_watch"] = True
+                from l3_node.skill_md_hot_reload import discover_skill_md_paths
+
+                _md_base["_skill_md_watched_paths"] = discover_skill_md_paths()
+        except Exception:
+            pass
         if _gateway_bundle is not None:
             _md_base["_gateway_bundle"] = _gateway_bundle
             _md_base["gateway_classification_truncated"] = bool(_gateway_bundle.classification_truncated)
@@ -9328,7 +9425,21 @@ async def run_agent(
                 await next_fn()
 
         async def react_mw(c: PipelineContext, next_fn) -> None:
-            await _run_react_core(c, engine, on_step=on_step)
+            try:
+                await _run_react_core(c, engine, on_step=on_step)
+            except Exception as _react_ex:
+                try:
+                    from l3_node.guardrails import GuardrailsAbortError
+
+                    if isinstance(_react_ex, GuardrailsAbortError):
+                        c.final_answer = (
+                            c.final_answer
+                            or f"[ExecutionBrief·Guardrails·Abort] {_react_ex}"
+                        )
+                    else:
+                        raise
+                except ImportError:
+                    raise
             if not c.aborted:
                 await next_fn()
 
@@ -9364,6 +9475,48 @@ async def run_agent(
         try:
             if not bool(getattr(ctx, "aborted", False)):
                 schedule_nexus_turn_commit_async(user_input or "", out)
+        except Exception:
+            pass
+        try:
+            from l3_node.run_agent_l3_hooks import try_auto_record_experience_run
+
+            try_auto_record_experience_run(
+                user_input or "",
+                out,
+                list(getattr(ctx, "_executed_tools_this_run", None) or []),
+                aborted=bool(getattr(ctx, "aborted", False)),
+            )
+        except Exception:
+            pass
+        try:
+            from l3_node.engine.hook_replay_executor import try_hook_replay_after_execution_brief
+
+            try_hook_replay_after_execution_brief(
+                run_id,
+                final_answer=out,
+                engine=engine,
+                user_input=user_input or "",
+                session_messages=_session_messages,
+                implicit_attribution=implicit_attribution,
+                on_chunk=on_chunk,
+            )
+        except Exception:
+            pass
+        try:
+            from l3_node.run_agent_l3_hooks import schedule_level3_brief_healing
+
+            _heal_sk = str(
+                ctx.metadata.get("_lark_chat_id")
+                or ctx.session_id
+                or (implicit_attribution or {}).get("session_key")
+                or ""
+            ).strip()
+            schedule_level3_brief_healing(
+                user_input or "",
+                out,
+                session_key=_heal_sk,
+                tools_used=list(getattr(ctx, "_executed_tools_this_run", None) or []),
+            )
         except Exception:
             pass
         try:
@@ -9415,11 +9568,11 @@ async def run_agent(
                 logger.debug("[L3 Agent] foreground_run_registry.unregister 跳过", exc_info=True)
         if _delegate_depth == 0 and _bg_channel != "background_task":
             try:
-                from l3_node.task_runtime_registry import unregister_foreground_task
+                from l3_node.run_agent_l3_hooks import unregister_global_foreground_task
 
-                unregister_foreground_task(run_id)
+                unregister_global_foreground_task(run_id)
             except Exception:
-                logger.debug("[L3 Agent] task_runtime_registry.unregister 跳过", exc_info=True)
+                logger.debug("[L3 Agent] global/task_runtime registry.unregister 跳过", exc_info=True)
         if _ws_tok is not None:
             try:
                 from l3_node.workspace_context import reset_delegate_workspace_sandbox

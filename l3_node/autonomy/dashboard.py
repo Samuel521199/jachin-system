@@ -121,6 +121,65 @@ def build_autonomy_status_dict() -> dict[str, Any]:
         pass
 
     try:
+        from l3_node.global_task_registry import get_global_registry_summary, use_redis_backend
+
+        gtr = get_global_registry_summary()
+        out["global_task_registry"] = gtr
+        out["global_registry_backend"] = gtr.get("backend") or (
+            "redis" if use_redis_backend() else "sqlite"
+        )
+    except Exception:
+        out["global_task_registry"] = None
+        out["global_registry_backend"] = None
+
+    try:
+        from l3_node.session_instruction_queue import get_all_session_stats, siq_enabled, siq_mode
+
+        out["siq_enabled"] = siq_enabled()
+        out["siq_mode"] = siq_mode()
+        out["siq_sessions"] = get_all_session_stats()
+    except Exception:
+        out["siq_enabled"] = False
+
+    try:
+        from l3_node.task_engine.dag_planner import auto_plan_enabled
+
+        out["dag_auto_plan_enabled"] = auto_plan_enabled()
+    except Exception:
+        out["dag_auto_plan_enabled"] = False
+
+    try:
+        from l3_node.experience_memory import auto_record_fail_enabled, auto_record_run_enabled
+
+        out["experience_auto_record"] = auto_record_run_enabled()
+        out["experience_auto_record_fail"] = auto_record_fail_enabled()
+    except Exception:
+        out["experience_auto_record"] = False
+        out["experience_auto_record_fail"] = False
+
+    try:
+        from l3_node.task_engine.dag_node_sync import dag_node_sync_enabled, get_next_pending_dag_node
+
+        out["dag_node_sync_enabled"] = dag_node_sync_enabled()
+        out["task_dag_next_pending"] = get_next_pending_dag_node()
+    except Exception:
+        out["dag_node_sync_enabled"] = False
+
+    try:
+        from l3_node.engine.execution_resilience_chain import strategy_chain_enabled
+
+        out["resilience_strategy_chain"] = strategy_chain_enabled()
+    except Exception:
+        out["resilience_strategy_chain"] = False
+
+    try:
+        from l3_node.engine.hook_replay_executor import replay_enabled
+
+        out["hook_replay_enabled"] = replay_enabled()
+    except Exception:
+        out["hook_replay_enabled"] = False
+
+    try:
         import shutil
 
         usage = shutil.disk_usage("/")

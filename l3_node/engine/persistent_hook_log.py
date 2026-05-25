@@ -31,10 +31,15 @@ _META_KEYS_KEEP = (
     "delegate_sub_task_index",
     "delegate_sub_task_role",
     "path",
+    "node_id",
     "executed_tool",
     "task_node_error",
+    "task_node_result_preview",
     "_task_decompose_sub_count",
     "_task_decompose_roles_preview",
+    "_resilience_strategy",
+    "_resilience_strategy_count",
+    "_resilience_strategy_hint",
 )
 
 
@@ -86,6 +91,9 @@ def _sync_append_row(path: Path, hook: str, run_id: str, intent_preview: str, me
                     meta_json TEXT NOT NULL
                 )
                 """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hook_events_run_id ON hook_events(run_id)"
             )
             conn.execute(
                 "INSERT INTO hook_events (ts, hook, run_id, intent_preview, meta_json) VALUES (?,?,?,?,?)",
@@ -232,3 +240,60 @@ def read_recent_hook_events(
     finally:
         conn.close()
     return rows
+
+
+def read_hook_events_chronological(
+    run_id: str,
+    *,
+    limit: int = 300,
+    hook: str | None = None,
+) -> list[dict[str, Any]]:
+    """按时间正序读取单次 run 的 Hook 事件链（回放执行器用）。"""
+    rid = (run_id or "").strip()
+    if not rid:
+        return []
+    cap = max(1, min(1000, int(limit)))
+    path = _hooks_db_path()
+    if not path.is_file():
+        return []
+    hook_f = (hook or "").strip() or None
+    rows: list[dict[str, Any]] = []
+    conn = sqlite3.connect(str(path), timeout=8.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='hook_events'"
+        )
+        if cur.fetchone() is None:
+            return []
+        q = (
+            "SELECT id, ts, hook, run_id, intent_preview, meta_json "
+            "FROM hook_events WHERE run_id = ?"
+        )
+        params: list[Any] = [rid]
+        if hook_f:
+            q += " AND hook = ?"
+            params.append(hook_f)
+        q += " ORDER BY id ASC LIMIT ?"
+        params.append(cap)
+        for r in conn.execute(q, params):
+            meta_raw = r["meta_json"]
+            try:
+                meta_p = json.loads(meta_raw) if meta_raw else {}
+            except json.JSONDecodeError:
+                meta_p = {}
+            rows.append({
+                "id": r["id"],
+                "ts": r["ts"],
+                "hook": r["hook"],
+                "run_id": r["run_id"],
+                "intent_preview": r["intent_preview"],
+                "meta": meta_p if isinstance(meta_p, dict) else {},
+            })
+    finally:
+        conn.close()
+    return rows
+
+
+def hooks_db_available() -> bool:
+    return _hooks_db_path().is_file()

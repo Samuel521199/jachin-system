@@ -1,6 +1,6 @@
 # Jachin AGI 优化路线图
 
-**版本**：2026-05-18（z）  
+**版本**：2026-05-19（an）  
 **性质**：基于现有代码架构的 AGI 级深度优化方案，从单机 Agent 走向真正的自主智能体系统。  
 **代码基线**：`L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md`（2026-04-02）+ `JACHIN_MEMORY_ARCHITECTURE.md` + 仓库实现快照。
 
@@ -12,20 +12,28 @@
 
 | 能力域 | 文档中的 ⏳ 要点（摘） | 诚实状态 | 建议分期 |
 |--------|----------------------|----------|----------|
-| 并发 / GlobalTaskRegistry | 集群 SSOT、SessionInstructionQueue **全量队列化**、飞书真·双轨并行 | **✅/⏳**：**AT**·y `global_task_registry.py` SQLite 跨进程 SSOT + `resource_tags` 抢占信号（`JACHIN_GLOBAL_REGISTRY_ENABLE=1` + `JACHIN_GLOBAL_REGISTRY_PREEMPT=1`）；**AU**·y `session_instruction_queue.py` 真·双轨并行（SERIAL/PARALLEL 模式，`JACHIN_SIQ_MODE=PARALLEL`）；⏳ Redis 集群 / 跨机 SSOT | Phase C 与编排器联动 |
-| `resource_tags` | 细粒度**抢占**调度 | **✅/⏳**：**AT**·y `check_and_preempt` 检测 `resource_tags` 重叠 + 标记 `preempted` + 调用 `request_cancel_run`（同进程）；⏳ 跨机 HTTP 信号 | Phase C 与编排器联动 |
-| 多 Agent | StructuredResultMerger、动态角色 | **✅**（**AA**·p）：`mode: discuss` + `StructuredResultMerger`；**AB**·p：inline role 安全沙箱；**AF**·s：普通 `delegate` 并行子任务 Observation 经 **`merge_parallel`**（索引表 + 详块）；**AG**·t：`nexus_config` / 环境变量 讨论轮次与子任务 `max_iterations` + 可选 **Experience** `multi_agent:*` 落盘；**AH**·t：飞书第二条**多子句**规则优先级仲裁 | 完整 discuss 多轮调优 ⏳；全量 LLM 意图仲裁 ⏳ |
-| TaskDAG | Planner **自动**维护、`task_plan.md` 全量迁移 | **✅/⏳**：**AV**·y `dag_planner.py` LLM 自动拆解 → `active.json`（`JACHIN_DAG_AUTO_PLAN=1`，启发式触发 + `force` 参数，保留已完成节点状态）；⏳ ReAct 中途自动重规划 | **H**/**V** 已覆盖手工/工具维护与只读诊断 |
-| Hook / 韧性 | DAG **回放**、失败自动策略链 | **✅/⏳**：**Q**·r 支持 `run_id_exact=1` 精确拉单 run Hook 序列（轻量回放探针）；**AO**·v `probe_dag_resume` / `apply_dag_resume`（hook_events + active.json 找待续跑节点，重置 pending + `POST /api/v1/registry/dag-resume`）；**AR**·w DAG Handoff Package（`export_dag_handoff` / `import_dag_handoff`，JSON 跨节点传输，`POST /dag-handoff/export` + `/import` + `/list`）；**AS**·x `dag_coordinator.py` 节点注册表 + 分布式 DAG 锁（SQLite CAS + TTL）+ Peer 发现（本地/HTTP）+ `auto_handoff_to_peer`（`JACHIN_COORDINATOR_ENABLE=1`）；`POST /coordinator/dag-claim` / `DELETE /dag-claim/{id}` / `GET /peers` / `GET /dag-locks` / `GET /coordinator/info`；心跳循环 on_startup；⏳ 专用 Coordinator 服务器 / Redis 支持 |
-| 记忆 / Experience | 四维 Wing 分级、跨 Agent 共享、自动沉淀策略 | **✅/⏳**：**Y**·p 遗忘曲线时间权重（`JACHIN_NEXUS_TIME_DECAY_WEIGHT`）；**AI**·u Wing 重要性乘数分级（`JACHIN_NEXUS_WING_IMPORTANCE_WEIGHT`，默认 0.15）；**AL**·v `wing_registry.py` 五 Wing 规范注册表（Episodes/Knowledge/Procedures/Core/Inbox）+ `normalize_wing` 写入归一化 + `JACHIN_WING_IMPORTANCE_OVERRIDE` 覆盖；**AW**·y `JACHIN_NEXUS_SHARED_PATH` 共享 SQLite 跨 Agent 记忆 + `JACHIN_NEXUS_VECTOR_LEAD=1` 向量主导检索（时间/Wing 权重缩至 0.3 倍）；⏳ 跨机向量数据库 | 见 §四 |
-| 无人值守 | 可观测面板、Level 3 系统级自愈、动态意图、完整 Guardrails | **✅/⏳**：**Z**·p；**AC**·p；**AD**·q `GET /api/v1/autonomy/status` + `llm_budget` 今日用量落盘；**AJ**·u condition 类意图内置条件评估；**AK**·u 失败意图自动重置 + 自愈通知；**AM**·v LLM fallback 条件评估（`JACHIN_CONDITION_LLM_EVAL=1`）；**AN**·v `GuardrailsChecker`（五维护栏）；**AP**·w `dag_guardrails.py` DAG 级跨 Node 预算控制（SQLite 持久，`JACHIN_DAG_GUARDRAILS_ENABLE=1`）；**AQ**·w `level3_healer.py` Level 3 Experience RAG 辅助诊断（`JACHIN_LEVEL3_HEALER_ENABLE=1`，自动 rich notify + optional auto-inject）；⏳ L2 Coordinator / 完整 DAG 编排 Guardrails | 见 §五阶段树 |
-| 前台 SOP / 提示词热同步（磁盘 → ReAct） | 与「自动进化」「L1 拉包」解耦：受管 Markdown 写盘后，当前会话 **system prompt** 尽快与磁盘对齐（**当前落地以 HR 标记段为主**） | **✅**：**ab**·**P1** 每轮 `skill_md_hot_reload` 读盘刷新 HR 段（`JACHIN_SKILL_MD_HOT_RELOAD`）；**ac**·**P2** 任意写盘方在成功 `write` 后调用 **`notify_skill_md_changed_from_disk_write`**（`JACHIN_SKILL_MD_INLINE_ENABLE`）：来源含 **AY** `skill_evolver`、**L1** `skill_sync_guard.handle_upstream_update`（覆盖 / 合并 / 强制覆盖 / 首次安装）；⏳ 非 HR 全域 | `skill_md_hot_reload.py`；与 §六 Skill 子项正交 |
+| 并发 / GlobalTaskRegistry | 集群 SSOT、SessionInstructionQueue **全量队列化**、飞书真·双轨并行 | **✅**：**AT** SQLite；✅ **al** **`global_registry_redis.py`** Redis 集群 SSOT（`JACHIN_GLOBAL_REGISTRY_REDIS=1` + `JACHIN_REDIS_URL`）；**AU** SIQ；**ag** 飞书 SIQ；⏳ L2 编排器统一视图 | **BO** Redis；**GET …/global-tasks** |
+| `resource_tags` | 细粒度**抢占**调度 | **✅**：**AT** + **BG** HTTP 远地 cancel；✅ **al** 多节点共享 Redis 后 `check_and_preempt` 全局可见；⏳ L2 统一调度器 | **BO** |
+| 多 Agent | StructuredResultMerger、动态角色 | **✅**（**AA**·p）：`mode: discuss` + `StructuredResultMerger`；**AB**·p：inline role 安全沙箱；**AF**·s：普通 `delegate` 并行子任务 Observation 经 **`merge_parallel`**；**AG**·t：讨论超参 + Experience；**AH**·t / **AX**·y 飞书冲突仲裁；✅ **ak** `JACHIN_DISCUSS_ADAPTIVE_ROUNDS=1` 按议题长度启发式收紧 `max_rounds` | 完整 discuss LLM 动态超参 ⏳ |
+| TaskDAG | Planner **自动**维护、`task_plan.md` 全量迁移 | **✅/⏳**：**AV**·y `dag_planner.py`；✅ **ag** 中途重规划；✅ **ah** `task_plan_dag_bridge.py`；✅ **BK** `dag_node_sync.py`（`JACHIN_DAG_NODE_SYNC=1` Hook 同步节点 + `core:task_dag_update`）；⏳ 工作流引擎级全自动调度 / L2 Coordinator | **H**/**V** 已覆盖手工/工具维护与只读诊断 |
+| Hook / 韧性 | DAG **回放**、失败自动策略链 | **✅/⏳**：**Q**·r / **AO**·v / **AR**·w / **AS**·x；✅ **BF** 策略链 + **ak** ReAct 每轮 `pop_strategy_inject_message` 注入；✅ **BJ** 回放 + `JACHIN_HOOK_REPLAY_AUTO_RUN` 续跑；⏳ 专用 Coordinator / Redis 集群 | Phase C |
+| 记忆 / Experience | 四维 Wing 分级、跨 Agent 共享、自动沉淀策略 | **✅/⏳**：**Y**·p 遗忘曲线；**AL**·v Wing 注册表；**AW**·y 共享 Nexus；✅ **af** `JACHIN_EXPERIENCE_AUTO_RECORD=1` 成功沉淀；✅ **ak** `JACHIN_EXPERIENCE_AUTO_RECORD_FAIL=1` → `run_agent:brief`；⏳ 跨机向量库 | 见 §四 |
+| 无人值守 | 可观测面板、Level 3 系统级自愈、动态意图、完整 Guardrails | **✅/⏳**：**AQ** 意图连续失败诊断；✅ **am** **BQ** `run_brief_healing`（`JACHIN_LEVEL3_BRIEF_HEAL` 主路径 ExecutionBrief + 热注入）；**AN**/**AP** Guardrails；⏳ L2 Coordinator / 完整 DAG 编排 | **BQ** |
+| 前台 SOP / 提示词热同步（磁盘 → ReAct） | 与「自动进化」「L1 拉包」解耦：受管 Markdown 写盘后，当前会话 **system prompt** 尽快与磁盘对齐 | **✅**：**ab/ac/af**；✅ **ah** 非 HR：`apply_skill_md_hot_reload_to_react_ctx` + `<!--JACHIN_GENERIC_SKILL_MD-->` 块（`JACHIN_SKILL_MD_GENERIC_HOT_RELOAD=1` + `discover_skill_md_paths`） | `skill_md_hot_reload.py` |
 | Skill 自动进化 | SKILL.md 格式统一 + 错误自愈后自动更新 SKILL.md + 进化日志 + 零感知 | **✅**：**AY**·z/`skill_evolver`；**ab** HR **每轮**热重载 `skill_md_hot_reload`（`JACHIN_SKILL_MD_HOT_RELOAD`）；**ac** **inline** 写盘 notify + `_skill_sop_dirty` + 世代（`JACHIN_SKILL_MD_INLINE_ENABLE`，§六 P2）；✅ **P3** `evolution_peers` + `JACHIN_SKILL_COEVOLVE_ENABLE`（一跳协同，§六）；⏳ 非 HR 域统一 | 见 §六 |
 | 飞书场景四 | 补充句 **热并入** 当前轮 Observation、LLM 冲突仲裁、并行汇总展示 | **✅**：**AE**·r：**HTTP** 同会话二条在等锁时写入 `session_hot_user_inject`，当前 `run_agent` 每轮 LLM 前 **drain** 并入 `full_messages`；**R** 轮询可带 `session_hot_user_pending`；飞书可选 `JACHIN_IM_SESSION_HOT_INJECT=1`（默认关，防与 **X** 重复）；**AF**·s：并行 `delegate` 子任务 **Markdown 索引表 + 结构化详块**；讨论模式 Observation 前缀 **`[Discussion]` 摘要行**；**AH**·t：第二条文案含**多段**（换行/；）时 **interrupt > parallel > supplement > queue** 取最高优先级子句（**非 LLM**）；**AX**·y `classify_busy_followup_llm` 全对话上下文 LLM 冲突仲裁（`JACHIN_IM_LLM_CONFLICT_RESOLVE=1`，规则 `interrupt/parallel` 高置信直通，`queue` 走 LLM，超时回退规则）；`dispatcher` 接入 `analyze_second_im_intent_llm_sync` |
 
 **本轮增量（z）**：**AY** `autonomy/skill_evolver.py` Skill 自动进化引擎（`analyze_and_evolve_skill`：LLM 生成最小 patch → 改动比例验证（≤30%）→ frontmatter 保护 → SKILL.md 备份快照 → 写入新版 → JSONL 进化日志；`awareness_loop._try_skill_evolution_after_success` 成功路径自动触发；`JACHIN_SKILL_EVOLVE_ENABLE=1`，干运模式 `JACHIN_SKILL_EVOLVE_DRY_RUN=1`，阈值 `JACHIN_SKILL_EVOLVE_MIN_SUCCESSES`；零用户感知）；§〇/§六/落地表 **AY**/阶段树/§八（z）同步。  
 **本轮增量（ad）**：§六 **P3** 多 Skill 协同进化初版：`skill_evolver` 读取进化**前** SKILL.md frontmatter 的 `evolution_peers` / `co_evolve_peers`；主技能 **proactive/healing** 成功 `applied` 且 `JACHIN_SKILL_COEVOLVE_ENABLE=1` 时，对至多 `JACHIN_SKILL_COEVOLVE_MAX_PEERS` 个 peer 跑 `co_evolve` LLM 补丁（**仅一跳**，peer 不再下传）；JSONL 记 `trigger=co_evolve`、`co_evolve_from`；`docs/SKILL_MD_SPEC.md`、`.cursor/rules/091` 同步。
 **本轮增量（ae）**：**横切**「前台 SOP / 提示词热同步」（§〇 新行，与 Skill 进化正交）：`skill_sync_guard.handle_upstream_update` 在成功 **首次安装 / 覆盖 / smart merge / 强制覆盖** 写盘后与 **AY** 同源调用 `notify_skill_md_changed_from_disk_write`；落地表 **AZ**。
+**本轮增量（af）**：单体 L3 接线 — `run_agent_l3_hooks.py`（`JACHIN_DAG_AUTO_PLAN` 后台规划、`JACHIN_GLOBAL_REGISTRY_ENABLE` 注册+抢占、`JACHIN_EXPERIENCE_AUTO_RECORD`）；HTTP `JACHIN_SIQ_ENABLE` + `GET …/siq-sessions`；`JACHIN_SKILL_MD_GENERIC_HOT_RELOAD`；`runtime-snapshot` / `autonomy/status` 增 SIQ/Global 字段。
+**本轮增量（ag）**：**BB** 飞书全量 SIQ — `im_channels/im_siq_bridge.py` + `dispatcher` 经 `submit_instruction`（`lark:{chat_id}`）；`JACHIN_IM_SIQ_ENABLE` 可单独开飞书队列；PARALLEL 时跳过 chat 锁；**BC** ReAct 中途 DAG 重规划 — `task_engine/dag_replan.py` + `agent_core` 每轮 LLM 前 `maybe_replan_during_react`（`JACHIN_DAG_REPLAN_MID_RUN=1`）。
+**本轮增量（ah）**：**BD** `task_plan_dag_bridge.py`（`JACHIN_TASK_PLAN_DAG_SYNC`）；**BE** 非 HR generic SKILL 热重载块；**BF** `execution_resilience_chain.py`；**BG** 跨机 `preempt-cancel`；**BH** `ws_siq_bridge.py`（`JACHIN_WS_SIQ_ENABLE`）；**BI** PARALLEL 飞书 `session_scope` 隔离会话；`JACHIN_DAG_RESUME_HINT` 续跑前缀。
+**本轮增量（ai）**：**BJ** Hook 回放执行器 `hook_replay_executor.py` + `read_hook_events_chronological`；`GET/POST /api/v1/registry/hook-replay`；`JACHIN_HOOK_REPLAY_AUTO_ON_BRIEF`；策略链触发 `HOOK_ON_STRATEGY_SHIFT` 落盘。  
+**本轮增量（ak）**：**BK** `dag_node_sync.py`（`JACHIN_DAG_NODE_SYNC=1` + `core:task_dag_update`）；**BL** 策略链 ReAct 注入（`pop_strategy_inject_message`）；**BM** `JACHIN_EXPERIENCE_AUTO_RECORD_FAIL` → `run_agent:brief`；**BN** `JACHIN_DISCUSS_ADAPTIVE_ROUNDS`；`autonomy/status` 与 `runtime-snapshot` 增 DAG/韧性/回放字段。  
+**本轮增量（al）**：**BO** Redis 集群 GlobalTaskRegistry SSOT — `global_registry_redis.py`（任务 JSON + running 集合 + `resource_tags` 倒排索引；`JACHIN_REDIS_CLUSTER=1`）；`global_task_registry` 自动回退 SQLite；**`GET /api/v1/registry/global-tasks`**。  
+**本轮增量（am）**：**BP** `core:plan_task_dag` 原生工具；**BQ** `run_brief_healing.py`（`JACHIN_LEVEL3_BRIEF_HEAL` + 热注入）；**BR** Redis 抢占 Pub/Sub + 双写 + TTL 续期（`JACHIN_GLOBAL_REGISTRY_REDIS_PREEMPT_PUBSUB` / `DUAL_WRITE` / `REDIS_TOUCH`）。  
+**本轮增量（an）**：**BS** `scheduled_global_registry.py` — 定时/APScheduler 回调**先** `register_task`（**P2**）；kalaroko / BI / PMO / autonomy intent；修正 `run_agent` 调用签名；内层 `run_agent` 跳过重复 Global 登记。
 **本轮增量（n）**：**W** — IM 线程池待处理深度只读 HTTP；`resource_tags` 写入 **D** / **R**。  
 **本轮增量（o）**：**X** — 飞书 IM **排队摘录**（`prior>0` 时入账，持锁执行前合并进本轮 `user_input` 前缀）；关闭：`JACHIN_IM_QUEUE_ROLLUP_DISABLE=1`。  
 **本轮增量（p）**：**Y** 遗忘曲线；**Z** PersistedIntent；**AA** mode:discuss + StructuredResultMerger；**AB** 动态角色安全沙箱；**AC** AwarenessLoop + ProactiveReporter。  
@@ -49,7 +57,8 @@
 |------|------|-----------|
 | **A. HTTP 同会话串行** | ✅ | `l3_node/http_server.py`：`_http_agent_session_lock`，`chat_id`/`session_id` 非空则互斥 `run_agent`。 |
 | **AU. SessionInstructionQueue 全量队列化** | ✅ | `l3_node/session_instruction_queue.py`：`SIQSession` 每会话独立 asyncio.Queue + worker 协程；SERIAL 模式（有序串行，默认）/ PARALLEL 模式（真·双轨并行，直接 `create_task`，`JACHIN_SIQ_MODE=PARALLEL`）；`_max_parallel` 并发上限（默认 2）；`submit_instruction` 统一入口；弱引用 `_sessions` 自动回收空闲会话；`JACHIN_SIQ_ENABLE=1` 开启。 |
-| **AU. SessionInstructionQueue 全量队列化** | ✅ | `l3_node/session_instruction_queue.py`：`SIQSession` 每会话独立 asyncio.Queue + worker 协程；SERIAL 模式（有序串行，默认）/ PARALLEL 模式（真·双轨并行，直接 `create_task`，`JACHIN_SIQ_MODE=PARALLEL`）；`_max_parallel` 并发上限（默认 2）；`submit_instruction` 统一入口；弱引用 `_sessions` 自动回收空闲会话；`JACHIN_SIQ_ENABLE=1` 开启。 |
+| **BB. 飞书 IM 全量 SIQ** | ✅ | `l3_node/im_channels/im_siq_bridge.py`：`schedule_im_message_via_siq`；`dispatcher.create_im_message_handler` 优先 `run_coroutine_threadsafe` 提交 SIQ（`session_key=lark:{chat_id}`）；`JACHIN_IM_SIQ_ENABLE=1` 可仅开飞书（`submit_instruction` 放行）；SIQ 开启时 `_use_im_chat_lock()` 为 false；PARALLEL 模式第二条即时 ack「并行处理」；失败回退线程池。 |
+| **BC. ReAct 中途 TaskDAG 重规划** | ✅ | `l3_node/task_engine/dag_replan.py`：`maybe_replan_during_react`（`plan_task_dag(..., force=True)` + `refresh_task_dag_block_in_system_prompt`）；`agent_core` 每轮 LLM 前触发（周期 + `peek_pending_session_user` 热并入）；`JACHIN_DAG_REPLAN_MID_RUN=1`；`JACHIN_DAG_REPLAN_EVERY_N_ITER` / `_MAX_PER_RUN` / `_MIN_ITER_GAP`。 |
 | **B. 飞书第二条进线 ack + 可打断** | ✅ | `dispatcher`：`_im_chat_inflight`、`_notify_im_when_prior_turn_inflight`、**X** `_im_append_queue_rollup` / `_im_consume_queue_rollup_prefix`（排队多条摘录合并进本轮）；`foreground_run_registry` + `run_agent`；`im_second_instruction` 分流。 |
 | **C. Prompt 注入后台负载** | ✅ | `format_combined_runtime_prompt_suffix()`（`task_runtime_registry` + 原 P3 摘要）→ `agent_core` 后缀块。 |
 | **D. 轻量 GlobalTaskRegistry（进程内）** | ✅ | `l3_node/task_runtime_registry.py`：登记顶层 `run_agent` 的 `run_id`+通道+可选 **`resource_tags`**（**R**/**W**）；无跨进程、无抢占。 |
@@ -67,7 +76,18 @@
 | **L. 进程内定时任务 → prompt 感知** | ✅ | `task_runtime_registry`：`register_scheduled_job_hint` / `unregister_*`；`kalaroko_scheduler` 与 `bi/scheduler` 在 APScheduler（或 BI loop）注册成功时写入摘要，合并进 `format_combined_runtime_prompt_suffix`。`agent_core`：`delegate` 且 `sub_tasks` 非空时触发 `on_task_decompose`。外加 **M** 外部心跳文件。 |
 | **M. 外部定时心跳 → prompt** | ✅ | `external_scheduled_hints.json` + `merge_external_scheduled_process_hint()` / `read_external_scheduled_hints_dict()`（**U** 只读 HTTP）；**O** `POST`/`DELETE`；`fb_report_scheduler` 写入心跳，退出清条目见 **S**；读侧 **`JACHIN_EXTERNAL_SCHED_HINTS_DISABLE`**（关闭 prompt 注入时 **U** 仍可读文件并带 `hints_prompt_read_disabled`）。 |
 | **O. HTTP 外部定时登记** | ✅ | `http_server`：`JACHIN_REGISTRY_EXTERNAL_SCHED_TOKEN` + `X-Jachin-Registry-Token`；**`POST`** 合并心跳（body：`process_key`、`title`、`schedule_summary`、`pid?`）；**`DELETE`** 撤销登记（body：`process_key`）→ `remove_external_scheduled_process_hint`。未配置 Token → 503。 |
-| **P. 飞书「补充意图」轻量分流** | ✅/⏳ | `classify_busy_followup` + supplement ack + `agent_core` **【飞书·排队补充意图】**；**X** 将排队期多条原文并入**即将执行**的 `user_input`；**AE**·r：**HTTP** 同会话二条在等服务端锁时中段热并入当前 ReAct（`session_hot_user_inject`）。**AF**·s：并行 `delegate` 汇总。**AH**·t：多子句优先级。**⏳**：全量 **LLM** 冲突仲裁。 |
+| **P. 飞书「补充意图」轻量分流** | ✅ | `classify_busy_followup` + supplement ack；**X** / **AE** / **AF** / **AH**；**AX** `JACHIN_IM_LLM_CONFLICT_RESOLVE=1` + `analyze_second_im_intent_llm_sync`（`dispatcher` 第二条进线）。 |
+| **BD. task_plan.md ↔ active.json** | ✅ | `task_plan_dag_bridge.py`：`mirror_active_json_to_task_plan_md` / `mirror_task_plan_md_to_active_json`；`JACHIN_TASK_PLAN_DAG_SYNC=1`；`dag_planner` / `save_active_task_dag_dict` 写盘后镜像。 |
+| **BE. 非 HR SKILL 热重载** | ✅ | `skill_md_hot_reload.apply_skill_md_hot_reload_to_react_ctx` + `GENERIC_SKILL_MD` 标记块；`discover_skill_md_paths`；`run_agent` 登记 `_skill_md_watched_paths`。 |
+| **BF. 失败自动策略链** | ✅ | `engine/execution_resilience_chain.py`：`HOOK_ON_RETRY` / `HOOK_ON_EXECUTION_BRIEF` → `[StrategyShift]`；`JACHIN_RESILIENCE_STRATEGY_CHAIN=1`。 |
+| **BG. 跨机抢占取消** | ✅ | `global_registry_remote.py`；`check_and_preempt` 本地 cancel 失败后 POST peer；`POST /api/v1/registry/preempt-cancel`；`JACHIN_GLOBAL_REGISTRY_REMOTE_PREEMPT=1`。 |
+| **BH. WebSocket SIQ** | ✅ | `ws_siq_bridge.py`：`JACHIN_WS_SIQ_ENABLE=1` 时同 `ws:{chat_id}` 经 SIQ 排队/并行，优先于默认 cancel 上一轮。 |
+| **BI. PARALLEL 会话隔离** | ✅ | `lark_session.session_storage_key` + `dispatcher` `session_scope=instruction_id`（SIQ PARALLEL）。 |
+| **BJ. Hook 回放执行器** | ✅ | `hook_replay_executor.py`：时间线 + `resume_intent` + `apply_dag_resume`；**`JACHIN_HOOK_REPLAY_AUTO_RUN=1`** Brief 后自动再跑 `run_agent`（`hook_replay_followup` 防循环，飞书/WS 回推）；`guardrails.emit_guardrails_execution_brief` 统一 `HOOK_ON_EXECUTION_BRIEF`；`POST …/hook-replay` 支持 `auto_run_agent`。 |
+| **BK. TaskDAG 节点 Hook 同步** | ✅ | `task_engine/dag_node_sync.py`：`HOOK_ON_TASK_NODE_DONE` → 写 `active.json` 节点 `completed`/`failed`（`JACHIN_DAG_NODE_SYNC=1`）；`core:task_dag_update`（`node_id`+`status` 或 `action=next_pending`）；delegate `sub_tasks[].node_id` 对齐。 |
+| **BL. 策略链 ReAct 注入** | ✅ | `execution_resilience_chain.pop_strategy_inject_message`：策略切换后下一轮 LLM 前注入 user 提示（`JACHIN_RESILIENCE_STRATEGY_CHAIN=1`）。 |
+| **BM. Experience Brief 自动沉淀** | ✅ | `JACHIN_EXPERIENCE_AUTO_RECORD_FAIL=1` → `save_run_failure_episode`（`run_agent:brief`）；`run_agent_l3_hooks.try_auto_record_experience_brief`。 |
+| **BN. discuss 自适应轮次** | ✅ | `discussion.effective_discussion_max_rounds`（`JACHIN_DISCUSS_ADAPTIVE_ROUNDS=1`）：短议题默认最多 2 轮。 |
 | **Q. Hook 事件只读 HTTP** | ✅ | `GET …/hook-events-recent`；与 **R**/**U**/**V**/**W** 共用诊断双 Token/双头；`read_recent_hook_events`；`run_id` + **`run_id_exact=1`** 精确筛单次 `run`（轻量回放探针）；未开 **K** 或库不存在则返回空列表。 |
 | **R. 运行时只读快照 · HTTP 锁探针** | ✅ | `GET …/runtime-snapshot?session_key=`；**与 Q 同源鉴权**；`get_runtime_registry_snapshot_dict()`；`foreground_tasks[]` 含 **`resource_tags`**；可选 `http_agent_session.lock_held`；**AE**：有则返回 `session_hot_user_pending`（等锁先进线摘要，不消费）。 |
 | **S. FB 调度守护退出清心跳** | ✅ | `scripts/fb_report_scheduler.py`：`finally` 中 `clear_fb_external_sched_hint()` → 本地 `remove_external_scheduled_process_hint("fb_report_scheduler")`；可选 `FB_SCHED_L3_REGISTRY_URL` / `JACHIN_L3_HTTP_URL` + `JACHIN_REGISTRY_EXTERNAL_SCHED_TOKEN` → 远地 L3 **`DELETE /api/v1/registry/external-sched-hint`**。 |
@@ -99,7 +119,13 @@
 | **AS. DAG Coordinator Phase 2（节点注册 + 分布式锁 + Peer 发现）** | ✅ | `l3_node/task_engine/dag_coordinator.py`：① **节点注册表**：`register_node` / `heartbeat` / `list_alive_nodes`（心跳 TTL `JACHIN_COORDINATOR_NODE_TTL`，默认 90s，SQLite `dag_coordinator.sqlite3`）；② **分布式 DAG 锁**：`claim_dag`（CAS，锁已过期自动抢占）/ `release_dag`（token 校验）/ `refresh_dag_lock`（续约）/ `get_dag_owner`（TTL `JACHIN_COORDINATOR_LOCK_TTL`，默认 120s）；③ **Peer 发现**：本地 SQLite 同机 + `discover_http_peers`（轮询 `JACHIN_COORDINATOR_PEER_URLS`）+ `find_idle_peer`（load_score < 0.5）；`dag_handoff.auto_handoff_to_peer`：export → find_idle_peer → HTTP POST /import → optional release_lock；`POST /dag-handoff/auto-transfer`；六个 coordinator 端点（`/info` / `/peers` / `/register` / `/dag-claim` POST/DELETE / `/dag-locks`）；`on_startup` 心跳循环自启；`JACHIN_COORDINATOR_ENABLE=1` 开启（默认关）；⏳ 专用 Coordinator 服务 / Redis 分布式锁 / 自动 Failover。 |
 | **AY. Skill 自动进化引擎** | ✅ | `l3_node/autonomy/skill_evolver.py`：`analyze_and_evolve_skill`（LLM patch → `_validate_candidate` ≤`JACHIN_SKILL_EVOLVE_MAX_PATCH_RATIO` → 快照 → 写 SKILL.md → JSONL）；`run_skill_evolution_if_ready`；`awareness_loop._try_skill_evolution_after_success`；`JACHIN_SKILL_EVOLVE_ENABLE`（默认关）、`JACHIN_SKILL_EVOLVE_DRY_RUN`。写盘成功 → `skill_md_hot_reload.notify_skill_md_changed_from_disk_write`（§六 **P2 inline**：`_skill_sop_dirty` + 世代；与 **AZ** 同源入口）。`skill_md_hot_reload.py`：**P1** 每轮刷新 HR 标记段；**P2** 同步 `_react_system_prompt_full`；`JACHIN_SKILL_MD_HOT_RELOAD` / `JACHIN_SKILL_MD_INLINE_ENABLE`。 |
 | **AZ. 前台 SOP / 提示词热同步（写盘 → inline notify）** | ✅ | **横切能力**（与 **AY** 进化、L1 同步解耦）：`skill_md_hot_reload.notify_skill_md_changed_from_disk_write(path)` 由 **`skill_evolver` 成功写盘**与 **`skill_sync_guard.handle_upstream_update` 成功写盘**（首次安装 / 无分叉覆盖 / smart merge / 强制覆盖）共同调用；HR 路径下 bump 世代 + 已注册 ReAct `_skill_sop_dirty`；非 HR 为 no-op。详见 §〇「前台 SOP / 提示词热同步」行。 |
-| GlobalTaskRegistry… | ⏳ | 见 **§〇**；**X** 为**上下文合并**，非全量队列抽象。 |
+| **BA. 单体 L3 run_agent 接线（af）** | ✅ | `l3_node/run_agent_l3_hooks.py`：`schedule_dag_auto_plan`（`JACHIN_DAG_AUTO_PLAN=1`）；`register_global_foreground_task` / `unregister_global_foreground_task`（`JACHIN_GLOBAL_REGISTRY_ENABLE=1` + `JACHIN_GLOBAL_REGISTRY_PREEMPT=1`）；`try_auto_record_experience_run`（`JACHIN_EXPERIENCE_AUTO_RECORD=1`）；HTTP **`JACHIN_SIQ_ENABLE=1`** 经 `SessionInstructionQueue`；`GET /api/v1/registry/siq-sessions`；`JACHIN_SKILL_MD_GENERIC_HOT_RELOAD=1` 扩展写盘 notify。 |
+| **BO. GlobalTaskRegistry Redis 集群 SSOT** | ✅ | `global_registry_redis.py`：`JACHIN_GLOBAL_REGISTRY_REDIS=1` + `JACHIN_REDIS_URL`；`register_task` / `unregister_task` / `check_and_preempt` 全局可见；失败回退 SQLite；`JACHIN_REDIS_CLUSTER=1`；`GET /api/v1/registry/global-tasks`。 |
+| **BP. core:plan_task_dag** | ✅ | `loader.py`：`core:plan_task_dag` → `plan_task_dag_sync` 写 `active.json`（`intent` + `force`）。 |
+| **BQ. Level3 ExecutionBrief 自愈** | ✅ | `run_brief_healing.py`：`JACHIN_LEVEL3_BRIEF_HEAL=1` + RAG 诊断；`JACHIN_LEVEL3_BRIEF_HEAL_INJECT=1` 写入 session 热注入；`run_agent` 回合末调度。 |
+| **BR. Redis 抢占 Pub/Sub · 双写 · TTL** | ✅ | `publish_preempt_message` + `start_preempt_subscriber`；`JACHIN_GLOBAL_REGISTRY_DUAL_WRITE`；`JACHIN_GLOBAL_REGISTRY_REDIS_TOUCH` 每 5 轮 ReAct 续期。 |
+| **BS. 定时任务入口 GlobalRegistry（P2）** | ✅ | `scheduled_global_registry.py`：`scheduled_global_task_scope` / `_async`；kalaroko / bi_scheduler / pmo / autonomy intent；`JACHIN_GLOBAL_REGISTRY_SCHEDULED`（默认随 ENABLE）；`run_agent` 传 `_scheduled_global_registry_active` 防双登记。 |
+| GlobalTaskRegistry… | ✅ | **AT** + **BO** + **BR** + **BG** + **BS** |
 
 ---
 
@@ -452,16 +478,16 @@ async def _handle_agent_run(request):
 | **P0** | 飞书通道：第二条消息进来时立即发送 ack（「收到，排队中」），不再静默等待 | 消除用户「发消息到黑洞」的感知 | ✅ `_notify_im_when_prior_turn_inflight` + `_im_chat_inflight` |
 | **P0** | HTTP 通道：补充 per-session `asyncio.Lock`，消除共享 session 竞态风险 | 数据安全 | ✅ `_http_agent_session_lock` |
 | **P0** | WebSocket：打断替换上一轮前即时下行系统提示，避免用户误以为「无响应」 | 用户知悉抢占 | ✅ **T**（`JACHIN_WS_SUPERSEDE_ACK`，默认 1） |
-| **P1** | 实现 `SessionInstructionQueue`；飞书通道改用队列替代锁；本地规则分析冲突意图 | 排队、打断、并行三种模式可用 | ⏳ 排队 ack + 关键词 **interrupt/parallel/supplement（说明性）** ✅；完整队列化 ⏳ |
+| **P1** | 实现 `SessionInstructionQueue`；飞书通道改用队列替代锁；本地规则分析冲突意图 | 排队、打断、并行三种模式可用 | ✅ **BB** 飞书 SIQ + **BH** WS SIQ（env 开）；规则 + **AX** LLM 仲裁 |
 | **P1** | 打断模式接通 `request_cancel_run`（`agent_cancel.py` 已有）；用户可通过自然语言触发取消 | 用户有控制权 | ✅ 飞书 + `foreground_run_registry` |
-| **P2** | 「对当前任务的补充说明」识别（场景四）；LLM 辅助冲突意图分析（替代纯规则）；并行执行的结果汇总展示 | 完整的多任务交互体验 | ✅/⏳（✅：本地 **supplement** + **X** + **P** + **AE**·r HTTP/可选 IM 中段并入；**AF**·s：**merge_parallel** 索引表 + 详块；**AA** discuss 前缀摘要；**AH**·t 多子句规则仲裁；⏳：**LLM** 全量仲裁） |
+| **P2** | 「对当前任务的补充说明」识别（场景四）；LLM 辅助冲突意图分析（替代纯规则）；并行执行的结果汇总展示 | 完整的多任务交互体验 | ✅ **P**/**AE**/**AF**/**AH**/**AX**；✅ **BI** PARALLEL 独立会话 scope |
 
 ### 1.5 实施优先级（模块整体）
 
 | 阶段 | 工作 | 预期收益 | 落地 |
 |------|------|----------|------|
 | **P0** | 后台任务状态注入 `run_agent` prompt（或统一注册表） | 前台感知 P3 负载 | ✅ **L+M+O**（含 HTTP 心跳）；⏳ 中心化集群注册 |
-| **P1** | `GlobalTaskRegistry` 完整态；定时任务入口先注册再执行 | 并发感知与排队通知 | ⏳ 统一集群 CRUD/认证；✅ 文件 + HTTP 合并 + **L** + **进程内快照 R** |
+| **P1** | `GlobalTaskRegistry` 完整态；定时任务入口先注册再执行 | 并发感知与排队通知 | ✅ **an** `scheduled_global_registry.py`（P2 + APScheduler 入口）；✅ **L** + **R** + **BO** Redis |
 | **P2** | `resource_tags` 细粒度抢占 | 资源互斥 | ⏳（✅ **W** + **D**：tags **登记 + 快照**；⏳ **调度抢占**） |
 
 ---
@@ -840,7 +866,7 @@ class PersistentHookLog:
         """检查 DAG 是否有未完成节点，支持跨会话续跑"""
 ```
 
-**✅ 轻量落地（2026-05-18）**：`l3_node/engine/persistent_hook_log.py` — 环境变量 `JACHIN_PERSIST_HOOKS=1` 时向 `hook_events` 表追加 `(hook, run_id, intent_preview, meta_json)`；**Q** / **U** / **V** / **R** / **W** 共用诊断 Token 族。完整 `PersistentHookLog` 类 API 与 DAG 回放仍属 ⏳（见 **§〇**）。
+**✅ 轻量落地（2026-05-18）**：`persistent_hook_log.py` — `JACHIN_PERSIST_HOOKS=1` 落盘。**Q** 只读最近事件。**BJ（ai）**：`hook_replay_executor.py` 正序回放 + 续跑意图合成 + 与 **AO** `apply_dag_resume` 联动；`GET/POST …/hook-replay`。⏳：回放后直接调度 `run_agent`（当前返回 `resume_intent` 由调用方执行）。
 
 ### 3.3 实施优先级
 
@@ -848,7 +874,7 @@ class PersistentHookLog:
 |------|------|----------|------|
 | **P0** | 增加 `ON_TASK_DECOMPOSE`（delegate 子任务）、`ON_TASK_NODE_START/DONE`、`ON_RETRY`、`ON_EXECUTION_BRIEF`、`ON_MEMORY_COMMIT`、`ON_EXPERIENCE_LEARNED` Hook 点；在现有 `agent_core` 中补触发 | 可观测性提升 | ✅ |
 | **P1** | `TaskDAG` 数据模型；`task_plan.md` 迁移到结构化 JSON；`on_task_decompose` 自动触发逻辑 | 任务拆解结构化 | ⏳（✅ **H** `active.json` + `save_active_task_dag_dict`；✅ **delegate → on_task_decompose**；✅ **V** 只读 HTTP 拉取 `active.json`） |
-| **P2** | `PersistentHookLog`；DAG 跨会话续跑；Hook 事件驱动的韧性策略（失败自动触发 `ON_RETRY` → 策略变更） | 真正的跨会话任务韧性 | ✅/⏳（✅：可选 SQLite 落盘 **K**、`hook_events.sqlite3`；✅ **Q** 只读 HTTP + **`run_id_exact`** 精确拉取单 run 事件链（**r**）；⏳：自动回放执行器/自动策略链） |
+| **P2** | `PersistentHookLog`；DAG 跨会话续跑；Hook 事件驱动的韧性策略（失败自动触发 `ON_RETRY` → 策略变更） | 真正的跨会话任务韧性 | ✅（**K**/**Q**/**AO**/**BF**/**BJ**：含 `JACHIN_HOOK_REPLAY_AUTO_RUN` 二次 run + Guardrails Brief Hook） |
 
 ---
 
@@ -1542,6 +1568,10 @@ L1 推送新版本
 
 | 日期 | 说明 |
 |------|------|
+| 2026-05-19（ai） | **BJ** Hook 回放执行器：`hook_replay_executor.py`、`read_hook_events_chronological`、`hook-replay` HTTP、`JACHIN_HOOK_REPLAY_*`；策略链 `on_strategy_shift` 落盘；§〇/§3.2.4/落地表 **BJ**/P2 同步。 |
+| 2026-05-19（ah） | **BD–BI**：task_plan↔active 镜像、generic SKILL 热重载、策略链 Hook、跨机 preempt、WS SIQ、PARALLEL 会话 scope、`JACHIN_DAG_RESUME_HINT`；§〇/落地表/修订记录同步。 |
+| 2026-05-19（ag） | **BB** 飞书全量 SIQ：`im_siq_bridge.py` + `dispatcher` 接入；`JACHIN_IM_SIQ_ENABLE` / `JACHIN_IM_SIQ_DISABLE`；**BC** ReAct 中途 DAG 重规划：`dag_replan.py` + `JACHIN_DAG_REPLAN_MID_RUN=1`；§〇/落地表 **BB**/**BC**、修订记录同步。 |
+| 2026-05-18（af） | **BA** 单体 L3：`run_agent_l3_hooks`（DAG 自动规划 / GlobalTaskRegistry / Experience 自动沉淀）；HTTP `JACHIN_SIQ_ENABLE` + `siq-sessions`；`JACHIN_SKILL_MD_GENERIC_HOT_RELOAD`；`autonomy/status` 与 `runtime-snapshot` 增字段；§〇/落地表同步。 |
 | 2026-05-18（ae） | **AZ** 横切「前台 SOP / 提示词热同步」：`skill_sync_guard.handle_upstream_update` 成功写盘/合并后与 **AY** 同源调用 `notify_skill_md_changed_from_disk_write`；§〇 新表格行、§六热重载段、落地表 **AZ**、**AY** 行、本轮增量（ae）、`.cursor/rules/091` §3/§4 同步。 |
 | 2026-05-18（ad） | §六 **P3**：`skill_evolver._propagate_co_evolve_to_peers` — `evolution_peers` / `co_evolve_peers`；`JACHIN_SKILL_COEVOLVE_ENABLE` / `JACHIN_SKILL_COEVOLVE_MAX_PEERS`；`trigger=co_evolve`、`co_evolve_from`；§〇 Skill 行、§6.7、阶段树、`SKILL_MD_SPEC`、`091-skill-auto-evolution.mdc` 同步。 |
 | 2026-05-18（ac） | §六 **P2**：`skill_md_hot_reload.py` — `notify_skill_md_changed_from_disk_write`（`skill_evolver` 写盘成功后）、`register_react_ctx_for_skill_inline`（ReAct 起算前）、`_skill_sop_dirty` + `_hr_skill_md_gen_seen` + 同步 `_react_system_prompt_full`；`apply_hr_skill_md_hot_reload_to_react_ctx` 置于 `HOOK_BEFORE_LLM_THINK` 前；`JACHIN_SKILL_MD_INLINE_ENABLE`。§六/§〇/落地表 **AY**/阶段树 **Skill 进化** 同步。 |

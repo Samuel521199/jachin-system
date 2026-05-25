@@ -15,9 +15,11 @@ GlobalTaskRegistry — 跨进程 SSOT + resource_tags 抢占调度（AT）
 
 环境变量
 --------
-JACHIN_GLOBAL_REGISTRY_ENABLE=1     开启跨进程 SQLite 双写（默认关，默认进程内）
+JACHIN_GLOBAL_REGISTRY_ENABLE=1     开启跨进程 SSOT（默认关，默认仅进程内）
 JACHIN_GLOBAL_REGISTRY_PREEMPT=1    开启 resource_tags 抢占逻辑（需先开启上项）
 JACHIN_GLOBAL_REGISTRY_TTL=300      僵尸任务超时清除秒（默认 300s）
+JACHIN_GLOBAL_REGISTRY_REDIS=1      Redis 集群 SSOT（见 global_registry_redis.py）
+JACHIN_GLOBAL_REGISTRY_BACKEND=redis|sqlite  显式后端（默认 sqlite；Redis 失败回退 SQLite）
 """
 from __future__ import annotations
 
@@ -52,6 +54,18 @@ def preempt_enabled() -> bool:
     return global_registry_enabled() and (
         os.environ.get("JACHIN_GLOBAL_REGISTRY_PREEMPT") or ""
     ).strip().lower() in ("1", "true", "yes")
+
+
+def use_redis_backend() -> bool:
+    """当前是否使用 Redis 作为 SSOT（连接失败时由 ``_ssot_*`` 回退 SQLite）。"""
+    if not global_registry_enabled():
+        return False
+    try:
+        from l3_node.global_registry_redis import redis_backend_requested, redis_available
+
+        return redis_backend_requested() and redis_available()
+    except ImportError:
+        return False
 
 
 def _task_ttl() -> float:
@@ -131,6 +145,49 @@ class PreemptResult:
 # 核心操作
 # ---------------------------------------------------------------------------
 
+def _notify_preempt_pubsub(run_id: str, preempted_by: str) -> None:
+    try:
+        from l3_node.global_registry_redis import publish_preempt_message
+
+        publish_preempt_message(run_id, preempted_by)
+    except Exception:
+        pass
+
+
+def _write_sqlite_register(
+    run_id: str,
+    *,
+    channel: str,
+    session_key: str,
+    priority: TaskPriority,
+    tags: list[str],
+    extra: dict[str, Any] | None,
+) -> None:
+    now = time.time()
+    with _LOCK:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO tasks
+                  (run_id, pid, channel, session_key, priority, status,
+                   resource_tags_json, started_at, extra_json)
+                VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                  status='running', started_at=excluded.started_at
+                """,
+                (
+                    run_id, os.getpid(), channel, session_key, priority,
+                    json.dumps(tags, ensure_ascii=False),
+                    now,
+                    json.dumps(extra or {}, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def register_task(
     run_id: str,
     *,
@@ -157,30 +214,55 @@ def register_task(
         return
 
     tags = [str(t).strip()[:64] for t in (resource_tags or []) if str(t).strip()][:8]
-    now = time.time()
-    with _LOCK:
-        conn = _get_conn()
-        try:
-            conn.execute(
-                """
-                INSERT INTO tasks
-                  (run_id, pid, channel, session_key, priority, status,
-                   resource_tags_json, started_at, extra_json)
-                VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)
-                ON CONFLICT(run_id) DO UPDATE SET
-                  status='running', started_at=excluded.started_at
-                """,
-                (
-                    run_id, os.getpid(), channel, session_key, priority,
-                    json.dumps(tags, ensure_ascii=False),
-                    now,
-                    json.dumps(extra or {}, ensure_ascii=False),
-                ),
+    redis_ok = False
+    dual = False
+    try:
+        from l3_node.global_registry_redis import (
+            dual_write_enabled,
+            redis_available,
+            redis_backend_requested,
+            register_task_redis,
+        )
+
+        want_redis = redis_backend_requested() and redis_available()
+        dual = dual_write_enabled() and want_redis
+        if want_redis:
+            redis_ok = register_task_redis(
+                run_id,
+                channel=channel,
+                session_key=session_key,
+                priority=priority,
+                resource_tags=tags,
+                extra=extra,
             )
-            conn.commit()
-        finally:
-            conn.close()
-    logger.debug("[GlobalTaskRegistry] registered run_id=%s priority=%s tags=%s", run_id, priority, tags)
+            if redis_ok and not dual:
+                logger.debug(
+                    "[GlobalTaskRegistry][redis] registered run_id=%s priority=%s tags=%s",
+                    run_id,
+                    priority,
+                    tags,
+                )
+                return
+    except Exception as e:
+        logger.warning("[GlobalTaskRegistry] Redis register 失败，回退 SQLite: %s", e)
+
+    if not redis_ok or dual:
+        _write_sqlite_register(
+            run_id,
+            channel=channel,
+            session_key=session_key,
+            priority=priority,
+            tags=tags,
+            extra=extra,
+        )
+    logger.debug(
+        "[GlobalTaskRegistry] registered run_id=%s priority=%s tags=%s redis=%s dual=%s",
+        run_id,
+        priority,
+        tags,
+        redis_ok,
+        dual,
+    )
 
 
 def unregister_task(run_id: str) -> None:
@@ -194,6 +276,26 @@ def unregister_task(run_id: str) -> None:
     if not global_registry_enabled():
         return
 
+    redis_ok = False
+    dual = False
+    want_redis = False
+    try:
+        from l3_node.global_registry_redis import (
+            dual_write_enabled,
+            redis_available,
+            redis_backend_requested,
+            unregister_task_redis,
+        )
+
+        want_redis = redis_backend_requested() and redis_available()
+        dual = dual_write_enabled() and want_redis
+        if want_redis:
+            redis_ok = unregister_task_redis(run_id)
+            if redis_ok and not dual:
+                return
+    except Exception as e:
+        logger.warning("[GlobalTaskRegistry] Redis unregister 失败，回退 SQLite: %s", e)
+
     with _LOCK:
         conn = _get_conn()
         try:
@@ -205,6 +307,27 @@ def unregister_task(run_id: str) -> None:
             conn.close()
 
 
+def _dict_to_global_task(data: dict[str, Any]) -> GlobalTask:
+    extra = data.get("extra")
+    if not isinstance(extra, dict):
+        extra = {}
+    tags = data.get("resource_tags")
+    if not isinstance(tags, list):
+        tags = []
+    return GlobalTask(
+        run_id=str(data.get("run_id") or ""),
+        pid=int(data.get("pid") or 0),
+        channel=str(data.get("channel") or ""),
+        session_key=str(data.get("session_key") or ""),
+        priority=str(data.get("priority") or "P1"),  # type: ignore[arg-type]
+        status=str(data.get("status") or "running"),  # type: ignore[arg-type]
+        resource_tags=[str(t) for t in tags],
+        started_at=float(data.get("started_at") or time.time()),
+        preempted_by=str(data.get("preempted_by") or ""),
+        extra=extra,
+    )
+
+
 def list_running_tasks(
     *,
     include_done: bool = False,
@@ -213,6 +336,18 @@ def list_running_tasks(
     """列出全局注册表中的任务；自动清除超过 TTL 的僵尸任务。"""
     if not global_registry_enabled():
         return []
+    if use_redis_backend():
+        try:
+            from l3_node.global_registry_redis import list_running_tasks_redis
+
+            rows = list_running_tasks_redis(
+                include_done=include_done,
+                include_zombie=include_zombie,
+            )
+            return [_dict_to_global_task(r) for r in rows]
+        except Exception as e:
+            logger.warning("[GlobalTaskRegistry] Redis list 失败，回退 SQLite: %s", e)
+
     ttl = _task_ttl()
     now = time.time()
     with _LOCK:
@@ -297,29 +432,48 @@ def check_and_preempt(
         conflict_tags.extend(overlap)
         preempted.append(task.run_id)
         # 标记为已抢占
-        try:
-            with _LOCK:
-                conn = _get_conn()
-                try:
-                    conn.execute(
-                        "UPDATE tasks SET status='preempted', preempted_by=? WHERE run_id=?",
-                        (new_run_id, task.run_id),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-        except Exception as e:
-            logger.debug("[GlobalTaskRegistry] mark preempted failed: %s", e)
+        marked = False
+        if use_redis_backend():
+            try:
+                from l3_node.global_registry_redis import mark_preempted_redis
+
+                marked = mark_preempted_redis(task.run_id, new_run_id)
+            except Exception as e:
+                logger.debug("[GlobalTaskRegistry] redis mark preempted failed: %s", e)
+        if not marked:
+            try:
+                with _LOCK:
+                    conn = _get_conn()
+                    try:
+                        conn.execute(
+                            "UPDATE tasks SET status='preempted', preempted_by=? WHERE run_id=?",
+                            (new_run_id, task.run_id),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+            except Exception as e:
+                logger.debug("[GlobalTaskRegistry] mark preempted failed: %s", e)
+        _notify_preempt_pubsub(task.run_id, new_run_id)
         # 尝试通过 foreground_run_registry 取消（同进程）
+        cancelled_local = False
         try:
             from l3_node.foreground_run_registry import request_cancel_run
-            request_cancel_run(task.run_id)
+
+            cancelled_local = bool(request_cancel_run(task.run_id))
             logger.info(
-                "[GlobalTaskRegistry][Preempt] run_id=%s preempted by %s (tags=%s)",
-                task.run_id, new_run_id, list(overlap),
+                "[GlobalTaskRegistry][Preempt] run_id=%s preempted by %s (tags=%s) local_cancel=%s",
+                task.run_id, new_run_id, list(overlap), cancelled_local,
             )
         except Exception:
             pass
+        if not cancelled_local:
+            try:
+                from l3_node.global_registry_remote import try_remote_preempt_after_local
+
+                try_remote_preempt_after_local([task.run_id])
+            except Exception:
+                pass
 
     return PreemptResult(
         preempted_run_ids=preempted,
@@ -334,10 +488,21 @@ def check_and_preempt(
 def get_global_registry_summary() -> dict[str, Any]:
     """返回供 HTTP 诊断端点使用的全局注册表摘要。"""
     tasks = list_running_tasks(include_done=False)
-    return {
+    backend = "redis" if use_redis_backend() else ("sqlite" if global_registry_enabled() else "memory")
+    out: dict[str, Any] = {
         "enabled": global_registry_enabled(),
         "preempt_enabled": preempt_enabled(),
+        "backend": backend,
         "running_count": sum(1 for t in tasks if t.status == "running"),
         "preempted_count": sum(1 for t in tasks if t.status == "preempted"),
         "tasks": [t.to_dict() for t in tasks[:20]],
     }
+    try:
+        from l3_node.global_registry_redis import get_redis_registry_summary, redis_backend_requested
+
+        out["redis"] = get_redis_registry_summary()
+        if redis_backend_requested() and backend != "redis":
+            out["redis"]["fallback_sqlite"] = True
+    except ImportError:
+        pass
+    return out

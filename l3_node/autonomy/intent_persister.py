@@ -444,13 +444,31 @@ class IntentRecovery:
                 asyncio.set_event_loop(loop)
             try:
                 from l3_node.agent_core import run_agent
-                result = loop.run_until_complete(
-                    run_agent(
-                        intent=action,
-                        channel="autonomy_intent",
-                        metadata={"_persisted_intent_id": intent_id},
-                    )
+                from l3_node.scheduled_global_registry import (
+                    get_scheduled_l3_engine,
+                    run_agent_implicit_attribution_for_scheduled,
+                    scheduled_global_task_scope,
                 )
+
+                with scheduled_global_task_scope(
+                    "autonomy_intent",
+                    intent_id,
+                    title=description[:80],
+                    extra_resource_tags=[f"intent:{intent_id[:48]}"],
+                ) as sched_rid:
+                    engine = get_scheduled_l3_engine()
+                    result = loop.run_until_complete(
+                        run_agent(
+                            action,
+                            engine,
+                            implicit_attribution=run_agent_implicit_attribution_for_scheduled(
+                                "autonomy_intent",
+                                intent_id,
+                                parent_run_id=sched_rid,
+                                base={"channel": "autonomy_intent"},
+                            ),
+                        )
+                    )
                 persister.record_execution(intent_id, success=True, result_summary=str(result)[:300])
             except Exception as e:
                 logger.error("[IntentRecovery] intent %s failed: %s", intent_id, e)

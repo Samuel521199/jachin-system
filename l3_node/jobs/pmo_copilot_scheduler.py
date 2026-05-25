@@ -285,22 +285,37 @@ async def _run_resource_monitor_async(run_type: str, focus_hint: str) -> dict[st
 
 async def _job_wed() -> None:
     """周三 09:30 BJT：延期 + 偏闲预警。"""
-    try:
-        await _run_resource_monitor_async("wed", _FOCUS_HINT_WED)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        logger.exception("[pmo_resource_monitor] 周三巡检任务崩溃: %s", e)
+    from l3_node.scheduled_global_registry import scheduled_global_task_scope_async
+
+    async with scheduled_global_task_scope_async(
+        "pmo_resource_monitor",
+        "pmo_resource_monitor_wed",
+        title="PMO 资源巡检·周三",
+    ):
+        try:
+            await _run_resource_monitor_async("wed", _FOCUS_HINT_WED)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("[pmo_resource_monitor] 周三巡检任务崩溃: %s", e)
+            return
 
 
 async def _job_thu() -> None:
     """周四 14:00 BJT：延期 + 进度落后预警。"""
-    try:
-        await _run_resource_monitor_async("thu", _FOCUS_HINT_THU)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        logger.exception("[pmo_resource_monitor] 周四巡检任务崩溃: %s", e)
+    from l3_node.scheduled_global_registry import scheduled_global_task_scope_async
+
+    async with scheduled_global_task_scope_async(
+        "pmo_resource_monitor",
+        "pmo_resource_monitor_thu",
+        title="PMO 资源巡检·周四",
+    ):
+        try:
+            await _run_resource_monitor_async("thu", _FOCUS_HINT_THU)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("[pmo_resource_monitor] 周四巡检任务崩溃: %s", e)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

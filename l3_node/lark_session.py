@@ -20,11 +20,22 @@ _LARK_SESSIONS_PATH = _JACHIN_ROOT / "l3_lark_sessions.json"
 _MAX_SESSION_MESSAGES = 48
 
 
-def load_lark_session(chat_id: str) -> list[dict[str, Any]]:
+def session_storage_key(chat_id: str, session_scope: str = "") -> str:
+    """会话存储键；PARALLEL SIQ 子任务可用 scope 隔离历史。"""
+    cid = (chat_id or "").strip()
+    sc = (session_scope or "").strip()
+    if not cid:
+        return ""
+    if sc:
+        return f"{cid}::scope:{sc[:48]}"
+    return cid
+
+
+def load_lark_session(chat_id: str, session_scope: str = "") -> list[dict[str, Any]]:
     """从文件加载 Lark chat 的对话历史"""
-    if not chat_id or not str(chat_id).strip():
+    chat_id = session_storage_key(chat_id, session_scope)
+    if not chat_id:
         return []
-    chat_id = str(chat_id).strip()
     try:
         if not _LARK_SESSIONS_PATH.exists():
             return []
@@ -42,11 +53,11 @@ def load_lark_session(chat_id: str) -> list[dict[str, Any]]:
     return []
 
 
-def save_lark_session(chat_id: str, messages: list[dict[str, Any]]) -> None:
+def save_lark_session(chat_id: str, messages: list[dict[str, Any]], session_scope: str = "") -> None:
     """将会话历史持久化到文件"""
-    if not chat_id or not str(chat_id).strip():
+    chat_id = session_storage_key(chat_id, session_scope)
+    if not chat_id:
         return
-    chat_id = str(chat_id).strip()
     try:
         _LARK_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {}

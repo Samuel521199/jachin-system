@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -39,6 +40,26 @@ from l3_node.primitives.multi_agent.result_merger import SubAgentResult, Structu
 logger = logging.getLogger("multi_agent.discussion")
 
 _STOP_KEYWORDS = ("无新质疑", "无更多质疑", "没有新的质疑", "方案已完善", "无进一步意见", "无异议")
+
+
+def discuss_adaptive_rounds_enabled() -> bool:
+    return (os.environ.get("JACHIN_DISCUSS_ADAPTIVE_ROUNDS") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def effective_discussion_max_rounds(config: "DiscussionConfig") -> int:
+    """按议题复杂度启发式收紧 max_rounds（不改变 config 本身）。"""
+    base = max(1, min(12, int(config.max_rounds or 3)))
+    if not discuss_adaptive_rounds_enabled():
+        return base
+    topic_len = len((config.topic or "").strip())
+    ctx_len = len((config.context or "").strip())
+    if topic_len < 36 and ctx_len < 180:
+        return min(base, 2)
+    if topic_len > 220 or ctx_len > 1600:
+        return base
+    return min(base, max(2, base - 1))
 
 
 @dataclass
@@ -97,7 +118,8 @@ async def run_discussion(
     critic_role = next((r for r in config.roles if "critic" in r.lower()), None)
     other_roles = [r for r in config.roles if r not in (planner_role, critic_role) and r != "summarizer"]
 
-    for round_idx in range(1, config.max_rounds + 1):
+    _max_rounds = effective_discussion_max_rounds(config)
+    for round_idx in range(1, _max_rounds + 1):
         round_results: list[SubAgentResult] = []
         t_round = time.monotonic()
 

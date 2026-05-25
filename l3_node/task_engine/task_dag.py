@@ -85,6 +85,12 @@ def save_active_task_dag_dict(data: dict[str, Any]) -> bool:
         tmp = p.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(p)
+        try:
+            from l3_node.task_engine.task_plan_dag_bridge import mirror_active_json_to_task_plan_md
+
+            mirror_active_json_to_task_plan_md()
+        except Exception:
+            pass
         return True
     except OSError:
         return False

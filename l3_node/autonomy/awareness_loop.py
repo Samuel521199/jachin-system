@@ -458,11 +458,29 @@ class AutonomousAwarenessLoop:
             try:
                 from l3_node.agent_core import run_agent
                 from l3_node.autonomy.intent_persister import get_intent_persister
-                result = await run_agent(
-                    intent=task_desc,
-                    channel="autonomy_intent",
-                    metadata={"_persisted_intent_id": intent_id},
+                from l3_node.scheduled_global_registry import (
+                    get_scheduled_l3_engine,
+                    run_agent_implicit_attribution_for_scheduled,
+                    scheduled_global_task_scope_async,
                 )
+
+                async with scheduled_global_task_scope_async(
+                    "autonomy_intent",
+                    intent_id,
+                    title=description[:80],
+                    extra_resource_tags=[f"intent:{intent_id[:48]}"],
+                ) as sched_rid:
+                    engine = get_scheduled_l3_engine()
+                    result = await run_agent(
+                        task_desc,
+                        engine,
+                        implicit_attribution=run_agent_implicit_attribution_for_scheduled(
+                            "autonomy_intent",
+                            intent_id,
+                            parent_run_id=sched_rid,
+                            base={"channel": "autonomy_intent"},
+                        ),
+                    )
                 get_intent_persister().record_execution(
                     intent_id, success=True, result_summary=str(result)[:300]
                 )

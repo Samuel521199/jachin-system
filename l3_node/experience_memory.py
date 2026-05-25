@@ -34,6 +34,79 @@ def experience_multi_agent_record_enabled() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def auto_record_run_enabled() -> bool:
+    """主路径 run_agent 成功结束时自动沉淀一条 run_agent:success 经验（默认关）。"""
+    v = (os.environ.get("JACHIN_EXPERIENCE_AUTO_RECORD") or "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def auto_record_fail_enabled() -> bool:
+    """主路径 ExecutionBrief / 部分失败时自动沉淀 run_agent:brief（默认关）。"""
+    v = (os.environ.get("JACHIN_EXPERIENCE_AUTO_RECORD_FAIL") or "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def save_run_success_episode(
+    user_intent: str,
+    final_answer: str,
+    tools_used: list[str] | set[str] | None = None,
+) -> None:
+    """将整轮成功摘要写入 Experience（executed_tool=run_agent:success）。"""
+    if not experience_rag_enabled() or not auto_record_run_enabled():
+        return
+    ui = (user_intent or "").strip()
+    ans = (final_answer or "").strip()
+    if not ui or len(ui) < 4:
+        return
+    if not ans or ans.startswith("[未产出回复]") or "[ExecutionBrief]" in ans:
+        return
+    if len(ans) < 12:
+        return
+    tools: list[str] = []
+    if tools_used:
+        tools = sorted({str(t).strip() for t in tools_used if str(t).strip()})[:24]
+    save_experience(
+        ui,
+        "run_agent:success",
+        {
+            "final_answer": ans[:4000],
+            "tools_used": tools,
+            "outcome": "success",
+        },
+    )
+
+
+def save_run_failure_episode(
+    user_intent: str,
+    final_answer: str,
+    *,
+    tools_used: list[str] | set[str] | None = None,
+    reason: str | None = None,
+) -> None:
+    """将 ExecutionBrief 或失败摘要写入 Experience（executed_tool=run_agent:brief）。"""
+    if not experience_rag_enabled() or not auto_record_fail_enabled():
+        return
+    ui = (user_intent or "").strip()
+    ans = (final_answer or "").strip()
+    if not ui or len(ui) < 4:
+        return
+    if not ans or "[ExecutionBrief]" not in ans:
+        return
+    tools: list[str] = []
+    if tools_used:
+        tools = sorted({str(t).strip() for t in tools_used if str(t).strip()})[:24]
+    save_experience(
+        ui,
+        "run_agent:brief",
+        {
+            "final_answer": ans[:4000],
+            "tools_used": tools,
+            "outcome": "brief",
+            "brief_reason": (reason or "")[:500],
+        },
+    )
+
+
 def save_multi_agent_episode(
     *,
     kind: Literal["discuss", "parallel_delegate"],

@@ -248,3 +248,56 @@ class GuardrailsChecker:
             f"- Token 消耗估算：{self._state.tokens_used}（上限 {self._max_tok}）\n"
             f"- 建议：检查意图是否过于复杂，或分拆为多个子任务。"
         )
+
+
+async def emit_guardrails_execution_brief(
+    ctx: Any,
+    *,
+    rule: str,
+    brief_body: str,
+    violation: "GuardrailsViolation | None" = None,
+) -> str:
+    """
+    Guardrails truncate/abort 统一打 HOOK_ON_EXECUTION_BRIEF 并返回 Final Answer 行。
+    brief_body 为 execution_brief() 正文（不含 Final Answer 前缀）。
+    """
+    from l3_node.engine.hooks_pipeline import HOOK_ON_EXECUTION_BRIEF, global_hooks
+
+    reason = f"guardrails:{rule}"
+    if violation is not None:
+        try:
+            ctx.metadata["_guardrails_violation"] = {
+                "rule": violation.rule,
+                "action": violation.action,
+                "message": (violation.message or "")[:500],
+            }
+        except Exception:
+            pass
+    try:
+        ctx.metadata["_execution_brief_reason"] = reason
+    except Exception:
+        pass
+    final_line = f"Final Answer: {brief_body}"
+    try:
+        ctx.final_answer = brief_body
+    except Exception:
+        pass
+    try:
+        await global_hooks.run(HOOK_ON_EXECUTION_BRIEF, ctx)
+    except Exception as e:
+        logger.debug("[Guardrails] HOOK_ON_EXECUTION_BRIEF failed: %s", e)
+    return final_line
+
+
+async def emit_guardrails_abort_brief(ctx: Any, violation: "GuardrailsViolation") -> None:
+    """abort 路径：落盘 Brief Hook 后再由调用方 raise GuardrailsAbortError。"""
+    brief = (
+        f"[ExecutionBrief·Guardrails·Abort] {violation.message}\n"
+        f"规则：{violation.rule}，动作：{violation.action}。"
+    )
+    await emit_guardrails_execution_brief(
+        ctx,
+        rule=violation.rule,
+        brief_body=brief,
+        violation=violation,
+    )

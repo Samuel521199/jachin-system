@@ -1548,7 +1548,78 @@ async def _handle_registry_runtime_snapshot_get(request) -> "aiohttp.web.Respons
             logger.warning("[L3 HTTP] runtime-snapshot lock probe: %s", e)
             busy = False
         snap = {**snap, "http_agent_session": {"session_key": sk, "lock_held": busy}}
+    try:
+        from l3_node.global_task_registry import get_global_registry_summary
+
+        snap["global_task_registry"] = get_global_registry_summary()
+    except Exception:
+        pass
+    try:
+        from l3_node.session_instruction_queue import get_all_session_stats, siq_enabled
+
+        snap["session_instruction_queue"] = {
+            "enabled": siq_enabled(),
+            "sessions": get_all_session_stats(),
+        }
+    except Exception:
+        pass
+    try:
+        from l3_node.task_engine.dag_node_sync import dag_node_sync_enabled, get_next_pending_dag_node
+
+        snap["dag_node_sync_enabled"] = dag_node_sync_enabled()
+        snap["task_dag_next_pending"] = get_next_pending_dag_node()
+    except Exception:
+        pass
+    try:
+        from l3_node.engine.execution_resilience_chain import strategy_chain_enabled
+
+        snap["resilience_strategy_chain"] = strategy_chain_enabled()
+    except Exception:
+        pass
     return _json_response({"ok": True, **snap}, status=200)
+
+
+async def _handle_registry_global_tasks_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/global-tasks — GlobalTaskRegistry 集群 SSOT 摘要（SQLite / Redis）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.global_task_registry import get_global_registry_summary, list_running_tasks
+
+        include_done = (request.query.get("include_done") or "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        summary = get_global_registry_summary()
+        tasks = [t.to_dict() for t in list_running_tasks(include_done=include_done)]
+        return _json_response(
+            {"ok": True, **summary, "tasks_full": tasks[:100]},
+            status=200,
+        )
+    except Exception as e:
+        logger.warning("[L3 HTTP] global-tasks GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_registry_siq_sessions_get(request) -> "aiohttp.web.Response":
+    """GET /api/v1/registry/siq-sessions — SessionInstructionQueue 会话统计（AU）。"""
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        from l3_node.session_instruction_queue import get_all_session_stats, siq_enabled, siq_mode
+
+        return _json_response(
+            {
+                "ok": True,
+                "enabled": siq_enabled(),
+                "mode": siq_mode(),
+                "sessions": get_all_session_stats(),
+            },
+            status=200,
+        )
+    except Exception as e:
+        return _json_response({"ok": False, "error": str(e)}, status=500)
 
 
 async def _handle_registry_external_scheduled_hints_get(request) -> "aiohttp.web.Response":
@@ -1845,6 +1916,135 @@ async def _handle_coordinator_dag_locks_get(request) -> "aiohttp.web.Response":
     except Exception as e:
         logger.warning("[L3 HTTP] coordinator/dag-locks GET: %s", e)
         return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def _handle_registry_hook_replay_get(request) -> "aiohttp.web.Response":
+    """
+    GET /api/v1/registry/hook-replay?run_id=... — Hook 回放探针（BJ）。
+    需 JACHIN_PERSIST_HOOKS=1 且 JACHIN_HOOK_REPLAY_ENABLE=1。
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    run_id = (request.query.get("run_id") or "").strip()
+    if not run_id:
+        return _json_response({"ok": False, "error": "run_id required"}, status=400)
+    try:
+        from l3_node.engine.hook_replay_executor import probe_hook_replay, replay_enabled
+
+        if not replay_enabled():
+            return _json_response(
+                {"ok": False, "error": "JACHIN_HOOK_REPLAY_ENABLE not set"},
+                status=503,
+            )
+        result = probe_hook_replay(run_id)
+    except Exception as e:
+        logger.warning("[L3 HTTP] hook-replay GET: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    body = result.to_dict()
+    body["ok"] = result.ok
+    return _json_response(body, status=200 if result.ok else 404)
+
+
+async def _handle_registry_hook_replay_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/hook-replay — Hook 回放 + 可选 DAG 续跑应用 + 可选自动 run_agent（BJ）。
+    Body: {
+      "run_id": "...",
+      "mode": "probe"|"apply",
+      "apply_dag_resume": true,
+      "auto_run_agent": false,
+      "user_input": "",
+      "final_answer": "",
+      "implicit_attribution": {}
+    }
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    run_id = (body.get("run_id") or request.query.get("run_id") or "").strip()
+    if not run_id:
+        return _json_response({"ok": False, "error": "run_id required"}, status=400)
+    mode = str(body.get("mode") or "probe").strip().lower()
+    apply_dag = body.get("apply_dag_resume", mode == "apply")
+    if isinstance(apply_dag, str):
+        apply_dag = apply_dag.strip().lower() in ("1", "true", "yes")
+    auto_run = body.get("auto_run_agent", False)
+    if isinstance(auto_run, str):
+        auto_run = auto_run.strip().lower() in ("1", "true", "yes")
+    try:
+        from l3_node.engine.hook_replay_executor import (
+            HookReplayFollowupContext,
+            apply_hook_replay,
+            probe_hook_replay,
+            replay_enabled,
+            schedule_hook_replay_followup_run,
+        )
+
+        if not replay_enabled():
+            return _json_response(
+                {"ok": False, "error": "JACHIN_HOOK_REPLAY_ENABLE not set"},
+                status=503,
+            )
+        if mode == "apply":
+            result = apply_hook_replay(run_id, apply_dag_resume=bool(apply_dag))
+        else:
+            result = probe_hook_replay(run_id)
+        if auto_run:
+            try:
+                from l3_node.agent_ref import engine_ref
+
+                engine = engine_ref.get("engine")
+            except ImportError:
+                engine = None
+            _iatt = body.get("implicit_attribution")
+            _iatt = _iatt if isinstance(_iatt, dict) else None
+            followup = HookReplayFollowupContext(
+                parent_run_id=run_id,
+                user_input=str(body.get("user_input") or ""),
+                final_answer=str(body.get("final_answer") or ""),
+                session_messages=None,
+                implicit_attribution=_iatt,
+            )
+            if engine is not None:
+                schedule_hook_replay_followup_run(result, engine, followup=followup)
+            else:
+                result.message += "；auto_run_agent 跳过（engine 未就绪）"
+    except Exception as e:
+        logger.warning("[L3 HTTP] hook-replay POST: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    payload = result.to_dict()
+    payload["ok"] = result.ok
+    return _json_response(payload, status=200 if result.ok else 404)
+
+
+async def _handle_registry_preempt_cancel_post(request) -> "aiohttp.web.Response":
+    """
+    POST /api/v1/registry/preempt-cancel — 跨机/跨进程抢占取消（BG）。
+    Body: { "run_id": "..." }
+    """
+    bad = _registry_diag_auth_failure(request)
+    if bad is not None:
+        return bad
+    try:
+        body: dict = await request.json()
+    except Exception:
+        body = {}
+    run_id = (body.get("run_id") or "").strip()
+    if not run_id:
+        return _json_response({"ok": False, "error": "run_id required"}, status=400)
+    cancelled = False
+    try:
+        from l3_node.foreground_run_registry import request_cancel_run
+
+        cancelled = bool(request_cancel_run(run_id))
+    except Exception as e:
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+    return _json_response({"ok": True, "run_id": run_id, "cancelled": cancelled}, status=200)
 
 
 async def _handle_registry_dag_resume_post(request) -> "aiohttp.web.Response":
@@ -2191,6 +2391,51 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
         return _json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def _http_agent_run_via_siq(
+    session_key: str,
+    user_input: str,
+    invoke_coro_factory,
+) -> tuple[str, str]:
+    """
+    经 SessionInstructionQueue 执行 HTTP 会话指令。
+    返回 (answer, siq_status)。
+    """
+    from l3_node.session_instruction_queue import (
+        SIQInstruction,
+        siq_enabled,
+        submit_instruction,
+        _instruction_timeout,
+    )
+
+    if not siq_enabled():
+        return (await invoke_coro_factory(user_input), "disabled")
+
+    done = asyncio.Event()
+    holder: dict[str, str] = {"answer": ""}
+
+    async def execute_fn(instr: SIQInstruction) -> str:
+        ans = await invoke_coro_factory(instr.intent)
+        holder["answer"] = ans or ""
+        done.set()
+        return holder["answer"]
+
+    status = await submit_instruction(
+        session_key,
+        user_input,
+        execute_fn,
+        metadata={"channel": "http_agent_run"},
+    )
+    if status == "disabled":
+        return (await invoke_coro_factory(user_input), "disabled")
+    if status == "rejected":
+        return ("当前会话指令队列已满，请稍后再试。", "rejected")
+    try:
+        await asyncio.wait_for(done.wait(), timeout=_instruction_timeout() + 5.0)
+    except asyncio.TimeoutError:
+        return ("处理超时，请稍后重试。", f"{status}_timeout")
+    return (holder["answer"], status)
+
+
 async def _handle_agent_run(request) -> "aiohttp.web.Response":
     """POST /api/v3/agent/run - 同步执行 L3 Agent，供控制台自然语言 404 回退使用。会触发 run_tool 持久化（如 HR 透析镜）"""
     try:
@@ -2262,7 +2507,18 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
                 gateway_workspace_dir=_sniff_ws,
             )
 
-        if _ch_s:
+        _siq_status = ""
+        _use_siq = False
+        try:
+            from l3_node.session_instruction_queue import siq_enabled as _siq_on
+
+            _use_siq = bool(_ch_s and _siq_on())
+        except ImportError:
+            _use_siq = False
+
+        if _use_siq:
+            answer, _siq_status = await _http_agent_run_via_siq(_ch_s, user_input, _invoke_agent)
+        elif _ch_s:
             try:
                 if await _http_agent_session_lock_held(_ch_s):
                     from l3_node.session_hot_user_inject import record_pending_session_user_text
@@ -2276,6 +2532,8 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         else:
             answer = await _invoke_agent()
         resp = {"answer": answer or ""}
+        if _siq_status:
+            resp["siq_status"] = _siq_status
         try:
             persist_mod = __import__("l3_node.hr_loader", fromlist=["get_hr_analysis_persist"]).get_hr_analysis_persist()
             if persist_mod:
@@ -2726,9 +2984,14 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_delete("/api/v1/registry/external-sched-hint", _handle_registry_external_sched_hint_delete)
     app.router.add_get("/api/v1/registry/hook-events-recent", _handle_hook_events_recent_get)
     app.router.add_get("/api/v1/registry/runtime-snapshot", _handle_registry_runtime_snapshot_get)
+    app.router.add_get("/api/v1/registry/global-tasks", _handle_registry_global_tasks_get)
+    app.router.add_get("/api/v1/registry/siq-sessions", _handle_registry_siq_sessions_get)
     app.router.add_get("/api/v1/registry/external-scheduled-hints", _handle_registry_external_scheduled_hints_get)
     app.router.add_get("/api/v1/registry/task-dag-active", _handle_registry_task_dag_active_get)
     app.router.add_get("/api/v1/registry/dag-guardrails", _handle_registry_dag_guardrails_get)
+    app.router.add_get("/api/v1/registry/hook-replay", _handle_registry_hook_replay_get)
+    app.router.add_post("/api/v1/registry/hook-replay", _handle_registry_hook_replay_post)
+    app.router.add_post("/api/v1/registry/preempt-cancel", _handle_registry_preempt_cancel_post)
     app.router.add_post("/api/v1/registry/dag-resume", _handle_registry_dag_resume_post)
     app.router.add_post("/api/v1/registry/dag-handoff/export", _handle_registry_dag_handoff_export_post)
     app.router.add_post("/api/v1/registry/dag-handoff/import", _handle_registry_dag_handoff_import_post)
@@ -2875,6 +3138,15 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except Exception as e:
             logger.warning("[L3 HTTP] autonomy services startup skipped: %s", e)
 
+    async def _on_startup_global_registry_redis(_app):
+        """Redis GlobalTaskRegistry 抢占 Pub/Sub 订阅（BO 增强）。"""
+        try:
+            from l3_node.global_registry_redis import start_preempt_subscriber
+
+            start_preempt_subscriber()
+        except Exception as e:
+            logger.warning("[L3 HTTP] global registry redis subscriber skipped: %s", e)
+
     app.on_startup.append(_on_startup_register_k11_schedule_sse_loop)
     app.on_startup.append(_on_startup_kalaroko_scheduler)
     app.on_startup.append(_on_startup_k11_unified_smoke_scheduler)
@@ -2885,6 +3157,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.on_startup.append(_on_startup_pmo_resource_monitor)
     app.on_startup.append(_on_startup_bi_console_scheduler)
     app.on_startup.append(_on_startup_autonomy_services)
+    app.on_startup.append(_on_startup_global_registry_redis)
 
     def _is_port_in_use(e: BaseException) -> bool:
         if isinstance(e, OSError):

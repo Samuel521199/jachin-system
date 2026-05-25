@@ -286,7 +286,13 @@ async def submit_instruction(
     返回提交状态。
     """
     if not siq_enabled():
-        return "disabled"
+        try:
+            from l3_node.im_channels.im_siq_bridge import im_siq_submission_allowed
+
+            if not im_siq_submission_allowed():
+                return "disabled"
+        except ImportError:
+            return "disabled"
     import uuid
     instruction = SIQInstruction(
         instruction_id=str(uuid.uuid4()),
@@ -302,3 +308,16 @@ async def submit_instruction(
 def get_all_session_stats() -> list[dict[str, Any]]:
     """获取所有活跃会话的统计信息（诊断用）。"""
     return [sess.stats() for sess in list(_sessions.values())]
+
+
+async def peek_session_queue_depth(session_key: str) -> dict[str, int]:
+    """只读探针：队列深度与 PARALLEL 在途数。"""
+    sk = (session_key or "").strip()
+    if not sk:
+        return {"queue_depth": 0, "active_parallel": 0}
+    sess = await get_or_create_session(sk)
+    st = sess.stats()
+    return {
+        "queue_depth": int(st.get("queue_depth") or 0),
+        "active_parallel": int(st.get("active_parallel") or 0),
+    }

@@ -158,6 +158,17 @@ async def _send_lark_safe(markdown: str, title: str) -> None:
 
 async def hourly_inspection_job() -> None:
     """每小时：4 轮 ×30s 间隔；异常则 Lark 严重预警。"""
+    from l3_node.scheduled_global_registry import scheduled_global_task_scope_async
+
+    async with scheduled_global_task_scope_async(
+        "kalaroko_scheduler",
+        _JOB_HOURLY,
+        title="Kalaroko 小时巡检",
+    ):
+        await _hourly_inspection_job_body()
+
+
+async def _hourly_inspection_job_body() -> None:
     if not await wait_for_network_or_skip():
         logger.info(
             "[kalaroko_scheduler] [网络防抖] 当前无网或探活失败，本次小时巡检静默跳过（不发飞书）。"
@@ -325,6 +336,17 @@ def _prune_kalaroko_e2e_jsonl_retention_days(retention_days: int = 7) -> dict[st
 
 async def weekly_persona_profile_job() -> None:
     """每周 UTC 周日 02:00：从 General_Chat 提炼统帅 Persona → Core_Profile。"""
+    from l3_node.scheduled_global_registry import scheduled_global_task_scope_async
+
+    async with scheduled_global_task_scope_async(
+        "kalaroko_scheduler",
+        _JOB_WEEKLY_PERSONA,
+        title="周 Persona 侧写",
+    ):
+        await _weekly_persona_profile_job_body()
+
+
+async def _weekly_persona_profile_job_body() -> None:
     try:
         from l3_node.jobs.persona_profiler import generate_weekly_persona_profile
 
@@ -503,6 +525,17 @@ async def smart_trigger_daily_report_job() -> None:
 
     用于办公机休眠错过原 UTC 定点后的 **catch-up**；无网静默等待下周期，不抛异常、不为此单独发飞书。
     """
+    from l3_node.scheduled_global_registry import scheduled_global_task_scope_async
+
+    async with scheduled_global_task_scope_async(
+        "kalaroko_scheduler",
+        _JOB_DAILY,
+        title="Kalaroko 晨报补偿",
+    ):
+        await _smart_trigger_daily_report_job_body()
+
+
+async def _smart_trigger_daily_report_job_body() -> None:
     if _DAILY_REPORT_LOCK.locked():
         logger.info(
             "[kalaroko_scheduler] [日报调度] 前序晨报任务正在执行，本次轮询跳过（防重入）。"

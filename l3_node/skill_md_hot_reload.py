@@ -10,6 +10,7 @@ P2：skill_evolver 等后台写入 SKILL.md 后 bump 世代 + 对当前前台 Re
 --------
 JACHIN_SKILL_MD_HOT_RELOAD=1       每轮读盘刷新（默认 1）
 JACHIN_SKILL_MD_INLINE_ENABLE=1   P2 inline 打标/注册/notify（默认 1）
+JACHIN_SKILL_MD_GENERIC_HOT_RELOAD=1  skills_repo / L1 缓存下任意 SKILL.md 写盘也触发 inline dirty（默认关）
 """
 from __future__ import annotations
 
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 HR_SKILL_MD_BODY_START = "<!--JACHIN_HR_SKILL_MD_BODY-->"
 HR_SKILL_MD_BODY_END = "<!--/JACHIN_HR_SKILL_MD_BODY-->"
+GENERIC_SKILL_MD_START = "<!--JACHIN_GENERIC_SKILL_MD-->"
+GENERIC_SKILL_MD_END = "<!--/JACHIN_GENERIC_SKILL_MD-->"
 
 _lock = threading.Lock()
 _hr_skill_inline_generation: int = 0
@@ -45,6 +48,14 @@ def skill_md_inline_enabled() -> bool:
         "0",
         "false",
         "no",
+    )
+
+
+def skill_md_generic_hot_reload_enabled() -> bool:
+    return (os.environ.get("JACHIN_SKILL_MD_GENERIC_HOT_RELOAD") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
 
 
@@ -74,11 +85,25 @@ def path_triggers_hr_skill_hot_inline(skill_path: Path) -> bool:
     )
 
 
+def path_triggers_skill_disk_hot_inline(skill_path: Path) -> bool:
+    """HR 或（开启 generic 时）skills_repo / L1 缓存下的 SKILL.md。"""
+    if path_triggers_hr_skill_hot_inline(skill_path):
+        return True
+    if not skill_md_generic_hot_reload_enabled():
+        return False
+    low = str(skill_path).replace("\\", "/").lower()
+    if skill_path.name.lower() != "skill.md":
+        return False
+    return "/skills_repo/" in low or "/.jachin/skills/" in low
+
+
 def register_react_ctx_for_skill_inline(run_id: str, ctx: Any) -> None:
     if not skill_md_inline_enabled() or not run_id:
         return
     sp = getattr(ctx, "system_prompt", "") or ""
-    if HR_SKILL_MD_BODY_START not in sp:
+    if HR_SKILL_MD_BODY_START not in sp and not bool(
+        (getattr(ctx, "metadata", None) or {}).get("_skill_md_generic_watch")
+    ):
         return
 
     rid = str(run_id).strip()
@@ -111,7 +136,7 @@ def notify_skill_md_changed_from_disk_write(skill_path: Path) -> None:
         p = skill_path if isinstance(skill_path, Path) else Path(skill_path)
     except Exception:
         return
-    if not path_triggers_hr_skill_hot_inline(p):
+    if not path_triggers_skill_disk_hot_inline(p):
         return
     bump_hr_skill_inline_generation()
     with _lock:
@@ -122,7 +147,8 @@ def notify_skill_md_changed_from_disk_write(skill_path: Path) -> None:
             continue
         try:
             sp = getattr(c, "system_prompt", "") or ""
-            if HR_SKILL_MD_BODY_START in sp:
+            md = getattr(c, "metadata", None) or {}
+            if HR_SKILL_MD_BODY_START in sp or md.get("_skill_md_generic_watch"):
                 c.metadata["_skill_sop_dirty"] = True
                 logger.info(
                     "[skill_md_hot_reload] inline dirty run_id=%s path=%s",
@@ -156,6 +182,107 @@ def refresh_hr_skill_md_body_in_system_prompt(
     replacement = f"{start}\n{fresh}\n{end}"
     new_prompt, n = re.subn(pattern, replacement, system_prompt, count=1)
     return new_prompt if n else system_prompt
+
+
+def discover_skill_md_paths(*, limit: int = 8) -> list[str]:
+    """skills_repo 下 SKILL.md（generic 热重载监视列表）。"""
+    import os
+    from pathlib import Path
+
+    root = Path(os.environ.get("JACHIN_HOME") or Path.home() / ".jachin")
+    proj = Path(__file__).resolve().parents[1]
+    bases = [
+        proj / "skills_repo",
+        root / "l3_skill_cache",
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for base in bases:
+        if not base.is_dir():
+            continue
+        try:
+            for p in base.rglob("SKILL.md"):
+                if not p.is_file():
+                    continue
+                key = str(p.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                if path_triggers_hr_skill_hot_inline(p):
+                    continue
+                out.append(key)
+                if len(out) >= max(1, limit):
+                    return out
+        except OSError:
+            continue
+    return out
+
+
+def _strip_frontmatter(text: str) -> str:
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4 :].lstrip()
+    return text
+
+
+def build_generic_skill_md_block(paths: list[str], *, max_chars: int = 6000) -> str:
+    parts: list[str] = []
+    for raw in paths[:8]:
+        try:
+            p = Path(raw)
+            body = _strip_frontmatter(p.read_text(encoding="utf-8")).strip()
+            if not body:
+                continue
+            parts.append(f"### {p.parent.name}\n{body[:2000]}")
+        except OSError:
+            continue
+    if not parts:
+        return ""
+    block = f"{GENERIC_SKILL_MD_START}\n" + "\n\n".join(parts) + f"\n{GENERIC_SKILL_MD_END}"
+    if len(block) > max_chars:
+        return block[: max_chars - 3] + "…"
+    return block
+
+
+def refresh_generic_skill_md_in_system_prompt(system_prompt: str, paths: list[str]) -> str:
+    fresh = build_generic_skill_md_block(paths)
+    if not fresh:
+        return system_prompt
+    pat = re.escape(GENERIC_SKILL_MD_START) + r"[\s\S]*?" + re.escape(GENERIC_SKILL_MD_END)
+    if re.search(pat, system_prompt or ""):
+        return re.sub(pat, fresh, system_prompt, count=1)
+    return (system_prompt or "") + "\n\n" + fresh + "\n"
+
+
+def apply_skill_md_hot_reload_to_react_ctx(ctx: Any) -> None:
+    """HR + generic SKILL.md 热重载（每轮 / inline dirty）。"""
+    apply_hr_skill_md_hot_reload_to_react_ctx(ctx)
+    if not ctx.metadata.get("_skill_md_generic_watch"):
+        return
+    gen = get_hr_skill_inline_generation()
+    dirty = bool(ctx.metadata.get("_skill_sop_dirty"))
+    try:
+        seen = int(ctx.metadata.get("_hr_skill_md_gen_seen") or 0)
+    except (TypeError, ValueError):
+        seen = 0
+    if not (skill_md_hot_reload_enabled() or dirty or seen < gen):
+        return
+    paths = ctx.metadata.get("_skill_md_watched_paths")
+    if not isinstance(paths, list) or not paths:
+        paths = discover_skill_md_paths()
+        ctx.metadata["_skill_md_watched_paths"] = paths
+    if not paths:
+        return
+    ctx.system_prompt = refresh_generic_skill_md_in_system_prompt(
+        getattr(ctx, "system_prompt", "") or "",
+        paths,
+    )
+    full = ctx.metadata.get("_react_system_prompt_full")
+    if isinstance(full, str):
+        ctx.metadata["_react_system_prompt_full"] = refresh_generic_skill_md_in_system_prompt(
+            full, paths
+        )
 
 
 def apply_hr_skill_md_hot_reload_to_react_ctx(ctx: Any) -> None:

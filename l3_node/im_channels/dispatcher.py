@@ -109,6 +109,16 @@ def _get_chat_lock(chat_id: str) -> threading.Lock:
         return _chat_locks[chat_id]
 
 
+def _use_im_chat_lock() -> bool:
+    """SIQ 已负责同会话串行/并行调度时，不再叠加 per-chat 互斥锁。"""
+    try:
+        from l3_node.im_channels.im_siq_bridge import im_siq_enabled
+
+        return not im_siq_enabled()
+    except ImportError:
+        return True
+
+
 # 每 chat 当前在线程池中有多少条「已提交尚未结束」的 IM 任务（用于第二条进线立即 ack）
 _im_chat_inflight: dict[str, int] = {}
 _im_chat_inflight_mutex = threading.Lock()
@@ -231,10 +241,22 @@ def _notify_im_when_prior_turn_inflight(
             )
             return
         if kind == "parallel":
+            try:
+                from l3_node.im_channels.im_siq_bridge import im_siq_enabled
+                from l3_node.session_instruction_queue import siq_mode
+
+                if im_siq_enabled() and siq_mode() == "PARALLEL":
+                    send_reply_fn(
+                        cid,
+                        "🔀 已按并行模式排队，本条将与上一任务同时进行（独立会话上下文）。",
+                    )
+                    return
+            except Exception:
+                pass
             send_reply_fn(
                 cid,
                 "🔀 已记录新需求。本会话仍按顺序执行，本条将在上一任务结束后立即处理"
-                "（真·双轨并行见 AGI 路线图后续版本）。",
+                "（开启 JACHIN_IM_SIQ_ENABLE + JACHIN_SIQ_MODE=PARALLEL 可真·并行）。",
             )
             return
         if kind == "supplement":
@@ -247,10 +269,22 @@ def _notify_im_when_prior_turn_inflight(
         snip = (user_text or "").strip()
         if len(snip) > 52:
             snip = snip[:52] + "…"
-        send_reply_fn(
-            cid,
-            f"⏳ 上一任务仍在处理中，本条「{snip}」已排队，将在完成后立即执行。",
-        )
+        try:
+            from l3_node.im_channels.im_siq_bridge import im_siq_enabled
+
+            _siq_on = im_siq_enabled()
+        except ImportError:
+            _siq_on = False
+        if _siq_on:
+            send_reply_fn(
+                cid,
+                f"⏳ 上一任务仍在处理中，本条「{snip}」已进入会话指令队列（SIQ），将按序或并行执行。",
+            )
+        else:
+            send_reply_fn(
+                cid,
+                f"⏳ 上一任务仍在处理中，本条「{snip}」已排队，将在完成后立即执行。",
+            )
     except Exception as e:
         logger.debug("[IM Dispatcher] 第二条进线 ack 失败: %s", e)
 
@@ -266,9 +300,10 @@ def _do_agent_work_tracked(
     timeout: float,
     *,
     prior_inflight_before: int = 0,
-) -> None:
+    session_scope: str = "",
+) -> str:
     try:
-        _do_agent_work(
+        return _do_agent_work(
             text,
             chat_id,
             user_id,
@@ -278,6 +313,7 @@ def _do_agent_work_tracked(
             send_reply_fn,
             timeout,
             prior_inflight_before=prior_inflight_before,
+            session_scope=session_scope,
         )
     finally:
         _adjust_im_chat_inflight(chat_id, -1)
@@ -465,15 +501,18 @@ def _do_agent_work(
     timeout: float,
     *,
     prior_inflight_before: int = 0,
-) -> None:
+    session_scope: str = "",
+) -> str:
     """
     在线程池中执行 Agent 工作，不阻塞 Lark WebSocket 线程。
-    按 chat_id 加锁，避免同一会话并发导致 session 损坏。
+    按 chat_id 加锁，避免同一会话并发导致 session 损坏（SIQ 开启时由队列负责串行/并行）。
+    返回 reply 文本（飞书路径内仍会 send_reply_fn）。
     """
     cid = chat_id or ""
-    lock = _get_chat_lock(cid) if cid else threading.Lock()
+    _scope = (session_scope or "").strip()
+    lock = _get_chat_lock(cid) if cid and _use_im_chat_lock() else threading.Lock()
     with lock:
-        session_messages = load_lark_session(cid) if cid else []
+        session_messages = load_lark_session(cid, _scope) if cid else []
         intent_raw = (text or "").strip()
         if _should_skip_duplicate_inbound(cid, intent_raw):
             logger.info(
@@ -489,7 +528,7 @@ def _do_agent_work(
                 route="im_dispatcher",
                 status="skipped_duplicate_within_ttl",
             )
-            return
+            return ""
         rpfx = _im_consume_queue_rollup_prefix(cid, intent_raw)
         intent = (rpfx + intent_raw) if rpfx else intent_raw
         reply = ""
@@ -680,7 +719,7 @@ def _do_agent_work(
                     err_msg = str(e)
                     err_tb = traceback.format_exc()
         if cid and session_messages:
-            save_lark_session(cid, session_messages)
+            save_lark_session(cid, session_messages, _scope)
             logger.debug("[IM Dispatcher] chat_id=%s 已保存会话 %d 条", cid[:20], len(session_messages))
         if reply and cid:
             ok = send_reply_fn(cid, str(reply).strip())
@@ -702,6 +741,7 @@ def _do_agent_work(
             error_trace=err_tb,
             send_ok=send_ok,
         )
+        return (reply or "").strip()
 
 
 def get_im_dispatcher_inflight_snapshot(
@@ -781,6 +821,28 @@ def create_im_message_handler(
                         record_pending_session_user_text(cid, text)
                     except Exception:
                         pass
+        try:
+            from l3_node.im_channels.im_siq_bridge import im_siq_enabled, schedule_im_message_via_siq
+
+            if im_siq_enabled():
+                asyncio.run_coroutine_threadsafe(
+                    schedule_im_message_via_siq(
+                        text=text,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        run_agent_fn=run_agent_fn,
+                        engine=engine,
+                        main_loop=loop,
+                        send_reply_fn=send_reply_fn,
+                        timeout=timeout,
+                        prior_inflight_before=prior_before,
+                        do_agent_work_fn=_do_agent_work_tracked,
+                    ),
+                    loop,
+                )
+                return
+        except Exception as _siq_ex:
+            logger.warning("[IM Dispatcher] SIQ 调度失败，回退线程池: %s", _siq_ex)
         _AGENT_EXECUTOR.submit(
             _do_agent_work_tracked,
             text,
