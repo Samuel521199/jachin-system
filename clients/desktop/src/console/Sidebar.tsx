@@ -18,6 +18,7 @@ import {
   Gamepad2,
   ShieldCheck,
   Briefcase,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -65,6 +66,12 @@ const navItems = [
     label: "项目管理",
     icon: Briefcase,
     title: "项目管理：PMO Copilot 触发器与定时任务调度",
+  },
+  {
+    path: "/bi",
+    label: "BI 分析",
+    icon: BarChart3,
+    title: "BI 每日战报：scripts/run_bi_daily_report.py，支持手动启动与北京时间定时",
   },
   { path: "/settings", label: "Persona", icon: Palette, title: "形象与声音个性化设置" },
   {

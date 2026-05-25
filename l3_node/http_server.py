@@ -2708,6 +2708,12 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         register_gameqa_routes(app)
     except Exception as e:
         logger.warning("[L3 HTTP] GameQA routes skipped: %s", e)
+    try:
+        from l3_node.bi_console_http import register_bi_console_routes
+
+        register_bi_console_routes(app)
+    except Exception as e:
+        logger.warning("[L3 HTTP] BI console routes skipped: %s", e)
     app.router.add_post(
         "/api/v1/cron-thinker/ingest-release-announcement", _handle_cron_thinker_ingest_release
     )
@@ -2848,6 +2854,19 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         except Exception as e:
             logger.warning("[L3 HTTP] PMO resource monitor scheduler skipped: %s", e)
 
+    async def _on_startup_bi_console_scheduler(_app):
+        """L3 重启后恢复 BI 控制台定时（~/.jachin/data/bi_console_scheduler_state.json）。"""
+        try:
+            from l3_node.jobs.bi_console_scheduler import (
+                init_bi_console_auto_start,
+                register_bi_console_schedule_log_loop,
+            )
+
+            register_bi_console_schedule_log_loop(asyncio.get_running_loop())
+            init_bi_console_auto_start()
+        except Exception as e:
+            logger.warning("[L3 HTTP] BI console scheduler auto-start skipped: %s", e)
+
     async def _on_startup_autonomy_services(_app):
         """启动 AutonomousAwarenessLoop（§5 Layer 2）。若禁用则静默跳过。"""
         try:
@@ -2864,6 +2883,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.on_startup.append(_on_startup_dag_coordinator)
     app.on_startup.append(_on_startup_skill_matrix_sync)
     app.on_startup.append(_on_startup_pmo_resource_monitor)
+    app.on_startup.append(_on_startup_bi_console_scheduler)
     app.on_startup.append(_on_startup_autonomy_services)
 
     def _is_port_in_use(e: BaseException) -> bool:

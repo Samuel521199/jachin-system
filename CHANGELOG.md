@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.70] - 2026-05-25
+
+### Added / Changed
+
+- 重构整个 PMO 之前。
+- **Version**: Desktop **0.9.70**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.68] - 2026-05-18
 
 ### Added / Changed

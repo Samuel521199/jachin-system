@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Kalaroko Web 性能自动化监控哨兵 — MCP Server（stdio / FastMCP）
 
@@ -3037,6 +3037,22 @@ async def _dismiss_kalaroko_blocking_promos(
             container: Any = (
                 modal_root if await modal_root.count() > 0 else page
             )
+            # 先把弹窗内所有含外链（youtube / 非 kalaroko 域）的 <a> 元素的 href 清空，
+            # 防止任何后续点击意外打开新标签页。
+            try:
+                await (modal_root if await modal_root.count() > 0 else overlay).evaluate(
+                    """(root) => {
+                        root.querySelectorAll('a[href]').forEach(a => {
+                            const h = (a.href || '').toLowerCase();
+                            if (h && !h.includes('kalaroko.com')) {
+                                a.removeAttribute('href');
+                                a.removeAttribute('target');
+                            }
+                        });
+                    }"""
+                )
+            except Exception:
+                pass
             clicked = False
             for pat in (
                 r"^Cancel$",
@@ -5028,6 +5044,34 @@ async def execute_playwright_perf_test(
                 await route.continue_()
 
             await page.route("**/*", intercept_noise_requests)
+
+            # Popup 守卫：捕获 context 内所有新弹出页面，若目标域不在白名单（如 YouTube）则立即关闭。
+            # 弹窗通常由 subscribers 模态中的 "Subscribe on YouTube"（target=_blank）触发。
+            def _popup_guardian(new_page: Any) -> None:
+                async def _close_if_external(p: Any) -> None:
+                    try:
+                        await asyncio.sleep(0.4)
+                        url = p.url or ""
+                        if not url or url in ("about:blank", "chrome://newtab/"):
+                            return
+                        try:
+                            host = (urlparse(url).hostname or "").lower()
+                        except Exception:
+                            host = ""
+                        if host and not any(
+                            host == h or host.endswith("." + h)
+                            for h in _allowed_hosts()
+                        ):
+                            logger.warning(
+                                "[kalaroko_monitor] [popup 守卫] 拦截到外链新标签页: %s — 已关闭", url[:200]
+                            )
+                            await p.close()
+                    except Exception as _pg_e:
+                        logger.debug("[kalaroko_monitor] [popup 守卫] 关闭异常: %s", str(_pg_e)[:160])
+
+                asyncio.ensure_future(_close_if_external(new_page))
+
+            context.on("page", _popup_guardian)
 
             _progress("已通过 CDP 绑定浏览器（未新起进程），页面对象就绪；即将采集首页…")
             await _kalaroko_ui_breathe(

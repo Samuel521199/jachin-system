@@ -89,6 +89,19 @@ def k11_game_open_smoke_script_path() -> Path:
     return Path(__file__).resolve().parent.parent / "scripts" / fname
 
 
+def bi_daily_report_script_path() -> Path:
+    """``scripts/run_bi_daily_report.py``（BI 每日战报）。"""
+    fname = "run_bi_daily_report.py"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "scripts" / fname
+        if p.is_file():
+            return p
+    portable = get_app_root() / "scripts" / fname
+    if portable.is_file():
+        return portable
+    return Path(__file__).resolve().parent.parent / "scripts" / fname
+
+
 def kalaroko_default_e2e_script_path() -> Path:
     """
     ``scripts/test_kalaroko_default_scenarios_e2e.py`` 的绝对路径。

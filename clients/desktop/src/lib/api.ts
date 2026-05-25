@@ -1463,6 +1463,12 @@ export async function getK11ScheduledSmokeLogStreamUrlAsync(): Promise<string> {
   return `${base}/api/v1/k11-unified-smoke/schedule/log-stream`;
 }
 
+/** BI 每日战报 SSE（等价 python scripts/run_bi_daily_report.py） */
+export async function getBiDailyReportStreamUrlAsync(): Promise<string> {
+  const base = await getL3SkillsBaseUrl();
+  return `${base}/api/v1/bi-daily-report/stream`;
+}
+
 /**
  * 流式执行 HR 透析镜（POST /api/v3/skills/{skill_id}/execute/stream）
  * 返回 SSE 事件异步迭代器，供 BatchProgressBar 消费
