@@ -1,4 +1,4 @@
-# Jachin Nexus Layer 2 - v8.0 (The Singularity OS)
+﻿# Jachin Nexus Layer 2 - v8.0 (The Singularity OS)
 # Core packages for edge computing
 
 # HTTP
@@ -98,5 +98,5 @@ openpyxl>=3.1.0
 # A 股数据（Native Tool：core:akshare_*）
 akshare>=1.14.0
 
-# 全球标的行情（Native Tool：core:yfinance_*，Yahoo Finance）
-yfinance>=0.2.40
+# PMO INIT staging JSON 宽容解析（core:pmo_import_json）
+json-repair>=0.30.0

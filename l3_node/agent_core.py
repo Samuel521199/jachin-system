@@ -530,6 +530,13 @@ def _env_int(name: str, default: int) -> int:
 
 # 可由 JACHIN_REACT_OBSERVATION_MAX_CHARS 覆盖（默认 15000）；未知模型/peek 失败时回退至此
 MAX_REACT_OBSERVATION_FOR_LLM = _env_int("JACHIN_REACT_OBSERVATION_MAX_CHARS", 15000)
+
+# PMO-Copilot：INIT 微批次行数 / ReAct 轮次 SSOT（与 scripts/run_pmo_copilot_skill.py、SKILL.md 对齐）
+PMO_INIT_BATCH_ROWS = 20
+PMO_INIT_MAX_ITERATIONS_DEFAULT = 270
+PMO_BRANCH_A_MAX_ITERATIONS_DEFAULT = 28
+MAX_PMO_REACT_ITERATIONS = _env_int("JACHIN_PMO_MAX_REACT_ITERATIONS", PMO_INIT_MAX_ITERATIONS_DEFAULT)
+
 # ReAct：按「下一轮实际路由到的通义模型」放宽单条 Observation 送入 LLM 的字符上限（与接口 token 窗口不同，属宿主侧护栏）
 _DEFAULT_REACT_OBS_CAP_QWEN35_PLUS = 700_000
 _DEFAULT_REACT_OBS_CAP_QWEN_MAX = 220_000
@@ -1294,6 +1301,177 @@ def _bi_project_context_observation_suggests_success(observation_full: str) -> b
         pass
     compact = s.replace(" ", "").lower()
     return '"status":"success"' in compact
+
+
+def _pmo_user_message_suggests_init(user_text: str) -> bool:
+    s = (user_text or "").strip()
+    if not s:
+        return False
+    return bool(
+        re.search(
+            r"INIT|全量提取入库|/pmo\s*init|初始化数据库|pmo_db_init",
+            s,
+            re.I,
+        )
+    )
+
+
+def _pmo_init_mode_active(ctx: PipelineContext) -> bool:
+    if not _pmo_lark_push_guard_channel_active(ctx):
+        return False
+    if ctx.metadata.get("pmo_init_mode") is True:
+        return True
+    ut = str(ctx.intent or "").strip()
+    return _pmo_user_message_suggests_init(ut)
+
+
+def _pmo_init_fs_write_targets_staging_ndjson(inp: str) -> bool:
+    """Action Input 是否指向 pmo_staging 下的 NDJSON 微批次文件。"""
+    raw = (inp or "").strip()
+    if not raw:
+        return False
+    path = raw
+    if raw.startswith("{"):
+        try:
+            args = json.loads(raw)
+            if isinstance(args, dict):
+                path = str(args.get("file_path") or args.get("path") or "")
+        except json.JSONDecodeError:
+            return False
+    p = path.replace("\\", "/").lower()
+    return "pmo_staging" in p and p.endswith(".ndjson")
+
+
+def _pmo_init_observation_suggests_ok(obs: str) -> bool:
+    s = str(obs or "").strip().lower()
+    if not s:
+        return False
+    if s in ("ok", "success", "true"):
+        return True
+    if s.startswith("{") and '"status"' in s:
+        try:
+            obj = json.loads(obs)
+            if isinstance(obj, dict):
+                st = str(obj.get("status") or "").lower()
+                return st in ("ok", "success", "partial")
+        except json.JSONDecodeError:
+            pass
+    return False
+
+
+def _pmo_init_blocked_stacked_staging_write(
+    tool: str, inp: str, ctx: PipelineContext
+) -> str | None:
+    """INIT：上一批 staging 已 write 成功但尚未 import 时，禁止连写下一 part。"""
+    if not _pmo_init_mode_active(ctx):
+        return None
+    if (tool or "").strip() != "core:fs_write":
+        return None
+    if not _pmo_init_fs_write_targets_staging_ndjson(inp):
+        return None
+    pending = str(ctx.metadata.get("_pmo_init_staging_await_import") or "").strip()
+    if not pending:
+        return None
+    return json.dumps(
+        {
+            "status": "error",
+            "error": "pmo_init_stacked_staging_write_blocked",
+            "msg": (
+                "【宿主拦截·PMO INIT】上一批 staging 已写入但尚未 import。"
+                f"待 import 文件：`{pending}`。\n"
+                "须 **write → import → write → import** 严格交替；"
+                "**禁止**连续 fs_write part1/2/3 后再 pmo_import_json。\n"
+                "请立即 Action: core:pmo_import_json，import 成功后再写下一 part。"
+            ),
+            "pending_import": pending,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _pmo_init_track_staging_io(
+    ctx: PipelineContext, tool: str, inp: str, observation_full: str
+) -> None:
+    """记录 INIT staging write/import 状态，供连写拦截使用。"""
+    if not _pmo_init_mode_active(ctx):
+        return
+    tl = (tool or "").strip()
+    obs = str(observation_full or "")
+    if tl == "core:fs_write" and _pmo_init_fs_write_targets_staging_ndjson(inp):
+        if _pmo_init_observation_suggests_ok(obs):
+            path = inp
+            if (inp or "").strip().startswith("{"):
+                try:
+                    args = json.loads(inp)
+                    if isinstance(args, dict):
+                        path = str(args.get("file_path") or args.get("path") or inp)
+                except json.JSONDecodeError:
+                    path = inp
+            ctx.metadata["_pmo_init_staging_await_import"] = path
+        return
+    if tl == "core:pmo_import_json" and _pmo_init_observation_suggests_ok(obs):
+        ctx.metadata.pop("_pmo_init_staging_await_import", None)
+
+
+def _pmo_final_answer_looks_like_init_incomplete_stall(ans: str) -> bool:
+    """INIT 未完成却以 Final Answer 收尾：部分入库、路径借口、询问是否继续。"""
+    s = str(ans or "").strip()
+    if not s or len(s) > 2500:
+        return False
+    if re.search(
+        r"(部分工作|只完成|仅完成|尚未完成|未完成全部|还需要处理|文件路径问题|被截断|无法继续读取|无法直接读取)",
+        s,
+    ) and re.search(
+        r"(INIT|入库|db_write|pmo_people|pmo_personnel|product_requirements|dev_requirements|design_requirements|wiki)",
+        s,
+        re.I,
+    ):
+        return True
+    if re.search(r"是否需要我继续|是否继续|还是直接进入分支\s*A", s, re.I):
+        return True
+    return False
+
+
+def _reject_pmo_init_incomplete_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """INIT：禁止在仅写入少量人员行后以路径/截断借口 Final Answer 结束。"""
+    if not _pmo_init_mode_active(ctx):
+        return False
+    if not _pmo_final_answer_looks_like_init_incomplete_stall(ans):
+        return False
+    try:
+        n = int(ctx.metadata.get("_pmo_init_incomplete_guard_count") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 5:
+        return False
+    ctx.metadata["_pmo_init_incomplete_guard_count"] = n + 1
+    logger.warning(
+        "[L3 Agent][PMO INIT 校验] trace=%s via=%s 未完成入库即 Final Answer，已注入纠偏",
+        str(ctx.metadata.get("_react_step_trace") or ""),
+        via,
+    )
+    messages.append({"role": "assistant", "content": response})
+    messages.append({
+        "role": "user",
+        "content": (
+            "【系统校验·PMO·INIT】当前 **INIT 尚未完成**，禁止 Final Answer。\n"
+            "须遵守 **Extract→JSON→Import**：每张 md = fs_read → fs_write staging JSON → **pmo_import_json**。\n"
+            "**每批严格交替**：fs_write partN → **立即** pmo_import_json partN → 再 partN+1；**禁止连写多 part**。\n"
+            "**禁止 INIT 使用 core:db_write**（请用 pmo_import_json 批量入库）。\n"
+            "1) 路径：manifest **basename** + workspace `pmo_lark_pull`；staging 在 `pmo_staging/{view_id}_partN.ndjson`；\n"
+            "2) flow_progress_note 对照 SKILL §附录 A；\n"
+            "3) 完成后 **pmo_init_gap_report**，对 missing_files 再 extract→import；\n"
+            "请立即输出 ReAct Action。"
+        ),
+    })
+    return True
 
 
 def _pmo_user_message_suggests_branch_b(user_text: str) -> bool:
@@ -6355,6 +6533,10 @@ async def _run_react_core(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
+                            if _reject_pmo_init_incomplete_guard(
+                                ctx, messages, response, ans, via="parsed_none+final_prefix"
+                            ):
+                                continue
                             _emit("answer", ans)
                             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
                             messages.append({"role": "assistant", "content": response})
@@ -6542,6 +6724,8 @@ async def _run_react_core(
             if _reject_pmo_branch_a_board_without_notifier_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
             if _reject_pmo_false_lark_sent_guard(ctx, messages, response, ans, via="type=answer"):
+                continue
+            if _reject_pmo_init_incomplete_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
             _emit("answer", ans)
             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
@@ -7398,7 +7582,19 @@ async def _run_react_core(
                         _pmo_skip_lark_invoke = True
                 except Exception as _blk_e:
                     logger.debug("[L3 Agent][PMO] premature_lark 拦截判断跳过: %s", _blk_e)
+            _pmo_skip_staging_invoke = False
             if not _pmo_skip_lark_invoke:
+                try:
+                    _stk_obs = _pmo_init_blocked_stacked_staging_write(tool, inp, ctx)
+                    if _stk_obs:
+                        observation = _stk_obs
+                        logger.info(
+                            "[L3 Agent][PMO INIT] 已拦截连写 staging（须先 pmo_import_json 上一 part）"
+                        )
+                        _pmo_skip_staging_invoke = True
+                except Exception as _stk_e:
+                    logger.debug("[L3 Agent][PMO INIT] stacked staging 拦截判断跳过: %s", _stk_e)
+            if not _pmo_skip_lark_invoke and not _pmo_skip_staging_invoke:
                 # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
                 observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
             try:
@@ -7458,6 +7654,10 @@ async def _run_react_core(
                 _react_mark_workspace_io_flags(ctx, tool, observation_full)
             except Exception as _mwf:
                 logger.debug("[L3 Agent] _react_mark_workspace_io_flags 跳过: %s", _mwf)
+            try:
+                _pmo_init_track_staging_io(ctx, tool, inp, observation_full)
+            except Exception as _pmt:
+                logger.debug("[L3 Agent][PMO INIT] staging io 跟踪跳过: %s", _pmt)
             _model_obs_cap = _peek_react_observation_cap_for_upcoming_llm(
                 ctx=ctx,
                 base_engine=engine,
@@ -9376,6 +9576,13 @@ async def run_agent(
             "_pure_json_contract": _pure_json_contract,
             "_domain_experts": list(_domain_experts_list),
         }
+        if implicit_attribution and isinstance(implicit_attribution, dict):
+            if implicit_attribution.get("pmo_init_mode") is not None:
+                _md_base["pmo_init_mode"] = bool(implicit_attribution.get("pmo_init_mode"))
+            if implicit_attribution.get("jachin_app_root"):
+                _md_base["jachin_app_root"] = str(implicit_attribution.get("jachin_app_root"))
+            if implicit_attribution.get("pmo_db_path"):
+                _md_base["pmo_db_path"] = str(implicit_attribution.get("pmo_db_path"))
         try:
             from l3_node.primitives.mcp.sqlite_write_guard import messages_history_has_write_ack_grant
 

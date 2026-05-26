@@ -2644,6 +2644,100 @@ def _host_allowed(url: str) -> bool:
     return host in _allowed_hosts()
 
 
+_POPUP_GUARDIAN_CTX_IDS: set[int] = set()
+
+
+def register_kalaroko_popup_guardian(context: Any) -> None:
+    """
+    在 Playwright BrowserContext 上注册 popup 守卫：拦截非白名单域的新标签页（如 YouTube）。
+    幂等：同一 context 只注册一次。统合冒烟 / 游戏开门 / execute_playwright_perf_test 均应调用。
+    """
+    if context is None:
+        return
+    ctx_id = id(context)
+    if ctx_id in _POPUP_GUARDIAN_CTX_IDS:
+        return
+    _POPUP_GUARDIAN_CTX_IDS.add(ctx_id)
+
+    def _popup_guardian(new_page: Any) -> None:
+        async def _close_if_external(p: Any) -> None:
+            try:
+                await asyncio.sleep(0.15)
+                url = p.url or ""
+                if not url or url in ("about:blank", "chrome://newtab/"):
+                    return
+                try:
+                    host = (urlparse(url).hostname or "").lower()
+                except Exception:
+                    host = ""
+                if host and not any(
+                    host == h or host.endswith("." + h) for h in _allowed_hosts()
+                ):
+                    logger.warning(
+                        "[kalaroko_monitor] [popup 守卫] 拦截到外链新标签页: %s — 已关闭",
+                        url[:200],
+                    )
+                    await p.close()
+            except Exception as _pg_e:
+                logger.debug(
+                    "[kalaroko_monitor] [popup 守卫] 关闭异常: %s", str(_pg_e)[:160]
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_close_if_external(new_page))
+        except RuntimeError:
+            asyncio.ensure_future(_close_if_external(new_page))
+
+    try:
+        context.on("page", _popup_guardian)
+        logger.info("[kalaroko_monitor] 已注册 popup 守卫（拦截非白名单新标签页）")
+    except Exception as e:
+        logger.debug("[kalaroko_monitor] popup 守卫注册失败: %s", str(e)[:160])
+
+
+_JS_STRIP_EXTERNAL_LINKS_IN_OVERLAYS = r"""() => {
+  let n = 0;
+  const roots = document.querySelectorAll(
+    ".subscribers-modal-overlay, [class*='subscribers-modal'], "
+    + "[class*='modal' i], [class*='overlay' i], [role='dialog']"
+  );
+  roots.forEach((root) => {
+    try {
+      root.querySelectorAll("a[href]").forEach((a) => {
+        const h = (a.href || "").toLowerCase();
+        if (h && !h.includes("kalaroko.com")) {
+          a.removeAttribute("href");
+          a.removeAttribute("target");
+          a.removeAttribute("onclick");
+          n += 1;
+        }
+      });
+    } catch (e) {}
+  });
+  return n;
+}"""
+
+
+async def _strip_external_links_in_kalaroko_overlays(page: Any) -> int:
+    """清场前脱链：去掉可见 overlay 内非 kalaroko 域链接，避免误点 YouTube 等新 tab。"""
+    if not _page_is_kalaroko(page):
+        return 0
+    try:
+        n = await page.evaluate(_JS_STRIP_EXTERNAL_LINKS_IN_OVERLAYS)
+        n = int(n or 0)
+        if n:
+            logger.info(
+                "[kalaroko_monitor] 已在 overlay 内脱链非 kalaroko 外链约 %d 处", n
+            )
+        return n
+    except Exception as e:
+        logger.debug(
+            "[kalaroko_monitor] overlay 外链脱链跳过: %s", str(e)[:120]
+        )
+        return 0
+
+
 def _page_is_kalaroko(page: Any) -> bool:
     try:
         host = (urlparse(page.url or "").hostname or "").lower()
@@ -2687,9 +2781,14 @@ _MERCH_HAMMER_JS = r"""
   const vh = window.innerHeight || 700;
   const cands = document.querySelectorAll("div, section, article, [role=dialog], aside");
   for (const root of cands) {
+    try {
+      if (root.closest && root.closest("[class*='subscribers-modal']")) continue;
+      if (root.querySelector("a[href*='youtube'], a[href*='youtu.be']")) continue;
+    } catch (e) {}
     let t = "";
     try { t = (root.innerText || "").replace(/\s+/g, " ").trim(); } catch (e) { continue; }
     if (t.length < 12) continue;
+    if (/subscribe\s*on\s*youtube|youtube\.com\/@/i.test(t.slice(0, 4000))) continue;
     if (!rx.test(t.slice(0, 4000))) continue;
     const r = root.getBoundingClientRect();
     if (r.width < 90 || r.height < 70) continue;
@@ -2881,6 +2980,8 @@ async def _dismiss_kalaroko_merch_package_modals(
                     continue
             except Exception:
                 continue
+            if await _modal_looks_like_subscribers_youtube_promo(m):
+                continue
             clicked = False
             for _rep in range(2):
                 if clicked:
@@ -2956,24 +3057,45 @@ async def _dismiss_kalaroko_merch_package_modals(
     return n_closed
 
 
-async def _dismiss_kalaroko_blocking_promos(
+async def _modal_looks_like_subscribers_youtube_promo(modal: Any) -> bool:
+    """subscribers 转化弹窗（含 YouTube CTA）不应走礼包 hammer/Playwright 关闭路径。"""
+    try:
+        if await modal.locator(
+            "a[href*='youtube' i], a[href*='youtu.be' i]"
+        ).count() > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        if await modal.evaluate(
+            """(el) => !!(
+                el.closest("[class*='subscribers-modal']")
+                || el.querySelector("a[href*='youtube'], a[href*='youtu.be']")
+            )"""
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        txt = (await modal.inner_text(timeout=400) or "")[:2000]
+        if re.search(r"subscribe\s*on\s*youtube|youtube\.com\/@", txt, re.I):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _dismiss_kalaroko_subscribers_modal(
     page: Any,
     *,
     progress: Callable[[str], None] | None = None,
     click_timeout_ms: int = 5000,
-    lobby_fast: bool = False,
 ) -> int:
-    """Close lobby promos, notifications, subscribers, and merch modals (see _dismiss_kalaroko_merch_package_modals)."""
+    """关闭 subscribers 订阅/转化模态；先脱链再 Cancel/Escape，避免误开 YouTube 新 tab。"""
     if not _page_is_kalaroko(page):
         return 0
-    n_merch = await _dismiss_kalaroko_merch_package_modals(
-        page,
-        progress=progress,
-        click_timeout_ms=click_timeout_ms,
-        lobby_fast=lobby_fast,
-    )
     clk = max(800, min(int(click_timeout_ms), 15000))
-    dismissed = int(n_merch)
+    dismissed = 0
 
     async def _try_click(loc: Any, label: str) -> bool:
         nonlocal dismissed
@@ -2989,6 +3111,103 @@ async def _dismiss_kalaroko_blocking_promos(
             return True
         except Exception:
             return False
+
+    try:
+        overlay = page.locator(
+            ".subscribers-modal-overlay, [class*='subscribers-modal-overlay']"
+        ).first
+        ov_vis = False
+        try:
+            ov_vis = await overlay.is_visible(timeout=900)
+        except Exception:
+            ov_vis = False
+        if not ov_vis:
+            return dismissed
+
+        modal_root = page.locator("[class*='subscribers-modal']").first
+        container: Any = modal_root if await modal_root.count() > 0 else page
+        try:
+            await (modal_root if await modal_root.count() > 0 else overlay).evaluate(
+                """(root) => {
+                    root.querySelectorAll('a[href]').forEach(a => {
+                        const h = (a.href || '').toLowerCase();
+                        if (h && !h.includes('kalaroko.com')) {
+                            a.removeAttribute('href');
+                            a.removeAttribute('target');
+                            a.removeAttribute('onclick');
+                        }
+                    });
+                }"""
+            )
+        except Exception:
+            pass
+        clicked = False
+        for pat in (
+            r"^Cancel$",
+            r"Maybe\s+Later",
+            r"Not\s+Now",
+            r"^Skip$",
+            r"^Close$",
+            r"^No\s+thanks?$",
+        ):
+            try:
+                btn = container.get_by_role("button", name=re.compile(pat, re.I)).first
+                if await btn.count() > 0:
+                    if await _try_click(btn, f"已关闭 subscribers 模态（{pat}）"):
+                        clicked = True
+                        break
+            except Exception:
+                continue
+        if not clicked:
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(260)
+                dismissed += 1
+                logger.info("[kalaroko_monitor] subscribers 模态：已发送 Escape")
+                if progress:
+                    progress("subscribers 遮挡：已尝试 Escape 关闭")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return dismissed
+
+
+async def _dismiss_kalaroko_blocking_promos(
+    page: Any,
+    *,
+    progress: Callable[[str], None] | None = None,
+    click_timeout_ms: int = 5000,
+    lobby_fast: bool = False,
+) -> int:
+    """Close lobby promos, notifications, subscribers, and merch modals (see _dismiss_kalaroko_merch_package_modals)."""
+    if not _page_is_kalaroko(page):
+        return 0
+
+    await _strip_external_links_in_kalaroko_overlays(page)
+
+    clk = max(800, min(int(click_timeout_ms), 15000))
+    dismissed = 0
+
+    async def _try_click(loc: Any, label: str) -> bool:
+        nonlocal dismissed
+        try:
+            if await loc.count() <= 0:
+                return False
+            await loc.first.click(timeout=clk, no_wait_after=True)
+            dismissed += 1
+            logger.info("[kalaroko_monitor] %s", label)
+            if progress:
+                progress(label)
+            await page.wait_for_timeout(150)
+            return True
+        except Exception:
+            return False
+
+    # subscribers 须在礼包 hammer 之前：hammer 的 Exclusive/Special 易误命中 YouTube 转化弹窗
+    dismissed += await _dismiss_kalaroko_subscribers_modal(
+        page, progress=progress, click_timeout_ms=click_timeout_ms
+    )
 
     # Escape 对部分模态/抽屉有效
     try:
@@ -3022,71 +3241,13 @@ async def _dismiss_kalaroko_blocking_promos(
     except Exception:
         pass
 
-    # --- subscribers 订阅/转化模态（曾导致 intercepts pointer events）---
-    try:
-        overlay = page.locator(
-            ".subscribers-modal-overlay, [class*='subscribers-modal-overlay']"
-        ).first
-        ov_vis = False
-        try:
-            ov_vis = await overlay.is_visible(timeout=900)
-        except Exception:
-            ov_vis = False
-        if ov_vis:
-            modal_root = page.locator("[class*='subscribers-modal']").first
-            container: Any = (
-                modal_root if await modal_root.count() > 0 else page
-            )
-            # 先把弹窗内所有含外链（youtube / 非 kalaroko 域）的 <a> 元素的 href 清空，
-            # 防止任何后续点击意外打开新标签页。
-            try:
-                await (modal_root if await modal_root.count() > 0 else overlay).evaluate(
-                    """(root) => {
-                        root.querySelectorAll('a[href]').forEach(a => {
-                            const h = (a.href || '').toLowerCase();
-                            if (h && !h.includes('kalaroko.com')) {
-                                a.removeAttribute('href');
-                                a.removeAttribute('target');
-                            }
-                        });
-                    }"""
-                )
-            except Exception:
-                pass
-            clicked = False
-            for pat in (
-                r"^Cancel$",
-                r"Maybe\s+Later",
-                r"Not\s+Now",
-                r"^Skip$",
-                r"^Close$",
-                r"^No\s+thanks?$",
-            ):
-                try:
-                    btn = container.get_by_role(
-                        "button", name=re.compile(pat, re.I)
-                    ).first
-                    if await btn.count() > 0:
-                        if await _try_click(
-                            btn,
-                            f"已关闭 subscribers 模态（{pat}）",
-                        ):
-                            clicked = True
-                            break
-                except Exception:
-                    continue
-            if not clicked:
-                try:
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(260)
-                    dismissed += 1
-                    logger.info("[kalaroko_monitor] subscribers 模态：已发送 Escape")
-                    if progress:
-                        progress("subscribers 遮挡：已尝试 Escape 关闭")
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    n_merch = await _dismiss_kalaroko_merch_package_modals(
+        page,
+        progress=progress,
+        click_timeout_ms=click_timeout_ms,
+        lobby_fast=lobby_fast,
+    )
+    dismissed += int(n_merch)
 
     return dismissed
 
@@ -4662,6 +4823,7 @@ async def _launch_kalaroko_browser_context(
         if browser is None:
             browser = await playwright.chromium.launch(headless=headless)
             context = await browser.new_context(viewport=vp, device_scale_factor=dsf)
+            register_kalaroko_popup_guardian(context)
             await _apply_stealth_to_context(context)
             page = await context.new_page()
             logger.info(
@@ -4695,6 +4857,7 @@ async def _launch_kalaroko_browser_context(
 
     # stealth 必须落在 **实际驱动** 的 context 上（可能与旧版仅 contexts[0] 不一致）
     await _apply_stealth_to_context(context)
+    register_kalaroko_popup_guardian(context)
 
     # CDP 复用已有标签时，Chrome 当前焦点可能在**别的 Tab**；不 bring_to_front 会导致
     # 「终端有 JSON/指标但眼前窗口一动不动」。launch 新页路径下同样无害。
@@ -5075,33 +5238,7 @@ async def execute_playwright_perf_test(
 
             await page.route("**/*", intercept_noise_requests)
 
-            # Popup 守卫：捕获 context 内所有新弹出页面，若目标域不在白名单（如 YouTube）则立即关闭。
-            # 弹窗通常由 subscribers 模态中的 "Subscribe on YouTube"（target=_blank）触发。
-            def _popup_guardian(new_page: Any) -> None:
-                async def _close_if_external(p: Any) -> None:
-                    try:
-                        await asyncio.sleep(0.4)
-                        url = p.url or ""
-                        if not url or url in ("about:blank", "chrome://newtab/"):
-                            return
-                        try:
-                            host = (urlparse(url).hostname or "").lower()
-                        except Exception:
-                            host = ""
-                        if host and not any(
-                            host == h or host.endswith("." + h)
-                            for h in _allowed_hosts()
-                        ):
-                            logger.warning(
-                                "[kalaroko_monitor] [popup 守卫] 拦截到外链新标签页: %s — 已关闭", url[:200]
-                            )
-                            await p.close()
-                    except Exception as _pg_e:
-                        logger.debug("[kalaroko_monitor] [popup 守卫] 关闭异常: %s", str(_pg_e)[:160])
-
-                asyncio.ensure_future(_close_if_external(new_page))
-
-            context.on("page", _popup_guardian)
+            register_kalaroko_popup_guardian(context)
 
             _progress("已通过 CDP 绑定浏览器（未新起进程），页面对象就绪；即将采集首页…")
             await _kalaroko_ui_breathe(

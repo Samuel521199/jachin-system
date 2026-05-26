@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 K11 极速开门探活（Smoke Test）
@@ -573,6 +573,10 @@ async def run_game_open_smoke_on_existing_page(
             return []
 
     per_game: list[dict[str, Any]] = []
+    try:
+        mcp.register_kalaroko_popup_guardian(page.context)
+    except Exception:
+        pass
     await mcp._goto_resilient(page, TARGET_HOME, "domcontentloaded", 30_000)
     total_games = len(selected)
     for idx, case in enumerate(selected, start=1):

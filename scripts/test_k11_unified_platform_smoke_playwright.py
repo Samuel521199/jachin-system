@@ -20,7 +20,7 @@ K11 平台冒烟 · 统合版（单次 CDP 会话顺序执行：P0 八条 + P1 �
 - ``K11_SMOKE_LARK_WIKI_URL``（可省略；与脚本内 ``K11_DEFAULT_LARK_WIKI_URL`` 同链时即同步到该表）
 - 可选：``K11_SMOKE_LARK_TABLE_ID`` / ``K11_SMOKE_LARK_SHEET_ID``（子表 id）
 - 加 ``--no-lark-report`` 可不发飞书、不同步表格；加 ``--write-local-xlsx`` 才写入 ``~/Downloads/K11平台测试用例.xlsx``（需 ``openpyxl``）。
-- 群通知卡片样式在 ``scripts/k11_lark_smoke_report.send_k11_smoke_lark_notification``：原生 table 三列（测试项目 / 结果 / 备注），失败时降级 lark_md/纯文本。
+- 群通知卡片样式在 ``scripts/k11_lark_smoke_report.send_k11_smoke_lark_notification``：原生 table 四列（测试项目 / 结果 / 时间戳 / 备注），失败时降级 lark_md/纯文本。
 - 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」并入结果；随后（除非 ``--skip-game-open-smoke``）在同一 CDP 页签上跑 ``test_k11_game_open_smoke`` 的四款游戏开门探活，**追加行**到同一 ``results``，与前面用例一并写入飞书表并打在**同一张** Lark 消息卡片表格中。
   随 L3 侧车 / ``l3_node.exe`` 跑统合时**禁止** ``l3_node.exe 某.py``（引导器不会当解释器），须用 ``--jachin-k11-p2-compat-subprocess`` 子命令（与 ``l3_node/http_server`` 一致）。
 
@@ -64,6 +64,10 @@ except ImportError:
 except OSError:
     pass
 
+from l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor import (
+    register_kalaroko_popup_guardian,
+)
+
 DEFAULT_TARGET = "https://www.kalaroko.com/"
 
 # 与 ``scripts/k11_lark_smoke_report`` 中默认知识表一致；环境变量/CLI 可覆盖
@@ -105,6 +109,14 @@ VERDICT_ZH: dict[str, str] = {
     "SKIP": "跳过",
     "BLOCKED": "阻塞",
 }
+
+
+def _smoke_executed_at_now() -> str:
+    """北京时区执行时刻，写入 results.executed_at 供飞书卡片「时间戳」列。"""
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
 
 def _resolve_p2_compat_script_path() -> Path:
     """
@@ -3612,6 +3624,11 @@ async def _async_main(args: argparse.Namespace) -> int:
             print(f"[失败] {pick_err or '无法获取目标页签'}", file=sys.stderr)
             return 2
 
+        try:
+            register_kalaroko_popup_guardian(page.context)
+        except Exception:
+            pass
+
         def _on_console(msg: Any) -> None:
             try:
                 if msg.type == "error":
@@ -3695,6 +3712,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                     "verdict": v,
                     "verdict_zh": vzh,
                     "detail": detail,
+                    "executed_at": _smoke_executed_at_now(),
                 }
             )
 
@@ -3810,6 +3828,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                                 "verdict": v,
                                 "verdict_zh": vzh,
                                 "detail": detail,
+                                "executed_at": _smoke_executed_at_now(),
                             }
                         )
                         log(
@@ -3835,6 +3854,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                             "verdict": "FAIL",
                             "verdict_zh": "失败",
                             "detail": ber,
+                            "executed_at": _smoke_executed_at_now(),
                         }
                     )
             log("")

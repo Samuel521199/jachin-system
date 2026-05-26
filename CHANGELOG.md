@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.72] - 2026-05-26
+
+### Added / Changed
+
+- 大模型写数据库版本，python 写数据库前夕。
+- **Version**: Desktop **0.9.72**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.70] - 2026-05-25
 
 ### Added / Changed

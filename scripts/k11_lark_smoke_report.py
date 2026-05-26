@@ -791,6 +791,14 @@ def _k11_result_column_plain(verdict: str, verdict_zh: str) -> str:
     return _k11_lark_md_escape(str(verdict_zh or verdict or "").strip() or "—", 32)
 
 
+def _k11_result_timestamp(r: dict[str, Any]) -> str:
+    """结果行执行时间（YYYY-MM-DD HH:MM:SS，北京时区）；无则显示 —。"""
+    raw = str(r.get("executed_at") or "").strip()
+    if raw:
+        return _k11_lark_md_escape(raw, 32)
+    return "—"
+
+
 def _build_k11_smoke_table_element(
     results: list[dict[str, Any]],
     *,
@@ -799,7 +807,7 @@ def _build_k11_smoke_table_element(
     plain_result: bool = False,
 ) -> dict[str, Any]:
     """
-    飞书消息卡片 1.0 原生 table（需客户端 ≥7.4）。列：测试项目、结果、备注。
+    飞书消息卡片 1.0 原生 table（需客户端 ≥7.4）。列：测试项目、结果、时间戳、备注。
 
     **备注/标题必须截断**：交互卡 ``content`` 有体积极限，行数一多+长 detail 会首包失败，触发旧版 lark_md 回退。
 
@@ -826,12 +834,13 @@ def _build_k11_smoke_table_element(
             {
                 "c_item": tzh or "—",
                 "c_res": res_val,
+                "c_ts": _k11_result_timestamp(r),
                 "c_note": note,
             }
         )
     if not rows:
         rows = [
-            {"c_item": "—", "c_res": "—", "c_note": "无结果行"},
+            {"c_item": "—", "c_res": "—", "c_ts": "—", "c_note": "无结果行"},
         ]
     res_col: dict[str, Any] = {
         "name": "c_res",
@@ -857,6 +866,13 @@ def _build_k11_smoke_table_element(
                 "horizontal_align": "left",
             },
             res_col,
+            {
+                "name": "c_ts",
+                "display_name": "时间戳",
+                "data_type": "text",
+                "width": "auto",
+                "horizontal_align": "center",
+            },
             {
                 "name": "c_note",
                 "display_name": "备注",

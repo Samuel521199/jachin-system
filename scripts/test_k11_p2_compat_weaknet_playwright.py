@@ -86,6 +86,13 @@ VERDICT_ZH = {
     "SKIP": "跳过",
 }
 
+
+def _p2_executed_at_now() -> str:
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+
 P2_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
     "p2_browser_compat_merged": "浏览器兼容",
     "p2_weak_network": "弱网",
@@ -114,6 +121,11 @@ def _p2_all_rows_to_lark_results(
                 "verdict": v,
                 "verdict_zh": vzh,
                 "detail": detail,
+                **(
+                    {"executed_at": str(row.get("executed_at") or "").strip()}
+                    if str(row.get("executed_at") or "").strip()
+                    else {}
+                ),
             }
         )
     return out
@@ -166,6 +178,11 @@ def _p2_normalize_rows_for_xlsx(all_rows: list[dict[str, Any]]) -> list[dict[str
                 "case": cid,
                 "verdict": str(r.get("verdict", "")),
                 "detail": str(r.get("detail", "")),
+                **(
+                    {"executed_at": str(r.get("executed_at") or "").strip()}
+                    if str(r.get("executed_at") or "").strip()
+                    else {}
+                ),
             }
         )
     if compat:
@@ -175,10 +192,17 @@ def _p2_normalize_rows_for_xlsx(all_rows: list[dict[str, Any]]) -> list[dict[str
             f"{x.get('title_zh', '')}: {x.get('verdict')} — {str(x.get('detail', ''))[:2000]}"
             for x in compat
         ]
-        out.insert(
-            0,
-            {"case": "p2_browser_compat_merged", "verdict": v, "detail": "\n".join(lines)},
-        )
+        merged: dict[str, Any] = {
+            "case": "p2_browser_compat_merged",
+            "verdict": v,
+            "detail": "\n".join(lines),
+        }
+        for x in reversed(compat):
+            ts = str(x.get("executed_at") or "").strip()
+            if ts:
+                merged["executed_at"] = ts
+                break
+        out.insert(0, merged)
     return out
 
 
@@ -1001,6 +1025,7 @@ async def handle_browser_compat_test(
                     "title_zh": title_zh,
                     "verdict": "FAIL",
                     "detail": f"无法启动 {ch}：{_brief_exc(e)}（可尝试 `playwright install {ch}` 或本机已安装该浏览器）",
+                    "executed_at": _p2_executed_at_now(),
                 }
             )
             continue
@@ -1021,6 +1046,7 @@ async def handle_browser_compat_test(
                         "title_zh": title_zh,
                         "verdict": "FAIL",
                         "detail": f"导航失败：{_brief_exc(e)}",
+                        "executed_at": _p2_executed_at_now(),
                     }
                 )
                 continue
@@ -1044,6 +1070,7 @@ async def handle_browser_compat_test(
                         "title_zh": title_zh,
                         "verdict": "FAIL",
                         "detail": f"白屏或空文档嫌疑：url={u!r} title空 len={n_body}",
+                        "executed_at": _p2_executed_at_now(),
                     }
                 )
             elif n_body < 20:
@@ -1053,6 +1080,7 @@ async def handle_browser_compat_test(
                         "title_zh": title_zh,
                         "verdict": "FAIL",
                         "detail": f"正文过短：title={title!r} bodyLen={n_body} url={u!r}",
+                        "executed_at": _p2_executed_at_now(),
                     }
                 )
             else:
@@ -1062,6 +1090,7 @@ async def handle_browser_compat_test(
                         "title_zh": title_zh,
                         "verdict": "PASS",
                         "detail": f"已打开并渲染可读：title={title!r} bodyLen≈{n_body} url={u!r}（不处理机器人/验证页，仅作冒烟）",
+                        "executed_at": _p2_executed_at_now(),
                     }
                 )
         finally:

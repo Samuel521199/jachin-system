@@ -29,5 +29,5 @@ def test_pmo_fs_read_skip_dedup_pattern():
     assert skip is True
 
 
-def test_pmo_max_iterations_default_at_least_38():
-    assert MAX_PMO_REACT_ITERATIONS >= 38
+def test_pmo_max_iterations_default_at_least_270():
+    assert MAX_PMO_REACT_ITERATIONS >= 270
