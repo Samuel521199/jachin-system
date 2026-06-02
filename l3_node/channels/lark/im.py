@@ -5,13 +5,37 @@ Lark 通道 — IM 消息发送（需 App 凭证）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from l3_node.channels.lark.client import get_lark_api_base, get_tenant_access_token
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_default_lark_chat_id() -> str:
+    """自主通知 / BriefHeal 等默认推送群：优先 LARK_CHAT_ID，其次 BI_LARK_CHAT_ID。"""
+    for key in ("LARK_CHAT_ID", "BI_LARK_CHAT_ID"):
+        cid = (os.environ.get(key) or "").strip()
+        if cid:
+            return cid
+    return ""
+
+
+async def send_text_to_default_chat(text: str) -> dict[str, Any]:
+    """
+    向环境变量配置的默认群发送纯文本（异步包装，供 AwarenessLoop / Level3Healer 等调用）。
+    """
+    cid = resolve_default_lark_chat_id()
+    if not cid:
+        return {
+            "status": "error",
+            "error": "未配置 LARK_CHAT_ID 或 BI_LARK_CHAT_ID，无法发送自主通知",
+        }
+    return await asyncio.to_thread(send_text, cid, (text or "")[:4000])
 
 
 def send_text(

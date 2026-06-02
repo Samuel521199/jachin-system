@@ -1,4 +1,4 @@
-"""
+﻿"""
 BI SPA 批量抓取 — 供 scripts 与 main_skill 复用
 
 职责：针对 bi-admin-web 侧栏菜单的批量抓取，输出 raw/*.csv。
@@ -123,6 +123,27 @@ _DEFAULT_QUERY_REFRESH_FILTERS: dict[str, Any] = {
 }
 
 
+def _build_single_date_range_filters(
+    as_of: date,
+    *,
+    form_label: str | None = None,
+    expand_first_row: bool = True,
+) -> dict[str, Any]:
+    """单时间段页（业务日期 起~止）：定位 .el-date-editor + 填后校验。"""
+    t_start, t_end = _build_7d_date_range_strings(as_of)
+    flt: dict[str, Any] = {
+        "date_range": [t_start, t_end],
+        "date_range_use_visual_order": True,
+        "date_range_verify": True,
+        "query_selector": "button:has-text('查询'), .el-button:has-text('查询')",
+        "wait_after_query_ms": 3000,
+        "expand_first_row": expand_first_row,
+    }
+    if form_label:
+        flt["date_range_form_label"] = form_label
+    return flt
+
+
 def _apply_slug_specific_automation(
     automation: dict[str, Any],
     slug_name: str,
@@ -167,18 +188,15 @@ def _apply_slug_specific_automation(
     )
 
     as_of = resolve_spa_report_date_end(report_date_end)
-    t_start, t_end = _build_7d_date_range_strings(as_of)
-    dau_dnu_filters = {
-        "date_range": [t_start, t_end],
-        "query_selector": "button:has-text('查询'), .el-button:has-text('查询')",
-        "wait_after_query_ms": 3000,
-        "expand_first_row": True,
-    }
-    stats_game_daily_filters = {**dau_dnu_filters, "expand_first_row": False}
+    dau_dnu_filters = _build_single_date_range_filters(as_of, expand_first_row=True)
+    stats_game_daily_filters = _build_single_date_range_filters(as_of, expand_first_row=False)
 
     p1, p2 = _build_compare_date_range_strings(as_of)
     stats_game_compare_filters = {
         "date_range_compare": [p1, p2],
+        "date_range_compare_use_visual_order": True,
+        "date_range_compare_no_escape_after_fill": True,
+        "date_range_compare_form_labels": ["时间段1", "时间段2"],
         "query_selector": "button:has-text('对比查询'), .el-button:has-text('对比查询')",
         "wait_after_query_ms": 3000,
         "expand_first_row": False,
@@ -260,6 +278,8 @@ def _apply_slug_specific_automation(
         automation["filters"] = dict(stats_game_compare_filters)
     elif slug_name == "stats_recharge":
         automation["filters"] = dict(stats_game_daily_filters)
+    elif slug_name == "daily_ops_summary":
+        automation["filters"] = _build_single_date_range_filters(as_of, form_label="业务日期")
     elif slug_name in dated_7d_expand_slugs:
         automation["filters"] = dict(dau_dnu_filters)
     elif slug_name in ("stats_user_dau", "stats_user_new") or slug_name in game_stats_expand_slugs:

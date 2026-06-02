@@ -1,4 +1,4 @@
-"""
+﻿"""
 AutonomousAwarenessLoop — 自主意识扫描循环（§5 Layer 2）
 
 每 N 秒运行一次「意识扫描」：
@@ -14,7 +14,8 @@ AutonomousAwarenessLoop — 自主意识扫描循环（§5 Layer 2）
 ----------
 JACHIN_AWARENESS_LOOP_DISABLE=1       关闭整个循环（不影响 PersistedIntent DB 读写）
 JACHIN_AWARENESS_SCAN_INTERVAL=60     扫描间隔秒数（默认 60）
-JACHIN_TOKEN_DAY_BUDGET=200000        Token 日消耗软上限（超过发告警）
+JACHIN_TOKEN_DAY_BUDGET=200000        Token 日消耗软上限（超过 80% 时发告警，见下）
+JACHIN_TOKEN_DAY_WARN_DISABLE=1       关闭 Token 日用量飞书告警（仪表盘/日终总结仍统计）
 JACHIN_CONDITION_INTENT_ENABLE=1      开启 condition 类意图内置条件评估（默认关，AJ）
 JACHIN_CONDITION_LLM_EVAL=1           condition 评估 LLM fallback（默认关，AM）
 JACHIN_INTENT_AUTORESET_HOURS=N       失败意图 N 小时后自动重置（默认 0=不自动重置，AK）
@@ -234,6 +235,11 @@ class AutonomousAwarenessLoop:
     def _is_disabled(self) -> bool:
         return (os.environ.get("JACHIN_AWARENESS_LOOP_DISABLE") or "").strip().lower() in ("1", "true", "yes")
 
+    def _token_day_warn_disabled(self) -> bool:
+        return (os.environ.get("JACHIN_TOKEN_DAY_WARN_DISABLE") or "").strip().lower() in (
+            "1", "true", "yes",
+        )
+
     def _condition_intent_enabled(self) -> bool:
         return (os.environ.get("JACHIN_CONDITION_INTENT_ENABLE") or "").strip().lower() in ("1", "true", "yes")
 
@@ -283,7 +289,7 @@ class AutonomousAwarenessLoop:
                 payload={"type": "disk", "free_gb": rh.disk_free_gb,
                          "message": f"磁盘剩余空间不足 2GB（当前 {rh.disk_free_gb:.1f}GB），建议清理。"},
             ))
-        if rh.token_warn:
+        if rh.token_warn and not self._token_day_warn_disabled():
             pct = int(rh.token_used_today / rh.token_budget * 100)
             actions.append(AutonomousAction(
                 action_type="resource_warn",

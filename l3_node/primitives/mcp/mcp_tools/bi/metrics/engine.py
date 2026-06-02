@@ -1,4 +1,4 @@
-"""
+﻿"""
 BI 指标 — 执行引擎
 
 加载配置、调度插件、提取指标、输出
@@ -201,9 +201,15 @@ def run(
         col_cands = m.get("column_candidates", [])
         val = _extract_from_row(row, col_cands)
         result[key] = _safe_float(val)
+        if m.get("value_scale") == "win_rate_pct":
+            v = result[key]
+            if 0 < v <= 1.0:
+                result[key] = round(v * 100, 2)
 
         prev_val = _extract_from_row(comp_row, col_cands) if comp_row else None
         prev_float = _safe_float(prev_val)
+        if m.get("value_scale") == "win_rate_pct" and 0 < prev_float <= 1.0:
+            prev_float = round(prev_float * 100, 2)
         result_prev[key] = prev_float
 
         # 环比：(当前 - 上期) / 上期 * 100，无上期则 0.00%

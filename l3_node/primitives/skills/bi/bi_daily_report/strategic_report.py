@@ -1,4 +1,4 @@
-"""
+﻿"""
 BI 战略大战报（长文深度分析）
 
 分析规范以 **docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md**（v4 交付形态）为 SSOT，
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -92,11 +93,442 @@ def _metrics_to_chinese(metrics: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _finalize_strategic_report_output(raw: str) -> str:
-    """保留模型全文输出；仅去空白与偶发的整段 ``` 代码围栏包裹。"""
-    text = (raw or "").strip()
+# qwen3.5 偶发将「思考链/自我修正/占位段落」写入 content（即使 enable_thinking=False）
+_LEAK_PATTERN_PARTS = (
+    r"此处模拟思考",
+    r"此处修正思考",
+    r"模拟思考过程",
+    r"模拟纠错",
+    r"模拟过程中的",
+    r"实际输出应直接陈述",
+    r"正式输出保持简洁",
+    r"正式输出修正",
+    r"正式输出段落",
+    r"正式内容片段",
+    r"以下为正式内容",
+    r"最终决定跳过模拟",
+    r"放弃模拟纠错",
+    r"自我纠正",
+    r"自我修正",
+    r"Self-Correction",
+    r"self-correction",
+    r"thought process",
+    r"thought block",
+    r"Final Check on Constraints",
+    r"Final Polish",
+    r"Ready to Output",
+    r"placeholder for the actual table",
+    r"In the final output",
+    r"In this thought block",
+    r"最后一次检查",
+    r"最终版逻辑",
+    r"最终确认\)",
+    r"再次自我纠正",
+    r"好了,下面是正式",
+    r"好了,直接写",
+    r"\(以下为正式",
+    r"直接写正确的\)",
+    r"直接生成正确文本\)",
+    r"好吧,直接写",
+    r"\*\(注:\s*此处",
+    r"\*\(Note:",
+    r"\*\(修正后\)",
+    r"\*\*\(正式输出",
+    r"\*\(正式输出",
+    r"\*\*\(正式内容",
+    r"\*\(正式内容",
+    r"\*\*\(截断\)",
+    r"\*\*\(续\)",
+    r"\*\*\(完整\)",
+    r"\*\*\(修正\)",
+    r"\*\*\(最终\)",
+    r"\*\*\(输出\)",
+    r"\*\*\(结束\)",
+    r"\*\*\(Done\)",
+    r"\*\*\(End\)",
+    r"\*\*\(Stop\)",
+    r"\*\*\(Finish\)",
+    r"\*\*\(Complete\)",
+    r"\*\*\(OK\)",
+    r"\*\*\(Yes\)",
+    r"\*\*\(No\)",
+    r"\*\*\(Maybe\)",
+    r"\*\*\(Unknown\)",
+    r"\*\*\(Error\)",
+    r"\*\*\(Warning\)",
+    r"\*\*\(Info\)",
+    r"\*\*\(Debug\)",
+    r"\*\*\(Trace\)",
+    r"\*\*\(Log\)",
+    r"\*\*\(Record\)",
+    r"\*\*\(Data\)",
+    r"\*\*\(Metric\)",
+    r"\*\*\(KPI\)",
+)
+_THINKING_LEAK_RE = re.compile("|".join(_LEAK_PATTERN_PARTS), re.IGNORECASE)
+
+# 大战报章节锚点（用于按节截断污染尾部）
+_STRATEGIC_SECTION_MARKERS: tuple[str, ...] = (
+    "## 一、",
+    "##一、",
+    "## 二、",
+    "##二、",
+    "## 三、",
+    "##三、",
+    "## 四、",
+    "##四、",
+    "## 五、",
+    "##五、",
+    "## 六、",
+    "##六、",
+)
+
+
+def _detect_table_spam_anomaly(text: str) -> bool:
+    """检测 Markdown 表格 pipe 滥用（模型占位/截断续写）。"""
+    for line in (text or "").splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        pipe_n = ln.count("|")
+        if pipe_n >= 12 and ln.count("---") >= 2:
+            return True
+        if pipe_n >= 20:
+            return True
+        if re.match(r"^\|(\s*\|\s*){8,}", ln):
+            return True
+    return False
+
+
+def _detect_header_corruption(text: str) -> bool:
+    """双标题拼接、空章节分隔等结构异常。"""
+    if not text:
+        return False
+    if re.search(r"##\s*❓\s*##", text):
+        return True
+    if re.search(r"##\s*---\s*\n\s*##\s*---", text):
+        return True
+    if text.count("## ---") >= 2:
+        return True
+    return False
+
+
+def _detect_metric_token_repetition(text: str) -> bool:
+    """检测 DNU=/DNU=)/D NU/D AU 等指标占位符死循环（qwen 写渠道占比时高发）。"""
+    if not text:
+        return False
+    tail = text[-4500:] if len(text) > 4500 else text
+    if len(re.findall(r"DNU=\)?", tail, flags=re.I)) >= 8:
+        return True
+    if re.search(r"(?:DNU=\)?,\s*){4,}", tail, re.I):
+        return True
+    if re.search(r"(?:DNU=,\s*){4,}", tail, re.I):
+        return True
+    if tail.count("D NU/D AU") >= 3:
+        return True
+    if re.search(r"(比例异常高\s*\(>[\d.]+%\)\s*[。]?){4,}", tail):
+        return True
+    if re.search(r"(`DNU=`|DNU=\s*,){3,}", tail, re.I):
+        return True
+    return False
+
+
+def _detect_repetition_anomaly(text: str) -> bool:
+    """检测尾部重复循环（模型卡在数值/占位符上）。"""
+    if not text:
+        return False
+    tail = text[-2500:] if len(text) > 2500 else text
+    if tail.count("正式输出") >= 3:
+        return True
+    if tail.count("**(正式") >= 2:
+        return True
+    if re.search(r"\*\*\((?:截断|续|完整|修正|最终|输出|Done|End)\)\*\*", tail, re.I):
+        return True
+    if tail.count("数值为 `NaN%`") >= 3:
+        return True
+    if re.search(r"(\+\d+%[`\(]?达\s*){3,}", tail):
+        return True
+    if re.search(r"(\+\d+%`\(达\s*){4,}", tail):
+        return True
+    if re.search(r"(\(达到\+\s*){4,}", tail):
+        return True
+    if re.search(r"(\+\s*){20,}", tail):
+        return True
+    if re.search(r"(% % % ){5,}", tail):
+        return True
+    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    for i in range(len(lines) - 2):
+        if len(lines[i]) > 8 and lines[i] == lines[i + 1] == lines[i + 2]:
+            return True
+    if _detect_metric_token_repetition(text):
+        return True
+    return False
+
+
+def _is_report_corrupted(text: str) -> bool:
+    """统一判定：thinking 泄漏 / 重复异常 / 表格 spam / 标题结构异常。"""
+    if not (text or "").strip():
+        return False
+    if _THINKING_LEAK_RE.search(text):
+        return True
+    if _detect_repetition_anomaly(text):
+        return True
+    if _detect_table_spam_anomaly(text):
+        return True
+    if _detect_header_corruption(text):
+        return True
+    return bool(re.search(r"\*\*\(正式[^\n]{0,40}$", text.strip()))
+
+
+def _detect_thinking_leak(text: str) -> bool:
+    return _is_report_corrupted(text)
+
+
+_RE_DNU_LOOP = re.compile(r"(?:DNU=\)?,\s*){4,}", re.I)
+_RE_DAU_RATIO_LOOP = re.compile(r"(?:D\s*NU/D\s*AU比例异常高[^。]{0,48}[。]?){3,}", re.I)
+
+# 第四节内异动小节锚点（污染时尽量保留上一小节）
+_SUBSECTION_ANCHORS: tuple[str, ...] = (
+    "### 🟡异动三",
+    "### 🟡 异动三",
+    "### 🟡异动二",
+    "### 🟡 异动二",
+    "### 🔴异动三",
+    "### 🔴 异动三",
+    "### 🔴异动二",
+    "### 🔴 异动二",
+    "### 🟡异动",
+    "### 🔴异动",
+)
+
+
+def _find_earliest_corruption_index(text: str) -> int | None:
+    """返回全文最早污染起点（泄漏标记 / 指标复读 / 表格 spam）。"""
+    earliest: int | None = _find_leak_cut_index(text)
+    for pat in (_RE_DNU_LOOP, _RE_DAU_RATIO_LOOP):
+        m = pat.search(text)
+        if m and (earliest is None or m.start() < earliest):
+            earliest = m.start()
+    if _detect_metric_token_repetition(text):
+        for pat in (
+            r"(?:DNU=\)?,\s*){2,}",
+            r"D NU/D AU",
+            r"(比例异常高\s*\(>[\d.]+%\)\s*[。]?){2,}",
+        ):
+            m = re.search(pat, text, re.I)
+            if m and (earliest is None or m.start() < earliest):
+                earliest = m.start()
+    return earliest
+
+
+def _truncate_loopy_lines(text: str) -> str:
+    """单行内 DNU=/占比 死循环：截断该行并附省略说明，避免整节丢弃。"""
+    out: list[str] = []
+    for line in text.splitlines():
+        ln = line
+        if _RE_DNU_LOOP.search(ln) or ln.count("D NU/D AU") >= 3:
+            m = re.search(r"(?:DNU=\)?,\s*){2,}", ln, re.I)
+            if m:
+                ln = ln[: m.start()].rstrip().rstrip("，,;；") + " …（渠道 DNU 枚举异常截断，详见多维表）"
+            elif _RE_DAU_RATIO_LOOP.search(ln):
+                m2 = _RE_DAU_RATIO_LOOP.search(ln)
+                ln = ln[: m2.start()].rstrip() + " …（DNU/DAU 占比描述异常截断）"
+            else:
+                ln = ln[: min(280, len(ln))].rstrip() + " …"
+        out.append(ln)
+    return "\n".join(out)
+
+
+def _smart_truncate_corrupted_report(text: str) -> str:
+    """优先在污染点/异动小节边界截断，尽量保留第四节前半有效归因。"""
+    if not _is_report_corrupted(text):
+        return text
+    text = _truncate_loopy_lines(text)
+    if not _is_report_corrupted(text):
+        return text
+    cut = _find_earliest_corruption_index(text)
+    if cut is not None and cut > 150:
+        for anchor in _SUBSECTION_ANCHORS:
+            pos = text.rfind(anchor, 0, cut + 1)
+            if pos >= 0 and pos >= len(text) * 0.18:
+                return text[:pos].rstrip()
+        return text[:cut].rstrip()
+    return _truncate_at_first_corrupted_section(text)
+
+
+def _find_leak_cut_index(text: str) -> int | None:
+    """返回应截断的最早字符位置；无泄漏则 None。"""
+    earliest: int | None = None
+    for m in _THINKING_LEAK_RE.finditer(text):
+        if earliest is None or m.start() < earliest:
+            earliest = m.start()
+    if _detect_repetition_anomaly(text):
+        # 重复异常通常出现在后半段：从第一个「##四」或「### 🔴异动二」之后找重复起点
+        for anchor in ("### 🔴异动二", "###异动二", "## 四、", "##四、"):
+            pos = text.find(anchor)
+            if pos >= 0:
+                sub = text[pos:]
+                m2 = re.search(
+                    r"(\+\d+%[`\(]?达\s*){2,}|(\(达到\+\s*){2,}|\*\*?\(正式|\*\*\((?:截断|续|完整|修正|最终|输出)\)|"
+                    r"(?:DNU=\)?,\s*){2,}|(?:D\s*NU/D\s*AU比例异常高)",
+                    sub,
+                    re.I,
+                )
+                if m2:
+                    cut = pos + m2.start()
+                    if earliest is None or cut < earliest:
+                        earliest = cut
+                break
+    if _detect_table_spam_anomaly(text):
+        for line in text.splitlines():
+            if line.count("|") >= 12:
+                pos = text.find(line)
+                if pos >= 0 and (earliest is None or pos < earliest):
+                    earliest = pos
+                break
+    if _detect_metric_token_repetition(text):
+        m = _RE_DNU_LOOP.search(text) or _RE_DAU_RATIO_LOOP.search(text)
+        if m and (earliest is None or m.start() < earliest):
+            earliest = m.start()
+    return earliest
+
+
+def _line_looks_like_leak_fragment(line: str) -> bool:
+    ln = (line or "").strip()
+    if not ln:
+        return False
+    if _THINKING_LEAK_RE.search(ln):
+        return True
+    if ln.startswith("*") and ("注:" in ln or "Note:" in ln or "修正" in ln or "正式" in ln):
+        return True
+    if re.match(r"^[\*\+%\(\)\s`\-|]+$", ln) and len(ln) > 6:
+        return True
+    if ln.count("|") >= 12:
+        return True
+    if _RE_DNU_LOOP.search(ln) or ln.count("D NU/D AU") >= 3:
+        return True
+    return False
+
+
+def _iter_strategic_section_starts(text: str) -> list[tuple[int, str]]:
+    hits: list[tuple[int, str]] = []
+    for marker in _STRATEGIC_SECTION_MARKERS:
+        pos = 0
+        while True:
+            idx = text.find(marker, pos)
+            if idx < 0:
+                break
+            hits.append((idx, marker))
+            pos = idx + len(marker)
+    hits.sort(key=lambda x: x[0])
+    # 同位置只保留最长 marker
+    dedup: list[tuple[int, str]] = []
+    for pos, marker in hits:
+        if dedup and dedup[-1][0] == pos:
+            if len(marker) > len(dedup[-1][1]):
+                dedup[-1] = (pos, marker)
+        else:
+            dedup.append((pos, marker))
+    return dedup
+
+
+def _section_number_from_marker(marker: str) -> int | None:
+    compact = marker.replace(" ", "")
+    for n, cn in enumerate("一二三四五六", 1):
+        if f"{cn}、" in compact:
+            return n
+    return None
+
+
+def _truncate_at_first_corrupted_section(text: str) -> str:
+    """从第四节起逐节检测；首个污染节及之后整段丢弃。"""
+    sections = _iter_strategic_section_starts(text)
+    if not sections:
+        return text
+    for i, (pos, marker) in enumerate(sections):
+        if (_section_number_from_marker(marker) or 0) < 4:
+            continue
+        end = sections[i + 1][0] if i + 1 < len(sections) else len(text)
+        if _is_report_corrupted(text[pos:end]):
+            return text[:pos].rstrip()
+    return text
+
+
+def _truncate_before_corrupted_section4(text: str) -> str:
+    """若第四节及以后污染，保留前三节主干（兼容旧名）。"""
+    return _truncate_at_first_corrupted_section(text)
+
+
+def _trim_corrupted_tail_lines(text: str) -> str:
+    lines = text.split("\n")
+    while lines:
+        ln = lines[-1]
+        if not ln.strip():
+            lines.pop()
+            continue
+        if _line_looks_like_leak_fragment(ln):
+            lines.pop()
+            continue
+        break
+    return "\n".join(lines).rstrip()
+
+
+def _sanitize_strategic_report_thinking_leak(text: str) -> str:
+    """截断 thinking/元注释泄漏点，并去掉末尾不完整片段。"""
     if not text:
         return text
+    cut = _find_leak_cut_index(text)
+    if cut is not None:
+        text = text[:cut].rstrip()
+    text = re.sub(r"\*\*\(正式[^\n]*$", "", text).rstrip()
+    text = _smart_truncate_corrupted_report(text)
+    text = _trim_corrupted_tail_lines(text)
+    # 回退到最后一个完整章节分隔（保留前三节为主干）
+    if text:
+        last_hr = text.rfind("\n---\n")
+        if last_hr > len(text) * 0.45:
+            tail = text[last_hr + 5 :].strip()
+            if _detect_thinking_leak(tail) or _detect_repetition_anomaly(tail):
+                text = text[:last_hr].rstrip()
+    return text
+
+
+def _append_strategic_truncation_notice(text: str, *, force: bool = False) -> str:
+    notice = (
+        "\n\n---\n\n> ⚠️ 部分章节因模型输出异常已自动截断（常见为第四～六节）。"
+        " 请人工复核留存/归因/待澄清部分，或稍后单独重跑 Step 3.5。"
+    )
+    if notice.strip() in text:
+        return text
+    if force:
+        base = text.rstrip()
+        if base and not base.endswith("。") and not base.endswith("）"):
+            base += "。"
+        return base + notice
+    sections = _iter_strategic_section_starts(text)
+    late_ok = True
+    late_markers = ("## 四、", "##四、", "## 五、", "##五、", "## 六、", "##六、")
+    for i, (pos, marker) in enumerate(sections):
+        is_late = any(m.replace(" ", "") in marker.replace(" ", "") for m in late_markers)
+        if not is_late:
+            continue
+        end = sections[i + 1][0] if i + 1 < len(sections) else len(text)
+        if _is_report_corrupted(text[pos:end]):
+            late_ok = False
+            break
+    if late_ok and not _is_report_corrupted(text):
+        return text
+    base = text.rstrip()
+    if base and not base.endswith("。") and not base.endswith("）"):
+        base += "。"
+    return base + notice
+
+
+def _finalize_strategic_report_output(raw: str) -> tuple[str, bool]:
+    """去空白/代码围栏；检测并清理 thinking 泄漏。返回 (正文, 是否曾污染)。"""
+    text = (raw or "").strip()
+    if not text:
+        return text, False
     if text.startswith("```"):
         lines = text.split("\n")
         if lines and lines[0].strip().startswith("```"):
@@ -104,6 +536,85 @@ def _finalize_strategic_report_output(raw: str) -> str:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+    corrupted = _is_report_corrupted(text)
+    was_corrupted = corrupted
+    if corrupted:
+        logger.warning("[Strategic] 战报含 thinking/元注释泄漏，执行截断清理")
+        pre_len = len(text)
+        text = _sanitize_strategic_report_thinking_leak(text)
+        text = _smart_truncate_corrupted_report(text)
+        text = _trim_corrupted_tail_lines(text)
+        if _is_report_corrupted(text):
+            text = _sanitize_strategic_report_thinking_leak(text)
+        truncated = len(text) < pre_len - 20
+        text = _append_strategic_truncation_notice(text, force=truncated or was_corrupted)
+        was_corrupted = True
+    return text, was_corrupted
+
+
+def _pick_best_strategic_candidate(candidates: list[tuple[str, bool, str]]) -> tuple[str, bool]:
+    """从多轮 LLM 结果中选最优：优先无污染且足够长。"""
+    valid = [(t.strip(), c, label) for t, c, label in candidates if (t or "").strip()]
+    if not valid:
+        return "", True
+    clean = [(t, label) for t, c, label in valid if not c]
+    if clean:
+        t, label = max(clean, key=lambda x: len(x[0]))
+        logger.info("[Strategic] 选用 %s 模型输出（无泄漏，%d 字符）", label, len(t))
+        return t, False
+    # 全部污染：取最长并再做截断
+    t, c, label = max(valid, key=lambda x: len(x[0]))
+    logger.warning("[Strategic] 各轮均含泄漏，对 %s 输出做强制截断（原长 %d）", label, len(t))
+    t2, c2 = _finalize_strategic_report_output(t)
+    return t2, c2
+
+
+def _scrub_dod_summary_for_prompt(dod: str) -> str:
+    """压缩 prompt 中易触发模型复读的 NaN/占位片段。"""
+    if not dod:
+        return dod
+    lines: list[str] = []
+    for ln in dod.splitlines():
+        if ln.count("NaN%") >= 3:
+            lines.append(re.sub(r"(NaN%[\s,，]*){2,}", "NaN%（ETL未闭合，勿逐条复读） ", ln))
+            continue
+        if re.search(r"(\+\d+%`?\(达\s*){3,}", ln):
+            lines.append(re.sub(r"(\+\d+%`?\(达\s*)+", "+N%（…环比，勿复读） ", ln))
+            continue
+        if re.search(r"(?:DNU=\)?,\s*){3,}", ln, re.I) or ln.count("DNU=") >= 6:
+            lines.append(
+                re.sub(
+                    r"(?:DNU=\)?,\s*)+",
+                    "DNU=(见T日03b/01表，勿列举空DNU=) ",
+                    ln,
+                    count=1,
+                )
+            )
+            continue
+        if re.search(r"(D\s*NU/D\s*AU[^。]{0,40}[。]?){2,}", ln, re.I):
+            lines.append(
+                re.sub(
+                    r"(D\s*NU/D\s*AU[^。]{0,40}[。]?)+",
+                    "DNU/DAU占比见01/03b表（勿复读） ",
+                    ln,
+                    count=1,
+                )
+            )
+            continue
+        lines.append(ln)
+    return "\n".join(lines)
+
+
+def _ensure_deliverable_strategic_report(text: str) -> str:
+    """终检：截断泄漏、补截断说明，保证可进邮件。"""
+    text = (text or "").strip()
+    if not text:
+        return text
+    if _is_report_corrupted(text):
+        logger.warning("[Strategic][ExecutionBrief] 终检仍含泄漏，强制截断后交付")
+        text = _sanitize_strategic_report_thinking_leak(text)
+        text = _smart_truncate_corrupted_report(text)
+        text = _append_strategic_truncation_notice(text)
     return text
 
 
@@ -440,7 +951,9 @@ _USER_PROMPT_TEMPLATE = """## K11 / BI 项目背景知识（docs/bi_daily_report
 ## 多维表 / CSV 数据摘要（与上表互补）
 {csv_summary_section}
 
-请**先**结合「背景知识」与「T vs T-1 摘要」理解异动，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v4 交付形态**（长文 Markdown：执行摘要、红黑榜、分维度解读、归因树、行动清单、待澄清；**不要**再用固定 🚨/⚡/🩸 三段子作为主结构）。**若 System 含「战报输出美学」追加节，排版（引用块摘要、涨跌符号与颜色、维度 emoji、`---` 分隔、行动项标签、表名行内代码）必须一并遵守。** 日期用 {report_date_mmdd}（数据所属日）。篇幅以说清为准（建议约 1200～3500 汉字）。"""
+请**先**结合「背景知识」与「T vs T-1 摘要」理解异动，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v4 交付形态**（长文 Markdown：执行摘要、红黑榜、分维度解读、归因树、行动清单、待澄清；**不要**再用固定 🚨/⚡/🩸 三段子作为主结构）。**若 System 含「战报输出美学」追加节，排版（引用块摘要、涨跌符号与颜色、维度 emoji、`---` 分隔、行动项标签、表名行内代码）必须一并遵守。** 日期用 {report_date_mmdd}（数据所属日）。篇幅以说清为准（建议约 1200～3500 汉字）。
+
+**禁止**在正文输出思考过程、自我修正说明、「正式输出段落」「修正后」等元注释或占位符；**直接**输出可交付的最终战报 Markdown。"""
 
 
 def _lark_bitable_list_params(
@@ -787,6 +1300,7 @@ async def generate_bi_strategic_report_async(
 
     k11_md = str(sr_cfg.get("_k11_project_context_md") or "").strip()
     dod_txt = str(sr_cfg.get("_strategic_dod_summary") or "").strip()
+    dod_txt = _scrub_dod_summary_for_prompt(dod_txt)
     dod_t1 = str(sr_cfg.get("_strategic_dod_t1") or "").strip()
     dod_t2 = str(sr_cfg.get("_strategic_dod_t2") or "").strip()
     if dod_t1 and not dod_t2:
@@ -820,6 +1334,14 @@ async def generate_bi_strategic_report_async(
             + "\n\n---\n\n## （追加）大战报 Markdown 排版与可读性 — 与上文 SSOT 同等效力\n\n"
             + aest
         )
+    sys_prompt = (
+        sys_prompt.rstrip()
+        + "\n\n---\n\n## （硬性）输出纪律\n\n"
+        "只输出可直接发送的 Markdown 正文。**禁止**输出思考过程、自我修正、占位符、"
+        "「(截断)/(续)/(完整)/(最终)」等标记、英文 Self-Correction/Ready to Output 注释、"
+        "或 pipe 滥用的空表格；**禁止**复读 `DNU=`, `DNU=),` 空占位或「D NU/D AU比例异常高」同句循环。"
+        "渠道占比写一次具体数字即可，缺数写「未提供」。第六节表格须列数正常（通常 4～5 列）；写不完时用「未提供」短句，勿续写元评论。"
+    )
 
     engine = None
     try:
@@ -842,23 +1364,91 @@ async def generate_bi_strategic_report_async(
 数据已就绪，但 LLM 引擎不可用。请在项目根 `.env` 配置 `DASHSCOPE_API_KEY` 或 `OPENAI_API_KEY`，或通过 L2 为子账号下发 Key 后重试。"""
         return fallback
 
-    try:
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        result = await engine.generate_response(
+    # qwen3.5-plus 在超大 prompt 时默认 thinking 会耗尽 max_tokens 输出预算，
+    # 导致 content 为空；显式关闭 thinking 可避免此问题。
+    # engine.generate_response 在 llm_client.py 中已支持 extra_body 透传。
+    _no_thinking_extra = {"enable_thinking": False}
+
+    async def _call_llm(eng: Any, max_tok: int = 8192) -> str:
+        result = await eng.generate_response(
             messages,
             temperature=0.2,
-            max_tokens=8192,
+            max_tokens=max_tok,
+            extra_body=_no_thinking_extra,
         )
         if isinstance(result, dict):
-            text = result.get("content", "")
-        else:
-            text = (result or "").strip()
-        if not text:
+            return result.get("content", "")
+        return (result or "").strip()
+
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    def _make_flash_engine() -> Any | None:
+        try:
+            from l3_node.llm_client import LiteLLMEngine, SecurityContext
+            import os as _os_sr
+
+            ctx_fb = SecurityContext()
+            dash_key = _os_sr.environ.get("DASHSCOPE_API_KEY_SEA") or _os_sr.environ.get("DASHSCOPE_API_KEY") or ""
+            if not dash_key:
+                return None
+            ctx_fb.set_key("dashscope", dash_key)
+            _timeout = float(_os_sr.environ.get("LLM_TIMEOUT", "180"))
+            return LiteLLMEngine(
+                security_context=ctx_fb,
+                model_name="dashscope/qwen3.5-flash",
+                timeout=_timeout,
+                max_attempts=1,
+            )
+        except Exception as fb_e:
+            logger.warning("[Strategic] flash 引擎初始化失败: %s", fb_e)
+            return None
+
+    async def _try_once(eng: Any | None, label: str, max_tok: int = 8192) -> tuple[str, bool, str]:
+        if eng is None:
+            return "", True, label
+        raw = await _call_llm(eng, max_tok=max_tok)
+        text, corrupted = _finalize_strategic_report_output(raw)
+        return text, corrupted, label
+
+    try:
+        flash_eng = _make_flash_engine()
+        candidates: list[tuple[str, bool, str]] = []
+
+        # flash 优先：不易在第四节陷入自我修正死循环；plus 仅作补充
+        if flash_eng:
+            logger.info("[Strategic] 主路径：qwen3.5-flash（enable_thinking=False）")
+            flash_text, flash_bad, _ = await _try_once(flash_eng, "flash", 8192)
+            if flash_text and not flash_bad and len(flash_text) >= 600 and "## 一、执行摘要" in flash_text:
+                logger.info("[Strategic] flash 首轮通过终检（%d 字符），跳过 plus", len(flash_text))
+                return _ensure_deliverable_strategic_report(flash_text)
+            if flash_text:
+                candidates.append((flash_text, flash_bad, "flash"))
+
+        logger.info("[Strategic] 备路径：默认引擎 qwen3.5-plus")
+        plus_text, plus_bad, _ = await _try_once(engine, "plus", 8192)
+        if plus_text:
+            candidates.append((plus_text, plus_bad, "plus"))
+
+        text, still_bad = _pick_best_strategic_candidate(candidates)
+        if still_bad or not (text or "").strip():
+            logger.warning("[Strategic] 首轮均不理想，flash 再试一次")
+            if flash_eng:
+                candidates.append(await _try_once(flash_eng, "flash-retry", 8192))
+            text, still_bad = _pick_best_strategic_candidate(candidates)
+
+        if not (text or "").strip():
             return "LLM 返回空内容"
-        return _finalize_strategic_report_output(text)
+
+        text = _ensure_deliverable_strategic_report(text)
+
+        if "## 一、执行摘要" not in text and "## 一、执行摘要" not in text.replace(" ", ""):
+            return (
+                "# 📊 BI 战略分析（结构异常）\n\n"
+                "模型输出缺少「执行摘要」章节，已拒绝原样发送。请重跑 Step 3.5 或检查 LLM 配置。"
+            )
+        return text
     except Exception as e:
         logger.exception("[Strategic] LLM 调用失败: %s", e)
         return f"""# 📊 BI 战略分析（生成失败）

@@ -181,25 +181,6 @@ NATIVE_TOOLS: list[dict[str, Any]] = [
         "params": ["yaml_path"],
     },
     {
-        "id": "core:task_dag_update",
-        "label": "core:task_dag_update",
-        "desc": (
-            "更新 ~/.jachin/workspace/task_dags/active.json 中节点状态。"
-            "JSON：node_id（必填）；status（pending|in_progress|completed|failed）；"
-            "error（可选）；或 action=next_pending 仅查询下一个待办节点。"
-        ),
-        "params": ["node_id"],
-    },
-    {
-        "id": "core:plan_task_dag",
-        "label": "core:plan_task_dag",
-        "desc": (
-            "LLM 将复杂意图拆解为 TaskDAG 并写入 workspace/task_dags/active.json。"
-            "JSON：intent（必填）；force（可选 true 跳过启发式）；dag_id（可选）。"
-        ),
-        "params": ["intent"],
-    },
-    {
         "id": "core:domain_workflow_run",
         "label": "core:domain_workflow_run",
         "desc": "长期架构 L2：执行已注册领域子图。JSON：domain_id（或 domain）+ 领域参数，如 HR：workflow_id, include_analyze, context",
@@ -500,14 +481,32 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
         return _read_file_content(p)
 
     if tool_id == "core:fs_read":
-        from core.native_tools import dispatch_native_tool
-
-        return dispatch_native_tool(tool_id, **kwargs)
+        raw = (kwargs.get("file_path", "") or "").strip().replace("\\", "/")
+        fp = Path(raw).expanduser()
+        if not fp.is_absolute():
+            # L3 数据卷相对路径：global_resume_pool/Java_杭州 4-6K/xxx.pdf
+            cand_vol = (_l3_volume / raw.lstrip("/")).resolve()
+            if cand_vol.exists() and cand_vol.is_file() and _under_hr(cand_vol):
+                return _read_after_read_policy(cand_vol)
+            for base in _hr_allowed:
+                cand = (base / fp.name).resolve()
+                if cand.exists() and _under_hr(cand):
+                    return _read_after_read_policy(cand)
+            cand = (proj / raw.lstrip("/")).resolve()
+            if cand.exists() and _under_hr(cand):
+                return _read_after_read_policy(cand)
+            fp = (workspace / raw).resolve()
+        if _under_hr(fp):
+            return _read_after_read_policy(fp)
+        return _read_after_read_policy(fp)
     if tool_id == "core:fs_write":
-        from core.native_tools import dispatch_native_tool
-
-        out = dispatch_native_tool(tool_id, **kwargs)
-        return out if isinstance(out, dict) else {"ok": True}
+        fp = Path(kwargs.get("file_path", "")).expanduser()
+        if not fp.is_absolute():
+            fp = (workspace / fp).resolve()
+        _assert_under(fp)
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(kwargs.get("content", ""), encoding="utf-8")
+        return {"ok": True}
     if tool_id == "core:shell_exec":
         import subprocess
         import uuid as _uuid
@@ -555,44 +554,6 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
             if not isinstance(p, dict):
                 p = {}
             return dispatch_domain_workflow(did, p)
-        except ImportError as e:
-            return {"ok": False, "error": str(e)}
-    if tool_id == "core:plan_task_dag":
-        try:
-            from l3_node.task_engine.dag_planner import plan_task_dag_sync
-
-            intent = str(kwargs.get("intent") or "").strip()
-            force = bool(kwargs.get("force", False))
-            result = plan_task_dag_sync(intent, force=force)
-            return {
-                "ok": result.ok,
-                "dag_id": result.dag_id,
-                "title": result.title,
-                "nodes": result.nodes,
-                "written_to": result.written_to,
-                "error": result.error,
-            }
-        except ImportError as e:
-            return {"ok": False, "error": str(e)}
-    if tool_id == "core:task_dag_update":
-        try:
-            from l3_node.task_engine.dag_node_sync import (
-                get_next_pending_dag_node,
-                mark_dag_node_status,
-            )
-
-            action = str(kwargs.get("action") or "").strip().lower()
-            if action == "next_pending":
-                nxt = get_next_pending_dag_node()
-                return {"ok": True, "next_pending": nxt}
-            nid = str(kwargs.get("node_id") or "").strip()
-            st = str(kwargs.get("status") or "completed").strip()
-            err = kwargs.get("error")
-            return mark_dag_node_status(
-                nid,
-                st,
-                error=str(err)[:500] if err else None,
-            )
         except ImportError as e:
             return {"ok": False, "error": str(e)}
     if tool_id == "core:workflow_run":
@@ -658,10 +619,6 @@ def _invoke_native_fallback(tool_id: str, **kwargs: Any) -> Any:
             content=str(kwargs.get("content") or kwargs.get("body") or ""),
             tags=tags,
         )
-    if tool_id in ("core:db_query", "core:db_write", "core:pmo_import_json", "core:pmo_init_gap_report"):
-        from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
-
-        return dispatch_pmo_db_tool(tool_id, **kwargs)
     raise ValueError(f"未知工具: {tool_id}")
 
 
@@ -1235,19 +1192,19 @@ def run_tool(
 
     params = {}
     if tool_id == "core:fs_read":
-        from l3_node.primitives.native_tool_json import coerce_file_path_from_tool_input
-
-        fp = coerce_file_path_from_tool_input(inp)
-        if not fp:
-            if inp.strip().startswith("{"):
-                return (
-                    "[执行失败: file_path JSON 解析失败] 请用绝对路径，例如 "
-                    "C:\\\\Users\\\\...\\\\.jachin\\\\workspace\\\\pmo_lark_pull\\\\00_SYNC_MANIFEST.json "
-                    "或 workspace 相对路径 pmo_lark_pull/00_SYNC_MANIFEST.json；"
-                    "勿重复嵌套 {\"file_path\": \"{...}\"}。"
-                )
-            fp = (inp or "target.txt").strip()
-        params["file_path"] = fp
+        # 与 core:fs_write 一致：模型常输出 JSON {"file_path":"..."}，不可整段当路径（否则会拼成 …/workspace/{"file_path":…} 触发 Errno 22）
+        params["file_path"] = ""
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    fp = str(o.get("file_path") or o.get("path") or "").strip()
+                    if fp:
+                        params["file_path"] = fp
+            except json.JSONDecodeError:
+                pass
+        if not params.get("file_path"):
+            params["file_path"] = (inp or "target.txt").strip()
     elif tool_id == "core:shell_exec":
         params["background"] = False
         params["timeout"] = 30
@@ -1349,33 +1306,6 @@ def run_tool(
                 pass
         dom = str(body.pop("domain_id", "") or body.pop("domain", "") or "").strip()
         params = {"domain_id": dom, "params": body if body else {}}
-    elif tool_id == "core:plan_task_dag":
-        params = {"intent": inp.strip(), "force": False, "dag_id": None}
-        if inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params["intent"] = str(o.get("intent") or o.get("user_intent") or "")
-                    params["force"] = bool(o.get("force", False))
-                    if o.get("dag_id") is not None:
-                        params["dag_id"] = str(o.get("dag_id"))
-            except json.JSONDecodeError:
-                pass
-    elif tool_id == "core:task_dag_update":
-        params = {"node_id": "", "status": "completed", "action": "", "error": None}
-        if inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params["node_id"] = str(o.get("node_id") or o.get("id") or "")
-                    params["status"] = str(o.get("status") or "completed")
-                    params["action"] = str(o.get("action") or "")
-                    if o.get("error") is not None:
-                        params["error"] = str(o.get("error"))
-            except json.JSONDecodeError:
-                pass
-        elif inp.strip():
-            params["node_id"] = inp.strip()
     elif tool_id == "core:workflow_run":
         params["yaml_path"] = inp.strip()
         params["persistent"] = False
@@ -1566,59 +1496,58 @@ def run_tool(
             except json.JSONDecodeError:
                 pass
     elif tool_id == "core:fs_write":
-        from l3_node.primitives.native_tool_json import parse_fs_write_tool_input
+        parsed_fs = False
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    fp = str(o.get("file_path") or o.get("path") or "").strip()
+                    ct = o.get("content")
+                    # 与 ReAct 常见输出对齐：整段 JSON 即一次写入
+                    if fp or ct is not None:
+                        params["file_path"] = fp
+                        params["content"] = "" if ct is None else str(ct)
+                        parsed_fs = True
+            except json.JSONDecodeError:
+                pass
+        if not parsed_fs:
+            if "," in inp and "=" in inp:
+                for part in inp.split(","):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        params[k.strip()] = v.strip()
+            else:
+                lines = inp.split("\n")
+                params["file_path"] = lines[0].strip() if lines else ""
+                params["content"] = "\n".join(lines[1:]) if len(lines) > 1 else ""
+    elif tool_id in (
+        "core:db_query",
+        "core:db_write",
+        "core:pmo_import_json",
+        "core:pmo_init_gap_report",
+        "core:pmo_mirror_import",
+    ):
+        if inp.strip().startswith("{"):
+            try:
+                o = json.loads(inp)
+                if isinstance(o, dict):
+                    params = o
+            except json.JSONDecodeError:
+                params = {}
+        else:
+            params = {"sql": inp} if tool_id == "core:db_query" else {}
+        print(
+            f"[Skill Execute] [Native PMO] 调用 tool_id={tool_id}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
 
-        parsed = parse_fs_write_tool_input(inp)
-        params["file_path"] = parsed.get("file_path") or ""
-        params["content"] = parsed.get("content") or ""
-    elif tool_id == "core:db_query":
-        params = {"sql": "", "params": None, "max_rows": 200}
-        if inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params["sql"] = str(o.get("sql") or o.get("query") or "")
-                    params["params"] = o.get("params")
-                    if o.get("max_rows") is not None:
-                        params["max_rows"] = o.get("max_rows")
-            except json.JSONDecodeError:
-                pass
-        if not params.get("sql"):
-            params["sql"] = inp
-    elif tool_id == "core:db_write":
-        params = {"table": "", "operation": "upsert", "records": None}
-        if inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params["table"] = str(o.get("table") or "")
-                    params["operation"] = str(o.get("operation") or "upsert")
-                    params["records"] = o.get("records")
-            except json.JSONDecodeError:
-                pass
-    elif tool_id == "core:pmo_import_json":
-        params = {"file_path": "", "operation": "upsert"}
-        if inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params["file_path"] = str(o.get("file_path") or o.get("path") or "")
-                    params["operation"] = str(o.get("operation") or "upsert")
-            except json.JSONDecodeError:
-                pass
-        if not params.get("file_path"):
-            params["file_path"] = inp.strip()
-    elif tool_id == "core:pmo_init_gap_report":
-        params = {"manifest_path": ""}
-        if inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params["manifest_path"] = str(o.get("manifest_path") or o.get("path") or "")
-            except json.JSONDecodeError:
-                pass
-        if not params.get("manifest_path") and inp.strip():
-            params["manifest_path"] = inp.strip()
+            result = dispatch_pmo_db_tool(tool_id, **params)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return f"[执行失败: {e}]"
     else:
         print(f"[Skill Execute] 未知工具 tool_id={tool_id}", file=sys.stderr, flush=True)
         return f"[未知工具: {tool_id}]"
@@ -1667,10 +1596,6 @@ def run_tool(
                 "core:akshare_company_info",
                 "core:yfinance_global_market_hist",
                 "core:yfinance_ticker_info",
-                "core:db_query",
-                "core:db_write",
-                "core:pmo_import_json",
-                "core:pmo_init_gap_report",
             ):
                 return json.dumps(result, ensure_ascii=False, indent=2)
             if result.get("background") and result.get("job_id"):

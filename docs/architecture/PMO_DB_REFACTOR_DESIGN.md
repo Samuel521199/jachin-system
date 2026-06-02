@@ -134,15 +134,9 @@ flowchart TB
 | 3 | `pmo_design_requirements` | **设计部（美术）需求表** | 设计方任务 `vewswB05Wi`、设计专用美术视图 `vew5taB9H1` 等 |
 | 4 | `pmo_personnel_task_progress` | **人员任务进度表** | 人工看板按员工 `vewCz1FFJi`、人工甘特 `vewjSEz5Xr` 等（以「人 + 任务」为粒度） |
 
-三张部门需求表 **字段结构一致**（便于提取 Prompt 复用、分析 SQL 可 `UNION`）；人员任务进度表以 **「人 → 任务 → 子任务」** 为粒度，通过 **`parent_id` / `dept_requirement_id`** 与部门表 **层层链接**。
+三张部门需求表 **字段结构一致**（便于提取 Prompt 复用、分析 SQL 可 `UNION`）；人员任务进度表 **一行 = 一个人名下的一条任务**，同一人有多条任务则多行。
 
-**重要设计取向（与旧版不同）**：
-
-1. **不固定「大需求进部门表、子任务只进人员表」**。飞书落盘 md 结构不统一，**由提取 Agent 按行语义判断**是否属于某部门；只要是该部门相关内容，**均可写入对应部门表**（Epic / Story / Task 层级均可）。
-2. **部门表与人员表允许重叠**。同一条业务信息可能同时出现在部门需求表（需求维度）和人员任务表（责任人维度），通过 **`id` / `dept_requirement_id` / `root_id`** 互相关联，而不是互斥。
-3. **「现在情况」不是分析结论**。库内只存 **对照 `docs/pmo_bmo_plugin/项目开发全流程说明.md` 如实描述的流程位置**；「延期 / 偏闲 / 风险」等 **留给第二层分析 Agent**，不入库。
-
-除上述四张业务表外，保留 **人员名册 / 同步状态 / 变更队列 / 提取日志** 等辅助表，支撑层级关联、Webhook 增量与审计。
+除上述四张业务表外，保留 **同步状态 / 变更队列 / 提取日志** 三张辅助表，支撑 Webhook 增量与审计。
 
 ---
 
@@ -153,29 +147,21 @@ flowchart TB
 ```sql
 CREATE TABLE pmo_product_requirements (
   id                  TEXT PRIMARY KEY,     -- 飞书记录 ID（record_id）；若无则生成 UUID
-  requirement_name    TEXT NOT NULL,        -- 需求 / 任务名称（层级不限，由 LLM 判断）
-  assigned_people     TEXT,                 -- 需求对应人员（JSON 数组，如 ["Seth","Elara"]）
-  work_cycle          TEXT,                 -- 工作周期（Sprint / 迭代 / 版本周期）
-  start_date          TEXT,                 -- 开始时间
-  end_date            TEXT,                 -- 结束时间
-  execution_stage     TEXT,                 -- 执行阶段（飞书表内状态原文，如实记录）
-  planned_schedule    TEXT,                 -- 计划时间（计划交付节点或计划排期）
-  priority            TEXT,                 -- 优先级
-  flow_progress_note  TEXT,                 -- 现在情况：对照全流程说明的「流程位置」如实描述（见 §4.1.6）
-  -- 层级关联（关系型核心）
-  parent_id           TEXT,                 -- 父节点 id（同表内上级需求/任务；顶层为 NULL）
-  root_id             TEXT,                 -- 根节点 id（所属 Epic / 大需求链顶端）
-  hierarchy_depth     INTEGER,              -- 层级深度（0=根，1=Story，2=Task…由 LLM 推断）
-  node_kind           TEXT,                 -- 节点类型提示：epic | story | task | unknown（LLM 推断，非硬编码）
-  -- 元数据
-  source_view         TEXT,
-  source_file         TEXT,
+  requirement_name    TEXT NOT NULL,          -- 需求名称
+  assigned_people     TEXT,                   -- 需求对应人员（JSON 数组字符串，如 ["Seth","Elara"]）
+  work_cycle          TEXT,                   -- 工作周期（Sprint / 迭代名 / 版本周期）
+  start_date          TEXT,                   -- 开始时间（YYYY-MM-DD 或 ISO 8601）
+  end_date            TEXT,                   -- 结束时间（实际或当前排期结束）
+  execution_stage     TEXT,                   -- 执行阶段（如：待评审/进行中/测试中/已上线）
+  planned_schedule    TEXT,                   -- 计划时间（计划交付节点、计划完成日或计划周期描述）
+  priority            TEXT,                   -- 任务优先级（P0/P1/P2 或表内原始值）
+  -- 元数据（提取与审计）
+  source_view         TEXT,                   -- 来源 view_id
+  source_file         TEXT,                   -- 来源落盘 md 文件名片段
   extracted_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
-  confidence          REAL DEFAULT 1.0,
-  raw_text            TEXT,
-  FOREIGN KEY (parent_id) REFERENCES pmo_product_requirements(id),
-  FOREIGN KEY (root_id)   REFERENCES pmo_product_requirements(id)
+  confidence          REAL DEFAULT 1.0,       -- LLM 提取置信度 0-1
+  raw_text            TEXT                    -- 原始 Markdown 行（审计 / 重提取）
 );
 ```
 
@@ -194,19 +180,12 @@ CREATE TABLE pmo_dev_requirements (
   execution_stage     TEXT,
   planned_schedule    TEXT,
   priority            TEXT,
-  flow_progress_note  TEXT,
-  parent_id           TEXT,
-  root_id             TEXT,
-  hierarchy_depth     INTEGER,
-  node_kind           TEXT,
   source_view         TEXT,
   source_file         TEXT,
   extracted_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
   confidence          REAL DEFAULT 1.0,
-  raw_text            TEXT,
-  FOREIGN KEY (parent_id) REFERENCES pmo_dev_requirements(id),
-  FOREIGN KEY (root_id)   REFERENCES pmo_dev_requirements(id)
+  raw_text            TEXT
 );
 ```
 
@@ -225,121 +204,59 @@ CREATE TABLE pmo_design_requirements (
   execution_stage     TEXT,
   planned_schedule    TEXT,
   priority            TEXT,
-  flow_progress_note  TEXT,
-  parent_id           TEXT,
-  root_id             TEXT,
-  hierarchy_depth     INTEGER,
-  node_kind           TEXT,
   source_view         TEXT,
   source_file         TEXT,
   extracted_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
   confidence          REAL DEFAULT 1.0,
-  raw_text            TEXT,
-  FOREIGN KEY (parent_id) REFERENCES pmo_design_requirements(id),
-  FOREIGN KEY (root_id)   REFERENCES pmo_design_requirements(id)
+  raw_text            TEXT
 );
 ```
 
 #### 4.1.4 人员任务进度表 · `pmo_personnel_task_progress`
 
-**粒度**：**一人 → 可多任务 → 任务可再分子任务**，通过外键 **层层链接**。
+**粒度**：一人 + 一任务 = 一行。同一人 5 个任务 → 5 行，`person_name` 相同。
 
 ```sql
--- 人员名册（可选但推荐：关系型「人」的锚点）
-CREATE TABLE pmo_people (
-  id            TEXT PRIMARY KEY,           -- 姓名或飞书 user_id
-  name          TEXT NOT NULL UNIQUE,
-  dept          TEXT,                       -- 产品 / 开发 / 设计
-  role          TEXT,
-  is_active     INTEGER DEFAULT 1
-);
-
 CREATE TABLE pmo_personnel_task_progress (
-  id                  TEXT PRIMARY KEY,
-  person_id           TEXT NOT NULL,          -- → pmo_people.id
-  person_name         TEXT NOT NULL,          -- 冗余展示字段，与 people 表一致
-  task_name           TEXT NOT NULL,
-  planned_time        TEXT,
-  completed_time      TEXT,
-  execution_stage     TEXT,                   -- 飞书表内状态原文
-  flow_progress_note  TEXT,                   -- 现在情况（流程位置如实描述，见 §4.1.6）
-  priority            TEXT,
-  work_cycle          TEXT,
-  dept                TEXT,                   -- 产品 / 开发 / 设计
-  -- 层级与跨表链接
-  parent_task_id      TEXT,                   -- 父任务（同表，子任务链）
-  dept_requirement_id TEXT,                   -- 关联部门需求表某行 id（产品/开发/设计三表之一）
-  dept_table          TEXT,                   -- 关联哪张部门表：product | dev | design
-  root_id             TEXT,                   -- 所属需求链根节点（通常 = 大需求 id）
-  hierarchy_depth     INTEGER,
+  id                  TEXT PRIMARY KEY,     -- 飞书记录 ID 或 人+任务 组合键哈希
+  person_name         TEXT NOT NULL,          -- 人员名称
+  task_name           TEXT NOT NULL,          -- 任务名称
+  planned_time        TEXT,                   -- 计划时间（计划开始/计划交付，YYYY-MM-DD 或区间）
+  completed_time      TEXT,                   -- 完成时间（未完成则 NULL）
+  execution_stage     TEXT,                   -- 执行到什么阶段（表内状态 / 流程节点）
+  current_status      TEXT,                   -- 现在情况如何（进行中/延期/阻塞/偏闲等归纳）
+  parent_requirement  TEXT,                   -- 属于哪个大需求（Epic / 顶层需求名；无则 NULL）
+  priority            TEXT,                   -- 任务优先级
+  work_cycle          TEXT,                   -- 所属工作周期（便于按 Sprint 筛选）
+  dept                TEXT,                   -- 产品/开发/设计（辅助交叉分析）
   source_view         TEXT,
   source_file         TEXT,
   extracted_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
   confidence          REAL DEFAULT 1.0,
-  raw_text            TEXT,
-  FOREIGN KEY (person_id)       REFERENCES pmo_people(id),
-  FOREIGN KEY (parent_task_id)  REFERENCES pmo_personnel_task_progress(id)
+  raw_text            TEXT
 );
 ```
-
-**层级示例**（关系型读法）：
-
-```
-pmo_people: Elara
-  └─ pmo_personnel_task_progress: 「接口联调」(parent_task_id=NULL, dept_requirement_id=rec_epic_01)
-       └─ 「修复登录 Bug」(parent_task_id=上一行 id)
-       └─ 「补充单元测试」(parent_task_id=上一行 id)
-
-pmo_dev_requirements: Bingo Flash (id=rec_epic_01, parent_id=NULL, root_id=rec_epic_01)
-  └─ Story: 支付模块 (parent_id=rec_epic_01)
-       └─ Task: 接口联调 (parent_id=story_id)  ← 可与人员表中 Elara 的任务行通过 dept_requirement_id 互指
-```
-
-同一条「接口联调」**可以同时**存在于 `pmo_dev_requirements`（开发需求树）和 `pmo_personnel_task_progress`（Elara 的任务行），**不是二选一**。
 
 #### 4.1.5 字段语义说明（业务 ↔ 库表）
 
 | 业务说法 | 部门需求表字段 | 人员任务进度表字段 | 提取注意 |
 |----------|----------------|-------------------|----------|
-| 需求 / 任务名称 | `requirement_name` | `task_name` | **不固定层级**：Epic / Story / Task 均可入部门表；是否写入由 LLM 根据「是否属于该部门内容」判断，**勿硬编码**「只收顶层」 |
-| 需求对应人员 | `assigned_people` | `person_id` + `person_name` | 人员表 **一人一行注册**于 `pmo_people`；其下 **多任务** 用多行 + `parent_task_id` 链接；部门表用 JSON 存多人 |
-| 工作周期 | `work_cycle` | `work_cycle` | 映射 Sprint / 冲刺 / 版本周期列 |
-| 开始 / 结束时间 | `start_date` / `end_date` | —（人员任务用 `planned_time` / `completed_time`） | 优先映射表内日期列；缺失则 null |
-| 执行阶段 | `execution_stage` | `execution_stage` | **飞书原文**，不做 PMO 分析性归纳 |
-| 计划时间 | `planned_schedule` | `planned_time` | 计划交付节点或计划排期 |
-| **现在情况** | `flow_progress_note` | `flow_progress_note` | **入库层**：对照 **`docs/pmo_bmo_plugin/项目开发全流程说明.md`** 如实写「流程走到哪」；**禁止**写延期/偏闲/风险等分析结论（那是第二层分析 Agent 的工作） |
-| 层级 / 父子 | `parent_id`, `root_id`, `hierarchy_depth`, `node_kind` | `parent_task_id`, `dept_requirement_id`, `dept_table`, `root_id`, `hierarchy_depth` | 提取时尽量还原 **Epic → Story → Task** 树；父子关系不确定时 `parent_id` 可 null，`confidence` 降低 |
-| 优先级 | `priority` | `priority` | P0–P3 或表内原值 |
-| 部门表 ↔ 人员表 | `id` | `dept_requirement_id` + `dept_table` | **允许重复存储**同一业务事实的两个视角；用 id 互链，分析时用 JOIN 而非 LLM 记忆 |
-
-#### 4.1.6 `flow_progress_note`（现在情况）填写规范
-
-**定义**：记录「对照项目全流程说明，这条需求/任务 **客观处于哪个流程位置**」，是 **提取层的事实描述**，不是战报里的负荷/风险判断。
-
-提取 Agent 须 **先读**（或已在 system 中注入）`docs/pmo_bmo_plugin/项目开发全流程说明.md`，再填写 `flow_progress_note`。参考该文档中的阶段叙事（立项/评审 → 开发/验收 → 上线发布）与各职能步骤。
-
-| 对象类型 | `flow_progress_note` 应写什么 | 示例（如实、可核对） |
-|----------|------------------------------|----------------------|
-| **大需求（Epic / Story）** | 处于全流程哪一大阶段 + 哪一职能步骤 | 「立项/评审阶段 · 需求评审已通过，进入开发/验收 · 开发任务表执行中」 |
-| **小需求 / 子任务（Task）** | 计划周期内的 **时间位置**（第几天、占计划比例）+ 表内可见状态 | 「开发/验收阶段 · 计划周期第 3/7 天 · 表内状态：进行中」 |
-| **信息不足** | 只写能从 Observation **直接读到** 的内容 | 「表内状态：待评审；全流程阶段无法从本行推断」 |
-
-**明确禁止写入 `flow_progress_note` 的内容**（这些属于 **第二层分析 Agent**）：
-- 🚨 延期、⚠️ 风险、🟡 偏闲、负荷过高/过低
-- 「应该加快」「建议关注」等主观建议
-- 与表内字段矛盾的猜测
-
-**与 `execution_stage` 的分工**：
-- `execution_stage` = 飞书多维表 **单元格原值**（如「进行中」「待验收」）
-- `flow_progress_note` = 结合全流程说明文档后的 **流程位置叙述**（仍须基于表内字段，不可臆造）
+| 需求名称 | `requirement_name` | — | 顶层需求行；子任务不入部门表，入人员表 |
+| 需求对应人员 | `assigned_people` | `person_name` | 部门表可多人 JSON；人员表一行一人 |
+| 工作周期 | `work_cycle` | `work_cycle` | 映射 Sprint / 迭代 / 版本周期列 |
+| 开始时间 | `start_date` | — | 优先映射「开始日」「启动时间」类列 |
+| 结束时间 | `end_date` | — | 优先映射「结束日」「实际完成」类列 |
+| 执行阶段 | `execution_stage` | `execution_stage` | 保留飞书原文，不强制枚举 |
+| 计划时间 | `planned_schedule` | `planned_time` | 与 start/end 区分：指「计划交付节点」或计划排期 |
+| 现在情况 | — | `current_status` | 可由 LLM 根据日期+状态归纳（延期/正常/偏闲） |
+| 属于哪个大需求 | — | `parent_requirement` | 从层级表或关联列提取父需求名 |
+| 优先级 | `priority` | `priority` | P0/P1/P2 或表内原始值 |
 
 ---
 
 ### 4.2 辅助表（同步 / 变更 / 审计）
-
-> **`pmo_people`** 已在 §4.1.4 与人员任务表一并定义，作为层级关系的「人」锚点。
 
 ```sql
 -- 同步状态（记录每个 view 上次同步时间）
@@ -385,56 +302,44 @@ CREATE TABLE pmo_extraction_log (
 
 ### 4.3 飞书 view → 业务表映射（提取 Agent 路由）
 
-提取 Agent 读落盘 md 时，按 **view_id + 行语义 + 部门归属** 决定写入目标。**不采用「一行只能进一张表」的硬规则**——同一业务事实可同时写入部门表与人员表，并用 **`dept_requirement_id` / `root_id`** 链接。
+提取 Agent 读落盘 md 时，按 **view_id + 行语义** 决定写入哪张表（同一条飞书记录不应重复写入多张部门表，除非业务上确属跨部门副本）：
 
-| view_id | 视图用途 | 可写入表 | 说明 |
-|---------|----------|----------|------|
-| `vew8TxMcSh` | 产品需求池 | `pmo_product_requirements` | 产品部内容；层级行均可入表 |
-| `vewL9Mofgd` | 产品端人员看板 | `pmo_personnel_task_progress` | dept=产品；补 `pmo_people` |
-| `vewpYzbZ29` | 产品方任务 | 产品表 **+** 人员表 | **允许重叠**；互链 id |
-| `vewpI8lyYw` | 开发计划核心版本需求 | `pmo_dev_requirements` | 开发主轴；Epic/Story/Task 均可 |
-| `vew0gcyAUk` | 开发方任务 | 开发表 **+** 人员表 | 同上 |
-| `vew4Im7GO3` / `vewpxQxeGw` / `vewQKcyDAV` | 甘特 / 看板 | 人员表（为主） | 可反链开发表 `dept_requirement_id` |
-| `vewswB05Wi` | 设计方任务 | 设计表 **+** 人员表 | 同上 |
+| view_id | 视图用途 | 主要写入表 | 说明 |
+|---------|----------|------------|------|
+| `vew8TxMcSh` | 产品需求池 | `pmo_product_requirements` | 产品部需求 |
+| `vewL9Mofgd` | 产品端人员看板 | `pmo_personnel_task_progress` | dept=产品 |
+| `vewpYzbZ29` | 产品方任务 | `pmo_product_requirements` + `pmo_personnel_task_progress` | 需求行→产品表；任务行→人员表 |
+| `vewpI8lyYw` | 开发计划核心版本需求 | `pmo_dev_requirements` | 开发主轴；顶层需求入开发表 |
+| `vew0gcyAUk` | 开发方任务 | `pmo_dev_requirements` + `pmo_personnel_task_progress` | dept=开发 |
+| `vew4Im7GO3` / `vewpxQxeGw` / `vewQKcyDAV` | 甘特 / 看板 | `pmo_personnel_task_progress` | 补充任务粒度与日期 |
+| `vewswB05Wi` | 设计方任务 | `pmo_design_requirements` + `pmo_personnel_task_progress` | dept=设计 |
 | `vew5taB9H1` | 设计专用美术视图 | `pmo_design_requirements` | 美术主轴 |
-| `vewCz1FFJi` | 人工看板按员工 | `pmo_personnel_task_progress` | 人员矩阵战报主来源 |
-| `vewjSEz5Xr` | 人工甘特 | 人员表 + 可选部门表 | 补充计划/完成时间与层级 |
-
-**提取 Agent 路由原则（LLM 判断，非硬编码）**：
-1. 该行内容 **属于哪个部门** → 写入对应部门表（若语义明确）
-2. 该行 **能识别责任人** → 写入人员表，并 `INSERT OR IGNORE` `pmo_people`
-3. 若能对应到已写入的部门行 → 填 `dept_requirement_id` + `dept_table`
-4. 若能识别父子层级 → 填 `parent_id` / `parent_task_id` + `root_id`
-5. **同一条 md 行写入两表时**，两行的 `raw_text` 可相同，但 **id 可相同（同一 record_id）或各生成一行并通过 dept_requirement_id 关联**
+| `vewCz1FFJi` | 人工看板按员工 | `pmo_personnel_task_progress` | **人员任务矩阵战报主来源** |
+| `vewjSEz5Xr` | 人工甘特 | `pmo_personnel_task_progress` | 补充计划/完成时间与 parent_requirement |
 
 **交叉分析时的用法**：
-- **§1.4 需求进度全览**：查三张部门需求表（可按 `root_id` 聚合树）
-- **§1.4 人员任务矩阵**：`pmo_personnel_task_progress` JOIN `pmo_people`，按人聚合子任务
-- **跨表对齐**：`dept_requirement_id` + `root_id` SQL JOIN，**第二层分析 Agent** 再算延期/偏闲/风险
+- **§1.4 需求进度全览**：以 `pmo_dev_requirements` 为主，`UNION` 产品 / 设计表或按部门筛选
+- **§1.4 人员任务矩阵**：查 `pmo_personnel_task_progress`，按 `person_name` 聚合
+- **跨表对齐**：用 `parent_requirement` + `requirement_name` + `work_cycle` 做关联，而非 LLM 记忆
 
 ---
 
 ### 4.4 关键索引
 
 ```sql
--- 部门需求表
-CREATE INDEX idx_product_parent     ON pmo_product_requirements(parent_id);
-CREATE INDEX idx_product_root       ON pmo_product_requirements(root_id);
+-- 部门需求表（三张结构相同，索引相同）
 CREATE INDEX idx_product_work_cycle ON pmo_product_requirements(work_cycle);
-CREATE INDEX idx_dev_parent         ON pmo_dev_requirements(parent_id);
-CREATE INDEX idx_dev_root           ON pmo_dev_requirements(root_id);
-CREATE INDEX idx_dev_work_cycle     ON pmo_dev_requirements(work_cycle);
-CREATE INDEX idx_design_parent      ON pmo_design_requirements(parent_id);
-CREATE INDEX idx_design_root        ON pmo_design_requirements(root_id);
-CREATE INDEX idx_design_work_cycle  ON pmo_design_requirements(work_cycle);
+CREATE INDEX idx_product_stage       ON pmo_product_requirements(execution_stage);
+CREATE INDEX idx_dev_work_cycle      ON pmo_dev_requirements(work_cycle);
+CREATE INDEX idx_dev_stage           ON pmo_dev_requirements(execution_stage);
+CREATE INDEX idx_design_work_cycle   ON pmo_design_requirements(work_cycle);
+CREATE INDEX idx_design_stage        ON pmo_design_requirements(execution_stage);
 
--- 人员与任务树
-CREATE INDEX idx_people_name        ON pmo_people(name);
-CREATE INDEX idx_personnel_person   ON pmo_personnel_task_progress(person_id);
-CREATE INDEX idx_personnel_parent   ON pmo_personnel_task_progress(parent_task_id);
-CREATE INDEX idx_personnel_dept_req ON pmo_personnel_task_progress(dept_requirement_id);
-CREATE INDEX idx_personnel_root     ON pmo_personnel_task_progress(root_id);
-CREATE INDEX idx_personnel_cycle    ON pmo_personnel_task_progress(work_cycle);
+-- 人员任务进度
+CREATE INDEX idx_personnel_name      ON pmo_personnel_task_progress(person_name);
+CREATE INDEX idx_personnel_cycle     ON pmo_personnel_task_progress(work_cycle);
+CREATE INDEX idx_personnel_parent    ON pmo_personnel_task_progress(parent_requirement);
+CREATE INDEX idx_personnel_planned   ON pmo_personnel_task_progress(planned_time);
 
 -- 辅助表
 CREATE INDEX idx_queue_status        ON pmo_change_queue(status);
@@ -558,11 +463,11 @@ sequenceDiagram
   Agent2->>DBQ: 查询 2：产品 + 设计需求（可 UNION）\nSELECT '产品' AS dept, * FROM pmo_product_requirements WHERE work_cycle = :cycle\nUNION ALL\nSELECT '设计', * FROM pmo_design_requirements WHERE work_cycle = :cycle
   DBQ-->>Agent2: 产设需求列表
 
-  Agent2->>DBQ: 查询 3：人员任务树（按人聚合）\nSELECT p.name, t.task_name, t.planned_time,\nt.completed_time, t.flow_progress_note, t.priority,\nt.dept_requirement_id, t.parent_task_id\nFROM pmo_personnel_task_progress t\nJOIN pmo_people p ON t.person_id = p.id\nWHERE t.work_cycle = :cycle
-  DBQ-->>Agent2: 人员任务行（含层级；分析层再算延期/偏闲）
+  Agent2->>DBQ: 查询 3：人员任务矩阵\nSELECT person_name, task_name, planned_time,\ncompleted_time, execution_stage, current_status,\nparent_requirement, priority\nFROM pmo_personnel_task_progress\nWHERE work_cycle = :cycle
+  DBQ-->>Agent2: 人员任务行（按人聚合后写 §1.4 矩阵）
 
-  Agent2->>DBQ: 查询 4：需求树（开发主轴示例）\nSELECT * FROM pmo_dev_requirements\nWHERE root_id = :root OR id = :root\nORDER BY hierarchy_depth
-  DBQ-->>Agent2: Epic → Story → Task 链
+  Agent2->>DBQ: 查询 4：延期 / 异常任务\nSELECT * FROM pmo_personnel_task_progress\nWHERE planned_time < date('now')\nAND (completed_time IS NULL OR completed_time = '')\nAND confidence >= 0.8
+  DBQ-->>Agent2: 风险任务列表
 
   Note over Agent2: 基于 4 次查询结果（共约 100-150 行数据）<br/>做交叉分析 + 起草三表 + 风险归纳
 
@@ -574,8 +479,8 @@ sequenceDiagram
 - 4 次 SQL 查询总计返回的数据量约 100～150 行，折算约 1～2 万字，是当前架构（12 张表全量，20 万+ 字）的**十分之一**
 - 分析 Agent 上下文里只有「精确需要的数据」，而不是「所有数据」
 - SQL 的 `WHERE work_cycle = :cycle` 按工作周期过滤，不需要 Agent 在上下文里手动筛 Sprint
-- 延期 / 偏闲 / 风险判断在 **第二层分析 Agent** 用 SQL + 日期计算完成，**不依赖** `flow_progress_note` 里预写结论
-- **§1.4 三表**：需求全览 ← 部门表按 `root_id` 建树；人员矩阵 ← 人员表 JOIN `pmo_people`；跨表对齐 ← `dept_requirement_id`
+- 延期判断用 `planned_time` 与 `completed_time` 空值查询，比大模型比较日期可靠
+- **§1.4 三表** 与四张 DB 表一一对应：需求全览 ← 三张部门需求表；人员矩阵 ← `pmo_personnel_task_progress`；版本映射 ← 三表按 `work_cycle` / `parent_requirement` 归集
 
 ---
 
@@ -624,11 +529,6 @@ sequenceDiagram
       "execution_stage": "进行中",
       "planned_schedule": "2026-05-30",
       "priority": "P0",
-      "flow_progress_note": "开发/验收阶段 · 开发任务表执行中 · 表内状态：进行中",
-      "parent_id": null,
-      "root_id": "rec_xxx",
-      "hierarchy_depth": 0,
-      "node_kind": "epic",
       "source_view": "vewpI8lyYw",
       "confidence": 0.92,
       "raw_text": "| Bingo Flash | 进行中 | Seth | 2026-05-30 | Sprint-23 | P0 |"
@@ -670,58 +570,67 @@ LLM 完全能够理解这个格式，但有几个陷阱：
 **解决方案**：提取 Agent 的 Prompt 里不写固定列名，而是写「找含有日期信息、表示计划完成时间的列，映射到 `plan_date`」。让 LLM 自己判断语义，而不是字符串匹配。
 
 **陷阱 2：层级结构**  
-飞书 md 中父子关系靠缩进、编号或列值体现，**结构不统一**。
+03 表有层级（父需求 → 子需求 → Task），但 Markdown 平铺展开，父子关系靠缩进或编号表示。
 
 **解决方案**：
-- **不预设**「只有顶层进部门表」。LLM 判断该行是否属于某部门 → 写入对应部门表，并尽量填 `parent_id` / `root_id` / `hierarchy_depth`
-- 同时若能识别责任人 → 写入人员表，填 `dept_requirement_id` 链接部门行
-- **同一行可写两表**；层级不确定时 `parent_id` 留 null，`confidence` 降低
+- **顶层需求行** → 写入对应部门表（`pmo_dev_requirements` 等），填 `requirement_name`、`assigned_people`、`work_cycle` 等
+- **子任务 / 按人拆分的行** → 写入 `pmo_personnel_task_progress`，`parent_requirement` 填父需求名，`person_name` + `task_name` 必填
 
 **陷阱 3：值域不一致**  
-「进行中」「开发中」可能是同一 `execution_stage` 原值。
+「进行中」「开发中」「In Progress」可能是同一个阶段。
 
-**解决方案**：`execution_stage` 保留飞书原文；`flow_progress_note` 对照 **`项目开发全流程说明.md`** 写流程位置，**不写**延期/偏闲等分析标签。
+**解决方案**：`execution_stage` / `current_status` **不做枚举约束**，保留飞书原文；分析时可 `LIKE` 或提取 Prompt 内给 normalize 映射表。
 
 ### 提取 Prompt 设计原则
 
-提取前须可读 **`docs/pmo_bmo_plugin/项目开发全流程说明.md`**（或 system 已注入摘要），用于填写 `flow_progress_note`。
+按 **目标表** 使用两套模板。
 
 #### A. 部门需求表（产品 / 开发 / 设计 · 结构相同）
 
 ```
-你是 PMO 数据提取助手。输入：飞书 md 片段 + source_view + 目标表名。
-逐行判断：若内容属于该部门，则提取为一条记录。输出 JSON 数组。
+你是 PMO 数据提取助手。输入：飞书 md 片段 + source_view + 目标表名（pmo_product_requirements | pmo_dev_requirements | pmo_design_requirements）。
+逐行提取「需求级」记录，输出 JSON 数组。每条必须包含：
 
-每条必须包含：
-- id, requirement_name, assigned_people, work_cycle
-- start_date, end_date, execution_stage, planned_schedule, priority
-- flow_progress_note（对照项目开发全流程说明，写流程位置；禁止写延期/偏闲/风险）
-- parent_id, root_id, hierarchy_depth, node_kind（epic|story|task|unknown）
-- confidence
+- id: 飞书记录 ID（无则 UUID）
+- requirement_name: 需求名称
+- assigned_people: 人员 JSON 数组字符串，如 ["Seth","Elara"]
+- work_cycle: 工作周期 / Sprint
+- start_date: 开始时间 YYYY-MM-DD（无则 null）
+- end_date: 结束时间 YYYY-MM-DD（无则 null）
+- execution_stage: 执行阶段（保留原文）
+- planned_schedule: 计划时间（计划交付日或计划节点，YYYY-MM-DD 或简短描述）
+- priority: 优先级 P0/P1/P2 或原文
+- confidence: 0-1
 
 规则：
-- 不限制「只收顶层」；Story/Task 也可入部门表
-- 父子关系：从缩进/编号/列值推断；不确定则 parent_id=null
-- 若同一行也会进人员表，id 保持一致或在人员行填 dept_requirement_id
-- 不猜测缺失字段
+- 只提取顶层需求行；子任务行改入人员任务表，不要写入部门需求表
+- 列名语义映射：「计划交付/截止日期/目标日期」→ planned_schedule；「开始/启动」→ start_date
+- 不猜测缺失字段；不确定则 null 且 confidence -= 0.2
+- 输出纯 JSON 数组
 ```
 
 #### B. 人员任务进度表 · `pmo_personnel_task_progress`
 
 ```
-你是 PMO 数据提取助手。输入：飞书 md 片段 + 已知部门表已写入行的 id 列表（若有）。
+你是 PMO 数据提取助手。输入：飞书 md 片段（尤其 vewCz1FFJi、vewjSEz5Xr、各方任务视图）。
+逐行提取「人 + 任务」记录，输出 JSON 数组。每条必须包含：
 
-每条必须包含：
-- id, person_id, person_name（先确保 pmo_people 有该人）
-- task_name, planned_time, completed_time, execution_stage, priority, work_cycle, dept
-- flow_progress_note（小任务写「计划第 N/M 天」等可核对描述；大任务写全流程阶段）
-- parent_task_id, dept_requirement_id, dept_table, root_id, hierarchy_depth
-- confidence
+- id: 飞书记录 ID（无则 UUID）
+- person_name: 人员名称
+- task_name: 任务名称
+- planned_time: 计划时间 YYYY-MM-DD 或区间描述
+- completed_time: 完成时间（未完成 null）
+- execution_stage: 执行到什么阶段（表内状态/节点）
+- current_status: 现在情况（进行中/延期/阻塞/偏闲等，须有一句可核对依据）
+- parent_requirement: 所属大需求名（无则 null）
+- priority: 任务优先级
+- work_cycle: 工作周期
+- dept: 产品 | 开发 | 设计
+- confidence: 0-1
 
 规则：
-- 一人多任务 = 多行；子任务用 parent_task_id 链接
-- 与部门表重叠允许；尽量填 dept_requirement_id
-- flow_progress_note 禁止写「延期/偏闲/负荷」——那是分析层
+- 一人多任务 = 多行，person_name 可重复
+- current_status 若判「延期」，须 implied 计划日已过且 completed_time 为空
 - 输出纯 JSON 数组
 ```
 
@@ -749,7 +658,7 @@ DB 初始化完成：
 - pmo_personnel_task_progress: 187 条（180 条 confidence≥0.9）
 - 需审查项：
   1. rec_xxx | Bingo Flash | planned_schedule 为 null（原文"待确认"）
-  2. rec_yyy | Elara / 任务A | parent_id 无法推断，hierarchy_depth 留空
+  2. rec_yyy | Elara / 任务A | parent_requirement 无法从层级推断
 ```
 
 ### 8.3 重新提取机制
@@ -839,6 +748,5 @@ flowchart LR
 |------|------|
 | 2026-05-25 | 初稿：提案阶段，未实施 |
 | 2026-05-25 | §4 重构为四张业务表：产品 / 开发 / 设计需求表 + 人员任务进度表 |
-| 2026-05-25 | §4 修订：层级外键、部门/人员表允许重叠；`flow_progress_note` 替代分析性 `current_status` |
 
 *文档状态：设计提案。实施前需完成阶段 1 验证。核心代码改动集中在 `tools/pmo_db_tools.py`（新增）和 `skills_repo/pmo-copilot/SKILL.md`（流程重写）。*

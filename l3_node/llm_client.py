@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 本地解密与直连 LLM
 
 内存级解密：从 L2 拉取密文 Key，用 L3 私钥解密，仅存于 SecurityContext。
@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -253,17 +254,47 @@ def _extract_tool_call_name_args(tc: Any) -> tuple[str, str]:
     return str(n or ""), str(a or "")
 
 
+def _extract_thought_from_assistant_content(content: str) -> str:
+    """从 function calling 同轮 assistant content 提取 Thought 或首句意图。"""
+    s = (content or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(?im)^Thought:\s*(.+?)(?=^Action:|^Final Answer:|^Answer:|\Z)", s, re.DOTALL)
+    if m:
+        t = m.group(1).strip()
+        if t and t not in ("（API function calling）", "API function calling"):
+            return t
+    first = s.splitlines()[0].strip() if s.splitlines() else s
+    if first and not first.startswith("{") and len(first) >= 6:
+        if first.lower().startswith("thought:"):
+            first = first.split(":", 1)[-1].strip()
+        return first[:400]
+    return ""
+
+
+def _infer_thought_from_tool_call(tool_id: str, args_raw: str) -> str:
+    try:
+        from l3_node.pmo_copilot_debug_file import infer_tool_purpose_from_input
+
+        return infer_tool_purpose_from_input(tool_id, args_raw)
+    except Exception:
+        return ""
+
+
 def tool_calls_to_react_text(
     tool_calls: list[Any] | None,
     *,
     openapi_fname_to_tool_id: Optional[dict[str, str]] = None,
     use_first_only: bool = True,
+    assistant_content: str = "",
 ) -> str:
     """
     将 API 返回的 function/tool 调用转写为 Thought/Action/Action Input，供 agent_core._parse_action。
     *openapi_fname_to_tool_id*：清洗后的 function.name → 真实 tool id（如 mcp_query → mcp:query）。
+    *assistant_content*：同轮模型文本 content（可含 Thought: 或一句意图）。
     """
     openapi_fname_to_tool_id = openapi_fname_to_tool_id or {}
+    shared_thought = _extract_thought_from_assistant_content(assistant_content)
     if not tool_calls:
         return ""
     calls = list(tool_calls)
@@ -287,7 +318,10 @@ def tool_calls_to_react_text(
             args_str = str(args_raw or "").strip()
         if not args_str:
             args_str = "{}"
-        blocks.append(f"Thought: （API function calling）\nAction: {tid}\nAction Input: {args_str}")
+        thought = shared_thought or _infer_thought_from_tool_call(tid, args_str)
+        if not thought:
+            thought = f"调用工具 {tid}"
+        blocks.append(f"Thought: {thought}\nAction: {tid}\nAction Input: {args_str}")
     return "\n\n".join(blocks)
 
 
@@ -810,6 +844,12 @@ class LiteLLMEngine:
                 if _rfmt is not None:
                     kwargs_chat["response_format"] = _rfmt
                 _merge_litellm_optional_penalties(kwargs, kwargs_chat)
+                # 透传 extra_body（如 DashScope enable_thinking / enable_search 等）
+                if "extra_body" in kwargs:
+                    _eb = kwargs.pop("extra_body")
+                    if isinstance(_eb, dict):
+                        _existing_eb = kwargs_chat.get("extra_body") or {}
+                        kwargs_chat["extra_body"] = {**_existing_eb, **_eb}
                 if kwargs:
                     logger.debug("[L3 LLM] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
 
@@ -877,12 +917,15 @@ class LiteLLMEngine:
                 msg = choice.message
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     tclist = list(msg.tool_calls)
+                    rest = (getattr(msg, "content", None) or "").strip()
                     synth = tool_calls_to_react_text(
                         tclist,
                         openapi_fname_to_tool_id=openapi_fname_to_tool_id,
+                        assistant_content=rest,
                     )
-                    rest = (getattr(msg, "content", None) or "").strip()
-                    out = (synth + "\n\n" + rest).strip() if rest else synth
+                    out = synth
+                    if rest and rest not in synth:
+                        out = (synth + "\n\n" + rest).strip()
                     logger.info(
                         "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=tool_calls->react n=%d chars=%d",
                         purpose,
@@ -917,7 +960,25 @@ class LiteLLMEngine:
                     except Exception:
                         pass
                     return out
-                text = (msg.content or "").strip()
+                try:
+                    from core.llm_stream_text import coerce_content_to_text
+                    text = coerce_content_to_text(msg.content).strip()
+                except Exception:
+                    text = (msg.content or "").strip()
+                if not text:
+                    # qwen3.5-plus 思考模式下，thinking tokens 可能耗尽 max_tokens 预算，
+                    # 导致 content 为空（reasoning_content 有思考链但无最终输出）；
+                    # 此时视为可重试错误，触发 fallback 链，不静默返回 ""。
+                    rc = getattr(msg, "reasoning_content", None)
+                    hint = "（reasoning_content 非空，thinking tokens 耗尽输出预算）" if rc and str(rc).strip() else ""
+                    logger.warning(
+                        "[L3 LLM] purpose=%s model=%s content 为空%s；触发 fallback 链重试",
+                        purpose, model, hint,
+                    )
+                    last_error = RuntimeError(
+                        f"L3 LLM content 为空 (purpose={purpose}, model={model}){hint}"
+                    )
+                    continue
                 logger.info(
                     "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=text chars=%d",
                     purpose,
@@ -1129,6 +1190,12 @@ class LiteLLMEngine:
                 if _rfmt_s is not None:
                     kwargs_chat["response_format"] = _rfmt_s
                 _merge_litellm_optional_penalties(kwargs, kwargs_chat)
+                # 透传 extra_body（如 DashScope enable_thinking / enable_search 等）
+                if "extra_body" in kwargs:
+                    _eb_s = kwargs.pop("extra_body")
+                    if isinstance(_eb_s, dict):
+                        _existing_eb_s = kwargs_chat.get("extra_body") or {}
+                        kwargs_chat["extra_body"] = {**_existing_eb_s, **_eb_s}
                 if kwargs:
                     logger.debug("[L3 LLM][stream] ignoring unsupported kwargs: %s", sorted(kwargs.keys()))
 
@@ -1240,8 +1307,11 @@ class LiteLLMEngine:
                     synth = tool_calls_to_react_text(
                         merged_calls,
                         openapi_fname_to_tool_id=openapi_fname_to_tool_id,
+                        assistant_content=text_out,
                     )
-                    out = (synth + "\n\n" + text_out).strip() if text_out else synth
+                    out = synth
+                    if text_out and text_out not in synth:
+                        out = (synth + "\n\n" + text_out).strip()
                     logger.info(
                         "[L3 LLM][调度] purpose=%s result=ok model_used=%s outcome=stream+tool_calls n=%d chars=%d",
                         purpose,

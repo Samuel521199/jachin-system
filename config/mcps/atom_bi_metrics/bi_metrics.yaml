@@ -1,4 +1,4 @@
-# atom_bi_metrics MCP 配置
+﻿# atom_bi_metrics MCP 配置
 # 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 # 路径: config/mcps/atom_bi_metrics/
 # 与 com.jachin.bi.daily_report 技能共享同一指标引擎，可引用技能目录配置
@@ -39,28 +39,33 @@ metrics:
     column_candidates: ["Arppu", "ARPPU"]
 
   - key: game_rounds
-    table: daily_ops_summary
-    column_candidates: ["游戏局数", "局数"]
+    table: stats_game_daily
+    column_candidates: ["完成局数", "完成游戏局数", "游戏局数"]
+    row_scope: 当日总计
 
   - key: game_rounds_per_user
-    table: daily_ops_summary
-    column_candidates: ["人均游戏局数"]
+    formula: "game_rounds / dau if dau else 0"
 
   - key: win_count
     table: stats_game_daily
-    column_candidates: ["用户获胜次数", "获胜次数", "胜次"]
+    column_candidates: ["获胜次数", "投注次数", "用户获胜次数", "胜次"]
+    row_scope: 当日总计
 
   - key: win_rate
     table: stats_game_daily
     column_candidates: ["胜率", "用户胜率"]
+    row_scope: 当日总计
+    value_scale: win_rate_pct
 
   - key: rtp
     table: stats_game_daily
-    column_candidates: ["返币率", "RTP", "GameRTP"]
+    column_candidates: ["回报率RTP", "返币率", "RTP", "GameRTP"]
+    row_scope: 当日总计
 
   - key: ggr
     table: stats_game_daily
     column_candidates: ["GGR"]
+    row_scope: 当日总计
 
 output:
   plugin: console

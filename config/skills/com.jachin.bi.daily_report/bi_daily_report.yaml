@@ -1,4 +1,4 @@
-# BI 每日战报配置
+﻿# BI 每日战报配置
 # 规范: .cursor/rules/075-config-root-and-cloud-sync.mdc
 # 三处建议保持同步：① 项目本文件 ② 项目根 .env（BI_* 与仪表盘 URL 等）③ %USERPROFILE%\.jachin\config\skills\com.jachin.bi.daily_report\ 下同名 YAML
 # 运行时：若优先加载了 ~/.jachin 且其中 lark_bitable.tables 某 CSV 的 table_id 为空，会用本仓库此文件中的非空 table_id 自动补齐；仪表盘同理按 name 追加缺失项。
@@ -211,6 +211,3 @@ distribution:
     # 收件人列表，写几个就发给几个人（一次性发送给列表内所有邮箱；与 .env BI_SMTP_TO、~/.jachin 同步）
     to_addrs:
       - "vivian@herontech.net"
-      - "haku@herontech.net"
-      - "ethan@herontech.net"
-      - "vivtor@herontech.net"

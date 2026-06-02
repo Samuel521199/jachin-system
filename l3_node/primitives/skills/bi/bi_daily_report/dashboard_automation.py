@@ -1,4 +1,4 @@
-"""
+﻿"""
 仪表盘分析 + Lark 自动化发送配置
 
 在数据同步到 Lark 多维表格后，对每个仪表盘：
@@ -316,6 +316,7 @@ async def generate_dashboard_analysis_async(
             messages,
             temperature=0.3,
             max_tokens=400,
+            extra_body={"enable_thinking": False},
         )
         if isinstance(result, dict):
             text = result.get("content", "")

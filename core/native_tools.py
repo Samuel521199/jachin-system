@@ -19,80 +19,6 @@ from typing import Any
 _WORKSPACE_ROOT = Path.home() / ".jachin" / "workspace"
 
 
-def _dedupe_pmo_lark_pull_segments(raw: str) -> str:
-    """Manifest files[] 常为 ``pmo_lark_pull\\\\01_…``，与 output_dir 拼接会出现双段 pmo_lark_pull。"""
-    s = (raw or "").replace("\\", "/")
-    while "pmo_lark_pull/pmo_lark_pull/" in s.lower():
-        s = re.sub(r"pmo_lark_pull/pmo_lark_pull/", "pmo_lark_pull/", s, flags=re.I)
-    return s
-
-
-def _read_text_file(p: Path) -> str:
-    if p.suffix.lower() == ".pdf":
-        from core.pdf_extractor import extract_pdf_text
-
-        return extract_pdf_text(p) or ""
-    return p.read_text(encoding="utf-8", errors="replace")
-
-
-def try_resolve_pmo_lark_md_if_missing(requested: Path) -> Path | None:
-    """
-    PMO 拉表 md 路径回退：项目根或 workspace 下 ``pmo_lark_pull``，
-    先按 basename，再按 ``_vew…`` 后缀匹配（缓解 Agent 复制错文件名）。
-    """
-    try:
-        req = requested.expanduser()
-        if req.exists() and req.is_file():
-            return req.resolve()
-        bn = req.name
-        if not bn.lower().endswith(".md"):
-            return None
-        view_m = re.search(r"(_vew[a-zA-Z0-9]+\.md)$", bn, re.I)
-        view_suffix = view_m.group(1) if view_m else None
-
-        search_roots: list[Path] = []
-        ws = _WORKSPACE_ROOT.resolve()
-        for base in (ws / "pmo_lark_pull", _PROJ_ROOT / "pmo_lark_pull"):
-            if base.is_dir():
-                search_roots.append(base)
-                try:
-                    for sub in base.iterdir():
-                        if sub.is_dir():
-                            search_roots.append(sub)
-                except OSError:
-                    pass
-
-        def _collect(root: Path, pattern: str) -> list[Path]:
-            out: list[Path] = []
-            try:
-                out.extend(p for p in root.glob(pattern) if p.is_file())
-            except OSError:
-                pass
-            return out
-
-        for root in search_roots:
-            exact = root / bn
-            if exact.is_file():
-                return exact.resolve()
-            for hit in _collect(root, bn):
-                return hit.resolve()
-
-        if view_suffix:
-            hits: list[Path] = []
-            for root in search_roots:
-                hits.extend(_collect(root, f"*{view_suffix}"))
-            if len(hits) == 1:
-                return hits[0].resolve()
-            if hits:
-                try:
-                    return max(hits, key=lambda p: p.stat().st_mtime).resolve()
-                except OSError:
-                    return hits[0].resolve()
-        return None
-    except (OSError, RuntimeError, ValueError):
-        return None
-
-
 def try_resolve_workspace_file_if_missing(requested: Path) -> Path | None:
     """
     当请求路径位于 ~/.jachin/workspace 下但文件不存在时，按 basename（及同名父目录）在
@@ -249,17 +175,16 @@ def core_fs_read(file_path: str) -> str:
         (raw_in[0] == raw_in[-1] == '"') or (raw_in[0] == raw_in[-1] == "'")
     ):
         raw_in = raw_in[1:-1].strip()
-    from l3_node.primitives.native_tool_json import coerce_file_path_from_tool_input
-
-    coerced = coerce_file_path_from_tool_input(raw_in)
-    if coerced:
-        raw_in = coerced
-    elif raw_in.startswith("{"):
-        return (
-            "[执行失败: file_path 解析失败] Action Input 须为 JSON {\"file_path\":\"绝对或 workspace 相对路径\"} "
-            "或裸路径字符串；勿把整段未闭合 JSON 当作路径。"
-        )
-    raw = _dedupe_pmo_lark_pull_segments(raw_in).replace("\\", "/")
+    if raw_in.startswith("{"):
+        try:
+            o = json.loads(raw_in)
+            if isinstance(o, dict):
+                inner = str(o.get("file_path") or o.get("path") or "").strip()
+                if inner:
+                    raw_in = inner
+        except json.JSONDecodeError:
+            pass
+    raw = raw_in.replace("\\", "/")
     p = Path(raw).expanduser()
     if not p.is_absolute():
         # 先尝试 HR 白名单路径（供 Agent 读取简历/JD）
@@ -267,20 +192,20 @@ def core_fs_read(file_path: str) -> str:
             cand = (base / p.name).resolve()
             if cand.exists() and _is_under_hr_whitelist(cand):
                 _assert_read_allowed(cand)
-                return _read_text_file(cand)
-        # 仓库相对路径（docs/、skills_repo/ 等）：优先于 ~/.jachin/workspace
+                if cand.suffix.lower() == ".pdf":
+                    from core.pdf_extractor import extract_pdf_text
+                    return extract_pdf_text(cand) or ""
+                return cand.read_text(encoding="utf-8", errors="replace")
         cand = (_PROJ_ROOT / raw.lstrip("/")).resolve()
-        if cand.is_file():
+        if cand.exists() and _is_under_hr_whitelist(cand):
             _assert_read_allowed(cand)
-            return _read_text_file(cand)
+            if cand.suffix.lower() == ".pdf":
+                from core.pdf_extractor import extract_pdf_text
+                return extract_pdf_text(cand) or ""
+            return cand.read_text(encoding="utf-8", errors="replace")
         from l3_node.workspace_context import get_effective_workspace_root
 
         p = (get_effective_workspace_root() / raw).resolve()
-    else:
-        p = p.resolve()
-        deduped = Path(_dedupe_pmo_lark_pull_segments(str(p)))
-        if deduped.is_file():
-            p = deduped.resolve()
     if _is_under_hr_whitelist(p):
         _assert_read_allowed(p)
         if not p.exists():
@@ -289,21 +214,21 @@ def core_fs_read(file_path: str) -> str:
                 p = alt
         if not p.exists():
             return _fs_read_file_not_found_hint(p)
-        return _read_text_file(p)
+        if p.suffix.lower() == ".pdf":
+            from core.pdf_extractor import extract_pdf_text
+            return extract_pdf_text(p) or ""
+        return p.read_text(encoding="utf-8", errors="replace")
     _assert_read_allowed(p)
     if not p.exists():
         alt = try_resolve_workspace_file_if_missing(p)
-        if alt is None:
-            alt = try_resolve_pmo_lark_md_if_missing(p)
-        if alt is None and not raw.startswith("/") and "://" not in raw:
-            cand = (_PROJ_ROOT / raw.lstrip("/")).resolve()
-            if cand.is_file():
-                alt = cand
         if alt is not None and alt.exists():
             p = alt
     if not p.exists():
         return _fs_read_file_not_found_hint(p)
-    return _read_text_file(p)
+    if p.suffix.lower() == ".pdf":
+        from core.pdf_extractor import extract_pdf_text
+        return extract_pdf_text(p) or ""
+    return p.read_text(encoding="utf-8", errors="replace")
 
 
 def core_fs_write(file_path: str, content: str) -> None:
@@ -318,27 +243,16 @@ def core_fs_write(file_path: str, content: str) -> None:
     Raises:
         SecurityException: 路径越界
     """
-    from l3_node.primitives.native_tool_json import coerce_file_path_from_tool_input, parse_fs_write_tool_input
     from l3_node.workspace_context import get_effective_workspace_root
 
-    fp_in = (file_path or "").strip()
-    ct_in = content if content is not None else ""
-    if fp_in.startswith("{") and not str(ct_in or "").strip():
-        parsed = parse_fs_write_tool_input(fp_in)
-        fp_in = parsed.get("file_path") or fp_in
-        if parsed.get("content"):
-            ct_in = parsed["content"]
-    else:
-        fp_in = coerce_file_path_from_tool_input(fp_in) or fp_in
-
-    p = Path(fp_in).expanduser()
+    p = Path(file_path).expanduser()
     if not p.is_absolute():
-        p = (get_effective_workspace_root() / fp_in).resolve()
+        p = (get_effective_workspace_root() / p).resolve()
     else:
         p = p.resolve()
     _assert_under_workspace(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(str(ct_in), encoding="utf-8")
+    p.write_text(content, encoding="utf-8")
 
 
 def _shell_cwd_for_profile(sandbox_profile: str | None) -> Path:
@@ -643,7 +557,13 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
         from l3_node.skills.native_tools.akshare_tools import dispatch_akshare_core
 
         return dispatch_akshare_core(tool_id, **kwargs)
-    if tool_id in ("core:db_query", "core:db_write", "core:pmo_import_json", "core:pmo_init_gap_report"):
+    if tool_id in (
+        "core:db_query",
+        "core:db_write",
+        "core:pmo_import_json",
+        "core:pmo_init_gap_report",
+        "core:pmo_mirror_import",
+    ):
         from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
 
         return dispatch_pmo_db_tool(tool_id, **kwargs)

@@ -10,6 +10,7 @@ Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 *
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -530,13 +531,6 @@ def _env_int(name: str, default: int) -> int:
 
 # 可由 JACHIN_REACT_OBSERVATION_MAX_CHARS 覆盖（默认 15000）；未知模型/peek 失败时回退至此
 MAX_REACT_OBSERVATION_FOR_LLM = _env_int("JACHIN_REACT_OBSERVATION_MAX_CHARS", 15000)
-
-# PMO-Copilot：INIT 微批次行数 / ReAct 轮次 SSOT（与 scripts/run_pmo_copilot_skill.py、SKILL.md 对齐）
-PMO_INIT_BATCH_ROWS = 20
-PMO_INIT_MAX_ITERATIONS_DEFAULT = 270
-PMO_BRANCH_A_MAX_ITERATIONS_DEFAULT = 28
-MAX_PMO_REACT_ITERATIONS = _env_int("JACHIN_PMO_MAX_REACT_ITERATIONS", PMO_INIT_MAX_ITERATIONS_DEFAULT)
-
 # ReAct：按「下一轮实际路由到的通义模型」放宽单条 Observation 送入 LLM 的字符上限（与接口 token 窗口不同，属宿主侧护栏）
 _DEFAULT_REACT_OBS_CAP_QWEN35_PLUS = 700_000
 _DEFAULT_REACT_OBS_CAP_QWEN_MAX = 220_000
@@ -1058,19 +1052,423 @@ def _pmo_lark_push_guard_channel_active(ctx: PipelineContext) -> bool:
     return "PMO-Copilot" in inj or "pmo-copilot-enterprise" in inj
 
 
-def _pmo_branch_a_notifier_markdown_is_complete(inp: str) -> bool:
-    """分支 A 的 notifier markdown_content 必须含三张核心表，否则视为残卡，不标记成功。"""
+_PMO_MD_SECTION_DEMAND = ("需求进度全览", "需求进度", "📊 需求", "📊")
+_PMO_MD_SECTION_PEOPLE = ("人员任务矩阵", "人员预警矩阵", "人员任务", "👥")
+_PMO_MD_SECTION_VERSION = ("版本发布需求映射", "版本需求映射", "版本映射", "📦")
+_PMO_MD_SECTION_SNIPPET_CHARS = 600
+
+
+def _pmo_markdown_extract_content(inp: str) -> str:
     try:
         args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
-        mc = str(args.get("markdown_content") or "")
+        return str(args.get("markdown_content") or "")
     except Exception:
-        mc = str(inp or "")
+        return str(inp or "")
+
+
+def _pmo_markdown_section_has_gfm_table(mc: str, section_keywords: tuple[str, ...]) -> bool:
+    """区块标题存在且其后片段含 GFM 管道符（允许空数据占位行）。"""
     if not mc:
         return False
-    has_demand = "需求进度全览" in mc or "📊" in mc
-    has_people = "人员任务矩阵" in mc or "👥" in mc
-    has_version = "版本发布需求映射" in mc or "版本需求映射" in mc or "📦" in mc
-    return has_demand and has_people and has_version
+    for kw in section_keywords:
+        idx = mc.find(kw)
+        if idx < 0:
+            continue
+        snippet = mc[idx : idx + _PMO_MD_SECTION_SNIPPET_CHARS]
+        if "|" in snippet:
+            return True
+    return False
+
+
+def _pmo_branch_a_notifier_markdown_is_complete(inp: str) -> bool:
+    """分支 A 的 notifier markdown_content 必须含三张核心表，否则视为残卡，不标记成功。"""
+    mc = _pmo_markdown_extract_content(inp)
+    if not mc:
+        return False
+    return (
+        _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_DEMAND)
+        and _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_PEOPLE)
+        and _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_VERSION)
+    )
+
+
+def _pmo_notifier_markdown_missing_sections(inp: str) -> list[str]:
+    mc = _pmo_markdown_extract_content(inp)
+    missing: list[str] = []
+    if not any(k in mc for k in _PMO_MD_SECTION_DEMAND):
+        missing.append("📊 需求进度全览")
+    elif not _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_DEMAND):
+        missing.append("📊 需求进度全览（须有 GFM 表格 |）")
+    if not any(k in mc for k in _PMO_MD_SECTION_PEOPLE):
+        missing.append("👥 人员任务矩阵")
+    elif not _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_PEOPLE):
+        missing.append("👥 人员任务矩阵（须有 GFM 表格 |）")
+    if not any(k in mc for k in _PMO_MD_SECTION_VERSION):
+        missing.append("📦 版本发布需求映射")
+    elif not _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_VERSION):
+        missing.append("📦 版本发布需求映射（须有 GFM 表格 |，Version Goal 全空时也须占位行）")
+    return missing
+
+
+def _pmo_notifier_markdown_section_format_examples(missing: list[str]) -> str:
+    """为缺失区块附最小 GFM 模板，便于 Agent 一次补全。"""
+    examples: list[str] = []
+    for item in missing:
+        if "需求进度" in item or "📊" in item:
+            examples.append(
+                "📊 最简示例：\n"
+                "| 需求名称 | 时间跨度 | 参与人 | 完成度 | 状态 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| Epic 示例 | 05/01→05/25 | Ethan | [▓▓░░] 20% | 🔵 进行中 |"
+            )
+        elif "人员" in item or "👥" in item:
+            examples.append(
+                "👥 最简示例：\n"
+                "| 人员 | 任务 | 状态 |\n"
+                "| --- | --- | --- |\n"
+                "| Celine | 任务 A | 🚨 延期 |"
+            )
+        elif "版本" in item or "📦" in item:
+            examples.append(
+                "📦 最简示例（Version Goal 全空时仍须建表）：\n"
+                "| 视图 | 记录总数 | Version Goal 填写数 | 填写率 | 说明 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| vew8TxMcSh / vewL9Mofgd | 100 | 0 | 0% | ⚠️ 原表字段全空，建议 PMO 补充版本目标 |"
+            )
+    return "\n\n".join(examples)
+
+
+def _pmo_extract_sql_from_tool_inp(inp: str) -> str:
+    try:
+        args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
+        if isinstance(args, dict):
+            return str(args.get("sql") or "")
+    except Exception:
+        pass
+    return str(inp or "")
+
+
+def _pmo_sql_is_step1_map(sql: str) -> bool:
+    sl = (sql or "").lower()
+    return "pmo_views_meta" in sl and ("columns_json" in sl or "record_count" in sl)
+
+
+def _pmo_extract_thought_from_assistant(response: str) -> str:
+    text = str(response or "")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("thought:"):
+            idx = text.find(line)
+            if idx >= 0:
+                return text[idx + len(line.split(":", 1)[0]) + 1 :].strip()
+            return stripped.split(":", 1)[1].strip()
+    m = re.search(r"Thought:\s*(.+)", text, re.I | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def _pmo_assistant_has_gfm_draft(response: str) -> bool:
+    thought = _pmo_extract_thought_from_assistant(response)
+    if _pmo_thought_has_gfm_draft(thought):
+        return True
+    return _pmo_thought_has_gfm_draft(str(response or ""))
+
+
+def _pmo_thought_has_gfm_draft(thought: str) -> bool:
+    if not thought or "待填充" in thought:
+        return False
+    pipe_lines = [ln for ln in thought.splitlines() if "|" in ln]
+    return len(pipe_lines) >= 2
+
+
+def _pmo_extract_gfm_draft_fingerprint(text: str) -> str:
+    """Thought 中 GFM 数据行指纹，用于检测机械复制上轮草稿。"""
+    data_lines: list[str] = []
+    for ln in str(text or "").splitlines():
+        stripped = ln.strip()
+        if "|" not in stripped:
+            continue
+        if re.match(r"^\|\s*[-:]+\s*\|", stripped):
+            continue
+        data_lines.append(stripped)
+    if not data_lines:
+        return ""
+    payload = "\n".join(data_lines)
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _pmo_markdown_fix_phase(ctx: PipelineContext) -> str | None:
+    phase = ctx.metadata.get("_pmo_markdown_fix_phase")
+    if phase in ("supplemental", "final"):
+        return str(phase)
+    if ctx.metadata.get("_pmo_markdown_fix_only"):
+        return "final"
+    return None
+
+
+def _pmo_markdown_fix_supplemental_remaining(ctx: PipelineContext) -> int:
+    used = int(ctx.metadata.get("_pmo_markdown_fix_supplemental_count") or 0)
+    return max(0, PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX - used)
+
+
+def _pmo_assistant_thought_has_all_three_tables(assistant_response: str) -> bool:
+    """仅用于组装轮门禁：检查 Thought 是否已含三张 GFM 表（不提取、不拼装内容）。"""
+    thought = _pmo_extract_thought_from_assistant(assistant_response)
+    source = thought or str(assistant_response or "")
+    if not source:
+        return False
+    return (
+        _pmo_markdown_section_has_gfm_table(source, _PMO_MD_SECTION_DEMAND)
+        and _pmo_markdown_section_has_gfm_table(source, _PMO_MD_SECTION_PEOPLE)
+        and _pmo_markdown_section_has_gfm_table(source, _PMO_MD_SECTION_VERSION)
+    )
+
+
+def _pmo_assembly_phase(ctx: PipelineContext) -> str | None:
+    """组装轮状态：writing=只写 Thought；ready=可推送 markdown。"""
+    phase = ctx.metadata.get("_pmo_assembly_phase")
+    if phase in ("writing", "ready"):
+        return str(phase)
+    return None
+
+
+def _pmo_ensure_assembly_phase(ctx: PipelineContext) -> None:
+    if not _pmo_db_analysis_mode(ctx) or _pmo_branch_a_delivery_complete(ctx):
+        return
+    if _pmo_markdown_fix_phase(ctx):
+        return
+    if not _pmo_branch_a_push_prerequisites_met(ctx):
+        return
+    if not _pmo_assembly_phase(ctx):
+        ctx.metadata["_pmo_assembly_phase"] = "writing"
+
+
+def _pmo_sync_assembly_phase_from_thought(ctx: PipelineContext, assistant_response: str) -> None:
+    if _pmo_assembly_phase(ctx) != "writing":
+        return
+    if _pmo_assistant_thought_has_all_three_tables(assistant_response):
+        ctx.metadata["_pmo_assembly_phase"] = "ready"
+
+
+def _pmo_markdown_incomplete_system_nudge(
+    ctx: PipelineContext, observation: str, tool: str, missing: list[str] | None = None
+) -> str:
+    """markdown_incomplete 时在 Observation 后追加系统校验提示（不解析 Thought 代劳组装）。"""
+    if not _pmo_lark_push_guard_channel_active(ctx):
+        return ""
+    if _pmo_canonical_tool_id(tool) != "atom_lark_notifier":
+        return ""
+    reason = ""
+    try:
+        if (observation or "").strip().startswith("{"):
+            payload = json.loads(observation)
+            reason = str(payload.get("reason") or payload.get("error") or "")
+            if not missing:
+                missing = payload.get("missing_sections")
+    except Exception:
+        pass
+    if reason not in ("markdown_incomplete", "pmo_premature_notifier_blocked"):
+        return ""
+    missing_txt = "、".join(missing) if missing else "§1.4 三张核心表"
+    return (
+        "\n\n【系统校验 · PMO 战报组装】\n"
+        f"你的 `markdown_content` 缺少：{missing_txt}。\n"
+        "**宿主不会**从 Thought 自动提取或拼装 markdown；你必须亲自动手完成渲染。\n"
+        "请立刻翻阅你前 10 轮对话中的 **Thought 历史与 Observation**，"
+        "把其中已写的 GFM 草稿数据完整整理为三张表："
+        "「📊 需求进度全览」「👥 人员任务矩阵」「📦 版本发布需求映射」，"
+        "每表须含 `| 列 |` 表头与至少 1 行数据（缺口用 ⚠️ 占位）。\n"
+        "下一步：**不要**调用 core:db_query；"
+        "将完整 GFM 三表 **全文** 写入 atom_lark_notifier 的 `markdown_content` 后再推送。"
+    )
+
+
+def _pmo_sql_is_step2_sample(sql: str) -> bool:
+    sl = (sql or "").lower()
+    if "pmo_views_meta" in sl or "count(" in sl or "group by" in sl:
+        return False
+    return bool(
+        "pmo_raw_records" in sl
+        and re.search(r"\blimit\s+1\b", sl)
+        and "fields" in sl
+    )
+
+
+def _pmo_sql_is_supplemental_allowed(sql: str) -> bool:
+    sl = (sql or "").lower()
+    if not (sql or "").strip():
+        return False
+    if _pmo_sql_is_step1_map(sql):
+        return False
+    if _pmo_sql_is_step2_sample(sql):
+        return False
+    if "count(" in sl and "group by" in sl:
+        return True
+    if "json_each" in sl and "vewcz1ffji" in sl:
+        return True
+    if "[0].text" in sql and "父记录" in sql and "vewpi8lyyw" in sl:
+        return True
+    if "fields like" in sl and "vewcz1ffji" in sl:
+        return True
+    lim = re.search(r"\blimit\s+(\d+)\b", sl)
+    if lim and int(lim.group(1)) <= 20:
+        return True
+    return False
+
+
+def _pmo_analysis_incomplete_recovery_hint(
+    ctx: PipelineContext, qn: int, missing_probes: list[str]
+) -> str:
+    missing_txt = "、".join(missing_probes) if missing_probes else "无"
+    if qn >= PMO_BRANCH_A_MIN_DB_QUERIES:
+        return (
+            f"你已执行 {qn} 次 db_query，分析 Observation 应已在上下文中。"
+            f"❌ **禁止从 Step1 重跑七步**；请仅补跑缺失探针：{missing_txt}，"
+            "或直接进入 §1.4 三表组装后再推送。"
+        )
+    if qn > 0:
+        return (
+            f"已执行 {qn}/{PMO_BRANCH_A_MIN_DB_QUERIES} 次 db_query。"
+            f"请继续完成缺失探针：{missing_txt}；"
+            "禁止重复已完成的步骤（尤其 Step1 数据地图）。"
+        )
+    return ""
+
+
+def _pmo_notifier_no_rerun_analysis_hint(ctx: PipelineContext) -> str:
+    """分析探针已满足时，提示无需重跑查库。"""
+    qn = int(ctx.metadata.get("_pmo_db_query_count") or 0)
+    if qn < PMO_BRANCH_A_MIN_DB_QUERIES:
+        return ""
+    if _pmo_branch_a_missing_cross_analysis(ctx):
+        return ""
+    probes = _pmo_ensure_analysis_probes(ctx)
+    core_ok = all(probes.get(k) for k in ("sprint", "status", "personnel", "version", "epic"))
+    if not core_ok or not probes.get("personnel_kanban"):
+        return ""
+    return (
+        "❌ **禁止重跑 Step 1–7 的 core:db_query**。"
+        "已完成的分析 Observation 仍然有效；"
+        "请直接基于已有结果组装 §1.4 三表 markdown_content 后再推送。"
+    )
+
+
+def _pmo_markdown_action_input_hint() -> str:
+    return (
+        "📋 注意：`markdown_content` 是 Action Input JSON 参数字段，"
+        "Thought 里的表格草稿 **不会自动传入** notifier；"
+        "须将完整 GFM 三表文本 **全文写入** `markdown_content`。"
+    )
+
+
+def _pmo_append_react_budget_warning(
+    ctx: PipelineContext,
+    observation: str,
+    *,
+    iteration: int,
+    max_iterations: int,
+) -> str:
+    """PMO 分支 A：剩余轮次不足时注入节奏警告，避免 panic SQL。"""
+    if not _pmo_db_analysis_mode(ctx) or _pmo_branch_a_delivery_complete(ctx):
+        return observation
+    remaining = max(0, int(max_iterations) - int(iteration) - 1)
+    if remaining > 3 or _pmo_branch_a_push_prerequisites_met(ctx):
+        return observation
+    return (
+        f"{observation}\n\n"
+        f"⚠️ **预算警告**：剩余 {remaining} 轮。"
+        "避免复杂 JOIN/子查询——跨视图检验请拆成 Step 6a + 6b 两步简单查询。"
+        "若本轮无法完成剩余步骤，用 ⚠️ 标注缺口后直接进入 §1.4 三表组装与推送。"
+    )
+
+
+def _pmo_ensure_views_queried(ctx: PipelineContext) -> set[str]:
+    raw = ctx.metadata.get("_pmo_views_queried")
+    if isinstance(raw, set):
+        return raw
+    if isinstance(raw, list):
+        out = {str(x).strip() for x in raw if str(x).strip()}
+        ctx.metadata["_pmo_views_queried"] = out
+        return out
+    out: set[str] = set()
+    ctx.metadata["_pmo_views_queried"] = out
+    return out
+
+
+def _pmo_extract_view_ids_from_sql(sql: str) -> set[str]:
+    ids: set[str] = set()
+    for m in re.finditer(r"['\"]?(vew[A-Za-z0-9]{6,})['\"]?", sql or ""):
+        ids.add(m.group(1))
+    for m in re.finditer(r"source_view\s*=\s*['\"]([^'\"]+)['\"]", sql or "", re.I):
+        vid = m.group(1).strip()
+        if vid.startswith("vew"):
+            ids.add(vid)
+    return ids
+
+
+def _pmo_sql_excludes_dept_epic_placeholders(sql: str) -> bool:
+    sl = (sql or "").lower()
+    if any(x in sql for x in ("开发", "美术", "产品")):
+        if "not in" in sl or "not like" in sl or "!=" in sql or "<>" in sql:
+            return True
+    # 顶层 Epic：父记录链接 text 为空（非 json_extract(父记录) IS NULL）
+    if "父记录" in sql and "[0].text" in sql and re.search(r"\bis null\b", sl):
+        return True
+    return False
+
+
+def _pmo_sql_uses_invalid_parent_null_epic_filter(sql: str) -> bool:
+    """json_extract(fields, '$.\"父记录\"') IS NULL 在镜像库恒 0 行。"""
+    if "父记录" not in sql:
+        return False
+    if "[0].text" in sql:
+        return False
+    return bool(re.search(r"\bis null\b", (sql or "").lower()))
+
+
+def _pmo_branch_a_missing_cross_analysis(ctx: PipelineContext) -> list[str]:
+    missing: list[str] = []
+    vq = _pmo_ensure_views_queried(ctx)
+    view_labels = {
+        "vewpI8lyYw": "开发计划核心(vewpI8lyYw)",
+        "vewCz1FFJi": "人工看板人员SSOT(vewCz1FFJi)",
+    }
+    for vid in sorted(PMO_BRANCH_A_REQUIRED_CROSS_VIEWS - vq):
+        missing.append(view_labels.get(vid, vid))
+    if not (vq & PMO_BRANCH_A_PRODUCT_VIEW_ALTS):
+        missing.append("产品视图(vew8TxMcSh 或 vewL9Mofgd)")
+    if len(vq) < PMO_BRANCH_A_CROSS_MIN_VIEW_COUNT:
+        missing.append(
+            f"至少 {PMO_BRANCH_A_CROSS_MIN_VIEW_COUNT} 个不同 source_view（当前 {len(vq)}）"
+        )
+    probes = _pmo_ensure_analysis_probes(ctx)
+    if not probes.get("personnel_kanban"):
+        missing.append(
+            f"人员矩阵须查 {PMO_BRANCH_A_PERSONNEL_SSOT_VIEW}（禁止仅用 vewpI8lyYw 负责人条数）"
+        )
+    return missing
+
+
+def _pmo_branch_a_missing_probes(ctx: PipelineContext) -> list[str]:
+    probes = _pmo_ensure_analysis_probes(ctx)
+    labels = {
+        "sprint": "Sprint/工作周期",
+        "status": "状态分布(GROUP BY 聚合)",
+        "personnel": "人员任务(json_each 明细)",
+        "version": "Version Goal 填写率(COUNT 聚合)",
+        "epic": "Epic/顶层需求(排除部门占位)",
+    }
+    missing = [labels[k] for k in ("sprint", "status", "personnel", "version", "epic") if not probes.get(k)]
+    if not (probes.get("cross_view_6a") and probes.get("cross_view_6b")):
+        missing.append("跨视图矛盾检验(Step6a vewpI8lyYw 延期 TOP5 + Step6b vewCz1FFJi 逐条核对)")
+    missing.extend(_pmo_branch_a_missing_cross_analysis(ctx))
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in missing:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def _pmo_notifier_extract_markdown_and_title(inp: str) -> tuple[str, str]:
@@ -1110,6 +1508,133 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
     """
     分支 A：不向飞书中途推送试错/半成品。返回 JSON observation 字符串则跳过真实 notifier 调用。
     """
+    if _pmo_db_analysis_mode(ctx):
+        chats_ok = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
+        cid = _pmo_notifier_chat_id_from_inp(inp) or PMO_BRANCH_A_PRIMARY_CHAT_ID
+        if _pmo_branch_a_delivery_complete(ctx) and cid in chats_ok:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "pmo_duplicate_delivery_blocked",
+                    "msg": (
+                        "【宿主拦截】该群本轮已成功推送过完整战报，禁止重复发送。"
+                        "请输出 ≤3 句 Final Answer 确认双群送达即可。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if not _pmo_branch_a_notifier_markdown_is_complete(inp):
+            missing = _pmo_notifier_markdown_missing_sections(inp)
+            examples = _pmo_notifier_markdown_section_format_examples(missing)
+            no_rerun = _pmo_notifier_no_rerun_analysis_hint(ctx)
+            qn_md = int(ctx.metadata.get("_pmo_db_query_count") or 0)
+            prev_preview = str(ctx.metadata.get("_pmo_last_notifier_markdown_preview") or "").strip()
+            mc_now = _pmo_markdown_extract_content(inp)
+            try:
+                block_count = int(ctx.metadata.get("_pmo_notifier_block_count") or 0) + 1
+            except (TypeError, ValueError):
+                block_count = 1
+            ctx.metadata["_pmo_notifier_block_count"] = block_count
+            if no_rerun or qn_md >= PMO_BRANCH_A_MIN_DB_QUERIES:
+                phase = _pmo_markdown_fix_phase(ctx)
+                if not phase:
+                    ctx.metadata["_pmo_markdown_fix_phase"] = "supplemental"
+                elif phase == "supplemental" and block_count >= 2:
+                    ctx.metadata["_pmo_markdown_fix_phase"] = "final"
+                if _pmo_markdown_fix_phase(ctx) == "final":
+                    ctx.metadata["_pmo_markdown_fix_only"] = True
+            msg_parts: list[str] = []
+            if no_rerun:
+                msg_parts.append(no_rerun)
+            msg_parts.extend([
+                "【宿主拦截】本条 **未发往飞书**。",
+                f"`markdown_content` 缺少：{('、'.join(missing) if missing else '§1.4 三张核心表')}。",
+                "须同时含「📊 需求进度全览」「👥 人员任务矩阵」「📦 版本发布需求映射」"
+                "及各自 GFM 表格（| 列 |）。",
+                "即使 Version Goal 等字段在原表全空，也须在 📦 区块建占位 GFM 表并写 ⚠️ 数据待补，禁止只写一行文字。",
+                _pmo_markdown_action_input_hint(),
+            ])
+            fix_phase = _pmo_markdown_fix_phase(ctx)
+            if fix_phase == "supplemental":
+                remaining = _pmo_markdown_fix_supplemental_remaining(ctx)
+                msg_parts.append(
+                    f"📝 **补缺模式**（剩余 {remaining}/{PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX} 次补缺 SQL）："
+                    "允许 COUNT+GROUP BY 聚合、json_each 人员明细、Step6b LIKE 核对、LIMIT≤20；"
+                    "❌ 禁止 Step1 地图 / Step2 LIMIT 1 样本重跑。"
+                    "优先将 Thought 草稿全文写入 markdown_content 再推送。"
+                )
+                probes = _pmo_ensure_analysis_probes(ctx)
+                if any("📊" in m for m in missing) and not probes.get("status"):
+                    msg_parts.append(
+                        "可先做 1 次 Step5 状态 GROUP BY 聚合补缺 SQL，再组装 📊 表。"
+                    )
+            elif fix_phase == "final":
+                msg_parts.append(
+                    "⛔ **最终整合阶段**：禁止 core:db_query；"
+                    "请基于已有 Observation 补写完整 GFM 三表 markdown_content 后重新推送。"
+                )
+            if prev_preview:
+                msg_parts.append(
+                    f"上轮 markdown_content 摘要（请在其基础上补缺，勿整段重写）：{prev_preview!r}"
+                )
+            if mc_now.strip():
+                ctx.metadata["_pmo_last_notifier_markdown_preview"] = mc_now[:200]
+            if examples:
+                msg_parts.append(f"格式参考：\n{examples}")
+            if not no_rerun and fix_phase not in ("supplemental", "final"):
+                msg_parts.append("请补全 markdown_content 后再推送，勿重复已完成的查库步骤。")
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "pmo_premature_notifier_blocked",
+                    "reason": "markdown_incomplete",
+                    "missing_sections": missing,
+                    "markdown_fix_phase": fix_phase,
+                    "msg": " ".join(msg_parts),
+                },
+                ensure_ascii=False,
+            )
+        if not _pmo_branch_a_push_prerequisites_met(ctx):
+            qn = int(ctx.metadata.get("_pmo_db_query_count") or 0)
+            missing_probes = _pmo_branch_a_missing_probes(ctx)
+            no_rerun = _pmo_notifier_no_rerun_analysis_hint(ctx)
+            recovery = _pmo_analysis_incomplete_recovery_hint(ctx, qn, missing_probes)
+            try:
+                ctx.metadata["_pmo_notifier_block_count"] = (
+                    int(ctx.metadata.get("_pmo_notifier_block_count") or 0) + 1
+                )
+            except (TypeError, ValueError):
+                ctx.metadata["_pmo_notifier_block_count"] = 1
+            msg_parts = [
+                "【宿主拦截】分析未完成，禁止推送。",
+                f"当前 core:db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；",
+                f"探针/交叉分析缺口：{('、'.join(missing_probes) if missing_probes else '无')}。",
+            ]
+            if recovery:
+                msg_parts.append(recovery)
+            else:
+                msg_parts.extend([
+                    "须：① 先 SELECT pmo_views_meta 读 columns_json；",
+                    "② 至少查 vewpI8lyYw + vewCz1FFJi + 产品视图；",
+                    "③ 人员矩阵以 vewCz1FFJi 为 SSOT（json_each 解析负责人）；",
+                    "④ Epic 须排除开发/美术/产品部门占位行；",
+                    "⑤ 完成 Sprint/状态/版本探针后补全 §1.4 三表再 atom_lark_notifier。",
+                ])
+            if no_rerun:
+                msg_parts.append(no_rerun)
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "pmo_premature_notifier_blocked",
+                    "reason": "analysis_incomplete",
+                    "db_query_count": qn,
+                    "min_db_queries": PMO_BRANCH_A_MIN_DB_QUERIES,
+                    "missing_probes": missing_probes,
+                    "msg": " ".join(msg_parts),
+                },
+                ensure_ascii=False,
+            )
+        return None
     if not _pmo_branch_a_requires_bi_pull(ctx):
         return None
     mc, title = _pmo_notifier_extract_markdown_and_title(inp)
@@ -1216,14 +1741,15 @@ def _pmo_final_answer_falsely_claims_lark_sent(ans: str) -> bool:
         return False
     return bool(
         re.search(
-            r"(已成功|已经).{0,40}(飞书|发送|送达|群聊)|"
-            r"通过飞书.{0,24}发送|"
+            r"(已成功|已经).{0,80}(飞书|发送|送达|群聊)|"
+            r"通过飞书.{0,40}(发送|推送)|"
+            r"推送(到|至).{0,24}(主群|监控群|飞书|群聊)|"
             r"发到(了)?指定群|"
             r"发往.{0,12}群|"
             r"卡片已发.{0,12}群|"
             r"飞书.{0,16}成功|"
             r"已发(?:往|送).{0,8}(?:群|飞书)|"
-            # 常见漏网：「已通过 mcp:atom_lark_notifier 发送至飞书主群」（无 contiguous「已经发送」）
+            r"战报.{0,24}(已|已经).{0,16}(推送|发送|送达)|"
             r"已通过.{0,240}(atom_lark_notifier|mcp:atom_lark_notifier)|"
             r"(atom_lark_notifier|mcp:atom_lark_notifier).{0,160}已(经)?(发送|推送|送达)|"
             r"已推送.{0,80}(飞书|主群|监控群|群聊)",
@@ -1231,6 +1757,142 @@ def _pmo_final_answer_falsely_claims_lark_sent(ans: str) -> bool:
             re.I,
         )
     )
+
+
+def _pmo_final_answer_looks_like_premature_branch_a_delivery(ans: str) -> bool:
+    """v7 仅分析/DB 就绪：未完成双群推送却输出宏观看板式收工摘要。"""
+    s = str(ans or "").strip()
+    if not s or len(s) < 60:
+        return False
+    if _pmo_final_answer_falsely_claims_lark_sent(s):
+        return True
+    markers = (
+        "战报主要",
+        "需求进度全览",
+        "人员任务矩阵",
+        "版本发布需求映射",
+        "宏观看板",
+        "分支A",
+        "分支 A",
+        "分支a",
+        "已成功完成PMO",
+        "已完成PMO",
+        "PMO-Copilot v7",
+        "识别出",
+        "存在过载",
+    )
+    hits = sum(1 for m in markers if m in s)
+    return hits >= 2 or (hits >= 1 and len(s) > 180)
+
+
+def _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """
+    v7 DB 仅分析：禁止在未双群 notifier 成功时以 Final Answer 输出战报摘要或声称已推送。
+    """
+    if not _pmo_lark_push_guard_channel_active(ctx):
+        return False
+    if not (_pmo_analysis_only_mode(ctx) or _pmo_db_analysis_mode(ctx)):
+        return False
+    if _pmo_branch_a_delivery_complete(ctx):
+        return False
+    if not _pmo_final_answer_looks_like_premature_branch_a_delivery(ans):
+        return False
+    try:
+        n = int(ctx.metadata.get("_pmo_analysis_incomplete_delivery_guard_count") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 5:
+        return False
+    ctx.metadata["_pmo_analysis_incomplete_delivery_guard_count"] = n + 1
+    missing = _pmo_branch_a_missing_probes(ctx)
+    chats_ok = ctx.metadata.get("_pmo_notifier_chats_success") or []
+    logger.warning(
+        "[L3 Agent][PMO 分析交付] trace=%s via=%s 未完成双群推送却 Final Answer 收工 probes=%s chats=%s",
+        str(ctx.metadata.get("_react_step_trace") or ""),
+        via,
+        missing,
+        chats_ok,
+    )
+    messages.append({"role": "assistant", "content": response})
+    messages.append({
+        "role": "user",
+        "content": (
+            "【系统校验·PMO·v7 仅分析】你尚未完成 **双群** `mcp:atom_lark_notifier` 成功推送"
+            f"（当前已成功群：{chats_ok or '无'}），禁止用 Final Answer 输出战报摘要或声称已推送。\n"
+            f"探针/交叉分析缺口：{('、'.join(missing) if missing else '无')}。\n"
+            "请继续 ReAct（勿写 Final Answer）：\n"
+            "① 按 SKILL §1.2.1 七步框架补完 db_query（≤10 次）；\n"
+            "② 组装 §1.4 三表 markdown_content；\n"
+            "③ **两次** atom_lark_notifier（主群 + 监控群，各须 Observation success）；\n"
+            "④ 双群均 success 后才可 ≤3 句 Final Answer 确认。"
+        ),
+    })
+    return True
+
+
+def _reject_pmo_branch_a_force_push_exit_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """
+    v7 仅分析：双群推送未成功时，禁止以任何措辞（含「数据质量差」「无法分析」）直接 Final Answer 退出。
+    """
+    if not _pmo_lark_push_guard_channel_active(ctx):
+        return False
+    if not _pmo_db_analysis_mode(ctx):
+        return False
+    if _pmo_branch_a_delivery_complete(ctx):
+        return False
+    s = str(ans or "").strip()
+    if len(s) < 20:
+        return False
+    try:
+        n = int(ctx.metadata.get("_pmo_force_push_exit_guard_count") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 6:
+        return False
+    ctx.metadata["_pmo_force_push_exit_guard_count"] = n + 1
+    chats_ok = ctx.metadata.get("_pmo_notifier_chats_success") or []
+    qn = int(ctx.metadata.get("_pmo_db_query_count") or 0)
+    missing = _pmo_branch_a_missing_probes(ctx)
+    logger.warning(
+        "[L3 Agent][PMO 强制推送] trace=%s via=%s 未推送却 Final Answer 退出 db_query=%s chats=%s",
+        str(ctx.metadata.get("_react_step_trace") or ""),
+        via,
+        qn,
+        chats_ok,
+    )
+    messages.append({"role": "assistant", "content": response})
+    messages.append({
+        "role": "user",
+        "content": (
+            "【系统校验·PMO·v7 仅分析】无论分析结果质量如何，分支 A **必须先尝试** "
+            "`mcp:atom_lark_notifier` 双群推送战报后才能 Final Answer。\n"
+            f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；"
+            f"已成功群：{chats_ok or '无（一次都未推送）'}。\n"
+            f"探针缺口：{('、'.join(missing) if missing else '无')}。\n"
+            "数据有缺口时须在战报中写 ⚠️ 占位行，**禁止**以「数据质量差」「无法形成洞察」为由跳过推送。\n"
+            "字段名写错导致 null 时须修正 SQL，不得归因为数据源问题。\n"
+            "请继续 ReAct（勿写 Final Answer）：\n"
+            "① 补完缺失探针（Step3 须 json_each；Step5 须 GROUP BY；Step6a+6b 跨视图；Step7 须 COUNT 聚合）；\n"
+            "② 组装 §1.4 三表 markdown_content（含 ⚠️ 占位行）；\n"
+            "③ **两次** atom_lark_notifier（主群 + 监控群）；\n"
+            "④ 双群均 success 后才可 ≤3 句 Final Answer 确认。"
+        ),
+    })
+    return True
 
 
 def _reject_pmo_false_lark_sent_guard(
@@ -1247,7 +1909,10 @@ def _reject_pmo_false_lark_sent_guard(
     """
     if not _pmo_lark_push_guard_channel_active(ctx):
         return False
-    if ctx.metadata.get("_pmo_atom_lark_notify_ok"):
+    if _pmo_db_analysis_mode(ctx):
+        if _pmo_branch_a_delivery_complete(ctx):
+            return False
+    elif ctx.metadata.get("_pmo_atom_lark_notify_ok"):
         return False
     if not _pmo_final_answer_falsely_claims_lark_sent(ans):
         return False
@@ -1282,6 +1947,7 @@ def _reject_pmo_false_lark_sent_guard(
             "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`。\n"
             "**SKILL §1.3 要求推送两个会话**：先主群（`chat_id` 来自 .env `PMO_PRIMARY_CHAT_ID`，即 notifier 的 `default_chat_id`），\n"
             "再监控群 `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`，内容相同，各调用一次 notifier。\n"
+            "（v7 仅分析模式：须 **两次** notifier 均 success 后才可 Final Answer 确认双群送达；单次成功不算完成。）\n"
             "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 Final Answer **如实**写明 error，不得写全部已成功。"
         ),
     })
@@ -1301,177 +1967,6 @@ def _bi_project_context_observation_suggests_success(observation_full: str) -> b
         pass
     compact = s.replace(" ", "").lower()
     return '"status":"success"' in compact
-
-
-def _pmo_user_message_suggests_init(user_text: str) -> bool:
-    s = (user_text or "").strip()
-    if not s:
-        return False
-    return bool(
-        re.search(
-            r"INIT|全量提取入库|/pmo\s*init|初始化数据库|pmo_db_init",
-            s,
-            re.I,
-        )
-    )
-
-
-def _pmo_init_mode_active(ctx: PipelineContext) -> bool:
-    if not _pmo_lark_push_guard_channel_active(ctx):
-        return False
-    if ctx.metadata.get("pmo_init_mode") is True:
-        return True
-    ut = str(ctx.intent or "").strip()
-    return _pmo_user_message_suggests_init(ut)
-
-
-def _pmo_init_fs_write_targets_staging_ndjson(inp: str) -> bool:
-    """Action Input 是否指向 pmo_staging 下的 NDJSON 微批次文件。"""
-    raw = (inp or "").strip()
-    if not raw:
-        return False
-    path = raw
-    if raw.startswith("{"):
-        try:
-            args = json.loads(raw)
-            if isinstance(args, dict):
-                path = str(args.get("file_path") or args.get("path") or "")
-        except json.JSONDecodeError:
-            return False
-    p = path.replace("\\", "/").lower()
-    return "pmo_staging" in p and p.endswith(".ndjson")
-
-
-def _pmo_init_observation_suggests_ok(obs: str) -> bool:
-    s = str(obs or "").strip().lower()
-    if not s:
-        return False
-    if s in ("ok", "success", "true"):
-        return True
-    if s.startswith("{") and '"status"' in s:
-        try:
-            obj = json.loads(obs)
-            if isinstance(obj, dict):
-                st = str(obj.get("status") or "").lower()
-                return st in ("ok", "success", "partial")
-        except json.JSONDecodeError:
-            pass
-    return False
-
-
-def _pmo_init_blocked_stacked_staging_write(
-    tool: str, inp: str, ctx: PipelineContext
-) -> str | None:
-    """INIT：上一批 staging 已 write 成功但尚未 import 时，禁止连写下一 part。"""
-    if not _pmo_init_mode_active(ctx):
-        return None
-    if (tool or "").strip() != "core:fs_write":
-        return None
-    if not _pmo_init_fs_write_targets_staging_ndjson(inp):
-        return None
-    pending = str(ctx.metadata.get("_pmo_init_staging_await_import") or "").strip()
-    if not pending:
-        return None
-    return json.dumps(
-        {
-            "status": "error",
-            "error": "pmo_init_stacked_staging_write_blocked",
-            "msg": (
-                "【宿主拦截·PMO INIT】上一批 staging 已写入但尚未 import。"
-                f"待 import 文件：`{pending}`。\n"
-                "须 **write → import → write → import** 严格交替；"
-                "**禁止**连续 fs_write part1/2/3 后再 pmo_import_json。\n"
-                "请立即 Action: core:pmo_import_json，import 成功后再写下一 part。"
-            ),
-            "pending_import": pending,
-        },
-        ensure_ascii=False,
-    )
-
-
-def _pmo_init_track_staging_io(
-    ctx: PipelineContext, tool: str, inp: str, observation_full: str
-) -> None:
-    """记录 INIT staging write/import 状态，供连写拦截使用。"""
-    if not _pmo_init_mode_active(ctx):
-        return
-    tl = (tool or "").strip()
-    obs = str(observation_full or "")
-    if tl == "core:fs_write" and _pmo_init_fs_write_targets_staging_ndjson(inp):
-        if _pmo_init_observation_suggests_ok(obs):
-            path = inp
-            if (inp or "").strip().startswith("{"):
-                try:
-                    args = json.loads(inp)
-                    if isinstance(args, dict):
-                        path = str(args.get("file_path") or args.get("path") or inp)
-                except json.JSONDecodeError:
-                    path = inp
-            ctx.metadata["_pmo_init_staging_await_import"] = path
-        return
-    if tl == "core:pmo_import_json" and _pmo_init_observation_suggests_ok(obs):
-        ctx.metadata.pop("_pmo_init_staging_await_import", None)
-
-
-def _pmo_final_answer_looks_like_init_incomplete_stall(ans: str) -> bool:
-    """INIT 未完成却以 Final Answer 收尾：部分入库、路径借口、询问是否继续。"""
-    s = str(ans or "").strip()
-    if not s or len(s) > 2500:
-        return False
-    if re.search(
-        r"(部分工作|只完成|仅完成|尚未完成|未完成全部|还需要处理|文件路径问题|被截断|无法继续读取|无法直接读取)",
-        s,
-    ) and re.search(
-        r"(INIT|入库|db_write|pmo_people|pmo_personnel|product_requirements|dev_requirements|design_requirements|wiki)",
-        s,
-        re.I,
-    ):
-        return True
-    if re.search(r"是否需要我继续|是否继续|还是直接进入分支\s*A", s, re.I):
-        return True
-    return False
-
-
-def _reject_pmo_init_incomplete_guard(
-    ctx: PipelineContext,
-    messages: list[dict[str, Any]],
-    response: str,
-    ans: str,
-    *,
-    via: str,
-) -> bool:
-    """INIT：禁止在仅写入少量人员行后以路径/截断借口 Final Answer 结束。"""
-    if not _pmo_init_mode_active(ctx):
-        return False
-    if not _pmo_final_answer_looks_like_init_incomplete_stall(ans):
-        return False
-    try:
-        n = int(ctx.metadata.get("_pmo_init_incomplete_guard_count") or 0)
-    except (TypeError, ValueError):
-        n = 0
-    if n >= 5:
-        return False
-    ctx.metadata["_pmo_init_incomplete_guard_count"] = n + 1
-    logger.warning(
-        "[L3 Agent][PMO INIT 校验] trace=%s via=%s 未完成入库即 Final Answer，已注入纠偏",
-        str(ctx.metadata.get("_react_step_trace") or ""),
-        via,
-    )
-    messages.append({"role": "assistant", "content": response})
-    messages.append({
-        "role": "user",
-        "content": (
-            "【系统校验·PMO·INIT】当前 **INIT 尚未完成**，禁止 Final Answer。\n"
-            "须遵守 **Extract→JSON→Import**：每张 md = fs_read → fs_write staging JSON → **pmo_import_json**。\n"
-            "**每批严格交替**：fs_write partN → **立即** pmo_import_json partN → 再 partN+1；**禁止连写多 part**。\n"
-            "**禁止 INIT 使用 core:db_write**（请用 pmo_import_json 批量入库）。\n"
-            "1) 路径：manifest **basename** + workspace `pmo_lark_pull`；staging 在 `pmo_staging/{view_id}_partN.ndjson`；\n"
-            "2) flow_progress_note 对照 SKILL §附录 A；\n"
-            "3) 完成后 **pmo_init_gap_report**，对 missing_files 再 extract→import；\n"
-            "请立即输出 ReAct Action。"
-        ),
-    })
-    return True
 
 
 def _pmo_user_message_suggests_branch_b(user_text: str) -> bool:
@@ -1515,6 +2010,8 @@ def _pmo_branch_a_requires_bi_pull(ctx: PipelineContext) -> bool:
     """分支 A（宏观看板）链路：须先调用 atom_bi_project_context，禁止只用 Final Answer 交代「下一步」。"""
     if not _pmo_lark_push_guard_channel_active(ctx):
         return False
+    if ctx.metadata.get("pmo_db_ready"):
+        return False
     ut = str(ctx.intent or "").strip()
     if _pmo_user_message_suggests_branch_b(ut):
         return False
@@ -1522,6 +2019,507 @@ def _pmo_branch_a_requires_bi_pull(ctx: PipelineContext) -> bool:
     if ch == "pmo_copilot_cli":
         return True
     return _pmo_user_intent_suggests_branch_a_macro(ut)
+
+
+PMO_BRANCH_A_PRIMARY_CHAT_ID = "oc_437c98d11106295fb10751a5481ee465"
+PMO_BRANCH_A_MONITOR_CHAT_ID = "oc_0e321f92d758ecb44aea5b499c90510b"
+PMO_BRANCH_A_MIN_DB_QUERIES = 10
+PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX = 3
+PMO_BRANCH_A_PERSONNEL_SSOT_VIEW = "vewCz1FFJi"
+PMO_BRANCH_A_CROSS_MIN_VIEW_COUNT = 3
+PMO_BRANCH_A_REQUIRED_CROSS_VIEWS = frozenset({
+    "vewpI8lyYw",
+    "vewCz1FFJi",
+})
+PMO_BRANCH_A_PRODUCT_VIEW_ALTS = frozenset({"vew8TxMcSh", "vewL9Mofgd"})
+
+_PMO_BRANCH_A_INIT_TOOL_CANON = frozenset({
+    "atom_bi_project_context",
+    "core:fs_read",
+    "core:db_write",
+    "core:pmo_import_json",
+    "core:pmo_mirror_import",
+    "atom_web_scraper",
+    "read_file",
+})
+
+
+def _pmo_db_analysis_mode(ctx: PipelineContext) -> bool:
+    return bool(ctx.metadata.get("pmo_db_ready"))
+
+
+def _pmo_analysis_only_mode(ctx: PipelineContext) -> bool:
+    return _pmo_db_analysis_mode(ctx) and bool(ctx.metadata.get("pmo_analysis_only"))
+
+
+def _pmo_notifier_chat_id_from_inp(inp: str) -> str:
+    try:
+        args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
+        if isinstance(args, dict):
+            return str(args.get("chat_id") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _pmo_canonical_tool_id(tool: str) -> str:
+    t = (tool or "").replace("mcp:", "").strip().lower()
+    if t.startswith("core:"):
+        return t[5:]
+    return t
+
+
+def _pmo_ensure_analysis_probes(ctx: PipelineContext) -> dict[str, bool]:
+    probes = ctx.metadata.get("_pmo_analysis_probes")
+    if not isinstance(probes, dict):
+        probes = {}
+        ctx.metadata["_pmo_analysis_probes"] = probes
+    return probes
+
+
+def _pmo_branch_a_delivery_complete(ctx: PipelineContext) -> bool:
+    chats = {str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()}
+    return PMO_BRANCH_A_PRIMARY_CHAT_ID in chats and PMO_BRANCH_A_MONITOR_CHAT_ID in chats
+
+
+def _pmo_branch_a_push_prerequisites_met(ctx: PipelineContext) -> bool:
+    if int(ctx.metadata.get("_pmo_db_query_count") or 0) < PMO_BRANCH_A_MIN_DB_QUERIES:
+        return False
+    probes = _pmo_ensure_analysis_probes(ctx)
+    for key in ("sprint", "status", "personnel", "version", "epic"):
+        if not probes.get(key):
+            return False
+    if not probes.get("personnel_kanban"):
+        return False
+    if not (probes.get("cross_view_6a") and probes.get("cross_view_6b")):
+        return False
+    if _pmo_branch_a_missing_cross_analysis(ctx):
+        return False
+    return True
+
+
+def _pmo_track_db_query_sql(ctx: PipelineContext, tool_id: str, inp: str) -> None:
+    if _pmo_canonical_tool_id(tool_id) != "db_query":
+        return
+    try:
+        ctx.metadata["_pmo_db_query_count"] = int(ctx.metadata.get("_pmo_db_query_count") or 0) + 1
+    except (TypeError, ValueError):
+        ctx.metadata["_pmo_db_query_count"] = 1
+    sql = _pmo_extract_sql_from_tool_inp(inp)
+    sl = sql.lower()
+    if _pmo_sql_is_step1_map(sql):
+        ctx.metadata["_pmo_step1_map_done"] = True
+    view_ids = _pmo_extract_view_ids_from_sql(sql)
+    if view_ids:
+        _pmo_ensure_views_queried(ctx).update(view_ids)
+    probes = _pmo_ensure_analysis_probes(ctx)
+    if (
+        "pmo_raw_records" in sl
+        or "vewpi8lyyw" in sl
+        or "pmo_dev_requirements" in sl
+        or "pmo_product_requirements" in sl
+    ):
+        has_requirement = re.search(r"\brequirement\b", sl) or "epic" in sl
+        if has_requirement and not _pmo_sql_uses_invalid_parent_null_epic_filter(sql):
+            if _pmo_sql_excludes_dept_epic_placeholders(sql):
+                probes["epic"] = True
+            elif "vewpi8lyyw" in sl and "父记录" in sql and "[0].text" in sql:
+                probes["epic"] = True
+    if "work_cycle" in sl or "sprint" in sl:
+        if "count(" in sl or "group by" in sl:
+            probes["sprint"] = True
+        elif "sprint" in sl and "json_extract" in sl:
+            probes["sprint_detail_only"] = True
+    if (
+        "execution_stage" in sl
+        or "current_status" in sl
+        or re.search(r"\bstatus\b", sl)
+        or "状态" in sql
+    ):
+        if "count(" in sl and "group by" in sl:
+            probes["status"] = True
+        elif re.search(r"\bstatus\b", sl) or "状态" in sql:
+            probes["status_detail_only"] = True
+    if "vewcz1ffji" in sl and "json_each" in sl:
+        probes["personnel_kanban"] = True
+        probes["personnel"] = True
+    elif "vewcz1ffji" in sl and (
+        "person in charge" in sl or "participant" in sl or "en_name" in sl
+    ):
+        probes["personnel_kanban_partial"] = True
+    elif "vewl9mofgd" in sl and (
+        "person" in sl or "负责人" in sql or "json_each" in sl or "participant" in sl
+    ):
+        if "json_each" in sl:
+            probes["personnel_kanban"] = True
+            probes["personnel"] = True
+    elif (
+        "person in charge" in sl or "person_name" in sl or "personnel_task_progress" in sl
+    ) and "vewpi8lyyw" in sl and "vewcz1ffji" not in sl:
+        probes["personnel_vewp_only"] = True
+    elif "json_each" in sl and re.search(r"person|participant|负责人", sl):
+        probes["personnel"] = True
+    if "vewpi8lyyw" in sl and (
+        "延期" in sql or "🔴" in sql or re.search(r"status.*延期|延期.*status", sl)
+    ):
+        probes["cross_view_6a"] = True
+    if "vewcz1ffji" in sl and "fields like" in sl:
+        probes["cross_view_6b"] = True
+    if "count(" in sl and (
+        "version goal" in sl
+        or "vew8txmcsh" in sl
+        or "vewl9mofgd" in sl
+    ):
+        probes["version"] = True
+    elif "version goal" in sl and "limit 1" in sl:
+        probes["version_sample_only"] = True
+
+
+def _pmo_append_draft_gfm_hint_after_db_query(
+    ctx: PipelineContext, assistant_response: str, observation: str
+) -> str:
+    """db_query 后检查 Thought 是否含 GFM 草稿行，缺失或重复则注入纠正提示。"""
+    if not _pmo_db_analysis_mode(ctx) or _pmo_branch_a_delivery_complete(ctx):
+        return observation
+    _pmo_sync_assembly_phase_from_thought(ctx, assistant_response)
+    if _pmo_markdown_fix_phase(ctx) == "final":
+        return observation
+    hints: list[str] = []
+    thought = _pmo_extract_thought_from_assistant(assistant_response) or str(assistant_response or "")
+    if not _pmo_assistant_has_gfm_draft(assistant_response):
+        hints.append(
+            "⚠️ **草稿提醒**：上一步 Thought 未包含 GFM 表格行（须含 `|` 分隔符，禁止写「待填充」）。"
+            "请在本步 Thought **开头**补写上一步对应表的至少 1 行 GFM 草稿"
+            "（📊 Step4/5 · 👥 Step3 · 📦 Step7），再继续下一步。"
+        )
+    else:
+        fp = _pmo_extract_gfm_draft_fingerprint(thought)
+        if fp:
+            last_fp = str(ctx.metadata.get("_pmo_last_gfm_draft_fingerprint") or "")
+            if last_fp and fp == last_fp:
+                hints.append(
+                    "⚠️ **草稿重复**：本轮 Thought 的 GFM 草稿内容与上轮完全相同。"
+                    "请基于本步 Observation **追加至少 1 行新数据**（禁止复制旧行）；"
+                    "Step5 应写状态汇总行（如 `| 🔴 延期 | N 条 |`），Step4 写 Epic 行，Step7 写 Version Goal 行。"
+                )
+            ctx.metadata["_pmo_last_gfm_draft_fingerprint"] = fp
+    if not hints:
+        return observation
+    return f"{observation}\n\n" + "\n".join(hints)
+
+
+def _pmo_branch_a_blocked_invalid_field_sql(
+    tool: str, inp: str, ctx: PipelineContext
+) -> str | None:
+    """开发主表使用错误中文字段名时提前拦截，避免误判为数据质量问题。"""
+    if not _pmo_db_analysis_mode(ctx):
+        return None
+    if _pmo_canonical_tool_id(tool) != "db_query":
+        return None
+    sql = _pmo_extract_sql_from_tool_inp(inp)
+    sl = sql.lower()
+    bad_fields: list[str] = []
+    if "vewpi8lyyw" in sl:
+        if "负责人" in sql:
+            bad_fields.append("$.负责人")
+        if "需求名称" in sql:
+            bad_fields.append("$.需求名称")
+    if "vewcz1ffji" in sl and "责任人" in sql and "person in charge" not in sl:
+        bad_fields.append("责任人")
+    if not bad_fields:
+        return None
+    return json.dumps(
+        {
+            "status": "error",
+            "error": "pmo_invalid_field_name_blocked",
+            "msg": (
+                "【宿主拦截】SQL 使用了不存在的字段名："
+                f"{('、'.join(bad_fields))}。"
+                "vewpI8lyYw / vewCz1FFJi 开发表字段为 "
+                "Person in charge/Participant 和 Requirement（非「负责人」「需求名称」「责任人」）。"
+                "请先 SELECT columns_json FROM pmo_views_meta 核对字段名后重写 SQL。"
+            ),
+            "hints": [
+                "请核对 Step1 的 columns_json；"
+                "Person 用 json_each(json_extract(fields, '$.$\"Person in charge/Participant\"'))；"
+                "Requirement 用 json_extract(fields, '$.Requirement')。",
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _pmo_branch_a_blocked_force_assembly_round(
+    tool: str, ctx: PipelineContext, assistant_response: str = ""
+) -> str | None:
+    """七步探针完成后强制组装轮：writing 阶段禁止查库/推送；ready 阶段禁止查库、允许推送。"""
+    if not _pmo_db_analysis_mode(ctx):
+        return None
+    if _pmo_branch_a_delivery_complete(ctx):
+        return None
+    if _pmo_markdown_fix_phase(ctx):
+        return None
+    if not _pmo_branch_a_push_prerequisites_met(ctx):
+        return None
+    _pmo_ensure_assembly_phase(ctx)
+    phase = _pmo_assembly_phase(ctx)
+    if not phase:
+        return None
+    canon = _pmo_canonical_tool_id(tool)
+    if phase == "writing" and canon == "atom_lark_notifier":
+        if _pmo_assistant_thought_has_all_three_tables(assistant_response):
+            ctx.metadata["_pmo_assembly_phase"] = "ready"
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "pmo_assembly_round_notifier_blocked",
+                    "msg": (
+                        "【宿主拦截 · 组装轮】Thought 三表 GFM 预览 **已就绪**。"
+                        "本轮禁止推送；下一轮请将 Thought 中的完整 GFM 三表"
+                        " **全文复制** 到 atom_lark_notifier.markdown_content 后再调用推送。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_assembly_round_notifier_blocked",
+                "msg": (
+                    "【宿主拦截 · 组装轮】禁止推送：Thought 中尚未含完整三张 GFM 表。"
+                    "请翻阅前 10 轮 Thought/Observation，在本轮 Thought 写出"
+                    "📊/👥/📦 三表完整预览（各含 | 表头与数据行），本轮不要调用 notifier。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if phase == "writing" and canon == "db_query":
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_force_assembly_round_blocked",
+                "msg": (
+                    "【宿主拦截 · 组装轮】§1.2.1 七步探针 **已完成**，禁止 core:db_query。"
+                    "请在本轮 **仅** 于 Thought 中写出 §1.4 完整三表 GFM 预览"
+                    "（📊 需求进度全览 + 👥 人员任务矩阵 + 📦 版本发布需求映射，各含 | 表格）。"
+                    "❌ 本轮禁止 atom_lark_notifier；Thought 写完后下一轮再推送。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if phase == "writing":
+        _pmo_sync_assembly_phase_from_thought(ctx, assistant_response)
+    if _pmo_assembly_phase(ctx) == "ready" and canon == "db_query":
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_force_assembly_round_blocked",
+                "msg": (
+                    "【宿主拦截 · 组装轮】Thought 三表预览已完成，禁止继续 core:db_query。"
+                    "请将 Thought 中的 GFM 三表全文写入 markdown_content 后调用 atom_lark_notifier。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return None
+
+
+def _pmo_branch_a_blocked_duplicate_step1_map(
+    tool: str, inp: str, ctx: PipelineContext
+) -> str | None:
+    """分析中途重复 Step1 地图查询时阻止盲目重跑七步。"""
+    if not _pmo_db_analysis_mode(ctx):
+        return None
+    if _pmo_canonical_tool_id(tool) != "db_query":
+        return None
+    sql = _pmo_extract_sql_from_tool_inp(inp)
+    if not _pmo_sql_is_step1_map(sql):
+        return None
+    if not ctx.metadata.get("_pmo_step1_map_done"):
+        return None
+    qn = int(ctx.metadata.get("_pmo_db_query_count") or 0)
+    if qn < 5:
+        return None
+    try:
+        restart = int(ctx.metadata.get("_pmo_restart_count") or 0) + 1
+    except (TypeError, ValueError):
+        restart = 1
+    ctx.metadata["_pmo_restart_count"] = restart
+    missing = _pmo_branch_a_missing_probes(ctx)
+    missing_txt = "、".join(missing) if missing else "无"
+    if restart >= 2:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_step1_rerun_blocked",
+                "msg": (
+                    "【宿主拦截 · ExecutionBrief】你已在本轮重复执行 Step1 数据地图 ≥2 次。"
+                    f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；仍缺：{missing_txt}。"
+                    "❌ 禁止从 Step1 重跑七步。"
+                    "请核对上下文中已有 Observation，仅补跑缺失探针对应步骤，"
+                    "或直接组装 §1.4 三表 markdown_content 再推送。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "status": "error",
+            "error": "pmo_step1_rerun_warn_blocked",
+            "msg": (
+                "【宿主拦截】Step1 数据地图在本轮已执行过。"
+                f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；仍缺：{missing_txt}。"
+                "❌ 禁止盲目重跑七步；请对照上下文已有数据，仅补跑缺失项。"
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _pmo_track_notifier_chat_success(ctx: PipelineContext, inp: str, observation: str) -> None:
+    if not _lark_notifier_observation_suggests_success(observation):
+        return
+    cid = _pmo_notifier_chat_id_from_inp(inp)
+    if not cid:
+        return
+    chats = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
+    if cid not in chats:
+        chats.append(cid)
+    ctx.metadata["_pmo_notifier_chats_success"] = chats
+    if _pmo_branch_a_delivery_complete(ctx):
+        ctx.metadata.pop("_pmo_markdown_fix_phase", None)
+        ctx.metadata.pop("_pmo_markdown_fix_only", None)
+
+
+def _pmo_branch_a_blocked_rerun_db_after_markdown_block(
+    tool: str, ctx: PipelineContext, inp: str = ""
+) -> str | None:
+    """markdown 修复阶段：final 禁止查库；supplemental 允许有限补缺 SQL。"""
+    if not _pmo_db_analysis_mode(ctx):
+        return None
+    if _pmo_canonical_tool_id(tool) != "db_query":
+        return None
+    phase = _pmo_markdown_fix_phase(ctx)
+    if not phase:
+        return None
+    if _pmo_branch_a_delivery_complete(ctx):
+        ctx.metadata.pop("_pmo_markdown_fix_phase", None)
+        ctx.metadata.pop("_pmo_markdown_fix_only", None)
+        return None
+    if phase == "supplemental":
+        sql = _pmo_extract_sql_from_tool_inp(inp)
+        if _pmo_sql_is_supplemental_allowed(sql):
+            used = int(ctx.metadata.get("_pmo_markdown_fix_supplemental_count") or 0) + 1
+            ctx.metadata["_pmo_markdown_fix_supplemental_count"] = used
+            if used >= PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX:
+                ctx.metadata["_pmo_markdown_fix_phase"] = "final"
+                ctx.metadata["_pmo_markdown_fix_only"] = True
+            return None
+        remaining = _pmo_markdown_fix_supplemental_remaining(ctx)
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_markdown_fix_supplemental_db_blocked",
+                "msg": (
+                    "【宿主拦截】markdown 补缺阶段：此类 SQL 视为重跑七步，禁止执行。"
+                    f"剩余补缺额度 {remaining}/{PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX}。"
+                    "允许：COUNT+GROUP BY、json_each 人员、Step6b LIKE、Epic 正确写法、LIMIT≤20。"
+                    "禁止：Step1 地图、Step2 LIMIT 1 样本。"
+                    "若数据已够，请补写 markdown_content 再推送。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "status": "error",
+            "error": "pmo_markdown_fix_only_db_blocked",
+            "msg": (
+                "【宿主拦截】markdown 最终整合阶段，且 §1.2.1 七步分析探针 **已完成**。"
+                "❌ **禁止** 任何 core:db_query。"
+                "请直接基于已有 Observation 将完整 GFM 三表写入 "
+                "`atom_lark_notifier.markdown_content` 后再推送。"
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineContext) -> str | None:
+    """DB 就绪 · 仅分析模式：禁止 INIT/拉表/读盘；推送完成后禁止继续查库。"""
+    if not _pmo_analysis_only_mode(ctx):
+        return None
+    canon = _pmo_canonical_tool_id(tool)
+    if _pmo_branch_a_delivery_complete(ctx):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_post_delivery_tool_blocked",
+                "msg": (
+                    "【宿主拦截】主群与监控群均已推送成功，本轮交付完成。"
+                    "请输出 ≤3 句 Final Answer 确认，禁止再调用任何工具。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    chats = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
+    if chats and not _pmo_branch_a_delivery_complete(ctx) and canon == "db_query":
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_post_push_analysis_blocked",
+                "msg": (
+                    "【宿主拦截】已向至少一个群推送卡片，请 **先完成双群推送**（主群 + 监控群），"
+                    "禁止在此阶段继续 core:db_query。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if canon in _PMO_BRANCH_A_INIT_TOOL_CANON:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_branch_a_init_switch_blocked",
+                "msg": (
+                    "【宿主拦截】当前为 **DB 仅分析模式**（pmo_db_ready）。"
+                    "禁止 atom_bi_project_context / fs_read / db_write / web_scraper。"
+                    "请仅用 core:db_query 查询 SQLite，完成大颗粒度探针与 §1.4 三表后再 notifier。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return None
+
+
+def _reject_pmo_branch_a_init_completion_guard(
+    ctx: PipelineContext,
+    messages: list[dict[str, Any]],
+    response: str,
+    ans: str,
+    *,
+    via: str,
+) -> bool:
+    """禁止在仅分析模式下用 Final Answer 冒充 INIT/入库已完成并收工。"""
+    if not _pmo_lark_push_guard_channel_active(ctx):
+        return False
+    if _pmo_branch_a_delivery_complete(ctx):
+        return False
+    s = str(ans or "").strip()
+    if len(s) < 12:
+        return False
+    markers = ("INIT 镜像", "pmo_mirror_import", "镜像入库", "INIT 完成", "init 镜像")
+    if not any(m.lower() in s.lower() for m in markers):
+        return False
+    messages.append({"role": "assistant", "content": response})
+    messages.append({
+        "role": "user",
+        "content": (
+            "【宿主·PMO 仅分析模式】禁止以 Final Answer 声称 INIT/镜像入库已完成。"
+            "请继续 core:db_query 大颗粒度探针（Sprint/状态/人员/版本/Epic），"
+            "完成 §1.4 三表后双群 atom_lark_notifier，再简短确认。"
+        ),
+    })
+    return True
 
 
 def _pmo_final_answer_looks_like_futile_plan_only(ans: str) -> bool:
@@ -1712,12 +2710,20 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
 ) -> bool:
     """
     已拉表但未发 notifier：禁止把完整战报写在 Final Answer（应写入 notifier 的 markdown_content）。
+    v7 DB 仅分析模式同样适用（不要求 atom_bi_project_context）。
     """
-    if not _pmo_branch_a_requires_bi_pull(ctx):
+    if not _pmo_lark_push_guard_channel_active(ctx):
         return False
-    if not ctx.metadata.get("_pmo_bi_project_context_invoked"):
+    if _pmo_db_analysis_mode(ctx):
+        if not _pmo_analysis_only_mode(ctx) and not _pmo_user_intent_suggests_branch_a_macro(
+            str(ctx.intent or "")
+        ):
+            return False
+    elif not _pmo_branch_a_requires_bi_pull(ctx):
         return False
-    if ctx.metadata.get("_pmo_atom_lark_notify_ok"):
+    if not _pmo_db_analysis_mode(ctx) and not ctx.metadata.get("_pmo_bi_project_context_invoked"):
+        return False
+    if ctx.metadata.get("_pmo_atom_lark_notify_ok") or _pmo_branch_a_delivery_complete(ctx):
         return False
     if not _pmo_final_answer_looks_like_lark_card_body(ans):
         return False
@@ -4883,14 +5889,6 @@ async def _run_sub_agent_hooked(
     _meta = dict(parent_ctx.metadata or {})
     _meta["delegate_sub_task_index"] = node_index
     _meta["delegate_sub_task_role"] = str(task_spec.get("role") or "")
-    _nid = str(
-        task_spec.get("node_id")
-        or task_spec.get("dag_node_id")
-        or task_spec.get("task_dag_node_id")
-        or ""
-    ).strip()
-    if _nid:
-        _meta["task_dag_node_id"] = _nid
     _sc = PipelineContext(
         intent=parent_ctx.intent,
         source=parent_ctx.source,
@@ -5590,6 +6588,19 @@ async def _run_react_core(
     ctx.metadata.pop("_pmo_branch_a_bi_pull_guard_count", None)
     ctx.metadata.pop("_pmo_branch_a_notifier_dump_guard_count", None)
     ctx.metadata.pop("_pmo_branch_a_post_bi_stall_guard_count", None)
+    ctx.metadata.pop("_pmo_db_query_count", None)
+    ctx.metadata.pop("_pmo_analysis_probes", None)
+    ctx.metadata.pop("_pmo_step1_map_done", None)
+    ctx.metadata.pop("_pmo_restart_count", None)
+    ctx.metadata.pop("_pmo_notifier_block_count", None)
+    ctx.metadata.pop("_pmo_markdown_fix_only", None)
+    ctx.metadata.pop("_pmo_markdown_fix_phase", None)
+    ctx.metadata.pop("_pmo_markdown_fix_supplemental_count", None)
+    ctx.metadata.pop("_pmo_assembly_phase", None)
+    ctx.metadata.pop("_pmo_last_notifier_markdown_preview", None)
+    ctx.metadata.pop("_pmo_notifier_chats_success", None)
+    ctx.metadata.pop("_pmo_last_gfm_draft_fingerprint", None)
+    ctx.metadata.pop("_pmo_force_push_exit_guard_count", None)
     ctx.metadata["_react_tool_invocations"] = 0
     # AN — Guardrails：初始化 checker（只在 JACHIN_GUARDRAILS_ENABLE=1 时激活）
     try:
@@ -5650,15 +6661,6 @@ async def _run_react_core(
 
     for iteration in range(max_iterations):
         ctx.metadata["_react_iteration"] = iteration + 1
-        try:
-            from l3_node.run_agent_l3_hooks import touch_global_registry_if_needed
-
-            touch_global_registry_if_needed(
-                str(getattr(ctx, "run_id", "") or ""),
-                react_iteration=iteration,
-            )
-        except Exception:
-            pass
         # AN — Guardrails 迭代前检查（iterations / token budget）
         try:
             _gr_ck = ctx.metadata.get("_gr_checker")
@@ -5668,22 +6670,7 @@ async def _run_react_core(
                 if _gr_pre_v is not None:
                     _gr_brief = _gr_ck.execution_brief()
                     logger.warning("[Guardrails] pre-iteration truncate rule=%s iter=%d", _gr_pre_v.rule, iteration + 1)
-                    if _gr_pre_v.action == "truncate":
-                        from l3_node.guardrails import emit_guardrails_execution_brief
-
-                        return await emit_guardrails_execution_brief(
-                            ctx,
-                            rule=_gr_pre_v.rule,
-                            brief_body=_gr_brief,
-                            violation=_gr_pre_v,
-                        )
-                    if _gr_pre_v.action == "abort":
-                        from l3_node.guardrails import emit_guardrails_abort_brief
-
-                        await emit_guardrails_abort_brief(ctx, _gr_pre_v)
-                        from l3_node.guardrails import GuardrailsAbortError
-
-                        raise GuardrailsAbortError(_gr_pre_v)
+                    return f"Final Answer: {_gr_brief}"
         except Exception as _gr_loop_e:
             logger.debug("[Guardrails] pre-iteration 检查异常: %s", _gr_loop_e)
         # 每轮唯一 trace，便于 PowerShell 里对比「这一次 vs 下一次」日志
@@ -5763,27 +6750,7 @@ async def _run_react_core(
         except ImportError:
             pass
         try:
-            from l3_node.skill_md_hot_reload import apply_skill_md_hot_reload_to_react_ctx
-
-            apply_skill_md_hot_reload_to_react_ctx(ctx)
-        except Exception:
-            pass
-        try:
-            from l3_node.task_engine.dag_replan import maybe_replan_during_react
-            from l3_node.session_hot_user_inject import peek_pending_session_user
-
-            _replan_hot_sk = str(ctx.metadata.get("_lark_chat_id") or "").strip()
-            _replan_hots: list[str] = []
-            if _replan_hot_sk:
-                _snap = peek_pending_session_user(_replan_hot_sk)
-                if _snap:
-                    _replan_hots = [str(x) for x in (_snap.get("previews") or []) if str(x).strip()]
-            await maybe_replan_during_react(
-                ctx,
-                iteration,
-                trigger="hot_inject" if _replan_hots else "periodic",
-                hot_user_lines=_replan_hots or None,
-            )
+            apply_hr_skill_md_hot_reload_to_react_ctx(ctx)
         except Exception:
             pass
         try:
@@ -5844,21 +6811,11 @@ async def _run_react_core(
                     _hot_user_msgs.append({"role": "user", "content": _body})
             except Exception:
                 pass
-        _strategy_msgs: list[dict[str, Any]] = []
-        try:
-            from l3_node.engine.execution_resilience_chain import pop_strategy_inject_message
-
-            _strat_msg = pop_strategy_inject_message(ctx)
-            if _strat_msg:
-                _strategy_msgs.append(_strat_msg)
-        except Exception:
-            pass
         full_messages = (
             [{"role": "system", "content": ctx.system_prompt}]
             + messages
             + ([_goal_reminder_msg] if _goal_reminder_msg else [])
             + _hot_user_msgs
-            + _strategy_msgs
         )
         # ──────────────────────────────────────────────────────────────────
         logger.debug("[L3 Agent] ReAct iter=%d 调用 LLM stream=%s sticky_goal_inject=%s", iteration + 1, bool(on_chunk), bool(_goal_reminder_msg))
@@ -6145,7 +7102,9 @@ async def _run_react_core(
             response, re.DOTALL | re.IGNORECASE,
         )
         if thought:
-            _emit("thought", thought.group(1).strip())
+            _th_text = thought.group(1).strip()
+            _emit("thought", _th_text)
+            ctx.metadata["_pmo_debug_thought"] = _th_text
 
         parsed = _parse_action(
             response,
@@ -6529,11 +7488,19 @@ async def _run_react_core(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
-                            if _reject_pmo_false_lark_sent_guard(
+                            if _reject_pmo_branch_a_init_completion_guard(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
-                            if _reject_pmo_init_incomplete_guard(
+                            if _reject_pmo_branch_a_force_push_exit_guard(
+                                ctx, messages, response, ans, via="parsed_none+final_prefix"
+                            ):
+                                continue
+                            if _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
+                                ctx, messages, response, ans, via="parsed_none+final_prefix"
+                            ):
+                                continue
+                            if _reject_pmo_false_lark_sent_guard(
                                 ctx, messages, response, ans, via="parsed_none+final_prefix"
                             ):
                                 continue
@@ -6723,9 +7690,17 @@ async def _run_react_core(
                 continue
             if _reject_pmo_branch_a_board_without_notifier_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
-            if _reject_pmo_false_lark_sent_guard(ctx, messages, response, ans, via="type=answer"):
+            if _reject_pmo_branch_a_init_completion_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
-            if _reject_pmo_init_incomplete_guard(ctx, messages, response, ans, via="type=answer"):
+            if _reject_pmo_branch_a_force_push_exit_guard(
+                ctx, messages, response, ans, via="type=answer"
+            ):
+                continue
+            if _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
+                ctx, messages, response, ans, via="type=answer"
+            ):
+                continue
+            if _reject_pmo_false_lark_sent_guard(ctx, messages, response, ans, via="type=answer"):
                 continue
             _emit("answer", ans)
             ctx.final_answer = _apply_hr_recruitment_final_answer_table_sync(ans, ctx)
@@ -7311,6 +8286,7 @@ async def _run_react_core(
                     inp=str(inp or ""),
                     iteration=iteration,
                     run_id=str(ctx.run_id or ""),
+                    thought=str(ctx.metadata.pop("_pmo_debug_thought", "") or ""),
                 )
             except Exception:
                 pass
@@ -7334,21 +8310,11 @@ async def _run_react_core(
                         _gr_violation = _gr_checker.check_all_pre_tool(tool or "", inp or "")
                         if _gr_violation is not None:
                             if _gr_violation.action == "abort":
-                                from l3_node.guardrails import emit_guardrails_abort_brief
-
-                                await emit_guardrails_abort_brief(ctx, _gr_violation)
                                 raise GuardrailsAbortError(_gr_violation)
                             if _gr_violation.action == "truncate":
                                 _gr_brief = _gr_checker.execution_brief()
                                 logger.warning("[Guardrails] truncate rule=%s", _gr_violation.rule)
-                                from l3_node.guardrails import emit_guardrails_execution_brief
-
-                                return await emit_guardrails_execution_brief(
-                                    ctx,
-                                    rule=_gr_violation.rule,
-                                    brief_body=_gr_brief,
-                                    violation=_gr_violation,
-                                )
+                                return f"Final Answer: {_gr_brief}"
                             # warn：将警告追加到下一次 observation
                             logger.warning("[Guardrails] warn rule=%s msg=%s", _gr_violation.rule, _gr_violation.message)
                             inp = inp or ""  # warn 时继续执行
@@ -7515,10 +8481,6 @@ async def _run_react_core(
                             ctx.metadata["_l4_exp_save_gate"] = True
                     except Exception:
                         pass
-            try:
-                ctx.metadata["executed_tool"] = str(base_tool or tool or "")
-            except Exception:
-                pass
             await global_hooks.run(HOOK_BEFORE_TOOL_EXEC, ctx)
             if ctx.aborted:
                 return
@@ -7559,6 +8521,65 @@ async def _run_react_core(
                 except Exception as e:
                     logger.debug("[L3 Agent] add_automated_recruitment_task 纠正 job_name 跳过: %s", e)
             _pmo_skip_lark_invoke = False
+            _pmo_skip_tool_invoke = False
+            observation: str | None = None
+            if _pmo_lark_push_guard_channel_active(ctx):
+                try:
+                    _pmo_sync_assembly_phase_from_thought(ctx, response)
+                    _pmo_init_blk = _pmo_branch_a_blocked_init_tools_during_analysis(str(tool or ""), ctx)
+                    if _pmo_init_blk:
+                        observation = _pmo_init_blk
+                        _pmo_skip_tool_invoke = True
+                        logger.info(
+                            "[L3 Agent][PMO] 已拦截 INIT/拉表类工具（DB 仅分析模式）tool=%s",
+                            (tool or "")[:80],
+                        )
+                    else:
+                        _pmo_rerun_blk = _pmo_branch_a_blocked_rerun_db_after_markdown_block(
+                            str(tool or ""), ctx, inp
+                        )
+                        if _pmo_rerun_blk:
+                            observation = _pmo_rerun_blk
+                            _pmo_skip_tool_invoke = True
+                            logger.info(
+                                "[L3 Agent][PMO] 已拦截 markdown 修复阶段的重复查库 tool=%s",
+                                (tool or "")[:80],
+                            )
+                        else:
+                            _pmo_assembly_blk = _pmo_branch_a_blocked_force_assembly_round(
+                                str(tool or ""), ctx, response
+                            )
+                            if _pmo_assembly_blk:
+                                observation = _pmo_assembly_blk
+                                _pmo_skip_tool_invoke = True
+                                logger.info(
+                                    "[L3 Agent][PMO] 已拦截组装轮违规工具 tool=%s",
+                                    (tool or "")[:80],
+                                )
+                            else:
+                                _pmo_invalid_field_blk = _pmo_branch_a_blocked_invalid_field_sql(
+                                    str(tool or ""), inp, ctx
+                                )
+                                if _pmo_invalid_field_blk:
+                                    observation = _pmo_invalid_field_blk
+                                    _pmo_skip_tool_invoke = True
+                                    logger.info(
+                                        "[L3 Agent][PMO] 已拦截错误字段名 SQL tool=%s",
+                                        (tool or "")[:80],
+                                    )
+                                else:
+                                    _pmo_step1_blk = _pmo_branch_a_blocked_duplicate_step1_map(
+                                        str(tool or ""), inp, ctx
+                                    )
+                                    if _pmo_step1_blk:
+                                        observation = _pmo_step1_blk
+                                        _pmo_skip_tool_invoke = True
+                                        logger.info(
+                                            "[L3 Agent][PMO] 已拦截重复 Step1 地图查库 tool=%s",
+                                            (tool or "")[:80],
+                                        )
+                except Exception as _pmo_init_e:
+                    logger.debug("[L3 Agent][PMO] init_switch 拦截判断跳过: %s", _pmo_init_e)
             if (
                 (tool or "").replace("mcp:", "").strip() == "atom_lark_notifier"
                 and _pmo_lark_push_guard_channel_active(ctx)
@@ -7573,30 +8594,30 @@ async def _run_react_core(
                 except Exception as _pmo_title_e:
                     logger.debug("[L3 Agent][PMO] atom_lark_notifier title 纠偏跳过: %s", _pmo_title_e)
                 try:
-                    _blk_obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
-                    if _blk_obs:
-                        observation = _blk_obs
-                        logger.info(
-                            "[L3 Agent][PMO] 已拦截试错阶段飞书推送（分支 A 未完成§1.4或未纠正误报）"
-                        )
+                    _pmo_assembly_blk = _pmo_branch_a_blocked_force_assembly_round(
+                        "mcp:atom_lark_notifier", ctx, response
+                    )
+                    if _pmo_assembly_blk:
+                        observation = _pmo_assembly_blk
                         _pmo_skip_lark_invoke = True
+                        logger.info(
+                            "[L3 Agent][PMO] 已拦截组装轮阶段的 premature notifier"
+                        )
+                    else:
+                        _blk_obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+                        if _blk_obs:
+                            observation = _blk_obs
+                            logger.info(
+                                "[L3 Agent][PMO] 已拦截试错阶段飞书推送（分支 A 未完成§1.4或未纠正误报）"
+                            )
+                            _pmo_skip_lark_invoke = True
                 except Exception as _blk_e:
                     logger.debug("[L3 Agent][PMO] premature_lark 拦截判断跳过: %s", _blk_e)
-            _pmo_skip_staging_invoke = False
-            if not _pmo_skip_lark_invoke:
-                try:
-                    _stk_obs = _pmo_init_blocked_stacked_staging_write(tool, inp, ctx)
-                    if _stk_obs:
-                        observation = _stk_obs
-                        logger.info(
-                            "[L3 Agent][PMO INIT] 已拦截连写 staging（须先 pmo_import_json 上一 part）"
-                        )
-                        _pmo_skip_staging_invoke = True
-                except Exception as _stk_e:
-                    logger.debug("[L3 Agent][PMO INIT] stacked staging 拦截判断跳过: %s", _stk_e)
-            if not _pmo_skip_lark_invoke and not _pmo_skip_staging_invoke:
+            if not _pmo_skip_tool_invoke and not _pmo_skip_lark_invoke:
                 # 工具执行路由器：MCP / Native；前台默认同步超时（可配置），预取附件去重
                 observation = await _invoke_react_tool(tool, inp, allowed_skills, ctx)
+            elif _pmo_skip_tool_invoke and observation is None:
+                observation = ""
             try:
                 ctx.metadata["_react_tool_invocations"] = int(ctx.metadata.get("_react_tool_invocations") or 0) + 1
             except (TypeError, ValueError):
@@ -7631,14 +8652,36 @@ async def _run_react_core(
                 logger.debug("[L3 Agent] observation_dedup 跳过: %s", _ode)
             observation_full = _maybe_shrink_shell_exec_observation(str(observation or ""), tool)
             try:
-                _tcanon = (tool or "").replace("mcp:", "").strip()
+                observation_full = _pmo_append_react_budget_warning(
+                    ctx,
+                    observation_full,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                )
+            except Exception as _pmo_bud_e:
+                logger.debug("[L3 Agent][PMO] budget warning 跳过: %s", _pmo_bud_e)
+            try:
+                _tcanon = _pmo_canonical_tool_id(tool or "")
                 if _tcanon == "atom_bi_project_context":
                     ctx.metadata["_pmo_bi_project_context_invoked"] = True
                     if _bi_project_context_observation_suggests_success(observation_full):
                         ctx.metadata["_pmo_bi_project_context_ok"] = True
-                if (tool or "").replace("mcp:", "").strip() == "atom_lark_notifier":
+                if _tcanon == "db_query":
+                    _pmo_track_db_query_sql(ctx, str(tool or ""), inp)
+                    observation_full = _pmo_append_draft_gfm_hint_after_db_query(
+                        ctx, response, observation_full
+                    )
+                if _tcanon == "atom_lark_notifier":
                     if _lark_notifier_observation_suggests_success(observation_full):
-                        if _pmo_branch_a_requires_bi_pull(ctx):
+                        _pmo_track_notifier_chat_success(ctx, inp, observation_full)
+                        if _pmo_db_analysis_mode(ctx):
+                            if (
+                                _pmo_branch_a_notifier_markdown_is_complete(inp)
+                                and _pmo_branch_a_push_prerequisites_met(ctx)
+                                and _pmo_branch_a_delivery_complete(ctx)
+                            ):
+                                ctx.metadata["_pmo_atom_lark_notify_ok"] = True
+                        elif _pmo_branch_a_requires_bi_pull(ctx):
                             if _pmo_branch_a_notifier_markdown_is_complete(inp):
                                 ctx.metadata["_pmo_atom_lark_notify_ok"] = True
                             else:
@@ -7654,10 +8697,6 @@ async def _run_react_core(
                 _react_mark_workspace_io_flags(ctx, tool, observation_full)
             except Exception as _mwf:
                 logger.debug("[L3 Agent] _react_mark_workspace_io_flags 跳过: %s", _mwf)
-            try:
-                _pmo_init_track_staging_io(ctx, tool, inp, observation_full)
-            except Exception as _pmt:
-                logger.debug("[L3 Agent][PMO INIT] staging io 跟踪跳过: %s", _pmt)
             _model_obs_cap = _peek_react_observation_cap_for_upcoming_llm(
                 ctx=ctx,
                 base_engine=engine,
@@ -7827,6 +8866,14 @@ async def _run_react_core(
                 {"role": "assistant", "content": _sanitize_react_assistant_tool_turn_for_history(response)}
             )
             _obs_tail = _react_observation_followup_user_text(str(observation or ""), str(tool or ""))
+            try:
+                _pmo_nudge = _pmo_markdown_incomplete_system_nudge(
+                    ctx, str(observation_full or ""), str(tool or "")
+                )
+                if _pmo_nudge:
+                    _obs_tail = f"{_obs_tail}{_pmo_nudge}"
+            except Exception as _pmo_nudge_e:
+                logger.debug("[L3 Agent][PMO] markdown nudge 跳过: %s", _pmo_nudge_e)
             if _linter_inject:
                 _obs_tail = f"{_linter_inject}\n\n{_obs_tail}"
             messages.append({"role": "user", "content": _obs_tail})
@@ -8234,19 +9281,6 @@ async def run_agent(
             _session_messages.clear()
         logger.info("[L3 Agent] /clear：已清空会话消息缓冲 run_id=%s", run_id[:12])
         return "[System] 后端上下文已强制清空。"
-
-    try:
-        from l3_node.run_agent_l3_hooks import (
-            maybe_prepend_dag_resume_hint,
-            schedule_dag_auto_plan,
-            sync_task_plan_on_run_start,
-        )
-
-        sync_task_plan_on_run_start()
-        user_input = maybe_prepend_dag_resume_hint(user_input, delegate_depth=_delegate_depth)
-        schedule_dag_auto_plan(user_input, run_id=run_id, delegate_depth=_delegate_depth)
-    except Exception:
-        pass
 
     if (
         implicit_attribution
@@ -9375,7 +10409,7 @@ async def run_agent(
             logger.debug("[L3 Agent] foreground_run_registry.register 跳过", exc_info=True)
     if _delegate_depth == 0 and _bg_channel != "background_task":
         try:
-            from l3_node.run_agent_l3_hooks import register_global_foreground_task
+            from l3_node.task_runtime_registry import register_foreground_task
 
             _rtags: list[str] | None = None
             if implicit_attribution and isinstance(implicit_attribution, dict):
@@ -9384,15 +10418,17 @@ async def run_agent(
                     _rtags = [str(x).strip()[:64] for x in raw if str(x).strip()][:8]
                 elif raw is not None and str(raw).strip():
                     _rtags = [str(raw).strip()[:64]]
-            register_global_foreground_task(
-                run_id,
+            if not _rtags:
+                _c = (_bg_channel or "unknown").strip()[:48] or "unknown"
+                _rtags = [f"channel:{_c}"]
+            register_foreground_task(
+                run_id=run_id,
                 channel=_bg_channel or "unknown",
                 session_key=_lark_cid,
                 resource_tags=_rtags,
-                implicit_attribution=implicit_attribution if isinstance(implicit_attribution, dict) else None,
             )
         except Exception:
-            logger.debug("[L3 Agent] global/task_runtime registry.register 跳过", exc_info=True)
+            logger.debug("[L3 Agent] task_runtime_registry.register 跳过", exc_info=True)
     _tok_cap = _llm_token_budget_for_run(_delegate_depth)
     _tok_acc: dict[str, int] = {"prompt": 0, "completion": 0}
 
@@ -9577,28 +10613,15 @@ async def run_agent(
             "_domain_experts": list(_domain_experts_list),
         }
         if implicit_attribution and isinstance(implicit_attribution, dict):
-            if implicit_attribution.get("pmo_init_mode") is not None:
-                _md_base["pmo_init_mode"] = bool(implicit_attribution.get("pmo_init_mode"))
-            if implicit_attribution.get("jachin_app_root"):
-                _md_base["jachin_app_root"] = str(implicit_attribution.get("jachin_app_root"))
-            if implicit_attribution.get("pmo_db_path"):
-                _md_base["pmo_db_path"] = str(implicit_attribution.get("pmo_db_path"))
+            for _pmo_meta_k in ("pmo_analysis_only", "pmo_db_ready"):
+                if _pmo_meta_k in implicit_attribution:
+                    _md_base[_pmo_meta_k] = bool(implicit_attribution[_pmo_meta_k])
         try:
             from l3_node.primitives.mcp.sqlite_write_guard import messages_history_has_write_ack_grant
 
             _md_base["_user_granted_mcp_sqlite_write_ack"] = messages_history_has_write_ack_grant(messages)
         except Exception:
             _md_base["_user_granted_mcp_sqlite_write_ack"] = False
-        try:
-            from l3_node.skill_md_hot_reload import skill_md_generic_hot_reload_enabled
-
-            if skill_md_generic_hot_reload_enabled():
-                _md_base["_skill_md_generic_watch"] = True
-                from l3_node.skill_md_hot_reload import discover_skill_md_paths
-
-                _md_base["_skill_md_watched_paths"] = discover_skill_md_paths()
-        except Exception:
-            pass
         if _gateway_bundle is not None:
             _md_base["_gateway_bundle"] = _gateway_bundle
             _md_base["gateway_classification_truncated"] = bool(_gateway_bundle.classification_truncated)
@@ -9632,21 +10655,7 @@ async def run_agent(
                 await next_fn()
 
         async def react_mw(c: PipelineContext, next_fn) -> None:
-            try:
-                await _run_react_core(c, engine, on_step=on_step)
-            except Exception as _react_ex:
-                try:
-                    from l3_node.guardrails import GuardrailsAbortError
-
-                    if isinstance(_react_ex, GuardrailsAbortError):
-                        c.final_answer = (
-                            c.final_answer
-                            or f"[ExecutionBrief·Guardrails·Abort] {_react_ex}"
-                        )
-                    else:
-                        raise
-                except ImportError:
-                    raise
+            await _run_react_core(c, engine, on_step=on_step)
             if not c.aborted:
                 await next_fn()
 
@@ -9682,48 +10691,6 @@ async def run_agent(
         try:
             if not bool(getattr(ctx, "aborted", False)):
                 schedule_nexus_turn_commit_async(user_input or "", out)
-        except Exception:
-            pass
-        try:
-            from l3_node.run_agent_l3_hooks import try_auto_record_experience_run
-
-            try_auto_record_experience_run(
-                user_input or "",
-                out,
-                list(getattr(ctx, "_executed_tools_this_run", None) or []),
-                aborted=bool(getattr(ctx, "aborted", False)),
-            )
-        except Exception:
-            pass
-        try:
-            from l3_node.engine.hook_replay_executor import try_hook_replay_after_execution_brief
-
-            try_hook_replay_after_execution_brief(
-                run_id,
-                final_answer=out,
-                engine=engine,
-                user_input=user_input or "",
-                session_messages=_session_messages,
-                implicit_attribution=implicit_attribution,
-                on_chunk=on_chunk,
-            )
-        except Exception:
-            pass
-        try:
-            from l3_node.run_agent_l3_hooks import schedule_level3_brief_healing
-
-            _heal_sk = str(
-                ctx.metadata.get("_lark_chat_id")
-                or ctx.session_id
-                or (implicit_attribution or {}).get("session_key")
-                or ""
-            ).strip()
-            schedule_level3_brief_healing(
-                user_input or "",
-                out,
-                session_key=_heal_sk,
-                tools_used=list(getattr(ctx, "_executed_tools_this_run", None) or []),
-            )
         except Exception:
             pass
         try:
@@ -9775,11 +10742,11 @@ async def run_agent(
                 logger.debug("[L3 Agent] foreground_run_registry.unregister 跳过", exc_info=True)
         if _delegate_depth == 0 and _bg_channel != "background_task":
             try:
-                from l3_node.run_agent_l3_hooks import unregister_global_foreground_task
+                from l3_node.task_runtime_registry import unregister_foreground_task
 
-                unregister_global_foreground_task(run_id)
+                unregister_foreground_task(run_id)
             except Exception:
-                logger.debug("[L3 Agent] global/task_runtime registry.unregister 跳过", exc_info=True)
+                logger.debug("[L3 Agent] task_runtime_registry.unregister 跳过", exc_info=True)
         if _ws_tok is not None:
             try:
                 from l3_node.workspace_context import reset_delegate_workspace_sandbox

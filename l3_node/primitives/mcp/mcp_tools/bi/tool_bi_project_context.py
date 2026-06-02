@@ -27,62 +27,6 @@ if str(_root) not in sys.path:
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_REL = "docs/bi_daily_report/bi_project"
-PMO_LARK_PULL_BASENAME = "pmo_lark_pull"
-
-
-def _pmo_workspace_pull_dir() -> Path:
-    """PMO-Copilot INIT 拉表落盘 SSOT（与 run_pmo_copilot_skill / pmo_db_tools 一致）。"""
-    return (Path.home() / ".jachin" / "workspace" / PMO_LARK_PULL_BASENAME).resolve()
-
-
-def _resolve_output_dir(cfg: dict[str, Any], root: Path) -> Path:
-    """
-    解析落盘目录。PMO 的 pmo_lark_pull 必须落在 ~/.jachin/workspace，禁止误解析到仓库根。
-    优先级：JACHIN_PMO_LARK_PULL_DIR > 绝对路径 > workspace pmo_lark_pull > 仓库相对路径。
-    """
-    env_dir = (os.environ.get("JACHIN_PMO_LARK_PULL_DIR") or "").strip()
-    if env_dir:
-        out_dir = Path(env_dir).expanduser().resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return out_dir
-
-    out_rel = (cfg.get("output_dir_relative") or DEFAULT_OUTPUT_REL).strip() or DEFAULT_OUTPUT_REL
-    outp = Path(out_rel).expanduser()
-    if outp.is_absolute():
-        outp.mkdir(parents=True, exist_ok=True)
-        return outp.resolve()
-
-    norm = out_rel.replace("\\", "/").strip("/")
-    if norm in (PMO_LARK_PULL_BASENAME, f".jachin/workspace/{PMO_LARK_PULL_BASENAME}"):
-        out_dir = _pmo_workspace_pull_dir()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return out_dir
-
-    if norm.startswith(".jachin/workspace/"):
-        out_dir = (Path.home() / norm).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        return out_dir
-
-    out_dir = (root / outp).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
-
-
-def _is_pmo_workspace_output_dir(out_dir: Path) -> bool:
-    try:
-        out_dir.resolve().relative_to(_pmo_workspace_pull_dir())
-        return True
-    except ValueError:
-        return False
-
-
-def _manifest_file_entry(path: Path, project_root: Path, out_dir: Path) -> str:
-    """manifest.files[]：PMO workspace 落盘仅写 basename，避免 Agent 拼接 pmo_lark_pull/pmo_lark_pull。"""
-    if _is_pmo_workspace_output_dir(out_dir):
-        return path.name
-    return _manifest_file_relpath(path, project_root, out_dir)
-
-
 # 防止异常表无限分页；可用环境变量抬高
 BITABLE_RECORD_HARD_CAP = int(os.environ.get("JACHIN_BITABLE_RECORD_HARD_CAP", "250000"))
 # 百科子节点 / 正文内链接展开预算（种子 URL 不受此限，仍可逐个落盘）
@@ -184,104 +128,6 @@ _K11_WIKI_VIEW_SLUG_BY_VIEW_ID: dict[str, str] = {
     "vew0gcyAUk": "开发方任务",
     "vew5taB9H1": "设计专用_美术视图",
 }
-
-# PMO §9 十二视图固定序号（稳定文件名前缀，重复拉取覆盖同一路径）
-_PMO_VIEW_FILE_ORDER: dict[str, int] = {
-    view_id: idx
-    for idx, view_id in enumerate(
-        (
-            "vew8TxMcSh",
-            "vewL9Mofgd",
-            "vewpI8lyYw",
-            "vewjSEz5Xr",
-            "vewCz1FFJi",
-            "vew4Im7GO3",
-            "vewpxQxeGw",
-            "vewQKcyDAV",
-            "vewpYzbZ29",
-            "vewswB05Wi",
-            "vew0gcyAUk",
-            "vew5taB9H1",
-        ),
-        start=1,
-    )
-}
-
-
-def _pmo_stable_md_basename(slug: str, meta: dict[str, Any]) -> str:
-    """PMO workspace：同一 view/节点始终映射到同一文件名（覆盖写，不递增序号堆叠）。"""
-    view_id = str(meta.get("view_id_hint") or "").strip()
-    order = _PMO_VIEW_FILE_ORDER.get(view_id, 0)
-    prefix = f"{order:02d}_" if order else ""
-    return f"{prefix}{_safe_name(slug, max_len=200)}.md"
-
-
-def _pmo_prune_stale_md(out_dir: Path, kept_md_names: set[str]) -> list[str]:
-    """删除本次 sync 未覆写的旧 .md（避免多次 INIT 拉表在目录内堆叠历史副本）。"""
-    removed: list[str] = []
-    for path in sorted(out_dir.glob("*.md")):
-        if path.name in kept_md_names:
-            continue
-        try:
-            path.unlink()
-            removed.append(path.name)
-        except OSError as e:
-            logger.warning("[bi_project_context] 清理陈旧 md 失败 %s: %s", path, e)
-    return removed
-
-
-def _pmo_skill_wiki_urls() -> list[str]:
-    """PMO-Copilot SKILL §9 十二视图 URL（SSOT，与 skills_repo/pmo-copilot/SKILL.md §9 对齐）。"""
-    product_base = (
-        "https://ssgkm409t6q5.sg.larksuite.com/wiki/ZItbw4omRi6Sbsksb6jlwYq8gYq"
-        "?table=tblNdv7DIlycuqxp&view="
-    )
-    dev_base = (
-        "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0P"
-        "?table=tblfK9gk6vTQpJtB&view="
-    )
-    design_base = (
-        "https://ssgkm409t6q5.sg.larksuite.com/wiki/DiSnwVB1OiDvPWkk0W9lzx6AgLd"
-        "?table=tblDw87UlhddFIoY&view="
-    )
-    product_views = frozenset({"vew8TxMcSh", "vewL9Mofgd"})
-    urls: list[str] = []
-    for view_id in sorted(_PMO_VIEW_FILE_ORDER, key=lambda k: _PMO_VIEW_FILE_ORDER[k]):
-        if view_id in product_views:
-            urls.append(product_base + view_id)
-        elif view_id == "vew5taB9H1":
-            urls.append(design_base + view_id)
-        else:
-            urls.append(dev_base + view_id)
-    return urls
-
-
-def _filter_wiki_urls_for_pmo(urls: list[str]) -> list[str]:
-    """PMO workspace：仅保留 SKILL §9 十二 view；丢弃 tblL2gXBH / 发版记录 / 平台链接等默认噪声种子。"""
-    allowed = set(_PMO_VIEW_FILE_ORDER.keys())
-    by_view: dict[str, str] = {}
-    for raw in urls:
-        su = sanitize_wiki_url(str(raw or "").strip())
-        if not su:
-            continue
-        vid = str(parse_wiki_url(su).get("view_id") or "").strip()
-        if vid in allowed:
-            by_view.setdefault(vid, su)
-    return [
-        by_view[view_id]
-        for view_id in sorted(_PMO_VIEW_FILE_ORDER, key=lambda k: _PMO_VIEW_FILE_ORDER[k])
-        if view_id in by_view
-    ]
-
-
-def _pmo_pull_mode_active(cfg: dict[str, Any], out_dir: Path) -> bool:
-    if _is_pmo_workspace_output_dir(out_dir):
-        return True
-    if (os.environ.get("JACHIN_PMO_LARK_PULL_DIR") or "").strip():
-        return True
-    if cfg.get("pmo_mode") in (True, "true", "1", "yes"):
-        return True
-    return False
 
 
 def _bitable_filename_semantic_slug(view_id: str | None) -> str:
@@ -808,21 +654,10 @@ def sync_bi_project_context(
     if not urls or not isinstance(urls, list):
         urls = _default_wiki_urls()
 
-    out_dir = _resolve_output_dir(cfg, root)
-    pmo_pull = _pmo_pull_mode_active(cfg, out_dir)
-    if pmo_pull:
-        original_count = len(urls)
-        filtered = _filter_wiki_urls_for_pmo(urls)
-        if filtered:
-            urls = filtered
-        else:
-            urls = _pmo_skill_wiki_urls()
-        if original_count != len(urls):
-            logger.info(
-                "[bi_project_context] PMO 拉表 URL 已收敛：%d → %d（仅 SKILL §9 十二 view）",
-                original_count,
-                len(urls),
-            )
+    out_rel = (cfg.get("output_dir_relative") or DEFAULT_OUTPUT_REL).strip() or DEFAULT_OUTPUT_REL
+    outp = Path(out_rel).expanduser()
+    out_dir = outp.resolve() if outp.is_absolute() else (root / outp).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     max_records = int(cfg.get("max_records_per_table") or 50000)
     max_records = max(1, min(max_records, BITABLE_RECORD_HARD_CAP))
@@ -880,16 +715,11 @@ def sync_bi_project_context(
 
     discovered = 0
     file_idx = 0
-    pmo_stable = _is_pmo_workspace_output_dir(out_dir)
-    written_md_names: set[str] = set()
 
     def write_md(slug: str, body: str, meta: dict[str, Any]) -> Path:
         nonlocal file_idx
-        if pmo_stable:
-            name = _pmo_stable_md_basename(slug, meta)
-        else:
-            file_idx += 1
-            name = f"{file_idx:02d}_{_safe_name(slug, max_len=160)}.md"
+        file_idx += 1
+        name = f"{file_idx:02d}_{_safe_name(slug, max_len=160)}.md"
         path = out_dir / name
         meta_block = (
             "## 同步元数据\n\n```json\n"
@@ -897,10 +727,7 @@ def sync_bi_project_context(
             + "\n```\n\n---\n\n"
         )
         path.write_text(meta_block + body, encoding="utf-8")
-        entry = _manifest_file_entry(path, root, out_dir)
-        if entry not in manifest["files"]:
-            manifest["files"].append(entry)
-        written_md_names.add(path.name)
+        manifest["files"].append(_manifest_file_relpath(path, root, out_dir))
         return path
 
     while queue:
@@ -1032,33 +859,19 @@ def sync_bi_project_context(
             slug_core = f"{slug_core}_{pref_view}"
         elif pref_table:
             slug_core = f"{slug_core}_tbl{pref_table[-6:]}" if len(pref_table) > 6 else f"{slug_core}_{pref_table}"
-        # PMO workspace 仅落盘种子 URL 对应业务表；跳过正文内链/子节点跟抓，避免目录膨胀
-        if pmo_stable and source != "seed" and not slug_core.startswith("error_"):
-            continue
         write_md(slug_core, "\n".join(body_parts), meta)
-
-    pruned: list[str] = []
-    if pmo_stable:
-        pruned = _pmo_prune_stale_md(out_dir, written_md_names)
 
     man_path = out_dir / "00_SYNC_MANIFEST.json"
     man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    manifest["files"].append(_manifest_file_entry(man_path, root, out_dir))
+    manifest["files"].append(_manifest_file_relpath(man_path, root, out_dir))
 
-    wrote_md = len(written_md_names) if pmo_stable else file_idx
+    wrote_md = file_idx
     ok = wrote_md > 0 or len(manifest["nodes"]) > 0
-    result: dict[str, Any] = {
+    return {
         "status": "success" if ok else "error",
         "msg": f"已写入 {len(manifest['files'])} 个文件（含 manifest）到 {out_dir}",
         **manifest,
     }
-    if pruned:
-        result["pruned_stale_md"] = pruned
-        result["msg"] += f"；已清理 {len(pruned)} 个陈旧 md"
-    if pmo_pull:
-        result["pmo_mode"] = True
-        result["wiki_url_count"] = len(urls)
-    return result
 
 
 def atom_bi_project_context(config: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 
 from l3_node.tools.pmo_db_tools import (
+    _db_query_hints,
+    _db_query_row_quality_hints,
+    _db_query_wide_date_range_hints,
     dispatch_pmo_db_tool,
     init_pmo_database,
     run_db_query,
@@ -72,6 +75,195 @@ class TestPmoDbTools(unittest.TestCase):
         init_pmo_database()
         bad = run_db_query(sql="DELETE FROM pmo_dev_requirements")
         self.assertEqual(bad["status"], "error")
+
+    def test_db_query_allows_pragma_table_info(self) -> None:
+        init_pmo_database()
+        out = run_db_query(sql="PRAGMA table_info(pmo_raw_records)")
+        self.assertEqual(out["status"], "ok")
+        names = {r["name"] for r in out["rows"]}
+        self.assertIn("source_view", names)
+        self.assertNotIn("view_id", names)
+
+    def test_db_query_hints_on_view_id_column_error(self) -> None:
+        init_pmo_database()
+        bad = run_db_query(sql="SELECT view_id FROM pmo_raw_records LIMIT 1")
+        self.assertEqual(bad["status"], "error")
+        hints = bad.get("hints") or []
+        self.assertTrue(any("source_view" in str(h) for h in hints))
+
+    def test_db_query_hints_on_zero_row_parent_null(self) -> None:
+        init_pmo_database()
+        conn_path = self._db
+        import sqlite3
+
+        conn = sqlite3.connect(conn_path)
+        conn.execute(
+            "INSERT INTO pmo_raw_records (id, source_view, source_file, row_index, raw_text, fields, synced_at) "
+            "VALUES ('t1', 'vewpI8lyYw', 'f.md', 0, 'x', '{\"Requirement\":\"EpicA\",\"父记录\":[{\"text\":\"开发\"}]}', '2026')"
+        )
+        conn.commit()
+        conn.close()
+        out = run_db_query(
+            sql=(
+                "SELECT id FROM pmo_raw_records WHERE source_view='vewpI8lyYw' "
+                "AND json_extract(fields, '$.\"父记录\"') IS NULL"
+            )
+        )
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["row_count"], 0)
+        hints = out.get("hints") or []
+        self.assertTrue(any("父记录" in str(h) for h in hints))
+
+    def test_db_query_hints_on_alias_json_extract_syntax_error(self) -> None:
+        init_pmo_database()
+        bad = run_db_query(
+            sql=(
+                "SELECT r1.json_extract(fields, '$.Requirement') FROM pmo_raw_records r1 "
+                "JOIN pmo_raw_records r2 ON r1.id = r2.id"
+            )
+        )
+        self.assertEqual(bad["status"], "error")
+        hints = bad.get("hints") or []
+        joined = " ".join(str(h) for h in hints)
+        self.assertIn("json_extract", joined)
+        self.assertTrue("Step 6a" in joined or "JOIN" in joined)
+
+    def test_db_query_hints_on_cross_view_join(self) -> None:
+        init_pmo_database()
+        out = run_db_query(
+            sql=(
+                "SELECT r1.id FROM pmo_raw_records r1 "
+                "JOIN pmo_raw_records r2 ON r1.source_view = r2.source_view LIMIT 1"
+            )
+        )
+        hints = out.get("hints") or []
+        self.assertTrue(any("Step 6a" in str(h) or "JOIN" in str(h) for h in hints))
+
+    def test_db_query_hints_on_person_first_only_en_name(self) -> None:
+        init_pmo_database()
+        out = run_db_query(
+            sql=(
+                "SELECT json_extract(fields, '$.\"Person in charge/Participant\"[0].en_name') AS person "
+                "FROM pmo_raw_records WHERE source_view='vewCz1FFJi' LIMIT 1"
+            )
+        )
+        hints = out.get("hints") or []
+        self.assertTrue(any("json_each" in str(h) for h in hints))
+
+    def test_db_query_hints_on_sprint_array_syntax(self) -> None:
+        init_pmo_database()
+        out = run_db_query(
+            sql=(
+                "SELECT json_extract(fields, '$.\"Sprint\"[0].text') AS sprint "
+                "FROM pmo_raw_records WHERE source_view='vewpI8lyYw' GROUP BY sprint"
+            )
+        )
+        hints = out.get("hints") or []
+        self.assertTrue(any("$.Sprint" in str(h) or "纯字符串" in str(h) for h in hints))
+
+    def test_db_query_hints_on_epic_zero_rows_extra_and(self) -> None:
+        init_pmo_database()
+        out = run_db_query(
+            sql=(
+                "SELECT id FROM pmo_raw_records WHERE source_view='vewpI8lyYw' "
+                "AND json_extract(fields, '$.\"父记录\"[0].text') IS NULL "
+                "AND json_extract(fields, '$.priority') = 'P0' "
+                "AND json_extract(fields, '$.Sprint') IS NOT NULL "
+                "AND json_extract(fields, '$.Requirement') NOT IN ('开发','美术','产品')"
+            )
+        )
+        hints = out.get("hints") or []
+        self.assertTrue(any("Step 4" in str(h) or "追加" in str(h) for h in hints))
+
+    def test_db_query_hints_on_epic_filter_on_personnel_view(self) -> None:
+        init_pmo_database()
+        out = run_db_query(
+            sql=(
+                "SELECT id FROM pmo_raw_records WHERE source_view='vewCz1FFJi' "
+                "AND json_extract(fields, '$.\"父记录\"[0].text') IS NULL"
+            )
+        )
+        hints = out.get("hints") or []
+        joined = " ".join(str(h) for h in hints)
+        self.assertIn("vewpI8lyYw", joined)
+        self.assertIn("vewCz1FFJi", joined)
+
+    def test_db_query_hints_on_step3_en_name_only(self) -> None:
+        init_pmo_database()
+        out = run_db_query(
+            sql=(
+                "SELECT json_extract(value, '$.en_name') AS en_name "
+                "FROM pmo_raw_records, "
+                "json_each(json_extract(fields, '$.\"Person in charge/Participant\"')) "
+                "WHERE source_view='vewCz1FFJi' LIMIT 5"
+            )
+        )
+        hints = out.get("hints") or []
+        self.assertTrue(any("不完整" in str(h) or "task/status" in str(h) for h in hints))
+
+    def test_db_query_hints_on_wrong_chinese_field_names(self) -> None:
+        hints = _db_query_hints(
+            "SELECT json_extract(fields, '$.负责人') FROM pmo_raw_records "
+            "WHERE source_view='vewpI8lyYw'",
+            row_count=10,
+        )
+        self.assertTrue(any("Person in charge" in str(h) or "Requirement" in str(h) for h in hints))
+
+    def test_db_query_hints_on_version_limit_one(self) -> None:
+        hints = _db_query_hints(
+            'SELECT json_extract(fields, \'$."Version Goal"\') FROM pmo_raw_records '
+            "WHERE source_view='vew8TxMcSh' LIMIT 1",
+            row_count=1,
+        )
+        self.assertTrue(any("Step7" in str(h) or "COUNT" in str(h) for h in hints))
+
+    def test_db_query_row_quality_hints_on_all_null_column(self) -> None:
+        rows = [{"person": None} for _ in range(10)]
+        hints = _db_query_row_quality_hints(
+            rows,
+            "SELECT json_extract(fields, '$.负责人') AS person FROM pmo_raw_records "
+            "WHERE source_view='vewpI8lyYw'",
+        )
+        self.assertTrue(any("非空率极低" in str(h) for h in hints))
+
+    def test_db_query_row_quality_hints_on_person_json_array(self) -> None:
+        rows = [{"person": '[{"en_name":"alvintan"}]'} for _ in range(3)]
+        hints = _db_query_row_quality_hints(
+            rows,
+            "SELECT json_extract(fields, '$.\"Person in charge/Participant\"') AS person "
+            "FROM pmo_raw_records WHERE source_view='vewCz1FFJi'",
+        )
+        self.assertTrue(any("json_each" in str(h) for h in hints))
+
+    def test_db_query_wide_date_range_hints(self) -> None:
+        hints = _db_query_wide_date_range_hints(
+            "SELECT * FROM pmo_raw_records WHERE json_extract(fields, '$.\"Start Date\"') >= '2020-01-01'"
+        )
+        self.assertTrue(any("Sprint" in str(h) or "过宽" in str(h) for h in hints))
+
+    def test_db_query_hints_on_step3_without_json_each(self) -> None:
+        hints = _db_query_hints(
+            "SELECT json_extract(fields, '$.\"Person in charge/Participant\"') AS person "
+            "FROM pmo_raw_records WHERE source_view='vewCz1FFJi'",
+            row_count=23,
+        )
+        self.assertTrue(any("json_each" in str(h) and "绝对禁忌" in str(h) for h in hints))
+
+    def test_db_query_hints_on_epic_parent_empty_array(self) -> None:
+        hints = _db_query_hints(
+            "SELECT json_extract(fields, '$.Requirement') FROM pmo_raw_records "
+            "WHERE source_view='vewpI8lyYw' AND json_extract(fields, '$.\"父记录\"') = '[]'",
+            row_count=0,
+        )
+        self.assertTrue(any("父记录" in str(h) for h in hints))
+
+    def test_db_query_hints_on_join_step6(self) -> None:
+        hints = _db_query_hints(
+            "SELECT r1.fields FROM pmo_raw_records r1 "
+            "JOIN pmo_raw_records r2 ON r1.source_view = r2.source_view",
+            row_count=0,
+        )
+        self.assertTrue(any("Step 6a" in str(h) or "JOIN" in str(h) for h in hints))
 
     def test_low_confidence_warning(self) -> None:
         init_pmo_database()

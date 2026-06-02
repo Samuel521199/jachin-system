@@ -1,24 +1,27 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PMO-Copilot v6：CLI「一句话点火」—— 进程内拉起 L3 引擎并 ``run_agent``。
+PMO-Copilot：CLI「一句话点火」—— 进程内拉起 L3 LiteLLM 引擎并 ``run_agent``。
 
-默认加载 ``skills_repo/pmo-copilot/SKILL.md``（SQLite 提取入库 → db_query 分析 → Lark 推送）。
-
-- **工具白名单 SSOT**：从 SKILL frontmatter（``mcp_tools`` / ``native_tools`` / ``tools[].prefer``）解析。
-- **Skill 注入 system**：正文 + persona 经 ``gateway_inject`` 写入 system；user 消息仅为短点火句。
-- **信道**：``pmo_copilot_cli``（启用 PMO 宿主守卫）。
+与设计约束对齐（相对早期草稿）：
+- **工具白名单 SSOT**：仅从 ``SKILL.md`` 的 YAML frontmatter（``mcp_tools`` / ``native_tools`` / ``tools[].prefer``）解析，
+  不在此脚本硬编码 MCP 列表。
+- **Skill 不进用户消息**：SKILL 正文与 persona 通过 ``l3_node.agent_core._build_system_prompt`` 的 ``gateway_inject``
+  写入 **system**，``user_input`` 仅为短用户句（避免 ReAct 每轮重复携带长篇 SKILL）。
+- **stdio MCP**：不引入自定义环境变量开关；是否合并本地 MCP 由 ``~/.jachin/nexus_config.json`` /
+  ``JACHIN_MERGE_LOCAL_MCP_INTO_TOOL_POOL`` 等与主路径一致。
 
 用法（仓库根）::
 
   python scripts/run_pmo_copilot_skill.py
-  python scripts/run_pmo_copilot_skill.py --init
-  python scripts/run_pmo_copilot_skill.py -m "分支 A：查 DB 生成宏观看板并双群推送"
+  python scripts/run_pmo_copilot_skill.py -m "执行分支 A：定时宏观看板……"
+  python scripts/run_pmo_copilot_skill.py --analysis-only
 
-调试日志：``~/.jachin/jachin_debug/健康skill/pmo_copilot_*.txt``
+每次运行会在 ``%USERPROFILE%\\.jachin\\jachin_debug\\健康skill\\``
+新建 **独立** 文件 ``pmo_copilot_YYYYMMDD_HHMMSS_mmm_xxxxxxxx.txt``（毫秒 + 短 UUID，不覆盖同名旧文件），
+写入 **仅落盘** 的调试摘要（抓取 URL、ReAct 步骤、Observation 节选、是否调 Lark）；不在控制台打印该内容。
 
-前置：``.env`` LLM Key；``atom_bi_project_context`` / ``atom_lark_notifier`` MCP 已配置；
-``core:db_query`` / ``core:db_write`` 已注册（``l3_node/tools/pmo_db_tools.py``）。
+前置：``.env`` 中 LLM Key；飞书播报依赖 ``atom_lark_notifier`` 的 MCP 配置（``config/mcps/atom_lark_notifier/config.yaml`` 或 ``~/.jachin/config/...``），与 ``python -m l3_node`` 一致——**无需在本脚本写 Lark 变量**。
 """
 from __future__ import annotations
 
@@ -51,48 +54,39 @@ except ImportError:
 
 DEFAULT_SKILL = ROOT / "skills_repo" / "pmo-copilot" / "SKILL.md"
 
-DEFAULT_PMO_DB = Path.home() / ".jachin" / "workspace" / "pmo_db.sqlite"
-PMO_LARK_PULL_DIR = (Path.home() / ".jachin" / "workspace" / "pmo_lark_pull").resolve()
-PMO_STAGING_DIR = (Path.home() / ".jachin" / "workspace" / "pmo_staging").resolve()
-
-PMO_INIT_BATCH_ROWS = 20
-PMO_INIT_MAX_ITERATIONS = 270
-PMO_BRANCH_A_MAX_ITERATIONS = 28
-PMO_BRANCH_A_ITERATIONS_CAP = 64
-
-MESSAGE_BRANCH_A = (
-    "请严格按 system 中的 PMO-Copilot v6 SKILL（pmo-copilot-enterprise）执行 **分支 A · 宏观看板**："
-    "1) 若 ~/.jachin/workspace/pmo_db.sqlite 尚无数据，先走 **INIT**（fs_write JSON + pmo_import_json）；"
-    "2) 否则用 **core:db_query** 按当前 work_cycle 查询四张业务表（≥3 次 SQL）；"
-    "3) 分步交叉分析后组装 §11 三表战报；"
-    "4) **mcp:atom_lark_notifier** 双群推送（native_table_card: true）；Final Answer ≤3 句。"
-    "禁止回退 v5「全量 fs_read 12 张表再分析」旧路径。"
+DEFAULT_MESSAGE = (
+    "请严格按 PMO-Copilot SKILL v7 **分支 A**："
+    "若 pmo_raw_records 未就绪则先 INIT（mcp:atom_bi_project_context 拉 §1.1 全部 12 视图 + "
+    "core:pmo_mirror_import 一次性镜像入库）；"
+    "然后用 core:db_query 对 pmo_raw_records 做交叉分析与大颗粒度探针，"
+    "组装 §1.4 三表后 **双群** mcp:atom_lark_notifier。"
+    "禁止 core:fs_read 读 md；禁止 core:pmo_import_json。"
 )
 
-MESSAGE_INIT = (
-    "请严格按 system 中的 PMO-Copilot v6.1.1 SKILL 执行 **INIT · 微批次 Extract→NDJSON→Python Import**："
-    f"1) mcp:atom_bi_project_context 拉 §9 全部 wiki_urls（**仅 1 次**；落盘 SSOT `{PMO_LARK_PULL_DIR}`，"
-    "**禁止** output_dir 指向仓库根）；fs_read manifest 建队列（**files[] 用 basename，禁止臆造文件名**）；"
-    f"2) **逐张 md**：fs_read(manifest basename) → **每批 {PMO_INIT_BATCH_ROWS} 行** "
-    "fs_write `pmo_staging/{view_id}_partN.ndjson` → **立即** pmo_import_json → 再下一批（"
-    "**禁止**连写 part1/2/3 再 import）；"
-    "3) import 若 partial/parse_warnings：继续下一批，**禁止**二次拉表、禁止 fs_read pmo_db.sqlite；"
-    "4) flow_progress_note 对照 **SKILL §附录 A**；pmo_people 仅 id/name/dept/role/is_active；"
-    "5) 12 张完成后 **core:pmo_init_gap_report**；对 missing_files 再 extract→import；"
-    "6) init_complete 后 Final Answer 含各表 row_count。"
+INIT_MESSAGE = (
+    "请严格按 PMO-Copilot SKILL v7 **INIT 分支**："
+    "调用 mcp:atom_bi_project_context 拉取 §1.1 全部 12 个 wiki_urls；"
+    "然后 **仅一次** 调用 core:pmo_mirror_import 完成镜像入库。"
+    "禁止 core:fs_read、core:pmo_import_json、core:db_write 循环。"
+    "Final Answer 仅在 mirror_import 返回 ok 且 total_records>0 后简短确认。"
 )
 
-
-def _pmo_iterations_hard_cap(*, init_mode: bool) -> int:
-    return PMO_INIT_MAX_ITERATIONS if init_mode else PMO_BRANCH_A_ITERATIONS_CAP
-
-
-def _default_max_iterations(*, init_mode: bool) -> int:
-    raw = (os.environ.get("JACHIN_PMO_MAX_REACT_ITERATIONS") or "").strip()
-    cap = _pmo_iterations_hard_cap(init_mode=init_mode)
-    if raw.isdigit():
-        return max(1, min(int(raw), cap))
-    return PMO_INIT_MAX_ITERATIONS if init_mode else PMO_BRANCH_A_MAX_ITERATIONS
+ANALYSIS_ONLY_MESSAGE = (
+    "请严格按 PMO-Copilot SKILL v7 **分支 A · 仅分析模式**："
+    "pmo_raw_records 镜像库已就绪。"
+    "**禁止** mcp:atom_bi_project_context、core:fs_read、core:pmo_mirror_import、core:db_write。"
+    "严格按 **§1.2.1 七步框架** 顺序执行 core:db_query（≤10 次）："
+    "Step1 地图(record_count+columns_json) → Step2 样本(vewpI8lyYw+vewCz1FFJi) → "
+    "Step3 人员(vewCz1FFJi·**1次**明细SQL：person+task+status+sprint+due 同查，禁止只查en_name) → "
+    "Step4 Epic(**仅**vewpI8lyYw·父记录[0].text IS NULL，**禁止**在vewCz1FFJi用此条件) → "
+    "Step5 状态+Sprint(Sprint用$.Sprint，禁止[0].text) → Step6 跨视图矛盾(6a+6b两步，禁止JOIN) → Step7 Version Goal。"
+    "每步 Thought 写「本步产出」并**边查边填**三表 GFM 草稿行（禁止写「待填充」）。"
+    "Version Goal 全空时 📦 表仍须 GFM 占位行（⚠️ 原表字段全空）。"
+    "第11–13轮组 §1.4 三表并做推送前自检，第14–15轮 **双群** mcp:atom_lark_notifier（须 native_table_card:true）。"
+    "若 pmo_premature_notifier_blocked(reason=markdown_incomplete) 且探针已完成，**只改 markdown_content**，禁止重跑 Step1–7。"
+    "Thought 里的三表草稿须全文写入 atom_lark_notifier 的 markdown_content 字段。"
+    "Final Answer 仅在双群 notifier 均 success 后 ≤3 句确认；禁止声称已推送。"
+)
 
 
 def _pmo_debug_log_dir() -> Path:
@@ -100,43 +94,21 @@ def _pmo_debug_log_dir() -> Path:
     return Path.home() / ".jachin" / "jachin_debug" / "健康skill"
 
 
-def _open_pmo_file_debug(path: Path, *, correlation_id: str, user_msg: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    path.write_text(
-        "\n".join(
-            [
-                "PMO-Copilot v6 / run_pmo_copilot_skill.py — 文件调试日志（以下不写入控制台）",
-                f"生成时间: {ts}",
-                f"correlation_id: {correlation_id}",
-                f"调试文件路径: {path}",
-                "",
-                "【本文件说明 · v6 DB 架构】",
-                "1) 拉表：atom_bi_project_context 的 wiki_urls / files[]。",
-                "2) 入库：core:fs_read + core:db_write（提取层）。",
-                "3) 分析：core:db_query（分析层）→ 战报 markdown。",
-                "4) 推送：atom_lark_notifier 的 status。",
-                "",
-                "【用户输入】",
-                user_msg,
-                "",
-                "=" * 72,
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-
 def _make_pmo_on_step_writer(debug_path: Path):
     def _on_step(step_type: str, content: str, run_id: str) -> None:
         try:
+            from l3_node.pmo_copilot_debug_file import append_pmo_debug_status
+
+            st = (step_type or "").strip().lower()
             clip = (content or "").strip()
-            lim = 1200
-            if len(clip) > lim:
-                clip = clip[:lim] + f"\n... [on_step 截断，总长度 {len(content)}]"
-            with open(debug_path, "a", encoding="utf-8") as f:
-                f.write(f"\n>>> on_step [{step_type}] run_id={run_id[:12]}…\n{clip}\n")
+            if st in ("status", "gateway", "progress", "info") or clip.startswith("{"):
+                append_pmo_debug_status(clip)
+                return
+            if st in ("thought", "action", "observation"):
+                return
+            if len(clip) > 400:
+                clip = clip[:400] + "…"
+            append_pmo_debug_status(f"[{step_type}] {clip}")
         except OSError:
             pass
 
@@ -191,57 +163,6 @@ def build_gateway_skill_inject(skill_path: Path, meta: dict[str, Any], body: str
     return "\n\n".join(parts)
 
 
-def build_pmo_runtime_hints(*, init_mode: bool) -> str:
-    """INIT/分支 A 运行时路径 SSOT，避免相对路径落进 workspace 或臆造 md 文件名。"""
-    design_doc = (ROOT / "docs" / "architecture" / "PMO_DB_REFACTOR_DESIGN.md").resolve()
-    pull_ws = PMO_LARK_PULL_DIR
-    staging_ws = PMO_STAGING_DIR
-    manifest_ws = pull_ws / "00_SYNC_MANIFEST.json"
-    lines = [
-        "### PMO 运行时路径（宿主注入 · 必读）",
-        "",
-        f"- **仓库根（JACHIN_APP_ROOT，开发机）**: `{ROOT}`",
-        "- **flow_progress_note SSOT**：**SKILL §附录 A**（已内嵌 system，**禁止** fs_read 外链流程文档）",
-        f"- **架构文档（开发机可选 fs_read）**: `{design_doc}`",
-        f"- **拉表落盘（唯一 SSOT · INIT 读 md 用此目录）**: `{pull_ws}`",
-        f"- **manifest 绝对路径**: `{manifest_ws}`",
-        "- **拉表范围**：PMO INIT **仅 SKILL §9 十二 view**（12 个 md + manifest）；MCP 会自动过滤 `tblL2gXBH`/发版记录/平台链接等默认噪声种子",
-        f"- **SQLite DB**: `{DEFAULT_PMO_DB}`",
-        f"- **staging JSON 目录（fs_write 须写此处）**: `{staging_ws}`",
-        "",
-        "**fs_read / fs_write 路径（禁止仓库根、禁止 ~/. 字符串未展开时的臆造路径）**：",
-        f"- 读 manifest：`{{\"file_path\": \"{manifest_ws}\"}}` 或 `pmo_lark_pull/00_SYNC_MANIFEST.json`",
-        f"- 读 md：`{{\"file_path\": \"{pull_ws}\\\\<manifest.files[i] basename>\"}}`（**仅 basename**，勿臆造 `02_产品方任务_…`）",
-        f"- 写 staging：`pmo_staging/{{view_id}}_partN.ndjson` 或 `{staging_ws}\\\\…`",
-        "",
-        "**读 md 纪律**：",
-        "1. `atom_bi_project_context` Observation 的 `output_dir` + `files[]` 为唯一 SSOT；",
-        "2. `files[]` 在 workspace 模式下为 **basename**；fs_read 用 `output_dir/basename` 或 `{manifest_ws 同目录}/basename`；",
-        "3. **禁止**臆造文件名；若不确定，先 fs_read `00_SYNC_MANIFEST.json`；",
-        "4. 调试日志里的 `[on_step 截断]` **仅限制日志显示**，不是 md 文件被截断；",
-        "5. 打包 L3 无仓库：**勿** fs_read `docs/pmo_bmo_plugin/…`；流程说明已在 Skill 正文。",
-    ]
-    if init_mode:
-        lines.extend(
-            [
-                "",
-                "**INIT · 微批次 Extract → NDJSON → Python Import（严格交替）**：",
-                f"- 每张 md 每批：**fs_write partN → 立即 pmo_import_json partN → 再 fs_write partN+1**；",
-                f"- **禁止**连续 fs_write 多个 part 后再 import（如 part1+part2+part3 连写）；",
-                f"- 每批 **{PMO_INIT_BATCH_ROWS} 行**；同 view 多批 **upsert 叠加**；",
-                "- import 返回 partial/parse_warnings 时继续下一批；",
-                "- **禁止 INIT 使用 core:db_write**；**禁止** import 失败后二次拉表或 fs_read pmo_db.sqlite；",
-                "- 12 张完成后 **pmo_init_gap_report**；对 missing_files 再 extract→import；",
-                "- Observation 去重时仍须写 JSON + import，勿 skip；",
-                "",
-                "**INIT 完成标准**：",
-                "- pmo_init_gap_report：`missing_count=0` 且四表 table_totals 均 > 0；",
-                "- Final Answer 含各表 row_count。",
-            ]
-        )
-    return "\n".join(lines)
-
-
 async def _async_main(args: argparse.Namespace) -> int:
     skill_path = Path(args.skill).expanduser().resolve()
     if not skill_path.is_file():
@@ -264,36 +185,36 @@ async def _async_main(args: argparse.Namespace) -> int:
         )
         return 2
 
-    if (args.message or "").strip():
-        user_msg = args.message.strip()
-    elif args.init:
-        user_msg = MESSAGE_INIT
-    else:
-        user_msg = MESSAGE_BRANCH_A
+    if args.analysis_only:
+        from l3_node.tools.pmo_db_tools import get_pmo_db_path, pmo_mirror_db_ready
 
-    skill_version = str(meta.get("version") or "?").strip()
-    skill_name = str(meta.get("name") or "pmo-copilot").strip()
-    print(
-        f"[pmo-copilot] Skill: {skill_name} v{skill_version} @ {skill_path}",
-        flush=True,
-    )
-    print(
-        f"[pmo-copilot] 模式: {'INIT 入库' if args.init and not (args.message or '').strip() else '自定义/分支 A'}",
-        flush=True,
-    )
-    db_exists = DEFAULT_PMO_DB.is_file()
-    init_mode = bool(args.init and not (args.message or "").strip())
-    if init_mode:
-        PMO_LARK_PULL_DIR.mkdir(parents=True, exist_ok=True)
-        PMO_STAGING_DIR.mkdir(parents=True, exist_ok=True)
-        os.environ["JACHIN_PMO_LARK_PULL_DIR"] = str(PMO_LARK_PULL_DIR)
+        db_path = get_pmo_db_path()
+        if not db_path.is_file() or not pmo_mirror_db_ready():
+            print(
+                f"[pmo-copilot] --analysis-only 需要已有镜像数据（pmo_raw_records）: {db_path}",
+                file=sys.stderr,
+            )
+            print("  请先运行: python scripts/run_pmo_copilot_skill.py --init", file=sys.stderr)
+            return 2
+        allow_lower = {t.lower() for t in base_allow}
+        for required in ("core:db_query",):
+            if required not in allow_lower:
+                base_allow.append(required)
+        user_msg = (args.message or "").strip() or ANALYSIS_ONLY_MESSAGE
+    elif getattr(args, "init", False):
+        allow_lower = {t.lower() for t in base_allow}
+        for required in ("core:pmo_mirror_import",):
+            if required not in allow_lower:
+                base_allow.append(required)
+        user_msg = (args.message or "").strip() or INIT_MESSAGE
     else:
-        os.environ.pop("JACHIN_PMO_LARK_PULL_DIR", None)
-    staging_dir = PMO_STAGING_DIR
-    print(
-        f"[pmo-copilot] DB: {DEFAULT_PMO_DB} ({'已存在' if db_exists else '尚未创建，INIT 或分支 A 会先入库'})",
-        flush=True,
-    )
+        user_msg = (args.message or "").strip() or DEFAULT_MESSAGE
+
+    if args.analysis_only:
+        print(f"[pmo-copilot] 模式: 仅分析（db_query）· DB: {db_path}", flush=True)
+    elif getattr(args, "init", False):
+        print("[pmo-copilot] 模式: INIT（拉表 + mirror_import）", flush=True)
+
     print("[pmo-copilot] 正在启动（引擎初始化可能需要数十秒）…", flush=True)
 
     _debug_dir = _pmo_debug_log_dir()
@@ -342,8 +263,37 @@ async def _async_main_inner(
     )
 
     correlation_id = str(uuid.uuid4())
-    _open_pmo_file_debug(_debug_path, correlation_id=correlation_id, user_msg=user_msg)
-    implicit = {"channel": "pmo_copilot_cli", "source": "run_pmo_copilot_skill.py"}
+    mi = max(1, min(int(args.max_iterations), 64))
+    from l3_node.pmo_copilot_debug_file import (
+        finalize_pmo_debug_log,
+        init_pmo_debug_session,
+        sync_pmo_debug_max_iterations,
+    )
+
+    mode_hint = ""
+    if getattr(args, "analysis_only", False):
+        mode_hint = "analysis-only"
+    elif getattr(args, "init", False):
+        mode_hint = "init"
+    init_pmo_debug_session(
+        log_path=_debug_path,
+        user_message=user_msg,
+        correlation_id=correlation_id,
+        max_iterations=mi,
+        mode_hint=mode_hint,
+    )
+    sync_pmo_debug_max_iterations(mi)
+    implicit: dict[str, Any] = {"channel": "pmo_copilot_cli", "source": "run_pmo_copilot_skill.py"}
+    if getattr(args, "analysis_only", False):
+        implicit["pmo_analysis_only"] = True
+        implicit["pmo_db_ready"] = True
+    elif getattr(args, "init", False):
+        implicit["pmo_init"] = True
+    else:
+        from l3_node.tools.pmo_db_tools import pmo_mirror_db_ready
+
+        if pmo_mirror_db_ready():
+            implicit["pmo_db_ready"] = True
     log = logging.getLogger("run_pmo_copilot_skill")
     bundle = build_gateway_bundle(
         user_input=user_msg,
@@ -377,23 +327,7 @@ async def _async_main_inner(
         allowlist_diag_source=allowlist_diag_source,
     )
 
-    tool_ids = {str(t.get("id") or "") for t in tools}
-    missing_tools = [t for t in base_allow if t not in tool_ids]
-    if missing_tools:
-        print(
-            "[pmo-copilot] 警告：SKILL 声明但当前引擎未注册的工具（v6 可能无法完整运行）：",
-            ", ".join(missing_tools),
-            file=sys.stderr,
-        )
-    print(
-        f"[pmo-copilot] 可用工具 ({len(tool_ids)}): {', '.join(sorted(tool_ids)) or '(无)'}",
-        flush=True,
-    )
-
     gateway_block = build_gateway_skill_inject(skill_path, meta, skill_body)
-    gateway_block = gateway_block + "\n\n" + build_pmo_runtime_hints(
-        init_mode=bool(args.init and not (args.message or "").strip())
-    )
 
     from l3_node.agent_core import _build_system_prompt
     from l3_node.routing.output_format_signals import analyze_output_format_signals
@@ -433,11 +367,7 @@ async def _async_main_inner(
         return 2
 
     from l3_node.agent_core import run_agent
-    from l3_node.pmo_copilot_debug_file import sync_pmo_debug_max_iterations
 
-    init_mode = bool(args.init and not (args.message or "").strip())
-    mi = max(1, min(int(args.max_iterations), _pmo_iterations_hard_cap(init_mode=init_mode)))
-    sync_pmo_debug_max_iterations(mi)
     _pmo_step = _make_pmo_on_step_writer(_debug_path)
     ans = await run_agent(
         user_msg,
@@ -446,28 +376,10 @@ async def _async_main_inner(
         _allowed_skills_override=allowlist_diag_source,
         _system_prompt_override=full_system,
         gateway_context_bundle=bundle,
-        implicit_attribution={
-            **implicit,
-            "skill_file": str(skill_path),
-            "skill_name": str(meta.get("name") or ""),
-            "skill_version": str(meta.get("version") or ""),
-            "pmo_db_path": str(DEFAULT_PMO_DB),
-            "pmo_init_mode": bool(args.init and not (args.message or "").strip()),
-            "jachin_app_root": str(ROOT),
-        },
+        implicit_attribution=implicit,
         on_step=_pmo_step,
     )
-    try:
-        with open(_debug_path, "a", encoding="utf-8") as _df:
-            _df.write(
-                "\n"
-                + "=" * 72
-                + "\n### 本轮 Final Answer（控制台也会打印）\n\n"
-                + (ans or "").strip()
-                + "\n"
-            )
-    except OSError:
-        pass
+    finalize_pmo_debug_log(ans or "")
 
     print("\n--- Final Answer ---\n", (ans or "").strip())
     await asyncio.sleep(0.5)
@@ -475,29 +387,21 @@ async def _async_main_inner(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="PMO-Copilot v6：加载 skills_repo/pmo-copilot/SKILL.md，注入 system 后 run_agent"
-    )
+    ap = argparse.ArgumentParser(description="PMO-Copilot：Skill YAML 驱动白名单；SKILL 注入 system，不长驻 user 消息")
+    ap.add_argument("--skill", default=str(DEFAULT_SKILL), help="SKILL.md 路径")
+    ap.add_argument("-m", "--message", default="", help="等同聊天框输入的一句话")
     ap.add_argument(
-        "--skill",
-        default=str(DEFAULT_SKILL),
-        help=f"SKILL.md 路径（默认 {DEFAULT_SKILL}）",
+        "--analysis-only",
+        action="store_true",
+        help="跳过拉表/入库；基于 pmo_raw_records 仅 db_query 分析并推送",
     )
-    ap.add_argument("-m", "--message", default="", help="自定义点火句（覆盖 --init / 默认分支 A）")
     ap.add_argument(
         "--init",
         action="store_true",
-        help="INIT 全量提取入库（拉表 → fs_read → db_write）；未指定 -m 时使用 INIT 默认句",
+        help="仅 INIT：拉表 + core:pmo_mirror_import 镜像入库",
     )
-    ap.add_argument(
-        "--max-iterations",
-        type=int,
-        default=None,
-        help=f"ReAct 上限（默认 INIT={PMO_INIT_MAX_ITERATIONS} / 分支 A={PMO_BRANCH_A_MAX_ITERATIONS}，或 env JACHIN_PMO_MAX_REACT_ITERATIONS）",
-    )
+    ap.add_argument("--max-iterations", type=int, default=32, help="ReAct 上限（1～64）")
     args = ap.parse_args()
-    if args.max_iterations is None:
-        args.max_iterations = _default_max_iterations(init_mode=bool(args.init))
     try:
         return asyncio.run(_async_main(args))
     except KeyboardInterrupt:

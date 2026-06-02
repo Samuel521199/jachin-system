@@ -140,7 +140,7 @@ def _table_element(
         "tag": "table",
         "element_id": element_id[:20] if len(element_id) > 20 else element_id,
         "page_size": max(1, min(int(page_size), 10)),
-        "row_height": "middle",
+        "row_height": "low",
         "header_style": {
             "text_align": "left",
             "bold": True,

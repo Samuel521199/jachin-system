@@ -215,6 +215,33 @@ def _set_el_range_input_value(inp: Any, value: str, sel_timeout: int) -> None:
         pass
 
 
+def _normalize_date_cell(v: str) -> str:
+    """从 input 值提取 YYYY-MM-DD（Element Plus 范围框可能带时间或斜杠）。"""
+    s = (v or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return s[:10] if len(s) >= 10 and s[4] in "-/" else s
+
+
+def _read_el_date_range_values(chosen_ed: Any) -> tuple[str, str]:
+    """读取 .el-date-editor 内起止日期（el-range-input）。"""
+    ins = chosen_ed.locator("input.el-range-input")
+    if ins.count() == 0:
+        ins = chosen_ed.locator("input")
+    start_v, end_v = "", ""
+    try:
+        if ins.count() > 0:
+            start_v = (ins.nth(0).input_value() or ins.nth(0).get_attribute("value") or "").strip()
+        if ins.count() > 1:
+            end_v = (ins.nth(1).input_value() or ins.nth(1).get_attribute("value") or "").strip()
+    except Exception:
+        pass
+    return _normalize_date_cell(start_v), _normalize_date_cell(end_v)
+
+
 def _fill_el_date_range_inputs(
     page: Any,
     chosen_ed: Any,
@@ -237,6 +264,42 @@ def _fill_el_date_range_inputs(
         _set_el_range_input_value(ins.nth(1), str(end_val), sel_timeout)
         page.wait_for_timeout(80)
     _soft_pause_after_range_cell_fill(page, ctx)
+
+
+def _fill_el_date_range_with_verify(
+    page: Any,
+    chosen_ed: Any,
+    start_val: str,
+    end_val: str,
+    sel_timeout: int,
+    ctx: str,
+    *,
+    verify: bool = True,
+    max_attempts: int = 2,
+) -> None:
+    """填写日期范围并在填写后读回校验（单时间段「业务日期」页防 Vue 未绑定旧值）。"""
+    exp_s = _normalize_date_cell(str(start_val or ""))
+    exp_e = _normalize_date_cell(str(end_val or ""))
+    last_got = ("", "")
+    for attempt in range(max(1, max_attempts)):
+        _fill_el_date_range_inputs(page, chosen_ed, start_val, end_val, sel_timeout, ctx)
+        if not verify or (not exp_s and not exp_e):
+            return
+        page.wait_for_timeout(180)
+        got_s, got_e = _read_el_date_range_values(chosen_ed)
+        last_got = (got_s, got_e)
+        ok_s = (not exp_s) or (got_s == exp_s)
+        ok_e = (not exp_e) or (got_e == exp_e)
+        if ok_s and ok_e:
+            _diff_log(f"[{ctx}] | fill_date_range 校验通过: {got_s} ~ {got_e}")
+            return
+        _diff_log(
+            f"[{ctx}] | fill_date_range 校验未通过 attempt={attempt + 1}/{max_attempts} "
+            f"期望={exp_s}~{exp_e} 实际={got_s}~{got_e}，重试填写"
+        )
+    raise TimeoutError(
+        f"日期范围填写后校验仍不符: 期望 {exp_s}~{exp_e}, 实际 {last_got[0]}~{last_got[1]}"
+    )
 
 
 def _clear_date_editor_scraper_marks(page: Any) -> None:
@@ -596,6 +659,7 @@ def _run_automation_actions(
                 editor_idx = act.get("date_editor_index")
                 form_lbl = (act.get("form_item_label") or "").strip()
                 vis_idx = act.get("date_editor_visual_index")
+                verify_dr = bool(act.get("verify_date_range", False))
                 _diff_log(f"当前真实 URL: {_safe_page_url(page)}")
                 try:
                     if vis_idx is not None:
@@ -621,26 +685,28 @@ def _run_automation_actions(
                                     page, idx_v, ctx, sel_timeout
                                 )
                                 chosen_ed.wait_for(state="visible", timeout=min(sel_timeout, 20000))
-                            _fill_el_date_range_inputs(
+                            _fill_el_date_range_with_verify(
                                 page,
                                 chosen_ed,
                                 str(start_val or ""),
                                 str(end_val or ""),
                                 sel_timeout,
                                 ctx,
+                                verify=verify_dr,
                             )
                         finally:
                             _clear_date_editor_scraper_marks(page)
                     elif form_lbl:
-                        # 留存对比：按表单项标签定位（部分页面与视觉序可并存，优先由 filters 选用）
+                        # 单时间段页（业务日期）或对比页：按表单项标签定位
                         chosen_ed = _locate_date_editor_by_form_item_label(page, form_lbl, ctx, sel_timeout)
-                        _fill_el_date_range_inputs(
+                        _fill_el_date_range_with_verify(
                             page,
                             chosen_ed,
                             str(start_val or ""),
                             str(end_val or ""),
                             sel_timeout,
                             ctx,
+                            verify=verify_dr,
                         )
                     elif editor_idx is not None:
                         # 对比页常有多个 .el-date-editor（侧栏/弹层/隐藏副本）；按「可见」顺序取第 N 个，避免 nth(0) 点到不可见节点导致「无法选择日期」
@@ -665,15 +731,17 @@ def _run_automation_actions(
                                 f"未找到第 {idx} 个可见的 .el-date-editor（已扫描 {nscan} 个节点，可见序共尝试到 {vis_rank}）"
                             )
                         chosen_ed.wait_for(state="visible", timeout=min(sel_timeout, 20000))
-                        _fill_el_date_range_inputs(
+                        _fill_el_date_range_with_verify(
                             page,
                             chosen_ed,
                             str(start_val or ""),
                             str(end_val or ""),
                             sel_timeout,
                             ctx,
+                            verify=verify_dr,
                         )
                     else:
+                        # 回退：按全局 input 选择器（旧路径，单页多编辑器时易填错）
                         if start_sel:
                             _log_locator_diag(page, str(start_sel), ctx)
                         if end_sel:
@@ -1067,6 +1135,9 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
         适用于付费/用户对比页标签文案不一致的情况（与 form_labels 二选一，此项优先于 form_labels）
     filters.date_range_compare_no_escape_after_fill: True 时每段 fill_date_range 后不按 Escape；
         Heron-BI 等站点多按 Escape 会整段卸载筛选区（DOM 中 .el-date-editor 变为 0）
+    filters.date_range_use_visual_order: 单时间段页 True 时按主内容区从左到右第 0 个 .el-date-editor 填写
+    filters.date_range_form_label: 单时间段页表单项标签（如「业务日期」），优先于 visual_index
+    filters.date_range_verify: 单时间段填完后读回校验，不符则重填（默认 True 当 use_visual_order 或 form_label 启用）
     filters.query_selector: 查询按钮选择器
     filters.wait_after_query_ms: 点击查询后的固定等待毫秒，默认 5000（弱网环境可调大）
     filters.wait_for_loading_hidden: 加载遮罩选择器，等待其隐藏表示数据加载完成
@@ -1123,16 +1194,29 @@ def _expand_filters_to_actions(filters: dict) -> list[dict]:
                     if use_visual_order and i == 0:
                         actions.append({"type": "wait_ms", "ms": 500})
     elif isinstance(dr, (list, tuple)) and len(dr) >= 2:
-        sels = filters.get("date_range_selectors") or {}
-        start_sel = sels.get("start") or ".el-date-editor input:first-of-type"
-        end_sel = sels.get("end") or ".el-date-editor input:last-of-type"
-        actions.append({
+        # 单时间段（图2：业务日期 起~止）：须定位整块 .el-date-editor 并校验，勿用全局 input:first/last
+        form_lbl = str(filters.get("date_range_form_label") or "").strip()
+        use_visual = filters.get("date_range_use_visual_order")
+        if use_visual is None:
+            use_visual = True
+        verify_dr = filters.get("date_range_verify")
+        if verify_dr is None:
+            verify_dr = bool(use_visual or form_lbl)
+        act_single: dict[str, Any] = {
             "type": "fill_date_range",
-            "start_selector": start_sel,
-            "end_selector": end_sel,
             "start": str(dr[0]),
             "end": str(dr[1]),
-        })
+            "verify_date_range": bool(verify_dr),
+        }
+        if form_lbl:
+            act_single["form_item_label"] = form_lbl
+        elif use_visual:
+            act_single["date_editor_visual_index"] = int(filters.get("date_range_visual_index") or 0)
+        else:
+            sels = filters.get("date_range_selectors") or {}
+            act_single["start_selector"] = sels.get("start") or ".el-date-editor input:first-of-type"
+            act_single["end_selector"] = sels.get("end") or ".el-date-editor input:last-of-type"
+        actions.append(act_single)
     qs = filters.get("query_selector")
     if qs:
         # BI 顶栏 fixed + z-10 常挡住表单区「查询」按钮的真实命中；force 与侧栏模式 click_if_exists 一致

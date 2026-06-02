@@ -3,6 +3,14 @@
 from l3_node.agent_core import _pmo_final_answer_falsely_claims_lark_sent
 
 
+def test_claims_lark_push_to_primary_and_monitor():
+    s = (
+        "战报已通过飞书推送至主群(oc_437c98d11106295fb10751a5481ee465)"
+        "和监控群(oc_0e321f92d758ecb44aea5b499c90510b)。"
+    )
+    assert _pmo_final_answer_falsely_claims_lark_sent(s) is True
+
+
 def test_claims_lark_via_notifier_phrase_user_hit():
     s = (
         "我已按要求执行了PMO-Copilot SKILL的分支A流程，拉取了§1.1中的全部种子链接并进行了汇总。"

@@ -38,7 +38,7 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 | 充值数据统计 → 充值数据统计 | stats_recharge | 14 付费人数金额增幅（无日运营时 Arpu/Arppu 兜底） |
 | 平台数据 → 日常报表 → 每日运营数据汇总 | daily_ops_summary | 15 Arpu 表、16 Arppu 表 |
 | 游戏数据统计 → 核心产品每日数据表 | stats_game_core | 17 完成局数、18 用户获胜、20 游戏深度参与、21–26 漏斗图新开六子表 |
-| 游戏数据统计 → 每日游戏数据 | stats_game_daily | 19 GameRTP、GGR |
+| 游戏数据统计 → 每日游戏数据 | stats_game_daily | 19 GameRTP、GGR；战报「游戏与生态」平台 KPI（当日总计：完成局数/获胜次数/胜率） |
 | 数据明细 → 充值明细 → 每日充值明细 | detail_recharge_daily | SPA 抓取时翻遍分页（默认 10 条/页）写全量 raw |
 
 输出目录：~/.jachin/client_volumes/bi_data/output/
@@ -2641,6 +2641,14 @@ def _refine_game_situation(conn: Any, output_dir: Path, t1: str, t0: str, raw_di
 
     gday = q("stats_game_daily", t0, t1)
     gday = _filter_rows_to_single_date(gday or [], ["日期", "date", "统计日期", "业务日期"], t1)
+    platform_daily = _extract_stats_game_daily_platform_row(gday or [])
+    if platform_daily:
+        _write_csv(
+            output_dir / "17_游戏_每日游戏数据_平台汇总.csv",
+            [platform_daily],
+            ["完成游戏局数", "用户获胜次数", "胜率（%）"],
+        )
+        written.append(output_dir / "17_游戏_每日游戏数据_平台汇总.csv")
     out19: list[dict] = []
     if gday:
         gcols = list(gday[0].keys())
@@ -2932,6 +2940,35 @@ def _is_stats_game_daily_total_scope(scope: str) -> bool:
     return False
 
 
+def _normalize_win_rate_pct(v: Any) -> float:
+    """BI「每日游戏数据」胜率：0.4078 → 40.78%；已为百分数则原样。"""
+    x = _safe_float(v)
+    if 0 < x <= 1.0:
+        return round(x * 100, 2)
+    return round(x, 2)
+
+
+def _extract_stats_game_daily_platform_row(rows: list[dict]) -> dict[str, Any] | None:
+    """从 stats_game_daily 当日行中取「当日总计」平台汇总（完成局数/获胜次数/胜率）。"""
+    if not rows:
+        return None
+    cols = list(rows[0].keys())
+    scope_c = _find_col(cols, "统计范围", "游戏类型", "游戏名称", "游戏")
+    rounds_c = _find_col(cols, "完成局数", "完成游戏局数", "游戏局数")
+    wins_c = _find_col(cols, "获胜次数", "投注次数", "用户获胜次数", "胜次")
+    rate_c = _find_col(cols, "胜率", "用户胜率")
+    for r in rows:
+        scope = str(r.get(scope_c, "")).strip() if scope_c else ""
+        if not _is_stats_game_daily_total_scope(scope):
+            continue
+        return {
+            "完成游戏局数": int(round(_safe_float(r.get(rounds_c)))) if rounds_c else 0,
+            "用户获胜次数": int(round(_safe_float(r.get(wins_c)))) if wins_c else 0,
+            "胜率（%）": _normalize_win_rate_pct(r.get(rate_c)) if rate_c else 0.0,
+        }
+    return None
+
+
 def _build_bi_kpi_snapshot_markdown(output_dir: Path, report_date: str) -> str:
     """
     从 output 目录 CSV 拼装「多维表同步后、大战报前」的 KPI 快照（Markdown：分组 + 涨跌徽章）。
@@ -2977,46 +3014,53 @@ def _build_bi_kpi_snapshot_markdown(output_dir: Path, report_date: str) -> str:
     arppu_v = _csv_float(r16.get("Arppu数值"), 0.0)
     arppu_pct = _csv_float(_csv_first_nonempty(r16, "增幅（%）", "涨幅（%）"), 0.0)
 
-    # 5) 完成局数 / 人均局数 — 17
-    rows17 = _load_output_csv_rows(od / "17_游戏_完成局数.csv")
-    total_rounds = 0
-    w_num, w_den = 0.0, 0.0  # 加权人均局数
-    for r in rows17:
-        g = str(r.get("游戏类型", "")).strip()
-        if _game_row_is_placeholder(g):
-            continue
-        tr = _csv_int(r.get("全部用户局数"), 0)
-        total_rounds += tr
-        pu = _csv_float(r.get("人均游戏局数"), 0.0)
-        if tr > 0 and pu > 0:
-            w_num += pu * tr
-            w_den += float(tr)
-    avg_rounds = (w_num / w_den) if w_den > 0 else 0.0
-
-    # 6) 获胜次数 / 胜率 — 18 + 17 按游戏对齐
-    rows18 = _load_output_csv_rows(od / "18_游戏_用户获胜.csv")
-    by_game_17: dict[str, int] = {}
-    for r in rows17:
-        g = str(r.get("游戏类型", "")).strip()
-        if _game_row_is_placeholder(g):
-            continue
-        by_game_17[g] = _csv_int(r.get("全部用户局数"), 0)
-    total_wins = 0
-    total_complete_for_rate = 0
-    for r in rows18:
-        g = str(r.get("游戏类型", "")).strip()
-        if _game_row_is_placeholder(g):
-            continue
-        wo = _csv_int(r.get("老用户胜利数"), 0)
-        wn = _csv_int(r.get("新用户胜利数"), 0)
-        total_wins += wo + wn
-        tc = by_game_17.get(g, 0)
-        if tc <= 0:
-            tc = wo + wn  # 兜底：无 17 对齐时用胜场和作分母近似
-        total_complete_for_rate += tc
-    win_rate = (100.0 * total_wins / total_complete_for_rate) if total_complete_for_rate > 0 else _csv_float(
-        (rows18[0].get("总胜率（%）") if rows18 else 0), 0.0
-    )
+    # 5–6) 游戏与生态 — 优先 stats_game_daily「当日总计」（17_游戏_每日游戏数据_平台汇总.csv）
+    plat_path = od / "17_游戏_每日游戏数据_平台汇总.csv"
+    if plat_path.is_file():
+        plat = (_load_output_csv_rows(plat_path) or [{}])[0]
+        total_rounds = _csv_int(plat.get("完成游戏局数"), 0)
+        total_wins = _csv_int(plat.get("用户获胜次数"), 0)
+        win_rate = _csv_float(plat.get("胜率（%）"), 0.0)
+        avg_rounds = (float(total_rounds) / float(dau_v)) if dau_v > 0 else 0.0
+    else:
+        # 回退：核心产品每日数据表按游戏汇总（与 Lark 17/18 子表一致，非战报首选口径）
+        rows17 = _load_output_csv_rows(od / "17_游戏_完成局数.csv")
+        total_rounds = 0
+        w_num, w_den = 0.0, 0.0
+        for r in rows17:
+            g = str(r.get("游戏类型", "")).strip()
+            if _game_row_is_placeholder(g):
+                continue
+            tr = _csv_int(r.get("全部用户局数"), 0)
+            total_rounds += tr
+            pu = _csv_float(r.get("人均游戏局数"), 0.0)
+            if tr > 0 and pu > 0:
+                w_num += pu * tr
+                w_den += float(tr)
+        avg_rounds = (w_num / w_den) if w_den > 0 else 0.0
+        rows18 = _load_output_csv_rows(od / "18_游戏_用户获胜.csv")
+        by_game_17: dict[str, int] = {}
+        for r in rows17:
+            g = str(r.get("游戏类型", "")).strip()
+            if _game_row_is_placeholder(g):
+                continue
+            by_game_17[g] = _csv_int(r.get("全部用户局数"), 0)
+        total_wins = 0
+        total_complete_for_rate = 0
+        for r in rows18:
+            g = str(r.get("游戏类型", "")).strip()
+            if _game_row_is_placeholder(g):
+                continue
+            wo = _csv_int(r.get("老用户胜利数"), 0)
+            wn = _csv_int(r.get("新用户胜利数"), 0)
+            total_wins += wo + wn
+            tc = by_game_17.get(g, 0)
+            if tc <= 0:
+                tc = wo + wn
+            total_complete_for_rate += tc
+        win_rate = (100.0 * total_wins / total_complete_for_rate) if total_complete_for_rate > 0 else _csv_float(
+            (rows18[0].get("总胜率（%）") if rows18 else 0), 0.0
+        )
 
     # 7) RTP / GGR — 19（与 BI「每日游戏数据」当日总计行一致；勿对各游戏 RTP 取平均或按 GGR 加权代替平台 RTP）
     rows19 = _load_output_csv_rows(od / "19_游戏_RTP_GGR.csv")

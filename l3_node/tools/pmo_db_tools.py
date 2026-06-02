@@ -30,9 +30,12 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
         "label": "core:db_query",
         "desc": (
             "PMO SQLite 只读查询（``~/.jachin/workspace/pmo_db.sqlite``）。"
-            "**仅允许 SELECT**；写操作请用 core:db_write。"
-            "JSON：sql（必填，可用 :name 占位符）；可选 params（对象）、max_rows（默认 200，上限 1000）。"
-            "返回 status/rows/row_count/truncated。"
+            "**仅允许 SELECT**（及只读 PRAGMA table_info/table_list）；写操作请 core:db_write。"
+            "**pmo_raw_records 列**：id, **source_view**, source_file, row_index, raw_text, **fields(JSON)**, synced_at。"
+            "**pmo_views_meta 列**：view_id, view_name, record_count, columns_json。"
+            "业务字段在 fields JSON 内；**父记录** 为链接数组（几乎 never IS NULL）。"
+            "JSON：sql（必填）；可选 params、max_rows（默认 200，上限 1000）。"
+            "返回 status/rows/row_count/truncated；0 行或报错时可能含 hints。"
         ),
         "params": ["sql"],
     },
@@ -70,6 +73,18 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "JSON：可选 manifest_path（默认 ~/.jachin/workspace/pmo_lark_pull/00_SYNC_MANIFEST.json）。"
         ),
         "params": ["manifest_path"],
+    },
+    {
+        "id": "core:pmo_mirror_import",
+        "label": "core:pmo_mirror_import",
+        "desc": (
+            "PMO v7 INIT 镜像入库：纯 Python 解析 ``pmo_lark_pull/*.md``（bullet + 平面表），"
+            "写入 ``pmo_raw_records`` / ``pmo_views_meta``；**零 LLM**。"
+            "JSON：可选 manifest_path（默认 ~/.jachin/workspace/pmo_lark_pull/00_SYNC_MANIFEST.json）；"
+            "可选 pull_dir（覆盖 manifest output_dir）；可选 view_ids（字符串数组，仅导入指定视图）。"
+            "返回 ok/total_records/views[]/files[]。"
+        ),
+        "params": ["manifest_path", "pull_dir", "view_ids"],
     },
 ]
 
@@ -221,12 +236,22 @@ _TABLE_COLUMNS: dict[str, frozenset[str]] = {
 _FORBIDDEN_SQL_RE = re.compile(
     r"\b("
     r"insert|update|delete|drop|alter|create|replace|truncate|attach|detach|"
-    r"pragma\s+(?!table_info|index_list|foreign_key_list)|grant|revoke|vacuum|reindex"
+    r"pragma\s+(?!table_info|table_list|index_list|foreign_key_list)|grant|revoke|vacuum|reindex"
     r")\b",
     re.IGNORECASE,
 )
 
-_SCHEMA_VERSION = 1
+_ALLOWED_READONLY_PRAGMA_RE = re.compile(
+    r"^pragma\s+(table_info|table_list|index_list|foreign_key_list)\s*\(",
+    re.IGNORECASE,
+)
+
+_PMO_RAW_RECORDS_SCHEMA_HINT = (
+    "pmo_raw_records: id, source_view, source_file, row_index, raw_text, fields(JSON), synced_at。"
+    "过滤视图用 source_view=...（不是 view_id）。业务列在 fields 内用 json_extract。"
+)
+
+_SCHEMA_VERSION = 2
 
 _SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS pmo_schema_meta (
@@ -389,6 +414,28 @@ CREATE INDEX IF NOT EXISTS idx_personnel_root     ON pmo_personnel_task_progress
 CREATE INDEX IF NOT EXISTS idx_personnel_cycle    ON pmo_personnel_task_progress(work_cycle);
 CREATE INDEX IF NOT EXISTS idx_queue_status       ON pmo_change_queue(status);
 CREATE INDEX IF NOT EXISTS idx_extraction_table   ON pmo_extraction_log(target_table);
+
+CREATE TABLE IF NOT EXISTS pmo_raw_records (
+  id          TEXT PRIMARY KEY,
+  source_view TEXT NOT NULL,
+  source_file TEXT NOT NULL,
+  row_index   INTEGER NOT NULL,
+  raw_text    TEXT NOT NULL,
+  fields      TEXT NOT NULL,
+  synced_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pmo_views_meta (
+  view_id      TEXT PRIMARY KEY,
+  view_name    TEXT,
+  file_name    TEXT,
+  record_count INTEGER,
+  columns_json TEXT,
+  synced_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_source_view ON pmo_raw_records(source_view);
+CREATE INDEX IF NOT EXISTS idx_raw_synced_at   ON pmo_raw_records(synced_at);
 """
 
 
@@ -409,6 +456,23 @@ def get_pmo_staging_dir() -> Path:
 def get_default_pmo_manifest_path() -> Path:
     ws = Path(os.environ.get("JACHIN_HOME") or Path.home() / ".jachin").expanduser() / "workspace"
     return (ws / "pmo_lark_pull" / "00_SYNC_MANIFEST.json").resolve()
+
+
+def pmo_mirror_db_ready() -> bool:
+    """v7：镜像库是否已有 ``pmo_raw_records`` 数据。"""
+    path = get_pmo_db_path()
+    if not path.is_file():
+        return False
+    try:
+        conn = _connect()
+        try:
+            ensure_pmo_schema(conn)
+            row = conn.execute("SELECT COUNT(*) AS n FROM pmo_raw_records").fetchone()
+            return bool(row and int(row["n"]) > 0)
+        finally:
+            conn.close()
+    except Exception:
+        return False
 
 
 def _utc_now_iso() -> str:
@@ -480,10 +544,209 @@ def _validate_select_sql(sql: str) -> None:
     if len(parts) != 1:
         raise ValueError("仅允许单条 SELECT 语句")
     stmt = parts[0]
+    if _ALLOWED_READONLY_PRAGMA_RE.match(stmt):
+        if _FORBIDDEN_SQL_RE.search(stmt):
+            raise ValueError("SQL 含禁止关键字或非只读 PRAGMA")
+        return
     if not re.match(r"^select\b", stmt, re.IGNORECASE):
-        raise ValueError("core:db_query 仅允许 SELECT")
+        raise ValueError("core:db_query 仅允许 SELECT 或只读 PRAGMA(table_info/table_list)")
     if _FORBIDDEN_SQL_RE.search(stmt):
         raise ValueError("SQL 含禁止关键字或非只读 PRAGMA")
+
+
+def _db_query_hints(sql: str, *, message: str = "", row_count: int | None = None) -> list[str]:
+    """常见 PMO 查询误区 → 可操作建议（Observation hints）。"""
+    hints: list[str] = []
+    sl = (sql or "").lower()
+    msg = (message or "").lower()
+
+    if "no such column: view_id" in msg:
+        hints.append(
+            "pmo_raw_records 无 view_id 列；请用 source_view='vew…'。"
+            "pmo_views_meta 才用 view_id。"
+        )
+    if row_count == 0 and "pmo_raw_records" in sl and re.search(r"\bview_id\b", sl):
+        hints.append("pmo_raw_records 请改用 source_view 列过滤视图。")
+    if row_count == 0 and "父记录" in sql:
+        if re.search(r"\bis null\b", sl) and "[0].text" not in sql:
+            hints.append(
+                "父记录在镜像库中为 JSON 链接数组，json_extract(fields, '$.$\"父记录\"') IS NULL 几乎恒为 0 行。"
+                "Epic 顶层需求请用 json_extract(fields, '$.$\"父记录\"[0].text') IS NULL，"
+                "并排除 Requirement IN ('开发','美术','产品') 部门占位行。"
+            )
+        elif "= '[]'" in sql or "='[]'" in sql.replace(" ", ""):
+            hints.append(
+                "父记录字段是 JSON 数组而非字符串；`父记录 = '[]'` 通常匹配不到行。"
+                "Epic 顶层请用 json_extract(fields, '$.$\"父记录\"[0].text') IS NULL（source_view='vewpI8lyYw'）。"
+            )
+        elif "[0].text" in sql and "vewpi8lyyw" in sl and sl.count(" and ") >= 3:
+            hints.append(
+                "Epic 查询返回 0 行：父记录[0].text IS NULL 条件本身通常能返回数据。"
+                "请检查是否额外追加了 priority/Sprint/状态 等 AND 过滤导致过严；"
+                "Step 4 只用 §1.2 Epic SQL 的 4 条固定条件，勿自行追加过滤。"
+            )
+        elif "[0].text" in sql and "vewcz1ffji" in sl:
+            hints.append(
+                "❌ 视图混用：Epic 顶层筛选（父记录[0].text IS NULL）只能在 vewpI8lyYw 使用。"
+                "vewCz1FFJi 是人员任务看板，任务行几乎都有父记录 text，此条件在此表恒 0 行。"
+                "Step 4 请改 source_view='vewpI8lyYw'；Step 3 人员请用 json_each 明细 SQL。"
+            )
+    if row_count == 0 and "责任人" in sql and "vewcz1ffji" in sl:
+        hints.append(
+            "vewCz1FFJi 人员字段为 Person in charge/Participant（非「责任人」）；"
+            "请 json_each(json_extract(fields, '$.$\"Person in charge/Participant\"')) 取 en_name。"
+        )
+    if (
+        "person in charge" in sl or "participant" in sl or "json_each" in sl
+    ) and "vewcz1ffji" in sl:
+        select_part = sl.split("from", 1)[0] if "from" in sl else sl
+        has_task_fields = any(
+            k in select_part
+            for k in ("requirement", "status", "sprint", "progress", "due", "start_date")
+        )
+        if "json_each" in sl and not has_task_fields and "count(" not in sl:
+            hints.append(
+                "Step 3 人员查询不完整：只查了 en_name，缺少 task/status/sprint/due 等列。"
+                "须用 SKILL §1.2「Step 3 明细 SQL」一次 SELECT 全部字段，供节奏判定。"
+            )
+    if (
+        "person in charge" in sl or "participant" in sl
+    ) and re.search(r"\[0\]\.en_name|\$\[0\]\.en_name", sql or "") and "json_each" not in sl:
+        hints.append(
+            "Person in charge/Participant 须用 json_each 展开 **所有** 参与者；"
+            "[0].en_name 只取第一人，多人任务会漏计。"
+            "见 SKILL §1.2 Step 3 明细 SQL。"
+        )
+    if re.search(r'sprint"\]\[0\]|sprint"\[0\]', sql or "", re.I) or re.search(
+        r'\$\.\"Sprint\"\[0\]\.text', sql or ""
+    ):
+        hints.append(
+            "Sprint 是纯字符串字段，路径为 json_extract(fields, '$.Sprint')；"
+            "禁止用 $.'Sprint'[0].text（那是对象数组写法，仅适用于「状态」字段）。"
+        )
+    if re.search(r"\b\w+\.json_extract\s*\(", sql or "", re.I):
+        hints.append(
+            "SQLite 中 json_extract 是独立函数，不能用 r1.json_extract(...) 写法。"
+            "正确：json_extract(r1.fields, '$.xxx')。"
+        )
+    if "syntax error" in msg and re.search(r"\b\w+\.json_extract\s*\(", sql or "", re.I):
+        hints.append(
+            "跨视图检验建议拆成 Step 6a + 6b 两步简单查询，而非一条 JOIN。"
+        )
+    if re.search(r"\bjoin\b", sl) and sl.count("pmo_raw_records") >= 2:
+        hints.append(
+            "跨视图检验禁止一条 JOIN 完成："
+            "Step 6a 从 vewpI8lyYw 取 TOP 5 延期 Requirement；"
+            "Step 6b 在 vewCz1FFJi 用 fields LIKE '%需求名%' 逐条核对。"
+        )
+    if "vewpi8lyyw" in sl and ("负责人" in sql or "需求名称" in sql):
+        hints.append(
+            "vewpI8lyYw 开发表字段为 Person in charge/Participant 和 Requirement"
+            "（非「负责人」「需求名称」）；请核对 Step1 的 columns_json。"
+        )
+    if "version goal" in sl and "limit 1" in sl and "count(" not in sl:
+        hints.append(
+            "Step7 未完成：Version Goal 须用 COUNT(*) 聚合统计填写率，"
+            "禁止 LIMIT 1 单行样本；见 SKILL §1.2.1 Step7 SQL 模板。"
+        )
+    if ("状态" in sql or re.search(r"\bstatus\b", sl)) and "group by" not in sl and "count(" not in sl:
+        if "pmo_raw_records" in sl and row_count and row_count > 3:
+            hints.append(
+                "Step5 状态分布须用 GROUP BY status_text, COUNT(*) 聚合，"
+                "禁止仅返回明细行；产出须含「🔴 延期 N 条 / 🔵 按时完成 M 条」等量化结论。"
+            )
+    if (
+        "person in charge" in sl or "participant" in sl or "en_name" in sl
+    ) and "vewcz1ffji" in sl and "json_each" not in sl:
+        hints.append(
+            "⛔ Step3 **绝对禁忌**：未用 json_each 展开 Person in charge/Participant。"
+            "直接 json_extract 返回的是 JSON 数组乱码（如 [{\"en_name\":\"…\"}]），"
+            "无法做人员负荷分析；personnel_kanban 探针 **不计为完成**，推送前 PMO 审核 **不通过**。"
+            "须改用 SKILL §1.2「Step 3 明细 SQL」（json_each + person/task/status/sprint 同查）。"
+        )
+    if not hints and row_count == 0 and "pmo_raw_records" in sl:
+        hints.append(
+            "0 行：请先 SELECT columns_json FROM pmo_views_meta WHERE view_id=... 核对 JSON 键名；"
+            "或 SELECT fields FROM pmo_raw_records WHERE source_view=... LIMIT 1 看样本。"
+        )
+    hints.extend(_db_query_wide_date_range_hints(sql))
+    return hints
+
+
+def _db_query_wide_date_range_hints(sql: str) -> list[str]:
+    """检测 Start Date / Expected Delivery Date 过滤范围是否过宽（>30 天）。"""
+    from datetime import timedelta
+
+    hints: list[str] = []
+    if not sql:
+        return hints
+    sl = sql.lower()
+    if "start date" not in sl and "expected delivery date" not in sl:
+        return hints
+    if re.search(r"json_extract\s*\(\s*fields\s*,\s*'\$\.sprint'\s*\)\s*=", sl):
+        return hints
+    for date_str in re.findall(r"'([0-9]{4}-\d{2}-\d{2})'", sql):
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if datetime.now() - dt > timedelta(days=30):
+            hints.append(
+                "⚠️ 日期过滤范围过宽（>30 天），可能把历史 Sprint 数据全部纳入。"
+                "建议从 Step2 样本提取当前 Sprint 名称，"
+                "用 json_extract(fields,'$.Sprint') = '<当前Sprint>' 等值过滤聚焦本迭代。"
+            )
+            break
+    return hints
+
+
+def _db_query_row_quality_hints(rows: list[dict[str, Any]], sql: str) -> list[str]:
+    """根据返回行检测字段名错误、json_each 未展开等质量问题。"""
+    hints: list[str] = []
+    if not rows:
+        return hints
+    sl = (sql or "").lower()
+    skip_cols = frozenset({
+        "source_view", "fields", "row_index", "id", "synced_at", "raw_text", "source_file",
+    })
+    for col in rows[0]:
+        if col in skip_cols:
+            continue
+        non_null = 0
+        json_array_like = 0
+        for row in rows:
+            val = row.get(col)
+            if val is None:
+                continue
+            sval = str(val).strip()
+            if not sval or sval.lower() in ("null", "none"):
+                continue
+            non_null += 1
+            if sval.startswith("[{") and ("en_name" in sval or "avatar_url" in sval or '"text"' in sval):
+                json_array_like += 1
+        total = len(rows)
+        if total >= 5 and non_null / total < 0.1:
+            hints.append(
+                f"⚠️ 字段 [{col}] 非空率极低（{non_null}/{total}），可能是字段名错误；"
+                "请核对 Step1 的 columns_json 后重写 SQL。"
+            )
+        elif col in ("person", "owner", "person_name") and json_array_like >= max(1, total // 3):
+            hints.append(
+                "⛔ Step3 数据质量失败：person 列仍为 JSON 数组乱码（以 [{ 开头），"
+                "说明未用 json_each 展开 en_name；personnel_kanban 探针 **不计为完成**。"
+                "须重写为 SKILL §1.2 Step 3 明细 SQL（json_each）。"
+            )
+        elif col in ("status", "status_text") and json_array_like >= max(1, total // 3):
+            hints.append(
+                "状态列返回 JSON 数组（以 [{ 开头），须用 "
+                "json_extract(json_extract(fields,'$.\"状态\"'),'$[0].text') 取 text。"
+            )
+    if "vewpi8lyyw" in sl and ("负责人" in sql or "需求名称" in sql):
+        hints.append(
+            "vewpI8lyYw 字段为 Person in charge/Participant / Requirement，"
+            "非「负责人」「需求名称」。"
+        )
+    return hints[:4]
 
 
 def _coerce_params(params: Any) -> dict[str, Any]:
@@ -800,18 +1063,36 @@ def run_db_query(
             truncated = len(rows_raw) > limit
             rows_raw = rows_raw[:limit]
             rows = [dict(r) for r in rows_raw]
-            return {
+            row_count = len(rows)
+            out: dict[str, Any] = {
                 "status": "ok",
                 "rows": rows,
-                "row_count": len(rows),
+                "row_count": row_count,
                 "truncated": truncated,
                 "db_path": str(get_pmo_db_path()),
             }
+            hints = _db_query_hints(sql_s, row_count=row_count)
+            row_hints = _db_query_row_quality_hints(rows, sql_s)
+            if row_hints:
+                hints = (hints or []) + row_hints
+            if hints:
+                out["hints"] = hints
+            return out
         finally:
             conn.close()
     except Exception as e:
         logger.warning("[pmo_db_query] %s", e)
-        return {"status": "error", "error": type(e).__name__, "message": str(e)}
+        msg = str(e)
+        err: dict[str, Any] = {
+            "status": "error",
+            "error": type(e).__name__,
+            "message": msg,
+            "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+        }
+        hints = _db_query_hints(sql_s, message=msg)
+        if hints:
+            err["hints"] = hints
+        return err
 
 
 def run_db_write(
@@ -1325,5 +1606,17 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
     if tool_id == "core:pmo_init_gap_report":
         return run_init_gap_report(
             manifest_path=str(payload.get("manifest_path") or payload.get("path") or ""),
+        )
+    if tool_id == "core:pmo_mirror_import":
+        from l3_node.tools.pmo_mirror_import import run_mirror_import
+
+        raw_views = payload.get("view_ids")
+        view_ids: list[str] | None = None
+        if isinstance(raw_views, list):
+            view_ids = [str(v) for v in raw_views]
+        return run_mirror_import(
+            manifest_path=str(payload.get("manifest_path") or payload.get("path") or ""),
+            pull_dir=str(payload.get("pull_dir") or payload.get("output_dir") or ""),
+            view_ids=view_ids,
         )
     raise ValueError(f"Unknown PMO db tool: {tool_id}")
