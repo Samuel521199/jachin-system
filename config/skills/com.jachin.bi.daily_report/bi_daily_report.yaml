@@ -6,8 +6,8 @@
 # skip_collect: 仅在 DuckDB+raw 已「今日新鲜」时跳过 SPA 抓取；不新鲜时仍会抓。完整流程建议 false。
 skip_collect: false
 
-# 数据分析数据来源: "raw"=从 raw 目录 slug CSV（战略分析、仪表盘 LLM 摘要）；lark"=从 Lark 多维表拉取
-# 战略分析 strategic_report、仪表盘大数据分析 dashboard_automation 均读此开关
+# 数据分析数据来源（仪表盘 Step 4a）："raw" | "lark"
+# 大战报 Step 3.5 单独读 strategic_report.data_source（默认 duckdb = bi.duckdb 全量入库）
 analysis_data_source: "raw"
 
 # run_refiner: false 时跳过 Step2 提纯，不生成 output CSV（Lark 同步无新文件）。完整流程须 true。
@@ -166,10 +166,11 @@ lark_bitable:
     "25_漏斗_Color_Blitz_Social_老用户.csv": "tblgUMsjF7cafZRb"
     "26_漏斗_Color_Blitz_Social_新用户.csv": "tblZbZN4Iz7CzTi8"
 
-# 战略深度分析：见 docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md（v4 长文 Markdown，非 1-3-3）
-# 基于 bi_project + output/raw T/T-1 + DuckDB/CSV 调用 LLM
+# 战略深度分析：见 STRATEGIC_REPORT_ANALYSIS_SPEC.md（v5 增长留存）
+# 大战报默认从 bi.duckdb 读 SPA 全量入库（strategic_report.data_source: duckdb）
 strategic_report:
   enabled: true
+  data_source: duckdb
   push_to_lark: true   # 生成后推送到 distribution.lark_chat_id 或 lark_webhook_url
 
 # 仪表盘自动化：分析统计图 + 设置 Lark 定时发送（Step 4）

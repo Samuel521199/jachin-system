@@ -1318,3 +1318,49 @@ markdown 写没写完整已无意义
 ---
 
 *最后更新：2026-05-28 · 第四次复盘 · 任务 f72ea48c · §19 覆盖五类问题的根因与改进方向。*
+
+---
+
+## 20. 方案 B 多 Agent 编排（已落地）
+
+> **入口**：`python scripts/run_pmo_copilot_skill.py --analysis-only`（默认多 Agent；`--single-agent` 回退旧单 Agent ReAct）  
+> **编排 SSOT**：`l3_node/pmo_multi_agent_orchestrator.py`  
+> **CLI 接线**：`scripts/run_pmo_copilot_skill.py` → `_async_main_multi_agent`
+
+### 20.1 三阶段结构
+
+```
+[定时/Webhook 或 CLI --analysis-only]
+       │
+       ▼
+【阶段一 · FanOut 并行捞数】l3_node/primitives/multi_agent/fanout.py
+ ├─ Worker A (inline analyst + core:db_query)：Step 1+2 → 字段映射 JSON
+ ├─ Worker B (inline analyst + core:db_query)：Step 3 json_each → 人员 JSON
+ └─ Worker C (inline analyst + core:db_query)：Step 4+5+7 → Epic/状态/Sprint/Version JSON
+       │
+       ▼
+【阶段二 · Pipeline 交叉审计】pipeline.py · inline reviewer · ⛔ 无 db_query
+ └─ Auditor：基于阶段一 JSON 做 Step 6 文字诊断 → 《项目风险诊断书》
+       │
+       ▼
+【阶段三 · Publisher run_agent】channel=pmo_copilot_cli · ⛔ 无 db_query · 仅 atom_lark_notifier
+ └─ 将 JSON + 诊断书填入 📊/👥/📦 三表 GFM → 双群推送
+```
+
+### 20.2 守卫适配
+
+| 机制 | 说明 |
+|------|------|
+| `pmo_multi_agent_complete` | 阶段三 `implicit_attribution` 置位 |
+| `pmo_multi_agent_seed` | 预置 `_pmo_analysis_probes` / `_pmo_views_queried` / `_pmo_db_query_count` |
+| `_pmo_branch_a_push_prerequisites_met` | 多 Agent 完成时跳过单 Agent 探针计数 |
+| `pmo_multi_agent_publish_db_blocked` | 阶段三禁止 `core:db_query` |
+
+### 20.3 与单 Agent 路径的关系
+
+- **INIT / 全分支 A（含拉表）**：仍走 `_async_main_inner` 单 Agent（未改）
+- **仅分析 + 默认**：走方案 B；探针死锁与 markdown 传参问题由分工缓解，但 Publisher 仍须将 GFM 全文写入 `markdown_content`
+
+---
+
+*最后更新：2026-05-28 · §20 方案 B 多 Agent 编排落地。*

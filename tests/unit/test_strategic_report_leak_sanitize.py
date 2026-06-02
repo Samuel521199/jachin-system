@@ -7,6 +7,7 @@ from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import (
     _ensure_deliverable_strategic_report,
     _finalize_strategic_report_output,
     _is_report_corrupted,
+    _polish_strategic_report_prose,
     _smart_truncate_corrupted_report,
     _truncate_at_first_corrupted_section,
 )
@@ -92,6 +93,30 @@ class TestStrategicReportLeakSanitize(unittest.TestCase):
         self.assertTrue(
             "截断" in out or "### 🟡异动二" not in out or "渠道 DNU 枚举异常截断" in out
         )
+
+    def test_polish_preserves_visual_hierarchy(self) -> None:
+        raw = """# 📊 BI 增长战报（数据日：2026-06-01）
+
+---
+
+## 一、大盘晴雨表 —— 今天我们真的增长了吗？
+
+定调：今天大盘呈现虚胖特征。
+
+### 人话结论
+- **DAU** 4,652（环比+7.16%），渠道 meta_ads06。
+
+**数据源**：stats_user_dau.
+"""
+        out = _polish_strategic_report_prose(raw)
+        self.assertNotIn("**", out)
+        self.assertIn("DAU", out)
+        self.assertIn("🎯 【定调】", out)
+        self.assertIn("📊 【结论】", out)
+        self.assertNotIn("---", out)
+        self.assertNotIn("`", out)
+        self.assertIn("一、大盘晴雨表", out)
+        self.assertNotIn("stats_user_dau", out)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""
+﻿"""
 流水线（Pipeline）多 Agent 编排器。
 
 适用场景：
@@ -88,6 +88,7 @@ async def run_pipeline(
     *,
     initial_context: dict[str, Any] | str | None = None,
     delegate_depth: int = 1,
+    parent_allowed_skills: list[str] | None = None,
 ) -> PipelineResult:
     """
     顺序执行流水线各阶段，每阶段输出自动流向下一阶段 context_data。
@@ -151,7 +152,10 @@ async def run_pipeline(
 
         try:
             from l3_node.agent_core import _run_sub_agent
-            result_str = await _run_sub_agent(spec, engine, delegate_depth=delegate_depth)
+            result_str = await _run_sub_agent(
+                spec, engine, delegate_depth=delegate_depth,
+                _parent_allowed_skills=parent_allowed_skills,
+            )
             elapsed = time.monotonic() - t1
             sr = PipelineStageResult(
                 stage_index=idx + 1, role=stage.role,

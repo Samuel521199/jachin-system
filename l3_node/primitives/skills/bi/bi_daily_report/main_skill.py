@@ -15,14 +15,14 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 3. **Lark 同步**：将 output 下 CSV 同步到飞书多维表格（atom_lark_bitable_sync）
 3.4 **KPI 快照卡片**：同步完成后，从同目录 CSV 拼装指标（按 👥/💰/🎮/⚖️ 分组、`---` 分隔、涨跌 🟢/🔻）推送 Lark
 4. **仪表盘分析**（Step 4a）：对每个仪表盘调用 LLM 分析统计图数据 → 保存到 output → 通过 Lark 机器人推送消息卡片（分析+仪表盘链接）。**先于大战报执行**。
-5. **战略深度分析（大战报）**：System 从 `STRATEGIC_REPORT_ANALYSIS_SPEC.md`（**v4 长文交付**）加载；注入 `bi_project` + output/raw **T vs T-1** 摘要 + DuckDB/CSV；在 Step 4a 之后执行。
+5. **战略深度分析（大战报）**：System 从 `STRATEGIC_REPORT_ANALYSIS_SPEC.md`（**v6.3 · 战略决策导向**）加载；第五节为 DAU 增长战略决策，非派工单。
 6. **邮件通知**：调用 mcp:atom_email_sender 将战报发送至 distribution.email.to_addrs（邮件内顺序：一、BI 数据快报 → 二、仪表盘 → 三、Lark 同步 → 四、战略分析）。
 
 配置项 `verbose_log`（默认 true）：控制是否在终端打印执行进度；false 时仅写日志文件。
 
 ## BI 平台 → raw/*.csv / DuckDB 数据源映射（供 L3 Agent 理解数据来源）
 
-提纯(Refiner) 仍可从 raw/{slug}.csv 或 DuckDB 取数；战略/仪表盘「大数据分析」由 bi_daily_report.yaml 的 analysis_data_source 决定（raw 或 lark 多维表）。
+提纯(Refiner) 仍可从 raw/{slug}.csv 或 DuckDB 取数；**大战报**默认读 `bi.duckdb`（`strategic_report.data_source: duckdb`）；仪表盘 Step 4a 读 `analysis_data_source`。
 
 | BI 菜单路径 | 页面名称 | slug | 产出表 |
 |-------------|----------|------|--------|
@@ -3360,23 +3360,24 @@ def _strategic_channel_two_day_digest(
     return lines
 
 
-def _summarize_one_csv_dod(path: Path, t1: str, t2: str, label: str) -> list[str]:
-    lines: list[str] = []
-    try:
-        with open(path, encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames or []
-            rows = list(reader)
-    except OSError as e:
-        return [f"- （读取失败 {label}: {e}）"]
-
+def _summarize_table_rows_dod(
+    rows: list[dict[str, Any]],
+    t1: str,
+    t2: str,
+    label: str,
+    *,
+    table_key: str = "",
+) -> list[str]:
+    """对 DuckDB 或 CSV 行做 T vs T-1 摘要。table_key 为 slug 或 CSV 文件名。"""
     if not rows:
         return [f"- （空表 {label}）"]
 
-    fn = path.name
-    # 01 增幅表：按类型快照 + 增幅列已含日环比语义
+    fieldnames = list(rows[0].keys())
+    fn = table_key or label
+    _skip = {"_ingested_at", "_ingested_date"}
+
     if fn.startswith("01_用户活跃_增幅表"):
-        lines.append(f"**{label}**（无日期列；提纯为 DAU/DNU 快照，增幅列为相对前日）")
+        lines = [f"**{label}**（无日期列；提纯为 DAU/DNU 快照，增幅列为相对前日）"]
         for r in rows[:12]:
             typ = str(r.get("类型", "") or "").strip()
             if typ:
@@ -3387,53 +3388,71 @@ def _summarize_one_csv_dod(path: Path, t1: str, t2: str, label: str) -> list[str
 
     if fn.startswith(
         ("04_留存_次留表", "05_留存_付费用户次留表", "06_留存_周环比表", "07_留存_付费用户周环比表")
-    ):
-        lines.append(f"**{label}**（留存/周环比多行快照；对照 T 业务日与周结构）")
+    ) or "stats_retention" in fn:
+        lines = [f"**{label}**（留存/周环比多行快照；对照 T 业务日与周结构）"]
         for r in rows[:18]:
-            ks = list(r.keys())[:6]
+            ks = [k for k in list(r.keys())[:8] if k not in _skip]
             lines.append("  - " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
         return lines
 
-    if fn.startswith("10_充值_付费人数按SKU") or fn.startswith("11_充值_付费金额按SKU"):
-        lines.append(f"**{label}**（SKU 分档快照；判断小额单 vs 大R 结构）")
+    if fn.startswith("10_充值_付费人数按SKU") or fn.startswith("11_充值_付费金额按SKU") or fn == "recharge_status":
+        lines = [f"**{label}**（SKU 分档快照）"]
         for r in rows[:22]:
-            ks = list(r.keys())[:5]
+            ks = [k for k in list(r.keys())[:6] if k not in _skip]
             lines.append("  - " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
         return lines
 
-    if fn.startswith("17_游戏_完成局数") or fn.startswith("18_游戏_用户获胜") or fn.startswith("19_游戏_RTP_GGR"):
-        lines.append(f"**{label}**（按游戏多行；关注 RTP/GGR/局数/胜负）")
-        for r in rows[:16]:
-            g = str(r.get("游戏类型", "") or "").strip()
-            if not g or "需抓取" in g:
-                continue
-            ks = [k for k in r.keys() if k != "游戏类型"][:5]
-            lines.append(f"  - {g}: " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
+    if (
+        fn.startswith("17_游戏_完成局数")
+        or fn.startswith("18_游戏_用户获胜")
+        or fn.startswith("19_游戏_RTP_GGR")
+        or fn in ("stats_game_daily", "stats_game_core", "stats_game_compare")
+    ):
+        lines = [f"**{label}**（按游戏多行；关注 RTP/GGR/局数/胜负）"]
+        game_col = _find_col(fieldnames, "游戏类型", "游戏名称", "汇总项目", "游戏")
+        for r in rows[:20]:
+            g = str(r.get(game_col, "") if game_col else r.get("游戏类型", "") or "").strip()
+            if g and "需抓取" not in g and game_col:
+                ks = [k for k in r.keys() if k != game_col and k not in _skip][:5]
+                lines.append(f"  - {g}: " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
+            else:
+                ks = [k for k in list(r.keys())[:6] if k not in _skip]
+                lines.append("  - " + " | ".join(f"{k}={r.get(k, '')}" for k in ks))
         return lines
 
-    dc = _strategic_pick_date_column(list(fieldnames))
+    if fn == "daily_acquisition":
+        lines = [f"**{label}**（单条落地链接漏斗；找注册/进桌断点）"]
+        dc = _strategic_pick_date_column(fieldnames)
+        sub = rows
+        if dc:
+            sub = [r for r in rows if _norm_strategic_csv_date(r.get(dc)) in (t1, t2)] or rows
+        for r in sub[:15]:
+            ks = [k for k in list(r.keys())[:7] if k not in _skip]
+            lines.append("  - " + " | ".join(f"{k}={str(r.get(k, ''))[:50]}" for k in ks))
+        return lines
+
+    dc = _strategic_pick_date_column(fieldnames)
     if not dc:
-        lines.append(f"**{label}**（无日期列；首行抽样）")
+        lines = [f"**{label}**（无日期列；首行抽样）"]
         r0 = rows[0]
-        for k in list(r0.keys())[:8]:
+        for k in [x for x in list(r0.keys())[:8] if x not in _skip]:
             lines.append(f"  - {k}={r0.get(k, '')}")
         return lines
 
     r1 = _strategic_row_for_date(rows, dc, t1)
     r2 = _strategic_row_for_date(rows, dc, t2)
 
-    # 渠道类：按日聚合
-    if "03a_" in fn or "03b_" in fn:
-        ch_c = _find_col(list(fieldnames), "DAU渠道来源", "DNU渠道来源", "渠道", "来源")
-        qty_c = _find_col(list(fieldnames), "数量", "人数", "DAU数量", "DNU数量")
+    if "03a_" in fn or "03b_" in fn or fn in ("stats_user_dau", "stats_user_new"):
+        ch_c = _find_col(fieldnames, "DAU渠道来源", "DNU渠道来源", "渠道", "来源", "渠道名称")
+        qty_c = _find_col(fieldnames, "数量", "人数", "DAU数量", "DNU数量", "日活", "新增用户")
         if ch_c and qty_c:
-            lines.append(f"**{label}**（按 `{dc}` 聚合 `{qty_c}`）")
+            lines = [f"**{label}**（按 `{dc}` 聚合 `{qty_c}`）"]
             lines.extend(_strategic_channel_two_day_digest(rows, dc, ch_c, qty_c, t1, t2))
             return lines
 
-    lines.append(f"**{label}**（日期列 `{dc}`）")
+    lines = [f"**{label}**（日期列 `{dc}`）"]
+    skip = {dc, *_skip}
     if r1 and r2:
-        skip = {dc}
         diff = _strategic_diff_two_rows(r1, r2, skip)
         if diff:
             lines.extend(diff)
@@ -3448,6 +3467,73 @@ def _summarize_one_csv_dod(path: Path, t1: str, t2: str, label: str) -> list[str
         sample = sorted(x for x in have if x)[:5]
         lines.append(f"  - 未命中 T/T-1；表中出现的日期样例: {sample}")
     return lines
+
+
+def _summarize_one_csv_dod(path: Path, t1: str, t2: str, label: str) -> list[str]:
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+    except OSError as e:
+        return [f"- （读取失败 {label}: {e}）"]
+    return _summarize_table_rows_dod(rows, t1, t2, label, table_key=path.name)
+
+
+def _build_strategic_dod_summary_from_duckdb(
+    t1_iso: str,
+    t2_iso: str,
+    *,
+    max_lines: int = 420,
+) -> str:
+    """大战报 T vs T-1：从 bi.duckdb 各 slug 表生成字段级对照（SPA 全量入库）。"""
+    from l3_node.primitives.mcp.mcp_tools.bi.data_store import _get_conn
+    from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_duckdb_path
+    from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import STRATEGIC_DUCKDB_SLUGS
+
+    t1 = t1_iso[:10]
+    t2 = t2_iso[:10]
+    try:
+        t0 = datetime.strptime(t2, "%Y-%m-%d")
+        window_from = (t0 - timedelta(days=14)).strftime("%Y-%m-%d")
+    except ValueError:
+        window_from = None
+
+    db_path = get_bi_duckdb_path()
+    acc: list[str] = [
+        f"说明：T 为数据日（通常昨日），T-1 为前一自然日。数值型字段给出差值与环比%；若缺某日行则标明。",
+        "",
+        f"**数据源**：DuckDB `{db_path}`（SPA 抓取 ingest 全量，非 output 提纯 CSV）",
+        "",
+        "**口径防错（大战报）**：金币换算 1 亿=10⁸；`prod_sales` 用户/机器人分列；"
+        "`daily_acquisition` 每行=单条落地链接；T+1 留存 NaN 优先写未闭合/ETL。",
+        "",
+        "**大战报 v6.3**：①～④ 诊断（🎯📊💡）；⑤ 增长战略与决策（选项/🧭优先序/🔍待验证），锚定盈利期 DAU，禁止派活。",
+        "③ IAA 缺数须盲区疾呼；⑤ 缺数写入 🔍待验证（决策盲区）。",
+        "",
+        "## DuckDB 表（T vs T-1 字段对照）",
+        "",
+    ]
+
+    conn = _get_conn()
+    try:
+        for slug in STRATEGIC_DUCKDB_SLUGS:
+            rows = _query_table(conn, slug, date_from=window_from, date_to=t1)
+            if not rows:
+                rows = _query_table(conn, slug)
+            if not rows:
+                continue
+            acc.extend(_summarize_table_rows_dod(rows, t1, t2, f"`{slug}`", table_key=slug))
+            acc.append("")
+            if len(acc) > max_lines:
+                acc.append("…（更多表省略，见上方 DuckDB 摘要）")
+                break
+    finally:
+        conn.close()
+
+    text = "\n".join(acc).strip()
+    if len(text) > 45000:
+        text = text[:45000] + "\n\n…（日环比全文截断）"
+    return text
 
 
 def _build_strategic_dod_summary(
@@ -3478,8 +3564,8 @@ def _build_strategic_dod_summary(
         "**口径防错（大战报）**：`stats_user_dau`/`stats_user_new` 金币产出消耗列换算「亿」须按 10⁸（例 53,179,122≈0.53 亿，勿写成 5.32 亿）。"
         "`prod_sales` 用户金币与机器人金币分列叙述。`daily_acquisition` 每行=单条落地链接。`stats_retention_user` 的 T+1 若为 0/NaN% 优先写未闭合/ETL，勿单归因架构。",
         "",
-        "**大战报归因要求（v3）**：以下 diff 须结合 `docs/bi_daily_report/bi_project` 背景与《STRATEGIC_REPORT_ANALYSIS_SPEC.md》——"
-        " 异动不可单一归因；并列检验 **平台/运营/版本**（上新、活动、买量、支付、体验房与弹窗）与 **外部**（发薪日、圣周、台风/断网、渠道）及 **风控/埋点/黑产**。"
+        "**大战报 v6.3 五板块**：① 晴雨表 ② 买量 ③ 漏斗 ④ 生态 ⑤ **增长战略与决策**（非派工单）。"
+        " 第三板块须点明新用户死亡断点；DNU/设备≥1.2 警告机刷；RTP>100% 用人话警告放水。"
         " output 为提纯表重点；同路径下 raw 明细已在下文对照。",
         "",
         "## output（提纯表，与 Lark 多维表同源）",
@@ -3570,21 +3656,34 @@ def _merge_strategic_report_config_for_llm(
     raw_dir: Path,
 ) -> dict[str, Any]:
     """在不改仪表盘逻辑的前提下，为 Step 3.5 大战报注入 bi_project 背景 + T/T-1 数据摘要 + 排版美学节选（注入 strategic_report System 追加节）。"""
-    from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import _detect_report_date_from_raw
+    from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import (
+        _detect_report_date_from_duckdb,
+        _detect_report_date_from_raw,
+        _resolve_strategic_data_source,
+    )
 
     out_cfg = dict(cfg or {})
     sr0 = dict(out_cfg.get("strategic_report") or {})
+    data_src = _resolve_strategic_data_source(out_cfg)
 
     k11_md = _load_bi_project_context_md(project_root)
-    rd = Path(raw_dir)
-    if rd.is_dir():
-        t1_iso, _ = _detect_report_date_from_raw(rd)
+    if data_src == "duckdb":
+        t1_iso, _ = _detect_report_date_from_duckdb()
     else:
-        t1_iso = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        rd = Path(raw_dir)
+        if rd.is_dir():
+            t1_iso, _ = _detect_report_date_from_raw(rd)
+        else:
+            t1_iso = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     t2_iso = (datetime.strptime(t1_iso[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
     try:
-        dod = _build_strategic_dod_summary(Path(output_dir), rd if rd.is_dir() else None, t1_iso, t2_iso)
+        if data_src == "duckdb":
+            dod = _build_strategic_dod_summary_from_duckdb(t1_iso, t2_iso)
+        else:
+            dod = _build_strategic_dod_summary(
+                Path(output_dir), Path(raw_dir) if Path(raw_dir).is_dir() else None, t1_iso, t2_iso
+            )
     except Exception as e:
         logger.warning("[BI] 大战报日环比摘要生成失败: %s", e)
         dod = f"（生成失败: {e}）"
@@ -4138,7 +4237,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
     _bi_debug("Step 3.5", "branch", data={"enabled": strategic_cfg.get("enabled", True)})
     if strategic_cfg.get("enabled", True):
         _bi_debug("Step 3.5", "entry", detail="generate_bi_strategic_report_async")
-        _bi_log("Step 3.5: 正在调用 LLM 生成战略深度分析战报（v4 长文形态）...", progress=True)
+        _bi_log("Step 3.5: 正在调用 LLM 生成增长战略战报（v6.3）...", progress=True)
         try:
             from l3_node.paths import get_app_root
             from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import generate_bi_strategic_report_async
@@ -4192,7 +4291,7 @@ async def _run_bi_daily_report_async(config: dict[str, Any] | None = None) -> di
                         if lark_cfg.get("lark_use_feishu"):
                             os.environ["LARK_USE_FEISHU"] = "1"
                         from l3_node.primitives.mcp.mcp_tools.bi.tool_lark_notifier import send_lark_markdown
-                        r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 战略深度分析战报", chat_id=chat_id or None)
+                        r = send_lark_markdown(webhook or "", strategic_md, title="📊 BI 增长战略战报", chat_id=chat_id or None)
                         if r.get("status") == "success":
                             _bi_log("Step 3.5: 战略报告已推送至 Lark", detail="发送成功", progress=True)
                             result["strategic_report_sent"] = True

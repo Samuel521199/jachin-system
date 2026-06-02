@@ -2083,6 +2083,8 @@ def _pmo_branch_a_delivery_complete(ctx: PipelineContext) -> bool:
 
 
 def _pmo_branch_a_push_prerequisites_met(ctx: PipelineContext) -> bool:
+    if ctx.metadata.get("pmo_multi_agent_complete"):
+        return True
     if int(ctx.metadata.get("_pmo_db_query_count") or 0) < PMO_BRANCH_A_MIN_DB_QUERIES:
         return False
     probes = _pmo_ensure_analysis_probes(ctx)
@@ -2450,6 +2452,34 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
     if not _pmo_analysis_only_mode(ctx):
         return None
     canon = _pmo_canonical_tool_id(tool)
+    if ctx.metadata.get("pmo_multi_agent_complete") and canon == "db_query":
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_multi_agent_publish_db_blocked",
+                "msg": (
+                    "【宿主拦截 · 多 Agent 阶段三】前序 FanOut/Pipeline 已完成查库与审计。"
+                    "⛔ 禁止 core:db_query；请仅用 mcp:atom_lark_notifier 组装 markdown_content 双群推送。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    if ctx.metadata.get("pmo_multi_agent_complete") and canon in (
+        "atom_bi_project_context",
+        "pmo_mirror_import",
+        "fs_read",
+    ):
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_multi_agent_publish_tool_blocked",
+                "msg": (
+                    "【宿主拦截 · 多 Agent 阶段三】禁止 INIT/读盘类工具；"
+                    "仅允许 mcp:atom_lark_notifier。"
+                ),
+            },
+            ensure_ascii=False,
+        )
     if _pmo_branch_a_delivery_complete(ctx):
         return json.dumps(
             {
@@ -10613,9 +10643,15 @@ async def run_agent(
             "_domain_experts": list(_domain_experts_list),
         }
         if implicit_attribution and isinstance(implicit_attribution, dict):
-            for _pmo_meta_k in ("pmo_analysis_only", "pmo_db_ready"):
+            for _pmo_meta_k in ("pmo_analysis_only", "pmo_db_ready", "pmo_multi_agent_complete"):
                 if _pmo_meta_k in implicit_attribution:
                     _md_base[_pmo_meta_k] = bool(implicit_attribution[_pmo_meta_k])
+            try:
+                from l3_node.pmo_multi_agent_orchestrator import apply_pmo_multi_agent_metadata_seed
+
+                apply_pmo_multi_agent_metadata_seed(_md_base, implicit_attribution)
+            except Exception:
+                pass
         try:
             from l3_node.primitives.mcp.sqlite_write_guard import messages_history_has_write_ack_grant
 

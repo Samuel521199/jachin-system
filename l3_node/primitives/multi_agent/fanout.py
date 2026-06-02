@@ -1,4 +1,4 @@
-"""
+﻿"""
 扇出并行（Fan-out Parallel）多 Agent 编排器。
 
 适用场景：
@@ -106,6 +106,7 @@ async def fanout_parallel(
     max_concurrent: int = 4,
     delegate_depth: int = 1,
     item_max_iterations: int = 3,
+    parent_allowed_skills: list[str] | None = None,
 ) -> FanoutResult:
     """
     并发执行多个子 Agent 任务，返回 FanoutResult。
@@ -146,9 +147,15 @@ async def fanout_parallel(
         try:
             if sem is not None:
                 async with sem:
-                    result = await _run_sub_agent(eff_spec, engine, delegate_depth=delegate_depth)
+                    result = await _run_sub_agent(
+                        eff_spec, engine, delegate_depth=delegate_depth,
+                        _parent_allowed_skills=parent_allowed_skills,
+                    )
             else:
-                result = await _run_sub_agent(eff_spec, engine, delegate_depth=delegate_depth)
+                result = await _run_sub_agent(
+                    eff_spec, engine, delegate_depth=delegate_depth,
+                    _parent_allowed_skills=parent_allowed_skills,
+                )
             elapsed = time.monotonic() - t1
             return FanoutItemResult(
                 index=idx + 1, role=role, task_preview=task_preview,

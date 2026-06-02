@@ -1,12 +1,12 @@
 ﻿"""
 BI 战略大战报（长文深度分析）
 
-分析规范以 **docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md**（v4 交付形态）为 SSOT，
+分析规范以 **docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md**（v6.3 五板块 · 战略决策导向）为 SSOT，
 运行时加载为 System Prompt；缺失时回退 _STRATEGIC_ANALYSIS_SPEC_FALLBACK。
 
-User 侧注入：bi_project 背景、T vs T-1 字段摘要、指标 JSON、CSV/Lark 摘要。
+User 侧注入：bi_project 背景、T vs T-1 字段摘要（默认 DuckDB）、指标 JSON、表摘要。
 
-数据来源：优先 Lark 多维表；否则 raw/output CSV。仪表盘小分析（Step 4a）不在此模块。
+数据来源：默认 DuckDB `bi.duckdb`；可配置回退 output/raw CSV。仪表盘小分析（Step 4a）不在此模块。
 """
 from __future__ import annotations
 
@@ -26,7 +26,165 @@ def _get_bi_raw_dir() -> Path:
     from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_raw_dir
     return get_bi_raw_dir()
 
-# 战略分析所需多维表子集（与 _load_csv_summary / 日环比 / Lark 拉取一致）
+# 战略分析 DuckDB 表 slug 清单（SPA 抓取 ingest 后的 bi_* 表，大战报主数据源）
+STRATEGIC_DUCKDB_SLUGS: tuple[str, ...] = (
+    "daily_ops_summary",
+    "stats_user_dau",
+    "stats_user_new",
+    "stats_retention_user",
+    "stats_retention_paid",
+    "stats_retention_user_compare",
+    "stats_retention_paid_compare",
+    "daily_acquisition",
+    "stats_recharge",
+    "recharge_status",
+    "prod_sales",
+    "stats_game_daily",
+    "stats_game_core",
+    "stats_game_compare",
+    "alert_gold",
+    "alert_traffic",
+)
+
+_DUCKDB_INTERNAL_COLS = frozenset({"_ingested_at", "_ingested_date"})
+
+
+def _resolve_strategic_data_source(cfg: dict[str, Any] | None) -> str:
+    """大战报数据源：strategic_report.data_source > analysis_data_source > duckdb（默认）。"""
+    c = cfg or {}
+    sr = c.get("strategic_report") or {}
+    src = (sr.get("data_source") or c.get("analysis_data_source") or "duckdb").strip().lower()
+    if src in ("duckdb", "db", "bi.duckdb"):
+        return "duckdb"
+    if src in ("lark", "bitable"):
+        return "lark"
+    return "raw"
+
+
+def _duckdb_conn_query_rows(slug: str, date_from: str | None = None, date_to: str | None = None) -> list[dict[str, Any]]:
+    """从 bi.duckdb 查询 slug 表，返回行 dict 列表。"""
+    try:
+        from l3_node.primitives.mcp.mcp_tools.bi.data_store import _get_conn
+        from l3_node.primitives.skills.bi.bi_daily_report.main_skill import _query_table
+
+        conn = _get_conn()
+        try:
+            return _query_table(conn, slug, date_from=date_from, date_to=date_to)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("[Strategic] DuckDB 查询 %s 失败: %s", slug, e)
+        return []
+
+
+def _max_business_date_in_duckdb_slug(slug: str) -> str | None:
+    """取 slug 表业务日期列的最大 ISO 日期。"""
+    from l3_node.primitives.skills.bi.bi_daily_report.main_skill import (
+        _norm_strategic_csv_date,
+        _strategic_pick_date_column,
+    )
+
+    rows = _duckdb_conn_query_rows(slug)
+    if not rows:
+        return None
+    dc = _strategic_pick_date_column([k for k in rows[0].keys() if k not in _DUCKDB_INTERNAL_COLS])
+    if not dc:
+        return None
+    dates = [_norm_strategic_csv_date(r.get(dc)) for r in rows]
+    dates = [d for d in dates if d]
+    return max(dates) if dates else None
+
+
+def _detect_report_date_from_duckdb() -> tuple[str, str]:
+    """从 DuckDB 推断最新完整业务日 T。返回 (YYYY-MM-DD, MM/DD)。"""
+    priority = (
+        "daily_ops_summary",
+        "stats_user_dau",
+        "stats_user_new",
+        "prod_sales",
+        "stats_recharge",
+        "stats_retention_user",
+        "daily_acquisition",
+    )
+    latest: str | None = None
+    for slug in priority:
+        d = _max_business_date_in_duckdb_slug(slug)
+        if d and (latest is None or d > latest):
+            latest = d
+    if not latest:
+        for slug in STRATEGIC_DUCKDB_SLUGS:
+            if slug in priority:
+                continue
+            d = _max_business_date_in_duckdb_slug(slug)
+            if d and (latest is None or d > latest):
+                latest = d
+    if latest:
+        try:
+            y, m, d = latest.split("-")
+            return (latest, f"{int(m):02d}/{int(d):02d}")
+        except ValueError:
+            pass
+    fallback = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return (fallback, (datetime.now() - timedelta(days=1)).strftime("%m/%d"))
+
+
+def _format_duckdb_rows_preview(slug: str, rows: list[dict[str, Any]], *, max_rows: int = 12) -> list[str]:
+    """将 DuckDB 行格式化为 LLM 可读摘要行。"""
+    if not rows:
+        return []
+    lines = [f"### DuckDB `{slug}`（{len(rows)} 行抽样，最多 {max_rows} 行）"]
+    cols = [c for c in rows[0].keys() if c not in _DUCKDB_INTERNAL_COLS]
+    show_cols = cols[:8]
+    for r in rows[:max_rows]:
+        parts = [f"{k}: {str(r.get(k, ''))[:40]}" for k in show_cols]
+        lines.append("  - " + " | ".join(parts))
+    if len(rows) > max_rows:
+        lines.append(f"  - …（另有 {len(rows) - max_rows} 行未展示）")
+    return lines
+
+
+def _load_duckdb_strategic_summary(
+    t1_iso: str | None = None,
+    *,
+    lookback_days: int = 21,
+) -> str:
+    """从 bi.duckdb 各 slug 表加载战略分析摘要（完整 SPA 入库数据，非提纯 CSV）。"""
+    try:
+        from l3_node.primitives.mcp.mcp_tools.bi.paths import get_bi_duckdb_path
+    except ImportError:
+        get_bi_duckdb_path = lambda: Path.home() / ".jachin" / "client_volumes" / "bi_data" / "duckdb" / "bi.duckdb"  # noqa: E731
+
+    db_path = get_bi_duckdb_path()
+    lines: list[str] = [
+        _RAW_STRATEGIC_PREAMBLE.rstrip(),
+        "",
+        f"**数据源**：DuckDB `{db_path}`（SPA 抓取全量入库，非 output 提纯 CSV）",
+        "",
+    ]
+    if t1_iso:
+        try:
+            t0 = datetime.strptime(t1_iso[:10], "%Y-%m-%d")
+            date_from = (t0 - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            date_to = t1_iso[:10]
+        except ValueError:
+            date_from, date_to = None, None
+    else:
+        date_from, date_to = None, None
+
+    any_data = False
+    for slug in STRATEGIC_DUCKDB_SLUGS:
+        rows = _duckdb_conn_query_rows(slug, date_from=date_from, date_to=date_to)
+        if not rows and date_from:
+            rows = _duckdb_conn_query_rows(slug)
+        if not rows:
+            continue
+        any_data = True
+        lines.extend(_format_duckdb_rows_preview(slug, rows))
+        lines.append("")
+
+    if not any_data:
+        return f"（DuckDB 无可用表数据：{db_path}）"
+    return "\n".join(lines).strip()
 _STRATEGIC_KEY_FILES = [
     "01_用户活跃_增幅表.csv",
     "02_用户活跃_日期数量表.csv",
@@ -164,6 +322,14 @@ _LEAK_PATTERN_PARTS = (
     r"\*\*\(Data\)",
     r"\*\*\(Metric\)",
     r"\*\*\(KPI\)",
+    r"Wait,",
+    r"re-read carefully",
+    r"Let me re-read",
+    r"checking Input",
+    r"hallucinating",
+    r"正式输出应",
+    r"Correction:",
+    r"Data Correction on",
 )
 _THINKING_LEAK_RE = re.compile("|".join(_LEAK_PATTERN_PARTS), re.IGNORECASE)
 
@@ -179,9 +345,212 @@ _STRATEGIC_SECTION_MARKERS: tuple[str, ...] = (
     "##四、",
     "## 五、",
     "##五、",
-    "## 六、",
-    "##六、",
 )
+
+
+def _count_numbered_sections(text: str) -> int:
+    """统计「一、」～「五、」大节出现数（兼容 ## 前缀）。"""
+    if not text:
+        return 0
+    compact = text.replace(" ", "")
+    n = 0
+    for ch in "一二三四五":
+        if (
+            re.search(rf"(?:^|\n)\s*{ch}、", text)
+            or f"##{ch}、" in compact
+            or f"## {ch}、" in text
+        ):
+            n += 1
+    return n
+
+
+def _structure_failure_reasons(text: str) -> list[str]:
+    """返回结构校验未通过原因（供日志与降级交付）。"""
+    reasons: list[str] = []
+    if not (text or "").strip():
+        return ["empty"]
+    if not _has_opening_section(text):
+        reasons.append("missing_ch1")
+    sec_n = _count_numbered_sections(text)
+    if sec_n < 5:
+        reasons.append(f"sections={sec_n}/5")
+    s5_ok = any(
+        k in text
+        for k in (
+            "增长战略",
+            "战略与决策",
+            "战略决策",
+            "战术清单",
+            "决策方向",
+            "决策优先",
+            "待验证",
+            "🧭",
+            "🔍",
+        )
+    )
+    if not s5_ok:
+        reasons.append("missing_s5_decision_markers")
+    theme_hits = sum(
+        1 for k in ("买量", "漏斗", "生态", "晴雨表", "大盘")
+        if k in text
+    )
+    if theme_hits < 3:
+        reasons.append(f"theme_hits={theme_hits}/3")
+    return reasons
+
+
+def _has_five_panel_structure(text: str) -> bool:
+    """v6 五板块大战报：须含第一～第五大节 + 第五节决策语义。"""
+    return len(_structure_failure_reasons(text)) == 0
+
+# v6 首章标题
+_STRATEGIC_OPENING_SECTION_HINTS: tuple[str, ...] = (
+    "大盘晴雨表",
+    "晴雨表",
+    "今日三句话",
+    "人话摘要",
+    "执行摘要",
+)
+
+
+def _has_opening_section(text: str) -> bool:
+    """大战报是否包含第一章（v6 大盘晴雨表 或兼容旧版首章）。"""
+    if not (text or "").strip():
+        return False
+    compact = text.replace(" ", "")
+    has_ch1 = (
+        "##一、" in compact
+        or "## 一、" in text
+        or bool(re.search(r"(?:^|\n)\s*一、", text))
+    )
+    if not has_ch1:
+        return False
+    if any(h in text for h in _STRATEGIC_OPENING_SECTION_HINTS):
+        return True
+    return len(text) >= 400
+
+
+def _polish_strategic_report_prose(text: str) -> str:
+    """轻量排版：去 ** 加粗与噪声符号，保留 🎯📊💡🚨⚠️ 视觉层级，保证节间空行。"""
+    if not (text or "").strip():
+        return text
+
+    lines_out: list[str] = []
+    prev_blank = False
+
+    for raw_ln in text.splitlines():
+        ln = raw_ln.rstrip()
+
+        if re.fullmatch(r"\s*-{3,}\s*", ln):
+            continue
+
+        if ln.lstrip().startswith(">"):
+            ln = re.sub(r"^\s*>\s*", "", ln)
+
+        hm = re.match(r"^(#{1,6})\s+(.*)$", ln)
+        if hm:
+            title = hm.group(2).strip()
+            title = re.sub(r"\*\*([^*]+)\*\*", r"\1", title)
+            if title in ("人话结论",) or title.startswith("人话结论"):
+                lines_out.append("📊 【结论】：")
+                prev_blank = False
+                continue
+            if "要点" in title:
+                lines_out.append("💡 【要点】：")
+                prev_blank = False
+                continue
+            if not prev_blank and lines_out:
+                lines_out.append("")
+            lines_out.append(title)
+            lines_out.append("")
+            prev_blank = True
+            continue
+
+        if re.match(r"^#{1,6}\s", ln):
+            ln = re.sub(r"^#{1,6}\s+", "", ln)
+
+        ln = re.sub(r"`([^`]+)`", r"\1", ln)
+
+        if re.match(r"^\*\*数据源\*\*", ln) or re.match(r"^数据源[：:]", ln.strip()):
+            continue
+
+        sub = re.match(
+            r"^(人话结论|分析要点(?:（必须覆盖）)?|运营\s*/\s*数值|买量\s*/\s*市场|技术\s*/\s*数仓)\s*$",
+            ln.strip(),
+        )
+        if sub:
+            label = sub.group(1)
+            if "结论" in label:
+                ln = "📊 【结论】："
+            elif "要点" in label:
+                ln = "💡 【要点】："
+            else:
+                continue
+
+        if re.match(r"^定调[：:]", ln.strip()) and "🎯" not in ln:
+            ln = re.sub(r"^定调[：:]\s*", "🎯 【定调】：", ln.strip())
+        elif re.match(r"^结论[：:]", ln.strip()) and "📊" not in ln:
+            ln = re.sub(r"^结论[：:]\s*", "📊 【结论】：", ln.strip())
+        elif re.match(r"^要点[：:]", ln.strip()) and "💡" not in ln:
+            ln = re.sub(r"^要点[：:]\s*", "💡 【要点】：", ln.strip())
+
+        if re.match(r"^\[(?:紧急|重要)\]\s*/\s*", ln.strip()):
+            ln = re.sub(
+                r"^\[(紧急|重要)\]\s*/\s*\[([^\]]+)\]\s*([^/\n]+?)(?:\s*/\s*([^/\n]+))?\s*$",
+                r"【\1·\2·\3】",
+                ln.strip(),
+            )
+
+        if re.match(r"^【(?:紧急|重要)", ln.strip()) and not re.match(r"^[🚨⚠️🧭🔍🎯📊💡]", ln):
+            # 旧版派活格式：去掉紧急/重要派工前缀，保留正文供人工阅读（规范已禁止新生成）
+            ln = re.sub(r"^【(?:紧急|重要)[^】]*】\s*", "", ln.strip())
+
+        if re.match(r"^[一二三四五]、", ln.strip()):
+            if not prev_blank and lines_out:
+                lines_out.append("")
+            lines_out.append(ln.strip())
+            lines_out.append("")
+            prev_blank = True
+            continue
+
+        if not ln.strip():
+            if not prev_blank:
+                lines_out.append("")
+                prev_blank = True
+            continue
+
+        ln = re.sub(r"\*\*([^*]+)\*\*", r"\1", ln)
+        lines_out.append(ln)
+        prev_blank = False
+
+    result = re.sub(r"\n{3,}", "\n\n", "\n".join(lines_out)).strip()
+    return result
+
+
+def _deliver_strategic_report(text: str) -> str:
+    """泄漏截断 → 结构校验 → 排版抛光；结构软失败时仍交付正文并打日志。"""
+    text = _ensure_deliverable_strategic_report(text)
+    reasons = _structure_failure_reasons(text)
+    if reasons:
+        sec_n = _count_numbered_sections(text)
+        # 五节齐全且篇幅足够：视为 LLM 标题措辞偏差，降级交付而非整篇丢弃
+        if sec_n >= 5 and len(text) >= 800:
+            logger.warning(
+                "[Strategic] 结构校验软失败（%s），五节齐全且 %d 字符，仍交付",
+                ",".join(reasons),
+                len(text),
+            )
+        else:
+            logger.warning(
+                "[Strategic] 结构校验硬失败（%s），拒绝原样发送",
+                ",".join(reasons),
+            )
+            return (
+                "BI 战略分析（结构异常）\n\n"
+                f"模型输出未通过结构校验（{', '.join(reasons)}），已拒绝原样发送。"
+                "请重跑 Step 3.5 或检查 LLM 配置。"
+            )
+    return _polish_strategic_report_prose(text)
 
 
 def _detect_table_spam_anomaly(text: str) -> bool:
@@ -553,12 +922,17 @@ def _finalize_strategic_report_output(raw: str) -> tuple[str, bool]:
 
 
 def _pick_best_strategic_candidate(candidates: list[tuple[str, bool, str]]) -> tuple[str, bool]:
-    """从多轮 LLM 结果中选最优：优先无污染且足够长。"""
+    """从多轮 LLM 结果中选最优：优先无污染且结构合格，其次无污染且足够长。"""
     valid = [(t.strip(), c, label) for t, c, label in candidates if (t or "").strip()]
     if not valid:
         return "", True
     clean = [(t, label) for t, c, label in valid if not c]
     if clean:
+        struct_ok = [(t, label) for t, label in clean if _has_five_panel_structure(t)]
+        if struct_ok:
+            t, label = max(struct_ok, key=lambda x: len(x[0]))
+            logger.info("[Strategic] 选用 %s 模型输出（无泄漏+结构合格，%d 字符）", label, len(t))
+            return t, False
         t, label = max(clean, key=lambda x: len(x[0]))
         logger.info("[Strategic] 选用 %s 模型输出（无泄漏，%d 字符）", label, len(t))
         return t, False
@@ -629,21 +1003,11 @@ def _to_json_serializable(obj: Any) -> Any:
     return obj
 
 # 未找到 STRATEGIC_REPORT_ANALYSIS_SPEC.md 时的兜底（保持可运行）
-_STRATEGIC_ANALYSIS_SPEC_FALLBACK = """# BI 战略战报（兜底规范）
+_STRATEGIC_ANALYSIS_SPEC_FALLBACK = """# BI 增长战报（兜底 v6.3）
 
-未加载到 `docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md`。请按 User 中 bi_project + T vs T-1 + JSON/CSV 输出 **长文 Markdown**（勿单一归因），须含：
-
-# 标题（含数据日）
-## 一、执行摘要（须含：菲律宾发薪窗与 Petsa de Peligro 判断；IAP 弱时追问 IAA 兜底；付费跌+RTP/产销异常时提死亡螺旋假设）
-## 二、红榜与黑榜（各 2 项；黑榜成对串联相关异动）
-## 三、分维度数据解读
-## 四、重点异动归因树（≤5 条；含「网赚双轨与死亡螺旋」段；无 IAA 数据须写明强需求）
-## 五、跨部门行动清单
-## 六、待澄清（首条优先：补 IAA/激励视频/eCPM 等）
-
-建议总篇幅约 1200～3500 汉字。禁止编造；缺数据写「未提供」。
-
-**数值**：`stats_user_dau` 金币列换算「亿」时 1 亿=10⁸（例 53,179,122≈0.53 亿）；`prod_sales` 用户列与机器人列分述；`daily_acquisition` 按单链接口径；T+1 留存 NaN 优先写未闭合/ETL。"""
+五节：晴雨表→买量→漏斗→生态→增长战略与决策。
+第一～四节：🎯📊💡；第五节：战略选项+🧭优先序+🔍待验证，面向 DAU 增长，禁止派活/人名/deadline。
+第三节 IAA 缺数须盲区疾呼。"""
 
 
 def _load_strategic_analysis_spec(project_root: Path | None = None) -> str:
@@ -948,12 +1312,65 @@ _USER_PROMPT_TEMPLATE = """## K11 / BI 项目背景知识（docs/bi_daily_report
 {metrics_json}
 ```
 
-## 多维表 / CSV 数据摘要（与上表互补）
+## 多维表 / DuckDB / CSV 数据摘要（与上表互补）
 {csv_summary_section}
 
-请**先**结合「背景知识」与「T vs T-1 摘要」理解异动，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v4 交付形态**（长文 Markdown：执行摘要、红黑榜、分维度解读、归因树、行动清单、待澄清；**不要**再用固定 🚨/⚡/🩸 三段子作为主结构）。**若 System 含「战报输出美学」追加节，排版（引用块摘要、涨跌符号与颜色、维度 emoji、`---` 分隔、行动项标签、表名行内代码）必须一并遵守。** 日期用 {report_date_mmdd}（数据所属日）。篇幅以说清为准（建议约 1200～3500 汉字）。
+## IAA 数据自检（系统预判 · 须服从）
+{iaa_self_check_section}
 
-**禁止**在正文输出思考过程、自我修正说明、「正式输出段落」「修正后」等元注释或占位符；**直接**输出可交付的最终战报 Markdown。"""
+请**先**结合「背景知识」与「T vs T-1 摘要」，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v6.3**：
+
+- **北极星**：盈利期 · 真实 DAU/DNU 增长（可持续，非虚胖一次性数字）  
+- **结构（五节）**：① 大盘晴雨表 → ② 买量复盘 → ③ 漏斗解剖（最厚）→ ④ 生态留客 → ⑤ **增长战略与决策**（最厚，与③相当）  
+- **第一～四节**：🎯【定调】📊【结论】💡【要点】；禁止 ** 加粗  
+- **第五节（决策层，不是派工单）**：🎯📊💡【战略选项】🧭【优先序】🔍【待验证】；写战略选项、利弊、对 DAU 的影响；**禁止**人名、deadline、派活式指令  
+- **IAA 缺数**：第三节盲区疾呼；第五节 🔍【待验证】说明哪些决策无法拍板  
+
+日期用 {report_date_mmdd}。建议 1200～2500 汉字。禁止思考链、占位符；直接输出正文。"""
+
+
+_IAA_FIELD_RE = re.compile(
+    r"IAA|eCPM|ecpm|激励视频|广告观看|广告完播|InAppAdvertisement|iaa_",
+    re.IGNORECASE,
+)
+_IAA_NUMERIC_NEAR_RE = re.compile(
+    r"(?:IAA|eCPM|激励视频|广告观看).{0,100}?\d[\d.,%]*|\d[\d.,%]*.{0,100}?(?:IAA|eCPM|激励视频)",
+    re.IGNORECASE,
+)
+
+
+def _iaa_data_likely_available(
+    metrics: dict[str, Any] | None,
+    data_summary: str,
+    dod_summary: str,
+) -> bool:
+    """输入侧是否含 IAA/eCPM 等可分析数值（非 bi_project 概念性提及）。"""
+    metrics_blob = json.dumps(
+        _to_json_serializable(metrics or {}),
+        ensure_ascii=False,
+    )
+    blob = metrics_blob + "\n" + (data_summary or "") + "\n" + (dod_summary or "")
+    if not _IAA_FIELD_RE.search(blob):
+        return False
+    return bool(_IAA_NUMERIC_NEAR_RE.search(blob))
+
+
+def _build_iaa_self_check_section(
+    metrics: dict[str, Any] | None,
+    data_summary: str,
+    dod_summary: str,
+) -> str:
+    if _iaa_data_likely_available(metrics, data_summary, dod_summary):
+        return (
+            "**判定：已检测到 IAA / eCPM / 激励视频相关数值字段** → 第三板块可正常分析广告承接与 ROI 兜底；"
+            "不必机械重复「盲区」套话，但仍须点明 IAA 与 IAP 谁主承接。"
+        )
+    return (
+        "**判定：输入中未检测到 IAA（激励视频）观看、eCPM、完播率等有效数值**（当前 DuckDB 常规 slug 通常不含此项）。\n"
+        "→ 第三板块「漏斗解剖」**必须**单独设 **IAA 致命盲区** 要点，大声疾呼："
+        "「连用户有没有看广告都不知道！在 IAP 几乎不起量的情况下，无法计算 ROI 兜底，这是极度危险的盲区！」\n"
+        "→ 第五板块「增长战略与决策」须在 🔍【待验证】中说明：缺 IAA/次留等数据时，**哪些面向 DAU 的战略选项无法拍板**（写决策盲区，不写数仓工单）。"
+    )
 
 
 def _lark_bitable_list_params(
@@ -1212,6 +1629,7 @@ def _build_user_prompt(
     dod_sec = (dod_summary or "").strip() or "（未生成 T/T-1 对照摘要，仅依据下列 JSON 与摘要）"
     dt1 = (dod_t1 or "").strip() or report_date_mmdd
     dt2 = (dod_t2 or "").strip() or "T-1"
+    iaa_sec = _build_iaa_self_check_section(metrics, data_section, dod_sec)
     return _USER_PROMPT_TEMPLATE.format(
         k11_context_section=k11_sec,
         dod_summary_section=dod_sec,
@@ -1219,6 +1637,7 @@ def _build_user_prompt(
         dod_t2=dt2,
         metrics_json=metrics_json,
         csv_summary_section=data_section,
+        iaa_self_check_section=iaa_sec,
         report_date_mmdd=report_date_mmdd,
     )
 
@@ -1244,22 +1663,29 @@ async def generate_bi_strategic_report_async(
     if not sr_cfg.get("enabled", True):
         return "战略分析已关闭 (strategic_report.enabled=false)"
 
-    # 数据日期：raw 模式从 raw CSV 推断；lark 模式不读本地 raw，默认昨日
+    # 数据日期与摘要：duckdb（默认）| raw CSV | lark 多维表
     date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     data_summary = ""
     report_date_mmdd = ""
-    analysis_src = (cfg.get("analysis_data_source") or "raw").strip().lower()
+    analysis_src = _resolve_strategic_data_source(cfg)
     raw_dir: Path | None = None
-    if analysis_src == "raw":
+
+    if analysis_src == "duckdb":
+        report_date_iso, report_date_mmdd = _detect_report_date_from_duckdb()
+        date_str = report_date_iso
+        data_summary = _load_duckdb_strategic_summary(date_str)
+        if "无可用表数据" not in data_summary:
+            logger.info("[Strategic] 使用 DuckDB 数据源，数据日期 %s", report_date_mmdd)
+    elif analysis_src == "raw":
         raw_dir_cfg = (cfg.get("storage") or {}).get("analysis_raw_dir") or ""
         raw_dir = Path(raw_dir_cfg) if raw_dir_cfg and str(raw_dir_cfg).strip() else _get_bi_raw_dir()
         raw_dir = raw_dir.expanduser().resolve()
-    if analysis_src == "raw" and raw_dir and raw_dir.exists():
-        data_summary = _load_raw_strategic_summary(raw_dir)
-        if data_summary not in ("（无 raw 目录）", "（无 raw 数据）"):
-            report_date_iso, report_date_mmdd = _detect_report_date_from_raw(raw_dir)
-            date_str = report_date_iso
-            logger.info("[Strategic] 使用 raw 目录 CSV 数据，数据日期 %s", report_date_mmdd)
+        if raw_dir.exists():
+            data_summary = _load_raw_strategic_summary(raw_dir)
+            if data_summary not in ("（无 raw 目录）", "（无 raw 数据）"):
+                report_date_iso, report_date_mmdd = _detect_report_date_from_raw(raw_dir)
+                date_str = report_date_iso
+                logger.info("[Strategic] 使用 raw 目录 CSV 数据，数据日期 %s", report_date_mmdd)
     if metrics is None:
         try:
             from l3_node.primitives.mcp.mcp_tools.bi.metrics.engine import run as run_metrics
@@ -1275,17 +1701,23 @@ async def generate_bi_strategic_report_async(
             logger.warning("[Strategic] 拉取指标失败: %s", e)
             metrics = {"_metrics_error": str(e)}
 
-    if not data_summary and analysis_src != "raw":
+    if not data_summary and analysis_src == "lark":
         lark_cfg = cfg.get("lark_bitable") or {}
         if lark_cfg.get("enabled", True) and lark_cfg.get("app_token"):
             lark_summary = _fetch_lark_strategic_summary(lark_cfg)
             if lark_summary not in ("（无数据）", "（无配置）"):
                 data_summary = lark_summary
                 logger.info("[Strategic] 使用 Lark 多维表数据")
+    if not data_summary and analysis_src == "duckdb":
+        data_summary = _load_duckdb_strategic_summary(date_str)
     if not data_summary and output_dir:
         data_summary = _load_csv_summary(Path(output_dir))
+        logger.info("[Strategic] 回退 output CSV 摘要")
     if not report_date_mmdd:
-        if analysis_src == "raw":
+        if analysis_src == "duckdb":
+            report_date_iso, report_date_mmdd = _detect_report_date_from_duckdb()
+            date_str = report_date_iso
+        elif analysis_src == "raw":
             detect_dir = raw_dir if (raw_dir and raw_dir.exists()) else _get_bi_raw_dir()
             if detect_dir and detect_dir.exists():
                 report_date_iso, report_date_mmdd = _detect_report_date_from_raw(detect_dir)
@@ -1337,10 +1769,15 @@ async def generate_bi_strategic_report_async(
     sys_prompt = (
         sys_prompt.rstrip()
         + "\n\n---\n\n## （硬性）输出纪律\n\n"
-        "只输出可直接发送的 Markdown 正文。**禁止**输出思考过程、自我修正、占位符、"
-        "「(截断)/(续)/(完整)/(最终)」等标记、英文 Self-Correction/Ready to Output 注释、"
+        "只输出可直接发送的正文（轻 Markdown / plain prose）。**禁止**输出思考过程、自我修正、占位符、"
+        "「(截断)/(续)/(完整)/(最终)」等标记、英文 Self-Correction/Ready to Output/Wait 注释、"
         "或 pipe 滥用的空表格；**禁止**复读 `DNU=`, `DNU=),` 空占位或「D NU/D AU比例异常高」同句循环。"
-        "渠道占比写一次具体数字即可，缺数写「未提供」。第六节表格须列数正常（通常 4～5 列）；写不完时用「未提供」短句，勿续写元评论。"
+        "渠道占比写一次具体数字即可，缺数写「未提供」。"
+        "**禁止** v4/v5 旧结构；必须按 v6.3 五板块输出。"
+        "第一～四节：🎯📊💡 诊断；第五节：增长战略与决策（🎯📊💡🧭🔍），面向盈利期 DAU 北极星。"
+        "第五节是战略备忘录：**禁止**点名负责人、禁止 deadline、禁止派工单（🚨【紧急·某某】）；须写选项/利弊/优先序。"
+        "第三板块最具体；无 IAA 时第三节疾呼 + 第五节 🔍待验证。"
+        "保留 emoji 标签；正文禁止 ** 加粗、###、---、引用块、反引号表名。"
     )
 
     engine = None
@@ -1420,9 +1857,9 @@ async def generate_bi_strategic_report_async(
         if flash_eng:
             logger.info("[Strategic] 主路径：qwen3.5-flash（enable_thinking=False）")
             flash_text, flash_bad, _ = await _try_once(flash_eng, "flash", 8192)
-            if flash_text and not flash_bad and len(flash_text) >= 600 and "## 一、执行摘要" in flash_text:
+            if flash_text and not flash_bad and len(flash_text) >= 400 and _has_five_panel_structure(flash_text):
                 logger.info("[Strategic] flash 首轮通过终检（%d 字符），跳过 plus", len(flash_text))
-                return _ensure_deliverable_strategic_report(flash_text)
+                return _deliver_strategic_report(flash_text)
             if flash_text:
                 candidates.append((flash_text, flash_bad, "flash"))
 
@@ -1441,14 +1878,7 @@ async def generate_bi_strategic_report_async(
         if not (text or "").strip():
             return "LLM 返回空内容"
 
-        text = _ensure_deliverable_strategic_report(text)
-
-        if "## 一、执行摘要" not in text and "## 一、执行摘要" not in text.replace(" ", ""):
-            return (
-                "# 📊 BI 战略分析（结构异常）\n\n"
-                "模型输出缺少「执行摘要」章节，已拒绝原样发送。请重跑 Step 3.5 或检查 LLM 配置。"
-            )
-        return text
+        return _deliver_strategic_report(text)
     except Exception as e:
         logger.exception("[Strategic] LLM 调用失败: %s", e)
         return f"""# 📊 BI 战略分析（生成失败）

@@ -16,6 +16,8 @@ PMO-Copilot：CLI「一句话点火」—— 进程内拉起 L3 LiteLLM 引擎�
   python scripts/run_pmo_copilot_skill.py
   python scripts/run_pmo_copilot_skill.py -m "执行分支 A：定时宏观看板……"
   python scripts/run_pmo_copilot_skill.py --analysis-only
+  python scripts/run_pmo_copilot_skill.py --analysis-only --multi-agent
+  python scripts/run_pmo_copilot_skill.py --analysis-only --single-agent
 
 每次运行会在 ``%USERPROFILE%\\.jachin\\jachin_debug\\健康skill\\``
 新建 **独立** 文件 ``pmo_copilot_YYYYMMDD_HHMMSS_mmm_xxxxxxxx.txt``（毫秒 + 短 UUID，不覆盖同名旧文件），
@@ -211,7 +213,9 @@ async def _async_main(args: argparse.Namespace) -> int:
         user_msg = (args.message or "").strip() or DEFAULT_MESSAGE
 
     if args.analysis_only:
-        print(f"[pmo-copilot] 模式: 仅分析（db_query）· DB: {db_path}", flush=True)
+        print(f"[pmo-copilot] 模式: 仅分析 · DB: {db_path}", flush=True)
+        if not getattr(args, "single_agent", False):
+            print("[pmo-copilot] 编排: 多 Agent 方案 B（--single-agent 回退单 Agent）", flush=True)
     elif getattr(args, "init", False):
         print("[pmo-copilot] 模式: INIT（拉表 + mirror_import）", flush=True)
 
@@ -230,6 +234,15 @@ async def _async_main(args: argparse.Namespace) -> int:
     os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = str(_debug_path.resolve())
 
     try:
+        if getattr(args, "analysis_only", False) and not getattr(args, "single_agent", False):
+            return await _async_main_multi_agent(
+                args,
+                _debug_path,
+                base_allow,
+                skill_path,
+                meta,
+                skill_body,
+            )
         return await _async_main_inner(
             args,
             user_msg,
@@ -386,6 +399,151 @@ async def _async_main_inner(
     return 0
 
 
+async def _async_main_multi_agent(
+    args: argparse.Namespace,
+    _debug_path: Path,
+    base_allow: list[str],
+    skill_path: Path,
+    meta: dict[str, Any],
+    skill_body: str,
+) -> int:
+    """方案 B：FanOut 捞数 → Pipeline 审计 → run_agent 排版双群推送。"""
+    from l3_node.intent_gateway.bundle import build_gateway_bundle
+    from l3_node.primitives.tools.tool_pool import (
+        assemble_tool_pool,
+        expand_allowed_skills_with_implicit_sqlite_read,
+        expand_allowed_skills_with_local_mcp,
+    )
+    from l3_node.pmo_copilot_debug_file import (
+        append_pmo_debug_status,
+        finalize_pmo_debug_log,
+        init_pmo_debug_session,
+        sync_pmo_debug_max_iterations,
+    )
+    from l3_node.pmo_multi_agent_orchestrator import (
+        build_pmo_multi_agent_implicit_attribution,
+        build_publisher_user_message,
+        run_pmo_multi_agent_workflow,
+    )
+
+    correlation_id = str(uuid.uuid4())
+    mi_phase3 = max(8, min(int(args.max_iterations), 24))
+    sync_pmo_debug_max_iterations(mi_phase3)
+    init_pmo_debug_session(
+        log_path=_debug_path,
+        user_message="[multi-agent] FanOut → Audit → Publish",
+        correlation_id=correlation_id,
+        max_iterations=mi_phase3,
+        mode_hint="multi-agent",
+    )
+
+    print("[pmo-copilot] 模式: 多 Agent 方案 B（FanOut → Audit → Publish）", flush=True)
+
+    allowlist_diag_source = list(base_allow)
+    allow_lower = {t.lower() for t in base_allow}
+    if "core:db_query" not in allow_lower:
+        allowlist_diag_source.append("core:db_query")
+
+    log = logging.getLogger("run_pmo_copilot_skill")
+
+    try:
+        from l3_node.__main__ import _create_engine_standalone
+
+        engine = _create_engine_standalone()
+    except Exception as e:
+        print(f"[pmo-copilot] 引擎初始化失败: {e}", file=sys.stderr)
+        return 2
+
+    def _on_status(msg: str) -> None:
+        append_pmo_debug_status(msg)
+        print(f"[pmo-copilot] {msg}", flush=True)
+
+    workflow = await run_pmo_multi_agent_workflow(
+        engine,
+        parent_allowed_skills=allowlist_diag_source,
+        on_status=_on_status,
+    )
+
+    if workflow.status == "failed":
+        finalize_pmo_debug_log(workflow.format_summary())
+        print(f"\n[pmo-copilot] 多 Agent 失败: {workflow.errors}", file=sys.stderr)
+        return 1
+
+    publisher_msg = build_publisher_user_message(workflow)
+    implicit = build_pmo_multi_agent_implicit_attribution()
+    implicit["source"] = "run_pmo_copilot_skill.py"
+
+    bundle = build_gateway_bundle(
+        user_input=publisher_msg,
+        short_memory_context="",
+        correlation_id=correlation_id,
+        implicit_attribution=implicit,
+    )
+
+    expanded = expand_allowed_skills_with_implicit_sqlite_read(list(base_allow))
+    expanded = expand_allowed_skills_with_local_mcp(expanded)
+    publisher_allow = [t for t in expanded if "atom_lark_notifier" in t.lower()]
+    if not publisher_allow:
+        publisher_allow = [t for t in base_allow if "lark" in t.lower() or "notifier" in t.lower()]
+    if not publisher_allow:
+        print("[pmo-copilot] 未找到 mcp:atom_lark_notifier，无法阶段三推送", file=sys.stderr)
+        return 2
+
+    tools = await assemble_tool_pool(
+        allowed_skills=publisher_allow,
+        gateway_bundle=bundle,
+        logger=log,
+        allowlist_diag_source=publisher_allow,
+    )
+
+    gateway_block = build_gateway_skill_inject(skill_path, meta, skill_body)
+    publisher_inject = (
+        gateway_block
+        + "\n\n### 多 Agent 阶段三（Publisher）\n"
+        "⛔ 禁止 core:db_query。仅 mcp:atom_lark_notifier。\n"
+        "须将三表 GFM **全文** 写入 markdown_content；双群推送 native_table_card:true。\n"
+    )
+
+    from l3_node.agent_core import _build_system_prompt, run_agent
+    from l3_node.routing.output_format_signals import analyze_output_format_signals
+
+    fmt_sig = analyze_output_format_signals(publisher_msg)
+    full_system = await _build_system_prompt(
+        tools=tools,
+        allow_delegate=False,
+        prompt_cycle=None,
+        recruitment_longform=False,
+        hr_domain_prompt_active=False,
+        prompt_style="slim_user_led" if fmt_sig.slim_system_prompt() else "full",
+        pure_json_contract=False,
+        gateway_inject=publisher_inject,
+        safety_lock_user_text=publisher_msg,
+        chief_advisor_mode=False,
+        environment_report_block="",
+        semantic_layer=None,
+        experience_few_shots="",
+        realtime_web_grounding_block="",
+        domain_experts=None,
+    )
+
+    _on_status("阶段三：Publisher 排版发报（仅 Lark）…")
+    _pmo_step = _make_pmo_on_step_writer(_debug_path)
+    ans = await run_agent(
+        publisher_msg,
+        engine,
+        max_iterations=mi_phase3,
+        _allowed_skills_override=publisher_allow,
+        _system_prompt_override=full_system,
+        gateway_context_bundle=bundle,
+        implicit_attribution=implicit,
+        on_step=_pmo_step,
+    )
+    finalize_pmo_debug_log(ans or workflow.format_summary())
+    print("\n--- Final Answer ---\n", (ans or "").strip())
+    await asyncio.sleep(0.5)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="PMO-Copilot：Skill YAML 驱动白名单；SKILL 注入 system，不长驻 user 消息")
     ap.add_argument("--skill", default=str(DEFAULT_SKILL), help="SKILL.md 路径")
@@ -393,7 +551,18 @@ def main() -> int:
     ap.add_argument(
         "--analysis-only",
         action="store_true",
-        help="跳过拉表/入库；基于 pmo_raw_records 仅 db_query 分析并推送",
+        help="跳过拉表/入库；基于 pmo_raw_records 分析并推送",
+    )
+    ap.add_argument(
+        "--multi-agent",
+        action="store_true",
+        default=False,
+        help="与 --analysis-only 联用：FanOut→Audit→Publish 三阶段多 Agent（默认在 analysis-only 时开启）",
+    )
+    ap.add_argument(
+        "--single-agent",
+        action="store_true",
+        help="与 --analysis-only 联用：回退单 Agent 32 轮 ReAct（禁用多 Agent）",
     )
     ap.add_argument(
         "--init",
