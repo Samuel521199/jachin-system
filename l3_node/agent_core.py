@@ -230,11 +230,11 @@ def _llm_token_budget_for_run(delegate_depth: int) -> int | None:
         key = "sub_agent_max_total_tokens" if delegate_depth > 0 else "main_max_total_tokens"
         v = ag.get(key)
         if v is None:
-            return 120_000 if delegate_depth > 0 else None
+            return 190_000 if delegate_depth > 0 else None
         vi = int(v)
         return None if vi <= 0 else vi
     except Exception:
-        return 120_000 if delegate_depth > 0 else None
+        return 190_000 if delegate_depth > 0 else None
 
 
 # ReAct：一旦发生 workspace 写改，后续 LLM 轮次改用编码模型（与主推理共用 Key）
@@ -1082,23 +1082,36 @@ def _pmo_markdown_section_has_gfm_table(mc: str, section_keywords: tuple[str, ..
 
 def _pmo_branch_a_notifier_markdown_is_complete(inp: str) -> bool:
     """分支 A 的 notifier markdown_content 必须含三张核心表，否则视为残卡，不标记成功。"""
+    from l3_node.pmo_report_format import pmo_demand_table_column_issues
+
     mc = _pmo_markdown_extract_content(inp)
     if not mc:
         return False
-    return (
+    if not (
         _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_DEMAND)
         and _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_PEOPLE)
         and _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_VERSION)
-    )
+    ):
+        return False
+    return not pmo_demand_table_column_issues(mc, _PMO_MD_SECTION_DEMAND)
 
 
 def _pmo_notifier_markdown_missing_sections(inp: str) -> list[str]:
+    from l3_node.pmo_report_format import pmo_demand_table_column_issues
+
     mc = _pmo_markdown_extract_content(inp)
     missing: list[str] = []
     if not any(k in mc for k in _PMO_MD_SECTION_DEMAND):
         missing.append("📊 需求进度全览")
     elif not _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_DEMAND):
         missing.append("📊 需求进度全览（须有 GFM 表格 |）")
+    else:
+        col_issues = pmo_demand_table_column_issues(mc, _PMO_MD_SECTION_DEMAND)
+        if col_issues:
+            missing.append(
+                "📊 需求进度全览（列须且仅为：需求名称|时间跨度|参与人|完成度|状态；"
+                f"当前问题：{'；'.join(col_issues)}）"
+            )
     if not any(k in mc for k in _PMO_MD_SECTION_PEOPLE):
         missing.append("👥 人员任务矩阵")
     elif not _pmo_markdown_section_has_gfm_table(mc, _PMO_MD_SECTION_PEOPLE):
@@ -1116,10 +1129,10 @@ def _pmo_notifier_markdown_section_format_examples(missing: list[str]) -> str:
     for item in missing:
         if "需求进度" in item or "📊" in item:
             examples.append(
-                "📊 最简示例：\n"
+                "📊 最简示例（仅 5 列，禁止优先级/风险说明/单独进度条列）：\n"
                 "| 需求名称 | 时间跨度 | 参与人 | 完成度 | 状态 |\n"
                 "| --- | --- | --- | --- | --- |\n"
-                "| Epic 示例 | 05/01→05/25 | Ethan | [▓▓░░] 20% | 🔵 进行中 |"
+                "| Epic 示例 | 05/18→05/25 | Ethan; Celine | [▓▓░░░░░░░░] 20% | 🔵 进行中 |"
             )
         elif "人员" in item or "👥" in item:
             examples.append(
@@ -1140,12 +1153,11 @@ def _pmo_notifier_markdown_section_format_examples(missing: list[str]) -> str:
 
 def _pmo_extract_sql_from_tool_inp(inp: str) -> str:
     try:
-        args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
-        if isinstance(args, dict):
-            return str(args.get("sql") or "")
+        from l3_node.tools.pmo_db_tools import parse_db_query_action_input
+
+        return str(parse_db_query_action_input(inp).get("sql") or "")
     except Exception:
-        pass
-    return str(inp or "")
+        return str(inp or "")
 
 
 def _pmo_sql_is_step1_map(sql: str) -> bool:
@@ -1692,8 +1704,51 @@ def _pmo_default_lark_card_title() -> str:
     return f"【K11 · PMO 宏观看板】{datetime.now():%Y-%m-%d}"
 
 
+def _pmo_resolve_primary_chat_id() -> str:
+    import os
+
+    cid = (os.environ.get("PMO_PRIMARY_CHAT_ID") or "").strip()
+    if cid:
+        return cid
+    return PMO_BRANCH_A_PRIMARY_CHAT_ID
+
+
+def _pmo_fixup_atom_lark_notifier_inp(inp: str) -> str:
+    """
+    PMO 推送：禁止无效 webhook（含把 oc_ chat_id 填进 webhook_url）；
+    缺 chat_id 时注入主群/监控群；PMO 走 IM API（app_id/secret）。
+    """
+    raw = (inp or "").strip()
+    if not raw.startswith("{"):
+        return inp
+    try:
+        args = json.loads(raw)
+    except json.JSONDecodeError:
+        return inp
+    if not isinstance(args, dict):
+        return inp
+    from l3_node.channels.lark.webhook_url import (
+        is_valid_lark_incoming_webhook_url,
+        looks_like_lark_chat_id,
+    )
+
+    wh = str(args.get("webhook_url") or "").strip()
+    cid = str(args.get("chat_id") or "").strip()
+    if wh and not is_valid_lark_incoming_webhook_url(wh):
+        if looks_like_lark_chat_id(wh) and not cid:
+            cid = wh
+        args.pop("webhook_url", None)
+    elif wh:
+        args["webhook_url"] = wh
+
+    if not cid:
+        cid = _pmo_resolve_primary_chat_id()
+    args["chat_id"] = cid
+    return json.dumps(args, ensure_ascii=False)
+
+
 def _pmo_sanitize_atom_lark_notifier_inp(inp: str) -> str:
-    """修正 atom_lark_notifier 的 title，避免 PMO 误用「综合冒烟」类用语。"""
+    """修正 atom_lark_notifier 的 title / webhook / chat_id（PMO 双群 IM 推送）。"""
     raw = (inp or "").strip()
     if not raw.startswith("{"):
         return inp
@@ -1708,7 +1763,8 @@ def _pmo_sanitize_atom_lark_notifier_inp(inp: str) -> str:
         title = ""
     if _pmo_forbidden_lark_title(title):
         args["title"] = _pmo_default_lark_card_title()
-        return json.dumps(args, ensure_ascii=False)
+        inp = json.dumps(args, ensure_ascii=False)
+    inp = _pmo_fixup_atom_lark_notifier_inp(inp)
     return inp
 
 
@@ -1944,9 +2000,9 @@ def _reject_pmo_false_lark_sent_guard(
             "请立即输出 ReAct（勿写 Final Answer）：\n"
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
-            "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`。\n"
-            "**SKILL §1.3 要求推送两个会话**：先主群（`chat_id` 来自 .env `PMO_PRIMARY_CHAT_ID`，即 notifier 的 `default_chat_id`），\n"
-            "再监控群 `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`，内容相同，各调用一次 notifier。\n"
+            "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`；**禁止** `webhook_url`。\n"
+            "**SKILL §1.3 要求推送两个会话**：先主群 `chat_id` = .env `PMO_PRIMARY_CHAT_ID`（`oc_437c98d11106295fb10751a5481ee465`），\n"
+            "再监控群 `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`，内容相同，各调用一次 notifier（IM API）。\n"
             "（v7 仅分析模式：须 **两次** notifier 均 success 后才可 Final Answer 确认双群送达；单次成功不算完成。）\n"
             "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 Final Answer **如实**写明 error，不得写全部已成功。"
         ),
@@ -2050,6 +2106,55 @@ def _pmo_db_analysis_mode(ctx: PipelineContext) -> bool:
 
 def _pmo_analysis_only_mode(ctx: PipelineContext) -> bool:
     return _pmo_db_analysis_mode(ctx) and bool(ctx.metadata.get("pmo_analysis_only"))
+
+
+def _pmo_init_mode(ctx: PipelineContext) -> bool:
+    return bool(ctx.metadata.get("pmo_init"))
+
+
+def _pmo_blocked_analysis_tools_during_init(tool: str, ctx: PipelineContext) -> str | None:
+    """INIT 模式：仅允许拉表 + mirror_import；禁止 db_query 与分支 A 分析工具。"""
+    if not _pmo_init_mode(ctx):
+        return None
+    canon = _pmo_canonical_tool_id(tool)
+    if canon in ("atom_bi_project_context", "pmo_mirror_import"):
+        return None
+    if canon == "db_query":
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_init_analysis_blocked",
+                "msg": (
+                    "【宿主拦截 · INIT 模式】当前为 **镜像入库**，禁止 core:db_query 交叉分析。"
+                    "请仅调用 core:pmo_mirror_import 完成入库；"
+                    "若 mirror_import 超时，请重试 mirror_import 或使用 "
+                    "`python scripts/run_pmo_copilot_skill.py --init`（确定性零 ReAct 路径）。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    blocked = (
+        "atom_lark_notifier",
+        "fs_read",
+        "read_file",
+        "db_write",
+        "pmo_import_json",
+        "atom_web_scraper",
+        "web_scraper",
+    )
+    if canon in blocked:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "pmo_init_tool_blocked",
+                "msg": (
+                    f"【宿主拦截 · INIT 模式】禁止在入库阶段调用 {tool}。"
+                    "INIT 仅允许 atom_bi_project_context + core:pmo_mirror_import。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return None
 
 
 def _pmo_notifier_chat_id_from_inp(inp: str) -> str:
@@ -2776,7 +2881,8 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
             "【系统校验·PMO】你已执行拉表，但 **宏观看板正文**须通过 **`mcp:atom_lark_notifier`** "
             "发到群内（`markdown_content` + `title` + `chat_id`），**禁止**把完整 §1.4 战报只写在 Final Answer。\n"
             "**分支 A 的 `markdown_content` 必须同时包含三张核心表**（缺一不可）：\n"
-            "① `📊 需求进度全览`（每需求一行，含时间跨度+参与人+10格进度条+%+状态）\n"
+            "① `📊 需求进度全览`（**仅 5 列**：需求名称|时间跨度|参与人|完成度|状态；"
+            "完成度列内写进度条+%；**禁止**优先级/风险说明列）\n"
             "② `👥 人员任务矩阵`（每人一行，含逐条需求明细+优先级+状态预警）\n"
             "③ `📦 版本发布需求映射`（按版本/Sprint归集，含每条需求当前状态）\n"
             "**注意**：分支 D 的精简格式（只含人员矩阵）仅适用于 `resource_monitor` 触发词，**对分支 A 完全无效**。\n"
@@ -5739,9 +5845,16 @@ class SubAgent:
     ) -> str:
         """执行一次思考，将 task 追加到 messages 并运行 Agent，结果写入 messages。"""
         tools = load_tools(allowed_skills=self.allowed_skills)
+        tools_block = build_tools_description(tools)
+        no_tools_clause = ""
+        if not self.allowed_skills:
+            no_tools_clause = (
+                "\n\n⛔ **本角色无任何可用工具**（禁止 db_query / read_file / shell_exec 等一切 Action）。"
+                "请 **直接** 基于下方 user 任务中的结构化数据输出 Final Answer，禁止调用工具。\n"
+            )
         system = f"""{self.system_prompt}
 可用工具：
-{build_tools_description(tools)}
+{tools_block or "（无）"}{no_tools_clause}
 
 输出格式：Thought / Action / Action Input / Observation / Final Answer
 """
@@ -5760,6 +5873,7 @@ class SubAgent:
             _initial_messages=self.messages,
             implicit_attribution={"channel": "delegate_sub_agent", "sub_agent_id": self.sub_agent_id},
             _delegate_depth=delegate_depth,
+            _allowed_skills_override=self.allowed_skills,
         )
         self.messages.append({"role": "user", "content": task})
         self.messages.append({"role": "assistant", "content": result})
@@ -5822,7 +5936,13 @@ def _sanitize_inline_role(
         re.IGNORECASE,
     )
     raw_prefix = str(role_spec.get("system_prefix") or "")
-    system_prefix = _DANGEROUS_PATTERNS.sub("[REDACTED]", raw_prefix)[:1200]
+    prefix_max = role_spec.get("system_prefix_max_chars")
+    try:
+        prefix_limit = int(prefix_max) if prefix_max is not None else 1200
+    except (TypeError, ValueError):
+        prefix_limit = 1200
+    prefix_limit = max(400, min(prefix_limit, 8000))
+    system_prefix = _DANGEROUS_PATTERNS.sub("[REDACTED]", raw_prefix)[:prefix_limit]
 
     # allowed_tools 只能是父级工具子集，且不含 delegate
     raw_tools = role_spec.get("allowed_tools")
@@ -5887,7 +6007,11 @@ async def _run_sub_agent(
             ctx_str = json.dumps(ctx_data, ensure_ascii=False, indent=2)
         else:
             ctx_str = str(ctx_data)
-        task = f"{task}\n\n【上下文数据】\n{ctx_str[:4000]}"
+        ctx_max = int(task_spec.get("context_max_chars") or 4000)
+        if ctx_max > 0:
+            task = f"{task}\n\n【上下文数据】\n{ctx_str[:ctx_max]}"
+        else:
+            task = f"{task}\n\n【上下文数据】\n{ctx_str}"
     result, _ = await _spawn_sub_agent_async(
         role, task, engine,
         delegate_depth=delegate_depth,
@@ -8556,8 +8680,18 @@ async def _run_react_core(
             if _pmo_lark_push_guard_channel_active(ctx):
                 try:
                     _pmo_sync_assembly_phase_from_thought(ctx, response)
+                    _pmo_init_analysis_blk = _pmo_blocked_analysis_tools_during_init(
+                        str(tool or ""), ctx
+                    )
+                    if _pmo_init_analysis_blk:
+                        observation = _pmo_init_analysis_blk
+                        _pmo_skip_tool_invoke = True
+                        logger.info(
+                            "[L3 Agent][PMO] 已拦截 INIT 模式下的分析/非入库工具 tool=%s",
+                            (tool or "")[:80],
+                        )
                     _pmo_init_blk = _pmo_branch_a_blocked_init_tools_during_analysis(str(tool or ""), ctx)
-                    if _pmo_init_blk:
+                    if _pmo_init_blk and observation is None:
                         observation = _pmo_init_blk
                         _pmo_skip_tool_invoke = True
                         logger.info(
@@ -9256,8 +9390,21 @@ async def run_agent(
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
     allowed = _allowed_skills_override if _allowed_skills_override is not None else _get_allowed_skills()
     allowlist_diag_source: list[str] | None = list(allowed) if allowed is not None else None
-    allowed = expand_allowed_skills_with_implicit_sqlite_read(allowed)
-    allowed = expand_allowed_skills_with_local_mcp(allowed)
+    from l3_node.primitives.tools.tool_pool import allowlist_is_native_only, allowlist_is_tools_denied
+
+    _tools_denied = allowlist_is_tools_denied(_allowed_skills_override)
+    _native_only_sub_agent = (
+        _delegate_depth > 0
+        and _allowed_skills_override is not None
+        and not _tools_denied
+    )
+    if _native_only_sub_agent:
+        _native_only_sub_agent = allowlist_is_native_only(_allowed_skills_override)
+    if _tools_denied:
+        allowed = []
+    elif not _native_only_sub_agent:
+        allowed = expand_allowed_skills_with_implicit_sqlite_read(allowed)
+        allowed = expand_allowed_skills_with_local_mcp(allowed)
     # 优先使用 _session_messages（多轮对话），否则用 _initial_messages（须先于 MCP 拉取与 Gateway 流水线）
     if _session_messages is not None:
         messages = list(_session_messages)
@@ -9334,32 +9481,33 @@ async def run_agent(
 
     _gateway_bridge_fmt: Any = None
     _gateway_bundle = gateway_context_bundle
-    try:
-        from l3_node.intent_gateway.bundle import build_gateway_bundle
-        from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
+    if _delegate_depth == 0:
+        try:
+            from l3_node.intent_gateway.bundle import build_gateway_bundle
+            from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
 
-        _gw_mem = (short_memory_context or "").strip() or _gateway_prior_brief(prior_messages)
-        if _gateway_bundle is None:
-            _gateway_bundle = build_gateway_bundle(
-                user_input=user_input or "",
-                short_memory_context=_gw_mem,
-                correlation_id=run_id,
-                session_id=_lark_cid,
-                implicit_attribution=implicit_attribution,
-                attachments_metadata=attachments_metadata,
-                system_state=gateway_system_state or "NORMAL",
-                clarification_handle=gateway_clarification_handle or "",
-                clarification_deadline_ts=float(gateway_clarification_deadline_ts or 0.0),
-            )
-        if _gateway_bundle is not None:
-            await apply_gateway_ingress_pipeline(
-                _gateway_bundle,
-                user_input or "",
-                prior_messages,
-                on_step=on_step,
-                run_id=run_id,
-                workspace_dir=_gateway_sniffer_ws,
-            )
+            _gw_mem = (short_memory_context or "").strip() or _gateway_prior_brief(prior_messages)
+            if _gateway_bundle is None:
+                _gateway_bundle = build_gateway_bundle(
+                    user_input=user_input or "",
+                    short_memory_context=_gw_mem,
+                    correlation_id=run_id,
+                    session_id=_lark_cid,
+                    implicit_attribution=implicit_attribution,
+                    attachments_metadata=attachments_metadata,
+                    system_state=gateway_system_state or "NORMAL",
+                    clarification_handle=gateway_clarification_handle or "",
+                    clarification_deadline_ts=float(gateway_clarification_deadline_ts or 0.0),
+                )
+            if _gateway_bundle is not None:
+                await apply_gateway_ingress_pipeline(
+                    _gateway_bundle,
+                    user_input or "",
+                    prior_messages,
+                    on_step=on_step,
+                    run_id=run_id,
+                    workspace_dir=_gateway_sniffer_ws,
+                )
             exec_trace(logger, "网关入站流水线完成 run_id=%s", run_id[:12])
             try:
                 from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -9451,12 +9599,12 @@ async def run_agent(
                     )
                 except Exception:
                     pass
-    except Exception as e:
-        logger.warning("[L3 Agent] GatewayContextBundle 构造失败，回退裸字符串: %s", e)
-        _gateway_bundle = None
+        except Exception as e:
+            logger.warning("[L3 Agent] GatewayContextBundle 构造失败，回退裸字符串: %s", e)
+            _gateway_bundle = None
 
     # 实时外部知识意图：独立于 enrich / semantic cache，避免缓存命中 enrich 跳过时的漏判
-    if _gateway_bundle is not None:
+    if _delegate_depth == 0 and _gateway_bundle is not None:
         try:
             from l3_node.intent_gateway.classification_llm import infer_requires_realtime_knowledge_async
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -9507,7 +9655,7 @@ async def run_agent(
             logger.debug("[L3 Agent] realtime_knowledge classify 跳过: %s", _rt_e)
 
     _domain_experts_list: list[str] = []
-    if _gateway_bundle is not None:
+    if _delegate_depth == 0 and _gateway_bundle is not None:
         try:
             from l3_node.intent_gateway.classification_llm import infer_domain_experts_async
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -10643,7 +10791,7 @@ async def run_agent(
             "_domain_experts": list(_domain_experts_list),
         }
         if implicit_attribution and isinstance(implicit_attribution, dict):
-            for _pmo_meta_k in ("pmo_analysis_only", "pmo_db_ready", "pmo_multi_agent_complete"):
+            for _pmo_meta_k in ("pmo_analysis_only", "pmo_db_ready", "pmo_multi_agent_complete", "pmo_init"):
                 if _pmo_meta_k in implicit_attribution:
                     _md_base[_pmo_meta_k] = bool(implicit_attribution[_pmo_meta_k])
             try:

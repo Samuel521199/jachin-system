@@ -434,7 +434,7 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
     {
         "id": "mcp:atom_lark_notifier",
         "label": "mcp:atom_lark_notifier",
-        "desc": "[L3 本地] 通用飞书播报员。传入 webhook_url 或 chat_id、markdown_content、title；建议显式传入 native_table_card=true（与 PMO MCP 默认一致）；正文须为可被解析的裸 GFM 管道表时可发 Schema 2.0 tag:table（含右下角分页；page_size=native_table_page_size）。若为 lark_md 降级则无分页。",
+        "desc": "[L3 本地] 通用飞书播报员。PMO 战报须 chat_id + markdown_content + title（禁止把 oc_ chat_id 写入 webhook_url）；有合法 bot/v2/hook URL 时才用 Webhook，否则用 app_id/secret IM API。建议 native_table_card=true；正文须裸 GFM 管道表才可发 Schema 2.0 tag:table。",
         "params": ["webhook_url", "markdown_content", "title", "chat_id", "native_table_card"],
         "long_running": True,
     },
@@ -1665,6 +1665,7 @@ class MCPToolRegistry:
         self._long_running_mcp_ids: set[str] = {
             str(t["id"]).strip().lower() for t in L3_LOCAL_MCP_TOOLS if tool_entry_long_running(t)
         }
+        self._fetch_tools_lock = asyncio.Lock()
         logger.info(
             "[MCP Registry] init capability_marker=write_native_pre_stdio_v1 "
             "(write_file/create_file 先于 stdio 走 core:fs_write；若日志无此行说明进程非当前代码)"
@@ -1703,6 +1704,15 @@ class MCPToolRegistry:
         Returns:
             合并后的工具列表，格式与 load_tools 一致：{id, label, desc, params}
         """
+        if self._tools_cache:
+            return list(self._tools_cache)
+        async with self._fetch_tools_lock:
+            if self._tools_cache:
+                return list(self._tools_cache)
+            return await self._fetch_tools_from_l2_locked()
+
+    async def _fetch_tools_from_l2_locked(self) -> list[dict[str, Any]]:
+        """单飞拉取 MCP 工具（stdio 握手 + L2 补充），避免并行 run_agent 重入。"""
         import httpx
 
         tools: list[dict[str, Any]] = list(L3_LOCAL_MCP_TOOLS)

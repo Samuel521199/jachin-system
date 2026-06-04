@@ -249,7 +249,75 @@ class TestPmoDbTools(unittest.TestCase):
         )
         self.assertTrue(any("json_each" in str(h) and "绝对禁忌" in str(h) for h in hints))
 
-    def test_db_query_hints_on_epic_parent_empty_array(self) -> None:
+    def test_db_query_allows_sqlite_replace_function_in_select(self) -> None:
+        sql = (
+            "SELECT date(replace(substr(json_extract(fields, '$.Sprint'), 1, 10), '/', '-')) "
+            "FROM pmo_raw_records WHERE source_view = 'vew8TxMcSh' LIMIT 1"
+        )
+        out = run_db_query(sql=sql)
+        assert out.get("status") == "ok", out
+
+    def test_db_query_blocks_product_status_nested_extract(self) -> None:
+        from l3_node.tools.pmo_db_tools import pmo_sql_has_product_status_nested_extract, run_db_query
+
+        bad_sql = (
+            "SELECT json_extract(json_extract(fields, '$.\"需求状态\"'), '$[0].text') "
+            "FROM pmo_raw_records WHERE source_view='vew8TxMcSh' LIMIT 10"
+        )
+        self.assertTrue(pmo_sql_has_product_status_nested_extract(bad_sql))
+        out = run_db_query(sql=bad_sql)
+        self.assertEqual(out.get("status"), "error")
+        self.assertEqual(out.get("error"), "pmo_sql_antipattern")
+        self.assertTrue(any("plain string" in str(h) for h in (out.get("hints") or [])))
+
+    def test_db_query_hints_on_malformed_json_product_status(self) -> None:
+        hints = _db_query_hints(
+            "SELECT json_extract(json_extract(fields, '$.\"需求状态\"'), '$[0].text') "
+            "FROM pmo_raw_records WHERE source_view='vew8TxMcSh'",
+            message="malformed JSON",
+        )
+        self.assertTrue(any("需求状态" in str(h) for h in hints))
+
+    def test_db_query_blocks_product_fields_on_dev_view(self) -> None:
+        from l3_node.tools.pmo_db_tools import (
+            pmo_sql_has_product_fields_on_dev_view,
+            run_db_query,
+        )
+
+        bad_sql = (
+            "SELECT json_extract(fields, '$.\"任务简述\"') AS task "
+            "FROM pmo_raw_records WHERE source_view = 'vewpI8lyYw' LIMIT 300"
+        )
+        self.assertTrue(pmo_sql_has_product_fields_on_dev_view(bad_sql))
+        out = run_db_query(sql=bad_sql)
+        self.assertEqual(out.get("status"), "error")
+        self.assertEqual(out.get("error"), "pmo_sql_antipattern")
+
+    def test_db_query_blocks_vewcz1_without_json_each(self) -> None:
+        from l3_node.tools.pmo_db_tools import (
+            pmo_sql_has_vewcz1_personnel_without_json_each,
+            run_db_query,
+        )
+
+        bad_sql = (
+            "SELECT json_extract(fields, '$.Requirement') AS task, "
+            "json_extract(fields, '$.\"Person in charge/Participant\"') AS person "
+            "FROM pmo_raw_records WHERE source_view = 'vewCz1FFJi' LIMIT 700"
+        )
+        self.assertTrue(pmo_sql_has_vewcz1_personnel_without_json_each(bad_sql))
+        out = run_db_query(sql=bad_sql)
+        self.assertEqual(out.get("status"), "error")
+        self.assertEqual(out.get("error"), "pmo_sql_antipattern")
+
+    def test_worker_b_product_sql_uses_safe_status_extract(self) -> None:
+        from l3_node.pmo_multi_agent_queries import WORKER_B_TASK
+
+        self.assertIn("json_extract(fields, '$.\"需求状态\"') AS demand_status", WORKER_B_TASK)
+        self.assertNotIn(
+            "json_extract(json_extract(fields, '$.\"需求状态\"'), '$[0].text')",
+            WORKER_B_TASK,
+        )
+
         hints = _db_query_hints(
             "SELECT json_extract(fields, '$.Requirement') FROM pmo_raw_records "
             "WHERE source_view='vewpI8lyYw' AND json_extract(fields, '$.\"父记录\"') = '[]'",

@@ -15,7 +15,7 @@ BI 每日战报 — 主技能逻辑（一个插件仅此一个 skill）
 3. **Lark 同步**：将 output 下 CSV 同步到飞书多维表格（atom_lark_bitable_sync）
 3.4 **KPI 快照卡片**：同步完成后，从同目录 CSV 拼装指标（按 👥/💰/🎮/⚖️ 分组、`---` 分隔、涨跌 🟢/🔻）推送 Lark
 4. **仪表盘分析**（Step 4a）：对每个仪表盘调用 LLM 分析统计图数据 → 保存到 output → 通过 Lark 机器人推送消息卡片（分析+仪表盘链接）。**先于大战报执行**。
-5. **战略深度分析（大战报）**：System 从 `STRATEGIC_REPORT_ANALYSIS_SPEC.md`（**v6.3 · 战略决策导向**）加载；第五节为 DAU 增长战略决策，非派工单。
+5. **战略深度分析（大战报）**：System 从 `STRATEGIC_REPORT_ANALYSIS_SPEC.md`（**v6.4 冲 DAU · 不谈 RTP**）加载；第五节为增长战略决策，非派工单。
 6. **邮件通知**：调用 mcp:atom_email_sender 将战报发送至 distribution.email.to_addrs（邮件内顺序：一、BI 数据快报 → 二、仪表盘 → 三、Lark 同步 → 四、战略分析）。
 
 配置项 `verbose_log`（默认 true）：控制是否在终端打印执行进度；false 时仅写日志文件。
@@ -3505,10 +3505,10 @@ def _build_strategic_dod_summary_from_duckdb(
         f"**数据源**：DuckDB `{db_path}`（SPA 抓取 ingest 全量，非 output 提纯 CSV）",
         "",
         "**口径防错（大战报）**：金币换算 1 亿=10⁸；`prod_sales` 用户/机器人分列；"
-        "`daily_acquisition` 每行=单条落地链接；T+1 留存 NaN 优先写未闭合/ETL。",
+        "`daily_acquisition` 每行=单条落地链接；**T 日次留 0/NaN% 为日历常态**（T+1 未到期），分析次留用 T-1 及更早。"
         "",
-        "**大战报 v6.3**：①～④ 诊断（🎯📊💡）；⑤ 增长战略与决策（选项/🧭优先序/🔍待验证），锚定盈利期 DAU，禁止派活。",
-        "③ IAA 缺数须盲区疾呼；⑤ 缺数写入 🔍待验证（决策盲区）。",
+        "**大战报 v6.4**：冲 DAU 阶段；①～④ 诊断；⑤ 战略决策；**正文禁止展开 RTP/GGR**。"
+        "③ 漏斗用进桌/首局/留存；④ 局数/人均局；IAA 缺数第三节疾呼。",
         "",
         "## DuckDB 表（T vs T-1 字段对照）",
         "",
@@ -3562,10 +3562,10 @@ def _build_strategic_dod_summary(
         f"说明：T 为数据日（通常昨日），T-1 为前一自然日。数值型字段给出差值与环比%；若缺某日行则标明。",
         "",
         "**口径防错（大战报）**：`stats_user_dau`/`stats_user_new` 金币产出消耗列换算「亿」须按 10⁸（例 53,179,122≈0.53 亿，勿写成 5.32 亿）。"
-        "`prod_sales` 用户金币与机器人金币分列叙述。`daily_acquisition` 每行=单条落地链接。`stats_retention_user` 的 T+1 若为 0/NaN% 优先写未闭合/ETL，勿单归因架构。",
+        "`prod_sales` 用户金币与机器人金币分列叙述。`daily_acquisition` 每行=单条落地链接。"
+        "`stats_retention_user`：**数据日 T 行 T+1=0/NaN% 正常**（等明天才有今日次留）；**禁止**当 ETL 故障；只用 **T-1 及更早** 次留% 做判断。",
         "",
-        "**大战报 v6.3 五板块**：① 晴雨表 ② 买量 ③ 漏斗 ④ 生态 ⑤ **增长战略与决策**（非派工单）。"
-        " 第三板块须点明新用户死亡断点；DNU/设备≥1.2 警告机刷；RTP>100% 用人话警告放水。"
+        "**大战报 v6.4 五板块**：冲 DAU；禁止 RTP/GGR 分析；③ 漏斗断点 ④ 局数/参与度 ⑤ 战略决策。"
         " output 为提纯表重点；同路径下 raw 明细已在下文对照。",
         "",
         "## output（提纯表，与 Lark 多维表同源）",

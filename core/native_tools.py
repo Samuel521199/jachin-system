@@ -563,6 +563,8 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
         "core:pmo_import_json",
         "core:pmo_init_gap_report",
         "core:pmo_mirror_import",
+        "core:pmo_sprint_epic_report",
+        "core:pmo_resolve_sprint",
     ):
         from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
 

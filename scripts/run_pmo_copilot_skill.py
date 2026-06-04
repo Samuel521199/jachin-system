@@ -14,10 +14,19 @@ PMO-Copilot：CLI「一句话点火」—— 进程内拉起 L3 LiteLLM 引擎�
 用法（仓库根）::
 
   python scripts/run_pmo_copilot_skill.py
-  python scripts/run_pmo_copilot_skill.py -m "执行分支 A：定时宏观看板……"
+      默认 **全流程 · 多 Agent 方案 B**：库未就绪则先 INIT，再 FanOut→Audit→Publish（与 --analysis-only 分析阶段一致）
+
   python scripts/run_pmo_copilot_skill.py --analysis-only
-  python scripts/run_pmo_copilot_skill.py --analysis-only --multi-agent
+      **仅分析 · 多 Agent**（库须已就绪；与无参命令的分析阶段相同）
+
+  python scripts/run_pmo_copilot_skill.py --single-agent
+      全流程但分析阶段回退 **单 Agent** ReAct（§1.2.1 七步，不含 Worker B/C FanOut）
+
   python scripts/run_pmo_copilot_skill.py --analysis-only --single-agent
+      仅分析 · 单 Agent（库须已就绪）
+
+  python scripts/run_pmo_copilot_skill.py --init
+      仅 INIT 入库
 
 每次运行会在 ``%USERPROFILE%\\.jachin\\jachin_debug\\健康skill\\``
 新建 **独立** 文件 ``pmo_copilot_YYYYMMDD_HHMMSS_mmm_xxxxxxxx.txt``（毫秒 + 短 UUID，不覆盖同名旧文件），
@@ -57,11 +66,11 @@ except ImportError:
 DEFAULT_SKILL = ROOT / "skills_repo" / "pmo-copilot" / "SKILL.md"
 
 DEFAULT_MESSAGE = (
-    "请严格按 PMO-Copilot SKILL v7 **分支 A**："
-    "若 pmo_raw_records 未就绪则先 INIT（mcp:atom_bi_project_context 拉 §1.1 全部 12 视图 + "
-    "core:pmo_mirror_import 一次性镜像入库）；"
-    "然后用 core:db_query 对 pmo_raw_records 做交叉分析与大颗粒度探针，"
+    "请严格按 PMO-Copilot SKILL v7 **分支 A · 单 Agent 回退路径**："
+    "若 pmo_raw_records 未就绪则先 INIT；"
+    "然后按 **§1.2.1 七步框架** 做 core:db_query 交叉分析，"
     "组装 §1.4 三表后 **双群** mcp:atom_lark_notifier。"
+    "（默认 CLI 无 --single-agent 时已走多 Agent §1.2.2 Worker B/C，无需本提示。）"
     "禁止 core:fs_read 读 md；禁止 core:pmo_import_json。"
 )
 
@@ -74,21 +83,24 @@ INIT_MESSAGE = (
 )
 
 ANALYSIS_ONLY_MESSAGE = (
-    "请严格按 PMO-Copilot SKILL v7 **分支 A · 仅分析模式**："
+    "请严格按 PMO-Copilot SKILL v7 **分支 A · 仅分析 · 单 Agent 回退**："
     "pmo_raw_records 镜像库已就绪。"
     "**禁止** mcp:atom_bi_project_context、core:fs_read、core:pmo_mirror_import、core:db_write。"
-    "严格按 **§1.2.1 七步框架** 顺序执行 core:db_query（≤10 次）："
-    "Step1 地图(record_count+columns_json) → Step2 样本(vewpI8lyYw+vewCz1FFJi) → "
-    "Step3 人员(vewCz1FFJi·**1次**明细SQL：person+task+status+sprint+due 同查，禁止只查en_name) → "
-    "Step4 Epic(**仅**vewpI8lyYw·父记录[0].text IS NULL，**禁止**在vewCz1FFJi用此条件) → "
-    "Step5 状态+Sprint(Sprint用$.Sprint，禁止[0].text) → Step6 跨视图矛盾(6a+6b两步，禁止JOIN) → Step7 Version Goal。"
-    "每步 Thought 写「本步产出」并**边查边填**三表 GFM 草稿行（禁止写「待填充」）。"
+    "（默认无 --single-agent 时已走多 Agent §1.2.2；本路径为单 Agent 回退。）"
+    "严格按 **§1.2.1 七步框架** 顺序执行 core:db_query（≤10 次），"
+    "并尽量覆盖 §1.2.2 产品/开发/美术视图与字段；禁止捏造 null 字段。"
+    "每步 Thought 写「本步产出」并**边查边填**三表 GFM 草稿行。"
     "Version Goal 全空时 📦 表仍须 GFM 占位行（⚠️ 原表字段全空）。"
-    "第11–13轮组 §1.4 三表并做推送前自检，第14–15轮 **双群** mcp:atom_lark_notifier（须 native_table_card:true）。"
-    "若 pmo_premature_notifier_blocked(reason=markdown_incomplete) 且探针已完成，**只改 markdown_content**，禁止重跑 Step1–7。"
-    "Thought 里的三表草稿须全文写入 atom_lark_notifier 的 markdown_content 字段。"
+    "组装 §1.4 三表后 **双群** mcp:atom_lark_notifier（native_table_card:true）。"
     "Final Answer 仅在双群 notifier 均 success 后 ≤3 句确认；禁止声称已推送。"
 )
+
+
+def _use_multi_agent_path(args: argparse.Namespace) -> bool:
+    """默认分支 A 分析走多 Agent（§1.2.2 Worker B/C）；仅 --single-agent 回退单 Agent。"""
+    if getattr(args, "init", False):
+        return False
+    return not getattr(args, "single_agent", False)
 
 
 def _pmo_debug_log_dir() -> Path:
@@ -197,6 +209,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             print("  请先运行: python scripts/run_pmo_copilot_skill.py --init", file=sys.stderr)
+            print("  或运行无参全流程（库未就绪时会先 INIT）: python scripts/run_pmo_copilot_skill.py", file=sys.stderr)
             return 2
         allow_lower = {t.lower() for t in base_allow}
         for required in ("core:db_query",):
@@ -204,20 +217,24 @@ async def _async_main(args: argparse.Namespace) -> int:
                 base_allow.append(required)
         user_msg = (args.message or "").strip() or ANALYSIS_ONLY_MESSAGE
     elif getattr(args, "init", False):
-        allow_lower = {t.lower() for t in base_allow}
-        for required in ("core:pmo_mirror_import",):
-            if required not in allow_lower:
-                base_allow.append(required)
         user_msg = (args.message or "").strip() or INIT_MESSAGE
     else:
         user_msg = (args.message or "").strip() or DEFAULT_MESSAGE
 
+    use_multi = _use_multi_agent_path(args)
+
     if args.analysis_only:
         print(f"[pmo-copilot] 模式: 仅分析 · DB: {db_path}", flush=True)
-        if not getattr(args, "single_agent", False):
-            print("[pmo-copilot] 编排: 多 Agent 方案 B（--single-agent 回退单 Agent）", flush=True)
+        if use_multi:
+            print("[pmo-copilot] 编排: 多 Agent 方案 B（§1.2.2 Worker B/C，与无参命令分析阶段一致）", flush=True)
+        else:
+            print("[pmo-copilot] 编排: 单 Agent 回退（--single-agent · §1.2.1）", flush=True)
     elif getattr(args, "init", False):
         print("[pmo-copilot] 模式: INIT（拉表 + mirror_import）", flush=True)
+    elif use_multi:
+        print("[pmo-copilot] 模式: 全流程 · 多 Agent 方案 B（库未就绪则先 INIT）", flush=True)
+    else:
+        print("[pmo-copilot] 模式: 全流程 · 单 Agent 回退（--single-agent）", flush=True)
 
     print("[pmo-copilot] 正在启动（引擎初始化可能需要数十秒）…", flush=True)
 
@@ -234,7 +251,23 @@ async def _async_main(args: argparse.Namespace) -> int:
     os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = str(_debug_path.resolve())
 
     try:
-        if getattr(args, "analysis_only", False) and not getattr(args, "single_agent", False):
+        if use_multi:
+            from l3_node.tools.pmo_db_tools import pmo_mirror_db_ready
+
+            if not args.analysis_only and not getattr(args, "init", False):
+                if not pmo_mirror_db_ready():
+                    print("[pmo-copilot] 镜像库未就绪，先执行 INIT…", flush=True)
+                    init_rc = await _async_main_init_direct(
+                        args,
+                        _debug_path,
+                        (args.message or "").strip() or INIT_MESSAGE,
+                    )
+                    if init_rc != 0:
+                        return init_rc
+                    if not pmo_mirror_db_ready():
+                        print("[pmo-copilot] INIT 完成但 pmo_raw_records 仍不可用", file=sys.stderr)
+                        return 1
+                    print("[pmo-copilot] INIT 完成，继续多 Agent 分析…", flush=True)
             return await _async_main_multi_agent(
                 args,
                 _debug_path,
@@ -243,6 +276,8 @@ async def _async_main(args: argparse.Namespace) -> int:
                 meta,
                 skill_body,
             )
+        if getattr(args, "init", False) and not (args.message or "").strip():
+            return await _async_main_init_direct(args, _debug_path, user_msg)
         return await _async_main_inner(
             args,
             user_msg,
@@ -259,6 +294,54 @@ async def _async_main(args: argparse.Namespace) -> int:
             os.environ.pop("JACHIN_PMO_COPILOT_DEBUG_LOG", None)
 
 
+async def _async_main_init_direct(
+    args: argparse.Namespace,
+    _debug_path: Path,
+    user_msg: str,
+) -> int:
+    """INIT 确定性路径：Python 直调拉表 + mirror_import，不启动 ReAct。"""
+    import asyncio
+    import uuid
+
+    from l3_node.pmo_copilot_debug_file import (
+        append_pmo_debug_status,
+        bootstrap_pmo_debug_main_agent,
+        finalize_pmo_debug_log,
+        init_pmo_debug_session,
+    )
+    from l3_node.pmo_init_runner import format_pmo_init_direct_summary, run_pmo_init_direct
+
+    correlation_id = str(uuid.uuid4())
+    init_pmo_debug_session(
+        log_path=_debug_path,
+        user_message=user_msg,
+        correlation_id=correlation_id,
+        max_iterations=1,
+        mode_hint="init",
+    )
+    bootstrap_pmo_debug_main_agent(
+        mode_hint="init",
+        task_preview=user_msg[:200],
+        max_iterations=1,
+    )
+    append_pmo_debug_status("⏳ INIT：开始拉表（sync_bi_project_context）…")
+    print("[pmo-copilot] INIT：确定性路径（零 ReAct）— 拉表 + mirror_import …", flush=True)
+
+    result = await asyncio.to_thread(run_pmo_init_direct)
+    summary = format_pmo_init_direct_summary(result)
+    append_pmo_debug_status(summary)
+    print(f"[pmo-copilot] {summary.replace(chr(10), ' | ')}", flush=True)
+
+    if str(result.get("status") or "").lower() != "ok":
+        finalize_pmo_debug_log(str(result.get("message") or "INIT 失败"), aborted=True)
+        return 1
+
+    finalize_pmo_debug_log(str(result.get("message") or "INIT 完成"))
+    print("\n--- INIT 完成 ---\n", str(result.get("message") or "").strip())
+    await asyncio.sleep(0.3)
+    return 0
+
+
 async def _async_main_inner(
     args: argparse.Namespace,
     user_msg: str,
@@ -267,6 +350,8 @@ async def _async_main_inner(
     skill_path: Path,
     meta: dict[str, Any],
     skill_body: str,
+    *,
+    force_mode_hint: str | None = None,
 ) -> int:
     from l3_node.intent_gateway.bundle import build_gateway_bundle
     from l3_node.primitives.tools.tool_pool import (
@@ -283,11 +368,12 @@ async def _async_main_inner(
         sync_pmo_debug_max_iterations,
     )
 
-    mode_hint = ""
-    if getattr(args, "analysis_only", False):
-        mode_hint = "analysis-only"
-    elif getattr(args, "init", False):
-        mode_hint = "init"
+    mode_hint = force_mode_hint or "full"
+    if force_mode_hint is None:
+        if getattr(args, "analysis_only", False):
+            mode_hint = "analysis-only"
+        elif getattr(args, "init", False):
+            mode_hint = "init"
     init_pmo_debug_session(
         log_path=_debug_path,
         user_message=user_msg,
@@ -297,11 +383,11 @@ async def _async_main_inner(
     )
     sync_pmo_debug_max_iterations(mi)
     implicit: dict[str, Any] = {"channel": "pmo_copilot_cli", "source": "run_pmo_copilot_skill.py"}
-    if getattr(args, "analysis_only", False):
+    if force_mode_hint == "init" or getattr(args, "init", False):
+        implicit["pmo_init"] = True
+    elif getattr(args, "analysis_only", False):
         implicit["pmo_analysis_only"] = True
         implicit["pmo_db_ready"] = True
-    elif getattr(args, "init", False):
-        implicit["pmo_init"] = True
     else:
         from l3_node.tools.pmo_db_tools import pmo_mirror_db_ready
 
@@ -415,9 +501,12 @@ async def _async_main_multi_agent(
         expand_allowed_skills_with_local_mcp,
     )
     from l3_node.pmo_copilot_debug_file import (
+        append_pmo_debug_agent_begin,
+        append_pmo_debug_phase_begin,
         append_pmo_debug_status,
         finalize_pmo_debug_log,
         init_pmo_debug_session,
+        set_ma_debug_context,
         sync_pmo_debug_max_iterations,
     )
     from l3_node.pmo_multi_agent_orchestrator import (
@@ -441,8 +530,9 @@ async def _async_main_multi_agent(
 
     allowlist_diag_source = list(base_allow)
     allow_lower = {t.lower() for t in base_allow}
-    if "core:db_query" not in allow_lower:
-        allowlist_diag_source.append("core:db_query")
+    for _tid in ("core:db_query", "core:pmo_sprint_epic_report", "core:pmo_resolve_sprint"):
+        if _tid not in allow_lower:
+            allowlist_diag_source.append(_tid)
 
     log = logging.getLogger("run_pmo_copilot_skill")
 
@@ -497,11 +587,19 @@ async def _async_main_multi_agent(
     )
 
     gateway_block = build_gateway_skill_inject(skill_path, meta, skill_body)
+    from l3_node.pmo_report_format import PMO_DEMAND_TABLE_PUBLISHER_SPEC
+
     publisher_inject = (
         gateway_block
         + "\n\n### 多 Agent 阶段三（Publisher）\n"
         "⛔ 禁止 core:db_query。仅 mcp:atom_lark_notifier。\n"
-        "须将三表 GFM **全文** 写入 markdown_content；双群推送 native_table_card:true。\n"
+        "⛔ **禁止** `webhook_url`（PMO 用应用机器人 IM API，不用群 Webhook）。\n"
+        "双群推送须 **显式** `chat_id` + `native_table_card: true`：\n"
+        "  ① 主群 chat_id = 环境变量 PMO_PRIMARY_CHAT_ID（或 oc_437c98d11106295fb10751a5481ee465）\n"
+        "  ② 监控群 chat_id = oc_0e321f92d758ecb44aea5b499c90510b\n"
+        "须将三表 GFM **全文** 写入 markdown_content（勿放代码围栏内）。\n"
+        + PMO_DEMAND_TABLE_PUBLISHER_SPEC
+        + "\n"
     )
 
     from l3_node.agent_core import _build_system_prompt, run_agent
@@ -527,6 +625,25 @@ async def _async_main_multi_agent(
     )
 
     _on_status("阶段三：Publisher 排版发报（仅 Lark）…")
+    append_pmo_debug_phase_begin(
+        3,
+        "排版发报 · Publisher",
+        detail="run_agent 主循环：三表 GFM 排版 + atom_lark_notifier 双群推送，禁止 db_query",
+    )
+    set_ma_debug_context(
+        phase=3,
+        phase_label="排版发报",
+        agent_label="Publisher",
+        role_label="主编排 Agent · 仅 Lark",
+        task_preview="将阶段一/二 JSON 与风险诊断书填入三表 GFM，双群推送",
+        max_iterations=mi_phase3,
+    )
+    append_pmo_debug_agent_begin(
+        agent_label="Publisher",
+        role_label="主编排 Agent · 仅 Lark",
+        task_preview="三表 GFM 排版 + atom_lark_notifier 双群推送",
+        max_iterations=mi_phase3,
+    )
     _pmo_step = _make_pmo_on_step_writer(_debug_path)
     ans = await run_agent(
         publisher_msg,
@@ -538,6 +655,16 @@ async def _async_main_multi_agent(
         implicit_attribution=implicit,
         on_step=_pmo_step,
     )
+    try:
+        from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+
+        append_pmo_debug_agent_finish(
+            agent_label="Publisher",
+            ok=bool((ans or "").strip()),
+            result_preview=str(ans or "")[:300],
+        )
+    except Exception:
+        pass
     finalize_pmo_debug_log(ans or workflow.format_summary())
     print("\n--- Final Answer ---\n", (ans or "").strip())
     await asyncio.sleep(0.5)
@@ -551,18 +678,18 @@ def main() -> int:
     ap.add_argument(
         "--analysis-only",
         action="store_true",
-        help="跳过拉表/入库；基于 pmo_raw_records 分析并推送",
+        help="跳过拉表/入库；分析阶段与无参命令相同（默认多 Agent §1.2.2，须库已就绪）",
     )
     ap.add_argument(
         "--multi-agent",
         action="store_true",
         default=False,
-        help="与 --analysis-only 联用：FanOut→Audit→Publish 三阶段多 Agent（默认在 analysis-only 时开启）",
+        help="显式启用多 Agent（默认：非 --single-agent 且非 --init 时已启用，通常无需指定）",
     )
     ap.add_argument(
         "--single-agent",
         action="store_true",
-        help="与 --analysis-only 联用：回退单 Agent 32 轮 ReAct（禁用多 Agent）",
+        help="分析阶段回退单 Agent ReAct（§1.2.1）；无参命令与 --analysis-only 默认均为多 Agent",
     )
     ap.add_argument(
         "--init",

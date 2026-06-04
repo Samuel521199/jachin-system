@@ -1,12 +1,14 @@
 ﻿"""
-PMO-Copilot 人类可读调试日志（按轮次摘要 · v7）。
+PMO-Copilot 人类可读调试日志（v8 统一格式 · 全模式）。
 
 启用：环境变量 ``JACHIN_PMO_COPILOT_DEBUG_LOG`` = 绝对路径 ``.txt``（``run_pmo_copilot_skill.py`` 自动设置）。
 
-每完成一轮工具调用（Action + Observation）追加一段摘要：目的 / 想法 / 工具 / 操作 / 结果 / 报错。
+所有运行模式（全流程 / INIT / 仅分析 / 多 Agent）均输出：阶段横幅、Agent 起止、轮次摘要（目的 / 想法 / 工具 / 结果 / 报错）。
+多 Agent FanOut/Pipeline 通过 ``contextvars`` 隔离并行 SubAgent 上下文；单 Agent 使用 session 默认上下文。
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -16,6 +18,10 @@ from typing import Any
 
 _pending_action: dict[str, tuple[str, str, str]] = {}
 _session: dict[str, Any] = {}
+
+_ma_debug_ctx: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "pmo_ma_debug_ctx", default=None
+)
 
 
 def _default_pmo_max_iterations() -> int:
@@ -35,6 +41,179 @@ def debug_log_path() -> str:
     return (os.environ.get("JACHIN_PMO_COPILOT_DEBUG_LOG") or "").strip()
 
 
+def get_ma_debug_context() -> dict[str, Any] | None:
+    """当前 asyncio 任务绑定的多 Agent 调试上下文（FanOut/Pipeline 并行隔离）。"""
+    return _ma_debug_ctx.get()
+
+
+def set_ma_debug_context(
+    *,
+    phase: int,
+    phase_label: str,
+    agent_label: str,
+    role_label: str = "",
+    task_preview: str = "",
+    max_iterations: int | None = None,
+) -> contextvars.Token[dict[str, Any] | None]:
+    frame: dict[str, Any] = {
+        "phase": int(phase),
+        "phase_label": (phase_label or "").strip(),
+        "agent_label": (agent_label or "").strip(),
+        "role_label": (role_label or "").strip(),
+        "task_preview": (task_preview or "").strip(),
+        "max_iterations": max(1, int(max_iterations)) if max_iterations else None,
+    }
+    return _ma_debug_ctx.set(frame)
+
+
+def reset_ma_debug_context(token: contextvars.Token[dict[str, Any] | None]) -> None:
+    _ma_debug_ctx.reset(token)
+
+
+def _phase_cn(n: int) -> str:
+    return {1: "一", 2: "二", 3: "三"}.get(int(n), str(n))
+
+
+_UNIFIED_FOOTER = (
+    "—— 下方按阶段 / Agent / 轮次记录：谁在做什么、调了什么工具、结果与报错 ——"
+)
+
+
+def _normalize_mode_hint(mode_hint: str) -> str:
+    m = (mode_hint or "").strip().lower()
+    return m if m else "full"
+
+
+def _mode_profile(mode: str) -> dict[str, Any]:
+    """各运行模式的日志展示配置（v8 统一格式）。"""
+    profiles: dict[str, dict[str, Any]] = {
+        "multi-agent": {
+            "display": "多 Agent 方案 B（FanOut → Audit → Publish）",
+            "arch": [
+                "  阶段一 FanOut: Worker A(字典) / B(B-1～B-7·vewCz1FFJi SSOT) / C(Epic) — 并行、上下文隔离",
+                "  阶段二 Pipeline: Auditor — Step6 交叉审计（禁止 db_query）",
+                "  阶段三 Publisher: run_agent — 三表 GFM 排版 + atom_lark_notifier 双群推送",
+            ],
+            "auto_bootstrap": False,
+        },
+        "full": {
+            "display": "全流程 · 单 Agent",
+            "arch": [
+                "  阶段一（按需）: mcp:atom_bi_project_context → core:pmo_mirror_import",
+                "  阶段二: core:db_query 七步交叉分析（Probe → Locate → Drill）",
+                "  阶段三: mcp:atom_lark_notifier 双群战报推送",
+            ],
+            "auto_bootstrap": True,
+            "phase_title": "全流程 ReAct",
+            "phase_detail": "若库未就绪先 INIT，再七步 db_query 分析，最后三表 GFM + 双群 Lark",
+            "agent_label": "主编排 Agent",
+            "role_label": "单 Agent · 主 ReAct 循环",
+        },
+        "analysis-only": {
+            "display": "仅分析 · 单 Agent",
+            "arch": [
+                "  跳过 INIT（镜像库已就绪）",
+                "  七步 core:db_query → Thought 三表 GFM 草稿 → atom_lark_notifier 双群推送",
+            ],
+            "auto_bootstrap": True,
+            "phase_title": "分析 + 发报",
+            "phase_detail": "§1.2.1 七步框架 db_query，禁止 mirror_import / bi_project_context",
+            "agent_label": "主编排 Agent",
+            "role_label": "单 Agent · 分析 ReAct",
+        },
+        "init": {
+            "display": "INIT 入库",
+            "arch": [
+                "  mcp:atom_bi_project_context 拉 §1.1 全部 Wiki 视图",
+                "  core:pmo_mirror_import 一次性镜像入库 pmo_raw_records",
+            ],
+            "auto_bootstrap": True,
+            "phase_title": "INIT · 拉表入库",
+            "phase_detail": "拉表落盘 → mirror_import；禁止 fs_read / db_write 循环",
+            "agent_label": "主编排 Agent",
+            "role_label": "单 Agent · INIT",
+        },
+    }
+    return profiles.get(mode, profiles["full"])
+
+
+def get_effective_debug_context() -> dict[str, Any] | None:
+    """并行 SubAgent 用 contextvars；单 Agent 主循环用 session 默认上下文。"""
+    ctx = get_ma_debug_context()
+    if ctx and ctx.get("agent_label"):
+        return ctx
+    default = _session.get("default_ctx")
+    return default if isinstance(default, dict) and default.get("agent_label") else None
+
+
+def bootstrap_pmo_debug_main_agent(
+    *,
+    mode_hint: str,
+    task_preview: str,
+    max_iterations: int,
+) -> None:
+    """单 Agent / INIT / 仅分析：写入阶段横幅 + Agent 启动 + 默认上下文。"""
+    mode = _normalize_mode_hint(mode_hint)
+    profile = _mode_profile(mode)
+    if not profile.get("auto_bootstrap"):
+        return
+    cap = max(1, int(max_iterations))
+    ctx: dict[str, Any] = {
+        "phase": 1,
+        "phase_label": str(profile.get("phase_title") or "主循环"),
+        "agent_label": str(profile.get("agent_label") or "主编排 Agent"),
+        "role_label": str(profile.get("role_label") or ""),
+        "task_preview": _truncate((task_preview or "").strip(), 200),
+        "max_iterations": cap,
+    }
+    _session["default_ctx"] = ctx
+    _session["agent_started"] = True
+    _session["agent_finished"] = False
+    append_pmo_debug_phase_begin(
+        1,
+        str(profile.get("phase_title") or "主循环"),
+        detail=str(profile.get("phase_detail") or ""),
+    )
+    append_pmo_debug_agent_begin(
+        agent_label=ctx["agent_label"],
+        role_label=ctx["role_label"],
+        task_preview=ctx["task_preview"],
+        max_iterations=cap,
+    )
+
+
+def complete_pmo_debug_main_agent(
+    *,
+    final_answer: str = "",
+    ok: bool = True,
+    aborted: bool = False,
+) -> None:
+    """单 Agent 主循环结束：Agent 结束 + 阶段汇总。"""
+    if _session.get("agent_finished"):
+        return
+    if not _session.get("agent_started"):
+        return
+    default = _session.get("default_ctx")
+    if not isinstance(default, dict):
+        return
+    append_pmo_debug_agent_finish(
+        agent_label=str(default.get("agent_label") or "主编排 Agent"),
+        ok=ok and not aborted,
+        result_preview=str(final_answer or "")[:300],
+        error="" if ok and not aborted else "运行中断或未正常完成",
+    )
+    append_pmo_debug_phase_summary(
+        1,
+        str(default.get("phase_label") or "主循环"),
+        ok_count=1 if ok and not aborted else 0,
+        total=1,
+        item_lines=[
+            "✅ 主编排 Agent 完成" if ok and not aborted else "❌ 主编排 Agent 未正常完成",
+        ],
+    )
+    _session["agent_finished"] = True
+
+
 def sync_pmo_debug_max_iterations(max_iterations: int) -> None:
     cap = max(1, int(max_iterations))
     old = int(_session.get("max_iterations") or 0)
@@ -46,10 +225,10 @@ def sync_pmo_debug_max_iterations(max_iterations: int) -> None:
         return
     try:
         text = Path(fp).read_text(encoding="utf-8")
-        new_line = f"ReAct 上限: {cap} 轮"
-        if re.search(r"^ReAct 上限:\s*\d+\s*轮\s*$", text, flags=re.MULTILINE):
+        new_line = f"ReAct 上限: {cap} 轮（本运行主循环）"
+        if re.search(r"^ReAct 上限:\s*\d+\s*轮", text, flags=re.MULTILINE):
             text = re.sub(
-                r"^ReAct 上限:\s*\d+\s*轮\s*$",
+                r"^ReAct 上限:\s*\d+\s*轮[^\n]*$",
                 new_line,
                 text,
                 count=1,
@@ -70,36 +249,39 @@ def init_pmo_debug_session(
     max_iterations: int | None = None,
     mode_hint: str = "",
 ) -> None:
-    """初始化日志文件头（覆盖旧内容）。"""
+    """初始化日志文件头（覆盖旧内容）；非 multi-agent 模式自动 bootstrap 阶段/Agent 上下文。"""
     cap = max(1, int(max_iterations)) if max_iterations is not None else _default_pmo_max_iterations()
     fp = str(Path(log_path).resolve())
     os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = fp
     _session.clear()
     _pending_action.clear()
+    mode = _normalize_mode_hint(mode_hint)
+    profile = _mode_profile(mode)
     _session.update(
         {
             "max_iterations": cap,
             "correlation_id": correlation_id,
             "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "mode_hint": (mode_hint or "").strip(),
+            "mode_hint": mode,
         }
     )
+
     header = "\n".join(
         [
-            "PMO-Copilot 运行日志（人类可读 · 按轮次摘要）",
+            "PMO-Copilot 运行日志（人类可读 · v8 统一格式）",
             f"开始时间: {_session['started_at']}",
             f"任务 ID: {correlation_id or '—'}",
-            f"ReAct 上限: {cap} 轮",
+            f"运行模式: {profile['display']}",
+            f"ReAct 上限: {cap} 轮（本运行主循环）",
             f"日志文件: {fp}",
             "",
-            "【架构速览 · v7】",
-            "  INIT: atom_bi_project_context → pmo_mirror_import",
-            "  分析: core:db_query（Probe → Locate → Drill）→ Thought → atom_lark_notifier",
+            "【架构速览】",
+            *profile["arch"],
             "",
             "【本次任务】",
             (user_message or "").strip() or "（无）",
             "",
-            "—— 下方每轮：在做什么 / Agent 想法 / 工具与操作 / 发生了什么 / 有无问题 ——",
+            _UNIFIED_FOOTER,
             "",
         ]
     )
@@ -108,6 +290,11 @@ def init_pmo_debug_session(
         Path(fp).write_text(header, encoding="utf-8")
     except OSError:
         pass
+    bootstrap_pmo_debug_main_agent(
+        mode_hint=mode,
+        task_preview=(user_message or "").strip(),
+        max_iterations=cap,
+    )
 
 
 def append_pmo_debug_status(message: str) -> None:
@@ -117,7 +304,7 @@ def append_pmo_debug_status(message: str) -> None:
     raw = (message or "").strip()
     if not raw:
         return
-    text = raw
+    text = raw.lstrip("⏳").strip() or raw
     if raw.startswith("{"):
         try:
             obj = json.loads(raw)
@@ -125,13 +312,123 @@ def append_pmo_debug_status(message: str) -> None:
                 text = str(obj.get("status") or raw)
         except json.JSONDecodeError:
             pass
-    _append_lines([f"⏳ {text}", ""])
+    if text.startswith("阶段"):
+        _append_lines([f"⏳ 【流程】{text}", ""])
+    else:
+        _append_lines([f"⏳ {text}", ""])
+
+
+def append_pmo_debug_phase_begin(
+    phase: int,
+    title: str,
+    *,
+    detail: str = "",
+) -> None:
+    """阶段开始横幅（阶段一/二/三）。"""
+    if not debug_log_path():
+        return
+    cn = _phase_cn(phase)
+    lines = [
+        "",
+        "=" * 72,
+        f"【阶段{cn} · {title}】开始",
+    ]
+    if detail.strip():
+        lines.append(f"说明: {detail.strip()}")
+    lines.extend(
+        [
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "=" * 72,
+            "",
+        ]
+    )
+    _append_lines(lines)
+
+
+def append_pmo_debug_phase_summary(
+    phase: int,
+    title: str,
+    *,
+    ok_count: int = 0,
+    total: int = 0,
+    elapsed_sec: float = 0.0,
+    item_lines: list[str] | None = None,
+) -> None:
+    """阶段结束汇总（各 Worker / Stage 成败摘要）。"""
+    if not debug_log_path():
+        return
+    cn = _phase_cn(phase)
+    status = f"{ok_count}/{total} 成功" if total else "完成"
+    lines = [
+        "",
+        "=" * 72,
+        f"【阶段{cn} · {title}】结束 — {status}"
+        + (f" · 耗时 {elapsed_sec:.1f}s" if elapsed_sec > 0 else ""),
+    ]
+    for ln in item_lines or []:
+        lines.append(f"  {ln}")
+    lines.extend(["=" * 72, ""])
+    _append_lines(lines)
+
+
+def append_pmo_debug_agent_begin(
+    *,
+    agent_label: str,
+    role_label: str = "",
+    task_preview: str = "",
+    max_iterations: int | None = None,
+) -> None:
+    """单个 SubAgent / Publisher 启动标记。"""
+    if not debug_log_path():
+        return
+    lines = [
+        "-" * 72,
+        f"▶ Agent 启动: {agent_label}"
+        + (f"（{role_label}）" if role_label else ""),
+    ]
+    if task_preview.strip():
+        lines.append(f"   任务: {_truncate(task_preview.strip(), 200)}")
+    if max_iterations:
+        lines.append(f"   ReAct 上限: {max_iterations} 轮")
+    lines.extend(["-" * 72, ""])
+    _append_lines(lines)
+
+
+def append_pmo_debug_agent_finish(
+    *,
+    agent_label: str,
+    ok: bool,
+    result_preview: str = "",
+    error: str = "",
+    elapsed_sec: float = 0.0,
+) -> None:
+    """单个 SubAgent / Publisher 结束标记。"""
+    if not debug_log_path():
+        return
+    marker = "✅ 成功" if ok else "❌ 失败"
+    lines = [
+        "-" * 72,
+        f"◀ Agent 结束: {agent_label}",
+        f"   状态: {marker}"
+        + (f" · 耗时 {elapsed_sec:.1f}s" if elapsed_sec > 0 else ""),
+    ]
+    if ok and result_preview.strip():
+        lines.append(f"   结果摘要: {_truncate(result_preview.strip(), 300)}")
+    if not ok and error.strip():
+        lines.append(f"   报错: {_truncate(error.strip(), 400)}")
+    lines.extend(["-" * 72, ""])
+    _append_lines(lines)
 
 
 def finalize_pmo_debug_log(final_answer: str = "", *, aborted: bool = False) -> None:
     fp = debug_log_path()
     if not fp:
         return
+    complete_pmo_debug_main_agent(
+        final_answer=final_answer,
+        ok=bool((final_answer or "").strip()),
+        aborted=aborted,
+    )
     lines = ["", "=" * 72, "【任务结束】"]
     if aborted:
         lines.append("状态: 中断或未正常完成")
@@ -188,26 +485,50 @@ def _format_round_block(
     *, iteration: int, tool: str, action_input: str, observation: str, thought: str = ""
 ) -> list[str]:
     n = iteration + 1
-    cap = _session_max_iterations_cap()
+    ctx = get_effective_debug_context()
+    if ctx and ctx.get("max_iterations"):
+        cap = max(1, int(ctx["max_iterations"]))
+    else:
+        cap = _session_max_iterations_cap()
     t = (tool or "").strip()
-    phase = _phase_label(t, action_input, observation)
+    step_phase = _phase_label(t, action_input, observation)
     purpose, _idea_raw = _split_thought(thought, tool=t, action_input=action_input)
     human_purpose = _humanize_purpose(purpose, tool=t, action_input=action_input)
     human_idea = _humanize_agent_idea(thought, tool=t, action_input=action_input)
 
+    if ctx and ctx.get("agent_label"):
+        cn = _phase_cn(int(ctx.get("phase") or 1))
+        phase_title = f"【阶段{cn} · {ctx['agent_label']}"
+        if ctx.get("phase_label"):
+            phase_title += f" · {ctx['phase_label']}"
+        round_hdr = f"{phase_title} · 第 {n} / {cap} 轮】{step_phase}"
+    else:
+        round_hdr = f"【第 {n} / {cap} 轮】{step_phase}"
+
     lines = [
         "=" * 72,
-        f"【第 {n} / {cap} 轮】{phase}",
-        "-" * 72,
-        "📌 这一步在做什么",
-        f"   {human_purpose}",
-        "",
-        "💭 Agent 想法",
-        f"   {human_idea}",
-        "",
-        f"🔧 调用了: {t or '（未知工具）'}",
-        "📋 具体操作",
+        round_hdr,
     ]
+    if ctx and ctx.get("agent_label"):
+        role = ctx.get("role_label") or ""
+        lines.append(
+            f"🤖 当前 Agent: {ctx['agent_label']}" + (f"（{role}）" if role else "")
+        )
+        if ctx.get("task_preview"):
+            lines.append(f"📋 本子 Agent 任务: {_truncate(str(ctx['task_preview']), 140)}")
+    lines.extend(
+        [
+            "-" * 72,
+            "📌 这一步在做什么",
+            f"   {human_purpose}",
+            "",
+            "💭 Agent 想法",
+            f"   {human_idea}",
+            "",
+            f"🔧 调用了: {t or '（未知工具）'}",
+            "📋 具体操作",
+        ]
+    )
     op_lines = _format_operation(t, action_input)
     lines.extend(f"   {ln}" if ln else "" for ln in op_lines)
 
@@ -331,6 +652,11 @@ def _humanize_agent_idea(thought: str, *, tool: str = "", action_input: str = ""
     return t[:500].rstrip() + f"…（共 {len(t)} 字）"
 
 
+def _debug_agent_label() -> str:
+    ctx = get_effective_debug_context()
+    return str((ctx or {}).get("agent_label") or "").strip()
+
+
 def _humanize_purpose(purpose: str, *, tool: str, action_input: str) -> str:
     """把宿主推断的目的改写成非技术人员也能读懂的一句话。"""
     sql = _extract_sql(action_input)
@@ -343,8 +669,16 @@ def _humanize_purpose(purpose: str, *, tool: str, action_input: str) -> str:
         raw_purpose = ""
 
     if "db_query" in tb:
+        agent = _debug_agent_label()
         if "pmo_views_meta" in sl:
-            return "查看项目里有哪些飞书视图、每个视图有多少条数据（Step1 数据地图）"
+            if agent == "Worker A":
+                return "查看项目里有哪些飞书视图、每个视图有多少条数据（Step1 数据地图）"
+            if agent in ("Worker B", "Worker C"):
+                return (
+                    f"{agent} 纠错：核对单视图 columns_json（B/C 任务 SQL 失败后的字段核对，"
+                    "非 Worker A 全量地图）"
+                )
+            return "查看飞书视图元数据（pmo_views_meta）"
         if "limit 1" in sl and "fields" in sl:
             if "vewcz1ffji" in sl:
                 return "抽 1 条人员看板记录，确认字段名长什么样（Step2 样本）"
@@ -361,15 +695,22 @@ def _humanize_purpose(purpose: str, *, tool: str, action_input: str) -> str:
                     "查人员看板里有哪些执行人（⚠️ 当前 SQL 只查了人名，"
                     "还应带上任务名、状态、Sprint、截止日期才能做负荷分析）"
                 )
+            if agent == "Worker B":
+                return "B-4·人员看板 vewCz1FFJi：每人任务/状态/Sprint（personnel_tasks[] SSOT）"
             return "查人员看板：每人负责哪些任务、状态如何、Sprint 和截止日期（Step3 人员矩阵）"
         if "vewcz1ffji" in sl and "父记录" in sql and "[0].text" in sql and " is null" in sl:
             return (
                 "❌ 错误操作：在人员看板上用「Epic 顶层」条件查需求——"
                 "人员表任务都有父记录，这个条件会查不到任何数据；"
-                "Epic 应去 vewpI8lyYw 查（Step4）"
+                "Epic 应去 vewpI8lyYw 用 **C-2**（Worker C）"
             )
         if "vewpi8lyyw" in sl and "父记录" in sql and "[0].text" in sql:
-            return "查开发主表里有哪些顶层 Epic 大需求（Step4）"
+            if agent == "Worker C":
+                return (
+                    "C-2·近三周顶层 Epic 大需求（须整段复制任务体 C-2："
+                    "父记录双形态 + 任务编号 + Sprint IN，禁止仅用父记录[0].text IS NULL）"
+                )
+            return "C-2·开发表 Epic 大需求（vewpI8lyYw · 父记录双形态，见任务体）"
         if "group by" in sl and "sprint" in sl:
             return "统计各 Sprint 里有多少条任务（Step5）"
         if "group by" in sl and ("状态" in sql or "status" in sl):
@@ -432,7 +773,13 @@ def _infer_purpose_from_sql(sql: str) -> str:
         if "version goal" in sl or "version" in sl:
             return "Step7·版本 Goal 覆盖率统计"
         if "vewpi8lyyw" in sl and ("父记录" in sql or "[0].text" in sql):
-            return "Step4·Epic 层级：顶层需求（父记录[0].text IS NULL）"
+            agent = _debug_agent_label()
+            if agent == "Worker C":
+                return (
+                    "C-2·大需求 Epic（须父记录双形态 + 任务编号；"
+                    "禁止仅用父记录[0].text IS NULL）"
+                )
+            return "C-2·开发表 Epic 大需求（vewpI8lyYw · 父记录双形态）"
         if "vewcz1ffji" in sl or "负责人" in sql or "person in charge" in sl:
             return "人员任务聚合（须用 Person in charge/Participant + en_name）"
         return "聚合统计探针"
@@ -445,7 +792,14 @@ def _infer_purpose_from_sql(sql: str) -> str:
     if "vewpi8lyyw" in sl and ("requirement" in sl or "priority" in sl):
         return "Locate·开发表需求明细（vewpI8lyYw）"
     if "vew8txmcsh" in sl or "vewl9mofgd" in sl:
-        return "Locate·产品视图交叉查询"
+        try:
+            from l3_node.tools.pmo_db_tools import pmo_sql_has_product_status_nested_extract
+
+            if pmo_sql_has_product_status_nested_extract(sql):
+                return "❌ B-1/B-2 错误：产品「需求状态/开发状态」禁止 [0].text 嵌套（须直接 json_extract）"
+        except Exception:
+            pass
+        return "Locate·产品视图交叉查询（B-1/B-2）"
     if "fields like" in sl or "like '%" in sl:
         return "Step6·跨视图：按需求名/人名检索矛盾"
     if "source_view" in sl:
@@ -488,8 +842,13 @@ def _phase_label(tool: str, inp: str, observation: str) -> str:
         return "推送 · 战报"
     if "db_query" in tb:
         sql = _extract_sql(inp).lower()
+        agent = _debug_agent_label()
         if "pmo_views_meta" in sql:
-            return "Probe · 数据地图"
+            if agent == "Worker A":
+                return "Probe · 数据地图"
+            if agent in ("Worker B", "Worker C"):
+                return "纠错 · 字段核对"
+            return "Probe · 视图元数据"
         if "group by" in sql or "count(*)" in sql or "count(*) as" in sql:
             if "sprint" in sql:
                 return "Probe · 工作周期"
@@ -822,10 +1181,23 @@ def _human_explain_zero_rows(sql: str) -> str:
         return (
             "查到了 0 条——因为在「人员看板」上用了 Epic 筛选条件。"
             "人员表里的任务几乎都有上级（父记录），所以筛「父记录为空」必然为空。"
-            "若要查 Epic，请改查 vewpI8lyYw（Step4）；若查人员任务，去掉父记录条件。"
+            "若要查 Epic，请改查 vewpI8lyYw 的 **C-2**；若查人员任务，去掉父记录条件。"
         )
+    if "vewpi8lyyw" in sl and "父记录" in sql:
+        dual = (
+            "json_extract(fields, '$.\"父记录\"') IS NULL" in sql
+            or "json_extract(fields, '$.\"父记录\"') = ''" in sql
+        )
+        if "[0].text" in sql and " is null" in sl and not dual:
+            return (
+                "查到了 0 条——可能因 **仅** 使用「父记录[0].text IS NULL」筛 Epic。"
+                "请逐字复制任务体 **C-2**（父记录双形态 + 任务编号 + 部门 NOT IN + Sprint IN）。"
+            )
     if "父记录" in sql and " is null" in sl and "[0].text" not in sql:
-        return "查到了 0 条——「父记录 IS NULL」写法不对，Epic 应改用 父记录[0].text IS NULL。"
+        return (
+            "查到了 0 条——「父记录 IS NULL」不能代替 C-2；"
+            "请逐字复制任务体 C-2（父记录双形态 + 任务编号）。"
+        )
     if "view_id" in sl and "pmo_raw_records" in sl:
         return "查到了 0 条——pmo_raw_records 表没有 view_id 列，应改用 source_view='vew…'。"
     return ""
@@ -925,10 +1297,15 @@ def _format_detail_row(row: dict[str, Any]) -> str:
 
 
 def _extract_sql(inp: str) -> str:
-    obj = _try_parse_json(inp)
-    if isinstance(obj, dict):
-        return str(obj.get("sql") or obj.get("query") or "").strip()
-    return (inp or "").strip()
+    try:
+        from l3_node.tools.pmo_db_tools import parse_db_query_action_input
+
+        return str(parse_db_query_action_input(inp).get("sql") or "").strip()
+    except Exception:
+        obj = _try_parse_json(inp)
+        if isinstance(obj, dict):
+            return str(obj.get("sql") or obj.get("query") or "").strip()
+        return (inp or "").strip()
 
 
 def _title_from_view_dict(v: dict[str, Any]) -> str:

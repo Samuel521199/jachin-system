@@ -94,6 +94,33 @@ class TestStrategicReportLeakSanitize(unittest.TestCase):
             "截断" in out or "### 🟡异动二" not in out or "渠道 DNU 枚举异常截断" in out
         )
 
+    def test_polish_chapter_spacing(self) -> None:
+        from l3_node.primitives.skills.bi.bi_daily_report.strategic_report import (
+            _format_strategic_report_spacing,
+            _polish_strategic_report_prose,
+        )
+
+        raw = """一、大盘晴雨表
+
+🎯 【定调】：a
+
+📊 【结论】：b
+
+💡 【要点】：
+- x
+
+二、买量复盘
+
+🎯 【定调】：c
+📊 【结论】：d
+"""
+        out = _polish_strategic_report_prose(raw)
+        # 章内无空行
+        self.assertIn("🎯 【定调】：a\n📊 【结论】：b", out)
+        # 章间双空行
+        self.assertIn("x\n\n\n二、买量复盘", out)
+        self.assertNotIn("🎯 【定调】：a\n\n📊", out)
+
     def test_polish_preserves_visual_hierarchy(self) -> None:
         raw = """# 📊 BI 增长战报（数据日：2026-06-01）
 

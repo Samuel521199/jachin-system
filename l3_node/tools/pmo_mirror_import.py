@@ -285,6 +285,13 @@ def import_mirror_from_files(
             }
         )
 
+    try:
+        from l3_node.pmo_worker_b_field_align import load_worker_b_field_alignment
+
+        load_worker_b_field_alignment(force=True)
+    except Exception:
+        pass
+
     return {
         "total_records": total_records,
         "views": list(per_view.values()),

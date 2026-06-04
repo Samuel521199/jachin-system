@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from l3_node.primitives.multi_agent.role_utils import sub_agent_role_label
+
 logger = logging.getLogger("multi_agent.fanout")
 
 
@@ -115,7 +117,7 @@ async def fanout_parallel(
     ----------
     items:
         子任务列表，每项为 dict，支持字段：
-        - role: str            SubAgent 角色（默认 "default"）
+        - role: str | dict     SubAgent 角色（字符串或 inline role dict）
         - task: str            任务描述
         - context_data: any    附加数据上下文（str 或 dict，自动序列化并追加到任务描述）
         - max_iterations: int  覆盖本子任务最大迭代次数
@@ -138,12 +140,45 @@ async def fanout_parallel(
     sem = asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
 
     async def _run_one(idx: int, spec: dict[str, Any]) -> FanoutItemResult:
-        role = (spec.get("role") or "default").lower()
+        role = sub_agent_role_label(spec.get("role"))
         task_preview = str(spec.get("task", ""))[:80]
         # 注入默认 max_iterations（若 spec 未显式设置）
         eff_spec = dict(spec)
         eff_spec.setdefault("max_iterations", item_max_iterations)
         t1 = time.monotonic()
+
+        debug_token = None
+        dbg_phase = spec.get("_debug_phase")
+        if dbg_phase:
+            try:
+                from l3_node.pmo_copilot_debug_file import (
+                    append_pmo_debug_agent_begin,
+                    append_pmo_debug_agent_finish,
+                    reset_ma_debug_context,
+                    set_ma_debug_context,
+                )
+
+                agent_label = str(spec.get("_debug_agent_label") or f"Worker {idx + 1}")
+                role_label = str(spec.get("_debug_role_label") or role)
+                task_short = str(spec.get("_debug_task_preview") or task_preview)
+                max_iter = int(eff_spec.get("max_iterations") or item_max_iterations)
+                debug_token = set_ma_debug_context(
+                    phase=int(dbg_phase),
+                    phase_label=str(spec.get("_debug_phase_label") or ""),
+                    agent_label=agent_label,
+                    role_label=role_label,
+                    task_preview=task_short,
+                    max_iterations=max_iter,
+                )
+                append_pmo_debug_agent_begin(
+                    agent_label=agent_label,
+                    role_label=role_label,
+                    task_preview=task_short,
+                    max_iterations=max_iter,
+                )
+            except Exception:
+                debug_token = None
+
         try:
             if sem is not None:
                 async with sem:
@@ -157,6 +192,18 @@ async def fanout_parallel(
                     _parent_allowed_skills=parent_allowed_skills,
                 )
             elapsed = time.monotonic() - t1
+            if debug_token is not None:
+                try:
+                    from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+
+                    append_pmo_debug_agent_finish(
+                        agent_label=str(spec.get("_debug_agent_label") or f"Worker {idx + 1}"),
+                        ok=True,
+                        result_preview=str(result or "")[:300],
+                        elapsed_sec=elapsed,
+                    )
+                except Exception:
+                    pass
             return FanoutItemResult(
                 index=idx + 1, role=role, task_preview=task_preview,
                 ok=True, result=result, elapsed_sec=elapsed,
@@ -166,10 +213,30 @@ async def fanout_parallel(
             err_str = str(e)
             err_class = "transient" if "timeout" in err_str.lower() else "per_item"
             logger.warning("[FanOut] 子任务 %d·%s 失败: %s", idx + 1, role, err_str[:200])
+            if debug_token is not None:
+                try:
+                    from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+
+                    append_pmo_debug_agent_finish(
+                        agent_label=str(spec.get("_debug_agent_label") or f"Worker {idx + 1}"),
+                        ok=False,
+                        error=err_str,
+                        elapsed_sec=elapsed,
+                    )
+                except Exception:
+                    pass
             return FanoutItemResult(
                 index=idx + 1, role=role, task_preview=task_preview,
                 ok=False, error=err_str, error_class=err_class, elapsed_sec=elapsed,
             )
+        finally:
+            if debug_token is not None:
+                try:
+                    from l3_node.pmo_copilot_debug_file import reset_ma_debug_context
+
+                    reset_ma_debug_context(debug_token)
+                except Exception:
+                    pass
 
     raw_results = await asyncio.gather(*[_run_one(i, spec) for i, spec in enumerate(items)])
     item_results: list[FanoutItemResult] = list(raw_results)

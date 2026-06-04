@@ -1,4 +1,4 @@
-# Jachin 多 Agent 架构全景文档
+﻿# Jachin 多 Agent 架构全景文档
 
 > **版本**: v1.0 — 2026-05-14  
 > **SSOT 关联**: `docs/Jachin 视角的「四大原语」终极架构规范.md`、`docs/JACHIN_EXECUTION_RESILIENCE_CONTRACT.md`  
@@ -49,7 +49,8 @@ Action Input: {"sub_tasks": [{"role": "coder", "task": "..."}, {"role": "analyst
 |------|------|------|------|
 | `agent.max_delegate_depth` | `nexus_config.json` | `2` | 防止无限嵌套 delegate |
 | `agent.delegate_max_concurrent` | `nexus_config.json` | `4` | 单次 delegate 最大并发 SubAgent 数（Semaphore） |
-| `agent.sub_agent_max_total_tokens` | `nexus_config.json` | `120000` | 子 Agent 单次 Token 上限 |
+| `agent.sub_agent_max_total_tokens` | `nexus_config.json` | `190000`（未配置时代码默认） | 子 Agent 单次 Token 上限（Worker A/B/C） |
+| `agent.main_max_total_tokens` | `nexus_config.json` | 可选 | 主编排 / 阶段三 Publisher |
 
 ### 2.2 `coordinate` — 跨节点多 L3 协同（L2 调度）
 

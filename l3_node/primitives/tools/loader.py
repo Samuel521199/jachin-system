@@ -1526,8 +1526,14 @@ def run_tool(
         "core:pmo_import_json",
         "core:pmo_init_gap_report",
         "core:pmo_mirror_import",
+        "core:pmo_sprint_epic_report",
+        "core:pmo_resolve_sprint",
     ):
-        if inp.strip().startswith("{"):
+        if tool_id == "core:db_query":
+            from l3_node.tools.pmo_db_tools import parse_db_query_action_input
+
+            params = parse_db_query_action_input(inp)
+        elif inp.strip().startswith("{"):
             try:
                 o = json.loads(inp)
                 if isinstance(o, dict):
@@ -1535,7 +1541,7 @@ def run_tool(
             except json.JSONDecodeError:
                 params = {}
         else:
-            params = {"sql": inp} if tool_id == "core:db_query" else {}
+            params = {}
         print(
             f"[Skill Execute] [Native PMO] 调用 tool_id={tool_id}",
             file=sys.stderr,

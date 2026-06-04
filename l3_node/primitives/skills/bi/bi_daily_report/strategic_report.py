@@ -1,7 +1,7 @@
 ﻿"""
 BI 战略大战报（长文深度分析）
 
-分析规范以 **docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md**（v6.3 五板块 · 战略决策导向）为 SSOT，
+分析规范以 **docs/bi_daily_report/STRATEGIC_REPORT_ANALYSIS_SPEC.md**（v6.4 冲 DAU · 不谈 RTP）为 SSOT，
 运行时加载为 System Prompt；缺失时回退 _STRATEGIC_ANALYSIS_SPEC_FALLBACK。
 
 User 侧注入：bi_project 背景、T vs T-1 字段摘要（默认 DuckDB）、指标 JSON、表摘要。
@@ -216,7 +216,7 @@ _RAW_STRATEGIC_PREAMBLE = """### 【raw 摘要 · 口径提示】（生成战报
 - **`stats_user_dau`「全部汇总」** 的当日金币产出/消耗：按真实位数换算（**1 亿 = 10⁸**）。例如 `53,179,122` ≈ **5318 万** 或 **约 0.53 亿**，**禁止**误写为 5.32 亿。
 - **`prod_sales`「全部汇总」**：**用户金币产出/消耗** 与 **机器人金币产出/消耗** 为不同列，须**分开**写；无合并定义时不要自行相加统称「全平台总产出」。
 - **`daily_acquisition`**：每行 = **单条落地 URL**，非全站唯一漏斗总和。
-- **`stats_retention_user`**：T 日行上 **T+1 留存** 为 `0`/`NaN%` 时，优先写 **指标未闭合或 ETL 未就绪**；架构延迟仅作**并列假设**。
+- **`stats_retention_user`**：**数据日 T 当行的「次日 T+1 留存」为 0/NaN% 是日历常态**（要等 T+1 自然日结束才有数），**禁止**写成 ETL 故障或留存崩盘；分析次留只用 **T-1 及更早** 已闭合日期（见 User「留存日历」）。
 - **局数**：优先与 **`stats_game_daily`（完成局数）** 对齐；若用 `stats_game_core` 请注明表名。
 
 """
@@ -430,101 +430,116 @@ def _has_opening_section(text: str) -> bool:
     return len(text) >= 400
 
 
+_CHAPTER_HEAD_RE = re.compile(r"^[一二三四五]、")
+_BLOCK_LABEL_RE = re.compile(r"^[🎯📊💡🧭🔍]")
+
+
+def _is_chapter_heading(line: str) -> bool:
+    return bool(_CHAPTER_HEAD_RE.match(line.strip()))
+
+
+def _normalize_strategic_report_line(raw_ln: str) -> str | None:
+    """单行归一化；返回 None 表示丢弃该行。"""
+    ln = raw_ln.rstrip()
+    if re.fullmatch(r"\s*-{3,}\s*", ln):
+        return None
+    if not ln.strip():
+        return None
+
+    if ln.lstrip().startswith(">"):
+        ln = re.sub(r"^\s*>\s*", "", ln)
+
+    hm = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if hm:
+        title = re.sub(r"\*\*([^*]+)\*\*", r"\1", hm.group(2).strip())
+        if title in ("人话结论",) or title.startswith("人话结论"):
+            return "📊 【结论】："
+        if "要点" in title:
+            return "💡 【要点】："
+        return title
+
+    if re.match(r"^#{1,6}\s", ln):
+        ln = re.sub(r"^#{1,6}\s+", "", ln)
+
+    ln = re.sub(r"`([^`]+)`", r"\1", ln)
+    if re.match(r"^\*\*数据源\*\*", ln) or re.match(r"^数据源[：:]", ln.strip()):
+        return None
+
+    sub = re.match(
+        r"^(人话结论|分析要点(?:（必须覆盖）)?|运营\s*/\s*数值|买量\s*/\s*市场|技术\s*/\s*数仓)\s*$",
+        ln.strip(),
+    )
+    if sub:
+        label = sub.group(1)
+        if "结论" in label:
+            return "📊 【结论】："
+        if "要点" in label:
+            return "💡 【要点】："
+        return None
+
+    if re.match(r"^定调[：:]", ln.strip()) and "🎯" not in ln:
+        ln = re.sub(r"^定调[：:]\s*", "🎯 【定调】：", ln.strip())
+    elif re.match(r"^结论[：:]", ln.strip()) and "📊" not in ln:
+        ln = re.sub(r"^结论[：:]\s*", "📊 【结论】：", ln.strip())
+    elif re.match(r"^要点[：:]", ln.strip()) and "💡" not in ln:
+        ln = re.sub(r"^要点[：:]\s*", "💡 【要点】：", ln.strip())
+
+    if re.match(r"^\[(?:紧急|重要)\]\s*/\s*", ln.strip()):
+        ln = re.sub(
+            r"^\[(紧急|重要)\]\s*/\s*\[([^\]]+)\]\s*([^/\n]+?)(?:\s*/\s*([^/\n]+))?\s*$",
+            r"【\1·\2·\3】",
+            ln.strip(),
+        )
+
+    if re.match(r"^【(?:紧急|重要)", ln.strip()) and not _BLOCK_LABEL_RE.match(ln.strip()):
+        ln = re.sub(r"^【(?:紧急|重要)[^】]*】\s*", "", ln.strip())
+
+    ln = re.sub(r"\*\*([^*]+)\*\*", r"\1", ln)
+    return ln.strip()
+
+
+def _format_strategic_report_spacing(lines: list[str]) -> str:
+    """
+    章内紧凑（单行间距），章间双空行（一眼分节）。
+    规则：「一、」～「五、」前插入 2 行空白；章内 🎯📊💡 与列表项不再插空行。
+    """
+    if not lines:
+        return ""
+
+    out: list[str] = []
+    for ln in lines:
+        if _is_chapter_heading(ln):
+            if out:
+                while out and out[-1] == "":
+                    out.pop()
+                out.extend(["", ""])
+            out.append(ln)
+        else:
+            out.append(ln)
+
+    text = "\n".join(out).strip()
+    # 文档总标题（非「一、」开头）与第一章之间：仅 1 行空白
+    text = re.sub(
+        r"^([^\n]+)\n\n+([一二三四五]、)",
+        r"\1\n\n\2",
+        text,
+        count=1,
+    )
+    return text
+
+
 def _polish_strategic_report_prose(text: str) -> str:
-    """轻量排版：去 ** 加粗与噪声符号，保留 🎯📊💡🚨⚠️ 视觉层级，保证节间空行。"""
+    """轻量排版：去 ** 与噪声；章内紧凑、章间双空行；保留 🎯📊💡🧭🔍。"""
     if not (text or "").strip():
         return text
 
-    lines_out: list[str] = []
-    prev_blank = False
-
+    lines: list[str] = []
     for raw_ln in text.splitlines():
-        ln = raw_ln.rstrip()
+        norm = _normalize_strategic_report_line(raw_ln)
+        if norm:
+            lines.append(norm)
 
-        if re.fullmatch(r"\s*-{3,}\s*", ln):
-            continue
-
-        if ln.lstrip().startswith(">"):
-            ln = re.sub(r"^\s*>\s*", "", ln)
-
-        hm = re.match(r"^(#{1,6})\s+(.*)$", ln)
-        if hm:
-            title = hm.group(2).strip()
-            title = re.sub(r"\*\*([^*]+)\*\*", r"\1", title)
-            if title in ("人话结论",) or title.startswith("人话结论"):
-                lines_out.append("📊 【结论】：")
-                prev_blank = False
-                continue
-            if "要点" in title:
-                lines_out.append("💡 【要点】：")
-                prev_blank = False
-                continue
-            if not prev_blank and lines_out:
-                lines_out.append("")
-            lines_out.append(title)
-            lines_out.append("")
-            prev_blank = True
-            continue
-
-        if re.match(r"^#{1,6}\s", ln):
-            ln = re.sub(r"^#{1,6}\s+", "", ln)
-
-        ln = re.sub(r"`([^`]+)`", r"\1", ln)
-
-        if re.match(r"^\*\*数据源\*\*", ln) or re.match(r"^数据源[：:]", ln.strip()):
-            continue
-
-        sub = re.match(
-            r"^(人话结论|分析要点(?:（必须覆盖）)?|运营\s*/\s*数值|买量\s*/\s*市场|技术\s*/\s*数仓)\s*$",
-            ln.strip(),
-        )
-        if sub:
-            label = sub.group(1)
-            if "结论" in label:
-                ln = "📊 【结论】："
-            elif "要点" in label:
-                ln = "💡 【要点】："
-            else:
-                continue
-
-        if re.match(r"^定调[：:]", ln.strip()) and "🎯" not in ln:
-            ln = re.sub(r"^定调[：:]\s*", "🎯 【定调】：", ln.strip())
-        elif re.match(r"^结论[：:]", ln.strip()) and "📊" not in ln:
-            ln = re.sub(r"^结论[：:]\s*", "📊 【结论】：", ln.strip())
-        elif re.match(r"^要点[：:]", ln.strip()) and "💡" not in ln:
-            ln = re.sub(r"^要点[：:]\s*", "💡 【要点】：", ln.strip())
-
-        if re.match(r"^\[(?:紧急|重要)\]\s*/\s*", ln.strip()):
-            ln = re.sub(
-                r"^\[(紧急|重要)\]\s*/\s*\[([^\]]+)\]\s*([^/\n]+?)(?:\s*/\s*([^/\n]+))?\s*$",
-                r"【\1·\2·\3】",
-                ln.strip(),
-            )
-
-        if re.match(r"^【(?:紧急|重要)", ln.strip()) and not re.match(r"^[🚨⚠️🧭🔍🎯📊💡]", ln):
-            # 旧版派活格式：去掉紧急/重要派工前缀，保留正文供人工阅读（规范已禁止新生成）
-            ln = re.sub(r"^【(?:紧急|重要)[^】]*】\s*", "", ln.strip())
-
-        if re.match(r"^[一二三四五]、", ln.strip()):
-            if not prev_blank and lines_out:
-                lines_out.append("")
-            lines_out.append(ln.strip())
-            lines_out.append("")
-            prev_blank = True
-            continue
-
-        if not ln.strip():
-            if not prev_blank:
-                lines_out.append("")
-                prev_blank = True
-            continue
-
-        ln = re.sub(r"\*\*([^*]+)\*\*", r"\1", ln)
-        lines_out.append(ln)
-        prev_blank = False
-
-    result = re.sub(r"\n{3,}", "\n\n", "\n".join(lines_out)).strip()
-    return result
+    return _format_strategic_report_spacing(lines)
 
 
 def _deliver_strategic_report(text: str) -> str:
@@ -950,7 +965,7 @@ def _scrub_dod_summary_for_prompt(dod: str) -> str:
     lines: list[str] = []
     for ln in dod.splitlines():
         if ln.count("NaN%") >= 3:
-            lines.append(re.sub(r"(NaN%[\s,，]*){2,}", "NaN%（ETL未闭合，勿逐条复读） ", ln))
+            lines.append(re.sub(r"(NaN%[\s,，]*){2,}", "NaN%（T日行T+1未到期为常态，勿当ETL故障复读） ", ln))
             continue
         if re.search(r"(\+\d+%`?\(达\s*){3,}", ln):
             lines.append(re.sub(r"(\+\d+%`?\(达\s*)+", "+N%（…环比，勿复读） ", ln))
@@ -1003,13 +1018,10 @@ def _to_json_serializable(obj: Any) -> Any:
     return obj
 
 # 未找到 STRATEGIC_REPORT_ANALYSIS_SPEC.md 时的兜底（保持可运行）
-_STRATEGIC_ANALYSIS_SPEC_FALLBACK = """# BI 增长战报（兜底 v6.3）
+_STRATEGIC_ANALYSIS_SPEC_FALLBACK = """# BI 增长战报（兜底 v6.5）
 
-五节：晴雨表→买量→漏斗→生态→增长战略与决策。
-第一～四节：🎯📊💡；第五节：战略选项+🧭优先序+🔍待验证，面向 DAU 增长，禁止派活/人名/deadline。
-第三节 IAA 缺数须盲区疾呼。"""
-
-
+五节诊断+战略决策；冲DAU；禁止RTP；T日次留0为常态；分析次留只用T-1及更早。
+用局数/进桌/留存/买量/IAA盲区；🎯📊💡🧭🔍；禁止派活。"""
 def _load_strategic_analysis_spec(project_root: Path | None = None) -> str:
     """加载大战报分析规范 MD；缺失则回退 _STRATEGIC_ANALYSIS_SPEC_FALLBACK。"""
     try:
@@ -1318,15 +1330,19 @@ _USER_PROMPT_TEMPLATE = """## K11 / BI 项目背景知识（docs/bi_daily_report
 ## IAA 数据自检（系统预判 · 须服从）
 {iaa_self_check_section}
 
-请**先**结合「背景知识」与「T vs T-1 摘要」，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v6.3**：
+## 留存日历（系统预判 · 须服从）
+{retention_calendar_section}
 
-- **北极星**：盈利期 · 真实 DAU/DNU 增长（可持续，非虚胖一次性数字）  
-- **结构（五节）**：① 大盘晴雨表 → ② 买量复盘 → ③ 漏斗解剖（最厚）→ ④ 生态留客 → ⑤ **增长战略与决策**（最厚，与③相当）  
-- **第一～四节**：🎯【定调】📊【结论】💡【要点】；禁止 ** 加粗  
-- **第五节（决策层，不是派工单）**：🎯📊💡【战略选项】🧭【优先序】🔍【待验证】；写战略选项、利弊、对 DAU 的影响；**禁止**人名、deadline、派活式指令  
-- **IAA 缺数**：第三节盲区疾呼；第五节 🔍【待验证】说明哪些决策无法拍板  
+请**先**结合「背景知识」与「T vs T-1 摘要」，再综合下方 JSON 与摘要，**严格遵循 System 中的《战略战报分析规范》v6.4**：
 
-日期用 {report_date_mmdd}。建议 1200～2500 汉字。禁止思考链、占位符；直接输出正文。"""
+- **北极星**：**不计成本冲 DAU/DNU**——流量、漏斗、留存、买量效率；**不是** RTP/GGR 控盘或「经济止血」  
+- **禁止 RTP 叙事**：正文不得写 RTP、GGR、放水、通胀、下调 RTP、经济模型止血等（即使 JSON 里有返币率字段也忽略）  
+- **次留日历**：**T 日（数据日）次留=0/NaN% 正常**（T+1 未到期）；**禁止**据此写「留存崩盘/ETL 未就绪/无法验证今日新增」；评价留存只用 **T-1 及更早** 真实次留%，今日新增写「待明日 T+1 落地后验证」  
+- **结构（五节）**：① 大盘晴雨表 → ② 买量复盘 → ③ 漏斗解剖（最厚）→ ④ 生态留客（局数/参与度，不谈 RTP）→ ⑤ 增长战略与决策  
+- **第一～四节**：🎯📊💡；第五节 🎯📊💡🧭🔍；禁止 ** 加粗、人名、派活  
+- **IAA 缺数**：第三节盲区疾呼；第五节 🔍【待验证】  
+
+日期用 {report_date_mmdd}。建议 1200～2500 汉字。禁止思考链；直接输出正文。"""
 
 
 _IAA_FIELD_RE = re.compile(
@@ -1355,6 +1371,18 @@ def _iaa_data_likely_available(
     return bool(_IAA_NUMERIC_NEAR_RE.search(blob))
 
 
+def _build_retention_calendar_note(dod_t1: str, dod_t2: str = "") -> str:
+    """向 LLM 说明 T 日次留 0 是日历常态，避免误判为 ETL/崩盘。"""
+    t = (dod_t1 or "").strip()[:10] or "T"
+    t_prev = (dod_t2 or "").strip()[:10] or "T-1"
+    return (
+        f"**数据日 T = {t}**（战报分析日）。留存表「次日(T+1)留存」列含义：T 日新增用户在 **T+1 自然日** 是否回访。\n"
+        f"- **{t} 这一行 T+1 显示 0 或 NaN% 是正常的**：今天还没过完，明日才有「今日新增用户的次留」；**不是**留存崩盘，**不是** ETL 坏了，**不要**写「次留归零」「无法验证今日新增质量」。\n"
+        f"- **只有 {t_prev} 及更早日期** 的次留% 才是已闭合的真实数据（例：截图里 {t_prev} 行可有 11% 量级次留）。\n"
+        f"- 写大盘/买量时：引用 **昨日 {t_prev} 次留** + 近 7 日趋势；对 **今日 {t} 新增** 写「次留待 T+1 数据落地后验证（预期明日可见）」。"
+    )
+
+
 def _build_iaa_self_check_section(
     metrics: dict[str, Any] | None,
     data_summary: str,
@@ -1369,7 +1397,7 @@ def _build_iaa_self_check_section(
         "**判定：输入中未检测到 IAA（激励视频）观看、eCPM、完播率等有效数值**（当前 DuckDB 常规 slug 通常不含此项）。\n"
         "→ 第三板块「漏斗解剖」**必须**单独设 **IAA 致命盲区** 要点，大声疾呼："
         "「连用户有没有看广告都不知道！在 IAP 几乎不起量的情况下，无法计算 ROI 兜底，这是极度危险的盲区！」\n"
-        "→ 第五板块「增长战略与决策」须在 🔍【待验证】中说明：缺 IAA/次留等数据时，**哪些面向 DAU 的战略选项无法拍板**（写决策盲区，不写数仓工单）。"
+        "→ 第五板块「增长战略与决策」须在 🔍【待验证】中说明：缺 IAA 时哪些买量决策无法拍板；**勿**把「T 日次留=0」列为待验证（那是日历常态）。"
     )
 
 
@@ -1630,6 +1658,7 @@ def _build_user_prompt(
     dt1 = (dod_t1 or "").strip() or report_date_mmdd
     dt2 = (dod_t2 or "").strip() or "T-1"
     iaa_sec = _build_iaa_self_check_section(metrics, data_section, dod_sec)
+    ret_sec = _build_retention_calendar_note(dt1, dt2)
     return _USER_PROMPT_TEMPLATE.format(
         k11_context_section=k11_sec,
         dod_summary_section=dod_sec,
@@ -1638,6 +1667,7 @@ def _build_user_prompt(
         metrics_json=metrics_json,
         csv_summary_section=data_section,
         iaa_self_check_section=iaa_sec,
+        retention_calendar_section=ret_sec,
         report_date_mmdd=report_date_mmdd,
     )
 
@@ -1773,11 +1803,12 @@ async def generate_bi_strategic_report_async(
         "「(截断)/(续)/(完整)/(最终)」等标记、英文 Self-Correction/Ready to Output/Wait 注释、"
         "或 pipe 滥用的空表格；**禁止**复读 `DNU=`, `DNU=),` 空占位或「D NU/D AU比例异常高」同句循环。"
         "渠道占比写一次具体数字即可，缺数写「未提供」。"
-        "**禁止** v4/v5 旧结构；必须按 v6.3 五板块输出。"
-        "第一～四节：🎯📊💡 诊断；第五节：增长战略与决策（🎯📊💡🧭🔍），面向盈利期 DAU 北极星。"
-        "第五节是战略备忘录：**禁止**点名负责人、禁止 deadline、禁止派工单（🚨【紧急·某某】）；须写选项/利弊/优先序。"
-        "第三板块最具体；无 IAA 时第三节疾呼 + 第五节 🔍待验证。"
-        "保留 emoji 标签；正文禁止 ** 加粗、###、---、引用块、反引号表名。"
+        "**禁止** v4/v5 旧结构；必须按 v6.4 五板块输出。"
+        "阶段锚点：不计成本冲 DAU/DNU；第一～四节 🎯📊💡；第五节战略决策 🧭🔍。"
+        "**全文禁止 RTP/GGR 叙事**：不得写返币率、放水、通胀、下调 RTP、经济止血等，即使输入数据含 RTP 字段。"
+        "**次留日历**：T 日（数据日）次留 0/NaN% 为常态（T+1 未到期），禁止写 ETL 故障/留存崩盘；只用 T-1 及更早真实次留评价，今日新增写待明日验证。"
+        "用局数/进桌率/留存/买量/IAA 讲增长；禁止派活与人名。"
+        "排版：章内紧凑；章间双空行由系统处理。"
     )
 
     engine = None

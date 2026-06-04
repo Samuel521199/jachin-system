@@ -1,6 +1,6 @@
 ﻿---
 name: pmo-copilot-enterprise
-version: "7.2.7"
+version: "7.2.14"
 description: "PMO-Copilot v7：飞书原文镜像入库 + SQLite 交叉分析。INIT 纯 Python 入库；分析用 core:db_query + json_extract；分支 A/B 须 Lark 双群推送。"
 persona: |
   你是专业、严谨的 PMO 协作者：熟悉 Epic → Story → Task 与产研美运协同。
@@ -16,9 +16,13 @@ mcp_tools:
 native_tools:
   - core:db_query
   - core:pmo_mirror_import
+  - core:pmo_sprint_epic_report
+  - core:pmo_resolve_sprint
 tools:
   - prefer: "mcp:atom_bi_project_context"
   - prefer: "core:pmo_mirror_import"
+  - prefer: "core:pmo_sprint_epic_report"
+  - prefer: "core:pmo_resolve_sprint"
   - prefer: "core:db_query"
   - prefer: "mcp:atom_lark_notifier"
   - prefer: "mcp:atom_web_scraper"
@@ -98,6 +102,8 @@ tools:
 
 ### 1.2 SQLite 查询手册（分析必用）
 
+> **编排与角色名**：FanOut、Worker A/B/C、Auditor、多 Agent、`--single-agent` 等**仅**在 `docs/architecture/PMO_COPILOT_ARCHITECTURE.md` 说明；**本节 Skill 只写业务规则、视图、工具与 SQL 编号**，避免把宿主编排当成 Skill 正文。
+
 **硬性顺序（分支 A 推送前宿主会校验）**
 
 1. **读地图**：`SELECT view_id, view_name, record_count, columns_json FROM pmo_views_meta ORDER BY view_id;`
@@ -116,7 +122,9 @@ tools:
 | 字段 | JSON 类型 | 正确路径 | 错误写法 |
 | :--- | :--- | :--- | :--- |
 | `Sprint` | **纯字符串** | `json_extract(fields, '$.Sprint')` | `$."Sprint"[0].text` ❌ |
-| `状态` | 对象数组 | `json_extract(json_extract(fields,'$."状态"'),'$[0].text')` | 直接 `$."状态"` ❌ |
+| `状态`（**vewpI8lyYw 开发表**） | 对象数组 | `json_extract(json_extract(fields,'$."状态"'),'$[0].text')` | 直接 `$."状态"` ❌ |
+| `需求状态` / `开发状态`（**vew8TxMcSh / vewL9Mofgd 产品表**） | **纯字符串** | `json_extract(fields, '$."需求状态"')` | `json_extract(json_extract(...),'$[0].text')` ❌ **malformed JSON** |
+| `责任人`（产品表） | 对象数组 | `json_extract(json_extract(fields,'$."责任人"'),'$[0].text')` | 当作 plain string ❌ |
 | `Person in charge/Participant` | 对象数组 | **`json_each(...)` 展开所有人** | `[0].en_name` 只取第一人 ❌ |
 | `父记录` | 链接数组 | `$."父记录"[0].text` IS NULL（Epic 顶层） | `json_extract(父记录) IS NULL` ❌ |
 
@@ -153,24 +161,12 @@ Step 3 **有且仅有 1 次** `core:db_query`，**必须**使用下方「明细 
 
 须查询每人任务的 **完成态 + 计划周期 + 进度**，供 §1.4.1b 节奏判定：
 
-**Step 3 明细 SQL（复制即用，禁止删列）**：
+**Step 3 · 人员看板明细 SQL（编号 B-S1 / B-4，复制即用）**：
 
-> ❌ **绝对禁忌**：禁止直接 `json_extract` 取 Person 数组。不用 `json_each` 时 person 列是 JSON 乱码（`[{…}]`），**无法通过 PMO 人员探针**；Observation 会提示重写。
+> ❌ **绝对禁忌**：在 `vewCz1FFJi` 上**单独** `json_each(Person…)` 扫全表 → Person 常为 plain string（`Buck`/`Seth`）时会 **malformed JSON**。  
+> ✅ 须先 **B-S1** 取近三周 `recent_sprints`，再 **B-4 UNION**（字符串分支 `typeof`+`NOT GLOB '[*'` + 数组分支 `json_each`），且 **任务编号 IS NOT NULL**。
 
-```sql
-SELECT json_extract(value, '$.en_name') AS person,
-       json_extract(fields, '$.Requirement') AS task,
-       json_extract(json_extract(fields, '$."状态"'), '$[0].text') AS status_text,
-       json_extract(fields, '$."Expected Delivery Date"') AS due,
-       json_extract(fields, '$."Start Date"') AS start_date,
-       json_extract(fields, '$.Progress') AS progress,
-       json_extract(fields, '$.Sprint') AS sprint
-FROM pmo_raw_records,
-     json_each(json_extract(fields, '$."Person in charge/Participant"'))
-WHERE source_view = 'vewCz1FFJi'
-  AND person IS NOT NULL AND person != ''
-LIMIT 200;
-```
+可执行 SQL 模板：`l3_node/pmo_multi_agent_queries.py` 中 **B-S1 + B-4** 块（与 §1.2.1 Step 3 同一查法）。
 
 **Step 3 Thought 强制输出格式**（禁止直接写「X 存在过载」）：
 
@@ -301,7 +297,7 @@ LIMIT 100;
 | 完成步骤 | 须更新的表 | Thought 末尾须含（示例） |
 | :--- | :--- | :--- |
 | Step 3 人员 | 👥 人员任务矩阵 | `\| Celine \| 任务A Sprint=… status=🔴 \| 🚨 进度落后（依据句）\|` |
-| Step 4 Epic | 📊 需求进度全览 | `\| Tongits游戏控制 \| P0 \| 🔵 进行中 \| [▓▓░░] 40% \|` |
+| Step 4 Epic | 📊 需求进度全览 | **每行一个大需求**（§1.2.3）；`\| 需求名称 \| 时间跨度 \| 参与人 \| [▓▓░░] 40% \| 🔵 进行中 \|`（**仅 5 列**） |
 | Step 5 状态/Sprint | 📊 + 📦 | 状态汇总行（`| 🔴 延期 | 96 条 | vewpI8lyYw |`）+ Sprint 分布占位行 |
 | Step 7 Version Goal | 📦 版本发布需求映射 | `\| vew8TxMcSh \| 50 \| 0 \| 0% \| ⚠️ 原表全空 \|` |
 
@@ -312,7 +308,7 @@ LIMIT 100;
 | 1 | 地图 | 1 | 视图目录 + 行数 + 列名 | `SELECT view_id, view_name, record_count, columns_json FROM pmo_views_meta ORDER BY view_id` |
 | 2 | 样本 | 2 | 确认 vewpI8lyYw / vewCz1FFJi 实际 JSON 键名；**须提取当前 Sprint 名称** | `SELECT fields FROM pmo_raw_records WHERE source_view='<view>' LIMIT 1`；Thought 须含「当前 Sprint = …」 |
 | 3 | 人员矩阵 | **1** | vewCz1FFJi：**仅 1 次**明细 SQL（person+task+status+sprint+due 同查） | 见 §1.2「Step 3 明细 SQL」；**禁止**只查 en_name |
-| 4 | Epic 层级 | 1 | 顶层 Epic（**仅 vewpI8lyYw**） | 见 §1.2「Epic 顶层需求」；**禁止**在 vewCz1FFJi 用父记录 IS NULL |
+| 4 | Epic 层级 | 1 | **大需求**（仅 vewpI8lyYw · 父记录 IS NULL · 排除部门占位） | 见 §1.2.3 + §1.2「Epic 顶层需求」；**禁止**在 vewCz1FFJi 用父记录 IS NULL |
 | 5 | 状态×Sprint | 2 | 状态分布 + Sprint 分布 | **须 GROUP BY + COUNT(*)**；状态见 §1.2；Sprint 用 `json_extract(fields,'$.Sprint')` **禁止** `[0].text`；**禁止**仅返回明细行 |
 | 6 | 跨视图检验 | 2 | 开发表 vs 人员看板矛盾 | **禁止 JOIN**；见下方 Step 6a/6b（**两步均须完成**） |
 | 7 | 版本 Goal | 1 | 产品视图 Version Goal 填写率 | **须 COUNT 聚合**；`SELECT COUNT(*), SUM(CASE WHEN …) …`；**禁止 LIMIT 1 样本** |
@@ -355,6 +351,81 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 
 **0 行纠错**：Observation 含 `hints` 时须立即改写 SQL，不得重复同一错误条件（尤其 `父记录 IS NULL`、`view_id`、`责任人`）。
 
+### 1.2.2 数据采集要点（业务 · 不含编排角色）
+
+**数据诚实（强制）**：Observation 为 null/空/0 行 → 填 `null` 或 `"field_empty": true`；**禁止捏造** priority、日期、人名、状态。
+
+#### 人员看板主表 + 开发需求辅表
+
+| 用途 | 飞书 | 镜像 source_view | 说明 |
+| :--- | :--- | :--- | :--- |
+| **👥 人员安排 SSOT** | `table=tblfK9gk6vTQpJtB` · `view=vewCz1FFJi` | `vewCz1FFJi` | **B-S1** Sprint 窗 + **B-4** UNION；有效行须有任务编号 |
+| **需求对照辅表** | 同 table · `view=vewpI8lyYw` | `vewpI8lyYw` | **B-SUP** 至多 1 次；与 B-4 **文字对照**，禁止多表 JOIN |
+
+- SQL 编号顺序：**B-S1 → B-4 → B-SUP**（模板见 `pmo_multi_agent_queries.py`）；**禁止**在本路径查产品/美术主表。
+- **B-SUP 易错点**：禁止自编 `任务标题/任务ID/负责人`；禁止套用 **C-2** 大需求 WHERE 当人员明细。
+- 跨视图矛盾（幽灵需求/状态倒挂）：用 §1.2.1 **Step 6** 分步 `db_query` 核对，**禁止**在 B-4 里写跨表 JOIN。
+
+#### Sprint · 大需求 · 子任务（仅 `vewpI8lyYw`）
+
+**唯一主表**：`table=tblfK9gk6vTQpJtB` · `view=vewpI8lyYw`。本路径**禁止**用 `vewCz1FFJi`/产品/美术表代替 Epic 筛选。
+
+1. **C-1**：按 Sprint **日期**取 **近 21 天内最多 3 个** Sprint；`sprint_date` 须 `date(replace(substr(Sprint,1,10),'/','-'))`；**禁止** `ORDER BY latest_row`。
+2. **current_sprint**：C-1 中 `sprint_date` **最大** 的一档 → **战报 📊 只展示这一周** 的大需求。
+3. **C-2**：`recent_sprints` 内 **大需求（Epic）**（父记录双形态 + **有任务编号** + 排除部门占位）。
+4. **C-3**：**子任务全量**（`COALESCE` 父记录 + `json_each` 执行人）；`parent_epic=开发` 时按 **row_index** 归到上一个 Epic（同 Sprint）。
+5. **C-6**（兜底，最多 1 次）：C-3 为 0 或 parent 无法关联时，按 `row_index` 拉层级探针。
+
+**优先**：`core:pmo_sprint_epic_report`（全量采集 `{"recent_window": true}`；单 Sprint `{"sprint":"2026/05/11-Sprint"}`），再按需 `db_query` 补洞。宿主 FanOut 可能已预取 epics[]，**禁止**重复步骤 0。  
+**兜底 SQL**：`pmo_multi_agent_queries.py` 中 **C-1～C-6**；Worker C 规范见 `docs/architecture/PMO_WORKER_C_SPEC.md`。
+
+结构化输出须能归纳：`current_sprint`、`recent_sprints[]`、`epics[]`、`epic_children[]`（或 Tool 等价 JSON）。
+
+### 1.2.4 Sprint 大需求 + 开发任务明细（对话窄路径 · 案例 SSOT）
+
+**触发**：用户指定 Sprint / 「5月11周期」/ 「大需求 + 开发部各字段」→ **非**全量七步战报时走本节。
+
+| 步骤 | Tool | Action Input 示例 |
+|------|------|-------------------|
+| 1 | `core:pmo_resolve_sprint`（可选） | `{"label":"5月11"}` 或 `{"sprint_date":"2026-05-11"}` |
+| 2 | **`core:pmo_sprint_epic_report`**（必须） | `{"sprint":"2026/05/11-Sprint"}` |
+| 3 | `core:db_query`（可选） | 仅补 `vewCz1FFJi` 执行人交叉 |
+
+- 字段表：本文档 §1 用户说法 ↔ JSON 键；null → `—`，禁止编造。  
+- 输出：摘要表 + 按 Epic 分节开发任务子表（同案例 §6）；**禁止**窄路径双群 notifier（除非用户要战报）。  
+- 执行映射：查对逻辑 `l3_node/tools/pmo_sprint_query.py`；案例全文 `docs/architecture/PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md`。
+
+### 1.2.3 业务语义：周汇报「大需求」层级 & 人员任务 SSOT
+
+**禁止硬编码**具体需求名称（如某一 Sprint 下的固定 Epic 列表）；须每轮从 `db_query` Observation **动态识别**。下列规则描述飞书「版本核心需求 / 开发计划」视图的**结构语义**，不绑定具体行内容。
+
+##### 大需求 vs 部门小需求（📊 需求进度全览）
+
+| 层级 | 飞书 UI 特征 | SQLite 识别规则（`vewpI8lyYw` · 版本核心需求） |
+| :--- | :--- | :--- |
+| **大需求（周汇报粒度）** | 同一 Sprint 分组下**带序号**的顶层行（如 `1.` `2.` …）；序号**不入库** | 父记录 **NULL/空/或** `[0].text` NULL；`Requirement` 非空；**有** `任务编号`；**排除**部门占位 Requirement（开发/美术/产品/测试/平台前端…） |
+| **部门小需求** | 缩进在大需求下方；`父记录` 常为 **plain string**（如「开发」「产品」），少数为链接数组 `[0].text` | `COALESCE(trim(父记录), 父记录[0].text)` 非空；`parent_epic` 可为 Epic 名或部门名；**parent=开发** 不直接带 Epic 名，须按 **row_index** 归到**上一个**大需求（同 Sprint） |
+
+**战报 📊 需求进度全览**：
+
+- **固定 5 列（禁止增列）**：`需求名称` | `时间跨度` | `参与人` | `完成度` | `状态`
+- **完成度**：10 格进度条 + 百分比写在**同一列**（如 `[▓▓▓░░░░░░░] 30%`），**禁止**单独「进度条」列
+- **禁止列**：优先级、风险说明、审计长文；风险诊断书放表**上方**摘要，**不入表**
+- **每行一个大需求**（Epic 粒度），**禁止**把部门小需求单独占一行冒充 Epic
+- 子任务的参与人/完成度/状态须**汇总进**对应大需求行的后三列；子项全空用 ⚠️ 占位
+- **战报 📊 仅 `current_sprint` 一周**；近三周数据仅供 C-3 汇总子任务进度，**禁止**把其它 Sprint 的 Epic 写入 📊 表
+- `current_sprint` / `recent_sprints[]` 以 C-1 Observation 为准，**禁止**写死 Sprint 名称
+
+##### 人员任务安排（👥 人员任务矩阵）
+
+| 用途 | SSOT 视图 | 说明 |
+| :--- | :--- | :--- |
+| **每人负责哪些任务、状态、Sprint** | **`vewCz1FFJi`**（`tblfK9gk6vTQpJtB` · 人工看板） | **人员安排主数据源**；B-S1 近三周 Sprint + B-4（Person 字符串或 UNION+json_each）；有效行须有任务编号 |
+| 产品侧人员/状态 | `vew8TxMcSh` / `vewL9Mofgd` | 仅作产品维度交叉，**不得**替代 vewCz1FFJi 做 👥 主表 |
+| 开发任务明细补全 | `vewpI8lyYw` / `vewjSEz5Xr` | 补字段或交叉核对，**不得**用 vewpI8lyYw 负责人条数代替人员矩阵 |
+
+**👥 战报表**：行以 **person** 为粒度，任务列表来自 **`personnel_tasks[]`（优先 vewCz1FFJi）**；缺数据写 null，禁止捏造。
+
 ### 1.3 Lark 会话
 
 | 标识 | `chat_id` |
@@ -366,7 +437,14 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 
 ### 1.4 推送版式（分支 A 三表 + 摘要）
 
-与 v5 一致：**📊 需求进度全览**、**👥 人员任务矩阵**、**📦 版本发布需求映射** 三张 Markdown 表 mandatory；10 格进度条；状态 Emoji 🟢🔵🟡🔴；底部 Wiki 链接行。
+**📊 需求进度全览** 表头须**且仅为**（5 列）：
+
+```markdown
+| 需求名称 | 时间跨度 | 参与人 | 完成度 | 状态 |
+| --- | --- | --- | --- | --- |
+```
+
+与 v5 一致：**👥 人员任务矩阵**、**📦 版本发布需求映射** 仍为 mandatory；📊 完成度列内写 10 格进度条 + %；状态 Emoji 🟢🔵🟡🔴；底部 Wiki 链接行。
 
 **三表最小格式（每张至少表头 + 1 行数据/占位行）**
 

@@ -52,6 +52,9 @@ def expand_allowed_skills_with_local_mcp(allowed: list[str] | None) -> list[str]
     """
     if allowed is None:
         return None
+    # 显式空列表 = 禁止一切工具，不得自动并入 mcp:*
+    if len(allowed) == 0:
+        return allowed
     if not implicit_local_mcp_merge_enabled():
         return allowed
     seen = {str(x).strip().lower() for x in allowed if str(x).strip()}
@@ -83,6 +86,26 @@ def implicit_sqlite_read_merge_enabled() -> bool:
         return False
 
 
+def allowlist_is_native_only(allowed: list[str] | None) -> bool:
+    """白名单是否仅含 Native/jpp 工具（无 mcp: 前缀、无 mcp:*）。"""
+    if not allowed:
+        return False
+    saw_any = False
+    for raw in allowed:
+        s = str(raw).strip().lower()
+        if not s:
+            continue
+        saw_any = True
+        if s.startswith("mcp:") or s in ("mcp:*", "mcp"):
+            return False
+    return saw_any
+
+
+def allowlist_is_tools_denied(allowed: list[str] | None) -> bool:
+    """显式空 allowlist：禁止一切工具（含 MCP 隐式合并）。"""
+    return allowed is not None and len(allowed) == 0
+
+
 def expand_allowed_skills_with_implicit_sqlite_read(allowed: list[str] | None) -> list[str] | None:
     """
     将 SQLite 只读相关工具 id 并入白名单（含 npm mcp-sqlite 的 mcp:query 等）。
@@ -90,6 +113,9 @@ def expand_allowed_skills_with_implicit_sqlite_read(allowed: list[str] | None) -
     """
     if allowed is None:
         return None
+    # 显式空列表 = 禁止一切工具
+    if len(allowed) == 0:
+        return allowed
     if not implicit_sqlite_read_merge_enabled():
         return allowed
     seen: set[str] = {str(x).strip().lower() for x in allowed if str(x).strip()}
@@ -144,8 +170,15 @@ async def assemble_tool_pool(
         except Exception as e:
             log.debug("[L3 Agent] RBAC MCP 预检跳过: %s", e)
 
+    skip_mcp_native_only = allowlist_is_native_only(_diag_src)
+    if skip_mcp_native_only:
+        log.debug(
+            "[L3 Agent] 白名单仅 Native/jpp（%s），跳过 MCP Registry 合并（FanOut 子 Agent 等窄通道）",
+            _diag_src,
+        )
+
     try:
-        if not skip_mcp_for_rbac:
+        if not skip_mcp_for_rbac and not skip_mcp_native_only:
             from l3_node.primitives.mcp.registry import get_mcp_registry
 
             reg = mcp_registry if mcp_registry is not None else get_mcp_registry()

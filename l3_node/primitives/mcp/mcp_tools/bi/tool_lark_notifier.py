@@ -29,6 +29,10 @@ if str(_root) not in sys.path:
 from l3_node.channels.lark import send_markdown
 from l3_node.channels.lark.im import send_interactive_card, send_markdown_card
 from l3_node.channels.lark.webhook import post_interactive_card_webhook
+from l3_node.channels.lark.webhook_url import (
+    is_valid_lark_incoming_webhook_url,
+    looks_like_lark_chat_id,
+)
 
 
 def _load_atom_lark_notifier_config() -> dict[str, Any]:
@@ -133,7 +137,17 @@ def send_lark_markdown(
         "1" if cfg.get("lark_use_feishu") in (True, "true", "1", "yes") else "0"
     )
 
-    has_webhook = (webhook_url or "").strip() and not str(webhook_url).strip().startswith("${")
+    _wh = (webhook_url or "").strip()
+    if not is_valid_lark_incoming_webhook_url(_wh):
+        if looks_like_lark_chat_id(_wh):
+            if not (chat_id or "").strip():
+                chat_id = _wh
+        _wh = ""
+    cfg_wh = (cfg.get("default_webhook_url") or "").strip()
+    if not _wh and is_valid_lark_incoming_webhook_url(cfg_wh):
+        _wh = cfg_wh
+    has_webhook = bool(_wh)
+
     _chat_id = (chat_id or "").strip()
     if not _chat_id:
         _chat_id = (cfg.get("default_chat_id") or "").strip()
@@ -166,7 +180,7 @@ def send_lark_markdown(
                 )
         if v2 is not None:
             if has_webhook:
-                return post_interactive_card_webhook(webhook_url.strip(), v2)
+                return post_interactive_card_webhook(_wh, v2)
             if _chat_id:
                 aid, sec = _cfg_app_pair(cfg)
                 ic_kw: dict[str, Any] = {
@@ -185,7 +199,7 @@ def send_lark_markdown(
 
     if chart_spec and has_webhook:
         return send_markdown(
-            webhook_url=webhook_url.strip(),
+            webhook_url=_wh,
             markdown_content=markdown_content,
             title=title,
             chart_spec=chart_spec,
@@ -193,7 +207,7 @@ def send_lark_markdown(
 
     if has_webhook and not chart_spec:
         return send_markdown(
-            webhook_url=webhook_url.strip(),
+            webhook_url=_wh,
             markdown_content=markdown_content,
             title=title,
             chart_spec=chart_spec,

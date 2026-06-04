@@ -10,6 +10,7 @@ from l3_node.agent_core import (
     _pmo_append_react_budget_warning,
     _pmo_branch_a_blocked_force_assembly_round,
     _pmo_branch_a_blocked_init_tools_during_analysis,
+    _pmo_blocked_analysis_tools_during_init,
     _pmo_branch_a_blocked_invalid_field_sql,
     _pmo_branch_a_blocked_premature_lark_observation,
     _pmo_branch_a_blocked_duplicate_step1_map,
@@ -241,6 +242,19 @@ def test_blocks_init_tools_during_analysis() -> None:
     assert obs is not None
     d = json.loads(obs)
     assert d.get("error") == "pmo_branch_a_init_switch_blocked"
+
+
+def test_blocks_db_query_during_init_mode() -> None:
+    ctx = _ctx(pmo_init=True)
+    obs = _pmo_blocked_analysis_tools_during_init("core:db_query", ctx)
+    assert obs is not None
+    d = json.loads(obs)
+    assert d.get("error") == "pmo_init_analysis_blocked"
+
+
+def test_allows_mirror_import_during_init_mode() -> None:
+    ctx = _ctx(pmo_init=True)
+    assert _pmo_blocked_analysis_tools_during_init("core:pmo_mirror_import", ctx) is None
 
 
 def test_blocks_db_query_after_partial_push() -> None:

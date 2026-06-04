@@ -462,20 +462,15 @@ def _render_bitable_markdown(
     if view_id:
         lines.append(f"- **view_id**（记录按此视图过滤/排序，与飞书前端一致）: `{view_id}`")
         lines.append("")
-    tables = client.bitable_list_tables(app_token)
-    if not tables:
-        lines.append("（无法列出子表或无权访问）")
-        return "\n".join(lines)
     targets: list[dict] = []
     if table_id:
-        for t in tables:
-            if t.get("table_id") == table_id:
-                targets = [t]
-                break
-        if not targets:
-            lines.append(f"（URL 中 table=`{table_id}` 未在应用中找到，以下为全部子表摘要）")
-            targets = tables
+        # PMO/BI 种子 URL 已带 table= 时直接拉字段与记录，跳过 list tables（避免 WrongRequestBody 噪声）
+        targets = [{"table_id": table_id, "name": table_name_hint or table_id}]
     else:
+        tables = client.bitable_list_tables(app_token)
+        if not tables:
+            lines.append("（无法列出子表或无权访问）")
+            return "\n".join(lines)
         targets = tables
 
     for ti, tbl in enumerate(targets):

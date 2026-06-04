@@ -10,8 +10,24 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_WORKER_C_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_C_SPEC.md"
+
+from l3_node.pmo_multi_agent_queries import (
+    WORKER_A_MAX_ITERATIONS,
+    WORKER_A_TASK,
+    WORKER_A_TASK_PREVIEW,
+    WORKER_B_AGENT_MAX_ITERATIONS,
+    WORKER_B_AGENT_TASK_PREVIEW,
+    WORKER_C_MAX_ITERATIONS,
+    WORKER_C_TASK,
+    WORKER_C_TASK_PREVIEW,
+    build_worker_b_agent_task,
+)
+from l3_node.pmo_report_format import PMO_DEMAND_TABLE_PUBLISHER_SPEC
 from l3_node.agent_core import PMO_BRANCH_A_MIN_DB_QUERIES, PMO_BRANCH_A_PERSONNEL_SSOT_VIEW
 from l3_node.agent_core import (
     PMO_BRANCH_A_PRODUCT_VIEW_ALTS,
@@ -20,33 +36,105 @@ from l3_node.agent_core import (
 
 logger = logging.getLogger("pmo_multi_agent")
 
-PMO_WORKER_DB_ROLE: dict[str, Any] = {
+PMO_AUDITOR_CONTEXT_MAX_CHARS = 28000
+
+# SubAgent 默认 system_prefix 截断 1200 字会裁掉 Worker 专有规则；PMO 角色显式放宽。
+PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS = 3200
+
+# 三 Worker 共用：不含 Person/Epic/状态 写法（避免与 queries.py SSOT / 各 Worker 专有块矛盾）。
+_PMO_WORKER_SHARED = (
+    "你是 PMO 数据搬砖工（Analyst）。\n"
+    "职责：用 core:db_query 执行 **本 Worker 任务体中的编号 SQL**，Observation → **合法 JSON** Final Answer。\n"
+    "通用：字段以任务体 SQL / columns_json 为准，禁止臆造键名；"
+    "Sprint 用 json_extract(fields,'$.Sprint')（禁止 Sprint 的 [0].text）。\n"
+    "db_query Action Input：**只写裸 SELECT**（从 SELECT 到 `;`），禁止 ``` 围栏、禁止 `{\"sql\":...}`。\n"
+    "Thought 开头「已完成: …」；同编号 SQL 仅 1 次；hints/error 同编号最多重试 2 次。\n"
+    "禁止捏造；Final Answer **仅 JSON**（禁止 GFM 战报）。\n"
+    "编号只认任务体：B-S1/B-4/B-SUP 或 C-1/C-2/C-3（**禁止**单 Agent 旧称 Step3/Step4/Step5）。\n"
+    "SQL 细则以 **user 任务体逐字 SQL** 为准，本 system 不重复旧版单表写法。\n"
+)
+
+_PMO_WORKER_A_RULES = (
+    "【Worker A · Step 1+2 字典】\n"
+    "- **唯一**负责：`pmo_views_meta`（五视图 IN）+ 各视图 `fields` 样本（GROUP BY source_view）。\n"
+    "- Final Answer：views_meta[]、samples[]、field_mapping（按视图 JSON 键路径）。\n"
+    "- **禁止** B-S1/B-4/B-SUP / C-1～C-3 业务明细 SQL。\n"
+)
+
+_PMO_WORKER_B_RULES = (
+    "【Worker B · vewCz1FFJi 主表 + vewpI8lyYw 辅表】\n"
+    "- **宿主预取**：FanOut 启动前宿主已执行 B-S1+B-4；JSON 在【宿主预取 JSON】；**禁止**重跑 B-S1/B-4。\n"
+    "- **ReAct 第 1 次 db_query = B-SUP**（`vewpI8lyYw`）；B-SUP 失败时同编号最多重试 2 次。\n"
+    "- **主表** `vewCz1FFJi`：personnel_tasks[] 只来自宿主预取；禁止自编 UNION/CASE。\n"
+    "- **辅表** `vewpI8lyYw`：仅 B-SUP；禁止 C-2 Epic WHERE / 自编任务标题字段。\n"
+    "- **禁止**产品/美术表；**不是** Worker A/C。\n"
+    "- Final Answer：合并宿主 recent_sprints[]、personnel_tasks[] + 自跑 requirement_context[]。\n"
+)
+
+_PMO_WORKER_C_RULES_INLINE = (
+    "【Worker C · vewpI8lyYw · C-TOOL 优先】\n"
+    "- **步骤 0（必须）**：`core:pmo_sprint_epic_report` + `{\"recent_window\": true}`；"
+    "宿主已预取 epics[] 时禁止重跑。\n"
+    "- **兜底**：仅步骤 0 失败后执行 user 任务体 C-1→C-2→C-3（逐字 SQL）。\n"
+    "⛔ 禁止仅用 `父记录[0].text IS NULL`；禁止 Person/状态 的 [0].text（malformed JSON）。\n"
+    "epics[] 仅大需求；子任务进 epic_children[]。\n"
+)
+
+
+def _load_worker_c_system_prefix() -> str:
+    """PMO_WORKER_C_SPEC.md + 内联护栏（截断时内联置前）。"""
+    spec = ""
+    try:
+        if _WORKER_C_SPEC_PATH.is_file():
+            spec = _WORKER_C_SPEC_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if spec:
+        return _PMO_WORKER_C_RULES_INLINE + "\n" + spec + "\n"
+    return _PMO_WORKER_C_RULES_INLINE
+
+PMO_WORKER_A_ROLE: dict[str, Any] = {
     "id": "analyst",
-    "system_prefix": (
-        "你是 PMO 数据搬砖工（Analyst）。\n"
-        "唯一职责：用 core:db_query 执行指定 SQL，将 Observation 整理为 **合法 JSON** 作为 Final Answer。\n"
-        "规则：\n"
-        "- 字段名以 columns_json 为准；禁止 Task/Status/负责人 等臆造键名\n"
-        "- Person 字段必须用 json_each 展开\n"
-        "- 状态须 json_extract(json_extract(fields,'$.\"状态\"'),'$[0].text')\n"
-        "- Epic 须 json_extract(fields,'$.\"父记录\"[0].text') IS NULL（禁止 json_extract(父记录) IS NULL）\n"
-        "- Sprint 用 json_extract(fields,'$.Sprint')，禁止 [0].text\n"
-        "- Final Answer **仅输出 JSON**（可含 observations 数组记录每步 SQL 与 rows），禁止 GFM 战报表\n"
-    ),
+    "system_prefix_max_chars": PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
+    "system_prefix": _PMO_WORKER_A_RULES + "\n" + _PMO_WORKER_SHARED,
     "allowed_tools": ["core:db_query"],
 }
+
+PMO_WORKER_B_ROLE: dict[str, Any] = {
+    "id": "analyst",
+    "system_prefix_max_chars": PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
+    "system_prefix": _PMO_WORKER_B_RULES + "\n" + _PMO_WORKER_SHARED,
+    "allowed_tools": ["core:db_query"],
+}
+
+PMO_WORKER_C_ROLE: dict[str, Any] = {
+    "id": "analyst",
+    "system_prefix_max_chars": PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
+    "system_prefix": _load_worker_c_system_prefix() + "\n" + _PMO_WORKER_SHARED,
+    "allowed_tools": ["core:pmo_sprint_epic_report", "core:db_query"],
+}
+
+# 兼容旧引用（等同 Worker B，FanOut 应使用 A/B/C 分角色）
+PMO_WORKER_DB_ROLE = PMO_WORKER_B_ROLE
 
 PMO_AUDITOR_ROLE: dict[str, Any] = {
     "id": "reviewer",
     "system_prefix": (
         "你是 PMO 交叉审计员（Reviewer / Auditor）。\n"
-        "⛔ **禁止**调用 core:db_query 或任何数据库工具；仅基于提供的 JSON 做 Step 6 交叉分析。\n"
+        "⛔ **你无任何可用工具**——禁止调用 db_query / read_file / shell_exec / 任何 MCP。\n"
+        "阶段一 Worker A/B/C 的全部 JSON **已在本条 user 消息中**（带 ## 小节标题），"
+        "请 **直接阅读文本** 做 Step 6 交叉分析，**禁止**尝试读取本地文件或 context_data 路径。\n"
         "须检查：\n"
-        "1. 幽灵需求：Epic/主表有、人员看板无（或反之）\n"
-        "2. 状态倒挂：同一需求在不同视图状态矛盾\n"
-        "3. 人员超载：按 §1.4.1b「计划周期×完成进度×当前时间」节奏判定 🚨/🟡/✅（**禁止** task_cnt 排名定过载）\n"
-        "4. Sprint 集合差：两视图 Sprint 不一致项\n"
-        "输出：**项目风险诊断书**（Markdown，分 ## 章节；每条风险含 ⚠️ 与依据）\n"
+        "1. **大需求层级**：Worker C 的 epics[] 是否仅为顶层大需求（非部门小需求重复占行）；"
+        "epic_children[] 是否通过 parent_epic 正确挂接\n"
+        "2. 幽灵需求：Epic/主表有、人员看板（vewCz1FFJi）无（或反之）——须引用具体 Requirement 名称\n"
+        "3. 状态倒挂：同一需求在不同视图状态矛盾\n"
+        "4. 人员超载：👥 须以 Worker B 的 personnel_tasks[]（vewCz1FFJi）为准；"
+        "按 §1.4.1b「计划周期×完成进度×当前时间」节奏判定 🚨/🟡/✅（**禁止** task_cnt 排名定过载）\n"
+        "5. Sprint 集合差：两视图 Sprint 不一致项\n"
+        "输出：**项目风险诊断书**（Markdown，分 ## 章节；每条风险含 ⚠️ 与依据）。\n"
+        "降级规则：若某节数据不足，须标注「数据不足·结论仅供参考」，**禁止**假装已完成完整分析。\n"
+        "禁止因任何原因调用工具；数据不足时基于已有 JSON 推理并标注可信度。\n"
     ),
     "allowed_tools": [],
 }
@@ -55,21 +143,25 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 前序阶段已完成数据捞取与交叉审计。**禁止** core:db_query / mirror_import / bi_project_context。
 
 你的唯一任务：
-1. 将下方 JSON 与「风险诊断书」死板填入 §1.4 三张 **GFM Markdown 表**：
-   - 📊 需求进度全览
-   - 👥 人员任务矩阵
+1. 将下方 JSON 填入 §1.4 三张 **GFM Markdown 表**（语义见 §1.2.3）；**风险诊断书不得写入 📊 表内列**：
+{demand_table_spec}
+   - 📊 仅 `current_sprint`（本周）大需求，每行一个 Epic；子任务汇总进「参与人/完成度/状态」三列
+   - 👥 人员任务矩阵 — **以 Worker B 的 personnel_tasks[]（vewCz1FFJi SSOT）为主**
    - 📦 版本发布需求映射
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
-3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次**：主群 + 监控群，`native_table_card: true`）
+3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次** IM 推送，**禁止 webhook_url**）：
+   - 主群：`chat_id` = `.env` 的 `PMO_PRIMARY_CHAT_ID`（当前 SSOT：`oc_437c98d11106295fb10751a5481ee465`）
+   - 监控群：`chat_id` = `oc_0e321f92d758ecb44aea5b499c90510b`
+   - 均须 `native_table_card: true`
 4. Final Answer 仅在双群 notifier 均 success 后 ≤3 句确认
 
 【阶段一 · 字段映射 JSON（Worker A）】
 {worker_a}
 
-【阶段一 · 人员负荷 JSON（Worker B）】
+【阶段一 · 人员任务 JSON（Worker B · personnel_tasks 主表=vewCz1FFJi）】
 {worker_b}
 
-【阶段一 · Epic/Sprint/Version JSON（Worker C）】
+【阶段一 · 大需求与子任务 JSON（Worker C · epics=周汇报大需求）】
 {worker_c}
 
 【阶段二 · 项目风险诊断书（Auditor）】
@@ -140,77 +232,66 @@ class PmoMultiAgentResult:
         return "\n".join(lines)
 
 
-def _phase1_fanout_items() -> list[dict[str, Any]]:
-    return [
-        {
-            "role": PMO_WORKER_DB_ROLE,
-            "task": (
-                "【Worker A · Step 1+2 查字典】\n"
-                "1) SELECT view_id, view_name, record_count, columns_json "
-                "FROM pmo_views_meta WHERE view_id IN "
-                "('vewpI8lyYw','vewCz1FFJi','vew8TxMcSh','vewL9Mofgd') ORDER BY view_id;\n"
-                "2) SELECT source_view, fields FROM pmo_raw_records "
-                "WHERE source_view IN ('vewpI8lyYw','vewCz1FFJi') "
-                "GROUP BY source_view LIMIT 2;\n"
-                "Final Answer：JSON 含 views_meta[]、samples[]、field_mapping（Requirement/状态/Sprint/Person 路径说明）"
-            ),
-            "max_iterations": 8,
-        },
-        {
-            "role": PMO_WORKER_DB_ROLE,
-            "task": (
-                "【Worker B · Step 3 查人力 · vewCz1FFJi SSOT】\n"
-                "执行以下 SQL（禁止删列、禁止 [0].en_name）：\n"
-                "SELECT json_extract(value, '$.en_name') AS person,\n"
-                "       json_extract(fields, '$.Requirement') AS task,\n"
-                "       json_extract(json_extract(fields, '$.\"状态\"'), '$[0].text') AS status_text,\n"
-                "       json_extract(fields, '$.Sprint') AS sprint,\n"
-                "       json_extract(fields, '$.\"Expected Delivery Date\"') AS due,\n"
-                "       json_extract(fields, '$.Progress') AS progress\n"
-                "FROM pmo_raw_records,\n"
-                "     json_each(json_extract(fields, '$.\"Person in charge/Participant\"'))\n"
-                "WHERE source_view = 'vewCz1FFJi'\n"
-                "  AND person IS NOT NULL AND person != ''\n"
-                "LIMIT 200;\n"
-                "Final Answer：JSON 含 personnel_tasks[]，按 person 分组摘要 optional"
-            ),
-            "max_iterations": 6,
-        },
-        {
-            "role": PMO_WORKER_DB_ROLE,
-            "task": (
-                "【Worker C · Step 4+5+7 查进度】\n"
-                "1) Epic（仅 vewpI8lyYw）：\n"
-                "SELECT json_extract(fields, '$.Requirement') AS epic,\n"
-                "       json_extract(fields, '$.Sprint') AS sprint,\n"
-                "       json_extract(fields, '$.priority') AS priority\n"
-                "FROM pmo_raw_records\n"
-                "WHERE source_view = 'vewpI8lyYw'\n"
-                "  AND json_extract(fields, '$.\"父记录\"[0].text') IS NULL\n"
-                "LIMIT 100;\n"
-                "2) 状态分布（vewCz1FFJi GROUP BY）：\n"
-                "SELECT json_extract(json_extract(fields, '$.\"状态\"'), '$[0].text') AS status_text,\n"
-                "       COUNT(*) AS cnt\n"
-                "FROM pmo_raw_records WHERE source_view = 'vewCz1FFJi'\n"
-                "GROUP BY status_text;\n"
-                "3) Sprint 分布（两视图）：\n"
-                "SELECT source_view, json_extract(fields, '$.Sprint') AS sprint, COUNT(*) AS cnt\n"
-                "FROM pmo_raw_records\n"
-                "WHERE source_view IN ('vewpI8lyYw','vewCz1FFJi')\n"
-                "GROUP BY source_view, json_extract(fields, '$.Sprint');\n"
-                "4) Version Goal 填写率（vewpI8lyYw + vewCz1FFJi）：\n"
-                "SELECT source_view,\n"
-                "       COUNT(*) AS total,\n"
-                "       SUM(CASE WHEN json_extract(fields, '$.\"Version Goal\"') IS NOT NULL "
-                "AND json_extract(fields, '$.\"Version Goal\"') != 'null' THEN 1 ELSE 0 END) AS filled\n"
-                "FROM pmo_raw_records\n"
-                "WHERE source_view IN ('vewpI8lyYw','vewCz1FFJi')\n"
-                "GROUP BY source_view;\n"
-                "Final Answer：JSON 含 epics[]、status_distribution[]、sprint_distribution[]、version_goal_stats[]"
-            ),
-            "max_iterations": 10,
-        },
+def _phase1_fanout_items(
+    host_b_seed: dict[str, Any] | None = None,
+    host_c_seed: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    worker_b_task = build_worker_b_agent_task(host_b_seed)
+    worker_b_preview = WORKER_B_AGENT_TASK_PREVIEW
+    worker_b_max_iter = WORKER_B_AGENT_MAX_ITERATIONS
+    worker_b_context: dict[str, Any] | None = None
+    worker_b_context_max = 0
+    if host_b_seed:
+        worker_b_context = {
+            "说明": "宿主预取 JSON（B-S1+B-4 已执行，勿重查 vewCz1FFJi UNION）",
+            **host_b_seed,
+        }
+        worker_b_context_max = 18000
+
+    workers: list[tuple[str, str, int, str, dict[str, Any], dict[str, Any]]] = [
+        ("Worker A", WORKER_A_TASK_PREVIEW, WORKER_A_MAX_ITERATIONS, WORKER_A_TASK, PMO_WORKER_A_ROLE, {}),
+        (
+            "Worker B",
+            worker_b_preview,
+            worker_b_max_iter,
+            worker_b_task,
+            PMO_WORKER_B_ROLE,
+            {
+                "context_data": worker_b_context,
+                "context_max_chars": worker_b_context_max,
+            },
+        ),
+        ("Worker C", WORKER_C_TASK_PREVIEW, WORKER_C_MAX_ITERATIONS, WORKER_C_TASK, PMO_WORKER_C_ROLE, {}),
     ]
+    items: list[dict[str, Any]] = []
+    worker_c_extra: dict[str, Any] = {}
+    if host_c_seed:
+        worker_c_extra = {
+            "context_data": {
+                "说明": "宿主预取 JSON（core:pmo_sprint_epic_report recent_window 已执行，勿重跑步骤 0）",
+                **host_c_seed,
+            },
+            "context_max_chars": 22000,
+        }
+    for agent_label, task_short, max_iter, task_body, role, extra in workers:
+        if agent_label == "Worker C" and host_c_seed:
+            extra = {**extra, **worker_c_extra}
+        item: dict[str, Any] = {
+            "role": role,
+            "task": task_body,
+            "max_iterations": max_iter,
+            "_debug_phase": 1,
+            "_debug_phase_label": "并行捞数",
+            "_debug_agent_label": agent_label,
+            "_debug_role_label": "analyst · 数据搬砖工",
+            "_debug_task_preview": task_short,
+        }
+        if extra.get("context_data"):
+            item["context_data"] = extra["context_data"]
+            if extra.get("context_max_chars"):
+                item["context_max_chars"] = extra["context_max_chars"]
+        items.append(item)
+    return items
 
 
 async def run_pmo_multi_agent_workflow(
@@ -234,15 +315,75 @@ async def run_pmo_multi_agent_workflow(
                 pass
 
     _status("阶段一：FanOut 并行捞数（Worker A/B/C）…")
+    host_b_seed: dict[str, Any] = {}
+    host_c_seed: dict[str, Any] = {}
+    try:
+        from l3_node.pmo_worker_result_backfill import run_worker_b_host_bootstrap
+
+        host_b_seed = run_worker_b_host_bootstrap()
+        _status(
+            f"Worker B 宿主预取：personnel_tasks={len(host_b_seed.get('personnel_tasks') or [])} 行"
+        )
+    except Exception:
+        logger.exception("[PMO Multi-Agent] Worker B host bootstrap failed")
+    try:
+        from l3_node.pmo_worker_result_backfill import run_worker_c_host_bootstrap
+
+        host_c_seed = run_worker_c_host_bootstrap()
+        _status(
+            f"Worker C 宿主预取：epics={len(host_c_seed.get('epics') or [])} "
+            f"epic_children={len(host_c_seed.get('epic_children') or [])}"
+        )
+    except Exception:
+        logger.exception("[PMO Multi-Agent] Worker C host bootstrap failed")
+    try:
+        from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_begin, append_pmo_debug_status
+
+        append_pmo_debug_phase_begin(
+            1,
+            "并行捞数 · FanOut",
+            detail="Worker A(字典) / B(宿主B-S1+B-4 → ReAct仅B-SUP) / C(vewp Epic) 并行",
+        )
+        if host_b_seed.get("personnel_tasks"):
+            append_pmo_debug_status(
+                f"Worker B 宿主预取完成：personnel_tasks={len(host_b_seed['personnel_tasks'])} 行，"
+                f"Sprint={host_b_seed.get('sprint_names_for_in')}"
+            )
+    except Exception:
+        pass
+
     phase1 = await fanout_parallel(
-        _phase1_fanout_items(),
+        _phase1_fanout_items(host_b_seed or None, host_c_seed or None),
         engine,
         max_concurrent=3,
         delegate_depth=1,
-        item_max_iterations=10,
+        item_max_iterations=16,
         parent_allowed_skills=parent_allowed_skills,
     )
     result.phase1 = phase1
+
+    try:
+        from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_summary
+
+        worker_labels = {1: "Worker A", 2: "Worker B", 3: "Worker C"}
+        summary_lines: list[str] = []
+        for it in phase1.items:
+            label = worker_labels.get(it.index, f"Worker {it.index}")
+            if it.ok:
+                preview = _clip(it.result, 80).replace("\n", " ")
+                summary_lines.append(f"✅ {label}: {preview or '（有输出）'}")
+            else:
+                summary_lines.append(f"❌ {label}: {_clip(it.error, 120)}")
+        append_pmo_debug_phase_summary(
+            1,
+            "并行捞数 · FanOut",
+            ok_count=phase1.ok_count,
+            total=phase1.total,
+            elapsed_sec=phase1.elapsed_sec,
+            item_lines=summary_lines,
+        )
+    except Exception:
+        pass
 
     if phase1.ok_count == 0:
         result.errors.append("阶段一全部失败")
@@ -251,8 +392,30 @@ async def run_pmo_multi_agent_workflow(
 
     by_idx = {item.index: item for item in phase1.items}
     result.worker_a = by_idx[1].result if by_idx.get(1) and by_idx[1].ok else ""
-    result.worker_b = by_idx[2].result if by_idx.get(2) and by_idx[2].ok else ""
+    raw_worker_b = by_idx[2].result if by_idx.get(2) and by_idx[2].ok else ""
     result.worker_c = by_idx[3].result if by_idx.get(3) and by_idx[3].ok else ""
+
+    try:
+        from l3_node.pmo_worker_result_backfill import merge_worker_b_result
+
+        if host_b_seed:
+            result.worker_b = merge_worker_b_result(host_b_seed, raw_worker_b)
+        else:
+            result.worker_b = raw_worker_b
+    except Exception:
+        logger.exception("[PMO Multi-Agent] Worker B merge failed")
+        result.worker_b = raw_worker_b
+
+    try:
+        from l3_node.pmo_worker_result_backfill import backfill_worker_outputs, merge_worker_c_result
+
+        result.worker_b, result.worker_c = backfill_worker_outputs(
+            result.worker_b, result.worker_c
+        )
+        if host_c_seed:
+            result.worker_c = merge_worker_c_result(host_c_seed, result.worker_c)
+    except Exception:
+        logger.exception("[PMO Multi-Agent] worker result backfill failed")
 
     if phase1.failed_count:
         result.errors.extend(
@@ -263,25 +426,40 @@ async def run_pmo_multi_agent_workflow(
     bundle_json = json.dumps(
         {
             "worker_a_field_map": _clip(result.worker_a, 8000),
-            "worker_b_personnel": _clip(result.worker_b, 12000),
-            "worker_c_progress": _clip(result.worker_c, 12000),
+            "worker_b_personnel": _clip(result.worker_b, 20000),
+            "worker_c_progress": _clip(result.worker_c, 20000),
         },
         ensure_ascii=False,
         indent=2,
     )
+    auditor_context = _build_auditor_context(
+        result.worker_a, result.worker_b, result.worker_c
+    )
 
     _status("阶段二：Pipeline 交叉审计（Auditor · 无 db_query）…")
+    try:
+        from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_begin
+
+        append_pmo_debug_phase_begin(
+            2,
+            "交叉审计 · Pipeline",
+            detail="Auditor 基于阶段一 JSON 做 Step6 矛盾检验，禁止 db_query",
+        )
+    except Exception:
+        pass
+
     audit_pipeline = await run_pipeline(
         stages=[
             PipelineStage(
                 role=PMO_AUDITOR_ROLE,
-                task=(
-                    "基于【阶段一 JSON 数据包】执行 Step 6 跨视图矛盾检验，"
-                    "输出《项目风险诊断书》（Markdown）。"
-                    "数据包见 context_data。"
-                ),
+                task=_build_auditor_task(auditor_context),
                 max_iterations=5,
-                pass_context=True,
+                pass_context=False,
+                debug_phase=2,
+                debug_phase_label="交叉审计",
+                debug_agent_label="Auditor",
+                debug_role_label="reviewer · 交叉审计员",
+                debug_task_preview="Step6 跨视图矛盾检验 → 项目风险诊断书",
             ),
         ],
         initial_context=bundle_json,
@@ -296,22 +474,58 @@ async def run_pmo_multi_agent_workflow(
         )
         result.status = "partial" if phase1.ok_count > 0 else "failed"
         result.audit_report = audit_pipeline.final_output or ""
+        try:
+            from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_summary
+
+            append_pmo_debug_phase_summary(
+                2,
+                "交叉审计 · Pipeline",
+                ok_count=audit_pipeline.completed_stages,
+                total=audit_pipeline.total_stages,
+                elapsed_sec=audit_pipeline.elapsed_sec,
+                item_lines=[f"❌ 审计中止: {_clip(audit_pipeline.execution_brief or '无输出', 200)}"],
+            )
+        except Exception:
+            pass
         return result
 
     result.audit_report = audit_pipeline.final_output
     result.phase2_output = audit_pipeline.final_output
     result.status = "partial" if phase1.failed_count else "completed"
+    try:
+        from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_summary
+
+        append_pmo_debug_phase_summary(
+            2,
+            "交叉审计 · Pipeline",
+            ok_count=audit_pipeline.completed_stages,
+            total=audit_pipeline.total_stages,
+            elapsed_sec=audit_pipeline.elapsed_sec,
+            item_lines=[
+                f"✅ Auditor: {_clip(audit_pipeline.final_output, 120).replace(chr(10), ' ')}"
+            ],
+        )
+    except Exception:
+        pass
     _status(f"阶段一 {phase1.ok_count}/3 · 阶段二完成 · 待阶段三排版发报")
     return result
 
 
 def build_publisher_user_message(workflow: PmoMultiAgentResult) -> str:
+    audit = _clip(workflow.audit_report, 6000)
+    low_conf_note = ""
+    if _audit_report_has_low_confidence(audit):
+        low_conf_note = (
+            "\n\n⚠️ **交叉审计提示**：阶段二诊断书含「数据不足/无法判定」类标记，"
+            "请在战报相关章节用 ⚠️ 占位行标注，勿过度断言。\n"
+        )
     return PMO_PUBLISHER_USER_TEMPLATE.format(
+        demand_table_spec=PMO_DEMAND_TABLE_PUBLISHER_SPEC,
         worker_a=_clip(workflow.worker_a, 6000),
-        worker_b=_clip(workflow.worker_b, 8000),
-        worker_c=_clip(workflow.worker_c, 8000),
-        audit_report=_clip(workflow.audit_report, 6000),
-    )
+        worker_b=_clip(workflow.worker_b, 12000),
+        worker_c=_clip(workflow.worker_c, 12000),
+        audit_report=audit,
+    ) + low_conf_note
 
 
 def _clip(text: str, n: int) -> str:
@@ -319,3 +533,57 @@ def _clip(text: str, n: int) -> str:
     if len(t) <= n:
         return t
     return t[: n - 1] + "…"
+
+
+def _build_auditor_context(worker_a: str, worker_b: str, worker_c: str) -> str:
+    """阶段二 Auditor 专用：带小节标题的结构化上下文（非文件路径）。"""
+    sections = [
+        (
+            "## Worker A · 视图字典与字段映射（Step 1+2）",
+            _clip(worker_a, 8000),
+        ),
+        (
+            "## Worker B · 人员看板 SSOT + 需求辅表（B-S1 / B-4 / B-SUP）",
+            _clip(worker_b, 18000),
+        ),
+        (
+            "## Worker C · 近三周 Sprint · Epic 与子任务（C-1～C-3）",
+            _clip(worker_c, 18000),
+        ),
+    ]
+    parts = [
+        "以下是阶段一 FanOut 采集的全部结构化数据（已内联于本消息，**不是文件路径**）。",
+        "请仅基于下列 JSON 文本做 Step 6 交叉审计，**禁止** read_file / db_query。",
+        "",
+    ]
+    for title, body in sections:
+        parts.append(title)
+        parts.append(body or "（本 Worker 无输出或失败）")
+        parts.append("")
+    return "\n".join(parts).strip()
+
+
+def _audit_report_has_low_confidence(report: str) -> bool:
+    """诊断书是否含数据不足/无法判定等低置信标记。"""
+    if not (report or "").strip():
+        return True
+    markers = (
+        "数据不足",
+        "无法直接判定",
+        "样本数据不完整",
+        "无法判定",
+        "缺乏",
+        "数据不完整",
+    )
+    low = report.lower()
+    return any(m.lower() in low for m in markers)
+
+
+def _build_auditor_task(context: str) -> str:
+    return (
+        "【PMO 多 Agent · 阶段二 · 交叉审计】\n"
+        "基于下方 **内联 JSON 数据**（非文件）执行 Step 6 跨视图矛盾检验，"
+        "输出《项目风险诊断书》（Markdown）。\n"
+        "⛔ 禁止调用任何工具；数据已在下方，直接分析并 Final Answer。\n\n"
+        f"{context}"
+    )

@@ -33,17 +33,24 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from l3_node.primitives.multi_agent.role_utils import sub_agent_role_label
+
 logger = logging.getLogger("multi_agent.pipeline")
 
 
 @dataclass
 class PipelineStage:
     """流水线中的一个阶段。"""
-    role: str
+    role: str | dict[str, Any]
     task: str
     max_iterations: int = 3
     on_failure: Literal["stop", "continue"] = "stop"
     pass_context: bool = True
+    debug_phase: int = 0
+    debug_phase_label: str = ""
+    debug_agent_label: str = ""
+    debug_role_label: str = ""
+    debug_task_preview: str = ""
 
 
 @dataclass
@@ -138,7 +145,8 @@ async def run_pipeline(
             if idx == 0 and ctx_str:
                 parts.append(ctx_str)
             if prev_output:
-                parts.append(f"【上一阶段（{stages[idx-1].role}）输出】\n{prev_output[:3000]}")
+                prev_role = sub_agent_role_label(stages[idx - 1].role)
+                parts.append(f"【上一阶段（{prev_role}）输出】\n{prev_output[:3000]}")
             if parts:
                 context_payload = "\n\n".join(parts)
 
@@ -150,6 +158,35 @@ async def run_pipeline(
         if context_payload:
             spec["context_data"] = context_payload
 
+        debug_token = None
+        if stage.debug_phase:
+            try:
+                from l3_node.pmo_copilot_debug_file import (
+                    append_pmo_debug_agent_begin,
+                    reset_ma_debug_context,
+                    set_ma_debug_context,
+                )
+
+                agent_label = stage.debug_agent_label or sub_agent_role_label(stage.role)
+                role_label = stage.debug_role_label or sub_agent_role_label(stage.role)
+                task_short = stage.debug_task_preview or task_text[:120]
+                debug_token = set_ma_debug_context(
+                    phase=int(stage.debug_phase),
+                    phase_label=stage.debug_phase_label,
+                    agent_label=agent_label,
+                    role_label=role_label,
+                    task_preview=task_short,
+                    max_iterations=stage.max_iterations,
+                )
+                append_pmo_debug_agent_begin(
+                    agent_label=agent_label,
+                    role_label=role_label,
+                    task_preview=task_short,
+                    max_iterations=stage.max_iterations,
+                )
+            except Exception:
+                debug_token = None
+
         try:
             from l3_node.agent_core import _run_sub_agent
             result_str = await _run_sub_agent(
@@ -157,8 +194,21 @@ async def run_pipeline(
                 _parent_allowed_skills=parent_allowed_skills,
             )
             elapsed = time.monotonic() - t1
+            role_label = sub_agent_role_label(stage.role)
+            if debug_token is not None:
+                try:
+                    from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+
+                    append_pmo_debug_agent_finish(
+                        agent_label=stage.debug_agent_label or role_label,
+                        ok=True,
+                        result_preview=str(result_str or "")[:300],
+                        elapsed_sec=elapsed,
+                    )
+                except Exception:
+                    pass
             sr = PipelineStageResult(
-                stage_index=idx + 1, role=stage.role,
+                stage_index=idx + 1, role=role_label,
                 ok=True, result=result_str, elapsed_sec=elapsed,
             )
             stage_results.append(sr)
@@ -166,23 +216,36 @@ async def run_pipeline(
             completed += 1
             logger.info(
                 "[Pipeline] Stage %d/%d·%s 完成 (%.1fs)",
-                idx + 1, n, stage.role, elapsed,
+                idx + 1, n, role_label, elapsed,
             )
         except Exception as e:
             elapsed = time.monotonic() - t1
             err_str = str(e)
+            role_label = sub_agent_role_label(stage.role)
+            if debug_token is not None:
+                try:
+                    from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+
+                    append_pmo_debug_agent_finish(
+                        agent_label=stage.debug_agent_label or role_label,
+                        ok=False,
+                        error=err_str,
+                        elapsed_sec=elapsed,
+                    )
+                except Exception:
+                    pass
             sr = PipelineStageResult(
-                stage_index=idx + 1, role=stage.role,
+                stage_index=idx + 1, role=role_label,
                 ok=False, error=err_str, elapsed_sec=elapsed,
             )
             stage_results.append(sr)
             logger.warning(
                 "[Pipeline] Stage %d/%d·%s 失败: %s",
-                idx + 1, n, stage.role, err_str[:200],
+                idx + 1, n, role_label, err_str[:200],
             )
             if stage.on_failure == "stop":
                 brief = (
-                    f"流水线在第 {idx+1} 阶段（{stage.role}）失败并中止。"
+                    f"流水线在第 {idx+1} 阶段（{role_label}）失败并中止。"
                     f"已完成阶段: {completed}/{n}。"
                     f"失败原因: {err_str[:300]}。"
                     f"建议：检查上下文数据格式，或将 on_failure 设为 continue 跳过失败阶段。"
@@ -198,6 +261,14 @@ async def run_pipeline(
                     elapsed_sec=time.monotonic() - t0,
                 )
             # on_failure="continue"：跳过失败阶段，prev_output 保持不变
+        finally:
+            if debug_token is not None:
+                try:
+                    from l3_node.pmo_copilot_debug_file import reset_ma_debug_context
+
+                    reset_ma_debug_context(debug_token)
+                except Exception:
+                    pass
 
     total_elapsed = time.monotonic() - t0
     failed_count = sum(1 for sr in stage_results if not sr.ok)

@@ -34,7 +34,8 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "**pmo_raw_records 列**：id, **source_view**, source_file, row_index, raw_text, **fields(JSON)**, synced_at。"
             "**pmo_views_meta 列**：view_id, view_name, record_count, columns_json。"
             "业务字段在 fields JSON 内；**父记录** 为链接数组（几乎 never IS NULL）。"
-            "JSON：sql（必填）；可选 params、max_rows（默认 200，上限 1000）。"
+            "Action Input：**裸 SELECT SQL**（推荐）；或 JSON {\"sql\":\"...\"}。"
+            "长 SQL 勿用 JSON 包装（内嵌引号易 missing_sql）。可选 max_rows（默认 200）。"
             "返回 status/rows/row_count/truncated；0 行或报错时可能含 hints。"
         ),
         "params": ["sql"],
@@ -85,6 +86,28 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "返回 ok/total_records/views[]/files[]。"
         ),
         "params": ["manifest_path", "pull_dir", "view_ids"],
+    },
+    {
+        "id": "core:pmo_sprint_epic_report",
+        "label": "core:pmo_sprint_epic_report",
+        "desc": (
+            "PMO 单 Sprint 大需求 + 开发/产品/美术子任务（Python 解析 pmo_raw_records，SSOT vewpI8lyYw）。"
+            "JSON 必填 sprint（如 2026/05/11-Sprint）；可选 department（默认 all=三者全采；可 development/product/art）、source_view。"
+            "返回 epics[]、dev_tasks[]、product_tasks[]、art_tasks[]、epic_children[]（含 department 字段）、"
+            "summary{epic_count, dev/product/art_task_count, epics_with_*}；日期 ISO YYYY-MM-DD。"
+            "近三周战报采集请用 recent_window:true（合并 C-1 窗内各 Sprint）。"
+        ),
+        "params": ["sprint", "department", "source_view", "recent_window"],
+    },
+    {
+        "id": "core:pmo_resolve_sprint",
+        "label": "core:pmo_resolve_sprint",
+        "desc": (
+            "自然语言/日期解析 Sprint 名（只读 pmo_raw_records DISTINCT Sprint）。"
+            "JSON：可选 sprint（精确串）、sprint_date（YYYY-MM-DD）、label（如 5月11）、year。"
+            "返回 resolved_sprint、candidates[]、ambiguous；禁止猜测唯一候选。"
+        ),
+        "params": ["sprint", "sprint_date", "label", "year"],
     },
 ]
 
@@ -235,7 +258,8 @@ _TABLE_COLUMNS: dict[str, frozenset[str]] = {
 
 _FORBIDDEN_SQL_RE = re.compile(
     r"\b("
-    r"insert|update|delete|drop|alter|create|replace|truncate|attach|detach|"
+    r"insert|update|delete|drop|alter|create|truncate|attach|detach|"
+    r"replace\s+into|"
     r"pragma\s+(?!table_info|table_list|index_list|foreign_key_list)|grant|revoke|vacuum|reindex"
     r")\b",
     re.IGNORECASE,
@@ -536,6 +560,353 @@ def _strip_sql_comments(sql: str) -> str:
     return s.strip()
 
 
+_PRODUCT_STATUS_NESTED_RE = re.compile(
+    r"json_extract\s*\(\s*json_extract\s*\([^)]*(?:需求状态|开发状态)",
+    re.IGNORECASE,
+)
+
+_PRODUCT_STATUS_WRONG_HINT = (
+    "⛔ 产品视图 vew8TxMcSh/vewL9Mofgd：「需求状态」「开发状态」在镜像库中是 **plain string**，"
+    "须 **一次** json_extract，例如 "
+    "json_extract(fields, '$.\"需求状态\"') AS demand_status。"
+    "**禁止** json_extract(json_extract(fields,'$.\"需求状态\"'),'$[0].text')（整句会 malformed JSON）。"
+    "开发表 vewpI8lyYw 的「状态」才用 [0].text；B-1/B-2/C-4 请 **原样复制** pmo_multi_agent_queries 任务体 SQL。"
+)
+
+
+def pmo_sql_has_product_status_nested_extract(sql: str) -> bool:
+    """产品表「需求状态/开发状态」误用开发表 [0].text 嵌套 extract。"""
+    return bool(_PRODUCT_STATUS_NESTED_RE.search(sql or ""))
+
+
+_DEV_SSOT_VIEW_IDS = ("vewpI8lyYw", "vewjSEz5Xr", "vewCz1FFJi")
+
+_DEV_VIEW_PRODUCT_FIELD_MARKERS = (
+    "任务简述",
+    "需求状态",
+    "开发状态",
+    '$."优先级"',
+    "$.'优先级'",
+    '$.\"优先级\"',
+    '$."责任人"',
+    '$.\"责任人\"',
+)
+
+_INVENTED_TASK_FIELD_MARKERS = (
+    "任务标题",
+    "任务ID",
+    "任务类型",
+    '$.\"负责人\"',
+    "$.'负责人'",
+    '$.\"关联需求\"',
+    "预估工时",
+    "实际工时",
+    "开始时间",
+    "截止时间",
+)
+
+_WORKER_B_SUP_INVENTED_FIELD_HINT = (
+    "⛔ Worker B·B-SUP：禁止自编中文任务字段（任务标题/任务ID/负责人/关联需求等）。"
+    "镜像键名为 Requirement / priority / Sprint / Person / 状态 / Progress。"
+    "请 **逐字复制** WORKER_B_TASK **B-SUP**（非 Worker C C-2）。"
+)
+
+_DEV_VIEW_PRODUCT_FIELD_HINT = (
+    "⛔ 开发/人员表（vewpI8lyYw / vewjSEz5Xr / vewCz1FFJi）禁止使用产品表字段名："
+    "任务简述、优先级、责任人、需求状态、开发状态、Sprint[0]。"
+    "须用 Requirement / priority / Person（B-3 plain；B-4 UNION；B-5 json_each）"
+    "与 状态 plain string；请 **逐字复制** WORKER_B_TASK 对应 B-x SQL。"
+)
+
+_C2_SPRINT_IN_RE = re.compile(
+    r"json_extract\s*\(\s*fields\s*,\s*['\"]\$\.Sprint['\"]\s*\)\s+in\s*\(",
+    re.IGNORECASE,
+)
+_C2_REQUIREMENT_JSON_RE = re.compile(
+    r"json_extract\s*\(\s*fields\s*,\s*['\"]\$\.Requirement['\"]",
+    re.IGNORECASE,
+)
+
+
+def pmo_sql_has_product_fields_on_dev_view(sql: str) -> bool:
+    """开发/人员表误用产品视图 JSON 键名（Observation 全 null 或字段找错根因）。"""
+    s = sql or ""
+    low = s.lower()
+    if not any(v.lower() in low for v in _DEV_SSOT_VIEW_IDS):
+        return False
+    if any(m in s for m in _DEV_VIEW_PRODUCT_FIELD_MARKERS):
+        return True
+    if any(m in s for m in _INVENTED_TASK_FIELD_MARKERS):
+        return True
+    if re.search(r'\$\.\"Sprint\"\s*\[\s*0\s*\]', s, re.I):
+        return True
+    if re.search(r"json_extract\s*\(\s*json_extract\s*\([^)]*责任人", s, re.I):
+        return True
+    return False
+
+
+def pmo_sql_has_invented_chinese_task_fields(sql: str) -> bool:
+    """Worker B 自编 Jira 式字段（任务标题/任务ID 等），镜像中不存在。"""
+    s = sql or ""
+    sl = s.lower()
+    if "pmo_raw_records" not in sl and not any(v.lower() in sl for v in _DEV_SSOT_VIEW_IDS):
+        return False
+    return any(m in s for m in _INVENTED_TASK_FIELD_MARKERS)
+
+
+def pmo_sql_is_worker_b_sup_vewp_context(sql: str) -> bool:
+    """Worker B B-SUP：vewp 辅表（Sprint IN · 无 C-2 Epic WHERE · 非 json_each）。"""
+    s = sql or ""
+    sl = s.lower()
+    if "vewpi8lyyw" not in sl:
+        return False
+    if "union" in sl or "json_each" in sl:
+        return False
+    if re.search(r"parent_|父记录|epic_name|task_level", s, re.I):
+        return False
+    if not _C2_SPRINT_IN_RE.search(s):
+        return False
+    if pmo_sql_has_c2_epic_filters(s):
+        return False
+    return bool(_C2_REQUIREMENT_JSON_RE.search(s)) and "limit" in sl
+
+
+def pmo_sql_is_worker_b3_vewp_cross(sql: str) -> bool:
+    """兼容旧 B-3（无 Sprint IN 的 vewp LIMIT 查询）。"""
+    s = sql or ""
+    sl = s.lower()
+    if "vewpi8lyyw" not in sl:
+        return False
+    if "union" in sl or "json_each" in sl:
+        return False
+    if _C2_SPRINT_IN_RE.search(s):
+        return False
+    return bool(_C2_REQUIREMENT_JSON_RE.search(s)) and "limit" in sl
+
+
+def pmo_sql_is_worker_b4_personnel_union(sql: str) -> bool:
+    """Worker B B-4：vewCz1FFJi 人员 SSOT（UNION + plain string 分支）。"""
+    sl = (sql or "").lower()
+    return (
+        "vewcz1ffji" in sl
+        and "union" in sl
+        and "typeof" in sl
+        and "glob" in sl
+        and "json_each" in sl
+    )
+
+
+def pmo_sql_has_vewcz1_personnel_without_json_each(sql: str) -> bool:
+    """vewCz1FFJi 人员 SSOT 未使用 B-4 合法写法（单独 json_each 或裸 Person）。"""
+    if "vewcz1ffji" not in (sql or "").lower():
+        return False
+    if pmo_sql_is_worker_b4_personnel_union(sql):
+        return False
+    sl = (sql or "").lower()
+    if "typeof" in sl and "glob" in sl and "vewcz1ffji" in sl:
+        return False
+    if "person in charge" in (sql or "").lower() or "participant" in (sql or "").lower():
+        return True
+    if re.search(r'\$\.\"责任人\"', sql or ""):
+        return True
+    return False
+
+
+def pmo_sql_is_worker_bs1_sprint_window(sql: str) -> bool:
+    """Worker B B-S1 近三周 Sprint（vewCz1FFJi）。"""
+    sl = (sql or "").lower()
+    return (
+        "vewcz1ffji" in sl
+        and "sprint_date" in sl
+        and "-21 days" in sl
+        and "group by" in sl
+    )
+
+
+_VEWCZ1_JSON_EACH_HINT = (
+    "⛔ vewCz1FFJi 人员 SSOT（B-4）：Person 常为 plain string（Buck/Seth），单独 json_each 会 malformed JSON。"
+    "须 **逐字复制** WORKER_B_TASK **B-4**（UNION ALL：typeof+NOT GLOB 字符串分支 + json_each 数组分支），"
+    "且 Sprint IN recent_sprints、任务编号 IS NOT NULL。先做 **B-S1** 取近三周 Sprint。"
+)
+
+_SPRINT_DATE_WRONG_HINT = (
+    "⛔ Sprint 时间窗（C-1 / B-S1）：`YYYY/MM/DD-Sprint` 须 "
+    "date(replace(substr(json_extract(fields,'$.Sprint'),1,10),'/','-'))；"
+    "请逐字复制 WORKER_C_TASK **C-1** 或 WORKER_B_TASK **B-S1** SQL。"
+)
+
+_C1_SPRINT_DATE_BAD_RE = re.compile(
+    r"date\s*\(\s*substr\s*\(\s*json_extract\s*\([^)]*['\"]\$\.Sprint['\"]",
+    re.IGNORECASE,
+)
+
+
+_VEWP_NESTED_PERSON_STATUS_HINT = (
+    "⛔ vewpI8lyYw（Worker C·C-2）：Person / 状态 在镜像中常为 **plain string**（含空串），"
+    "禁止 json_extract(json_extract(...), '$[0].text')（整表扫描会 malformed JSON）。"
+    "请 **整段逐字复制** WORKER_C_TASK **C-2**（含父记录双形态 WHERE + 任务编号 + Sprint IN）。"
+)
+
+_WORKER_C2_INCOMPLETE_HINT = (
+    "⛔ Worker C·C-2：禁止用「Sprint IN + SELECT 全字段」捞全表（会把开发/产品/子任务当 Epic）。"
+    "须 **整段逐字复制** WORKER_C_TASK **C-2**（父记录双形态 + 任务编号 IS NOT NULL + 排除部门占位）。"
+    "子任务明细用 **C-3**；epics[] **仅** 来自 C-2，禁止把 C-3/自编查询结果写入 epics[]。"
+)
+
+_C2_EPIC_PARENT_NULL_RE = re.compile(
+    r"父记录[\"']?\)\s+is\s+null"
+    r"|父记录[\"']?\)\s*=\s*''"
+    r"|父记录[\"']?\[0\]\.text[\"']?\)\s+is\s+null",
+    re.IGNORECASE,
+)
+_C2_TASK_NO_WHERE_RE = re.compile(
+    r"任务编号[\"'\\]*\)\s+is\s+not\s+null",
+    re.IGNORECASE,
+)
+_DEPT_PLACEHOLDER_ROW_NAMES = frozenset({
+    "开发", "美术", "产品", "测试", "平台前端", "平台后端",
+    "游戏", "中台", "后台", "游戏客户端",
+})
+
+
+def pmo_sql_has_vewp_person_or_status_nested_extract(sql: str) -> bool:
+    """vewpI8lyYw 上对 Person/状态 做 nested [0].text（易 malformed JSON）。"""
+    s = sql or ""
+    sl = s.lower()
+    if "vewpi8lyyw" not in sl:
+        return False
+    if (
+        pmo_sql_is_worker_b_sup_vewp_context(s)
+        or pmo_sql_is_worker_b3_vewp_cross(s)
+    ):
+        return False
+    if re.search(
+        r"json_extract\s*\(\s*json_extract\s*\([^)]*person in charge/participant",
+        sl,
+        re.I,
+    ):
+        return True
+    if re.search(
+        r"json_extract\s*\(\s*json_extract\s*\([^)]*状态",
+        s,
+        re.I,
+    ):
+        return True
+    return False
+
+
+def pmo_sql_has_c2_epic_filters(sql: str) -> bool:
+    """是否含 C-2 大需求三层 WHERE（父记录双形态 + 任务编号 + 部门占位排除）。"""
+    s = sql or ""
+    sl = s.lower()
+    if "vewpi8lyyw" not in sl:
+        return False
+    return (
+        bool(_C2_EPIC_PARENT_NULL_RE.search(s))
+        and bool(_C2_TASK_NO_WHERE_RE.search(s))
+        and "not in" in sl
+        and re.search(r"开发|美术|产品", s) is not None
+    )
+
+
+def pmo_sql_missing_worker_c2_epic_filters(sql: str) -> bool:
+    """近三周 Sprint IN 但缺少 C-2 大需求 WHERE（常误把全表当 Epic）。"""
+    sl = (sql or "").lower()
+    s = sql or ""
+    if "vewpi8lyyw" not in sl:
+        return False
+    if (
+        pmo_sql_is_worker_b_sup_vewp_context(s)
+        or pmo_sql_is_worker_b3_vewp_cross(s)
+    ):
+        return False
+    if pmo_sql_has_invented_chinese_task_fields(s):
+        return False
+    if "group by" in sl and "sprint_date" in sl:
+        return False
+    if "json_each" in sl:
+        return False
+    if "row_index" in sl and "order by row_index" in sl:
+        return False
+    if not _C2_SPRINT_IN_RE.search(s):
+        return False
+    if pmo_sql_has_c2_epic_filters(s):
+        return False
+    if _C2_REQUIREMENT_JSON_RE.search(s) or re.search(r"\bepic_name\b", sl):
+        return True
+    return False
+
+
+def pmo_sql_is_worker_c1_sprint_window(sql: str) -> bool:
+    """是否为 Worker C C-1 近三周 Sprint 聚合查询。"""
+    sl = (sql or "").lower()
+    return (
+        "vewpi8lyyw" in sl
+        and "sprint_date" in sl
+        and "-21 days" in sl
+        and "group by" in sl
+    )
+
+
+def pmo_sql_is_sprint_window_aggregate(sql: str) -> bool:
+    """C-1 或 B-S1 近三周 Sprint 聚合。"""
+    return pmo_sql_is_worker_c1_sprint_window(sql) or pmo_sql_is_worker_bs1_sprint_window(sql)
+
+
+def pmo_sql_has_sprint_date_without_replace(sql: str) -> bool:
+    """C-1/B-S1 误用 date(substr(Sprint)) 未 replace 斜杠为横杠。"""
+    if not pmo_sql_is_sprint_window_aggregate(sql):
+        return False
+    s = sql or ""
+    if "replace(" in s.lower() and "substr" in s.lower():
+        return False
+    return bool(_C1_SPRINT_DATE_BAD_RE.search(s))
+
+
+_DB_QUERY_JSON_SQL_RE = re.compile(
+    r'"sql"\s*:\s*"(.*)',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def parse_db_query_action_input(inp: str) -> dict[str, Any]:
+    """
+    解析 core:db_query 的 Action Input。
+
+    模型常输出 ``{"sql": "SELECT ..."}``；SQL 内未转义 ``"`` 会导致 ``json.loads`` 失败，
+    进而 ``params={}`` → missing_sql。本函数在 JSON 失败时从正文回收 SELECT 语句。
+    """
+    s = (inp or "").strip()
+    if not s:
+        return {}
+    if s.startswith("{"):
+        try:
+            o = json.loads(s)
+            if isinstance(o, dict):
+                sql = str(o.get("sql") or o.get("query") or "").strip()
+                if sql:
+                    return dict(o)
+        except json.JSONDecodeError:
+            pass
+        m = _DB_QUERY_JSON_SQL_RE.search(s)
+        if m:
+            body = m.group(1)
+            body = re.sub(r'"\s*\}\s*$', "", body)
+            body = body.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+            sql = body.strip()
+            if sql:
+                return {"sql": sql}
+        sel = re.search(r"(?is)\bselect\b", s)
+        if sel:
+            chunk = s[sel.start() :].strip()
+            chunk = re.sub(r'"\s*\}\s*$', "", chunk).strip().rstrip('"')
+            if chunk:
+                return {"sql": chunk}
+    if re.match(r"^(?:select|pragma)\b", s, re.IGNORECASE):
+        return {"sql": s}
+    return {"sql": s}
+
+
 def _validate_select_sql(sql: str) -> None:
     cleaned = _strip_sql_comments(sql)
     if not cleaned:
@@ -559,31 +930,66 @@ def _db_query_hints(sql: str, *, message: str = "", row_count: int | None = None
     hints: list[str] = []
     sl = (sql or "").lower()
     msg = (message or "").lower()
-
     if "no such column: view_id" in msg:
         hints.append(
             "pmo_raw_records 无 view_id 列；请用 source_view='vew…'。"
             "pmo_views_meta 才用 view_id。"
         )
+    if pmo_sql_has_product_status_nested_extract(sql):
+        hints.append(_PRODUCT_STATUS_WRONG_HINT)
+    if pmo_sql_has_product_fields_on_dev_view(sql):
+        hints.append(_DEV_VIEW_PRODUCT_FIELD_HINT)
+    if pmo_sql_has_vewcz1_personnel_without_json_each(sql):
+        hints.append(_VEWCZ1_JSON_EACH_HINT)
+    if "latest_row" in sl and "group by" in sl and "sprint" in sl and "vewpi8lyyw" in sl:
+        hints.append(
+            "⛔ Worker C·C-1：禁止用 ORDER BY latest_row / MAX(row_index) 选「最近 Sprint」，"
+            "会误选 2025 等历史周期。须用 date(replace(substr(Sprint,1,10),'/','-')) 降序 + "
+            "sprint_date >= date('now','-21 days') LIMIT 3；见 WORKER_C_TASK C-1。"
+        )
+    if row_count == 0 and pmo_sql_is_sprint_window_aggregate(sql):
+        if pmo_sql_has_sprint_date_without_replace(sql):
+            hints.append(_SPRINT_DATE_WRONG_HINT)
+        elif "replace(" not in sl:
+            hints.append(_SPRINT_DATE_WRONG_HINT)
+    if pmo_sql_has_sprint_date_without_replace(sql) and row_count != 0:
+        hints.append(_SPRINT_DATE_WRONG_HINT)
+    if "malformed json" in msg and "vewcz1ffji" in sl and "json_each" in sl:
+        hints.append(_VEWCZ1_JSON_EACH_HINT)
+    if "malformed json" in msg and "vewpi8lyyw" in sl:
+        hints.append(_VEWP_NESTED_PERSON_STATUS_HINT)
+    if "malformed json" in msg:
+        hints.append(
+            "⛔ malformed JSON：常见原因是对**纯字符串字段**做了二次 json_extract。"
+            "产品视图 vew8TxMcSh/vewL9Mofgd 的「需求状态」「开发状态」是 plain string，"
+            "须用 json_extract(fields, '$.\"需求状态\"') **直接提取**（plain string），"
+            "**禁止** json_extract(json_extract(...), '$[0].text')；"
+            "SQLite CASE 的 ELSE 分支仍会触发 malformed JSON，勿用 CASE 嵌套。"
+        )
+        if not pmo_sql_has_product_status_nested_extract(sql):
+            hints.append(_PRODUCT_STATUS_WRONG_HINT)
     if row_count == 0 and "pmo_raw_records" in sl and re.search(r"\bview_id\b", sl):
         hints.append("pmo_raw_records 请改用 source_view 列过滤视图。")
     if row_count == 0 and "父记录" in sql:
-        if re.search(r"\bis null\b", sl) and "[0].text" not in sql:
+        if re.search(r"\bis null\b", sl) and "[0].text" not in sql and "coalesce" not in sl:
             hints.append(
-                "父记录在镜像库中为 JSON 链接数组，json_extract(fields, '$.$\"父记录\"') IS NULL 几乎恒为 0 行。"
-                "Epic 顶层需求请用 json_extract(fields, '$.$\"父记录\"[0].text') IS NULL，"
-                "并排除 Requirement IN ('开发','美术','产品') 部门占位行。"
+                "父记录在镜像库中常为 plain string（如「开发」），json_extract(fields, '$.$\"父记录\"') IS NULL 几乎恒为 0 行。"
+                "Epic（C-2）请用 WORKER_C_TASK：父记录 NULL/空/或 [0].text NULL + 任务编号 IS NOT NULL + 排除部门占位 Requirement。"
+            )
+        elif "[0].text" in sql and "is null" in sl and "任务编号" not in sl and "vewpi8lyyw" in sl:
+            hints.append(
+                "仅用 父记录[0].text IS NULL 会漏 Epic 或误匹配。C-2 须父记录双形态（NULL/空/[0].text NULL）"
+                "且 json_extract(fields, '$.$\"任务编号\"') IS NOT NULL；逐字复制 pmo_multi_agent_queries C-2 SQL。"
             )
         elif "= '[]'" in sql or "='[]'" in sql.replace(" ", ""):
             hints.append(
-                "父记录字段是 JSON 数组而非字符串；`父记录 = '[]'` 通常匹配不到行。"
-                "Epic 顶层请用 json_extract(fields, '$.$\"父记录\"[0].text') IS NULL（source_view='vewpI8lyYw'）。"
+                "父记录字段可能是 string 或 JSON 数组；`父记录 = '[]'` 通常匹配不到行。"
+                "子任务（C-3）请 COALESCE(trim(父记录), 父记录[0].text)；大需求见 C-2。"
             )
         elif "[0].text" in sql and "vewpi8lyyw" in sl and sl.count(" and ") >= 3:
             hints.append(
-                "Epic 查询返回 0 行：父记录[0].text IS NULL 条件本身通常能返回数据。"
-                "请检查是否额外追加了 priority/Sprint/状态 等 AND 过滤导致过严；"
-                "Step 4 只用 §1.2 Epic SQL 的 4 条固定条件，勿自行追加过滤。"
+                "Epic/子任务查询 0 行：请逐字复制 WORKER_C_TASK 的 C-2/C-3（含 Sprint IN 与任务编号）。"
+                "C-3 仍 0 且 C-2 有 Epic → 执行 C-6 按 row_index 归并 parent_epic=开发。"
             )
         elif "[0].text" in sql and "vewcz1ffji" in sl:
             hints.append(
@@ -644,6 +1050,8 @@ def _db_query_hints(sql: str, *, message: str = "", row_count: int | None = None
             "vewpI8lyYw 开发表字段为 Person in charge/Participant 和 Requirement"
             "（非「负责人」「需求名称」）；请核对 Step1 的 columns_json。"
         )
+    if pmo_sql_has_product_fields_on_dev_view(sql):
+        hints.append(_DEV_VIEW_PRODUCT_FIELD_HINT)
     if "version goal" in sl and "limit 1" in sl and "count(" not in sl:
         hints.append(
             "Step7 未完成：Version Goal 须用 COUNT(*) 聚合统计填写率，"
@@ -746,7 +1154,57 @@ def _db_query_row_quality_hints(rows: list[dict[str, Any]], sql: str) -> list[st
             "vewpI8lyYw 字段为 Person in charge/Participant / Requirement，"
             "非「负责人」「需求名称」。"
         )
-    return hints[:4]
+    if pmo_sql_has_product_fields_on_dev_view(sql):
+        hints.append(_DEV_VIEW_PRODUCT_FIELD_HINT)
+    hints.extend(_db_query_vewp_epic_row_quality_hints(rows, sql))
+    return hints[:5]
+
+
+def _db_query_vewp_epic_row_quality_hints(
+    rows: list[dict[str, Any]], sql: str
+) -> list[str]:
+    """vewpI8lyYw：检出「Sprint 全量捞取」误当 C-2 大需求。"""
+    hints: list[str] = []
+    if not rows or "vewpi8lyyw" not in (sql or "").lower():
+        return hints
+    s = sql or ""
+    if pmo_sql_has_c2_epic_filters(s):
+        req_col = None
+        for c in ("epic_name", "requirement", "task"):
+            if rows and c in rows[0]:
+                req_col = c
+                break
+        if req_col:
+            dept_rows = sum(
+                1
+                for r in rows
+                if str(r.get(req_col) or "").strip() in _DEPT_PLACEHOLDER_ROW_NAMES
+            )
+            if dept_rows >= 2:
+                hints.append(
+                    "⛔ 返回行仍含部门占位词（开发/产品/美术…），不是 C-2 大需求结果。"
+                    "请确认已逐字复制 WORKER_C_TASK C-2 且 WHERE 未删改。"
+                )
+        return hints[:2]
+    if len(rows) < 10:
+        return hints
+    req_col = None
+    for c in ("epic_name", "requirement", "task"):
+        if c in rows[0]:
+            req_col = c
+            break
+    if not req_col:
+        return hints
+    dept_rows = sum(
+        1 for r in rows if str(r.get(req_col) or "").strip() in _DEPT_PLACEHOLDER_ROW_NAMES
+    )
+    if dept_rows >= 2 or len(rows) > 40:
+        hints.append(_WORKER_C2_INCOMPLETE_HINT)
+        hints.append(
+            f"当前 {len(rows)} 行且含部门占位/子任务特征 → 这是 **C-3 级全量**，不是 epics[]。"
+            "请执行 **C-2**（仅大需求，通常每 Sprint 十余条）；子任务写入 epic_children[]。"
+        )
+    return hints[:2]
 
 
 def _coerce_params(params: Any) -> dict[str, Any]:
@@ -1036,6 +1494,22 @@ def _apply_write(
     return "inserted", float(record.get("confidence") or 1.0)
 
 
+def _prepend_worker_b_field_align_hints(hints: list[str] | None, sql: str) -> list[str]:
+    """Worker B 相关 source_view：在 Observation 顶部附带字段对齐摘要。"""
+    try:
+        from l3_node.pmo_worker_b_field_align import field_align_hint_for_sql
+
+        align = field_align_hint_for_sql(sql)
+        if not align:
+            return list(hints or [])
+        out = list(hints or [])
+        if align not in out:
+            out.insert(0, align)
+        return out
+    except Exception:
+        return list(hints or [])
+
+
 def run_db_query(
     *,
     sql: str = "",
@@ -1045,9 +1519,105 @@ def run_db_query(
     """执行只读 SELECT。"""
     sql_s = str(sql or "").strip()
     if not sql_s:
-        return {"status": "error", "error": "missing_sql", "message": "sql 不能为空"}
+        return {
+            "status": "error",
+            "error": "missing_sql",
+            "message": (
+                "sql 不能为空。Action Input 请 **直接写 SELECT…; 裸 SQL**，"
+                "禁止 {\"sql\":\"...\"} JSON 包装（SQL 内双引号会使 JSON 解析失败）。"
+            ),
+            "hints": [
+                "✅ 正确：Action Input 第一行即以 SELECT 开头，直至分号结束。"
+                "❌ 错误：{\"sql\": \"SELECT ...\"}（易导致 missing_sql）",
+            ],
+        }
     try:
         _validate_select_sql(sql_s)
+        if pmo_sql_has_product_status_nested_extract(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "产品视图「需求状态」「开发状态」禁止 nested json_extract + [0].text；"
+                    "请改用任务体 B-1/B-2/C-4 中的直接 json_extract（未执行 SQL，避免 malformed JSON）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": _prepend_worker_b_field_align_hints(
+                    [_PRODUCT_STATUS_WRONG_HINT], sql_s
+                ),
+            }
+        if pmo_sql_has_invented_chinese_task_fields(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "Worker B·B-SUP：禁止自编任务标题/任务ID/负责人等字段；"
+                    "请逐字复制 WORKER_B_TASK B-SUP（未执行 SQL）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": _prepend_worker_b_field_align_hints(
+                    [_WORKER_B_SUP_INVENTED_FIELD_HINT], sql_s
+                ),
+            }
+        if pmo_sql_has_product_fields_on_dev_view(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "开发/人员表禁止使用产品字段名（任务简述/优先级/责任人等）；"
+                    "请改用 WORKER_B_TASK B-S1/B-4/B-SUP SQL（未执行 SQL）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": _prepend_worker_b_field_align_hints(
+                    [_DEV_VIEW_PRODUCT_FIELD_HINT], sql_s
+                ),
+            }
+        if pmo_sql_has_vewcz1_personnel_without_json_each(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "vewCz1FFJi 人员 SSOT 须 WORKER_B_TASK B-4（UNION：typeof+NOT GLOB + json_each 数组分支）；"
+                    "请先 B-S1（未执行 SQL）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": _prepend_worker_b_field_align_hints(
+                    [_VEWCZ1_JSON_EACH_HINT], sql_s
+                ),
+            }
+        if pmo_sql_has_vewp_person_or_status_nested_extract(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "vewpI8lyYw C-2：Person/状态 禁止 nested [0].text；"
+                    "请整段复制 WORKER_C_TASK C-2（未执行 SQL，避免 malformed JSON）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": [_VEWP_NESTED_PERSON_STATUS_HINT],
+            }
+        if pmo_sql_missing_worker_c2_epic_filters(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "Worker C·C-2 缺少任务编号/父记录双形态/Sprint IN；"
+                    "请整段复制 WORKER_C_TASK C-2（未执行 SQL）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": [_WORKER_C2_INCOMPLETE_HINT],
+            }
+        if pmo_sql_has_sprint_date_without_replace(sql_s):
+            return {
+                "status": "error",
+                "error": "pmo_sql_antipattern",
+                "message": (
+                    "Worker C·C-1：Sprint 日期须 replace('/','-') 再 date()；"
+                    "请复制 WORKER_C_TASK C-1 SQL（未执行 SQL，避免恒 0 行）"
+                ),
+                "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
+                "hints": [_SPRINT_DATE_WRONG_HINT],
+            }
         bound = _coerce_params(params)
         try:
             limit = int(max_rows)
@@ -1075,6 +1645,7 @@ def run_db_query(
             row_hints = _db_query_row_quality_hints(rows, sql_s)
             if row_hints:
                 hints = (hints or []) + row_hints
+            hints = _prepend_worker_b_field_align_hints(hints, sql_s)
             if hints:
                 out["hints"] = hints
             return out
@@ -1089,7 +1660,9 @@ def run_db_query(
             "message": msg,
             "schema_hint": _PMO_RAW_RECORDS_SCHEMA_HINT,
         }
-        hints = _db_query_hints(sql_s, message=msg)
+        hints = _prepend_worker_b_field_align_hints(
+            _db_query_hints(sql_s, message=msg), sql_s
+        )
         if hints:
             err["hints"] = hints
         return err
@@ -1618,5 +2191,33 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
             manifest_path=str(payload.get("manifest_path") or payload.get("path") or ""),
             pull_dir=str(payload.get("pull_dir") or payload.get("output_dir") or ""),
             view_ids=view_ids,
+        )
+    if tool_id == "core:pmo_sprint_epic_report":
+        from l3_node.tools.pmo_sprint_query import (
+            run_sprint_epic_report,
+            run_sprint_epic_report_for_recent,
+        )
+
+        if payload.get("recent_window") in (True, "true", "1", 1):
+            return run_sprint_epic_report_for_recent(
+                source_view=str(payload.get("source_view") or "vewpI8lyYw"),
+                department=str(payload.get("department") or "all"),
+            )
+        return run_sprint_epic_report(
+            sprint=str(payload.get("sprint") or ""),
+            source_view=str(payload.get("source_view") or "vewpI8lyYw"),
+            department=str(payload.get("department") or "all"),
+        )
+    if tool_id == "core:pmo_resolve_sprint":
+        from l3_node.tools.pmo_sprint_query import run_resolve_sprint
+
+        year_raw = payload.get("year")
+        year_i = int(year_raw) if year_raw not in (None, "") else None
+        return run_resolve_sprint(
+            sprint=str(payload.get("sprint") or "").strip() or None,
+            sprint_date=str(payload.get("sprint_date") or "").strip() or None,
+            label=str(payload.get("label") or "").strip() or None,
+            year=year_i,
+            source_view=str(payload.get("source_view") or "vewpI8lyYw"),
         )
     raise ValueError(f"Unknown PMO db tool: {tool_id}")

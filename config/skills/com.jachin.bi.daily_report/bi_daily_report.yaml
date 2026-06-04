@@ -212,3 +212,7 @@ distribution:
     # 收件人列表，写几个就发给几个人（一次性发送给列表内所有邮箱；与 .env BI_SMTP_TO、~/.jachin 同步）
     to_addrs:
       - "vivian@herontech.net"
+      - "haku@herontech.net"
+      - "ethan@herontech.net"
+      - "samuel@herontech.net"
+      - "vivtor@herontech.net"

@@ -46,6 +46,8 @@ def load_foreground_tools_config() -> dict[str, Any]:
         # mcp:fetch 常拉取大页/XML；无头浏览器与物理键鼠单次调用常 >5s（冷启动/截屏/导航）
         "long_running_tool_ids": [
             "mcp:fetch",
+            "mcp:atom_bi_project_context",
+            "core:pmo_mirror_import",
             "mcp:puppeteer_navigate",
             "mcp:puppeteer_screenshot",
             "mcp:puppeteer_evaluate",
