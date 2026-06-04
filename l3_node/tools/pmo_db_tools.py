@@ -88,6 +88,20 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
         "params": ["manifest_path", "pull_dir", "view_ids"],
     },
     {
+        "id": "core:pmo_personnel_report",
+        "label": "core:pmo_personnel_report",
+        "desc": (
+            "PMO 人员任务矩阵（Python 解析 pmo_raw_records；SSOT vewCz1FFJi + vewpI8lyYw 合并）。"
+            "JSON：可选 sprint；或 recent_window:true（近 21 天最多 3 Sprint，等同 Worker B 宿主预取）。"
+            "返回 current_sprint（sd≤today）、recent_sprints[]、personnel_tasks[]（含 sprint/priority/"
+            "start_date_iso/review_date_iso/acceptance_date_iso/expected_delivery_date_iso/"
+            "actual_delivery_date_iso/department/task_no/progress/status）、requirement_context[]、"
+            "unassigned_tasks[]、cross_week_tasks[]、by_person{}、summary、formatted_text（纯文本表，"
+            "人员【姓名】+ GFM 任务表（序/任务/编号/日期 MM-DD），勿用 #### 或等宽空格表）；日期含 *_iso。"
+        ),
+        "params": ["sprint", "recent_window", "person_view", "cross_view"],
+    },
+    {
         "id": "core:pmo_sprint_epic_report",
         "label": "core:pmo_sprint_epic_report",
         "desc": (
@@ -2191,6 +2205,15 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
             manifest_path=str(payload.get("manifest_path") or payload.get("path") or ""),
             pull_dir=str(payload.get("pull_dir") or payload.get("output_dir") or ""),
             view_ids=view_ids,
+        )
+    if tool_id == "core:pmo_personnel_report":
+        from l3_node.tools.pmo_personnel_query import run_personnel_report
+
+        return run_personnel_report(
+            sprint=str(payload.get("sprint") or "").strip() or None,
+            recent_window=payload.get("recent_window") in (True, "true", "1", 1),
+            person_view=str(payload.get("person_view") or "vewCz1FFJi"),
+            cross_view=str(payload.get("cross_view") or "vewpI8lyYw"),
         )
     if tool_id == "core:pmo_sprint_epic_report":
         from l3_node.tools.pmo_sprint_query import (

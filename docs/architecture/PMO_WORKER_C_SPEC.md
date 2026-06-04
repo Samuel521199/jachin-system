@@ -26,6 +26,11 @@
 - 禁止用 JSON 包装 `core:db_query`；须裸 SELECT。
 - 禁止未失败就重跑 C-2；禁止把 C-3 子任务写入 `epics[]`。
 
-## 3. 数据诚实
+## 3. 子任务采集（参与人勿漏）
+
+- `core:pmo_sprint_epic_report` 除 `父记录=开发/产品/美术` 外，须采集 **父记录为 Epic 名或中间层链接**（如 `技术优化` → `中台技术优化`）且有 **任务编号** 的行，按 `row_index` 归并 `parent_epic`。
+- 战报 📊 **参与人** = 该 Epic 下子任务 `person` 汇总（实现：`l3_node/pmo_epic_aggregate.epic_participants`）；禁止只看 Epic 行自身 `person`（常为空）。
+
+## 4. 数据诚实
 
 Observation 为 null/空 → JSON `null` 或 `field_empty`；禁止编造 priority、日期、人名。

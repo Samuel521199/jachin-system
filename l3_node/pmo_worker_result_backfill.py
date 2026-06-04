@@ -103,16 +103,68 @@ def _epics_empty(data: dict[str, Any]) -> bool:
     return True
 
 
+def _apply_personnel_report_payload(data: dict[str, Any], rep: dict[str, Any]) -> None:
+    if str(rep.get("status") or "").lower() != "ok":
+        return
+    for k in (
+        "current_sprint",
+        "current_sprint_date",
+        "recent_sprints",
+        "personnel_tasks",
+        "requirement_context",
+        "unassigned_tasks",
+        "cross_week_tasks",
+        "by_person",
+        "_current_sprint_meta",
+    ):
+        if rep.get(k) is not None:
+            data[k] = rep[k]
+    summ = rep.get("summary")
+    if isinstance(summ, dict):
+        data["summary"] = summ
+    ids = data.setdefault("completed_sql_ids", [])
+    if isinstance(ids, list) and "B-TOOL" not in ids:
+        ids.append("B-TOOL")
+    names = _sprint_names(data.get("recent_sprints") or [])
+    if names:
+        data["sprint_names_for_in"] = names
+
+
 def backfill_worker_b(raw: str) -> str:
-    """若 personnel_tasks[] / recent_sprints[] 缺失或为空，宿主执行 B-S1 + B-4 回填。"""
+    """若 personnel_tasks[] / recent_sprints[] 缺失或为空，宿主执行 B-TOOL 或 B-S1+B-4 回填。"""
     data = parse_worker_final_json(raw) or {}
     if not _personnel_tasks_empty(data):
         return raw
+
+    try:
+        from l3_node.tools.pmo_personnel_query import run_personnel_report_for_recent
+
+        rep = run_personnel_report_for_recent()
+        if str(rep.get("status") or "").lower() == "ok" and (rep.get("personnel_tasks") or []):
+            _apply_personnel_report_payload(data, rep)
+            meta = data.setdefault("_host_backfill", [])
+            if isinstance(meta, list):
+                meta.append("personnel_tasks:B-TOOL")
+            logger.info(
+                "[PMO backfill] Worker B: report tool injected %d personnel_tasks",
+                len(data.get("personnel_tasks") or []),
+            )
+            return json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("[PMO backfill] Worker B report tool failed: %s", e)
 
     s1_rows = _run_sql(sql_worker_b_s1())
     sprints = _sprint_names(s1_rows)
     if s1_rows:
         data["recent_sprints"] = s1_rows
+        from l3_node.tools.pmo_personnel_query import resolve_current_sprint
+
+        cs, cs_date, _ = resolve_current_sprint(s1_rows)
+        if cs:
+            data["current_sprint"] = cs
+        if cs_date:
+            data["current_sprint_date"] = cs_date
+        data["sprint_names_for_in"] = sprints
 
     b4_rows = _run_sql(sql_worker_b_b4(sprints), max_rows=300)
     if b4_rows:
@@ -186,7 +238,12 @@ def backfill_worker_c(raw: str) -> str:
     sprints = _sprint_names(c1_rows)
     if c1_rows:
         data["recent_sprints"] = c1_rows
-        data["current_sprint"] = str(c1_rows[0].get("sprint") or "").strip() or None
+        from l3_node.tools.pmo_personnel_query import resolve_current_sprint
+
+        cs, cs_date, _ = resolve_current_sprint(c1_rows)
+        data["current_sprint"] = cs or str(c1_rows[0].get("sprint") or "").strip() or None
+        if cs_date:
+            data["current_sprint_date"] = cs_date
 
     c2_rows = _run_sql(sql_worker_c_c2(sprints), max_rows=200)
     if c2_rows:
@@ -268,21 +325,61 @@ def backfill_worker_outputs(worker_b: str, worker_c: str) -> tuple[str, str]:
 
 def run_worker_b_host_bootstrap() -> dict[str, Any]:
     """
-    FanOut 前宿主确定性执行 B-S1 + B-4（SSOT SQL）。
-    Worker B SubAgent 禁止重跑这两步，仅做 B-SUP + 出错自纠。
+    FanOut 前宿主确定性执行 core:pmo_personnel_report（recent_window）。
+    Worker B SubAgent 禁止重跑 B-S1/B-4；仅整理 Final Answer 或 B-SUP 兜底。
     """
+    try:
+        from l3_node.tools.pmo_personnel_query import run_personnel_report_for_recent
+
+        rep = run_personnel_report_for_recent()
+        if str(rep.get("status") or "").lower() == "ok":
+            sprints = _sprint_names(rep.get("recent_sprints") or [])
+            seed: dict[str, Any] = {
+                "current_sprint": rep.get("current_sprint"),
+                "current_sprint_date": rep.get("current_sprint_date"),
+                "recent_sprints": rep.get("recent_sprints") or [],
+                "personnel_tasks": rep.get("personnel_tasks") or [],
+                "requirement_context": rep.get("requirement_context") or [],
+                "unassigned_tasks": rep.get("unassigned_tasks") or [],
+                "cross_week_tasks": rep.get("cross_week_tasks") or [],
+                "by_person": rep.get("by_person") or {},
+                "sprint_names_for_in": sprints,
+                "completed_sql_ids": ["B-TOOL"],
+                "_host_bootstrap": ["B-TOOL"],
+                "summary": rep.get("summary"),
+                "_current_sprint_meta": rep.get("_current_sprint_meta"),
+            }
+            if rep.get("sprint_window_empty"):
+                seed["sprint_window_empty"] = True
+            logger.info(
+                "[PMO bootstrap] Worker B host (B-TOOL): current_sprint=%s sprints=%s personnel_rows=%d",
+                seed.get("current_sprint"),
+                sprints,
+                len(seed.get("personnel_tasks") or []),
+            )
+            return seed
+    except Exception as e:
+        logger.warning("[PMO bootstrap] Worker B report tool failed, SQL fallback: %s", e)
+
     s1_rows = _run_sql(sql_worker_b_s1())
     sprints = _sprint_names(s1_rows)
+    from l3_node.tools.pmo_personnel_query import resolve_current_sprint
+
+    current_sprint, current_sprint_date, cs_meta = resolve_current_sprint(s1_rows)
     b4_rows = _run_sql(sql_worker_b_b4(sprints), max_rows=300)
-    seed: dict[str, Any] = {
+    seed = {
         "recent_sprints": s1_rows,
+        "current_sprint": current_sprint,
+        "current_sprint_date": current_sprint_date,
         "personnel_tasks": b4_rows,
         "sprint_names_for_in": sprints,
         "completed_sql_ids": ["B-S1", "B-4"],
         "_host_bootstrap": ["B-S1", "B-4"],
+        "_current_sprint_meta": cs_meta,
     }
     logger.info(
-        "[PMO bootstrap] Worker B host: sprints=%s personnel_rows=%d",
+        "[PMO bootstrap] Worker B host (SQL fallback): current_sprint=%s sprints=%s personnel_rows=%d",
+        current_sprint,
         sprints,
         len(b4_rows),
     )
@@ -295,20 +392,35 @@ def merge_worker_b_result(host_seed: dict[str, Any], agent_raw: str) -> str:
     SubAgent 未交卷或缺 B-SUP 时，宿主兜底执行 B-SUP。
     """
     out: dict[str, Any] = {
+        "current_sprint": host_seed.get("current_sprint"),
+        "current_sprint_date": host_seed.get("current_sprint_date"),
         "recent_sprints": host_seed.get("recent_sprints") or [],
         "personnel_tasks": host_seed.get("personnel_tasks") or [],
         "completed_sql_ids": list(host_seed.get("completed_sql_ids") or ["B-S1", "B-4"]),
     }
+    for k in (
+        "requirement_context",
+        "unassigned_tasks",
+        "cross_week_tasks",
+        "by_person",
+        "summary",
+        "_current_sprint_meta",
+    ):
+        if host_seed.get(k) is not None:
+            out[k] = host_seed[k]
     if host_seed.get("_host_bootstrap"):
         out["_host_bootstrap"] = list(host_seed["_host_bootstrap"])
 
     agent = parse_worker_final_json(agent_raw)
     incomplete = (agent_raw or "").strip() and not agent
     if agent:
+        agent_cs = agent.get("current_sprint")
+        if agent_cs and agent_cs != out.get("current_sprint"):
+            out["_current_sprint_mismatch"] = {"agent": agent_cs, "host": out.get("current_sprint")}
         rc = agent.get("requirement_context")
         if isinstance(rc, list) and rc:
             out["requirement_context"] = rc
-            if "B-SUP" not in out["completed_sql_ids"]:
+            if "B-SUP" not in out["completed_sql_ids"] and "B-TOOL" not in out["completed_sql_ids"]:
                 out["completed_sql_ids"].append("B-SUP")
         for k in ("cross_check_notes", "field_empty", "column_missing_in_view"):
             if k in agent:

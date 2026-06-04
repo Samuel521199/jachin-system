@@ -15,6 +15,7 @@ from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKER_C_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_C_SPEC.md"
+_WORKER_B_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_B_SPEC.md"
 
 from l3_node.pmo_multi_agent_queries import (
     WORKER_A_MAX_ITERATIONS,
@@ -61,15 +62,27 @@ _PMO_WORKER_A_RULES = (
     "- **禁止** B-S1/B-4/B-SUP / C-1～C-3 业务明细 SQL。\n"
 )
 
-_PMO_WORKER_B_RULES = (
-    "【Worker B · vewCz1FFJi 主表 + vewpI8lyYw 辅表】\n"
-    "- **宿主预取**：FanOut 启动前宿主已执行 B-S1+B-4；JSON 在【宿主预取 JSON】；**禁止**重跑 B-S1/B-4。\n"
-    "- **ReAct 第 1 次 db_query = B-SUP**（`vewpI8lyYw`）；B-SUP 失败时同编号最多重试 2 次。\n"
-    "- **主表** `vewCz1FFJi`：personnel_tasks[] 只来自宿主预取；禁止自编 UNION/CASE。\n"
-    "- **辅表** `vewpI8lyYw`：仅 B-SUP；禁止 C-2 Epic WHERE / 自编任务标题字段。\n"
-    "- **禁止**产品/美术表；**不是** Worker A/C。\n"
-    "- Final Answer：合并宿主 recent_sprints[]、personnel_tasks[] + 自跑 requirement_context[]。\n"
+_PMO_WORKER_B_RULES_INLINE = (
+    "【Worker B · vewCz1FFJi + vewpI8lyYw · B-TOOL 优先】\n"
+    "- **步骤 0（必须）**：`core:pmo_personnel_report` + `{\"recent_window\": true}`；"
+    "宿主已预取 personnel_tasks[] 时禁止重跑。\n"
+    "- **current_sprint**：宿主已按 **sd≤today** 算出；**禁止**用 recent_sprints[0] 覆盖。\n"
+    "- **兜底**：仅步骤 0 缺 requirement_context 时执行 B-SUP（db_query）；禁止重跑 B-S1/B-4。\n"
+    "- Final Answer：current_sprint + recent_sprints[] + personnel_tasks[] + requirement_context[]。\n"
 )
+
+
+def _load_worker_b_system_prefix() -> str:
+    spec = ""
+    try:
+        if _WORKER_B_SPEC_PATH.is_file():
+            spec = _WORKER_B_SPEC_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if spec:
+        return _PMO_WORKER_B_RULES_INLINE + "\n" + spec + "\n"
+    return _PMO_WORKER_B_RULES_INLINE
+
 
 _PMO_WORKER_C_RULES_INLINE = (
     "【Worker C · vewpI8lyYw · C-TOOL 优先】\n"
@@ -103,8 +116,8 @@ PMO_WORKER_A_ROLE: dict[str, Any] = {
 PMO_WORKER_B_ROLE: dict[str, Any] = {
     "id": "analyst",
     "system_prefix_max_chars": PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
-    "system_prefix": _PMO_WORKER_B_RULES + "\n" + _PMO_WORKER_SHARED,
-    "allowed_tools": ["core:db_query"],
+    "system_prefix": _load_worker_b_system_prefix() + "\n" + _PMO_WORKER_SHARED,
+    "allowed_tools": ["core:pmo_personnel_report", "core:db_query"],
 }
 
 PMO_WORKER_C_ROLE: dict[str, Any] = {
@@ -145,8 +158,8 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 你的唯一任务：
 1. 将下方 JSON 填入 §1.4 三张 **GFM Markdown 表**（语义见 §1.2.3）；**风险诊断书不得写入 📊 表内列**：
 {demand_table_spec}
-   - 📊 仅 `current_sprint`（本周）大需求，每行一个 Epic；子任务汇总进「参与人/完成度/状态」三列
-   - 👥 人员任务矩阵 — **以 Worker B 的 personnel_tasks[]（vewCz1FFJi SSOT）为主**
+   - 📊 仅 `current_sprint`（本周）大需求，每行一个 Epic；子任务汇总进「参与人/完成度/状态」三列（参与人须含 Epic 父记录链接链子任务，见 `pmo_epic_aggregate.epic_participants`）
+   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**（禁止 `A; B` 合成 person 键，见 `person_keys_from_task`）
    - 📦 版本发布需求映射
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
 3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次** IM 推送，**禁止 webhook_url**）：
@@ -243,10 +256,10 @@ def _phase1_fanout_items(
     worker_b_context_max = 0
     if host_b_seed:
         worker_b_context = {
-            "说明": "宿主预取 JSON（B-S1+B-4 已执行，勿重查 vewCz1FFJi UNION）",
+            "说明": "宿主预取 JSON（core:pmo_personnel_report recent_window 已执行，勿重跑步骤 0）",
             **host_b_seed,
         }
-        worker_b_context_max = 18000
+        worker_b_context_max = 22000
 
     workers: list[tuple[str, str, int, str, dict[str, Any], dict[str, Any]]] = [
         ("Worker A", WORKER_A_TASK_PREVIEW, WORKER_A_MAX_ITERATIONS, WORKER_A_TASK, PMO_WORKER_A_ROLE, {}),
@@ -322,7 +335,8 @@ async def run_pmo_multi_agent_workflow(
 
         host_b_seed = run_worker_b_host_bootstrap()
         _status(
-            f"Worker B 宿主预取：personnel_tasks={len(host_b_seed.get('personnel_tasks') or [])} 行"
+            f"Worker B 宿主预取：current_sprint={host_b_seed.get('current_sprint')} "
+            f"personnel_tasks={len(host_b_seed.get('personnel_tasks') or [])} 行"
         )
     except Exception:
         logger.exception("[PMO Multi-Agent] Worker B host bootstrap failed")
@@ -342,11 +356,12 @@ async def run_pmo_multi_agent_workflow(
         append_pmo_debug_phase_begin(
             1,
             "并行捞数 · FanOut",
-            detail="Worker A(字典) / B(宿主B-S1+B-4 → ReAct仅B-SUP) / C(vewp Epic) 并行",
+            detail="Worker A(字典) / B(宿主B-TOOL → ReAct可选B-SUP) / C(vewp Epic) 并行",
         )
         if host_b_seed.get("personnel_tasks"):
             append_pmo_debug_status(
-                f"Worker B 宿主预取完成：personnel_tasks={len(host_b_seed['personnel_tasks'])} 行，"
+                f"Worker B 宿主预取完成：current_sprint={host_b_seed.get('current_sprint')} "
+                f"personnel_tasks={len(host_b_seed['personnel_tasks'])} 行，"
                 f"Sprint={host_b_seed.get('sprint_names_for_in')}"
             )
     except Exception:

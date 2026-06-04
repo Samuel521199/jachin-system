@@ -2,7 +2,7 @@
 PMO Sprint 大需求 + 开发/产品/美术子任务查询（案例 SSOT：PMO_DB_QUERY_CASE_STUDY_0511_SPRINT §5）。
 
 Python 解析 ``pmo_raw_records.fields``，避免 ``json_extract`` 在父记录混 string/array 时 malformed JSON。
-子任务：`父记录` ∈ {开发, 产品, 美术}，按 row_index 归并到上一个大需求 epic_name。
+子任务：① `父记录` ∈ {开发, 产品, 美术}，按 row_index 归并大需求；② `父记录` 为 Epic/中间层链接名（非部门名）且有任务编号，同样按 row_index 归并（修复「技术优化」类漏采）。
 """
 from __future__ import annotations
 
@@ -213,23 +213,30 @@ def _epic_for_row(row_index: int, epic_indices: list[tuple[int, str]]) -> str | 
     return best
 
 
-def _collect_dept_tasks(
+def _dept_lane_for_row(
+    row_index: int,
     rows: list[tuple[int, dict[str, Any]]],
-    epic_indices: list[tuple[int, str]],
-    dept_parent: str,
-) -> list[dict[str, Any]]:
-    raw: list[tuple[int, dict[str, Any], str | None]] = []
+) -> str:
+    """向上扫描：当前行所属部门泳道（开发/产品/美术），默认开发。"""
+    lane = _DEVELOPMENT_PARENT
     for idx, f in rows:
-        if parent_text(f) != dept_parent:
-            continue
+        if idx >= row_index:
+            break
+        pt = parent_text(f)
+        if pt in _CHILD_DEPT_PARENTS:
+            lane = pt
         req = str(f.get("Requirement") or "").strip()
-        if not req or req in _DEPT or req == dept_parent:
-            continue
-        raw.append((idx, f, _epic_for_row(idx, epic_indices)))
+        if req in _CHILD_DEPT_PARENTS:
+            lane = req
+    return lane
 
+
+def _dedupe_child_tasks(
+    raw: list[tuple[int, dict[str, Any], str | None, str]],
+) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     seen_task_no: dict[str, int] = {}
-    for idx, f, pe in sorted(raw, key=lambda x: x[0]):
+    for idx, f, pe, dept_parent in sorted(raw, key=lambda x: x[0]):
         row = _pack_child_row(f, pe, department=dept_parent)
         tno = row.get("task_no")
         if tno:
@@ -239,6 +246,63 @@ def _collect_dept_tasks(
             seen_task_no[key] = idx
         tasks.append(row)
     return tasks
+
+
+def _collect_dept_tasks(
+    rows: list[tuple[int, dict[str, Any]]],
+    epic_indices: list[tuple[int, str]],
+    dept_parent: str,
+) -> list[dict[str, Any]]:
+    raw: list[tuple[int, dict[str, Any], str | None, str]] = []
+    for idx, f in rows:
+        if parent_text(f) != dept_parent:
+            continue
+        req = str(f.get("Requirement") or "").strip()
+        if not req or req in _DEPT or req == dept_parent:
+            continue
+        raw.append((idx, f, _epic_for_row(idx, epic_indices), dept_parent))
+    return _dedupe_child_tasks(raw)
+
+
+def _collect_epic_chain_tasks(
+    rows: list[tuple[int, dict[str, Any]]],
+    epic_indices: list[tuple[int, str]],
+) -> list[dict[str, Any]]:
+    """
+    父记录为 Epic 名或中间层（如 技术优化 → 中台技术优化），非 开发/产品/美术 部门占位。
+    仍须有任务编号；parent_epic 由 row_index 归并到最近大需求。
+    """
+    raw: list[tuple[int, dict[str, Any], str | None, str]] = []
+    for idx, f in rows:
+        if _is_big_epic(f):
+            continue
+        pt = parent_text(f)
+        if pt is None or pt in _CHILD_DEPT_PARENTS:
+            continue
+        req = str(f.get("Requirement") or "").strip()
+        if not req or req in _DEPT:
+            continue
+        if not f.get("任务编号"):
+            continue
+        lane = _dept_lane_for_row(idx, rows)
+        raw.append((idx, f, _epic_for_row(idx, epic_indices), lane))
+    return _dedupe_child_tasks(raw)
+
+
+def _merge_child_task_lists(*parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 task_no 去重合并多路子任务列表（部门占位 + Epic 链接链）。"""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for tasks in parts:
+        for row in tasks:
+            tno = row.get("task_no")
+            if tno:
+                key = str(tno)
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(row)
+    return out
 
 
 def _epics_with_children(tasks: list[dict[str, Any]]) -> int:
@@ -345,17 +409,21 @@ def run_sprint_epic_report(
 
     epic_sorted, epic_indices = _sorted_big_epics(rows)
 
+    epic_chain = _collect_epic_chain_tasks(rows, epic_indices)
+
     dev_tasks: list[dict[str, Any]] = []
     product_tasks: list[dict[str, Any]] = []
     art_tasks: list[dict[str, Any]] = []
     for dept_parent in dept_parents:
         collected = _collect_dept_tasks(rows, epic_indices, dept_parent)
+        chain_slice = [t for t in epic_chain if t.get("department") == dept_parent]
+        merged = _merge_child_task_lists(collected, chain_slice)
         if dept_parent == _DEVELOPMENT_PARENT:
-            dev_tasks = collected
+            dev_tasks = merged
         elif dept_parent == _PRODUCT_PARENT:
-            product_tasks = collected
+            product_tasks = merged
         elif dept_parent == _ART_PARENT:
-            art_tasks = collected
+            art_tasks = merged
 
     epics = [_pack_epic_row(f) for _, f in epic_sorted]
     all_children = dev_tasks + product_tasks + art_tasks
@@ -419,7 +487,11 @@ def run_sprint_epic_report_for_recent(
             "sprint_window_empty": True,
         }
 
-    current_sprint = sprint_names[0]
+    from l3_node.tools.pmo_personnel_query import resolve_current_sprint
+
+    current_sprint, _cs_date, _ = resolve_current_sprint(recent)
+    if not current_sprint:
+        current_sprint = sprint_names[0]
     all_epics: list[dict[str, Any]] = []
     all_dev: list[dict[str, Any]] = []
     all_product: list[dict[str, Any]] = []

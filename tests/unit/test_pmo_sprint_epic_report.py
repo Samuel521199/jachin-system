@@ -97,6 +97,65 @@ def test_sprint_report_fixture_counts(monkeypatch, tmp_path):
     assert out_dev_only["summary"]["product_task_count"] == 0
 
 
+def test_epic_chain_parent_collects_participants(monkeypatch, tmp_path):
+    """父记录=Epic 名链（非 开发 占位）的子任务须归并到大需求。"""
+    db = tmp_path / "pmo_chain.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE pmo_raw_records (
+            id INTEGER PRIMARY KEY,
+            source_view TEXT,
+            source_file TEXT,
+            row_index INTEGER,
+            raw_text TEXT,
+            fields TEXT,
+            synced_at TEXT
+        )
+        """
+    )
+    sprint = "2026/06/01-Sprint"
+
+    def row(ri, req, parent, task_no=None, person=None):
+        f = {"Requirement": req, "Sprint": sprint, "priority": "P2"}
+        if parent is not None:
+            f["父记录"] = parent
+        if task_no:
+            f["任务编号"] = task_no
+        if person:
+            f["Person in charge/Participant"] = person
+        conn.execute(
+            "INSERT INTO pmo_raw_records (source_view, source_file, row_index, fields, synced_at) "
+            "VALUES (?,?,?,?,?)",
+            ("vewpI8lyYw", "t.md", ri, json.dumps(f, ensure_ascii=False), "2026-01-01"),
+        )
+
+    row(100, "技术优化", None, "E-TECH")
+    row(101, "中台技术优化", "技术优化", "G-MID")
+    row(102, "中台技术优化-BI导出", "中台技术优化", "T1", "Jade")
+    row(103, "中台技术优化-创建房间", "中台技术优化", "T2", "Kelden")
+    row(104, "中台技术优化-grpc", "中台技术优化", "T3", "hex")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(sq, "get_pmo_db_path", lambda: db)
+    monkeypatch.setattr(sq, "pmo_mirror_db_ready", lambda: True)
+    monkeypatch.setattr(sq, "_connect", lambda: sqlite3.connect(db))
+
+    out = sq.run_sprint_epic_report(sprint=sprint)
+    assert out["status"] == "ok"
+    tech_kids = [t for t in out["dev_tasks"] if t.get("parent_epic") == "技术优化"]
+    with_person = [t for t in tech_kids if t.get("person")]
+    assert len(with_person) == 3
+    assert {t.get("person") for t in with_person} == {"Jade", "Kelden", "hex"}
+
+    from l3_node.pmo_epic_aggregate import epic_participants
+
+    epic = next(e for e in out["epics"] if e.get("epic_name") == "技术优化")
+    label = epic_participants(epic, tech_kids)
+    assert "Jade" in label and "Kelden" in label and "hex" in label
+
+
 def test_resolve_sprint_label(monkeypatch, tmp_path):
     db = tmp_path / "pmo_resolve.sqlite"
     conn = sqlite3.connect(db)

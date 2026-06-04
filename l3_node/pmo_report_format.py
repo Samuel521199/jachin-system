@@ -30,7 +30,7 @@ PMO_DEMAND_TABLE_PUBLISHER_SPEC = (
     + "\n```\n"
     "- **需求名称**：Worker C `epics[].epic_name`（大需求 Requirement，每行一个 Epic）\n"
     "- **时间跨度**：`Start Date`～`Expected Delivery Date`，或当前 Sprint 周期；示例 `05/18→05/25`\n"
-    "- **参与人**：该 Epic 下子任务 + personnel_tasks 汇总的人名，分号分隔\n"
+    "- **参与人**：该 Epic 下子任务 person 汇总（含父记录 Epic 链接链采集，见 pmo_sprint_query._collect_epic_chain_tasks）；可兜底 personnel_tasks；分号分隔\n"
     "- **完成度**：**仅此列**写 10 格进度条 + 百分比，如 `[▓▓▓░░░░░░░] 30%`（**禁止**单独「进度条」列）\n"
     "- **状态**：汇总状态（🟢🔵🟡🔴 + 短语），如 `🔵 按时完成`\n"
     "- **禁止列**：优先级、风险说明、说明、审计长文等；**禁止**把「项目风险诊断书」写入表内。\n"

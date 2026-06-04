@@ -1526,6 +1526,7 @@ def run_tool(
         "core:pmo_import_json",
         "core:pmo_init_gap_report",
         "core:pmo_mirror_import",
+        "core:pmo_personnel_report",
         "core:pmo_sprint_epic_report",
         "core:pmo_resolve_sprint",
     ):
@@ -1551,6 +1552,15 @@ def run_tool(
             from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
 
             result = dispatch_pmo_db_tool(tool_id, **params)
+            if tool_id == "core:pmo_personnel_report" and isinstance(result, dict):
+                ft = (result.get("formatted_text") or "").strip()
+                if ft:
+                    body = {k: v for k, v in result.items() if k != "formatted_text"}
+                    return (
+                        ft
+                        + "\n\n---\n[结构化 JSON · FanOut/合并请用下列键，勿用 Markdown #### 重排]\n"
+                        + json.dumps(body, ensure_ascii=False, indent=2)
+                    )
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
             return f"[执行失败: {e}]"

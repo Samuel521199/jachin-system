@@ -413,6 +413,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 - **禁止列**：优先级、风险说明、审计长文；风险诊断书放表**上方**摘要，**不入表**
 - **每行一个大需求**（Epic 粒度），**禁止**把部门小需求单独占一行冒充 Epic
 - 子任务的参与人/完成度/状态须**汇总进**对应大需求行的后三列；子项全空用 ⚠️ 占位
+- **参与人采集**：须包含 `父记录` 为 Epic 名链的子任务（不仅 `父记录=开发`）；`core:pmo_sprint_epic_report` + `pmo_epic_aggregate.epic_participants`（禁止只看 Epic 行 person，常为空）
 - **战报 📊 仅 `current_sprint` 一周**；近三周数据仅供 C-3 汇总子任务进度，**禁止**把其它 Sprint 的 Epic 写入 📊 表
 - `current_sprint` / `recent_sprints[]` 以 C-1 Observation 为准，**禁止**写死 Sprint 名称
 
@@ -424,7 +425,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 | 产品侧人员/状态 | `vew8TxMcSh` / `vewL9Mofgd` | 仅作产品维度交叉，**不得**替代 vewCz1FFJi 做 👥 主表 |
 | 开发任务明细补全 | `vewpI8lyYw` / `vewjSEz5Xr` | 补字段或交叉核对，**不得**用 vewpI8lyYw 负责人条数代替人员矩阵 |
 
-**👥 战报表**：行以 **person** 为粒度，任务列表来自 **`personnel_tasks[]`（优先 vewCz1FFJi）**；缺数据写 null，禁止捏造。
+**👥 战报表**：行以 **单人 person** 为粒度（**禁止** `Jack Looi; Baojing` 合成一行）；多人共担任务归入**每一位**负责人行。`by_person` 由 `person_keys_from_task()` 构建（`persons[]` 优先）。任务列表来自 **`personnel_tasks[]`（优先 vewCz1FFJi）**；缺数据写 null，禁止捏造。
 
 ### 1.3 Lark 会话
 

@@ -1062,38 +1062,404 @@ by_person keys: alvintan, Baojing, Buck, Gavin, hex, Jack Looi,
 | 人员 SSOT 视图 | `pmo_multi_agent_queries._PMO_VIEW_PERSONNEL` = `vewCz1FFJi` |
 | B-S1 近三周 Sprint | `sql_worker_b_s1()` |
 | B-4 人员 UNION | `sql_worker_b_b4(sprints)` |
+| B-SUP 开发视图辅表 | `sql_worker_b_b_sup(sprints)` |
 | 宿主预取 | `pmo_worker_result_backfill.run_worker_b_host_bootstrap()` |
+| 合并 + 兜底 | `merge_worker_b_result()` / `backfill_worker_b()` |
 | 战报 👥 语义 | `SKILL.md` §1.4.1b（节奏判定，禁止 task_cnt 排名定过载） |
 | Epic 视图（交叉） | `vewpI8lyYw` · Worker C · `pmo_sprint_query.py` |
 
-**本案没有走** `core:db_query` ReAct，但 SQL 时间窗与 B-S1 **同构**；合并两视图的思路与 FanOut 后 **backfill + Publisher 读 JSON** 一致。
+**本案（Cursor 探针）没有走** `core:db_query` ReAct，但 SQL 时间窗与 B-S1 **同构**；合并两视图的思路与 FanOut 后 **backfill + Publisher 读 JSON** 一致。
 
 ---
 
-## 11. 若要在 Jachin 里复现（给工程师）
+## 11. 把本案整个流程教给 Worker B——Jachin 集成方案
 
-### 11.1 窄路径（推荐对话查人）
+> **目标**：用户在 Jachin 中触发 PMO 战报时，👥 人员任务矩阵能稳定复现 §6 的结果（正确 11 人、字段齐全、Epic 不混入个人条数、跨周有补充）。  
+> **原则**：本案「Python 探针能查对」的能力，不靠 Worker B 自己当场想 SQL；而是把正确算法放进 **宿主 Python（B-S1 + B-4）**，Worker B 只做宿主搞不定的那一步（B-SUP 开发视图辅表）。  
+> **范围**：本节只讲 Worker B 相关；Epic 层级见 `PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md` §10。
 
-用户 message 示例：
+---
 
-> 查本周人员任务：vewCz1FFJi SSOT，近三周防跨周，输出每人 priority / 各日期 / 任务编号 / progress。
+### 11.1 整体架构（三层分工）
 
-应走 **SKILL §1.2.4 类窄路径** + Worker B 逻辑，**不要**强行走 §1.2.1 七步 + 双群推送（参见 `PMO_COPILOT_ARCHITECTURE.md` CLI 窄路径缺口说明）。
+```mermaid
+flowchart TD
+  subgraph H [宿主 Python · FanOut 启动前]
+    BS1[B-S1：近三周 Sprint]
+    CUR[current_sprint：sd≤today 取最大]
+    B4[B-4：人员 SSOT UNION]
+    BS1 --> CUR
+    CUR --> B4
+  end
 
-### 11.2 确定性探针（零 LLM）
+  subgraph W [Worker B SubAgent · ReAct ≤8 轮]
+    BSUP[B-SUP：vewpI8lyYw 辅表]
+  end
 
-```bash
-# 仓库已有 Worker C 探针；人员可类比调用 host bootstrap：
-python -c "from l3_node.pmo_worker_result_backfill import run_worker_b_host_bootstrap; import json; print(json.dumps(run_worker_b_host_bootstrap(), ensure_ascii=False, indent=2))"
+  subgraph M [宿主 Python · FanOut 结束后]
+    MRG[merge_worker_b_result]
+    BF[backfill_worker_b 兜底]
+  end
+
+  H -->|context_data 注入| W
+  W -->|Final Answer JSON| M
+  M --> PUB[Publisher · 👥 三表]
 ```
 
-### 11.3 验收清单
+| 层 | 谁执行 | 做什么 | 为什么在这里做 |
+|----|--------|--------|----------------|
+| **宿主预取** | Python | B-S1（Sprint 窗）+ **`current_sprint`（sd≤today）** + B-4（人员 UNION） | SQL 固定、字段路径已验证；`current_sprint` **必须由宿主算好注入**，禁止 LLM 猜「recent_sprints 第一行」 |
+| **Worker B SubAgent** | LLM ReAct | **只跑 B-SUP**（vewpI8lyYw 辅表文字对照） | B-SUP 的结果需要 LLM 用自然语言做「人员 × 需求」文字对照，不是纯 SQL |
+| **宿主合并** | Python | merge + backfill | Final Answer 可能漏字段；宿主兜底保证 personnel_tasks[] 永远不空 |
 
-- [ ] current_sprint 是否为 **已开始** 最近一档（非未来 06/08）  
-- [ ] 11 人姓名与飞书 👥 看板一致  
-- [ ] 任选一任务编号，两视图字段对账  
-- [ ] Epic 无 Person 行 **未** 计入个人条数  
-- [ ] 跨周任务仅在补充说明出现，不重复计入本周 count  
+#### 11.1.1 `current_sprint` 固定输出：缺口与实现（必做）
+
+> **读者问**：§5 第 3 步 Cursor 探针能定出 `2026/06/01-Sprint`，现网 `run_worker_b_host_bootstrap()` 只出 `recent_sprints[]`，**方案里有没有写怎么集成？**  
+> **答**：本节补全；此前 §11 仅在 Auditor/Publisher/验收清单**引用**该字段，**未写宿主如何产出**——属方案缺口，按下面落地。
+
+##### 业务定义（与 §5 第 3 步一致）
+
+| 概念 | 规则 | 本案样例 |
+|------|------|----------|
+| `recent_sprints[]` | B-S1：近 21 天、`ORDER BY sprint_date DESC`、`LIMIT 3` | 含 `06/08`、`06/01`、`05/25`（**可含未来周**） |
+| **`current_sprint`** | 在 B-S1 结果（或同窗口内全部 Sprint）中，取 **`sprint_date <= date('now')` 且 sprint_date 最大** 的一档 | **`2026/06/01-Sprint`** |
+| **禁止** | 把 `recent_sprints[0]`（日期最大）直接当 current | 会把 **`06/08`（未来、几乎无人）** 误当本周 |
+
+```mermaid
+flowchart LR
+  S1[B-S1 行集\n每行 sprint + sprint_date] --> F{ sprint_date ≤ today? }
+  F -->|是| E[eligible 集合]
+  F -->|否| X[仅进 recent_sprints\n不进 current 候选]
+  E --> M[取 sprint_date 最大]
+  M --> CS[current_sprint 字符串]
+```
+
+##### 现网缺口（代码 SSOT）
+
+| 位置 | 现状 | 应有 |
+|------|------|------|
+| `pmo_worker_result_backfill.run_worker_b_host_bootstrap()` | 返回 `recent_sprints`、`personnel_tasks`、`sprint_names_for_in` | **增加** `current_sprint`、`current_sprint_date` |
+| `merge_worker_b_result()` | 透传 `recent_sprints` / `personnel_tasks` | **透传** `current_sprint`；Agent 漏写时不覆盖宿主值 |
+| Worker B Final Answer schema（§11.4.1） | 未强制 `current_sprint` | **必须含**（从 context 复制） |
+| `pmo_sprint_query.list_recent_sprints()` / Worker C | `current_sprint = sprint_names[0]`（日期最大） | **同源函数**应共用 sd≤today 规则（B/C 对齐） |
+
+B-S1 SQL **不必改**：它负责「近三周窗口」；`current_sprint` 在 **Python 层对 B-S1 行做二次筛选**即可（与 Cursor 探针第 3 步同构）。
+
+##### 实现步骤（工程师 checklist，不写具体 PR）
+
+**Step 1 — 新增共享函数（建议位置）**
+
+在 `l3_node/tools/pmo_sprint_query.py`（与 Worker C report 同模块）或 `pmo_worker_result_backfill.py` 增加：
+
+```python
+def resolve_current_sprint(
+    sprint_rows: list[dict],
+    *,
+    today: str | None = None,  # 测试注入；默认 date('now') 等价 YYYY-MM-DD
+) -> tuple[str | None, str | None]:
+    """
+    从 B-S1/C-1 行（含 sprint, sprint_date）解析 current_sprint。
+    规则：sprint_date <= today 中取 sprint_date 最大的一行。
+    返回 (current_sprint, current_sprint_date)；无 eligible 时 (None, None) 并打 log。
+    """
+```
+
+**算法（与 §5 第 3 步等价）**：
+
+1. 遍历 `sprint_rows`，跳过 `sprint` / `sprint_date` 为空的行。  
+2. 仅保留 `sprint_date <= today`（字符串 `YYYY-MM-DD` 比较）。  
+3. 在 eligible 中取 **`max(sprint_date)`** 对应行的 `sprint` → `current_sprint`。  
+4. **兜底**（eligible 为空，例如窗口内全是未来 Sprint）：  
+   - 标 `_current_sprint_fallback: "all_future_in_window"`；  
+   - 取 eligible 外 **`sprint_date` 最小且 ≤ today 的次新档**，或 **不产出 current** 并让 Auditor 标 `future_sprint_only`（与 R-P-4 一致）。  
+5. 打 log：`[PMO bootstrap] current_sprint=%s (sd=%s, eligible=%d)`。
+
+**Step 2 — 宿主 bootstrap 写入 seed**
+
+`run_worker_b_host_bootstrap()` 在 `_run_sql(sql_worker_b_s1())` 之后：
+
+```python
+current_sprint, current_sprint_date = resolve_current_sprint(s1_rows)
+seed = {
+    "recent_sprints": s1_rows,
+    "current_sprint": current_sprint,
+    "current_sprint_date": current_sprint_date,
+    "personnel_tasks": b4_rows,
+    ...
+}
+```
+
+**Step 3 — context_data 注入 Worker B**
+
+FanOut 启动时，编排器把 `current_sprint` 一并注入 SubAgent `context_data`（与 `recent_sprints` 同级）。  
+Worker B system_prefix 增加一句：
+
+> `current_sprint` 已由宿主根据 **sd≤today** 算出，**禁止**用 `recent_sprints[0]` 或自行 ORDER BY 覆盖。
+
+**Step 4 — merge / backfill 透传**
+
+`merge_worker_b_result()` / `backfill_worker_b()` 的 `out` 字典 **始终保留** `host_seed["current_sprint"]`；Agent Final Answer 若带了不同值 → **以宿主为准**（或 Auditor 标 `current_sprint_mismatch`）。
+
+**Step 5 — 下游消费**
+
+| 消费者 | 用法 |
+|--------|------|
+| **Worker B Final Answer** | 复制 `current_sprint` + `current_sprint_date`（可选） |
+| **Auditor** | R-P-4：校验 `current_sprint_date <= today` |
+| **Publisher 👥** | 主表只展示 `sprint == current_sprint` 的任务；近三周其他 Sprint 标「(前序延续)」（§11.8 规则 4） |
+| **可选 personnel Tool** | `core:pmo_personnel_report` 出参顶层含 `current_sprint`（§11.9） |
+
+**Step 6 — 与 Worker C 对齐（建议同 PR 或紧跟）**
+
+Worker C 宿主预取 / `run_sprint_epic_report_for_recent` 里 **`current_sprint = sprint_names[0]`** 存在与本案相同的未来 Sprint 风险；应将 `resolve_current_sprint()` 提升为 **B/C 共用 SSOT**，避免 👥 与 📊 战报「本周」不一致。
+
+##### 验收（`current_sprint` 专项）
+
+- [ ] 库中存在 `2026/06/08-Sprint`（未来、少人）+ `2026/06/01-Sprint`（本周）时，bootstrap 输出 **`current_sprint = 2026/06/01-Sprint`**，**不是** 06/08  
+- [ ] `recent_sprints[]` 仍可含 06/08（窗口参考）  
+- [ ] merge 后 JSON 顶层有 `current_sprint`；Publisher 👥 主表 Sprint 列与之一致  
+- [ ] 单元测试：`resolve_current_sprint([{06/08}, {06/01}, {05/25}])` → 06/01  
+
+---
+
+### 11.2 需要哪些 Tool？（现状 vs 目标）
+
+| Tool | 现状 | 本方案需求 | 说明 |
+|------|------|-----------|------|
+| `core:db_query` | ✅ 已有 | Worker B B-SUP 唯一查库工具 | B-S1/B-4 由宿主 Python 调，不走 LLM |
+| `run_worker_b_host_bootstrap()` | ✅ 已有 | FanOut 前宿主调用 | 见 `pmo_worker_result_backfill.py` |
+| `merge_worker_b_result()` | ✅ 已有 | FanOut 后合并 | 同上 |
+| `backfill_worker_b()` | ✅ 已有 | personnel_tasks 空时兜底 | 同上 |
+| `core:pmo_personnel_report` | ❌ **尚未实现** | （可选）窄路径对话直接查人 | 类似 `pmo_sprint_epic_report`；实现后可跳过 Worker B SubAgent；见 §11.6 |
+
+**结论**：做到「战报 👥 稳定」，**不需要新 Tool**；现有宿主 Python 链路已覆盖 B-S1 + B-4 + merge/backfill。  
+若要支持对话窄路径（「查本周谁负责什么」），再加 `core:pmo_personnel_report`（§11.6）。
+
+---
+
+### 11.3 Worker B 的任务应该教他做什么
+
+**核心原则**：宿主已把「最难的部分」（Sprint 窗 + 人员 UNION）做完注入进来，Worker B **只需要做一件事**：
+
+> **跑 B-SUP，把 vewpI8lyYw 里的需求上下文和宿主给的人员对照一下，整理出 `requirement_context[]`，然后写 Final Answer。**
+
+Worker B 的职责边界：
+
+| 步骤 | Worker B **要做** | Worker B **禁止做** |
+|------|-------------------|---------------------|
+| B-SUP | 查 vewpI8lyYw Sprint IN recent_sprints，取 Requirement/priority/Sprint/department 等 | 禁止自编 Epic 筛选（那是 Worker C C-2）；禁止单独 json_each 扫 Person |
+| Final Answer | 输出 `recent_sprints[]`、`personnel_tasks[]`（**直接从注入 context 取，不重查**）、`requirement_context[]` | 禁止重跑 B-S1 / B-4；禁止自编 UNION/JOIN |
+| 自我修复 | B-SUP 报错时同编号重试 ≤2 次 | 禁止把 B-SUP 失败变成重查 vewCz1FFJi |
+
+---
+
+### 11.4 Worker B 的 system_prefix / 任务体应该怎么写（设计要点）
+
+#### 11.4.1 system_prefix 应该告诉 Worker B 的三件事
+
+**① 你拿到的是什么（context_data）**
+
+> 宿主已在【宿主预取 JSON】里给你了 `recent_sprints[]` 和 `personnel_tasks[]`（来自 vewCz1FFJi B-S1 + B-4，字段已验证）。  
+> **禁止重跑 B-S1 / B-4**；这两步已完成，直接用注入数据。
+
+**② 你要做什么（唯一任务）**
+
+> 你的唯一 ReAct 任务是 **B-SUP**：在 vewpI8lyYw 里按相同 Sprint 取需求上下文，写入 `requirement_context[]`，与 `personnel_tasks[]` 做文字对照（**不用 SQL JOIN**，只用 Thought 推理）。
+
+**③ 你交卷格式（Final Answer JSON schema）**
+
+```
+{
+  "current_sprint": "2026/06/01-Sprint",   ← 直接从 context_data 复制（宿主 sd≤today 已算好）
+  "current_sprint_date": "2026-06-01",   ← 可选，便于 Auditor
+  "recent_sprints": [...],               ← 直接从 context_data 复制
+  "personnel_tasks": [...],              ← 直接从 context_data 复制
+  "requirement_context": [...],          ← B-SUP Observation 结果
+  "completed_sql_ids": ["B-S1","B-4","B-SUP"]
+}
+```
+
+#### 11.4.2 任务体（user 消息）的写法要点
+
+- 明确写出 **B-SUP SQL 模板**（逐字，Sprint IN 占位符在 context_data 里的 `sprint_names_for_in`）。
+- 每条 SQL 前加：`⚠️ 以下 SQL 须逐字复制，禁止改写字段名或 WHERE 条件`。
+- 声明：B-SUP 失败时同编号最多重试 2 次；不影响 `personnel_tasks[]`（宿主已有）。
+- 声明：**禁止**把 B-SUP 的 Requirement 当 Epic（那是 Worker C 的事）。
+
+#### 11.4.3 allowed_tools
+
+Worker B SubAgent 只需：
+
+```
+allowed_tools: ["core:db_query"]
+```
+
+不需要 `pmo_sprint_epic_report`（Worker C 才用）；不需要 lark/notify（阶段三 Publisher 才用）。
+
+#### 11.4.4 max_iterations
+
+Worker B 只做 1 次 B-SUP（最多重试 2 次）。建议 **≤8 轮**（与现有 `WORKER_B_AGENT_MAX_ITERATIONS = 8` 一致）。宿主已做 B-S1/B-4，不需要更多轮次。
+
+---
+
+### 11.5 编排流程（FanOut 三阶段 · Worker B 侧）
+
+```mermaid
+sequenceDiagram
+  participant O as 编排器 (Python)
+  participant H as 宿主 host_bootstrap
+  participant W as Worker B SubAgent
+  participant M as merge / backfill
+
+  O->>H: run_worker_b_host_bootstrap()
+  H-->>O: {recent_sprints, personnel_tasks, sprint_names_for_in}
+
+  O->>W: FanOut 启动，context_data = 宿主预取 JSON
+  W->>W: Thought: 读 context_data，确认 recent_sprints
+  W->>W: Action: core:db_query B-SUP SQL
+  W-->>O: Final Answer JSON (含 requirement_context)
+
+  O->>M: merge_worker_b_result(host_seed, agent_raw)
+  M-->>O: 合并后 personnel_tasks + requirement_context
+  note over M: personnel_tasks 空 → backfill_worker_b 再补 B-4
+```
+
+**关键约束**（编排器侧）：
+
+1. **Bootstrap 必须在 FanOut 启动前完成**；失败时记录 log 继续（Worker B SubAgent 收到空 context 时走 B-SUP，同时 backfill 兜底）。  
+2. **Context 注入**：`context_data` 含 `recent_sprints`、`personnel_tasks`、`sprint_names_for_in`；`context_max_chars` ≥ 18000（人员行数多时扩到 22000）。  
+3. **FanOut 并行**：Worker A/B/C 并行跑，B 的 bootstrap 在 FanOut 前已完成（不在并行环节）。  
+4. **merge 入口**：FanOut 结束后，编排器调 `merge_worker_b_result` 再传给 Auditor/Publisher。
+
+---
+
+### 11.6 Skill 要如何写（SKILL.md 增量）
+
+**现有 §1.2.3 人员语义**已有 SSOT 描述，**不需要**重写整个 Skill。需要增补或确认以下三个地方：
+
+#### 增补 1 — 👥 人员矩阵数据流说明（§1.2.3 开头或新增小节）
+
+```
+人员矩阵数据流（FanOut B 路径）：
+1. 宿主 Python 在 FanOut 前执行 B-S1 + B-4 → recent_sprints[] + personnel_tasks[]
+2. Worker B SubAgent 只执行 B-SUP → requirement_context[]
+3. merge_worker_b_result 合并后传 Publisher
+👥 表的 SSOT 是 vewCz1FFJi（B-4）；vewpI8lyYw（B-SUP）仅用于文字对照，不覆盖人员数据。
+```
+
+#### 增补 2 — 人员节奏判定规则（§1.4.1b，已有，确认完整）
+
+现有 SKILL §1.4.1b 已规定「按计划周期×完成进度×当前时间判定 🚨/🟡/✅，禁止 task_cnt 排名」。  
+**确认包含以下规则**：
+
+| 规则 ID | 条件 | 结果 |
+|---------|------|------|
+| R-P-1 | `personnel_tasks[]` 为空且 `recent_sprints[]` 有值 | Auditor 标 warn，触发 backfill |
+| R-P-2 | 任务编号为空（纯分组行） | **不计入**个人 task count |
+| R-P-3 | Person 为 `Jack Looi; Baojing` 式多人串 | 整串算一个负责单位；不拆人 |
+| R-P-4 | `current_sprint` 起始日 > today | 标 future_sprint，不用于主表 |
+| R-P-5 | Actual Delivery 非空、Expected Delivery 非空 | `Actual <= Expected` → 🔵 按时；否则 🔴 延期 |
+| R-P-6 | Progress = null 且 Actual = null 且 Start ≤ today | 推断 🟡 进行中（待确认） |
+
+#### 增补 3 — 禁用规则（防止 Worker B 越界）
+
+在 Worker B system_prefix 或 Skill 对应段落添加：
+
+```
+❌ Worker B 禁止：
+- 重跑 B-S1 / B-4（宿主已完成）
+- 把 vewpI8lyYw 的 Requirement 行加入 personnel_tasks[]（那是 Worker C 的 epics[]）
+- 用 task_cnt 排名判定过载（须 R-P-5/6 节奏判定）
+- 在 Final Answer 里编造执行人姓名
+- 对 Person 做 json_extract(...,'$[0].text')（可能 malformed JSON）
+```
+
+---
+
+### 11.7 Auditor 对 Worker B 输出的检查规则
+
+Auditor（阶段二）拿到 Worker B JSON 后，需检查：
+
+| 检查项 | 通过条件 | 失败动作 |
+|--------|----------|----------|
+| personnel_tasks 非空 | `len(personnel_tasks) > 0` | 标 warn；触发 backfill（宿主兜底） |
+| 人员行都有任务编号 | `task_no` 非空 | 无编号行标 `suspect_placeholder`，不进 👥 表 |
+| current_sprint 起始 ≤ today | `sprint_date <= today` | 换用次新 Sprint；记录 future_sprint_swapped |
+| 无 Epic 行混入 | `persons` 非空（person 不为 vewpI8lyYw 部门名） | 若来自 vewpI8lyYw 且无人，归入「无负责人 Epic」桶 |
+| 跨周标记 | 前序 Sprint 同人有任务 | 在 👥 表备注「含前序周期延续」 |
+| 日期合理性 | Start ≤ Review ≤ Expected（允许 Review < Start 的录入异常） | 如实展示，不修正，Auditor 标注 |
+
+---
+
+### 11.8 Publisher 如何消费（👥 表组装规则）
+
+Publisher（阶段三）从 `personnel_tasks[]` 组装 👥 表，规则：
+
+```
+1. 按 person 分组（字母序）
+2. 每人一行 or 多行（按任务）
+3. 列：人员 | 任务名 | 编号 | P | Sprint | Start→Expected | Progress | 状态
+4. current_sprint 的任务排前；prior sprint 的加注「(前序延续)」
+5. 空值字段写「—」，注明非漏查
+6. 共担任务（含 ";" 的 person）单独一行，不拆两人
+7. Epic/占位行（task_no 空或 persons 空）不进👥 表，进备注「另有 N 条 Epic 行」
+```
+
+**禁止**：按任务条数排名判断过载（见 R-P-5/6）；禁止把 Worker C 的 `epics[]` 放进 👥 人员列。
+
+---
+
+### 11.9 可选：core:pmo_personnel_report（窄路径 Tool）
+
+若要支持对话级「查本周谁在做什么」，可仿照 `core:pmo_sprint_epic_report` 做一个：
+
+| 属性 | 设计 |
+|------|------|
+| Tool id | `core:pmo_personnel_report` |
+| 入参 | `sprint`（可选，默认 recent_window）、`source_view`（默认 `vewCz1FFJi`）、`cross_view`（默认 `vewpI8lyYw`） |
+| 内部实现 | Python：B-S1 → B-4 UNION → 按 task_no + sprint 合并两视图 → 日期换算 → 按 person 分组 |
+| 出参 | `current_sprint`、`recent_sprints[]`、`personnel_tasks[]`（含 persons/dates/progress/department）、`summary` |
+| 使用场景 | 对话窄路径；Worker B 步骤 0（优先于 B-SUP） |
+| 实施优先级 | P1（战报 👥 靠宿主 bootstrap 已稳定；窄路径对话需要此 Tool） |
+
+实施后 Worker B system_prefix 增加：
+
+> **步骤 0（必须优先）**：若 context_data 中 `personnel_tasks` 非空，禁止重跑；否则先调 `core:pmo_personnel_report {"recent_window": true}`。
+
+---
+
+### 11.10 实施阶段（建议顺序）
+
+| 阶段 | 交付 | 验收标志 |
+|------|------|----------|
+| **P0（部分完成）** | `run_worker_b_host_bootstrap()` + `merge_worker_b_result()` + `backfill_worker_b()` | CLI 跑 FanOut，日志可见 `personnel_rows=N` |
+| **P0.5（必做 · §11.1.1）** | `resolve_current_sprint()` + bootstrap/merge 输出 `current_sprint`；Worker C 同源对齐 | 未来 Sprint 06/08 入库时 current 仍为 06/01；见 §11.1.1 验收 |
+| **P1** | Worker B system_prefix 收紧（禁止重跑 B-S1/B-4；**禁止覆盖 current_sprint**；context_data 说明）；`WORKER_B_AGENT_TASK` 加「逐字复制」约束 | 日志 B-SUP 第 1 轮命中；`completed_sql_ids` 含 B-S1/B-4/B-SUP |
+| **P2** | Auditor 加 R-P-1～R-P-6 检查规则；Publisher 加 👥 表七条组装规则 | 战报 👥 表与飞书看板 11 人一致 |
+| **P3** | 实现 `core:pmo_personnel_report` Tool；Skill §1.2.4 类窄路径路由 | 对话「查本周谁负责什么」→ 1～3 轮出结果，不触发双群 notifier |
+| **P4** | 文档：SKILL.md 增补 §1.2.3 数据流 + §1.4.1b 规则；`PMO_COPILOT_ARCHITECTURE.md` §20 更新 Worker B host-first 说明 | 新人只读 v7 路径 |
+
+---
+
+### 11.11 不需要做什么（避免范围蔓延）
+
+- **不**新建独立的人员 MCP；镜像库已有，用 Python bootstrap 即可。  
+- **不**让 Worker B 自己决定 Sprint 窗口（宿主 B-S1 已做，context_data 注入）。  
+- **不**在 Tool 里生成 👥 GFM 三表（留给 Publisher）。  
+- **不**要求 Worker B 做 Epic 层级识别（Worker C 职责）。  
+- **不**把案例全文注入 Worker B system（只注入关键规则 + context_data）。
+
+---
+
+### 11.12 验收清单（每次部署后回归）
+
+- [ ] `run_worker_b_host_bootstrap()` 返回 `personnel_rows > 0`，`current_sprint` 为 `sd ≤ today` 的最近档  
+- [ ] Worker B Final Answer JSON 含 `personnel_tasks[]`（非空）、`requirement_context[]`、`completed_sql_ids: ["B-S1","B-4","B-SUP"]`  
+- [ ] `merge_worker_b_result` 后 `personnel_tasks` 仍非空（即使 Agent 漏写，宿主补回）  
+- [ ] Publisher 👥 表：11 人（或当期实际人数）与飞书看板一致  
+- [ ] Epic/占位行不进 👥 表  
+- [ ] 跨周任务有「前序延续」标注，不重复计入本周条数  
+- [ ] 空值字段显示「—」，非「缺少查询」  
 
 ---
 
@@ -1104,7 +1470,8 @@ python -c "from l3_node.pmo_worker_result_backfill import run_worker_b_host_boot
 3. **两视图合并键**：任务编号 + Sprint；Person 优先看板。  
 4. **三类输出要分开写**：人的任务 / 无负责人 Epic / 跨周补充——否则 PM 会误以为「52 条全是某人的活」。  
 5. **Cursor 本案 = Python 探针 + 架构 doc 对齐**；产品内应 **Worker B bootstrap + backfill**，别让 LLM 手写 B-4 UNION。  
-6. **文档 SSOT**：架构 [`PMO_COPILOT_ARCHITECTURE.md`](./PMO_COPILOT_ARCHITECTURE.md) · SQL [`pmo_multi_agent_queries.py`](../../l3_node/pmo_multi_agent_queries.py) · Epic 案例 [`PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md`](./PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md)。
+6. **Worker B 只做 B-SUP**：宿主拿走了「最难查对」的 B-S1/B-4；Worker B 只做文字对照那一步，轮次从 14 压到 8。  
+7. **文档 SSOT**：架构 [`PMO_COPILOT_ARCHITECTURE.md`](./PMO_COPILOT_ARCHITECTURE.md) · SQL [`pmo_multi_agent_queries.py`](../../l3_node/pmo_multi_agent_queries.py) · Epic 案例 [`PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md`](./PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md)。
 
 ---
 
@@ -1116,3 +1483,5 @@ python -c "from l3_node.pmo_worker_result_backfill import run_worker_b_host_boot
 | 2026-06-04 | §5 第 4 步扩写：工具、四回合解题过程、原始行/标准化对象示例、B-4/B-SUP 对照、常见坑 |
 | 2026-06-04 | §5 第 5～6 步扩写：Person 非一步到位（三分支循环 / B-4 UNION）；合并五子动作、by_key/by_person 结果结构、与 merge_worker_b 对照 |
 | 2026-06-04 | §6 扩写为验收交付全文：口径 + 11 人明细表 + 无负责人/跨周/数据质量快照（用户确认数据正确） |
+| 2026-06-04 | §11 新增：把本案流程教给 Worker B 的完整集成方案（三层分工、Tool 清单、system_prefix 要点、编排时序、判定规则、Publisher 组装、可选 Tool、实施阶段、验收清单） |
+| 2026-06-04 | §11.1.1 新增：`current_sprint`（sd≤today）宿主固定输出缺口、算法、传播链路、B/C 对齐与验收（此前 §11 仅引用未写实现） |

@@ -30,9 +30,10 @@ def test_worker_b_task_covers_personnel_and_sup():
     assert "B-S1" in WORKER_B_TASK and "B-4" in WORKER_B_TASK and "B-SUP" in WORKER_B_TASK
 
 
-def test_worker_b_agent_task_host_first_b_sup_only():
+def test_worker_b_agent_task_host_first_b_tool():
     assert "宿主预取" in WORKER_B_AGENT_TASK
-    assert "B-SUP" in WORKER_B_AGENT_TASK
+    assert "B-TOOL" in WORKER_B_AGENT_TASK
+    assert "current_sprint" in WORKER_B_AGENT_TASK
     assert "禁止" in WORKER_B_AGENT_TASK and "B-S1" in WORKER_B_AGENT_TASK
     task = build_worker_b_agent_task(
         {"sprint_names_for_in": ["2026/06/01-Sprint", "2026/06/08-Sprint"]}
@@ -50,17 +51,20 @@ def test_worker_c_covers_epics():
 
 def test_phase1_fanout_worker_b_uses_host_seed():
     seed = {
+        "current_sprint": "2026/06/01-Sprint",
         "personnel_tasks": [{"person": "Buck", "task": "x"}],
         "recent_sprints": [{"sprint": "2026/06/01-Sprint"}],
+        "requirement_context": [{"requirement": "y"}],
         "sprint_names_for_in": ["2026/06/01-Sprint"],
     }
     items = _phase1_fanout_items(seed)
     assert len(items) == 3
     b = items[1]
     assert b["max_iterations"] == WORKER_B_AGENT_MAX_ITERATIONS
-    assert "B-SUP" in b["task"]
+    assert "B-TOOL" in b["task"] or "B-SUP" in b["task"]
     assert b["context_data"]["personnel_tasks"][0]["person"] == "Buck"
-    assert "宿主预取" in b["context_data"]["说明"]
+    assert b["context_data"]["current_sprint"] == "2026/06/01-Sprint"
+    assert "pmo_personnel_report" in b["context_data"]["说明"]
 
 
 def test_worker_c_system_prompt_no_legacy_sql_rules():
@@ -76,11 +80,13 @@ def test_worker_c_system_prompt_no_legacy_sql_rules():
 
 def test_worker_b_system_prompt_no_legacy_epic_or_person_rule():
     prefix = PMO_WORKER_B_ROLE["system_prefix"]
-    assert "B-SUP" in prefix
-    assert "宿主预取" in prefix
+    assert "B-TOOL" in prefix or "pmo_personnel_report" in prefix
+    assert "current_sprint" in prefix
+    assert "宿主" in prefix or "预取" in prefix
     assert _LEGACY_EPIC_AFFIRM not in prefix
     assert _LEGACY_PERSON_EACH not in prefix
     assert _LEGACY_DEV_STATUS_NESTED not in prefix
+    assert "core:pmo_personnel_report" in str(PMO_WORKER_B_ROLE.get("allowed_tools"))
 
 
 def test_pmo_worker_roles_raise_system_prefix_limit():
