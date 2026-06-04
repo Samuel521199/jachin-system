@@ -108,11 +108,66 @@ def _unique_col_keys(headers: list[str]) -> list[str]:
     return out
 
 
+def _apply_pmo_column_layout(
+    columns: list[dict[str, Any]],
+    header_cells: list[str],
+) -> tuple[str | None, dict[str, Any]]:
+    try:
+        from l3_node.pmo_report_format import (
+            PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND,
+            PMO_NATIVE_TABLE_PAGE_SIZE_PERSONNEL,
+            PMO_NATIVE_TABLE_ROW_HEIGHT,
+            PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL,
+            detect_pmo_native_table_profile,
+            pmo_native_table_column_widths,
+        )
+    except ImportError:
+        return None, {}
+    profile = detect_pmo_native_table_profile(header_cells)
+    if not profile:
+        return None, {}
+    widths = pmo_native_table_column_widths(profile, len(columns))
+    for ci, col in enumerate(columns):
+        if ci < len(widths):
+            col["width"] = widths[ci]
+        h = header_cells[ci] if ci < len(header_cells) else ""
+        if profile == "demand" and "完成度" in h:
+            col["data_type"] = "lark_md"
+        elif profile == "personnel" and (
+            "负责需求" in h or "任务" in h
+        ):
+            col["data_type"] = "lark_md"
+        else:
+            col["data_type"] = "text"
+        col["vertical_align"] = "top" if col["data_type"] == "lark_md" else "center"
+        col["horizontal_align"] = "left"
+    page_hint = (
+        PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND
+        if profile == "demand"
+        else PMO_NATIVE_TABLE_PAGE_SIZE_PERSONNEL
+    )
+    extras = {
+        "row_height": (
+            PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL
+            if profile == "personnel"
+            else PMO_NATIVE_TABLE_ROW_HEIGHT
+        ),
+        "page_size_hint": page_hint,
+    }
+    return profile, extras
+
+
 def _table_element(
     rows_matrix: list[list[str]], *, element_id: str, page_size: int = 10
 ) -> dict[str, Any]:
     if not rows_matrix or len(rows_matrix) < 2:
         raise ValueError("table needs header + ≥1 data row")
+    try:
+        from l3_node.pmo_report_format import compact_pmo_table_matrix_for_native_table
+
+        rows_matrix = compact_pmo_table_matrix_for_native_table(rows_matrix)
+    except ImportError:
+        pass
     header_cells = rows_matrix[0]
     data_rows = rows_matrix[1:]
     keys = _unique_col_keys(header_cells)
@@ -124,31 +179,48 @@ def _table_element(
                 "name": key,
                 "display_name": display or f"列{ci + 1}",
                 "width": "auto",
-                "data_type": "lark_md",
-                "vertical_align": "top",
+                "data_type": "text",
+                "vertical_align": "center",
                 "horizontal_align": "left",
             }
         )
+    profile, pmo_extras = _apply_pmo_column_layout(columns, header_cells)
     feishu_rows: list[dict[str, Any]] = []
     for dr in data_rows:
         row_obj: dict[str, Any] = {}
         for ci, col in enumerate(columns):
             cell = dr[ci] if ci < len(dr) else ""
-            row_obj[col["name"]] = str(cell or "").strip() or "—"
+            val = str(cell or "").strip() or "—"
+            if col.get("data_type") == "lark_md":
+                val = re.sub(r"<br\s*/?>", "\n", val, flags=re.I)
+            row_obj[col["name"]] = val
         feishu_rows.append(row_obj)
-    return {
+    n_data = len(feishu_rows)
+    eff_page = max(1, min(int(page_size), 10))
+    if profile and pmo_extras.get("page_size_hint"):
+        prof_cap = int(pmo_extras["page_size_hint"])
+        eff_page = max(1, min(eff_page, prof_cap, n_data or prof_cap))
+    row_height = (
+        str(pmo_extras.get("row_height") or "low")
+        if profile
+        else "low"
+    )
+    table_obj: dict[str, Any] = {
         "tag": "table",
         "element_id": element_id[:20] if len(element_id) > 20 else element_id,
-        "page_size": max(1, min(int(page_size), 10)),
-        "row_height": "low",
+        "page_size": eff_page,
+        "row_height": row_height,
+        "freeze_first_column": profile == "personnel",
         "header_style": {
             "text_align": "left",
             "bold": True,
             "lines": 1,
+            "text_size": "normal",
         },
         "columns": columns,
         "rows": feishu_rows,
     }
+    return table_obj
 
 
 def build_schema_v2_card_from_markdown(

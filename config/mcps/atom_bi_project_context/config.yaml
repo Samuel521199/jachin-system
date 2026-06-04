@@ -7,6 +7,8 @@ app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
 lark_use_feishu: false
 
 output_dir_relative: ~/.jachin/workspace/pmo_lark_pull
+# PMO：多维表拉取时除 .md 外写入同前缀 .records.json（原始 record_id + fields）
+emit_pull_records_json: true
 max_records_per_table: 2000
 max_discovered_links: 40
 recurse_children_depth: 2

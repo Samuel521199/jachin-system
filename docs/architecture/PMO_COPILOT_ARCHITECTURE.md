@@ -173,6 +173,7 @@ Worker 专属短规范（注入 system，**不是** SKILL 全文）：
 
 - Worker B：[`PMO_WORKER_B_SPEC.md`](./PMO_WORKER_B_SPEC.md)
 - Worker C：[`PMO_WORKER_C_SPEC.md`](./PMO_WORKER_C_SPEC.md)
+- **Work 总（端到端战报案例 · 拆解/工具/踩坑）**：[`PMO_WORK_ZONG_CASE_STUDY.md`](./PMO_WORK_ZONG_CASE_STUDY.md)
 
 SQL 模板 SSOT：`l3_node/pmo_multi_agent_queries.py`（B-S1/B-4/B-SUP、C-1～C-6）
 
@@ -201,7 +202,8 @@ LLM 常见毛病：**Observation 有数，Final Answer JSON 却漏字段**。因
 
 ### 6.5 阶段三：Publisher（排版发报）
 
-- **仍是** `run_agent` ReAct，但任务收窄：**只**组装 §1.4 三表 + **两次** `mcp:atom_lark_notifier`
+- **默认**：`run_agent` 优先 **`core:pmo_macro_dashboard_push`**（Work 总 · 确定性 B/C 预取 + polish + 双群 native_table）；成功则 **禁止** 再调 notifier。
+- **兜底**：仍是 `run_agent` ReAct，手工组装 §1.4 三表 + **两次** `mcp:atom_lark_notifier`
 - system 注入：**完整 SKILL**（三表版式、推送闭环、§1.4.1b）
 - 读阶段一/二的 JSON + 审计书，**不再**大规模查库
 
@@ -209,8 +211,8 @@ LLM 常见毛病：**Observation 有数，Final Answer JSON 却漏字段**。因
 
 | 表 | 数据来源（优先） |
 |----|------------------|
-| 📊 需求进度全览 | Worker C `epics[]` + 子任务汇总；**仅 current_sprint 一周** |
-| 👥 人员任务矩阵 | Worker B `personnel_tasks[]`（SSOT vewCz1FFJi） |
+| 📊 需求进度全览 | Worker C `epics[]`；**6 列**（`优先级` 独立列，P0→P1→P2 排序）；`format_demand_table_gfm_row`；状态/完成度见 `pmo_workflow_stage`；**仅首列+表头**加粗（`PMO_PMO_TABLE_BOLD_SPEC`） |
+| 👥 人员任务矩阵 | Worker B `personnel_tasks[]`（SSOT vewCz1FFJi）；任务列 `format_personnel_matrix_tasks_cell`（`<br>` 分行、无 `**`） |
 | 📦 版本发布需求映射 | Version Goal 等；全空仍须 ⚠️ 占位行 |
 
 推送参数：`native_table_card: true`；配置见 `config/mcps/atom_lark_notifier/config.yaml`。
@@ -248,6 +250,8 @@ LLM 常见毛病：**Observation 有数，Final Answer JSON 却漏字段**。因
 | **`core:pmo_personnel_report`** | 👥 人员矩阵全量采集 | `{"recent_window": true}` 或 `{"sprint":"2026/06/01-Sprint"}` | `l3_node/tools/pmo_personnel_query.py` |
 | **`core:pmo_sprint_epic_report`** | 📊 Epic + 开发/产品/美术子任务 | 同上 | `l3_node/tools/pmo_sprint_query.py` |
 | **`core:pmo_resolve_sprint`** | 自然语言 → Sprint 名 | `{"label":"5月11"}` | 同上 |
+| **`core:pmo_macro_dashboard_push`** | 宏观看板一键推送（Publisher 默认） | `{}` | `l3_node/tools/pmo_macro_dashboard.py` |
+| **`core:pmo_macro_dashboard_preview`** | 宏观看板 Markdown 预览 | `{}` | 同上 |
 | `core:pmo_mirror_import` | INIT 镜像入库 | manifest / pull_dir | `l3_node/tools/pmo_db_tools.py` |
 | `core:db_query` | 只读 SELECT 兜底 / Worker A / 单 Agent | 裸 SQL | 同上（含 SQL 反模式 hints） |
 

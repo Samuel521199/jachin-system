@@ -1,7 +1,7 @@
 ﻿"""
 PMO-Copilot 方案 B：三阶段多 Agent 编排。
 
-阶段一 FanOut（并行捞数）→ 阶段二 Pipeline（交叉审计）→ 阶段三 run_agent（排版发报）。
+阶段一 FanOut（并行捞数）→ 阶段三 run_agent（排版发报）。阶段二交叉审计（Auditor）默认关闭。
 
 代码锚点：scripts/run_pmo_copilot_skill.py --multi-agent
 """
@@ -28,7 +28,10 @@ from l3_node.pmo_multi_agent_queries import (
     WORKER_C_TASK_PREVIEW,
     build_worker_b_agent_task,
 )
-from l3_node.pmo_report_format import PMO_DEMAND_TABLE_PUBLISHER_SPEC
+from l3_node.pmo_report_format import (
+    PMO_DEMAND_TABLE_PUBLISHER_SPEC,
+    PMO_WAR_REPORT_LAYOUT_CONTRACT,
+)
 from l3_node.agent_core import PMO_BRANCH_A_MIN_DB_QUERIES, PMO_BRANCH_A_PERSONNEL_SSOT_VIEW
 from l3_node.agent_core import (
     PMO_BRANCH_A_PRODUCT_VIEW_ALTS,
@@ -153,13 +156,20 @@ PMO_AUDITOR_ROLE: dict[str, Any] = {
 }
 
 PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报】
-前序阶段已完成数据捞取与交叉审计。**禁止** core:db_query / mirror_import / bi_project_context。
+前序阶段已完成数据捞取（FanOut Worker A/B/C）。**禁止** core:db_query / mirror_import / bi_project_context。
 
-你的唯一任务：
+**第一步（默认 · 宏观看板）**：
+- `Action: core:pmo_macro_dashboard_push`
+- `Action Input: {{}}` 或 `{{"chat_id":"oc_437c98d11106295fb10751a5481ee465"}}`
+- 工具内双群推送（主群+监控群）；Observation `status` 为 success/partial 后 **Final Answer ≤3 句**，引用 message_id；**禁止**再调 atom_lark_notifier。
+- 仅当 push 失败或用户明确要求「风险写入表内/自定义版式」时，执行下方手工任务。
+
+**兜底任务（push 失败或特殊需求时）**：
 1. 将下方 JSON 填入 §1.4 三张 **GFM Markdown 表**（语义见 §1.2.3）；**风险诊断书不得写入 📊 表内列**：
 {demand_table_spec}
    - 📊 仅 `current_sprint`（本周）大需求，每行一个 Epic；子任务汇总进「参与人/完成度/状态」三列（参与人须含 Epic 父记录链接链子任务，见 `pmo_epic_aggregate.epic_participants`）
-   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**（禁止 `A; B` 合成 person 键，见 `person_keys_from_task`）
+   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**；任务列 `format_personnel_matrix_tasks_cell(compact_for_feishu=False)` **全量** `<br>` 分行（**禁止**等N项）；列宽/行高见 `PMO_NATIVE_TABLE_LAYOUT_SPEC`；**行序** 🚨延期→🚨进度落后→🟡→✅
+   - {layout_contract}
    - 📦 版本发布需求映射
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
 3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次** IM 推送，**禁止 webhook_url**）：
@@ -176,9 +186,6 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 
 【阶段一 · 大需求与子任务 JSON（Worker C · epics=周汇报大需求）】
 {worker_c}
-
-【阶段二 · 项目风险诊断书（Auditor）】
-{audit_report}
 """
 
 
@@ -200,6 +207,7 @@ def build_pmo_multi_agent_implicit_attribution() -> dict[str, Any]:
     return {
         "channel": "pmo_copilot_cli",
         "source": "pmo_multi_agent_phase3",
+        "pmo_publisher_tool_lock": True,
         "pmo_analysis_only": True,
         "pmo_db_ready": True,
         "pmo_multi_agent_complete": True,
@@ -312,11 +320,10 @@ async def run_pmo_multi_agent_workflow(
     *,
     parent_allowed_skills: list[str],
     on_status: Any | None = None,
+    refresh_pull_markdown: bool | None = None,
 ) -> PmoMultiAgentResult:
     """执行 PMO 三阶段多 Agent 工作流；阶段三由调用方 run_agent 完成。"""
     from l3_node.primitives.multi_agent.fanout import fanout_parallel
-    from l3_node.primitives.multi_agent.pipeline import PipelineStage, run_pipeline
-
     result = PmoMultiAgentResult(status="failed")
 
     def _status(msg: str) -> None:
@@ -326,6 +333,34 @@ async def run_pmo_multi_agent_workflow(
                 on_status(msg)
             except Exception:
                 pass
+
+    pull_skip_reason = ""
+    if refresh_pull_markdown is None:
+        from l3_node.pmo_init_runner import pmo_resolve_refresh_pull_markdown
+
+        refresh_pull_markdown, pull_skip_reason = pmo_resolve_refresh_pull_markdown()
+    if not refresh_pull_markdown:
+        _status(f"阶段零：跳过拉表（{pull_skip_reason or '今日已有数据'}）")
+    elif refresh_pull_markdown:
+        import asyncio
+
+        from l3_node.pmo_init_runner import format_pmo_init_direct_summary, run_pmo_init_direct
+
+        _status("阶段零：飞书拉表 → JSON 落盘 md/records.json + mirror_import…")
+        try:
+            refresh_result = await asyncio.to_thread(run_pmo_init_direct)
+            _status(format_pmo_init_direct_summary(refresh_result).replace("\n", " | "))
+            if str(refresh_result.get("status") or "").lower() != "ok":
+                result.status = "failed"
+                result.errors.append(
+                    str(refresh_result.get("message") or "拉表/镜像入库失败，已中止 FanOut")
+                )
+                return result
+        except Exception as e:
+            logger.exception("[PMO Multi-Agent] refresh pull markdown failed")
+            result.status = "failed"
+            result.errors.append(f"拉表落盘异常: {e}")
+            return result
 
     _status("阶段一：FanOut 并行捞数（Worker A/B/C）…")
     host_b_seed: dict[str, Any] = {}
@@ -438,109 +473,21 @@ async def run_pmo_multi_agent_workflow(
             for it in phase1.failed_items
         )
 
-    bundle_json = json.dumps(
-        {
-            "worker_a_field_map": _clip(result.worker_a, 8000),
-            "worker_b_personnel": _clip(result.worker_b, 20000),
-            "worker_c_progress": _clip(result.worker_c, 20000),
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    auditor_context = _build_auditor_context(
-        result.worker_a, result.worker_b, result.worker_c
-    )
-
-    _status("阶段二：Pipeline 交叉审计（Auditor · 无 db_query）…")
-    try:
-        from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_begin
-
-        append_pmo_debug_phase_begin(
-            2,
-            "交叉审计 · Pipeline",
-            detail="Auditor 基于阶段一 JSON 做 Step6 矛盾检验，禁止 db_query",
-        )
-    except Exception:
-        pass
-
-    audit_pipeline = await run_pipeline(
-        stages=[
-            PipelineStage(
-                role=PMO_AUDITOR_ROLE,
-                task=_build_auditor_task(auditor_context),
-                max_iterations=5,
-                pass_context=False,
-                debug_phase=2,
-                debug_phase_label="交叉审计",
-                debug_agent_label="Auditor",
-                debug_role_label="reviewer · 交叉审计员",
-                debug_task_preview="Step6 跨视图矛盾检验 → 项目风险诊断书",
-            ),
-        ],
-        initial_context=bundle_json,
-        engine=engine,
-        delegate_depth=1,
-        parent_allowed_skills=parent_allowed_skills,
-    )
-
-    if audit_pipeline.status == "aborted" or not audit_pipeline.final_output.strip():
-        result.errors.append(
-            audit_pipeline.execution_brief or "阶段二审计失败或无输出"
-        )
-        result.status = "partial" if phase1.ok_count > 0 else "failed"
-        result.audit_report = audit_pipeline.final_output or ""
-        try:
-            from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_summary
-
-            append_pmo_debug_phase_summary(
-                2,
-                "交叉审计 · Pipeline",
-                ok_count=audit_pipeline.completed_stages,
-                total=audit_pipeline.total_stages,
-                elapsed_sec=audit_pipeline.elapsed_sec,
-                item_lines=[f"❌ 审计中止: {_clip(audit_pipeline.execution_brief or '无输出', 200)}"],
-            )
-        except Exception:
-            pass
-        return result
-
-    result.audit_report = audit_pipeline.final_output
-    result.phase2_output = audit_pipeline.final_output
+    result.audit_report = ""
+    result.phase2_output = ""
     result.status = "partial" if phase1.failed_count else "completed"
-    try:
-        from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_summary
-
-        append_pmo_debug_phase_summary(
-            2,
-            "交叉审计 · Pipeline",
-            ok_count=audit_pipeline.completed_stages,
-            total=audit_pipeline.total_stages,
-            elapsed_sec=audit_pipeline.elapsed_sec,
-            item_lines=[
-                f"✅ Auditor: {_clip(audit_pipeline.final_output, 120).replace(chr(10), ' ')}"
-            ],
-        )
-    except Exception:
-        pass
-    _status(f"阶段一 {phase1.ok_count}/3 · 阶段二完成 · 待阶段三排版发报")
+    _status(f"阶段一 {phase1.ok_count}/3 完成 · 跳过交叉审计 · 待阶段三排版发报")
     return result
 
 
 def build_publisher_user_message(workflow: PmoMultiAgentResult) -> str:
-    audit = _clip(workflow.audit_report, 6000)
-    low_conf_note = ""
-    if _audit_report_has_low_confidence(audit):
-        low_conf_note = (
-            "\n\n⚠️ **交叉审计提示**：阶段二诊断书含「数据不足/无法判定」类标记，"
-            "请在战报相关章节用 ⚠️ 占位行标注，勿过度断言。\n"
-        )
     return PMO_PUBLISHER_USER_TEMPLATE.format(
         demand_table_spec=PMO_DEMAND_TABLE_PUBLISHER_SPEC,
+        layout_contract=PMO_WAR_REPORT_LAYOUT_CONTRACT,
         worker_a=_clip(workflow.worker_a, 6000),
         worker_b=_clip(workflow.worker_b, 12000),
         worker_c=_clip(workflow.worker_c, 12000),
-        audit_report=audit,
-    ) + low_conf_note
+    )
 
 
 def _clip(text: str, n: int) -> str:

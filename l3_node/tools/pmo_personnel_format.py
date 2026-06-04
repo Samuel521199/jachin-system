@@ -152,11 +152,14 @@ def format_personnel_report_text(payload: dict[str, Any]) -> str:
             parts.append(format_task_detail_table(tasks))
         return "\n".join(parts)
 
-    # 人员索引（便于扫读）
+    from l3_node.pmo_report_format import personnel_matrix_entries_sorted
+
+    person_rows = personnel_matrix_entries_sorted(
+        by_person, current_sprint=str(cs or "")
+    )
+
     index_bits: list[str] = []
-    for person in sorted(by_person.keys(), key=lambda x: (x == "", x.lower())):
-        tasks = by_person[person]
-        current = [t for t in tasks if t.get("is_current_week") or t.get("sprint") == cs]
+    for person, current, _alert in person_rows:
         if current:
             label = person or "(无)"
             index_bits.append(f"{label}({len(current)})")
@@ -165,9 +168,7 @@ def format_personnel_report_text(payload: dict[str, Any]) -> str:
 
     parts.append(f"\n---\n\n**本周人员任务**（{len(by_person)} 人）\n")
 
-    for person in sorted(by_person.keys(), key=lambda x: (x == "", x.lower())):
-        tasks = by_person[person]
-        current = [t for t in tasks if t.get("is_current_week") or t.get("sprint") == cs]
+    for person, current, _alert in person_rows:
         dept = _dash(current[0].get("department")) if current else "—"
         label = person or "(无)"
         parts.append(f"**【{label}】** {len(current)} 条 · 部门：{dept}")

@@ -14,7 +14,7 @@ PMO-Copilot：CLI「一句话点火」—— 进程内拉起 L3 LiteLLM 引擎�
 用法（仓库根）::
 
   python scripts/run_pmo_copilot_skill.py
-      默认 **全流程 · 多 Agent 方案 B**：库未就绪则先 INIT，再 FanOut→Audit→Publish（与 --analysis-only 分析阶段一致）
+      默认 **全流程 · 多 Agent 方案 B**：库未就绪或**今日尚未拉表**才 INIT/拉盘，再 FanOut→Publish
 
   python scripts/run_pmo_copilot_skill.py --analysis-only
       **仅分析 · 多 Agent**（库须已就绪；与无参命令的分析阶段相同）
@@ -254,6 +254,7 @@ async def _async_main(args: argparse.Namespace) -> int:
         if use_multi:
             from l3_node.tools.pmo_db_tools import pmo_mirror_db_ready
 
+            just_init = False
             if not args.analysis_only and not getattr(args, "init", False):
                 if not pmo_mirror_db_ready():
                     print("[pmo-copilot] 镜像库未就绪，先执行 INIT…", flush=True)
@@ -268,6 +269,17 @@ async def _async_main(args: argparse.Namespace) -> int:
                         print("[pmo-copilot] INIT 完成但 pmo_raw_records 仍不可用", file=sys.stderr)
                         return 1
                     print("[pmo-copilot] INIT 完成，继续多 Agent 分析…", flush=True)
+                    just_init = True
+            if args.analysis_only and getattr(args, "refresh_pull", False):
+                print("[pmo-copilot] --refresh-pull：拉表写 md + mirror_import …", flush=True)
+                init_rc = await _async_main_init_direct(
+                    args,
+                    _debug_path,
+                    (args.message or "").strip() or INIT_MESSAGE,
+                )
+                if init_rc != 0:
+                    return init_rc
+                just_init = True
             return await _async_main_multi_agent(
                 args,
                 _debug_path,
@@ -275,6 +287,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                 skill_path,
                 meta,
                 skill_body,
+                skip_pull_refresh=just_init,
             )
         if getattr(args, "init", False) and not (args.message or "").strip():
             return await _async_main_init_direct(args, _debug_path, user_msg)
@@ -492,6 +505,8 @@ async def _async_main_multi_agent(
     skill_path: Path,
     meta: dict[str, Any],
     skill_body: str,
+    *,
+    skip_pull_refresh: bool = False,
 ) -> int:
     """方案 B：FanOut 捞数 → Pipeline 审计 → run_agent 排版双群推送。"""
     from l3_node.intent_gateway.bundle import build_gateway_bundle
@@ -520,13 +535,13 @@ async def _async_main_multi_agent(
     sync_pmo_debug_max_iterations(mi_phase3)
     init_pmo_debug_session(
         log_path=_debug_path,
-        user_message="[multi-agent] FanOut → Audit → Publish",
+        user_message="[multi-agent] FanOut → Publish",
         correlation_id=correlation_id,
         max_iterations=mi_phase3,
         mode_hint="multi-agent",
     )
 
-    print("[pmo-copilot] 模式: 多 Agent 方案 B（FanOut → Audit → Publish）", flush=True)
+    print("[pmo-copilot] 模式: 多 Agent 方案 B（FanOut → Publish，已跳过交叉审计）", flush=True)
 
     allowlist_diag_source = list(base_allow)
     allow_lower = {t.lower() for t in base_allow}
@@ -548,10 +563,22 @@ async def _async_main_multi_agent(
         append_pmo_debug_status(msg)
         print(f"[pmo-copilot] {msg}", flush=True)
 
+    if getattr(args, "refresh_pull", False):
+        refresh_pull = True
+        pull_reason = "--refresh-pull 强制拉表"
+    elif getattr(args, "no_refresh_pull", False) or skip_pull_refresh:
+        refresh_pull = False
+        pull_reason = "CLI 指定跳过拉表" if skip_pull_refresh else "--no-refresh-pull"
+    else:
+        from l3_node.pmo_init_runner import pmo_resolve_refresh_pull_markdown
+
+        refresh_pull, pull_reason = pmo_resolve_refresh_pull_markdown()
+    print(f"[pmo-copilot] 阶段零拉表: {'执行' if refresh_pull else '跳过'} — {pull_reason}", flush=True)
     workflow = await run_pmo_multi_agent_workflow(
         engine,
         parent_allowed_skills=allowlist_diag_source,
         on_status=_on_status,
+        refresh_pull_markdown=refresh_pull,
     )
 
     if workflow.status == "failed":
@@ -562,6 +589,7 @@ async def _async_main_multi_agent(
     publisher_msg = build_publisher_user_message(workflow)
     implicit = build_pmo_multi_agent_implicit_attribution()
     implicit["source"] = "run_pmo_copilot_skill.py"
+    implicit["pmo_publisher_tool_lock"] = True
 
     bundle = build_gateway_bundle(
         user_input=publisher_msg,
@@ -572,11 +600,29 @@ async def _async_main_multi_agent(
 
     expanded = expand_allowed_skills_with_implicit_sqlite_read(list(base_allow))
     expanded = expand_allowed_skills_with_local_mcp(expanded)
-    publisher_allow = [t for t in expanded if "atom_lark_notifier" in t.lower()]
+    publisher_allow: list[str] = []
+    seen_pub: set[str] = set()
+    for tid in list(expanded) + list(base_allow):
+        low = tid.lower()
+        if not (
+            "pmo_macro_dashboard" in low
+            or "atom_lark_notifier" in low
+            or "lark_notifier" in low
+        ):
+            continue
+        if low not in seen_pub:
+            seen_pub.add(low)
+            publisher_allow.append(tid)
+    if not any("pmo_macro_dashboard" in t.lower() for t in publisher_allow):
+        for tid in ("core:pmo_macro_dashboard_push", "core:pmo_macro_dashboard_preview"):
+            if tid.lower() not in seen_pub:
+                seen_pub.add(tid.lower())
+                publisher_allow.insert(0, tid)
     if not publisher_allow:
-        publisher_allow = [t for t in base_allow if "lark" in t.lower() or "notifier" in t.lower()]
-    if not publisher_allow:
-        print("[pmo-copilot] 未找到 mcp:atom_lark_notifier，无法阶段三推送", file=sys.stderr)
+        print(
+            "[pmo-copilot] 未找到 macro_dashboard_push 或 atom_lark_notifier，无法阶段三推送",
+            file=sys.stderr,
+        )
         return 2
 
     tools = await assemble_tool_pool(
@@ -592,9 +638,13 @@ async def _async_main_multi_agent(
     publisher_inject = (
         gateway_block
         + "\n\n### 多 Agent 阶段三（Publisher）\n"
-        "⛔ 禁止 core:db_query。仅 mcp:atom_lark_notifier。\n"
+        "**宏观看板（默认）**：优先 `Action: core:pmo_macro_dashboard_push` + `Action Input: {}`。\n"
+        "  工具内完成 B/C 预取、五列📊+三列👥、polish、主群+监控群双推；成功则 Final Answer 引用 message_id，**禁止**再调 notifier。\n"
+        "  仅预览：`core:pmo_macro_dashboard_preview`。工具失败时 **一次** 回退下方手工路径。\n"
+        "⛔ 禁止 core:db_query / mirror_import / bi_project_context。\n"
+        "**兜底路径**（特殊版式或 push 失败）：mcp:atom_lark_notifier ×2。\n"
         "⛔ **禁止** `webhook_url`（PMO 用应用机器人 IM API，不用群 Webhook）。\n"
-        "双群推送须 **显式** `chat_id` + `native_table_card: true`：\n"
+        "双群兜底推送须 **显式** `chat_id` + `native_table_card: true`：\n"
         "  ① 主群 chat_id = 环境变量 PMO_PRIMARY_CHAT_ID（或 oc_437c98d11106295fb10751a5481ee465）\n"
         "  ② 监控群 chat_id = oc_0e321f92d758ecb44aea5b499c90510b\n"
         "须将三表 GFM **全文** 写入 markdown_content（勿放代码围栏内）。\n"
@@ -628,14 +678,14 @@ async def _async_main_multi_agent(
     append_pmo_debug_phase_begin(
         3,
         "排版发报 · Publisher",
-        detail="run_agent 主循环：三表 GFM 排版 + atom_lark_notifier 双群推送，禁止 db_query",
+        detail="run_agent：优先 macro_dashboard_push，兜底 GFM+notifier 双群",
     )
     set_ma_debug_context(
         phase=3,
         phase_label="排版发报",
         agent_label="Publisher",
         role_label="主编排 Agent · 仅 Lark",
-        task_preview="将阶段一/二 JSON 与风险诊断书填入三表 GFM，双群推送",
+        task_preview="将阶段一 JSON 填入战报（macro_dashboard_push 或三表 GFM），双群推送",
         max_iterations=mi_phase3,
     )
     append_pmo_debug_agent_begin(
@@ -695,6 +745,16 @@ def main() -> int:
         "--init",
         action="store_true",
         help="仅 INIT：拉表 + core:pmo_mirror_import 镜像入库",
+    )
+    ap.add_argument(
+        "--no-refresh-pull",
+        action="store_true",
+        help="多 Agent 前强制跳过拉表（默认仅当今日未拉盘/库空时才拉）",
+    )
+    ap.add_argument(
+        "--refresh-pull",
+        action="store_true",
+        help="强制重新拉表+mirror_import（默认今日已入库则跳过）",
     )
     ap.add_argument("--max-iterations", type=int, default=32, help="ReAct 上限（1～64）")
     args = ap.parse_args()

@@ -154,6 +154,22 @@ def send_lark_markdown(
         if str(_chat_id).startswith("${"):
             _chat_id = ""
 
+    _mc_raw = markdown_content or ""
+    if _mc_raw and (
+        "需求进度全览" in _mc_raw
+        or "人员任务矩阵" in _mc_raw
+        or "Executive Summary" in _mc_raw
+    ):
+        try:
+            from l3_node.pmo_report_format import polish_pmo_war_report_markdown
+
+            _polished = polish_pmo_war_report_markdown(_mc_raw)
+            if _polished and _polished != _mc_raw:
+                markdown_content = _polished
+                _mc_raw = _polished
+        except Exception:
+            logger.debug("[atom_lark_notifier] polish_pmo_war_report_markdown skipped", exc_info=True)
+
     use_native = _truthy_native_table(native_table_card, cfg) and not chart_spec
     if use_native:
         from l3_node.channels.lark.md_native_table_card import build_schema_v2_card_from_markdown

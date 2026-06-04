@@ -1109,8 +1109,8 @@ def _pmo_notifier_markdown_missing_sections(inp: str) -> list[str]:
         col_issues = pmo_demand_table_column_issues(mc, _PMO_MD_SECTION_DEMAND)
         if col_issues:
             missing.append(
-                "📊 需求进度全览（列须且仅为：需求名称|时间跨度|参与人|完成度|状态；"
-                f"当前问题：{'；'.join(col_issues)}）"
+                "📊 需求进度全览（列须且仅为：优先级|需求名称|时间跨度|参与人|完成度|状态；"
+                f"当前问题：{'；'.join(col_issues)}；见 PMO_WAR_REPORT_LAYOUT_CONTRACT / format_demand_table_gfm_row）"
             )
     if not any(k in mc for k in _PMO_MD_SECTION_PEOPLE):
         missing.append("👥 人员任务矩阵")
@@ -1129,17 +1129,27 @@ def _pmo_notifier_markdown_section_format_examples(missing: list[str]) -> str:
     for item in missing:
         if "需求进度" in item or "📊" in item:
             examples.append(
-                "📊 最简示例（仅 5 列，禁止优先级/风险说明/单独进度条列）：\n"
+                "📊 最简示例（图1~5 五列；P0 在需求名称格首）：\n"
                 "| 需求名称 | 时间跨度 | 参与人 | 完成度 | 状态 |\n"
                 "| --- | --- | --- | --- | --- |\n"
-                "| Epic 示例 | 05/18→05/25 | Ethan; Celine | [▓▓░░░░░░░░] 20% | 🔵 进行中 |"
+                "| 【P0】Epic 示例 | 05/18→05/25 | Ethan; Celine | [▓▓▓▓▓░░░░░] 51% | "
+                "🔵 开发/验收 · 技术开发 |"
             )
         elif "人员" in item or "👥" in item:
+            from l3_node.pmo_report_format import (
+                PMO_PERSONNEL_MATRIX_ROW_SORT_SPEC,
+                PMO_PERSONNEL_TASK_CELL_FORMAT_SPEC,
+            )
+
             examples.append(
-                "👥 最简示例：\n"
-                "| 人员 | 任务 | 状态 |\n"
+                "👥 最简示例（行序：🚨 在前，✅ 在最后；任务列每行一条，用 <br> 换行，禁止 **）：\n"
+                "| 人员 | 负责需求（含优先级） | 状态预警 |\n"
                 "| --- | --- | --- |\n"
-                "| Celine | 任务 A | 🚨 延期 |"
+                "| Gavin | 【P0】任务 A · 开发中<br>【P1】任务 B · 待开始 | "
+                "🚨 进度落后（时间已过约 80%，完成 0%）|\n"
+                "| Baojing | 【P1】任务 C · 开发中 | ✅ 正常（本周计划 4/完成 3）|\n"
+                f"{PMO_PERSONNEL_MATRIX_ROW_SORT_SPEC}\n"
+                f"{PMO_PERSONNEL_TASK_CELL_FORMAT_SPEC}"
             )
         elif "版本" in item or "📦" in item:
             examples.append(
@@ -1764,6 +1774,14 @@ def _pmo_sanitize_atom_lark_notifier_inp(inp: str) -> str:
     if _pmo_forbidden_lark_title(title):
         args["title"] = _pmo_default_lark_card_title()
         inp = json.dumps(args, ensure_ascii=False)
+    mc = str(args.get("markdown_content") or "")
+    if mc:
+        from l3_node.pmo_report_format import polish_pmo_war_report_markdown
+
+        fixed = polish_pmo_war_report_markdown(mc)
+        if fixed != mc:
+            args["markdown_content"] = fixed
+            inp = json.dumps(args, ensure_ascii=False)
     inp = _pmo_fixup_atom_lark_notifier_inp(inp)
     return inp
 
@@ -2182,7 +2200,67 @@ def _pmo_ensure_analysis_probes(ctx: PipelineContext) -> dict[str, bool]:
     return probes
 
 
+def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
+    """解析 core:pmo_macro_dashboard_push 返回：双群均 success。"""
+    try:
+        o = json.loads(str(observation or "").strip())
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(o, dict):
+        return False
+    st = str(o.get("status") or "").lower()
+    if st not in ("success", "ok", "partial"):
+        return False
+    pushes = o.get("pushes")
+    if not isinstance(pushes, list) or not pushes:
+        return False
+    ok_chats: set[str] = set()
+    for p in pushes:
+        if not isinstance(p, dict):
+            continue
+        if str(p.get("status") or "").lower() != "success":
+            continue
+        cid = str(p.get("chat_id") or "").strip()
+        if cid:
+            ok_chats.add(cid)
+    return (
+        PMO_BRANCH_A_PRIMARY_CHAT_ID in ok_chats
+        and PMO_BRANCH_A_MONITOR_CHAT_ID in ok_chats
+    )
+
+
+def _pmo_track_macro_dashboard_push_success(ctx: PipelineContext, observation: str) -> None:
+    """macro_dashboard_push 双群成功 → 等同 notifier 双群送达，允许 Final Answer 收工。"""
+    if not _pmo_macro_dashboard_push_succeeded(observation):
+        return
+    ctx.metadata["_pmo_macro_dashboard_push_ok"] = True
+    ctx.metadata["_pmo_atom_lark_notify_ok"] = True
+    chats = [
+        str(x).strip()
+        for x in (ctx.metadata.get("_pmo_notifier_chats_success") or [])
+        if str(x).strip()
+    ]
+    for cid in (PMO_BRANCH_A_PRIMARY_CHAT_ID, PMO_BRANCH_A_MONITOR_CHAT_ID):
+        if cid not in chats:
+            chats.append(cid)
+    ctx.metadata["_pmo_notifier_chats_success"] = chats
+    ctx.metadata.pop("_pmo_markdown_fix_phase", None)
+    ctx.metadata.pop("_pmo_markdown_fix_only", None)
+
+
+def _pmo_append_macro_dashboard_delivery_hint(observation: str) -> str:
+    if "宏观看板已双群推送成功" in str(observation or ""):
+        return observation
+    return (
+        f"{observation.rstrip()}\n\n"
+        "【宿主·PMO】`core:pmo_macro_dashboard_push` 已向主群与监控群送达。"
+        "请 **立即** 输出 ≤3 句 Final Answer（引用 message_id），**禁止**再调用任何工具。"
+    )
+
+
 def _pmo_branch_a_delivery_complete(ctx: PipelineContext) -> bool:
+    if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
+        return True
     chats = {str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()}
     return PMO_BRANCH_A_PRIMARY_CHAT_ID in chats and PMO_BRANCH_A_MONITOR_CHAT_ID in chats
 
@@ -2557,30 +2635,57 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
     if not _pmo_analysis_only_mode(ctx):
         return None
     canon = _pmo_canonical_tool_id(tool)
-    if ctx.metadata.get("pmo_multi_agent_complete") and canon == "db_query":
+    _pmo_phase3_publish_allowed = frozenset({
+        "pmo_macro_dashboard_push",
+        "pmo_macro_dashboard_preview",
+        "atom_lark_notifier",
+    })
+    _pmo_sqlite_mcp_canon = frozenset({
+        "read_query",
+        "list_tables",
+        "get_table_schema",
+        "create_table",
+        "write_query",
+        "query",
+        "db_info",
+        "read_records",
+    })
+    if ctx.metadata.get("pmo_multi_agent_complete") and canon == "pmo_macro_dashboard_push":
+        if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "pmo_macro_dashboard_duplicate_blocked",
+                    "msg": (
+                        "【宿主拦截】本轮已通过 core:pmo_macro_dashboard_push 完成双群推送，"
+                        "禁止重复调用。请输出 ≤3 句 Final Answer 确认 message_id 即可。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+    if ctx.metadata.get("pmo_multi_agent_complete") and (
+        canon == "db_query" or canon in _pmo_sqlite_mcp_canon
+    ):
         return json.dumps(
             {
                 "status": "error",
                 "error": "pmo_multi_agent_publish_db_blocked",
                 "msg": (
                     "【宿主拦截 · 多 Agent 阶段三】前序 FanOut/Pipeline 已完成查库与审计。"
-                    "⛔ 禁止 core:db_query；请仅用 mcp:atom_lark_notifier 组装 markdown_content 双群推送。"
+                    "⛔ 禁止 db_query / MCP SQLite（read_query、list_tables 等）。"
+                    "请优先 `core:pmo_macro_dashboard_push` + `{}`；仅 push 失败时回退 atom_lark_notifier。"
                 ),
             },
             ensure_ascii=False,
         )
-    if ctx.metadata.get("pmo_multi_agent_complete") and canon in (
-        "atom_bi_project_context",
-        "pmo_mirror_import",
-        "fs_read",
-    ):
+    if ctx.metadata.get("pmo_multi_agent_complete") and canon not in _pmo_phase3_publish_allowed:
         return json.dumps(
             {
                 "status": "error",
                 "error": "pmo_multi_agent_publish_tool_blocked",
                 "msg": (
-                    "【宿主拦截 · 多 Agent 阶段三】禁止 INIT/读盘类工具；"
-                    "仅允许 mcp:atom_lark_notifier。"
+                    "【宿主拦截 · 多 Agent 阶段三】禁止 INIT/读盘/无关 MCP。"
+                    "仅允许 core:pmo_macro_dashboard_push、preview 或 mcp:atom_lark_notifier（兜底）。"
                 ),
             },
             ensure_ascii=False,
@@ -2881,9 +2986,12 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
             "【系统校验·PMO】你已执行拉表，但 **宏观看板正文**须通过 **`mcp:atom_lark_notifier`** "
             "发到群内（`markdown_content` + `title` + `chat_id`），**禁止**把完整 §1.4 战报只写在 Final Answer。\n"
             "**分支 A 的 `markdown_content` 必须同时包含三张核心表**（缺一不可）：\n"
-            "① `📊 需求进度全览`（**仅 5 列**：需求名称|时间跨度|参与人|完成度|状态；"
-            "完成度列内写进度条+%；**禁止**优先级/风险说明列）\n"
-            "② `👥 人员任务矩阵`（每人一行，含逐条需求明细+优先级+状态预警）\n"
+            "① `📊 需求进度全览`（**6 列**：优先级|需求名称|时间跨度|参与人|完成度|状态；"
+            "完成度列写 workflow_completion_pct 进度条+%（与泳道 rank 同源，禁止条数占比）；"
+            "状态须写泳道步骤如「开发/验收·技术开发」，"
+            "**禁止**待开始/进行中/已完成；**禁止**优先级/风险说明列）\n"
+            "② `👥 人员任务矩阵`（每人一行；任务列每条独立一行用 `<br>`，格式 `【P0】任务名 · 状态`，"
+            "禁止 ** 与分号挤一段；**行序**：🚨落后→🟡偏闲→✅正常）\n"
             "③ `📦 版本发布需求映射`（按版本/Sprint归集，含每条需求当前状态）\n"
             "**注意**：分支 D 的精简格式（只含人员矩阵）仅适用于 `resource_monitor` 触发词，**对分支 A 完全无效**。\n"
             "请立即输出 ReAct（勿写 Final Answer）：\n"
@@ -8835,6 +8943,12 @@ async def _run_react_core(
                     observation_full = _pmo_append_draft_gfm_hint_after_db_query(
                         ctx, response, observation_full
                     )
+                if _tcanon == "pmo_macro_dashboard_push":
+                    _pmo_track_macro_dashboard_push_success(ctx, observation_full)
+                    if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
+                        observation_full = _pmo_append_macro_dashboard_delivery_hint(
+                            observation_full
+                        )
                 if _tcanon == "atom_lark_notifier":
                     if _lark_notifier_observation_suggests_success(observation_full):
                         _pmo_track_notifier_chat_success(ctx, inp, observation_full)
@@ -9400,9 +9514,14 @@ async def run_agent(
     )
     if _native_only_sub_agent:
         _native_only_sub_agent = allowlist_is_native_only(_allowed_skills_override)
+    _pmo_publisher_tool_lock = bool(
+        implicit_attribution
+        and isinstance(implicit_attribution, dict)
+        and implicit_attribution.get("pmo_publisher_tool_lock")
+    )
     if _tools_denied:
         allowed = []
-    elif not _native_only_sub_agent:
+    elif not _native_only_sub_agent and not _pmo_publisher_tool_lock:
         allowed = expand_allowed_skills_with_implicit_sqlite_read(allowed)
         allowed = expand_allowed_skills_with_local_mcp(allowed)
     # 优先使用 _session_messages（多轮对话），否则用 _initial_messages（须先于 MCP 拉取与 Gateway 流水线）

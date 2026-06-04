@@ -17,7 +17,7 @@ def test_render_bitable_skips_list_tables_when_table_id_known() -> None:
     client.bitable_list_records.return_value = [
         {"record_id": "r1", "fields": {"f1": "任务A"}},
     ]
-    md = _render_bitable_markdown(
+    md, export = _render_bitable_markdown(
         client,
         "app_token_xyz",
         "tblABC",
@@ -32,6 +32,9 @@ def test_render_bitable_skips_list_tables_when_table_id_known() -> None:
     client.bitable_list_records.assert_called_once_with(
         "app_token_xyz", "tblABC", 50000, view_id="vew123"
     )
+    assert export is not None
+    assert export.get("view_id") == "vew123"
+    assert export["tables"][0]["records"][0]["record_id"] == "r1"
 
 
 def test_format_pmo_init_direct_summary_ok() -> None:

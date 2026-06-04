@@ -457,7 +457,7 @@ def _render_bitable_markdown(
     *,
     view_id: str | None = None,
     emit_hierarchy: bool = True,
-) -> str:
+) -> tuple[str, dict[str, Any] | None]:
     lines: list[str] = [f"# 多维表格 {table_name_hint}", "", f"- app_token: `{app_token}`", ""]
     if view_id:
         lines.append(f"- **view_id**（记录按此视图过滤/排序，与飞书前端一致）: `{view_id}`")
@@ -470,9 +470,10 @@ def _render_bitable_markdown(
         tables = client.bitable_list_tables(app_token)
         if not tables:
             lines.append("（无法列出子表或无权访问）")
-            return "\n".join(lines)
+            return "\n".join(lines), None
         targets = tables
 
+    export_tables: list[dict[str, Any]] = []
     for ti, tbl in enumerate(targets):
         tid = tbl.get("table_id", "")
         tname = tbl.get("name", tid)
@@ -524,7 +525,27 @@ def _render_bitable_markdown(
             row = [_cell_to_text(m.get(c)) for c in col_order]
             lines.append("| " + " | ".join(x.replace("|", "\\|").replace("\n", " ") for x in row) + " |")
         lines.append("")
-    return "\n".join(lines)
+        export_tables.append(
+            {
+                "table_id": tid,
+                "name": tname,
+                "columns": col_order,
+                "records": [
+                    {"record_id": rid, "fields": fields}
+                    for rid, fields in norm_rows
+                    if rid or fields
+                ],
+            }
+        )
+    records_export: dict[str, Any] | None = None
+    if export_tables:
+        records_export = {
+            "kind": "bitable",
+            "app_token": app_token,
+            "view_id": view_id,
+            "tables": export_tables,
+        }
+    return "\n".join(lines), records_export
 
 
 def _render_sheet_markdown(client: _LarkProjectClient, spreadsheet_token: str, sheet_sub_id: str | None) -> str:
@@ -666,6 +687,12 @@ def sync_bi_project_context(
     else:
         bitable_emit_hierarchy = bool(_raw_hi)
 
+    _raw_json = cfg.get("emit_pull_records_json", True)
+    if isinstance(_raw_json, str):
+        emit_pull_records_json = _raw_json.strip().lower() not in ("0", "false", "no", "off")
+    else:
+        emit_pull_records_json = bool(_raw_json)
+
     app_id = (cfg.get("app_id") or os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID") or "").strip()
     app_secret = (cfg.get("app_secret") or os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET") or "").strip()
     if cfg.get("lark_use_feishu") in (True, "true", "1", "yes"):
@@ -711,19 +738,37 @@ def sync_bi_project_context(
     discovered = 0
     file_idx = 0
 
-    def write_md(slug: str, body: str, meta: dict[str, Any]) -> Path:
+    def write_pull_artifacts(
+        slug: str,
+        body: str,
+        meta: dict[str, Any],
+        *,
+        records_export: dict[str, Any] | None = None,
+    ) -> Path:
+        """落盘 md（GFM 表 + 元数据块）；多维表可附带同前缀 .records.json 供检索。"""
         nonlocal file_idx
         file_idx += 1
-        name = f"{file_idx:02d}_{_safe_name(slug, max_len=160)}.md"
-        path = out_dir / name
+        base = f"{file_idx:02d}_{_safe_name(slug, max_len=160)}"
+        md_path = out_dir / f"{base}.md"
         meta_block = (
             "## 同步元数据\n\n```json\n"
             + json.dumps(meta, ensure_ascii=False, indent=2)
             + "\n```\n\n---\n\n"
         )
-        path.write_text(meta_block + body, encoding="utf-8")
-        manifest["files"].append(_manifest_file_relpath(path, root, out_dir))
-        return path
+        md_path.write_text(meta_block + body, encoding="utf-8")
+        manifest["files"].append(_manifest_file_relpath(md_path, root, out_dir))
+        if emit_pull_records_json and records_export:
+            payload = {
+                "sync_meta": meta,
+                **records_export,
+            }
+            json_path = out_dir / f"{base}.records.json"
+            json_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            manifest["files"].append(_manifest_file_relpath(json_path, root, out_dir))
+        return md_path
 
     while queue:
         node_token, pref_table, pref_sheet, pref_view, source, depth, seed_url = queue.pop(0)
@@ -743,7 +788,7 @@ def sync_bi_project_context(
         if g.get("code") != 0:
             msg = g.get("msg", str(g))
             manifest["errors"].append(f"get_node {node_token}: {msg}")
-            write_md(
+            write_pull_artifacts(
                 f"error_{node_token}",
                 f"# 节点拉取失败\n\n`{node_token}`\n\n{msg}\n",
                 {"node_token": node_token, "error": msg, "source": source, "seed_url": seed_url},
@@ -784,18 +829,18 @@ def sync_bi_project_context(
             "",
         ]
 
+        records_export: dict[str, Any] | None = None
         if obj_type == "bitable" and obj_token:
-            body_parts.append(
-                _render_bitable_markdown(
-                    client,
-                    obj_token,
-                    pref_table,
-                    title,
-                    max_records,
-                    view_id=pref_view,
-                    emit_hierarchy=bitable_emit_hierarchy,
-                )
+            bitable_md, records_export = _render_bitable_markdown(
+                client,
+                obj_token,
+                pref_table,
+                title,
+                max_records,
+                view_id=pref_view,
+                emit_hierarchy=bitable_emit_hierarchy,
             )
+            body_parts.append(bitable_md)
         elif obj_type == "sheet" and obj_token:
             body_parts.append(_render_sheet_markdown(client, obj_token, pref_sheet))
         elif obj_type == "docx" and obj_token:
@@ -854,7 +899,12 @@ def sync_bi_project_context(
             slug_core = f"{slug_core}_{pref_view}"
         elif pref_table:
             slug_core = f"{slug_core}_tbl{pref_table[-6:]}" if len(pref_table) > 6 else f"{slug_core}_{pref_table}"
-        write_md(slug_core, "\n".join(body_parts), meta)
+        write_pull_artifacts(
+            slug_core,
+            "\n".join(body_parts),
+            meta,
+            records_export=records_export,
+        )
 
     man_path = out_dir / "00_SYNC_MANIFEST.json"
     man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

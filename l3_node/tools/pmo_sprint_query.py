@@ -236,6 +236,7 @@ def _dedupe_child_tasks(
 ) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     seen_task_no: dict[str, int] = {}
+    seen_fallback: set[tuple[str, str, str, str]] = set()
     for idx, f, pe, dept_parent in sorted(raw, key=lambda x: x[0]):
         row = _pack_child_row(f, pe, department=dept_parent)
         tno = row.get("task_no")
@@ -244,6 +245,16 @@ def _dedupe_child_tasks(
             if key in seen_task_no and seen_task_no[key] <= idx:
                 continue
             seen_task_no[key] = idx
+        else:
+            fb = (
+                str(pe or ""),
+                str(row.get("task") or ""),
+                str(row.get("department") or ""),
+                str(row.get("sprint") or ""),
+            )
+            if fb in seen_fallback:
+                continue
+            seen_fallback.add(fb)
         tasks.append(row)
     return tasks
 
@@ -427,6 +438,9 @@ def run_sprint_epic_report(
 
     epics = [_pack_epic_row(f) for _, f in epic_sorted]
     all_children = dev_tasks + product_tasks + art_tasks
+    from l3_node.pmo_epic_aggregate import enrich_epics_workflow_status
+
+    enrich_epics_workflow_status(epics, all_children, current_sprint=sprint_s)
 
     return {
         "status": "ok",

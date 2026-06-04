@@ -1529,6 +1529,8 @@ def run_tool(
         "core:pmo_personnel_report",
         "core:pmo_sprint_epic_report",
         "core:pmo_resolve_sprint",
+        "core:pmo_macro_dashboard_push",
+        "core:pmo_macro_dashboard_preview",
     ):
         if tool_id == "core:db_query":
             from l3_node.tools.pmo_db_tools import parse_db_query_action_input

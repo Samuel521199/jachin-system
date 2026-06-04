@@ -88,11 +88,11 @@ def _mode_profile(mode: str) -> dict[str, Any]:
     """各运行模式的日志展示配置（v8 统一格式）。"""
     profiles: dict[str, dict[str, Any]] = {
         "multi-agent": {
-            "display": "多 Agent 方案 B（FanOut → Audit → Publish）",
+            "display": "多 Agent 方案 B（FanOut → Publish）",
             "arch": [
-                "  阶段一 FanOut: Worker A(字典) / B(B-1～B-7·vewCz1FFJi SSOT) / C(Epic) — 并行、上下文隔离",
-                "  阶段二 Pipeline: Auditor — Step6 交叉审计（禁止 db_query）",
-                "  阶段三 Publisher: run_agent — 三表 GFM 排版 + atom_lark_notifier 双群推送",
+                "  阶段一 FanOut: Worker A(字典) / B(B-TOOL·vewCz1FFJi SSOT) / C(C-TOOL·Epic) — 并行、上下文隔离",
+                "  阶段二: （已跳过）Auditor 交叉审计",
+                "  阶段三 Publisher: run_agent — macro_dashboard_push / 三表 GFM + 双群推送",
             ],
             "auto_bootstrap": False,
         },

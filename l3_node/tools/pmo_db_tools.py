@@ -107,8 +107,9 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
         "desc": (
             "PMO 单 Sprint 大需求 + 开发/产品/美术子任务（Python 解析 pmo_raw_records，SSOT vewpI8lyYw）。"
             "JSON 必填 sprint（如 2026/05/11-Sprint）；可选 department（默认 all=三者全采；可 development/product/art）、source_view。"
-            "返回 epics[]、dev_tasks[]、product_tasks[]、art_tasks[]、epic_children[]（含 department 字段）、"
-            "summary{epic_count, dev/product/art_task_count, epics_with_*}；日期 ISO YYYY-MM-DD。"
+            "返回 epics[]（含 workflow_status、workflow_completion_pct 泳道进度）、dev_tasks[]、product_tasks[]、art_tasks[]、"
+            "epic_children[]（含 department 字段）、summary{epic_count, dev/product/art_task_count, epics_with_*}；"
+            "日期 ISO YYYY-MM-DD。workflow_status 见 pmo_workflow_stage（禁止待开始/进行中/已完成粗词）。"
             "近三周战报采集请用 recent_window:true（合并 C-1 窗内各 Sprint）。"
         ),
         "params": ["sprint", "department", "source_view", "recent_window"],
@@ -122,6 +123,41 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "返回 resolved_sprint、candidates[]、ambiguous；禁止猜测唯一候选。"
         ),
         "params": ["sprint", "sprint_date", "label", "year"],
+    },
+    {
+        "id": "core:pmo_macro_dashboard_push",
+        "label": "core:pmo_macro_dashboard_push",
+        "desc": (
+            "PMO 宏观看板一键推送（Work 总 · 确定性路径）。"
+            "内部自动 core:pmo_personnel_report + core:pmo_sprint_epic_report 宿主预取，"
+            "组装 Executive Summary + 📊 五列需求表 + 👥 人员表 + 📦 辅表，"
+            "polish_pmo_war_report_markdown 后以飞书 native_table 卡片发送。"
+            "JSON：可选 chat_id（主群，默认 PMO_PRIMARY_CHAT_ID）；"
+            "monitor_chat_id（监控群，默认 oc_0e321f92d758ecb44aea5b499c90510b）；"
+            "push_monitor（默认 true，双群推送）；app_id/app_secret（空则用 atom_lark_notifier 配置）；"
+            "dry_run（true 仅返回 markdown）；title（卡片标题）。"
+            "返回 status、message_id(s)、current_sprint、epic_count、person_count、markdown_preview、pushes[]。"
+            "Publisher 推宏观看板时 **优先** 本工具，禁止再手写 GFM 后重复 notifier。"
+        ),
+        "params": [
+            "chat_id",
+            "monitor_chat_id",
+            "push_monitor",
+            "app_id",
+            "app_secret",
+            "dry_run",
+            "title",
+        ],
+    },
+    {
+        "id": "core:pmo_macro_dashboard_preview",
+        "label": "core:pmo_macro_dashboard_preview",
+        "desc": (
+            "PMO 宏观看板 Markdown 预览（不推送飞书）。"
+            "与 push 同源 B/C 预取与 polish；返回 markdown 全文与 epic_count/person_count。"
+            "JSON：可选 title。"
+        ),
+        "params": ["title"],
     },
 ]
 
@@ -780,6 +816,9 @@ _C2_TASK_NO_WHERE_RE = re.compile(
 _DEPT_PLACEHOLDER_ROW_NAMES = frozenset({
     "开发", "美术", "产品", "测试", "平台前端", "平台后端",
     "游戏", "中台", "后台", "游戏客户端",
+    # 飞书表内部门/泳道分组行（非真实子任务；无 Progress 时不应进入战报 📊 状态推断）
+    "前端开发", "后端开发", "程序开发", "客户端", "服务端",
+    "技术评估", "需求评审", "UI设计", "交互设计",
 })
 
 
@@ -2242,5 +2281,31 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
             label=str(payload.get("label") or "").strip() or None,
             year=year_i,
             source_view=str(payload.get("source_view") or "vewpI8lyYw"),
+        )
+    if tool_id == "core:pmo_macro_dashboard_push":
+        from l3_node.tools.pmo_macro_dashboard import run_macro_dashboard_push
+
+        root_raw = payload.get("project_root")
+        project_root = Path(str(root_raw)) if root_raw else None
+        push_mon = payload.get("push_monitor")
+        if push_mon is None:
+            push_monitor = True
+        else:
+            push_monitor = push_mon in (True, "true", "1", 1)
+        return run_macro_dashboard_push(
+            chat_id=str(payload.get("chat_id") or "").strip() or None,
+            monitor_chat_id=str(payload.get("monitor_chat_id") or "").strip() or None,
+            push_monitor=push_monitor,
+            app_id=str(payload.get("app_id") or "").strip() or None,
+            app_secret=str(payload.get("app_secret") or "").strip() or None,
+            dry_run=payload.get("dry_run") in (True, "true", "1", 1),
+            title=str(payload.get("title") or "").strip() or None,
+            project_root=project_root,
+        )
+    if tool_id == "core:pmo_macro_dashboard_preview":
+        from l3_node.tools.pmo_macro_dashboard import run_macro_dashboard_preview
+
+        return run_macro_dashboard_preview(
+            title=str(payload.get("title") or "").strip() or None,
         )
     raise ValueError(f"Unknown PMO db tool: {tool_id}")

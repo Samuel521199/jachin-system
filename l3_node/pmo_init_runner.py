@@ -1,13 +1,19 @@
 ﻿"""
 PMO INIT 确定性路径：拉表 + mirror_import，**零 ReAct**。
 
+拉表阶段将飞书 API 记录（JSON）落盘为 ``pmo_lark_pull/*.md``（GFM 表）及可选 ``*.records.json``，
+供后续 ``core:pmo_mirror_import`` 与宿主/模型检索。
+
 SSOT：skills_repo/pmo-copilot/SKILL.md §1.1（12 视图）+ config/mcps/atom_bi_project_context/config.yaml。
 """
 from __future__ import annotations
 
 import logging
+import os
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,148 @@ def _load_bi_pull_config() -> dict[str, Any]:
     from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import _load_merge_config
 
     return _load_merge_config({"wiki_urls": pmo_init_wiki_urls()}, get_app_root())
+
+
+def pmo_skip_pull_markdown_refresh() -> bool:
+    """为真时跳过多 Agent 前的「拉表 → md」刷新（环境变量 ``PMO_SKIP_PULL_MD``）。"""
+    return os.environ.get("PMO_SKIP_PULL_MD", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def pmo_expected_view_ids() -> frozenset[str]:
+    """§1.1 十二视图 view_id（与 PMO_INIT_WIKI_URLS 对齐）。"""
+    out: set[str] = set()
+    for url in PMO_INIT_WIKI_URLS:
+        v = (parse_qs(urlparse(url).query).get("view") or [None])[0]
+        if v:
+            out.add(str(v).strip())
+    return frozenset(out)
+
+
+def _parse_sync_local_date(iso_str: str) -> date | None:
+    if not (iso_str or "").strip():
+        return None
+    try:
+        s = iso_str.strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt.date()
+    except ValueError:
+        return None
+
+
+def _pmo_views_meta_coverage() -> tuple[bool, int, int]:
+    """(是否覆盖全部预期 view_id, 已登记数, 预期数)。"""
+    expected = pmo_expected_view_ids()
+    if not expected:
+        return False, 0, 0
+    from l3_node.tools.pmo_db_tools import _connect, ensure_pmo_schema
+
+    placeholders = ",".join("?" * len(expected))
+    conn = _connect()
+    try:
+        ensure_pmo_schema(conn)
+        rows = conn.execute(
+            f"SELECT view_id FROM pmo_views_meta WHERE view_id IN ({placeholders})",
+            list(expected),
+        ).fetchall()
+        found = {str(r["view_id"]) for r in rows}
+        return expected <= found, len(found), len(expected)
+    finally:
+        conn.close()
+
+
+def _pmo_latest_mirror_sync_local_date() -> date | None:
+    from l3_node.tools.pmo_db_tools import _connect, ensure_pmo_schema
+
+    conn = _connect()
+    try:
+        ensure_pmo_schema(conn)
+        row = conn.execute(
+            "SELECT MAX(synced_at) AS ts FROM pmo_views_meta"
+        ).fetchone()
+        if not row or not row["ts"]:
+            return None
+        return _parse_sync_local_date(str(row["ts"]))
+    finally:
+        conn.close()
+
+
+def _pmo_manifest_local_date() -> date | None:
+    from l3_node.tools.pmo_db_tools import get_default_pmo_manifest_path
+
+    path = get_default_pmo_manifest_path()
+    if not path.is_file():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime).date()
+
+
+def pmo_resolve_refresh_pull_markdown() -> tuple[bool, str]:
+    """
+    是否需要在 FanOut 前执行拉表 + mirror_import。
+
+    默认：**今日**（本地日历日）已成功落盘且十二视图已入库 → **不拉**；
+    镜像库空、视图不齐、或上次入库非今日 → **拉**。
+    """
+    if os.environ.get("PMO_FORCE_PULL_MD", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True, "PMO_FORCE_PULL_MD=1 强制拉表"
+    if pmo_skip_pull_markdown_refresh():
+        return False, "PMO_SKIP_PULL_MD=1 跳过拉表"
+
+    from l3_node.tools.pmo_db_tools import pmo_mirror_db_ready
+
+    if not pmo_mirror_db_ready():
+        return True, "镜像库无数据（pmo_raw_records 为空）"
+
+    ok_views, n_found, n_exp = _pmo_views_meta_coverage()
+    if not ok_views:
+        return True, f"pmo_views_meta 视图不齐（{n_found}/{n_exp}），需拉表"
+
+    today = date.today()
+    manifest_day = _pmo_manifest_local_date()
+    sync_day = _pmo_latest_mirror_sync_local_date()
+
+    if manifest_day == today or sync_day == today:
+        hint = []
+        if manifest_day == today:
+            hint.append("manifest 今日已更新")
+        if sync_day == today:
+            hint.append(f"入库 synced_at={sync_day}")
+        return False, "；".join(hint) + f"（{n_found}/{n_exp} 视图）"
+
+    if sync_day:
+        return True, f"上次镜像入库为 {sync_day}（非今日），将重新拉表"
+    if manifest_day:
+        return True, f"拉盘 manifest 日期为 {manifest_day}（非今日），将重新拉表"
+    return True, "无 manifest/入库时间记录，将拉表"
+
+
+def run_pmo_pull_markdown() -> dict[str, Any]:
+    """仅拉表落盘：sync_bi_project_context（JSON→md + 可选 records.json），不入库。"""
+    out: dict[str, Any] = {"status": "error", "steps": ["pull"]}
+    try:
+        from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import (
+            sync_bi_project_context,
+        )
+
+        cfg = _load_bi_pull_config()
+        pull_result = sync_bi_project_context(cfg)
+        out["pull"] = pull_result
+        st = str(pull_result.get("status") or "").lower()
+        if st == "error" or pull_result.get("error"):
+            out["message"] = str(pull_result.get("error") or pull_result.get("msg") or "拉表失败")
+            return out
+        files = pull_result.get("files") if isinstance(pull_result.get("files"), list) else []
+        md_n = sum(1 for f in files if str(f).endswith(".md"))
+        json_n = sum(1 for f in files if str(f).endswith(".records.json"))
+        out["status"] = "ok"
+        out["message"] = f"拉表落盘完成：{md_n} 个 md，{json_n} 个 records.json"
+        return out
+    except Exception as e:
+        logger.exception("[PMO] pull markdown failed")
+        out["message"] = f"拉表异常: {e}"
+        out["pull"] = {"status": "error", "error": str(e)}
+        return out
 
 
 def run_pmo_init_direct(*, skip_pull: bool = False) -> dict[str, Any]:
@@ -119,7 +267,12 @@ def format_pmo_init_direct_summary(result: dict[str, Any]) -> str:
     if pull:
         files = pull.get("files") if isinstance(pull.get("files"), list) else []
         out_dir = str(pull.get("output_dir") or "").strip()
-        lines.append(f"拉表: {len(files)} 个 md 文件 → {out_dir or '（见 pull.output_dir）'}")
+        md_n = sum(1 for f in files if str(f).endswith(".md"))
+        json_n = sum(1 for f in files if str(f).endswith(".records.json"))
+        lines.append(
+            f"拉表: {md_n} 个 md + {json_n} 个 records.json（共 {len(files)} 项）"
+            f" → {out_dir or '（见 pull.output_dir）'}"
+        )
     if imp:
         total = int(imp.get("total_records") or 0)
         views = imp.get("views") if isinstance(imp.get("views"), list) else []

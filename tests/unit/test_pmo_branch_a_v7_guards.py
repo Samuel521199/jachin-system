@@ -16,6 +16,8 @@ from l3_node.agent_core import (
     _pmo_branch_a_blocked_duplicate_step1_map,
     _pmo_branch_a_blocked_rerun_db_after_markdown_block,
     _pmo_branch_a_delivery_complete,
+    _pmo_macro_dashboard_push_succeeded,
+    _pmo_track_macro_dashboard_push_success,
     _pmo_branch_a_missing_cross_analysis,
     _pmo_branch_a_notifier_markdown_is_complete,
     _pmo_branch_a_push_prerequisites_met,
@@ -301,6 +303,67 @@ def test_duplicate_delivery_blocked() -> None:
     )
     obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
     assert json.loads(obs).get("error") == "pmo_duplicate_delivery_blocked"
+
+
+def test_macro_dashboard_push_marks_dual_delivery() -> None:
+    obs = json.dumps(
+        {
+            "status": "success",
+            "pushes": [
+                {
+                    "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+                    "status": "success",
+                    "message_id": "om_x1",
+                },
+                {
+                    "chat_id": "oc_0e321f92d758ecb44aea5b499c90510b",
+                    "status": "success",
+                    "message_id": "om_x2",
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+    assert _pmo_macro_dashboard_push_succeeded(obs) is True
+    ctx = _ctx(pmo_multi_agent_complete=True, pmo_analysis_only=True, pmo_db_ready=True)
+    _pmo_track_macro_dashboard_push_success(ctx, obs)
+    assert ctx.metadata.get("_pmo_macro_dashboard_push_ok") is True
+    assert _pmo_branch_a_delivery_complete(ctx) is True
+
+
+def test_blocks_read_query_during_multi_agent_phase3() -> None:
+    ctx = _ctx(
+        pmo_multi_agent_complete=True,
+        pmo_analysis_only=True,
+        pmo_db_ready=True,
+    )
+    obs = _pmo_branch_a_blocked_init_tools_during_analysis("mcp:read_query", ctx)
+    assert obs is not None
+    assert json.loads(obs).get("error") == "pmo_multi_agent_publish_db_blocked"
+
+
+def test_blocks_duplicate_macro_dashboard_push() -> None:
+    ctx = _ctx(
+        pmo_multi_agent_complete=True,
+        pmo_analysis_only=True,
+        pmo_db_ready=True,
+        _pmo_macro_dashboard_push_ok=True,
+    )
+    obs = _pmo_branch_a_blocked_init_tools_during_analysis(
+        "core:pmo_macro_dashboard_push", ctx
+    )
+    assert json.loads(obs).get("error") == "pmo_macro_dashboard_duplicate_blocked"
+
+
+def test_blocks_all_tools_after_macro_push_delivery() -> None:
+    ctx = _ctx(
+        pmo_analysis_only=True,
+        pmo_db_ready=True,
+        _pmo_macro_dashboard_push_ok=True,
+    )
+    assert _pmo_branch_a_delivery_complete(ctx) is True
+    obs = _pmo_branch_a_blocked_init_tools_during_analysis("mcp:read_query", ctx)
+    assert json.loads(obs).get("error") == "pmo_post_delivery_tool_blocked"
 
 
 def test_track_notifier_chat_success() -> None:
