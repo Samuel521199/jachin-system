@@ -1529,8 +1529,13 @@ def run_tool(
         "core:pmo_personnel_report",
         "core:pmo_sprint_epic_report",
         "core:pmo_resolve_sprint",
+        "core:pmo_release_epic_mapping",
         "core:pmo_macro_dashboard_push",
         "core:pmo_macro_dashboard_preview",
+        "core:pmo_bitable_watch_tick",
+        "core:pmo_bitable_watch_status",
+        "core:pmo_change_diff",
+        "core:pmo_change_alert_analyze",
     ):
         if tool_id == "core:db_query":
             from l3_node.tools.pmo_db_tools import parse_db_query_action_input

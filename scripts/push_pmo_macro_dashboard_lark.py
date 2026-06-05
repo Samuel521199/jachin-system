@@ -23,7 +23,18 @@ def main() -> int:
     ap.add_argument("--app-secret", default=os.environ.get("LARK_APP_SECRET", ""))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out-md", default="")
+    ap.add_argument(
+        "--release-epic-mapping",
+        action="store_true",
+        help="（已默认开启）显式启用 Worker D 发版 Epic 映射",
+    )
+    ap.add_argument(
+        "--no-release-epic-mapping",
+        action="store_true",
+        help="回退旧版 Version Goal 辅表口径（禁用 Worker D）",
+    )
     args = ap.parse_args()
+    use_release = not args.no_release_epic_mapping
 
     from l3_node.tools.pmo_macro_dashboard import (
         build_polished_macro_dashboard_markdown,
@@ -31,12 +42,21 @@ def main() -> int:
     )
 
     if args.out_md:
-        md, _, _ = build_polished_macro_dashboard_markdown()
+        md, _, _ = build_polished_macro_dashboard_markdown(
+            use_release_epic_mapping=use_release,
+            app_id=(args.app_id or None),
+            app_secret=(args.app_secret or None),
+        )
         Path(args.out_md).write_text(md, encoding="utf-8")
         print(f"markdown -> {args.out_md}")
 
     if args.dry_run and not args.out_md:
-        result = run_macro_dashboard_push(dry_run=True)
+        result = run_macro_dashboard_push(
+            dry_run=True,
+            use_release_epic_mapping=use_release,
+            app_id=(args.app_id or None),
+            app_secret=(args.app_secret or None),
+        )
     else:
         result = run_macro_dashboard_push(
             chat_id=(args.chat_id or None),
@@ -46,6 +66,7 @@ def main() -> int:
             app_secret=(args.app_secret or None),
             dry_run=args.dry_run,
             project_root=ROOT,
+            use_release_epic_mapping=use_release,
         )
 
     print(json.dumps(result, ensure_ascii=False, indent=2))

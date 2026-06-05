@@ -545,7 +545,12 @@ async def _async_main_multi_agent(
 
     allowlist_diag_source = list(base_allow)
     allow_lower = {t.lower() for t in base_allow}
-    for _tid in ("core:db_query", "core:pmo_sprint_epic_report", "core:pmo_resolve_sprint"):
+    for _tid in (
+        "core:db_query",
+        "core:pmo_sprint_epic_report",
+        "core:pmo_resolve_sprint",
+        "core:pmo_release_epic_mapping",
+    ):
         if _tid not in allow_lower:
             allowlist_diag_source.append(_tid)
 
@@ -587,6 +592,14 @@ async def _async_main_multi_agent(
         return 1
 
     publisher_msg = build_publisher_user_message(workflow)
+    try:
+        from l3_node.pmo_worker_result_backfill import parse_worker_final_json
+        from l3_node.tools.pmo_macro_dashboard import set_pmo_worker_d_push_cache
+
+        wd_seed = parse_worker_final_json(workflow.worker_d) if workflow.worker_d else None
+        set_pmo_worker_d_push_cache(wd_seed)
+    except Exception:
+        pass
     implicit = build_pmo_multi_agent_implicit_attribution()
     implicit["source"] = "run_pmo_copilot_skill.py"
     implicit["pmo_publisher_tool_lock"] = True
@@ -639,7 +652,8 @@ async def _async_main_multi_agent(
         gateway_block
         + "\n\n### 多 Agent 阶段三（Publisher）\n"
         "**宏观看板（默认）**：优先 `Action: core:pmo_macro_dashboard_push` + `Action Input: {}`。\n"
-        "  工具内完成 B/C 预取、五列📊+三列👥、polish、主群+监控群双推；成功则 Final Answer 引用 message_id，**禁止**再调 notifier。\n"
+        "  工具内完成 B/C 预取 + Worker D 📦 发版 Epic 映射、五列📊+三列👥、polish、主群+监控群双推；"
+        "成功则 Final Answer 引用 message_id，**禁止**再调 notifier。\n"
         "  仅预览：`core:pmo_macro_dashboard_preview`。工具失败时 **一次** 回退下方手工路径。\n"
         "⛔ 禁止 core:db_query / mirror_import / bi_project_context。\n"
         "**兜底路径**（特殊版式或 push 失败）：mcp:atom_lark_notifier ×2。\n"

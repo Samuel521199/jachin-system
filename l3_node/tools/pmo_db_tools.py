@@ -125,17 +125,33 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
         "params": ["sprint", "sprint_date", "label", "year"],
     },
     {
+        "id": "core:pmo_release_epic_mapping",
+        "label": "core:pmo_release_epic_mapping",
+        "desc": (
+            "PMO 战报 📦 版本发布需求映射（Worker D · D-TOOL）。"
+            "读 Vivian 邮箱生产发版维护公告确定时间窗，在 vewpI8lyYw 镜像中筛选完成度 100% 的顶层 Epic。"
+            "JSON：可选 mailbox、app_id、app_secret、page_size。"
+            "返回 status、window、completed_epics[]、completed_count、markdown_section（📦 GFM 段）、"
+            "release_mails_found、mailbox。"
+            "禁止用 Version Goal 填写率代替本工具输出。"
+        ),
+        "params": ["mailbox", "app_id", "app_secret", "page_size"],
+    },
+    {
         "id": "core:pmo_macro_dashboard_push",
         "label": "core:pmo_macro_dashboard_push",
         "desc": (
             "PMO 宏观看板一键推送（Work 总 · 确定性路径）。"
             "内部自动 core:pmo_personnel_report + core:pmo_sprint_epic_report 宿主预取，"
-            "组装 Executive Summary + 📊 五列需求表 + 👥 人员表 + 📦 辅表，"
+            "默认 core:pmo_release_epic_mapping（Worker D）生成 📦 发版 Epic 清单，"
+            "组装 Executive Summary + 📊 五列需求表 + 👥 人员表 + 📦 版本发布需求映射，"
             "polish_pmo_war_report_markdown 后以飞书 native_table 卡片发送。"
             "JSON：可选 chat_id（主群，默认 PMO_PRIMARY_CHAT_ID）；"
             "monitor_chat_id（监控群，默认 oc_0e321f92d758ecb44aea5b499c90510b）；"
             "push_monitor（默认 true，双群推送）；app_id/app_secret（空则用 atom_lark_notifier 配置）；"
-            "dry_run（true 仅返回 markdown）；title（卡片标题）。"
+            "dry_run（true 仅返回 markdown）；title（卡片标题）；"
+            "use_release_epic_mapping（默认 true，启用 Worker D 📦）；"
+            "release_mapping_section（可选，直接注入 Worker D markdown 段，跳过重复 D-TOOL）。"
             "返回 status、message_id(s)、current_sprint、epic_count、person_count、markdown_preview、pushes[]。"
             "Publisher 推宏观看板时 **优先** 本工具，禁止再手写 GFM 后重复 notifier。"
         ),
@@ -147,6 +163,8 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "app_secret",
             "dry_run",
             "title",
+            "use_release_epic_mapping",
+            "release_mapping_section",
         ],
     },
     {
@@ -158,6 +176,57 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
             "JSON：可选 title。"
         ),
         "params": ["title"],
+    },
+    {
+        "id": "core:pmo_bitable_watch_tick",
+        "label": "core:pmo_bitable_watch_tick",
+        "desc": (
+            "PMO 多维表变更监控单次 tick（拉表 → 防抖会话 → 空闲满 idle_seconds 后汇总推送）。"
+            "默认监控 tblB2uMLGIQrAttB / vewpI8lyYw，回调群 oc_b1b9cff6804517c79b7f5a617ab30483。"
+            "配置：~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml 或 PMO_BITABLE_WATCH_* 环境变量。"
+            "JSON：可选 force_finalize（true 立即结束会话并推送）；dry_run；app_id/app_secret。"
+            "返回 action=baseline_initialized|session_active|waiting_debounce|session_finalized_notify。"
+        ),
+        "params": ["force_finalize", "dry_run", "app_id", "app_secret"],
+    },
+    {
+        "id": "core:pmo_bitable_watch_status",
+        "label": "core:pmo_bitable_watch_status",
+        "desc": (
+            "PMO 多维表变更监控状态（会话是否活跃、距上次变更秒数、基线记录数、最近推送时间）。"
+            "无参数；只读。"
+        ),
+        "params": [],
+    },
+    {
+        "id": "core:pmo_change_diff",
+        "label": "core:pmo_change_diff",
+        "desc": (
+            "PMO 记录级 diff（created/updated/deleted + 字段 before/after）。"
+            "JSON 模式 A：before_records + after_records（record_id→fields 或数组）。"
+            "模式 B：webhook_payload（飞书 bitable.record.* 事件）。"
+            "返回 events[]、summary{created,updated,deleted}。"
+        ),
+        "params": ["before_records", "after_records", "webhook_payload"],
+    },
+    {
+        "id": "core:pmo_change_alert_analyze",
+        "label": "core:pmo_change_alert_analyze",
+        "desc": (
+            "PMO 变更预警三轴分析（排期/人员/项目）+ 决策门 + 可选推送。"
+            "参数 events[]（ChangeEvent dict）或 webhook_payload；"
+            "push=true 时有问题才推 Lark；返回 change_alert_result 与 fact_pack。"
+            "查数由宿主 Python 完成，禁止 Agent 自由 SQL。"
+        ),
+        "params": [
+            "events",
+            "webhook_payload",
+            "view_id",
+            "table_id",
+            "push",
+            "dry_run",
+            "chat_id",
+        ],
     },
 ]
 
@@ -2282,6 +2351,17 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
             year=year_i,
             source_view=str(payload.get("source_view") or "vewpI8lyYw"),
         )
+    if tool_id == "core:pmo_release_epic_mapping":
+        from l3_node.tools.pmo_release_epic_mapping import run_release_epic_mapping
+
+        page_raw = payload.get("page_size")
+        page_size = int(page_raw) if page_raw not in (None, "") else 20
+        return run_release_epic_mapping(
+            app_id=str(payload.get("app_id") or "").strip() or None,
+            app_secret=str(payload.get("app_secret") or "").strip() or None,
+            mailbox=str(payload.get("mailbox") or "").strip() or None,
+            page_size=page_size,
+        )
     if tool_id == "core:pmo_macro_dashboard_push":
         from l3_node.tools.pmo_macro_dashboard import run_macro_dashboard_push
 
@@ -2292,6 +2372,11 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
             push_monitor = True
         else:
             push_monitor = push_mon in (True, "true", "1", 1)
+        use_rel = payload.get("use_release_epic_mapping")
+        if use_rel is None:
+            use_release_epic_mapping = True
+        else:
+            use_release_epic_mapping = use_rel in (True, "true", "1", 1)
         return run_macro_dashboard_push(
             chat_id=str(payload.get("chat_id") or "").strip() or None,
             monitor_chat_id=str(payload.get("monitor_chat_id") or "").strip() or None,
@@ -2301,11 +2386,49 @@ def dispatch_pmo_db_tool(tool_id: str, **kwargs: Any) -> dict[str, Any]:
             dry_run=payload.get("dry_run") in (True, "true", "1", 1),
             title=str(payload.get("title") or "").strip() or None,
             project_root=project_root,
+            use_release_epic_mapping=use_release_epic_mapping,
+            release_mapping_section=str(payload.get("release_mapping_section") or "").strip() or None,
         )
     if tool_id == "core:pmo_macro_dashboard_preview":
         from l3_node.tools.pmo_macro_dashboard import run_macro_dashboard_preview
 
         return run_macro_dashboard_preview(
             title=str(payload.get("title") or "").strip() or None,
+        )
+    if tool_id == "core:pmo_bitable_watch_tick":
+        from l3_node.tools.pmo_bitable_watch import run_bitable_watch_tick
+
+        ff = payload.get("force_finalize")
+        return run_bitable_watch_tick(
+            force_finalize=ff in (True, "true", "1", 1),
+            dry_run=payload.get("dry_run") if "dry_run" in payload else None,
+            app_id=str(payload.get("app_id") or "").strip() or None,
+            app_secret=str(payload.get("app_secret") or "").strip() or None,
+        )
+    if tool_id == "core:pmo_bitable_watch_status":
+        from l3_node.tools.pmo_bitable_watch import run_bitable_watch_status
+
+        return run_bitable_watch_status()
+    if tool_id == "core:pmo_change_diff":
+        from l3_node.tools.pmo_bitable_watch import run_change_diff
+
+        return run_change_diff(
+            before_records=payload.get("before_records"),
+            after_records=payload.get("after_records"),
+            webhook_payload=payload.get("webhook_payload"),
+        )
+    if tool_id == "core:pmo_change_alert_analyze":
+        from l3_node.tools.pmo_change_alert import run_change_alert_analyze
+
+        ev = payload.get("events")
+        events_list = ev if isinstance(ev, list) else None
+        return run_change_alert_analyze(
+            events=events_list,
+            webhook_payload=payload.get("webhook_payload"),
+            view_id=str(payload.get("view_id") or "").strip(),
+            table_id=str(payload.get("table_id") or "").strip(),
+            push=payload.get("push") in (True, "true", "1", 1),
+            dry_run=payload.get("dry_run") in (True, "true", "1", 1),
+            chat_id=str(payload.get("chat_id") or "").strip() or None,
         )
     raise ValueError(f"Unknown PMO db tool: {tool_id}")

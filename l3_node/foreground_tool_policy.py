@@ -48,6 +48,8 @@ def load_foreground_tools_config() -> dict[str, Any]:
             "mcp:fetch",
             "mcp:atom_bi_project_context",
             "core:pmo_mirror_import",
+            "core:pmo_macro_dashboard_push",
+            "core:pmo_macro_dashboard_preview",
             "mcp:puppeteer_navigate",
             "mcp:puppeteer_screenshot",
             "mcp:puppeteer_evaluate",

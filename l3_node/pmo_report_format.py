@@ -68,9 +68,9 @@ PMO_PERSONNEL_TABLE_COLUMN_WIDTHS_PCT: tuple[str, ...] = (
     "28%",  # 状态预警
 )
 
-# 飞书 native_table 行高（📊 low 单行；👥 medium 允许多行任务）
+# 飞书 native_table 行高（📊/👥 均 low 单行；任务列用紧凑截断，禁止 <br> 撑高）
 PMO_NATIVE_TABLE_ROW_HEIGHT = "low"
-PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL = "middle"  # 飞书合法枚举：low | middle | high（非 medium）
+PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL = "low"
 PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND = 4
 PMO_NATIVE_TABLE_PAGE_SIZE_PERSONNEL = 5
 PMO_EPIC_NAME_CELL_MAX_LEN = 32
@@ -88,7 +88,7 @@ PMO_WAR_REPORT_FIG_LAYOUT_SPEC = (
     "1. **Executive Summary**：🎯 标题 + 当前 Sprint + 目标版本 K11 + 🟢/🟡 总体状况一句 + 本周期大需求/人员统计一行。\n"
     "2. **📊 需求进度全览**：区块下优先级图例一行；**native 表 5 列**（需求名称·时间·参与人·完成度·状态）；"
     "需求名称格=`【P0】`+纯名；完成度=10格条+%；状态=`🔵 阶段 · 步骤`（无职能括号长串）。\n"
-    "3. **👥 人员任务矩阵**：3 列；节奏判定副标题；**freeze_first_column**；负责需求列 **lark_md 多行**、全量任务。\n"
+    "3. **👥 人员任务矩阵**：3 列；节奏判定副标题；**freeze_first_column**；负责需求列 **全量**（`lark_md` + `<br>`/`\\n`），`row_height=low` 表内单行省略，**hover 展示全部**（飞书原生能力，禁止「等N项」）。\n"
     "4. **📦 版本映射**：1 行辅表统计即可。\n"
     "5. **禁止**：表头/单元格出现 `...` 省略、横向挤没列、👥「等N项」、手写列宽。\n"
 )
@@ -101,7 +101,7 @@ PMO_NATIVE_TABLE_LAYOUT_SPEC = (
     f"- 列宽 %：📊 五列 {PMO_DEMAND_TABLE_COLUMN_WIDTHS_NATIVE} · 👥 {PMO_PERSONNEL_TABLE_COLUMN_WIDTHS_PCT}\n"
     f"- 📊：需求名≤{PMO_EPIC_NAME_CELL_MAX_LEN}字（含【P0】前缀）· 时间 `{PMO_TIME_SPAN_CELL_MAX_LEN}` · "
     f"参与人≤{PMO_PARTICIPANTS_CELL_MAX_LEN}字 · 完成度列 `lark_md` · 10格条\n"
-    f"- 👥：`freeze_first_column=true`；负责需求 `lark_md` + 全量 `<br>`（≤{PMO_PERSONNEL_TASKS_LIST_MAX} 条）\n"
+    f"- 👥：`freeze_first_column=true`；负责需求 **全量** `lark_md`（每条任务一行；表内 `row_height=low` 裁剪，hover 看全）\n"
     "- 推送前 **必** `polish_pmo_war_report_markdown`（含六列→五列折叠）+ `compact_pmo_table_matrix_for_native_table`\n"
 )
 
@@ -116,7 +116,7 @@ PMO_WAR_REPORT_LAYOUT_CONTRACT = (
     "六列 GFM 草稿由 `collapse_demand_table_to_native_fig_layout` 推送前自动折叠。\n"
     "2. 📊 数据：Worker C `epics[]` + `format_demand_table_gfm_row_native` / `sort_epics_for_demand_table`。\n"
     "3. 👥 行序：🚨 延期 → 🚨 进度落后 → 🟡 偏闲 → ⚠️ 数据不足 → ✅ 正常；"
-    "任务列 `format_personnel_matrix_tasks_cell`（**全量** + `<br>` 分行，禁止「等N项」）。\n"
+    "任务列 `format_personnel_matrix_tasks_cell(compact_for_feishu=False)` 全量 + `row_height=low`（表内一行，hover 多行）。\n"
     "4. 推送：`native_table_card: true`；宿主/MCP 推送前 **必** `polish_pmo_war_report_markdown`。\n"
     "5. **禁止**手写列宽/行高、禁止 `row_height:auto`、禁止把三表放在 ``` 代码围栏内。\n"
     "6. 宏观看板确定性路径：`scripts/push_pmo_macro_dashboard_lark.py` 或 FanOut 后 Publisher 按上规则组装。\n"
@@ -492,21 +492,6 @@ def compact_pmo_table_matrix_for_native_table(matrix: list[list[str]]) -> list[l
         else:
             row_fn = _compact_demand_row_cells
         return [header] + [row_fn(row, header) for row in matrix[1:]]
-    if profile == "personnel" and visual == PMO_WAR_REPORT_VISUAL_FIG1:
-        p_idx, task_idx, alert_idx = _personnel_table_column_indices(header)
-        out_rows: list[list[str]] = [header]
-        for row in matrix[1:]:
-            cells = list(row)
-            while len(cells) < len(header):
-                cells.append("—")
-            if p_idx < len(cells):
-                cells[p_idx] = _strip_md_bold(cells[p_idx]) or "—"
-            if task_idx < len(cells):
-                cells[task_idx] = normalize_personnel_task_cell_text(
-                    cells[task_idx], preserve_multiline=True
-                )
-            out_rows.append(cells)
-        return out_rows
     if profile == "personnel":
         p_idx, task_idx, alert_idx = _personnel_table_column_indices(header)
         compacted: list[list[str]] = [header]
@@ -515,8 +500,8 @@ def compact_pmo_table_matrix_for_native_table(matrix: list[list[str]]) -> list[l
             while len(cells) < len(header):
                 cells.append("—")
             if task_idx < len(cells):
-                cells[task_idx] = format_personnel_matrix_tasks_cell_compact(
-                    cells[task_idx]
+                cells[task_idx] = normalize_personnel_task_cell_text(
+                    cells[task_idx], preserve_multiline=True
                 )
             if alert_idx < len(cells):
                 a = _strip_md_bold(cells[alert_idx])
@@ -899,8 +884,9 @@ def format_personnel_matrix_tasks_cell(
     compact_for_feishu: bool = False,
 ) -> str:
     """
-    👥 负责需求列：默认 **全量 + `<br>` 分行**（飞书 native_table · row_height=middle）。
-    仅显式 `compact_for_feishu=True` 时退回「最多 2 条 + 等N项」紧凑单行（勿用于战报推送）。
+    👥 负责需求列：默认 **全量 + `<br>` 分行**（飞书 native_table + `row_height=low`：
+    表内单行省略，hover 展示全部任务，每条一行）。
+    仅显式 `compact_for_feishu=True` 时退回「等N项」紧凑单行（**禁止**用于战报推送）。
     """
     cap = limit if limit is not None else (
         2 if compact_for_feishu else PMO_PERSONNEL_TASKS_LIST_MAX
@@ -931,13 +917,12 @@ def format_personnel_matrix_tasks_cell(
 def format_personnel_tasks_lines_compact(
     lines: list[str], *, total_count: int | None = None
 ) -> str:
-    """飞书 native_table：单行 · 连接，最多展示 2 条。"""
+    """飞书 native_table：单行，仅展示首条任务（其余用「等N项」）。"""
     if not lines:
         return "—"
-    shown = lines[:2]
-    body = " · ".join(shown)
+    body = lines[0]
     n = total_count if total_count is not None else len(lines)
-    if n > len(shown):
+    if n > 1:
         body = f"{body} · 等{n}项"
     if len(body) > PMO_PERSONNEL_TASKS_CELL_MAX_LEN:
         return body[: PMO_PERSONNEL_TASKS_CELL_MAX_LEN - 1] + "…"
@@ -959,7 +944,7 @@ def format_personnel_matrix_tasks_cell_compact(cell: str) -> str:
 def normalize_personnel_task_cell_text(
     cell: str, *, preserve_multiline: bool = True
 ) -> str:
-    """校正 LLM/旧版：去掉 **；展开 ` · ` / `；` / 等N项 为 `<br>` 全量分行。"""
+    """校正 LLM/旧版：去掉 **；展开为全量 `<br>` 分行（配合 row_height=low + hover）。"""
     raw = _strip_md_bold(str(cell or "").strip())
     if not raw or raw == "—":
         return "—"
@@ -1128,7 +1113,7 @@ def polish_personnel_matrix_in_markdown(
     sort_rows: bool = True,
     normalize_tasks: bool = True,
 ) -> str:
-    """重排 👥 行序 + 规范化「负责需求」列排版（去 **、<br> 分行）。"""
+    """重排 👥 行序 + 规范化「负责需求」列为单行紧凑（去 **、<br>）。"""
     if not mc or "|" not in mc:
         return mc
     start = -1

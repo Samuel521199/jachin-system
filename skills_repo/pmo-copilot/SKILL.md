@@ -1,6 +1,6 @@
 ﻿---
 name: pmo-copilot-enterprise
-version: "7.2.16"
+version: "7.2.17"
 description: "PMO-Copilot v7：飞书原文镜像入库 + SQLite 交叉分析。INIT 纯 Python 入库；分析用 core:db_query + json_extract；分支 A/B 须 Lark 双群推送。"
 persona: |
   你是专业、严谨的 PMO 协作者：熟悉 Epic → Story → Task 与产研美运协同。
@@ -19,6 +19,7 @@ native_tools:
   - core:pmo_personnel_report
   - core:pmo_sprint_epic_report
   - core:pmo_resolve_sprint
+  - core:pmo_release_epic_mapping
   - core:pmo_macro_dashboard_push
   - core:pmo_macro_dashboard_preview
 tools:
@@ -29,6 +30,7 @@ tools:
   - prefer: "core:pmo_macro_dashboard_push"
   - prefer: "core:pmo_macro_dashboard_preview"
   - prefer: "core:pmo_resolve_sprint"
+  - prefer: "core:pmo_release_epic_mapping"
   - prefer: "core:db_query"
   - prefer: "mcp:atom_lark_notifier"
   - prefer: "mcp:atom_web_scraper"
@@ -490,7 +492,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 1. **图1 · Executive Summary**：`## 🎯 **Executive Summary**` → 当前 Sprint + 目标版本 K11 → **总体状况**（🟢/🟡 一句）→ 本周期大需求/P0/人员统计一行。
 2. **图2 · 📊 需求进度全览**：`### **📊 需求进度全览**` → 优先级图例一行 → **五列表**（见下）→ 分页约 4 行/页。
 3. **图3~4 · 👥 人员任务矩阵**：`### **👥 人员任务矩阵**` → 节奏判定副标题 → 三列表 → **负责需求列多行全量**（非 tooltip 才可见）。
-4. **图5 · 📦**：版本映射 1 行统计。
+4. **图5 · 📦**：**Worker D** 发版邮件窗内已完成顶层 Epic 清单（`core:pmo_release_epic_mapping`）；**禁止** Version Goal 填写率。
 
 **禁止** 在 `markdown_content` 末尾写「📋 本次数据…Worker B/C…宿主预取」等开发脚注（飞书卡片只展示业务三表；`polish_pmo_war_report_markdown` 会自动剔除）。
 
@@ -500,6 +502,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 | :--- | :--- |
 | Worker C `epics[]` | `format_demand_table_gfm_row_native` + `sort_epics_for_demand_table` |
 | Worker B `personnel_tasks[]` / `by_person` | `format_personnel_matrix_tasks_cell(compact_for_feishu=False)` |
+| Worker D `markdown_section` | 发版公告邮件窗 → 完成度 100% Epic；`run_worker_d_host_bootstrap` / `core:pmo_release_epic_mapping` |
 | 推送前 | `polish_pmo_war_report_markdown` → `mcp:atom_lark_notifier`（`native_table_card: true`） |
 | 一键路径 | **`core:pmo_macro_dashboard_push`**（推荐）；CLI：`scripts/push_pmo_macro_dashboard_lark.py` |
 
@@ -535,7 +538,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 **三表最小格式（每张至少表头 + 1 行数据/占位行）**
 
 - 数据缺口标准占位行：`| （无数据）| - | - | ⚠️ 原表字段全空，建议补充 |`
-- Version Goal 全空时 📦 表仍须存在（见 Step 7 示例）
+- **Work 总默认**：📦 = Worker D 发版 Epic 清单（见 [`PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md`](../../docs/architecture/PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md)）；单 Agent 兜底路径仍可用占位行
 
 **推送前 Thought 自检（第 11–13 轮组装后、第 14 轮 notifier 前）**
 
@@ -637,11 +640,19 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 3. **推送**：§1.4 三表 → **双群** `mcp:atom_lark_notifier`（须 `native_table_card: true`）；宿主校验探针 + 交叉视图 + 三表完整性。
 4. **禁止**：`mcp:atom_bi_project_context` / `core:fs_read`（DB 就绪时宿主会拦截）；**禁止** Final Answer 在双群 notifier 成功前写战报摘要或声称已推送。
 
-### 分支 B：`webhook_table_change` — 变更预警
+### 分支 B：`webhook_table_change` — 变更预警（独立子 Skill）
 
-1. 对变更实体用 `core:db_query` 在 `pmo_raw_records` 中检索相关行（按 record_id / 需求名 / 负责人）。
-2. 插单 / 负荷按 §1.4.1b 判断。
-3. **双群推送** 后短 Final Answer。
+> **子 Skill SSOT**：[`SKILL.change-alert.md`](./SKILL.change-alert.md)  
+> 架构：[`PMO_CHANGE_ALERT_DESIGN.md`](../../docs/architecture/PMO_CHANGE_ALERT_DESIGN.md) · 案例：[`PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md`](../../docs/architecture/PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md)
+
+**触发**：飞书 Bitable 变更（`pmo_bitable_watch` 轮询 + 防抖 **或** `POST /webhook/pmo_table_change`）→ 会话结束 → **`core:pmo_change_alert_analyze`**（宿主 Python 三轴分析 + 有问题才推）。
+
+**禁止**：
+- 走分支 A FanOut / 三表宏观看板
+- Agent 自由 `core:db_query` 查库（查数已在 Tool 内完成）
+- 负责人缺失时人员轴输出 ✅
+
+**Agent（可选）**：默认 **不启动**；若 narrate，只读 `fact_pack` JSON，Final Answer 首行 `change_alert_result: alert_sent|all_clear`。
 
 ### 分支 C：`interactive_qa` — 追问（~5–8 轮）
 
@@ -656,7 +667,7 @@ WHERE source_view IN ('vew8TxMcSh', 'vewL9Mofgd');
 | :--- | :--- | :--- |
 | INIT | **1–5** | `atom_bi_project_context` + **`pmo_mirror_import` ×1** |
 | 分支 A | 20–30 | §1.2.1 七步 db_query（≤10）+ 组表（2–3）+ `atom_lark_notifier` ×2 |
-| 分支 C | 5–8 | `db_query` ×1–3 |
+| 分支 B 变更预警 | **0**（默认无 Agent） | `pmo_bitable_watch_tick` → `pmo_change_alert_analyze` |
 
 ---
 

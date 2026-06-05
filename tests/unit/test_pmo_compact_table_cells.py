@@ -53,20 +53,39 @@ def test_table_element_row_height_low():
     assert el["row_height"] == "low"
 
 
-def test_table_element_personnel_row_height_middle():
+def test_table_element_personnel_row_height_low_with_hover_payload():
     matrix = [
         ["人员", "负责需求（含优先级）", "状态预警"],
         ["Gavin", "【P0】A · 开发<br>【P1】B · 完成", "🚨 延期"],
     ]
     el = _table_element(matrix, element_id="t1")
-    assert el["row_height"] == "middle"
+    assert el["row_height"] == "low"
+    task_col = el["columns"][1]
+    assert task_col["data_type"] == "lark_md"
+    row_val = list(el["rows"][0].values())[1]
+    assert "\n" in row_val
+    assert "【P0】A" in row_val and "【P1】B" in row_val
 
 
-def test_personnel_tasks_cell_lists_all_no_etc():
+def test_personnel_tasks_cell_full_no_etc():
     from l3_node.pmo_report_format import format_personnel_matrix_tasks_cell
 
     tasks = [{"priority": f"P{i}", "task": f"任务{i}", "status": "开发中"} for i in range(5)]
-    cell = format_personnel_matrix_tasks_cell(tasks)
+    cell = format_personnel_matrix_tasks_cell(tasks, compact_for_feishu=False)
     assert "等" not in cell or "等5项" not in cell
     assert cell.count("<br>") == 4
     assert "任务4" in cell
+
+
+def test_personnel_compact_matrix_preserves_all_tasks():
+    from l3_node.pmo_report_format import compact_pmo_table_matrix_for_native_table
+
+    matrix = [
+        ["人员", "负责需求（含优先级）", "状态预警"],
+        ["Akie", "【P1】任务A · 开发<br>【P1】任务B · 完成", "🚨 延期"],
+    ]
+    out = compact_pmo_table_matrix_for_native_table(matrix)
+    task = out[1][1]
+    assert "等" not in task
+    assert "<br>" in task.lower()
+    assert "任务A" in task and "任务B" in task

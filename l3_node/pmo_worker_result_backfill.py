@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from l3_node.pmo_multi_agent_queries import (
@@ -448,5 +449,192 @@ def merge_worker_b_result(host_seed: dict[str, Any], agent_raw: str) -> str:
 
     if _personnel_tasks_empty(out):
         return backfill_worker_b(json.dumps(out, ensure_ascii=False))
+
+    return json.dumps(out, ensure_ascii=False, indent=2)
+
+
+def _iso_datetime(v: Any) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.isoformat()
+    s = str(v).strip()
+    return s if s else None
+
+
+def _serialize_release_window(window: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(window, dict):
+        return {}
+    out = dict(window)
+    for k in ("since", "until"):
+        out[k] = _iso_datetime(out.get(k))
+    since_mail = out.get("since_mail")
+    if isinstance(since_mail, dict):
+        sm = dict(since_mail)
+        sm["internal_dt"] = _iso_datetime(sm.get("internal_dt"))
+        out["since_mail"] = sm
+    latest_mail = out.get("latest_mail")
+    if isinstance(latest_mail, dict):
+        lm = dict(latest_mail)
+        lm["internal_dt"] = _iso_datetime(lm.get("internal_dt"))
+        out["latest_mail"] = lm
+    return out
+
+
+def _placeholder_release_mapping_md(reason: str) -> str:
+    return "\n".join(
+        [
+            "### **📦 版本发布需求映射**",
+            f"**口径**：⚠️ {reason}",
+            "",
+            "| # | 大需求 (Epic) | Sprint | 完成日期 | 负责人 |",
+            "| --- | --- | --- | --- | --- |",
+            "| — | ⚠️ 数据不可用 | — | — | — |",
+        ]
+    )
+
+
+def _worker_d_error_seed(
+    reason: str,
+    *,
+    error_reason: str | None = None,
+    error_class: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "window_since": None,
+        "window_until": None,
+        "since_mail_subject": None,
+        "since_maintenance_date": None,
+        "completed_epics": [],
+        "completed_count": 0,
+        "markdown_section": _placeholder_release_mapping_md(reason),
+        "completed_sql_ids": [],
+        "_host_bootstrap": [],
+        "error_reason": error_reason or "worker_d_failed",
+        "error_class": error_class or "config",
+        "window": {"ok": False, "reason": error_reason or reason},
+    }
+
+
+def _worker_d_seed_from_tool_result(rep: dict[str, Any]) -> dict[str, Any]:
+    status = str(rep.get("status") or "").lower()
+    if status != "ok":
+        err = str(rep.get("error") or "pmo_release_epic_mapping failed")
+        return _worker_d_error_seed(
+            err,
+            error_reason=err,
+            error_class=str(rep.get("error_class") or "transient"),
+        )
+
+    window = rep.get("window") if isinstance(rep.get("window"), dict) else {}
+    since_mail = window.get("since_mail") if isinstance(window.get("since_mail"), dict) else {}
+    since_dt = window.get("since")
+    until_dt = window.get("until")
+    maint = since_mail.get("maintenance_date") or window.get("since_maintenance_date")
+
+    return {
+        "window_since": _iso_datetime(since_dt),
+        "window_until": _iso_datetime(until_dt),
+        "since_mail_subject": since_mail.get("subject"),
+        "since_maintenance_date": maint,
+        "completed_epics": rep.get("completed_epics") or [],
+        "completed_count": int(rep.get("completed_count") or len(rep.get("completed_epics") or [])),
+        "markdown_section": rep.get("markdown_section") or _placeholder_release_mapping_md(
+            "发版映射工具未返回 markdown_section"
+        ),
+        "mailbox": rep.get("mailbox"),
+        "release_mails_found": rep.get("release_mails_found", 0),
+        "completed_sql_ids": ["D-TOOL"],
+        "_host_bootstrap": ["D-TOOL"],
+        "window": _serialize_release_window(window),
+    }
+
+
+def run_worker_d_host_bootstrap(
+    *,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    mailbox: str | None = None,
+) -> dict[str, Any]:
+    """
+    FanOut 前宿主确定性执行 core:pmo_release_epic_mapping。
+    Worker D SubAgent 禁止重跑邮件 API（除非宿主失败）。
+    """
+    try:
+        from l3_node.tools.pmo_release_epic_mapping import run_release_epic_mapping
+
+        rep = run_release_epic_mapping(
+            app_id=app_id,
+            app_secret=app_secret,
+            mailbox=mailbox,
+        )
+        seed = _worker_d_seed_from_tool_result(rep)
+        logger.info(
+            "[PMO bootstrap] Worker D host (D-TOOL): completed_count=%s mails=%s",
+            seed.get("completed_count"),
+            seed.get("release_mails_found"),
+        )
+        return seed
+    except Exception as e:
+        logger.warning("[PMO bootstrap] Worker D report tool failed: %s", e)
+        return _worker_d_error_seed(str(e), error_class="transient")
+
+
+def _worker_d_empty(data: dict[str, Any]) -> bool:
+    md = str(data.get("markdown_section") or "").strip()
+    if md and "📦" in md:
+        return False
+    ep = data.get("completed_epics")
+    if isinstance(ep, list) and ep:
+        return False
+    return not md
+
+
+def backfill_worker_d(raw: str) -> str:
+    """Worker D Final Answer 缺 markdown_section 时，再跑 D-TOOL 一次。"""
+    data = parse_worker_final_json(raw) or {}
+    if not _worker_d_empty(data):
+        return raw if parse_worker_final_json(raw) else json.dumps(data, ensure_ascii=False, indent=2)
+    seed = run_worker_d_host_bootstrap()
+    return json.dumps(seed, ensure_ascii=False, indent=2)
+
+
+def merge_worker_d_result(host_seed: dict[str, Any], agent_raw: str) -> str:
+    """合并宿主 D-TOOL 预取与 SubAgent Final Answer。"""
+    out: dict[str, Any] = {
+        "window_since": host_seed.get("window_since"),
+        "window_until": host_seed.get("window_until"),
+        "since_mail_subject": host_seed.get("since_mail_subject"),
+        "since_maintenance_date": host_seed.get("since_maintenance_date"),
+        "completed_epics": host_seed.get("completed_epics") or [],
+        "completed_count": host_seed.get("completed_count", 0),
+        "markdown_section": host_seed.get("markdown_section") or "",
+        "mailbox": host_seed.get("mailbox"),
+        "release_mails_found": host_seed.get("release_mails_found", 0),
+        "completed_sql_ids": list(host_seed.get("completed_sql_ids") or ["D-TOOL"]),
+        "window": host_seed.get("window") or {},
+    }
+    if host_seed.get("_host_bootstrap"):
+        out["_host_bootstrap"] = list(host_seed["_host_bootstrap"])
+    if host_seed.get("error_reason"):
+        out["error_reason"] = host_seed["error_reason"]
+    if host_seed.get("error_class"):
+        out["error_class"] = host_seed["error_class"]
+
+    agent = parse_worker_final_json(agent_raw)
+    if agent:
+        if isinstance(agent.get("markdown_section"), str) and agent["markdown_section"].strip():
+            if not out.get("markdown_section") or "⚠️" in str(out.get("markdown_section")):
+                out["markdown_section"] = agent["markdown_section"]
+        if isinstance(agent.get("completed_epics"), list) and agent["completed_epics"]:
+            if not out.get("completed_epics"):
+                out["completed_epics"] = agent["completed_epics"]
+                out["completed_count"] = len(agent["completed_epics"])
+        for k in ("cross_check_notes", "field_empty", "error_reason"):
+            if k in agent:
+                out[k] = agent[k]
+
+    if _worker_d_empty(out):
+        return backfill_worker_d(json.dumps(out, ensure_ascii=False))
 
     return json.dumps(out, ensure_ascii=False, indent=2)

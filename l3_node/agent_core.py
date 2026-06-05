@@ -1530,6 +1530,9 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
     """
     分支 A：不向飞书中途推送试错/半成品。返回 JSON observation 字符串则跳过真实 notifier 调用。
     """
+    timeout_blk = _pmo_macro_dashboard_push_timeout_blocks_notifier(ctx)
+    if timeout_blk:
+        return timeout_blk
     if _pmo_db_analysis_mode(ctx):
         chats_ok = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
         cid = _pmo_notifier_chat_id_from_inp(inp) or PMO_BRANCH_A_PRIMARY_CHAT_ID
@@ -2200,6 +2203,15 @@ def _pmo_ensure_analysis_probes(ctx: PipelineContext) -> dict[str, bool]:
     return probes
 
 
+def _pmo_observation_is_foreground_tool_timeout(observation: str) -> bool:
+    """前台同步预算超时 JSON（工具可能仍在线程中继续执行）。"""
+    try:
+        o = json.loads(str(observation or "").strip())
+    except json.JSONDecodeError:
+        return False
+    return isinstance(o, dict) and str(o.get("reason") or "") == "foreground_sync_budget_exceeded"
+
+
 def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
     """解析 core:pmo_macro_dashboard_push 返回：双群均 success。"""
     try:
@@ -2229,11 +2241,64 @@ def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
     )
 
 
+def _pmo_track_macro_dashboard_push_observation(ctx: PipelineContext, observation: str) -> None:
+    """记录 macro_dashboard_push 结果：成功 / 超时 / 永久失败。"""
+    obs = str(observation or "")
+    if _pmo_observation_is_foreground_tool_timeout(obs):
+        ctx.metadata["_pmo_macro_dashboard_push_timeout"] = True
+        ctx.metadata.pop("_pmo_macro_dashboard_push_failed", None)
+        return
+    ctx.metadata.pop("_pmo_macro_dashboard_push_timeout", None)
+    try:
+        o = json.loads(obs.strip())
+    except json.JSONDecodeError:
+        return
+    if not isinstance(o, dict):
+        return
+    st = str(o.get("status") or "").lower()
+    if st in ("success", "ok", "partial"):
+        ctx.metadata.pop("_pmo_macro_dashboard_push_failed", None)
+        return
+    if st in ("failed", "error"):
+        ctx.metadata["_pmo_macro_dashboard_push_failed"] = True
+
+
+def _pmo_macro_dashboard_push_timeout_blocks_notifier(ctx: PipelineContext) -> str | None:
+    """
+    macro_dashboard_push 前台超时后，后台线程可能仍在推送。
+    多 Agent 阶段三禁止 atom_lark_notifier 兜底，避免双份不同版战报。
+    """
+    if not ctx.metadata.get("pmo_multi_agent_complete"):
+        return None
+    if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
+        return None
+    if not ctx.metadata.get("_pmo_macro_dashboard_push_timeout"):
+        return None
+    if ctx.metadata.get("_pmo_macro_dashboard_push_failed"):
+        return None
+    return json.dumps(
+        {
+            "status": "error",
+            "error": "pmo_macro_dashboard_push_timeout_no_notifier",
+            "msg": (
+                "【宿主拦截】`core:pmo_macro_dashboard_push` 曾触发前台超时，"
+                "但工具可能仍在后台组装并推送完整 native_table 战报。"
+                "**禁止** 使用 atom_lark_notifier 发送精简兜底版（会导致群内出现两份不同内容）。"
+                "请 **仅** 再次调用 `core:pmo_macro_dashboard_push` + `{}` 等待 success；"
+                "或输出 ≤3 句说明「推送可能已在途中，请稍后在群内核对 message_id」。"
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _pmo_track_macro_dashboard_push_success(ctx: PipelineContext, observation: str) -> None:
     """macro_dashboard_push 双群成功 → 等同 notifier 双群送达，允许 Final Answer 收工。"""
+    _pmo_track_macro_dashboard_push_observation(ctx, observation)
     if not _pmo_macro_dashboard_push_succeeded(observation):
         return
     ctx.metadata["_pmo_macro_dashboard_push_ok"] = True
+    ctx.metadata.pop("_pmo_macro_dashboard_push_timeout", None)
     ctx.metadata["_pmo_atom_lark_notify_ok"] = True
     chats = [
         str(x).strip()
@@ -2651,6 +2716,7 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
         "read_records",
     })
     if ctx.metadata.get("pmo_multi_agent_complete") and canon == "pmo_macro_dashboard_push":
+        ctx.metadata["_pmo_macro_dashboard_push_attempted"] = True
         if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
             return json.dumps(
                 {
@@ -2659,6 +2725,27 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                     "msg": (
                         "【宿主拦截】本轮已通过 core:pmo_macro_dashboard_push 完成双群推送，"
                         "禁止重复调用。请输出 ≤3 句 Final Answer 确认 message_id 即可。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+    if ctx.metadata.get("pmo_multi_agent_complete") and canon == "atom_lark_notifier":
+        timeout_blk = _pmo_macro_dashboard_push_timeout_blocks_notifier(ctx)
+        if timeout_blk:
+            return timeout_blk
+        if (
+            ctx.metadata.get("_pmo_macro_dashboard_push_attempted")
+            and not ctx.metadata.get("_pmo_macro_dashboard_push_failed")
+            and not ctx.metadata.get("_pmo_macro_dashboard_push_ok")
+        ):
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": "pmo_macro_dashboard_push_pending_no_notifier",
+                    "msg": (
+                        "【宿主拦截 · 多 Agent 阶段三】已调用过 core:pmo_macro_dashboard_push 但未确认双群 success。"
+                        "禁止 atom_lark_notifier 兜底（易与工具内推送重复且版式不一致）。"
+                        "请重试 macro_dashboard_push；仅当 Observation 明确 status=failed 且无 timeout 时才允许 notifier。"
                     ),
                 },
                 ensure_ascii=False,
@@ -8945,7 +9032,13 @@ async def _run_react_core(
                     )
                 if _tcanon == "pmo_macro_dashboard_push":
                     _pmo_track_macro_dashboard_push_success(ctx, observation_full)
-                    if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
+                    if _pmo_observation_is_foreground_tool_timeout(observation_full):
+                        observation_full = (
+                            f"{observation_full.rstrip()}\n\n"
+                            "【宿主·PMO】macro_dashboard_push 前台超时，但工具可能仍在后台推送完整战报。"
+                            "**禁止** atom_lark_notifier 兜底；请稍后重试 macro_dashboard_push 或核对群内是否已送达。"
+                        )
+                    elif ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
                         observation_full = _pmo_append_macro_dashboard_delivery_hint(
                             observation_full
                         )
@@ -9492,6 +9585,20 @@ async def run_agent(
             implicit_attribution.get("lark_chat_id") or implicit_attribution.get("chat_id") or ""
         ).strip()
         _bg_channel = str(implicit_attribution.get("channel") or "").strip()
+    _turn_dbg: dict[str, Any] = {}
+    try:
+        from l3_node.terminal_turn_debug_log import ensure_turn_started
+
+        ensure_turn_started(
+            user_input or "",
+            extra={
+                "run_id": run_id,
+                "channel": _bg_channel or "run_agent",
+                "max_iterations": max_iterations,
+            },
+        )
+    except Exception:
+        pass
     _gateway_sniffer_ws = ""
     if gateway_workspace_dir and str(gateway_workspace_dir).strip():
         _gateway_sniffer_ws = str(gateway_workspace_dir).strip()
@@ -10386,6 +10493,9 @@ async def run_agent(
             "[run_agent] 进入网关/OOD/ReAct 前的配置摘要",
             json.dumps(_dbg_body, ensure_ascii=False, indent=2),
         )
+        from l3_node.terminal_turn_debug_log import log_human_run_config
+
+        log_human_run_config(_dbg_body)
     except Exception:
         pass
 
@@ -10427,6 +10537,18 @@ async def run_agent(
                 _session_messages.clear()
                 _recent_ood = messages[-30:] if len(messages) > 30 else messages
                 _session_messages.extend(_recent_ood)
+            _turn_dbg["answer"] = _ood_reply
+            try:
+                from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+                finalize_top_level_turn(
+                    _ood_reply,
+                    delegate_depth=_delegate_depth,
+                    run_id=run_id,
+                    channel=_bg_channel,
+                )
+            except Exception:
+                pass
             return _apply_hr_recruitment_final_answer_table_sync(_ood_reply, _DirectBypassCtx())
     except Exception as _ood_ex:
         logger.debug("[L3 Agent] OOD 硬拦截评估跳过: %s", _ood_ex)
@@ -10496,6 +10618,18 @@ async def run_agent(
                         _session_messages.clear()
                         _recent_sem = messages[-30:] if len(messages) > 30 else messages
                         _session_messages.extend(_recent_sem)
+                    _turn_dbg["answer"] = _sem_reply
+                    try:
+                        from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+                        finalize_top_level_turn(
+                            _sem_reply,
+                            delegate_depth=_delegate_depth,
+                            run_id=run_id,
+                            channel=_bg_channel,
+                        )
+                    except Exception:
+                        pass
                     return _apply_hr_recruitment_final_answer_table_sync(_sem_reply, _DirectBypassCtx())
     except Exception as _sem_ex:
         logger.debug("[L3 Agent] semantic_ood 评估跳过: %s", _sem_ex)
@@ -10639,6 +10773,18 @@ async def run_agent(
         except Exception as e:
             logger.debug("[L3 Agent] abort_slot_chat_fallback 跳过: %s", e)
         exec_trace(logger, "preflight 短路返回 run_id=%s out_len=%d", run_id[:12], len(_early or ""))
+        _turn_dbg["answer"] = _early
+        try:
+            from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+            finalize_top_level_turn(
+                _early,
+                delegate_depth=_delegate_depth,
+                run_id=run_id,
+                channel=_bg_channel,
+            )
+        except Exception:
+            pass
         return _early
 
     try:
@@ -10782,6 +10928,18 @@ async def run_agent(
                         metadata={"_implicit_channel": _bg_channel, "path": "direct_llm_bypass"},
                     )
                     await global_hooks.run(HOOK_ON_MEMORY_COMMIT, _mctx)
+                except Exception:
+                    pass
+                _turn_dbg["answer"] = _db_out
+                try:
+                    from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+                    finalize_top_level_turn(
+                        _db_out,
+                        delegate_depth=_delegate_depth,
+                        run_id=run_id,
+                        channel=_bg_channel,
+                    )
                 except Exception:
                     pass
                 return _apply_hr_recruitment_final_answer_table_sync(_db_out, _DirectBypassCtx())
@@ -11033,8 +11191,23 @@ async def run_agent(
         except Exception as _monitor_ex:
             logger.debug("[ConvMonitor] 挂钩失败（不影响主流程）: %s", _monitor_ex)
         # ─────────────────────────────────────────────────────────
+        _turn_dbg["answer"] = out
         return _apply_hr_recruitment_final_answer_table_sync(out, ctx)
     finally:
+        if _delegate_depth == 0:
+            try:
+                from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+                _dbg_ans = _turn_dbg.get("answer")
+                if _dbg_ans is not None:
+                    finalize_top_level_turn(
+                        str(_dbg_ans),
+                        delegate_depth=_delegate_depth,
+                        run_id=run_id,
+                        channel=_bg_channel,
+                    )
+            except Exception:
+                pass
         unregister_cancel_event(run_id)
         if _delegate_depth == 0 and _lark_cid and _bg_channel == "lark_im_dispatcher":
             try:

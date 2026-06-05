@@ -35,6 +35,9 @@ PMO-Copilot 是跑在 Jachin L3 上的 **K11 项目 PMO 自动化 Skill**。它�
 
 - Epic / 开发子任务：[`PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md`](./PMO_DB_QUERY_CASE_STUDY_0511_SPRINT.md)
 - 人员任务矩阵：[`PMO_PERSONNEL_QUERY_CASE_STUDY_0601_SPRINT.md`](./PMO_PERSONNEL_QUERY_CASE_STUDY_0601_SPRINT.md)
+- 临时需求调整 · 变更预警：[`PMO_CHANGE_ALERT_DESIGN.md`](./PMO_CHANGE_ALERT_DESIGN.md)
+- 变更预警演练复盘（Gavin 麻将插单）：[`PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md`](./PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md)
+- 版本发布需求映射（发版邮件窗 + 已完成 Epic）：[`PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md`](./PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md)
 
 ---
 
@@ -154,6 +157,7 @@ flowchart TB
 |------|-----------|-------------------------------|
 | `run_worker_b_host_bootstrap()` | `core:pmo_personnel_report` recent_window | `current_sprint`, `recent_sprints[]`, `personnel_tasks[]`, `requirement_context[]`, `by_person`, `unassigned_tasks`, `cross_week_tasks`, `summary` |
 | `run_worker_c_host_bootstrap()` | `core:pmo_sprint_epic_report` recent_window | `current_sprint`, `epics[]`, `epic_children[]`, `dev_tasks[]`, … |
+| `run_worker_d_host_bootstrap()` | `core:pmo_release_epic_mapping` | `completed_epics[]`, `markdown_section`, `window_since`/`window_until`, `completed_count` |
 
 **`current_sprint` 规则（B/C 共用）**：在近三周 Sprint 里取 **`sprint_date ≤ today` 且日期最大** 的一档——**禁止**直接用 `recent_sprints[0]`（可能是未来预建的 Sprint，如 06/08）。
 
@@ -168,12 +172,15 @@ flowchart TB
 | **A** | Step1+2：`pmo_views_meta` + 各视图字段样本 | `core:db_query` | 若干轮 |
 | **B** | 复制宿主 JSON → Final Answer；仅缺 `requirement_context` 时 B-SUP | `core:pmo_personnel_report`, `core:db_query` | **0～2 轮** |
 | **C** | 复制宿主 JSON → Final Answer；Tool 失败时 C-1→C-2→C-3 SQL 兜底 | `core:pmo_sprint_epic_report`, `core:db_query` | **0～3 轮** |
+| **D** | 复制宿主 JSON → Final Answer；仅宿主失败时调 D-TOOL 兜底 | `core:pmo_release_epic_mapping` | **0～1 轮** |
 
 Worker 专属短规范（注入 system，**不是** SKILL 全文）：
 
 - Worker B：[`PMO_WORKER_B_SPEC.md`](./PMO_WORKER_B_SPEC.md)
 - Worker C：[`PMO_WORKER_C_SPEC.md`](./PMO_WORKER_C_SPEC.md)
+- Worker D：[`PMO_WORKER_D_SPEC.md`](./PMO_WORKER_D_SPEC.md)
 - **Work 总（端到端战报案例 · 拆解/工具/踩坑）**：[`PMO_WORK_ZONG_CASE_STUDY.md`](./PMO_WORK_ZONG_CASE_STUDY.md)
+- **📦 版本发布需求映射（邮件窗 + Epic 清单）**：[`PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md`](./PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md)
 
 SQL 模板 SSOT：`l3_node/pmo_multi_agent_queries.py`（B-S1/B-4/B-SUP、C-1～C-6）
 
@@ -399,6 +406,9 @@ LLM 常见毛病：**Observation 有数，Final Answer JSON 却漏字段**。因
 | 推送守卫 / 单 Agent 探针 | `l3_node/agent_core.py` |
 | 业务 SKILL | `skills_repo/pmo-copilot/SKILL.md` |
 | 镜像表设计 | `docs/architecture/PMO_DB_REFACTOR_DESIGN.md` |
+| 变更预警方案 | `docs/architecture/PMO_CHANGE_ALERT_DESIGN.md` |
+| 变更预警案例（0605 麻将插单） | `docs/architecture/PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md` |
+| 版本发布需求映射案例（0605 发版 Epic） | `docs/architecture/PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md` |
 | 执行韧性契约 | `docs/JACHIN_EXECUTION_RESILIENCE_CONTRACT.md` |
 
 ---

@@ -239,6 +239,12 @@ async def _push_reply_to_lark(chat_id: str, content: str) -> None:
     if not chat_id or content is None:
         return
 
+    from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+
+    content = sanitize_final_answer_for_lark_im(str(content))
+    if not content.strip():
+        return
+
     prefer_direct_first = _is_default_mirror_push_url(url) or not url
     if prefer_direct_first:
         if await asyncio.to_thread(_push_via_lark_open_api_sync, chat_id, content):

@@ -18,8 +18,27 @@ from l3_node.pmo_epic_aggregate import (
     group_children_by_epic,
     merge_personnel_progress_into_children,
 )
+_PMO_PUSH_WORKER_D_CACHE: dict[str, Any] | None = None
+
+
+def set_pmo_worker_d_push_cache(seed: dict[str, Any] | None) -> None:
+    """多 Agent 阶段三推送前注入 Worker D 宿主结果，避免重复调邮件 API。"""
+    global _PMO_PUSH_WORKER_D_CACHE
+    _PMO_PUSH_WORKER_D_CACHE = seed
+
+
+def get_pmo_worker_d_push_cache() -> dict[str, Any] | None:
+    return _PMO_PUSH_WORKER_D_CACHE
+
+
+def clear_pmo_worker_d_push_cache() -> None:
+    global _PMO_PUSH_WORKER_D_CACHE
+    _PMO_PUSH_WORKER_D_CACHE = None
+
+
 from l3_node.pmo_report_format import (
     PMO_DEMAND_TABLE_HEADERS_NATIVE,
+    PMO_PERSONNEL_TASK_LINE_MAX_LEN,
     PMO_WAR_REPORT_VISUAL_FIG1,
     build_person_rhythm_alert,
     format_demand_table_gfm_row_native,
@@ -87,11 +106,19 @@ def _epic_time_span(epic: dict[str, Any], children: list[dict[str, Any]]) -> str
 
 def _person_tasks_cell(tasks: list[dict[str, Any]]) -> str:
     return format_personnel_matrix_tasks_cell(
-        tasks, compact_for_feishu=False, name_max_len=36, status_max_len=14
+        tasks,
+        compact_for_feishu=False,
+        name_max_len=PMO_PERSONNEL_TASK_LINE_MAX_LEN,
+        status_max_len=18,
     )
 
 
-def build_macro_dashboard_markdown(worker_b: dict[str, Any], worker_c: dict[str, Any]) -> str:
+def build_macro_dashboard_markdown(
+    worker_b: dict[str, Any],
+    worker_c: dict[str, Any],
+    *,
+    release_mapping_section: str | None = None,
+) -> str:
     """从 Worker B/C JSON 组装宏观看板 GFM（未 polish）。"""
     current_sprint = worker_b.get("current_sprint") or worker_c.get("current_sprint")
     cs_date = worker_b.get("current_sprint_date") or ""
@@ -206,19 +233,30 @@ def build_macro_dashboard_markdown(worker_b: dict[str, Any], worker_c: dict[str,
     if not people_rows:
         people_rows.append("| （无数据） | - | ⚠️ 人员看板无本周任务 |")
 
-    req_ctx = worker_b.get("requirement_context") or []
-    filled = sum(
-        1
-        for r in req_ctx
-        if r.get("version_goal") not in (None, "", "null", "—")
-    )
-    total_ctx = len(req_ctx)
-    fill_pct = round(100 * filled / total_ctx) if total_ctx else 0
-    version_note = (
-        f"需求辅表 {total_ctx} 行，Version Goal 填写 {filled} 行（{fill_pct}%）"
-        if total_ctx
-        else "⚠️ 无 requirement_context"
-    )
+    if release_mapping_section and release_mapping_section.strip():
+        version_block = release_mapping_section.strip()
+    else:
+        req_ctx = worker_b.get("requirement_context") or []
+        filled = sum(
+            1
+            for r in req_ctx
+            if r.get("version_goal") not in (None, "", "null", "—")
+        )
+        total_ctx = len(req_ctx)
+        fill_pct = round(100 * filled / total_ctx) if total_ctx else 0
+        version_note = (
+            f"需求辅表 {total_ctx} 行，Version Goal 填写 {filled} 行（{fill_pct}%）"
+            if total_ctx
+            else "⚠️ 无 requirement_context"
+        )
+        version_block = "\n".join(
+            [
+                "### **📦 版本发布需求映射**",
+                "| 数据源 | 记录数 | Version Goal 填写 | 填写率 | 说明 |",
+                "| --- | --- | --- | --- | --- |",
+                f"| vewpI8lyYw 辅表 | {total_ctx} | {filled} | {fill_pct}% | {version_note} |",
+            ]
+        )
 
     return "\n".join(
         [
@@ -248,10 +286,7 @@ def build_macro_dashboard_markdown(worker_b: dict[str, Any], worker_c: dict[str,
             "",
             "---",
             "",
-            "### **📦 版本发布需求映射**",
-            "| 数据源 | 记录数 | Version Goal 填写 | 填写率 | 说明 |",
-            "| --- | --- | --- | --- | --- |",
-            f"| vewpI8lyYw 辅表 | {total_ctx} | {filled} | {fill_pct}% | {version_note} |",
+            version_block,
         ]
     )
 
@@ -273,10 +308,35 @@ def fetch_worker_bc_json() -> tuple[dict[str, Any], dict[str, Any]]:
 def build_polished_macro_dashboard_markdown(
     worker_b: dict[str, Any] | None = None,
     worker_c: dict[str, Any] | None = None,
+    *,
+    release_mapping_section: str | None = None,
+    worker_d: dict[str, Any] | None = None,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    use_release_epic_mapping: bool = True,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     if worker_b is None or worker_c is None:
         worker_b, worker_c = fetch_worker_bc_json()
-    raw = build_macro_dashboard_markdown(worker_b, worker_c)
+    release_section = release_mapping_section
+    worker_d_seed = worker_d or get_pmo_worker_d_push_cache()
+    if not release_section and worker_d_seed:
+        release_section = str(worker_d_seed.get("markdown_section") or "").strip() or None
+        if release_section:
+            worker_b["_release_epic_mapping"] = worker_d_seed
+    if use_release_epic_mapping and not release_section:
+        from l3_node.tools.pmo_release_epic_mapping import run_release_epic_mapping
+
+        rel = run_release_epic_mapping(app_id=app_id, app_secret=app_secret)
+        if str(rel.get("status") or "").lower() == "ok":
+            release_section = rel.get("markdown_section")
+            worker_b["_release_epic_mapping"] = rel
+        else:
+            worker_b["_release_epic_mapping_error"] = rel.get("error") or rel
+    raw = build_macro_dashboard_markdown(
+        worker_b,
+        worker_c,
+        release_mapping_section=release_section,
+    )
     return polish_pmo_war_report_markdown(raw), worker_b, worker_c
 
 
@@ -410,6 +470,9 @@ def run_macro_dashboard_push(
     dry_run: bool = False,
     title: str | None = None,
     project_root: Path | None = None,
+    use_release_epic_mapping: bool = True,
+    release_mapping_section: str | None = None,
+    worker_d: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Work 总一键推送：B/C 预取 → 战报 Markdown → 飞书 native_table 卡片。
@@ -429,7 +492,13 @@ def run_macro_dashboard_push(
     if push_monitor and monitor and monitor != primary:
         chat_targets.append(monitor)
 
-    md, worker_b, worker_c = build_polished_macro_dashboard_markdown()
+    md, worker_b, worker_c = build_polished_macro_dashboard_markdown(
+        use_release_epic_mapping=use_release_epic_mapping,
+        release_mapping_section=release_mapping_section,
+        worker_d=worker_d,
+        app_id=app_id,
+        app_secret=app_secret,
+    )
     card_title = title or f"【K11 · PMO 宏观看板】{datetime.now():%Y-%m-%d}"
 
     epics = [

@@ -16,6 +16,7 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKER_C_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_C_SPEC.md"
 _WORKER_B_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_B_SPEC.md"
+_WORKER_D_SPEC_PATH = _REPO_ROOT / "docs" / "architecture" / "PMO_WORKER_D_SPEC.md"
 
 from l3_node.pmo_multi_agent_queries import (
     WORKER_A_MAX_ITERATIONS,
@@ -26,7 +27,11 @@ from l3_node.pmo_multi_agent_queries import (
     WORKER_C_MAX_ITERATIONS,
     WORKER_C_TASK,
     WORKER_C_TASK_PREVIEW,
+    WORKER_D_AGENT_MAX_ITERATIONS,
+    WORKER_D_TASK,
+    WORKER_D_TASK_PREVIEW,
     build_worker_b_agent_task,
+    build_worker_d_agent_task,
 )
 from l3_node.pmo_report_format import (
     PMO_DEMAND_TABLE_PUBLISHER_SPEC,
@@ -109,6 +114,28 @@ def _load_worker_c_system_prefix() -> str:
         return _PMO_WORKER_C_RULES_INLINE + "\n" + spec + "\n"
     return _PMO_WORKER_C_RULES_INLINE
 
+
+_PMO_WORKER_D_RULES_INLINE = (
+    "【Worker D · 发版 Epic 清单 · D-TOOL 优先】\n"
+    "- **步骤 0（必须）**：`core:pmo_release_epic_mapping` + `{}`；"
+    "宿主已预取 markdown_section 时禁止重跑。\n"
+    "- **禁止** core:db_query / Version Goal 统计 / 人员表查询。\n"
+    "Final Answer：completed_epics[] + markdown_section + window_* + completed_sql_ids 含 **D-TOOL**。\n"
+)
+
+
+def _load_worker_d_system_prefix() -> str:
+    spec = ""
+    try:
+        if _WORKER_D_SPEC_PATH.is_file():
+            spec = _WORKER_D_SPEC_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if spec:
+        return _PMO_WORKER_D_RULES_INLINE + "\n" + spec + "\n"
+    return _PMO_WORKER_D_RULES_INLINE
+
+
 PMO_WORKER_A_ROLE: dict[str, Any] = {
     "id": "analyst",
     "system_prefix_max_chars": PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
@@ -130,7 +157,14 @@ PMO_WORKER_C_ROLE: dict[str, Any] = {
     "allowed_tools": ["core:pmo_sprint_epic_report", "core:db_query"],
 }
 
-# 兼容旧引用（等同 Worker B，FanOut 应使用 A/B/C 分角色）
+PMO_WORKER_D_ROLE: dict[str, Any] = {
+    "id": "analyst",
+    "system_prefix_max_chars": PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
+    "system_prefix": _load_worker_d_system_prefix() + "\n" + _PMO_WORKER_SHARED,
+    "allowed_tools": ["core:pmo_release_epic_mapping"],
+}
+
+# 兼容旧引用（等同 Worker B，FanOut 应使用 A/B/C/D 分角色）
 PMO_WORKER_DB_ROLE = PMO_WORKER_B_ROLE
 
 PMO_AUDITOR_ROLE: dict[str, Any] = {
@@ -168,9 +202,9 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 1. 将下方 JSON 填入 §1.4 三张 **GFM Markdown 表**（语义见 §1.2.3）；**风险诊断书不得写入 📊 表内列**：
 {demand_table_spec}
    - 📊 仅 `current_sprint`（本周）大需求，每行一个 Epic；子任务汇总进「参与人/完成度/状态」三列（参与人须含 Epic 父记录链接链子任务，见 `pmo_epic_aggregate.epic_participants`）
-   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**；任务列 `format_personnel_matrix_tasks_cell(compact_for_feishu=False)` **全量** `<br>` 分行（**禁止**等N项）；列宽/行高见 `PMO_NATIVE_TABLE_LAYOUT_SPEC`；**行序** 🚨延期→🚨进度落后→🟡→✅
+   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**；任务列全量 `<br>` + `row_height=low`（表内一行，hover 多行）；**禁止**「等N项」；**行序** 🚨延期→🚨进度落后→🟡→✅
    - {layout_contract}
-   - 📦 版本发布需求映射
+   - 📦 版本发布需求映射 — **以 Worker D 的 markdown_section 为准**（发版邮件窗内已完成 Epic）；**禁止** Version Goal 填写率
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
 3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次** IM 推送，**禁止 webhook_url**）：
    - 主群：`chat_id` = `.env` 的 `PMO_PRIMARY_CHAT_ID`（当前 SSOT：`oc_437c98d11106295fb10751a5481ee465`）
@@ -186,6 +220,9 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 
 【阶段一 · 大需求与子任务 JSON（Worker C · epics=周汇报大需求）】
 {worker_c}
+
+【阶段一 · 发版 Epic 清单 JSON（Worker D · completed_epics[]）】
+{worker_d}
 """
 
 
@@ -241,6 +278,7 @@ class PmoMultiAgentResult:
     worker_a: str = ""
     worker_b: str = ""
     worker_c: str = ""
+    worker_d: str = ""
     audit_report: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -256,6 +294,7 @@ class PmoMultiAgentResult:
 def _phase1_fanout_items(
     host_b_seed: dict[str, Any] | None = None,
     host_c_seed: dict[str, Any] | None = None,
+    host_d_seed: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     worker_b_task = build_worker_b_agent_task(host_b_seed)
     worker_b_preview = WORKER_B_AGENT_TASK_PREVIEW
@@ -283,6 +322,14 @@ def _phase1_fanout_items(
             },
         ),
         ("Worker C", WORKER_C_TASK_PREVIEW, WORKER_C_MAX_ITERATIONS, WORKER_C_TASK, PMO_WORKER_C_ROLE, {}),
+        (
+            "Worker D",
+            WORKER_D_TASK_PREVIEW,
+            WORKER_D_AGENT_MAX_ITERATIONS,
+            build_worker_d_agent_task(host_d_seed),
+            PMO_WORKER_D_ROLE,
+            {},
+        ),
     ]
     items: list[dict[str, Any]] = []
     worker_c_extra: dict[str, Any] = {}
@@ -294,9 +341,20 @@ def _phase1_fanout_items(
             },
             "context_max_chars": 22000,
         }
+    worker_d_extra: dict[str, Any] = {}
+    if host_d_seed:
+        worker_d_extra = {
+            "context_data": {
+                "说明": "宿主预取 JSON（core:pmo_release_epic_mapping 已执行，勿重跑步骤 0）",
+                **host_d_seed,
+            },
+            "context_max_chars": 16000,
+        }
     for agent_label, task_short, max_iter, task_body, role, extra in workers:
         if agent_label == "Worker C" and host_c_seed:
             extra = {**extra, **worker_c_extra}
+        if agent_label == "Worker D" and host_d_seed:
+            extra = {**extra, **worker_d_extra}
         item: dict[str, Any] = {
             "role": role,
             "task": task_body,
@@ -362,9 +420,10 @@ async def run_pmo_multi_agent_workflow(
             result.errors.append(f"拉表落盘异常: {e}")
             return result
 
-    _status("阶段一：FanOut 并行捞数（Worker A/B/C）…")
+    _status("阶段一：FanOut 并行捞数（Worker A/B/C/D）…")
     host_b_seed: dict[str, Any] = {}
     host_c_seed: dict[str, Any] = {}
+    host_d_seed: dict[str, Any] = {}
     try:
         from l3_node.pmo_worker_result_backfill import run_worker_b_host_bootstrap
 
@@ -386,12 +445,22 @@ async def run_pmo_multi_agent_workflow(
     except Exception:
         logger.exception("[PMO Multi-Agent] Worker C host bootstrap failed")
     try:
+        from l3_node.pmo_worker_result_backfill import run_worker_d_host_bootstrap
+
+        host_d_seed = run_worker_d_host_bootstrap()
+        _status(
+            f"Worker D 宿主预取：completed_count={host_d_seed.get('completed_count')} "
+            f"release_mails={host_d_seed.get('release_mails_found')}"
+        )
+    except Exception:
+        logger.exception("[PMO Multi-Agent] Worker D host bootstrap failed")
+    try:
         from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_begin, append_pmo_debug_status
 
         append_pmo_debug_phase_begin(
             1,
             "并行捞数 · FanOut",
-            detail="Worker A(字典) / B(宿主B-TOOL → ReAct可选B-SUP) / C(vewp Epic) 并行",
+            detail="Worker A(字典) / B(B-TOOL) / C(C-TOOL) / D(D-TOOL 发版Epic) 并行",
         )
         if host_b_seed.get("personnel_tasks"):
             append_pmo_debug_status(
@@ -403,9 +472,9 @@ async def run_pmo_multi_agent_workflow(
         pass
 
     phase1 = await fanout_parallel(
-        _phase1_fanout_items(host_b_seed or None, host_c_seed or None),
+        _phase1_fanout_items(host_b_seed or None, host_c_seed or None, host_d_seed or None),
         engine,
-        max_concurrent=3,
+        max_concurrent=4,
         delegate_depth=1,
         item_max_iterations=16,
         parent_allowed_skills=parent_allowed_skills,
@@ -415,7 +484,7 @@ async def run_pmo_multi_agent_workflow(
     try:
         from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_summary
 
-        worker_labels = {1: "Worker A", 2: "Worker B", 3: "Worker C"}
+        worker_labels = {1: "Worker A", 2: "Worker B", 3: "Worker C", 4: "Worker D"}
         summary_lines: list[str] = []
         for it in phase1.items:
             label = worker_labels.get(it.index, f"Worker {it.index}")
@@ -443,7 +512,9 @@ async def run_pmo_multi_agent_workflow(
     by_idx = {item.index: item for item in phase1.items}
     result.worker_a = by_idx[1].result if by_idx.get(1) and by_idx[1].ok else ""
     raw_worker_b = by_idx[2].result if by_idx.get(2) and by_idx[2].ok else ""
-    result.worker_c = by_idx[3].result if by_idx.get(3) and by_idx[3].ok else ""
+    raw_worker_c = by_idx[3].result if by_idx.get(3) and by_idx[3].ok else ""
+    raw_worker_d = by_idx[4].result if by_idx.get(4) and by_idx[4].ok else ""
+    result.worker_c = raw_worker_c
 
     try:
         from l3_node.pmo_worker_result_backfill import merge_worker_b_result
@@ -467,6 +538,17 @@ async def run_pmo_multi_agent_workflow(
     except Exception:
         logger.exception("[PMO Multi-Agent] worker result backfill failed")
 
+    try:
+        from l3_node.pmo_worker_result_backfill import merge_worker_d_result
+
+        if host_d_seed:
+            result.worker_d = merge_worker_d_result(host_d_seed, raw_worker_d)
+        else:
+            result.worker_d = raw_worker_d
+    except Exception:
+        logger.exception("[PMO Multi-Agent] Worker D merge failed")
+        result.worker_d = raw_worker_d
+
     if phase1.failed_count:
         result.errors.extend(
             f"Worker {it.index}({it.role}): {it.error[:120]}"
@@ -476,7 +558,7 @@ async def run_pmo_multi_agent_workflow(
     result.audit_report = ""
     result.phase2_output = ""
     result.status = "partial" if phase1.failed_count else "completed"
-    _status(f"阶段一 {phase1.ok_count}/3 完成 · 跳过交叉审计 · 待阶段三排版发报")
+    _status(f"阶段一 {phase1.ok_count}/4 完成 · 跳过交叉审计 · 待阶段三排版发报")
     return result
 
 
@@ -487,6 +569,7 @@ def build_publisher_user_message(workflow: PmoMultiAgentResult) -> str:
         worker_a=_clip(workflow.worker_a, 6000),
         worker_b=_clip(workflow.worker_b, 12000),
         worker_c=_clip(workflow.worker_c, 12000),
+        worker_d=_clip(workflow.worker_d, 8000),
     )
 
 

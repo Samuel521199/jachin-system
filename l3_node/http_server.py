@@ -2972,6 +2972,12 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         register_bi_console_routes(app)
     except Exception as e:
         logger.warning("[L3 HTTP] BI console routes skipped: %s", e)
+    try:
+        from l3_node.pmo_webhook_receiver import register_pmo_webhook_routes
+
+        register_pmo_webhook_routes(app)
+    except Exception as e:
+        logger.warning("[L3 HTTP] PMO webhook routes skipped: %s", e)
     app.router.add_post(
         "/api/v1/cron-thinker/ingest-release-announcement", _handle_cron_thinker_ingest_release
     )
@@ -3108,14 +3114,14 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
 
         asyncio.create_task(_skill_matrix_sync_bg(), name="jachin-skill-matrix-sync")
 
-    async def _on_startup_pmo_resource_monitor(_app):
-        """PMO 资源预警巡检：周三 09:30（延期+偏闲）+ 周四 14:00（延期+进度落后）。"""
+    async def _on_startup_pmo_bitable_watch(_app):
+        """PMO 多维表变更监控：轮询 + 60s 防抖回调。"""
         try:
-            from l3_node.jobs.pmo_copilot_scheduler import init_pmo_resource_monitor_auto_start
+            from l3_node.jobs.pmo_bitable_watch_scheduler import init_pmo_bitable_watch_auto_start
 
-            init_pmo_resource_monitor_auto_start()
+            init_pmo_bitable_watch_auto_start()
         except Exception as e:
-            logger.warning("[L3 HTTP] PMO resource monitor scheduler skipped: %s", e)
+            logger.warning("[L3 HTTP] PMO bitable watch scheduler skipped: %s", e)
 
     async def _on_startup_bi_console_scheduler(_app):
         """L3 重启后恢复 BI 控制台定时（~/.jachin/data/bi_console_scheduler_state.json）。"""
@@ -3154,7 +3160,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.on_startup.append(_on_startup_cron_thinker)
     app.on_startup.append(_on_startup_dag_coordinator)
     app.on_startup.append(_on_startup_skill_matrix_sync)
-    app.on_startup.append(_on_startup_pmo_resource_monitor)
+    app.on_startup.append(_on_startup_pmo_bitable_watch)
     app.on_startup.append(_on_startup_bi_console_scheduler)
     app.on_startup.append(_on_startup_autonomy_services)
     app.on_startup.append(_on_startup_global_registry_redis)

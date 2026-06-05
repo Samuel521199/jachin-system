@@ -1,0 +1,51 @@
+﻿# PMO 多维表变更监控（防抖轮询 → Lark 回调）
+# 写出路径：~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml
+#
+# 也可用环境变量覆盖：PMO_BITABLE_WATCH_TABLE_ID / VIEW_ID / CHAT_ID /
+# PMO_BITABLE_WATCH_IDLE_SECONDS / PMO_BITABLE_WATCH_APP_ID / APP_SECRET 等
+
+enabled: true
+
+# webhook = 飞书 Lark 推送 drive.file.bitable_record_changed_v1（推荐）
+# poll = 兜底每 N 秒拉全表 diff（无事件订阅时用）
+mode: webhook
+
+# 监控目标（用户指定）
+table_id: tblB2uMLGIQrAttB
+view_id: vewpI8lyYw
+
+# 变更回调群聊（oc_ 开头为飞书群 chat_id）
+chat_id: oc_b1b9cff6804517c79b7f5a617ab30483
+# monitor_chat_id: oc_0e321f92d758ecb44aea5b499c90510b  # 可选：变更预警双群时的监控群
+
+# 飞书应用凭证（勿提交真实 secret 到 git；本地用 .env 或 ~/.jachin/.env）
+app_id: "${PMO_BITABLE_WATCH_APP_ID}"
+app_secret: "${PMO_BITABLE_WATCH_APP_SECRET}"
+
+# 推荐：飞书多维表 /base/ 直达链接（自动解析 app_token / table / view）
+# bitable_url: "https://ssgkm409t6q5.sg.larksuite.com/base/KHOebTjbpaeSy3sC4BxlzPelg7b?table=tblB2uMLGIQrAttB&view=vewpI8lyYw"
+# 或二选一：app_token / wiki_url
+# app_token: ""
+# wiki_url: "https://your-domain.larksuite.com/wiki/XXXX?table=tblB2uMLGIQrAttB&view=vewpI8lyYw"
+
+# 人类连续编辑防抖：Lark 连续推送事件时重置计时；idle_seconds 无新事件则结束会话并回调
+idle_seconds: 20
+# webhook 模式下仅检查 idle 是否到期（不拉全表）
+debounce_check_seconds: 5
+# poll 模式下的全表拉取间隔（mode=poll 时生效）
+poll_interval_seconds: 15
+
+# 单次拉取记录上限（视图过滤后）
+max_records: 5000
+
+# 会话结束后：推 Lark + 本机落盘（~/.jachin/data/pmo_bitable_watch_callbacks/）
+push_change_summary: true
+run_change_alert: true
+persist_local: true
+
+# 事件驱动长连接：python scripts/run_pmo_bitable_watch_long_connection.py --domain lark
+# Windows 后台：.\scripts\start_pmo_bitable_watch_daemon.ps1
+# 公网 Webhook：POST /webhook/pmo_table_change（L3 HTTP 已注册）
+# L3 HTTP 启动时会挂载 debounce 检查器（mode=webhook 不拉全表）
+
+# dry_run: true  # 仅预览不发 Lark

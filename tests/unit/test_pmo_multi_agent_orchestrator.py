@@ -9,9 +9,14 @@ from l3_node.pmo_multi_agent_queries import (
     WORKER_C_TASK,
     build_worker_b_agent_task,
 )
+from l3_node.pmo_multi_agent_queries import (
+    WORKER_D_AGENT_MAX_ITERATIONS,
+    WORKER_D_TASK,
+)
 from l3_node.pmo_multi_agent_orchestrator import (
     PMO_WORKER_B_ROLE,
     PMO_WORKER_C_ROLE,
+    PMO_WORKER_D_ROLE,
     PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS,
     _phase1_fanout_items,
 )
@@ -58,7 +63,7 @@ def test_phase1_fanout_worker_b_uses_host_seed():
         "sprint_names_for_in": ["2026/06/01-Sprint"],
     }
     items = _phase1_fanout_items(seed)
-    assert len(items) == 3
+    assert len(items) == 4
     b = items[1]
     assert b["max_iterations"] == WORKER_B_AGENT_MAX_ITERATIONS
     assert "B-TOOL" in b["task"] or "B-SUP" in b["task"]
@@ -89,6 +94,36 @@ def test_worker_b_system_prompt_no_legacy_epic_or_person_rule():
     assert "core:pmo_personnel_report" in str(PMO_WORKER_B_ROLE.get("allowed_tools"))
 
 
+def test_worker_d_covers_release_mapping():
+    assert "D-TOOL" in WORKER_D_TASK
+    assert "pmo_release_epic_mapping" in WORKER_D_TASK
+    assert "markdown_section" in WORKER_D_TASK
+    assert WORKER_D_AGENT_MAX_ITERATIONS <= 4
+
+
+def test_phase1_fanout_worker_d_uses_host_seed():
+    seed = {
+        "completed_epics": [{"epic_name": "Laro GO", "priority": "P0"}],
+        "completed_count": 1,
+        "markdown_section": "### **📦 版本发布需求映射**",
+        "completed_sql_ids": ["D-TOOL"],
+    }
+    items = _phase1_fanout_items(host_d_seed=seed)
+    assert len(items) == 4
+    d = items[3]
+    assert d["max_iterations"] == WORKER_D_AGENT_MAX_ITERATIONS
+    assert "D-TOOL" in d["task"]
+    assert d["context_data"]["completed_count"] == 1
+    assert "pmo_release_epic_mapping" in d["context_data"]["说明"]
+
+
+def test_worker_d_system_prompt_has_d_tool():
+    prefix = PMO_WORKER_D_ROLE["system_prefix"]
+    assert "D-TOOL" in prefix or "pmo_release_epic_mapping" in prefix
+    assert "core:pmo_release_epic_mapping" in str(PMO_WORKER_D_ROLE.get("allowed_tools"))
+
+
 def test_pmo_worker_roles_raise_system_prefix_limit():
     assert PMO_WORKER_C_ROLE.get("system_prefix_max_chars") == PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS
     assert len(PMO_WORKER_C_ROLE["system_prefix"]) <= PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS
+    assert PMO_WORKER_D_ROLE.get("system_prefix_max_chars") == PMO_WORKER_SYSTEM_PREFIX_MAX_CHARS

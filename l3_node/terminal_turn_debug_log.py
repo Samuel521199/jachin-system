@@ -5,6 +5,12 @@
 与当轮内所有 ``append_*`` / ReAct 轨迹写入同一文件。多 WebSocket 并发时按 asyncio 任务隔离路径
 （``contextvars``），避免互相串写。
 
+**人类可读分区**（搜索 ``【人类可读】``）：
+- 会话导读：用户问了什么、渠道、最多几轮
+- 按轮展开：模型在想什么 → 调什么工具、在哪执行 → 返回摘要
+- 会话复盘：共几轮、用了哪些工具、最终回答、效果简述
+- 其下 ``[ReAct 第 N 轮]`` 等为技术细节（完整 JSON / Observation）
+
 若需恢复旧行为（始终写入并覆盖 ``terminal_turn_debug.log``），设置
 ``JACHIN_TERMINAL_DEBUG_OVERWRITE=1``。
 
@@ -28,6 +34,7 @@ import re
 import sys
 import threading
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,8 +59,74 @@ _turn_log_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "jachin_terminal_turn_log_path",
     default=None,
 )
+# append_final 后仍允许同轮追加技术尾注（如 WS 与 run_agent 双写结束块）
+_turn_log_path_settled: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "jachin_terminal_turn_log_path_settled",
+    default=None,
+)
 _stream_accumulator: list[str] = []
 _stream_total: int = 0
+
+_human_journal: contextvars.ContextVar["_HumanJournal | None"] = contextvars.ContextVar(
+    "jachin_terminal_human_journal",
+    default=None,
+)
+
+_TOOL_WHERE_HINTS: dict[str, str] = {
+    "core:db_query": "查询本机 SQLite / 结构化数据",
+    "core:fs_read": "读取工作区文件",
+    "core:fs_write": "写入工作区文件",
+    "core:pmo_personnel_report": "汇总 PMO 人员任务矩阵",
+    "core:pmo_sprint_epic_report": "汇总 PMO 大需求与 Sprint 进度",
+    "core:pmo_release_epic_mapping": "发版邮件窗内已完成 Epic（Worker D）",
+    "core:pmo_macro_dashboard_push": "组装战报并推送飞书",
+    "core:pmo_mirror_import": "把飞书拉盘 md 镜像进 SQLite",
+    "mcp:atom_bi_project_context": "从飞书 Wiki/多维表拉取项目上下文",
+    "mcp:atom_lark_notifier": "向飞书群发送消息卡片",
+    "mcp:fetch": "抓取网页内容",
+    "delegate": "拆成子 Agent 并行执行",
+    "recall_memory": "检索长期记忆（Memory Nexus）",
+    "coordinate": "分布式多节点协调（L2）",
+}
+
+
+@dataclass
+class _HumanRound:
+    iteration: int = 0
+    thought: str = ""
+    decision: str = ""
+    tool_id: str = ""
+    tool_where: str = ""
+    tool_input_brief: str = ""
+    tool_elapsed_ms: float | None = None
+    observation_brief: str = ""
+    ended_with_answer: bool = False
+    final_answer_preview: str = ""
+
+
+@dataclass
+class _HumanJournal:
+    user_message: str = ""
+    run_id: str = ""
+    channel: str = ""
+    max_iterations: int = 0
+    model_hint: str = ""
+    execution_tier: str = ""
+    rounds: list[_HumanRound] = field(default_factory=list)
+    tools_used: list[str] = field(default_factory=list)
+    final_answer: str = ""
+    end_tag: str = ""
+    file_started: bool = False
+    recap_written: bool = False
+    config_logged: bool = False
+
+    def current_round(self, iteration: int) -> _HumanRound:
+        for r in self.rounds:
+            if r.iteration == iteration:
+                return r
+        nr = _HumanRound(iteration=iteration)
+        self.rounds.append(nr)
+        return nr
 
 
 def _enabled() -> bool:
@@ -98,6 +171,7 @@ def _lazy_orphan_turn_path() -> Path:
     fname = f"terminal_turn_{ts}_orphan_{uuid.uuid4().hex[:10]}.log"
     p = root / fname
     _turn_log_path.set(p)
+    _reset_human_journal()
     try:
         p.write_text(
             "=== terminal turn debug（未调用 begin_turn，首次写入时自动创建本文件）===\n",
@@ -106,6 +180,9 @@ def _lazy_orphan_turn_path() -> Path:
         )
     except OSError:
         pass
+    j = _journal()
+    if j is not None and (j.user_message or "").strip() and not j.file_started:
+        _write_human_session_intro(j)
     return p
 
 
@@ -118,6 +195,9 @@ def _path() -> Path | None:
     p = _turn_log_path.get()
     if p is not None:
         return p
+    settled = _turn_log_path_settled.get()
+    if settled is not None:
+        return settled
     return _lazy_orphan_turn_path()
 
 
@@ -157,6 +237,253 @@ def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+def _journal() -> _HumanJournal | None:
+    return _human_journal.get()
+
+
+def _reset_human_journal() -> _HumanJournal:
+    j = _HumanJournal()
+    _human_journal.set(j)
+    return j
+
+
+def _append_human_block(lines: list[str]) -> None:
+    """写入「人类可读」分区（不截断到极小，单块上限与 _max_field 一致）。"""
+    if not _enabled():
+        return
+    body = _redact(_truncate("\n".join(lines)))
+    block = f"\n{'─' * 72}\n【人类可读】\n{body}\n"
+    try:
+        p = _path()
+        if p is None:
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with _lock:
+            if not p.is_file():
+                p.write_text("", encoding="utf-8")
+            with p.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(block)
+    except OSError:
+        pass
+
+
+def _tool_where_line(tool_id: str, *, mcp: bool = False) -> str:
+    tid = (tool_id or "").strip()
+    if tid == "delegate":
+        return "子 Agent 编排（宿主内再开一轮 ReAct）"
+    if tid.startswith("core:"):
+        hint = _TOOL_WHERE_HINTS.get(tid, "宿主本机 Python 执行（Native 工具）")
+        return f"{hint} · 路径：L3 进程内 run_tool"
+    if tid.startswith("mcp:") or mcp:
+        hint = _TOOL_WHERE_HINTS.get(tid, "MCP 外部服务")
+        return f"{hint} · 路径：MCP 子进程 stdio/HTTP"
+    if tid.startswith("util:"):
+        return "宿主内置实用工具 · 路径：L3 进程内"
+    return "工具运行时"
+
+
+def _brief_action_input(tool_id: str, action_input: str, *, max_len: int = 900) -> str:
+    raw = (action_input or "").strip()
+    if not raw:
+        return "（无参数）"
+    tid = (tool_id or "").strip()
+    if tid == "core:db_query":
+        try:
+            obj = json.loads(raw)
+            sql = str(obj.get("sql") or obj.get("query") or "").strip()
+            if sql:
+                sql = re.sub(r"\s+", " ", sql)
+                return _truncate(sql, max_len)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if raw.upper().startswith("SELECT"):
+            return _truncate(re.sub(r"\s+", " ", raw), max_len)
+    if raw.startswith("{") or raw.startswith("["):
+        try:
+            obj = json.loads(raw)
+            return _truncate(json.dumps(obj, ensure_ascii=False), max_len)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return _truncate(raw.replace("\n", " "), max_len)
+
+
+def _brief_observation(tool_id: str, observation: str, *, max_len: int = 1200) -> str:
+    text = (observation or "").strip()
+    if not text:
+        return "工具没有返回内容。"
+    low = text.lower()
+    if "[工具执行失败]" in text or '"status": "error"' in low or '"status":"error"' in low:
+        head = "执行失败。"
+    elif '"status": "ok"' in low or '"status":"ok"' in low or "success" in low[:200].lower():
+        head = "执行成功。"
+    else:
+        head = "已返回结果。"
+    preview = re.sub(r"\s+", " ", text[: max_len - len(head)])
+    if len(text) > len(preview):
+        preview += f"…（共 {len(text)} 字，悬停/下文技术区可看全文）"
+    return head + preview
+
+
+def _write_human_session_intro(j: _HumanJournal) -> None:
+    ch = (j.channel or "未知").strip()
+    ch_human = {
+        "websocket_terminal": "桌面终端 WebSocket",
+        "websocket_lark": "飞书 WebSocket 桥",
+        "lark_im_dispatcher": "飞书 IM 消息分发",
+        "pmo_copilot_cli": "PMO Copilot 命令行",
+    }.get(ch, ch or "（未标注）")
+    max_it = j.max_iterations or "（未设置）"
+    lines = [
+        "╔══════════════════════════════════════════════════════════════════════╗",
+        "║  会话导读 — 帮你快速看懂「问了什么 → 怎么做的 → 答了什么」              ║",
+        "╚══════════════════════════════════════════════════════════════════════╝",
+        "",
+        "【用户这次问了什么】",
+        f"  {j.user_message or '（启动时未记录用户句，见下方 messages 快照）'}",
+        "",
+        "【系统怎么接这个活】",
+        "  采用 ReAct 多轮推理：每一轮模型先「想一步」，再决定「调工具拿数据」或「直接回答」。",
+        f"  · 来源渠道：{ch_human}",
+        f"  · 本轮最多推理：{max_it} 轮",
+    ]
+    if j.run_id:
+        lines.append(f"  · 运行 ID：{j.run_id}")
+    if j.execution_tier:
+        lines.append(f"  · 任务复杂度档位：{j.execution_tier}")
+    if j.model_hint:
+        lines.append(f"  · 主模型：{j.model_hint}")
+    lines.extend(
+        [
+            "",
+            "【日志怎么读】",
+            "  下面按「第 1 轮 / 第 2 轮 …」展开：每轮包含模型想法、调了什么工具、在哪执行、得到什么。",
+            "  更底层的 JSON / 完整 Observation 在「技术细节」分区（搜索 [ReAct 第 N 轮]）。",
+            "",
+        ]
+    )
+    _append_human_block(lines)
+    j.file_started = True
+
+
+def _write_human_round_header(iteration: int, *, max_iterations: int = 0) -> None:
+    j = _journal()
+    if j is None:
+        return
+    cap = max_iterations or j.max_iterations or "?"
+    lines = [
+        "",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"▶ 第 {iteration} 轮（上限 {cap} 轮）",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    _append_human_block(lines)
+
+
+def _write_human_session_recap(j: _HumanJournal) -> None:
+    if j.rounds:
+        n_rounds = max(r.iteration for r in j.rounds)
+    else:
+        n_rounds = 0
+    tools = []
+    seen: set[str] = set()
+    for t in j.tools_used:
+        if t and t not in seen:
+            seen.add(t)
+            tools.append(t)
+    lines = [
+        "",
+        "╔══════════════════════════════════════════════════════════════════════╗",
+        "║  本轮会话复盘                                                         ║",
+        "╚══════════════════════════════════════════════════════════════════════╝",
+        "",
+        "【用户问了什么】",
+        f"  {j.user_message or '（未记录）'}",
+        "",
+        "【一共跑了几轮】",
+        f"  共 {n_rounds} 轮 ReAct 步骤。",
+        "",
+        "【调用了哪些工具】",
+    ]
+    if tools:
+        for t in tools:
+            lines.append(f"  · {t} — {_TOOL_WHERE_HINTS.get(t, _tool_where_line(t))}")
+    else:
+        lines.append("  · 本轮未调用工具（模型凭上下文/记忆直接作答）。")
+    lines.extend(["", "【最终回答用户什么】"])
+    ans = (j.final_answer or "").strip()
+    if ans:
+        preview = _truncate(ans.replace("\n", "\n  "), 4000)
+        lines.append(f"  {preview}")
+    else:
+        lines.append("  （未捕获 Final Answer，见技术区 [本轮结束]）")
+    lines.extend(["", "【效果简述】"])
+    if j.end_tag and "exception" in j.end_tag.lower():
+        lines.append("  运行异常结束，请查看技术区错误栈。")
+    elif tools:
+        lines.append("  先通过工具取数/执行，再组织成自然语言回复用户。")
+    else:
+        lines.append("  未再查库或调工具，直接基于会话历史回答（响应较快，但可能未刷新最新数据）。")
+    _append_human_block(lines)
+
+
+def ensure_turn_started(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
+    """
+    保证本轮有独立日志文件 + 人类可读导读。
+    WebSocket 已 begin_turn 时仅补全 journal；Lark/HTTP 等入口在 run_agent 首行调用。
+    """
+    if not _enabled():
+        return
+    ex = extra or {}
+    j = _journal()
+    path_exists = _turn_log_path.get() is not None or _single_file_overwrite_mode()
+    if j is None:
+        j = _reset_human_journal()
+    j.user_message = (user_text or j.user_message or "").strip()
+    j.run_id = str(ex.get("run_id") or j.run_id or "")
+    j.channel = str(ex.get("channel") or j.channel or "")
+    try:
+        j.max_iterations = int(ex.get("max_iterations") or j.max_iterations or 0)
+    except (TypeError, ValueError):
+        pass
+    if not path_exists:
+        begin_turn(user_text, extra=extra)
+        j = _journal()
+        if j is None:
+            return
+    elif not j.file_started:
+        _write_human_session_intro(j)
+
+
+def log_human_run_config(meta: dict[str, Any]) -> None:
+    """run_agent 进入主流程后补全模型/档位等人话说明。"""
+    j = _journal()
+    if j is None:
+        return
+    j.execution_tier = str(meta.get("execution_tier") or j.execution_tier or "")
+    try:
+        j.max_iterations = int(meta.get("max_iterations") or j.max_iterations or 0)
+    except (TypeError, ValueError):
+        pass
+    if not j.run_id:
+        j.run_id = str(meta.get("run_id") or "")
+    ch = str(meta.get("channel") or "")
+    if ch:
+        j.channel = ch
+    if not j.config_logged and j.file_started:
+        tier = (j.execution_tier or "默认").strip()
+        lines = [
+            "【系统接活后的配置】",
+            f"  任务复杂度档位：{tier}",
+            f"  本轮最多推理：{j.max_iterations or '（未设置）'} 轮",
+        ]
+        if j.model_hint:
+            lines.append(f"  主模型：{j.model_hint}")
+        if j.channel:
+            lines.append(f"  来源渠道：{j.channel}")
+        _append_human_block(lines)
+        j.config_logged = True
+
+
 def _host_snapshot_dict() -> dict[str, Any]:
     """进程与环境快照（不含密钥类 env）。"""
     out: dict[str, Any] = {
@@ -182,6 +509,8 @@ def reset_stream_accumulator() -> None:
     with _lock:
         _stream_accumulator = []
         _stream_total = 0
+    _reset_human_journal()
+    _turn_log_path_settled.set(None)
 
 
 def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
@@ -189,6 +518,15 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
     if not _enabled():
         return
     reset_stream_accumulator()
+    ex = extra or {}
+    j = _journal() or _reset_human_journal()
+    j.user_message = (user_text or "").strip()
+    j.run_id = str(ex.get("run_id") or "")
+    j.channel = str(ex.get("channel") or "")
+    try:
+        j.max_iterations = int(ex.get("max_iterations") or 0)
+    except (TypeError, ValueError):
+        pass
     text = (user_text or "").strip()
     ts = _utc()
     lines = [
@@ -211,8 +549,7 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
     except Exception as _e:
         lines.append(f"host_snapshot: (failed: {_e!r})\n")
     lines.append(
-        "说明：以下为 L3 ReAct 深度轨迹 — 轮次上下文 / llm_round_meta / llm_raw / parsed / "
-        "tool_input_full / tool_dispatch_timing / observation_full / stream_chunk / on_step\n"
+        "说明：上方为【人类可读】导读；以下为【技术细节】— llm_raw / parsed / tool_input / observation 等\n"
     )
     lines.append("=" * 72 + "\n")
     try:
@@ -232,6 +569,7 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
         blob = "\n".join(lines)
         with _lock:
             p.write_text(blob, encoding="utf-8", newline="\n")
+        _write_human_session_intro(j)
     except OSError:
         pass
 
@@ -323,6 +661,15 @@ def log_react_iteration_start(
     *,
     context: dict[str, Any] | None = None,
 ) -> None:
+    ctx = context or {}
+    try:
+        mi = int(ctx.get("max_iterations") or 0)
+    except (TypeError, ValueError):
+        mi = 0
+    j = _journal()
+    if j is not None and mi:
+        j.max_iterations = mi
+    _write_human_round_header(iteration, max_iterations=mi)
     body = f"trace={trace}"
     if context:
         try:
@@ -373,6 +720,9 @@ def log_llm_round_summary(
     }
     if error:
         meta["error"] = error
+    j = _journal()
+    if j is not None and meta.get("model_effective"):
+        j.model_hint = str(meta.get("model_effective") or j.model_hint)
     try:
         body = json.dumps(meta, ensure_ascii=False, indent=2)
     except Exception:
@@ -408,6 +758,23 @@ def log_tool_dispatch_summary(
     except Exception:
         body = repr(meta)
     append_section(f"[ReAct 第 {iteration} 轮] 工具调度完成（耗时与通道）", body)
+    try:
+        j = _journal()
+        if j is not None:
+            rd = j.current_round(iteration)
+            rd.tool_elapsed_ms = float(elapsed_ms)
+            where = _tool_where_line(tool, mcp=mcp)
+            _append_human_block([
+                "",
+                "【工具执行完毕】",
+                f"  工具：`{tool}`",
+                f"  耗时：{elapsed_ms:.0f} ms",
+                f"  通道：{'MCP' if mcp else 'Native'}",
+                f"  说明：{where}",
+                f"  返回数据约 {output_len} 字（详见下方 Observation）",
+            ])
+    except Exception:
+        pass
 
 
 def log_event(iteration: int | None, title: str, detail: str) -> None:
@@ -441,11 +808,83 @@ def log_parsed_action_detail(
     lines.append(raw)
     body = "\n".join(lines)
     append_section(f"[ReAct 第 {iteration} 轮] 解析结果 parsed_action", body)
+    try:
+        j = _journal()
+        if j is not None:
+            rd = j.current_round(iteration)
+            if (thought_excerpt or "").strip():
+                rd.thought = _truncate(_redact(thought_excerpt.strip()), 800)
+            if isinstance(parsed, dict):
+                ptype = str(parsed.get("type") or "")
+                if ptype == "answer":
+                    rd.ended_with_answer = True
+                    content = str(parsed.get("content") or "")
+                    rd.final_answer_preview = _truncate(content, 500)
+                    rd.decision = "模型认为信息已足够，本轮直接作答（不再调工具）。"
+                    human_lines = [
+                        "",
+                        "【模型在想什么】",
+                        f"  {rd.thought or '（本轮回合未单独写出 Thought）'}",
+                        "",
+                        "【这一步决定做什么】",
+                        f"  {rd.decision}",
+                    ]
+                    if content.strip():
+                        human_lines.extend(["", "【答复预览】", f"  {_truncate(content.replace(chr(10), chr(10) + '  '), 1500)}"])
+                    _append_human_block(human_lines)
+                elif ptype == "native":
+                    tool = str(parsed.get("tool") or "")
+                    rd.tool_id = tool
+                    rd.tool_where = _tool_where_line(tool)
+                    rd.decision = f"调用工具 `{tool}`"
+                    if tool not in j.tools_used:
+                        j.tools_used.append(tool)
+                    human_lines = [
+                        "",
+                        "【模型在想什么】",
+                        f"  {rd.thought or '（本轮回合未单独写出 Thought）'}",
+                        "",
+                        "【这一步决定做什么】",
+                        f"  {rd.decision}",
+                        "",
+                        "【工具在哪执行】",
+                        f"  {rd.tool_where}",
+                    ]
+                    _append_human_block(human_lines)
+                elif ptype == "delegate":
+                    rd.tool_id = "delegate"
+                    rd.decision = "把任务拆给多个子 Agent 并行处理。"
+                    j.tools_used.append("delegate")
+                    _append_human_block([
+                        "",
+                        "【模型在想什么】",
+                        f"  {rd.thought or '（未写 Thought）'}",
+                        "",
+                        "【这一步决定做什么】",
+                        f"  {rd.decision}",
+                    ])
+    except Exception:
+        pass
 
 
 def log_tool_call_full(iteration: int, tool: str, action_input: str, *, note: str = "") -> None:
     body = f"tool_id={tool or ''}\n{note}\n\n--- Action Input 全文 ---\n{action_input or ''}"
     append_section(f"[ReAct 第 {iteration} 轮] 工具调用（完整入参）", body)
+    try:
+        j = _journal()
+        if j is not None:
+            rd = j.current_round(iteration)
+            rd.tool_id = tool or rd.tool_id
+            rd.tool_input_brief = _brief_action_input(tool, action_input)
+            if tool and tool not in j.tools_used:
+                j.tools_used.append(tool)
+            _append_human_block([
+                "",
+                "【传给工具的参数（摘要）】",
+                f"  {rd.tool_input_brief}",
+            ])
+    except Exception:
+        pass
 
 
 def log_observation_full(
@@ -463,6 +902,40 @@ def log_observation_full(
         note += f"\n传入 LLM 的 observation 长度={sent_to_llm_len}"
     body = f"{note}\n\n--- Observation 全文（写入日志前未做截断） ---\n{observation_full or ''}"
     append_section(f"[ReAct 第 {iteration} 轮] 工具返回 Observation", body)
+    try:
+        j = _journal()
+        if j is not None:
+            rd = j.current_round(iteration)
+            rd.observation_brief = _brief_observation(tool, observation_full or "")
+            _append_human_block([
+                "",
+                "【工具返回了什么（人话摘要）】",
+                f"  {rd.observation_brief}",
+                "",
+                "  → 以上内容会作为「Observation」喂回模型，进入下一轮推理。",
+            ])
+    except Exception:
+        pass
+
+
+def finalize_top_level_turn(
+    answer: str,
+    *,
+    delegate_depth: int = 0,
+    run_id: str = "",
+    channel: str = "",
+    tag: str = "final_answer",
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """顶层 run_agent 任意出口调用；子 Agent（delegate_depth>0）不写复盘。"""
+    if delegate_depth != 0:
+        return
+    ex = dict(extra or {})
+    if run_id:
+        ex.setdefault("run_id", run_id)
+    if channel:
+        ex.setdefault("channel", channel)
+    append_final(tag, answer or "", extra=ex or None)
 
 
 def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) -> None:
@@ -470,6 +943,17 @@ def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) ->
         flush_stream_summary()
     except Exception:
         pass
+    j = _journal()
+    if j is not None:
+        if (text or "").strip() and not j.final_answer:
+            j.final_answer = text.strip()
+        j.end_tag = tag
+        if not j.recap_written:
+            try:
+                _write_human_session_recap(j)
+                j.recap_written = True
+            except Exception:
+                pass
     body = text or ""
     if extra:
         try:
@@ -482,4 +966,8 @@ def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) ->
             body = f"{body}\n\nextra={extra!r}"
     append_section(f"[本轮结束] {tag}", body)
     if not _single_file_overwrite_mode():
+        p = _turn_log_path.get()
+        if p is not None:
+            _turn_log_path_settled.set(p)
         _turn_log_path.set(None)
+        _human_journal.set(None)

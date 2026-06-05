@@ -41,15 +41,16 @@ def test_format_tasks_cell_no_etc_when_many_tasks():
     assert cell.count("<br>") == 5
 
 
-def test_normalize_legacy_semicolon_cell():
+def test_normalize_legacy_semicolon_cell_multiline():
     raw = (
         "【P1】**在线奖励-弹窗** · 开发中；"
         "【P0】**Laro GO** · 🔵 按时完成"
     )
     out = normalize_personnel_task_cell_text(raw)
     assert "**" not in out
-    assert "<br>" in out
+    assert "<br>" in out.lower()
     assert "；" not in out
+    assert "等" not in out
 
 
 def test_polish_personnel_matrix_normalizes_task_column():
@@ -60,6 +61,8 @@ def test_polish_personnel_matrix_normalizes_task_column():
 """
     out = polish_personnel_matrix_in_markdown(mc, sort_rows=False)
     row = [ln for ln in out.splitlines() if "Baojing" in ln][0]
-    assert "**" not in row
-    assert "<br>" in row or "开发中" in row
-    assert "；" not in row.split("|")[2] if "|" in row else True
+    task_cell = row.split("|")[2] if row.count("|") >= 2 else row
+    assert "**" not in task_cell
+    assert "<br>" in task_cell.lower()
+    assert "；" not in task_cell
+    assert "等" not in task_cell

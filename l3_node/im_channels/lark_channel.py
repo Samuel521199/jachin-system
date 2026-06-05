@@ -131,6 +131,11 @@ def create_lark_send_reply(config: dict[str, Any]) -> Callable[[str, str], bool]
         if not chat_id or not text:
             return False
         try:
+            from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+
+            text = sanitize_final_answer_for_lark_im(str(text))
+            if not text.strip():
+                return False
             token = get_tenant_access_token(
                 app_id=app_id, app_secret=app_secret, api_base=api_base
             )

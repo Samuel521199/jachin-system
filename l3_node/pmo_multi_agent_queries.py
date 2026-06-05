@@ -616,3 +616,59 @@ def sql_worker_c_c2(sprints: list[str]) -> str:
         f"  AND json_extract(fields, '$.Sprint') IN {in_clause}\n"
         "ORDER BY sprint, task_no LIMIT 200"
     )
+
+
+WORKER_D_MAX_ITERATIONS = 4
+WORKER_D_AGENT_MAX_ITERATIONS = 3
+WORKER_D_TASK_PREVIEW = "D-TOOL（宿主已预取 completed_epics[] · 发版邮件窗）"
+
+_WORKER_D_TABLE_BLOCK = (
+    "**📦 Worker D · 发版 Epic 清单（禁止读人员表 / Version Goal 辅表）**：\n"
+    "- **唯一工具**：`core:pmo_release_epic_mapping`（Vivian 邮箱 + vewpI8lyYw 完成度 100% Epic）。\n"
+    "- **禁止** `core:db_query`；**禁止** Worker B/C 的 B-SUP / C-2 SQL。\n"
+)
+
+_WORKER_D_TOOL_FIRST_BLOCK = (
+    "**步骤 0（必须优先 · D-TOOL）**：\n"
+    "1. 若【宿主预取 JSON】已含 `markdown_section` 或 `completed_sql_ids` 含 **D-TOOL**，"
+    "**禁止**重跑步骤 0；直接复制 window_* / completed_epics[] / markdown_section → Final Answer。\n"
+    "2. 否则 Action: core:pmo_release_epic_mapping\n"
+    '   Action Input: {}\n'
+    "3. Observation status=ok → 填入 completed_epics[]、completed_count、markdown_section、"
+    "window_since/window_until、since_mail_subject、since_maintenance_date；"
+    "completed_sql_ids 含 **D-TOOL** → Final Answer。\n"
+    "4. **仅**步骤 0 失败时，可再调 **1 次** core:pmo_release_epic_mapping（禁止同参无限重试）。\n\n"
+)
+
+_WORKER_D_HOST_AGENT_BLOCK = (
+    "**【宿主预取 · 已完成 D-TOOL】**（见 user 消息末尾【宿主预取 JSON】）\n"
+    "⛔ **禁止**重跑 core:pmo_release_epic_mapping（避免重复调邮件 API）。\n"
+    "⛔ **禁止** core:db_query / Version Goal 统计 / 人员表查询。\n"
+    "Final Answer：**原样保留**宿主 completed_epics[]、markdown_section、window 字段，"
+    '`completed_sql_ids`: ["D-TOOL"]。\n\n'
+)
+
+WORKER_D_AGENT_TASK = (
+    "【Worker D · ReAct 段 · D-TOOL 优先 · 发版邮件窗已完成 Epic】\n"
+    + _WORKER_D_TOOL_FIRST_BLOCK
+    + _WORKER_D_HOST_AGENT_BLOCK
+    + _HONESTY_BLOCK
+    + _WORKER_D_TABLE_BLOCK
+    + "Thought 开头写「已完成: D-TOOL(宿主) 或 D-TOOL …」。\n\n"
+    "Final Answer JSON 结构：\n"
+    "  window_since, window_until（ISO 8601）\n"
+    "  since_mail_subject, since_maintenance_date（可选）\n"
+    "  completed_epics[]（顶层 Epic：epic_name, priority, sprint, completion_date, person）\n"
+    "  completed_count\n"
+    "  markdown_section（📦 GFM 段，供 Publisher 拼接）\n"
+    '  completed_sql_ids: ["D-TOOL"]\n'
+    "  error_reason（仅邮件/镜像失败时）\n"
+)
+
+WORKER_D_TASK = WORKER_D_AGENT_TASK
+
+
+def build_worker_d_agent_task(host_seed: dict | None = None) -> str:
+    """FanOut Worker D ReAct 任务体（宿主预取为主，无 SQL 注入）。"""
+    _ = host_seed  # 保留签名与 B/C 对齐
+    return WORKER_D_AGENT_TASK

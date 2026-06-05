@@ -1,4 +1,4 @@
-"""
+﻿"""
 WebSocket / 终端 UI 推送前的回复净化：减少 Thought、ReAct 标签与口吃式重复泄漏到用户可见区。
 
 环境变量：
@@ -107,6 +107,18 @@ def sanitize_final_answer_for_ui(text: str) -> str:
     s = _RE_OBSERVATION_LINE.sub("", s)
     s = _collapse_stutter(s.strip())
     return s
+
+
+def sanitize_final_answer_for_lark_im(text: str) -> str:
+    """
+    飞书单聊/群聊 Agent 纯文本回复（``msg_type=text``）推送前净化。
+
+    Lark 文本消息不渲染 Markdown，模型输出的 ``**加粗**`` 会以字面量 ``**`` 展示，影响阅读。
+    """
+    s = sanitize_final_answer_for_ui(text)
+    if not s:
+        return s
+    return s.replace("**", "")
 
 
 def _collapse_stutter(s: str) -> str:

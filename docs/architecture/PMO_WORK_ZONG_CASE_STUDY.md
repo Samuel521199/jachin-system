@@ -232,6 +232,8 @@ run_worker_b_host_bootstrap()
 
 这是给 PM 看「辅表填没填」的，**不进** 📊 大需求主表。
 
+> **2026-06-05 更新**：产品口径已改为「自上一封生产发版公告邮件起，已完成顶层 Epic 清单」。实现与全流程复盘见 [`PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md`](./PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md)；代码入口 `l3_node/tools/pmo_release_epic_mapping.py`，CLI 旗标 `--release-epic-mapping`。
+
 #### 积木 D：推送前还要过一道「抛光」
 
 `polish_pmo_war_report_markdown(md)` 会在发飞书前自动：
