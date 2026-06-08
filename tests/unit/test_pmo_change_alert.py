@@ -8,10 +8,43 @@ from l3_node.tools.pmo_change_alert import (
     _route_axes,
     _should_push,
     analyze_change_events,
+    build_change_alert_prose_brief,
     format_change_alert_markdown,
     format_change_alert_narrative_markdown,
     human_change_alert_title,
 )
+
+
+def test_parse_assignees_lark_person_json() -> None:
+    raw = '[{"email": "vivian@herontech.net", "en_name": "Vivian", "name": "Vivian"}]'
+    persons, warnings = _parse_assignees(raw)
+    assert persons == ["Vivian"]
+    assert warnings == []
+
+
+def test_task7_future_sprint_all_clear() -> None:
+    vivian_json = '[{"email": "vivian@herontech.net", "en_name": "Vivian", "name": "Vivian"}]'
+    evt = {
+        "change_type": "updated",
+        "label": "任务7",
+        "after": {
+            "Requirement": "任务7",
+            "Person in charge/Participant": vivian_json,
+            "Sprint": "2026/06/08-Sprint",
+        },
+        "changed_fields": {},
+    }
+    fact = analyze_change_events(
+        [evt],
+        personnel_seed={
+            "current_sprint": "2026/06/01-Sprint",
+            "personnel_tasks": [],
+        },
+        today="2026-06-08",
+    )
+    assert fact["analyzed_events"][0]["assignees"] == ["Vivian"]
+    assert fact["should_push"] is False
+    assert fact["change_alert_result"] == "all_clear"
 
 
 def test_parse_assignees_team_skipped() -> None:
@@ -132,6 +165,11 @@ def test_narrative_markdown_no_technical_codes() -> None:
     assert "Gavin" in md
     assert "FB外跳" in md
     assert "| :--- |" not in md
+    assert "→" not in md
+    assert "【定调】" in md
+    assert "【变更】" in md
+    assert "【影响】" in md
+    assert "change_alert_result" not in md
     title = human_change_alert_title(fact)
     assert "Gavin" in title
     assert "麻将" in title
@@ -142,3 +180,21 @@ def test_should_push_all_clear() -> None:
     personnel = {"verdict": "ok", "people": []}
     project = {"verdict": "ok", "risks": []}
     assert _should_push(schedule, personnel, project, severity_score=10) is False
+
+
+def test_change_alert_dedup_fingerprint_stable() -> None:
+    from l3_node.tools.pmo_change_alert import (
+        _change_alert_dedup_fingerprint,
+        _dedup_mark_pushed,
+        _dedup_recently_pushed,
+        _DEDUP_STORE_PATH,
+    )
+
+    events = [{"record_id": "rec1", "change_type": "updated", "label": "任务A"}]
+    fact = {"change_alert_result": "alert_sent", "should_push": True, "max_severity_score": 20}
+    fp = _change_alert_dedup_fingerprint(events, fact)
+    assert fp == _change_alert_dedup_fingerprint(events, fact)
+    if _DEDUP_STORE_PATH.is_file():
+        _DEDUP_STORE_PATH.unlink()
+    _dedup_mark_pushed(fp)
+    assert _dedup_recently_pushed(fp) is True

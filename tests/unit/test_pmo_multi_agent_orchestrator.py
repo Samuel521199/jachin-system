@@ -101,6 +101,25 @@ def test_worker_d_covers_release_mapping():
     assert WORKER_D_AGENT_MAX_ITERATIONS <= 4
 
 
+def test_phase1_fanout_worker_d_only():
+    seed = {
+        "completed_count": 2,
+        "markdown_section": "### **📦 版本发布需求映射**",
+        "completed_sql_ids": ["D-TOOL"],
+    }
+    items = _phase1_fanout_items(host_d_seed=seed, include_workers=frozenset({"d"}))
+    assert len(items) == 1
+    assert items[0]["max_iterations"] == WORKER_D_AGENT_MAX_ITERATIONS
+    assert "D-TOOL" in items[0]["task"]
+
+
+def test_phase1_fanout_abc_excludes_worker_d():
+    items = _phase1_fanout_items(include_workers=frozenset({"a", "b", "c"}))
+    assert len(items) == 3
+    previews = [it.get("_debug_agent_label") for it in items]
+    assert "Worker D" not in previews
+
+
 def test_phase1_fanout_worker_d_uses_host_seed():
     seed = {
         "completed_epics": [{"epic_name": "Laro GO", "priority": "P0"}],

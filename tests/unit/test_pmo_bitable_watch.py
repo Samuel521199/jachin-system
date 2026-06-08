@@ -57,9 +57,9 @@ def test_format_change_summary_markdown() -> None:
                 "changed_fields": {"Requirement": {"before": "", "after": "测试需求"}},
             }
         ],
-        table_id="tblB2uMLGIQrAttB",
+        table_id="tblfK9gk6vTQpJtB",
         view_id="vewpI8lyYw",
     )
     assert "多维表变更回调" in md
-    assert "tblB2uMLGIQrAttB" in md
+    assert "tblfK9gk6vTQpJtB" in md
     assert "新增" in md

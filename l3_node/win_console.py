@@ -1,4 +1,4 @@
-"""
+﻿"""
 Windows：为 L3 子进程分配独立控制台，使打包/桌面拉起时也能看到与开发机类似的实时日志。
 
 - 已由用户终端启动（已有控制台）时不处理。
@@ -24,6 +24,21 @@ def wants_l3_console_window() -> bool:
 def maybe_attach_windows_console() -> None:
     if sys.platform != "win32":
         return
+    if (os.environ.get("JACHIN_PMO_COPILOT_RUN") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    try:
+        from l3_node.pmo_copilot_env import is_pmo_copilot_cli_argv
+
+        if is_pmo_copilot_cli_argv():
+            return
+    except Exception:
+        if "--run-pmo-copilot" in sys.argv:
+            return
     if not wants_l3_console_window():
         return
     try:

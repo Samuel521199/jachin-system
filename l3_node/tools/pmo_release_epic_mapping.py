@@ -1,16 +1,20 @@
 ﻿"""
 PMO 战报第三部分：版本发布需求映射 — 基于 Vivian 发版公告邮件窗口的已完成 Epic。
 
-时间窗：上一封「生产环境发版维护公告」邮件 internal_date → 当前时刻。
+时间窗：最近一封「生产环境发版维护公告」邮件 internal_date → 当前时刻。
 数据源：cron_thinker 同款飞书邮箱 API + pmo_raw_records（vewpI8lyYw）。
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 from core.cron_thinker import (
     RELEASE_TITLE_NEEDLE,
@@ -102,6 +106,45 @@ def _is_genuine_release_announcement(subject: str, body: str) -> bool:
     return parse_release_maintenance_date(f"{subj}\n{body or ''}") is not None
 
 
+def _is_transient_mail_api_error(msg: str) -> bool:
+    low = (msg or "").lower()
+    needles = (
+        "gateway timeout",
+        "timeout",
+        "timed out",
+        "try again",
+        "internal error",
+        "503",
+        "504",
+        "429",
+        "rate limit",
+        "connection reset",
+        "connection aborted",
+    )
+    return any(n in low for n in needles)
+
+
+def _mail_detail_retry_count() -> int:
+    raw = os.environ.get("PMO_RELEASE_MAIL_DETAIL_RETRY_COUNT", "3").strip()
+    try:
+        return max(1, min(6, int(raw)))
+    except ValueError:
+        return 3
+
+
+def _mail_list_retry_count() -> int:
+    raw = os.environ.get("PMO_RELEASE_MAIL_LIST_RETRY_COUNT", "2").strip()
+    try:
+        return max(1, min(4, int(raw)))
+    except ValueError:
+        return 2
+
+
+def _mail_retry_backoff_sec(attempt: int) -> float:
+    base = float(os.environ.get("PMO_RELEASE_MAIL_RETRY_BACKOFF_SEC", "1.5"))
+    return base * max(1, attempt + 1)
+
+
 def _mail_list_message_ids(
     *,
     token: str,
@@ -135,21 +178,59 @@ def _mail_list_message_ids(
     return out
 
 
-def _mail_get_message_full(
+def _mail_list_message_ids_with_retry(
+    *,
+    token: str,
+    api_base: str,
+    mailbox: str,
+    page_size: int,
+    folder_id: str = "INBOX",
+    max_pages: int = 5,
+) -> tuple[list[str], str | None]:
+    last_err: str | None = None
+    for attempt in range(_mail_list_retry_count()):
+        try:
+            return (
+                _mail_list_message_ids(
+                    token=token,
+                    api_base=api_base,
+                    mailbox=mailbox,
+                    page_size=page_size,
+                    folder_id=folder_id,
+                    max_pages=max_pages,
+                ),
+                None,
+            )
+        except Exception as e:
+            last_err = str(e)
+            if _is_transient_mail_api_error(last_err) and attempt + 1 < _mail_list_retry_count():
+                logger.warning(
+                    "[PMO release mail] list retry %s/%s: %s",
+                    attempt + 1,
+                    _mail_list_retry_count(),
+                    last_err,
+                )
+                time.sleep(_mail_retry_backoff_sec(attempt))
+                continue
+            break
+    return [], last_err
+
+
+def _mail_get_message_once(
     *,
     token: str,
     api_base: str,
     mailbox: str,
     message_id: str,
+    format: str | None = "plain_text_full",
 ) -> dict[str, Any]:
     from core.cron_thinker import _b64url_to_str
 
     enc_box = quote(mailbox, safe="")
     enc_mid = quote(message_id, safe="")
-    url = (
-        f"{api_base}/mail/v1/user_mailboxes/{enc_box}/messages/{enc_mid}"
-        "?format=plain_text_full"
-    )
+    url = f"{api_base}/mail/v1/user_mailboxes/{enc_box}/messages/{enc_mid}"
+    if format:
+        url = f"{url}?format={quote(format, safe='')}"
     data = _lark_http_json_get(url, token, timeout=_mail_lark_http_timeout_sec())
     if _lark_feishu_errcode(data) != 0:
         raise RuntimeError(f"获取邮件详情失败: {data.get('msg')!s}")
@@ -167,6 +248,55 @@ def _mail_get_message_full(
         "internal_date": msg.get("internal_date"),
         "internal_dt": _ms_to_dt(msg.get("internal_date")),
     }
+
+
+def _mail_get_message_full(
+    *,
+    token: str,
+    api_base: str,
+    mailbox: str,
+    message_id: str,
+) -> dict[str, Any] | None:
+    """单封邮件详情：瞬态错误重试 + plain_text_full 失败时降级无 format。"""
+    formats: tuple[str | None, ...] = ("plain_text_full", None)
+    max_attempts = _mail_detail_retry_count()
+    last_err = ""
+    for fmt in formats:
+        for attempt in range(max_attempts):
+            try:
+                detail = _mail_get_message_once(
+                    token=token,
+                    api_base=api_base,
+                    mailbox=mailbox,
+                    message_id=message_id,
+                    format=fmt,
+                )
+                if detail:
+                    return detail
+                return None
+            except Exception as e:
+                last_err = str(e)
+                transient = _is_transient_mail_api_error(last_err)
+                if transient and attempt + 1 < max_attempts:
+                    logger.warning(
+                        "[PMO release mail] detail retry %s/%s mid=%s… fmt=%s: %s",
+                        attempt + 1,
+                        max_attempts,
+                        message_id[:12],
+                        fmt or "default",
+                        last_err,
+                    )
+                    time.sleep(_mail_retry_backoff_sec(attempt))
+                    continue
+                if fmt != formats[-1]:
+                    break
+                logger.warning(
+                    "[PMO release mail] detail failed mid=%s…: %s",
+                    message_id[:12],
+                    last_err,
+                )
+                return None
+    return None
 
 
 def _dedupe_release_mails_by_maintenance(
@@ -197,6 +327,66 @@ def _dedupe_release_mails_by_maintenance(
     return out
 
 
+def _fetch_release_mails_resilient(
+    *,
+    mailbox: str | None = None,
+    page_size: int = 20,
+    max_pages: int = 5,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+) -> dict[str, Any]:
+    """
+    拉取发版公告邮件；列表/详情瞬态失败重试，单封详情失败跳过（对齐 cron_thinker）。
+    返回 {mails, stats}。
+    """
+    if app_id and app_secret:
+        os.environ["LARK_APP_ID"] = app_id.strip()
+        os.environ["LARK_APP_SECRET"] = app_secret.strip()
+    mailbox = (mailbox or _mail_mailbox()).strip()
+    token, api_base = _mail_fetch_token_and_base()
+    ids, list_err = _mail_list_message_ids_with_retry(
+        token=token,
+        api_base=api_base,
+        mailbox=mailbox,
+        page_size=max(1, min(20, page_size)),
+        max_pages=max_pages,
+    )
+    stats: dict[str, Any] = {
+        "ids_scanned": len(ids),
+        "list_failed": bool(list_err),
+        "list_error": list_err,
+        "detail_failures": 0,
+        "failed_message_ids": [],
+    }
+    if list_err and not ids:
+        return {"mails": [], "stats": stats}
+
+    hits: list[dict[str, Any]] = []
+    for mid in ids:
+        detail = _mail_get_message_full(
+            token=token,
+            api_base=api_base,
+            mailbox=mailbox,
+            message_id=mid,
+        )
+        if not detail:
+            stats["detail_failures"] = int(stats["detail_failures"]) + 1
+            failed_ids = stats.setdefault("failed_message_ids", [])
+            if isinstance(failed_ids, list):
+                failed_ids.append(mid)
+            continue
+        subj = str(detail.get("subject") or "")
+        body = str(detail.get("body") or "")
+        if not _is_genuine_release_announcement(subj, body):
+            continue
+        raw = f"{subj}\n{body}"
+        maint = parse_release_maintenance_date(raw)
+        detail["maintenance_date"] = maint.isoformat() if maint else None
+        detail["title_needle"] = RELEASE_TITLE_NEEDLE
+        hits.append(detail)
+    return {"mails": _dedupe_release_mails_by_maintenance(hits), "stats": stats}
+
+
 def fetch_release_announcement_mails(
     *,
     mailbox: str | None = None,
@@ -208,38 +398,35 @@ def fetch_release_announcement_mails(
     """
     拉取邮箱内匹配发版公告标题的邮件（含 internal_date），按维护日降序（去重后）。
     """
-    if app_id and app_secret:
-        os.environ["LARK_APP_ID"] = app_id.strip()
-        os.environ["LARK_APP_SECRET"] = app_secret.strip()
-    mailbox = (mailbox or _mail_mailbox()).strip()
-    token, api_base = _mail_fetch_token_and_base()
-    ids = _mail_list_message_ids(
-        token=token,
-        api_base=api_base,
+    res = _fetch_release_mails_resilient(
         mailbox=mailbox,
-        page_size=max(1, min(20, page_size)),
+        page_size=page_size,
         max_pages=max_pages,
+        app_id=app_id,
+        app_secret=app_secret,
     )
-    hits: list[dict[str, Any]] = []
-    for mid in ids:
-        detail = _mail_get_message_full(
-            token=token,
-            api_base=api_base,
-            mailbox=mailbox,
-            message_id=mid,
+    stats = res.get("stats") if isinstance(res.get("stats"), dict) else {}
+    if stats.get("list_failed") and not res.get("mails"):
+        raise RuntimeError(str(stats.get("list_error") or "列出邮件失败"))
+    return list(res.get("mails") or [])
+
+
+def _mail_since_datetime(mail: dict[str, Any]) -> datetime | None:
+    """发版公告邮件作为统计起点的时刻（优先 internal_dt，否则维护日 00:00 UTC）。"""
+    since_dt = mail.get("internal_dt")
+    if since_dt is not None:
+        return since_dt
+    maint = mail.get("maintenance_date")
+    if not maint:
+        return None
+    try:
+        return datetime.combine(
+            date.fromisoformat(str(maint)[:10]),
+            datetime.min.time(),
+            tzinfo=timezone.utc,
         )
-        if not detail:
-            continue
-        subj = str(detail.get("subject") or "")
-        body = str(detail.get("body") or "")
-        if not _is_genuine_release_announcement(subj, body):
-            continue
-        raw = f"{subj}\n{body}"
-        maint = parse_release_maintenance_date(raw)
-        detail["maintenance_date"] = maint.isoformat() if maint else None
-        detail["title_needle"] = RELEASE_TITLE_NEEDLE
-        hits.append(detail)
-    return _dedupe_release_mails_by_maintenance(hits)
+    except ValueError:
+        return None
 
 
 def resolve_release_window(
@@ -250,8 +437,10 @@ def resolve_release_window(
     """
     确定 Epic 完成统计窗口。
 
-    - ``since``：上一封（第二新）发版公告邮件时间；仅一封时用该封时间。
+    - ``since``：**最近一封**（维护日最新）发版公告邮件发出时刻。
     - ``until``：当前时刻。
+
+    产品口径：自最近一次生产发版公告起，到此刻有哪些顶层 Epic 完成（100%）。
     """
     now = now or datetime.now(tz=timezone.utc)
     sorted_mails = list(mails)
@@ -264,21 +453,9 @@ def resolve_release_window(
             "since_mail": None,
             "latest_mail": None,
         }
-    latest = sorted_mails[0]
-    # 当前发版周期 = 最新维护日公告；统计窗起点 = 上一维护日公告发出时刻
-    since_mail = sorted_mails[1] if len(sorted_mails) > 1 else sorted_mails[0]
-    since_dt = since_mail.get("internal_dt")
-    if since_dt is None:
-        maint = since_mail.get("maintenance_date")
-        if maint:
-            try:
-                since_dt = datetime.combine(
-                    date.fromisoformat(str(maint)[:10]),
-                    datetime.min.time(),
-                    tzinfo=timezone.utc,
-                )
-            except ValueError:
-                since_dt = None
+    # mails 已按 maintenance_date 降序；[0] = 距离现在最近的一次发版公告
+    since_mail = sorted_mails[0]
+    since_dt = _mail_since_datetime(since_mail)
     return {
         "ok": True,
         "since": since_dt,
@@ -290,10 +467,10 @@ def resolve_release_window(
             "maintenance_date": since_mail.get("maintenance_date"),
         },
         "latest_mail": {
-            "message_id": latest.get("message_id"),
-            "subject": latest.get("subject"),
-            "internal_date": latest.get("internal_date"),
-            "maintenance_date": latest.get("maintenance_date"),
+            "message_id": since_mail.get("message_id"),
+            "subject": since_mail.get("subject"),
+            "internal_date": since_mail.get("internal_date"),
+            "maintenance_date": since_mail.get("maintenance_date"),
         },
         "mail_count": len(sorted_mails),
     }
@@ -405,9 +582,9 @@ def build_release_mapping_markdown(
     subj = _dash(since_mail.get("subject"))
     if len(subj) > 48:
         subj = subj[:45] + "…"
+    maint = _dash(since_mail.get("maintenance_date"))
     note = (
-        f"统计窗：自上一封发版公告（{subj} · {since_s}）至 {until_s}；"
-        f"邮箱 {mailbox or _mail_mailbox()}；"
+        f"统计窗：自最近发版公告（维护日 {maint} · {subj} · 邮件 {since_s}）至 {until_s}；"
         f"共 **{len(completed_epics)}** 个顶层 Epic 完成（完成度 100%）"
     )
 
@@ -450,18 +627,34 @@ def run_release_epic_mapping(
             "status": "failed",
             "error": "pmo_raw_records 为空，请先 INIT（core:pmo_mirror_import）",
         }
-    try:
-        mails = fetch_release_announcement_mails(
-            mailbox=mailbox,
-            page_size=page_size,
-            app_id=app_id,
-            app_secret=app_secret,
-        )
-    except Exception as e:
+    fetch_res = _fetch_release_mails_resilient(
+        mailbox=mailbox,
+        page_size=page_size,
+        app_id=app_id,
+        app_secret=app_secret,
+    )
+    mails = list(fetch_res.get("mails") or [])
+    stats = fetch_res.get("stats") if isinstance(fetch_res.get("stats"), dict) else {}
+    ids_scanned = int(stats.get("ids_scanned") or 0)
+    detail_failures = int(stats.get("detail_failures") or 0)
+
+    if stats.get("list_failed") and not mails:
+        list_err = str(stats.get("list_error") or "列出邮件失败")
         return {
             "status": "failed",
-            "error": f"拉取发版邮件失败: {e}",
+            "error": f"拉取发版邮件失败: {list_err}",
             "error_class": "transient",
+            "mail_fetch_stats": stats,
+        }
+    if not mails and ids_scanned > 0 and detail_failures >= ids_scanned:
+        return {
+            "status": "failed",
+            "error": (
+                f"拉取发版邮件失败: 已扫描 {ids_scanned} 封，"
+                f"详情全部失败（含 Gateway timeout 等）"
+            ),
+            "error_class": "transient",
+            "mail_fetch_stats": stats,
         }
 
     window = resolve_release_window(mails)
@@ -471,7 +664,8 @@ def run_release_epic_mapping(
         window=window,
         mailbox=mailbox,
     )
-    return {
+    degraded = detail_failures > 0 or bool(stats.get("list_failed"))
+    out: dict[str, Any] = {
         "status": "ok",
         "mailbox": mailbox or _mail_mailbox(),
         "window": window,
@@ -479,4 +673,9 @@ def run_release_epic_mapping(
         "completed_count": len(completed),
         "release_mails_found": len(mails),
         "markdown_section": md,
+        "degraded": degraded,
+        "mail_fetch_stats": stats,
     }
+    if degraded:
+        out["fallback_used"] = True
+    return out

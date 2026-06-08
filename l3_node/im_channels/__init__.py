@@ -3,6 +3,11 @@ IM 通道层 — Lark/Telegram 等同维度
 
 L3 启动时按 ~/.jachin/config/im_channels.yaml 加载配置，
 启动启用的入站通道（长连接等），与 L3 主进程解耦。
+
+长连接类型（可独立 enabled，多机部署时每台只开需要的）:
+  - lark: 主机器人 IM（PMO 触发 / 通用 / 招聘路由）
+  - lark_hr: HR 招聘专用机器人 IM（独立 app_id 时用）
+  - lark_pmo_bitable: PMO 多维表变更事件（非聊天）
 """
 from __future__ import annotations
 
@@ -16,12 +21,16 @@ from l3_node.im_channels.lark_channel import (
     LarkInboundChannel,
     create_lark_send_reply,
 )
+from l3_node.im_channels.pmo_bitable_channel import PmoBitableLarkInboundChannel
 
 logger = logging.getLogger(__name__)
 
+_IM_LARK_CHANNELS = frozenset({"lark", "lark_hr"})
+
 _REGISTRY: dict[str, type] = {
     "lark": LarkInboundChannel,
-    # "telegram": TelegramInboundChannel,  # future
+    "lark_hr": LarkInboundChannel,
+    "lark_pmo_bitable": PmoBitableLarkInboundChannel,
 }
 
 
@@ -58,7 +67,7 @@ def start_im_channels(
     cfg = load_config()
     channels = cfg.get("im_channels") or {}
     threads: list[threading.Thread] = []
-    lark_started = False
+    lark_im_started = False
 
     for ch_id, ch_cfg in channels.items():
         if not isinstance(ch_cfg, dict) or not ch_cfg.get("enabled", False):
@@ -68,12 +77,32 @@ def start_im_channels(
             logger.debug("[IM Channels] 未知通道 %s，跳过", ch_id)
             continue
 
-        if ch_id == "lark":
-            lark_started = True
-            send_fn = create_lark_send_reply(ch_cfg)
-        else:
+        ch_run = {**ch_cfg, "_channel_id": ch_id}
+
+        if ch_id == "lark_pmo_bitable":
+            channel = impl()
+            t = threading.Thread(
+                target=channel.start,
+                args=(ch_run, lambda *_a: None),
+                name=f"im-{ch_id}",
+                daemon=True,
+            )
+            t.start()
+            threads.append(t)
+            logger.info(
+                "[IM Channels] 已启动 %s 长连接（PMO 多维表变更事件；"
+                "凭证见 im_channels 或 pmo_bitable_watch.yaml）",
+                ch_id,
+            )
+            continue
+
+        if ch_id not in _IM_LARK_CHANNELS:
             logger.warning("[IM Channels] 通道 %s 暂未实现 send_reply", ch_id)
             continue
+
+        if ch_id == "lark":
+            lark_im_started = True
+        send_fn = create_lark_send_reply(ch_run, channel_id=ch_id)
 
         _im_timeout = float(os.environ.get("LARK_IM_AGENT_TIMEOUT", "180"))
         handler = create_im_message_handler(
@@ -86,19 +115,21 @@ def start_im_channels(
         channel = impl()
         t = threading.Thread(
             target=channel.start,
-            args=(ch_cfg, handler),
+            args=(ch_run, handler),
             name=f"im-{ch_id}",
             daemon=True,
         )
         t.start()
         threads.append(t)
-        logger.info("[IM Channels] 已启动 %s 入站通道（长连接），招聘测试请直接使用 Lark 发消息", ch_id)
+        logger.info(
+            "[IM Channels] 已启动 %s 入站 IM 长连接（本机接管该机器人私聊/群消息）",
+            ch_id,
+        )
 
-    if lark_started:
+    if lark_im_started:
         def _delayed_hr_online_briefing() -> None:
             import time
 
-            # 略晚于 Lark WS connect，且等 im_channels 凭证已参与首轮请求
             time.sleep(6.0)
             try:
                 from l3_node.channels.lark.hr_recruitment_notify import send_hr_l3_online_briefing_if_configured

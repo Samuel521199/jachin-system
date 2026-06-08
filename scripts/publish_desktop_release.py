@@ -16,7 +16,19 @@
   DESKTOP_RELEASES_S3_DISABLE_PROXY    默认视为开启：上传时直连 MinIO/S3（清环境变量代理 + botocore 禁用 proxies）。
                                        Windows 即使未设 HTTP_PROXY，系统代理（注册表/127.0.0.1:8800）也会让 boto 中途失败；
                                        若必须经 HTTP 代理访问 S3，请设为 0/false。
+  DESKTOP_RELEASES_S3_CONNECT_TIMEOUT  botocore 连接超时秒数，默认 30
+  DESKTOP_RELEASES_S3_READ_TIMEOUT     botocore 读超时秒数，默认 300（大文件 multipart 建议 ≥300）
+  DESKTOP_RELEASES_S3_UPLOAD_RETRIES   整次 upload_file 失败后的额外重试次数，默认 3
+  DESKTOP_RELEASES_S3_UPLOAD_MAX_CONCURRENCY  multipart 并发分片数，默认 4（网络不稳时可设为 1）
   DESKTOP_PUBLISH_LOG_DIR              发布/上传诊断日志目录（默认 Windows: %USERPROFILE%\\.jachin\\jachin_debug\\打包）
+
+从开发机上传 MinIO 的常见做法（MinIO 通常只监听 ECS 本机 127.0.0.1:9000）:
+  1) SSH 端口转发后本机发布:
+       ssh -L 9000:127.0.0.1:9000 root@<ECS公网IP>
+       set DESKTOP_RELEASES_S3_ENDPOINT=http://127.0.0.1:9000
+       python scripts\\publish_desktop_release.py --sign
+  2) 或在 ECS 上 scp 安装包后，用 ENDPOINT=http://127.0.0.1:9000 直接跑本脚本
+  3) 对象已在桶内时: python scripts\\publish_desktop_release.py --register-only
 
   NEXUS_BASE_URL                     例: http://localhost:3000（无尾斜杠）
   NEXUS_ADMIN_SECRET                 与 NEXUS_ADMIN_SECRET / X-Admin-Token 一致
@@ -530,6 +542,55 @@ class _S3UploadDiag:
         print(f"[ERROR] 上传失败；完整 traceback 已写入: {self.log_path}", file=sys.stderr)
 
 
+def _s3_int_env(name: str, default: int) -> int:
+    raw = (_env(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _format_s3_connectivity_hint(endpoint: str | None, exc: BaseException) -> str:
+    ep = endpoint or "<未设置 DESKTOP_RELEASES_S3_ENDPOINT>"
+    exc_name = type(exc).__name__
+    lines = [
+        "",
+        "[诊断] S3/MinIO 端点不可达或拒绝 HTTP 响应。",
+        f"  endpoint: {ep}",
+        f"  异常: {exc_name}: {exc}",
+        "",
+        "常见原因与处理:",
+        "  1) MinIO 只监听 127.0.0.1 —— 勿从外网直连 公网IP:9000；改用 SSH 隧道:",
+        "       ssh -L 9000:127.0.0.1:9000 root@<ECS公网IP>",
+        "       set DESKTOP_RELEASES_S3_ENDPOINT=http://127.0.0.1:9000",
+        "  2) ECS 上 MinIO 未启动 / 实例宕机 —— 登录服务器执行:",
+        "       curl -sS http://127.0.0.1:9000/minio/health/live",
+        "  3) 阿里云安全组未放行 TCP 9000（若确需公网直连 MinIO）",
+        "  4) 安装包已手动上传桶内 —— 仅登记 Nexus:",
+        "       python scripts/publish_desktop_release.py --register-only ...",
+        "",
+        "本机快速探测（PowerShell）:",
+        f'  curl.exe -v --connect-timeout 10 "{ep.rstrip("/")}/minio/health/live"',
+        "  若出现 Empty reply / Connection closed without response，说明 TCP 能连但对端未返回 HTTP。",
+    ]
+    return "\n".join(lines)
+
+
+def _preflight_s3(client: Any, bucket: str, endpoint: str | None, diag: "_S3UploadDiag") -> None:
+    diag._emit("preflight head_bucket")
+    try:
+        client.head_bucket(Bucket=bucket)
+        diag._emit("preflight head_bucket OK")
+    except BaseException as exc:
+        hint = _format_s3_connectivity_hint(endpoint, exc)
+        diag._emit("preflight FAILED " + repr(exc))
+        diag._emit(hint, to_stderr=False)
+        print(hint, file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
 def _s3_upload_should_bypass_proxy() -> bool:
     """
     是否直连 MinIO/S3（清环境变量代理 + botocore Config 禁用 proxies）。
@@ -575,6 +636,9 @@ def make_s3_client(*, force_direct: bool | None = None) -> tuple[Any, str]:
     cfg_kw: dict[str, Any] = {
         "signature_version": "s3v4",
         "s3": {"addressing_style": "path" if force_path else "auto"},
+        "connect_timeout": _s3_int_env("DESKTOP_RELEASES_S3_CONNECT_TIMEOUT", 30),
+        "read_timeout": _s3_int_env("DESKTOP_RELEASES_S3_READ_TIMEOUT", 300),
+        "retries": {"max_attempts": 10, "mode": "standard"},
     }
     if force_direct:
         cfg_kw["proxies"] = {"http": None, "https": None}
@@ -646,24 +710,63 @@ def upload_file_s3(
         try:
             from boto3.s3.transfer import TransferConfig  # type: ignore
 
+            max_conc = _s3_int_env("DESKTOP_RELEASES_S3_UPLOAD_MAX_CONCURRENCY", 4)
+            upload_retries = _s3_int_env("DESKTOP_RELEASES_S3_UPLOAD_RETRIES", 3)
             tcfg = TransferConfig(
                 multipart_threshold=8 * 1024 * 1024,
                 multipart_chunksize=16 * 1024 * 1024,
-                max_concurrency=10,
-                use_threads=True,
+                max_concurrency=max_conc,
+                use_threads=max_conc > 1,
             )
-            diag._emit("invoke client.upload_file (multipart, Callback=progress)")
-            client.upload_file(
-                str(local_path),
-                bucket,
-                object_key,
-                ExtraArgs=extra or None,
-                Config=tcfg,
-                Callback=diag.on_chunk,
-            )
+            _preflight_s3(client, bucket, ep, diag)
+
+            last_exc: BaseException | None = None
+            for attempt in range(1, upload_retries + 1):
+                if attempt > 1:
+                    wait_s = min(30, 2 ** (attempt - 1))
+                    diag._emit(
+                        f"upload retry {attempt}/{upload_retries} after {wait_s}s "
+                        f"(last={repr(last_exc)})"
+                    )
+                    print(
+                        f"[WARN] 上传失败，{wait_s}s 后重试 ({attempt}/{upload_retries})…",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_s)
+                    with diag._lock:
+                        diag.accumulated = 0
+                        diag._last_progress_bytes = 0
+                        diag._chunk_calls = 0
+
+                diag._emit(
+                    f"invoke client.upload_file attempt={attempt}/{upload_retries} "
+                    f"max_concurrency={max_conc} (multipart, Callback=progress)"
+                )
+                try:
+                    client.upload_file(
+                        str(local_path),
+                        bucket,
+                        object_key,
+                        ExtraArgs=extra or None,
+                        Config=tcfg,
+                        Callback=diag.on_chunk,
+                    )
+                    last_exc = None
+                    break
+                except BaseException as exc:
+                    last_exc = exc
+                    diag._emit(f"upload attempt {attempt} failed: {repr(exc)}")
+                    if attempt >= upload_retries:
+                        raise
+
+            if last_exc is not None:
+                raise last_exc
             diag.success()
         except BaseException as exc:
             diag.failure(exc)
+            hint = _format_s3_connectivity_hint(ep, exc)
+            diag._emit(hint, to_stderr=False)
+            print(hint, file=sys.stderr)
             raise
 
 

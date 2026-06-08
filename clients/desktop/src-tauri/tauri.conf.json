@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.72",
+  "version": "0.9.84",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -109,6 +109,7 @@
     "resources": {
       "../../../dist_jachin_desktop/bin/": "bin/",
       "../../../dist_jachin_desktop/config/": "config/",
+      "../../../dist_jachin_desktop/skills_repo/": "skills_repo/",
       "../../../dist_jachin_desktop/scripts/": "scripts/",
       "../../../dist_jachin_desktop/logs/": "logs/",
       "../../../dist_jachin_desktop/runtime/": "runtime/",

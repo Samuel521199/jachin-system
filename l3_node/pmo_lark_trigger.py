@@ -143,22 +143,9 @@ def _build_gateway_skill_inject(skill_path: Path, meta: dict[str, Any], body: st
 
 def _get_pmo_skill_path() -> Path | None:
     """查找 PMO SKILL.md，与 run_pmo_copilot_skill.py 路径一致。"""
-    try:
-        from l3_node.paths import get_app_root
-        root = get_app_root()
-    except Exception:
-        root = Path(__file__).parent.parent
-    jachin = Path(__file__).parent.parent / ".."  # 简单 fallback
+    from l3_node.pmo_skill_paths import resolve_pmo_skill_md
 
-    candidates = [
-        root / "skills_repo" / "pmo-copilot" / "SKILL.md",
-        Path.home() / ".jachin" / "l3_skill_cache" / "pmo-copilot" / "SKILL.md",
-        Path.home() / ".jachin" / "l3_mcp_cache" / "com.jachin.pmo-copilot" / "SKILL.md",
-    ]
-    for p in candidates:
-        if p.is_file():
-            return p.resolve()
-    return None
+    return resolve_pmo_skill_md()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -191,7 +178,7 @@ def _build_pmo_confirm_card(source_text: str = "") -> dict[str, Any]:
                         f"{hint_prefix}"
                         "请回复序号确认要执行的操作：\n\n"
                         "**1️⃣  生成全量看板**\n"
-                        "拉取所有飞书多维表，生成需求进度全览 + 人员任务矩阵 + 版本需求映射，推送到 PMO 主群与监控群。\n\n"
+                        "拉取所有飞书多维表，生成需求进度全览 + 人员任务矩阵 + 版本需求映射，并推送飞书战报卡片。\n\n"
                         "**2️⃣  巡检异常人员**\n"
                         "仅检查当前任务状态，标记阻塞 / 逾期 / 空载人员，输出告警摘要（分支 B 预警）。\n\n"
                         "**3️⃣  仅回答简单问题**\n"
@@ -285,7 +272,7 @@ _ACTION_MESSAGES: dict[str, str] = {
     "full_board": (
         "请严格按系统提示中的 PMO-Copilot SKILL：按「分支 A / 定时宏观看板」"
         "拉取 §1.1 全部种子链接并汇总，生成包含三张核心表的 Markdown 战报，"
-        "并通过 mcp:atom_lark_notifier 推送到 PMO 主群与监控群。"
+        "并通过 mcp:atom_lark_notifier 推送飞书消息卡片（对用户仅确认已推送，禁止提及内部收件会话）。"
     ),
     "anomaly": (
         "请严格按系统提示中的 PMO-Copilot SKILL：按「分支 B / 表格变更预警」"
@@ -304,6 +291,8 @@ async def _run_pmo_skill_coro(
     engine: Any,
     session_msgs: list[dict[str, Any]],
     chat_id: str,
+    *,
+    trigger_source: str = "pmo_lark_trigger",
 ) -> str:
     """
     以 pmo_copilot_cli 信道完整执行 PMO Skill 任务。
@@ -335,68 +324,181 @@ async def _run_pmo_skill_coro(
         # 继续运行，工具白名单为空时 run_agent 会使用完整工具池
 
     pmo_user_msg = _ACTION_MESSAGES.get(action_key, user_msg)
+    _src = (trigger_source or "pmo_lark_trigger").strip() or "pmo_lark_trigger"
     implicit: dict[str, Any] = {
         "channel": "pmo_copilot_cli",
-        "source": "pmo_lark_trigger",
+        "source": _src,
         "lark_chat_id": chat_id,
     }
 
-    bundle = build_gateway_bundle(
-        user_input=pmo_user_msg,
-        short_memory_context="",
-        correlation_id=None,
-        implicit_attribution=implicit,
+    import os
+    import uuid
+
+    from l3_node.pmo_copilot_debug_file import (
+        begin_pmo_debug_log_for_im_trigger,
+        finalize_pmo_debug_log,
     )
 
+    _prev_pmo_log_env = os.environ.get("JACHIN_PMO_COPILOT_DEBUG_LOG")
+    _corr = str(uuid.uuid4())
+    answer = ""
     try:
-        from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
+        try:
+            _dbg_path = begin_pmo_debug_log_for_im_trigger(
+                pmo_user_msg,
+                source=_src,
+                chat_id=chat_id,
+                correlation_id=_corr,
+                max_iterations=32,
+            )
+            logger.info("[PMO Trigger] 详细调试日志: %s", _dbg_path)
+        except Exception as _dbg_e:
+            logger.warning("[PMO Trigger] 调试日志初始化跳过: %s", _dbg_e)
 
-        await apply_gateway_ingress_pipeline(bundle, pmo_user_msg, [], run_id="")
-    except Exception as e:
-        logger.debug("[PMO Trigger] gateway ingress pipeline 跳过: %s", e)
+        bundle = build_gateway_bundle(
+            user_input=pmo_user_msg,
+            short_memory_context="",
+            correlation_id=_corr,
+            implicit_attribution=implicit,
+        )
 
-    expanded = expand_allowed_skills_with_implicit_sqlite_read(list(base_allow))
-    expanded = expand_allowed_skills_with_local_mcp(expanded)
-    tools = await assemble_tool_pool(
-        allowed_skills=expanded,
-        gateway_bundle=bundle,
-        bg_channel="pmo_copilot_cli",
+        try:
+            from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
+
+            await apply_gateway_ingress_pipeline(bundle, pmo_user_msg, [], run_id=_corr)
+        except Exception as e:
+            logger.debug("[PMO Trigger] gateway ingress pipeline 跳过: %s", e)
+
+        expanded = expand_allowed_skills_with_implicit_sqlite_read(list(base_allow))
+        expanded = expand_allowed_skills_with_local_mcp(expanded)
+        tools = await assemble_tool_pool(
+            allowed_skills=expanded,
+            gateway_bundle=bundle,
+            bg_channel="pmo_copilot_cli",
+        )
+
+        gateway_block = _build_gateway_skill_inject(skill_path, meta, skill_body)
+
+        fmt_sig = analyze_output_format_signals(pmo_user_msg)
+        prompt_style = "slim_user_led" if fmt_sig.slim_system_prompt() else "full"
+
+        full_system = await _build_system_prompt(
+            tools=tools,
+            allow_delegate=True,
+            prompt_cycle=None,
+            recruitment_longform=False,
+            hr_domain_prompt_active=False,
+            prompt_style=prompt_style,
+            pure_json_contract=False,
+            gateway_inject=gateway_block,
+            safety_lock_user_text=pmo_user_msg,
+            chief_advisor_mode=False,
+            environment_report_block="",
+            semantic_layer=None,
+            experience_few_shots="",
+            realtime_web_grounding_block="",
+            domain_experts=None,
+        )
+
+        answer = await run_agent(
+            pmo_user_msg,
+            engine,
+            max_iterations=32,
+            _session_messages=list(session_msgs),
+            _system_prompt_override=full_system,
+            _allowed_skills_override=base_allow if base_allow else None,
+            gateway_context_bundle=bundle,
+            implicit_attribution=implicit,
+        )
+        return _shorten_pmo_lark_dispatcher_reply(answer)
+    finally:
+        try:
+            finalize_pmo_debug_log(answer)
+        except Exception as _fin_e:
+            logger.debug("[PMO Trigger] 调试日志收尾跳过: %s", _fin_e)
+        if _prev_pmo_log_env is not None:
+            os.environ["JACHIN_PMO_COPILOT_DEBUG_LOG"] = _prev_pmo_log_env
+        else:
+            os.environ.pop("JACHIN_PMO_COPILOT_DEBUG_LOG", None)
+
+
+def _shorten_pmo_lark_dispatcher_reply(answer: str) -> str:
+    """
+    PMO 战报应经 atom_lark_notifier / macro_dashboard_push 以卡片送达。
+    若模型仍把三表 Markdown 写进 Final Answer，勿再当纯文本发回会话。
+    """
+    a = (answer or "").strip()
+    if not a:
+        return "✅ PMO 任务已完成；战报请以群内飞书消息卡片为准。"
+    if re.search(
+        r"(已成功|已经).{0,40}(推送|送达|发送).{0,24}(飞书|卡片|群)|"
+        r"macro_dashboard_push|atom_lark_notifier",
+        a,
+        re.I,
+    ):
+        if len(a) <= 400 and "|" not in a[:500]:
+            return a
+    looks_like_war_report = (
+        ("需求进度" in a or "Executive Summary" in a or "📊" in a)
+        and "|" in a
+        and ("---" in a or "|:---" in a)
     )
+    if looks_like_war_report or (len(a) > 600 and a.count("|") >= 8):
+        return (
+            "✅ PMO 宏观看板战报已通过 **飞书消息卡片** 推送到群内，"
+            "请在会话中查看带表格翻页的卡片（非本段纯文本 Markdown）。"
+        )
+    try:
+        from l3_node.pmo_user_visible_sanitize import sanitize_pmo_confidential_wording
 
-    gateway_block = _build_gateway_skill_inject(skill_path, meta, skill_body)
+        a = sanitize_pmo_confidential_wording(a)
+    except Exception:
+        pass
+    return a
 
-    fmt_sig = analyze_output_format_signals(pmo_user_msg)
-    prompt_style = "slim_user_led" if fmt_sig.slim_system_prompt() else "full"
 
-    full_system = await _build_system_prompt(
-        tools=tools,
-        allow_delegate=True,
-        prompt_cycle=None,
-        recruitment_longform=False,
-        hr_domain_prompt_active=False,
-        prompt_style=prompt_style,
-        pure_json_contract=False,
-        gateway_inject=gateway_block,
-        safety_lock_user_text=pmo_user_msg,
-        chief_advisor_mode=False,
-        environment_report_block="",
-        semantic_layer=None,
-        experience_few_shots="",
-        realtime_web_grounding_block="",
-        domain_experts=None,
-    )
-
-    answer = await run_agent(
-        pmo_user_msg,
+async def run_pmo_heavy_task_from_lark(
+    action_key: str,
+    user_msg: str,
+    engine: Any,
+    session_msgs: list[dict[str, Any]],
+    chat_id: str,
+    *,
+    trigger_source: str = "pmo_lark_trigger",
+) -> str:
+    """供 ``#*#`` / ``/pmo`` 等入口复用：完整 PMO Skill + 缩短 dispatcher 回执。"""
+    return await _run_pmo_skill_coro(
+        action_key,
+        user_msg,
         engine,
-        max_iterations=32,
-        _session_messages=list(session_msgs),
-        _system_prompt_override=full_system,
-        _allowed_skills_override=base_allow if base_allow else None,
-        gateway_context_bundle=bundle,
-        implicit_attribution=implicit,
+        session_msgs,
+        chat_id,
+        trigger_source=trigger_source,
     )
-    return answer or ""
+
+
+def run_pmo_heavy_task_from_lark_sync(
+    action_key: str,
+    user_msg: str,
+    engine: Any,
+    session_msgs: list[dict[str, Any]],
+    chat_id: str,
+    loop: asyncio.AbstractEventLoop,
+    *,
+    trigger_source: str = "pmo_lark_trigger",
+) -> str:
+    future = asyncio.run_coroutine_threadsafe(
+        run_pmo_heavy_task_from_lark(
+            action_key,
+            user_msg,
+            engine,
+            session_msgs,
+            chat_id,
+            trigger_source=trigger_source,
+        ),
+        loop,
+    )
+    return future.result(timeout=None) or ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -455,11 +557,9 @@ def try_pmo_lark_intercept(
             send_reply_fn(cid, ack)
 
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                _run_pmo_skill_coro(action_from_card, norm, engine, session_messages, cid),
-                loop,
+            return run_pmo_heavy_task_from_lark_sync(
+                action_from_card, norm, engine, session_messages, cid, loop
             )
-            return future.result(timeout=None) or ""
         except Exception as e:
             logger.exception("[PMO Trigger] PMO 任务执行失败 action=%s: %s", action_from_card, e)
             return f"⚠️ PMO 任务执行出错：{e}"
@@ -475,11 +575,9 @@ def try_pmo_lark_intercept(
         cmd_msg = _extract_exact_custom_msg(norm) or _PMO_EXACT_DEFAULT_MSG
 
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                _run_pmo_skill_coro("full_board", cmd_msg, engine, session_messages, cid),
-                loop,
+            return run_pmo_heavy_task_from_lark_sync(
+                "full_board", cmd_msg, engine, session_messages, cid, loop
             )
-            return future.result(timeout=None) or ""
         except Exception as e:
             logger.exception("[PMO Trigger] 精确 PMO 任务执行失败: %s", e)
             return f"⚠️ PMO 任务执行出错：{e}"
@@ -494,7 +592,7 @@ def try_pmo_lark_intercept(
                 _mark_card_pending(cid, norm)
                 return (
                     "（以上卡片请选择操作，或直接回复 1 / 2 / 3；"
-                    "若卡片未显示请回复"生成全量看板"或"巡检异常人员"）"
+                    '若卡片未显示请回复「生成全量看板」或「巡检异常人员」）'
                 )
             else:
                 # 卡片发送失败，降级为文字提示

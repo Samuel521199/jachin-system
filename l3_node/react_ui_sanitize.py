@@ -106,7 +106,18 @@ def sanitize_final_answer_for_ui(text: str) -> str:
     s = _RE_ACTION_INPUT_BLOCK.sub("", s)
     s = _RE_OBSERVATION_LINE.sub("", s)
     s = _collapse_stutter(s.strip())
+    try:
+        from l3_node.pmo_user_visible_sanitize import sanitize_pmo_confidential_wording
+
+        s = sanitize_pmo_confidential_wording(s)
+    except Exception:
+        pass
     return s
+
+
+def sanitize_user_visible_answer(text: str) -> str:
+    """所有对用户可见的出口（L3 终端/WS、飞书 IM 等）在 ReAct 净化后统一脱敏 PMO 机密措辞。"""
+    return sanitize_final_answer_for_ui(text)
 
 
 def sanitize_final_answer_for_lark_im(text: str) -> str:

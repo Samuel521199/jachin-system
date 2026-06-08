@@ -8,7 +8,7 @@ def test_parse_lark_bitable_record_changed_filters_table() -> None:
     body = {
         "header": {"event_type": "drive.file.bitable_record_changed_v1"},
         "event": {
-            "table_id": "tblB2uMLGIQrAttB",
+            "table_id": "tblfK9gk6vTQpJtB",
             "file_token": "KHOebTjbpaeSy3sC4BxlzPelg7b",
             "action_list": [
                 {

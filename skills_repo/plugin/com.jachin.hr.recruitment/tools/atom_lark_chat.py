@@ -1,4 +1,4 @@
-"""
+﻿"""
 原子 Tool: atom_lark_chat
 Lark 机器人 AI 对话核心逻辑。
 
@@ -438,8 +438,20 @@ def process_lark_message(
     if not user_text or not user_text.strip():
         return {"reply": "", "is_task": False}
 
+    sess = session_messages if isinstance(session_messages, list) else []
+    _use_hr_agent = True
+    try:
+        from l3_node.routing.intent_signals import lark_message_should_use_hr_recruitment
+
+        _use_hr_agent = lark_message_should_use_hr_recruitment(
+            user_text.strip(),
+            prior_messages=sess,
+        )
+    except Exception:
+        _use_hr_agent = True
+
     # 记录飞书 chat_id，供收网进度推送（LARK_CHAT_ID 未设时从指针读取）
-    if (chat_id or "").strip():
+    if _use_hr_agent and (chat_id or "").strip():
         try:
             from l3_node.local_memory import get_hr_recruitment_workflow_pointer, set_hr_recruitment_workflow_pointer
 
@@ -457,7 +469,7 @@ def process_lark_message(
             logger.debug("[Lark] 写入 lark_chat_id 跳过: %s", e)
 
     # 从飞书整句解析 Boss 选岗行并写入 jd.json（如「python工程师 杭州 15-25k开始抓取简历」）
-    if (user_text or "").strip():
+    if _use_hr_agent and (user_text or "").strip():
         try:
             apply_job_select_from_hr_im_text(user_text.strip())
         except Exception as e:
@@ -477,11 +489,11 @@ def process_lark_message(
     if run_agent_fn and engine and loop:
         import asyncio
 
-        sess = session_messages if isinstance(session_messages, list) else []
         _cid = (chat_id or "").strip()
 
         async def _do():
-            _iatt = {"channel": "lark_hr_recruitment"}
+            _channel = "lark_im_dispatcher" if not _use_hr_agent else "lark_hr_recruitment"
+            _iatt = {"channel": _channel}
             if _cid:
                 _iatt["lark_chat_id"] = _cid
             return await run_agent_fn(
@@ -502,7 +514,13 @@ def process_lark_message(
     l3_url = os.environ.get("L3_WS_URL", "").strip()
     # L3 模式：转发给 Jachin，由 L3 调用 MCP 工具；传入 chat_id 以便 L3 持久化会话（「同意」时能拿到上一轮 JD）
     if l3_url:
-        logger.info("L3 壳模式: 转发到 %s chat_id=%s", l3_url, (chat_id or "")[:20] if chat_id else "无")
+        _mode = "HR" if _use_hr_agent else "PMO/通用"
+        logger.info(
+            "L3 壳模式(%s): 转发到 %s chat_id=%s",
+            _mode,
+            l3_url,
+            (chat_id or "")[:20] if chat_id else "无",
+        )
         reply = _call_l3_ws(user_text.strip(), chat_id=chat_id or "")
         return {"reply": reply or "L3 未返回回复", "is_task": False}
 

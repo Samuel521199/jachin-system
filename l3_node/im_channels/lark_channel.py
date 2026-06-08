@@ -51,11 +51,16 @@ class LarkInboundChannel(InboundIMChannel):
             logger.info("[IM Lark] mode=%s 跳过（当前仅支持 long_connection）", mode)
             return
 
-        import os
-        app_id = (config.get("app_id") or os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID") or "").strip()
-        app_secret = (config.get("app_secret") or os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET") or "").strip()
+        from l3_node.im_channels.lark_credentials import resolve_lark_im_credentials
+
+        channel_id = str(config.get("_channel_id") or "lark").strip() or "lark"
+        app_id, app_secret = resolve_lark_im_credentials(config, channel_id)
         if not app_id or not app_secret:
-            logger.warning("[IM Lark] 未配置 app_id/app_secret（config 或 LARK_APP_ID/SECRET 环境变量），跳过")
+            logger.warning(
+                "[IM Lark] 未配置 app_id/app_secret（channel=%s；"
+                "im_channels 或 LARK_* / HR_LARK_* 环境变量），跳过",
+                channel_id,
+            )
             return
 
         chat_ids = config.get("chat_ids") or []
@@ -76,7 +81,7 @@ class LarkInboundChannel(InboundIMChannel):
                     chat_id=chat_id or "",
                     user_id=user_id or "",
                     user_text=text or "",
-                    route="lark_long_connection",
+                    route=f"lark_long_connection:{channel_id}",
                     status="skipped_not_in_chat_ids",
                     extra=f"allowed_chat_ids={allowed[:8]!r}{'…' if len(allowed) > 8 else ''}",
                 )
@@ -86,7 +91,7 @@ class LarkInboundChannel(InboundIMChannel):
                 chat_id=chat_id or "",
                 user_id=user_id or "",
                 user_text=text or "",
-                route="lark_long_connection",
+                route=f"lark_long_connection:{channel_id}",
                 status="queued_for_dispatcher",
             )
             try:
@@ -105,7 +110,8 @@ class LarkInboundChannel(InboundIMChannel):
             return
 
         logger.info(
-            "[IM Lark] 长连接启动中 app_id=%s domain=%s chat_ids=%s",
+            "[IM Lark] 长连接启动中 channel=%s app_id=%s domain=%s chat_ids=%s",
+            channel_id,
             app_id[:12] + "..." if len(app_id) > 12 else app_id,
             domain,
             allowed[:5] if len(allowed) > 5 else allowed,
@@ -119,11 +125,15 @@ class LarkInboundChannel(InboundIMChannel):
         )
 
 
-def create_lark_send_reply(config: dict[str, Any]) -> Callable[[str, str], bool]:
+def create_lark_send_reply(
+    config: dict[str, Any],
+    *,
+    channel_id: str = "lark",
+) -> Callable[[str, str], bool]:
     """创建 Lark 回复发送函数，使用配置中的 app_id/secret/domain"""
-    import os
-    app_id = (config.get("app_id") or os.environ.get("LARK_APP_ID") or os.environ.get("FEISHU_APP_ID") or "").strip()
-    app_secret = (config.get("app_secret") or os.environ.get("LARK_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET") or "").strip()
+    from l3_node.im_channels.lark_credentials import resolve_lark_im_credentials
+
+    app_id, app_secret = resolve_lark_im_credentials(config, channel_id)
     domain = _resolve_lark_im_domain(config)
     api_base = _api_base_from_domain(domain)
 

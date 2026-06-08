@@ -27,14 +27,52 @@ if str(_root) not in sys.path:
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_REL = "docs/bi_daily_report/bi_project"
+PMO_LARK_PULL_REL = "pmo_lark_pull"
 # 防止异常表无限分页；可用环境变量抬高
 BITABLE_RECORD_HARD_CAP = int(os.environ.get("JACHIN_BITABLE_RECORD_HARD_CAP", "250000"))
 # 百科子节点 / 正文内链接展开预算（种子 URL 不受此限，仍可逐个落盘）
 DISCOVERED_NODE_BUDGET = int(os.environ.get("JACHIN_BI_WIKI_DISCOVER_BUDGET", "200"))
 
 
+def get_pmo_lark_pull_dir() -> Path:
+    """PMO 拉盘目录 SSOT：~/.jachin/workspace/pmo_lark_pull（可由 JACHIN_PMO_LARK_PULL_DIR 覆盖）。"""
+    custom = os.environ.get("JACHIN_PMO_LARK_PULL_DIR", "").strip()
+    if custom:
+        return Path(custom).expanduser().resolve()
+    jachin_home = Path(os.environ.get("JACHIN_HOME") or Path.home() / ".jachin").expanduser()
+    return (jachin_home / "workspace" / PMO_LARK_PULL_REL).resolve()
+
+
+def _is_pmo_workspace_pull_rel(rel: str) -> bool:
+    """是否为 PMO 工作区拉盘路径（不得相对安装目录解析）。"""
+    s = (rel or "").strip().replace("\\", "/").rstrip("/")
+    if not s:
+        return False
+    if s in (PMO_LARK_PULL_REL, f"~/.jachin/workspace/{PMO_LARK_PULL_REL}"):
+        return True
+    expanded = str(Path(s).expanduser()).replace("\\", "/").rstrip("/")
+    return expanded.endswith(f"/.jachin/workspace/{PMO_LARK_PULL_REL}")
+
+
+def _resolve_output_dir(cfg: dict[str, Any], project_root: Path) -> Path:
+    """解析落盘目录：PMO 拉盘固定 ~/.jachin/workspace/pmo_lark_pull，其余相对 project_root。"""
+    out_rel = (cfg.get("output_dir_relative") or DEFAULT_OUTPUT_REL).strip() or DEFAULT_OUTPUT_REL
+    if _is_pmo_workspace_pull_rel(out_rel):
+        out_dir = get_pmo_lark_pull_dir()
+    else:
+        outp = Path(out_rel).expanduser()
+        out_dir = outp.resolve() if outp.is_absolute() else (project_root / outp).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 def _manifest_file_relpath(path: Path, project_root: Path, out_dir: Path) -> str:
     """manifest.files 条目：在仓库下则相对 project_root；否则相对本次 out_dir；再否则绝对路径。"""
+    return _manifest_file_entry(path, project_root, out_dir)
+
+
+def _manifest_file_entry(path: Path, project_root: Path, out_dir: Path) -> str:
+    """manifest.files 条目（PMO 工作区拉盘时通常为 basename）。"""
     try:
         return str(path.resolve().relative_to(project_root.resolve()))
     except ValueError:
@@ -43,6 +81,8 @@ def _manifest_file_relpath(path: Path, project_root: Path, out_dir: Path) -> str
         return str(path.resolve().relative_to(out_dir.resolve()))
     except ValueError:
         return str(path.resolve())
+
+
 WIKI_LINK_RE = re.compile(
     r"https://[a-zA-Z0-9.-]*(?:larksuite\.com|feishu\.cn)/wiki/([A-Za-z0-9]+)",
     re.IGNORECASE,
@@ -135,6 +175,69 @@ def _bitable_filename_semantic_slug(view_id: str | None) -> str:
     if not vid:
         return ""
     return _K11_WIKI_VIEW_SLUG_BY_VIEW_ID.get(vid, "")
+
+
+def _filter_wiki_urls_for_pmo(urls: list[str]) -> list[str]:
+    """从默认种子中筛出 PMO §1.1 十二视图（须含 table + view=vew*）。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for u in urls:
+        su = sanitize_wiki_url(u)
+        p = parse_wiki_url(su)
+        vid = (p.get("view_id") or "").strip()
+        tid = (p.get("table_id") or "").strip()
+        if not vid.startswith("vew") or not tid:
+            continue
+        if "ldxeuHgiN5L2gXBH" in su:
+            continue
+        if vid in seen:
+            continue
+        seen.add(vid)
+        out.append(su)
+    return out
+
+
+def _pmo_skill_wiki_urls() -> list[str]:
+    return _filter_wiki_urls_for_pmo(_default_wiki_urls())
+
+
+_PMO_VIEW_ORDER: tuple[str, ...] = tuple(_K11_WIKI_VIEW_SLUG_BY_VIEW_ID.keys())
+
+
+def _pmo_view_file_index(view_id: str) -> int:
+    try:
+        return _PMO_VIEW_ORDER.index(view_id) + 1
+    except ValueError:
+        return 0
+
+
+def _pmo_stable_md_basename(slug: str, meta: dict[str, Any]) -> str:
+    """同 view 稳定文件名（NN_ 前缀 + view_id 后缀），便于覆盖旧拉盘。"""
+    view_id = str(meta.get("view_id_hint") or "").strip()
+    idx = _pmo_view_file_index(view_id)
+    core = _safe_name(slug, max_len=160)
+    if view_id and view_id not in core:
+        core = f"{core}_{view_id}"
+    if not core.endswith(".md"):
+        core = f"{core}.md"
+    if idx:
+        prefix = f"{idx:02d}_"
+        if not core.startswith(prefix):
+            core = prefix + core
+    return core
+
+
+def _pmo_prune_stale_md(out_dir: Path, keep_basenames: set[str]) -> list[str]:
+    """删除 out_dir 下不在 keep 集合中的 *.md（保留 README.md）。"""
+    removed: list[str] = []
+    if not out_dir.is_dir():
+        return removed
+    for p in sorted(out_dir.glob("*.md")):
+        if p.name == "README.md" or p.name in keep_basenames:
+            continue
+        p.unlink(missing_ok=True)
+        removed.append(p.name)
+    return removed
 
 
 def _cell_to_text(val: Any) -> str:
@@ -670,10 +773,7 @@ def sync_bi_project_context(
     if not urls or not isinstance(urls, list):
         urls = _default_wiki_urls()
 
-    out_rel = (cfg.get("output_dir_relative") or DEFAULT_OUTPUT_REL).strip() or DEFAULT_OUTPUT_REL
-    outp = Path(out_rel).expanduser()
-    out_dir = outp.resolve() if outp.is_absolute() else (root / outp).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _resolve_output_dir(cfg, root)
 
     max_records = int(cfg.get("max_records_per_table") or 50000)
     max_records = max(1, min(max_records, BITABLE_RECORD_HARD_CAP))

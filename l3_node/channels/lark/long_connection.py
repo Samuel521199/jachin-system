@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lark 通道 — 入站长连接（WebSocket）
 
 使用 lark-oapi WebSocket 客户端与飞书建立长连接，接收 im.message.receive_v1 事件。
@@ -12,6 +12,38 @@ import os
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_lark_ws_log_level(log_level: int | str | object) -> object:
+    """
+    lark.ws.Client 需要 ``lark.LogLevel`` 枚举；调用方常传 ``logging.INFO``（int）会触发
+    ``AttributeError: 'int' object has no attribute 'value'``。
+    """
+    try:
+        import lark_oapi as lark
+    except ImportError as e:
+        raise ImportError("请安装 lark-oapi: pip install lark-oapi") from e
+
+    if hasattr(log_level, "value"):
+        return log_level
+
+    level_map = {
+        "DEBUG": lark.LogLevel.DEBUG,
+        "INFO": lark.LogLevel.INFO,
+        "WARN": lark.LogLevel.WARNING,
+        "WARNING": lark.LogLevel.WARNING,
+    }
+    if isinstance(log_level, str):
+        return level_map.get(log_level.strip().upper(), lark.LogLevel.INFO)
+
+    if isinstance(log_level, int):
+        if log_level <= logging.DEBUG:
+            return lark.LogLevel.DEBUG
+        if log_level <= logging.INFO:
+            return lark.LogLevel.INFO
+        return lark.LogLevel.WARNING
+
+    return lark.LogLevel.INFO
 
 
 def _patch_lark_oapi_ws_keepalive() -> None:
@@ -142,13 +174,7 @@ def start_long_connection(
         _handler
     ).build()
 
-    level_map = {
-        "DEBUG": lark.LogLevel.DEBUG,
-        "INFO": lark.LogLevel.INFO,
-        "WARN": lark.LogLevel.WARNING,
-        "WARNING": lark.LogLevel.WARNING,
-    }
-    ll = level_map.get(str(log_level).upper(), lark.LogLevel.INFO) if isinstance(log_level, str) else log_level
+    ll = resolve_lark_ws_log_level(log_level)
     dom = domain or LARK_DOMAIN
 
     cli = lark.ws.Client(

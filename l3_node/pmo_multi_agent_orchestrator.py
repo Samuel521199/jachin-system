@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -295,7 +296,10 @@ def _phase1_fanout_items(
     host_b_seed: dict[str, Any] | None = None,
     host_c_seed: dict[str, Any] | None = None,
     host_d_seed: dict[str, Any] | None = None,
+    *,
+    include_workers: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
+    include = include_workers or frozenset({"a", "b", "c", "d"})
     worker_b_task = build_worker_b_agent_task(host_b_seed)
     worker_b_preview = WORKER_B_AGENT_TASK_PREVIEW
     worker_b_max_iter = WORKER_B_AGENT_MAX_ITERATIONS
@@ -308,8 +312,8 @@ def _phase1_fanout_items(
         }
         worker_b_context_max = 22000
 
-    workers: list[tuple[str, str, int, str, dict[str, Any], dict[str, Any]]] = [
-        ("Worker A", WORKER_A_TASK_PREVIEW, WORKER_A_MAX_ITERATIONS, WORKER_A_TASK, PMO_WORKER_A_ROLE, {}),
+    workers: list[tuple[str, str, int, str, dict[str, Any], dict[str, Any], str]] = [
+        ("Worker A", WORKER_A_TASK_PREVIEW, WORKER_A_MAX_ITERATIONS, WORKER_A_TASK, PMO_WORKER_A_ROLE, {}, "a"),
         (
             "Worker B",
             worker_b_preview,
@@ -320,8 +324,9 @@ def _phase1_fanout_items(
                 "context_data": worker_b_context,
                 "context_max_chars": worker_b_context_max,
             },
+            "b",
         ),
-        ("Worker C", WORKER_C_TASK_PREVIEW, WORKER_C_MAX_ITERATIONS, WORKER_C_TASK, PMO_WORKER_C_ROLE, {}),
+        ("Worker C", WORKER_C_TASK_PREVIEW, WORKER_C_MAX_ITERATIONS, WORKER_C_TASK, PMO_WORKER_C_ROLE, {}, "c"),
         (
             "Worker D",
             WORKER_D_TASK_PREVIEW,
@@ -329,6 +334,7 @@ def _phase1_fanout_items(
             build_worker_d_agent_task(host_d_seed),
             PMO_WORKER_D_ROLE,
             {},
+            "d",
         ),
     ]
     items: list[dict[str, Any]] = []
@@ -350,7 +356,9 @@ def _phase1_fanout_items(
             },
             "context_max_chars": 16000,
         }
-    for agent_label, task_short, max_iter, task_body, role, extra in workers:
+    for agent_label, task_short, max_iter, task_body, role, extra, worker_key in workers:
+        if worker_key not in include:
+            continue
         if agent_label == "Worker C" and host_c_seed:
             extra = {**extra, **worker_c_extra}
         if agent_label == "Worker D" and host_d_seed:
@@ -371,6 +379,57 @@ def _phase1_fanout_items(
                 item["context_max_chars"] = extra["context_max_chars"]
         items.append(item)
     return items
+
+
+def _worker_d_mail_delay_sec() -> float:
+    raw = os.environ.get("PMO_WORKER_D_MAIL_DELAY_SEC", "5").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 5.0
+
+
+def _merge_fanout_results(*parts: Any) -> Any:
+    from l3_node.primitives.multi_agent.fanout import FanoutResult
+
+    items: list[Any] = []
+    ok_count = 0
+    failed_count = 0
+    total = 0
+    elapsed = 0.0
+    for part in parts:
+        if not part:
+            continue
+        items.extend(part.items)
+        ok_count += part.ok_count
+        failed_count += part.failed_count
+        total += part.total
+        elapsed += part.elapsed_sec
+    if total == 0:
+        status = "completed"
+    elif failed_count == 0:
+        status = "completed"
+    elif ok_count == 0:
+        status = "failed"
+    else:
+        status = "partial"
+    return FanoutResult(
+        status=status,
+        ok_count=ok_count,
+        failed_count=failed_count,
+        total=total,
+        degraded=failed_count > 0,
+        items=items,
+        elapsed_sec=elapsed,
+    )
+
+
+def _fanout_worker_label(item: Any) -> str:
+    preview = str(getattr(item, "task_preview", "") or "")
+    if "Worker D" in preview or "D-TOOL" in preview or "发版" in preview:
+        return "Worker D"
+    idx = getattr(item, "index", 0)
+    return {1: "Worker A", 2: "Worker B", 3: "Worker C", 4: "Worker D"}.get(idx, f"Worker {idx}")
 
 
 async def run_pmo_multi_agent_workflow(
@@ -420,7 +479,7 @@ async def run_pmo_multi_agent_workflow(
             result.errors.append(f"拉表落盘异常: {e}")
             return result
 
-    _status("阶段一：FanOut 并行捞数（Worker A/B/C/D）…")
+    _status("阶段一：FanOut 并行捞数（Worker A/B/C）…")
     host_b_seed: dict[str, Any] = {}
     host_c_seed: dict[str, Any] = {}
     host_d_seed: dict[str, Any] = {}
@@ -445,22 +504,12 @@ async def run_pmo_multi_agent_workflow(
     except Exception:
         logger.exception("[PMO Multi-Agent] Worker C host bootstrap failed")
     try:
-        from l3_node.pmo_worker_result_backfill import run_worker_d_host_bootstrap
-
-        host_d_seed = run_worker_d_host_bootstrap()
-        _status(
-            f"Worker D 宿主预取：completed_count={host_d_seed.get('completed_count')} "
-            f"release_mails={host_d_seed.get('release_mails_found')}"
-        )
-    except Exception:
-        logger.exception("[PMO Multi-Agent] Worker D host bootstrap failed")
-    try:
         from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_begin, append_pmo_debug_status
 
         append_pmo_debug_phase_begin(
             1,
             "并行捞数 · FanOut",
-            detail="Worker A(字典) / B(B-TOOL) / C(C-TOOL) / D(D-TOOL 发版Epic) 并行",
+            detail="Worker A(字典) / B(B-TOOL) / C(C-TOOL) 并行；D(D-TOOL) 错开于 A/B/C 之后",
         )
         if host_b_seed.get("personnel_tasks"):
             append_pmo_debug_status(
@@ -471,14 +520,54 @@ async def run_pmo_multi_agent_workflow(
     except Exception:
         pass
 
-    phase1 = await fanout_parallel(
-        _phase1_fanout_items(host_b_seed or None, host_c_seed or None, host_d_seed or None),
+    import asyncio
+
+    phase1_abc = await fanout_parallel(
+        _phase1_fanout_items(
+            host_b_seed or None,
+            host_c_seed or None,
+            include_workers=frozenset({"a", "b", "c"}),
+        ),
         engine,
-        max_concurrent=4,
+        max_concurrent=3,
         delegate_depth=1,
         item_max_iterations=16,
         parent_allowed_skills=parent_allowed_skills,
     )
+
+    delay_sec = _worker_d_mail_delay_sec()
+    if delay_sec > 0:
+        _status(
+            f"Worker D 邮件 API 错开 {delay_sec:.0f}s（避开阶段零拉表与 A/B/C FanOut 并发）…"
+        )
+        await asyncio.sleep(delay_sec)
+
+    try:
+        from l3_node.pmo_worker_result_backfill import run_worker_d_host_bootstrap_with_retry
+
+        host_d_seed = run_worker_d_host_bootstrap_with_retry()
+        _status(
+            f"Worker D 宿主预取：completed_count={host_d_seed.get('completed_count')} "
+            f"release_mails={host_d_seed.get('release_mails_found')}"
+            + ("（部分邮件详情失败，已降级）" if host_d_seed.get("degraded") else "")
+        )
+    except Exception:
+        logger.exception("[PMO Multi-Agent] Worker D host bootstrap failed")
+
+    phase1_d = await fanout_parallel(
+        _phase1_fanout_items(
+            host_d_seed=host_d_seed or None,
+            include_workers=frozenset({"d"}),
+        ),
+        engine,
+        max_concurrent=1,
+        delegate_depth=1,
+        item_max_iterations=16,
+        parent_allowed_skills=parent_allowed_skills,
+    )
+    for it in phase1_d.items:
+        it.index = 4
+    phase1 = _merge_fanout_results(phase1_abc, phase1_d)
     result.phase1 = phase1
 
     try:
@@ -487,7 +576,7 @@ async def run_pmo_multi_agent_workflow(
         worker_labels = {1: "Worker A", 2: "Worker B", 3: "Worker C", 4: "Worker D"}
         summary_lines: list[str] = []
         for it in phase1.items:
-            label = worker_labels.get(it.index, f"Worker {it.index}")
+            label = _fanout_worker_label(it) or worker_labels.get(it.index, f"Worker {it.index}")
             if it.ok:
                 preview = _clip(it.result, 80).replace("\n", " ")
                 summary_lines.append(f"✅ {label}: {preview or '（有输出）'}")
@@ -506,6 +595,13 @@ async def run_pmo_multi_agent_workflow(
 
     if phase1.ok_count == 0:
         result.errors.append("阶段一全部失败")
+        result.status = "failed"
+        return result
+
+    # A/B/C 至少一项成功即可继续；Worker D 单独失败不阻断发报
+    abc_ok = sum(1 for it in phase1_abc.items if it.ok)
+    if abc_ok == 0:
+        result.errors.append("阶段一 A/B/C 全部失败")
         result.status = "failed"
         return result
 
@@ -558,7 +654,11 @@ async def run_pmo_multi_agent_workflow(
     result.audit_report = ""
     result.phase2_output = ""
     result.status = "partial" if phase1.failed_count else "completed"
-    _status(f"阶段一 {phase1.ok_count}/4 完成 · 跳过交叉审计 · 待阶段三排版发报")
+    _status(
+        f"阶段一 {phase1.ok_count}/{phase1.total} 完成"
+        f"（A/B/C {abc_ok}/3 · D {sum(1 for it in phase1_d.items if it.ok)}/1）"
+        f" · 跳过交叉审计 · 待阶段三排版发报"
+    )
     return result
 
 

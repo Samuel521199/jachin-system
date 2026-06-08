@@ -430,24 +430,25 @@ def _apply_hr_im_job_select_prelude(text: str) -> None:
         logger.debug("[IM Dispatcher] 选岗 prelude 跳过: %s", e)
 
 
-def _is_recruitment_message(text: str) -> bool:
-    """判断是否为招聘类消息"""
-    if not text or not text.strip():
-        return False
+def _is_recruitment_message(text: str, *, prior_messages: list | None = None) -> bool:
+    """判断是否为招聘类消息（PMO/产研追问不走 HR 包）。"""
     try:
-        from l3_node.routing.intent_signals import user_message_suggests_pmo_or_bi_context
+        from l3_node.routing.intent_signals import lark_message_should_use_hr_recruitment
 
-        if user_message_suggests_pmo_or_bi_context(text):
-            return False
+        return lark_message_should_use_hr_recruitment(
+            text or "",
+            prior_messages=prior_messages if isinstance(prior_messages, list) else None,
+        )
     except Exception:
-        pass
-    if _line_parses_as_boss_job_select(text):
-        return True
-    t = text.strip().lower()
-    for kw in _HR_RECRUITMENT_KEYWORDS:
-        if kw.lower() in t or kw in text:
+        if not text or not text.strip():
+            return False
+        if _line_parses_as_boss_job_select(text):
             return True
-    return False
+        t = text.strip().lower()
+        for kw in _HR_RECRUITMENT_KEYWORDS:
+            if kw.lower() in t or kw in text:
+                return True
+        return False
 
 
 def _process_via_hr_package(
@@ -607,9 +608,33 @@ def _do_agent_work(
                 if cid:
                     session_messages.append({"role": "user", "content": intent})
                     session_messages.append({"role": "assistant", "content": test_reply})
+            # ── #*# / /#/ 显式 Skill 触发（PMO 硬路由走 pmo_copilot_cli + 飞书卡片）──
+            hash_star_reply: str | None = None
+            if deferred_reply is None and test_reply is None:
+                try:
+                    from l3_node.slash_hash_skill_router import try_hash_star_skill_lark_intercept
+
+                    hash_star_reply = try_hash_star_skill_lark_intercept(
+                        intent,
+                        cid,
+                        send_reply_fn,
+                        engine,
+                        loop,
+                        session_messages,
+                    )
+                except Exception as _hs_ex:
+                    logger.debug("[IM Dispatcher] #*# Skill 触发器跳过: %s", _hs_ex)
+
+            if hash_star_reply is not None:
+                route = "hash_star_skill_pmo"
+                reply = hash_star_reply
+                turn_status = "ok"
+                if cid:
+                    session_messages.append({"role": "user", "content": intent})
+                    session_messages.append({"role": "assistant", "content": hash_star_reply})
             # ── PMO 双重触发器（精确指令 / 模糊确认卡片 / 卡片回复）──
             pmo_reply: str | None = None
-            if deferred_reply is None and test_reply is None:
+            if deferred_reply is None and test_reply is None and hash_star_reply is None:
                 try:
                     from l3_node.pmo_lark_trigger import try_pmo_lark_intercept
 
@@ -626,16 +651,18 @@ def _do_agent_work(
                 except Exception as _pmo_ex:
                     logger.debug("[IM Dispatcher] PMO 触发器跳过: %s", _pmo_ex)
 
-            if test_reply is None and pmo_reply is not None:
+            if test_reply is None and hash_star_reply is None and pmo_reply is not None:
                 route = "pmo_lark_trigger"
                 reply = pmo_reply
                 turn_status = "ok"
                 if cid:
                     session_messages.append({"role": "user", "content": intent})
                     session_messages.append({"role": "assistant", "content": pmo_reply})
-            elif deferred_reply is None and test_reply is None:
+            elif deferred_reply is None and test_reply is None and hash_star_reply is None:
                 try:
-                    if _is_hr_package_available() and _is_recruitment_message(intent):
+                    if _is_hr_package_available() and _is_recruitment_message(
+                        intent, prior_messages=session_messages
+                    ):
                         logger.debug(
                             "[IM Dispatcher] 招聘类消息，走 HR process_lark_message chat_id=%s",
                             cid[:20] if cid else "",
@@ -722,7 +749,14 @@ def _do_agent_work(
             save_lark_session(cid, session_messages, _scope)
             logger.debug("[IM Dispatcher] chat_id=%s 已保存会话 %d 条", cid[:20], len(session_messages))
         if reply and cid:
-            ok = send_reply_fn(cid, str(reply).strip())
+            _out = str(reply).strip()
+            try:
+                from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+
+                _out = sanitize_final_answer_for_lark_im(_out)  # UI 脱敏 + 去 Markdown 加粗
+            except Exception:
+                pass
+            ok = send_reply_fn(cid, _out)
             send_ok = ok
             if not ok:
                 logger.warning("[IM Dispatcher] 回复发送失败 chat_id=%s", cid[:20])

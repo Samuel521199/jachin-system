@@ -47,9 +47,30 @@ def pmo_init_wiki_urls() -> list[str]:
 def _load_bi_pull_config() -> dict[str, Any]:
     from l3_node.paths import get_app_root
 
-    from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import _load_merge_config
+    from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import (
+        PMO_LARK_PULL_REL,
+        _load_merge_config,
+    )
 
-    return _load_merge_config({"wiki_urls": pmo_init_wiki_urls()}, get_app_root())
+    cfg = _load_merge_config({"wiki_urls": pmo_init_wiki_urls()}, get_app_root())
+    # PMO INIT 拉盘 SSOT：与 mirror_import 默认 manifest 目录一致（勿相对安装目录）
+    cfg["output_dir_relative"] = PMO_LARK_PULL_REL
+    cfg["emit_pull_records_json"] = True
+    return cfg
+
+
+def _mirror_import_kwargs_from_pull(pull_result: dict[str, Any] | None) -> dict[str, str]:
+    """从本轮拉盘结果推导 mirror_import 的 manifest_path / pull_dir。"""
+    if not pull_result:
+        return {}
+    out_dir = str(pull_result.get("output_dir") or "").strip()
+    if not out_dir:
+        return {}
+    base = Path(out_dir)
+    return {
+        "manifest_path": str(base / "00_SYNC_MANIFEST.json"),
+        "pull_dir": out_dir,
+    }
 
 
 def pmo_skip_pull_markdown_refresh() -> bool:
@@ -227,7 +248,7 @@ def run_pmo_init_direct(*, skip_pull: bool = False) -> dict[str, Any]:
     try:
         from l3_node.tools.pmo_mirror_import import run_mirror_import
 
-        import_result = run_mirror_import()
+        import_result = run_mirror_import(**_mirror_import_kwargs_from_pull(pull_result))
         out["import"] = import_result
         out["steps"].append("mirror_import")
     except Exception as e:

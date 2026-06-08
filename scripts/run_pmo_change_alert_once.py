@@ -4,7 +4,11 @@ PMO 变更预警：手动触发一次分析（模拟 Webhook / 会话变更事�
 
 用法：
   # 从 JSON 文件读取 events（bitable diff 格式）
-  python scripts/run_pmo_change_alert_once.py --events-file data/sample_change_events.json
+  python scripts/run_pmo_change_alert_once.py --events-file data/my_replay_events.json
+  python scripts/run_pmo_change_alert_once.py --events-file data/sample_replay_events_alert.json
+
+  # 从本机 callbacks 导出 replay（PowerShell 示例）：
+  # python -c "import json; from pathlib import Path; p=Path.home()/'.jachin/data/pmo_bitable_watch_callbacks/callbacks.ndjson'; rec=json.loads(p.read_text(encoding='utf-8').strip().split(chr(10))[-1]); Path('data/my_replay_events.json').write_text(json.dumps(rec['events'],ensure_ascii=False,indent=2),encoding='utf-8')"
 
   # 模拟 Gavin 麻将插单（与案例文档一致）
   python scripts/run_pmo_change_alert_once.py --demo mahjong
@@ -37,10 +41,30 @@ except Exception:
 
 
 def _demo_mahjong_event() -> list[dict]:
+    """Gavin 麻将插单：Epic 无负责人 + 子任务当日交付 + Gavin 有延期项（应推送）。"""
     return [
         {
             "change_type": "created",
-            "record_id": "rec_demo_mahjong",
+            "record_id": "rec_demo_mahjong_epic",
+            "label": "麻将开发",
+            "before": {},
+            "after": {
+                "Requirement": "麻将开发",
+                "Sprint": "2026/06/01-Sprint",
+                "Start Date": "2026-06-05",
+                "Expected Delivery Date": "2026-06-05",
+                "Acceptable Delivery Date": "2026-06-06",
+            },
+            "changed_fields": {
+                "Requirement": {"before": "", "after": "麻将开发"},
+                "Sprint": {"before": "", "after": "2026/06/01-Sprint"},
+            },
+            "view_id": "vewCz1FFJi",
+            "table_id": "tblfK9gk6vTQpJtB",
+        },
+        {
+            "change_type": "created",
+            "record_id": "rec_demo_mahjong_child",
             "label": "麻将花色增加开发",
             "before": {},
             "after": {
@@ -59,9 +83,9 @@ def _demo_mahjong_event() -> list[dict]:
                 "Start Date": {"before": "", "after": "2026-06-05"},
                 "Expected Delivery Date": {"before": "", "after": "2026-06-05"},
             },
-            "view_id": "vewpI8lyYw",
+            "view_id": "vewCz1FFJi",
             "table_id": "tblfK9gk6vTQpJtB",
-        }
+        },
     ]
 
 

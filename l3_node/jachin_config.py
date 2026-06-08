@@ -81,11 +81,13 @@ smtp:
 default_to_addrs:
   - "${BI_SMTP_TO}"
 """,
-    "atom_bi_project_context": """# atom_bi_project_context — BI 项目知识库同步（写入 docs/bi_daily_report/bi_project）
+    "atom_bi_project_context": """# atom_bi_project_context — PMO/BI 项目知识库同步
 app_id: "${LARK_APP_ID}"
 app_secret: "${LARK_APP_SECRET}"
 lark_use_feishu: false
-output_dir_relative: docs/bi_daily_report/bi_project
+# PMO 拉盘 SSOT（勿相对安装目录）；BI 通用分析可改为 docs/bi_daily_report/bi_project
+output_dir_relative: pmo_lark_pull
+emit_pull_records_json: true
 max_records_per_table: 50000
 max_discovered_links: 40
 recurse_children_depth: 2

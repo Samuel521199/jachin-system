@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -547,7 +549,66 @@ def _worker_d_seed_from_tool_result(rep: dict[str, Any]) -> dict[str, Any]:
         "completed_sql_ids": ["D-TOOL"],
         "_host_bootstrap": ["D-TOOL"],
         "window": _serialize_release_window(window),
+        "degraded": bool(rep.get("degraded")),
+        "mail_fetch_stats": rep.get("mail_fetch_stats"),
     }
+
+
+def _worker_d_bootstrap_successful(seed: dict[str, Any]) -> bool:
+    if "D-TOOL" not in (seed.get("completed_sql_ids") or []):
+        return False
+    if seed.get("error_reason"):
+        return False
+    return True
+
+
+def _worker_d_mail_retry_count() -> int:
+    raw = os.environ.get("PMO_WORKER_D_MAIL_RETRY_COUNT", "3").strip()
+    try:
+        return max(1, min(5, int(raw)))
+    except ValueError:
+        return 3
+
+
+def _worker_d_mail_retry_delay_sec() -> float:
+    raw = os.environ.get("PMO_WORKER_D_MAIL_RETRY_DELAY_SEC", "8").strip()
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 8.0
+
+
+def run_worker_d_host_bootstrap_with_retry(
+    *,
+    app_id: str | None = None,
+    app_secret: str | None = None,
+    mailbox: str | None = None,
+) -> dict[str, Any]:
+    """Worker D 宿主预取：整轮失败时有限次重试（错开 A/B/C 后调用）。"""
+    attempts = _worker_d_mail_retry_count()
+    delay = _worker_d_mail_retry_delay_sec()
+    last: dict[str, Any] | None = None
+    for attempt in range(attempts):
+        seed = run_worker_d_host_bootstrap(
+            app_id=app_id,
+            app_secret=app_secret,
+            mailbox=mailbox,
+        )
+        last = seed
+        if _worker_d_bootstrap_successful(seed):
+            if attempt > 0:
+                logger.info("[PMO bootstrap] Worker D succeeded on attempt %s", attempt + 1)
+            return seed
+        err = str(seed.get("error_reason") or "")
+        logger.warning(
+            "[PMO bootstrap] Worker D attempt %s/%s failed: %s",
+            attempt + 1,
+            attempts,
+            err[:200],
+        )
+        if attempt + 1 < attempts:
+            time.sleep(delay * (attempt + 1))
+    return last or _worker_d_error_seed("worker_d_bootstrap_exhausted", error_class="transient")
 
 
 def run_worker_d_host_bootstrap(
@@ -595,7 +656,7 @@ def backfill_worker_d(raw: str) -> str:
     data = parse_worker_final_json(raw) or {}
     if not _worker_d_empty(data):
         return raw if parse_worker_final_json(raw) else json.dumps(data, ensure_ascii=False, indent=2)
-    seed = run_worker_d_host_bootstrap()
+    seed = run_worker_d_host_bootstrap_with_retry()
     return json.dumps(seed, ensure_ascii=False, indent=2)
 
 

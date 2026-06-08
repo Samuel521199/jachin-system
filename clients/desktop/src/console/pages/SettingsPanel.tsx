@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SettingsPanel - AI 模式与运行模式设置
  *
  * LLM Mode: Auto | Force Local | Force Cloud
@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { fetchNativeFsPolicy, saveApiKey, saveNativeFsPolicy, type NativeFsPolicyPayload } from "../../lib/api";
 import { cn } from "../../utils/cn";
+import { LarkLongConnectionSettings } from "./LarkLongConnectionSettings";
 
 /** 桌面精灵语音模式：三层架构 */
 export type SpriteVoiceMode = "push_to_talk" | "wake_up" | "continuous";
@@ -721,6 +722,14 @@ export function SettingsPanel() {
               </div>
             </div>
           </div>
+        </motion.section>
+
+        <motion.section
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-xl border border-white/10 bg-black/20 p-6"
+        >
+          <LarkLongConnectionSettings />
         </motion.section>
       </div>
     </div>

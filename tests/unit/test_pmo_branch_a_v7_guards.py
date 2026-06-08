@@ -326,6 +326,12 @@ def test_macro_dashboard_push_marks_dual_delivery() -> None:
         ensure_ascii=False,
     )
     assert _pmo_macro_dashboard_push_succeeded(obs) is True
+    obs_with_prefetch = (
+        obs
+        + "\n\n【relevant_context_prefetch】\n"
+        + "以下工作区 Markdown 与用户意图关键词可能相关：\n\n### `findings.md`\n"
+    )
+    assert _pmo_macro_dashboard_push_succeeded(obs_with_prefetch) is True
     ctx = _ctx(pmo_multi_agent_complete=True, pmo_analysis_only=True, pmo_db_ready=True)
     _pmo_track_macro_dashboard_push_success(ctx, obs)
     assert ctx.metadata.get("_pmo_macro_dashboard_push_ok") is True

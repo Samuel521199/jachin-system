@@ -47,6 +47,7 @@ def start_pmo_bitable_long_connection(
         FEISHU_DOMAIN,
         LARK_DOMAIN,
         _patch_lark_oapi_ws_keepalive,
+        resolve_lark_ws_log_level,
     )
 
     _patch_lark_oapi_ws_keepalive()
@@ -92,17 +93,7 @@ def start_pmo_bitable_long_connection(
     if not registered:
         raise RuntimeError("无法注册 bitable_record_changed 事件处理器")
 
-    level_map = {
-        "DEBUG": lark.LogLevel.DEBUG,
-        "INFO": lark.LogLevel.INFO,
-        "WARN": lark.LogLevel.WARNING,
-        "WARNING": lark.LogLevel.WARNING,
-    }
-    ll = (
-        level_map.get(str(log_level).upper(), lark.LogLevel.INFO)
-        if isinstance(log_level, str)
-        else log_level
-    )
+    ll = resolve_lark_ws_log_level(log_level)
     dom = domain or LARK_DOMAIN
 
     cli = lark.ws.Client(

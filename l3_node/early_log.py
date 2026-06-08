@@ -215,12 +215,22 @@ def install_websocket_handshake_noise_filters() -> None:
         logging.getLogger(ln).addFilter(flt)
 
 
+def _is_pmo_copilot_run() -> bool:
+    try:
+        from l3_node.pmo_copilot_env import is_pmo_copilot_run
+
+        return is_pmo_copilot_run()
+    except Exception:
+        return "--run-pmo-copilot" in sys.argv
+
+
 def _resolve_log_path() -> str:
     """解析日志路径。JACHIN_LOG_DIR 优先（便携包 logs/），否则 PyInstaller 时 cwd"""
     candidates = []
+    log_name = "pmo_l3_debug.log" if _is_pmo_copilot_run() else "l3_debug.log"
     log_dir = os.environ.get("JACHIN_LOG_DIR")
     if log_dir:
-        p = Path(log_dir) / "l3_debug.log"
+        p = Path(log_dir) / log_name
         candidates.append(p)
     if getattr(sys, "frozen", False):
         cwd = Path.cwd()
@@ -249,15 +259,21 @@ def setup_early_logging() -> str:
     global _LOG_PATH, _FILE_HANDLER
     _LOG_PATH = _resolve_log_path()
 
-    # 每次启动清空（强制覆盖，确保日志一定更新）
+    pmo_run = _is_pmo_copilot_run()
+    # 常驻 L3：每次启动清空；PMO 一次性子进程：追加到独立 pmo_l3_debug.log，避免抹掉主 L3 日志
     try:
-        with open(_LOG_PATH, "w", encoding="utf-8") as f:
+        with open(_LOG_PATH, "a" if pmo_run else "w", encoding="utf-8") as f:
             utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
             try:
                 _host = socket.gethostname()
             except OSError:
                 _host = "?"
-            f.write(f"{utc} [L3 DEBUG] === L3 调试日志（每次启动清空）=== START\n")
+            banner = (
+                "=== PMO Copilot 子进程日志（追加，不清空主 L3 l3_debug.log）=== START"
+                if pmo_run
+                else "=== L3 调试日志（每次启动清空）=== START"
+            )
+            f.write(f"{utc} [L3 DEBUG] {banner}\n")
             f.write(f"{utc} [L3 DEBUG] log_file={_LOG_PATH}\n")
             f.write(f"{utc} [L3 DEBUG] pid={os.getpid()} ppid={getattr(os, 'getppid', lambda: -1)()} thread={threading.current_thread().name!r}\n")
             f.write(f"{utc} [L3 DEBUG] argv={sys.argv[:16]}\n")

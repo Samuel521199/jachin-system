@@ -1,4 +1,4 @@
-"""
+﻿"""
 IM 通道配置 — 从 ~/.jachin/config/im_channels.yaml 加载
 
 支持打包后修改，Lark/Telegram 等同维度配置。
@@ -22,24 +22,37 @@ def _get_jachin_root() -> Path:
 
 _CONFIG_EXAMPLE = """# IM 通道配置 — L3 独立使用 Lark/Telegram 等，无需 Layer 1
 # 路径: ~/.jachin/config/im_channels.yaml（支持 JACHIN_HOME 覆盖）
-# 打包后可修改
+# 打包后可修改；桌面端「设置 → 飞书长连接」可切换本机是否接管
 
 im_channels:
+  # 主机器人 IM（PMO / 通用 / 招聘路由 — 同一长连接内按消息分流）
   lark:
-    enabled: true
-    mode: long_connection   # long_connection | webhook
-    app_id: ""              # 飞书应用 App ID (cli_xxx)
-    app_secret: ""          # 飞书应用 App Secret
-    # 多机共享：本节点只处理这些 chat_id，空则处理全部
-    # 非空时，仅处理列表中的会话，避免回复到其他机器
+    enabled: false
+    mode: long_connection
+    app_id: ""              # 空则读 LARK_APP_ID / FEISHU_APP_ID
+    app_secret: ""
+    # 多机共享：本节点只处理这些 chat_id；空=处理全部推到本连接的会话
     chat_ids: []
-    # 机器人 WebSocket 须与应用创建平台一致。国际版默认 larksuite；仅「飞书中国自建应用 + 入耳长连接」时改为
-    # https://open.feishu.cn 并在环境变量设 LARK_USE_FEISHU=1（勿与仅用于巡检 Open API 的 FEISHU_* 混推域名）
-    domain: "https://open.larksuite.com"
+    domain: "https://open.feishu.cn"
+
+  # HR 招聘专用机器人（与上不同 app 时单独开；同 app 则只开 lark 即可）
+  lark_hr:
+    enabled: false
+    mode: long_connection
+    app_id: ""              # 空则读 HR_LARK_APP_ID → LARK_APP_ID
+    app_secret: ""
+    chat_ids: []
+    domain: "https://open.feishu.cn"
+
+  # PMO 多维表变更事件（drive.file.bitable_record_changed_v1，非 IM 聊天）
+  lark_pmo_bitable:
+    enabled: false
+    app_id: ""              # 空则读 pmo_bitable_watch.yaml / PMO_BITABLE_WATCH_*
+    app_secret: ""
+    domain: "https://open.feishu.cn"
+
   telegram:
     enabled: false
-    # bot_token: ""
-    # future
 """
 
 

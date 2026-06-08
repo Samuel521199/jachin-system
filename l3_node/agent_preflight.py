@@ -113,6 +113,14 @@ async def apply_inbound_preflight(
 
     ui = (user_input or "").strip()
 
+    _session_domain = "general"
+    try:
+        from l3_node.routing.intent_signals import infer_lark_session_domain
+
+        _session_domain = infer_lark_session_domain(ui, prior_messages)
+    except Exception:
+        pass
+
     try:
         from l3_node.primitives.mcp.sqlite_write_guard import user_message_is_only_sqlite_write_ack
 
@@ -129,12 +137,17 @@ async def apply_inbound_preflight(
 
     _vague_recruitment = re.search(r"我要(?:招聘|发布|招人?)|发布(?:一个)?职位|招聘", ui)
     _has_jd_in_history = bool(_extract_jd_config_from_conversation(messages, ""))
-    if _vague_recruitment and not _has_jd_in_history:
+    if (
+        _session_domain == "hr_recruitment"
+        and _vague_recruitment
+        and not _has_jd_in_history
+    ):
         prefix = "【系统】用户要发布职位，但尚未提供完整配置。你必须**仅做询问**，禁止臆想、禁止杜撰、禁止调用 atom_post_job_boss。请用 Final Answer 向 HR 依次询问：1.岗位名称是什么？2.社招、校招、实习还是兼职？3.薪资待遇大概多少？4.学历要求？5.经验要求？若 HR 第一轮未给某项，下一轮**单独追问**该项，直到收集齐再输出完整 JD 配置供确认。\n\n"
         prepend_text_to_last_user_message(messages, prefix)
 
     if (
-        tools_include_recruitment(tools)
+        _session_domain == "hr_recruitment"
+        and tools_include_recruitment(tools)
         and _hr_user_input_is_solitary_boss_job_select_line(user_input or "")
         and _extract_branch_b_add_task_payload(messages) is None
         and not _extract_jd_config_from_conversation(prior_messages, "")

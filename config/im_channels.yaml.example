@@ -1,20 +1,38 @@
-# IM 通道配置 — L3 独立使用 Lark/Telegram 等，无需 Layer 1
+﻿# IM 通道配置 — L3 独立使用 Lark/Telegram 等，无需 Layer 1
 # 复制到 ~/.jachin/config/im_channels.yaml 后修改（支持 JACHIN_HOME 覆盖）
-# Lark 凭证仅此一处（长连接、发消息、HR 多维表同步均读该文件；环境变量可覆盖）。
-# 打包后可随意修改，无需重新打包
+# Lark 凭证也可通过环境变量 LARK_* / HR_LARK_* / PMO_BITABLE_WATCH_* 提供
+# 打包后可修改；桌面端「设置 → 飞书长连接」可切换本机是否接管
 
 im_channels:
+  # 主机器人 IM（PMO / 通用私聊；与 PMO 战报推送可共用同一应用）
   lark:
-    enabled: true
+    enabled: false
     mode: long_connection   # long_connection | webhook（当前仅支持 long_connection）
     app_id: ""              # 飞书应用 App ID (cli_xxx)，可从环境变量 LARK_APP_ID 覆盖
     app_secret: ""          # 飞书应用 App Secret，可从 LARK_APP_SECRET 覆盖
-    # 多机共享同一飞书应用：本节点只处理这些 chat_id，空则处理全部
-    # 非空时，仅处理列表中的会话，避免回复到其他机器
-    # 各节点 chat_ids 应互斥，否则消息可能被忽略
+    # 多机共享同一飞书应用：本节点明确绑定的 chat_id（标记用；默认仍处理未分配会话）
+    # exclusive_sessions: true 时变为白名单，仅处理下列 chat_id
     chat_ids: []
-    # 必须与飞书应用创建地一致，否则会报 Incorrect domain name
+    exclusive_sessions: false
     domain: "https://open.feishu.cn"   # 飞书中国版；国际版用 https://open.larksuite.com
+
+  # HR 招聘专用机器人（独立飞书应用时启用；与 lark 同 app 则保持 false）
+  lark_hr:
+    enabled: false
+    mode: long_connection
+    app_id: ""
+    app_secret: ""
+    chat_ids: []
+    exclusive_sessions: false
+    domain: "https://open.feishu.cn"
+
+  # PMO 多维表变更长连接（非 IM；凭证可回落到 pmo_bitable_watch.yaml）
+  lark_pmo_bitable:
+    enabled: false
+    app_id: ""
+    app_secret: ""
+    domain: "https://open.feishu.cn"
+
   telegram:
     enabled: false
     # bot_token: ""

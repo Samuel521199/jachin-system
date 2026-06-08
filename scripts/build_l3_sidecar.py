@@ -202,8 +202,17 @@ def main() -> int:
     _k11_lark = ROOT / "scripts" / "k11_lark_smoke_report.py"
     if _k11_lark.is_file():
         cmd.extend(["--add-data", f"{_k11_lark}{_docs_sep}scripts"])
+    # PMO Copilot：桌面端 --run-pmo-copilot 入口（frozen 下须在 _MEIPASS/scripts/）
+    _pmo_cli = ROOT / "scripts" / "run_pmo_copilot_skill.py"
+    if _pmo_cli.is_file():
+        cmd.extend(["--add-data", f"{_pmo_cli}{_docs_sep}scripts"])
     cmd += [
         "--hidden-import", "l3_node",
+        "--hidden-import", "l3_node.pmo_copilot_cli",
+        "--hidden-import", "l3_node.pmo_skill_paths",
+        "--hidden-import", "l3_node.pmo_copilot_env",
+        "--hidden-import", "l3_node.standalone_engine",
+        "--hidden-import", "l3_node.pmo_mcp_delegate",
         "--hidden-import", "l3_node.win_console",
         "--hidden-import", "l3_node.paths",
         "--hidden-import", "l3_node.early_log",
@@ -226,6 +235,8 @@ def main() -> int:
         "--hidden-import", "l3_node.config_writeout",
         "--hidden-import", "l3_node.im_channels",
         "--hidden-import", "l3_node.im_channels.lark_channel",
+        "--hidden-import", "l3_node.im_channels.lark_credentials",
+        "--hidden-import", "l3_node.im_channels.pmo_bitable_channel",
         "--hidden-import", "l3_node.channels.lark.long_connection",
         "--hidden-import", "lark_oapi",
         "--hidden-import", "yaml",

@@ -172,6 +172,23 @@ function main() {
     copyIfExists(recruitEx, path.join(DIST, "config", "l3_recruitment.yaml.example"));
   }
 
+  const pmoScript = path.join(ROOT, "scripts", "run_pmo_copilot_skill.py");
+  if (fs.existsSync(pmoScript)) {
+    copyIfExists(pmoScript, path.join(DIST, "scripts", "run_pmo_copilot_skill.py"));
+  }
+  const pmoBat = path.join(ROOT, "scripts", "run_pmo_copilot_skill.bat");
+  if (fs.existsSync(pmoBat)) {
+    copyIfExists(pmoBat, path.join(DIST, "scripts", "run_pmo_copilot_skill.bat"));
+  }
+  const pmoSkillDir = path.join(ROOT, "skills_repo", "pmo-copilot");
+  if (fs.existsSync(pmoSkillDir)) {
+    copyIfExists(pmoSkillDir, path.join(DIST, "skills_repo", "pmo-copilot"));
+  }
+  const pmoConfigDir = path.join(ROOT, "config", "skills", "pmo-copilot");
+  if (fs.existsSync(pmoConfigDir)) {
+    copyIfExists(pmoConfigDir, path.join(DIST, "config", "skills", "pmo-copilot"));
+  }
+
   const ps = path.join(ROOT, "scripts", "run_l3.ps1");
   if (fs.existsSync(ps)) {
     copyIfExists(ps, path.join(DIST, "scripts", "run_l3.ps1"));

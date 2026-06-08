@@ -15,25 +15,31 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_finalize_lock = threading.Lock()
+
 _STATE_PATH = Path.home() / ".jachin" / "data" / "pmo_bitable_watch_state.json"
 _CALLBACK_DIR = Path.home() / ".jachin" / "data" / "pmo_bitable_watch_callbacks"
 _CALLBACK_NDJSON = _CALLBACK_DIR / "callbacks.ndjson"
 _CALLBACK_LATEST_MD = _CALLBACK_DIR / "latest.md"
+_RAW_EVENTS_NDJSON = _CALLBACK_DIR / "raw_events.ndjson"
+_LONG_CONNECTION_LOG = Path.home() / ".jachin" / "data" / "pmo_bitable_watch_long_connection.log"
 _SKILL_ID = "pmo-copilot"
 _CONFIG_NAME = "pmo_bitable_watch.yaml"
 
-_DEFAULT_TABLE_ID = "tblB2uMLGIQrAttB"
-_DEFAULT_VIEW_ID = "vewpI8lyYw"
-_DEFAULT_CHAT_ID = "oc_b1b9cff6804517c79b7f5a617ab30483"
+_DEFAULT_TABLE_ID = "tblfK9gk6vTQpJtB"
+_DEFAULT_VIEW_ID = "vewCz1FFJi"
 _DEFAULT_IDLE_SECONDS = 20
 _DEFAULT_POLL_SECONDS = 15
 _DEFAULT_MAX_RECORDS = 5000
+# 单次 poll diff 超过此阈值视为基线异常（整表误报），只重建基线、不入 session
+_DEFAULT_POLL_FLOOD_THRESHOLD = 25
 
 _CHANGE_TYPE_LABELS = {
     "created": "新增",
@@ -137,7 +143,14 @@ def _parse_bitable_url(url: str) -> dict[str, str]:
 
 
 def _load_watch_config() -> dict[str, Any]:
-    """合并 YAML 与 PMO_BITABLE_WATCH_* 环境变量。"""
+    """合并 YAML 与 PMO_BITABLE_WATCH_* / PMO_CHANGE_ALERT_* 环境变量。"""
+    from l3_node.pmo_lark_env import (
+        ensure_pmo_dotenv_loaded,
+        pmo_change_alert_chat_id,
+        pmo_change_alert_monitor_chat_id,
+    )
+
+    ensure_pmo_dotenv_loaded()
     yaml_cfg = _load_yaml_config()
 
     def _cfg(key: str, env_key: str, default: Any) -> Any:
@@ -147,6 +160,13 @@ def _load_watch_config() -> dict[str, Any]:
         if key in yaml_cfg and yaml_cfg.get(key) not in (None, ""):
             return yaml_cfg[key]
         return default
+
+    def _chat_env(*env_keys: str) -> str:
+        for k in env_keys:
+            v = _env_str(k)
+            if v:
+                return v
+        return ""
 
     app_id = _expand_placeholder(_cfg("app_id", "PMO_BITABLE_WATCH_APP_ID", ""))
     app_secret = _expand_placeholder(_cfg("app_secret", "PMO_BITABLE_WATCH_APP_SECRET", ""))
@@ -203,9 +223,17 @@ def _load_watch_config() -> dict[str, Any]:
         "enabled": _env_bool("PMO_BITABLE_WATCH_ENABLED", bool(yaml_cfg.get("enabled", True))),
         "table_id": table_id,
         "view_id": view_id,
-        "chat_id": str(_cfg("chat_id", "PMO_BITABLE_WATCH_CHAT_ID", _DEFAULT_CHAT_ID)).strip(),
+        "chat_id": str(
+            _chat_env("PMO_CHANGE_ALERT_CHAT_ID", "PMO_BITABLE_WATCH_CHAT_ID")
+            or _expand_placeholder(_cfg("chat_id", "", pmo_change_alert_chat_id()))
+        ).strip(),
         "monitor_chat_id": str(
-            _cfg("monitor_chat_id", "PMO_BITABLE_WATCH_MONITOR_CHAT_ID", "")
+            _chat_env(
+                "PMO_CHANGE_ALERT_MONITOR_CHAT_ID",
+                "PMO_BITABLE_WATCH_MONITOR_CHAT_ID",
+                "PMO_MONITOR_CHAT_ID",
+            )
+            or _expand_placeholder(_cfg("monitor_chat_id", "", pmo_change_alert_monitor_chat_id()))
         ).strip()
         or None,
         "bitable_url": bitable_url,
@@ -242,10 +270,36 @@ def _load_watch_config() -> dict[str, Any]:
             int(yaml_cfg.get("max_records") or _DEFAULT_MAX_RECORDS),
         ),
         "run_change_alert": bool(yaml_cfg.get("run_change_alert", True)),
-        "push_change_summary": bool(yaml_cfg.get("push_change_summary", True)),
+        "push_change_summary": bool(yaml_cfg.get("push_change_summary", False)),
+        "change_alert_push_monitor": bool(yaml_cfg.get("change_alert_push_monitor", False)),
         "persist_local": bool(yaml_cfg.get("persist_local", True)),
         "dry_run": bool(yaml_cfg.get("dry_run", False)),
     }
+
+
+def _append_raw_ingest_log(
+    events: list[dict[str, Any]],
+    *,
+    source: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """每次收到变更（Lark 事件或 poll diff）立即落盘，供 watch 脚本实时 tail。"""
+    if not events:
+        return
+    try:
+        _CALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        record: dict[str, Any] = {
+            "received_at": _iso_now(),
+            "source": str(source or "unknown"),
+            "event_count": len(events),
+            "events": events,
+        }
+        if extra:
+            record.update(extra)
+        with _RAW_EVENTS_NDJSON.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        logger.warning("[pmo_bitable_watch] raw_events 落盘失败: %s", e)
 
 
 def _persist_callback_local(
@@ -301,6 +355,40 @@ def _write_state(state: dict[str, Any]) -> None:
         _STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError as e:
         logger.warning("[pmo_bitable_watch] 写状态失败: %s", e)
+
+
+def _poll_flood_threshold(cfg: dict[str, Any]) -> int:
+    raw = (os.environ.get("PMO_BITABLE_WATCH_POLL_FLOOD_THRESHOLD") or "").strip()
+    if raw:
+        try:
+            return max(5, int(raw))
+        except ValueError:
+            pass
+    return max(5, int(cfg.get("poll_flood_threshold") or _DEFAULT_POLL_FLOOD_THRESHOLD))
+
+
+def _sync_state_scope(state: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    """table/view 与配置不一致时清空 baseline 与 session，避免换表后整表误报。"""
+    tid = str(cfg.get("table_id") or "").strip()
+    vid = str(cfg.get("view_id") or "").strip()
+    old_tid = str(state.get("table_id") or "").strip()
+    old_vid = str(state.get("view_id") or "").strip()
+    if old_tid and tid and old_tid != tid:
+        logger.warning("[pmo_bitable_watch] table_id 变更 %s → %s，重置基线与 session", old_tid, tid)
+        state["baseline_records"] = {}
+        state["session"] = {"active": False, "events": []}
+        state["table_id"] = tid
+        state["view_id"] = vid
+        return True
+    if old_vid and vid and old_vid != vid:
+        logger.warning("[pmo_bitable_watch] view_id 变更 %s → %s，重置基线与 session", old_vid, vid)
+        state["baseline_records"] = {}
+        state["session"] = {"active": False, "events": []}
+        state["view_id"] = vid
+        return True
+    state["table_id"] = tid
+    state["view_id"] = vid
+    return False
 
 
 def _normalize_value(val: Any) -> str:
@@ -706,24 +794,32 @@ def _finalize_session(
     app_id: str | None = None,
     app_secret: str | None = None,
 ) -> dict[str, Any]:
-    session = state.get("session") if isinstance(state.get("session"), dict) else {}
-    events = list(session.get("events") or [])
-    if not events:
+    """结束防抖会话：先 claim 清空 session，再分析推送（防并发重复 finalize）。"""
+    with _finalize_lock:
+        state = _read_state()
+        session = state.get("session") if isinstance(state.get("session"), dict) else {}
+        events = list(session.get("events") or [])
+        if not events:
+            state["session"] = {"active": False, "events": []}
+            _write_state(state)
+            return {
+                "status": "ok",
+                "action": "session_finalized_notify",
+                "notified": False,
+                "message": "会话结束但无累积变更",
+            }
+
+        started = str(session.get("started_at") or "")
+        ended = _iso_now()
+        # 立即 claim：其它 tick / 线程不再看到同一批 events
         state["session"] = {"active": False, "events": []}
+        state["last_finalized_at"] = ended
         _write_state(state)
-        return {
-            "status": "ok",
-            "action": "session_finalized_notify",
-            "notified": False,
-            "message": "会话结束但无累积变更",
-        }
 
     is_dry = cfg.get("dry_run") if dry_run is None else dry_run
     table_id = str(cfg.get("table_id") or "")
     view_id = str(cfg.get("view_id") or "")
     chat_id = str(cfg.get("chat_id") or "").strip()
-    started = str(session.get("started_at") or "")
-    ended = _iso_now()
 
     out: dict[str, Any] = {
         "status": "ok",
@@ -735,7 +831,7 @@ def _finalize_session(
 
     notify_results: list[dict[str, Any]] = []
 
-    if cfg.get("push_change_summary", True) and chat_id:
+    if cfg.get("push_change_summary") and chat_id:
         md = format_change_summary_markdown(
             events,
             table_id=table_id,
@@ -774,7 +870,7 @@ def _finalize_session(
                 session_started_at=started,
                 chat_id=chat_id,
                 monitor_chat_id=cfg.get("monitor_chat_id"),
-                push_monitor=True,
+                push_monitor=bool(cfg.get("change_alert_push_monitor", False)),
                 dry_run=bool(is_dry),
                 app_id=app_id or str(cfg.get("notify_app_id") or "") or None,
                 app_secret=app_secret or str(cfg.get("notify_app_secret") or "") or None,
@@ -803,13 +899,13 @@ def _finalize_session(
         if not r.get("dry_run")
     ) or bool((out.get("change_alert") or {}).get("notified"))
 
-    # 基线推进到当前快照
-    current = state.get("current_records") if isinstance(state.get("current_records"), dict) else {}
-    state["baseline_records"] = current
-    state["session"] = {"active": False, "events": []}
-    state["last_notify_at"] = ended
-    state["last_finalized_at"] = ended
-    _write_state(state)
+    # 基线推进（session 已在 claim 阶段清空）
+    with _finalize_lock:
+        state = _read_state()
+        current = state.get("current_records") if isinstance(state.get("current_records"), dict) else {}
+        state["baseline_records"] = current
+        state["last_notify_at"] = ended
+        _write_state(state)
 
     out["notified"] = notified
     out["message"] = "变更会话已结束并回调" if notified or is_dry else "变更会话已结束（推送未确认成功）"
@@ -843,8 +939,7 @@ def run_bitable_watch_tick(
         return {"status": "ok", "action": "disabled", "message": "PMO_BITABLE_WATCH_ENABLED=0"}
 
     state = _read_state()
-    state.setdefault("table_id", cfg["table_id"])
-    state.setdefault("view_id", cfg["view_id"])
+    _sync_state_scope(state, cfg)
 
     try:
         current = _fetch_bitable_records(cfg)
@@ -885,6 +980,25 @@ def run_bitable_watch_tick(
         table_id=cfg["table_id"],
     )
 
+    flood_limit = _poll_flood_threshold(cfg)
+    if len(tick_events) > flood_limit:
+        logger.warning(
+            "[pmo_bitable_watch] poll diff 洪水 %d 条 (> %d)，视为基线异常，跳过 session",
+            len(tick_events),
+            flood_limit,
+        )
+        state["baseline_records"] = current
+        state["session"] = {"active": False, "events": []}
+        _write_state(state)
+        return {
+            "status": "ok",
+            "action": "poll_flood_baseline_reset",
+            "poll_diff_count": len(tick_events),
+            "flood_threshold": flood_limit,
+            "record_count": len(current),
+            "message": "poll diff 异常过多，已重建基线且不累积 session",
+        }
+
     idle_seconds = int(cfg.get("idle_seconds") or _DEFAULT_IDLE_SECONDS)
     last_change_at = str(session.get("last_change_at") or "")
     idle_elapsed = _seconds_since(last_change_at)
@@ -896,6 +1010,7 @@ def run_bitable_watch_tick(
                 "started_at": _iso_now(),
                 "last_change_at": _iso_now(),
                 "events": [],
+                "source": "poll_diff",
             }
             logger.info("[pmo_bitable_watch] 新编辑会话开始 changes=%d", len(tick_events))
         else:
@@ -903,6 +1018,8 @@ def run_bitable_watch_tick(
         session["events"] = _merge_session_events(list(session.get("events") or []), tick_events)
         state["session"] = session
         state["baseline_records"] = current
+        state["last_event_at"] = _iso_now()
+        _append_raw_ingest_log(tick_events, source="poll_diff")
         _write_state(state)
         return {
             "status": "ok",
@@ -972,11 +1089,15 @@ def run_bitable_watch_status() -> dict[str, Any]:
         "baseline_record_count": len(state.get("baseline_records") or {}),
         "current_record_count": state.get("record_count"),
         "last_tick_at": state.get("last_tick_at"),
+        "last_event_at": state.get("last_event_at"),
         "last_notify_at": state.get("last_notify_at"),
+        "session_source": session.get("source"),
         "state_path": str(_STATE_PATH),
         "callback_dir": str(_CALLBACK_DIR),
         "callback_latest_md": str(_CALLBACK_LATEST_MD),
         "callback_ndjson": str(_CALLBACK_NDJSON),
+        "raw_events_ndjson": str(_RAW_EVENTS_NDJSON),
+        "long_connection_log": str(_LONG_CONNECTION_LOG),
     }
 
 
@@ -1081,6 +1202,10 @@ def ingest_bitable_change_events(events: list[dict[str, Any]]) -> dict[str, Any]
     session["events"] = _merge_session_events(list(session.get("events") or []), events)
     state["session"] = session
     state["last_event_at"] = _iso_now()
+    ingest_source = str(
+        (events[0].get("source") if events else None) or session.get("source") or "lark_event"
+    )
+    _append_raw_ingest_log(events, source=ingest_source)
     _write_state(state)
     return {
         "status": "ok",
@@ -1088,6 +1213,7 @@ def ingest_bitable_change_events(events: list[dict[str, Any]]) -> dict[str, Any]
         "session_event_count": len(session.get("events") or []),
         "idle_seconds": cfg.get("idle_seconds"),
         "mode": cfg.get("mode"),
+        "ingest_source": ingest_source,
     }
 
 

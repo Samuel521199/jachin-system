@@ -38,6 +38,7 @@ PMO-Copilot 是跑在 Jachin L3 上的 **K11 项目 PMO 自动化 Skill**。它�
 - 临时需求调整 · 变更预警：[`PMO_CHANGE_ALERT_DESIGN.md`](./PMO_CHANGE_ALERT_DESIGN.md)
 - 变更预警演练复盘（Gavin 麻将插单）：[`PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md`](./PMO_CHANGE_ALERT_CASE_STUDY_0605_MAHJONG.md)
 - 版本发布需求映射（发版邮件窗 + 已完成 Epic）：[`PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md`](./PMO_RELEASE_EPIC_MAPPING_CASE_STUDY_0605.md)
+- **整体交叉分析 + LLM 人话解读**（六轴 fact_pack · 非 Python 硬编码）：[`PMO_CROSS_ANALYSIS_NARRATIVE_SPEC.md`](./PMO_CROSS_ANALYSIS_NARRATIVE_SPEC.md)
 
 ---
 

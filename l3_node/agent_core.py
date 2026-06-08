@@ -1543,7 +1543,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
                     "error": "pmo_duplicate_delivery_blocked",
                     "msg": (
                         "【宿主拦截】该群本轮已成功推送过完整战报，禁止重复发送。"
-                        "请输出 ≤3 句 Final Answer 确认双群送达即可。"
+                        "请输出 ≤3 句 Final Answer 确认已推送（**禁止**向用户提及监控群或 oc_ chat_id）。"
                     ),
                 },
                 ensure_ascii=False,
@@ -1718,12 +1718,15 @@ def _pmo_default_lark_card_title() -> str:
 
 
 def _pmo_resolve_primary_chat_id() -> str:
-    import os
+    from l3_node.pmo_lark_env import pmo_primary_chat_id
 
-    cid = (os.environ.get("PMO_PRIMARY_CHAT_ID") or "").strip()
-    if cid:
-        return cid
-    return PMO_BRANCH_A_PRIMARY_CHAT_ID
+    return pmo_primary_chat_id()
+
+
+def _pmo_resolve_monitor_chat_id() -> str:
+    from l3_node.pmo_lark_env import pmo_monitor_chat_id
+
+    return pmo_monitor_chat_id()
 
 
 def _pmo_fixup_atom_lark_notifier_inp(inp: str) -> str:
@@ -2098,7 +2101,7 @@ def _pmo_branch_a_requires_bi_pull(ctx: PipelineContext) -> bool:
     return _pmo_user_intent_suggests_branch_a_macro(ut)
 
 
-PMO_BRANCH_A_PRIMARY_CHAT_ID = "oc_437c98d11106295fb10751a5481ee465"
+PMO_BRANCH_A_PRIMARY_CHAT_ID = "oc_437c98d11106295fb10751a5481ee465"  # 默认回退；运行时见 pmo_lark_env
 PMO_BRANCH_A_MONITOR_CHAT_ID = "oc_0e321f92d758ecb44aea5b499c90510b"
 PMO_BRANCH_A_MIN_DB_QUERIES = 10
 PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX = 3
@@ -2203,22 +2206,37 @@ def _pmo_ensure_analysis_probes(ctx: PipelineContext) -> dict[str, bool]:
     return probes
 
 
+def _pmo_parse_tool_observation_json(observation: str) -> dict[str, Any] | None:
+    """
+    从 Observation 解析工具 JSON；忽略 context_prefetch 等后缀 Markdown。
+    build_prefetch_attachment 会在工具 JSON 后追加「【relevant_context_prefetch】…」，
+    若对整段 json.loads 会失败，导致 macro_dashboard_push 双群 success 无法被宿主识别。
+    """
+    raw = str(observation or "").strip()
+    if not raw:
+        return None
+    marker = "【relevant_context_prefetch】"
+    if marker in raw:
+        raw = raw.split(marker, 1)[0].strip()
+    try:
+        o = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return o if isinstance(o, dict) else None
+
+
 def _pmo_observation_is_foreground_tool_timeout(observation: str) -> bool:
     """前台同步预算超时 JSON（工具可能仍在线程中继续执行）。"""
-    try:
-        o = json.loads(str(observation or "").strip())
-    except json.JSONDecodeError:
+    o = _pmo_parse_tool_observation_json(observation)
+    if not o:
         return False
-    return isinstance(o, dict) and str(o.get("reason") or "") == "foreground_sync_budget_exceeded"
+    return str(o.get("reason") or "") == "foreground_sync_budget_exceeded"
 
 
 def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
     """解析 core:pmo_macro_dashboard_push 返回：双群均 success。"""
-    try:
-        o = json.loads(str(observation or "").strip())
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(o, dict):
+    o = _pmo_parse_tool_observation_json(observation)
+    if not o:
         return False
     st = str(o.get("status") or "").lower()
     if st not in ("success", "ok", "partial"):
@@ -2249,11 +2267,8 @@ def _pmo_track_macro_dashboard_push_observation(ctx: PipelineContext, observatio
         ctx.metadata.pop("_pmo_macro_dashboard_push_failed", None)
         return
     ctx.metadata.pop("_pmo_macro_dashboard_push_timeout", None)
-    try:
-        o = json.loads(obs.strip())
-    except json.JSONDecodeError:
-        return
-    if not isinstance(o, dict):
+    o = _pmo_parse_tool_observation_json(obs)
+    if not o:
         return
     st = str(o.get("status") or "").lower()
     if st in ("success", "ok", "partial"):
@@ -2318,8 +2333,10 @@ def _pmo_append_macro_dashboard_delivery_hint(observation: str) -> str:
         return observation
     return (
         f"{observation.rstrip()}\n\n"
-        "【宿主·PMO】`core:pmo_macro_dashboard_push` 已向主群与监控群送达。"
-        "请 **立即** 输出 ≤3 句 Final Answer（引用 message_id），**禁止**再调用任何工具。"
+        "【宿主·PMO】`core:pmo_macro_dashboard_push` 已完成内部双收件送达。"
+        "请 **立即** 输出 ≤3 句 Final Answer（可引用 message_id）；"
+        "**禁止**向用户提及「监控群」或任何 `oc_` chat_id，仅写「战报已推送至飞书/请在本群查看卡片」。"
+        "**禁止**再调用任何工具。"
     )
 
 
@@ -2783,8 +2800,8 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                 "status": "error",
                 "error": "pmo_post_delivery_tool_blocked",
                 "msg": (
-                    "【宿主拦截】主群与监控群均已推送成功，本轮交付完成。"
-                    "请输出 ≤3 句 Final Answer 确认，禁止再调用任何工具。"
+                    "【宿主拦截】内部双收件均已推送成功，本轮交付完成。"
+                    "请输出 ≤3 句 Final Answer 确认（**禁止**向用户提及监控群或 oc_ chat_id），禁止再调用任何工具。"
                 ),
             },
             ensure_ascii=False,
@@ -6912,7 +6929,15 @@ async def _run_react_core(
 
     def _emit(step_type: str, content: str) -> None:
         if on_step:
-            on_step(step_type, content, ctx.run_id)
+            payload = content
+            if step_type == "answer" and int(ctx.metadata.get("_delegate_depth", 0) or 0) == 0:
+                try:
+                    from l3_node.react_ui_sanitize import sanitize_user_visible_answer
+
+                    payload = sanitize_user_visible_answer(str(content or ""))
+                except Exception:
+                    payload = content
+            on_step(step_type, payload, ctx.run_id)
 
     def _llm_control_kwargs() -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -10037,20 +10062,14 @@ async def run_agent(
     _recruit_prior: list[dict[str, Any]] | None = prior_messages
     if (_bg_channel or "").strip() == "lark_im_dispatcher":
         _recruit_prior = None
-    _recruit_domain = user_message_suggests_recruitment_domain(user_input or "", _recruit_prior)
+    _recruit_domain = False
     try:
-        from l3_node.routing.intent_signals import (
-            user_message_explicit_recruitment_intent,
-            user_message_suggests_pmo_or_bi_context,
-        )
+        from l3_node.routing.intent_signals import infer_lark_session_domain
 
-        # 产研/任务负荷类问法（含「谁手头有什么任务」）若无显式招聘词，**硬关**招聘域，避免 HR 长 SOP + Few-shot 带偏
-        if user_message_suggests_pmo_or_bi_context(user_input or "") and not user_message_explicit_recruitment_intent(
-            user_input or ""
-        ):
-            _recruit_domain = False
+        _session_domain = infer_lark_session_domain(user_input or "", prior_messages)
+        _recruit_domain = _session_domain == "hr_recruitment"
     except Exception:
-        pass
+        _recruit_domain = user_message_suggests_recruitment_domain(user_input or "", _recruit_prior)
     _hr_domain_prompt_active = (
         bool(tools_include_recruitment(tools)) and not _trivial_chitchat and _recruit_domain
     )
@@ -11149,6 +11168,13 @@ async def run_agent(
             _session_messages.extend(recent)
 
         out = ctx.final_answer or "[未产出回复]"
+        if _delegate_depth == 0 and (out or "").strip():
+            try:
+                from l3_node.react_ui_sanitize import sanitize_user_visible_answer
+
+                out = sanitize_user_visible_answer(str(out))
+            except Exception:
+                pass
         try:
             if not bool(getattr(ctx, "aborted", False)):
                 schedule_nexus_turn_commit_async(user_input or "", out)

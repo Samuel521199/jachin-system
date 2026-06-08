@@ -51,13 +51,24 @@ WebSocket/终端仅用于镜像展示，**不可替代长连接**进行招聘流
 
 飞书后台需选择「使用长连接接收回调」。
 
+## Lark 长连接（三类，可独立 enabled）
+
+| 配置节 | 用途 | 凭证回落 |
+|--------|------|----------|
+| `lark` | 主机器人 **IM**（PMO 触发 / 通用 / 招聘路由） | `LARK_APP_ID` / yaml `app_id` |
+| `lark_hr` | **HR 招聘**专用机器人 IM（独立飞书应用时） | `HR_LARK_APP_ID` → `LARK_APP_ID` |
+| `lark_pmo_bitable` | **PMO 多维表变更**事件（非聊天） | `pmo_bitable_watch.yaml` / `PMO_BITABLE_WATCH_*` |
+
+打包后可在桌面 **设置 → 飞书长连接（本机接管）** 切换上述 `enabled` 与 IM 的 `chat_ids`；写入 `~/.jachin/config/im_channels.yaml`。**保存后需重启 Jachin Desktop** 使 L3 侧车重建连接。
+
 ## 多机共享
 
 多台 L3 共享同一飞书应用时：
 
 1. 各节点配置 **chat_ids**，指定本节点负责的会话
 2. chat_ids 应互斥（各节点不重叠），否则消息可能被忽略
-3. 飞书将消息随机推送到某一连接；若推送到「错误」节点，该节点会因 chat_id 不在列表而忽略
+3. **同一 app 的 IM 长连接**（`lark` 或 `lark_hr`）同时只应 **一台** `enabled: true`
+4. 飞书将消息推到当前在线的一条连接；若推到「错误」节点，该节点会因 chat_id 不在列表而忽略
 
 ## 扩展 Telegram
 

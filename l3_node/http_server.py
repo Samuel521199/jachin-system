@@ -2314,6 +2314,35 @@ async def _handle_recruitment_start_task(request) -> "aiohttp.web.StreamResponse
     return response
 
 
+def _is_loopback_http_peer(request) -> bool:
+    remote = (getattr(request, "remote", None) or "").strip()
+    return remote in ("127.0.0.1", "::1", "localhost")
+
+
+def _pmo_mcp_delegate_request(request) -> bool:
+    try:
+        from l3_node.pmo_mcp_delegate import PMO_DELEGATE_HEADER
+
+        return (request.headers.get(PMO_DELEGATE_HEADER) or "").strip() == "1"
+    except Exception:
+        return False
+
+
+async def _handle_mcp_tools_list(request) -> "aiohttp.web.Response":
+    """GET /api/v3/mcp/tools — 供 PMO 子进程拉取本机常驻 L3 已挂载的 MCP 工具表（仅 loopback）。"""
+    if not _is_loopback_http_peer(request) or not _pmo_mcp_delegate_request(request):
+        return _json_response({"ok": False, "error": "forbidden"}, status=403)
+    try:
+        from l3_node.primitives.mcp.registry import get_mcp_registry
+
+        reg = get_mcp_registry()
+        tools = await reg.fetch_tools_from_l2()
+        return _json_response({"ok": True, "tools": tools, "count": len(tools)})
+    except Exception as e:
+        logger.warning("[L3 HTTP] mcp/tools 失败: %s", e)
+        return _json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
     """POST /api/v3/mcp/execute — 兼容路径：供 L2 在可达 peer URL 时代为触发本机 MCP。
 
@@ -2337,7 +2366,7 @@ async def _handle_mcp_execute(request) -> "aiohttp.web.Response":
         "true",
         "yes",
         "on",
-    )
+    ) or (_is_loopback_http_peer(request) and _pmo_mcp_delegate_request(request))
     task_id = str(body.get("task_id") or "").strip()
     task_token = str(body.get("task_token") or "").strip()
     if not allow_legacy:
@@ -3016,6 +3045,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_patch("/api/v1/autonomy/intents/{intent_id}", _handle_autonomy_intent_patch)
     app.router.add_delete("/api/v1/autonomy/intents/{intent_id}", _handle_autonomy_intent_delete)
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
+    app.router.add_get("/api/v3/mcp/tools", _handle_mcp_tools_list)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
     app.router.add_get("/l3/setup", _handle_l3_setup_page)

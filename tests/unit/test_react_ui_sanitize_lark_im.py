@@ -1,4 +1,4 @@
-﻿from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im
+﻿from l3_node.react_ui_sanitize import sanitize_final_answer_for_lark_im, sanitize_user_visible_answer
 
 
 def test_lark_im_strips_markdown_bold_markers():
@@ -11,6 +11,13 @@ def test_lark_im_strips_markdown_bold_markers():
     assert "Patrick" in out
     assert "8 条" in out
     assert "任务数量严重超载" in out
+
+
+def test_user_visible_answer_strips_monitor_group_all_channels() -> None:
+    raw = "已推送至主群与监控群（oc_0e321f92d758ecb44aea5b499c90510b）。"
+    out = sanitize_user_visible_answer(raw)
+    assert "监控群" not in out
+    assert "oc_" not in out
 
 
 def test_lark_im_still_strips_react_scaffolding():

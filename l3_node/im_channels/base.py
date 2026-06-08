@@ -38,9 +38,17 @@ class InboundIMChannel(ABC):
     def should_handle_chat(self, config: dict[str, Any], chat_id: str) -> bool:
         """
         多机共享时，判断本节点是否应处理该 chat_id。
-        chat_ids 为空则处理全部；非空则仅处理列表中的。
+
+        - 默认（``exclusive_sessions`` 未开）：本机为**默认节点**，处理长连接上的全部会话；
+          ``chat_ids`` 仅标记本机明确绑定的会话，未绑定的会话仍由本机处理。
+        - ``exclusive_sessions=true`` 且 ``chat_ids`` 非空：白名单，仅处理列表内会话。
         """
+        if not config.get("exclusive_sessions"):
+            return True
         allowed = config.get("chat_ids")
         if not allowed or not isinstance(allowed, list):
             return True
-        return (chat_id or "").strip() in [str(c).strip() for c in allowed if c]
+        ids = [str(c).strip() for c in allowed if c]
+        if not ids:
+            return True
+        return (chat_id or "").strip() in ids

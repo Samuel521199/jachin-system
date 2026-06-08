@@ -64,7 +64,7 @@ def _interval_seconds() -> int:
     return max(5, int(cfg.get("debounce_check_seconds") or 10))
 
 
-def _job_tick() -> None:
+def _job_tick_body() -> None:
     try:
         mode = _watch_mode()
         if _use_poll_tick():
@@ -95,6 +95,13 @@ def _job_tick() -> None:
             logger.info("[pmo_bitable_watch_scheduler] 本机落盘 %s", out.get("local_paths"))
     except Exception as e:
         logger.warning("[pmo_bitable_watch_scheduler] tick 异常: %s", e)
+
+
+def _job_tick() -> None:
+    """在后台线程执行 tick，避免 finalize+LLM 阻塞下一轮 poll/debounce。"""
+    import threading
+
+    threading.Thread(target=_job_tick_body, daemon=True, name="pmo_bitable_watch_tick").start()
 
 
 def start_pmo_bitable_watch_scheduler() -> dict[str, Any]:
@@ -171,8 +178,8 @@ def stop_pmo_bitable_watch_scheduler() -> dict[str, Any]:
 
 
 def run_pmo_bitable_watch_once(*, force_finalize: bool = False) -> dict[str, Any]:
-    """手动触发一次 tick。"""
-    if _watch_mode() == "poll":
+    """手动触发一次 tick（poll / hybrid 拉表 diff；webhook 仅 debounce）。"""
+    if _use_poll_tick():
         from l3_node.tools.pmo_bitable_watch import run_bitable_watch_tick
 
         return run_bitable_watch_tick(force_finalize=force_finalize)

@@ -99,8 +99,18 @@ if __name__ == "__main__" and len(sys.argv) > 1:
 
         raise SystemExit(run_k11_game_open_smoke_sync())
 
+# PMO Copilot 一次性任务：在 logging 初始化前压低控制台刷屏（详情见 pmo_copilot_*.txt / l3_debug.log）
+if __name__ == "__main__" and "--run-pmo-copilot" in sys.argv:
+    try:
+        from l3_node.pmo_copilot_env import apply_pmo_copilot_console_quiet_defaults
+
+        apply_pmo_copilot_console_quiet_defaults()
+    except Exception:
+        pass
+
 # 桌面/GUI 拉起打包 exe 时无控制台：分配独立控制台（须在 logging 绑定 stdout 之前）
-if sys.platform == "win32":
+# PMO 一次性子进程禁止弹窗/抢 stdout（见 pmo_copilot_env.JACHIN_L3_CONSOLE=0）
+if sys.platform == "win32" and "--run-pmo-copilot" not in sys.argv:
     try:
         from l3_node.win_console import maybe_attach_windows_console
 
@@ -371,50 +381,16 @@ def _log_l3_code_identity() -> None:
 _log_l3_code_identity()
 
 
-def _create_engine_standalone():
-    """仅用环境变量创建引擎，不连接 L2。有 DASHSCOPE 时默认 qwen3.5-plus，降级用 flash，避免连未启动的 Ollama。"""
-    try:
-        trace("_create_engine_standalone: importing LiteLLMEngine...")
-        from l3_node.llm_client import LiteLLMEngine, SecurityContext
-
-        ctx = SecurityContext()
-        if os.environ.get("OPENAI_API_KEY"):
-            ctx.set_key("openai", os.environ["OPENAI_API_KEY"])
-        if os.environ.get("DASHSCOPE_API_KEY"):
-            ctx.set_key("dashscope", os.environ["DASHSCOPE_API_KEY"])
-        fallback = None
-        default_model = "gpt-4o-mini"
-        if ctx.get_key("dashscope"):
-            try:
-                from core.llm_provider import DASHSCOPE_ECON_FALLBACK_MODEL
-
-                fallback = [DASHSCOPE_ECON_FALLBACK_MODEL]
-            except ImportError:
-                fallback = ["dashscope/qwen3.5-flash"]
-            default_model = os.environ.get("LLM_MODEL", "qwen3.5-plus")
-        _timeout = float(os.environ.get("LLM_TIMEOUT", "180"))
-        engine = LiteLLMEngine(
-            security_context=ctx,
-            model_name=os.environ.get("L3_MODEL", default_model),
-            fallback_models=fallback,
-            timeout=_timeout,
-            max_attempts=2,
-        )
-        trace("_create_engine_standalone: importing register_host_services...")
-        from core.wasm_runner import register_host_services
-        from l3_node.l2_url_util import normalize_l2_base_url
-
-        register_host_services(
-            llm_engine=engine, l2_base_url=normalize_l2_base_url(os.environ.get("L2_BASE_URL"))
-        )
-        trace("_create_engine_standalone: done")
-        return engine
-    except Exception as e:
-        trace("_create_engine_standalone FAILED: %s", e)
-        raise
+from l3_node.standalone_engine import create_engine_standalone as _create_engine_standalone
 
 
 async def main() -> None:
+    # 旧侧车若误入 main()：必须在单实例锁之前退出，否则会 kill_previous 杀掉桌面常驻 L3
+    if "--run-pmo-copilot" in sys.argv:
+        from l3_node.pmo_copilot_cli import run_pmo_copilot_main
+
+        raise SystemExit(run_pmo_copilot_main())
+
     # 抑制客户端断开时的 ConnectionResetError（刷新/关闭页面时常见，非异常）
     _loop = asyncio.get_running_loop()
     _orig = _loop.get_exception_handler()
@@ -439,7 +415,14 @@ async def main() -> None:
     _loop.set_exception_handler(_quiet_handler)
 
     from core.single_instance import acquire_single_instance_lock
-    acquire_single_instance_lock("l3", kill_previous=True)  # 同设备仅允许一个 L3，启动时杀死旧实例
+    # 默认不 taskkill 旧实例（PMO/误双开时避免拖死 start-layer3 常驻 L3）；显式 JACHIN_L3_KILL_PREVIOUS=1 可恢复旧行为
+    _kill_prev = (os.environ.get("JACHIN_L3_KILL_PREVIOUS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    acquire_single_instance_lock("l3", kill_previous=_kill_prev)
 
     parser = argparse.ArgumentParser(description="L3 节点")
     parser.add_argument("--ws-only", action="store_true", help="仅启动 WebSocket，不连接 L2")
@@ -738,6 +721,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--run-pmo-copilot" in sys.argv:
+        try:
+            from l3_node.pmo_copilot_cli import run_pmo_copilot_main
+
+            raise SystemExit(run_pmo_copilot_main())
+        except KeyboardInterrupt:
+            raise SystemExit(130)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

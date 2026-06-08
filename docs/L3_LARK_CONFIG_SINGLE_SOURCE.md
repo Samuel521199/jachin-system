@@ -52,7 +52,9 @@
 
 ## 5. 桌面客户端还读什么
 
-桌面端除连接 **L3 WebSocket** 外，可能另有 **`nexus_config.json` / 镜像推送 URL** 等（用于云边、下载与推送），与 **飞书 tenant 凭证**不是同一套；以 `clients/desktop` 内文档与配置为准。
+桌面端除连接 **L3 WebSocket** 外，另有 **`nexus_config.json` / 镜像推送 URL** 等（用于云边、下载与推送），与 **飞书 tenant 凭证**不是同一套；以 `clients/desktop` 内文档与配置为准。
+
+**飞书长连接（本机是否接管）**：控制台 **设置 → 飞书长连接（本机接管）**，写入 `~/.jachin/config/im_channels.yaml` 的 `lark` / `lark_hr` / `lark_pmo_bitable` 的 `enabled` 与 IM 的 `chat_ids`。**保存后需重启 Desktop**。应用凭证仍来自 `.env` 的 `LARK_*` / `HR_LARK_*`。
 
 ---
 

@@ -1744,6 +1744,34 @@ class MCPToolRegistry:
             logger.info("[MCP Registry] L3 本地优先模式，仅用本地工具 %d 个（JACHIN_L3_LOCAL_ONLY=1，跳过 L2）", len(tools))
             return tools
 
+        # PMO 子进程：复用本机常驻 L3 的 MCP 工具表，禁止再起第二套 stdio（与主 L3 争用子进程/管道）
+        try:
+            from l3_node.pmo_mcp_delegate import (
+                fetch_mcp_tools_via_local_l3_http,
+                local_l3_http_reachable,
+                should_delegate_mcp_to_local_l3,
+            )
+
+            if should_delegate_mcp_to_local_l3() and await local_l3_http_reachable():
+                remote_tools = await fetch_mcp_tools_via_local_l3_http()
+                for t in remote_tools:
+                    tid = str(t.get("id") or "").strip()
+                    if not tid or tid in self._known_mcp_tools:
+                        continue
+                    tools.append(t)
+                    self._known_mcp_tools.add(tid)
+                self._long_running_mcp_ids = {
+                    str(x.get("id", "")).strip().lower() for x in tools if tool_entry_long_running(x)
+                }
+                self._tools_cache = tools
+                logger.info(
+                    "[MCP Registry] PMO 子进程复用本机 L3 MCP 工具表（跳过 stdio 引导）count=%d",
+                    len(tools),
+                )
+                return tools
+        except Exception as e:
+            logger.warning("[MCP Registry] PMO→本机 L3 MCP 工具拉取失败，回退独立 stdio: %s", e)
+
         # L3 进程内 stdio MCP（长期架构；与 L2 原 mcp_servers.json + inventory/mcps 同源）
         try:
             from l3_node.primitives.mcp.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
@@ -2564,12 +2592,40 @@ class MCPToolRegistry:
             return await self._bridge_atomic_file_mcp_to_native(tool_id, action_input)
 
         try:
-            from l3_node.primitives.mcp.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
             from core.mcp_client import get_mcp_manager, MCPToolNotFoundError as _McpNotFound, normalize_mcp_schema_aliases
+
+            _rn = self._raw_name(tool_id)
+            try:
+                from l3_node.pmo_mcp_delegate import (
+                    invoke_mcp_via_local_l3_http,
+                    local_l3_http_reachable,
+                    should_delegate_mcp_to_local_l3,
+                )
+
+                if (
+                    _rn
+                    and should_delegate_mcp_to_local_l3()
+                    and await local_l3_http_reachable()
+                ):
+                    _parsed_delegate = self._parse_action_input(action_input)
+                    _args_delegate = normalize_mcp_schema_aliases(_rn, _parsed_delegate)
+                    if _rn == "apply_professional_design":
+                        _args_delegate = _normalize_apply_professional_design_args(dict(_args_delegate))
+                    _invoke_cap = float(timeout) if (timeout or 0) > 0 else 120.0
+                    return await invoke_mcp_via_local_l3_http(
+                        _rn, _args_delegate, timeout=_invoke_cap
+                    )
+            except Exception as _pmo_del_e:
+                logger.warning(
+                    "[MCP Registry] PMO→本机 L3 MCP 调用失败 tool=%s，回退本地 stdio: %s",
+                    tool_id,
+                    _pmo_del_e,
+                )
+
+            from l3_node.primitives.mcp.mcp_stdio_bootstrap import start_l3_stdio_mcp_host
 
             await start_l3_stdio_mcp_host()
             _mgr = get_mcp_manager()
-            _rn = self._raw_name(tool_id)
             if _rn and not _mgr.can_invoke_stdio_tool(_rn):
                 logger.info(
                     "[MCP Registry] stdio 未路由 raw_name=%s（本机 MCPManager 无此工具）→ 将尝试 L2 tool_id=%s",

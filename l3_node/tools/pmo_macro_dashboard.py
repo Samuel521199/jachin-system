@@ -48,14 +48,22 @@ from l3_node.pmo_report_format import (
     polish_pmo_war_report_markdown,
     sort_epics_for_demand_table,
 )
+from l3_node.pmo_lark_env import (
+    DEFAULT_PMO_MONITOR_CHAT_ID,
+    DEFAULT_PMO_PRIMARY_CHAT_ID,
+    ensure_pmo_dotenv_loaded,
+    pmo_monitor_chat_id,
+    pmo_primary_chat_id,
+)
 from l3_node.pmo_workflow_stage import (
     format_workflow_progress_bar,
     infer_epic_workflow_status,
 )
 from l3_node.tools.pmo_personnel_query import person_keys_from_task
 
-DEFAULT_PRIMARY_CHAT_ID = "oc_437c98d11106295fb10751a5481ee465"
-DEFAULT_MONITOR_CHAT_ID = "oc_0e321f92d758ecb44aea5b499c90510b"
+# 向后兼容：旧代码引用模块级常量
+DEFAULT_PRIMARY_CHAT_ID = DEFAULT_PMO_PRIMARY_CHAT_ID
+DEFAULT_MONITOR_CHAT_ID = DEFAULT_PMO_MONITOR_CHAT_ID
 
 
 def _dash(v: Any) -> str:
@@ -486,8 +494,9 @@ def run_macro_dashboard_push(
             "error": "pmo_raw_records 为空，请先 INIT（core:pmo_mirror_import）",
         }
 
-    primary = (chat_id or os.environ.get("PMO_PRIMARY_CHAT_ID") or DEFAULT_PRIMARY_CHAT_ID).strip()
-    monitor = (monitor_chat_id or DEFAULT_MONITOR_CHAT_ID).strip()
+    ensure_pmo_dotenv_loaded()
+    primary = (chat_id or pmo_primary_chat_id()).strip()
+    monitor = (monitor_chat_id or pmo_monitor_chat_id()).strip()
     chat_targets = [primary]
     if push_monitor and monitor and monitor != primary:
         chat_targets.append(monitor)

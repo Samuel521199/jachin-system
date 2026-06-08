@@ -297,6 +297,50 @@ def init_pmo_debug_session(
     )
 
 
+def allocate_pmo_copilot_debug_file() -> Path:
+    """与 ``run_pmo_copilot_skill.py`` 相同目录与 ``pmo_copilot_*.txt`` 命名。"""
+    import uuid
+
+    d = Path.home() / ".jachin" / "jachin_debug" / "健康skill"
+    now = datetime.now()
+    stamp = (
+        now.strftime("%Y%m%d_%H%M%S")
+        + f"_{now.microsecond // 1000:03d}"
+        + f"_{uuid.uuid4().hex[:8]}"
+    )
+    return d / f"pmo_copilot_{stamp}.txt"
+
+
+def begin_pmo_debug_log_for_im_trigger(
+    user_message: str,
+    *,
+    source: str = "pmo_lark_trigger",
+    chat_id: str = "",
+    correlation_id: str = "",
+    max_iterations: int = 32,
+) -> Path:
+    """
+    飞书对话触发（``#*#`` / ``/pmo`` / 确认卡片）时初始化 ``健康skill/pmo_copilot_*.txt``。
+
+    与 CLI ``run_pmo_copilot_skill.py`` 共用 ``JACHIN_PMO_COPILOT_DEBUG_LOG`` 机制；
+    日志写在**当前正在跑 L3 进程的那台机器**的 ``%USERPROFILE%\\.jachin\\`` 下。
+    """
+    path = allocate_pmo_copilot_debug_file()
+    mode = f"im:{(source or 'pmo_lark_trigger').strip()}"
+    init_pmo_debug_session(
+        log_path=path,
+        user_message=user_message,
+        correlation_id=correlation_id,
+        max_iterations=max_iterations,
+        mode_hint=mode,
+    )
+    meta_lines = [f"触发来源: {source or 'pmo_lark_trigger'}"]
+    if (chat_id or "").strip():
+        meta_lines.append(f"Lark chat_id: {chat_id.strip()}")
+    append_pmo_debug_status(" · ".join(meta_lines))
+    return path
+
+
 def append_pmo_debug_status(message: str) -> None:
     """追加网关/环境嗅探等状态行（非 ReAct 轮次）。"""
     if not debug_log_path():

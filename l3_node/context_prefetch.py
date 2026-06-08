@@ -46,6 +46,9 @@ def _load_prefetch_cfg() -> dict[str, Any]:
             "read_query",
             ":query",
             "write_query",
+            # PMO 阶段三：macro_dashboard_push 返回 JSON 须被宿主解析双群 success，勿拼 prefetch
+            "pmo_macro_dashboard_push",
+            "core:pmo_macro_dashboard_push",
         ),
     }
     if not p.exists():

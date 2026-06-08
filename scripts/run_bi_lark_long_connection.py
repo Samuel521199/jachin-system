@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 BI助手 — Lark 长连接监听脚本
 
@@ -152,10 +152,17 @@ def _on_message(text: str, chat_id: str, user_id: str) -> None:
         return
 
     try:
-        from tools.atom_lark_chat import process_lark_message
+        from l3_node.lark_session import load_lark_session
+        from l3_node.routing.intent_signals import lark_message_should_use_hr_recruitment
+        from tools.atom_lark_chat import _call_l3_ws, process_lark_message
 
-        out = process_lark_message(text, chat_id=reply_chat_id, user_id=user_id)
-        reply = out.get("reply", "")
+        _sess = load_lark_session(reply_chat_id) if reply_chat_id else []
+        if lark_message_should_use_hr_recruitment(text, prior_messages=_sess):
+            out = process_lark_message(text, chat_id=reply_chat_id, user_id=user_id)
+            reply = out.get("reply", "")
+        else:
+            log.info("[BI助手] PMO/通用路由 → L3 WebSocket（非 HR 招聘包）")
+            reply = _call_l3_ws(text.strip(), chat_id=reply_chat_id) or ""
         if reply:
             ok = _send_reply(reply_chat_id, reply)
             log.info("[BI助手] 回复已发送 len=%d ok=%s", len(reply), ok)

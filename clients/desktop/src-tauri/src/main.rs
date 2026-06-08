@@ -988,6 +988,14 @@ fn main() {
             quick_action_hibernate,
             handle_device_command,
             launch_pmo_copilot_script,
+            commands::pmo_run::get_pmo_copilot_run_status,
+            commands::pmo_run::stop_pmo_copilot_run,
+            commands::pmo_config::read_pmo_skill_config,
+            commands::pmo_config::write_pmo_skill_config,
+            commands::pmo_config::open_pmo_skill_config_dir,
+            commands::im_channels_config::read_im_channels_config,
+            commands::im_channels_config::write_im_channels_config,
+            commands::im_channels_config::open_im_channels_config_dir,
             #[cfg(feature = "ambient")]
             stt::commands::start_voice_capture,
             #[cfg(feature = "ambient")]
@@ -1005,6 +1013,7 @@ fn main() {
         .setup(|app| {
             updater_debug_log::log_startup_rust(&app.package_info().version.to_string());
             nexus_config::ensure_default_nexus_config_from_example(app.handle());
+            app.manage(std::sync::Arc::new(commands::pmo_run::PmoRunTracker::new()));
 
             // L3 引擎生命周期：静默启动 l3_node Sidecar（--ws-only），Ctrl+C 时 kill 释放端口
             match l3_spawn::spawn_l3_node(&*app) {
@@ -1796,99 +1805,233 @@ async fn show_console_window(app: tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// PMO Copilot：在新终端窗口启动 scripts/run_pmo_copilot_skill.py
-/// 自动从项目根或 exe 相邻目录定位脚本；工作目录为项目根（脚本内相对路径可用）。
+/// PMO Copilot：后台启动全流程或 INIT（无弹窗）；日志写入 ``logs/pmo_copilot_<ts>.log``。
+/// ``init_only=true`` 时等价 ``run_pmo_copilot_skill.py --init``（拉表 + mirror_import）。
 #[tauri::command]
-async fn launch_pmo_copilot_script() -> Result<String, String> {
+async fn launch_pmo_copilot_script(
+    init_only: Option<bool>,
+    tracker: tauri::State<'_, std::sync::Arc<commands::pmo_run::PmoRunTracker>>,
+) -> Result<String, String> {
+    let init_only = init_only.unwrap_or(false);
     use std::path::PathBuf;
     use std::process::Command as StdCommand;
 
-    // 尝试从项目根（含 l3_node 包）或 exe 相邻 scripts/ 目录定位脚本
+    let app_root: PathBuf = l3_spawn::project_root()
+        .or_else(l3_spawn::exe_dir)
+        .ok_or_else(|| "无法定位应用根目录".to_string())?;
+
+    let sidecar = l3_spawn::portable_l3_sidecar_exe_path().filter(|p| p.exists());
     let script_path = {
-        let from_root = l3_spawn::project_root()
-            .map(|r| r.join("scripts").join("run_pmo_copilot_skill.py"));
-        let from_exe = l3_spawn::exe_dir()
-            .map(|d| d.join("scripts").join("run_pmo_copilot_skill.py"));
-        from_root
-            .filter(|p| p.exists())
-            .or_else(|| from_exe.filter(|p| p.exists()))
-            .ok_or_else(|| {
-                "找不到 scripts/run_pmo_copilot_skill.py，请确认项目根目录包含该文件".to_string()
-            })?
+        let from_root = app_root.join("scripts").join("run_pmo_copilot_skill.py");
+        if from_root.exists() {
+            Some(from_root)
+        } else {
+            l3_spawn::exe_dir()
+                .map(|d| d.join("scripts").join("run_pmo_copilot_skill.py"))
+                .filter(|p| p.exists())
+        }
     };
 
-    // 项目根：优先 l3_spawn 推断，否则 scripts/ 的上一级
-    let project_root: PathBuf = l3_spawn::project_root().unwrap_or_else(|| {
-        script_path
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| script_path.clone())
-    });
+    enum LaunchMode {
+        Sidecar(PathBuf),
+        PythonScript(PathBuf),
+    }
 
-    let script_str = script_path.to_string_lossy().into_owned();
+    let has_l3_source = app_root.join("l3_node").join("__main__.py").exists();
+
+    // 开发机（含 l3_node 源码）：优先 Python 脚本，与 start-layer3.ps1 同源 L3 并存，避免侧车 exe 抢 l3.lock
+    let mode = if script_path.is_some() && has_l3_source {
+        LaunchMode::PythonScript(script_path.unwrap())
+    } else if let Some(sc) = sidecar {
+        LaunchMode::Sidecar(sc)
+    } else if script_path.is_some() {
+        return Err(
+            "安装目录缺少 bin/l3_node 侧车，无法用 python 运行 PMO（安装包不含 l3_node 源码）。\
+             请重新安装完整包或确认 bin/l3_node-x86_64-pc-windows-msvc.exe 存在。"
+                .to_string(),
+        );
+    } else {
+        return Err(
+            "找不到 PMO Copilot 入口：请确认安装包含 bin/l3_node 侧车或 scripts/run_pmo_copilot_skill.py"
+                .to_string(),
+        );
+    };
+
+    let launch_label = match (&mode, init_only) {
+        (LaunchMode::Sidecar(p), true) => format!("INIT 数据更新 · L3 侧车: {}", p.display()),
+        (LaunchMode::Sidecar(p), false) => format!("PMO 全流程 · L3 侧车: {}", p.display()),
+        (LaunchMode::PythonScript(p), true) => format!("INIT 数据更新 · Python: {}", p.display()),
+        (LaunchMode::PythonScript(p), false) => format!("PMO 全流程 · Python: {}", p.display()),
+    };
 
     #[cfg(windows)]
     {
+        use std::fs::OpenOptions;
+        use std::io::Write;
         use std::os::windows::process::CommandExt;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        // PowerShell -NoExit：执行完脚本后窗口保持打开，不会闪退。
-        // -Command 里用单引号包路径，避免 Windows 路径中空格/反斜杠问题。
-        // 若路径含单引号则 escape（''）；PYTHONUNBUFFERED 确保实时输出不缓冲。
-        let root_ps = project_root.to_string_lossy().replace('\'', "''");
-        let ps_cmd = format!(
-            "$env:PYTHONUNBUFFERED='1'; $env:PYTHONUTF8='1'; $env:JACHIN_APP_ROOT='{root}'; Set-Location '{root}'; Write-Host '=== PMO Copilot ===' -ForegroundColor Cyan; Write-Host ('工作目录: ' + (Get-Location)) -ForegroundColor DarkGray; Write-Host ''; python -u scripts/run_pmo_copilot_skill.py; Write-Host ''; Write-Host '[完成] 按任意键关闭...' -ForegroundColor Green; $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')",
-            root = root_ps,
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let log_dir = app_root.join("logs");
+        std::fs::create_dir_all(&log_dir).map_err(|e| format!("创建 logs 目录失败: {e}"))?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let log_path = log_dir.join(format!("pmo_copilot_{ts}.log"));
+        let mut log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| format!("打开 PMO 日志文件失败: {e}"))?;
+        let _ = writeln!(
+            log_file,
+            "[desktop] PMO Copilot 后台启动 pid={} ts={ts} cwd={}",
+            std::process::id(),
+            cwd = app_root.display()
         );
-        StdCommand::new("powershell")
-            .args([
-                "-NoLogo",
-                "-NoExit",
-                "-Command",
-                &ps_cmd,
-            ])
-            .current_dir(&project_root)
-            .creation_flags(CREATE_NEW_CONSOLE)
+        let _ = log_file.flush();
+        let err_file = log_file
+            .try_clone()
+            .map_err(|e| format!("打开 PMO 日志文件失败: {e}"))?;
+
+        let root_str = app_root.to_string_lossy();
+        let mut cmd = match &mode {
+            LaunchMode::Sidecar(sc) => {
+                let mut c = StdCommand::new(sc);
+                c.arg("--run-pmo-copilot");
+                if init_only {
+                    c.arg("--init");
+                }
+                c
+            }
+            LaunchMode::PythonScript(_) => {
+                let mut c = StdCommand::new("python");
+                c.arg("-u").arg("scripts/run_pmo_copilot_skill.py");
+                if init_only {
+                    c.arg("--init");
+                }
+                c
+            }
+        };
+        let pmo_log_dir = log_dir.join("pmo");
+        let _ = std::fs::create_dir_all(&pmo_log_dir);
+        cmd.current_dir(&app_root)
+            .env("JACHIN_APP_ROOT", root_str.as_ref())
+            .env("JACHIN_LOG_DIR", pmo_log_dir.to_string_lossy().as_ref())
+            .env("JACHIN_PMO_COPILOT_RUN", "1")
+            .env("JACHIN_L3_CONSOLE", "0")
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONUTF8", "1")
+            .env("JACHIN_L3_DEEP_LOG", "0")
+            .env("JACHIN_EXEC_TRACE_STDERR", "0")
+            .env("JACHIN_L3_LOG_LITELLM_DETAIL", "0")
+            .env("LOG_LEVEL", "WARNING")
+            .env("JACHIN_LOG_LEVEL", "WARNING")
+            .env("JACHIN_L3_FILE_LOG_COMPACT", "1")
+            .stdout(log_file)
+            .stderr(err_file)
+            .creation_flags(CREATE_NO_WINDOW);
+        let child = cmd
             .spawn()
             .map_err(|e| format!("启动 PMO Copilot 失败: {e}"))?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let root_esc = project_root.to_string_lossy().replace('\'', "\\'");
-        let apple_script = format!(
-            "tell application \"Terminal\" to do script \"cd '{}' && python scripts/run_pmo_copilot_skill.py\"",
-            root_esc
-        );
-        StdCommand::new("osascript")
-            .args(["-e", &apple_script])
-            .spawn()
-            .map_err(|e| format!("启动 PMO Copilot 失败: {e}"))?;
-    }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        let root_esc = project_root.to_string_lossy().replace('\'', "'\\''");
-        let cmd_str = format!(
-            "cd '{}' && python scripts/run_pmo_copilot_skill.py; read -p 'Press Enter to close...'",
-            root_esc
-        );
-        let launched = StdCommand::new("x-terminal-emulator")
-            .args(["-e", "bash", "-c", &cmd_str])
-            .spawn()
-            .is_ok()
-            || StdCommand::new("xterm")
-                .args(["-e", "bash", "-c", &cmd_str])
-                .spawn()
-                .is_ok();
-        if !launched {
-            return Err("找不到可用终端模拟器（尝试了 x-terminal-emulator / xterm）".to_string());
-        }
+        let pid = tracker.register_child(child, launch_label.clone())?;
+
+        return Ok(format!(
+            "PMO 已在后台运行（PID {pid}）。{}状态见本页指示灯；日志: {} / {}",
+            if init_only { "INIT 拉表入库 · " } else { "" },
+            log_path.display(),
+            pmo_log_dir.join("pmo_l3_debug.log").display()
+        ));
     }
 
-    Ok(format!(
-        "已启动（cwd: {}）: {}",
-        project_root.to_string_lossy(),
-        script_str
-    ))
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "macos")]
+        {
+            let root_esc = app_root.to_string_lossy().replace('\'', "\\'");
+            let inner = match &mode {
+                LaunchMode::Sidecar(sc) => {
+                    let sc_esc = sc.to_string_lossy().replace('\'', "\\'");
+                    if init_only {
+                        format!(
+                            "cd '{}' && '{}' --run-pmo-copilot --init",
+                            root_esc, sc_esc
+                        )
+                    } else {
+                        format!("cd '{}' && '{}' --run-pmo-copilot", root_esc, sc_esc)
+                    }
+                }
+                LaunchMode::PythonScript(_) => {
+                    if init_only {
+                        format!(
+                            "cd '{}' && python scripts/run_pmo_copilot_skill.py --init",
+                            root_esc
+                        )
+                    } else {
+                        format!("cd '{}' && python scripts/run_pmo_copilot_skill.py", root_esc)
+                    }
+                }
+            };
+            let apple_script = format!("tell application \"Terminal\" to do script \"{}\"", inner);
+            StdCommand::new("osascript")
+                .args(["-e", &apple_script])
+                .spawn()
+                .map_err(|e| format!("启动 PMO Copilot 失败: {e}"))?;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let root_esc = app_root.to_string_lossy().replace('\'', "'\\''");
+            let cmd_str = match &mode {
+                LaunchMode::Sidecar(sc) => {
+                    let sc_esc = sc.to_string_lossy().replace('\'', "'\\''");
+                    if init_only {
+                        format!(
+                            "cd '{}' && '{}' --run-pmo-copilot --init; read -p 'Press Enter to close...'",
+                            root_esc, sc_esc
+                        )
+                    } else {
+                        format!(
+                            "cd '{}' && '{}' --run-pmo-copilot; read -p 'Press Enter to close...'",
+                            root_esc, sc_esc
+                        )
+                    }
+                }
+                LaunchMode::PythonScript(_) => {
+                    if init_only {
+                        format!(
+                            "cd '{}' && python scripts/run_pmo_copilot_skill.py --init; read -p 'Press Enter to close...'",
+                            root_esc
+                        )
+                    } else {
+                        format!(
+                            "cd '{}' && python scripts/run_pmo_copilot_skill.py; read -p 'Press Enter to close...'",
+                            root_esc
+                        )
+                    }
+                }
+            };
+            let launched = StdCommand::new("x-terminal-emulator")
+                .args(["-e", "bash", "-c", &cmd_str])
+                .spawn()
+                .is_ok()
+                || StdCommand::new("xterm")
+                    .args(["-e", "bash", "-c", &cmd_str])
+                    .spawn()
+                    .is_ok();
+            if !launched {
+                return Err(
+                    "找不到可用终端模拟器（尝试了 x-terminal-emulator / xterm）".to_string(),
+                );
+            }
+        }
+
+        Ok(format!(
+            "已启动（cwd: {}）: {}",
+            app_root.to_string_lossy(),
+            launch_label
+        ))
+    }
 }
 
 /// 处理设备指令（从 Dapr Pub/Sub 接收）

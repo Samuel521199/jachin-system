@@ -1,4 +1,4 @@
-"""
+﻿"""
 单实例锁：同一设备上仅允许运行一个 L2 和一个 L3。
 
 锁文件位于 ~/.jachin/{name}.lock，内含 PID。
@@ -62,6 +62,15 @@ def _kill_process(pid: int, *, force: bool = False) -> bool:
         return False
 
 
+def _is_pmo_copilot_child() -> bool:
+    try:
+        from l3_node.pmo_copilot_env import is_pmo_copilot_run
+
+        return is_pmo_copilot_run()
+    except Exception:
+        return "--run-pmo-copilot" in sys.argv
+
+
 def acquire_single_instance_lock(name: str, *, kill_previous: bool = False) -> bool:
     """
     尝试获取单实例锁。成功则返回 True，进程退出时自动释放锁。
@@ -70,6 +79,10 @@ def acquire_single_instance_lock(name: str, *, kill_previous: bool = False) -> b
         name: 锁名称，如 "l2" 或 "l3"
         kill_previous: 若为 True，检测到已有实例时先杀死旧进程再继续；否则退出并提示
     """
+    # PMO 一次性任务与 start-layer3 常驻 L3 并存；不得 taskkill 聊天进程
+    if name == "l3" and _is_pmo_copilot_child():
+        return True
+
     jachin = _jachin_dir()
     jachin.mkdir(parents=True, exist_ok=True)
     lock_path = jachin / f"{name}.lock"

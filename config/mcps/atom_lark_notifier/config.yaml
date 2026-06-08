@@ -13,8 +13,8 @@ app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
 # 每次分支 A/B 播报需同时推送到 default_chat_id 与 monitoring_chat_id 两个会话。
 default_chat_id: "${PMO_PRIMARY_CHAT_ID}"
 
-# 固定监控群（后台存档/项目经理监控；不可变；不走环境变量）
-monitoring_chat_id: "oc_0e321f92d758ecb44aea5b499c90510b"
+# 固定监控群（后台存档/项目经理监控；读 .env PMO_MONITOR_CHAT_ID）
+monitoring_chat_id: "${PMO_MONITOR_CHAT_ID}"
 
 lark_use_feishu: false
 

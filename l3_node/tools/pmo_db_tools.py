@@ -182,7 +182,7 @@ PMO_NATIVE_TOOLS_LIST: list[dict[str, Any]] = [
         "label": "core:pmo_bitable_watch_tick",
         "desc": (
             "PMO 多维表变更监控单次 tick（拉表 → 防抖会话 → 空闲满 idle_seconds 后汇总推送）。"
-            "默认监控 tblB2uMLGIQrAttB / vewpI8lyYw，回调群 oc_b1b9cff6804517c79b7f5a617ab30483。"
+            "默认监控 tblfK9gk6vTQpJtB / vewCz1FFJi（人员任务看板），回调群见 pmo_bitable_watch.yaml。"
             "配置：~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml 或 PMO_BITABLE_WATCH_* 环境变量。"
             "JSON：可选 force_finalize（true 立即结束会话并推送）；dry_run；app_id/app_secret。"
             "返回 action=baseline_initialized|session_active|waiting_debounce|session_finalized_notify。"
@@ -597,8 +597,9 @@ def get_pmo_staging_dir() -> Path:
 
 
 def get_default_pmo_manifest_path() -> Path:
-    ws = Path(os.environ.get("JACHIN_HOME") or Path.home() / ".jachin").expanduser() / "workspace"
-    return (ws / "pmo_lark_pull" / "00_SYNC_MANIFEST.json").resolve()
+    from l3_node.primitives.mcp.mcp_tools.bi.tool_bi_project_context import get_pmo_lark_pull_dir
+
+    return (get_pmo_lark_pull_dir() / "00_SYNC_MANIFEST.json").resolve()
 
 
 def pmo_mirror_db_ready() -> bool:
@@ -625,9 +626,10 @@ def _utc_now_iso() -> str:
 def _connect() -> sqlite3.Connection:
     path = get_pmo_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 

@@ -60,6 +60,8 @@ def _ensure_dotenv_loaded() -> None:
         root = get_app_root()
         jachin = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
         paths: list[Path] = [
+            root / ".env",
+            jachin / ".env",
             root / "skills_repo" / "plugin" / ".env",
             root / "skills_repo" / "plugin" / "com.jachin.hr.recruitment" / ".env",
             jachin / "l3_mcp_cache" / "com.jachin.hr.recruitment" / ".env",

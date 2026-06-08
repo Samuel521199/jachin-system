@@ -8,11 +8,13 @@ SSOT：skills_repo/pmo-copilot/SKILL.change-alert.md
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,13 +22,109 @@ logger = logging.getLogger(__name__)
 _DEV_VIEW = "vewpI8lyYw"
 _PERSON_VIEW = "vewCz1FFJi"
 _PRODUCT_VIEWS = ("vew8TxMcSh", "vewL9Mofgd")
-_DEFAULT_MONITOR_CHAT = "oc_0e321f92d758ecb44aea5b499c90510b"
+_DEFAULT_MONITOR_CHAT = None  # 运行时由 pmo_lark_env.pmo_change_alert_monitor_chat_id() 解析
+_DEDUP_STORE_PATH = Path.home() / ".jachin" / "data" / "pmo_change_alert_dedup.json"
+_DEFAULT_DEDUP_WINDOW_SEC = 3600
 
 _CHANGE_TYPE_CN = {
     "created": "新增",
     "updated": "修改",
     "deleted": "删除",
 }
+
+
+def _dedup_window_seconds() -> int:
+    raw = (os.environ.get("PMO_CHANGE_ALERT_DEDUP_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(60, int(raw))
+        except ValueError:
+            pass
+    return _DEFAULT_DEDUP_WINDOW_SEC
+
+
+def _change_alert_dedup_fingerprint(events: list[dict[str, Any]], fact: dict[str, Any]) -> str:
+    """同一批变更 + 同一分析结论 → 相同指纹（用于抑制重复推送）。"""
+    parts: list[str] = []
+    for e in sorted(events, key=lambda x: str(x.get("record_id") or x.get("label") or "")):
+        parts.append(
+            "|".join(
+                [
+                    str(e.get("record_id") or ""),
+                    str(e.get("change_type") or ""),
+                    str(e.get("label") or ""),
+                    str((e.get("semantic") or {}).get("requirement") if isinstance(e.get("semantic"), dict) else ""),
+                ]
+            )
+        )
+    parts.append(str(fact.get("change_alert_result") or ""))
+    parts.append(str(fact.get("should_push")))
+    parts.append(str(fact.get("max_severity_score")))
+    blob = "\n".join(parts)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+
+def _load_dedup_store() -> dict[str, Any]:
+    if not _DEDUP_STORE_PATH.is_file():
+        return {"pushes": {}}
+    try:
+        raw = json.loads(_DEDUP_STORE_PATH.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {"pushes": {}}
+    except (json.JSONDecodeError, OSError):
+        return {"pushes": {}}
+
+
+def _save_dedup_store(store: dict[str, Any]) -> None:
+    try:
+        _DEDUP_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DEDUP_STORE_PATH.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        logger.warning("[PMO change_alert] dedup store write failed: %s", e)
+
+
+def _dedup_recently_pushed(fingerprint: str) -> bool:
+    store = _load_dedup_store()
+    pushes = store.get("pushes") if isinstance(store.get("pushes"), dict) else {}
+    ts = pushes.get(fingerprint)
+    if not ts:
+        return False
+    try:
+        from datetime import datetime as dt
+
+        sent = dt.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=timezone.utc)
+        age = (_utc_now() - sent.astimezone(timezone.utc)).total_seconds()
+        return age < _dedup_window_seconds()
+    except (TypeError, ValueError):
+        return False
+
+
+def _dedup_mark_pushed(fingerprint: str) -> None:
+    store = _load_dedup_store()
+    pushes = store.get("pushes") if isinstance(store.get("pushes"), dict) else {}
+    pushes[fingerprint] = _utc_now().isoformat()
+    #  prune old entries
+    window = _dedup_window_seconds()
+    from datetime import datetime as dt
+
+    kept: dict[str, str] = {}
+    for k, v in pushes.items():
+        try:
+            sent = dt.fromisoformat(str(v).replace("Z", "+00:00"))
+            if sent.tzinfo is None:
+                sent = sent.replace(tzinfo=timezone.utc)
+            if (_utc_now() - sent.astimezone(timezone.utc)).total_seconds() < window * 2:
+                kept[k] = str(v)
+        except (TypeError, ValueError):
+            continue
+    store["pushes"] = kept
+    _save_dedup_store(store)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 _FIELD_ALIASES = {
     "requirement": ("Requirement", "任务名称", "名称", "title", "标题"),
@@ -88,15 +186,41 @@ def _extract_semantic_fields(fields: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def _names_from_lark_person_value(val: Any) -> list[str]:
+    """从飞书人员字段 JSON（dict / list）提取 display name。"""
+    names: list[str] = []
+    if isinstance(val, list):
+        for item in val:
+            names.extend(_names_from_lark_person_value(item))
+    elif isinstance(val, dict):
+        for key in ("name", "en_name", "cn_name", "display_name"):
+            n = str(val.get(key) or "").strip()
+            if n and len(n) <= 40 and n not in names:
+                names.append(n)
+                break
+    return names
+
+
 def _parse_assignees(raw: str) -> tuple[list[str], list[str]]:
     """返回 (valid_persons, warnings)。"""
     warnings: list[str] = []
-    if not raw:
+    text = (raw or "").strip()
+    if not text:
         return [], warnings
-    if any(m in raw for m in _TEAM_MARKERS):
+    if any(m in text for m in _TEAM_MARKERS):
         warnings.append("assignee_is_team")
         return [], warnings
-    parts = re.split(r"[;；,/，]", raw)
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            from_json = _names_from_lark_person_value(parsed)
+            if from_json:
+                return from_json, warnings
+            warnings.append("assignee_unparseable")
+            return [], warnings
+        except json.JSONDecodeError:
+            pass
+    parts = re.split(r"[;；]", text)
     persons: list[str] = []
     for p in parts:
         name = p.strip()
@@ -377,11 +501,15 @@ def _analyze_personnel(
             any_alert = True
             reasons.append("同日 Start=Due 插单，节奏恶化")
 
+        task_sprint = change_sem.get("sprint")
         if m == 0 and not overdue:
-            symbol = "⚠️"
-            verdict = "warning"
-            any_warning = True
-            reasons.append("镜像中未找到该员本 Sprint 任务记录")
+            if current_sprint and task_sprint and task_sprint != current_sprint:
+                reasons.append("任务在未来 Sprint，当前周期无负荷属正常")
+            else:
+                symbol = "⚠️"
+                verdict = "warning"
+                any_warning = True
+                reasons.append("镜像中未找到该员本 Sprint 任务记录")
 
         people_out.append(
             {
@@ -526,12 +654,35 @@ def _should_push(
 ) -> bool:
     if schedule.get("verdict") == "alert" or personnel.get("verdict") == "alert":
         return True
-    if schedule.get("verdict") == "warning" or personnel.get("verdict") == "warning":
+
+    sched_risks = set(str(x) for x in (schedule.get("risks") or []))
+    proj_risks = set(str(x) for x in (project.get("risks") or []))
+
+    meaningful_schedule = schedule.get("verdict") == "warning" and bool(
+        sched_risks - {"mid_sprint_change"}
+    )
+
+    people = personnel.get("people") or []
+    meaningful_personnel = False
+    if personnel.get("verdict") == "warning":
+        if personnel.get("status") == "skipped":
+            meaningful_personnel = True
+        elif any(
+            p.get("verdict") in ("alert", "warning")
+            and "未来 Sprint" not in (p.get("reason") or "")
+            for p in people
+        ):
+            meaningful_personnel = True
+
+    meaningful_project = bool(proj_risks - {"mirror_row_missing"})
+
+    if meaningful_schedule or meaningful_personnel or meaningful_project:
         return True
-    if project.get("verdict") == "warning":
-        return True
+
     if severity_score >= 40 and (
-        schedule.get("risks") or project.get("risks") or personnel.get("people")
+        sched_risks - {"mid_sprint_change"}
+        or proj_risks - {"mirror_row_missing"}
+        or any(p.get("verdict") == "alert" for p in people)
     ):
         return True
     return False
@@ -734,6 +885,165 @@ _SCHEDULE_RISK_CN: dict[str, str] = {
 }
 
 
+def _event_change_sentence(item: dict[str, Any]) -> str:
+    """单条变更的自然语言摘要（用于【变更】段）。"""
+    sem = item.get("semantic") or {}
+    name = sem.get("requirement") or item.get("label") or "未命名需求"
+    ct = _CHANGE_TYPE_CN.get(str(item.get("change_type")), "变更")
+    assignees = item.get("assignees") or []
+    sprint = sem.get("sprint") or ""
+    start = sem.get("start_date") or ""
+    due = sem.get("expected_due") or ""
+
+    who = f"指派给 **{', '.join(assignees)}**" if assignees else "尚未指定负责人"
+    when = ""
+    if sprint:
+        when = f"纳入 **{sprint}**"
+    if start and due:
+        when = (when + "，" if when else "") + (
+            f"**{start}** 开工、**{due}** 交付"
+            if start != due
+            else f"**{start}** 当天开工且当天交付"
+        )
+    elif due:
+        when = (when + "，" if when else "") + f"期待 **{due}** 交付"
+
+    tail = f"，{when}" if when else ""
+    return f"{ct}「**{name}**」{who}{tail}"
+
+
+def _event_impact_sentences(item: dict[str, Any]) -> list[str]:
+    """单条变更的交叉影响句（用于【影响】段；无实质风险则返回空）。"""
+    sem = item.get("semantic") or {}
+    name = sem.get("requirement") or item.get("label") or "该需求"
+    sched = item.get("schedule_axis") or {}
+    pers = item.get("personnel_axis") or {}
+    proj = item.get("project_axis") or {}
+    risks = set(str(x) for x in (sched.get("risks") or []))
+    out: list[str] = []
+
+    if "due_already_passed" in risks or "due_past" in risks:
+        out.append(f"「{name}」期待交付日已早于今天。")
+    elif "zero_buffer" in risks:
+        out.append(f"「{name}」开工与交付同一天，几乎没有缓冲。")
+    elif "buffer_very_short" in risks:
+        out.append(f"「{name}」可接受交付日仅比期待日晚约 1 天，缓冲偏紧。")
+    elif "mid_sprint_change" in risks or "mid_sprint_insert" in risks:
+        out.append(f"「{name}」落在当前 Sprint 中途变更，需关注对既有承诺的冲击。")
+
+    if pers.get("status") == "skipped":
+        msg = pers.get("message") or ""
+        if "无有效负责人" in msg or "未分配" in msg:
+            out.append(f"「{name}」Epic/父需求层尚未指定 Owner，只有子任务有人时容易扯皮。")
+    else:
+        for p in pers.get("people") or []:
+            person = p.get("person") or ""
+            sym = p.get("symbol") or ""
+            if sym != "🚨" and sym != "⚠️":
+                continue
+            if "未来 Sprint" in (p.get("reason") or ""):
+                continue
+            overdue = p.get("overdue_tasks") or []
+            if overdue and sym == "🚨":
+                tasks = "、".join(
+                    f"「{t.get('task')}」（计划 {t.get('due')}）"
+                    for t in overdue[:3]
+                    if t.get("task")
+                )
+                out.append(
+                    f"**{person}** 本 Sprint 仍有 {tasks} 尚未关闭，"
+                    f"此时再动「{name}」的节奏风险偏高。"
+                )
+            elif "今天又插了一条" in _humanize_person_reason(p.get("reason") or ""):
+                out.append(
+                    f"**{person}** 今天又插了一条当天就要交的任务（「{name}」），"
+                    "与手头未闭环项叠加后节奏会恶化。"
+                )
+            elif sym == "⚠️" and p.get("verdict") == "warning":
+                out.append(f"**{person}** 在镜像库里暂无本 Sprint 负荷记录，建议 PM 核对是否刚改表。")
+
+    proj_risks = set(str(x) for x in (proj.get("risks") or []))
+    if "cross_view_mismatch" in proj_risks:
+        out.append(f"「{name}」在开发表有记录但产品侧未对齐，Epic/负责人可能对不上。")
+
+    return out
+
+
+def _event_action_hint(item: dict[str, Any]) -> str | None:
+    """单条变更的可执行建议（去重后合并进【建议】）。"""
+    sem = item.get("semantic") or {}
+    name = sem.get("requirement") or item.get("label") or "该需求"
+    pers = item.get("personnel_axis") or {}
+    hints: list[str] = []
+
+    if pers.get("status") == "skipped":
+        hints.append(f"给「{name}」补 Owner，避免只有子任务有人扛。")
+
+    alert_people = [
+        p for p in (pers.get("people") or [])
+        if p.get("symbol") == "🚨" and p.get("person")
+    ]
+    if alert_people:
+        who = alert_people[0].get("person")
+        hints.append(f"先和 **{who}** 对齐手头延期项，再定「{name}」是否维持当前交付日。")
+
+    sched = item.get("schedule_axis") or {}
+    if "zero_buffer" in (sched.get("risks") or []) and not alert_people:
+        hints.append(f"评估「{name}」是否能把交付日后移 1～2 天，或砍 scope。")
+
+    return hints[0] if hints else None
+
+
+def build_change_alert_prose_brief(fact_pack: dict[str, Any]) -> str:
+    """
+    BI 大战报风格的人话预警：定调 → 变更 → 影响 → 建议。
+    不输出 risk 码、箭头列表或 change_alert_result（后者仅写日志）。
+    """
+    events = fact_pack.get("analyzed_events") or []
+    if not events:
+        return "今日需求表无待跟进变更。"
+
+    has_red = any(
+        (ev.get("schedule_axis") or {}).get("verdict") == "alert"
+        or (ev.get("personnel_axis") or {}).get("verdict") == "alert"
+        or any(p.get("symbol") == "🚨" for p in (ev.get("personnel_axis") or {}).get("people") or [])
+        for ev in events
+    )
+    has_warn = fact_pack.get("should_push") and not has_red
+
+    if has_red:
+        ding = "🎯 【定调】：本次表更存在**需要 PM 立即对齐**的资源/排期风险，不建议按表直接开干。"
+    elif has_warn:
+        ding = "🎯 【定调】：本次表更整体可控，但有**字段或节奏**值得 PM 快速确认。"
+    else:
+        ding = "🎯 【定调】：本次表更已记录，当前快照下**暂无明确冲突**。"
+
+    changes = [_event_change_sentence(ev) for ev in events]
+    bian = "📋 【变更】：" + ("；".join(changes) if len(changes) > 1 else changes[0]) + "。"
+
+    impacts: list[str] = []
+    for ev in events:
+        for sent in _event_impact_sentences(ev):
+            if sent not in impacts:
+                impacts.append(sent)
+
+    sections = [ding, "", bian]
+    if impacts:
+        sections.extend(["", "⚠️ 【影响】：" + " ".join(impacts)])
+
+    actions: list[str] = []
+    for ev in events:
+        hint = _event_action_hint(ev)
+        if hint and hint not in actions:
+            actions.append(hint)
+    if not actions and impacts:
+        actions.append("核对负责人与交付日是否填全；跨 Epic 时产品和开发表对齐一下。")
+    if actions:
+        sections.extend(["", "💡 【建议】：" + " ".join(actions)])
+
+    return "\n".join(sections)
+
+
 def _describe_schedule_natural(sched: dict[str, Any], sem: dict[str, Any]) -> str:
     sprint = sem.get("sprint") or ""
     start = sem.get("start_date") or ""
@@ -827,41 +1137,29 @@ def _describe_change_event_natural(item: dict[str, Any], *, idx: int, total: int
 
 
 def format_change_alert_narrative_markdown(fact_pack: dict[str, Any]) -> str:
-    """飞书推送用人话简报（无 GFM 表、无英文 risk 码）。"""
-    today_s = fact_pack.get("today") or _today_iso()
-    events = fact_pack.get("analyzed_events") or []
-    result = fact_pack.get("change_alert_result") or "all_clear"
-    if not events:
-        return f"今天（{today_s}）没有需要跟进的表更。\n\n`change_alert_result: all_clear`"
+    """飞书推送：BI 大战报风格人话（定调/变更/影响/建议）。"""
+    return build_change_alert_prose_brief(fact_pack)
 
-    n = len(events)
-    opening = (
-        f"各位好，今天需求表有 **{n}** 处变更，麻烦 PM 帮看一眼："
-        if n > 1
-        else "各位好，需求表刚有一条变更，麻烦 PM 帮看一眼："
-    )
-    body: list[str] = [opening, ""]
 
-    alerts: list[str] = []
-    for i, item in enumerate(events, 1):
-        body.extend(_describe_change_event_natural(item, idx=i, total=n))
-        body.append("")
-        for p in (item.get("personnel_axis") or {}).get("people") or []:
-            if p.get("symbol") == "🚨" and p.get("person"):
-                alerts.append(str(p.get("person")))
-
-    unique_alerts = list(dict.fromkeys(alerts))
-    if unique_alerts:
-        names = "、".join(unique_alerts)
-        body.append(f"**建议：** {names} 这边比较紧——建议先把延期项谈清楚，再定要不要接这条插单；Epic 没填负责人的也麻烦补一下。")
-    else:
-        body.append("**建议：** 核对负责人和交付日是否填全；若有跨表 Epic，产品和开发表对齐一下。")
-
-    body.append("")
-    body.append("_（系统自动分析，不代 PM 改表；有疑问以飞书表为准。）_")
-    body.append("")
-    body.append(f"`change_alert_result: {result}`")
-    return "\n".join(body)
+def _build_change_alert_llm_context(fact_pack: dict[str, Any]) -> dict[str, Any]:
+    """压缩 fact_pack 供 LLM  narrate，避免 raw JSON 诱导模型堆字段。"""
+    events_out: list[dict[str, Any]] = []
+    for ev in fact_pack.get("analyzed_events") or []:
+        events_out.append(
+            {
+                "change": _event_change_sentence(ev),
+                "impacts": _event_impact_sentences(ev),
+                "action_hint": _event_action_hint(ev),
+                "should_push": ev.get("decision_push"),
+            }
+        )
+    return {
+        "today": fact_pack.get("today"),
+        "current_sprint": fact_pack.get("current_sprint"),
+        "change_alert_result": fact_pack.get("change_alert_result"),
+        "should_push": fact_pack.get("should_push"),
+        "events": events_out,
+    }
 
 
 def _change_alert_use_technical_markdown() -> bool:
@@ -875,27 +1173,32 @@ def _change_alert_llm_narrate_enabled() -> bool:
 
 
 def _llm_polish_change_alert_narrative(fact_pack: dict[str, Any], draft: str) -> str | None:
-    """用 LLM 根据 fact_pack 写飞书预警正文（禁止改事实；失败返回 None）。"""
+    """用 LLM 将分析结论写成 BI 大战报风格人话（禁止改事实；失败返回 None）。"""
     try:
         import asyncio
 
         from l3_node.__main__ import _create_engine_standalone
 
         engine = _create_engine_standalone()
-        fact_json = json.dumps(fact_pack, ensure_ascii=False)[:12000]
+        brief = _build_change_alert_llm_context(fact_pack)
+        brief_json = json.dumps(brief, ensure_ascii=False)[:8000]
         system = (
-            "你是 PMO 变更预警助手。宿主已完成三轴分析，下方 fact_pack 是唯一事实来源。\n"
-            "任务：写一段可直接发飞书群的中文预警（150～450 字）。\n"
-            "规则：\n"
-            "1. 只能使用 fact_pack 里的人名、需求名、日期、🚨/⚠️ 判定与 reason，禁止编造或改数字。\n"
-            "2. 语气自然、像同事在群里提醒 PM，不要 Markdown 表格，不要英文 risk 代码。\n"
-            "3. 说清楚：改了什么、对谁有什么影响、建议 PM 做什么；无影响则简短说明即可。\n"
-            "4. 最后一行单独输出：`change_alert_result: alert_sent` 或 `change_alert_result: all_clear`（与 fact_pack 一致）。\n"
-            "5. 只输出正文，不要 Thought/Action。"
+            "你是 PMO 变更影响分析编辑，文风对标 BI 增长大战报：先定调、再陈述事实、再讲影响、最后给建议。\n"
+            "宿主已完成三轴交叉分析，下方 analysis_brief 是唯一事实来源。\n\n"
+            "输出要求：\n"
+            "1. 用中文写 180～420 字，可直接发飞书群；禁止 Markdown 表格、禁止英文 risk 代码、禁止 JSON 原文。\n"
+            "2. 结构固定四段（每段标题保留 emoji 前缀）：\n"
+            "   🎯 【定调】：一句话说明 PM 要不要马上动作（紧急 / 待确认 / 暂无冲突）。\n"
+            "   📋 【变更】：用人话说明改了什么、谁负责、落在哪个 Sprint。\n"
+            "   ⚠️ 【影响】：只写有业务含义的交叉风险（延期叠加、零缓冲、无人 Owner 等）；无风险则整段省略。\n"
+            "   💡 【建议】：最多 2 条可执行动作，像同事在群里 @PM，不要套话。\n"
+            "3. 只能使用 brief 里的人名、需求名、日期与影响句，禁止编造。\n"
+            "4. 不要输出 change_alert_result、不要免责声明、不要「→」字段列表。\n"
+            "5. 只输出正文。"
         )
         user = (
-            f"fact_pack（JSON，分析结论 SSOT）：\n{fact_json}\n\n"
-            f"可参考的结构化草稿（可完全重写，勿丢事实）：\n{draft}"
+            f"analysis_brief（JSON）：\n{brief_json}\n\n"
+            f"规则模板草稿（可完全重写，勿丢事实）：\n{draft}"
         )
         messages = [
             {"role": "system", "content": system},
@@ -903,13 +1206,16 @@ def _llm_polish_change_alert_narrative(fact_pack: dict[str, Any], draft: str) ->
         ]
 
         async def _run() -> str:
-            raw = await engine.generate_response(messages, tools=None, temperature=0.3, max_tokens=1024)
+            raw = await engine.generate_response(messages, tools=None, temperature=0.35, max_tokens=900)
             if isinstance(raw, dict):
-                return str(raw.get("content") or "").strip()
+                text = str(raw.get("content") or "").strip()
+                if not text and raw.get("reasoning_content"):
+                    text = str(raw.get("reasoning_content") or "").strip()[:600]
+                return text
             return str(raw or "").strip()
 
         text = asyncio.run(_run())
-        if len(text) < 40 or "change_alert_result" not in text:
+        if len(text) < 60 or "【定调】" not in text:
             return None
         return text
     except Exception as e:
@@ -992,9 +1298,10 @@ def push_change_alert(
     app_secret: str | None = None,
 ) -> dict[str, Any]:
     from l3_node.tools.pmo_bitable_watch import send_watch_notification
+    from l3_node.pmo_lark_env import pmo_change_alert_monitor_chat_id
 
     targets = [chat_id.strip()]
-    monitor = (monitor_chat_id or _DEFAULT_MONITOR_CHAT).strip()
+    monitor = (monitor_chat_id or pmo_change_alert_monitor_chat_id()).strip()
     if push_monitor and monitor and monitor not in targets:
         targets.append(monitor)
 
@@ -1058,6 +1365,14 @@ def run_change_alert_pipeline(
         logger.info("[PMO change_alert] all_clear events=%d", len(events))
         return out
 
+    dedup_fp = _change_alert_dedup_fingerprint(events, fact)
+    if not dry_run and _dedup_recently_pushed(dedup_fp):
+        out["message"] = "与近期已推送的预警重复，跳过（dedup）"
+        out["dedup_skipped"] = True
+        out["dedup_fingerprint"] = dedup_fp
+        logger.info("[PMO change_alert] dedup skip fp=%s events=%d", dedup_fp[:12], len(events))
+        return out
+
     md, md_mode = resolve_change_alert_push_markdown(fact)
     title = human_change_alert_title(fact)
 
@@ -1088,6 +1403,9 @@ def run_change_alert_pipeline(
     )
     out["push"] = push_out
     out["notified"] = bool(push_out.get("notified"))
+    if out["notified"] and not dry_run:
+        _dedup_mark_pushed(dedup_fp)
+        out["dedup_fingerprint"] = dedup_fp
     out["markdown_mode"] = md_mode
     out["markdown_preview"] = md[:800]
     out["message"] = "变更预警已推送" if out["notified"] else "推送未确认成功"

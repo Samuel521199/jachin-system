@@ -187,6 +187,21 @@ def resolve_md_files(
             p for p in base_dir.glob("*.md") if p.name != "README.md"
         )
     else:
+        # 兼容旧版打包机：拉盘曾写入安装目录 docs/bi_daily_report/bi_project
+        try:
+            from l3_node.paths import get_app_root
+
+            legacy = (
+                get_app_root()
+                / "docs"
+                / "bi_daily_report"
+                / "bi_project"
+                / "00_SYNC_MANIFEST.json"
+            )
+            if legacy.is_file():
+                return resolve_md_files(manifest_path=legacy, pull_dir=pull_dir)
+        except Exception:
+            pass
         raise FileNotFoundError(f"manifest 不存在且未指定 pull_dir: {mp}")
 
     if not md_files and pull_dir and pull_dir.is_dir():

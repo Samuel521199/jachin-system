@@ -15,7 +15,9 @@ PMO 多维表变更监控 — 回调链路自测（无需真改飞书表）
   # 4) 三步一条龙：inject → 等 2s → finalize
   python scripts/test_pmo_bitable_watch_callback.py --e2e
 
-真机验证：改飞书表后看日志是否出现 merged=1
+真机验证（推荐开着监看脚本，改表后应立即有反应）：
+  python scripts/watch_pmo_bitable_lark_events.py
+  # 或 tail 长连接日志：
   Get-Content ~/.jachin/data/pmo_bitable_watch_long_connection.log -Wait -Tail 20
 """
 from __future__ import annotations
@@ -47,8 +49,8 @@ _SAMPLE_LARK_EVENT = {
         "app_id": "cli_a9253a96b179deee",
     },
     "event": {
-        "table_id": "tblB2uMLGIQrAttB",
-        "file_token": "KHOebTjbpaeSy3sC4BxlzPelg7b",
+        "table_id": "tblfK9gk6vTQpJtB",
+        "file_token": "",
         "file_type": "bitable",
         "action_list": [
             {

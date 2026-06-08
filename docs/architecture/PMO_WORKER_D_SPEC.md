@@ -27,7 +27,7 @@
 
 ## 3. 📦 口径
 
-- **时间窗**：上一封「生产环境维护公告」邮件 `internal_date` → 当前时刻（`cron_thinker` 同款过滤 + 维护日去重）。
+- **时间窗**：**最近一封**「生产环境维护公告」邮件 `internal_date` → 当前时刻（`cron_thinker` 同款过滤 + 维护日去重）。
 - **完成**：`epic_completion_pct == 100`；完成日落在窗内。
 - **数据源**：`vewpI8lyYw` 镜像 + Vivian 邮箱（`core:pmo_release_epic_mapping`）。
 
@@ -51,3 +51,10 @@
   "completed_sql_ids": ["D-TOOL"]
 }
 ```
+
+## 6. 编排错开与邮件 API 韧性（2026-06-08）
+
+- **错开**：多 Agent 编排中 Worker D **不在** A/B/C FanOut 前拉邮件；A/B/C 完成后等待 `PMO_WORKER_D_MAIL_DELAY_SEC`（默认 5s），再宿主 `run_worker_d_host_bootstrap_with_retry`，最后单独 FanOut Worker D。
+- **整轮重试**：`PMO_WORKER_D_MAIL_RETRY_COUNT`（默认 3）、`PMO_WORKER_D_MAIL_RETRY_DELAY_SEC`（默认 8s，递增间隔）。
+- **单封韧性**：列表/详情遇 Gateway timeout 等瞬态错误有限重试；单封详情仍失败则 **跳过**（对齐 `cron_thinker`），部分成功时 `degraded: true` + `mail_fetch_stats`。
+- **环境变量**：`PMO_RELEASE_MAIL_DETAIL_RETRY_COUNT`、`PMO_RELEASE_MAIL_LIST_RETRY_COUNT`、`PMO_RELEASE_MAIL_RETRY_BACKOFF_SEC`。
