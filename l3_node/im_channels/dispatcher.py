@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -83,14 +84,51 @@ def _quick_task_summary(user_input: str, timeout_sec: float = 2.0) -> str:
         return ""
 
 
+def _im_ack_delay_sec() -> float:
+    """Agent 仍未返回时才发安抚；默认 40s，可用 ``JACHIN_IM_ACK_DELAY_SEC`` 覆盖。"""
+    raw = (os.environ.get("JACHIN_IM_ACK_DELAY_SEC") or "40").strip()
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        return 40.0
+
+
+def _should_send_delayed_ack(user_input: str) -> bool:
+    """
+    仅对「预期长耗时」的 run_agent 轮次启用延时安抚。
+    寒暄/致谢等短句不发送（避免「你好」也弹「请稍候」）。
+    """
+    t = (user_input or "").strip()
+    if not t:
+        return False
+    try:
+        from l3_node.routing.output_format_signals import heuristic_trivial_chitchat_only
+
+        if heuristic_trivial_chitchat_only(t):
+            return False
+    except Exception:
+        pass
+    # 显式 Skill / PMO 重型入口另有即时 ack，run_agent 路径不再重复
+    try:
+        from l3_node.slash_hash_skill_router import is_slash_hash_skill_invocation
+
+        if is_slash_hash_skill_invocation(t):
+            return False
+    except Exception:
+        pass
+    if re.match(r"^/pmo\b|^/board\b", t, re.I):
+        return False
+    return True
+
+
 def _build_ack_message(user_input: str, summary: str) -> str:
-    """用意图摘要或截取原文构造安抚消息。"""
+    """用意图摘要或截取原文构造安抚消息（仅长任务超时后发送）。"""
     if summary:
-        return f"🤖 正在{summary}，请稍候…（复杂任务约需 1-2 分钟）"
+        return f"🤖 仍在{summary}，请稍候…"
     snip = user_input.strip()
     if len(snip) > 50:
         snip = snip[:50] + "…"
-    return f"🤖 正在处理：「{snip}」，请稍候…（复杂任务约需 1-2 分钟）"
+    return f"🤖 仍在处理：「{snip}」，请稍候…"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -693,24 +731,24 @@ def _do_agent_work(
                             ),
                             loop,
                         )
-                        # 延时安抚：12 秒后若 Agent 仍未返回，自动发送一条智能安抚消息
-                        # 快速任务（<12s）用户直接收到答案，不会被多余消息打扰
+                        # 延时安抚：默认 40s 后若 Agent 仍未返回才发（寒暄等短句不启用）
                         _ack_cancelled = threading.Event()
+                        _ack_timer: threading.Timer | None = None
+                        if _should_send_delayed_ack(intent):
 
-                        def _delayed_ack() -> None:
-                            if _ack_cancelled.is_set() or not cid:
-                                return
-                            try:
-                                _summary = _quick_task_summary(intent, timeout_sec=2.0)
-                                _ack = _build_ack_message(intent, _summary)
-                                send_reply_fn(cid, _ack)
-                            except Exception as _ae:
-                                logger.debug("[IM Dispatcher] 延时安抚发送失败: %s", _ae)
+                            def _delayed_ack() -> None:
+                                if _ack_cancelled.is_set() or not cid:
+                                    return
+                                try:
+                                    _summary = _quick_task_summary(intent, timeout_sec=2.0)
+                                    _ack = _build_ack_message(intent, _summary)
+                                    send_reply_fn(cid, _ack)
+                                except Exception as _ae:
+                                    logger.debug("[IM Dispatcher] 延时安抚发送失败: %s", _ae)
 
-                        _ACK_DELAY_SEC = 12.0
-                        _ack_timer = threading.Timer(_ACK_DELAY_SEC, _delayed_ack)
-                        _ack_timer.daemon = True
-                        _ack_timer.start()
+                            _ack_timer = threading.Timer(_im_ack_delay_sec(), _delayed_ack)
+                            _ack_timer.daemon = True
+                            _ack_timer.start()
                         try:
                             # 不设超时：Agent 跑多久都等；结果通过 send_reply_fn 直连 API 推回主群
                             reply = future.result(timeout=None)
@@ -734,7 +772,8 @@ def _do_agent_work(
                                 logger.debug("[IM Dispatcher] deferred heal 跳过: %s", _h_ex)
                         finally:
                             _ack_cancelled.set()
-                            _ack_timer.cancel()
+                            if _ack_timer is not None:
+                                _ack_timer.cancel()
                 except TimeoutError:
                     reply = "处理超时，请稍后重试。"
                     turn_status = "timeout"

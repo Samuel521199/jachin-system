@@ -27,6 +27,16 @@ def test_resolve_lark_hr_uses_yaml_first() -> None:
     assert sec == "sec_hr_yaml"
 
 
+def test_resolve_lark_falls_back_to_env_three_tuple() -> None:
+    with patch(
+        "l3_node.channels.lark.client.resolve_lark_credentials",
+        return_value=("cli_main", "sec_main", "https://open.larksuite.com"),
+    ):
+        aid, sec = resolve_lark_im_credentials({}, "lark")
+    assert aid == "cli_main"
+    assert sec == "sec_main"
+
+
 def test_resolve_pmo_bitable_from_watch_config() -> None:
     with patch(
         "l3_node.tools.pmo_bitable_watch._load_watch_config",

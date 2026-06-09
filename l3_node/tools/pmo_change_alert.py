@@ -141,7 +141,9 @@ _TEAM_MARKERS = ("组", "团队", "Team", "team", "部门", "工作室")
 
 
 def _today_iso() -> str:
-    return date.today().isoformat()
+    from l3_node.tools.pmo_dates import pmo_today_iso
+
+    return pmo_today_iso()
 
 
 def _parse_date(val: Any) -> str | None:
@@ -156,10 +158,10 @@ def _parse_date(val: Any) -> str | None:
         return s[:10].replace("/", "-")
     try:
         ts = int(float(s))
-        if ts > 1e11:
-            from datetime import timezone
+        if ts > 1e10:
+            from l3_node.tools.pmo_dates import pmo_ms_to_iso_date
 
-            return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            return pmo_ms_to_iso_date(ts)
     except (TypeError, ValueError):
         pass
     return None

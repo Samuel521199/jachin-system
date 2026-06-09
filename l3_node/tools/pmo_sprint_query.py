@@ -9,10 +9,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import timedelta
 from typing import Any
 
+from l3_node.tools.pmo_dates import pmo_ms_to_iso_date, pmo_today_date
 from l3_node.tools.pmo_db_tools import _DEPT_PLACEHOLDER_ROW_NAMES, _connect, get_pmo_db_path, pmo_mirror_db_ready
+
+_ms_to_iso_date = pmo_ms_to_iso_date
 
 _DEFAULT_SOURCE_VIEW = "vewpI8lyYw"
 _DEPT = _DEPT_PLACEHOLDER_ROW_NAMES
@@ -85,18 +88,6 @@ def _person_display(fields: dict[str, Any]) -> str | None:
                     names.append(n)
         return ", ".join(dict.fromkeys(names)) if names else None
     return None
-
-
-def _ms_to_iso_date(v: Any) -> str | None:
-    if v is None or v == "":
-        return None
-    try:
-        ts = int(v)
-        return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-    except (TypeError, ValueError):
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-        return None
 
 
 def _is_big_epic(fields: dict[str, Any]) -> bool:
@@ -351,10 +342,11 @@ def list_recent_sprints(
     source_view: str = _DEFAULT_SOURCE_VIEW,
 ) -> list[dict[str, Any]]:
     """等同 C-1：近 N 天内最多 limit 个 Sprint（按 sprint_date 降序）。"""
+    cutoff = (pmo_today_date() - timedelta(days=int(days))).isoformat()
     conn = _connect()
     try:
         rows = conn.execute(
-            f"""
+            """
             SELECT json_extract(fields, '$.Sprint') AS sprint,
                    date(replace(substr(json_extract(fields, '$.Sprint'), 1, 10), '/', '-')) AS sprint_date,
                    COUNT(*) AS cnt
@@ -365,11 +357,11 @@ def list_recent_sprints(
               AND json_extract(fields, '$.Sprint') GLOB '????/??/??-Sprint'
             GROUP BY json_extract(fields, '$.Sprint')
             HAVING sprint_date IS NOT NULL
-               AND sprint_date >= date('now', ?)
+               AND sprint_date >= ?
             ORDER BY sprint_date DESC
             LIMIT ?
             """,
-            (source_view, f"-{int(days)} days", int(limit)),
+            (source_view, cutoff, int(limit)),
         ).fetchall()
         return [
             {

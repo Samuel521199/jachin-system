@@ -400,12 +400,11 @@ def _normalize_value(val: Any) -> str:
         except TypeError:
             return str(val)
     if isinstance(val, float) and val > 1e11:
-        try:
-            from datetime import datetime as _dt
+        from l3_node.tools.pmo_dates import pmo_ms_to_iso_date
 
-            return _dt.utcfromtimestamp(val / 1000).strftime("%Y-%m-%d")
-        except (OSError, OverflowError, ValueError):
-            pass
+        iso = pmo_ms_to_iso_date(int(val))
+        if iso:
+            return iso
     return str(val).strip()
 
 

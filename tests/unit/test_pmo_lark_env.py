@@ -44,6 +44,25 @@ class TestPmoLarkEnv(unittest.TestCase):
                 ple.ensure_pmo_dotenv_loaded()
             self.assertEqual(os.environ.get("PMO_PRIMARY_CHAT_ID"), "oc_from_root_env")
 
+    def test_push_monitor_disabled_single_delivery(self) -> None:
+        b_primary = "oc_367e7998b7dfe39c67d1598101defdfe"
+        with mock.patch.dict(
+            os.environ,
+            {"PMO_PRIMARY_CHAT_ID": b_primary, "PMO_PUSH_MONITOR": "0"},
+            clear=False,
+        ):
+            ple._PMO_DOTENV_LOADED = False
+            self.assertFalse(ple.pmo_push_monitor_enabled())
+            self.assertEqual(ple.pmo_required_delivery_chat_ids(), (b_primary,))
+
+    def test_push_monitor_default_includes_monitor(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            ple._PMO_DOTENV_LOADED = False
+            ids = ple.pmo_required_delivery_chat_ids()
+            self.assertEqual(len(ids), 2)
+            self.assertIn(ple.DEFAULT_PMO_PRIMARY_CHAT_ID, ids)
+            self.assertIn(ple.DEFAULT_PMO_MONITOR_CHAT_ID, ids)
+
 
 if __name__ == "__main__":
     unittest.main()

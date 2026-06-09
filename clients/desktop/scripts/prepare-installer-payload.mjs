@@ -205,6 +205,8 @@ function main() {
   const bat2 = path.join(ROOT, "scripts", "run_l3_standalone.bat");
   if (fs.existsSync(bat)) copyIfExists(bat, path.join(DIST, "run_l3.bat"));
   if (fs.existsSync(bat2)) copyIfExists(bat2, path.join(DIST, "run_l3_standalone.bat"));
+  const consoleBat = path.join(ROOT, "scripts", "run_l3_console.bat");
+  if (fs.existsSync(consoleBat)) copyIfExists(consoleBat, path.join(DIST, "run_l3_console.bat"));
 
   const pyExe = path.join(DIST, "runtime", "python", "python.exe");
   const wantMcp = process.env.JACHIN_DESKTOP_BUNDLE_MCP_RUNTIME === "1";

@@ -54,6 +54,7 @@ from l3_node.pmo_lark_env import (
     ensure_pmo_dotenv_loaded,
     pmo_monitor_chat_id,
     pmo_primary_chat_id,
+    pmo_push_monitor_enabled,
 )
 from l3_node.pmo_workflow_stage import (
     format_workflow_progress_bar,
@@ -130,7 +131,9 @@ def build_macro_dashboard_markdown(
     """从 Worker B/C JSON 组装宏观看板 GFM（未 polish）。"""
     current_sprint = worker_b.get("current_sprint") or worker_c.get("current_sprint")
     cs_date = worker_b.get("current_sprint_date") or ""
-    today = date.today()
+    from l3_node.tools.pmo_dates import pmo_today_date
+
+    today = pmo_today_date()
 
     all_children = (
         (worker_c.get("dev_tasks") or [])
@@ -497,8 +500,9 @@ def run_macro_dashboard_push(
     ensure_pmo_dotenv_loaded()
     primary = (chat_id or pmo_primary_chat_id()).strip()
     monitor = (monitor_chat_id or pmo_monitor_chat_id()).strip()
+    effective_push_monitor = bool(push_monitor) and pmo_push_monitor_enabled()
     chat_targets = [primary]
-    if push_monitor and monitor and monitor != primary:
+    if effective_push_monitor and monitor and monitor != primary:
         chat_targets.append(monitor)
 
     md, worker_b, worker_c = build_polished_macro_dashboard_markdown(

@@ -1535,7 +1535,7 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
         return timeout_blk
     if _pmo_db_analysis_mode(ctx):
         chats_ok = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
-        cid = _pmo_notifier_chat_id_from_inp(inp) or PMO_BRANCH_A_PRIMARY_CHAT_ID
+        cid = _pmo_notifier_chat_id_from_inp(inp) or _pmo_resolve_primary_chat_id()
         if _pmo_branch_a_delivery_complete(ctx) and cid in chats_ok:
             return json.dumps(
                 {
@@ -1904,14 +1904,15 @@ def _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
     messages.append({
         "role": "user",
         "content": (
-            "【系统校验·PMO·v7 仅分析】你尚未完成 **双群** `mcp:atom_lark_notifier` 成功推送"
-            f"（当前已成功群：{chats_ok or '无'}），禁止用 Final Answer 输出战报摘要或声称已推送。\n"
+            "【系统校验·PMO·v7 仅分析】你尚未完成全部投递目标的 `mcp:atom_lark_notifier` 成功推送"
+            f"（须送达：{_pmo_delivery_targets_user_hint()}；当前已成功群：{chats_ok or '无'}），"
+            "禁止用 Final Answer 输出战报摘要或声称已推送。\n"
             f"探针/交叉分析缺口：{('、'.join(missing) if missing else '无')}。\n"
             "请继续 ReAct（勿写 Final Answer）：\n"
             "① 按 SKILL §1.2.1 七步框架补完 db_query（≤10 次）；\n"
             "② 组装 §1.4 三表 markdown_content；\n"
-            "③ **两次** atom_lark_notifier（主群 + 监控群，各须 Observation success）；\n"
-            "④ 双群均 success 后才可 ≤3 句 Final Answer 确认。"
+            f"③ 对每个投递目标各调用一次 atom_lark_notifier（{_pmo_delivery_targets_user_hint()}），各须 Observation success；\n"
+            "④ 全部目标 success 后才可 ≤3 句 Final Answer 确认。"
         ),
     })
     return True
@@ -1959,7 +1960,7 @@ def _reject_pmo_branch_a_force_push_exit_guard(
         "role": "user",
         "content": (
             "【系统校验·PMO·v7 仅分析】无论分析结果质量如何，分支 A **必须先尝试** "
-            "`mcp:atom_lark_notifier` 双群推送战报后才能 Final Answer。\n"
+            f"`mcp:atom_lark_notifier` 推送到全部投递目标（{_pmo_delivery_targets_user_hint()}）后才能 Final Answer。\n"
             f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；"
             f"已成功群：{chats_ok or '无（一次都未推送）'}。\n"
             f"探针缺口：{('、'.join(missing) if missing else '无')}。\n"
@@ -1968,8 +1969,8 @@ def _reject_pmo_branch_a_force_push_exit_guard(
             "请继续 ReAct（勿写 Final Answer）：\n"
             "① 补完缺失探针（Step3 须 json_each；Step5 须 GROUP BY；Step6a+6b 跨视图；Step7 须 COUNT 聚合）；\n"
             "② 组装 §1.4 三表 markdown_content（含 ⚠️ 占位行）；\n"
-            "③ **两次** atom_lark_notifier（主群 + 监控群）；\n"
-            "④ 双群均 success 后才可 ≤3 句 Final Answer 确认。"
+            f"③ 对每个投递目标各 atom_lark_notifier（{_pmo_delivery_targets_user_hint()}）；\n"
+            "④ 全部目标 success 后才可 ≤3 句 Final Answer 确认。"
         ),
     })
     return True
@@ -2025,9 +2026,9 @@ def _reject_pmo_false_lark_sent_guard(
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
             "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`；**禁止** `webhook_url`。\n"
-            "**SKILL §1.3 要求推送两个会话**：先主群 `chat_id` = .env `PMO_PRIMARY_CHAT_ID`（`oc_437c98d11106295fb10751a5481ee465`），\n"
-            "再监控群 `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`，内容相同，各调用一次 notifier（IM API）。\n"
-            "（v7 仅分析模式：须 **两次** notifier 均 success 后才可 Final Answer 确认双群送达；单次成功不算完成。）\n"
+            f"**SKILL §1.3 投递目标**（以 .env 为准）：{', '.join(_pmo_required_delivery_chat_ids())}；"
+            "须对每个目标各调用一次 notifier（IM API），或一次 `core:pmo_macro_dashboard_push` 且 Observation 显示全部 success。\n"
+            "（v7 仅分析：全部目标 success 后才可 Final Answer 确认送达。）\n"
             "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 Final Answer **如实**写明 error，不得写全部已成功。"
         ),
     })
@@ -2233,8 +2234,21 @@ def _pmo_observation_is_foreground_tool_timeout(observation: str) -> bool:
     return str(o.get("reason") or "") == "foreground_sync_budget_exceeded"
 
 
+def _pmo_required_delivery_chat_ids() -> tuple[str, ...]:
+    from l3_node.pmo_lark_env import pmo_required_delivery_chat_ids
+
+    return pmo_required_delivery_chat_ids()
+
+
+def _pmo_delivery_targets_user_hint() -> str:
+    ids = _pmo_required_delivery_chat_ids()
+    if len(ids) <= 1:
+        return f"主群 `{ids[0]}`（单群；`.env` 可设 `PMO_PUSH_MONITOR=0`）"
+    return f"主群 `{ids[0]}`、监控群 `{ids[1]}`"
+
+
 def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
-    """解析 core:pmo_macro_dashboard_push 返回：双群均 success。"""
+    """解析 core:pmo_macro_dashboard_push 返回：配置的投递目标均 success。"""
     o = _pmo_parse_tool_observation_json(observation)
     if not o:
         return False
@@ -2253,10 +2267,8 @@ def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
         cid = str(p.get("chat_id") or "").strip()
         if cid:
             ok_chats.add(cid)
-    return (
-        PMO_BRANCH_A_PRIMARY_CHAT_ID in ok_chats
-        and PMO_BRANCH_A_MONITOR_CHAT_ID in ok_chats
-    )
+    required = set(_pmo_required_delivery_chat_ids())
+    return bool(required) and required <= ok_chats
 
 
 def _pmo_track_macro_dashboard_push_observation(ctx: PipelineContext, observation: str) -> None:
@@ -2320,7 +2332,7 @@ def _pmo_track_macro_dashboard_push_success(ctx: PipelineContext, observation: s
         for x in (ctx.metadata.get("_pmo_notifier_chats_success") or [])
         if str(x).strip()
     ]
-    for cid in (PMO_BRANCH_A_PRIMARY_CHAT_ID, PMO_BRANCH_A_MONITOR_CHAT_ID):
+    for cid in _pmo_required_delivery_chat_ids():
         if cid not in chats:
             chats.append(cid)
     ctx.metadata["_pmo_notifier_chats_success"] = chats
@@ -2344,7 +2356,8 @@ def _pmo_branch_a_delivery_complete(ctx: PipelineContext) -> bool:
     if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
         return True
     chats = {str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()}
-    return PMO_BRANCH_A_PRIMARY_CHAT_ID in chats and PMO_BRANCH_A_MONITOR_CHAT_ID in chats
+    required = set(_pmo_required_delivery_chat_ids())
+    return bool(required) and required <= chats
 
 
 def _pmo_branch_a_push_prerequisites_met(ctx: PipelineContext) -> bool:
@@ -2813,7 +2826,8 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                 "status": "error",
                 "error": "pmo_post_push_analysis_blocked",
                 "msg": (
-                    "【宿主拦截】已向至少一个群推送卡片，请 **先完成双群推送**（主群 + 监控群），"
+                    "【宿主拦截】已向至少一个群推送卡片，请 **先完成全部投递目标推送**（"
+                    f"{_pmo_delivery_targets_user_hint()}），"
                     "禁止在此阶段继续 core:db_query。"
                 ),
             },
@@ -2990,9 +3004,8 @@ def _reject_pmo_branch_a_missing_bi_pull_guard(
             "Action: mcp:atom_bi_project_context\n"
             "Action Input: JSON，至少含 `wiki_urls` 字符串数组（与 SKILL §1.1 一致），可按需含 "
             "`output_dir_relative` 等。\n"
-            "拉表拿到 Observation 后，再聚合并 **两次** `Action: mcp:atom_lark_notifier` 推送 §1.4 卡片：\n"
-            "① `chat_id=oc_437c98d11106295fb10751a5481ee465`（主群），\n"
-            "② `chat_id=oc_0e321f92d758ecb44aea5b499c90510b`（固定监控群）；最后才用简短 Final Answer 确认。"
+            "拉表拿到 Observation 后，再聚合并对每个投递目标调用 `Action: mcp:atom_lark_notifier` 推送 §1.4 卡片：\n"
+            f"{_pmo_delivery_targets_user_hint()}；最后才用简短 Final Answer 确认。"
         ),
     })
     return True
@@ -3102,7 +3115,7 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
             "Action Input: JSON（全文三表战报送 `markdown_content`，`title` 用 `【K11 · PMO 宏观看板】` 类）。\n"
-            "**须调用两次**：先主群（`PMO_PRIMARY_CHAT_ID`）、再监控群（`oc_0e321f92d758ecb44aea5b499c90510b`）。\n"
+            f"**须对每个投递目标各调用一次**（{_pmo_delivery_targets_user_hint()}）。\n"
             "推送成功后再用 ≤3 句 Final Answer 确认 Observation 状态即可。"
         ),
     })

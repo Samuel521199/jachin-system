@@ -1029,7 +1029,7 @@ fn main() {
                     );
                 }
                 Err(e) => {
-                    let msg = format!("[L3] 启动失败: {}", e);
+                    let msg = format!("[L3] 侧车启动失败: {}。请检查安装目录 bin\\l3_node-*.exe、.env 与 logs\\l3_debug.log；调试可双击 run_l3_console.bat", e);
                     eprintln!("{}", msg);
                     l3_spawn::write_l3_debug(&msg);
                     // 不阻塞启动，前端 useSensoryWebSocket 会显示未连接

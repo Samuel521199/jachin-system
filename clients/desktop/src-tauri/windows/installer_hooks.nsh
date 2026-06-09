@@ -49,6 +49,8 @@ skip_dotenv:
     CopyFiles /SILENT "$INSTDIR\resources\run_l3.bat" "$INSTDIR\run_l3.bat"
   IfFileExists "$INSTDIR\resources\run_l3_standalone.bat" 0 +2
     CopyFiles /SILENT "$INSTDIR\resources\run_l3_standalone.bat" "$INSTDIR\run_l3_standalone.bat"
+  IfFileExists "$INSTDIR\resources\run_l3_console.bat" 0 +2
+    CopyFiles /SILENT "$INSTDIR\resources\run_l3_console.bat" "$INSTDIR\run_l3_console.bat"
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL

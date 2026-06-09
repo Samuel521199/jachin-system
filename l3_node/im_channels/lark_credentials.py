@@ -29,7 +29,8 @@ def resolve_lark_im_credentials(
 
     from l3_node.channels.lark.client import resolve_lark_credentials
 
-    return resolve_lark_credentials()
+    creds = resolve_lark_credentials()
+    return creds[0], creds[1]
 
 
 def resolve_pmo_bitable_credentials(config: dict[str, Any]) -> tuple[str, str]:

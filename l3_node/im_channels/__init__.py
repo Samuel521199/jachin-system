@@ -126,6 +126,18 @@ def start_im_channels(
             ch_id,
         )
 
+    try:
+        from l3_node.runtime_diag_log import log_runtime_milestone
+
+        log_runtime_milestone(
+            f"IM 通道已启动 {len(threads)} 条线程: "
+            + ",".join(t.name for t in threads)
+            if threads
+            else "IM 通道：无 enabled 通道"
+        )
+    except Exception:
+        pass
+
     if lark_im_started:
         def _delayed_hr_online_briefing() -> None:
             import time

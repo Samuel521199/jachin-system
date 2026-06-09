@@ -3214,6 +3214,14 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
             logger.info("[L3 HTTP] 技能 API 已启动 http://%s:%d/api/v3/skills", host, try_port)
             print(f"[L3 HTTP] 已启动 http://{host}:{try_port}/api/v3/skills", file=sys.stderr, flush=True)
 
+            try:
+                from l3_node.runtime_diag_log import log_runtime_milestone, start_runtime_diag_loop
+
+                log_runtime_milestone(f"HTTP API listening http://{host}:{try_port}")
+                asyncio.create_task(start_runtime_diag_loop(), name="jachin-l3-runtime-diag")
+            except Exception as e:
+                logger.debug("[L3 HTTP] runtime_diag 启动跳过: %s", e)
+
             async def _stdio_mcp_bootstrap_bg() -> None:
                 try:
                     from l3_node.mcp_stdio_bootstrap import start_l3_stdio_mcp_host

@@ -338,6 +338,51 @@ def test_macro_dashboard_push_marks_dual_delivery() -> None:
     assert _pmo_branch_a_delivery_complete(ctx) is True
 
 
+def test_macro_dashboard_push_single_chat_b_machine() -> None:
+    """打包机 B：仅主群 oc_367…，PMO_PUSH_MONITOR=0 时不应再要求 oc_437。"""
+    b_primary = "oc_367e7998b7dfe39c67d1598101defdfe"
+    obs = json.dumps(
+        {
+            "status": "success",
+            "pushes": [
+                {"chat_id": b_primary, "status": "success", "message_id": "om_b1"},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    with patch.dict(
+        "os.environ",
+        {"PMO_PRIMARY_CHAT_ID": b_primary, "PMO_PUSH_MONITOR": "0"},
+        clear=False,
+    ):
+        assert _pmo_macro_dashboard_push_succeeded(obs) is True
+        ctx = _ctx(pmo_multi_agent_complete=True, pmo_analysis_only=True, pmo_db_ready=True)
+        _pmo_track_macro_dashboard_push_success(ctx, obs)
+        assert _pmo_branch_a_delivery_complete(ctx) is True
+        dup = _pmo_branch_a_blocked_premature_lark_observation(
+            json.dumps(
+                {"title": "t", "markdown_content": _full_mc(), "chat_id": b_primary},
+                ensure_ascii=False,
+            ),
+            ctx,
+        )
+        assert dup is not None
+        assert json.loads(dup).get("error") == "pmo_duplicate_delivery_blocked"
+
+
+def test_macro_dashboard_push_single_chat_still_requires_primary_when_dual_env() -> None:
+    """默认双群 env 下，仅推 oc_367 不算完成。"""
+    b_primary = "oc_367e7998b7dfe39c67d1598101defdfe"
+    obs = json.dumps(
+        {
+            "status": "success",
+            "pushes": [{"chat_id": b_primary, "status": "success", "message_id": "om_b1"}],
+        },
+        ensure_ascii=False,
+    )
+    assert _pmo_macro_dashboard_push_succeeded(obs) is False
+
+
 def test_blocks_read_query_during_multi_agent_phase3() -> None:
     ctx = _ctx(
         pmo_multi_agent_complete=True,
@@ -439,7 +484,7 @@ def test_reject_analysis_premature_delivery_final_answer() -> None:
     )
     assert blocked is True
     assert len(messages) == 2
-    assert "双群" in messages[1]["content"]
+    assert "投递目标" in messages[1]["content"]
 
 
 def test_version_goal_empty_placeholder_table_passes_markdown_guard() -> None:

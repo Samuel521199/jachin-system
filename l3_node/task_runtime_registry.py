@@ -1,4 +1,4 @@
-"""进程内前台 + 后台任务负载摘要（轻量 GlobalTaskRegistry，供 prompt 注入）。线程安全。"""
+﻿"""进程内前台 + 后台任务负载摘要（轻量 GlobalTaskRegistry，供 prompt 注入）。线程安全。"""
 from __future__ import annotations
 
 import json
@@ -232,6 +232,13 @@ def register_foreground_task(
         if tags:
             rec["resource_tags"] = tags
         _foreground[rid] = rec
+    logger.info(
+        "[L3 Runtime] 前台任务开始 run_id=%s channel=%s session=%s tags=%s",
+        rid[:16],
+        rec["channel"],
+        (rec["session_key"][:24] + "…") if len(rec["session_key"]) > 24 else rec["session_key"] or "-",
+        tags or [],
+    )
 
 
 def unregister_foreground_task(run_id: str) -> None:
@@ -239,7 +246,18 @@ def unregister_foreground_task(run_id: str) -> None:
     if not rid:
         return
     with _lock:
-        _foreground.pop(rid, None)
+        rec = _foreground.pop(rid, None)
+    if rec:
+        try:
+            elapsed = time.monotonic() - float(rec.get("started_at", time.monotonic()))
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        logger.info(
+            "[L3 Runtime] 前台任务结束 run_id=%s channel=%s elapsed=%.1fs",
+            rid[:16],
+            str(rec.get("channel") or ""),
+            max(0.0, elapsed),
+        )
 
 
 def register_scheduled_job_hint(

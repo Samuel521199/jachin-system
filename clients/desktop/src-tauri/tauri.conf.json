@@ -1,6 +1,6 @@
 {
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.84",
+  "version": "0.9.85",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -119,6 +119,7 @@
       "../../../dist_jachin_desktop/README_DEPLOY.md": "README_DEPLOY.md",
       "../../../dist_jachin_desktop/run_l3.bat": "run_l3.bat",
       "../../../dist_jachin_desktop/run_l3_standalone.bat": "run_l3_standalone.bat",
+      "../../../dist_jachin_desktop/run_l3_console.bat": "run_l3_console.bat",
       "../nexus_config.example.json": "nexus_config.example.json"
     },
     "windows": {

@@ -37,6 +37,7 @@ from pathlib import Path
 
 _LOG_PATH: str | None = None
 _FILE_HANDLER: logging.FileHandler | None = None
+_MIRROR_HANDLER: logging.Handler | None = None
 _WS_HANDSHAKE_NOISE_FILTER_INSTALLED: bool = False
 _EXCEPTHOOK_INSTALLED: bool = False
 _ORIG_SYS_EXCEPTHOOK = sys.excepthook
@@ -224,6 +225,56 @@ def _is_pmo_copilot_run() -> bool:
         return "--run-pmo-copilot" in sys.argv
 
 
+def shared_l3_debug_log_path() -> Path:
+    """用户级共享诊断路径（Desktop 与 L3 对照用，不受 JACHIN_LOG_DIR 影响）。"""
+    return Path.home() / ".jachin" / "l3_debug.log"
+
+
+def _should_truncate_log_on_start(path: str, *, pmo_run: bool) -> bool:
+    """
+    PMO 子进程始终追加；共享 ~/.jachin/l3_debug.log 默认追加（保留 Desktop 侧车日志）；
+    安装目录 logs/ 仍每次清空。强制清空：JACHIN_L3_DEBUG_LOG_TRUNCATE=1。
+    """
+    if pmo_run:
+        return False
+    if _env_truthy("JACHIN_L3_DEBUG_LOG_TRUNCATE"):
+        return True
+    try:
+        if Path(path).resolve() == shared_l3_debug_log_path().resolve():
+            return False
+    except OSError:
+        pass
+    return True
+
+
+def _install_shared_mirror_handler() -> None:
+    """便携包 primary 在 install/logs 时，镜像一份到 ~/.jachin/l3_debug.log（追加，不清空）。"""
+    global _MIRROR_HANDLER
+    if not _LOG_PATH or not _FILE_HANDLER or _MIRROR_HANDLER is not None:
+        return
+    try:
+        primary = Path(_LOG_PATH).resolve()
+        shared = (Path.home() / ".jachin" / "l3_debug.log").resolve()
+    except OSError:
+        return
+    if primary == shared:
+        return
+    try:
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        mh = logging.FileHandler(str(shared), mode="a", encoding="utf-8")
+        mh.setLevel(logging.DEBUG)
+        mh.setFormatter(_make_file_formatter())
+        logging.getLogger().addHandler(mh)
+        _MIRROR_HANDLER = mh
+        utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        with open(shared, "a", encoding="utf-8") as f:
+            f.write(
+                f"{utc} [L3 DEBUG] === 便携包日志镜像（primary={primary}）pid={os.getpid()} ===\n"
+            )
+    except OSError:
+        pass
+
+
 def _resolve_log_path() -> str:
     """解析日志路径。JACHIN_LOG_DIR 优先（便携包 logs/），否则 PyInstaller 时 cwd"""
     candidates = []
@@ -260,19 +311,20 @@ def setup_early_logging() -> str:
     _LOG_PATH = _resolve_log_path()
 
     pmo_run = _is_pmo_copilot_run()
-    # 常驻 L3：每次启动清空；PMO 一次性子进程：追加到独立 pmo_l3_debug.log，避免抹掉主 L3 日志
+    truncate = _should_truncate_log_on_start(_LOG_PATH, pmo_run=pmo_run)
     try:
-        with open(_LOG_PATH, "a" if pmo_run else "w", encoding="utf-8") as f:
+        with open(_LOG_PATH, "a" if (pmo_run or not truncate) else "w", encoding="utf-8") as f:
             utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
             try:
                 _host = socket.gethostname()
             except OSError:
                 _host = "?"
-            banner = (
-                "=== PMO Copilot 子进程日志（追加，不清空主 L3 l3_debug.log）=== START"
-                if pmo_run
-                else "=== L3 调试日志（每次启动清空）=== START"
-            )
+            if pmo_run:
+                banner = "=== PMO Copilot 子进程日志（追加，不清空主 L3 l3_debug.log）=== START"
+            elif truncate:
+                banner = "=== L3 调试日志（每次启动清空）=== START"
+            else:
+                banner = "=== L3 会话开始（追加到共享 l3_debug.log，保留 Desktop/历史）=== START"
             f.write(f"{utc} [L3 DEBUG] {banner}\n")
             f.write(f"{utc} [L3 DEBUG] log_file={_LOG_PATH}\n")
             f.write(f"{utc} [L3 DEBUG] pid={os.getpid()} ppid={getattr(os, 'getppid', lambda: -1)()} thread={threading.current_thread().name!r}\n")
@@ -340,6 +392,7 @@ def setup_early_logging() -> str:
         pass
 
     install_websocket_handshake_noise_filters()
+    _install_shared_mirror_handler()
 
     return _LOG_PATH
 

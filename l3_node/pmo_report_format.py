@@ -999,7 +999,10 @@ def build_person_rhythm_alert(
     """与宏观看板脚本一致的节奏预警文案（用于排序与 👥 第三列）。"""
     if not tasks:
         return "⚠️ 数据不足，无法节奏判定"
-    today = today or date.today()
+    if today is None:
+        from l3_node.tools.pmo_dates import pmo_today_date
+
+        today = pmo_today_date()
     total = len(tasks)
     done = sum(1 for t in tasks if is_terminal_personnel_task(t))
     pct = round(100 * done / total) if total else 0

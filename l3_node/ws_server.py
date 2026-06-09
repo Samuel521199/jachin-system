@@ -951,6 +951,12 @@ async def run_ws_server(
                     port, try_port, try_port,
                 )
             logger.info("L3 WebSocket 服务已启动 ws://%s:%d/sensory", host, try_port)
+            try:
+                from l3_node.runtime_diag_log import log_runtime_milestone
+
+                log_runtime_milestone(f"WebSocket listening ws://{host}:{try_port}/sensory")
+            except Exception:
+                pass
             _sig_tokens: list = []
 
             def _on_stop_signal() -> None:

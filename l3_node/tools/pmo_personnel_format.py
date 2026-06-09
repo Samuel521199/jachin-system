@@ -140,7 +140,10 @@ def format_personnel_report_text(payload: dict[str, Any]) -> str:
     n_week = summ.get("current_week_task_count", "—")
     n_unassigned = summ.get("unassigned_count", len(payload.get("unassigned_tasks") or []))
 
+    from l3_node.tools.pmo_dates import pmo_today_iso
+
     parts.append("**PMO 人员任务矩阵**")
+    parts.append(f"- **数据基准日（北京时间）**：`{pmo_today_iso()}`")
     parts.append(f"- **本周 Sprint**：`{cs}`（`{cs_date}`）")
     parts.append(f"- **执行人**：{n_person} 人 · **本周任务**：{n_week} 条 · **无执行人占位**：{n_unassigned} 条")
 

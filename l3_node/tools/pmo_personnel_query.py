@@ -9,9 +9,10 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import timedelta
 from typing import Any
 
+from l3_node.tools.pmo_dates import pmo_ms_to_iso_date, pmo_today_date, pmo_today_iso
 from l3_node.tools.pmo_db_tools import _connect, get_pmo_db_path, pmo_mirror_db_ready
 from l3_node.tools.pmo_sprint_query import parent_text, _status_text
 
@@ -30,7 +31,7 @@ def resolve_current_sprint(
     从 B-S1/C-1 行（含 sprint, sprint_date）解析 current_sprint。
     规则：sprint_date <= today 中取 sprint_date 最大的一行。
     """
-    today_s = (today or date.today().isoformat()).strip()[:10]
+    today_s = (today or pmo_today_iso()).strip()[:10]
     eligible: list[tuple[str, str]] = []
     for r in sprint_rows:
         sp = str(r.get("sprint") or "").strip()
@@ -59,16 +60,7 @@ def resolve_current_sprint(
     return None, None, meta
 
 
-def _ms_to_iso_date(v: Any) -> str | None:
-    if v is None or v == "":
-        return None
-    try:
-        ts = int(v)
-        return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-    except (TypeError, ValueError):
-        if isinstance(v, str) and v.strip():
-            return v.strip()[:10]
-        return None
+_ms_to_iso_date = pmo_ms_to_iso_date
 
 
 def person_keys_from_task(task: dict[str, Any]) -> list[str]:
@@ -116,6 +108,7 @@ def list_recent_sprints_personnel(
     source_view: str = _PERSON_VIEW,
 ) -> list[dict[str, Any]]:
     """B-S1：近 N 天内最多 limit 个 Sprint（人员看板视图）。"""
+    cutoff = (pmo_today_date() - timedelta(days=int(days))).isoformat()
     conn = _connect()
     try:
         rows = conn.execute(
@@ -130,11 +123,11 @@ def list_recent_sprints_personnel(
               AND json_extract(fields, '$.Sprint') GLOB '????/??/??-Sprint'
             GROUP BY json_extract(fields, '$.Sprint')
             HAVING sprint_date IS NOT NULL
-               AND sprint_date >= date('now', ?)
+               AND sprint_date >= ?
             ORDER BY sprint_date DESC
             LIMIT ?
             """,
-            (source_view, f"-{int(days)} days", int(limit)),
+            (source_view, cutoff, int(limit)),
         ).fetchall()
         return [
             {

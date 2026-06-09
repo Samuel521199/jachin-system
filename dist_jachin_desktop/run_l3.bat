@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 cd /d "%~dp0"
 if not exist "logs" mkdir logs
 set JACHIN_LOG_DIR=%~dp0logs
@@ -13,5 +13,7 @@ for %%f in (bin\l3_node*.exe) do (
     goto :done
 )
 echo [ERR] bin\l3_node*.exe not found. Run build first.
+echo       安装目录: %~dp0
+echo       请重新安装完整包，或联系发布方确认 bin 目录已打入侧车。
 pause
 :done
