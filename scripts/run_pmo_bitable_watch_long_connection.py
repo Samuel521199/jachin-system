@@ -5,7 +5,7 @@ PMO 多维表变更监控 — 飞书长连接（事件驱动，非轮询拉表�
 飞书在有人改表时主动推送 drive.file.bitable_record_changed_v1；
 本脚本建立 WebSocket 长连接接收事件，并后台启动 debounce 检查器（idle 后分析推 Lark）。
 
-开放平台配置（cli_a9253a96b179deee）：
+开放平台配置（pmo_bitable_watch.yaml 的 app_id，当前为 cli_a9253a96…）：
   1. 事件与回调 → 订阅方式 → 「使用长连接接收事件」
   2. 添加事件 → 「多维表格记录变更」drive.file.bitable_record_changed_v1
   3. 在目标多维表上订阅变更（飞书文档内「订阅文档变更」）

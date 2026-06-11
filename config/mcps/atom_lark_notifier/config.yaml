@@ -6,8 +6,8 @@
 default_webhook_url: ""
 
 robot_name: PMO-Copilot
-app_id: cli_a940990299f8ded2
-app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
+app_id: cli_aaad309a98795ed1
+app_secret: k07F7armnlQBOUezl0RmV7Yna2MS6wqk
 
 # PMO 推送目标群 chat_id（可变；读 .env PMO_PRIMARY_CHAT_ID；须与本租户 OpenAPI 一致；机器人须已加入该群）
 # 每次分支 A/B 播报需同时推送到 default_chat_id 与 monitoring_chat_id 两个会话。

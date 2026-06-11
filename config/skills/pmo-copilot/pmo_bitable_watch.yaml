@@ -22,9 +22,11 @@ wiki_url: "https://ssgkm409t6q5.sg.larksuite.com/wiki/B19Iww8tBiXZqfky1hhlIZ6kg0
 chat_id: "${PMO_CHANGE_ALERT_CHAT_ID}"
 monitor_chat_id: "${PMO_CHANGE_ALERT_MONITOR_CHAT_ID}"
 
-# 飞书应用凭证（勿提交真实 secret 到 git；本地用 .env 或 ~/.jachin/.env）
-app_id: "${PMO_BITABLE_WATCH_APP_ID}"
-app_secret: "${PMO_BITABLE_WATCH_APP_SECRET}"
+# 双应用分工：Bitable 长连接/拉表 cli_a9253a96…；推群/对话 IM cli_aaad309a…
+app_id: cli_a9253a96b179deee
+app_secret: xzIhCMJgbaAu0XGo7zjI9cHiTjbc7Azj
+notify_app_id: cli_aaad309a98795ed1
+notify_app_secret: k07F7armnlQBOUezl0RmV7Yna2MS6wqk
 
 # 人类连续编辑防抖：idle_seconds 无新事件则结束会话并回调
 idle_seconds: 20

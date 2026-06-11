@@ -2,8 +2,9 @@
 # 与 skills_repo/pmo-copilot/SKILL.md 中 mcp:atom_bi_project_context 共用。
 # wiki_urls 可由运行时 Action Input 合并传入；此处不写死以免与 BI 默认种子混淆。
 #
-app_id: cli_a940990299f8ded2
-app_secret: UZogSbmne0IBiD81Ke0oieCNEmIdxNJD
+# Wiki/多维表拉取与 Bitable 长连接同应用（与 pmo_bitable_watch.yaml app_id 对齐）
+app_id: cli_a9253a96b179deee
+app_secret: xzIhCMJgbaAu0XGo7zjI9cHiTjbc7Azj
 lark_use_feishu: false
 
 output_dir_relative: ~/.jachin/workspace/pmo_lark_pull
