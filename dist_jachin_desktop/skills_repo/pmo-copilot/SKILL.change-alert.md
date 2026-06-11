@@ -118,10 +118,12 @@ tools:
 | view_id（人员任务看板 · 变更回调） | `vewCz1FFJi` |
 | wiki 直达 | `…?table=tblfK9gk6vTQpJtB&view=vewCz1FFJi` |
 
-| 标识 | 环境变量（项目根 `.env`） | 内置默认 `chat_id` |
-|------|---------------------------|-------------------|
-| 主推送群 | `PMO_CHANGE_ALERT_CHAT_ID`（兼容 `PMO_BITABLE_WATCH_CHAT_ID`） | `oc_b1b9cff6804517c79b7f5a617ab30483` |
-| 监控群（双群推送时） | `PMO_CHANGE_ALERT_MONITOR_CHAT_ID`（兼容 `PMO_BITABLE_WATCH_MONITOR_CHAT_ID`；回退 `PMO_MONITOR_CHAT_ID`） | `oc_0e321f92d758ecb44aea5b499c90510b` |
+| 标识 | 环境变量（项目根 `.env`） | 运行时来源 |
+|------|---------------------------|------------|
+| 主推送群 | `PMO_CHANGE_ALERT_CHAT_ID`（兼容 `PMO_BITABLE_WATCH_CHAT_ID`） | .env |
+| 监控群（双群推送时） | `PMO_CHANGE_ALERT_MONITOR_CHAT_ID`（兼容 `PMO_BITABLE_WATCH_MONITOR_CHAT_ID`） | .env 或代码内置监控群 |
+
+**禁止**在推送工具 Action Input 中手写 `oc_…` chat_id；由宿主 / `.env` 注入。
 
 SSOT 代码：`l3_node/pmo_lark_env.py`；YAML 模板：`config/skills/pmo-copilot/pmo_bitable_watch.yaml`（占位 `${PMO_CHANGE_ALERT_*}`）。
 

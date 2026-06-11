@@ -171,7 +171,13 @@ def send_markdown_card(
             err = data.get("msg", str(data))
             logger.warning("Lark 卡片发送失败: %s", err)
             return {"status": "error", "error": str(err)}
-        return {"status": "success", "msg": "飞书已送达"}
+        mid = ""
+        if isinstance(data.get("data"), dict):
+            mid = str(data["data"].get("message_id") or "").strip()
+        out: dict[str, Any] = {"status": "success", "msg": "飞书已送达"}
+        if mid:
+            out["message_id"] = mid
+        return out
     except Exception as e:
         logger.warning("Lark 卡片发送异常: %s", e)
         return {"status": "error", "error": str(e)}
@@ -230,7 +236,13 @@ def send_interactive_card(
             err = data.get("msg", str(data))
             logger.warning("Lark 交互卡片发送失败: %s", err)
             return {"status": "error", "error": str(err), "lark_code": data.get("code"), "lark_data": data}
-        return {"status": "success", "msg": "飞书已送达", "data": data.get("data")}
+        mid = ""
+        if isinstance(data.get("data"), dict):
+            mid = str(data["data"].get("message_id") or "").strip()
+        out: dict[str, Any] = {"status": "success", "msg": "飞书已送达", "data": data.get("data")}
+        if mid:
+            out["message_id"] = mid
+        return out
     except Exception as e:
         logger.warning("Lark 交互卡片发送异常: %s", e)
         return {"status": "error", "error": str(e)}

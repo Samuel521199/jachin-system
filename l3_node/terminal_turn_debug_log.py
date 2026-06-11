@@ -53,6 +53,9 @@ _ENV_KEYS_FOR_SNAPSHOT = (
 )
 
 _lock = threading.Lock()
+# IM 分发器在独立线程 send_reply 时无法读到 asyncio 的 contextvar；按 run_id / chat_id 索引日志路径。
+_turn_log_by_run_id: dict[str, Path] = {}
+_turn_log_by_lark_chat: dict[str, Path] = {}
 _LEGACY_FILE_NAME = "terminal_turn_debug.log"
 # 当前 asyncio 任务对应的日志文件（per-turn 模式）；单文件模式不使用
 _turn_log_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
@@ -104,11 +107,61 @@ class _HumanRound:
     final_answer_preview: str = ""
 
 
+def _lark_chat_id_from_extra(ex: dict[str, Any] | None) -> str:
+    if not ex:
+        return ""
+    return str(ex.get("lark_chat_id") or ex.get("chat_id") or "").strip()
+
+
+def _lark_reply_chat_id_from_extra(ex: dict[str, Any] | None) -> str:
+    if not ex:
+        return ""
+    return str(
+        ex.get("lark_reply_chat_id") or ex.get("reply_chat_id") or ex.get("lark_chat_id") or ex.get("chat_id") or ""
+    ).strip()
+
+
+def _is_lark_im_channel(channel: str) -> bool:
+    ch = (channel or "").strip().lower()
+    return "lark" in ch
+
+
+def _apply_lark_chat_id_to_journal(j: _HumanJournal, ex: dict[str, Any] | None) -> None:
+    inbound = _lark_chat_id_from_extra(ex)
+    if inbound:
+        j.lark_chat_id = inbound
+    reply = _lark_reply_chat_id_from_extra(ex)
+    if reply:
+        j.lark_reply_chat_id = reply
+    elif inbound and not j.lark_reply_chat_id:
+        j.lark_reply_chat_id = inbound
+
+
+def _lark_routing_human_lines(j: _HumanJournal) -> list[str]:
+    """飞书 IM 来源/回推 chat_id 人话块（来源与目标相同时仍显式各写一行）。"""
+    inbound = (j.lark_chat_id or "").strip()
+    reply = (j.lark_reply_chat_id or inbound or "").strip()
+    if not inbound and not reply:
+        return []
+    lines = [
+        "【飞书会话路由】",
+        f"  来源会话 chat_id（用户从哪发消息）：{inbound or '（未记录）'}",
+        f"  回复目标 chat_id（须发回哪）：{reply or '（未记录）'}",
+    ]
+    if inbound and reply and inbound != reply:
+        lines.append("  （来源与回推目标不同：例如镜像终端/跨群转发场景）")
+    return lines
+
+
 @dataclass
 class _HumanJournal:
     user_message: str = ""
     run_id: str = ""
     channel: str = ""
+    lark_chat_id: str = ""
+    lark_reply_chat_id: str = ""
+    lark_reply_sent: bool = False
+    lark_reply_send_ok: bool | None = None
     max_iterations: int = 0
     model_hint: str = ""
     execution_tier: str = ""
@@ -199,6 +252,156 @@ def _path() -> Path | None:
     if settled is not None:
         return settled
     return _lazy_orphan_turn_path()
+
+
+def _register_turn_log_path(
+    path: Path,
+    *,
+    run_id: str = "",
+    lark_chat_id: str = "",
+) -> None:
+    """供 IM 分发器等跨线程追加写入同一 turn 日志。"""
+    rid = (run_id or "").strip()
+    cid = (lark_chat_id or "").strip()
+    if not rid and not cid:
+        return
+    with _lock:
+        if rid:
+            _turn_log_by_run_id[rid] = path
+        if cid:
+            _turn_log_by_lark_chat[cid] = path
+
+
+def _resolve_turn_log_path(
+    *,
+    run_id: str = "",
+    lark_chat_id: str = "",
+) -> Path | None:
+    rid = (run_id or "").strip()
+    cid = (lark_chat_id or "").strip()
+    with _lock:
+        if rid and rid in _turn_log_by_run_id:
+            return _turn_log_by_run_id[rid]
+        if cid and cid in _turn_log_by_lark_chat:
+            return _turn_log_by_lark_chat[cid]
+    p = _turn_log_path.get()
+    if p is not None:
+        return p
+    settled = _turn_log_path_settled.get()
+    if settled is not None:
+        return settled
+    return None
+
+
+def _append_section_to_path(path: Path, heading: str, body: str) -> None:
+    body = _redact(_truncate(body or ""))
+    block = f"\n{'=' * 72}\n{heading}\nutc={_utc()}\n{'-' * 72}\n{body}\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _lock:
+            with path.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(block)
+    except OSError:
+        pass
+
+
+def append_section_cross_thread(
+    heading: str,
+    body: str,
+    *,
+    run_id: str = "",
+    lark_chat_id: str = "",
+) -> None:
+    """跨线程写入 turn 日志（优先 run_id，其次 lark_chat_id 索引）。"""
+    if not _enabled():
+        return
+    p = _resolve_turn_log_path(run_id=run_id, lark_chat_id=lark_chat_id)
+    if p is None:
+        return
+    _append_section_to_path(p, heading, body)
+
+
+def log_lark_im_session_routing(
+    *,
+    inbound_chat_id: str,
+    reply_chat_id: str = "",
+    channel: str = "",
+    user_id: str = "",
+    run_id: str = "",
+) -> None:
+    """飞书 IM 入站：记录来源会话与须回推的目标 chat_id。"""
+    if not _enabled():
+        return
+    inbound = (inbound_chat_id or "").strip()
+    reply = (reply_chat_id or inbound or "").strip()
+    if not inbound and not reply:
+        return
+    j = _journal()
+    if j is not None:
+        if inbound:
+            j.lark_chat_id = inbound
+        if reply:
+            j.lark_reply_chat_id = reply
+    ex = {
+        "inbound_chat_id": inbound,
+        "reply_chat_id": reply,
+        "channel": channel or "",
+        "user_id": user_id or "",
+        "run_id": run_id or "",
+    }
+    body_lines = [
+        f"来源会话 chat_id（用户从哪发消息）：{inbound or '（未记录）'}",
+        f"回复目标 chat_id（须发回哪）：{reply or '（未记录）'}",
+    ]
+    if inbound and reply and inbound != reply:
+        body_lines.append("说明：来源与回推目标不同（例如镜像终端/跨群转发）。")
+    append_section_cross_thread(
+        "[飞书 IM] 会话路由",
+        "\n".join(body_lines) + "\n\n" + json.dumps(ex, ensure_ascii=False, indent=2),
+        run_id=run_id,
+        lark_chat_id=inbound or reply,
+    )
+    if j is not None and j.file_started:
+        _append_human_block([""] + _lark_routing_human_lines(j))
+
+
+def log_lark_im_reply_dispatch(
+    *,
+    reply_chat_id: str,
+    inbound_chat_id: str = "",
+    ok: bool,
+    reply_preview: str = "",
+    run_id: str = "",
+) -> None:
+    """飞书 IM 出站：记录实际发回哪条 chat_id 及发送结果。"""
+    if not _enabled():
+        return
+    reply = (reply_chat_id or "").strip()
+    inbound = (inbound_chat_id or reply or "").strip()
+    if not reply:
+        return
+    j = _journal()
+    if j is not None:
+        if inbound:
+            j.lark_chat_id = inbound
+        j.lark_reply_chat_id = reply
+        j.lark_reply_sent = True
+        j.lark_reply_send_ok = ok
+    preview = _truncate((reply_preview or "").strip().replace("\n", " "), 240)
+    ok_txt = "成功" if ok else "失败"
+    body = (
+        f"来源会话 chat_id：{inbound or '（未记录）'}\n"
+        f"回复目标 chat_id：{reply}\n"
+        f"发送结果：{ok_txt}\n"
+    )
+    if preview:
+        body += f"回复预览：{preview}\n"
+    append_section_cross_thread(
+        f"[飞书 IM] 回推发送 ({ok_txt})",
+        body,
+        run_id=run_id,
+        lark_chat_id=inbound or reply,
+    )
 
 
 def _max_field() -> int:
@@ -348,6 +551,20 @@ def _write_human_session_intro(j: _HumanJournal) -> None:
     ]
     if j.run_id:
         lines.append(f"  · 运行 ID：{j.run_id}")
+    lark_routing = _lark_routing_human_lines(j)
+    if lark_routing:
+        lines.extend([""] + lark_routing)
+    elif j.lark_chat_id:
+        lines.append(f"  · 飞书会话 chat_id（回复须发回该群）：{j.lark_chat_id}")
+    elif _is_lark_im_channel(ch):
+        lines.extend(
+            [
+                "",
+                "【飞书会话路由】",
+                "  来源会话 chat_id：（未记录 — 检查 implicit_attribution.lark_chat_id）",
+                "  回复目标 chat_id：（未记录）",
+            ]
+        )
     if j.execution_tier:
         lines.append(f"  · 任务复杂度档位：{j.execution_tier}")
     if j.model_hint:
@@ -399,11 +616,36 @@ def _write_human_session_recap(j: _HumanJournal) -> None:
         "【用户问了什么】",
         f"  {j.user_message or '（未记录）'}",
         "",
-        "【一共跑了几轮】",
-        f"  共 {n_rounds} 轮 ReAct 步骤。",
-        "",
-        "【调用了哪些工具】",
     ]
+    if j.lark_chat_id or j.lark_reply_chat_id:
+        lark_routing = _lark_routing_human_lines(j)
+        if lark_routing:
+            lines.extend([""] + lark_routing + [""])
+        else:
+            lines.extend(
+                [
+                    "【飞书回推目标】",
+                    f"  chat_id={j.lark_reply_chat_id or j.lark_chat_id}",
+                    "",
+                ]
+            )
+    if j.lark_reply_sent:
+        ok_txt = "成功" if j.lark_reply_send_ok else "失败"
+        lines.extend(
+            [
+                "【飞书回推执行】",
+                f"  已向回复目标 chat_id={j.lark_reply_chat_id or j.lark_chat_id or '（未记录）'} 发送 IM 回复：{ok_txt}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "【一共跑了几轮】",
+            f"  共 {n_rounds} 轮 ReAct 步骤。",
+            "",
+            "【调用了哪些工具】",
+        ]
+    )
     if tools:
         for t in tools:
             lines.append(f"  · {t} — {_TOOL_WHERE_HINTS.get(t, _tool_where_line(t))}")
@@ -441,6 +683,7 @@ def ensure_turn_started(user_text: str, *, extra: dict[str, Any] | None = None) 
     j.user_message = (user_text or j.user_message or "").strip()
     j.run_id = str(ex.get("run_id") or j.run_id or "")
     j.channel = str(ex.get("channel") or j.channel or "")
+    _apply_lark_chat_id_to_journal(j, ex)
     try:
         j.max_iterations = int(ex.get("max_iterations") or j.max_iterations or 0)
     except (TypeError, ValueError):
@@ -469,6 +712,7 @@ def log_human_run_config(meta: dict[str, Any]) -> None:
     ch = str(meta.get("channel") or "")
     if ch:
         j.channel = ch
+    _apply_lark_chat_id_to_journal(j, meta)
     if not j.config_logged and j.file_started:
         tier = (j.execution_tier or "默认").strip()
         lines = [
@@ -480,6 +724,11 @@ def log_human_run_config(meta: dict[str, Any]) -> None:
             lines.append(f"  主模型：{j.model_hint}")
         if j.channel:
             lines.append(f"  来源渠道：{j.channel}")
+        lark_routing = _lark_routing_human_lines(j)
+        if lark_routing:
+            lines.extend(lark_routing)
+        elif j.lark_chat_id:
+            lines.append(f"  飞书会话 chat_id：{j.lark_chat_id}")
         _append_human_block(lines)
         j.config_logged = True
 
@@ -523,6 +772,7 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
     j.user_message = (user_text or "").strip()
     j.run_id = str(ex.get("run_id") or "")
     j.channel = str(ex.get("channel") or "")
+    _apply_lark_chat_id_to_journal(j, ex)
     try:
         j.max_iterations = int(ex.get("max_iterations") or 0)
     except (TypeError, ValueError):
@@ -569,6 +819,11 @@ def begin_turn(user_text: str, *, extra: dict[str, Any] | None = None) -> None:
         blob = "\n".join(lines)
         with _lock:
             p.write_text(blob, encoding="utf-8", newline="\n")
+        _register_turn_log_path(
+            p,
+            run_id=j.run_id,
+            lark_chat_id=j.lark_chat_id or j.lark_reply_chat_id,
+        )
         _write_human_session_intro(j)
     except OSError:
         pass
@@ -948,6 +1203,8 @@ def append_final(tag: str, text: str, *, extra: dict[str, Any] | None = None) ->
         if (text or "").strip() and not j.final_answer:
             j.final_answer = text.strip()
         j.end_tag = tag
+        if extra:
+            _apply_lark_chat_id_to_journal(j, extra)
         if not j.recap_written:
             try:
                 _write_human_session_recap(j)

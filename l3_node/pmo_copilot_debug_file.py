@@ -341,6 +341,56 @@ def begin_pmo_debug_log_for_im_trigger(
     return path
 
 
+def append_pmo_lark_push_plan_line(
+    *,
+    tool: str,
+    chat_ids: list[str],
+    debug: dict[str, str] | None = None,
+) -> None:
+    """推送前：计划投递的 chat_id 列表。"""
+    if not debug_log_path():
+        return
+    ids = [str(x).strip() for x in chat_ids if str(x).strip()]
+    lines = [f"📋 飞书推送计划 · {tool} · 目标群: {', '.join(ids) if ids else '(无)'}"]
+    if debug:
+        eff = str(debug.get("PMO_EFFECTIVE_PRIMARY") or "").strip()
+        src = str(debug.get("PMO_EFFECTIVE_SOURCE") or "").strip()
+        if eff and eff != "(empty)":
+            lines.append(f"   主群={eff}（来源: {src or '—'}）")
+        mon = str(debug.get("PMO_MONITOR_CHAT_ID") or "").strip()
+        if mon and mon != "(empty)":
+            lines.append(f"   监控群={mon}")
+    lines.append("")
+    _append_lines(lines)
+
+
+def append_pmo_lark_push_line(
+    *,
+    tool: str,
+    chat_id: str,
+    status: str,
+    message_id: str = "",
+    error: str = "",
+    extra: dict | None = None,
+) -> None:
+    """推送结果：每条记录含完整 chat_id。"""
+    if not debug_log_path():
+        return
+    cid = (chat_id or "").strip() or "(unknown)"
+    st = (status or "").strip().lower()
+    if st == "success":
+        line = f"📤 飞书推送成功 · {tool} · chat_id={cid}"
+        if message_id:
+            line += f" · message_id={message_id}"
+    else:
+        line = f"📤 飞书推送失败 · {tool} · chat_id={cid}"
+        if error:
+            line += f" · {error}"
+        elif status:
+            line += f" · status={status}"
+    _append_lines([line, ""])
+
+
 def append_pmo_debug_status(message: str) -> None:
     """追加网关/环境嗅探等状态行（非 ReAct 轮次）。"""
     if not debug_log_path():
@@ -792,6 +842,8 @@ def infer_tool_purpose_from_input(tool: str, inp: str) -> str:
         obj = _try_parse_json(inp)
         cid = str((obj or {}).get("chat_id") or "主群").strip() if isinstance(obj, dict) else "主群"
         return f"推送 §1.4 战报到群 {cid}"
+    if "macro_dashboard_push" in tb:
+        return "组装宏观看板并推送到配置的飞书群"
     if "fs_read" in tb or tb == "read_file":
         return "读取本地 Markdown 样本"
     return ""
@@ -1040,6 +1092,36 @@ def _summarize_effect(tool: str, inp: str, observation: str) -> tuple[list[str],
             )
             return lines, errors
 
+    elif "macro_dashboard_push" in tb:
+        data = _try_parse_json(obs)
+        if isinstance(data, dict):
+            st = str(data.get("status") or "").lower()
+            targets = data.get("chat_ids") if isinstance(data.get("chat_ids"), list) else []
+            pushes = data.get("pushes") if isinstance(data.get("pushes"), list) else []
+            dbg = data.get("pmo_delivery_debug") if isinstance(data.get("pmo_delivery_debug"), dict) else {}
+            if targets:
+                lines.append(f"结果: 推送目标群 {', '.join(str(x) for x in targets)}")
+            elif dbg.get("PMO_DELIVERY_TARGETS"):
+                lines.append(f"结果: 推送目标 {dbg.get('PMO_DELIVERY_TARGETS')}")
+            for p in pushes:
+                if not isinstance(p, dict):
+                    continue
+                cid = str(p.get("chat_id") or "?")
+                pst = str(p.get("status") or "")
+                mid = str(p.get("message_id") or "")
+                if pst.lower() == "success":
+                    lines.append(f"  · ✅ {cid}" + (f" message_id={mid}" if mid else ""))
+                else:
+                    lines.append(f"  · ❌ {cid}: {p.get('error') or pst}")
+                    errors.append(str(p.get("error") or f"推送到 {cid} 失败"))
+            if st in ("success", "ok", "partial") and not errors:
+                lines.insert(0, "结果: ✅ 宏观看板战报已推送")
+            elif st in ("failed", "error"):
+                errors.append(str(data.get("error") or "macro_dashboard_push 失败"))
+                lines.insert(0, "结果: ❌ 宏观看板推送失败")
+        else:
+            lines.append(f"结果: {obs[:200]}")
+
     elif "lark_notifier" in tb:
         data = _try_parse_json(obs)
         inp_obj = _try_parse_json(inp)
@@ -1050,7 +1132,14 @@ def _summarize_effect(tool: str, inp: str, observation: str) -> tuple[list[str],
             err_code = str(data.get("error") or "")
             st = str(data.get("status") or "").lower()
             if st == "success":
-                lines.append("结果: ✅ 飞书战报已成功发送到群里")
+                inp_obj = _try_parse_json(inp)
+                cid = ""
+                if isinstance(inp_obj, dict):
+                    cid = str(inp_obj.get("chat_id") or "").strip()
+                if cid:
+                    lines.append(f"结果: ✅ 飞书战报已成功发送 · chat_id={cid}")
+                else:
+                    lines.append("结果: ✅ 飞书战报已成功发送到群里")
             elif err_code == "pmo_premature_notifier_blocked":
                 block_lines, block_errors = _explain_notifier_block(data, markdown_len=md_len)
                 lines.extend(block_lines)

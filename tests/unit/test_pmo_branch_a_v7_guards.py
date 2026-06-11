@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from l3_node.agent_core import (
     PipelineContext,
@@ -13,6 +14,7 @@ from l3_node.agent_core import (
     _pmo_blocked_analysis_tools_during_init,
     _pmo_branch_a_blocked_invalid_field_sql,
     _pmo_branch_a_blocked_premature_lark_observation,
+    _pmo_blocked_invalid_war_report_chat_observation,
     _pmo_branch_a_blocked_duplicate_step1_map,
     _pmo_branch_a_blocked_rerun_db_after_markdown_block,
     _pmo_branch_a_delivery_complete,
@@ -34,7 +36,54 @@ from l3_node.agent_core import (
     _reject_pmo_branch_a_force_push_exit_guard,
     _reject_pmo_branch_a_init_completion_guard,
 )
+from unittest import mock
 from unittest.mock import patch
+
+
+_DEV_PRIMARY = "oc_868fc82317a60ce89744ae51bb7bce91"
+_DEV_MONITOR = "oc_0e321f92d758ecb44aea5b499c90510b"
+_DEV_LEGACY = "oc_437c98d11106295fb10751a5481ee465"
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+
+
+@contextmanager
+def _isolated_dual_pmo_env():
+    from l3_node import pmo_lark_env as ple
+
+    td = tempfile.mkdtemp()
+    install = Path(td) / "install"
+    jachin = Path(td) / "jachin"
+    install.mkdir()
+    jachin.mkdir()
+    (jachin / ".env").write_text(
+        f"PMO_PRIMARY_CHAT_ID={_DEV_PRIMARY}\n",
+        encoding="utf-8",
+    )
+    ple._PMO_DOTENV_LOADED = False
+    with mock.patch.dict(os.environ, {"JACHIN_HOME": str(jachin)}, clear=True), mock.patch(
+        "l3_node.paths.get_app_root", return_value=install
+    ):
+        ple._PMO_DOTENV_LOADED = False
+        yield
+
+
+@contextmanager
+def _isolated_empty_pmo_env():
+    from l3_node import pmo_lark_env as ple
+
+    td = tempfile.mkdtemp()
+    install = Path(td) / "install"
+    jachin = Path(td) / "jachin"
+    install.mkdir()
+    jachin.mkdir()
+    ple._PMO_DOTENV_LOADED = False
+    with mock.patch.dict(os.environ, {"JACHIN_HOME": str(jachin)}, clear=True), mock.patch(
+        "l3_node.paths.get_app_root", return_value=install
+    ):
+        ple._PMO_DOTENV_LOADED = False
+        yield
 
 
 def _ctx(**meta) -> PipelineContext:
@@ -118,11 +167,12 @@ def test_premature_block_applies_in_analysis_only_mode() -> None:
         {
             "title": "t",
             "markdown_content": "only partial",
-            "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+            "chat_id": _DEV_PRIMARY,
         },
         ensure_ascii=False,
     )
-    obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
     assert obs is not None
     assert json.loads(obs).get("error") == "pmo_premature_notifier_blocked"
 
@@ -229,11 +279,12 @@ def test_premature_block_shows_missing_markdown_sections() -> None:
         {
             "title": "📊 PMO",
             "markdown_content": "**📊 需求进度全览**\n| a | b |\n| --- | --- |\n| x | y |",
-            "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+            "chat_id": _DEV_PRIMARY,
         },
         ensure_ascii=False,
     )
-    obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
     d = json.loads(obs or "{}")
     assert d.get("reason") == "markdown_incomplete"
     assert "👥" in str(d.get("missing_sections"))
@@ -265,9 +316,10 @@ def test_blocks_db_query_after_partial_push() -> None:
         pmo_db_ready=True,
         pmo_analysis_only=True,
         _pmo_db_query_count=12,
-        _pmo_notifier_chats_success=["oc_437c98d11106295fb10751a5481ee465"],
+        _pmo_notifier_chats_success=[_DEV_PRIMARY],
     )
-    obs = _pmo_branch_a_blocked_init_tools_during_analysis("core:db_query", ctx)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_branch_a_blocked_init_tools_during_analysis("core:db_query", ctx)
     assert obs is not None
     assert json.loads(obs).get("error") == "pmo_post_push_analysis_blocked"
 
@@ -276,33 +328,30 @@ def test_blocks_all_tools_after_dual_delivery() -> None:
     ctx = _ctx(
         pmo_db_ready=True,
         pmo_analysis_only=True,
-        _pmo_notifier_chats_success=[
-            "oc_437c98d11106295fb10751a5481ee465",
-            "oc_0e321f92d758ecb44aea5b499c90510b",
-        ],
+        _pmo_notifier_chats_success=[_DEV_PRIMARY, _DEV_MONITOR],
     )
-    assert _pmo_branch_a_delivery_complete(ctx) is True
-    obs = _pmo_branch_a_blocked_init_tools_during_analysis("core:db_query", ctx)
+    with _isolated_dual_pmo_env():
+        assert _pmo_branch_a_delivery_complete(ctx) is True
+        obs = _pmo_branch_a_blocked_init_tools_during_analysis("core:db_query", ctx)
     assert json.loads(obs).get("error") == "pmo_post_delivery_tool_blocked"
 
 
 def test_duplicate_delivery_blocked() -> None:
     ctx = _ctx(
         **_probes_complete_meta(),
-        _pmo_notifier_chats_success=[
-            "oc_437c98d11106295fb10751a5481ee465",
-            "oc_0e321f92d758ecb44aea5b499c90510b",
-        ],
+        _pmo_notifier_chats_success=[_DEV_PRIMARY, _DEV_MONITOR],
+        _pmo_delivery_required_chats=[_DEV_PRIMARY, _DEV_MONITOR],
     )
     inp = json.dumps(
         {
             "title": "t",
             "markdown_content": _full_mc(),
-            "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+            "chat_id": _DEV_PRIMARY,
         },
         ensure_ascii=False,
     )
-    obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
     assert json.loads(obs).get("error") == "pmo_duplicate_delivery_blocked"
 
 
@@ -312,12 +361,12 @@ def test_macro_dashboard_push_marks_dual_delivery() -> None:
             "status": "success",
             "pushes": [
                 {
-                    "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+                    "chat_id": _DEV_PRIMARY,
                     "status": "success",
                     "message_id": "om_x1",
                 },
                 {
-                    "chat_id": "oc_0e321f92d758ecb44aea5b499c90510b",
+                    "chat_id": _DEV_MONITOR,
                     "status": "success",
                     "message_id": "om_x2",
                 },
@@ -325,38 +374,74 @@ def test_macro_dashboard_push_marks_dual_delivery() -> None:
         },
         ensure_ascii=False,
     )
-    assert _pmo_macro_dashboard_push_succeeded(obs) is True
-    obs_with_prefetch = (
-        obs
-        + "\n\n【relevant_context_prefetch】\n"
-        + "以下工作区 Markdown 与用户意图关键词可能相关：\n\n### `findings.md`\n"
+    with _isolated_dual_pmo_env():
+        assert _pmo_macro_dashboard_push_succeeded(obs) is True
+        obs_with_prefetch = (
+            obs
+            + "\n\n【relevant_context_prefetch】\n"
+            + "以下工作区 Markdown 与用户意图关键词可能相关：\n\n### `findings.md`\n"
+        )
+        assert _pmo_macro_dashboard_push_succeeded(obs_with_prefetch) is True
+        ctx = _ctx(pmo_multi_agent_complete=True, pmo_analysis_only=True, pmo_db_ready=True)
+        _pmo_track_macro_dashboard_push_success(ctx, obs)
+        assert ctx.metadata.get("_pmo_macro_dashboard_push_ok") is True
+        assert _pmo_branch_a_delivery_complete(ctx) is True
+
+
+def test_legacy_dev_chat_blocked_for_notifier() -> None:
+    ctx = _ctx(**_probes_complete_meta())
+    inp = json.dumps(
+        {
+            "title": "t",
+            "markdown_content": _full_mc(),
+            "chat_id": _DEV_LEGACY,
+        },
+        ensure_ascii=False,
     )
-    assert _pmo_macro_dashboard_push_succeeded(obs_with_prefetch) is True
-    ctx = _ctx(pmo_multi_agent_complete=True, pmo_analysis_only=True, pmo_db_ready=True)
-    _pmo_track_macro_dashboard_push_success(ctx, obs)
-    assert ctx.metadata.get("_pmo_macro_dashboard_push_ok") is True
-    assert _pmo_branch_a_delivery_complete(ctx) is True
+    with _isolated_dual_pmo_env():
+        obs = _pmo_blocked_invalid_war_report_chat_observation("mcp:atom_lark_notifier", inp, ctx)
+    assert obs is not None
+    d = json.loads(obs)
+    assert d.get("error") == "pmo_legacy_dev_chat_blocked"
+    assert _DEV_LEGACY in d.get("msg", "")
+
+
+def test_legacy_dev_chat_blocked_for_macro_dashboard_push() -> None:
+    ctx = _ctx(pmo_multi_agent_complete=True)
+    inp = json.dumps({"chat_id": _DEV_LEGACY}, ensure_ascii=False)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_blocked_invalid_war_report_chat_observation(
+            "core:pmo_macro_dashboard_push", inp, ctx
+        )
+    assert json.loads(obs or "{}").get("error") == "pmo_legacy_dev_chat_blocked"
 
 
 def test_macro_dashboard_push_single_chat_b_machine() -> None:
-    """打包机 B：仅主群 oc_367…，PMO_PUSH_MONITOR=0 时不应再要求 oc_437。"""
+    """打包机：PMO_PRIMARY 留空，用 Lark 触发群 oc_367…，不推 dev 默认群。"""
     b_primary = "oc_367e7998b7dfe39c67d1598101defdfe"
     obs = json.dumps(
         {
             "status": "success",
+            "chat_ids": [b_primary],
             "pushes": [
                 {"chat_id": b_primary, "status": "success", "message_id": "om_b1"},
             ],
         },
         ensure_ascii=False,
     )
-    with patch.dict(
-        "os.environ",
-        {"PMO_PRIMARY_CHAT_ID": b_primary, "PMO_PUSH_MONITOR": "0"},
-        clear=False,
-    ):
-        assert _pmo_macro_dashboard_push_succeeded(obs) is True
-        ctx = _ctx(pmo_multi_agent_complete=True, pmo_analysis_only=True, pmo_db_ready=True)
+    with _isolated_empty_pmo_env():
+        from l3_node import pmo_lark_env as ple
+
+        jachin = Path(os.environ["JACHIN_HOME"])
+        (jachin / ".env").write_text("PMO_PUSH_MONITOR=0\n", encoding="utf-8")
+        ple._PMO_DOTENV_LOADED = False
+        ctx = _ctx(
+            pmo_multi_agent_complete=True,
+            pmo_analysis_only=True,
+            pmo_db_ready=True,
+            _lark_chat_id=b_primary,
+        )
+        assert _pmo_macro_dashboard_push_succeeded(obs, ctx) is True
         _pmo_track_macro_dashboard_push_success(ctx, obs)
         assert _pmo_branch_a_delivery_complete(ctx) is True
         dup = _pmo_branch_a_blocked_premature_lark_observation(
@@ -370,8 +455,7 @@ def test_macro_dashboard_push_single_chat_b_machine() -> None:
         assert json.loads(dup).get("error") == "pmo_duplicate_delivery_blocked"
 
 
-def test_macro_dashboard_push_single_chat_still_requires_primary_when_dual_env() -> None:
-    """默认双群 env 下，仅推 oc_367 不算完成。"""
+def test_macro_dashboard_push_single_chat_still_requires_monitor_when_dual_env() -> None:
     b_primary = "oc_367e7998b7dfe39c67d1598101defdfe"
     obs = json.dumps(
         {
@@ -380,7 +464,8 @@ def test_macro_dashboard_push_single_chat_still_requires_primary_when_dual_env()
         },
         ensure_ascii=False,
     )
-    assert _pmo_macro_dashboard_push_succeeded(obs) is False
+    with _isolated_dual_pmo_env():
+        assert _pmo_macro_dashboard_push_succeeded(obs, None) is False
 
 
 def test_blocks_read_query_during_multi_agent_phase3() -> None:
@@ -448,13 +533,11 @@ def test_blocks_all_tools_after_macro_push_delivery() -> None:
 def test_track_notifier_chat_success() -> None:
     ctx = _ctx()
     inp = json.dumps(
-        {"chat_id": "oc_437c98d11106295fb10751a5481ee465", "markdown_content": "x"},
+        {"chat_id": _DEV_PRIMARY, "markdown_content": "x"},
         ensure_ascii=False,
     )
     _pmo_track_notifier_chat_success(ctx, inp, '{"status":"success"}')
-    assert ctx.metadata.get("_pmo_notifier_chats_success") == [
-        "oc_437c98d11106295fb10751a5481ee465"
-    ]
+    assert ctx.metadata.get("_pmo_notifier_chats_success") == [_DEV_PRIMARY]
 
 
 def test_reject_init_completion_final_answer() -> None:
@@ -530,11 +613,12 @@ def test_premature_block_includes_format_examples_and_no_rerun_hint() -> None:
         {
             "title": "📊 PMO",
             "markdown_content": "Version Goal 填写率为 0%，建议补充。",
-            "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+            "chat_id": _DEV_PRIMARY,
         },
         ensure_ascii=False,
     )
-    obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
     d = json.loads(obs or "{}")
     assert d.get("reason") == "markdown_incomplete"
     msg = d.get("msg") or ""
@@ -697,11 +781,12 @@ def test_markdown_fix_only_set_when_query_count_sufficient() -> None:
         {
             "title": "t",
             "markdown_content": "只有摘要，没有三表",
-            "chat_id": "oc_437c98d11106295fb10751a5481ee465",
+            "chat_id": _DEV_PRIMARY,
         },
         ensure_ascii=False,
     )
-    obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
+    with _isolated_dual_pmo_env():
+        obs = _pmo_branch_a_blocked_premature_lark_observation(inp, ctx)
     d = json.loads(obs or "{}")
     assert d.get("reason") == "markdown_incomplete"
     assert ctx.metadata.get("_pmo_markdown_fix_phase") == "supplemental"

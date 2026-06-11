@@ -445,8 +445,17 @@ async def _ws_execute_intent_turn(
             intent,
             extra={
                 "run_id": run_id,
+                "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
                 "origin_terminal": origin_terminal,
                 "has_chat_id": bool(chat_id),
+                **(
+                    {
+                        "lark_chat_id": str(chat_id).strip(),
+                        "lark_reply_chat_id": str(chat_id).strip(),
+                    }
+                    if chat_id
+                    else {}
+                ),
                 "intent_chars": len(intent),
                 "history_msgs_before_turn": len(messages),
                 "default_engine_model": getattr(_engine, "model_name", ""),
@@ -563,6 +572,8 @@ async def _ws_execute_intent_turn(
                 extra={
                     "run_id": run_id,
                     "session_msgs_saved": len(messages) if chat_id else None,
+                    "lark_chat_id": chat_id or None,
+                    "lark_reply_chat_id": chat_id or None,
                     "chat_id_suffix": (chat_id[-12:] if chat_id and len(chat_id) >= 12 else chat_id) or "",
                 },
             )

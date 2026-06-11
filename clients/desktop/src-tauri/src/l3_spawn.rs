@@ -326,6 +326,12 @@ const L3_ENV_KEYS: &[&str] = &[
     "JACHIN_L3_DEBUG",
     "L3_VERBOSE_LOG",
     "LOG_LEVEL",
+    // PMO 战报推送目标（须注入 L3 侧车；否则仅 Python 读盘 .env 可能晚于 MCP 占位符展开）
+    "PMO_PRIMARY_CHAT_ID",
+    "PMO_MONITOR_CHAT_ID",
+    "PMO_PUSH_MONITOR",
+    "PMO_CHANGE_ALERT_CHAT_ID",
+    "PMO_CHANGE_ALERT_MONITOR_CHAT_ID",
     // 安全锁：控制台「安全锁审批」与 CLI approve 均依赖 L3 进程内该变量；须从项目 .env 注入子进程（原白名单未包含会导致 503 admin_token_not_configured）
     "JACHIN_SAFETY_LOCK_ADMIN_TOKEN",
     "JACHIN_SAFETY_LOCK_LEARN",

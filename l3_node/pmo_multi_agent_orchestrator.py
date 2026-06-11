@@ -195,8 +195,8 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 
 **第一步（默认 · 宏观看板）**：
 - `Action: core:pmo_macro_dashboard_push`
-- `Action Input: {{}}` 或 `{{"chat_id":"oc_437c98d11106295fb10751a5481ee465"}}`
-- 工具内双群推送（主群+监控群）；Observation `status` 为 success/partial 后 **Final Answer ≤3 句**，引用 message_id；**禁止**再调 atom_lark_notifier。
+- `Action Input: {{}}` **仅此**（禁止传 chat_id；宿主注入主群 + 代码内置监控群）
+- 工具内按 .env / 触发群推送；Observation `status` 为 success/partial 后 **Final Answer ≤3 句**，引用 message_id；**禁止**再调 atom_lark_notifier。
 - 仅当 push 失败或用户明确要求「风险写入表内/自定义版式」时，执行下方手工任务。
 
 **兜底任务（push 失败或特殊需求时）**：
@@ -207,11 +207,9 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
    - {layout_contract}
    - 📦 版本发布需求映射 — **以 Worker D 的 markdown_section 为准**（发版邮件窗内已完成 Epic）；**禁止** Version Goal 填写率
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
-3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次** IM 推送，**禁止 webhook_url**）：
-   - 主群：`chat_id` = `.env` 的 `PMO_PRIMARY_CHAT_ID`（当前 SSOT：`oc_437c98d11106295fb10751a5481ee465`）
-   - 监控群：`chat_id` = `oc_0e321f92d758ecb44aea5b499c90510b`
+3. 将 **完整 markdown_content 全文** 写入 mcp:atom_lark_notifier（**两次**：宿主分别注入主群与代码内置监控群；**禁止** Action Input 手写 `oc_…` 或 `webhook_url`）：
    - 均须 `native_table_card: true`
-4. Final Answer 仅在双群 notifier 均 success 后 ≤3 句确认
+4. Final Answer 仅在全部目标 notifier success 后 ≤3 句确认
 
 【阶段一 · 字段映射 JSON（Worker A）】
 {worker_a}

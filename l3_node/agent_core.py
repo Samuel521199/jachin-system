@@ -1530,12 +1530,15 @@ def _pmo_branch_a_blocked_premature_lark_observation(inp: str, ctx: PipelineCont
     """
     分支 A：不向飞书中途推送试错/半成品。返回 JSON observation 字符串则跳过真实 notifier 调用。
     """
+    chat_blk = _pmo_blocked_invalid_war_report_chat_observation("mcp:atom_lark_notifier", inp, ctx)
+    if chat_blk:
+        return chat_blk
     timeout_blk = _pmo_macro_dashboard_push_timeout_blocks_notifier(ctx)
     if timeout_blk:
         return timeout_blk
     if _pmo_db_analysis_mode(ctx):
         chats_ok = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
-        cid = _pmo_notifier_chat_id_from_inp(inp) or _pmo_resolve_primary_chat_id()
+        cid = _pmo_notifier_chat_id_from_inp(inp) or _pmo_resolve_primary_chat_id(ctx)
         if _pmo_branch_a_delivery_complete(ctx) and cid in chats_ok:
             return json.dumps(
                 {
@@ -1717,10 +1720,20 @@ def _pmo_default_lark_card_title() -> str:
     return f"【K11 · PMO 宏观看板】{datetime.now():%Y-%m-%d}"
 
 
-def _pmo_resolve_primary_chat_id() -> str:
-    from l3_node.pmo_lark_env import pmo_primary_chat_id
+def _pmo_session_lark_chat_id(ctx: PipelineContext | None = None) -> str:
+    if ctx is not None:
+        cid = str(ctx.metadata.get("_lark_chat_id") or "").strip()
+        if cid:
+            return cid
+    from l3_node.channels.lark.turn_chat_context import peek_lark_chat_id_for_tools
 
-    return pmo_primary_chat_id()
+    return peek_lark_chat_id_for_tools()
+
+
+def _pmo_resolve_primary_chat_id(ctx: PipelineContext | None = None) -> str:
+    from l3_node.pmo_lark_env import pmo_effective_primary_chat_id
+
+    return pmo_effective_primary_chat_id(_pmo_session_lark_chat_id(ctx))
 
 
 def _pmo_resolve_monitor_chat_id() -> str:
@@ -1729,10 +1742,87 @@ def _pmo_resolve_monitor_chat_id() -> str:
     return pmo_monitor_chat_id()
 
 
-def _pmo_fixup_atom_lark_notifier_inp(inp: str) -> str:
+def _pmo_delivery_targets_from_push_observation(observation: str) -> tuple[str, ...]:
+    o = _pmo_parse_tool_observation_json(observation)
+    if not o:
+        return ()
+    chat_ids = o.get("chat_ids")
+    if isinstance(chat_ids, list):
+        ids = [str(x).strip() for x in chat_ids if str(x).strip()]
+        if ids:
+            return tuple(ids)
+    pushes = o.get("pushes")
+    if not isinstance(pushes, list):
+        return ()
+    ids = [
+        str(p.get("chat_id") or "").strip()
+        for p in pushes
+        if isinstance(p, dict) and str(p.get("chat_id") or "").strip()
+    ]
+    if not ids:
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for cid in ids:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        out.append(cid)
+    return tuple(out)
+
+
+def _pmo_required_delivery_chat_ids(ctx: PipelineContext | None = None) -> tuple[str, ...]:
+    if ctx is not None:
+        stored = ctx.metadata.get("_pmo_delivery_required_chats")
+        if isinstance(stored, list) and stored:
+            return tuple(str(x).strip() for x in stored if str(x).strip())
+    from l3_node.pmo_lark_env import pmo_required_delivery_chat_ids
+
+    return pmo_required_delivery_chat_ids(_pmo_session_lark_chat_id(ctx))
+
+
+def _pmo_delivery_targets_user_hint(ctx: PipelineContext | None = None) -> str:
+    ids = _pmo_required_delivery_chat_ids(ctx)
+    if not ids:
+        return "飞书触发群（`.env` 未设 `PMO_PRIMARY_CHAT_ID` 时用当前会话 `oc_…`）"
+    if len(ids) <= 1:
+        return f"主群 `{ids[0]}`"
+    return f"主群 `{ids[0]}`、监控群 `{ids[1]}`"
+
+
+def _pmo_macro_dashboard_push_succeeded(
+    observation: str,
+    ctx: PipelineContext | None = None,
+) -> bool:
+    """解析 core:pmo_macro_dashboard_push 返回：配置的投递目标均 success。"""
+    o = _pmo_parse_tool_observation_json(observation)
+    if not o:
+        return False
+    st = str(o.get("status") or "").lower()
+    if st not in ("success", "ok", "partial"):
+        return False
+    pushes = o.get("pushes")
+    if not isinstance(pushes, list) or not pushes:
+        return False
+    ok_chats: set[str] = set()
+    for p in pushes:
+        if not isinstance(p, dict):
+            continue
+        if str(p.get("status") or "").lower() != "success":
+            continue
+        cid = str(p.get("chat_id") or "").strip()
+        if cid:
+            ok_chats.add(cid)
+    required = set(_pmo_required_delivery_chat_ids(ctx))
+    if not required:
+        required = set(_pmo_delivery_targets_from_push_observation(observation))
+    return bool(required) and required <= ok_chats
+
+
+def _pmo_fixup_atom_lark_notifier_inp(inp: str, ctx: PipelineContext | None = None) -> str:
     """
     PMO 推送：禁止无效 webhook（含把 oc_ chat_id 填进 webhook_url）；
-    缺 chat_id 时注入主群/监控群；PMO 走 IM API（app_id/secret）。
+    缺 chat_id 时注入主群（.env 或飞书触发群）；PMO 走 IM API（app_id/secret）。
     """
     raw = (inp or "").strip()
     if not raw.startswith("{"):
@@ -1758,12 +1848,12 @@ def _pmo_fixup_atom_lark_notifier_inp(inp: str) -> str:
         args["webhook_url"] = wh
 
     if not cid:
-        cid = _pmo_resolve_primary_chat_id()
+        cid = _pmo_resolve_primary_chat_id(ctx)
     args["chat_id"] = cid
     return json.dumps(args, ensure_ascii=False)
 
 
-def _pmo_sanitize_atom_lark_notifier_inp(inp: str) -> str:
+def _pmo_sanitize_atom_lark_notifier_inp(inp: str, ctx: PipelineContext | None = None) -> str:
     """修正 atom_lark_notifier 的 title / webhook / chat_id（PMO 双群 IM 推送）。"""
     raw = (inp or "").strip()
     if not raw.startswith("{"):
@@ -1788,7 +1878,7 @@ def _pmo_sanitize_atom_lark_notifier_inp(inp: str) -> str:
         if fixed != mc:
             args["markdown_content"] = fixed
             inp = json.dumps(args, ensure_ascii=False)
-    inp = _pmo_fixup_atom_lark_notifier_inp(inp)
+    inp = _pmo_fixup_atom_lark_notifier_inp(inp, ctx)
     return inp
 
 
@@ -1905,13 +1995,13 @@ def _reject_pmo_branch_a_analysis_incomplete_delivery_guard(
         "role": "user",
         "content": (
             "【系统校验·PMO·v7 仅分析】你尚未完成全部投递目标的 `mcp:atom_lark_notifier` 成功推送"
-            f"（须送达：{_pmo_delivery_targets_user_hint()}；当前已成功群：{chats_ok or '无'}），"
+            f"（须送达：{_pmo_delivery_targets_user_hint(ctx)}；当前已成功群：{chats_ok or '无'}），"
             "禁止用 Final Answer 输出战报摘要或声称已推送。\n"
             f"探针/交叉分析缺口：{('、'.join(missing) if missing else '无')}。\n"
             "请继续 ReAct（勿写 Final Answer）：\n"
             "① 按 SKILL §1.2.1 七步框架补完 db_query（≤10 次）；\n"
             "② 组装 §1.4 三表 markdown_content；\n"
-            f"③ 对每个投递目标各调用一次 atom_lark_notifier（{_pmo_delivery_targets_user_hint()}），各须 Observation success；\n"
+            f"③ 对每个投递目标各调用一次 atom_lark_notifier（{_pmo_delivery_targets_user_hint(ctx)}），各须 Observation success；\n"
             "④ 全部目标 success 后才可 ≤3 句 Final Answer 确认。"
         ),
     })
@@ -1960,7 +2050,7 @@ def _reject_pmo_branch_a_force_push_exit_guard(
         "role": "user",
         "content": (
             "【系统校验·PMO·v7 仅分析】无论分析结果质量如何，分支 A **必须先尝试** "
-            f"`mcp:atom_lark_notifier` 推送到全部投递目标（{_pmo_delivery_targets_user_hint()}）后才能 Final Answer。\n"
+            f"`mcp:atom_lark_notifier` 推送到全部投递目标（{_pmo_delivery_targets_user_hint(ctx)}）后才能 Final Answer。\n"
             f"当前 db_query={qn}/{PMO_BRANCH_A_MIN_DB_QUERIES}；"
             f"已成功群：{chats_ok or '无（一次都未推送）'}。\n"
             f"探针缺口：{('、'.join(missing) if missing else '无')}。\n"
@@ -1969,7 +2059,7 @@ def _reject_pmo_branch_a_force_push_exit_guard(
             "请继续 ReAct（勿写 Final Answer）：\n"
             "① 补完缺失探针（Step3 须 json_each；Step5 须 GROUP BY；Step6a+6b 跨视图；Step7 须 COUNT 聚合）；\n"
             "② 组装 §1.4 三表 markdown_content（含 ⚠️ 占位行）；\n"
-            f"③ 对每个投递目标各 atom_lark_notifier（{_pmo_delivery_targets_user_hint()}）；\n"
+            f"③ 对每个投递目标各 atom_lark_notifier（{_pmo_delivery_targets_user_hint(ctx)}）；\n"
             "④ 全部目标 success 后才可 ≤3 句 Final Answer 确认。"
         ),
     })
@@ -2026,7 +2116,7 @@ def _reject_pmo_false_lark_sent_guard(
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
             "Action Input: JSON，须含 `markdown_content`（§1.4 战报全文）、`title`、`chat_id`；**禁止** `webhook_url`。\n"
-            f"**SKILL §1.3 投递目标**（以 .env 为准）：{', '.join(_pmo_required_delivery_chat_ids())}；"
+            f"**SKILL §1.3 投递目标**：{', '.join(_pmo_required_delivery_chat_ids(ctx)) or _pmo_delivery_targets_user_hint(ctx)}；"
             "须对每个目标各调用一次 notifier（IM API），或一次 `core:pmo_macro_dashboard_push` 且 Observation 显示全部 success。\n"
             "（v7 仅分析：全部目标 success 后才可 Final Answer 确认送达。）\n"
             "若尚未拉表，可先 `mcp:atom_bi_project_context` 再发 notifier；若任一推送失败须在 Final Answer **如实**写明 error，不得写全部已成功。"
@@ -2102,8 +2192,6 @@ def _pmo_branch_a_requires_bi_pull(ctx: PipelineContext) -> bool:
     return _pmo_user_intent_suggests_branch_a_macro(ut)
 
 
-PMO_BRANCH_A_PRIMARY_CHAT_ID = "oc_437c98d11106295fb10751a5481ee465"  # 默认回退；运行时见 pmo_lark_env
-PMO_BRANCH_A_MONITOR_CHAT_ID = "oc_0e321f92d758ecb44aea5b499c90510b"
 PMO_BRANCH_A_MIN_DB_QUERIES = 10
 PMO_MARKDOWN_FIX_SUPPLEMENTAL_MAX = 3
 PMO_BRANCH_A_PERSONNEL_SSOT_VIEW = "vewCz1FFJi"
@@ -2192,6 +2280,60 @@ def _pmo_notifier_chat_id_from_inp(inp: str) -> str:
     return ""
 
 
+def _pmo_blocked_invalid_war_report_chat_observation(
+    tool: str,
+    inp: str,
+    ctx: PipelineContext | None,
+) -> str | None:
+    """战报推送守卫：拦截 dev 遗留群与非白名单 chat_id。"""
+    if ctx is None or not _pmo_lark_push_guard_channel_active(ctx):
+        return None
+    canon = _pmo_canonical_tool_id(tool)
+    if canon not in ("atom_lark_notifier", "pmo_macro_dashboard_push"):
+        return None
+    from l3_node.pmo_lark_push_guard import (
+        pmo_guard_blocked_push_chat_payload,
+        pmo_guard_observation_json,
+    )
+
+    session = _pmo_session_lark_chat_id(ctx)
+    primary = _pmo_resolve_primary_chat_id(ctx)
+    tool_label = str(tool or "").strip()
+
+    if canon == "pmo_macro_dashboard_push":
+        try:
+            args = json.loads(inp) if (inp or "").strip().startswith("{") else {}
+        except json.JSONDecodeError:
+            args = {}
+        if isinstance(args, dict):
+            for key in ("chat_id", "monitor_chat_id"):
+                cid = str(args.get(key) or "").strip()
+                if not cid:
+                    continue
+                payload = pmo_guard_blocked_push_chat_payload(
+                    cid,
+                    session_chat_id=session,
+                    tool=tool_label,
+                    configured_primary=primary,
+                )
+                if payload:
+                    return pmo_guard_observation_json(payload)
+        return None
+
+    cid = _pmo_notifier_chat_id_from_inp(inp)
+    if not cid:
+        return None
+    payload = pmo_guard_blocked_push_chat_payload(
+        cid,
+        session_chat_id=session,
+        tool=tool_label,
+        configured_primary=primary,
+    )
+    if payload:
+        return pmo_guard_observation_json(payload)
+    return None
+
+
 def _pmo_canonical_tool_id(tool: str) -> str:
     t = (tool or "").replace("mcp:", "").strip().lower()
     if t.startswith("core:"):
@@ -2232,43 +2374,6 @@ def _pmo_observation_is_foreground_tool_timeout(observation: str) -> bool:
     if not o:
         return False
     return str(o.get("reason") or "") == "foreground_sync_budget_exceeded"
-
-
-def _pmo_required_delivery_chat_ids() -> tuple[str, ...]:
-    from l3_node.pmo_lark_env import pmo_required_delivery_chat_ids
-
-    return pmo_required_delivery_chat_ids()
-
-
-def _pmo_delivery_targets_user_hint() -> str:
-    ids = _pmo_required_delivery_chat_ids()
-    if len(ids) <= 1:
-        return f"主群 `{ids[0]}`（单群；`.env` 可设 `PMO_PUSH_MONITOR=0`）"
-    return f"主群 `{ids[0]}`、监控群 `{ids[1]}`"
-
-
-def _pmo_macro_dashboard_push_succeeded(observation: str) -> bool:
-    """解析 core:pmo_macro_dashboard_push 返回：配置的投递目标均 success。"""
-    o = _pmo_parse_tool_observation_json(observation)
-    if not o:
-        return False
-    st = str(o.get("status") or "").lower()
-    if st not in ("success", "ok", "partial"):
-        return False
-    pushes = o.get("pushes")
-    if not isinstance(pushes, list) or not pushes:
-        return False
-    ok_chats: set[str] = set()
-    for p in pushes:
-        if not isinstance(p, dict):
-            continue
-        if str(p.get("status") or "").lower() != "success":
-            continue
-        cid = str(p.get("chat_id") or "").strip()
-        if cid:
-            ok_chats.add(cid)
-    required = set(_pmo_required_delivery_chat_ids())
-    return bool(required) and required <= ok_chats
 
 
 def _pmo_track_macro_dashboard_push_observation(ctx: PipelineContext, observation: str) -> None:
@@ -2322,8 +2427,13 @@ def _pmo_macro_dashboard_push_timeout_blocks_notifier(ctx: PipelineContext) -> s
 def _pmo_track_macro_dashboard_push_success(ctx: PipelineContext, observation: str) -> None:
     """macro_dashboard_push 双群成功 → 等同 notifier 双群送达，允许 Final Answer 收工。"""
     _pmo_track_macro_dashboard_push_observation(ctx, observation)
-    if not _pmo_macro_dashboard_push_succeeded(observation):
+    if not _pmo_macro_dashboard_push_succeeded(observation, ctx):
         return
+    targets = _pmo_delivery_targets_from_push_observation(observation) or _pmo_required_delivery_chat_ids(
+        ctx
+    )
+    if targets:
+        ctx.metadata["_pmo_delivery_required_chats"] = list(targets)
     ctx.metadata["_pmo_macro_dashboard_push_ok"] = True
     ctx.metadata.pop("_pmo_macro_dashboard_push_timeout", None)
     ctx.metadata["_pmo_atom_lark_notify_ok"] = True
@@ -2332,7 +2442,7 @@ def _pmo_track_macro_dashboard_push_success(ctx: PipelineContext, observation: s
         for x in (ctx.metadata.get("_pmo_notifier_chats_success") or [])
         if str(x).strip()
     ]
-    for cid in _pmo_required_delivery_chat_ids():
+    for cid in targets:
         if cid not in chats:
             chats.append(cid)
     ctx.metadata["_pmo_notifier_chats_success"] = chats
@@ -2356,7 +2466,7 @@ def _pmo_branch_a_delivery_complete(ctx: PipelineContext) -> bool:
     if ctx.metadata.get("_pmo_macro_dashboard_push_ok"):
         return True
     chats = {str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()}
-    required = set(_pmo_required_delivery_chat_ids())
+    required = set(_pmo_required_delivery_chat_ids(ctx))
     return bool(required) and required <= chats
 
 
@@ -2656,12 +2766,35 @@ def _pmo_branch_a_blocked_duplicate_step1_map(
     )
 
 
+def _pmo_extract_lark_message_id(observation: str) -> str:
+    o = _pmo_parse_tool_observation_json(observation)
+    if not o:
+        return ""
+    mid = str(o.get("message_id") or "").strip()
+    if mid:
+        return mid
+    data = o.get("data")
+    if isinstance(data, dict):
+        mid = str(data.get("message_id") or "").strip()
+        if mid:
+            return mid
+    return ""
+
+
 def _pmo_track_notifier_chat_success(ctx: PipelineContext, inp: str, observation: str) -> None:
     if not _lark_notifier_observation_suggests_success(observation):
         return
     cid = _pmo_notifier_chat_id_from_inp(inp)
     if not cid:
         return
+    from l3_node.pmo_push_audit_log import log_pmo_lark_push
+
+    log_pmo_lark_push(
+        tool="mcp:atom_lark_notifier",
+        chat_id=cid,
+        status="success",
+        message_id=_pmo_extract_lark_message_id(observation),
+    )
     chats = [str(x).strip() for x in (ctx.metadata.get("_pmo_notifier_chats_success") or []) if str(x).strip()]
     if cid not in chats:
         chats.append(cid)
@@ -2827,7 +2960,7 @@ def _pmo_branch_a_blocked_init_tools_during_analysis(tool: str, ctx: PipelineCon
                 "error": "pmo_post_push_analysis_blocked",
                 "msg": (
                     "【宿主拦截】已向至少一个群推送卡片，请 **先完成全部投递目标推送**（"
-                    f"{_pmo_delivery_targets_user_hint()}），"
+                    f"{_pmo_delivery_targets_user_hint(ctx)}），"
                     "禁止在此阶段继续 core:db_query。"
                 ),
             },
@@ -3005,7 +3138,7 @@ def _reject_pmo_branch_a_missing_bi_pull_guard(
             "Action Input: JSON，至少含 `wiki_urls` 字符串数组（与 SKILL §1.1 一致），可按需含 "
             "`output_dir_relative` 等。\n"
             "拉表拿到 Observation 后，再聚合并对每个投递目标调用 `Action: mcp:atom_lark_notifier` 推送 §1.4 卡片：\n"
-            f"{_pmo_delivery_targets_user_hint()}；最后才用简短 Final Answer 确认。"
+            f"{_pmo_delivery_targets_user_hint(ctx)}；最后才用简短 Final Answer 确认。"
         ),
     })
     return True
@@ -3115,7 +3248,7 @@ def _reject_pmo_branch_a_board_without_notifier_guard(
             "Thought: …\n"
             "Action: mcp:atom_lark_notifier\n"
             "Action Input: JSON（全文三表战报送 `markdown_content`，`title` 用 `【K11 · PMO 宏观看板】` 类）。\n"
-            f"**须对每个投递目标各调用一次**（{_pmo_delivery_targets_user_hint()}）。\n"
+            f"**须对每个投递目标各调用一次**（{_pmo_delivery_targets_user_hint(ctx)}）。\n"
             "推送成功后再用 ≤3 句 Final Answer 确认 Observation 状态即可。"
         ),
     })
@@ -8912,6 +9045,20 @@ async def _run_react_core(
             observation: str | None = None
             if _pmo_lark_push_guard_channel_active(ctx):
                 try:
+                    _pmo_chat_guard_blk = _pmo_blocked_invalid_war_report_chat_observation(
+                        str(tool or ""), inp, ctx
+                    )
+                    if _pmo_chat_guard_blk:
+                        observation = _pmo_chat_guard_blk
+                        _pmo_skip_tool_invoke = True
+                        logger.warning(
+                            "[L3 Agent][PMO] 推送守卫拦截非法 chat_id tool=%s",
+                            (tool or "")[:80],
+                        )
+                except Exception as _pmo_chat_guard_e:
+                    logger.debug("[L3 Agent][PMO] 推送 chat_id 守卫跳过: %s", _pmo_chat_guard_e)
+            if _pmo_lark_push_guard_channel_active(ctx):
+                try:
                     _pmo_sync_assembly_phase_from_thought(ctx, response)
                     _pmo_init_analysis_blk = _pmo_blocked_analysis_tools_during_init(
                         str(tool or ""), ctx
@@ -8982,7 +9129,7 @@ async def _run_react_core(
                 and _pmo_lark_push_guard_channel_active(ctx)
             ):
                 try:
-                    inp_san = _pmo_sanitize_atom_lark_notifier_inp(inp)
+                    inp_san = _pmo_sanitize_atom_lark_notifier_inp(inp, ctx)
                     if inp_san != inp:
                         logger.info(
                             "[L3 Agent][PMO] atom_lark_notifier title 已纠偏（禁止冒烟/自动化测试战报撞名）"
@@ -9623,6 +9770,9 @@ async def run_agent(
             implicit_attribution.get("lark_chat_id") or implicit_attribution.get("chat_id") or ""
         ).strip()
         _bg_channel = str(implicit_attribution.get("channel") or "").strip()
+    _lark_turn_dbg_extra: dict[str, str] = (
+        {"lark_chat_id": _lark_cid, "lark_reply_chat_id": _lark_cid} if _lark_cid else {}
+    )
     _turn_dbg: dict[str, Any] = {}
     try:
         from l3_node.terminal_turn_debug_log import ensure_turn_started
@@ -9633,6 +9783,14 @@ async def run_agent(
                 "run_id": run_id,
                 "channel": _bg_channel or "run_agent",
                 "max_iterations": max_iterations,
+                **(
+                    {
+                        "lark_chat_id": _lark_cid,
+                        "lark_reply_chat_id": _lark_cid,
+                    }
+                    if _lark_cid
+                    else {}
+                ),
             },
         )
     except Exception:
@@ -10511,7 +10669,9 @@ async def run_agent(
             "max_iterations": max_iterations,
             "delegate_depth": _delegate_depth,
             "channel": _bg_channel,
-            "lark_chat_id_suffix": (_lark_cid[-16:] if len(_lark_cid) > 16 else _lark_cid),
+            "lark_chat_id": _lark_cid or None,
+            "lark_reply_chat_id": _lark_cid or None,
+            "lark_chat_id_suffix": (_lark_cid[-16:] if len(_lark_cid) > 16 else _lark_cid) or None,
             "prompt_style": _prompt_style,
             "pure_json_contract": _pure_json_contract,
             "try_direct_llm_bypass": _try_direct,
@@ -10578,6 +10738,7 @@ async def run_agent(
                     delegate_depth=_delegate_depth,
                     run_id=run_id,
                     channel=_bg_channel,
+                    extra=_lark_turn_dbg_extra or None,
                 )
             except Exception:
                 pass
@@ -10659,6 +10820,7 @@ async def run_agent(
                             delegate_depth=_delegate_depth,
                             run_id=run_id,
                             channel=_bg_channel,
+                            extra=_lark_turn_dbg_extra or None,
                         )
                     except Exception:
                         pass
@@ -10814,6 +10976,7 @@ async def run_agent(
                 delegate_depth=_delegate_depth,
                 run_id=run_id,
                 channel=_bg_channel,
+                extra=_lark_turn_dbg_extra or None,
             )
         except Exception:
             pass
@@ -10971,6 +11134,7 @@ async def run_agent(
                         delegate_depth=_delegate_depth,
                         run_id=run_id,
                         channel=_bg_channel,
+                        extra=_lark_turn_dbg_extra or None,
                     )
                 except Exception:
                     pass
@@ -11244,6 +11408,7 @@ async def run_agent(
                         delegate_depth=_delegate_depth,
                         run_id=run_id,
                         channel=_bg_channel,
+                        extra=_lark_turn_dbg_extra or None,
                     )
             except Exception:
                 pass

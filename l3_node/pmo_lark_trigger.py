@@ -1,28 +1,14 @@
 ﻿"""
-PMO Lark 双重触发器
+PMO Lark 精确触发器（/pmo、全量看板等）→ ``pmo_copilot_cli`` 完整 Skill 管线。
 
-精确触发：/pmo、执行PMO看板、全量看板 等固定短语
-  → 直接以 pmo_copilot_cli 信道触发 PMO Skill（含完整 SOP 约束与推送守卫）
-
-模糊触发：帮我看看进度、项目情况怎么样 等模糊意图
-  → 发送飞书交互卡片提供三个选项；用户回复 1/2/3 或关键词后再触发重型任务
-
-卡片等待机制：
-  card_pending[chat_id] 存放 (timestamp, source_msg)，TTL 5 分钟。
-  下一条消息若命中 "1/2/3" 或对应标签文本，触发对应 PMO 任务。
-
-动作映射：
-  1 / 全量看板 / 生成全量看板  →  分支 A 宏观看板（拉表 + 三表战报 + 推送两群）
-  2 / 巡检异常 / 巡检异常人员  →  分支 B 变更预警（仅检查阻塞/逾期人员）
-  3 / 简单问题 / 仅回答        →  普通 run_agent（不注入 PMO SKILL，避免重型工具调用）
+显式 PMO 任务请用 ``#*#`` 前缀（见 ``slash_hash_skill_router``）；普通闲聊/项目问答走默认 ``run_agent``。
+**不再**对模糊项目话术弹出「请选择 1/2/3」确认卡片。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
-import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -46,54 +32,6 @@ _PMO_EXACT_RE = re.compile(
 _PMO_EXACT_DEFAULT_MSG = (
     "请严格按系统提示中的 PMO-Copilot SKILL：按「分支 A / 定时宏观看板」拉取 §1.1 全部种子链接并汇总"
 )
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 正则：模糊意图（命中则发确认卡片）
-# ──────────────────────────────────────────────────────────────────────────────
-_PMO_FUZZY_RE = re.compile(
-    r"帮我看.{0,10}(进度|项目|任务|看板)|"
-    r"看.{0,8}(项目进度|进度|状态|任务情况)|"
-    r"项目.{0,8}(情况|进度|怎么样|如何)|"
-    r"现在.{0,12}(进度|项目|任务)|"
-    r"有没有.{0,8}(进度|异常|阻塞)|"
-    r"(进度|状态).{0,8}怎么样|"
-    r"帮我.{0,8}(看看|查一下|检查一下|梳理一下).{0,20}(进度|项目|任务)|"
-    r"最近.{0,10}(项目|进度|任务).{0,10}(情况|怎么|如何)",
-    re.I,
-)
-
-# 这些词命中了 fuzzy 但不需要卡片（已由精确命中或其它路径处理）
-_PMO_FUZZY_SKIP_RE = re.compile(
-    r"/pmo|^pmo$|生成全量看板|宏观看板|分支\s*[AB]|atom_bi_project|lark_notifier",
-    re.I,
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 卡片回复词典
-# ──────────────────────────────────────────────────────────────────────────────
-# action_key → (选项序号, 用户可能回复的关键词列表)
-_CARD_ACTIONS: dict[str, tuple[str, list[str]]] = {
-    "full_board": (
-        "1",
-        ["1", "1️⃣", "全量看板", "生成全量看板", "宏观看板", "全量", "分支a", "分支A", "branch a", "看板"],
-    ),
-    "anomaly": (
-        "2",
-        ["2", "2️⃣", "巡检异常", "巡检异常人员", "异常人员", "异常检查", "分支b", "分支B", "branch b", "巡检"],
-    ),
-    "simple": (
-        "3",
-        ["3", "3️⃣", "简单问题", "仅回答", "仅回答简单问题", "直接回答", "简单", "不拉表"],
-    ),
-}
-
-# TTL 300 秒（5 分钟）
-_CARD_PENDING_TTL_SEC = 300.0
-
-# chat_id → (timestamp, source_user_text)
-_card_pending: dict[str, tuple[float, str]] = {}
-_card_pending_lock = threading.Lock()
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 内部工具函数（复制自 scripts/run_pmo_copilot_skill.py 避免跨包依赖）
@@ -146,122 +84,6 @@ def _get_pmo_skill_path() -> Path | None:
     from l3_node.pmo_skill_paths import resolve_pmo_skill_md
 
     return resolve_pmo_skill_md()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 飞书卡片构建
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _build_pmo_confirm_card(source_text: str = "") -> dict[str, Any]:
-    """
-    构建 PMO 操作确认卡片（Lark Interactive Card JSON 1.0）。
-    三个操作选项以视觉区块呈现，提示用户回复 1/2/3 触发。
-    """
-    preview = (source_text.strip()[:60] + "…") if len(source_text.strip()) > 60 else source_text.strip()
-    hint_prefix = f'检测到意图：「{preview}」\n\n' if preview else ""
-
-    return {
-        "config": {
-            "wide_screen_mode": True,
-            "enable_forward": False,
-        },
-        "header": {
-            "title": {"tag": "plain_text", "content": "📊 PMO 看板 — 请选择操作"},
-            "template": "blue",
-        },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"{hint_prefix}"
-                        "请回复序号确认要执行的操作：\n\n"
-                        "**1️⃣  生成全量看板**\n"
-                        "拉取所有飞书多维表，生成需求进度全览 + 人员任务矩阵 + 版本需求映射，并推送飞书战报卡片。\n\n"
-                        "**2️⃣  巡检异常人员**\n"
-                        "仅检查当前任务状态，标记阻塞 / 逾期 / 空载人员，输出告警摘要（分支 B 预警）。\n\n"
-                        "**3️⃣  仅回答简单问题**\n"
-                        "不拉远端表，直接用已有上下文回答你的问题。"
-                    ),
-                },
-            },
-            {"tag": "hr"},
-            {
-                "tag": "note",
-                "elements": [
-                    {
-                        "tag": "plain_text",
-                        "content": "💡 回复 1、2 或 3（或对应关键词）确认操作，有效期 5 分钟",
-                    }
-                ],
-            },
-        ],
-    }
-
-
-def _send_pmo_confirm_card(
-    chat_id: str,
-    source_text: str,
-    *,
-    app_id: str | None = None,
-    app_secret: str | None = None,
-    api_base: str | None = None,
-) -> bool:
-    """发送 PMO 确认卡片，返回是否成功。"""
-    try:
-        from l3_node.channels.lark.im import send_interactive_card
-
-        card = _build_pmo_confirm_card(source_text)
-        result = send_interactive_card(
-            chat_id,
-            card,
-            app_id=app_id,
-            app_secret=app_secret,
-            api_base=api_base,
-        )
-        return result.get("status") == "success"
-    except Exception as e:
-        logger.warning("[PMO Trigger] 卡片发送失败 chat_id=%s: %s", (chat_id or "")[:24], e)
-        return False
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 卡片待确认状态管理
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _mark_card_pending(chat_id: str, source_text: str) -> None:
-    with _card_pending_lock:
-        _card_pending[chat_id] = (time.monotonic(), source_text)
-
-
-def _clear_card_pending(chat_id: str) -> None:
-    with _card_pending_lock:
-        _card_pending.pop(chat_id, None)
-
-
-def _check_card_reply(text: str, chat_id: str) -> str | None:
-    """
-    若该 chat 有待确认卡片且本条消息是有效回复，返回 action_key；否则返回 None。
-    同时清理超时条目。
-    """
-    with _card_pending_lock:
-        now = time.monotonic()
-        # 清理超时
-        stale = [k for k, (ts, _) in _card_pending.items() if now - ts > _CARD_PENDING_TTL_SEC]
-        for k in stale:
-            del _card_pending[k]
-
-        if chat_id not in _card_pending:
-            return None
-
-    # 卡片存在，尝试匹配动作
-    norm = (text or "").strip().lower()
-    for action_key, (_, keywords) in _CARD_ACTIONS.items():
-        for kw in keywords:
-            if norm == kw.lower() or norm == kw:
-                return action_key
-    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -520,49 +342,15 @@ def try_pmo_lark_intercept(
     api_base: str | None = None,
 ) -> str | None:
     """
-    PMO 双重触发器主入口。
+    PMO 精确触发主入口（``/pmo``、全量看板等）。未命中则返回 ``None``，由 dispatcher 走 ``run_agent``。
 
-    返回值：
-      - str  → 已处理，返回给用户的回复（dispatcher 直接使用，不再走 run_agent）
-      - None → 未命中，dispatcher 继续走后续逻辑
+    显式 Skill 用 ``#*#``（``slash_hash_skill_router``）；不再弹出 1/2/3 意图确认卡片。
     """
     norm = (text or "").strip()
     if not norm:
         return None
 
     cid = (chat_id or "").strip()
-
-    # ── 优先检查：是否是对已发出卡片的回复 ──
-    action_from_card = _check_card_reply(norm, cid) if cid else None
-    if action_from_card is not None:
-        _clear_card_pending(cid)
-        logger.info(
-            "[PMO Trigger] 卡片回复 action=%s chat_id=%s text=%r",
-            action_from_card,
-            cid[:24],
-            norm[:40],
-        )
-
-        if action_from_card == "simple":
-            # 不注入 SKILL，交回正常 run_agent 流程
-            return None
-
-        # 重型 PMO 任务
-        ack = {
-            "full_board": "⏳ PMO 全量看板任务已启动，正在拉取飞书多维表，约需 1-3 分钟，战报将直接推送到群内…",
-            "anomaly": "⏳ PMO 巡检任务已启动，正在检查任务状态，约需 1-2 分钟…",
-        }.get(action_from_card, "⏳ PMO 任务已启动，请稍候…")
-
-        if cid:
-            send_reply_fn(cid, ack)
-
-        try:
-            return run_pmo_heavy_task_from_lark_sync(
-                action_from_card, norm, engine, session_messages, cid, loop
-            )
-        except Exception as e:
-            logger.exception("[PMO Trigger] PMO 任务执行失败 action=%s: %s", action_from_card, e)
-            return f"⚠️ PMO 任务执行出错：{e}"
 
     # ── 精确触发 ──
     if _PMO_EXACT_RE.search(norm):
@@ -581,28 +369,6 @@ def try_pmo_lark_intercept(
         except Exception as e:
             logger.exception("[PMO Trigger] 精确 PMO 任务执行失败: %s", e)
             return f"⚠️ PMO 任务执行出错：{e}"
-
-    # ── 模糊触发 ──
-    if _PMO_FUZZY_RE.search(norm) and not _PMO_FUZZY_SKIP_RE.search(norm):
-        logger.info("[PMO Trigger] 模糊意图，发送确认卡片 chat_id=%s text=%r", cid[:24], norm[:60])
-
-        if cid:
-            sent = _send_pmo_confirm_card(cid, norm, app_id=app_id, app_secret=app_secret, api_base=api_base)
-            if sent:
-                _mark_card_pending(cid, norm)
-                return (
-                    "（以上卡片请选择操作，或直接回复 1 / 2 / 3；"
-                    '若卡片未显示请回复「生成全量看板」或「巡检异常人员」）'
-                )
-            else:
-                # 卡片发送失败，降级为文字提示
-                _mark_card_pending(cid, norm)
-                return (
-                    "检测到 PMO 相关意图，请回复数字确认操作：\n"
-                    "**1** 生成全量看板（拉表 + 推送战报）\n"
-                    "**2** 巡检异常人员（分支 B 预警）\n"
-                    "**3** 仅回答简单问题（不拉表）"
-                )
 
     return None
 

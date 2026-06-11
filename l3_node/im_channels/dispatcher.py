@@ -797,6 +797,17 @@ def _do_agent_work(
                 pass
             ok = send_reply_fn(cid, _out)
             send_ok = ok
+            try:
+                from l3_node.terminal_turn_debug_log import log_lark_im_reply_dispatch
+
+                log_lark_im_reply_dispatch(
+                    inbound_chat_id=cid,
+                    reply_chat_id=cid,
+                    ok=bool(ok),
+                    reply_preview=_out,
+                )
+            except Exception:
+                pass
             if not ok:
                 logger.warning("[IM Dispatcher] 回复发送失败 chat_id=%s", cid[:20])
         elif cid and not (reply or "").strip():

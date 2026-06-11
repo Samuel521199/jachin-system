@@ -766,8 +766,8 @@ async def _async_main_multi_agent(
         "**兜底路径**（特殊版式或 push 失败）：mcp:atom_lark_notifier ×2。\n"
         "⛔ **禁止** `webhook_url`（PMO 用应用机器人 IM API，不用群 Webhook）。\n"
         "双群兜底推送须 **显式** `chat_id` + `native_table_card: true`：\n"
-        "  ① 主群 chat_id = 环境变量 PMO_PRIMARY_CHAT_ID（或 oc_437c98d11106295fb10751a5481ee465）\n"
-        "  ② 监控群 chat_id = oc_0e321f92d758ecb44aea5b499c90510b\n"
+        "  ① 主群 chat_id = 环境变量 PMO_PRIMARY_CHAT_ID（留空则用飞书触发群 oc_…）\n"
+        "  ② 监控群 chat_id = 环境变量 PMO_MONITOR_CHAT_ID（未配置则单群推送）\n"
         "须将三表 GFM **全文** 写入 markdown_content（勿放代码围栏内）。\n"
         + PMO_DEMAND_TABLE_PUBLISHER_SPEC
         + "\n"

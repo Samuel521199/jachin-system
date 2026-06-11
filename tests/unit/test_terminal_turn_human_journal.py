@@ -87,6 +87,43 @@ def test_human_journal_round_and_recap(debug_log_dir):
     assert "[ReAct 第 1 轮]" in text
 
 
+def test_lark_im_session_routing_in_journal(debug_log_dir):
+    from l3_node import terminal_turn_debug_log as tlog
+
+    inbound = "oc_inbound_test_chat_001"
+    tlog.begin_turn(
+        "今天战报怎么样？",
+        extra={
+            "run_id": "run-lark",
+            "channel": "lark_im_dispatcher",
+            "lark_chat_id": inbound,
+            "lark_reply_chat_id": inbound,
+            "max_iterations": 6,
+        },
+    )
+    tlog.log_lark_im_reply_dispatch(
+        inbound_chat_id=inbound,
+        reply_chat_id=inbound,
+        ok=True,
+        reply_preview="战报已推送。",
+        run_id="run-lark",
+    )
+    tlog.finalize_top_level_turn(
+        "战报已推送。",
+        run_id="run-lark",
+        channel="lark_im_dispatcher",
+        extra={"lark_chat_id": inbound, "lark_reply_chat_id": inbound},
+    )
+
+    text = next(debug_log_dir.glob("terminal_turn_*.log")).read_text(encoding="utf-8")
+    assert "【飞书会话路由】" in text
+    assert "来源会话 chat_id" in text
+    assert "回复目标 chat_id" in text
+    assert inbound in text
+    assert "[飞书 IM] 回推发送 (成功)" in text
+    assert "【飞书回推执行】" in text
+
+
 def test_append_final_idempotent(debug_log_dir):
     from l3_node import terminal_turn_debug_log as tlog
 

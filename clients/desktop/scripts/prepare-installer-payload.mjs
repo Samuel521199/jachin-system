@@ -40,8 +40,7 @@ function copyIfExists(src, dst) {
  * 打进 dist_jachin_desktop/.env 的来源路径（非空则必须存在）：
  * 1) JACHIN_DESKTOP_BUNDLE_ENV_FILE
  * 2) clients/desktop/.jachin_bundle_env_path（单行绝对路径，gitignore）
- * 3) 仓库根 .env（存在则作为默认）
- * 若以上均无有效路径，返回空字符串（由 main 回退为 .env.example）。
+ * 禁止默认复制仓库根 .env（易把开发机 PMO 群 ID 打进安装包）；无显式源时回退 .env.example。
  */
 function resolveBundleEnvSourcePath() {
   const fromEnv = process.env.JACHIN_DESKTOP_BUNDLE_ENV_FILE?.trim();
@@ -55,8 +54,6 @@ function resolveBundleEnvSourcePath() {
       return t;
     }
   }
-  const rootEnv = path.join(ROOT, ".env");
-  if (fs.existsSync(rootEnv)) return rootEnv;
   return "";
 }
 
@@ -128,7 +125,7 @@ function main() {
     }
     fs.copyFileSync(bundleEnvSrc, envDst);
     if (path.resolve(bundleEnvSrc) === path.resolve(rootEnv)) {
-      console.log("[prepare-installer-payload] bundled .env from repo root .env (default when no override)");
+      console.log("[prepare-installer-payload] bundled .env from explicit override (repo root .env)");
     } else {
       console.log("[prepare-installer-payload] bundled .env from override:", bundleEnvSrc);
     }

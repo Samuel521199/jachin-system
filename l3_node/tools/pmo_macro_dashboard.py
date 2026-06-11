@@ -49,11 +49,9 @@ from l3_node.pmo_report_format import (
     sort_epics_for_demand_table,
 )
 from l3_node.pmo_lark_env import (
-    DEFAULT_PMO_MONITOR_CHAT_ID,
-    DEFAULT_PMO_PRIMARY_CHAT_ID,
     ensure_pmo_dotenv_loaded,
+    pmo_effective_primary_chat_id,
     pmo_monitor_chat_id,
-    pmo_primary_chat_id,
     pmo_push_monitor_enabled,
 )
 from l3_node.pmo_workflow_stage import (
@@ -61,11 +59,6 @@ from l3_node.pmo_workflow_stage import (
     infer_epic_workflow_status,
 )
 from l3_node.tools.pmo_personnel_query import person_keys_from_task
-
-# 向后兼容：旧代码引用模块级常量
-DEFAULT_PRIMARY_CHAT_ID = DEFAULT_PMO_PRIMARY_CHAT_ID
-DEFAULT_MONITOR_CHAT_ID = DEFAULT_PMO_MONITOR_CHAT_ID
-
 
 def _dash(v: Any) -> str:
     if v is None or v == "" or v == "null":
@@ -498,12 +491,34 @@ def run_macro_dashboard_push(
         }
 
     ensure_pmo_dotenv_loaded()
-    primary = (chat_id or pmo_primary_chat_id()).strip()
-    monitor = (monitor_chat_id or pmo_monitor_chat_id()).strip()
+    from l3_node.channels.lark.turn_chat_context import peek_lark_chat_id_for_tools
+    from l3_node.pmo_lark_env import pmo_delivery_targets_debug
+    from l3_node.pmo_lark_push_guard import pmo_reject_legacy_primary_chat_id
+    from l3_node.pmo_push_audit_log import log_pmo_lark_push, log_pmo_lark_push_plan
+
+    session_chat = peek_lark_chat_id_for_tools()
+    dbg = pmo_delivery_targets_debug(session_chat)
+    explicit_primary = pmo_reject_legacy_primary_chat_id(chat_id)
+    primary = (explicit_primary or pmo_effective_primary_chat_id(session_chat)).strip()
+    if not primary:
+        return {
+            "status": "failed",
+            "error": (
+                "未配置 PMO_PRIMARY_CHAT_ID，且当前无飞书触发会话 chat_id；"
+                "请在 .env 设置主群或在飞书群内 # 触发 PMO"
+            ),
+        }
+    monitor = pmo_monitor_chat_id().strip()
     effective_push_monitor = bool(push_monitor) and pmo_push_monitor_enabled()
     chat_targets = [primary]
     if effective_push_monitor and monitor and monitor != primary:
         chat_targets.append(monitor)
+
+    log_pmo_lark_push_plan(
+        tool="core:pmo_macro_dashboard_push",
+        chat_ids=chat_targets,
+        debug=dbg,
+    )
 
     md, worker_b, worker_c = build_polished_macro_dashboard_markdown(
         use_release_epic_mapping=use_release_epic_mapping,
@@ -529,6 +544,7 @@ def run_macro_dashboard_push(
         "title": card_title,
         "markdown_preview": md[:500],
         "chat_ids": chat_targets,
+        "pmo_delivery_debug": dbg,
         "pushes": [],
     }
 
@@ -564,6 +580,13 @@ def run_macro_dashboard_push(
             "lark_code": result.get("lark_code"),
         }
         base["pushes"].append(push_rec)
+        log_pmo_lark_push(
+            tool="core:pmo_macro_dashboard_push",
+            chat_id=cid,
+            status=push_rec["status"],
+            message_id=str(push_rec.get("message_id") or ""),
+            error=str(push_rec.get("error") or ""),
+        )
         if push_rec["status"].lower() != "success":
             all_ok = False
         elif push_rec.get("message_id"):
