@@ -1,4 +1,4 @@
-# 与 docs/AGI_OPTIMIZATION_ROADMAP.md §2.3 对齐；delegate Action Input 的 role 可与内置列表并用。
+﻿# 与 docs/AGI_OPTIMIZATION_ROADMAP.md §2.3 对齐；delegate Action Input 的 role 可与内置列表并用。
 roles:
   - id: analyst
     name: 分析师
@@ -15,6 +15,9 @@ roles:
   - id: summarizer
     name: 总结者
     description: 把多方结果整理为共识/分歧/建议行动。
+  - id: verification
+    name: 验证专员（对抗性）
+    description: 尽力证明交付物有问题；须实际核对（读文件/跑测试）；Final Answer 含 VERDICT PASS/FAIL/PARTIAL。
   - id: domain_expert
     name: 领域专家（占位）
     description: 复杂域问题时与 researcher/analyst 组合使用；任务描述里写清领域上下文。

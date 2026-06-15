@@ -53,17 +53,23 @@ def test_table_element_demand_completion_column_text():
     assert prog_col["width"] == "19%"
 
 
-def test_build_card_uses_fill_width_mode():
-    from l3_node.channels.lark.md_native_table_card import build_schema_v2_card_from_markdown
+def test_build_pmo_war_report_card_uses_ssot_page_size():
+    from l3_node.channels.lark.md_native_table_card import build_pmo_war_report_schema_v2_card
 
     md = """**📊 需求进度全览**
 | 需求名称 | 时间跨度 | 参与人 | 完成度 | 状态 |
 | --- | --- | --- | --- | --- |
 | 【P0】A | 06/01→06/02 | Gavin | [▓▓░░░░░░░░] 51% | 🔵 开发中 |
+| 【P0】B | 06/01→06/02 | Buck | [▓▓░░░░░░░░] 51% | 🔵 开发中 |
+| 【P0】C | 06/01→06/02 | Cole | [▓▓░░░░░░░░] 51% | 🔵 开发中 |
+| 【P0】D | 06/01→06/02 | Akie | [▓▓░░░░░░░░] 51% | 🔵 开发中 |
+| 【P0】E | 06/01→06/02 | Jade | [▓▓░░░░░░░░] 51% | 🔵 开发中 |
 """
-    card = build_schema_v2_card_from_markdown(md, "test")
+    card = build_pmo_war_report_schema_v2_card(md, "test", polish=False)
     assert card is not None
-    assert card["config"]["width_mode"] == "fill"
+    table_el = next(e for e in card["body"]["elements"] if e.get("tag") == "table")
+    assert table_el["page_size"] == 4
+    assert table_el["row_height"] == "auto"
 
 
 def test_detect_release_mapping_profile():

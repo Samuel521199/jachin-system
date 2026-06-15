@@ -1,7 +1,7 @@
 ﻿"""
 PMO-Copilot 方案 B：三阶段多 Agent 编排。
 
-阶段一 FanOut（并行捞数）→ 阶段三 run_agent（排版发报）。阶段二交叉审计（Auditor）默认关闭。
+阶段一 FanOut（并行捞数）→ 阶段二 Verification Agent 交叉审计（``PMO_ENABLE_VERIFICATION_AUDIT=1`` 开启）→ 阶段三 run_agent（排版发报）。
 
 代码锚点：scripts/run_pmo_copilot_skill.py --multi-agent
 """
@@ -42,6 +42,12 @@ from l3_node.agent_core import PMO_BRANCH_A_MIN_DB_QUERIES, PMO_BRANCH_A_PERSONN
 from l3_node.agent_core import (
     PMO_BRANCH_A_PRODUCT_VIEW_ALTS,
     PMO_BRANCH_A_REQUIRED_CROSS_VIEWS,
+)
+from l3_node.primitives.multi_agent.verification_agent import (
+    PMO_AUDITOR_ROLE,
+    PMO_VERIFICATION_ROLE,
+    parse_verification_verdict,
+    pmo_verification_audit_enabled,
 )
 
 logger = logging.getLogger("pmo_multi_agent")
@@ -165,31 +171,6 @@ PMO_WORKER_D_ROLE: dict[str, Any] = {
     "allowed_tools": ["core:pmo_release_epic_mapping"],
 }
 
-# 兼容旧引用（等同 Worker B，FanOut 应使用 A/B/C/D 分角色）
-PMO_WORKER_DB_ROLE = PMO_WORKER_B_ROLE
-
-PMO_AUDITOR_ROLE: dict[str, Any] = {
-    "id": "reviewer",
-    "system_prefix": (
-        "你是 PMO 交叉审计员（Reviewer / Auditor）。\n"
-        "⛔ **你无任何可用工具**——禁止调用 db_query / read_file / shell_exec / 任何 MCP。\n"
-        "阶段一 Worker A/B/C 的全部 JSON **已在本条 user 消息中**（带 ## 小节标题），"
-        "请 **直接阅读文本** 做 Step 6 交叉分析，**禁止**尝试读取本地文件或 context_data 路径。\n"
-        "须检查：\n"
-        "1. **大需求层级**：Worker C 的 epics[] 是否仅为顶层大需求（非部门小需求重复占行）；"
-        "epic_children[] 是否通过 parent_epic 正确挂接\n"
-        "2. 幽灵需求：Epic/主表有、人员看板（vewCz1FFJi）无（或反之）——须引用具体 Requirement 名称\n"
-        "3. 状态倒挂：同一需求在不同视图状态矛盾\n"
-        "4. 人员超载：👥 须以 Worker B 的 personnel_tasks[]（vewCz1FFJi）为准；"
-        "按 §1.4.1b「计划周期×完成进度×当前时间」节奏判定 🚨/🟡/✅（**禁止** task_cnt 排名定过载）\n"
-        "5. Sprint 集合差：两视图 Sprint 不一致项\n"
-        "输出：**项目风险诊断书**（Markdown，分 ## 章节；每条风险含 ⚠️ 与依据）。\n"
-        "降级规则：若某节数据不足，须标注「数据不足·结论仅供参考」，**禁止**假装已完成完整分析。\n"
-        "禁止因任何原因调用工具；数据不足时基于已有 JSON 推理并标注可信度。\n"
-    ),
-    "allowed_tools": [],
-}
-
 PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报】
 前序阶段已完成数据捞取（FanOut Worker A/B/C）。**禁止** core:db_query / mirror_import / bi_project_context。
 
@@ -203,7 +184,7 @@ PMO_PUBLISHER_USER_TEMPLATE = """【PMO 多 Agent · 阶段三 · 排版发报�
 1. 将下方 JSON 填入 §1.4 三张 **GFM Markdown 表**（语义见 §1.2.3）；**风险诊断书不得写入 📊 表内列**：
 {demand_table_spec}
    - 📊 仅 `current_sprint`（本周）大需求，每行一个 Epic；子任务汇总进「参与人/完成度/状态」三列（参与人须含 Epic 父记录链接链子任务，见 `pmo_epic_aggregate.epic_participants`）
-   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**；任务列全量 `<br>` + `row_height=low`（表内一行，hover 多行）；**禁止**「等N项」；**行序** 🚨延期→🚨进度落后→🟡→✅
+   - 👥 人员任务矩阵 — **以 Worker B 的 by_person / personnel_tasks[] 为准**；**每人一行**；任务列全量 `<br>` + `row_height=auto` 多行完整展示；**禁止**「等N项」；**行序** 🚨延期→🚨进度落后→🟡→✅
    - {layout_contract}
    - 📦 版本发布需求映射 — **以 Worker D 的 markdown_section 为准**（发版邮件窗内已完成 Epic）；**禁止** Version Goal 填写率
 2. 每表须含表头行 + `|---|---|` 分隔 + 至少 3 行数据（缺口用 ⚠️ 占位行）
@@ -651,12 +632,75 @@ async def run_pmo_multi_agent_workflow(
 
     result.audit_report = ""
     result.phase2_output = ""
-    result.status = "partial" if phase1.failed_count else "completed"
-    _status(
-        f"阶段一 {phase1.ok_count}/{phase1.total} 完成"
-        f"（A/B/C {abc_ok}/3 · D {sum(1 for it in phase1_d.items if it.ok)}/1）"
-        f" · 跳过交叉审计 · 待阶段三排版发报"
-    )
+
+    if pmo_verification_audit_enabled():
+        _status("阶段二：对抗性交叉验证（Verification Agent）…")
+        try:
+            from l3_node.agent_core import _run_sub_agent
+            from l3_node.pmo_copilot_debug_file import append_pmo_debug_phase_begin, append_pmo_debug_phase_summary
+
+            append_pmo_debug_phase_begin(2, "交叉验证 · Verification", detail="无工具 · 内联 JSON · VERDICT")
+            audit_ctx = _build_auditor_context(result.worker_a, result.worker_b, result.worker_c)
+            audit_task = _build_auditor_task(audit_ctx)
+            phase2_raw = await _run_sub_agent(
+                {
+                    "role": PMO_VERIFICATION_ROLE,
+                    "task": audit_task,
+                    "max_iterations": 8,
+                    "_debug_phase": 2,
+                    "_debug_phase_label": "交叉验证",
+                    "_debug_agent_label": "Verification Agent",
+                    "_debug_role_label": "verification",
+                    "_debug_task_preview": "PMO Step6 交叉审计",
+                },
+                engine,
+                delegate_depth=1,
+                _parent_allowed_skills=parent_allowed_skills,
+            )
+            result.phase2_output = phase2_raw
+            result.audit_report = phase2_raw
+            verdict = parse_verification_verdict(phase2_raw)
+            low_conf = _audit_report_has_low_confidence(phase2_raw)
+            if verdict == "UNKNOWN":
+                result.errors.append("阶段二验证未输出有效 VERDICT（应为 PASS/FAIL/PARTIAL）")
+            elif verdict == "FAIL":
+                result.errors.append("阶段二验证 VERDICT=FAIL（见 audit_report）")
+            elif verdict == "PARTIAL" or low_conf:
+                result.status = "partial"
+            append_pmo_debug_phase_summary(
+                2,
+                "交叉验证 · Verification",
+                ok_count=1 if verdict in ("PASS", "PARTIAL") else 0,
+                total=1,
+                elapsed_sec=0.0,
+                item_lines=[
+                    f"VERDICT={verdict}"
+                    + (" · 含低置信标记" if low_conf else "")
+                    + f" · {_clip(phase2_raw, 100).replace(chr(10), ' ')}"
+                ],
+            )
+            _status(f"阶段二完成 · VERDICT={verdict} · 待阶段三排版发报")
+        except Exception as ex:
+            logger.exception("[PMO Multi-Agent] 阶段二 Verification 失败")
+            result.errors.append(f"阶段二验证失败: {ex!s}"[:200])
+            result.status = "partial"
+            _status(f"阶段二验证异常（已降级继续）: {ex!s}"[:120])
+    else:
+        _status(
+            f"阶段一 {phase1.ok_count}/{phase1.total} 完成"
+            f"（A/B/C {abc_ok}/3 · D {sum(1 for it in phase1_d.items if it.ok)}/1）"
+            f" · 跳过阶段二验证（设 PMO_ENABLE_VERIFICATION_AUDIT=1 开启）· 待阶段三排版发报"
+        )
+        if phase1.failed_count:
+            result.status = "partial"
+        else:
+            result.status = "completed"
+        return result
+
+    if phase1.failed_count and result.status != "partial":
+        result.status = "partial"
+    elif result.status not in ("partial", "failed"):
+        result.status = "completed"
     return result
 
 
@@ -724,9 +768,10 @@ def _audit_report_has_low_confidence(report: str) -> bool:
 
 def _build_auditor_task(context: str) -> str:
     return (
-        "【PMO 多 Agent · 阶段二 · 交叉审计】\n"
+        "【PMO 多 Agent · 阶段二 · Verification Agent 交叉验证】\n"
         "基于下方 **内联 JSON 数据**（非文件）执行 Step 6 跨视图矛盾检验，"
-        "输出《项目风险诊断书》（Markdown）。\n"
-        "⛔ 禁止调用任何工具；数据已在下方，直接分析并 Final Answer。\n\n"
+        "输出《项目风险诊断书》（Markdown）及 **VERDICT: PASS | FAIL | PARTIAL**。\n"
+        "⛔ 禁止调用任何工具；数据已在下方，直接分析并 Final Answer。\n"
+        "对抗性要求：尽力找出数据矛盾、幽灵需求、状态倒挂；找不到问题才给 PASS。\n\n"
         f"{context}"
     )

@@ -189,6 +189,136 @@ def _use_multi_agent_path(args: argparse.Namespace) -> bool:
     return not getattr(args, "single_agent", False)
 
 
+def _format_macro_dashboard_push_answer(result: dict[str, Any]) -> str:
+    """与 ``push_pmo_macro_dashboard_lark.py`` 推送结果一致的 Final Answer 文案。"""
+    st = str(result.get("status") or "").lower()
+    mids = list(result.get("message_ids") or [])
+    if not mids and result.get("message_id"):
+        mids = [str(result["message_id"])]
+    mid_s = ", ".join(str(m) for m in mids[:3] if m) or "—"
+    sprint = result.get("current_sprint") or "—"
+    title = result.get("title") or "【K11 · PMO 宏观看板】"
+    if st in ("success", "ok"):
+        return (
+            f"{title} 已推送飞书（与 scripts/push_pmo_macro_dashboard_lark.py 同源）。\n"
+            f"Sprint: {sprint} · message_id: {mid_s}"
+        )
+    if st == "partial":
+        return (
+            f"{title} 部分群推送成功（同源 macro_dashboard_push）。\n"
+            f"message_ids: {mid_s} · {result.get('warning') or result.get('error') or '见 pushes[]'}"
+        )
+    return f"macro_dashboard_push 失败: {result.get('error') or 'unknown'}"
+
+
+async def _run_pmo_phase3_publisher_agent(
+    *,
+    workflow: Any,
+    engine: Any,
+    publisher_msg: str,
+    implicit: dict[str, Any],
+    bundle: Any,
+    publisher_allow: list[str],
+    skill_path: Path,
+    meta: dict[str, Any],
+    skill_body: str,
+    mi_phase3: int,
+    _debug_path: Path,
+    _on_status: Any,
+    log: logging.Logger,
+) -> tuple[str, int]:
+    """macro_dashboard_push 失败时的 Publisher Agent 兜底（GFM + atom_lark_notifier）。"""
+    from l3_node.pmo_copilot_debug_file import (
+        append_pmo_debug_agent_begin,
+        append_pmo_debug_phase_begin,
+        set_ma_debug_context,
+    )
+    from l3_node.agent_core import _build_system_prompt, run_agent
+    from l3_node.intent_gateway.bundle import build_gateway_skill_inject
+    from l3_node.primitives.tools.tool_pool import assemble_tool_pool
+    from l3_node.pmo_report_format import PMO_DEMAND_TABLE_PUBLISHER_SPEC
+    from l3_node.routing.output_format_signals import analyze_output_format_signals
+
+    tools = await assemble_tool_pool(
+        allowed_skills=publisher_allow,
+        gateway_bundle=bundle,
+        logger=log,
+        allowlist_diag_source=publisher_allow,
+    )
+    gateway_block = build_gateway_skill_inject(skill_path, meta, skill_body)
+    publisher_inject = (
+        gateway_block
+        + "\n\n### 多 Agent 阶段三（Publisher · 兜底）\n"
+        "**macro_dashboard_push 已失败** — 手工 GFM + `mcp:atom_lark_notifier` 双群推送。\n"
+        "版式须与 `core:pmo_macro_dashboard_push` / push_pmo_macro_dashboard_lark 一致："
+        "polish + native_table + PMO 列宽 SSOT。\n"
+        "⛔ 禁止 core:db_query / mirror_import / bi_project_context / webhook_url。\n"
+        "双群兜底：`chat_id` + `native_table_card: true`。\n"
+        + PMO_DEMAND_TABLE_PUBLISHER_SPEC
+        + "\n"
+    )
+    fmt_sig = analyze_output_format_signals(publisher_msg)
+    full_system = await _build_system_prompt(
+        tools=tools,
+        allow_delegate=False,
+        prompt_cycle=None,
+        recruitment_longform=False,
+        hr_domain_prompt_active=False,
+        prompt_style="slim_user_led" if fmt_sig.slim_system_prompt() else "full",
+        pure_json_contract=False,
+        gateway_inject=publisher_inject,
+        safety_lock_user_text=publisher_msg,
+        chief_advisor_mode=False,
+        environment_report_block="",
+        semantic_layer=None,
+        experience_few_shots="",
+        realtime_web_grounding_block="",
+        domain_experts=None,
+    )
+    _on_status("阶段三：Publisher Agent 兜底排版发报…")
+    append_pmo_debug_phase_begin(
+        3,
+        "排版发报 · Publisher 兜底",
+        detail="macro_dashboard_push 失败后 run_agent + notifier",
+    )
+    set_ma_debug_context(
+        phase=3,
+        phase_label="排版发报",
+        agent_label="Publisher",
+        role_label="主编排 Agent · 仅 Lark",
+        task_preview="三表 GFM 排版 + atom_lark_notifier 双群推送",
+        max_iterations=mi_phase3,
+    )
+    append_pmo_debug_agent_begin(
+        agent_label="Publisher",
+        role_label="主编排 Agent · 仅 Lark",
+        task_preview="三表 GFM 排版 + atom_lark_notifier 双群推送",
+        max_iterations=mi_phase3,
+    )
+    _pmo_step = _make_pmo_on_step_writer(_debug_path)
+    ans = await run_agent(
+        publisher_msg,
+        engine,
+        max_iterations=mi_phase3,
+        _allowed_skills_override=publisher_allow,
+        _system_prompt_override=full_system,
+        gateway_context_bundle=bundle,
+        implicit_attribution=implicit,
+        on_step=_pmo_step,
+    )
+    try:
+        from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+
+        append_pmo_debug_agent_finish(
+            agent_label="Publisher",
+            ok=bool((ans or "").strip()),
+            result_preview=str(ans or "")[:300],
+        )
+    except Exception:
+        pass
+    return str(ans or ""), 0
+
+
 def _pmo_debug_log_dir() -> Path:
     """~/.jachin/jachin_debug/健康skill（例：C:\\Users\\Samuel\\.jachin\\jachin_debug\\健康skill）。"""
     return Path.home() / ".jachin" / "jachin_debug" / "健康skill"
@@ -615,15 +745,13 @@ async def _async_main_multi_agent(
     *,
     skip_pull_refresh: bool = False,
 ) -> int:
-    """方案 B：FanOut 捞数 → Pipeline 审计 → run_agent 排版双群推送。"""
+    """方案 B：FanOut 捞数 → 确定性 macro_dashboard_push（与 push 脚本同源）。"""
     from l3_node.intent_gateway.bundle import build_gateway_bundle
     from l3_node.primitives.tools.tool_pool import (
-        assemble_tool_pool,
         expand_allowed_skills_with_implicit_sqlite_read,
         expand_allowed_skills_with_local_mcp,
     )
     from l3_node.pmo_copilot_debug_file import (
-        append_pmo_debug_agent_begin,
         append_pmo_debug_phase_begin,
         append_pmo_debug_status,
         finalize_pmo_debug_log,
@@ -701,12 +829,16 @@ async def _async_main_multi_agent(
     publisher_msg = build_publisher_user_message(workflow)
     try:
         from l3_node.pmo_worker_result_backfill import parse_worker_final_json
-        from l3_node.tools.pmo_macro_dashboard import set_pmo_worker_d_push_cache
+        from l3_node.tools.pmo_macro_dashboard import (
+            run_macro_dashboard_push,
+            set_pmo_worker_d_push_cache,
+        )
 
         wd_seed = parse_worker_final_json(workflow.worker_d) if workflow.worker_d else None
         set_pmo_worker_d_push_cache(wd_seed)
     except Exception:
-        pass
+        from l3_node.tools.pmo_macro_dashboard import run_macro_dashboard_push
+
     implicit = build_pmo_multi_agent_implicit_attribution()
     implicit["source"] = "run_pmo_copilot_skill.py"
     implicit["pmo_publisher_tool_lock"] = True
@@ -745,97 +877,41 @@ async def _async_main_multi_agent(
         )
         return 2
 
-    tools = await assemble_tool_pool(
-        allowed_skills=publisher_allow,
-        gateway_bundle=bundle,
-        logger=log,
-        allowlist_diag_source=publisher_allow,
-    )
-
-    gateway_block = build_gateway_skill_inject(skill_path, meta, skill_body)
-    from l3_node.pmo_report_format import PMO_DEMAND_TABLE_PUBLISHER_SPEC
-
-    publisher_inject = (
-        gateway_block
-        + "\n\n### 多 Agent 阶段三（Publisher）\n"
-        "**宏观看板（默认）**：优先 `Action: core:pmo_macro_dashboard_push` + `Action Input: {}`。\n"
-        "  工具内完成 B/C 预取 + Worker D 📦 发版 Epic 映射、五列📊+三列👥、polish、主群+监控群双推；"
-        "成功则 Final Answer 引用 message_id，**禁止**再调 notifier。\n"
-        "  仅预览：`core:pmo_macro_dashboard_preview`。工具失败时 **一次** 回退下方手工路径。\n"
-        "⛔ 禁止 core:db_query / mirror_import / bi_project_context。\n"
-        "**兜底路径**（特殊版式或 push 失败）：mcp:atom_lark_notifier ×2。\n"
-        "⛔ **禁止** `webhook_url`（PMO 用应用机器人 IM API，不用群 Webhook）。\n"
-        "双群兜底推送须 **显式** `chat_id` + `native_table_card: true`：\n"
-        "  ① 主群 chat_id = 环境变量 PMO_PRIMARY_CHAT_ID（留空则用飞书触发群 oc_…）\n"
-        "  ② 监控群 chat_id = 环境变量 PMO_MONITOR_CHAT_ID（未配置则单群推送）\n"
-        "须将三表 GFM **全文** 写入 markdown_content（勿放代码围栏内）。\n"
-        + PMO_DEMAND_TABLE_PUBLISHER_SPEC
-        + "\n"
-    )
-
-    from l3_node.agent_core import _build_system_prompt, run_agent
-    from l3_node.routing.output_format_signals import analyze_output_format_signals
-
-    fmt_sig = analyze_output_format_signals(publisher_msg)
-    full_system = await _build_system_prompt(
-        tools=tools,
-        allow_delegate=False,
-        prompt_cycle=None,
-        recruitment_longform=False,
-        hr_domain_prompt_active=False,
-        prompt_style="slim_user_led" if fmt_sig.slim_system_prompt() else "full",
-        pure_json_contract=False,
-        gateway_inject=publisher_inject,
-        safety_lock_user_text=publisher_msg,
-        chief_advisor_mode=False,
-        environment_report_block="",
-        semantic_layer=None,
-        experience_few_shots="",
-        realtime_web_grounding_block="",
-        domain_experts=None,
-    )
-
-    _on_status("阶段三：Publisher 排版发报（仅 Lark）…")
+    _on_status("阶段三：宏观看板推送（push_pmo_macro_dashboard_lark 同源）…")
     append_pmo_debug_phase_begin(
         3,
-        "排版发报 · Publisher",
-        detail="run_agent：优先 macro_dashboard_push，兜底 GFM+notifier 双群",
+        "排版发报 · macro_dashboard_push",
+        detail="run_macro_dashboard_push（与 scripts/push_pmo_macro_dashboard_lark.py 一致）",
     )
-    set_ma_debug_context(
-        phase=3,
-        phase_label="排版发报",
-        agent_label="Publisher",
-        role_label="主编排 Agent · 仅 Lark",
-        task_preview="将阶段一 JSON 填入战报（macro_dashboard_push 或三表 GFM），双群推送",
-        max_iterations=mi_phase3,
-    )
-    append_pmo_debug_agent_begin(
-        agent_label="Publisher",
-        role_label="主编排 Agent · 仅 Lark",
-        task_preview="三表 GFM 排版 + atom_lark_notifier 双群推送",
-        max_iterations=mi_phase3,
-    )
-    _pmo_step = _make_pmo_on_step_writer(_debug_path)
-    ans = await run_agent(
-        publisher_msg,
-        engine,
-        max_iterations=mi_phase3,
-        _allowed_skills_override=publisher_allow,
-        _system_prompt_override=full_system,
-        gateway_context_bundle=bundle,
-        implicit_attribution=implicit,
-        on_step=_pmo_step,
-    )
-    try:
-        from l3_node.pmo_copilot_debug_file import append_pmo_debug_agent_finish
+    push_result = run_macro_dashboard_push(project_root=ROOT)
+    push_st = str(push_result.get("status") or "").lower()
+    if push_st in ("success", "ok", "partial"):
+        ans = _format_macro_dashboard_push_answer(push_result)
+        finalize_pmo_debug_log(ans)
+        print("\n--- Final Answer ---\n", ans.strip())
+        await asyncio.sleep(0.5)
+        return 0 if push_st in ("success", "ok") else 1
 
-        append_pmo_debug_agent_finish(
-            agent_label="Publisher",
-            ok=bool((ans or "").strip()),
-            result_preview=str(ans or "")[:300],
-        )
-    except Exception:
-        pass
+    print(
+        f"[pmo-copilot] macro_dashboard_push 未成功（{push_result.get('error') or push_st}），"
+        "回退 Publisher Agent…",
+        flush=True,
+    )
+    ans, _ = await _run_pmo_phase3_publisher_agent(
+        workflow=workflow,
+        engine=engine,
+        publisher_msg=publisher_msg,
+        implicit=implicit,
+        bundle=bundle,
+        publisher_allow=publisher_allow,
+        skill_path=skill_path,
+        meta=meta,
+        skill_body=skill_body,
+        mi_phase3=mi_phase3,
+        _debug_path=_debug_path,
+        _on_status=_on_status,
+        log=log,
+    )
     finalize_pmo_debug_log(ans or workflow.format_summary())
     print("\n--- Final Answer ---\n", (ans or "").strip())
     await asyncio.sleep(0.5)

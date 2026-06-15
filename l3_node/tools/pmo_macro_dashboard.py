@@ -361,13 +361,10 @@ def _send_markdown_card_to_chat(
     os.environ["LARK_USE_FEISHU"] = "0"
     from l3_node.channels.lark.client import LARK_API_BASE_DEFAULT
     from l3_node.channels.lark.im import send_interactive_card, send_markdown_card
-    from l3_node.pmo_report_format import PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND
-    from l3_node.channels.lark.md_native_table_card import build_schema_v2_card_from_markdown
+    from l3_node.channels.lark.md_native_table_card import build_pmo_war_report_schema_v2_card
 
     api_base = LARK_API_BASE_DEFAULT
-    v2 = build_schema_v2_card_from_markdown(
-        markdown, title, max_tables=5, table_page_size=PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND
-    )
+    v2 = build_pmo_war_report_schema_v2_card(markdown, title)
     if v2 is not None:
         result = send_interactive_card(
             chat_id,

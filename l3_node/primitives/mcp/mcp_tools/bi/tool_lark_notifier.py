@@ -155,11 +155,12 @@ def send_lark_markdown(
             _chat_id = ""
 
     _mc_raw = markdown_content or ""
-    if _mc_raw and (
-        "需求进度全览" in _mc_raw
-        or "人员任务矩阵" in _mc_raw
-        or "Executive Summary" in _mc_raw
-    ):
+    try:
+        from l3_node.channels.lark.md_native_table_card import is_pmo_war_report_markdown
+    except ImportError:
+        is_pmo_war_report_markdown = lambda _s: False  # type: ignore[assignment,misc]
+
+    if _mc_raw and is_pmo_war_report_markdown(_mc_raw):
         try:
             from l3_node.pmo_report_format import polish_pmo_war_report_markdown
 
@@ -172,20 +173,32 @@ def send_lark_markdown(
 
     use_native = _truthy_native_table(native_table_card, cfg) and not chart_spec
     if use_native:
-        from l3_node.channels.lark.md_native_table_card import build_schema_v2_card_from_markdown
+        from l3_node.channels.lark.md_native_table_card import (
+            build_pmo_war_report_schema_v2_card,
+            build_schema_v2_card_from_markdown,
+            is_pmo_war_report_markdown,
+        )
 
         try:
             _mt = int((os.environ.get("JACHIN_LARK_NATIVE_TABLE_MAX") or "5").strip() or "5")
         except ValueError:
             _mt = 5
         _mt = max(1, min(_mt, 5))
-        _ps = _native_table_page_size(cfg)
-        v2 = build_schema_v2_card_from_markdown(
-            markdown_content or "",
-            title,
-            max_tables=_mt,
-            table_page_size=_ps,
-        )
+        if is_pmo_war_report_markdown(_mc_raw):
+            v2 = build_pmo_war_report_schema_v2_card(
+                markdown_content or "",
+                title,
+                polish=False,
+                max_tables=_mt,
+            )
+        else:
+            _ps = _native_table_page_size(cfg)
+            v2 = build_schema_v2_card_from_markdown(
+                markdown_content or "",
+                title,
+                max_tables=_mt,
+                table_page_size=_ps,
+            )
         if v2 is None:
             mc = markdown_content or ""
             if mc.count("|") >= 15:

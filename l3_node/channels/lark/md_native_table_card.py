@@ -223,6 +223,55 @@ def _table_element(
     return table_obj
 
 
+def is_pmo_war_report_markdown(markdown_content: str) -> bool:
+    """PMO 宏观看板三表正文（推送前 polish + native_table 尺寸 SSOT）。"""
+    mc = markdown_content or ""
+    return any(
+        k in mc
+        for k in (
+            "需求进度全览",
+            "人员任务矩阵",
+            "版本发布需求映射",
+            "Executive Summary",
+        )
+    )
+
+
+def build_pmo_war_report_schema_v2_card(
+    markdown_content: str,
+    title: str | None = None,
+    *,
+    polish: bool = True,
+    max_tables: int = 5,
+) -> dict[str, Any] | None:
+    """
+    PMO 战报飞书卡片 SSOT（与 ``push_pmo_macro_dashboard_lark`` / ``core:pmo_macro_dashboard_push`` 一致）：
+    polish → native_table 列宽/行高/分页 → schema 2.0 + width_mode default。
+    """
+    mc = (markdown_content or "").strip()
+    if not mc:
+        return None
+    if polish and is_pmo_war_report_markdown(mc):
+        try:
+            from l3_node.pmo_report_format import polish_pmo_war_report_markdown
+
+            mc = polish_pmo_war_report_markdown(mc)
+        except ImportError:
+            pass
+    try:
+        from l3_node.pmo_report_format import PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND
+
+        page_size = int(PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND)
+    except ImportError:
+        page_size = 4
+    return build_schema_v2_card_from_markdown(
+        mc,
+        title,
+        max_tables=max(1, min(int(max_tables), 5)),
+        table_page_size=max(1, min(page_size, 10)),
+    )
+
+
 def build_schema_v2_card_from_markdown(
     markdown_content: str,
     title: str | None = None,

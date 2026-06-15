@@ -3755,6 +3755,11 @@ NATIVE_TOOL_IDS = (
 RECALL_MEMORY_TOOL_ID = "recall_memory"
 COORDINATE_TOOL_ID = "coordinate"
 
+from l3_node.primitives.multi_agent.verification_agent import (
+    VERIFICATION_SYSTEM_PROMPT,
+    VERIFICATION_TOOLS_WITH_EXEC,
+)
+
 # 子 Agent 角色预设（分身时使用）
 SUB_AGENT_PROMPTS: dict[str, str] = {
     "coder": (
@@ -3786,7 +3791,9 @@ SUB_AGENT_PROMPTS: dict[str, str] = {
         "你是代码审查专家，负责检查代码质量、安全性和可维护性。"
         "使用 core:fs_read 读取待审查文件，core:shell_exec 运行静态检查工具。"
         "完成后按「严重/警告/建议」三级分类输出审查意见，并标注具体行号或文件路径。"
+        "（若需对抗性验证交付物是否真的能 work，请使用 role=verification 而非 reviewer。）"
     ),
+    "verification": VERIFICATION_SYSTEM_PROMPT,
     "summarizer": (
         "你是文档摘要专家，负责从大量文本中提炼关键信息。"
         "使用 core:fs_read 读取文件内容。"
@@ -3833,6 +3840,7 @@ SUB_AGENT_ALLOWED_SKILLS: dict[str, list[str]] = {
     ],
     "planner": ["core:fs_read", "core:local_memory_search"],
     "reviewer": ["core:fs_read", "core:shell_exec", "core:shell_job_status"],
+    "verification": list(VERIFICATION_TOOLS_WITH_EXEC),
     "summarizer": ["core:fs_read", "core:local_memory_search"],
     "data_processor": [
         "core:fs_read", "core:fs_write",
@@ -5625,6 +5633,7 @@ Action Input: {"sub_tasks": [{"role": "<角色>", "task": "<任务描述>", "con
 - analyst      → 数据分析、指标提炼（可用 fs_read/shell_exec）
 - planner      → 复杂任务拆解与规划（可用 fs_read）
 - reviewer     → 代码审查、质量检查（可用 fs_read/shell_exec）
+- verification → **对抗性验证**：跑测试/构建证明交付物是否 work；必须输出 VERDICT: PASS/FAIL/PARTIAL（可用 fs_read/shell_exec）
 - summarizer   → 文档摘要、要点提炼（可用 fs_read）
 - data_processor → 数据清洗与格式转换（可用 fs_read/fs_write/shell_exec）
 - tester       → 编写和执行测试用例（可用 fs_read/fs_write/shell_exec）
@@ -5638,7 +5647,10 @@ Action Input: {"sub_tasks": [{"role": "<角色>", "task": "<任务描述>", "con
 **讨论/辩论模式（mode: discuss）** — 适用于需要多角度评审的复杂决策：
 Action: delegate
 Action Input: {"mode": "discuss", "topic": "议题描述", "context": "背景信息", "roles": ["planner", "critic"], "max_rounds": 3}
-多轮流程：planner 提初稿 → critic 质疑 → planner 修订（重复直到 critic 无新质疑或达到 max_rounds）→ summarizer 输出最终共识。"""
+多轮流程：planner 提初稿 → critic 质疑 → planner 修订（重复直到 critic 无新质疑或达到 max_rounds）→ summarizer 输出最终共识。
+
+**实现后验证（推荐）** — 代码/报告改完后，用 **fresh spawn** 的 verification 角色独立验证（禁止让实现者自证）：
+{"sub_tasks": [{"role": "verification", "task": "验证上述实现：跑测试/构建，列出阻断项，Final Answer 含 VERDICT: PASS/FAIL/PARTIAL"}]}"""
         try:
             from l3_node.agent_roles_loader import format_role_pool_delegate_addon
 
