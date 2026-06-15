@@ -19,10 +19,12 @@ def test_compact_completion_five_blocks():
     assert format_compact_completion_cell("[▓▓▓▓▓░░░░░] 51%") == "▓▓▓░░ 51%"
 
 
-def test_workflow_status_drops_parenthetical():
+def test_workflow_status_keeps_parenthetical():
     s = "🔵 立项/评审 · 需求评审（美术 1/1 · 产品 3/4）"
-    assert "（" not in format_workflow_status_cell(s)
-    assert "需求评审" in format_workflow_status_cell(s)
+    out = format_workflow_status_cell(s)
+    assert "（" in out
+    assert "美术 1/1" in out
+    assert "需求评审" in out
 
 
 def test_personnel_tasks_compact_no_br():
@@ -41,25 +43,25 @@ def test_polish_demand_compact_time():
     out = polish_demand_table_in_markdown(mc)
     assert "2026/" not in out
     assert "06/01→06/07" in out
-    assert "（技术" not in out
+    assert "（技术" in out
 
 
-def test_table_element_row_height_low():
+def test_table_element_row_height_auto():
     matrix = [
         ["优先级", "需求名称", "时间跨度", "参与人", "完成度", "状态"],
         ["P0", "FB外跳", "06/01→06/02", "Gavin", "▓▓▓░░ 51%", "🔵 开发中"],
     ]
     el = _table_element(matrix, element_id="t0")
-    assert el["row_height"] == "low"
+    assert el["row_height"] == "auto"
 
 
-def test_table_element_personnel_row_height_low_with_hover_payload():
+def test_table_element_personnel_row_height_auto_with_multiline_tasks():
     matrix = [
         ["人员", "负责需求（含优先级）", "状态预警"],
         ["Gavin", "【P0】A · 开发<br>【P1】B · 完成", "🚨 延期"],
     ]
     el = _table_element(matrix, element_id="t1")
-    assert el["row_height"] == "low"
+    assert el["row_height"] == "auto"
     task_col = el["columns"][1]
     assert task_col["data_type"] == "lark_md"
     row_val = list(el["rows"][0].values())[1]

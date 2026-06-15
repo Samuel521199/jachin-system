@@ -122,8 +122,11 @@ def build_macro_dashboard_markdown(
     release_mapping_section: str | None = None,
 ) -> str:
     """从 Worker B/C JSON 组装宏观看板 GFM（未 polish）。"""
-    current_sprint = worker_b.get("current_sprint") or worker_c.get("current_sprint")
-    cs_date = worker_b.get("current_sprint_date") or ""
+    from l3_node.tools.pmo_sprint_query import apply_war_report_current_sprint
+
+    apply_war_report_current_sprint(worker_b, worker_c, refresh_from_db=False)
+    current_sprint = worker_c.get("current_sprint") or worker_b.get("current_sprint")
+    cs_date = worker_c.get("current_sprint_date") or worker_b.get("current_sprint_date") or ""
     from l3_node.tools.pmo_dates import pmo_today_date
 
     today = pmo_today_date()
@@ -305,7 +308,9 @@ def fetch_worker_bc_json() -> tuple[dict[str, Any], dict[str, Any]]:
     os.environ.setdefault("PMO_WAR_REPORT_VISUAL", PMO_WAR_REPORT_VISUAL_FIG1)
     worker_b = run_worker_b_host_bootstrap()
     worker_c = run_worker_c_host_bootstrap()
-    worker_b["current_sprint"] = worker_b.get("current_sprint") or worker_c.get("current_sprint")
+    from l3_node.tools.pmo_sprint_query import apply_war_report_current_sprint
+
+    apply_war_report_current_sprint(worker_b, worker_c, refresh_from_db=True)
     return worker_b, worker_c
 
 
@@ -356,10 +361,13 @@ def _send_markdown_card_to_chat(
     os.environ["LARK_USE_FEISHU"] = "0"
     from l3_node.channels.lark.client import LARK_API_BASE_DEFAULT
     from l3_node.channels.lark.im import send_interactive_card, send_markdown_card
+    from l3_node.pmo_report_format import PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND
     from l3_node.channels.lark.md_native_table_card import build_schema_v2_card_from_markdown
 
     api_base = LARK_API_BASE_DEFAULT
-    v2 = build_schema_v2_card_from_markdown(markdown, title, max_tables=5, table_page_size=4)
+    v2 = build_schema_v2_card_from_markdown(
+        markdown, title, max_tables=5, table_page_size=PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND
+    )
     if v2 is not None:
         result = send_interactive_card(
             chat_id,
@@ -450,12 +458,12 @@ def run_macro_dashboard_preview(
     epics = [
         e
         for e in (worker_c.get("epics") or [])
-        if str(e.get("sprint") or "") == str(worker_b.get("current_sprint") or "")
+        if str(e.get("sprint") or "") == str(worker_c.get("current_sprint") or worker_b.get("current_sprint") or "")
     ]
     n_people = worker_b.get("summary", {}).get("person_count") or len(worker_b.get("by_person") or {})
     return {
         "status": "ok",
-        "current_sprint": worker_b.get("current_sprint"),
+        "current_sprint": worker_c.get("current_sprint") or worker_b.get("current_sprint"),
         "epic_count": len(epics),
         "person_count": n_people,
         "title": title or f"【K11 · PMO 宏观看板】{datetime.now():%Y-%m-%d}",
@@ -532,13 +540,13 @@ def run_macro_dashboard_push(
     epics = [
         e
         for e in (worker_c.get("epics") or [])
-        if str(e.get("sprint") or "") == str(worker_b.get("current_sprint") or "")
+        if str(e.get("sprint") or "") == str(worker_c.get("current_sprint") or worker_b.get("current_sprint") or "")
     ]
     n_people = worker_b.get("summary", {}).get("person_count") or len(worker_b.get("by_person") or {})
 
     base: dict[str, Any] = {
         "status": "ok",
-        "current_sprint": worker_b.get("current_sprint"),
+        "current_sprint": worker_c.get("current_sprint") or worker_b.get("current_sprint"),
         "epic_count": len(epics),
         "person_count": n_people,
         "title": card_title,

@@ -12,6 +12,7 @@ export interface ImChannelEntry {
   mode?: string;
   app_id?: string;
   chat_ids?: string[];
+  exclusive_sessions?: boolean;
   domain?: string;
 }
 
@@ -97,11 +98,13 @@ function ChatIdListEditor({
   onChange,
   disabled,
   emptyHint,
+  exclusiveSessions,
 }: {
   ids: string[];
   onChange: (next: string[]) => void;
   disabled?: boolean;
   emptyHint: string;
+  exclusiveSessions: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [feedback, setFeedback] = useState<ChatIdFeedback>(null);
@@ -224,7 +227,9 @@ function ChatIdListEditor({
 
       {ids.length > 0 && (
         <p className="text-[11px] text-slate-600">
-          已绑定 {ids.length} 个会话；未在任意电脑声明的会话仍由本机（默认节点）处理。
+          {exclusiveSessions
+            ? `已绑定 ${ids.length} 个会话；白名单模式下仅处理上述会话。`
+            : `已标记 ${ids.length} 个会话；当前为默认节点，仍处理长连接上的全部会话。`}
         </p>
       )}
     </div>
@@ -242,6 +247,8 @@ export function LarkLongConnectionSettings() {
   const [bitableEnabled, setBitableEnabled] = useState(false);
   const [larkChatIds, setLarkChatIds] = useState<string[]>([]);
   const [larkHrChatIds, setLarkHrChatIds] = useState<string[]>([]);
+  const [larkExclusiveSessions, setLarkExclusiveSessions] = useState(true);
+  const [larkHrExclusiveSessions, setLarkHrExclusiveSessions] = useState(true);
   const [domain, setDomain] = useState("https://open.feishu.cn");
 
   const load = useCallback(async () => {
@@ -253,8 +260,12 @@ export function LarkLongConnectionSettings() {
       setLarkEnabled(Boolean(cfg.lark?.enabled));
       setLarkHrEnabled(Boolean(cfg.lark_hr?.enabled));
       setBitableEnabled(Boolean(cfg.lark_pmo_bitable?.enabled));
-      setLarkChatIds(dedupeChatIds(cfg.lark?.chat_ids ?? []));
-      setLarkHrChatIds(dedupeChatIds(cfg.lark_hr?.chat_ids ?? []));
+      const larkIds = dedupeChatIds(cfg.lark?.chat_ids ?? []);
+      const hrIds = dedupeChatIds(cfg.lark_hr?.chat_ids ?? []);
+      setLarkChatIds(larkIds);
+      setLarkHrChatIds(hrIds);
+      setLarkExclusiveSessions(cfg.lark?.exclusive_sessions ?? larkIds.length > 0);
+      setLarkHrExclusiveSessions(cfg.lark_hr?.exclusive_sessions ?? hrIds.length > 0);
       setDomain(cfg.lark?.domain || cfg.lark_hr?.domain || "https://open.feishu.cn");
     } catch (e) {
       setError(String(e));
@@ -279,6 +290,8 @@ export function LarkLongConnectionSettings() {
             mode: "long_connection",
             app_id: "",
             chat_ids: dedupeChatIds(larkChatIds),
+            exclusive_sessions:
+              dedupeChatIds(larkChatIds).length > 0 ? larkExclusiveSessions : false,
             domain,
           },
           lark_hr: {
@@ -286,6 +299,8 @@ export function LarkLongConnectionSettings() {
             mode: "long_connection",
             app_id: "",
             chat_ids: dedupeChatIds(larkHrChatIds),
+            exclusive_sessions:
+              dedupeChatIds(larkHrChatIds).length > 0 ? larkHrExclusiveSessions : false,
             domain,
           },
           lark_pmo_bitable: {
@@ -348,15 +363,27 @@ export function LarkLongConnectionSettings() {
           onChange={setLarkEnabled}
           disabled={saving}
         />
+        <Toggle
+          label="仅处理下方绑定的会话（白名单，推荐）"
+          checked={larkExclusiveSessions}
+          onChange={setLarkExclusiveSessions}
+          disabled={saving || larkChatIds.length === 0}
+        />
         <div>
           <label className="block text-xs text-slate-400 mb-2 font-medium">
-            本机明确绑定的会话（可选）
+            本机绑定的会话
           </label>
           <ChatIdListEditor
             ids={larkChatIds}
-            onChange={setLarkChatIds}
+            onChange={(next) => {
+              setLarkChatIds(next);
+              if (next.length > 0 && !larkExclusiveSessions) {
+                setLarkExclusiveSessions(true);
+              }
+            }}
             disabled={saving}
-            emptyHint="尚未绑定专属会话。开启长连接后，本机作为默认节点，处理所有推送到此连接的会话（含未被其他电脑声明的私聊/群聊）。"
+            exclusiveSessions={larkExclusiveSessions}
+            emptyHint="尚未绑定会话。未配置 chat_id 时，本机作为默认节点处理长连接上的全部会话。"
           />
         </div>
       </div>
@@ -372,18 +399,30 @@ export function LarkLongConnectionSettings() {
           onChange={setLarkHrEnabled}
           disabled={saving}
         />
+        <Toggle
+          label="仅处理下方绑定的 HR 会话（白名单，推荐）"
+          checked={larkHrExclusiveSessions}
+          onChange={setLarkHrExclusiveSessions}
+          disabled={saving || larkHrChatIds.length === 0}
+        />
         <p className="text-xs text-slate-500">
           与主机器人<strong className="text-slate-400">不同飞书应用</strong>时单独开启；同一应用则只开「主机器人」即可。
         </p>
         <div>
           <label className="block text-xs text-slate-400 mb-2 font-medium">
-            HR 本机明确绑定的会话（可选）
+            HR 本机绑定的会话
           </label>
           <ChatIdListEditor
             ids={larkHrChatIds}
-            onChange={setLarkHrChatIds}
+            onChange={(next) => {
+              setLarkHrChatIds(next);
+              if (next.length > 0 && !larkHrExclusiveSessions) {
+                setLarkHrExclusiveSessions(true);
+              }
+            }}
             disabled={saving}
-            emptyHint="尚未绑定 HR 专属会话。开启后本机同样作为默认节点处理未声明的 HR 会话。"
+            exclusiveSessions={larkHrExclusiveSessions}
+            emptyHint="尚未绑定 HR 会话。未配置 chat_id 时，本机作为默认节点处理全部 HR 会话。"
           />
         </div>
       </div>

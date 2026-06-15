@@ -54,7 +54,11 @@ class TestPmoLarkPushGuard(unittest.TestCase):
         install.mkdir()
         jachin.mkdir()
         primary = "oc_868fc82317a60ce89744ae51bb7bce91"
-        (jachin / ".env").write_text(f"PMO_PRIMARY_CHAT_ID={primary}\n", encoding="utf-8")
+        monitor = "oc_monitor_from_env"
+        (install / ".env").write_text(
+            f"PMO_PRIMARY_CHAT_ID={primary}\nPMO_MONITOR_CHAT_ID={monitor}\n",
+            encoding="utf-8",
+        )
         ple._PMO_DOTENV_LOADED = False
         with mock.patch.dict(os.environ, {"JACHIN_HOME": str(jachin)}, clear=True), mock.patch(
             "l3_node.paths.get_app_root", return_value=install
@@ -62,7 +66,7 @@ class TestPmoLarkPushGuard(unittest.TestCase):
             ple._PMO_DOTENV_LOADED = False
             allowed = pmo_war_report_allowed_chat_ids()
             self.assertIn(primary, allowed)
-            self.assertIn(PMO_WAR_REPORT_MONITOR_CHAT_ID, allowed)
+            self.assertIn(monitor, allowed)
 
 
 if __name__ == "__main__":

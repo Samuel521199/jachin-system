@@ -39,11 +39,11 @@ class InboundIMChannel(ABC):
         """
         多机共享时，判断本节点是否应处理该 chat_id。
 
-        - 默认（``exclusive_sessions`` 未开）：本机为**默认节点**，处理长连接上的全部会话；
-          ``chat_ids`` 仅标记本机明确绑定的会话，未绑定的会话仍由本机处理。
-        - ``exclusive_sessions=true`` 且 ``chat_ids`` 非空：白名单，仅处理列表内会话。
+        - ``chat_ids`` 非空且 ``exclusive_sessions`` 未显式关闭：白名单，仅处理列表内会话
+          （未写 ``exclusive_sessions`` 时，只要配了 ``chat_ids`` 即默认白名单）。
+        - ``exclusive_sessions=false`` 或未配 ``chat_ids``：本机为**默认节点**，处理全部会话。
         """
-        if not config.get("exclusive_sessions"):
+        if not _effective_exclusive_sessions(config):
             return True
         allowed = config.get("chat_ids")
         if not allowed or not isinstance(allowed, list):
@@ -52,3 +52,23 @@ class InboundIMChannel(ABC):
         if not ids:
             return True
         return (chat_id or "").strip() in ids
+
+
+def _effective_exclusive_sessions(config: dict[str, Any]) -> bool:
+    """
+    是否启用「仅处理 chat_ids 白名单」。
+
+    - 显式 ``exclusive_sessions: true/false`` 以配置为准；
+    - **未写**且 ``chat_ids`` 非空 → 默认 ``True``（与 Desktop 保存行为一致）。
+    """
+    raw = config.get("exclusive_sessions")
+    if raw is not None:
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+        return bool(raw)
+    allowed = config.get("chat_ids")
+    if isinstance(allowed, list):
+        ids = [str(c).strip() for c in allowed if c]
+        if ids:
+            return True
+    return False

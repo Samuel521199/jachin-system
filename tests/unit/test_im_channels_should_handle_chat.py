@@ -23,6 +23,13 @@ def test_exclusive_whitelist_only_listed() -> None:
     assert ch.should_handle_chat(cfg, "oc_other999") is False
 
 
+def test_chat_ids_without_exclusive_defaults_to_whitelist() -> None:
+    ch = _Stub()
+    cfg = {"chat_ids": ["oc_abc123"]}
+    assert ch.should_handle_chat(cfg, "oc_abc123") is True
+    assert ch.should_handle_chat(cfg, "oc_other999") is False
+
+
 def test_empty_chat_ids_always_handle() -> None:
     ch = _Stub()
     assert ch.should_handle_chat({"chat_ids": [], "exclusive_sessions": True}, "oc_x") is True

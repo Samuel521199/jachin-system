@@ -12,6 +12,7 @@ import sqlite3
 from datetime import timedelta
 from typing import Any
 
+from l3_node.pmo_parent_record import parent_text_from_fields
 from l3_node.tools.pmo_dates import pmo_ms_to_iso_date, pmo_today_date
 from l3_node.tools.pmo_db_tools import _DEPT_PLACEHOLDER_ROW_NAMES, _connect, get_pmo_db_path, pmo_mirror_db_ready
 
@@ -54,14 +55,7 @@ def _safe_json(raw: str | None) -> dict[str, Any]:
 
 
 def parent_text(fields: dict[str, Any]) -> str | None:
-    pr = fields.get("父记录")
-    if isinstance(pr, str):
-        s = pr.strip()
-        return s or None
-    if isinstance(pr, list) and pr and isinstance(pr[0], dict):
-        s = str(pr[0].get("text") or "").strip()
-        return s or None
-    return None
+    return parent_text_from_fields(fields)
 
 
 def _status_text(fields: dict[str, Any]) -> str | None:
@@ -687,3 +681,91 @@ def run_resolve_sprint(
         "candidates": [],
         "message": "无匹配 Sprint；请检查 label/sprint_date",
     }
+
+
+def resolve_war_report_current_sprint(
+    worker_b: dict[str, Any] | None = None,
+    worker_c: dict[str, Any] | None = None,
+    *,
+    today: str | None = None,
+    refresh_from_db: bool = True,
+    source_view: str = _DEFAULT_SOURCE_VIEW,
+) -> tuple[str | None, str | None, dict[str, Any]]:
+    """
+    战报「本周 Sprint」：以 **开发 Epic 表 (vewpI8lyYw · Worker C)** 为 SSOT，
+    按 ``sprint_date <= today`` 取最大一行；**不**以可能滞后的人员看板 (Worker B) 为准。
+    """
+    from l3_node.tools.pmo_personnel_query import resolve_current_sprint
+
+    worker_b = worker_b or {}
+    worker_c = worker_c or {}
+    meta: dict[str, Any] = {"ssot_view": source_view}
+
+    if refresh_from_db:
+        try:
+            if pmo_mirror_db_ready():
+                rows = list_recent_sprints(source_view=source_view)
+                cs, cs_date, rmeta = resolve_current_sprint(rows, today=today)
+                meta.update(rmeta)
+                if cs:
+                    meta["resolved_from"] = "dev_view_db_c1"
+                    if worker_b.get("current_sprint") and worker_b.get("current_sprint") != cs:
+                        meta["personnel_board_sprint"] = worker_b.get("current_sprint")
+                    return cs, cs_date, meta
+        except Exception as exc:
+            meta["db_refresh_error"] = str(exc)
+
+    c_rows = worker_c.get("recent_sprints") or []
+    cs, cs_date, rmeta = resolve_current_sprint(c_rows, today=today)
+    meta.update(rmeta)
+    if cs:
+        meta["resolved_from"] = "worker_c_recent_sprints"
+        if worker_b.get("current_sprint") and worker_b.get("current_sprint") != cs:
+            meta["personnel_board_sprint"] = worker_b.get("current_sprint")
+        return cs, cs_date, meta
+
+    cs = worker_c.get("current_sprint")
+    cs_date = worker_c.get("current_sprint_date")
+    if cs:
+        meta["resolved_from"] = "worker_c_explicit"
+        if worker_b.get("current_sprint") and worker_b.get("current_sprint") != cs:
+            meta["personnel_board_sprint"] = worker_b.get("current_sprint")
+        return str(cs).strip() or None, (str(cs_date).strip()[:10] if cs_date else None), meta
+
+    b_rows = worker_b.get("recent_sprints") or []
+    cs, cs_date, rmeta = resolve_current_sprint(b_rows, today=today)
+    meta.update(rmeta)
+    if cs:
+        meta["resolved_from"] = "worker_b_recent_sprints_fallback"
+        return cs, cs_date, meta
+
+    cs = worker_b.get("current_sprint")
+    cs_date = worker_b.get("current_sprint_date")
+    meta["resolved_from"] = "worker_b_explicit_fallback"
+    return (str(cs).strip() or None if cs else None), (str(cs_date).strip()[:10] if cs_date else None), meta
+
+
+def apply_war_report_current_sprint(
+    worker_b: dict[str, Any],
+    worker_c: dict[str, Any],
+    *,
+    today: str | None = None,
+    refresh_from_db: bool = True,
+) -> tuple[str | None, str | None]:
+    """将战报用 current_sprint 写入 B/C 字典（二者对齐为开发表 SSOT）。"""
+    cs, cs_date, meta = resolve_war_report_current_sprint(
+        worker_b,
+        worker_c,
+        today=today,
+        refresh_from_db=refresh_from_db,
+    )
+    if cs:
+        worker_b["current_sprint"] = cs
+        worker_c["current_sprint"] = cs
+    if cs_date:
+        worker_b["current_sprint_date"] = cs_date
+        worker_c["current_sprint_date"] = cs_date
+    worker_b["_war_report_sprint_meta"] = meta
+    worker_c["_war_report_sprint_meta"] = meta
+    return cs, cs_date
+

@@ -1,12 +1,11 @@
 ﻿"""
 PMO 飞书会话 chat_id 与项目根 ``.env`` 加载 SSOT。
 
-**PMO 群 ID 读取优先级**（后者覆盖前者，避免安装包内置 dev 群盖过本机配置）：
-1. 进程环境变量（若已显式注入）
-2. ``{JACHIN_APP_ROOT}/.env``（安装目录）
-3. ``~/.jachin/.env``（本机覆盖，**推荐打包机改这里**）
+**打包机配置（与 Jachin Desktop.exe 同级 ``.env``）** 建议填写：
+``LARK_APP_ID`` / ``LARK_APP_SECRET``、``PMO_PRIMARY_CHAT_ID``、``PMO_MONITOR_CHAT_ID``、
+``PMO_CHANGE_ALERT_CHAT_ID`` / ``PMO_CHANGE_ALERT_MONITOR_CHAT_ID``。
 
-战报 **主群** 仅 ``PMO_PRIMARY_CHAT_ID`` / 飞书触发会话；**监控群** 代码写死（见 ``pmo_lark_push_guard``）。
+**读取优先级**（同名键）：``~/.jachin/.env`` 覆盖安装目录 ``.env``，再覆盖进程环境变量。
 """
 from __future__ import annotations
 
@@ -15,15 +14,18 @@ import os
 import re
 from pathlib import Path
 
-from l3_node.pmo_lark_push_guard import PMO_WAR_REPORT_MONITOR_CHAT_ID
-
 logger = logging.getLogger(__name__)
+
+# 战报/预警监控群内置默认（未配 PMO_MONITOR_CHAT_ID / PMO_CHANGE_ALERT_MONITOR_CHAT_ID 时）
+DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID = "oc_0e321f92d758ecb44aea5b499c90510b"
 
 # 变更预警内置默认（战报主群无内置默认）
 DEFAULT_PMO_CHANGE_ALERT_CHAT_ID = "oc_b1b9cff6804517c79b7f5a617ab30483"
 
 _PMO_DOTENV_LOADED = False
 _PMO_ENV_KEY_NAMES = (
+    "LARK_APP_ID",
+    "LARK_APP_SECRET",
     "PMO_PRIMARY_CHAT_ID",
     "PMO_MONITOR_CHAT_ID",
     "PMO_PUSH_MONITOR",
@@ -138,8 +140,12 @@ def pmo_effective_primary_chat_id(session_chat_id: str = "") -> str:
 
 
 def pmo_monitor_chat_id() -> str:
-    """战报监控群：代码写死，不读 .env ``PMO_MONITOR_CHAT_ID``。"""
-    return PMO_WAR_REPORT_MONITOR_CHAT_ID
+    """战报监控群：优先 ``PMO_MONITOR_CHAT_ID``（安装根 ``.env``），否则内置默认。"""
+    val, src = _resolve_pmo_env_key("PMO_MONITOR_CHAT_ID")
+    if val:
+        logger.debug("[PMO env] PMO_MONITOR_CHAT_ID=%s from %s", val, src)
+        return val
+    return DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID
 
 
 def pmo_push_monitor_enabled() -> bool:
@@ -170,13 +176,15 @@ def pmo_delivery_targets_debug(session_chat_id: str = "") -> dict[str, str]:
         f"session:{session_chat_id}" if session_chat_id else "unset"
     )
     targets = pmo_required_delivery_chat_ids(session_chat_id)
+    mon = pmo_monitor_chat_id()
+    _, mon_src = _resolve_pmo_env_key("PMO_MONITOR_CHAT_ID")
     return {
         "PMO_PRIMARY_CONFIGURED": primary or "(empty)",
         "PMO_PRIMARY_SOURCE": primary_src or "(none)",
         "PMO_EFFECTIVE_PRIMARY": effective or "(empty)",
         "PMO_EFFECTIVE_SOURCE": eff_src,
-        "PMO_MONITOR_CHAT_ID": PMO_WAR_REPORT_MONITOR_CHAT_ID,
-        "PMO_MONITOR_SOURCE": "code:pmo_lark_push_guard",
+        "PMO_MONITOR_CHAT_ID": mon,
+        "PMO_MONITOR_SOURCE": mon_src or "code:default_pmo_war_report_monitor",
         "PMO_PUSH_MONITOR": "1" if pmo_push_monitor_enabled() else "0",
         "PMO_DELIVERY_TARGETS": ",".join(targets) if targets else "(none)",
     }
@@ -195,7 +203,7 @@ def pmo_change_alert_monitor_chat_id() -> str:
             "PMO_CHANGE_ALERT_MONITOR_CHAT_ID",
             "PMO_BITABLE_WATCH_MONITOR_CHAT_ID",
         )
-        or PMO_WAR_REPORT_MONITOR_CHAT_ID
+        or DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID
     )
 
 

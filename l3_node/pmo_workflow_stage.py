@@ -131,10 +131,10 @@ def infer_epic_workflow_completion_pct(
 
 
 def format_workflow_progress_bar(pct: int) -> str:
-    """10 格进度条 + 百分比（📊 完成度列 SSOT）。"""
+    """10 格进度条 + 百分比（📊 完成度列 SSOT）；``\\u00a0`` 避免条与 % 折行。"""
     pct = max(0, min(100, int(pct)))
     filled = round(pct / 10)
-    return f"[{'▓' * filled}{'░' * (10 - filled)}] {pct}%"
+    return f"[{'▓' * filled}{'░' * (10 - filled)}]\u00a0{pct}%"
 
 
 def infer_task_workflow_step(task: dict[str, Any]) -> tuple[int, str, str]:

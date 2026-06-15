@@ -132,7 +132,7 @@ def _apply_pmo_column_layout(
             col["width"] = widths[ci]
         h = header_cells[ci] if ci < len(header_cells) else ""
         if profile == "demand" and "完成度" in h:
-            col["data_type"] = "lark_md"
+            col["data_type"] = "text"
         elif profile == "personnel" and (
             "负责需求" in h or "任务" in h
         ):
@@ -271,7 +271,11 @@ def build_schema_v2_card_from_markdown(
 
     card: dict[str, Any] = {
         "schema": "2.0",
-        "config": {"wide_screen_mode": True, "enable_forward": True},
+        "config": {
+            "wide_screen_mode": True,
+            "enable_forward": True,
+            "width_mode": "fill",
+        },
         "body": {"elements": elements},
     }
     t = (title or "").strip()[:100]

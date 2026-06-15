@@ -42,6 +42,7 @@ fn default_channel(enabled: bool) -> ImChannelEntry {
         mode: Some("long_connection".to_string()),
         app_id: String::new(),
         chat_ids: Vec::new(),
+        exclusive_sessions: true,
         domain: Some("https://open.feishu.cn".to_string()),
     }
 }
@@ -68,8 +69,15 @@ pub struct ImChannelEntry {
     pub app_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chat_ids: Vec<String>,
+    /// true = 仅处理 chat_ids 白名单；保存时默认 true（与 L3 should_handle_chat 缺省一致）
+    #[serde(default = "default_exclusive_sessions")]
+    pub exclusive_sessions: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+}
+
+fn default_exclusive_sessions() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -172,6 +180,11 @@ fn merge_channel(existing: &ImChannelEntry, patch: &ImChannelEntry) -> ImChannel
             patch.app_id.clone()
         },
         chat_ids: patch.chat_ids.clone(),
+        exclusive_sessions: if patch.chat_ids.is_empty() {
+            false
+        } else {
+            patch.exclusive_sessions
+        },
         domain: patch
             .domain
             .clone()

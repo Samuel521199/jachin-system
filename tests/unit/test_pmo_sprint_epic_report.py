@@ -16,6 +16,15 @@ def test_parent_text_string_and_array():
     assert sq.parent_text({"父记录": [{"text": "游戏加载"}]}) == "游戏加载"
     assert sq.parent_text({"父记录": None}) is None
     assert sq.parent_text({}) is None
+    assert sq.parent_text({"父记录": ""}) is None
+    assert sq.parent_text(
+        {
+            "父记录": (
+                '{"table_id": "tblfK9gk6vTQpJtB", "text_arr": [], "type": "text"}'
+            )
+        }
+    ) is None
+    assert sq.parent_text({"父记录": {"text_arr": [], "type": "text"}}) is None
 
 
 def test_is_big_epic_rules():
@@ -24,6 +33,15 @@ def test_is_big_epic_rules():
     )
     assert not sq._is_big_epic({"Requirement": "开发", "父记录": "Epic", "任务编号": "x"})
     assert not sq._is_big_epic({"Requirement": "游戏加载", "父记录": "开发", "任务编号": "K11-1"})
+    assert sq._is_big_epic(
+        {
+            "Requirement": "club",
+            "父记录": (
+                '{"table_id": "tblfK9gk6vTQpJtB", "text_arr": [], "type": "text"}'
+            ),
+            "任务编号": "K11-03218",
+        }
+    )
 
 
 def test_run_sprint_epic_report_empty_db(monkeypatch):
@@ -95,6 +113,51 @@ def test_sprint_report_fixture_counts(monkeypatch, tmp_path):
     out_dev_only = sq.run_sprint_epic_report(sprint=sprint, department="development")
     assert out_dev_only["summary"]["dev_task_count"] == 1
     assert out_dev_only["summary"]["product_task_count"] == 0
+
+
+def test_empty_link_json_parent_recognized_as_epic(monkeypatch, tmp_path):
+    """开发机入库：平面表行 父记录=空链接 JSON 字符串，须识别为大需求。"""
+    db = tmp_path / "pmo_empty_link.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE pmo_raw_records (
+            id INTEGER PRIMARY KEY,
+            source_view TEXT,
+            source_file TEXT,
+            row_index INTEGER,
+            raw_text TEXT,
+            fields TEXT,
+            synced_at TEXT
+        )
+        """
+    )
+    sprint = "2026/06/08-Sprint"
+    epic_fields = {
+        "Requirement": "club",
+        "Sprint": sprint,
+        "priority": "P0",
+        "父记录": (
+            '{"table_id": "tblfK9gk6vTQpJtB", "text_arr": [], "type": "text"}'
+        ),
+        "任务编号": "K11-03218",
+    }
+    conn.execute(
+        "INSERT INTO pmo_raw_records (source_view, source_file, row_index, fields, synced_at) "
+        "VALUES (?,?,?,?,?)",
+        ("vewpI8lyYw", "t.md", 10, json.dumps(epic_fields, ensure_ascii=False), "2026-01-01"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(sq, "get_pmo_db_path", lambda: db)
+    monkeypatch.setattr(sq, "pmo_mirror_db_ready", lambda: True)
+    monkeypatch.setattr(sq, "_connect", lambda: sqlite3.connect(db))
+
+    out = sq.run_sprint_epic_report(sprint=sprint)
+    assert out["status"] == "ok"
+    assert out["summary"]["epic_count"] == 1
+    assert out["epics"][0]["epic_name"] == "club"
 
 
 def test_epic_chain_parent_collects_participants(monkeypatch, tmp_path):

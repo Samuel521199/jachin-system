@@ -47,11 +47,11 @@ PMO_DEMAND_TABLE_HEADERS_NATIVE: tuple[str, ...] = (
     "状态",
 )
 PMO_DEMAND_TABLE_COLUMN_WIDTHS_NATIVE: tuple[str, ...] = (
-    "28%",  # 【P0】+ 需求名（图2 首列可见）
-    "12%",  # 06/01→06/03
-    "14%",  # 参与人全名
-    "20%",  # 10 格进度条 + %
-    "26%",  # 泳道状态
+    "19%",  # 【P0】+ 需求名（可折两行）
+    "13%",  # 06/08→06/12 单行（紧凑）
+    "12%",  # 参与人 · 紧凑
+    "19%",  # 10 格进度条 + % 单行（text 列）
+    "37%",  # 泳道状态（含职能括号）
 )
 # 六列 GFM（探针/LLM 草稿）；推送前 polish 折叠为 NATIVE 五列
 PMO_DEMAND_TABLE_COLUMN_WIDTHS_PCT: tuple[str, ...] = (
@@ -63,20 +63,28 @@ PMO_DEMAND_TABLE_COLUMN_WIDTHS_PCT: tuple[str, ...] = (
     "21%",
 )
 PMO_PERSONNEL_TABLE_COLUMN_WIDTHS_PCT: tuple[str, ...] = (
-    "20%",  # 人员 · 冻结首列 + 全名
-    "52%",  # 负责需求 · lark_md 多行
-    "28%",  # 状态预警
+    "9%",   # 人员 · 冻结首列 · 单行姓名
+    "56%",  # 负责需求 · lark_md 多行
+    "35%",  # 状态预警 · 单行紧凑
+)
+# 📦 版本发布需求映射（5 列：# · Epic · Sprint · 完成日期 · 负责人）
+PMO_RELEASE_MAPPING_TABLE_COLUMN_WIDTHS_PCT: tuple[str, ...] = (
+    "6%",   # #
+    "45%",  # 大需求 (Epic)
+    "22%",  # Sprint
+    "9%",   # 完成日期 · MM/DD
+    "18%",  # 负责人
 )
 
-# 飞书 native_table 行高（📊/👥 均 low 单行；任务列用紧凑截断，禁止 <br> 撑高）
-PMO_NATIVE_TABLE_ROW_HEIGHT = "low"
-PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL = "low"
+# 飞书 native_table 行高（auto = 多行完整展示；low = 单行省略靠 hover）
+PMO_NATIVE_TABLE_ROW_HEIGHT = "auto"
+PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL = "auto"
 PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND = 4
-PMO_NATIVE_TABLE_PAGE_SIZE_PERSONNEL = 5
-PMO_EPIC_NAME_CELL_MAX_LEN = 32
-PMO_TIME_SPAN_CELL_MAX_LEN = 14
-PMO_PARTICIPANTS_CELL_MAX_LEN = 42
-PMO_WORKFLOW_STATUS_CELL_MAX_LEN = 36
+PMO_NATIVE_TABLE_PAGE_SIZE_PERSONNEL = 4
+PMO_EPIC_NAME_CELL_MAX_LEN = 96
+PMO_TIME_SPAN_CELL_MAX_LEN = 22
+PMO_PARTICIPANTS_CELL_MAX_LEN = 96
+PMO_WORKFLOW_STATUS_CELL_MAX_LEN = 120
 PMO_PERSONNEL_TASKS_LIST_MAX = 99
 PMO_PERSONNEL_TASK_LINE_MAX_LEN = 56
 PMO_PERSONNEL_ALERT_CELL_MAX_LEN = 48
@@ -87,8 +95,8 @@ PMO_WAR_REPORT_FIG_LAYOUT_SPEC = (
     "**图1~图5 飞书战报锚点（视觉 SSOT · 与产品截图一致）**\n"
     "1. **Executive Summary**：🎯 标题 + 当前 Sprint + 目标版本 K11 + 🟢/🟡 总体状况一句 + 本周期大需求/人员统计一行。\n"
     "2. **📊 需求进度全览**：区块下优先级图例一行；**native 表 5 列**（需求名称·时间·参与人·完成度·状态）；"
-    "需求名称格=`【P0】`+纯名；完成度=10格条+%；状态=`🔵 阶段 · 步骤`（无职能括号长串）。\n"
-    "3. **👥 人员任务矩阵**：3 列；节奏判定副标题；**freeze_first_column**；负责需求列 **全量**（`lark_md` + `<br>`/`\\n`），`row_height=low` 表内单行省略，**hover 展示全部**（飞书原生能力，禁止「等N项」）。\n"
+    "需求名称格=`【P0】`+纯名；完成度=10格条+%；状态=`🔵 阶段 · 步骤`（含职能括号明细）。\n"
+    "3. **👥 人员任务矩阵**：3 列；节奏判定副标题；**freeze_first_column**；负责需求列 **全量**（`lark_md` + `<br>`/`\\n`），`row_height=auto` 多行完整展示。\n"
     "4. **📦 版本映射**：1 行辅表统计即可。\n"
     "5. **禁止**：表头/单元格出现 `...` 省略、横向挤没列、👥「等N项」、手写列宽。\n"
 )
@@ -96,12 +104,12 @@ PMO_WAR_REPORT_FIG_LAYOUT_SPEC = (
 PMO_NATIVE_TABLE_LAYOUT_SPEC = (
     "**飞书 native_table 尺寸（强制 · 代码常量 SSOT，禁止 Agent 猜列宽）**\n"
     + PMO_WAR_REPORT_FIG_LAYOUT_SPEC
-    + f"\n- `row_height`：📊 **`{PMO_NATIVE_TABLE_ROW_HEIGHT}`** · 👥 **`{PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL}`**（禁止 `auto`）\n"
+    + f"\n- `row_height`：📊 **`{PMO_NATIVE_TABLE_ROW_HEIGHT}`** · 👥 **`{PMO_NATIVE_TABLE_ROW_HEIGHT_PERSONNEL}`**（完整展示优先）\n"
     f"- `page_size`：📊 **{PMO_NATIVE_TABLE_PAGE_SIZE_DEMAND}** 行/页 · 👥 **{PMO_NATIVE_TABLE_PAGE_SIZE_PERSONNEL}** 行/页\n"
     f"- 列宽 %：📊 五列 {PMO_DEMAND_TABLE_COLUMN_WIDTHS_NATIVE} · 👥 {PMO_PERSONNEL_TABLE_COLUMN_WIDTHS_PCT}\n"
     f"- 📊：需求名≤{PMO_EPIC_NAME_CELL_MAX_LEN}字（含【P0】前缀）· 时间 `{PMO_TIME_SPAN_CELL_MAX_LEN}` · "
-    f"参与人≤{PMO_PARTICIPANTS_CELL_MAX_LEN}字 · 完成度列 `lark_md` · 10格条\n"
-    f"- 👥：`freeze_first_column=true`；负责需求 **全量** `lark_md`（每条任务一行；表内 `row_height=low` 裁剪，hover 看全）\n"
+    f"参与人≤{PMO_PARTICIPANTS_CELL_MAX_LEN}字 · 完成度列 `text` · 10格条+% 同行\n"
+    f"- 👥：`freeze_first_column=true`；负责需求 **全量** `lark_md`（每条任务一行；`row_height=auto` 多行完整展示）\n"
     "- 推送前 **必** `polish_pmo_war_report_markdown`（含六列→五列折叠）+ `compact_pmo_table_matrix_for_native_table`\n"
 )
 
@@ -116,7 +124,7 @@ PMO_WAR_REPORT_LAYOUT_CONTRACT = (
     "六列 GFM 草稿由 `collapse_demand_table_to_native_fig_layout` 推送前自动折叠。\n"
     "2. 📊 数据：Worker C `epics[]` + `format_demand_table_gfm_row_native` / `sort_epics_for_demand_table`。\n"
     "3. 👥 行序：🚨 延期 → 🚨 进度落后 → 🟡 偏闲 → ⚠️ 数据不足 → ✅ 正常；"
-    "任务列 `format_personnel_matrix_tasks_cell(compact_for_feishu=False)` 全量 + `row_height=low`（表内一行，hover 多行）。\n"
+    "任务列 `format_personnel_matrix_tasks_cell(compact_for_feishu=False)` 全量 + `row_height=auto`。\n"
     "4. 推送：`native_table_card: true`；宿主/MCP 推送前 **必** `polish_pmo_war_report_markdown`。\n"
     "5. **禁止**手写列宽/行高、禁止 `row_height:auto`、禁止把三表放在 ``` 代码围栏内。\n"
     "6. 宏观看板确定性路径：`scripts/push_pmo_macro_dashboard_lark.py` 或 FanOut 后 Publisher 按上规则组装。\n"
@@ -269,10 +277,8 @@ def format_priority_cell_bracket(priority: Any) -> str:
 
 
 def format_workflow_status_cell(status: Any, *, max_len: int = PMO_WORKFLOW_STATUS_CELL_MAX_LEN) -> str:
-    """📊 状态列：紧凑单行（去掉职能括号明细）。"""
+    """📊 状态列：完整泳道文案（保留职能括号明细）。"""
     s = _strip_md_bold(str(status or "")).strip() or "—"
-    if "（" in s:
-        s = s.split("（", 1)[0].strip()
     if len(s) <= max_len:
         return s
     return s[: max_len - 1] + "…"
@@ -330,7 +336,7 @@ def format_fig1_completion_cell(progress: Any) -> str:
     m = re.search(r"(\d+)\s*%", s)
     if m:
         return format_workflow_progress_bar(int(m.group(1)))
-    return s[:20] if s != "—" else "—"
+    return s if s != "—" else "—"
 
 
 def format_compact_completion_cell(progress: Any) -> str:
@@ -366,7 +372,7 @@ def _fig1_demand_row_cells(cells: list[str], header: list[str]) -> list[str]:
     out[time_idx] = format_compact_time_span_cell(out[time_idx])
     out[part_idx] = format_compact_participants_cell(out[part_idx])
     out[prog_idx] = format_fig1_completion_cell(out[prog_idx])
-    out[s_idx] = format_workflow_status_cell(out[s_idx], max_len=40)
+    out[s_idx] = format_workflow_status_cell(out[s_idx])
     return out
 
 
@@ -523,6 +529,8 @@ def detect_pmo_native_table_profile(header_cells: list[str]) -> str | None:
         "状态预警" in joined or "负责需求" in joined or "任务" in joined
     ):
         return "personnel"
+    if "大需求" in joined and "完成日期" in joined and "负责人" in joined:
+        return "release_mapping"
     return None
 
 
@@ -533,6 +541,8 @@ def pmo_native_table_column_widths(profile: str, ncol: int) -> list[str]:
         base = list(PMO_DEMAND_TABLE_COLUMN_WIDTHS_PCT)
     elif profile == "personnel":
         base = list(PMO_PERSONNEL_TABLE_COLUMN_WIDTHS_PCT)
+    elif profile == "release_mapping":
+        base = list(PMO_RELEASE_MAPPING_TABLE_COLUMN_WIDTHS_PCT)
     else:
         base = []
     if not base:

@@ -88,25 +88,27 @@ class TestPmoLarkEnv(unittest.TestCase):
             self.assertFalse(ple.pmo_push_monitor_enabled())
             self.assertEqual(ple.pmo_required_delivery_chat_ids(), (b_primary,))
 
-    def test_push_monitor_dual_delivery_uses_fixed_monitor(self) -> None:
+    def test_push_monitor_dual_delivery_uses_env_monitor(self) -> None:
         ctx = _isolated_pmo_env(
-            jachin_env="PMO_PRIMARY_CHAT_ID=oc_primary\nPMO_MONITOR_CHAT_ID=oc_custom_monitor\n"
+            install_env=(
+                "PMO_PRIMARY_CHAT_ID=oc_primary\n"
+                "PMO_MONITOR_CHAT_ID=oc_custom_monitor\n"
+            ),
         )
         with ctx[0], ctx[1]:
             ple._PMO_DOTENV_LOADED = False
-            from l3_node.pmo_lark_push_guard import PMO_WAR_REPORT_MONITOR_CHAT_ID
-
-            self.assertEqual(ple.pmo_monitor_chat_id(), PMO_WAR_REPORT_MONITOR_CHAT_ID)
+            self.assertEqual(ple.pmo_monitor_chat_id(), "oc_custom_monitor")
             ids = ple.pmo_required_delivery_chat_ids()
-            self.assertEqual(ids, ("oc_primary", PMO_WAR_REPORT_MONITOR_CHAT_ID))
+            self.assertEqual(ids, ("oc_primary", "oc_custom_monitor"))
 
-    def test_fixed_monitor_chat_id(self) -> None:
-        from l3_node.pmo_lark_push_guard import PMO_WAR_REPORT_MONITOR_CHAT_ID
-
+    def test_fixed_monitor_chat_id_default_when_unset(self) -> None:
         ctx = _isolated_pmo_env()
         with ctx[0], ctx[1]:
             ple._PMO_DOTENV_LOADED = False
-            self.assertEqual(ple.pmo_monitor_chat_id(), PMO_WAR_REPORT_MONITOR_CHAT_ID)
+            self.assertEqual(
+                ple.pmo_monitor_chat_id(),
+                ple.DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID,
+            )
 
     def test_session_only_single_delivery(self) -> None:
         b_chat = "oc_367e7998b7dfe39c67d1598101defdfe"

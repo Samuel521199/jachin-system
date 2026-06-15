@@ -10,6 +10,7 @@ from l3_node.pmo_worker_result_backfill import (
     merge_worker_b_result,
     parse_worker_final_json,
     run_worker_b_host_bootstrap,
+    run_worker_c_host_bootstrap,
 )
 
 
@@ -44,7 +45,13 @@ def test_backfill_worker_b_injects_personnel_tasks() -> None:
             return {"status": "ok", "rows": fake_b4}
         return {"status": "ok", "rows": []}
 
-    with patch("l3_node.tools.pmo_db_tools.run_db_query", side_effect=_fake_run):
+    with (
+        patch(
+            "l3_node.tools.pmo_personnel_query.run_personnel_report_for_recent",
+            return_value={"status": "error"},
+        ),
+        patch("l3_node.tools.pmo_db_tools.run_db_query", side_effect=_fake_run),
+    ):
         out = backfill_worker_b(empty_b)
     data = json.loads(out)
     assert len(data["personnel_tasks"]) == 1
@@ -78,8 +85,65 @@ def test_backfill_worker_c_injects_epics() -> None:
             return {"status": "ok", "rows": fake_c2}
         return {"status": "ok", "rows": []}
 
-    with patch("l3_node.tools.pmo_db_tools.run_db_query", side_effect=_fake_run):
+    with (
+        patch(
+            "l3_node.tools.pmo_sprint_query.run_sprint_epic_report_for_recent",
+            return_value={"status": "error", "epics": []},
+        ),
+        patch("l3_node.tools.pmo_db_tools.run_db_query", side_effect=_fake_run),
+    ):
         out = backfill_worker_c(empty_c)
     data = json.loads(out)
     assert data["current_sprint"] == "2026/06/01-Sprint"
     assert data["epics"][0]["epic_name"] == "Epic A"
+
+
+def test_run_worker_c_host_bootstrap_empty_link_epic(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    db = tmp_path / "pmo_c_bootstrap.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE pmo_raw_records (
+            id INTEGER PRIMARY KEY,
+            source_view TEXT,
+            source_file TEXT,
+            row_index INTEGER,
+            raw_text TEXT,
+            fields TEXT,
+            synced_at TEXT
+        )
+        """
+    )
+    sprint = "2026/06/08-Sprint"
+    fields = json.dumps(
+        {
+            "Requirement": "club",
+            "Sprint": sprint,
+            "priority": "P0",
+            "父记录": (
+                '{"table_id": "tblfK9gk6vTQpJtB", "text_arr": [], "type": "text"}'
+            ),
+            "任务编号": "K11-03218",
+        },
+        ensure_ascii=False,
+    )
+    conn.execute(
+        "INSERT INTO pmo_raw_records (source_view, source_file, row_index, fields, synced_at) "
+        "VALUES (?,?,?,?,?)",
+        ("vewpI8lyYw", "t.md", 1, fields, "2026-01-01"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("JACHIN_PMO_DB_PATH", str(db))
+    with patch("l3_node.tools.pmo_db_tools.pmo_mirror_db_ready", return_value=True):
+        seed = run_worker_c_host_bootstrap()
+    cur = [
+        e
+        for e in seed.get("epics") or []
+        if e.get("sprint") == seed.get("current_sprint")
+    ]
+    assert len(cur) == 1
+    assert cur[0]["epic_name"] == "club"

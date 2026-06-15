@@ -327,6 +327,8 @@ const L3_ENV_KEYS: &[&str] = &[
     "L3_VERBOSE_LOG",
     "LOG_LEVEL",
     // PMO 战报推送目标（须注入 L3 侧车；否则仅 Python 读盘 .env 可能晚于 MCP 占位符展开）
+    "LARK_APP_ID",
+    "LARK_APP_SECRET",
     "PMO_PRIMARY_CHAT_ID",
     "PMO_MONITOR_CHAT_ID",
     "PMO_PUSH_MONITOR",

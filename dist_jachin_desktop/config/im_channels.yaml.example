@@ -10,10 +10,10 @@ im_channels:
     mode: long_connection   # long_connection | webhook（当前仅支持 long_connection）
     app_id: ""              # 飞书应用 App ID (cli_xxx)，可从环境变量 LARK_APP_ID 覆盖
     app_secret: ""          # 飞书应用 App Secret，可从 LARK_APP_SECRET 覆盖
-    # 多机共享同一飞书应用：本节点明确绑定的 chat_id（标记用；默认仍处理未分配会话）
-    # exclusive_sessions: true 时变为白名单，仅处理下列 chat_id
+    # 多机共享同一飞书应用：配置 chat_id 后默认白名单（仅处理下列会话）
+    # 显式 exclusive_sessions: false 时 chat_ids 仅作标记，本机仍处理全部会话
     chat_ids: []
-    exclusive_sessions: false
+    exclusive_sessions: true
     domain: "https://open.feishu.cn"   # 飞书中国版；国际版用 https://open.larksuite.com
 
   # HR 招聘专用机器人（独立飞书应用时启用；与 lark 同 app 则保持 false）
@@ -23,7 +23,7 @@ im_channels:
     app_id: ""
     app_secret: ""
     chat_ids: []
-    exclusive_sessions: false
+    exclusive_sessions: true
     domain: "https://open.feishu.cn"
 
   # PMO 多维表变更长连接（非 IM；凭证可回落到 pmo_bitable_watch.yaml）

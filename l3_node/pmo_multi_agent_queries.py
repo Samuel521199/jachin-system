@@ -77,12 +77,10 @@ _WORKER_B_SELF_HEAL_BLOCK = (
     "Thought 开头写「已完成: B-S1, B-4, B-SUP」；未完成 B-S1 + B-4 + B-SUP 禁止 Final Answer。\n"
 )
 
-# 镜像 vewpI8lyYw：父记录常为 plain string（如「开发」），少数为 JSON 数组 [0].text
-_PARENT_EPIC_NULL_SQL = (
-    "(json_extract(fields, '$.\"父记录\"') IS NULL\n"
-    "   OR json_extract(fields, '$.\"父记录\"') = ''\n"
-    "   OR json_extract(fields, '$.\"父记录\"[0].text') IS NULL)"
-)
+# 镜像 vewpI8lyYw：父记录常为 plain string；空链接可能为 JSON 字符串 text_arr:[]
+from l3_node.pmo_parent_record import sql_parent_epic_null_clause
+
+_PARENT_EPIC_NULL_SQL = sql_parent_epic_null_clause("fields")
 _PARENT_TEXT_EXPR = (
     "COALESCE(NULLIF(trim(json_extract(fields, '$.\"父记录\"')), ''),\n"
     "         json_extract(fields, '$.\"父记录\"[0].text'))"
