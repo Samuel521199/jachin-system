@@ -11,17 +11,20 @@
 用法::
 
   # 旧方式：手动 bbox
-  python slice_cards.py --image data/my_game_screenshot.png --bbox 396 729 1517 928 --ocr
+  python slice_cards.py --image data/my_game_screenshot.png --bbox 396 729 1517 928 --recognize
 
   # 自动找底部手牌区 + 自动数张数
-  python slice_cards.py --image data/hard_example.jpg --auto-hand --ocr
+  python slice_cards.py --image data/hard_example.jpg --auto-hand --recognize
 
   # Florence 返回多个框：传入候选，脚本按 Y 过滤后取最宽的一条
   python slice_cards.py --image shot.jpg \\
     --candidate-bbox 120 400 1800 900 --candidate-bbox 396 729 1517 928 --ocr
 
-  # 批量：切割 florence2_test_out/图片 下所有截图（自动读 *_report.json）
-  python slice_cards.py --input-dir data/florence2_test_out/图片 --auto-hand --ocr
+  # 默认：批量切割 florence2_test_out/image 下所有截图（自动读 *_report.json）
+  python slice_cards.py --recognize
+
+  # 单张
+  python slice_cards.py --image data/hard_example.jpg --auto-hand --recognize
 """
 from __future__ import annotations
 
@@ -35,11 +38,35 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from card_recognizer import DEFAULT_TEMPLATES_DIR, CardRecognizer, MatchResult
+
 ROOT = Path(__file__).resolve().parent
-DEFAULT_IMG = ROOT / "data" / "my_game_screenshot.png"
-DEFAULT_OUT = ROOT / "data" / "florence2_test_out" / "sliced_cards"
-DEFAULT_INPUT_DIR = ROOT / "data" / "florence2_test_out" / "图片"
+DEFAULT_OUT = ROOT / "data" / "florence2_test_out" / "sliced_cards_from_image"
+DEFAULT_INPUT_DIR = ROOT / "data" / "florence2_test_out" / "image"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def _imread_bgr(path: Path) -> np.ndarray | None:
+    """OpenCV imread；Windows 中文路径回退 imdecode。"""
+    path = path.expanduser().resolve()
+    img = cv2.imread(str(path))
+    if img is not None:
+        return img
+    try:
+        buf = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    if buf.size == 0:
+        return None
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+
+
+def _batch_stem_key(path: Path) -> str:
+    """同一任务的去重键：去掉 _annotated 后缀。"""
+    stem = path.stem
+    if stem.endswith("_annotated"):
+        return stem[: -len("_annotated")]
+    return stem
 
 
 @dataclass
@@ -52,10 +79,14 @@ class SliceOptions:
     num_cards: int = 0
     min_gap: int = 72
     bottom_scan_ratio: float = 0.42
-    ocr: bool = False
+    recognize: bool = False
+    templates_dir: Path = DEFAULT_TEMPLATES_DIR
+    match_threshold: float = 0.75
+    slice_mode: str = "column"  # column | contour
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> SliceOptions:
+        recognize = args.recognize or args.ocr
         return cls(
             bbox=tuple(args.bbox) if args.bbox is not None else None,
             candidate_bbox=[tuple(b) for b in (args.candidate_bbox or [])],
@@ -65,7 +96,10 @@ class SliceOptions:
             num_cards=args.num_cards,
             min_gap=args.min_gap,
             bottom_scan_ratio=args.bottom_scan_ratio,
-            ocr=args.ocr,
+            recognize=recognize,
+            templates_dir=args.templates_dir,
+            match_threshold=args.match_threshold,
+            slice_mode=args.slice_mode,
         )
 
 
@@ -79,12 +113,12 @@ class BatchTask:
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="手牌 ROI：Y 过滤 / 自动定位 + 边缘切牌")
-    ap.add_argument("--image", type=Path, default=None, help="单张原图（与 --input-dir 二选一）")
+    ap.add_argument("--image", type=Path, default=None, help="单张原图（指定后忽略 --input-dir 批量模式）")
     ap.add_argument(
         "--input-dir",
         type=Path,
-        default=None,
-        help=f"批量目录，默认示例: {DEFAULT_INPUT_DIR.relative_to(ROOT)}",
+        default=DEFAULT_INPUT_DIR,
+        help=f"批量目录，默认: {DEFAULT_INPUT_DIR.relative_to(ROOT)}",
     )
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument(
@@ -134,7 +168,30 @@ def _parse_args() -> argparse.Namespace:
         default=0.42,
         help="--auto-hand 时在画面底部该比例高度内扫描",
     )
-    ap.add_argument("--ocr", action="store_true")
+    ap.add_argument("--ocr", action="store_true", help="已弃用，等同 --recognize")
+    ap.add_argument(
+        "--recognize",
+        action="store_true",
+        help="切割后用 OpenCV 模板匹配识别牌面（data/templates/）",
+    )
+    ap.add_argument(
+        "--templates-dir",
+        type=Path,
+        default=DEFAULT_TEMPLATES_DIR,
+        help="rank 模板目录，文件名即牌面标签",
+    )
+    ap.add_argument(
+        "--match-threshold",
+        type=float,
+        default=0.75,
+        help="模板匹配置信度阈值，低于则 Unknown",
+    )
+    ap.add_argument(
+        "--slice-mode",
+        choices=("column", "contour"),
+        default="column",
+        help="ROI 内切牌：column=白边列检测(默认) contour=白色块轮廓",
+    )
     ap.add_argument(
         "--no-from-report",
         action="store_true",
@@ -300,12 +357,31 @@ def _bbox_to_int_tuple(raw: list[float] | tuple[float, ...]) -> tuple[int, int, 
 
 
 def _resolve_image_path(raw: str, *, base_dir: Path) -> Path | None:
+    """解析 report 中的 image；优先 base_dir（image 文件夹）内的原图 / _annotated 图。"""
     p = Path(raw)
-    if p.is_file():
-        return p.resolve()
-    for candidate in (base_dir / p.name, ROOT / p, base_dir / p):
+    stem = p.stem
+    names: list[str] = []
+    if p.suffix:
+        names.append(p.name)
+    for ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+        names.append(f"{stem}_annotated{ext}")
+        names.append(stem + ext)
+    ordered_names: list[str] = []
+    for name in names:
+        if name not in ordered_names:
+            ordered_names.append(name)
+
+    for name in ordered_names:
+        candidate = base_dir / name
         if candidate.is_file():
             return candidate.resolve()
+    if p.is_file():
+        return p.resolve()
+    for name in ordered_names:
+        for parent in (ROOT / "data", ROOT):
+            candidate = parent / name
+            if candidate.is_file():
+                return candidate.resolve()
     return None
 
 
@@ -332,8 +408,6 @@ def bboxes_from_florence_report(report_path: Path) -> tuple[Path | None, list[tu
 def _should_skip_batch_image(path: Path) -> bool:
     name = path.name.lower()
     stem = path.stem.lower()
-    if stem.endswith("_annotated") or "_annotated." in name:
-        return True
     if stem.startswith("card_") or name.startswith("_"):
         return True
     return False
@@ -345,7 +419,7 @@ def collect_batch_tasks(input_dir: Path, *, use_report: bool) -> list[BatchTask]
         raise FileNotFoundError(f"输入目录不存在: {input_dir}")
 
     tasks: list[BatchTask] = []
-    seen_images: set[Path] = set()
+    seen_keys: set[str] = set()
 
     if use_report:
         for report_path in sorted(input_dir.glob("*_report.json")):
@@ -354,6 +428,10 @@ def collect_batch_tasks(input_dir: Path, *, use_report: bool) -> list[BatchTask]
                 print(f"[WARN] 跳过 report（找不到原图）: {report_path.name}", file=sys.stderr)
                 continue
             name = report_path.stem[: -len("_report")] if report_path.stem.endswith("_report") else report_path.stem
+            key = _batch_stem_key(img_path)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             tasks.append(
                 BatchTask(
                     name=name,
@@ -362,17 +440,17 @@ def collect_batch_tasks(input_dir: Path, *, use_report: bool) -> list[BatchTask]
                     report_path=report_path,
                 )
             )
-            seen_images.add(img_path.resolve())
 
     for img_path in sorted(input_dir.iterdir()):
         if img_path.suffix.lower() not in IMAGE_SUFFIXES:
             continue
         if _should_skip_batch_image(img_path):
             continue
-        resolved = img_path.resolve()
-        if resolved in seen_images:
+        key = _batch_stem_key(img_path)
+        if key in seen_keys:
             continue
-        tasks.append(BatchTask(name=img_path.stem, image_path=resolved))
+        seen_keys.add(key)
+        tasks.append(BatchTask(name=img_path.stem, image_path=img_path.resolve()))
 
     return tasks
 
@@ -387,8 +465,9 @@ def _white_column_rising_edges(roi_bgr: np.ndarray, *, min_gap: int) -> list[int
 
     raw: list[int] = []
     for i in range(1, w):
-        rise = (col[i - 1] < 0.38 and col[i] >= 0.55) or (
-            col[i - 1] < 0.52 and col[i] >= 0.72
+        # ROI 内仅手牌；0.35 可覆盖星标角标等非纯白左上角
+        rise = (col[i - 1] < 0.38 and col[i] >= 0.35) or (
+            col[i - 1] < 0.45 and col[i] >= 0.52
         )
         if not rise:
             continue
@@ -447,6 +526,75 @@ def detect_card_left_edges(
 
     n_cards = len(left)
     return left, method, n_cards
+
+
+def detect_card_left_edges_contour(
+    roi_bgr: np.ndarray,
+    *,
+    min_w: int = 30,
+    min_h: int = 50,
+    min_gap: int = 72,
+    num_cards: int = 0,
+) -> tuple[list[int], str, int]:
+    """
+    在 ROI 内用白色区域轮廓找独立牌块，按 X 排序得到左缘列表。
+    仅在 roi_box 范围内操作，不写死全屏宽度。
+    """
+    h, w = roi_bgr.shape[:2]
+    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, mask = cv2.threshold(blur, 200, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    xs: list[int] = []
+    for c in cnts:
+        bx, _by, bw, bh = cv2.boundingRect(c)
+        if bw >= min_w and bh >= min_h and bx + bw <= w:
+            xs.append(bx)
+
+    xs = sorted(set(xs))
+    left: list[int] = [0]
+    for x in xs:
+        if x <= 0:
+            continue
+        if x - left[-1] >= min_gap:
+            left.append(x)
+
+    left = _merge_small_gaps(left, w, min_gap)
+    method = "contour_auto"
+
+    if num_cards > 0:
+        method = "contour_fixed"
+        while len(left) < num_cards:
+            med = int(np.median(np.diff(left))) if len(left) > 1 else max(min_gap, w // max(num_cards, 1))
+            left.append(min(w - 1, left[-1] + med))
+        if len(left) > num_cards:
+            while len(left) > num_cards:
+                gaps = [(left[i + 1] - left[i], i) for i in range(len(left) - 1)]
+                _, idx = min(gaps, key=lambda t: t[0])
+                left.pop(idx + 1)
+        left = left[:num_cards]
+
+    return left, method, len(left)
+
+
+def detect_card_segments(
+    roi_bgr: np.ndarray,
+    opts: SliceOptions,
+) -> tuple[list[int], str, int]:
+    if opts.slice_mode == "contour":
+        return detect_card_left_edges_contour(
+            roi_bgr,
+            min_gap=opts.min_gap,
+            num_cards=opts.num_cards,
+        )
+    return detect_card_left_edges(
+        roi_bgr,
+        min_gap=opts.min_gap,
+        num_cards=opts.num_cards,
+    )
 
 
 def _rank_crop_contour(
@@ -556,9 +704,9 @@ def process_one_image(
         print(f"[ERROR] 图片不存在: {img_path}", file=sys.stderr)
         return 2
 
-    img = cv2.imread(str(img_path))
+    img = _imread_bgr(img_path)
     if img is None:
-        print(f"[ERROR] cv2.imread 失败: {img_path}", file=sys.stderr)
+        print(f"[ERROR] 无法读取图片: {img_path}", file=sys.stderr)
         return 2
 
     img_h, img_w = img.shape[:2]
@@ -578,11 +726,7 @@ def process_one_image(
         return 2
 
     h, w = roi.shape[:2]
-    left_edges, method, n_detected = detect_card_left_edges(
-        roi,
-        min_gap=opts.min_gap,
-        num_cards=opts.num_cards,
-    )
+    left_edges, method, n_detected = detect_card_segments(roi, opts)
     intervals = [
         (left_edges[i + 1] if i + 1 < len(left_edges) else w) - left_edges[i]
         for i in range(len(left_edges))
@@ -618,23 +762,46 @@ def process_one_image(
     print(f"{prefix}完成 {len(slices)} 张 -> {out_dir}  ({elapsed_ms:.1f} ms)")
     print(f"{prefix}对照: _full_debug.png / _slice_debug.png")
 
-    if opts.ocr:
-        _try_ocr(slices, prefix=prefix)
+    if opts.recognize:
+        _run_recognize(slices, hand_bbox, out_dir, opts, prefix=prefix)
     return 0
 
 
-def _try_ocr(slices, *, prefix: str = "") -> None:
-    try:
-        from rapidocr_onnxruntime import RapidOCR
-    except ImportError:
-        print("[ocr] 跳过：pip install rapidocr-onnxruntime", file=sys.stderr)
-        return
-    ocr = RapidOCR()
-    print(f"\n{prefix}=== RapidOCR 试读 ===")
-    for idx, _, _, _, _, crop in slices:
-        result, _ = ocr(crop)
-        text = " | ".join(str(row[1]) for row in (result or [])) if result else "(empty)"
-        print(f"{prefix}  card_{idx:2d}: {text}")
+def _run_recognize(
+    slices: list[tuple[int, int, int, int, int, np.ndarray]],
+    hand_bbox: tuple[int, int, int, int],
+    out_dir: Path,
+    opts: SliceOptions,
+    *,
+    prefix: str = "",
+) -> None:
+    recognizer = CardRecognizer(
+        opts.templates_dir,
+        match_threshold=opts.match_threshold,
+    )
+    results = recognizer.recognize_slices(slices, hand_bbox)
+    recognizer.print_report(results, prefix=prefix)
+
+    report = {
+        "hand_bbox": list(hand_bbox),
+        "templates_dir": str(opts.templates_dir),
+        "match_threshold": opts.match_threshold,
+        "template_labels": recognizer.template_labels,
+        "cards": [
+            {
+                "index": r.card_index,
+                "label": r.label,
+                "score": round(r.score, 4),
+                "screen_cx": r.screen_cx,
+                "screen_cy": r.screen_cy,
+                "roi_bbox": list(r.roi_bbox),
+            }
+            for r in results
+        ],
+    }
+    report_path = out_dir / "recognition_report.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"{prefix}识别报告 -> {report_path.name}")
 
 
 def run_batch(input_dir: Path, out_root: Path, base_opts: SliceOptions, *, use_report: bool) -> int:
@@ -667,7 +834,10 @@ def run_batch(input_dir: Path, out_root: Path, base_opts: SliceOptions, *, use_r
             num_cards=base_opts.num_cards,
             min_gap=base_opts.min_gap,
             bottom_scan_ratio=base_opts.bottom_scan_ratio,
-            ocr=base_opts.ocr,
+            recognize=base_opts.recognize,
+            templates_dir=base_opts.templates_dir,
+            match_threshold=base_opts.match_threshold,
+            slice_mode=base_opts.slice_mode,
         )
         if not opts.bbox and not opts.candidate_bbox and not opts.auto_hand:
             opts.auto_hand = True
@@ -683,16 +853,25 @@ def main() -> int:
     args = _parse_args()
     base_opts = SliceOptions.from_args(args)
 
-    if args.input_dir is not None:
-        return run_batch(
-            args.input_dir,
+    if args.image is not None:
+        return process_one_image(
+            args.image.expanduser().resolve(),
             args.out_dir.expanduser().resolve(),
             base_opts,
-            use_report=not args.no_from_report,
         )
 
-    img_path = args.image or DEFAULT_IMG
-    return process_one_image(img_path, args.out_dir, base_opts)
+    input_dir = args.input_dir.expanduser().resolve()
+    if not input_dir.is_dir():
+        print(f"[ERROR] 输入目录不存在: {input_dir}", file=sys.stderr)
+        print(f"  请将 Florence 测试截图放入 {DEFAULT_INPUT_DIR.relative_to(ROOT)}", file=sys.stderr)
+        return 2
+
+    return run_batch(
+        input_dir,
+        args.out_dir.expanduser().resolve(),
+        base_opts,
+        use_report=not args.no_from_report,
+    )
 
 
 if __name__ == "__main__":
