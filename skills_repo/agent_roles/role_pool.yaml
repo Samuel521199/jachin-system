@@ -18,6 +18,18 @@ roles:
   - id: verification
     name: 验证专员（对抗性）
     description: 尽力证明交付物有问题；须实际核对（读文件/跑测试）；Final Answer 含 VERDICT PASS/FAIL/PARTIAL。
+  - id: readonly_explore
+    name: 只读探索
+    description: 快速找文件/读代码回答问题；系统层禁止写工具（fs_read + local_memory_search）。
+  - id: readonly_researcher
+    name: 只读调研
+    description: 查阅资料、整理结论；禁止修改文件或 shell 写操作。
+  - id: readonly_analyst
+    name: 只读分析
+    description: 阅读数据文件提炼指标；只分析不写入。
+  - id: readonly_planner
+    name: 只读规划
+    description: 读代码/design 方案；方案末尾须列 3–5 个关键文件路径；禁止写操作。
   - id: domain_expert
     name: 领域专家（占位）
     description: 复杂域问题时与 researcher/analyst 组合使用；任务描述里写清领域上下文。

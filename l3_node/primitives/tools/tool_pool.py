@@ -143,6 +143,7 @@ async def assemble_tool_pool(
     mcp_registry: MCPToolRegistry | None = None,
     logger: logging.Logger | None = None,
     allowlist_diag_source: list[str] | None = None,
+    readonly_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """
     阶段 A: load_tools；阶段 B: fetch_tools_from_l2（可因 RBAC 跳过）；阶段 C: 白名单过滤 MCP、追加、通道剔除。
@@ -225,4 +226,8 @@ async def assemble_tool_pool(
 
     if bg_channel == "background_task":
         tools = [t for t in tools if (t.get("id") or "").strip().lower() != "core:submit_background_task"]
+    if readonly_mode:
+        from l3_node.primitives.multi_agent.readonly_agent import filter_tools_for_readonly_subagent
+
+        tools = filter_tools_for_readonly_subagent(tools)
     return tools

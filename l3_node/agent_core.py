@@ -3759,6 +3759,10 @@ from l3_node.primitives.multi_agent.verification_agent import (
     VERIFICATION_SYSTEM_PROMPT,
     VERIFICATION_TOOLS_WITH_EXEC,
 )
+from l3_node.primitives.multi_agent.readonly_agent import (
+    READONLY_ROLE_ALLOWED_SKILLS,
+    READONLY_ROLE_PROMPTS,
+)
 
 # 子 Agent 角色预设（分身时使用）
 SUB_AGENT_PROMPTS: dict[str, str] = {
@@ -3794,6 +3798,10 @@ SUB_AGENT_PROMPTS: dict[str, str] = {
         "（若需对抗性验证交付物是否真的能 work，请使用 role=verification 而非 reviewer。）"
     ),
     "verification": VERIFICATION_SYSTEM_PROMPT,
+    "readonly_explore": READONLY_ROLE_PROMPTS["readonly_explore"],
+    "readonly_researcher": READONLY_ROLE_PROMPTS["readonly_researcher"],
+    "readonly_analyst": READONLY_ROLE_PROMPTS["readonly_analyst"],
+    "readonly_planner": READONLY_ROLE_PROMPTS["readonly_planner"],
     "summarizer": (
         "你是文档摘要专家，负责从大量文本中提炼关键信息。"
         "使用 core:fs_read 读取文件内容。"
@@ -3841,6 +3849,10 @@ SUB_AGENT_ALLOWED_SKILLS: dict[str, list[str]] = {
     "planner": ["core:fs_read", "core:local_memory_search"],
     "reviewer": ["core:fs_read", "core:shell_exec", "core:shell_job_status"],
     "verification": list(VERIFICATION_TOOLS_WITH_EXEC),
+    "readonly_explore": list(READONLY_ROLE_ALLOWED_SKILLS["readonly_explore"]),
+    "readonly_researcher": list(READONLY_ROLE_ALLOWED_SKILLS["readonly_researcher"]),
+    "readonly_analyst": list(READONLY_ROLE_ALLOWED_SKILLS["readonly_analyst"]),
+    "readonly_planner": list(READONLY_ROLE_ALLOWED_SKILLS["readonly_planner"]),
     "summarizer": ["core:fs_read", "core:local_memory_search"],
     "data_processor": [
         "core:fs_read", "core:fs_write",
@@ -5634,6 +5646,7 @@ Action Input: {"sub_tasks": [{"role": "<角色>", "task": "<任务描述>", "con
 - planner      → 复杂任务拆解与规划（可用 fs_read）
 - reviewer     → 代码审查、质量检查（可用 fs_read/shell_exec）
 - verification → **对抗性验证**：跑测试/构建证明交付物是否 work；必须输出 VERDICT: PASS/FAIL/PARTIAL（可用 fs_read/shell_exec）
+- readonly_explore / readonly_researcher / readonly_analyst / readonly_planner → **只读**查代码/资料/规划（仅 fs_read/local_memory_search；系统层禁止写工具）
 - summarizer   → 文档摘要、要点提炼（可用 fs_read）
 - data_processor → 数据清洗与格式转换（可用 fs_read/fs_write/shell_exec）
 - tester       → 编写和执行测试用例（可用 fs_read/fs_write/shell_exec）
@@ -6199,10 +6212,13 @@ class SubAgent:
         system_prompt: str,
         allowed_skills: list[str],
         messages: Optional[list[dict[str, Any]]] = None,
+        *,
+        role_id: str = "default",
     ) -> None:
         self.sub_agent_id = sub_agent_id
         self.system_prompt = system_prompt
         self.allowed_skills = allowed_skills
+        self.role_id = (role_id or "default").strip().lower()
         self.messages = list(messages) if messages else []
 
     async def run_once(
@@ -6241,7 +6257,11 @@ class SubAgent:
             max_iterations=max_iterations,
             _system_prompt_override=system,
             _initial_messages=self.messages,
-            implicit_attribution={"channel": "delegate_sub_agent", "sub_agent_id": self.sub_agent_id},
+            implicit_attribution={
+                "channel": "delegate_sub_agent",
+                "sub_agent_id": self.sub_agent_id,
+                "sub_agent_role": self.role_id,
+            },
             _delegate_depth=delegate_depth,
             _allowed_skills_override=self.allowed_skills,
         )
@@ -6330,6 +6350,16 @@ def _sanitize_inline_role(
     if parent_allowed_skills is not None:
         parent_ids = set(parent_allowed_skills)
         allowed_tools = [t for t in allowed_tools if t in parent_ids]
+    try:
+        from l3_node.primitives.multi_agent.readonly_agent import (
+            is_readonly_subagent_role,
+            sanitize_allowed_skills_for_readonly,
+        )
+
+        if is_readonly_subagent_role(role_id):
+            allowed_tools = sanitize_allowed_skills_for_readonly(allowed_tools)
+    except Exception:
+        pass
     return role_id, system_prefix, allowed_tools
 
 
@@ -6516,6 +6546,17 @@ async def _spawn_sub_agent_async(
     if global_allowed is not None:
         allowed = [s for s in allowed if s in _build_allowed_ids(global_allowed)]
 
+    try:
+        from l3_node.primitives.multi_agent.readonly_agent import (
+            is_readonly_subagent_role,
+            sanitize_allowed_skills_for_readonly,
+        )
+
+        if is_readonly_subagent_role(role_lower):
+            allowed = sanitize_allowed_skills_for_readonly(list(allowed))
+    except Exception:
+        pass
+
     _run_kwargs: dict[str, Any] = {"delegate_depth": delegate_depth}
     if max_iterations and max_iterations > 0:
         _run_kwargs["max_iterations"] = max_iterations
@@ -6526,7 +6567,7 @@ async def _spawn_sub_agent_async(
         return result, sub_agent_id
 
     sid = sub_agent_id or f"sub-{uuid.uuid4().hex[:8]}"
-    agent = SubAgent(sid, prompt, allowed)
+    agent = SubAgent(sid, prompt, allowed, role_id=role_lower)
     _sub_agent_registry[sid] = agent
     result = await agent.run_once(task, eff_engine, **_run_kwargs)
     return result, sid
@@ -6641,6 +6682,22 @@ async def _invoke_react_tool(
         _inp[:500],
         "…(truncated)" if len(_inp) > 500 else "",
     )
+    if ctx.metadata.get("_readonly_subagent"):
+        try:
+            from l3_node.primitives.multi_agent.readonly_agent import (
+                is_write_or_side_effect_tool,
+                readonly_tool_block_observation,
+            )
+
+            if is_write_or_side_effect_tool(tool or ""):
+                logger.warning(
+                    "[L3 Agent][readonly] 拦截写工具调用 tool=%s run_id=%s",
+                    tool,
+                    getattr(ctx, "run_id", "") or "",
+                )
+                return readonly_tool_block_observation(tool or "")
+        except Exception as _ro_e:
+            logger.debug("[L3 Agent][readonly] 拦截检查跳过: %s", _ro_e)
     if tool_entry_looks_like_sqlite_family({"id": tool}):
         try:
             _jd = json.loads(_inp)
@@ -9818,6 +9875,18 @@ async def run_agent(
                 break
     logger.debug("[L3 Agent] run_agent 开始 input_len=%d history=%d", len(user_input or ""), len(_session_messages or []) + len(_initial_messages or []))
     allowed = _allowed_skills_override if _allowed_skills_override is not None else _get_allowed_skills()
+    from l3_node.primitives.multi_agent.readonly_agent import (
+        is_readonly_subagent_role,
+        parse_readonly_role_from_implicit,
+        sanitize_allowed_skills_for_readonly,
+    )
+
+    _sub_agent_role = parse_readonly_role_from_implicit(
+        implicit_attribution if isinstance(implicit_attribution, dict) else None
+    )
+    _readonly_subagent = is_readonly_subagent_role(_sub_agent_role)
+    if _readonly_subagent and allowed is not None and len(allowed) > 0:
+        allowed = sanitize_allowed_skills_for_readonly(list(allowed))
     allowlist_diag_source: list[str] | None = list(allowed) if allowed is not None else None
     from l3_node.primitives.tools.tool_pool import allowlist_is_native_only, allowlist_is_tools_denied
 
@@ -10130,6 +10199,7 @@ async def run_agent(
             bg_channel=_bg_channel or None,
             logger=logger,
             allowlist_diag_source=allowlist_diag_source,
+            readonly_mode=_readonly_subagent,
         )
         try:
             from l3_node.multimodal_tool_policy import filter_tools_for_vision_image_turn
@@ -10183,6 +10253,10 @@ async def run_agent(
             pass
         tools = load_tools(allowed_skills=allowed)
         _vision_forbid_web_fetch = False
+        if _readonly_subagent:
+            from l3_node.primitives.multi_agent.readonly_agent import filter_tools_for_readonly_subagent
+
+            tools = filter_tools_for_readonly_subagent(tools)
     exec_trace(
         logger,
         "工具列表就绪 run_id=%s count=%d bg_channel=%s",
@@ -11274,6 +11348,8 @@ async def run_agent(
             "_react_prompt_style": _prompt_style,
             "_pure_json_contract": _pure_json_contract,
             "_domain_experts": list(_domain_experts_list),
+            "_readonly_subagent": _readonly_subagent,
+            "_sub_agent_role": _sub_agent_role,
         }
         if implicit_attribution and isinstance(implicit_attribution, dict):
             for _pmo_meta_k in ("pmo_analysis_only", "pmo_db_ready", "pmo_multi_agent_complete", "pmo_init"):

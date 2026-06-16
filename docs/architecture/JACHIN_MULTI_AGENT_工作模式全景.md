@@ -173,6 +173,10 @@ flowchart LR
 | `summarizer` | 摘要 | 长文提炼 |
 | `data_processor` | 洗数据 | CSV/JSON 转换 |
 | `tester` | 测试 | 用例、测试报告 |
+| `readonly_explore` | **只读**探索 | 找文件、读代码（工具层硬隔离写操作） |
+| `readonly_researcher` | **只读**调研 | 查阅资料，禁止改文件 |
+| `readonly_analyst` | **只读**分析 | 读数据提炼指标，禁止写入 |
+| `readonly_planner` | **只读**规划 | 出方案 + 关键文件路径，禁止动手改 |
 | `critic` / `executor` / `domain_expert` | 专向场景 | 讨论模式、领域任务 |
 | `default` | 通用 | 其它 |
 
@@ -518,7 +522,7 @@ flowchart TB
 |------|-------------------|---------------|-----------|
 | 多 Agent 触发 | LLM 输出 `Agent(...)` 工具调用 | LLM 输出 `Action: delegate` | 几乎等价，形式不同 |
 | 子 Agent 角色 | `subagent_type`（general/explore/plan/verification/worker…） | `role`（coder/analyst/reviewer/planner…） | 类似，但 Jachin 少几个专门化类型 |
-| 只读 Agent | Explore/Plan **硬隔离工具层** | 无专门「只读 SubAgent」类型，只有工具白名单 | **有差距**，Jachin 缺工具层硬隔离 |
+| 只读 Agent | Explore/Plan **硬隔离工具层** | `readonly_*` 内置角色 + 三层过滤 | **已对齐** |
 | 验证 Agent | `verification` 必须出 PASS/FAIL/PARTIAL，被设计成「尽量搞砸」 | `reviewer` 角色存在但没有强制对抗性 | **有差距**，验证设计不够强 |
 | 后台异步 | `run_in_background: true`，禁止轮询 | `core:submit_background_task`，WebSocket 推送 | 基本等价 |
 | 任务清单 | `TaskCreate/TaskUpdate`，磁盘持久化，支持认领与依赖 | `TodoWrite`（本会话），或 `task_plan.md`（工作区文件） | **有差距**，Jachin 缺多 Agent 共享任务板 |
@@ -552,16 +556,22 @@ flowchart TB
 
 ---
 
-#### ✅ 借鉴点二：给「只读 Agent」在工具层做硬隔离，不依赖提示词约束
+#### ✅ 借鉴点二：给「只读 Agent」在工具层做硬隔离（已落地）
 
 **Claude Code 怎么做**：Explore、Plan 类型的 Agent，在工具层**物理禁止**写文件、改 git、磁盘写入，不只靠提示词说「不要改文件」。
 
-**Jachin 现状**：有工具白名单机制（`allowed_tools` / `SUB_AGENT_ALLOWED_SKILLS`），但没有明确的「只读 SubAgent 类型」，每次都要在 delegate 的 `role` 里手写工具列表。
+**Jachin 实现**（系统层，不涉及 PMO 域编排）：
 
-**怎么借鉴**：
+- 内置只读角色：`readonly_explore`、`readonly_researcher`、`readonly_analyst`、`readonly_planner`（`role` 以 `readonly_` 开头亦视为只读）。
+- 白名单裁剪：`sanitize_allowed_skills_for_readonly()` 在 SubAgent _spawn 时剔除写工具。
+- 工具池：`assemble_tool_pool(..., readonly_mode=True)` 物理移除写/副作用 MCP 与 Native 工具。
+- 执行期防线：`_invoke_react_tool` 对 `_readonly_subagent` 再次拦截并返回 `readonly_subagent_forbidden`。
+- SSOT 模块：`l3_node/primitives/multi_agent/readonly_agent.py`。
 
-- 定义几个**内置只读角色**，例如 `readonly_analyst`、`readonly_researcher`，在角色定义里**强制排除**所有写类工具（`fs_write`、`apply_patch`、`shell_exec` 写模式等）。
-- 把「只查不改」的承诺从提示词层下沉到工具池组装层——`assemble_tool_pool` 时，如果 channel 是 `readonly_*`，直接过滤掉所有写工具。
+**delegate 示例**：
+```json
+{"sub_tasks": [{"role": "readonly_explore", "task": "在仓库中定位 PMO orchestrator 的入口函数并列出路径"}]}
+```
 - 现有的 PMO Worker A/B/C/D 其实就是这个模式的雏形（工具白名单极窄），可以把这个模式抽象成通用机制。
 
 ---
@@ -662,7 +672,7 @@ Jachin 现在是显式白名单（`allowed_tools`），这其实**更灵活也�
 |--------|--------|--------|----------|
 | 🔴 **高** | Verification 对抗性设计 | 改 reviewer 角色的提示词，要求出 PASS/FAIL/PARTIAL | 提示词，无需改代码 |
 | 🔴 **高** | Synthesis 义务显式化 | System Prompt 里加约束：多个 SubAgent 汇报后必须先 `[Synthesis]` | 提示词，无需改代码 |
-| 🟡 **中** | 只读角色工具层硬隔离 | 在 `assemble_tool_pool` 里，对 `readonly_*` channel 强制过滤写工具 | `tool_pool.py` + 角色定义 |
+| 🟡 **中** | 只读角色工具层硬隔离 | `readonly_*` + `assemble_tool_pool(readonly_mode)` + `_invoke_react_tool` 拦截 | **已完成** |
 | 🟡 **中** | 协调员人格注入 | 复杂宏观任务时注入「只编排、不执行」的 system prompt 段落 | System Prompt 组装逻辑 |
 | 🟡 **中** | `task_plan.md` 格式标准化 | 约定包含 owner/status/depends_on 的结构化字段 | 文档规范 + 提示词 |
 | 🟢 **低** | Pipeline 中间确认机制 | `PipelineStage` 增加 `pause_for_user_confirm` 标志 | `pipeline.py` |
