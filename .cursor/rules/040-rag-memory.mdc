@@ -35,7 +35,7 @@ globs: core/biological_memory.py, core/dreamer.py, core/agent_memory.py, core/me
 8. **混合检索（Hybrid Search）**：**若部署 L2 控制面**，其 `GET /api/v2/memory/search` 支持向量 + BM25 + 可选 **MMR**；与 **L3 Memory Nexus**（`deep_search`）分立。权重与 MMR 见 `nexus_config.json` → **`memory_scoring`**，公式见 **`docs/MEMORY_SCORING.md`**。
 9. **主动记忆刷新（Memory Flush）**：神盾 Compaction 前，当 token 接近上限时静默 LLM 回合，提醒模型写入 core_memory。配置 `llm.memory_flush.enabled`、`llm.memory_flush.soft_threshold`。
 10. **Markdown 导出**：`export_core_memory_to_markdown()` 将 core_memory 导出至 `~/.jachin/memory/MEMORY.md`，梦境完成后自动执行；`GET /api/v3/memory/export-markdown` 手动触发。
-11. **L3 Memory Nexus（现行）**：Chroma **`~/.jachin/palace_db`**，`l3_client/.../memory_backend.py`（`commit_drawer` / `recall_room` / `deep_search`）；L1 注入 · `core:local_memory_*` · 回合末异步 commit。可选 **`CHROMA_USE_HTTP_CLIENT`**。SSOT：**`docs/architecture/MEMORY_NEXUS_L3.md`**。
+11. **L3 Memory Nexus（现行）**：**SQLite + FastEmbed** — `~/.jachin/palace_db/memory_nexus.sqlite3`，`l3_client/.../memory_backend.py`（`commit_drawer` / `recall_room` / `deep_search`）；L1 注入 · `core:local_memory_*` · 回合末异步 commit。SSOT：**`docs/architecture/MEMORY_NEXUS_L3.md`** · 全景分册：**`docs/arch/04_MEMORY_ARCHITECTURE.md`**。
 11b. **JSON「梦境合并」（已停用）**：`compact_local_memory_if_needed` 为 **no-op**；旧 `l3_local.json` LLM 合并调度已关闭。勿向用户灌输 150 条 banners 等旧口径；上下文 compaction 仍指 **`core/compaction_hook.py`**。
 12. **Pre-reset 刷新（P0）**：`POST /api/v3/llm/context/reset` 前 `run_pre_reset_memory_flush()`（`core/compaction_hook.py`）。
 13. **阶段 A（MVP）**：`llm.memory_flush.workspace_must_update` 锚点校验、`post_compaction_audit`、compaction 后 `findings` checkpoint（可选 **Nexus** `commit_drawer` 摘要，非旧 JSON 坍缩）；L3 与 core 共用 `compaction_before_llm_think`（`l3_node/l3_compaction_bridge.py`）。见总览 §5.2、**078**。

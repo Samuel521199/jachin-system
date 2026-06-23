@@ -199,6 +199,15 @@ def main() -> int:
     _k11_game_open = ROOT / "scripts" / "test_k11_game_open_smoke.py"
     if _k11_game_open.is_file():
         cmd.extend(["--add-data", f"{_k11_game_open}{_docs_sep}scripts"])
+    _k11_tongits = ROOT / "scripts" / "test_k11_tongits_autoplay_smoke.py"
+    if _k11_tongits.is_file():
+        cmd.extend(["--add-data", f"{_k11_tongits}{_docs_sep}scripts"])
+    _k11_tongits_sess = ROOT / "scripts" / "k11_tongits_smoke_session.py"
+    if _k11_tongits_sess.is_file():
+        cmd.extend(["--add-data", f"{_k11_tongits_sess}{_docs_sep}scripts"])
+    _k11_coin = ROOT / "scripts" / "test_k11_game_open_coin_smoke.py"
+    if _k11_coin.is_file():
+        cmd.extend(["--add-data", f"{_k11_coin}{_docs_sep}scripts"])
     _k11_lark = ROOT / "scripts" / "k11_lark_smoke_report.py"
     if _k11_lark.is_file():
         cmd.extend(["--add-data", f"{_k11_lark}{_docs_sep}scripts"])

@@ -22,6 +22,7 @@ K11 平台冒烟 · 统合版（单次 CDP 会话顺序执行：P0 八条 + P1 �
 - 加 ``--no-lark-report`` 可不发飞书、不同步表格；加 ``--write-local-xlsx`` 才写入 ``~/Downloads/K11平台测试用例.xlsx``（需 ``openpyxl``）。
 - 群通知卡片样式在 ``scripts/k11_lark_smoke_report.send_k11_smoke_lark_notification``：原生 table 四列（测试项目 / 结果 / 时间戳 / 备注），失败时降级 lark_md/纯文本。
 - 主流程结束后（除非 ``--skip-browser-compat``）会子进程执行 P2「仅兼容」段（``--only-compat``），将「浏览器兼容」并入结果；随后（除非 ``--skip-game-open-smoke``）在同一 CDP 页签上跑 ``test_k11_game_open_smoke`` 的四款游戏开门探活，**追加行**到同一 ``results``，与前面用例一并写入飞书表并打在**同一张** Lark 消息卡片表格中。
+- 冒烟开始（首页就绪后）在**独立页签**并行启动 Tongits 一局（``scripts/k11_tongits_smoke_session.py``）；须 ``K11_TONGITS_SMOKE=1`` 才启用；**推荐先用控制台「🃏 Tongits 自动打牌」独立验证**（``test_k11_tongits_autoplay_smoke.py``）。
   随 L3 侧车 / ``l3_node.exe`` 跑统合时**禁止** ``l3_node.exe 某.py``（引导器不会当解释器），须用 ``--jachin-k11-p2-compat-subprocess`` 子命令（与 ``l3_node/http_server`` 一致）。
 
 行为对齐：P0/P1/扩展/弱网各段逻辑与对应单脚本一致（含 P0 Play Now 默认**不点击**）。
@@ -195,6 +196,27 @@ def _load_game_open_smoke_module(log: Callable[[str], None] | None = None) -> An
     return mod
 
 
+def _load_k11_tongits_smoke_session_module(log: Callable[[str], None] | None = None) -> Any:
+    p = Path(__file__).resolve().parent / "k11_tongits_smoke_session.py"
+    if not p.is_file():
+        p = ROOT / "scripts" / "k11_tongits_smoke_session.py"
+    if not p.is_file():
+        if log:
+            log(f"  [tongits] 未找到 k11_tongits_smoke_session.py（{p}）")
+        return None
+    spec = importlib.util.spec_from_file_location("k11_tongits_smoke_session_embed", p)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as e:
+        if log:
+            log(f"  [tongits] 加载 k11_tongits_smoke_session 失败：{_brief_exc(e, 320)}")
+        return None
+
+
 def _resolve_k11_lark_smoke_report_path() -> Path:
     """
     开发：仓库根 ``scripts/k11_lark_smoke_report.py``；
@@ -236,6 +258,7 @@ UNIFIED_CASE_TO_XLSX_TEST_ITEM_KEY: dict[str, str] = {
     "game_open_infinity_9_ball": "Infinity 9 Ball",
     "game_open_color_blitz_social": "Color Blitz Social",
     "game_open_royal_pusoy": "Royal Pusoy",
+    "tongits_smoke_coin": "Tongits King 一局金币",
 }
 
 _XLSX_REMARK_MAX_LEN = 32000
@@ -3601,14 +3624,21 @@ async def _async_main(args: argparse.Namespace) -> int:
     log(f"CDP：{cdp}  目标：{target_url}  Party 切换阈值：{args.switch_ms} ms")
     _skip_c = bool(getattr(args, "skip_browser_compat", False))
     _skip_g = bool(getattr(args, "skip_game_open_smoke", False))
+    _tmod_pre = _load_k11_tongits_smoke_session_module()
+    _skip_t = bool(getattr(args, "skip_tongits_smoke", False)) or (
+        _tmod_pre is not None and not _tmod_pre.tongits_smoke_enabled(args)  # type: ignore[attr-defined]
+    )
     log(
         f"用例主流程 {len(UNIFIED_CASE_DEFS)} 条；"
+        f"{'不' if _skip_t else '将'}在独立页签并行 Tongits 一局+金币监控；"
         f"结束后{'不' if _skip_c else '将'}子进程跑浏览器兼容并并入结果；"
         f"随后{'不' if _skip_g else '将'}在同一 CDP 页签跑 herontest 游戏开门探活并并入结果"
     )
     log("")
 
     console_bucket: list[str] = []
+    tongits_mod = _load_k11_tongits_smoke_session_module()
+    tongits_session: Any = None
 
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(cdp)
@@ -3652,6 +3682,24 @@ async def _async_main(args: argparse.Namespace) -> int:
         log("准备：若在 party-hubs、app_tabbar=no 或个人中心，先回站点首页。")
         await _ensure_on_home_feed(page, target_url, log)
         log("")
+
+        tongits_session = None
+        if tongits_mod and tongits_mod.tongits_smoke_enabled(args):  # type: ignore[attr-defined]
+            try:
+                tongits_session = await tongits_mod.tongits_smoke_start(  # type: ignore[attr-defined]
+                    page.context,
+                    log,
+                    target_url=target_url,
+                )
+            except Exception as e:
+                log(
+                    f"  [tongits] 并行启动异常（已忽略，不阻断主流程）：{_brief_exc(e, 480)}"
+                )
+                tongits_session = None
+        elif getattr(args, "skip_tongits_smoke", False):
+            log("  [tongits] 已跳过：--skip-tongits-smoke")
+        else:
+            log("  [tongits] 已跳过：K11_TONGITS_SMOKE=0 或模块不可用")
 
         results: list[dict[str, Any]] = []
         for i, (cid, tier, title_zh) in enumerate(UNIFIED_CASE_DEFS, start=1):
@@ -3862,6 +3910,18 @@ async def _async_main(args: argparse.Namespace) -> int:
             log("  [game_open] 已跳过：--skip-game-open-smoke")
             log("")
 
+        if tongits_mod and tongits_session is not None:
+            try:
+                await tongits_mod.tongits_smoke_finalize_and_append(  # type: ignore[attr-defined]
+                    tongits_session,
+                    results,
+                    log,
+                )
+            except Exception as e:
+                log(
+                    f"  [tongits] finalize 外层异常（已忽略）：{_brief_exc(e, 320)}"
+                )
+
         # 收尾快照需在关闭 Playwright 前完成，但不得因 CDP/页签异常让「写盘+飞书」整段不执行
         page_url_final = ""
         page_title_final = ""
@@ -3890,6 +3950,10 @@ async def _async_main(args: argparse.Namespace) -> int:
         "console_errors_filtered_sample": bad_console[:30],
         "browser_compat_subprocess": compat_info,
         "game_open_smoke": game_open_info,
+        "tongits_smoke": {
+            "enabled": bool(tongits_mod and tongits_mod.tongits_smoke_enabled(args)),  # type: ignore[attr-defined]
+            "skipped": bool(getattr(args, "skip_tongits_smoke", False)),
+        },
         "results": results,
     }
     if args.json_out:
@@ -3980,7 +4044,10 @@ async def _async_main(args: argparse.Namespace) -> int:
             f"  {m} [{r.get('tier', '')}] {r['case_title_zh']} → {r['verdict_zh']}"
         )
 
-    verdicts = {r["verdict"] for r in results}
+    exit_results = results
+    if tongits_mod and hasattr(tongits_mod, "filter_results_for_exit_code"):
+        exit_results = tongits_mod.filter_results_for_exit_code(results)  # type: ignore[attr-defined]
+    verdicts = {r["verdict"] for r in exit_results}
     if "FAIL" in verdicts or "BLOCKED" in verdicts:
         log("\n最终结果：存在未通过或阻塞项，退出码 1。")
         return 1
@@ -4034,6 +4101,11 @@ def main() -> int:
         "--skip-game-open-smoke",
         action="store_true",
         help="不在浏览器兼容之后跑 test_k11_game_open_smoke（四款游戏开门探活）",
+    )
+    ap.add_argument(
+        "--skip-tongits-smoke",
+        action="store_true",
+        help="不在冒烟开始时并行 Tongits 一局与协议金币监控",
     )
     ap.add_argument(
         "--browser-compat-headless",

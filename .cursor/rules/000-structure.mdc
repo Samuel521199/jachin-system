@@ -4,7 +4,7 @@ globs: core/**/*.py, cloud/nexus/**/*.ts, clients/**/*.tsx, l3_node/**/*.py, doc
 ---
 # V2 项目结构宪法
 
-**规范**: docs/ARCHITECTURE.md | docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md（L3 执行主轴） | docs/FILE_STRUCTURE.md | **术语** Tools/MCP/Skills/Agent Tasks：`docs/Jachin 视角的「四大原语」终极架构规范.md`（**072-jachin-four-primitives.mdc**）
+**规范**: docs/ARCHITECTURE.md | docs/arch/README.md（架构全景 01~07 分册） | docs/JACHIN_FULL_ARCHITECTURE_2026.md（→ arch 索引） | docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md（L3 执行主轴） | docs/FILE_STRUCTURE.md | **术语** Tools/MCP/Skills/Agent Tasks：`docs/Jachin 视角的「四大原语」终极架构规范.md`（**072-jachin-four-primitives.mdc**）
 
 ## V2 分层
 

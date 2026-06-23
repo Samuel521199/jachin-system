@@ -950,7 +950,7 @@ async def run_ws_server(
                 handler,
                 host,
                 try_port,
-                # ReAct + 多模态单轮可 30s+；事件环若短暂卡顿（Chroma/GIL 等）须避免误杀连接，
+                # ReAct + 多模态单轮可 30s+；事件环若短暂卡顿（Memory Nexus/GIL 等）须避免误杀连接，
                 # 否则桌面端会双断连 → 占位「等待 L3 或 L2」且输入被硬禁用。
                 ping_interval=30,
                 ping_timeout=120,

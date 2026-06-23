@@ -6,6 +6,8 @@
 
 **现行实现一页索引**（MCP 守卫、stdio 噪声过滤、后台 zombie、桌面 WS）：[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md)
 
+**架构全景（总—分，含流程图/时序图）**：[arch/README.md](./arch/README.md)（01~07 分册；原 `JACHIN_FULL_ARCHITECTURE_2026.md` 正文已迁入此目录）
+
 ---
 
 ## 一、核心范式
@@ -88,7 +90,7 @@ L3 默认是 **单进程、单 `run_agent` ReAct 主循环**；在此主轴上�
 | L3 后台任务 | `l3_node/primitives/agent_tasks/background_task_service.py`、`l3_node/l3_event_bus.py` | `core:submit_background_task` / `check` / **`check_interrupted_tasks`**、队列 Worker、`zombie_tasks.json`、WebSocket `subscribe_background_tasks`（含 `zombie_tasks_pending`）；详见 [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md) §5 |
 | 跨会话规划文件 | `l3_node/task_planning.py` | `~/.jachin/workspace/task_plan.md`、`progress.md`、`findings.md`；Prompt 注入「继续执行计划」 |
 | HR 招聘（DAG + 物理进度） | `l3_node/primitives/skills/hr_recruitment_dag.py` + `skills_repo/plugin/com.jachin.hr.recruitment/` | `hr_plan_init` → `harvest_loop` → 可选分析；`STOP_HARVEST`；`~/.jachin/workspace/hr_recruitment/` 下宏图与战况 — 详见 [HR_RECRUITMENT.md](HR_RECRUITMENT.md) |
-| 智能化与编排 | `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`、`docs/ORCHESTRATION_ARCHITECTURE.md` | OpenClaw 对比、记忆/梦境/规划、**三层编排（L1 路由 / L2 领域子图 / L3 YAML glue）** |
+| 智能化与编排 | `docs/arch/README.md`（**架构全景 2026**）、`docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md`、`docs/ORCHESTRATION_ARCHITECTURE.md`（**领域编排**） | OpenClaw 对比、记忆/梦境/规划、Skill 路由 / 领域子图 |
 
 ---
 

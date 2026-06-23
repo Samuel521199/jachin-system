@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
@@ -506,6 +506,43 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "label": "mcp:tool_get_audit_log",
         "desc": "[L3 本地·GameQA] 读取 audit_trail JSONL 文本。",
         "params": [],
+    },
+    # Vision UI（全息神机 · 全桌面 OCR 编号 + PyAutoGUI，不依赖 DOM/API）
+    {
+        "id": "mcp:get_parsed_screen",
+        "label": "mcp:get_parsed_screen",
+        "desc": "[L3 本地·VisionUI] 截取**全桌面**，OCR/可选 YOLO 识别可点文字与控件，生成带 [1][2]… 编号的标注图与 JSON 坐标表（elements）。**桌面 UI 测试必须先调用本工具**再 click/type。返回含标注图（多模态）。可选 VISION_UI_YOLO_MODEL 或 GAMEQA_YOLO_MODEL。",
+        "params": [],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:click_element",
+        "label": "mcp:click_element",
+        "desc": "[L3 本地·VisionUI] 按 get_parsed_screen 返回的 element_id（编号）在屏幕像素 (x,y) 点击。打开桌面图标常用 double_click=true。须先 get_parsed_screen。",
+        "params": ["element_id", "double_click", "button"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:type_text",
+        "label": "mcp:type_text",
+        "desc": "[L3 本地·VisionUI] 输入文字；可选 element_id 先点击聚焦。中文等非 ASCII 走剪贴板 Ctrl+V。可选 press_enter。",
+        "params": ["text", "element_id", "press_enter", "interval"],
+        "long_running": True,
+    },
+    # Holographic Screen（OmniParser 全息编号 + PyAutoGUI 物理手）
+    {
+        "id": "mcp:get_holographic_screen",
+        "label": "mcp:get_holographic_screen",
+        "desc": "[L3 本地·Holographic] 截**全桌面**→ OmniParser 生成带红框数字 id 的标注图 + 精简 elements（id/center_x/center_y）。**桌面视觉闭环须先调用**再 physical_click。返回多模态。推理默认走 .venv-omniparser。",
+        "params": ["bbox_threshold", "iou_threshold"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:physical_click",
+        "label": "mcp:physical_click",
+        "desc": "[L3 本地·Holographic] 按 get_holographic_screen 返回的 element_id（与标注图数字一致，从 0 起）点击 center_x/center_y。开桌面图标可 double_click=true。须先 get_holographic_screen。",
+        "params": ["element_id", "double_click", "button"],
+        "long_running": True,
     },
 ]
 
@@ -2472,6 +2509,82 @@ class MCPToolRegistry:
                 return await asyncio.to_thread(
                     _invoke_atom_bi_project_context_local,
                     arguments if isinstance(arguments, dict) else {},
+                )
+
+            # Vision UI：全桌面视觉编号 + PyAutoGUI（阶段二全息神机）
+            if raw_name == "get_parsed_screen":
+                from l3_client.local_mcps.vision_ui_mcp.service import get_vision_ui_service
+
+                return await asyncio.to_thread(get_vision_ui_service().get_parsed_screen)
+
+            if raw_name == "click_element":
+                from l3_client.local_mcps.vision_ui_mcp.service import get_vision_ui_service
+
+                eid = str(arguments.get("element_id") or arguments.get("id") or "").strip()
+                dc = bool(arguments.get("double_click", False))
+                btn = str(arguments.get("button") or "left").strip() or "left"
+                return await asyncio.to_thread(
+                    get_vision_ui_service().click_element,
+                    element_id=eid,
+                    double_click=dc,
+                    button=btn,
+                )
+
+            if raw_name == "type_text":
+                from l3_client.local_mcps.vision_ui_mcp.service import get_vision_ui_service
+
+                txt = str(arguments.get("text") or arguments.get("value") or "")
+                eid = str(arguments.get("element_id") or arguments.get("id") or "").strip()
+                pe = bool(arguments.get("press_enter", False))
+                try:
+                    iv = float(arguments.get("interval") or 0.02)
+                except (TypeError, ValueError):
+                    iv = 0.02
+                return await asyncio.to_thread(
+                    get_vision_ui_service().type_text,
+                    text=txt,
+                    element_id=eid,
+                    press_enter=pe,
+                    interval=iv,
+                )
+
+            # Holographic Screen：OmniParser + PyAutoGUI（ReAct 眼-脑-手闭环）
+            if raw_name == "get_holographic_screen":
+                from l3_client.local_mcps.holographic_screen_mcp.session_service import (
+                    get_holographic_screen_service,
+                )
+
+                bt = arguments.get("bbox_threshold")
+                iou = arguments.get("iou_threshold")
+                try:
+                    bt_f = float(bt) if bt is not None and str(bt).strip() != "" else None
+                except (TypeError, ValueError):
+                    bt_f = None
+                try:
+                    iou_f = float(iou) if iou is not None and str(iou).strip() != "" else None
+                except (TypeError, ValueError):
+                    iou_f = None
+                return await asyncio.to_thread(
+                    get_holographic_screen_service().get_holographic_screen,
+                    bbox_threshold=bt_f,
+                    iou_threshold=iou_f,
+                )
+
+            if raw_name == "physical_click":
+                from l3_client.local_mcps.holographic_screen_mcp.session_service import (
+                    get_holographic_screen_service,
+                )
+
+                eid = arguments.get("element_id")
+                if eid is None:
+                    eid = arguments.get("id")
+                dc = bool(arguments.get("double_click", False))
+                btn = str(arguments.get("button") or "left").strip() or "left"
+                return await asyncio.to_thread(
+                    get_holographic_screen_service().physical_click,
+                    element_id=eid,
+                    double_click=dc,
+                    button=btn,
                 )
 
             # GameQA：进程内会话，可与 /api/v1/gameqa/log-stream 共用单例

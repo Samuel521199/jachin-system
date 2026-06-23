@@ -80,7 +80,7 @@ reinforce_bonus = reinforce_weight * (1 - exp(-merged_raw))
 
 ## 5. L3 本地检索（断网 / Memory Nexus）
 
-工具 **`core:local_memory_search`**：`l3_node/local_memory_search.py` → **`deep_search`**（Chroma **`~/.jachin/palace_db`**），按查询做 **向量语义检索**，返回 `matches[]`（含 `wing`/`room`/距离）。与 L2 hybrid 公式独立；产品位对标「单工具语义检索」。权威说明：**[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**。
+工具 **`core:local_memory_search`**：`l3_node/local_memory_search.py` → **`deep_search`**（**SQLite + FastEmbed**，`~/.jachin/palace_db/memory_nexus.sqlite3`），按查询做 **向量语义检索**，返回 `matches[]`（含 `wing`/`room`/距离）。与 L2 hybrid 公式独立；产品位对标「单工具语义检索」。权威说明：**[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)** · **[arch/04_MEMORY_ARCHITECTURE.md](./arch/04_MEMORY_ARCHITECTURE.md)**。
 
 ## 6. apply_patch 与 Python AST
 

@@ -15,7 +15,7 @@
 | **Agent** | 每节点有主 Agent，可分身多个子 Agent |
 | **Skill** | MCP + SKILL.md + JPP .wasm |
 | **执行** | ReAct 循环 + 工具调用 |
-| **记忆** | 本地 Memory Nexus（Chroma）；不向 L2 同步宿主记忆 |
+| **记忆** | 本地 Memory Nexus（SQLite + FastEmbed）；不向 L2 同步宿主记忆 |
 | **API Key** | 本地持**密文**，请求时解密后**自行调用**外部 API；L2 只管理 Key |
 
 ---

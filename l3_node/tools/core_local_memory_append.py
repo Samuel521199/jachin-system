@@ -1,7 +1,7 @@
 """
 Native **core:local_memory_append**：写入 Memory Nexus（User_Persona / Learned_Skills）。
 
-与 core:local_memory_search / L1 注入同属 Chroma 底座；禁止模型幻觉写入 MEMORY.md。
+与 core:local_memory_search / L1 注入同属 Memory Nexus（SQLite）底座；禁止模型幻觉写入 MEMORY.md。
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ async def async_run_local_memory_append(
     content: str,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
-    """异步写入：``to_thread`` + ``wait_for``，避免 Chroma 阻塞或假死挂死协程。"""
+    """异步写入：``to_thread`` + ``wait_for``，避免 Memory Nexus 阻塞或假死挂死协程。"""
     _tmo = _local_memory_append_timeout_sec()
     try:
         return await asyncio.wait_for(

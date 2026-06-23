@@ -17,7 +17,7 @@
 | 上下文预检与短路 | `l3_node/agent_preflight.py`、`l3_node/routing/plugins.py` |
 | 工具后预取 / 账本 | `l3_node/context_prefetch.py`、`l3_node/context_path_ledger.py` |
 | System 后缀驱逐与总帽 | `l3_node/prompt_compose.py`（`SuffixChunk`、`apply_system_prompt_total_cap`） |
-| L3 Memory Nexus（Chroma） | `l3_client/.../memory_backend.py`、`l3_node/memory_nexus_bridge.py`（`~/.jachin/palace_db`；可选 HTTP） |
+| L3 Memory Nexus（SQLite + FastEmbed） | `l3_client/.../memory_backend.py`、`l3_node/memory_nexus_bridge.py`（`~/.jachin/palace_db/memory_nexus.sqlite3`） |
 | 核心记忆（SQLite） | `core/biological_memory.py`（`get_core_memory_for_prompt` 等） |
 | 上下文折叠 / 记忆刷新 | `core/compaction_hook.py`（挂 `HOOK_BEFORE_LLM_THINK`） |
 | L3 侧注册 compaction | `l3_node/l3_compaction_bridge.py` |
@@ -60,7 +60,7 @@
 ### 2.5 与「记忆」的边界
 
 - **上下文**偏 **本轮可消费的 token 预算内的可见文本**。  
-- **记忆**偏 **跨轮持久化存储 + 选择性注入**；L3 宿主长期记忆 **仅在 Memory Nexus（Chroma）**；`recall_memory` 伪动作与 `core:local_memory_search` **同源**，结果进 **Observation**（见 §4）。
+- **记忆**偏 **跨轮持久化存储 + 选择性注入**；L3 宿主长期记忆 **仅在 Memory Nexus（SQLite + FastEmbed）**；`recall_memory` 伪动作与 `core:local_memory_search` **同源**，结果进 **Observation**（见 §4）。
 
 ---
 
@@ -68,9 +68,9 @@
 
 实现上是 **多源并列**，职责不同；拼装进 prompt 时由 `_build_system_prompt` + **`memory_facade.snapshot_for_prompt`（L1 Nexus）** 等统一择要。
 
-### 3.1 L3 Memory Nexus（Chroma，主路径）
+### 3.1 L3 Memory Nexus（SQLite + FastEmbed，主路径）
 
-- **路径**：默认 **`~/.jachin/palace_db`**（`chromadb.PersistentClient`）；可选 **`CHROMA_USE_HTTP_CLIENT`** 连接远程服务。  
+- **路径**：**`~/.jachin/palace_db/memory_nexus.sqlite3`**（表 `drawers`）；本地 **FastEmbed** 嵌入，NumPy 余弦相似度检索。  
 - **API**：`commit_drawer` / `recall_room` / `deep_search`（`memory_backend.py`）；宿主侧 **`core:local_memory_search`**、**`core:local_memory_append`**；L1 注入 **`build_l1_system_memory_block`**；`get_local_memory_for_prompt` 与门面 **对齐同一 L1 块**。  
 - **策略**：翼区 **Wing/Room** 过滤；回合末异步 commit；详见 **[MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**。
 
@@ -88,7 +88,7 @@
 
 ### 3.5 核心记忆 SQLite（`core_memory`）
 
-- `core/biological_memory.py`：`add_core_memory`、`get_core_memory_for_prompt`；Compaction **memory flush** 回合可写入；供 **Core Agent / 部分 Nexus 路径** 使用；与 **Memory Nexus（Chroma）并行存在**。
+- `core/biological_memory.py`：`add_core_memory`、`get_core_memory_for_prompt`；Compaction **memory flush** 回合可写入；供 **Core Agent / 部分 Nexus 路径** 使用；与 **Memory Nexus（SQLite）并行存在**。
 
 ### 3.6 工作区「规划记忆」
 

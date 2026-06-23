@@ -1,5 +1,5 @@
 """
-L3 本地记忆检索：Memory Nexus（Chroma）`deep_search` 全库向量检索。
+L3 本地记忆检索：Memory Nexus（SQLite + FastEmbed）`deep_search` 全库向量检索。
 
 已废弃 l3_local.json + MMR/半衰 旧实现；`mmr_lambda` / `half_life_days` / `include_memory_md` 仅作 API 兼容字段。
 
@@ -41,7 +41,7 @@ def _search_local_memories_sync(
     include_memory_md: bool = True,
     candidate_pool: int = 32,
 ) -> dict[str, Any]:
-    """同步执行 Chroma deep_search + 结果整形（供 to_thread 使用）。"""
+    """同步执行 Memory Nexus deep_search + 结果整形（供 to_thread 使用）。"""
     q = (query or "").strip()
     if not q:
         return {"ok": False, "error": "query 为空", "hits": []}
@@ -76,7 +76,7 @@ def _search_local_memories_sync(
                 "tag": f"{wing}/{room}",
                 "content": text[:8000],
                 "score": score,
-                "source": "memory_nexus_chroma",
+                "source": "memory_nexus_sqlite",
                 "wing": wing,
                 "room": room,
                 "distance": dist,
@@ -110,7 +110,7 @@ async def async_search_local_memories(
     candidate_pool: int = 32,
 ) -> dict[str, Any]:
     """
-    异步检索：``to_thread`` 执行同步 Chroma 路径，外层 ``wait_for`` 防止线程永久挂起。
+    异步检索：``to_thread`` 执行同步 Nexus 路径，外层 ``wait_for`` 防止线程永久挂起。
     超时 / 异常 fail-open 返回可序列化 dict（不向外抛）。
     """
     _tmo = _local_memory_search_timeout_sec()

@@ -2,7 +2,7 @@
 智能化 P2：修正意图（P2-7）、意图-技能统计（P2-8）配置与入口。
 
 - 配置：`~/.jachin/nexus_config.json` → `intelligence_p2`
-- 修正记忆写入：经 `add_local_memory` → **Memory Nexus（Chroma）**；可选 v8 向量碎片（`core_memory`）
+- 修正记忆写入：经 `add_local_memory` → **Memory Nexus（SQLite + FastEmbed）**；可选 v8 向量碎片（`core_memory`）
 """
 from __future__ import annotations
 

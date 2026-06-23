@@ -1,150 +1,347 @@
-# Jachin L3 记忆架构（现行）
+# Jachin 记忆架构（人话版）
 
-本文描述仓库内与「跨轮次记忆」相关的**实现级**架构：**跨会话记忆在 L3 内由 Memory Nexus（SQLite + FastEmbed）闭环**，不依赖 L2 记忆 API 或同步守护进程。与四大原语中的 **Tools**（`core:local_memory_*`）及 **Agent 上下文**（system prompt、意图网关嗅探）对齐。
+本文只回答一个问题：**Jachin 的 Agent 到底怎么记东西？**
 
-**Nexus 契约细项**见 [`MEMORY_NEXUS_L3.md`](./MEMORY_NEXUS_L3.md)。  
-**Prompt 调度**见 [`../L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md`](../L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md)、[`../JACHIN_CONTEXT_MEMORY_PROMPT_SCHEDULING.md`](../JACHIN_CONTEXT_MEMORY_PROMPT_SCHEDULING.md)。  
-**写入与打分叙事**见 [`../MEMORY_WRITE_AND_SCORE_NARRATIVE.md`](../MEMORY_WRITE_AND_SCORE_NARRATIVE.md)。
+先说结论：
+
+- **单体 L3 模式**：记忆主要存在用户这台机器上，L3 自己读、自己写、自己检索。
+- **L3 + L2 模式**：L3 仍然是执行和本地记忆的主体；L2 负责企业侧管理、权限、同步、集中检索或多节点协作。
+
+不要把所有“记忆”混成一类。Jachin 里至少有三种东西：
+
+| 名称 | 通俗解释 | 主要用途 |
+|------|----------|----------|
+| 短上下文 | 当前聊天窗口里还没忘的内容 | 保持本轮对话连续 |
+| 长期记忆 | Agent 跨会话记住的事实、偏好、经验 | 下次还能想起来 |
+| 任务状态 | 当前正在做什么、做到哪一步、有啥发现 | 让长任务能续上 |
 
 ---
 
-## 1. 总览：命名空间区分
+## 1. 单体 L3 的记忆架构
 
-| 名称 / 路径 | 角色 | 典型用途 |
-|-------------|------|----------|
-| **Memory Nexus（SQLite + FastEmbed）** | L3 **唯一**跨会话记忆主存 | L0/L1 注入、`deep_search`、`commit_drawer`、回合末 commit、技能矩阵、`recall_memory` 伪动作（与 `core:local_memory_search` 同源） |
-| **`~/.jachin/memory/l3_local.json`（及 shard）** | **遗留** JSON | 只读/诊断、HR/workflow 指针；**新记忆写入已迁 Nexus（SQLite）** |
-| **`core_memory`（SQLite）** | Core 层碎片/生物侧 | `core/memory_store.py` 等；**不是** Nexus（与 Nexus 为不同 SQLite 用途） |
-| **对话 Compaction** | Token 折叠 | 折叠**消息列表**；非 JSON「梦境合并」 |
+单体 L3 就是：**桌面端或本机 L3 Agent 自己完成记忆闭环**。
 
-> **说明**：L2 控制面仍可承担配对、Key 下发、`coordinate` 等；**产品化跨会话宿主记忆不再经 L2 `/memory/sync` 或 `/memory/search`**。若需集中式多节点记忆，应另行设计同步层，而非本文所述默认路径。
+它不需要 L2 才能记住你，也不需要把每条记忆上传到云端。默认情况下，L3 会把长期记忆存在本机 SQLite 文件里：
 
-```mermaid
-flowchart LR
-  subgraph prompt["System Prompt"]
-    L0["L0 Core_Profile"]
-    L1["L1 近期块"]
-    AG["agent_core._build_system_prompt"]
-    L0 --> AG
-    L1 --> AG
-  end
-  subgraph nexus["Memory Nexus"]
-    DB[("memory_nexus.sqlite3 / drawers")]
-    CR["recall_room / deep_search / commit_drawer"]
-    CR --- DB
-  end
-  L0 --> CR
-  L1 --> CR
-  TOOL["core:local_memory_search"] --> CR
-  REC["recall_memory 伪动作"] --> CR
-  TAPP["core:local_memory_append"] --> CR
-  ADD["add_local_memory"] --> CR
-  TC["schedule_nexus_turn_commit_async"] --> CR
-  SM["sync_all_tools_to_nexus"] --> CR
-  JSON["l3_local.json 只读"]
-  JSON -.->|遗留读| AG
+```text
+~/.jachin/palace_db/memory_nexus.sqlite3
 ```
 
+这个本地记忆库叫 **Memory Nexus**。
+
+### 1.1 一句话理解
+
+可以把 Memory Nexus 想成 Agent 的本地笔记柜：
+
+```text
+Wing    = 大分类
+Room    = 小分类
+Drawer  = 一条具体记忆
+```
+
+例如：
+
+```text
+User_Persona / Core_Profile    -> 用户长期偏好、人设侧写
+User_Persona / General_Chat     -> 最近重要对话
+User_Persona / Learned_Skills   -> 用户明确要求记住的事实、习惯、规则
+System_Core / Skill_Matrix      -> 工具能力索引
+```
+
+### 1.2 L3 每轮对话怎么用记忆
+
+一轮普通对话大概是这样：
+
+```text
+用户说话
+  ↓
+L3 先拿一点近期/核心记忆塞进 system prompt
+  ↓
+Agent 开始 ReAct 推理
+  ↓
+需要更多记忆时，调用本地记忆检索
+  ↓
+得到答案
+  ↓
+回合结束后，L3 挑有价值的信息异步写回 Memory Nexus
+```
+
+这里有两个重点：
+
+1. **不是把全部记忆都塞进 prompt**  
+   只塞少量近期/核心记忆，避免 prompt 变巨大。
+
+2. **需要时再检索**  
+   Agent 可以用 `core:local_memory_search` 或 `recall_memory` 从本地记忆库查相关内容。
+
+### 1.3 L3 怎么“记住”
+
+L3 有两种写入方式。
+
+第一种是**显式写入**：
+
+```text
+core:local_memory_append
+```
+
+适合用户明确说：
+
+```text
+记住我喜欢这种风格
+以后默认用中文回答
+这个项目的部署机器叫 xxx
+```
+
+这类内容通常写到：
+
+```text
+User_Persona / Learned_Skills
+```
+
+第二种是**回合末自动写入**：
+
+```text
+schedule_nexus_turn_commit_async
+```
+
+它会在一次对话结束后，把有价值的用户输入和助手回复异步写入：
+
+```text
+User_Persona / General_Chat
+```
+
+但它会跳过太短、太水、纯寒暄的内容，比如“好的”“收到”“谢谢”。
+
+### 1.4 L3 怎么“想起来”
+
+L3 有三种想起记忆的方式：
+
+| 方式 | 通俗解释 |
+|------|----------|
+| L0 注入 | 最高优先级的用户侧写，例如长期偏好 |
+| L1 注入 | 最近重要记忆，自动放进本轮 prompt |
+| 主动检索 | Agent 需要时调用 `core:local_memory_search` / `recall_memory` |
+
+检索底层是：
+
+```text
+本地文本 -> FastEmbed 向量 -> SQLite 候选 -> NumPy 相似度排序 -> 返回 Top-K
+```
+
+也就是说，L3 可以语义检索“和当前问题相近的记忆”，不是只能做关键词搜索。
+
+### 1.5 单体 L3 架构图
+
+```text
+┌────────────┐
+│  用户输入   │
+└─────┬──────┘
+      ↓
+┌──────────────────────┐
+│ L3 Agent / run_agent  │
+│ 单主轴 ReAct 循环      │
+└─────┬────────────────┘
+      ↓
+┌──────────────────────┐
+│ System Prompt         │
+│ - 工具列表             │
+│ - SOP                 │
+│ - L0/L1 本地记忆       │
+│ - 任务规划上下文       │
+└─────┬────────────────┘
+      ↓
+┌──────────────────────┐
+│ 工具调用              │
+│ local_memory_search   │
+│ local_memory_append   │
+│ recall_memory         │
+└─────┬────────────────┘
+      ↓
+┌──────────────────────────────┐
+│ Memory Nexus                  │
+│ SQLite + FastEmbed             │
+│ ~/.jachin/palace_db/...sqlite3 │
+└──────────────────────────────┘
+```
+
+单体 L3 的核心原则是：
+
+> **记忆离 Agent 很近。读写都在本机，失败不阻塞对话。**
+
 ---
 
-## 2. Memory Nexus（MemPalace / SQLite + FastEmbed）
+## 2. L3 + L2 的记忆架构
 
-### 2.1 数据模型与检索
+L3 + L2 模式不是简单地说“L2 替代 L3 记忆”。
 
-- **Wing → Room → Drawer**：verbatim 文本 + 元数据（JSON）；与实现中表字段一一对应。
-- **存储介质**：单一 SQLite 文件 **`~/.jachin/palace_db/memory_nexus.sqlite3`**，表 **`drawers`**（`drawer_id`, `wing`, `room`, `document`, `embedding` BLOB、`dim`, `timestamp`, `extra_meta_json`）。**不依赖**外部分向量库服务或网络向量 API；与旧版 `palace_db` 目录同父级，便于桌面打包与单文件分发。
-- **向量化（Embedding）**：宿主进程内 **`fastembed.TextEmbedding`**（`memory_backend.py`），默认模型可由环境变量覆盖；写入/更新抽屉时对正文生成 L2 归一化 float32 向量并落库。
-- **Deep Search（语义检索）**：
-  - **不再使用** HNSW 等近似最近邻索引。
-  - **候选集**：SQLite 按 **`ORDER BY timestamp DESC`**，并结合可选 **wing** 过滤，最多取 **`JACHIN_NEXUS_DEEP_SEARCH_CANDIDATES`**（默认 **2500**）条。
-  - **打分**：在内存中用 **NumPy** 将候选向量堆叠为矩阵，与查询向量做内积（等价于归一化后的余弦相似度）；返回 **Top-K**；对外仍以 `distance` 字段表示 **1 − cos_sim**（越小越相似），与旧版 API 习惯一致。
-- **实现**：`l3_client/local_mcps/jachin_memory_nexus/memory_backend.py`。
+更准确地说：
 
-### 2.2 注入 Prompt（L0 / L1）
+```text
+L3 负责当场思考、执行、本地记忆
+L2 负责企业侧管理、权限、同步、集中能力和跨节点协作
+```
 
-| 层级 | Wing/Room | 说明 |
-|------|-----------|------|
-| **L0** | `User_Persona` / `Core_Profile` | 统帅侧写 |
-| **L1** | `E2E_Monitors`/`Kalaroko_Default`、`User_Persona`/`General_Chat` | 「系统近期核心记忆」块 |
+### 2.1 L2 在记忆里负责什么
 
-入口：`agent_core` **await** `memory_nexus_bridge` 异步函数；超时 `JACHIN_MEMORY_NEXUS_PROMPT_TIMEOUT_SEC`；`JACHIN_MEMORY_NEXUS_PROMPT_DISABLE` 可关整块。
+L2 更像企业里的“记忆控制面”，不是每次聊天都必须经过的脑子。
 
-### 2.3 Native 工具与伪动作
+它适合负责：
 
-| 入口 | 行为 |
-|------|------|
-| `core:local_memory_search` | `deep_search` → 格式化 Observation |
-| `core:local_memory_append` | `commit_drawer` |
-| **`recall_memory`（ReAct 伪动作）** | 与上表同源：`agent_core._recall_memory_search` → `search_local_memories`，**不访问 L2** |
+| L2 能力 | 通俗解释 |
+|---------|----------|
+| 权限隔离 | 谁能看哪些记忆、哪些工具、哪些业务数据 |
+| 子账号管理 | 同一企业里不同用户的记忆不要串 |
+| 集中检索 | 企业知识、共享记忆、团队资料统一查 |
+| 多节点协作 | 多台 L3 可以被 L2 调度 |
+| 同步和分发 | Skill、MCP、配置、可选记忆包下发 |
 
-`add_local_memory` → **`User_Persona` / `Learned_Skills`**。
+### 2.2 L3 + L2 时，一轮对话怎么走
 
-### 2.4 回合末异步写入
+典型流程是：
 
-`schedule_nexus_turn_commit_async` → `User_Persona` / `General_Chat`；失败仅日志。
+```text
+用户对 L3 说话
+  ↓
+L3 先用本地 Memory Nexus 和本地工具处理
+  ↓
+如果需要企业级知识/共享记忆/权限判断
+  ↓
+L3 向 L2 请求
+  ↓
+L2 检查权限，返回可用结果
+  ↓
+L3 把结果放回 ReAct 循环继续思考
+  ↓
+最终由 L3 给用户回复
+```
 
-### 2.5 技能矩阵与动态工具检索
+所以，L2 不是“替 L3 思考”，而是给 L3 提供更大的组织级记忆和权限边界。
 
-`sync_all_tools_to_nexus`、`JACHIN_DYNAMIC_TOOL_RETRIEVAL` 下的 **`async_filter_tools_for_dynamic_retrieval`**（内部 `to_thread` + `wait_for`，fail-open 全量池）；超时环境变量 `JACHIN_DYNAMIC_TOOL_RETRIEVAL_ASYNC_TIMEOUT_SEC`。
+### 2.3 两层记忆怎么分工
+
+最容易理解的划分是：
+
+| 记忆类型 | 放 L3 | 放 L2 |
+|----------|------|------|
+| 用户个人偏好 | 是 | 可选同步 |
+| 最近聊天记忆 | 是 | 通常不必 |
+| 当前任务进度 | 是 | 可选上报 |
+| 企业知识库 | 可缓存 | 是 |
+| 团队共享经验 | 可缓存 | 是 |
+| 多用户共享资料 | 不建议只放 L3 | 是 |
+| 权限敏感数据 | L3 只拿授权后的结果 | 是 |
+
+也就是说：
+
+```text
+个人、即时、贴近执行的记忆 -> L3
+组织、共享、权限敏感的记忆 -> L2
+```
+
+### 2.4 L3 + L2 架构图
+
+```text
+┌────────────┐
+│  用户输入   │
+└─────┬──────┘
+      ↓
+┌──────────────────────┐
+│ L3 Agent              │
+│ - ReAct 推理           │
+│ - 本地工具             │
+│ - 本地 Memory Nexus    │
+└─────┬────────────────┘
+      │
+      │ 需要企业共享记忆 / 权限 / 多节点协作时
+      ↓
+┌──────────────────────┐
+│ L2 控制面             │
+│ - 权限与子账号          │
+│ - 企业知识/共享记忆      │
+│ - Skill/MCP 清单        │
+│ - 多节点任务调度         │
+└─────┬────────────────┘
+      ↓
+┌──────────────────────┐
+│ L3 继续推理并回复用户   │
+└──────────────────────┘
+```
+
+### 2.5 为什么不是所有记忆都放 L2
+
+因为 L3 是实际执行 Agent。很多记忆只对当前机器、当前用户、当前任务有意义：
+
+- 用户说话习惯
+- 最近几轮对话
+- 本地桌面任务状态
+- 本机工具执行经验
+- 当前项目的临时计划和发现
+
+这些放 L3 更快，也更稳定。
+
+而企业共享知识、多人共用资料、权限敏感内容，则更适合放 L2。
 
 ---
 
-## 3. 意图网关 · Context Sniffer
+## 3. 单体 L3 与 L3+L2 的区别
 
-默认不在嗅探阶段调用 Memory Nexus（避免阻塞）；`intent_gateway.context_sniffer_memory_chroma_enabled`（配置键名保留历史后缀 `chroma`）为真时可开启嗅探侧 Nexus 拉取；超时 `JACHIN_CONTEXT_SNIFFER_MEMORY_TIMEOUT_SEC`。
+| 问题 | 单体 L3 | L3 + L2 |
+|------|---------|---------|
+| Agent 在哪里思考 | L3 | L3 |
+| 本地长期记忆在哪里 | L3 SQLite | L3 SQLite |
+| 企业共享记忆在哪里 | 没有或本地文件 | L2 |
+| 权限谁管 | 本机配置 | L2 |
+| 多节点协作 | 不强调 | L2 调度 |
+| 离线可用性 | 强 | L3 可离线，L2 能力离线时降级 |
+| 适合场景 | 个人桌面、单机 Agent | 企业、多用户、多设备 |
 
----
+最重要的一点：
 
-## 4. 遗留与已移除项
-
-### 4.1 `l3_local.json`
-
-只读/分片/HR；`merge_from_l2` 为空操作（历史名保留）。
-
-### 4.2 JSON「梦境合并」
-
-`memory_compactor` 全局 no-op。
-
-### 4.3 `memory_sync_signals`
-
-`bump_urgent_l3_local_sync` 为兼容占位，**不再**驱动任何 L2 同步。
-
-### 4.4 已移除：`l3_memory.json` + MemorySyncDaemon
-
-原 `agent_core` 内周期性 `POST /api/v2/memory/sync` 已删除；**不再**维护 `~/.jachin/l3_memory.json` 作为 L3↔L2 记忆载荷。
+> **无论有没有 L2，L3 都是执行脑。L2 是控制面和组织记忆层，不是默认替代 L3 的脑。**
 
 ---
 
-## 5. 环境变量（速查）
+## 4. 当前代码里的状态
 
-| 变量 | 作用 |
-|------|------|
-| `JACHIN_MEMORY_NEXUS_PROMPT_DISABLE` | 关闭 L0/L1 |
-| `JACHIN_MEMORY_NEXUS_PROMPT_TIMEOUT_SEC` | L0/L1 读超时 |
-| `JACHIN_MEMORY_EMBED_MODEL` | FastEmbed 模型名（默认多语言 MiniLM，见 `memory_backend.py`） |
-| `JACHIN_NEXUS_DEEP_SEARCH_CANDIDATES` | Deep Search 参与 NumPy 打分的最大候选条数（默认 2500） |
-| `JACHIN_DYNAMIC_TOOL_RETRIEVAL` | 动态工具裁剪 |
-| `JACHIN_CONTEXT_SNIFFER_MEMORY_TIMEOUT_SEC` | 嗅探记忆超时 |
+当前项目的默认方向是：
 
----
+1. **L3 本地跨会话记忆走 Memory Nexus**
+2. **L3 不再默认依赖 L2 `/memory/sync` 做长期记忆**
+3. **旧的 `l3_local.json` 只保留兼容和诊断意义**
+4. **`core_memory`、compaction、task_plan 是旁路系统，不等于 Memory Nexus**
 
-## 6. 代码锚点
+换句话说：
 
-| 主题 | 文件 |
-|------|------|
-| Nexus 桥接 | `l3_node/memory_nexus_bridge.py` |
-| SQLite + FastEmbed 底座 | `l3_client/local_mcps/jachin_memory_nexus/memory_backend.py` |
-| 检索 / 门面 | `l3_node/local_memory_search.py`、`l3_node/memory_facade.py` |
-| 写入封装 | `l3_node/local_memory.py` |
-| ReAct + `recall_memory` | `l3_node/agent_core.py`（`_recall_memory_search`） |
-| 嗅探 | `l3_node/intent_gateway/context_sniffer.py`、`config.py` |
+```text
+当前默认主路径：
+
+L3 Agent
+  -> Memory Nexus
+  -> SQLite + FastEmbed
+  -> 本地闭环
+```
+
+未来如果要做企业级共享记忆，可以在 L2 增加集中式记忆层，但这应该是清晰的“组织记忆”，不要再和 L3 本地记忆混在一起。
 
 ---
 
-## 7. 修订记录
+## 5. 设计原则
 
-| 日期 | 说明 |
-|------|------|
-| 2026-04 | 首版总览。 |
-| 2026-04 | L3 记忆闭环：移除 L2 sync 守护；`recall_memory` 改走 Nexus。 |
-| 2026-04 | Nexus 存储迁至 **SQLite + FastEmbed + NumPy**；单文件 `memory_nexus.sqlite3` / 表 `drawers`；文档与实现对齐。 |
+1. **个人记忆靠近 Agent**
+   L3 能本地记住的，就不要每次绕远路。
+
+2. **组织记忆交给 L2**
+   跨用户、跨设备、要权限控制的内容，应该由 L2 管。
+
+3. **Prompt 只放少量关键记忆**
+   不要把数据库整库塞给模型。
+
+4. **需要时检索**
+   Agent 想不起来时，再用语义检索查。
+
+5. **记忆失败不能拖死对话**
+   记忆读写都应该 fail-open：失败就跳过，不影响主流程。
+
+6. **不要再发明一堆相似名字**
+   新记忆默认进 Memory Nexus；除非明确是任务状态、压缩摘要或企业共享知识。
+

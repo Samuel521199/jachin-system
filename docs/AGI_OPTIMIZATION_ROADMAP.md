@@ -2,6 +2,7 @@
 
 **版本**：2026-05-19（an）  
 **性质**：基于现有代码架构的 AGI 级深度优化方案，从单机 Agent 走向真正的自主智能体系统。  
+**架构全景（2026）**：[`arch/README.md`](./arch/README.md)（01~07 分册）  
 **代码基线**：`L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md`（2026-04-02）+ `JACHIN_MEMORY_ARCHITECTURE.md` + 仓库实现快照。
 
 ---

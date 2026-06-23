@@ -560,7 +560,7 @@ export async function deleteCalendarItem(itemId: string): Promise<{ ok: boolean 
 }
 
 /**
- * 批量删除记忆（控制台未接 Chroma 管理 API 时为占位）
+ * 批量删除记忆（控制台未接 Memory Nexus 管理 API 时为占位）
  */
 export async function batchDeleteMemory(
   _memoryIds: string[]
@@ -569,7 +569,7 @@ export async function batchDeleteMemory(
 }
 
 /**
- * 删除记忆（控制台未接 Chroma 管理 API 时为占位）
+ * 删除记忆（控制台未接 Memory Nexus 管理 API 时为占位）
  */
 export async function deleteMemory(_memoryId: string): Promise<{ ok: boolean; message?: string }> {
   return { ok: false, message: "宿主记忆在 L3 Memory Nexus；单条删除请走运维/后续 API" };
@@ -1414,6 +1414,26 @@ export async function getK11GameOpenSmokeStreamUrlAsync(opts?: {
   if (opts?.singleGame) sp.set("single_game", opts.singleGame);
   const q = sp.toString();
   const rel = `/api/v1/k11-game-open-smoke/stream${q ? `?${q}` : ""}`;
+  const base = await getL3SkillsBaseUrl();
+  return `${base}${rel}`;
+}
+
+/** K11 Tongits 全自动打牌 + 协议金币 Lark SSE */
+export async function getK11TongitsAutoplaySmokeStreamUrlAsync(opts?: {
+  targetUrl?: string;
+  cdpHttp?: string;
+  verbose?: boolean;
+  noLarkReport?: boolean;
+  roundWaitSec?: number;
+}): Promise<string> {
+  const sp = new URLSearchParams();
+  sp.set("target_url", (opts?.targetUrl || K11_SMOKE_DEFAULT_TARGET_URL).trim() || K11_SMOKE_DEFAULT_TARGET_URL);
+  if (opts?.cdpHttp) sp.set("cdp_http", opts.cdpHttp);
+  if (opts?.verbose) sp.set("verbose", "1");
+  if (opts?.noLarkReport) sp.set("no_lark_report", "1");
+  if (opts?.roundWaitSec != null) sp.set("round_wait_sec", String(opts.roundWaitSec));
+  const q = sp.toString();
+  const rel = `/api/v1/k11-tongits-autoplay-smoke/stream${q ? `?${q}` : ""}`;
   const base = await getL3SkillsBaseUrl();
   return `${base}${rel}`;
 }

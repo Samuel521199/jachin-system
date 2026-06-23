@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.93] - 2026-06-23
+
+### Added / Changed
+
+- codex 使用前测试版：K11 Tongits 全自动打牌冒烟（独立按钮 + Lark 3016 金币结算）、视觉/UI QA MCP、ReAct 截图多模态注入与相关文档。
+- **Version**: Desktop **0.9.93**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.72] - 2026-05-26
 
 ### Added / Changed

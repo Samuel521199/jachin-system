@@ -1,0 +1,12 @@
+{
+  "roi": [
+    288,
+    761,
+    1632,
+    961
+  ],
+  "screen_width": 1920,
+  "screen_height": 1080,
+  "source": "anchor",
+  "updated_at": "2026-06-04T06:16:14.416657+00:00"
+}

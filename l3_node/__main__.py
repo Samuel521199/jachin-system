@@ -98,6 +98,10 @@ if __name__ == "__main__" and len(sys.argv) > 1:
         from l3_node.k11_subprocess_cli import run_k11_game_open_smoke_sync
 
         raise SystemExit(run_k11_game_open_smoke_sync())
+    if sys.argv[1] == "--jachin-k11-tongits-autoplay-smoke-subprocess":
+        from l3_node.k11_subprocess_cli import run_k11_tongits_autoplay_smoke_sync
+
+        raise SystemExit(run_k11_tongits_autoplay_smoke_sync())
 
 # PMO Copilot 一次性任务：在 logging 初始化前压低控制台刷屏（详情见 pmo_copilot_*.txt / l3_debug.log）
 if __name__ == "__main__" and "--run-pmo-copilot" in sys.argv:

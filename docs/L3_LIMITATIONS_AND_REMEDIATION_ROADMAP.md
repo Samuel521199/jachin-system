@@ -20,7 +20,7 @@
 | **§1 Cancel** | **`l3_node/agent_cancel`**：`metadata` 注入 cancel **`Event`**；流式 **`register_stream_task` + `task.cancel()`**（与 `RunCancelledError` 路径配合） |
 | **§2 沙箱 / 预算** | **`workspace_context`**：子 Agent 工作区落在 `workspace/sandboxes/...`；宿主记忆以 **Memory Nexus** 为主 + 遗留 **`l3_local_shard_*.json`** 隔离；**`llm_budget` + `agent.sub_agent_max_total_tokens` / `main_max_total_tokens`**；**`max_delegate_depth`** 超限禁止继续 delegate |
 | **§3 去重** | **`context_path_ledger` + `context_prefetch`**（`ledger_iteration_window`、`metadata._react_iteration`）；路径滑窗 **`_prefetch_paths_shown`**；**`mcp:read_file` 与 `core:fs_read` 同路径登记**；**`observation_dedup`** 同 run 大块 hash 引用（非 shell 正文级去重） |
-| **§4 记忆** | **`memory_facade`**、**Memory Nexus（Chroma）**；`memory_sync_signals` 仅为历史兼容占位；**`passive_max_idle_runs` / `last_prompt_inject_cycle`** 对 JSON 主路径已弱化（见 `nexus_config` `memory`） |
+| **§4 记忆** | **`memory_facade`**、**Memory Nexus（SQLite + FastEmbed）**；`memory_sync_signals` 仅为历史兼容占位；**`passive_max_idle_runs` / `last_prompt_inject_cycle`** 对 JSON 主路径已弱化（见 `nexus_config` `memory`） |
 | **§5 Prompt** | **`agent_preflight` + `l3_node/routing/`** 插件链；**`prompt_compose`** 后缀预算与 **`prompt_suffix_eviction`** 日志；招聘域 **动态后缀**（`intent_signals` + `recruitment_longform` / 短 `hr_hint`） |
 
 **仍开放（文档不宣称已解决）**：线程池 **Prometheus/深度指标**（§1 P0）；广谱 **Native 子进程 kill**（§1 P1）；**进程级后台 Worker**（§1 P2）；LiteLLM **`cache_control` 多段 system**（§3 P1）；L2 **webhook 强制 flush**（§4 P2）；子 Agent 通道当前 **`allow_delegate` 仍与主会话同为 True**（仅深度卡死递归，与 §2 P0「默认禁嵌套 delegate」尚有差距）。
@@ -105,7 +105,7 @@
 
 2. **沙箱与隔离（已部分落地）**  
    - **工作区**：`delegate` 深度大于 0 时 **`workspace_context`** 将默认根设为 `workspace/sandboxes/<sub>/`（与主会话隔离写入）。**进程内**仍共享 MCP Manager、技能缓存等（非 OS 级隔离）。  
-   - **记忆**：宿主长期记忆以 **Memory Nexus（Chroma）** 为主；遗留 **`l3_local_shard_*.json`** 与子 Agent 隔离，避免与主会话混写同一 JSON 文件（见 `docs/architecture/MEMORY_NEXUS_L3.md`）。
+   - **记忆**：宿主长期记忆以 **Memory Nexus（SQLite + FastEmbed）** 为主；遗留 **`l3_local_shard_*.json`** 与子 Agent 隔离，避免与主会话混写同一 JSON 文件（见 `docs/architecture/MEMORY_NEXUS_L3.md`、`docs/arch/04_MEMORY_ARCHITECTURE.md`）。
 
 3. **可观测性**  
    - 后台：`l3_event_bus` + WS + **`tasks_index.jsonl`**（queued/started/completed 等事件行）+ `progress.md`。**强制终止**仍弱：同进程 `run_agent` 依赖 cancel Event / 流式 cancel，非子进程级 SIGKILL。

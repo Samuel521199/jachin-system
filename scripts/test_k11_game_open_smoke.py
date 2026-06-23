@@ -7,6 +7,8 @@ K11 极速开门探活（Smoke Test）
 - 仅验证 4 款指定游戏能否快速成功加载进桌。
 - 不进行对局操作、不做金币结算。
 - 复用 mcp_kalaroko_monitor 的极速引擎探针，命中晚期 UI / 资源静默 / 后置 API 即可判定上桌。
+
+**Tongits 并行（可选）**：须 ``K11_TONGITS_SMOKE=1``；独立验证请用控制台「🃏 Tongits 自动打牌」或 ``test_k11_tongits_autoplay_smoke.py``。
 """
 from __future__ import annotations
 
@@ -100,6 +102,36 @@ def _resolve_k11_lark_smoke_report_path() -> Path:
     return ROOT / "scripts" / "k11_lark_smoke_report.py"
 
 
+def _load_tongits_smoke_module() -> Any | None:
+    path = ROOT / "scripts" / "k11_tongits_smoke_session.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("k11_tongits_smoke_session_embed", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _tongits_row_for_lark(row: dict[str, Any]) -> dict[str, Any]:
+    v = str(row.get("verdict") or "SKIP").upper()
+    if v == "PASS":
+        vzh = "通过"
+    elif v == "SKIP":
+        vzh = "跳过"
+    else:
+        vzh = "失败"
+    return {
+        "tier": str(row.get("tier") or "Tongits"),
+        "case": str(row.get("case") or "tongits_smoke_coin"),
+        "case_title_zh": str(row.get("case_title_zh") or "Tongits King 一局金币"),
+        "verdict": v,
+        "verdict_zh": vzh,
+        "detail": str(row.get("detail") or "")[:8000],
+    }
+
+
 def _to_lark_results(per_game: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in per_game:
@@ -129,6 +161,7 @@ def _send_lark_notification_for_open_smoke(
     target_url: str,
     lark_wiki_url: str,
     log: Any,
+    extra_lark_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     _lark_path = _resolve_k11_lark_smoke_report_path()
     if not _lark_path.is_file():
@@ -155,9 +188,12 @@ def _send_lark_notification_for_open_smoke(
     app_secret = (os.environ.get("K11_SMOKE_LARK_APP_SECRET") or "").strip()
     chat_id = (os.environ.get("K11_SMOKE_LARK_NOTIFY_CHAT_ID") or "").strip()
 
+    lark_rows = _to_lark_results(per_game)
+    if extra_lark_rows:
+        lark_rows.extend(extra_lark_rows)
     try:
         mod.send_k11_smoke_lark_notification(  # type: ignore[attr-defined]
-            results=_to_lark_results(per_game),
+            results=lark_rows,
             target_url=target_url,
             wiki_url=lark_wiki_url,
             lark_wrote=0,
@@ -609,9 +645,12 @@ async def _async_main(args: argparse.Namespace) -> int:
         return 2
 
     per_game: list[dict[str, Any]] = []
+    tongits_lark_rows: list[dict[str, Any]] = []
     browser: Any = None
     context: Any = None
     must_close_context = False
+    tongits_mod = _load_tongits_smoke_module()
+    tongits_session: Any = None
 
     print("———————— K11 极速开门探活（kalaroko.com）————————", flush=True)
     print(f"目标站点: {TARGET_HOME}", flush=True)
@@ -637,12 +676,39 @@ async def _async_main(args: argparse.Namespace) -> int:
                 preferred_host=preferred_host,
             )
 
+            def _log(msg: str) -> None:
+                print(msg, flush=True)
+
+            if tongits_mod and tongits_mod.tongits_smoke_enabled(args):  # type: ignore[attr-defined]
+                try:
+                    tongits_session = await tongits_mod.tongits_smoke_start(  # type: ignore[attr-defined]
+                        context,
+                        _log,
+                        target_url=TARGET_HOME,
+                    )
+                except Exception as e:
+                    print(f"  [tongits] 并行启动异常（已忽略）: {e}", flush=True)
+
             per_game = await run_game_open_smoke_on_existing_page(
                 page,
                 verbose=bool(args.verbose),
                 log=None,
                 cases=selected,
             )
+
+            if tongits_mod and tongits_session is not None:
+                _buf: list[dict[str, Any]] = []
+                try:
+                    await tongits_mod.tongits_smoke_finalize_and_append(  # type: ignore[attr-defined]
+                        tongits_session,
+                        _buf,
+                        _log,
+                    )
+                    tongits_lark_rows = [
+                        _tongits_row_for_lark(r) for r in _buf
+                    ]
+                except Exception as e:
+                    print(f"  [tongits] 收尾异常（已忽略）: {e}", flush=True)
 
     except Exception as e:
         print(f"[失败] 执行异常: {type(e).__name__}: {e}", file=sys.stderr)
@@ -688,6 +754,7 @@ async def _async_main(args: argparse.Namespace) -> int:
             target_url=TARGET_HOME,
             lark_wiki_url=wiki_url,
             log=lambda m: print(m, flush=True),
+            extra_lark_rows=tongits_lark_rows or None,
         )
 
     if args.json_out:
@@ -717,6 +784,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-lark-report",
         action="store_true",
         help="只跑本地探活，不发飞书消息卡片",
+    )
+    ap.add_argument(
+        "--skip-tongits-smoke",
+        action="store_true",
+        help="不并行 Tongits 一局与协议金币监控",
     )
     ap.add_argument(
         "--lark-wiki-url",

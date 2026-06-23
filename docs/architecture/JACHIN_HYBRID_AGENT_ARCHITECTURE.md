@@ -2,6 +2,7 @@
 
 **版本**: 2026-04-07  
 **状态**: **架构 SSOT（单一事实来源）** — 描述 Jachin AI OS 在 **单体 ReAct 主轴** 之上如何挂载语义层、SOP、**内联 Critic** 与 **Experience RAG**；与实现渐进对齐。  
+**架构全景（含工程图）**: [arch/README.md](../arch/README.md)  
 **术语 SSOT**: [FOUR_PRIMITIVES.md](../FOUR_PRIMITIVES.md) → 中文全文 [Jachin 视角的「四大原语」终极架构规范.md](../Jachin%20视角的「四大原语」终极架构规范.md)  
 **执行韧性**: [JACHIN_EXECUTION_RESILIENCE_CONTRACT.md](../JACHIN_EXECUTION_RESILIENCE_CONTRACT.md)  
 **工具池**: [L3_TOOL_POOL_AND_MCP_ASSEMBLY.md](./L3_TOOL_POOL_AND_MCP_ASSEMBLY.md)

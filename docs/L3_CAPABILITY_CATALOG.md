@@ -18,7 +18,7 @@
 
 | 项 | 说明 |
 |----|------|
-| **角色** | Layer 3 执行节点：ReAct Agent + 本地/订阅 MCP + Wasm 技能 + Memory Nexus（Chroma）+（可选）L2 协同等控制面 |
+| **角色** | Layer 3 执行节点：ReAct Agent + 本地/订阅 MCP + Wasm 技能 + Memory Nexus（SQLite + FastEmbed）+（可选）L2 协同等控制面 |
 | **典型通道** | 飞书 IM、WebSocket 控制台、HTTP `agent/run` |
 | **边界** | 不臆测外部系统已登录/已连接；以工具返回值与配置为准 |
 
@@ -54,6 +54,7 @@
 |--------|------|------|
 | `hr_recruitment` | [capability_domains/hr_recruitment.md](./capability_domains/hr_recruitment.md) | Boss/Lark 招聘、无人值守、透析 MCP |
 | `office_powerpoint_mcp` | [capability_domains/office_powerpoint_mcp.md](./capability_domains/office_powerpoint_mcp.md) | PPTX 创建/编辑（com.jachin.mcp.office_powerpoint） |
+| `ui_qa` | [capability_domains/ui_qa.md](./capability_domains/ui_qa.md) | 全桌面视觉 UI：`get_parsed_screen` / `click_element` / `type_text` |
 
 > 新域请在此表增加一行，并在 `DOMAIN_REGISTRY` 注册。
 

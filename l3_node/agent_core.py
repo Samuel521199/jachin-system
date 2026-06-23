@@ -1,5 +1,5 @@
 ﻿"""
-Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（Chroma）** 在 L3 内闭环；可选 delegate 子 Agent。
+Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（SQLite + FastEmbed）** 在 L3 内闭环；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
 
@@ -51,6 +51,8 @@ from l3_node.capability_catalog import (
     build_capability_prompt_inject_for_tools,
     tools_include_akshare_native,
     tools_include_recruitment,
+    tools_include_holographic_ui,
+    tools_include_vision_ui,
 )
 from l3_node.skill_md_hot_reload import (
     HR_SKILL_MD_BODY_END,
@@ -5206,6 +5208,52 @@ def _load_hr_recruitment_skill_content() -> str | None:
     return None
 
 
+def _load_ui_qa_skill_content() -> str | None:
+    """加载桌面视觉 UI QA Skill（ui_qa_skill.md）。"""
+    proj = Path(__file__).resolve().parent
+    candidates = [
+        proj / "skills" / "ui_qa" / "ui_qa_skill.md",
+    ]
+    try:
+        from l3_node.paths import get_app_root
+
+        app = get_app_root()
+        if app:
+            candidates.insert(0, app / "l3_node" / "skills" / "ui_qa" / "ui_qa_skill.md")
+    except Exception:
+        pass
+    for p in candidates:
+        if p.is_file():
+            try:
+                return p.read_text(encoding="utf-8").strip()
+            except Exception as e:
+                logger.debug("[Agent] 读取 UI QA Skill 失败 %s: %s", p, e)
+    return None
+
+
+def _load_holographic_ui_skill_content() -> str | None:
+    """加载 OmniParser 全息屏幕 Skill（holographic_ui_skill.md）。"""
+    proj = Path(__file__).resolve().parent
+    candidates = [
+        proj / "skills" / "ui_qa" / "holographic_ui_skill.md",
+    ]
+    try:
+        from l3_node.paths import get_app_root
+
+        app = get_app_root()
+        if app:
+            candidates.insert(0, app / "l3_node" / "skills" / "ui_qa" / "holographic_ui_skill.md")
+    except Exception:
+        pass
+    for p in candidates:
+        if p.is_file():
+            try:
+                return p.read_text(encoding="utf-8").strip()
+            except Exception as e:
+                logger.debug("[Agent] 读取 Holographic UI Skill 失败 %s: %s", p, e)
+    return None
+
+
 def _get_l2_config() -> dict[str, Any] | None:
     """从 l2_gateway_config.json 读取 L2 配置（已配对时）。含 permissions_snapshot。"""
     try:
@@ -5264,7 +5312,7 @@ def _get_service_switches() -> list[str] | None:
 
 async def _recall_memory_search(query: str) -> str:
     """
-    检索 Memory Nexus（Chroma / deep_search），与 ``core:local_memory_search`` 同源。
+    检索 Memory Nexus（SQLite / deep_search），与 ``core:local_memory_search`` 同源。
     不依赖 L2；伪动作 ``recall_memory`` 仅为 ReAct 兼容别名。
     """
     import json
@@ -5536,7 +5584,7 @@ async def _build_system_prompt(
         "yes",
         "on",
     )
-    # 纯寒暄 / 显式关断：不碰 Chroma，主流程优先
+    # 纯寒暄 / 显式关断：不碰 Memory Nexus，主流程优先
     _skip_nexus_l0_l1 = _nexus_prompt_disabled or heuristic_trivial_chitchat_only(_surf_user)
 
     l0_persona_header = ""
@@ -5610,15 +5658,15 @@ Action: ...
     recall_hint = ""
     if allow_recall and _get_l2_config():
         recall_hint = (
-            "\n- recall_memory: 检索本地 Memory Nexus（Chroma），与 core:local_memory_search 同源。参数: 查询关键词。"
-            "\n- core:local_memory_search: L3 本地记忆语义检索（Memory Nexus / Chroma，`deep_search`）。Action Input JSON："
+            "\n- recall_memory: 检索本地 Memory Nexus（SQLite + FastEmbed），与 core:local_memory_search 同源。参数: 查询关键词。"
+            "\n- core:local_memory_search: L3 本地记忆语义检索（Memory Nexus / SQLite，`deep_search`）。Action Input JSON："
             '{"query":"关键词","top_k":8}；可选 mmr_lambda、half_life_days、include_memory_md（兼容字段，后端以向量检索为准）。'
             "\n- core:local_memory_append: 将事实/偏好**写入** Memory Nexus（User_Persona / Learned_Skills）。JSON："
             '{"content":"要记住的文本","tags":["可选"]}。'
         )
     else:
         recall_hint = (
-            "\n- core:local_memory_search: 本地记忆语义检索（Memory Nexus / Chroma，`deep_search`）。"
+            "\n- core:local_memory_search: 本地记忆语义检索（Memory Nexus / SQLite，`deep_search`）。"
             ' JSON：{"query":"..."}，可选 top_k。'
             "\n- core:local_memory_append: 写入 Memory Nexus（User_Persona / Learned_Skills）。JSON："
             '{"content":"...","tags":["可选"]}。'
@@ -5739,7 +5787,42 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
             "【HR·动态收敛】未检测到本轮与招聘强相关意图时勿调用招聘 MCP；"
             "用户谈到职位、简历、Boss、透析、收网、飞书调度等再按需使用工具。\n"
         )
-    # L1 唤醒栈：Memory Nexus（Chroma）动态拉取近期巡检与用户侧记忆
+    _ui_has_holographic_tools = tools_include_holographic_ui(tools)
+    _ui_has_vision_tools = tools_include_vision_ui(tools)
+    ui_qa_hint = ""
+    if _ui_has_holographic_tools:
+        _holo_skill = _load_holographic_ui_skill_content()
+        if _holo_skill:
+            ui_qa_hint = f"""
+【当前激活技能：全息屏幕 · OmniParser 眼-脑-手闭环】
+必须先 **mcp:get_holographic_screen** 看图与 elements（id 从 0 起），再 **mcp:physical_click**；禁止未看图就猜坐标或编造 element_id。勿与 OCR 版 get_parsed_screen 混用编号。
+
+{_holo_skill}
+
+---
+"""
+        else:
+            ui_qa_hint = """
+【全息屏幕】工具已就绪：get_holographic_screen → physical_click（桌面图标常 double_click=true）。
+---
+"""
+    elif _ui_has_vision_tools:
+        _ui_skill = _load_ui_qa_skill_content()
+        if _ui_skill:
+            ui_qa_hint = f"""
+【当前激活技能：桌面视觉 UI 测试 · OCR 编号】
+必须先 **mcp:get_parsed_screen** 看图与 elements 编号，再 **click_element** / **type_text**；禁止未看图就猜像素或编造 element_id。
+
+{_ui_skill}
+
+---
+"""
+        else:
+            ui_qa_hint = """
+【UI 视觉测试】工具已就绪：get_parsed_screen → click_element（桌面图标常 double_click=true）→ type_text。
+---
+"""
+    # L1 唤醒栈：Memory Nexus（SQLite + FastEmbed）动态拉取近期巡检与用户侧记忆
     l1_system_memory = ""
     if not _skip_nexus_l0_l1:
         try:
@@ -5783,6 +5866,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
         capability_catalog_hint = ""
         hr_recruitment_hint = ""
         hr_hint = ""
+        ui_qa_hint = ""
         plan_ctx = ""
         plan_hint = ""
 
@@ -6119,6 +6203,10 @@ Final Answer: <最终回复>
             suffix_chunks.append(
                 SuffixChunk("mid", "hr_recruitment_sop", hr_recruitment_hint, eviction_rank=42)
             )
+        if (ui_qa_hint or "").strip():
+            suffix_chunks.append(
+                SuffixChunk("mid", "ui_qa_vision_sop", ui_qa_hint, eviction_rank=43)
+            )
         if (plan_hint or "").strip():
             suffix_chunks.append(SuffixChunk("low", "plan_hint", plan_hint, eviction_rank=_rank_plan_hint))
         if (hr_hint or "").strip():
@@ -6135,7 +6223,7 @@ Final Answer: <最终回复>
             _react_footer_body = (
                 REACT_FOOTER_L5_MEMORY_COMPACT_FACTS
                 + "【记忆】被动注入仅供参考；事实以 core:local_memory_search 或 recall_memory（同源 Nexus）检索为准。\n"
-                "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 Memory Nexus（Chroma），"
+                "【记忆分级写入铁律】日常偏好/代号/框架喜好 → **必须且只能**用 **core:local_memory_append** 写入 Memory Nexus（SQLite + FastEmbed），"
                 "**禁止**幻觉写 MEMORY.md、**禁止** core:safety_lock_append；仅「禁止高危操作、核心安防」才用 safety_lock_append。\n"
                 "【记忆整理纪律】统帅**下令**整理时：系统常**异步**执行合并（非必有可轮询的 background_task）。**禁止**在对话中输出整份 Markdown 记忆清单；"
                 "若存在已登记的 background_task 可用 **core:check_background_task**；否则 Final Answer 简短说明已完成（显式口令/横幅路径会尝试合并，勿谎称「未达 150 条未触发」）。\n"
@@ -9375,7 +9463,19 @@ async def _run_react_core(
                 )
             except Exception:
                 pass
-            _emit("observation", observation)
+            try:
+                from l3_node.react_observation_vision import (
+                    build_react_observation_user_content,
+                    observation_display_text_for_emit,
+                )
+
+                _emit_obs = observation_display_text_for_emit(
+                    str(observation_full or observation or ""),
+                    str(tool or ""),
+                )
+            except Exception:
+                _emit_obs = observation
+            _emit("observation", _emit_obs)
             try:
                 if ctx.metadata.get("_l4_exp_save_gate"):
                     from l3_node.experience_memory import (
@@ -9490,18 +9590,52 @@ async def _run_react_core(
             messages.append(
                 {"role": "assistant", "content": _sanitize_react_assistant_tool_turn_for_history(response)}
             )
-            _obs_tail = _react_observation_followup_user_text(str(observation or ""), str(tool or ""))
+            try:
+                from l3_node.react_observation_vision import build_react_observation_user_content
+
+                _obs_user_content = build_react_observation_user_content(
+                    str(observation_full or observation or ""),
+                    str(tool or ""),
+                    followup_builder=_react_observation_followup_user_text,
+                )
+                if isinstance(_obs_user_content, list):
+                    ctx.metadata["_forbid_web_fetch_for_vision_turn"] = True
+            except Exception as _rov_e:
+                logger.debug("[L3 Agent] react_observation_vision 跳过: %s", _rov_e)
+                _obs_user_content = _react_observation_followup_user_text(
+                    str(observation or ""), str(tool or "")
+                )
             try:
                 _pmo_nudge = _pmo_markdown_incomplete_system_nudge(
                     ctx, str(observation_full or ""), str(tool or "")
                 )
                 if _pmo_nudge:
-                    _obs_tail = f"{_obs_tail}{_pmo_nudge}"
+                    if isinstance(_obs_user_content, list):
+                        _first = _obs_user_content[0] if _obs_user_content else {}
+                        if isinstance(_first, dict) and _first.get("type") == "text":
+                            _first["text"] = f"{_first.get('text') or ''}{_pmo_nudge}"
+                        else:
+                            _obs_user_content = [
+                                {"type": "text", "text": _pmo_nudge},
+                                *(_obs_user_content if isinstance(_obs_user_content, list) else []),
+                            ]
+                    else:
+                        _obs_user_content = f"{_obs_user_content}{_pmo_nudge}"
             except Exception as _pmo_nudge_e:
                 logger.debug("[L3 Agent][PMO] markdown nudge 跳过: %s", _pmo_nudge_e)
             if _linter_inject:
-                _obs_tail = f"{_linter_inject}\n\n{_obs_tail}"
-            messages.append({"role": "user", "content": _obs_tail})
+                if isinstance(_obs_user_content, list):
+                    _first = _obs_user_content[0] if _obs_user_content else {}
+                    if isinstance(_first, dict) and _first.get("type") == "text":
+                        _first["text"] = f"{_linter_inject}\n\n{_first.get('text') or ''}"
+                    else:
+                        _obs_user_content = [
+                            {"type": "text", "text": f"{_linter_inject}\n\n"},
+                            *(_obs_user_content if isinstance(_obs_user_content, list) else []),
+                        ]
+                else:
+                    _obs_user_content = f"{_linter_inject}\n\n{_obs_user_content}"
+            messages.append({"role": "user", "content": _obs_user_content})
             continue
 
     # 循环结束仍未产出：最后一轮兜底
@@ -9608,7 +9742,7 @@ async def _build_direct_system_prompt(
         "yes",
         "on",
     )
-    # 【闲聊避让】纯寒暄且非 JSON：跳过 L0/L1（Chroma），仅轻量 system + 工作区规则
+    # 【闲聊避让】纯寒暄且非 JSON：跳过 L0/L1（Memory Nexus），仅轻量 system + 工作区规则
     if general_chitchat and not json_mode:
         lines: list[str] = [
             "你是 Jachin 通用智能助手，语气自然、简洁、友善。",
@@ -11546,7 +11680,7 @@ def _schedule_local_memory_compaction_background(user_input: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 记忆：已移除 L2 /memory/sync 守护进程；跨会话 SSOT 为 Memory Nexus（Chroma），见 memory_nexus_bridge。
+# 记忆：已移除 L2 /memory/sync 守护进程；跨会话 SSOT 为 Memory Nexus（SQLite + FastEmbed），见 memory_nexus_bridge。
 # ---------------------------------------------------------------------------
 
 

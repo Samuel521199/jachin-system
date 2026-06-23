@@ -29,7 +29,7 @@ Layer 2 是**控制平面 + 记忆平面 + 调度平面 + API Key 管理**。**�
 | **执行引擎** | L2 运行 Agent + ReAct | **L3 运行**，L2 不执行用户任务 |
 | **API Key** | L2 持有并代理请求 | L2 只管理，**密文下发** L3，L3 解密后直连 |
 | **Skill** | L2 加载 | **L3 加载** |
-| **记忆** | L2 存储 | **L3 宿主记忆默认在 Memory Nexus（Chroma）**；L2 `/memory/*` 为可选集中式/多租户能力 |
+| **记忆** | L2 存储 | **L3 宿主记忆默认在 Memory Nexus（SQLite + FastEmbed）**；L2 `/memory/*` 为可选集中式/多租户能力 |
 
 ---
 

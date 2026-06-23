@@ -1,7 +1,7 @@
 # L3 执行面深度架构：Agent、上下文、记忆与 Prompt
 
 **版本**: 2026-04-17  
-**定位**: 基于当前仓库实现的 **代码级** 说明（非愿景文档）。与 [ARCHITECTURE.md](./ARCHITECTURE.md)（三层产品架构）、[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)（**L3 执行主轴 + L4 挂载 SSOT**）、[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)（**L3 Memory Nexus / Chroma**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)（前台/后台与超时）、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)（智能化里程碑）互补。  
+**定位**: 基于当前仓库实现的 **代码级** 说明（非愿景文档）。与 [ARCHITECTURE.md](./ARCHITECTURE.md)、[arch/README.md](./arch/README.md)（**架构全景分册**）、[architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](./architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)（**L3 执行主轴 + L4 挂载 SSOT**）、[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)（**L3 Memory Nexus / SQLite + FastEmbed**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)（前台/后台与超时）、[INTELLIGENCE_UPGRADE_OVERVIEW.md](./INTELLIGENCE_UPGRADE_OVERVIEW.md)（智能化里程碑）互补。  
 **薄弱点、路线图与「实现快照」**: [L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md](./L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md)（文内 **§〇** 与仓库同步）。
 
 **主入口代码**: `l3_node/agent_core.py`（`run_agent`、`_build_system_prompt`、`_run_react_core`、`SubAgent`）；内联 Critic / 经验飞轮见同文件与 `critic_agent.py`、`experience_memory.py`。
@@ -108,9 +108,9 @@
 
 实现上是 **多条并列链路**，用途不同，勿混为一谈。**L3 跨会话宿主记忆 SSOT**：**[architecture/MEMORY_NEXUS_L3.md](./architecture/MEMORY_NEXUS_L3.md)**。
 
-### 4.1 Memory Nexus（Chroma / MemPalace）
+### 4.1 Memory Nexus（SQLite + FastEmbed / MemPalace）
 
-- **底座**: `l3_client/local_mcps/jachin_memory_nexus/memory_backend.py` — `commit_drawer`、`recall_room`、`deep_search`；持久化默认 **`~/.jachin/palace_db`**，collection **`jachin_drawers`**。可选 **`CHROMA_USE_HTTP_CLIENT`** 连接远程 Chroma。
+- **底座**: `l3_client/local_mcps/jachin_memory_nexus/memory_backend.py` — `commit_drawer`、`recall_room`、`deep_search`；持久化 **`~/.jachin/palace_db/memory_nexus.sqlite3`**，表 **`drawers`**（float32 embedding BLOB）。本地 **FastEmbed** 向量化，无外部分向量库进程。
 - **L1 注入**: `l3_node/memory_nexus_bridge.build_l1_system_memory_block` → system 后缀 **「系统近期核心记忆」**（如巡检翼区 `E2E_Monitors/Kalaroko_Default`、用户侧 `User_Persona/General_Chat`）。
 - **工具**: `core:local_memory_search` → **`deep_search`**（语义检索，`matches[]`）；`core:local_memory_append` → **`commit_drawer`**（默认翼区 **`User_Persona/Learned_Skills`**）。
 - **回合末**: `schedule_nexus_turn_commit_async` 异步写入 `User_Persona/General_Chat`（启发式长度阈值，fail-open）。
@@ -118,7 +118,7 @@
 ### 4.2 遗留文件 `l3_local.json` 与 shard（只读/诊断）
 
 - **路径**: `~/.jachin/memory/l3_local.json`；delegate 仍可有 **`l3_local_shard_<id>.json`**。
-- **现状**: **核心写入已迁至 Chroma**；文件若存在可用于 **旧数据/HR 指针/诊断**。`get_local_memory_for_prompt` **已委托 L1 Nexus 块**，不再依赖 JSON 被动衰减排序做主路径。
+- **现状**: **核心写入已迁至 Memory Nexus（SQLite）**；文件若存在可用于 **旧数据/HR 指针/诊断**。`get_local_memory_for_prompt` **已委托 L1 Nexus 块**，不再依赖 JSON 被动衰减排序做主路径。
 - **JSON「梦境合并」**：`compact_local_memory_if_needed` **已全局停用**（不调用 LLM 破坏性合并）；桌面横幅 / 会话静默调度已禁用，见 `memory_compactor.py`、`agent_core`。
 
 ### 4.3 ReAct 伪动作：`recall_memory`
@@ -238,5 +238,6 @@ flowchart TB
 | 2026-04-02 | 预检/插件、metadata 账本与 prefetch/dedup、shard 记忆、`prompt_compose` 硬帽、MemorySync 急迫信号；与路线图 §〇 一致 |
 | 2026-04-02 | 增补四大原语（Tools/MCP/Skills/Agent Tasks）引用与文内说明 |
 | 2026-04-07 | 对齐混合架构白皮书：网关/语义层、Experience RAG、内联 Critic、metadata 键与 Mermaid 主路径 |
-| 2026-04-17 | §4 迁移为 Memory Nexus（Chroma）；停用 l3_local 主编译 / merge_from_l2 / JSON compactor 描述；链接 MEMORY_NEXUS_L3.md |
+| 2026-04-17 | §4 迁移为 Memory Nexus（SQLite + FastEmbed）；停用 l3_local 主编译 / merge_from_l2 / JSON compactor 描述；链接 MEMORY_NEXUS_L3.md |
+| 2026-05-28 | 对齐 `docs/arch/` 分册；Memory Nexus 存储口径统一为 SQLite + FastEmbed |
 | 2026-04-21 | `recall_memory` 改走 Nexus；移除 MemorySyncDaemon / l3_memory.json 记忆同步描述。 |

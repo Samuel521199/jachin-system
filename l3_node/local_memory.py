@@ -1,5 +1,5 @@
 """
-L3 记忆宿主：核心写入已迁移 **Memory Nexus（Chroma）**；**l3_local.json 仅保留读取/合并器/历史诊断**。
+L3 记忆宿主：核心写入已迁移 **Memory Nexus（SQLite + FastEmbed）**；**l3_local.json 仅保留读取/合并器/历史诊断**。
 
 - 被动注入：见 `memory_nexus_bridge.build_l1_system_memory_block` / `get_local_memory_for_prompt`
 - `add_local_memory` → `commit_drawer`（User_Persona / Learned_Skills）
@@ -131,7 +131,7 @@ def add_local_memory(
     tags_list: list[str] | None = None,
 ) -> bool:
     """
-    写入一条核心记忆：**已迁移至 Memory Nexus（Chroma）** User_Persona / Learned_Skills。
+    写入一条核心记忆：**已迁移至 Memory Nexus（SQLite）** User_Persona / Learned_Skills。
     （历史 l3_local.json 写入路径已废弃，保留 load 仅兼容旧 compaction/诊断。）
 
     tag: preference | user_habit | config_hint | fact | task_checkpoint 等
@@ -198,7 +198,7 @@ def get_local_memory_for_prompt(
 
 def merge_from_l2(items: list[dict]) -> None:
     """
-    已移除：L3 记忆不再经 L2 回灌；跨会话 SSOT 为 Memory Nexus（Chroma）。
+    已移除：L3 记忆不再经 L2 回灌；跨会话 SSOT 为 Memory Nexus（SQLite + FastEmbed）。
     保留空实现以免旧调用链 import 报错。
     """
     if not items:

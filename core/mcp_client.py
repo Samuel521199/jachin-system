@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 - L2 MCP 客户端代理引擎（四大原语 · MCP）
 
 连接 MCP 服务器、发现工具、执行工具调用，供 L3 通过 HTTP 代理调用。
@@ -593,16 +593,51 @@ class MCPServerInstance:
                 err_msg = str(result.content) if result.content else "工具执行返回错误"
                 logger.warning("[MCP] call_tool 工具返回错误 server_id=%s name=%s content=%s", self.server_id, name, err_msg)
                 return f"[MCP 工具错误] {err_msg}"
-            # 解析 content：可能是 TextContent 列表
+            # 解析 content：TextContent + ImageContent（截图类 MCP）
             if result.content:
-                parts = []
+                from core.mcp_multimodal_result import (
+                    build_multimodal_observation_payload,
+                    encode_image_bytes_as_data_url,
+                )
+
+                text_parts: list[str] = []
+                image_urls: list[str] = []
                 for block in result.content:
                     if hasattr(block, "text") and block.text:
-                        parts.append(block.text)
+                        text_parts.append(str(block.text))
                     elif hasattr(block, "type") and block.type == "text" and hasattr(block, "text"):
-                        parts.append(block.text)
-                if parts:
-                    return "\n".join(parts)
+                        text_parts.append(str(block.text))
+                    else:
+                        data = getattr(block, "data", None)
+                        if isinstance(data, (bytes, bytearray)) and data:
+                            mime = (
+                                getattr(block, "mimeType", None)
+                                or getattr(block, "mime_type", None)
+                                or "image/png"
+                            )
+                            try:
+                                du = encode_image_bytes_as_data_url(bytes(data), str(mime))
+                                image_urls.append(du)
+                            except Exception as _img_e:
+                                logger.debug(
+                                    "[MCP] ImageContent 编码失败 server_id=%s name=%s err=%s",
+                                    self.server_id,
+                                    name,
+                                    _img_e,
+                                )
+                if image_urls:
+                    logger.info(
+                        "[MCP] call_tool 含 %d 张图片 server_id=%s name=%s → 多模态 Observation 信封",
+                        len(image_urls),
+                        self.server_id,
+                        name,
+                    )
+                    return build_multimodal_observation_payload(
+                        text_parts=text_parts,
+                        image_data_urls=image_urls,
+                    )
+                if text_parts:
+                    return "\n".join(text_parts)
             return "[无输出]"
         except Exception as e:
             logger.exception("[MCP] call_tool 异常 server_id=%s name=%s err=%s", self.server_id, name, e)

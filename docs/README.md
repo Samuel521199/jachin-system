@@ -9,6 +9,8 @@
 
 | 文档 | 说明 |
 |------|------|
+| [arch/README.md](./arch/README.md) | **架构全景（2026，总—分）** — 01~07 分册：三层/L3 主轴/多 Agent/记忆/AGI/韧性/可观测；含流程图与时序图 |
+| [JACHIN_FULL_ARCHITECTURE_2026.md](./JACHIN_FULL_ARCHITECTURE_2026.md) | **→ 重定向** 至 `docs/arch/` 索引 |
 | [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](./architecture/CURRENT_SYSTEM_ARCHITECTURE.md) | **现行实现总览（2026-04）** — L1/L2/L3/桌面、MCP stdio 与守卫、后台 zombie、WS 与桌面通知；与代码同步时优先改此索引 |
 | [L3_EMBEDDED_RUNTIME.md](./L3_EMBEDDED_RUNTIME.md) | **L3 嵌入式 Python/Node（含 npx）** — 便携 `runtime/` 布局、环境变量、安装器与 Sidecar 旁路 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范** — 一店一库、四大原语、三层架构、关键组件 |

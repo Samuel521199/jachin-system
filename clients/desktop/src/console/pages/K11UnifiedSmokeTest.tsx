@@ -10,6 +10,7 @@ import { useK11ScheduleLogLines } from "../K11ScheduleLogContext";
 import {
   clearL3SkillsBaseUrlCache,
   getK11GameOpenSmokeStreamUrlAsync,
+  getK11TongitsAutoplaySmokeStreamUrlAsync,
   getK11UnifiedSmokeStreamUrlAsync,
   getL3MonitorApiUrlAsync,
 } from "../../lib/api";
@@ -629,6 +630,46 @@ export function K11UnifiedSmokeTest() {
     })();
   }, [connectSse, noLark, verbose]);
 
+  const handleStartTongitsAutoplay = useCallback(() => {
+    void (async () => {
+      esRef.current?.close();
+      setL3Probing(true);
+      setDoneOk(null);
+      setExitCode(null);
+      setUnifiedLogs([
+        "> 正在探测本机 L3 技能 HTTP…",
+        "> 模式：Tongits 全自动打牌（test_k11_tongits_autoplay_smoke.py -v）",
+        "> 将自动点击 Tongits King → Join → 等待进桌 → main_bot_loop 出牌 → 3016 结算 → Lark 卡片",
+      ]);
+      let streamUrl: string;
+      try {
+        streamUrl = await getK11TongitsAutoplaySmokeStreamUrlAsync({
+          verbose,
+          noLarkReport: noLark,
+          roundWaitSec: 600,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setUnifiedLogs([
+          `> [ERROR] 连不上 L3：${msg}`,
+          "> 请确认 L3 已运行，且调试 Chrome（CDP 9222）已打开 kalaroko 页。",
+        ]);
+        return;
+      } finally {
+        setL3Probing(false);
+      }
+      connectSse(
+        streamUrl,
+        [
+          "> 初始化 Tongits 自动打牌冒烟…",
+          "> 等效: python scripts/test_k11_tongits_autoplay_smoke.py -v",
+          "> 连接 L3 SSE 流…",
+        ],
+        "Tongits 自动打牌已完成（退出码 0）"
+      );
+    })();
+  }, [connectSse, noLark, verbose]);
+
   /** 探测 L3 与执行冒烟：合并后控制「启动」灰显，避免仅 running 在探测期误判为整轮执行中。 */
   const l3OrRun = l3Probing || running;
 
@@ -662,6 +703,9 @@ export function K11UnifiedSmokeTest() {
             {" · "}
             开门：
             <span className="font-mono text-cyan-600/90">test_k11_game_open_smoke.py</span>
+            {" · "}
+            Tongits：
+            <span className="font-mono text-cyan-600/90">test_k11_tongits_autoplay_smoke.py</span>
           </p>
         </div>
       </header>
@@ -743,6 +787,20 @@ export function K11UnifiedSmokeTest() {
               title="python scripts/test_k11_game_open_smoke.py -v"
             >
               {l3Probing ? "探测 L3…" : "🎮 游戏模块开门冒烟"}
+            </button>
+            <button
+              type="button"
+              disabled={l3OrRun}
+              onClick={handleStartTongitsAutoplay}
+              className={cn(
+                "rounded-lg border px-4 py-2.5 text-sm font-bold transition-all",
+                l3OrRun
+                  ? "cursor-not-allowed border-slate-700 bg-slate-900/50 text-slate-600"
+                  : "border-amber-500/50 bg-amber-950/40 text-amber-100 shadow-[0_0_16px_rgba(245,158,11,0.2)] hover:bg-amber-900/50"
+              )}
+              title="python scripts/test_k11_tongits_autoplay_smoke.py -v（全自动进 Tongits + 打牌 + Lark 金币结算）"
+            >
+              {l3Probing ? "探测 L3…" : "🃏 Tongits 自动打牌"}
             </button>
             <button
               type="button"

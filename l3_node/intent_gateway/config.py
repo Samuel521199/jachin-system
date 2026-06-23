@@ -103,7 +103,8 @@ _DEFAULT: dict[str, Any] = {
     "flywheel_feedback_enabled": False,
     # Omni-Context Sniffer（docs/INTENT_GATEWAY_CONTEXT_SNIFFER_AND_TRANSPARENCY.md）
     "context_sniffer_enabled": True,
-    # 默认 false：嗅探阶段不调用 Memory Nexus/Chroma（避免阻塞）；需旧行为时在 nexus_config.json → intent_gateway 置 true
+    # 默认 false：嗅探阶段不调用 Memory Nexus（避免阻塞）；需旧行为时在 nexus_config.json → intent_gateway 置 true
+    # 配置键 context_sniffer_memory_chroma_enabled 为历史命名，实际指 Nexus 检索开关
     "context_sniffer_memory_chroma_enabled": False,
     "context_sniffer_max_total_chars": 1500,
     "context_sniffer_max_git_chars": 500,

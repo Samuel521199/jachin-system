@@ -1,7 +1,7 @@
 """
 L5 本地记忆「梦境合并」（**已全局停用**）：原 l3_local.json LLM 合并管线。
 
-入口 ``compact_local_memory_if_needed`` 现为 no-op（Memory Nexus / Chroma 取代）。
+入口 ``compact_local_memory_if_needed`` 现为 no-op（Memory Nexus / SQLite 取代）。
 下文解析/原子写等辅助函数仍保留，供查阅或零星脚本引用。
 """
 from __future__ import annotations
@@ -205,7 +205,7 @@ async def compact_local_memory_if_needed(
     Returns:
         成功：简短中文报告；未触发/失败：空字符串（fail-open，不抛错）。
     """
-    # [DEPRECATED] 系统已全面迁移至 Memory Nexus（Chroma）。保留 Drawer 原文，不再对 l3_local.json 做破坏性 LLM 合并。
+    # [DEPRECATED] 系统已全面迁移至 Memory Nexus（SQLite）。保留 Drawer 原文，不再对 l3_local.json 做破坏性 LLM 合并。
     logger.debug(
         "[Memory Compactor] 触发已拦截（旧 JSON 坍缩全局停用），file=%s threshold=%s force=%s",
         file_path,

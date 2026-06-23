@@ -1,8 +1,7 @@
 # Jachin 长期编排架构（三层）
 
-> **[部分过时]** 本文档为 2026-03-16 版本，整体三层编排思路仍有效，  
-> 但文中对「JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md」及「INTELLIGENCE_UPGRADE_OVERVIEW.md」的引用  
-> 已指向已删除文档；**L3 能力全量现状** 请以 **[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)** 为准。
+> **[领域编排 · 非 L3 主轴 SSOT]** 本文档描述 **Skill 路由 / 领域子图 / YAML glue** 的长期编排层；**L3 执行主轴、多 Agent、记忆** 以 **[arch/README.md](./arch/README.md)** 为准。  
+> 文中部分引用已过时；**L3 能力全量现状** 请以 **[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)** 为准。
 
 **更新**: 2026-03-16（历史版本；L3 实现现状见 AGI_OPTIMIZATION_ROADMAP.md）  
 **代码入口**: `l3_node/orchestration/`、`l3_node/workflow_spec_runner.py`、`core/native_tools.py`（`core:domain_workflow_run`）  

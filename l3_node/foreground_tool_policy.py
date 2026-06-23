@@ -1,4 +1,4 @@
-﻿"""前台同步工具超时策略（默认 5s，可配置与豁免）。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
+"""前台同步工具超时策略（默认 5s，可配置与豁免）。见 docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md。"""
 from __future__ import annotations
 
 import json
@@ -62,6 +62,11 @@ def load_foreground_tools_config() -> dict[str, Any]:
             "mcp:double_click_mouse",
             "mcp:scroll_up",
             "mcp:scroll_down",
+            "mcp:get_parsed_screen",
+            "mcp:click_element",
+            "mcp:type_text",
+            "mcp:get_holographic_screen",
+            "mcp:physical_click",
         ],
     }
     p = _nexus_path()

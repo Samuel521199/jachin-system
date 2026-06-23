@@ -15,7 +15,7 @@ globs: l3_node/**/*.py, core/db/**, core/api/routes/v2_*.py, core/security/**
 
 ## 核心原则
 
-1. **L2 不代理推理**：L2 管理 API Key（密文下发）、权限、L3 协同调度等控制面；**L3 宿主跨会话记忆在本地 Memory Nexus（Chroma）闭环**，不依赖 L2 `/memory/*` 作为默认路径
+1. **L2 不代理推理**：L2 管理 API Key（密文下发）、权限、L3 协同调度等控制面；**L3 宿主跨会话记忆在本地 Memory Nexus（SQLite + FastEmbed）闭环**，不依赖 L2 `/memory/*` 作为默认路径
 2. **L3 直连 LLM**：L3 持密文 Key，请求时解密后自行调用 api.openai.com 等
 3. **L3 执行面**：多 Agent、多 Skill、本地记忆、ReAct、YAML 工作流与 **领域子图委托**（`l3_node/orchestration/`、`core:domain_workflow_run`）；**前台超时 / 后台任务队列 / 工具后预取 / 规划链** 见 **`docs/前台闲聊与后台重负荷任务的物理隔离与背压熔断.md`**；与 OpenClaw **对标**见 `docs/JACHIN_VS_OPENCLAW_INTELLIGENCE_ANALYSIS.md`、`docs/INTELLIGENCE_UPGRADE_OVERVIEW.md` §五、**`docs/ORCHESTRATION_ARCHITECTURE.md`**
 

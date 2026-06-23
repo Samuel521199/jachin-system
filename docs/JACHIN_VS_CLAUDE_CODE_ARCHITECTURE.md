@@ -2,7 +2,7 @@
 
 **版本**: 2026-04  
 **状态**: 设计对照（Claude Code 侧为概念模型；Jachin 以本仓库代码为准）  
-**相关**: [ARCHITECTURE.md](./ARCHITECTURE.md)、[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)（Tools/MCP/Skills/Agent Tasks **Jachin 正式定义**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)、[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)（L3 智能化现状，替代旧版总览文档）、[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)、[SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md)  
+**相关**: [ARCHITECTURE.md](./ARCHITECTURE.md)、[arch/README.md](./arch/README.md)（**架构全景 2026**）、[Jachin 视角的「四大原语」终极架构规范.md](./Jachin%20视角的「四大原语」终极架构规范.md)（Tools/MCP/Skills/Agent Tasks **Jachin 正式定义**）、[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](./前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)、[AGI_OPTIMIZATION_ROADMAP.md](./AGI_OPTIMIZATION_ROADMAP.md)（L3 智能化现状，替代旧版总览文档）、[ORCHESTRATION_ARCHITECTURE.md](./ORCHESTRATION_ARCHITECTURE.md)（**领域编排**，非 L3 主轴 SSOT）、[SKILL_MD_SPEC.md](./SKILL_MD_SPEC.md)  
 > **注**：`INTELLIGENCE_UPGRADE_OVERVIEW.md` 与 `ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md` 已删除，相关内容见 `AGI_OPTIMIZATION_ROADMAP.md`。
 
 ---
@@ -54,7 +54,7 @@ flowchart LR
 |-------------------------|-------------|-------------|------|
 | **CLAUDE.md 族** | 层级合并、`@include` | **`JACHIN.md` / `workspace/.jachin/rules.md`** → `jachin_workspace_rules.py` 注入 system；另：P1 偏好、域 `SKILL.md`、IDE `.cursor/rules` | 无 **cwd 向上多级**与 **`@include` 级联**（未实现） |
 | **Git / 环境快照** | `appendSystemContext` | **未**一等实现 | 可选后续 |
-| **结构化长期记忆** | memdir / `MEMORY.md` 索引 | **Memory Nexus（Chroma）**、`build_l1_system_memory_block` / `get_local_memory_for_prompt`；Dream Weaver / `core_memory` 为旁路 | **palace_db** Wing/Room；宿主记忆 **不**以 L2 为默认 SSOT |
+| **结构化长期记忆** | memdir / `MEMORY.md` 索引 | **Memory Nexus（SQLite + FastEmbed）**、`build_l1_system_memory_block` / `get_local_memory_for_prompt`；Dream Weaver / `core_memory` 为旁路 | **memory_nexus.sqlite3** Wing/Room；宿主记忆 **不**以 L2 为默认 SSOT |
 | **工具后附件预取** | sideQuery + `relevant_memories` | **`context_prefetch.build_prefetch_attachment`**：workspace `*.md` 摘录 + 路径/字节去重，拼在 Observation 后 | 无 **side-LLM 选文件**；规则扫描 |
 | **Session 笔记** | fork 子循环写 md | **task_plan / progress / findings**、后台任务写 **progress.md** 一行 | 非独立 session_memory 进程模型 |
 | **Agent 记忆目录** | per-agent `MEMORY.md` | **SubAgent** + `implicit_attribution`；RBAC 路径 | 无全局 agent-memory 文件树 |

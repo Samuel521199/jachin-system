@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -170,6 +170,11 @@ fb_campaign_report_*.csv
 
 # 调试截图（自动化测试过程中生成，不入仓库）
 debug_*.png
+
+# OmniParser 标注图输出（scripts/omnioutput/README.md 保留）
+scripts/omnioutput/*
+!scripts/omnioutput/README.md
+!scripts/omnioutput/.gitkeep
 
 # 便携包 zip 产物（构建产物，体积大）
 dist_jachin_desktop.zip

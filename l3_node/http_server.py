@@ -23,6 +23,7 @@ from l3_node.paths import (
     get_app_root,
     k11_game_open_smoke_script_path,
     k11_p2_compat_weaknet_script_path,
+    k11_tongits_autoplay_smoke_script_path,
     k11_unified_smoke_script_path,
     kalaroko_default_e2e_script_path,
 )
@@ -1137,6 +1138,67 @@ async def _handle_k11_game_open_smoke_stream(request) -> "aiohttp.web.StreamResp
         cmd,
         f"[K11] 游戏模块冒烟已启动: {script.name}",
         "k11 game open smoke",
+        run_count=1,
+        interval_between_runs_sec=0,
+    )
+
+
+async def _handle_k11_tongits_autoplay_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
+    """GET /api/v1/k11-tongits-autoplay-smoke/stream — Tongits 全自动打牌 + Lark 金币结算。"""
+    root = get_app_root()
+    script = k11_tongits_autoplay_smoke_script_path()
+    if not script.is_file():
+        resp = _stream_response()
+        await resp.prepare(request)
+        payload = json.dumps(
+            {
+                "type": "error",
+                "message": (
+                    f"缺少脚本: {script}。请放入 scripts/ 或重新 build_l3_sidecar "
+                    "（test_k11_tongits_autoplay_smoke.py + k11_tongits_smoke_session.py）。"
+                ),
+            },
+            ensure_ascii=False,
+        )
+        await resp.write(f"data: {payload}\n\n".encode("utf-8"))
+        return resp
+
+    params, err = _k11_smoke_stream_parse_query(request)
+    if err is not None:
+        return err
+    assert params is not None
+    target_url, cdp_http, verbose, no_lark, _headless = params
+    round_wait = (request.query.get("round_wait_sec") or "").strip()
+    launch_browser = str(request.query.get("launch_browser", "")).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+    passthrough: list[str] = []
+    if target_url:
+        passthrough.extend(["--target-url", target_url])
+    if cdp_http:
+        passthrough.extend(["--cdp-http", cdp_http])
+    if verbose:
+        passthrough.append("-v")
+    if no_lark:
+        passthrough.append("--no-lark-report")
+    if launch_browser:
+        passthrough.append("--launch-browser")
+    if round_wait:
+        passthrough.extend(["--round-wait-sec", round_wait])
+
+    cmd: list[str] = _k11_smoke_subprocess_cmd(
+        "--jachin-k11-tongits-autoplay-smoke-subprocess", passthrough
+    )
+    return await _k11_smoke_subprocess_sse_stream(
+        request,
+        root,
+        cmd,
+        f"[K11] Tongits 自动打牌已启动: {script.name}",
+        "k11 tongits autoplay smoke",
         run_count=1,
         interval_between_runs_sec=0,
     )
@@ -2985,6 +3047,9 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_get("/api/v1/k11-unified-smoke/stream", _handle_k11_unified_smoke_stream)
     app.router.add_get("/api/v1/k11-p2-compat-only/stream", _handle_k11_p2_compat_only_stream)
     app.router.add_get("/api/v1/k11-game-open-smoke/stream", _handle_k11_game_open_smoke_stream)
+    app.router.add_get(
+        "/api/v1/k11-tongits-autoplay-smoke/stream", _handle_k11_tongits_autoplay_smoke_stream
+    )
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/status", _handle_k11_unified_smoke_schedule_status)
     app.router.add_get("/api/v1/k11-unified-smoke/schedule/log-stream", _handle_k11_unified_smoke_schedule_log_stream)
     app.router.add_post("/api/v1/k11-unified-smoke/schedule/toggle", _handle_k11_unified_smoke_schedule_toggle)

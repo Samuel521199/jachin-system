@@ -21,7 +21,7 @@ export const BUILTIN_L3_TOOLS: BuiltinL3ToolEntry[] = [
   { tool_id: "core:apply_patch_rollback", name: "core:apply_patch_rollback", description: "回滚 apply_patch。" },
   { tool_id: "core:submit_background_task", name: "core:submit_background_task", description: "投递长耗时后台任务。" },
   { tool_id: "core:check_background_task", name: "core:check_background_task", description: "查询后台任务状态。" },
-  { tool_id: "core:local_memory_search", name: "core:local_memory_search", description: "本地记忆检索（l3_local.json）。" },
+  { tool_id: "core:local_memory_search", name: "core:local_memory_search", description: "本地记忆语义检索（Memory Nexus / SQLite）。" },
   { tool_id: "core:local_memory_append", name: "core:local_memory_append", description: "追加本地记忆条目。" },
   { tool_id: "core:safety_lock_append", name: "core:safety_lock_append", description: "提交安防规则（待审批）。" },
   { tool_id: "core:safety_lock_list_pending", name: "core:safety_lock_list_pending", description: "列出安全锁待审批。" },

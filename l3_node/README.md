@@ -7,7 +7,7 @@ Jachin Nexus V2 - Layer 3 对标 OpenClaw 单机架构。
 - **本地解密**：从 L2 拉取密文 Key，私钥解密后仅存内存
 - **直连 LLM**：持明文 Key 直接请求 api.openai.com 等，不经过 L2
 - **ReAct 循环**：Thought -> Action -> Observation -> Final Answer
-- **记忆**：Memory Nexus（Chroma，`~/.jachin/palace_db`）；不向 L2 同步宿主记忆
+- **记忆**：Memory Nexus（SQLite + FastEmbed，`~/.jachin/palace_db/memory_nexus.sqlite3`）；不向 L2 同步宿主记忆
 - **跨会话规划**：`task_planning.py`（`task_plan.md` / `progress.md` / `findings.md` + HR 子目录）
 - **HR 招聘 DAG**：`skills/hr_recruitment_dag.py`（与 MCP 包、调度器协同）
 

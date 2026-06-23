@@ -1,5 +1,5 @@
 """
-Memory Nexus（Chroma / MemPalace）与 L3 宿主之间的薄桥接：L0 统帅 Persona（Core_Profile）、
+Memory Nexus（SQLite + FastEmbed / MemPalace）与 L3 宿主之间的薄桥接：L0 统帅 Persona（Core_Profile）、
 L1 唤醒块、深度检索展示、回合末异步提交、技能矩阵同步与动态工具检索。
 
 失败须 fail-open，不阻塞对话主路径。
@@ -100,7 +100,7 @@ def build_l1_system_memory_block(
 
 
 def _nexus_prompt_io_timeout_sec() -> float:
-    """L0/L1 注入 Chroma 读路径硬上限，超时 fail-open，避免卡死主对话。"""
+    """L0/L1 注入 Memory Nexus 读路径硬上限，超时 fail-open，避免卡死主对话。"""
     raw = (os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_TIMEOUT_SEC") or "2").strip()
     try:
         v = float(raw)
@@ -113,7 +113,7 @@ _L0_L1_HARD_TIMEOUT_SEC = 15.0
 
 
 async def async_build_l0_persona_block() -> str:
-    """在独立线程中执行 L0；``wait_for(15s)`` 包裹 ``to_thread``，防止 Chroma 假死导致协程永不返回。"""
+    """在独立线程中执行 L0；``wait_for(15s)`` 包裹 ``to_thread``，防止 SQLite/嵌入假死导致协程永不返回。"""
     _cap = _L0_L1_HARD_TIMEOUT_SEC
     try:
         return await asyncio.wait_for(asyncio.to_thread(build_l0_persona_block), timeout=_cap)

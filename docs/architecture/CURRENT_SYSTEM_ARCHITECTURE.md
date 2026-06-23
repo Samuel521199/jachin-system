@@ -90,11 +90,13 @@
 | 类型 | 文档 |
 |------|------|
 | **全局架构规范** | [../ARCHITECTURE.md](../ARCHITECTURE.md) |
+| **架构全景（总—分，含工程图）** | [../arch/README.md](../arch/README.md) — 01~07 分册 |
 | **本文（现行快照）** | `docs/architecture/CURRENT_SYSTEM_ARCHITECTURE.md` |
 | **L3 混合智能体** | `JACHIN_HYBRID_AGENT_ARCHITECTURE.md`（本目录） |
 | **工具池与 MCP 组装** | `L3_TOOL_POOL_AND_MCP_ASSEMBLY.md` |
 | **MCP 执行模型** | [../MCP_EXECUTION_MODEL.md](../MCP_EXECUTION_MODEL.md) |
 | **执行韧性** | [../JACHIN_EXECUTION_RESILIENCE_CONTRACT.md](../JACHIN_EXECUTION_RESILIENCE_CONTRACT.md)（见 `.cursor/rules/080`） |
 | **历史设计稿** | `../ARCHITECTURE_V2_LAYER3_STANDALONE.md` — 保留作背景阅读；**实现以 ARCHITECTURE.md + 代码为准** |
+| **已归档索引** | [../JACHIN_FULL_ARCHITECTURE_2026.md](../JACHIN_FULL_ARCHITECTURE_2026.md) → 重定向至 `docs/arch/` |
 
-新增跨领域行为（如新 MCP 守卫、新 WS 事件）时：**更新本文件一节 + 对应专题 SSOT**，避免再写第三份重复说明。
+新增跨领域行为（如新 MCP 守卫、新 WS 事件）时：**更新本文件一节 + `docs/arch/` 对应分册或专题 SSOT**，避免再写第三份重复说明。
