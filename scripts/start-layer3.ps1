@@ -8,7 +8,9 @@
 #
 # DEFAULT = desktop + source L3 in the SAME console (recommended)
 #   - python -m l3_node via Start-Process -NoNewWindow (logs appear in this window, mixed with npm)
-#   - then npm run tauri:dev ; JACHIN_SKIP_L3_SPAWN=1 (desktop does not spawn second L3)
+#   - then npm run tauri:dev:ambient（默认，含 VAD/语音唤起）；JACHIN_SKIP_L3_SPAWN=1
+#   - 不需要 ambient 时：.\scripts\start-layer3.ps1 -NoAmbient
+#   - 同脚本会尝试启动 JVS voice_server (18982)，供陪伴语音 TTS/STT
 #   .\scripts\start-layer3.ps1
 #   Optional old behavior (second window): -SeparateL3Window
 #   （已默认行为）桌面会随启动打开控制台 + Omni；无需 -ShowOmni。自动化可设 JACHIN_SKIP_STARTUP_WINDOWS=1
@@ -26,8 +28,12 @@ param(
     [switch]$DesktopOnly,
     [switch]$SeparateL3Window,
     [switch]$SkipRepairMcp,
-    [switch]$ShowOmni
+    [switch]$ShowOmni,
+    [switch]$NoAmbient,
+    [switch]$NoPause
 )
+
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -37,12 +43,43 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
+$script:Layer3ExitCode = 0
+
+function Ensure-TauriJsonNoBom {
+    $mjs = Join-Path $ProjectRoot "clients\desktop\scripts\ensure-json-no-bom.mjs"
+    if (-not (Test-Path -LiteralPath $mjs)) { return }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Host "[Layer3] WARN: node 不在 PATH，跳过 ensure-json-no-bom（若 tauri dev 报 JSON 解析错误，请先安装 Node）" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "[Layer3] 检查 Tauri/Vite 关键 JSON 是否带 BOM..." -ForegroundColor Gray
+    & node $mjs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[Layer3] WARN: ensure-json-no-bom 退出码 $LASTEXITCODE" -ForegroundColor Yellow
+    }
+}
+
+function Wait-Layer3PauseIfNeeded {
+    if ($NoPause) { return }
+    if ($env:CI -eq "true") { return }
+    if ($env:JACHIN_PAUSE_ON_EXIT -eq "0") { return }
+    $code = if ($script:Layer3ExitCode -ne 0) { $script:Layer3ExitCode } else { $LASTEXITCODE }
+    if ($env:JACHIN_PAUSE_ON_EXIT -eq "1" -or ($code -ne 0 -and $null -ne $code)) {
+        if ($code -ne 0) {
+            Write-Host "[Layer3] 异常退出，代码: $code" -ForegroundColor Red
+        }
+        Read-Host "按 Enter 关闭此窗口"
+    }
+}
+
 # 尽量让传统 conhost 用 UTF-8 代码页输出中文（Windows Terminal 通常已 OK）
 try {
     if ($env:OS -match 'Windows') {
         & cmd.exe /c "chcp 65001>nul" 2>$null
     }
 } catch { }
+
+Ensure-TauriJsonNoBom
 
 function Resolve-PythonExePath {
     $c = @(Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1)[0]
@@ -103,6 +140,107 @@ try {
     Write-Host "  [WARN] python probe failed: $_" -ForegroundColor Yellow
 }
 
+function Stop-TcpPortListener {
+    param([int]$Port)
+    $connections = @(netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING")
+    if (-not $connections.Count) { return $false }
+    $processIds = $connections | ForEach-Object { $_.ToString().Split()[-1] } | Select-Object -Unique
+    foreach ($processId in $processIds) {
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+        } catch {
+            Start-Process -FilePath "taskkill" -ArgumentList "/F", "/PID", $processId -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+    return $true
+}
+
+function Resolve-VoicePythonExe {
+    $venvPy = Join-Path $ProjectRoot ".venv-voice\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy) { return $venvPy }
+    return Resolve-PythonExePath
+}
+
+function Start-JvsVoiceServer {
+    param(
+        # start-layer3 一键启动时强制重启 JVS，避免旧进程无 CORS 等修复仍占用 18982
+        [switch]$Refresh
+    )
+    $baseUrl = if ($env:JACHIN_VOICE_SERVER_URL) { $env:JACHIN_VOICE_SERVER_URL.TrimEnd('/') } else { "http://127.0.0.1:18982" }
+    $healthUrl = "$baseUrl/health"
+
+    if ($Refresh) {
+        Write-Host "[Layer3] 重启 JVS voice_server（18982）以加载当前代码..." -ForegroundColor Cyan
+        if (Stop-TcpPortListener -Port 18982) {
+            Start-Sleep -Seconds 1
+        }
+    } else {
+        try {
+            $h = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 3 -ErrorAction Stop
+            if ($h.ok -and $h.tts_ready) {
+                Write-Host "[Layer3] JVS 已就绪 ($healthUrl, tts_ready=true)" -ForegroundColor Green
+                return
+            }
+            if ($h.ok) {
+                Write-Host "[Layer3] JVS 已监听，模型仍在预热 (tts_ready=false)..." -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "[Layer3] JVS 未响应，准备启动 voice_server..." -ForegroundColor Cyan
+        }
+    }
+
+    $mainPy = Join-Path $ProjectRoot "voice_server\main.py"
+    if (-not (Test-Path -LiteralPath $mainPy)) {
+        Write-Host "[Layer3] WARN: 未找到 voice_server\main.py，跳过 JVS（语音将不可用）" -ForegroundColor Yellow
+        return
+    }
+
+    $pyExe = Resolve-VoicePythonExe
+    if (-not $pyExe) {
+        Write-Host "[Layer3] WARN: 找不到 python，无法启动 JVS" -ForegroundColor Yellow
+        return
+    }
+
+    $modelRoot = if ($env:JACHIN_VOICE_MODEL_ROOT) { $env:JACHIN_VOICE_MODEL_ROOT } else { Join-Path $ProjectRoot "data\models\voice" }
+    Write-Host "[Layer3] 启动 JVS: $pyExe voice_server\main.py (模型预热可能需 30~90s)" -ForegroundColor Cyan
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $pyExe
+        $psi.Arguments = $mainPy
+        $psi.WorkingDirectory = $ProjectRoot
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $false
+        $evs = $psi.EnvironmentVariables
+        foreach ($de in [System.Environment]::GetEnvironmentVariables([System.EnvironmentVariableTarget]::Process).GetEnumerator()) {
+            $k = $de.Key.ToString()
+            try { $evs[$k] = $de.Value.ToString() } catch { }
+        }
+        $evs["JACHIN_VOICE_MODEL_ROOT"] = $modelRoot
+        $evs["PYTHONUNBUFFERED"] = "1"
+        $evs["PYTHONUTF8"] = "1"
+        [void][System.Diagnostics.Process]::Start($psi)
+    } catch {
+        Write-Host "[Layer3] WARN: JVS 启动失败: $_" -ForegroundColor Yellow
+        return
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $h = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 3 -ErrorAction Stop
+            if ($h.ok -and $h.tts_ready) {
+                Write-Host "[Layer3] JVS 就绪: tts_voice=$($h.tts_voice) model_root=$($h.model_root)" -ForegroundColor Green
+                return
+            }
+            if ($h.ok) {
+                Write-Host "[Layer3] JVS 监听中，等待 TTS 模型预热..." -ForegroundColor Gray
+            }
+        } catch { }
+        Start-Sleep -Seconds 2
+    }
+    Write-Host "[Layer3] WARN: JVS 120s 内 tts_ready 仍为 false；请检查 data\models\voice 与 pip install -r voice_server\requirements.txt" -ForegroundColor Yellow
+}
+
 function Start-L3SourceForeground {
     param([string]$Mode)
     $pyArgs = @("-m", "l3_node")
@@ -115,7 +253,7 @@ function Start-L3SourceForeground {
     }
     Write-Host "[Layer3] cwd=$ProjectRoot" -ForegroundColor Gray
     & python @pyArgs
-    exit $LASTEXITCODE
+    $script:Layer3ExitCode = if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 0 }
 }
 
 try {
@@ -134,7 +272,9 @@ try {
         $viteListen = netstat -ano 2>$null | Select-String ":31421\s" | Select-String "LISTENING"
         if ($viteListen) {
             Write-Host "  端口 31421 已被占用，正在释放（多为上次 npm run dev / tauri dev 未退出）..." -ForegroundColor Yellow
-            & (Join-Path $ScriptDir "kill_port.ps1") -Port 31421
+            if (Stop-TcpPortListener -Port 31421) {
+                Write-Host "  已尝试释放端口 31421" -ForegroundColor Gray
+            }
         } else {
             Write-Host "  端口 31421 未被占用" -ForegroundColor Gray
         }
@@ -149,6 +289,7 @@ try {
         } else {
             Start-L3SourceForeground -Mode "gateway"
         }
+        exit $script:Layer3ExitCode
     }
 
     if (-not $SourceOnly) {
@@ -202,6 +343,7 @@ try {
             }
             Start-Sleep -Seconds 2
             Write-Host "[Layer3] JACHIN_SKIP_L3_SPAWN=1 (Tauri window does not spawn second L3)" -ForegroundColor Gray
+            Start-JvsVoiceServer -Refresh
         }
 
         $DesktopDir = Join-Path $ProjectRoot "clients\desktop"
@@ -256,6 +398,7 @@ try {
         Write-Host "[$UtcNow] L2: .\scripts\run-gateway.ps1" -ForegroundColor Yellow
         if ($DesktopOnly) {
             Write-Host "[$UtcNow] Mode: desktop only (Tauri may spawn Sidecar L3)" -ForegroundColor Gray
+            Start-JvsVoiceServer -Refresh
         } else {
             if ($SeparateL3Window) {
                 Write-Host "[$UtcNow] Mode: L3 in other window ; this window = npm/Tauri" -ForegroundColor Yellow
@@ -267,26 +410,57 @@ try {
         Write-Host ""
 
         Write-Host "[$UtcNow] Skills 为空可运行: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
-        Write-Host "[$UtcNow] 热更新联调: npm run tauri:dev:with-updater（日常开发: npm run tauri:dev）" -ForegroundColor Gray
+        Write-Host "[$UtcNow] 热更新联调: npm run tauri:dev:with-updater（日常开发: npm run tauri:dev:ambient）" -ForegroundColor Gray
         Write-Host "[$UtcNow] 发布/签名: 仓库根 npm run publish-desktop-release（见 clients/desktop/package.json）" -ForegroundColor Gray
 
+        if (-not $NoAmbient) {
+            $env:JACHIN_AUTO_WAKE_LISTENER = "1"
+            Write-Host "[$UtcNow] 语音唤起: JACHIN_AUTO_WAKE_LISTENER=1（桌面启动后自动监听麦克风）" -ForegroundColor Gray
+            $vadPath = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA "jachin") "desktop") "data\vad\silero_vad.onnx"
+            if (-not (Test-Path -LiteralPath $vadPath)) {
+                Write-Host "[$UtcNow] VAD 模型缺失，自动下载到用户目录..." -ForegroundColor Yellow
+                try {
+                    $env:JACHIN_VAD_DEBUG_PATH = (Join-Path (Join-Path $env:LOCALAPPDATA "jachin") "desktop\data")
+                    & python (Join-Path $ScriptDir "download_vad_model.py")
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "[$UtcNow] WARN: 自动下载 VAD 失败，可手动执行: python scripts\download_vad_model.py" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "[$UtcNow] VAD 模型就绪: $vadPath" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Host "[$UtcNow] WARN: 自动下载 VAD 失败: $_" -ForegroundColor Yellow
+                }
+            }
+        }
         Push-Location $DesktopDir
+        Ensure-TauriJsonNoBom
         $tauriPkgDir = $at + "tauri-apps"
         $tauriBin = Join-Path (Join-Path (Join-Path $DesktopDir "node_modules") $tauriPkgDir) "cli"
         $hasLocalTauriCli = (Test-Path $tauriBin)
         $hasGlobalTauri = [bool](Get-Command tauri -ErrorAction SilentlyContinue)
+        $tauriDevScript = if ($NoAmbient) { "tauri:dev" } else { "tauri:dev:ambient" }
+        if ($NoAmbient) {
+            Write-Host "[$UtcNow] Tauri: npm run tauri:dev（未启用 ambient，无 VAD/语音唤起）" -ForegroundColor Yellow
+        } else {
+            Write-Host "[$UtcNow] Tauri: npm run tauri:dev:ambient（VAD + 语音唤起）" -ForegroundColor Gray
+        }
         if ($hasLocalTauriCli -or $hasGlobalTauri) {
-            npm run tauri:dev
+            npm run $tauriDevScript
         } else {
             Write-Host "[INFO] @tauri-apps/cli not found. npm install first; else npm run dev (Vite only)." -ForegroundColor Yellow
             npm run dev
         }
         Pop-Location
-        exit $LASTEXITCODE
+        $script:Layer3ExitCode = if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } else { 0 }
+        exit $script:Layer3ExitCode
     }
+} catch {
+    Write-Host "[Layer3] FATAL: $_" -ForegroundColor Red
+    if ($_.ScriptStackTrace) {
+        Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+    }
+    $script:Layer3ExitCode = 1
+    exit 1
 } finally {
-    Write-Host ""
-    if ($env:JACHIN_PAUSE_ON_EXIT -eq "1") {
-        Read-Host "Press Enter to exit"
-    }
+    Wait-Layer3PauseIfNeeded
 }

@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import uuid
+import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -32,6 +33,10 @@ from l3_node.lark_session import load_lark_session as _load_lark_session, save_l
 
 # 含大段 base64 的附件帧可达数 MB，同步 json.loads 会长时间阻塞 asyncio 事件环，导致全节点 WS「假死」
 _WS_JSON_LARGE_BYTES = 150_000
+_EARLY_YIELD_TOKENS = ("收到，", "稍等，", "我想想，")
+_EARLY_YIELD_COMPLEX_RE = re.compile(
+    r"(全部|批量|所有|每个|目录|文件夹|报告|汇总|分析|导出|重构|改造|数据库|SQL|接口|权限|部署|流水线|CI|日志|排查|修复)"
+)
 
 
 async def _ws_json_loads(raw: str | bytes) -> Any:
@@ -47,6 +52,91 @@ async def _ws_json_loads(raw: str | bytes) -> Any:
 def _ws_msg_session_key(msg: dict) -> str:
     """桌面 Omni 多会话：`session_id` 与 `chat_id` 同义，分区键写入 l3_lark_sessions.json。"""
     return str(msg.get("chat_id") or msg.get("session_id") or "").strip()
+
+
+
+
+def _is_ws_voice_fast_lane(intent: str, implicit_signals: dict | None, msg: dict | None = None) -> bool:
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    text = (intent or "").strip()
+    if not text or len(text) > 80:
+        return False
+    if msg and msg.get("attachments_metadata"):
+        return False
+    if bool(sig.get("voice_fast_lane")) or bool(sig.get("skip_context_retrieval")):
+        return True
+    tier = str(sig.get("voice_dispatch_tier") or "").upper()
+    lane = str(sig.get("voice_dispatch_lane") or "").lower()
+    intent_class = str(sig.get("voice_intent_class") or "").upper()
+    verdict = str(sig.get("voice_interrupt_verdict") or "NONE").upper()
+    return (
+        tier == "CHIT_CHAT"
+        and lane == "direct_llm"
+        and intent_class in ("", "CHITCHAT")
+        and verdict in ("", "NONE")
+        and not sig.get("target_task_id")
+    )
+
+
+def _is_ws_voice_presence_ack_intent(intent: str) -> bool:
+    text = (intent or "").strip()
+    if not text or len(text) > 40:
+        return False
+    question_words = (
+        "\u4ec0\u4e48", "\u600e\u4e48", "\u4e3a\u4ec0\u4e48", "\u54ea\u4e2a", "\u54ea\u91cc",
+        "\u591a\u5c11", "\u51e0", "\u5417", "\uff1f", "?", "\u5403", "\u559d", "\u8981\u4e0d\u8981",
+        "\u5e94\u8be5", "\u63a8\u8350",
+    )
+    if any(w in text for w in question_words):
+        return False
+    presence_words = (
+        "\u542c\u6211\u8bb2\u8bdd", "\u542c\u6211\u8bf4", "\u8ddf\u6211\u8bf4", "\u966a\u6211",
+        "\u8bf4\u70b9\u8bdd", "\u8bb2\u8bdd", "\u8bf4\u8bdd", "\u5728\u5417", "\u4f60\u5728\u5417",
+    )
+    return any(w in text for w in presence_words)
+
+
+def _voice_fast_lane_messages(intent: str) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "\u4f60\u662f Jachin \u7684\u966a\u4f34\u6001\u8bed\u97f3\u52a9\u624b\u3002\u5f53\u524d\u662f\u8bed\u97f3\u95f2\u804a\u5feb\u8def\u5f84\u3002"
+                "\u76f4\u63a5\u3001\u81ea\u7136\u3001\u6e29\u67d4\u5730\u7528\u4e2d\u6587\u77ed\u7b54\uff0c1\u52302\u53e5\u3002\u7528\u6237\u5982\u679c\u95ee\u4e86\u5177\u4f53\u95ee\u9898\uff0c\u5fc5\u987b\u56de\u7b54\u95ee\u9898\u672c\u8eab\uff0c"
+                "\u4e0d\u8981\u53ea\u8bf4\u6211\u5728\u3001\u597d\u5440\u3001\u542c\u7740\u5462\u3002\u53ea\u6709\u7528\u6237\u53ea\u662f\u53eb\u4f60\u966a\u4f34\u6216\u786e\u8ba4\u4f60\u5728\u65f6\uff0c\u624d\u53ef\u7528\u5f88\u77ed\u7684\u8fde\u63a5\u8bed\u3002"
+                "\u4e0d\u8981\u5c55\u793a\u63a8\u7406\uff0c\u4e0d\u8981\u8c03\u7528\u5de5\u5177\uff0c\u4e0d\u8981\u8bf4\u4f60\u6b63\u5728\u5904\u7406\u4efb\u52a1\u3002"
+            ),
+        },
+        {"role": "user", "content": (intent or "").strip()},
+    ]
+
+
+def _pick_early_yield_token(intent: str, implicit_signals: dict | None) -> str | None:
+    """
+    Early Yielding:
+    - 复杂请求先吐一个极短语气词 chunk，优先打破“死寂”并触发 TTS。
+    - 简单闲聊/快车道不触发，避免无意义前缀。
+    """
+    text = (intent or "").strip()
+    if not text or text.startswith("/"):
+        return None
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    # 快车道（CHIT_CHAT）不需要 Early Yield。
+    if bool(sig.get("voice_fast_lane")) or bool(sig.get("skip_context_retrieval")):
+        return None
+    tier = str(sig.get("voice_dispatch_tier") or "").upper()
+    lane = str(sig.get("voice_dispatch_lane") or "").lower()
+    intent_class = str(sig.get("voice_intent_class") or "").upper()
+    likely_complex = (
+        tier == "LONG_TASK"
+        or lane in ("foreground", "background_submit")
+        or intent_class in ("TASK_SYNC", "TASK_ASYNC")
+        or (len(text) >= 42 and bool(_EARLY_YIELD_COMPLEX_RE.search(text)))
+    )
+    if not likely_complex:
+        return None
+    idx = zlib.crc32(text.encode("utf-8")) % len(_EARLY_YIELD_TOKENS)
+    return _EARLY_YIELD_TOKENS[idx]
 
 
 def _coerce_ws_intent_and_inline_attachments(msg: dict) -> tuple[str, list[dict[str, Any]]]:
@@ -480,12 +570,36 @@ async def _ws_execute_intent_turn(
             out_content = sanitize_thought_step_for_ui(content)
         base_on_step(step_type, out_content, ctx_run_id)
 
+    _imp_sig = msg.get("implicit_signals")
+    _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
+
+    _early_yield = _pick_early_yield_token(intent, _imp_sig)
+    if _early_yield:
+        try:
+            from l3_node.terminal_turn_debug_log import append_stream_chunk
+
+            append_stream_chunk(_early_yield)
+        except Exception:
+            pass
+        from l3_node.react_ui_sanitize import sanitize_stream_chunk_for_ui
+
+        _early_payload = {
+            "step_type": "chunk",
+            "content": sanitize_stream_chunk_for_ui(_early_yield),
+            "run_id": run_id,
+        }
+        await _send_safe(websocket, _early_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, _early_payload)
+
+    _ws_voice_fast_lane = _is_ws_voice_fast_lane(intent, _imp_sig, msg)
     try:
         from l3_node.intent_gateway.ood_signals import should_skip_progress_thought_kick
 
         _skip_kick = should_skip_progress_thought_kick(raw_user_input=intent)
     except Exception:
         _skip_kick = False
+    _skip_kick = bool(_skip_kick or _ws_voice_fast_lane)
     if not _skip_kick:
         _kick = {
             "step_type": "thought",
@@ -510,9 +624,100 @@ async def _ws_execute_intent_turn(
         await _send_safe(websocket, p)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, p)
+    if _ws_voice_fast_lane:
+        try:
+            from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
+            from l3_node.terminal_turn_debug_log import append_final
 
-    _imp_sig = msg.get("implicit_signals")
-    _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
+            _fast_kw: dict[str, Any] = {
+                "temperature": 0.35,
+                "max_tokens": 80,
+                "l3_call_purpose": "voice_fast_lane_ws_direct_llm",
+                "l3_run_id": run_id,
+            }
+            _fast_model = os.environ.get("JACHIN_VOICE_FAST_LANE_MODEL", "").strip()
+            if _fast_model:
+                _fast_kw["l3_override_model"] = _fast_model
+            logger.info("[L3 WS] voice fast lane direct LLM run_id=%s input_len=%d", run_id, len(intent or ""))
+            _fast_first_chunk = asyncio.Event()
+            _fast_chunks: list[str] = []
+
+            async def _fast_on_chunk(chunk: str) -> None:
+                _fast_chunks.append(chunk)
+                _fast_first_chunk.set()
+                await on_chunk(chunk)
+
+            _fast_timeout_s = float(os.environ.get("JACHIN_VOICE_FAST_LANE_TIMEOUT_SEC", "1.4") or "1.4")
+            _fast_task = asyncio.create_task(
+                _engine.generate_response_stream(
+                    _voice_fast_lane_messages(intent),
+                    chunk_callback=_fast_on_chunk,
+                    tools=None,
+                    **_fast_kw,
+                )
+            )
+            try:
+                await asyncio.wait_for(asyncio.shield(_fast_first_chunk.wait()), timeout=max(0.4, _fast_timeout_s))
+                reply = await _fast_task
+            except asyncio.TimeoutError:
+                _presence_ack = _is_ws_voice_presence_ack_intent(intent)
+                logger.warning(
+                    "[L3 WS] voice fast lane first-token timeout run_id=%s timeout=%.2fs presence_ack=%s",
+                    run_id,
+                    _fast_timeout_s,
+                    _presence_ack,
+                )
+                _fast_task.cancel()
+                try:
+                    await _fast_task
+                except BaseException:
+                    pass
+                if not _presence_ack:
+                    raise TimeoutError("voice_fast_lane_first_token_timeout_non_presence")
+                reply = "\u6211\u5728\u3002"
+                await on_chunk(reply)
+            reply = (reply or "".join(_fast_chunks) or "").strip()
+            if not reply:
+                reply = "我在，慢慢说。"
+            if chat_id and messages is not None:
+                messages.append({"role": "user", "content": intent})
+                messages.append({"role": "assistant", "content": reply})
+                _save_lark_session(chat_id, messages)
+            try:
+                append_final("voice_fast_lane_final", reply, extra={"run_id": run_id, "chat_id": chat_id or None})
+            except Exception:
+                pass
+            _reply_ui = sanitize_final_answer_for_ui(reply)
+            ans_payload = {"step_type": "answer", "content": _reply_ui, "run_id": run_id}
+            await _send_safe(websocket, ans_payload)
+            if broadcast and chat_id:
+                await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
+            if origin_terminal and chat_id and reply:
+                asyncio.create_task(_push_reply_to_lark(chat_id, _reply_ui))
+            return
+        except asyncio.CancelledError:
+            try:
+                if "_fast_task" in locals() and _fast_task is not None and not _fast_task.done():
+                    _fast_task.cancel()
+                    try:
+                        await _fast_task
+                    except BaseException:
+                        pass
+            except Exception:
+                pass
+            logger.info("[L3 WS] voice fast lane cancelled run_id=%s", run_id)
+            raise
+        except Exception as _fast_e:
+            _fast_err = f"{type(_fast_e).__name__}: {_fast_e}".lower()
+            if "cancel" in _fast_err:
+                logger.info(
+                    "[L3 WS] voice fast lane cancelled run_id=%s err=%s; no fallback",
+                    run_id,
+                    type(_fast_e).__name__,
+                )
+                raise asyncio.CancelledError() from _fast_e
+            logger.warning("[L3 WS] voice fast lane direct failed, fallback run_agent: %s", _fast_e)
+
     _imp_attr = {
         "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
         "has_chat_id": bool(chat_id),
@@ -618,6 +823,40 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
     _my_lark_chat_id: str = ""  # 本连接订阅的 chat_id（终端镜像模式）
     _bg_task_subscribed: bool = False
     active_turn_task: asyncio.Task | None = None
+    # Pre-flight：语音开始后提前预热会话历史，等 STT 文本到达时直接复用。
+    _prepared_sessions: dict[str, list[dict]] = {}
+    _prepare_tasks: dict[str, asyncio.Task] = {}
+
+    async def _preflight_prepare_session(chat_id: str) -> list[dict]:
+        if not chat_id:
+            return []
+        loaded = await asyncio.to_thread(_load_lark_session, chat_id)
+        prepared = loaded if isinstance(loaded, list) else []
+        _prepared_sessions[chat_id] = prepared
+        logger.debug("[L3 WS][Preflight] chat_id=%s prepared history=%d", chat_id[:20], len(prepared))
+        return prepared
+
+    async def _resolve_session_messages(chat_id: str) -> list[dict]:
+        nonlocal session_messages
+        if not chat_id:
+            return session_messages
+        task = _prepare_tasks.get(chat_id)
+        if task is not None and not task.done():
+            # 预热通常已在用户说话阶段完成；这里给一个极短等待窗口，避免因竞态退回冷加载。
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.4)
+            except asyncio.TimeoutError:
+                logger.debug("[L3 WS][Preflight] chat_id=%s warmup still running", chat_id[:20])
+            except Exception as e:
+                logger.debug("[L3 WS][Preflight] chat_id=%s warmup failed: %s", chat_id[:20], e)
+        prepared = _prepared_sessions.pop(chat_id, None)
+        if isinstance(prepared, list):
+            session_messages = prepared
+            return session_messages
+        loaded = await asyncio.to_thread(_load_lark_session, chat_id)
+        session_messages = loaded if isinstance(loaded, list) else []
+        return session_messages
+
     try:
         async for raw in websocket:
             try:
@@ -675,9 +914,22 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             if msg_type == "clear_session":
                 cid = (_ws_msg_session_key(msg) or _my_lark_chat_id or "").strip()
                 session_messages.clear()
+                _prepared_sessions.pop(cid, None)
+                _pt = _prepare_tasks.pop(cid, None)
+                if _pt is not None and not _pt.done():
+                    _pt.cancel()
                 if cid:
                     _save_lark_session(cid, session_messages)
                 logger.debug("[L3 WS] clear_session 已清空 chat_id=%s", cid[:20] if cid else "-")
+                continue
+
+            # 语音 Pre-flight：麦克风点亮即发送。后台预热历史会话，隐藏后续首包延迟。
+            if msg_type == "prepare_context":
+                cid = (_ws_msg_session_key(msg) or _my_lark_chat_id or "").strip()
+                if cid:
+                    _running = _prepare_tasks.get(cid)
+                    if _running is None or _running.done():
+                        _prepare_tasks[cid] = asyncio.create_task(_preflight_prepare_session(cid))
                 continue
 
             # 终端「停止生成」：取消当前 run_agent 任务，主循环可继续收包（避免与含 intent 的误触 action 混淆）
@@ -742,7 +994,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             if msg_type == "tool_ui_result":
                 chat_id = _ws_msg_session_key(msg)
                 if chat_id:
-                    session_messages = _load_lark_session(chat_id)
+                    session_messages = await _resolve_session_messages(chat_id)
                 tool_raw = (msg.get("tool_name") or msg.get("tool_id") or "").strip()
                 result = msg.get("result")
                 run_id = str(uuid.uuid4())[:8]
@@ -802,7 +1054,7 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
             chat_id = _ws_msg_session_key(msg)
             origin_terminal = str(msg.get("origin", "")).lower() == "terminal"
             if chat_id:
-                session_messages = _load_lark_session(chat_id)
+                session_messages = await _resolve_session_messages(chat_id)
                 logger.debug("[L3 WS] chat_id=%s 加载历史 %d 条", chat_id[:20], len(session_messages))
 
             # 有 chat_id 时向镜像订阅者广播「用户输入」，终端可同步显示
@@ -895,6 +1147,9 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
     except Exception as e:
         logger.warning("WebSocket client error: %s", e)
     finally:
+        for _t in _prepare_tasks.values():
+            if _t is not None and not _t.done():
+                _t.cancel()
         if active_turn_task is not None and not active_turn_task.done():
             active_turn_task.cancel()
             try:

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Omni 赛博协议壳层 — 对话历史 + 底栏胶囊；思考过程与正文隔离展示
  */
 
@@ -722,28 +722,37 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                     <Radio className="h-3.5 w-3.5 shrink-0" />
                   </button>
                 )}
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (canVoice && !isRecording) onVoiceStart();
-                  }}
-                  onMouseUp={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (isRecording) onVoiceStop();
-                  }}
-                  onMouseLeave={() => isRecording && onVoiceStop()}
-                  disabled={!canVoice}
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center bg-transparent transition-[opacity,filter] duration-200 disabled:opacity-20 ${
-                    isRecording
-                      ? "text-red-200 opacity-100 drop-shadow-[0_0_12px_rgba(248,113,113,0.55)]"
-                      : "text-cyan-300 opacity-30 hover:opacity-100 hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.9)]"
-                  }`}
-                >
-                  {isRecording ? <Square className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
-                </button>
+                {isRecording ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onVoiceStop();
+                    }}
+                    title="结束录音并发送"
+                    aria-label="结束录音"
+                    className="flex h-9 shrink-0 items-center gap-1 rounded-md border border-red-400/35 bg-red-500/15 px-2 text-red-200 opacity-100 transition-[opacity,filter] duration-200 drop-shadow-[0_0_12px_rgba(248,113,113,0.45)] hover:bg-red-500/25"
+                  >
+                    <Square className="h-3.5 w-3.5 shrink-0" />
+                    <span className="text-[10px] font-medium tracking-wide">结束</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (canVoice) onVoiceStart();
+                    }}
+                    disabled={!canVoice}
+                    title="开始录音"
+                    aria-label="开始录音"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center bg-transparent text-cyan-300 opacity-30 transition-[opacity,filter] duration-200 hover:opacity-100 hover:drop-shadow-[0_0_10px_rgba(34,211,238,0.9)] disabled:opacity-20"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
 
               <div className="min-w-0 flex-1 flex flex-col gap-1">

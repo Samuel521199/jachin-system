@@ -1,4 +1,4 @@
-/**
+﻿/**
  * useSensoryWebSocket - Layer 3 全息感官总线连接
  * 连接 ws://localhost:18981/sensory，接收大脑 step_type / thought / action / HITL_REQUIRED
  * v8.0 视觉觉醒：stream_chunk 流式神经、handoff 人格切换、swarm 算力雷达
@@ -131,6 +131,11 @@ export type SensoryChunkMeta = {
   reasoningAppend?: string;
 };
 
+export interface SensoryUserInputMeta {
+  source: "local" | "mirror";
+  runId?: string;
+}
+
 function detectChunkIsReasoning(
   meta: Record<string, unknown> | undefined,
   raw: Record<string, unknown>,
@@ -193,6 +198,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
   const onStepRef = useRef<((stepType: string, content: string, runId?: string) => void) | null>(null);
   const onMirrorInputRef = useRef<((content: string) => void) | null>(null);
   const onBackgroundTaskRef = useRef<((ev: BackgroundTaskEventPayload) => void) | null>(null);
+  const onUserInputRef = useRef<((content: string, meta?: SensoryUserInputMeta) => void) | null>(null);
   /** 本轮是否已收到流式 chunk（有则 answer 勿再向同气泡追加全文，否则会「复读机」） */
   const hadStreamChunksForRunRef = useRef(false);
   /** 与 streamingContent 同步，用于合并 cumulative/delta chunk，避免重复拼接 */
@@ -212,6 +218,11 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     },
     [],
   );
+
+  /** 注册用户输入回调：主窗/HUD/Lark mirror 的用户发言都可实时分发给 UI */
+  const registerUserInputHandler = useCallback((fn: ((content: string, meta?: SensoryUserInputMeta) => void) | null) => {
+    onUserInputRef.current = fn;
+  }, []);
 
   /** 注册 chunk 回调：供 Chat 将流式内容追加到当前 Assistant 消息 */
   const registerChunkHandler = useCallback(
@@ -417,6 +428,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
           // Lark 镜像：Lark 用户发消息时同步到终端显示
           if (data.step_type === "mirror_input" && data.content != null) {
             onMirrorInputRef.current?.(data.content);
+            onUserInputRef.current?.(data.content, { source: "mirror", runId: data.run_id });
           }
 
           if (data.step_type === "HITL_REQUIRED") {
@@ -634,6 +646,31 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     return true;
   }, [larkChatId, desktopSessionIdRef]);
 
+  /**
+   * 语音预热控制帧：麦克风刚进入 listening 即触发，
+   * 让 L3 在后台提前加载会话历史/摘要，隐藏后续首包延迟。
+   */
+  const sendPrepareContextControl = useCallback((trigger: "ptt_start" | "companion_voice_start" = "ptt_start") => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return false;
+    const payload: Record<string, string> = {
+      type: "prepare_context",
+      trigger,
+      source: "desktop_voice",
+    };
+    if (larkChatId) {
+      payload.chat_id = larkChatId;
+      payload.session_id = larkChatId;
+    } else {
+      const sid = desktopSessionIdRef?.current?.trim() ?? "";
+      if (sid) {
+        payload.chat_id = sid;
+        payload.session_id = sid;
+      }
+    }
+    wsRef.current.send(JSON.stringify(payload));
+    return true;
+  }, [larkChatId, desktopSessionIdRef]);
+
   const resolveHitl = useCallback((approved: boolean) => {
     const tid = hitlPending?.task_id;
     sendHitlResponse(approved, tid);
@@ -651,6 +688,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
           has_image: boolean;
           base64: string;
         }>;
+        implicit_signals?: Record<string, unknown>;
       },
     ) => {
       dropL3StreamUntilTerminalRef.current = false;
@@ -670,6 +708,9 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
       if (extras?.attachments_metadata?.length) {
         payload.attachments_metadata = extras.attachments_metadata;
       }
+      if (extras?.implicit_signals && Object.keys(extras.implicit_signals).length > 0) {
+        payload.implicit_signals = extras.implicit_signals;
+      }
       if (larkChatId) {
         payload.chat_id = larkChatId;
         payload.session_id = larkChatId;
@@ -682,6 +723,7 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
         }
       }
       wsRef.current.send(JSON.stringify(payload));
+      onUserInputRef.current?.(intentTrim, { source: "local" });
       console.debug(
         "[Sensory] sendInput 已发送 len=%d attachments=%s mirror=%s",
         intentTrim.length,
@@ -774,11 +816,14 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
     sendToolUiResult,
     /** 通知 L3 清空 WS 会话缓冲（控制帧，非用户 intent） */
     sendSessionClearControl,
+    /** 语音开始时触发：让 L3 预热会话上下文 */
+    sendPrepareContextControl,
     /** 停止当前 L3 生成（发 run_abort + 丢弃残余流直至终结帧） */
     sendRunAbort,
     /** Lark 镜像：注册回调，Lark 用户发消息时终端同步显示 */
     registerMirrorInputHandler,
     registerBackgroundTaskHandler,
+    registerUserInputHandler,
     /** 是否处于 Lark 镜像模式 */
     larkMirrorMode: !!larkChatId,
     // v8.0 视觉觉醒

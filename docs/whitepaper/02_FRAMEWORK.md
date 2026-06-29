@@ -1,130 +1,106 @@
-# 02 — 框架架构 (The Trinity + Neural Bus)
+﻿# 02 — 框架架构 (The Trinity + Neural Bus)
 
 **文档类型**: 白皮书 · 框架架构  
-**版本**: V2  
-**基准**: [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md)
+**版本**: V2.3  
+**更新日期**: 2026-06  
+**基准**: [ARCHITECTURE.md](../ARCHITECTURE.md) · [CURRENT_SYSTEM_ARCHITECTURE.md](../architecture/CURRENT_SYSTEM_ARCHITECTURE.md)
 
 ---
 
-## 〇、 Platform First（平台优先原则）
+## 〇、Platform First（平台优先）
 
-**Layer 1 默认为官方托管的多租户 SaaS 平台。** 个人、家庭和企业用户开箱即用，只需在边缘端拉起 Layer 2/3 并连接到云端即可。用户账户、技能订阅、付费账单均在 Layer 1 平台统一管理。
+**Layer 1 默认为官方托管的多租户 SaaS**（`cloud/nexus`）。用户注册后在控制台创建/加入 **工作区（组织）**，再在企业内网部署 L2/L3 并绑定网关。
 
-**私有化部署（Self-Hosted Layer 1）** 仅作为强合规（政企、金融等）场景的 fallback 方案，不作为代码和默认设计的出发点。
+**私有化 Layer 1** 仅作政企/金融 fallback，非默认设计起点。
 
 ---
 
-## 一、 三位一体架构 (The Trinity Architecture)
-
-Jachin Nexus 采用严格的“重云轻端”三位一体设计，彻底摒弃了上一代笨重的微服务网格。
+## 一、三位一体架构
 
 ```text
-Layer 1 (平台) ↔ Layer 2 (控制面) ↔ Layer 3 (单体执行节点)
+Layer 1 (cloud/nexus)  ↔  Layer 2 (core/)  ↔  Layer 3 (l3_node/ + clients/desktop)
 
-1. Layer 1: Jachin Nexus (平台)
-定位: 用户主账号注册/登录，平台主账号管理平台内部。与 L2/L3 无直接耦合。
+L1 — 平台
+  商城 catalog/publish/subscribe/licenses · sync/manifest · 组织/舰队/Forge
+  Auth.js + Drizzle + PostgreSQL · 不存 L3 隐私记忆
 
-特性: 绝对不存储边缘节点隐私记忆。用户主账号在平台注册后，管理其自己的 L2 + L3 系统。
+L2 — 控制面 + 数字仓库
+  子账号 · RBAC · API Key 保险箱（密文下发 L3）· inventory · MCP TaskManager 委托
+  LanceDB 可选集中记忆 · Dream Weaver · 不代理 L3 推理
 
-核心组件: The Forge (图形化编排)、Fleet Management (舰队批量下发)、Universal Message Adapter (全渠道 Webhook 统一适配)。
-
-数据底座: Drizzle ORM + PostgreSQL（去 BaaS 化 P0 已落地），Auth.js 身份认证，统管全网设备心跳、AST 蓝图、JPP 插件元数据及跨网指令队列。详见 [09_DE_BAASIFICATION.md](./09_DE_BAASIFICATION.md)。
-
-2. Layer 2: 控制面 (V2)
-定位: 子账号（在 L2 创建）、权限、API Key 管理（密文下发）、记忆、梦境、L3 协同调度。**不代理 L3 的推理请求**。
-
-特性: SQLite (~/.jachin/l2_control.db)、零信任密钥流转、梦境优化、L3 协同。
-
-技术栈: Python 3.10+、FastAPI、cryptography。
-
-3. Layer 3: 单体执行节点 (V2) — **对标 OpenClaw**
-定位: 完整执行节点。持密文 Key，解密后直连外部 API；多 Agent、多 Skill、本地记忆。
-
-特性: **L3 单体** = Agent + Skill + 直连 LLM。入口：Tauri 桌面端、IM、CLI。可与 L2 同机部署。
-
-技术栈: Tauri v2 + Rust + React。语音: Porcupine/Snowboy + Whisper + Kokoro/XTTS。
+L3 — 执行面
+  run_agent ReAct · stdio MCP Host · Wasm Tools · SKILL.md 注入
+  Memory Nexus（SQLite+FastEmbed）· ws://127.0.0.1:18981/sensory
+  Tauri 桌面 Omni · Lark/Telegram IM 通道
 ```
 
-**未来升维**：控制面与数据面分离。局域网 mDNS 零配置直连、广域网 WebRTC P2P 打洞，Layer 1 仅作信令。详见 [10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)。
+**配对边界**：L1↔L2 见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](../L1_L2_PAIRING_AND_WEB_BRIDGE.md)；L2↔L3 见 [PAIRING_PROTOCOL_SPEC.md](../PAIRING_PROTOCOL_SPEC.md)。
 
 ---
 
-## 二、 四大原语执行面
+## 二、四大原语执行面（L3）
 
-**V2**：执行引擎在 **Layer 3**。L3 打破“万物皆需编译 Wasm”的设定，以 **四大原语** 组织能力（**已废弃**「轨道 A/B/C」命名）：
+| 原语 | 形态 | 代码锚点 |
+|------|------|----------|
+| **Tools** | `core:*` Native、`jpp:*` Wasm | `l3_node/primitives/tools/` |
+| **MCP** | `mcp:*` stdio | `core/mcp_client.py`（L3 默认 Host） |
+| **Skills** | `SKILL.md`、能力域 | `skills_repo/`、`docs/capability_domains/` |
+| **Agent Tasks** | 多轮运行时 | `delegate`、`core:submit_background_task`、`coordinate` |
 
-| 原语 | 形态 | 信任级别 | 用途 |
-|------|------|----------|------|
-| **MCP** | Model Context Protocol 外挂 | 高信任 | 文件、Shell、数据库、Git 等开箱工具 |
-| **Skills** | SKILL.md 声明式 | 用户可控 | `skills_repo/` Markdown，热加载 |
-| **Tools · jpp** | The Abyss Wasm 沙箱 | 零信任 | 商城第三方付费插件，燃料熔断 |
-| **Agent Tasks** | delegate / 后台 / coordinate | 独立预算 | 多轮子运行时 |
-
-**SSOT**：`docs/Jachin 视角的「四大原语」终极架构规范.md`。详见 `docs/MCP_SPEC.md`、`docs/SKILL_MD_SPEC.md`、`docs/whitepaper/08_JPP_SDK_AND_SKILLS.md`。
+**混合增强（非第五原语）**：`intent_gateway/`、语义层、`db_semantics.yaml`、内联 Critic、Experience RAG — 均挂载同一 `run_agent` 主轴。SSOT：[JACHIN_HYBRID_AGENT_ARCHITECTURE.md](../architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md)。
 
 ---
 
-## 三、 量子记忆与自我进化 (Quantum Memory)
+## 三、记忆体系
 
-### 3.1 轻量化向量 + 可插拔 Embedding
+### 3.1 L3 Memory Nexus（宿主默认）
 
-- 不引入 Redis/Pinecone。在 SQLite 中加载 **sqlite-vss** 或 **lancedb** 扩展。
-- 单文件，百万级 Token 极速语义检索。
-- **可插拔向量引擎**：`embedding_mode: "cloud"` (OpenAI) 或 `"local"` (ONNX 断网可用)，由 Layer 3 设置界面 "Local AI Mode" 开关控制。详见 `docs/whitepaper/PLUGGABLE_VECTOR_ENGINE.md`。
+- **存储**：`~/.jachin/palace_db/memory_nexus.sqlite3`（SQLite + FastEmbed 本地 embedding）。
+- **实现**：`l3_client/local_mcps/jachin_memory_nexus/memory_backend.py`；桥接 `l3_node/memory_nexus_bridge.py`。
+- **工具**：`core:local_memory_search`、`core:local_memory_append`；Prompt 注入「系统近期核心记忆」。
+- SSOT：[MEMORY_NEXUS_L3.md](../architecture/MEMORY_NEXUS_L3.md)
 
-### 3.2 自我修复 (Self-Healing)
+### 3.2 L2 可选集中记忆
 
-- Agent 调用工具报错时，ReAct 循环捕获 Exception，将错误日志作为 Observation 喂给大脑。
-- Agent 自动调整参数、重试。
-- 梦境阶段可生成 `bug_fix.md` 规则写入长期记忆，确保同样错误不再犯。
+- LanceDB（`~/.jachin/lancedb_data/`）+ `core/dream_weaver.py` 聚类/去重/融合。
+- API：`POST /api/v2/memory/sync`、`GET /api/v2/memory/search`（多租户 namespace）。
+- L3 **默认不依赖** L2 记忆路径运行；多节点/审计场景可选用。
 
-### 3.3 生物钟主动心跳 (Bio-Rhythm Proactivity)
+### 3.3 自我修复
 
-- 脱离云端的 **cron_thinker** 异步线程，每 30 分钟主动环顾（**规划中**，当前代码未实现）。
-- 设计：扫描系统日志、读取未读邮件，发现异常时通过 IM 推送报警。
-- 与 **Jachin Mesh** 双向长连并行，互为补充。
-
----
-
-## 四、 全息感知器官 (Jarvis Protocol) + 全息感官总线
-
-**端口-适配器架构**：Voice、Sprite、IM 作为外接感官，统一归一化为 `Event(source, intent, payload)`，经 **Omni-Sensory Bus** 送入大脑；输出按 source 多路分发。详见 `docs/whitepaper/OMNI_SENSORY_BUS.md`。
-
-### 4.1 感官一：Jachin Voice (听觉与喉咙)
-
-- 空间级交互 (Ambient Computing)。Porcupine 唤醒词
-- “Hey Jachin” → 录音 → Whisper STT → 总线 → Agent → TTS 播报。无屏幕亦可运行（树莓派 + 麦克风 + 音箱）。
-
-### 4.2 感官二：Jachin Sprite (桌面精灵与外壳)
-
-- Tauri 控制台 + 透明窗口 Live2D/3D 精灵。企业级扫码即连、静默拉起 Layer 2。
-- 感官联动：`[Thought]` → 托腮思考；`core:shell_exec` → 挥动手臂。
-
-### 4.3 感官三：Jachin Link (全息通讯网关)
-
-- Layer 1 **Universal Message Adapter**：Telegram、飞书、Slack 等 Webhook 统一清洗入队。
-- **Jachin Mesh** 双向长连 → 毫秒级指令下发 → `emit_omni_input("telegram", ...)` → Agent → HTTP Callback 回传手机。
-
-### 4.4 极客视觉流 (Cyber-CLI)
-
-- `python -m core.cli pair`：L1↔L2 无头配对（有 Web 时优先 L2 `/gateway` 邮箱或 Nexus 登录）
-- `jachin-cli shell`：终端流光溢彩，满足顶尖黑客控制欲
+ReAct 捕获工具异常 → Observation 反馈 → 可选写入 Memory Nexus 或 L2 core_memory 规则。
 
 ---
 
-## 五、 核心通信与调度拓扑
+## 四、全息感知（Omni-Sensory Bus）
 
-1. **Jachin Mesh**：基于 WebSocket 的双向长连通道，实现 Layer 1 到 Layer 2 的**毫秒级指令下发**，替代 10 秒 HTTP 轮询。
-2. **生物钟 cron_thinker (30min)**：本地主动环顾，无需云端（**规划中**）。
-3. **IM 跨网直达**：手机 → Layer 1 Webhook (Universal Adapter) → 队列 → Jachin Mesh 推送（过渡期：心跳拉取；P0：WS 长连）→ Agent Loop → Callback → 手机。同机/同网/广域网原生客户端则直连 Layer 2，详见 [LAYER3_L2_WAN_ARCHITECTURE.md](../LAYER3_L2_WAN_ARCHITECTURE.md)。
-4. **持久化感官总线**：OmniSensoryBus 底层挂载 SQLite 队列，确保进程重启不丢事件。
-5. **v8.0 边缘网格计算 (Edge Mesh Swarm)**：同 Layer 2 网络下的多个 Layer 3 设备可形成**算力集群**。高负载任务（如 4K 视频压缩）由 Layer 2 向局域网内设备广播「谁空闲？」，空闲设备认领任务、执行 WASM 技能、回传结果。Jachin 升级为家庭/企业级私有云计算集群。
+**现行实现**：L3 `ws_server.py`（端口 **18981**）+ 桌面 `useSensoryWebSocket.ts`。
+
+- **输入**：桌面 chat、Voice STT、Lark webhook → 归一化为 Sensory 消息 → `run_agent`。
+- **输出**：ReAct 步骤、流式 chunk、HITL、后台任务事件（含 `zombie_tasks_pending`）→ WS 广播。
+- 详见 [OMNI_SENSORY_BUS.md](./OMNI_SENSORY_BUS.md)。
+
+**Legacy 说明**：`core/event_bus.py` + `core/daemon.py` 仍保留 v8.0 感官总线代码，**非**桌面 Omni 主路径。
 
 ---
 
-## 六、 废弃清单 (Architectural Purge)
+## 五、通信拓扑（现行 vs 规划）
+
+| 链路 | 现行 | 规划 |
+|------|------|------|
+| 桌面 ↔ L3 | `localhost:18981` WebSocket | 同左 |
+| L3 ↔ LLM | 直连 DashScope/OpenAI 等（LiteLLM） | 同左 |
+| L2 ↔ L3 | HTTP API + MCP Pull/委托 | 同左 |
+| L1 ↔ L2 | manifest 同步、Web Bridge、CLI 配对 | Jachin Mesh WS 长连 |
+| L1 ↔ L3（IM） | Webhook → 队列 → L2/L3 拉取 | WS 推送 + 可选 P2P |
+| 局域网 | — | mDNS + 内网直连（[10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)） |
+
+---
+
+## 六、废弃清单
 
 ❌ Dapr & Ray Cluster  
-❌ 本地 Redis / PostgreSQL  
-❌ 独立托管向量库（已由 LanceDB + 可插拔向量引擎取代）  
-❌ “万物皆 Wasm”的单一形态（现为 **四大原语** 并存）
+❌ L2 作为主 ReAct 执行引擎（`core/agent_loop.py` 等为 legacy）  
+❌ L3 宿主记忆 = Chroma（已改为 SQLite + FastEmbed）  
+❌ 「轨道 A/B/C」命名（统一四大原语）  
+❌ 注册自动创建个人组织（V2.2 起显式 workspace onboarding）

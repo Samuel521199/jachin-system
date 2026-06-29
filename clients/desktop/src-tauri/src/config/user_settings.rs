@@ -39,6 +39,27 @@ pub struct UserSettings {
     /// 唤醒词/名字（模式 B）：说此词或名字时激活 AI 助手。None 或空时使用默认 "Jachin"
     pub wake_word: Option<String>,
 
+    /// 唤醒确认：`earcon_only` | `verbal` | `both`（默认 both）
+    pub wake_ack_mode: Option<String>,
+
+    /// 唤醒口头确认预设池 id 列表（随机播放）
+    pub wake_ack_pool: Option<Vec<String>>,
+
+    /// 自定义唤醒确认句（非空时优先于池；须预生成 WAV 缓存）
+    pub wake_ack_phrase: Option<String>,
+
+    /// HUD 展示唤醒确认 system 气泡
+    pub wake_ack_show_in_hud: Option<bool>,
+
+    /// 声纹门总开关（默认开启；无 owner profile 时会回退为仅记录日志）
+    pub speaker_verification_enabled: Option<bool>,
+
+    /// 严格模式：SV 服务/profile 异常时 fail-close（默认 false，避免误杀主流程）
+    pub speaker_verification_strict: Option<bool>,
+
+    /// LISTENING 阶段主人轨提取开关（默认开启）
+    pub speaker_owner_track_enabled: Option<bool>,
+
     /// Qwen/通义千问 API Key（桌面端保存，会同步到后端覆盖文件）
     pub qwen_api_key: Option<String>,
 

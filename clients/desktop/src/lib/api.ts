@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API Client - 与后端通信
  *
  * V2: Dapr 已废弃，统一直连后端 API。
@@ -835,14 +835,31 @@ export async function rejectSafetyLockPending(
 /** BI 等 L3 专用意图：在 L2 兜底前优先尝试 L3 agent/run（当 Sensory WebSocket 未连接时） */
 const BI_INTENT_REGEX = /BI\s*分析|bi\s*分析|帮我开始.*BI|今天的BI分析|开始BI分析|执行BI分析/i;
 
-export async function tryL3AgentForIntent(userInput: string): Promise<string | null> {
+export async function tryL3AgentForIntent(
+  userInput: string,
+  extras?: {
+    attachments_metadata?: Array<{
+      name: string;
+      size_bytes: number;
+      mime: string;
+      has_image: boolean;
+      base64: string;
+    }>;
+    implicit_signals?: Record<string, unknown>;
+  },
+): Promise<string | null> {
   const t = (userInput || "").trim();
   if (!t || !BI_INTENT_REGEX.test(t)) return null;
   const path = "/api/v3/agent/run";
+  const body: Record<string, unknown> = { user_input: userInput };
+  if (extras?.attachments_metadata?.length) body.attachments_metadata = extras.attachments_metadata;
+  if (extras?.implicit_signals && Object.keys(extras.implicit_signals).length > 0) {
+    body.implicit_signals = extras.implicit_signals;
+  }
   const options: RequestInit = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_input: userInput }),
+    body: JSON.stringify(body),
   };
   const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
   if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
@@ -1626,7 +1643,7 @@ let l2TtsHttpSkipped = false;
 
 /**
  * 语音合成
- * 优先使用本地 Kokoro TTS（tts_speak），失败时回退到 Tier 2 Edge TTS
+ * 优先使用本地 voice_server MOSS ONNX（tts_speak），失败时回退到 Tier 2 Edge TTS
  */
 export async function synthesizeSpeech(
   text: string,
@@ -1675,6 +1692,39 @@ export async function synthesizeSpeech(
 }
 
 /**
+ * 仅走 L2 /api/v2/voice/synthesize（不走本地 tts_speak），用于强制普通话神经音色。
+ */
+export async function synthesizeSpeechL2Only(
+  text: string,
+  voice: string = "zh-CN-XiaoxiaoNeural",
+  language: string = "zh-CN",
+  speed: number = 1.0,
+  pitch: number = 1.0
+): Promise<Blob> {
+  const response = await fetch(`${BACKEND_URL}/api/v2/voice/synthesize`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      text,
+      voice,
+      language,
+      speed,
+      pitch,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error);
+  }
+
+  return response.blob();
+}
+
+/**
+ * @deprecated 桌面 Tauri 已统一走 JVS + L3（见 voice/voiceCore.ts）。仅保留给 Web/旧客户端。
  * 语音聊天（完整流程）
  */
 export async function voiceChat(
@@ -1729,8 +1779,8 @@ export interface VoiceProcessResponse {
 }
 
 /**
+ * @deprecated 桌面 Tauri 已统一走 JVS + L3。仅保留给 Web/旧客户端。
  * 语音处理总线 POST /api/v1/voice/process（Step 2 实现后端）
- * 前端严格传 wav_base64 + input_mode + client_timestamp
  */
 export async function voiceProcess(
   wav_base64: string,

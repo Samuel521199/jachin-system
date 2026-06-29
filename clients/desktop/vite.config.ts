@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+﻿import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { Readable } from "stream";
@@ -120,7 +120,14 @@ export default defineConfig(async () => ({
       // Tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
-    // L3 代理由 viteL3Proxy 处理（多端口回退 18991/18990/18992...）
+    // JVS：dev 下同源代理，避免 WebView fetch 跨域 OPTIONS 405
+    proxy: {
+      "/jvs": {
+        target: "http://127.0.0.1:18982",
+        changeOrigin: true,
+        rewrite: (p: string) => p.replace(/^\/jvs/, ""),
+      },
+    },
   },
 
   // 多页入口：main 窗口用 console.html
@@ -134,6 +141,7 @@ export default defineConfig(async () => ({
         sprite: path.resolve(__dirname, "sprite.html"),
         chat: path.resolve(__dirname, "chat.html"),
         notification: path.resolve(__dirname, "notification.html"),
+        hud: path.resolve(__dirname, "hud.html"),
       },
     },
   },

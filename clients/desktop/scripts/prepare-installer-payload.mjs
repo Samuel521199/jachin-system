@@ -42,6 +42,22 @@ function copyIfExists(src, dst) {
  * 2) clients/desktop/.jachin_bundle_env_path（单行绝对路径，gitignore）
  * 禁止默认复制仓库根 .env（易把开发机 PMO 群 ID 打进安装包）；无显式源时回退 .env.example。
  */
+function upsertEnvKeyIfMissing(text, key, value) {
+  const re = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=`, "m");
+  if (re.test(text)) return text;
+  const suffix = text.endsWith("\n") ? "" : "\n";
+  return `${text}${suffix}\n# PMO 变更预警（打包默认关闭；设为 1 手动开启）\n${key}=${value}\n`;
+}
+
+/** 安装包 / 便携包 .env：未显式配置时默认关闭多维表变更预警（不覆盖已有 =1） */
+function ensurePackagedPmoAlertDefaults(envPath) {
+  if (!envPath || !fs.existsSync(envPath)) return;
+  let text = fs.readFileSync(envPath, "utf8");
+  text = upsertEnvKeyIfMissing(text, "PMO_BITABLE_WATCH_ENABLED", "0");
+  text = upsertEnvKeyIfMissing(text, "PMO_CHANGE_ALERT_ENABLED", "0");
+  fs.writeFileSync(envPath, text, "utf8");
+}
+
 function resolveBundleEnvSourcePath() {
   const fromEnv = process.env.JACHIN_DESKTOP_BUNDLE_ENV_FILE?.trim();
   if (fromEnv) return fromEnv;
@@ -253,6 +269,9 @@ function main() {
     );
     console.log("[prepare-installer-payload] wrote stub .env.sea.example (replace with full template if needed)");
   }
+
+  ensurePackagedPmoAlertDefaults(path.join(DIST, ".env"));
+  ensurePackagedPmoAlertDefaults(path.join(DIST, ".env.example"));
 
   console.log("[prepare-installer-payload] OK ->", DIST);
 }

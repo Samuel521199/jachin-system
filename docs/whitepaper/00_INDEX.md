@@ -1,50 +1,62 @@
-# Jachin Nexus 白皮书 — 文档索引
+﻿# Jachin Nexus 白皮书 — 文档索引
 
-**版本**: V2  
-**更新日期**: 2026-04  
+**版本**: V2.3  
+**更新日期**: 2026-06  
 **核心基调**: L1 平台 / L2 零信任控制面 / L3 单体执行面（对标 OpenClaw）
 
-> **当前架构规范**：[ARCHITECTURE.md](../ARCHITECTURE.md) — 云边协同数字发行操作系统  
-> **现行实现索引（代码同步）**：[architecture/CURRENT_SYSTEM_ARCHITECTURE.md](../architecture/CURRENT_SYSTEM_ARCHITECTURE.md)  
-> **历史详细设计**：[ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) | **架构图**：[V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)
+> **现行实现 SSOT（优先阅读）**  
+> - [ARCHITECTURE.md](../ARCHITECTURE.md) — 全局架构宪法  
+> - [architecture/CURRENT_SYSTEM_ARCHITECTURE.md](../architecture/CURRENT_SYSTEM_ARCHITECTURE.md) — 代码同步的一页索引  
+> - [architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md](../architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md) — L3 单主轴 ReAct + 语义层 / Critic / Experience RAG  
+> - [FOUR_PRIMITIVES.md](../FOUR_PRIMITIVES.md) — 四大原语索引  
+
+> **历史背景（非实现 SSOT）**  
+> [ARCHITECTURE_V2_LAYER3_STANDALONE.md](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) · [V2_ARCHITECTURE_DIAGRAM.md](../V2_ARCHITECTURE_DIAGRAM.md)
 
 ---
 
 ## ⚠️ 架构宪法 (The Constitution)
+
 致所有阅读此文档的开发者与 AI 编程助手（如 Cursor）：
-1. 本项目已**全面弃用** Dapr、Ray 集群、本地 PostgreSQL（L2）和复杂 Docker 编排。**Redis** 仅 L2 集群化时可选使用。
-2. **V2**：L2 为**控制面**（子账号、权限、记忆、API Key、MCP **TaskManager**）；**执行在 L3**（stdio MCP + SKILL.md + Wasm）。跨节点：**Pull** + 带 **Task Token** 的 HTTP 降级（`docs/MCP_EXECUTION_MODEL.md` v2.2）；`docs/ARCHITECTURE_L3_MCP_HOST_AND_L2_TASK_MANAGER.md` v0.4；L2 本机 stdio 仅 `JACHIN_L2_STDIO_MCP=1`。
-3. **四大原语**（术语 SSOT：`docs/Jachin 视角的「四大原语」终极架构规范.md`）：**MCP**（`mcp:*` 外挂）；**Skills**（`SKILL.md` 声明式）；**Tools**（`core:*` Native + `jpp:*` Wasm）；**Agent Tasks**（delegate / 后台任务 / coordinate）。
-4. 记忆系统：**量子记忆** = 生物学梦境 + LanceDB + **可插拔向量引擎** (Cloud/Edge)，支持自我修复 (Self-Healing)。
-5. **Jachin Mesh**：基于 WebSocket 的双向长连，实现 Layer 1 到 Layer 2 的**毫秒级指令下发**。**废弃 10 秒 HTTP 轮询**。
-6. **生物钟 cron_thinker**：脱离云端，每 30 分钟主动环顾（系统日志、未读邮件、异常报警）— **规划中**。
-7. 全息感知：**全息感官总线 (Omni-Sensory Bus)** 端口-适配器架构，**持久化 SQLite 队列**；**Animus Protocol** (pvporcupine 唤醒词)；**Layer 3 视觉投射** (Daemon WebSocket 广播)；Layer 1 **Universal Message Adapter**；**jachin-cli**。
-8. **Cognitive Swarm**：LiteLLM 抹平大模型差异，支持 100+ 模型；**Aegis**：OpenTelemetry 遥测 + Prompt 注入拦截墙。
-9. 设备鉴权、配对：V2 L3 桌面端走 L2 网关零信任（RSA 双盲）；L1↔L2 控制面默认 **L2 `/gateway` Nexus 账号 Web 绑定**，无头/恢复时 **CLI 6 位码** 辅助（见仓库 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`）。
-10. **v8.0 升维**：**Session Multiplexing**（按 session_id 隔离 Agent Actor）；**Nexus Hook Pipeline**（洋葱中间件，pre_tool_exec/post_tool_exec）；**Dream Weaver**（梦境重塑、记忆去重、冲突消解）；**Capability Negotiation**（Layer 3 多态，接入时发送 Manifest）；**Edge Mesh Swarm**（同网设备算力协同、任务认领）；**全链路 runId 追踪**（Distributed Tracing，贯穿 SensoryInputEvent → PipelineContext → SensoryOutputEvent，日志染色）；**流式神经**（Streaming Chunk，LLM 逐 token 推送到 caps 含 `stream_chunk` 的客户端）。
-11. **控制面与数据面分离**（规划）：Layer 1 仅负责鉴权、计费、信令；感官数据优先 P2P 直连。局域网 mDNS 零配置发现，广域网 WebRTC 打洞。能直连绝不绕路。详见 [10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)。
+
+1. **已全面弃用**：Dapr、Ray 集群、L2 本地 PostgreSQL、复杂 Docker 编排。`core/dapr/`、`core/ray_cluster/`、`core/memory/schema/` **禁止再引入**。
+2. **V2 执行模型**：**ReAct 与 stdio MCP 在 L3**（`l3_node/agent_core.py`）；L2 为控制面（子账号、权限、记忆、API Key、MCP **TaskManager 委托**）。L2 本机 stdio 仅 `JACHIN_L2_STDIO_MCP=1` 回滚。详见 [MCP_EXECUTION_MODEL.md](../MCP_EXECUTION_MODEL.md) v2.2。
+3. **四大原语**（术语 SSOT：[Jachin 视角的「四大原语」终极架构规范.md](../Jachin%20视角的「四大原语」终极架构规范.md)）：**Tools**（`core:*` + `jpp:*`）· **MCP**（`mcp:*`）· **Skills**（`SKILL.md`）· **Agent Tasks**（delegate / 后台 / coordinate）。
+4. **L3 记忆（现行）**：宿主跨会话记忆为 **Memory Nexus**（SQLite + FastEmbed，`~/.jachin/palace_db/memory_nexus.sqlite3`），**非** Chroma。L2 LanceDB + Dream Weaver 为**可选集中式**能力。SSOT：[architecture/MEMORY_NEXUS_L3.md](../architecture/MEMORY_NEXUS_L3.md)。
+5. **组织即租户**：租户 = `organizations.id`；成员关系 **仅** 查 `organization_users`；**禁止**假设 `users` 表自带 `tenant_id`。V2.2 起注册 **不自动建组织**，须 `/console/workspace` 显式 onboarding。
+6. **L3 轻量分发**：本体 Sidecar + L1→L2→`l3_skill_cache` / `l3_mcp_cache` 订阅制品。见 [L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md](../L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md)。
+7. **Omni-Sensory Bus**：桌面 **WebSocket `ws://127.0.0.1:18981/sensory`**（`l3_node/ws_server.py`），非 L2 daemon 大脑。
+8. **混合增强（非第五原语）**：意图网关（`l3_node/intent_gateway/`）、内联 Critic、Experience RAG 挂载在同一 `run_agent` 主轴。
+9. **规划中 / 部分落地**：Jachin Mesh 长连、控制面/数据面 P2P（[10_CONTROL_DATA_PLANE.md](./10_CONTROL_DATA_PLANE.md)）、cron_thinker 生物钟、Edge Mesh Swarm。
 
 ---
 
 ## 文档列表
 
-| 序号 | 文档 | 内容概要 |
-| — | [**V2 架构规范**](../ARCHITECTURE_V2_LAYER3_STANDALONE.md) | L2 控制面、L3 单体、API Key 零信任流转 |
-| — | [**V2 架构图**](../V2_ARCHITECTURE_DIAGRAM.md) | Mermaid 流程图、时序图、文件结构 |
-|------|------|----------|
-| 01 | [设计目的](./01_DESIGN_PURPOSE.md) | Jachin 解决什么问题、B2B/B2C 定位（对标 OpenClaw） |
-| 02 | [框架架构](./02_FRAMEWORK.md) | 三位一体 + 四大原语执行面 + 量子记忆 + 全息感知 |
-| 03 | [业务流程](./03_WORKFLOW.md) | 扫码/CLI 配对、心跳、cron_thinker、ReAct、Voice Wake |
-| 04 | [文件结构](./04_FILE_STRUCTURE.md) | 纯净目录树、core/、scripts/、~/.jachin/、v8.0 新增模块 |
-| 05 | [Layer 1 云端中枢](./05_LAYER1_NEXUS.md) | 免密登录、舰队、Forge、Universal Message Adapter |
-| 06 | [Layer 2 控制面](./06_LAYER2_EDGE.md) | V2：子账号、权限、API Key 管理、记忆、L3 调度（不代理推理） |
-| — | [可插拔向量引擎](./PLUGGABLE_VECTOR_ENGINE.md) | Cloud/Edge 双核、策略模式、Local AI Mode |
-| — | [可插拔认知引擎](./PLUGGABLE_COGNITIVE_ENGINES.md) | 大小脑动态路由、瀑布流密钥、模型非 Skill |
-| — | [全息感官总线](./OMNI_SENSORY_BUS.md) | 端口-适配器、Voice/Sprite/IM 归一化、输出多路分发 |
-| 07 | [Layer 3 单体执行节点](./07_LAYER3_TERMINAL.md) | V2：对标 OpenClaw，Agent + Skill + 直连 LLM |
-| 08 | [JPP 与技能生态](./08_JPP_SDK_AND_SKILLS.md) | Tools(jpp)、MCP、Skills（SKILL.md）、Agent Tasks |
-| 09 | [**去 BaaS 化战役**](./09_DE_BAASIFICATION.md) | Auth.js、Drizzle ORM、Redis、MinIO、Helm — Layer 1 绝对主权架构 |
-| 10 | [**控制面与数据面分离**](./10_CONTROL_DATA_PLANE.md) | mDNS 局域网直连、WebRTC P2P 打洞、信令分离 — 能直连绝不绕路 |
-| 11 | [**每日 BI 深度分析战报**](../bi_daily_report/04_WHITEPAPER.md) | 通用 MCP 工具 + 独立 Skill + 调度挂载 — 数据增长官自动化心脏 |
-| — | [MCP 接入规范](../MCP_SPEC.md) | MCP Client 实现、工具发现与调用 |
-| — | [SKILL.md 规范](../SKILL_MD_SPEC.md) | 声明式技能格式、Persona、热加载 |
+| 序号 | 文档 | 内容概要 | 与代码对齐度 |
+|------|------|----------|--------------|
+| 01 | [设计目的](./01_DESIGN_PURPOSE.md) | 解决什么问题、B2B/B2C、对标 OpenClaw | ✅ 已同步 V2.3 |
+| 02 | [框架架构](./02_FRAMEWORK.md) | 三位一体 + 四大原语 + 记忆 + 感官 | ✅ 已同步 V2.3 |
+| 03 | [业务流程](./03_WORKFLOW.md) | 配对、IM、梦境、舰队、Voice Wake | ✅ 已同步 V2.3 |
+| 04 | [文件结构](./04_FILE_STRUCTURE.md) | 目录树、`l3_node/primitives/`、`~/.jachin/` | ✅ 已同步 V2.3 |
+| 05 | [Layer 1 云端中枢](./05_LAYER1_NEXUS.md) | 商城、组织、舰队、Forge、IM 网关 | ✅ 已同步 V2.3 |
+| 06 | [Layer 2 控制面](./06_LAYER2_EDGE.md) | 子账号、Key、记忆、MCP 委托 | ✅ 已同步 V2.3 |
+| 07 | [Layer 3 执行节点](./07_LAYER3_TERMINAL.md) | ReAct、intent_gateway、WS、Memory Nexus | ✅ 已同步 V2.3 |
+| 08 | [JPP 与技能生态](./08_JPP_SDK_AND_SKILLS.md) | 四大原语商品形态与发布 | ✅ 已同步 V2.3 |
+| 09 | [去 BaaS 化战役](./09_DE_BAASIFICATION.md) | Auth.js、Drizzle、Redis/MinIO 路线图 | ⚠️ P0 已落地，P1+ 规划 |
+| 10 | [控制面与数据面分离](./10_CONTROL_DATA_PLANE.md) | mDNS、WebRTC、信令分离 | ⚠️ 战略蓝图 |
+| — | [可插拔向量引擎](./PLUGGABLE_VECTOR_ENGINE.md) | L2 Semantic Router Embedding | ✅ L2 侧 |
+| — | [可插拔认知引擎](./PLUGGABLE_COGNITIVE_ENGINES.md) | LiteLLM、区域 Key、三档模型 | ✅ L3 侧 |
+| — | [全息感官总线](./OMNI_SENSORY_BUS.md) | WS 18981、桌面 Omni | ✅ 已同步 V2.3 |
+| — | [每日 BI 战报](../bi_daily_report/04_WHITEPAPER.md) | BI MCP + Skill + 调度 | 域专题 |
+| — | [MCP 规范](../MCP_SPEC.md) | stdio MCP、npm 包名校验 | SSOT |
+| — | [SKILL.md 规范](../SKILL_MD_SPEC.md) | 声明式技能 | SSOT |
+
+---
+
+## 阅读顺序建议
+
+1. **新人**：`ARCHITECTURE.md` → `CURRENT_SYSTEM_ARCHITECTURE.md` → 本目录 01 → 02 → 05/06/07  
+2. **L3 开发**：07 → `JACHIN_HYBRID_AGENT_ARCHITECTURE.md` → `L3_TOOL_POOL_AND_MCP_ASSEMBLY.md`  
+3. **L1 开发**：05 → `ARCHITECTURE_L1_WORKSPACE_L2_GATEWAY_L3.md` → `cloud/nexus/src/db/schema.ts`  
+4. **历史考古**：`ARCHITECTURE_V2_LAYER3_STANDALONE.md`（背景阅读，**勿**当作实现 SSOT）

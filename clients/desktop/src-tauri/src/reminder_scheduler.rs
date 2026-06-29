@@ -4,6 +4,7 @@ use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
@@ -39,11 +40,22 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn reminders_path() -> PathBuf {
+fn jachin_home_dir() -> PathBuf {
     BaseDirs::new()
-        .map(|b| b.home_dir().join(".jachin").join("desktop_reminders.json"))
-        .unwrap_or_else(|| PathBuf::from("desktop_reminders.json"))
+        .map(|b| b.home_dir().join(".jachin"))
+        .unwrap_or_else(|| PathBuf::from(".jachin"))
 }
+
+fn reminders_path() -> PathBuf {
+    jachin_home_dir().join("desktop_reminders.json")
+}
+
+/// 外部脚本写入此文件即可触发右下角哨兵（见 `scripts/send_jachin_test_message.ps1`）。
+fn sentry_ping_path() -> PathBuf {
+    jachin_home_dir().join("desktop_sentry_ping.json")
+}
+
+static LAST_SENTRY_PING_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn load_items(path: &PathBuf) -> Vec<Reminder> {
     let raw = match fs::read_to_string(path) {
@@ -141,6 +153,9 @@ impl ReminderService {
     }
 
     async fn tick_due(&self) -> Result<(), String> {
+        self.poll_external_sentry_ping();
+        self.merge_disk_reminders()?;
+
         let now = unix_now_ms();
         let mut due: Vec<Reminder> = Vec::new();
         {
@@ -161,18 +176,79 @@ impl ReminderService {
         Ok(())
     }
 
-    fn fire_one(&self, r: Reminder) {
+    /// 脚本 / 运维写入 `desktop_sentry_ping.json` 后，约 1 秒内弹出右下角 toast。
+    fn poll_external_sentry_ping(&self) {
+        let path = sentry_ping_path();
+        let raw = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let raw = raw.trim_start_matches('\u{feff}');
+        let v: serde_json::Value = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SentryPing] invalid json: {e} raw={}", raw.chars().take(120).collect::<String>());
+                return;
+            }
+        };
+        let seq = v
+            .get("seq")
+            .and_then(|x| x.as_u64())
+            .or_else(|| {
+                v.get("seq")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+            })
+            .or_else(|| v.get("id").and_then(|x| x.as_u64()))
+            .unwrap_or(0);
+        if seq == 0 || seq == LAST_SENTRY_PING_SEQ.load(Ordering::Relaxed) {
+            return;
+        }
+        LAST_SENTRY_PING_SEQ.store(seq, Ordering::Relaxed);
+        let title = v
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("Jachin · 测试")
+            .chars()
+            .take(TITLE_MAX)
+            .collect::<String>();
+        let body = v
+            .get("body")
+            .and_then(|b| b.as_str())
+            .unwrap_or("右下角陪伴弹窗测试")
+            .chars()
+            .take(BODY_MAX)
+            .collect::<String>();
+        eprintln!("[SentryPing] fire seq={} title={}", seq, title);
+        self.fire_sentry_toast(title, body, "sentry_ping");
+    }
+
+    /// 允许外部直接编辑 `desktop_reminders.json`（与 Tauri `schedule_jachin_reminder` 同源）。
+    fn merge_disk_reminders(&self) -> Result<(), String> {
+        let disk = load_items(&reminders_path());
+        let mut g = self.inner.lock().map_err(|e| e.to_string())?;
+        for dr in disk {
+            if !g.items.iter().any(|r| r.id == dr.id) {
+                g.items.push(dr);
+            }
+        }
+        Ok(())
+    }
+
+    fn fire_sentry_toast(&self, title: String, body: String, log_prefix: &'static str) {
         let app = self.app.clone();
-        let title = r.title;
-        let body = r.body;
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(60)).await;
             let app_h = app.clone();
             if let Err(e) = app.run_on_main_thread(move || {
-                crate::show_sentry_toast_inner(&app_h, title, body, "reminder_toast");
+                crate::show_sentry_toast_inner(&app_h, title, body, log_prefix);
             }) {
                 eprintln!("[Reminder] run_on_main_thread failed: {:?}", e);
             }
         });
+    }
+
+    fn fire_one(&self, r: Reminder) {
+        self.fire_sentry_toast(r.title, r.body, "reminder_toast");
     }
 }

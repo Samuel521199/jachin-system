@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "jachin-desktop",
-  "version": "0.9.93",
+  "version": "0.9.94",
   "private": true,
   "type": "module",
   "description": "Jachin-System Desktop Console - Tauri v2 + React + TypeScript",
@@ -28,6 +28,8 @@
     "tauri:dev:ambient": "npm run ensure-l3-sidecar-stub && npm run prepare-installer-payload && npm run ensure-json-no-bom && tauri dev --features ambient",
     "tauri:build:ambient": "npm run ensure-json-no-bom && tauri build --features ambient",
     "sync-version": "node scripts/sync-version.mjs",
+    "test:intent-routing": "npx tsx scripts/intent-routing-test.ts",
+    "test:tts-benchmark": "npx tsx scripts/tts-sentence-benchmark.ts",
     "publish-desktop-release": "python ../../scripts/publish_desktop_release.py --sign"
   },
   "dependencies": {

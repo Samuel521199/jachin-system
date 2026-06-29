@@ -1,95 +1,124 @@
-# 03 — 业务流程 (The Workflow)
+﻿# 03 — 业务流程 (The Workflow)
 
 **文档类型**: 白皮书 · 业务流程  
-**版本**: v8.0 (The Singularity OS)
+**版本**: V2.3  
+**更新日期**: 2026-06  
+**基准**: [L1_L2_L3_END_TO_END_FLOW.md](../L1_L2_L3_END_TO_END_FLOW.md)
 
 ---
 
-## 一、 新设备觉醒流 (V2 L2↔L3 零信任配对)
+## 一、新设备觉醒流
 
-这是 C 端用户和 B 端员工接入 Jachin Nexus 星图的方式。**L1↔L2 控制面**：在 L2 `/gateway` 使用 **L1 注册邮箱+密码** 或 **Nexus 账号登录**；无头/SSH/恢复时用 **CLI 6 位码**（`python -m core.cli pair`）。详见仓库 `docs/L1_L2_PAIRING_AND_WEB_BRIDGE.md`。
+### 1.1 L1 账号与工作区（V2.2+）
 
-### V2 L3 桌面端（主流程）
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | 用户 | 在 L1 注册（**仅**创建 `users`）或 OAuth 登录 |
+| 2 | 用户 | 进入 `/console/workspace`，**创建或加入**组织 → `organization_users` |
+| 3 | JWT | Auth.js 注入 `orgId` / `orgRole`；业务 API 经 `withOrgRole` 校验 |
 
-| 步骤 | 动作主体 | 行为描述 |
-|------|----------|----------|
-| 1 | **Layer 3 (Tauri)** | 用户双击运行桌面端，显示 GatewayConnectScreen，输入 L2 网关地址，点击「发起神经接驳」。 |
-| 2 | **L3 (l3_node)** | 生成 RSA 密钥对，`POST /api/v2/auth/sync` 向 L2 注册，轮询 `GET /api/v2/auth/poll` 等待审批。 |
-| 3 | **L2 管理员** | 在 L2 后台 `POST /api/v2/admin/nodes/assign` 将节点分配给子账号。 |
-| 4 | **L3 (l3_node)** | 收到加密 Key，私钥解密，引擎点火，启动 ws://127.0.0.1:18981。 |
-| 5 | **Layer 3 (React)** | 检测 L3 就绪，UI 丝滑过渡为主大盘。 |
+### 1.2 L1↔L2 控制面信任
 
-### L1↔L2：控制面信任（与上表 L3 流程独立）
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | 管理员 | L2 `/gateway`：L1 邮箱+密码 或 Nexus OAuth |
+| 2 | 或 | L1 `/console/l2-bridge` → `bridge_code` → 写入 `~/.jachin/nexus_config.json` |
+| 3 | 辅助 | `python -m cli.jachin_cli pair` 六位码（无头/恢复） |
 
-- **主路径**：L2 `/gateway` →（A）L1 邮箱+密码经 L2 调 L1 `verify-credentials` 写盘；或（B）L1 `/console/l2-bridge` → `bridge_code` 兑换 → `nexus_config.json`。
-- **辅助路径**：`pairing/request` → 6 位码 → `pairing/confirm` → CLI 轮询 `pairing/status` → 同上配置文件。
+详见 [L1_L2_PAIRING_AND_WEB_BRIDGE.md](../L1_L2_PAIRING_AND_WEB_BRIDGE.md)。
 
----
+### 1.3 L2↔L3 零信任配对（主流程）
 
-## 二、 跨网通讯与执行流 (IM Gateway + ReAct)
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | Tauri 桌面 | GatewayConnectScreen 输入 L2 地址，「发起神经接驳」 |
+| 2 | `l3_node` | 生成 RSA 密钥对，`POST /api/v2/auth/sync` 注册 |
+| 3 | L2 管理员 | `POST /api/v2/admin/nodes/assign` 分配子账号 |
+| 4 | `l3_node` | 轮询 `GET /api/v2/auth/poll`，收到密文 API Key，解密后 bootstrap |
+| 5 | `l3_node` | 启动 `ws://127.0.0.1:18981/sensory`；桌面 Omni 连接 |
 
-打破内外网物理隔离，实现随时随地掏出手机即接触底层算力。
-
-| 步骤 | 动作主体 | 行为描述 |
-|------|----------|----------|
-| 1 | **用户 (Telegram)** | 在街上向专属机器人发送：“查一下北京天气并写入本地日志”。 |
-| 2 | **Layer 1 (Next.js)**| Webhook 捕获消息，查库匹配 `agent_id`，存入 `agent_messages` 队列。 |
-| 3 | **Layer 2 (Daemon)** | 拉取 `pending_task`（过渡期：10 秒/次 HTTP 心跳；P0：WS 长连推送）。 |
-| 4 | **Layer 2 (Agent)** | **进入 Nexus Hook Pipeline**：<br>1. `[Thought]` 需要调用天气 API。<br>2. `[Action]` 按 **四大原语** 选择 MCP / Skills / Tools(jpp)；Swarm Hook 可拦截 heavy_tools 外包至虫群。<br>3. `[Observation]` 获取结果；若报错则自我修复重试。<br>4. `[Action]` 再次调用 MCP 文件工具或 Wasm 写入。 |
-| 5 | **Layer 2 (Daemon)** | 得到 `[Final Answer]`，向 Layer 1 发起 `/api/v1/agents/callback`。 |
-| 6 | **Layer 1 (Next.js)**| 收到结果，调用 Telegram API 推送至用户手机。手机震动，闭环完成。 |
+详见 [PAIRING_PROTOCOL_SPEC.md](../PAIRING_PROTOCOL_SPEC.md)。
 
 ---
 
-## 三、 每日进化流 (生物学梦境压缩)
+## 二、商城订阅 → L3 执行（一键装配）
 
-确立边缘智能体数字生命体征的核心流程。
-
-| 步骤 | 动作主体 | 行为描述 |
-|------|----------|----------|
-| 1 | **Layer 2 (SQLite)** | 白天：高频、无损地将对话、报错日志写入 `short_term_logs`。 |
-| 2 | **Layer 2 (Dreamer)**| 凌晨 (如 3:00 AM)：触发梦境机制。提取海马体中的昨日数据喂给本地 LLM。 |
-| 3 | **Layer 2 (LLM)** | **反思与提纯**：剥离无效闲聊，提取出“主人偏好”、“异常环境规律”等关键信息。 |
-| 4 | **Layer 2 (SQLite)** | 遗忘（清空）短期日志，将提纯的高价值 Tag 存入 `core_memory`。 |
-| 5 | **Layer 2 (Agent)** | 次日清晨：系统唤醒，最新的核心记忆已无缝挂载于 System Prompt 中。 |
-
----
-
-## 四、 舰队指令下发流 (企业级批量热更新)
-
-面向 B 端客户的极速降维打击。
-
-| 步骤 | 动作主体 | 行为描述 |
-|------|----------|----------|
-| 1 | **Layer 1 (UI)** | 管理员在 The Forge 图形化连线，将新策略编译为 AST JSON。 |
-| 2 | **Layer 1 (UI)** | 在舰队指挥大屏中，勾选全球 500 个门店的边缘节点，点击“批量下发蓝图”。 |
-| 3 | **Layer 1 (DB)** | 数据库中这 500 个节点的 `current_blueprint_id` 瞬间更新。 |
-| 4 | **Layer 2 (Daemon)** | 全球节点的下一次心跳 (10秒内) 侦测到版本变更。 |
-| 5 | **Layer 2** | 边缘守护进程拉取新 AST，下载所需 MCP 配置/SKILL.md/Wasm 插件，进行热重载，算力阵型瞬间切换。 |
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | L1 | 用户订阅 → `user_licenses` |
+| 2 | L2 | `sync_daemon` poll manifest → 下载到 `~/.jachin/inventory/` |
+| 3 | L2 | `policy_enforcer` 按 `role_permissions` RBAC |
+| 4 | L3 | `skill_sync` → `GET /skills` + `/download` → `l3_skill_cache/` |
+| 5 | L3 | `mcp_sync` → `GET /l3_mcps` → `l3_mcp_cache/`；`mcp_stdio_bootstrap` 注册 stdio |
+| 6 | L3 | `run_agent` 加载工具池（Native + MCP + Skill 白名单）执行用户任务 |
 
 ---
 
-## 五、 生物钟主动环顾流 (cron_thinker)
+## 三、跨网 IM 通讯流（Telegram / Lark 等）
 
-脱离云端，每 30 分钟主动环顾。
+**原则**：L1 做 Webhook 入队；**执行在 L3**（非 L2 Agent Loop）。
 
-| 步骤 | 动作主体 | 行为描述 |
-|------|----------|----------|
-| 1 | **Layer 2 (cron_thinker)** | 定时触发，读取 HEARTBEAT.md 或配置的检查清单。 |
-| 2 | **Layer 2 (cron_thinker)** | 扫描系统日志、未读邮件、异常指标。 |
-| 3 | **Layer 2 (Agent)** | 若发现需关注事项，通过 IM 主动推送报警给用户。 |
-| 4 | **Layer 2 (cron_thinker)** | 无异常则静默，等待下一轮。 |
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | 用户 IM | 发送自然语言指令 |
+| 2 | L1 | `/api/v1/webhooks/{platform}` → 清洗 → `agent_message_queue` |
+| 3 | L2/L3 | **过渡期**：L2/L3 拉取 pending；**目标态**：L1 WS 长连推送 |
+| 4 | **L3** | Lark/Telegram channel 注入 → `run_agent` ReAct → 工具调用 |
+| 5 | L1/L3 | 结果经 Callback 或 channel 回传 IM |
+
+L3 原生 IM 实现：`l3_node/channels/lark/` 等；配置见 [L3_LARK_CONFIG_SINGLE_SOURCE.md](../L3_LARK_CONFIG_SINGLE_SOURCE.md)。
 
 ---
 
-## 六、 语音唤醒流 (Voice Wake — Hey Jachin)
+## 四、前台对话 vs 后台重负荷
 
-复刻钢铁侠 Jarvis 体验。
+| 类型 | 路径 | 说明 |
+|------|------|------|
+| 前台 | `run_agent` 同步 | `foreground_tool_policy` 超时；长任务应转后台 |
+| 后台 | `core:submit_background_task` | Worker 队列；断电对账 → `zombie_tasks.json` |
+| 恢复 | `core:check_interrupted_tasks` | 新会话晨会；WS 事件 `zombie_tasks_pending` |
 
-| 步骤 | 动作主体 | 行为描述 |
-|------|----------|----------|
-| 1 | **Layer 3 (Porcupine/Snowboy)** | 监听“Hey Jachin”唤醒词。 |
-| 2 | **Layer 3** | 唤醒后开始录音，VAD 检测结束。 |
-| 3 | **Layer 3** | Whisper STT 转文本，发送至 Layer 2 Agent。 |
-| 4 | **Layer 2 (Agent)** | ReAct 循环执行，得到 Final Answer。 |
-| 5 | **Layer 3** | 调用 TTS (Kokoro/XTTS) 播报结果。 |
+SSOT：[前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](../前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)
+
+---
+
+## 五、梦境与记忆压缩（L2 可选）
+
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | L2 | 短期对话/日志写入 LanceDB 或 SQLite 碎片 |
+| 2 | L2 | `dream_weaver.py` / `dreamer.py` 空闲或阈值触发 |
+| 3 | L2 | 聚类、去重、冲突标记 → 更新 core_memory |
+| 4 | L3 | 宿主侧默认走 **Memory Nexus** 回合末 `commit_drawer`，与 L2 梦境 **并行可选** |
+
+---
+
+## 六、舰队蓝图下发（B 端）
+
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | L1 控制台 | Forge 编排 → `blueprints` AST JSON |
+| 2 | L1 | 按组织/设备组选择 `edge_agents`，更新 `current_blueprint_id` 或 `deploy_commands` |
+| 3 | L2 边缘 | 心跳/轮询侦测版本 → 拉取 manifest → inventory 热重载 |
+| 4 | L3 | 下次 sync 拉取新 Skill/MCP |
+
+**鉴权红线**：所有 `edge_agents` 查询必须带已验证 `organization_id`（防 IDOR）。
+
+---
+
+## 七、语音唤醒流（Voice Wake）
+
+| 步骤 | 主体 | 行为 |
+|------|------|------|
+| 1 | Tauri / `clients/desktop` | Porcupine「Hey Jachin」唤醒 |
+| 2 | STT | Whisper / 云端 STT → 文本 |
+| 3 | **L3** | 文本经 Sensory WS → `run_agent` |
+| 4 | TTS | MOSS ONNX/XTTS/Edge-TTS 播报 |
+
+规范见 `.cursor/rules/055-tts-service.mdc`、`docs/VOICE_AND_TTS_GUIDE.md`。
+
+---
+
+## 八、规划中：cron_thinker 生物钟
+
+每 30 分钟本地环顾（日志、邮件、指标）→ 异常则 IM 推送。**当前代码未完整落地**；与后台任务调度、`autonomy/` 模块演进方向一致。

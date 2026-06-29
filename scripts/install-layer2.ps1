@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # Layer2 (用户) - 一键安装 (Windows)
 # nexus_daemon（V2：LanceDB 本地向量记忆）
 # =============================================================================
@@ -93,9 +93,9 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host '  [WARN] Skip, will auto-download on first edge mode use' -ForegroundColor Yellow
 }
 
-# TTS 模型预下载 (Kokoro ~326MB) - L2 为 L3 桌面端提供模型下载服务
+# TTS 模型预下载 (MOSS ONNX) - L2 为 L3 桌面端提供模型就绪检查服务
 Write-Host ""
-Write-Host '[4/4] TTS model (Kokoro)...' -ForegroundColor Blue
+Write-Host '[4/4] TTS model (MOSS ONNX)...' -ForegroundColor Blue
 $ttsModelFile = Join-Path $ProjectRoot "data\tts\kokoro-v0_19.onnx"
 if (Test-Path $ttsModelFile) {
     Write-Host '  [SKIP] TTS model exists' -ForegroundColor DarkGray

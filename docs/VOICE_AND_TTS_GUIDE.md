@@ -1,4 +1,4 @@
-# 语音与 TTS 指南 (Jarvis 协议)
+﻿# 语音与 TTS 指南 (Jarvis 协议)
 
 **版本**: v8.0 (The Singularity OS)
 
@@ -7,7 +7,7 @@
 ## 系统概述
 
 - **STT**：语音 → 文本（Whisper / 阿里云）
-- **TTS**：文本 → 语音（Kokoro 本地 / Edge TTS / 云端）
+- **TTS**：文本 → 语音（MOSS ONNX 本地 / Edge TTS / 云端）
 - **三种模式**：录音 (Push-to-Talk)、唤醒 (Wake-Up)、连续识别 (Continuous)
 
 ## 全息听觉流 (v8.0)
@@ -18,7 +18,7 @@
 2. **录音**：唤醒后开始录音，VAD 检测结束（静音 800ms 或满 15 秒）
 3. **STT**：Whisper 转文本，发送至 Layer 2 Agent
 4. **执行**：ReAct 循环，得到 Final Answer
-5. **TTS**：Kokoro/XTTS 播报结果
+5. **TTS**：MOSS ONNX/XTTS 播报结果
 
 **实现位置**：`clients/desktop/src-tauri/src/stt/`，参考 `.cursor/rules/ambient-audio.mdc`、`057-voice-endpointing.mdc`
 
@@ -43,6 +43,6 @@
 
 ## TTS Fallback 链
 
-1. Local (Kokoro ONNX)
+1. Local (MOSS ONNX)
 2. Edge (XTTS)
 3. Cloud (Aliyun / CosyVoice)

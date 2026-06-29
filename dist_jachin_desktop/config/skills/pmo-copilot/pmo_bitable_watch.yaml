@@ -1,10 +1,11 @@
 ﻿# PMO 多维表变更监控（防抖轮询 → Lark 回调）
 # 写出路径：~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml
+# 打包默认关闭；手动开启：安装根 .env 设 PMO_BITABLE_WATCH_ENABLED=1、PMO_CHANGE_ALERT_ENABLED=1，并改本文件 enabled/run_change_alert
 #
 # 也可用环境变量覆盖：PMO_CHANGE_ALERT_CHAT_ID / PMO_CHANGE_ALERT_MONITOR_CHAT_ID /
 # PMO_BITABLE_WATCH_* / PMO_MONITOR_CHAT_ID 等（优先读项目根 .env）
 
-enabled: true
+enabled: false
 
 # webhook = 飞书 Lark 推送 drive.file.bitable_record_changed_v1
 # poll = 兜底每 N 秒拉全表 diff
@@ -37,7 +38,7 @@ max_records: 5000
 
 push_change_summary: false
 change_alert_push_monitor: false
-run_change_alert: true
+run_change_alert: false
 persist_local: true
 
 # 事件驱动长连接：python scripts/run_pmo_bitable_watch_long_connection.py --domain lark

@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -132,6 +132,10 @@ htmlcov/
 data/tts/*.onnx
 data/tts/voices.json
 data/tts/*.bin
+
+# JVS voice models (SenseVoice STT + MOSS ONNX TTS; see data/models/voice/README)
+data/models/voice/**/*.onnx
+data/models/voice/**/*.bin
 
 # HR analysis reports and resumes (user-specific runtime data)
 data/hr_analysis/*.md

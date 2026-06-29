@@ -62,7 +62,7 @@ fn ensure_user_config() -> Result<PathBuf, String> {
         }
     }
     let default_yaml = r#"# PMO 多维表变更监控（由桌面端自动创建）
-enabled: true
+enabled: false
 mode: webhook
 table_id: tblfK9gk6vTQpJtB
 view_id: vewpI8lyYw
@@ -75,8 +75,8 @@ idle_seconds: 20
 debounce_check_seconds: 5
 poll_interval_seconds: 15
 max_records: 5000
-push_change_summary: true
-run_change_alert: true
+push_change_summary: false
+run_change_alert: false
 persist_local: true
 "#;
     fs::write(&dst, default_yaml).map_err(|e| format!("写入默认 PMO 配置失败: {e}"))?;

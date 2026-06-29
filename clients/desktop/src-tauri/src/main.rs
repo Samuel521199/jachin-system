@@ -19,6 +19,11 @@ mod tts;
 mod window;
 mod omni_hotkey_mirror_trace;
 mod inbox_store;
+mod jvs;
+mod voice_playback;
+mod voice_session;
+mod voice_wake_bridge;
+mod wake_ack;
 
 #[cfg(windows)]
 #[link(name = "user32")]
@@ -45,6 +50,27 @@ mod stt_voice_stub {
     #[tauri::command]
     pub fn is_voice_capture_running() -> bool {
         false
+    }
+    #[tauri::command]
+    pub fn start_ptt_capture() -> Result<(), String> {
+        Err("请使用 --features ambient 构建以启用语音采集".to_string())
+    }
+    #[tauri::command]
+    pub fn stop_ptt_capture() -> Result<serde_json::Value, String> {
+        Err("请使用 --features ambient 构建以启用语音采集".to_string())
+    }
+    #[tauri::command]
+    pub fn is_ptt_capture_running() -> bool {
+        false
+    }
+    #[tauri::command]
+    pub fn companion_filter_owner_track_wav(_wav_base64: String) -> serde_json::Value {
+        serde_json::json!({
+            "accepted": true,
+            "used_owner_track": false,
+            "wav_base64": serde_json::Value::Null,
+            "reason": "sv_bypass_ambient_disabled"
+        })
     }
 }
 
@@ -104,7 +130,7 @@ fn get_system_info() -> Result<serde_json::Value, String> {
 #[tauri::command]
 fn tts_self_check() -> Result<serde_json::Value, String> {
     let engine = tts::SpeechEngine::new(
-        "http://localhost:18888",
+        "http://127.0.0.1:18982",
         None,
         None::<tts::AliyunTtsConfig>,
     );
@@ -121,7 +147,7 @@ fn tts_self_check() -> Result<serde_json::Value, String> {
 /// TTS 模型是否已存在
 #[tauri::command]
 fn tts_has_model() -> Result<bool, String> {
-    let mgr = tts::SpeechEngine::model_manager(Some("http://localhost:18888"), None);
+    let mgr = tts::SpeechEngine::model_manager(Some("http://127.0.0.1:18982"), None);
     Ok(mgr.has_model())
 }
 
@@ -129,13 +155,13 @@ fn tts_has_model() -> Result<bool, String> {
 /// 返回 WAV 音频的 base64 字符串，供前端解码播放
 #[tauri::command]
 async fn tts_speak(text: String) -> Result<String, String> {
-    let mgr = tts::SpeechEngine::model_manager(Some("http://localhost:18888"), None);
+    let mgr = tts::SpeechEngine::model_manager(Some("http://127.0.0.1:18982"), None);
     if !mgr.has_model() {
-        return Err("请先调用 tts_ensure_model 下载模型".to_string());
+        return Err("未找到 MOSS ONNX 模型目录，请先放置到 data/models/voice/tts".to_string());
     }
     let model_dir = mgr.data_dir().clone();
     let engine = tts::SpeechEngine::new(
-        "http://localhost:18888",
+        "http://127.0.0.1:18982",
         Some(model_dir),
         None::<tts::AliyunTtsConfig>,
     );
@@ -146,10 +172,10 @@ async fn tts_speak(text: String) -> Result<String, String> {
     ))
 }
 
-/// TTS 确保模型已下载（若不存在则从 Tier 2 下载，通过 tts-download-progress 事件推送进度）
+/// TTS 检查 MOSS 就绪状态（通过 tts-download-progress 事件回传检查进度）
 #[tauri::command]
 async fn tts_ensure_model(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let mgr = tts::SpeechEngine::model_manager(Some("http://localhost:18888"), None);
+    let mgr = tts::SpeechEngine::model_manager(Some("http://127.0.0.1:18982"), None);
 
     let app_handle = app.clone();
     let on_progress: Option<tts::ProgressCallback> = Some(Box::new(move |downloaded, total| {
@@ -159,10 +185,11 @@ async fn tts_ensure_model(app: tauri::AppHandle) -> Result<serde_json::Value, St
         }));
     }));
 
-    let (model_path, voices_path) = mgr.ensure_model(on_progress).await?;
+    let (tts_model_dir, codec_model_dir) = mgr.ensure_model(on_progress).await?;
     Ok(serde_json::json!({
-        "model_path": model_path.to_string_lossy(),
-        "voices_path": voices_path.to_string_lossy(),
+        "tts_model_dir": tts_model_dir.to_string_lossy(),
+        "codec_model_dir": codec_model_dir.to_string_lossy(),
+        "status": "MOSS_READY",
     }))
 }
 
@@ -188,6 +215,15 @@ fn get_system_stats() -> Result<serde_json::Value, String> {
 /// 隐私模式状态（全局可读写的开关）
 static PRIVACY_MODE: AtomicBool = AtomicBool::new(false);
 
+/// 隐私/休眠等场景下停止唤醒监听（ambient 特性）
+#[cfg(feature = "ambient")]
+fn ambient_stop_wake_listener(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<stt::WakeListenerState>() {
+        state.stop();
+    }
+    stt::WakeWordDetector::stop();
+}
+
 /// 获取当前隐私模式是否开启
 #[tauri::command]
 fn get_privacy_mode() -> Result<bool, String> {
@@ -200,6 +236,10 @@ async fn quick_action_privacy_mode(app: tauri::AppHandle) -> Result<bool, String
     let prev = PRIVACY_MODE.load(Ordering::Relaxed);
     let next = !prev;
     PRIVACY_MODE.store(next, Ordering::Relaxed);
+    if next {
+        #[cfg(feature = "ambient")]
+        ambient_stop_wake_listener(&app);
+    }
     let (title, body) = if next {
         ("隐私模式", "已开启隐私模式，本地数据将不再上报")
     } else {
@@ -266,7 +306,11 @@ async fn quick_action_eagle_eye(app: tauri::AppHandle) -> Result<bool, String> {
 static HIBERNATE_ON: AtomicBool = AtomicBool::new(false);
 
 /// Omni 条是否处于右下角「陪伴圆」模式（窗口缩小而非 hide，便于存在感）
-static CHAT_COMPANION_MODE: AtomicBool = AtomicBool::new(false);
+pub(crate) static CHAT_COMPANION_MODE: AtomicBool = AtomicBool::new(false);
+/// HUD 是否被用户手动静默（true 时消息到达不自动弹出）
+static HUD_PANEL_SUPPRESSED: AtomicBool = AtomicBool::new(false);
+/// HUD 语音会话激活态：仅语音对话链路允许自动弹出 HUD。
+pub(crate) static HUD_VOICE_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 进入陪伴模式前记录的外尺寸，用于恢复用户拖拽后的大小
 static CHAT_RESTORE_SIZE: std::sync::Mutex<Option<(u32, u32)>> = std::sync::Mutex::new(None);
 
@@ -276,10 +320,11 @@ const CHAT_DEFAULT_HEIGHT: u32 = 640;
 const CHAT_MIN_WIDTH: u32 = 360;
 const CHAT_MIN_HEIGHT: u32 = 280;
 /// 陪伴条略宽于球体，贴边缩进后仍有一條可悬停的透明区（类似网盘角标）
-const CHAT_COMPANION_W: u32 = 72;
-const CHAT_COMPANION_H: u32 = 56;
-const CHAT_COMPANION_MIN_W: u32 = 56;
-const CHAT_COMPANION_MIN_H: u32 = 48;
+/// 陪伴圆窗口：132px Orb + 光晕留白 + 状态行 + 内边距（物理像素，含 HiDPI）
+const CHAT_COMPANION_W: u32 = 248;
+const CHAT_COMPANION_H: u32 = 252;
+const CHAT_COMPANION_MIN_W: u32 = 200;
+const CHAT_COMPANION_MIN_H: u32 = 220;
 /// 贴边时留在屏幕内的可见厚度（物理像素）
 const COMPANION_PEEK_VISIBLE_PX: i32 = 10;
 /// 「dock」= 小球完全露出时的左上角；peek 只改窗口位置不改此值
@@ -379,8 +424,7 @@ fn omni_surface_debug_snapshot(app: &tauri::AppHandle) -> String {
     parts.join(" ")
 }
 
-/// 前端 `listen('omni-companion-mode')`：优先投递到 chat Webview（Tauri 2 事件目标更明确）
-fn emit_omni_companion_ui(app: &tauri::AppHandle, companion: bool) {
+pub(crate) fn emit_omni_companion_ui(app: &tauri::AppHandle, companion: bool) {
     l3_spawn::write_jachin_shared_l3_debug(
         "omni_companion_emit",
         &format!(
@@ -416,6 +460,10 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
     let prev = HIBERNATE_ON.load(Ordering::Relaxed);
     let next = !prev;
     HIBERNATE_ON.store(next, Ordering::Relaxed);
+    if next {
+        #[cfg(feature = "ambient")]
+        ambient_stop_wake_listener(&app);
+    }
     if let Some(sprite) = app.get_webview_window("sprite") {
         if next {
             let _ = sprite.hide();
@@ -563,7 +611,7 @@ fn companion_apply_peek(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn companion_apply_reveal(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn companion_apply_reveal(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(chat) = app.get_webview_window("chat") else {
         return Err("chat window missing".into());
     };
@@ -681,7 +729,7 @@ fn convert_os_minimize_to_companion_if_needed(app: &tauri::AppHandle) {
 }
 
 /// Esc / hide：缩为右下角小圆（需先放宽 min_inner_size，否则达不到 tauri.conf 的 360×280 下限）
-fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(chat) = app.get_webview_window("chat") else {
         return Err("chat window missing".into());
     };
@@ -702,11 +750,21 @@ fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), String> {
         CHAT_COMPANION_H,
     )))
     .map_err(|e| format!("set_size(companion): {e}"))?;
-    position_chat_companion(app)?;
+    let _ = chat.set_always_on_top(true);
+    let has_saved_dock = COMPANION_DOCK_POSITION
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .is_some();
+    if has_saved_dock {
+        let _ = companion_apply_reveal(app);
+    } else {
+        position_chat_companion(app)?;
+        let _ = companion_sync_dock_from_window(app);
+    }
     chat
         .show()
         .map_err(|e| format!("show(companion): {e}"))?;
-    let _ = companion_sync_dock_from_window(app);
     CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
     emit_omni_companion_ui(app, true);
     Ok(())
@@ -724,6 +782,7 @@ fn restore_chat_full_omni(app: &tauri::AppHandle) -> Result<(), String> {
     .map_err(|e| format!("set_min_size(restore): {e}"))?;
     chat.set_size(Size::Physical(PhysicalSize::new(w, h)))
         .map_err(|e| format!("set_size(restore): {e}"))?;
+    let _ = chat.set_always_on_top(false);
     position_chat_omni_bar(app)?;
     CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
     emit_omni_companion_ui(app, false);
@@ -744,6 +803,7 @@ fn hide_chat_fully_reset(app: &tauri::AppHandle) -> Result<(), String> {
     ))))
     .map_err(|e| format!("set_min_size(reset): {e}"))?;
     CHAT_COMPANION_MODE.store(false, Ordering::SeqCst);
+    let _ = chat.set_always_on_top(false);
     emit_omni_companion_ui(app, false);
     if let Ok(mut g) = COMPANION_DOCK_POSITION.lock() {
         *g = None;
@@ -785,6 +845,39 @@ pub(crate) fn toggle_chat_omni(app: &tauri::AppHandle) {
     });
 }
 
+/// 关闭 HUD：同步 suppression + hide（主线程调用）
+fn close_hud_panel_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(hud) = app.get_webview_window("hud_panel") else {
+        return Err("hud_panel window missing".into());
+    };
+    HUD_PANEL_SUPPRESSED.store(true, Ordering::Relaxed);
+    HUD_VOICE_SESSION_ACTIVE.store(false, Ordering::Relaxed);
+    let _ = app.emit_to(
+        EventTarget::webview_window("hud_panel"),
+        "hud-voice-session",
+        json!({ "active": false }),
+    );
+    hud.hide().map_err(|e| e.to_string())
+}
+
+/// 切换 HUD 临时交互面板（显示时聚焦输入；隐藏时不影响主窗口）
+pub(crate) fn toggle_hud_panel(app: &tauri::AppHandle) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(hud) = app_clone.get_webview_window("hud_panel") {
+            let visible = hud.is_visible().unwrap_or(false);
+            if visible {
+                let _ = close_hud_panel_inner(&app_clone);
+            } else {
+                HUD_PANEL_SUPPRESSED.store(false, Ordering::Relaxed);
+                let _ = hud.set_always_on_top(true);
+                let _ = hud.show();
+                let _ = hud.set_focus();
+            }
+        }
+    });
+}
+
 /// 注册 Omni 全局快捷键：按顺序尝试，被占用则换下一个（失败不崩溃）
 fn register_omni_hotkeys(app: &tauri::AppHandle) {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -796,6 +889,42 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
         }),
     );
     let _ = app.global_shortcut().unregister_all();
+
+    // HUD 面板快捷键（独立于 Omni）
+    {
+        const HUD_CANDIDATES: &[&str] = &[
+            "ctrl+alt+h",
+            "ctrl+shift+h",
+            "ctrl+alt+j",
+            "ctrl+shift+j",
+            "f8",
+            "f9",
+            "alt+h",
+        ];
+        let mut hud_registered: Vec<&str> = Vec::new();
+        for combo in HUD_CANDIDATES {
+            let rr = app.global_shortcut().on_shortcut(*combo, |app, _shortcut, event| {
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
+                toggle_hud_panel(app);
+            });
+            match rr {
+                Ok(()) => {
+                    eprintln!("[HUD] 全局快捷键已注册: {}", combo);
+                    hud_registered.push(*combo);
+                }
+                Err(e) => {
+                    eprintln!("[HUD] 跳过 {}: {}", combo, e);
+                }
+            }
+        }
+        if hud_registered.is_empty() {
+            eprintln!("[HUD] 未注册到可用全局快捷键（可继续使用托盘菜单或消息自动弹出）");
+        } else {
+            eprintln!("[HUD] 可用快捷键: {}", hud_registered.join(", "));
+        }
+    }
 
     const CANDIDATES: &[&str] = &[
         "ctrl+alt+x",
@@ -843,12 +972,34 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
             "[Omni] 未能注册全局快捷键，请使用托盘图标左键打开 Omni 条，或释放 Alt+Space 后再试。"
         );
     }
+
+    // 语音打断（Barge-in）全局快捷键
+    const BARGE_CANDIDATES: &[&str] = &["ctrl+space", "ctrl+shift+b"];
+    for combo in BARGE_CANDIDATES {
+        let combo_label = *combo;
+        let rr = app.global_shortcut().on_shortcut(combo_label, move |app, _shortcut, event| {
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            let _ = app.emit(
+                "voice-barge-in",
+                serde_json::json!({ "source": "hotkey", "shortcut": combo_label }),
+            );
+        });
+        if rr.is_ok() {
+            eprintln!("[Voice] Barge-in 快捷键已注册: {}", combo_label);
+            break;
+        }
+    }
 }
 
 /// 释放 L3 Sidecar 并退出进程（托盘「退出」与 `app_exit` 命令共用）。
 fn shutdown_application(app: &tauri::AppHandle) {
     if let Some(l3) = app.try_state::<std::sync::Arc<l3_spawn::L3Handle>>() {
         l3.kill();
+    }
+    if let Some(jvs) = app.try_state::<std::sync::Arc<jvs::process_manager::JvsHandle>>() {
+        jvs.stop();
     }
     app.exit(0);
 }
@@ -894,7 +1045,127 @@ fn main() {
     // 必须尽量靠前注册：阻止多开 exe；再次启动时唤起已有实例的主窗口
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if argv.iter().any(|a| a == "--jachin-sentry-test") {
+                let pos = argv.iter().position(|a| a == "--jachin-sentry-test").unwrap_or(0);
+                let title = argv
+                    .get(pos + 1)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "Jachin · 陪伴测试".into());
+                let body = argv
+                    .get(pos + 2)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "右下角陪伴弹窗测试".into());
+                let ah = app.clone();
+                let app_h = ah.clone();
+                let _ = ah.run_on_main_thread(move || {
+                    show_sentry_toast_inner(&app_h, title, body, "sentry_cli_ping");
+                });
+                return;
+            }
+            if argv.iter().any(|a| a == "--jachin-voice-sim") {
+                let pos = argv.iter().position(|a| a == "--jachin-voice-sim").unwrap_or(0);
+                let role = argv
+                    .get(pos + 1)
+                    .map(|s| s.to_lowercase())
+                    .unwrap_or_else(|| "assistant".into());
+                let content = argv
+                    .get(pos + 2)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "语音模拟消息".into());
+                let state = argv
+                    .get(pos + 3)
+                    .map(|s| s.to_lowercase())
+                    .unwrap_or_else(|| {
+                        if role == "assistant" {
+                            "speaking".into()
+                        } else {
+                            "listening".into()
+                        }
+                    });
+                let ah = app.clone();
+                let app_h = ah.clone();
+                let _ = ah.run_on_main_thread(move || {
+                    HUD_VOICE_SESSION_ACTIVE.store(true, Ordering::Relaxed);
+                    if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
+                        let _ = companion_apply_reveal(&app_h);
+                        if let Some(chat) = app_h.get_webview_window("chat") {
+                            let _ = chat.set_always_on_top(true);
+                            let _ = chat.show();
+                        }
+                        emit_omni_companion_ui(&app_h, true);
+                    } else if let Err(e) = minimize_chat_to_companion(&app_h) {
+                        eprintln!("[voice-sim] companion orb: {}", e);
+                    }
+                    let _ = app_h.emit(
+                        "hud-voice-session",
+                        json!({ "active": true }),
+                    );
+                    let sim_payload = json!({
+                        "role": role,
+                        "content": content,
+                    });
+                    let _ = app_h.emit_to(
+                        EventTarget::webview_window("chat"),
+                        "voice-sim-message",
+                        sim_payload,
+                    );
+                    if role == "user" {
+                        let _ = app_h.emit_to(
+                            EventTarget::webview_window("chat"),
+                            "voice-sim-user-input",
+                            json!({ "content": content }),
+                        );
+                    }
+                    if role == "assistant" {
+                        let _ = app_h.emit_to(
+                            EventTarget::webview_window("hud_panel"),
+                            "hud-panel-message",
+                            json!({ "title": "Jachin", "body": content }),
+                        );
+                    } else {
+                        let _ = app_h.emit_to(
+                            EventTarget::webview_window("hud_panel"),
+                            "hud-panel-user-message",
+                            json!({ "content": content }),
+                        );
+                    }
+                    l3_spawn::write_voice_companion_debug(
+                        "rust",
+                        "voice_sim",
+                        &format!("role={} state={}", role, state),
+                        &format!(
+                            "content={} companion_mode={}",
+                            content.chars().take(200).collect::<String>(),
+                            CHAT_COMPANION_MODE.load(Ordering::Relaxed)
+                        ),
+                    );
+                    HUD_PANEL_SUPPRESSED.store(false, Ordering::Relaxed);
+                    if let Some(hud) = app_h.get_webview_window("hud_panel") {
+                        let _ = hud.set_always_on_top(true);
+                        let _ = hud.show();
+                    }
+                    let orb_state = match state.as_str() {
+                        "idle" | "listening" | "thinking" | "speaking" => state.clone(),
+                        _ => "idle".into(),
+                    };
+                    let orb_payload = json!({ "state": orb_state });
+                    let _ = app_h.emit_to(
+                        EventTarget::webview_window("chat"),
+                        "hud-orb-state",
+                        orb_payload.clone(),
+                    );
+                    let _ = app_h.emit("hud-orb-state", orb_payload);
+                    if role == "assistant" {
+                        let app_after = app_h.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+                            let _ = app_after.emit("hud-orb-state", json!({ "state": "idle" }));
+                        });
+                    }
+                });
+                return;
+            }
             let ah = app.clone();
             let ah_focus = ah.clone();
             let _ = ah.run_on_main_thread(move || {
@@ -930,6 +1201,7 @@ fn main() {
             commands::settings::get_current_config,
             commands::settings::get_user_settings,
             commands::settings::update_user_settings,
+            commands::settings::enroll_owner_voiceprint,
             commands::settings::get_desktop_ui_lang,
             commands::settings::set_desktop_ui_lang,
             commands::native_fs_policy::native_fs_policy_get,
@@ -965,7 +1237,16 @@ fn main() {
             get_hibernate_mode,
             show_chat_window,
             hide_chat_window,
+            set_hud_panel_suppressed,
+            close_hud_panel,
             desktop_diag_log,
+            voice_companion_debug_log,
+            voice_chat_trace_log,
+            voice_companion_emit_to_hud,
+            voice_companion_play_wav,
+            voice_companion_stop_playback,
+            voice_companion_set_phase,
+            voice_companion_play_wake_ack_preview,
             is_chat_companion_mode,
             companion_peek,
             companion_reveal,
@@ -996,18 +1277,38 @@ fn main() {
             commands::im_channels_config::read_im_channels_config,
             commands::im_channels_config::write_im_channels_config,
             commands::im_channels_config::open_im_channels_config_dir,
+            jvs::process_manager::jvs_start,
+            jvs::process_manager::jvs_stop,
+            jvs::process_manager::jvs_status,
+            jvs::process_manager::jvs_health,
             #[cfg(feature = "ambient")]
             stt::commands::start_voice_capture,
             #[cfg(feature = "ambient")]
             stt::commands::stop_voice_capture,
             #[cfg(feature = "ambient")]
             stt::commands::is_voice_capture_running,
+            #[cfg(feature = "ambient")]
+            stt::commands::start_ptt_capture,
+            #[cfg(feature = "ambient")]
+            stt::commands::stop_ptt_capture,
+            #[cfg(feature = "ambient")]
+            stt::commands::is_ptt_capture_running,
+            #[cfg(feature = "ambient")]
+            stt::commands::companion_filter_owner_track_wav,
             #[cfg(not(feature = "ambient"))]
             stt_voice_stub::start_voice_capture,
             #[cfg(not(feature = "ambient"))]
             stt_voice_stub::stop_voice_capture,
             #[cfg(not(feature = "ambient"))]
             stt_voice_stub::is_voice_capture_running,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::start_ptt_capture,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::stop_ptt_capture,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::is_ptt_capture_running,
+            #[cfg(not(feature = "ambient"))]
+            stt_voice_stub::companion_filter_owner_track_wav,
             updater_debug_log::updater_debug_append,
         ])
         .setup(|app| {
@@ -1036,6 +1337,27 @@ fn main() {
                 }
             }
 
+            // JVS 语音独立进程：探活优先，按配置自动拉起（JACHIN_SKIP_VOICE_SPAWN=1 可禁用）
+            let jvs_cfg = jvs::process_manager::load_jvs_config();
+            let jvs_handle = std::sync::Arc::new(jvs::process_manager::JvsHandle::new(jvs_cfg.clone()));
+            app.manage(jvs_handle.clone());
+            if jvs_cfg.auto_spawn_enabled {
+                let app_h = app.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = jvs::process_manager::start_jvs_process(&app_h).await {
+                        l3_spawn::write_jachin_shared_l3_debug(
+                            "jvs",
+                            &format!("auto start failed: {}", e),
+                        );
+                    }
+                });
+            } else {
+                l3_spawn::write_jachin_shared_l3_debug(
+                    "jvs",
+                    "auto spawn skipped (JACHIN_SKIP_VOICE_SPAWN=1)",
+                );
+            }
+
             // 初始化设备注册
             let device_id = format!("desktop-{}", whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
             let registry = Arc::new(Mutex::new(DeviceRegistry::new(device_id.clone())));
@@ -1049,6 +1371,17 @@ fn main() {
 
             #[cfg(feature = "ambient")]
             app.manage(stt::SttState::new());
+            #[cfg(feature = "ambient")]
+            app.manage(stt::WakeListenerState::new());
+
+            #[cfg(feature = "ambient")]
+            {
+                let app_wake = app.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    stt::WakeWordDetector::auto_start_if_enabled(app_wake);
+                });
+            }
             
             // 启动 Pub/Sub HTTP 服务器（用于接收 Dapr 推送的命令）
             let app_handle_clone = app.app_handle().clone();
@@ -1199,7 +1532,7 @@ fn main() {
                 }
             });
             
-            // 系统托盘：左键切换 Omni；右键菜单可打开交互界面 / 控制台 / 退出
+            // 系统托盘：左键切换 Omni；右键菜单可打开交互界面 / 控制台 / HUD / 退出
             if let Some(icon) = app.default_window_icon() {
                 let tray_build = (|| -> Result<(), tauri::Error> {
                     let item_chat = MenuItem::with_id(
@@ -1216,24 +1549,32 @@ fn main() {
                         true,
                         None::<&str>,
                     )?;
+                    let item_hud = MenuItem::with_id(
+                        app,
+                        "tray_hud",
+                        "打开 HUD 临时交互",
+                        true,
+                        None::<&str>,
+                    )?;
                     let item_quit =
                         MenuItem::with_id(app, "tray_quit", "退出 Jachin", true, None::<&str>)?;
                     let tray_menu = MenuBuilder::new(app)
                         .item(&item_chat)
                         .item(&item_console)
+                        .item(&item_hud)
                         .item(&item_quit)
                         .build()?;
 
                     let _tray = TrayIconBuilder::new()
                         .icon(icon.clone())
                         .tooltip(
-                            "Jachin · 左键切换 Omni · 右键可打开交互界面或控制台 · 快捷键 Ctrl+Alt+X 等",
+                            "Jachin · 左键切换 Omni · 右键可打开交互界面/控制台/HUD",
                         )
                         .menu(&tray_menu)
                         .on_menu_event(|app, event| {
                             match event.id.as_ref() {
                                 "tray_chat" => {
-                                    toggle_chat_omni(app.app_handle());
+                                    show_omni_chat_window(app.app_handle());
                                 }
                                 "tray_console" => {
                                     let ah = app.app_handle().clone();
@@ -1246,6 +1587,7 @@ fn main() {
                                         }
                                     });
                                 }
+                                "tray_hud" => toggle_hud_panel(app.app_handle()),
                                 "tray_quit" => shutdown_application(app.app_handle()),
                                 _ => {}
                             }
@@ -1299,12 +1641,24 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // main 窗口点击关闭时：不销毁窗口，改为隐藏，便于从 Chat/托盘再次打开
+            // main 窗口点击关闭时：不销毁窗口，改为隐藏，并把 Omni 收回陪伴圆。
+            // 这样从 L3 控制台关闭后，陪伴态仍作为入口留在桌面。
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     EAGLE_EYE_ON.store(false, Ordering::Relaxed);
                     let _ = window.hide();
+                    let app = window.app_handle().clone();
+                    match minimize_chat_to_companion(&app) {
+                        Ok(()) => l3_spawn::write_jachin_shared_l3_debug(
+                            "main_close_to_companion",
+                            &omni_surface_debug_snapshot(&app),
+                        ),
+                        Err(e) => l3_spawn::write_jachin_shared_l3_debug(
+                            "main_close_to_companion_err",
+                            &format!("err={e} {}", omni_surface_debug_snapshot(&app)),
+                        ),
+                    }
                 }
                 return;
             }
@@ -1319,6 +1673,20 @@ fn main() {
                             convert_os_minimize_to_companion_if_needed(&app2);
                         });
                     });
+                }
+            }
+            // hud_panel：用户通过任何方式隐藏时，自动设 suppressed；
+            // 仅当通过快捷键/托盘主动打开时（toggle_hud_panel）才清除 suppressed。
+            if window.label() == "hud_panel" {
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = close_hud_panel_inner(window.app_handle());
+                    }
+                    tauri::WindowEvent::Focused(false) => {
+                        // 失焦不等于关闭；不在此处设 suppressed
+                    }
+                    _ => {}
                 }
             }
         })
@@ -1344,20 +1712,35 @@ async fn stt_start_wake_listener(
 
 /// 停止唤醒词监听
 #[tauri::command]
-fn stt_stop_wake_listener() -> Result<(), String> {
+fn stt_stop_wake_listener(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(feature = "ambient")]
+    if let Some(state) = app.try_state::<stt::WakeListenerState>() {
+        state.stop();
+    }
     stt::WakeWordDetector::stop();
     Ok(())
 }
 
 /// 是否正在监听唤醒词
 #[tauri::command]
-fn stt_wake_listener_running() -> Result<bool, String> {
+fn stt_wake_listener_running(app: tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(feature = "ambient")]
+    if let Some(state) = app.try_state::<stt::WakeListenerState>() {
+        return Ok(state.is_running());
+    }
     Ok(stt::WakeWordDetector::is_running())
 }
 
-/// 模拟唤醒（测试用）：向前端发送 WAKE_UP 事件
+/// 模拟唤醒（测试用）：进入 VAD 采集段或仅发 WAKE_UP
 #[tauri::command]
 async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(feature = "ambient")]
+    if let Some(state) = app.try_state::<stt::WakeListenerState>() {
+        if state.is_running() {
+            state.trigger_manual_wake()?;
+            return Ok(());
+        }
+    }
     stt::WakeWordDetector::emit_wake_up(&app);
     Ok(())
 }
@@ -1456,7 +1839,6 @@ fn position_notification_bottom_right(app: &tauri::AppHandle) -> Result<(), Stri
     let nw = (380.0_f64 * factor).round().clamp(280.0, 800.0) as u32;
     let nh = (88.0_f64 * factor).round().clamp(64.0, 200.0) as u32;
     let margin = (10.0_f64 * factor).round() as i32;
-    // 横置任务栏典型高度（逻辑像素量级）→ 物理像素，从屏幕底边上移，避免盖住任务栏/系统托盘
     #[cfg(windows)]
     let taskbar_reserve = (48.0_f64 * factor).round().max(32.0) as i32;
     #[cfg(not(windows))]
@@ -1648,7 +2030,8 @@ async fn show_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Esc：先缩为右下角陪伴圆；再按一次则彻底隐藏。必须等主线程执行完再返回，前端才能立刻切 UI。
+/// Esc / 关闭按钮：始终缩为右下角陪伴圆（不再在此命令内二次切到 fully hidden）。
+/// 这样可避免重复触发时把陪伴态误关掉，导致用户感知“关闭交互后陪伴消失”。
 #[tauri::command]
 async fn hide_chat_window(app: tauri::AppHandle) -> Result<HideChatWindowResult, String> {
     l3_spawn::write_jachin_shared_l3_debug(
@@ -1663,9 +2046,10 @@ async fn hide_chat_window(app: tauri::AppHandle) -> Result<HideChatWindowResult,
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
         let out = if CHAT_COMPANION_MODE.load(Ordering::Relaxed) {
-            hide_chat_fully_reset(&app_handle).map(|_| HideChatWindowResult {
-                companion: false,
-                fully_hidden: true,
+            // 已在陪伴态：仅确保仍可见，不执行 fully hide。
+            companion_apply_reveal(&app_handle).map(|_| HideChatWindowResult {
+                companion: true,
+                fully_hidden: false,
             })
         } else {
             minimize_chat_to_companion(&app_handle).map(|_| HideChatWindowResult {
@@ -1706,9 +2090,139 @@ fn desktop_diag_log(category: String, message: String) {
     l3_spawn::write_jachin_shared_l3_debug(&category, &sanitized);
 }
 
+/// 陪伴语音链路调试：`%USERPROFILE%\.jachin\jachin_debug\voice_companion.log`
+#[tauri::command]
+fn voice_companion_debug_log(
+    webview: String,
+    stage: String,
+    message: String,
+    detail: Option<String>,
+) {
+    let msg = message.chars().take(2000).collect::<String>();
+    let det = detail
+        .unwrap_or_default()
+        .chars()
+        .take(4000)
+        .collect::<String>();
+    l3_spawn::write_voice_companion_debug(
+        &webview.chars().take(64).collect::<String>(),
+        &stage.chars().take(128).collect::<String>(),
+        &msg,
+        &det,
+    );
+}
+
+/// 大窗语音按钮链路：`%USERPROFILE%\.jachin\jachin_debug\voice_chat.log`
+#[tauri::command]
+fn voice_chat_trace_log(trace_id: String, stage: String, message: String, detail: Option<String>) {
+    let tid = trace_id.chars().take(64).collect::<String>();
+    let stg = stage.chars().take(128).collect::<String>();
+    let msg = message.chars().take(2000).collect::<String>();
+    let det = detail
+        .unwrap_or_default()
+        .chars()
+        .take(8000)
+        .collect::<String>();
+    l3_spawn::write_voice_chat_trace(&tid, &stg, &msg, &det);
+}
+
+/// 陪伴语音：系统扬声器播放 JVS WAV（避免 WebView `<audio>` 在陪伴态无声）
+#[tauri::command]
+async fn voice_companion_play_wav(wav_base64: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(wav_base64.trim())
+        .map_err(|e| format!("base64 decode: {}", e))?;
+    l3_spawn::write_voice_companion_debug(
+        "rust",
+        "voice_play_wav_start",
+        &format!("bytes={}", bytes.len()),
+        "",
+    );
+    let result = tokio::task::spawn_blocking(move || voice_playback::play_wav_bytes_sync(&bytes))
+        .await
+        .map_err(|e| format!("spawn_blocking: {}", e))?;
+    match &result {
+        Ok(()) => {
+            l3_spawn::write_voice_companion_debug("rust", "voice_play_wav_ok", "", "");
+        }
+        Err(e) => {
+            l3_spawn::write_voice_companion_debug("rust", "voice_play_wav_fail", e, "");
+        }
+    }
+    result
+}
+
+/// 陪伴语音：急停当前 Rust 侧 WAV 播放（Barge-in）
+#[tauri::command]
+fn voice_companion_stop_playback() -> Result<(), String> {
+    voice_playback::stop_playback_sync();
+    l3_spawn::write_voice_companion_debug("rust", "voice_play_stop", "", "");
+    Ok(())
+}
+
+/// 陪伴语音：同步 Orb 相位供 Rust VAD 打断判断
+#[tauri::command]
+fn voice_companion_set_phase(phase: String) {
+    voice_session::set_companion_phase(&phase);
+}
+
+/// 唤醒确认语试听（WakeModePanel）
+#[tauri::command]
+fn voice_companion_play_wake_ack_preview(id: String) -> Result<(), String> {
+    let path = wake_ack::resolve_preview_path(&id.trim())
+        .ok_or_else(|| format!("wake_ack wav not found: {}", id))?;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    voice_playback::play_wav_bytes_sync(&bytes)
+}
+
+/// chat webview → hud_panel：由 Rust 中继 Tauri 事件，避免跨 webview emit 偶发丢包
+#[tauri::command]
+fn voice_companion_emit_to_hud(
+    app: tauri::AppHandle,
+    event: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let ev = event.chars().take(128).collect::<String>();
+    l3_spawn::write_voice_companion_debug(
+        "rust",
+        "companion_emit_to_hud",
+        &ev,
+        &payload.to_string().chars().take(400).collect::<String>(),
+    );
+    HUD_PANEL_SUPPRESSED.store(false, Ordering::Relaxed);
+    if let Some(hud) = app.get_webview_window("hud_panel") {
+        let _ = hud.set_always_on_top(true);
+        let _ = hud.show();
+    }
+    app.emit_to(EventTarget::webview_window("hud_panel"), &ev, payload)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn is_chat_companion_mode() -> bool {
     CHAT_COMPANION_MODE.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn set_hud_panel_suppressed(suppressed: bool) -> Result<(), String> {
+    HUD_PANEL_SUPPRESSED.store(suppressed, Ordering::Relaxed);
+    Ok(())
+}
+
+/// 用户主动关闭 HUD：主线程置 suppression 并 hide，避免前端 capability/ hide 失败时 Rust 仍自动唤醒。
+#[tauri::command]
+async fn close_hud_panel(app: tauri::AppHandle) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        let out = close_hud_panel_inner(&app_handle);
+        let _ = tx.send(out);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|_| "close_hud_panel: 主线程未响应".to_string())?
 }
 
 /// 退出应用（先 kill L3 释放端口）

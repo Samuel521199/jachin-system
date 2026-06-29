@@ -44,6 +44,7 @@ async def apply_gateway_ingress_pipeline(
     on_step: Optional[Callable[[str, str, str], None]] = None,
     run_id: str = "",
     workspace_dir: str = "",
+    skip_context_sniffer: bool = False,
 ) -> None:
     _esc = apply_global_escape_hatch(bundle, user_input or "")
     if _esc.get("escaped"):
@@ -95,6 +96,28 @@ async def apply_gateway_ingress_pipeline(
         except Exception:
             ws = str(Path.home() / ".jachin" / "workspace")
 
+    if skip_context_sniffer:
+        bundle.extra["environment_report"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "voice_fast_lane",
+        }
+        bundle.extra["semantic_layer"] = {}
+        if bool(_ig_sniff.get("context_sniffer_tracker_enabled", True)):
+            try:
+                from l3_node.intent_gateway.intent_tracker import emit_intent_tracker_event
+
+                emit_intent_tracker_event(
+                    "context_sniffer_skipped",
+                    {
+                        "correlation_id": (bundle.correlation_id or "")[:32],
+                        "run_id": (run_id or bundle.correlation_id or "")[:32],
+                        "reason": "voice_fast_lane",
+                    },
+                )
+            except Exception:
+                pass
+        return
     if not bool(_ig_sniff.get("context_sniffer_enabled", True)):
         bundle.extra["environment_report"] = {
             "ok": True,

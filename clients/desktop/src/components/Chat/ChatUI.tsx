@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ChatUI — 独立 Chat 窗口用全息风格 UI（单文件、结构清晰，保证输入/按钮可响应）
  *
  * 结构：根 pointer-events-none → 面板 pointer-events-auto
@@ -256,46 +256,37 @@ export const ChatUI: React.FC<ChatUIProps> = ({
               <span className="text-xs font-medium uppercase tracking-wider">VAD</span>
             </button>
           )}
-          {/* 模式 A：按键录音 (PTT) — onMouseDown 开始录音，onMouseUp 结束并发送 */}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (canVoice && !isRecording) onVoiceStart();
-            }}
-            onMouseUp={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isRecording) onVoiceStop();
-            }}
-            onMouseLeave={() => {
-              if (isRecording) onVoiceStop();
-            }}
-            onPointerDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (canVoice && !isRecording) onVoiceStart();
-            }}
-            onPointerUp={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isRecording) onVoiceStop();
-            }}
-            onPointerLeave={() => {
-              if (isRecording) onVoiceStop();
-            }}
-            disabled={!canVoice}
-            aria-label={isRecording ? "松开发送" : "麦克风"}
-            title={isRecording ? "松开发送" : "麦克风"}
-            className={`p-2.5 rounded-full border transition-all flex-shrink-0 cursor-pointer select-none ${
-              isRecording
-                ? "bg-red-500/25 text-red-300 border-red-500/40"
-                : "bg-white/10 border-cyan-400/20 text-cyan-400 hover:bg-white/15 hover:border-cyan-400/40 disabled:opacity-50"
-            }`}
-          >
-            {isRecording ? <Square className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-          </button>
+          {isRecording ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onVoiceStop();
+              }}
+              aria-label="结束录音"
+              title="结束录音并发送"
+              className="p-2.5 rounded-full border transition-all flex-shrink-0 cursor-pointer select-none flex items-center gap-1.5 bg-red-500/25 text-red-300 border-red-500/40"
+            >
+              <Square className="w-4 h-4" />
+              <span className="text-xs font-medium">结束</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (canVoice) onVoiceStart();
+              }}
+              disabled={!canVoice}
+              aria-label="开始录音"
+              title="开始录音"
+              className="p-2.5 rounded-full border transition-all flex-shrink-0 cursor-pointer select-none bg-white/10 border-cyan-400/20 text-cyan-400 hover:bg-white/15 hover:border-cyan-400/40 disabled:opacity-50"
+            >
+              <Mic className="w-4 h-4" />
+            </button>
+          )}
           <div className="flex-1 min-w-0 flex flex-col justify-center">
             {voiceVisual ? (
               <VoiceWaveform phase={wavePhase} micLevel={micLevel} />

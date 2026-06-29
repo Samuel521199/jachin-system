@@ -1,4 +1,4 @@
-//! STT (Speech-to-Text) 模块
+﻿//! STT (Speech-to-Text) 模块
 //!
 //! 唤醒模式 (Wake-Up)：轻量级 KWS，检测到唤醒词后发出 WAKE_UP 事件。
 //! 后续可接入 openWakeWord (ONNX) 或 oww-rs 实现真实唤醒词检测。
@@ -17,6 +17,20 @@ mod endpointing;
 mod manager;
 #[cfg(feature = "ambient")]
 mod vad_engine;
+#[cfg(feature = "ambient")]
+mod wake_audio;
+#[cfg(feature = "ambient")]
+mod wake_kws;
+#[cfg(feature = "ambient")]
+mod wake_pipeline;
+#[cfg(feature = "ambient")]
+mod wake_listener;
+#[cfg(feature = "ambient")]
+mod wake_barge_in;
+#[cfg(feature = "ambient")]
+mod speaker_verification;
+#[cfg(feature = "ambient")]
+mod stream_stt_client;
 
 pub use keyword_spotting::WakeWordDetector;
 
@@ -31,9 +45,11 @@ pub use audio_processor::AudioProcessor;
 pub use endpointing::{EndpointingMachine, RecordingState};
 #[cfg(feature = "ambient")]
 #[allow(unused_imports)]
-pub use manager::{start_listening, ListeningGuard, SttAudioPayload};
+pub use manager::{start_listening, ListeningGuard, PttCaptureOutcome, SttAudioPayload};
 #[cfg(feature = "ambient")]
 #[allow(unused_imports)]
 pub use vad_engine::SileroVadEngine;
 #[cfg(feature = "ambient")]
 pub use commands::SttState;
+#[cfg(feature = "ambient")]
+pub use wake_listener::WakeListenerState;

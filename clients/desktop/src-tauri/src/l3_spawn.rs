@@ -58,6 +58,87 @@ pub fn jachin_shared_l3_debug_path() -> PathBuf {
 
 // Omni 热键落盘见 `omni_hotkey_mirror_trace`（避免与 `l3_spawn` 重复两套路径逻辑）。
 
+/// 桌面诊断目录：`%USERPROFILE%\.jachin\jachin_debug`（与热更新调试同目录）。
+pub fn jachin_debug_dir() -> PathBuf {
+    std::env::var("JACHIN_HOT_UPDATE_DEBUG_DIR")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let base = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .unwrap_or_else(|_| "C:\\Users\\Public".to_string());
+            PathBuf::from(base).join(".jachin").join("jachin_debug")
+        })
+}
+
+/// 陪伴语音专用日志：`jachin_debug/voice_companion.log`
+pub fn write_voice_companion_debug(webview: &str, stage: &str, message: &str, detail: &str) {
+    let dir = jachin_debug_dir();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!(
+            "[voice_companion_debug] mkdir {}: {}",
+            dir.display(),
+            e
+        );
+        return;
+    }
+    let path = dir.join("voice_companion.log");
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let msg = message.replace('\r', " ").replace('\n', " | ");
+    let det = detail.replace('\r', " ").replace('\n', " | ");
+    let line = format!(
+        "{}ms [pid={}] [webview={}] [stage={}] {} | {}\n",
+        now_ms, pid, webview, stage, msg, det
+    );
+    match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                eprintln!("[voice_companion_debug] write {}: {}", path.display(), e);
+            }
+            let _ = f.flush();
+        }
+        Err(e) => eprintln!("[voice_companion_debug] open {}: {}", path.display(), e),
+    }
+}
+
+/// 大窗语音按钮链路：`jachin_debug/voice_chat.log`（PTT / VAD → STT → L3 → TTS）
+pub fn write_voice_chat_trace(trace_id: &str, stage: &str, message: &str, detail: &str) {
+    let dir = jachin_debug_dir();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("[voice_chat_trace] mkdir {}: {}", dir.display(), e);
+        return;
+    }
+    let path = dir.join("voice_chat.log");
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let tid = trace_id.chars().take(64).collect::<String>();
+    let stg = stage.chars().take(128).collect::<String>();
+    let msg = message.replace('\r', " ").replace('\n', " | ");
+    let det = detail.replace('\r', " ").replace('\n', " | ");
+    let line = format!(
+        "{}ms [pid={}] [trace={}] [stage={}] {} | {}\n",
+        now_ms, pid, tid, stg, msg, det
+    );
+    match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                eprintln!("[voice_chat_trace] write {}: {}", path.display(), e);
+            }
+            let _ = f.flush();
+        }
+        Err(e) => eprintln!("[voice_chat_trace] open {}: {}", path.display(), e),
+    }
+}
+
 /// 追加一行 UTF-8（自动建目录）；单行内换行会压成 ` | `，便于与 L3 日志混排检索。
 pub fn write_jachin_shared_l3_debug(category: &str, message: &str) {
     let path = jachin_shared_l3_debug_path();
@@ -334,6 +415,8 @@ const L3_ENV_KEYS: &[&str] = &[
     "PMO_PUSH_MONITOR",
     "PMO_CHANGE_ALERT_CHAT_ID",
     "PMO_CHANGE_ALERT_MONITOR_CHAT_ID",
+    "PMO_BITABLE_WATCH_ENABLED",
+    "PMO_CHANGE_ALERT_ENABLED",
     // 安全锁：控制台「安全锁审批」与 CLI approve 均依赖 L3 进程内该变量；须从项目 .env 注入子进程（原白名单未包含会导致 503 admin_token_not_configured）
     "JACHIN_SAFETY_LOCK_ADMIN_TOKEN",
     "JACHIN_SAFETY_LOCK_LEARN",
@@ -362,6 +445,16 @@ fn parse_env_file(path: &PathBuf) -> Vec<(String, String)> {
     vars
 }
 
+/// 打包/便携安装：`.env` 未配置时默认关闭 PMO 变更预警（不覆盖用户显式 `=1`）。
+fn ensure_pmo_alert_disabled_by_default(mut vars: Vec<(String, String)>) -> Vec<(String, String)> {
+    for key in ["PMO_BITABLE_WATCH_ENABLED", "PMO_CHANGE_ALERT_ENABLED"] {
+        if !vars.iter().any(|(k, _)| k == key) {
+            vars.push((key.to_string(), "0".to_string()));
+        }
+    }
+    vars
+}
+
 /// 从项目根 `.env` 与 `~/.jachin/.env` 读取白名单变量（`L3_ENV_KEYS`），供 L3 子进程使用。
 /// 统帅目录在后合并且**不覆盖**项目已有同名键（与 Python `load_dotenv(..., override=false)` 一致）。
 /// 此前仅在项目缺少 DASHSCOPE/OPENAI 时才读统帅目录，导致「项目已有 Key、TAVILY 只在 ~/.jachin/.env」时子进程永远拿不到 TAVILY。
@@ -375,7 +468,14 @@ pub fn load_l3_env_vars(root: &PathBuf) -> Vec<(String, String)> {
             }
         }
     }
-    vars
+    if portable_l3_sidecar_exe_path()
+        .map(|p| p.is_file())
+        .unwrap_or(false)
+    {
+        ensure_pmo_alert_disabled_by_default(vars)
+    } else {
+        vars
+    }
 }
 
 /// Tauri `externalBin` 路径（与 `tauri.conf.json` 的 `bin/l3_node` 一致）

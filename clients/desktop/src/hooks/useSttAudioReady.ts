@@ -1,30 +1,43 @@
-import { useEffect } from "react";
+﻿import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 const STT_AUDIO_READY = "STT_AUDIO_READY";
+const STT_PTT_FAILED = "STT_PTT_FAILED";
 
 export interface SttAudioPayload {
   wav_base64: string;
+  recognized_text?: string;
 }
 
-/**
- * 监听 VAD 截断完成事件 STT_AUDIO_READY。
- * 收到后可将 wav_base64 转为 Blob/Audio 播放或送 STT API。
- * 调试时可开启 playOnReady，直接播放刚截断的语音以验证截断是否干净。
- */
-export function useSttAudioReady(options?: {
+export interface SttPttFailedPayload {
+  reason: string;
+  chunks: number;
+  detail: string;
+}
+
+export type SttAudioReadyOptions = {
   /** 收到事件后是否自动播放（用于验证截断效果） */
   playOnReady?: boolean;
-  /** 收到事件时的回调，可用于送 Layer2 STT 等 */
+  /** 收到 WAV 时的回调 */
   onReady?: (payload: SttAudioPayload) => void;
-}) {
-  const { playOnReady = true, onReady } = options ?? {};
+  /** PTT 未能产出音频 */
+  onPttFailed?: (payload: SttPttFailedPayload) => void;
+};
+
+/**
+ * 监听 VAD/PTT 截断完成事件 STT_AUDIO_READY，以及 PTT 失败 STT_PTT_FAILED。
+ * 回调经 ref 持有，避免父组件重渲染时反复 unlisten 导致事件丢失。
+ */
+export function useSttAudioReady(options?: SttAudioReadyOptions) {
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   useEffect(() => {
-    const unlistenPromise = listen<SttAudioPayload>(STT_AUDIO_READY, (event) => {
+    const unlistenReady = listen<SttAudioPayload>(STT_AUDIO_READY, (event) => {
       const payload = event.payload;
       if (!payload?.wav_base64) return;
 
+      const { playOnReady = true, onReady } = optionsRef.current ?? {};
       onReady?.(payload);
 
       if (playOnReady) {
@@ -38,8 +51,15 @@ export function useSttAudioReady(options?: {
       }
     });
 
+    const unlistenFailed = listen<SttPttFailedPayload>(STT_PTT_FAILED, (event) => {
+      const payload = event.payload;
+      if (!payload) return;
+      optionsRef.current?.onPttFailed?.(payload);
+    });
+
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      void unlistenReady.then((unlisten) => unlisten());
+      void unlistenFailed.then((unlisten) => unlisten());
     };
-  }, [playOnReady, onReady]);
+  }, []);
 }

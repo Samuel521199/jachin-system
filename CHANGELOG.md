@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.94] - 2026-06-29
+
+### Added / Changed
+
+- moss改kokoro之前。
+- **Version**: Desktop **0.9.94**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.93] - 2026-06-23
 
 ### Added / Changed

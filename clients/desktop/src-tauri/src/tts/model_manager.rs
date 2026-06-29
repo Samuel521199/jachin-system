@@ -1,4 +1,4 @@
-//! ModelManager - 从 Tier 2 下载 Kokoro 模型
+﻿//! ModelManager - 检查本地 MOSS ONNX 模型目录
 //!
 //! 路径解析采用 "Silent Intelligence"：零配置，自动检测最佳存储位置。
 //! 优先级：Portable（可执行文件旁）> Standard（OS 数据目录）> 环境变量（开发调试）
@@ -11,12 +11,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static DOWNLOADED: AtomicBool = AtomicBool::new(false);
 
-/// 默认 Tier 2 URL（可通过环境变量覆盖）
-pub const DEFAULT_TIER2_URL: &str = "http://localhost:18888";
+/// 默认本地 voice_server URL（可通过环境变量覆盖）
+pub const DEFAULT_VOICE_SERVER_URL: &str = "http://127.0.0.1:18982";
 
-/// 模型文件信息
-pub const KOKORO_MODEL_FILENAME: &str = "kokoro-v0_19.onnx";
-pub const VOICES_FILENAME: &str = "voices.json";
+/// MOSS 模型目录信息
+pub const MOSS_TTS_DIRNAME: &str = "MOSS-TTS-Nano-100M-ONNX";
+pub const MOSS_CODEC_DIRNAME: &str = "MOSS-Audio-Tokenizer-Nano-ONNX";
+pub const MOSS_MANIFEST_FILENAME: &str = "browser_poc_manifest.json";
 
 /// 便携模式目录名（可执行文件旁）
 const PORTABLE_DATA_DIR: &str = "_portable_data";
@@ -87,22 +88,22 @@ pub fn resolve_model_path() -> PathBuf {
     standard
 }
 
-/// ModelManager - 管理 Kokoro 模型下载
+/// ModelManager - 管理 MOSS 模型目录状态
 pub struct ModelManager {
     /// 模型存储目录（由 resolve_model_path 或显式传入）
     data_dir: PathBuf,
-    tier2_base_url: String,
+    voice_server_base_url: String,
 }
 
 impl ModelManager {
     /// 使用 app_data_dir 创建 ModelManager
     /// data_dir: 若为 None，则调用 resolve_model_path() 自动解析；若为 Some，则视为已含 tts 子路径
-    pub fn new(tier2_base_url: impl Into<String>, data_dir: Option<PathBuf>) -> Self {
+    pub fn new(voice_server_base_url: impl Into<String>, data_dir: Option<PathBuf>) -> Self {
         let data_dir = data_dir.unwrap_or_else(resolve_model_path);
 
         Self {
             data_dir,
-            tier2_base_url: tier2_base_url.into(),
+            voice_server_base_url: voice_server_base_url.into(),
         }
     }
 
@@ -111,88 +112,48 @@ impl ModelManager {
         &self.data_dir
     }
 
-    /// 检查 kokoro-v0_19.onnx 是否存在
-    pub fn has_model(&self) -> bool {
-        self.data_dir.join(KOKORO_MODEL_FILENAME).exists()
+    fn tts_dir(&self) -> PathBuf {
+        self.data_dir.join(MOSS_TTS_DIRNAME)
     }
 
-    /// 获取模型路径，若不存在则下载
-    /// on_progress: 可选进度回调 (downloaded_bytes, total_bytes)，total=0 表示未知
+    fn codec_dir(&self) -> PathBuf {
+        self.data_dir.join(MOSS_CODEC_DIRNAME)
+    }
+
+    /// 检查 MOSS 模型目录是否存在
+    pub fn has_model(&self) -> bool {
+        self.tts_dir().join(MOSS_MANIFEST_FILENAME).exists() && self.codec_dir().is_dir()
+    }
+
+    /// 获取模型目录；若不存在则返回明确错误（MOSS 模型由部署阶段准备，不再运行时下载）
+    /// on_progress: 保持兼容，立即上报完成状态
     pub async fn ensure_model(
         &self,
         on_progress: Option<ProgressCallback>,
     ) -> Result<(PathBuf, PathBuf), String> {
-        let model_path = self.data_dir.join(KOKORO_MODEL_FILENAME);
-        let voices_path = self.data_dir.join(VOICES_FILENAME);
+        let tts_path = self.tts_dir();
+        let codec_path = self.codec_dir();
 
-        if model_path.exists() && voices_path.exists() {
-            return Ok((model_path, voices_path));
-        }
-
-        std::fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
-
-        if !model_path.exists() {
-            self.download_file(
-                KOKORO_MODEL_FILENAME,
-                &model_path,
-                on_progress.as_ref(),
-            )
-            .await?;
-        }
-
-        if !voices_path.exists() {
-            self.download_file(VOICES_FILENAME, &voices_path, None)
-                .await?;
-        }
-
-        DOWNLOADED.store(true, Ordering::Relaxed);
-        Ok((model_path, voices_path))
-    }
-
-    async fn download_file(
-        &self,
-        filename: &str,
-        dest_path: &PathBuf,
-        on_progress: Option<&ProgressCallback>,
-    ) -> Result<(), String> {
-        let base = self.tier2_base_url.trim_end_matches('/');
-        let url = format!("{}/api/v2/tts/models/{}", base, filename);
-
-        let client = reqwest::Client::new();
-        let res = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !res.status().is_success() {
-            return Err(format!("Download failed {}: {}", url, res.status()));
-        }
-
-        let total = res.content_length().unwrap_or(0);
-        let mut stream = res.bytes_stream();
-        let mut downloaded: u64 = 0;
-        let mut buf = Vec::with_capacity(total as usize);
-
-        use futures_util::StreamExt;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| e.to_string())?;
-            let len = chunk.len() as u64;
-            downloaded += len;
-            buf.extend_from_slice(&chunk);
-            if let Some(ref cb) = on_progress {
-                cb(downloaded, if total > 0 { total } else { downloaded });
+        if self.has_model() {
+            if let Some(cb) = on_progress {
+                cb(1, 1);
             }
+            DOWNLOADED.store(true, Ordering::Relaxed);
+            return Ok((tts_path, codec_path));
         }
 
-        std::fs::write(dest_path, &buf).map_err(|e| e.to_string())?;
-        Ok(())
+        let base = self.voice_server_base_url.trim_end_matches('/');
+        Err(format!(
+            "MOSS ONNX models not found. expected: {:?} and {:?}. \
+             Please place model folders under data/models/voice/tts, then retry. \
+             Local voice_server endpoint: {}",
+            tts_path, codec_path, base
+        ))
     }
 
     /// 模型是否已下载
     pub fn is_downloaded(&self) -> bool {
         DOWNLOADED.load(Ordering::Relaxed)
-            || (self.data_dir.join(KOKORO_MODEL_FILENAME).exists()
-                && self.data_dir.join(VOICES_FILENAME).exists())
+            || self.has_model()
     }
 }

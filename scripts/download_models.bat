@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 REM 一键下载 Jachin 所需模型（VAD / TTS / Whisper）
 REM 用法: download_models.bat [vad|tts|whisper|all]
 REM 无参数时默认下载全部
@@ -27,7 +27,7 @@ echo [Models] VAD 完成.
 goto end
 
 :do_tts
-echo [Models] 正在下载 TTS 模型 (Kokoro)...
+echo [Models] 正在下载 TTS 模型 (MOSS ONNX)...
 call conda run -n jachin-dev python scripts\download_tts_models.py
 if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%
 echo [Models] TTS 完成.

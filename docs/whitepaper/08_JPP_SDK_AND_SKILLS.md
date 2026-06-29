@@ -1,92 +1,121 @@
-# 08 — JPP 与技能生态（四大原语）
+﻿# 08 — JPP 与技能生态（四大原语）
 
 **文档类型**: 白皮书 · 技能生态规范  
-**版本**: v8.0 (The Singularity OS)  
-**术语 SSOT**：[Jachin 视角的「四大原语」终极架构规范.md](../Jachin%20视角的「四大原语」终极架构规范.md)（**已废弃**「轨道 A/B/C」命名）
+**版本**: V2.3  
+**更新日期**: 2026-06  
+**术语 SSOT**：[Jachin 视角的「四大原语」终极架构规范.md](../Jachin%20视角的「四大原语」终极架构规范.md)
 
 ---
 
-## 一、 定位与愿景 (The Ecosystem Vision)
+## 一、定位
 
-**“Write Once, Run Everywhere, Earn Crypto.”**
+**商品形态**（L1 商城）与 **执行原语**（L3 运行时）的映射：
 
-Jachin Nexus v8.0 以 **四大原语** 组织执行面：**MCP**、**Skills**、**Tools**（含 `core:*` 与 `jpp:*` Wasm）、**Agent Tasks**（多轮/后台/编排）。本文侧重 **Tools · jpp** 与生态；MCP / Skills 见专文。
+| 商城商品 | 执行原语 | 运行时 |
+|----------|----------|--------|
+| MCP 包 | **MCP** | L3 stdio Host |
+| Skill 包（含 SKILL.md） | **Skills** + 可能含 Wasm | Prompt/SOP + 可选 **Tools(jpp)** |
+| Wasm 插件 | **Tools · jpp** | L3 `wasm_runner` 沙箱 |
+| — | **Agent Tasks** | 非商城商品；运行时能力 |
 
-| 原语 | 形态 | 信任级别 | 用途 |
-|------|------|----------|------|
-| **MCP** | Model Context Protocol 外挂 | 高信任（本机托管） | 开箱工具、系统控制 |
-| **Skills** | SKILL.md 声明式 | 用户可控 | `skills_repo/` 热加载 |
-| **Tools · jpp** | JPP Wasm 沙箱 | 零信任 | 商城第三方付费插件 |
-| **Agent Tasks** | delegate / 后台 / coordinate | 独立预算与生命周期 | 多轮子运行时 |
-
----
-
-## 二、 MCP（原语）
-
-* **划时代意义**: 瞬间继承全球最大的 AI 工具生态。
-* **实现**: L2 `core/mcp_client.py` / L3 `mcp_registry` 连接 MCP 服务器，发现 `mcp:*` 工具。
-* **参考**: `docs/MCP_SPEC.md`
+**Write Once, Run Everywhere**：发布到 L1 → L2 sync → L3 cache 执行。
 
 ---
 
-## 三、 Skills（原语）：SKILL.md 声明式技能
+## 二、MCP（原语）
 
-* **划时代意义**: 极低门槛。用户只需在 `skills_repo/` 丢一个 Markdown 文件。
-* **格式**: YAML Frontmatter (name, description, persona, mcp_tools) + 自然语言指令正文。
-* **热加载**: 保存文件瞬间，智能体立刻掌握新技能。
-* **参考**: `docs/SKILL_MD_SPEC.md`
+- **id 前缀**：`mcp:*`
+- **Host**：L3 `core/mcp_client.py`（MCPManager）
+- **配置**：`~/.jachin/mcp_servers.json`、`inventory/mcps/`、`l3_mcp_cache/`
+- **跨节点**：L2 TaskManager 委托（见 MCP_EXECUTION_MODEL）
+- **npm 包名**：须与 registry 一致（规则 088）
+- SSOT：[MCP_SPEC.md](../MCP_SPEC.md)、[MCP_EXECUTION_MODEL.md](../MCP_EXECUTION_MODEL.md)
 
 ---
 
-## 四、 Tools · jpp：JPP 插件协议 (Jachin Plugin Protocol)
+## 三、Skills（原语）
 
-**专供从“神经元商城”下载的、不信任的第三方付费插件使用**，确保商业生态的安全变现。
+- **形态**：`SKILL.md`（YAML frontmatter + SOP 正文）
+- **位置**：`skills_repo/**/SKILL.md`、商城 Skill zip、`docs/capability_domains/`
+- **作用**：声明 Persona、工具/MCP 白名单、领域 SOP — **非**可执行二进制本体
+- **加载**：Prompt 注入、域路由、`capability_catalog.py`
+- SSOT：[SKILL_MD_SPEC.md](../SKILL_MD_SPEC.md)
 
-### 4.1 物理沙箱与 WASI 交互
+---
 
-* **通信媒介**: Layer 2 与 `.wasm` 之间，严格通过 JSON 格式的 `stdin` 和 `stdout` 通信。
-* **执行边界**: `core/wasm_runner.py` 注入燃料，写入 Action Input，截获 stdout 作为 Observation。
-* **燃料熔断**: 死循环或恶意占用时，燃料耗尽，Wasm 实例当场物理超度。
+## 四、Tools · jpp（Wasm）
 
-### 4.2 神经元清单 (`plugin.json`)
+**不受信任的第三方付费插件**，L3 沙箱执行。
+
+### 4.1 执行边界
+
+- **通信**：JSON stdin/stdout（WASI）
+- **宿主**：`core/wasm_runner.py`（L3 路径；L2 仅 legacy）
+- **燃料熔断**：死循环/OOM 时实例终止
+
+### 4.2 plugin.json 示例
 
 ```json
 {
   "name": "crypto-oracle",
   "version": "1.0.0",
-  "description": "获取实时加密货币价格",
-  "author": "0xYourWalletAddress",
-  "royalty_fee": "0.01 USDC",
+  "item_type": "SKILL",
   "entry_point": "plugin.wasm",
-  "schema": {
-    "input": { "ticker": "string" },
-    "output": { "price": "float", "trend": "string" }
-  }
+  "royalty_fee": "0.01 USDC"
 }
 ```
 
-`royalty_fee` 是 JPP 的灵魂。Layer 1 统计调用次数，向开发者地址分润。
+L1 统计调用 → `developer/earnings`、分润账本。
 
-### 4.3 官方脚手架
+### 4.3 发布流程
 
-* **jachin-plugin-sdk-python**: `@jachin_plugin` 装饰器，`make build` 一键编译为 Wasm。
-* **上传**: 将 `plugin.wasm` + `plugin.json` 上传至云端商城。
+```bash
+# tools/jachin-cli/
+jachin-cli pack
+jachin-cli publish   # → POST /api/v1/store/publish
+```
 
-### 4.4 去中心化编译器技能 (The Forge Compiler)
+- PUBLIC：`status=pending` → Admin 审核  
+- PRIVATE：`shadow_only` 仅 metadata，实体侧载 L2 inventory
 
-**`core:forge_compiler`** 是一个特殊的官方重型技能，允许边缘节点**消耗本地 CPU** 将 Python 脚本一键编译为 Wasm，减轻 Layer 1 云端压力。
+### 4.4 SDK
 
-* **定位**: 边缘侧编译，无需云端算力。
-* **输入**: Python 源码路径（位于 `~/.jachin/workspace/` 内）。
-* **输出**: 编译后的 `.wasm` 与 `plugin.json`，可直接写入 `skills_repo/`。
-
-企业部署时，可在边缘节点本地完成技能编译与热加载，无需依赖云端 Forge 服务。
+- `jachin-plugin-sdk-python/` — `@jachin_plugin` → Wasm
+- `jachin-plugin-sdk/` — Rust 侧
 
 ---
 
-## 五、 v8.0 废弃声明
+## 五、Agent Tasks（原语）
 
-1. **❌ 废弃“万物皆 Wasm”**: **MCP + Skills + Tools(jpp)** 并存。
-2. **❌ 废弃原生脚本裸跑**: 不受信任的第三方代码仍必须通过 Wasm 沙箱；MCP 与 SKILL.md 为用户可控的高信任扩展。
-3. **❌ 废弃 Docker 技能容器**: Wasm 极速冷启动、极低内存占用，完美契合边缘端。
-4. **❌ 废弃「轨道 A/B/C」文案**: 统一使用 **四大原语**（见仓库 SSOT 文档）。
+| 入口 | 说明 |
+|------|------|
+| `delegate` / SubAgent | 同步多轮子 Agent |
+| `core:submit_background_task` | 异步队列 |
+| `coordinate` | L2 多 L3 协同 |
+
+非商城 SKU；见 [前台闲聊与后台重负荷任务的物理隔离与背压熔断.md](../前台闲聊与后台重负荷任务的物理隔离与背压熔断.md)。
+
+---
+
+## 六、能力登记与 Sidecar
+
+- 新域须登记：[L3_CAPABILITY_CATALOG.md](../L3_CAPABILITY_CATALOG.md) + `l3_node/capability_catalog.py`
+- Sidecar 打包：`scripts/build_l3_sidecar.py`（规则 079）
+- 订阅制品路径：[L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md](../L3_SLIM_DISTRIBUTION_AND_SUBSCRIBED_ARTIFACTS.md)
+
+---
+
+## 七、废弃声明
+
+1. ~~万物皆 Wasm~~ → 四大原语并存  
+2. ~~轨道 A/B/C~~ → 统一术语  
+3. ~~L2 作为 Wasm 主宿主~~ → **L3 执行**  
+4. ~~Docker 技能容器~~ → Wasm + stdio MCP
+
+---
+
+## 八、参考
+
+- [SKILL_MCP_UPLOAD_SPEC.md](../SKILL_MCP_UPLOAD_SPEC.md)
+- [PLUGIN_SECURITY_SANDBOX.md](../PLUGIN_SECURITY_SANDBOX.md)
+- [08 对应商城 Admin API](../ADMIN_PLUGIN_MANAGEMENT_API.md)

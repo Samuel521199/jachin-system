@@ -12,6 +12,14 @@ body:has(#chat-root),
   background: transparent !important;
 }
 
+/* HUD 窗口：使用稳定选择器强制透明，不依赖 :has 兼容性 */
+body#hud-body,
+#hud-root {
+  background-color: transparent !important;
+  background-image: none !important;
+  background: transparent !important;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -165,6 +173,13 @@ body:has(#chat-root),
       linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
     background-size: 100% 100%, 24px 24px, 24px 24px;
     background-position: 0 0, 0 0, 0 0;
+  }
+
+  /* HUD 页面不允许 body 铺任何实体背景 */
+  body#hud-body {
+    background-color: transparent !important;
+    background-image: none !important;
+    background: transparent !important;
   }
 
   /* 代码/日志类文本强制等宽 */

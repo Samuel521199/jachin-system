@@ -1,6 +1,6 @@
-{
+﻿{
   "productName": "Jachin Desktop Sprite",
-  "version": "0.9.93",
+  "version": "0.9.94",
   "identifier": "com.jachin.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -40,7 +40,7 @@
         "transparent": true,
         "decorations": false,
         "shadow": false,
-        "alwaysOnTop": false,
+        "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
         "url": "sprite.html"
@@ -81,6 +81,27 @@
         "skipTaskbar": true,
         "visible": false,
         "url": "notification.html"
+      },
+      {
+        "label": "hud_panel",
+        "title": "Jachin HUD",
+        "width": 360,
+        "height": 460,
+        "minWidth": 300,
+        "minHeight": 240,
+        "maxWidth": 700,
+        "maxHeight": 760,
+        "x": 72,
+        "y": 88,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "hud.html"
       }
     ],
     "security": {

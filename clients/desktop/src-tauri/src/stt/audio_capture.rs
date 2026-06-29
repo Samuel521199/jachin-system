@@ -1,4 +1,4 @@
-//! 麦克风采集与无锁数据流
+﻿//! 麦克风采集与无锁数据流
 //!
 //! 遵循 057-voice-endpointing：在 cpal 回调内仅做拷贝并发送到 channel，不做任何阻塞操作。
 
@@ -11,8 +11,8 @@ use cpal::{SampleFormat, Stream};
 use std::sync::Arc;
 
 /// 启动配置：使用系统默认麦克风，将 PCM 送入无界 channel。
-/// 返回 (流句柄, 接收端, 原始采样率)。流句柄必须保持存活，否则采集停止。
-pub fn start_capture() -> Result<(Stream, Receiver<Vec<f32>>, u32), String> {
+/// 返回 (流句柄, 接收端, 原始采样率, 原始声道数)。流句柄必须保持存活，否则采集停止。
+pub fn start_capture() -> Result<(Stream, Receiver<Vec<f32>>, u32, usize), String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -22,8 +22,9 @@ pub fn start_capture() -> Result<(Stream, Receiver<Vec<f32>>, u32), String> {
         .default_input_config()
         .map_err(|e| format!("获取默认输入配置失败: {}", e))?;
 
-    let sample_rate = config.sample_rate().0;
     let stream_config: cpal::StreamConfig = config.clone().into();
+    let sample_rate = config.sample_rate().0;
+    let source_channels = stream_config.channels as usize;
     let (tx, rx) = unbounded::<Vec<f32>>();
 
     let stream = match config.sample_format() {
@@ -35,7 +36,7 @@ pub fn start_capture() -> Result<(Stream, Receiver<Vec<f32>>, u32), String> {
 
     stream.play().map_err(|e| format!("启动音频流失败: {}", e))?;
 
-    Ok((stream, rx, sample_rate))
+    Ok((stream, rx, sample_rate, source_channels))
 }
 
 fn build_stream_f32(

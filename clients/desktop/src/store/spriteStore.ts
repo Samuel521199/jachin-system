@@ -1,4 +1,4 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type SpriteState = "idle" | "listening" | "thinking" | "speaking" | "happy" | "sad";
@@ -54,7 +54,7 @@ interface SpriteStore {
   idleToSleepSeconds: number;
   /** 是否启用 TTS 朗读 AI 回复（有扬声器时可用） */
   ttsEnabled: boolean;
-  /** TTS 语音 ID（如 zh-CN-XiaoxiaoNeural） */
+      /** TTS 语音 ID（如 Junhao / zh-CN-XiaoxiaoNeural） */
   ttsVoice: string;
   setState: (state: SpriteState) => void;
   setPosition: (position: { x: number; y: number }) => void;
@@ -84,7 +84,7 @@ export const useSpriteStore = create<SpriteStore>()(
       pixiScale: 1,
       idleToSleepSeconds: 900,
       ttsEnabled: true,
-      ttsVoice: "zh-CN-XiaoxiaoNeural",
+      ttsVoice: "Junhao",
       setState: (state) => set({ state }),
       setPosition: (position) => set({ position }),
       setAvatarId: (avatarId) => set({ avatarId }),

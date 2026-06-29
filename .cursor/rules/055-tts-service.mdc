@@ -1,4 +1,4 @@
----
+﻿---
 description: Tier 3 TTS 服务与 Voice Wake (Hey Jachin) 规范
 alwaysApply: false
 ---
@@ -8,7 +8,7 @@ alwaysApply: false
 - **唤醒词:** Porcupine 或 Snowboy，监听“Hey Jachin”
 - **录音:** VAD 检测结束（静音 800ms 或满 15 秒）
 - **STT:** Whisper 转文本 → Layer 2 Agent
-- **TTS:** Kokoro/XTTS 播报结果
+- **TTS:** MOSS ONNX/XTTS 播报结果
 - **参考:** `docs/VOICE_AND_TTS_GUIDE.md`、`ambient-audio.mdc`
 
 ## Tier 3 Adaptive TTS Strategy
@@ -25,7 +25,7 @@ Client start-up must perform a `TTS_SelfCheck`:
 
 `speak(text)` must follow this order:
 
-1. **Local (Kokoro ONNX):** Default for Desktop/High-end Mobile. Use `zm` style for Chinese-English mix.
+1. **Local (MOSS ONNX):** Default for Desktop/High-end Mobile.
 2. **Edge (Layer 2 XTTS):** Fallback if Local is disabled or text length > 500 chars.
 3. **Cloud (Aliyun Qwen/CosyVoice):** Last resort if Layer 2 is unreachable.
 
@@ -36,7 +36,7 @@ Client start-up must perform a `TTS_SelfCheck`:
 
 ### 4. 中英混合优化
 
-- 调用 Kokoro 时**强制** Language Code 为 `z` (Chinese)，自动处理夹杂的英文单词。
+- 调用 MOSS ONNX 时按默认中文配置处理中英混合输入。
 - **不切换模型**，只切换 Style 向量（如 `zm`）。
 
 ### 5. 树莓派兼容性

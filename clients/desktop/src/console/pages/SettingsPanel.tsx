@@ -221,6 +221,12 @@ export function SettingsPanel() {
       await invoke("update_user_settings", {
         patch: { ...settings, sprite_voice_mode: value as UserSettings["sprite_voice_mode"] },
       });
+      if (value === "wake_up") {
+        const word = settings.wake_word?.trim() || undefined;
+        await invoke("stt_start_wake_listener", { wake_word: word }).catch(() => {});
+      } else {
+        await invoke("stt_stop_wake_listener").catch(() => {});
+      }
     } finally {
       setSaving(false);
     }

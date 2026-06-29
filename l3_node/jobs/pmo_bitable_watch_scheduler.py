@@ -50,7 +50,7 @@ def _is_disabled() -> bool:
     try:
         from l3_node.tools.pmo_bitable_watch import _load_watch_config
 
-        return not bool(_load_watch_config().get("enabled", True))
+        return not bool(_load_watch_config().get("enabled", False))
     except Exception:
         return False
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuration management - 配置管理
 
 使用 pydantic-settings BaseSettings 管理环境变量，支持 .env 文件。
@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     ALIYUN_APP_KEY: Optional[str] = None
     XDG_CACHE_HOME: Optional[str] = None
 
-    # TTS Kokoro 模型目录（供 Tier 3 下载 kokoro-v0_19.onnx, voices.json）
+    # TTS 模型目录（供 Tier 3 获取模型资源）
     TTS_MODELS_DIR: Optional[str] = None  # 默认 ./data/tts
 
     # Project

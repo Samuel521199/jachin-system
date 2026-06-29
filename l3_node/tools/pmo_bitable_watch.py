@@ -220,7 +220,7 @@ def _load_watch_config() -> dict[str, Any]:
         app_token = url_bits.get("app_token") or ""
 
     return {
-        "enabled": _env_bool("PMO_BITABLE_WATCH_ENABLED", bool(yaml_cfg.get("enabled", True))),
+        "enabled": _env_bool("PMO_BITABLE_WATCH_ENABLED", bool(yaml_cfg.get("enabled", False))),
         "table_id": table_id,
         "view_id": view_id,
         "chat_id": str(
@@ -269,7 +269,10 @@ def _load_watch_config() -> dict[str, Any]:
             100,
             int(yaml_cfg.get("max_records") or _DEFAULT_MAX_RECORDS),
         ),
-        "run_change_alert": bool(yaml_cfg.get("run_change_alert", True)),
+        "run_change_alert": _env_bool(
+            "PMO_CHANGE_ALERT_ENABLED",
+            bool(yaml_cfg.get("run_change_alert", False)),
+        ),
         "push_change_summary": bool(yaml_cfg.get("push_change_summary", False)),
         "change_alert_push_monitor": bool(yaml_cfg.get("change_alert_push_monitor", False)),
         "persist_local": bool(yaml_cfg.get("persist_local", True)),
@@ -858,7 +861,7 @@ def _finalize_session(
         session_ended_at=ended,
     )
 
-    if cfg.get("run_change_alert", True):
+    if cfg.get("run_change_alert", False):
         try:
             from l3_node.tools.pmo_change_alert import run_change_alert_pipeline
 

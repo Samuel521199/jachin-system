@@ -133,7 +133,7 @@ class SynthesizeRequest(BaseModel):
 
 
 class PhonemizeRequest(BaseModel):
-    """文本转音素请求（Split-Inference 供 Tier 3 Kokoro 使用）"""
+    """文本转音素请求（Split-Inference 供 Tier 3 本地 TTS 使用）"""
     text: str
     style: str = Field(default="zm", description="语音风格，如 zm 用于中英混合")
 
@@ -556,9 +556,9 @@ async def phonemize_text(request: PhonemizeRequest):
     """
     文本转音素（Split-Inference）
     
-    供 Tier 3 本地 Kokoro ONNX 使用：Tier 2 处理音素，Tier 3 仅负责 ONNX 推理。
+    供 Tier 3 本地 TTS ONNX 使用：Tier 2 处理音素，Tier 3 仅负责 ONNX 推理。
     需安装 misaki: pip install "misaki[zh]" 或 pip install "misaki[en]"
-    返回 phonemes（IPA 字符列表）和 tokens（Kokoro token IDs，若可用）
+    返回 phonemes（IPA 字符列表）和 tokens（TTS token IDs，若可用）
     """
     def _run_g2p(g2p):
         phonemes, tokens = g2p(request.text)

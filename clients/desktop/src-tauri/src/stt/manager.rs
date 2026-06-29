@@ -1,4 +1,4 @@
-//! 全天候语音 Pipeline 总控：采集 → 重采样 → VAD 截断 → 发射 STT_AUDIO_READY。
+﻿//! 全天候语音 Pipeline 总控：采集 → 重采样 → VAD 截断 → 发射 STT_AUDIO_READY。
 
 #![cfg(feature = "ambient")]
 #![allow(dead_code)]
@@ -9,19 +9,53 @@ use super::endpointing::EndpointingMachine;
 use super::vad_engine::SileroVadEngine;
 use base64::Engine;
 use crossbeam_channel::unbounded;
+use crate::jvs::process_manager::JvsHandle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const STT_SAMPLE_RATE: u32 = 16000;
 const CHUNK_LEN: usize = 512;
+/// 10 * 32ms
+const MIN_PTT_CHUNKS: usize = 10;
 
 /// 截断完成时向前端/上层发送的载荷：16kHz 单声道 WAV 的 base64。
 #[derive(Clone, serde::Serialize)]
 pub struct SttAudioPayload {
     pub wav_base64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recognized_text: Option<String>,
+}
+
+/// PTT 未能产出可识别音频（过短、采音失败、麦克风未写入等）。
+#[derive(Clone, serde::Serialize)]
+pub struct SttPttFailedPayload {
+    pub reason: String,
+    pub chunks: usize,
+    pub detail: String,
+}
+
+fn emit_ptt_failed(app: &AppHandle, reason: &str, chunks: usize, detail: &str) {
+    let payload = SttPttFailedPayload {
+        reason: reason.to_string(),
+        chunks,
+        detail: detail.to_string(),
+    };
+    let _ = app.emit("STT_PTT_FAILED", payload.clone());
+    crate::l3_spawn::write_voice_chat_trace(
+        "ptt",
+        "ptt.failed",
+        reason,
+        &format!("chunks={} {}", chunks, detail),
+    );
+    crate::l3_spawn::write_voice_companion_debug(
+        "rust",
+        "ptt.failed",
+        reason,
+        &format!("chunks={} {}", chunks, detail),
+    );
 }
 
 fn pcm_f32_to_wav(samples: &[f32], sample_rate: u32) -> Vec<u8> {
@@ -53,13 +87,157 @@ fn pcm_f32_to_wav(samples: &[f32], sample_rate: u32) -> Vec<u8> {
     buf
 }
 
+fn resolve_jvs_base_url(app: &AppHandle) -> String {
+    app.try_state::<Arc<JvsHandle>>()
+        .map(|h| h.status().base_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:18982".to_string())
+}
+
+#[derive(Clone)]
+pub enum PttCaptureOutcome {
+    Ready(SttAudioPayload),
+    Failed(SttPttFailedPayload),
+}
+
+/// PTT 按住说话：按下即采，松开立即 `finalize_ptt` 并发射 `STT_AUDIO_READY`。
+pub fn run_ptt_capture(
+    app_handle: AppHandle,
+    model_path: PathBuf,
+    finalize_rx: std::sync::mpsc::Receiver<()>,
+    running: Arc<AtomicBool>,
+) -> PttCaptureOutcome {
+    let app = Arc::new(app_handle);
+    let stream_session_id = format!(
+        "ptt-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let mut stream_client = super::stream_stt_client::SttStreamClient::connect(
+        &resolve_jvs_base_url(&app),
+        &stream_session_id,
+    )
+    .ok();
+    let (stream, rx_raw, sample_rate, source_channels) = match start_capture() {
+        Ok(v) => v,
+        Err(e) => {
+            emit_ptt_failed(&app, "mic_open_failed", 0, &e);
+            return PttCaptureOutcome::Failed(SttPttFailedPayload {
+                reason: "mic_open_failed".to_string(),
+                chunks: 0,
+                detail: e.clone(),
+            });
+        }
+    };
+    let (tx_chunk, rx_chunk) = unbounded::<[f32; CHUNK_LEN]>();
+
+    let vad_engine = match SileroVadEngine::new(&model_path) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = format!("VAD 初始化失败: {e}");
+            emit_ptt_failed(&app, "vad_init_failed", 0, &msg);
+            return PttCaptureOutcome::Failed(SttPttFailedPayload {
+                reason: "vad_init_failed".to_string(),
+                chunks: 0,
+                detail: msg,
+            });
+        }
+    };
+    let mut endpointing = EndpointingMachine::new(vad_engine);
+    endpointing.begin_ptt();
+
+    let running_p = Arc::clone(&running);
+    let running_e = Arc::clone(&running);
+
+    let join_processor = thread::spawn(move || {
+        if let Ok(mut processor) = AudioProcessor::new(sample_rate, source_channels) {
+            let _ = processor.process_stream(&rx_raw, &running_p, |chunk| {
+                let _ = tx_chunk.send(chunk);
+            });
+        }
+    });
+
+    let mut chunks_received: usize = 0;
+    while running_e.load(Ordering::Relaxed) {
+        if finalize_rx.try_recv().is_ok() {
+            break;
+        }
+        match rx_chunk.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(chunk) => {
+                chunks_received += 1;
+                if let Some(client) = stream_client.as_mut() {
+                    let _ = client.push_chunk(&chunk);
+                }
+                let _ = endpointing.feed_chunk_ptt(&chunk);
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    running_e.store(false, Ordering::Relaxed);
+    let buffer_chunks = endpointing.ptt_buffer_chunks();
+    if let Some(audio) = endpointing.finalize_ptt() {
+        let wav = pcm_f32_to_wav(&audio, STT_SAMPLE_RATE);
+        let wav_base64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let recognized_text = stream_client
+            .as_mut()
+            .and_then(|c| c.finalize_and_get_text(std::time::Duration::from_millis(1200)))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        crate::l3_spawn::write_voice_chat_trace(
+            "ptt",
+            "ptt.audio_ready",
+            "emit STT_AUDIO_READY",
+            &format!(
+                "chunks_rx={} buffer_chunks={} wav_bytes={} stream_text_len={}",
+                chunks_received,
+                buffer_chunks,
+                wav.len(),
+                recognized_text.as_ref().map(|s| s.len()).unwrap_or(0)
+            ),
+        );
+        let payload = SttAudioPayload {
+            wav_base64,
+            recognized_text,
+        };
+        let _ = app.emit("STT_AUDIO_READY", payload.clone());
+        drop(stream);
+        let _ = join_processor.join();
+        return PttCaptureOutcome::Ready(payload);
+    } else {
+        let detail = if chunks_received == 0 {
+            "麦克风未写入任何音频帧（可能被其它管线占用或采音线程失败）".to_string()
+        } else if buffer_chunks < MIN_PTT_CHUNKS {
+            format!(
+                "录音过短或有效语音不足（收到 {} 帧，至少需要 {} 帧 ≈320ms）",
+                buffer_chunks, MIN_PTT_CHUNKS
+            )
+        } else {
+            format!(
+                "finalize 未产出音频（chunks_rx={} buffer_chunks={}）",
+                chunks_received, buffer_chunks
+            )
+        };
+        emit_ptt_failed(&app, "no_audio", buffer_chunks, &detail);
+        drop(stream);
+        let _ = join_processor.join();
+        return PttCaptureOutcome::Failed(SttPttFailedPayload {
+            reason: "no_audio".to_string(),
+            chunks: buffer_chunks,
+            detail,
+        });
+    }
+}
+
 /// 启动全天候监听：麦克风 → 重采样 → 512 切片 → VAD 截断，截断完成时发射 `STT_AUDIO_READY`。
 /// 返回的 guard 持有音频流；drop 后停止采集与 pipeline。
 pub fn start_listening(
     app_handle: AppHandle,
     model_path: PathBuf,
 ) -> Result<ListeningGuard, String> {
-    let (stream, rx_raw, sample_rate) = start_capture()?;
+    let (stream, rx_raw, sample_rate, source_channels) = start_capture()?;
     let (tx_chunk, rx_chunk) = unbounded::<[f32; CHUNK_LEN]>();
 
     let vad_engine = SileroVadEngine::new(&model_path)?;
@@ -70,7 +248,6 @@ pub fn start_listening(
     let running_e = Arc::clone(&running);
 
     let join_processor = thread::spawn(move || {
-        let source_channels = 1;
         if let Ok(mut processor) = AudioProcessor::new(sample_rate, source_channels) {
             let _ = processor.process_stream(&rx_raw, &running_p, |chunk| {
                 let _ = tx_chunk.send(chunk);
@@ -85,7 +262,13 @@ pub fn start_listening(
                     if let Ok(Some(audio)) = endpointing.feed_chunk(&chunk) {
                         let wav = pcm_f32_to_wav(&audio, STT_SAMPLE_RATE);
                         let wav_base64 = base64::engine::general_purpose::STANDARD.encode(&wav);
-                        let _ = app.emit("STT_AUDIO_READY", SttAudioPayload { wav_base64 });
+                        let _ = app.emit(
+                            "STT_AUDIO_READY",
+                            SttAudioPayload {
+                                wav_base64,
+                                recognized_text: None,
+                            },
+                        );
                     }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,

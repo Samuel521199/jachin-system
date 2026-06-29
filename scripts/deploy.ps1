@@ -1,5 +1,5 @@
-# Jachin-System One-Click Deploy
-# Steps: env check -> deps install -> TTS models download -> desktop build
+﻿# Jachin-System One-Click Deploy
+# Steps: env check -> deps install -> TTS models check -> desktop build
 
 param(
     [switch]$SkipTts,
@@ -72,7 +72,7 @@ if (-not $SkipTts -and -not $SkipBackend) {
     if (Test-Path $modelFile) {
         Write-Success "TTS models exist, skip"
     } else {
-        Write-Info "Downloading Kokoro (~326MB, may take 2-5 min)..."
+        Write-Info "Preparing MOSS ONNX models (may take 2-5 min)..."
         $env:PYTHONPATH = "$ProjectRoot;$ProjectRoot\core"
         conda run -n jachin-dev python "$ScriptDir\download_tts_models.py"
         if ($LASTEXITCODE -eq 0) { Write-Success "TTS models done" } else { Write-Warn "TTS download incomplete, run scripts\download_tts_models.py later" }

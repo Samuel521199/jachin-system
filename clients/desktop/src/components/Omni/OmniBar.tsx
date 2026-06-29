@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Omni-Bar — Raycast 风格悬浮条：Jachin Core + 输入 + 流式面板 + HITL
  */
 
@@ -317,28 +317,37 @@ export const OmniBar: React.FC<OmniBarProps> = ({
                 </button>
               )}
 
-              <button
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (canVoice && !isRecording) onVoiceStart();
-                }}
-                onMouseUp={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (isRecording) onVoiceStop();
-                }}
-                onMouseLeave={() => isRecording && onVoiceStop()}
-                disabled={!canVoice}
-                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border ${
-                  isRecording
-                    ? "border-red-500/40 bg-red-500/25 text-red-300"
-                    : "border-cyan-400/30 bg-white/10 text-cyan-400"
-                }`}
-              >
-                {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </button>
+              {isRecording ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onVoiceStop();
+                  }}
+                  title="结束录音并发送"
+                  aria-label="结束录音"
+                  className="flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/25 px-3 text-red-300"
+                >
+                  <Square className="h-4 w-4 shrink-0" />
+                  <span className="text-[10px] font-medium uppercase">结束</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (canVoice) onVoiceStart();
+                  }}
+                  disabled={!canVoice}
+                  title="开始录音"
+                  aria-label="开始录音"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-cyan-400/30 bg-white/10 text-cyan-400 disabled:opacity-40"
+                >
+                  <Mic className="h-4 w-4" />
+                </button>
+              )}
             </div>
 
             <div className="flex min-w-0 flex-col items-center justify-center gap-1 px-1">

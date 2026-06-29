@@ -7,6 +7,7 @@ param(
     [switch]$NoPause,
     [switch]$AlsoKillDesktopDev
 )
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
 $ErrorActionPreference = 'Continue'
 # 被 start-layer3 等调用时独立进程，须自设编码，否则 Windows PowerShell 5.1 下中文易乱码
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -17,6 +18,21 @@ if (-not $ScriptDir) { $ScriptDir = ".\scripts" }
 Write-Host ""
 Write-Host '[L3] 清理残留 L3 进程与端口...' -ForegroundColor Cyan
 Write-Host ""
+
+function Stop-TcpPortListener {
+    param([int]$Port)
+    $connections = @(netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING")
+    if (-not $connections.Count) { return $false }
+    $processIds = $connections | ForEach-Object { $_.ToString().Split()[-1] } | Select-Object -Unique
+    foreach ($processId in $processIds) {
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+        } catch {
+            Start-Process -FilePath "taskkill" -ArgumentList "/F", "/PID", $processId -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+    return $true
+}
 
 # 1. 结束 L3 相关进程（python l3_node + l3_node-*.exe Sidecar）
 $killed = 0
@@ -50,7 +66,9 @@ foreach ($port in 18981..18999) {
 if ($portsInUse.Count -gt 0) {
     Write-Host "  释放端口: $($portsInUse -join ', ')" -ForegroundColor Yellow
     foreach ($p in $portsInUse) {
-        & (Join-Path $ScriptDir "kill_port.ps1") -Port $p 2>$null | Out-Null
+        if (Stop-TcpPortListener -Port $p) {
+            Write-Host "  已尝试释放端口 $p" -ForegroundColor Gray
+        }
     }
 } else {
     Write-Host "  端口 18981-18999 均未被占用" -ForegroundColor Gray

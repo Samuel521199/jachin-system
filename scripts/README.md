@@ -1,4 +1,4 @@
-# Scripts 脚本说明
+﻿# Scripts 脚本说明
 
 Jachin 各层独立安装/启动，以及特殊用途脚本说明。
 
@@ -70,7 +70,7 @@ Cloud（平台商）、Layer2（用户）、Layer3（用户）完全分离。
 |------|------|
 | `download_models.bat` | 一键下载 VAD / TTS / Whisper 模型。用法：`download_models.bat [vad|tts|whisper|all]`，无参数=全部 |
 | `download_vad_model.py` | 下载 Silero VAD 模型 (silero_vad.onnx) |
-| `download_tts_models.py` | 下载 TTS Kokoro 模型 |
+| `download_tts_models.py` | 下载 TTS MOSS ONNX 模型 |
 | `download_whisper_model.py` | 下载 Whisper 语音识别模型 |
 
 ---

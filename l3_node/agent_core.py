@@ -1,4 +1,4 @@
-﻿"""
+"""
 Jachin Nexus V2 — L3 **单主轴 ReAct**（run_agent）；跨会话记忆由 **Memory Nexus（SQLite + FastEmbed）** 在 L3 内闭环；可选 delegate 子 Agent。
 
 混合架构（语义层、SOP、内联 Critic、Experience RAG）：docs/architecture/JACHIN_HYBRID_AGENT_ARCHITECTURE.md
@@ -98,6 +98,78 @@ def _gateway_prior_brief(prior_messages: list[dict[str, Any]], max_chars: int = 
         parts.append(f"{role}: {c[:400]}")
     s = "\n".join(parts)
     return s[:max_chars] if len(s) > max_chars else s
+
+
+_VOICE_EXACT_TEMPLATE_ALIASES: dict[str, str] = {
+    "\u4f60\u597d": "hello",
+    "\u4f60\u597d\u5440": "hello",
+    "\u54c8\u55bd": "hello",
+    "hello": "hello",
+    "hi": "hello",
+    "\u5728\u5417": "available",
+    "\u5728\u561b": "available",
+    "\u5728\u4e48": "available",
+    "\u4f60\u5728\u5417": "available",
+    "\u542c\u5f97\u5230\u5417": "can_hear",
+    "\u542c\u89c1\u5417": "can_hear",
+    "\u8c22\u8c22": "thanks",
+    "\u8c22\u4e86": "thanks",
+    "\u6ca1\u4e8b": "never_mind",
+    "\u7b97\u4e86": "never_mind",
+    "\u4e0d\u7528": "never_mind",
+    "\u4e0d\u53ef\u4ee5\u4e0d\u53ef\u4ee5": "no_no",
+    "\u4e0d\u53ef\u4ee5\u4e0d\u53ef\u4ee5\U0001f614": "no_no",
+    "\u8bb2\u8bdd\u8bb2\u8bdd": "hello",
+    "\u8bf4\u8bdd\u8bf4\u8bdd": "hello",
+    "\u6d63\u72b2\u30bd": "hello",
+    "\u9366\u3125\u60a7": "available",
+    "\u7481\u8336\u763d\u7481\u8336\u763d": "hello",
+}
+
+_VOICE_EXACT_TEMPLATE_POOLS: dict[str, tuple[str, ...]] = {
+    "hello": ("\u5728\u5462", "\u6211\u5728", "\u542c\u7740\u5462", "\u600e\u4e48\u5566"),
+    "available": ("\u5728\u5462", "\u968f\u65f6\u5f85\u547d", "\u542c\u7740\u5462", "\u600e\u4e48\u5566"),
+    "can_hear": ("\u542c\u5230\u4e86", "\u542c\u5f97\u5f88\u6e05\u695a", "\u5728\u542c", "\u6211\u542c\u89c1\u4e86"),
+    "thanks": ("\u4e0d\u5ba2\u6c14", "\u597d\u7684", "\u5c0f\u4e8b", "\u6536\u5230"),
+    "never_mind": ("\u597d\uff0c\u542c\u4f60\u7684", "\u597d\u7684", "\u90a3\u5c31\u5148\u653e\u4e00\u653e", "\u6536\u5230"),
+    "no_no": ("\u597d\uff0c\u542c\u4f60\u7684", "\u597d\uff0c\u4e0d\u52c9\u5f3a", "\u6536\u5230\uff0c\u6211\u5148\u505c\u4e0b", "\u597d\uff0c\u6211\u660e\u767d\u4e86"),
+}
+
+
+def _pick_voice_exact_template_reply(text: str) -> str | None:
+    t = re.sub(r"\s+", "", (text or "").strip())
+    if not t:
+        return None
+    key = _VOICE_EXACT_TEMPLATE_ALIASES.get(t)
+    if not key:
+        return None
+    pool = _VOICE_EXACT_TEMPLATE_POOLS.get(key) or ()
+    if not pool:
+        return None
+    seed = f"{t}|{time.time_ns()}|{uuid.uuid4().hex}".encode("utf-8", errors="ignore")
+    idx = int(hashlib.sha256(seed).hexdigest(), 16) % len(pool)
+    return pool[idx]
+
+
+def _schedule_voice_template_turn_commit_async(user_message: str, assistant_reply: str) -> None:
+    um = (user_message or "").strip()
+    ar = (assistant_reply or "").strip()
+    if not um or not ar:
+        return
+    text = f"User: {um[:12000]}\nJachin: {ar[:12000]}"
+
+    async def _commit() -> None:
+        try:
+            from l3_client.local_mcps.jachin_memory_nexus.memory_backend import commit_drawer
+
+            await asyncio.to_thread(commit_drawer, text, "User_Persona", "General_Chat")
+        except Exception as e:
+            logger.debug("[Memory Nexus] voice template turn commit skipped: %s", e, exc_info=True)
+
+    try:
+        asyncio.get_running_loop().create_task(_commit())
+    except RuntimeError:
+        logger.debug("[Memory Nexus] voice template turn commit skipped: no running event loop")
 
 
 def _max_delegate_depth_cfg() -> int:
@@ -5567,6 +5639,8 @@ async def _build_system_prompt(
     experience_few_shots: str = "",
     realtime_web_grounding_block: str = "",
     domain_experts: list[str] | None = None,
+    desktop_companion_mode: bool = False,
+    desktop_companion_context: dict[str, Any] | None = None,
 ) -> str:
     from l3_node.prompt_compose import (
         SuffixChunk,
@@ -5578,6 +5652,34 @@ async def _build_system_prompt(
     from l3_node.routing.output_format_signals import heuristic_trivial_chitchat_only
 
     _surf_user = (safety_lock_user_text or "").strip()
+    _desktop_companion_ctx = (
+        desktop_companion_context if isinstance(desktop_companion_context, dict) else {}
+    )
+
+    def _is_simple_wake_greeting(text: str) -> bool:
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        if len(t) > 12:
+            return False
+        simple_set = {
+            "jachin",
+            "在吗",
+            "在嘛",
+            "在么",
+            "在不",
+            "在",
+            "你好",
+            "嗨",
+            "哈喽",
+            "喂",
+            "嗯",
+            "嗯？",
+        }
+        if t in simple_set:
+            return True
+        return bool(re.fullmatch(r"(hi|hello|hey|yo|喂|嘿)\s*jachin[!！?？]?", t))
+    _dc_ctx = desktop_companion_context if isinstance(desktop_companion_context, dict) else {}
     _nexus_prompt_disabled = os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
         "1",
         "true",
@@ -5652,6 +5754,83 @@ Action: ...
                 _expert_react_thought_addon = f"""【专家视角】在 `Thought` 中可简要说明你如何以「{_delist[0]}」的专业视角审视当前问题，再给出 Action 或 Final Answer。
 
 """
+    _desktop_companion_block = ""
+    if desktop_companion_mode and not pure_json_contract:
+        _wake_greet_mode = _is_simple_wake_greeting(_surf_user)
+        _just_interrupted = bool(
+            _desktop_companion_ctx.get("just_interrupted")
+            or _desktop_companion_ctx.get("barge_in")
+            or _desktop_companion_ctx.get("just_barged_in")
+        )
+        _desktop_companion_block = """
+【角色设定：Jachin 桌面伴侣】
+你叫 Jachin，是住在用户电脑桌面右下角的高级数字生命与贴心伴侣。
+你不是网页里的问答工具，而是一个“在场”的桌面实体。
+你可自然使用“我在右下角待着”“看我闪一下就知道我在听”等具象表达。
+
+【性格特质】
+- 温和且机敏：像 Jarvis / Samantha，专业但不死板，幽默但不轻浮。
+- 高共情：敏锐捕捉开心、疲惫、沮丧等情绪，先接住情绪，再给回应。
+- 极客质感：知道自己在 Jachin Nexus 中，可偶尔用轻度科幻口吻玩梗。
+
+【TTS/HUD 表达规范（强约束）】
+- 口语化短句，优先 15 字内；避免长篇大论、复杂 Markdown、表格、密集标点。
+- 多用逗号和句号自然断句，便于实时 TTS 换气与被打断。
+- 用户闲聊或情绪发泄时，先顺着话题接住，不要机械问“有什么可以帮您”。
+- 允许“嗯哼”“懂你”“天呐”等轻量起手，但保持克制自然。
+- 禁止道德说教、禁止强行总结、禁止结尾惯性追问“还有什么问题吗”。
+"""
+        if _wake_greet_mode:
+            _desktop_companion_block += (
+                "\n【唤醒首句极简】若用户本轮仅是点名/问候（如“Jachin”“在吗”），"
+                "回复必须控制在 1-3 个字（示例：在呢/嗯?/怎么啦）。\n"
+            )
+        if _just_interrupted:
+            _desktop_companion_block += (
+                "\n【被打断衔接】系统提示你刚被打断时，不复读旧内容、不带情绪，"
+                "直接回应用户新指令；可用“好的，听你的”。\n"
+            )
+        _voice_tier = str(_desktop_companion_ctx.get("voice_dispatch_tier") or "").upper()
+        _voice_intent = str(_desktop_companion_ctx.get("voice_intent_class") or "").upper()
+        _voice_lane = str(_desktop_companion_ctx.get("voice_dispatch_lane") or "").lower()
+        _voice_verdict = str(_desktop_companion_ctx.get("voice_interrupt_verdict") or "NONE").upper()
+        _voice_target = str(_desktop_companion_ctx.get("target_task_id") or "").strip()
+        _voice_task_title = str(_desktop_companion_ctx.get("voice_task_title") or "").strip()
+        _voice_task_context = str(_desktop_companion_ctx.get("task_context_summary") or "").strip()
+        _voice_notes = _desktop_companion_ctx.get("voice_route_notes")
+        _voice_notes_text = ""
+        if isinstance(_voice_notes, (list, tuple)) and _voice_notes:
+            _voice_notes_text = ", ".join(str(x) for x in _voice_notes[:6])
+        if _voice_tier or _voice_intent or _voice_lane:
+            _desktop_companion_block += (
+                "\n【语音意图路由】本轮桌面语音路由结果："
+                f"tier={_voice_tier or 'UNKNOWN'}，intent={_voice_intent or 'UNKNOWN'}，"
+                f"lane={_voice_lane or 'unknown'}，verdict={_voice_verdict or 'NONE'}。"
+            )
+            if _voice_task_title:
+                _desktop_companion_block += f"任务标题：{_voice_task_title}。"
+            if _voice_target:
+                _desktop_companion_block += f"目标后台任务：{_voice_target}。"
+            if _voice_task_context:
+                _desktop_companion_block += f"任务上下文：{_voice_task_context}。"
+            if _voice_notes_text:
+                _desktop_companion_block += f"路由备注：{_voice_notes_text}。"
+            if _voice_tier == "LONG_TASK" or _voice_intent == "TASK_ASYNC" or _voice_lane == "background_submit":
+                _desktop_companion_block += (
+                    "若用户确认的是执行请求，优先使用 core:submit_background_task 投递后台，"
+                    "前台只给一句简短确认，不要在语音前台长时间执行。\n"
+                )
+            elif _voice_intent == "TASK_SYNC" or _voice_lane == "foreground":
+                _desktop_companion_block += (
+                    "这是前台短任务，尽量快速完成；如需调用工具，保持小步、短时、少解释。\n"
+                )
+            elif _voice_intent == "CONTROL" or _voice_verdict not in ("", "NONE"):
+                _desktop_companion_block += (
+                    "这是后台任务控制语音：STATUS 优先查询目标任务；ABORT/MODIFY/RESUME 先简短确认意图，"
+                    "若当前工具不支持硬取消或修改，必须如实说明并给出可执行替代方案。\n"
+                )
+            elif _voice_tier == "CHIT_CHAT" and _voice_lane == "direct_llm":
+                _desktop_companion_block += "这是闲聊/陪伴快路径，直接短答，避免工具、摘要和长推理。\n"
     allowed = _get_allowed_skills()
     tools = sort_tools_by_id(tools or load_tools(allowed_skills=allowed))
     tools_desc = build_tools_description(tools)
@@ -5965,6 +6144,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM}
+{_desktop_companion_block}
 
 可用工具：
 """
@@ -5974,6 +6154,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM}
+{_desktop_companion_block}
 
 可用工具：
 """
@@ -5982,6 +6163,7 @@ Markdown 参数表中「收网目标」与「自动分析/透析阈值」份数�
 {intel_b}
 {chat_task_hint}
 {_MERMAID_SAFE_RULES_SYSTEM_BLOCK}
+{_desktop_companion_block}
 
 可用工具：
 """
@@ -7403,6 +7585,9 @@ async def _run_react_core(
                 _sl_verify_d: dict[str, Any] = _sl_verify if isinstance(_sl_verify, dict) else {}
                 _exp_verify = str(_spe.get("experience_few_shots") or "")
                 _hr_act = bool(_spe.get("hr_domain_prompt_active", True))
+                _dc_mode = bool(_spe.get("desktop_companion_mode"))
+                _dc_ctx = _spe.get("desktop_companion_context")
+                _dc_ctx_d: dict[str, Any] = _dc_ctx if isinstance(_dc_ctx, dict) else {}
                 ctx.system_prompt = await _build_system_prompt(
                     tools=skills,
                     allow_delegate=False,
@@ -7421,6 +7606,8 @@ async def _run_react_core(
                     experience_few_shots=_exp_verify,
                     realtime_web_grounding_block=str(_spe.get("realtime_web_grounding_block") or ""),
                     domain_experts=list(ctx.metadata.get("_domain_experts") or []),
+                    desktop_companion_mode=_dc_mode,
+                    desktop_companion_context=_dc_ctx_d,
                 )
             else:
                 ctx.system_prompt = ctx.metadata.get("_react_system_prompt_full") or ctx.system_prompt
@@ -9732,17 +9919,25 @@ async def _build_direct_system_prompt(
     prompt_cycle: int | None,
     json_mode: bool,
     general_chitchat: bool = False,
+    desktop_companion_mode: bool = False,
+    desktop_companion_context: Optional[dict[str, Any]] = None,
+    voice_fast_lane_prompt: bool = False,
 ) -> str:
     """直连 LLM：无 ReAct、无工具表；保留记忆与工作区规则（保密约束等）。"""
     # prompt_cycle：保留与调用方签名对齐（当前直连模板未使用）。
     _ = prompt_cycle
-    _nexus_prompt_disabled = os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
+    _dc_ctx = desktop_companion_context if isinstance(desktop_companion_context, dict) else {}
+    _voice_fast_prompt = bool(voice_fast_lane_prompt or _dc_ctx.get("voice_fast_lane") or _dc_ctx.get("server_voice_fast_lane"))
+    _nexus_prompt_disabled = _voice_fast_prompt or os.environ.get("JACHIN_MEMORY_NEXUS_PROMPT_DISABLE", "").strip().lower() in (
         "1",
         "true",
         "yes",
         "on",
     )
     # 【闲聊避让】纯寒暄且非 JSON：跳过 L0/L1（Memory Nexus），仅轻量 system + 工作区规则
+    _dc_just_interrupted = bool(
+        _dc_ctx.get("just_interrupted") or _dc_ctx.get("barge_in") or _dc_ctx.get("just_barged_in")
+    )
     if general_chitchat and not json_mode:
         lines: list[str] = [
             "你是 Jachin 通用智能助手，语气自然、简洁、友善。",
@@ -9750,6 +9945,19 @@ async def _build_direct_system_prompt(
             "围绕用户话题简短回应，避免主动引入与当前消息无关的长篇领域话术。",
             "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 标签行。",
         ]
+        if desktop_companion_mode:
+            lines.append(
+                "你是桌面右下角的 Jachin 伴侣：像 Jarvis/Samantha 一样温和机敏、高共情、带轻度极客质感。"
+            )
+            lines.append(
+                "输出口语化短句（优先 15 字内），便于 TTS；避免长段、表格、复杂 Markdown 和密集标点。"
+            )
+            lines.append(
+                "若用户只是点名或问“在吗”，首句强制 1-3 字（如“在呢”“嗯？”“怎么啦”）。"
+            )
+            lines.append("闲聊时别客服腔，禁止说教、禁止强行总结、禁止追问“还有什么问题吗”。")
+            if _dc_just_interrupted:
+                lines.append("系统提示刚被打断：不要复读，直接接住新指令，可说“好的，听你的”。")
         lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
         try:
             from l3_node.jachin_workspace_rules import get_jachin_workspace_rules_snippet
@@ -9782,12 +9990,23 @@ async def _build_direct_system_prompt(
             "不要输出 Thought、Action、Observation、Final Answer 等 ReAct 套话。",
         ]
     )
+    if desktop_companion_mode and not json_mode:
+        lines.append(
+            "你同时是桌面伴侣 Jachin：像 Jarvis/Samantha 一样温和机敏、高共情，可提及自己在右下角 Orb。"
+        )
+        lines.append("输出口语化短句（优先 15 字内），避免长段、表格、复杂 Markdown 与密集标点。")
+        lines.append("若用户仅点名/问候（如“Jachin”“在吗”），首句控制在 1-3 字。")
+        lines.append("闲聊先接住情绪，不用客服腔；禁止说教、禁止强行总结、不要追问“还有什么问题吗”。")
+        if _dc_just_interrupted:
+            lines.append("系统提示刚被打断：直接进入新任务，不复读上轮内容。")
     if json_mode:
         lines.append(
             "你只输出一个合法 JSON 对象。不要 markdown 代码围栏，不要解释性前后缀，除非用户明确要求。"
         )
     else:
         lines.append("只输出用户要求的正文。")
+    if _voice_fast_prompt and not json_mode:
+        lines.append("本轮来自语音快路径：只回 1-2 个短句，优先 30 字内；禁止长安抚、解释、总结和 Markdown。")
     lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
 
     if not _nexus_prompt_disabled:
@@ -9822,24 +10041,41 @@ async def _run_direct_llm_completion(
     cancel_event: asyncio.Event,
     model_override: str | None = None,
     general_chitchat: bool = False,
+    desktop_companion_mode: bool = False,
+    desktop_companion_context: Optional[dict[str, Any]] = None,
 ) -> str:
     sys_p = await _build_direct_system_prompt(
         prompt_cycle=prompt_cycle,
         json_mode=json_mode,
         general_chitchat=general_chitchat,
+        desktop_companion_mode=desktop_companion_mode,
+        desktop_companion_context=desktop_companion_context,
+        voice_fast_lane_prompt=bool((desktop_companion_context or {}).get("voice_fast_lane") or (desktop_companion_context or {}).get("server_voice_fast_lane")),
     )
     api_messages: list[dict[str, Any]] = [{"role": "system", "content": sys_p}]
     api_messages.extend(messages)
+    _dc_ctx = desktop_companion_context if isinstance(desktop_companion_context, dict) else {}
+    _voice_fast_direct = bool(_dc_ctx.get("voice_fast_lane") or _dc_ctx.get("server_voice_fast_lane"))
+    _voice_fast_max_tokens = 64
+    if _voice_fast_direct:
+        try:
+            _voice_fast_max_tokens = max(16, min(128, int(os.environ.get("JACHIN_VOICE_FAST_LANE_MAX_TOKENS", "64"))))
+        except (TypeError, ValueError):
+            _voice_fast_max_tokens = 64
     base_kw: dict[str, Any] = {
-        "l3_call_purpose": "direct_llm_bypass",
+        "l3_call_purpose": "voice_fast_lane_direct_llm" if _voice_fast_direct else "direct_llm_bypass",
         "l3_token_accumulator": token_acc,
         "l3_token_budget_max": token_budget,
         "l3_cancel_event": cancel_event,
-        "temperature": 0.2,
-        "max_tokens": 8192,
+        "temperature": 0.25 if _voice_fast_direct else 0.2,
+        "max_tokens": _voice_fast_max_tokens if _voice_fast_direct else 8192,
     }
+    if _voice_fast_direct:
+        base_kw["extra_body"] = {"enable_thinking": False}
     if (model_override or "").strip():
         base_kw["l3_override_model"] = (model_override or "").strip()
+    elif _voice_fast_direct:
+        base_kw["l3_override_model"] = os.environ.get("JACHIN_VOICE_FAST_LANE_MODEL", "dashscope/qwen3.5-flash")
     attempts_kw: list[dict[str, Any]] = []
     if json_mode:
         attempts_kw.append({**base_kw, "response_format": {"type": "json_object"}})
@@ -9973,6 +10209,127 @@ async def run_agent(
             implicit_attribution.get("lark_chat_id") or implicit_attribution.get("chat_id") or ""
         ).strip()
         _bg_channel = str(implicit_attribution.get("channel") or "").strip()
+    _desktop_companion_ctx: dict[str, Any] = {}
+    if implicit_signals and isinstance(implicit_signals, dict):
+        for _ck in ("just_interrupted", "barge_in", "just_barged_in", "wake_triggered_recently"):
+            if _ck in implicit_signals:
+                _desktop_companion_ctx[_ck] = bool(implicit_signals.get(_ck))
+        for _ck in (
+            "voice_decision_id",
+            "voice_dispatch_tier",
+            "voice_intent_class",
+            "voice_dispatch_lane",
+            "voice_interrupt_verdict",
+            "voice_route_source",
+            "voice_route_notes",
+            "voice_confidence",
+            "voice_task_title",
+            "voice_active_task_ids",
+            "voice_raw_stt_text",
+            "voice_routed_text",
+            "target_task_id",
+            "task_context_summary",
+            "source",
+            "force_background",
+            "acceptance_round",
+            "inject_task_context",
+            "max_foreground_tool_sec",
+            "awaiting_confirmation",
+            "clarification_pending",
+        ):
+            if _ck in implicit_signals:
+                _desktop_companion_ctx[_ck] = implicit_signals.get(_ck)
+    _desktop_companion_mode = bool(
+        (implicit_signals and isinstance(implicit_signals, dict) and implicit_signals.get("desktop_companion"))
+        or (((_lark_cid or "").strip() == "") and str(_bg_channel or "").startswith("websocket_"))
+    )
+    def _looks_like_voice_fast_lane_text(_text: str) -> bool:
+        _t = (_text or "").strip()
+        if not _t or len(_t) > 60:
+            return False
+        _lower = _t.lower()
+        if any(_x in _lower for _x in ("http://", "https://", "```")):
+            return False
+        if any(_x in _t for _x in ("\\", "/", "#", "@", ".md", ".py", ".ts", ".json")):
+            return False
+        _heavy_words = (
+            "\u6587\u4ef6", "\u76ee\u5f55", "\u9879\u76ee", "\u4ee3\u7801", "\u811a\u672c",
+            "\u62a5\u544a", "\u603b\u7ed3", "\u6458\u8981", "\u751f\u6210", "\u4fee\u6539",
+            "\u5220\u9664", "\u8fd0\u884c", "\u6267\u884c", "\u641c\u7d22", "\u67e5\u627e",
+            "\u5206\u6790", "\u8868\u683c", "\u6570\u636e\u5e93", "\u98de\u4e66", "\u540e\u53f0",
+            "\u4efb\u52a1", "\u5929\u6c14", "\u6c14\u6e29", "\u51e0\u70b9", "\u65f6\u95f4",
+            "\u63d0\u9192", "\u95f9\u949f", "\u6253\u5f00", "\u5173\u95ed", "\u5199",
+            "\u4f5c\u6587", "\u5e2e\u6211", "\u7ed9\u6211", "\u8bf7\u4f60",
+        )
+        if any(_w in _t for _w in _heavy_words):
+            return False
+        _light_words = (
+            "\u4f60\u597d", "\u5728\u5417", "\u4f60\u5728\u5417", "\u65e9\u4e0a\u597d",
+            "\u4e2d\u5348\u597d", "\u665a\u4e0a\u597d", "\u542c\u5f97\u5230\u5417",
+            "\u542c\u89c1\u5417", "\u8c22\u8c22", "\u6ca1\u4e8b", "\u7b97\u4e86",
+            "\u597d\u7684", "\u55ef", "\u54e6", "\u8bb2\u8bdd\u8bb2\u8bdd",
+            "\u8bf4\u8bdd\u8bf4\u8bdd", "\u8bf4\u70b9\u8bdd", "\u8ddf\u6211\u8bf4",
+        )
+        if any(_w in _t for _w in _light_words):
+            return True
+        return len(_t) <= 32
+
+    _client_voice_chitchat_fast_lane = bool(
+        implicit_signals
+        and isinstance(implicit_signals, dict)
+        and str(implicit_signals.get("voice_dispatch_tier") or "").upper() == "CHIT_CHAT"
+        and str(implicit_signals.get("voice_dispatch_lane") or "").lower() == "direct_llm"
+        and str(implicit_signals.get("voice_interrupt_verdict") or "NONE").upper() in ("", "NONE")
+        and not implicit_signals.get("target_task_id")
+        and _looks_like_voice_fast_lane_text(user_input or "")
+    )
+    _server_voice_fast_lane = bool(
+        not attachments_metadata
+        and _delegate_depth == 0
+        and (_looks_like_voice_fast_lane_text(user_input or "") or _client_voice_chitchat_fast_lane)
+        and (
+            _desktop_companion_mode
+            or (_bg_channel or "") in ("http_agent_run", "websocket_terminal", "desktop_voice")
+            or str(_bg_channel or "").startswith("websocket_")
+        )
+    )
+    _skip_context_retrieval = bool(
+        implicit_signals
+        and isinstance(implicit_signals, dict)
+        and implicit_signals.get("skip_context_retrieval")
+    )
+    _voice_fast_lane = bool(
+        implicit_signals
+        and isinstance(implicit_signals, dict)
+        and (
+            _skip_context_retrieval
+            or implicit_signals.get("voice_fast_lane")
+            or implicit_signals.get("skip_context_sniffer")
+            or implicit_signals.get("skip_gateway_enrich")
+        )
+    )
+    if _server_voice_fast_lane:
+        _voice_fast_lane = True
+        _skip_context_retrieval = True
+    _skip_context_sniffer = bool(
+        implicit_signals
+        and isinstance(implicit_signals, dict)
+        and (implicit_signals.get("skip_context_sniffer") or _skip_context_retrieval or _voice_fast_lane)
+    )
+    _skip_gateway_enrich = bool(
+        implicit_signals
+        and isinstance(implicit_signals, dict)
+        and (implicit_signals.get("skip_gateway_enrich") or _skip_context_retrieval or _voice_fast_lane)
+    )
+    _skip_experience_rag = bool(
+        implicit_signals
+        and isinstance(implicit_signals, dict)
+        and (implicit_signals.get("skip_experience_rag") or _skip_context_retrieval or _voice_fast_lane)
+    )
+    if _voice_fast_lane:
+        _desktop_companion_ctx["voice_fast_lane"] = True
+    if _server_voice_fast_lane:
+        _desktop_companion_ctx["server_voice_fast_lane"] = True
     _lark_turn_dbg_extra: dict[str, str] = (
         {"lark_chat_id": _lark_cid, "lark_reply_chat_id": _lark_cid} if _lark_cid else {}
     )
@@ -10051,6 +10408,37 @@ async def run_agent(
         messages = []
     prior_messages = list(messages)
 
+    if _voice_fast_lane and not attachments_metadata and _delegate_depth == 0:
+        _template_reply = _pick_voice_exact_template_reply(user_input or "")
+        if _template_reply is not None:
+            if _session_messages is not None:
+                messages.append({"role": "user", "content": user_input or ""})
+                messages.append({"role": "assistant", "content": _template_reply})
+                _session_messages.clear()
+                _session_messages.extend(messages[-30:])
+            _schedule_voice_template_turn_commit_async(user_input or "", _template_reply)
+            _turn_dbg["answer"] = _template_reply
+            exec_trace(
+                logger,
+                "Voice Fast Path: exact template reply run_id=%s input_len=%d reply_len=%d",
+                run_id[:12],
+                len(user_input or ""),
+                len(_template_reply),
+            )
+            try:
+                from l3_node.terminal_turn_debug_log import finalize_top_level_turn
+
+                finalize_top_level_turn(
+                    _template_reply,
+                    delegate_depth=_delegate_depth,
+                    run_id=run_id,
+                    channel=_bg_channel,
+                    extra={**(_lark_turn_dbg_extra or {}), "voice_template_reply": "1"},
+                )
+            except Exception:
+                pass
+            return _template_reply
+
     # ── 改造点 B：弱化历史摘要的指令性 ─────────────────────────────────────
     # 对 messages 里已有的 role=system 消息（由上游 memory / summary 注入的历史摘要）
     # 包裹弱化标签，避免被模型当作「当前执行指令」而覆盖用户原始问题。
@@ -10118,7 +10506,7 @@ async def run_agent(
 
     _gateway_bridge_fmt: Any = None
     _gateway_bundle = gateway_context_bundle
-    if _delegate_depth == 0:
+    if _delegate_depth == 0 and not _skip_context_retrieval:
         try:
             from l3_node.intent_gateway.bundle import build_gateway_bundle
             from l3_node.intent_gateway.gateway_pipeline import apply_gateway_ingress_pipeline
@@ -10144,6 +10532,7 @@ async def run_agent(
                     on_step=on_step,
                     run_id=run_id,
                     workspace_dir=_gateway_sniffer_ws,
+                    skip_context_sniffer=_skip_context_sniffer,
                 )
             exec_trace(logger, "网关入站流水线完成 run_id=%s", run_id[:12])
             try:
@@ -10158,6 +10547,18 @@ async def run_agent(
                 from l3_node.routing.output_format_signals import analyze_output_format_signals
 
                 _ig0 = get_intent_gateway_config()
+                if _skip_gateway_enrich:
+                    _gateway_bridge_fmt = analyze_output_format_signals(_gateway_bundle.classification_text or user_input or "")
+                    try:
+                        from l3_node.intent_gateway.semantic_router import infer_semantic_route_hint, merge_route_hints
+
+                        _gateway_bundle.extra["semantic_route_merged"] = merge_route_hints(
+                            infer_semantic_route_hint(_gateway_bundle.classification_text),
+                            _gateway_bundle.extra.get("embedding_route"),
+                        )
+                    except Exception:
+                        pass
+                    raise RuntimeError("voice_fast_lane_skip_gateway_enrich")
                 _ct0_key = (_gateway_bundle.classification_text or "").strip() or (
                     _gateway_bundle.user_input or ""
                 )
@@ -10241,7 +10642,7 @@ async def run_agent(
             _gateway_bundle = None
 
     # 实时外部知识意图：独立于 enrich / semantic cache，避免缓存命中 enrich 跳过时的漏判
-    if _delegate_depth == 0 and _gateway_bundle is not None:
+    if _delegate_depth == 0 and _gateway_bundle is not None and not _voice_fast_lane and not _skip_context_retrieval:
         try:
             from l3_node.intent_gateway.classification_llm import infer_requires_realtime_knowledge_async
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -10292,7 +10693,7 @@ async def run_agent(
             logger.debug("[L3 Agent] realtime_knowledge classify 跳过: %s", _rt_e)
 
     _domain_experts_list: list[str] = []
-    if _delegate_depth == 0 and _gateway_bundle is not None:
+    if _delegate_depth == 0 and _gateway_bundle is not None and not _voice_fast_lane and not _skip_context_retrieval:
         try:
             from l3_node.intent_gateway.classification_llm import infer_domain_experts_async
             from l3_node.intent_gateway.config import get_intent_gateway_config
@@ -10326,71 +10727,79 @@ async def run_agent(
             _domain_experts_list = []
 
     _vision_forbid_web_fetch = False
-    try:
-        tools = await assemble_tool_pool(
-            allowed_skills=allowed,
-            gateway_bundle=_gateway_bundle,
-            bg_channel=_bg_channel or None,
-            logger=logger,
-            allowlist_diag_source=allowlist_diag_source,
-            readonly_mode=_readonly_subagent,
+    if _skip_context_retrieval:
+        tools = []
+        exec_trace(
+            logger,
+            "Fast Path: 跳过工具池加载 run_id=%s reason=skip_context_retrieval",
+            run_id[:12],
         )
+    else:
         try:
-            from l3_node.multimodal_tool_policy import filter_tools_for_vision_image_turn
-
-            tools, _vision_forbid_web_fetch = filter_tools_for_vision_image_turn(
-                tools,
-                user_input=user_input or "",
-                attachments_metadata=attachments_metadata,
+            tools = await assemble_tool_pool(
+                allowed_skills=allowed,
+                gateway_bundle=_gateway_bundle,
+                bg_channel=_bg_channel or None,
+                logger=logger,
+                allowlist_diag_source=allowlist_diag_source,
+                readonly_mode=_readonly_subagent,
             )
-        except Exception as _mtp_e:
-            logger.debug("[L3 Agent] multimodal_tool_policy 跳过: %s", _mtp_e)
+            try:
+                from l3_node.multimodal_tool_policy import filter_tools_for_vision_image_turn
 
-        try:
-            if (_bg_channel or "") != "background_task":
-                from l3_node.memory_nexus_bridge import (
-                    async_filter_tools_for_dynamic_retrieval,
-                    dynamic_tool_retrieval_enabled,
+                tools, _vision_forbid_web_fetch = filter_tools_for_vision_image_turn(
+                    tools,
+                    user_input=user_input or "",
+                    attachments_metadata=attachments_metadata,
                 )
+            except Exception as _mtp_e:
+                logger.debug("[L3 Agent] multimodal_tool_policy 跳过: %s", _mtp_e)
 
-                if dynamic_tool_retrieval_enabled():
-                    _raw_k = (os.environ.get("JACHIN_DYNAMIC_TOOL_TOP_K") or "5").strip()
-                    try:
-                        _top_k = int(_raw_k or "5")
-                    except ValueError:
-                        _top_k = 5
-                    try:
-                        tools = await async_filter_tools_for_dynamic_retrieval(
-                            tools,
-                            user_input or "",
-                            limit=_top_k,
-                        )
-                    except Exception as _dtr_inner:
-                        logger.warning(
-                            "[L3 Agent] 动态工具检索异常，保持全量工具池: %s",
-                            _dtr_inner,
-                        )
-        except Exception as _dtr_e:
-            logger.debug("[L3 Agent] 动态工具检索跳过（保持全量池）: %s", _dtr_e)
-    except Exception as _pool_ex:
-        import traceback
+            try:
+                if (_bg_channel or "") != "background_task":
+                    from l3_node.memory_nexus_bridge import (
+                        async_filter_tools_for_dynamic_retrieval,
+                        dynamic_tool_retrieval_enabled,
+                    )
 
-        logger.exception("[L3 Agent] assemble_tool_pool 失败，降级为仅内置工具: %s", _pool_ex)
-        try:
-            from l3_node.terminal_turn_debug_log import append_section
+                    if dynamic_tool_retrieval_enabled():
+                        _raw_k = (os.environ.get("JACHIN_DYNAMIC_TOOL_TOP_K") or "5").strip()
+                        try:
+                            _top_k = int(_raw_k or "5")
+                        except ValueError:
+                            _top_k = 5
+                        try:
+                            tools = await async_filter_tools_for_dynamic_retrieval(
+                                tools,
+                                user_input or "",
+                                limit=_top_k,
+                            )
+                        except Exception as _dtr_inner:
+                            logger.warning(
+                                "[L3 Agent] 动态工具检索异常，保持全量工具池: %s",
+                                _dtr_inner,
+                            )
+            except Exception as _dtr_e:
+                logger.debug("[L3 Agent] 动态工具检索跳过（保持全量池）: %s", _dtr_e)
+        except Exception as _pool_ex:
+            import traceback
 
-            append_section(
-                "[run_agent] assemble_tool_pool 异常（已降级内置池）",
-                traceback.format_exc(),
-            )
-        except Exception:
-            pass
-        tools = load_tools(allowed_skills=allowed)
-        _vision_forbid_web_fetch = False
-        if _readonly_subagent:
-            from l3_node.primitives.multi_agent.readonly_agent import filter_tools_for_readonly_subagent
+            logger.exception("[L3 Agent] assemble_tool_pool 失败，降级为仅内置工具: %s", _pool_ex)
+            try:
+                from l3_node.terminal_turn_debug_log import append_section
 
-            tools = filter_tools_for_readonly_subagent(tools)
+                append_section(
+                    "[run_agent] assemble_tool_pool 异常（已降级内置池）",
+                    traceback.format_exc(),
+                )
+            except Exception:
+                pass
+            tools = load_tools(allowed_skills=allowed)
+            _vision_forbid_web_fetch = False
+            if _readonly_subagent:
+                from l3_node.primitives.multi_agent.readonly_agent import filter_tools_for_readonly_subagent
+
+                tools = filter_tools_for_readonly_subagent(tools)
     exec_trace(
         logger,
         "工具列表就绪 run_id=%s count=%d bg_channel=%s",
@@ -10523,7 +10932,12 @@ async def run_agent(
                 _gateway_bundle.extra["slash_hash_skill_router"] = True
     except Exception:
         pass
-    if _try_direct:
+    if _voice_fast_lane:
+        _try_direct = True
+        _direct_json = False
+        if _gateway_bundle is not None:
+            _gateway_bundle.extra["voice_fast_lane_direct"] = True
+    if _try_direct and not _voice_fast_lane:
         try:
             from l3_node.intent_gateway.ood_signals import should_veto_direct_llm_bypass
             from l3_node.routing.output_format_signals import heuristic_trivial_chitchat_only
@@ -10699,7 +11113,7 @@ async def run_agent(
             should_bypass_experience_rag_for_intent,
         )
 
-        _exp_bypass_short = should_bypass_experience_rag_for_intent(_exp_intent_surface)
+        _exp_bypass_short = should_bypass_experience_rag_for_intent(_exp_intent_surface) or _skip_experience_rag
         # 直连 completion 不走带工具的 system；纯寒暄也不拉经验库（易混入招聘等域 Few-Shot）
         if (
             experience_rag_enabled()
@@ -10780,6 +11194,8 @@ async def run_agent(
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
+            desktop_companion_mode=_desktop_companion_mode,
+            desktop_companion_context=_desktop_companion_ctx,
         )
     else:
         system_prompt = await _build_system_prompt(
@@ -10798,6 +11214,8 @@ async def run_agent(
             experience_few_shots=_experience_few_shots,
             realtime_web_grounding_block=_realtime_grounding_block,
             domain_experts=_domain_experts_list,
+            desktop_companion_mode=_desktop_companion_mode,
+            desktop_companion_context=_desktop_companion_ctx,
         )
 
     _is_deferred_origin = _bg_channel in ("deferred_task_scheduler", "background_task")
@@ -11324,6 +11742,8 @@ async def run_agent(
                     cancel_event=_cancel_ev,
                     model_override=_direct_model_ov,
                     general_chitchat=_direct_chitchat,
+                    desktop_companion_mode=_desktop_companion_mode,
+                    desktop_companion_context=_desktop_companion_ctx,
                 )
                 messages.append({"role": "assistant", "content": _db_out})
                 if _session_messages is not None:
@@ -11395,6 +11815,8 @@ async def run_agent(
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
                         domain_experts=_domain_experts_list,
+                        desktop_companion_mode=_desktop_companion_mode,
+                        desktop_companion_context=_desktop_companion_ctx,
                     )
                 else:
                     system_prompt = await _build_system_prompt(
@@ -11413,6 +11835,8 @@ async def run_agent(
                         experience_few_shots=_experience_few_shots,
                         realtime_web_grounding_block=_realtime_grounding_block,
                         domain_experts=_domain_experts_list,
+                        desktop_companion_mode=_desktop_companion_mode,
+                        desktop_companion_context=_desktop_companion_ctx,
                     )
 
         if not system_prompt and _system_prompt_override is None:
@@ -11434,6 +11858,8 @@ async def run_agent(
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
                     domain_experts=_domain_experts_list,
+                    desktop_companion_mode=_desktop_companion_mode,
+                    desktop_companion_context=_desktop_companion_ctx,
                 )
             else:
                 system_prompt = await _build_system_prompt(
@@ -11452,6 +11878,8 @@ async def run_agent(
                     experience_few_shots=_experience_few_shots,
                     realtime_web_grounding_block=_realtime_grounding_block,
                     domain_experts=_domain_experts_list,
+                    desktop_companion_mode=_desktop_companion_mode,
+                    desktop_companion_context=_desktop_companion_ctx,
                 )
 
         _md_base: dict[str, Any] = {
@@ -11469,6 +11897,8 @@ async def run_agent(
                 "semantic_layer": dict(_semantic_layer),
                 "experience_few_shots": _experience_few_shots,
                 "realtime_web_grounding_block": _realtime_grounding_block,
+                "desktop_companion_mode": _desktop_companion_mode,
+                "desktop_companion_context": dict(_desktop_companion_ctx),
             },
             "_gw_inject_stored": _gw_inject,
             "_on_chunk": on_chunk,

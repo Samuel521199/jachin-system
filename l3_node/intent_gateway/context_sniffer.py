@@ -1,4 +1,4 @@
-"""
+﻿"""
 Omni-Context Sniffer：入站轻量环境报告（Git + 安全锁摘要 + db_semantics.md / golden_sql），
 硬字符预算，写入 bundle.extra["environment_report"]；并解析 db_semantics.yaml → report["semantic_layer"]（见 workspace_db_context）。
 
@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -24,6 +26,96 @@ logger = logging.getLogger(__name__)
 _MAX_TOTAL_CHARS = 1500
 # Git status + diff --stat 合并上限
 _MAX_GIT_CHARS = 500
+
+_SNIFFER_CACHE_TTL_SEC_DEFAULT = 300.0
+_SNIFFER_CACHE_TTL_SEC_MAX = 1800.0
+_CACHE_LOCK = threading.RLock()
+_GIT_SNIFF_CACHE: dict[str, dict[str, Any]] = {}
+_SAFETY_SNIFF_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _sniffer_cache_ttl_sec() -> float:
+    raw = (os.environ.get("JACHIN_CONTEXT_SNIFFER_TTL_SEC") or "").strip()
+    if not raw:
+        return _SNIFFER_CACHE_TTL_SEC_DEFAULT
+    try:
+        v = float(raw)
+    except ValueError:
+        return _SNIFFER_CACHE_TTL_SEC_DEFAULT
+    return max(0.0, min(v, _SNIFFER_CACHE_TTL_SEC_MAX))
+
+
+def _safe_mtime_ns(path: Path) -> int:
+    try:
+        if path.is_file():
+            return int(path.stat().st_mtime_ns)
+    except OSError:
+        return 0
+    return 0
+
+
+def _git_signature(workspace_dir: str) -> tuple[str, int, int]:
+    cwd = Path(workspace_dir)
+    gd = cwd / ".git"
+    return (
+        str(cwd.resolve()),
+        _safe_mtime_ns(gd / "index"),
+        _safe_mtime_ns(gd / "HEAD"),
+    )
+
+
+def _safety_signature(workspace_dir: str) -> tuple[int, ...]:
+    root = Path(os.environ.get("JACHIN_HOME", str(Path.home() / ".jachin")))
+    sdir = root / "safety_lock"
+    files = [
+        root / "JACHIN_SAFETY_LOCK.md",
+        root / "workspace" / "JACHIN_SAFETY_LOCK.md",
+        sdir / "pin.md",
+        sdir / "db_safety_lock.md",
+        sdir / "shell_safety_lock.md",
+        root / "nexus_config.json",
+        Path(workspace_dir) / ".env",
+    ]
+    return tuple(_safe_mtime_ns(p) for p in files)
+
+
+def _cache_get(
+    store: dict[str, dict[str, Any]],
+    key: str,
+    signature: Any,
+    ttl_sec: float,
+) -> tuple[bool, Any]:
+    if ttl_sec <= 0:
+        return False, None
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        rec = store.get(key)
+        if not rec:
+            return False, None
+        if now - float(rec.get("ts") or 0.0) > ttl_sec:
+            store.pop(key, None)
+            return False, None
+        if rec.get("signature") != signature:
+            store.pop(key, None)
+            return False, None
+        return True, rec.get("value")
+
+
+def _cache_set(
+    store: dict[str, dict[str, Any]],
+    key: str,
+    signature: Any,
+    value: Any,
+    ttl_sec: float,
+) -> None:
+    if ttl_sec <= 0:
+        return
+    with _CACHE_LOCK:
+        store[key] = {
+            "ts": time.monotonic(),
+            "signature": signature,
+            "value": value,
+        }
 
 
 def _truncate(s: str, max_len: int) -> tuple[str, bool]:
@@ -182,8 +274,10 @@ async def build_environment_report(
     """
     _emit_status(on_step, run_id, "⏳ 正在嗅探环境（Git / 安全锁）…")
     ui = (user_input or "").strip()
-
-    git_task = asyncio.to_thread(_git_workspace_snippet, workspace_dir, max_git_chars)
+    ttl_sec = _sniffer_cache_ttl_sec()
+    git_sig = _git_signature(workspace_dir)
+    git_hit, git_cached = _cache_get(_GIT_SNIFF_CACHE, workspace_dir, git_sig, ttl_sec)
+    git_task = None if git_hit else asyncio.to_thread(_git_workspace_snippet, workspace_dir, max_git_chars)
 
     def _safety() -> str:
         try:
@@ -193,9 +287,18 @@ async def build_environment_report(
         except Exception as e:
             logger.debug("[ContextSniffer] safety_lock 失败: %s", e)
             return ""
+    try:
+        from l3_node.routing.output_format_signals import heuristic_safety_lock_domains
 
-    _emit_status(on_step, run_id, "⏳ 正在加载 JACHIN_SAFETY_LOCK 相关摘要…")
-    safety_task = asyncio.to_thread(_safety)
+        _domains = heuristic_safety_lock_domains(ui or "")
+    except Exception:
+        _domains = []
+    safety_key = f"{workspace_dir}|{','.join(sorted(str(d) for d in _domains)) or 'none'}"
+    safety_sig = _safety_signature(workspace_dir)
+    safety_hit, safety_cached = _cache_get(_SAFETY_SNIFF_CACHE, safety_key, safety_sig, ttl_sec)
+    if not safety_hit:
+        _emit_status(on_step, run_id, "⏳ 正在加载 JACHIN_SAFETY_LOCK 相关摘要…")
+    safety_task = None if safety_hit else asyncio.to_thread(_safety)
 
     mem_text, mem_hits = "", []
     _mem_on = False
@@ -250,7 +353,16 @@ async def build_environment_report(
         _to = max(0.35, min(_to, 15.0))
         mem_future = asyncio.create_task(asyncio.wait_for(asyncio.to_thread(_mem), timeout=_to))
 
-    git_info, safety_raw = await asyncio.gather(git_task, safety_task)
+    if git_hit:
+        git_info = git_cached if isinstance(git_cached, dict) else {"ok": False, "combined": ""}
+    else:
+        git_info = await git_task
+        _cache_set(_GIT_SNIFF_CACHE, workspace_dir, git_sig, git_info, ttl_sec)
+    if safety_hit:
+        safety_raw = str(safety_cached or "")
+    else:
+        safety_raw = await safety_task
+        _cache_set(_SAFETY_SNIFF_CACHE, safety_key, safety_sig, safety_raw, ttl_sec)
     if mem_future is not None:
         try:
             mem_text, mem_hits = await mem_future
@@ -343,6 +455,9 @@ async def build_environment_report(
             "max_total_chars": max_total_chars,
             "workspace_dir": workspace_dir[:200],
             "workspace_db_context_enabled": _db_ctx_on,
+            "sniffer_cache_ttl_sec": ttl_sec,
+            "sniffer_cache_hit_git": bool(git_hit),
+            "sniffer_cache_hit_safety_lock": bool(safety_hit),
         },
     }
     _emit_status(on_step, run_id, "✓ 环境嗅探完成，已写入网关上下文（受字符预算约束）。")

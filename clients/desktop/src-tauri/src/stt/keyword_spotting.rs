@@ -1,59 +1,98 @@
-//! 唤醒词检测 (Keyword Spotting)
-//!
-//! 设计：后台 Loop 持续监听麦克风 -> 识别到用户配置的唤醒词/名字 -> 发出 WAKE_UP 事件。
-//! 当前为占位实现：后台循环仅轮询运行标志；真实 KWS 可后续接入 openWakeWord (ONNX) / oww-rs。
+﻿//! 唤醒词检测入口：ambient 下委托 wake_listener；否则仅占位。
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
-/// 全局：是否正在运行唤醒监听
+/// 全局：是否正在运行唤醒监听（非 ambient 占位）
 static WAKE_LISTENER_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// 当前生效的唤醒词/名字（由 start 设置，emit 时带入 payload）
 static CURRENT_WAKE_WORD: RwLock<Option<String>> = RwLock::new(None);
 
-/// 唤醒词检测器
 pub struct WakeWordDetector;
 
 impl WakeWordDetector {
-    /// 事件名：检测到唤醒词时发送到前端
     pub const WAKE_UP_EVENT: &'static str = "WAKE_UP";
 
-    /// 启动唤醒词监听（后台任务）。`wake_word` 为 None 或空时使用 "Jachin"。
-    /// 占位：循环仅检查运行标志；后续接入 cpal + ONNX 后在此循环内采集并推理，得分超阈值时 emit WAKE_UP。
+    /// 桌面启动时是否自动拉起唤醒监听（`start-layer3.ps1` 默认设 `JACHIN_AUTO_WAKE_LISTENER=1`）。
+    pub fn should_auto_start() -> bool {
+        if std::env::var("JACHIN_SKIP_WAKE_LISTENER")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            return false;
+        }
+        if std::env::var("JACHIN_AUTO_WAKE_LISTENER")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            return true;
+        }
+        crate::config::UserSettings::load()
+            .sprite_voice_mode
+            .as_deref()
+            == Some("wake_up")
+    }
+
+    pub fn auto_start_if_enabled(app: AppHandle) {
+        if !Self::should_auto_start() {
+            return;
+        }
+        let word = crate::config::UserSettings::load()
+            .wake_word
+            .filter(|s| !s.trim().is_empty());
+        crate::l3_spawn::write_voice_companion_debug(
+            "rust",
+            "wake.auto_start",
+            word.as_deref().unwrap_or("Jachin"),
+            "",
+        );
+        Self::start(app, word);
+    }
+
     pub fn start(app: AppHandle, wake_word: Option<String>) {
         let word = wake_word
             .filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("JACHIN_WAKE_WORD").ok().filter(|s| !s.trim().is_empty()))
             .unwrap_or_else(|| "Jachin".to_string());
         if let Ok(mut cur) = CURRENT_WAKE_WORD.write() {
             *cur = Some(word.clone());
         }
+
+        #[cfg(feature = "ambient")]
+        {
+            if let Some(state) = app.try_state::<super::wake_listener::WakeListenerState>() {
+                if let Err(e) = state.start(app.clone(), word) {
+                    eprintln!("[Wake] start failed: {}", e);
+                }
+                return;
+            }
+        }
+
         if WAKE_LISTENER_RUNNING.swap(true, Ordering::SeqCst) {
             return;
         }
         tauri::async_runtime::spawn(async move {
-            #[allow(unused_variables)]
-            let app = app;
             while WAKE_LISTENER_RUNNING.load(Ordering::SeqCst) {
-                // 占位：真实实现在此处读麦克风 -> 跑 openWakeWord(当前唤醒词) -> 若检测到则 app.emit(WAKE_UP_EVENT, json!({ wake_word }))
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
         });
     }
 
-    /// 停止唤醒词监听
     pub fn stop() {
+        #[cfg(feature = "ambient")]
+        {
+            // 需要 AppHandle 才能 stop state — 由 stt_stop_wake_listener 直接调 state
+        }
         WAKE_LISTENER_RUNNING.store(false, Ordering::SeqCst);
     }
 
-    /// 是否正在监听
     pub fn is_running() -> bool {
         WAKE_LISTENER_RUNNING.load(Ordering::SeqCst)
     }
 
-    /// 供测试或手动触发：向所有窗口发送 WAKE_UP 事件，payload 含当前唤醒词
     pub fn emit_wake_up(app: &AppHandle) {
         let wake_word = CURRENT_WAKE_WORD
             .read()
