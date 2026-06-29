@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-K11 · Tongits 全自动打牌冒烟（独立入口，验证通过后再并入统合冒烟）。
+K11 · Tongits 自动打牌接管冒烟（独立按钮）。
 
 流程：
 1. 连接调试 Chrome（CDP）或自启 Chromium
-2. 自动点击 Tongits King → Join → 等待进桌
+2. 接管用户已打开的 Tongits 主页面（不再自动进大厅 / 点入口 / Join）
 3. 启动协议 3016 监控 + main_bot_loop 自动出牌
 4. 等待一局结算，发送 Lark 金币变化卡片
 
@@ -75,19 +75,44 @@ async def _acquire_page_cdp(
     target_url: str,
     log: Callable[[str], None],
 ) -> Any:
-    """优先复用含目标域的页签，否则新开并 goto。"""
+    """优先复用已经打开的 Tongits / Kalaroko 页签。"""
+    candidates: list[tuple[int, Any, str]] = []
     for ctx in browser.contexts:
         for pg in ctx.pages:
             try:
                 u = (pg.url or "").lower()
+                frame_urls = []
+                try:
+                    frame_urls = [str(getattr(fr, "url", "") or "").lower() for fr in pg.frames]
+                except Exception:
+                    frame_urls = []
+                joined = "\n".join([u] + frame_urls)
+                score = 0
+                if "game-frame" in joined:
+                    score += 100
+                if "gweb." in joined or "heronpro" in joined:
+                    score += 80
+                if "tongits" in joined:
+                    score += 60
                 if host and host in u:
-                    log(f"  [cdp] 复用页签: {pg.url[:100]}")
-                    return pg
+                    score += 30
+                if "kalaroko.com" in joined:
+                    score += 20
+                if score > 0:
+                    candidates.append((score, pg, pg.url))
             except Exception:
                 continue
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        score, pg, url = candidates[0]
+        log(f"  [cdp] 复用当前页签: score={score} url={url[:160]}")
+        return pg
     ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
     pg = await ctx.new_page()
-    log(f"  [cdp] 新开页签并打开 {target_url}")
+    log(
+        "  [cdp] 未找到已打开的 Kalaroko/Tongits 页签，"
+        f"仅新开目标页用于诊断: {target_url}"
+    )
     await mcp._goto_resilient(pg, target_url, "domcontentloaded", 30_000)
     return pg
 
@@ -115,9 +140,10 @@ async def _async_main(args: argparse.Namespace) -> int:
         if args.verbose or not args.quiet:
             _log_print(msg)
 
-    log("———————— K11 Tongits 全自动打牌冒烟 ————————")
+    log("———————— K11 Tongits 自动打牌接管冒烟 ————————")
     log(f"目标: {target_url}  CDP: {_kalaroko_cdp(args.cdp_http) if use_cdp else '(自启浏览器)'}")
     log(f"等待结算上限: {wait_sec:.0f}s")
+    log("模式: 请先手动打开 Tongits 主页面/牌桌；本脚本只接管当前页面开始打牌，不再自动入场")
 
     my_name = (os.environ.get("K11_TONGITS_MY_NAME") or "victor").strip()
     port = int((os.environ.get("K11_TONGITS_MONITOR_PORT") or "17889").strip() or "17889")
@@ -172,8 +198,8 @@ async def _async_main(args: argparse.Namespace) -> int:
                     preferred_host=h,
                 )
 
-            entered = await session.enter_tongits_on_page(page, target_url=target_url)
-            if not entered:
+            attached = await session.attach_ready_tongits_page(page, target_url=target_url)
+            if not attached:
                 row = session.build_result_row(extra_wait_sec=0)
                 send_tongits_lark_notification(
                     row,
@@ -184,20 +210,58 @@ async def _async_main(args: argparse.Namespace) -> int:
                 )
                 return 1
 
-            log(f"  [tongits] 等待本局结算（最长 {wait_sec:.0f}s）…")
+            log(f"  [tongits] 等待本局协议结算（最长 {wait_sec:.0f}s）…")
             import time as _time
 
             deadline = _time.monotonic() + wait_sec
+            heartbeat_at = _time.monotonic()
             while _time.monotonic() < deadline:
                 if session._last_settlement:
                     break
+                try:
+                    from_proto = session._load_recent_settlement_from_proto_status()
+                    if from_proto:
+                        session._last_settlement = from_proto
+                        break
+                    from_log = session._load_recent_settlement_from_log()
+                    if from_log:
+                        session._last_settlement = from_log
+                        break
+                except Exception:
+                    pass
                 await asyncio.sleep(2.0)
+                now = _time.monotonic()
+                if now >= heartbeat_at:
+                    remain = max(0.0, deadline - now)
+                    bot = session._bot_proc
+                    bot_code = bot.poll() if bot is not None else None
+                    bot_state = (
+                        "未启动"
+                        if bot is None
+                        else ("运行中" if bot_code is None else f"已退出({bot_code})")
+                    )
+                    log(
+                        "  [tongits] 等待结算中..."
+                        f" 剩余 {remain:.0f}s | bot={bot_state} | "
+                        f"settlement={'yes' if session._last_settlement else 'no'}"
+                    )
+                    heartbeat_at = now + 15.0
+            if not session._last_settlement:
+                log(
+                    "  [tongits] 等待结束但未收到协议结算；"
+                    "将发送未监听到结算的 Lark 失败卡片"
+                )
 
             row = session.build_result_row(extra_wait_sec=0)
             v = str(row.get("verdict") or "FAIL")
             log("")
             log(f"[结果] {row.get('verdict_zh')} ({v})")
             log(f"[备注] {row.get('detail', '')[:500]}")
+            settlement = row.get("tongits_settlement")
+            if settlement:
+                log(f"[结算] {settlement}")
+            else:
+                log("[结算] 未收到协议结算")
 
             send_tongits_lark_notification(
                 row,
@@ -246,7 +310,7 @@ def main() -> int:
         "--round-wait-sec",
         type=float,
         default=float(os.environ.get("K11_TONGITS_ROUND_WAIT_SEC") or "600"),
-        help="等待一局 3016 结算的最长秒数（默认 600）",
+        help="等待一局协议结算的最长秒数（默认 600）",
     )
     ap.add_argument("--no-lark-report", action="store_true", help="不发飞书卡片")
     ap.add_argument("--lark-wiki-url", default="", help="飞书 Wiki 链接（卡片展示用）")

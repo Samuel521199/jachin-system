@@ -22,7 +22,7 @@ _SETTLEMENT_RE = re.compile(r"(settle|settlement|result|reward|round_end|game_en
 _COIN_RE = re.compile(r"(coin|gold|balance|wallet|chip|chips|delta|win|lose|profit)", re.I)
 _INT_RE = re.compile(r"[+-]?\d+")
 _DUEL_MSG_TYPES = {"3018"}
-_SETTLEMENT_MSG_TYPES = {"3016", "3021"}
+_SETTLEMENT_MSG_TYPES = {"3016", "3017", "3021"}
 _COIN_MSG_TYPES = {"3016"}  # SSOT：仅 3016 sumWinBonus；3021/3024 不记账
 
 _output_path: Path | None = None
@@ -77,6 +77,27 @@ def _extract_msg_type(payload: dict[str, Any]) -> str:
     return str(raw) if raw is not None else ""
 
 
+def _looks_like_rtc_noise(payload: dict[str, Any], text_blob: str | None = None) -> bool:
+    """Agora/WebRTC telemetry can contain words like result, but it is not game settlement."""
+    url = str(payload.get("url") or "").lower()
+    if "sd-rtn.com" in url or "agora" in url or ".edge." in url and ":471" in url:
+        return True
+    if text_blob is None:
+        text_blob = _to_text_blob(payload)
+    low = text_blob.lower()
+    rtc_tokens = (
+        "agora",
+        "sd-rtn",
+        "rejoin_token",
+        "rtc",
+        "webrtc",
+        "iceparameters",
+        "rtpcapabilities",
+        "dtlsparameters",
+    )
+    return any(token in low for token in rtc_tokens)
+
+
 def _mark_signal_by_msg_type(msg_type: str) -> tuple[str, str, str]:
     """
     显式 msgType 映射（优先级最高）：
@@ -99,6 +120,8 @@ def _mark_signal(payload: dict[str, Any], text_blob: str) -> tuple[str, str, str
     map_duel, map_settlement, map_coin = _mark_signal_by_msg_type(msg_type)
     if map_duel != "-" or map_settlement != "-" or map_coin != "-":
         return map_duel, map_settlement, map_coin
+    if not msg_type and _looks_like_rtc_noise(payload, text_blob):
+        return "-", "-", "-"
 
     compact = f"{msg_type} {text_blob}"
     if _DUEL_RE.search(compact):
@@ -249,13 +272,13 @@ def _get_settlement_monitor(out_dir: Path) -> Any:
 
 def _feed_settlement_monitor(payload: dict[str, Any], out_dir: Path) -> None:
     msg_type = _extract_msg_type(payload)
-    if msg_type != "3016":
+    if msg_type not in ("3016", "3017", "3021"):
         return
     try:
         mon = _get_settlement_monitor(out_dir)
         mon.handle(_normalize_bridge_payload(payload))
     except Exception as exc:
-        print(f"[proto-bridge] 3016 settlement error: {exc}", flush=True)
+        print(f"[proto-bridge] {msg_type} settlement error: {exc}", flush=True)
 
 
 def _init_state() -> dict[str, Any]:

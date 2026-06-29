@@ -43,6 +43,10 @@ export interface UserSettings {
   wake_word?: string | null;
   /** Qwen/通义千问 API Key（保存后持久化，无需每次配置） */
   qwen_api_key?: string | null;
+  /** Windows 文件高危操作是否免确认。默认 false */
+  os_file_dangerous_without_confirm?: boolean | null;
+  /** 飞书/Lark 多维表写入是否免确认。默认 false */
+  lark_bitable_write_without_confirm?: boolean | null;
 }
 
 export interface RuntimeConfig {
@@ -232,6 +236,30 @@ export function SettingsPanel() {
     }
   };
 
+  const handleOsFileDangerousBypassChange = async (value: boolean) => {
+    if (saving || !settings) return;
+    setSaving(true);
+    try {
+      await invoke("update_user_settings", {
+        patch: { ...settings, os_file_dangerous_without_confirm: value },
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleLarkBitableWriteBypassChange = async (value: boolean) => {
+    if (saving || !settings) return;
+    setSaving(true);
+    try {
+      await invoke("update_user_settings", {
+        patch: { ...settings, lark_bitable_write_without_confirm: value },
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSaveApiKey = async () => {
     if (apiKeySaving || !settings) return;
     setApiKeySaving(true);
@@ -348,6 +376,88 @@ export function SettingsPanel() {
                 <div>Run Mode: {config.run_mode}</div>
               </>
             )}
+          </div>
+        </motion.section>
+
+        <motion.section
+          className="glass-panel rounded-xl overflow-hidden"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.035 }}
+        >
+          <div className="px-4 py-3 border-b border-white/10 flex items-center gap-2">
+            <ShieldOff className="w-4 h-4 text-amber-400/90" />
+            <span className="font-mono text-xs uppercase tracking-wider text-slate-400">
+              OS 文件操作确认
+            </span>
+          </div>
+          <div className="p-4 space-y-4">
+            <div className="flex items-start gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  void handleOsFileDangerousBypassChange(
+                    !Boolean(settings?.os_file_dangerous_without_confirm)
+                  )
+                }
+                disabled={saving || !settings}
+                className={cn(
+                  "relative mt-0.5 h-5 w-9 rounded-full border transition-colors disabled:opacity-50",
+                  settings?.os_file_dangerous_without_confirm
+                    ? "bg-amber-500/30 border-amber-400/60"
+                    : "bg-white/5 border-white/15"
+                )}
+                title="切换高危文件操作免确认"
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-slate-100 transition-transform",
+                    settings?.os_file_dangerous_without_confirm ? "translate-x-4" : "translate-x-0.5"
+                  )}
+                />
+              </button>
+              <div className="space-y-1">
+                <div className="text-sm font-mono text-slate-200">
+                  高危文件操作免二次确认
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  默认关闭。关闭时，删除、覆盖、移动到已存在目标等操作会先返回确认请求；开启后，Windows 文件 MCP 可在用户指令明确时直接执行这些高危动作。
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 border-t border-white/10 pt-4">
+              <button
+                type="button"
+                onClick={() =>
+                  void handleLarkBitableWriteBypassChange(
+                    !Boolean(settings?.lark_bitable_write_without_confirm)
+                  )
+                }
+                disabled={saving || !settings}
+                className={cn(
+                  "relative mt-0.5 h-5 w-9 rounded-full border transition-colors disabled:opacity-50",
+                  settings?.lark_bitable_write_without_confirm
+                    ? "bg-amber-500/30 border-amber-400/60"
+                    : "bg-white/5 border-white/15"
+                )}
+                title="切换飞书多维表写入免确认"
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-slate-100 transition-transform",
+                    settings?.lark_bitable_write_without_confirm ? "translate-x-4" : "translate-x-0.5"
+                  )}
+                />
+              </button>
+              <div className="space-y-1">
+                <div className="text-sm font-mono text-slate-200">
+                  飞书多维表写入免二次确认
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  默认关闭。关闭时，新增或修改多维表记录会先返回写入预览；开启后，Lark 多维表 MCP 可在用户指令明确时直接写入并做截图/OCR 校验。
+                </p>
+              </div>
+            </div>
           </div>
         </motion.section>
 

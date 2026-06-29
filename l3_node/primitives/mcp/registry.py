@@ -544,6 +544,339 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "params": ["element_id", "double_click", "button"],
         "long_running": True,
     },
+    {
+        "id": "mcp:uia_snapshot",
+        "label": "mcp:uia_snapshot",
+        "desc": "[L3 local · OS Assistant] Inspect the Windows UI Automation control tree. Use before operating an unknown desktop app when accessible controls may exist. Params: max_depth, name_contains, control_type, limit.",
+        "params": ["max_depth", "name_contains", "control_type", "limit"],
+    },
+    {
+        "id": "mcp:uia_click",
+        "label": "mcp:uia_click",
+        "desc": "[L3 local · OS Assistant] Click a Windows UIA control by accessible name, optionally filtered by control_type or regex. Prefer this over pixel clicking when controls are exposed.",
+        "params": ["name", "control_type", "regex", "timeout"],
+    },
+    {
+        "id": "mcp:uia_set_text",
+        "label": "mcp:uia_set_text",
+        "desc": "[L3 local · OS Assistant] Focus a Windows UIA text control and set or paste text. Use for forms, search boxes, editor fields, and app input controls.",
+        "params": ["name", "text", "control_type", "regex", "timeout", "press_enter"],
+    },
+    {
+        "id": "mcp:uia_focused",
+        "label": "mcp:uia_focused",
+        "desc": "[L3 local · OS Assistant] Return the currently focused Windows UIA control. Use to verify focus before typing or after app navigation.",
+        "params": [],
+    },
+    {
+        "id": "mcp:windows_calculator_calculate",
+        "label": "mcp:windows_calculator_calculate",
+        "desc": "[L3 local · OS Assistant] Open Windows Calculator, type an arithmetic expression, copy/read the result, and verify it. If the user asks to use the computer/calculator for arithmetic, call this tool instead of only calculating in the LLM.",
+        "params": ["expression", "expected", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_notepad_save_text",
+        "label": "mcp:windows_notepad_save_text",
+        "desc": "[L3 local · OS Assistant] Open Notepad, write requested text, save it to target_path, and verify file contents.",
+        "params": ["text", "target_path", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_open_app",
+        "label": "mcp:windows_open_app",
+        "desc": "[L3 local OS Assistant] Open a Windows desktop app by profile/name, focus the correct window, and return verification evidence. Use app_name=lark for Lark/Feishu. This is a generic OS app launcher, not business logic.",
+        "params": ["app_name", "args_json", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_send_message",
+        "label": "mcp:windows_lark_send_message",
+        "desc": "[L3 local OS Assistant] Open Lark/Feishu, search each recipient, preview the target/message, send, and verify with screenshot/OCR. recipients_json must be a JSON array, e.g. [\"Vivian\",\"Samuel\"]. Supports single chats and groups.",
+        "params": ["recipients_json", "message", "out_dir", "max_attempts"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_read_recent_messages",
+        "label": "mcp:windows_lark_read_recent_messages",
+        "desc": "[L3 local OS Assistant] Open a Lark/Feishu chat or group, capture recent message pages with scrolling, OCR them, dedupe lines, and return likely urgent/mention/task lines for summarization.",
+        "params": ["target", "pages", "scroll_clicks", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_read_history",
+        "label": "mcp:windows_lark_read_history",
+        "desc": "[L3 local OS Assistant] Open a Lark/Feishu chat or group, scroll OCR history for a requested window such as 3 days or 7 days, dedupe lines, group by time/date labels, and return evidence for summarization.",
+        "params": ["target", "days", "max_pages", "scroll_clicks", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_open_bitable",
+        "label": "mcp:windows_lark_open_bitable",
+        "desc": "[L3 local OS Assistant] Open a Lark/Feishu Bitable by title through the desktop app, then verify the browser/table view with title/OCR evidence. Use for requests like open P28 AI project progress table.",
+        "params": ["table_name", "out_dir", "max_attempts"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_bitable_add_record",
+        "label": "mcp:windows_lark_bitable_add_record",
+        "desc": "[L3 local OS Assistant] Add a record to a Lark/Feishu Bitable through the browser UI. This writes shared office data and requires confirm=true unless allow_dangerous=true or desktop/env bypass is configured. fields_json is a JSON object keyed by visible field names, e.g. {\"任务\":\"...\"}.",
+        "params": ["table_name", "fields_json", "confirm", "allow_dangerous", "out_dir", "max_attempts"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_bitable_ai_paste_records",
+        "label": "mcp:windows_lark_bitable_ai_paste_records",
+        "desc": "[L3 local OS Assistant] Use Lark/Feishu Bitable AI paste import for multiple records. It opens the table, chooses AI paste import, pastes structured text with target_group such as 2026/6/22, and returns screenshot/OCR evidence for review. This writes/creates shared data and requires confirm=true unless bypass is configured.",
+        "params": ["table_name", "records_text", "target_group", "confirm", "allow_dangerous", "out_dir", "max_attempts"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_lark_bitable_cdp_ai_paste_records",
+        "label": "mcp:windows_lark_bitable_cdp_ai_paste_records",
+        "desc": "[L3 local OS Assistant] Use browser CDP/DOM with the user's logged-in Lark/Feishu session to trigger Bitable AI paste import. This does not require OpenAPI app_token permission. It requires a CDP browser at cdp_url or can launch an isolated Edge/Chrome profile. submit=false enters data for review; submit=true tries to finalize import.",
+        "params": ["table_name", "bitable_url", "records_text", "target_group", "cdp_url", "launch_if_missing", "submit", "confirm", "allow_dangerous", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_active_window",
+        "label": "mcp:windows_active_window",
+        "desc": "[L3 local OS Assistant] Capture current foreground window title, bounds, and screenshot evidence.",
+        "params": ["out_dir"],
+    },
+    {
+        "id": "mcp:windows_window_list",
+        "label": "mcp:windows_window_list",
+        "desc": "[L3 local OS Assistant] List visible top-level Windows windows, active window, process names, and office-related classification.",
+        "params": ["limit", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_window_switch",
+        "label": "mcp:windows_window_switch",
+        "desc": "[L3 local OS Assistant] Focus/switch to a visible Windows window by title/process keywords, then screenshot the active window.",
+        "params": ["keywords", "exclude_keywords", "timeout", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_disk_snapshot",
+        "label": "mcp:windows_disk_snapshot",
+        "desc": "[L3 local OS Assistant] Collect Windows drive free/used space.",
+        "params": ["out_dir"],
+    },
+    {
+        "id": "mcp:windows_network_check",
+        "label": "mcp:windows_network_check",
+        "desc": "[L3 local OS Assistant] Check basic outbound TCP network connectivity to a host/port.",
+        "params": ["host", "port", "timeout", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_power_status",
+        "label": "mcp:windows_power_status",
+        "desc": "[L3 local OS Assistant] Collect battery/power status when available.",
+        "params": ["out_dir"],
+    },
+    {
+        "id": "mcp:windows_process_snapshot",
+        "label": "mcp:windows_process_snapshot",
+        "desc": "[L3 local OS Assistant] Collect top Windows processes by CPU usage and memory.",
+        "params": ["top", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_system_status",
+        "label": "mcp:windows_system_status",
+        "desc": "[L3 local OS Assistant] Collect disk, network, power, and process status in one snapshot.",
+        "params": ["network_host", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_recent_files",
+        "label": "mcp:windows_recent_files",
+        "desc": "[L3 local OS Assistant] Find recently created/modified files under Desktop, Downloads, Documents, project, or custom paths_json, with type classification.",
+        "params": ["paths_json", "since_days", "max_results", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_folder_create",
+        "label": "mcp:windows_folder_create",
+        "desc": "[L3 local OS Assistant] Create a Windows folder and return filesystem evidence.",
+        "params": ["path", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_write_text",
+        "label": "mcp:windows_file_write_text",
+        "desc": "[L3 local OS Assistant] Write a text file. Existing files require confirmation unless allow_dangerous=true or desktop/env dangerous bypass is configured.",
+        "params": ["path", "text", "overwrite", "confirm", "allow_dangerous", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_workspace_report",
+        "label": "mcp:windows_workspace_report",
+        "desc": "[L3 local OS Assistant] Generate a Windows OS workspace report with window list, recent files, system status, and evidence JSON. Good for OS assistant demos.",
+        "params": ["output_path", "since_days", "open_folder", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_evidence_panel",
+        "label": "mcp:windows_evidence_panel",
+        "desc": "[L3 local OS Assistant] Render an OS workflow evidence JSON into a leadership-friendly HTML evidence panel with apps, files, recipients, screenshots/OCR, validations, and output.",
+        "params": ["evidence_path", "title", "open_panel", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_project_remember",
+        "label": "mcp:windows_project_remember",
+        "desc": "[L3 local OS Assistant] Remember a project name to local Windows path mapping. Use the first time the user says a project name such as Jachin and provides its path, so later briefings can resolve the project by name only.",
+        "params": ["project_name", "project_path", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_project_latest_briefing",
+        "label": "mcp:windows_project_latest_briefing",
+        "desc": "[L3 local OS Assistant] Local/offline project progress briefing preview only. Reads Git status/log/diff and files, writes report/evidence, and may use Qwen Coder when available. Do NOT choose this for project/directory/bug briefings that must be sent to Lark/Feishu; use mcp:windows_codex_lark_workflow_template or mcp:windows_codex_project_briefing_to_lark so Codex performs the analysis and Lark delivery is verified by OS evidence.",
+        "params": ["project_name", "project_path", "feature_query", "recipients_json", "since_days", "send_summary", "open_report", "use_qwen", "remember", "max_files", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_codex_project_briefing_to_lark",
+        "label": "mcp:windows_codex_project_briefing_to_lark",
+        "desc": "[L3 local OS Assistant] Multi-app workflow: open/focus Codex desktop, ask Codex to summarize a remembered/provided project, wait for output, copy the result, validate it, then optionally open Lark and send to one or more recipients with evidence.",
+        "params": ["project_name", "project_path", "feature_query", "recipients_json", "since_days", "wait_seconds", "send_summary", "remember", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_codex_lark_workflow_template",
+        "label": "mcp:windows_codex_lark_workflow_template",
+        "desc": "[L3 local OS Assistant] Generic Codex -> Lark workflow template. Supports project summaries, directory summaries, and bug-analysis prompts; remembers first provided paths, sends to one or more Lark users/groups, and returns report/evidence/panel paths.",
+        "params": ["project_name", "project_path", "directory_path", "feature_query", "bug_query", "recipients_json", "since_days", "wait_seconds", "send_summary", "remember", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_codex_lark_standard_demo",
+        "label": "mcp:windows_codex_lark_standard_demo",
+        "desc": "[L3 local OS Assistant] Standard demo workflow: summarize the remembered/provided Jachin/project path with Codex, send the short briefing to one or more Lark users/groups, and produce timeline evidence for the console.",
+        "params": ["project_name", "project_path", "recipients_json", "since_days", "wait_seconds", "send_summary", "remember", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_app_switch_matrix",
+        "label": "mcp:windows_app_switch_matrix",
+        "desc": "[L3 local OS Assistant] Open or focus multiple common Windows apps, avoid duplicate launches when a window is already open, and verify each focused window with screenshot evidence.",
+        "params": ["apps_json", "timeout", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_daily_office_briefing",
+        "label": "mcp:windows_daily_office_briefing",
+        "desc": "[L3 local OS Assistant] Cross-app daily office assistant demo: inspect windows/system status, scan recent files, reveal a key file, generate a Markdown report/evidence JSON, open it for preview, and optionally send the summary to Lark recipients.",
+        "params": ["recipients_json", "paths_json", "since_days", "send_summary", "open_report", "reveal_key_file", "max_files", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_file_bridge_to_app",
+        "label": "mcp:windows_file_bridge_to_app",
+        "desc": "[L3 local OS Assistant] Bridge files into apps: select a provided or recent file, reveal it in Explorer, open/focus the target app, submit the file path to its native file dialog, and return evidence.",
+        "params": ["file_path", "app_name", "paths_json", "since_days", "open_dialog_hotkey", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_os_mission_execute",
+        "label": "mcp:windows_os_mission_execute",
+        "desc": "[L3 local OS Assistant] Execute a declarative multi-app Windows mission from steps_json. Supports window/system/file sensing, app matrix, file reveal/open/bridge, daily briefing, and gated Lark sends with step-by-step evidence.",
+        "params": ["goal", "steps_json", "dry_run", "confirm_send", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:lark_bitable_list_fields",
+        "label": "mcp:lark_bitable_list_fields",
+        "desc": "[L3 local office data] List Lark/Feishu Bitable fields through OpenAPI. Does not use browser/CDP. Accepts app_token/table_id, table_name, or bitable_url.",
+        "params": ["app_token", "table_id", "table_name", "bitable_url", "app_id", "app_secret", "api_base"],
+    },
+    {
+        "id": "mcp:lark_bitable_get_records",
+        "label": "mcp:lark_bitable_get_records",
+        "desc": "[L3 local office data] Read Lark/Feishu Bitable records through OpenAPI for verification or summarization. Does not use browser/CDP.",
+        "params": ["app_token", "table_id", "table_name", "bitable_url", "view_id", "max_records", "app_id", "app_secret", "api_base"],
+    },
+    {
+        "id": "mcp:lark_bitable_create_records",
+        "label": "mcp:lark_bitable_create_records",
+        "desc": "[L3 local office data] Create Lark/Feishu Bitable records through OpenAPI. Reads table fields, maps aliases to field names, supports dry_run, and requires confirm=true unless allow_dangerous=true or desktop/env bypass is configured. This is the preferred stable path for writing Bitable data; UI/OCR verification should be composed separately.",
+        "params": ["records_json", "app_token", "table_id", "table_name", "bitable_url", "field_aliases_json", "dry_run", "confirm", "allow_dangerous", "app_id", "app_secret", "api_base"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_file_find",
+        "label": "mcp:windows_file_find",
+        "desc": "[L3 local OS Assistant] Find files/folders under a Windows path by glob pattern. Read-only.",
+        "params": ["root", "pattern", "max_results", "include_dirs", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_copy",
+        "label": "mcp:windows_file_copy",
+        "desc": "[L3 local OS Assistant] Copy a file with evidence. Overwriting an existing destination is dangerous and requires confirmation unless allow_dangerous=true or desktop/env setting bypasses confirmation.",
+        "params": ["source", "destination", "overwrite", "confirm", "allow_dangerous", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_move",
+        "label": "mcp:windows_file_move",
+        "desc": "[L3 local OS Assistant] Move a file/folder with evidence. Overwriting destination is dangerous and requires confirmation unless allow_dangerous=true or desktop/env setting bypasses confirmation.",
+        "params": ["source", "destination", "overwrite", "confirm", "allow_dangerous", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_rename",
+        "label": "mcp:windows_file_rename",
+        "desc": "[L3 local OS Assistant] Rename a file/folder within its parent. Overwriting destination is dangerous and requires confirmation unless allow_dangerous=true or desktop/env setting bypasses confirmation.",
+        "params": ["path", "new_name", "overwrite", "confirm", "allow_dangerous", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_delete_with_confirm",
+        "label": "mcp:windows_file_delete_with_confirm",
+        "desc": "[L3 local OS Assistant] Delete a file/folder only after confirm=true or dangerous bypass setting. If confirmation is missing, returns confirmation_required with evidence.",
+        "params": ["path", "confirm", "allow_dangerous", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_open",
+        "label": "mcp:windows_file_open",
+        "desc": "[L3 local OS Assistant] Open a file/folder with the Windows default app and capture active-window evidence.",
+        "params": ["path", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_file_reveal_in_explorer",
+        "label": "mcp:windows_file_reveal_in_explorer",
+        "desc": "[L3 local OS Assistant] Reveal/select a file/folder in Windows Explorer and capture evidence.",
+        "params": ["path", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_file_attach_to_app",
+        "label": "mcp:windows_file_attach_to_app",
+        "desc": "[L3 local OS Assistant] Submit a file path to the active/opened app file dialog. Use when attaching/uploading files through native dialogs.",
+        "params": ["file_path", "app_name", "open_dialog_hotkey", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_folder_summarize",
+        "label": "mcp:windows_folder_summarize",
+        "desc": "[L3 local OS Assistant] Summarize a folder tree with file/dir counts, total size, extension counts, and sample entries. Read-only.",
+        "params": ["folder", "max_depth", "max_entries", "out_dir"],
+    },
+    {
+        "id": "mcp:windows_file_dialogs_smoke",
+        "label": "mcp:windows_file_dialogs_smoke",
+        "desc": "[L3 local · OS Assistant] Exercise Windows open-file and save-file dialogs with UIA/keyboard fallback. Use for OS dialog validation and as a building block for file picker handling.",
+        "params": ["out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_browser_address_download_prompt",
+        "label": "mcp:windows_browser_address_download_prompt",
+        "desc": "[L3 local · OS Assistant] Open Chrome/Edge, use the address bar, attempt a download, and handle browser prompts. Use for browser-level OS workflows rather than DOM testing.",
+        "params": ["url", "out_dir"],
+        "long_running": True,
+    },
+    {
+        "id": "mcp:windows_popup_action",
+        "label": "mcp:windows_popup_action",
+        "desc": "[L3 local · OS Assistant] Open or handle a native Windows popup and confirm, cancel, or close it. Params: action=confirm|cancel|close.",
+        "params": ["action", "out_dir"],
+        "long_running": True,
+    },
 ]
 
 
@@ -553,6 +886,61 @@ def _mcp_id_raw_local_part(tool_id: str) -> str:
     if s.lower().startswith(MCP_TOOLS_PREFIX.lower()):
         return s[len(MCP_TOOLS_PREFIX) :].strip().lower()
     return s.lower()
+
+
+_BUSINESS_MCP_RAW_PREFIXES = ("atom_", "pmo_")
+_BUSINESS_MCP_RAW_NAMES = frozenset(
+    {
+        "add_automated_recruitment_task",
+        "hr_scheduler_send_confirm_prompt",
+        "stop_automated_recruitment",
+        "get_recruitment_job_memory",
+        "list_hr_scheduler_suspended_jobs",
+        "resume_hr_job_scheduler",
+        "harvest_resume_full_flow",
+        "brain_filter",
+        "local_archiver",
+    }
+)
+
+
+def _truthy_env(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _business_mcp_tools_enabled() -> bool:
+    return any(
+        _truthy_env(name)
+        for name in (
+            "JACHIN_ENABLE_BUSINESS_MCP_TOOLS",
+            "JACHIN_ENABLE_PMO_LOCAL_MCP_TOOLS",
+            "JACHIN_PMO_COPILOT_RUN",
+        )
+    )
+
+
+def _extra_visible_mcp_raw_names() -> frozenset[str]:
+    raw = (os.environ.get("JACHIN_L3_LOCAL_MCP_ALLOW_TOOLS") or "").strip()
+    return frozenset(x.strip().lower().removeprefix("mcp:") for x in raw.split(",") if x.strip())
+
+
+def _is_business_mcp_raw_name(raw_name: str) -> bool:
+    raw = (raw_name or "").strip().lower().removeprefix("mcp:")
+    return raw in _BUSINESS_MCP_RAW_NAMES or any(raw.startswith(p) for p in _BUSINESS_MCP_RAW_PREFIXES)
+
+
+def _mcp_raw_visible_in_default_pool(raw_name: str) -> bool:
+    raw = (raw_name or "").strip().lower().removeprefix("mcp:")
+    if not raw:
+        return False
+    if _business_mcp_tools_enabled() or raw in _extra_visible_mcp_raw_names():
+        return True
+    return not _is_business_mcp_raw_name(raw)
+
+
+L3_LOCAL_MCP_TOOLS = [
+    t for t in L3_LOCAL_MCP_TOOLS if _mcp_raw_visible_in_default_pool(_mcp_id_raw_local_part(str(t.get("id", ""))))
+]
 
 
 def _normalize_apply_professional_design_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -1766,6 +2154,9 @@ class MCPToolRegistry:
             if raw_ct in local_raw_names:
                 logger.debug("[MCP Registry] 跳过 l3_mcp_cache 工具（与 L3_LOCAL 裸名重复）: %s", ct_id)
                 continue
+            if not _mcp_raw_visible_in_default_pool(raw_ct):
+                logger.debug("[MCP Registry] l3_mcp_cache business MCP hidden by default: %s", ct_id)
+                continue
             if raw_ct in deny_raw:
                 logger.debug("[MCP Registry] 跳过 l3_mcp_cache 工具（JACHIN_L3_MCP_DENY_TOOLS）: %s", ct_id)
                 continue
@@ -1824,6 +2215,9 @@ class MCPToolRegistry:
                 name = (t.get("name") or "").strip()
                 raw_n = name.lower()
                 if not name or raw_n in local_raw_names:
+                    continue
+                if not _mcp_raw_visible_in_default_pool(raw_n):
+                    logger.debug("[MCP Registry] stdio business MCP hidden by default: %s", name)
                     continue
                 if raw_n in deny_raw:
                     logger.debug("[MCP Registry] stdio 工具被 JACHIN_L3_MCP_DENY_TOOLS 排除: %s", name)
@@ -1889,6 +2283,9 @@ class MCPToolRegistry:
             name = t.get("name", "").strip()
             raw_n = name.lower()
             if not name or raw_n in local_raw_names:
+                continue
+            if not _mcp_raw_visible_in_default_pool(raw_n):
+                logger.debug("[MCP Registry] L2 business MCP hidden by default: %s", name)
                 continue
             if raw_n in deny_raw:
                 logger.debug("[MCP Registry] L2 工具被 JACHIN_L3_MCP_DENY_TOOLS 排除: %s", name)
@@ -2588,6 +2985,548 @@ class MCPToolRegistry:
                 )
 
             # GameQA：进程内会话，可与 /api/v1/gameqa/log-stream 共用单例
+            if raw_name in {
+                "lark_bitable_list_fields",
+                "lark_bitable_get_records",
+                "lark_bitable_create_records",
+            }:
+                from l3_node.primitives.mcp.mcp_tools import lark_bitable_ops
+
+                def _bool_arg(value: Any) -> bool:
+                    if isinstance(value, bool):
+                        return value
+                    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+                if raw_name == "lark_bitable_list_fields":
+                    raw = lark_bitable_ops.lark_bitable_list_fields(
+                        app_token=str(arguments.get("app_token") or ""),
+                        table_id=str(arguments.get("table_id") or ""),
+                        table_name=str(arguments.get("table_name") or arguments.get("name") or ""),
+                        bitable_url=str(arguments.get("bitable_url") or arguments.get("url") or ""),
+                        app_id=str(arguments.get("app_id") or ""),
+                        app_secret=str(arguments.get("app_secret") or ""),
+                        api_base=str(arguments.get("api_base") or ""),
+                    )
+                elif raw_name == "lark_bitable_get_records":
+                    raw = lark_bitable_ops.lark_bitable_get_records(
+                        app_token=str(arguments.get("app_token") or ""),
+                        table_id=str(arguments.get("table_id") or ""),
+                        table_name=str(arguments.get("table_name") or arguments.get("name") or ""),
+                        bitable_url=str(arguments.get("bitable_url") or arguments.get("url") or ""),
+                        view_id=str(arguments.get("view_id") or ""),
+                        max_records=int(arguments.get("max_records") or 20),
+                        app_id=str(arguments.get("app_id") or ""),
+                        app_secret=str(arguments.get("app_secret") or ""),
+                        api_base=str(arguments.get("api_base") or ""),
+                    )
+                else:
+                    _records_arg = arguments.get("records_json") or arguments.get("records") or "[]"
+                    if not isinstance(_records_arg, str):
+                        _records_arg = json.dumps(_records_arg, ensure_ascii=False)
+                    _aliases_arg = arguments.get("field_aliases_json") or arguments.get("field_aliases") or "{}"
+                    if not isinstance(_aliases_arg, str):
+                        _aliases_arg = json.dumps(_aliases_arg, ensure_ascii=False)
+                    raw = lark_bitable_ops.lark_bitable_create_records(
+                        records_json=str(_records_arg),
+                        app_token=str(arguments.get("app_token") or ""),
+                        table_id=str(arguments.get("table_id") or ""),
+                        table_name=str(arguments.get("table_name") or arguments.get("name") or ""),
+                        bitable_url=str(arguments.get("bitable_url") or arguments.get("url") or ""),
+                        field_aliases_json=str(_aliases_arg),
+                        dry_run=_bool_arg(arguments.get("dry_run")),
+                        confirm=_bool_arg(arguments.get("confirm")),
+                        allow_dangerous=_bool_arg(arguments.get("allow_dangerous")),
+                        app_id=str(arguments.get("app_id") or ""),
+                        app_secret=str(arguments.get("app_secret") or ""),
+                        api_base=str(arguments.get("api_base") or ""),
+                    )
+                return json.dumps(raw, ensure_ascii=False)
+
+            if raw_name in {
+                "uia_snapshot",
+                "uia_click",
+                "uia_set_text",
+                "uia_focused",
+                "windows_calculator_calculate",
+                "windows_notepad_save_text",
+                "windows_open_app",
+                "windows_lark_send_message",
+                "windows_lark_read_recent_messages",
+                "windows_lark_read_history",
+                "windows_lark_open_bitable",
+                "windows_lark_bitable_add_record",
+                "windows_lark_bitable_ai_paste_records",
+                "windows_lark_bitable_cdp_ai_paste_records",
+                "windows_active_window",
+                "windows_window_list",
+                "windows_window_switch",
+                "windows_disk_snapshot",
+                "windows_network_check",
+                "windows_power_status",
+                "windows_process_snapshot",
+                "windows_system_status",
+                "windows_recent_files",
+                "windows_folder_create",
+                "windows_file_write_text",
+                "windows_workspace_report",
+                "windows_evidence_panel",
+                "windows_project_remember",
+                "windows_project_latest_briefing",
+                "windows_codex_project_briefing_to_lark",
+                "windows_codex_lark_workflow_template",
+                "windows_codex_lark_standard_demo",
+                "windows_app_switch_matrix",
+                "windows_daily_office_briefing",
+                "windows_file_bridge_to_app",
+                "windows_os_mission_execute",
+                "windows_file_find",
+                "windows_file_copy",
+                "windows_file_move",
+                "windows_file_rename",
+                "windows_file_delete_with_confirm",
+                "windows_file_open",
+                "windows_file_reveal_in_explorer",
+                "windows_file_attach_to_app",
+                "windows_folder_summarize",
+                "windows_file_dialogs_smoke",
+                "windows_browser_address_download_prompt",
+                "windows_popup_action",
+            }:
+                from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
+
+                def _bool_arg(value: Any) -> bool:
+                    if isinstance(value, bool):
+                        return value
+                    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+                if raw_name == "uia_snapshot":
+                    return await asyncio.to_thread(
+                        windows_uia_server.uia_snapshot,
+                        int(arguments.get("max_depth") or 5),
+                        str(arguments.get("name_contains") or ""),
+                        str(arguments.get("control_type") or ""),
+                        int(arguments.get("limit") or 80),
+                    )
+                if raw_name == "uia_click":
+                    return await asyncio.to_thread(
+                        windows_uia_server.uia_click,
+                        str(arguments.get("name") or ""),
+                        str(arguments.get("control_type") or ""),
+                        _bool_arg(arguments.get("regex")),
+                        float(arguments.get("timeout") or 5.0),
+                    )
+                if raw_name == "uia_set_text":
+                    return await asyncio.to_thread(
+                        windows_uia_server.uia_set_text,
+                        str(arguments.get("name") or ""),
+                        str(arguments.get("text") or ""),
+                        str(arguments.get("control_type") or ""),
+                        _bool_arg(arguments.get("regex")),
+                        float(arguments.get("timeout") or 5.0),
+                        _bool_arg(arguments.get("press_enter")),
+                    )
+                if raw_name == "uia_focused":
+                    return await asyncio.to_thread(windows_uia_server.uia_focused)
+                if raw_name == "windows_calculator_calculate":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_calculator_calculate,
+                        str(arguments.get("expression") or ""),
+                        str(arguments.get("expected") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_notepad_save_text":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_notepad_save_text,
+                        str(arguments.get("text") or ""),
+                        str(arguments.get("target_path") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_open_app":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_open_app,
+                        str(arguments.get("app_name") or ""),
+                        str(arguments.get("args_json") or "[]"),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_lark_send_message":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_send_message,
+                        str(arguments.get("recipients_json") or arguments.get("recipients") or "[]"),
+                        str(arguments.get("message") or ""),
+                        str(arguments.get("out_dir") or ""),
+                        int(arguments.get("max_attempts") or 2),
+                    )
+                if raw_name == "windows_lark_read_recent_messages":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_read_recent_messages,
+                        str(arguments.get("target") or ""),
+                        int(arguments.get("pages") or 3),
+                        int(arguments.get("scroll_clicks") or 5),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_lark_read_history":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_read_history,
+                        str(arguments.get("target") or ""),
+                        int(arguments.get("days") or 7),
+                        int(arguments.get("max_pages") or 18),
+                        int(arguments.get("scroll_clicks") or 6),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_lark_open_bitable":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_open_bitable,
+                        str(arguments.get("table_name") or arguments.get("name") or ""),
+                        str(arguments.get("out_dir") or ""),
+                        int(arguments.get("max_attempts") or 2),
+                    )
+                if raw_name == "windows_lark_bitable_add_record":
+                    _fields_arg = arguments.get("fields_json") or arguments.get("fields") or "{}"
+                    if not isinstance(_fields_arg, str):
+                        _fields_arg = json.dumps(_fields_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_bitable_add_record,
+                        str(arguments.get("table_name") or arguments.get("name") or ""),
+                        str(_fields_arg),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                        int(arguments.get("max_attempts") or 2),
+                    )
+                if raw_name == "windows_lark_bitable_ai_paste_records":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_bitable_ai_paste_records,
+                        str(arguments.get("table_name") or arguments.get("name") or ""),
+                        str(arguments.get("records_text") or arguments.get("text") or ""),
+                        str(arguments.get("target_group") or "2026/6/22"),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                        int(arguments.get("max_attempts") or 2),
+                    )
+                if raw_name == "windows_lark_bitable_cdp_ai_paste_records":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_lark_bitable_cdp_ai_paste_records,
+                        str(arguments.get("table_name") or arguments.get("name") or ""),
+                        str(arguments.get("bitable_url") or arguments.get("url") or ""),
+                        str(arguments.get("records_text") or arguments.get("text") or ""),
+                        str(arguments.get("target_group") or "2026/6/22"),
+                        str(arguments.get("cdp_url") or "http://127.0.0.1:9222"),
+                        _bool_arg(arguments.get("launch_if_missing", True)),
+                        _bool_arg(arguments.get("submit")),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_active_window":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_active_window,
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_window_list":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_window_list,
+                        int(arguments.get("limit") or 80),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_window_switch":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_window_switch,
+                        str(arguments.get("keywords") or arguments.get("keyword") or ""),
+                        str(arguments.get("exclude_keywords") or ""),
+                        float(arguments.get("timeout") or 5.0),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_disk_snapshot":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_disk_snapshot,
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_network_check":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_network_check,
+                        str(arguments.get("host") or "www.baidu.com"),
+                        int(arguments.get("port") or 443),
+                        float(arguments.get("timeout") or 3.0),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_power_status":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_power_status,
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_process_snapshot":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_process_snapshot,
+                        int(arguments.get("top") or 10),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_system_status":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_system_status,
+                        str(arguments.get("network_host") or "www.baidu.com"),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_recent_files":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_recent_files,
+                        str(arguments.get("paths_json") or arguments.get("paths") or ""),
+                        int(arguments.get("since_days") or 1),
+                        int(arguments.get("max_results") or 200),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_folder_create":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_folder_create,
+                        str(arguments.get("path") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_write_text":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_write_text,
+                        str(arguments.get("path") or ""),
+                        str(arguments.get("text") or ""),
+                        _bool_arg(arguments.get("overwrite")),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_workspace_report":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_workspace_report,
+                        str(arguments.get("output_path") or ""),
+                        int(arguments.get("since_days") or 1),
+                        _bool_arg(arguments.get("open_folder")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_evidence_panel":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_evidence_panel,
+                        str(arguments.get("evidence_path") or arguments.get("path") or ""),
+                        str(arguments.get("title") or ""),
+                        _bool_arg(arguments.get("open_panel")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_project_remember":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_project_remember,
+                        str(arguments.get("project_name") or arguments.get("name") or ""),
+                        str(arguments.get("project_path") or arguments.get("path") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_project_latest_briefing":
+                    _recipients_arg = arguments.get("recipients_json") or arguments.get("recipients") or "[]"
+                    if not isinstance(_recipients_arg, str):
+                        _recipients_arg = json.dumps(_recipients_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_project_latest_briefing,
+                        str(arguments.get("project_name") or arguments.get("name") or ""),
+                        str(arguments.get("project_path") or arguments.get("path") or ""),
+                        str(arguments.get("feature_query") or arguments.get("feature") or ""),
+                        str(_recipients_arg),
+                        int(arguments.get("since_days") or 3),
+                        _bool_arg(arguments.get("send_summary")),
+                        _bool_arg(arguments.get("open_report", True)),
+                        _bool_arg(arguments.get("use_qwen", True)),
+                        _bool_arg(arguments.get("remember", True)),
+                        int(arguments.get("max_files") or 80),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_codex_project_briefing_to_lark":
+                    _recipients_arg = arguments.get("recipients_json") or arguments.get("recipients") or "[]"
+                    if not isinstance(_recipients_arg, str):
+                        _recipients_arg = json.dumps(_recipients_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_codex_project_briefing_to_lark,
+                        str(arguments.get("project_name") or arguments.get("name") or ""),
+                        str(arguments.get("project_path") or arguments.get("path") or ""),
+                        str(arguments.get("feature_query") or arguments.get("feature") or ""),
+                        str(_recipients_arg),
+                        int(arguments.get("since_days") or 3),
+                        int(arguments.get("wait_seconds") or 90),
+                        _bool_arg(arguments.get("send_summary")),
+                        _bool_arg(arguments.get("remember", True)),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_codex_lark_workflow_template":
+                    _recipients_arg = arguments.get("recipients_json") or arguments.get("recipients") or "[]"
+                    if not isinstance(_recipients_arg, str):
+                        _recipients_arg = json.dumps(_recipients_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_codex_lark_workflow_template,
+                        str(arguments.get("project_name") or arguments.get("name") or ""),
+                        str(arguments.get("project_path") or arguments.get("path") or ""),
+                        str(arguments.get("directory_path") or arguments.get("directory") or ""),
+                        str(arguments.get("feature_query") or arguments.get("feature") or ""),
+                        str(arguments.get("bug_query") or arguments.get("bug") or ""),
+                        str(_recipients_arg),
+                        int(arguments.get("since_days") or 3),
+                        int(arguments.get("wait_seconds") or 90),
+                        _bool_arg(arguments.get("send_summary")),
+                        _bool_arg(arguments.get("remember", True)),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_codex_lark_standard_demo":
+                    _recipients_arg = arguments.get("recipients_json") or arguments.get("recipients") or "[]"
+                    if not isinstance(_recipients_arg, str):
+                        _recipients_arg = json.dumps(_recipients_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_codex_lark_standard_demo,
+                        str(arguments.get("project_name") or arguments.get("name") or "Jachin"),
+                        str(arguments.get("project_path") or arguments.get("path") or ""),
+                        str(_recipients_arg),
+                        int(arguments.get("since_days") or 3),
+                        int(arguments.get("wait_seconds") or 120),
+                        _bool_arg(arguments.get("send_summary", True)),
+                        _bool_arg(arguments.get("remember", True)),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_app_switch_matrix":
+                    _apps_arg = arguments.get("apps_json") or arguments.get("apps") or ""
+                    if not isinstance(_apps_arg, str):
+                        _apps_arg = json.dumps(_apps_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_app_switch_matrix,
+                        str(_apps_arg),
+                        float(arguments.get("timeout") or 4.0),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_daily_office_briefing":
+                    _recipients_arg = arguments.get("recipients_json") or arguments.get("recipients") or "[]"
+                    if not isinstance(_recipients_arg, str):
+                        _recipients_arg = json.dumps(_recipients_arg, ensure_ascii=False)
+                    _paths_arg = arguments.get("paths_json") or arguments.get("paths") or ""
+                    if not isinstance(_paths_arg, str):
+                        _paths_arg = json.dumps(_paths_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_daily_office_briefing,
+                        str(_recipients_arg),
+                        str(_paths_arg),
+                        int(arguments.get("since_days") or 1),
+                        _bool_arg(arguments.get("send_summary")),
+                        _bool_arg(arguments.get("open_report", True)),
+                        _bool_arg(arguments.get("reveal_key_file", True)),
+                        int(arguments.get("max_files") or 60),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_bridge_to_app":
+                    _paths_arg = arguments.get("paths_json") or arguments.get("paths") or ""
+                    if not isinstance(_paths_arg, str):
+                        _paths_arg = json.dumps(_paths_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_bridge_to_app,
+                        str(arguments.get("file_path") or arguments.get("path") or ""),
+                        str(arguments.get("app_name") or arguments.get("app") or ""),
+                        str(_paths_arg),
+                        int(arguments.get("since_days") or 1),
+                        str(arguments.get("open_dialog_hotkey") or "ctrl+o"),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_os_mission_execute":
+                    _steps_arg = arguments.get("steps_json") or arguments.get("steps") or ""
+                    if not isinstance(_steps_arg, str):
+                        _steps_arg = json.dumps(_steps_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_os_mission_execute,
+                        str(arguments.get("goal") or ""),
+                        str(_steps_arg),
+                        _bool_arg(arguments.get("dry_run")),
+                        _bool_arg(arguments.get("confirm_send")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_find":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_find,
+                        str(arguments.get("root") or ""),
+                        str(arguments.get("pattern") or "*"),
+                        int(arguments.get("max_results") or 100),
+                        _bool_arg(arguments.get("include_dirs", True)),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_copy":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_copy,
+                        str(arguments.get("source") or ""),
+                        str(arguments.get("destination") or ""),
+                        _bool_arg(arguments.get("overwrite")),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_move":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_move,
+                        str(arguments.get("source") or ""),
+                        str(arguments.get("destination") or ""),
+                        _bool_arg(arguments.get("overwrite")),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_rename":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_rename,
+                        str(arguments.get("path") or ""),
+                        str(arguments.get("new_name") or ""),
+                        _bool_arg(arguments.get("overwrite")),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_delete_with_confirm":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_delete_with_confirm,
+                        str(arguments.get("path") or ""),
+                        _bool_arg(arguments.get("confirm")),
+                        _bool_arg(arguments.get("allow_dangerous")),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_open":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_open,
+                        str(arguments.get("path") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_reveal_in_explorer":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_reveal_in_explorer,
+                        str(arguments.get("path") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_attach_to_app":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_attach_to_app,
+                        str(arguments.get("file_path") or arguments.get("path") or ""),
+                        str(arguments.get("app_name") or ""),
+                        str(arguments.get("open_dialog_hotkey") or "ctrl+o"),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_folder_summarize":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_folder_summarize,
+                        str(arguments.get("folder") or ""),
+                        int(arguments.get("max_depth") or 2),
+                        int(arguments.get("max_entries") or 300),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_file_dialogs_smoke":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_file_dialogs_smoke,
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_browser_address_download_prompt":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_browser_address_download_prompt,
+                        str(arguments.get("url") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_popup_action":
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_popup_action,
+                        str(arguments.get("action") or ""),
+                        str(arguments.get("out_dir") or ""),
+                    )
+
             if raw_name == "tool_read_knowledge":
                 from l3_client.local_mcps.gameqa_mcp.session_service import get_gameqa_service
 

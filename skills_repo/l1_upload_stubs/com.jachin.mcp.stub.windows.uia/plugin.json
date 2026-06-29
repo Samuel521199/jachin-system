@@ -1,0 +1,21 @@
+{
+  "id": "com.jachin.mcp.stub.windows.uia",
+  "name": "MCP Windows UI Automation",
+  "version": "1.0.0",
+  "description": "Jachin local Windows UIA MCP. It inspects the Windows accessibility tree, clicks controls by name, and sets text through UI Automation.",
+  "type": "mcp",
+  "item_type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "windows-uia",
+    "command": "__JACHIN_MCP_PYTHON__",
+    "args": [
+      "-m",
+      "l3_client.local_mcps.windows_uia_mcp.server"
+    ],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}

@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Briefcase,
   BarChart3,
+  MonitorCheck,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { SystemHeartbeat } from "./components/SystemHeartbeat";
@@ -60,6 +61,12 @@ const navItems = [
     label: "游戏测试",
     icon: Gamepad2,
     title: "GameQA：本地 MCP 语义测试 / 影子示教（l3_client/local_mcps/gameqa_mcp）",
+  },
+  {
+    path: "/os-evidence",
+    label: "OS 证据链",
+    icon: MonitorCheck,
+    title: "OS Assistant：跨 App 任务 evidence、截图/OCR、报告与发送校验",
   },
   {
     path: "/pmo",

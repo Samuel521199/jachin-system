@@ -638,8 +638,8 @@ export function K11UnifiedSmokeTest() {
       setExitCode(null);
       setUnifiedLogs([
         "> 正在探测本机 L3 技能 HTTP…",
-        "> 模式：Tongits 全自动打牌（test_k11_tongits_autoplay_smoke.py -v）",
-        "> 将自动点击 Tongits King → Join → 等待进桌 → main_bot_loop 出牌 → 3016 结算 → Lark 卡片",
+        "> 模式：Tongits 当前牌桌接管（test_k11_tongits_autoplay_smoke.py -v）",
+        "> 请先手动打开 Tongits 主页面/牌桌；按钮只启动 main_bot_loop 出牌 → 3016 结算 → Lark 卡片",
       ]);
       let streamUrl: string;
       try {
@@ -663,6 +663,7 @@ export function K11UnifiedSmokeTest() {
         [
           "> 初始化 Tongits 自动打牌冒烟…",
           "> 等效: python scripts/test_k11_tongits_autoplay_smoke.py -v",
+          "> 前提: Chrome 当前已有 Tongits 主页面/牌桌，本轮不再自动入场…",
           "> 连接 L3 SSE 流…",
         ],
         "Tongits 自动打牌已完成（退出码 0）"
@@ -798,9 +799,9 @@ export function K11UnifiedSmokeTest() {
                   ? "cursor-not-allowed border-slate-700 bg-slate-900/50 text-slate-600"
                   : "border-amber-500/50 bg-amber-950/40 text-amber-100 shadow-[0_0_16px_rgba(245,158,11,0.2)] hover:bg-amber-900/50"
               )}
-              title="python scripts/test_k11_tongits_autoplay_smoke.py -v（全自动进 Tongits + 打牌 + Lark 金币结算）"
+              title="python scripts/test_k11_tongits_autoplay_smoke.py -v（接管当前 Tongits 牌桌 + 打牌 + Lark 金币结算）"
             >
-              {l3Probing ? "探测 L3…" : "🃏 Tongits 自动打牌"}
+              {l3Probing ? "探测 L3…" : "🃏 Tongits 接管打牌"}
             </button>
             <button
               type="button"

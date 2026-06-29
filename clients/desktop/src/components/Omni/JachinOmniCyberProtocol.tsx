@@ -283,6 +283,14 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
   const canVoice = voiceGate && !isLoading;
   const voiceVisual = interactionPhase !== "text";
   const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
+  const handleQuickReply = useCallback(
+    (text: string) => {
+      if (disabled || isLoading || isTyping) return;
+      onInputChange(text);
+      window.setTimeout(() => onSend(), 0);
+    },
+    [disabled, isLoading, isTyping, onInputChange, onSend],
+  );
 
   const riskBorder =
     riskLevel === "danger"
@@ -522,6 +530,7 @@ export const OmniCyberChatShell: React.FC<OmniCyberChatShellProps> = ({
                               isTyping={isTyping}
                               variant="markdown"
                               onToolUiResult={onToolUiResult}
+                              onQuickReply={handleQuickReply}
                             />
                           </div>
                         </div>

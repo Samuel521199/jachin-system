@@ -15,22 +15,71 @@ from __future__ import annotations
 import logging
 import sys
 from contextlib import asynccontextmanager
+from importlib import import_module
+from pathlib import Path
 from typing import TextIO
 
 import anyio
 import anyio.lowlevel
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from anyio.streams.text import TextReceiveStream
-from mcp import types as types
-from mcp.client.stdio import (
-    PROCESS_TERMINATION_TIMEOUT,
-    StdioServerParameters,
-    _create_platform_compatible_process,
-    _get_executable_command,
-    _terminate_process_tree,
-    get_default_environment,
-)
-from mcp.shared.message import SessionMessage
+
+
+def _import_official_mcp_modules():
+    """Import the PyPI ``mcp`` SDK even if ``l3_node/primitives`` shadows it.
+
+    Some desktop/dev launch paths put ``l3_node/primitives`` on ``sys.path``.
+    That makes ``import mcp`` resolve to Jachin's internal
+    ``l3_node/primitives/mcp`` package, which has no ``types`` module and
+    breaks the stdio host at startup.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    local_primitives = (repo_root / "l3_node" / "primitives").resolve()
+    local_mcp = (local_primitives / "mcp").resolve()
+
+    def _is_local_mcp_module(mod: object) -> bool:
+        raw = getattr(mod, "__file__", "") or ""
+        if not raw:
+            return False
+        try:
+            Path(raw).resolve().relative_to(local_mcp)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    removed_paths: list[tuple[int, str]] = []
+    for i, raw in reversed(list(enumerate(sys.path))):
+        try:
+            if Path(raw or ".").resolve() == local_primitives:
+                removed_paths.append((i, raw))
+                sys.path.pop(i)
+        except OSError:
+            continue
+
+    if _is_local_mcp_module(sys.modules.get("mcp")):
+        for name in [k for k in sys.modules if k == "mcp" or k.startswith("mcp.")]:
+            sys.modules.pop(name, None)
+
+    try:
+        types_mod = import_module("mcp.types")
+        stdio_mod = import_module("mcp.client.stdio")
+        message_mod = import_module("mcp.shared.message")
+    finally:
+        for i, raw in sorted(removed_paths):
+            if raw not in sys.path:
+                sys.path.insert(min(i, len(sys.path)), raw)
+
+    return types_mod, stdio_mod, message_mod
+
+
+types, _mcp_stdio_mod, _mcp_message_mod = _import_official_mcp_modules()
+PROCESS_TERMINATION_TIMEOUT = _mcp_stdio_mod.PROCESS_TERMINATION_TIMEOUT
+StdioServerParameters = _mcp_stdio_mod.StdioServerParameters
+_create_platform_compatible_process = _mcp_stdio_mod._create_platform_compatible_process
+_get_executable_command = _mcp_stdio_mod._get_executable_command
+_terminate_process_tree = _mcp_stdio_mod._terminate_process_tree
+get_default_environment = _mcp_stdio_mod.get_default_environment
+SessionMessage = _mcp_message_mod.SessionMessage
 
 logger = logging.getLogger(__name__)
 

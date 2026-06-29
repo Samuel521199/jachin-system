@@ -557,26 +557,16 @@ def dispatch_native_tool(tool_id: str, **kwargs: Any) -> Any:
         from l3_node.skills.native_tools.akshare_tools import dispatch_akshare_core
 
         return dispatch_akshare_core(tool_id, **kwargs)
-    if tool_id in (
-        "core:db_query",
-        "core:db_write",
-        "core:pmo_import_json",
-        "core:pmo_init_gap_report",
-        "core:pmo_mirror_import",
-        "core:pmo_personnel_report",
-        "core:pmo_sprint_epic_report",
-        "core:pmo_resolve_sprint",
-        "core:pmo_release_epic_mapping",
-        "core:pmo_macro_dashboard_push",
-        "core:pmo_macro_dashboard_preview",
-        "core:pmo_bitable_watch_tick",
-        "core:pmo_bitable_watch_status",
-        "core:pmo_change_diff",
-        "core:pmo_change_alert_analyze",
-    ):
-        from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
+    try:
+        from l3_node.primitives.tools.native_extensions import (
+            dispatch_native_extension_tool,
+            is_native_extension_tool,
+        )
 
-        return dispatch_pmo_db_tool(tool_id, **kwargs)
+        if is_native_extension_tool(tool_id):
+            return dispatch_native_extension_tool(tool_id, **kwargs)
+    except Exception:
+        pass
     raise ValueError(f"Unknown Native Core tool: {tool_id}")
 
 

@@ -270,10 +270,11 @@ export default function ChatPanel() {
     return () => registerMirrorInputHandler(null);
   }, [isLoading, isTyping, registerChunkHandler, registerAnswerHandler, registerStepHandler, registerMirrorInputHandler]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading || isTyping) return;
+  const handleSend = async (overrideText?: string) => {
+    const pendingInput = (overrideText ?? input).trim();
+    if (!pendingInput || isLoading || isTyping) return;
 
-    if (input.trim() === "/clear") {
+    if (pendingInput === "/clear") {
       registerChunkHandler(null);
       registerAnswerHandler(null);
       registerStepHandler(null);
@@ -292,7 +293,7 @@ export default function ChatPanel() {
       return;
     }
 
-    const content = input.trim();
+    const content = pendingInput;
     const userMessage: StoredMessage = {
       role: "user",
       content,
@@ -689,6 +690,7 @@ export default function ChatPanel() {
                         variant="markdown"
                         streamingFromWs={false}
                         onToolUiResult={handleToolUiResult}
+                        onQuickReply={(text) => void handleSend(text)}
                       />
                     ) : (
                       <>
@@ -903,7 +905,7 @@ export default function ChatPanel() {
             style={{ minHeight: "40px", maxHeight: "120px" }}
           />
           <button
-            onClick={handleSend}
+            onClick={() => void handleSend()}
             disabled={(!sensoryConnected && !isConnected) || isLoading || isRecording || isTyping || !input.trim()}
             className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
           >

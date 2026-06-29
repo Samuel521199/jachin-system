@@ -115,6 +115,75 @@ DOMAIN_REGISTRY: tuple[CapabilityDomainSpec, ...] = (
         inject_anchor="HOLOGRAPHIC_UI",
         fallback=_HOLOGRAPHIC_UI_FALLBACK.strip(),
     ),
+    CapabilityDomainSpec(
+        domain_id="os_assistant",
+        tool_markers=(
+            "windows_calculator_calculate",
+            "windows_notepad_save_text",
+            "windows_open_app",
+            "windows_lark_send_message",
+            "windows_lark_read_recent_messages",
+            "windows_lark_read_history",
+            "windows_lark_open_bitable",
+            "windows_lark_bitable_add_record",
+            "windows_lark_bitable_ai_paste_records",
+            "windows_lark_bitable_cdp_ai_paste_records",
+            "lark_bitable_list_fields",
+            "lark_bitable_get_records",
+            "lark_bitable_create_records",
+            "windows_active_window",
+            "windows_window_list",
+            "windows_window_switch",
+            "windows_disk_snapshot",
+            "windows_network_check",
+            "windows_power_status",
+            "windows_process_snapshot",
+            "windows_system_status",
+            "windows_recent_files",
+            "windows_folder_create",
+            "windows_file_write_text",
+            "windows_workspace_report",
+            "windows_evidence_panel",
+            "windows_project_remember",
+            "windows_project_latest_briefing",
+            "windows_codex_project_briefing_to_lark",
+            "windows_codex_lark_workflow_template",
+            "windows_codex_lark_standard_demo",
+            "windows_app_switch_matrix",
+            "windows_daily_office_briefing",
+            "windows_file_bridge_to_app",
+            "windows_os_mission_execute",
+            "windows_file_find",
+            "windows_file_copy",
+            "windows_file_move",
+            "windows_file_rename",
+            "windows_file_delete_with_confirm",
+            "windows_file_open",
+            "windows_file_reveal_in_explorer",
+            "windows_file_attach_to_app",
+            "windows_folder_summarize",
+            "windows_file_dialogs_smoke",
+            "windows_browser_address_download_prompt",
+            "windows_popup_action",
+            "uia_snapshot",
+            "uia_click",
+            "uia_set_text",
+            "uia_focused",
+        ),
+        doc_relpath="capability_domains/os_assistant.md",
+        inject_anchor="OS_ASSISTANT",
+        fallback=(
+            "【域：OS 助手 / 本机计算机操作】若可用工具中含 windows_calculator_calculate、"
+            "windows_notepad_save_text、windows_open_app、windows_lark_send_message、"
+            "windows_lark_read_recent_messages、windows_lark_read_history、windows_lark_open_bitable、windows_lark_bitable_add_record、windows_lark_bitable_ai_paste_records、windows_file_find/copy/move/rename/open/delete、"
+            "windows_file_dialogs_smoke、"
+            "windows_browser_address_download_prompt、windows_popup_action 或 "
+            "uia_snapshot/uia_click/uia_set_text，则本机 OS 助手能力已连接。用户明确说"
+            "「用电脑/计算机/Windows/桌面/App 帮我做」时，优先用结构化 OS 工具真实操作；"
+            "计算类请求优先 windows_calculator_calculate，不要只在模型里心算。"
+            "若结构化工具不足，再用 UIA 探控件树，最后才使用视觉/物理点击层。"
+        ),
+    ),
 )
 
 

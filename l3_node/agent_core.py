@@ -408,6 +408,7 @@ REACT_FOOTER_LARK_PUSH_BLOCK = (
     "【飞书/Lark 推送】用户要「总结网页/文章并发到飞书、发到 Lark、发到我的飞书会话」等："
     "若工具列表含 **util:stealth_extract**（或 MCP 读 URL）与 **util:lark_send_text**，应**连续调用**："
     "先取网页正文，再在模型内按用户字数要求压缩，最后 **util:lark_send_text** 传入 **text**（摘要正文）。"
+    "但如果用户要总结本机项目/目录/bug/代码变更并发送到 Lark，且工具列表含 **mcp:windows_codex_lark_workflow_template** 或 **mcp:windows_codex_project_briefing_to_lark**，必须使用该 Windows Codex -> Lark 工作流；禁止用 Jachin 自己总结后再 util:lark_send_text。"
     "**chat_id/receive_id** 须为飞书 **oc_/ou_**、**邮箱**或**手机号**，**禁止**把人名/昵称（如 vivian）当作 ID；"
     "若用户只提供姓名，须先 **util:lark_search_user**（唯一则取 open_id）；多结果则列出并请用户选；"
     "无映射时也可问邮箱/手机再 **util:lark_resolve_user**，或请用户给出 **ou_**。"
@@ -417,6 +418,7 @@ REACT_FOOTER_LARK_PUSH_BLOCK = (
 )
 REACT_FOOTER_LARK_PUSH_BLOCK_SLIM = (
     "【飞书推送】**util:stealth_extract** → **util:lark_send_text**；chat_id 须 oc_/ou_/邮箱/手机，**禁人名**；"
+    "本机项目/目录/bug 总结发 Lark → **mcp:windows_codex_lark_workflow_template** / **mcp:windows_codex_project_briefing_to_lark**，禁自己总结后 util:lark_send_text；"
     "仅姓名时先 **util:lark_search_user**（多结果让用户选）或邮箱/手机 **util:lark_resolve_user**；禁写密钥。\n"
 )
 REACT_FOOTER_YOUTUBE_TRANSCRIPT_BLOCK = (

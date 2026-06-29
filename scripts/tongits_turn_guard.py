@@ -73,7 +73,7 @@ def _turn_hand_refresh_est_sec() -> float:
 def _is_my_turn_on_frame(bgr: Any) -> bool:
     from main_bot_loop import is_my_turn_on_frame
 
-    return is_my_turn_on_frame(bgr)
+    return is_my_turn_on_frame(bgr, exiting=True)
 
 
 @dataclass

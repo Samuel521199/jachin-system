@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.95] - 2026-06-29
+
+### Added / Changed
+
+- OS Assistant release: Windows UIA MCP, OS Mission Router, Codex project briefing to Lark, Evidence console, project memory, mission templates, Windows file ops, Lark workflows, and reliability smoke matrix scaffolding.
+- Codex result extraction now prefers final screenshot + Qwen vision extraction, with clipboard fallback disabled by default.
+- **Version**: Desktop **0.9.95**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.94] - 2026-06-29
 
 ### Added / Changed

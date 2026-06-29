@@ -1206,6 +1206,16 @@ fn main() {
             commands::settings::set_desktop_ui_lang,
             commands::native_fs_policy::native_fs_policy_get,
             commands::native_fs_policy::native_fs_policy_set,
+            commands::os_evidence::os_evidence_list,
+            commands::os_evidence::os_evidence_stats,
+            commands::os_evidence::os_evidence_open_path,
+            commands::os_evidence::os_evidence_start_standard_demo,
+            commands::os_evidence::os_evidence_start_smoke_matrix,
+            commands::os_evidence::os_evidence_start_template,
+            commands::os_evidence::os_evidence_preflight,
+            commands::os_evidence::os_evidence_stop_task,
+            commands::os_evidence::os_evidence_config_get,
+            commands::os_evidence::os_evidence_config_set,
             commands::pairing::is_gateway_paired,
             commands::pairing::read_l2_gateway_config,
             commands::pairing::read_l2_gateway_url,
@@ -2400,7 +2410,7 @@ async fn launch_pmo_copilot_script(
             .map_err(|e| format!("打开 PMO 日志文件失败: {e}"))?;
         let _ = writeln!(
             log_file,
-            "[desktop] PMO Copilot 后台启动 pid={} ts={ts} cwd={}",
+            "[desktop] PMO Copilot 后台启动 pid={} ts={ts} cwd={cwd}",
             std::process::id(),
             cwd = app_root.display()
         );

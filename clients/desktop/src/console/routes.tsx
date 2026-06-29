@@ -18,6 +18,7 @@ import { K11UnifiedSmokeTest } from "./pages/K11UnifiedSmokeTest";
 import { GameQAPanel } from "./pages/GameQAPanel";
 import { ProjectManagement } from "./pages/ProjectManagement";
 import { BIAnalysis } from "./pages/BIAnalysis";
+import { OsEvidencePanel } from "./pages/OsEvidencePanel";
 
 export const consoleRoutes = [
   {
@@ -33,6 +34,7 @@ export const consoleRoutes = [
       { path: "monitor", element: <MonitorMatrix /> },
       { path: "k11-smoke", element: <K11UnifiedSmokeTest /> },
       { path: "gameqa", element: <GameQAPanel /> },
+      { path: "os-evidence", element: <OsEvidencePanel /> },
       { path: "pmo", element: <ProjectManagement /> },
       { path: "bi", element: <BIAnalysis /> },
       { path: "network", element: <JachinLink /> },

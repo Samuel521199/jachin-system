@@ -5,7 +5,7 @@
  */
 
 import React from "react";
-import { Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import type { StoredMessage } from "../../utils/messageStorage";
 import { getAssistantMainBodyForDisplay } from "../../utils/reasoningStreamSplit";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -23,6 +23,8 @@ export interface AssistantMessageContentProps {
   streamingFromWs?: boolean;
   /** 用户完成面板交互后的回调（可 async，用于等待 L3 回包） */
   onToolUiResult?: (payload: ToolUiSubmitPayload) => void | Promise<void>;
+  /** 快速回复：用于任务预览确认/取消等轻量控制 */
+  onQuickReply?: (text: string) => void;
 }
 
 /** 未注册可视化面板的工具：保持「静默执行」体验，仅极轻占位 */
@@ -47,6 +49,50 @@ function CanvasToolCallHintCard({ toolName }: { toolName: string }) {
   );
 }
 
+function shouldShowMissionConfirmationControls(body: string): boolean {
+  const text = body || "";
+  return (
+    /Task Preview:/i.test(text) &&
+    (/确认执行|取消|暂不执行|待确认|pending_confirmation|confirm|execute|cancel/i.test(text))
+  );
+}
+
+function MissionConfirmationControls({ onQuickReply }: { onQuickReply: (text: string) => void }) {
+  return (
+    <div
+      data-chat-interactive
+      className="mt-3 flex flex-wrap items-center gap-2 border-t border-cyan-400/15 pt-3"
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onQuickReply("确认执行");
+        }}
+        className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-100 transition hover:border-emerald-300/70 hover:bg-emerald-500/25"
+      >
+        <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
+        确认执行
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onQuickReply("取消");
+        }}
+        className="inline-flex items-center gap-1.5 rounded-md border border-slate-400/25 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:border-rose-300/55 hover:bg-rose-500/15 hover:text-rose-100"
+      >
+        <XCircle className="h-3.5 w-3.5" aria-hidden />
+        取消
+      </button>
+    </div>
+  );
+}
+
 export function AssistantMessageContent({
   message,
   isLastAssistant,
@@ -54,6 +100,7 @@ export function AssistantMessageContent({
   variant,
   streamingFromWs = false,
   onToolUiResult,
+  onQuickReply,
 }: AssistantMessageContentProps) {
   const tc = message.tool_call;
 
@@ -93,10 +140,12 @@ export function AssistantMessageContent({
   // ---------- 分支 B：普通 assistant 文本（历史行为） ----------
   /** 主气泡只展示「对用户正文」；调度/Action 等仅在思考链中展示 */
   const body = getAssistantMainBodyForDisplay(message);
+  const showMissionControls = !!onQuickReply && shouldShowMissionConfirmationControls(body);
   if (variant === "markdown") {
     return (
       <>
         <MarkdownMessage content={body} />
+        {showMissionControls && <MissionConfirmationControls onQuickReply={onQuickReply} />}
         {isLastAssistant && isTyping && (
           <span
             className={
@@ -119,6 +168,7 @@ export function AssistantMessageContent({
           <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-cyan-400/90 align-middle" />
         )}
       </div>
+      {showMissionControls && <MissionConfirmationControls onQuickReply={onQuickReply} />}
     </>
   );
 }

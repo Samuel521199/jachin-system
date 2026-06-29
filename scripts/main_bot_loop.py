@@ -37,7 +37,7 @@ Tongits 主循环 — 绿圈探回合 + 轮到我时 YOLO 侦察一次（默认�
   TONGITS_ROI_MY_MELDS — 我方明牌区 x1,y1,x2,y2（或 MY_MELD_*_RATIO 比例）
   TONGITS_HAND_ROI_*_RATIO — 手牌归类区（仅坐标分桶，不裁切推理）
   TONGITS_ROI_OPPONENT_LEFT / TONGITS_ROI_OPPONENT_RIGHT — 对手明牌区
-  TONGITS_TURN_CAPTURE_DELAY_SEC — 回合开始后延迟再侦察（默认 1s）
+  TONGITS_TURN_CAPTURE_DELAY_SEC — 回合开始后延迟再侦察（默认 0.2s）
   TONGITS_STARTUP_GRACE_SEC — 脚本启动后预热秒数，期间不截屏（默认 8）
   TONGITS_CAPTURE_RETRY_COUNT — 非牌桌/0检出时重试次数（默认 2）
   TONGITS_CAPTURE_WARMUP — 启动时被动预热截屏（默认 1，不改变窗口）
@@ -176,15 +176,16 @@ MONITOR_INDEX = 1
 # 绿圈回合检测常量（主循环轮询，YOLO / 截图均在此基础上触发）
 # ---------------------------------------------------------------------------
 
-AVATAR_ROI: tuple[int, int, int, int] = (8, 720, 118, 118)
+AVATAR_ROI: tuple[int, int, int, int] = (70, 710, 135, 135)
 _GREEN_RANGES: list[tuple[np.ndarray, np.ndarray]] = [
     (np.array([35, 100, 120], dtype=np.uint8), np.array([85, 255, 255], dtype=np.uint8)),
     (np.array([40, 150, 180], dtype=np.uint8), np.array([75, 255, 255], dtype=np.uint8)),
 ]
-GREEN_PIXEL_THRESHOLD = 80
+GREEN_PIXEL_THRESHOLD = 1200
+GREEN_EXIT_PIXEL_THRESHOLD = 700
 GREEN_RING_BORDER_ONLY = True
 POLL_INTERVAL_SEC = 0.2
-TURN_CAPTURE_DELAY_SEC = 1.0
+TURN_CAPTURE_DELAY_SEC = 0.2
 STARTUP_GRACE_SEC = 8.0
 CAPTURE_RETRY_COUNT = 2
 CAPTURE_RETRY_DELAY_SEC = 1.5
@@ -249,6 +250,9 @@ _settlement_continue_clicked_seen: bool = False
 _settlement_coin_probe_armed: bool = False
 _last_proto_status_log_at: float = 0.0
 _last_proto_status_digest: str = ""
+_startup_grace_turn_retry_at: float = 0.0
+_force_turn_rearm_until: float = 0.0
+_force_turn_rearm_wait_exit: bool = False
 _loop_started_at: float = 0.0
 _proto_settlement_service: Any = None
 
@@ -2231,6 +2235,42 @@ def _validate_table_card_uniqueness(
     return len(issues) == 0, issues
 
 
+def _dedupe_player_hand_labels(
+    dets: list[CardDetection],
+    *,
+    reason: str,
+) -> list[CardDetection]:
+    """When VLM times out, YOLO may duplicate a label; keep one card so autoplay can continue."""
+    if len(dets) <= 1:
+        return list(dets)
+    best_by_label: dict[str, CardDetection] = {}
+    duplicates: list[str] = []
+    for det in _yolo_spatial_sort(dets):
+        label = _normalize_table_label(det.class_name)
+        if not label:
+            continue
+        prev = best_by_label.get(label)
+        if prev is None:
+            best_by_label[label] = det
+            continue
+        duplicates.append(
+            f"{label}@({prev.center_x},{prev.center_y})/({det.center_x},{det.center_y})"
+        )
+        if det.confidence > prev.confidence:
+            best_by_label[label] = det
+    if not duplicates:
+        return list(dets)
+    out = _yolo_spatial_sort(list(best_by_label.values()))
+    logger.warning(
+        "[qwen_full] 手牌内部重复已软修复（%s）：%s；保留 %d/%d 张继续出牌",
+        reason,
+        "; ".join(duplicates[:8]),
+        len(out),
+        len(dets),
+    )
+    return out
+
+
 def _apply_qwen_full_deck_fail_fallback(
     by_zone: dict[str, list[CardDetection]],
     vlm_labels: dict[str, list[str]],
@@ -2257,6 +2297,10 @@ def _apply_qwen_full_deck_fail_fallback(
         )
     else:
         player_hand = _label_list_to_detections(hand_vlm, "player_hand")
+    player_hand = _dedupe_player_hand_labels(
+        player_hand,
+        reason="deck_fail_fallback",
+    )
 
     new_by_zone: dict[str, list[CardDetection]] = {
         z: [] for z in TURN_SCOUT_ZONE_ORDER
@@ -2289,9 +2333,9 @@ def _nonbar_diag_interval_sec() -> float:
 def _qwen_full_vlm_phase_budget_sec() -> float:
     """VLM 五路并行的整体硬预算（秒）：超过即放弃剩余战区，防止单路拖垮整轮。"""
     try:
-        return max(4.0, float(os.environ.get("TONGITS_QWEN_FULL_VLM_PHASE_BUDGET_SEC") or "14"))
+        return max(4.0, float(os.environ.get("TONGITS_QWEN_FULL_VLM_PHASE_BUDGET_SEC") or "8"))
     except ValueError:
-        return 14.0
+        return 8.0
 
 
 def _infer_qwen_vlm_zones_parallel(
@@ -2877,7 +2921,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def load_turn_runtime_config() -> None:
-    global AVATAR_ROI, GREEN_PIXEL_THRESHOLD, GREEN_RING_BORDER_ONLY, POLL_INTERVAL_SEC
+    global AVATAR_ROI, GREEN_PIXEL_THRESHOLD, GREEN_EXIT_PIXEL_THRESHOLD, GREEN_RING_BORDER_ONLY, POLL_INTERVAL_SEC
     global TURN_CAPTURE_DELAY_SEC, STARTUP_GRACE_SEC, CAPTURE_RETRY_COUNT
     global CAPTURE_RETRY_DELAY_SEC, CAPTURE_TIMEOUT_SEC
     global HAND_CARD_RATIO_MIN, HAND_EDGE_RATIO_MIN
@@ -2886,6 +2930,9 @@ def load_turn_runtime_config() -> None:
     AVATAR_ROI = _parse_roi_env("TONGITS_AVATAR_ROI", AVATAR_ROI)
     GREEN_PIXEL_THRESHOLD = int(
         os.environ.get("TONGITS_GREEN_PIXEL_THRESHOLD", str(GREEN_PIXEL_THRESHOLD))
+    )
+    GREEN_EXIT_PIXEL_THRESHOLD = int(
+        os.environ.get("TONGITS_GREEN_EXIT_PIXEL_THRESHOLD", str(GREEN_EXIT_PIXEL_THRESHOLD))
     )
     GREEN_RING_BORDER_ONLY = _env_bool("TONGITS_GREEN_RING_BORDER_ONLY", GREEN_RING_BORDER_ONLY)
     POLL_INTERVAL_SEC = float(
@@ -3144,8 +3191,8 @@ def _green_border_score(avatar_bgr: np.ndarray) -> int:
     return int(cv2.countNonZero(mask))
 
 
-def is_my_turn() -> bool:
-    return _green_border_score(_capture_avatar_bgr()) > GREEN_PIXEL_THRESHOLD
+def is_my_turn(*, exiting: bool = False) -> bool:
+    return _is_my_turn_score(_green_border_score(_capture_avatar_bgr()), exiting=exiting)
 
 
 def _crop_avatar_from_frame(bgr: np.ndarray) -> np.ndarray:
@@ -3175,8 +3222,13 @@ def _green_border_score_on_frame(bgr: np.ndarray) -> int:
     return _green_border_score(avatar)
 
 
-def is_my_turn_on_frame(bgr: np.ndarray) -> bool:
-    return _green_border_score_on_frame(bgr) > GREEN_PIXEL_THRESHOLD
+def _is_my_turn_score(score: int, *, exiting: bool = False) -> bool:
+    threshold = GREEN_EXIT_PIXEL_THRESHOLD if exiting else GREEN_PIXEL_THRESHOLD
+    return score > threshold
+
+
+def is_my_turn_on_frame(bgr: np.ndarray, *, exiting: bool = False) -> bool:
+    return _is_my_turn_score(_green_border_score_on_frame(bgr), exiting=exiting)
 
 
 def _avatar_win_badge_scores(avatar_bgr: np.ndarray) -> dict[str, float]:
@@ -3347,6 +3399,18 @@ def _fight_point_ink_ratio_min() -> float:
         return max(0.01, float(os.environ.get("TONGITS_FIGHT_POINT_INK_RATIO_MIN", "0.045")))
     except ValueError:
         return 0.045
+
+
+def _fight_point_text_ratio(bgr: np.ndarray) -> float:
+    from tongits_ui_probe import duel_point_roi_xywh
+
+    left, top, w, h = duel_point_roi_xywh(bgr.shape)
+    crop = bgr[top : top + h, left : left + w]
+    if crop.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    dark = gray < 105
+    return float(np.count_nonzero(dark)) / max(1, dark.size)
 
 
 def _fight_offer_poll_sec() -> float:
@@ -3660,6 +3724,7 @@ def _on_proto_cdp_settlement(data: dict[str, Any]) -> None:
     global _settlement_coin_overlay_latched
     logger.info("%s", str(data.get("line") or ""))
     _settlement_coin_overlay_latched = True
+    _abort_active_turn("protocol_settlement_callback")
 
 
 def _start_proto_settlement_service_if_enabled() -> None:
@@ -3783,6 +3848,60 @@ def _load_proto_status_file() -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return obj if isinstance(obj, dict) else {}
+
+
+def _settlement_abort_window_sec() -> float:
+    try:
+        return max(3.0, float(os.environ.get("TONGITS_SETTLEMENT_ABORT_WINDOW_SEC", "30.0")))
+    except ValueError:
+        return 30.0
+
+
+def _proto_record_recent(file_obj: dict[str, Any]) -> bool:
+    ts = _parse_iso_ts_to_utc(str(file_obj.get("settlement_record_at", "")))
+    if ts is None:
+        return False
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age <= _settlement_abort_window_sec()
+
+
+def _proto_status_has_final_settlement(file_obj: dict[str, Any]) -> bool:
+    line = str(file_obj.get("settlement_record_line") or "").strip()
+    if line and _proto_record_recent(file_obj):
+        return True
+    settlement = str(file_obj.get("settlement") or "").strip()
+    coin = str(file_obj.get("coin") or "").strip()
+    typed_settlement = settlement in {"seen@3016", "seen@3017", "seen@3021"}
+    typed_coin = coin in {"seen@3016", "seen@3017", "seen@3021"}
+    if typed_settlement and _proto_signal_recent(file_obj, "settlement"):
+        return True
+    if typed_coin and _proto_signal_recent(file_obj, "coin"):
+        return True
+    return False
+
+
+def _abort_active_turn(reason: str) -> int | None:
+    global _pending_turn_scout
+    _pending_turn_scout = False
+    try:
+        from tongits_turn_guard import abort_active_play_session
+
+        gen = abort_active_play_session()
+        logger.info("[turn] 中止当前出牌 session→%s reason=%s", gen, reason)
+        return gen
+    except Exception as e:
+        logger.warning("[turn] 中止当前出牌 session 失败 reason=%s: %s", reason, e)
+        return None
+
+
+def _abort_due_to_proto_settlement(reason: str) -> bool:
+    if not _settlement_api_only():
+        return False
+    file_obj = _load_proto_status_file()
+    if not _proto_status_has_final_settlement(file_obj):
+        return False
+    _abort_active_turn(reason)
+    return True
 
 
 def _log_proto_status(*, reason: str, force: bool = False) -> None:
@@ -4714,6 +4833,16 @@ def _try_log_settlement_coin_delta(scout: TurnScout, *, assume_after_duel: bool 
     return True
 
 
+def _block_turn_start_due_to_proto_settlement() -> bool:
+    """Only block turn start for a parsed/typed settlement, not broad text hints."""
+    if not _settlement_api_only():
+        return False
+    if _settlement_coin_overlay_latched:
+        return True
+    file_obj = _load_proto_status_file()
+    return _proto_status_has_final_settlement(file_obj)
+
+
 def _estimate_fight_overlay_point_legacy_cloud_only(bgr: np.ndarray) -> int | None:
     """兼容占位（避免旧调用），现统一走 _estimate_fight_overlay_point。"""
     from tongits_ui_probe import duel_point_roi_xywh
@@ -4741,7 +4870,13 @@ def _estimate_fight_overlay_point_legacy_cloud_only(bgr: np.ndarray) -> int | No
             pass
 
 
-def _try_handle_fight_offer_overlay(scout: TurnScout) -> bool:
+def _try_handle_fight_offer_overlay(
+    scout: TurnScout,
+    *,
+    allow_my_turn: bool = False,
+    frame: np.ndarray | None = None,
+    capture_backend_hint: str = "",
+) -> bool:
     """
     非我方回合：若出现 CHALLENGE/FOLD 决斗弹窗，按散牌点自动应战或认输。
     散牌点低（<=阈值）点 CHALLENGE；否则点 FOLD。
@@ -4753,7 +4888,9 @@ def _try_handle_fight_offer_overlay(scout: TurnScout) -> bool:
     global _settlement_candidate_until
     if not _auto_play_enabled() or not _auto_fight_defense_enabled():
         return False
-    if _capture_busy.locked():
+    if _abort_due_to_proto_settlement("fight_probe_before_capture"):
+        return False
+    if frame is None and _capture_busy.locked():
         return False
     if _in_startup_grace():
         return False
@@ -4772,19 +4909,27 @@ def _try_handle_fight_offer_overlay(scout: TurnScout) -> bool:
     if _last_settlement_seen_at > 0 and (now - _last_settlement_seen_at) < _fight_skip_after_settlement_sec():
         return False
 
-    bgr, capture_backend = _grab_turn_frame(scout)
-    if bgr is None:
-        return False
-    if is_my_turn_on_frame(bgr):
+    if frame is None:
+        bgr, capture_backend = _grab_turn_frame(scout)
+        if bgr is None:
+            return False
+    else:
+        bgr = frame
+        capture_backend = capture_backend_hint or "current_frame"
+    if is_my_turn_on_frame(bgr) and not allow_my_turn:
         return False
 
     from tongits_ui_probe import (
         challenge_offer_click_xy,
         fold_offer_click_xy,
+        normal_action_bar_present,
         probe_fight_offer_stats,
     )
     from tongits_rule_bot import physical_click_xy
     proto_obj = _load_proto_status_file()
+    if _proto_status_has_final_settlement(proto_obj):
+        _abort_active_turn("fight_probe_proto_settlement")
+        return False
     proto_duel_recent = _proto_signal_recent(proto_obj, "duel")
     proto_settlement_recent = _proto_signal_recent(proto_obj, "settlement")
 
@@ -4808,6 +4953,9 @@ def _try_handle_fight_offer_overlay(scout: TurnScout) -> bool:
         return False
     else:
         _settlement_block_fight_streak = 0
+    if (not proto_duel_recent) and normal_action_bar_present(bgr, log_details=False):
+        logger.info("[fight] 跳过：正常动作栏仍在场，不能当作决斗弹窗")
+        return False
     # 协议主判：若最近明确是 settlement，且最近没有 duel 信号，则阻断决斗分支。
     if proto_settlement_recent and not proto_duel_recent:
         _set_pending_settlement(True, reason="proto_settlement_block_fight", now=now)
@@ -4831,18 +4979,17 @@ def _try_handle_fight_offer_overlay(scout: TurnScout) -> bool:
     if raw_fight_ultra_confident and (not relax_allowed):
         logger.info("[fight] 结算候选/待结算窗口内，禁用超高置信放宽")
     if (not proto_duel_recent) and _fight_require_point_evidence():
-        if not fight_ultra_confident:
-            ink_ratio = _fight_point_text_ratio(bgr)
-            if ink_ratio < _fight_point_ink_ratio_min():
-                logger.info(
-                    "[fight] 跳过：决斗 POINT 证据不足 ink=%.3f need>=%.3f",
-                    ink_ratio,
-                    _fight_point_ink_ratio_min(),
-                )
-                return False
-        else:
+        ink_ratio = _fight_point_text_ratio(bgr)
+        if ink_ratio < _fight_point_ink_ratio_min():
             logger.info(
-                "[fight] 超高置信按钮证据(c=%.3f f=%.3f)，放宽 POINT 证据门",
+                "[fight] 跳过：决斗 POINT 证据不足 ink=%.3f need>=%.3f",
+                ink_ratio,
+                _fight_point_ink_ratio_min(),
+            )
+            return False
+        if fight_ultra_confident:
+            logger.info(
+                "[fight] 超高置信按钮证据(c=%.3f f=%.3f)，但仍要求 POINT 证据通过",
                 stats["challenge_ratio"],
                 stats["fold_ratio"],
             )
@@ -4937,6 +5084,8 @@ def _try_handle_fight_offer_overlay(scout: TurnScout) -> bool:
             _fight_offer_repeat_action_cooldown_sec(),
         )
         return True
+    if _abort_due_to_proto_settlement("fight_before_click"):
+        return False
     res = physical_click_xy(
         cx,
         cy,
@@ -5228,10 +5377,31 @@ def _capture_retry_delay_sec() -> float:
 
 
 def _in_startup_grace() -> bool:
+    return _startup_grace_remaining_sec() > 0
+
+
+def _startup_grace_remaining_sec() -> float:
     grace = _startup_grace_sec()
     if grace <= 0 or _loop_started_at <= 0:
-        return False
-    return (time.perf_counter() - _loop_started_at) < grace
+        return 0.0
+    return max(0.0, grace - (time.perf_counter() - _loop_started_at))
+
+
+def _turn_rearm_after_dump_sec() -> float:
+    try:
+        return max(0.0, float(os.environ.get("TONGITS_TURN_REARM_AFTER_DUMP_SEC", "2.5")))
+    except ValueError:
+        return 2.5
+
+
+def _force_turn_rearm_after_dump() -> None:
+    global _force_turn_rearm_until, _force_turn_rearm_wait_exit
+    sec = _turn_rearm_after_dump_sec()
+    if sec <= 0:
+        return
+    _force_turn_rearm_until = max(_force_turn_rearm_until, time.perf_counter() + sec)
+    _force_turn_rearm_wait_exit = True
+    logger.info("[turn] Dump 后强制复位回合状态 %.1fs，并等待绿圈低于结束阈值后才允许下一回合", sec)
 
 
 def _capture_warmup_enabled() -> bool:
@@ -5328,6 +5498,67 @@ def _looks_like_dealt_near_miss(stats: dict[str, float]) -> bool:
     return card_ok and edge_ok and floor_ok
 
 
+def _turn_ready_wait_sec() -> float:
+    try:
+        return max(0.0, float(os.environ.get("TONGITS_TURN_READY_WAIT_SEC", "3.0")))
+    except ValueError:
+        return 3.0
+
+
+def _turn_ready_poll_sec() -> float:
+    try:
+        return max(0.1, float(os.environ.get("TONGITS_TURN_READY_POLL_SEC", "0.35")))
+    except ValueError:
+        return 0.35
+
+
+def _turn_animation_back_ratio_threshold() -> float:
+    try:
+        return max(0.0, float(os.environ.get("TONGITS_TURN_ANIMATION_BACK_RATIO_MAX", "0.13")))
+    except ValueError:
+        return 0.13
+
+
+def _turn_mid_back_ratio(bgr: np.ndarray) -> float:
+    """Detect flying/animating face-down cards in the center/lower board area."""
+    sh, sw = bgr.shape[:2]
+    x1, y1 = int(sw * 0.32), int(sh * 0.28)
+    x2, y2 = int(sw * 0.68), int(sh * 0.92)
+    crop = bgr[y1:y2, x1:x2]
+    if crop.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    red_orange = cv2.bitwise_or(
+        cv2.inRange(hsv, np.array([0, 70, 120], dtype=np.uint8), np.array([22, 255, 255], dtype=np.uint8)),
+        cv2.inRange(hsv, np.array([170, 70, 120], dtype=np.uint8), np.array([180, 255, 255], dtype=np.uint8)),
+    )
+    return float(np.count_nonzero(red_orange)) / max(1, red_orange.size)
+
+
+def _turn_actionable_frame_status(bgr: np.ndarray) -> tuple[bool, str]:
+    """
+    Green ring means "candidate turn", but screenshots taken during deal/draw animation
+    are not actionable. Wait for draw arrow or a stable hand without flying card backs.
+    """
+    try:
+        from tongits_ui_probe import is_draw_phase_hint
+
+        if is_draw_phase_hint(bgr):
+            return True, "draw_arrow"
+    except Exception:
+        pass
+
+    back_ratio = _turn_mid_back_ratio(bgr)
+    max_back = _turn_animation_back_ratio_threshold()
+    if back_ratio > max_back:
+        return False, f"card_animation back={back_ratio:.3f}>{max_back:.3f}"
+
+    dealt, stats = _is_dealt_frame(bgr)
+    if dealt:
+        return True, f"stable_hand card={stats['card_ratio']:.3f} edge={stats['edge_ratio']:.3f} back={back_ratio:.3f}"
+    return False, f"no_dealt_hand card={stats['card_ratio']:.3f} edge={stats['edge_ratio']:.3f} back={back_ratio:.3f}"
+
+
 def _auto_play_enabled() -> bool:
     from tongits_coord_executor import auto_play_enabled
 
@@ -5345,7 +5576,9 @@ def _run_coord_auto_play(
     from tongits_coord_executor import auto_play_dry_run, execute_scout_coord_turn
 
     try:
-        if not is_my_turn_on_frame(bgr):
+        if _abort_due_to_proto_settlement("autoplay_before_execute"):
+            return
+        if not is_my_turn_on_frame(bgr, exiting=True):
             logger.info("[出牌] 绿圈已消失，跳过自动出牌")
             return
         result = execute_scout_coord_turn(
@@ -5357,6 +5590,8 @@ def _run_coord_auto_play(
             log_fn=logger.info,
             turn_started_at=turn_started_at,
         )
+        if _abort_due_to_proto_settlement("autoplay_after_execute"):
+            return
         if not result.get("ok"):
             if result.get("aborted"):
                 logger.info("[出牌] 已中止（回合结束或绿圈消失）")
@@ -5366,6 +5601,7 @@ def _run_coord_auto_play(
             actions = [str(a) for a in (result.get("actions") or [])]
             if "dump" in actions:
                 _mark_settlement_dump_seen(reason="turn_dump_completed")
+                _force_turn_rearm_after_dump()
             if "fight" in actions:
                 _mark_settlement_duel_seen(reason="active_fight_clicked")
             # 回合执行成功后，用“本轮出牌后”可估计的散牌点刷新缓存，
@@ -5389,28 +5625,52 @@ def _run_coord_auto_play(
 
 def _on_yolo_turn_worker(scout: TurnScout) -> None:
     """后台：延迟 → 截屏 → 校验已发牌 → YOLO 推理 → 战报 → 存 omnioutput 原图。"""
-    global _pending_turn_scout, _last_known_hand_scatter
+    global _pending_turn_scout, _last_known_hand_scatter, _startup_grace_turn_retry_at
     if not _capture_busy.acquire(blocking=False):
-        logger.info("上一回合侦察未完成，跳过")
-        if is_my_turn():
-            _pending_turn_scout = True
-            logger.info("已登记回合补跑：当前侦察结束后自动再跑一轮")
+        logger.info("上一回合侦察未完成，跳过本次回合开始信号，不补跑旧回合")
         return
     _pending_turn_scout = False
     turn_started_at = time.perf_counter()
+    from tongits_turn_guard import get_play_session, is_play_aborted
+
+    worker_session = get_play_session()
     try:
+        if _abort_due_to_proto_settlement("worker_start"):
+            return
         if _in_startup_grace():
+            remain = _startup_grace_remaining_sec()
             logger.info(
-                "启动预热中（%.0fs 内不截屏），请先切到游戏窗口",
-                _startup_grace_sec(),
+                "启动预热中（剩余 %.1fs 不截屏），当前回合将于预热结束后补跑",
+                remain,
             )
+            if is_my_turn():
+                deadline = time.perf_counter() + remain + 0.2
+                if deadline - _startup_grace_turn_retry_at > 0.5:
+                    _startup_grace_turn_retry_at = deadline
+
+                    def _delayed_startup_retry() -> None:
+                        global _startup_grace_turn_retry_at
+                        delay = max(0.2, deadline - time.perf_counter())
+                        time.sleep(delay)
+                        _startup_grace_turn_retry_at = 0.0
+                        if _abort_due_to_proto_settlement("startup_retry_settlement"):
+                            return
+                        if is_my_turn():
+                            logger.info("[turn] 启动预热结束，仍在我的回合，补跑侦察")
+                            _on_yolo_turn_worker(scout)
+                        else:
+                            logger.info("[turn] 启动预热结束，但回合已结束，取消补跑")
+
+                    threading.Thread(target=_delayed_startup_retry, daemon=True).start()
             return
 
         if TURN_CAPTURE_DELAY_SEC > 0:
             logger.info("等待 %.1fs 后侦察 …", TURN_CAPTURE_DELAY_SEC)
             time.sleep(TURN_CAPTURE_DELAY_SEC)
 
-        if not is_my_turn():
+        if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("before_capture"):
+            return
+        if not is_my_turn(exiting=True):
             logger.info("跳过：回合已结束（绿圈消失），不标记")
             return
 
@@ -5420,6 +5680,8 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
         scout_result: TurnScoutResult | None = None
 
         for attempt in range(retries + 1):
+            if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("capture_loop"):
+                return
             if attempt > 0:
                 logger.info(
                     "截屏重试 %d/%d（等待 %.1fs）…",
@@ -5436,10 +5698,22 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
 
             if _is_round_end_win_screen(bgr):
                 _log_win_skip_reason(bgr)
-                _try_click_center_win_button(bgr)
+                _abort_active_turn("visual_round_end_screen")
                 return
 
-            if not is_my_turn_on_frame(bgr):
+            if _is_duel_overlay_strict_for_gate(bgr):
+                logger.info("[fight] 当前帧命中决斗弹窗，跳过普通打牌侦察")
+                if _abort_due_to_proto_settlement("duel_overlay_before_handle"):
+                    return
+                _try_handle_fight_offer_overlay(
+                    scout,
+                    allow_my_turn=True,
+                    frame=bgr,
+                    capture_backend_hint=capture_backend,
+                )
+                return
+
+            if not is_my_turn_on_frame(bgr, exiting=True):
                 logger.info("跳过：截屏时绿圈已消失，不标记")
                 return
 
@@ -5455,18 +5729,58 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
                 )
                 continue
 
+            ready, ready_reason = _turn_actionable_frame_status(bgr)
+            if not ready:
+                deadline = time.perf_counter() + _turn_ready_wait_sec()
+                logger.info("[turn] 回合画面未稳定：%s，等待可操作帧…", ready_reason)
+                while time.perf_counter() < deadline and is_my_turn(exiting=True):
+                    time.sleep(_turn_ready_poll_sec())
+                    bgr2, capture_backend2 = _grab_turn_frame(scout)
+                    if bgr2 is None:
+                        continue
+                    if _is_round_end_win_screen(bgr2):
+                        _log_win_skip_reason(bgr2)
+                        _abort_active_turn("visual_round_end_screen_waiting")
+                        return
+                    if _is_duel_overlay_strict_for_gate(bgr2):
+                        logger.info("[fight] 等待稳定期间命中决斗弹窗，跳过普通打牌侦察")
+                        if _abort_due_to_proto_settlement("duel_overlay_waiting_before_handle"):
+                            return
+                        _try_handle_fight_offer_overlay(
+                            scout,
+                            allow_my_turn=True,
+                            frame=bgr2,
+                            capture_backend_hint=capture_backend2,
+                        )
+                        return
+                    if not is_my_turn_on_frame(bgr2, exiting=True):
+                        logger.info("[turn] 等待稳定期间绿圈消失，取消本回合侦察")
+                        return
+                    table_ok2, table_ratio2 = _looks_like_game_table(bgr2)
+                    if not table_ok2:
+                        logger.info("[turn] 等待稳定期间截图仍不像牌桌 blue=%.3f", table_ratio2)
+                        continue
+                    ready2, ready_reason2 = _turn_actionable_frame_status(bgr2)
+                    bgr, capture_backend = bgr2, capture_backend2
+                    ready, ready_reason = ready2, ready_reason2
+                    if ready:
+                        logger.info("[turn] 回合画面已稳定：%s", ready_reason)
+                        break
+                if not ready:
+                    logger.info("[turn] 回合画面稳定等待超时，继续使用当前帧兜底：%s", ready_reason)
+
             dealt, stats = _is_dealt_frame(bgr)
             if not dealt:
                 near_miss_force = (
                     _dealt_force_last_retry_enabled()
                     and attempt >= retries
-                    and is_my_turn_on_frame(bgr)
+                    and is_my_turn_on_frame(bgr, exiting=True)
                     and _looks_like_dealt_near_miss(stats)
                 )
                 force_scout = (
                     _scout_mode() == "florence_local"
                     and attempt >= retries
-                    and is_my_turn_on_frame(bgr)
+                    and is_my_turn_on_frame(bgr, exiting=True)
                 )
                 if force_scout or near_miss_force:
                     logger.warning(
@@ -5475,7 +5789,11 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
                         stats["edge_ratio"],
                         "Florence" if force_scout else "边界容错",
                     )
+                    if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("before_force_scout"):
+                        return
                     scout_result = scout.infer_turn_frame(bgr)
+                    if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("after_force_scout"):
+                        return
                     break
                 logger.info(
                     "本帧未发牌（card=%.3f edge=%.3f），重试",
@@ -5484,7 +5802,11 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
                 )
                 continue
 
+            if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("before_scout"):
+                return
             scout_result = scout.infer_turn_frame(bgr)
+            if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("after_scout"):
+                return
             if scout_result.raw_detection_count > 0:
                 break
 
@@ -5500,6 +5822,8 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
             logger.warning("本轮截屏失败：未获得有效牌局画面")
             return
 
+        if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("before_report"):
+            return
         scatter = _hand_scatter_from_detections(scout_result.by_zone.get("player_hand", []))
         if scatter is not None:
             _last_known_hand_scatter = scatter
@@ -5525,24 +5849,47 @@ def _on_yolo_turn_worker(scout: TurnScout) -> None:
 
         _save_turn_board_screenshot(bgr)
 
+        if is_play_aborted(worker_session) or _abort_due_to_proto_settlement("before_autoplay"):
+            return
         if _auto_play_enabled() and scout_result.deck_valid:
             _run_coord_auto_play(
                 scout, scout_result, bgr, turn_started_at=turn_started_at
             )
         elif _auto_play_enabled() and not scout_result.deck_valid:
-            logger.warning("[出牌] 一副牌约束未通过，跳过自动出牌")
+            hand = _dedupe_player_hand_labels(
+                list(scout_result.by_zone.get("player_hand") or []),
+                reason="autoplay_degraded",
+            )
+            if hand:
+                degraded_by_zone = {z: [] for z in TURN_SCOUT_ZONE_ORDER}
+                degraded_by_zone["player_hand"] = hand
+                degraded = TurnScoutResult(
+                    all_detections=hand,
+                    by_zone=degraded_by_zone,
+                    elapsed_ms=scout_result.elapsed_ms,
+                    zone_rois=scout_result.zone_rois,
+                    raw_detection_count=len(hand),
+                    yolo_ms=scout_result.yolo_ms,
+                    vlm_ms=scout_result.vlm_ms,
+                    hybrid=scout_result.hybrid,
+                    scout_mode=f"{scout_result.scout_mode}_degraded_hand",
+                    deck_valid=True,
+                    deck_issues=scout_result.deck_issues,
+                )
+                logger.warning(
+                    "[出牌] 一副牌约束未通过，但手牌可用，降级为仅手牌保守出牌（hand=%d）",
+                    len(hand),
+                )
+                _run_coord_auto_play(
+                    scout, degraded, bgr, turn_started_at=turn_started_at
+                )
+            else:
+                logger.warning("[出牌] 一副牌约束未通过且无可用手牌，跳过自动出牌")
     except Exception as e:
         logger.error("回合侦察失败: %s", e)
     finally:
         _capture_busy.release()
-        if _pending_turn_scout and is_my_turn():
-            _pending_turn_scout = False
-            logger.info("补跑回合侦察：仍在我的回合")
-            threading.Thread(
-                target=_on_yolo_turn_worker,
-                args=(scout,),
-                daemon=True,
-            ).start()
+        _pending_turn_scout = False
 
 
 def _on_save_only_turn_worker() -> None:
@@ -5623,13 +5970,14 @@ class TurnCycleTracker:
 
     def update(self, active: bool) -> tuple[bool, bool]:
         if not self.bootstrapped:
-            # 首帧仅同步状态，不触发「到我的回合」（避免启动瞬间误截桌面）
+            # Attach may happen mid-turn. Sync state only; wait for the next real
+            # green-ring rising edge before triggering autoplay.
             self.bootstrapped = True
-            self.phase = (
-                TurnCyclePhase.MY_TURN if active else TurnCyclePhase.WAITING
-            )
+            self.phase = TurnCyclePhase.MY_TURN if active else TurnCyclePhase.WAITING
             self.enter_streak = 0
             self.exit_streak = 0
+            if active:
+                logger.info("[turn] 启动时已处于我的回合，先同步状态，不触发自动打牌，等待下一次回合开始")
             return False, False
 
         started = ended = False
@@ -5665,16 +6013,53 @@ def _turn_poll_loop(
     on_waiting: Callable[[], None] | None = None,
 ) -> None:
     """绿圈轮询主循环：检测到「我的回合」上升沿时回调一次。"""
+    global _force_turn_rearm_wait_exit
     load_turn_runtime_config()
     tracker = TurnCycleTracker()
+    last_settlement_block_log_at = 0.0
     try:
         while True:
             try:
-                active = is_my_turn()
+                raw_score = _green_border_score(_capture_avatar_bgr())
+                raw_active = _is_my_turn_score(
+                    raw_score,
+                    exiting=(tracker.phase == TurnCyclePhase.MY_TURN),
+                )
+                blocked_by_settlement = raw_active and _block_turn_start_due_to_proto_settlement()
+                if _force_turn_rearm_wait_exit and raw_score <= GREEN_EXIT_PIXEL_THRESHOLD:
+                    _force_turn_rearm_wait_exit = False
+                    logger.info(
+                        "[turn] Dump 后绿圈已释放：green_score=%d <= exit_thr=%d",
+                        raw_score,
+                        GREEN_EXIT_PIXEL_THRESHOLD,
+                    )
+                blocked_by_rearm = raw_active and (
+                    time.perf_counter() < _force_turn_rearm_until
+                    or _force_turn_rearm_wait_exit
+                )
+                if blocked_by_settlement:
+                    now = time.perf_counter()
+                    if now - last_settlement_block_log_at >= 2.0:
+                        last_settlement_block_log_at = now
+                        logger.info(
+                            "[settlement] 协议近期已看到结算信号，拦截绿圈判定，继续等待结算记录"
+                        )
+                active = False if (blocked_by_settlement or blocked_by_rearm) else raw_active
                 started, ended = tracker.update(active)
                 if started:
+                    logger.info(
+                        "[turn] 回合开始确认：green_score=%d start_thr=%d exit_thr=%d",
+                        raw_score,
+                        GREEN_PIXEL_THRESHOLD,
+                        GREEN_EXIT_PIXEL_THRESHOLD,
+                    )
                     on_started()
                 if ended and on_ended:
+                    logger.info(
+                        "[turn] 回合结束确认：green_score=%d exit_thr=%d",
+                        raw_score,
+                        GREEN_EXIT_PIXEL_THRESHOLD,
+                    )
                     on_ended()
                 if (not active) and on_waiting:
                     on_waiting()
@@ -5751,7 +6136,7 @@ def yolo_turn_main_loop(
         marked_hint,
         hard_hint,
         (f"金币裁图→{COIN_CROPS_DIR.resolve()}" if _coin_crops_enabled() else "金币裁图=关"),
-        ("结算=协议3016(bridge/CDP)" if _settlement_api_only() else "结算=视觉"),
+        ("结算=协议(bridge/CDP)" if _settlement_api_only() else "结算=视觉"),
     ]
     startup_detail = " | ".join(p for p in startup_parts if p)
     logger.info(
@@ -5828,7 +6213,7 @@ def save_only_main_loop() -> None:
 def turn_probe_once() -> int:
     load_turn_runtime_config()
     score = _green_border_score(_capture_avatar_bgr())
-    active = score > GREEN_PIXEL_THRESHOLD
+    active = _is_my_turn_score(score)
     bgr = _capture_screen_bgr()
     if bgr is None:
         print("capture=timeout", flush=True)
@@ -5839,7 +6224,7 @@ def turn_probe_once() -> int:
         and stats["edge_ratio"] >= HAND_EDGE_RATIO_MIN
     )
     print(
-        f"border_green={score} threshold={GREEN_PIXEL_THRESHOLD} "
+        f"border_green={score} start_threshold={GREEN_PIXEL_THRESHOLD} exit_threshold={GREEN_EXIT_PIXEL_THRESHOLD} "
         f"{'我的回合' if active else '非我的回合'} | "
         f"hand card={stats['card_ratio']:.3f} edge={stats['edge_ratio']:.3f} "
         f"{'已发牌' if dealt else '未发牌'}",
@@ -5852,7 +6237,8 @@ def turn_debug_mode() -> None:
     load_turn_runtime_config()
     pyautogui = _require_pyautogui()
     print(
-        f"[debug] AVATAR_ROI={AVATAR_ROI} threshold={GREEN_PIXEL_THRESHOLD} | Q=退出",
+        f"[debug] AVATAR_ROI={AVATAR_ROI} start_threshold={GREEN_PIXEL_THRESHOLD} "
+        f"exit_threshold={GREEN_EXIT_PIXEL_THRESHOLD} | Q=退出",
         flush=True,
     )
     try:
@@ -5863,7 +6249,7 @@ def turn_debug_mode() -> None:
                 from_native=True,
             )
             score = _green_border_score(_capture_avatar_bgr())
-            active = score > GREEN_PIXEL_THRESHOLD
+            active = _is_my_turn_score(score)
             hand_stats = probe_hand_cards_stats(full_bgr)
             dealt = (
                 hand_stats["card_ratio"] >= HAND_CARD_RATIO_MIN

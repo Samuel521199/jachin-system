@@ -54,9 +54,10 @@ _LIST_KEYS = (
     "rank", "rankList", "members", "memberList",
 )
 # 结算帧分工（实机已确认）：
-# - 3016 sumWinBonus = 本局盈亏（记账 SSOT）
+# - 3016 sumWinBonus = 本局盈亏（测试服/旧正式服记账 SSOT）
 # - 3017 coinChanged = 同局稍后到的汇总/累计字段，数值常≠单局，默认不记账
-_SETTLEMENT_OBSERVE_TYPES = frozenset({"3016", "3017"})
+# - 3021 正式服可能承载结算展示/结果同步；若能解析出三人零和，可作为 fallback
+_SETTLEMENT_OBSERVE_TYPES = frozenset({"3016", "3017", "3021"})
 _SETTLEMENT_RECORD_TYPES = frozenset({"3016"})  # 只认 3016 写入 CSV
 # 进房/座位/玩家状态广播：含 coin/coinChanged 但是「入座快照」，不是本局打完的盈亏。
 _ROOM_SYNC_MSG_TYPES = frozenset({"101", "103", "152", "320", "1"})
@@ -69,6 +70,7 @@ _MSGTYPE_HINTS: dict[str, str] = {
     "3015": "对局状态快照",
     "3016": "★本局结算明细(sumWinBonus) → 记账 SSOT",
     "3017": "同局补充帧(coinChanged 常为累计，默认不记账)",
+    "3021": "正式服结算/结果同步候选（仅零和玩家列表可 fallback 记账）",
     "3028": "胜者/摊牌展示(非最终记账)",
     "C2W_GAME_STATUS": "外层 UI 桥(无金币)",
 }
@@ -267,8 +269,20 @@ def _coerce_msg_type(payload: dict[str, Any], text: str) -> str:
     return ""
 
 
+def _valid_settlement_players(players: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(players) < 2:
+        return []
+    if not any(int(p["delta"]) != 0 for p in players):
+        return []
+    return players
+
+
+def _generic_settlement_players(body: Any) -> list[dict[str, Any]]:
+    return _valid_settlement_players(_find_player_list(body))
+
+
 def _parse_tongits_settlement(msg_type: str, body: Any) -> list[dict[str, Any]]:
-    """只从 3016/3017 提取本局盈亏；其它 msgType 一律不记账。"""
+    """Extract settlement players from known prod/test settlement messages."""
     body = _unwrap_settlement_body(body)
     if not isinstance(body, dict) or msg_type not in _SETTLEMENT_OBSERVE_TYPES:
         return []
@@ -277,49 +291,49 @@ def _parse_tongits_settlement(msg_type: str, body: Any) -> list[dict[str, Any]]:
 
     if msg_type == "3016":
         results = body.get("playerResults")
-        if not isinstance(results, list):
-            return []
-        for pr in results:
-            if not isinstance(pr, dict):
-                continue
-            info = _unwrap_player_info(pr)
-            delta = _to_int(pr.get("sumWinBonus"))
-            if delta is None:
-                delta = _to_int(_get_first(info, ("coinChanged", "coin_changed")))
-            if delta is None:
-                continue
-            uid = _get_first(info, _UID_KEYS)
-            name = _get_first(info, _NAME_KEYS)
-            if uid is None and name is None:
-                continue
-            players.append(_player_row(info, delta, extra={
-                "normalWinBonus": _to_int(pr.get("normalWinBonus")),
-                "bonusBonus": _to_int(pr.get("bonusBonus")),
-            }))
+        if isinstance(results, list):
+            for pr in results:
+                if not isinstance(pr, dict):
+                    continue
+                info = _unwrap_player_info(pr)
+                delta = _to_int(pr.get("sumWinBonus"))
+                if delta is None:
+                    delta = _to_int(_get_first(info, ("coinChanged", "coin_changed")))
+                if delta is None:
+                    continue
+                uid = _get_first(info, _UID_KEYS)
+                name = _get_first(info, _NAME_KEYS)
+                if uid is None and name is None:
+                    continue
+                players.append(_player_row(info, delta, extra={
+                    "normalWinBonus": _to_int(pr.get("normalWinBonus")),
+                    "bonusBonus": _to_int(pr.get("bonusBonus")),
+                }))
+        if not players:
+            players = _find_player_list(body)
 
     elif msg_type == "3017":
         raw_players = body.get("players")
-        if not isinstance(raw_players, list):
-            return []
-        for entry in raw_players:
-            if not isinstance(entry, dict):
-                continue
-            info = _unwrap_player_info(entry)
-            delta = _to_int(_get_first(info, ("coinChanged", "coin_changed")))
-            if delta is None:
-                continue
-            uid = _get_first(info, _UID_KEYS)
-            name = _get_first(info, _NAME_KEYS)
-            if uid is None and name is None:
-                continue
-            players.append(_player_row(info, delta))
+        if isinstance(raw_players, list):
+            for entry in raw_players:
+                if not isinstance(entry, dict):
+                    continue
+                info = _unwrap_player_info(entry)
+                delta = _to_int(_get_first(info, ("coinChanged", "coin_changed")))
+                if delta is None:
+                    continue
+                uid = _get_first(info, _UID_KEYS)
+                name = _get_first(info, _NAME_KEYS)
+                if uid is None and name is None:
+                    continue
+                players.append(_player_row(info, delta))
+        if not players:
+            players = _find_player_list(body)
 
-    # 必须 ≥2 人且至少一人本局盈亏非零（过滤 attach 回放里的全 0 快照）
-    if len(players) < 2:
-        return []
-    if not any(p["delta"] != 0 for p in players):
-        return []
-    return players
+    elif msg_type == "3021":
+        players = _find_player_list(body)
+
+    return _valid_settlement_players(players)
 
 
 def _find_player_list(node: Any, *, depth: int = 0) -> list[dict[str, Any]]:
@@ -371,7 +385,7 @@ class ResultMonitor:
         self.verbose_per_type = 2  # 每种 msgType 详细打印前 N 帧，之后收敛成计数
         self._noise_dropped = 0
         self._started_at = time.time()
-        self._warmup_sec = float(os.environ.get("TONGITS_SETTLE_WARMUP_SEC") or ("1.5" if on_settlement else "5"))
+        self._warmup_sec = float(os.environ.get("TONGITS_SETTLE_WARMUP_SEC") or ("15" if on_settlement else "5"))
         self._last_primary_settle_at: float = 0.0
         self._on_settlement: Callable[[dict[str, Any]], None] | None = on_settlement
         self._quiet_console = on_settlement is not None
@@ -592,7 +606,7 @@ class ResultMonitor:
                         )
                 return  # 不是可记账的结算帧
 
-            # 3017 是同局补充帧：3016 已记账后忽略；默认 altogether 不写入 CSV（除非显式开启 fallback）
+            # 3017/3021 are fallback settlement candidates. 3016 remains the preferred SSOT.
             if msg_type == "3017":
                 dedup_sec = float(os.environ.get("TONGITS_SETTLE_DEDUP_SEC") or "120")
                 if self._last_primary_settle_at and (time.time() - self._last_primary_settle_at) < dedup_sec:
@@ -609,15 +623,35 @@ class ResultMonitor:
                         print(f"{_now_hms()} [结算] 跳过 3017（默认不记账，以 3016 sumWinBonus 为准；"
                               f"coinChanged={my_d}）", flush=True)
                     return
-
-            if msg_type not in _SETTLEMENT_RECORD_TYPES:
+            elif msg_type == "3021":
+                dedup_sec = float(os.environ.get("TONGITS_SETTLE_DEDUP_SEC") or "120")
+                if self._last_primary_settle_at and (time.time() - self._last_primary_settle_at) < dedup_sec:
+                    if not self._quiet_console:
+                        print(
+                            f"{_now_hms()} [结算] 跳过 3021（{dedup_sec:.0f}s 内已有 3016 记账）",
+                            flush=True,
+                        )
+                    return
+                if not _env_bool("TONGITS_SETTLE_ALLOW_3021", True):
+                    if not self._quiet_console:
+                        me = self._pick_me(settlement_players)
+                        my_d = me["delta"] if me else "?"
+                        print(f"{_now_hms()} [结算] 跳过 3021 fallback（TONGITS_SETTLE_ALLOW_3021=0，my={my_d}）", flush=True)
+                    return
+                if self._on_settlement:
+                    me = self._pick_me(settlement_players)
+                    my_d = me["delta"] if me else "?"
+                    self._emit_settle_note(
+                        f"[结算] 使用 3021 正式服 fallback 记账候选 我方 {my_d}"
+                    )
+            elif msg_type not in _SETTLEMENT_RECORD_TYPES:
                 return
 
             if not self._zero_sum_ok(settlement_players):
-                if msg_type == "3016" and self._on_settlement:
+                if msg_type in _SETTLEMENT_OBSERVE_TYPES and self._on_settlement:
                     total = sum(int(p["delta"]) for p in settlement_players)
                     self._emit_settle_note(
-                        f"[结算] 3016 零和校验失败 sum={total}，跳过本帧"
+                        f"[结算] {msg_type} 零和校验失败 sum={total}，跳过本帧"
                     )
                 return
 
@@ -631,12 +665,12 @@ class ResultMonitor:
                 )
                 return
 
-            # 去抖：连发多帧 3016 时只记最后一帧（约 2.5s 内无新帧才落盘）
-            if msg_type == "3016" and self._on_settlement:
+            # 去抖：连发多帧时只记最后一帧（约 2.5s 内无新帧才落盘）
+            if msg_type in ("3016", "3021") and self._on_settlement:
                 me = self._pick_me(settlement_players)
                 my_d = me["delta"] if me else "?"
                 self._emit_settle_note(
-                    f"[结算] 3016 已收帧 我方 {my_d}，{self._debounce_sec:.1f}s 去抖后落盘…"
+                    f"[结算] {msg_type} 已收帧 我方 {my_d}，{self._debounce_sec:.1f}s 去抖后落盘…"
                 )
             self._schedule_debounced_record(msg_type, settlement_players, payload)
 

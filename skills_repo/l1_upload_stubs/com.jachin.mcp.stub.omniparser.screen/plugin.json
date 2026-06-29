@@ -1,0 +1,24 @@
+{
+  "id": "com.jachin.mcp.stub.omniparser.screen",
+  "name": "MCP OmniParser Holographic Screen",
+  "version": "1.0.0",
+  "description": "Jachin local OmniParser MCP. It captures the desktop, returns an annotated element map, and clicks by returned element id.",
+  "type": "mcp",
+  "item_type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "stdio_server": {
+    "id": "holographic-screen",
+    "command": "__JACHIN_MCP_PYTHON__",
+    "args": [
+      "-m",
+      "l3_client.local_mcps.holographic_screen_mcp.server"
+    ],
+    "env": {
+      "PYTHONIOENCODING": "utf-8",
+      "OMNIPARSER_PYTHON": "__JACHIN_REPO_ROOT__/.venv-omniparser/Scripts/python.exe",
+      "OMNIPARSER_MODEL_DIR": "__JACHIN_REPO_ROOT__/model/OmniParser-v2.0",
+      "HOLOGRAPHIC_SCREEN_DATA_DIR": "__JACHIN_WORKSPACE__/holographic_screen"
+    }
+  }
+}

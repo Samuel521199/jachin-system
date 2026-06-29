@@ -2264,6 +2264,7 @@ UTIL_TOOLS_NATIVES_LIST: list[dict[str, Any]] = [
         "label": "util:lark_send_text",
         "desc": "【飞书/Lark】向指定会话发送纯文本（Open API，需 LARK_APP_ID/SECRET；默认 LARK_CHAT_ID）。"
         "网页摘要场景：先 util:stealth_extract 取正文，再本工具发摘要。**勿**在工具参数中写密钥。"
+        "本机项目/目录/bug/代码变更总结发 Lark 时不要用本工具；应使用 windows_codex_lark_workflow_template 或 windows_codex_project_briefing_to_lark。"
         "**禁止**把「人名、昵称」填进 chat_id；须 oc_/ou_ 或邮箱/手机，或先 **util:lark_search_user** / util:lark_resolve_user。",
         "params": ["text"],
     },
@@ -2619,6 +2620,7 @@ UTIL_TOOLS_REGISTRY: dict[str, dict[str, Any]] = {
         "description": (
             "向飞书/Lark 指定会话发送纯文本（im:message）。凭证来自 LARK_APP_ID/LARK_APP_SECRET 或 im_channels.yaml；"
             "目标会话默认 LARK_CHAT_ID，可覆盖传入 chat_id。"
+            "本机项目/目录/bug/代码变更总结发 Lark 时不要用本工具；应使用 mcp:windows_codex_lark_workflow_template 或 mcp:windows_codex_project_briefing_to_lark，让 Codex 分析并由 Windows OS workflow 发送/校验。"
             "**禁止**将人名/昵称当作 chat_id；须 oc_/ou_、邮箱、手机，或先 util:lark_search_user / util:lark_resolve_user。"
         ),
         "inputSchema": _schema_obj(

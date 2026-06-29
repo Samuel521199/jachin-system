@@ -1,17 +1,23 @@
 {
   "id": "com.jachin.mcp.stub.playwright.browser",
-  "name": "MCP Playwright（stub）",
-  "version": "1.0.0",
-  "description": "npm @playwright/mcp 浏览器自动化。",
+  "name": "MCP Playwright Browser",
+  "version": "1.1.0",
+  "description": "Official Playwright MCP over stdio. Use it as the primary browser automation layer for DOM/accessibility-based web tasks.",
   "type": "mcp",
+  "item_type": "MCP",
   "runtime_tier": "L3_LOCAL",
   "mcp_execution_mode": "stdio_server",
   "stdio_server": {
-    "id": "playwright-browser-npx",
+    "id": "playwright-browser",
     "command": "npx",
     "args": [
       "-y",
       "@playwright/mcp@latest"
-    ]
+    ],
+    "env": {
+      "PLAYWRIGHT_MCP_HEADLESS": "${PLAYWRIGHT_MCP_HEADLESS}",
+      "HTTP_PROXY": "${HTTP_PROXY}",
+      "HTTPS_PROXY": "${HTTPS_PROXY}"
+    }
   }
 }

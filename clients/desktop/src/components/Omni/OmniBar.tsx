@@ -103,6 +103,14 @@ export const OmniBar: React.FC<OmniBarProps> = ({
   const canVoice = !disabled && !isLoading;
   const voiceVisual = interactionPhase !== "text";
   const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
+  const handleQuickReply = useCallback(
+    (text: string) => {
+      if (disabled || isLoading || isTyping) return;
+      onInputChange(text);
+      window.setTimeout(() => onSend(), 0);
+    },
+    [disabled, isLoading, isTyping, onInputChange, onSend],
+  );
 
   const riskBorder =
     riskLevel === "danger"
@@ -164,6 +172,7 @@ export const OmniBar: React.FC<OmniBarProps> = ({
                     variant="markdown"
                     streamingFromWs={streamingFromWs}
                     onToolUiResult={onToolUiResult}
+                    onQuickReply={handleQuickReply}
                   />
                 ) : (
                   msg.content

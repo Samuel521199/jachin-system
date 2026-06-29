@@ -1144,7 +1144,7 @@ async def _handle_k11_game_open_smoke_stream(request) -> "aiohttp.web.StreamResp
 
 
 async def _handle_k11_tongits_autoplay_smoke_stream(request) -> "aiohttp.web.StreamResponse | aiohttp.web.Response":
-    """GET /api/v1/k11-tongits-autoplay-smoke/stream — Tongits 全自动打牌 + Lark 金币结算。"""
+    """GET /api/v1/k11-tongits-autoplay-smoke/stream — 接管当前 Tongits 页打牌 + Lark 金币结算。"""
     root = get_app_root()
     script = k11_tongits_autoplay_smoke_script_path()
     if not script.is_file():
@@ -1197,7 +1197,7 @@ async def _handle_k11_tongits_autoplay_smoke_stream(request) -> "aiohttp.web.Str
         request,
         root,
         cmd,
-        f"[K11] Tongits 自动打牌已启动: {script.name}",
+        f"[K11] Tongits 当前牌桌接管已启动: {script.name}",
         "k11 tongits autoplay smoke",
         run_count=1,
         interval_between_runs_sec=0,

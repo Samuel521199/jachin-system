@@ -90,6 +90,19 @@ async def apply_inbound_preflight(
     except Exception as e:
         logger.warning("[AgentPreflight] Intent Registry preflight 跳过: %s", e)
 
+    try:
+        from l3_node.os_mission_router import maybe_run_codex_lark_mission
+
+        _os_mission = await maybe_run_codex_lark_mission(
+            user_input=user_input,
+            tools=tools,
+            allowed=allowed,
+        )
+        if _os_mission is not None:
+            return _os_mission
+    except Exception as e:
+        logger.warning("[AgentPreflight] OS Mission Router 跳过: %s", e)
+
     if _implicit_channel_skips_hr_keyword_preflight(implicit_attribution):
         logger.debug(
             "[AgentPreflight] skip HR keyword heuristics (embedded DOM + skill); channel=%s",

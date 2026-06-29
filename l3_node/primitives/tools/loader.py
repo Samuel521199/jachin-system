@@ -233,11 +233,11 @@ except Exception as e:
     logger.debug("[Skills] yfinance 原生工具未挂载: %s", e)
 
 try:
-    from l3_node.tools.pmo_db_tools import PMO_NATIVE_TOOLS_LIST
+    from l3_node.primitives.tools.native_extensions import load_native_extension_tools
 
-    NATIVE_TOOLS.extend(PMO_NATIVE_TOOLS_LIST)
+    NATIVE_TOOLS.extend(load_native_extension_tools())
 except Exception as e:
-    logger.debug("[Skills] PMO db_query/db_write 原生工具未挂载: %s", e)
+    logger.debug("[Skills] Native extension tools not mounted: %s", e)
 
 def _fetch_skill_config(skill_id: str) -> dict[str, Any]:
     """
@@ -1520,58 +1520,40 @@ def run_tool(
                 lines = inp.split("\n")
                 params["file_path"] = lines[0].strip() if lines else ""
                 params["content"] = "\n".join(lines[1:]) if len(lines) > 1 else ""
-    elif tool_id in (
-        "core:db_query",
-        "core:db_write",
-        "core:pmo_import_json",
-        "core:pmo_init_gap_report",
-        "core:pmo_mirror_import",
-        "core:pmo_personnel_report",
-        "core:pmo_sprint_epic_report",
-        "core:pmo_resolve_sprint",
-        "core:pmo_release_epic_mapping",
-        "core:pmo_macro_dashboard_push",
-        "core:pmo_macro_dashboard_preview",
-        "core:pmo_bitable_watch_tick",
-        "core:pmo_bitable_watch_status",
-        "core:pmo_change_diff",
-        "core:pmo_change_alert_analyze",
-    ):
-        if tool_id == "core:db_query":
-            from l3_node.tools.pmo_db_tools import parse_db_query_action_input
-
-            params = parse_db_query_action_input(inp)
-        elif inp.strip().startswith("{"):
-            try:
-                o = json.loads(inp)
-                if isinstance(o, dict):
-                    params = o
-            except json.JSONDecodeError:
-                params = {}
-        else:
-            params = {}
-        print(
-            f"[Skill Execute] [Native PMO] 调用 tool_id={tool_id}",
-            file=sys.stderr,
-            flush=True,
-        )
-        try:
-            from l3_node.tools.pmo_db_tools import dispatch_pmo_db_tool
-
-            result = dispatch_pmo_db_tool(tool_id, **params)
-            if tool_id == "core:pmo_personnel_report" and isinstance(result, dict):
-                ft = (result.get("formatted_text") or "").strip()
-                if ft:
-                    body = {k: v for k, v in result.items() if k != "formatted_text"}
-                    return (
-                        ft
-                        + "\n\n---\n[结构化 JSON · FanOut/合并请用下列键，勿用 Markdown #### 重排]\n"
-                        + json.dumps(body, ensure_ascii=False, indent=2)
-                    )
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        except Exception as e:
-            return f"[执行失败: {e}]"
     else:
+        try:
+            from l3_node.primitives.tools.native_extensions import (
+                dispatch_native_extension_tool,
+                is_native_extension_tool,
+                parse_native_extension_action_input,
+            )
+        except Exception:
+            dispatch_native_extension_tool = None  # type: ignore[assignment]
+            is_native_extension_tool = None  # type: ignore[assignment]
+            parse_native_extension_action_input = None  # type: ignore[assignment]
+
+        if is_native_extension_tool and is_native_extension_tool(tool_id):
+            params = parse_native_extension_action_input(tool_id, inp) if parse_native_extension_action_input else {}
+            print(
+                f"[Skill Execute] [Native Extension] 调用 tool_id={tool_id}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                result = dispatch_native_extension_tool(tool_id, **params) if dispatch_native_extension_tool else None
+                if isinstance(result, dict):
+                    ft = (result.get("formatted_text") or "").strip()
+                    if ft:
+                        body = {k: v for k, v in result.items() if k != "formatted_text"}
+                        return (
+                            ft
+                            + "\n\n---\n[结构化 JSON · FanOut/合并请用下列键，勿用 Markdown #### 重排]\n"
+                            + json.dumps(body, ensure_ascii=False, indent=2)
+                        )
+                    return json.dumps(result, ensure_ascii=False, indent=2)
+                return str(result)
+            except Exception as e:
+                return f"[执行失败: {e}]"
         print(f"[Skill Execute] 未知工具 tool_id={tool_id}", file=sys.stderr, flush=True)
         return f"[未知工具: {tool_id}]"
 

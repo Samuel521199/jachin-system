@@ -8,7 +8,7 @@
  * - 输入区：独立一层 pointer-events:auto
  */
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useCallback } from "react";
 import { Send, Mic, Sparkles, Loader2, Square, Radio, LayoutDashboard } from "lucide-react";
 import { WindowControls } from "./WindowControls";
 import { VoiceWaveform, type WavePhase } from "./VoiceWaveform";
@@ -88,6 +88,14 @@ export const ChatUI: React.FC<ChatUIProps> = ({
   const canVoice = !disabled && !isLoading;
   const voiceVisual = interactionPhase !== "text";
   const wavePhase: WavePhase = voiceVisual ? interactionPhase : "mic_listen";
+  const handleQuickReply = useCallback(
+    (text: string) => {
+      if (disabled || isLoading || isTyping) return;
+      onInputChange(text);
+      window.setTimeout(() => onSend(), 0);
+    },
+    [disabled, isLoading, isTyping, onInputChange, onSend],
+  );
 
   const riskBorder =
     riskLevel === "danger"
@@ -166,6 +174,7 @@ export const ChatUI: React.FC<ChatUIProps> = ({
                       variant="markdown"
                       streamingFromWs={streamingFromWs}
                       onToolUiResult={onToolUiResult}
+                      onQuickReply={handleQuickReply}
                     />
                   ) : (
                     msg.content

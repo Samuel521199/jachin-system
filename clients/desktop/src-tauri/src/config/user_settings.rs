@@ -65,6 +65,12 @@ pub struct UserSettings {
 
     /// 桌面控制台 / Omni 对话窗界面语言：`Some("zh")` | `Some("en")`，None 视为 zh
     pub desktop_ui_lang: Option<String>,
+
+    /// Windows 文件操作高危动作是否免二次确认。None/false = 删除、覆盖、危险移动前需要确认。
+    pub os_file_dangerous_without_confirm: Option<bool>,
+
+    /// 飞书/Lark 多维表写入是否免二次确认。None/false = 新增/修改记录前需要确认。
+    pub lark_bitable_write_without_confirm: Option<bool>,
 }
 
 /// 获取应用数据根目录（与 TTS 路径策略一致）

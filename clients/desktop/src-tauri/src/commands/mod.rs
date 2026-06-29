@@ -2,6 +2,7 @@
 
 pub mod im_channels_config;
 pub mod native_fs_policy;
+pub mod os_evidence;
 pub mod pairing;
 pub mod pmo_config;
 pub mod pmo_run;

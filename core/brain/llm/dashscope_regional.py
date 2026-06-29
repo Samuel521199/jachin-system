@@ -17,6 +17,9 @@ _DEFAULT_BASE_SEA = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 def _active_region_str() -> str:
     """JACHIN_ACTIVE_REGION：环境变量优先，否则 core.config.settings。"""
     r = os.getenv("JACHIN_ACTIVE_REGION", "").strip().upper()
+    if r == "SEA" and not (os.getenv("DASHSCOPE_API_KEY_SEA") or "").strip():
+        if (os.getenv("DASHSCOPE_API_KEY_CN") or "").strip():
+            return "CN"
     if r:
         return r
     try:
