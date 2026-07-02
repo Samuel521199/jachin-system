@@ -96,20 +96,52 @@ def _is_ws_voice_presence_ack_intent(intent: str) -> bool:
     return any(w in text for w in presence_words)
 
 
-def _voice_fast_lane_messages(intent: str) -> list[dict[str, str]]:
+def _voice_light_task_context_prompt(implicit_signals: dict | None) -> str:
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    if not bool(sig.get("inject_light_task_context")):
+        return ""
+    ctx = sig.get("light_task_context")
+    if not isinstance(ctx, dict):
+        return ""
+    tasks = ctx.get("active_tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return ""
+    compact_tasks: list[dict[str, str]] = []
+    for item in tasks[:3]:
+        if not isinstance(item, dict):
+            continue
+        task_id = str(item.get("id") or "").strip()[:80]
+        title = str(item.get("title") or "").strip()[:120]
+        if task_id or title:
+            compact_tasks.append({"id": task_id, "title": title})
+    if not compact_tasks:
+        return ""
+    focused_task_id = str(ctx.get("focused_task_id") or "").strip()[:80] or None
+    summary = str(ctx.get("summary") or sig.get("task_context_summary") or "").strip()[:160] or None
+    payload = {
+        "active_tasks": compact_tasks,
+        "focused_task_id": focused_task_id,
+        "summary": summary,
+    }
+    return (
+        "\n\u8f7b\u91cf\u4efb\u52a1\u72b6\u6001\uff08\u4ec5\u7528\u4e8e\u4fdd\u6301\u966a\u4f34\u6001\u7684\u8fde\u7eed\u611f\uff0c\u4e0d\u8981\u5c55\u5f00\u68c0\u7d22\u6216\u7f16\u9020\u8fdb\u5ea6\uff09\uff1a"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n\u5982\u679c\u7528\u6237\u63d0\u5230\u8fd9\u4e9b\u4efb\u52a1\uff0c\u53ef\u4ee5\u7b80\u77ed\u627f\u63a5\u5b83\u4eec\u4ecd\u5728\u540e\u53f0\u4fdd\u6301\u72b6\u6001\uff1b\u4e0d\u8981\u7f16\u9020\u5b8c\u6210\u767e\u5206\u6bd4\u3001\u6b65\u9aa4\u6216\u7ed3\u679c\u3002"
+    )
+
+
+def _voice_fast_lane_messages(intent: str, implicit_signals: dict | None = None) -> list[dict[str, str]]:
+    task_context_prompt = _voice_light_task_context_prompt(implicit_signals)
+    system_prompt = (
+        "\u4f60\u662f Jachin \u7684\u966a\u4f34\u6001\u8bed\u97f3\u52a9\u624b\u3002\u5f53\u524d\u662f\u8bed\u97f3\u95f2\u804a\u5feb\u8def\u5f84\u3002"
+        "\u76f4\u63a5\u3001\u81ea\u7136\u3001\u6e29\u67d4\u5730\u7528\u4e2d\u6587\u77ed\u7b54\uff0c1\u52302\u53e5\u3002\u7528\u6237\u5982\u679c\u95ee\u4e86\u5177\u4f53\u95ee\u9898\uff0c\u5fc5\u987b\u56de\u7b54\u95ee\u9898\u672c\u8eab\uff0c"
+        "\u4e0d\u8981\u53ea\u8bf4\u6211\u5728\u3001\u597d\u5440\u3001\u542c\u7740\u5462\u3002\u53ea\u6709\u7528\u6237\u53ea\u662f\u53eb\u4f60\u966a\u4f34\u6216\u786e\u8ba4\u4f60\u5728\u65f6\uff0c\u624d\u53ef\u7528\u5f88\u77ed\u7684\u8fde\u63a5\u8bed\u3002"
+        "\u4e0d\u8981\u5c55\u793a\u63a8\u7406\uff0c\u4e0d\u8981\u8c03\u7528\u5de5\u5177\u3002\u6ca1\u6709\u8f7b\u91cf\u4efb\u52a1\u72b6\u6001\u65f6\uff0c\u4e0d\u8981\u8bf4\u4f60\u6b63\u5728\u5904\u7406\u4efb\u52a1\u3002"
+    )
     return [
-        {
-            "role": "system",
-            "content": (
-                "\u4f60\u662f Jachin \u7684\u966a\u4f34\u6001\u8bed\u97f3\u52a9\u624b\u3002\u5f53\u524d\u662f\u8bed\u97f3\u95f2\u804a\u5feb\u8def\u5f84\u3002"
-                "\u76f4\u63a5\u3001\u81ea\u7136\u3001\u6e29\u67d4\u5730\u7528\u4e2d\u6587\u77ed\u7b54\uff0c1\u52302\u53e5\u3002\u7528\u6237\u5982\u679c\u95ee\u4e86\u5177\u4f53\u95ee\u9898\uff0c\u5fc5\u987b\u56de\u7b54\u95ee\u9898\u672c\u8eab\uff0c"
-                "\u4e0d\u8981\u53ea\u8bf4\u6211\u5728\u3001\u597d\u5440\u3001\u542c\u7740\u5462\u3002\u53ea\u6709\u7528\u6237\u53ea\u662f\u53eb\u4f60\u966a\u4f34\u6216\u786e\u8ba4\u4f60\u5728\u65f6\uff0c\u624d\u53ef\u7528\u5f88\u77ed\u7684\u8fde\u63a5\u8bed\u3002"
-                "\u4e0d\u8981\u5c55\u793a\u63a8\u7406\uff0c\u4e0d\u8981\u8c03\u7528\u5de5\u5177\uff0c\u4e0d\u8981\u8bf4\u4f60\u6b63\u5728\u5904\u7406\u4efb\u52a1\u3002"
-            ),
-        },
+        {"role": "system", "content": system_prompt + task_context_prompt},
         {"role": "user", "content": (intent or "").strip()},
     ]
-
 
 def _pick_early_yield_token(intent: str, implicit_signals: dict | None) -> str | None:
     """
@@ -650,7 +682,7 @@ async def _ws_execute_intent_turn(
             _fast_timeout_s = float(os.environ.get("JACHIN_VOICE_FAST_LANE_TIMEOUT_SEC", "1.4") or "1.4")
             _fast_task = asyncio.create_task(
                 _engine.generate_response_stream(
-                    _voice_fast_lane_messages(intent),
+                    _voice_fast_lane_messages(intent, _imp_sig),
                     chunk_callback=_fast_on_chunk,
                     tools=None,
                     **_fast_kw,

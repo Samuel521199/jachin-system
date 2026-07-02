@@ -80,7 +80,7 @@ def main() -> None:
 
     # 默认完全跟随陪伴态；只有显式传参时才覆盖。
     model_dir = Path(args.model_dir) if args.model_dir else Path(cfg.tts_dir)
-    voice = (args.voice or cfg.tts_voice or "Junhao").strip() or "Junhao"
+    voice = (args.voice or cfg.tts_voice or "zm_053").strip() or "zm_053"
     speed = float(args.speed) if args.speed is not None else float(cfg.tts_speed)
     if args.cpu_threads is not None:
         os.environ["JACHIN_VOICE_TTS_THREADS"] = str(max(1, args.cpu_threads))
@@ -95,10 +95,10 @@ def main() -> None:
     if not tts._load_engine():
         raise RuntimeError(f"TTS engine load failed: {tts._load_error}")
 
-    print("Companion-matched MOSS interactive mode is ready.")
+    print("Companion-matched Kokoro interactive mode is ready.")
     print(f"model_dir={model_dir}")
     print(
-        f"voice={voice} speed={speed} sample_mode={tts.sample_mode} do_sample={tts.do_sample} "
+        f"voice={voice} speed={speed} "
         f"threads_env={os.getenv('JACHIN_VOICE_TTS_THREADS', '') or '(companion default)'}"
     )
     print("Type text and press Enter. Type 'q' to quit.")

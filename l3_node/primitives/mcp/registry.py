@@ -1,4 +1,4 @@
-"""
+﻿"""
 Jachin Nexus V2 - L3 MCP 工具桥接器
 
 合并本机 stdio MCP、l3_mcp_cache 动态包与 L3 内置工具，维护 known_mcp_tools；
@@ -590,6 +590,13 @@ L3_LOCAL_MCP_TOOLS: list[dict[str, Any]] = [
         "long_running": True,
     },
     {
+        "id": "mcp:windows_codex_ask_lark_send",
+        "label": "mcp:windows_codex_ask_lark_send",
+        "desc": "[L3 local OS Assistant] Multi-app workflow: open/focus Codex, ask a user-provided question, wait for and capture the answer, validate it, then send the answer through Lark with visual verification.",
+        "params": ["question", "recipients_json", "original_user_input", "wait_seconds", "out_dir"],
+        "long_running": True,
+    },
+    {
         "id": "mcp:windows_lark_send_message",
         "label": "mcp:windows_lark_send_message",
         "desc": "[L3 local OS Assistant] Open Lark/Feishu, search each recipient, preview the target/message, send, and verify with screenshot/OCR. recipients_json must be a JSON array, e.g. [\"Vivian\",\"Samuel\"]. Supports single chats and groups.",
@@ -938,8 +945,14 @@ def _mcp_raw_visible_in_default_pool(raw_name: str) -> bool:
     return not _is_business_mcp_raw_name(raw)
 
 
+# 全量本地 MCP（invoke 路由 SSOT）：不受 business 池过滤影响，BI atom_* 等技能直连 L3 执行
+L3_LOCAL_MCP_TOOLS_ALL: list[dict[str, Any]] = L3_LOCAL_MCP_TOOLS
+
+# Agent 默认工具池：未开 JACHIN_ENABLE_BUSINESS_MCP_TOOLS 时隐藏 atom_/HR 等业务 MCP
 L3_LOCAL_MCP_TOOLS = [
-    t for t in L3_LOCAL_MCP_TOOLS if _mcp_raw_visible_in_default_pool(_mcp_id_raw_local_part(str(t.get("id", ""))))
+    t
+    for t in L3_LOCAL_MCP_TOOLS_ALL
+    if _mcp_raw_visible_in_default_pool(_mcp_id_raw_local_part(str(t.get("id", ""))))
 ]
 
 
@@ -2085,10 +2098,12 @@ class MCPToolRegistry:
         self._l2_base_url = (l2_base_url or _get_l2_base_url()).rstrip("/")
         self._known_mcp_tools: set[str] = set()
         self._tools_cache: list[dict[str, Any]] = []
+        # invoke：L3_LOCAL_MCP_TOOLS_ALL；工具池可见性：过滤后的 L3_LOCAL_MCP_TOOLS
+        self._local_mcp_invoke_tools: set[str] = {t["id"] for t in L3_LOCAL_MCP_TOOLS_ALL}
         self._local_mcp_tools: set[str] = {t["id"] for t in L3_LOCAL_MCP_TOOLS}
         self._cache_invoke_map: dict[str, tuple[Path, str, str]] = {}
         self._long_running_mcp_ids: set[str] = {
-            str(t["id"]).strip().lower() for t in L3_LOCAL_MCP_TOOLS if tool_entry_long_running(t)
+            str(t["id"]).strip().lower() for t in L3_LOCAL_MCP_TOOLS_ALL if tool_entry_long_running(t)
         }
         self._fetch_tools_lock = asyncio.Lock()
         logger.info(
@@ -2141,7 +2156,7 @@ class MCPToolRegistry:
         import httpx
 
         tools: list[dict[str, Any]] = list(L3_LOCAL_MCP_TOOLS)
-        self._known_mcp_tools = set(self._local_mcp_tools)
+        self._known_mcp_tools = set(self._local_mcp_invoke_tools)
         local_raw_names = l3_local_mcp_raw_names()
         deny_raw = _mcp_deny_tool_raw_names()
 
@@ -2654,12 +2669,13 @@ class MCPToolRegistry:
     ) -> str:
         """MCP 实际执行（不含权限与 P1 缓存包装）。"""
         logger.info(
-            "[MCP Registry] _invoke_impl begin tool_id=%s action_input_len=%s in_local_mcp_set=%s",
+            "[MCP Registry] _invoke_impl begin tool_id=%s action_input_len=%s in_local_invoke_set=%s in_pool_set=%s",
             tool_id,
             len(action_input or ""),
+            tool_id in self._local_mcp_invoke_tools,
             tool_id in self._local_mcp_tools,
         )
-        if tool_id in self._local_mcp_tools:
+        if tool_id in self._local_mcp_invoke_tools:
             raw_name = self._raw_name(tool_id)
             arguments = self._parse_action_input(action_input)
 
@@ -3146,6 +3162,18 @@ class MCPToolRegistry:
                         windows_uia_server.windows_open_app,
                         str(arguments.get("app_name") or ""),
                         str(arguments.get("args_json") or "[]"),
+                        str(arguments.get("out_dir") or ""),
+                    )
+                if raw_name == "windows_codex_ask_lark_send":
+                    _recipients_arg = arguments.get("recipients_json") or arguments.get("recipients") or "[]"
+                    if not isinstance(_recipients_arg, str):
+                        _recipients_arg = json.dumps(_recipients_arg, ensure_ascii=False)
+                    return await asyncio.to_thread(
+                        windows_uia_server.windows_codex_ask_lark_send,
+                        str(arguments.get("question") or arguments.get("feature_query") or arguments.get("prompt") or ""),
+                        str(_recipients_arg),
+                        str(arguments.get("original_user_input") or ""),
+                        int(arguments.get("wait_seconds") or 90),
                         str(arguments.get("out_dir") or ""),
                     )
                 if raw_name == "windows_lark_send_message":
@@ -3990,3 +4018,5 @@ def get_mcp_registry() -> MCPToolRegistry:
     if _registry is None:
         _registry = MCPToolRegistry()
     return _registry
+
+

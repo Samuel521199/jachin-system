@@ -61,7 +61,7 @@ audio_data = await tts.synthesize(
     text="你好，我是Jachin助手",
     voice="zh-CN-XiaoxiaoNeural",
     language="zh-CN",
-    speed=1.0,
+    speed=1.25,
     pitch=1.0
 )
 
@@ -115,7 +115,7 @@ curl -X POST "http://localhost:8000/api/v2/voice/synthesize" \
     "text": "你好，我是Jachin助手",
     "voice": "zh-CN-XiaoxiaoNeural",
     "language": "zh-CN",
-    "speed": 1.0,
+    "speed": 1.25,
     "pitch": 1.0
   }' \
   --output speech.wav

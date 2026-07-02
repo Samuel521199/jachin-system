@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 BI 每日战报 — 一键执行入口
 
@@ -19,6 +19,9 @@ try:
     load_dotenv(root / ".env", encoding="utf-8")
 except ImportError:
     pass
+# BI 战报 atom_* MCP 默认 L3 本地 invoke（与 registry L3_LOCAL_MCP_TOOLS_ALL 一致；Agent 池仍可按需隐藏）
+import os
+os.environ.setdefault("JACHIN_ENABLE_BUSINESS_MCP_TOOLS", "1")
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 

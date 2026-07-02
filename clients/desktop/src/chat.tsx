@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Chat / Omni 窗口 — Jachin Omni 极简输入条（无桌面精灵、无内嵌日志面板）
  *
  * 独立 chat 窗口入口（chat.html → 本文件）；大控制台为 `console/ConsoleApp.tsx`（main）。
@@ -79,6 +79,7 @@ import { voicePlaybackController } from "./voice/voicePlaybackController";
 import { voiceSessionStore } from "./voice/voiceSessionStore";
 import { initVoiceCompanionDebugLog, truncVoiceLog, voiceCompanionDebug } from "./voice/voiceCompanionDebugLog";
 import { previewWakeAckWav } from "./voice/voiceNativeBridge";
+import { DEFAULT_KOKORO_TTS_VOICE } from "./voice/voiceDefaults";
 import {
   dispatchVoiceIntent,
   type VoiceDispatcherDecision,
@@ -99,8 +100,10 @@ import { OmniDynamicHud } from "./components/Omni/OmniDynamicHud";
 import { OmniTacticalVoidDecor } from "./components/Omni/OmniTacticalVoidDecor";
 import type { JachinCoreMachineState } from "./components/Omni/JachinCore";
 import { WindowResizeHandles } from "./components/Omni/WindowResizeHandles";
-import { OmniMiniSpark } from "./components/Omni/OmniMiniSpark";
+import { CompanionOverlay } from "./components/Omni/CompanionOverlay";
 import type { AiState } from "./components/Omni/JachinOrb";
+import { useCompanionMode } from "./hooks/useCompanionMode";
+import { scheduleCompanionLayoutSyncWithRetry } from "./components/Omni/companionLayoutCheck";
 import { SensoryOverlay } from "./console/components/SensoryOverlay";
 import { useJachinCoreState } from "./hooks/useJachinCoreState";
 import { useDesktopUiLang } from "./hooks/useDesktopUiLang";
@@ -136,11 +139,9 @@ function stripDefaultSadEmojiSuffix(text: string): string {
   return cleaned || t;
 }
 
-const FIXED_L3_JVS_VOICE = "Junhao";
-
 function resolveCompanionJvsVoice(_voice: string): string {
-  // 用户要求 L3 语音模块固定为 Junhao，避免音色漂移。
-  return FIXED_L3_JVS_VOICE;
+  // Keep all system voice output aligned with the Kokoro trace baseline.
+  return DEFAULT_KOKORO_TTS_VOICE;
 }
 
 function ChatApp() {
@@ -379,7 +380,8 @@ function ChatApp() {
   const isLoadingRef = useRef(false);
   const isTypingRef = useRef(false);
   /** 语音陪伴 / simulate：L3 流由 chat WS 接收，JVS TTS 在 chat 窗播放（陪伴 Orb 同窗） */
-  const voiceCompanionActiveRef = useRef(false);
+  const { companionMode, setCompanionMode, companionModeRef, voiceCompanionActiveRef, ensureCompanionSurfaceVisible } =
+    useCompanionMode();
   /** HUD 自有 WS 回包兜底：避免临时窗有字但 chat 未接管 TTS。 */
   const hudTtsBridgeRunRef = useRef("");
   /** 最近一次打断（barge-in）标记：下一轮发给 L3，用于“好的，听你的”衔接语气。 */
@@ -445,12 +447,6 @@ function ChatApp() {
 
   // 不在此用 window blur 自动隐藏：dev 环境下焦点常在 PowerShell/IDE，WebView 收不到 focus，
   // 延迟隐藏仍会在数百毫秒后执行 → Omni「闪退」。收起请用 Esc、托盘左键或窗口关闭。
-  /** 右下角陪伴圆模式（窗口缩小，非完全 hide） */
-  const [companionMode, setCompanionMode] = useState(false);
-  const companionModeRef = useRef(companionMode);
-  useEffect(() => {
-    companionModeRef.current = companionMode;
-  }, [companionMode]);
 
   /** 断电遗留横幅出现时：陪伴圆/最小化时走哨兵 Toast（与后台任务完成一致） */
   useEffect(() => {
@@ -514,93 +510,6 @@ function ChatApp() {
     return () => registerBackgroundTaskHandler(null);
   }, [registerBackgroundTaskHandler, setMessages]);
 
-  /** 陪伴态 React state 每次变化时打一条，与 Rust emit / 窗口 API 对照 */
-  useEffect(() => {
-    void (async () => {
-      try {
-        const w = getCurrentWindow();
-        const [min, vis] = await Promise.all([w.isMinimized(), w.isVisible()]);
-        void desktopDiagLog("react_companion_mode_state", {
-          companionModeReact: companionMode,
-          label: w.label,
-          minimized: min,
-          visible: vis,
-        });
-      } catch (e) {
-        void desktopDiagLog("react_companion_mode_state_err", { err: String(e) });
-      }
-    })();
-  }, [companionMode]);
-
-  useEffect(() => {
-    const root = document.getElementById("chat-root");
-    if (!root) return;
-    root.style.overflow = companionMode ? "visible" : "hidden";
-    return () => {
-      root.style.overflow = "hidden";
-    };
-  }, [companionMode]);
-
-  /**
-   * 启动时同步 Rust 陪伴态。若该 invoke 较慢，用户可能已先按 Esc 坍缩；
-   * 后到的 false 会错误盖掉 true → UI 与大窗不同步、球「随机」才出现。
-   * 规则：本地已是陪伴态时，不再被这次启动同步降成 false。
-   */
-  useEffect(() => {
-    let cancelled = false;
-    void invoke<boolean>("is_chat_companion_mode")
-      .then((v) => {
-        if (cancelled) return;
-        void desktopDiagLog("react_startup_companion_sync", {
-          rustCompanionReported: v,
-          note: "before merge with optimistic local state",
-        });
-        setCompanionMode((prev) => (prev ? prev : Boolean(v)));
-      })
-      .catch((e) => {
-        void desktopDiagLog("react_startup_companion_sync_err", { err: String(e) });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ companion: boolean }>("omni-companion-mode", (ev) => {
-      const next = Boolean(ev.payload?.companion);
-      setCompanionMode(next);
-      void (async () => {
-        try {
-          const w = getCurrentWindow();
-          const [min, vis, focused] = await Promise.all([
-            w.isMinimized(),
-            w.isVisible(),
-            w.isFocused().catch(() => false),
-          ]);
-          void desktopDiagLog("react_omni_companion_event", {
-            payloadCompanion: next,
-            label: w.label,
-            minimized: min,
-            visible: vis,
-            focused,
-          });
-        } catch (e) {
-          void desktopDiagLog("react_omni_companion_event_err", { err: String(e) });
-        }
-      })();
-    })
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch((err) => {
-        console.warn("[Omni] listen omni-companion-mode failed:", err);
-      });
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listen<{ state?: string }>("hud-orb-state", (ev) => {
@@ -635,30 +544,34 @@ function ChatApp() {
   const requestHideChat = useCallback(async () => {
     void desktopDiagLog("react_hide_chat_request", { phase: "before_invoke" });
     try {
-      // 乐观切陪伴 UI，与 Rust 立刻缩小窗口对齐；避免 mode=wait 时大窗已缩小仍渲主界面一帧
-      setCompanionMode((prev) => (prev ? prev : true));
       const r = await invoke<HideChatWindowResult>("hide_chat_window");
-      setCompanionMode(Boolean(r?.companion));
+      if (!r?.companion) {
+        throw new Error("hide_chat_window returned companion=false");
+      }
+      setCompanionMode(true);
+      scheduleCompanionLayoutSyncWithRetry();
       void desktopDiagLog("react_hide_chat_ok", {
-        companion: r?.companion,
-        fullyHidden: r?.fullyHidden,
+        companion: r.companion,
+        fullyHidden: r.fullyHidden,
       });
     } catch (err) {
       console.error("[Omni] hide_chat_window failed:", err);
       void desktopDiagLog("react_hide_chat_err", { err: String(err) });
-      setCompanionMode(false);
-      // 陪伴坍缩失败时仍应能关掉窗口，避免 × / Esc 完全无响应
       try {
-        const w = getCurrentWindow();
-        await w.hide();
-        setCompanionMode(false);
-        void desktopDiagLog("react_hide_chat_fallback_hide_ok", {});
-      } catch (e2) {
-        console.error("[Omni] fallback hide() failed:", e2);
-        void desktopDiagLog("react_hide_chat_fallback_hide_err", { err: String(e2) });
+        const rustCompanion = await invoke<boolean>("is_chat_companion_mode");
+        if (rustCompanion) {
+          setCompanionMode(true);
+          await invoke("companion_restore_surface");
+          await getCurrentWindow().show().catch(() => {});
+          scheduleCompanionLayoutSyncWithRetry();
+          return;
+        }
+      } catch {
+        // fall through
       }
+      setCompanionMode(false);
     }
-  }, []);
+  }, [setCompanionMode]);
 
   const requestExpandFromSpark = useCallback(async () => {
     void desktopDiagLog("react_expand_from_spark", { phase: "before_invoke" });
@@ -696,7 +609,7 @@ function ChatApp() {
       });
       voiceSessionStore.setState("listening");
       void armCompanionVoiceSession();
-      void invoke("companion_reveal").catch(() => invoke("show_chat_window"));
+      void ensureCompanionSurfaceVisible();
     })
       .then((fn) => {
         unlisten = fn;
@@ -705,7 +618,7 @@ function ChatApp() {
     return () => {
       unlisten?.();
     };
-  }, []);
+  }, [ensureCompanionSurfaceVisible]);
 
   // 桌面启动后自动拉起唤醒监听（与 Rust auto_start 双保险；需 ambient 构建）
   useEffect(() => {
@@ -1095,13 +1008,13 @@ function ChatApp() {
       voiceOrchestrator.startSession(`chat-voice-${turnSessionId}-${Date.now()}`, {
         maxSpeakSentences: chatVoiceSpeakSentences,
         companionUi: false,
-        ttsVoice: FIXED_L3_JVS_VOICE,
+        ttsVoice: DEFAULT_KOKORO_TTS_VOICE,
       });
       startCompanionJvsIfNeeded();
       voiceChatTraceIfActive("tts.session_armed", {
         maxSpeakSentences: chatVoiceSpeakSentences,
         ttsEnabled,
-        ttsVoiceResolved: FIXED_L3_JVS_VOICE,
+        ttsVoiceResolved: DEFAULT_KOKORO_TTS_VOICE,
       });
     }
     chatTurnTokenRef.current += 1;
@@ -1119,6 +1032,13 @@ function ChatApp() {
       !useJvsOrchestrator && ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
     let accumulatedForTts = "";
 
+    const shouldSpeakFinalAnswer = (text: string, meta?: SensoryAnswerMeta): boolean => {
+      if (!text.trim()) return false;
+      if (meta?.terminalOutcome === "error" || meta?.terminalOutcome === "rejected") return false;
+      if (!meta?.hadStreamChunks) return true;
+      const compactSpoken = accumulatedForTts.replace(/[\s\u3000，,。.!！?？、；;：:]+/g, "");
+      return compactSpoken.length > 0 && compactSpoken.length <= 4;
+    };
     const enqueueSentence = (sentence: string) => {
       if (!sentence.trim() || !ttsQueue) return;
       synthesizeSpeech(sentence.trim(), ttsVoice)
@@ -1191,7 +1111,6 @@ function ChatApp() {
         const last = updated[updated.length - 1];
         if (last?.role === "assistant") {
           if (opts?.skipContentUpdate) {
-            // 流式已按 reasoning+content 拆开：收尾时对「全量串」再 normalize（含 Final Answer: 与标签）
             const combined = [last.reasoning ?? "", last.content ?? ""].filter(Boolean).join("\n\n");
             const n = normalizeAssistantOutput(
               combined.trim() ? combined : (sanitizedFinal || finalContent || last.content || ""),
@@ -1330,8 +1249,8 @@ function ChatApp() {
       });
     };
 
-    /** 无 chunk 时轻提示；过密会刷屏、撑大 reasoning 串并拖慢渲染，与「仅思考链展示」的预期不符 */
-    const REASONING_PULSE_MS = 3500;
+    /** Waiting hint: show once only when the assistant bubble is still completely empty. */
+    const REASONING_PULSE_MS = 12000;
     const pulseHints = [
       "调度管线等待上游 token（chunk 流式）…",
       "Sensory WebSocket 已连接；若长时间无输出多为模型或工具阻塞。",
@@ -1339,16 +1258,20 @@ function ChatApp() {
       "可检查网络、API Key 或缩小单次请求范围。",
     ];
     let pulseIdx = 0;
+    let pulseShown = false;
     reasoningPulseTimer = window.setInterval(() => {
       if (myTurnToken !== chatTurnTokenRef.current) return;
       if (Date.now() - lastSensoryActivityAt < 900) return;
       updateSessionMessagesById(turnSessionId, (prev) => {
+        if (pulseShown) return prev;
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last?.role !== "assistant") return prev;
+        if ((last.content ?? "").trim() || (last.reasoning ?? "").trim()) return prev;
         const ts = new Date().toLocaleTimeString();
         const line = `\n[${ts}] [jachin:heartbeat] ${pulseHints[pulseIdx % pulseHints.length]}\n`;
         pulseIdx += 1;
+        pulseShown = true;
         updated[updated.length - 1] = { ...last, reasoning: (last.reasoning ?? "") + line };
         return updated;
       });
@@ -1444,22 +1367,16 @@ function ChatApp() {
           meta,
         });
         if (
-          meta?.terminalOutcome !== "error" &&
-          meta?.terminalOutcome !== "rejected" &&
-          !meta?.hadStreamChunks &&
           typeof answerContent === "string" &&
-          safeAnswerContent.trim()
+          shouldSpeakFinalAnswer(safeAnswerContent, meta)
         ) {
           void voiceOrchestrator.onL3Chunk(safeAnswerContent);
         }
         endTraceAfterVoiceDrain();
       } else if (chatJvsVoiceActiveRef.current && chatVoiceSpeakSentences > 0) {
         if (
-          meta?.terminalOutcome !== "error" &&
-          meta?.terminalOutcome !== "rejected" &&
-          !meta?.hadStreamChunks &&
           typeof answerContent === "string" &&
-          safeAnswerContent.trim()
+          shouldSpeakFinalAnswer(safeAnswerContent, meta)
         ) {
           void voiceOrchestrator.onL3Chunk(safeAnswerContent);
         }
@@ -1498,9 +1415,10 @@ function ChatApp() {
             cleanup(`L2 兜底也失败：${(e as Error).message}`, "L2");
           });
       } else {
-        // 与 Lark 一致：最终正文以服务端 answer 为准；流式仅作打字机，避免坏 chunk 永久留在气泡里
+        // Server final answer always updates the main bubble; streaming is only a preview.
         const hadStream = meta?.hadStreamChunks ?? false;
-        const useServerFinal = hadStream && typeof answerContent === "string" && answerContent.trim().length > 0;
+        const hasServerFinal = typeof answerContent === "string" && answerContent.trim().length > 0;
+        const useServerFinal = hadStream && hasServerFinal;
         const sentryVariant: SentryNotifyVariant =
           meta?.terminalOutcome === "rejected"
             ? "rejected"
@@ -1508,7 +1426,7 @@ function ChatApp() {
               ? "error"
               : "answer";
         cleanup(safeAnswerContent, "L3", {
-          skipContentUpdate: !useServerFinal,
+          skipContentUpdate: hadStream && !hasServerFinal,
           ttsUseFinalOnly: useServerFinal,
           sentryVariant,
         });
@@ -1659,6 +1577,7 @@ function ChatApp() {
         activeTaskCount: decision.active_task_ids.length,
         routeNotes: decision.route_notes,
         fastLane: decision.router_hints.fast_lane,
+        injectLightTaskContext: decision.router_hints.inject_light_task_context,
         skipContextRetrieval: decision.router_hints.skip_context_retrieval,
         skipContextSniffer: decision.router_hints.skip_context_sniffer,
         skipExperienceRag: decision.router_hints.skip_experience_rag,
@@ -1673,6 +1592,17 @@ function ChatApp() {
       const taskSummary = leadTask?.title
         ? `${leadTask.title}${activeTasks.length > 1 ? `（另有${activeTasks.length - 1}个任务）` : ""}`
         : "";
+      const lightTaskContext = decision.router_hints.inject_light_task_context && activeTasks.length > 0
+        ? {
+            active_tasks: activeTasks.slice(0, 3).map((task) => ({
+              id: task.id,
+              title: task.title || "",
+            })),
+            focused_task_id: decision.target_task_id || lastFocusVoiceTaskIdRef.current || activeTasks[0]?.id || null,
+            summary: taskSummary || undefined,
+            source: "voice_intent_router",
+          }
+        : undefined;
       const routedText = decision.normalized_text?.trim() || t;
       await doActualSend(routedText, [], {
         displayContent: t,
@@ -1699,6 +1629,8 @@ function ChatApp() {
           force_background: decision.router_hints.force_background,
           acceptance_round: decision.router_hints.acceptance_round,
           inject_task_context: decision.router_hints.inject_task_context,
+          inject_light_task_context: decision.router_hints.inject_light_task_context,
+          light_task_context: lightTaskContext,
           max_foreground_tool_sec: decision.router_hints.max_foreground_tool_sec,
           awaiting_confirmation: decision.router_hints.awaiting_confirmation,
           clarification_pending: decision.router_hints.clarification_pending,
@@ -2371,54 +2303,60 @@ function ChatApp() {
     return "idle";
   }, [hudOrbState, isRecording, isVadActive, isTyping, isLoading, jachinMachineState, ttsPlaying]);
 
+  const handleCompanionVoiceStart = useCallback(() => {
+    voiceCompanionActiveRef.current = true;
+    void armCompanionVoiceSession();
+    sendPrepareContextControl("companion_voice_start");
+    void (async () => {
+      if (isLoading || isTyping || ttsPlaying) {
+        await handleVoiceBargeIn();
+        await new Promise<void>((r) => setTimeout(() => r(), 120));
+      }
+      await startRecording();
+    })();
+  }, [
+    armCompanionVoiceSession,
+    handleVoiceBargeIn,
+    isLoading,
+    isTyping,
+    sendPrepareContextControl,
+    startRecording,
+    ttsPlaying,
+  ]);
+
+  const handleCompanionVoiceStop = useCallback(() => {
+    if (!isRecording) return;
+    void stopRecording();
+  }, [isRecording, stopRecording]);
+
+  const handleCompanionQuickSend = useCallback(
+    (text: string) => {
+      if (!text.trim() || isLoading || isTyping) return;
+      voiceCompanionActiveRef.current = true;
+      void armCompanionVoiceSession();
+      void emitCompanionUserToHud(text.trim());
+      void dispatchVoiceUtterance(text.trim(), "companion_quick_send");
+    },
+    [armCompanionVoiceSession, dispatchVoiceUtterance, isLoading, isTyping],
+  );
+
   return (
     <div
       className={`relative flex h-full w-full min-h-0 flex-col bg-transparent ${
-        companionMode ? "overflow-visible" : "overflow-hidden"
+        companionMode ? "items-center justify-start overflow-visible" : "overflow-hidden"
       }`}
     >
       <AnimatePresence>
         {companionMode ? (
-          <motion.div
-            key="omni-spark"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-            className="pointer-events-auto flex h-full min-h-0 w-full flex-col overflow-visible"
-          >
-            <OmniMiniSpark
-              state={companionAiState}
-              onExpandFull={requestExpandFromSpark}
-              onBargeIn={() => void handleVoiceBargeIn()}
-              isRecording={isRecording}
-              onVoiceStart={() => {
-                // 陪伴态语音按钮：始终进入陪伴会话（HUD + Companion TTS）
-                voiceCompanionActiveRef.current = true;
-                void armCompanionVoiceSession();
-                sendPrepareContextControl("companion_voice_start");
-                // 若上一轮仍在思考/播报，需先完成打断再录音；并发执行会导致麦克风状态竞争，表现为“按钮卡住”。
-                void (async () => {
-                  if (isLoading || isTyping || ttsPlaying) {
-                    await handleVoiceBargeIn();
-                    await new Promise<void>((r) => setTimeout(() => r(), 120));
-                  }
-                  await startRecording();
-                })();
-              }}
-              onVoiceStop={() => {
-                if (!isRecording) return;
-                void stopRecording();
-              }}
-              onQuickSend={(text) => {
-                if (!text.trim() || isLoading || isTyping) return;
-                voiceCompanionActiveRef.current = true;
-                void armCompanionVoiceSession();
-                void emitCompanionUserToHud(text.trim());
-                void dispatchVoiceUtterance(text.trim(), "companion_quick_send");
-              }}
-            />
-          </motion.div>
+          <CompanionOverlay
+            state={companionAiState}
+            isRecording={isRecording}
+            onExpandFull={requestExpandFromSpark}
+            onBargeIn={() => void handleVoiceBargeIn()}
+            onVoiceStart={handleCompanionVoiceStart}
+            onVoiceStop={handleCompanionVoiceStop}
+            onQuickSend={handleCompanionQuickSend}
+          />
         ) : (
           <motion.div
             key="omni-main"

@@ -22,6 +22,15 @@ def test_semantic_parser_handles_plain_lark_message() -> None:
     assert intent.slots.recipients == ["Vivian"]
     assert intent.slots.message == "你好，我已经在测试"
 
+def test_semantic_parser_keeps_explicit_lark_send_over_open_lark_prefix() -> None:
+    from l3_node.semantic_slot_parser import parse_mission_intent
+
+    intent = parse_mission_intent("打开 Lark 给 Vivian 发 你好")
+
+    assert intent.task_type == MissionTaskType.LARK_MESSAGE_SEND
+    assert intent.slots.recipients == ["Vivian"]
+    assert intent.slots.message == "你好"
+
 
 def test_capability_router_forces_codex_for_project_delivery() -> None:
     from l3_node.capability_router import choose_capability_route
@@ -94,3 +103,96 @@ def test_semantic_parser_handles_path_to_group_briefing() -> None:
     assert intent.task_type == MissionTaskType.PROJECT_BRIEFING_DELIVERY
     assert intent.slots.project_path == r"D:\Projects\demo"
     assert intent.slots.recipients == ["研发群"]
+
+
+def test_semantic_parser_routes_command_prefix_calculator_to_local_calculator() -> None:
+    from l3_node.capability_router import choose_capability_route
+    from l3_node.semantic_slot_parser import parse_mission_intent
+
+    intent = parse_mission_intent("给我打开windows上原生的计算器给我算20+70等于几")
+    route = choose_capability_route(
+        intent,
+        [
+            {"id": "mcp:windows_lark_send_message"},
+            {"id": "mcp:windows_open_app"},
+            {"id": "mcp:windows_calculator_calculate"},
+        ],
+    )
+
+    assert intent.task_type == MissionTaskType.CALCULATOR_CALCULATE
+    assert intent.slots.app_name == "calculator"
+    assert intent.slots.expression == "20+70"
+    assert route.ok is True
+    assert route.tool_id == "mcp:windows_calculator_calculate"
+
+
+def test_semantic_parser_treats_geiwo_open_calculator_as_app_control() -> None:
+    from l3_node.capability_router import choose_capability_route
+    from l3_node.semantic_slot_parser import parse_mission_intent
+
+    intent = parse_mission_intent("给我打开计算器")
+    route = choose_capability_route(
+        intent,
+        [{"id": "mcp:windows_lark_send_message"}, {"id": "mcp:windows_open_app"}],
+    )
+
+    assert intent.task_type == MissionTaskType.APP_CONTROL
+    assert intent.slots.app_name == "calculator"
+    assert route.ok is True
+    assert route.tool_id == "mcp:windows_open_app"
+
+
+def test_semantic_parser_does_not_turn_geiwo_send_message_into_lark_send() -> None:
+    from l3_node.capability_router import choose_capability_route
+    from l3_node.semantic_slot_parser import parse_mission_intent
+
+    intent = parse_mission_intent("给我发消息")
+    route = choose_capability_route(intent, [{"id": "mcp:windows_lark_send_message"}])
+
+    assert intent.task_type == MissionTaskType.UNKNOWN
+    assert route.ok is False
+
+
+def test_lark_route_sanity_rejects_local_task_shaped_recipient() -> None:
+    from l3_node.capability_router import choose_capability_route
+    from l3_node.mission_intent_schema import MissionIntent, MissionSlots
+
+    intent = MissionIntent(
+        task_type=MissionTaskType.LARK_MESSAGE_SEND,
+        confidence=0.78,
+        slots=MissionSlots(recipients=["我打开windows上原生的计算器"], message="20+70"),
+        raw_text="给我打开windows上原生的计算器给我算20+70等于几",
+    )
+
+    route = choose_capability_route(intent, [{"id": "mcp:windows_lark_send_message"}])
+
+    assert route.ok is False
+    assert route.reason in {"command_prefix_not_lark_send", "recipient_looks_like_local_task"}
+
+def test_semantic_parser_keeps_codex_question_lark_delivery_as_composite_task() -> None:
+    from l3_node.capability_router import choose_capability_route
+    from l3_node.semantic_slot_parser import parse_mission_intent
+
+    utterance = (
+        "\u8bf7\u4f60\u5728 codex \u91cc\u9762\u6253\u5f00\u4e00\u4e2a\u4f1a\u8bdd\u6846\uff0c"
+        "\u95ee\u4ed6\u8fd9\u5468\u7684AI\u5927\u4e8b\u6709\u4ec0\u4e48\uff0c"
+        "\u7136\u540e\u628a\u4ed6\u56de\u590d\u7684\u5185\u5bb9\u901a\u8fc7lark\u53d1\u9001\u7ed9vivian"
+    )
+
+    intent = parse_mission_intent(utterance)
+    route = choose_capability_route(
+        intent,
+        [
+            {"id": "mcp:windows_open_app"},
+            {"id": "mcp:windows_lark_send_message"},
+            {"id": "mcp:windows_codex_ask_lark_send"},
+        ],
+    )
+
+    assert intent.task_type == MissionTaskType.CODEX_ASK_LARK_SEND
+    assert intent.slots.app_name == "codex"
+    assert intent.slots.recipients == ["vivian"]
+    assert "AI" in intent.slots.feature_query
+    assert route.ok is True
+    assert route.tool_id == "mcp:windows_codex_ask_lark_send"
+    assert route.workflow_id == "codex_ask_lark_send"

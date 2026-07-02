@@ -9,8 +9,10 @@ from typing import Any
 class MissionTaskType(str, Enum):
     UNKNOWN = "unknown"
     PROJECT_BRIEFING_DELIVERY = "project_briefing_delivery"
+    CODEX_ASK_LARK_SEND = "codex_ask_lark_send"
     PROJECT_MEMORY_UPDATE = "project_memory_update"
     LARK_MESSAGE_SEND = "lark_message_send"
+    CALCULATOR_CALCULATE = "calculator_calculate"
     FILE_TO_APP = "file_to_app"
     APP_CONTROL = "app_control"
     SYSTEM_STATUS_REPORT = "system_status_report"
@@ -35,6 +37,7 @@ class MissionSlots:
     app_name: str = ""
     since_days: int = 3
     output_format: str = ""
+    expression: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

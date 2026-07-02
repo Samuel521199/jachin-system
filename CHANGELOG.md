@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.96] - 2026-06-29
+
+### Added / Changed
+
+- 到达 kokoro 极限，改语音模型前夕：Kokoro TTS 管线、陪伴态 UI、语音意图路由与 OS Mission 理解层增强。
+- **Version**: Desktop **0.9.96**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.95] - 2026-06-29
 
 ### Added / Changed

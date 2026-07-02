@@ -87,6 +87,9 @@ _DEFAULT: dict[str, Any] = {
     "classification_llm_rewrite_enabled": False,
     "classification_llm_timeout_sec": 4.0,
     "classification_llm_max_tokens": 256,
+    "os_mission_llm_intent_enabled": True,
+    "os_mission_llm_intent_timeout_sec": 4.0,
+    "os_mission_llm_intent_max_tokens": 600,
     # 实时外部知识意图（小模型 JSON；主 ReAct 前 Tavily 预取注入，默认开）
     "realtime_knowledge_llm_enabled": True,
     "realtime_knowledge_llm_timeout_sec": 5.0,

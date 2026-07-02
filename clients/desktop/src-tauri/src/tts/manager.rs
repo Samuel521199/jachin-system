@@ -1,6 +1,6 @@
-﻿//! SpeechEngine - TTS 统一入口与自检
+//! SpeechEngine - TTS 统一入口与自检
 //!
-//! 当前策略：优先调用本地 voice_server(/v1/tts/synthesize, MOSS ONNX)；
+//! 当前策略：优先调用本地 voice_server(/v1/tts/synthesize, Kokoro ONNX)；
 //! 若失败则按配置回退云端 TTS。
 
 use crate::tts::cloud_adapter::{AliyunTtsConfig, CloudAliyunAdapter};
@@ -19,17 +19,17 @@ pub struct TtsSelfCheckResult {
     pub reason: Option<String>,
 }
 
-/// TTS 提供者枚举
+/// TTS provider enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderEnum {
-    /// Local Voice Server (MOSS ONNX)
+    /// Local Voice Server (Kokoro ONNX)
     LocalVoiceServer,
     /// Cloud Aliyun Qwen/CosyVoice
     Cloud,
 }
 
-/// 文本长度阈值，超过则优先直接走云端，避免本地长文本推理阻塞。
-const CLOUD_TEXT_LENGTH_THRESHOLD: usize = 500;
+/// Do not switch to cloud for system voice output; keep Kokoro voice stable.
+const DEFAULT_KOKORO_TTS_VOICE: &str = "zm_053";
 
 /// 最小可用内存 (bytes)
 const MIN_FREE_RAM_BYTES: u64 = 1024 * 1024 * 1024; // 1GB
@@ -110,14 +110,11 @@ impl SpeechEngine {
     }
 
     /// 根据文本决定使用哪个 Provider
-    pub fn decide_provider(&self, text: &str) -> ProviderEnum {
-        if text.len() > CLOUD_TEXT_LENGTH_THRESHOLD {
-            return ProviderEnum::Cloud;
-        }
+    pub fn decide_provider(&self, _text: &str) -> ProviderEnum {
         ProviderEnum::LocalVoiceServer
     }
 
-    /// 合成语音（按 Fallback Chain 顺序尝试）
+    /// Synthesize speech through local JVS Kokoro.
     pub async fn speak(&self, text: &str) -> Result<Vec<u8>, String> {
         let provider = self.decide_provider(text);
 
@@ -131,11 +128,7 @@ impl SpeechEngine {
         match self.call_local_voice_server_tts(text).await {
             Ok(audio) => Ok(audio),
             Err(e) => {
-                if let Some(ref cloud) = self.cloud {
-                    cloud.synthesize(text, "zh-CN-XiaoxiaoNeural").await
-                } else {
-                    Err(format!("Voice server failed: {}; Cloud not configured", e))
-                }
+                Err(format!("Voice server failed: {}", e))
             }
         }
     }
@@ -151,7 +144,7 @@ impl SpeechEngine {
             .post(&url)
             .json(&serde_json::json!({
                 "text": text,
-                "voice": "Junhao"
+                "voice": DEFAULT_KOKORO_TTS_VOICE
             }))
             .send()
             .await
@@ -165,11 +158,7 @@ impl SpeechEngine {
         Ok(bytes.to_vec())
     }
 
-    async fn try_cloud(&self, text: &str) -> Result<Vec<u8>, String> {
-        if let Some(ref cloud) = self.cloud {
-            cloud.synthesize(text, "zh-CN-XiaoxiaoNeural").await
-        } else {
-            Err("Cloud TTS not configured".to_string())
-        }
+    async fn try_cloud(&self, _text: &str) -> Result<Vec<u8>, String> {
+        Err("Cloud TTS disabled for system voice output; use local JVS Kokoro".to_string())
     }
 }

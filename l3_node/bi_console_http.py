@@ -77,7 +77,12 @@ async def _bi_subprocess_sse_stream(request: Any) -> Any:
             _ja = str(Path(root).resolve())
         except Exception:
             _ja = str(root)
-        env = {**os.environ, "PYTHONUNBUFFERED": "1", "JACHIN_APP_ROOT": _ja}
+        env = {
+            **os.environ,
+            "PYTHONUNBUFFERED": "1",
+            "JACHIN_APP_ROOT": _ja,
+            "JACHIN_ENABLE_BUSINESS_MCP_TOOLS": "1",
+        }
         response = _stream_response()
         keepalive_sec = 15.0
         last_keepalive = 0.0

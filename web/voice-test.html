@@ -239,9 +239,7 @@
             <div class="input-group">
                 <label>选择语音：</label>
                 <select id="ttsVoice">
-                    <option value="zh-CN-XiaoxiaoNeural">晓晓（女声）</option>
-                    <option value="zh-CN-YunyangNeural">云扬（男声）</option>
-                    <option value="zh-CN-YunxiNeural">云希（男声）</option>
+                    <option value="zm_053">Kokoro zm_053</option>
                 </select>
             </div>
             <div class="button-group">
@@ -414,7 +412,7 @@
                         text: text,
                         voice: voice,
                         language: 'zh-CN',
-                        speed: 1.0,
+                        speed: 1.25,
                         pitch: 1.0
                     })
                 });
@@ -455,8 +453,8 @@
                 formData.append('format', 'wav');
                 formData.append('language', 'zh-CN');
                 formData.append('return_audio', 'true');
-                formData.append('voice', 'zh-CN-XiaoxiaoNeural');
-                formData.append('speed', '1.0');
+                formData.append('voice', 'zm_053');
+                formData.append('speed', '1.25');
                 formData.append('pitch', '1.0');
 
                 const response = await fetch(`${API_BASE}/chat`, {

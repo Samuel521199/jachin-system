@@ -211,13 +211,30 @@ def _os_auto(out_dir: str = ""):
     return WindowsOSAutomation(out_dir=out_dir or None)
 
 
+def _tool_exception_json(task: str, exc: Exception) -> str:
+    detail = f"failed:{exc!r}"
+    evidence: dict[str, Any] = {"exception_type": type(exc).__name__}
+    if type(exc).__name__ == "MouseFailSafeInterrupt" or "fail-safe" in str(exc).lower() or "mouse_failsafe_triggered" in str(exc).lower():
+        detail = "mouse_failsafe_triggered"
+        to_evidence = getattr(exc, "to_evidence", None)
+        if callable(to_evidence):
+            try:
+                evidence["mouse_failsafe"] = to_evidence()
+            except Exception:
+                evidence["mouse_failsafe"] = {"detail": "mouse_failsafe_triggered"}
+        else:
+            evidence["mouse_failsafe"] = {"detail": "mouse_failsafe_triggered"}
+        evidence["side_effect_status"] = "interrupted_by_user_safety_corner"
+    return json.dumps({"task": task, "ok": False, "detail": detail, "evidence": evidence}, ensure_ascii=False)
+
+
 @mcp.tool(name="windows_notepad_save_text")
 def windows_notepad_save_text(text: str, target_path: str, out_dir: str = "") -> str:
     """Open Notepad, write text, save it, and verify file contents."""
     try:
         return _os_auto(out_dir).notepad_edit_save(text=text, target_path=target_path).to_json()
     except Exception as e:
-        return json.dumps({"task": "notepad", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("notepad", e)
 
 
 @mcp.tool(name="windows_calculator_calculate")
@@ -226,7 +243,7 @@ def windows_calculator_calculate(expression: str, expected: str = "", out_dir: s
     try:
         return _os_auto(out_dir).calculator_calculate(expression=expression, expected=expected).to_json()
     except Exception as e:
-        return json.dumps({"task": "calculator", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("calculator", e)
 
 
 @mcp.tool(name="windows_open_app")
@@ -240,7 +257,7 @@ def windows_open_app(app_name: str, args_json: str = "[]", out_dir: str = "") ->
             args = []
         return _os_auto(out_dir).open_app(app_name=app_name, args=args).to_json()
     except Exception as e:
-        return json.dumps({"task": "open_app", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("open_app", e)
 
 
 @mcp.tool(name="windows_lark_send_message")
@@ -259,7 +276,37 @@ def windows_lark_send_message(recipients_json: str, message: str, out_dir: str =
             recipients = [x.strip() for x in str(recipients_json or "").split(",") if x.strip()]
         return _os_auto(out_dir).lark_send_message(recipients=recipients, message=message, max_attempts=max_attempts).to_json()
     except Exception as e:
-        return json.dumps({"task": "lark_send_message", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_send_message", e)
+
+
+@mcp.tool(name="windows_codex_ask_lark_send")
+def windows_codex_ask_lark_send(
+    question: str,
+    recipients_json: str = "[]",
+    original_user_input: str = "",
+    wait_seconds: int = 90,
+    out_dir: str = "",
+) -> str:
+    """Ask Codex a question, validate the reply, then send the reply to Lark recipients."""
+    try:
+        try:
+            raw = json.loads(recipients_json or "[]")
+            if isinstance(raw, str):
+                recipients = [raw]
+            elif isinstance(raw, list):
+                recipients = [str(x) for x in raw]
+            else:
+                recipients = []
+        except Exception:
+            recipients = [x.strip() for x in str(recipients_json or "").split(",") if x.strip()]
+        return _os_auto(out_dir).codex_ask_lark_send(
+            question=question,
+            recipients=recipients,
+            original_user_input=original_user_input,
+            wait_seconds=wait_seconds,
+        ).to_json()
+    except Exception as e:
+        return _tool_exception_json("windows_codex_ask_lark_send", e)
 
 
 @mcp.tool(name="windows_lark_read_recent_messages")
@@ -268,7 +315,7 @@ def windows_lark_read_recent_messages(target: str, pages: int = 3, scroll_clicks
     try:
         return _os_auto(out_dir).lark_read_recent_messages(target=target, pages=pages, scroll_clicks=scroll_clicks).to_json()
     except Exception as e:
-        return json.dumps({"task": "lark_read_recent_messages", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_read_recent_messages", e)
 
 
 @mcp.tool(name="windows_lark_read_history")
@@ -277,7 +324,7 @@ def windows_lark_read_history(target: str, days: int = 7, max_pages: int = 18, s
     try:
         return _os_auto(out_dir).lark_read_history(target=target, days=days, max_pages=max_pages, scroll_clicks=scroll_clicks).to_json()
     except Exception as e:
-        return json.dumps({"task": "lark_read_history", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_read_history", e)
 
 
 @mcp.tool(name="windows_lark_open_bitable")
@@ -286,7 +333,7 @@ def windows_lark_open_bitable(table_name: str, out_dir: str = "", max_attempts: 
     try:
         return _os_auto(out_dir).lark_open_bitable(table_name=table_name, max_attempts=max_attempts).to_json()
     except Exception as e:
-        return json.dumps({"task": "lark_open_bitable", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_open_bitable", e)
 
 
 @mcp.tool(name="windows_lark_bitable_add_record")
@@ -308,7 +355,7 @@ def windows_lark_bitable_add_record(
             max_attempts=max_attempts,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "lark_bitable_add_record", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_bitable_add_record", e)
 
 
 @mcp.tool(name="windows_lark_bitable_ai_paste_records")
@@ -332,7 +379,7 @@ def windows_lark_bitable_ai_paste_records(
             max_attempts=max_attempts,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "lark_bitable_ai_paste_records", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_bitable_ai_paste_records", e)
 
 
 @mcp.tool(name="windows_lark_bitable_cdp_ai_paste_records")
@@ -365,7 +412,7 @@ def windows_lark_bitable_cdp_ai_paste_records(
             out_dir=out_dir,
         )
     except Exception as e:
-        return json.dumps({"task": "lark_bitable_cdp_ai_paste_records", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("lark_bitable_cdp_ai_paste_records", e)
 
 
 @mcp.tool(name="windows_active_window")
@@ -374,7 +421,7 @@ def windows_active_window(out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).active_window().to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_active_window", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_active_window", e)
 
 
 @mcp.tool(name="windows_window_list")
@@ -383,7 +430,7 @@ def windows_window_list(limit: int = 80, out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).window_list(limit=limit).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_window_list", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_window_list", e)
 
 
 @mcp.tool(name="windows_window_switch")
@@ -392,7 +439,7 @@ def windows_window_switch(keywords: str, exclude_keywords: str = "", timeout: fl
     try:
         return _os_auto(out_dir).window_switch(keywords=keywords, exclude_keywords=exclude_keywords, timeout=timeout).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_window_switch", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_window_switch", e)
 
 
 @mcp.tool(name="windows_disk_snapshot")
@@ -401,7 +448,7 @@ def windows_disk_snapshot(out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).disk_snapshot().to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_disk_snapshot", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_disk_snapshot", e)
 
 
 @mcp.tool(name="windows_network_check")
@@ -410,7 +457,7 @@ def windows_network_check(host: str = "www.baidu.com", port: int = 443, timeout:
     try:
         return _os_auto(out_dir).network_check(host=host, port=port, timeout=timeout).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_network_check", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_network_check", e)
 
 
 @mcp.tool(name="windows_power_status")
@@ -419,7 +466,7 @@ def windows_power_status(out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).power_status().to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_power_status", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_power_status", e)
 
 
 @mcp.tool(name="windows_process_snapshot")
@@ -428,7 +475,7 @@ def windows_process_snapshot(top: int = 10, out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).process_snapshot(top=top).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_process_snapshot", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_process_snapshot", e)
 
 
 @mcp.tool(name="windows_system_status")
@@ -437,7 +484,7 @@ def windows_system_status(network_host: str = "www.baidu.com", out_dir: str = ""
     try:
         return _os_auto(out_dir).system_status(network_host=network_host).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_system_status", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_system_status", e)
 
 
 @mcp.tool(name="windows_recent_files")
@@ -446,7 +493,7 @@ def windows_recent_files(paths_json: str = "", since_days: int = 1, max_results:
     try:
         return _os_auto(out_dir).recent_files(paths_json=paths_json, since_days=since_days, max_results=max_results).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_recent_files", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_recent_files", e)
 
 
 @mcp.tool(name="windows_folder_create")
@@ -455,7 +502,7 @@ def windows_folder_create(path: str, out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).folder_create(path=path).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_folder_create", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_folder_create", e)
 
 
 @mcp.tool(name="windows_file_write_text")
@@ -464,7 +511,7 @@ def windows_file_write_text(path: str, text: str, overwrite: bool = False, confi
     try:
         return _os_auto(out_dir).file_write_text(path=path, text=text, overwrite=overwrite, confirm=confirm, allow_dangerous=allow_dangerous).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_file_write_text", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_file_write_text", e)
 
 
 @mcp.tool(name="windows_workspace_report")
@@ -473,7 +520,7 @@ def windows_workspace_report(output_path: str = "", since_days: int = 1, open_fo
     try:
         return _os_auto(out_dir).workspace_report(output_path=output_path, since_days=since_days, open_folder=open_folder).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_workspace_report", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_workspace_report", e)
 
 
 @mcp.tool(name="windows_evidence_panel")
@@ -482,7 +529,7 @@ def windows_evidence_panel(evidence_path: str, title: str = "", open_panel: bool
     try:
         return _os_auto(out_dir).evidence_panel(evidence_path=evidence_path, title=title, open_panel=open_panel).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_evidence_panel", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_evidence_panel", e)
 
 
 @mcp.tool(name="windows_project_remember")
@@ -491,7 +538,7 @@ def windows_project_remember(project_name: str, project_path: str, out_dir: str 
     try:
         return _os_auto(out_dir).project_remember(project_name=project_name, project_path=project_path).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_project_remember", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_project_remember", e)
 
 
 @mcp.tool(name="windows_project_latest_briefing")
@@ -540,7 +587,7 @@ def windows_project_latest_briefing(
             max_files=max_files,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_project_latest_briefing", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_project_latest_briefing", e)
 
 
 @mcp.tool(name="windows_codex_project_briefing_to_lark")
@@ -575,7 +622,7 @@ def windows_codex_project_briefing_to_lark(
             remember=remember,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_codex_project_briefing_to_lark", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_codex_project_briefing_to_lark", e)
 
 
 @mcp.tool(name="windows_codex_lark_workflow_template")
@@ -614,7 +661,7 @@ def windows_codex_lark_workflow_template(
             remember=remember,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_codex_lark_workflow_template", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_codex_lark_workflow_template", e)
 
 
 @mcp.tool(name="windows_codex_lark_standard_demo")
@@ -645,7 +692,7 @@ def windows_codex_lark_standard_demo(
             remember=remember,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_codex_lark_standard_demo", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_codex_lark_standard_demo", e)
 
 
 @mcp.tool(name="windows_app_switch_matrix")
@@ -654,7 +701,7 @@ def windows_app_switch_matrix(apps_json: str = "", timeout: float = 4.0, out_dir
     try:
         return _os_auto(out_dir).app_switch_matrix(apps_json=apps_json, timeout=timeout).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_app_switch_matrix", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_app_switch_matrix", e)
 
 
 @mcp.tool(name="windows_daily_office_briefing")
@@ -685,7 +732,7 @@ def windows_daily_office_briefing(
             max_files=max_files,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_daily_office_briefing", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_daily_office_briefing", e)
 
 
 @mcp.tool(name="windows_file_bridge_to_app")
@@ -707,7 +754,7 @@ def windows_file_bridge_to_app(
             open_dialog_hotkey=open_dialog_hotkey,
         ).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_file_bridge_to_app", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_file_bridge_to_app", e)
 
 
 @mcp.tool(name="windows_os_mission_execute")
@@ -716,7 +763,7 @@ def windows_os_mission_execute(goal: str = "", steps_json: str = "", dry_run: bo
     try:
         return _os_auto(out_dir).os_mission_execute(goal=goal, steps_json=steps_json, dry_run=dry_run, confirm_send=confirm_send).to_json()
     except Exception as e:
-        return json.dumps({"task": "windows_os_mission_execute", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("windows_os_mission_execute", e)
 
 
 @mcp.tool(name="windows_file_find")
@@ -725,7 +772,7 @@ def windows_file_find(root: str, pattern: str = "*", max_results: int = 100, inc
     try:
         return _os_auto(out_dir).file_find(root=root, pattern=pattern, max_results=max_results, include_dirs=include_dirs).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_find", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_find", e)
 
 
 @mcp.tool(name="windows_file_copy")
@@ -734,7 +781,7 @@ def windows_file_copy(source: str, destination: str, overwrite: bool = False, co
     try:
         return _os_auto(out_dir).file_copy(source=source, destination=destination, overwrite=overwrite, confirm=confirm, allow_dangerous=allow_dangerous).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_copy", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_copy", e)
 
 
 @mcp.tool(name="windows_file_move")
@@ -743,7 +790,7 @@ def windows_file_move(source: str, destination: str, overwrite: bool = False, co
     try:
         return _os_auto(out_dir).file_move(source=source, destination=destination, overwrite=overwrite, confirm=confirm, allow_dangerous=allow_dangerous).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_move", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_move", e)
 
 
 @mcp.tool(name="windows_file_rename")
@@ -752,7 +799,7 @@ def windows_file_rename(path: str, new_name: str, overwrite: bool = False, confi
     try:
         return _os_auto(out_dir).file_rename(path=path, new_name=new_name, overwrite=overwrite, confirm=confirm, allow_dangerous=allow_dangerous).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_rename", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_rename", e)
 
 
 @mcp.tool(name="windows_file_delete_with_confirm")
@@ -761,7 +808,7 @@ def windows_file_delete_with_confirm(path: str, confirm: bool = False, allow_dan
     try:
         return _os_auto(out_dir).file_delete_with_confirm(path=path, confirm=confirm, allow_dangerous=allow_dangerous).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_delete_with_confirm", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_delete_with_confirm", e)
 
 
 @mcp.tool(name="windows_file_open")
@@ -770,7 +817,7 @@ def windows_file_open(path: str, out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).file_open(path=path).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_open", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_open", e)
 
 
 @mcp.tool(name="windows_file_reveal_in_explorer")
@@ -779,7 +826,7 @@ def windows_file_reveal_in_explorer(path: str, out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).file_reveal_in_explorer(path=path).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_reveal_in_explorer", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_reveal_in_explorer", e)
 
 
 @mcp.tool(name="windows_file_attach_to_app")
@@ -788,7 +835,7 @@ def windows_file_attach_to_app(file_path: str, app_name: str = "", open_dialog_h
     try:
         return _os_auto(out_dir).file_attach_to_app(file_path=file_path, app_name=app_name, open_dialog_hotkey=open_dialog_hotkey).to_json()
     except Exception as e:
-        return json.dumps({"task": "file_attach_to_app", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_attach_to_app", e)
 
 
 @mcp.tool(name="windows_folder_summarize")
@@ -797,7 +844,7 @@ def windows_folder_summarize(folder: str, max_depth: int = 2, max_entries: int =
     try:
         return _os_auto(out_dir).folder_summarize(folder=folder, max_depth=max_depth, max_entries=max_entries).to_json()
     except Exception as e:
-        return json.dumps({"task": "folder_summarize", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("folder_summarize", e)
 
 
 @mcp.tool(name="windows_file_dialogs_smoke")
@@ -806,7 +853,7 @@ def windows_file_dialogs_smoke(out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).file_open_save_dialogs().to_json()
     except Exception as e:
-        return json.dumps({"task": "file_dialogs", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("file_dialogs", e)
 
 
 @mcp.tool(name="windows_browser_address_download_prompt")
@@ -815,7 +862,7 @@ def windows_browser_address_download_prompt(url: str = "", out_dir: str = "") ->
     try:
         return _os_auto(out_dir).browser_address_download_prompt(url=url).to_json()
     except Exception as e:
-        return json.dumps({"task": "browser", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("browser", e)
 
 
 @mcp.tool(name="windows_popup_action")
@@ -824,7 +871,7 @@ def windows_popup_action(action: str = "confirm", out_dir: str = "") -> str:
     try:
         return _os_auto(out_dir).popup_action(action=action).to_json()
     except Exception as e:
-        return json.dumps({"task": "popup", "ok": False, "detail": f"failed:{e!r}"}, ensure_ascii=False)
+        return _tool_exception_json("popup", e)
 
 
 def main() -> None:
@@ -833,3 +880,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

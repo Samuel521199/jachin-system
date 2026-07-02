@@ -95,7 +95,7 @@ class BaseTTSProvider(ABC):
         text: str,
         voice: str = "default",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> bytes:
@@ -121,7 +121,7 @@ class BaseTTSProvider(ABC):
         text: str,
         voice: str = "default",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> AsyncIterator[bytes]:
@@ -194,7 +194,7 @@ class AliyunTTSProvider(BaseTTSProvider):
         text: str,
         voice: str = "default",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> bytes:
@@ -267,7 +267,7 @@ class AliyunTTSProvider(BaseTTSProvider):
         text: str,
         voice: str = "default",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> AsyncIterator[bytes]:
@@ -333,7 +333,7 @@ class EdgeTTSProvider(BaseTTSProvider):
         text: str,
         voice: str = "zh-CN-XiaoxiaoNeural",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> bytes:
@@ -402,7 +402,7 @@ class EdgeTTSProvider(BaseTTSProvider):
         text: str,
         voice: str = "zh-CN-XiaoxiaoNeural",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> AsyncIterator[bytes]:
@@ -473,7 +473,7 @@ class TextToSpeech:
         text: str,
         voice: str = "default",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> bytes:
@@ -516,7 +516,7 @@ class TextToSpeech:
         text: str,
         voice: str = "default",
         language: str = "zh-CN",
-        speed: float = 1.0,
+        speed: float = 1.25,
         pitch: float = 1.0,
         **kwargs
     ) -> AsyncIterator[bytes]:

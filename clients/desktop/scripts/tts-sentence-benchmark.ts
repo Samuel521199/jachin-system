@@ -1,4 +1,4 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { spawn } from "node:child_process";
@@ -173,7 +173,7 @@ async function synthesizeByEngine(engine: TtsEngine, text: string, voice: string
       text,
       voice,
       language: "zh-CN",
-      speed: 1.0,
+      speed: 1.25,
       pitch: 1.0,
     }),
   });

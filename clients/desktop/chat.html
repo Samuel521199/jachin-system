@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -44,6 +44,15 @@
       }
       #chat-root input {
         user-select: text;
+      }
+      /* 陪伴态 CSS 沙盒（主 SSOT：src/styles/globals.css COMPANION MODE STYLES） */
+      body.companion-mode,
+      html.companion-mode body {
+        overflow: visible !important;
+      }
+      body.companion-mode #chat-root {
+        overflow: visible !important;
+        max-height: none !important;
       }
     </style>
   </head>

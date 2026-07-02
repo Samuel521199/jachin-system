@@ -1,4 +1,4 @@
-﻿"""
+"""
 Voice API - 语音相关接口
 
 提供语音识别、语音合成和语音聊天功能
@@ -22,6 +22,9 @@ from typing import List, Optional, Dict, Any
 import logging
 import os
 import base64
+import asyncio
+import json
+import urllib.request
 
 from core.voice import SpeechToText, STTProvider, TextToSpeech, TTSProvider, IntentRouter, is_tts_globally_enabled
 from core.brain.llm.factory import LLMProviderFactory
@@ -31,6 +34,35 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2/voice", tags=["voice"])
+DEFAULT_KOKORO_TTS_VOICE = os.environ.get("JACHIN_VOICE_TTS_VOICE", "zm_053").strip() or "zm_053"
+DEFAULT_KOKORO_TTS_SPEED = float(os.environ.get("JACHIN_VOICE_TTS_SPEED", "1.25"))
+JVS_TTS_URL = (
+    os.environ.get("JACHIN_VOICE_SERVER_URL", "http://127.0.0.1:18982").rstrip("/")
+    + "/v1/tts/synthesize"
+)
+
+
+def _is_kokoro_voice(voice: str | None) -> bool:
+    v = (voice or "").strip()
+    return not v or v == "default" or v == DEFAULT_KOKORO_TTS_VOICE or v.startswith(("zm_", "zf_"))
+
+
+async def _synthesize_with_jvs(text: str, voice: str | None = None, speed: float | None = None) -> bytes:
+    def _call() -> bytes:
+        payload = json.dumps(
+            {"text": text, "voice": (voice or DEFAULT_KOKORO_TTS_VOICE), "speed": DEFAULT_KOKORO_TTS_SPEED if speed is None else speed},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            JVS_TTS_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+
+    return await asyncio.to_thread(_call)
 
 # 初始化语音服务
 # 默认使用 Whisper（免费，开源），如果需要使用阿里云，可以改为 STTProvider.ALIYUN
@@ -126,9 +158,9 @@ class RecognizeResponse(BaseModel):
 class SynthesizeRequest(BaseModel):
     """语音合成请求"""
     text: str
-    voice: str = Field(default="default", description="语音名称/ID")
+    voice: str = Field(default=DEFAULT_KOKORO_TTS_VOICE, description="语音名称/ID")
     language: str = Field(default="zh-CN", description="语言代码")
-    speed: float = Field(default=1.0, ge=0.5, le=2.0, description="语速")
+    speed: float = Field(default=DEFAULT_KOKORO_TTS_SPEED, ge=0.5, le=2.0, description="语速")
     pitch: float = Field(default=1.0, ge=0.5, le=2.0, description="音调")
 
 
@@ -168,8 +200,8 @@ class VoiceChatRequest(BaseModel):
     format: str = Field(default="wav", description="音频格式")
     language: str = Field(default="zh-CN", description="语言代码")
     return_audio: bool = Field(default=True, description="是否返回语音回复")
-    voice: str = Field(default="default", description="TTS语音名称")
-    speed: float = Field(default=1.0, ge=0.5, le=2.0, description="TTS语速")
+    voice: str = Field(default=DEFAULT_KOKORO_TTS_VOICE, description="TTS语音名称")
+    speed: float = Field(default=DEFAULT_KOKORO_TTS_SPEED, ge=0.5, le=2.0, description="TTS语速")
     pitch: float = Field(default=1.0, ge=0.5, le=2.0, description="TTS音调")
 
 
@@ -267,14 +299,16 @@ async def synthesize_speech(request: SynthesizeRequest):
         )
     
     try:
-        # 合成语音
-        audio_data = await tts.synthesize(
-            text=request.text,
-            voice=request.voice,
-            language=request.language,
-            speed=request.speed,
-            pitch=request.pitch
-        )
+        if _is_kokoro_voice(request.voice):
+            audio_data = await _synthesize_with_jvs(request.text, request.voice, request.speed)
+        else:
+            audio_data = await tts.synthesize(
+                text=request.text,
+                voice=request.voice,
+                language=request.language,
+                speed=request.speed,
+                pitch=request.pitch
+            )
         if not audio_data:
             raise HTTPException(
                 status_code=503,
@@ -322,6 +356,9 @@ async def synthesize_speech_stream(request: SynthesizeRequest):
     
     try:
         async def generate_audio():
+            if _is_kokoro_voice(request.voice):
+                yield await _synthesize_with_jvs(request.text, request.voice, request.speed)
+                return
             async for chunk in tts.synthesize_stream(
                 text=request.text,
                 voice=request.voice,
@@ -356,8 +393,8 @@ async def voice_process(
     format: str = Form("wav"),
     language: str = Form("zh-CN"),
     return_audio: bool = Form(True),
-    voice: str = Form("default"),
-    speed: float = Form(1.0),
+    voice: str = Form(DEFAULT_KOKORO_TTS_VOICE),
+    speed: float = Form(DEFAULT_KOKORO_TTS_SPEED),
     pitch: float = Form(1.0),
 ):
     """
@@ -396,7 +433,7 @@ async def voice_process(
         audio_format_result = None
         if return_audio and tts and is_tts_globally_enabled(source="voice"):
             try:
-                reply_audio = await tts.synthesize(
+                reply_audio = await _synthesize_with_jvs(reply_text, voice, speed) if _is_kokoro_voice(voice) else await tts.synthesize(
                     text=reply_text, voice=voice, language=language, speed=speed, pitch=pitch
                 )
                 if reply_audio:
@@ -427,8 +464,8 @@ async def voice_chat(
     format: str = Form("wav"),
     language: str = Form("zh-CN"),
     return_audio: bool = Form(True),
-    voice: str = Form("default"),
-    speed: float = Form(1.0),
+    voice: str = Form(DEFAULT_KOKORO_TTS_VOICE),
+    speed: float = Form(DEFAULT_KOKORO_TTS_SPEED),
     pitch: float = Form(1.0),
     personality_id: Optional[str] = Form(None, description="AI助手人格ID")
 ):
@@ -523,7 +560,7 @@ async def voice_chat(
         
         if return_audio and tts and is_tts_globally_enabled(source="voice"):
             try:
-                reply_audio = await tts.synthesize(
+                reply_audio = await _synthesize_with_jvs(reply_text, voice, speed) if _is_kokoro_voice(voice) else await tts.synthesize(
                     text=reply_text,
                     voice=voice,
                     language=language,

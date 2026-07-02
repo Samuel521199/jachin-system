@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } fr
 import { Send, Loader2, Mic, Square, Trash2, MicOff } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { voiceChat, streamChatMessage } from "../lib/api";
+import { DEFAULT_KOKORO_TTS_VOICE } from "../voice/voiceDefaults";
 import { useAppStore } from "../store/appStore";
 import { useSttAudioReady } from "../hooks/useSttAudioReady";
 import { useSensoryWebSocket, type SensoryAnswerMeta } from "../hooks/useSensoryWebSocket";
@@ -486,7 +487,7 @@ export default function ChatPanel() {
       const audioFile = new File([audioBlob], 'recording.wav', { type: 'audio/wav' });
       
       // 调用语音聊天API
-      const response = await voiceChat(audioFile, 'wav', 'zh-CN', true, 'zh-CN-XiaoxiaoNeural');
+      const response = await voiceChat(audioFile, 'wav', 'zh-CN', true, DEFAULT_KOKORO_TTS_VOICE);
       
       // 添加用户消息（显示识别出的文本）
       const userMessage: StoredMessage = {

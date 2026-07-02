@@ -5,7 +5,6 @@
  */
 
 import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
-import { formatAssistantStepPayload } from "../utils/sensoryStepFormat";
 import { mergeStreamChunk } from "../utils/streamChunkMerge";
 
 const SENSORY_WS_PORT = import.meta.env.VITE_SENSORY_WS_PORT || "18981";
@@ -516,11 +515,6 @@ export function useSensoryWebSocket(options: UseSensoryOptions = {}) {
             if (swallowAfterAbort) {
               return;
             }
-            // 流式已逐段拼进气泡时，禁止再注入整段正文（否则与 chunk 叠加成双倍/多倍复读）
-            const stepPayload = hadChunks
-              ? ""
-              : formatAssistantStepPayload(data.step_type, content);
-            onStepRef.current?.(data.step_type, stepPayload, data.run_id ?? "");
             const terminalOutcome = data.step_type as "answer" | "rejected" | "error";
             onAnswerRef.current?.(content, {
               hadStreamChunks: hadChunks,

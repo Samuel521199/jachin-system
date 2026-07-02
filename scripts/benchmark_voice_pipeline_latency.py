@@ -19,6 +19,7 @@ import csv
 import io
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -42,7 +43,22 @@ if sys.platform == "win32":
 DEFAULT_JVS = os.getenv("JACHIN_VOICE_SERVER_URL", "http://127.0.0.1:18982").rstrip("/")
 DEFAULT_L3 = os.getenv("JACHIN_L3_HTTP_BASE", "http://127.0.0.1:18991").rstrip("/")
 DEFAULT_OUT_DIR = Path("data/voice_latency_bench")
-DEFAULT_VOICE = "Junhao"
+DEFAULT_VOICE = "zm_053"
+
+CHITCHAT_RE = re.compile(r"(你好|在吗|你在吗|早上好|中午好|晚上好|陪我聊聊|心情怎么样|今天过得怎么样)")
+FASTLANE_HEAVY_RE = re.compile(r"(文件|目录|项目|代码|脚本|报告|总结|生成|修改|删除|运行|执行|搜索|查找|分析|数据库|飞书|后台|任务)")
+FASTLANE_LIGHT_RE = re.compile(r"(你好|在吗|你在吗|早上好|中午好|晚上好|陪我|聊聊|你是谁|听得到吗|听见吗|几点|时间|谢谢|没事|算了|好的|心情|难受|开心|累了|困了)")
+CONTROL_ABORT_RE = re.compile(r"(停|停止|取消|别弄了|算了|不要了|暂停)")
+CONTROL_STATUS_RE = re.compile(r"(进度|好了吗|怎么样了|做到哪了|状态)")
+CONTROL_MODIFY_RE = re.compile(r"(改成|改为|改一下|换成|加上|再加|其实还要)")
+CONTROL_RESUME_RE = re.compile(r"(继续|接着做|恢复)")
+LONG_TASK_RE = re.compile(r"(全部|批量|所有|每个|整文件夹|整个文件夹|目录|文件夹|生成报告|形成报告|输出报告|汇总报告|分析这些|导出|爬取|所有文件|所有文档)")
+SHORT_QUERY_RE = re.compile(r"(天气|气温|几点|时间|提醒|闹钟|打开|搜索|读文件|总结这一份|查一下)")
+SENSEVOICE_TAG_RE = re.compile(r"<\|.*?\|>")
+
+RESULT_HINT_RE = re.compile(r"(已|已经|完成|成功|失败|结果|最终|搞定|好了|完成了|已为你|我已|无法|没法|失败了|报错|可以了|请重试)")
+PROCESS_HINT_RE = re.compile(r"(首先|接下来|然后|步骤|第[一二三四五六七八九十]|先|再|最后|正在|我会|我将|分析|思路|计划|流程|执行中|处理中|如下)")
+LIST_PREFIX_RE = re.compile(r"^(\d+[\.\)]|[-*•]|第[一二三四五六七八九十]+步|步骤[:：]?)")
 
 
 def _now_ms() -> int:
@@ -104,10 +120,122 @@ def _first_sentence(text: str) -> str:
     return t[:80].strip()
 
 
-def _split_for_companion_tts(text: str, max_sentences: int = 3) -> list[str]:
-    """
-    近似陪伴态分句：按句号类终止符切句，最多返回 max_sentences 句。
-    """
+def _sanitize_stt_text(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = SENSEVOICE_TAG_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return ""
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", t):
+        return ""
+    return t
+
+
+def _is_companion_fast_lane_text(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if len(t) > 80:
+        return False
+    if re.search(r"[\\/]|[.]\w{1,6}\b|```|#|@|http", t, flags=re.IGNORECASE):
+        return False
+    if FASTLANE_HEAVY_RE.search(t):
+        return False
+    if FASTLANE_LIGHT_RE.search(t):
+        return True
+    return bool(re.fullmatch(r"(好|嗯|哦|行|可以|不用|没事|谢谢|辛苦了)[。！？!?]?", t))
+
+
+def _dispatch_voice_intent_bench(text: str) -> dict[str, Any]:
+    t = (text or "").strip()
+    decision = {
+        "tier": "CHIT_CHAT",
+        "intent_class": "CHITCHAT",
+        "execution_lane": "direct_llm",
+        "normalized_text": t,
+        "router_hints": {
+            "fast_lane": False,
+            "skip_context_retrieval": False,
+            "skip_context_sniffer": False,
+            "skip_experience_rag": False,
+            "skip_gateway_enrich": False,
+            "prefer_direct_llm": True,
+            "force_background": False,
+            "acceptance_round": False,
+            "inject_task_context": False,
+            "max_foreground_tool_sec": 5,
+            "awaiting_confirmation": False,
+            "clarification_pending": False,
+        },
+    }
+    if not t:
+        return decision
+    if _is_companion_fast_lane_text(t) or CHITCHAT_RE.search(t):
+        decision["router_hints"].update({
+            "fast_lane": True,
+            "skip_context_retrieval": True,
+            "skip_context_sniffer": True,
+            "skip_experience_rag": True,
+            "skip_gateway_enrich": True,
+            "prefer_direct_llm": True,
+        })
+        return decision
+    if LONG_TASK_RE.search(t):
+        decision.update({"tier": "LONG_TASK", "intent_class": "TASK_ASYNC", "execution_lane": "background_submit"})
+        decision["router_hints"].update({"prefer_direct_llm": False, "force_background": True, "acceptance_round": True})
+        return decision
+    if SHORT_QUERY_RE.search(t):
+        decision.update({"tier": "SHORT_TASK", "intent_class": "TASK_SYNC", "execution_lane": "foreground"})
+        decision["router_hints"].update({"prefer_direct_llm": False})
+        return decision
+    if CONTROL_ABORT_RE.search(t) or CONTROL_STATUS_RE.search(t) or CONTROL_MODIFY_RE.search(t) or CONTROL_RESUME_RE.search(t):
+        decision.update({"intent_class": "CONTROL", "execution_lane": "background_control"})
+        decision["router_hints"].update({"prefer_direct_llm": False})
+        return decision
+    return decision
+
+
+def _pick_result_clause(s: str) -> str | None:
+    clauses = [x.strip() for x in re.split(r"[，。；！？]", s or "") if x.strip()]
+    if not clauses:
+        return None
+    for c in reversed(clauses):
+        if RESULT_HINT_RE.search(c):
+            return f"{c}。"
+    return None
+
+
+def _prepare_sentence_for_tts(raw: str) -> str | None:
+    s = (raw or "")
+    s = re.sub(r"```[\s\S]*?```", " ", s)
+    s = re.sub(r"`[^`]*`", " ", s)
+    s = re.sub(r"[#*_~]", "", s)
+    s = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) < 2:
+        return None
+    letters = len(re.findall(r"[\w\u4e00-\u9fff]", s, flags=re.UNICODE))
+    if letters < 2:
+        return None
+    noisy = len(re.findall(r"[^\w\u4e00-\u9fff\s，。！？、；：]", s, flags=re.UNICODE))
+    if len(s) > 0 and (noisy / len(s)) > 0.45:
+        return None
+    has_result = bool(RESULT_HINT_RE.search(s))
+    has_process = bool(PROCESS_HINT_RE.search(s))
+    if LIST_PREFIX_RE.search(s) and not has_result:
+        return None
+    if has_process and not has_result:
+        return None
+    if (has_result and has_process) or (has_result and len(s) > 36):
+        concise = _pick_result_clause(s)
+        if concise:
+            s = concise
+    return s
+
+
+def _split_for_companion_tts(text: str) -> list[str]:
     t = (text or "").strip()
     if not t:
         return []
@@ -121,23 +249,30 @@ def _split_for_companion_tts(text: str, max_sentences: int = 3) -> list[str]:
             if s:
                 out.append(s)
             buf = []
-            if len(out) >= max(1, max_sentences):
-                break
-    if len(out) < max(1, max_sentences) and buf:
+    if buf:
         s = "".join(buf).strip()
         if s:
             out.append(s)
-    return out[: max(1, max_sentences)]
+    if not out:
+        out = [t]
+    return out
 
 
 def _pick_tts_inputs(answer: str, mode: str, max_sentences: int) -> list[str]:
     if mode == "legacy":
         one = _first_sentence(answer) or answer[:80]
         return [one] if one else []
-    # companion mode: sentence queue (up to 3 by default)
-    rows = _split_for_companion_tts(answer, max_sentences=max_sentences)
-    if rows:
-        return rows
+    # companion mode: 使用接近前端 speakableText 的过滤，默认只播报结果类句子。
+    rows = _split_for_companion_tts(answer)
+    kept: list[str] = []
+    for r in rows:
+        s = _prepare_sentence_for_tts(r)
+        if s:
+            kept.append(s)
+        if len(kept) >= max(1, max_sentences):
+            break
+    if kept:
+        return kept
     one = _first_sentence(answer) or answer[:80]
     return [one] if one else []
 
@@ -199,6 +334,10 @@ class RunMetric:
     tts_input: str
     tts_calls: int
     tts_audio_ms: int
+    routed_text: str
+    voice_dispatch_tier: str
+    voice_intent_class: str
+    voice_fast_lane: bool
 
 
 def run_once(
@@ -216,6 +355,7 @@ def run_once(
     play_audio: bool,
     tts_mode: str,
     max_speak_sentences: int,
+    companion_real_route: bool,
     progress: Callable[[str], None] | None = None,
 ) -> RunMetric:
     started = _perf_ms()
@@ -226,6 +366,10 @@ def run_once(
     tts_input = ""
     tts_calls = 0
     tts_audio_ms = 0
+    routed_text = ""
+    voice_dispatch_tier = ""
+    voice_intent_class = ""
+    voice_fast_lane = False
     try:
         if text_input is not None:
             recognized = text_input.strip()
@@ -237,7 +381,7 @@ def run_once(
             st = _perf_ms()
             stt_json = _http_post_multipart_stt(f"{jvs_base}/v1/stt/transcribe", wav_bytes, timeout=t_stt)
             stt_ms = _perf_ms() - st
-            recognized = (stt_json.get("text") or "").strip()
+            recognized = _sanitize_stt_text(stt_json.get("text") or "")
         if not recognized:
             raise RuntimeError("STT 未识别到文本")
 
@@ -245,9 +389,41 @@ def run_once(
             progress("L3 推理中...")
         st = _perf_ms()
         chat_id = f"{chat_prefix}-{uuid.uuid4().hex[:10]}"
+        decision = _dispatch_voice_intent_bench(recognized) if companion_real_route else _dispatch_voice_intent_bench("")
+        routed_text = (decision.get("normalized_text") or recognized).strip() or recognized
+        voice_dispatch_tier = str(decision.get("tier") or "")
+        voice_intent_class = str(decision.get("intent_class") or "")
+        voice_fast_lane = bool((decision.get("router_hints") or {}).get("fast_lane"))
+        implicit_signals: dict[str, Any] = {
+            "desktop_companion": True,
+            "source": "desktop_voice_companion",
+            "voice_raw_stt_text": recognized,
+            "voice_routed_text": routed_text,
+            "voice_dispatch_tier": voice_dispatch_tier,
+            "voice_intent_class": voice_intent_class,
+            "voice_dispatch_lane": decision.get("execution_lane"),
+            "voice_fast_lane": voice_fast_lane,
+            "skip_context_retrieval": bool((decision.get("router_hints") or {}).get("skip_context_retrieval")),
+            "skip_context_sniffer": bool((decision.get("router_hints") or {}).get("skip_context_sniffer")),
+            "skip_experience_rag": bool((decision.get("router_hints") or {}).get("skip_experience_rag")),
+            "skip_gateway_enrich": bool((decision.get("router_hints") or {}).get("skip_gateway_enrich")),
+            "prefer_direct_llm": bool((decision.get("router_hints") or {}).get("prefer_direct_llm")),
+            "force_background": bool((decision.get("router_hints") or {}).get("force_background")),
+            "acceptance_round": bool((decision.get("router_hints") or {}).get("acceptance_round")),
+            "inject_task_context": bool((decision.get("router_hints") or {}).get("inject_task_context")),
+            "max_foreground_tool_sec": int((decision.get("router_hints") or {}).get("max_foreground_tool_sec") or 5),
+            "awaiting_confirmation": bool((decision.get("router_hints") or {}).get("awaiting_confirmation")),
+            "clarification_pending": bool((decision.get("router_hints") or {}).get("clarification_pending")),
+        }
         l3_raw = _http_post_json(
             f"{l3_base}/api/v3/agent/run",
-            {"user_input": recognized, "chat_id": chat_id, "max_iterations": 8},
+            {
+                "user_input": routed_text,
+                "chat_id": chat_id,
+                "max_iterations": 8,
+                "implicit_signals": implicit_signals,
+                "implicit_attribution": {"channel": "websocket_terminal"},
+            },
             timeout=t_l3,
         )
         l3_ms = _perf_ms() - st
@@ -291,6 +467,10 @@ def run_once(
             tts_input=tts_input,
             tts_calls=tts_calls,
             tts_audio_ms=tts_audio_ms,
+            routed_text=routed_text,
+            voice_dispatch_tier=voice_dispatch_tier,
+            voice_intent_class=voice_intent_class,
+            voice_fast_lane=voice_fast_lane,
         )
     except Exception as e:  # noqa: BLE001
         return RunMetric(
@@ -307,6 +487,10 @@ def run_once(
             tts_input=tts_input,
             tts_calls=tts_calls,
             tts_audio_ms=tts_audio_ms,
+            routed_text=routed_text,
+            voice_dispatch_tier=voice_dispatch_tier,
+            voice_intent_class=voice_intent_class,
+            voice_fast_lane=voice_fast_lane,
         )
 
 
@@ -347,7 +531,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--l3-base", default=DEFAULT_L3, help="L3 HTTP 地址，默认 http://127.0.0.1:18991")
     p.add_argument("--runs", type=int, default=20, help="压测轮数")
     p.add_argument("--interval-sec", type=float, default=0.5, help="每轮间隔秒")
-    p.add_argument("--voice", default=DEFAULT_VOICE, help="TTS 音色 ID（陪伴态默认 Junhao）")
+    p.add_argument("--voice", default=DEFAULT_VOICE, help="TTS 音色 ID（陪伴态默认 zm_053 / Kokoro）")
     p.add_argument(
         "--tts-mode",
         choices=("companion", "legacy"),
@@ -370,6 +554,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeout-tts", type=float, default=120.0)
     p.add_argument("--chat-prefix", default="voice-latency-bench")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    p.add_argument(
+        "--companion-real-route",
+        action="store_true",
+        default=True,
+        help="按陪伴态语音路由规则生成 implicit_signals 并送入 L3（默认开启）",
+    )
+    p.add_argument(
+        "--no-companion-real-route",
+        action="store_true",
+        help="关闭陪伴态路由信号注入（仅保留基础 STT->L3->TTS）",
+    )
     return p.parse_args()
 
 
@@ -385,6 +580,9 @@ def main() -> int:
         f"[INFO] JVS={args.jvs_base}  L3={args.l3_base}  "
         f"voice={args.voice}  tts_mode={args.tts_mode}  max_speak_sentences={args.max_speak_sentences}"
     )
+    if args.no_companion_real_route:
+        args.companion_real_route = False
+    print(f"[INFO] companion_real_route={bool(args.companion_real_route)}")
 
     fixed_wav: bytes | None = None
     if args.audio_file:
@@ -405,7 +603,7 @@ def main() -> int:
                 except Exception as e:  # noqa: BLE001
                     print(f"[{i}/{args.runs}] 录音失败: {e}")
                     rows.append(
-                        RunMetric(i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0)
+                        RunMetric(i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0, 0, "", "", "", False)
                     )
                     write_rows(csv_path, jsonl_path, [rows[-1]])
                     continue
@@ -429,6 +627,7 @@ def main() -> int:
             play_audio=args.play,
             tts_mode=args.tts_mode,
             max_speak_sentences=max(1, int(args.max_speak_sentences)),
+            companion_real_route=bool(args.companion_real_route),
             progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
         )
         rows.append(metric)
@@ -438,7 +637,8 @@ def main() -> int:
             print(
                 f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
                 f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
-                f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}"
+                f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
+                f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)}"
             )
         else:
             print(f"[{i}/{args.runs}] FAIL {metric.error}")

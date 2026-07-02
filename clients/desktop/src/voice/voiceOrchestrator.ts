@@ -7,9 +7,9 @@ import { truncVoiceLog, voiceCompanionDebug } from "./voiceCompanionDebugLog";
 import { voiceChatTraceIfActive } from "./voiceChatTraceLog";
 import { notifyCompanionVoicePhase } from "./voiceNativeBridge";
 import { synthesizeSpeechL2Only } from "../lib/api";
+import { DEFAULT_KOKORO_TTS_VOICE } from "./voiceDefaults";
 
 type ChunkConsumer = (text: string) => void;
-const FIXED_L3_JVS_VOICE = "Junhao";
 
 type SpeechJobContext = {
   generation: number;
@@ -79,8 +79,7 @@ export class VoiceOrchestrator {
     this.spokenOrQueuedSentenceKeys.clear();
     this.maxSpeakSentences = opts?.maxSpeakSentences ?? 3;
     this.companionUi = opts?.companionUi ?? true;
-    // 用户要求 L3 语音模块固定音色为 Junhao。
-    this.ttsVoice = FIXED_L3_JVS_VOICE;
+    this.ttsVoice = (opts?.ttsVoice || DEFAULT_KOKORO_TTS_VOICE).trim() || DEFAULT_KOKORO_TTS_VOICE;
     this.chunkChain = Promise.resolve();
     this.ttsChain = Promise.resolve();
     this.generation = voicePlaybackController.bumpGeneration();
@@ -216,7 +215,7 @@ export class VoiceOrchestrator {
 
     const jobGeneration = job.generation;
     const sessionId = job.sessionId;
-    const ttsVoice = FIXED_L3_JVS_VOICE;
+    const ttsVoice = (job.ttsVoice || DEFAULT_KOKORO_TTS_VOICE).trim() || DEFAULT_KOKORO_TTS_VOICE;
     const useMandarinNeuralVoice = false;
     onSentence?.(speakable);
     if (this.isHardSentenceBoundary(speakable)) {
@@ -262,7 +261,7 @@ export class VoiceOrchestrator {
         sentence: truncVoiceLog(speakable, 120),
         latencyMs: synthMs,
         queueWaitMs,
-        engine: useMandarinNeuralVoice ? "l2_edge" : "jvs_moss",
+        engine: useMandarinNeuralVoice ? "l2_edge" : "jvs_kokoro",
         voice: ttsVoice ?? "",
       });
       if (job.companionUi) {

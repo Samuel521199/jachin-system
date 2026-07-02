@@ -1,4 +1,4 @@
-﻿//! ModelManager - 检查本地 MOSS ONNX 模型目录
+﻿//! ModelManager - 检查本地 Kokoro ONNX 模型目录
 //!
 //! 路径解析采用 "Silent Intelligence"：零配置，自动检测最佳存储位置。
 //! 优先级：Portable（可执行文件旁）> Standard（OS 数据目录）> 环境变量（开发调试）
@@ -14,10 +14,9 @@ static DOWNLOADED: AtomicBool = AtomicBool::new(false);
 /// 默认本地 voice_server URL（可通过环境变量覆盖）
 pub const DEFAULT_VOICE_SERVER_URL: &str = "http://127.0.0.1:18982";
 
-/// MOSS 模型目录信息
-pub const MOSS_TTS_DIRNAME: &str = "MOSS-TTS-Nano-100M-ONNX";
-pub const MOSS_CODEC_DIRNAME: &str = "MOSS-Audio-Tokenizer-Nano-ONNX";
-pub const MOSS_MANIFEST_FILENAME: &str = "browser_poc_manifest.json";
+/// Kokoro 模型目录信息
+pub const KOKORO_TTS_DIRNAME: &str = "Kokoro-82M-v1.1-zh-ONNX";
+pub const KOKORO_MODEL_REL_PATH: &str = "onnx/model.onnx";
 
 /// 便携模式目录名（可执行文件旁）
 const PORTABLE_DATA_DIR: &str = "_portable_data";
@@ -88,7 +87,7 @@ pub fn resolve_model_path() -> PathBuf {
     standard
 }
 
-/// ModelManager - 管理 MOSS 模型目录状态
+/// ModelManager - 管理 Kokoro 模型目录状态
 pub struct ModelManager {
     /// 模型存储目录（由 resolve_model_path 或显式传入）
     data_dir: PathBuf,
@@ -113,41 +112,39 @@ impl ModelManager {
     }
 
     fn tts_dir(&self) -> PathBuf {
-        self.data_dir.join(MOSS_TTS_DIRNAME)
+        self.data_dir.join(KOKORO_TTS_DIRNAME)
     }
 
-    fn codec_dir(&self) -> PathBuf {
-        self.data_dir.join(MOSS_CODEC_DIRNAME)
-    }
-
-    /// 检查 MOSS 模型目录是否存在
+    /// 检查 Kokoro 模型目录是否存在
     pub fn has_model(&self) -> bool {
-        self.tts_dir().join(MOSS_MANIFEST_FILENAME).exists() && self.codec_dir().is_dir()
+        self.tts_dir().join(KOKORO_MODEL_REL_PATH).exists() && self.tts_dir().join("voices").is_dir()
     }
 
-    /// 获取模型目录；若不存在则返回明确错误（MOSS 模型由部署阶段准备，不再运行时下载）
+    /// 获取模型目录；若不存在则返回明确错误（Kokoro 模型由部署阶段准备，不再运行时下载）
     /// on_progress: 保持兼容，立即上报完成状态
     pub async fn ensure_model(
         &self,
         on_progress: Option<ProgressCallback>,
     ) -> Result<(PathBuf, PathBuf), String> {
         let tts_path = self.tts_dir();
-        let codec_path = self.codec_dir();
+        let voices_path = tts_path.join("voices");
 
         if self.has_model() {
             if let Some(cb) = on_progress {
                 cb(1, 1);
             }
             DOWNLOADED.store(true, Ordering::Relaxed);
-            return Ok((tts_path, codec_path));
+            return Ok((tts_path, voices_path));
         }
 
         let base = self.voice_server_base_url.trim_end_matches('/');
         Err(format!(
-            "MOSS ONNX models not found. expected: {:?} and {:?}. \
+            "Kokoro ONNX model not found. expected: {:?} and {:?}. \
              Please place model folders under data/models/voice/tts, then retry. \
              Local voice_server endpoint: {}",
-            tts_path, codec_path, base
+            tts_path.join(KOKORO_MODEL_REL_PATH),
+            voices_path,
+            base
         ))
     }
 

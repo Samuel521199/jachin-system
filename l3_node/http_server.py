@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,51 @@ async def _http_agent_session_lock_held(session_key: str) -> bool:
     if lk is None:
         return False
     return lk.locked()
+
+
+_VOICE_EXPLICIT_MEMORY_RE = re.compile(r"^\s*(?:请|帮我|麻烦你)?记住[：:，,\s]*(?P<fact>.+?)\s*[。.!！]?\s*$")
+_VOICE_SESSION_GUARD = (
+    "【桌面语音会话规则】回答‘刚刚/前面/我告诉你’这类问题时，必须优先依据当前 chat_id "
+    "的本轮会话历史；没有命中时再说明不确定，不要引用其它会话或全局旧记忆。"
+)
+
+
+def _extract_voice_explicit_memory(text: str) -> str:
+    m = _VOICE_EXPLICIT_MEMORY_RE.match(text or "")
+    if not m:
+        return ""
+    fact = (m.group("fact") or "").strip()
+    return fact[:1000]
+
+
+def _ensure_voice_session_guard(messages: list[dict[str, Any]]) -> None:
+    for m in messages[:4]:
+        if isinstance(m, dict) and m.get("role") == "system" and m.get("content") == _VOICE_SESSION_GUARD:
+            return
+    messages.insert(0, {"role": "system", "content": _VOICE_SESSION_GUARD})
+
+
+async def _commit_voice_explicit_memory(*, fact: str, chat_id: str, source: str, original_text: str) -> None:
+    fact = (fact or "").strip()
+    if not fact:
+        return
+    try:
+        from l3_client.local_mcps.jachin_memory_nexus.memory_backend import commit_drawer
+
+        await asyncio.to_thread(
+            commit_drawer,
+            text=f"[voice_companion_explicit_memory] {fact}",
+            wing="User_Persona",
+            room="Companion_Explicit_Memory",
+            extra_meta={
+                "tag": "voice_companion_explicit_memory",
+                "source": source or "desktop_voice_companion",
+                "chat_id": chat_id,
+                "original_text": original_text[:1000],
+            },
+        )
+    except Exception as e:
+        logger.warning("[L3 HTTP] voice explicit memory commit skipped: %s", e)
 
 
 def _registry_diag_read_token() -> str:
@@ -2559,6 +2605,16 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         _ch_s = str(_ch).strip() if _ch else ""
         if _ch_s:
             _iatt = {**_iatt, "lark_chat_id": _ch_s}
+        _voice_companion = bool(_isig and _isig.get("desktop_companion"))
+        if _voice_companion:
+            _voice_fact = _extract_voice_explicit_memory(user_input)
+            if _voice_fact:
+                await _commit_voice_explicit_memory(
+                    fact=_voice_fact,
+                    chat_id=_ch_s,
+                    source=str((_isig or {}).get("source") or "desktop_voice_companion"),
+                    original_text=user_input,
+                )
         try:
             from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
 
@@ -2583,12 +2639,40 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         except (TypeError, ValueError):
             _mi = 8
         _mi = max(1, min(_mi, 48))
+        _session_messages: list[dict[str, Any]] | None = None
+
+        async def _load_session_for_run() -> None:
+            nonlocal _session_messages
+            if not _ch_s:
+                _session_messages = None
+                return
+            try:
+                from l3_node.lark_session import load_lark_session
+
+                _session_messages = await asyncio.to_thread(load_lark_session, _ch_s)
+            except Exception as e:
+                logger.debug("[L3 HTTP] load session skipped chat_id=%s: %s", _ch_s[:20], e)
+                _session_messages = []
+            if _voice_companion and _session_messages is not None:
+                _ensure_voice_session_guard(_session_messages)
+
+        async def _save_session_after_run() -> None:
+            if not _ch_s or _session_messages is None:
+                return
+            try:
+                from l3_node.lark_session import save_lark_session
+
+                await asyncio.to_thread(save_lark_session, _ch_s, _session_messages)
+                logger.debug("[L3 HTTP] chat_id=%s saved session %d messages", _ch_s[:20], len(_session_messages))
+            except Exception as e:
+                logger.debug("[L3 HTTP] save session skipped chat_id=%s: %s", _ch_s[:20], e)
 
         async def _invoke_agent() -> str:
             return await run_agent(
                 user_input,
                 engine,
                 max_iterations=_mi,
+                _session_messages=_session_messages,
                 implicit_signals=_isig,
                 implicit_attribution=_iatt,
                 attachments_metadata=_att_meta,
@@ -2608,7 +2692,9 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
             _use_siq = False
 
         if _use_siq:
+            await _load_session_for_run()
             answer, _siq_status = await _http_agent_run_via_siq(_ch_s, user_input, _invoke_agent)
+            await _save_session_after_run()
         elif _ch_s:
             try:
                 if await _http_agent_session_lock_held(_ch_s):
@@ -2619,7 +2705,9 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
                 pass
             _lk = await _http_agent_session_lock(_ch_s)
             async with _lk:
+                await _load_session_for_run()
                 answer = await _invoke_agent()
+                await _save_session_after_run()
         else:
             answer = await _invoke_agent()
         resp = {"answer": answer or ""}

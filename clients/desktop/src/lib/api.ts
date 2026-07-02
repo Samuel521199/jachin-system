@@ -3,6 +3,7 @@
  *
  * V2: Dapr 已废弃，统一直连后端 API。
  */
+import { DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE } from "../voice/voiceDefaults";
 
 /** 后端 base URL（L2） */
 export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:18888";
@@ -1643,13 +1644,13 @@ let l2TtsHttpSkipped = false;
 
 /**
  * 语音合成
- * 优先使用本地 voice_server MOSS ONNX（tts_speak），失败时回退到 Tier 2 Edge TTS
+ * 优先使用本地 voice_server Kokoro ONNX（tts_speak），失败时回退到 Tier 2 Edge TTS
  */
 export async function synthesizeSpeech(
   text: string,
-  voice: string = "zh-CN-XiaoxiaoNeural",
+  voice: string = DEFAULT_KOKORO_TTS_VOICE,
   language: string = "zh-CN",
-  speed: number = 1.0,
+  speed: number = DEFAULT_KOKORO_TTS_SPEED,
   pitch: number = 1.0
 ): Promise<Blob> {
   // 在 Tauri 中优先尝试本地 TTS
@@ -1696,9 +1697,9 @@ export async function synthesizeSpeech(
  */
 export async function synthesizeSpeechL2Only(
   text: string,
-  voice: string = "zh-CN-XiaoxiaoNeural",
+  voice: string = DEFAULT_KOKORO_TTS_VOICE,
   language: string = "zh-CN",
-  speed: number = 1.0,
+  speed: number = DEFAULT_KOKORO_TTS_SPEED,
   pitch: number = 1.0
 ): Promise<Blob> {
   const response = await fetch(`${BACKEND_URL}/api/v2/voice/synthesize`, {
@@ -1732,7 +1733,7 @@ export async function voiceChat(
   format: string = "wav",
   language: string = "zh-CN",
   returnAudio: boolean = true,
-  voice: string = "zh-CN-XiaoxiaoNeural"
+  voice: string = DEFAULT_KOKORO_TTS_VOICE
 ): Promise<{
   user_text: string;
   text: string;
@@ -1745,7 +1746,7 @@ export async function voiceChat(
   formData.append("language", language);
   formData.append("return_audio", returnAudio.toString());
   formData.append("voice", voice);
-  formData.append("speed", "1.0");
+  formData.append("speed", String(DEFAULT_KOKORO_TTS_SPEED));
   formData.append("pitch", "1.0");
 
   const response = await fetch(`${BACKEND_URL}/api/v2/voice/chat`, {

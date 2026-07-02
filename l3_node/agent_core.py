@@ -7285,6 +7285,33 @@ async def _invoke_react_tool(
     )
     _out: str | None = None
     try:
+        try:
+            from l3_node.intent_orchestrator import check_tool_consistency
+
+            _routing_violation = check_tool_consistency(
+                tool,
+                _invoke_inp,
+                ctx.metadata.get("_intent_orchestrator_decision"),
+            )
+        except Exception as _rvc_ex:
+            logger.debug("[RoutingViolation] consistency check skipped: %s", _rvc_ex)
+            _routing_violation = None
+        if _routing_violation:
+            logger.warning(
+                "[RoutingViolation] blocked tool=%s reason=%s",
+                (tool or "")[:160],
+                str(_routing_violation.get("reason") or "")[:240],
+            )
+            try:
+                from l3_node.terminal_turn_debug_log import append_section
+
+                append_section(
+                    "[RoutingViolation] blocked inconsistent tool call",
+                    json.dumps(_routing_violation, ensure_ascii=False, indent=2),
+                )
+            except Exception:
+                pass
+            return json.dumps(_routing_violation, ensure_ascii=False)
         if _is_mcp:
             if use_timeout:
                 try:
@@ -10802,6 +10829,58 @@ async def run_agent(
                 from l3_node.primitives.multi_agent.readonly_agent import filter_tools_for_readonly_subagent
 
                 tools = filter_tools_for_readonly_subagent(tools)
+    _intent_orchestrator_decision = None
+    _hidca_strip_lark_identity = False
+    try:
+        from l3_node.intent_orchestrator import (
+            analyze_intent_async,
+            format_hidca_prompt_block,
+            prune_tools_for_hidca,
+            sandbox_implicit_attribution,
+            write_router_evidence,
+        )
+
+        _intent_orchestrator_decision = await analyze_intent_async(
+            user_input or "",
+            tools=tools,
+            allowed=allowed,
+            implicit_attribution=implicit_attribution if isinstance(implicit_attribution, dict) else None,
+            engine=engine,
+        )
+        tools, _hidca_prune_meta = prune_tools_for_hidca(tools, _intent_orchestrator_decision)
+        _sandboxed_implicit, _hidca_stripped_keys = sandbox_implicit_attribution(
+            implicit_attribution if isinstance(implicit_attribution, dict) else None,
+            _intent_orchestrator_decision,
+        )
+        if _hidca_stripped_keys:
+            implicit_attribution = _sandboxed_implicit
+            _hidca_strip_lark_identity = True
+        _gw_inject = (_gw_inject or "") + format_hidca_prompt_block(_intent_orchestrator_decision)
+        _intent_orchestrator_decision.hidca.update(_hidca_prune_meta)
+        _intent_orchestrator_decision.hidca["stripped_context_keys"] = list(_hidca_stripped_keys or [])
+        _io_evidence_path = write_router_evidence(_intent_orchestrator_decision)
+        exec_trace(
+            logger,
+            "[IntentOrchestrator] run_id=%s domain=%s tools=%d->%d chosen=%s stripped=%s evidence=%s",
+            run_id[:12],
+            _intent_orchestrator_decision.hidca.get("semantic_router_domain"),
+            _intent_orchestrator_decision.hidca.get("tools_before_prune"),
+            _intent_orchestrator_decision.hidca.get("tools_after_prune"),
+            _intent_orchestrator_decision.chosen.get("tool_id"),
+            ",".join(_hidca_stripped_keys or []),
+            _io_evidence_path,
+        )
+        try:
+            from l3_node.terminal_turn_debug_log import append_section
+
+            append_section(
+                "[IntentOrchestrator] decision package",
+                json.dumps(_intent_orchestrator_decision.to_dict(), ensure_ascii=False, indent=2),
+            )
+        except Exception:
+            pass
+    except Exception as _io_ex:
+        logger.warning("[IntentOrchestrator] skipped: %s", _io_ex)
     exec_trace(
         logger,
         "工具列表就绪 run_id=%s count=%d bg_channel=%s",
@@ -11233,6 +11312,7 @@ async def run_agent(
         (_lark_cid or "").strip()
         and (system_prompt or "").strip()
         and not (_try_direct or (system_prompt is None))
+        and not _hidca_strip_lark_identity
         and _bg_channel in _FG_LARK_BIND_CHANNELS
     ):
         _lc = (_lark_cid or "").strip()
@@ -11903,8 +11983,9 @@ async def run_agent(
                 "desktop_companion_context": dict(_desktop_companion_ctx),
             },
             "_gw_inject_stored": _gw_inject,
+            "_intent_orchestrator_decision": _intent_orchestrator_decision,
             "_on_chunk": on_chunk,
-            "_lark_chat_id": _lark_cid,
+            "_lark_chat_id": "" if _hidca_strip_lark_identity else _lark_cid,
             "_implicit_channel": _bg_channel,
             "_prompt_cycle": _mem_cycle,
             "_cancel_event": _cancel_ev,

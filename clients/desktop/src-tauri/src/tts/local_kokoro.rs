@@ -22,6 +22,7 @@ pub const KOKORO_STYLE_ZM: &str = "zm";
 
 /// 采样率 24kHz
 const SAMPLE_RATE: u32 = 24000;
+const DEFAULT_KOKORO_TTS_SPEED: f32 = 1.25;
 
 /// x86_64 默认推理线程数
 #[cfg(not(target_arch = "aarch64"))]
@@ -203,7 +204,7 @@ impl LocalKokoroEngine {
             .map_err(|e: ort::Error| e.to_string())?;
         let style_tensor = Tensor::from_array(([1usize, 256], style_vec.clone()))
             .map_err(|e: ort::Error| e.to_string())?;
-        let speed_tensor = Tensor::from_array(([1usize], vec![1.0f32]))
+        let speed_tensor = Tensor::from_array(([1usize], vec![DEFAULT_KOKORO_TTS_SPEED]))
             .map_err(|e: ort::Error| e.to_string())?;
 
         let outputs = session_guard
