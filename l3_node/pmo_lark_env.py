@@ -5,6 +5,9 @@ PMO 飞书会话 chat_id 与项目根 ``.env`` 加载 SSOT。
 ``LARK_APP_ID`` / ``LARK_APP_SECRET``、``PMO_PRIMARY_CHAT_ID``、``PMO_MONITOR_CHAT_ID``、
 ``PMO_CHANGE_ALERT_CHAT_ID`` / ``PMO_CHANGE_ALERT_MONITOR_CHAT_ID``。
 
+首次运行会把安装目录 ``.env`` 中缺失的 PMO/Lark 键补种到 ``~/.jachin/.env``。
+之后用户本机配置以 ``~/.jachin/.env`` 为准，能力包升级不会覆盖用户配置。
+
 **读取优先级**（同名键）：``~/.jachin/.env`` 覆盖安装目录 ``.env``，再覆盖进程环境变量。
 """
 from __future__ import annotations
@@ -23,6 +26,7 @@ DEFAULT_PMO_WAR_REPORT_MONITOR_CHAT_ID = "oc_0e321f92d758ecb44aea5b499c90510b"
 DEFAULT_PMO_CHANGE_ALERT_CHAT_ID = "oc_b1b9cff6804517c79b7f5a617ab30483"
 
 _PMO_DOTENV_LOADED = False
+_PMO_USER_DOTENV_SEEDED = False
 _PMO_ENV_KEY_NAMES = (
     "LARK_APP_ID",
     "LARK_APP_SECRET",
@@ -70,6 +74,64 @@ def _read_dotenv_key(path: Path, key: str) -> str:
     return raw
 
 
+def _read_dotenv_keys(path: Path, keys: tuple[str, ...]) -> dict[str, str]:
+    return {key: _read_dotenv_key(path, key) for key in keys}
+
+
+def ensure_pmo_user_dotenv_seeded() -> None:
+    """
+    把安装/能力包里的 PMO 配置种到 ``~/.jachin/.env``。
+
+    这一步只补缺失键，不覆盖用户已经在 ``~/.jachin`` 里配置的值。
+    这样开发模式、打包模式、L1 下载后的能力包都走同一套用户配置位置。
+    """
+    global _PMO_USER_DOTENV_SEEDED
+    if _PMO_USER_DOTENV_SEEDED:
+        return
+    _PMO_USER_DOTENV_SEEDED = True
+
+    install_path, jachin_path = _pmo_dotenv_paths()
+    if not install_path.is_file() or install_path == jachin_path:
+        return
+
+    install_values = _read_dotenv_keys(install_path, _PMO_ENV_KEY_NAMES)
+    missing_values = {k: v for k, v in install_values.items() if v}
+    if not missing_values:
+        return
+
+    try:
+        jachin_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.debug("[PMO env] skip seeding ~/.jachin/.env: mkdir failed: %s", exc)
+        return
+
+    existing_values = _read_dotenv_keys(jachin_path, _PMO_ENV_KEY_NAMES)
+    to_append = [
+        (key, value)
+        for key, value in missing_values.items()
+        if not existing_values.get(key)
+    ]
+    if not to_append:
+        return
+
+    try:
+        existed = jachin_path.is_file()
+        with jachin_path.open("a", encoding="utf-8", newline="\n") as f:
+            if existed and jachin_path.stat().st_size > 0:
+                f.write("\n")
+            f.write("# PMO Copilot local config, seeded from installed package .env.\n")
+            f.write("# Edit values here; package upgrades will not overwrite them.\n")
+            for key, value in to_append:
+                f.write(f"{key}={value}\n")
+        logger.info(
+            "[PMO env] seeded %s PMO/Lark config key(s) into %s",
+            len(to_append),
+            jachin_path,
+        )
+    except OSError as exc:
+        logger.debug("[PMO env] skip seeding ~/.jachin/.env: write failed: %s", exc)
+
+
 def _resolve_pmo_env_key(key: str) -> tuple[str, str]:
     """
     返回 (value, source_hint)。
@@ -95,6 +157,7 @@ def ensure_pmo_dotenv_loaded() -> None:
     if _PMO_DOTENV_LOADED:
         return
     _PMO_DOTENV_LOADED = True
+    ensure_pmo_user_dotenv_seeded()
     try:
         from dotenv import load_dotenv
 

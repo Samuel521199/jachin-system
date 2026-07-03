@@ -25,7 +25,7 @@ _ma_debug_ctx: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Conte
 
 
 def _default_pmo_max_iterations() -> int:
-    from l3_node.agent_core import MAX_PMO_REACT_ITERATIONS
+    from l3_node.pmo_agent_policy import MAX_PMO_REACT_ITERATIONS
 
     return max(1, int(MAX_PMO_REACT_ITERATIONS))
 

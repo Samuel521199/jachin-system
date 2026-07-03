@@ -141,6 +141,7 @@ export default defineConfig(async () => ({
         sprite: path.resolve(__dirname, "sprite.html"),
         chat: path.resolve(__dirname, "chat.html"),
         notification: path.resolve(__dirname, "notification.html"),
+        englishVocab: path.resolve(__dirname, "english-vocab.html"),
         hud: path.resolve(__dirname, "hud.html"),
       },
     },

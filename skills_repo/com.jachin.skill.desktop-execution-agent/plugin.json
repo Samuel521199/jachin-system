@@ -1,0 +1,31 @@
+{
+  "id": "com.jachin.skill.desktop-execution-agent",
+  "name": "企业桌面执行 Agent",
+  "version": "1.0.0",
+  "description": "跨 Windows、飞书、文件、浏览器和办公软件完成真实任务，并保留截图、OCR、文件和发送校验证据。",
+  "entry": "SKILL.md",
+  "item_type": "SKILL",
+  "type": "SKILL",
+  "runtime_tier": "L3_LOCAL",
+  "required_mcps": [
+    "com.jachin.mcp.stub.windows.uia",
+    "com.jachin.mcp.filesystem_workspace",
+    "com.jachin.mcp.playwright.browser",
+    "com.jachin.mcp.l3.atom-lark-notifier"
+  ],
+  "preserve_user_data": [
+    "$JACHIN_HOME/config/skills/com.jachin.skill.desktop-execution-agent",
+    "$JACHIN_HOME/workspace/os_mission",
+    "$JACHIN_HOME/data/os_mission",
+    "$JACHIN_HOME/logs/os_mission"
+  ],
+  "tags": [
+    "business-skill",
+    "os-assistant",
+    "windows",
+    "lark",
+    "files",
+    "browser",
+    "evidence"
+  ]
+}

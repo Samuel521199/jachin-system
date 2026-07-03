@@ -1,4 +1,4 @@
-﻿//! 飞书 IM / PMO 长连接 — ~/.jachin/config/im_channels.yaml（打包后可改）
+//! 飞书 IM / PMO 长连接 — ~/.jachin/config/im_channels.yaml（打包后可改）
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -142,8 +142,10 @@ fn load_file() -> Result<(PathBuf, ImChannelsFile, bool), String> {
             let file = ImChannelsFile {
                 im_channels: default_root(),
             };
-            let yaml = serde_yaml::to_string(&file).map_err(|e| format!("序列化默认配置失败: {e}"))?;
-            fs::write(&path, yaml.as_bytes()).map_err(|e| format!("写入默认 im_channels 失败: {e}"))?;
+            let yaml =
+                serde_yaml::to_string(&file).map_err(|e| format!("序列化默认配置失败: {e}"))?;
+            fs::write(&path, yaml.as_bytes())
+                .map_err(|e| format!("写入默认 im_channels 失败: {e}"))?;
             seeded = true;
         }
         let raw = fs::read_to_string(&path).map_err(|e| format!("读取 im_channels 失败: {e}"))?;
@@ -154,9 +156,10 @@ fn load_file() -> Result<(PathBuf, ImChannelsFile, bool), String> {
         return Ok((path, parsed, seeded));
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("读取 im_channels 失败: {e}"))?;
-    let mut parsed: ImChannelsFile = serde_yaml::from_str(&raw).unwrap_or_else(|_| ImChannelsFile {
-        im_channels: default_root(),
-    });
+    let mut parsed: ImChannelsFile =
+        serde_yaml::from_str(&raw).unwrap_or_else(|_| ImChannelsFile {
+            im_channels: default_root(),
+        });
     if parsed.im_channels.lark.mode.is_none() {
         parsed.im_channels.lark.mode = Some("long_connection".to_string());
     }
@@ -193,7 +196,10 @@ fn merge_channel(existing: &ImChannelEntry, patch: &ImChannelEntry) -> ImChannel
     }
 }
 
-fn merge_bitable(existing: &ImBitableChannelEntry, patch: &ImBitableChannelEntry) -> ImBitableChannelEntry {
+fn merge_bitable(
+    existing: &ImBitableChannelEntry,
+    patch: &ImBitableChannelEntry,
+) -> ImBitableChannelEntry {
     ImBitableChannelEntry {
         enabled: patch.enabled,
         app_id: if patch.app_id.is_empty() {

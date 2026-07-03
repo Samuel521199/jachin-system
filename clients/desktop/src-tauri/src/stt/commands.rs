@@ -1,4 +1,4 @@
-﻿//! STT 语音采集的 Tauri 状态与 Commands
+//! STT 语音采集的 Tauri 状态与 Commands
 //!
 //! 因 cpal::Stream 在 Windows 上非 Send，ListeningGuard 不能放入 Tauri State。
 //! 改为由专用“持有线程”在本地持有 guard，State 只保存 Start 信道、Stop 信令与 running 标志。
@@ -9,7 +9,6 @@
 
 #![cfg(feature = "ambient")]
 
-use base64::Engine;
 use crate::config::UserSettings;
 use crate::stt;
 use crate::stt::manager::{PttCaptureOutcome, SttAudioPayload};
@@ -17,6 +16,7 @@ use crate::stt::speaker_verification::{
     jvs_filter_owner_track_blocking, load_owner_voiceprint_profile,
 };
 use crate::stt::wake_listener::WakeListenerState;
+use base64::Engine;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -32,11 +32,16 @@ const VAD_DEBUG_PATH_ENV: &str = "JACHIN_VAD_DEBUG_PATH";
 /// 解析 VAD 模型路径：环境变量 > 便携目录 > 标准数据目录。
 fn resolve_vad_model_path() -> PathBuf {
     if let Ok(debug_path) = std::env::var(VAD_DEBUG_PATH_ENV) {
-        return PathBuf::from(debug_path.trim()).join("vad").join(VAD_MODEL_FILENAME);
+        return PathBuf::from(debug_path.trim())
+            .join("vad")
+            .join(VAD_MODEL_FILENAME);
     }
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let portable = exe_dir.join(PORTABLE_DATA_DIR).join("vad").join(VAD_MODEL_FILENAME);
+            let portable = exe_dir
+                .join(PORTABLE_DATA_DIR)
+                .join("vad")
+                .join(VAD_MODEL_FILENAME);
             if portable.exists() {
                 return portable;
             }
@@ -78,7 +83,6 @@ pub struct CompanionOwnerTrackFilterResult {
     pub skipped_segments_count: Option<usize>,
 }
 
-
 fn estimate_wav_duration_ms(wav: &[u8]) -> Option<u32> {
     if wav.len() < 44 || &wav.get(0..4)? != b"RIFF" || &wav.get(8..12)? != b"WAVE" {
         return None;
@@ -106,7 +110,9 @@ fn estimate_wav_duration_ms(wav: &[u8]) -> Option<u32> {
         offset = body + size + (size % 2);
     }
     let bytes_per_sample = (bits_per_sample as u32 / 8).max(1);
-    let bytes_per_sec = sample_rate.saturating_mul(channels as u32).saturating_mul(bytes_per_sample);
+    let bytes_per_sec = sample_rate
+        .saturating_mul(channels as u32)
+        .saturating_mul(bytes_per_sample);
     if bytes_per_sec == 0 || data_bytes == 0 {
         return None;
     }
@@ -267,13 +273,13 @@ pub fn start_voice_capture(
     if !model_path.exists() {
         return Err(format!(
             "VAD 模型不存在: {:?}。请将 silero_vad.onnx 放入该路径，或设置 {} 指向包含 vad 的目录",
-            model_path,
-            VAD_DEBUG_PATH_ENV
+            model_path, VAD_DEBUG_PATH_ENV
         ));
     }
     let guard = state.start_tx.lock().map_err(|e| e.to_string())?;
     if let Some(ref tx) = *guard {
-        tx.send((app_handle, model_path)).map_err(|e| e.to_string())?;
+        tx.send((app_handle, model_path))
+            .map_err(|e| e.to_string())?;
     } else {
         return Err("持有线程已退出".to_string());
     }
@@ -314,13 +320,13 @@ pub fn start_ptt_capture(
     if !model_path.exists() {
         return Err(format!(
             "VAD 模型不存在: {:?}。请将 silero_vad.onnx 放入该路径，或设置 {} 指向包含 vad 的目录",
-            model_path,
-            VAD_DEBUG_PATH_ENV
+            model_path, VAD_DEBUG_PATH_ENV
         ));
     }
     let guard = state.ptt_start_tx.lock().map_err(|e| e.to_string())?;
     if let Some(ref tx) = *guard {
-        tx.send((app_handle, model_path)).map_err(|e| e.to_string())?;
+        tx.send((app_handle, model_path))
+            .map_err(|e| e.to_string())?;
     } else {
         return Err("PTT 持有线程已退出".to_string());
     }
@@ -333,16 +339,15 @@ pub fn start_ptt_capture(
 
 /// PTT 松开：触发立即截句，等待采音线程完成后返回 WAV（同时仍发射 `STT_AUDIO_READY` 供 VAD 路径复用）。
 #[tauri::command]
-pub fn stop_ptt_capture(
-    state: State<'_, SttState>,
-) -> Result<SttAudioPayload, String> {
+pub fn stop_ptt_capture(state: State<'_, SttState>) -> Result<SttAudioPayload, String> {
     let deadline = Instant::now() + Duration::from_millis(PTT_STOP_RETRY_MS);
     let mut finalize_sent = false;
     loop {
         {
             let guard = state.ptt_finalize_tx.lock().map_err(|e| e.to_string())?;
             if let Some(ref tx) = *guard {
-                tx.send(()).map_err(|e| format!("PTT 截句信号发送失败: {e}"))?;
+                tx.send(())
+                    .map_err(|e| format!("PTT 截句信号发送失败: {e}"))?;
                 finalize_sent = true;
                 break;
             }
@@ -386,7 +391,10 @@ pub fn stop_ptt_capture(
         }
         thread::sleep(Duration::from_millis(PTT_STOP_POLL_MS));
     }
-    Err("未收到录音数据（超时）。若唤醒门卫刚关闭，请再试一次；并确认麦克风权限与默认输入设备。".to_string())
+    Err(
+        "未收到录音数据（超时）。若唤醒门卫刚关闭，请再试一次；并确认麦克风权限与默认输入设备。"
+            .to_string(),
+    )
 }
 
 #[tauri::command]
@@ -530,7 +538,7 @@ pub fn companion_filter_owner_track_wav(
                     },
                 }),
             }
-        },
+        }
         Err(e) => Ok(CompanionOwnerTrackFilterResult {
             accepted: !strict,
             used_owner_track: false,

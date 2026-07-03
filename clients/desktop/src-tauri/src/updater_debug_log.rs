@@ -1,4 +1,4 @@
-﻿//! 热更新调试：追加写入固定目录日志（Windows 调试路径，勿用于生产收集用户隐私）。
+//! 热更新调试：追加写入固定目录日志（Windows 调试路径，勿用于生产收集用户隐私）。
 //! 不落盘完整 Bearer / token，仅记录长度与是否配置。
 //!
 //! 目录：`crate::updater_common::hot_update_debug_log_dir()`（环境变量 `JACHIN_HOT_UPDATE_DEBUG_DIR`）。
@@ -106,7 +106,12 @@ pub fn log_startup_rust(app_version: &str) {
              updater_plugin_bearer_header_installed={} \
              tauri_endpoints_json={} \
              {}",
-            app_version, os, arch, exe, hot_update_debug_log_dir().display(), LOG_FILE,
+            app_version,
+            os,
+            arch,
+            exe,
+            hot_update_debug_log_dir().display(),
+            LOG_FILE,
             nc_path,
             nc_exists,
             nc_summary,

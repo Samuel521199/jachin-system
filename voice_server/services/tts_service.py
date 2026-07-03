@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import json
 import logging
 import os
 import sys
@@ -26,6 +27,8 @@ DEFAULT_VOICE_CLONE_MAX_TEXT_TOKENS = 75
 DEFAULT_MAX_NEW_FRAMES = 375
 DEFAULT_TTS_MAX_RETRIES = 2
 DEFAULT_MAX_ALLOWED_AUDIO_MS = 12000
+KOKORO_DIRNAME = "Kokoro-82M-v1.1-zh-ONNX"
+KOKORO_SAMPLE_RATE = 24000
 
 
 def _env_int(name: str, default: int) -> int:
@@ -66,16 +69,16 @@ class TtsCancelledError(RuntimeError):
 
 
 class TtsService:
-    """MOSS-TTS-Nano ONNX local synthesis service."""
+    """Local ONNX TTS service. Kokoro is the current preferred bundled model."""
 
     def __init__(
         self,
         tts_dir: Path,
-        default_voice: str = "Junhao",
+        default_voice: str = "zm_053",
         default_speed: float = 1.0,
     ) -> None:
         self.tts_dir = tts_dir
-        self.default_voice = default_voice.strip() or "Junhao"
+        self.default_voice = default_voice.strip() or "zm_053"
         self.default_speed = float(np.clip(default_speed, 0.8, 1.5))
         raw_sample_mode = str(os.getenv("JACHIN_VOICE_TTS_SAMPLE_MODE", "fixed")).strip().lower() or "fixed"
         if raw_sample_mode not in {"greedy", "fixed", "full"}:
@@ -97,7 +100,13 @@ class TtsService:
         self.tts_model_dir = self.tts_dir / "MOSS-TTS-Nano-100M-ONNX"
         self.codec_model_dir = self.tts_dir / "MOSS-Audio-Tokenizer-Nano-ONNX"
         self.model_path = self.tts_model_dir / "browser_poc_manifest.json"
+        self.kokoro_dir = self.tts_dir / KOKORO_DIRNAME
+        self.kokoro_model_path = self.kokoro_dir / "onnx" / "model.onnx"
+        self.kokoro_tokenizer_path = self.kokoro_dir / "tokenizer.json"
+        self.kokoro_voices_dir = self.kokoro_dir / "voices"
         self._runtime: Any = None
+        self._backend: str | None = None
+        self._kokoro_vocab: dict[str, int] | None = None
         self._load_error: str | None = None
         self._runtime_lock = threading.Lock()
         self._synthesize_lock = threading.Lock()
@@ -108,12 +117,70 @@ class TtsService:
 
     @property
     def ready(self) -> bool:
+        if self._has_kokoro_files():
+            return self._kokoro_dependencies_ready()
         return (
             self.tts_model_dir.is_dir()
             and self.codec_model_dir.is_dir()
             and self.model_path.is_file()
             and self.runtime_file.is_file()
         )
+
+    @property
+    def backend(self) -> str:
+        if self._backend:
+            return self._backend
+        if self._has_kokoro_files():
+            return "kokoro"
+        return "moss"
+
+    def _has_kokoro_files(self) -> bool:
+        return (
+            self.kokoro_model_path.is_file()
+            and self.kokoro_tokenizer_path.is_file()
+            and self.kokoro_voices_dir.is_dir()
+            and any(self.kokoro_voices_dir.glob("*.bin"))
+        )
+
+    def _kokoro_dependencies_ready(self) -> bool:
+        return importlib.util.find_spec("onnxruntime") is not None and importlib.util.find_spec("pypinyin") is not None
+
+    def diagnostics(self) -> dict[str, Any]:
+        missing: list[str] = []
+        if self._has_kokoro_files() or self.kokoro_dir.exists():
+            checks = {
+                "kokoro_model_file": self.kokoro_model_path,
+                "kokoro_tokenizer_file": self.kokoro_tokenizer_path,
+                "kokoro_voices_dir": self.kokoro_voices_dir,
+            }
+            for dep in ("onnxruntime", "pypinyin"):
+                if importlib.util.find_spec(dep) is None:
+                    missing.append(f"python_dependency:{dep}")
+        else:
+            checks = {
+                "moss_tts_model_dir": self.tts_model_dir,
+                "moss_codec_model_dir": self.codec_model_dir,
+                "moss_manifest_file": self.model_path,
+                "moss_runtime_file": self.runtime_file,
+            }
+        for name, path in checks.items():
+            if not path.exists():
+                missing.append(name)
+        return {
+            "ready": self.ready,
+            "backend": self.backend,
+            "tts_dir": str(self.tts_dir),
+            "kokoro_dir": str(self.kokoro_dir),
+            "kokoro_model_file": str(self.kokoro_model_path),
+            "kokoro_tokenizer_file": str(self.kokoro_tokenizer_path),
+            "kokoro_voices_dir": str(self.kokoro_voices_dir),
+            "tts_model_dir": str(self.tts_model_dir),
+            "codec_model_dir": str(self.codec_model_dir),
+            "manifest_file": str(self.model_path),
+            "runtime_file": str(self.runtime_file),
+            "missing": missing,
+            "load_error": self._load_error,
+        }
 
     def _import_runtime_module(self):
         if not self.runtime_file.is_file():
@@ -134,8 +201,32 @@ class TtsService:
         if self._load_error is not None:
             return False
         if not self.ready:
-            self._load_error = f"MOSS model/runtime files missing under: {self.tts_dir}"
+            self._load_error = f"{self.backend} model/runtime files missing under: {self.tts_dir}"
             return False
+        if self._has_kokoro_files():
+            return self._load_kokoro_engine()
+        return self._load_moss_engine()
+
+    def _load_kokoro_engine(self) -> bool:
+        try:
+            with self._runtime_lock:
+                if self._runtime is not None:
+                    return True
+                import onnxruntime as ort
+
+                logger.info("Loading Kokoro ONNX runtime from %s", self.kokoro_model_path)
+                self._runtime = ort.InferenceSession(
+                    str(self.kokoro_model_path),
+                    providers=["CPUExecutionProvider"],
+                )
+                self._backend = "kokoro"
+            return True
+        except Exception as e:
+            self._load_error = str(e)
+            logger.exception("Kokoro ONNX load failed: %s", e)
+            return False
+
+    def _load_moss_engine(self) -> bool:
         try:
             with self._runtime_lock:
                 if self._runtime is not None:
@@ -158,6 +249,7 @@ class TtsService:
                     sample_mode=self.sample_mode,
                     do_sample=self.do_sample,
                 )
+                self._backend = "moss"
             return True
         except Exception as e:
             self._load_error = str(e)
@@ -166,6 +258,10 @@ class TtsService:
 
     def list_voices(self) -> list[str]:
         if self._voices_cache is not None:
+            return list(self._voices_cache)
+        if self._has_kokoro_files():
+            voices = sorted(p.stem for p in self.kokoro_voices_dir.glob("*.bin"))
+            self._voices_cache = voices or [self.default_voice]
             return list(self._voices_cache)
         if not self._load_engine() or self._runtime is None:
             return [self.default_voice]
@@ -228,17 +324,26 @@ class TtsService:
             return self._fallback_sine(normalized, freq_hz=330.0, sample_rate=DEFAULT_SAMPLE_RATE)
 
         if not self._load_engine():
-            return self._error_wav(f"[TTS ERROR] MOSS model not loaded: {self._load_error or 'unknown'}")
+            return self._error_wav(f"[TTS ERROR] {self.backend} model not loaded: {self._load_error or 'unknown'}")
 
         voice_id = (voice or self.default_voice).strip() or self.default_voice
         if not self.has_voice(voice_id):
-            fallback_voice = self.default_voice
+            fallback_voice = self.default_voice if self.has_voice(self.default_voice) else (self.list_voices()[0] if self.list_voices() else self.default_voice)
             logger.warning(
-                "MOSS voice '%s' missing, fallback to default '%s'",
+                "%s voice '%s' missing, fallback to default '%s'",
+                self.backend,
                 voice_id,
                 fallback_voice,
             )
             voice_id = fallback_voice
+
+        if self.backend == "kokoro":
+            return self._synthesize_kokoro(
+                text=normalized,
+                voice_id=voice_id,
+                session_id=session_id,
+                cancel_snapshot=cancel_snapshot,
+            )
 
         base_max_new_frames = self._resolve_max_new_frames(normalized)
         max_attempts = max(1, self.max_retry_attempts + 1)
@@ -303,6 +408,137 @@ class TtsService:
             last_result.quality_status = last_reason
             return self._trim_result_to_allowed_duration(normalized, last_result)
         return self._error_wav(f"[TTS ERROR] MOSS synthesize failed: {last_reason}")
+
+    def _synthesize_kokoro(
+        self,
+        *,
+        text: str,
+        voice_id: str,
+        session_id: str | None,
+        cancel_snapshot: tuple[int, int],
+    ) -> TtsResult:
+        started_at = time.perf_counter()
+        self._ensure_not_cancelled(session_id, cancel_snapshot, "before_kokoro_tokenize")
+        tokens = self._kokoro_text_to_tokens(text)
+        if not tokens:
+            return self._fallback_sine(text, freq_hz=420.0, sample_rate=KOKORO_SAMPLE_RATE)
+        if len(tokens) > 510:
+            tokens = tokens[:510]
+        input_ids = np.array([[0, *tokens, 0]], dtype=np.int64)
+        style_vec = self._kokoro_style_vector(voice_id, token_len=len(tokens))
+        speed = np.array([self.default_speed], dtype=np.float32)
+        self._ensure_not_cancelled(session_id, cancel_snapshot, "before_kokoro_infer")
+        with self._synthesize_lock:
+            outputs = self._runtime.run(
+                None,
+                {
+                    "input_ids": input_ids,
+                    "style": style_vec,
+                    "speed": speed,
+                },
+            )
+        self._ensure_not_cancelled(session_id, cancel_snapshot, "after_kokoro_infer")
+        samples = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+        wav_bytes = self._pcm_f32_to_wav(samples, KOKORO_SAMPLE_RATE)
+        duration_ms = self._wav_duration_ms(wav_bytes, sample_rate=KOKORO_SAMPLE_RATE)
+        return TtsResult(
+            wav_bytes=wav_bytes,
+            duration_ms=duration_ms,
+            sample_rate=KOKORO_SAMPLE_RATE,
+            synth_ms=int((time.perf_counter() - started_at) * 1000),
+            quality_status="ok",
+        )
+
+    def _kokoro_vocab_map(self) -> dict[str, int]:
+        if self._kokoro_vocab is not None:
+            return self._kokoro_vocab
+        raw = json.loads(self.kokoro_tokenizer_path.read_text(encoding="utf-8"))
+        vocab = raw.get("model", {}).get("vocab", {})
+        self._kokoro_vocab = {str(k): int(v) for k, v in vocab.items()}
+        return self._kokoro_vocab
+
+    def _kokoro_text_to_tokens(self, text: str) -> list[int]:
+        vocab = self._kokoro_vocab_map()
+        sequence = self._kokoro_phonemize_text(text)
+        tokens: list[int] = []
+        for ch in sequence:
+            token = vocab.get(ch)
+            if token is not None:
+                tokens.append(token)
+        return tokens
+
+    def _kokoro_phonemize_text(self, text: str) -> str:
+        try:
+            from pypinyin import Style, pinyin
+        except Exception:
+            return text
+
+        tone_marks = {
+            "ˉ": "1",
+            "ˊ": "2",
+            "ˇ": "3",
+            "ˋ": "4",
+            "˙": "5",
+        }
+        punctuation = {
+            "，": ",",
+            "。": ".",
+            "！": "!",
+            "？": "?",
+            "；": ";",
+            "：": ":",
+            "、": ",",
+            "（": "(",
+            "）": ")",
+            "“": '"',
+            "”": '"',
+        }
+        parts: list[str] = []
+        for ch in text:
+            mapped = punctuation.get(ch)
+            if mapped is not None:
+                parts.append(mapped)
+                continue
+            if "\u4e00" <= ch <= "\u9fff":
+                bopomofo = pinyin(ch, style=Style.BOPOMOFO, neutral_tone_with_five=True, errors="default")
+                raw = bopomofo[0][0] if bopomofo and bopomofo[0] else ch
+                tone = "5"
+                cleaned: list[str] = []
+                for item in raw:
+                    if item in tone_marks:
+                        tone = tone_marks[item]
+                    else:
+                        cleaned.append(item)
+                parts.append("".join(cleaned) + tone)
+                continue
+            parts.append(ch.lower() if ch.isascii() else ch)
+        return " ".join(p for p in parts if p)
+
+    def _kokoro_style_vector(self, voice_id: str, token_len: int) -> np.ndarray:
+        voice_path = self.kokoro_voices_dir / f"{voice_id}.bin"
+        if not voice_path.is_file():
+            voice_path = self.kokoro_voices_dir / f"{self.default_voice}.bin"
+        if not voice_path.is_file():
+            first = next(self.kokoro_voices_dir.glob("*.bin"))
+            voice_path = first
+        raw = np.fromfile(voice_path, dtype=np.float32)
+        if raw.size % 256 != 0:
+            raise RuntimeError(f"invalid Kokoro voice style vector: {voice_path}")
+        styles = raw.reshape((-1, 256))
+        idx = min(max(token_len, 0), styles.shape[0] - 1)
+        return styles[idx : idx + 1].astype(np.float32, copy=False)
+
+    @staticmethod
+    def _pcm_f32_to_wav(samples: np.ndarray, sample_rate: int) -> bytes:
+        clipped = np.clip(samples, -1.0, 1.0)
+        pcm = (clipped * 32767.0).astype("<i2")
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm.tobytes())
+        return buf.getvalue()
 
     def _synthesize_once(
         self,
@@ -546,8 +782,6 @@ class TtsService:
             wf.setframerate(sample_rate)
             wf.writeframes(pcm.tobytes())
         return buf.getvalue()
-
-
 
 
 

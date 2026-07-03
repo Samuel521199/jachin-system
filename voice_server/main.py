@@ -124,13 +124,17 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     available_voices = tts_service.list_voices()
+    tts_diagnostics = tts_service.diagnostics()
     return {
         "ok": True,
         "stt_ready": stt_service.ready,
         "tts_ready": tts_service.ready,
+        "tts_diagnostics": tts_diagnostics,
+        "tts_load_error": tts_diagnostics.get("load_error"),
         "sv_ready": sv_service.ready,
         "stt_model": "SenseVoiceSmall-onnx",
-        "tts_model": "MOSS-TTS-Nano-100M-ONNX + MOSS-Audio-Tokenizer-Nano-ONNX",
+        "tts_model": "Kokoro-82M-v1.1-zh-ONNX" if tts_diagnostics.get("backend") == "kokoro" else "MOSS-TTS-Nano-100M-ONNX + MOSS-Audio-Tokenizer-Nano-ONNX",
+        "tts_backend": tts_diagnostics.get("backend"),
         "sv_model": sv_service.backend,
         "sv_load_error": sv_service.load_error,
         "tts_voice": cfg.tts_voice,
@@ -688,4 +692,3 @@ if __name__ == "__main__":
 
     logger.info("Starting voice_server at http://%s:%s", cfg.host, cfg.port)
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level=cfg.log_level)
-

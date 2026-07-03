@@ -1,0 +1,49 @@
+{
+  "description": "右下角轻量背词、例句精讲、词义查询、翻译和学习统计。",
+  "entry": "SKILL.md",
+  "id": "com.jachin.skill.english-learning-assistant",
+  "item_type": "SKILL",
+  "name": "英语助手",
+  "package_assets": [
+    {
+      "from": "clients/desktop/src/components/EnglishVocab/wordBookData.ts",
+      "to": "assets/english_vocab/wordBookData.ts"
+    },
+    {
+      "from": "clients/desktop/src/components/EnglishVocab/wordBookDefinitions.ts",
+      "to": "assets/english_vocab/wordBookDefinitions.ts"
+    },
+    {
+      "from": "clients/desktop/src/components/EnglishVocab/wordBooks.ts",
+      "to": "assets/english_vocab/wordBooks.ts"
+    }
+  ],
+  "preserve_user_data": [
+    "$JACHIN_HOME/data/english_vocab/state.json",
+    "$JACHIN_HOME/data/english_vocab/cache.json",
+    "$JACHIN_HOME/data/english_vocab/example_generator_cache.json",
+    "localStorage:jachin.english_vocab.lookup_cache.v1",
+    "localStorage:jachin.english_vocab.lookup_cache.v2",
+    "localStorage:jachin.english_vocab.lookup_cache.v3"
+  ],
+  "required_mcps": [
+    "com.jachin.mcp.english-tutor",
+    "com.jachin.mcp.local-translate",
+    "com.jachin.mcp.english-example-generator"
+  ],
+  "required_models": [
+    "com.jachin.model.opus-mt-en-zh-ct2-int8",
+    "com.jachin.model.opus-mt-zh-en-ct2-int8",
+    "com.jachin.model.qwen2-5-0-5b-instruct-gguf-q4-k-m"
+  ],
+  "runtime_tier": "L3_LOCAL",
+  "tags": [
+    "english",
+    "learning",
+    "offline",
+    "mcp-test",
+    "skill-test"
+  ],
+  "type": "SKILL",
+  "version": "1.0.2"
+}

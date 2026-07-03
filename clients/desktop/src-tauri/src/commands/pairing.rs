@@ -37,7 +37,8 @@ fn upsert_dotenv_key(path: &std::path::Path, key: &str, value: &str) -> Result<(
     let new_line = format!("{}={}", key, value);
     let mut lines: Vec<String> = Vec::new();
     if path.exists() {
-        let content = fs::read_to_string(path).map_err(|e| format!("读取 {}: {}", path.display(), e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("读取 {}: {}", path.display(), e))?;
         let mut replaced = false;
         for line in content.lines() {
             let t = line.trim();
@@ -130,11 +131,7 @@ pub fn is_gateway_paired() -> Result<bool, String> {
         return Ok(true);
     }
     let paired = cfg.paired.unwrap_or(false);
-    let has_node = cfg
-        .node_id
-        .as_ref()
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
+    let has_node = cfg.node_id.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
     Ok(paired && has_node)
 }
 
@@ -176,7 +173,10 @@ pub struct WriteGatewayConfigInput {
     pub active_region: Option<String>,
 }
 
-fn merge_workspace_into_cfg(cfg: &mut serde_json::Value, input: &WriteGatewayConfigInput) -> Result<(), String> {
+fn merge_workspace_into_cfg(
+    cfg: &mut serde_json::Value,
+    input: &WriteGatewayConfigInput,
+) -> Result<(), String> {
     let id = input
         .organization_id
         .as_ref()
@@ -233,7 +233,8 @@ pub fn write_l2_gateway_config(input: WriteGatewayConfigInput) -> Result<(), Str
     merge_workspace_into_cfg(&mut cfg, &input)?;
     let reg = normalize_jachin_active_region(&input.active_region);
     cfg["jachin_active_region"] = serde_json::json!(reg);
-    persist_jachin_active_region_to_dotenv(reg).map_err(|e| format!("写入 JACHIN_ACTIVE_REGION 失败: {}", e))?;
+    persist_jachin_active_region_to_dotenv(reg)
+        .map_err(|e| format!("写入 JACHIN_ACTIVE_REGION 失败: {}", e))?;
     fs::write(
         &path,
         serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?,
@@ -259,7 +260,10 @@ pub struct GatewayConnectInput {
 /// 发起网关接驳：重启 L3 为 --gateway 模式（支持 Sidecar 或 Python 回退）
 /// display_name 会写入配置并作为 JACHIN_DEVICE_NAME 传给 L3；工作区写入 l2_gateway_config 供 auth/sync
 #[tauri::command]
-pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) -> Result<(), String> {
+pub async fn gateway_connect(
+    app: tauri::AppHandle,
+    input: GatewayConnectInput,
+) -> Result<(), String> {
     let url = input.l2_url.trim().trim_end_matches('/');
     let display_name = input.display_name.clone();
     write_l2_gateway_config(WriteGatewayConfigInput {
@@ -276,7 +280,10 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
     env_vars.retain(|(k, _)| k != "JACHIN_ACTIVE_REGION");
     env_vars.push(("JACHIN_ACTIVE_REGION".to_string(), rr));
 
-    let sidecar = match app.shell().sidecar(crate::l3_spawn::l3_sidecar_external_bin_path()) {
+    let sidecar = match app
+        .shell()
+        .sidecar(crate::l3_spawn::l3_sidecar_external_bin_path())
+    {
         Ok(s) => s,
         Err(e) => {
             println!("[L3] Sidecar 未找到，尝试直接启动 exe: {}", e);
@@ -302,7 +309,10 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
     if let Some(ref name) = display_name {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
-            sidecar = sidecar.env("JACHIN_DEVICE_NAME", trimmed.chars().take(64).collect::<String>());
+            sidecar = sidecar.env(
+                "JACHIN_DEVICE_NAME",
+                trimmed.chars().take(64).collect::<String>(),
+            );
         }
     }
     if let Some(ref dir) = crate::l3_spawn::exe_dir() {
@@ -331,7 +341,11 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
         }
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("找不到") || err_msg.contains("path") || err_msg.contains("os error 2") || err_msg.contains("os error 3") {
+            if err_msg.contains("找不到")
+                || err_msg.contains("path")
+                || err_msg.contains("os error 2")
+                || err_msg.contains("os error 3")
+            {
                 println!("[L3] Sidecar 不可用，尝试直接启动 exe");
                 match crate::l3_spawn::spawn_l3_via_direct_exe(
                     &app,
@@ -353,7 +367,10 @@ pub async fn gateway_connect(app: tauri::AppHandle, input: GatewayConnectInput) 
                     }
                 }
             } else {
-                return Err(format!("L3 启动失败: {}。请运行: python scripts/build_l3_sidecar.py", err_msg));
+                return Err(format!(
+                    "L3 启动失败: {}。请运行: python scripts/build_l3_sidecar.py",
+                    err_msg
+                ));
             }
         }
     };

@@ -1,4 +1,4 @@
-﻿//! 智能截断状态机：结合 VAD 概率与尾音/最大时长，决定何时交出完整录音。
+//! 智能截断状态机：结合 VAD 概率与尾音/最大时长，决定何时交出完整录音。
 
 #![cfg(feature = "ambient")]
 #![allow(dead_code)]
@@ -61,7 +61,11 @@ impl EndpointingMachine {
     /// PTT 按住期间：持续写入缓冲，不做尾音截断。
     pub fn feed_chunk_ptt(&mut self, chunk: &[f32]) -> Result<(), String> {
         if chunk.len() != CHUNK_LEN {
-            return Err(format!("chunk 长度须为 {}，当前 {}", CHUNK_LEN, chunk.len()));
+            return Err(format!(
+                "chunk 长度须为 {}，当前 {}",
+                CHUNK_LEN,
+                chunk.len()
+            ));
         }
         if self.state != RecordingState::Speaking {
             self.begin_ptt();
@@ -96,11 +100,7 @@ impl EndpointingMachine {
     }
 
     /// 打断后把环形缓冲拼进当前句；`rearm` 时用更低门限 + 前滚，避免起首被吃。
-    pub fn seed_from_ring(
-        &mut self,
-        ring: &[[f32; CHUNK_LEN]],
-        rearm: bool,
-    ) -> Result<(), String> {
+    pub fn seed_from_ring(&mut self, ring: &[[f32; CHUNK_LEN]], rearm: bool) -> Result<(), String> {
         self.reset();
         if ring.is_empty() {
             return Ok(());
@@ -111,11 +111,7 @@ impl EndpointingMachine {
         } else {
             VAD_THRESHOLD
         };
-        let preroll = if rearm {
-            RING_PREROLL_CHUNKS
-        } else {
-            4
-        };
+        let preroll = if rearm { RING_PREROLL_CHUNKS } else { 4 };
 
         let mut onset = 0usize;
         for (i, chunk) in ring.iter().enumerate() {
@@ -138,7 +134,11 @@ impl EndpointingMachine {
     /// 喂入一帧 512 样本。若截断完成且满足最短语音长度，返回 `Some(完整 PCM)`，否则返回 `None`。
     pub fn feed_chunk(&mut self, chunk: &[f32]) -> Result<Option<Vec<f32>>, String> {
         if chunk.len() != CHUNK_LEN {
-            return Err(format!("chunk 长度须为 {}，当前 {}", CHUNK_LEN, chunk.len()));
+            return Err(format!(
+                "chunk 长度须为 {}，当前 {}",
+                CHUNK_LEN,
+                chunk.len()
+            ));
         }
         let prob = self.vad_engine.process_chunk(chunk)?;
         self.feed_chunk_with_prob(chunk, prob, false)
@@ -153,7 +153,11 @@ impl EndpointingMachine {
         rearm: bool,
     ) -> Result<Option<Vec<f32>>, String> {
         if chunk.len() != CHUNK_LEN {
-            return Err(format!("chunk 长度须为 {}，当前 {}", CHUNK_LEN, chunk.len()));
+            return Err(format!(
+                "chunk 长度须为 {}，当前 {}",
+                CHUNK_LEN,
+                chunk.len()
+            ));
         }
 
         let speech_thresh = if rearm {
@@ -182,9 +186,8 @@ impl EndpointingMachine {
                     self.silence_frames += 1;
                 }
 
-                let should_end =
-                    self.silence_frames >= MAX_SILENCE_FRAMES
-                        || self.total_frames >= MAX_TOTAL_FRAMES;
+                let should_end = self.silence_frames >= MAX_SILENCE_FRAMES
+                    || self.total_frames >= MAX_TOTAL_FRAMES;
 
                 if should_end {
                     self.state = RecordingState::Idle;

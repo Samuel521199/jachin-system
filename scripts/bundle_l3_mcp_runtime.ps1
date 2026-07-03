@@ -90,6 +90,12 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "pip install requirements failed with exit $LASTEXITCODE"
 }
 
+Write-Host "[MCP Runtime] pip install local vocabulary model runtime deps ..." -ForegroundColor Cyan
+& $py -m pip install ctranslate2==4.8.0 sentencepiece==0.2.0 --only-binary=:all: --quiet
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "pip install local vocabulary runtime deps failed with exit $LASTEXITCODE"
+}
+
 if (Test-Path $mcpRtReadme) {
     $null = New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "runtime") | Out-Null
     Copy-Item $mcpRtReadme -Destination (Join-Path $OutDir "runtime\README_MCP_RUNTIME.txt") -Force

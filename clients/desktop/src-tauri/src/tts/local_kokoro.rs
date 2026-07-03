@@ -74,7 +74,9 @@ impl LocalKokoroEngine {
             let threads = INFERENCE_INTRA_OP_THREADS.max(0) as usize;
             let builder = Session::builder().map_err(|e| e.to_string())?;
             let builder = if threads > 0 {
-                builder.with_intra_threads(threads).map_err(|e| e.to_string())?
+                builder
+                    .with_intra_threads(threads)
+                    .map_err(|e| e.to_string())?
             } else {
                 builder
             };
@@ -107,23 +109,26 @@ impl LocalKokoroEngine {
             if floats.len() % 256 != 0 {
                 return Err("Invalid voices bin: size must be multiple of 256".to_string());
             }
-            let vectors: Vec<Vec<f32>> = floats
-                .chunks(256)
-                .map(|c| c.to_vec())
-                .collect();
+            let vectors: Vec<Vec<f32>> = floats.chunks(256).map(|c| c.to_vec()).collect();
             return Ok(vectors);
         }
 
         if voices_path.exists() {
             let content = std::fs::read_to_string(voices_path).map_err(|e| e.to_string())?;
-            let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-            if let Some(voice_data) = json.get(style).or_else(|| json.get("voices").and_then(|v| v.get(style))) {
+            let json: serde_json::Value =
+                serde_json::from_str(&content).map_err(|e| e.to_string())?;
+            if let Some(voice_data) = json
+                .get(style)
+                .or_else(|| json.get("voices").and_then(|v| v.get(style)))
+            {
                 if let Some(arr) = voice_data.as_array() {
                     let vectors: Vec<Vec<f32>> = arr
                         .iter()
                         .filter_map(|v| {
                             v.as_array().map(|a| {
-                                a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect()
+                                a.iter()
+                                    .filter_map(|x| x.as_f64().map(|f| f as f32))
+                                    .collect()
                             })
                         })
                         .filter(|v: &Vec<f32>| v.len() == 256)
@@ -137,9 +142,7 @@ impl LocalKokoroEngine {
 
         Err(format!(
             "No style vectors for '{}'. Place {}.bin or voices.json in {:?}",
-            style,
-            style,
-            dir
+            style, style, dir
         ))
     }
 
@@ -203,8 +206,8 @@ impl LocalKokoroEngine {
             .map_err(|e: ort::Error| e.to_string())?;
         let style_tensor = Tensor::from_array(([1usize, 256], style_vec.clone()))
             .map_err(|e: ort::Error| e.to_string())?;
-        let speed_tensor = Tensor::from_array(([1usize], vec![1.0f32]))
-            .map_err(|e: ort::Error| e.to_string())?;
+        let speed_tensor =
+            Tensor::from_array(([1usize], vec![1.0f32])).map_err(|e: ort::Error| e.to_string())?;
 
         let outputs = session_guard
             .run(ort::inputs![
@@ -233,7 +236,8 @@ impl LocalKokoroEngine {
         let data_size = samples.len() * 2;
 
         buf.write_all(b"RIFF").unwrap();
-        buf.write_all(&(36 + data_size as u32).to_le_bytes()).unwrap();
+        buf.write_all(&(36 + data_size as u32).to_le_bytes())
+            .unwrap();
         buf.write_all(b"WAVE").unwrap();
         buf.write_all(b"fmt ").unwrap();
         buf.write_all(&16u32.to_le_bytes()).unwrap();

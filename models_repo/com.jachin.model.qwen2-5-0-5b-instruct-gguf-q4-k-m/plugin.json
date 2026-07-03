@@ -1,0 +1,26 @@
+{
+  "id": "com.jachin.model.qwen2-5-0-5b-instruct-gguf-q4-k-m",
+  "name": "Qwen2.5 0.5B Instruct GGUF Q4_K_M",
+  "description": "Small local instruction model for fast English example sentence generation.",
+  "version": "1.0.0",
+  "item_type": "MODEL",
+  "type": "MODEL",
+  "layer": "model",
+  "model_asset": {
+    "engine": "llama.cpp",
+    "task": "text-generation",
+    "upstream": "bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+    "filename": "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+    "quantization": "Q4_K_M",
+    "required_files": [
+      "model/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+    ]
+  },
+  "keywords": [
+    "english",
+    "example-generation",
+    "qwen",
+    "gguf",
+    "llama.cpp"
+  ]
+}

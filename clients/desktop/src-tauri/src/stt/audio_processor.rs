@@ -6,9 +6,11 @@
 #![allow(dead_code)]
 
 use crossbeam_channel::Receiver;
-use std::time::Duration;
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 const TARGET_SAMPLE_RATE: u32 = 16000;
 const CHUNK_SAMPLES: usize = 512;
@@ -40,13 +42,8 @@ impl AudioProcessor {
             window: WindowFunction::BlackmanHarris2,
         };
         let chunk_size = 1024;
-        let resampler = SincFixedIn::<f32>::new(
-            ratio,
-            2.0,
-            params,
-            chunk_size,
-            1,
-        ).map_err(|e| format!("创建重采样器失败: {}", e))?;
+        let resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, chunk_size, 1)
+            .map_err(|e| format!("创建重采样器失败: {}", e))?;
 
         let resampler_input_buf = resampler.input_buffer_allocate(false);
         let mut resampler_output_buf = resampler.output_buffer_allocate(false);

@@ -1,4 +1,4 @@
-﻿//! PMO Copilot 本地 YAML 配置（~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml）
+//! PMO Copilot 本地 YAML 配置（~/.jachin/config/skills/pmo-copilot/pmo_bitable_watch.yaml）
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -23,7 +23,11 @@ fn jachin_home() -> Result<PathBuf, String> {
 }
 
 fn user_config_path() -> Result<PathBuf, String> {
-    Ok(jachin_home()?.join("config").join("skills").join(SKILL_ID).join(CONFIG_NAME))
+    Ok(jachin_home()?
+        .join("config")
+        .join("skills")
+        .join(SKILL_ID)
+        .join(CONFIG_NAME))
 }
 
 fn bundled_template_paths() -> Vec<PathBuf> {

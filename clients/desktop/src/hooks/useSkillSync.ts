@@ -26,6 +26,12 @@ export function useSkillSync() {
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState<SyncProgress | null>(null);
 
+  const showVocabIfAvailable = useCallback(() => {
+    void invoke("show_english_vocab_window_if_available").catch((e) => {
+      console.warn("[SkillSync] English vocab auto show skipped:", e);
+    });
+  }, []);
+
   const startSync = useCallback(() => {
     setSyncing(true);
     setProgress({ phase: "syncing", current: 0, total: 0 });
@@ -42,6 +48,7 @@ export function useSkillSync() {
       if (ev.payload?.phase === "complete") {
         setSyncing(false);
         setProgress(null);
+        showVocabIfAvailable();
         window.dispatchEvent(new CustomEvent(INVENTORY_UPDATED_EVENT, { detail: { type: "SYNC_COMPLETE" } }));
       }
     });
@@ -49,6 +56,7 @@ export function useSkillSync() {
     const unlistenComplete = listen("inventory-sync-complete", () => {
       setSyncing(false);
       setProgress(null);
+      showVocabIfAvailable();
       window.dispatchEvent(new CustomEvent(INVENTORY_UPDATED_EVENT, { detail: { type: "SYNC_COMPLETE" } }));
     });
 
@@ -58,7 +66,7 @@ export function useSkillSync() {
       unlistenProgress.then((fn) => fn());
       unlistenComplete.then((fn) => fn());
     };
-  }, [startSync]);
+  }, [startSync, showVocabIfAvailable]);
 
   return { syncing, progress, startSync };
 }

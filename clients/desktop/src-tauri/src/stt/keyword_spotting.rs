@@ -1,4 +1,4 @@
-﻿//! 唤醒词检测入口：ambient 下委托 wake_listener；否则仅占位。
+//! 唤醒词检测入口：ambient 下委托 wake_listener；否则仅占位。
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,18 +16,10 @@ impl WakeWordDetector {
 
     /// 桌面启动时是否自动拉起唤醒监听（`start-layer3.ps1` 默认设 `JACHIN_AUTO_WAKE_LISTENER=1`）。
     pub fn should_auto_start() -> bool {
-        if std::env::var("JACHIN_SKIP_WAKE_LISTENER")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if std::env::var("JACHIN_SKIP_WAKE_LISTENER").ok().as_deref() == Some("1") {
             return false;
         }
-        if std::env::var("JACHIN_AUTO_WAKE_LISTENER")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if std::env::var("JACHIN_AUTO_WAKE_LISTENER").ok().as_deref() == Some("1") {
             return true;
         }
         crate::config::UserSettings::load()
@@ -55,7 +47,11 @@ impl WakeWordDetector {
     pub fn start(app: AppHandle, wake_word: Option<String>) {
         let word = wake_word
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| std::env::var("JACHIN_WAKE_WORD").ok().filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("JACHIN_WAKE_WORD")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
             .unwrap_or_else(|| "Jachin".to_string());
         if let Ok(mut cur) = CURRENT_WAKE_WORD.write() {
             *cur = Some(word.clone());

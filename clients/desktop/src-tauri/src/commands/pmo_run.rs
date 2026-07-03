@@ -1,4 +1,4 @@
-﻿//! PMO Copilot 后台子进程状态（供项目管理页轮询，不读日志文件）
+//! PMO Copilot 后台子进程状态（供项目管理页轮询，不读日志文件）
 
 use serde::Serialize;
 use std::process::Child;
@@ -50,14 +50,13 @@ impl PmoRunTracker {
 
     /// 注册新启动的子进程；若上一轮仍在跑则拒绝
     pub fn register_child(&self, child: Child, label: String) -> Result<u32, String> {
-        let mut g = self
-            .0
-            .lock()
-            .map_err(|e| format!("PMO 状态锁失败: {e}"))?;
+        let mut g = self.0.lock().map_err(|e| format!("PMO 状态锁失败: {e}"))?;
         if let Some(ref mut existing) = g.child {
             match existing.try_wait() {
                 Ok(None) => {
-                    return Err("PMO Copilot 已在后台运行中，请等待当前任务结束后再启动".to_string());
+                    return Err(
+                        "PMO Copilot 已在后台运行中，请等待当前任务结束后再启动".to_string()
+                    );
                 }
                 Ok(Some(status)) => {
                     g.finished_at_ms = Some(Self::now_ms());
@@ -79,10 +78,7 @@ impl PmoRunTracker {
 
     /// 终止当前 PMO 子进程（Windows 使用 taskkill /T 结束进程树）
     pub fn stop_child(&self) -> Result<u32, String> {
-        let mut g = self
-            .0
-            .lock()
-            .map_err(|e| format!("PMO 状态锁失败: {e}"))?;
+        let mut g = self.0.lock().map_err(|e| format!("PMO 状态锁失败: {e}"))?;
         let Some(mut child) = g.child.take() else {
             return Err("当前没有运行中的 PMO 任务".to_string());
         };
@@ -109,10 +105,7 @@ impl PmoRunTracker {
     }
 
     pub fn snapshot(&self) -> Result<PmoCopilotRunStatus, String> {
-        let mut g = self
-            .0
-            .lock()
-            .map_err(|e| format!("PMO 状态锁失败: {e}"))?;
+        let mut g = self.0.lock().map_err(|e| format!("PMO 状态锁失败: {e}"))?;
 
         if let Some(ref mut child) = g.child {
             match child.try_wait() {

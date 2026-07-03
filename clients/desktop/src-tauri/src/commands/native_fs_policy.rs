@@ -94,7 +94,10 @@ pub fn native_fs_policy_get() -> Result<NativeFsPolicyPayload, String> {
         policy_file,
         builtin_write_roots: Vec::new(),
         custom_write_roots: custom_write,
-        builtin_read_blacklist_lines: BUILTIN_READ_BLACKLIST_LINES.iter().map(|s| (*s).to_string()).collect(),
+        builtin_read_blacklist_lines: BUILTIN_READ_BLACKLIST_LINES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
         custom_read_blacklist_roots: custom_read,
     })
 }
@@ -118,7 +121,9 @@ pub struct NativeFsPolicySetResult {
 
 /// 保存用户扩展路径（校验绝对路径后写入 JSON，与 Python `save_policy` 格式一致）
 #[tauri::command]
-pub fn native_fs_policy_set(input: NativeFsPolicySetInput) -> Result<NativeFsPolicySetResult, String> {
+pub fn native_fs_policy_set(
+    input: NativeFsPolicySetInput,
+) -> Result<NativeFsPolicySetResult, String> {
     let mut errs: Vec<String> = Vec::new();
     let mut w_clean: Vec<String> = Vec::new();
     for (i, s) in input.write_allowlist_extra.iter().enumerate() {

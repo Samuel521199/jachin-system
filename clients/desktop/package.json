@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "jachin-desktop",
   "version": "0.9.95",
   "private": true,
@@ -15,7 +15,7 @@
     "ensure-l3-sidecar-for-bundle": "node scripts/ensure-l3-sidecar-for-bundle.mjs",
     "tauri:before-bundle": "npm run ensure-l3-sidecar-for-bundle && npm run prepare-installer-payload && npm run ensure-updater-helper-sidecar",
     "ensure-json-no-bom": "node scripts/ensure-json-no-bom.mjs",
-    "prebuild": "npm run build:l3-sidecar",
+    "prebuild": "node scripts/prebuild-l3-sidecar.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "npm run ensure-l3-sidecar-stub && npm run prepare-installer-payload && npm run ensure-json-no-bom && tauri dev",

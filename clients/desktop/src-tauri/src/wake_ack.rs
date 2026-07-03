@@ -1,4 +1,4 @@
-﻿//! 唤醒口头确认（Verbal ACK）预渲染 WAV 解析与选取。
+//! 唤醒口头确认（Verbal ACK）预渲染 WAV 解析与选取。
 
 use crate::config::UserSettings;
 use std::env;
@@ -28,7 +28,12 @@ fn wake_ack_search_dirs() -> Vec<PathBuf> {
     }
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            dirs.push(exe_dir.join(PORTABLE_DATA_DIR).join("audio").join("wake_ack"));
+            dirs.push(
+                exe_dir
+                    .join(PORTABLE_DATA_DIR)
+                    .join("audio")
+                    .join("wake_ack"),
+            );
         }
     }
     dirs.push(data_root().join("audio").join("wake_ack"));

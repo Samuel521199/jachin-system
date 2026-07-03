@@ -104,7 +104,8 @@ pub fn load_owner_voiceprint_profile() -> Result<Option<OwnerVoiceprintProfile>,
     if !path.exists() {
         return Ok(None);
     }
-    let s = fs::read_to_string(&path).map_err(|e| format!("读取 owner_voiceprint.json 失败: {e}"))?;
+    let s =
+        fs::read_to_string(&path).map_err(|e| format!("读取 owner_voiceprint.json 失败: {e}"))?;
     let parsed: OwnerVoiceprintProfile =
         serde_json::from_str(&s).map_err(|e| format!("解析 owner_voiceprint.json 失败: {e}"))?;
     if parsed.centroid.is_empty() {
@@ -135,7 +136,11 @@ pub fn jvs_verify_blocking(
         )
         .text("threshold", format!("{threshold:.4}"));
     let url = format!("{}/v1/sv/verify", base_url.trim_end_matches('/'));
-    let resp = client.post(&url).multipart(form).send().map_err(|e| e.to_string())?;
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("JVS SV verify status {}", resp.status()));
     }
@@ -184,10 +189,20 @@ pub fn jvs_filter_owner_track_blocking(
             form = form.text("debounce_count", v.to_string());
         }
     }
-    let url = format!("{}/v1/sv/filter_owner_track", base_url.trim_end_matches('/'));
-    let resp = client.post(&url).multipart(form).send().map_err(|e| e.to_string())?;
+    let url = format!(
+        "{}/v1/sv/filter_owner_track",
+        base_url.trim_end_matches('/')
+    );
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("JVS SV filter_owner_track status {}", resp.status()));
+        return Err(format!(
+            "JVS SV filter_owner_track status {}",
+            resp.status()
+        ));
     }
     let json: FilterOwnerTrackJson = resp.json().map_err(|e| e.to_string())?;
     let owner_b64 = json.owner_wav_b64.unwrap_or_default();

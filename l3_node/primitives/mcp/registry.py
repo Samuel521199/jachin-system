@@ -1979,6 +1979,8 @@ def _load_tools_from_l3_mcp_cache() -> tuple[list[dict[str, Any]], dict[str, tup
                 scan_dirs.append(d)
     if not getattr(sys, "frozen", False):
         try:
+            from core.capability_pack_policy import should_load_repo_package
+
             root = get_app_root()
             plugin_root = root / "skills_repo" / "plugin"
             if plugin_root.exists():
@@ -1986,7 +1988,10 @@ def _load_tools_from_l3_mcp_cache() -> tuple[list[dict[str, Any]], dict[str, tup
                     if p.is_dir() and (p / "plugin.json").exists():
                         try:
                             pl = json.loads((p / "plugin.json").read_text(encoding="utf-8-sig"))
-                            if pl.get("runtime_tier") == "L3_LOCAL":
+                            if pl.get("runtime_tier") == "L3_LOCAL" and should_load_repo_package(
+                                str(pl.get("id") or p.name),
+                                is_mcp=True,
+                            ):
                                 scan_dirs.append(p)
                         except Exception:
                             pass

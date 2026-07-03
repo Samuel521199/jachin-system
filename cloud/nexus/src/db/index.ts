@@ -3,10 +3,35 @@
  * 使用任意 PostgreSQL（本地默认 postgres/postgres）
  */
 import { drizzle } from "drizzle-orm/postgres-js";
+import { config as loadDotenv } from "dotenv";
+import { existsSync } from "fs";
+import { resolve } from "path";
 import postgres from "postgres";
 import * as schema from "./schema";
 
+let envLoadedFromFile = false;
+
+function ensureLocalEnvLoaded(): void {
+  if (envLoadedFromFile || process.env.NODE_ENV === "production") return;
+  if ((process.env.DATABASE_URL ?? "").trim()) return;
+  envLoadedFromFile = true;
+
+  const cwd = process.cwd();
+  const candidates = [
+    resolve(cwd, ".env"),
+    resolve(cwd, ".env.local"),
+    resolve(cwd, "cloud", "nexus", ".env"),
+    resolve(cwd, "cloud", "nexus", ".env.local"),
+  ];
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      loadDotenv({ path, override: false });
+    }
+  }
+}
+
 function currentDatabaseUrl(): string {
+  ensureLocalEnvLoaded();
   return (process.env.DATABASE_URL ?? "").trim();
 }
 

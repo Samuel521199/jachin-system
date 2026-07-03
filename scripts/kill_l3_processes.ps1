@@ -74,6 +74,31 @@ if ($portsInUse.Count -gt 0) {
     Write-Host "  端口 18981-18999 均未被占用" -ForegroundColor Gray
 }
 
+# 2.5 清理 L3 单实例锁。这个脚本的语义就是“我要重新启动 L3”，因此端口/进程清理后
+# 可以安全移除旧锁，避免 PyInstaller 父子进程退出后留下 PID 导致 packaged L3 秒退。
+try {
+    $lockPath = Join-Path $HOME ".jachin\l3.lock"
+    if (Test-Path -LiteralPath $lockPath) {
+        $pidText = (Get-Content -LiteralPath $lockPath -Raw -ErrorAction SilentlyContinue).Trim()
+        $pidNum = 0
+        [void][int]::TryParse($pidText, [ref]$pidNum)
+        $alive = $false
+        if ($pidNum -gt 0) {
+            $aliveProc = Get-CimInstance Win32_Process -Filter "ProcessId = $pidNum" -ErrorAction SilentlyContinue
+            $cmd = if ($aliveProc -and $aliveProc.CommandLine) { [string]$aliveProc.CommandLine } else { "" }
+            $alive = $aliveProc -and ($cmd -match "l3_node")
+        }
+        if (-not $alive) {
+            Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+            Write-Host "  已清理 stale L3 锁: $lockPath" -ForegroundColor Gray
+        } else {
+            Write-Host "  L3 锁仍指向存活实例 PID $pidNum，跳过删除" -ForegroundColor Gray
+        }
+    }
+} catch {
+    Write-Host "  清理 L3 锁时出错: $_" -ForegroundColor DarkGray
+}
+
 # 3. 可选：结束本仓库 cargo 输出目录下的桌面进程（Tauri single-instance 会令第二进程打印 [Kernel] 后立即退出）
 if ($AlsoKillDesktopDev) {
     Write-Host ""

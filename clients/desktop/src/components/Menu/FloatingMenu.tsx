@@ -11,6 +11,7 @@ import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
+  BookOpen,
   ShoppingBag,
   MessageCircle,
   Shirt,
@@ -148,6 +149,12 @@ export const defaultMenuActions: MenuAction[] = [
     label: "打开聊天",
     icon: <MessageCircle className="w-4 h-4" />,
     onClick: () => void invoke("show_chat_window"),
+  },
+  {
+    id: "english-vocab",
+    label: "英语背词",
+    icon: <BookOpen className="w-4 h-4" />,
+    onClick: () => void invoke("show_english_vocab_window"),
   },
   {
     id: "console",

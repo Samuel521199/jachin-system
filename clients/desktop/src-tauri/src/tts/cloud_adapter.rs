@@ -62,11 +62,7 @@ impl CloudAliyunAdapter {
     }
 
     /// 合成语音（REST API）
-    pub async fn synthesize(
-        &self,
-        text: &str,
-        voice: &str,
-    ) -> Result<Vec<u8>, String> {
+    pub async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>, String> {
         let url = format!("{}/api/v1/services/audio/tts/speech", self.config.endpoint);
 
         let body = AliyunSynthesizeRequest {

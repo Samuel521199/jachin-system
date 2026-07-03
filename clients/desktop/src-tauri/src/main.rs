@@ -1,29 +1,29 @@
-﻿// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 mod config;
-mod nexus_config;
-#[allow(dead_code)]
-mod updater_common;
-mod updater_debug_log;
-mod updater_spawn;
 mod device;
 mod device_registry;
+mod inbox_store;
+mod jvs;
 mod kernel;
 mod l3_spawn;
+mod nexus_config;
+mod omni_hotkey_mirror_trace;
 mod pubsub;
 mod reminder_scheduler;
 mod stt;
 mod tts;
-mod window;
-mod omni_hotkey_mirror_trace;
-mod inbox_store;
-mod jvs;
+#[allow(dead_code)]
+mod updater_common;
+mod updater_debug_log;
+mod updater_spawn;
 mod voice_playback;
 mod voice_session;
 mod voice_wake_bridge;
 mod wake_ack;
+mod window;
 
 #[cfg(windows)]
 #[link(name = "user32")]
@@ -77,8 +77,12 @@ mod stt_voice_stub {
 use sysinfo::System;
 
 use device::DeviceController;
-use device_registry::{DeviceRegistry, DeviceCommand, DeviceResponse};
+use device_registry::{DeviceCommand, DeviceRegistry, DeviceResponse};
 use pubsub::start_pubsub_server;
+use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tauri::{
     menu::{MenuBuilder, MenuItem},
     tray::{TrayIconBuilder, TrayIconEvent},
@@ -86,10 +90,6 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
-use serde_json::json;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
 /// [v5.0 已废弃] 原 Dapr 调用，现由 Layer 1 HTTP 心跳与云端 API 取代
@@ -110,7 +110,7 @@ async fn control_device(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let controller = DeviceController::new();
-    
+
     controller
         .execute(&device_id, &action, params)
         .await
@@ -129,11 +129,8 @@ fn get_system_info() -> Result<serde_json::Value, String> {
 /// TTS 自检（Capability Check）- 检测 Arch 和 RAM
 #[tauri::command]
 fn tts_self_check() -> Result<serde_json::Value, String> {
-    let engine = tts::SpeechEngine::new(
-        "http://127.0.0.1:18982",
-        None,
-        None::<tts::AliyunTtsConfig>,
-    );
+    let engine =
+        tts::SpeechEngine::new("http://127.0.0.1:18982", None, None::<tts::AliyunTtsConfig>);
     let result = engine.self_check_result();
     Ok(serde_json::json!({
         "arch_ok": result.arch_ok,
@@ -179,10 +176,13 @@ async fn tts_ensure_model(app: tauri::AppHandle) -> Result<serde_json::Value, St
 
     let app_handle = app.clone();
     let on_progress: Option<tts::ProgressCallback> = Some(Box::new(move |downloaded, total| {
-        let _ = app_handle.emit("tts-download-progress", serde_json::json!({
-            "downloaded": downloaded,
-            "total": total,
-        }));
+        let _ = app_handle.emit(
+            "tts-download-progress",
+            serde_json::json!({
+                "downloaded": downloaded,
+                "total": total,
+            }),
+        );
     }));
 
     let (tts_model_dir, codec_model_dir) = mgr.ensure_model(on_progress).await?;
@@ -201,7 +201,11 @@ fn get_system_stats() -> Result<serde_json::Value, String> {
     std::thread::sleep(std::time::Duration::from_millis(250));
     sys.refresh_cpu_usage();
     let raw_cpu = sys.global_cpu_info().cpu_usage();
-    let cpu_percent = if raw_cpu <= 1.0 { raw_cpu * 100.0 } else { raw_cpu };
+    let cpu_percent = if raw_cpu <= 1.0 {
+        raw_cpu * 100.0
+    } else {
+        raw_cpu
+    };
     sys.refresh_memory();
     let total = sys.total_memory();
     let used = sys.used_memory();
@@ -252,7 +256,12 @@ async fn quick_action_privacy_mode(app: tauri::AppHandle) -> Result<bool, String
 /// 快捷指令：立即清理内存（通知 + 可扩展为调用后端清理缓存）
 #[tauri::command]
 async fn quick_action_clear_memory(app: tauri::AppHandle) -> Result<(), String> {
-    let _ = app.notification().builder().title("清理内存").body("已触发内存清理，缓存将在后台释放").show();
+    let _ = app
+        .notification()
+        .builder()
+        .title("清理内存")
+        .body("已触发内存清理，缓存将在后台释放")
+        .show();
     Ok(())
 }
 
@@ -440,7 +449,10 @@ pub(crate) fn emit_omni_companion_ui(app: &tauri::AppHandle, companion: bool) {
         "omni-companion-mode",
         payload.clone(),
     ) {
-        eprintln!("[Omni] emit_to(chat) omni-companion-mode failed: {}, fallback broadcast", e);
+        eprintln!(
+            "[Omni] emit_to(chat) omni-companion-mode failed: {}, fallback broadcast",
+            e
+        );
         l3_spawn::write_jachin_shared_l3_debug(
             "omni_companion_emit_err",
             &format!("emit_to_failed={e} fallback_broadcast=1"),
@@ -489,7 +501,10 @@ async fn quick_action_hibernate(app: tauri::AppHandle) -> Result<bool, String> {
         }
     }
     let (title, body) = if next {
-        ("休眠系统", "已开启：Omni 条与桌面精灵已隐藏，托盘或全局快捷键可恢复")
+        (
+            "休眠系统",
+            "已开启：Omni 条与桌面精灵已隐藏，托盘或全局快捷键可恢复",
+        )
     } else {
         ("休眠系统", "已关闭：Omni 条已恢复显示（精灵默认保持关闭）")
     };
@@ -762,9 +777,7 @@ pub(crate) fn minimize_chat_to_companion(app: &tauri::AppHandle) -> Result<(), S
         position_chat_companion(app)?;
         let _ = companion_sync_dock_from_window(app);
     }
-    chat
-        .show()
-        .map_err(|e| format!("show(companion): {e}"))?;
+    chat.show().map_err(|e| format!("show(companion): {e}"))?;
     CHAT_COMPANION_MODE.store(true, Ordering::SeqCst);
     emit_omni_companion_ui(app, true);
     Ok(())
@@ -837,7 +850,10 @@ pub(crate) fn toggle_chat_omni(app: &tauri::AppHandle) {
             if companion {
                 let _ = restore_chat_full_omni(&app_clone);
                 let fr = chat.set_focus();
-                omni_hotkey_mirror_trace::trace_set_focus_result("toggle_restore_from_companion", &fr);
+                omni_hotkey_mirror_trace::trace_set_focus_result(
+                    "toggle_restore_from_companion",
+                    &fr,
+                );
                 return;
             }
             let _ = minimize_chat_to_companion(&app_clone);
@@ -903,12 +919,14 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
         ];
         let mut hud_registered: Vec<&str> = Vec::new();
         for combo in HUD_CANDIDATES {
-            let rr = app.global_shortcut().on_shortcut(*combo, |app, _shortcut, event| {
-                if event.state != ShortcutState::Pressed {
-                    return;
-                }
-                toggle_hud_panel(app);
-            });
+            let rr = app
+                .global_shortcut()
+                .on_shortcut(*combo, |app, _shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    toggle_hud_panel(app);
+                });
             match rr {
                 Ok(()) => {
                     eprintln!("[HUD] 全局快捷键已注册: {}", combo);
@@ -926,27 +944,24 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
         }
     }
 
-    const CANDIDATES: &[&str] = &[
-        "ctrl+alt+x",
-        "alt+q",
-        "ctrl+shift+space",
-        "alt+space",
-    ];
+    const CANDIDATES: &[&str] = &["ctrl+alt+x", "alt+q", "ctrl+shift+space", "alt+space"];
     let mut registered = false;
     for combo in CANDIDATES {
-        let r = app.global_shortcut().on_shortcut(*combo, |app, shortcut, event| {
-            let state_s = match event.state {
-                ShortcutState::Pressed => "Pressed",
-                ShortcutState::Released => "Released",
-            };
-            let shortcut_hint = format!("{:?}", shortcut);
-            omni_hotkey_mirror_trace::trace_raw_hotkey(&shortcut_hint, state_s);
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            omni_hotkey_mirror_trace::trace_signal_received_by_rust(app, &shortcut_hint);
-            toggle_chat_omni(app);
-        });
+        let r = app
+            .global_shortcut()
+            .on_shortcut(*combo, |app, shortcut, event| {
+                let state_s = match event.state {
+                    ShortcutState::Pressed => "Pressed",
+                    ShortcutState::Released => "Released",
+                };
+                let shortcut_hint = format!("{:?}", shortcut);
+                omni_hotkey_mirror_trace::trace_raw_hotkey(&shortcut_hint, state_s);
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
+                omni_hotkey_mirror_trace::trace_signal_received_by_rust(app, &shortcut_hint);
+                toggle_chat_omni(app);
+            });
         match &r {
             Ok(()) => {
                 omni_hotkey_mirror_trace::trace_registration(combo, true, None);
@@ -977,15 +992,17 @@ fn register_omni_hotkeys(app: &tauri::AppHandle) {
     const BARGE_CANDIDATES: &[&str] = &["ctrl+space", "ctrl+shift+b"];
     for combo in BARGE_CANDIDATES {
         let combo_label = *combo;
-        let rr = app.global_shortcut().on_shortcut(combo_label, move |app, _shortcut, event| {
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            let _ = app.emit(
-                "voice-barge-in",
-                serde_json::json!({ "source": "hotkey", "shortcut": combo_label }),
-            );
-        });
+        let rr = app
+            .global_shortcut()
+            .on_shortcut(combo_label, move |app, _shortcut, event| {
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
+                let _ = app.emit(
+                    "voice-barge-in",
+                    serde_json::json!({ "source": "hotkey", "shortcut": combo_label }),
+                );
+            });
         if rr.is_ok() {
             eprintln!("[Voice] Barge-in 快捷键已注册: {}", combo_label);
             break;
@@ -1010,7 +1027,8 @@ fn guard_main_exe_not_nsis_installer_stub() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let Ok(true) = updater_common::sniff_file_looks_like_windows_nsis_installer_package(&exe) else {
+    let Ok(true) = updater_common::sniff_file_looks_like_windows_nsis_installer_package(&exe)
+    else {
         return;
     };
     const MB_OK: u32 = 0x0000_0000;
@@ -1026,7 +1044,12 @@ fn guard_main_exe_not_nsis_installer_stub() {
     let t = to_wide(title);
     let b = to_wide(body);
     unsafe {
-        MessageBoxW(std::ptr::null_mut(), b.as_ptr(), t.as_ptr(), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            std::ptr::null_mut(),
+            b.as_ptr(),
+            t.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
     std::process::exit(86);
 }
@@ -1047,7 +1070,10 @@ fn main() {
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if argv.iter().any(|a| a == "--jachin-sentry-test") {
-                let pos = argv.iter().position(|a| a == "--jachin-sentry-test").unwrap_or(0);
+                let pos = argv
+                    .iter()
+                    .position(|a| a == "--jachin-sentry-test")
+                    .unwrap_or(0);
                 let title = argv
                     .get(pos + 1)
                     .map(|s| s.to_string())
@@ -1064,7 +1090,10 @@ fn main() {
                 return;
             }
             if argv.iter().any(|a| a == "--jachin-voice-sim") {
-                let pos = argv.iter().position(|a| a == "--jachin-voice-sim").unwrap_or(0);
+                let pos = argv
+                    .iter()
+                    .position(|a| a == "--jachin-voice-sim")
+                    .unwrap_or(0);
                 let role = argv
                     .get(pos + 1)
                     .map(|s| s.to_lowercase())
@@ -1097,10 +1126,7 @@ fn main() {
                     } else if let Err(e) = minimize_chat_to_companion(&app_h) {
                         eprintln!("[voice-sim] companion orb: {}", e);
                     }
-                    let _ = app_h.emit(
-                        "hud-voice-session",
-                        json!({ "active": true }),
-                    );
+                    let _ = app_h.emit("hud-voice-session", json!({ "active": true }));
                     let sim_payload = json!({
                         "role": role,
                         "content": content,
@@ -1183,7 +1209,7 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 // sprite：勿自动恢复显示。chat：勿用持久化尺寸覆盖 Esc 陪伴圆（否则会立刻弹回大窗）
-                .with_denylist(&["sprite", "chat", "notification"])
+                .with_denylist(&["sprite", "chat", "notification", "english_vocab"])
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
@@ -1206,6 +1232,26 @@ fn main() {
             commands::settings::set_desktop_ui_lang,
             commands::native_fs_policy::native_fs_policy_get,
             commands::native_fs_policy::native_fs_policy_set,
+            commands::capability_publish::capability_publish_scan,
+            commands::capability_publish::capability_publish_package,
+            commands::capability_publish::capability_publish_open_path,
+            commands::capability_publish::capability_publish_l1_direct_get,
+            commands::capability_publish::capability_publish_l1_direct_set,
+            commands::capability_publish::capability_publish_l1_direct_test,
+            commands::capability_install::capability_install_scan,
+            commands::capability_install::capability_install_local_inventory,
+            commands::capability_install::capability_l1_profiles_get,
+            commands::capability_install::capability_l1_profile_save,
+            commands::capability_install::capability_l1_profile_activate,
+            commands::capability_install::capability_install_package,
+            commands::capability_install::capability_install_set_enabled,
+            commands::capability_install::capability_install_uninstall,
+            commands::english_vocab::english_vocab_lookup,
+            commands::english_vocab::english_vocab_prefetch_sentence,
+            commands::english_vocab::english_vocab_state_get,
+            commands::english_vocab::english_vocab_state_set_book,
+            commands::english_vocab::english_vocab_state_record_review,
+            commands::english_vocab::english_vocab_state_reset,
             commands::os_evidence::os_evidence_list,
             commands::os_evidence::os_evidence_stats,
             commands::os_evidence::os_evidence_open_path,
@@ -1247,6 +1293,10 @@ fn main() {
             get_hibernate_mode,
             show_chat_window,
             hide_chat_window,
+            show_english_vocab_window,
+            hide_english_vocab_window,
+            toggle_english_vocab_window,
+            show_english_vocab_window_if_available,
             set_hud_panel_suppressed,
             close_hud_panel,
             desktop_diag_log,
@@ -1350,6 +1400,7 @@ fn main() {
             // JVS 语音独立进程：探活优先，按配置自动拉起（JACHIN_SKIP_VOICE_SPAWN=1 可禁用）
             let jvs_cfg = jvs::process_manager::load_jvs_config();
             let jvs_handle = std::sync::Arc::new(jvs::process_manager::JvsHandle::new(jvs_cfg.clone()));
+            l3_spawn::register_ctrlc_jvs(&jvs_handle);
             app.manage(jvs_handle.clone());
             if jvs_cfg.auto_spawn_enabled {
                 let app_h = app.app_handle().clone();
@@ -1371,7 +1422,7 @@ fn main() {
             // 初始化设备注册
             let device_id = format!("desktop-{}", whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
             let registry = Arc::new(Mutex::new(DeviceRegistry::new(device_id.clone())));
-            
+
             // 存储 registry 到应用状态（在 setup 中）
             app.manage(registry.clone());
 
@@ -1392,17 +1443,17 @@ fn main() {
                     stt::WakeWordDetector::auto_start_if_enabled(app_wake);
                 });
             }
-            
+
             // 启动 Pub/Sub HTTP 服务器（用于接收 Dapr 推送的命令）
             let app_handle_clone = app.app_handle().clone();
             let device_id_clone = device_id.clone();
             let pubsub_port = 8002; // 桌面客户端的应用端口
             let reminders_pubsub = reminders.clone();
-            
+
             // 在后台任务中启动 Pub/Sub 服务器
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                
+
                 // 启动 Pub/Sub 服务器
                 if let Err(e) = start_pubsub_server(
                     app_handle_clone.clone(),
@@ -1417,7 +1468,7 @@ fn main() {
                     println!("[PubSub] Pub/Sub server started on port {}", pubsub_port);
                 }
             });
-            
+
             // 在后台任务中注册设备（带重试，后端可能尚未就绪）
             let registry_clone = registry.clone();
             let device_id_clone_for_heartbeat = device_id.clone();
@@ -1440,12 +1491,12 @@ fn main() {
                 }
                 reg.start_heartbeat_loop();
             });
-            
+
             // 监听设备命令事件（从 Pub/Sub 服务器接收）
             let app_handle_for_events = app.app_handle().clone();
             let registry_for_events = registry.clone();
             let device_id_for_events = device_id.clone();
-            
+
             let app_handle_for_listen = app_handle_for_events.clone();
             let _ = app_handle_for_listen.listen("device-command", move |event| {
                 // Tauri 事件 payload 是 JSON 字符串
@@ -1455,23 +1506,23 @@ fn main() {
                     let app_handle = app_handle_for_events.clone();
                     let registry = registry_for_events.clone();
                     let device_id = device_id_for_events.clone();
-                    
+
                         // 在异步任务中处理命令
                         tauri::async_runtime::spawn(async move {
                         if command.target_device_id != device_id {
                             return;
                         }
-                        
+
                         let mut response_status = "success";
                         let mut response_result = Some(json!({"success": true}));
                         let mut response_error = None;
-                        
+
                         // 根据能力名称执行相应操作
                         match command.capability_name.as_str() {
                             "notification.show" => {
                                 let title = command.params["title"].as_str().unwrap_or("通知");
                                 let message = command.params["message"].as_str().unwrap_or("");
-                                
+
                                 // 使用 Tauri 通知插件显示通知
                                 if let Err(e) = app_handle.notification()
                                     .builder()
@@ -1523,7 +1574,7 @@ fn main() {
                                 response_result = None;
                             }
                         }
-                        
+
                         // 发送响应
                         let reg = registry.lock().await;
                         let response = DeviceResponse {
@@ -1534,14 +1585,14 @@ fn main() {
                             error: response_error,
                             timestamp: device_registry::current_timestamp(),
                         };
-                        
+
                         if let Err(e) = reg.send_response(response).await {
                             eprintln!("[DeviceRegistry] Failed to send response: {}", e);
                         }
                     });
                 }
             });
-            
+
             // 系统托盘：左键切换 Omni；右键菜单可打开交互界面 / 控制台 / HUD / 退出
             if let Some(icon) = app.default_window_icon() {
                 let tray_build = (|| -> Result<(), tauri::Error> {
@@ -1566,19 +1617,22 @@ fn main() {
                         true,
                         None::<&str>,
                     )?;
+                    let item_vocab =
+                        MenuItem::with_id(app, "tray_vocab", "英语背词", true, None::<&str>)?;
                     let item_quit =
                         MenuItem::with_id(app, "tray_quit", "退出 Jachin", true, None::<&str>)?;
                     let tray_menu = MenuBuilder::new(app)
                         .item(&item_chat)
                         .item(&item_console)
                         .item(&item_hud)
+                        .item(&item_vocab)
                         .item(&item_quit)
                         .build()?;
 
                     let _tray = TrayIconBuilder::new()
                         .icon(icon.clone())
                         .tooltip(
-                            "Jachin · 左键切换 Omni · 右键可打开交互界面/控制台/HUD",
+                            "Jachin · 左键切换 Omni · 右键可打开交互界面/控制台/HUD/英语背词",
                         )
                         .menu(&tray_menu)
                         .on_menu_event(|app, event| {
@@ -1598,6 +1652,9 @@ fn main() {
                                     });
                                 }
                                 "tray_hud" => toggle_hud_panel(app.app_handle()),
+                                "tray_vocab" => {
+                                    let _ = show_english_vocab_window_inner(app.app_handle());
+                                }
                                 "tray_quit" => shutdown_application(app.app_handle()),
                                 _ => {}
                             }
@@ -1647,6 +1704,7 @@ fn main() {
                     "[Desktop] 启动时已显示控制台与 Omni（JACHIN_SKIP_STARTUP_WINDOWS=1 可跳过）"
                 );
             }
+            schedule_english_vocab_auto_show(app.handle().clone());
 
             Ok(())
         })
@@ -1759,30 +1817,30 @@ async fn stt_emit_wake_up(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn expand_chat_window_for_skill_canvas(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            let Some(chat) = app_handle.get_webview_window("chat") else {
-                return;
-            };
-            let Ok(sz) = chat.outer_size() else {
-                return;
-            };
-            if let Ok(mut g) = CHAT_WIDTH_BEFORE_SKILL_CANVAS.lock() {
-                if g.is_none() {
-                    *g = Some(sz.width);
-                }
+    app.run_on_main_thread(move || {
+        let Some(chat) = app_handle.get_webview_window("chat") else {
+            return;
+        };
+        let Ok(sz) = chat.outer_size() else {
+            return;
+        };
+        if let Ok(mut g) = CHAT_WIDTH_BEFORE_SKILL_CANVAS.lock() {
+            if g.is_none() {
+                *g = Some(sz.width);
             }
-            let factor = chat.scale_factor().unwrap_or(1.0);
-            let min_w_phys =
-                (CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL * factor).ceil().max(1.0) as u32;
-            let new_w = sz.width.max(min_w_phys);
-            // 始终 set_size：避免「已达标」时系统未重排导致右栏仍要手拖
-            let _ = chat.set_size(Size::Physical(PhysicalSize::new(new_w, sz.height)));
-            let _ = position_chat_omni_bar(&app_handle);
-            let _ = chat.show();
-            let _ = chat.set_focus();
-        })
-        .map_err(|e| e.to_string())?;
+        }
+        let factor = chat.scale_factor().unwrap_or(1.0);
+        let min_w_phys = (CHAT_SKILL_CANVAS_MIN_TOTAL_LOGICAL * factor)
+            .ceil()
+            .max(1.0) as u32;
+        let new_w = sz.width.max(min_w_phys);
+        // 始终 set_size：避免「已达标」时系统未重排导致右栏仍要手拖
+        let _ = chat.set_size(Size::Physical(PhysicalSize::new(new_w, sz.height)));
+        let _ = position_chat_omni_bar(&app_handle);
+        let _ = chat.show();
+        let _ = chat.set_focus();
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1790,24 +1848,23 @@ async fn expand_chat_window_for_skill_canvas(app: tauri::AppHandle) -> Result<()
 #[tauri::command]
 async fn restore_chat_window_after_skill_canvas_rust(app: tauri::AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            let prev = CHAT_WIDTH_BEFORE_SKILL_CANVAS
-                .lock()
-                .ok()
-                .and_then(|mut g| g.take());
-            let Some(w) = prev else {
-                return;
-            };
-            let Some(chat) = app_handle.get_webview_window("chat") else {
-                return;
-            };
-            if let Ok(sz) = chat.outer_size() {
-                let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, sz.height)));
-                let _ = position_chat_omni_bar(&app_handle);
-            }
-        })
-        .map_err(|e| e.to_string())?;
+    app.run_on_main_thread(move || {
+        let prev = CHAT_WIDTH_BEFORE_SKILL_CANVAS
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        let Some(w) = prev else {
+            return;
+        };
+        let Some(chat) = app_handle.get_webview_window("chat") else {
+            return;
+        };
+        if let Ok(sz) = chat.outer_size() {
+            let _ = chat.set_size(Size::Physical(PhysicalSize::new(w, sz.height)));
+            let _ = position_chat_omni_bar(&app_handle);
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1861,6 +1918,271 @@ fn position_notification_bottom_right(app: &tauri::AppHandle) -> Result<(), Stri
     win.set_position(PhysicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn position_english_vocab_bottom_right(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("english_vocab") else {
+        return Err("english_vocab window missing".into());
+    };
+    let monitor = app
+        .get_webview_window("chat")
+        .as_ref()
+        .and_then(|c| c.current_monitor().ok().flatten())
+        .or_else(|| win.current_monitor().ok().flatten())
+        .ok_or_else(|| "no monitor".to_string())?;
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+    let factor = win.scale_factor().unwrap_or(1.0);
+    let width = (368.0_f64 * factor).round().clamp(340.0, 520.0) as u32;
+    let height = (430.0_f64 * factor).round().clamp(400.0, 540.0) as u32;
+    let margin = (18.0_f64 * factor).round() as i32;
+    #[cfg(windows)]
+    let taskbar_reserve = (52.0_f64 * factor).round().max(36.0) as i32;
+    #[cfg(not(windows))]
+    let taskbar_reserve = (42.0_f64 * factor).round().max(24.0) as i32;
+    let x = mon_pos.x + mon_size.width as i32 - width as i32 - margin;
+    let y = mon_pos.y + mon_size.height as i32 - height as i32 - margin - taskbar_reserve;
+    win.set_size(Size::Physical(PhysicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
+    win.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn jachin_home_dir_for_desktop() -> std::path::PathBuf {
+    if let Ok(raw) = std::env::var("JACHIN_HOME") {
+        let p = std::path::PathBuf::from(raw);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    if cfg!(target_os = "windows") {
+        std::env::var("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default()
+            .join(".jachin")
+    } else {
+        std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default()
+            .join(".jachin")
+    }
+}
+
+fn english_learning_capability_installed() -> bool {
+    let home = jachin_home_dir_for_desktop();
+    let skill_cache = home
+        .join("l3_skill_cache")
+        .join("com.jachin.skill.english-learning-assistant");
+    let mcp_cache = home
+        .join("l3_mcp_cache")
+        .join("com.jachin.mcp.english-tutor");
+    let legacy_skill = home
+        .join("skills")
+        .join("com.jachin.skill.english-learning-assistant");
+    skill_cache.is_dir() || mcp_cache.is_dir() || legacy_skill.is_dir()
+}
+
+fn should_auto_show_english_vocab() -> bool {
+    let skip = std::env::var("JACHIN_SKIP_ENGLISH_VOCAB_STARTUP")
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        })
+        .unwrap_or(false);
+    if skip {
+        return false;
+    }
+    cfg!(debug_assertions) || english_learning_capability_installed()
+}
+
+fn log_english_vocab_startup(message: &str) {
+    eprintln!("[Desktop][EnglishVocab] {}", message);
+    l3_spawn::write_l3_debug(&format!("[EnglishVocab] {}", message));
+    l3_spawn::write_jachin_shared_l3_debug("english_vocab_startup", message);
+}
+
+fn schedule_english_vocab_auto_show(app: tauri::AppHandle) {
+    if !should_auto_show_english_vocab() {
+        log_english_vocab_startup(
+            "skip auto show: capability not installed/enabled or JACHIN_SKIP_ENGLISH_VOCAB_STARTUP=1",
+        );
+        return;
+    }
+    log_english_vocab_startup("schedule auto show: waiting for L3 HTTP health");
+    tauri::async_runtime::spawn(async move {
+        match wait_english_vocab_auto_ready(std::time::Duration::from_secs(75)).await {
+            Ok(()) => {
+                let result = run_vocab_window_command(app, |app_handle| {
+                    show_english_vocab_window_inner(&app_handle)
+                });
+                match result {
+                    Ok(()) => log_english_vocab_startup(
+                        "L3 ready; English vocab window shown at bottom-right",
+                    ),
+                    Err(e) => log_english_vocab_startup(&format!(
+                        "show window failed after L3 ready: {}",
+                        e
+                    )),
+                }
+            }
+            Err(e) => log_english_vocab_startup(&format!(
+                "wait backend ready timeout; auto show skipped: {}",
+                e
+            )),
+        }
+    });
+}
+
+async fn wait_english_vocab_auto_ready(timeout: std::time::Duration) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let mut last_error = "waiting for L3".to_string();
+    while start.elapsed() < timeout {
+        if let Err(e) = l3_http_health_ready().await {
+            last_error = e;
+        } else {
+            tauri::async_runtime::spawn(async {
+                let warmup = tokio::time::timeout(
+                    std::time::Duration::from_secs(12),
+                    warmup_english_vocab_first_card(),
+                )
+                .await;
+                match warmup {
+                    Ok(Ok(())) => {
+                        log_english_vocab_startup("first card warmup completed");
+                    }
+                    Ok(Err(e)) => {
+                        log_english_vocab_startup(&format!(
+                            "first card warmup failed; frontend will continue loading: {}",
+                            e
+                        ));
+                    }
+                    Err(_) => {
+                        log_english_vocab_startup(
+                            "first card warmup timed out; frontend will continue loading",
+                        );
+                    }
+                }
+            });
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    }
+    Err(last_error)
+}
+
+async fn l3_http_health_ready() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut last_error = "L3 HTTP health not ready".to_string();
+    for port in [
+        18991u16, 18990, 18992, 18993, 18994, 18995, 18996, 18997, 18998, 18999,
+    ] {
+        let url = format!("http://127.0.0.1:{port}/api/health");
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp) => {
+                last_error = format!("{url} returned {}", resp.status());
+            }
+            Err(e) => {
+                last_error = format!("{url} failed: {e}");
+            }
+        }
+    }
+    Err(last_error)
+}
+
+async fn warmup_english_vocab_first_card() -> Result<(), String> {
+    for word in ["bread", "breakfast", "morning", "lunch"] {
+        let input = commands::english_vocab::EnglishVocabLookupInput {
+            word: word.to_string(),
+            book_id: Some("daily_life_ngsl".to_string()),
+            context_sentence: None,
+        };
+        let result = commands::english_vocab::english_vocab_lookup(input).await?;
+        if result.example.trim().is_empty()
+            || result.meaning_cn.trim().is_empty()
+            || result.example.contains("came up in a normal conversation")
+            || result.example.contains("I want to learn the word")
+        {
+            return Err(format!("English vocab first card is not ready: {word}"));
+        }
+    }
+    Ok(())
+}
+
+fn show_english_vocab_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("english_vocab") else {
+        return Err("english_vocab window missing".into());
+    };
+    let _ = win.set_always_on_top(true);
+    position_english_vocab_bottom_right(app)?;
+    win.show().map_err(|e| e.to_string())?;
+    win.unminimize().map_err(|e| e.to_string())?;
+    let _ = win.set_focus();
+    Ok(())
+}
+
+fn hide_english_vocab_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("english_vocab") else {
+        return Err("english_vocab window missing".into());
+    };
+    win.hide().map_err(|e| e.to_string())
+}
+
+fn run_vocab_window_command<F>(app: tauri::AppHandle, f: F) -> Result<(), String>
+where
+    F: FnOnce(tauri::AppHandle) -> Result<(), String> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    let app_for_thread = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f(app_for_thread));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn show_english_vocab_window(app: tauri::AppHandle) -> Result<(), String> {
+    run_vocab_window_command(app, |app_handle| {
+        show_english_vocab_window_inner(&app_handle)
+    })
+}
+
+#[tauri::command]
+fn hide_english_vocab_window(app: tauri::AppHandle) -> Result<(), String> {
+    run_vocab_window_command(app, |app_handle| {
+        hide_english_vocab_window_inner(&app_handle)
+    })
+}
+
+#[tauri::command]
+fn toggle_english_vocab_window(app: tauri::AppHandle) -> Result<(), String> {
+    run_vocab_window_command(app, |app_handle| {
+        let Some(win) = app_handle.get_webview_window("english_vocab") else {
+            return Err("english_vocab window missing".into());
+        };
+        if win.is_visible().unwrap_or(false) {
+            hide_english_vocab_window_inner(&app_handle)
+        } else {
+            show_english_vocab_window_inner(&app_handle)
+        }
+    })
+}
+
+#[tauri::command]
+async fn show_english_vocab_window_if_available(app: tauri::AppHandle) -> Result<bool, String> {
+    if !should_auto_show_english_vocab() {
+        return Ok(false);
+    }
+    wait_english_vocab_auto_ready(std::time::Duration::from_secs(45)).await?;
+    run_vocab_window_command(app, |app_handle| {
+        show_english_vocab_window_inner(&app_handle)
+    })?;
+    Ok(true)
 }
 
 /// 主线程：右下角哨兵通知展示逻辑（`jachin_sentry_notify` 与定时提醒共用）。
@@ -1924,7 +2246,11 @@ pub(crate) fn show_sentry_toast_inner(
 
 /// Omni 最小化 / 陪伴圆 / 完全隐藏时：透明子窗口右下角通知（非系统 Notification）
 #[tauri::command]
-async fn jachin_sentry_notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+async fn jachin_sentry_notify(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
     let title_preview: String = title.chars().take(100).collect();
     let body_preview: String = body.chars().take(160).collect();
     l3_spawn::write_jachin_shared_l3_debug(
@@ -1942,11 +2268,10 @@ async fn jachin_sentry_notify(app: tauri::AppHandle, title: String, body: String
     let app_handle = app.clone();
     let title_m = title;
     let body_m = body;
-    app
-        .run_on_main_thread(move || {
-            show_sentry_toast_inner(&app_handle, title_m, body_m, "sentry_notify");
-        })
-        .map_err(|e| e.to_string())?;
+    app.run_on_main_thread(move || {
+        show_sentry_toast_inner(&app_handle, title_m, body_m, "sentry_notify");
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2003,13 +2328,12 @@ async fn jachin_sentry_notify_dismiss(app: tauri::AppHandle) -> Result<(), Strin
         &omni_surface_debug_snapshot(&app),
     );
     let app_handle = app.clone();
-    app
-        .run_on_main_thread(move || {
-            if let Some(win) = app_handle.get_webview_window("notification") {
-                let _ = win.hide();
-            }
-        })
-        .map_err(|e| e.to_string())?;
+    app.run_on_main_thread(move || {
+        if let Some(win) = app_handle.get_webview_window("notification") {
+            let _ = win.hide();
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2463,7 +2787,11 @@ async fn launch_pmo_copilot_script(
 
         return Ok(format!(
             "PMO 已在后台运行（PID {pid}）。{}状态见本页指示灯；日志: {} / {}",
-            if init_only { "INIT 拉表入库 · " } else { "" },
+            if init_only {
+                "INIT 拉表入库 · "
+            } else {
+                ""
+            },
             log_path.display(),
             pmo_log_dir.join("pmo_l3_debug.log").display()
         ));
@@ -2478,10 +2806,7 @@ async fn launch_pmo_copilot_script(
                 LaunchMode::Sidecar(sc) => {
                     let sc_esc = sc.to_string_lossy().replace('\'', "\\'");
                     if init_only {
-                        format!(
-                            "cd '{}' && '{}' --run-pmo-copilot --init",
-                            root_esc, sc_esc
-                        )
+                        format!("cd '{}' && '{}' --run-pmo-copilot --init", root_esc, sc_esc)
                     } else {
                         format!("cd '{}' && '{}' --run-pmo-copilot", root_esc, sc_esc)
                     }
@@ -2493,7 +2818,10 @@ async fn launch_pmo_copilot_script(
                             root_esc
                         )
                     } else {
-                        format!("cd '{}' && python scripts/run_pmo_copilot_skill.py", root_esc)
+                        format!(
+                            "cd '{}' && python scripts/run_pmo_copilot_skill.py",
+                            root_esc
+                        )
                     }
                 }
             };
@@ -2545,7 +2873,7 @@ async fn launch_pmo_copilot_script(
                     .is_ok();
             if !launched {
                 return Err(
-                    "找不到可用终端模拟器（尝试了 x-terminal-emulator / xterm）".to_string(),
+                    "找不到可用终端模拟器（尝试了 x-terminal-emulator / xterm）".to_string()
                 );
             }
         }
@@ -2565,11 +2893,17 @@ async fn handle_device_command(
     command: DeviceCommand,
     registry: tauri::State<'_, Arc<Mutex<DeviceRegistry>>>,
 ) -> Result<DeviceResponse, String> {
-    let device_id = format!("desktop-{}", whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()));
-    
+    let device_id = format!(
+        "desktop-{}",
+        whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string())
+    );
+
     // 验证目标设备ID
     if command.target_device_id != device_id {
-        return Err(format!("Command target mismatch: expected {}, got {}", device_id, command.target_device_id));
+        return Err(format!(
+            "Command target mismatch: expected {}, got {}",
+            device_id, command.target_device_id
+        ));
     }
 
     // 根据能力名称执行相应操作
@@ -2578,9 +2912,10 @@ async fn handle_device_command(
             // 显示通知
             let title = command.params["title"].as_str().unwrap_or("通知");
             let message = command.params["message"].as_str().unwrap_or("");
-            
+
             // 使用 Tauri 通知插件显示通知
-            if let Err(e) = app.notification()
+            if let Err(e) = app
+                .notification()
                 .builder()
                 .title(title)
                 .body(message)
@@ -2588,7 +2923,7 @@ async fn handle_device_command(
             {
                 eprintln!("[Notification] Failed to show notification: {}", e);
             }
-            
+
             Ok(serde_json::json!({"success": true}))
         }
         "window.show" => {
@@ -2612,9 +2947,12 @@ async fn handle_device_command(
         "sprite.set_state" => {
             let state = command.params["state"].as_str().unwrap_or("idle");
             // 通过事件发送到前端，更新 Rive 动画状态
-            let _ = app.emit("sprite-state-change", json!({
-                "state": state
-            }));
+            let _ = app.emit(
+                "sprite-state-change",
+                json!({
+                    "state": state
+                }),
+            );
             Ok(serde_json::json!({"success": true, "state": state}))
         }
         _ => Err(format!("Unknown capability: {}", command.capability_name)),

@@ -341,19 +341,31 @@ except Exception as e:
 
 # 启动时打印 env 状态，便于排查 Key 分配问题（脱敏显示前8+后4字符）
 if _log_path:
+    trace("startup status: before debug-log logger.info")
     logger.info("[L3] 调试日志: %s", _log_path)
+    trace("startup status: after debug-log logger.info")
     if is_l3_verbose():
+        trace("startup status: before verbose logger.info")
         logger.info("[L3] 超详细诊断已开启 (JACHIN_L3_DEBUG/L3_VERBOSE_LOG)，l3_debug.log 将包含 WS/LLM 流式 DEBUG")
+        trace("startup status: after verbose logger.info")
     else:
+        trace("startup status: before detail-hint logger.info")
         logger.info("[L3] 需要更详细日志时请在 .env 设置 JACHIN_L3_DEBUG=1 后重启 L3")
+        trace("startup status: after detail-hint logger.info")
 _dash_key = os.environ.get("DASHSCOPE_API_KEY", "")
 _openai_key = os.environ.get("OPENAI_API_KEY", "")
 if _dash_key:
+    trace("startup status: before dashscope logger.info")
     logger.info("[L3] DASHSCOPE_API_KEY 已加载: %s", _mask_key(_dash_key))
+    trace("startup status: after dashscope logger.info")
 if _openai_key:
+    trace("startup status: before openai logger.info")
     logger.info("[L3] OPENAI_API_KEY 已加载: %s", _mask_key(_openai_key))
+    trace("startup status: after openai logger.info")
 if not _dash_key and not _openai_key:
+    trace("startup status: before missing-key logger.warning")
     logger.warning("[L3] 未检测到 DASHSCOPE_API_KEY 或 OPENAI_API_KEY，大模型不可用，将依赖 L2 下发 Key")
+    trace("startup status: after missing-key logger.warning")
 
 
 def _log_l3_code_identity() -> None:
@@ -383,9 +395,11 @@ def _log_l3_code_identity() -> None:
 
 
 _log_l3_code_identity()
+trace("startup status: after code identity")
 
-
+trace("startup status: before standalone_engine import")
 from l3_node.standalone_engine import create_engine_standalone as _create_engine_standalone
+trace("startup status: after standalone_engine import")
 
 
 async def main() -> None:
@@ -724,7 +738,10 @@ async def main() -> None:
     logger.info("L3 节点退出")
 
 
+trace("entrypoint check: __name__=%s argv=%s", __name__, sys.argv)
+
 if __name__ == "__main__":
+    trace("entrypoint: entering asyncio runner")
     if "--run-pmo-copilot" in sys.argv:
         try:
             from l3_node.pmo_copilot_cli import run_pmo_copilot_main
@@ -743,3 +760,5 @@ if __name__ == "__main__":
             import traceback
             trace("traceback: %s", traceback.format_exc())
         raise
+else:
+    trace("entrypoint skipped: module __name__ is %s, not __main__", __name__)

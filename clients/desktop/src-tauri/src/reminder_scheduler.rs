@@ -1,4 +1,4 @@
-﻿//! 桌面定时提醒：持久化到 ~/.jachin/desktop_reminders.json，tokio 秒级 tick，到点复用右下角哨兵通知。
+//! 桌面定时提醒：持久化到 ~/.jachin/desktop_reminders.json，tokio 秒级 tick，到点复用右下角哨兵通知。
 
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
@@ -80,8 +80,7 @@ impl ReminderService {
 
     fn persist(&self) -> Result<(), String> {
         let g = self.inner.lock().map_err(|e| e.to_string())?;
-        let json =
-            serde_json::to_string_pretty(&g.items).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&g.items).map_err(|e| e.to_string())?;
         fs::write(&g.path, json).map_err(|e| e.to_string())
     }
 
@@ -187,7 +186,10 @@ impl ReminderService {
         let v: serde_json::Value = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[SentryPing] invalid json: {e} raw={}", raw.chars().take(120).collect::<String>());
+                eprintln!(
+                    "[SentryPing] invalid json: {e} raw={}",
+                    raw.chars().take(120).collect::<String>()
+                );
                 return;
             }
         };

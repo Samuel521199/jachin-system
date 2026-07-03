@@ -44,7 +44,12 @@ impl JvsHandle {
     }
 
     pub fn status(&self) -> JvsStatus {
-        let running = self.child.lock().ok().and_then(|g| g.as_ref().map(|_| true)).unwrap_or(false);
+        let running = self
+            .child
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|_| true))
+            .unwrap_or(false);
         let last_error = self.last_error.lock().ok().and_then(|g| g.clone());
         JvsStatus {
             running,
@@ -104,13 +109,14 @@ fn parse_bool_env(name: &str, default_value: bool) -> bool {
 }
 
 pub fn load_jvs_config() -> JvsConfig {
-    let host = std::env::var("JACHIN_VOICE_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let host =
+        std::env::var("JACHIN_VOICE_SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("JACHIN_VOICE_SERVER_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(18982);
-    let base_url =
-        std::env::var("JACHIN_VOICE_SERVER_URL").unwrap_or_else(|_| format!("http://{}:{}", host, port));
+    let base_url = std::env::var("JACHIN_VOICE_SERVER_URL")
+        .unwrap_or_else(|_| format!("http://{}:{}", host, port));
     let model_root = std::env::var("JACHIN_VOICE_MODEL_ROOT")
         .unwrap_or_else(|_| r"D:\project\jachin-system-main\data\models\voice".to_string());
     // JACHIN_SKIP_VOICE_SPAWN=1 means disable autospawn
@@ -131,7 +137,11 @@ async fn check_health(url: &str) -> Result<(), String> {
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client.get(&health_url).send().await.map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&health_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("JVS health status {}", resp.status()));
     }
@@ -159,8 +169,20 @@ async fn warm_audio_models(url: &str) -> Result<(), String> {
 fn resolve_python_for_voice(root: &std::path::Path) -> String {
     let venv = root.join(".venv-voice").join("Scripts").join("python.exe");
     if venv.is_file() {
+        #[cfg(target_os = "windows")]
+        {
+            let pythonw = venv.with_file_name("pythonw.exe");
+            if pythonw.is_file() {
+                return pythonw.to_string_lossy().to_string();
+            }
+        }
         return venv.to_string_lossy().to_string();
     }
+    #[cfg(target_os = "windows")]
+    {
+        "pythonw".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
     "python".to_string()
 }
 
@@ -182,11 +204,21 @@ pub async fn start_jvs_process(app: &tauri::AppHandle) -> Result<(), String> {
 
     if check_health(&cfg.base_url).await.is_ok() {
         match warm_audio_models(&cfg.base_url).await {
-            Ok(()) => l3_spawn::write_voice_companion_debug("rust", "jvs_warm_ok", "reused", &cfg.base_url),
-            Err(e) => l3_spawn::write_voice_companion_debug("rust", "jvs_warm_warn", &e, &cfg.base_url),
+            Ok(()) => l3_spawn::write_voice_companion_debug(
+                "rust",
+                "jvs_warm_ok",
+                "reused",
+                &cfg.base_url,
+            ),
+            Err(e) => {
+                l3_spawn::write_voice_companion_debug("rust", "jvs_warm_warn", &e, &cfg.base_url)
+            }
         }
         state.clear_error();
-        l3_spawn::write_jachin_shared_l3_debug("jvs", "health check ok; reuse existing voice_server");
+        l3_spawn::write_jachin_shared_l3_debug(
+            "jvs",
+            "health check ok; reuse existing voice_server",
+        );
         l3_spawn::write_voice_companion_debug("rust", "jvs_reuse", "health ok", &cfg.base_url);
         return Ok(());
     }
@@ -210,15 +242,27 @@ pub async fn start_jvs_process(app: &tauri::AppHandle) -> Result<(), String> {
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONUTF8", "1");
 
-    let (_rx, child) = cmd.spawn().map_err(|e| format!("spawn voice_server failed: {}", e))?;
+    let (_rx, child) = cmd
+        .spawn()
+        .map_err(|e| format!("spawn voice_server failed: {}", e))?;
     state.set_child(child);
 
     // 模型预热可能需数十秒；短超时会导致「spawn 失败」但进程仍在后台加载
     for _ in 0..120 {
         if check_health(&cfg.base_url).await.is_ok() {
             match warm_audio_models(&cfg.base_url).await {
-                Ok(()) => l3_spawn::write_voice_companion_debug("rust", "jvs_warm_ok", "spawned", &cfg.base_url),
-                Err(e) => l3_spawn::write_voice_companion_debug("rust", "jvs_warm_warn", &e, &cfg.base_url),
+                Ok(()) => l3_spawn::write_voice_companion_debug(
+                    "rust",
+                    "jvs_warm_ok",
+                    "spawned",
+                    &cfg.base_url,
+                ),
+                Err(e) => l3_spawn::write_voice_companion_debug(
+                    "rust",
+                    "jvs_warm_warn",
+                    &e,
+                    &cfg.base_url,
+                ),
             }
             state.clear_error();
             l3_spawn::write_jachin_shared_l3_debug("jvs", "voice_server spawned and healthy");

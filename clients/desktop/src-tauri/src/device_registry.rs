@@ -1,11 +1,10 @@
 /// Device Registry - 设备注册和能力发现
-/// 
+///
 /// 按照 Jachin-System v2.0 架构实现：
 /// - 设备启动时广播能力到 system/announce
 /// - 定期发送心跳到 system/heartbeat
 /// - 监听设备指令 device/{device_id}/command
 /// - 发送执行结果到 device/{device_id}/response
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -92,13 +91,13 @@ impl DeviceRegistry {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(3500);
-        
+
         Self {
             device_id,
             dapr_http_port: dapr_port,
         }
     }
-    
+
     /// 获取设备ID
     #[allow(dead_code)]
     pub fn device_id(&self) -> &str {
@@ -199,10 +198,10 @@ impl DeviceRegistry {
         };
 
         let data = serde_json::to_vec(&announce)?;
-        
+
         // 通过 Dapr Pub/Sub 发布到 system/announce 主题
         self.publish_event("system/announce", data).await?;
-        
+
         println!("[DeviceRegistry] Device announced: {}", self.device_id);
         Ok(())
     }
@@ -217,12 +216,15 @@ impl DeviceRegistry {
 
         let data = serde_json::to_vec(&heartbeat)?;
         self.publish_event("system/heartbeat", data).await?;
-        
+
         Ok(())
     }
 
     /// 发送设备响应
-    pub async fn send_response(&self, response: DeviceResponse) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_response(
+        &self,
+        response: DeviceResponse,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let topic = format!("device/{}/response", self.device_id);
         let data = serde_json::to_vec(&response)?;
         self.publish_event(&topic, data).await?;
@@ -230,11 +232,14 @@ impl DeviceRegistry {
     }
 
     /// 通过 Dapr Pub/Sub 发布事件
-    async fn publish_event(&self, topic: &str, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn publish_event(
+        &self,
+        topic: &str,
+        data: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "http://localhost:{}/v1.0/publish/pubsub/{}",
-            self.dapr_http_port,
-            topic
+            self.dapr_http_port, topic
         );
 
         let client = reqwest::Client::new();
@@ -259,10 +264,10 @@ impl DeviceRegistry {
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-            
+
             loop {
                 interval.tick().await;
-                
+
                 let heartbeat = DeviceHeartbeat {
                     device_id: device_id.clone(),
                     timestamp: current_timestamp(),

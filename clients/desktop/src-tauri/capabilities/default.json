@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/capabilities.json",
   "identifier": "default",
   "description": "Default capabilities for Jachin Desktop Sprite",
-  "windows": ["main", "sprite", "chat", "notification", "hud_panel"],
+  "windows": ["main", "sprite", "chat", "notification", "hud_panel", "english_vocab"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",

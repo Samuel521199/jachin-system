@@ -5,12 +5,12 @@
 #![allow(dead_code)]
 
 use serde_json::{json, Value};
-use tauri::Manager;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
 static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -84,7 +84,10 @@ pub fn trace_raw_hotkey(shortcut_hint: &str, state: &str) {
 }
 
 /// 在调用 `toggle_chat_omni` 之前：若 Machine B 没有此行，说明 OS/插件层未把键交给 Rust
-pub fn trace_signal_received_by_rust<R: tauri::Runtime>(app: &tauri::AppHandle<R>, shortcut_hint: &str) {
+pub fn trace_signal_received_by_rust<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    shortcut_hint: &str,
+) {
     let window_exists = app.get_webview_window("chat").is_some();
     let window_visible = app
         .get_webview_window("chat")

@@ -103,6 +103,13 @@ build/
 *.dmg
 *.app
 
+# Local generated outputs and large model artifacts
+output/
+data/models/
+model/
+models_repo/**/model/
+*.gguf
+
 # ChromaDB data
 chroma_data/
 

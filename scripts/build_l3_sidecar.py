@@ -39,6 +39,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR = ROOT / "clients" / "desktop" / "src-tauri" / "bin"
 SIDECAR_NAME = "l3_node"
+BUILD_WITH_BUSINESS_PACKAGES = (os.environ.get("JACHIN_BUILD_WITH_BUSINESS_PACKAGES") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _sync_dist_jachin_desktop_env_example() -> None:
@@ -158,8 +164,8 @@ def main() -> int:
     exclude_modules = [
         "torch", "torchvision", "transformers",  # WinError 1114 DLL 初始化失败
         "pandas", "scipy", "sklearn", "dask", "distributed",  # 非 L3 依赖
-        "bokeh", "matplotlib", "PIL", "cv2", "h5py", "tables",  # 非 L3 依赖
-        "PyQt5", "qtpy", "onnxruntime", "numba", "llvmlite",  # 非 L3 依赖
+        "bokeh", "matplotlib", "cv2", "h5py", "tables",  # 非 L3 依赖
+        "PyQt5", "qtpy", "numba", "llvmlite",  # 非 L3 依赖
     ]
     # 不用 --clean：脚本上方已 rmtree dist_l3/build_l3；PyInstaller --clean 会清空 workpath 子目录，易与 base_library.zip 路径竞态
     cmd = [
@@ -211,17 +217,16 @@ def main() -> int:
     _k11_lark = ROOT / "scripts" / "k11_lark_smoke_report.py"
     if _k11_lark.is_file():
         cmd.extend(["--add-data", f"{_k11_lark}{_docs_sep}scripts"])
-    # PMO Copilot：桌面端 --run-pmo-copilot 入口（frozen 下须在 _MEIPASS/scripts/）
-    _pmo_cli = ROOT / "scripts" / "run_pmo_copilot_skill.py"
-    if _pmo_cli.is_file():
-        cmd.extend(["--add-data", f"{_pmo_cli}{_docs_sep}scripts"])
+    # Business packages stay out of the default L3 sidecar. They should be
+    # published to L1 and installed into ~/.jachin/l3_*_cache. Use
+    # JACHIN_BUILD_WITH_BUSINESS_PACKAGES=1 only for legacy/dev bundles.
+    if BUILD_WITH_BUSINESS_PACKAGES:
+        _pmo_cli = ROOT / "scripts" / "run_pmo_copilot_skill.py"
+        if _pmo_cli.is_file():
+            cmd.extend(["--add-data", f"{_pmo_cli}{_docs_sep}scripts"])
     cmd += [
         "--hidden-import", "l3_node",
-        "--hidden-import", "l3_node.pmo_copilot_cli",
-        "--hidden-import", "l3_node.pmo_skill_paths",
-        "--hidden-import", "l3_node.pmo_copilot_env",
         "--hidden-import", "l3_node.standalone_engine",
-        "--hidden-import", "l3_node.pmo_mcp_delegate",
         "--hidden-import", "l3_node.win_console",
         "--hidden-import", "l3_node.paths",
         "--hidden-import", "l3_node.early_log",
@@ -234,8 +239,8 @@ def main() -> int:
         "--hidden-import", "l3_node.primitives",
         "--hidden-import", "l3_node.primitives.tools.loader",
         "--hidden-import", "l3_node.primitives.mcp.registry",
-        "--collect-submodules", "l3_node.primitives.mcp.mcp_tools",
-        "--hidden-import", "l3_node.hr_loader",
+        "--hidden-import", "l3_node.primitives.mcp.mcp_tools.human_ask_tool",
+        "--hidden-import", "l3_node.primitives.mcp.mcp_tools.lark_bitable_ops",
         "--hidden-import", "l3_node.capability_catalog",
         "--hidden-import", "l3_node.http_server",
         "--hidden-import", "l3_node.k11_subprocess_cli",
@@ -245,7 +250,6 @@ def main() -> int:
         "--hidden-import", "l3_node.im_channels",
         "--hidden-import", "l3_node.im_channels.lark_channel",
         "--hidden-import", "l3_node.im_channels.lark_credentials",
-        "--hidden-import", "l3_node.im_channels.pmo_bitable_channel",
         "--hidden-import", "l3_node.channels.lark.long_connection",
         "--hidden-import", "lark_oapi",
         "--hidden-import", "yaml",
@@ -274,19 +278,39 @@ def main() -> int:
         "--hidden-import", "playwright.sync_api",
         "--hidden-import", "playwright.async_api",
         "--hidden-import", "playwright_stealth",
-        # Kalaroko E2E / 巡检中枢：脚本内动态 import l3_client.*；须显式打入 frozen
-        "--collect-submodules", "l3_client",
-        "--hidden-import", "l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor",
+        # Core local MCPs for OS assistant.
+        "--collect-submodules", "l3_client.local_mcps.windows_uia_mcp",
+        "--collect-submodules", "l3_client.local_mcps.vision_ui_mcp",
+        "--collect-submodules", "l3_client.local_mcps.holographic_screen_mcp",
+        "--collect-submodules", "l3_client.local_mcps.jachin_memory_nexus",
         "--hidden-import", "l3_client.local_mcps.jachin_memory_nexus.memory_backend",
-        "--hidden-import", "l3_node.kalaroko_e2e_control",
-        "--hidden-import", "l3_node.channels.lark.kalaroko_inspection_notify",
         "--hidden-import", "mcp.server.fastmcp",
         "--hidden-import", "dotenv",
         # Memory Nexus commit_drawer（E2E 异常入库时；lazy import 须显式收集）
         "--hidden-import", "fastembed.text.text_embedding",
         "--hidden-import", "numpy",
+        "--hidden-import", "onnxruntime",
+        "--hidden-import", "onnxruntime.capi.onnxruntime_pybind11_state",
+        "--collect-binaries", "onnxruntime",
+        "--collect-data", "onnxruntime",
+        "--hidden-import", "PIL",
+        "--hidden-import", "PIL.Image",
         str(l3_main),
     ]
+    if BUILD_WITH_BUSINESS_PACKAGES:
+        cmd += [
+            "--hidden-import", "l3_node.pmo_copilot_cli",
+            "--hidden-import", "l3_node.pmo_skill_paths",
+            "--hidden-import", "l3_node.pmo_copilot_env",
+            "--hidden-import", "l3_node.pmo_mcp_delegate",
+            "--hidden-import", "l3_node.hr_loader",
+            "--hidden-import", "l3_node.im_channels.pmo_bitable_channel",
+            "--collect-submodules", "l3_node.primitives.mcp.mcp_tools",
+            "--collect-submodules", "l3_client",
+            "--hidden-import", "l3_client.local_mcps.kalaroko_monitor.mcp_kalaroko_monitor",
+            "--hidden-import", "l3_node.kalaroko_e2e_control",
+            "--hidden-import", "l3_node.channels.lark.kalaroko_inspection_notify",
+        ]
     if sys.platform == "win32":
         # mcp stdio 路径会触达 pywintypes（见 core/requirements.txt 注释）
         cmd.extend(["--hidden-import", "pywintypes"])

@@ -1,0 +1,31 @@
+{
+  "id": "com.jachin.skill.ai-recruiting-director",
+  "name": "AI 招聘总监",
+  "version": "1.0.0",
+  "description": "Boss 发帖、打招呼、收简历、简历透析、飞书遥控和无人值守招聘调度。",
+  "entry": "SKILL.md",
+  "item_type": "SKILL",
+  "type": "SKILL",
+  "runtime_tier": "L3_LOCAL",
+  "required_mcps": [
+    "com.jachin.hr.recruitment",
+    "com.jachin.hr.filesystem",
+    "com.jachin.tool.jpp-hr-analyzer4",
+    "com.jachin.mcp.l3.atom-lark-notifier"
+  ],
+  "preserve_user_data": [
+    "$JACHIN_HOME/config/skills/com.jachin.skill.ai-recruiting-director",
+    "$JACHIN_HOME/config/mcps/com.jachin.hr.recruitment",
+    "$JACHIN_HOME/workspace/hr",
+    "$JACHIN_HOME/data/hr",
+    "$JACHIN_HOME/logs/hr"
+  ],
+  "tags": [
+    "business-skill",
+    "hr",
+    "recruiting",
+    "boss",
+    "resume",
+    "lark"
+  ]
+}

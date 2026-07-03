@@ -14,22 +14,49 @@ export const dynamic = "force-dynamic";
 /** 语义化版本正则 */
 const SEMVER_REGEX = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$/;
 
+function readLocalEnvValue(key: string): string | undefined {
+  const fromProcess = process.env[key]?.trim();
+  if (fromProcess) return fromProcess;
+
+  try {
+    const envPath = path.join(process.cwd(), ".env.local");
+    if (!fs.existsSync(envPath)) return undefined;
+    const prefix = `${key}=`;
+    const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || !trimmed.startsWith(prefix)) {
+        continue;
+      }
+      return trimmed
+        .slice(prefix.length)
+        .trim()
+        .replace(/^['"]|['"]$/g, "");
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 /** plugin.json 结构（从 zip 内解析） */
 interface PluginJson {
   id: string;
   name: string;
   version?: string;
   description?: string;
-  item_type?: "SKILL" | "MCP" | "TOOL";
+  item_type?: "SKILL" | "MCP" | "TOOL" | "MODEL";
   type?: string;
   runtime_tier?: "L3_LOCAL" | "L2_GATEWAY" | "L1_CLOUD";
   required_mcps?: string[];
+  required_models?: string[];
 }
 
-function normalizePluginItemType(raw: string): "SKILL" | "MCP" | "TOOL" {
+function normalizePluginItemType(raw: string): "SKILL" | "MCP" | "TOOL" | "MODEL" {
   const u = String(raw).toUpperCase();
   if (u === "MCP") return "MCP";
   if (u === "TOOL") return "TOOL";
+  if (u === "MODEL") return "MODEL";
   return "SKILL";
 }
 
@@ -39,8 +66,8 @@ function normalizePluginItemType(raw: string): "SKILL" | "MCP" | "TOOL" {
 function resolveDeveloperFromToken(authHeader: string | null): string | null {
   if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.slice(7).trim();
-  const expected = process.env.JACHIN_DEV_TOKEN;
-  const devId = process.env.JACHIN_DEV_ID;
+  const expected = readLocalEnvValue("JACHIN_DEV_TOKEN");
+  const devId = readLocalEnvValue("JACHIN_DEV_ID");
   if (!expected || !devId || token !== expected) return null;
   return devId;
 }
@@ -78,7 +105,7 @@ function parseAndValidateZip(zipBuffer: Buffer): {
 
   let raw: unknown;
   try {
-    const content = pluginEntry.getData().toString("utf8");
+    const content = pluginEntry.getData().toString("utf8").replace(/^\uFEFF/, "");
     raw = JSON.parse(content) as unknown;
   } catch {
     throw new PublishError(
@@ -131,6 +158,9 @@ function parseAndValidateZip(zipBuffer: Buffer): {
   const requiredMcps = Array.isArray(p.required_mcps)
     ? (p.required_mcps as string[]).filter((x) => typeof x === "string")
     : [];
+  const requiredModels = Array.isArray(p.required_models)
+    ? (p.required_models as string[]).filter((x) => typeof x === "string")
+    : [];
 
   const pluginJson: PluginJson = {
     id,
@@ -140,6 +170,7 @@ function parseAndValidateZip(zipBuffer: Buffer): {
     item_type: itemTypeNorm,
     runtime_tier: runtimeTierNorm,
     required_mcps: requiredMcps,
+    required_models: requiredModels,
   };
 
   // 076: 若包内含 config/ 则必须含 manifest.yaml
@@ -178,8 +209,10 @@ function validateConfigInZip(zip: AdmZip): void {
 }
 
 /**
- * 077 规范：Skill 依赖的 MCP 必须已发布且审核通过
- * 文档: .cursor/rules/077-skill-mcp-dependency.mdc
+ * Skill dependencies must already exist in L1.
+ *
+ * Current stage has no external developer marketplace review. Published
+ * packages are approved immediately, so this only checks dependency presence.
  */
 async function validateRequiredMcpsForSkill(
   db: ReturnType<typeof getDb>,
@@ -206,14 +239,10 @@ async function validateRequiredMcpsForSkill(
     .where(and(eq(pluginsRegistry.itemType, "MCP")));
 
   const foundLower = new Set<string>();
-  const notApproved: string[] = [];
   for (const m of mcps) {
     const pid = (m.pluginId ?? "").toLowerCase();
     if (pluginIdsLower.has(pid)) {
       foundLower.add(pid);
-      if (m.status !== "approved") {
-        notApproved.push(m.pluginId ?? pid);
-      }
     }
   }
 
@@ -225,14 +254,6 @@ async function validateRequiredMcpsForSkill(
         `Skill 依赖的 MCP 必须先发布：mcp:${pid} 未在 L1 注册。请先发布该 MCP 后再发布 Skill。规范: .cursor/rules/077-skill-mcp-dependency.mdc`
       );
     }
-  }
-
-  if (notApproved.length > 0) {
-    throw new PublishError(
-      400,
-      "REQUIRED_MCP_NOT_APPROVED",
-      `Skill 依赖的 MCP 必须已审核通过：${notApproved.join(", ")} 尚未审核。请先在 L1 管理后台审核通过后再发布 Skill。规范: .cursor/rules/077-skill-mcp-dependency.mdc`
-    );
   }
 }
 
@@ -264,7 +285,7 @@ async function savePackageLocally(
   fs.writeFileSync(destPath, zipBuffer);
   // 禁止写成 a || b ? c : d：当 NEXUS_PUBLIC_URL 已设而 VERCEL_URL 未设时，旧写法会走到
   // `https://${VERCEL_URL}` → https://undefined（L2 无法拉包）。
-  const pub = (process.env.NEXUS_PUBLIC_URL || "").trim().replace(/\/$/, "");
+  const pub = (readLocalEnvValue("NEXUS_PUBLIC_URL") || "").trim().replace(/\/$/, "");
   const vercel = (process.env.VERCEL_URL || "").trim();
   let baseUrl: string;
   if (pub) {
@@ -273,7 +294,7 @@ async function savePackageLocally(
     const host = vercel.replace(/^https?:\/\//, "").replace(/\/$/, "");
     baseUrl = `https://${host}`;
   } else {
-    baseUrl = "https://nexus.jachin";
+    baseUrl = "http://localhost:3000";
   }
   return `${baseUrl.replace(/\/$/, "")}/packages/${fileName}`;
 }
@@ -321,6 +342,7 @@ function validateMetadataFromForm(
     description: description ?? "",
     item_type: itemTypeNorm,
     type: itemTypeNorm,
+    required_models: [],
   };
   return { pluginJson, manifestJsonRaw };
 }
@@ -343,7 +365,7 @@ export async function POST(request: NextRequest) {
       msg: "request",
       has_auth: Boolean(authHeader?.startsWith("Bearer ")),
       developer_ok: Boolean(developerId),
-      nexus_auto_approve: process.env.NEXUS_AUTO_APPROVE === "1",
+      publish_policy: "direct_approved",
     });
     if (!developerId) {
       appendL1DebugLine("store.publish", { msg: "reject", reason: "INVALID_TOKEN" });
@@ -482,7 +504,7 @@ export async function POST(request: NextRequest) {
 
     const db = getDb()!;
 
-    // 077 规范：Skill 依赖的 MCP 必须已发布且审核通过
+    // Skill dependencies still need to exist, but no review gate is required.
     if (pluginJson.item_type === "SKILL" && (pluginJson.required_mcps?.length ?? 0) > 0) {
       await validateRequiredMcpsForSkill(db, pluginJson.required_mcps);
     }
@@ -496,7 +518,7 @@ export async function POST(request: NextRequest) {
     const row = {
       pluginId: pluginJson.id,
       version: pluginJson.version ?? "1.0.0",
-      itemType: (pluginJson.item_type ?? "SKILL") as "SKILL" | "MCP" | "TOOL",
+      itemType: (pluginJson.item_type ?? "SKILL") as "SKILL" | "MCP" | "TOOL" | "MODEL",
       name: pluginJson.name,
       description: pluginJson.description ?? null,
       developerId,
@@ -506,12 +528,15 @@ export async function POST(request: NextRequest) {
         | "L3_LOCAL"
         | "L2_GATEWAY"
         | "L1_CLOUD",
-      requiredMcps: pluginJson.required_mcps ?? [],
+      requiredMcps: [
+        ...(pluginJson.required_mcps ?? []),
+        ...(pluginJson.required_models ?? []).map((id) => `model:${id}`),
+      ],
       packageUrl: packageUrl ?? null,
       packageSha256: packageSha256 ?? null,
       manifestJson: manifestJsonRaw,
-      category: "skill",
-      status: shadowOnly || process.env.NEXUS_AUTO_APPROVE === "1" ? "approved" : "pending",
+      category: pluginJson.item_type === "MODEL" ? "model" : pluginJson.item_type === "MCP" ? "mcp" : pluginJson.item_type === "TOOL" ? "tool" : "skill",
+      status: "approved",
       updatedAt: new Date(),
     };
 

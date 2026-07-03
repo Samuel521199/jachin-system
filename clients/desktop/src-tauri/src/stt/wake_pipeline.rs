@@ -6,13 +6,13 @@
 use super::audio_capture::start_capture;
 use super::audio_processor::AudioProcessor;
 use super::endpointing::{EndpointingMachine, RecordingState};
-use super::vad_engine::SileroVadEngine;
-use super::wake_audio::{generate_tone_wav, pcm_f32_to_wav};
-use super::wake_barge_in::BargeInDetector;
-use super::wake_kws::{normalize_wake_text, SttAssistedKws, transcript_matches_wake};
 use super::speaker_verification::{
     jvs_filter_owner_track_blocking, jvs_verify_blocking, load_owner_voiceprint_profile,
 };
+use super::vad_engine::SileroVadEngine;
+use super::wake_audio::{generate_tone_wav, pcm_f32_to_wav};
+use super::wake_barge_in::BargeInDetector;
+use super::wake_kws::{normalize_wake_text, transcript_matches_wake, SttAssistedKws};
 use crate::config::UserSettings;
 use crate::jvs::process_manager::JvsHandle;
 use crate::l3_spawn;
@@ -56,11 +56,16 @@ pub struct WakePipelineConfig {
 fn resolve_vad_model_path() -> PathBuf {
     // 1) 显式调试目录（最高优先级）
     if let Ok(debug_path) = std::env::var(VAD_DEBUG_PATH_ENV) {
-        return PathBuf::from(debug_path.trim()).join("vad").join(VAD_MODEL_FILENAME);
+        return PathBuf::from(debug_path.trim())
+            .join("vad")
+            .join(VAD_MODEL_FILENAME);
     }
     // 2) JACHIN_APP_ROOT（start-layer3.ps1 会设置），优先使用仓库 data/vad
     if let Ok(app_root) = std::env::var("JACHIN_APP_ROOT") {
-        let p = PathBuf::from(app_root).join("data").join("vad").join(VAD_MODEL_FILENAME);
+        let p = PathBuf::from(app_root)
+            .join("data")
+            .join("vad")
+            .join(VAD_MODEL_FILENAME);
         if p.exists() {
             return p;
         }
@@ -124,10 +129,7 @@ fn emit_wake_up(app: &AppHandle, wake_word: &str) {
 }
 
 fn emit_barge_in(app: &AppHandle, source: &str) {
-    let _ = app.emit(
-        "voice-barge-in",
-        serde_json::json!({ "source": source }),
-    );
+    let _ = app.emit("voice-barge-in", serde_json::json!({ "source": source }));
     l3_spawn::write_voice_companion_debug("rust", "barge_in", source, "");
 }
 
@@ -201,7 +203,11 @@ fn blocking_jvs_stt(base_url: &str, wav: &[u8]) -> Result<String, String> {
         .file_name("speech.wav");
     let form = reqwest::blocking::multipart::Form::new().part("audio", part);
     let url = format!("{}/v1/stt/transcribe", base_url.trim_end_matches('/'));
-    let resp = client.post(&url).multipart(form).send().map_err(|e| e.to_string())?;
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("JVS STT status {}", resp.status()));
     }
@@ -252,7 +258,9 @@ fn build_wake_slice_from_ring(ring: &[[f32; CHUNK_LEN]]) -> Vec<f32> {
     if ring.is_empty() {
         return Vec::new();
     }
-    let target_samples = (SAMPLE_RATE as f64 * WAKE_VERIFY_SLICE_SEC).round().max(0.0) as usize;
+    let target_samples = (SAMPLE_RATE as f64 * WAKE_VERIFY_SLICE_SEC)
+        .round()
+        .max(0.0) as usize;
     let target_chunks = (target_samples / CHUNK_LEN).max(1);
     let start = ring.len().saturating_sub(target_chunks);
     let mut out = Vec::with_capacity((ring.len() - start) * CHUNK_LEN);
@@ -262,11 +270,7 @@ fn build_wake_slice_from_ring(ring: &[[f32; CHUNK_LEN]]) -> Vec<f32> {
     out
 }
 
-fn pass_wake_speaker_gate(
-    app: &AppHandle,
-    ring_buffer: &[[f32; CHUNK_LEN]],
-    reason: &str,
-) -> bool {
+fn pass_wake_speaker_gate(app: &AppHandle, ring_buffer: &[[f32; CHUNK_LEN]], reason: &str) -> bool {
     let settings = UserSettings::load();
     if !sv_gate_enabled(&settings) {
         return true;
@@ -331,11 +335,19 @@ fn apply_owner_track_filter(
         Ok(Some(p)) => p,
         Ok(None) => {
             l3_spawn::write_voice_companion_debug("rust", "sv.owner_profile_missing", "", "");
-            return Ok(if strict { None } else { Some(source_wav.to_vec()) });
+            return Ok(if strict {
+                None
+            } else {
+                Some(source_wav.to_vec())
+            });
         }
         Err(e) => {
             l3_spawn::write_voice_companion_debug("rust", "sv.owner_profile_error", &e, "");
-            return Ok(if strict { None } else { Some(source_wav.to_vec()) });
+            return Ok(if strict {
+                None
+            } else {
+                Some(source_wav.to_vec())
+            });
         }
     };
 
@@ -355,8 +367,7 @@ fn apply_owner_track_filter(
             "sv.owner_empty",
             &format!(
                 "owner_duration_ms={} skipped={}",
-                owner_filter.owner_duration_ms,
-                owner_filter.skipped_segments_count
+                owner_filter.owner_duration_ms, owner_filter.skipped_segments_count
             ),
             "",
         );
@@ -458,33 +469,38 @@ fn process_utterance(app: &AppHandle, audio: Vec<f32>, wake_word: &str) -> bool 
                 }
             };
             match blocking_jvs_stt(&base, &sv_wav) {
-            Ok(text) => {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
+                Ok(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        play_timeout_earcon();
+                        l3_spawn::write_voice_companion_debug("rust", "wake.stt_empty", "", "");
+                        return false;
+                    }
+                    let cmd = strip_wake_prefix(trimmed, wake_word);
+                    if cmd.trim().is_empty() {
+                        l3_spawn::write_voice_companion_debug(
+                            "rust",
+                            "wake.stt_only_wake",
+                            trimmed,
+                            "",
+                        );
+                        return false;
+                    }
+                    l3_spawn::write_voice_companion_debug(
+                        "rust",
+                        "wake.stt_ok",
+                        &cmd.chars().take(120).collect::<String>(),
+                        "",
+                    );
+                    crate::voice_wake_bridge::inject_companion_user(app, &cmd);
+                    true
+                }
+                Err(e) => {
                     play_timeout_earcon();
-                    l3_spawn::write_voice_companion_debug("rust", "wake.stt_empty", "", "");
-                    return false;
+                    l3_spawn::write_voice_companion_debug("rust", "wake.stt_fail", &e, "");
+                    false
                 }
-                let cmd = strip_wake_prefix(trimmed, wake_word);
-                if cmd.trim().is_empty() {
-                    l3_spawn::write_voice_companion_debug("rust", "wake.stt_only_wake", trimmed, "");
-                    return false;
-                }
-                l3_spawn::write_voice_companion_debug(
-                    "rust",
-                    "wake.stt_ok",
-                    &cmd.chars().take(120).collect::<String>(),
-                    "",
-                );
-                crate::voice_wake_bridge::inject_companion_user(app, &cmd);
-                true
             }
-            Err(e) => {
-                play_timeout_earcon();
-                l3_spawn::write_voice_companion_debug("rust", "wake.stt_fail", &e, "");
-                false
-            }
-        }
         }
         Err(e) => {
             l3_spawn::write_voice_companion_debug("rust", "wake.jvs_fail", &e, "");
@@ -519,8 +535,7 @@ pub fn start_wake_pipeline(
     if !vad_path.exists() {
         return Err(format!(
             "VAD 模型不存在: {:?}。请将 silero_vad.onnx 放入该路径，或设置 {}",
-            vad_path,
-            VAD_DEBUG_PATH_ENV
+            vad_path, VAD_DEBUG_PATH_ENV
         ));
     }
 
@@ -572,7 +587,8 @@ pub fn start_wake_pipeline(
 
             if rx_manual.try_recv().is_ok() && phase == WakePhase::KwsIdle {
                 if pass_wake_speaker_gate(&app, &ring_buffer, "manual") {
-                    phase = enter_wake_capture(&app, &wake_word, &mut endpointing, &mut barge_detector);
+                    phase =
+                        enter_wake_capture(&app, &wake_word, &mut endpointing, &mut barge_detector);
                     wake_capture_started = Some(Instant::now());
                     speech_started = false;
                     conversation_until = None;
@@ -584,8 +600,12 @@ pub fn start_wake_pipeline(
             if rx_kws_hit.try_recv().is_ok() {
                 if phase == WakePhase::KwsIdle {
                     if pass_wake_speaker_gate(&app, &ring_buffer, "kws") {
-                        phase =
-                            enter_wake_capture(&app, &wake_word, &mut endpointing, &mut barge_detector);
+                        phase = enter_wake_capture(
+                            &app,
+                            &wake_word,
+                            &mut endpointing,
+                            &mut barge_detector,
+                        );
                         wake_capture_started = Some(Instant::now());
                         speech_started = false;
                         conversation_until = None;
@@ -629,7 +649,12 @@ pub fn start_wake_pipeline(
                     {
                         phase = WakePhase::KwsIdle;
                         conversation_until = None;
-                        l3_spawn::write_voice_companion_debug("rust", "wake.conversation_end", "", "");
+                        l3_spawn::write_voice_companion_debug(
+                            "rust",
+                            "wake.conversation_end",
+                            "",
+                            "",
+                        );
                     }
                 } else {
                     phase = WakePhase::KwsIdle;
@@ -724,11 +749,9 @@ pub fn start_wake_pipeline(
                         if barged_this_chunk {
                             continue;
                         }
-                        if let Ok(Some(audio)) = endpointing.feed_chunk_with_prob(
-                            &chunk,
-                            vad_prob,
-                            latched,
-                        ) {
+                        if let Ok(Some(audio)) =
+                            endpointing.feed_chunk_with_prob(&chunk, vad_prob, latched)
+                        {
                             barge_latched = false;
                             barge_latched_until = None;
                             let ok = process_utterance(&app, audio, &wake_word);

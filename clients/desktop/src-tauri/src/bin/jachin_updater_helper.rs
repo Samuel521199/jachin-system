@@ -1,4 +1,4 @@
-﻿//! 独立进程：下载新版本 → minisign 校验 → 检查用户数据目录 → 等待主进程退出 →
+//! 独立进程：下载新版本 → minisign 校验 → 检查用户数据目录 → 等待主进程退出 →
 //! 结束仍占用主程序路径的残留进程 → 若为 NSIS/MSI 则从暂存路径启动安装包，否则覆盖便携 exe 并启动。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -17,11 +17,10 @@ use sysinfo::{Pid, System};
 
 use updater_common::{
     assert_signed_artifact_version_matches_release, embedded_updater_pubkey_b64,
-    resolve_updater_pubkey_for_job,
     hot_update_debug_log_dir, hot_update_payload_sha256_hex, parse_minisign_trusted_file_field,
-    signature_wire_debug_summary, sniff_file_looks_like_windows_nsis_installer_package,
-    user_data_ready_for_hot_update, verify_minisign_payload_traced, HotUpdateJob,
-    HotUpdatePrepareResult,
+    resolve_updater_pubkey_for_job, signature_wire_debug_summary,
+    sniff_file_looks_like_windows_nsis_installer_package, user_data_ready_for_hot_update,
+    verify_minisign_payload_traced, HotUpdateJob, HotUpdatePrepareResult,
 };
 
 const LOG_FILE: &str = "hot_update_debug.log";
@@ -85,14 +84,9 @@ fn download_url_log_safe(url: &str) -> String {
     } else {
         return format!("non_http total_len={total}");
     };
-    let host = rest
-        .split(|c| c == '/' || c == '?')
-        .next()
-        .unwrap_or("?");
+    let host = rest.split(|c| c == '/' || c == '?').next().unwrap_or("?");
     let path_and_more_len = rest.len().saturating_sub(host.len());
-    format!(
-        "scheme={scheme} host={host} path_query_tail_len={path_and_more_len} total_len={total}"
-    )
+    format!("scheme={scheme} host={host} path_query_tail_len={path_and_more_len} total_len={total}")
 }
 
 fn log_job_loaded(job: &HotUpdateJob, job_path: &Path) {
@@ -106,7 +100,10 @@ fn log_job_loaded(job: &HotUpdateJob, job_path: &Path) {
         job.target_exe.display()
     ));
     if !job.download_url.is_empty() {
-        log_line(&format!("job download_url {}", download_url_log_safe(&job.download_url)));
+        log_line(&format!(
+            "job download_url {}",
+            download_url_log_safe(&job.download_url)
+        ));
     }
     if !job.signature.is_empty() {
         log_line(&format!(
@@ -123,7 +120,12 @@ fn log_job_loaded(job: &HotUpdateJob, job_path: &Path) {
     let wire = resolve_updater_pubkey_for_job(job);
     log_line(&format!(
         "verify_pubkey_source={} {}",
-        if job.updater_pubkey_wire.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        if job
+            .updater_pubkey_wire
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        {
             "job_json"
         } else {
             "helper_embedded"
@@ -182,9 +184,7 @@ fn looks_like_windows_installer_filename(path: &Path) -> bool {
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    name.contains("-setup")
-        || name.contains("_setup")
-        || name.ends_with("setup.exe")
+    name.contains("-setup") || name.contains("_setup") || name.ends_with("setup.exe")
 }
 
 /// NSIS / MSI 安装包；含内容嗅探，避免「主程序名却是安装桩」时误判为便携 exe。
@@ -451,7 +451,10 @@ fn download_verify_to_tmp(job: &HotUpdateJob, tmp: &Path) -> Result<(), String> 
 
     assert_signed_artifact_version_matches_release(&job.signature, &job.new_version)?;
     if let Ok(Some(ref fname)) = parse_minisign_trusted_file_field(&job.signature) {
-        log_line(&format!("minisign trusted file 字段与 new_version={} 一致: {fname}", job.new_version));
+        log_line(&format!(
+            "minisign trusted file 字段与 new_version={} 一致: {fname}",
+            job.new_version
+        ));
     }
 
     log_line("minisign verify_minisign_payload_traced finished OK");
@@ -492,7 +495,8 @@ fn run_prepare(job_path: &Path, job: &HotUpdateJob) -> Result<(), String> {
                 if renamed.exists() {
                     let _ = fs::remove_file(&renamed);
                 }
-                fs::rename(&tmp_initial, &renamed).map_err(|e| format!("NSIS 暂存重命名失败: {e}"))?;
+                fs::rename(&tmp_initial, &renamed)
+                    .map_err(|e| format!("NSIS 暂存重命名失败: {e}"))?;
                 log_line(&format!(
                     "prepare: 判定为 NSIS，已将暂存重命名为 {}",
                     renamed.display()
@@ -655,7 +659,8 @@ fn run_legacy(job_path: &Path, job: &HotUpdateJob) -> Result<(), String> {
 fn run(job_path: &Path) -> Result<(), String> {
     log_session_banner(job_path);
     let raw = fs::read_to_string(job_path).map_err(|e| format!("读取任务: {e}"))?;
-    let job: HotUpdateJob = serde_json::from_str(&raw).map_err(|e| format!("解析任务 JSON: {e}"))?;
+    let job: HotUpdateJob =
+        serde_json::from_str(&raw).map_err(|e| format!("解析任务 JSON: {e}"))?;
     log_job_loaded(&job, job_path);
 
     if job.apply_only {
@@ -691,18 +696,19 @@ fn main() {
 mod tests {
     //! MIME Base64（76 列换行）与生产 `signature` 外层解码回归；`cargo test --bin jachin-updater-helper`。
 
-    use base64::Engine;
     use crate::updater_common::{
         assert_signed_artifact_version_matches_release, parse_minisign_trusted_file_field,
     };
+    use base64::Engine;
 
     /// 生产环境抓取的 MIME 折行外层 Base64（内含字面 `\n`）。
     const RAW_MIME_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUK0h0\nNGhTRHFzQ0pLZlFJbFVlK1RNNWhRZTRVOWdRZ3gyaWdvMUR6M1dTQThHbFc1cVRaeVlQcGUwMEJ0\nbnJ2YWFWMkJpUjV5b3dEN2RDWlVQMjZWTk53bm0rY1IrM0FBPQp0cnVzdGVkIGNvbW1lbnQ6IHRp\nbWVzdGFtcDoxNzc1NjM1MDA1CWZpbGU6amFjaGluLWRlc2t0b3AuZXhlCjBNSWMwcDdRcitFNkVR\nWTVydDJSbUowUWFBT01pNlAxdzJxRCtvUmJNWTRCdXNVZ1JYYWZuRUJqSnhVcnBHT1d3QjdQRUpE\nSVZVZnhVREVCZnBpZURBPT0K";
 
     #[test]
     fn test_base64_decode_signature_production_helper_path() {
-        let decoded = crate::updater_common::decode_mime_wrapped_signature_outer_base64(RAW_MIME_SIGNATURE)
-            .unwrap_or_else(|e| panic!("热更新共用解码路径失败（应已处理 MIME 换行）: {e}"));
+        let decoded =
+            crate::updater_common::decode_mime_wrapped_signature_outer_base64(RAW_MIME_SIGNATURE)
+                .unwrap_or_else(|e| panic!("热更新共用解码路径失败（应已处理 MIME 换行）: {e}"));
 
         assert!(
             decoded.trim_start().starts_with("untrusted comment:"),

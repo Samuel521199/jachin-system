@@ -1,4 +1,4 @@
-﻿//! 读取 `~/.jachin/nexus_config.json`（与 L2 配对后写入的 access_token / nexus_base_url）。
+//! 读取 `~/.jachin/nexus_config.json`（与 L2 配对后写入的 access_token / nexus_base_url）。
 //! 热更新 Bearer 优先 `desktop_update_token`（与 L1 `DESKTOP_UPDATE_BEARER` 一致），否则用 `access_token`（edge 用户凭证）。
 //! 热更新端点 URL 须在 `tauri.conf.json` 的 `plugins.updater.endpoints` 与 `nexus_base_url` 主机一致。
 //!
@@ -49,6 +49,17 @@ pub fn nexus_base_url() -> Option<String> {
 pub fn access_token() -> Option<String> {
     let v = read_nexus_config_value();
     v.get("access_token")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[allow(dead_code)]
+pub fn l1_user_id() -> Option<String> {
+    let v = read_nexus_config_value();
+    v.get("l1_user_id")
+        .or_else(|| v.get("developer_id"))
+        .or_else(|| v.get("user_id"))
         .and_then(|x| x.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -136,14 +147,7 @@ pub fn ensure_default_nexus_config_from_example(app: &tauri::AppHandle) {
         }
     }
     match fs::write(&dest, raw) {
-        Ok(()) => eprintln!(
-            "[nexus_config] 已写入默认配置 {}",
-            dest.display()
-        ),
-        Err(e) => eprintln!(
-            "[nexus_config] 写入 {} 失败: {}",
-            dest.display(),
-            e
-        ),
+        Ok(()) => eprintln!("[nexus_config] 已写入默认配置 {}", dest.display()),
+        Err(e) => eprintln!("[nexus_config] 写入 {} 失败: {}", dest.display(), e),
     }
 }

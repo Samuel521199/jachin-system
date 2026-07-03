@@ -1,0 +1,59 @@
+{
+  "id": "com.jachin.mcp.local-translate",
+  "name": "Local Translate MCP",
+  "version": "1.0.1",
+  "description": "Local CTranslate2 translation MCP using installed OPUS-MT model assets.",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "mcp_execution_mode": "stdio_server",
+  "required_models": [
+    "com.jachin.model.opus-mt-en-zh-ct2-int8",
+    "com.jachin.model.opus-mt-zh-en-ct2-int8"
+  ],
+  "stdio_server": {
+    "id": "com.jachin.mcp.local-translate",
+    "command": "__JACHIN_MCP_PYTHON__",
+    "args": [
+      "__MCP_PACKAGE_ROOT__/server.py"
+    ],
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    }
+  },
+  "tools": [
+    {
+      "id": "local_translate_text",
+      "function": "local_translate_text",
+      "module": "local_translate",
+      "description": "Translate Chinese/English text locally with installed OPUS-MT CTranslate2 models.",
+      "params": [
+        "text",
+        "direction"
+      ]
+    },
+    {
+      "id": "local_translate_model_status",
+      "function": "local_translate_model_status",
+      "module": "local_translate",
+      "description": "Check whether local translation models are installed and usable.",
+      "params": []
+    },
+    {
+      "id": "local_translate_warmup",
+      "function": "local_translate_warmup",
+      "module": "local_translate",
+      "description": "Warm up installed translation models.",
+      "params": [
+        "direction"
+      ]
+    }
+  ],
+  "tags": [
+    "translation",
+    "offline",
+    "ctranslate2",
+    "opus-mt",
+    "model-asset"
+  ]
+}

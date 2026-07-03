@@ -49,7 +49,10 @@ impl RemotePhonemizer {
 impl Phonemizer for RemotePhonemizer {
     async fn text_to_phonemes(&self, text: &str, _style: &str) -> Result<PhonemeResult, String> {
         let client = reqwest::Client::new();
-        let url = format!("{}/api/v2/voice/phonemize", self.tier2_base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/api/v2/voice/phonemize",
+            self.tier2_base_url.trim_end_matches('/')
+        );
         let res = client
             .post(&url)
             .json(&serde_json::json!({ "text": text, "style": "zm" }))
@@ -75,11 +78,7 @@ impl Phonemizer for RemotePhonemizer {
         let tokens: Option<Vec<i64>> = body
             .get("tokens")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_i64())
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
             .filter(|v: &Vec<i64>| !v.is_empty());
 
         Ok(PhonemeResult {

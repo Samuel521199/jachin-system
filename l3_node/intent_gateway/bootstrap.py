@@ -12,6 +12,20 @@ logger = logging.getLogger(__name__)
 _BOOTSTRAPPED = False
 
 
+def _bi_capability_available() -> bool:
+    try:
+        from l3_node.capability_runtime_gate import capability_available
+
+        return capability_available(
+            ids=("com.jachin.bi.daily_report", "com.jachin.bi.analysis"),
+            prefixes=("com.jachin.bi",),
+            name_includes=("bi ", "bi每日", "bi 每日", "战报"),
+            dev_env="JACHIN_DEV_LOAD_BI_CAPABILITY",
+        )
+    except Exception:
+        return False
+
+
 def _match_stop_recruitment(bundle: Any, _ctx: dict[str, Any]) -> bool:
     ui = (bundle.user_input or "").strip()
     return bool(
@@ -42,6 +56,8 @@ async def _handle_stop_recruitment(bundle: Any, _ctx: dict[str, Any]) -> Optiona
 
 
 def _match_bi(bundle: Any, _ctx: dict[str, Any]) -> bool:
+    if not _bi_capability_available():
+        return False
     ui = (bundle.user_input or "").strip()
     try:
         from l3_node.primitives.skills.bi.bi_daily_report import is_bi_analysis_intent
@@ -105,6 +121,8 @@ def _match_docker_cleanup(bundle: Any, _ctx: dict[str, Any]) -> bool:
 
 
 async def _handle_bi(bundle: Any, _ctx: dict[str, Any]) -> Optional[str]:
+    if not _bi_capability_available():
+        return None
     try:
         from l3_node.primitives.skills.bi.bi_daily_report.main_skill import run_bi_daily_report
 
@@ -180,12 +198,15 @@ def ensure_default_intent_registry() -> None:
         ],
         defer_to_react_on_success=True,
     )
-    reg.register_preflight(
-        "skill.bi_daily_report",
-        priority=20,
-        match=_match_bi,
-        handle=_handle_bi,
-    )
+    if _bi_capability_available():
+        reg.register_preflight(
+            "skill.bi_daily_report",
+            priority=20,
+            match=_match_bi,
+            handle=_handle_bi,
+        )
+    else:
+        logger.info("[IntentRegistry] BI capability not installed/enabled; skip BI intent")
     try:
         from l3_node.intent_gateway.compensation_registry import get_compensation_registry
 

@@ -104,6 +104,7 @@ def _iter_package_dirs() -> list[Path]:
                 dirs.append(d)
     if not getattr(sys, "frozen", False):
         try:
+            from core.capability_pack_policy import should_load_repo_package
             from l3_node.paths import get_app_root
 
             plugin_root = get_app_root() / "skills_repo" / "plugin"
@@ -115,7 +116,15 @@ def _iter_package_dirs() -> list[Path]:
                             if str(pl.get("runtime_tier", "")).upper() == "L3_LOCAL" and (
                                 pl.get("item_type", "").lower() == "mcp" or pl.get("type", "").lower() == "mcp"
                             ):
-                                dirs.append(p)
+                                plugin_id = str(pl.get("id") or p.name).strip()
+                                if should_load_repo_package(plugin_id, is_mcp=True):
+                                    dirs.append(p)
+                                else:
+                                    logger.debug(
+                                        "[L3PackagedStdio] repo package hidden by boundary policy plugin=%s path=%s",
+                                        plugin_id,
+                                        p,
+                                    )
                         except Exception as e:
                             logger.warning(
                                 "[L3PackagedStdio] 解析 %s 失败，已跳过: %s",

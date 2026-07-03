@@ -1,4 +1,4 @@
-﻿//! Settings Commands - 用户设置与运行时配置
+//! Settings Commands - 用户设置与运行时配置
 
 use crate::config::UserSettings;
 use crate::jvs::process_manager::JvsHandle;
@@ -30,8 +30,13 @@ pub fn get_user_settings() -> Result<UserSettings, String> {
 #[tauri::command]
 pub fn update_user_settings(app: tauri::AppHandle, patch: UserSettings) -> Result<(), String> {
     patch.save()?;
-    app.emit("settings-updated", SettingsUpdatedPayload { restart_required: true })
-        .map_err(|e| e.to_string())?;
+    app.emit(
+        "settings-updated",
+        SettingsUpdatedPayload {
+            restart_required: true,
+        },
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -121,7 +126,11 @@ fn extract_embedding_blocking(base_url: &str, wav: &[u8]) -> Result<Vec<f32>, St
         .file_name("sample.wav");
     let form = reqwest::blocking::multipart::Form::new().part("audio", part);
     let url = format!("{}/v1/sv/extract", base_url.trim_end_matches('/'));
-    let resp = client.post(&url).multipart(form).send().map_err(|e| e.to_string())?;
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("JVS SV extract status {}", resp.status()));
     }
@@ -265,13 +274,12 @@ pub fn set_desktop_ui_lang(app: tauri::AppHandle, lang: String) -> Result<(), St
     let mut s = UserSettings::load();
     s.desktop_ui_lang = Some(normalized.to_string());
     s.save()?;
-    app
-        .emit(
-            "jachin-desktop-ui-lang-sync",
-            DesktopUiLangPayload {
-                lang: normalized.to_string(),
-            },
-        )
-        .map_err(|e| e.to_string())?;
+    app.emit(
+        "jachin-desktop-ui-lang-sync",
+        DesktopUiLangPayload {
+            lang: normalized.to_string(),
+        },
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -1,4 +1,4 @@
-﻿//! 陪伴语音会话相位（供唤醒管线 VAD 打断与 Masking 判断）。
+//! 陪伴语音会话相位（供唤醒管线 VAD 打断与 Masking 判断）。
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -31,5 +31,6 @@ pub fn companion_phase_is_thinking_or_speaking() -> bool {
 }
 
 pub fn should_monitor_barge_in(session_active: bool) -> bool {
-    session_active && (crate::voice_playback::is_playing() || companion_phase_is_thinking_or_speaking())
+    session_active
+        && (crate::voice_playback::is_playing() || companion_phase_is_thinking_or_speaking())
 }

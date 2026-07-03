@@ -8,13 +8,118 @@ import { appendL1DebugLine } from "@/lib/l1-debug-file-log";
 export const dynamic = "force-dynamic";
 
 /** 允许的 item_type 筛选值，防止非法注入 */
-const ALLOWED_ITEM_TYPES = ["SKILL", "MCP", "TOOL"] as const;
+const ALLOWED_ITEM_TYPES = ["SKILL", "MCP", "TOOL", "MODEL"] as const;
+
+type CatalogModelRow = {
+  id: string;
+  pluginId: string;
+  name: string;
+  packageUrl: string | null;
+  version: string | null;
+  manifestJson: unknown;
+};
+
+type CatalogRequiredModel = {
+  model_id: string;
+  plugin_id: string | null;
+  name: string;
+  package_url: string | null;
+  version: string | null;
+};
+
+function normalizeModelKey(input: string): string {
+  return input.trim().toLowerCase().replace(/^model:/, "");
+}
+
+function collectModelRefs(requiredMcps: unknown, manifestJson: unknown): string[] {
+  const refs = new Set<string>();
+
+  if (Array.isArray(requiredMcps)) {
+    for (const raw of requiredMcps) {
+      if (typeof raw !== "string") continue;
+      if (!raw.toLowerCase().startsWith("model:")) continue;
+      const k = normalizeModelKey(raw);
+      if (k) refs.add(k);
+    }
+  }
+
+  const manifest = manifestJson as Record<string, unknown> | null;
+  const fromManifest = manifest?.required_models;
+  if (Array.isArray(fromManifest)) {
+    for (const raw of fromManifest) {
+      if (typeof raw === "string") {
+        const k = normalizeModelKey(raw);
+        if (k) refs.add(k);
+        continue;
+      }
+      if (!raw || typeof raw !== "object") continue;
+      const obj = raw as Record<string, unknown>;
+      const candidates = [
+        obj.id,
+        obj.model_id,
+        obj.plugin_id,
+        obj.slug,
+      ];
+      for (const c of candidates) {
+        if (typeof c !== "string") continue;
+        const k = normalizeModelKey(c);
+        if (k) refs.add(k);
+      }
+    }
+  }
+
+  return [...refs];
+}
+
+function buildModelLookup(rows: CatalogModelRow[]): Map<string, CatalogModelRow> {
+  const lookup = new Map<string, CatalogModelRow>();
+
+  const bind = (key: string, row: CatalogModelRow) => {
+    const k = normalizeModelKey(key);
+    if (!k || lookup.has(k)) return;
+    lookup.set(k, row);
+  };
+
+  for (const row of rows) {
+    bind(row.pluginId, row);
+    const segs = row.pluginId.split(".").filter(Boolean);
+    const lastSeg = segs.length > 0 ? segs[segs.length - 1] : undefined;
+    if (lastSeg) bind(lastSeg, row);
+
+    const manifest = row.manifestJson as Record<string, unknown> | null;
+    const extra = [manifest?.id, manifest?.model_id, manifest?.plugin_id, manifest?.slug];
+    for (const v of extra) {
+      if (typeof v === "string") bind(v, row);
+    }
+  }
+
+  return lookup;
+}
+
+function resolveRequiredModels(
+  requiredMcps: unknown,
+  manifestJson: unknown,
+  modelLookup: Map<string, CatalogModelRow>
+): CatalogRequiredModel[] {
+  const refs = collectModelRefs(requiredMcps, manifestJson);
+  return refs.map((ref) => {
+    const hit = modelLookup.get(ref);
+    return {
+      model_id: ref,
+      plugin_id: hit?.pluginId ?? null,
+      name: hit?.name ?? ref,
+      package_url: hit?.packageUrl ?? null,
+      version: hit?.version ?? null,
+    };
+  });
+}
 
 /**
  * GET /api/v1/store/catalog
  * 面向前端网页的商城货架
  *
- * 状态锁死：仅返回 status = 'approved' 的插件，未经审核的绝不展示。
+ * 状态锁死：仅返回 status = 'approved' 的插件。当前发布策略为发布即 approved；
+ * pending 仅可能来自旧数据或手工写库。
  * 核心拦截：强制 visibility = 'PUBLIC'，绝不泄露 PRIVATE 私有技能。
  * 支持分页 (limit, offset)，支持按 item_type 筛选。
  */
@@ -60,7 +165,7 @@ export async function GET(request: NextRequest) {
 
     const db = getDb()!;
 
-    // 强制过滤：visibility = 'PUBLIC' 且 status = 'approved'，未经审核的插件绝对禁止展示
+    // 强制过滤：visibility = 'PUBLIC' 且 status = 'approved'
     const baseWhere = and(
       eq(pluginsRegistry.visibility, "PUBLIC"),
       eq(pluginsRegistry.status, "approved")
@@ -80,10 +185,13 @@ export async function GET(request: NextRequest) {
       runtimeTier: pluginsRegistry.runtimeTier,
       requiredMcps: pluginsRegistry.requiredMcps,
       packageUrl: pluginsRegistry.packageUrl,
+      packageSha256: pluginsRegistry.packageSha256,
+      version: pluginsRegistry.version,
+      manifestJson: pluginsRegistry.manifestJson,
       createdAt: pluginsRegistry.createdAt,
     };
 
-    const mapRow = (r: {
+    const buildMapRow = (modelLookup: Map<string, CatalogModelRow>) => (r: {
       id: string;
       pluginId: string;
       itemType: string;
@@ -94,6 +202,9 @@ export async function GET(request: NextRequest) {
       runtimeTier: string;
       requiredMcps: unknown;
       packageUrl: string | null;
+      packageSha256: string | null;
+      version: string | null;
+      manifestJson: unknown;
       createdAt: Date | null;
     }) => ({
       id: r.id,
@@ -105,11 +216,47 @@ export async function GET(request: NextRequest) {
       price_monthly: r.priceMonthly ? Number(r.priceMonthly) : 0,
       runtime_tier: r.runtimeTier,
       required_mcps: (r.requiredMcps as string[]) ?? [],
+      required_models: resolveRequiredModels(r.requiredMcps, r.manifestJson, modelLookup),
       package_url: r.packageUrl ?? null,
+      package_sha256: r.packageSha256 ?? null,
+      version: r.version ?? "1.0.0",
       created_at: r.createdAt?.toISOString() ?? null,
       runtime_builtin: false as const,
       tool_id: null as string | null,
     });
+
+    let modelLookup = new Map<string, CatalogModelRow>();
+    if (!itemType || itemType === "MCP") {
+      try {
+        const modelRows = await db
+          .select({
+            id: pluginsRegistry.id,
+            pluginId: pluginsRegistry.pluginId,
+            name: pluginsRegistry.name,
+            packageUrl: pluginsRegistry.packageUrl,
+            version: pluginsRegistry.version,
+            manifestJson: pluginsRegistry.manifestJson,
+          })
+          .from(pluginsRegistry)
+          .where(
+            and(
+              eq(pluginsRegistry.itemType, "MODEL"),
+              eq(pluginsRegistry.visibility, "PUBLIC"),
+              eq(pluginsRegistry.status, "approved")
+            )
+          );
+        modelLookup = buildModelLookup(modelRows);
+      } catch (dbErr) {
+        appendL1DebugLine("store.catalog", {
+          msg: "model_lookup_failed_fallback_empty",
+          error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+          hint: "DB enum/table may not include MODEL yet; catalog continues without model package resolution.",
+        });
+        modelLookup = new Map<string, CatalogModelRow>();
+      }
+    }
+
+    const mapRow = buildMapRow(modelLookup);
 
     // TOOL：先拉取**全部**已审核上架的 TOOL 行，再与内置列表合并后做 slice（禁止对 SQL 先 limit 再合并，否则会丢内置或截断错误）
     if (itemType === "TOOL") {
@@ -223,9 +370,7 @@ export async function GET(request: NextRequest) {
 
     const hints: string[] = [];
     if (dbTotal === 0 && itemType && pendingSameType > 0) {
-      hints.push(
-        `有 ${pendingSameType} 条 ${itemType} 处于 pending（待审核），商店仅展示 approved。请打开 /dashboard/admin/review 审核，或本机 .env.local 设 NEXUS_AUTO_APPROVE=1 后重启 Nexus。`
-      );
+      hints.push(`有 ${pendingSameType} 条历史 ${itemType} 仍处于 pending，当前新发布包会直接 approved。`);
     }
 
     return NextResponse.json({

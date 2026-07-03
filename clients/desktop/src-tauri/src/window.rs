@@ -1,7 +1,6 @@
 /// Window Management - 窗口管理模块
-/// 
+///
 /// 处理多窗口协同、位置同步等
-
 use tauri::{AppHandle, Manager};
 
 #[allow(dead_code)]

@@ -66,7 +66,7 @@ export function extractJwtSubjectFromRequest(request: NextRequest): string | nul
 export async function extractTrustedTenantId(
   request: NextRequest
 ): Promise<string | null> {
-  const secret = process.env.AUTH_SECRET;
+  const secret = resolveAuthSecret();
   if (!secret) return null;
   try {
     const token = await getToken({ req: request, secret });

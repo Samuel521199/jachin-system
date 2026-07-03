@@ -61,7 +61,7 @@ def load_config() -> VoiceServerConfig:
         stt_dir=model_root / stt_rel,
         tts_dir=model_root / tts_rel,
         sv_dir=model_root / sv_rel,
-        tts_voice=os.getenv("JACHIN_VOICE_TTS_VOICE", "Junhao"),
+        tts_voice=os.getenv("JACHIN_VOICE_TTS_VOICE", "zm_053"),
         tts_speed=_env_float("JACHIN_VOICE_TTS_SPEED", 1.3),
         log_level=os.getenv("JACHIN_VOICE_LOG_LEVEL", "info"),
     )

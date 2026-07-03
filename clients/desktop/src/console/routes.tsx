@@ -19,6 +19,9 @@ import { GameQAPanel } from "./pages/GameQAPanel";
 import { ProjectManagement } from "./pages/ProjectManagement";
 import { BIAnalysis } from "./pages/BIAnalysis";
 import { OsEvidencePanel } from "./pages/OsEvidencePanel";
+import { CapabilityPublish } from "./pages/CapabilityPublish";
+import { CapabilityInstallCenter } from "./pages/CapabilityInstallCenter";
+import { EnglishVocabPanel } from "./pages/EnglishVocabPanel";
 
 export const consoleRoutes = [
   {
@@ -31,6 +34,9 @@ export const consoleRoutes = [
       { path: "safety-lock", element: <SafetyLockApproval /> },
       { path: "calendar", element: <Calendar /> },
       { path: "skills", element: <SkillMatrix /> },
+      { path: "capability-publish", element: <CapabilityPublish /> },
+      { path: "capability-install", element: <CapabilityInstallCenter /> },
+      { path: "english-vocab", element: <EnglishVocabPanel /> },
       { path: "monitor", element: <MonitorMatrix /> },
       { path: "k11-smoke", element: <K11UnifiedSmokeTest /> },
       { path: "gameqa", element: <GameQAPanel /> },

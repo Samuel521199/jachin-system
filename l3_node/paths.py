@@ -10,12 +10,12 @@ import os
 import sys
 from pathlib import Path
 
-_PLUGIN_HR = Path("skills_repo") / "plugin" / "com.jachin.hr.recruitment"
+_CORE_SKILLS = Path("skills_repo") / "_bundled"
 
 
 def _has_plugin_root(p: Path) -> bool:
-    """检查路径下是否存在有效插件（开发模式用）。"""
-    return (p / _PLUGIN_HR).exists()
+    """检查路径下是否存在核心技能根（开发模式用）。"""
+    return (p / _CORE_SKILLS).exists()
 
 
 def get_app_root() -> Path:

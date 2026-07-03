@@ -1,13 +1,27 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { getDb, isDatabaseConfigured } from "@/db";
-import { jsonOrgRequiredResponse } from "@/lib/org-session-guard";
 import { edgeAgents } from "@/db/schema";
 import { inArray, desc, and, eq, or, isNull } from "drizzle-orm";
 
+export const dynamic = "force-dynamic";
+
+function emptyInstances(reason: "auth_required" | "org_required") {
+  return NextResponse.json({
+    instances: [],
+    success: true,
+    reason,
+  });
+}
+
 /**
  * GET /api/v1/instances
- * 指挥台 / Market 等 - 拉取当前登录用户名下的边缘智能体（与 /api/v1/fleet 隔离规则一致）
+ * Read-only instance list used by console and market pages.
+ *
+ * When the database is configured, the list is still scoped by the current
+ * authenticated user and active organization. If the browser is not logged in
+ * yet, return an empty list instead of 401 so L1 startup and public pages do
+ * not produce noisy auth errors.
  */
 export async function GET() {
   try {
@@ -15,16 +29,13 @@ export async function GET() {
       const session = await auth();
       const userId = session?.user?.id;
       if (!userId) {
-        return NextResponse.json(
-          { error: "请先登录" },
-          { status: 401 }
-        );
+        return emptyInstances("auth_required");
       }
 
       const activeOrgId =
         typeof session.user?.orgId === "string" ? session.user.orgId.trim() : "";
       if (!activeOrgId) {
-        return jsonOrgRequiredResponse();
+        return emptyInstances("org_required");
       }
 
       const db = getDb()!;
@@ -50,17 +61,16 @@ export async function GET() {
         .where(whereClause)
         .orderBy(desc(edgeAgents.lastHeartbeat));
 
-      const instances = agents.map((a) => ({
-        instance_id: a.id,
-        name: a.name ?? `边缘智能体-${a.id.slice(0, 8)}`,
-        status: a.status,
-        last_heartbeat: a.lastHeartbeat?.toISOString() ?? null,
+      const instances = agents.map((agent) => ({
+        instance_id: agent.id,
+        name: agent.name ?? `Edge Agent ${agent.id.slice(0, 8)}`,
+        status: agent.status,
+        last_heartbeat: agent.lastHeartbeat?.toISOString() ?? null,
       }));
 
-      return NextResponse.json({ instances });
+      return NextResponse.json({ instances, success: true });
     }
 
-    // 无数据库：演示用 mock
     const mockData = [
       {
         instance_id: "dev-layer2-instance-001",
@@ -89,11 +99,11 @@ export async function GET() {
       },
     ];
 
-    return NextResponse.json({ instances: mockData });
-  } catch (e) {
-    console.error("Instances API Error:", e);
+    return NextResponse.json({ instances: mockData, success: true });
+  } catch (error) {
+    console.error("[instances] Error:", error);
     return NextResponse.json(
-      { error: "获取边缘智能体列表失败" },
+      { success: false, error: "Failed to fetch instance list" },
       { status: 500 }
     );
   }

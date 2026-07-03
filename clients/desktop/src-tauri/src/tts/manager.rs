@@ -1,4 +1,4 @@
-﻿//! SpeechEngine - TTS 统一入口与自检
+//! SpeechEngine - TTS 统一入口与自检
 //!
 //! 当前策略：优先调用本地 voice_server(/v1/tts/synthesize, MOSS ONNX)；
 //! 若失败则按配置回退云端 TTS。
@@ -62,7 +62,10 @@ impl SpeechEngine {
     }
 
     /// 创建 ModelManager（使用 app_data_dir）
-    pub fn model_manager(voice_server_url: Option<&str>, app_data_dir: Option<PathBuf>) -> ModelManager {
+    pub fn model_manager(
+        voice_server_url: Option<&str>,
+        app_data_dir: Option<PathBuf>,
+    ) -> ModelManager {
         ModelManager::new(
             voice_server_url.unwrap_or(DEFAULT_VOICE_SERVER_URL),
             app_data_dir.map(|d| d.join("tts")),

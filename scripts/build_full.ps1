@@ -22,6 +22,149 @@ if (-not $root) { Write-Error "Project root not found" }
 
 Set-Location $root
 
+function Stop-ProcessTree {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return }
+    try {
+        & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+    } catch {
+        try {
+            Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+}
+
+function Invoke-TauriBuildNonInteractive {
+    param(
+        [string]$DesktopDir,
+        [string]$RootDir
+    )
+
+    $npm = @(Get-Command npm.cmd -ErrorAction SilentlyContinue | Select-Object -First 1)[0]
+    if (-not $npm) {
+        $npm = @(Get-Command npm -ErrorAction SilentlyContinue | Select-Object -First 1)[0]
+    }
+    if (-not $npm) {
+        Write-Host "[ERR] npm not found in PATH" -ForegroundColor Red
+        return 1
+    }
+
+    $logDir = Join-Path $RootDir "output\build_logs"
+    $null = New-Item -ItemType Directory -Force -Path $logDir
+    $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $stdoutLog = Join-Path $logDir "tauri_build_$stamp.stdout.log"
+    $stderrLog = Join-Path $logDir "tauri_build_$stamp.stderr.log"
+    $targetRelease = Join-Path $DesktopDir "src-tauri\target\release"
+    $mainExe = Join-Path $targetRelease "jachin-desktop.exe"
+
+    Write-Host "  Tauri build log:" -ForegroundColor Gray
+    Write-Host "    stdout: $stdoutLog" -ForegroundColor Gray
+    Write-Host "    stderr: $stderrLog" -ForegroundColor Gray
+
+    "" | Set-Content -LiteralPath $stdoutLog -Encoding UTF8
+    "" | Set-Content -LiteralPath $stderrLog -Encoding UTF8
+    $oldSkipL3Prebuild = $env:JACHIN_SKIP_L3_PREBUILD
+    $oldRustFlags = $env:RUSTFLAGS
+    $env:JACHIN_SKIP_L3_PREBUILD = "1"
+    if (-not $env:RUSTFLAGS) {
+        $env:RUSTFLAGS = "-C linker=rust-lld"
+        Write-Host "  RUSTFLAGS: -C linker=rust-lld（规避 Windows link.exe LNK1105 文件占用）" -ForegroundColor Gray
+    } elseif ($env:RUSTFLAGS -notmatch "linker=") {
+        $env:RUSTFLAGS = "$($env:RUSTFLAGS) -C linker=rust-lld"
+        Write-Host "  RUSTFLAGS appended: -C linker=rust-lld" -ForegroundColor Gray
+    }
+    try {
+        $proc = Start-Process `
+            -FilePath $npm.Source `
+            -ArgumentList @("run", "tauri", "build") `
+            -WorkingDirectory $DesktopDir `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog `
+            -WindowStyle Hidden `
+            -PassThru
+    } finally {
+        if ($null -eq $oldSkipL3Prebuild) {
+            Remove-Item Env:\JACHIN_SKIP_L3_PREBUILD -ErrorAction SilentlyContinue
+        } else {
+            $env:JACHIN_SKIP_L3_PREBUILD = $oldSkipL3Prebuild
+        }
+        if ($null -eq $oldRustFlags) {
+            Remove-Item Env:\RUSTFLAGS -ErrorAction SilentlyContinue
+        } else {
+            $env:RUSTFLAGS = $oldRustFlags
+        }
+    }
+
+    $startedAt = [DateTime]::UtcNow
+    $bundleSeenAt = $null
+    $timeoutAt = $startedAt.AddMinutes(45)
+
+    while (-not $proc.HasExited) {
+        Start-Sleep -Seconds 2
+        $stdoutText = ""
+        $stderrText = ""
+        try {
+            if (Test-Path -LiteralPath $stdoutLog) {
+                $stdoutText = Get-Content -LiteralPath $stdoutLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $stderrLog) {
+                $stderrText = Get-Content -LiteralPath $stderrLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        $combinedText = "$stdoutText`n$stderrText"
+        if ($combinedText -match "Finished\s+\d+\s+bundle\s+at:") {
+            if ($null -eq $bundleSeenAt) { $bundleSeenAt = [DateTime]::UtcNow }
+        }
+        $bundleComplete = ($null -ne $bundleSeenAt) -and (Test-Path -LiteralPath $mainExe)
+        if ($bundleComplete -and ([DateTime]::UtcNow - $bundleSeenAt).TotalSeconds -ge 8) {
+            Write-Host "  Tauri build 已生成 bundle，但 npm/tauri 进程未自动退出；自动收尾继续打包。" -ForegroundColor Yellow
+            Stop-ProcessTree -ProcessId $proc.Id
+            Start-Sleep -Seconds 1
+            return 0
+        }
+
+        if ([DateTime]::UtcNow -gt $timeoutAt) {
+            Write-Host "[ERR] Tauri build timeout after 45 minutes" -ForegroundColor Red
+            Stop-ProcessTree -ProcessId $proc.Id
+            Start-Sleep -Seconds 1
+            return 124
+        }
+    }
+
+    try {
+        $proc.WaitForExit()
+        $proc.Refresh()
+    } catch { }
+    $code = $proc.ExitCode
+    if ($null -eq $code) {
+        $code = 0
+    }
+    if ($code -ne 0) {
+        $stdoutText = ""
+        $stderrText = ""
+        try {
+            if (Test-Path -LiteralPath $stdoutLog) {
+                $stdoutText = Get-Content -LiteralPath $stdoutLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $stderrLog) {
+                $stderrText = Get-Content -LiteralPath $stderrLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        $combinedText = "$stdoutText`n$stderrText"
+        if (($combinedText -match "Finished\s+\d+\s+bundle\s+at:") -and (Test-Path -LiteralPath $mainExe)) {
+            Write-Host "  Tauri build 已生成 bundle，但进程退出码为 $code；按成功产物继续打包。" -ForegroundColor Yellow
+            return 0
+        }
+    }
+    if ($code -ne 0) {
+        Write-Host "  ---- tauri stdout tail ----" -ForegroundColor Yellow
+        Get-Content -LiteralPath $stdoutLog -Tail 80 -Encoding UTF8 -ErrorAction SilentlyContinue
+        Write-Host "  ---- tauri stderr tail ----" -ForegroundColor Yellow
+        Get-Content -LiteralPath $stderrLog -Tail 120 -Encoding UTF8 -ErrorAction SilentlyContinue
+    }
+    return $code
+}
+
 # 1. Clean (unless -NoClean)
 if (-not $NoClean) {
     Write-Host "`n[1/5] Cleaning build artifacts..." -ForegroundColor Cyan
@@ -43,10 +186,7 @@ if ($LASTEXITCODE -ne 0) {
 # 3. Build Tauri Desktop (optional)
 if (-not $SkipTauri) {
     Write-Host "`n[3/5] Building Tauri Desktop..." -ForegroundColor Cyan
-    Push-Location (Join-Path $root "clients\desktop")
-    npm run tauri build
-    $tauriExit = $LASTEXITCODE
-    Pop-Location
+    $tauriExit = Invoke-TauriBuildNonInteractive -DesktopDir (Join-Path $root "clients\desktop") -RootDir $root
     if ($tauriExit -ne 0) {
         Write-Host "[ERR] Tauri build failed" -ForegroundColor Red
         exit $tauriExit

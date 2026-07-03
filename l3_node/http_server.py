@@ -2959,6 +2959,57 @@ async def _handle_native_fs_policy_post(request: Any) -> "aiohttp.web.Response":
         return _json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def _handle_local_model_install(request: Any) -> "aiohttp.web.Response":
+    """POST /api/v1/local-model-install — L1 网页触发，本机 L3 下载并安装模型包。"""
+    try:
+        body = await request.json()
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"JSON 解析失败: {e}"}, status=400)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "error": "body must be object"}, status=400)
+
+    plugin_id = str(body.get("plugin_id") or body.get("model_plugin_id") or "").strip()
+    if not plugin_id:
+        return _json_response({"ok": False, "error": "plugin_id required"}, status=400)
+    l1_base_url = str(body.get("l1_base_url") or body.get("base_url") or "").strip() or None
+
+    try:
+        from l3_node.local_model_install import install_model_from_l1
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, install_model_from_l1, plugin_id, l1_base_url)
+        return _json_response(result)
+    except Exception as e:
+        logger.warning("[L3 HTTP] local model install failed plugin_id=%s err=%s", plugin_id, e)
+        return _json_response({"ok": False, "error": str(e), "plugin_id": plugin_id}, status=500)
+
+
+async def _handle_local_capability_install(request: Any) -> "aiohttp.web.Response":
+    """POST /api/v1/local-capability-install — L1 网页触发，本机 L3 安装 Skill/MCP/Model 及依赖。"""
+    try:
+        body = await request.json()
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"JSON 解析失败: {e}"}, status=400)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "error": "body must be object"}, status=400)
+
+    plugin_id = str(body.get("plugin_id") or body.get("item_id") or "").strip()
+    if not plugin_id:
+        return _json_response({"ok": False, "error": "plugin_id required"}, status=400)
+    l1_base_url = str(body.get("l1_base_url") or body.get("base_url") or "").strip() or None
+    repair = bool(body.get("repair") or False)
+
+    try:
+        from l3_node.local_capability_install import install_capability_from_l1
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, install_capability_from_l1, plugin_id, l1_base_url, repair)
+        return _json_response(result)
+    except Exception as e:
+        logger.warning("[L3 HTTP] local capability install failed plugin_id=%s err=%s", plugin_id, e)
+        return _json_response({"ok": False, "error": str(e), "plugin_id": plugin_id}, status=500)
+
+
 def _json_response(data: Any, status: int = 200) -> "aiohttp.web.Response":
     import aiohttp.web
     return aiohttp.web.json_response(data, status=status, dumps=lambda o: json.dumps(o, ensure_ascii=False))
@@ -2992,9 +3043,20 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         logger.debug("[L3 HTTP] recruitment_scheduler 预加载跳过: %s", e)
 
     try:
-        from l3_node.primitives.skills.bi.scheduler import register_bi_daily_report_job
+        from l3_node.capability_runtime_gate import capability_available
 
-        register_bi_daily_report_job()
+        bi_available = capability_available(
+            ids=("com.jachin.bi.daily_report", "com.jachin.bi.analysis"),
+            prefixes=("com.jachin.bi",),
+            name_includes=("bi ", "bi每日", "bi 每日", "战报"),
+            dev_env="JACHIN_DEV_LOAD_BI_CAPABILITY",
+        )
+        if bi_available:
+            from l3_node.primitives.skills.bi.scheduler import register_bi_daily_report_job
+
+            register_bi_daily_report_job()
+        else:
+            logger.info("[L3 HTTP] BI capability not installed/enabled; skip BI scheduler")
     except Exception as e:
         logger.debug("[L3 HTTP] bi.scheduler 注册跳过: %s", e)
 
@@ -3061,9 +3123,20 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     except Exception as e:
         logger.warning("[L3 HTTP] GameQA routes skipped: %s", e)
     try:
-        from l3_node.bi_console_http import register_bi_console_routes
+        from l3_node.capability_runtime_gate import capability_available
 
-        register_bi_console_routes(app)
+        bi_available = capability_available(
+            ids=("com.jachin.bi.daily_report", "com.jachin.bi.analysis"),
+            prefixes=("com.jachin.bi",),
+            name_includes=("bi ", "bi每日", "bi 每日", "战报"),
+            dev_env="JACHIN_DEV_LOAD_BI_CAPABILITY",
+        )
+        if bi_available:
+            from l3_node.bi_console_http import register_bi_console_routes
+
+            register_bi_console_routes(app)
+        else:
+            logger.info("[L3 HTTP] BI capability not installed/enabled; skip BI console routes")
     except Exception as e:
         logger.warning("[L3 HTTP] BI console routes skipped: %s", e)
     try:
@@ -3124,6 +3197,8 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/v3/safety-lock/reject", _handle_safety_lock_reject)
     app.router.add_get("/api/v3/config/native-fs-policy", _handle_native_fs_policy_get)
     app.router.add_post("/api/v3/config/native-fs-policy", _handle_native_fs_policy_post)
+    app.router.add_post("/api/v1/local-model-install", _handle_local_model_install)
+    app.router.add_post("/api/v1/local-capability-install", _handle_local_capability_install)
 
     async def _on_startup_register_k11_schedule_sse_loop(_app):
         """绑定主 asyncio 循环，供 cron_thinker 等线程向 MIND STREAM / schedule SSE 推流。"""

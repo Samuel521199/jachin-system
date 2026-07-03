@@ -1,4 +1,4 @@
-﻿//! 全天候语音 Pipeline 总控：采集 → 重采样 → VAD 截断 → 发射 STT_AUDIO_READY。
+//! 全天候语音 Pipeline 总控：采集 → 重采样 → VAD 截断 → 发射 STT_AUDIO_READY。
 
 #![cfg(feature = "ambient")]
 #![allow(dead_code)]
@@ -7,9 +7,9 @@ use super::audio_capture::start_capture;
 use super::audio_processor::AudioProcessor;
 use super::endpointing::EndpointingMachine;
 use super::vad_engine::SileroVadEngine;
+use crate::jvs::process_manager::JvsHandle;
 use base64::Engine;
 use crossbeam_channel::unbounded;
-use crate::jvs::process_manager::JvsHandle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

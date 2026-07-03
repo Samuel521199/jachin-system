@@ -1,13 +1,13 @@
-﻿//! 麦克风采集与无锁数据流
+//! 麦克风采集与无锁数据流
 //!
 //! 遵循 057-voice-endpointing：在 cpal 回调内仅做拷贝并发送到 channel，不做任何阻塞操作。
 
 #![cfg(feature = "ambient")]
 #![allow(dead_code)]
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::sync::Arc;
 
 /// 启动配置：使用系统默认麦克风，将 PCM 送入无界 channel。
@@ -34,7 +34,9 @@ pub fn start_capture() -> Result<(Stream, Receiver<Vec<f32>>, u32, usize), Strin
         _ => return Err("不支持的麦克风采样格式（仅支持 f32/i16/u16）".to_string()),
     };
 
-    stream.play().map_err(|e| format!("启动音频流失败: {}", e))?;
+    stream
+        .play()
+        .map_err(|e| format!("启动音频流失败: {}", e))?;
 
     Ok((stream, rx, sample_rate, source_channels))
 }
@@ -70,10 +72,7 @@ fn build_stream_i16(
         .build_input_stream(
             config,
             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let out: Vec<f32> = data
-                    .iter()
-                    .map(|&s| s as f32 / 32768.0f32)
-                    .collect();
+                let out: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0f32).collect();
                 let _ = tx.send(out);
             },
             move |_| {},

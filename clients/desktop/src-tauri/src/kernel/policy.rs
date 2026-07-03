@@ -61,37 +61,51 @@ pub fn generate_policy(profile: HardwareProfile, settings: &UserSettings) -> Run
 fn resolve_llm_provider(profile: &HardwareProfile, settings: &UserSettings) -> String {
     if let Some(ref choice) = settings.llm_provider_override {
         let c = choice.to_lowercase().trim().to_string();
-        eprintln!("[Kernel] LLM Provider: {} (User Override)", capitalize_first(&c));
+        eprintln!(
+            "[Kernel] LLM Provider: {} (User Override)",
+            capitalize_first(&c)
+        );
         return c;
     }
-    let choice = if profile.vram_ok {
-        "local"
-    } else {
-        "cloud"
-    };
-    eprintln!("[Kernel] LLM Provider: {} (Auto-Detected)", capitalize_first(choice));
+    let choice = if profile.vram_ok { "local" } else { "cloud" };
+    eprintln!(
+        "[Kernel] LLM Provider: {} (Auto-Detected)",
+        capitalize_first(choice)
+    );
     choice.to_string()
 }
 
 fn resolve_tts_provider(profile: &HardwareProfile, settings: &UserSettings) -> String {
     if let Some(ref choice) = settings.tts_provider_override {
         let c = choice.to_lowercase().trim().to_string();
-        eprintln!("[Kernel] TTS Provider: {} (User Override)", capitalize_first(&c));
+        eprintln!(
+            "[Kernel] TTS Provider: {} (User Override)",
+            capitalize_first(&c)
+        );
         return c;
     }
     let choice = if profile.ram_ok { "local" } else { "edge" };
-    eprintln!("[Kernel] TTS Provider: {} (Auto-Detected)", capitalize_first(choice));
+    eprintln!(
+        "[Kernel] TTS Provider: {} (Auto-Detected)",
+        capitalize_first(choice)
+    );
     choice.to_string()
 }
 
 fn resolve_stt_provider(profile: &HardwareProfile, settings: &UserSettings) -> String {
     if let Some(ref choice) = settings.stt_provider_override {
         let c = choice.to_lowercase().trim().to_string();
-        eprintln!("[Kernel] STT Provider: {} (User Override)", capitalize_first(&c));
+        eprintln!(
+            "[Kernel] STT Provider: {} (User Override)",
+            capitalize_first(&c)
+        );
         return c;
     }
     let choice = if profile.ram_ok { "local" } else { "cloud" };
-    eprintln!("[Kernel] STT Provider: {} (Auto-Detected)", capitalize_first(choice));
+    eprintln!(
+        "[Kernel] STT Provider: {} (Auto-Detected)",
+        capitalize_first(choice)
+    );
     choice.to_string()
 }
 

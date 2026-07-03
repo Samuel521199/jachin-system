@@ -1,0 +1,29 @@
+{
+  "id": "com.jachin.mcp.gameqa",
+  "name": "GameQA Runtime MCP",
+  "version": "1.0.0",
+  "description": "GameQA local runtime capability registration for visual testing, smoke tests, replay and rule execution. Runtime implementation is provided by L3 local GameQA endpoints.",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "required_mcps": [
+    "com.jachin.mcp.playwright.browser",
+    "com.jachin.mcp.stub.windows.uia"
+  ],
+  "tools": [
+    {
+      "id": "gameqa_auto_test",
+      "description": "Run game or complex UI smoke automation."
+    },
+    {
+      "id": "gameqa_shadow_apprentice",
+      "description": "Record, replay and inspect visual UI interaction paths."
+    }
+  ],
+  "tags": [
+    "gameqa",
+    "runtime",
+    "visual-testing",
+    "l3-local"
+  ]
+}

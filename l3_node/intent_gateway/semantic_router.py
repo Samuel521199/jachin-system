@@ -40,9 +40,31 @@ def infer_semantic_route_hint(text: str) -> Optional[dict[str, Any]]:
     low = raw.lower()
     hits: list[dict[str, Any]] = []
     for skill_id, kws in _KEYWORD_BAGS:
+        if skill_id == "skill.bi_daily_report" and not _route_capability_available(
+            ids=("com.jachin.bi.daily_report", "com.jachin.bi.analysis"),
+            prefixes=("com.jachin.bi",),
+            name_includes=("bi ", "bi每日", "bi 每日", "战报"),
+            dev_env="JACHIN_DEV_LOAD_BI_CAPABILITY",
+        ):
+            continue
         matched = [k for k in kws if k.lower() in low or k in raw]
         if matched:
             hits.append({"skill_id": skill_id, "keywords": matched[:5]})
     if not hits:
         return None
     return {"kind": "keyword_bag", "hits": hits[:5]}
+
+
+def _route_capability_available(
+    *,
+    ids: tuple[str, ...] = (),
+    prefixes: tuple[str, ...] = (),
+    name_includes: tuple[str, ...] = (),
+    dev_env: str | None = None,
+) -> bool:
+    try:
+        from l3_node.capability_runtime_gate import capability_available
+
+        return capability_available(ids=ids, prefixes=prefixes, name_includes=name_includes, dev_env=dev_env)
+    except Exception:
+        return False

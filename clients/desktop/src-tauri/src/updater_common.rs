@@ -1,4 +1,4 @@
-﻿//! 热更新助手与主程序共享：pubkey、minisign 校验、用户数据目录检查、任务 JSON。
+//! 热更新助手与主程序共享：pubkey、minisign 校验、用户数据目录检查、任务 JSON。
 
 use base64::Engine;
 use minisign_verify::{PublicKey, Signature};
@@ -273,9 +273,7 @@ fn looks_like_outer_base64_wrapped_full_pub_file(wire: &str) -> bool {
 fn decode_public_key_from_conf(pubkey_wire: &str) -> Result<PublicKey, String> {
     let t = pubkey_wire.trim().trim_start_matches('\u{feff}');
     if t.contains("untrusted comment:") {
-        return Err(
-            "pubkey: 勿粘贴带注释的整份 .pub；请只填第二行公钥（单行 R… Base64）".into(),
-        );
+        return Err("pubkey: 勿粘贴带注释的整份 .pub；请只填第二行公钥（单行 R… Base64）".into());
     }
     if looks_like_outer_base64_wrapped_full_pub_file(t) {
         return Err(
@@ -300,7 +298,10 @@ fn decode_public_key_from_conf(pubkey_wire: &str) -> Result<PublicKey, String> {
 /// **禁止**把明文多行 `.sig` 直接交给 `base64::decode`（其中含 `:`、空格、`\n`，会在约 76 字节处触发 Invalid symbol 10）。
 ///
 /// 兼容：① 误传了明文 `.sig`；② 双重 Base64；③ 外层带 MIME 折行。
-fn resolve_minisign_sig_text_from_wire_impl<F: FnMut(&str)>(wire: &str, mut trace: F) -> Result<String, String> {
+fn resolve_minisign_sig_text_from_wire_impl<F: FnMut(&str)>(
+    wire: &str,
+    mut trace: F,
+) -> Result<String, String> {
     let t = wire.trim();
     trace(&format!(
         "resolve_sig trim_char_len={} {}",
@@ -363,7 +364,9 @@ fn resolve_minisign_sig_text_from_wire_impl<F: FnMut(&str)>(wire: &str, mut trac
 }
 
 /// Tauri `tauri signer sign` 在 trusted comment 写入 `file:<被签名的本地文件名>`。
-pub fn parse_minisign_trusted_file_field(release_signature_b64: &str) -> Result<Option<String>, String> {
+pub fn parse_minisign_trusted_file_field(
+    release_signature_b64: &str,
+) -> Result<Option<String>, String> {
     let sig_text = resolve_minisign_sig_text_from_wire_impl(release_signature_b64, |_| {})?;
     for line in sig_text.lines() {
         let line = line.trim();
@@ -435,7 +438,11 @@ pub fn assert_signed_artifact_version_matches_release(
 
 /// 与 tauri-plugin-updater 一致：`Signature::decode` 解析多行 `.sig`，**不要**对整段明文做 `base64::decode`。
 #[allow(dead_code)] // 对外 API；`jachin-updater-helper` 二进制仅调用 `verify_minisign_payload_traced`
-pub fn verify_minisign_payload(data: &[u8], release_signature_b64: &str, pubkey_conf_b64: &str) -> Result<(), String> {
+pub fn verify_minisign_payload(
+    data: &[u8],
+    release_signature_b64: &str,
+    pubkey_conf_b64: &str,
+) -> Result<(), String> {
     verify_minisign_payload_traced(data, release_signature_b64, pubkey_conf_b64, |_| {})
 }
 
@@ -456,8 +463,8 @@ pub fn verify_minisign_payload_traced<F: FnMut(&str)>(
         e
     })?;
     trace("minisign_trace pubkey_OK");
-    let sig_text =
-        resolve_minisign_sig_text_from_wire_impl(release_signature_b64, |m| trace(m)).map_err(|e| {
+    let sig_text = resolve_minisign_sig_text_from_wire_impl(release_signature_b64, |m| trace(m))
+        .map_err(|e| {
             trace(&format!("minisign_trace resolve_ERR {e}"));
             e
         })?;
@@ -471,12 +478,10 @@ pub fn verify_minisign_payload_traced<F: FnMut(&str)>(
         format!("signature: minisign 解析失败: {e}")
     })?;
     trace("minisign_trace Signature_decode_OK");
-    public_key
-        .verify(data, &signature, true)
-        .map_err(|e| {
-            trace(&format!("minisign_trace crypto_verify_ERR {e}"));
-            format!("minisign verify: {e}")
-        })?;
+    public_key.verify(data, &signature, true).map_err(|e| {
+        trace(&format!("minisign_trace crypto_verify_ERR {e}"));
+        format!("minisign verify: {e}")
+    })?;
     trace("minisign_trace crypto_verify_OK");
     Ok(())
 }
@@ -509,8 +514,7 @@ mod pubkey_decode_tests {
     const DOC_RW_LINE: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
 
     /// 与 `tauri.conf.json` / `publish_desktop_release.py` 默认私钥成对。
-    const REPO_DEFAULT_KEY_LINE: &str =
-        "RWT+Ht4hSDqsCEoNM84poJhl0iQDXHPuU3lChuRTZ+ArkkyRGrvnF7ea";
+    const REPO_DEFAULT_KEY_LINE: &str = "RWT+Ht4hSDqsCEoNM84poJhl0iQDXHPuU3lChuRTZ+ArkkyRGrvnF7ea";
 
     #[test]
     fn decode_single_line_doc_example_ok() {

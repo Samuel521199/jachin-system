@@ -1,0 +1,91 @@
+{
+  "description": "Offline English learning MCP for correction, translation, word explanation, example sentences, and quizzes.",
+  "id": "com.jachin.mcp.english-tutor",
+  "item_type": "MCP",
+  "mcp_execution_mode": "stdio_server",
+  "name": "English Tutor MCP",
+  "runtime_tier": "L3_LOCAL",
+  "stdio_server": {
+    "args": [
+      "__MCP_PACKAGE_ROOT__/server.py"
+    ],
+    "command": "__JACHIN_MCP_PYTHON__",
+    "env": {
+      "PYTHONIOENCODING": "utf-8"
+    },
+    "id": "com.jachin.mcp.english-tutor"
+  },
+  "tags": [
+    "english",
+    "learning",
+    "offline",
+    "education",
+    "l1-publish-test"
+  ],
+  "tools": [
+    {
+      "description": "Correct common English grammar and expression issues with offline rules.",
+      "function": "english_correct_sentence",
+      "id": "english_correct_sentence",
+      "module": "english_tutor",
+      "params": [
+        "text",
+        "level"
+      ]
+    },
+    {
+      "description": "Translate simple Chinese/English words and short phrases with an offline dictionary.",
+      "function": "english_translate_cn_en",
+      "id": "english_translate_cn_en",
+      "module": "english_tutor",
+      "params": [
+        "text",
+        "direction"
+      ]
+    },
+    {
+      "description": "Explain an English word with meaning, pronunciation hint, usage, and examples.",
+      "function": "english_explain_word",
+      "id": "english_explain_word",
+      "module": "english_tutor",
+      "params": [
+        "word"
+      ]
+    },
+    {
+      "description": "Generate simple example sentences for a word or topic.",
+      "function": "english_make_examples",
+      "id": "english_make_examples",
+      "module": "english_tutor",
+      "params": [
+        "topic_or_word",
+        "count",
+        "level"
+      ]
+    },
+    {
+      "description": "Generate an offline English learning quiz.",
+      "function": "english_quiz_generate",
+      "id": "english_quiz_generate",
+      "module": "english_tutor",
+      "params": [
+        "topic",
+        "count",
+        "level"
+      ]
+    },
+    {
+      "description": "Check a quiz answer with offline answer keys or simple heuristics.",
+      "function": "english_quiz_check_answer",
+      "id": "english_quiz_check_answer",
+      "module": "english_tutor",
+      "params": [
+        "question_id",
+        "question",
+        "answer"
+      ]
+    }
+  ],
+  "type": "MCP",
+  "version": "1.0.2"
+}

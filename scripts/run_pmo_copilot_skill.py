@@ -234,7 +234,6 @@ async def _run_pmo_phase3_publisher_agent(
         set_ma_debug_context,
     )
     from l3_node.agent_core import _build_system_prompt, run_agent
-    from l3_node.intent_gateway.bundle import build_gateway_skill_inject
     from l3_node.primitives.tools.tool_pool import assemble_tool_pool
     from l3_node.pmo_report_format import PMO_DEMAND_TABLE_PUBLISHER_SPEC
     from l3_node.routing.output_format_signals import analyze_output_format_signals
@@ -890,10 +889,24 @@ async def _async_main_multi_agent(
         finalize_pmo_debug_log(ans)
         print("\n--- Final Answer ---\n", ans.strip())
         await asyncio.sleep(0.5)
-        return 0 if push_st in ("success", "ok") else 1
+        return 0
+
+    push_err = str(push_result.get("error") or push_st or "unknown")
+    if "bot/user can not be out of the chat" in push_err.lower():
+        targets = ", ".join(str(x) for x in (push_result.get("chat_ids") or []) if x) or "—"
+        ans = (
+            "PMO 宏观看板已完成数据分析，但飞书推送失败：机器人不在目标群内。\n"
+            f"目标 chat_id: {targets}\n"
+            "请把当前 Lark 应用机器人加入这些群，或把 .env 的 PMO_PRIMARY_CHAT_ID / "
+            "PMO_MONITOR_CHAT_ID 改成机器人已加入的群；临时可设置 PMO_PUSH_MONITOR=0 关闭监控群。"
+        )
+        finalize_pmo_debug_log(ans)
+        print("\n--- Final Answer ---\n", ans.strip())
+        await asyncio.sleep(0.5)
+        return 1
 
     print(
-        f"[pmo-copilot] macro_dashboard_push 未成功（{push_result.get('error') or push_st}），"
+        f"[pmo-copilot] macro_dashboard_push 未成功（{push_err}），"
         "回退 Publisher Agent…",
         flush=True,
     )

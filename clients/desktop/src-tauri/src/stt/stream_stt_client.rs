@@ -1,4 +1,4 @@
-﻿#![cfg(feature = "ambient")]
+#![cfg(feature = "ambient")]
 
 use serde::Deserialize;
 use serde_json::json;
@@ -68,10 +68,21 @@ impl SttStreamClient {
         };
         let sid = session_id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_string() } else { "_".to_string() })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c.to_string()
+                } else {
+                    "_".to_string()
+                }
+            })
             .collect::<String>();
-        let ws_url = format!("{}/v1/stt/stream?session_id={}", ws_base.trim_end_matches('/'), sid);
-        let (mut ws, _) = connect(&ws_url).map_err(|e| format!("stt stream connect failed: {e}"))?;
+        let ws_url = format!(
+            "{}/v1/stt/stream?session_id={}",
+            ws_base.trim_end_matches('/'),
+            sid
+        );
+        let (mut ws, _) =
+            connect(&ws_url).map_err(|e| format!("stt stream connect failed: {e}"))?;
         if let MaybeTlsStream::Plain(stream) = ws.get_mut() {
             let _ = stream.set_nonblocking(true);
         }
@@ -190,7 +201,8 @@ impl SttStreamClient {
 
 impl RawTcpClient {
     fn connect(base_url: &str, session_id: &str) -> Result<Self, String> {
-        let (host, http_port) = parse_host_port(base_url).ok_or_else(|| "invalid jvs base url".to_string())?;
+        let (host, http_port) =
+            parse_host_port(base_url).ok_or_else(|| "invalid jvs base url".to_string())?;
         let tcp_port = http_port.saturating_add(1);
         let addr = format!("{host}:{tcp_port}");
         let mut stream = TcpStream::connect_timeout(
@@ -303,6 +315,12 @@ fn parse_host_port(base_url: &str) -> Option<(String, u16)> {
 fn sanitize_session_id(session_id: &str) -> String {
     session_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
 }

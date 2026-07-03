@@ -434,10 +434,24 @@ class PluginManager:
         return ids
 
     def _scan_all_skills(self) -> List[str]:
-        """扫描 _bundled、drivers、apps 和根目录下所有合法技能（v4.0 分类）"""
+        """扫描可自动加载的技能。
+
+        默认只加载 _bundled 核心技能。业务/扩展技能必须通过 L1/L2 安装进入
+        用户缓存；开发态如需直接扫描仓库 skills_repo，可显式打开
+        JACHIN_DEV_LOAD_REPO_CAPABILITY_PACKAGES 或
+        JACHIN_DEV_LOAD_BUSINESS_CAPABILITY_PACKAGES。
+        """
+        from core.capability_pack_policy import (
+            is_core_package_id,
+            should_scan_repo_skill_roots,
+        )
+
         ids = set()
         for sid in self.scan_bundled_skills():
-            ids.add(sid)
+            if is_core_package_id(sid):
+                ids.add(sid)
+        if not should_scan_repo_skill_roots():
+            return list(ids)
         for sub in ("drivers", "apps"):
             for sid in self._scan_dir_for_skills(self.skills_repo_dir / sub):
                 ids.add(sid)

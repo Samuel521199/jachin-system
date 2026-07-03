@@ -38,8 +38,8 @@ from l3_node.pmo_report_format import (
     PMO_DEMAND_TABLE_PUBLISHER_SPEC,
     PMO_WAR_REPORT_LAYOUT_CONTRACT,
 )
-from l3_node.agent_core import PMO_BRANCH_A_MIN_DB_QUERIES, PMO_BRANCH_A_PERSONNEL_SSOT_VIEW
-from l3_node.agent_core import (
+from l3_node.pmo_agent_policy import PMO_BRANCH_A_MIN_DB_QUERIES, PMO_BRANCH_A_PERSONNEL_SSOT_VIEW
+from l3_node.pmo_agent_policy import (
     PMO_BRANCH_A_PRODUCT_VIEW_ALTS,
     PMO_BRANCH_A_REQUIRED_CROSS_VIEWS,
 )

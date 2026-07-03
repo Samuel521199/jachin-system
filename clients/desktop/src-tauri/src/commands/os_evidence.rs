@@ -142,7 +142,8 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create parent dir failed: {e}"))?;
     }
-    let text = serde_json::to_string_pretty(value).map_err(|e| format!("serialize json failed: {e}"))?;
+    let text =
+        serde_json::to_string_pretty(value).map_err(|e| format!("serialize json failed: {e}"))?;
     fs::write(path, text).map_err(|e| format!("write json failed: {e}"))
 }
 
@@ -160,7 +161,10 @@ fn compact_preview(text: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         return s;
     }
-    let mut out = s.chars().take(max_len.saturating_sub(1)).collect::<String>();
+    let mut out = s
+        .chars()
+        .take(max_len.saturating_sub(1))
+        .collect::<String>();
     out.push('…');
     out
 }
@@ -195,7 +199,10 @@ fn collect_paths(value: &Value, files: &mut BTreeSet<String>, screenshots: &mut 
                 if let Value::String(s) = item {
                     let lower_key = key.to_ascii_lowercase();
                     let lower = s.to_ascii_lowercase();
-                    if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                    if lower.ends_with(".png")
+                        || lower.ends_with(".jpg")
+                        || lower.ends_with(".jpeg")
+                    {
                         screenshots.insert(s.clone());
                     } else if lower_key.contains("path")
                         || lower.ends_with(".json")
@@ -255,7 +262,13 @@ fn collect_recipients(value: &Value) -> Vec<String> {
     if let Some(send_ev) = value
         .get("send_result")
         .and_then(|v| v.get("evidence"))
-        .or_else(|| value.get("run").and_then(|v| v.get("evidence")).and_then(|v| v.get("send_result")).and_then(|v| v.get("evidence")))
+        .or_else(|| {
+            value
+                .get("run")
+                .and_then(|v| v.get("evidence"))
+                .and_then(|v| v.get("send_result"))
+                .and_then(|v| v.get("evidence"))
+        })
     {
         for s in as_string_vec(send_ev.get("recipients")) {
             out.insert(s);
@@ -296,10 +309,26 @@ fn collect_timeline(value: &Value) -> Vec<OsEvidenceTimelineEntry> {
             let ocr_preview = timeline_ocr_preview(evidence);
             let checks = timeline_checks(evidence);
             Some(OsEvidenceTimelineEntry {
-                ts: obj.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                stage: obj.get("stage").and_then(|v| v.as_str()).unwrap_or("step").to_string(),
-                status: obj.get("status").and_then(|v| v.as_str()).unwrap_or("done").to_string(),
-                detail: obj.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                ts: obj
+                    .get("ts")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                stage: obj
+                    .get("stage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("step")
+                    .to_string(),
+                status: obj
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("done")
+                    .to_string(),
+                detail: obj
+                    .get("detail")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 screenshots: screenshots.into_iter().take(8).collect(),
                 files: files.into_iter().take(8).collect(),
                 ocr_preview,
@@ -388,7 +417,8 @@ fn diagnose(value: &Value, ok: bool, detail: &str) -> String {
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
     if !validation_ok {
-        return "Codex 输出不可信：项目名/关键文件/结论校验未通过，未发送或需要人工确认。".to_string();
+        return "Codex 输出不可信：项目名/关键文件/结论校验未通过，未发送或需要人工确认。"
+            .to_string();
     }
     let send_result = value.get("send_result").and_then(|v| v.as_object());
     if let Some(send) = send_result {
@@ -406,21 +436,42 @@ fn diagnose(value: &Value, ok: bool, detail: &str) -> String {
         if let Some(rows) = deliveries {
             for row in rows {
                 if !row.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    let recipient = row.get("recipient").and_then(|v| v.as_str()).unwrap_or("目标对象");
-                    let stage = row.get("failure_stage").and_then(|v| v.as_str()).unwrap_or("");
+                    let recipient = row
+                        .get("recipient")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("目标对象");
+                    let stage = row
+                        .get("failure_stage")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if stage.contains("preview") {
-                        return format!("失败点：{} 的粘贴预览不匹配或没找到正确聊天对象。", recipient);
+                        return format!(
+                            "失败点：{} 的粘贴预览不匹配或没找到正确聊天对象。",
+                            recipient
+                        );
                     }
-                    if !row.get("recipient_visible").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if !row
+                        .get("recipient_visible")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
                         return format!("失败点：没找到或没聚焦到 {} 的聊天窗口。", recipient);
                     }
-                    if !row.get("message_visible").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        return format!("失败点：OCR 没看到 {} 的发送结果，可能未发送或消息太长需要滚动校验。", recipient);
+                    if !row
+                        .get("message_visible")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        return format!(
+                            "失败点：OCR 没看到 {} 的发送结果，可能未发送或消息太长需要滚动校验。",
+                            recipient
+                        );
                     }
                 }
             }
         }
-        return "失败点：Lark 发送链路未完全通过视觉校验，请打开 evidence 查看截图和时间线。".to_string();
+        return "失败点：Lark 发送链路未完全通过视觉校验，请打开 evidence 查看截图和时间线。"
+            .to_string();
     }
     if ok {
         "已完成：任务 evidence 已生成。".to_string()
@@ -437,18 +488,37 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
     let task = value
         .get("task")
         .and_then(|v| v.as_str())
-        .or_else(|| value.get("run").and_then(|v| v.get("task")).and_then(|v| v.as_str()))
-        .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("evidence"))
+        .or_else(|| {
+            value
+                .get("run")
+                .and_then(|v| v.get("task"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("evidence")
+        })
         .to_string();
     let ok = value
         .get("ok")
         .and_then(|v| v.as_bool())
-        .or_else(|| value.get("run").and_then(|v| v.get("ok")).and_then(|v| v.as_bool()))
+        .or_else(|| {
+            value
+                .get("run")
+                .and_then(|v| v.get("ok"))
+                .and_then(|v| v.as_bool())
+        })
         .unwrap_or(true);
     let detail = value
         .get("detail")
         .and_then(|v| v.as_str())
-        .or_else(|| value.get("run").and_then(|v| v.get("detail")).and_then(|v| v.as_str()))
+        .or_else(|| {
+            value
+                .get("run")
+                .and_then(|v| v.get("detail"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("evidence_ready")
         .to_string();
     let message = value
@@ -500,7 +570,11 @@ fn evidence_entry(path: &Path) -> Option<OsEvidenceEntry> {
         workflow_composition: value.get("workflow_composition").cloned(),
         control: value.get("control").cloned(),
         plan_preview: value.get("plan_preview").cloned(),
-        attempts: value.get("attempts").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+        attempts: value
+            .get("attempts")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
         retry: value.get("retry").cloned(),
         metrics: value.get("metrics").cloned(),
     })
@@ -588,7 +662,12 @@ pub fn os_evidence_stats(limit: Option<usize>) -> Result<OsEvidenceStats, String
         let workflow = metrics
             .and_then(|v| v.get("workflow_id"))
             .and_then(|v| v.as_str())
-            .or_else(|| row.route.as_ref().and_then(|v| v.get("workflow_id")).and_then(|v| v.as_str()))
+            .or_else(|| {
+                row.route
+                    .as_ref()
+                    .and_then(|v| v.get("workflow_id"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or(&row.task)
             .to_string();
         *workflow_counts.entry(workflow.clone()).or_insert(0) += 1;
@@ -608,7 +687,11 @@ pub fn os_evidence_stats(limit: Option<usize>) -> Result<OsEvidenceStats, String
     let mut workflow_pass_rate = workflow_pass
         .into_iter()
         .map(|(name, (count, pass))| {
-            let rate = if count == 0 { 0.0 } else { pass as f64 / count as f64 };
+            let rate = if count == 0 {
+                0.0
+            } else {
+                pass as f64 / count as f64
+            };
             (name, count, pass, rate)
         })
         .collect::<Vec<_>>();
@@ -619,9 +702,21 @@ pub fn os_evidence_stats(limit: Option<usize>) -> Result<OsEvidenceStats, String
         total,
         passed,
         failed,
-        success_rate: if total == 0 { 0.0 } else { passed as f64 / total as f64 },
-        avg_duration_ms: if duration_count == 0 { 0 } else { (duration_sum / duration_count) as u64 },
-        avg_attempts: if attempt_count == 0 { 0.0 } else { attempt_sum as f64 / attempt_count as f64 },
+        success_rate: if total == 0 {
+            0.0
+        } else {
+            passed as f64 / total as f64
+        },
+        avg_duration_ms: if duration_count == 0 {
+            0
+        } else {
+            (duration_sum / duration_count) as u64
+        },
+        avg_attempts: if attempt_count == 0 {
+            0.0
+        } else {
+            attempt_sum as f64 / attempt_count as f64
+        },
         failure_top,
         workflow_top,
         workflow_pass_rate,
@@ -706,8 +801,13 @@ fn append_stop_timeline(out_dir: &str, pid: u32, ok: bool) -> Result<String, Str
     });
     if let Some(obj) = value.as_object_mut() {
         obj.insert("ok".to_string(), Value::Bool(false));
-        obj.insert("detail".to_string(), Value::String("user_stopped".to_string()));
-        let timeline = obj.entry("timeline".to_string()).or_insert_with(|| Value::Array(Vec::new()));
+        obj.insert(
+            "detail".to_string(),
+            Value::String("user_stopped".to_string()),
+        );
+        let timeline = obj
+            .entry("timeline".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
         if let Value::Array(rows) = timeline {
             rows.push(event);
         }
@@ -725,12 +825,21 @@ fn chrono_like_now() -> String {
     format!("{secs}")
 }
 
-fn spawn_runner(mode: &str, input: OsEvidenceLaunchInput) -> Result<OsEvidenceLaunchResult, String> {
+fn spawn_runner(
+    mode: &str,
+    input: OsEvidenceLaunchInput,
+) -> Result<OsEvidenceLaunchResult, String> {
     let root = crate::l3_spawn::project_root().ok_or("project root not found")?;
-    let project_name = input.project_name.clone().unwrap_or_else(|| "Jachin".to_string());
+    let project_name = input
+        .project_name
+        .clone()
+        .unwrap_or_else(|| "Jachin".to_string());
     let project_path = input.project_path.clone().unwrap_or_default();
-    let recipients = input.recipients.unwrap_or_else(|| vec!["Vivian".to_string()]);
-    let recipients_json = serde_json::to_string(&recipients).map_err(|e| format!("serialize recipients failed: {e}"))?;
+    let recipients = input
+        .recipients
+        .unwrap_or_else(|| vec!["Vivian".to_string()]);
+    let recipients_json = serde_json::to_string(&recipients)
+        .map_err(|e| format!("serialize recipients failed: {e}"))?;
     let wait_seconds = input.wait_seconds.unwrap_or(120).clamp(10, 600).to_string();
     let out_dir = output_subdir(mode)?;
     fs::create_dir_all(&out_dir).map_err(|e| format!("create output dir failed: {e}"))?;
@@ -739,7 +848,8 @@ fn spawn_runner(mode: &str, input: OsEvidenceLaunchInput) -> Result<OsEvidenceLa
         return Err(format!("runner script not found: {}", script.display()));
     }
 
-    let mut cmd = Command::new(std::env::var("JACHIN_PYTHON").unwrap_or_else(|_| "python".to_string()));
+    let mut cmd =
+        Command::new(std::env::var("JACHIN_PYTHON").unwrap_or_else(|_| "python".to_string()));
     cmd.current_dir(&root)
         .arg(&script)
         .arg("--mode")
@@ -768,7 +878,9 @@ fn spawn_runner(mode: &str, input: OsEvidenceLaunchInput) -> Result<OsEvidenceLa
     {
         cmd.creation_flags(0x08000000);
     }
-    let child = cmd.spawn().map_err(|e| format!("spawn evidence runner failed: {e}"))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn evidence runner failed: {e}"))?;
     let pid = child.id();
     let state = serde_json::json!({
         "mode": mode,
@@ -790,17 +902,30 @@ fn spawn_runner(mode: &str, input: OsEvidenceLaunchInput) -> Result<OsEvidenceLa
     })
 }
 
-fn runner_command(mode: &str, input: &OsEvidenceLaunchInput, out_dir: &Path, root: &Path) -> Result<Command, String> {
-    let project_name = input.project_name.clone().unwrap_or_else(|| "Jachin".to_string());
+fn runner_command(
+    mode: &str,
+    input: &OsEvidenceLaunchInput,
+    out_dir: &Path,
+    root: &Path,
+) -> Result<Command, String> {
+    let project_name = input
+        .project_name
+        .clone()
+        .unwrap_or_else(|| "Jachin".to_string());
     let project_path = input.project_path.clone().unwrap_or_default();
-    let recipients = input.recipients.clone().unwrap_or_else(|| vec!["Vivian".to_string()]);
-    let recipients_json = serde_json::to_string(&recipients).map_err(|e| format!("serialize recipients failed: {e}"))?;
+    let recipients = input
+        .recipients
+        .clone()
+        .unwrap_or_else(|| vec!["Vivian".to_string()]);
+    let recipients_json = serde_json::to_string(&recipients)
+        .map_err(|e| format!("serialize recipients failed: {e}"))?;
     let wait_seconds = input.wait_seconds.unwrap_or(120).clamp(10, 600).to_string();
     let script = root.join("scripts").join("os_evidence_task_runner.py");
     if !script.exists() {
         return Err(format!("runner script not found: {}", script.display()));
     }
-    let mut cmd = Command::new(std::env::var("JACHIN_PYTHON").unwrap_or_else(|_| "python".to_string()));
+    let mut cmd =
+        Command::new(std::env::var("JACHIN_PYTHON").unwrap_or_else(|_| "python".to_string()));
     cmd.current_dir(root)
         .arg(&script)
         .arg("--mode")
@@ -827,22 +952,30 @@ fn runner_command(mode: &str, input: &OsEvidenceLaunchInput, out_dir: &Path, roo
 }
 
 #[tauri::command]
-pub fn os_evidence_start_standard_demo(input: OsEvidenceLaunchInput) -> Result<OsEvidenceLaunchResult, String> {
+pub fn os_evidence_start_standard_demo(
+    input: OsEvidenceLaunchInput,
+) -> Result<OsEvidenceLaunchResult, String> {
     spawn_runner("standard_demo", input)
 }
 
 #[tauri::command]
-pub fn os_evidence_start_smoke_matrix(input: OsEvidenceLaunchInput) -> Result<OsEvidenceLaunchResult, String> {
+pub fn os_evidence_start_smoke_matrix(
+    input: OsEvidenceLaunchInput,
+) -> Result<OsEvidenceLaunchResult, String> {
     spawn_runner("smoke_matrix", input)
 }
 
 #[tauri::command]
-pub fn os_evidence_start_template(input: OsEvidenceLaunchInput) -> Result<OsEvidenceLaunchResult, String> {
+pub fn os_evidence_start_template(
+    input: OsEvidenceLaunchInput,
+) -> Result<OsEvidenceLaunchResult, String> {
     spawn_runner("template", input)
 }
 
 #[tauri::command]
-pub fn os_evidence_preflight(input: OsEvidenceLaunchInput) -> Result<OsEvidencePreflightResult, String> {
+pub fn os_evidence_preflight(
+    input: OsEvidenceLaunchInput,
+) -> Result<OsEvidencePreflightResult, String> {
     let root = crate::l3_spawn::project_root().ok_or("project root not found")?;
     let out_dir = output_subdir("preflight")?;
     fs::create_dir_all(&out_dir).map_err(|e| format!("create preflight dir failed: {e}"))?;
@@ -858,16 +991,23 @@ pub fn os_evidence_preflight(input: OsEvidenceLaunchInput) -> Result<OsEvidenceP
         .find('{')
         .and_then(|start| stdout.rfind('}').map(|end| stdout[start..=end].to_string()))
         .unwrap_or(stdout);
-    let raw: Value = serde_json::from_str(&json_text).map_err(|e| format!("preflight json invalid: {e}; stdout={json_text}"))?;
+    let raw: Value = serde_json::from_str(&json_text)
+        .map_err(|e| format!("preflight json invalid: {e}; stdout={json_text}"))?;
     Ok(OsEvidencePreflightResult {
         ok: raw.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
-        checks: raw.get("checks").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+        checks: raw
+            .get("checks")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
         raw,
     })
 }
 
 #[tauri::command]
-pub fn os_evidence_stop_task(pid: Option<u32>, out_dir: Option<String>) -> Result<OsEvidenceStopResult, String> {
+pub fn os_evidence_stop_task(
+    pid: Option<u32>,
+    out_dir: Option<String>,
+) -> Result<OsEvidenceStopResult, String> {
     let Some(pid) = pid else {
         return Ok(OsEvidenceStopResult {
             ok: false,
@@ -908,7 +1048,11 @@ pub fn os_evidence_stop_task(pid: Option<u32>, out_dir: Option<String>) -> Resul
         ok,
         pid: Some(pid),
         out_dir,
-        message: if ok { "stopped".to_string() } else { "stop_failed".to_string() },
+        message: if ok {
+            "stopped".to_string()
+        } else {
+            "stop_failed".to_string()
+        },
     })
 }
 
@@ -919,7 +1063,8 @@ pub fn os_evidence_config_get() -> Result<OsEvidenceConfig, String> {
         return Ok(default_config());
     }
     let text = fs::read_to_string(&path).map_err(|e| format!("read config failed: {e}"))?;
-    let mut cfg: OsEvidenceConfig = serde_json::from_str(&text).unwrap_or_else(|_| default_config());
+    let mut cfg: OsEvidenceConfig =
+        serde_json::from_str(&text).unwrap_or_else(|_| default_config());
     cfg.project_name = cfg.project_name.trim().to_string();
     cfg.project_path = cfg.project_path.trim().to_string();
     cfg.recipients = cfg

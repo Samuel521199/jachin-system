@@ -46,7 +46,8 @@ async function main() {
       EXCEPTION WHEN duplicate_object THEN NULL;
       END $$;
     `);
-    // 与 drizzle/0015_item_type_tool.sql 一致：旧库仅 SKILL/MCP，缺 TOOL 时 catalog/publish 会报 invalid enum
+    // 与 drizzle/0015_item_type_tool.sql、drizzle/0016_item_type_model.sql 一致：
+    // 旧库仅 SKILL/MCP，缺 TOOL/MODEL 时 catalog/publish 会报 invalid enum。
     await sql.unsafe(`
       DO $$
       BEGIN
@@ -60,7 +61,20 @@ async function main() {
         END IF;
       END $$;
     `);
-    log("[init-store-schema] Enums OK (incl. item_type TOOL)");
+    await sql.unsafe(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_enum e
+          JOIN pg_type t ON e.enumtypid = t.oid
+          WHERE t.typname = 'item_type' AND e.enumlabel = 'MODEL'
+        ) THEN
+          ALTER TYPE public.item_type ADD VALUE 'MODEL';
+        END IF;
+      END $$;
+    `);
+    log("[init-store-schema] Enums OK (incl. item_type TOOL/MODEL)");
 
     // 2. plugins_registry 列（需表已存在）
     await sql.unsafe(`

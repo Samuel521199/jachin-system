@@ -59,8 +59,8 @@ function redirectOffBindAllHost(req: NextRequest): NextResponse | null {
 /** NextAuth v5：`auth` 须用回调包装为中间件，不能 `auth(req)` 直接调用。 */
 export default auth((req) => {
   const p = req.nextUrl.pathname;
-  // 双保险：matcher 已排除 _next，但若环境对正则匹配有差异，避免误伤静态资源
-  if (p.startsWith("/_next/")) {
+  // 双保险：matcher 已排除公开页与 _next，但若环境对正则匹配有差异，避免误伤
+  if (p === "/" || p === "/login" || p.startsWith("/auth/") || p.startsWith("/_next/")) {
     return NextResponse.next();
   }
   const early = redirectOffBindAllHost(req);
@@ -69,7 +69,7 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    // 排除 API、Next 内部资源、静态后缀；api 用 api/|api$ 避免误伤 /apiconfig 等
-    "/((?!api/|api$|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // 排除公开页、API、Next 内部资源、静态后缀；api 用 api/|api$ 避免误伤 /apiconfig 等
+    "/((?!$|login$|auth/|api/|api$|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

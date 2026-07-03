@@ -135,6 +135,7 @@ async function assertDrizzleIntrospectNoLegacyNotNull(url: string, verbose: bool
         )
       WHERE tc.table_schema = 'public'
         AND tc.constraint_type = 'CHECK'
+        AND con.contype = 'c'
         AND trim(tc.constraint_name::text) LIKE '%\\_not_null' ESCAPE '\\'
     `);
     if (rows.length > 0) {

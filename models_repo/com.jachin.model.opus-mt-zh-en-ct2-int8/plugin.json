@@ -1,0 +1,32 @@
+{
+  "id": "com.jachin.model.opus-mt-zh-en-ct2-int8",
+  "name": "OPUS-MT Chinese to English CT2 INT8",
+  "version": "1.0.0",
+  "description": "Local CTranslate2 INT8 translation model for Chinese to English sentence translation.",
+  "item_type": "MODEL",
+  "type": "MODEL",
+  "runtime_tier": "L3_LOCAL",
+  "model_asset": {
+    "engine": "ctranslate2",
+    "task": "translation",
+    "source_lang": "zh",
+    "target_lang": "en",
+    "quantization": "int8",
+    "upstream": "Helsinki-NLP/opus-mt-zh-en",
+    "model_dir": "model",
+    "required_files": [
+      "model/config.json",
+      "model/model.bin",
+      "model/source.spm",
+      "model/target.spm"
+    ]
+  },
+  "tags": [
+    "model",
+    "translation",
+    "chinese",
+    "english",
+    "opus-mt",
+    "ctranslate2"
+  ]
+}

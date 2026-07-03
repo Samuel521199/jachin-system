@@ -53,6 +53,7 @@ export async function GET(request: NextRequest) {
         priceMonthly: pluginsRegistry.priceMonthly,
         runtimeTier: pluginsRegistry.runtimeTier,
         packageUrl: pluginsRegistry.packageUrl,
+        packageSha256: pluginsRegistry.packageSha256,
         status: pluginsRegistry.status,
         createdAt: pluginsRegistry.createdAt,
       })
@@ -72,6 +73,7 @@ export async function GET(request: NextRequest) {
       price_monthly: r.priceMonthly ? Number(r.priceMonthly) : 0,
       runtime_tier: r.runtimeTier,
       package_url: r.packageUrl ?? null,
+      package_sha256: r.packageSha256 ?? null,
       status: r.status,
       created_at: r.createdAt?.toISOString() ?? null,
     }));

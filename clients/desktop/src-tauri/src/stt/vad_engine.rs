@@ -63,12 +63,10 @@ impl SileroVadEngine {
         input_buf.extend_from_slice(&self.context);
         input_buf.extend_from_slice(chunk);
 
-        let input_tensor =
-            Tensor::from_array(([1usize, EFFECTIVE_INPUT], input_buf.clone()))
-                .map_err(|e| e.to_string())?;
+        let input_tensor = Tensor::from_array(([1usize, EFFECTIVE_INPUT], input_buf.clone()))
+            .map_err(|e| e.to_string())?;
         let state_tensor =
-            Tensor::from_array((STATE_SHAPE, self.state.clone()))
-                .map_err(|e| e.to_string())?;
+            Tensor::from_array((STATE_SHAPE, self.state.clone())).map_err(|e| e.to_string())?;
         let sr_arr: Vec<i64> = vec![SAMPLE_RATE];
         let sr_tensor = Tensor::from_array(([1usize], sr_arr)).map_err(|e| e.to_string())?;
 

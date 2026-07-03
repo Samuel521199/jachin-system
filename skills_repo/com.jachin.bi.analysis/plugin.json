@@ -1,0 +1,31 @@
+{
+  "id": "com.jachin.skill.bi-growth-officer",
+  "name": "BI 数据增长官",
+  "version": "1.0.0",
+  "description": "每天自动生成经营分析、留存、充值、游戏经济和战略建议，重点关注在线增长。",
+  "entry": "SKILL.md",
+  "item_type": "SKILL",
+  "type": "SKILL",
+  "runtime_tier": "L3_LOCAL",
+  "required_mcps": [
+    "com.jachin.bi.daily_report",
+    "com.jachin.mcp.l3.atom-bi-project-context",
+    "com.jachin.mcp.l3.atom-lark-notifier",
+    "com.jachin.mcp.l3.atom-web-scraper",
+    "com.jachin.mcp.l3.atom-email-sender"
+  ],
+  "preserve_user_data": [
+    "$JACHIN_HOME/config/skills/com.jachin.bi.daily_report",
+    "$JACHIN_HOME/workspace/bi",
+    "$JACHIN_HOME/data/bi",
+    "$JACHIN_HOME/logs/bi"
+  ],
+  "tags": [
+    "business-skill",
+    "bi",
+    "growth",
+    "retention",
+    "revenue",
+    "game-economy"
+  ]
+}

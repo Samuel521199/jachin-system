@@ -1,0 +1,37 @@
+{
+  "id": "com.jachin.mcp.pmo-runtime",
+  "name": "PMO Runtime MCP",
+  "version": "1.0.0",
+  "description": "PMO local runtime capability registration for mirror import, macro dashboard generation, preview, delivery guardrails, and change-alert analysis. Runtime implementation is provided by L3 local capability hooks.",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "required_mcps": [
+    "com.jachin.mcp.l3.atom-bi-project-context",
+    "com.jachin.mcp.l3.atom-lark-notifier"
+  ],
+  "tools": [
+    {
+      "id": "core:pmo_mirror_import",
+      "description": "Import Lark Bitable markdown/json mirror files into PMO SQLite raw-record tables."
+    },
+    {
+      "id": "core:pmo_macro_dashboard_push",
+      "description": "Generate and push PMO macro dashboard report to configured Lark channels."
+    },
+    {
+      "id": "core:pmo_macro_dashboard_preview",
+      "description": "Generate a PMO macro dashboard preview without sending."
+    },
+    {
+      "id": "core:pmo_change_alert_analyze",
+      "description": "Analyze PMO table changes and produce correction alerts when needed."
+    }
+  ],
+  "tags": [
+    "pmo",
+    "runtime",
+    "l3-local",
+    "business-mcp"
+  ]
+}

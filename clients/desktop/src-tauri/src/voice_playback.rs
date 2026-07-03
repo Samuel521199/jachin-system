@@ -86,7 +86,11 @@ const SND_PURGE: u32 = 0x0040;
 #[link(name = "winmm")]
 extern "system" {
     #[link_name = "PlaySoundW"]
-    fn winmm_play_sound_w(psz_sound: *const u16, hmod: *mut std::ffi::c_void, fdw_sound: u32) -> i32;
+    fn winmm_play_sound_w(
+        psz_sound: *const u16,
+        hmod: *mut std::ffi::c_void,
+        fdw_sound: u32,
+    ) -> i32;
 }
 
 /// 短冷却，避免止音后立即起播叠音。

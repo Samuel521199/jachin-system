@@ -1,0 +1,36 @@
+{
+  "id": "com.jachin.mcp.english-example-generator",
+  "name": "English Example Generator MCP",
+  "description": "Local small-model MCP for generating scene-aware English example sentences.",
+  "version": "1.0.1",
+  "item_type": "MCP",
+  "type": "MCP",
+  "layer": "extension",
+  "runtime": "python",
+  "entry": "server.py",
+  "required_models": [
+    "com.jachin.model.qwen2-5-0-5b-instruct-gguf-q4-k-m"
+  ],
+  "tools": [
+    {
+      "id": "english_generate_example_card",
+      "name": "Generate English Example Card",
+      "description": "Generate a short English example sentence for a word and scene with local GGUF model.",
+      "function": "english_generate_example_card",
+      "module": "example_generator"
+    },
+    {
+      "id": "english_example_model_status",
+      "name": "English Example Model Status",
+      "description": "Check whether the local example generation model and runtime are ready.",
+      "function": "english_example_model_status",
+      "module": "example_generator"
+    }
+  ],
+  "tags": [
+    "english",
+    "local-model",
+    "examples",
+    "gguf"
+  ]
+}

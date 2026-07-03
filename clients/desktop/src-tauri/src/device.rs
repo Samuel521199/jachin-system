@@ -1,5 +1,5 @@
 /// Device Controller - 设备控制模块
-/// 
+///
 /// 未来可以扩展为：
 /// - GPIO 控制（树莓派）
 /// - 串口通信（ESP32）
@@ -28,7 +28,7 @@ impl DeviceController {
         // - GPIO 控制: gpio_set_pin(device_id, pin, value)
         // - 串口通信: serial_send(device_id, command)
         // - 系统命令: execute_system_command(action, params)
-        
+
         Ok(serde_json::json!({
             "device_id": device_id,
             "action": action,

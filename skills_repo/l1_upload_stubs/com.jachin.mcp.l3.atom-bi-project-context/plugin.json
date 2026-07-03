@@ -1,0 +1,21 @@
+{
+  "id": "com.jachin.mcp.l3.atom-bi-project-context",
+  "name": "Bitable Project Context（L3 内置）",
+  "version": "1.0.0",
+  "description": "对应运行时工具 mcp:atom_bi_project_context：由 L3 本地能力读取 Lark Wiki / 多维表上下文并落盘，供 PMO/BI 等业务技能使用。上架用于商城可见性、依赖安装与 manifest 对齐。",
+  "item_type": "MCP",
+  "type": "MCP",
+  "runtime_tier": "L3_LOCAL",
+  "tools": [
+    {
+      "id": "mcp:atom_bi_project_context",
+      "description": "Pull Lark Wiki/Bitable project context into local markdown/json workspace."
+    }
+  ],
+  "tags": [
+    "lark",
+    "bitable",
+    "context",
+    "l3-local"
+  ]
+}

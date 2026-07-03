@@ -1,4 +1,4 @@
-﻿{
+{
   "productName": "Jachin Desktop Sprite",
   "version": "0.9.95",
   "identifier": "com.jachin.desktop",
@@ -81,6 +81,25 @@
         "skipTaskbar": true,
         "visible": false,
         "url": "notification.html"
+      },
+      {
+        "label": "english_vocab",
+        "title": "Jachin 英语背词",
+        "width": 368,
+        "height": 430,
+        "minWidth": 340,
+        "minHeight": 400,
+        "maxWidth": 440,
+        "maxHeight": 520,
+        "resizable": false,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "english-vocab.html"
       },
       {
         "label": "hud_panel",

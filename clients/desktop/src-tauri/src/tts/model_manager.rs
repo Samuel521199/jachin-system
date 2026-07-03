@@ -1,4 +1,4 @@
-﻿//! ModelManager - 检查本地 MOSS ONNX 模型目录
+//! ModelManager - 检查本地 MOSS ONNX 模型目录
 //!
 //! 路径解析采用 "Silent Intelligence"：零配置，自动检测最佳存储位置。
 //! 优先级：Portable（可执行文件旁）> Standard（OS 数据目录）> 环境变量（开发调试）
@@ -83,7 +83,10 @@ pub fn resolve_model_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".data/tts"));
 
     if let Err(e) = fs::create_dir_all(&standard) {
-        eprintln!("[TTS] Failed to create model dir {:?}: {} (will retry on first use)", standard, e);
+        eprintln!(
+            "[TTS] Failed to create model dir {:?}: {} (will retry on first use)",
+            standard, e
+        );
     }
     standard
 }
@@ -153,7 +156,6 @@ impl ModelManager {
 
     /// 模型是否已下载
     pub fn is_downloaded(&self) -> bool {
-        DOWNLOADED.load(Ordering::Relaxed)
-            || self.has_model()
+        DOWNLOADED.load(Ordering::Relaxed) || self.has_model()
     }
 }

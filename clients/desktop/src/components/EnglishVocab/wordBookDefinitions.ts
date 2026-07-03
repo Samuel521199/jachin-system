@@ -1,0 +1,9274 @@
+// Generated from l3_client/local_mcps/english_tutor_mcp/word_definitions.json.
+// Do not edit by hand. Run: python scripts/generate_english_wordbook_definitions.py
+
+export type LocalWordDefinition = {
+  meaning_cn: string;
+  part_of_speech: string;
+};
+
+export const localWordDefinitions: Record<string, LocalWordDefinition> = {
+  "ability": {
+    "meaning_cn": "能力；才干；才能",
+    "part_of_speech": "n."
+  },
+  "above": {
+    "meaning_cn": "在上方；超出；在上面；a. 上述的",
+    "part_of_speech": "prep."
+  },
+  "abstract": {
+    "meaning_cn": "a. 抽象的；深奥的；摘要；抽象概念",
+    "part_of_speech": "n."
+  },
+  "abuse": {
+    "meaning_cn": "滥用；虐待；恶习；辱骂",
+    "part_of_speech": "n."
+  },
+  "academic": {
+    "meaning_cn": "a. 学院的；学术的；不切实际的；大学生",
+    "part_of_speech": "n."
+  },
+  "academy": {
+    "meaning_cn": "学院；院校；学会",
+    "part_of_speech": "n."
+  },
+  "accept": {
+    "meaning_cn": "接受；承认；同意；相信",
+    "part_of_speech": "vt."
+  },
+  "acceptance": {
+    "meaning_cn": "接受；接纳；承认；同意",
+    "part_of_speech": "n."
+  },
+  "accepted": {
+    "meaning_cn": "a. 公认的；一般承认的；已承兑；已认付",
+    "part_of_speech": "-"
+  },
+  "access": {
+    "meaning_cn": "通路；入口；接近；进入",
+    "part_of_speech": "n."
+  },
+  "account": {
+    "meaning_cn": "报告；解释；估价；理由",
+    "part_of_speech": "n."
+  },
+  "accountability": {
+    "meaning_cn": "负有责任；可说明性；衡算计量",
+    "part_of_speech": "n."
+  },
+  "accounts": {
+    "meaning_cn": "账号；会计账簿；账目（account的复数）",
+    "part_of_speech": "n."
+  },
+  "accuracy": {
+    "meaning_cn": "精确；正确；准确度",
+    "part_of_speech": "n."
+  },
+  "accurate": {
+    "meaning_cn": "a. 正确的；精确的；准确的",
+    "part_of_speech": "-"
+  },
+  "achieve": {
+    "meaning_cn": "完成；达到；如愿以偿",
+    "part_of_speech": "vt."
+  },
+  "across": {
+    "meaning_cn": "越过；穿过；与...相交叉；在...的对面",
+    "part_of_speech": "prep."
+  },
+  "action": {
+    "meaning_cn": "行动；活动；动作；作用",
+    "part_of_speech": "n."
+  },
+  "actions": {
+    "meaning_cn": "动作；行动（action的复数）",
+    "part_of_speech": "n."
+  },
+  "active": {
+    "meaning_cn": "a. 活跃的；起作用的；积极的；有效的",
+    "part_of_speech": "-"
+  },
+  "activity": {
+    "meaning_cn": "活动；行动；活跃；活力",
+    "part_of_speech": "n."
+  },
+  "actual": {
+    "meaning_cn": "a. 真实的；实际的；现行的；实际死亡率",
+    "part_of_speech": "-"
+  },
+  "actually": {
+    "meaning_cn": "事实上；竟然；如今；现在",
+    "part_of_speech": "adv."
+  },
+  "adaptation": {
+    "meaning_cn": "适应；改编；改编本；适应[作用]",
+    "part_of_speech": "n."
+  },
+  "added": {
+    "meaning_cn": "a. 额外的；更多的",
+    "part_of_speech": "-"
+  },
+  "adding": {
+    "meaning_cn": "加法的",
+    "part_of_speech": "-"
+  },
+  "addition": {
+    "meaning_cn": "加法；增加的人(或物)",
+    "part_of_speech": "n."
+  },
+  "address": {
+    "meaning_cn": "住址；演说；举止；灵巧",
+    "part_of_speech": "n."
+  },
+  "admin": {
+    "meaning_cn": "行政管理程序",
+    "part_of_speech": "-"
+  },
+  "administration": {
+    "meaning_cn": "行政；管理；政府机关；给药",
+    "part_of_speech": "n."
+  },
+  "adobe": {
+    "meaning_cn": "风干土坯；风干砖；土砖；灰质粘土",
+    "part_of_speech": "n."
+  },
+  "adult": {
+    "meaning_cn": "成人；成虫；a. 成年的；成熟的",
+    "part_of_speech": "n."
+  },
+  "adults": {
+    "meaning_cn": "成年人（adult的复数形式）",
+    "part_of_speech": "n."
+  },
+  "advance": {
+    "meaning_cn": "前进；进展；行过的路程；提高",
+    "part_of_speech": "n."
+  },
+  "advanced": {
+    "meaning_cn": "a. 在前的；高级的；先进的；年老的",
+    "part_of_speech": "-"
+  },
+  "advantage": {
+    "meaning_cn": "优点；便利；好处；优势",
+    "part_of_speech": "n."
+  },
+  "advertising": {
+    "meaning_cn": "广告业；广告；a. 广告的；发广告",
+    "part_of_speech": "n."
+  },
+  "advice": {
+    "meaning_cn": "忠告；劝告；意见；报道",
+    "part_of_speech": "n."
+  },
+  "advisor": {
+    "meaning_cn": "顾问；劝告者；指导教师",
+    "part_of_speech": "n."
+  },
+  "advisory": {
+    "meaning_cn": "a. 顾问的；咨询的；劝告的；忠告的",
+    "part_of_speech": "-"
+  },
+  "affairs": {
+    "meaning_cn": "事务；事宜；风流韵事",
+    "part_of_speech": "n."
+  },
+  "affect": {
+    "meaning_cn": "影响；感动；假装；模仿",
+    "part_of_speech": "vt."
+  },
+  "affected": {
+    "meaning_cn": "a. 假装的；做作的；受影响的",
+    "part_of_speech": "-"
+  },
+  "africa": {
+    "meaning_cn": "非洲",
+    "part_of_speech": "n."
+  },
+  "african": {
+    "meaning_cn": "非洲人；a. 非洲的；非洲人的",
+    "part_of_speech": "n."
+  },
+  "after": {
+    "meaning_cn": "在...之后；由于；后来",
+    "part_of_speech": "prep."
+  },
+  "again": {
+    "meaning_cn": "再一次；又；到原处",
+    "part_of_speech": "adv."
+  },
+  "against": {
+    "meaning_cn": "反对；对着；倚靠",
+    "part_of_speech": "prep."
+  },
+  "agencies": {
+    "meaning_cn": "代理；代理处（agency的复数）",
+    "part_of_speech": "n."
+  },
+  "agency": {
+    "meaning_cn": "代理机构；经销商；中介；办事处",
+    "part_of_speech": "n."
+  },
+  "agenda": {
+    "meaning_cn": "议程；日程；待办事项",
+    "part_of_speech": "n."
+  },
+  "agent": {
+    "meaning_cn": "代理商；政府代表；动原；媒介",
+    "part_of_speech": "n."
+  },
+  "agents": {
+    "meaning_cn": "间谍；代理人；代理商；特工人员（agent的复数形式）",
+    "part_of_speech": "n."
+  },
+  "agree": {
+    "meaning_cn": "同意；赞成；应允；适合",
+    "part_of_speech": "vi."
+  },
+  "agreed": {
+    "meaning_cn": "a. 同意的；通过协议的",
+    "part_of_speech": "-"
+  },
+  "agriculture": {
+    "meaning_cn": "农业；农学",
+    "part_of_speech": "n."
+  },
+  "ahead": {
+    "meaning_cn": "a. 领先的；预先的；向前的；领先",
+    "part_of_speech": "adv."
+  },
+  "aircraft": {
+    "meaning_cn": "航空器；飞机",
+    "part_of_speech": "n."
+  },
+  "airport": {
+    "meaning_cn": "飞机场；航空站；机场",
+    "part_of_speech": "n."
+  },
+  "alabama": {
+    "meaning_cn": "亚拉巴马州",
+    "part_of_speech": "n."
+  },
+  "alaska": {
+    "meaning_cn": "阿拉斯加州",
+    "part_of_speech": "n."
+  },
+  "album": {
+    "meaning_cn": "粘贴簿；唱片套；白色物",
+    "part_of_speech": "n."
+  },
+  "albums": {
+    "meaning_cn": "相簿；相册；专辑；影集（album的复数形式）",
+    "part_of_speech": "n."
+  },
+  "alcohol": {
+    "meaning_cn": "酒精；酒；醇；乙醇",
+    "part_of_speech": "n."
+  },
+  "alert": {
+    "meaning_cn": "a. 警觉的；灵敏的；留心的；警报",
+    "part_of_speech": "n."
+  },
+  "algorithm": {
+    "meaning_cn": "算法；计算程序",
+    "part_of_speech": "n."
+  },
+  "alignment": {
+    "meaning_cn": "队列；结盟；校正；校准",
+    "part_of_speech": "n."
+  },
+  "allocation": {
+    "meaning_cn": "配置；分配；拨给；拨款",
+    "part_of_speech": "n."
+  },
+  "allow": {
+    "meaning_cn": "允许；同意给予；承认；容许",
+    "part_of_speech": "vt."
+  },
+  "allowed": {
+    "meaning_cn": "a. 允许；容许的",
+    "part_of_speech": "-"
+  },
+  "allows": {
+    "meaning_cn": "允许",
+    "part_of_speech": "n."
+  },
+  "almost": {
+    "meaning_cn": "几乎；差不多",
+    "part_of_speech": "adv."
+  },
+  "alone": {
+    "meaning_cn": "a. 孤独的；单独的；独自的；独自地",
+    "part_of_speech": "adv."
+  },
+  "along": {
+    "meaning_cn": "平行地；向前；沿着",
+    "part_of_speech": "adv."
+  },
+  "alpha": {
+    "meaning_cn": "希腊字母表的第一个字母；最初；开端；α(希腊文的第一个字母)",
+    "part_of_speech": "n."
+  },
+  "already": {
+    "meaning_cn": "已经；早已",
+    "part_of_speech": "adv."
+  },
+  "although": {
+    "meaning_cn": "虽然；尽管",
+    "part_of_speech": "conj."
+  },
+  "always": {
+    "meaning_cn": "总是；始终",
+    "part_of_speech": "adv."
+  },
+  "amateur": {
+    "meaning_cn": "业余爱好者；外行；爱好者；业余家",
+    "part_of_speech": "n."
+  },
+  "amazing": {
+    "meaning_cn": "a. 令人惊异的",
+    "part_of_speech": "-"
+  },
+  "amazon": {
+    "meaning_cn": "亚马孙河；无乳腺者",
+    "part_of_speech": "n."
+  },
+  "america": {
+    "meaning_cn": "美洲；美国",
+    "part_of_speech": "n."
+  },
+  "american": {
+    "meaning_cn": "美国人；a. 美国的；美洲的",
+    "part_of_speech": "n."
+  },
+  "among": {
+    "meaning_cn": "在...之中",
+    "part_of_speech": "prep."
+  },
+  "amount": {
+    "meaning_cn": "总数；总额；总计；等同",
+    "part_of_speech": "n."
+  },
+  "amounts": {
+    "meaning_cn": "数量；总额（amount的复数）",
+    "part_of_speech": "n."
+  },
+  "analysis": {
+    "meaning_cn": "分析；分析机；分析员；分析程序",
+    "part_of_speech": "n."
+  },
+  "anderson": {
+    "meaning_cn": "安德森市（美国印第安纳州）；安德森（男子名）",
+    "part_of_speech": "n."
+  },
+  "andrew": {
+    "meaning_cn": "安德鲁（男子名）",
+    "part_of_speech": "n."
+  },
+  "angel": {
+    "meaning_cn": "天使；守护神；善人",
+    "part_of_speech": "n."
+  },
+  "angeles": {
+    "meaning_cn": "安杰利斯（姓氏）；天使城（菲律宾地名）",
+    "part_of_speech": "n."
+  },
+  "animal": {
+    "meaning_cn": "动物",
+    "part_of_speech": "n."
+  },
+  "animals": {
+    "meaning_cn": "动物；动物世界；牲畜（animal的复数形式）",
+    "part_of_speech": "n."
+  },
+  "anime": {
+    "meaning_cn": "硬树脂",
+    "part_of_speech": "-"
+  },
+  "announcement": {
+    "meaning_cn": "公告；发表；告知；通告",
+    "part_of_speech": "n."
+  },
+  "annual": {
+    "meaning_cn": "年刊；年报；a. 每年的；一年一次的",
+    "part_of_speech": "n."
+  },
+  "another": {
+    "meaning_cn": "a. 另外的；再一的；不同的；又一个",
+    "part_of_speech": "pron."
+  },
+  "ansible": {
+    "meaning_cn": "波；安塞波",
+    "part_of_speech": "-"
+  },
+  "answer": {
+    "meaning_cn": "答案；回答；回报；答辩",
+    "part_of_speech": "n."
+  },
+  "answers": {
+    "meaning_cn": "答案；回答（answer的复数）",
+    "part_of_speech": "n."
+  },
+  "anthropology": {
+    "meaning_cn": "人类学",
+    "part_of_speech": "n."
+  },
+  "anyone": {
+    "meaning_cn": "任何人",
+    "part_of_speech": "pron."
+  },
+  "anything": {
+    "meaning_cn": "任何事",
+    "part_of_speech": "pron."
+  },
+  "anyway": {
+    "meaning_cn": "无论如何；至少",
+    "part_of_speech": "adv."
+  },
+  "anywhere": {
+    "meaning_cn": "无论何处",
+    "part_of_speech": "adv."
+  },
+  "api": {
+    "meaning_cn": "应用程序接口；自动优先中断；美国石油协会",
+    "part_of_speech": "-"
+  },
+  "apparel": {
+    "meaning_cn": "衣服；外表；使穿衣；装饰",
+    "part_of_speech": "n."
+  },
+  "appeal": {
+    "meaning_cn": "恳求；诉请；上诉；吸引力",
+    "part_of_speech": "n."
+  },
+  "appear": {
+    "meaning_cn": "出现；显得；来到；出庭",
+    "part_of_speech": "vi."
+  },
+  "appears": {
+    "meaning_cn": "出现；呈现；看上去好像（appear的三单形式）",
+    "part_of_speech": "v."
+  },
+  "apple": {
+    "meaning_cn": "苹果；家伙",
+    "part_of_speech": "n."
+  },
+  "applied": {
+    "meaning_cn": "a. 应用的；应用的；应用；申请",
+    "part_of_speech": "-"
+  },
+  "apply": {
+    "meaning_cn": "涂；应用；申请；适用",
+    "part_of_speech": "vt."
+  },
+  "appointment": {
+    "meaning_cn": "约会；委任的职位；委派；任命",
+    "part_of_speech": "n."
+  },
+  "approach": {
+    "meaning_cn": "接近；入门；近似；找...商量",
+    "part_of_speech": "n."
+  },
+  "approval": {
+    "meaning_cn": "赞成；批准；核准",
+    "part_of_speech": "n."
+  },
+  "approved": {
+    "meaning_cn": "a. 被认可的；经过检验的",
+    "part_of_speech": "-"
+  },
+  "april": {
+    "meaning_cn": "四月",
+    "part_of_speech": "n."
+  },
+  "archaeology": {
+    "meaning_cn": "考古学",
+    "part_of_speech": "n."
+  },
+  "architecture": {
+    "meaning_cn": "建筑学；建筑式样；体系结构",
+    "part_of_speech": "n."
+  },
+  "archive": {
+    "meaning_cn": "把...存档；档案馆；档案文件；挡案库",
+    "part_of_speech": "vt."
+  },
+  "archives": {
+    "meaning_cn": "档案；档案室；公文档案；案卷",
+    "part_of_speech": "n."
+  },
+  "areas": {
+    "meaning_cn": "区域；领域；面积（area的复数形式）",
+    "part_of_speech": "n."
+  },
+  "argument": {
+    "meaning_cn": "争论；论证；论据；自变量",
+    "part_of_speech": "n."
+  },
+  "arizona": {
+    "meaning_cn": "亚利桑那州",
+    "part_of_speech": "n."
+  },
+  "around": {
+    "meaning_cn": "包围；在...周围；四处；兜着圈子",
+    "part_of_speech": "prep."
+  },
+  "array": {
+    "meaning_cn": "排列；衣服；大批；军队",
+    "part_of_speech": "n."
+  },
+  "art": {
+    "meaning_cn": "艺术；人文科学；技术；巧妙",
+    "part_of_speech": "n."
+  },
+  "article": {
+    "meaning_cn": "文章；冠词；物品；物件",
+    "part_of_speech": "n."
+  },
+  "articles": {
+    "meaning_cn": "文章；冠词；物品；条款（article的复数）",
+    "part_of_speech": "n."
+  },
+  "artifact": {
+    "meaning_cn": "人工制品；人为现象；人工产物",
+    "part_of_speech": "n."
+  },
+  "artist": {
+    "meaning_cn": "艺术家；画家",
+    "part_of_speech": "n."
+  },
+  "artists": {
+    "meaning_cn": "艺术家；设计师（artist的复数）",
+    "part_of_speech": "n."
+  },
+  "asian": {
+    "meaning_cn": "亚洲人；a. 亚洲的；亚洲人的",
+    "part_of_speech": "n."
+  },
+  "asked": {
+    "meaning_cn": "卖方要价",
+    "part_of_speech": "n."
+  },
+  "aspect": {
+    "meaning_cn": "外观；方面；面貌；方向",
+    "part_of_speech": "n."
+  },
+  "aspects": {
+    "meaning_cn": "方面( aspect的复数形式 )；面貌；方位；样子",
+    "part_of_speech": "n."
+  },
+  "assembly": {
+    "meaning_cn": "与会者；集会；装配；组件",
+    "part_of_speech": "n."
+  },
+  "assessment": {
+    "meaning_cn": "评估；估定；评定的款额",
+    "part_of_speech": "n."
+  },
+  "assets": {
+    "meaning_cn": "资产；财产",
+    "part_of_speech": "n."
+  },
+  "assigned": {
+    "meaning_cn": "a. 已分配的；指定的",
+    "part_of_speech": "-"
+  },
+  "assignee": {
+    "meaning_cn": "受让人；受托者；代理人",
+    "part_of_speech": "n."
+  },
+  "assignment": {
+    "meaning_cn": "分配；功课；任务；转让",
+    "part_of_speech": "n."
+  },
+  "assist": {
+    "meaning_cn": "帮助；协助；促进；参加",
+    "part_of_speech": "n."
+  },
+  "assurance": {
+    "meaning_cn": "保证；把握；信心；保险",
+    "part_of_speech": "n."
+  },
+  "ast": {
+    "meaning_cn": "大西洋标准时间（Atlantic Standard Time）",
+    "part_of_speech": "abbr."
+  },
+  "astronomy": {
+    "meaning_cn": "天文学",
+    "part_of_speech": "n."
+  },
+  "async": {
+    "meaning_cn": "异步的",
+    "part_of_speech": "-"
+  },
+  "atlanta": {
+    "meaning_cn": "亚特兰大（美国城市）",
+    "part_of_speech": "n."
+  },
+  "atlantic": {
+    "meaning_cn": "大西洋；a. 大西洋的",
+    "part_of_speech": "n."
+  },
+  "atmosphere": {
+    "meaning_cn": "大气；空气；气氛；大气压",
+    "part_of_speech": "n."
+  },
+  "attack": {
+    "meaning_cn": "攻击；抨击；动手干",
+    "part_of_speech": "n."
+  },
+  "attempt": {
+    "meaning_cn": "尝试；企图",
+    "part_of_speech": "n."
+  },
+  "attendance": {
+    "meaning_cn": "出席；出席的人数；照料；管理",
+    "part_of_speech": "n."
+  },
+  "attitude": {
+    "meaning_cn": "态度；看法；姿势；体态",
+    "part_of_speech": "n."
+  },
+  "attorney": {
+    "meaning_cn": "代理人；律师",
+    "part_of_speech": "n."
+  },
+  "auction": {
+    "meaning_cn": "拍卖",
+    "part_of_speech": "n."
+  },
+  "auctions": {
+    "meaning_cn": "拍卖（auction的三单形式）",
+    "part_of_speech": "v."
+  },
+  "audience": {
+    "meaning_cn": "听众；观众；读者；听讼",
+    "part_of_speech": "n."
+  },
+  "audio": {
+    "meaning_cn": "a. 音频的；声音的；声频",
+    "part_of_speech": "-"
+  },
+  "august": {
+    "meaning_cn": "八月；a. 威严的；令人敬畏的",
+    "part_of_speech": "n."
+  },
+  "austin": {
+    "meaning_cn": "奥斯丁（人名）；英国制汽车牌名",
+    "part_of_speech": "n."
+  },
+  "austria": {
+    "meaning_cn": "奥地利",
+    "part_of_speech": "n."
+  },
+  "authentication": {
+    "meaning_cn": "证明可信；证实为真；使具法律效力；验证",
+    "part_of_speech": "n."
+  },
+  "author": {
+    "meaning_cn": "作家；作家的著作；创始人；作者",
+    "part_of_speech": "n."
+  },
+  "authority": {
+    "meaning_cn": "权力；当权者；当局；权威",
+    "part_of_speech": "n."
+  },
+  "authorization": {
+    "meaning_cn": "授权；许可；批准",
+    "part_of_speech": "n."
+  },
+  "authors": {
+    "meaning_cn": "著作家( author的名词复数 )；作者；创造者；发起人",
+    "part_of_speech": "n."
+  },
+  "availability": {
+    "meaning_cn": "有效性；可利用性；可利用的人；可用性",
+    "part_of_speech": "n."
+  },
+  "avenue": {
+    "meaning_cn": "大街；途径；林荫路",
+    "part_of_speech": "n."
+  },
+  "average": {
+    "meaning_cn": "平均；平均数；一般水平；海损",
+    "part_of_speech": "n."
+  },
+  "avoid": {
+    "meaning_cn": "避免；防止；撤消；回避",
+    "part_of_speech": "vt."
+  },
+  "await": {
+    "meaning_cn": "等候；等待着",
+    "part_of_speech": "vt."
+  },
+  "award": {
+    "meaning_cn": "奖品；裁定；判决；授予",
+    "part_of_speech": "n."
+  },
+  "awards": {
+    "meaning_cn": "奖项；判决；奖赏（award的复数）",
+    "part_of_speech": "n."
+  },
+  "aware": {
+    "meaning_cn": "a. 知道的；有觉悟的",
+    "part_of_speech": "-"
+  },
+  "babes": {
+    "meaning_cn": "<书>婴儿( babe的复数形式 )；无助的人；需要人抱的婴儿；<美俚>姑娘",
+    "part_of_speech": "n."
+  },
+  "backend": {
+    "meaning_cn": "后端",
+    "part_of_speech": "n."
+  },
+  "backlog": {
+    "meaning_cn": "积压待办的事务；积压而未交付的订货；积压的工作；储备",
+    "part_of_speech": "n."
+  },
+  "backup": {
+    "meaning_cn": "倒车；后退；后援；支持",
+    "part_of_speech": "n."
+  },
+  "balance": {
+    "meaning_cn": "平衡；差额；相等；称",
+    "part_of_speech": "n."
+  },
+  "balancer": {
+    "meaning_cn": "起平衡作用的人；平衡器；走钢丝者；均衡器",
+    "part_of_speech": "n."
+  },
+  "bandwidth": {
+    "meaning_cn": "频带宽度；通带宽度；带宽；频宽",
+    "part_of_speech": "n."
+  },
+  "bank": {
+    "meaning_cn": "银行；堤；岸；库",
+    "part_of_speech": "n."
+  },
+  "banking": {
+    "meaning_cn": "银行业务；银行业；银行事务",
+    "part_of_speech": "n."
+  },
+  "banks": {
+    "meaning_cn": "银行；斜床；岸；堤（bank的复数形式）",
+    "part_of_speech": "n."
+  },
+  "baseball": {
+    "meaning_cn": "棒球；棒球系统",
+    "part_of_speech": "n."
+  },
+  "based": {
+    "meaning_cn": "立基于；以…为基础（base的过去式和过去分词）",
+    "part_of_speech": "v."
+  },
+  "baseline": {
+    "meaning_cn": "基线；基准",
+    "part_of_speech": "n."
+  },
+  "basic": {
+    "meaning_cn": "基本原理；要素；基本规律；a. 基本的",
+    "part_of_speech": "n."
+  },
+  "basis": {
+    "meaning_cn": "基础；主要成分；基底",
+    "part_of_speech": "n."
+  },
+  "basket": {
+    "meaning_cn": "篮；篮子；装入篮",
+    "part_of_speech": "n."
+  },
+  "bathroom": {
+    "meaning_cn": "浴室；厕所",
+    "part_of_speech": "n."
+  },
+  "battery": {
+    "meaning_cn": "电池；殴打；蓄电池",
+    "part_of_speech": "n."
+  },
+  "battle": {
+    "meaning_cn": "战役；战斗",
+    "part_of_speech": "n."
+  },
+  "beach": {
+    "meaning_cn": "海滩",
+    "part_of_speech": "n."
+  },
+  "beauty": {
+    "meaning_cn": "美；美人",
+    "part_of_speech": "n."
+  },
+  "became": {
+    "meaning_cn": "become的过去式",
+    "part_of_speech": "-"
+  },
+  "because": {
+    "meaning_cn": "因为",
+    "part_of_speech": "conj."
+  },
+  "become": {
+    "meaning_cn": "变成；变得；适合",
+    "part_of_speech": "vi."
+  },
+  "becomes": {
+    "meaning_cn": "变为；成为( become的第三人称单数 )；适合；使（人）显得漂亮",
+    "part_of_speech": "v."
+  },
+  "bedroom": {
+    "meaning_cn": "卧室",
+    "part_of_speech": "n."
+  },
+  "beef": {
+    "meaning_cn": "牛肉；肌肉；养(牛)；宰(牛)",
+    "part_of_speech": "n."
+  },
+  "before": {
+    "meaning_cn": "在...之前；在前",
+    "part_of_speech": "prep."
+  },
+  "began": {
+    "meaning_cn": "begin的过去式",
+    "part_of_speech": "-"
+  },
+  "begin": {
+    "meaning_cn": "开始",
+    "part_of_speech": "v."
+  },
+  "behavior": {
+    "meaning_cn": "行为；举止",
+    "part_of_speech": "n."
+  },
+  "behind": {
+    "meaning_cn": "在后地；在...背后",
+    "part_of_speech": "adv."
+  },
+  "being": {
+    "meaning_cn": "存在；性质；生命；人",
+    "part_of_speech": "n."
+  },
+  "believe": {
+    "meaning_cn": "相信",
+    "part_of_speech": "v."
+  },
+  "below": {
+    "meaning_cn": "在下面",
+    "part_of_speech": "prep."
+  },
+  "benchmark": {
+    "meaning_cn": "基准程序；基准",
+    "part_of_speech": "-"
+  },
+  "benefit": {
+    "meaning_cn": "利益；有益于；受益",
+    "part_of_speech": "n."
+  },
+  "benefits": {
+    "meaning_cn": "利益；收益；福利；效益（benefit的复数形式）",
+    "part_of_speech": "n."
+  },
+  "better": {
+    "meaning_cn": "a. 较好的；比较好",
+    "part_of_speech": "adv."
+  },
+  "between": {
+    "meaning_cn": "在...之间",
+    "part_of_speech": "prep."
+  },
+  "beyond": {
+    "meaning_cn": "超过；在那一边；迟于；在远处",
+    "part_of_speech": "prep."
+  },
+  "bible": {
+    "meaning_cn": "圣经",
+    "part_of_speech": "n."
+  },
+  "bicycle": {
+    "meaning_cn": "自行车",
+    "part_of_speech": "n."
+  },
+  "billion": {
+    "meaning_cn": "十亿；十亿个",
+    "part_of_speech": "num."
+  },
+  "binary": {
+    "meaning_cn": "a. 由两部分组成的；二进位的；二元的；二进制的",
+    "part_of_speech": "-"
+  },
+  "binding": {
+    "meaning_cn": "装订；联编；汇集；绑定",
+    "part_of_speech": "n."
+  },
+  "biodiversity": {
+    "meaning_cn": "生物多样性",
+    "part_of_speech": "n."
+  },
+  "biology": {
+    "meaning_cn": "生物学；生物",
+    "part_of_speech": "n."
+  },
+  "birth": {
+    "meaning_cn": "出生；起源；生产；分娩",
+    "part_of_speech": "n."
+  },
+  "birthday": {
+    "meaning_cn": "生日",
+    "part_of_speech": "n."
+  },
+  "black": {
+    "meaning_cn": "黑色；黑颜料；a. 黑色的",
+    "part_of_speech": "n."
+  },
+  "block": {
+    "meaning_cn": "街区；木块；石块；块",
+    "part_of_speech": "n."
+  },
+  "blocked": {
+    "meaning_cn": "a. 堵塞的；被封锁的",
+    "part_of_speech": "-"
+  },
+  "blocker": {
+    "meaning_cn": "阻滞物；阻滞剂；阻滞抗体",
+    "part_of_speech": "-"
+  },
+  "blogs": {
+    "meaning_cn": "博客；网志（网站上记有活动；意见等的个人记录）( blog的名词复数 )",
+    "part_of_speech": "n."
+  },
+  "blonde": {
+    "meaning_cn": "a. (头发)亚麻色的；淡色的；白肤金发碧眼的；白里透红的",
+    "part_of_speech": "-"
+  },
+  "blood": {
+    "meaning_cn": "血；血统；流血；气质",
+    "part_of_speech": "n."
+  },
+  "board": {
+    "meaning_cn": "木板；甲板；膳食；会议桌",
+    "part_of_speech": "n."
+  },
+  "boards": {
+    "meaning_cn": "木板；板子；纸板（board复数形式）",
+    "part_of_speech": "n."
+  },
+  "bonus": {
+    "meaning_cn": "奖金；红利；额外补贴",
+    "part_of_speech": "n."
+  },
+  "book": {
+    "meaning_cn": "书；书籍；帐簿；名册",
+    "part_of_speech": "n."
+  },
+  "bookmark": {
+    "meaning_cn": "书签",
+    "part_of_speech": "n."
+  },
+  "books": {
+    "meaning_cn": "书评；书籍（book的复数）",
+    "part_of_speech": "n."
+  },
+  "borrow": {
+    "meaning_cn": "借；借入；借用；借位",
+    "part_of_speech": "vt."
+  },
+  "boston": {
+    "meaning_cn": "波士顿",
+    "part_of_speech": "n."
+  },
+  "bottom": {
+    "meaning_cn": "底部；a. 底部的；给...装底；查明真相",
+    "part_of_speech": "n."
+  },
+  "bought": {
+    "meaning_cn": "a. 买来的；buy的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "boxes": {
+    "meaning_cn": "小木箱；盒子",
+    "part_of_speech": "n."
+  },
+  "brain": {
+    "meaning_cn": "脑；打碎脑部",
+    "part_of_speech": "n."
+  },
+  "branch": {
+    "meaning_cn": "树枝；支店；支流；分部",
+    "part_of_speech": "n."
+  },
+  "brand": {
+    "meaning_cn": "商标；牌子；烙印；打烙印于",
+    "part_of_speech": "n."
+  },
+  "brands": {
+    "meaning_cn": "品牌；烙印（brand的复数）",
+    "part_of_speech": "n."
+  },
+  "brazil": {
+    "meaning_cn": "巴西",
+    "part_of_speech": "n."
+  },
+  "bread": {
+    "meaning_cn": "面包；生计；食物；裹以面包屑",
+    "part_of_speech": "n."
+  },
+  "break": {
+    "meaning_cn": "休息；中断；破裂处；绝交",
+    "part_of_speech": "n."
+  },
+  "breakfast": {
+    "meaning_cn": "早餐",
+    "part_of_speech": "n."
+  },
+  "breaking": {
+    "meaning_cn": "断开；停止；设断点；打开",
+    "part_of_speech": "-"
+  },
+  "breast": {
+    "meaning_cn": "胸部；乳房；胸怀；以胸对着",
+    "part_of_speech": "n."
+  },
+  "brian": {
+    "meaning_cn": "布莱恩（男子名）",
+    "part_of_speech": "n."
+  },
+  "bridge": {
+    "meaning_cn": "桥；舰桥；桥梁；桥牌",
+    "part_of_speech": "n."
+  },
+  "brief": {
+    "meaning_cn": "摘要；简报；a. 简短的；短暂的",
+    "part_of_speech": "n."
+  },
+  "briefing": {
+    "meaning_cn": "简报；情况的简要介绍",
+    "part_of_speech": "n."
+  },
+  "bring": {
+    "meaning_cn": "带来；产生；促使；提出",
+    "part_of_speech": "vt."
+  },
+  "british": {
+    "meaning_cn": "a. 英国的；英国人；英国英语",
+    "part_of_speech": "n."
+  },
+  "broken": {
+    "meaning_cn": "a. 坏掉的；打破的；断掉的；break的过去分词",
+    "part_of_speech": "-"
+  },
+  "brother": {
+    "meaning_cn": "兄弟",
+    "part_of_speech": "n."
+  },
+  "brought": {
+    "meaning_cn": "bring的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "brown": {
+    "meaning_cn": "褐色；a. 褐色的；(使)变褐色",
+    "part_of_speech": "n."
+  },
+  "browse": {
+    "meaning_cn": "浏览；吃草",
+    "part_of_speech": "v."
+  },
+  "browser": {
+    "meaning_cn": "吃嫩叶的动物；浏览书本的人；浏览程序",
+    "part_of_speech": "n."
+  },
+  "brush": {
+    "meaning_cn": "刷子；毛笔；争吵；刷",
+    "part_of_speech": "n."
+  },
+  "budget": {
+    "meaning_cn": "预算；编预算；编入预算；安排",
+    "part_of_speech": "n."
+  },
+  "build": {
+    "meaning_cn": "建立；建筑；构造；体格",
+    "part_of_speech": "v."
+  },
+  "building": {
+    "meaning_cn": "建筑物；建筑；营造",
+    "part_of_speech": "n."
+  },
+  "built": {
+    "meaning_cn": "build的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "bundle": {
+    "meaning_cn": "捆；束；包扎；胡乱塞进",
+    "part_of_speech": "n."
+  },
+  "bureau": {
+    "meaning_cn": "局；办公处；司；处",
+    "part_of_speech": "n."
+  },
+  "bus": {
+    "meaning_cn": "公共汽车；总线；汇流条；母线",
+    "part_of_speech": "n."
+  },
+  "business": {
+    "meaning_cn": "生意；事情；业务；商业",
+    "part_of_speech": "n."
+  },
+  "busy": {
+    "meaning_cn": "a. 忙碌的；热闹的；没空的；使忙",
+    "part_of_speech": "vt."
+  },
+  "button": {
+    "meaning_cn": "钮扣；按钮；扣住；钉钮扣于",
+    "part_of_speech": "n."
+  },
+  "buy": {
+    "meaning_cn": "买；获得；购买；买得的东西",
+    "part_of_speech": "vt."
+  },
+  "buyer": {
+    "meaning_cn": "买主；买方；买手",
+    "part_of_speech": "n."
+  },
+  "buying": {
+    "meaning_cn": "买气；买进",
+    "part_of_speech": "-"
+  },
+  "bytes": {
+    "meaning_cn": "位元组；字节数（byte的复数）；字节",
+    "part_of_speech": "n."
+  },
+  "cable": {
+    "meaning_cn": "电缆；海底电报；缆；索",
+    "part_of_speech": "n."
+  },
+  "cache": {
+    "meaning_cn": "隐藏所；隐藏的粮食或物资；贮藏物；高速缓冲存储器",
+    "part_of_speech": "n."
+  },
+  "cafeteria": {
+    "meaning_cn": "自助餐厅",
+    "part_of_speech": "n."
+  },
+  "calendar": {
+    "meaning_cn": "日历；日程表；列入表中",
+    "part_of_speech": "n."
+  },
+  "callback": {
+    "meaning_cn": "收回",
+    "part_of_speech": "n."
+  },
+  "called": {
+    "meaning_cn": "a. 被呼叫的",
+    "part_of_speech": "-"
+  },
+  "calling": {
+    "meaning_cn": "职业；行业；呼唤；召集",
+    "part_of_speech": "n."
+  },
+  "calls": {
+    "meaning_cn": "调用；呼吁；电话（call的复数）",
+    "part_of_speech": "n."
+  },
+  "camera": {
+    "meaning_cn": "照相机；摄影机；密谈室；暗箱",
+    "part_of_speech": "n."
+  },
+  "cameras": {
+    "meaning_cn": "照相机；暗箱；摄像机；摄影机",
+    "part_of_speech": "-"
+  },
+  "campaign": {
+    "meaning_cn": "战役；运动；竞选运动；参加运动",
+    "part_of_speech": "n."
+  },
+  "campus": {
+    "meaning_cn": "校园；大学生活",
+    "part_of_speech": "n."
+  },
+  "canada": {
+    "meaning_cn": "加拿大",
+    "part_of_speech": "n."
+  },
+  "canadian": {
+    "meaning_cn": "a. 加拿大的",
+    "part_of_speech": "-"
+  },
+  "canceled": {
+    "meaning_cn": "取消( cancel的过去式和过去分词 )；废除；注销；删去",
+    "part_of_speech": "v."
+  },
+  "cancer": {
+    "meaning_cn": "癌；恶性肿瘤",
+    "part_of_speech": "n."
+  },
+  "candidate": {
+    "meaning_cn": "候选人；投考者；候选；候补者",
+    "part_of_speech": "n."
+  },
+  "canon": {
+    "meaning_cn": "教会法规；圣典；准则；标准",
+    "part_of_speech": "n."
+  },
+  "capability": {
+    "meaning_cn": "能力；性能；约束力",
+    "part_of_speech": "n."
+  },
+  "capacity": {
+    "meaning_cn": "容量；能力；才能；资格",
+    "part_of_speech": "n."
+  },
+  "capital": {
+    "meaning_cn": "首都；大写字母；资本；a. 首都的",
+    "part_of_speech": "n."
+  },
+  "carbon": {
+    "meaning_cn": "碳；副本；复写纸",
+    "part_of_speech": "n."
+  },
+  "cards": {
+    "meaning_cn": "(playing cards)(正式)一副纸牌；一副扑克牌；纸牌游戏；打扑克",
+    "part_of_speech": "n."
+  },
+  "career": {
+    "meaning_cn": "事业；生涯；成功；职业",
+    "part_of_speech": "n."
+  },
+  "careers": {
+    "meaning_cn": "职业生涯；事业；职业（career的复数）",
+    "part_of_speech": "n."
+  },
+  "cargo": {
+    "meaning_cn": "货物；货柜",
+    "part_of_speech": "n."
+  },
+  "carolina": {
+    "meaning_cn": "北(或南)卡罗来纳州",
+    "part_of_speech": "n."
+  },
+  "carried": {
+    "meaning_cn": "a. 入神的；被运的；忘我的",
+    "part_of_speech": "-"
+  },
+  "carry": {
+    "meaning_cn": "进位；射程；运载；携带",
+    "part_of_speech": "n."
+  },
+  "cases": {
+    "meaning_cn": "案例；箱；情况（case的复数形式）",
+    "part_of_speech": "n."
+  },
+  "casino": {
+    "meaning_cn": "卡西诺赌场；卡西诺牌戏",
+    "part_of_speech": "n."
+  },
+  "catalog": {
+    "meaning_cn": "目录；大学概况手册；编目录；编目",
+    "part_of_speech": "n."
+  },
+  "category": {
+    "meaning_cn": "种类；类项；分类",
+    "part_of_speech": "n."
+  },
+  "causation": {
+    "meaning_cn": "因果关系；原因；因果律；原因作用",
+    "part_of_speech": "n."
+  },
+  "cause": {
+    "meaning_cn": "原因；目标；引起；使产生",
+    "part_of_speech": "n."
+  },
+  "caused": {
+    "meaning_cn": "引起；使发生（cause的过去分词）",
+    "part_of_speech": "v."
+  },
+  "cd": {
+    "meaning_cn": "镭射碟；镭射唱片；光盘；压缩盘",
+    "part_of_speech": "n."
+  },
+  "cell": {
+    "meaning_cn": "单元；细胞；电池",
+    "part_of_speech": "n."
+  },
+  "cells": {
+    "meaning_cn": "细胞；牢房；小屋；单元格（cell的复数）",
+    "part_of_speech": "n."
+  },
+  "census": {
+    "meaning_cn": "户口普查；实施统计调查",
+    "part_of_speech": "n."
+  },
+  "center": {
+    "meaning_cn": "中心；中心点；中锋；a. 中央的",
+    "part_of_speech": "n."
+  },
+  "centers": {
+    "meaning_cn": "中心；中央（center的复数形式）",
+    "part_of_speech": "n."
+  },
+  "central": {
+    "meaning_cn": "a. 中央的；重要的；中央的；中心的",
+    "part_of_speech": "-"
+  },
+  "centre": {
+    "meaning_cn": "中心；中心点；中锋；a. 中央的",
+    "part_of_speech": "n."
+  },
+  "century": {
+    "meaning_cn": "世纪；百年",
+    "part_of_speech": "n."
+  },
+  "certain": {
+    "meaning_cn": "a. 确定的；某一个的；必然的；确凿的",
+    "part_of_speech": "-"
+  },
+  "certificate": {
+    "meaning_cn": "证书；证明书；发给证明书；用证书批准",
+    "part_of_speech": "n."
+  },
+  "chain": {
+    "meaning_cn": "链；枷锁；束缚；用铁练锁住",
+    "part_of_speech": "n."
+  },
+  "chair": {
+    "meaning_cn": "椅子；显要的席位；主席；使入座",
+    "part_of_speech": "n."
+  },
+  "chairman": {
+    "meaning_cn": "主席；会长",
+    "part_of_speech": "n."
+  },
+  "challenge": {
+    "meaning_cn": "挑战；盘问；向...挑战；要求",
+    "part_of_speech": "n."
+  },
+  "chance": {
+    "meaning_cn": "机会；意外；可能性；偶然发生",
+    "part_of_speech": "n."
+  },
+  "change": {
+    "meaning_cn": "变化；找回的零钱；找头；更换",
+    "part_of_speech": "n."
+  },
+  "changed": {
+    "meaning_cn": "a. 变化的；改变的",
+    "part_of_speech": "-"
+  },
+  "changes": {
+    "meaning_cn": "变化；改变（change的复数）",
+    "part_of_speech": "n."
+  },
+  "changing": {
+    "meaning_cn": "交换；兑换；改变（change的ing形式）",
+    "part_of_speech": "v."
+  },
+  "channel": {
+    "meaning_cn": "海峡；航道；频道；引导",
+    "part_of_speech": "n."
+  },
+  "chapter": {
+    "meaning_cn": "章；篇；重要章节；段",
+    "part_of_speech": "n."
+  },
+  "character": {
+    "meaning_cn": "个性；字符；人物；性质",
+    "part_of_speech": "n."
+  },
+  "charge": {
+    "meaning_cn": "指控；费用；冲锋；电荷",
+    "part_of_speech": "n."
+  },
+  "charges": {
+    "meaning_cn": "费用；手续费；运费",
+    "part_of_speech": "n."
+  },
+  "charles": {
+    "meaning_cn": "查尔斯（人名）",
+    "part_of_speech": "n."
+  },
+  "chart": {
+    "meaning_cn": "图表；海图；制成图表",
+    "part_of_speech": "n."
+  },
+  "charts": {
+    "meaning_cn": "图表；排行榜（chart的复数）",
+    "part_of_speech": "n."
+  },
+  "cheap": {
+    "meaning_cn": "a. 便宜的；不值钱的；可鄙的；便宜地",
+    "part_of_speech": "adv."
+  },
+  "cheats": {
+    "meaning_cn": "骗子（cheat的复数形式）",
+    "part_of_speech": "n."
+  },
+  "check": {
+    "meaning_cn": "检查；支票；阻止物；寄物牌",
+    "part_of_speech": "n."
+  },
+  "checkout": {
+    "meaning_cn": "结帐台；检验",
+    "part_of_speech": "n."
+  },
+  "chemical": {
+    "meaning_cn": "化学药品；a. 化学的；化学上用的",
+    "part_of_speech": "n."
+  },
+  "chemistry": {
+    "meaning_cn": "化学；化学过程",
+    "part_of_speech": "n."
+  },
+  "chicago": {
+    "meaning_cn": "芝加哥",
+    "part_of_speech": "n."
+  },
+  "chicken": {
+    "meaning_cn": "小鸡；鸡肉",
+    "part_of_speech": "n."
+  },
+  "chief": {
+    "meaning_cn": "领袖；酋长；长官；主要部分",
+    "part_of_speech": "n."
+  },
+  "child": {
+    "meaning_cn": "孩子；产物；追随者；儿童",
+    "part_of_speech": "n."
+  },
+  "children": {
+    "meaning_cn": "pl. 孩子；孩子们",
+    "part_of_speech": "-"
+  },
+  "china": {
+    "meaning_cn": "中国；瓷器；a. 中国的",
+    "part_of_speech": "n."
+  },
+  "chinese": {
+    "meaning_cn": "中文；中国话；中国人；a. 中国的",
+    "part_of_speech": "n."
+  },
+  "choice": {
+    "meaning_cn": "选择；精选品；选择权；a. 精选的",
+    "part_of_speech": "n."
+  },
+  "choose": {
+    "meaning_cn": "选择；宁愿；欲；作出选择",
+    "part_of_speech": "vt."
+  },
+  "chris": {
+    "meaning_cn": "克里斯（男子名）；克莉丝（女子名）",
+    "part_of_speech": "n."
+  },
+  "christ": {
+    "meaning_cn": "基督；救世主",
+    "part_of_speech": "n."
+  },
+  "church": {
+    "meaning_cn": "教堂；礼拜；教会；使人接受宗教仪式",
+    "part_of_speech": "n."
+  },
+  "ci": {
+    "meaning_cn": "输入；通信接口；计算机工业；配置项",
+    "part_of_speech": "-"
+  },
+  "cipher": {
+    "meaning_cn": "零；暗号；密码；无用的东西",
+    "part_of_speech": "n."
+  },
+  "circle": {
+    "meaning_cn": "圆周；社交圈；循环；范围",
+    "part_of_speech": "n."
+  },
+  "circuit": {
+    "meaning_cn": "电路；环(行)道；巡回；线路",
+    "part_of_speech": "n."
+  },
+  "cisco": {
+    "meaning_cn": "加拿大白鲑",
+    "part_of_speech": "n."
+  },
+  "cite": {
+    "meaning_cn": "引用；引证；表彰；指引",
+    "part_of_speech": "vt."
+  },
+  "cities": {
+    "meaning_cn": "城市（city的复数）",
+    "part_of_speech": "n."
+  },
+  "citizens": {
+    "meaning_cn": "市民；公民（citizen的复数）",
+    "part_of_speech": "n."
+  },
+  "citizenship": {
+    "meaning_cn": "国籍；市民权；市民的身份；公民权",
+    "part_of_speech": "n."
+  },
+  "civil": {
+    "meaning_cn": "a. 市民的；公民的；有礼貌的；国民的",
+    "part_of_speech": "-"
+  },
+  "claim": {
+    "meaning_cn": "要求；要求权；断言；权利",
+    "part_of_speech": "n."
+  },
+  "claims": {
+    "meaning_cn": "权利要求；要求；请求权；债权",
+    "part_of_speech": "n."
+  },
+  "class": {
+    "meaning_cn": "班级；阶级；种类；课",
+    "part_of_speech": "n."
+  },
+  "classes": {
+    "meaning_cn": "级别；阶级（class复数形式）",
+    "part_of_speech": "n."
+  },
+  "classic": {
+    "meaning_cn": "古典作品；杰作；大艺术家；a. 第一流的",
+    "part_of_speech": "n."
+  },
+  "clean": {
+    "meaning_cn": "a. 干净的；清白的；简洁的；清洁地",
+    "part_of_speech": "adv."
+  },
+  "cleaning": {
+    "meaning_cn": "清洁；扫除；家畜的胞衣；扫除出来的垃圾",
+    "part_of_speech": "n."
+  },
+  "clear": {
+    "meaning_cn": "a. 清楚的；明确的；澄清的；清晰地",
+    "part_of_speech": "adv."
+  },
+  "clearly": {
+    "meaning_cn": "清楚地",
+    "part_of_speech": "adv."
+  },
+  "cli": {
+    "meaning_cn": "命令行界面（Command Line Interface for batch scripting）；生活指数（Cost of Living Index）",
+    "part_of_speech": "abbr."
+  },
+  "click": {
+    "meaning_cn": "咔哒声；啪嗒声；作咔哒声；使发咔哒声",
+    "part_of_speech": "n."
+  },
+  "client": {
+    "meaning_cn": "客户；顾客；委托人；客户机",
+    "part_of_speech": "n."
+  },
+  "clients": {
+    "meaning_cn": "客户端；顾客；救济对象；应受账款",
+    "part_of_speech": "n."
+  },
+  "climate": {
+    "meaning_cn": "气候；社会趋势；气候区",
+    "part_of_speech": "n."
+  },
+  "clinic": {
+    "meaning_cn": "诊所；临床教学；诊所(门诊部)；临床(讲解)",
+    "part_of_speech": "n."
+  },
+  "clinical": {
+    "meaning_cn": "a. 临床的；门诊部的；临床的；临证的",
+    "part_of_speech": "-"
+  },
+  "clips": {
+    "meaning_cn": "夹子；弹片；剪下来的东西；回形针（clip的复数）",
+    "part_of_speech": "n."
+  },
+  "clock": {
+    "meaning_cn": "时钟；计时器；(袜子上的)绣花边花；绣花样",
+    "part_of_speech": "n."
+  },
+  "close": {
+    "meaning_cn": "结束；完结；a. 靠近的；亲近的",
+    "part_of_speech": "n."
+  },
+  "closed": {
+    "meaning_cn": "a. 关闭的；限于少数人的；关闭指令",
+    "part_of_speech": "-"
+  },
+  "clothes": {
+    "meaning_cn": "衣服",
+    "part_of_speech": "n."
+  },
+  "clothing": {
+    "meaning_cn": "衣服",
+    "part_of_speech": "n."
+  },
+  "cloudy": {
+    "meaning_cn": "a. 多云的；有愁容的；云的；浑浊的",
+    "part_of_speech": "-"
+  },
+  "clubs": {
+    "meaning_cn": "（扑克牌）梅花；俱乐部；社团（club的复数）",
+    "part_of_speech": "n."
+  },
+  "cluster": {
+    "meaning_cn": "串；丛；群；簇",
+    "part_of_speech": "n."
+  },
+  "coach": {
+    "meaning_cn": "四轮大马车；教练；训练；指导",
+    "part_of_speech": "n."
+  },
+  "coaching": {
+    "meaning_cn": "辅导；教练技术",
+    "part_of_speech": "n."
+  },
+  "coast": {
+    "meaning_cn": "海岸；滑坡；沿海岸而行",
+    "part_of_speech": "n."
+  },
+  "coat": {
+    "meaning_cn": "外套；外面覆盖；给...穿外套",
+    "part_of_speech": "n."
+  },
+  "codes": {
+    "meaning_cn": "编码；代码；规范；准则（code的复数）",
+    "part_of_speech": "n."
+  },
+  "coffee": {
+    "meaning_cn": "咖啡；咖啡色；咖啡豆",
+    "part_of_speech": "n."
+  },
+  "coherent": {
+    "meaning_cn": "a. 互相耦合的；清晰的；明了的；凝聚性的",
+    "part_of_speech": "-"
+  },
+  "cohesion": {
+    "meaning_cn": "结合；黏聚；内聚；内聚性",
+    "part_of_speech": "n."
+  },
+  "cold": {
+    "meaning_cn": "感冒；寒冷；a. 寒冷的；冷淡的",
+    "part_of_speech": "n."
+  },
+  "collaboration": {
+    "meaning_cn": "合作；勾结；通敌卖国者；奸细",
+    "part_of_speech": "n."
+  },
+  "collective": {
+    "meaning_cn": "a. 集体的；聚集的；共同的；集体的",
+    "part_of_speech": "-"
+  },
+  "college": {
+    "meaning_cn": "学院；大学；学会",
+    "part_of_speech": "n."
+  },
+  "color": {
+    "meaning_cn": "颜色；面色；颜料；外貌",
+    "part_of_speech": "n."
+  },
+  "colorado": {
+    "meaning_cn": "科罗拉多；科罗拉多河",
+    "part_of_speech": "n."
+  },
+  "colors": {
+    "meaning_cn": "国旗；旗帜；船旗；军旗",
+    "part_of_speech": "n."
+  },
+  "columbia": {
+    "meaning_cn": "哥伦比亚",
+    "part_of_speech": "n."
+  },
+  "column": {
+    "meaning_cn": "专栏；圆柱；纵队；列",
+    "part_of_speech": "n."
+  },
+  "combined": {
+    "meaning_cn": "a. 结合的；组合的",
+    "part_of_speech": "-"
+  },
+  "comes": {
+    "meaning_cn": "来自；从…来（come的三单形式）",
+    "part_of_speech": "v."
+  },
+  "comfort": {
+    "meaning_cn": "舒适；安慰；安慰者",
+    "part_of_speech": "n."
+  },
+  "comfortable": {
+    "meaning_cn": "a. 舒服的；轻松的；盖被",
+    "part_of_speech": "n."
+  },
+  "comics": {
+    "meaning_cn": "连环画；漫画；喜剧演员（comic的复数形式）",
+    "part_of_speech": "n."
+  },
+  "coming": {
+    "meaning_cn": "来临；a. 就要来的；接着的",
+    "part_of_speech": "n."
+  },
+  "command": {
+    "meaning_cn": "命令；指挥；控制；部队",
+    "part_of_speech": "n."
+  },
+  "comment": {
+    "meaning_cn": "注解；批评；评论；备注",
+    "part_of_speech": "n."
+  },
+  "comments": {
+    "meaning_cn": "注解；评论（comment的复数）",
+    "part_of_speech": "n."
+  },
+  "commerce": {
+    "meaning_cn": "商业；商务；贸易",
+    "part_of_speech": "n."
+  },
+  "commit": {
+    "meaning_cn": "委托(托付)；犯罪；指派...作战；使承担义务",
+    "part_of_speech": "vt."
+  },
+  "common": {
+    "meaning_cn": "a. 通常的；共同的；通俗的；公共的",
+    "part_of_speech": "-"
+  },
+  "communication": {
+    "meaning_cn": "交流；交通；通讯；通信",
+    "part_of_speech": "n."
+  },
+  "community": {
+    "meaning_cn": "社区；公众；共有；共同体",
+    "part_of_speech": "n."
+  },
+  "commute": {
+    "meaning_cn": "交换；折偿；减轻；代偿",
+    "part_of_speech": "vt."
+  },
+  "compact": {
+    "meaning_cn": "a. 紧凑的；紧密的；简洁的；使紧密结合",
+    "part_of_speech": "vt."
+  },
+  "company": {
+    "meaning_cn": "公司；友伴；交往；连队",
+    "part_of_speech": "n."
+  },
+  "compare": {
+    "meaning_cn": "比较；比喻；对照；相比",
+    "part_of_speech": "vt."
+  },
+  "compared": {
+    "meaning_cn": "a. 比较的；对照的（compare的过去式和过去分词）",
+    "part_of_speech": "-"
+  },
+  "comparison": {
+    "meaning_cn": "比较；对照；比喻；对比",
+    "part_of_speech": "n."
+  },
+  "compensation": {
+    "meaning_cn": "补偿；赔偿金；工资；代偿(机能)",
+    "part_of_speech": "n."
+  },
+  "compiler": {
+    "meaning_cn": "编辑者；编译程序",
+    "part_of_speech": "n."
+  },
+  "complaint": {
+    "meaning_cn": "诉苦；抱怨；控诉；陈诉",
+    "part_of_speech": "n."
+  },
+  "complete": {
+    "meaning_cn": "a. 完全的；十足的；完成的；完成",
+    "part_of_speech": "vt."
+  },
+  "complex": {
+    "meaning_cn": "综合体；情结；络合物；a. 复杂的",
+    "part_of_speech": "n."
+  },
+  "compliance": {
+    "meaning_cn": "遵从；顺从；屈从；柔顺",
+    "part_of_speech": "n."
+  },
+  "component": {
+    "meaning_cn": "元件；组件；成分；a. 组成的",
+    "part_of_speech": "n."
+  },
+  "compression": {
+    "meaning_cn": "压缩；压紧",
+    "part_of_speech": "n."
+  },
+  "computer": {
+    "meaning_cn": "电脑；电子计算机；计算机",
+    "part_of_speech": "n."
+  },
+  "concept": {
+    "meaning_cn": "观念；概念",
+    "part_of_speech": "n."
+  },
+  "concern": {
+    "meaning_cn": "关心；忧虑；与...有关；使担心",
+    "part_of_speech": "n."
+  },
+  "concerns": {
+    "meaning_cn": "关注；关注点；关注者（concern的复数形式）",
+    "part_of_speech": "n."
+  },
+  "conclusion": {
+    "meaning_cn": "结论；结尾；推论；缔结",
+    "part_of_speech": "n."
+  },
+  "concurrency": {
+    "meaning_cn": "并发性；并行性",
+    "part_of_speech": "-"
+  },
+  "condition": {
+    "meaning_cn": "情况；条件；使健康；以...为条件",
+    "part_of_speech": "n."
+  },
+  "conduct": {
+    "meaning_cn": "行为；举动；指导；为人",
+    "part_of_speech": "n."
+  },
+  "conflict": {
+    "meaning_cn": "战斗；冲突；矛盾；争执",
+    "part_of_speech": "n."
+  },
+  "congestion": {
+    "meaning_cn": "拥挤；充血；拥塞",
+    "part_of_speech": "n."
+  },
+  "congress": {
+    "meaning_cn": "国会；会议；讨论会；会合",
+    "part_of_speech": "n."
+  },
+  "connect": {
+    "meaning_cn": "连接；联合；联系",
+    "part_of_speech": "v."
+  },
+  "consensus": {
+    "meaning_cn": "合意；一致；同感",
+    "part_of_speech": "n."
+  },
+  "consequence": {
+    "meaning_cn": "结果；重要性；后果；推断",
+    "part_of_speech": "n."
+  },
+  "conservation": {
+    "meaning_cn": "保护；保存",
+    "part_of_speech": "n."
+  },
+  "consider": {
+    "meaning_cn": "考虑；思考；认为",
+    "part_of_speech": "v."
+  },
+  "consume": {
+    "meaning_cn": "消耗；消费；消灭；耗尽",
+    "part_of_speech": "vt."
+  },
+  "consumer": {
+    "meaning_cn": "消费者；用户",
+    "part_of_speech": "n."
+  },
+  "contact": {
+    "meaning_cn": "联系；交际；熟人；接触",
+    "part_of_speech": "n."
+  },
+  "contacts": {
+    "meaning_cn": "联系人；联络方式；触体（contact的复数形式）",
+    "part_of_speech": "n."
+  },
+  "contain": {
+    "meaning_cn": "包含；容纳；控制；自制",
+    "part_of_speech": "vt."
+  },
+  "container": {
+    "meaning_cn": "容器；集装箱；贮存箱；容器(任何一种)",
+    "part_of_speech": "n."
+  },
+  "contains": {
+    "meaning_cn": "包含；容纳；包含某字符串（contain的单三形式）",
+    "part_of_speech": "v."
+  },
+  "content": {
+    "meaning_cn": "内容；满足；意义；要旨",
+    "part_of_speech": "n."
+  },
+  "contents": {
+    "meaning_cn": "目录",
+    "part_of_speech": "n."
+  },
+  "context": {
+    "meaning_cn": "上下文；背景；来龙去脉",
+    "part_of_speech": "n."
+  },
+  "continue": {
+    "meaning_cn": "继续；延续；延长；使继续",
+    "part_of_speech": "vi."
+  },
+  "contract": {
+    "meaning_cn": "合约；婚约；契约；使皱缩",
+    "part_of_speech": "n."
+  },
+  "contrast": {
+    "meaning_cn": "差别；对比；对照物；使对比",
+    "part_of_speech": "n."
+  },
+  "control": {
+    "meaning_cn": "控制；管理；克制；控制器",
+    "part_of_speech": "n."
+  },
+  "controls": {
+    "meaning_cn": "控制；控制元件；控制装置（control的复数）",
+    "part_of_speech": "n."
+  },
+  "conversation": {
+    "meaning_cn": "会话；说话；交谈；社交",
+    "part_of_speech": "n."
+  },
+  "cook": {
+    "meaning_cn": "厨子；厨师；烹调；煮饭",
+    "part_of_speech": "n."
+  },
+  "cookie": {
+    "meaning_cn": "饼干；小甜点；糕点",
+    "part_of_speech": "n."
+  },
+  "cooking": {
+    "meaning_cn": "烹饪；熬炼；热炼；蒸煮",
+    "part_of_speech": "n."
+  },
+  "copies": {
+    "meaning_cn": "打印份数；复印份数；复制品；副本（copy的复数）",
+    "part_of_speech": "n."
+  },
+  "corner": {
+    "meaning_cn": "角落；转角；窘境；迫至一隅",
+    "part_of_speech": "n."
+  },
+  "correct": {
+    "meaning_cn": "a. 正确的；合适的；改正；订正",
+    "part_of_speech": "vt."
+  },
+  "correlation": {
+    "meaning_cn": "相互关系；相关；关联；联系",
+    "part_of_speech": "n."
+  },
+  "cors": {
+    "meaning_cn": "连续运行参考站；[医][=Cronholm-Ottosson rating scale]克-奥二氏分级量表",
+    "part_of_speech": "n."
+  },
+  "cost": {
+    "meaning_cn": "代价；价值；费用；花费",
+    "part_of_speech": "n."
+  },
+  "costs": {
+    "meaning_cn": "费用；诉讼费；损失（cost的复数）",
+    "part_of_speech": "n."
+  },
+  "council": {
+    "meaning_cn": "会议；委员会",
+    "part_of_speech": "n."
+  },
+  "count": {
+    "meaning_cn": "计算；视为；计数；合计",
+    "part_of_speech": "vt."
+  },
+  "counter": {
+    "meaning_cn": "计算器；计算者；柜台；筹码",
+    "part_of_speech": "n."
+  },
+  "counterargument": {
+    "meaning_cn": "抗办",
+    "part_of_speech": "-"
+  },
+  "country": {
+    "meaning_cn": "国家；乡村；地区；故乡",
+    "part_of_speech": "n."
+  },
+  "county": {
+    "meaning_cn": "县；郡",
+    "part_of_speech": "n."
+  },
+  "couple": {
+    "meaning_cn": "对；夫妇；数个；使成双",
+    "part_of_speech": "n."
+  },
+  "course": {
+    "meaning_cn": "课程；路线；过程；一道菜",
+    "part_of_speech": "n."
+  },
+  "courses": {
+    "meaning_cn": "月经",
+    "part_of_speech": "-"
+  },
+  "court": {
+    "meaning_cn": "法院；庭院；奉承；献殷勤",
+    "part_of_speech": "n."
+  },
+  "cover": {
+    "meaning_cn": "盖子；封面；藉口；覆盖",
+    "part_of_speech": "n."
+  },
+  "coverage": {
+    "meaning_cn": "覆盖的范围；保险总额；新闻报导；可达范围",
+    "part_of_speech": "n."
+  },
+  "covered": {
+    "meaning_cn": "a. 隐蔽着的；掩藏着的；有屋顶的；涂抹了的",
+    "part_of_speech": "-"
+  },
+  "covers": {
+    "meaning_cn": "覆盖；封面；盖子；暗礁",
+    "part_of_speech": "n."
+  },
+  "cpu": {
+    "meaning_cn": "中央处理器",
+    "part_of_speech": "-"
+  },
+  "crate": {
+    "meaning_cn": "板条箱；装货箱；篓；筐",
+    "part_of_speech": "n."
+  },
+  "cream": {
+    "meaning_cn": "乳酪；奶油；面霜；乳油",
+    "part_of_speech": "n."
+  },
+  "create": {
+    "meaning_cn": "创造；建造；引起；任命",
+    "part_of_speech": "vt."
+  },
+  "created": {
+    "meaning_cn": "a. 创造的；创造的；建立的",
+    "part_of_speech": "-"
+  },
+  "creating": {
+    "meaning_cn": "生成的",
+    "part_of_speech": "-"
+  },
+  "creation": {
+    "meaning_cn": "创造；创作物；发明；产生",
+    "part_of_speech": "n."
+  },
+  "creative": {
+    "meaning_cn": "a. 有创造力的；创作的；产生的",
+    "part_of_speech": "-"
+  },
+  "credential": {
+    "meaning_cn": "国书；凭据；证明书；凭证",
+    "part_of_speech": "n."
+  },
+  "credit": {
+    "meaning_cn": "信用；信任；荣誉；贷款",
+    "part_of_speech": "n."
+  },
+  "credits": {
+    "meaning_cn": "演职员名单；工作人员；信用；学分（credit的复数）",
+    "part_of_speech": "n."
+  },
+  "creek": {
+    "meaning_cn": "小溪；小河；小湾",
+    "part_of_speech": "n."
+  },
+  "crime": {
+    "meaning_cn": "犯罪；罪行；罪恶；罪",
+    "part_of_speech": "n."
+  },
+  "criminal": {
+    "meaning_cn": "罪犯；犯人；刑事；a. 犯了罪的",
+    "part_of_speech": "n."
+  },
+  "criteria": {
+    "meaning_cn": "pl. 标准；条件",
+    "part_of_speech": "-"
+  },
+  "critical": {
+    "meaning_cn": "a. 批评的；决定性的；危险的；临界的",
+    "part_of_speech": "-"
+  },
+  "cron": {
+    "meaning_cn": "克龙（时间单位；等于百万年）；[计]计划任务工具",
+    "part_of_speech": "n."
+  },
+  "cross": {
+    "meaning_cn": "十字架；十字架形物件；交叉；十字标",
+    "part_of_speech": "n."
+  },
+  "cruise": {
+    "meaning_cn": "巡航；巡弋；漫游",
+    "part_of_speech": "n."
+  },
+  "crystal": {
+    "meaning_cn": "水晶；水晶装饰品；结晶；a. 水晶的",
+    "part_of_speech": "n."
+  },
+  "cultural": {
+    "meaning_cn": "a. 文化的；教养的；修养的；培养的",
+    "part_of_speech": "-"
+  },
+  "culture": {
+    "meaning_cn": "文化；修养；耕种；培养",
+    "part_of_speech": "n."
+  },
+  "currency": {
+    "meaning_cn": "货币；通货；流通；通用",
+    "part_of_speech": "n."
+  },
+  "current": {
+    "meaning_cn": "涌流；趋势；流；a. 流通的",
+    "part_of_speech": "n."
+  },
+  "curriculum": {
+    "meaning_cn": "课程；学程",
+    "part_of_speech": "n."
+  },
+  "custom": {
+    "meaning_cn": "习惯；风俗；海关；自定义",
+    "part_of_speech": "n."
+  },
+  "customer": {
+    "meaning_cn": "消费者；顾客",
+    "part_of_speech": "n."
+  },
+  "cycle": {
+    "meaning_cn": "周期；循环；自行车；一段时间",
+    "part_of_speech": "n."
+  },
+  "daemon": {
+    "meaning_cn": "无交互后台程序",
+    "part_of_speech": "-"
+  },
+  "daily": {
+    "meaning_cn": "a. 每日的；日常的；每日地；日常地",
+    "part_of_speech": "adv."
+  },
+  "dakota": {
+    "meaning_cn": "达科他（美国过去一地区名；现分为南；北达科他州）",
+    "part_of_speech": "n."
+  },
+  "dallas": {
+    "meaning_cn": "达拉斯（美国城市）",
+    "part_of_speech": "n."
+  },
+  "damage": {
+    "meaning_cn": "损害；伤害",
+    "part_of_speech": "n."
+  },
+  "dance": {
+    "meaning_cn": "跳舞；舞蹈；舞会",
+    "part_of_speech": "n."
+  },
+  "daniel": {
+    "meaning_cn": "丹尼尔（男子名）",
+    "part_of_speech": "n."
+  },
+  "dashboard": {
+    "meaning_cn": "仪表板；挡泥板",
+    "part_of_speech": "n."
+  },
+  "data": {
+    "meaning_cn": "pl. 资料；数据；DOS内部命令:用于显示或设定系统的日期",
+    "part_of_speech": "-"
+  },
+  "database": {
+    "meaning_cn": "数据库",
+    "part_of_speech": "n."
+  },
+  "dates": {
+    "meaning_cn": "日期；枣子；大枣；约会（date的复数形式）",
+    "part_of_speech": "n."
+  },
+  "dating": {
+    "meaning_cn": "记日期的；注明日期",
+    "part_of_speech": "-"
+  },
+  "daughter": {
+    "meaning_cn": "女儿；a. 女儿的",
+    "part_of_speech": "n."
+  },
+  "david": {
+    "meaning_cn": "大卫；戴维（男子名）",
+    "part_of_speech": "n."
+  },
+  "davis": {
+    "meaning_cn": "戴维斯（男子名）",
+    "part_of_speech": "n."
+  },
+  "deadline": {
+    "meaning_cn": "最后期限；截止日期",
+    "part_of_speech": "n."
+  },
+  "deadlock": {
+    "meaning_cn": "僵局；停顿；(使)停顿；(使)相持不下",
+    "part_of_speech": "n."
+  },
+  "dealer": {
+    "meaning_cn": "经销商；商人；交易员；贩卖商",
+    "part_of_speech": "n."
+  },
+  "dealers": {
+    "meaning_cn": "交易商；经销商；商人们（dealer的复数）",
+    "part_of_speech": "n."
+  },
+  "deals": {
+    "meaning_cn": "协约；份额；交易（deal的复数形式）",
+    "part_of_speech": "n."
+  },
+  "death": {
+    "meaning_cn": "死亡",
+    "part_of_speech": "n."
+  },
+  "debate": {
+    "meaning_cn": "辩论；讨论；争论",
+    "part_of_speech": "n."
+  },
+  "debug": {
+    "meaning_cn": "除错；改正有毛病部分；除去窃听器；调试",
+    "part_of_speech": "vt."
+  },
+  "december": {
+    "meaning_cn": "十二月",
+    "part_of_speech": "n."
+  },
+  "decided": {
+    "meaning_cn": "a. 确定的；坚决的",
+    "part_of_speech": "-"
+  },
+  "decision": {
+    "meaning_cn": "决定；决心；决断；判定",
+    "part_of_speech": "n."
+  },
+  "decompression": {
+    "meaning_cn": "降压；解除压缩；脱压缩；减压",
+    "part_of_speech": "-"
+  },
+  "default": {
+    "meaning_cn": "违约；不履行责任；缺席；默认值",
+    "part_of_speech": "n."
+  },
+  "defense": {
+    "meaning_cn": "防卫；防卫物；防御",
+    "part_of_speech": "n."
+  },
+  "define": {
+    "meaning_cn": "定义；规定；使明确",
+    "part_of_speech": "vt."
+  },
+  "defined": {
+    "meaning_cn": "a. 清晰的；轮廓分明的；有定义的；确定的",
+    "part_of_speech": "-"
+  },
+  "degree": {
+    "meaning_cn": "程度；度数；学位；度",
+    "part_of_speech": "n."
+  },
+  "degrees": {
+    "meaning_cn": "角度；学历；度数（degree的复数）",
+    "part_of_speech": "n."
+  },
+  "delegation": {
+    "meaning_cn": "代表团；派遣代表团；代表的地位(或权力)；派遣",
+    "part_of_speech": "n."
+  },
+  "delete": {
+    "meaning_cn": "删除",
+    "part_of_speech": "vt."
+  },
+  "deliverable": {
+    "meaning_cn": "可交付的；可投递的；可交割的",
+    "part_of_speech": "-"
+  },
+  "delivery": {
+    "meaning_cn": "递送；交付；分娩；交货",
+    "part_of_speech": "n."
+  },
+  "delta": {
+    "meaning_cn": "三角洲；希腊字母的第四个字；δ(希腊文的第四个字母)；丁种",
+    "part_of_speech": "n."
+  },
+  "demand": {
+    "meaning_cn": "要求；需求；需要；查询",
+    "part_of_speech": "n."
+  },
+  "demo": {
+    "meaning_cn": "演示；样本唱片",
+    "part_of_speech": "n."
+  },
+  "democracy": {
+    "meaning_cn": "民主政治；民主主义；民主；民主政体",
+    "part_of_speech": "n."
+  },
+  "dependency": {
+    "meaning_cn": "属国；保护地；从属物；从属",
+    "part_of_speech": "n."
+  },
+  "deployment": {
+    "meaning_cn": "展开",
+    "part_of_speech": "-"
+  },
+  "depth": {
+    "meaning_cn": "深度；深处；深奥",
+    "part_of_speech": "n."
+  },
+  "describe": {
+    "meaning_cn": "描述；描绘；画",
+    "part_of_speech": "vt."
+  },
+  "design": {
+    "meaning_cn": "设计；图样；方案；企图",
+    "part_of_speech": "n."
+  },
+  "designed": {
+    "meaning_cn": "a. 故意的；有计划的；特意的",
+    "part_of_speech": "-"
+  },
+  "designer": {
+    "meaning_cn": "设计者；谋划者；制图者；设计员",
+    "part_of_speech": "n."
+  },
+  "designs": {
+    "meaning_cn": "阴谋；诡计",
+    "part_of_speech": "n."
+  },
+  "desk": {
+    "meaning_cn": "书桌；办公桌；工作台",
+    "part_of_speech": "n."
+  },
+  "desktop": {
+    "meaning_cn": "桌面",
+    "part_of_speech": "n."
+  },
+  "despite": {
+    "meaning_cn": "轻视；憎恨；虽然；尽管",
+    "part_of_speech": "n."
+  },
+  "detail": {
+    "meaning_cn": "细节；详情；详述；选派",
+    "part_of_speech": "n."
+  },
+  "detailed": {
+    "meaning_cn": "a. 详细的；复杂的；详细的；详尽的",
+    "part_of_speech": "-"
+  },
+  "details": {
+    "meaning_cn": "详细资料；细节（detail的复数）",
+    "part_of_speech": "n."
+  },
+  "devel": {
+    "meaning_cn": "重击；猛击",
+    "part_of_speech": "n."
+  },
+  "develop": {
+    "meaning_cn": "发展；使发达；进步；洗印",
+    "part_of_speech": "vt."
+  },
+  "device": {
+    "meaning_cn": "装置；设计；策略；发明物",
+    "part_of_speech": "n."
+  },
+  "devices": {
+    "meaning_cn": "设备；装置；器件（device的复数）",
+    "part_of_speech": "n."
+  },
+  "diagram": {
+    "meaning_cn": "图表；图解",
+    "part_of_speech": "n."
+  },
+  "diamond": {
+    "meaning_cn": "钻石；菱形",
+    "part_of_speech": "n."
+  },
+  "diego": {
+    "meaning_cn": "迭戈（男子名）",
+    "part_of_speech": "n."
+  },
+  "digital": {
+    "meaning_cn": "a. 数字显示的；数字的；数字仪表；数字式电子表(或时钟)",
+    "part_of_speech": "n."
+  },
+  "dining": {
+    "meaning_cn": "正餐；宴会",
+    "part_of_speech": "n."
+  },
+  "dinner": {
+    "meaning_cn": "晚餐；正餐；宴会",
+    "part_of_speech": "n."
+  },
+  "direct": {
+    "meaning_cn": "a. 直接的；坦白的；指示；指挥",
+    "part_of_speech": "vt."
+  },
+  "directed": {
+    "meaning_cn": "a. 定向的；经指导的；被控制的",
+    "part_of_speech": "-"
+  },
+  "directly": {
+    "meaning_cn": "径直地；直接地；直率地；正好地",
+    "part_of_speech": "adv."
+  },
+  "director": {
+    "meaning_cn": "主管；导演；董事；寻向偶极子",
+    "part_of_speech": "n."
+  },
+  "disadvantage": {
+    "meaning_cn": "缺点；不利；坏处",
+    "part_of_speech": "n."
+  },
+  "discount": {
+    "meaning_cn": "折扣；贴现率；打折扣；贴现",
+    "part_of_speech": "n."
+  },
+  "discover": {
+    "meaning_cn": "发现；找到；暴露",
+    "part_of_speech": "vt."
+  },
+  "discuss": {
+    "meaning_cn": "讨论；论述；辩论",
+    "part_of_speech": "vt."
+  },
+  "discussion": {
+    "meaning_cn": "讨论",
+    "part_of_speech": "n."
+  },
+  "disease": {
+    "meaning_cn": "疾病；弊病；[疾]病",
+    "part_of_speech": "n."
+  },
+  "diseases": {
+    "meaning_cn": "病害；疾病；疾病种类；病（disease的复数）",
+    "part_of_speech": "n."
+  },
+  "disk": {
+    "meaning_cn": "圆盘；磁盘",
+    "part_of_speech": "n."
+  },
+  "disney": {
+    "meaning_cn": "迪斯尼",
+    "part_of_speech": "n."
+  },
+  "display": {
+    "meaning_cn": "显示；陈列；炫耀；显示器",
+    "part_of_speech": "n."
+  },
+  "distance": {
+    "meaning_cn": "距离；远方；遥远；位距",
+    "part_of_speech": "n."
+  },
+  "distributed": {
+    "meaning_cn": "a. 分布式的；分散对齐；分布式处理",
+    "part_of_speech": "-"
+  },
+  "district": {
+    "meaning_cn": "区域；地方；地区；地段",
+    "part_of_speech": "n."
+  },
+  "division": {
+    "meaning_cn": "分；分开；除法；部门(如部",
+    "part_of_speech": "n."
+  },
+  "docker": {
+    "meaning_cn": "码头工人",
+    "part_of_speech": "n."
+  },
+  "doctor": {
+    "meaning_cn": "医生；博士；授以博士学位；诊断",
+    "part_of_speech": "n."
+  },
+  "document": {
+    "meaning_cn": "文件；公文；文档；证明",
+    "part_of_speech": "n."
+  },
+  "doing": {
+    "meaning_cn": "行为；活动",
+    "part_of_speech": "n."
+  },
+  "dollar": {
+    "meaning_cn": "美元；元(加；澳等国货币单位)；纯经济的",
+    "part_of_speech": "n."
+  },
+  "dollars": {
+    "meaning_cn": "美元（dollar的复数）",
+    "part_of_speech": "n."
+  },
+  "dom": {
+    "meaning_cn": "师（对罗马天主教等修士的尊称）",
+    "part_of_speech": "n."
+  },
+  "domain": {
+    "meaning_cn": "领域；领土；产业；范围",
+    "part_of_speech": "n."
+  },
+  "domestic": {
+    "meaning_cn": "a. 家庭的；国内的；驯养的；家庭的",
+    "part_of_speech": "-"
+  },
+  "done": {
+    "meaning_cn": "a. 完成了的；好了的；do的过去分词",
+    "part_of_speech": "-"
+  },
+  "door": {
+    "meaning_cn": "门",
+    "part_of_speech": "n."
+  },
+  "dormitory": {
+    "meaning_cn": "宿舍",
+    "part_of_speech": "n."
+  },
+  "double": {
+    "meaning_cn": "两倍；a. 两倍的；双重的；使加倍",
+    "part_of_speech": "n."
+  },
+  "download": {
+    "meaning_cn": "卸载；下栽",
+    "part_of_speech": "-"
+  },
+  "draft": {
+    "meaning_cn": "气流；草稿；汇票；草案",
+    "part_of_speech": "n."
+  },
+  "drama": {
+    "meaning_cn": "戏剧；戏剧艺术",
+    "part_of_speech": "n."
+  },
+  "dream": {
+    "meaning_cn": "梦；空想；愿望；做梦",
+    "part_of_speech": "n."
+  },
+  "dress": {
+    "meaning_cn": "服装；覆盖物；穿着；给...穿衣",
+    "part_of_speech": "n."
+  },
+  "drink": {
+    "meaning_cn": "饮料；酒；喝；喝酒",
+    "part_of_speech": "n."
+  },
+  "drive": {
+    "meaning_cn": "驾车；快车道；推进力；驱动",
+    "part_of_speech": "n."
+  },
+  "driver": {
+    "meaning_cn": "驾驶员；驱动器；驱动程序",
+    "part_of_speech": "n."
+  },
+  "drivers": {
+    "meaning_cn": "驱动程序",
+    "part_of_speech": "-"
+  },
+  "drives": {
+    "meaning_cn": "驱动器；驱动力；驱动程序（drive的复数形式）",
+    "part_of_speech": "n."
+  },
+  "driving": {
+    "meaning_cn": "赶；操纵；驾驶；a. 推进的",
+    "part_of_speech": "n."
+  },
+  "drugs": {
+    "meaning_cn": "毒品；药物",
+    "part_of_speech": "n."
+  },
+  "during": {
+    "meaning_cn": "在...的时候",
+    "part_of_speech": "prep."
+  },
+  "dynamic": {
+    "meaning_cn": "a. 动态的；有活力的；有力的；动力的",
+    "part_of_speech": "-"
+  },
+  "earlier": {
+    "meaning_cn": "a. 早的；初期的",
+    "part_of_speech": "-"
+  },
+  "early": {
+    "meaning_cn": "a. 早的；早熟的；很早；初",
+    "part_of_speech": "adv."
+  },
+  "earth": {
+    "meaning_cn": "地球；泥土；世界；尘世",
+    "part_of_speech": "n."
+  },
+  "earthquake": {
+    "meaning_cn": "地震",
+    "part_of_speech": "n."
+  },
+  "easier": {
+    "meaning_cn": "a. 更简单；较早的；容易些（easy的比较级形式）",
+    "part_of_speech": "-"
+  },
+  "easily": {
+    "meaning_cn": "容易地；轻易地；流利地",
+    "part_of_speech": "adv."
+  },
+  "eastern": {
+    "meaning_cn": "东方人；东正教徒；a. 东方的；向东的",
+    "part_of_speech": "n."
+  },
+  "ecology": {
+    "meaning_cn": "生态学；社会生态学",
+    "part_of_speech": "n."
+  },
+  "economic": {
+    "meaning_cn": "a. 经济上的；实用的；节省的；经济的",
+    "part_of_speech": "-"
+  },
+  "economics": {
+    "meaning_cn": "经济学",
+    "part_of_speech": "n."
+  },
+  "economy": {
+    "meaning_cn": "经济；理财；节约；整体",
+    "part_of_speech": "n."
+  },
+  "ecosystem": {
+    "meaning_cn": "生态系统；生态系",
+    "part_of_speech": "n."
+  },
+  "edition": {
+    "meaning_cn": "版本；版；翻版",
+    "part_of_speech": "n."
+  },
+  "editor": {
+    "meaning_cn": "编者；编辑；主笔；编辑器",
+    "part_of_speech": "n."
+  },
+  "education": {
+    "meaning_cn": "教育；训练；教育学",
+    "part_of_speech": "n."
+  },
+  "edward": {
+    "meaning_cn": "爱德华（男子名）",
+    "part_of_speech": "n."
+  },
+  "effect": {
+    "meaning_cn": "结果；影响；效果；印象",
+    "part_of_speech": "n."
+  },
+  "effects": {
+    "meaning_cn": "财物；个人财产；动产",
+    "part_of_speech": "n."
+  },
+  "effort": {
+    "meaning_cn": "努力；成就",
+    "part_of_speech": "n."
+  },
+  "efforts": {
+    "meaning_cn": "努力；转向力（effort的复数）",
+    "part_of_speech": "n."
+  },
+  "egg": {
+    "meaning_cn": "蛋；卵；挑唆；煽动",
+    "part_of_speech": "n."
+  },
+  "eight": {
+    "meaning_cn": "八；八个",
+    "part_of_speech": "num."
+  },
+  "either": {
+    "meaning_cn": "a. (两者之中)任一的；(两者之中)各一的；(两者之中)任一；或",
+    "part_of_speech": "pron."
+  },
+  "election": {
+    "meaning_cn": "选举；当选；选择权",
+    "part_of_speech": "n."
+  },
+  "electric": {
+    "meaning_cn": "a. 电的；导电的；电动的；电的",
+    "part_of_speech": "-"
+  },
+  "electron": {
+    "meaning_cn": "电子",
+    "part_of_speech": "n."
+  },
+  "element": {
+    "meaning_cn": "元件；元素；要素；部分",
+    "part_of_speech": "n."
+  },
+  "elements": {
+    "meaning_cn": "原理；基础",
+    "part_of_speech": "n."
+  },
+  "eligible": {
+    "meaning_cn": "a. 有资格当选的；合格的；有资格者；合格者",
+    "part_of_speech": "n."
+  },
+  "email": {
+    "meaning_cn": "电子信函",
+    "part_of_speech": "n."
+  },
+  "emission": {
+    "meaning_cn": "发射；射出；发行；遗精",
+    "part_of_speech": "n."
+  },
+  "employee": {
+    "meaning_cn": "职员；员工；受雇人员；职工",
+    "part_of_speech": "n."
+  },
+  "employer": {
+    "meaning_cn": "雇主；老板；业主",
+    "part_of_speech": "n."
+  },
+  "employment": {
+    "meaning_cn": "雇用；职业；工作；职工招请",
+    "part_of_speech": "n."
+  },
+  "empty": {
+    "meaning_cn": "a. 空的；空虚的；空腹的；空洞的",
+    "part_of_speech": "-"
+  },
+  "enable": {
+    "meaning_cn": "使能够；允许；使能；打开",
+    "part_of_speech": "vt."
+  },
+  "encryption": {
+    "meaning_cn": "加密",
+    "part_of_speech": "-"
+  },
+  "ended": {
+    "meaning_cn": "a. 结束的（end的过去分词）",
+    "part_of_speech": "-"
+  },
+  "ending": {
+    "meaning_cn": "终止；终了；收场；末梢",
+    "part_of_speech": "n."
+  },
+  "endpoint": {
+    "meaning_cn": "端点；末端；终结点",
+    "part_of_speech": "n."
+  },
+  "energy": {
+    "meaning_cn": "精力；精神；活力；能量",
+    "part_of_speech": "n."
+  },
+  "engine": {
+    "meaning_cn": "引擎；发动机；机车；安装发动机于",
+    "part_of_speech": "n."
+  },
+  "engines": {
+    "meaning_cn": "火车头；发动机；引擎（engine的复数形式）",
+    "part_of_speech": "n."
+  },
+  "england": {
+    "meaning_cn": "英格兰；英国",
+    "part_of_speech": "n."
+  },
+  "english": {
+    "meaning_cn": "英语；a. 英文的；英国人的",
+    "part_of_speech": "n."
+  },
+  "enjoy": {
+    "meaning_cn": "享受；喜欢；欣赏；享有",
+    "part_of_speech": "vt."
+  },
+  "enlarge": {
+    "meaning_cn": "扩大；增大；详述",
+    "part_of_speech": "vt."
+  },
+  "enough": {
+    "meaning_cn": "充足；够；很多；a. 充足的",
+    "part_of_speech": "n."
+  },
+  "ensure": {
+    "meaning_cn": "确定；保证；担保；保护",
+    "part_of_speech": "vt."
+  },
+  "enter": {
+    "meaning_cn": "进入；参加；开始；输入",
+    "part_of_speech": "vt."
+  },
+  "entered": {
+    "meaning_cn": "a. 进入的",
+    "part_of_speech": "-"
+  },
+  "entire": {
+    "meaning_cn": "整个；全部；a. 全体的；完全的",
+    "part_of_speech": "n."
+  },
+  "entries": {
+    "meaning_cn": "进入；（词典所列的）词目（entry的复数形式）",
+    "part_of_speech": "n."
+  },
+  "entry": {
+    "meaning_cn": "登录；条目；进入；入口",
+    "part_of_speech": "n."
+  },
+  "environment": {
+    "meaning_cn": "环境；外界；围绕",
+    "part_of_speech": "n."
+  },
+  "enzyme": {
+    "meaning_cn": "酶",
+    "part_of_speech": "n."
+  },
+  "equal": {
+    "meaning_cn": "对手；匹敌；同辈；a. 相等的",
+    "part_of_speech": "n."
+  },
+  "equity": {
+    "meaning_cn": "公平；公正；权益；产权",
+    "part_of_speech": "n."
+  },
+  "error": {
+    "meaning_cn": "错误；过失；失误；误差",
+    "part_of_speech": "n."
+  },
+  "errors": {
+    "meaning_cn": "误差；错误；差错（error的复数）",
+    "part_of_speech": "n."
+  },
+  "escalate": {
+    "meaning_cn": "逐步扩大；逐步升高；逐步增强；使逐步上升",
+    "part_of_speech": "vi."
+  },
+  "escalation": {
+    "meaning_cn": "扩大；增加；调查；价格调整",
+    "part_of_speech": "n."
+  },
+  "essay": {
+    "meaning_cn": "随笔；短文；评论；企图",
+    "part_of_speech": "n."
+  },
+  "estate": {
+    "meaning_cn": "不动产；(人生的)阶段；阶层；财产",
+    "part_of_speech": "n."
+  },
+  "estimate": {
+    "meaning_cn": "估计；判断；评价",
+    "part_of_speech": "n."
+  },
+  "ethics": {
+    "meaning_cn": "道德规范；伦理学",
+    "part_of_speech": "n."
+  },
+  "europe": {
+    "meaning_cn": "欧洲",
+    "part_of_speech": "n."
+  },
+  "european": {
+    "meaning_cn": "欧洲人；a. 欧洲的；欧洲人的",
+    "part_of_speech": "n."
+  },
+  "evaluate": {
+    "meaning_cn": "评估；评价；赋值",
+    "part_of_speech": "vt."
+  },
+  "evening": {
+    "meaning_cn": "傍晚；晚间；末期",
+    "part_of_speech": "n."
+  },
+  "event": {
+    "meaning_cn": "事件；结果；事情的进程；竞赛项目",
+    "part_of_speech": "n."
+  },
+  "events": {
+    "meaning_cn": "事件；[体育]项目（event的复数）",
+    "part_of_speech": "n."
+  },
+  "every": {
+    "meaning_cn": "a. 每一；所有的",
+    "part_of_speech": "-"
+  },
+  "everyone": {
+    "meaning_cn": "每个人；人人；系统中的一个组名",
+    "part_of_speech": "pron."
+  },
+  "evidence": {
+    "meaning_cn": "根据；证据；迹象；凭证",
+    "part_of_speech": "n."
+  },
+  "evolution": {
+    "meaning_cn": "进化；发展；进展；(气体)放出",
+    "part_of_speech": "n."
+  },
+  "exactly": {
+    "meaning_cn": "确切地；精确地；恰好；完全地",
+    "part_of_speech": "adv."
+  },
+  "exam": {
+    "meaning_cn": "考试；测验",
+    "part_of_speech": "n."
+  },
+  "example": {
+    "meaning_cn": "例子；样本；实例",
+    "part_of_speech": "n."
+  },
+  "examples": {
+    "meaning_cn": "例子；列证（example的复数形式）",
+    "part_of_speech": "n."
+  },
+  "except": {
+    "meaning_cn": "除；除外；反对；除了...之外",
+    "part_of_speech": "vt."
+  },
+  "exchange": {
+    "meaning_cn": "交换；(电话)交换局；交换机；汇兑",
+    "part_of_speech": "n."
+  },
+  "executable": {
+    "meaning_cn": "a. 可执行的；可以作成的；可实行的；可执行的",
+    "part_of_speech": "-"
+  },
+  "executive": {
+    "meaning_cn": "执行部门；执行委员会；执行者；经理主管人员",
+    "part_of_speech": "n."
+  },
+  "exercise": {
+    "meaning_cn": "行使；执行；运动；练习",
+    "part_of_speech": "n."
+  },
+  "exist": {
+    "meaning_cn": "存在；生存；发生",
+    "part_of_speech": "vi."
+  },
+  "existing": {
+    "meaning_cn": "a. 存在的；目前的；现存的；现有的",
+    "part_of_speech": "-"
+  },
+  "expand": {
+    "meaning_cn": "使膨胀；详述；扩张；张开",
+    "part_of_speech": "vt."
+  },
+  "expect": {
+    "meaning_cn": "预期；盼望；期待",
+    "part_of_speech": "vt."
+  },
+  "expected": {
+    "meaning_cn": "a. 预期的；预料的",
+    "part_of_speech": "-"
+  },
+  "expenditure": {
+    "meaning_cn": "开支；费用；用光；消费额",
+    "part_of_speech": "n."
+  },
+  "expense": {
+    "meaning_cn": "费用；代价；开支；损失",
+    "part_of_speech": "n."
+  },
+  "expenses": {
+    "meaning_cn": "开支；经费；费用；支出",
+    "part_of_speech": "n."
+  },
+  "expensive": {
+    "meaning_cn": "a. 贵的；奢华的；费用浩大的；乱化钱的",
+    "part_of_speech": "-"
+  },
+  "experiment": {
+    "meaning_cn": "实验；试验；实验仪器；尝试",
+    "part_of_speech": "n."
+  },
+  "expert": {
+    "meaning_cn": "专家；行家；a. 老练的；内行的",
+    "part_of_speech": "n."
+  },
+  "experts": {
+    "meaning_cn": "专家；人才（expert的复数形式）",
+    "part_of_speech": "n."
+  },
+  "explain": {
+    "meaning_cn": "解释；说明",
+    "part_of_speech": "v."
+  },
+  "explore": {
+    "meaning_cn": "探险；探测；探究",
+    "part_of_speech": "v."
+  },
+  "export": {
+    "meaning_cn": "输出品；输出；出口；输出物资",
+    "part_of_speech": "n."
+  },
+  "exposure": {
+    "meaning_cn": "暴露；揭发；揭露；曝光量",
+    "part_of_speech": "n."
+  },
+  "express": {
+    "meaning_cn": "快车；快递；专使；a. 明确的",
+    "part_of_speech": "n."
+  },
+  "extended": {
+    "meaning_cn": "a. 延续的；伸出的；竭尽全力的；广大的",
+    "part_of_speech": "-"
+  },
+  "extension": {
+    "meaning_cn": "延长；扩充；范围；扩展名",
+    "part_of_speech": "n."
+  },
+  "extent": {
+    "meaning_cn": "范围；程度；区域",
+    "part_of_speech": "n."
+  },
+  "external": {
+    "meaning_cn": "外部；外面；a. 外部的；客观的",
+    "part_of_speech": "n."
+  },
+  "extra": {
+    "meaning_cn": "额外的事物；另外的收费；a. 额外的；特别的",
+    "part_of_speech": "n."
+  },
+  "extreme": {
+    "meaning_cn": "极端；末端；a. 极端的；尽头的",
+    "part_of_speech": "n."
+  },
+  "facility": {
+    "meaning_cn": "容易；灵巧；设备；设施",
+    "part_of_speech": "n."
+  },
+  "factor": {
+    "meaning_cn": "因素；因数；系数；基因",
+    "part_of_speech": "n."
+  },
+  "factors": {
+    "meaning_cn": "因素（factor的复数）",
+    "part_of_speech": "n."
+  },
+  "factory": {
+    "meaning_cn": "工厂；产生地；代理店；商行在国外的代理处",
+    "part_of_speech": "n."
+  },
+  "facts": {
+    "meaning_cn": "设备管理控制与时间调度程序；Facilities Administration Control and Time Schedule",
+    "part_of_speech": "abbr."
+  },
+  "faculty": {
+    "meaning_cn": "才能；能力；全体教员；(大学的)系",
+    "part_of_speech": "n."
+  },
+  "failed": {
+    "meaning_cn": "a. 已失败的；失败的",
+    "part_of_speech": "-"
+  },
+  "failover": {
+    "meaning_cn": "[数据库]失效备援 （为系统备援能力的一种；当系统中其中一项设备失效而无法运作时；另一项设备即可自动接手原失效系统所执行的工作）",
+    "part_of_speech": "n."
+  },
+  "failure": {
+    "meaning_cn": "失败；失败者；不足；缺乏",
+    "part_of_speech": "n."
+  },
+  "faith": {
+    "meaning_cn": "信心；信任；忠实；保证",
+    "part_of_speech": "n."
+  },
+  "falls": {
+    "meaning_cn": "瀑布；陨石",
+    "part_of_speech": "n."
+  },
+  "false": {
+    "meaning_cn": "a. 错误的；虚伪的；假的；不老实的",
+    "part_of_speech": "-"
+  },
+  "families": {
+    "meaning_cn": "家族；家庭（family的复数）",
+    "part_of_speech": "n."
+  },
+  "family": {
+    "meaning_cn": "家庭；家人；族；a. 家庭的",
+    "part_of_speech": "n."
+  },
+  "famous": {
+    "meaning_cn": "a. 出名的；极好的",
+    "part_of_speech": "-"
+  },
+  "fantasy": {
+    "meaning_cn": "幻想；想象的产物",
+    "part_of_speech": "n."
+  },
+  "fashion": {
+    "meaning_cn": "流行；风尚；时样；形成",
+    "part_of_speech": "n."
+  },
+  "faster": {
+    "meaning_cn": "加快",
+    "part_of_speech": "-"
+  },
+  "father": {
+    "meaning_cn": "父亲；祖先；长辈；神父",
+    "part_of_speech": "n."
+  },
+  "fault": {
+    "meaning_cn": "过错；故障；毛病；挑剔",
+    "part_of_speech": "n."
+  },
+  "favorite": {
+    "meaning_cn": "喜欢的事物；幸运儿；a. 特别受喜爱的；喜爱的",
+    "part_of_speech": "n."
+  },
+  "feature": {
+    "meaning_cn": "面孔的一部分(如眼；口等)；特征；容貌",
+    "part_of_speech": "n."
+  },
+  "featured": {
+    "meaning_cn": "a. 面貌秀丽的；被作为特色的",
+    "part_of_speech": "-"
+  },
+  "features": {
+    "meaning_cn": "容貌；产品特点；特征；嘴脸（feature的复数）",
+    "part_of_speech": "n."
+  },
+  "february": {
+    "meaning_cn": "二月",
+    "part_of_speech": "n."
+  },
+  "federal": {
+    "meaning_cn": "a. 联邦的；联合的；同盟的；联邦的",
+    "part_of_speech": "-"
+  },
+  "feedback": {
+    "meaning_cn": "反馈；反应",
+    "part_of_speech": "n."
+  },
+  "feeds": {
+    "meaning_cn": "饲料；一餐（feed的复数）",
+    "part_of_speech": "n."
+  },
+  "feel": {
+    "meaning_cn": "感觉；觉得；触摸；以为",
+    "part_of_speech": "vt."
+  },
+  "feeling": {
+    "meaning_cn": "摸；触觉；知觉；感觉",
+    "part_of_speech": "n."
+  },
+  "female": {
+    "meaning_cn": "女性；女人；雌性动物；a. 女性的",
+    "part_of_speech": "n."
+  },
+  "festival": {
+    "meaning_cn": "a. 节日的；喜庆的；快乐的；节日",
+    "part_of_speech": "n."
+  },
+  "fiction": {
+    "meaning_cn": "小说；虚构故事；虚构的事实；捏造",
+    "part_of_speech": "n."
+  },
+  "field": {
+    "meaning_cn": "领域；田地；场地；战场",
+    "part_of_speech": "n."
+  },
+  "fields": {
+    "meaning_cn": "域；字段；场设置（field复数形式）",
+    "part_of_speech": "n."
+  },
+  "fight": {
+    "meaning_cn": "打架；争吵；斗志；对抗",
+    "part_of_speech": "n."
+  },
+  "figure": {
+    "meaning_cn": "数字；价格；图形；形状",
+    "part_of_speech": "n."
+  },
+  "figures": {
+    "meaning_cn": "图形；图表；价格；金额",
+    "part_of_speech": "n."
+  },
+  "filed": {
+    "meaning_cn": "申请；存档（file的过去分词形式）",
+    "part_of_speech": "v."
+  },
+  "files": {
+    "meaning_cn": "文件；文档（file的复数）",
+    "part_of_speech": "n."
+  },
+  "filesystem": {
+    "meaning_cn": "文件系统；档案系统",
+    "part_of_speech": "n."
+  },
+  "films": {
+    "meaning_cn": "电影；薄膜；胶片（film的复数）",
+    "part_of_speech": "n."
+  },
+  "filter": {
+    "meaning_cn": "滤波器；过滤器；滤光器；过滤嘴",
+    "part_of_speech": "n."
+  },
+  "final": {
+    "meaning_cn": "期末考试；结局；决赛；a. 最后的",
+    "part_of_speech": "n."
+  },
+  "finally": {
+    "meaning_cn": "最后；终于",
+    "part_of_speech": "adv."
+  },
+  "finance": {
+    "meaning_cn": "财政；财务；供给...经费；负担经费",
+    "part_of_speech": "n."
+  },
+  "finding": {
+    "meaning_cn": "发现；发现物；决定；裁决",
+    "part_of_speech": "n."
+  },
+  "finish": {
+    "meaning_cn": "完成；结束；末道漆；磨光",
+    "part_of_speech": "n."
+  },
+  "finished": {
+    "meaning_cn": "a. 完成的；完结的；精巧的；完美的",
+    "part_of_speech": "-"
+  },
+  "firms": {
+    "meaning_cn": "公司；厂商（firm的复数）",
+    "part_of_speech": "n."
+  },
+  "first": {
+    "meaning_cn": "首先；第一；优先；a. 第一的",
+    "part_of_speech": "adv."
+  },
+  "fish": {
+    "meaning_cn": "鱼；鱼肉；鱼类；接合板",
+    "part_of_speech": "n."
+  },
+  "fishing": {
+    "meaning_cn": "钓鱼；鱼业；a. 钓鱼的",
+    "part_of_speech": "n."
+  },
+  "fitness": {
+    "meaning_cn": "适合；合宜；合理；恰当",
+    "part_of_speech": "n."
+  },
+  "fixed": {
+    "meaning_cn": "a. 固定的；不变的；固定的；确定的",
+    "part_of_speech": "-"
+  },
+  "flash": {
+    "meaning_cn": "闪光；闪现；一瞬间；反射",
+    "part_of_speech": "n."
+  },
+  "flight": {
+    "meaning_cn": "飞行；射程；逃走；飞跃",
+    "part_of_speech": "n."
+  },
+  "flights": {
+    "meaning_cn": "（物体的）飞行( flight的名词复数 )；航班；飞翔；楼梯的一段",
+    "part_of_speech": "n."
+  },
+  "floor": {
+    "meaning_cn": "地板；楼层；底部；底价",
+    "part_of_speech": "n."
+  },
+  "florida": {
+    "meaning_cn": "佛罗里达州",
+    "part_of_speech": "n."
+  },
+  "flower": {
+    "meaning_cn": "花；开花植物；精华；盛时",
+    "part_of_speech": "n."
+  },
+  "flowers": {
+    "meaning_cn": "花；升华制成的药物；月经",
+    "part_of_speech": "-"
+  },
+  "fluency": {
+    "meaning_cn": "流畅；雄辩；善辩",
+    "part_of_speech": "n."
+  },
+  "focus": {
+    "meaning_cn": "焦点；焦距；聚焦；注视",
+    "part_of_speech": "n."
+  },
+  "follow": {
+    "meaning_cn": "跟随；沿行；遵循；追求",
+    "part_of_speech": "vt."
+  },
+  "followed": {
+    "meaning_cn": "a. 跟随的；服从的",
+    "part_of_speech": "-"
+  },
+  "follows": {
+    "meaning_cn": "跟随；遵照（follow的复数）",
+    "part_of_speech": "n."
+  },
+  "followup": {
+    "meaning_cn": "把…探究到底；回答；追踪；跟踪",
+    "part_of_speech": "v."
+  },
+  "football": {
+    "meaning_cn": "足球；橄榄球",
+    "part_of_speech": "n."
+  },
+  "force": {
+    "meaning_cn": "力量；武力；势力；影响力",
+    "part_of_speech": "n."
+  },
+  "forced": {
+    "meaning_cn": "a. 被迫的；强迫的；用力的；强制的",
+    "part_of_speech": "-"
+  },
+  "forces": {
+    "meaning_cn": "势力；兵力；武装力量（force的复数形式）",
+    "part_of_speech": "n."
+  },
+  "forecast": {
+    "meaning_cn": "预想；预测；预报；趋势预测",
+    "part_of_speech": "n."
+  },
+  "foreign": {
+    "meaning_cn": "a. 外国的；外交的；外省的；外来的",
+    "part_of_speech": "-"
+  },
+  "forest": {
+    "meaning_cn": "森林；林区；植树于",
+    "part_of_speech": "n."
+  },
+  "forget": {
+    "meaning_cn": "忘记；忽略；忘",
+    "part_of_speech": "vt."
+  },
+  "forgot": {
+    "meaning_cn": "forget的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "formal": {
+    "meaning_cn": "a. 正式的；形式的；礼仪的；拘于礼节的",
+    "part_of_speech": "-"
+  },
+  "format": {
+    "meaning_cn": "开本；版式；形式；格式",
+    "part_of_speech": "n."
+  },
+  "former": {
+    "meaning_cn": "a. 从前的；前者的；起形成作用的人(或物)；模型",
+    "part_of_speech": "n."
+  },
+  "forms": {
+    "meaning_cn": "窗体；表单；表格（form的复数形式）",
+    "part_of_speech": "n."
+  },
+  "forum": {
+    "meaning_cn": "论坛；公开讨论的广场；法庭；讨论会",
+    "part_of_speech": "n."
+  },
+  "forums": {
+    "meaning_cn": "pl. 论坛；讨论会；座谈会；广播专题讲话节目",
+    "part_of_speech": "-"
+  },
+  "forward": {
+    "meaning_cn": "a. 向前的；早的；迅速的；在前的",
+    "part_of_speech": "-"
+  },
+  "fossil": {
+    "meaning_cn": "化石；古物；a. 化石的；陈腐的",
+    "part_of_speech": "n."
+  },
+  "found": {
+    "meaning_cn": "建立；创立；铸造；find的过去式和过去分词",
+    "part_of_speech": "vt."
+  },
+  "fourth": {
+    "meaning_cn": "第四；四分之一",
+    "part_of_speech": "num."
+  },
+  "frame": {
+    "meaning_cn": "框；结构；体格；构成",
+    "part_of_speech": "n."
+  },
+  "frames": {
+    "meaning_cn": "帧；画面；框架；眼镜架（frame的复数）",
+    "part_of_speech": "n."
+  },
+  "framework": {
+    "meaning_cn": "结构；骨架；参照标准；准则",
+    "part_of_speech": "n."
+  },
+  "france": {
+    "meaning_cn": "法国",
+    "part_of_speech": "n."
+  },
+  "frank": {
+    "meaning_cn": "a. 坦白的；率直的；老实的；免费邮寄",
+    "part_of_speech": "vt."
+  },
+  "freedom": {
+    "meaning_cn": "自由；坦率；特权；自主",
+    "part_of_speech": "n."
+  },
+  "french": {
+    "meaning_cn": "法国人；法文；法式；a. 法国的",
+    "part_of_speech": "n."
+  },
+  "fresh": {
+    "meaning_cn": "a. 新鲜的；新奇的；另外的；淡的",
+    "part_of_speech": "-"
+  },
+  "friday": {
+    "meaning_cn": "星期五",
+    "part_of_speech": "n."
+  },
+  "friend": {
+    "meaning_cn": "朋友；支持者；赞助者；友人",
+    "part_of_speech": "n."
+  },
+  "friendly": {
+    "meaning_cn": "a. 友好的；亲切的；互助的；友善地",
+    "part_of_speech": "adv."
+  },
+  "friends": {
+    "meaning_cn": "老友记（剧集）",
+    "part_of_speech": "n."
+  },
+  "front": {
+    "meaning_cn": "前面；开头；前线；阵线",
+    "part_of_speech": "n."
+  },
+  "frontend": {
+    "meaning_cn": "前端",
+    "part_of_speech": "n."
+  },
+  "fruit": {
+    "meaning_cn": "水果；果类；结果；果实",
+    "part_of_speech": "n."
+  },
+  "fully": {
+    "meaning_cn": "十分地；完全地；充分地",
+    "part_of_speech": "adv."
+  },
+  "function": {
+    "meaning_cn": "官能；职务；功能；函数",
+    "part_of_speech": "n."
+  },
+  "funding": {
+    "meaning_cn": "债务转期",
+    "part_of_speech": "-"
+  },
+  "funds": {
+    "meaning_cn": "基金；资金；现金（fund的复数）",
+    "part_of_speech": "n."
+  },
+  "funny": {
+    "meaning_cn": "a. 好笑的；有趣的；滑稽的；滑稽人物",
+    "part_of_speech": "n."
+  },
+  "further": {
+    "meaning_cn": "a. 更远的；此外的；更多的；促进",
+    "part_of_speech": "vt."
+  },
+  "future": {
+    "meaning_cn": "未来；将来；a. 将来的；未来的",
+    "part_of_speech": "n."
+  },
+  "gallery": {
+    "meaning_cn": "走廊；最高楼座；画廊；收集",
+    "part_of_speech": "n."
+  },
+  "gambling": {
+    "meaning_cn": "赌博",
+    "part_of_speech": "n."
+  },
+  "games": {
+    "meaning_cn": "(英)体操课；体育课；[谓语用单数或复数]运动会；比赛会",
+    "part_of_speech": "n."
+  },
+  "gaming": {
+    "meaning_cn": "赌博；赌胜负；赌赛",
+    "part_of_speech": "n."
+  },
+  "gamma": {
+    "meaning_cn": "希腊语的第三个字母(Γ；γ)；γ(希腊文第三个字母)；丙种",
+    "part_of_speech": "n."
+  },
+  "garden": {
+    "meaning_cn": "花园；果园；菜园；栽培花木",
+    "part_of_speech": "n."
+  },
+  "gateway": {
+    "meaning_cn": "门；通路；网关",
+    "part_of_speech": "n."
+  },
+  "gender": {
+    "meaning_cn": "性；产生",
+    "part_of_speech": "n."
+  },
+  "gene": {
+    "meaning_cn": "基因；基因(遗传因子)",
+    "part_of_speech": "n."
+  },
+  "general": {
+    "meaning_cn": "一般；将军；大体；a. 全面的",
+    "part_of_speech": "n."
+  },
+  "generic": {
+    "meaning_cn": "a. 属类的；一般的",
+    "part_of_speech": "-"
+  },
+  "geology": {
+    "meaning_cn": "地质学；地质情况",
+    "part_of_speech": "n."
+  },
+  "george": {
+    "meaning_cn": "乔治（男子名）；自动操纵装置；英国最高勋爵勋章上的圣乔治诛龙图",
+    "part_of_speech": "n."
+  },
+  "georgia": {
+    "meaning_cn": "乔治亚州",
+    "part_of_speech": "n."
+  },
+  "german": {
+    "meaning_cn": "德国人；德语；a. 德国的；德国人的",
+    "part_of_speech": "n."
+  },
+  "germany": {
+    "meaning_cn": "德国",
+    "part_of_speech": "n."
+  },
+  "getting": {
+    "meaning_cn": "采煤；采掘；获得",
+    "part_of_speech": "n."
+  },
+  "gift": {
+    "meaning_cn": "礼物；赠予；天才；赋予",
+    "part_of_speech": "n."
+  },
+  "gifts": {
+    "meaning_cn": "礼品；赠品；礼物；天赋（gift的复数形式）",
+    "part_of_speech": "n."
+  },
+  "girls": {
+    "meaning_cn": "女孩（girl的复数）",
+    "part_of_speech": "n."
+  },
+  "given": {
+    "meaning_cn": "a. 赠予的；沉溺的；约定的；give的过去分词",
+    "part_of_speech": "-"
+  },
+  "gives": {
+    "meaning_cn": "付出；弯曲；内幕消息（give的复数）",
+    "part_of_speech": "n."
+  },
+  "giving": {
+    "meaning_cn": "礼物；给予物",
+    "part_of_speech": "n."
+  },
+  "glacier": {
+    "meaning_cn": "冰川",
+    "part_of_speech": "n."
+  },
+  "glass": {
+    "meaning_cn": "玻璃；玻璃杯；透镜；装玻璃于",
+    "part_of_speech": "n."
+  },
+  "global": {
+    "meaning_cn": "a. 通用的；全球的；球形的；综合的",
+    "part_of_speech": "-"
+  },
+  "globalization": {
+    "meaning_cn": "全球化；普及到世界范围",
+    "part_of_speech": "-"
+  },
+  "go": {
+    "meaning_cn": "去；走；达到；运转",
+    "part_of_speech": "vi."
+  },
+  "goals": {
+    "meaning_cn": "目标；目的；进球；射中次数",
+    "part_of_speech": "n."
+  },
+  "going": {
+    "meaning_cn": "去；离去；工作情况；地面状况",
+    "part_of_speech": "n."
+  },
+  "golden": {
+    "meaning_cn": "a. 金的；含金的；金色的；贵重的",
+    "part_of_speech": "-"
+  },
+  "goods": {
+    "meaning_cn": "货物；商品；动产",
+    "part_of_speech": "n."
+  },
+  "google": {
+    "meaning_cn": "谷歌；搜索引擎技术；谷歌公司",
+    "part_of_speech": "-"
+  },
+  "government": {
+    "meaning_cn": "政府；内阁；政治；政体",
+    "part_of_speech": "n."
+  },
+  "gpu": {
+    "meaning_cn": "地面动力装置（ground power unit）",
+    "part_of_speech": "abbr."
+  },
+  "grade": {
+    "meaning_cn": "等级；年级；阶段；成绩",
+    "part_of_speech": "n."
+  },
+  "graduate": {
+    "meaning_cn": "毕业生；量杯；a. 已得学位的；研究生的",
+    "part_of_speech": "n."
+  },
+  "grammar": {
+    "meaning_cn": "语法学；入门书；语法检查",
+    "part_of_speech": "n."
+  },
+  "grand": {
+    "meaning_cn": "a. 庄重的；壮观的；显赫的；重大的",
+    "part_of_speech": "-"
+  },
+  "grant": {
+    "meaning_cn": "授予；授予物；允许；承认",
+    "part_of_speech": "n."
+  },
+  "grants": {
+    "meaning_cn": "补助金；拨款；津贴",
+    "part_of_speech": "-"
+  },
+  "graph": {
+    "meaning_cn": "曲线图；图表；图形",
+    "part_of_speech": "n."
+  },
+  "graphic": {
+    "meaning_cn": "a. 生动的；轮廓分明的；绘画似的；图解的",
+    "part_of_speech": "-"
+  },
+  "graphics": {
+    "meaning_cn": "制图法；制图学；图解算法；图形显示",
+    "part_of_speech": "n."
+  },
+  "gratis": {
+    "meaning_cn": "免费地；白送地；a. 免费的",
+    "part_of_speech": "adv."
+  },
+  "gravity": {
+    "meaning_cn": "地心引力；重力",
+    "part_of_speech": "n."
+  },
+  "great": {
+    "meaning_cn": "a. 大的；非常的；主要的；重大的",
+    "part_of_speech": "-"
+  },
+  "greater": {
+    "meaning_cn": "大的",
+    "part_of_speech": "-"
+  },
+  "greatest": {
+    "meaning_cn": "最大的",
+    "part_of_speech": "-"
+  },
+  "greek": {
+    "meaning_cn": "希腊人；希腊语；a. 希腊的；希腊人的",
+    "part_of_speech": "n."
+  },
+  "green": {
+    "meaning_cn": "绿色；绿色颜料；a. 绿色的；未成熟的",
+    "part_of_speech": "n."
+  },
+  "grocery": {
+    "meaning_cn": "食品杂货店；食品杂货业",
+    "part_of_speech": "n."
+  },
+  "ground": {
+    "meaning_cn": "土地；战场；场地；地面",
+    "part_of_speech": "n."
+  },
+  "group": {
+    "meaning_cn": "团体；组；团；群",
+    "part_of_speech": "n."
+  },
+  "groups": {
+    "meaning_cn": "群组；组；用户组；团体（group的复数形式）",
+    "part_of_speech": "n."
+  },
+  "growing": {
+    "meaning_cn": "a. 成长的",
+    "part_of_speech": "-"
+  },
+  "growth": {
+    "meaning_cn": "生长；栽培；增长；等比级数",
+    "part_of_speech": "n."
+  },
+  "guess": {
+    "meaning_cn": "猜测；臆测",
+    "part_of_speech": "n."
+  },
+  "guest": {
+    "meaning_cn": "客人；来宾；旅客；客体",
+    "part_of_speech": "n."
+  },
+  "guests": {
+    "meaning_cn": "客人；来宾（guest的复数）",
+    "part_of_speech": "n."
+  },
+  "gui": {
+    "meaning_cn": "图形用户界面",
+    "part_of_speech": "-"
+  },
+  "guide": {
+    "meaning_cn": "引导者；导游；指南；路标",
+    "part_of_speech": "n."
+  },
+  "guides": {
+    "meaning_cn": "辅助线；参考线；指南",
+    "part_of_speech": "n."
+  },
+  "guitar": {
+    "meaning_cn": "吉他",
+    "part_of_speech": "n."
+  },
+  "habitat": {
+    "meaning_cn": "栖息地；居留地；自生地；聚集处",
+    "part_of_speech": "n."
+  },
+  "handle": {
+    "meaning_cn": "柄；把手；把柄；柄状物",
+    "part_of_speech": "n."
+  },
+  "handling": {
+    "meaning_cn": "处理；a. 操作的",
+    "part_of_speech": "n."
+  },
+  "handover": {
+    "meaning_cn": "转移；转换",
+    "part_of_speech": "-"
+  },
+  "hands": {
+    "meaning_cn": "拥有；所有；动手",
+    "part_of_speech": "n."
+  },
+  "happen": {
+    "meaning_cn": "发生；恰巧",
+    "part_of_speech": "vi."
+  },
+  "happened": {
+    "meaning_cn": "发生（happen的过去式；过去分词）",
+    "part_of_speech": "v."
+  },
+  "happy": {
+    "meaning_cn": "a. 快乐的；幸福的；愉快的；恰当的",
+    "part_of_speech": "-"
+  },
+  "hardware": {
+    "meaning_cn": "硬件；五金器具；零件",
+    "part_of_speech": "n."
+  },
+  "harry": {
+    "meaning_cn": "掠夺；使苦恼；强使前行；折磨",
+    "part_of_speech": "vt."
+  },
+  "hash": {
+    "meaning_cn": "剁碎的食物；杂乱无章的的一大堆；杂烩；复述",
+    "part_of_speech": "n."
+  },
+  "having": {
+    "meaning_cn": "财产；所有物",
+    "part_of_speech": "n."
+  },
+  "hawaii": {
+    "meaning_cn": "夏威夷州；夏威夷岛",
+    "part_of_speech": "n."
+  },
+  "health": {
+    "meaning_cn": "健康；卫生；蓬勃；健康状态",
+    "part_of_speech": "n."
+  },
+  "healthcare": {
+    "meaning_cn": "医疗保健；卫生保健；健康护理；健康服务",
+    "part_of_speech": "n."
+  },
+  "healthy": {
+    "meaning_cn": "a. 健康的；有益健康的；卫生的；健康的",
+    "part_of_speech": "-"
+  },
+  "heard": {
+    "meaning_cn": "hear的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "hearing": {
+    "meaning_cn": "听；听觉；听讯",
+    "part_of_speech": "n."
+  },
+  "heart": {
+    "meaning_cn": "心；心脏；中心；内心",
+    "part_of_speech": "n."
+  },
+  "heavy": {
+    "meaning_cn": "a. 重的；巨大的；沉重的；笨重的",
+    "part_of_speech": "-"
+  },
+  "height": {
+    "meaning_cn": "高度；海拔；高地；顶点",
+    "part_of_speech": "n."
+  },
+  "hello": {
+    "meaning_cn": "interj. 喂；嘿",
+    "part_of_speech": "-"
+  },
+  "helm": {
+    "meaning_cn": "舵；驾驶盘；枢机；头盔",
+    "part_of_speech": "n."
+  },
+  "help": {
+    "meaning_cn": "帮忙；帮助者；补救办法；有益的东西",
+    "part_of_speech": "n."
+  },
+  "helpful": {
+    "meaning_cn": "a. 有帮助的；有益的；有用的",
+    "part_of_speech": "-"
+  },
+  "helping": {
+    "meaning_cn": "帮助；协助；一份",
+    "part_of_speech": "n."
+  },
+  "helps": {
+    "meaning_cn": "高端激光打印解决方案（High-End Laser Printing Solutions）",
+    "part_of_speech": "abbr."
+  },
+  "henry": {
+    "meaning_cn": "亨利；亨[利](电感应单位)",
+    "part_of_speech": "n."
+  },
+  "heritage": {
+    "meaning_cn": "遗产；祖先遗留物；继承物；遗传性",
+    "part_of_speech": "n."
+  },
+  "hidden": {
+    "meaning_cn": "a. 隐藏的；hide的过去分词；隐藏的",
+    "part_of_speech": "-"
+  },
+  "higher": {
+    "meaning_cn": "上扬",
+    "part_of_speech": "-"
+  },
+  "highest": {
+    "meaning_cn": "最高",
+    "part_of_speech": "-"
+  },
+  "highly": {
+    "meaning_cn": "非常；非常赞许地；大大地",
+    "part_of_speech": "adv."
+  },
+  "hills": {
+    "meaning_cn": "丘陵（hill的复数形式）",
+    "part_of_speech": "n."
+  },
+  "himself": {
+    "meaning_cn": "他自己；他亲自",
+    "part_of_speech": "pron."
+  },
+  "hiring": {
+    "meaning_cn": "租用；雇用",
+    "part_of_speech": "-"
+  },
+  "history": {
+    "meaning_cn": "历史；过去；经历；发展过程",
+    "part_of_speech": "n."
+  },
+  "holding": {
+    "meaning_cn": "把持；支持；保持；租借地",
+    "part_of_speech": "n."
+  },
+  "holiday": {
+    "meaning_cn": "假日；假期；节日；度假",
+    "part_of_speech": "n."
+  },
+  "holidays": {
+    "meaning_cn": "在假日；每逢假日",
+    "part_of_speech": "adv."
+  },
+  "home": {
+    "meaning_cn": "家；避难所；故乡；a. 家庭的",
+    "part_of_speech": "n."
+  },
+  "homepage": {
+    "meaning_cn": "主页",
+    "part_of_speech": "n."
+  },
+  "homes": {
+    "meaning_cn": "房屋；家庭（home的复数形式）",
+    "part_of_speech": "n."
+  },
+  "homework": {
+    "meaning_cn": "家庭作业；家里做的工作",
+    "part_of_speech": "n."
+  },
+  "hook": {
+    "meaning_cn": "钩；钩状；镰刀；陷阱",
+    "part_of_speech": "n."
+  },
+  "horse": {
+    "meaning_cn": "马；骑兵；脚架；骑马",
+    "part_of_speech": "n."
+  },
+  "hospital": {
+    "meaning_cn": "医院",
+    "part_of_speech": "n."
+  },
+  "hosted": {
+    "meaning_cn": "（作为主人）款待；招待（客人）；主持（host的过去式）",
+    "part_of_speech": "v."
+  },
+  "hosting": {
+    "meaning_cn": "作战；群众或部队的集合",
+    "part_of_speech": "n."
+  },
+  "hot": {
+    "meaning_cn": "a. 热的；热心的；辣的；热情的",
+    "part_of_speech": "-"
+  },
+  "hotel": {
+    "meaning_cn": "旅馆；客栈",
+    "part_of_speech": "n."
+  },
+  "hotels": {
+    "meaning_cn": "酒店；大饭店；旅馆（hotel的复数）",
+    "part_of_speech": "n."
+  },
+  "hour": {
+    "meaning_cn": "小时；钟头；时间；...点钟",
+    "part_of_speech": "n."
+  },
+  "hours": {
+    "meaning_cn": "小时（hour的复数形式）",
+    "part_of_speech": "n."
+  },
+  "house": {
+    "meaning_cn": "房子；住宅；机构；议院",
+    "part_of_speech": "n."
+  },
+  "houses": {
+    "meaning_cn": "住宅；房子的总称；家园；洋房 （house的复数）",
+    "part_of_speech": "n."
+  },
+  "housing": {
+    "meaning_cn": "遮盖；住房供给；居留(处)；房屋",
+    "part_of_speech": "n."
+  },
+  "houston": {
+    "meaning_cn": "休斯敦",
+    "part_of_speech": "n."
+  },
+  "however": {
+    "meaning_cn": "然而；无论如何；究竟怎样；可是",
+    "part_of_speech": "adv."
+  },
+  "http": {
+    "meaning_cn": "超文本传输协议",
+    "part_of_speech": "-"
+  },
+  "https": {
+    "meaning_cn": "超文本传输协议安全（Hyper Text Transfer Protocol）",
+    "part_of_speech": "abbr."
+  },
+  "human": {
+    "meaning_cn": "人；人类；a. 人类的；似人类的",
+    "part_of_speech": "n."
+  },
+  "hunter": {
+    "meaning_cn": "猎人；猎犬；追求者",
+    "part_of_speech": "n."
+  },
+  "husband": {
+    "meaning_cn": "丈夫；管理人；节俭的人；节俭",
+    "part_of_speech": "n."
+  },
+  "hydration": {
+    "meaning_cn": "水合",
+    "part_of_speech": "n."
+  },
+  "hypothesis": {
+    "meaning_cn": "假设",
+    "part_of_speech": "n."
+  },
+  "ideal": {
+    "meaning_cn": "理想；典范；观念；思想",
+    "part_of_speech": "n."
+  },
+  "ideas": {
+    "meaning_cn": "工业设计优秀奖",
+    "part_of_speech": "abbr."
+  },
+  "identify": {
+    "meaning_cn": "识别；认为...等同于；确定；使参与",
+    "part_of_speech": "vt."
+  },
+  "identity": {
+    "meaning_cn": "身份；相同；一致；特性",
+    "part_of_speech": "n."
+  },
+  "illinois": {
+    "meaning_cn": "伊利诺州",
+    "part_of_speech": "n."
+  },
+  "illustrate": {
+    "meaning_cn": "举例说明；作图解；阐明",
+    "part_of_speech": "vt."
+  },
+  "image": {
+    "meaning_cn": "影像；肖像；想象；图像",
+    "part_of_speech": "n."
+  },
+  "images": {
+    "meaning_cn": "图片；意象（image的复数）",
+    "part_of_speech": "n."
+  },
+  "impact": {
+    "meaning_cn": "冲击；冲突；影响；效果",
+    "part_of_speech": "n."
+  },
+  "implication": {
+    "meaning_cn": "牵连；含义；暗示；推断",
+    "part_of_speech": "n."
+  },
+  "import": {
+    "meaning_cn": "进口货；进口；输入；含义",
+    "part_of_speech": "n."
+  },
+  "improve": {
+    "meaning_cn": "改良；提高...的价值；改善；利用",
+    "part_of_speech": "vt."
+  },
+  "improved": {
+    "meaning_cn": "a. 改良的",
+    "part_of_speech": "-"
+  },
+  "incentive": {
+    "meaning_cn": "动机；a. 激励的",
+    "part_of_speech": "n."
+  },
+  "inches": {
+    "meaning_cn": "英寸（inch的复数）",
+    "part_of_speech": "n."
+  },
+  "incident": {
+    "meaning_cn": "事件；事变；小事；a. 附带的",
+    "part_of_speech": "n."
+  },
+  "include": {
+    "meaning_cn": "包括；把...算入；包住；DOS内部命令:在CONFIG.SYS文件的一个配置块中包含另一配置块的内容",
+    "part_of_speech": "vt."
+  },
+  "included": {
+    "meaning_cn": "a. 包括在内；包含的",
+    "part_of_speech": "-"
+  },
+  "includes": {
+    "meaning_cn": "包含；包住（include的三单形式）",
+    "part_of_speech": "v."
+  },
+  "income": {
+    "meaning_cn": "收入；收益；流入",
+    "part_of_speech": "n."
+  },
+  "increase": {
+    "meaning_cn": "增加；增进；利益；加大",
+    "part_of_speech": "n."
+  },
+  "indeed": {
+    "meaning_cn": "的确；实在；真正地；甚至",
+    "part_of_speech": "adv."
+  },
+  "independent": {
+    "meaning_cn": "独立自主者；无党派者；a. 独立的；有主见的",
+    "part_of_speech": "n."
+  },
+  "index": {
+    "meaning_cn": "索引；指针；指数；指标",
+    "part_of_speech": "n."
+  },
+  "india": {
+    "meaning_cn": "印度",
+    "part_of_speech": "n."
+  },
+  "indian": {
+    "meaning_cn": "印度人；印第安人；印第安语；a. 印度的",
+    "part_of_speech": "n."
+  },
+  "indiana": {
+    "meaning_cn": "印地安那州",
+    "part_of_speech": "n."
+  },
+  "indicate": {
+    "meaning_cn": "显示；象征；指示；指出",
+    "part_of_speech": "vt."
+  },
+  "individual": {
+    "meaning_cn": "人；个人；个体；a. 个别的",
+    "part_of_speech": "n."
+  },
+  "industrialization": {
+    "meaning_cn": "工业化；产业化",
+    "part_of_speech": "n."
+  },
+  "industry": {
+    "meaning_cn": "勤劳；工业；企业；产业",
+    "part_of_speech": "n."
+  },
+  "inequality": {
+    "meaning_cn": "不平等；不同；不平坦；不平均",
+    "part_of_speech": "n."
+  },
+  "infer": {
+    "meaning_cn": "推论出；推断；作推论",
+    "part_of_speech": "vt."
+  },
+  "inflation": {
+    "meaning_cn": "胀大；夸张；通货膨胀；充气吹胀",
+    "part_of_speech": "n."
+  },
+  "informal": {
+    "meaning_cn": "a. 非正式的；不拘礼的；通俗的；非正式的",
+    "part_of_speech": "-"
+  },
+  "informed": {
+    "meaning_cn": "a. 见多识广的",
+    "part_of_speech": "-"
+  },
+  "infrastructure": {
+    "meaning_cn": "基础结构；基础设施",
+    "part_of_speech": "n."
+  },
+  "initial": {
+    "meaning_cn": "字首；首字母；a. 开始的；最初的",
+    "part_of_speech": "n."
+  },
+  "injury": {
+    "meaning_cn": "伤害；侮辱；伤；损伤",
+    "part_of_speech": "n."
+  },
+  "innovation": {
+    "meaning_cn": "改革；创新；刷新",
+    "part_of_speech": "n."
+  },
+  "input": {
+    "meaning_cn": "输入；输入电路",
+    "part_of_speech": "n."
+  },
+  "inside": {
+    "meaning_cn": "内部；内脏；内幕；a. 内部的",
+    "part_of_speech": "n."
+  },
+  "insight": {
+    "meaning_cn": "察看；洞察力；见识；自知力",
+    "part_of_speech": "n."
+  },
+  "install": {
+    "meaning_cn": "安装；安置；使就职；安装程序",
+    "part_of_speech": "vt."
+  },
+  "instance": {
+    "meaning_cn": "建议；情况；例子；场合",
+    "part_of_speech": "n."
+  },
+  "instant": {
+    "meaning_cn": "立即；瞬间；a. 紧急的；立即的",
+    "part_of_speech": "n."
+  },
+  "instead": {
+    "meaning_cn": "作为替代；反而",
+    "part_of_speech": "adv."
+  },
+  "institution": {
+    "meaning_cn": "机构；惯例；制度；机关",
+    "part_of_speech": "n."
+  },
+  "integrated": {
+    "meaning_cn": "a. 综合的；完整的；互相协调的；成为整体的",
+    "part_of_speech": "-"
+  },
+  "integration": {
+    "meaning_cn": "综合；与环境协调的行为；集成；整合",
+    "part_of_speech": "n."
+  },
+  "intel": {
+    "meaning_cn": "美国英特尔公司（财富500强公司之一；以生产CPU芯片著称）",
+    "part_of_speech": "n."
+  },
+  "intended": {
+    "meaning_cn": "a. 有意的；故意的；未婚夫(妻)",
+    "part_of_speech": "n."
+  },
+  "interest": {
+    "meaning_cn": "兴趣；嗜好；利息；利益",
+    "part_of_speech": "n."
+  },
+  "interface": {
+    "meaning_cn": "分界面；接触面；界面；接口",
+    "part_of_speech": "n."
+  },
+  "interior": {
+    "meaning_cn": "内部；内政；a. 内部的；心灵的",
+    "part_of_speech": "n."
+  },
+  "internal": {
+    "meaning_cn": "a. 内在的；国内的；内的；内部的",
+    "part_of_speech": "-"
+  },
+  "internet": {
+    "meaning_cn": "因特网；国际互连网；网际网络；互连网络",
+    "part_of_speech": "-"
+  },
+  "interpret": {
+    "meaning_cn": "解释；演出；翻译；理解",
+    "part_of_speech": "vt."
+  },
+  "interpretation": {
+    "meaning_cn": "解释；演出；翻译；插值",
+    "part_of_speech": "n."
+  },
+  "interview": {
+    "meaning_cn": "面谈；访问；接见；面试",
+    "part_of_speech": "n."
+  },
+  "introduction": {
+    "meaning_cn": "介绍；传入；采用；初步",
+    "part_of_speech": "n."
+  },
+  "invalidation": {
+    "meaning_cn": "无效；失效；作废",
+    "part_of_speech": "n."
+  },
+  "inventory": {
+    "meaning_cn": "详细目录；存货清单；列入详细目录；清点存货",
+    "part_of_speech": "n."
+  },
+  "investment": {
+    "meaning_cn": "投资；包埋料；围模料；包埋法",
+    "part_of_speech": "n."
+  },
+  "investor": {
+    "meaning_cn": "投资者",
+    "part_of_speech": "n."
+  },
+  "invoice": {
+    "meaning_cn": "发票；发货单；开发票；记清单",
+    "part_of_speech": "n."
+  },
+  "involved": {
+    "meaning_cn": "a. 难懂的；复杂的；不易懂的；卷入...之中的",
+    "part_of_speech": "-"
+  },
+  "ireland": {
+    "meaning_cn": "爱尔兰",
+    "part_of_speech": "n."
+  },
+  "irish": {
+    "meaning_cn": "爱尔兰人；爱尔兰语；a. 爱尔兰的",
+    "part_of_speech": "n."
+  },
+  "island": {
+    "meaning_cn": "岛；岛屿；孤立地区；安全岛",
+    "part_of_speech": "n."
+  },
+  "islands": {
+    "meaning_cn": "岛屿；群岛（island的复数）",
+    "part_of_speech": "n."
+  },
+  "israel": {
+    "meaning_cn": "以色列；以色列后裔；犹太人",
+    "part_of_speech": "n."
+  },
+  "issue": {
+    "meaning_cn": "发行；问题；后果；流出",
+    "part_of_speech": "n."
+  },
+  "issued": {
+    "meaning_cn": "发布；发行（issue的过去分词形式）",
+    "part_of_speech": "v."
+  },
+  "issues": {
+    "meaning_cn": "议题；问题；争点；债券（issue的复数）",
+    "part_of_speech": "n."
+  },
+  "italian": {
+    "meaning_cn": "意大利人；意大利语；a. 意大利的；意大利语的",
+    "part_of_speech": "n."
+  },
+  "italy": {
+    "meaning_cn": "意大利",
+    "part_of_speech": "n."
+  },
+  "items": {
+    "meaning_cn": "项目；名目；所有物品（item的复数形式）",
+    "part_of_speech": "n."
+  },
+  "itself": {
+    "meaning_cn": "它本身；它自己",
+    "part_of_speech": "pron."
+  },
+  "jackson": {
+    "meaning_cn": "杰克逊（男子名）；杰克逊（美国密西西比州的城市）",
+    "part_of_speech": "n."
+  },
+  "james": {
+    "meaning_cn": "詹姆斯（姓氏；男子名）；[圣]《雅各书》",
+    "part_of_speech": "n."
+  },
+  "january": {
+    "meaning_cn": "一月",
+    "part_of_speech": "n."
+  },
+  "japan": {
+    "meaning_cn": "日本；天然漆；大漆；漆器",
+    "part_of_speech": "n."
+  },
+  "japanese": {
+    "meaning_cn": "日本人；日语；a. 日本的；日语的",
+    "part_of_speech": "n."
+  },
+  "java": {
+    "meaning_cn": "爪哇；爪哇咖啡",
+    "part_of_speech": "n."
+  },
+  "javascript": {
+    "meaning_cn": "Java描述语言（一种程序语言）",
+    "part_of_speech": "n."
+  },
+  "jersey": {
+    "meaning_cn": "运动衫",
+    "part_of_speech": "n."
+  },
+  "jesus": {
+    "meaning_cn": "耶稣",
+    "part_of_speech": "n."
+  },
+  "jewelry": {
+    "meaning_cn": "珠宝；珠宝类",
+    "part_of_speech": "n."
+  },
+  "job": {
+    "meaning_cn": "工作；零活；职业；事情",
+    "part_of_speech": "n."
+  },
+  "johnson": {
+    "meaning_cn": "约翰逊（姓氏）",
+    "part_of_speech": "n."
+  },
+  "joined": {
+    "meaning_cn": "加入；连接；参加（join的过去式；过去分词）",
+    "part_of_speech": "v."
+  },
+  "joint": {
+    "meaning_cn": "连接处；接合；关节；a. 共同的",
+    "part_of_speech": "n."
+  },
+  "jones": {
+    "meaning_cn": "琼斯（姓氏）",
+    "part_of_speech": "n."
+  },
+  "jordan": {
+    "meaning_cn": "约旦；约旦河；尿壶",
+    "part_of_speech": "n."
+  },
+  "joseph": {
+    "meaning_cn": "约瑟夫（男子名）；约瑟（圣经中雅各的第十一子）",
+    "part_of_speech": "n."
+  },
+  "journal": {
+    "meaning_cn": "日记；杂志；日报；轴颈",
+    "part_of_speech": "n."
+  },
+  "judge": {
+    "meaning_cn": "法官；裁判员；审判官；鉴定人",
+    "part_of_speech": "n."
+  },
+  "junior": {
+    "meaning_cn": "年少者；地位较低者；大学三年级学生；a. 年少的",
+    "part_of_speech": "n."
+  },
+  "justice": {
+    "meaning_cn": "正义；公平；公正；正确",
+    "part_of_speech": "n."
+  },
+  "justify": {
+    "meaning_cn": "替...辩护；证明；证明合法；段落重排",
+    "part_of_speech": "vt."
+  },
+  "jwt": {
+    "meaning_cn": "J Walter Thompson (advertising agency) J·华尔特·汤普森（广告机构）；joint wavelet transform 联合子波变换",
+    "part_of_speech": "abbr."
+  },
+  "kanban": {
+    "meaning_cn": "<日>看板（法）（指企业为降低原材料或零部件的仓储成本在需要前夕才进货的制度）",
+    "part_of_speech": "n."
+  },
+  "kansas": {
+    "meaning_cn": "堪萨斯州",
+    "part_of_speech": "n."
+  },
+  "keeping": {
+    "meaning_cn": "保管；供养；一致；保护",
+    "part_of_speech": "n."
+  },
+  "kelly": {
+    "meaning_cn": "凯利（男子名）；[古]战士",
+    "part_of_speech": "n."
+  },
+  "kentucky": {
+    "meaning_cn": "肯塔基州",
+    "part_of_speech": "n."
+  },
+  "kevin": {
+    "meaning_cn": "凯文（男子名）",
+    "part_of_speech": "n."
+  },
+  "key": {
+    "meaning_cn": "钥匙；键；解答；关键",
+    "part_of_speech": "n."
+  },
+  "keyword": {
+    "meaning_cn": "关键字",
+    "part_of_speech": "-"
+  },
+  "keywords": {
+    "meaning_cn": "关键字",
+    "part_of_speech": "n."
+  },
+  "kinds": {
+    "meaning_cn": "种类（kind的复数形式）",
+    "part_of_speech": "n."
+  },
+  "kingdom": {
+    "meaning_cn": "王国；领域；界(动物；植物",
+    "part_of_speech": "n."
+  },
+  "kitchen": {
+    "meaning_cn": "厨房；全套炊具",
+    "part_of_speech": "n."
+  },
+  "known": {
+    "meaning_cn": "a. 已知的；有名的；know的过去分词",
+    "part_of_speech": "-"
+  },
+  "knows": {
+    "meaning_cn": "知道（know的第三人称单数形式）",
+    "part_of_speech": "v."
+  },
+  "korea": {
+    "meaning_cn": "朝鲜；韩国",
+    "part_of_speech": "n."
+  },
+  "label": {
+    "meaning_cn": "标签；称号；商标；标志",
+    "part_of_speech": "n."
+  },
+  "labor": {
+    "meaning_cn": "劳动；努力；工作；劳工",
+    "part_of_speech": "n."
+  },
+  "laboratory": {
+    "meaning_cn": "实验室；研究室；化工厂；检验室",
+    "part_of_speech": "n."
+  },
+  "ladies": {
+    "meaning_cn": "公共女厕所；女盥洗室；女洗手间",
+    "part_of_speech": "n."
+  },
+  "language": {
+    "meaning_cn": "语言；文字；措辞",
+    "part_of_speech": "n."
+  },
+  "laptop": {
+    "meaning_cn": "膝上型的",
+    "part_of_speech": "-"
+  },
+  "large": {
+    "meaning_cn": "a. 大的；大量的；宽大的；广博的",
+    "part_of_speech": "-"
+  },
+  "larger": {
+    "meaning_cn": "a. 大的；多量的",
+    "part_of_speech": "-"
+  },
+  "largest": {
+    "meaning_cn": "a. 多量的；最大的（large的最高级）",
+    "part_of_speech": "-"
+  },
+  "laser": {
+    "meaning_cn": "激光；激光器",
+    "part_of_speech": "n."
+  },
+  "latency": {
+    "meaning_cn": "潜伏；潜在；传输时间；传输延迟时间",
+    "part_of_speech": "n."
+  },
+  "later": {
+    "meaning_cn": "以后；随后",
+    "part_of_speech": "adv."
+  },
+  "latest": {
+    "meaning_cn": "a. 最近的",
+    "part_of_speech": "-"
+  },
+  "latin": {
+    "meaning_cn": "拉丁人；拉丁语；a. 拉丁人的；拉丁语的",
+    "part_of_speech": "n."
+  },
+  "launch": {
+    "meaning_cn": "下水；汽艇；发射；使下水",
+    "part_of_speech": "n."
+  },
+  "laundry": {
+    "meaning_cn": "洗衣店；洗好的衣服；洗涤；洗衣作",
+    "part_of_speech": "n."
+  },
+  "lawyer": {
+    "meaning_cn": "律师",
+    "part_of_speech": "n."
+  },
+  "lawyers": {
+    "meaning_cn": "律师（lawyer的复数）",
+    "part_of_speech": "n."
+  },
+  "layer": {
+    "meaning_cn": "层；产卵鸡；放置者；分层堆积",
+    "part_of_speech": "n."
+  },
+  "leader": {
+    "meaning_cn": "领导者；社论；指挥；领袖",
+    "part_of_speech": "n."
+  },
+  "leaders": {
+    "meaning_cn": "指挥；引线；前导字符；领袖（leader的复数）",
+    "part_of_speech": "n."
+  },
+  "leadership": {
+    "meaning_cn": "领导能力；领导阶层",
+    "part_of_speech": "n."
+  },
+  "leading": {
+    "meaning_cn": "领导；指挥；神示；铅板",
+    "part_of_speech": "n."
+  },
+  "leads": {
+    "meaning_cn": "领导者；引线；管道（lead的复数）",
+    "part_of_speech": "n."
+  },
+  "league": {
+    "meaning_cn": "同盟；联盟；盟约；组联盟",
+    "part_of_speech": "n."
+  },
+  "learn": {
+    "meaning_cn": "学习；认识到；得知",
+    "part_of_speech": "vt."
+  },
+  "learning": {
+    "meaning_cn": "学问；学识；学习",
+    "part_of_speech": "n."
+  },
+  "least": {
+    "meaning_cn": "最少；最小；最小限度；a. 最少的",
+    "part_of_speech": "n."
+  },
+  "leather": {
+    "meaning_cn": "皮革；皮制品；马镫的皮带；覆以皮革",
+    "part_of_speech": "n."
+  },
+  "leave": {
+    "meaning_cn": "许可；告别；请假；休假",
+    "part_of_speech": "n."
+  },
+  "leaving": {
+    "meaning_cn": "离开；残余；渣滓",
+    "part_of_speech": "n."
+  },
+  "lecture": {
+    "meaning_cn": "演讲；谴责；讲稿；训诫",
+    "part_of_speech": "n."
+  },
+  "legal": {
+    "meaning_cn": "a. 法律的；法定的；合法的；法定权利",
+    "part_of_speech": "-"
+  },
+  "legislation": {
+    "meaning_cn": "立法；法律；法规",
+    "part_of_speech": "n."
+  },
+  "length": {
+    "meaning_cn": "长度；长；期间；一段",
+    "part_of_speech": "n."
+  },
+  "lesbian": {
+    "meaning_cn": "a. 女同性恋的；女同性恋者",
+    "part_of_speech": "n."
+  },
+  "lesbians": {
+    "meaning_cn": "女同性恋者；女同志（lesbian的复数形式）",
+    "part_of_speech": "n."
+  },
+  "letter": {
+    "meaning_cn": "信；字母；证书；字面意义",
+    "part_of_speech": "n."
+  },
+  "letters": {
+    "meaning_cn": "字母；书信；读者投书栏（letter的复数）",
+    "part_of_speech": "n."
+  },
+  "level": {
+    "meaning_cn": "水平；水准；平地；a. 同高的",
+    "part_of_speech": "n."
+  },
+  "levels": {
+    "meaning_cn": "色阶调整；控制色阶；水平；标准（level复数形式）",
+    "part_of_speech": "n."
+  },
+  "lexer": {
+    "meaning_cn": "法科大学生",
+    "part_of_speech": "-"
+  },
+  "library": {
+    "meaning_cn": "图书馆；藏书；库",
+    "part_of_speech": "n."
+  },
+  "license": {
+    "meaning_cn": "执照；许可证；特许；许可",
+    "part_of_speech": "n."
+  },
+  "licensed": {
+    "meaning_cn": "a. 得到许可的；领有执照的；领到许可证的",
+    "part_of_speech": "-"
+  },
+  "lifestyle": {
+    "meaning_cn": "生活方式",
+    "part_of_speech": "n."
+  },
+  "light": {
+    "meaning_cn": "光；光亮；灯；日光",
+    "part_of_speech": "n."
+  },
+  "lighting": {
+    "meaning_cn": "照明；照明设备；舞台灯光",
+    "part_of_speech": "n."
+  },
+  "lights": {
+    "meaning_cn": "（供食用的）家畜的肺脏；灯光（light的复数）",
+    "part_of_speech": "n."
+  },
+  "likely": {
+    "meaning_cn": "a. 有可能的；合适的；前途有望的；或许",
+    "part_of_speech": "adv."
+  },
+  "limit": {
+    "meaning_cn": "界限；边界；限度；极限",
+    "part_of_speech": "n."
+  },
+  "limited": {
+    "meaning_cn": "a. 有限制的；有限的；有限责任的；特别快车",
+    "part_of_speech": "n."
+  },
+  "lines": {
+    "meaning_cn": "台词",
+    "part_of_speech": "n."
+  },
+  "lingerie": {
+    "meaning_cn": "女式内衣",
+    "part_of_speech": "n."
+  },
+  "links": {
+    "meaning_cn": "高尔夫球场",
+    "part_of_speech": "n."
+  },
+  "lint": {
+    "meaning_cn": "绷带用麻布；皮棉；绒布(外科用布)",
+    "part_of_speech": "n."
+  },
+  "linux": {
+    "meaning_cn": "一个个人电脑上免费的UNIX操作系统",
+    "part_of_speech": "n."
+  },
+  "listed": {
+    "meaning_cn": "a. 列出的；上市的；已登录的；表列的",
+    "part_of_speech": "-"
+  },
+  "listen": {
+    "meaning_cn": "听；倾听；听从",
+    "part_of_speech": "vi."
+  },
+  "listener": {
+    "meaning_cn": "收听者；听众",
+    "part_of_speech": "n."
+  },
+  "listening": {
+    "meaning_cn": "听；监听；a. 助听用的",
+    "part_of_speech": "n."
+  },
+  "listing": {
+    "meaning_cn": "列表；清单；编目；挂牌",
+    "part_of_speech": "-"
+  },
+  "listings": {
+    "meaning_cn": "表",
+    "part_of_speech": "-"
+  },
+  "lists": {
+    "meaning_cn": "竞技场",
+    "part_of_speech": "n."
+  },
+  "literacy": {
+    "meaning_cn": "读写能力；识字；精通文学",
+    "part_of_speech": "n."
+  },
+  "literature": {
+    "meaning_cn": "文学；文艺；著作；广告",
+    "part_of_speech": "n."
+  },
+  "little": {
+    "meaning_cn": "一点点；少许；一会儿；短时间",
+    "part_of_speech": "n."
+  },
+  "lives": {
+    "meaning_cn": "life的复数",
+    "part_of_speech": "-"
+  },
+  "living": {
+    "meaning_cn": "生活；生计；生存；a. 活的",
+    "part_of_speech": "n."
+  },
+  "load": {
+    "meaning_cn": "负荷；担子；重担；装载量",
+    "part_of_speech": "n."
+  },
+  "loans": {
+    "meaning_cn": "借贷；贷款（loan的复数形式）",
+    "part_of_speech": "n."
+  },
+  "local": {
+    "meaning_cn": "a. 地方性的；当地的；局部的；乡土的",
+    "part_of_speech": "-"
+  },
+  "located": {
+    "meaning_cn": "a. 处于；位于；坐落的",
+    "part_of_speech": "-"
+  },
+  "location": {
+    "meaning_cn": "位置；场所；特定区域",
+    "part_of_speech": "n."
+  },
+  "lock": {
+    "meaning_cn": "锁；刹车；水闸；一缕头发",
+    "part_of_speech": "n."
+  },
+  "log": {
+    "meaning_cn": "记录；圆木；日志；计程仪",
+    "part_of_speech": "n."
+  },
+  "logged": {
+    "meaning_cn": "a. 笨重的；湿透的",
+    "part_of_speech": "-"
+  },
+  "logic": {
+    "meaning_cn": "逻辑；逻辑学；推理的方法；推理",
+    "part_of_speech": "n."
+  },
+  "login": {
+    "meaning_cn": "注册(程序)；登记；用户注册程序",
+    "part_of_speech": "-"
+  },
+  "logistics": {
+    "meaning_cn": "后勤学；后勤",
+    "part_of_speech": "n."
+  },
+  "london": {
+    "meaning_cn": "伦敦",
+    "part_of_speech": "n."
+  },
+  "longer": {
+    "meaning_cn": "比较久",
+    "part_of_speech": "adv."
+  },
+  "looked": {
+    "meaning_cn": "看；瞧( look的过去式和过去分词 )；注意；面向",
+    "part_of_speech": "v."
+  },
+  "looking": {
+    "meaning_cn": "a. 有…相貌的；有…样子的",
+    "part_of_speech": "-"
+  },
+  "looks": {
+    "meaning_cn": "美貌",
+    "part_of_speech": "n."
+  },
+  "louis": {
+    "meaning_cn": "路易斯（男子名）",
+    "part_of_speech": "n."
+  },
+  "lower": {
+    "meaning_cn": "a. 低的；下级的；下层的；降低",
+    "part_of_speech": "vi."
+  },
+  "lowest": {
+    "meaning_cn": "最低的；基层的",
+    "part_of_speech": "-"
+  },
+  "lunch": {
+    "meaning_cn": "午餐",
+    "part_of_speech": "n."
+  },
+  "luxury": {
+    "meaning_cn": "奢侈；豪华；a. 奢侈的；豪华的",
+    "part_of_speech": "n."
+  },
+  "lyrics": {
+    "meaning_cn": "歌词",
+    "part_of_speech": "n."
+  },
+  "machine": {
+    "meaning_cn": "机器；机械装置；机构；自动售货机",
+    "part_of_speech": "n."
+  },
+  "machines": {
+    "meaning_cn": "机器；机械（machine的复数）",
+    "part_of_speech": "n."
+  },
+  "magazine": {
+    "meaning_cn": "杂志；仓库；弹盒；胶卷盒",
+    "part_of_speech": "n."
+  },
+  "magic": {
+    "meaning_cn": "魔术；魔法；a. 魔术的；有魔力的",
+    "part_of_speech": "n."
+  },
+  "mailing": {
+    "meaning_cn": "邮寄；投递；邮件；农场租金",
+    "part_of_speech": "n."
+  },
+  "maine": {
+    "meaning_cn": "缅因州",
+    "part_of_speech": "n."
+  },
+  "maintain": {
+    "meaning_cn": "维持；维修；保持；坚持",
+    "part_of_speech": "vt."
+  },
+  "maintenance": {
+    "meaning_cn": "维护；保持；维修；生活费用",
+    "part_of_speech": "n."
+  },
+  "major": {
+    "meaning_cn": "主修课；成年人；陆军少校；a. 主要的",
+    "part_of_speech": "n."
+  },
+  "majority": {
+    "meaning_cn": "多数；大半；多数逻辑",
+    "part_of_speech": "n."
+  },
+  "makes": {
+    "meaning_cn": "做；制作（make的第三人称单数）",
+    "part_of_speech": "v."
+  },
+  "making": {
+    "meaning_cn": "制造；(手工)制造业；制作；形成",
+    "part_of_speech": "n."
+  },
+  "manage": {
+    "meaning_cn": "处理；管理；控制；维持",
+    "part_of_speech": "vi."
+  },
+  "managed": {
+    "meaning_cn": "a. 与中央化计划及管制有关的；托管的",
+    "part_of_speech": "-"
+  },
+  "manager": {
+    "meaning_cn": "经理；管理员；管理器",
+    "part_of_speech": "n."
+  },
+  "managers": {
+    "meaning_cn": "管理者；经理（manager复数）",
+    "part_of_speech": "n."
+  },
+  "managing": {
+    "meaning_cn": "a. 管理的；节约的；管理的；主管的",
+    "part_of_speech": "-"
+  },
+  "manner": {
+    "meaning_cn": "样子；礼貌；风格；方式",
+    "part_of_speech": "n."
+  },
+  "manual": {
+    "meaning_cn": "手册；指南；a. 手的；手动的",
+    "part_of_speech": "n."
+  },
+  "map": {
+    "meaning_cn": "地图；天体图；映像；映射",
+    "part_of_speech": "n."
+  },
+  "march": {
+    "meaning_cn": "三月；进行；行军；步伐",
+    "part_of_speech": "n."
+  },
+  "marine": {
+    "meaning_cn": "舰队；水兵；海景画；a. 海的",
+    "part_of_speech": "n."
+  },
+  "market": {
+    "meaning_cn": "市场；交易；集市；推销地区",
+    "part_of_speech": "n."
+  },
+  "markets": {
+    "meaning_cn": "市场；市场组合（market 复数）",
+    "part_of_speech": "n."
+  },
+  "marriage": {
+    "meaning_cn": "婚姻；结婚；婚礼；合并",
+    "part_of_speech": "n."
+  },
+  "married": {
+    "meaning_cn": "a. 已婚的；婚姻的；结了婚的；有配偶的",
+    "part_of_speech": "-"
+  },
+  "martin": {
+    "meaning_cn": "马丁；圣马丁鸟",
+    "part_of_speech": "n."
+  },
+  "maryland": {
+    "meaning_cn": "马里兰州",
+    "part_of_speech": "n."
+  },
+  "master": {
+    "meaning_cn": "主人；硕士；大师；母机",
+    "part_of_speech": "n."
+  },
+  "match": {
+    "meaning_cn": "比赛；火柴；对手；使相配",
+    "part_of_speech": "n."
+  },
+  "matches": {
+    "meaning_cn": "火柴；比赛（match的复数）",
+    "part_of_speech": "n."
+  },
+  "matching": {
+    "meaning_cn": "a. 相同的；协调的；匹配；对比",
+    "part_of_speech": "-"
+  },
+  "material": {
+    "meaning_cn": "材料；物资；素材；布料",
+    "part_of_speech": "n."
+  },
+  "matrix": {
+    "meaning_cn": "母体；子宫；基质；脉石",
+    "part_of_speech": "n."
+  },
+  "matter": {
+    "meaning_cn": "事件；物质；原因；素材",
+    "part_of_speech": "n."
+  },
+  "matters": {
+    "meaning_cn": "事项；事态；事件；情事（matter的复数）",
+    "part_of_speech": "n."
+  },
+  "mature": {
+    "meaning_cn": "a. 成熟的；到期的；充分考虑的；使成熟",
+    "part_of_speech": "vt."
+  },
+  "maximum": {
+    "meaning_cn": "极点；最大量；极大；a. 最高的",
+    "part_of_speech": "n."
+  },
+  "maybe": {
+    "meaning_cn": "也许；大概；可能性",
+    "part_of_speech": "adv."
+  },
+  "mcp": {
+    "meaning_cn": "主控程序",
+    "part_of_speech": "-"
+  },
+  "meaning": {
+    "meaning_cn": "意义；含义；目的；意图",
+    "part_of_speech": "n."
+  },
+  "means": {
+    "meaning_cn": "方法；手段；工具；财产",
+    "part_of_speech": "n."
+  },
+  "measure": {
+    "meaning_cn": "尺寸；量度器；量度标准；测量",
+    "part_of_speech": "n."
+  },
+  "measurement": {
+    "meaning_cn": "尺寸；度量；度量单位",
+    "part_of_speech": "n."
+  },
+  "measures": {
+    "meaning_cn": "措施；层组（measure的复数）",
+    "part_of_speech": "n."
+  },
+  "media": {
+    "meaning_cn": "媒体；媒质",
+    "part_of_speech": "n."
+  },
+  "medical": {
+    "meaning_cn": "医生；体格检查；a. 医学的；内科的",
+    "part_of_speech": "n."
+  },
+  "medicine": {
+    "meaning_cn": "药；医学；内科；给...用药",
+    "part_of_speech": "n."
+  },
+  "medium": {
+    "meaning_cn": "媒体；方法；媒介；a. 半生熟的",
+    "part_of_speech": "n."
+  },
+  "meeting": {
+    "meaning_cn": "会议；会面；会谈；集会",
+    "part_of_speech": "n."
+  },
+  "meetings": {
+    "meaning_cn": "会议；集会；会见（meeting的复数形式）",
+    "part_of_speech": "n."
+  },
+  "member": {
+    "meaning_cn": "成员；会员；│肢；肢体",
+    "part_of_speech": "n."
+  },
+  "members": {
+    "meaning_cn": "成员；会员（member的复数）",
+    "part_of_speech": "n."
+  },
+  "memo": {
+    "meaning_cn": "备忘录",
+    "part_of_speech": "n."
+  },
+  "memory": {
+    "meaning_cn": "记忆；记忆力；回忆；纪念",
+    "part_of_speech": "n."
+  },
+  "mental": {
+    "meaning_cn": "a. 心智的；精神病的；心理的；颏的",
+    "part_of_speech": "-"
+  },
+  "merchant": {
+    "meaning_cn": "商人；店主；a. 商业的；商人的",
+    "part_of_speech": "n."
+  },
+  "merge": {
+    "meaning_cn": "使合并；使消失；吞没；合并",
+    "part_of_speech": "vt."
+  },
+  "message": {
+    "meaning_cn": "消息；通讯；讯息；教训",
+    "part_of_speech": "n."
+  },
+  "messages": {
+    "meaning_cn": "信息；留言板（message的复数形式）",
+    "part_of_speech": "n."
+  },
+  "metal": {
+    "meaning_cn": "金属；金属制品；合金；本质",
+    "part_of_speech": "n."
+  },
+  "method": {
+    "meaning_cn": "方法；办法；条理；秩序",
+    "part_of_speech": "n."
+  },
+  "methods": {
+    "meaning_cn": "方法；方式；研究方法（method的复数）",
+    "part_of_speech": "n."
+  },
+  "metric": {
+    "meaning_cn": "a. 公尺的；公制的；计量的；测量的",
+    "part_of_speech": "-"
+  },
+  "mexico": {
+    "meaning_cn": "墨西哥",
+    "part_of_speech": "n."
+  },
+  "miami": {
+    "meaning_cn": "迈阿密",
+    "part_of_speech": "n."
+  },
+  "michael": {
+    "meaning_cn": "迈克尔（男子名）",
+    "part_of_speech": "n."
+  },
+  "michigan": {
+    "meaning_cn": "密歇根州",
+    "part_of_speech": "n."
+  },
+  "microscope": {
+    "meaning_cn": "显微镜",
+    "part_of_speech": "n."
+  },
+  "middle": {
+    "meaning_cn": "中央；中间；腰部；a. 中央的",
+    "part_of_speech": "n."
+  },
+  "middleware": {
+    "meaning_cn": "中间设备；中间件",
+    "part_of_speech": "n."
+  },
+  "might": {
+    "meaning_cn": "力量；权力；aux. 可能；也许",
+    "part_of_speech": "n."
+  },
+  "migration": {
+    "meaning_cn": "移民；移往；移动；迁移",
+    "part_of_speech": "n."
+  },
+  "miles": {
+    "meaning_cn": "英里（1英里约合1609米；mile的复数形式）",
+    "part_of_speech": "n."
+  },
+  "milestone": {
+    "meaning_cn": "里程碑；里程石；里程标",
+    "part_of_speech": "n."
+  },
+  "military": {
+    "meaning_cn": "军队；a. 军事的；军人的；适于战争的",
+    "part_of_speech": "n."
+  },
+  "milk": {
+    "meaning_cn": "奶；乳状物；挤乳；榨取",
+    "part_of_speech": "n."
+  },
+  "miller": {
+    "meaning_cn": "厂主；蛾；铣床",
+    "part_of_speech": "n."
+  },
+  "million": {
+    "meaning_cn": "百万；无数",
+    "part_of_speech": "n."
+  },
+  "mineral": {
+    "meaning_cn": "矿物；无机物；苏打水；a. 矿物的",
+    "part_of_speech": "n."
+  },
+  "minify": {
+    "meaning_cn": "使变小；使缩小；使降低；缩减",
+    "part_of_speech": "vt."
+  },
+  "minimum": {
+    "meaning_cn": "a. 最小的；最低的；最小值",
+    "part_of_speech": "n."
+  },
+  "minister": {
+    "meaning_cn": "部长；牧师；公使；服侍",
+    "part_of_speech": "n."
+  },
+  "ministry": {
+    "meaning_cn": "部；内阁；服务",
+    "part_of_speech": "n."
+  },
+  "minor": {
+    "meaning_cn": "未成年人；副修科目；a. 较小的；二流的",
+    "part_of_speech": "n."
+  },
+  "minute": {
+    "meaning_cn": "分；分钟；片刻；备忘录",
+    "part_of_speech": "n."
+  },
+  "minutes": {
+    "meaning_cn": "会议记录；备忘录；审判记录",
+    "part_of_speech": "n."
+  },
+  "missing": {
+    "meaning_cn": "a. 不见的；缺少的；行踪不明的；失踪的",
+    "part_of_speech": "-"
+  },
+  "mission": {
+    "meaning_cn": "任务；代表团；使命；传教团",
+    "part_of_speech": "n."
+  },
+  "missouri": {
+    "meaning_cn": "密苏里州",
+    "part_of_speech": "n."
+  },
+  "mixed": {
+    "meaning_cn": "a. 混合的；形形色色的；弄糊涂的；混合的",
+    "part_of_speech": "-"
+  },
+  "mobile": {
+    "meaning_cn": "a. 移动的；易变的；机动的；活动物体",
+    "part_of_speech": "n."
+  },
+  "model": {
+    "meaning_cn": "模型；模范；模特儿；a. 模范的",
+    "part_of_speech": "n."
+  },
+  "models": {
+    "meaning_cn": "模型( model的名词复数 )；模特儿；模式；典型",
+    "part_of_speech": "n."
+  },
+  "modern": {
+    "meaning_cn": "现代人；有思想的人；a. 现代的；时髦的",
+    "part_of_speech": "n."
+  },
+  "modified": {
+    "meaning_cn": "a. 改良的；改进的；修改的",
+    "part_of_speech": "-"
+  },
+  "module": {
+    "meaning_cn": "组件；模数；模块",
+    "part_of_speech": "n."
+  },
+  "modules": {
+    "meaning_cn": "加载模块列表；模块（module的复数）",
+    "part_of_speech": "n."
+  },
+  "molecule": {
+    "meaning_cn": "分子；些微",
+    "part_of_speech": "n."
+  },
+  "moment": {
+    "meaning_cn": "片刻；瞬间；重要；阶段",
+    "part_of_speech": "n."
+  },
+  "monday": {
+    "meaning_cn": "星期一",
+    "part_of_speech": "n."
+  },
+  "money": {
+    "meaning_cn": "金钱；一笔款；财富；货币",
+    "part_of_speech": "n."
+  },
+  "monitor": {
+    "meaning_cn": "监督器；级长；监听员；班长",
+    "part_of_speech": "n."
+  },
+  "monolith": {
+    "meaning_cn": "巨型独石；大独石碑",
+    "part_of_speech": "n."
+  },
+  "month": {
+    "meaning_cn": "月",
+    "part_of_speech": "n."
+  },
+  "monthly": {
+    "meaning_cn": "月刊；a. 每月的；每月一次的",
+    "part_of_speech": "n."
+  },
+  "months": {
+    "meaning_cn": "月份（month的复数）",
+    "part_of_speech": "-"
+  },
+  "morning": {
+    "meaning_cn": "早晨；上午",
+    "part_of_speech": "n."
+  },
+  "mortgage": {
+    "meaning_cn": "抵押；约束性义务；抵押借款；以...作担保",
+    "part_of_speech": "n."
+  },
+  "mostly": {
+    "meaning_cn": "大概；大部分；主要；大部份",
+    "part_of_speech": "adv."
+  },
+  "mother": {
+    "meaning_cn": "母亲；修女院长；产生；照看",
+    "part_of_speech": "n."
+  },
+  "motion": {
+    "meaning_cn": "移动；手势；动作；意向",
+    "part_of_speech": "n."
+  },
+  "motor": {
+    "meaning_cn": "马达；发动机；原动力；汽车",
+    "part_of_speech": "n."
+  },
+  "motorola": {
+    "meaning_cn": "摩托罗拉（美国主营电子的公司）",
+    "part_of_speech": "n."
+  },
+  "mount": {
+    "meaning_cn": "乘骑用马；框；衬纸；山",
+    "part_of_speech": "n."
+  },
+  "mountain": {
+    "meaning_cn": "山；山脉；大堆",
+    "part_of_speech": "n."
+  },
+  "mouse": {
+    "meaning_cn": "老鼠；胆小羞怯的人；鼠标；捕鼠",
+    "part_of_speech": "n."
+  },
+  "moved": {
+    "meaning_cn": "移动；移动到；感动（move的过去式；过去分词）",
+    "part_of_speech": "v."
+  },
+  "movement": {
+    "meaning_cn": "运动；动作；运转；移动",
+    "part_of_speech": "n."
+  },
+  "movie": {
+    "meaning_cn": "电影",
+    "part_of_speech": "n."
+  },
+  "movies": {
+    "meaning_cn": "电影",
+    "part_of_speech": "n."
+  },
+  "moving": {
+    "meaning_cn": "a. 动人的；令人感动的；鼓动的；原动的",
+    "part_of_speech": "-"
+  },
+  "multi": {
+    "meaning_cn": "多",
+    "part_of_speech": "-"
+  },
+  "multiple": {
+    "meaning_cn": "倍数；并联；a. 多样的；许多的",
+    "part_of_speech": "n."
+  },
+  "museum": {
+    "meaning_cn": "博物馆",
+    "part_of_speech": "n."
+  },
+  "music": {
+    "meaning_cn": "音乐；乐曲",
+    "part_of_speech": "n."
+  },
+  "musical": {
+    "meaning_cn": "音乐片；音乐舞台剧；a. 音乐的；声音美妙的",
+    "part_of_speech": "n."
+  },
+  "mutex": {
+    "meaning_cn": "互斥量；互斥；互斥元；互斥体",
+    "part_of_speech": "n."
+  },
+  "myself": {
+    "meaning_cn": "我自己；我亲自；我独自",
+    "part_of_speech": "pron."
+  },
+  "naked": {
+    "meaning_cn": "a. 裸体的；无装饰的；无保护的；赤贫的",
+    "part_of_speech": "-"
+  },
+  "named": {
+    "meaning_cn": "a. 被指名的；指定的；命名的；有名的",
+    "part_of_speech": "-"
+  },
+  "names": {
+    "meaning_cn": "名字；名望（name的复数形式）",
+    "part_of_speech": "n."
+  },
+  "narrative": {
+    "meaning_cn": "叙述；故事；a. 叙述的；叙事的",
+    "part_of_speech": "n."
+  },
+  "nation": {
+    "meaning_cn": "国家；民族",
+    "part_of_speech": "n."
+  },
+  "national": {
+    "meaning_cn": "a. 国家的；国立的；全国性的；民族的",
+    "part_of_speech": "-"
+  },
+  "nations": {
+    "meaning_cn": "国家（nation的复数）",
+    "part_of_speech": "n."
+  },
+  "native": {
+    "meaning_cn": "本地人；土产；当地人；a. 本国的",
+    "part_of_speech": "n."
+  },
+  "natural": {
+    "meaning_cn": "白痴；a. 自然的；自然界的；本能的",
+    "part_of_speech": "n."
+  },
+  "nature": {
+    "meaning_cn": "自然；大自然；本性；性格",
+    "part_of_speech": "n."
+  },
+  "nearby": {
+    "meaning_cn": "a. 附近的；近旁的；在附近；近旁地",
+    "part_of_speech": "adv."
+  },
+  "nearly": {
+    "meaning_cn": "几乎；密切地",
+    "part_of_speech": "adv."
+  },
+  "need": {
+    "meaning_cn": "需要；必须；缺乏；必需",
+    "part_of_speech": "n."
+  },
+  "needed": {
+    "meaning_cn": "a. 需要的",
+    "part_of_speech": "-"
+  },
+  "needs": {
+    "meaning_cn": "（只与must连用）必须地",
+    "part_of_speech": "adv."
+  },
+  "negative": {
+    "meaning_cn": "否定；否定语；负数；底片",
+    "part_of_speech": "n."
+  },
+  "negotiation": {
+    "meaning_cn": "谈判；磋商；交涉；协商",
+    "part_of_speech": "n."
+  },
+  "neighbor": {
+    "meaning_cn": "邻居；邻接；毗邻而居；友好",
+    "part_of_speech": "n."
+  },
+  "network": {
+    "meaning_cn": "网络；广播网；网状物",
+    "part_of_speech": "n."
+  },
+  "networks": {
+    "meaning_cn": "网络；广播电视网（network的复数形式）",
+    "part_of_speech": "n."
+  },
+  "nevada": {
+    "meaning_cn": "内华达",
+    "part_of_speech": "n."
+  },
+  "never": {
+    "meaning_cn": "从不；决不；不曾；永不",
+    "part_of_speech": "adv."
+  },
+  "newest": {
+    "meaning_cn": "最新",
+    "part_of_speech": "-"
+  },
+  "news": {
+    "meaning_cn": "新闻；消息；报导；新闻报导",
+    "part_of_speech": "n."
+  },
+  "night": {
+    "meaning_cn": "夜；夜晚；晚上；黑暗",
+    "part_of_speech": "n."
+  },
+  "node": {
+    "meaning_cn": "节；结节；瘤；节点",
+    "part_of_speech": "n."
+  },
+  "noise": {
+    "meaning_cn": "噪音；杂音；响声；喧闹",
+    "part_of_speech": "n."
+  },
+  "noisy": {
+    "meaning_cn": "a. 嘈杂的；喧闹的；噪声的；嘈杂的",
+    "part_of_speech": "-"
+  },
+  "nokia": {
+    "meaning_cn": "诺基亚（财富500强公司之一）",
+    "part_of_speech": "n."
+  },
+  "noodle": {
+    "meaning_cn": "面条；笨蛋",
+    "part_of_speech": "n."
+  },
+  "normal": {
+    "meaning_cn": "常态；标准；正常；普通",
+    "part_of_speech": "n."
+  },
+  "north": {
+    "meaning_cn": "北方；北；a. 北的；北方的",
+    "part_of_speech": "n."
+  },
+  "northern": {
+    "meaning_cn": "北方人；a. 北方的；向北的；自北方来的",
+    "part_of_speech": "n."
+  },
+  "note": {
+    "meaning_cn": "笔记；记录；注解；票据",
+    "part_of_speech": "n."
+  },
+  "noted": {
+    "meaning_cn": "a. 著名的；显著的；扬名的",
+    "part_of_speech": "-"
+  },
+  "notes": {
+    "meaning_cn": "票据；注释；说明（note复数）",
+    "part_of_speech": "n."
+  },
+  "nothing": {
+    "meaning_cn": "无；不关紧要之事；零；毫不",
+    "part_of_speech": "n."
+  },
+  "notice": {
+    "meaning_cn": "注意；布告；通知；预告",
+    "part_of_speech": "n."
+  },
+  "novel": {
+    "meaning_cn": "小说；长篇故事；a. 新奇的；异常的",
+    "part_of_speech": "n."
+  },
+  "november": {
+    "meaning_cn": "十一月",
+    "part_of_speech": "n."
+  },
+  "npm": {
+    "meaning_cn": "number of points in the point-matching method 点匹配法中的点数",
+    "part_of_speech": "abbr."
+  },
+  "nuclear": {
+    "meaning_cn": "a. 核子的；原子能的；核的；中心的",
+    "part_of_speech": "-"
+  },
+  "number": {
+    "meaning_cn": "数；数字；数目；号码",
+    "part_of_speech": "n."
+  },
+  "numbers": {
+    "meaning_cn": "数字（number的复数）；算术",
+    "part_of_speech": "n."
+  },
+  "numeracy": {
+    "meaning_cn": "识数；计算能力",
+    "part_of_speech": "n."
+  },
+  "nursing": {
+    "meaning_cn": "看护；养育；护理[法]；喂乳[法]",
+    "part_of_speech": "n."
+  },
+  "nutrition": {
+    "meaning_cn": "营养；营养学；营养品",
+    "part_of_speech": "n."
+  },
+  "object": {
+    "meaning_cn": "物体；目标；目的；对象",
+    "part_of_speech": "n."
+  },
+  "objective": {
+    "meaning_cn": "目的；目标；宗旨；宾格",
+    "part_of_speech": "n."
+  },
+  "objects": {
+    "meaning_cn": "目标；物体（object的复数）",
+    "part_of_speech": "n."
+  },
+  "observability": {
+    "meaning_cn": "可观察性；可观测性",
+    "part_of_speech": "-"
+  },
+  "observation": {
+    "meaning_cn": "观察；注意；观测；观察力",
+    "part_of_speech": "n."
+  },
+  "obtain": {
+    "meaning_cn": "获得；达到；流行；得到公认",
+    "part_of_speech": "vt."
+  },
+  "obtained": {
+    "meaning_cn": "获得（obtain的过去分词）",
+    "part_of_speech": "v."
+  },
+  "occur": {
+    "meaning_cn": "发生；被想到；存在",
+    "part_of_speech": "vi."
+  },
+  "ocean": {
+    "meaning_cn": "海洋；广阔；许多；一大片",
+    "part_of_speech": "n."
+  },
+  "october": {
+    "meaning_cn": "十月",
+    "part_of_speech": "n."
+  },
+  "offer": {
+    "meaning_cn": "给予(物)；出价；提议；意图",
+    "part_of_speech": "n."
+  },
+  "offered": {
+    "meaning_cn": "提供；提议；奉献（offer过去时态）",
+    "part_of_speech": "v."
+  },
+  "offering": {
+    "meaning_cn": "提供；奉献物；牲礼；上市的股票(或证券等)",
+    "part_of_speech": "n."
+  },
+  "offers": {
+    "meaning_cn": "提议；出价；求婚；试图（offer的复数）",
+    "part_of_speech": "n."
+  },
+  "office": {
+    "meaning_cn": "办公室；部；公职；职责",
+    "part_of_speech": "n."
+  },
+  "officer": {
+    "meaning_cn": "军官；主管；官员；公务员",
+    "part_of_speech": "n."
+  },
+  "officers": {
+    "meaning_cn": "军官；人员（officer复数形式）",
+    "part_of_speech": "n."
+  },
+  "offices": {
+    "meaning_cn": "办公室；办事处（office的复数）",
+    "part_of_speech": "n."
+  },
+  "official": {
+    "meaning_cn": "官员；公务员；职员；a. 公务的",
+    "part_of_speech": "n."
+  },
+  "often": {
+    "meaning_cn": "时常；常常",
+    "part_of_speech": "adv."
+  },
+  "oil": {
+    "meaning_cn": "油；石油；油画颜料；涂油于",
+    "part_of_speech": "n."
+  },
+  "oklahoma": {
+    "meaning_cn": "俄克拉何马",
+    "part_of_speech": "n."
+  },
+  "older": {
+    "meaning_cn": "a. 年长的；较旧的",
+    "part_of_speech": "-"
+  },
+  "online": {
+    "meaning_cn": "联机",
+    "part_of_speech": "-"
+  },
+  "ontario": {
+    "meaning_cn": "安大略湖（北美五大湖之一）",
+    "part_of_speech": "n."
+  },
+  "open": {
+    "meaning_cn": "公开；户外；空旷；a. 开着的",
+    "part_of_speech": "n."
+  },
+  "opening": {
+    "meaning_cn": "开始；口子；穴；揭幕",
+    "part_of_speech": "n."
+  },
+  "operation": {
+    "meaning_cn": "操作；动作；手术；运算",
+    "part_of_speech": "n."
+  },
+  "operator": {
+    "meaning_cn": "操作员；行家；经纪人；算子",
+    "part_of_speech": "n."
+  },
+  "opinion": {
+    "meaning_cn": "意见；评价；主张",
+    "part_of_speech": "n."
+  },
+  "opinions": {
+    "meaning_cn": "意见；舆论；评价（opinion的复数）",
+    "part_of_speech": "n."
+  },
+  "opportunity": {
+    "meaning_cn": "机会；时机",
+    "part_of_speech": "n."
+  },
+  "optical": {
+    "meaning_cn": "a. 眼睛的；视觉的；光学的；光学上的",
+    "part_of_speech": "-"
+  },
+  "option": {
+    "meaning_cn": "选择权；挑选；选项",
+    "part_of_speech": "n."
+  },
+  "optional": {
+    "meaning_cn": "a. 可选择的；随意的；选购的",
+    "part_of_speech": "-"
+  },
+  "options": {
+    "meaning_cn": "选择；期权；选择项（option的复数）",
+    "part_of_speech": "n."
+  },
+  "orange": {
+    "meaning_cn": "柑橘；桔子；橘色；a. 橘色的",
+    "part_of_speech": "n."
+  },
+  "orbit": {
+    "meaning_cn": "轨道；常轨；眼眶；绕...轨道而行",
+    "part_of_speech": "n."
+  },
+  "order": {
+    "meaning_cn": "次序；规则；命令；定货",
+    "part_of_speech": "n."
+  },
+  "ordering": {
+    "meaning_cn": "有序化；定序；排序",
+    "part_of_speech": "n."
+  },
+  "orders": {
+    "meaning_cn": "牧师职；神职",
+    "part_of_speech": "n."
+  },
+  "oregon": {
+    "meaning_cn": "俄勒冈",
+    "part_of_speech": "n."
+  },
+  "organic": {
+    "meaning_cn": "a. 器官的；有机的；组织的；根本的",
+    "part_of_speech": "-"
+  },
+  "organism": {
+    "meaning_cn": "生物；有机体；社会组织；生物[体]",
+    "part_of_speech": "n."
+  },
+  "organization": {
+    "meaning_cn": "组织；结构；团体；体制",
+    "part_of_speech": "n."
+  },
+  "origin": {
+    "meaning_cn": "起源；起因；出身；开端",
+    "part_of_speech": "n."
+  },
+  "original": {
+    "meaning_cn": "a. 最初的；原始的；有创意的；原物",
+    "part_of_speech": "n."
+  },
+  "orlando": {
+    "meaning_cn": "奥兰多（美国城市名；男子名）",
+    "part_of_speech": "n."
+  },
+  "other": {
+    "meaning_cn": "a. 其他的；另外的；从前的；其他的",
+    "part_of_speech": "pron."
+  },
+  "others": {
+    "meaning_cn": "其他人",
+    "part_of_speech": "pron."
+  },
+  "outage": {
+    "meaning_cn": "(水；电；煤)断供；储运损耗",
+    "part_of_speech": "n."
+  },
+  "outcome": {
+    "meaning_cn": "结果；出口",
+    "part_of_speech": "n."
+  },
+  "outdoor": {
+    "meaning_cn": "a. 户外的；屋外的；露天的",
+    "part_of_speech": "-"
+  },
+  "outdoors": {
+    "meaning_cn": "户外；野外活动；在户外；在野外",
+    "part_of_speech": "n."
+  },
+  "output": {
+    "meaning_cn": "输出；产品；产量",
+    "part_of_speech": "n."
+  },
+  "outside": {
+    "meaning_cn": "外面；外表；外界；a. 外面的",
+    "part_of_speech": "n."
+  },
+  "overall": {
+    "meaning_cn": "a. 全部的；全体的；从头至尾的；一切在内的",
+    "part_of_speech": "-"
+  },
+  "overview": {
+    "meaning_cn": "概述；概观；总的看法",
+    "part_of_speech": "n."
+  },
+  "owned": {
+    "meaning_cn": "拥有；承认（own的过去分词）",
+    "part_of_speech": "v."
+  },
+  "owner": {
+    "meaning_cn": "拥有者；物主；所有人；所有者",
+    "part_of_speech": "n."
+  },
+  "owners": {
+    "meaning_cn": "所有者；业主（owner的复数）",
+    "part_of_speech": "n."
+  },
+  "pacific": {
+    "meaning_cn": "太平洋；a. 太平洋的；太平洋沿岸的；爱好和平的",
+    "part_of_speech": "n."
+  },
+  "package": {
+    "meaning_cn": "包裹；套装软件；包；包装用物",
+    "part_of_speech": "n."
+  },
+  "packages": {
+    "meaning_cn": "程序包；包装；包裹（package的复数）",
+    "part_of_speech": "n."
+  },
+  "packet": {
+    "meaning_cn": "小包；一批信件；大量；信息包",
+    "part_of_speech": "n."
+  },
+  "pages": {
+    "meaning_cn": "页数；青年侍从（page的复数）",
+    "part_of_speech": "n."
+  },
+  "panel": {
+    "meaning_cn": "嵌板；仪表板；专题讨论小组；全体陪审员",
+    "part_of_speech": "n."
+  },
+  "paper": {
+    "meaning_cn": "纸；文件；文章；报纸",
+    "part_of_speech": "n."
+  },
+  "papers": {
+    "meaning_cn": "文件；官方文件；票证；证券",
+    "part_of_speech": "n."
+  },
+  "paragraph": {
+    "meaning_cn": "段落；短评；将...分段；分段落",
+    "part_of_speech": "n."
+  },
+  "parallelism": {
+    "meaning_cn": "平行；对应；类似；比拟",
+    "part_of_speech": "n."
+  },
+  "paraphrase": {
+    "meaning_cn": "释义；解述；改写；意译",
+    "part_of_speech": "n."
+  },
+  "parent": {
+    "meaning_cn": "父母；父母亲；根源；父亲",
+    "part_of_speech": "n."
+  },
+  "parents": {
+    "meaning_cn": "父母；双亲（parent的复数）",
+    "part_of_speech": "n."
+  },
+  "paris": {
+    "meaning_cn": "巴黎；重楼属",
+    "part_of_speech": "n."
+  },
+  "parking": {
+    "meaning_cn": "停车；a. 停车的",
+    "part_of_speech": "n."
+  },
+  "parks": {
+    "meaning_cn": "帕克斯（人名）",
+    "part_of_speech": "n."
+  },
+  "parser": {
+    "meaning_cn": "分析程序",
+    "part_of_speech": "-"
+  },
+  "participant": {
+    "meaning_cn": "参加者；参与者；a. 有份的；参加的",
+    "part_of_speech": "n."
+  },
+  "participation": {
+    "meaning_cn": "参与；分享；参股",
+    "part_of_speech": "n."
+  },
+  "parties": {
+    "meaning_cn": "当事人；聚会；党派；政党机关",
+    "part_of_speech": "n."
+  },
+  "partition": {
+    "meaning_cn": "分割；隔离物；隔墙；财产分割",
+    "part_of_speech": "n."
+  },
+  "partner": {
+    "meaning_cn": "合伙人；股东；伙伴；伴侣",
+    "part_of_speech": "n."
+  },
+  "partners": {
+    "meaning_cn": "合作伙伴；合伙人；伙伴（partner的复数形式）",
+    "part_of_speech": "n."
+  },
+  "parts": {
+    "meaning_cn": "零件；部件",
+    "part_of_speech": "n."
+  },
+  "party": {
+    "meaning_cn": "宴会；党；政党；团体",
+    "part_of_speech": "n."
+  },
+  "passed": {
+    "meaning_cn": "a. 已被传递的；已经通过的；已经过去的",
+    "part_of_speech": "-"
+  },
+  "password": {
+    "meaning_cn": "密码；口令；通行手段",
+    "part_of_speech": "n."
+  },
+  "patch": {
+    "meaning_cn": "片；补缀；碎片；斑",
+    "part_of_speech": "n."
+  },
+  "patient": {
+    "meaning_cn": "病人；承受者；a. 忍耐的；容忍的",
+    "part_of_speech": "n."
+  },
+  "patients": {
+    "meaning_cn": "病人（patient的复数形式）",
+    "part_of_speech": "n."
+  },
+  "pattern": {
+    "meaning_cn": "模范；典型；式样；样品",
+    "part_of_speech": "n."
+  },
+  "patterns": {
+    "meaning_cn": "模式（pattern的复数形式）",
+    "part_of_speech": "n."
+  },
+  "pay": {
+    "meaning_cn": "薪资；付款；补偿；支付",
+    "part_of_speech": "n."
+  },
+  "payload": {
+    "meaning_cn": "商务载重；工资负担；净载重量；有效负荷",
+    "part_of_speech": "n."
+  },
+  "payment": {
+    "meaning_cn": "付款；支付的款项(或实物)；偿还；报应",
+    "part_of_speech": "n."
+  },
+  "payments": {
+    "meaning_cn": "惩罚；薪资；支付；付款（payment的复数形式）",
+    "part_of_speech": "n."
+  },
+  "paypal": {
+    "meaning_cn": "贝宝（全球最大的在线支付平台）",
+    "part_of_speech": "n."
+  },
+  "payroll": {
+    "meaning_cn": "工资名单；饷金名单；发放的工资总额；工资表",
+    "part_of_speech": "n."
+  },
+  "peace": {
+    "meaning_cn": "和平；和约；治安；和睦",
+    "part_of_speech": "n."
+  },
+  "pending": {
+    "meaning_cn": "a. 未决定的；待决的；行将发生的；向外伸出的",
+    "part_of_speech": "-"
+  },
+  "people": {
+    "meaning_cn": "人；人民；民族；平民",
+    "part_of_speech": "n."
+  },
+  "pepper": {
+    "meaning_cn": "胡椒粉；胡椒；辣椒；花椒",
+    "part_of_speech": "n."
+  },
+  "percent": {
+    "meaning_cn": "百分比；百分数；部分；百分率",
+    "part_of_speech": "n."
+  },
+  "percentage": {
+    "meaning_cn": "百分比；比率；部分；可能性",
+    "part_of_speech": "n."
+  },
+  "perfect": {
+    "meaning_cn": "完成时；a. 完美的；完好的；理想的",
+    "part_of_speech": "n."
+  },
+  "perform": {
+    "meaning_cn": "进行；履行；完成；执行",
+    "part_of_speech": "vt."
+  },
+  "performance": {
+    "meaning_cn": "施行；工作情况；成绩；行为",
+    "part_of_speech": "n."
+  },
+  "perhaps": {
+    "meaning_cn": "也许；大概",
+    "part_of_speech": "adv."
+  },
+  "period": {
+    "meaning_cn": "时期；节段；节；句点",
+    "part_of_speech": "n."
+  },
+  "permission": {
+    "meaning_cn": "许可；允许；认可",
+    "part_of_speech": "n."
+  },
+  "permit": {
+    "meaning_cn": "许可证；许可；执照；通行证",
+    "part_of_speech": "n."
+  },
+  "person": {
+    "meaning_cn": "人；人身；人称；法人",
+    "part_of_speech": "n."
+  },
+  "personal": {
+    "meaning_cn": "a. 私人的；涉及隐私的；有人性的；人称的",
+    "part_of_speech": "-"
+  },
+  "persons": {
+    "meaning_cn": "人员；人们（person的复数）",
+    "part_of_speech": "n."
+  },
+  "perspective": {
+    "meaning_cn": "远景；透视感；(观察问题的)视角；透视法",
+    "part_of_speech": "n."
+  },
+  "pet": {
+    "meaning_cn": "宠物；受宠爱的人；宠坏的孩子；不悦",
+    "part_of_speech": "n."
+  },
+  "peter": {
+    "meaning_cn": "逐渐消失；逐渐减少",
+    "part_of_speech": "vi."
+  },
+  "pharmacy": {
+    "meaning_cn": "药房；配药学；制药业；药学",
+    "part_of_speech": "n."
+  },
+  "phase": {
+    "meaning_cn": "时期；局面；方面；位相",
+    "part_of_speech": "n."
+  },
+  "phenomenon": {
+    "meaning_cn": "现象；迹象；表现；奇迹",
+    "part_of_speech": "n."
+  },
+  "philosophy": {
+    "meaning_cn": "哲学；人生观；哲学思想；哲理",
+    "part_of_speech": "n."
+  },
+  "phoenix": {
+    "meaning_cn": "凤凰；不死鸟；死而复生的人；完人",
+    "part_of_speech": "n."
+  },
+  "phone": {
+    "meaning_cn": "电话；受话器；耳机；打电话给",
+    "part_of_speech": "n."
+  },
+  "phones": {
+    "meaning_cn": "听筒；电话（phone的复数）",
+    "part_of_speech": "n."
+  },
+  "photo": {
+    "meaning_cn": "相片；照片；逼真的描绘；照相",
+    "part_of_speech": "n."
+  },
+  "photos": {
+    "meaning_cn": "照片；图片；相册（photo的复数形式）",
+    "part_of_speech": "n."
+  },
+  "physical": {
+    "meaning_cn": "a. 身体的；物质的；自然的；物理学的",
+    "part_of_speech": "-"
+  },
+  "physics": {
+    "meaning_cn": "物理学；物理过程；物理现象；物理",
+    "part_of_speech": "n."
+  },
+  "picture": {
+    "meaning_cn": "图画；照片；景色；美丽如画的人(或物)",
+    "part_of_speech": "n."
+  },
+  "pictures": {
+    "meaning_cn": "电影院",
+    "part_of_speech": "n."
+  },
+  "piece": {
+    "meaning_cn": "块；片；篇；碎片",
+    "part_of_speech": "n."
+  },
+  "pieces": {
+    "meaning_cn": "匹头；毛束；件片块个工件零件",
+    "part_of_speech": "n."
+  },
+  "pipeline": {
+    "meaning_cn": "管道；传递途径；管路；管线",
+    "part_of_speech": "n."
+  },
+  "place": {
+    "meaning_cn": "地方；地点；位置；住所",
+    "part_of_speech": "n."
+  },
+  "placed": {
+    "meaning_cn": "放置（place的过去分词形式）",
+    "part_of_speech": "v."
+  },
+  "places": {
+    "meaning_cn": "地点；位置；[数]位数（place的复数）",
+    "part_of_speech": "n."
+  },
+  "plain": {
+    "meaning_cn": "平原；草原；朴实无华的东西；无格式",
+    "part_of_speech": "n."
+  },
+  "planet": {
+    "meaning_cn": "行星；命运星辰；杰出的人；重大影响的事",
+    "part_of_speech": "n."
+  },
+  "planning": {
+    "meaning_cn": "计划的制订；策划；设计；规划",
+    "part_of_speech": "n."
+  },
+  "plans": {
+    "meaning_cn": "计划；规划（plan的复数）",
+    "part_of_speech": "n."
+  },
+  "plant": {
+    "meaning_cn": "植物；作物；工厂；树枝",
+    "part_of_speech": "n."
+  },
+  "plants": {
+    "meaning_cn": "植物；工厂（plant的复数形式）",
+    "part_of_speech": "n."
+  },
+  "plastic": {
+    "meaning_cn": "塑料；可塑体；可塑性物质；a. 塑料的",
+    "part_of_speech": "n."
+  },
+  "plate": {
+    "meaning_cn": "碟；盘子；盆中物；金属板",
+    "part_of_speech": "n."
+  },
+  "platform": {
+    "meaning_cn": "站台；月台；讲台；论坛",
+    "part_of_speech": "n."
+  },
+  "played": {
+    "meaning_cn": "玩耍；演奏；播放；参加竞赛（play的过去分词）",
+    "part_of_speech": "v."
+  },
+  "player": {
+    "meaning_cn": "竞赛者；上场队员；游戏者；演员",
+    "part_of_speech": "n."
+  },
+  "players": {
+    "meaning_cn": "队员；参与者；迷你音碟机；雷射唱盘（player的复数形式）",
+    "part_of_speech": "n."
+  },
+  "playing": {
+    "meaning_cn": "游戏；玩耍；竞技；比赛",
+    "part_of_speech": "n."
+  },
+  "please": {
+    "meaning_cn": "请；使高兴；合...的心意；取悦",
+    "part_of_speech": "adv."
+  },
+  "plugin": {
+    "meaning_cn": "相关插件；插件",
+    "part_of_speech": "n."
+  },
+  "pocket": {
+    "meaning_cn": "口袋；钱袋；钱；容器",
+    "part_of_speech": "n."
+  },
+  "pod": {
+    "meaning_cn": "豆荚；(豆荚状的)保护性外壳；扁豆形矿体；从豆荚中剥出",
+    "part_of_speech": "n."
+  },
+  "poem": {
+    "meaning_cn": "诗；诗般美的事物",
+    "part_of_speech": "n."
+  },
+  "poetry": {
+    "meaning_cn": "诗；韵文；诗歌艺术",
+    "part_of_speech": "n."
+  },
+  "point": {
+    "meaning_cn": "点；小数点；标点；地点",
+    "part_of_speech": "n."
+  },
+  "points": {
+    "meaning_cn": "转轨器；道岔；磅",
+    "part_of_speech": "n."
+  },
+  "poker": {
+    "meaning_cn": "戳的人；拨火棍；纸牌戏；烙制",
+    "part_of_speech": "n."
+  },
+  "police": {
+    "meaning_cn": "警察；警察当局；治安；维持治安",
+    "part_of_speech": "n."
+  },
+  "policies": {
+    "meaning_cn": "政策；保险单（policy的复数）",
+    "part_of_speech": "n."
+  },
+  "policy": {
+    "meaning_cn": "政策；方针；策略；保险单",
+    "part_of_speech": "n."
+  },
+  "politics": {
+    "meaning_cn": "政治；政治学；政见；政治活动",
+    "part_of_speech": "n."
+  },
+  "pollution": {
+    "meaning_cn": "污染；玷污",
+    "part_of_speech": "n."
+  },
+  "popular": {
+    "meaning_cn": "a. 通俗的；流行的；受欢迎的；大众的",
+    "part_of_speech": "-"
+  },
+  "population": {
+    "meaning_cn": "人口；人口数；群体；总体",
+    "part_of_speech": "n."
+  },
+  "portable": {
+    "meaning_cn": "a. 可携带的；可搬运的；可移动的；可移植的",
+    "part_of_speech": "-"
+  },
+  "portal": {
+    "meaning_cn": "入口；大门；a. 肝门的",
+    "part_of_speech": "n."
+  },
+  "position": {
+    "meaning_cn": "位置；地位；身分；形势",
+    "part_of_speech": "n."
+  },
+  "positive": {
+    "meaning_cn": "a. 肯定的；积极的；有把握的；正的",
+    "part_of_speech": "-"
+  },
+  "possible": {
+    "meaning_cn": "a. 可能的；潜在的；合适的；可能性",
+    "part_of_speech": "n."
+  },
+  "post": {
+    "meaning_cn": "柱；杆；准星；邮件",
+    "part_of_speech": "n."
+  },
+  "postal": {
+    "meaning_cn": "a. 邮政的；邮局的；邮政的",
+    "part_of_speech": "-"
+  },
+  "posted": {
+    "meaning_cn": "贴出；布置；通告（post的过去分词）",
+    "part_of_speech": "v."
+  },
+  "poster": {
+    "meaning_cn": "海报；招贴；驿马",
+    "part_of_speech": "n."
+  },
+  "posters": {
+    "meaning_cn": "招贴；海报( poster的复数形式 )；印成的大幅画",
+    "part_of_speech": "n."
+  },
+  "posting": {
+    "meaning_cn": "记入；记录；稿件；邮件",
+    "part_of_speech": "-"
+  },
+  "posts": {
+    "meaning_cn": "标杆；岗位；帖子；邮件（post的复数）",
+    "part_of_speech": "n."
+  },
+  "poverty": {
+    "meaning_cn": "贫穷；贫困；缺乏；贫乏",
+    "part_of_speech": "n."
+  },
+  "power": {
+    "meaning_cn": "力；体力；力量；势力",
+    "part_of_speech": "n."
+  },
+  "powered": {
+    "meaning_cn": "a. 有动力装置的；用动力推动的；产生动力的；产生...动力的",
+    "part_of_speech": "-"
+  },
+  "powerful": {
+    "meaning_cn": "a. 有力的；有权力的；强大的；强力的",
+    "part_of_speech": "-"
+  },
+  "practice": {
+    "meaning_cn": "实践；练习；实行；惯例",
+    "part_of_speech": "n."
+  },
+  "predator": {
+    "meaning_cn": "食肉动物；掠夺者；捕食者",
+    "part_of_speech": "n."
+  },
+  "predict": {
+    "meaning_cn": "预知；预言；预报",
+    "part_of_speech": "v."
+  },
+  "premium": {
+    "meaning_cn": "额外补贴；奖金；奖赏；保险费",
+    "part_of_speech": "n."
+  },
+  "prepared": {
+    "meaning_cn": "a. 准备好的；特制的",
+    "part_of_speech": "-"
+  },
+  "presence": {
+    "meaning_cn": "出席；面前；存在；仪态",
+    "part_of_speech": "n."
+  },
+  "present": {
+    "meaning_cn": "现在；礼品；瞄准；a. 现在的",
+    "part_of_speech": "n."
+  },
+  "presentation": {
+    "meaning_cn": "赠与；描述；介绍；简报",
+    "part_of_speech": "n."
+  },
+  "press": {
+    "meaning_cn": "压；揿；按；人群",
+    "part_of_speech": "n."
+  },
+  "pressure": {
+    "meaning_cn": "压；榨；按；强制",
+    "part_of_speech": "n."
+  },
+  "pretty": {
+    "meaning_cn": "a. 漂亮的；优美的；机灵的；狡猾的",
+    "part_of_speech": "-"
+  },
+  "prevent": {
+    "meaning_cn": "预防；防止；阻止；妨碍",
+    "part_of_speech": "v."
+  },
+  "prevention": {
+    "meaning_cn": "阻止；妨碍；预防",
+    "part_of_speech": "n."
+  },
+  "preview": {
+    "meaning_cn": "事先查看；预览；预演",
+    "part_of_speech": "n."
+  },
+  "previous": {
+    "meaning_cn": "a. 早先的；前面的；过急的；以前的",
+    "part_of_speech": "-"
+  },
+  "prey": {
+    "meaning_cn": "被掠食者；牺牲者；捕食",
+    "part_of_speech": "n."
+  },
+  "price": {
+    "meaning_cn": "价格；代价；价值；定...的价格",
+    "part_of_speech": "n."
+  },
+  "prices": {
+    "meaning_cn": "价格（price的复数）",
+    "part_of_speech": "n."
+  },
+  "pricing": {
+    "meaning_cn": "定价；标价",
+    "part_of_speech": "-"
+  },
+  "primary": {
+    "meaning_cn": "最主要者；原色；a. 主要的；初期的",
+    "part_of_speech": "n."
+  },
+  "prime": {
+    "meaning_cn": "最佳部分；初期；全盛期；a. 主要的",
+    "part_of_speech": "n."
+  },
+  "prince": {
+    "meaning_cn": "王子；亲王；国君；贵族",
+    "part_of_speech": "n."
+  },
+  "print": {
+    "meaning_cn": "打印；版；印刷物；痕迹",
+    "part_of_speech": "n."
+  },
+  "printed": {
+    "meaning_cn": "a. 印刷的；印好的；印花样的；印刷的",
+    "part_of_speech": "-"
+  },
+  "printer": {
+    "meaning_cn": "印刷工；打印机",
+    "part_of_speech": "n."
+  },
+  "printers": {
+    "meaning_cn": "打印机；印刷厂；印花平纹坯布（printer的复数）",
+    "part_of_speech": "n."
+  },
+  "printing": {
+    "meaning_cn": "印刷；印刷术；印花；打印",
+    "part_of_speech": "n."
+  },
+  "prints": {
+    "meaning_cn": "打印；图片；相片；报刊",
+    "part_of_speech": "n."
+  },
+  "prior": {
+    "meaning_cn": "a. 更重要的；较早的；在先的；小隐修院院长",
+    "part_of_speech": "n."
+  },
+  "priority": {
+    "meaning_cn": "优先权；优先；优先级",
+    "part_of_speech": "n."
+  },
+  "privacy": {
+    "meaning_cn": "隐私；隐居；秘密；个人保密权",
+    "part_of_speech": "n."
+  },
+  "private": {
+    "meaning_cn": "a. 私人的；秘密的；私立的；隐蔽的",
+    "part_of_speech": "-"
+  },
+  "probability": {
+    "meaning_cn": "可能性；或然率；几率；概率",
+    "part_of_speech": "n."
+  },
+  "probably": {
+    "meaning_cn": "大概；或许",
+    "part_of_speech": "adv."
+  },
+  "problem": {
+    "meaning_cn": "问题；难题；a. 成问题的；难处理的",
+    "part_of_speech": "n."
+  },
+  "problems": {
+    "meaning_cn": "问题；难题（problem的复数）",
+    "part_of_speech": "n."
+  },
+  "process": {
+    "meaning_cn": "程序；进行；过程；加工",
+    "part_of_speech": "n."
+  },
+  "procurement": {
+    "meaning_cn": "获得；采购",
+    "part_of_speech": "n."
+  },
+  "produce": {
+    "meaning_cn": "生产品；物产；后代；产生",
+    "part_of_speech": "n."
+  },
+  "produced": {
+    "meaning_cn": "创作；产生；制造（produce的过去式和过去分词）",
+    "part_of_speech": "v."
+  },
+  "product": {
+    "meaning_cn": "产品；结果；乘积；生产物",
+    "part_of_speech": "n."
+  },
+  "productivity": {
+    "meaning_cn": "生产力；生产率；生产能力",
+    "part_of_speech": "n."
+  },
+  "products": {
+    "meaning_cn": "产品；商品（product的复数）",
+    "part_of_speech": "n."
+  },
+  "professor": {
+    "meaning_cn": "教授",
+    "part_of_speech": "n."
+  },
+  "profile": {
+    "meaning_cn": "侧面；轮廓；传略；描绘...轮廓",
+    "part_of_speech": "n."
+  },
+  "profiles": {
+    "meaning_cn": "配置文件；个人档案；剖面图（profile的复数）",
+    "part_of_speech": "n."
+  },
+  "profit": {
+    "meaning_cn": "利润；赢利；利益；有益",
+    "part_of_speech": "n."
+  },
+  "program": {
+    "meaning_cn": "节目；节目单；程序；纲要",
+    "part_of_speech": "n."
+  },
+  "programs": {
+    "meaning_cn": "程序；程序集；所有程式（program的复数）",
+    "part_of_speech": "n."
+  },
+  "progress": {
+    "meaning_cn": "进步；发展；前进；进行",
+    "part_of_speech": "n."
+  },
+  "project": {
+    "meaning_cn": "计划；设计；事业；投掷",
+    "part_of_speech": "n."
+  },
+  "projects": {
+    "meaning_cn": "项目；企划；工程（project的复数）",
+    "part_of_speech": "n."
+  },
+  "promise": {
+    "meaning_cn": "诺言；约定的事情；有指望；允诺",
+    "part_of_speech": "n."
+  },
+  "promote": {
+    "meaning_cn": "促进；晋升；创办；推销",
+    "part_of_speech": "vt."
+  },
+  "pronunciation": {
+    "meaning_cn": "发音；读法",
+    "part_of_speech": "n."
+  },
+  "proof": {
+    "meaning_cn": "证据；证明；试验；检验",
+    "part_of_speech": "n."
+  },
+  "proper": {
+    "meaning_cn": "a. 适当的；固有的；高尚的；专属的",
+    "part_of_speech": "-"
+  },
+  "property": {
+    "meaning_cn": "财产；所有权；性质；属性",
+    "part_of_speech": "n."
+  },
+  "proportion": {
+    "meaning_cn": "比例；比率；均衡；部分",
+    "part_of_speech": "n."
+  },
+  "proposal": {
+    "meaning_cn": "提议；计划；求婚；提案",
+    "part_of_speech": "n."
+  },
+  "propose": {
+    "meaning_cn": "计划；打算；建议；提议",
+    "part_of_speech": "vt."
+  },
+  "proposed": {
+    "meaning_cn": "a. 被提议的；所推荐的",
+    "part_of_speech": "-"
+  },
+  "props": {
+    "meaning_cn": "小道具；支柱；后盾（prop的复数）",
+    "part_of_speech": "n."
+  },
+  "protect": {
+    "meaning_cn": "防卫；保护；警戒；庇护",
+    "part_of_speech": "vt."
+  },
+  "protein": {
+    "meaning_cn": "蛋白质；a. 蛋白质的",
+    "part_of_speech": "n."
+  },
+  "protocol": {
+    "meaning_cn": "草案；礼仪；协议；拟定",
+    "part_of_speech": "n."
+  },
+  "provide": {
+    "meaning_cn": "提供；供应；规定；预备",
+    "part_of_speech": "vt."
+  },
+  "provided": {
+    "meaning_cn": "倘若；以...为条件",
+    "part_of_speech": "conj."
+  },
+  "provider": {
+    "meaning_cn": "供应者；供养人；伙食承办人；提供器",
+    "part_of_speech": "n."
+  },
+  "provides": {
+    "meaning_cn": "提供；供给；供应( provide的第三人称单数 )；规定",
+    "part_of_speech": "v."
+  },
+  "proxy": {
+    "meaning_cn": "代理；代理人；委托书；代表权",
+    "part_of_speech": "n."
+  },
+  "psychology": {
+    "meaning_cn": "心理学；心理状态",
+    "part_of_speech": "n."
+  },
+  "public": {
+    "meaning_cn": "公众；民众；a. 公众的；公共的",
+    "part_of_speech": "n."
+  },
+  "purchase": {
+    "meaning_cn": "购买；购买品；紧握；绞辘",
+    "part_of_speech": "n."
+  },
+  "purpose": {
+    "meaning_cn": "目的；意向；决心；用途",
+    "part_of_speech": "n."
+  },
+  "purposes": {
+    "meaning_cn": "目的；意志（purpose的复数形式）",
+    "part_of_speech": "n."
+  },
+  "python": {
+    "meaning_cn": "大蟒；巨蟒",
+    "part_of_speech": "n."
+  },
+  "quality": {
+    "meaning_cn": "品质；特性；才能；质量",
+    "part_of_speech": "n."
+  },
+  "quantity": {
+    "meaning_cn": "量；数量；总量",
+    "part_of_speech": "n."
+  },
+  "quarter": {
+    "meaning_cn": "四分之一；一刻钟；季度；地区",
+    "part_of_speech": "n."
+  },
+  "quarterly": {
+    "meaning_cn": "a. 季度的；按季度的；每季的；按季",
+    "part_of_speech": "adv."
+  },
+  "queen": {
+    "meaning_cn": "王后；女王；立为女王；做女王",
+    "part_of_speech": "n."
+  },
+  "query": {
+    "meaning_cn": "疑问；疑问号；质问；查询",
+    "part_of_speech": "n."
+  },
+  "question": {
+    "meaning_cn": "问题；询问；审问；怀疑",
+    "part_of_speech": "n."
+  },
+  "queue": {
+    "meaning_cn": "辫子；一队人；队列；使排队",
+    "part_of_speech": "n."
+  },
+  "quick": {
+    "meaning_cn": "a. 快的；迅速的；敏捷的；灵敏的",
+    "part_of_speech": "-"
+  },
+  "quickly": {
+    "meaning_cn": "很快地",
+    "part_of_speech": "adv."
+  },
+  "quiet": {
+    "meaning_cn": "安静；闲适；平静；a. 安静的",
+    "part_of_speech": "n."
+  },
+  "quite": {
+    "meaning_cn": "相当；完全；十分",
+    "part_of_speech": "adv."
+  },
+  "quiz": {
+    "meaning_cn": "考查；课堂测验；恶作剧；智力测验",
+    "part_of_speech": "n."
+  },
+  "quotation": {
+    "meaning_cn": "引用语；语录；牌价；报价",
+    "part_of_speech": "n."
+  },
+  "quote": {
+    "meaning_cn": "引用；引述；举证；报(价)",
+    "part_of_speech": "n."
+  },
+  "quotes": {
+    "meaning_cn": "引用；引号；报价（quote的复数）",
+    "part_of_speech": "n."
+  },
+  "race": {
+    "meaning_cn": "种族；人种；赛跑；比赛",
+    "part_of_speech": "n."
+  },
+  "racing": {
+    "meaning_cn": "赛马；赛车；空转；急转",
+    "part_of_speech": "n."
+  },
+  "radio": {
+    "meaning_cn": "无线电；收音机；无线电报；无线电广播",
+    "part_of_speech": "n."
+  },
+  "rainy": {
+    "meaning_cn": "a. 下雨的；多雨的",
+    "part_of_speech": "-"
+  },
+  "raised": {
+    "meaning_cn": "a. 凸起的；浮雕的；发酵的；隆起的",
+    "part_of_speech": "-"
+  },
+  "random": {
+    "meaning_cn": "随意；随机；a. 任意的；随便的",
+    "part_of_speech": "n."
+  },
+  "range": {
+    "meaning_cn": "排；行；山脉；范围",
+    "part_of_speech": "n."
+  },
+  "rated": {
+    "meaning_cn": "额定的",
+    "part_of_speech": "-"
+  },
+  "rates": {
+    "meaning_cn": "比率；价格；等级（rate的复数形式）",
+    "part_of_speech": "n."
+  },
+  "rather": {
+    "meaning_cn": "宁可；稍微；相当",
+    "part_of_speech": "adv."
+  },
+  "rating": {
+    "meaning_cn": "等级；额定功率；责骂；等级评定",
+    "part_of_speech": "n."
+  },
+  "ratings": {
+    "meaning_cn": "评级；等级（rating的复数形式）",
+    "part_of_speech": "n."
+  },
+  "ratio": {
+    "meaning_cn": "比；比率；比例",
+    "part_of_speech": "n."
+  },
+  "reach": {
+    "meaning_cn": "伸出；延伸；区域；范围",
+    "part_of_speech": "n."
+  },
+  "react": {
+    "meaning_cn": "起反应；起作用；反攻；应答",
+    "part_of_speech": "vi."
+  },
+  "read": {
+    "meaning_cn": "读；阅读；理解；a. 有学问的",
+    "part_of_speech": "v."
+  },
+  "reader": {
+    "meaning_cn": "读者；读物；文选；校对人",
+    "part_of_speech": "n."
+  },
+  "readers": {
+    "meaning_cn": "读者；读物（reader的复数形式）",
+    "part_of_speech": "n."
+  },
+  "reading": {
+    "meaning_cn": "阅读；知识；读物；a. 阅读的",
+    "part_of_speech": "n."
+  },
+  "ready": {
+    "meaning_cn": "预备好的状态；现款；a. 准备好的；备用的",
+    "part_of_speech": "n."
+  },
+  "reality": {
+    "meaning_cn": "实在；事实；实体；逼真",
+    "part_of_speech": "n."
+  },
+  "really": {
+    "meaning_cn": "实际上；真实地；实在",
+    "part_of_speech": "adv."
+  },
+  "reason": {
+    "meaning_cn": "理由；原因；理智；道理",
+    "part_of_speech": "n."
+  },
+  "reasons": {
+    "meaning_cn": "理由；理智；原因（reason的复数）",
+    "part_of_speech": "n."
+  },
+  "rebase": {
+    "meaning_cn": "垫底",
+    "part_of_speech": "-"
+  },
+  "receipt": {
+    "meaning_cn": "收据；收入；收到；开...的收据",
+    "part_of_speech": "n."
+  },
+  "receive": {
+    "meaning_cn": "收到；接到；得到；接待",
+    "part_of_speech": "vt."
+  },
+  "received": {
+    "meaning_cn": "a. 被一般承认的；公认的",
+    "part_of_speech": "-"
+  },
+  "recent": {
+    "meaning_cn": "a. 最近的；近代的；最新的；最近的",
+    "part_of_speech": "-"
+  },
+  "recently": {
+    "meaning_cn": "最近",
+    "part_of_speech": "adv."
+  },
+  "recipe": {
+    "meaning_cn": "食谱；处方；秘诀；取(处方头语)",
+    "part_of_speech": "n."
+  },
+  "recipes": {
+    "meaning_cn": "烹饪法( recipe的名词复数 )；食谱；方法；秘诀",
+    "part_of_speech": "n."
+  },
+  "recommend": {
+    "meaning_cn": "推荐；介绍；劝告；使受欢迎",
+    "part_of_speech": "vt."
+  },
+  "recommendation": {
+    "meaning_cn": "推荐；介绍；推荐信；劝告",
+    "part_of_speech": "n."
+  },
+  "record": {
+    "meaning_cn": "记录；履历；档案；审判记录",
+    "part_of_speech": "n."
+  },
+  "recorded": {
+    "meaning_cn": "a. 记录的",
+    "part_of_speech": "-"
+  },
+  "records": {
+    "meaning_cn": "记录；录音；唱片；档案（record的复数形式）",
+    "part_of_speech": "n."
+  },
+  "recovery": {
+    "meaning_cn": "恢复；复原；痊愈；重获",
+    "part_of_speech": "n."
+  },
+  "recruiter": {
+    "meaning_cn": "招聘人员；征兵人员",
+    "part_of_speech": "n."
+  },
+  "recycle": {
+    "meaning_cn": "使再循环；重新利用；再制；再循环",
+    "part_of_speech": "vt."
+  },
+  "reduce": {
+    "meaning_cn": "减少；分解；降低；使衰退",
+    "part_of_speech": "vt."
+  },
+  "reduced": {
+    "meaning_cn": "a. 减少的；简化的；缩减的",
+    "part_of_speech": "-"
+  },
+  "reducer": {
+    "meaning_cn": "渐缩管；缩减者；还原剂；变径段",
+    "part_of_speech": "n."
+  },
+  "refer": {
+    "meaning_cn": "提交；归诸于；把...提交；使求助于",
+    "part_of_speech": "vt."
+  },
+  "referred": {
+    "meaning_cn": "归类；谈及；送交；参考",
+    "part_of_speech": "v."
+  },
+  "refrigerator": {
+    "meaning_cn": "电冰箱；冷藏库；冷冻机；致冷器",
+    "part_of_speech": "n."
+  },
+  "refund": {
+    "meaning_cn": "偿还；付还；偿还借款；归还",
+    "part_of_speech": "n."
+  },
+  "region": {
+    "meaning_cn": "区域；地带；地区；领域",
+    "part_of_speech": "n."
+  },
+  "regional": {
+    "meaning_cn": "a. 地方的；地域性的；区的；部位的",
+    "part_of_speech": "-"
+  },
+  "regions": {
+    "meaning_cn": "地区；地域；领域（region的复数）",
+    "part_of_speech": "n."
+  },
+  "register": {
+    "meaning_cn": "寄存器；记录；登记簿；注册",
+    "part_of_speech": "n."
+  },
+  "registrar": {
+    "meaning_cn": "记录者；登记者；登记官员；登记员",
+    "part_of_speech": "n."
+  },
+  "registry": {
+    "meaning_cn": "登记处；登记名册；登录库",
+    "part_of_speech": "n."
+  },
+  "regular": {
+    "meaning_cn": "a. 规则的；常例的；有秩序的；整齐的",
+    "part_of_speech": "-"
+  },
+  "regulate": {
+    "meaning_cn": "管理；控制；调节；调整",
+    "part_of_speech": "vt."
+  },
+  "regulation": {
+    "meaning_cn": "规则；管理；调整；规章",
+    "part_of_speech": "n."
+  },
+  "reimburse": {
+    "meaning_cn": "付还；偿还；赔偿；偿付",
+    "part_of_speech": "vt."
+  },
+  "rejection": {
+    "meaning_cn": "拒绝；抛弃；驳回；被抛弃的东西",
+    "part_of_speech": "n."
+  },
+  "related": {
+    "meaning_cn": "a. 讲述的；叙述的；有关系的；有关联的",
+    "part_of_speech": "-"
+  },
+  "relative": {
+    "meaning_cn": "亲戚；关系词；a. 有关系的；相对的",
+    "part_of_speech": "n."
+  },
+  "release": {
+    "meaning_cn": "释放；发泄；豁免；发行",
+    "part_of_speech": "n."
+  },
+  "released": {
+    "meaning_cn": "已发布；释放（release的过去式）",
+    "part_of_speech": "v."
+  },
+  "releases": {
+    "meaning_cn": "释放；豁免；发泄（release的复数形式）",
+    "part_of_speech": "n."
+  },
+  "relevant": {
+    "meaning_cn": "a. 有关联的；有关系的；适当的；相应的",
+    "part_of_speech": "-"
+  },
+  "reliability": {
+    "meaning_cn": "信度；可靠性",
+    "part_of_speech": "n."
+  },
+  "relief": {
+    "meaning_cn": "减轻；解除；救济；安慰",
+    "part_of_speech": "n."
+  },
+  "religion": {
+    "meaning_cn": "宗教；信仰；宗教信仰",
+    "part_of_speech": "n."
+  },
+  "remain": {
+    "meaning_cn": "保持；逗留；剩余；停留",
+    "part_of_speech": "vi."
+  },
+  "remains": {
+    "meaning_cn": "剩余物；废墟；残余；遗体",
+    "part_of_speech": "n."
+  },
+  "remember": {
+    "meaning_cn": "记得；回忆起；记住；铭记",
+    "part_of_speech": "vt."
+  },
+  "reminder": {
+    "meaning_cn": "提醒的人；暗示；催单",
+    "part_of_speech": "n."
+  },
+  "remote": {
+    "meaning_cn": "a. 遥远的；偏僻的；疏远的；微少的",
+    "part_of_speech": "-"
+  },
+  "removal": {
+    "meaning_cn": "移动；移居；迁移；排除",
+    "part_of_speech": "n."
+  },
+  "remove": {
+    "meaning_cn": "移动；调动；除去；迁移",
+    "part_of_speech": "vt."
+  },
+  "removed": {
+    "meaning_cn": "a. 离开的；间隔的；远离的；拆除的",
+    "part_of_speech": "-"
+  },
+  "rendering": {
+    "meaning_cn": "翻译；表现；描写；表演",
+    "part_of_speech": "n."
+  },
+  "renewable": {
+    "meaning_cn": "a. 可更新的；可恢复的；可继续的；可换新的",
+    "part_of_speech": "-"
+  },
+  "renewal": {
+    "meaning_cn": "更新；革新；复兴；恢复",
+    "part_of_speech": "n."
+  },
+  "rental": {
+    "meaning_cn": "租费；租金收入；a. 租赁的；收取租金的",
+    "part_of_speech": "n."
+  },
+  "rentals": {
+    "meaning_cn": "住房出租；租金收入（rental的复数形式）",
+    "part_of_speech": "n."
+  },
+  "reopened": {
+    "meaning_cn": "重新开始( reopen的过去式和过去分词 )；再开；揭旧疮疤；重提伤心事",
+    "part_of_speech": "v."
+  },
+  "repair": {
+    "meaning_cn": "修理；补救；修复；修补",
+    "part_of_speech": "n."
+  },
+  "replication": {
+    "meaning_cn": "回答；反响；复制；第二次答辩",
+    "part_of_speech": "n."
+  },
+  "replies": {
+    "meaning_cn": "回复；回答；答复（reply的复数形式）",
+    "part_of_speech": "n."
+  },
+  "reply": {
+    "meaning_cn": "答复；回答；答辩；回击",
+    "part_of_speech": "n."
+  },
+  "report": {
+    "meaning_cn": "报告；报道；传说；案情报告",
+    "part_of_speech": "n."
+  },
+  "reported": {
+    "meaning_cn": "a. 报告的；据报道的",
+    "part_of_speech": "-"
+  },
+  "reports": {
+    "meaning_cn": "报表；专题；报告（report的复数）",
+    "part_of_speech": "n."
+  },
+  "repository": {
+    "meaning_cn": "贮藏所；贮物器；仓库；博物馆",
+    "part_of_speech": "n."
+  },
+  "reproduction": {
+    "meaning_cn": "再现；复制；生殖；繁殖",
+    "part_of_speech": "n."
+  },
+  "republic": {
+    "meaning_cn": "共和国；共和政体；团体；界",
+    "part_of_speech": "n."
+  },
+  "request": {
+    "meaning_cn": "请求；需要；申请书；要求",
+    "part_of_speech": "n."
+  },
+  "requests": {
+    "meaning_cn": "要求( request的名词复数 )；需要；所请求的事物；申请书",
+    "part_of_speech": "n."
+  },
+  "require": {
+    "meaning_cn": "需要；命令；要求",
+    "part_of_speech": "vt."
+  },
+  "required": {
+    "meaning_cn": "a. 必需的",
+    "part_of_speech": "-"
+  },
+  "requirement": {
+    "meaning_cn": "需求；必要条件；要求；合同要求",
+    "part_of_speech": "n."
+  },
+  "requires": {
+    "meaning_cn": "需要；要求；需求（require的复数）",
+    "part_of_speech": "n."
+  },
+  "research": {
+    "meaning_cn": "研究；调查；考察",
+    "part_of_speech": "n."
+  },
+  "reserve": {
+    "meaning_cn": "储备品；贮量；后备军；自然保护区",
+    "part_of_speech": "n."
+  },
+  "reserved": {
+    "meaning_cn": "a. 保留的；预备的；预定的；腼腆的",
+    "part_of_speech": "-"
+  },
+  "resort": {
+    "meaning_cn": "度假胜地；手段；凭借；常去之地",
+    "part_of_speech": "n."
+  },
+  "resource": {
+    "meaning_cn": "资源；财力；办法；策略",
+    "part_of_speech": "n."
+  },
+  "respect": {
+    "meaning_cn": "尊敬；尊重；问候；注意",
+    "part_of_speech": "n."
+  },
+  "respond": {
+    "meaning_cn": "以...回答；回答；响应；回报",
+    "part_of_speech": "vt."
+  },
+  "response": {
+    "meaning_cn": "反应；回答；响应；应答",
+    "part_of_speech": "n."
+  },
+  "responsibility": {
+    "meaning_cn": "责任；职责；负担；可靠性",
+    "part_of_speech": "n."
+  },
+  "restaurant": {
+    "meaning_cn": "餐馆；饭店",
+    "part_of_speech": "n."
+  },
+  "restore": {
+    "meaning_cn": "回复；恢复；归还；修补",
+    "part_of_speech": "vt."
+  },
+  "result": {
+    "meaning_cn": "结果；成绩；答案；产生",
+    "part_of_speech": "n."
+  },
+  "results": {
+    "meaning_cn": "结果；成绩（result的复数）",
+    "part_of_speech": "n."
+  },
+  "retail": {
+    "meaning_cn": "零售；a. 零售的；详述；传播",
+    "part_of_speech": "n."
+  },
+  "retrospective": {
+    "meaning_cn": "a. 回顾的；怀旧的；在后面的；回顾展",
+    "part_of_speech": "n."
+  },
+  "return": {
+    "meaning_cn": "回来；返回；来回票；归还",
+    "part_of_speech": "n."
+  },
+  "returned": {
+    "meaning_cn": "a. 被送回的；归来的；已回来的；已归还的",
+    "part_of_speech": "-"
+  },
+  "returns": {
+    "meaning_cn": "回报；收益；退货（return的复数）",
+    "part_of_speech": "n."
+  },
+  "revenue": {
+    "meaning_cn": "收入；岁入；税收；税务局",
+    "part_of_speech": "n."
+  },
+  "review": {
+    "meaning_cn": "检讨；复习；回顾；检阅",
+    "part_of_speech": "n."
+  },
+  "reviewed": {
+    "meaning_cn": "评估；复习；评论；检讨（review的过去分词形式）",
+    "part_of_speech": "v."
+  },
+  "reviews": {
+    "meaning_cn": "评论；综述；复核；复习（review的复数）",
+    "part_of_speech": "n."
+  },
+  "revised": {
+    "meaning_cn": "a. 改进的",
+    "part_of_speech": "-"
+  },
+  "revision": {
+    "meaning_cn": "校订；修正；修订本；修订版",
+    "part_of_speech": "n."
+  },
+  "rice": {
+    "meaning_cn": "米；米饭；稻；将...压成米粒状",
+    "part_of_speech": "n."
+  },
+  "richard": {
+    "meaning_cn": "理查德（男子名）",
+    "part_of_speech": "n."
+  },
+  "right": {
+    "meaning_cn": "权利；右边；正义；右派",
+    "part_of_speech": "n."
+  },
+  "rights": {
+    "meaning_cn": "正当权利；权限；权限程序",
+    "part_of_speech": "n."
+  },
+  "rings": {
+    "meaning_cn": "吊环（ring的复数）",
+    "part_of_speech": "n."
+  },
+  "risk": {
+    "meaning_cn": "冒险；危险；保险额；冒...的危险",
+    "part_of_speech": "n."
+  },
+  "river": {
+    "meaning_cn": "河；江；河流；江河",
+    "part_of_speech": "n."
+  },
+  "roadmap": {
+    "meaning_cn": "路标",
+    "part_of_speech": "n."
+  },
+  "robert": {
+    "meaning_cn": "警察",
+    "part_of_speech": "-"
+  },
+  "rollback": {
+    "meaning_cn": "回降；卷回；推回去；滚返",
+    "part_of_speech": "n."
+  },
+  "rollout": {
+    "meaning_cn": "首次展示",
+    "part_of_speech": "n."
+  },
+  "room": {
+    "meaning_cn": "房间；空位；场所；住宿",
+    "part_of_speech": "n."
+  },
+  "rooms": {
+    "meaning_cn": "空间；房间（room的复数）",
+    "part_of_speech": "n."
+  },
+  "round": {
+    "meaning_cn": "圆；圆形物；巡回；循环",
+    "part_of_speech": "n."
+  },
+  "route": {
+    "meaning_cn": "路径；途径；路线；确定路线",
+    "part_of_speech": "n."
+  },
+  "row": {
+    "meaning_cn": "排；行；街道；划船",
+    "part_of_speech": "n."
+  },
+  "royal": {
+    "meaning_cn": "王室；皇族；a. 王室的；皇家的",
+    "part_of_speech": "n."
+  },
+  "rules": {
+    "meaning_cn": "规则；条例（rule的复数形式）",
+    "part_of_speech": "n."
+  },
+  "running": {
+    "meaning_cn": "赛跑；流出；运转；a. 流动的",
+    "part_of_speech": "n."
+  },
+  "runtime": {
+    "meaning_cn": "执行时间；运行时间",
+    "part_of_speech": "n."
+  },
+  "rural": {
+    "meaning_cn": "a. 乡下的；田园的；乡村风味的；农村的",
+    "part_of_speech": "-"
+  },
+  "russia": {
+    "meaning_cn": "俄国；俄罗斯；苏联",
+    "part_of_speech": "n."
+  },
+  "russian": {
+    "meaning_cn": "俄国人；俄语；a. 俄国的；俄语的",
+    "part_of_speech": "n."
+  },
+  "rust": {
+    "meaning_cn": "锈；生锈；衰退；使生锈",
+    "part_of_speech": "n."
+  },
+  "safety": {
+    "meaning_cn": "安全；保险；平安；保安设备",
+    "part_of_speech": "n."
+  },
+  "saint": {
+    "meaning_cn": "圣徒；圣人；a. 神圣的；自动积分程序符号",
+    "part_of_speech": "n."
+  },
+  "salad": {
+    "meaning_cn": "色拉",
+    "part_of_speech": "n."
+  },
+  "sales": {
+    "meaning_cn": "a. 销售的；销售",
+    "part_of_speech": "-"
+  },
+  "salt": {
+    "meaning_cn": "盐；风趣；刺激；a. 含盐的",
+    "part_of_speech": "n."
+  },
+  "sample": {
+    "meaning_cn": "样品；范例；样本；抽样",
+    "part_of_speech": "n."
+  },
+  "samples": {
+    "meaning_cn": "样品；采样；例子（suffer的复数形式）",
+    "part_of_speech": "n."
+  },
+  "samsung": {
+    "meaning_cn": "三星电子（韩国电子公司）",
+    "part_of_speech": "n."
+  },
+  "sandwich": {
+    "meaning_cn": "三明治；夹心面包；夹层板；插入",
+    "part_of_speech": "n."
+  },
+  "santa": {
+    "meaning_cn": "圣诞老人（等于Santa Claus）",
+    "part_of_speech": "n."
+  },
+  "saturday": {
+    "meaning_cn": "星期六",
+    "part_of_speech": "n."
+  },
+  "savings": {
+    "meaning_cn": "储蓄；存款；储金",
+    "part_of_speech": "n."
+  },
+  "saying": {
+    "meaning_cn": "叙述；话；说；言论",
+    "part_of_speech": "n."
+  },
+  "scalability": {
+    "meaning_cn": "可伸缩性",
+    "part_of_speech": "-"
+  },
+  "scale": {
+    "meaning_cn": "刻度；衡量；比例；比例尺",
+    "part_of_speech": "n."
+  },
+  "scene": {
+    "meaning_cn": "场；情景；镜头；发生地点",
+    "part_of_speech": "n."
+  },
+  "schedule": {
+    "meaning_cn": "时间表；一览表；计划表；议事日程",
+    "part_of_speech": "n."
+  },
+  "scheduler": {
+    "meaning_cn": "制表人；程序机；调度程序",
+    "part_of_speech": "n."
+  },
+  "schema": {
+    "meaning_cn": "概要；图解；略图；模式",
+    "part_of_speech": "n."
+  },
+  "scheme": {
+    "meaning_cn": "方案；计划；组合；系统",
+    "part_of_speech": "n."
+  },
+  "scholarship": {
+    "meaning_cn": "学问；学术成就；奖学金",
+    "part_of_speech": "n."
+  },
+  "school": {
+    "meaning_cn": "学校；鱼群；门派；学派",
+    "part_of_speech": "n."
+  },
+  "schools": {
+    "meaning_cn": "学校（school的复数形式）",
+    "part_of_speech": "n."
+  },
+  "science": {
+    "meaning_cn": "科学；学科；学问；自然科学",
+    "part_of_speech": "n."
+  },
+  "sciences": {
+    "meaning_cn": "科学（science的复数）",
+    "part_of_speech": "n."
+  },
+  "scope": {
+    "meaning_cn": "范围；机会；广度；眼界",
+    "part_of_speech": "n."
+  },
+  "score": {
+    "meaning_cn": "得分；抓痕；二十个；刻痕",
+    "part_of_speech": "n."
+  },
+  "scotland": {
+    "meaning_cn": "苏格兰",
+    "part_of_speech": "n."
+  },
+  "scott": {
+    "meaning_cn": "斯科特（男子名）",
+    "part_of_speech": "n."
+  },
+  "screen": {
+    "meaning_cn": "幕；银幕；屏风；掩蔽物",
+    "part_of_speech": "n."
+  },
+  "script": {
+    "meaning_cn": "手迹；手稿；正本；手写体",
+    "part_of_speech": "n."
+  },
+  "scrum": {
+    "meaning_cn": "(橄榄球中)扭夺；并列争球",
+    "part_of_speech": "n."
+  },
+  "sdk": {
+    "meaning_cn": "系统设计成套工具",
+    "part_of_speech": "-"
+  },
+  "search": {
+    "meaning_cn": "搜寻；查究；搜查；探求",
+    "part_of_speech": "n."
+  },
+  "searches": {
+    "meaning_cn": "检索；搜索（search的复数）",
+    "part_of_speech": "n."
+  },
+  "season": {
+    "meaning_cn": "季节；时节；当令期；时期",
+    "part_of_speech": "n."
+  },
+  "seattle": {
+    "meaning_cn": "西雅图",
+    "part_of_speech": "n."
+  },
+  "second": {
+    "meaning_cn": "秒；瞬间；第二名；支持者",
+    "part_of_speech": "n."
+  },
+  "seconds": {
+    "meaning_cn": "次级品；二等品",
+    "part_of_speech": "n."
+  },
+  "secret": {
+    "meaning_cn": "秘密；机密；秘诀；秘方",
+    "part_of_speech": "n."
+  },
+  "section": {
+    "meaning_cn": "区段；部分；区域；节",
+    "part_of_speech": "n."
+  },
+  "sections": {
+    "meaning_cn": "截面；节段；型材（section的复数）",
+    "part_of_speech": "n."
+  },
+  "sector": {
+    "meaning_cn": "扇形；部门；部分；函数尺",
+    "part_of_speech": "n."
+  },
+  "secure": {
+    "meaning_cn": "a. 无虑的；安心的；安全的；可靠的",
+    "part_of_speech": "-"
+  },
+  "security": {
+    "meaning_cn": "安全；安全性；防护物；保安",
+    "part_of_speech": "n."
+  },
+  "seeing": {
+    "meaning_cn": "视觉；视力；观看；鉴于",
+    "part_of_speech": "n."
+  },
+  "seeking": {
+    "meaning_cn": "查找；寻找；故障检查",
+    "part_of_speech": "-"
+  },
+  "seems": {
+    "meaning_cn": "好像；仿佛（ seem的第三人称单数 ）",
+    "part_of_speech": "v."
+  },
+  "select": {
+    "meaning_cn": "a. 挑选出来的；极好的；选择；挑选",
+    "part_of_speech": "v."
+  },
+  "selected": {
+    "meaning_cn": "a. 挑选出来的；精选的；被选的",
+    "part_of_speech": "-"
+  },
+  "selection": {
+    "meaning_cn": "选择；选文；精选品；淘汰",
+    "part_of_speech": "n."
+  },
+  "sell": {
+    "meaning_cn": "卖；背叛；销售；出卖",
+    "part_of_speech": "vt."
+  },
+  "seller": {
+    "meaning_cn": "销售者；卖方",
+    "part_of_speech": "n."
+  },
+  "sellers": {
+    "meaning_cn": "塞勒斯（姓氏）",
+    "part_of_speech": "n."
+  },
+  "selling": {
+    "meaning_cn": "a. 卖的；销路好的；出售的；卖盘",
+    "part_of_speech": "-"
+  },
+  "semantic": {
+    "meaning_cn": "a. 语义的；语义",
+    "part_of_speech": "-"
+  },
+  "semaphore": {
+    "meaning_cn": "信号；臂板信号；旗语；用信号联络",
+    "part_of_speech": "n."
+  },
+  "seminar": {
+    "meaning_cn": "研究班；专题讨论会；讨论会；专家讨论会",
+    "part_of_speech": "n."
+  },
+  "senate": {
+    "meaning_cn": "参议院；立法机构；评议会",
+    "part_of_speech": "n."
+  },
+  "senior": {
+    "meaning_cn": "年长者；资深者；毕业班学生；a. 年长的",
+    "part_of_speech": "n."
+  },
+  "sense": {
+    "meaning_cn": "感应；感觉；感官；意识",
+    "part_of_speech": "n."
+  },
+  "separate": {
+    "meaning_cn": "独立件；抽印本；a. 分开的；各别的",
+    "part_of_speech": "n."
+  },
+  "sequence": {
+    "meaning_cn": "序列；续发事件；顺序；连续",
+    "part_of_speech": "n."
+  },
+  "serial": {
+    "meaning_cn": "分期连载作品；连载小说；a. 连续的；一连串的",
+    "part_of_speech": "n."
+  },
+  "serialization": {
+    "meaning_cn": "连载；串行化",
+    "part_of_speech": "n."
+  },
+  "series": {
+    "meaning_cn": "串联；序列；连续；系列",
+    "part_of_speech": "n."
+  },
+  "serious": {
+    "meaning_cn": "a. 严肃的；认真的；重要的；严重的",
+    "part_of_speech": "-"
+  },
+  "serve": {
+    "meaning_cn": "可作...用；服务；经历；招待",
+    "part_of_speech": "vt."
+  },
+  "served": {
+    "meaning_cn": "招待；服役；发球；服务（serve的过去分词）",
+    "part_of_speech": "v."
+  },
+  "server": {
+    "meaning_cn": "服伺者；上菜用具；发球员；服务器",
+    "part_of_speech": "n."
+  },
+  "servers": {
+    "meaning_cn": "服务器（server的复数）",
+    "part_of_speech": "n."
+  },
+  "service": {
+    "meaning_cn": "服务；贡献；雇佣；公职",
+    "part_of_speech": "n."
+  },
+  "services": {
+    "meaning_cn": "服务；服务项目（service复数形式）",
+    "part_of_speech": "n."
+  },
+  "serving": {
+    "meaning_cn": "服务；招待；上菜；一份食物",
+    "part_of_speech": "n."
+  },
+  "session": {
+    "meaning_cn": "期间；开庭期；会议；学期",
+    "part_of_speech": "n."
+  },
+  "setting": {
+    "meaning_cn": "环境；背景；布景；镶嵌",
+    "part_of_speech": "n."
+  },
+  "settings": {
+    "meaning_cn": "设置（setting的复数）",
+    "part_of_speech": "n."
+  },
+  "seven": {
+    "meaning_cn": "七；七个",
+    "part_of_speech": "num."
+  },
+  "several": {
+    "meaning_cn": "a. 几个的；一些的；各自的；几个",
+    "part_of_speech": "pron."
+  },
+  "sexual": {
+    "meaning_cn": "a. 性的；性别的；性的；性欲的",
+    "part_of_speech": "-"
+  },
+  "shall": {
+    "meaning_cn": "aux. 将",
+    "part_of_speech": "-"
+  },
+  "shape": {
+    "meaning_cn": "形状；形态；外形；形式",
+    "part_of_speech": "n."
+  },
+  "share": {
+    "meaning_cn": "部分；参与；一份；参股",
+    "part_of_speech": "n."
+  },
+  "shared": {
+    "meaning_cn": "a. 共享的",
+    "part_of_speech": "-"
+  },
+  "shares": {
+    "meaning_cn": "股份（share的复数形式）",
+    "part_of_speech": "n."
+  },
+  "sharing": {
+    "meaning_cn": "共享；公用",
+    "part_of_speech": "-"
+  },
+  "sharp": {
+    "meaning_cn": "半升音调；利刃；骗子；a. 锋利的",
+    "part_of_speech": "n."
+  },
+  "sheet": {
+    "meaning_cn": "床单；张；纸张；印刷品",
+    "part_of_speech": "n."
+  },
+  "shell": {
+    "meaning_cn": "贝壳；壳；外形；炮弹",
+    "part_of_speech": "n."
+  },
+  "shipment": {
+    "meaning_cn": "装船；出货；运送；运送(寄出)货物",
+    "part_of_speech": "n."
+  },
+  "shipping": {
+    "meaning_cn": "装运；航行；船舶；船舶吨数",
+    "part_of_speech": "n."
+  },
+  "ships": {
+    "meaning_cn": "舰船（ship的复数）",
+    "part_of_speech": "n."
+  },
+  "shirt": {
+    "meaning_cn": "衬衫；内衣；汗衫",
+    "part_of_speech": "n."
+  },
+  "shirts": {
+    "meaning_cn": "衬衫（shirt的复数形式）",
+    "part_of_speech": "n."
+  },
+  "shoes": {
+    "meaning_cn": "鞋子（shoe的复数）",
+    "part_of_speech": "n."
+  },
+  "shopping": {
+    "meaning_cn": "买东西；购物",
+    "part_of_speech": "n."
+  },
+  "shops": {
+    "meaning_cn": "商店；商店用包装纸（shop的复数）",
+    "part_of_speech": "n."
+  },
+  "short": {
+    "meaning_cn": "a. 短的；近的；矮的；短期的",
+    "part_of_speech": "-"
+  },
+  "shower": {
+    "meaning_cn": "阵雨；淋浴；一阵；展出者",
+    "part_of_speech": "n."
+  },
+  "showing": {
+    "meaning_cn": "显示；陈列；展览；成绩",
+    "part_of_speech": "n."
+  },
+  "shown": {
+    "meaning_cn": "show的过去分词",
+    "part_of_speech": "-"
+  },
+  "shows": {
+    "meaning_cn": "秀场；表演（show的复数）",
+    "part_of_speech": "n."
+  },
+  "signal": {
+    "meaning_cn": "信号；暗号；近因；导火线",
+    "part_of_speech": "n."
+  },
+  "signature": {
+    "meaning_cn": "签字；识别标志；调号；签名附件",
+    "part_of_speech": "n."
+  },
+  "signed": {
+    "meaning_cn": "a. 有符号的；有正负之分的；已签字的",
+    "part_of_speech": "-"
+  },
+  "significant": {
+    "meaning_cn": "a. 重要的；有效的；有含义的；暗示的",
+    "part_of_speech": "-"
+  },
+  "signs": {
+    "meaning_cn": "标志；符号（sign的复数）",
+    "part_of_speech": "n."
+  },
+  "silver": {
+    "meaning_cn": "银；银币；银器；a. 银的",
+    "part_of_speech": "n."
+  },
+  "similar": {
+    "meaning_cn": "a. 相似的；类似的；相似的东西",
+    "part_of_speech": "n."
+  },
+  "simple": {
+    "meaning_cn": "a. 简单的；普通的；朴素的；单纯的",
+    "part_of_speech": "-"
+  },
+  "simply": {
+    "meaning_cn": "简单地；只是；简直；简朴地",
+    "part_of_speech": "adv."
+  },
+  "since": {
+    "meaning_cn": "自...以后；自...以来；自那时以后；既然",
+    "part_of_speech": "prep."
+  },
+  "single": {
+    "meaning_cn": "a. 单身的；单程的；单一的；个别的",
+    "part_of_speech": "-"
+  },
+  "singles": {
+    "meaning_cn": "单打比赛",
+    "part_of_speech": "n."
+  },
+  "sister": {
+    "meaning_cn": "姐妹；姐；妹；护士",
+    "part_of_speech": "n."
+  },
+  "sites": {
+    "meaning_cn": "遗址；举办地点；网站（site的复数）",
+    "part_of_speech": "n."
+  },
+  "sizes": {
+    "meaning_cn": "象素显示尺寸；尺寸（size复数形式）",
+    "part_of_speech": "n."
+  },
+  "skill": {
+    "meaning_cn": "技术；技巧；技能；熟练",
+    "part_of_speech": "n."
+  },
+  "skills": {
+    "meaning_cn": "技术；技能；技巧（skill的复数形式）",
+    "part_of_speech": "n."
+  },
+  "sleep": {
+    "meaning_cn": "睡眠；静止；昏迷；麻木",
+    "part_of_speech": "n."
+  },
+  "slide": {
+    "meaning_cn": "滑；滑道；山崩；雪崩",
+    "part_of_speech": "n."
+  },
+  "slightly": {
+    "meaning_cn": "些微地；苗条地",
+    "part_of_speech": "adv."
+  },
+  "small": {
+    "meaning_cn": "a. 小的；少的；小型的；低微的",
+    "part_of_speech": "-"
+  },
+  "smaller": {
+    "meaning_cn": "a. 较小；更小的",
+    "part_of_speech": "-"
+  },
+  "smart": {
+    "meaning_cn": "a. 聪明的；漂亮的；刺痛的；剧烈的",
+    "part_of_speech": "-"
+  },
+  "smith": {
+    "meaning_cn": "铁匠；金属品工匠；锻造工；上手",
+    "part_of_speech": "n."
+  },
+  "smoking": {
+    "meaning_cn": "抽烟；冒烟；烟熏；吸烟",
+    "part_of_speech": "n."
+  },
+  "snack": {
+    "meaning_cn": "小吃；点心；快餐；吃零食",
+    "part_of_speech": "n."
+  },
+  "snapshot": {
+    "meaning_cn": "快照；抽点打印；瞬象",
+    "part_of_speech": "n."
+  },
+  "soccer": {
+    "meaning_cn": "英式足球",
+    "part_of_speech": "n."
+  },
+  "social": {
+    "meaning_cn": "a. 社会的；群居的；社交的；联欢会",
+    "part_of_speech": "n."
+  },
+  "society": {
+    "meaning_cn": "社会；社交界；交往；社团",
+    "part_of_speech": "n."
+  },
+  "sociology": {
+    "meaning_cn": "社会学",
+    "part_of_speech": "n."
+  },
+  "socket": {
+    "meaning_cn": "窝；穴；插座；眼窝",
+    "part_of_speech": "n."
+  },
+  "software": {
+    "meaning_cn": "软件；软设备",
+    "part_of_speech": "n."
+  },
+  "solid": {
+    "meaning_cn": "固体；a. 坚硬的；稳固的；固体的",
+    "part_of_speech": "n."
+  },
+  "solution": {
+    "meaning_cn": "解决；解答；溶液",
+    "part_of_speech": "n."
+  },
+  "someone": {
+    "meaning_cn": "有人；某人",
+    "part_of_speech": "pron."
+  },
+  "songs": {
+    "meaning_cn": "歌曲；歌集（song的复数）",
+    "part_of_speech": "n."
+  },
+  "sorry": {
+    "meaning_cn": "a. 难过的；悲哀的；遗憾的",
+    "part_of_speech": "-"
+  },
+  "sorted": {
+    "meaning_cn": "a. 分选的；分类的；挑选的",
+    "part_of_speech": "-"
+  },
+  "sound": {
+    "meaning_cn": "声音；语音；吵闹；声调",
+    "part_of_speech": "n."
+  },
+  "sounds": {
+    "meaning_cn": "音效；声音（sound的复数）",
+    "part_of_speech": "n."
+  },
+  "soup": {
+    "meaning_cn": "汤；马力；加速；增加马力",
+    "part_of_speech": "n."
+  },
+  "source": {
+    "meaning_cn": "来源；水源；根源；原始资料",
+    "part_of_speech": "n."
+  },
+  "sources": {
+    "meaning_cn": "输入源；发起者；来源（source的复数）",
+    "part_of_speech": "n."
+  },
+  "south": {
+    "meaning_cn": "南方；南；a. 南的；向南的",
+    "part_of_speech": "n."
+  },
+  "southern": {
+    "meaning_cn": "南方人；男风；a. 向南方的；来自南方的",
+    "part_of_speech": "n."
+  },
+  "space": {
+    "meaning_cn": "位置；空间；距离；太空",
+    "part_of_speech": "n."
+  },
+  "spain": {
+    "meaning_cn": "西班牙",
+    "part_of_speech": "n."
+  },
+  "spanish": {
+    "meaning_cn": "西班牙人；西班牙语；a. 西班牙的",
+    "part_of_speech": "n."
+  },
+  "speak": {
+    "meaning_cn": "说；说话；演说；发言",
+    "part_of_speech": "vi."
+  },
+  "speaker": {
+    "meaning_cn": "说话人；讲演者；发言人；喇叭",
+    "part_of_speech": "n."
+  },
+  "speakers": {
+    "meaning_cn": "演说家；扬声器；发言者（speaker的复数）",
+    "part_of_speech": "n."
+  },
+  "speaking": {
+    "meaning_cn": "谈话；演说；a. 讲话的；适于说的",
+    "part_of_speech": "n."
+  },
+  "special": {
+    "meaning_cn": "专辑；专车；号外；特别的东西",
+    "part_of_speech": "n."
+  },
+  "specials": {
+    "meaning_cn": "特殊的人或事；特刊；降价（special的复数形式）",
+    "part_of_speech": "n."
+  },
+  "species": {
+    "meaning_cn": "种；类；外形；茶剂",
+    "part_of_speech": "n."
+  },
+  "specific": {
+    "meaning_cn": "特效药；特性；a. 特殊的；明确的",
+    "part_of_speech": "n."
+  },
+  "specification": {
+    "meaning_cn": "规格；详述；详细说明书；规范",
+    "part_of_speech": "n."
+  },
+  "specs": {
+    "meaning_cn": "眼镜；规格；说明书",
+    "part_of_speech": "n."
+  },
+  "speech": {
+    "meaning_cn": "演讲；说话；谈话；言语",
+    "part_of_speech": "n."
+  },
+  "speed": {
+    "meaning_cn": "速率；速度；迅速；加速",
+    "part_of_speech": "n."
+  },
+  "spend": {
+    "meaning_cn": "花费；浪费；度过；消耗",
+    "part_of_speech": "vt."
+  },
+  "spent": {
+    "meaning_cn": "a. 用尽的；精疲力竭的；spend的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "spirit": {
+    "meaning_cn": "精神；心灵；灵魂；态度",
+    "part_of_speech": "n."
+  },
+  "sponsor": {
+    "meaning_cn": "保证人；赞助者；发起者；倡议者",
+    "part_of_speech": "n."
+  },
+  "sponsors": {
+    "meaning_cn": "保人( sponsor的名词复数 )；（广播电视节目；音乐会或运动会的）赞助者；（培训或教育的）资助者",
+    "part_of_speech": "n."
+  },
+  "sport": {
+    "meaning_cn": "运动；游戏；娱乐；消遣",
+    "part_of_speech": "n."
+  },
+  "sporting": {
+    "meaning_cn": "a. 喜好运动的；运动用的；冒险性的",
+    "part_of_speech": "-"
+  },
+  "sports": {
+    "meaning_cn": "(英)运动会；运动的；适用于运动的；运动会的",
+    "part_of_speech": "n."
+  },
+  "spread": {
+    "meaning_cn": "传播；散布；伸展；a. 双唇展开的",
+    "part_of_speech": "n."
+  },
+  "spreadsheet": {
+    "meaning_cn": "空白表格程序；电子制表软件；电子数据表；电子表格",
+    "part_of_speech": "n."
+  },
+  "spring": {
+    "meaning_cn": "春天；弹簧；跳跃；弹性",
+    "part_of_speech": "n."
+  },
+  "springs": {
+    "meaning_cn": "斯普林斯（南非东部城市名）",
+    "part_of_speech": "n."
+  },
+  "sprint": {
+    "meaning_cn": "短距离赛跑；全速跑；冲刺；全速跑过",
+    "part_of_speech": "n."
+  },
+  "square": {
+    "meaning_cn": "正方形；街区；广场；平方",
+    "part_of_speech": "n."
+  },
+  "ssl": {
+    "meaning_cn": "软件说明语言；源语句库；存储结构语言；系统仿真语言",
+    "part_of_speech": "-"
+  },
+  "staff": {
+    "meaning_cn": "全体人员；工作班子；棍棒；杆",
+    "part_of_speech": "n."
+  },
+  "stage": {
+    "meaning_cn": "阶段；舞台；场所；戏剧",
+    "part_of_speech": "n."
+  },
+  "stakeholder": {
+    "meaning_cn": "赌金保管者；赌款保存人；保存保证金的人",
+    "part_of_speech": "n."
+  },
+  "stand": {
+    "meaning_cn": "站立；站住；停顿；讲台",
+    "part_of_speech": "n."
+  },
+  "standard": {
+    "meaning_cn": "标准；规格；旗；军旗",
+    "part_of_speech": "n."
+  },
+  "standing": {
+    "meaning_cn": "起立；持续；身分；a. 立着的",
+    "part_of_speech": "n."
+  },
+  "standup": {
+    "meaning_cn": "直立领；竖立领",
+    "part_of_speech": "n."
+  },
+  "stars": {
+    "meaning_cn": "明星类；明星（star的复数形式）",
+    "part_of_speech": "n."
+  },
+  "start": {
+    "meaning_cn": "惊起；出发；开端；起点",
+    "part_of_speech": "n."
+  },
+  "started": {
+    "meaning_cn": "出发；启程( start的过去式和过去分词 )；起动；提出（问题）",
+    "part_of_speech": "v."
+  },
+  "starting": {
+    "meaning_cn": "开端；开始；出发；起动",
+    "part_of_speech": "n."
+  },
+  "state": {
+    "meaning_cn": "州；状态；情形；国家",
+    "part_of_speech": "n."
+  },
+  "stated": {
+    "meaning_cn": "a. 决定了的；一定的；阐明的；规定的",
+    "part_of_speech": "-"
+  },
+  "states": {
+    "meaning_cn": "美国",
+    "part_of_speech": "n."
+  },
+  "static": {
+    "meaning_cn": "静电；静电干扰；a. 静态的；静止的",
+    "part_of_speech": "n."
+  },
+  "station": {
+    "meaning_cn": "车站；站；局；驻地",
+    "part_of_speech": "n."
+  },
+  "stations": {
+    "meaning_cn": "车站；驻地；位置（station的复数形式）",
+    "part_of_speech": "n."
+  },
+  "statistic": {
+    "meaning_cn": "统计量；a. 统计的；统计学的",
+    "part_of_speech": "n."
+  },
+  "stats": {
+    "meaning_cn": "静止坦克自动目标系统（Stationary Tank Automatic Target System）",
+    "part_of_speech": "abbr."
+  },
+  "status": {
+    "meaning_cn": "状态；情形；地位；要人身份",
+    "part_of_speech": "n."
+  },
+  "steel": {
+    "meaning_cn": "钢；钢制品；钢铁；坚硬",
+    "part_of_speech": "n."
+  },
+  "stephen": {
+    "meaning_cn": "斯蒂芬（男子名）",
+    "part_of_speech": "n."
+  },
+  "steps": {
+    "meaning_cn": "（楼外的）台阶；步伐；步幅；步数",
+    "part_of_speech": "n."
+  },
+  "steve": {
+    "meaning_cn": "史蒂夫（男子名）",
+    "part_of_speech": "n."
+  },
+  "still": {
+    "meaning_cn": "蒸馏室；寂静；剧照；蒸馏",
+    "part_of_speech": "n."
+  },
+  "stock": {
+    "meaning_cn": "树干；祖先；血统；原料",
+    "part_of_speech": "n."
+  },
+  "stone": {
+    "meaning_cn": "石头；宝石；果核；纪念碑",
+    "part_of_speech": "n."
+  },
+  "storage": {
+    "meaning_cn": "存储器；储藏；保管；库存",
+    "part_of_speech": "n."
+  },
+  "store": {
+    "meaning_cn": "商店；贮藏；仓库；备用品",
+    "part_of_speech": "n."
+  },
+  "stores": {
+    "meaning_cn": "(英)百货商店；a. 贮藏的；用作贮藏处的；贮存的",
+    "part_of_speech": "n."
+  },
+  "stories": {
+    "meaning_cn": "故事（story的复数）",
+    "part_of_speech": "n."
+  },
+  "story": {
+    "meaning_cn": "故事；小说；传奇；描述",
+    "part_of_speech": "n."
+  },
+  "straight": {
+    "meaning_cn": "直线；直；a. 直的；笔直的",
+    "part_of_speech": "n."
+  },
+  "strategy": {
+    "meaning_cn": "战略；策略",
+    "part_of_speech": "n."
+  },
+  "stream": {
+    "meaning_cn": "水流；小河；流出；趋势",
+    "part_of_speech": "n."
+  },
+  "street": {
+    "meaning_cn": "街道；马路；街区；a. 街道的",
+    "part_of_speech": "n."
+  },
+  "strength": {
+    "meaning_cn": "力量；实力；强度；浓度",
+    "part_of_speech": "n."
+  },
+  "stress": {
+    "meaning_cn": "压力；紧迫；强调；重音",
+    "part_of_speech": "n."
+  },
+  "string": {
+    "meaning_cn": "线；细绳；一串；字符串",
+    "part_of_speech": "n."
+  },
+  "strong": {
+    "meaning_cn": "a. 强壮的；坚固的；坚强的；强烈的",
+    "part_of_speech": "-"
+  },
+  "student": {
+    "meaning_cn": "学生；研究者；学者",
+    "part_of_speech": "n."
+  },
+  "students": {
+    "meaning_cn": "（尤指大专院校的）学生（student的复数）",
+    "part_of_speech": "n."
+  },
+  "studies": {
+    "meaning_cn": "研究；学习；学业（study的复数）",
+    "part_of_speech": "n."
+  },
+  "studio": {
+    "meaning_cn": "工作室；画室；演播室；电影制片厂",
+    "part_of_speech": "n."
+  },
+  "study": {
+    "meaning_cn": "学习；研究；学科；论文",
+    "part_of_speech": "n."
+  },
+  "stuff": {
+    "meaning_cn": "原料；要素；东西；材料",
+    "part_of_speech": "n."
+  },
+  "style": {
+    "meaning_cn": "风格；时尚；文体；风度",
+    "part_of_speech": "n."
+  },
+  "subject": {
+    "meaning_cn": "科目；主题；臣民；主语",
+    "part_of_speech": "n."
+  },
+  "subjects": {
+    "meaning_cn": "主题；被试者；学科；科目（subject的复数）",
+    "part_of_speech": "n."
+  },
+  "submit": {
+    "meaning_cn": "使服从；使受到；委托；提交",
+    "part_of_speech": "vt."
+  },
+  "subscription": {
+    "meaning_cn": "捐献；订金；订阅；签署",
+    "part_of_speech": "n."
+  },
+  "subsidy": {
+    "meaning_cn": "补助金；津贴；补贴",
+    "part_of_speech": "n."
+  },
+  "subway": {
+    "meaning_cn": "地铁；地道；乘地铁",
+    "part_of_speech": "n."
+  },
+  "success": {
+    "meaning_cn": "成功；成就；胜利",
+    "part_of_speech": "n."
+  },
+  "sugar": {
+    "meaning_cn": "糖；糖块；甜言蜜语；加糖于",
+    "part_of_speech": "n."
+  },
+  "suggest": {
+    "meaning_cn": "提议；建议；促成；暗示",
+    "part_of_speech": "vt."
+  },
+  "suite": {
+    "meaning_cn": "随员；套房；(一)组；(一)套",
+    "part_of_speech": "n."
+  },
+  "suites": {
+    "meaning_cn": "套房；组曲；餐厅套件；[计]程序组（suite的复数）",
+    "part_of_speech": "n."
+  },
+  "summarize": {
+    "meaning_cn": "概述；总结",
+    "part_of_speech": "v."
+  },
+  "summary": {
+    "meaning_cn": "摘要；概要；a. 摘要的；简略的",
+    "part_of_speech": "n."
+  },
+  "summer": {
+    "meaning_cn": "夏季；全盛时期；避暑；过夏天",
+    "part_of_speech": "n."
+  },
+  "sunday": {
+    "meaning_cn": "星期日；a. 星期日的；业余的；度星期日",
+    "part_of_speech": "n."
+  },
+  "sunny": {
+    "meaning_cn": "a. 阳光充足的；乐观的；快乐的；像太阳的",
+    "part_of_speech": "-"
+  },
+  "super": {
+    "meaning_cn": "跑龙套角色；冗员；特级品；特大号",
+    "part_of_speech": "n."
+  },
+  "supermarket": {
+    "meaning_cn": "超级市场；自助售货商店",
+    "part_of_speech": "n."
+  },
+  "supplied": {
+    "meaning_cn": "a. 有...提供的；备有...的",
+    "part_of_speech": "-"
+  },
+  "supplier": {
+    "meaning_cn": "供应者；供给国；供应商；承制厂",
+    "part_of_speech": "n."
+  },
+  "supplies": {
+    "meaning_cn": "供应品；日用必需品；生活用品；(储备)物质",
+    "part_of_speech": "n."
+  },
+  "supply": {
+    "meaning_cn": "补给；供给；供应品；提供",
+    "part_of_speech": "n."
+  },
+  "support": {
+    "meaning_cn": "支持；支撑；援助；供养",
+    "part_of_speech": "n."
+  },
+  "supports": {
+    "meaning_cn": "支承结构；支持；忍受；赡养（support的复数）",
+    "part_of_speech": "n."
+  },
+  "surface": {
+    "meaning_cn": "面；表面；水面；外表",
+    "part_of_speech": "n."
+  },
+  "surgery": {
+    "meaning_cn": "外科；手术；手术室；换球术",
+    "part_of_speech": "n."
+  },
+  "surveillance": {
+    "meaning_cn": "监视；监督；侦测",
+    "part_of_speech": "n."
+  },
+  "survey": {
+    "meaning_cn": "纵览；视察；测量；俯瞰",
+    "part_of_speech": "n."
+  },
+  "sustainable": {
+    "meaning_cn": "a. 足可支撑的；养得起的；可以忍受的",
+    "part_of_speech": "-"
+  },
+  "sweden": {
+    "meaning_cn": "瑞典",
+    "part_of_speech": "n."
+  },
+  "sweet": {
+    "meaning_cn": "甜蜜；糖果；情人；a. 甜的",
+    "part_of_speech": "n."
+  },
+  "swift": {
+    "meaning_cn": "褐雨燕；快速爬行的小蜥蜴；蝙蝠蛾；大滚筒",
+    "part_of_speech": "n."
+  },
+  "switch": {
+    "meaning_cn": "开关；电闸；转换；软枝",
+    "part_of_speech": "n."
+  },
+  "sydney": {
+    "meaning_cn": "悉尼（澳大利亚港市）",
+    "part_of_speech": "n."
+  },
+  "syllabus": {
+    "meaning_cn": "摘要；提纲；课程表；教学大纲",
+    "part_of_speech": "n."
+  },
+  "symbolism": {
+    "meaning_cn": "象征主义；符号论",
+    "part_of_speech": "n."
+  },
+  "syntax": {
+    "meaning_cn": "句法；语法；句子构造",
+    "part_of_speech": "n."
+  },
+  "system": {
+    "meaning_cn": "系统；体系；制度；方式",
+    "part_of_speech": "n."
+  },
+  "systems": {
+    "meaning_cn": "体制；体系；制度；系统（system的复数形式）",
+    "part_of_speech": "n."
+  },
+  "table": {
+    "meaning_cn": "桌子；餐桌；工作台；铭文",
+    "part_of_speech": "n."
+  },
+  "tables": {
+    "meaning_cn": "桌子；附录；表格（table的复数）",
+    "part_of_speech": "n."
+  },
+  "tag": {
+    "meaning_cn": "标签；附属物；碎片；结束语",
+    "part_of_speech": "n."
+  },
+  "taken": {
+    "meaning_cn": "take的过去分词",
+    "part_of_speech": "-"
+  },
+  "takes": {
+    "meaning_cn": "取走；预备动作（take第三人称单数）",
+    "part_of_speech": "vt."
+  },
+  "taking": {
+    "meaning_cn": "取得；捕获；进款；a. 迷人的",
+    "part_of_speech": "n."
+  },
+  "talking": {
+    "meaning_cn": "a. 说话的；多嘴的；富有表情的；讲话",
+    "part_of_speech": "n."
+  },
+  "target": {
+    "meaning_cn": "目标；靶子；指标；对准",
+    "part_of_speech": "n."
+  },
+  "task": {
+    "meaning_cn": "工作；任务；作业；困难的工作",
+    "part_of_speech": "n."
+  },
+  "tauri": {
+    "meaning_cn": "Taurus 的所有格",
+    "part_of_speech": "-"
+  },
+  "taxation": {
+    "meaning_cn": "课税；征税；抽税；税款",
+    "part_of_speech": "n."
+  },
+  "taxes": {
+    "meaning_cn": "税务；税捐；税收；税金",
+    "part_of_speech": "n."
+  },
+  "taxi": {
+    "meaning_cn": "出租车；乘出租车；用出租车送",
+    "part_of_speech": "n."
+  },
+  "taylor": {
+    "meaning_cn": "泰勒",
+    "part_of_speech": "n."
+  },
+  "tcp": {
+    "meaning_cn": "终端控制程序；测试检验程序；传输控制协议",
+    "part_of_speech": "-"
+  },
+  "tea": {
+    "meaning_cn": "茶；茶叶；茶剂；浸剂",
+    "part_of_speech": "n."
+  },
+  "teacher": {
+    "meaning_cn": "教师；老师；导师",
+    "part_of_speech": "n."
+  },
+  "teachers": {
+    "meaning_cn": "教师（teacher的复数形式）",
+    "part_of_speech": "n."
+  },
+  "teaching": {
+    "meaning_cn": "教学；学说；教导",
+    "part_of_speech": "n."
+  },
+  "team": {
+    "meaning_cn": "队；组；把马(牛)套在同一辆车上；把...编成一组",
+    "part_of_speech": "n."
+  },
+  "teams": {
+    "meaning_cn": "团队；参赛队伍（team的复数形式）",
+    "part_of_speech": "n."
+  },
+  "technology": {
+    "meaning_cn": "技术；工业技术；术语；技术学",
+    "part_of_speech": "n."
+  },
+  "teens": {
+    "meaning_cn": "十三岁到十九岁",
+    "part_of_speech": "n."
+  },
+  "telescope": {
+    "meaning_cn": "望远镜；叠缩；嵌进；缩短",
+    "part_of_speech": "n."
+  },
+  "television": {
+    "meaning_cn": "电视",
+    "part_of_speech": "n."
+  },
+  "template": {
+    "meaning_cn": "样板；模板；垫木",
+    "part_of_speech": "n."
+  },
+  "tennis": {
+    "meaning_cn": "网球",
+    "part_of_speech": "n."
+  },
+  "terms": {
+    "meaning_cn": "条件；条款；费用；价钱",
+    "part_of_speech": "n."
+  },
+  "terraform": {
+    "meaning_cn": "将（行星）地球化（以适合人类居住）",
+    "part_of_speech": "-"
+  },
+  "test": {
+    "meaning_cn": "测试；试验；化验；检验",
+    "part_of_speech": "n."
+  },
+  "testing": {
+    "meaning_cn": "测试；a. 吃力的；试验的",
+    "part_of_speech": "n."
+  },
+  "tests": {
+    "meaning_cn": "测验（test的复数）",
+    "part_of_speech": "n."
+  },
+  "texas": {
+    "meaning_cn": "德克萨斯",
+    "part_of_speech": "n."
+  },
+  "thailand": {
+    "meaning_cn": "泰国",
+    "part_of_speech": "n."
+  },
+  "thank": {
+    "meaning_cn": "谢意；感谢；谢谢",
+    "part_of_speech": "n."
+  },
+  "thanks": {
+    "meaning_cn": "感谢；谢意；谢忱；interj. 谢谢",
+    "part_of_speech": "n."
+  },
+  "theater": {
+    "meaning_cn": "戏院；电影院；剧场；全体观众",
+    "part_of_speech": "n."
+  },
+  "theatre": {
+    "meaning_cn": "戏院；电影院；剧场；全体观众",
+    "part_of_speech": "n."
+  },
+  "theme": {
+    "meaning_cn": "主题；话题；题目",
+    "part_of_speech": "n."
+  },
+  "theory": {
+    "meaning_cn": "理论；学说；原理；意见",
+    "part_of_speech": "n."
+  },
+  "therapy": {
+    "meaning_cn": "治疗；疗法",
+    "part_of_speech": "n."
+  },
+  "thing": {
+    "meaning_cn": "事物；东西；物；用品",
+    "part_of_speech": "n."
+  },
+  "things": {
+    "meaning_cn": "所有物；财产；用具；用品",
+    "part_of_speech": "n."
+  },
+  "think": {
+    "meaning_cn": "想；考虑；想起；想像",
+    "part_of_speech": "vt."
+  },
+  "thinking": {
+    "meaning_cn": "思考；思想；a. 思考的；有理性的",
+    "part_of_speech": "n."
+  },
+  "third": {
+    "meaning_cn": "第三；三分之一；第三的",
+    "part_of_speech": "num."
+  },
+  "thomas": {
+    "meaning_cn": "多马(耶稣十二门徒之一)",
+    "part_of_speech": "n."
+  },
+  "those": {
+    "meaning_cn": "那些",
+    "part_of_speech": "pron."
+  },
+  "though": {
+    "meaning_cn": "然而；可是；虽然；纵然",
+    "part_of_speech": "adv."
+  },
+  "thought": {
+    "meaning_cn": "想法；思想；思维；关心",
+    "part_of_speech": "n."
+  },
+  "thoughts": {
+    "meaning_cn": "思想；思维；想法（thought的复数）",
+    "part_of_speech": "n."
+  },
+  "thread": {
+    "meaning_cn": "线；丝；纤维；线索",
+    "part_of_speech": "n."
+  },
+  "three": {
+    "meaning_cn": "三；三个",
+    "part_of_speech": "num."
+  },
+  "through": {
+    "meaning_cn": "穿越；从头至尾；到底；因为",
+    "part_of_speech": "adv."
+  },
+  "throughput": {
+    "meaning_cn": "生产量；通过量；产量",
+    "part_of_speech": "n."
+  },
+  "thursday": {
+    "meaning_cn": "星期四",
+    "part_of_speech": "n."
+  },
+  "ticket": {
+    "meaning_cn": "票；券；车票；标签",
+    "part_of_speech": "n."
+  },
+  "tickets": {
+    "meaning_cn": "票；罚单（ticket的复数）",
+    "part_of_speech": "n."
+  },
+  "timeline": {
+    "meaning_cn": "时间轴；时间表",
+    "part_of_speech": "n."
+  },
+  "times": {
+    "meaning_cn": "时代；境遇；时报",
+    "part_of_speech": "n."
+  },
+  "tired": {
+    "meaning_cn": "a. 疲累的；疲乏的；厌倦的",
+    "part_of_speech": "-"
+  },
+  "title": {
+    "meaning_cn": "头衔；名称；标题；书名",
+    "part_of_speech": "n."
+  },
+  "titles": {
+    "meaning_cn": "标题；字幕；主题（title复数形式）",
+    "part_of_speech": "n."
+  },
+  "tls": {
+    "meaning_cn": "坦克激光瞄准镜（Tank Laser-Sight）",
+    "part_of_speech": "abbr."
+  },
+  "today": {
+    "meaning_cn": "今天；当今；现在",
+    "part_of_speech": "n."
+  },
+  "together": {
+    "meaning_cn": "一起；共同；彼此",
+    "part_of_speech": "adv."
+  },
+  "token": {
+    "meaning_cn": "表征；记号；代币；a. 象征的",
+    "part_of_speech": "n."
+  },
+  "tolerance": {
+    "meaning_cn": "宽容；忍受；容忍；容许量",
+    "part_of_speech": "n."
+  },
+  "tools": {
+    "meaning_cn": "工具；工具菜单；工具箱（tool的复数形式）",
+    "part_of_speech": "n."
+  },
+  "topic": {
+    "meaning_cn": "主题；论题；话题",
+    "part_of_speech": "n."
+  },
+  "topics": {
+    "meaning_cn": "总联机程序和信息控制系统（Total On-line Program and Information Control System）",
+    "part_of_speech": "abbr."
+  },
+  "toronto": {
+    "meaning_cn": "多伦多（加拿大城市）",
+    "part_of_speech": "n."
+  },
+  "total": {
+    "meaning_cn": "a. 全体的；总的；全然的；计算...的总和",
+    "part_of_speech": "vt."
+  },
+  "totally": {
+    "meaning_cn": "完全地",
+    "part_of_speech": "adv."
+  },
+  "touch": {
+    "meaning_cn": "触觉；碰；触；机灵",
+    "part_of_speech": "n."
+  },
+  "tourism": {
+    "meaning_cn": "观光业；游览；旅游业",
+    "part_of_speech": "n."
+  },
+  "tours": {
+    "meaning_cn": "图尔斯（姓氏）；图尔市（法国城市名）",
+    "part_of_speech": "n."
+  },
+  "toward": {
+    "meaning_cn": "向；对于；为了；a. 即将来临的",
+    "part_of_speech": "prep."
+  },
+  "towards": {
+    "meaning_cn": "向；对于；为了",
+    "part_of_speech": "prep."
+  },
+  "trace": {
+    "meaning_cn": "痕迹；踪迹；微量；迹线",
+    "part_of_speech": "n."
+  },
+  "track": {
+    "meaning_cn": "轨迹；足迹；径迹；小道",
+    "part_of_speech": "n."
+  },
+  "tracking": {
+    "meaning_cn": "跟踪；追踪",
+    "part_of_speech": "-"
+  },
+  "tracks": {
+    "meaning_cn": "轮胎；磁道；轨道（track的复数）",
+    "part_of_speech": "n."
+  },
+  "trade": {
+    "meaning_cn": "贸易；商业；交易；生意",
+    "part_of_speech": "n."
+  },
+  "trading": {
+    "meaning_cn": "交易",
+    "part_of_speech": "-"
+  },
+  "tradition": {
+    "meaning_cn": "传说；传统；交付；惯例",
+    "part_of_speech": "n."
+  },
+  "traffic": {
+    "meaning_cn": "交通；通行；运输；交通量",
+    "part_of_speech": "n."
+  },
+  "train": {
+    "meaning_cn": "火车；列车；行列；长队",
+    "part_of_speech": "n."
+  },
+  "training": {
+    "meaning_cn": "训练；培养",
+    "part_of_speech": "n."
+  },
+  "transaction": {
+    "meaning_cn": "交易；办理；学报；和解协议",
+    "part_of_speech": "n."
+  },
+  "transcript": {
+    "meaning_cn": "抄本；副本；成绩单；法院文本",
+    "part_of_speech": "n."
+  },
+  "transfer": {
+    "meaning_cn": "迁移；移动；传递；转让",
+    "part_of_speech": "n."
+  },
+  "transit": {
+    "meaning_cn": "经过；通行；运输；运输线",
+    "part_of_speech": "n."
+  },
+  "transition": {
+    "meaning_cn": "转变；转换；变迁；过渡时期",
+    "part_of_speech": "n."
+  },
+  "transport": {
+    "meaning_cn": "运输；运输工具；激动；狂喜",
+    "part_of_speech": "n."
+  },
+  "transportation": {
+    "meaning_cn": "运输；输送；交通车辆；运转",
+    "part_of_speech": "n."
+  },
+  "travel": {
+    "meaning_cn": "旅行；游历；行进；移动",
+    "part_of_speech": "n."
+  },
+  "treatment": {
+    "meaning_cn": "治疗；待遇；处理；疗法",
+    "part_of_speech": "n."
+  },
+  "trees": {
+    "meaning_cn": "树木；乔木；树状结构（tree的复数）",
+    "part_of_speech": "n."
+  },
+  "trend": {
+    "meaning_cn": "趋势；倾向；走向；转向",
+    "part_of_speech": "n."
+  },
+  "trends": {
+    "meaning_cn": "动态；趋势",
+    "part_of_speech": "n."
+  },
+  "trial": {
+    "meaning_cn": "审判；试验；艰苦；麻烦事",
+    "part_of_speech": "n."
+  },
+  "tried": {
+    "meaning_cn": "a. 试验过的；可靠的；已经审讯的；已经查验的",
+    "part_of_speech": "-"
+  },
+  "trouble": {
+    "meaning_cn": "烦恼；麻烦；困难；动乱",
+    "part_of_speech": "n."
+  },
+  "truck": {
+    "meaning_cn": "卡车；货车；对...进行交易；来往",
+    "part_of_speech": "n."
+  },
+  "trust": {
+    "meaning_cn": "信任；信赖；相信；受托",
+    "part_of_speech": "n."
+  },
+  "truth": {
+    "meaning_cn": "事实；实情；真实；真相",
+    "part_of_speech": "n."
+  },
+  "trying": {
+    "meaning_cn": "a. 难受的；难堪的；裁决；审判",
+    "part_of_speech": "-"
+  },
+  "tuesday": {
+    "meaning_cn": "星期二",
+    "part_of_speech": "n."
+  },
+  "tuition": {
+    "meaning_cn": "学费；讲授",
+    "part_of_speech": "n."
+  },
+  "turkey": {
+    "meaning_cn": "火鸡；无用的家伙；土耳其",
+    "part_of_speech": "n."
+  },
+  "turned": {
+    "meaning_cn": "a. 变质的；被转动的；[金属加工]车削的",
+    "part_of_speech": "-"
+  },
+  "types": {
+    "meaning_cn": "打字（type的第三人称单数形式）",
+    "part_of_speech": "v."
+  },
+  "typescript": {
+    "meaning_cn": "用打字机打的文件",
+    "part_of_speech": "n."
+  },
+  "udp": {
+    "meaning_cn": "用户数据报协议；尿苷二磷酸",
+    "part_of_speech": "-"
+  },
+  "ui": {
+    "meaning_cn": "用户接口",
+    "part_of_speech": "-"
+  },
+  "ultimate": {
+    "meaning_cn": "终极；根本；顶点；基本原则",
+    "part_of_speech": "n."
+  },
+  "umbrella": {
+    "meaning_cn": "伞；雨伞；保护伞；a. 伞的",
+    "part_of_speech": "n."
+  },
+  "undergraduate": {
+    "meaning_cn": "大学本科生；大学肄业生；a. 大学生的",
+    "part_of_speech": "n."
+  },
+  "unemployment": {
+    "meaning_cn": "失业；失业人数",
+    "part_of_speech": "n."
+  },
+  "union": {
+    "meaning_cn": "联盟；联合；结合；工会",
+    "part_of_speech": "n."
+  },
+  "unique": {
+    "meaning_cn": "a. 独一无二的；独特的；稀罕的",
+    "part_of_speech": "-"
+  },
+  "unit": {
+    "meaning_cn": "单位；分队；部队；单元",
+    "part_of_speech": "n."
+  },
+  "united": {
+    "meaning_cn": "a. 联合的；团结的；一致的；和睦的",
+    "part_of_speech": "-"
+  },
+  "units": {
+    "meaning_cn": "单位",
+    "part_of_speech": "n."
+  },
+  "university": {
+    "meaning_cn": "大学",
+    "part_of_speech": "n."
+  },
+  "unknown": {
+    "meaning_cn": "a. 不知道的；未知的；陌生的；未知物",
+    "part_of_speech": "n."
+  },
+  "unless": {
+    "meaning_cn": "除非；除...之外",
+    "part_of_speech": "conj."
+  },
+  "until": {
+    "meaning_cn": "直到；在...以前；直到...时",
+    "part_of_speech": "prep."
+  },
+  "update": {
+    "meaning_cn": "更新；使现代化",
+    "part_of_speech": "vt."
+  },
+  "updated": {
+    "meaning_cn": "a. 更新的；现代化的",
+    "part_of_speech": "-"
+  },
+  "updates": {
+    "meaning_cn": "升级；更新；补充资料（update复数形式）",
+    "part_of_speech": "n."
+  },
+  "upgrade": {
+    "meaning_cn": "上坡；升级；上升；往上",
+    "part_of_speech": "n."
+  },
+  "upper": {
+    "meaning_cn": "a. 上面的；较高的；上级的；上院的",
+    "part_of_speech": "-"
+  },
+  "urban": {
+    "meaning_cn": "a. 都市的；住在都市的；习惯于都市的；城市的",
+    "part_of_speech": "-"
+  },
+  "urbanization": {
+    "meaning_cn": "都市化；人口城市集中",
+    "part_of_speech": "n."
+  },
+  "usage": {
+    "meaning_cn": "用法；使用；习惯；惯用法",
+    "part_of_speech": "n."
+  },
+  "useful": {
+    "meaning_cn": "a. 有用的；有益的；有用的；有效的",
+    "part_of_speech": "-"
+  },
+  "username": {
+    "meaning_cn": "由字母或数字组成的用户名称；以标明用户的身份",
+    "part_of_speech": "n."
+  },
+  "users": {
+    "meaning_cn": "使用者；受限用户（user的复数）",
+    "part_of_speech": "n."
+  },
+  "using": {
+    "meaning_cn": "使用",
+    "part_of_speech": "-"
+  },
+  "usually": {
+    "meaning_cn": "通常；大抵",
+    "part_of_speech": "adv."
+  },
+  "utility": {
+    "meaning_cn": "功用；有用之物；实用；公用事业",
+    "part_of_speech": "n."
+  },
+  "ux": {
+    "meaning_cn": "用户体验（User Experience）",
+    "part_of_speech": "abbr."
+  },
+  "vacation": {
+    "meaning_cn": "假期；休假；停审期；休庭期",
+    "part_of_speech": "n."
+  },
+  "valid": {
+    "meaning_cn": "a. 有确实根据的；有法律效力的；正当的；正确的",
+    "part_of_speech": "-"
+  },
+  "validity": {
+    "meaning_cn": "有效性；正确性",
+    "part_of_speech": "n."
+  },
+  "valley": {
+    "meaning_cn": "山谷；溪谷；流域；凹地",
+    "part_of_speech": "n."
+  },
+  "value": {
+    "meaning_cn": "价值；价格；购买力；评价",
+    "part_of_speech": "n."
+  },
+  "values": {
+    "meaning_cn": "对价值的看法；准则；标准；价值观念",
+    "part_of_speech": "n."
+  },
+  "variable": {
+    "meaning_cn": "易变的事物；变数；可变物；变量",
+    "part_of_speech": "n."
+  },
+  "variety": {
+    "meaning_cn": "多样；种类；变种；杂耍",
+    "part_of_speech": "n."
+  },
+  "various": {
+    "meaning_cn": "a. 不同的；各种的；多方面的；许多的",
+    "part_of_speech": "-"
+  },
+  "vegas": {
+    "meaning_cn": "维加斯",
+    "part_of_speech": "n."
+  },
+  "vegetable": {
+    "meaning_cn": "蔬菜；植物；无精打采之人；a. 蔬菜的",
+    "part_of_speech": "n."
+  },
+  "vehicle": {
+    "meaning_cn": "交通工具；车辆；传播媒介；载体",
+    "part_of_speech": "n."
+  },
+  "vehicles": {
+    "meaning_cn": "交通工具；车辆（vehicle的复数形式）",
+    "part_of_speech": "n."
+  },
+  "vendor": {
+    "meaning_cn": "小贩；卖主；自动售货机；计算机销售商",
+    "part_of_speech": "n."
+  },
+  "verified": {
+    "meaning_cn": "a. 已查清的；已证实的",
+    "part_of_speech": "-"
+  },
+  "version": {
+    "meaning_cn": "一种描述；版本；译文",
+    "part_of_speech": "n."
+  },
+  "versions": {
+    "meaning_cn": "版本；译本",
+    "part_of_speech": "n."
+  },
+  "victoria": {
+    "meaning_cn": "维多利亚（女子名）",
+    "part_of_speech": "n."
+  },
+  "video": {
+    "meaning_cn": "影像；电视；a. 图像的；电视的",
+    "part_of_speech": "n."
+  },
+  "videos": {
+    "meaning_cn": "视频文件；影像资料（video的复数）",
+    "part_of_speech": "n."
+  },
+  "viewed": {
+    "meaning_cn": "看（view的过去式与过去分词形式）",
+    "part_of_speech": "vt."
+  },
+  "viewing": {
+    "meaning_cn": "可见的",
+    "part_of_speech": "-"
+  },
+  "views": {
+    "meaning_cn": "景点；见解；查看；视图（view的复数）",
+    "part_of_speech": "n."
+  },
+  "village": {
+    "meaning_cn": "村庄；a. 乡村的；村庄的",
+    "part_of_speech": "n."
+  },
+  "vintage": {
+    "meaning_cn": "酒；葡萄收获(期；量)；酿酒",
+    "part_of_speech": "n."
+  },
+  "violence": {
+    "meaning_cn": "猛烈；暴力；暴虐；暴行",
+    "part_of_speech": "n."
+  },
+  "virgin": {
+    "meaning_cn": "处女；a. 处女的；贞洁的；纯洁的",
+    "part_of_speech": "n."
+  },
+  "virginia": {
+    "meaning_cn": "弗吉尼亚",
+    "part_of_speech": "n."
+  },
+  "virtual": {
+    "meaning_cn": "a. 实际上起作用的；虚的；实质的；有效的",
+    "part_of_speech": "-"
+  },
+  "virus": {
+    "meaning_cn": "病毒；滤过性病毒；毒害",
+    "part_of_speech": "n."
+  },
+  "vision": {
+    "meaning_cn": "视觉；眼光；视力；幻想",
+    "part_of_speech": "n."
+  },
+  "visit": {
+    "meaning_cn": "拜访；访问；游览；视察",
+    "part_of_speech": "n."
+  },
+  "visitors": {
+    "meaning_cn": "访问者；游客（visitor 复数）",
+    "part_of_speech": "n."
+  },
+  "visual": {
+    "meaning_cn": "a. 视觉的；视觉的；视力的；视觉性记忆优势者",
+    "part_of_speech": "-"
+  },
+  "vite": {
+    "meaning_cn": "轻快地；急速地",
+    "part_of_speech": "adv."
+  },
+  "vocabulary": {
+    "meaning_cn": "词汇(量)；词汇表；词表",
+    "part_of_speech": "n."
+  },
+  "vocational": {
+    "meaning_cn": "a. 职业的；职业上的；天职的",
+    "part_of_speech": "-"
+  },
+  "voice": {
+    "meaning_cn": "声音；嗓音；嗓子；愿望",
+    "part_of_speech": "n."
+  },
+  "volcano": {
+    "meaning_cn": "火山",
+    "part_of_speech": "n."
+  },
+  "volume": {
+    "meaning_cn": "册；卷；体积；容量",
+    "part_of_speech": "n."
+  },
+  "votes": {
+    "meaning_cn": "投票；提倡（vote的第三人称单数形式）",
+    "part_of_speech": "v."
+  },
+  "waiting": {
+    "meaning_cn": "等候；a. 等候的；服侍的",
+    "part_of_speech": "n."
+  },
+  "wake": {
+    "meaning_cn": "叫醒；激发；醒来；醒着",
+    "part_of_speech": "vt."
+  },
+  "wales": {
+    "meaning_cn": "威尔士",
+    "part_of_speech": "n."
+  },
+  "walk": {
+    "meaning_cn": "走；散步；步行；行走的路程",
+    "part_of_speech": "n."
+  },
+  "walking": {
+    "meaning_cn": "步行；步态；a. 步行的；步行用的",
+    "part_of_speech": "n."
+  },
+  "wallet": {
+    "meaning_cn": "皮夹；皮包；钱袋",
+    "part_of_speech": "n."
+  },
+  "want": {
+    "meaning_cn": "需要的东西；缺乏；贫困；需要",
+    "part_of_speech": "n."
+  },
+  "wanted": {
+    "meaning_cn": "a. 被通缉的",
+    "part_of_speech": "-"
+  },
+  "wants": {
+    "meaning_cn": "需求；欲望；必需品；消费者的欲望",
+    "part_of_speech": "n."
+  },
+  "warehouse": {
+    "meaning_cn": "仓库；货栈；大商店；储入仓库",
+    "part_of_speech": "n."
+  },
+  "warm": {
+    "meaning_cn": "a. 暖和的；暖的；温暖的；热烈的",
+    "part_of_speech": "-"
+  },
+  "warning": {
+    "meaning_cn": "警告；预告；预兆；通知",
+    "part_of_speech": "n."
+  },
+  "warranty": {
+    "meaning_cn": "正当理由；授权；担保；保证",
+    "part_of_speech": "n."
+  },
+  "wash": {
+    "meaning_cn": "洗；洗涤；冲洗；洗的衣服",
+    "part_of_speech": "n."
+  },
+  "washing": {
+    "meaning_cn": "洗涤；浸；洗涤物；涂浆",
+    "part_of_speech": "n."
+  },
+  "waste": {
+    "meaning_cn": "浪费；废物；损耗；消耗",
+    "part_of_speech": "n."
+  },
+  "watch": {
+    "meaning_cn": "观察；手表；看守；守护",
+    "part_of_speech": "n."
+  },
+  "watches": {
+    "meaning_cn": "手表（watch的复数）",
+    "part_of_speech": "n."
+  },
+  "water": {
+    "meaning_cn": "水；雨水；海水；水位",
+    "part_of_speech": "n."
+  },
+  "weather": {
+    "meaning_cn": "天气；气象；处境；a. 迎风的",
+    "part_of_speech": "n."
+  },
+  "website": {
+    "meaning_cn": "网站（全球资讯网的主机站）",
+    "part_of_speech": "n."
+  },
+  "websites": {
+    "meaning_cn": "网站( website的复数形式 )",
+    "part_of_speech": "n."
+  },
+  "wedding": {
+    "meaning_cn": "婚礼；结婚；结婚周年纪念日；结合",
+    "part_of_speech": "n."
+  },
+  "weekend": {
+    "meaning_cn": "周末；周末休假",
+    "part_of_speech": "n."
+  },
+  "weekly": {
+    "meaning_cn": "周刊；周报；a. 每周的；一周一次的",
+    "part_of_speech": "n."
+  },
+  "weeks": {
+    "meaning_cn": "威克斯（姓氏）",
+    "part_of_speech": "n."
+  },
+  "weight": {
+    "meaning_cn": "重；重量；体重；砝码",
+    "part_of_speech": "n."
+  },
+  "welcome": {
+    "meaning_cn": "欢迎；欢迎词；a. 受欢迎的；可随意的",
+    "part_of_speech": "n."
+  },
+  "welfare": {
+    "meaning_cn": "福利；安宁；幸福；福利事业",
+    "part_of_speech": "n."
+  },
+  "wellbeing": {
+    "meaning_cn": "健康；幸福；福利；舒适",
+    "part_of_speech": "n."
+  },
+  "western": {
+    "meaning_cn": "西方人；西部片；西部小说；a. 向西方的",
+    "part_of_speech": "n."
+  },
+  "whatever": {
+    "meaning_cn": "无论什么",
+    "part_of_speech": "pron."
+  },
+  "wheel": {
+    "meaning_cn": "轮子；车轮；轮；方向盘",
+    "part_of_speech": "n."
+  },
+  "whether": {
+    "meaning_cn": "是否；不论；两个中的哪一个",
+    "part_of_speech": "conj."
+  },
+  "while": {
+    "meaning_cn": "一会儿；(一段)时间；当...的时候；虽然",
+    "part_of_speech": "n."
+  },
+  "white": {
+    "meaning_cn": "白色；洁白；眼白；白种人",
+    "part_of_speech": "n."
+  },
+  "whole": {
+    "meaning_cn": "全部；全体；整体；完全之体系",
+    "part_of_speech": "n."
+  },
+  "whose": {
+    "meaning_cn": "谁的",
+    "part_of_speech": "pron."
+  },
+  "width": {
+    "meaning_cn": "宽度；宽广；广博",
+    "part_of_speech": "n."
+  },
+  "wife": {
+    "meaning_cn": "妻子；太太；夫人；已婚妇女",
+    "part_of_speech": "n."
+  },
+  "wildlife": {
+    "meaning_cn": "野生动植物",
+    "part_of_speech": "n."
+  },
+  "william": {
+    "meaning_cn": "威廉（男子名）；[常作W-][美俚]钞票；纸币",
+    "part_of_speech": "n."
+  },
+  "williams": {
+    "meaning_cn": "威廉姆斯（男子名）",
+    "part_of_speech": "n."
+  },
+  "wilson": {
+    "meaning_cn": "威尔逊（姓氏）",
+    "part_of_speech": "n."
+  },
+  "window": {
+    "meaning_cn": "窗户；窗子；窗口；给...开窗",
+    "part_of_speech": "n."
+  },
+  "windows": {
+    "meaning_cn": "微软公司生产的“视窗”操作系统",
+    "part_of_speech": "n."
+  },
+  "winning": {
+    "meaning_cn": "胜利；获得；成功；赢得物",
+    "part_of_speech": "n."
+  },
+  "winter": {
+    "meaning_cn": "冬季；萧条期；衰退期；a. 冬天的",
+    "part_of_speech": "n."
+  },
+  "wireless": {
+    "meaning_cn": "无线电；a. 无线的；无线电的",
+    "part_of_speech": "n."
+  },
+  "within": {
+    "meaning_cn": "内部；里头；在内部；在内心里",
+    "part_of_speech": "n."
+  },
+  "without": {
+    "meaning_cn": "没有；不；在...之外；在外面",
+    "part_of_speech": "prep."
+  },
+  "woman": {
+    "meaning_cn": "女人；妇女；女仆；a. 女用的",
+    "part_of_speech": "n."
+  },
+  "women": {
+    "meaning_cn": "pl. 女人",
+    "part_of_speech": "-"
+  },
+  "words": {
+    "meaning_cn": "言语；话语；字（word的复数）",
+    "part_of_speech": "n."
+  },
+  "work": {
+    "meaning_cn": "工作；劳动；职业；行为",
+    "part_of_speech": "n."
+  },
+  "worked": {
+    "meaning_cn": "work的过去式和过去分词",
+    "part_of_speech": "-"
+  },
+  "worker": {
+    "meaning_cn": "工人；劳动者；劳工",
+    "part_of_speech": "n."
+  },
+  "workers": {
+    "meaning_cn": "工人；人员；角色（worker复数形式）",
+    "part_of_speech": "n."
+  },
+  "workflow": {
+    "meaning_cn": "工作流程",
+    "part_of_speech": "-"
+  },
+  "workforce": {
+    "meaning_cn": "劳动力；工人总数；职工总数",
+    "part_of_speech": "n."
+  },
+  "working": {
+    "meaning_cn": "工作；运转；劳动；a. 工作的",
+    "part_of_speech": "n."
+  },
+  "works": {
+    "meaning_cn": "工程；工厂；工事；活动部件",
+    "part_of_speech": "n."
+  },
+  "workshop": {
+    "meaning_cn": "工场；车间；研讨会；讨论会",
+    "part_of_speech": "n."
+  },
+  "workspace": {
+    "meaning_cn": "工作区",
+    "part_of_speech": "-"
+  },
+  "world": {
+    "meaning_cn": "世界；地球；宇宙；万物",
+    "part_of_speech": "n."
+  },
+  "worth": {
+    "meaning_cn": "价值；财产；a. 值...的；值得的",
+    "part_of_speech": "n."
+  },
+  "write": {
+    "meaning_cn": "书写；著述；写；写满",
+    "part_of_speech": "vt."
+  },
+  "writer": {
+    "meaning_cn": "作家；撰稿者；抄写员；记录器",
+    "part_of_speech": "n."
+  },
+  "writing": {
+    "meaning_cn": "书写；著作；笔迹；作品",
+    "part_of_speech": "n."
+  },
+  "written": {
+    "meaning_cn": "a. 书面的；写成文字的；write的过去分词",
+    "part_of_speech": "-"
+  },
+  "wrong": {
+    "meaning_cn": "a. 错误的；不正当的；失常的；错误地",
+    "part_of_speech": "adv."
+  },
+  "wrote": {
+    "meaning_cn": "write的过去式",
+    "part_of_speech": "-"
+  },
+  "yahoo": {
+    "meaning_cn": "人面兽心的人；乡愚；粗汉",
+    "part_of_speech": "n."
+  },
+  "years": {
+    "meaning_cn": "年代；岁月；年；年龄",
+    "part_of_speech": "n."
+  },
+  "yellow": {
+    "meaning_cn": "黄色；a. 黄色的",
+    "part_of_speech": "n."
+  },
+  "young": {
+    "meaning_cn": "a. 年轻的；无经验的；朝气蓬勃的；青年们",
+    "part_of_speech": "n."
+  },
+  "yourself": {
+    "meaning_cn": "你自己",
+    "part_of_speech": "pron."
+  },
+  "youth": {
+    "meaning_cn": "年轻；青年时代；青年们；青春",
+    "part_of_speech": "n."
+  },
+  "zealand": {
+    "meaning_cn": "西兰岛（丹麦最大的岛）",
+    "part_of_speech": "n."
+  }
+};

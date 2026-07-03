@@ -1,4 +1,4 @@
-﻿//! 唤醒监听状态：持有 WakePipelineGuard，支持热重载 wake_word。
+//! 唤醒监听状态：持有 WakePipelineGuard，支持热重载 wake_word。
 
 #![cfg(feature = "ambient")]
 
@@ -107,11 +107,8 @@ impl WakeListenerState {
         self.stop_inner();
         let guard = self.start_tx.lock().map_err(|e| e.to_string())?;
         if let Some(ref tx) = *guard {
-            tx.send(WakeStartRequest {
-                app,
-                wake_word,
-            })
-            .map_err(|e| e.to_string())?;
+            tx.send(WakeStartRequest { app, wake_word })
+                .map_err(|e| e.to_string())?;
             Ok(())
         } else {
             Err("唤醒持有线程已退出".to_string())

@@ -1,4 +1,4 @@
-﻿//! 主进程：写入热更新任务 JSON 并启动 `jachin-updater-helper`（与主 exe 同目录，或打包资源目录）。
+//! 主进程：写入热更新任务 JSON 并启动 `jachin-updater-helper`（与主 exe 同目录，或打包资源目录）。
 
 use crate::updater_common::{
     embedded_updater_pubkey_b64, normalize_signature_for_hot_update_job,
@@ -103,7 +103,10 @@ pub fn resolve_helper_executable(app: &tauri::AppHandle) -> Result<PathBuf, Stri
 }
 
 /// 写入任务文件并启动助手（已分离进程组，主进程退出后助手仍可运行）。
-pub fn spawn_hot_update_job(app: &tauri::AppHandle, payload: SpawnHotUpdatePayload) -> Result<(), String> {
+pub fn spawn_hot_update_job(
+    app: &tauri::AppHandle,
+    payload: SpawnHotUpdatePayload,
+) -> Result<(), String> {
     let target_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent_pid = std::process::id();
     let job = HotUpdateJob {
@@ -156,7 +159,10 @@ pub fn spawn_hot_update_job(app: &tauri::AppHandle, payload: SpawnHotUpdatePaylo
 }
 
 /// 准备阶段：助手下载并校验，主进程不退出；结果通过事件 `hot-update-prepare-result` 推送。
-pub fn spawn_hot_update_prepare_job(app: &tauri::AppHandle, payload: SpawnHotUpdatePayload) -> Result<(), String> {
+pub fn spawn_hot_update_prepare_job(
+    app: &tauri::AppHandle,
+    payload: SpawnHotUpdatePayload,
+) -> Result<(), String> {
     let target_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent_pid = std::process::id();
     let ts = std::time::SystemTime::now()
@@ -182,10 +188,8 @@ pub fn spawn_hot_update_prepare_job(app: &tauri::AppHandle, payload: SpawnHotUpd
         updater_pubkey_wire: Some(embedded_updater_pubkey_b64().to_string()),
     };
 
-    let job_path = std::env::temp_dir().join(format!(
-        "jachin-hot-prepare-{}-{}.json",
-        parent_pid, ts
-    ));
+    let job_path =
+        std::env::temp_dir().join(format!("jachin-hot-prepare-{}-{}.json", parent_pid, ts));
 
     let f = std::fs::File::create(&job_path).map_err(|e| format!("创建任务文件失败: {e}"))?;
     serde_json::to_writer_pretty(f, &job).map_err(|e| format!("写入任务 JSON: {e}"))?;
@@ -244,10 +248,7 @@ pub fn spawn_hot_update_prepare_job(app: &tauri::AppHandle, payload: SpawnHotUpd
                                 &format!(
                                     "result_file ok={} staged_len={} err={:?} path={}",
                                     r.ok,
-                                    r.staged_new_exe
-                                        .as_ref()
-                                        .map(|s| s.len())
-                                        .unwrap_or(0),
+                                    r.staged_new_exe.as_ref().map(|s| s.len()).unwrap_or(0),
                                     r.error,
                                     watch_path.display()
                                 ),
@@ -345,10 +346,8 @@ pub fn spawn_hot_update_apply_job(
         updater_pubkey_wire: Some(embedded_updater_pubkey_b64().to_string()),
     };
 
-    let job_path = std::env::temp_dir().join(format!(
-        "jachin-hot-apply-{}-{}.json",
-        parent_pid, ts
-    ));
+    let job_path =
+        std::env::temp_dir().join(format!("jachin-hot-apply-{}-{}.json", parent_pid, ts));
 
     let f = std::fs::File::create(&job_path).map_err(|e| format!("创建任务文件失败: {e}"))?;
     serde_json::to_writer_pretty(f, &job).map_err(|e| format!("写入任务 JSON: {e}"))?;

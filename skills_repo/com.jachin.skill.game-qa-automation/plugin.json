@@ -1,0 +1,29 @@
+{
+  "id": "com.jachin.skill.game-qa-automation",
+  "name": "游戏 QA / 自动化测试平台",
+  "version": "1.0.0",
+  "description": "面向游戏和复杂 UI 的视觉测试、冒烟、回放和规则执行，统一隐藏底层 GameQA MCP 与测试脚本。",
+  "entry": "SKILL.md",
+  "item_type": "SKILL",
+  "type": "SKILL",
+  "runtime_tier": "L3_LOCAL",
+  "required_mcps": [
+    "com.jachin.mcp.gameqa",
+    "com.jachin.mcp.playwright.browser",
+    "com.jachin.mcp.stub.windows.uia"
+  ],
+  "preserve_user_data": [
+    "$JACHIN_HOME/config/skills/com.jachin.skill.game-qa-automation",
+    "$JACHIN_HOME/workspace/gameqa",
+    "$JACHIN_HOME/data/gameqa",
+    "$JACHIN_HOME/logs/gameqa"
+  ],
+  "tags": [
+    "business-skill",
+    "gameqa",
+    "game",
+    "qa",
+    "visual-testing",
+    "smoke-test"
+  ]
+}

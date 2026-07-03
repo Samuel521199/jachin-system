@@ -364,8 +364,8 @@ export const deployCommands = pgTable("deploy_commands", {
 // 任务 1：核心枚举 (Enums)
 // -----------------------------------------------------------------------------
 
-/** 商品类型：SKILL=领域包，MCP=外部驱动，TOOL=原子工具包（与本机 Tools 概念对齐） */
-export const itemTypeEnum = pgEnum("item_type", ["SKILL", "MCP", "TOOL"]);
+/** 商品类型：SKILL=领域包，MCP=外部驱动，TOOL=原子工具包，MODEL=本地模型资产 */
+export const itemTypeEnum = pgEnum("item_type", ["SKILL", "MCP", "TOOL", "MODEL"]);
 
 /** 可见性：PUBLIC=公开售卖，PRIVATE=企业私有自用 */
 export const visibilityEnum = pgEnum("visibility", ["PUBLIC", "PRIVATE"]);
@@ -422,8 +422,8 @@ export const pluginsRegistry = pgTable(
   downloadCount: integer("download_count").default(0),
   /** manifest/plugin.json 完整内容，兼容商城展示 */
   manifestJson: jsonb("manifest_json").$type<Record<string, unknown>>(),
-  /** 审核状态：pending 待审，approved 准许上架，rejected 驳回 */
-  status: text("status").notNull().default("pending"),
+  /** 上架状态：当前发布即 approved；archived/rejected 仅用于后续管理 */
+  status: text("status").notNull().default("approved"),
   /** 驳回理由（status = rejected 时填写） */
   rejectReason: text("reject_reason"),
   /** 创建时间 */
@@ -436,7 +436,7 @@ export const pluginsRegistry = pgTable(
     .defaultNow(),
 },
   (table) => [
-    /** 优化 status = 'pending' 的审核列表查询 */
+    /** 优化按状态管理列表查询 */
     index("plugins_registry_status_created_idx").on(table.status, table.createdAt),
   ]
 );
