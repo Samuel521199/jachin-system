@@ -124,7 +124,7 @@ struct L1DirectConfig {
     profile_name: Option<String>,
 }
 
-const DEFAULT_L1_BASE_URL: &str = "http://localhost:3000";
+const DEFAULT_L1_BASE_URL: &str = "http://47.86.39.173:3000";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct L1ProfilesFile {
@@ -1504,8 +1504,7 @@ fn read_l1_direct_config() -> L1DirectConfig {
 
     let mut cfg = read_legacy_l1_direct_config_raw();
     if cfg.base_url.trim().is_empty() {
-        cfg.base_url = crate::nexus_config::nexus_base_url()
-            .unwrap_or_else(|| DEFAULT_L1_BASE_URL.to_string());
+        cfg.base_url = DEFAULT_L1_BASE_URL.to_string();
     }
     if cfg
         .developer_id
@@ -1551,8 +1550,7 @@ fn read_l1_profiles_file() -> L1ProfilesFile {
     if file.profiles.is_empty() {
         let mut cfg = read_legacy_l1_direct_config_raw();
         if cfg.base_url.trim().is_empty() {
-            cfg.base_url = crate::nexus_config::nexus_base_url()
-                .unwrap_or_else(|| DEFAULT_L1_BASE_URL.to_string());
+            cfg.base_url = DEFAULT_L1_BASE_URL.to_string();
         }
         if cfg
             .developer_id
@@ -1687,7 +1685,7 @@ fn profile_id_for_base_url(base_url: &str) -> String {
 fn default_profile_name(base_url: &str) -> String {
     let base = normalize_base_url(base_url);
     if base == DEFAULT_L1_BASE_URL {
-        "Local L1".to_string()
+        "Jachin Cloud L1".to_string()
     } else {
         base.trim_start_matches("https://")
             .trim_start_matches("http://")

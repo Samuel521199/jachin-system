@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_L1_BASE_URL = "http://localhost:3000"
+DEFAULT_L1_BASE_URL = "http://47.86.39.173:3000"
 
 
 def install_capability_from_l1(
