@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zip::ZipArchive;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilityInstallScan {
@@ -16,6 +16,7 @@ pub struct CapabilityInstallScan {
     pub mcp_cache_dir: String,
     pub skill_cache_dir: String,
     pub model_cache_dir: String,
+    pub source_store_dir: String,
     pub download_dir: String,
     pub items: Vec<CapabilityInstallItem>,
     pub counts: BTreeMap<String, usize>,
@@ -33,11 +34,13 @@ pub struct CapabilityInstallItem {
     pub package_sha256: Option<String>,
     pub installed_sha256: Option<String>,
     pub installed_path: Option<String>,
+    pub source_store_path: Option<String>,
     pub enabled: bool,
     pub source: String,
     pub source_l1_base_url: Option<String>,
     pub source_l1_profile_id: Option<String>,
     pub current_l1_match: bool,
+    pub current_l1_cached: bool,
     pub l1_status: Option<String>,
     pub status: String,
     pub problems: Vec<String>,
@@ -121,7 +124,7 @@ struct L1DirectConfig {
     profile_name: Option<String>,
 }
 
-const DEFAULT_L1_BASE_URL: &str = "http://localhost:3000";
+const DEFAULT_L1_BASE_URL: &str = "http://47.86.39.173:3000";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct L1ProfilesFile {
@@ -143,6 +146,8 @@ struct L1ProfileRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct InstalledRegistry {
     packages: HashMap<String, InstalledRecord>,
+    #[serde(default)]
+    source_packages: HashMap<String, InstalledRecord>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +161,8 @@ struct InstalledRecord {
     source_l1_base_url: Option<String>,
     #[serde(default)]
     source_l1_profile_id: Option<String>,
+    #[serde(default)]
+    source_store_path: Option<String>,
     package_url: Option<String>,
     package_sha256: Option<String>,
     installed_path: String,
@@ -217,7 +224,10 @@ pub fn capability_install_scan() -> Result<CapabilityInstallScan, String> {
 
     for item in remote.values() {
         let rec = registry.packages.get(&item.id);
-        items.push(install_item_from_remote(item, rec, &cfg));
+        let source_rec = registry
+            .source_packages
+            .get(&source_record_key_for(&cfg, &item.kind, &item.id));
+        items.push(install_item_from_remote(item, rec, source_rec, &cfg));
         seen.insert(item.id.clone(), true);
     }
     for rec in registry.packages.values() {
@@ -258,6 +268,7 @@ pub fn capability_install_scan() -> Result<CapabilityInstallScan, String> {
         mcp_cache_dir: l3_mcp_cache_dir().display().to_string(),
         skill_cache_dir: l3_skill_cache_dir().display().to_string(),
         model_cache_dir: model_cache_dir().display().to_string(),
+        source_store_dir: source_store_root().display().to_string(),
         download_dir: download_dir().display().to_string(),
         items,
         counts,
@@ -443,7 +454,10 @@ fn item_is_ready(item: &RemoteItem) -> bool {
     let cfg = read_l1_direct_config();
     let mut registry = read_installed_registry();
     merge_disk_installs(&mut registry);
-    let probe = install_item_from_remote(item, registry.packages.get(&item.id), &cfg);
+    let source_rec = registry
+        .source_packages
+        .get(&source_record_key_for(&cfg, &item.kind, &item.id));
+    let probe = install_item_from_remote(item, registry.packages.get(&item.id), source_rec, &cfg);
     probe.enabled && probe.status == "installed"
 }
 
@@ -462,6 +476,12 @@ fn install_single_package(
         .ok_or_else(|| format!("package_url is missing for {}", input.id))?;
     let full_url = resolve_package_url(&cfg.base_url, &url)?;
     let kind_hint = input.kind.as_deref().unwrap_or(&item.kind);
+    let remote_kind = normalize_kind(kind_hint);
+    if !input.repair.unwrap_or(false) {
+        if let Some(result) = try_activate_cached_source(cfg, item, &remote_kind, &full_url)? {
+            return Ok(result);
+        }
+    }
     let downloaded = download_package(&full_url, &input.id)?;
     let actual_sha = sha256_file(&downloaded)?;
     if let Some(expected) = item
@@ -483,7 +503,7 @@ fn install_single_package(
         fs::remove_dir_all(&staging).map_err(|e| format!("clear staging failed: {e}"))?;
     }
     fs::create_dir_all(&staging).map_err(|e| format!("create staging failed: {e}"))?;
-    extract_zip_powershell(&downloaded, &staging)?;
+    extract_zip_archive(&downloaded, &staging)?;
     let meta = read_package_meta(&staging).unwrap_or_default();
     let id = meta.id.clone().unwrap_or_else(|| input.id.clone());
     let kind = normalize_kind(meta.kind.as_deref().unwrap_or(kind_hint));
@@ -494,41 +514,49 @@ fn install_single_package(
         .unwrap_or_else(|| "0.0.0".to_string());
     let name = item.name.clone();
     let final_dir = install_dir_for(&kind, &id);
-    if final_dir.exists() {
-        replace_existing_install_preserving_user_data(&final_dir, &meta.preserve_user_data)?;
+    let source_dir = source_store_dir_for(cfg, &kind, &id);
+    if source_dir.exists() {
+        fs::remove_dir_all(&source_dir)
+            .map_err(|e| format!("remove previous source package failed: {e}"))?;
     }
-    if final_dir.exists() {
-        fs::remove_dir_all(&final_dir)
-            .map_err(|e| format!("remove previous install failed: {e}"))?;
+    if let Some(parent) = source_dir.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create source package parent failed: {e}"))?;
     }
-    if let Some(parent) = final_dir.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create install parent failed: {e}"))?;
-    }
-    fs::rename(&staging, &final_dir).map_err(|e| format!("move package into cache failed: {e}"))?;
-    restore_preserved_user_data(&final_dir, &meta.preserve_user_data)?;
+    fs::rename(&staging, &source_dir)
+        .map_err(|e| format!("move package into source store failed: {e}"))?;
+    materialize_active_install(&source_dir, &final_dir, &meta.preserve_user_data)?;
     let dependencies = merge_package_dependencies(&item.dependencies, &meta);
 
     let mut registry = read_installed_registry();
-    registry.packages.insert(
-        id.clone(),
-        InstalledRecord {
-            id: id.clone(),
-            name,
-            version: version.clone(),
-            kind: kind.clone(),
-            source: "l1".to_string(),
-            source_l1_base_url: Some(normalize_base_url(&cfg.base_url)),
-            source_l1_profile_id: cfg.profile_id.clone(),
-            package_url: Some(full_url),
-            package_sha256: Some(actual_sha.clone()),
-            installed_path: final_dir.display().to_string(),
-            installed_at: timestamp_string(),
-            enabled: true,
-            package_assets: meta.package_assets,
-            preserve_user_data: meta.preserve_user_data,
-            dependencies,
-        },
+    let record = InstalledRecord {
+        id: id.clone(),
+        name,
+        version: version.clone(),
+        kind: kind.clone(),
+        source: "l1".to_string(),
+        source_l1_base_url: Some(normalize_base_url(&cfg.base_url)),
+        source_l1_profile_id: cfg.profile_id.clone(),
+        source_store_path: Some(source_dir.display().to_string()),
+        package_url: Some(full_url),
+        package_sha256: Some(actual_sha.clone()),
+        installed_path: final_dir.display().to_string(),
+        installed_at: timestamp_string(),
+        enabled: true,
+        package_assets: meta.package_assets,
+        preserve_user_data: meta.preserve_user_data,
+        dependencies,
+    };
+    registry.source_packages.insert(
+        source_record_key_from_parts(
+            record.source_l1_profile_id.as_deref(),
+            &kind,
+            &id,
+            &record.source_l1_base_url,
+        ),
+        record.clone(),
     );
+    registry.packages.insert(id.clone(), record);
     write_installed_registry(&registry)?;
 
     Ok(CapabilityInstallResult {
@@ -546,6 +574,68 @@ fn install_single_package(
     })
 }
 
+fn try_activate_cached_source(
+    cfg: &L1DirectConfig,
+    item: &RemoteItem,
+    kind: &str,
+    full_url: &str,
+) -> Result<Option<CapabilityInstallResult>, String> {
+    let mut registry = read_installed_registry();
+    let key = source_record_key_for(cfg, kind, &item.id);
+    let Some(source_rec) = registry.source_packages.get(&key).cloned() else {
+        return Ok(None);
+    };
+    if let Some(remote_version) = item.version.as_deref() {
+        if remote_version != source_rec.version {
+            return Ok(None);
+        }
+    }
+    if let Some(remote_sha) = item
+        .package_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if source_rec
+            .package_sha256
+            .as_deref()
+            .map(|local| remote_sha.eq_ignore_ascii_case(local))
+            != Some(true)
+        {
+            return Ok(None);
+        }
+    }
+    let source_dir = source_rec
+        .source_store_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| source_store_dir_for(cfg, &source_rec.kind, &source_rec.id));
+    if !source_dir.is_dir() {
+        return Ok(None);
+    }
+    let final_dir = install_dir_for(&source_rec.kind, &source_rec.id);
+    materialize_active_install(&source_dir, &final_dir, &source_rec.preserve_user_data)?;
+
+    let mut active = source_rec.clone();
+    active.package_url = Some(full_url.to_string());
+    active.installed_path = final_dir.display().to_string();
+    active.enabled = true;
+    active.installed_at = timestamp_string();
+    registry.packages.insert(active.id.clone(), active.clone());
+    registry.source_packages.insert(key, active.clone());
+    write_installed_registry(&registry)?;
+
+    Ok(Some(CapabilityInstallResult {
+        ok: true,
+        id: active.id,
+        version: active.version,
+        kind: active.kind,
+        installed_path: final_dir.display().to_string(),
+        package_sha256: active.package_sha256.unwrap_or_default(),
+        message: "activated from cached L1 source package".to_string(),
+    }))
+}
+
 #[tauri::command]
 pub fn capability_install_set_enabled(
     input: CapabilityEnableInput,
@@ -557,23 +647,34 @@ pub fn capability_install_set_enabled(
         .ok_or_else(|| format!("not installed: {}", input.id))?;
     if input.enabled && !rec.enabled {
         let current = PathBuf::from(&rec.installed_path);
-        if !current.is_dir() {
+        let target = install_dir_for(&rec.kind, &rec.id);
+        if current.is_dir() {
+            if target.exists() {
+                fs::remove_dir_all(&target)
+                    .map_err(|e| format!("remove stale cache dir failed: {e}"))?;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("create cache parent failed: {e}"))?;
+            }
+            fs::rename(&current, &target)
+                .map_err(|e| format!("move package back to cache failed: {e}"))?;
+            rec.installed_path = target.display().to_string();
+        } else if let Some(source) = rec.source_store_path.as_deref().map(PathBuf::from) {
+            if !source.is_dir() {
+                return Err(format!(
+                    "source package path is missing: {}",
+                    source.display()
+                ));
+            }
+            materialize_active_install(&source, &target, &rec.preserve_user_data)?;
+            rec.installed_path = target.display().to_string();
+        } else {
             return Err(format!(
                 "disabled package path is missing: {}",
                 current.display()
             ));
         }
-        let target = install_dir_for(&rec.kind, &rec.id);
-        if target.exists() {
-            fs::remove_dir_all(&target)
-                .map_err(|e| format!("remove stale cache dir failed: {e}"))?;
-        }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("create cache parent failed: {e}"))?;
-        }
-        fs::rename(&current, &target)
-            .map_err(|e| format!("move package back to cache failed: {e}"))?;
-        rec.installed_path = target.display().to_string();
     } else if !input.enabled && rec.enabled {
         let current = PathBuf::from(&rec.installed_path);
         if current.is_dir() {
@@ -621,6 +722,7 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
             l3_mcp_cache_dir(),
             l3_skill_cache_dir(),
             model_cache_dir(),
+            source_store_root(),
             legacy_skills_dir(),
             disabled_dir(),
         ];
@@ -633,6 +735,34 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
         }
         fs::remove_dir_all(&p).map_err(|e| format!("remove install dir failed: {e}"))?;
     }
+    let source_keys: Vec<String> = registry
+        .source_packages
+        .iter()
+        .filter_map(|(key, source_rec)| {
+            if source_rec.id == rec.id {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for key in source_keys {
+        if let Some(source_rec) = registry.source_packages.remove(&key) {
+            if let Some(source) = source_rec.source_store_path.as_deref().map(PathBuf::from) {
+                if source.exists() {
+                    let safe = source.starts_with(source_store_root());
+                    if !safe {
+                        return Err(format!(
+                            "refuse to remove source path outside capability source store: {}",
+                            source.display()
+                        ));
+                    }
+                    fs::remove_dir_all(&source)
+                        .map_err(|e| format!("remove source package dir failed: {e}"))?;
+                }
+            }
+        }
+    }
     write_installed_registry(&registry)?;
     Ok(())
 }
@@ -640,10 +770,16 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
 fn install_item_from_remote(
     item: &RemoteItem,
     rec: Option<&InstalledRecord>,
+    source_rec: Option<&InstalledRecord>,
     cfg: &L1DirectConfig,
 ) -> CapabilityInstallItem {
     let mut problems = Vec::new();
-    if item.package_url.as_deref().unwrap_or("").trim().is_empty() {
+    let current_source_cached = source_rec
+        .and_then(|r| r.source_store_path.as_deref())
+        .map(PathBuf::from)
+        .map(|p| p.is_dir())
+        .unwrap_or(false);
+    if item.package_url.as_deref().unwrap_or("").trim().is_empty() && !current_source_cached {
         problems.push("missing package_url".to_string());
     }
     let (local_version, installed_sha256, installed_path, enabled, status) = if let Some(r) = rec {
@@ -657,7 +793,11 @@ fn install_item_from_remote(
             _ => true,
         };
         let status = if !current_l1_match {
-            "source_mismatch"
+            if current_source_cached {
+                "source_cached"
+            } else {
+                "source_mismatch"
+            }
         } else if !exists {
             "repair_needed"
         } else if !r.enabled {
@@ -680,6 +820,18 @@ fn install_item_from_remote(
         )
     } else if !problems.is_empty() {
         (None, None, None, false, "blocked".to_string())
+    } else if let Some(r) = source_rec {
+        (
+            Some(r.version.clone()),
+            r.package_sha256.clone(),
+            r.source_store_path.clone(),
+            false,
+            if current_source_cached {
+                "source_cached".to_string()
+            } else {
+                "repair_needed".to_string()
+            },
+        )
     } else {
         (None, None, None, false, "not_installed".to_string())
     };
@@ -695,13 +847,19 @@ fn install_item_from_remote(
         package_sha256: item.package_sha256.clone(),
         installed_sha256,
         installed_path,
+        source_store_path: rec.or(source_rec).and_then(|r| r.source_store_path.clone()),
         enabled,
         source: item.source.clone(),
-        source_l1_base_url: rec.and_then(|r| r.source_l1_base_url.clone()),
-        source_l1_profile_id: rec.and_then(|r| r.source_l1_profile_id.clone()),
+        source_l1_base_url: rec
+            .or(source_rec)
+            .and_then(|r| r.source_l1_base_url.clone()),
+        source_l1_profile_id: rec
+            .or(source_rec)
+            .and_then(|r| r.source_l1_profile_id.clone()),
         current_l1_match: rec
             .map(|r| record_matches_current_l1(r, cfg))
             .unwrap_or(false),
+        current_l1_cached: current_source_cached,
         l1_status: item.status.clone(),
         status,
         problems,
@@ -722,11 +880,13 @@ fn install_item_local_only(rec: &InstalledRecord) -> CapabilityInstallItem {
         package_sha256: None,
         installed_sha256: rec.package_sha256.clone(),
         installed_path: Some(rec.installed_path.clone()),
+        source_store_path: rec.source_store_path.clone(),
         enabled: rec.enabled,
         source: rec.source.clone(),
         source_l1_base_url: rec.source_l1_base_url.clone(),
         source_l1_profile_id: rec.source_l1_profile_id.clone(),
         current_l1_match: false,
+        current_l1_cached: false,
         l1_status: None,
         status: if !exists {
             "repair_needed".to_string()
@@ -942,6 +1102,7 @@ fn merge_disk_installs(registry: &mut InstalledRegistry) {
                     source: "local_cache".to_string(),
                     source_l1_base_url: None,
                     source_l1_profile_id: None,
+                    source_store_path: None,
                     package_url: None,
                     package_sha256: None,
                     installed_path: path.display().to_string(),
@@ -1034,6 +1195,57 @@ fn replace_existing_install_preserving_user_data(
             .map_err(|e| format!("serialize preserve marker failed: {e}"))?,
     )
     .map_err(|e| format!("write preserve marker failed: {e}"))?;
+    Ok(())
+}
+
+fn materialize_active_install(
+    source_dir: &Path,
+    final_dir: &Path,
+    preserve: &[String],
+) -> Result<(), String> {
+    if !source_dir.is_dir() {
+        return Err(format!("source package missing: {}", source_dir.display()));
+    }
+    if final_dir.exists() {
+        replace_existing_install_preserving_user_data(final_dir, preserve)?;
+    }
+    if final_dir.exists() {
+        fs::remove_dir_all(final_dir)
+            .map_err(|e| format!("remove previous active install failed: {e}"))?;
+    }
+    copy_dir_recursive(source_dir, final_dir)?;
+    restore_preserved_user_data(final_dir, preserve)?;
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.is_dir() {
+        return Err(format!("copy source is not a directory: {}", src.display()));
+    }
+    fs::create_dir_all(dst).map_err(|e| format!("create copy destination failed: {e}"))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("read copy source failed: {e}"))? {
+        let entry = entry.map_err(|e| format!("read copy entry failed: {e}"))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let ty = entry
+            .file_type()
+            .map_err(|e| format!("read copy entry type failed: {e}"))?;
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if ty.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("create copied file parent failed: {e}"))?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(|e| {
+                format!(
+                    "copy file failed {} -> {}: {e}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -1155,23 +1367,49 @@ fn download_package(url: &str, id: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn extract_zip_powershell(zip_path: &Path, dest: &Path) -> Result<(), String> {
+fn extract_zip_archive(zip_path: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("create extract dir failed: {e}"))?;
-    let status = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-Command")
-        .arg("Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force")
-        .arg(zip_path)
-        .arg(dest)
-        .status()
-        .map_err(|e| format!("run Expand-Archive failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("Expand-Archive failed with status {status}"))
+    let file = fs::File::open(zip_path)
+        .map_err(|e| format!("open zip failed {}: {e}", zip_path.display()))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("read zip archive failed: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("read zip entry #{i} failed: {e}"))?;
+        let rel = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("unsafe zip entry: {}", entry.name()))?
+            .to_owned();
+        let out = dest.join(rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&out)
+                .map_err(|e| format!("create extracted directory failed {}: {e}", out.display()))?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "create extracted file parent failed {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+        let mut output = fs::File::create(&out)
+            .map_err(|e| format!("create extracted file failed {}: {e}", out.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|e| format!("write extracted file failed {}: {e}", out.display()))?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&out, fs::Permissions::from_mode(mode)).map_err(|e| {
+                format!(
+                    "set extracted file permissions failed {}: {e}",
+                    out.display()
+                )
+            })?;
+        }
     }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -1209,6 +1447,49 @@ fn install_dir_for(kind: &str, id: &str) -> PathBuf {
         _ => l3_skill_cache_dir(),
     };
     base.join(safe_id(id))
+}
+
+fn source_store_dir_for(cfg: &L1DirectConfig, kind: &str, id: &str) -> PathBuf {
+    let profile = cfg
+        .profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| profile_id_for_base_url(&cfg.base_url));
+    source_store_root()
+        .join(safe_id(&profile))
+        .join(normalize_kind(kind))
+        .join(safe_id(id))
+}
+
+fn source_record_key_for(cfg: &L1DirectConfig, kind: &str, id: &str) -> String {
+    source_record_key_from_parts(
+        cfg.profile_id.as_deref(),
+        kind,
+        id,
+        &Some(normalize_base_url(&cfg.base_url)),
+    )
+}
+
+fn source_record_key_from_parts(
+    profile_id: Option<&str>,
+    kind: &str,
+    id: &str,
+    base_url: &Option<String>,
+) -> String {
+    let profile = profile_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| base_url.as_deref().map(profile_id_for_base_url))
+        .unwrap_or_else(|| "unknown_l1".to_string());
+    format!(
+        "{}/{}/{}",
+        safe_id(&profile),
+        normalize_kind(kind),
+        safe_id(id)
+    )
 }
 
 fn normalize_kind(raw: &str) -> String {
@@ -1249,8 +1530,7 @@ fn read_l1_direct_config() -> L1DirectConfig {
 
     let mut cfg = read_legacy_l1_direct_config_raw();
     if cfg.base_url.trim().is_empty() {
-        cfg.base_url = crate::nexus_config::nexus_base_url()
-            .unwrap_or_else(|| DEFAULT_L1_BASE_URL.to_string());
+        cfg.base_url = DEFAULT_L1_BASE_URL.to_string();
     }
     if cfg
         .developer_id
@@ -1296,8 +1576,7 @@ fn read_l1_profiles_file() -> L1ProfilesFile {
     if file.profiles.is_empty() {
         let mut cfg = read_legacy_l1_direct_config_raw();
         if cfg.base_url.trim().is_empty() {
-            cfg.base_url = crate::nexus_config::nexus_base_url()
-                .unwrap_or_else(|| DEFAULT_L1_BASE_URL.to_string());
+            cfg.base_url = DEFAULT_L1_BASE_URL.to_string();
         }
         if cfg
             .developer_id
@@ -1432,7 +1711,7 @@ fn profile_id_for_base_url(base_url: &str) -> String {
 fn default_profile_name(base_url: &str) -> String {
     let base = normalize_base_url(base_url);
     if base == DEFAULT_L1_BASE_URL {
-        "Local L1".to_string()
+        "Jachin Cloud L1".to_string()
     } else {
         base.trim_start_matches("https://")
             .trim_start_matches("http://")
@@ -1535,6 +1814,10 @@ fn l3_skill_cache_dir() -> PathBuf {
 
 fn model_cache_dir() -> PathBuf {
     jachin_home_dir().join("models")
+}
+
+fn source_store_root() -> PathBuf {
+    jachin_home_dir().join("capability_sources")
 }
 
 fn legacy_skills_dir() -> PathBuf {

@@ -148,7 +148,7 @@ struct L1DirectConfig {
     upload_by_default: Option<bool>,
 }
 
-const DEFAULT_L1_BASE_URL: &str = "http://localhost:3000";
+const DEFAULT_L1_BASE_URL: &str = "http://47.86.39.173:3000";
 
 #[derive(Debug, Clone, Default)]
 struct RemotePackageRecord {
@@ -193,18 +193,16 @@ pub fn capability_publish_scan() -> Result<CapabilityPublishScan, String> {
     let remote_packages = fetch_l1_developer_packages(&l1_config).unwrap_or_default();
     let mut packages = scan_capability_packages(&root, &state)?;
     for pkg in &mut packages {
+        pkg.status = "unpublished".to_string();
         if let Some(remote) = remote_packages.get(&pkg.id) {
             pkg.l1_published = true;
             pkg.l1_version = Some(remote.version.clone());
             pkg.l1_review_status = remote.review_status.clone();
             pkg.l1_package_url = remote.package_url.clone();
             if remote.version == pkg.version {
-                pkg.published = true;
                 pkg.published_version = Some(remote.version.clone());
-                if pkg.status == "unpublished" {
-                    pkg.status = "published".to_string();
-                }
-            } else if pkg.status == "unpublished" || pkg.status == "published" {
+                pkg.status = "published".to_string();
+            } else {
                 pkg.status = "update_available".to_string();
             }
         }
@@ -921,15 +919,6 @@ fn read_package_info(
         } else {
             (false, None, None, None, None)
         };
-    let status = if !published {
-        "unpublished"
-    } else if published_version.as_deref() == Some(version.as_str()) {
-        "published"
-    } else {
-        "update_available"
-    }
-    .to_string();
-
     let path = dir.strip_prefix(root).unwrap_or(dir).display().to_string();
     Ok(CapabilityPackageInfo {
         id,
@@ -946,7 +935,11 @@ fn read_package_info(
         last_published_at,
         package_path,
         sha256_path,
-        status,
+        // `published` records the local packaging history only. Whether a
+        // capability is published must be judged against the currently active
+        // L1, because the same workstation may switch between local, staging,
+        // and cloud L1 instances.
+        status: "unpublished".to_string(),
         l1_published: false,
         l1_version: None,
         l1_review_status: None,
@@ -1189,8 +1182,7 @@ fn read_l1_direct_config() -> L1DirectConfig {
 
 fn merge_l1_defaults_from_nexus(config: &mut L1DirectConfig) {
     if config.base_url.trim().is_empty() {
-        config.base_url = crate::nexus_config::nexus_base_url()
-            .unwrap_or_else(|| DEFAULT_L1_BASE_URL.to_string());
+        config.base_url = DEFAULT_L1_BASE_URL.to_string();
     }
     if config
         .developer_id

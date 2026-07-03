@@ -47,6 +47,7 @@ tauri-plugin-single-instance = "2"
 minisign-verify = "0.2"
 uuid = { version = "1", features = ["v4"] }
 serde_yaml = "0.9"
+zip = "0.6"
 
 [[bin]]
 name = "jachin-updater-helper"

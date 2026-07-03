@@ -624,7 +624,7 @@ export function CapabilityPublish() {
                         {statusLabel(pkg.status)}
                       </span>
                       <div className="mt-2 text-xs text-slate-500">
-                        {pkg.published_version ? `已发 ${pkg.published_version}` : "无发布记录"}
+                        {pkg.published_version ? `本地产物 ${pkg.published_version}` : "无本地产物记录"}
                       </div>
                       {pkg.l1_published && (
                         <div className="mt-1 text-xs text-cyan-300/80">
@@ -640,7 +640,7 @@ export function CapabilityPublish() {
                         onChange={(e) => setVersions((prev) => ({ ...prev, [pkg.id]: e.target.value }))}
                         className="h-9 w-full rounded-md border border-slate-700 bg-slate-950/70 px-2 font-mono text-sm text-slate-100 outline-none focus:border-cyan-400/60"
                       />
-                      {(pkg.published || pkg.l1_published) && (
+                      {pkg.l1_published && (
                         <button
                           onClick={() => setVersions((prev) => ({ ...prev, [pkg.id]: bumpPatch(pkg.version) }))}
                           className="mt-2 text-xs text-cyan-300 hover:text-cyan-100"
@@ -657,10 +657,10 @@ export function CapabilityPublish() {
                       >
                         {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
                         {isBusinessSkill(pkg)
-                          ? pkg.published || pkg.l1_published
+                          ? pkg.l1_published
                             ? "发布业务包"
                             : "一键发布"
-                          : pkg.published || pkg.l1_published
+                          : pkg.l1_published
                             ? "发布新版本"
                             : "发布"}
                       </button>

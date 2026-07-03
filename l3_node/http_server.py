@@ -476,6 +476,7 @@ def _stream_response() -> "aiohttp.web.StreamResponse":
     r.headers["Cache-Control"] = "no-cache"
     r.headers["Connection"] = "keep-alive"
     r.headers["Access-Control-Allow-Origin"] = "*"
+    r.headers["Access-Control-Allow-Private-Network"] = "true"
     return r
 
 
@@ -3098,6 +3099,117 @@ async def _handle_local_capability_install(request: Any) -> "aiohttp.web.Respons
         return _json_response({"ok": False, "error": str(e), "plugin_id": plugin_id}, status=500)
 
 
+def _local_install_page_html(title: str, body: str, ok: bool) -> str:
+    import html
+
+    status = "安装完成" if ok else "安装失败"
+    color = "#35e6a5" if ok else "#ff6b81"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #050914;
+      color: #e8f4ff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    main {{
+      width: min(720px, calc(100vw - 32px));
+      border: 1px solid rgba(34, 211, 238, .28);
+      border-radius: 14px;
+      background: rgba(15, 23, 42, .92);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .38);
+      padding: 28px;
+    }}
+    .eyebrow {{
+      color: #22d3ee;
+      font-size: 12px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }}
+    h1 {{
+      margin: 0 0 16px;
+      font-size: 24px;
+      line-height: 1.25;
+    }}
+    pre {{
+      white-space: pre-wrap;
+      word-break: break-word;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, .25);
+      background: rgba(2, 6, 23, .76);
+      padding: 16px;
+      color: #cbd5e1;
+      line-height: 1.6;
+    }}
+    .status {{
+      color: {color};
+      font-weight: 700;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Jachin Local Install</div>
+    <h1><span class="status">{status}</span> · {html.escape(title)}</h1>
+    <pre>{html.escape(body)}</pre>
+  </main>
+</body>
+</html>"""
+
+
+async def _handle_local_capability_install_page(request: Any) -> "aiohttp.web.Response":
+    """GET /l3/local-capability-install — top-level browser fallback for cloud L1 pages.
+
+    Cloud L1 pages can be blocked by browser Private Network Access rules when
+    they fetch 127.0.0.1 directly. Top-level navigation to the local L3 endpoint
+    remains a reliable user-initiated fallback and lets L3 perform the install.
+    """
+    import aiohttp.web
+
+    plugin_id = str(request.query.get("plugin_id") or request.query.get("item_id") or "").strip()
+    l1_base_url = str(request.query.get("l1_base_url") or request.query.get("base_url") or "").strip() or None
+    repair = str(request.query.get("repair") or "").strip().lower() in ("1", "true", "yes")
+    if not plugin_id:
+        html = _local_install_page_html("缺少 plugin_id", "URL 中缺少 plugin_id，无法安装能力。", False)
+        return aiohttp.web.Response(text=html, content_type="text/html", status=400)
+
+    try:
+        from l3_node.local_capability_install import install_capability_from_l1
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, install_capability_from_l1, plugin_id, l1_base_url, repair)
+        ok = bool(result.get("ok"))
+        installed_ids = result.get("installed_ids") or []
+        lines = [
+            f"能力 ID：{result.get('id') or plugin_id}",
+            f"版本：{result.get('version') or '-'}",
+            f"安装位置：{result.get('installed_path') or '-'}",
+            f"安装包数量：{result.get('installed_count') or len(installed_ids) or 1}",
+        ]
+        if installed_ids:
+            lines.append("")
+            lines.append("已安装能力：")
+            lines.extend(f"- {item}" for item in installed_ids)
+        if not ok and result.get("error"):
+            lines.append("")
+            lines.append(f"错误：{result.get('error')}")
+        html = _local_install_page_html(plugin_id, "\n".join(lines), ok)
+        return aiohttp.web.Response(text=html, content_type="text/html", status=200 if ok else 500)
+    except Exception as e:
+        logger.warning("[L3 HTTP] local capability install page failed plugin_id=%s err=%s", plugin_id, e)
+        html = _local_install_page_html(plugin_id, f"错误：{e}", False)
+        return aiohttp.web.Response(text=html, content_type="text/html", status=500)
+
+
 def _json_response(data: Any, status: int = 200) -> "aiohttp.web.Response":
     import aiohttp.web
     return aiohttp.web.json_response(data, status=status, dumps=lambda o: json.dumps(o, ensure_ascii=False))
@@ -3173,6 +3285,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
         else:
             r = await handler(request)
         r.headers["Access-Control-Allow-Origin"] = "*"
+        r.headers["Access-Control-Allow-Private-Network"] = "true"
         r.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
         r.headers["Access-Control-Allow-Headers"] = (
             "Content-Type, X-Jachin-Safety-Lock-Token, X-Jachin-Cron-Thinker-Token, "
@@ -3287,6 +3400,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/v3/config/native-fs-policy", _handle_native_fs_policy_post)
     app.router.add_post("/api/v1/local-model-install", _handle_local_model_install)
     app.router.add_post("/api/v1/local-capability-install", _handle_local_capability_install)
+    app.router.add_get("/l3/local-capability-install", _handle_local_capability_install_page)
 
     async def _on_startup_register_k11_schedule_sse_loop(_app):
         """绑定主 asyncio 循环，供 cron_thinker 等线程向 MIND STREAM / schedule SSE 推流。"""

@@ -22,6 +22,7 @@ type InstallStatus =
   | "repair_needed"
   | "disabled"
   | "local_only"
+  | "source_cached"
   | "source_mismatch"
   | "blocked";
 
@@ -36,11 +37,13 @@ interface CapabilityInstallItem {
   package_sha256?: string | null;
   installed_sha256?: string | null;
   installed_path?: string | null;
+  source_store_path?: string | null;
   enabled: boolean;
   source: string;
   source_l1_base_url?: string | null;
   source_l1_profile_id?: string | null;
   current_l1_match: boolean;
+  current_l1_cached: boolean;
   l1_status?: string | null;
   status: InstallStatus | string;
   problems: string[];
@@ -54,6 +57,7 @@ interface CapabilityInstallScan {
   mcp_cache_dir: string;
   skill_cache_dir: string;
   model_cache_dir: string;
+  source_store_dir: string;
   download_dir: string;
   items: CapabilityInstallItem[];
   counts: Record<string, number>;
@@ -93,6 +97,7 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: "update_available", label: "可更新" },
   { key: "installed", label: "已安装" },
   { key: "repair_needed", label: "需修复" },
+  { key: "source_cached", label: "已缓存" },
   { key: "source_mismatch", label: "其他 L1" },
   { key: "disabled", label: "已禁用" },
   { key: "local_only", label: "本地包" },
@@ -101,7 +106,13 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: "model", label: "Model" },
 ];
 
-const INSTALLABLE_STATUSES = new Set(["not_installed", "update_available", "repair_needed", "source_mismatch"]);
+const INSTALLABLE_STATUSES = new Set([
+  "not_installed",
+  "update_available",
+  "repair_needed",
+  "source_cached",
+  "source_mismatch",
+]);
 const READY_STATUSES = new Set(["installed", "local_only"]);
 
 function statusLabel(status: string): string {
@@ -109,6 +120,7 @@ function statusLabel(status: string): string {
   if (status === "not_installed") return "未安装";
   if (status === "update_available") return "可更新";
   if (status === "repair_needed") return "需修复";
+  if (status === "source_cached") return "当前 L1 已缓存";
   if (status === "source_mismatch") return "其他 L1 来源";
   if (status === "disabled") return "已禁用";
   if (status === "local_only") return "本地开发包";
@@ -119,6 +131,7 @@ function statusClass(status: string): string {
   if (status === "installed") return "border-emerald-400/35 bg-emerald-500/10 text-emerald-200";
   if (status === "update_available") return "border-amber-400/35 bg-amber-500/10 text-amber-200";
   if (status === "repair_needed") return "border-rose-400/35 bg-rose-500/10 text-rose-200";
+  if (status === "source_cached") return "border-cyan-400/35 bg-cyan-500/10 text-cyan-100";
   if (status === "source_mismatch") return "border-sky-400/35 bg-sky-500/10 text-sky-100";
   if (status === "disabled") return "border-slate-500/35 bg-slate-500/10 text-slate-300";
   if (status === "local_only") return "border-violet-400/35 bg-violet-500/10 text-violet-200";
@@ -195,6 +208,7 @@ export function CapabilityInstallCenter() {
         item.id.toLowerCase().includes(q) ||
         item.name.toLowerCase().includes(q) ||
         (item.source_l1_base_url ?? "").toLowerCase().includes(q) ||
+        (item.source_store_path ?? "").toLowerCase().includes(q) ||
         (item.installed_path ?? "").toLowerCase().includes(q);
       if (!matchQuery) return false;
       if (filter === "all") return true;
@@ -481,7 +495,7 @@ export function CapabilityInstallCenter() {
           {scan && (
             <p className="mt-3 text-xs text-slate-500">
               L1：{scan.l1_base_url || "未配置"}；registry：{scan.registry_path}；MCP：{scan.mcp_cache_dir}；Skill：
-              {scan.skill_cache_dir}；Model：{scan.model_cache_dir}
+              {scan.skill_cache_dir}；Model：{scan.model_cache_dir}；Source Store：{scan.source_store_dir}
             </p>
           )}
         </section>
@@ -551,6 +565,16 @@ export function CapabilityInstallCenter() {
                           <span className="truncate">{item.installed_path}</span>
                         </button>
                       )}
+                      {item.source_store_path && (
+                        <button
+                          onClick={() => void openPath(item.source_store_path)}
+                          className="mt-1 inline-flex max-w-full items-center gap-1 text-left text-xs text-sky-300/65 hover:text-sky-100"
+                          title={item.source_store_path}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5 flex-shrink-0" />
+                          <span className="truncate">源包：{item.source_store_path}</span>
+                        </button>
+                      )}
                       {item.problems.length > 0 && (
                         <div className="mt-2 rounded border border-amber-400/20 bg-amber-500/5 px-2 py-1 text-xs text-amber-100">
                           {item.problems.join("；")}
@@ -597,6 +621,8 @@ export function CapabilityInstallCenter() {
                               ? "更新模型"
                               : item.status === "repair_needed"
                                 ? "修复模型"
+                                : item.status === "source_cached"
+                                  ? "启用模型"
                                 : item.status === "source_mismatch"
                                   ? "切换来源"
                                   : "下载模型"
@@ -604,6 +630,8 @@ export function CapabilityInstallCenter() {
                               ? "更新"
                               : item.status === "repair_needed"
                                 ? "修复"
+                                : item.status === "source_cached"
+                                  ? "启用来源"
                                 : item.status === "source_mismatch"
                                   ? "切换来源安装"
                                 : pendingDeps.length > 0

@@ -405,20 +405,44 @@ export default function StorePage() {
       const installLocally = async () => {
         if (!["SKILL", "MCP", "MODEL"].includes(item.item_type)) return null;
         const pluginId = item.plugin_id || item.id;
+        const openLocalInstallPage = () => {
+          const url = new URL("http://127.0.0.1:18991/l3/local-capability-install");
+          url.searchParams.set("plugin_id", pluginId);
+          url.searchParams.set("l1_base_url", window.location.origin);
+          const opened = window.open(url.toString(), "_blank", "noopener,noreferrer");
+          if (!opened) {
+            window.location.assign(url.toString());
+          }
+        };
         setToast({ message: t.toastLocalInstallStart(item.name), type: "info" });
-        const res = await fetch("http://127.0.0.1:18991/api/v1/local-capability-install", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            plugin_id: pluginId,
-            l1_base_url: window.location.origin,
-          }),
-        });
-        const json = await res.json().catch(() => null);
-        if (!res.ok || !json?.ok) {
-          throw new Error(json?.error || `local capability install failed: HTTP ${res.status}`);
+        const isLocalL1 = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+        const shouldUseNavigationFallback = window.location.protocol !== "https:" && !isLocalL1;
+        if (shouldUseNavigationFallback) {
+          openLocalInstallPage();
+          return { fallback_opened: true };
         }
-        return json as { installed_count?: number; installed_path?: string; id?: string };
+        try {
+          const res = await fetch("http://127.0.0.1:18991/api/v1/local-capability-install", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              plugin_id: pluginId,
+              l1_base_url: window.location.origin,
+            }),
+          });
+          const json = await res.json().catch(() => null);
+          if (!res.ok || !json?.ok) {
+            throw new Error(json?.error || `local capability install failed: HTTP ${res.status}`);
+          }
+          return json as { installed_count?: number; installed_path?: string; id?: string };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
+            openLocalInstallPage();
+            return { fallback_opened: true };
+          }
+          throw err;
+        }
       };
       try {
         if (!ownedIds.has(item.id)) {
@@ -451,7 +475,11 @@ export default function StorePage() {
 
         const local = await installLocally();
         setToast({
-          message: local ? t.toastLocalInstallOk(item.name, local.installed_count ?? 1) : t.toastSubscribeOk,
+          message: local
+            ? "fallback_opened" in local
+              ? t.toastLocalInstallFallback(item.name)
+              : t.toastLocalInstallOk(item.name, local.installed_count ?? 1)
+            : t.toastSubscribeOk,
           type: "success",
         });
       } catch (err) {
