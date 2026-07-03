@@ -8,6 +8,7 @@
 3) 统计 p50/p90，快速评估提速效果
 
 默认链路（陪伴态对齐）：
+  路由     : clients/desktop/src/voice/voiceIntentRouter.ts（via tsx CLI，与 chat.tsx 同源）
   JVS STT  : POST /v1/stt/transcribe     (18982)
   L3 回答  : POST /api/v3/agent/run      (18991)
   JVS TTS  : POST /v1/tts/synthesize     (18982)
@@ -31,6 +32,15 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from voice_intent_router import (
+    build_companion_implicit_signals,
+    dispatch_voice_intent,
+)
+
 
 if sys.platform == "win32":
     try:
@@ -45,15 +55,6 @@ DEFAULT_L3 = os.getenv("JACHIN_L3_HTTP_BASE", "http://127.0.0.1:18991").rstrip("
 DEFAULT_OUT_DIR = Path("data/voice_latency_bench")
 DEFAULT_VOICE = "zm_053"
 
-CHITCHAT_RE = re.compile(r"(你好|在吗|你在吗|早上好|中午好|晚上好|陪我聊聊|心情怎么样|今天过得怎么样)")
-FASTLANE_HEAVY_RE = re.compile(r"(文件|目录|项目|代码|脚本|报告|总结|生成|修改|删除|运行|执行|搜索|查找|分析|数据库|飞书|后台|任务)")
-FASTLANE_LIGHT_RE = re.compile(r"(你好|在吗|你在吗|早上好|中午好|晚上好|陪我|聊聊|你是谁|听得到吗|听见吗|几点|时间|谢谢|没事|算了|好的|心情|难受|开心|累了|困了)")
-CONTROL_ABORT_RE = re.compile(r"(停|停止|取消|别弄了|算了|不要了|暂停)")
-CONTROL_STATUS_RE = re.compile(r"(进度|好了吗|怎么样了|做到哪了|状态)")
-CONTROL_MODIFY_RE = re.compile(r"(改成|改为|改一下|换成|加上|再加|其实还要)")
-CONTROL_RESUME_RE = re.compile(r"(继续|接着做|恢复)")
-LONG_TASK_RE = re.compile(r"(全部|批量|所有|每个|整文件夹|整个文件夹|目录|文件夹|生成报告|形成报告|输出报告|汇总报告|分析这些|导出|爬取|所有文件|所有文档)")
-SHORT_QUERY_RE = re.compile(r"(天气|气温|几点|时间|提醒|闹钟|打开|搜索|读文件|总结这一份|查一下)")
 SENSEVOICE_TAG_RE = re.compile(r"<\|.*?\|>")
 
 RESULT_HINT_RE = re.compile(r"(已|已经|完成|成功|失败|结果|最终|搞定|好了|完成了|已为你|我已|无法|没法|失败了|报错|可以了|请重试)")
@@ -133,68 +134,16 @@ def _sanitize_stt_text(text: str) -> str:
     return t
 
 
-def _is_companion_fast_lane_text(text: str) -> bool:
-    t = (text or "").strip()
-    if not t:
-        return False
-    if len(t) > 80:
-        return False
-    if re.search(r"[\\/]|[.]\w{1,6}\b|```|#|@|http", t, flags=re.IGNORECASE):
-        return False
-    if FASTLANE_HEAVY_RE.search(t):
-        return False
-    if FASTLANE_LIGHT_RE.search(t):
-        return True
-    return bool(re.fullmatch(r"(好|嗯|哦|行|可以|不用|没事|谢谢|辛苦了)[。！？!?]?", t))
-
-
-def _dispatch_voice_intent_bench(text: str) -> dict[str, Any]:
-    t = (text or "").strip()
-    decision = {
-        "tier": "CHIT_CHAT",
-        "intent_class": "CHITCHAT",
-        "execution_lane": "direct_llm",
-        "normalized_text": t,
-        "router_hints": {
-            "fast_lane": False,
-            "skip_context_retrieval": False,
-            "skip_context_sniffer": False,
-            "skip_experience_rag": False,
-            "skip_gateway_enrich": False,
-            "prefer_direct_llm": True,
-            "force_background": False,
-            "acceptance_round": False,
-            "inject_task_context": False,
-            "max_foreground_tool_sec": 5,
-            "awaiting_confirmation": False,
-            "clarification_pending": False,
-        },
-    }
-    if not t:
-        return decision
-    if _is_companion_fast_lane_text(t) or CHITCHAT_RE.search(t):
-        decision["router_hints"].update({
-            "fast_lane": True,
-            "skip_context_retrieval": True,
-            "skip_context_sniffer": True,
-            "skip_experience_rag": True,
-            "skip_gateway_enrich": True,
-            "prefer_direct_llm": True,
-        })
-        return decision
-    if LONG_TASK_RE.search(t):
-        decision.update({"tier": "LONG_TASK", "intent_class": "TASK_ASYNC", "execution_lane": "background_submit"})
-        decision["router_hints"].update({"prefer_direct_llm": False, "force_background": True, "acceptance_round": True})
-        return decision
-    if SHORT_QUERY_RE.search(t):
-        decision.update({"tier": "SHORT_TASK", "intent_class": "TASK_SYNC", "execution_lane": "foreground"})
-        decision["router_hints"].update({"prefer_direct_llm": False})
-        return decision
-    if CONTROL_ABORT_RE.search(t) or CONTROL_STATUS_RE.search(t) or CONTROL_MODIFY_RE.search(t) or CONTROL_RESUME_RE.search(t):
-        decision.update({"intent_class": "CONTROL", "execution_lane": "background_control"})
-        decision["router_hints"].update({"prefer_direct_llm": False})
-        return decision
-    return decision
+def _load_route_context(path: Path | None) -> dict[str, Any]:
+    """VoiceDispatcherContext JSON（activeTasks / awaitingConfirmation 等）。"""
+    if path is None:
+        return {"activeTasks": []}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"route context must be object: {path}")
+    if "activeTasks" not in data:
+        data["activeTasks"] = []
+    return data
 
 
 def _pick_result_clause(s: str) -> str | None:
@@ -338,6 +287,8 @@ class RunMetric:
     voice_dispatch_tier: str
     voice_intent_class: str
     voice_fast_lane: bool
+    voice_interrupt_verdict: str
+    voice_route_notes: str
 
 
 def run_once(
@@ -356,6 +307,7 @@ def run_once(
     tts_mode: str,
     max_speak_sentences: int,
     companion_real_route: bool,
+    route_context: dict[str, Any],
     progress: Callable[[str], None] | None = None,
 ) -> RunMetric:
     started = _perf_ms()
@@ -370,6 +322,8 @@ def run_once(
     voice_dispatch_tier = ""
     voice_intent_class = ""
     voice_fast_lane = False
+    voice_interrupt_verdict = ""
+    voice_route_notes = ""
     try:
         if text_input is not None:
             recognized = text_input.strip()
@@ -389,32 +343,31 @@ def run_once(
             progress("L3 推理中...")
         st = _perf_ms()
         chat_id = f"{chat_prefix}-{uuid.uuid4().hex[:10]}"
-        decision = _dispatch_voice_intent_bench(recognized) if companion_real_route else _dispatch_voice_intent_bench("")
-        routed_text = (decision.get("normalized_text") or recognized).strip() or recognized
+        if companion_real_route:
+            decision = dispatch_voice_intent(recognized, route_context)
+            routed_text = (decision.get("normalized_text") or recognized).strip() or recognized
+            implicit_signals = build_companion_implicit_signals(
+                raw_stt_text=recognized,
+                decision=decision,
+                source="voice_latency_bench",
+                active_tasks=route_context.get("activeTasks"),
+            )
+        else:
+            routed_text = recognized
+            implicit_signals = {
+                "desktop_companion": True,
+                "source": "desktop_voice_companion",
+                "voice_raw_stt_text": recognized,
+                "voice_routed_text": routed_text,
+            }
+            decision = {}
         voice_dispatch_tier = str(decision.get("tier") or "")
         voice_intent_class = str(decision.get("intent_class") or "")
-        voice_fast_lane = bool((decision.get("router_hints") or {}).get("fast_lane"))
-        implicit_signals: dict[str, Any] = {
-            "desktop_companion": True,
-            "source": "desktop_voice_companion",
-            "voice_raw_stt_text": recognized,
-            "voice_routed_text": routed_text,
-            "voice_dispatch_tier": voice_dispatch_tier,
-            "voice_intent_class": voice_intent_class,
-            "voice_dispatch_lane": decision.get("execution_lane"),
-            "voice_fast_lane": voice_fast_lane,
-            "skip_context_retrieval": bool((decision.get("router_hints") or {}).get("skip_context_retrieval")),
-            "skip_context_sniffer": bool((decision.get("router_hints") or {}).get("skip_context_sniffer")),
-            "skip_experience_rag": bool((decision.get("router_hints") or {}).get("skip_experience_rag")),
-            "skip_gateway_enrich": bool((decision.get("router_hints") or {}).get("skip_gateway_enrich")),
-            "prefer_direct_llm": bool((decision.get("router_hints") or {}).get("prefer_direct_llm")),
-            "force_background": bool((decision.get("router_hints") or {}).get("force_background")),
-            "acceptance_round": bool((decision.get("router_hints") or {}).get("acceptance_round")),
-            "inject_task_context": bool((decision.get("router_hints") or {}).get("inject_task_context")),
-            "max_foreground_tool_sec": int((decision.get("router_hints") or {}).get("max_foreground_tool_sec") or 5),
-            "awaiting_confirmation": bool((decision.get("router_hints") or {}).get("awaiting_confirmation")),
-            "clarification_pending": bool((decision.get("router_hints") or {}).get("clarification_pending")),
-        }
+        hints = decision.get("router_hints") or {}
+        voice_fast_lane = bool(hints.get("fast_lane"))
+        voice_interrupt_verdict = str(decision.get("interrupt_verdict") or "")
+        notes = decision.get("route_notes") or []
+        voice_route_notes = "|".join(notes) if isinstance(notes, list) else str(notes)
         l3_raw = _http_post_json(
             f"{l3_base}/api/v3/agent/run",
             {
@@ -471,6 +424,8 @@ def run_once(
             voice_dispatch_tier=voice_dispatch_tier,
             voice_intent_class=voice_intent_class,
             voice_fast_lane=voice_fast_lane,
+            voice_interrupt_verdict=voice_interrupt_verdict,
+            voice_route_notes=voice_route_notes,
         )
     except Exception as e:  # noqa: BLE001
         return RunMetric(
@@ -491,6 +446,8 @@ def run_once(
             voice_dispatch_tier=voice_dispatch_tier,
             voice_intent_class=voice_intent_class,
             voice_fast_lane=voice_fast_lane,
+            voice_interrupt_verdict=voice_interrupt_verdict,
+            voice_route_notes=voice_route_notes,
         )
 
 
@@ -558,12 +515,17 @@ def parse_args() -> argparse.Namespace:
         "--companion-real-route",
         action="store_true",
         default=True,
-        help="按陪伴态语音路由规则生成 implicit_signals 并送入 L3（默认开启）",
+        help="调用 voiceIntentRouter.ts（与 chat.tsx 同源）并注入完整 implicit_signals（默认开启）",
     )
     p.add_argument(
         "--no-companion-real-route",
         action="store_true",
-        help="关闭陪伴态路由信号注入（仅保留基础 STT->L3->TTS）",
+        help="关闭陪伴态路由，仅传 STT 原文与最小 companion 信号",
+    )
+    p.add_argument(
+        "--route-context-json",
+        type=Path,
+        help="VoiceDispatcherContext JSON（含 activeTasks 等），模拟长任务运行中插嘴",
     )
     return p.parse_args()
 
@@ -582,7 +544,10 @@ def main() -> int:
     )
     if args.no_companion_real_route:
         args.companion_real_route = False
-    print(f"[INFO] companion_real_route={bool(args.companion_real_route)}")
+    route_context = _load_route_context(args.route_context_json)
+    print(f"[INFO] companion_real_route={bool(args.companion_real_route)} router=voiceIntentRouter.ts")
+    if route_context.get("activeTasks"):
+        print(f"[INFO] route_context activeTasks={len(route_context['activeTasks'])}")
 
     fixed_wav: bytes | None = None
     if args.audio_file:
@@ -603,7 +568,9 @@ def main() -> int:
                 except Exception as e:  # noqa: BLE001
                     print(f"[{i}/{args.runs}] 录音失败: {e}")
                     rows.append(
-                        RunMetric(i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0, 0, "", "", "", False)
+                        RunMetric(
+                            i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0, 0, "", "", "", False, "", ""
+                        )
                     )
                     write_rows(csv_path, jsonl_path, [rows[-1]])
                     continue
@@ -628,6 +595,7 @@ def main() -> int:
             tts_mode=args.tts_mode,
             max_speak_sentences=max(1, int(args.max_speak_sentences)),
             companion_real_route=bool(args.companion_real_route),
+            route_context=route_context,
             progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
         )
         rows.append(metric)
@@ -638,8 +606,11 @@ def main() -> int:
                 f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
                 f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
                 f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
-                f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)}"
+                f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
+                f"INT={metric.voice_interrupt_verdict or '-'}"
             )
+            if metric.voice_route_notes:
+                print(f"         route_notes={metric.voice_route_notes[:120]}")
         else:
             print(f"[{i}/{args.runs}] FAIL {metric.error}")
         print_live_summary(rows)
