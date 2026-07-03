@@ -36,6 +36,7 @@ interface CapabilityInstallItem {
   package_sha256?: string | null;
   installed_sha256?: string | null;
   installed_path?: string | null;
+  source_store_path?: string | null;
   enabled: boolean;
   source: string;
   source_l1_base_url?: string | null;
@@ -54,6 +55,7 @@ interface CapabilityInstallScan {
   mcp_cache_dir: string;
   skill_cache_dir: string;
   model_cache_dir: string;
+  source_store_dir: string;
   download_dir: string;
   items: CapabilityInstallItem[];
   counts: Record<string, number>;
@@ -195,6 +197,7 @@ export function CapabilityInstallCenter() {
         item.id.toLowerCase().includes(q) ||
         item.name.toLowerCase().includes(q) ||
         (item.source_l1_base_url ?? "").toLowerCase().includes(q) ||
+        (item.source_store_path ?? "").toLowerCase().includes(q) ||
         (item.installed_path ?? "").toLowerCase().includes(q);
       if (!matchQuery) return false;
       if (filter === "all") return true;
@@ -481,7 +484,7 @@ export function CapabilityInstallCenter() {
           {scan && (
             <p className="mt-3 text-xs text-slate-500">
               L1：{scan.l1_base_url || "未配置"}；registry：{scan.registry_path}；MCP：{scan.mcp_cache_dir}；Skill：
-              {scan.skill_cache_dir}；Model：{scan.model_cache_dir}
+              {scan.skill_cache_dir}；Model：{scan.model_cache_dir}；Source Store：{scan.source_store_dir}
             </p>
           )}
         </section>
@@ -549,6 +552,16 @@ export function CapabilityInstallCenter() {
                         >
                           <FolderOpen className="h-3.5 w-3.5 flex-shrink-0" />
                           <span className="truncate">{item.installed_path}</span>
+                        </button>
+                      )}
+                      {item.source_store_path && (
+                        <button
+                          onClick={() => void openPath(item.source_store_path)}
+                          className="mt-1 inline-flex max-w-full items-center gap-1 text-left text-xs text-sky-300/65 hover:text-sky-100"
+                          title={item.source_store_path}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5 flex-shrink-0" />
+                          <span className="truncate">源包：{item.source_store_path}</span>
                         </button>
                       )}
                       {item.problems.length > 0 && (

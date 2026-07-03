@@ -16,6 +16,7 @@ pub struct CapabilityInstallScan {
     pub mcp_cache_dir: String,
     pub skill_cache_dir: String,
     pub model_cache_dir: String,
+    pub source_store_dir: String,
     pub download_dir: String,
     pub items: Vec<CapabilityInstallItem>,
     pub counts: BTreeMap<String, usize>,
@@ -33,6 +34,7 @@ pub struct CapabilityInstallItem {
     pub package_sha256: Option<String>,
     pub installed_sha256: Option<String>,
     pub installed_path: Option<String>,
+    pub source_store_path: Option<String>,
     pub enabled: bool,
     pub source: String,
     pub source_l1_base_url: Option<String>,
@@ -156,6 +158,8 @@ struct InstalledRecord {
     source_l1_base_url: Option<String>,
     #[serde(default)]
     source_l1_profile_id: Option<String>,
+    #[serde(default)]
+    source_store_path: Option<String>,
     package_url: Option<String>,
     package_sha256: Option<String>,
     installed_path: String,
@@ -258,6 +262,7 @@ pub fn capability_install_scan() -> Result<CapabilityInstallScan, String> {
         mcp_cache_dir: l3_mcp_cache_dir().display().to_string(),
         skill_cache_dir: l3_skill_cache_dir().display().to_string(),
         model_cache_dir: model_cache_dir().display().to_string(),
+        source_store_dir: source_store_root().display().to_string(),
         download_dir: download_dir().display().to_string(),
         items,
         counts,
@@ -494,18 +499,18 @@ fn install_single_package(
         .unwrap_or_else(|| "0.0.0".to_string());
     let name = item.name.clone();
     let final_dir = install_dir_for(&kind, &id);
-    if final_dir.exists() {
-        replace_existing_install_preserving_user_data(&final_dir, &meta.preserve_user_data)?;
+    let source_dir = source_store_dir_for(cfg, &kind, &id);
+    if source_dir.exists() {
+        fs::remove_dir_all(&source_dir)
+            .map_err(|e| format!("remove previous source package failed: {e}"))?;
     }
-    if final_dir.exists() {
-        fs::remove_dir_all(&final_dir)
-            .map_err(|e| format!("remove previous install failed: {e}"))?;
+    if let Some(parent) = source_dir.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create source package parent failed: {e}"))?;
     }
-    if let Some(parent) = final_dir.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create install parent failed: {e}"))?;
-    }
-    fs::rename(&staging, &final_dir).map_err(|e| format!("move package into cache failed: {e}"))?;
-    restore_preserved_user_data(&final_dir, &meta.preserve_user_data)?;
+    fs::rename(&staging, &source_dir)
+        .map_err(|e| format!("move package into source store failed: {e}"))?;
+    materialize_active_install(&source_dir, &final_dir, &meta.preserve_user_data)?;
     let dependencies = merge_package_dependencies(&item.dependencies, &meta);
 
     let mut registry = read_installed_registry();
@@ -519,6 +524,7 @@ fn install_single_package(
             source: "l1".to_string(),
             source_l1_base_url: Some(normalize_base_url(&cfg.base_url)),
             source_l1_profile_id: cfg.profile_id.clone(),
+            source_store_path: Some(source_dir.display().to_string()),
             package_url: Some(full_url),
             package_sha256: Some(actual_sha.clone()),
             installed_path: final_dir.display().to_string(),
@@ -557,23 +563,34 @@ pub fn capability_install_set_enabled(
         .ok_or_else(|| format!("not installed: {}", input.id))?;
     if input.enabled && !rec.enabled {
         let current = PathBuf::from(&rec.installed_path);
-        if !current.is_dir() {
+        let target = install_dir_for(&rec.kind, &rec.id);
+        if current.is_dir() {
+            if target.exists() {
+                fs::remove_dir_all(&target)
+                    .map_err(|e| format!("remove stale cache dir failed: {e}"))?;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("create cache parent failed: {e}"))?;
+            }
+            fs::rename(&current, &target)
+                .map_err(|e| format!("move package back to cache failed: {e}"))?;
+            rec.installed_path = target.display().to_string();
+        } else if let Some(source) = rec.source_store_path.as_deref().map(PathBuf::from) {
+            if !source.is_dir() {
+                return Err(format!(
+                    "source package path is missing: {}",
+                    source.display()
+                ));
+            }
+            materialize_active_install(&source, &target, &rec.preserve_user_data)?;
+            rec.installed_path = target.display().to_string();
+        } else {
             return Err(format!(
                 "disabled package path is missing: {}",
                 current.display()
             ));
         }
-        let target = install_dir_for(&rec.kind, &rec.id);
-        if target.exists() {
-            fs::remove_dir_all(&target)
-                .map_err(|e| format!("remove stale cache dir failed: {e}"))?;
-        }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("create cache parent failed: {e}"))?;
-        }
-        fs::rename(&current, &target)
-            .map_err(|e| format!("move package back to cache failed: {e}"))?;
-        rec.installed_path = target.display().to_string();
     } else if !input.enabled && rec.enabled {
         let current = PathBuf::from(&rec.installed_path);
         if current.is_dir() {
@@ -621,6 +638,7 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
             l3_mcp_cache_dir(),
             l3_skill_cache_dir(),
             model_cache_dir(),
+            source_store_root(),
             legacy_skills_dir(),
             disabled_dir(),
         ];
@@ -632,6 +650,19 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
             ));
         }
         fs::remove_dir_all(&p).map_err(|e| format!("remove install dir failed: {e}"))?;
+    }
+    if let Some(source) = rec.source_store_path.as_deref().map(PathBuf::from) {
+        if source.exists() {
+            let safe = source.starts_with(source_store_root());
+            if !safe {
+                return Err(format!(
+                    "refuse to remove source path outside capability source store: {}",
+                    source.display()
+                ));
+            }
+            fs::remove_dir_all(&source)
+                .map_err(|e| format!("remove source package dir failed: {e}"))?;
+        }
     }
     write_installed_registry(&registry)?;
     Ok(())
@@ -695,6 +726,7 @@ fn install_item_from_remote(
         package_sha256: item.package_sha256.clone(),
         installed_sha256,
         installed_path,
+        source_store_path: rec.and_then(|r| r.source_store_path.clone()),
         enabled,
         source: item.source.clone(),
         source_l1_base_url: rec.and_then(|r| r.source_l1_base_url.clone()),
@@ -722,6 +754,7 @@ fn install_item_local_only(rec: &InstalledRecord) -> CapabilityInstallItem {
         package_sha256: None,
         installed_sha256: rec.package_sha256.clone(),
         installed_path: Some(rec.installed_path.clone()),
+        source_store_path: rec.source_store_path.clone(),
         enabled: rec.enabled,
         source: rec.source.clone(),
         source_l1_base_url: rec.source_l1_base_url.clone(),
@@ -942,6 +975,7 @@ fn merge_disk_installs(registry: &mut InstalledRegistry) {
                     source: "local_cache".to_string(),
                     source_l1_base_url: None,
                     source_l1_profile_id: None,
+                    source_store_path: None,
                     package_url: None,
                     package_sha256: None,
                     installed_path: path.display().to_string(),
@@ -1034,6 +1068,57 @@ fn replace_existing_install_preserving_user_data(
             .map_err(|e| format!("serialize preserve marker failed: {e}"))?,
     )
     .map_err(|e| format!("write preserve marker failed: {e}"))?;
+    Ok(())
+}
+
+fn materialize_active_install(
+    source_dir: &Path,
+    final_dir: &Path,
+    preserve: &[String],
+) -> Result<(), String> {
+    if !source_dir.is_dir() {
+        return Err(format!("source package missing: {}", source_dir.display()));
+    }
+    if final_dir.exists() {
+        replace_existing_install_preserving_user_data(final_dir, preserve)?;
+    }
+    if final_dir.exists() {
+        fs::remove_dir_all(final_dir)
+            .map_err(|e| format!("remove previous active install failed: {e}"))?;
+    }
+    copy_dir_recursive(source_dir, final_dir)?;
+    restore_preserved_user_data(final_dir, preserve)?;
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.is_dir() {
+        return Err(format!("copy source is not a directory: {}", src.display()));
+    }
+    fs::create_dir_all(dst).map_err(|e| format!("create copy destination failed: {e}"))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("read copy source failed: {e}"))? {
+        let entry = entry.map_err(|e| format!("read copy entry failed: {e}"))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let ty = entry
+            .file_type()
+            .map_err(|e| format!("read copy entry type failed: {e}"))?;
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if ty.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("create copied file parent failed: {e}"))?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(|e| {
+                format!(
+                    "copy file failed {} -> {}: {e}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -1209,6 +1294,20 @@ fn install_dir_for(kind: &str, id: &str) -> PathBuf {
         _ => l3_skill_cache_dir(),
     };
     base.join(safe_id(id))
+}
+
+fn source_store_dir_for(cfg: &L1DirectConfig, kind: &str, id: &str) -> PathBuf {
+    let profile = cfg
+        .profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| profile_id_for_base_url(&cfg.base_url));
+    source_store_root()
+        .join(safe_id(&profile))
+        .join(normalize_kind(kind))
+        .join(safe_id(id))
 }
 
 fn normalize_kind(raw: &str) -> String {
@@ -1535,6 +1634,10 @@ fn l3_skill_cache_dir() -> PathBuf {
 
 fn model_cache_dir() -> PathBuf {
     jachin_home_dir().join("models")
+}
+
+fn source_store_root() -> PathBuf {
+    jachin_home_dir().join("capability_sources")
 }
 
 fn legacy_skills_dir() -> PathBuf {
