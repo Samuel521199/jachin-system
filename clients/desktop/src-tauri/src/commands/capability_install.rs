@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zip::ZipArchive;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilityInstallScan {
@@ -503,7 +503,7 @@ fn install_single_package(
         fs::remove_dir_all(&staging).map_err(|e| format!("clear staging failed: {e}"))?;
     }
     fs::create_dir_all(&staging).map_err(|e| format!("create staging failed: {e}"))?;
-    extract_zip_powershell(&downloaded, &staging)?;
+    extract_zip_archive(&downloaded, &staging)?;
     let meta = read_package_meta(&staging).unwrap_or_default();
     let id = meta.id.clone().unwrap_or_else(|| input.id.clone());
     let kind = normalize_kind(meta.kind.as_deref().unwrap_or(kind_hint));
@@ -1367,23 +1367,49 @@ fn download_package(url: &str, id: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn extract_zip_powershell(zip_path: &Path, dest: &Path) -> Result<(), String> {
+fn extract_zip_archive(zip_path: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("create extract dir failed: {e}"))?;
-    let status = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-Command")
-        .arg("Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force")
-        .arg(zip_path)
-        .arg(dest)
-        .status()
-        .map_err(|e| format!("run Expand-Archive failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("Expand-Archive failed with status {status}"))
+    let file = fs::File::open(zip_path)
+        .map_err(|e| format!("open zip failed {}: {e}", zip_path.display()))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("read zip archive failed: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("read zip entry #{i} failed: {e}"))?;
+        let rel = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("unsafe zip entry: {}", entry.name()))?
+            .to_owned();
+        let out = dest.join(rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&out)
+                .map_err(|e| format!("create extracted directory failed {}: {e}", out.display()))?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "create extracted file parent failed {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+        let mut output = fs::File::create(&out)
+            .map_err(|e| format!("create extracted file failed {}: {e}", out.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|e| format!("write extracted file failed {}: {e}", out.display()))?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&out, fs::Permissions::from_mode(mode)).map_err(|e| {
+                format!(
+                    "set extracted file permissions failed {}: {e}",
+                    out.display()
+                )
+            })?;
+        }
     }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {

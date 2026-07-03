@@ -144,7 +144,20 @@ def _extract_zip(zip_path: Path, dest: Path) -> None:
                 target.relative_to(dest_resolved)
             except ValueError:
                 raise RuntimeError(f"unsafe zip entry: {info.filename}")
-        zf.extractall(dest)
+        for info in zf.infolist():
+            extracted = Path(zf.extract(info, dest))
+            _restore_zip_permissions(info, extracted)
+
+
+def _restore_zip_permissions(info: zipfile.ZipInfo, path: Path) -> None:
+    if os.name == "nt" or not path.exists():
+        return
+    mode = (info.external_attr >> 16) & 0o777
+    if mode:
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
 
 
 def _detect_package_root(staging: Path) -> Path:

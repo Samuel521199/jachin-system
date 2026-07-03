@@ -136,7 +136,7 @@ const navItems = [
     path: "/os-evidence",
     label: "桌面执行",
     icon: MonitorCheck,
-    title: "企业桌面执行 Agent：跨 Windows、飞书、文件、浏览器和办公软件完成真实任务",
+    title: "企业桌面执行 Agent：跨 Windows/macOS、飞书、文件、浏览器和办公软件完成真实任务",
     capabilityGate: {
       ids: ["com.jachin.skill.desktop-execution-agent"],
       prefixes: ["com.jachin.skill.desktop", "com.jachin.skill.os"],
