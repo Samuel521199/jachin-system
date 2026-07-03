@@ -40,6 +40,7 @@ pub struct CapabilityInstallItem {
     pub source_l1_base_url: Option<String>,
     pub source_l1_profile_id: Option<String>,
     pub current_l1_match: bool,
+    pub current_l1_cached: bool,
     pub l1_status: Option<String>,
     pub status: String,
     pub problems: Vec<String>,
@@ -145,6 +146,8 @@ struct L1ProfileRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct InstalledRegistry {
     packages: HashMap<String, InstalledRecord>,
+    #[serde(default)]
+    source_packages: HashMap<String, InstalledRecord>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -221,7 +224,10 @@ pub fn capability_install_scan() -> Result<CapabilityInstallScan, String> {
 
     for item in remote.values() {
         let rec = registry.packages.get(&item.id);
-        items.push(install_item_from_remote(item, rec, &cfg));
+        let source_rec = registry
+            .source_packages
+            .get(&source_record_key_for(&cfg, &item.kind, &item.id));
+        items.push(install_item_from_remote(item, rec, source_rec, &cfg));
         seen.insert(item.id.clone(), true);
     }
     for rec in registry.packages.values() {
@@ -448,7 +454,10 @@ fn item_is_ready(item: &RemoteItem) -> bool {
     let cfg = read_l1_direct_config();
     let mut registry = read_installed_registry();
     merge_disk_installs(&mut registry);
-    let probe = install_item_from_remote(item, registry.packages.get(&item.id), &cfg);
+    let source_rec = registry
+        .source_packages
+        .get(&source_record_key_for(&cfg, &item.kind, &item.id));
+    let probe = install_item_from_remote(item, registry.packages.get(&item.id), source_rec, &cfg);
     probe.enabled && probe.status == "installed"
 }
 
@@ -467,6 +476,12 @@ fn install_single_package(
         .ok_or_else(|| format!("package_url is missing for {}", input.id))?;
     let full_url = resolve_package_url(&cfg.base_url, &url)?;
     let kind_hint = input.kind.as_deref().unwrap_or(&item.kind);
+    let remote_kind = normalize_kind(kind_hint);
+    if !input.repair.unwrap_or(false) {
+        if let Some(result) = try_activate_cached_source(cfg, item, &remote_kind, &full_url)? {
+            return Ok(result);
+        }
+    }
     let downloaded = download_package(&full_url, &input.id)?;
     let actual_sha = sha256_file(&downloaded)?;
     if let Some(expected) = item
@@ -514,27 +529,34 @@ fn install_single_package(
     let dependencies = merge_package_dependencies(&item.dependencies, &meta);
 
     let mut registry = read_installed_registry();
-    registry.packages.insert(
-        id.clone(),
-        InstalledRecord {
-            id: id.clone(),
-            name,
-            version: version.clone(),
-            kind: kind.clone(),
-            source: "l1".to_string(),
-            source_l1_base_url: Some(normalize_base_url(&cfg.base_url)),
-            source_l1_profile_id: cfg.profile_id.clone(),
-            source_store_path: Some(source_dir.display().to_string()),
-            package_url: Some(full_url),
-            package_sha256: Some(actual_sha.clone()),
-            installed_path: final_dir.display().to_string(),
-            installed_at: timestamp_string(),
-            enabled: true,
-            package_assets: meta.package_assets,
-            preserve_user_data: meta.preserve_user_data,
-            dependencies,
-        },
+    let record = InstalledRecord {
+        id: id.clone(),
+        name,
+        version: version.clone(),
+        kind: kind.clone(),
+        source: "l1".to_string(),
+        source_l1_base_url: Some(normalize_base_url(&cfg.base_url)),
+        source_l1_profile_id: cfg.profile_id.clone(),
+        source_store_path: Some(source_dir.display().to_string()),
+        package_url: Some(full_url),
+        package_sha256: Some(actual_sha.clone()),
+        installed_path: final_dir.display().to_string(),
+        installed_at: timestamp_string(),
+        enabled: true,
+        package_assets: meta.package_assets,
+        preserve_user_data: meta.preserve_user_data,
+        dependencies,
+    };
+    registry.source_packages.insert(
+        source_record_key_from_parts(
+            record.source_l1_profile_id.as_deref(),
+            &kind,
+            &id,
+            &record.source_l1_base_url,
+        ),
+        record.clone(),
     );
+    registry.packages.insert(id.clone(), record);
     write_installed_registry(&registry)?;
 
     Ok(CapabilityInstallResult {
@@ -550,6 +572,68 @@ fn install_single_package(
             "installed from L1 package".to_string()
         },
     })
+}
+
+fn try_activate_cached_source(
+    cfg: &L1DirectConfig,
+    item: &RemoteItem,
+    kind: &str,
+    full_url: &str,
+) -> Result<Option<CapabilityInstallResult>, String> {
+    let mut registry = read_installed_registry();
+    let key = source_record_key_for(cfg, kind, &item.id);
+    let Some(source_rec) = registry.source_packages.get(&key).cloned() else {
+        return Ok(None);
+    };
+    if let Some(remote_version) = item.version.as_deref() {
+        if remote_version != source_rec.version {
+            return Ok(None);
+        }
+    }
+    if let Some(remote_sha) = item
+        .package_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if source_rec
+            .package_sha256
+            .as_deref()
+            .map(|local| remote_sha.eq_ignore_ascii_case(local))
+            != Some(true)
+        {
+            return Ok(None);
+        }
+    }
+    let source_dir = source_rec
+        .source_store_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| source_store_dir_for(cfg, &source_rec.kind, &source_rec.id));
+    if !source_dir.is_dir() {
+        return Ok(None);
+    }
+    let final_dir = install_dir_for(&source_rec.kind, &source_rec.id);
+    materialize_active_install(&source_dir, &final_dir, &source_rec.preserve_user_data)?;
+
+    let mut active = source_rec.clone();
+    active.package_url = Some(full_url.to_string());
+    active.installed_path = final_dir.display().to_string();
+    active.enabled = true;
+    active.installed_at = timestamp_string();
+    registry.packages.insert(active.id.clone(), active.clone());
+    registry.source_packages.insert(key, active.clone());
+    write_installed_registry(&registry)?;
+
+    Ok(Some(CapabilityInstallResult {
+        ok: true,
+        id: active.id,
+        version: active.version,
+        kind: active.kind,
+        installed_path: final_dir.display().to_string(),
+        package_sha256: active.package_sha256.unwrap_or_default(),
+        message: "activated from cached L1 source package".to_string(),
+    }))
 }
 
 #[tauri::command]
@@ -651,17 +735,32 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
         }
         fs::remove_dir_all(&p).map_err(|e| format!("remove install dir failed: {e}"))?;
     }
-    if let Some(source) = rec.source_store_path.as_deref().map(PathBuf::from) {
-        if source.exists() {
-            let safe = source.starts_with(source_store_root());
-            if !safe {
-                return Err(format!(
-                    "refuse to remove source path outside capability source store: {}",
-                    source.display()
-                ));
+    let source_keys: Vec<String> = registry
+        .source_packages
+        .iter()
+        .filter_map(|(key, source_rec)| {
+            if source_rec.id == rec.id {
+                Some(key.clone())
+            } else {
+                None
             }
-            fs::remove_dir_all(&source)
-                .map_err(|e| format!("remove source package dir failed: {e}"))?;
+        })
+        .collect();
+    for key in source_keys {
+        if let Some(source_rec) = registry.source_packages.remove(&key) {
+            if let Some(source) = source_rec.source_store_path.as_deref().map(PathBuf::from) {
+                if source.exists() {
+                    let safe = source.starts_with(source_store_root());
+                    if !safe {
+                        return Err(format!(
+                            "refuse to remove source path outside capability source store: {}",
+                            source.display()
+                        ));
+                    }
+                    fs::remove_dir_all(&source)
+                        .map_err(|e| format!("remove source package dir failed: {e}"))?;
+                }
+            }
         }
     }
     write_installed_registry(&registry)?;
@@ -671,10 +770,16 @@ pub fn capability_install_uninstall(input: CapabilityUninstallInput) -> Result<(
 fn install_item_from_remote(
     item: &RemoteItem,
     rec: Option<&InstalledRecord>,
+    source_rec: Option<&InstalledRecord>,
     cfg: &L1DirectConfig,
 ) -> CapabilityInstallItem {
     let mut problems = Vec::new();
-    if item.package_url.as_deref().unwrap_or("").trim().is_empty() {
+    let current_source_cached = source_rec
+        .and_then(|r| r.source_store_path.as_deref())
+        .map(PathBuf::from)
+        .map(|p| p.is_dir())
+        .unwrap_or(false);
+    if item.package_url.as_deref().unwrap_or("").trim().is_empty() && !current_source_cached {
         problems.push("missing package_url".to_string());
     }
     let (local_version, installed_sha256, installed_path, enabled, status) = if let Some(r) = rec {
@@ -688,7 +793,11 @@ fn install_item_from_remote(
             _ => true,
         };
         let status = if !current_l1_match {
-            "source_mismatch"
+            if current_source_cached {
+                "source_cached"
+            } else {
+                "source_mismatch"
+            }
         } else if !exists {
             "repair_needed"
         } else if !r.enabled {
@@ -711,6 +820,18 @@ fn install_item_from_remote(
         )
     } else if !problems.is_empty() {
         (None, None, None, false, "blocked".to_string())
+    } else if let Some(r) = source_rec {
+        (
+            Some(r.version.clone()),
+            r.package_sha256.clone(),
+            r.source_store_path.clone(),
+            false,
+            if current_source_cached {
+                "source_cached".to_string()
+            } else {
+                "repair_needed".to_string()
+            },
+        )
     } else {
         (None, None, None, false, "not_installed".to_string())
     };
@@ -726,14 +847,19 @@ fn install_item_from_remote(
         package_sha256: item.package_sha256.clone(),
         installed_sha256,
         installed_path,
-        source_store_path: rec.and_then(|r| r.source_store_path.clone()),
+        source_store_path: rec.or(source_rec).and_then(|r| r.source_store_path.clone()),
         enabled,
         source: item.source.clone(),
-        source_l1_base_url: rec.and_then(|r| r.source_l1_base_url.clone()),
-        source_l1_profile_id: rec.and_then(|r| r.source_l1_profile_id.clone()),
+        source_l1_base_url: rec
+            .or(source_rec)
+            .and_then(|r| r.source_l1_base_url.clone()),
+        source_l1_profile_id: rec
+            .or(source_rec)
+            .and_then(|r| r.source_l1_profile_id.clone()),
         current_l1_match: rec
             .map(|r| record_matches_current_l1(r, cfg))
             .unwrap_or(false),
+        current_l1_cached: current_source_cached,
         l1_status: item.status.clone(),
         status,
         problems,
@@ -760,6 +886,7 @@ fn install_item_local_only(rec: &InstalledRecord) -> CapabilityInstallItem {
         source_l1_base_url: rec.source_l1_base_url.clone(),
         source_l1_profile_id: rec.source_l1_profile_id.clone(),
         current_l1_match: false,
+        current_l1_cached: false,
         l1_status: None,
         status: if !exists {
             "repair_needed".to_string()
@@ -1308,6 +1435,35 @@ fn source_store_dir_for(cfg: &L1DirectConfig, kind: &str, id: &str) -> PathBuf {
         .join(safe_id(&profile))
         .join(normalize_kind(kind))
         .join(safe_id(id))
+}
+
+fn source_record_key_for(cfg: &L1DirectConfig, kind: &str, id: &str) -> String {
+    source_record_key_from_parts(
+        cfg.profile_id.as_deref(),
+        kind,
+        id,
+        &Some(normalize_base_url(&cfg.base_url)),
+    )
+}
+
+fn source_record_key_from_parts(
+    profile_id: Option<&str>,
+    kind: &str,
+    id: &str,
+    base_url: &Option<String>,
+) -> String {
+    let profile = profile_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| base_url.as_deref().map(profile_id_for_base_url))
+        .unwrap_or_else(|| "unknown_l1".to_string());
+    format!(
+        "{}/{}/{}",
+        safe_id(&profile),
+        normalize_kind(kind),
+        safe_id(id)
+    )
 }
 
 fn normalize_kind(raw: &str) -> String {
