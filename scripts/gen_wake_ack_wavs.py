@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """批量生成唤醒口头确认（Verbal ACK）预渲染 WAV，供 Rust wake_pipeline 播放。
 
 用法:
@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / "clients" / "desktop" / "public" / "audio" / "wake_ack"
+DEFAULT_TTS_SPEED = 1.25
 
 def localappdata_out() -> Path | None:
     base = os.environ.get("LOCALAPPDATA", "").strip()
@@ -36,7 +37,7 @@ def synthesize_wav(jvs_base: str, text: str) -> bytes:
     import urllib.request
 
     url = f"{jvs_base.rstrip('/')}/v1/tts/synthesize"
-    body = json.dumps({"text": text}).encode("utf-8")
+    body = json.dumps({"text": text, "speed": DEFAULT_TTS_SPEED}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,

@@ -1,7 +1,7 @@
 //! TTS (Text-to-Speech) 模块
 //!
 //! 实现 Tier 3 自适应 TTS 策略：
-//! - Local Voice Server (MOSS ONNX) -> Cloud (Aliyun)
+//! - Local Voice Server (Kokoro ONNX) -> Cloud (Aliyun)
 
 #![allow(dead_code)]
 

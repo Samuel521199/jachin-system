@@ -19,9 +19,10 @@ from rich.panel import Panel
 
 logger = logging.getLogger(__name__)
 console = Console()
-
-# TTS 推荐音色：zh-CN-YunxiNeural (清朗男声) / zh-CN-XiaoxiaoNeural (自然女声)
-DEFAULT_TTS_VOICE = "zh-CN-YunxiNeural"
+# TTS voice baseline: same Kokoro voice used by scripts/trace_kokoro_tts_pipeline.py.
+DEFAULT_TTS_VOICE = "zm_053"
+DEFAULT_TTS_SPEED = 1.25
+DEFAULT_JVS_TTS_URL = "http://127.0.0.1:18982/v1/tts/synthesize"
 
 # 唤醒词：内置 "jarvis" 最接近 "Hey Jachin"；可配置自定义 .ppn 路径
 DEFAULT_WAKE_KEYWORD = "jarvis"
@@ -151,42 +152,46 @@ def _listen_for_wake_word() -> bool:
 
 
 async def speak_text(text: str, voice: str = DEFAULT_TTS_VOICE) -> None:
-    """
-    TTS 喉咙：edge-tts 生成 mp3，pygame.mixer 播放。
-    播放时打印 [🔊 Jachin 发声中...]
-    """
+    """Speak through local JVS Kokoro so legacy voice output matches the desktop baseline."""
     if not text or not text.strip():
         return
 
-    import edge_tts
-    import pygame
+    import urllib.request
+
+    def _synthesize_wav() -> bytes:
+        payload = json.dumps({"text": text.strip(), "voice": voice, "speed": DEFAULT_TTS_SPEED}, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            DEFAULT_JVS_TTS_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
 
     tmp_path: str | None = None
     try:
-        communicate = edge_tts.Communicate(text.strip(), voice)
-        fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+        wav_bytes = await asyncio.to_thread(_synthesize_wav)
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
-        await communicate.save(tmp_path)
+        Path(tmp_path).write_bytes(wav_bytes)
+        console.print("[cyan][Jachin voice][/cyan]")
 
-        if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=512)
+        if os.name == "nt":
+            import winsound
 
-        console.print("[cyan][🔊 Jachin 发声中...][/cyan]")
-        pygame.mixer.music.load(tmp_path)
-        pygame.mixer.music.play()
-
-        while pygame.mixer.music.get_busy():
-            await asyncio.sleep(0.1)
+            await asyncio.to_thread(winsound.PlaySound, tmp_path, winsound.SND_FILENAME)
+        else:
+            console.print(f"[dim]Audio saved: {tmp_path}[/dim]")
     except Exception as e:
-        logger.exception("TTS 异常: %s", e)
-        console.print(f"[red][TTS 异常] {e}[/red]")
+        logger.exception("JVS Kokoro TTS error: %s", e)
+        console.print(f"[red][TTS error] {e}[/red]")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-
 
 def listen_and_transcribe() -> str | None:
     """

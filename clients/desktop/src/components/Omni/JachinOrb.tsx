@@ -81,6 +81,7 @@ export function JachinOrb({ state, label = "JACHIN" }: JachinOrbProps) {
   const thinking = state === "thinking";
   return (
     <motion.div
+      // ⚠️ h/w 须与 companionLayout.ts ORB_SIZE_PX (132) 一致
       className="pointer-events-none relative flex h-[132px] w-[132px] transform-gpu items-center justify-center rounded-full will-change-transform"
       animate={{
         filter: [

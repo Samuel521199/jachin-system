@@ -82,6 +82,45 @@ def test_business_mcp_tools_hidden_from_default_os_assistant_pool() -> None:
     assert "add_automated_recruitment_task" not in raw_names
 
 
+def test_atom_email_sender_invokes_locally_without_business_mcp_env(monkeypatch) -> None:
+    """BI Step 3.6：未开 JACHIN_ENABLE_BUSINESS_MCP_TOOLS 时仍须 L3 本地 SMTP，禁止 fallback L2。"""
+    import asyncio
+
+    from l3_node.primitives.mcp.registry import MCPToolRegistry
+
+    monkeypatch.delenv("JACHIN_ENABLE_BUSINESS_MCP_TOOLS", raising=False)
+    monkeypatch.delenv("JACHIN_ENABLE_PMO_LOCAL_MCP_TOOLS", raising=False)
+    monkeypatch.delenv("JACHIN_PMO_COPILOT_RUN", raising=False)
+
+    calls: list[dict] = []
+
+    def fake_send(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "msg": "邮件已发送"}
+
+    monkeypatch.setattr(
+        "l3_node.primitives.mcp.mcp_tools.bi.tool_email_sender.send_email_with_attachment",
+        fake_send,
+    )
+
+    registry = MCPToolRegistry()
+    assert "mcp:atom_email_sender" not in registry._local_mcp_tools
+    assert "mcp:atom_email_sender" in registry._local_mcp_invoke_tools
+
+    result = asyncio.run(
+        registry._invoke_impl(
+            "mcp:atom_email_sender",
+            '{"smtp_config":{"host":"smtp.test","port":465,"user":"u","password":"p"},'
+            '"to_addrs":["a@test.com"],"subject":"t","body":"<p>hi</p>","attachment_paths":[]}',
+            allow_l2_delegate=False,
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["to_addrs"] == ["a@test.com"]
+    assert '"status": "success"' in result or '"status":"success"' in result
+
+
 async def test_windows_calculator_mcp_invokes_local_handler(monkeypatch) -> None:
     from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
     from l3_node.primitives.mcp.registry import MCPToolRegistry
@@ -1189,6 +1228,19 @@ def test_lark_long_message_preview_matches_visible_tail_anchors() -> None:
     assert len(match["hits"]) >= match["required"]
 
 
+def test_lark_short_chinese_message_matches_when_ocr_drops_first_char() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _lark_message_visible_match
+
+    match = _lark_message_visible_match(
+        "一条测试消息",
+        "Samuel\n6月27日\n条测试消息\nAa@@X④\nShift + Enter 换行",
+    )
+
+    assert match["ok"] is True
+    assert match["strategy"] == "short_fuzzy_edge_drop"
+    assert match["required"] == 1
+
+
 def test_lark_history_window_labels_include_iso_dates() -> None:
     from datetime import date
 
@@ -1278,6 +1330,49 @@ def test_open_app_finds_lark_start_menu_shortcut(monkeypatch, tmp_path) -> None:
     assert source == "candidate_path"
 
 
+def test_find_app_executable_does_not_return_missing_bare_exe(monkeypatch, tmp_path) -> None:
+    from l3_client.local_mcps.windows_uia_mcp import os_tasks
+
+    monkeypatch.setattr(os_tasks.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path / "programs"))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(tmp_path / "programs_x86"))
+
+    found, source = os_tasks._find_app_executable(
+        {
+            "aliases": ("codex",),
+            "candidate_paths": ("DefinitelyMissingCodex.exe",),
+            "exe_names": ("DefinitelyMissingCodex.exe",),
+        }
+    )
+
+    assert found == ""
+    assert source == "not_found"
+
+
+def test_desktop_io_launch_result_captures_missing_executable(monkeypatch) -> None:
+    from l3_client.local_mcps.windows_uia_mcp import os_tasks
+
+    class FakeWindow:
+        def focus_by_keywords(self, *_args, **_kwargs):
+            return False
+
+        def active_title(self):
+            return ""
+
+    def fake_popen(*_args, **_kwargs):
+        raise FileNotFoundError(2, "系统找不到指定的文件。")
+
+    io = os_tasks.DesktopIO.__new__(os_tasks.DesktopIO)
+    io.win = FakeWindow()
+    monkeypatch.setattr(os_tasks.subprocess, "Popen", fake_popen)
+
+    result = io.launch_result("DefinitelyMissingCodex.exe", ("codex",), wait=0)
+
+    assert result["ok"] is False
+    assert result["detail"] == "app_executable_not_found"
+    assert result["error_type"] == "FileNotFoundError"
+
 def test_calculator_visual_state_detects_wrong_display(monkeypatch, tmp_path) -> None:
     from l3_client.local_mcps.gameqa_mcp.core import ocr_engine
     from l3_client.local_mcps.windows_uia_mcp.os_tasks import (
@@ -1314,3 +1409,290 @@ def test_calculator_visual_state_prefers_expected_result(monkeypatch, tmp_path) 
 
     assert state["expression_norm"] == "91+9"
     assert state["result_norm"] == "100"
+
+
+
+def test_calculator_workflow_builds_environment_contract_before_input(monkeypatch, tmp_path) -> None:
+    import sys
+    import types
+
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import (
+        EnvironmentVerification,
+        TaskResult,
+        WindowsOSAutomation,
+    )
+
+    class FakeIO:
+        def launch(self, *args, **kwargs):
+            return None
+
+        def screenshot_active_window(self, out_dir, label):
+            path = tmp_path / f"{label}.png"
+            path.write_bytes(b"fake")
+            return str(path)
+
+    def fake_verify(self, contract, stage="", action=""):
+        return EnvironmentVerification(
+            ok=False,
+            detail="wrong_foreground_app",
+            contract=contract,
+            active={"title": "Cursor", "process": "Cursor.exe"},
+            stage=stage,
+            action=action,
+        )
+
+    def fake_focus(self, *args, **kwargs):
+        return TaskResult("focus_or_raise_app", True, "app_focused_and_verified", {})
+
+    monkeypatch.setitem(sys.modules, "pyperclip", types.SimpleNamespace(copy=lambda _x: None, paste=lambda: ""))
+    monkeypatch.setattr(WindowsOSAutomation, "_verify_environment", fake_verify)
+    monkeypatch.setattr(WindowsOSAutomation, "focus_or_raise_app", fake_focus)
+
+    auto = WindowsOSAutomation.__new__(WindowsOSAutomation)
+    auto.out_dir = tmp_path
+    auto.io = FakeIO()
+
+    result = auto.calculator_calculate("30*50")
+
+    assert result.ok is False
+    assert result.detail == "wrong_foreground_app"
+    assert result.evidence["execution_contract"]["app_key"] == "calculator"
+    assert result.evidence["environment_guard"]["stage"] == "calculator_before_input"
+
+
+def test_environment_verifier_rejects_wrong_foreground_app() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
+
+    class FakeWin:
+        def active_snapshot(self):
+            return {
+                "title": "COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md - jachin-system-main - Cursor",
+                "process": "Cursor.exe",
+                "pid": 123,
+                "hwnd": 456,
+                "rect": {"left": 0, "top": 0, "width": 1200, "height": 800},
+            }
+
+    contract = _app_contract("lark", goal="send_message")
+    result = EnvironmentVerifier(FakeWin()).verify(contract, stage="before_input", action="type_text")
+
+    assert result.ok is False
+    assert result.detail == "wrong_foreground_app"
+    assert result.active["process"] == "Cursor.exe"
+    assert result.contract.app_key == "lark"
+
+
+def test_environment_verifier_accepts_matching_target_environment() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
+
+    class FakeWin:
+        def active_snapshot(self):
+            return {
+                "title": "Lark",
+                "process": "Lark.exe",
+                "pid": 123,
+                "hwnd": 456,
+                "rect": {"left": 0, "top": 0, "width": 1200, "height": 800},
+            }
+
+    result = EnvironmentVerifier(FakeWin()).verify(_app_contract("lark"), stage="open_app", action="verify_foreground")
+
+    assert result.ok is True
+    assert result.detail == "environment_verified"
+    assert result.checks["title_ok"] is True or result.checks["process_ok"] is True
+
+
+def test_environment_verifier_falls_back_when_active_snapshot_is_missing() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerifier, _app_contract
+
+    class LegacyWin:
+        def active_title(self):
+            return "Calculator"
+
+    result = EnvironmentVerifier(LegacyWin()).verify(_app_contract("calculator"), stage="calculator_before_input", action="type_expression")
+
+    assert result.ok is True
+    assert result.detail == "environment_verified"
+    assert result.active["title"] == "Calculator"
+    assert "active_snapshot_error" in result.checks
+
+
+def test_window_tools_exposes_active_snapshot_contract() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import WindowTools
+
+    win = WindowTools()
+
+    assert callable(getattr(win, "active_snapshot", None))
+    if not win.enabled:
+        assert win.active_snapshot() == {}
+
+
+def test_lark_recipient_identity_rejects_sidebar_hit_when_active_chat_is_mail_assistant() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _lark_recipient_identity_check
+
+    visual_text = (
+        "\u53e3\n?\n\u6d88\u606f\n\u90ae\u7bb1\u52a9\u624b \u90ae\u7bb1\u52a9\u624b\u673a\u5668\u4eba\n"
+        "Q\u641c\u7d22(Ctl+K)\n\u6d88\u606f\nVivian\n"
+        "\u53d1\u9001\u7ed9\u90ae\u7bb1\u52a9\u624b\nVivian:@BI\u52a9\u624b\u4f60\u4f1a\u56de\u590d\u5417"
+    )
+
+    check = _lark_recipient_identity_check("vivian", visual_text)
+
+    assert check["ok"] is False
+    assert check["target_visible_fullscreen"] is True
+    assert any(str(item).startswith("wrong_send_target") for item in check["negative_evidence"])
+    assert any(str(item).startswith("wrong_chat_title") for item in check["negative_evidence"])
+
+
+def test_lark_recipient_identity_accepts_active_target_chat() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _lark_recipient_identity_check
+
+    visual_text = "\u6d88\u606f\nVivian\nQ\u641c\u7d22(Ctl+K)\n\u53d1\u9001\u7ed9 Vivian\n"
+
+    check = _lark_recipient_identity_check("vivian", visual_text)
+
+    assert check["ok"] is True
+    assert check["title_match"] is True or check["send_target_match"] is True
+
+
+def test_lark_recipient_identity_rejects_search_overlay() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _lark_recipient_identity_check
+
+    visual_text = "Q \u641c\u7d22(Ctrl-Q)\n\u641c\u7d22\u5386\u53f2\nVivian\n\u9009\u62e9\u6761\u76ee\nesc \u9000\u51fa\u641c\u7d22"
+
+    check = _lark_recipient_identity_check("vivian", visual_text)
+
+    assert check["ok"] is False
+    assert "search_overlay_still_open" in check["negative_evidence"]
+
+
+
+def test_calculator_stops_after_result_verified_even_when_expression_ocr_is_incomplete(monkeypatch, tmp_path) -> None:
+    import sys
+    import types
+
+    from l3_client.local_mcps.windows_uia_mcp import os_tasks
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import EnvironmentVerification, TaskResult, WindowsOSAutomation, _app_contract
+
+    class FakeIO:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            self.pastes: list[str] = []
+            self.presses: list[tuple[str, int]] = []
+            self.hotkeys: list[tuple[str, ...]] = []
+
+        def screenshot_active_window(self, out_dir, label):
+            shot = tmp_path / f"{label}.png"
+            shot.write_text("fake", encoding="utf-8")
+            return str(shot)
+
+        def press(self, key, presses=1, wait=0.0):
+            self.presses.append((key, presses))
+
+        def write(self, text, interval=0.0, wait=0.0):
+            self.writes.append(text)
+
+        def paste(self, text, wait=0.0):
+            self.pastes.append(text)
+
+        def hotkey(self, *keys, wait=0.0):
+            self.hotkeys.append(tuple(keys))
+
+    class FakeAuto(WindowsOSAutomation):
+        def __init__(self) -> None:
+            self.io = FakeIO()
+            self.out_dir = tmp_path
+
+        def focus_or_raise_app(self, *args, **kwargs):
+            return TaskResult("focus_or_raise_app", True, "app_focused_and_verified", {})
+
+        def _verify_environment(self, contract, stage="", action=""):
+            return EnvironmentVerification(True, "environment_verified", contract, stage=stage, action=action)
+
+    fake_clipboard = types.SimpleNamespace(copy=lambda value: None, paste=lambda: "56")
+    monkeypatch.setitem(sys.modules, "pyperclip", fake_clipboard)
+    monkeypatch.setattr(
+        os_tasks,
+        "calculator_visual_state",
+        lambda _path, _expect: {
+            "ok": True,
+            "expression_norm": "*8",
+            "result_norm": "56",
+            "result": "56",
+        },
+    )
+
+    auto = FakeAuto()
+    result = auto.calculator_calculate("7*8", "56")
+
+    assert result.ok is True
+    assert result.detail == "result_verified_expression_ocr_incomplete"
+    assert result.evidence["result_verified"] is True
+    assert result.evidence["expression_verified"] is False
+    assert len(result.evidence["attempts"]) == 1
+    assert auto.io.writes == ["7*8"]
+    assert auto.io.pastes == []
+
+
+def test_desktop_io_mouse_corner_raises_structured_interrupt() -> None:
+    import pytest
+
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import DesktopIO, MouseFailSafeInterrupt
+
+    class FakePyAutoGUI:
+        def position(self):
+            return (0, 7)
+
+        def size(self):
+            return (1920, 1080)
+
+    io = DesktopIO.__new__(DesktopIO)
+    io.pyautogui = FakePyAutoGUI()
+
+    with pytest.raises(MouseFailSafeInterrupt) as raised:
+        io._safe_mouse("paste", margin=8)
+
+    evidence = raised.value.to_evidence()
+    assert evidence["detail"] == "mouse_failsafe_triggered"
+    assert evidence["action"] == "paste"
+    assert evidence["position"] == {"x": 0, "y": 7}
+
+
+def test_codex_generic_reply_prefers_valid_vision_over_prompt_echo() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _choose_codex_generic_reply
+
+    question = "我们的 Jachin 项目现在有几个 skill，分别有什么功能"
+    prompt_echo = question
+    vision_text = (
+        "Jachin 项目当前按仓库静态文件看有 18 个 SKILL 意图技能文件。\n"
+        "主要能力包括 BI 日报、PMO 同步、HR 招聘、浏览器自动化、金融分析、内容总结、系统和文件操作。\n"
+        "另外 config/skills 里还有 5 个运行配置包，用来驱动具体业务流程。"
+    )
+
+    choice = _choose_codex_generic_reply(prompt_echo, "", vision_text=vision_text, question=question)
+
+    assert choice["message_source"] == "qwen_vision"
+    assert choice["validation"]["ok"] is True
+    assert choice["copied_validation"]["checks"]["not_prompt_echo"] is False
+    assert choice["message_text"] == vision_text
+
+
+def test_codex_generic_reply_can_use_ocr_fallback() -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _choose_codex_generic_reply
+
+    question = "Jachin skill 功能"
+    ocr = """
+    File
+    Edit
+    Jachin skill 功能
+    Jachin 现在有 18 个 SKILL 文件：BI 日报、PMO、HR 招聘、浏览器自动化、金融分析、YouTube/B站总结、Mermaid 图表、工作区检查等。
+    这些技能覆盖业务运营、数据分析、自动化操作和内容处理。
+    Ask for follow-up changes
+    """
+
+    choice = _choose_codex_generic_reply("", ocr, vision_text="", question=question)
+
+    assert choice["message_source"] == "ocr_fallback"
+    assert choice["validation"]["ok"] is True
+    assert "File" not in choice["message_text"]
+    assert "Ask for follow-up changes" not in choice["message_text"]

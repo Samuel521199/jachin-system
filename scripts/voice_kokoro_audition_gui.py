@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 """
-MOSS ONNX 音色试听 GUI（点选即播）。
+Kokoro ONNX 音色试听 GUI（点选即播）。
 
 用途：
 - 扫描 voices 目录下所有 *.bin 音色
@@ -9,7 +9,7 @@ MOSS ONNX 音色试听 GUI（点选即播）。
 
 默认：
 - voices 目录：
-  D:\\project\\jachin-system-main\\data\\models\\voice\\tts\\MOSS-TTS-Nano-100M-ONNX
+  D:\\project\\jachin-system-main\\data\\models\\voice\\tts\\Kokoro-82M-v1.1-zh-ONNX\\voices
 - JVS 地址：
   http://127.0.0.1:18982
 """
@@ -29,7 +29,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 DEFAULT_VOICES_DIR = Path(
-    r"D:\project\jachin-system-main\data\models\voice\tts\MOSS-TTS-Nano-100M-ONNX"
+    r"D:\project\jachin-system-main\data\models\voice\tts\Kokoro-82M-v1.1-zh-ONNX\voices"
 )
 DEFAULT_JVS_BASE = "http://127.0.0.1:18982"
 DEFAULT_TEXT = "你好，主人，有什么可以帮您"
@@ -98,7 +98,7 @@ class VoiceAuditionApp:
         self.last_voice = ""
         self.is_busy = False
 
-        self.root.title("Jachin MOSS ONNX 音色试听")
+        self.root.title("Jachin Kokoro ONNX 音色试听")
         self.root.geometry("520x620")
         self.root.minsize(420, 460)
 
@@ -115,7 +115,7 @@ class VoiceAuditionApp:
             frame,
             textvariable=self.mode_var,
             state="readonly",
-            values=["普通话(本地JVS)", "MOSS ONNX"],
+            values=["普通话(本地JVS)", "Kokoro ONNX"],
         )
         mode_box.pack(fill=tk.X, pady=(0, 8))
 
@@ -207,7 +207,7 @@ class VoiceAuditionApp:
     def _resolve_output_path(self, mode: str, voice: str) -> Path:
         base = Path(self.output_var.get().strip() or str(DEFAULT_OUTPUT_DIR))
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        mode_tag = "mandarin" if mode != "MOSS ONNX" else "moss_onnx"
+        mode_tag = "mandarin" if mode != "Kokoro ONNX" else "kokoro_onnx"
         voice_tag = self._safe_name(voice)[:48] or "voice"
         return base / f"{stamp}_{mode_tag}_{voice_tag}.wav"
 
@@ -228,10 +228,10 @@ class VoiceAuditionApp:
         mode = self.mode_var.get().strip() or "普通话(本地JVS)"
         mandarin_voice = (self.mandarin_voice_var.get().strip() or self.default_mandarin_voice)
         voice_set = set(self.voices)
-        if mode != "MOSS ONNX" and mandarin_voice not in voice_set:
+        if mode != "Kokoro ONNX" and mandarin_voice not in voice_set:
             mandarin_voice = self.default_mandarin_voice
             self.mandarin_voice_var.set(mandarin_voice)
-        if mode != "MOSS ONNX":
+        if mode != "Kokoro ONNX":
             # 普通话模式也跟随当前点击项，避免“点了列表却不生效”的误导。
             mandarin_voice = voice
             self.mandarin_voice_var.set(mandarin_voice)
@@ -241,11 +241,11 @@ class VoiceAuditionApp:
 
         def worker() -> None:
             try:
-                if mode == "MOSS ONNX":
+                if mode == "Kokoro ONNX":
                     wav = post_tts(base, text, voice)
                 else:
                     wav = post_tts(base, text, mandarin_voice)
-                save_voice = voice if mode == "MOSS ONNX" else mandarin_voice
+                save_voice = voice if mode == "Kokoro ONNX" else mandarin_voice
                 save_path = self._resolve_output_path(mode, save_voice)
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 save_path.write_bytes(wav)
@@ -280,7 +280,7 @@ class VoiceAuditionApp:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="MOSS ONNX 音色试听 GUI（点选即播）")
+    p = argparse.ArgumentParser(description="Kokoro ONNX 音色试听 GUI（点选即播）")
     p.add_argument("--voices-dir", type=Path, default=DEFAULT_VOICES_DIR, help="音色目录（*.bin）")
     p.add_argument("--base-url", default=DEFAULT_JVS_BASE, help="JVS 地址，默认 http://127.0.0.1:18982")
     p.add_argument("--text", default=DEFAULT_TEXT, help="试听文案")

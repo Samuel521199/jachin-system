@@ -40,6 +40,7 @@ function compactDecision(d: VoiceDispatcherDecision): string {
     acceptanceRound: d.router_hints.acceptance_round,
     preferDirectLlm: d.router_hints.prefer_direct_llm,
     injectTaskContext: d.router_hints.inject_task_context,
+    injectLightTaskContext: d.router_hints.inject_light_task_context,
     notes: d.route_notes,
   });
 }
@@ -73,7 +74,7 @@ function expectChatWhileWorking(title: string, activeTaskId: string): (d: VoiceD
   return (d) => [
     check(`${title}: 不提交新后台任务`, d.execution_lane !== "background_submit" && d.router_hints.force_background === false, compactDecision(d)),
     check(`${title}: 不中断当前任务`, d.interrupt_verdict !== "ABORT" && d.target_task_id !== activeTaskId, compactDecision(d)),
-    check(`${title}: 保留任务上下文`, d.active_task_ids.includes(activeTaskId) && d.router_hints.inject_task_context === true, compactDecision(d)),
+    check(`${title}: 保留任务上下文`, d.active_task_ids.includes(activeTaskId) && d.router_hints.inject_light_task_context === true, compactDecision(d)),
     check(`${title}: 仍可直接对话`, d.execution_lane === "direct_llm" || d.router_hints.prefer_direct_llm === true, compactDecision(d)),
   ];
 }

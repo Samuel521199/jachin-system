@@ -65,6 +65,7 @@ export interface VoiceDispatcherDecision {
     acceptance_round: boolean;
     max_foreground_tool_sec: number;
     inject_task_context: boolean;
+    inject_light_task_context: boolean;
     fast_lane: boolean;
     skip_context_sniffer: boolean;
     skip_experience_rag: boolean;
@@ -191,6 +192,7 @@ function markFastLane(decision: VoiceDispatcherDecision): void {
   decision.confidence = Math.max(decision.confidence, 0.9);
   decision.router_hints.prefer_direct_llm = true;
   decision.router_hints.inject_task_context = false;
+  decision.router_hints.inject_light_task_context = false;
   decision.router_hints.fast_lane = true;
   decision.router_hints.skip_context_retrieval = true;
   decision.router_hints.skip_context_sniffer = true;
@@ -279,6 +281,7 @@ export function dispatchVoiceIntent(rawText: string, ctx: VoiceDispatcherContext
       acceptance_round: false,
       max_foreground_tool_sec: 5,
       inject_task_context: activeTaskIds.length > 0,
+      inject_light_task_context: false,
       fast_lane: false,
       skip_context_sniffer: false,
       skip_experience_rag: false,
@@ -382,13 +385,23 @@ export function dispatchVoiceIntent(rawText: string, ctx: VoiceDispatcherContext
   if (CHITCHAT_RE.test(text)) {
     markFastLane(decision);
     decision.confidence = 0.9;
-    decision.route_notes.push("chitchat-fast-lane");
+    if (hasActiveTask) {
+      decision.router_hints.inject_light_task_context = true;
+      decision.route_notes.push("chitchat-fast-lane-active-task");
+    } else {
+      decision.route_notes.push("chitchat-fast-lane");
+    }
     return decision;
   }
 
   if (isCompanionFastLaneText(text)) {
     markFastLane(decision);
-    decision.route_notes.push(hasActiveTask ? "companion-fast-lane-active-task" : "companion-fast-lane");
+    if (hasActiveTask) {
+      decision.router_hints.inject_light_task_context = true;
+      decision.route_notes.push("companion-fast-lane-active-task");
+    } else {
+      decision.route_notes.push("companion-fast-lane");
+    }
     return decision;
   }
 

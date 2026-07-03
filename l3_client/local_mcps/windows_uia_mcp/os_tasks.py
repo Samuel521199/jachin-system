@@ -50,8 +50,8 @@ def _truthy(value: Any) -> bool:
 
 APP_PROFILES: dict[str, dict[str, Any]] = {
     "lark": {
-        "aliases": ("lark", "feishu", "飞书"),
-        "keywords": ("lark", "feishu", "飞书"),
+        "aliases": ("lark", "feishu", "\u98de\u4e66"),
+        "keywords": ("lark", "feishu", "\u98de\u4e66"),
         "env": "JACHIN_APP_LARK_EXE",
         "exe_names": ("Lark.exe", "Feishu.exe"),
         "candidate_paths": (
@@ -70,20 +70,20 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
         ),
     },
     "notepad": {
-        "aliases": ("notepad", "记事本"),
-        "keywords": ("notepad", "记事本"),
+        "aliases": ("notepad", "\u8bb0\u4e8b\u672c"),
+        "keywords": ("notepad", "\u8bb0\u4e8b\u672c"),
         "exe_names": ("notepad.exe",),
         "candidate_paths": ("notepad.exe",),
     },
     "calculator": {
-        "aliases": ("calculator", "calc", "计算器"),
-        "keywords": ("calculator", "calc", "计算器"),
-        "exe_names": ("calc.exe",),
+        "aliases": ("calculator", "calc", "\u8ba1\u7b97\u5668"),
+        "keywords": ("calculator", "calc", "\u8ba1\u7b97\u5668"),
+        "exe_names": ("calc.exe", "calculatorapp.exe", "applicationframehost.exe"),
         "candidate_paths": ("calc.exe",),
     },
     "explorer": {
         "aliases": ("explorer", "file explorer", "files"),
-        "keywords": ("explorer", "file explorer", "文件资源管理器"),
+        "keywords": ("explorer", "file explorer", "\u6587\u4ef6\u8d44\u6e90\u7ba1\u7406\u5668"),
         "exe_names": ("explorer.exe",),
         "candidate_paths": ("explorer.exe",),
     },
@@ -133,6 +133,56 @@ class TaskResult:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2)
 
 
+@dataclass(frozen=True)
+class ExecutionContract:
+    """Generic target-environment contract for OS workflows.
+
+    This contract intentionally describes the environment, not app-specific UI
+    steps. Any workflow that is about to type, click, paste, or press keys can
+    ask the verifier whether the current foreground environment still matches
+    the user's target.
+    """
+
+    target_app: str
+    app_key: str
+    expected_keywords: tuple[str, ...] = ()
+    expected_processes: tuple[str, ...] = ()
+    goal: str = ""
+    require_foreground: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_app": self.target_app,
+            "app_key": self.app_key,
+            "expected_keywords": list(self.expected_keywords),
+            "expected_processes": list(self.expected_processes),
+            "goal": self.goal,
+            "require_foreground": self.require_foreground,
+        }
+
+
+@dataclass(frozen=True)
+class EnvironmentVerification:
+    ok: bool
+    detail: str
+    contract: ExecutionContract
+    active: dict[str, Any] = field(default_factory=dict)
+    checks: dict[str, Any] = field(default_factory=dict)
+    stage: str = ""
+    action: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "detail": self.detail,
+            "contract": self.contract.to_dict(),
+            "active": self.active,
+            "checks": self.checks,
+            "stage": self.stage,
+            "action": self.action,
+        }
+
+
 def normalize_text(text: str) -> str:
     return (text or "").replace("\r\n", "\n").replace("\r", "\n")
 
@@ -163,6 +213,20 @@ def normalize_app_name(app_name: str) -> str:
     return raw
 
 
+def _app_contract(app_name: str, goal: str = "") -> ExecutionContract:
+    app_key = normalize_app_name(app_name)
+    profile = APP_PROFILES.get(app_key, {})
+    keywords = tuple(str(x).lower() for x in profile.get("keywords", ()) if str(x).strip()) or (app_key,)
+    processes = tuple(str(x).lower() for x in profile.get("exe_names", ()) if str(x).strip())
+    return ExecutionContract(
+        target_app=str(app_name or app_key),
+        app_key=app_key,
+        expected_keywords=keywords,
+        expected_processes=processes,
+        goal=goal,
+    )
+
+
 def _expand_candidate_path(raw: str) -> str:
     s = os.path.expandvars(raw or "").strip()
     if not s:
@@ -185,7 +249,9 @@ def _find_app_executable(profile: dict[str, Any]) -> tuple[str, str]:
         if suffix in (".exe", ".lnk") and Path(candidate).is_file():
             return candidate, "candidate_path"
         if candidate.lower().endswith(".exe") and "\\" not in candidate and "/" not in candidate:
-            return candidate, "path_lookup"
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved, "path_lookup"
 
     search_roots = [
         Path(os.environ.get("LOCALAPPDATA") or ""),
@@ -1034,6 +1100,9 @@ def _extract_codex_brief_from_ocr(ocr_text: str, project_name: str) -> str:
     )
     for raw in str(ocr_text or "").splitlines():
         line = re.sub(r"\s+", " ", raw).strip()
+        line_l = line.lower()
+        if "ask for follow-up changes" in line_l or "ask for approval" in line_l:
+            break
         if not line:
             continue
         key = line.lower().replace(" ", "")
@@ -1135,6 +1204,142 @@ def _choose_codex_brief_message(
         "ocr_validation": ocr_validation,
     }
 
+
+def _extract_codex_generic_from_ocr(ocr_text: str, question: str = "") -> str:
+    lines: list[str] = []
+    question_key = _compact_match_text(question)
+    noisy_exact = {
+        "file",
+        "edit",
+        "view",
+        "help",
+        "newchat",
+        "qsearch",
+        "projects",
+        "chats",
+        "scheduled",
+        "showmore",
+        "askforfollowupchanges",
+        "askforapproval",
+        "samuelthoreau",
+        "update",
+        "pro",
+    }
+    noisy_patterns = (
+        r"^\d+(s|m|h|d)?$",
+        r"^workingfor",
+        r"^workedfor",
+        r"^running\$",
+        r"^ran\d+commands?$",
+        r"^5\.5",
+        r"^document[- ]?md$",
+        r"^openin$",
+    )
+    for raw in str(ocr_text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        line_l = line.lower()
+        if "ask for follow-up changes" in line_l or "ask for approval" in line_l:
+            break
+        if not line:
+            continue
+        compact = _compact_match_text(line)
+        if not compact or compact in noisy_exact:
+            continue
+        if any(re.search(pat, compact, re.I) for pat in noisy_patterns):
+            continue
+        if question_key and compact == question_key:
+            continue
+        lines.append(line)
+
+    if not lines:
+        return ""
+
+    start = 0
+    if question_key:
+        for idx, line in enumerate(lines):
+            if question_key and question_key in _compact_match_text(line):
+                start = min(idx + 1, len(lines))
+    selected = lines[start:]
+    trimmed: list[str] = []
+    for line in selected:
+        compact = _compact_match_text(line)
+        if compact in {"askforfollowupchanges", "askforapproval", "update", "pro"}:
+            break
+        trimmed.append(line)
+        if len("\n".join(trimmed)) > 2400:
+            break
+    text = "\n".join(trimmed).strip()
+    if len(text) > 2200:
+        text = text[:2150].rstrip() + "\n...[OCR excerpt truncated]"
+    return text
+
+
+def _codex_generic_response_valid(text: str, question: str = "") -> dict[str, Any]:
+    content = str(text or "").strip()
+    compact = _compact_match_text(content)
+    question_text = str(question or "").strip()
+    question_key = _compact_match_text(question_text)
+    question_tokens = [
+        token
+        for token in re.split(r"[^a-zA-Z0-9\u4e00-\u9fff]+", question_text.lower())
+        if len(token) >= 2
+    ]
+    token_hits = sum(1 for token in question_tokens if token and token in compact)
+    prompt_echo = False
+    if question_key:
+        prompt_echo = compact == question_key or (question_key in compact and len(compact) <= max(80, len(question_key) * 2))
+    checks = {
+        "non_empty": len(content) >= 40,
+        "not_prompt_echo": not prompt_echo and not _looks_like_codex_project_prompt_echo(content),
+        "has_answer_shape": bool("\n" in content or re.search(r"([:：。；;]|^[-*•\d]+[.)、])", content, re.M) or len(content) >= 120),
+        "mentions_question_topic": True if not question_tokens else token_hits >= max(1, min(2, len(question_tokens))),
+    }
+    ok = all(checks.values())
+    return {"ok": ok, "checks": checks, "length": len(content), "token_hits": token_hits}
+
+
+def _choose_codex_generic_reply(
+    copied_text: str,
+    ocr_text: str,
+    vision_text: str = "",
+    question: str = "",
+) -> dict[str, Any]:
+    copied = str(copied_text or "").strip()
+    vision = str(vision_text or "").strip()
+    ocr_fallback = _extract_codex_generic_from_ocr(ocr_text, question=question)
+    vision_validation = _codex_generic_response_valid(vision, question=question)
+    copied_validation = _codex_generic_response_valid(copied, question=question)
+    ocr_validation = _codex_generic_response_valid(ocr_fallback, question=question)
+
+    candidates = [
+        ("qwen_vision", vision, vision_validation),
+        ("clipboard", copied, copied_validation),
+        ("ocr_fallback", ocr_fallback, ocr_validation),
+    ]
+    for source, message_text, validation in candidates:
+        if validation.get("ok"):
+            return {
+                "message_text": message_text,
+                "message_source": source,
+                "validation": validation,
+                "vision_text": vision,
+                "ocr_fallback_text": ocr_fallback,
+                "vision_validation": vision_validation,
+                "copied_validation": copied_validation,
+                "ocr_validation": ocr_validation,
+            }
+
+    source, message_text, validation = max(candidates, key=lambda item: len(item[1]))
+    return {
+        "message_text": message_text,
+        "message_source": f"{source}_unverified",
+        "validation": validation,
+        "vision_text": vision,
+        "ocr_fallback_text": ocr_fallback,
+        "vision_validation": vision_validation,
+        "copied_validation": copied_validation,
+        "ocr_validation": ocr_validation,
+    }
 
 def calculator_visual_state(screenshot_path: str | Path, expected: str = "") -> dict[str, Any]:
     state: dict[str, Any] = {
@@ -1288,12 +1493,26 @@ def _lark_message_visible_match(message: str, visual_text: str) -> dict[str, Any
     if msg_key in text_key:
         return {"ok": True, "strategy": "exact", "hits": [msg[:80]], "required": 1}
 
+    if 4 <= len(msg_key) <= 20:
+        edge_variants = [msg_key[1:], msg_key[:-1]]
+        if len(msg_key) >= 6:
+            edge_variants.extend([msg_key[2:], msg_key[:-2], msg_key[1:-1]])
+        hits = [variant for variant in edge_variants if len(variant) >= 4 and variant in text_key]
+        if hits:
+            return {
+                "ok": True,
+                "strategy": "short_fuzzy_edge_drop",
+                "hits": hits[:3],
+                "required": 1,
+                "message_len": len(msg_key),
+            }
+
     # Long Lark drafts only show the bottom of the composer. OCR also drops
     # punctuation and can confuse file prefixes, so verify with distinctive
     # anchors from visible chunks instead of requiring the whole message.
     chunks: list[str] = []
     for raw_line in msg.splitlines():
-        for part in re.split(r"[，。；;：:、,.!?！？\s]+", raw_line):
+        for part in re.split(r"[\uFF0C\u3002\uFF1B;\u3001,.!?\uFF01\uFF1F\s]+", raw_line):
             part = part.strip()
             key = _compact_match_text(part)
             if len(key) >= 5:
@@ -1309,7 +1528,10 @@ def _lark_message_visible_match(message: str, visual_text: str) -> dict[str, Any
         anchors.append(chunk)
 
     hits = [anchor for anchor in anchors if _compact_match_text(anchor) in text_key]
-    required = max(2, min(3, len(anchors) // 3 if anchors else 0))
+    if len(anchors) == 1 and len(_compact_match_text(anchors[0])) >= 4:
+        required = 1
+    else:
+        required = max(2, min(3, len(anchors) // 3 if anchors else 0))
     ok = len(hits) >= required
     return {
         "ok": ok,
@@ -1318,6 +1540,85 @@ def _lark_message_visible_match(message: str, visual_text: str) -> dict[str, Any
         "required": required,
         "anchor_count": len(anchors),
     }
+
+
+def _lark_recipient_identity_check(target: str, visual_text: str) -> dict[str, Any]:
+    """Verify the active Lark conversation, not just any full-screen text hit."""
+    target_raw = str(target or "").strip()
+    text = str(visual_text or "")
+    target_key = _compact_match_text(target_raw)
+    text_key = _compact_match_text(text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    result: dict[str, Any] = {
+        "ok": False,
+        "target": target_raw,
+        "target_visible_fullscreen": bool(target_key and target_key in text_key),
+        "title": "",
+        "title_match": False,
+        "send_target": "",
+        "send_target_match": False,
+        "negative_evidence": [],
+        "reason": "",
+    }
+    if not target_key:
+        result["reason"] = "target_empty"
+        return result
+
+    search_overlay = (
+        ("\u641c\u7d22\u5386\u53f2" in text and ("\u9009\u62e9\u6761\u76ee" in text or "\u9000\u51fa\u641c\u7d22" in text))
+        or ("search history" in text.lower() and ("select" in text.lower() or "esc" in text.lower()))
+    )
+    if search_overlay:
+        result["negative_evidence"].append("search_overlay_still_open")
+
+    for line in lines:
+        if "\u53d1\u9001\u7ed9" in line or "send to" in line.lower():
+            result["send_target"] = line
+            result["send_target_match"] = target_key in _compact_match_text(line)
+            if not result["send_target_match"]:
+                result["negative_evidence"].append(f"wrong_send_target:{line[:80]}")
+            break
+
+    title = ""
+    for idx, line in enumerate(lines[:18]):
+        compact = _compact_match_text(line)
+        if compact in {"\u6d88\u606f", "chats", "chat"}:
+            for candidate in lines[idx + 1 : min(len(lines), idx + 6)]:
+                candidate_compact = _compact_match_text(candidate)
+                if not candidate_compact:
+                    continue
+                if candidate_compact in {"\u6d88\u606f", "chats", "chat"}:
+                    continue
+                if "\u641c\u7d22" in candidate or "search" in candidate.lower() or candidate in {"?", "Q"}:
+                    continue
+                title = candidate
+                break
+            if title:
+                break
+    if not title and lines:
+        for candidate in lines[:10]:
+            if "\u641c\u7d22" not in candidate and "search" not in candidate.lower() and candidate not in {"?", "Q", "\u53e3"}:
+                title = candidate
+                break
+    result["title"] = title
+    result["title_match"] = bool(title and target_key in _compact_match_text(title))
+
+    wrong_assistant = any(
+        marker in _compact_match_text(result.get("title") or "")
+        for marker in ("\u90ae\u7bb1\u52a9\u624b", "\u90ae\u7bb1\u52a9\u624b\u673a\u5668\u4eba", "mailassistant", "emailassistant")
+    )
+    if wrong_assistant and not any(marker in target_key for marker in ("\u90ae\u7bb1\u52a9\u624b", "mailassistant", "emailassistant")):
+        result["negative_evidence"].append(f"wrong_chat_title:{title[:80]}")
+
+    if result["negative_evidence"]:
+        result["reason"] = ",".join(result["negative_evidence"])
+        return result
+    if result["title_match"] or result["send_target_match"]:
+        result["ok"] = True
+        result["reason"] = "recipient_identity_verified"
+        return result
+    result["reason"] = "recipient_identity_not_verified"
+    return result
 
 
 def _collect_evidence_paths(value: Any) -> list[str]:
@@ -1691,6 +1992,32 @@ def _import_pyautogui():
     return pyautogui
 
 
+class MouseFailSafeInterrupt(RuntimeError):
+    """Raised when the pointer is in PyAutoGUI's fail-safe corner."""
+
+    def __init__(
+        self,
+        action: str = "pyautogui_action",
+        position: tuple[int, int] | None = None,
+        screen: tuple[int, int] | None = None,
+        margin: int = 8,
+    ) -> None:
+        super().__init__("mouse_failsafe_triggered")
+        self.action = action
+        self.position = position
+        self.screen = screen
+        self.margin = margin
+
+    def to_evidence(self) -> dict[str, Any]:
+        return {
+            "detail": "mouse_failsafe_triggered",
+            "action": self.action,
+            "position": {"x": self.position[0], "y": self.position[1]} if self.position else {},
+            "screen": {"width": self.screen[0], "height": self.screen[1]} if self.screen else {},
+            "margin": self.margin,
+        }
+
+
 def _import_uia():
     try:
         import uiautomation as auto  # type: ignore
@@ -1767,6 +2094,48 @@ class WindowTools:
         if width <= 10 or height <= 10:
             return None
         return ((buf.value or "").strip(), left, top, width, height)
+
+    def active_snapshot(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {}
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return {}
+
+        length = user32.GetWindowTextLengthW(hwnd) + 1
+        buf = ctypes.create_unicode_buffer(length)
+        user32.GetWindowTextW(hwnd, buf, length)
+        title = (buf.value or "").strip()
+
+        rect_data: dict[str, int] = {}
+        rect = ctypes.wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            left = int(rect.left)
+            top = int(rect.top)
+            rect_data = {
+                "left": left,
+                "top": top,
+                "width": max(0, int(rect.right - rect.left)),
+                "height": max(0, int(rect.bottom - rect.top)),
+            }
+
+        pid_i = 0
+        try:
+            pid = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            pid_i = int(pid.value)
+        except Exception:
+            pid_i = 0
+
+        proc = _parse_tasklist().get(pid_i, {})
+        return {
+            "hwnd": int(hwnd),
+            "pid": pid_i,
+            "process": proc.get("image_name") or "",
+            "title": title,
+            "rect": rect_data,
+        }
 
     def list_windows(self, limit: int = 80) -> list[dict[str, Any]]:
         if not self.enabled:
@@ -1903,42 +2272,67 @@ class DesktopIO:
         self.win = win
         self.pyautogui = _import_pyautogui()
 
-    def _safe_mouse(self) -> None:
+    def _safe_mouse(self, action: str = "pyautogui_action", margin: int = 8) -> None:
         try:
             x, y = self.pyautogui.position()
             w, h = self.pyautogui.size()
-            if x <= 2 or y <= 2 or x >= w - 2 or y >= h - 2:
-                self.pyautogui.moveTo(max(120, w // 2), max(120, h // 2), duration=0.05)
-        except Exception:
-            pass
-
-    def launch(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> bool:
+        except Exception as exc:
+            if type(exc).__name__ == "FailSafeException" or "fail-safe" in str(exc).lower():
+                raise MouseFailSafeInterrupt(action=action) from exc
+            return
+        if x <= margin or y <= margin or x >= w - margin or y >= h - margin:
+            raise MouseFailSafeInterrupt(action=action, position=(int(x), int(y)), screen=(int(w), int(h)), margin=margin)
+    def launch_result(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> dict[str, Any]:
         argv = [exe] + list(args or [])
         logger.info("[act] launch argv=%s", argv)
-        if Path(exe).suffix.lower() == ".lnk":
-            os.startfile(exe)  # type: ignore[attr-defined]
-        else:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if Path(exe).suffix.lower() == ".lnk":
+                os.startfile(exe)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError as exc:
+            logger.warning("[act] launch file not found argv=%s error=%r", argv, exc)
+            return {
+                "ok": False,
+                "detail": "app_executable_not_found",
+                "exe": exe,
+                "argv": argv,
+                "error_type": type(exc).__name__,
+                "error": repr(exc),
+            }
+        except OSError as exc:
+            logger.warning("[act] launch failed argv=%s error=%r", argv, exc)
+            return {
+                "ok": False,
+                "detail": "app_launch_failed",
+                "exe": exe,
+                "argv": argv,
+                "error_type": type(exc).__name__,
+                "error": repr(exc),
+            }
         time.sleep(wait)
         focused = self.win.focus_by_keywords(keywords, timeout=5.0)
         logger.info("[act] launched=%s focused=%s active=%r", exe, focused, self.win.active_title())
-        return focused
+        return {"ok": True, "detail": "launch_invoked", "exe": exe, "argv": argv, "focused": bool(focused)}
+
+    def launch(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> bool:
+        return bool(self.launch_result(exe, keywords, args=args, wait=wait).get("focused"))
 
     def hotkey(self, *keys: str, wait: float = 0.2) -> None:
         logger.info("[act] hotkey=%s", "+".join(keys))
-        self._safe_mouse()
+        self._safe_mouse("hotkey")
         self.pyautogui.hotkey(*keys)
         time.sleep(wait)
 
     def press(self, key: str, presses: int = 1, wait: float = 0.15) -> None:
         logger.info("[act] press=%s x%s", key, presses)
-        self._safe_mouse()
+        self._safe_mouse("press")
         self.pyautogui.press(key, presses=presses)
         time.sleep(wait)
 
     def write(self, text: str, interval: float = 0.02, wait: float = 0.2) -> None:
         logger.info("[act] write len=%d", len(text))
-        self._safe_mouse()
+        self._safe_mouse("write")
         self.pyautogui.write(text, interval=interval)
         time.sleep(wait)
 
@@ -1947,36 +2341,37 @@ class DesktopIO:
 
         logger.info("[act] paste len=%d", len(text))
         pyperclip.copy(text)
-        self._safe_mouse()
+        self._safe_mouse("paste")
         self.pyautogui.hotkey("ctrl", "v")
         time.sleep(wait)
 
     def click(self, x: int, y: int, wait: float = 0.2) -> None:
         logger.info("[act] click x=%s y=%s", x, y)
-        self._safe_mouse()
+        self._safe_mouse("click")
         self.pyautogui.click(x=int(x), y=int(y))
         time.sleep(wait)
 
     def move_to(self, x: int, y: int, wait: float = 0.05) -> None:
         logger.info("[act] move_to x=%s y=%s", x, y)
-        self._safe_mouse()
+        self._safe_mouse("move_to")
         self.pyautogui.moveTo(int(x), int(y), duration=0.05)
         time.sleep(wait)
 
     def drag_to(self, x: int, y: int, duration: float = 0.25, wait: float = 0.2) -> None:
         logger.info("[act] drag_to x=%s y=%s duration=%.2f", x, y, duration)
-        self._safe_mouse()
+        self._safe_mouse("drag_to")
         self.pyautogui.dragTo(int(x), int(y), duration=float(duration), button="left")
         time.sleep(wait)
 
     def scroll(self, clicks: int, wait: float = 0.2) -> None:
         logger.info("[act] scroll clicks=%s", clicks)
-        self._safe_mouse()
+        self._safe_mouse("scroll")
         self.pyautogui.scroll(int(clicks))
         time.sleep(wait)
 
     def screenshot(self, out_dir: Path, label: str) -> str:
         out_dir.mkdir(parents=True, exist_ok=True)
+        self._safe_mouse("screenshot")
         img = self.pyautogui.screenshot()
         path = out_dir / f"{now_tag()}_{label}.png"
         img.save(path)
@@ -1985,6 +2380,179 @@ class DesktopIO:
 
     def screenshot_active_window(self, out_dir: Path, label: str) -> str:
         out_dir.mkdir(parents=True, exist_ok=True)
+        self._safe_mouse("screenshot_active_window")
+        rect = self.win.active_rect()
+        if rect:
+            title, left, top, width, height = rect
+            img = self.pyautogui.screenshot(region=(left, top, width, height))
+            logger.info("[observe] %s active_window title=%r rect=(%d,%d,%d,%d)", label, title, left, top, width, height)
+        else:
+            img = self.pyautogui.screenshot()
+        path = out_dir / f"{now_tag()}_{label}.png"
+        img.save(path)
+        logger.info("[observe] %s screenshot=%s active=%r", label, path, self.win.active_title())
+        return str(path)
+
+
+class EnvironmentVerifier:
+    def __init__(self, win: WindowTools) -> None:
+        self.win = win
+
+    def verify(self, contract: ExecutionContract, stage: str = "", action: str = "") -> EnvironmentVerification:
+        checks: dict[str, Any] = {}
+        try:
+            active = self.win.active_snapshot()
+        except AttributeError as exc:
+            title = ""
+            try:
+                title = self.win.active_title()
+            except Exception:
+                title = ""
+            active = {"title": title, "process": ""}
+            checks["active_snapshot_error"] = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:
+            active = {}
+            checks["active_snapshot_error"] = f"{type(exc).__name__}: {exc}"
+        title = str(active.get("title") or "")
+        process = str(active.get("process") or "")
+        title_l = title.lower()
+        process_l = process.lower()
+        keywords = tuple(k.lower() for k in contract.expected_keywords if k)
+        processes = tuple(p.lower() for p in contract.expected_processes if p)
+        title_ok = bool(keywords and any(k in title_l for k in keywords))
+        process_ok = bool(processes and any(process_l == p or p.replace(".exe", "") in process_l for p in processes))
+        ok = bool((title_ok or process_ok) if contract.require_foreground else True)
+        if ok:
+            detail = "environment_verified"
+        elif title or process:
+            detail = "wrong_foreground_app"
+        else:
+            detail = "foreground_app_unknown"
+        checks.update(
+            {
+                "title_ok": title_ok,
+                "process_ok": process_ok,
+                "expected_keywords": list(keywords),
+                "expected_processes": list(processes),
+            }
+        )
+        return EnvironmentVerification(ok=ok, detail=detail, contract=contract, active=active, checks=checks, stage=stage, action=action)
+
+
+class DesktopIO:
+    def __init__(self, win: WindowTools) -> None:
+        self.win = win
+        self.pyautogui = _import_pyautogui()
+
+    def _safe_mouse(self, action: str = "pyautogui_action", margin: int = 8) -> None:
+        try:
+            x, y = self.pyautogui.position()
+            w, h = self.pyautogui.size()
+        except Exception as exc:
+            if type(exc).__name__ == "FailSafeException" or "fail-safe" in str(exc).lower():
+                raise MouseFailSafeInterrupt(action=action) from exc
+            return
+        if x <= margin or y <= margin or x >= w - margin or y >= h - margin:
+            raise MouseFailSafeInterrupt(action=action, position=(int(x), int(y)), screen=(int(w), int(h)), margin=margin)
+    def launch_result(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> dict[str, Any]:
+        argv = [exe] + list(args or [])
+        logger.info("[act] launch argv=%s", argv)
+        try:
+            if Path(exe).suffix.lower() == ".lnk":
+                os.startfile(exe)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError as exc:
+            logger.warning("[act] launch file not found argv=%s error=%r", argv, exc)
+            return {
+                "ok": False,
+                "detail": "app_executable_not_found",
+                "exe": exe,
+                "argv": argv,
+                "error_type": type(exc).__name__,
+                "error": repr(exc),
+            }
+        except OSError as exc:
+            logger.warning("[act] launch failed argv=%s error=%r", argv, exc)
+            return {
+                "ok": False,
+                "detail": "app_launch_failed",
+                "exe": exe,
+                "argv": argv,
+                "error_type": type(exc).__name__,
+                "error": repr(exc),
+            }
+        time.sleep(wait)
+        focused = self.win.focus_by_keywords(keywords, timeout=5.0)
+        logger.info("[act] launched=%s focused=%s active=%r", exe, focused, self.win.active_title())
+        return {"ok": True, "detail": "launch_invoked", "exe": exe, "argv": argv, "focused": bool(focused)}
+
+    def launch(self, exe: str, keywords: tuple[str, ...], args: list[str] | None = None, wait: float = 1.2) -> bool:
+        return bool(self.launch_result(exe, keywords, args=args, wait=wait).get("focused"))
+
+    def hotkey(self, *keys: str, wait: float = 0.2) -> None:
+        logger.info("[act] hotkey=%s", "+".join(keys))
+        self._safe_mouse("hotkey")
+        self.pyautogui.hotkey(*keys)
+        time.sleep(wait)
+
+    def press(self, key: str, presses: int = 1, wait: float = 0.15) -> None:
+        logger.info("[act] press=%s x%s", key, presses)
+        self._safe_mouse("press")
+        self.pyautogui.press(key, presses=presses)
+        time.sleep(wait)
+
+    def write(self, text: str, interval: float = 0.02, wait: float = 0.2) -> None:
+        logger.info("[act] write len=%d", len(text))
+        self._safe_mouse("write")
+        self.pyautogui.write(text, interval=interval)
+        time.sleep(wait)
+
+    def paste(self, text: str, wait: float = 0.2) -> None:
+        import pyperclip  # type: ignore
+
+        logger.info("[act] paste len=%d", len(text))
+        pyperclip.copy(text)
+        self._safe_mouse("paste")
+        self.pyautogui.hotkey("ctrl", "v")
+        time.sleep(wait)
+
+    def click(self, x: int, y: int, wait: float = 0.2) -> None:
+        logger.info("[act] click x=%s y=%s", x, y)
+        self._safe_mouse("click")
+        self.pyautogui.click(x=int(x), y=int(y))
+        time.sleep(wait)
+
+    def move_to(self, x: int, y: int, wait: float = 0.05) -> None:
+        logger.info("[act] move_to x=%s y=%s", x, y)
+        self._safe_mouse("move_to")
+        self.pyautogui.moveTo(int(x), int(y), duration=0.05)
+        time.sleep(wait)
+
+    def drag_to(self, x: int, y: int, duration: float = 0.25, wait: float = 0.2) -> None:
+        logger.info("[act] drag_to x=%s y=%s duration=%.2f", x, y, duration)
+        self._safe_mouse("drag_to")
+        self.pyautogui.dragTo(int(x), int(y), duration=float(duration), button="left")
+        time.sleep(wait)
+
+    def scroll(self, clicks: int, wait: float = 0.2) -> None:
+        logger.info("[act] scroll clicks=%s", clicks)
+        self._safe_mouse("scroll")
+        self.pyautogui.scroll(int(clicks))
+        time.sleep(wait)
+
+    def screenshot(self, out_dir: Path, label: str) -> str:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self._safe_mouse("screenshot")
+        img = self.pyautogui.screenshot()
+        path = out_dir / f"{now_tag()}_{label}.png"
+        img.save(path)
+        logger.info("[observe] %s screenshot=%s active=%r", label, path, self.win.active_title())
+        return str(path)
+
+    def screenshot_active_window(self, out_dir: Path, label: str) -> str:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self._safe_mouse("screenshot_active_window")
         rect = self.win.active_rect()
         if rect:
             title, left, top, width, height = rect
@@ -2003,7 +2571,62 @@ class WindowsOSAutomation:
         self.out_dir = Path(out_dir or Path.cwd() / "output" / "os_vision").resolve()
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.win = WindowTools()
+        self.env = EnvironmentVerifier(self.win)
         self.io = DesktopIO(self.win)
+
+    def _execution_contract(self, app_name: str, goal: str = "") -> ExecutionContract:
+        return _app_contract(app_name, goal=goal)
+
+    def _verify_environment(self, contract: ExecutionContract, stage: str = "", action: str = "") -> EnvironmentVerification:
+        row = self.env.verify(contract, stage=stage, action=action)
+        logger.info(
+            "[env_guard] stage=%s action=%s target=%s ok=%s detail=%s active_title=%r process=%r",
+            stage,
+            action,
+            contract.app_key,
+            row.ok,
+            row.detail,
+            row.active.get("title"),
+            row.active.get("process"),
+        )
+        return row
+
+    def _unsafe_environment_result(self, task: str, contract: ExecutionContract, guard: EnvironmentVerification, evidence: dict[str, Any] | None = None) -> TaskResult:
+        payload = dict(evidence or {})
+        payload["execution_contract"] = contract.to_dict()
+        payload["environment_guard"] = guard.to_dict()
+        return TaskResult(task, False, guard.detail if guard.detail != "environment_verified" else "unsafe_environment", payload)
+
+    def _recover_environment_if_needed(
+        self,
+        contract: ExecutionContract,
+        guard: EnvironmentVerification,
+        *,
+        stage: str,
+        action: str,
+        launch_if_missing: bool = False,
+        timeout: float = 3.0,
+        max_attempts: int = 2,
+    ) -> tuple[EnvironmentVerification, dict[str, Any] | None]:
+        """Bring the target app back before treating foreground loss as fatal."""
+        if guard.ok or guard.detail not in {"wrong_foreground_app", "foreground_app_unknown"}:
+            return guard, None
+        focus_result = self.focus_or_raise_app(
+            contract.app_key,
+            timeout=timeout,
+            max_attempts=max_attempts,
+            launch_if_missing=launch_if_missing,
+            stage=f"{stage}_focus_recovery",
+        )
+        recovered = self._verify_environment(contract, stage=stage, action=f"{action}_after_focus_recovery")
+        recovery = {
+            "reason": guard.detail,
+            "initial_guard": guard.to_dict(),
+            "focus_result": asdict(focus_result),
+            "recovered_guard": recovered.to_dict(),
+            "ok": bool(recovered.ok),
+        }
+        return recovered, recovery
 
     def active_window(self) -> TaskResult:
         rect = self.win.active_rect()
@@ -2031,8 +2654,8 @@ class WindowsOSAutomation:
         )
 
     def window_switch(self, keywords: str, exclude_keywords: str = "", timeout: float = 5.0) -> TaskResult:
-        keys = tuple(k.strip() for k in re.split(r"[,，|]", str(keywords or "")) if k.strip())
-        excludes = tuple(k.strip() for k in re.split(r"[,，|]", str(exclude_keywords or "")) if k.strip())
+        keys = tuple(k.strip() for k in re.split(r"[,锛寍]", str(keywords or "")) if k.strip())
+        excludes = tuple(k.strip() for k in re.split(r"[,锛寍]", str(exclude_keywords or "")) if k.strip())
         if not keys:
             return TaskResult("windows_window_switch", False, "keywords_empty", {})
         before = self.win.active_title()
@@ -3016,6 +3639,168 @@ class WindowsOSAutomation:
             evidence,
         )
 
+    def codex_ask_lark_send(
+        self,
+        question: str,
+        recipients: list[str] | None = None,
+        original_user_input: str = "",
+        wait_seconds: int = 90,
+    ) -> TaskResult:
+        clean_question = str(question or "").strip()
+        clean_recipients = [str(x).strip() for x in (recipients or []) if str(x).strip()]
+        if not clean_question:
+            return TaskResult("windows_codex_ask_lark_send", False, "question_empty", {"recipients": clean_recipients})
+        if not clean_recipients:
+            return TaskResult("windows_codex_ask_lark_send", False, "recipients_empty", {"question": clean_question})
+
+        label = _safe_label(clean_question[:40] or "codex_question")
+        report = self.out_dir / f"codex_ask_lark_{label}_{now_tag()}.md"
+        evidence_path = report.with_suffix(".evidence.json")
+        evidence: dict[str, Any] = {
+            "task": "windows_codex_ask_lark_send",
+            "ok": False,
+            "detail": "running",
+            "question": clean_question,
+            "original_user_input": original_user_input,
+            "recipients": clean_recipients,
+            "report_path": str(report),
+            "evidence_path": str(evidence_path),
+            "artifact_contract": {
+                "artifact": "codex_reply",
+                "producer_step": "ask_codex",
+                "consumer_step": "send_lark",
+                "validation": ["non_empty", "not_prompt_echo", "has_answer_shape"],
+            },
+            "timeline": [],
+        }
+        _append_evidence_timeline(evidence, evidence_path, "build_mission_graph", "done", "codex_reply -> lark_message", {"recipients": clean_recipients})
+
+        codex_open = self.ensure_app("codex", timeout=4.0)
+        evidence["codex_open"] = asdict(codex_open)
+        _append_evidence_timeline(evidence, evidence_path, "open_codex", "done" if codex_open.ok else "failed", codex_open.detail, {"codex_open": asdict(codex_open)})
+        if not codex_open.ok:
+            evidence["detail"] = "codex_open_failed"
+            evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+            return TaskResult("windows_codex_ask_lark_send", False, "codex_open_failed", evidence)
+
+        codex_focus_before = self._ensure_codex_foreground(timeout=3.0)
+        evidence["codex_focus_before"] = codex_focus_before
+        before = self.io.screenshot_active_window(self.out_dir, f"codex_ask_before_{label}")
+        focus_input = self._codex_focus_input()
+        evidence["focus_input"] = focus_input
+        evidence["screenshots"] = {"before": before}
+        _append_evidence_timeline(evidence, evidence_path, "focus_codex_input", "done" if focus_input.get("ok") else "failed", "focused Codex input area", {"focus_input": focus_input, "screenshot": before})
+        if not focus_input.get("ok"):
+            evidence["detail"] = "codex_input_focus_failed"
+            evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+            return TaskResult("windows_codex_ask_lark_send", False, "codex_input_focus_failed", evidence)
+
+        self.io.paste(clean_question, wait=0.4)
+        typed = self.io.screenshot_active_window(self.out_dir, f"codex_ask_typed_{label}")
+        evidence["screenshots"]["typed"] = typed
+        evidence["typed_visual"] = ocr_image_state(typed)
+        _append_evidence_timeline(evidence, evidence_path, "paste_codex_question", "done", "pasted user question into Codex", {"screenshot": typed, "question_len": len(clean_question)})
+        self.io.press("enter", wait=1.0)
+        _append_evidence_timeline(evidence, evidence_path, "submit_codex_question", "done", "submitted question to Codex", {})
+
+        wait_limit = max(10, min(int(wait_seconds or 90), 600))
+        wait_start = time.time()
+        deadline = time.time() + wait_limit
+        last_fingerprint = ""
+        stable_count = 0
+        captures: list[dict[str, Any]] = []
+        while time.time() < deadline:
+            time.sleep(5.0)
+            focus_guard = self._ensure_codex_foreground(timeout=2.0)
+            if not focus_guard.get("ok"):
+                elapsed = time.time() - wait_start
+                captures.append({"focus_guard": focus_guard, "elapsed_seconds": round(elapsed, 1), "active": False, "stable_count": stable_count})
+                evidence["wait_captures"] = captures
+                _append_evidence_timeline(evidence, evidence_path, "wait_codex_reply", "failed", "Codex focus lost while waiting", {"focus_guard": focus_guard, "elapsed_seconds": round(elapsed, 1)})
+                break
+            shot = self.io.screenshot_active_window(self.out_dir, f"codex_ask_wait_{label}_{len(captures)+1}")
+            visual = ocr_image_state(shot)
+            text = str(visual.get("ocr_text") or "")
+            fp = _ocr_fingerprint(text)
+            active = _codex_generation_active(text)
+            if fp and fp == last_fingerprint:
+                stable_count += 1
+            else:
+                stable_count = 0
+                last_fingerprint = fp
+            elapsed = time.time() - wait_start
+            captures.append({"screenshot": shot, "visual": visual, "stable_count": stable_count, "active": active, "elapsed_seconds": round(elapsed, 1)})
+            evidence["wait_captures"] = captures
+            _append_evidence_timeline(evidence, evidence_path, "wait_codex_reply", "running" if active or stable_count < 2 else "done", f"capture {len(captures)} stable_count={stable_count} active={active}", {"screenshot": shot, "ocr_text_len": len(text), "stable_count": stable_count, "active": active, "elapsed_seconds": round(elapsed, 1)})
+            min_wait = min(20, wait_limit)
+            if stable_count >= 2 and len(text) > 80 and not active and elapsed >= min_wait:
+                break
+
+        final_focus_guard = self._ensure_codex_foreground(timeout=3.0)
+        evidence["codex_final_focus_guard"] = final_focus_guard
+        final_shot = self.io.screenshot_active_window(self.out_dir, f"codex_ask_final_{label}" if final_focus_guard.get("ok") else f"codex_ask_final_focus_lost_{label}")
+        final_visual = ocr_image_state(final_shot)
+        evidence["screenshots"]["final"] = final_shot
+        evidence["final_visual"] = final_visual
+        vision_extract = _call_qwen_vision_codex_extract(final_shot, "Codex answer", feature_query=clean_question)
+        vision_text = str(vision_extract.get("content") or "").strip()
+        evidence["vision_extract"] = {k: v for k, v in vision_extract.items() if k != "content"}
+        evidence["vision_text"] = vision_text
+        _append_evidence_timeline(evidence, evidence_path, "extract_codex_reply_by_vision", "done" if vision_extract.get("ok") else "check", str(vision_extract.get("detail") or ""), {"screenshot": final_shot, "vision_text_len": len(vision_text)})
+
+        if _truthy(os.environ.get("JACHIN_CODEX_COPY_FALLBACK_ENABLED")):
+            copied = self._codex_copy_latest_response("Codex answer", feature_query=clean_question)
+        else:
+            copied = {"ok": False, "detail": "copy_fallback_disabled_visual_first", "text": "", "attempts": []}
+        copied_text = str(copied.get("text") or "").strip()
+        evidence["copied"] = {k: v for k, v in copied.items() if k != "text"}
+        evidence["copied_text"] = copied_text
+        choice = _choose_codex_generic_reply(copied_text, str(final_visual.get("ocr_text") or ""), vision_text=vision_text, question=clean_question)
+        message_text = str(choice.get("message_text") or "").strip()
+        validation = dict(choice.get("validation") or {})
+        evidence.update(
+            {
+                "codex_reply": message_text,
+                "message_text": message_text,
+                "message_source": str(choice.get("message_source") or ""),
+                "reply_validation": validation,
+                "vision_validation": choice.get("vision_validation"),
+                "copied_validation": choice.get("copied_validation"),
+                "ocr_validation": choice.get("ocr_validation"),
+                "ocr_fallback_text": choice.get("ocr_fallback_text"),
+            }
+        )
+        _append_evidence_timeline(evidence, evidence_path, "validate_codex_reply", "done" if validation.get("ok") else "failed", f"message_source={choice.get('message_source')}", {"validation": validation})
+        report.write_text(message_text or str(final_visual.get("ocr_text") or ""), encoding="utf-8")
+        _append_evidence_timeline(evidence, evidence_path, "write_report", "done", "wrote Codex reply report", {"report_path": str(report), "message_len": len(message_text)})
+
+        send_result: dict[str, Any] | None = None
+        if not validation.get("ok"):
+            send_result = {"ok": False, "detail": "codex_reply_validation_failed"}
+            _append_evidence_timeline(evidence, evidence_path, "send_lark", "failed", "codex_reply_validation_failed", {"validation": validation})
+        else:
+            def lark_event(stage: str, status: str, detail: str, row: dict[str, Any]) -> None:
+                _append_evidence_timeline(evidence, evidence_path, f"lark.{stage}", status, detail, row)
+
+            send_result = asdict(self.lark_send_message(clean_recipients, message_text, timeline_cb=lark_event))
+            _append_evidence_timeline(evidence, evidence_path, "send_lark_complete", "done" if send_result.get("ok") else "failed", str(send_result.get("detail") or ""), {"recipients": clean_recipients, "send_result": send_result})
+
+        ok = bool(validation.get("ok")) and bool(send_result and send_result.get("ok"))
+        evidence["ok"] = ok
+        evidence["detail"] = "codex_reply_sent" if ok else (str(send_result.get("detail") or "codex_reply_not_sent") if isinstance(send_result, dict) else "codex_reply_not_sent")
+        evidence["send_result"] = send_result
+        panel_path = _write_evidence_panel(
+            self.out_dir,
+            title="Codex Ask to Lark Evidence",
+            task="windows_codex_ask_lark_send",
+            ok=ok,
+            detail=evidence["detail"],
+            evidence=evidence,
+        )
+        evidence["evidence_panel_path"] = panel_path
+        _append_evidence_timeline(evidence, evidence_path, "render_evidence_panel", "done", "rendered evidence HTML panel", {"evidence_panel_path": panel_path})
+        evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+        return TaskResult("windows_codex_ask_lark_send", ok, evidence["detail"], evidence)
     def codex_lark_workflow_template(
         self,
         project_name: str = "",
@@ -3415,25 +4200,34 @@ class WindowsOSAutomation:
         logger.info("[window] active target final ok=%s title=%r target=%r", ok, active, needle)
         return ok
 
-    def open_app(self, app_name: str, args: list[str] | None = None) -> TaskResult:
+    def focus_or_raise_app(
+        self,
+        app_name: str,
+        args: list[str] | None = None,
+        timeout: float = 6.0,
+        max_attempts: int = 3,
+        launch_if_missing: bool = True,
+        stage: str = "focus_or_raise_app",
+    ) -> TaskResult:
         app_key = normalize_app_name(app_name)
         profile = APP_PROFILES.get(app_key)
-        if profile is None:
+        if not profile:
             profile = {
                 "aliases": (app_key,),
                 "keywords": (app_key,),
                 "exe_names": (f"{app_key}.exe",),
                 "candidate_paths": (f"{app_key}.exe",),
             }
-        keywords = tuple(str(x) for x in profile.get("keywords", ()) if str(x).strip())
+        keywords = tuple(str(x) for x in profile.get("keywords", ()) if str(x).strip()) or (app_key,)
+        contract = self._execution_contract(app_key, goal=f"focus_or_raise:{app_key}")
         if app_key == "browser":
             browser = _find_browser()
             exe, source = (browser, "detected_browser") if browser else ("", "not_found")
         else:
             exe, source = _find_app_executable(profile)
-        if not exe:
+        if launch_if_missing and not exe:
             return TaskResult(
-                "open_app",
+                "focus_or_raise_app",
                 False,
                 "app_executable_not_found",
                 {
@@ -3442,32 +4236,109 @@ class WindowsOSAutomation:
                     "path_source": source,
                     "env_hint": profile.get("env") or "",
                     "candidate_paths": list(profile.get("candidate_paths", ())),
+                    "execution_contract": contract.to_dict(),
                 },
             )
 
-        launched = self.io.launch(exe, keywords or (app_key,), args=args or [], wait=1.5)
-        if not launched and keywords:
-            launched = self.win.focus_by_keywords(keywords, timeout=8.0)
-        active_title = self.win.active_title()
-        screenshot = self.io.screenshot_active_window(self.out_dir, f"open_app_{app_key}")
-        title_ok = bool(active_title and any(k.lower() in active_title.lower() for k in keywords))
-        ok = bool(launched or title_ok)
+        attempts: list[dict[str, Any]] = []
+        final_guard: EnvironmentVerification | None = None
+        for attempt in range(1, max(1, int(max_attempts or 1)) + 1):
+            launch_result: dict[str, Any] | None = None
+            launched = False
+            if launch_if_missing and exe and attempt == 1:
+                launch_result = self.io.launch_result(exe, keywords, args=args or [], wait=1.0)
+                launched = bool(launch_result.get("focused"))
+                if not launch_result.get("ok"):
+                    detail = str(launch_result.get("detail") or "app_launch_failed")
+                    attempts.append(
+                        {
+                            "attempt": attempt,
+                            "launched": False,
+                            "focused": False,
+                            "ok": False,
+                            "detail": detail,
+                            "launch_result": launch_result,
+                        }
+                    )
+                    return TaskResult(
+                        "focus_or_raise_app",
+                        False,
+                        detail,
+                        {
+                            "app": app_name,
+                            "app_key": app_key,
+                            "exe": exe,
+                            "path_source": source,
+                            "keywords": list(keywords),
+                            "attempts": attempts,
+                            "launch_result": launch_result,
+                            "execution_contract": contract.to_dict(),
+                        },
+                    )
+            focused = self.win.focus_by_keywords(keywords, timeout=float(timeout or 6.0))
+            guard = self._verify_environment(contract, stage=stage, action=f"verify_foreground_attempt_{attempt}")
+            final_guard = guard
+            screenshot = self.io.screenshot_active_window(self.out_dir, f"focus_or_raise_{app_key}_attempt_{attempt}")
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "launched": launched,
+                    "focused": focused,
+                    "ok": guard.ok,
+                    "detail": guard.detail,
+                    "active": guard.active,
+                    "environment_guard": guard.to_dict(),
+                    "launch_result": launch_result,
+                    "screenshot": screenshot,
+                }
+            )
+            if guard.ok:
+                return TaskResult(
+                    "focus_or_raise_app",
+                    True,
+                    "app_focused_and_verified",
+                    {
+                        "app": app_name,
+                        "app_key": app_key,
+                        "exe": exe,
+                        "path_source": source,
+                        "keywords": list(keywords),
+                        "attempts": attempts,
+                        "execution_contract": contract.to_dict(),
+                        "environment_guard": guard.to_dict(),
+                        "screenshot": screenshot,
+                    },
+                )
+            time.sleep(0.25)
+
+        fallback_guard = final_guard or self._verify_environment(contract, stage=stage, action="verify_foreground_final")
         return TaskResult(
-            "open_app",
-            ok,
-            "app_opened_and_window_verified" if ok else "app_launched_but_window_not_verified",
+            "focus_or_raise_app",
+            False,
+            "app_focus_failed" if fallback_guard.detail in {"wrong_foreground_app", "foreground_app_unknown"} else fallback_guard.detail,
             {
                 "app": app_name,
                 "app_key": app_key,
                 "exe": exe,
                 "path_source": source,
-                "focused": launched,
-                "active_title": active_title,
-                "title_ok": title_ok,
                 "keywords": list(keywords),
-                "screenshot": screenshot,
+                "attempts": attempts,
+                "execution_contract": contract.to_dict(),
+                "environment_guard": fallback_guard.to_dict(),
             },
         )
+
+    def open_app(self, app_name: str, args: list[str] | None = None) -> TaskResult:
+        result = self.focus_or_raise_app(app_name, args=args or [], timeout=6.0, max_attempts=3, launch_if_missing=True, stage="open_app")
+        evidence = dict(result.evidence)
+        evidence["focused"] = bool(result.ok)
+        return TaskResult(
+            "open_app",
+            result.ok,
+            "app_opened_and_window_verified" if result.ok else result.detail,
+            evidence,
+        )
+
 
     def ensure_app(self, app_name: str, args: list[str] | None = None, timeout: float = 4.0) -> TaskResult:
         app_key = normalize_app_name(app_name)
@@ -3477,10 +4348,12 @@ class WindowsOSAutomation:
         focused_existing = self.win.focus_by_keywords(keywords, timeout=float(timeout or 4.0))
         if focused_existing:
             screenshot = self.io.screenshot_active_window(self.out_dir, f"ensure_app_{app_key}_existing")
+            contract = self._execution_contract(app_key, goal=f"ensure_app:{app_key}")
+            guard = self._verify_environment(contract, stage="ensure_app", action="verify_existing_foreground")
             return TaskResult(
                 "windows_ensure_app",
-                True,
-                "existing_window_focused",
+                bool(guard.ok),
+                "existing_window_focused" if guard.ok else "app_focus_failed",
                 {
                     "app": app_name,
                     "app_key": app_key,
@@ -3488,6 +4361,8 @@ class WindowsOSAutomation:
                     "active_title": self.win.active_title(),
                     "started_new": False,
                     "keywords": list(keywords),
+                    "environment_guard": guard.to_dict(),
+                    "launch_result": launch_result,
                     "screenshot": screenshot,
                 },
             )
@@ -3532,11 +4407,13 @@ class WindowsOSAutomation:
         opened = self.io.screenshot_active_window(self.out_dir, f"lark_opened_{label}")
         opened_visual = ocr_image_state(opened)
         opened_text = str(opened_visual.get("ocr_text") or "")
-        target_visible = target.lower() in opened_text.lower()
+        identity = _lark_recipient_identity_check(target, opened_text)
         return {
             "target": target,
-            "ok": bool(target_visible),
-            "target_visible": target_visible,
+            "ok": bool(identity.get("ok")),
+            "target_visible": bool(identity.get("target_visible_fullscreen")),
+            "identity_verified": bool(identity.get("ok")),
+            "identity_check": identity,
             "active_title": self.win.active_title(),
             "visual": opened_visual,
             "screenshots": {
@@ -3547,6 +4424,19 @@ class WindowsOSAutomation:
             "search_visual": search_visual,
         }
 
+    def _lark_verify_current_recipient_identity(self, recipient: str, label: str) -> dict[str, Any]:
+        screenshot = self.io.screenshot_active_window(self.out_dir, label)
+        visual = ocr_image_state(screenshot)
+        text = str(visual.get("ocr_text") or "")
+        identity = _lark_recipient_identity_check(recipient, text)
+        return {
+            "ok": bool(identity.get("ok")),
+            "recipient": recipient,
+            "screenshot": screenshot,
+            "visual": visual,
+            "identity_check": identity,
+            "active_title": self.win.active_title(),
+        }
     def _lark_focus_message_area(self) -> None:
         self._lark_ensure_focused()
         rect = self.win.active_rect()
@@ -3559,10 +4449,10 @@ class WindowsOSAutomation:
         active = self.win.active_title()
         active_l = active.lower()
         browser_title = any(k in active_l for k in ("edge", "chrome", "firefox", "browser"))
-        if not browser_title and any(k in active_l for k in ("lark", "feishu", "飞书")):
+        if not browser_title and any(k in active_l for k in ("lark", "feishu", "椋炰功")):
             return True
         focused = self.win.focus_by_keywords(
-            ("lark", "feishu", "飞书"),
+            ("lark", "feishu", "椋炰功"),
             timeout=3.0,
             exclude_keywords=("edge", "chrome", "firefox", "browser"),
         )
@@ -3693,6 +4583,7 @@ class WindowsOSAutomation:
         if not msg.strip():
             return TaskResult("lark_send_message", False, "message_empty", {"recipients": clean_recipients})
 
+        contract = self._execution_contract("lark", goal="send_message")
         opened = self.open_app("lark")
         if timeline_cb:
             timeline_cb("open_lark", "done" if opened.ok else "failed", opened.detail, {"open_result": asdict(opened)})
@@ -3700,16 +4591,72 @@ class WindowsOSAutomation:
             return TaskResult(
                 "lark_send_message",
                 False,
-                "lark_open_failed",
-                {"open_result": asdict(opened), "recipients": clean_recipients},
+                "app_focus_failed" if opened.detail == "app_focus_failed" else "lark_open_failed",
+                {"open_result": asdict(opened), "recipients": clean_recipients, "execution_contract": contract.to_dict()},
             )
+        guard = self._verify_environment(contract, stage="before_recipient_loop", action="prepare_send_message")
+        guard, focus_recovery = self._recover_environment_if_needed(
+            contract,
+            guard,
+            stage="before_recipient_loop",
+            action="prepare_send_message",
+            launch_if_missing=False,
+        )
+        if not guard.ok:
+            unsafe_evidence = {"open_result": asdict(opened), "recipients": clean_recipients}
+            if focus_recovery:
+                unsafe_evidence["focus_recovery"] = focus_recovery
+            return self._unsafe_environment_result("lark_send_message", contract, guard, unsafe_evidence)
 
         deliveries: list[dict[str, Any]] = []
         for recipient in clean_recipients:
             logger.info("[scenario:lark] recipient=%r message_len=%d", recipient, len(msg))
             attempts: list[dict[str, Any]] = []
             delivery: dict[str, Any] | None = None
+            guard = self._verify_environment(contract, stage="before_open_target", action="locate_target_object")
+            guard, focus_recovery = self._recover_environment_if_needed(
+                contract,
+                guard,
+                stage="before_open_target",
+                action="locate_target_object",
+                launch_if_missing=False,
+            )
+            if not guard.ok:
+                row = {"recipient": recipient, "ok": False, "failure_stage": guard.detail, "environment_guard": guard.to_dict()}
+                if focus_recovery:
+                    row["focus_recovery"] = focus_recovery
+                deliveries.append(row)
+                continue
             opened_target = self._lark_open_target(recipient)
+            guard = self._verify_environment(contract, stage="after_open_target", action="verify_target_environment")
+            guard, focus_recovery = self._recover_environment_if_needed(
+                contract,
+                guard,
+                stage="after_open_target",
+                action="verify_target_environment",
+                launch_if_missing=False,
+            )
+            if not guard.ok:
+                opened_target["environment_guard"] = guard.to_dict()
+                if focus_recovery:
+                    opened_target["focus_recovery"] = focus_recovery
+                deliveries.append({"recipient": recipient, "ok": False, "failure_stage": guard.detail, "opened_target": opened_target, "environment_guard": guard.to_dict()})
+                continue
+            if focus_recovery:
+                opened_target["focus_recovery"] = focus_recovery
+            if not opened_target.get("ok"):
+                identity_reason = str((opened_target.get("identity_check") or {}).get("reason") or "")
+                failure_stage = "wrong_recipient_opened" if "wrong_" in identity_reason or "search_overlay" in identity_reason else "recipient_not_verified"
+                deliveries.append(
+                    {
+                        "recipient": recipient,
+                        "ok": False,
+                        "failure_stage": failure_stage,
+                        "opened_target": opened_target,
+                        "environment_guard": guard.to_dict(),
+                    }
+                )
+                continue
             if timeline_cb:
                 timeline_cb(
                     "open_recipient",
@@ -3727,6 +4674,42 @@ class WindowsOSAutomation:
                             f"target={recipient} attempt={attempt}",
                             {"recipient": recipient, "attempt": attempt, "opened_target": opened_target},
                         )
+                guard = self._verify_environment(contract, stage="before_text_input", action="type_or_paste_message")
+                guard, focus_recovery = self._recover_environment_if_needed(
+                    contract,
+                    guard,
+                    stage="before_text_input",
+                    action="type_or_paste_message",
+                    launch_if_missing=False,
+                )
+                if not guard.ok:
+                    row = {"attempt": attempt, "ok": False, "failure_stage": guard.detail, "environment_guard": guard.to_dict()}
+                    if focus_recovery:
+                        row["focus_recovery"] = focus_recovery
+                    attempts.append(row)
+                    break
+                pre_identity = self._lark_verify_current_recipient_identity(
+                    recipient,
+                    f"lark_identity_before_input_{_safe_label(recipient)}_attempt_{attempt}",
+                )
+                if not pre_identity.get("ok"):
+                    attempts.append(
+                        {
+                            "attempt": attempt,
+                            "ok": False,
+                            "failure_stage": "wrong_recipient_opened",
+                            "opened_target": opened_target,
+                            "recipient_identity": pre_identity,
+                            "screenshots": {"identity": pre_identity.get("screenshot")},
+                        }
+                    )
+                    logger.info(
+                        "[scenario:lark] recipient identity failed before typing recipient=%r attempt=%d reason=%s",
+                        recipient,
+                        attempt,
+                        (pre_identity.get("identity_check") or {}).get("reason"),
+                    )
+                    continue
                 rect = self.win.active_rect()
                 if rect:
                     _title, left, top, width, height = rect
@@ -3739,14 +4722,17 @@ class WindowsOSAutomation:
                 typed = self.io.screenshot_active_window(self.out_dir, f"lark_typed_{_safe_label(recipient)}_attempt_{attempt}")
                 preview = ocr_image_state(typed)
                 preview_text = str(preview.get("ocr_text") or "")
-                preview_recipient_ok = recipient.lower() in preview_text.lower()
+                preview_identity = _lark_recipient_identity_check(recipient, preview_text)
+                preview_recipient_ok = bool(preview_identity.get("ok"))
                 preview_message_match = _lark_message_visible_match(msg, preview_text)
                 preview_message_ok = bool(preview_message_match.get("ok"))
                 attempt_row = {
                     "attempt": attempt,
                     "opened_target": opened_target,
+                    "recipient_identity_before_input": pre_identity,
                     "preview": preview,
                     "preview_recipient_visible": preview_recipient_ok,
+                    "preview_recipient_identity": preview_identity,
                     "preview_message_visible": preview_message_ok,
                     "preview_message_match": preview_message_match,
                     "screenshots": {"typed": typed},
@@ -3763,9 +4749,24 @@ class WindowsOSAutomation:
                             "recipient_visible": preview_recipient_ok,
                             "message_visible": preview_message_ok,
                             "screenshot": typed,
+                            "recipient_identity": preview_identity,
                             "message_match": preview_message_match,
                         },
                     )
+                guard = self._verify_environment(contract, stage="after_text_input", action="verify_still_in_target_environment")
+                guard, focus_recovery = self._recover_environment_if_needed(
+                    contract,
+                    guard,
+                    stage="after_text_input",
+                    action="verify_still_in_target_environment",
+                    launch_if_missing=False,
+                )
+                if focus_recovery:
+                    attempt_row["focus_recovery_after_text_input"] = focus_recovery
+                if not guard.ok:
+                    attempt_row["environment_guard"] = guard.to_dict()
+                    logger.info("[scenario:lark] unsafe focus after typing recipient=%r attempt=%d detail=%s", recipient, attempt, guard.detail)
+                    break
                 if not (preview_recipient_ok and preview_message_ok):
                     logger.info(
                         "[scenario:lark] preview failed recipient=%r attempt=%d recipient_ok=%s msg_ok=%s",
@@ -3775,20 +4776,51 @@ class WindowsOSAutomation:
                         preview_message_ok,
                     )
                     continue
+                guard = self._verify_environment(contract, stage="before_commit_action", action="press_enter_or_send")
+                guard, focus_recovery = self._recover_environment_if_needed(
+                    contract,
+                    guard,
+                    stage="before_commit_action",
+                    action="press_enter_or_send",
+                    launch_if_missing=False,
+                )
+                if focus_recovery:
+                    attempt_row["focus_recovery_before_commit"] = focus_recovery
+                if not guard.ok:
+                    attempt_row["environment_guard"] = guard.to_dict()
+                    break
+                commit_identity = self._lark_verify_current_recipient_identity(
+                    recipient,
+                    f"lark_identity_before_send_{_safe_label(recipient)}_attempt_{attempt}",
+                )
+                attempt_row["recipient_identity_before_send"] = commit_identity
+                if not commit_identity.get("ok"):
+                    attempt_row["failure_stage"] = "wrong_recipient_before_send"
+                    attempt_row.setdefault("screenshots", {})["identity_before_send"] = commit_identity.get("screenshot")
+                    logger.info(
+                        "[scenario:lark] recipient identity failed before send recipient=%r attempt=%d reason=%s",
+                        recipient,
+                        attempt,
+                        (commit_identity.get("identity_check") or {}).get("reason"),
+                    )
+                    continue
                 self.io.press("enter", wait=1.1)
                 sent = self.io.screenshot_active_window(self.out_dir, f"lark_sent_{_safe_label(recipient)}_attempt_{attempt}")
                 visual = ocr_image_state(sent)
                 ocr_text = str(visual.get("ocr_text") or "")
-                recipient_ok = recipient.lower() in ocr_text.lower()
+                sent_identity = _lark_recipient_identity_check(recipient, ocr_text)
+                recipient_ok = bool(sent_identity.get("ok"))
                 message_match = _lark_message_visible_match(msg, ocr_text)
                 message_ok = bool(message_match.get("ok"))
                 delivery = {
                     "recipient": recipient,
                     "ok": bool(recipient_ok and message_ok),
                     "recipient_visible": recipient_ok,
+                    "recipient_identity": sent_identity,
                     "message_visible": message_ok,
                     "message_match": message_match,
                     "preview_verified": True,
+                    "failure_stage": "" if bool(recipient_ok and message_ok) else ("wrong_recipient_after_send" if not recipient_ok else "post_send_verification_failed"),
                     "active_title": self.win.active_title(),
                     "visual": visual,
                     "attempts": attempts,
@@ -3809,35 +4841,62 @@ class WindowsOSAutomation:
                             "recipient_visible": recipient_ok,
                             "message_visible": message_ok,
                             "screenshot": sent,
+                            "recipient_identity": sent_identity,
                             "message_match": message_match,
                         },
                     )
                 break
             if delivery is None:
+                unsafe_stage = next((str(a.get("failure_stage")) for a in attempts if str(a.get("failure_stage") or "") in {"wrong_foreground_app", "foreground_app_unknown"}), "")
+                wrong_recipient_stage = next((str(a.get("failure_stage")) for a in attempts if str(a.get("failure_stage") or "").startswith("wrong_recipient")), "")
+                any_recipient_seen = any(bool(a.get("preview_recipient_visible")) for a in attempts)
+                any_message_seen = any(bool(a.get("preview_message_visible")) for a in attempts)
+                if unsafe_stage:
+                    failure_stage = unsafe_stage
+                elif wrong_recipient_stage:
+                    failure_stage = wrong_recipient_stage
+                elif any_recipient_seen and not any_message_seen:
+                    failure_stage = "message_preview_verification_failed"
+                elif not any_recipient_seen:
+                    failure_stage = "recipient_preview_verification_failed"
+                else:
+                    failure_stage = "preview_or_target_verification_failed"
                 delivery = {
                     "recipient": recipient,
                     "ok": False,
-                    "recipient_visible": False,
-                    "message_visible": False,
+                    "recipient_visible": any_recipient_seen,
+                    "message_visible": any_message_seen,
                     "preview_verified": False,
                     "active_title": self.win.active_title(),
                     "attempts": attempts,
-                    "failure_stage": "preview_or_target_verification_failed",
+                    "failure_stage": failure_stage,
                 }
                 if timeline_cb:
                     timeline_cb(
                         "verify_sent",
                         "failed",
-                        f"target={recipient} preview_or_target_verification_failed",
+                        f"target={recipient} {failure_stage}",
                         {"recipient": recipient, "attempts": attempts},
                     )
             deliveries.append(delivery)
 
         ok = all(bool(d.get("ok")) for d in deliveries)
+        if ok:
+            detail = "sent_and_verified_with_visual"
+        elif any(str(d.get("failure_stage") or "").startswith("wrong_recipient") for d in deliveries):
+            detail = "wrong_recipient"
+        elif any(str(d.get("failure_stage") or "") == "message_preview_verification_failed" for d in deliveries):
+            detail = "draft_preview_verification_failed"
+        elif any(str(d.get("failure_stage") or "") == "post_send_verification_failed" for d in deliveries):
+            detail = "sent_but_post_verification_failed"
+        elif any(str(d.get("failure_stage") or "") in {"wrong_foreground_app", "foreground_app_unknown"} for d in deliveries):
+            detail = "wrong_foreground_app"
+        else:
+            detail = "lark_delivery_verification_failed"
         return TaskResult(
             "lark_send_message",
             ok,
-            "sent_and_verified_with_visual" if ok else "sent_but_visual_verification_incomplete",
+            detail,
             {
                 "recipients": clean_recipients,
                 "message": msg,
@@ -4286,9 +5345,9 @@ class WindowsOSAutomation:
         if not text:
             return TaskResult("lark_bitable_ai_paste_records", False, "records_text_empty", {"table_name": name, "target_group": group})
         payload = (
-            f"请把下面内容录入到多维表格，目标分组/日期为：{group}。\n"
-            "每一条开发事项生成一条记录；任务字段写清楚事项标题；如果内容里有负责人、风险、日期、预估人天，请尽量填入对应字段；"
-            "没有明确值的字段留空，不要编造。\n\n"
+            f"璇锋妸涓嬮潰鍐呭褰曞叆鍒板缁磋〃鏍硷紝鐩爣鍒嗙粍/鏃ユ湡涓猴細{group}銆俓n"
+            "姣忎竴鏉″紑鍙戜簨椤圭敓鎴愪竴鏉¤褰曪紱浠诲姟瀛楁鍐欐竻妤氫簨椤规爣棰橈紱濡傛灉鍐呭閲屾湁璐熻矗浜恒€侀闄┿€佹棩鏈熴€侀浼颁汉澶╋紝璇峰敖閲忓～鍏ュ搴斿瓧娈碉紱"
+            "娌℃湁鏄庣‘鍊肩殑瀛楁鐣欑┖锛屼笉瑕佺紪閫犮€俓n\n"
             f"{text}"
         )
         bypass = os_lark_bitable_write_without_confirm_enabled(allow_dangerous)
@@ -4363,7 +5422,7 @@ class WindowsOSAutomation:
         menu_shot = self.io.screenshot_active_window(self.out_dir, f"lark_bitable_ai_paste_menu_{_safe_label(name)}")
         menu_visual = ocr_image_state(menu_shot)
         menu_text = str(menu_visual.get("ocr_text") or "")
-        menu_verified = _visual_has_any(menu_text, ("AI 粘贴录入", "粘贴录入"))
+        menu_verified = _visual_has_any(menu_text, ("AI 绮樿创褰曞叆", "绮樿创褰曞叆"))
         if not menu_verified:
             return TaskResult(
                 "lark_bitable_ai_paste_records",
@@ -4384,7 +5443,7 @@ class WindowsOSAutomation:
         modal_shot = self.io.screenshot_active_window(self.out_dir, f"lark_bitable_ai_paste_modal_{_safe_label(name)}")
         modal_visual = ocr_image_state(modal_shot)
         modal_text = str(modal_visual.get("ocr_text") or "")
-        modal_verified = _visual_has_any(modal_text, ("AI 粘贴录入", "支持粘贴文本", "AI 自动识别内容并录入数据表", "AI自动识别内容并录入数据表"))
+        modal_verified = _visual_has_any(modal_text, ("AI 绮樿创褰曞叆", "鏀寔绮樿创鏂囨湰", "AI 鑷姩璇嗗埆鍐呭骞跺綍鍏ユ暟鎹〃", "AI鑷姩璇嗗埆鍐呭骞跺綍鍏ユ暟鎹〃"))
         if not modal_verified:
             return TaskResult(
                 "lark_bitable_ai_paste_records",
@@ -4685,22 +5744,84 @@ class WindowsOSAutomation:
         expr = expression.strip()
         expr_norm = normalize_calculator_expression(expr)
         expect = normalize_number(expected or _safe_eval_arithmetic(expr))
+        contract = self._execution_contract("calculator", goal="calculate")
         logger.info("[scenario:calculator] expr=%r expect=%s", expr, expect)
-        self.io.launch("calc.exe", ("calculator", "calc", "计算器"), wait=1.3)
+        focus_result = self.focus_or_raise_app("calculator", timeout=4.0, max_attempts=3, stage="calculator_open_focus")
         before = self.io.screenshot_active_window(self.out_dir, "calculator_before")
+        if not focus_result.ok:
+            return TaskResult(
+                "calculator",
+                False,
+                focus_result.detail,
+                {
+                    "expr": expr,
+                    "expr_norm": expr_norm,
+                    "expect": expect,
+                    "focus_result": asdict(focus_result),
+                    "execution_contract": contract.to_dict(),
+                    "screenshots": {"before": before, "after": ""},
+                },
+            )
+
         attempts: list[dict[str, Any]] = []
         ok = False
+        result_verified = False
+        expression_verified = False
         raw = ""
         got = ""
         after = ""
         visual: dict[str, Any] = {}
         for attempt in range(1, 4):
             logger.info("[scenario:calculator] attempt=%d expr=%r", attempt, expr)
+            guard = self._verify_environment(contract, stage="calculator_before_input", action="type_expression")
+            refocus_result = None
+            if not guard.ok:
+                refocus_result = self.focus_or_raise_app("calculator", timeout=3.0, max_attempts=2, launch_if_missing=False, stage="calculator_refocus_before_input")
+                guard = self._verify_environment(contract, stage="calculator_before_input", action="type_expression_after_refocus")
+            if not guard.ok:
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "ok": False,
+                        "failure_stage": guard.detail,
+                        "environment_guard": guard.to_dict(),
+                        "refocus_result": asdict(refocus_result) if refocus_result else None,
+                    }
+                )
+                return self._unsafe_environment_result(
+                    "calculator",
+                    contract,
+                    guard,
+                    {
+                        "expr": expr,
+                        "expr_norm": expr_norm,
+                        "expect": expect,
+                        "focus_result": asdict(focus_result),
+                        "attempts": attempts,
+                        "screenshots": {"before": before, "after": after},
+                    },
+                )
             self.io.press("esc", presses=3, wait=0.25)
             if attempt == 1:
                 self.io.write(expr, interval=0.08, wait=0.25)
             else:
                 self.io.paste(expr, wait=0.35)
+            guard = self._verify_environment(contract, stage="calculator_before_submit", action="press_enter")
+            if not guard.ok:
+                attempts.append({"attempt": attempt, "ok": False, "failure_stage": guard.detail, "environment_guard": guard.to_dict()})
+                return self._unsafe_environment_result(
+                    "calculator",
+                    contract,
+                    guard,
+                    {
+                        "expr": expr,
+                        "expr_norm": expr_norm,
+                        "expect": expect,
+                        "focus_result": asdict(focus_result),
+                        "attempts": attempts,
+                        "screenshots": {"before": before, "after": after},
+                    },
+                )
             self.io.press("enter", wait=0.9)
             after = self.io.screenshot_active_window(self.out_dir, f"calculator_after_attempt_{attempt}")
             visual = calculator_visual_state(after, expect)
@@ -4711,6 +5832,8 @@ class WindowsOSAutomation:
             expr_ok = visual.get("expression_norm") == expr_norm
             visual_result_ok = visual.get("result_norm") == expect
             clipboard_ok = got == expect
+            result_verified = bool(clipboard_ok or visual_result_ok)
+            expression_verified = bool(expr_ok)
             attempts.append(
                 {
                     "attempt": attempt,
@@ -4730,13 +5853,20 @@ class WindowsOSAutomation:
                 visual.get("expression_norm"),
                 visual.get("result_norm"),
             )
-            if clipboard_ok and expr_ok and visual_result_ok:
+            if result_verified:
                 ok = True
                 break
+        detail = (
+            "result_verified_with_visual"
+            if ok and expression_verified and visual.get("result_norm") == expect
+            else "result_verified_expression_ocr_incomplete"
+            if ok
+            else "result_not_verified"
+        )
         return TaskResult(
             "calculator",
             ok,
-            "result_verified_with_visual" if ok else "visual_or_result_mismatch",
+            detail,
             {
                 "expr": expr,
                 "expr_norm": expr_norm,
@@ -4744,10 +5874,15 @@ class WindowsOSAutomation:
                 "clipboard_raw": raw,
                 "clipboard_norm": got,
                 "visual": visual,
+                "result_verified": result_verified,
+                "expression_verified": expression_verified,
                 "attempts": attempts,
+                "focus_result": asdict(focus_result),
+                "execution_contract": contract.to_dict(),
                 "screenshots": {"before": before, "after": after},
             },
         )
+
 
     def file_open_save_dialogs(self) -> TaskResult:
         source = self.out_dir / f"open_source_{now_tag()}.txt"
@@ -4952,3 +6087,15 @@ def run_tasks(
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     report["report_path"] = str(report_path)
     return report
+
+
+
+
+
+
+
+
+
+
+
+

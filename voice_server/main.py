@@ -29,6 +29,7 @@ class TtsRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     session_id: Optional[str] = None
+    speed: Optional[float] = None
 
 
 class CancelRequest(BaseModel):
@@ -73,13 +74,13 @@ def _warmup_stt_engine() -> None:
 
 def _warmup_tts_engine() -> None:
     if tts_service.ready:
-        logger.info("Preloading MOSS ONNX TTS engine…")
+        logger.info("Preloading Kokoro ONNX TTS engine…")
         if tts_service._load_engine():
             # Run one tiny synthesis so the first user-facing sentence does not pay
             # the ONNX/G2P cold path. The bytes are intentionally discarded.
             result = tts_service.synthesize("你好。", voice=cfg.tts_voice)
             logger.info(
-                "MOSS ONNX TTS warmed (voice=%s, sample_rate=%s, duration_ms=%s)",
+                "Kokoro ONNX TTS warmed (voice=%s, sample_rate=%s, duration_ms=%s)",
                 cfg.tts_voice,
                 result.sample_rate,
                 result.duration_ms,
@@ -124,17 +125,13 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     available_voices = tts_service.list_voices()
-    tts_diagnostics = tts_service.diagnostics()
     return {
         "ok": True,
         "stt_ready": stt_service.ready,
         "tts_ready": tts_service.ready,
-        "tts_diagnostics": tts_diagnostics,
-        "tts_load_error": tts_diagnostics.get("load_error"),
         "sv_ready": sv_service.ready,
         "stt_model": "SenseVoiceSmall-onnx",
-        "tts_model": "Kokoro-82M-v1.1-zh-ONNX" if tts_diagnostics.get("backend") == "kokoro" else "MOSS-TTS-Nano-100M-ONNX + MOSS-Audio-Tokenizer-Nano-ONNX",
-        "tts_backend": tts_diagnostics.get("backend"),
+        "tts_model": "Kokoro-82M-v1.1-zh-ONNX",
         "sv_model": sv_service.backend,
         "sv_load_error": sv_service.load_error,
         "tts_voice": cfg.tts_voice,
@@ -496,7 +493,7 @@ def tts_synthesize(req: TtsRequest) -> Response:
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
     try:
-        result = tts_service.synthesize(req.text, voice=req.voice, session_id=req.session_id)
+        result = tts_service.synthesize(req.text, voice=req.voice, session_id=req.session_id, speed=req.speed)
     except TtsCancelledError:
         raise HTTPException(status_code=409, detail="tts cancelled")
     if not tts_service.ready:
@@ -692,3 +689,4 @@ if __name__ == "__main__":
 
     logger.info("Starting voice_server at http://%s:%s", cfg.host, cfg.port)
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level=cfg.log_level)
+

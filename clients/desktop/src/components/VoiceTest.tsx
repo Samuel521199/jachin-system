@@ -6,6 +6,7 @@
 
 import { useState, useRef } from 'react';
 import { BACKEND_URL } from '../lib/api';
+import { DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE } from '../voice/voiceDefaults';
 
 const API_BASE = `${BACKEND_URL}/api/v2/voice`;
 
@@ -20,7 +21,7 @@ export default function VoiceTest({ className }: VoiceTestProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingType, setRecordingType] = useState<'stt' | 'chat' | null>(null);
   const [ttsText, setTtsText] = useState('你好，我是Jachin助手');
-  const [selectedVoice, setSelectedVoice] = useState('zh-CN-XiaoxiaoNeural');
+  const [selectedVoice, setSelectedVoice] = useState(DEFAULT_KOKORO_TTS_VOICE);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -121,7 +122,7 @@ export default function VoiceTest({ className }: VoiceTestProps) {
           text: ttsText,
           voice: selectedVoice,
           language: 'zh-CN',
-          speed: 1.0,
+          speed: DEFAULT_KOKORO_TTS_SPEED,
           pitch: 1.0,
         }),
       });
@@ -159,8 +160,8 @@ export default function VoiceTest({ className }: VoiceTestProps) {
       formData.append('format', 'wav');
       formData.append('language', 'zh-CN');
       formData.append('return_audio', 'true');
-      formData.append('voice', 'zh-CN-XiaoxiaoNeural');
-      formData.append('speed', '1.0');
+      formData.append('voice', DEFAULT_KOKORO_TTS_VOICE);
+      formData.append('speed', String(DEFAULT_KOKORO_TTS_SPEED));
       formData.append('pitch', '1.0');
 
       const response = await fetch(`${API_BASE}/chat`, {
@@ -257,9 +258,7 @@ export default function VoiceTest({ className }: VoiceTestProps) {
             onChange={(e) => setSelectedVoice(e.target.value)}
             className="w-full px-3 py-2 border rounded"
           >
-            <option value="zh-CN-XiaoxiaoNeural">晓晓（女声）</option>
-            <option value="zh-CN-YunyangNeural">云扬（男声）</option>
-            <option value="zh-CN-YunxiNeural">云希（男声）</option>
+            <option value={DEFAULT_KOKORO_TTS_VOICE}>Kokoro zm_053</option>
           </select>
         </div>
         <button

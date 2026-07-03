@@ -1,4 +1,4 @@
-﻿"""
+"""
 入站确定性预检（招聘/BI/分支短路等）：从 agent_core 外提，供 run_agent 与路由层共用。
 说明见 docs/L3_AGENT_CONTEXT_MEMORY_AND_PROMPT.md §3.2、docs/L3_LIMITATIONS_AND_REMEDIATION_ROADMAP.md §〇。
 """
@@ -91,12 +91,43 @@ async def apply_inbound_preflight(
         logger.warning("[AgentPreflight] Intent Registry preflight 跳过: %s", e)
 
     try:
+        from l3_node.intent_orchestrator import analyze_intent_async, write_router_evidence
+
+        _io_decision = await analyze_intent_async(
+            user_input or "",
+            tools=tools,
+            allowed=allowed,
+            implicit_attribution=implicit_attribution if isinstance(implicit_attribution, dict) else None,
+            engine=engine,
+        )
+        _io_evidence_path = write_router_evidence(_io_decision)
+        logger.info(
+            "[IntentOrchestrator] preflight domain=%s chosen=%s policy=%s evidence=%s",
+            _io_decision.hidca.get("semantic_router_domain"),
+            _io_decision.chosen.get("tool_id"),
+            _io_decision.intent_frame.route_policy,
+            _io_evidence_path,
+        )
+        try:
+            from l3_node.terminal_turn_debug_log import append_section
+
+            append_section(
+                "[IntentOrchestrator] preflight decision package",
+                json.dumps(_io_decision.to_dict(), ensure_ascii=False, indent=2),
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("[AgentPreflight] Intent Orchestrator 跳过: %s", e)
+
+    try:
         from l3_node.os_mission_router import maybe_run_codex_lark_mission
 
         _os_mission = await maybe_run_codex_lark_mission(
             user_input=user_input,
             tools=tools,
             allowed=allowed,
+            engine=engine,
         )
         if _os_mission is not None:
             return _os_mission

@@ -36,8 +36,19 @@ from l3_node.mission_memory_center import apply_memory_to_intent, record_success
 from l3_node.mission_preview import build_mission_preview, format_preview_for_chat
 from l3_node.mission_runtime import build_plan_preview, execute_with_retry
 from l3_node.mission_template_library import MissionTemplate, select_mission_template
+from l3_node.mission_user_feedback import (
+    build_mission_user_result,
+    format_mission_user_reply,
+)
+from l3_node.pending_intent_resolver import (
+    PendingResolverResult,
+    apply_resolver_slots,
+    external_effect_intent,
+    resolve_pending_intent_async,
+    resolver_needs_clarification,
+)
 from l3_node.project_memory import remember_project, resolve_project
-from l3_node.semantic_intent_engine import parse_semantic_intent
+from l3_node.semantic_intent_engine import parse_semantic_intent_async
 from l3_node.workflow_composer import compose_workflow
 
 
@@ -255,6 +266,7 @@ def _write_router_evidence(
     control: dict[str, Any] | None = None,
     plan_preview: dict[str, Any] | None = None,
     tool_result: dict[str, Any] | None = None,
+    task_result: dict[str, Any] | None = None,
     attempts: list[dict[str, Any]] | None = None,
     retry: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
@@ -278,6 +290,7 @@ def _write_router_evidence(
         "route": route.to_dict(),
         "clarification": clarification.to_dict(),
         "tool_result": tool_result or {},
+        "task_result": task_result or {},
         "attempts": attempts or [],
         "retry": retry or {},
         "metrics": metrics or {},
@@ -378,6 +391,16 @@ def _write_router_evidence(
                 "evidence": {"tool_result": tool_result, "attempts": attempts or [], "retry": retry or {}, "metrics": metrics or {}},
             }
         )
+    if task_result is not None:
+        payload["timeline"].append(
+            {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "stage": "compose_user_report",
+                "status": "done" if bool(task_result.get("success")) else "failed",
+                "detail": str(task_result.get("status") or ""),
+                "evidence": task_result,
+            }
+        )
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
 
@@ -414,6 +437,9 @@ def _format_mission_result(result_text: str, intent: MissionIntent, route: Capab
         head = f"已通过 Codex 总结 {target}，并发送给 {recipients}。" if ok else f"Codex -> Lark 工作流未完成：{data.get('detail') or 'unknown'}。"
     elif intent.task_type == MissionTaskType.LARK_MESSAGE_SEND:
         head = "Lark 消息已发送并完成校验。" if ok else f"Lark 消息发送未完成：{data.get('detail') or 'unknown'}。"
+    elif intent.task_type == MissionTaskType.CALCULATOR_CALCULATE:
+        expr = intent.slots.expression or "表达式"
+        head = f"Windows 计算器已完成计算：{expr}。" if ok else f"Windows 计算器计算未完成：{data.get('detail') or 'unknown'}。"
     elif intent.task_type == MissionTaskType.PROJECT_MEMORY_UPDATE:
         target = intent.slots.project_name or intent.slots.project_path or "项目"
         head = f"已记住项目路径：{target}。" if ok else f"项目路径记忆未完成：{data.get('detail') or 'unknown'}。"
@@ -462,6 +488,14 @@ def _execute_mission_sync(intent: MissionIntent, route: CapabilityRoute) -> str:
             remember=True,
             out_dir="",
         )
+    if route.tool_id == "mcp:windows_codex_ask_lark_send":
+        return windows_uia_server.windows_codex_ask_lark_send(
+            question=slots.feature_query,
+            recipients_json=json.dumps(slots.recipients, ensure_ascii=False),
+            original_user_input=intent.raw_text,
+            wait_seconds=120,
+            out_dir="",
+        )
     if route.tool_id == "mcp:windows_lark_send_message":
         return windows_uia_server.windows_lark_send_message(
             json.dumps(slots.recipients, ensure_ascii=False),
@@ -469,6 +503,8 @@ def _execute_mission_sync(intent: MissionIntent, route: CapabilityRoute) -> str:
             "",
             2,
         )
+    if route.tool_id == "mcp:windows_calculator_calculate":
+        return windows_uia_server.windows_calculator_calculate(slots.expression, "", "")
     if route.tool_id == "mcp:windows_project_remember":
         return windows_uia_server.windows_project_remember(slots.project_name, slots.project_path, "")
     if route.tool_id == "local:project_memory":
@@ -516,16 +552,26 @@ async def _execute_prepared_mission(
     runtime = await asyncio.to_thread(_run)
     result_text = str(runtime.get("result_text") or "")
     result_data = runtime.get("result_data") if isinstance(runtime.get("result_data"), dict) else _parse_tool_result(result_text)
+    task_result = build_mission_user_result(
+        intent=intent,
+        route=route,
+        result_data=result_data,
+        runtime=runtime,
+    )
+    task_result_dict = task_result.to_dict()
     memory_update: dict[str, Any] = {}
-    if bool(result_data.get("ok")):
+    if task_result.success:
         memory_update = record_successful_mission(intent, template.id if template else route.workflow_id)
-    control_payload["result_ok"] = bool(result_data.get("ok"))
+    control_payload["raw_result_ok"] = bool(result_data.get("ok"))
+    control_payload["result_ok"] = bool(task_result.success)
+    control_payload["result_status"] = task_result.status
+    control_payload["reported"] = True
     control_payload["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     router_evidence = _write_router_evidence(
         intent=intent,
         route=route,
         clarification=clarification,
-        status="done" if bool(result_data.get("ok")) else "failed",
+        status="done" if task_result.success else "failed",
         parser_meta=semantic_meta,
         memory_evidence={**memory_evidence, "post_run_update": memory_update},
         template=template,
@@ -535,18 +581,86 @@ async def _execute_prepared_mission(
         control=control_payload,
         plan_preview=plan.to_dict(),
         tool_result=result_data,
+        task_result=task_result_dict,
         attempts=runtime.get("attempts") if isinstance(runtime.get("attempts"), list) else [],
         retry=runtime.get("retry") if isinstance(runtime.get("retry"), dict) else {},
         metrics=runtime.get("metrics") if isinstance(runtime.get("metrics"), dict) else {},
     )
-    return "\n".join([*format_preview_for_chat(preview, executed=True), _format_mission_result(result_text, intent, route, router_evidence)])
+    return format_mission_user_reply(
+        task_result=task_result,
+        intent=intent,
+        route=route,
+        router_evidence=router_evidence,
+        result_data=result_data,
+    )
 
+
+
+def _clean_lark_message_fill(text: str) -> str:
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    if re.search("(\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u8f6c\u7ed9|\u6539\u53d1|\u6536\u4ef6\u4eba|recipient|\\bto\\b)", s, re.I):
+        return ""
+    s = re.sub("^(?:\u5185\u5bb9(?:\u662f|\u4e3a)?|\u6d88\u606f(?:\u5185\u5bb9)?(?:\u662f|\u4e3a)?|\u5c31\u8bf4|\u90a3\u5c31\u8bf4|\u90a3\u5c31\u53d1|\u5e2e\u6211\u53d1|\u53d1(?:\u9001)?(?:\u4e00\u6761)?)\\s*[:\uff1a,\uff0c\u3001]*\\s*", "", s)
+    s = re.sub("\\s*(?:\u5c31\u597d(?:\u4e86)?|\u5c31\u884c(?:\u4e86)?|\u5373\u53ef|\u5427|\u597d\u4e86|\u5c31\u53ef\u4ee5(?:\u4e86)?)\\s*$", "", s)
+    return s.strip(" \\t\\r\\n\u3002\uff01\uff1f!?\uff0c,\uff1a:")
+
+
+def _patch_pending_missing_slots(intent: MissionIntent, user_input: str) -> tuple[MissionIntent, list[dict[str, Any]]]:
+    changes: list[dict[str, Any]] = []
+    missing = set(intent.missing_slots or [])
+    if intent.task_type == MissionTaskType.LARK_MESSAGE_SEND and "message" in missing:
+        if intent.slots.recipients:
+            message = _clean_lark_message_fill(user_input)
+            if message:
+                before = intent.slots.message
+                intent.slots.message = message
+                intent.missing_slots = [slot for slot in intent.missing_slots if slot != "message"]
+                intent.reasoning.append("pending_slot_fill:message")
+                changes.append({"slot": "message", "before": before, "after": message, "source": "pending_followup"})
+    return intent, changes
+
+
+def _clarification_question_for_intent(intent: MissionIntent, clarification: ClarificationDecision) -> str:
+    if (
+        intent.task_type == MissionTaskType.LARK_MESSAGE_SEND
+        and clarification.reason == "missing_message"
+        and intent.slots.recipients
+    ):
+        recipients = "\u3001".join(str(x).strip() for x in intent.slots.recipients if str(x).strip())
+        if recipients:
+            return f"\u8981\u53d1\u7ed9 {recipients} \u7684\u5185\u5bb9\u662f\u4ec0\u4e48\uff1f"
+    return clarification.question
+
+def _resolver_clarification_question(
+    intent: MissionIntent,
+    resolver: PendingResolverResult,
+    clarification: ClarificationDecision | None = None,
+) -> str:
+    if resolver.clarification_question:
+        return resolver.clarification_question
+    if clarification is not None and clarification.question:
+        return _clarification_question_for_intent(intent, clarification)
+    if resolver.ambiguous_slots:
+        slots = ", ".join(resolver.ambiguous_slots)
+        return f"\u8fd9\u4e2a\u4efb\u52a1\u91cc {slots} \u8fd8\u4e0d\u591f\u660e\u786e\uff0c\u4f60\u518d\u8865\u4e00\u4e0b\u597d\u5417\uff1f"
+    return "\u8fd9\u4e2a\u4efb\u52a1\u8fd8\u5dee\u4e00\u70b9\u5173\u952e\u4fe1\u606f\uff0c\u4f60\u518d\u8865\u4e00\u4e0b\u597d\u5417\uff1f"
+
+
+def _fallback_external_confirmation_question(intent: MissionIntent) -> str:
+    recipients = "\u3001".join(str(x).strip() for x in intent.slots.recipients if str(x).strip())
+    message = str(intent.slots.message or "").strip()
+    if intent.task_type == MissionTaskType.LARK_MESSAGE_SEND and recipients and message:
+        return f"\u6211\u7406\u89e3\u4f60\u662f\u60f3\u53d1\u7ed9 {recipients}\uff0c\u5185\u5bb9\u662f\u201c{message}\u201d\u3002\u786e\u8ba4\u53d1\u9001\u5417\uff1f"
+    return "\u6211\u7406\u89e3\u4e86\u4f60\u8981\u8865\u5145\u7684\u4fe1\u606f\uff0c\u4f46\u8fd9\u662f\u4e00\u4e2a\u4f1a\u4ea7\u751f\u5916\u90e8\u5f71\u54cd\u7684\u4efb\u52a1\u3002\u8bf7\u786e\u8ba4\u540e\u6211\u518d\u6267\u884c\u3002"
 
 async def maybe_run_codex_lark_mission(
     *,
     user_input: str,
     tools: list[dict[str, Any]],
     allowed: list[str] | None = None,
+    engine: Any | None = None,
 ) -> str | None:
     if os.environ.get("JACHIN_DISABLE_OS_MISSION_ROUTER", "").strip().lower() in {"1", "true", "yes", "on"}:
         return None
@@ -627,76 +741,295 @@ async def maybe_run_codex_lark_mission(
                 },
             )
 
-        # A pending mission exists and the user did not confirm/cancel. Treat
-        # slot-like language as a patch to the preview, then keep waiting.
+        # A pending mission exists and the user did not confirm/cancel. Resolve
+        # the follow-up against that pending context before treating it as a
+        # standalone request.  The LLM resolver fills a fixed slot schema; the
+        # older text patcher is only a fallback and cannot auto-execute
+        # external-effect tasks when it had to guess.
         intent = mission_intent_from_dict(pending.get("intent") or {})
         route = capability_route_from_dict(pending.get("route") or {})
-        patched_intent, changes = patch_intent_from_text(intent, user_input)
-        if changes:
-            memory_evidence = apply_memory_to_intent(patched_intent)
-            match_result = match_task_to_capability(str(pending.get("initial_user_input") or user_input), tools, allowed)
-            match_result.understanding.intent = patched_intent
-            route = choose_capability_route(patched_intent, tools, allowed)
-            match_result.route = route
-            composition = compose_workflow(match_result)
-            template = select_mission_template(patched_intent, route)
-            clarification = decide_clarification(patched_intent, route)
-            plan = build_plan_preview(patched_intent, route)
-            preview = build_mission_preview(
-                intent=patched_intent,
-                route=route,
-                plan=plan,
-                template=template,
-                clarification=clarification,
-                memory_evidence=memory_evidence,
-            )
-            history = [*(pending.get("history") or []), {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "user_input": user_input, "changes": changes}]
-            saved = save_pending_mission(
-                {
-                    **pending,
-                    "intent": patched_intent.to_dict(),
-                    "route": route.to_dict(),
-                    "memory": memory_evidence,
-                    "template": template.to_dict() if template else {},
-                    "mission_preview": preview.to_dict(),
-                    "capability_semantic": match_result.to_dict(),
-                    "workflow_composition": composition.to_dict(),
-                    "plan_preview": plan.to_dict(),
-                    "history": history,
-                }
-            )
-            evidence_path = _write_router_evidence(
-                intent=patched_intent,
-                route=route,
-                clarification=clarification,
-                status="preview_updated",
-                parser_meta=pending.get("parser") if isinstance(pending.get("parser"), dict) else {},
-                memory_evidence=memory_evidence,
-                template=template,
-                mission_preview=preview.to_dict(),
-                capability_semantic=match_result.to_dict(),
-                workflow_composition=composition.to_dict(),
-                control={
-                    "status": "pending_confirmation",
-                    "decision": "patch_preview",
-                    "pending_id": saved.get("pending_id"),
-                    "initial_user_input": saved.get("initial_user_input"),
-                    "changes": changes,
-                    "history": history,
-                },
-                plan_preview=plan.to_dict(),
-            )
-            return "\n".join(
-                [
-                    *format_preview_for_chat(preview),
-                    "已更新任务预览。确认后我再执行；也可以继续修改或取消。",
-                    f"Router Evidence: {evidence_path}",
+        resolver = await resolve_pending_intent_async(pending, user_input, engine=engine)
+        resolver_meta = resolver.to_dict()
+        pending_still_active = True
+        if resolver.used and not resolver.continue_pending:
+            clear_pending_mission()
+            pending_still_active = False
+            if resolver.operation == "cancel":
+                return "\u5df2\u53d6\u6d88\u8fd9\u6b21\u672a\u5b8c\u6210\u7684\u4efb\u52a1\u3002"
+
+        if pending_still_active:
+            patched_intent = intent
+            changes: list[dict[str, Any]] = []
+            fallback_external_needs_confirmation = False
+
+            if resolver.used and resolver.continue_pending:
+                patched_intent, changes = apply_resolver_slots(intent, resolver)
+                if resolver_needs_clarification(patched_intent, resolver):
+                    memory_evidence = apply_memory_to_intent(patched_intent)
+                    match_result = match_task_to_capability(str(pending.get("initial_user_input") or user_input), tools, allowed)
+                    match_result.understanding.intent = patched_intent
+                    route = choose_capability_route(patched_intent, tools, allowed)
+                    match_result.route = route
+                    composition = compose_workflow(match_result)
+                    template = select_mission_template(patched_intent, route)
+                    clarification = ClarificationDecision(True, _resolver_clarification_question(patched_intent, resolver), "pending_resolver_clarification")
+                    plan = build_plan_preview(patched_intent, route)
+                    preview = build_mission_preview(
+                        intent=patched_intent,
+                        route=route,
+                        plan=plan,
+                        template=template,
+                        clarification=clarification,
+                        memory_evidence=memory_evidence,
+                    )
+                    history = [
+                        *(pending.get("history") or []),
+                        {
+                            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "user_input": user_input,
+                            "changes": changes,
+                            "pending_resolver": resolver_meta,
+                            "decision": "resolver_clarification",
+                        },
+                    ]
+                    saved = save_pending_mission(
+                        {
+                            **pending,
+                            "intent": patched_intent.to_dict(),
+                            "route": route.to_dict(),
+                            "memory": memory_evidence,
+                            "template": template.to_dict() if template else {},
+                            "mission_preview": preview.to_dict(),
+                            "capability_semantic": match_result.to_dict(),
+                            "workflow_composition": composition.to_dict(),
+                            "plan_preview": plan.to_dict(),
+                            "history": history,
+                            "pending_reason": clarification.reason,
+                            "pending_resolver": resolver_meta,
+                        }
+                    )
+                    evidence_path = _write_router_evidence(
+                        intent=patched_intent,
+                        route=route,
+                        clarification=clarification,
+                        status="clarification_required",
+                        parser_meta=pending.get("parser") if isinstance(pending.get("parser"), dict) else {},
+                        memory_evidence=memory_evidence,
+                        template=template,
+                        mission_preview=preview.to_dict(),
+                        capability_semantic=match_result.to_dict(),
+                        workflow_composition=composition.to_dict(),
+                        control={
+                            "status": "pending_slot_fill",
+                            "decision": "resolver_clarification",
+                            "pending_id": saved.get("pending_id"),
+                            "initial_user_input": saved.get("initial_user_input"),
+                            "changes": changes,
+                            "pending_resolver": resolver_meta,
+                            "history": history,
+                        },
+                        plan_preview=plan.to_dict(),
+                    )
+                    logger.info(
+                        "[OSMissionRouter] pending resolver needs clarification intent=%s evidence=%s",
+                        patched_intent.task_type.value,
+                        evidence_path,
+                    )
+                    return _resolver_clarification_question(patched_intent, resolver, clarification)
+            else:
+                patched_intent, changes = _patch_pending_missing_slots(intent, user_input)
+                if not changes:
+                    patched_intent, changes = patch_intent_from_text(intent, user_input)
+                fallback_external_needs_confirmation = bool(changes and external_effect_intent(patched_intent))
+
+            if changes:
+                memory_evidence = apply_memory_to_intent(patched_intent)
+                match_result = match_task_to_capability(str(pending.get("initial_user_input") or user_input), tools, allowed)
+                match_result.understanding.intent = patched_intent
+                route = choose_capability_route(patched_intent, tools, allowed)
+                match_result.route = route
+                composition = compose_workflow(match_result)
+                template = select_mission_template(patched_intent, route)
+                clarification = decide_clarification(patched_intent, route)
+                plan = build_plan_preview(patched_intent, route)
+                preview = build_mission_preview(
+                    intent=patched_intent,
+                    route=route,
+                    plan=plan,
+                    template=template,
+                    clarification=clarification,
+                    memory_evidence=memory_evidence,
+                )
+                history = [
+                    *(pending.get("history") or []),
+                    {
+                        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "user_input": user_input,
+                        "changes": changes,
+                        "pending_resolver": resolver_meta,
+                    },
                 ]
-            )
+                if clarification.should_ask:
+                    saved = save_pending_mission(
+                        {
+                            **pending,
+                            "intent": patched_intent.to_dict(),
+                            "route": route.to_dict(),
+                            "memory": memory_evidence,
+                            "template": template.to_dict() if template else {},
+                            "mission_preview": preview.to_dict(),
+                            "capability_semantic": match_result.to_dict(),
+                            "workflow_composition": composition.to_dict(),
+                            "plan_preview": plan.to_dict(),
+                            "history": history,
+                            "pending_reason": clarification.reason,
+                            "pending_resolver": resolver_meta,
+                        }
+                    )
+                    evidence_path = _write_router_evidence(
+                        intent=patched_intent,
+                        route=route,
+                        clarification=clarification,
+                        status="clarification_required",
+                        parser_meta=pending.get("parser") if isinstance(pending.get("parser"), dict) else {},
+                        memory_evidence=memory_evidence,
+                        template=template,
+                        mission_preview=preview.to_dict(),
+                        capability_semantic=match_result.to_dict(),
+                        workflow_composition=composition.to_dict(),
+                        control={
+                            "status": "pending_slot_fill",
+                            "decision": "patch_incomplete",
+                            "pending_id": saved.get("pending_id"),
+                            "initial_user_input": saved.get("initial_user_input"),
+                            "changes": changes,
+                            "pending_resolver": resolver_meta,
+                            "history": history,
+                        },
+                        plan_preview=plan.to_dict(),
+                    )
+                    logger.info(
+                        "[OSMissionRouter] pending slot patch still needs clarification intent=%s reason=%s evidence=%s",
+                        patched_intent.task_type.value,
+                        clarification.reason,
+                        evidence_path,
+                    )
+                    return _clarification_question_for_intent(patched_intent, clarification)
 
-        return "当前有一个待确认的 OS 任务。你可以说：确认执行、取消，或者直接说要修改什么，例如“改发给 Vivian”“时间范围改成 7 天”。"
+                if fallback_external_needs_confirmation:
+                    saved = save_pending_mission(
+                        {
+                            **pending,
+                            "intent": patched_intent.to_dict(),
+                            "route": route.to_dict(),
+                            "memory": memory_evidence,
+                            "template": template.to_dict() if template else {},
+                            "mission_preview": preview.to_dict(),
+                            "capability_semantic": match_result.to_dict(),
+                            "workflow_composition": composition.to_dict(),
+                            "plan_preview": plan.to_dict(),
+                            "history": history,
+                            "pending_reason": "fallback_external_confirmation_required",
+                            "pending_resolver": resolver_meta,
+                        }
+                    )
+                    _write_router_evidence(
+                        intent=patched_intent,
+                        route=route,
+                        clarification=ClarificationDecision(True, _fallback_external_confirmation_question(patched_intent), "fallback_external_confirmation_required"),
+                        status="preview_waiting_confirmation",
+                        parser_meta=pending.get("parser") if isinstance(pending.get("parser"), dict) else {},
+                        memory_evidence=memory_evidence,
+                        template=template,
+                        mission_preview=preview.to_dict(),
+                        capability_semantic=match_result.to_dict(),
+                        workflow_composition=composition.to_dict(),
+                        control={
+                            "status": "pending_confirmation",
+                            "decision": "fallback_external_confirmation_required",
+                            "pending_id": saved.get("pending_id"),
+                            "initial_user_input": saved.get("initial_user_input"),
+                            "changes": changes,
+                            "pending_resolver": resolver_meta,
+                            "history": history,
+                        },
+                        plan_preview=plan.to_dict(),
+                    )
+                    return _fallback_external_confirmation_question(patched_intent)
 
-    semantic = parse_semantic_intent(user_input)
+                if should_hold_for_confirmation(patched_intent, plan):
+                    saved = save_pending_mission(
+                        {
+                            **pending,
+                            "intent": patched_intent.to_dict(),
+                            "route": route.to_dict(),
+                            "memory": memory_evidence,
+                            "template": template.to_dict() if template else {},
+                            "mission_preview": preview.to_dict(),
+                            "capability_semantic": match_result.to_dict(),
+                            "workflow_composition": composition.to_dict(),
+                            "plan_preview": plan.to_dict(),
+                            "history": history,
+                            "pending_resolver": resolver_meta,
+                        }
+                    )
+                    evidence_path = _write_router_evidence(
+                        intent=patched_intent,
+                        route=route,
+                        clarification=clarification,
+                        status="preview_updated",
+                        parser_meta=pending.get("parser") if isinstance(pending.get("parser"), dict) else {},
+                        memory_evidence=memory_evidence,
+                        template=template,
+                        mission_preview=preview.to_dict(),
+                        capability_semantic=match_result.to_dict(),
+                        workflow_composition=composition.to_dict(),
+                        control={
+                            "status": "pending_confirmation",
+                            "decision": "patch_preview",
+                            "pending_id": saved.get("pending_id"),
+                            "initial_user_input": saved.get("initial_user_input"),
+                            "changes": changes,
+                            "pending_resolver": resolver_meta,
+                            "history": history,
+                        },
+                        plan_preview=plan.to_dict(),
+                    )
+                    return "\n".join(
+                        [
+                            *format_preview_for_chat(preview),
+                            "\u4efb\u52a1\u4fe1\u606f\u5df2\u66f4\u65b0\u3002\u786e\u8ba4\u540e\u6211\u518d\u6267\u884c\uff1b\u4e5f\u53ef\u4ee5\u7ee7\u7eed\u4fee\u6539\u6216\u53d6\u6d88\u3002",
+                            f"Router Evidence: {evidence_path}",
+                        ]
+                    )
+
+                clear_pending_mission()
+                return await _execute_prepared_mission(
+                    intent=patched_intent,
+                    route=route,
+                    clarification=clarification,
+                    semantic_meta=pending.get("parser") if isinstance(pending.get("parser"), dict) else {},
+                    memory_evidence=memory_evidence,
+                    template=template,
+                    plan=plan,
+                    preview=preview,
+                    capability_semantic=match_result.to_dict(),
+                    workflow_composition=composition.to_dict(),
+                    control={
+                        "status": "slot_filled_auto_executed",
+                        "decision": "pending_slot_filled",
+                        "pending_id": pending.get("pending_id"),
+                        "initial_user_input": pending.get("initial_user_input"),
+                        "followup_user_input": user_input,
+                        "changes": changes,
+                        "pending_resolver": resolver_meta,
+                        "history": history,
+                    },
+                )
+
+            return "\u5f53\u524d\u6709\u4e00\u4e2a\u6ca1\u8865\u5168\u7684\u4efb\u52a1\u3002\u4f60\u53ef\u4ee5\u76f4\u63a5\u544a\u8bc9\u6211\u7f3a\u5c11\u7684\u5185\u5bb9\uff0c\u6216\u8005\u8bf4\u201c\u53d6\u6d88\u201d\u3002"
+
+    semantic = await parse_semantic_intent_async(user_input, engine=engine)
     intent = semantic.intent
     if intent.task_type == MissionTaskType.UNKNOWN:
         return None
@@ -719,6 +1052,21 @@ async def maybe_run_codex_lark_mission(
         memory_evidence=memory_evidence,
     )
     if clarification.should_ask:
+        pending_payload = {
+            "initial_user_input": user_input,
+            "intent": intent.to_dict(),
+            "parser": semantic.meta,
+            "memory": memory_evidence,
+            "route": route.to_dict(),
+            "template": template.to_dict() if template else {},
+            "mission_preview": preview.to_dict(),
+            "capability_semantic": match_result.to_dict(),
+            "workflow_composition": composition.to_dict(),
+            "plan_preview": plan.to_dict(),
+            "pending_reason": clarification.reason,
+            "history": [{"at": time.strftime("%Y-%m-%d %H:%M:%S"), "user_input": user_input, "decision": "clarification_requested", "reason": clarification.reason}],
+        }
+        saved = save_pending_mission(pending_payload)
         evidence_path = _write_router_evidence(
             intent=intent,
             route=route,
@@ -730,15 +1078,25 @@ async def maybe_run_codex_lark_mission(
             mission_preview=preview.to_dict(),
             capability_semantic=match_result.to_dict(),
             workflow_composition=composition.to_dict(),
+            control={
+                "status": "pending_slot_fill",
+                "decision": "clarification_requested",
+                "pending_id": saved.get("pending_id"),
+                "pending_path": saved.get("pending_path"),
+                "initial_user_input": user_input,
+                "reason": clarification.reason,
+                "history": saved.get("history") or [],
+            },
             plan_preview=plan.to_dict(),
         )
         logger.info(
-            "[OSMissionRouter] clarification intent=%s reason=%s evidence=%s",
+            "[OSMissionRouter] clarification intent=%s reason=%s pending_id=%s evidence=%s",
             intent.task_type.value,
             clarification.reason,
+            saved.get("pending_id"),
             evidence_path,
         )
-        return "\n".join([*format_preview_for_chat(preview), clarification.question, f"Router Evidence: {evidence_path}"])
+        return _clarification_question_for_intent(intent, clarification)
     if should_hold_for_confirmation(intent, plan):
         saved = save_pending_mission(
             {

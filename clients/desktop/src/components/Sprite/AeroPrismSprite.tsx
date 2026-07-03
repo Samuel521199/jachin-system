@@ -24,6 +24,7 @@ import { FloatingMenu, defaultMenuActions } from "../Menu/FloatingMenu";
 import { SDUICard } from "../SDRenderer/SDUICard";
 import { useSpriteStore } from "../../store/spriteStore";
 import { voiceChat, invokePlugin } from "../../lib/api";
+import { DEFAULT_KOKORO_TTS_VOICE } from "../../voice/voiceDefaults";
 import { useSensoryWebSocket } from "../../hooks/useSensoryWebSocket";
 import "../../styles/globals.css";
 
@@ -265,7 +266,7 @@ export const AeroPrismSprite: React.FC = () => {
     setState("thinking");
     try {
       const audioFile = new File([audioBlob], "recording.wav", { type: "audio/wav" });
-      const response = await voiceChat(audioFile, "wav", "zh-CN", true, "zh-CN-XiaoxiaoNeural");
+      const response = await voiceChat(audioFile, "wav", "zh-CN", true, DEFAULT_KOKORO_TTS_VOICE);
       
       setState("speaking");
       setTimeout(() => setState("idle"), 3000);

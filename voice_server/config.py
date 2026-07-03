@@ -4,6 +4,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from defaults import DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE
+except ModuleNotFoundError:
+    from voice_server.defaults import DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE
+
 
 @dataclass
 class VoiceServerConfig:
@@ -61,7 +66,7 @@ def load_config() -> VoiceServerConfig:
         stt_dir=model_root / stt_rel,
         tts_dir=model_root / tts_rel,
         sv_dir=model_root / sv_rel,
-        tts_voice=os.getenv("JACHIN_VOICE_TTS_VOICE", "zm_053"),
-        tts_speed=_env_float("JACHIN_VOICE_TTS_SPEED", 1.3),
+        tts_voice=os.getenv("JACHIN_VOICE_TTS_VOICE", DEFAULT_KOKORO_TTS_VOICE),
+        tts_speed=_env_float("JACHIN_VOICE_TTS_SPEED", DEFAULT_KOKORO_TTS_SPEED),
         log_level=os.getenv("JACHIN_VOICE_LOG_LEVEL", "info"),
     )

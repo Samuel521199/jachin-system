@@ -1,4 +1,4 @@
-"""Semantic capability registry for MCP/Skill routing.
+﻿"""Semantic capability registry for MCP/Skill routing.
 
 This module describes what a capability can *do*, independent from the code
 that executes it.  The descriptors are intentionally small and serializable so
@@ -58,19 +58,31 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         risk="external_effect",
         description="Use Codex to inspect a local project or directory, generate a briefing, send it through Lark, and verify visually.",
         examples=[
-            "总结 Jachin 最近开发了什么新功能，使用 Codex 总结然后发给 Neil",
-            "看看这个项目最近干了啥，整理成几条发给 Vivian",
-            "让 Codex 分析 OS assistant workflow，然后发给测试群",
+            "summarize recent Jachin work with Codex and send it to Neil",
+            "inspect this project and send a short briefing to Vivian",
+            "ask Codex to analyze the OS assistant workflow and send it to a test group",
         ],
         workflow_id="codex_project_briefing_to_lark",
         task_type="project_briefing_delivery",
-        tool_chain=[
-            "project_memory",
-            "windows_codex_lark_workflow_template",
-            "windows_lark_send_message",
-            "ocr_verify",
-        ],
+        tool_chain=["project_memory", "windows_codex_lark_workflow_template", "windows_lark_send_message", "ocr_verify"],
         evidence=["router_evidence", "codex_output", "report_md", "lark_screenshot", "ocr_check"],
+    ),
+    CapabilityDescriptor(
+        id="mcp:windows_codex_ask_lark_send",
+        domain="os_assistant.agent_delivery",
+        actions=["ask_agent", "capture_reply", "send_message", "verify"],
+        objects=["codex_chat", "codex_reply", "lark_contact", "lark_group"],
+        inputs=["feature_query", "recipients"],
+        risk="external_effect",
+        description="Ask Codex a user-provided question, validate the reply, send it through Lark, and verify visually.",
+        examples=[
+            "ask Codex what happened in AI this week and send the answer to Vivian",
+            "let Codex answer this question and send the reply to Vivian via Lark",
+        ],
+        workflow_id="codex_ask_lark_send",
+        task_type="codex_ask_lark_send",
+        tool_chain=["windows_open_app", "codex_reply_capture", "windows_lark_send_message", "ocr_verify"],
+        evidence=["codex_reply", "reply_validation", "lark_screenshot", "ocr_check"],
     ),
     CapabilityDescriptor(
         id="mcp:windows_lark_send_message",
@@ -80,15 +92,23 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["recipients", "message"],
         risk="external_effect",
         description="Open Lark, find one or more contacts or groups, send a message, and verify the sent result.",
-        examples=[
-            "给 Vivian 发你好",
-            "通知 Neil 一下今天测试完成",
-            "发给 Vivian 和 Samuel",
-            "把这段消息发到测试备注冒烟草稿",
-        ],
+        examples=["send hello to Vivian", "notify Neil that testing is done", "send this message to a Lark group"],
         workflow_id="windows_lark_message_send",
         task_type="lark_message_send",
         evidence=["recipient_visible", "message_visible", "screenshot", "ocr_check"],
+    ),
+    CapabilityDescriptor(
+        id="mcp:windows_calculator_calculate",
+        domain="os_assistant.calculator",
+        actions=["calculate", "open_app", "verify"],
+        objects=["windows_calculator", "arithmetic_expression"],
+        inputs=["expression", "expected"],
+        risk="low",
+        description="Open Windows Calculator, type an arithmetic expression, copy or read the result, and verify it visually.",
+        examples=["calculate 20+70 in Calculator", "open Windows Calculator and compute 91+9", "use Calculator for 8*7"],
+        workflow_id="windows_calculator_calculate",
+        task_type="calculator_calculate",
+        evidence=["active_window", "expression", "result", "screenshot", "ocr_check"],
     ),
     CapabilityDescriptor(
         id="mcp:windows_open_app",
@@ -98,7 +118,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["app_name"],
         risk="low",
         description="Open or focus a Windows app and verify the foreground window.",
-        examples=["打开 Lark", "切换到浏览器", "打开计算器", "聚焦 Codex"],
+        examples=["open Lark", "switch to browser", "open Calculator", "focus Codex"],
         workflow_id="windows_app_control",
         task_type="app_control",
         evidence=["active_window", "window_title", "screenshot"],
@@ -111,7 +131,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=[],
         risk="low",
         description="Inspect Windows disk, network, battery, process, CPU, and memory status.",
-        examples=["检查系统状态", "看看磁盘和内存占用", "当前电脑状态怎么样"],
+        examples=["check system status", "show disk and memory usage", "diagnose current computer health"],
         workflow_id="windows_system_status_report",
         task_type="system_status_report",
         evidence=["system_status", "process_snapshot", "evidence_json"],
@@ -124,7 +144,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["file_path", "app_name"],
         risk="medium",
         description="Find or resolve a local file, attach or upload it into a target app, then verify the filename.",
-        examples=["把今天的报告发到 Lark", "把这个文件上传到浏览器", "找到最新文档并附加到消息里"],
+        examples=["send today's report to Lark", "upload this file in the browser", "attach the newest document to a message"],
         workflow_id="windows_file_to_app_bridge",
         task_type="file_to_app",
         evidence=["file_stat", "upload_target", "filename_visible", "ocr_check"],
@@ -137,7 +157,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["query", "directory_path", "since_days"],
         risk="low",
         description="Search Windows files and folders, including recent or project-related files.",
-        examples=["找到今天新增的文件", "找一下桌面上的日志", "搜索 Jachin 相关文档"],
+        examples=["find files added today", "search desktop logs", "search Jachin related docs"],
         workflow_id="windows_file_find",
         task_type="file_find",
         evidence=["file_paths", "file_stat", "evidence_json"],
@@ -150,7 +170,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["file_path", "confirm"],
         risk="high",
         description="Delete local files only with confirmation and evidence.",
-        examples=["删除这个临时文件", "清理这些旧日志"],
+        examples=["delete this temporary file", "clean old logs after confirmation"],
         workflow_id="windows_file_delete_with_confirm",
         task_type="file_delete",
         evidence=["confirmation", "file_path", "delete_result"],
@@ -163,7 +183,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["apps"],
         risk="low",
         description="Open and switch across multiple Windows apps and verify each foreground window.",
-        examples=["打开多个 App 并验证", "测试 Codex Lark 浏览器资源管理器切换"],
+        examples=["open multiple apps and verify focus", "test switching among Codex, Lark, browser, and Explorer"],
         workflow_id="windows_app_switch_matrix",
         task_type="app_switch_matrix",
         evidence=["active_window", "screenshot", "timing"],
@@ -176,7 +196,7 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["topic", "outline", "style"],
         risk="low",
         description="Create a PowerPoint or slide deck from a topic, outline, or document.",
-        examples=["做一个项目汇报 PPT", "把这份内容整理成演示文稿", "生成 slides"],
+        examples=["create a project report PPT", "turn this content into slides", "generate slides"],
         workflow_id="office_powerpoint_create",
         task_type="presentation_create",
         evidence=["presentation_id", "ppt_path"],
@@ -189,13 +209,12 @@ BUILTIN_CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         inputs=["symbol", "date_range"],
         risk="read_only",
         description="Fetch A-share market data for stock analysis.",
-        examples=["分析一下 A 股走势", "查一下 600519 最近行情"],
+        examples=["analyze an A-share stock", "fetch recent market data for 600519"],
         workflow_id="a_share_analysis",
         task_type="finance_analysis",
         evidence=["market_data", "source_tool"],
     ),
 )
-
 
 def _canonical_tool_id(raw: str) -> str:
     s = str(raw or "").strip()
@@ -287,21 +306,21 @@ def _split_words(text: str) -> list[str]:
 
 def _infer_domain(tool_id: str, text: str) -> str:
     s = f"{tool_id} {text}".lower()
-    if any(x in s for x in ("lark", "feishu", "飞书", "message", "chat", "notify")):
+    if any(x in s for x in ("lark", "feishu", "flybook", "message", "chat", "notify")):
         return "communication.lark"
-    if any(x in s for x in ("codex", "project", "briefing", "summary", "项目", "总结")):
+    if any(x in s for x in ("codex", "project", "briefing", "summary", "repo", "codebase")):
         return "os_assistant.project"
-    if any(x in s for x in ("ppt", "powerpoint", "presentation", "slide", "slides", "演示", "幻灯")):
+    if any(x in s for x in ("ppt", "powerpoint", "presentation", "slide", "slides")):
         return "office.presentation"
-    if any(x in s for x in ("file", "folder", "fs_", "workspace", "read_file", "write_file", "文件", "目录")):
+    if any(x in s for x in ("file", "folder", "fs_", "workspace", "read_file", "write_file", "path")):
         return "os_assistant.file_ops"
-    if any(x in s for x in ("window", "app", "open", "switch", "uia", "desktop", "calculator", "notepad", "browser", "explorer", "窗口", "打开")):
+    if any(x in s for x in ("window", "app", "open", "switch", "uia", "desktop", "calculator", "notepad", "browser", "explorer")):
         return "os_assistant.app_control"
-    if any(x in s for x in ("system", "disk", "network", "battery", "process", "cpu", "memory", "系统", "磁盘", "内存")):
+    if any(x in s for x in ("system", "disk", "network", "battery", "process", "cpu", "memory")):
         return "os_assistant.system_status"
-    if any(x in s for x in ("sqlite", "sql", "database", "db_", "table", "record", "数据库")):
+    if any(x in s for x in ("sqlite", "sql", "database", "db_", "table", "record")):
         return "database"
-    if any(x in s for x in ("stock", "akshare", "finance", "股票", "行情")):
+    if any(x in s for x in ("stock", "akshare", "finance", "market")):
         return "finance"
     if tool_id.startswith("jpp:"):
         return "skill.plugin"
@@ -313,15 +332,15 @@ def _infer_domain(tool_id: str, text: str) -> str:
 def _infer_actions(tool_id: str, text: str) -> list[str]:
     s = f"{tool_id} {text}".lower()
     mapping = (
-        ("send_message", ("send", "message", "notify", "chat", "发", "通知", "消息")),
-        ("summarize", ("summary", "briefing", "summarize", "总结", "简报")),
-        ("open_app", ("open", "switch", "focus", "打开", "切换")),
-        ("find_file", ("find", "search", "list", "recent", "找", "搜索")),
-        ("read", ("read", "get", "fetch", "读取", "查询")),
-        ("write", ("write", "create", "update", "append", "写入", "创建", "更新")),
-        ("delete", ("delete", "remove", "删除")),
-        ("verify", ("verify", "ocr", "screenshot", "校验", "截图")),
-        ("create_presentation", ("presentation", "slide", "ppt", "演示")),
+        ("send_message", ("send", "message", "notify", "chat", "recipient")),
+        ("summarize", ("summary", "briefing", "summarize", "report")),
+        ("open_app", ("open", "switch", "focus", "launch", "activate")),
+        ("find_file", ("find", "search", "list", "recent", "locate")),
+        ("read", ("read", "get", "fetch", "query")),
+        ("write", ("write", "create", "update", "append")),
+        ("delete", ("delete", "remove")),
+        ("verify", ("verify", "ocr", "screenshot", "validate")),
+        ("create_presentation", ("presentation", "slide", "ppt")),
     )
     out = [action for action, keys in mapping if any(k in s for k in keys)]
     if out:
@@ -333,10 +352,10 @@ def _infer_actions(tool_id: str, text: str) -> list[str]:
 def _infer_objects(tool_id: str, text: str) -> list[str]:
     s = f"{tool_id} {text}".lower()
     mapping = (
-        ("lark_contact", ("lark", "feishu", "飞书", "contact", "recipient", "chat")),
-        ("local_project", ("project", "codebase", "repo", "项目", "代码")),
-        ("windows_app", ("app", "window", "desktop", "calculator", "browser", "explorer", "窗口")),
-        ("local_file", ("file", "folder", "workspace", "文件", "目录")),
+        ("lark_contact", ("lark", "feishu", "flybook", "contact", "recipient", "chat")),
+        ("local_project", ("project", "codebase", "repo")),
+        ("windows_app", ("app", "window", "desktop", "calculator", "browser", "explorer")),
+        ("local_file", ("file", "folder", "workspace", "path")),
         ("system_status", ("system", "disk", "network", "battery", "process", "cpu", "memory")),
         ("presentation", ("ppt", "presentation", "slide", "powerpoint")),
         ("database", ("sqlite", "sql", "database", "table", "record")),
@@ -346,14 +365,13 @@ def _infer_objects(tool_id: str, text: str) -> list[str]:
 
 def _infer_risk(tool_id: str, text: str) -> str:
     s = f"{tool_id} {text}".lower()
-    if any(x in s for x in ("delete", "remove", "overwrite", "drop", "删除", "覆盖", "清空")):
+    if any(x in s for x in ("delete", "remove", "overwrite", "drop", "truncate")):
         return "high"
-    if any(x in s for x in ("send", "message", "notify", "post", "write", "create", "update", "move", "rename", "发", "写", "创建", "移动", "重命名")):
+    if any(x in s for x in ("send", "message", "notify", "post", "write", "create", "update", "move", "rename")):
         return "external_effect"
-    if any(x in s for x in ("read", "list", "get", "status", "search", "query", "读取", "查询", "搜索")):
+    if any(x in s for x in ("read", "list", "get", "status", "search", "query", "fetch")):
         return "read_only"
     return "unknown"
-
 
 def _metadata_override(tool: dict[str, Any]) -> dict[str, Any]:
     for key in ("capability", "capabilities", "jachin_capability", "x_jachin_capability", "metadata"):
@@ -450,3 +468,6 @@ def build_capability_registry(tools: list[dict[str, Any]] | None = None) -> list
 
 def capability_registry_as_dicts(tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     return [item.to_dict() for item in build_capability_registry(tools)]
+
+
+

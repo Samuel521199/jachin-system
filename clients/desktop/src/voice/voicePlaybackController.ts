@@ -8,7 +8,40 @@ type AudioTask = {
   blob: Blob;
 };
 
-async function blobToBase64(blob: Blob): Promise<string> {
+function parseWavInfo(buf: ArrayBuffer): Record<string, number | string> {
+  try {
+    const view = new DataView(buf);
+    const riff = String.fromCharCode(...new Uint8Array(buf.slice(0, 4)));
+    const wave = String.fromCharCode(...new Uint8Array(buf.slice(8, 12)));
+    if (riff !== "RIFF" || wave !== "WAVE") return { format: "unknown" };
+    let offset = 12;
+    let sampleRate = 0;
+    let channels = 0;
+    let bitsPerSample = 0;
+    let dataBytes = 0;
+    while (offset + 8 <= view.byteLength) {
+      const id = String.fromCharCode(...new Uint8Array(buf.slice(offset, offset + 4)));
+      const size = view.getUint32(offset + 4, true);
+      const body = offset + 8;
+      if (id === "fmt " && body + 16 <= view.byteLength) {
+        channels = view.getUint16(body + 2, true);
+        sampleRate = view.getUint32(body + 4, true);
+        bitsPerSample = view.getUint16(body + 14, true);
+      } else if (id === "data") {
+        dataBytes = size;
+        break;
+      }
+      offset = body + size + (size % 2);
+    }
+    const bytesPerSecond = sampleRate * channels * Math.max(1, bitsPerSample) / 8;
+    const durationMs = bytesPerSecond > 0 ? Math.round((dataBytes / bytesPerSecond) * 1000) : 0;
+    return { format: "wav", sampleRate, channels, bitsPerSample, dataBytes, durationMs };
+  } catch (e) {
+    return { format: "parse_failed", err: String(e) };
+  }
+}
+
+async function blobToBase64(blob: Blob): Promise<{ base64: string; wavInfo: Record<string, number | string> }> {
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let binary = "";
@@ -16,7 +49,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
-  return btoa(binary);
+  return { base64: btoa(binary), wavInfo: parseWavInfo(buf) };
 }
 
 export class VoicePlaybackController {
@@ -170,13 +203,14 @@ export class VoicePlaybackController {
     if (this.preferNativePlayback) {
       try {
         const encodeStartedAt = Date.now();
-        const wavBase64 = await blobToBase64(blob);
+        const { base64: wavBase64, wavInfo } = await blobToBase64(blob);
         voiceChatTraceIfActive("tts.playback_native_start", {
           bytes: blob.size,
           generation,
           encodeMs: Date.now() - encodeStartedAt,
+          wavInfo,
         });
-        voiceCompanionDebug("playback.native_start", { bytes: blob.size, generation });
+        voiceCompanionDebug("playback.native_start", { bytes: blob.size, generation, wavInfo });
         const playStartedAt = Date.now();
         await invoke("voice_companion_play_wav", { wavBase64 });
         voiceCompanionDebug("playback.native_ok", { generation });
@@ -201,8 +235,9 @@ export class VoicePlaybackController {
       a.pause();
       a.onended = null;
       a.src = url;
-      voiceCompanionDebug("playback.play_start", { bytes: blob.size, generation });
-      voiceChatTraceIfActive("tts.playback_web_start", { bytes: blob.size, generation });
+      const wavInfo = parseWavInfo(await blob.arrayBuffer());
+      voiceCompanionDebug("playback.play_start", { bytes: blob.size, generation, wavInfo });
+      voiceChatTraceIfActive("tts.playback_web_start", { bytes: blob.size, generation, wavInfo });
       try {
         await a.play();
         voiceCompanionDebug("playback.play_ok", { generation });

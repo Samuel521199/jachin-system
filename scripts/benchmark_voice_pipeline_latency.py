@@ -8,6 +8,7 @@
 3) 统计 p50/p90，快速评估提速效果
 
 默认链路（陪伴态对齐）：
+  路由     : clients/desktop/src/voice/voiceIntentRouter.ts（via tsx CLI，与 chat.tsx 同源）
   JVS STT  : POST /v1/stt/transcribe     (18982)
   L3 回答  : POST /api/v3/agent/run      (18991)
   JVS TTS  : POST /v1/tts/synthesize     (18982)
@@ -19,6 +20,7 @@ import csv
 import io
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -29,6 +31,15 @@ import wave
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from voice_intent_router import (
+    build_companion_implicit_signals,
+    dispatch_voice_intent,
+)
 
 
 if sys.platform == "win32":
@@ -42,7 +53,13 @@ if sys.platform == "win32":
 DEFAULT_JVS = os.getenv("JACHIN_VOICE_SERVER_URL", "http://127.0.0.1:18982").rstrip("/")
 DEFAULT_L3 = os.getenv("JACHIN_L3_HTTP_BASE", "http://127.0.0.1:18991").rstrip("/")
 DEFAULT_OUT_DIR = Path("data/voice_latency_bench")
-DEFAULT_VOICE = "Junhao"
+DEFAULT_VOICE = "zm_053"
+
+SENSEVOICE_TAG_RE = re.compile(r"<\|.*?\|>")
+
+RESULT_HINT_RE = re.compile(r"(已|已经|完成|成功|失败|结果|最终|搞定|好了|完成了|已为你|我已|无法|没法|失败了|报错|可以了|请重试)")
+PROCESS_HINT_RE = re.compile(r"(首先|接下来|然后|步骤|第[一二三四五六七八九十]|先|再|最后|正在|我会|我将|分析|思路|计划|流程|执行中|处理中|如下)")
+LIST_PREFIX_RE = re.compile(r"^(\d+[\.\)]|[-*•]|第[一二三四五六七八九十]+步|步骤[:：]?)")
 
 
 def _now_ms() -> int:
@@ -104,10 +121,70 @@ def _first_sentence(text: str) -> str:
     return t[:80].strip()
 
 
-def _split_for_companion_tts(text: str, max_sentences: int = 3) -> list[str]:
-    """
-    近似陪伴态分句：按句号类终止符切句，最多返回 max_sentences 句。
-    """
+def _sanitize_stt_text(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = SENSEVOICE_TAG_RE.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return ""
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", t):
+        return ""
+    return t
+
+
+def _load_route_context(path: Path | None) -> dict[str, Any]:
+    """VoiceDispatcherContext JSON（activeTasks / awaitingConfirmation 等）。"""
+    if path is None:
+        return {"activeTasks": []}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"route context must be object: {path}")
+    if "activeTasks" not in data:
+        data["activeTasks"] = []
+    return data
+
+
+def _pick_result_clause(s: str) -> str | None:
+    clauses = [x.strip() for x in re.split(r"[，。；！？]", s or "") if x.strip()]
+    if not clauses:
+        return None
+    for c in reversed(clauses):
+        if RESULT_HINT_RE.search(c):
+            return f"{c}。"
+    return None
+
+
+def _prepare_sentence_for_tts(raw: str) -> str | None:
+    s = (raw or "")
+    s = re.sub(r"```[\s\S]*?```", " ", s)
+    s = re.sub(r"`[^`]*`", " ", s)
+    s = re.sub(r"[#*_~]", "", s)
+    s = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) < 2:
+        return None
+    letters = len(re.findall(r"[\w\u4e00-\u9fff]", s, flags=re.UNICODE))
+    if letters < 2:
+        return None
+    noisy = len(re.findall(r"[^\w\u4e00-\u9fff\s，。！？、；：]", s, flags=re.UNICODE))
+    if len(s) > 0 and (noisy / len(s)) > 0.45:
+        return None
+    has_result = bool(RESULT_HINT_RE.search(s))
+    has_process = bool(PROCESS_HINT_RE.search(s))
+    if LIST_PREFIX_RE.search(s) and not has_result:
+        return None
+    if has_process and not has_result:
+        return None
+    if (has_result and has_process) or (has_result and len(s) > 36):
+        concise = _pick_result_clause(s)
+        if concise:
+            s = concise
+    return s
+
+
+def _split_for_companion_tts(text: str) -> list[str]:
     t = (text or "").strip()
     if not t:
         return []
@@ -121,23 +198,30 @@ def _split_for_companion_tts(text: str, max_sentences: int = 3) -> list[str]:
             if s:
                 out.append(s)
             buf = []
-            if len(out) >= max(1, max_sentences):
-                break
-    if len(out) < max(1, max_sentences) and buf:
+    if buf:
         s = "".join(buf).strip()
         if s:
             out.append(s)
-    return out[: max(1, max_sentences)]
+    if not out:
+        out = [t]
+    return out
 
 
 def _pick_tts_inputs(answer: str, mode: str, max_sentences: int) -> list[str]:
     if mode == "legacy":
         one = _first_sentence(answer) or answer[:80]
         return [one] if one else []
-    # companion mode: sentence queue (up to 3 by default)
-    rows = _split_for_companion_tts(answer, max_sentences=max_sentences)
-    if rows:
-        return rows
+    # companion mode: 使用接近前端 speakableText 的过滤，默认只播报结果类句子。
+    rows = _split_for_companion_tts(answer)
+    kept: list[str] = []
+    for r in rows:
+        s = _prepare_sentence_for_tts(r)
+        if s:
+            kept.append(s)
+        if len(kept) >= max(1, max_sentences):
+            break
+    if kept:
+        return kept
     one = _first_sentence(answer) or answer[:80]
     return [one] if one else []
 
@@ -199,6 +283,12 @@ class RunMetric:
     tts_input: str
     tts_calls: int
     tts_audio_ms: int
+    routed_text: str
+    voice_dispatch_tier: str
+    voice_intent_class: str
+    voice_fast_lane: bool
+    voice_interrupt_verdict: str
+    voice_route_notes: str
 
 
 def run_once(
@@ -216,6 +306,8 @@ def run_once(
     play_audio: bool,
     tts_mode: str,
     max_speak_sentences: int,
+    companion_real_route: bool,
+    route_context: dict[str, Any],
     progress: Callable[[str], None] | None = None,
 ) -> RunMetric:
     started = _perf_ms()
@@ -226,6 +318,12 @@ def run_once(
     tts_input = ""
     tts_calls = 0
     tts_audio_ms = 0
+    routed_text = ""
+    voice_dispatch_tier = ""
+    voice_intent_class = ""
+    voice_fast_lane = False
+    voice_interrupt_verdict = ""
+    voice_route_notes = ""
     try:
         if text_input is not None:
             recognized = text_input.strip()
@@ -237,7 +335,7 @@ def run_once(
             st = _perf_ms()
             stt_json = _http_post_multipart_stt(f"{jvs_base}/v1/stt/transcribe", wav_bytes, timeout=t_stt)
             stt_ms = _perf_ms() - st
-            recognized = (stt_json.get("text") or "").strip()
+            recognized = _sanitize_stt_text(stt_json.get("text") or "")
         if not recognized:
             raise RuntimeError("STT 未识别到文本")
 
@@ -245,9 +343,40 @@ def run_once(
             progress("L3 推理中...")
         st = _perf_ms()
         chat_id = f"{chat_prefix}-{uuid.uuid4().hex[:10]}"
+        if companion_real_route:
+            decision = dispatch_voice_intent(recognized, route_context)
+            routed_text = (decision.get("normalized_text") or recognized).strip() or recognized
+            implicit_signals = build_companion_implicit_signals(
+                raw_stt_text=recognized,
+                decision=decision,
+                source="voice_latency_bench",
+                active_tasks=route_context.get("activeTasks"),
+            )
+        else:
+            routed_text = recognized
+            implicit_signals = {
+                "desktop_companion": True,
+                "source": "desktop_voice_companion",
+                "voice_raw_stt_text": recognized,
+                "voice_routed_text": routed_text,
+            }
+            decision = {}
+        voice_dispatch_tier = str(decision.get("tier") or "")
+        voice_intent_class = str(decision.get("intent_class") or "")
+        hints = decision.get("router_hints") or {}
+        voice_fast_lane = bool(hints.get("fast_lane"))
+        voice_interrupt_verdict = str(decision.get("interrupt_verdict") or "")
+        notes = decision.get("route_notes") or []
+        voice_route_notes = "|".join(notes) if isinstance(notes, list) else str(notes)
         l3_raw = _http_post_json(
             f"{l3_base}/api/v3/agent/run",
-            {"user_input": recognized, "chat_id": chat_id, "max_iterations": 8},
+            {
+                "user_input": routed_text,
+                "chat_id": chat_id,
+                "max_iterations": 8,
+                "implicit_signals": implicit_signals,
+                "implicit_attribution": {"channel": "websocket_terminal"},
+            },
             timeout=t_l3,
         )
         l3_ms = _perf_ms() - st
@@ -291,6 +420,12 @@ def run_once(
             tts_input=tts_input,
             tts_calls=tts_calls,
             tts_audio_ms=tts_audio_ms,
+            routed_text=routed_text,
+            voice_dispatch_tier=voice_dispatch_tier,
+            voice_intent_class=voice_intent_class,
+            voice_fast_lane=voice_fast_lane,
+            voice_interrupt_verdict=voice_interrupt_verdict,
+            voice_route_notes=voice_route_notes,
         )
     except Exception as e:  # noqa: BLE001
         return RunMetric(
@@ -307,6 +442,12 @@ def run_once(
             tts_input=tts_input,
             tts_calls=tts_calls,
             tts_audio_ms=tts_audio_ms,
+            routed_text=routed_text,
+            voice_dispatch_tier=voice_dispatch_tier,
+            voice_intent_class=voice_intent_class,
+            voice_fast_lane=voice_fast_lane,
+            voice_interrupt_verdict=voice_interrupt_verdict,
+            voice_route_notes=voice_route_notes,
         )
 
 
@@ -347,7 +488,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--l3-base", default=DEFAULT_L3, help="L3 HTTP 地址，默认 http://127.0.0.1:18991")
     p.add_argument("--runs", type=int, default=20, help="压测轮数")
     p.add_argument("--interval-sec", type=float, default=0.5, help="每轮间隔秒")
-    p.add_argument("--voice", default=DEFAULT_VOICE, help="TTS 音色 ID（陪伴态默认 Junhao）")
+    p.add_argument("--voice", default=DEFAULT_VOICE, help="TTS 音色 ID（陪伴态默认 zm_053 / Kokoro）")
     p.add_argument(
         "--tts-mode",
         choices=("companion", "legacy"),
@@ -370,6 +511,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeout-tts", type=float, default=120.0)
     p.add_argument("--chat-prefix", default="voice-latency-bench")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    p.add_argument(
+        "--companion-real-route",
+        action="store_true",
+        default=True,
+        help="调用 voiceIntentRouter.ts（与 chat.tsx 同源）并注入完整 implicit_signals（默认开启）",
+    )
+    p.add_argument(
+        "--no-companion-real-route",
+        action="store_true",
+        help="关闭陪伴态路由，仅传 STT 原文与最小 companion 信号",
+    )
+    p.add_argument(
+        "--route-context-json",
+        type=Path,
+        help="VoiceDispatcherContext JSON（含 activeTasks 等），模拟长任务运行中插嘴",
+    )
     return p.parse_args()
 
 
@@ -385,6 +542,12 @@ def main() -> int:
         f"[INFO] JVS={args.jvs_base}  L3={args.l3_base}  "
         f"voice={args.voice}  tts_mode={args.tts_mode}  max_speak_sentences={args.max_speak_sentences}"
     )
+    if args.no_companion_real_route:
+        args.companion_real_route = False
+    route_context = _load_route_context(args.route_context_json)
+    print(f"[INFO] companion_real_route={bool(args.companion_real_route)} router=voiceIntentRouter.ts")
+    if route_context.get("activeTasks"):
+        print(f"[INFO] route_context activeTasks={len(route_context['activeTasks'])}")
 
     fixed_wav: bytes | None = None
     if args.audio_file:
@@ -405,7 +568,9 @@ def main() -> int:
                 except Exception as e:  # noqa: BLE001
                     print(f"[{i}/{args.runs}] 录音失败: {e}")
                     rows.append(
-                        RunMetric(i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0)
+                        RunMetric(
+                            i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0, 0, "", "", "", False, "", ""
+                        )
                     )
                     write_rows(csv_path, jsonl_path, [rows[-1]])
                     continue
@@ -429,6 +594,8 @@ def main() -> int:
             play_audio=args.play,
             tts_mode=args.tts_mode,
             max_speak_sentences=max(1, int(args.max_speak_sentences)),
+            companion_real_route=bool(args.companion_real_route),
+            route_context=route_context,
             progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
         )
         rows.append(metric)
@@ -438,8 +605,12 @@ def main() -> int:
             print(
                 f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
                 f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
-                f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}"
+                f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
+                f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
+                f"INT={metric.voice_interrupt_verdict or '-'}"
             )
+            if metric.voice_route_notes:
+                print(f"         route_notes={metric.voice_route_notes[:120]}")
         else:
             print(f"[{i}/{args.runs}] FAIL {metric.error}")
         print_live_summary(rows)

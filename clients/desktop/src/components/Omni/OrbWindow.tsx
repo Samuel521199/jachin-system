@@ -1,8 +1,28 @@
-﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿/**
+ * 陪伴态 Orb 窗口布局
+ *
+ * ## 锁定布局策略（勿随意更换）
+ * - 单栏文档流：Orb → 状态字 →（可选 tips）→ 语音按钮，全部 shrink-0
+ * - 根节点 justify-start，禁止 flex-1 + justify-center（窗高不足时 IDLE 会溢出叠到按钮上）
+ * - 拖拽层 bottom = COMPANION_VOICE_FOOTER_PX，不盖住按钮
+ *
+ * ## 禁止的替代方案（已证实导致 regression）
+ * - ❌ flex-1 justify-center 包住 Orb+IDLE → 压缩时 IDLE 与按钮重叠
+ * - ❌ 根节点 justify-center 包住整块内容 → 对称裁切，按钮消失
+ * - ❌ 按钮 absolute bottom → 与 IDLE 重叠
+ *
+ * 尺寸 SSOT：companionLayout.ts · 根因文档：docs/COMPANION_UI_REGRESSION_ROOT_CAUSE_ANALYSIS.md
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AiState, JachinOrb } from "./JachinOrb";
+import {
+  COMPANION_QUICK_INPUT_BOTTOM_PX,
+  COMPANION_VOICE_FOOTER_PX,
+} from "./companionLayout";
+import { scheduleCompanionLayoutSync, isCompanionLayoutSyncInProgress } from "./companionLayoutCheck";
 
 export interface OrbWindowProps {
   state: AiState;
@@ -30,6 +50,7 @@ export function OrbWindow({
   const [tips, setTips] = useState<string[]>([]);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveDockDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const stateText = useMemo(() => {
     if (state === "listening") return "LISTENING";
@@ -37,6 +58,14 @@ export function OrbWindow({
     if (state === "speaking") return "SPEAKING";
     return "IDLE";
   }, [state]);
+
+  const runLayoutSync = useCallback(() => {
+    scheduleCompanionLayoutSync(rootRef.current);
+  }, []);
+
+  useEffect(() => {
+    runLayoutSync();
+  }, [runLayoutSync]);
 
   const saveDockPosition = useCallback(async () => {
     try {
@@ -51,6 +80,7 @@ export function OrbWindow({
     let unlisten: (() => void) | undefined;
     void getCurrentWindow()
       .onMoved(() => {
+        if (isCompanionLayoutSyncInProgress()) return;
         if (saveDockDebounceRef.current) clearTimeout(saveDockDebounceRef.current);
         saveDockDebounceRef.current = setTimeout(() => {
           void saveDockPosition();
@@ -99,27 +129,35 @@ export function OrbWindow({
 
   return (
     <motion.div
+      ref={rootRef}
+      data-companion-root
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
       role="presentation"
-      className="relative flex h-full w-full min-h-0 select-none flex-col items-center justify-center overflow-visible bg-transparent px-2 py-3"
+      className="relative flex w-full shrink-0 select-none flex-col items-center justify-start overflow-visible bg-transparent px-2 pb-3 pt-3"
     >
       <div
         data-tauri-drag-region
-        className="absolute inset-0 z-50 cursor-grab active:cursor-grabbing"
+        className="absolute inset-x-0 top-0 z-50 cursor-grab active:cursor-grabbing"
+        style={{ bottom: COMPANION_VOICE_FOOTER_PX }}
         onClick={onDragRegionClick}
         onDoubleClick={onDragRegionDoubleClick}
         title="拖拽移动 · 单击展开 Omni · 朗读中单击打断 · 双击快捷输入"
       />
 
-      <div className="pointer-events-none relative z-10 flex shrink-0 flex-col items-center gap-1.5">
-        <div className="flex shrink-0 items-center justify-center p-3">
+      <div className="pointer-events-none relative z-10 flex w-full shrink-0 flex-col items-center gap-1.5">
+        <div className="flex shrink-0 items-center justify-center px-2 pb-0.5 pt-1" data-companion-orb>
           <JachinOrb state={state} />
         </div>
 
-        <div className="min-h-[18px] text-[10px] tracking-[0.22em] text-cyan-200/80">{stateText}</div>
+        <div
+          className="shrink-0 text-[10px] tracking-[0.22em] text-cyan-200/80"
+          data-companion-state
+        >
+          {stateText}
+        </div>
 
         <AnimatePresence>
           {tips.length > 0 ? (
@@ -128,7 +166,7 @@ export function OrbWindow({
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}
-              className="flex w-[210px] flex-col gap-1.5"
+              className="flex w-[210px] max-h-[40px] shrink-0 flex-col gap-1 overflow-hidden"
             >
               {tips.map((t, i) => (
                 <div
@@ -143,11 +181,15 @@ export function OrbWindow({
         </AnimatePresence>
       </div>
 
-      <div className="pointer-events-auto relative z-[60] mt-1" data-tauri-drag-region="false">
+      <div
+        className="relative z-[60] mt-1.5 flex w-full shrink-0 justify-center"
+        data-companion-voice-btn
+        data-tauri-drag-region="false"
+      >
         <button
           type="button"
           data-tauri-drag-region="false"
-          className={`rounded-md border px-3 py-1 text-[11px] font-medium tracking-[0.08em] transition ${
+          className={`pointer-events-auto rounded-md border px-3 py-1 text-[11px] font-medium tracking-[0.08em] transition ${
             isRecording
               ? "border-rose-400/70 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30"
               : "border-cyan-400/60 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25"
@@ -183,7 +225,8 @@ export function OrbWindow({
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
-            className="pointer-events-auto relative z-[60] mt-1 flex w-[220px] items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-slate-950/85 p-1.5 backdrop-blur"
+            className="pointer-events-auto absolute left-1/2 z-[60] flex w-[220px] -translate-x-1/2 items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-slate-950/85 p-1.5 backdrop-blur"
+            style={{ bottom: COMPANION_QUICK_INPUT_BOTTOM_PX }}
             data-companion-input
             data-tauri-drag-region="false"
           >
