@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 语音问答链路延迟基准脚本（STT -> L3 -> TTS）。
 
@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import io
 import json
@@ -52,6 +53,7 @@ if sys.platform == "win32":
 
 DEFAULT_JVS = os.getenv("JACHIN_VOICE_SERVER_URL", "http://127.0.0.1:18982").rstrip("/")
 DEFAULT_L3 = os.getenv("JACHIN_L3_HTTP_BASE", "http://127.0.0.1:18991").rstrip("/")
+DEFAULT_L3_WS = os.getenv("JACHIN_L3_WS_URL", "ws://127.0.0.1:18981/sensory").rstrip("/")
 DEFAULT_OUT_DIR = Path("data/voice_latency_bench")
 DEFAULT_VOICE = "zm_053"
 
@@ -80,6 +82,79 @@ def _http_post_json(url: str, payload: dict[str, Any], timeout: float) -> bytes:
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
+
+
+async def _l3_ws_run_async(
+    ws_url: str,
+    payload: dict[str, Any],
+    timeout: float,
+) -> tuple[str, float]:
+    """Run one L3 turn through the same /sensory WebSocket path used by desktop companion."""
+    try:
+        import websockets
+    except ImportError as e:
+        raise RuntimeError("websockets package is required for --l3-transport ws/auto") from e
+
+    open_timeout = max(0.5, min(5.0, timeout))
+    sent_at = 0.0
+    first_chunk_ms = 0.0
+    chunks: list[str] = []
+    async with websockets.connect(
+        ws_url,
+        open_timeout=open_timeout,
+        close_timeout=1,
+        ping_interval=None,
+        max_size=16 * 1024 * 1024,
+    ) as ws:
+        chat_id = str(payload.get("chat_id") or payload.get("session_id") or "").strip()
+        await ws.send(json.dumps({"type": "manifest", "caps": ["voice_latency_bench"]}, ensure_ascii=False))
+        if chat_id:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "prepare_context",
+                        "trigger": "companion_voice_start",
+                        "source": "desktop_voice",
+                        "chat_id": chat_id,
+                        "session_id": chat_id,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        sent_at = _perf_ms()
+        await ws.send(json.dumps(payload, ensure_ascii=False))
+        deadline = time.monotonic() + max(0.5, timeout)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("L3 WebSocket timed out waiting for answer")
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            try:
+                msg = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            except Exception:
+                continue
+            step = str(msg.get("step_type") or msg.get("type") or "")
+            if step == "chunk":
+                content = str(msg.get("content") or "")
+                if content:
+                    chunks.append(content)
+                    if first_chunk_ms <= 0:
+                        first_chunk_ms = _perf_ms() - sent_at
+                continue
+            if step == "answer":
+                answer = str(msg.get("content") or "").strip()
+                if answer:
+                    return answer, first_chunk_ms
+                joined = "".join(chunks).strip()
+                if joined:
+                    return joined, first_chunk_ms
+                raise RuntimeError("L3 WebSocket returned empty answer")
+            if step == "error":
+                raise RuntimeError(str(msg.get("content") or msg.get("error") or "L3 WebSocket error"))
+
+
+def _l3_ws_run(ws_url: str, payload: dict[str, Any], timeout: float) -> tuple[str, float]:
+    return asyncio.run(_l3_ws_run_async(ws_url, payload, timeout))
 
 
 def _http_post_multipart_stt(url: str, wav_bytes: bytes, timeout: float) -> dict[str, Any]:
@@ -276,6 +351,7 @@ class RunMetric:
     error: str
     stt_ms: float
     l3_ms: float
+    l3_first_chunk_ms: float
     tts_ms: float
     total_ms: float
     recognized_text: str
@@ -289,6 +365,8 @@ class RunMetric:
     voice_fast_lane: bool
     voice_interrupt_verdict: str
     voice_route_notes: str
+    l3_transport: str
+    l3_fallback_reason: str
 
 
 def run_once(
@@ -296,6 +374,8 @@ def run_once(
     *,
     jvs_base: str,
     l3_base: str,
+    l3_ws: str,
+    l3_transport: str,
     wav_bytes: bytes | None,
     text_input: str | None,
     voice: str,
@@ -306,6 +386,7 @@ def run_once(
     play_audio: bool,
     tts_mode: str,
     max_speak_sentences: int,
+    fast_lane_max_speak_sentences: int,
     companion_real_route: bool,
     route_context: dict[str, Any],
     progress: Callable[[str], None] | None = None,
@@ -313,6 +394,7 @@ def run_once(
     started = _perf_ms()
     stamp = _now_ms()
     stt_ms = l3_ms = tts_ms = 0.0
+    l3_first_chunk_ms = 0.0
     recognized = ""
     answer = ""
     tts_input = ""
@@ -324,6 +406,8 @@ def run_once(
     voice_fast_lane = False
     voice_interrupt_verdict = ""
     voice_route_notes = ""
+    l3_transport_used = ""
+    l3_fallback_reason = ""
     try:
         if text_input is not None:
             recognized = text_input.strip()
@@ -368,26 +452,50 @@ def run_once(
         voice_interrupt_verdict = str(decision.get("interrupt_verdict") or "")
         notes = decision.get("route_notes") or []
         voice_route_notes = "|".join(notes) if isinstance(notes, list) else str(notes)
-        l3_raw = _http_post_json(
-            f"{l3_base}/api/v3/agent/run",
-            {
-                "user_input": routed_text,
-                "chat_id": chat_id,
-                "max_iterations": 8,
-                "implicit_signals": implicit_signals,
-                "implicit_attribution": {"channel": "websocket_terminal"},
-            },
-            timeout=t_l3,
-        )
-        l3_ms = _perf_ms() - st
-        l3_json = json.loads(l3_raw.decode("utf-8"))
-        if l3_json.get("error"):
-            raise RuntimeError(str(l3_json["error"]))
-        answer = (l3_json.get("answer") or "").strip()
+        l3_payload = {
+            "intent": routed_text,
+            "chat_id": chat_id,
+            "session_id": chat_id,
+            "origin": "terminal",
+            "implicit_signals": implicit_signals,
+        }
+        http_payload = {
+            "user_input": routed_text,
+            "chat_id": chat_id,
+            "max_iterations": 8,
+            "implicit_signals": implicit_signals,
+            "implicit_attribution": {"channel": "websocket_terminal"},
+        }
+        transport = (l3_transport or "auto").strip().lower()
+        if transport not in ("auto", "ws", "http"):
+            transport = "auto"
+        if transport in ("auto", "ws"):
+            try:
+                answer, l3_first_chunk_ms = _l3_ws_run(l3_ws, l3_payload, timeout=t_l3)
+                l3_transport_used = "ws"
+            except Exception as ws_error:  # noqa: BLE001
+                l3_fallback_reason = str(ws_error)
+                if transport == "ws":
+                    raise RuntimeError(f"L3 WebSocket failed: {ws_error}") from ws_error
         if not answer:
-            raise RuntimeError("L3 返回空 answer")
+            l3_raw = _http_post_json(
+                f"{l3_base}/api/v3/agent/run",
+                http_payload,
+                timeout=t_l3,
+            )
+            l3_transport_used = "http" if transport == "http" else "http_fallback"
+            l3_json = json.loads(l3_raw.decode("utf-8"))
+            if l3_json.get("error"):
+                raise RuntimeError(str(l3_json["error"]))
+            answer = (l3_json.get("answer") or "").strip()
+        l3_ms = _perf_ms() - st
+        if not answer:
+            raise RuntimeError("L3 returned empty answer")
 
-        tts_inputs = _pick_tts_inputs(answer, mode=tts_mode, max_sentences=max_speak_sentences)
+        effective_max_sentences = max(1, int(max_speak_sentences))
+        if voice_fast_lane:
+            effective_max_sentences = max(1, int(fast_lane_max_speak_sentences))
+        tts_inputs = _pick_tts_inputs(answer, mode=tts_mode, max_sentences=effective_max_sentences)
         if not tts_inputs:
             raise RuntimeError("TTS 无可用输入句子")
         tts_input = " | ".join(tts_inputs)
@@ -413,6 +521,7 @@ def run_once(
             error="",
             stt_ms=stt_ms,
             l3_ms=l3_ms,
+            l3_first_chunk_ms=l3_first_chunk_ms,
             tts_ms=tts_ms,
             total_ms=_perf_ms() - started,
             recognized_text=recognized,
@@ -426,6 +535,8 @@ def run_once(
             voice_fast_lane=voice_fast_lane,
             voice_interrupt_verdict=voice_interrupt_verdict,
             voice_route_notes=voice_route_notes,
+            l3_transport=l3_transport_used,
+            l3_fallback_reason=l3_fallback_reason[:300],
         )
     except Exception as e:  # noqa: BLE001
         return RunMetric(
@@ -435,6 +546,7 @@ def run_once(
             error=str(e),
             stt_ms=stt_ms,
             l3_ms=l3_ms,
+            l3_first_chunk_ms=l3_first_chunk_ms,
             tts_ms=tts_ms,
             total_ms=_perf_ms() - started,
             recognized_text=recognized,
@@ -448,6 +560,8 @@ def run_once(
             voice_fast_lane=voice_fast_lane,
             voice_interrupt_verdict=voice_interrupt_verdict,
             voice_route_notes=voice_route_notes,
+            l3_transport=l3_transport_used,
+            l3_fallback_reason=l3_fallback_reason[:300],
         )
 
 
@@ -501,6 +615,12 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="companion 模式下最多送 TTS 的句子数（默认 3）",
     )
+    p.add_argument(
+        "--fast-lane-max-speak-sentences",
+        type=int,
+        default=1,
+        help="Max TTS sentences for voice fast lane turns",
+    )
     p.add_argument("--audio-file", type=Path, help="固定 WAV 文件作为输入（推荐可重复）")
     p.add_argument("--record-sec", type=float, default=3.0, help="每轮现场录音秒数（未提供 --audio-file/--text 时生效）")
     p.add_argument("--reuse-audio", action="store_true", help="录音模式下，仅第1轮录音，后续复用")
@@ -508,6 +628,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--play", action="store_true", help="每轮 TTS 合成后本地播放")
     p.add_argument("--timeout-stt", type=float, default=90.0)
     p.add_argument("--timeout-l3", type=float, default=180.0)
+    p.add_argument("--l3-ws", default=DEFAULT_L3_WS, help="L3 sensory WebSocket URL")
+    p.add_argument(
+        "--l3-transport",
+        choices=("auto", "ws", "http"),
+        default="auto",
+        help="L3 transport: auto uses WebSocket first then HTTP fallback",
+    )
     p.add_argument("--timeout-tts", type=float, default=120.0)
     p.add_argument("--chat-prefix", default="voice-latency-bench")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
@@ -539,8 +666,10 @@ def main() -> int:
     print(f"[INFO] 输出 CSV: {csv_path}")
     print(f"[INFO] 输出 JSONL: {jsonl_path}")
     print(
-        f"[INFO] JVS={args.jvs_base}  L3={args.l3_base}  "
-        f"voice={args.voice}  tts_mode={args.tts_mode}  max_speak_sentences={args.max_speak_sentences}"
+        f"[INFO] JVS={args.jvs_base}  L3_HTTP={args.l3_base}  L3_WS={args.l3_ws}  "
+        f"transport={args.l3_transport}  voice={args.voice}  tts_mode={args.tts_mode}  "
+        f"max_speak_sentences={args.max_speak_sentences}  "
+        f"fast_lane_max_speak_sentences={args.fast_lane_max_speak_sentences}"
     )
     if args.no_companion_real_route:
         args.companion_real_route = False
@@ -569,7 +698,28 @@ def main() -> int:
                     print(f"[{i}/{args.runs}] 录音失败: {e}")
                     rows.append(
                         RunMetric(
-                            i, _now_ms(), False, str(e), 0, 0, 0, 0, "", "", "", 0, 0, "", "", "", False, "", ""
+                            run_id=i,
+                            timestamp_ms=_now_ms(),
+                            ok=False,
+                            error=str(e),
+                            stt_ms=0,
+                            l3_ms=0,
+                            l3_first_chunk_ms=0,
+                            tts_ms=0,
+                            total_ms=0,
+                            recognized_text="",
+                            answer_preview="",
+                            tts_input="",
+                            tts_calls=0,
+                            tts_audio_ms=0,
+                            routed_text="",
+                            voice_dispatch_tier="",
+                            voice_intent_class="",
+                            voice_fast_lane=False,
+                            voice_interrupt_verdict="",
+                            voice_route_notes="",
+                            l3_transport="",
+                            l3_fallback_reason="",
                         )
                     )
                     write_rows(csv_path, jsonl_path, [rows[-1]])
@@ -584,6 +734,8 @@ def main() -> int:
             i,
             jvs_base=args.jvs_base.rstrip("/"),
             l3_base=args.l3_base.rstrip("/"),
+            l3_ws=args.l3_ws.rstrip("/"),
+            l3_transport=args.l3_transport,
             wav_bytes=wav,
             text_input=args.text,
             voice=args.voice,
@@ -594,6 +746,7 @@ def main() -> int:
             play_audio=args.play,
             tts_mode=args.tts_mode,
             max_speak_sentences=max(1, int(args.max_speak_sentences)),
+            fast_lane_max_speak_sentences=max(1, int(args.fast_lane_max_speak_sentences)),
             companion_real_route=bool(args.companion_real_route),
             route_context=route_context,
             progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
@@ -606,11 +759,14 @@ def main() -> int:
                 f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
                 f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
                 f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
+                f"VIA={metric.l3_transport or '-'} FC={metric.l3_first_chunk_ms:.0f}ms  "
                 f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
                 f"INT={metric.voice_interrupt_verdict or '-'}"
             )
             if metric.voice_route_notes:
                 print(f"         route_notes={metric.voice_route_notes[:120]}")
+            if metric.l3_fallback_reason:
+                print(f"         l3_fallback={metric.l3_fallback_reason[:160]}")
         else:
             print(f"[{i}/{args.runs}] FAIL {metric.error}")
         print_live_summary(rows)

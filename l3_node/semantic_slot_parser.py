@@ -1,4 +1,4 @@
-﻿"""Semantic slot parser for OS mission routing.
+"""Semantic slot parser for OS mission routing.
 
 This deterministic layer is the testable safety net under the LLM intent
 parser. It extracts the stable contract fields that downstream workflows need.
@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 
 from l3_node.mission_intent_schema import MissionIntent, MissionRiskLevel, MissionSlots, MissionTaskType
+from l3_node.voice_entity_correction import correct_voice_entities
+from l3_node.voice_semantic_guard import apply_voice_semantic_guard
 
 
 _ZH_DIGITS = {
@@ -110,6 +112,10 @@ def _extract_recipients(text: str, *, allow_trailing_to: bool = False) -> list[s
             tail = matches[-1].group(1)
             tail = re.split(r"(?:，然后|, then|然后|之后|再|并且|并)", tail, maxsplit=1)[0]
             return _split_recipients(tail)
+    direct = re.search(r"(?:\u7ed9|\u5411)\s*([A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{1,40})\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?", text, re.I)
+    if direct:
+        return _split_recipients(direct.group(1))
+
     pre_patterns = (
         r"(?:给|向)\s*(.+?)\s*(?:发送|发|说|告诉)\s+",
         r"缁.?\s*(.+?)\s*(?:鍙戦€|鍙|璇|鍛婅瘔)",
@@ -164,6 +170,13 @@ def _extract_feature_query(text: str, project_name: str, project_path: str) -> s
 
 
 def _extract_lark_message(text: str, recipients: list[str]) -> str:
+    bare_send = re.search(r"(?:\u7ed9|\u5411)\s*[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff\s.-]{0,40}\s*(?:\u53d1\u9001|\u53d1)(?:\u4e00\u6761|\u4e2a|\u4e00\u4e0b)?(?:\u6d88\u606f|\u4fe1\u606f|message)?\s*$", text, re.I)
+    if bare_send:
+        return ""
+    marker = re.search(r"(?:\u5185\u5bb9\u662f|\u6d88\u606f\u662f|\u6b63\u6587\u662f|\u8bf4\u7684\u662f|message\s+is|content\s+is)\s*(.+)$", text, re.I)
+    if marker:
+        return marker.group(1).strip(" \t\r\n,.:;!?\u3002\uff0c\uff01\uff1f\uff1a\uff1b\"'\u201c\u201d\u2018\u2019")
+
     patterns = (
         r"(?:给|向)\s*.+?\s*(?:发送|发|说|告诉)\s*(.+)$",
         r"缁.?\s*.+?\s*(?:鍙戦€|鍙|璇|鍛婅瘔)\s*(.+)$",
@@ -181,11 +194,13 @@ def _extract_lark_message(text: str, recipients: list[str]) -> str:
 
 
 _APP_ALIASES: dict[str, tuple[str, ...]] = {
-    "lark": ("lark", "feishu", "flybook", "飞书", "椋炰功"),
-    "calculator": ("calculator", "calc", "计算器", "璁＄畻鍣"),
-    "notepad": ("notepad", "记事本", "璁颁簨"),
-    "browser": ("browser", "浏览器", "edge", "chrome", "娴忚"),
-    "explorer": ("explorer", "资源管理器", "文件管理器", "璧勬簮", "鏂囦欢"),
+    "lark": ("lark", "feishu", "flybook", "\u98de\u4e66", "飞书", "椋炰功"),
+    "chrome": ("chrome", "google chrome"),
+    "vscode": ("vs code", "vscode", "visual studio code"),
+    "calculator": ("calculator", "calc", "\u8ba1\u7b97\u5668", "计算器", "璁＄畻鍣"),
+    "notepad": ("notepad", "\u8bb0\u4e8b\u672c", "记事本", "璁颁簨"),
+    "browser": ("browser", "\u6d4f\u89c8\u5668", "浏览器", "edge", "chrome", "娴忚"),
+    "explorer": ("explorer", "\u8d44\u6e90\u7ba1\u7406\u5668", "\u6587\u4ef6\u7ba1\u7406\u5668", "资源管理器", "文件管理器", "璧勬簮", "鏂囦欢"),
     "terminal": ("terminal", "powershell", "cmd", "终端", "cmd.exe"),
     "codex": ("codex",),
 }
@@ -209,10 +224,9 @@ def _detect_actual_app_name(text: str) -> str:
 
 
 def _extract_app_control_target(text: str) -> str:
-    if not re.search(r"打开|启动|切换|聚焦|focus|open|switch|鎵撳紑|鍒囨崲", text, re.I):
+    if not re.search(r"(?:\u6253\u5f00|\u542f\u52a8|\u5207\u6362\u5230|\u805a\u7126|\u8fd0\u884c|focus|open|launch|start|switch)", text, re.I):
         return ""
     return _detect_actual_app_name(text)
-
 
 def _normalize_arithmetic_expr(expr: str) -> str:
     table = str.maketrans({"×": "*", "÷": "/", "（": "(", "）": ")"})
@@ -269,6 +283,8 @@ def _detect_output_format(text: str) -> str:
 def _looks_like_project_delivery(text: str, recipients: list[str], project_name: str, project_path: str) -> bool:
     if not recipients:
         return False
+    if re.search(r"(?:\u5185\u5bb9\u662f|\u6d88\u606f\u662f|\u6b63\u6587\u662f|message\s+is|content\s+is)", text, re.I):
+        return False
     if project_name or project_path:
         return bool(re.search(r"总结|分析|看看|查看|整理|梳理|Codex|最近|进展|改动|鎬荤粨|鍒嗘瀽|鐪嬬湅|鏈€杩|杩欏嚑", text, re.I))
     return bool(re.search(r"最近|这几天|这两天|改动|进展|总结|整理|几条|鍑犳潯|鏈€杩|杩欏嚑", text, re.I))
@@ -301,7 +317,8 @@ def _is_codex_ask_lark_delivery(text: str, recipients: list[str]) -> bool:
 
 
 def parse_mission_intent(user_input: str) -> MissionIntent:
-    text = str(user_input or "").strip()
+    correction = correct_voice_entities(str(user_input or "").strip())
+    text = correction.corrected_text.strip()
     slots = MissionSlots(since_days=_extract_since_days(text))
     if not text:
         return MissionIntent(MissionTaskType.UNKNOWN, 0.0, slots, raw_text=text)
@@ -382,7 +399,7 @@ def parse_mission_intent(user_input: str) -> MissionIntent:
         missing = [] if slots.message else ["message"]
         if not slots.message and re.search(r"(?:给我|帮我|麻烦).*(?:发消息|发送消息)$", text):
             return MissionIntent(MissionTaskType.UNKNOWN, 0.25, slots, raw_text=text)
-        return MissionIntent(
+        return apply_voice_semantic_guard(MissionIntent(
             MissionTaskType.LARK_MESSAGE_SEND,
             0.82 if slots.message else 0.62,
             slots,
@@ -390,21 +407,20 @@ def parse_mission_intent(user_input: str) -> MissionIntent:
             risk_level=MissionRiskLevel.LOW,
             reasoning=["explicit recipient message"],
             raw_text=text,
-        )
+        ), raw_text=text)
 
     target_app = _extract_app_control_target(text)
     if target_app:
         slots.app_name = target_app
-        return MissionIntent(
+        return apply_voice_semantic_guard(MissionIntent(
             MissionTaskType.APP_CONTROL,
             0.78,
             slots,
             reasoning=["local app control"],
             raw_text=text,
-        )
+        ), raw_text=text)
 
     if re.search(r"系统状态|磁盘|内存|CPU|网络|battery|system status", text, re.I):
         return MissionIntent(MissionTaskType.SYSTEM_STATUS_REPORT, 0.72, slots, reasoning=["system status"], raw_text=text)
 
     return MissionIntent(MissionTaskType.UNKNOWN, 0.2, slots, raw_text=text)
-

@@ -15,6 +15,8 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DESKTOP_DIR = _REPO_ROOT / "clients" / "desktop"
 _ROUTER_CLI = _DESKTOP_DIR / "scripts" / "voice-intent-router-cli.ts"
+_ROUTER_SRC = _DESKTOP_DIR / "src" / "voice" / "voiceIntentRouter.ts"
+_ROUTER_BUNDLE = _DESKTOP_DIR / "tmp" / "voice-intent-router-cli.cjs"
 _BOM = b"\xef\xbb\xbf"
 
 
@@ -42,34 +44,69 @@ def _ensure_desktop_json_ready() -> None:
         _strip_json_bom_if_needed(_DESKTOP_DIR / "package.json")
 
 
-def _run_voice_router_cli(payload_json: str) -> str:
-    _ensure_desktop_json_ready()
-    cli_arg = "scripts/voice-intent-router-cli.ts"
-    if sys.platform == "win32":
-        proc = subprocess.run(
-            f"npx tsx {cli_arg}",
-            cwd=str(_DESKTOP_DIR),
-            input=payload_json,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            shell=True,
-        )
-    else:
-        proc = subprocess.run(
-            ["npx", "tsx", cli_arg],
-            cwd=str(_DESKTOP_DIR),
-            input=payload_json,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-        )
+def _ensure_router_cli_bundle() -> Path:
+    """Build a local JS bundle for the TS router CLI so benchmark runs do not depend on npx."""
+    if not _ROUTER_CLI.is_file():
+        raise RuntimeError(f"voice intent router CLI missing: {_ROUTER_CLI}")
+    needs_build = not _ROUTER_BUNDLE.is_file()
+    if not needs_build:
+        try:
+            bundle_mtime = _ROUTER_BUNDLE.stat().st_mtime
+            needs_build = any(
+                p.is_file() and p.stat().st_mtime > bundle_mtime
+                for p in (_ROUTER_CLI, _ROUTER_SRC)
+            )
+        except OSError:
+            needs_build = True
+    if not needs_build:
+        return _ROUTER_BUNDLE
+    _ROUTER_BUNDLE.parent.mkdir(parents=True, exist_ok=True)
+    build_js = """
+const esbuild = require('esbuild');
+esbuild.buildSync({
+  entryPoints: ['scripts/voice-intent-router-cli.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node18',
+  outfile: 'tmp/voice-intent-router-cli.cjs',
+  logLevel: 'silent',
+});
+"""
+    proc = subprocess.run(
+        ["node", "-e", build_js],
+        cwd=str(_DESKTOP_DIR),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"build voice intent router bundle failed (code={proc.returncode}): {err}")
+    if not _ROUTER_BUNDLE.is_file():
+        raise RuntimeError(f"voice intent router bundle missing after build: {_ROUTER_BUNDLE}")
+    return _ROUTER_BUNDLE
+
+
+def _run_voice_router_cli(payload_json: str) -> str:
+    _ensure_desktop_json_ready()
+    bundle = _ensure_router_cli_bundle()
+    proc = subprocess.run(
+        ["node", str(bundle)],
+        cwd=str(_DESKTOP_DIR),
+        input=payload_json.encode("ascii"),
+        capture_output=True,
+        timeout=10,
+        shell=False,
+    )
+    stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        err = (stderr or stdout or "").strip()
         raise RuntimeError(f"dispatch_voice_intent failed (code={proc.returncode}): {err}")
-    line = (proc.stdout or "").strip()
+    line = (stdout or "").strip()
     if not line:
         raise RuntimeError("dispatch_voice_intent: empty stdout")
     return line
@@ -83,7 +120,7 @@ def dispatch_voice_intent(text: str, ctx: dict[str, Any] | None = None) -> dict[
     """与 dispatchVoiceIntent(rawText, ctx) 等价；失败时抛出 RuntimeError。"""
     if not _ROUTER_CLI.is_file():
         raise RuntimeError(f"voice intent router CLI missing: {_ROUTER_CLI}")
-    payload = json.dumps({"text": text or "", "ctx": ctx if ctx is not None else _default_ctx()}, ensure_ascii=False)
+    payload = json.dumps({"text": text or "", "ctx": ctx if ctx is not None else _default_ctx()}, ensure_ascii=True)
     line = _run_voice_router_cli(payload)
     return json.loads(line)
 

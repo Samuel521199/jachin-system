@@ -1,0 +1,19 @@
+LARK :8.0
+Lark :8.0
+飞书 :6.0
+VIVIAN :8.0
+Vivian :8.0
+VIVI :5.0
+vivi :5.0
+薇薇安 :8.0
+微微安 :8.0
+JACHIN :5.0
+Jachin :5.0
+FEISHU :5.0
+Feishu :5.0
+VS CODE :4.0
+VS Code :4.0
+CHROME :4.0
+Chrome :4.0
+CODEX :4.0
+Codex :4.0

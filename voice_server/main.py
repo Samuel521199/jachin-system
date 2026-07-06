@@ -226,6 +226,9 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                         "confidence": result.confidence,
                         "duration_ms": result.duration_ms,
                         "language": result.language,
+        "hotword_count": result.hotword_count,
+        "hotword_status": result.hotword_status,
+        "hotword_sources": list(result.hotword_sources),
                     },
                 )
 
@@ -276,6 +279,9 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                             "confidence": final.confidence,
                             "duration_ms": final.duration_ms,
                             "language": final.language,
+                    "hotword_count": final.hotword_count,
+                    "hotword_status": final.hotword_status,
+                    "hotword_sources": list(final.hotword_sources),
                             "bytes": len(pcm_buffer),
                         },
                     )
@@ -362,6 +368,9 @@ async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str
         "confidence": result.confidence,
         "duration_ms": result.duration_ms,
         "language": result.language,
+        "hotword_count": result.hotword_count,
+        "hotword_status": result.hotword_status,
+        "hotword_sources": list(result.hotword_sources),
         "session_id": session_id,
     }
 
@@ -413,6 +422,9 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                     "confidence": result.confidence,
                     "duration_ms": result.duration_ms,
                     "language": result.language,
+        "hotword_count": result.hotword_count,
+        "hotword_status": result.hotword_status,
+        "hotword_sources": list(result.hotword_sources),
                 }
             )
 
@@ -456,6 +468,9 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                             "confidence": final.confidence,
                             "duration_ms": final.duration_ms,
                             "language": final.language,
+                    "hotword_count": final.hotword_count,
+                    "hotword_status": final.hotword_status,
+                    "hotword_sources": list(final.hotword_sources),
                             "bytes": len(pcm_buffer),
                         }
                     )

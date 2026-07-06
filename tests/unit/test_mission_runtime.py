@@ -13,8 +13,9 @@ def test_plan_preview_for_codex_lark_project_briefing() -> None:
 
     plan = build_plan_preview(intent, route)
 
-    assert plan.auto_execute is True
-    assert plan.requires_confirmation is False
+    assert plan.auto_execute is False
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "external_side_effect"
     assert "Codex" in plan.apps
     assert "Lark" in plan.apps
     assert plan.recipients == ["Vivian"]
@@ -27,7 +28,7 @@ def test_plan_preview_for_codex_lark_project_briefing() -> None:
     ]
 
 
-def test_default_confirmation_policy_only_holds_high_risk(monkeypatch) -> None:
+def test_default_confirmation_policy_holds_high_risk_and_external_sends(monkeypatch) -> None:
     monkeypatch.delenv("JACHIN_OS_MISSION_CONFIRM_MODE", raising=False)
     route = CapabilityRoute(ok=True, tool_id="mcp:windows_codex_lark_workflow_template", workflow_id="codex_project_briefing_to_lark")
     low_risk_intent = MissionIntent(
@@ -39,8 +40,9 @@ def test_default_confirmation_policy_only_holds_high_risk(monkeypatch) -> None:
     )
     low_risk_plan = build_plan_preview(low_risk_intent, route)
 
-    assert low_risk_plan.requires_confirmation is False
-    assert should_hold_for_confirmation(low_risk_intent, low_risk_plan) is False
+    assert low_risk_plan.requires_confirmation is True
+    assert low_risk_plan.confirmation_reason == "external_side_effect"
+    assert should_hold_for_confirmation(low_risk_intent, low_risk_plan) is True
 
     high_risk_intent = MissionIntent(
         task_type=MissionTaskType.UNKNOWN,

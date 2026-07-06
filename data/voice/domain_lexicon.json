@@ -1,0 +1,28 @@
+{
+  "apps": {
+    "Lark": {
+      "aliases": ["lark", "feishu", "flybook", "飞书", "luck", "lock", "拉克", "拉"],
+      "active": true
+    },
+    "Chrome": {
+      "aliases": ["chrome", "google chrome", "clone", "浏览器"],
+      "active": true
+    },
+    "VS Code": {
+      "aliases": ["vs code", "vscode", "visual studio code", "ws code", "w s code"],
+      "active": true
+    }
+  },
+  "contacts": {
+    "Vivian": {
+      "aliases": ["vivian", "vivi", "viian", "vivan", "vivien", "薇薇安", "微微安", "v薇m", "v 薇 m"],
+      "active": true
+    }
+  },
+  "projects": {
+    "Jachin": {
+      "aliases": ["jachin", "jacking", "加勤", "嘉钦"],
+      "active": true
+    }
+  }
+}

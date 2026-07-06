@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.98] - 2026-07-06
+
+### Added / Changed
+
+- 改热词之前的版本：STT 鲁棒性提案落地（实体/语义纠错、风险门控、热词配置、Sherpa/Paraformer 评测脚本与单测）。
+- **Version**: Desktop **0.9.98**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.97] - 2026-07-03
 
 ### Added / Changed

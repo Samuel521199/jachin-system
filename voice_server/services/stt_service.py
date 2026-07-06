@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 import io
+import inspect
+import math
 import logging
 import re
 import wave
@@ -9,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from services.stt_hotwords import SttHotwordProvider
 
 logger = logging.getLogger("jachin.voice_server.stt")
 _SENSEVOICE_INTERNAL_TAG_RE = re.compile(r"<\|.*?\|>")
@@ -21,6 +25,9 @@ class SttResult:
     confidence: float
     duration_ms: int
     language: str
+    hotword_count: int = 0
+    hotword_status: str = "not_configured"
+    hotword_sources: tuple[str, ...] = ()
 
 
 class SttService:
@@ -31,6 +38,8 @@ class SttService:
         self.model_path = stt_dir / "model_quant.onnx"
         self._engine: Any = None
         self._load_error: str | None = None
+        self._hotwords = SttHotwordProvider()
+        self._hotword_support: bool | None = None
 
     @property
     def ready(self) -> bool:
@@ -89,11 +98,17 @@ class SttService:
             )
 
         audio = self._resample_to_16k(audio, sample_rate)
+        hotword_snapshot = self._hotwords.snapshot()
+        hotword_status = "not_configured" if not hotword_snapshot.words else "pending"
 
         try:
             from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
 
-            raw_list = engine(audio, fs=16000, language="auto", use_itn=True)
+            raw_list, hotword_status = self._call_engine(
+                engine,
+                audio,
+                hotwords=hotword_snapshot.words,
+            )
             raw = raw_list[0] if raw_list else ""
             text = rich_transcription_postprocess(raw).strip()
             if not text:
@@ -109,7 +124,44 @@ class SttService:
             confidence=confidence,
             duration_ms=duration_ms,
             language="zh",
+            hotword_count=hotword_snapshot.count,
+            hotword_status=hotword_status,
+            hotword_sources=tuple(hotword_snapshot.sources),
         )
+
+    def _engine_supports_hotwords(self, engine: Any) -> bool:
+        if self._hotword_support is not None:
+            return self._hotword_support
+        try:
+            source = inspect.getsource(engine.__call__)
+        except Exception:
+            source = ""
+        # Some funasr-onnx builds accept **kwargs but ignore hotword. Treat that
+        # as unsupported so diagnostics do not imply the boost is active.
+        self._hotword_support = "hotword" in source or "hotwords" in source
+        return self._hotword_support
+
+    def _call_engine(
+        self,
+        engine: Any,
+        audio: np.ndarray,
+        *,
+        hotwords: dict[str, int],
+    ) -> tuple[list[str], str]:
+        base_kwargs = {"fs": 16000, "language": "auto", "use_itn": True}
+        if hotwords and self._engine_supports_hotwords(engine):
+            for key in ("hotword", "hotwords"):
+                try:
+                    return engine(audio, **base_kwargs, **{key: hotwords}), "applied"
+                except TypeError:
+                    continue
+                except Exception:
+                    logger.exception("SenseVoice hotword inference failed with %s; falling back without hotwords", key)
+                    break
+            self._hotword_support = False
+            logger.warning("SenseVoice engine rejected hotword kwargs; falling back without hotwords")
+        status = "unsupported" if hotwords else "not_configured"
+        return engine(audio, **base_kwargs), status
 
     @staticmethod
     def _sanitize_transcript_text(text: str) -> str:
@@ -155,10 +207,19 @@ class SttService:
     def _resample_to_16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
         if sample_rate == 16000 or sample_rate <= 0:
             return audio
-        target_len = max(1, int(len(audio) * 16000 / sample_rate))
-        x_old = np.linspace(0.0, 1.0, len(audio), dtype=np.float64)
-        x_new = np.linspace(0.0, 1.0, target_len, dtype=np.float64)
-        return np.interp(x_new, x_old, audio.astype(np.float64)).astype(np.float32)
+        try:
+            from scipy.signal import resample_poly
+
+            divisor = math.gcd(int(sample_rate), 16000)
+            up = 16000 // divisor
+            down = int(sample_rate) // divisor
+            resampled = resample_poly(audio.astype(np.float32), up, down)
+            return np.asarray(resampled, dtype=np.float32)
+        except Exception:
+            target_len = max(1, int(len(audio) * 16000 / sample_rate))
+            x_old = np.linspace(0.0, 1.0, len(audio), dtype=np.float64)
+            x_new = np.linspace(0.0, 1.0, target_len, dtype=np.float64)
+            return np.interp(x_new, x_old, audio.astype(np.float64)).astype(np.float32)
 
     @staticmethod
     def _estimate_duration_ms(audio_bytes: bytes) -> int:
