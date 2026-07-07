@@ -55,6 +55,7 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 Set-Location $ProjectRoot
 
 $script:Layer3ExitCode = 0
+$script:L3SourceChild = $null
 
 function Select-Layer3RunMode {
     param([string]$RequestedMode)
@@ -118,14 +119,15 @@ function Ensure-TauriJsonNoBom {
 function Wait-Layer3PauseIfNeeded {
     if ($NoPause) { return }
     if ($env:CI -eq "true") { return }
-    if ($env:JACHIN_PAUSE_ON_EXIT -eq "0") { return }
+    # 默认不阻塞。仅当显式设置 JACHIN_PAUSE_ON_EXIT=1 时才等待回车。
+    if ($env:JACHIN_PAUSE_ON_EXIT -ne "1") { return }
     $code = if ($script:Layer3ExitCode -ne 0) { $script:Layer3ExitCode } else { $LASTEXITCODE }
-    if ($env:JACHIN_PAUSE_ON_EXIT -eq "1" -or ($code -ne 0 -and $null -ne $code)) {
-        if ($code -ne 0) {
-            Write-Host "[Layer3] 异常退出，代码: $code" -ForegroundColor Red
-        }
-        Read-Host "按 Enter 关闭此窗口"
+    # Ctrl+C / 用户中断（130 或 Windows STATUS_CONTROL_C_EXIT）不应被当成“卡住需回车”。
+    if ($null -ne $code -and $code -in @(1, 130, 0xC000013A, 3221225786, -1073741510)) { return }
+    if ($code -ne 0 -and $null -ne $code) {
+        Write-Host "[Layer3] 异常退出，代码: $code" -ForegroundColor Red
     }
+    Read-Host "按 Enter 关闭此窗口"
 }
 
 # 尽量让传统 conhost 用 UTF-8 代码页输出中文（Windows Terminal 通常已 OK）
@@ -726,10 +728,13 @@ try {
                         $evs.Remove("JACHIN_BUILD_WITH_BUSINESS_PACKAGES")
                     }
                     $proc = [System.Diagnostics.Process]::Start($psi)
-                    if ($null -ne $proc) { [void]$proc.Id }
+                    if ($null -ne $proc) {
+                        $script:L3SourceChild = $proc
+                        [void]$proc.Id
+                    }
                 } catch {
                     Write-Host "[Layer3] ProcessStartInfo 启动失败，回退 Start-Process: $_" -ForegroundColor Yellow
-                    Start-Process -FilePath $pyExe -WorkingDirectory $ProjectRoot -ArgumentList $argList -NoNewWindow
+                    $script:L3SourceChild = Start-Process -FilePath $pyExe -WorkingDirectory $ProjectRoot -ArgumentList $argList -NoNewWindow -PassThru
                 }
             }
             Start-Sleep -Seconds 2
@@ -813,7 +818,7 @@ try {
                 Write-Host "[$UtcNow] Mode: L3 + npm share this console (output interleaved)" -ForegroundColor Yellow
             }
         }
-        Write-Host "[$UtcNow] Ctrl+C usually stops npm first; L3 may keep running (use kill_l3_processes.ps1)" -ForegroundColor Gray
+        Write-Host "[$UtcNow] Ctrl+C 会中断当前控制台；下次启动会自动清理 L3/英语背词服务残留，也可手动执行 scripts\\kill_l3_processes.ps1" -ForegroundColor Gray
         Write-Host ""
 
         Write-Host "[$UtcNow] Skills 为空可运行: .\scripts\diagnose-skill-sync.ps1" -ForegroundColor Gray
@@ -870,5 +875,24 @@ try {
     $script:Layer3ExitCode = 1
     exit 1
 } finally {
+    # 同窗模式下 Ctrl+C 常先打断 npm；这里兜底回收残留的 python -m l3_node 子进程，避免“界面卡住无提示符”。
+    if ($script:L3SourceChild) {
+        try {
+            if (-not $script:L3SourceChild.HasExited) {
+                Stop-Process -Id $script:L3SourceChild.Id -Force -ErrorAction SilentlyContinue
+                Write-Host "[Layer3] 已结束残留 L3 子进程 (pid=$($script:L3SourceChild.Id))" -ForegroundColor Gray
+            }
+        } catch { }
+        $script:L3SourceChild = $null
+    }
+    if ($SelectedRunMode -eq "dev" -and -not $SourceOnly) {
+        try {
+            Write-Host "[Layer3] 退出清理: 桌面/L3/JVS/英语背词/Vite 残留..." -ForegroundColor Gray
+            & (Join-Path $ScriptDir "kill_l3_processes.ps1") -NoPause -AlsoKillDesktopDev
+            [void](Stop-TcpPortListener -Port 31421)
+        } catch {
+            Write-Host "[Layer3] 退出清理跳过: $_" -ForegroundColor DarkGray
+        }
+    }
     Wait-Layer3PauseIfNeeded
 }

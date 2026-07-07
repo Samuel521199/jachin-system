@@ -8,6 +8,18 @@ try { chcp 65001 | Out-Null } catch {}
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+function Test-IsUserInterruptExitCode {
+    param([int]$Code)
+    return $Code -in @(1, 130, 0xC000013A, 3221225786, -1073741510)
+}
+
+function ShouldPauseOnExit {
+    param([int]$Code)
+    if ($env:JACHIN_PAUSE_ON_EXIT -ne "1") { return $false }
+    if (Test-IsUserInterruptExitCode -Code $Code) { return $false }
+    return $true
+}
+
 function Get-L3Health {
     param([int[]]$Ports = @(18991, 18990, 18992, 18993, 18994))
     foreach ($port in $Ports) {
@@ -159,7 +171,7 @@ if ($hasPython -and (Test-Path (Join-Path $appRoot "l3_node"))) {
             Write-Host "  4) 侧车版本过旧 → 重新 build_l3_sidecar 并打包" -ForegroundColor Yellow
             Show-L3LogTail -LogPath $logPath
         }
-        if ($Host.Name -eq "ConsoleHost") {
+        if ($Host.Name -eq "ConsoleHost" -and (ShouldPauseOnExit -Code $code)) {
             Read-Host "按 Enter 关闭此窗口"
         }
     } finally {

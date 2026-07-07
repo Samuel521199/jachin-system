@@ -11,6 +11,7 @@ commands.allow = [
   "companion_set_dock_position",
   "control_device",
   "english_vocab_lookup",
+  "english_vocab_warmup",
   "english_vocab_prefetch_sentence",
   "english_vocab_state_get",
   "english_vocab_state_set_book",

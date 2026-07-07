@@ -1258,6 +1258,7 @@ fn shutdown_application(app: &tauri::AppHandle) {
     if let Some(jvs) = app.try_state::<std::sync::Arc<jvs::process_manager::JvsHandle>>() {
         jvs.stop();
     }
+    commands::english_vocab::shutdown_english_vocab_service();
     app.exit(0);
 }
 
@@ -1487,6 +1488,7 @@ fn main() {
             commands::capability_install::capability_install_set_enabled,
             commands::capability_install::capability_install_uninstall,
             commands::english_vocab::english_vocab_lookup,
+            commands::english_vocab::english_vocab_warmup,
             commands::english_vocab::english_vocab_prefetch_sentence,
             commands::english_vocab::english_vocab_state_get,
             commands::english_vocab::english_vocab_state_set_book,
@@ -2342,6 +2344,7 @@ async fn l3_http_health_ready() -> Result<(), String> {
 }
 
 async fn warmup_english_vocab_first_card() -> Result<(), String> {
+    let _ = commands::english_vocab::english_vocab_warmup();
     for word in ["bread", "breakfast", "morning", "lunch"] {
         let input = commands::english_vocab::EnglishVocabLookupInput {
             word: word.to_string(),

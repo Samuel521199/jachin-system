@@ -4,6 +4,7 @@ use directories::BaseDirs;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -182,6 +183,24 @@ pub fn write_jachin_shared_l3_debug(category: &str, message: &str) {
 static L3_FOR_CTRLC: OnceLock<Arc<L3Handle>> = OnceLock::new();
 static JVS_FOR_CTRLC: OnceLock<Arc<crate::jvs::process_manager::JvsHandle>> = OnceLock::new();
 static CTRLC_HANDLER: Once = Once::new();
+static CTRLC_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn ExitProcess(u_exit_code: u32) -> !;
+}
+
+fn force_process_exit(code: i32) -> ! {
+    #[cfg(windows)]
+    unsafe {
+        ExitProcess(code as u32);
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::exit(code);
+    }
+}
 
 /// 持有 L3 子进程句柄，Drop 时 kill 避免僵尸进程
 pub struct L3Handle(pub Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
@@ -220,6 +239,9 @@ pub fn register_ctrlc_kill(handle: &Arc<L3Handle>) {
 fn install_ctrlc_shutdown_handler() {
     CTRLC_HANDLER.call_once(|| {
         let _ = ctrlc::set_handler(move || {
+            if CTRLC_SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
+                force_process_exit(0);
+            }
             if let Some(l3) = L3_FOR_CTRLC.get() {
                 l3.kill();
                 eprintln!("[L3] Ctrl+C 已结束 L3 子进程，端口已释放");
@@ -228,7 +250,8 @@ fn install_ctrlc_shutdown_handler() {
                 jvs.stop();
                 eprintln!("[JVS] Ctrl+C 已结束语音服务子进程");
             }
-            std::process::exit(0);
+            crate::commands::english_vocab::shutdown_english_vocab_service();
+            force_process_exit(0);
         });
     });
 }

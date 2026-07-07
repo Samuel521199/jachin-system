@@ -88,8 +88,25 @@ def _load(direction: str):
     target = spm.SentencePieceProcessor()
     source.load(str(base / "source.spm"))
     target.load(str(base / "target.spm"))
-    translator = ctranslate2.Translator(str(base), device="cpu")
-    return source, target, translator
+    requested_device = (os.environ.get("JACHIN_LOCAL_TRANSLATE_DEVICE") or "cpu").strip().lower()
+    compute_type = (os.environ.get("JACHIN_LOCAL_TRANSLATE_COMPUTE_TYPE") or "default").strip()
+    device = requested_device
+    if requested_device == "auto":
+        try:
+            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        except Exception:
+            device = "cpu"
+    try:
+        kwargs: dict[str, Any] = {"device": device}
+        if compute_type and compute_type != "default":
+            kwargs["compute_type"] = compute_type
+        translator = ctranslate2.Translator(str(base), **kwargs)
+        return source, target, translator, device, kwargs.get("compute_type", "default")
+    except Exception:
+        if device == "cpu":
+            raise
+        translator = ctranslate2.Translator(str(base), device="cpu")
+        return source, target, translator, "cpu", "default"
 
 
 def local_translate_model_status() -> dict[str, Any]:
@@ -109,8 +126,8 @@ def local_translate_warmup(direction: str = "all") -> dict[str, Any]:
     directions = list(MODEL_IDS) if direction == "all" else [_direction("", direction)]
     warmed = []
     for item in directions:
-        _load(item)
-        warmed.append(item)
+        _source, _target, _translator, device, compute_type = _load(item)
+        warmed.append({"direction": item, "device": device, "compute_type": compute_type})
     return {"ok": True, "warmed": warmed}
 
 
@@ -119,7 +136,7 @@ def local_translate_text(text: str, direction: str = "auto") -> dict[str, Any]:
     if not clean:
         return {"ok": False, "error": "text is empty"}
     resolved = _direction(clean, direction)
-    source_sp, target_sp, translator = _load(resolved)
+    source_sp, target_sp, translator, device, compute_type = _load(resolved)
     tokens = source_sp.encode(clean, out_type=str) + ["</s>"]
     result = translator.translate_batch([tokens], beam_size=4, max_decoding_length=160)
     pieces = result[0].hypotheses[0]
@@ -130,6 +147,8 @@ def local_translate_text(text: str, direction: str = "auto") -> dict[str, Any]:
         "source": clean,
         "translation": translated,
         "model_id": MODEL_IDS[resolved],
+        "device": device,
+        "compute_type": compute_type,
     }
 
 
@@ -143,7 +162,7 @@ def local_translate_batch_texts(texts: list[str], direction: str = "auto") -> di
 
     seed = next((item for item in clean_items if item), "")
     resolved = _direction(seed, direction)
-    source_sp, target_sp, translator = _load(resolved)
+    source_sp, target_sp, translator, device, compute_type = _load(resolved)
 
     encoded_batch: list[list[str]] = []
     for item in clean_items:
@@ -161,4 +180,6 @@ def local_translate_batch_texts(texts: list[str], direction: str = "auto") -> di
         "direction": resolved,
         "translations": translations,
         "model_id": MODEL_IDS[resolved],
+        "device": device,
+        "compute_type": compute_type,
     }

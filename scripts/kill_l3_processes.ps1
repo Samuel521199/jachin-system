@@ -19,22 +19,57 @@ Write-Host ""
 Write-Host '[L3] 清理残留 L3 进程与端口...' -ForegroundColor Cyan
 Write-Host ""
 
+function Stop-JachinProcessTree {
+    param([int]$TargetProcessId)
+    if (-not $TargetProcessId -or $TargetProcessId -le 0) { return }
+    try {
+        Stop-Process -Id $TargetProcessId -Force -ErrorAction SilentlyContinue
+        for ($i = 0; $i -lt 20; $i++) {
+            $proc = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+            if (-not $proc -or $proc.HasExited) { break }
+            Start-Sleep -Milliseconds 100
+        }
+    } catch { }
+    try {
+        $stillAlive = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+        if ($stillAlive -and $stillAlive.HasExited) { $stillAlive = $null }
+        $stillCim = Get-CimInstance Win32_Process -Filter "ProcessId = $TargetProcessId" -ErrorAction SilentlyContinue
+        if ($stillCim) {
+            try {
+                Invoke-CimMethod -InputObject $stillCim -MethodName Terminate -ErrorAction SilentlyContinue *> $null
+                Start-Sleep -Milliseconds 200
+            } catch { }
+        }
+        if ($stillAlive -or $stillCim) {
+            & taskkill /F /T /PID $TargetProcessId *> $null
+            for ($i = 0; $i -lt 20; $i++) {
+                $proc = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+                if (-not $proc -or $proc.HasExited) { break }
+                Start-Sleep -Milliseconds 100
+            }
+        }
+    } catch {
+        & taskkill /F /T /PID $TargetProcessId *> $null
+    }
+}
+
 function Stop-TcpPortListener {
     param([int]$Port)
     $connections = @(netstat -ano 2>$null | Select-String ":$Port\s" | Select-String "LISTENING")
     if (-not $connections.Count) { return $false }
     $processIds = $connections | ForEach-Object { $_.ToString().Split()[-1] } | Select-Object -Unique
     foreach ($processId in $processIds) {
-        try {
-            Stop-Process -Id $processId -Force -ErrorAction Stop
-        } catch {
-            Start-Process -FilePath "taskkill" -ArgumentList "/F", "/PID", $processId -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
+        $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if ($proc -and -not $proc.HasExited) {
+            Stop-JachinProcessTree -TargetProcessId ([int]$processId)
         }
     }
     return $true
 }
 
 # 1. 结束 L3 相关进程（python l3_node + l3_node-*.exe Sidecar）
+#    同时结束由桌面端拉起的英语背词常驻服务。它不是 l3_node，
+#    但会占用 18987；Ctrl+C 关闭桌面/L3 后若残留，会导致下次启动复用旧服务或卡住。
 $killed = 0
 try {
     $allProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
@@ -42,9 +77,11 @@ try {
         $name = $p.Name
         $cmd = if ($p.CommandLine) { $p.CommandLine } else { "" }
         $isL3 = ($name -eq "python.exe" -and $cmd -match "l3_node") -or ($name -match "^l3_node-.*\.exe$")
-        if ($isL3) {
+        $isEnglishVocabService = ($name -eq "python.exe" -and $cmd -match "english_vocab_service\.py")
+        $shouldStop = $isL3 -or $isEnglishVocabService
+        if ($shouldStop) {
             Write-Host "  结束: $name (PID $($p.ProcessId))" -ForegroundColor Yellow
-            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            Stop-JachinProcessTree -TargetProcessId ([int]$p.ProcessId)
             $killed++
         }
     }
@@ -52,7 +89,7 @@ try {
     Write-Host "  查询进程时出错: $_" -ForegroundColor Red
 }
 if ($killed -eq 0) {
-    Write-Host "  未发现 L3 进程" -ForegroundColor Gray
+    Write-Host "  未发现 L3/英语背词服务进程" -ForegroundColor Gray
 }
 
 # 2. 查找并释放 18981-18999 中被占用的端口

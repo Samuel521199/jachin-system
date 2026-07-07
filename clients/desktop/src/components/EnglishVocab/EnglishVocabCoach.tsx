@@ -29,9 +29,9 @@ type LookupResult = {
 
 type ProgressStore = Record<string, WordProgress>;
 
-const LOOKUP_CACHE_KEY = "jachin.english_vocab.lookup_cache.v6";
-const REMOTE_LOOKUP_UI_TIMEOUT_MS = 12000;
-const TOKEN_LOOKUP_UI_TIMEOUT_MS = 12000;
+const LOOKUP_CACHE_KEY = "jachin.english_vocab.lookup_cache.v18";
+const REMOTE_LOOKUP_UI_TIMEOUT_MS = 10000;
+const TOKEN_LOOKUP_UI_TIMEOUT_MS = 6000;
 const pendingLookups = new Map<string, Promise<LookupResult>>();
 
 type VocabState = {
@@ -55,6 +55,13 @@ type LocalDefinition = {
 };
 
 type ExamplePair = {
+  example: string;
+  example_cn: string;
+};
+
+type ExampleVariant = {
+  id: string;
+  label: string;
   example: string;
   example_cn: string;
 };
@@ -100,6 +107,9 @@ const extraLocalDefinitions: Record<string, LocalDefinition> = {
   friday: { meaning_cn: "\u661f\u671f\u4e94", part_of_speech: "n." },
   groceries: { meaning_cn: "\u98df\u54c1\u6742\u8d27\uff1bgrocery \u7684\u590d\u6570", part_of_speech: "n." },
   grocery: { meaning_cn: "\u98df\u54c1\u6742\u8d27\uff1b\u6742\u8d27\u5e97", part_of_speech: "n." },
+  grab: { meaning_cn: "\u6293\u4f4f\uff1b\u62ff\u8d77\uff1b\u8d76\u4e0a\uff1b\u62a2\u5230", part_of_speech: "v." },
+  grabbed: { meaning_cn: "grab \u7684\u8fc7\u53bb\u5f0f\uff1b\u6293\u4f4f\uff1b\u62ff\u8d77\uff1b\u8d76\u4e0a", part_of_speech: "v." },
+  grabbing: { meaning_cn: "grab \u7684\u73b0\u5728\u5206\u8bcd\uff1b\u6293\u4f4f\uff1b\u62ff\u8d77", part_of_speech: "v." },
   have: { meaning_cn: "\u6709\uff1b\u5403\uff1b\u8fdb\u884c\uff1b\u7ecf\u5386", part_of_speech: "v." },
   he: { meaning_cn: "\u4ed6", part_of_speech: "pron." },
   help: { meaning_cn: "\u5e2e\u52a9\uff1b\u63f4\u52a9\uff1b\u6709\u5e2e\u52a9", part_of_speech: "v./n." },
@@ -250,6 +260,9 @@ const irregularVariants: Record<string, { base: string; relation: string }> = {
   gave: { base: "give", relation: "\u8fc7\u53bb\u5f0f" },
   given: { base: "give", relation: "\u8fc7\u53bb\u5206\u8bcd" },
   gone: { base: "go", relation: "\u8fc7\u53bb\u5206\u8bcd" },
+  grabbed: { base: "grab", relation: "\u8fc7\u53bb\u5f0f/\u8fc7\u53bb\u5206\u8bcd" },
+  grabbing: { base: "grab", relation: "\u73b0\u5728\u5206\u8bcd" },
+  grabs: { base: "grab", relation: "\u7b2c\u4e09\u4eba\u79f0\u5355\u6570" },
   went: { base: "go", relation: "\u8fc7\u53bb\u5f0f" },
   grown: { base: "grow", relation: "\u8fc7\u53bb\u5206\u8bcd" },
   grew: { base: "grow", relation: "\u8fc7\u53bb\u5f0f" },
@@ -358,9 +371,15 @@ const UI = {
   fuzzyFeedback: "\u5df2\u6807\u8bb0\u6a21\u7cca\uff1a1 \u5c0f\u65f6\u540e\u4f1a\u4f18\u5148\u590d\u4e60\u3002",
   unknownFeedback: "\u5df2\u6807\u8bb0\u4e0d\u8ba4\u8bc6\uff1a\u7a0d\u540e\u4f1a\u66f4\u5feb\u51fa\u73b0\u3002",
   loading: "\u67e5\u8be2\u4e2d...",
+  lookupLocal: "正在查本地词典...",
+  lookupLocalHit: "已命中本地词典",
+  lookupBackground: "正在补全释义和例句...",
+  lookupBackgroundFailed: "补全失败，已显示可用释义",
+  lookupDone: "查询完成",
   exampleLoading: "\u6b63\u5728\u51c6\u5907\u4f8b\u53e5...",
+  examplePending: "\u4f8b\u53e5\u6b63\u5728\u751f\u6210\uff0c\u7a0d\u540e\u4f1a\u81ea\u52a8\u5237\u65b0\u3002",
   retry: "\u91cd\u8bd5",
-  lookupUnavailable: "\u672c\u5730\u8bcd\u5178\u6682\u672a\u547d\u4e2d\uff0c\u8bf7\u70b9\u51fb\u91cd\u8bd5\u6216\u5207\u6362\u4e0b\u4e00\u4e2a\u5355\u8bcd\u3002",
+  lookupUnavailable: "\u91ca\u4e49\u67e5\u8be2\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u70b9\u51fb\u91cd\u8bd5\u3002",
   prefetching: "\u8bcd\u4e49\u9884\u53d6\u4e2d",
   prefetchReady: "\u8bcd\u4e49\u5df2\u5c31\u7eea",
   prefetchError: "\u9884\u53d6\u5f02\u5e38",
@@ -368,8 +387,20 @@ const UI = {
   exampleTitle: "\u82f1\u6587\u4f8b\u53e5",
   meaningTitle: "\u91ca\u4e49",
   sentenceMeaningTitle: "\u4f8b\u53e5\u4e2d\u6587",
-  fallbackMeaning: "\u672c\u5730\u8bcd\u5178\u6682\u672a\u6536\u5f55\u8be5\u8bcd\u3002",
+  fallbackMeaning: "\u8bcd\u4e49\u6b63\u5728\u51c6\u5907\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002",
 };
+
+function userFacingMeaning(meaning?: string | null) {
+  const text = (meaning ?? "").trim();
+  if (!text) return "";
+  if (text.includes("\u672c\u5730\u8bcd\u5178\u6682\u672a\u6536\u5f55") || text.includes("\u672c\u5730\u8bcd\u5178\u6682\u672a\u547d\u4e2d")) {
+    return UI.fallbackMeaning;
+  }
+  if (text.includes("\u6a21\u578b\u6b63\u5728\u8865\u5168") || text.includes("\u8865\u5168\u8be5\u8bcd\u91ca\u4e49")) {
+    return UI.fallbackMeaning;
+  }
+  return text;
+}
 
 function getBookById(id?: string | null): EnglishWordBook {
   return englishWordBooks.find((book) => book.id === id) ?? englishWordBooks[0];
@@ -405,6 +436,16 @@ function feedbackFor(rating: Rating) {
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error || "unknown error");
+}
+
+function lookupSourceLabel(result?: LookupResult | null) {
+  const source = (result?.source || "").toLowerCase();
+  if (!source) return UI.lookupDone;
+  if (source.includes("cache")) return "查询完成：缓存命中";
+  if (source.includes("dictionary") || source.includes("ecdict")) return "查询完成：本地词典";
+  if (source.includes("dashscope")) return "查询完成：智能补全";
+  if (source.includes("fallback")) return "已显示可用释义，后台会继续补全";
+  return UI.lookupDone;
 }
 
 function cleanToken(token: string) {
@@ -480,7 +521,51 @@ function isPlaceholderExample(example?: string | null) {
     /\bremember the word\b/.test(text) ||
     /\bmemorize the word\b/.test(text) ||
     text.includes("came up in a normal conversation") ||
-    text.includes("useful in everyday conversation")
+    text.includes("we met near the") ||
+    text.includes("useful in everyday conversation") ||
+    text.includes("while preparing for the day") ||
+    text.includes("during their weekend errands") ||
+    text.includes("at home last night") ||
+    text.includes("while making a simple plan") ||
+    text.includes("while preparing dinner") ||
+    text.includes("clear example for") ||
+    text.includes("people discussed the") ||
+    text.includes("the article mentioned the") ||
+    text.includes("we included the") ||
+    text.includes("plays an important role in daily life") ||
+    text.includes("had a discount on") ||
+    text.includes("was on sale") ||
+    text.includes("on the kitchen table") ||
+    text.includes("before getting on the bus") ||
+    text.includes("packed the ") ||
+    text.startsWith("we should ") ||
+    text.startsWith("this option feels ") ||
+    text.includes("put the ") ||
+    text.includes("will be refreshed locally")
+  );
+}
+
+function isFallbackExampleSource(result?: Partial<Pick<LookupResult, "source" | "model">> | null) {
+  const source = (result?.source || "").trim().toLowerCase();
+  const model = (result?.model || "").trim().toLowerCase();
+  return (
+    source === "local_fallback" ||
+    source === "local_context_fallback" ||
+    source.includes("local_service_fallback") ||
+    source.includes("local_scene") ||
+    model.includes("local_scene_template") ||
+    model.includes("local_scene_templates")
+  );
+}
+
+function hasDisplayableExample(result?: LookupResult | null) {
+  return Boolean(
+    result &&
+      !isFallbackExampleSource(result) &&
+      result.example?.trim() &&
+      !isPlaceholderExample(result.example) &&
+      !isSemanticallyBadExample(result.example, result.word, result.meaning_cn) &&
+      result.example_cn?.trim(),
   );
 }
 
@@ -512,6 +597,8 @@ function readLookupCache(): Record<string, LookupResult> {
           !meaning.toLowerCase().includes("request failed") &&
           !meaning.includes("\u67e5\u8be2\u5931\u8d25") &&
           !isPlaceholderExample(item.example) &&
+          !isSemanticallyBadExample(item.example, item.word, item.meaning_cn) &&
+          !isFallbackExampleSource(item as Partial<LookupResult>) &&
           item.example_cn !== "\u5148\u7406\u89e3\u8fd9\u4e2a\u8bcd\u7684\u6838\u5fc3\u542b\u4e49\uff0c\u518d\u6839\u636e\u8bb0\u5fc6\u7a0b\u5ea6\u9009\u62e9\u3002" &&
           item.example_cn !== "\u8fd9\u4e2a\u8bcd\u53ef\u4ee5\u5148\u6309\u8bed\u5883\u8bb0\u5fc6\uff0c\u9047\u5230\u4f8b\u53e5\u65f6\u518d\u56de\u6765\u5de9\u56fa\u3002" &&
           item.source !== "local_fallback" &&
@@ -586,6 +673,10 @@ const curatedExamples: Record<string, ExamplePair> = {
   lunch: {
     example: "Let us have lunch near the office today.",
     example_cn: "\u6211\u4eec\u4eca\u5929\u5728\u529e\u516c\u5ba4\u9644\u8fd1\u5403\u5348\u9910\u5427\u3002",
+  },
+  office: {
+    example: "She left her laptop at the office.",
+    example_cn: "她把笔记本电脑落在办公室了。",
   },
   dinner: {
     example: "They cooked dinner together after work.",
@@ -773,20 +864,1032 @@ const curatedExamples: Record<string, ExamplePair> = {
   },
 };
 
+type SceneTemplate = {
+  id: string;
+  example: (word: string) => string;
+  example_cn: (meaning: string) => string;
+};
+
+type SceneTemplatePos = "noun" | "verb" | "adjective" | "other";
+
+type SemanticCategory =
+  | "transport"
+  | "place"
+  | "food"
+  | "portable_object"
+  | "work_item"
+  | "tech"
+  | "money"
+  | "person"
+  | "time"
+  | "abstract"
+  | "generic";
+
+const SEMANTIC_WORDS: Record<SemanticCategory, Set<string>> = {
+  transport: new Set(["airport", "bus", "car", "flight", "plane", "station", "subway", "taxi", "train"]),
+  place: new Set([
+    "bank",
+    "beach",
+    "building",
+    "campus",
+    "city",
+    "classroom",
+    "country",
+    "hotel",
+    "hospital",
+    "kitchen",
+    "lab",
+    "laboratory",
+    "library",
+    "market",
+    "museum",
+    "office",
+    "park",
+    "restaurant",
+    "river",
+    "road",
+    "room",
+    "school",
+    "store",
+    "street",
+    "village",
+  ]),
+  food: new Set([
+    "breakfast",
+    "bread",
+    "chicken",
+    "coffee",
+    "dinner",
+    "egg",
+    "fruit",
+    "lunch",
+    "meal",
+    "milk",
+    "oil",
+    "rice",
+    "tea",
+    "vegetable",
+    "water",
+  ]),
+  portable_object: new Set([
+    "bag",
+    "book",
+    "charger",
+    "computer",
+    "key",
+    "keys",
+    "laptop",
+    "medicine",
+    "package",
+    "phone",
+    "receipt",
+    "ticket",
+    "umbrella",
+    "wallet",
+  ]),
+  work_item: new Set([
+    "agenda",
+    "budget",
+    "deadline",
+    "document",
+    "feedback",
+    "invoice",
+    "meeting",
+    "message",
+    "milestone",
+    "plan",
+    "priority",
+    "project",
+    "proposal",
+    "report",
+    "schedule",
+    "task",
+    "workflow",
+  ]),
+  tech: new Set([
+    "algorithm",
+    "api",
+    "backend",
+    "cache",
+    "config",
+    "database",
+    "deployment",
+    "endpoint",
+    "frontend",
+    "latency",
+    "pipeline",
+    "repository",
+    "rollback",
+    "server",
+    "service",
+    "system",
+  ]),
+  money: new Set(["bill", "cash", "cost", "fee", "money", "payment", "price", "salary"]),
+  person: new Set(["doctor", "engineer", "friend", "manager", "neighbor", "teacher"]),
+  time: new Set(["afternoon", "evening", "friday", "morning", "night", "sunday", "weekend"]),
+  abstract: new Set(["choice", "conclusion", "discussion", "idea", "issue", "reason", "research", "risk", "weather"]),
+  generic: new Set(),
+};
+
+function inferSemanticCategory(word: string, meaningCn = "", bookId = ""): SemanticCategory {
+  const clean = cleanToken(word) || word.trim().toLowerCase();
+  for (const category of Object.keys(SEMANTIC_WORDS) as SemanticCategory[]) {
+    if (category !== "generic" && SEMANTIC_WORDS[category].has(clean)) return category;
+  }
+  const hint = `${meaningCn} ${bookId}`.toLowerCase();
+  if (bookId === "computer_science" || /api|cache|server|database|deployment|latency|software|system/.test(hint)) {
+    return "tech";
+  }
+  if (bookId === "workplace" || /meeting|project|report|budget|agenda|schedule|deadline/.test(hint)) {
+    return "work_item";
+  }
+  if (/[旅馆酒店客栈机场车站学校医院银行办公室公园餐厅商店市场图书馆教室城市村庄]/.test(meaningCn)) {
+    return "place";
+  }
+  if (/[早餐午餐晚餐面包鸡肉鸡蛋咖啡茶水米饭水果蔬菜食物餐]/.test(meaningCn)) {
+    return "food";
+  }
+  if (/[消息报告计划预算议程日程截止反馈项目任务文档发票]/.test(meaningCn)) {
+    return "work_item";
+  }
+  if (/[手机电脑书钥匙包票据收据雨伞钱包药]/.test(meaningCn)) {
+    return "portable_object";
+  }
+  if (/[早晨上午下午晚上周末星期夜晚]/.test(meaningCn)) {
+    return "time";
+  }
+  return "generic";
+}
+
+function isSemanticallyBadExample(example?: string | null, word?: string | null, meaningCn?: string | null) {
+  const cleanWord = cleanToken(word ?? "");
+  const text = (example ?? "").trim().toLowerCase();
+  if (!text || !cleanWord) return false;
+  const category = inferSemanticCategory(cleanWord, meaningCn ?? "");
+  const wordPattern = cleanWord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  if (
+    category === "place" &&
+    (new RegExp(`\\b(left|put|packed|grabbed|bought|cooked|ate|drank)\\b[^.?!]*\\b${wordPattern}\\b`).test(text) ||
+      new RegExp(`\\b${wordPattern}\\b[^.?!]*\\b(on|in) the kitchen table\\b`).test(text) ||
+      text.includes(`discount on ${cleanWord}`) ||
+      text.includes(`${cleanWord} was on sale`))
+  ) {
+    return true;
+  }
+
+  if (
+    category !== "food" &&
+    (new RegExp(`\\b(cooked|ate|drank|ordered)\\b[^.?!]*\\b${wordPattern}\\b`).test(text) ||
+      new RegExp(`\\b${wordPattern}\\b[^.?!]*\\b(after dinner|for breakfast)\\b`).test(text))
+  ) {
+    return true;
+  }
+
+  if (
+    category !== "portable_object" &&
+    new RegExp(`\\b(grabbed|packed|left|put)\\b[^.?!]*\\b${wordPattern}\\b[^.?!]*\\b(on the table|in the bag|before getting on the bus)\\b`).test(text)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function pickSemanticScene(clean: string, bookId: string, category: SemanticCategory, scenes: ExamplePair[]) {
+  if (!scenes.length) return null;
+  const history = readSceneTemplateHistory();
+  const recentSet = new Set(history.slice(-24));
+  const start = templateHash(`${bookId}:${clean}:${category}:semantic`) % scenes.length;
+  for (let offset = 0; offset < scenes.length; offset += 1) {
+    const idx = (start + offset) % scenes.length;
+    const key = `semantic:${category}:${idx}`;
+    if (!recentSet.has(key)) {
+      rememberSceneTemplate(key, history);
+      return scenes[idx];
+    }
+  }
+  const fallback = scenes[start];
+  rememberSceneTemplate(`semantic:${category}:${start}`, history);
+  return fallback;
+}
+
+function semanticExampleFor(word: string, book: EnglishWordBook, meaning: string, pos: SceneTemplatePos): ExamplePair | null {
+  if (pos !== "noun") return null;
+  const clean = cleanToken(word) || word.trim().toLowerCase();
+  const meaningHead = normalizeMeaningHead(meaning, clean);
+  const category = inferSemanticCategory(clean, meaningHead, book.id);
+
+  const specificScenes: Record<string, ExamplePair[]> = {
+    airport: [
+      { example: "We arrived at the airport before sunrise.", example_cn: "\u6211\u4eec\u5728\u65e5\u51fa\u524d\u5230\u8fbe\u4e86\u673a\u573a\u3002" },
+      { example: "The airport security line moved faster than expected.", example_cn: "\u673a\u573a\u5b89\u68c0\u961f\u4f0d\u6bd4\u9884\u60f3\u4e2d\u524d\u8fdb\u5f97\u66f4\u5feb\u3002" },
+      { example: "She checked the gate number at the airport.", example_cn: "\u5979\u5728\u673a\u573a\u67e5\u770b\u4e86\u767b\u673a\u53e3\u53f7\u7801\u3002" },
+      { example: "After the delay, families slept beside their bags at the airport.", example_cn: "\u822a\u73ed\u5ef6\u8bef\u540e\uff0c\u4e00\u4e9b\u5bb6\u5ead\u5728\u673a\u573a\u91cc\u9760\u7740\u884c\u674e\u7761\u7740\u4e86\u3002" },
+      { example: "Because the airport was busy, we printed our boarding passes at home.", example_cn: "\u56e0\u4e3a\u673a\u573a\u5f88\u5fd9\uff0c\u6211\u4eec\u5728\u5bb6\u5148\u6253\u5370\u4e86\u767b\u673a\u724c\u3002" },
+    ],
+    bus: [
+      { example: "The bus arrived just as it started to rain.", example_cn: "\u521a\u5f00\u59cb\u4e0b\u96e8\u65f6\uff0c\u516c\u4ea4\u8f66\u6b63\u597d\u5230\u4e86\u3002" },
+      { example: "I tapped my card when I got on the bus.", example_cn: "\u6211\u4e0a\u516c\u4ea4\u8f66\u65f6\u5237\u4e86\u5361\u3002" },
+      { example: "The last bus left ten minutes ago.", example_cn: "\u6700\u540e\u4e00\u73ed\u516c\u4ea4\u8f66\u5341\u5206\u949f\u524d\u5f00\u8d70\u4e86\u3002" },
+      { example: "A student gave up his seat when the bus became crowded.", example_cn: "\u516c\u4ea4\u8f66\u53d8\u5f97\u62e5\u6324\u65f6\uff0c\u4e00\u540d\u5b66\u751f\u8ba9\u51fa\u4e86\u5ea7\u4f4d\u3002" },
+      { example: "If the bus is late again, I will walk to the office.", example_cn: "\u5982\u679c\u516c\u4ea4\u8f66\u53c8\u665a\u70b9\uff0c\u6211\u5c31\u8d70\u8def\u53bb\u529e\u516c\u5ba4\u3002" },
+    ],
+    hotel: [
+      { example: "We stayed at the hotel during the trip.", example_cn: "\u6211\u4eec\u65c5\u884c\u65f6\u4f4f\u5728\u8fd9\u5bb6\u65c5\u9986\u3002" },
+      { example: "The hotel receptionist gave us two room keys.", example_cn: "\u9152\u5e97\u524d\u53f0\u7ed9\u4e86\u6211\u4eec\u4e24\u5f20\u623f\u5361\u3002" },
+      { example: "Their hotel room overlooked the river.", example_cn: "\u4ed6\u4eec\u7684\u9152\u5e97\u623f\u95f4\u53ef\u4ee5\u4fef\u77b0\u6cb3\u9762\u3002" },
+      { example: "The hotel lobby smelled of coffee and fresh flowers.", example_cn: "\u9152\u5e97\u5927\u5802\u91cc\u6709\u5496\u5561\u548c\u9c9c\u82b1\u7684\u6c14\u5473\u3002" },
+      { example: "Although the hotel was small, the staff remembered every guest's name.", example_cn: "\u867d\u7136\u8fd9\u5bb6\u9152\u5e97\u4e0d\u5927\uff0c\u5458\u5de5\u5374\u8bb0\u5f97\u6bcf\u4f4d\u5ba2\u4eba\u7684\u540d\u5b57\u3002" },
+    ],
+    station: [
+      { example: "The station platform was crowded during rush hour.", example_cn: "\u9ad8\u5cf0\u671f\u8f66\u7ad9\u7ad9\u53f0\u5f88\u62e5\u6324\u3002" },
+      { example: "An announcement at the station changed our train time.", example_cn: "\u8f66\u7ad9\u7684\u4e00\u6761\u5e7f\u64ad\u6539\u4e86\u6211\u4eec\u7684\u5217\u8f66\u65f6\u95f4\u3002" },
+      { example: "She waited by the station entrance with her suitcase.", example_cn: "\u5979\u62d6\u7740\u884c\u674e\u7bb1\u5728\u8f66\u7ad9\u5165\u53e3\u7b49\u5019\u3002" },
+      { example: "The station clock was five minutes ahead of my phone.", example_cn: "\u8f66\u7ad9\u65f6\u949f\u6bd4\u6211\u7684\u624b\u673a\u5feb\u4e86\u4e94\u5206\u949f\u3002" },
+      { example: "When the storm ended, people returned to the station quietly.", example_cn: "\u66b4\u98ce\u96e8\u7ed3\u675f\u540e\uff0c\u4eba\u4eec\u5b89\u9759\u5730\u56de\u5230\u8f66\u7ad9\u3002" },
+    ],
+  };
+  const scenes = specificScenes[clean];
+  if (scenes?.length) {
+    return pickSemanticScene(clean, book.id, category, scenes);
+  }
+
+  const categoryScenes: Partial<Record<SemanticCategory, ExamplePair[]>> = {
+    transport: [
+      { example: `The ${clean} arrived earlier than the timetable showed.`, example_cn: `${meaningHead}\u6bd4\u65f6\u523b\u8868\u4e0a\u663e\u793a\u7684\u65f6\u95f4\u66f4\u65e9\u5230\u4e86\u3002` },
+      { example: `She checked the ${clean} schedule before leaving home.`, example_cn: `\u5979\u51fa\u95e8\u524d\u67e5\u4e86${meaningHead}\u7684\u65f6\u523b\u8868\u3002` },
+      { example: `Heavy rain delayed the ${clean} for several minutes.`, example_cn: `\u5927\u96e8\u8ba9${meaningHead}\u5ef6\u8bef\u4e86\u51e0\u5206\u949f\u3002` },
+      { example: `I changed my route because the ${clean} was too crowded.`, example_cn: `\u56e0\u4e3a${meaningHead}\u592a\u62e5\u6324\uff0c\u6211\u6539\u4e86\u8def\u7ebf\u3002` },
+      { example: `By the time we reached the ${clean}, the queue had already doubled.`, example_cn: `\u6211\u4eec\u5230\u8fbe${meaningHead}\u65f6\uff0c\u961f\u4f0d\u5df2\u7ecf\u53d8\u6210\u4e86\u4e24\u500d\u957f\u3002` },
+    ],
+    place: [
+      { example: `The ${clean} opened early on Monday morning.`, example_cn: `${meaningHead}\u5468\u4e00\u65e9\u4e0a\u5f88\u65e9\u5c31\u5f00\u95e8\u4e86\u3002` },
+      { example: `We stopped by the ${clean} on our way home.`, example_cn: `\u6211\u4eec\u56de\u5bb6\u8def\u4e0a\u987a\u8def\u53bb\u4e86${meaningHead}\u3002` },
+      { example: `The ${clean} was quiet before the evening crowd arrived.`, example_cn: `\u665a\u9ad8\u5cf0\u4eba\u7fa4\u5230\u6765\u524d\uff0c${meaningHead}\u5f88\u5b89\u9759\u3002` },
+      { example: `A handwritten sign on the ${clean} door explained the new hours.`, example_cn: `${meaningHead}\u95e8\u4e0a\u4e00\u5f20\u624b\u5199\u544a\u793a\u8bf4\u660e\u4e86\u65b0\u8425\u4e1a\u65f6\u95f4\u3002` },
+      { example: `Although the ${clean} looked small from outside, it was bright and busy inside.`, example_cn: `\u867d\u7136${meaningHead}\u4ece\u5916\u9762\u770b\u4e0d\u5927\uff0c\u91cc\u9762\u5374\u660e\u4eae\u53c8\u5fd9\u788c\u3002` },
+    ],
+    food: [
+      { example: `She bought ${clean} from a small shop nearby.`, example_cn: `\u5979\u5728\u9644\u8fd1\u7684\u5c0f\u5e97\u4e70\u4e86${meaningHead}\u3002` },
+      { example: `The fresh ${clean} smelled warm from the oven.`, example_cn: `\u65b0\u9c9c\u7684${meaningHead}\u5e26\u7740\u521a\u51fa\u7089\u7684\u70ed\u9999\u3002` },
+      { example: `He saved some ${clean} for tomorrow's breakfast.`, example_cn: `\u4ed6\u7559\u4e86\u4e00\u4e9b${meaningHead}\u7ed9\u660e\u5929\u65e9\u9910\u3002` },
+      { example: `The children shared the ${clean} before the picnic began.`, example_cn: `\u91ce\u9910\u5f00\u59cb\u524d\uff0c\u5b69\u5b50\u4eec\u5206\u4eab\u4e86${meaningHead}\u3002` },
+      { example: `Because the ${clean} was still hot, she wrapped it in a napkin.`, example_cn: `\u56e0\u4e3a${meaningHead}\u8fd8\u5f88\u70ed\uff0c\u5979\u7528\u9910\u5dfe\u628a\u5b83\u5305\u4e86\u8d77\u6765\u3002` },
+    ],
+    portable_object: [
+      { example: `I put the ${clean} beside my laptop.`, example_cn: `\u6211\u628a${meaningHead}\u653e\u5728\u7b14\u8bb0\u672c\u7535\u8111\u65c1\u8fb9\u3002` },
+      { example: `She found the ${clean} at the bottom of her bag.`, example_cn: `\u5979\u5728\u5305\u5e95\u627e\u5230\u4e86${meaningHead}\u3002` },
+      { example: `Please bring the ${clean} to the front desk.`, example_cn: `\u8bf7\u628a${meaningHead}\u5e26\u5230\u524d\u53f0\u3002` },
+    ],
+    work_item: [
+      { example: `The team reviewed the ${clean} before the meeting.`, example_cn: `\u56e2\u961f\u5728\u4f1a\u524d\u590d\u76d8\u4e86${meaningHead}\u3002` },
+      { example: `She updated the ${clean} after the client call.`, example_cn: `\u5979\u5728\u5ba2\u6237\u7535\u8bdd\u540e\u66f4\u65b0\u4e86${meaningHead}\u3002` },
+      { example: `The manager highlighted the ${clean} in the weekly report.`, example_cn: `\u7ecf\u7406\u5728\u5468\u62a5\u4e2d\u5f3a\u8c03\u4e86${meaningHead}\u3002` },
+      { example: `Before anyone made a decision, the ${clean} was pinned to the screen.`, example_cn: `\u5728\u4efb\u4f55\u4eba\u505a\u51b3\u5b9a\u4e4b\u524d\uff0c${meaningHead}\u88ab\u56fa\u5b9a\u5728\u5c4f\u5e55\u4e0a\u3002` },
+      { example: `Although the ${clean} looked simple, it changed the team's priorities.`, example_cn: `\u867d\u7136${meaningHead}\u770b\u8d77\u6765\u7b80\u5355\uff0c\u5b83\u5374\u6539\u53d8\u4e86\u56e2\u961f\u7684\u4f18\u5148\u7ea7\u3002` },
+    ],
+    tech: [
+      { example: `The engineer checked the ${clean} before deployment.`, example_cn: `\u5de5\u7a0b\u5e08\u5728\u90e8\u7f72\u524d\u68c0\u67e5\u4e86${meaningHead}\u3002` },
+      { example: `The logs showed a problem with the ${clean}.`, example_cn: `\u65e5\u5fd7\u663e\u793a${meaningHead}\u51fa\u73b0\u4e86\u95ee\u9898\u3002` },
+      { example: `They optimized the ${clean} before the release.`, example_cn: `\u4ed6\u4eec\u5728\u53d1\u5e03\u524d\u4f18\u5316\u4e86${meaningHead}\u3002` },
+      { example: `Once the ${clean} warmed up, the dashboard loaded almost instantly.`, example_cn: `${meaningHead}\u9884\u70ed\u5b8c\u6210\u540e\uff0c\u4eea\u8868\u76d8\u51e0\u4e4e\u7acb\u523b\u52a0\u8f7d\u5b8c\u6210\u3002` },
+      { example: `If the ${clean} fails again, the worker will switch to a backup path.`, example_cn: `\u5982\u679c${meaningHead}\u518d\u6b21\u5931\u8d25\uff0cworker \u4f1a\u5207\u5230\u5907\u7528\u8def\u5f84\u3002` },
+    ],
+    time: [
+      { example: `The ${clean} was quiet and cool.`, example_cn: `${meaningHead}\u5f88\u5b89\u9759\uff0c\u4e5f\u5f88\u51c9\u723d\u3002` },
+      { example: `I saved this task for the ${clean}.`, example_cn: `\u6211\u628a\u8fd9\u4e2a\u4efb\u52a1\u7559\u5230${meaningHead}\u5904\u7406\u3002` },
+      { example: `The ${clean} felt shorter than usual.`, example_cn: `${meaningHead}\u611f\u89c9\u6bd4\u5e73\u65f6\u66f4\u77ed\u3002` },
+    ],
+    abstract: [
+      { example: `The discussion focused on the ${clean}.`, example_cn: `\u8ba8\u8bba\u96c6\u4e2d\u5728${meaningHead}\u4e0a\u3002` },
+      { example: `Her answer changed our view of the ${clean}.`, example_cn: `\u5979\u7684\u56de\u7b54\u6539\u53d8\u4e86\u6211\u4eec\u5bf9${meaningHead}\u7684\u770b\u6cd5\u3002` },
+      { example: `The report explains the ${clean} with clear examples.`, example_cn: `\u62a5\u544a\u7528\u6e05\u6670\u4f8b\u5b50\u89e3\u91ca\u4e86${meaningHead}\u3002` },
+    ],
+  };
+  const options = categoryScenes[category];
+  if (options?.length) {
+    return options[templateHash(`${book.id}:${clean}:${category}`) % options.length];
+  }
+  return null;
+}
+
+const SCENE_TEMPLATE_HISTORY_KEY = "jachin.english_vocab.scene_template_history.v2";
+const SCENE_TEMPLATE_HISTORY_LIMIT = 80;
+
+const dailyTemplates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "daily_noun_1",
+      example: (word) => `I saw the ${word} on my way home.`,
+      example_cn: (meaning) => `我回家路上看到了${meaning}。`,
+    },
+    {
+      id: "daily_noun_2",
+      example: (word) => `We talked about the ${word} after lunch.`,
+      example_cn: (meaning) => `午饭后我们聊到了${meaning}。`,
+    },
+    {
+      id: "daily_noun_3",
+      example: (word) => `She asked a clear question about the ${word}.`,
+      example_cn: (meaning) => `她问了一个关于${meaning}的清楚问题。`,
+    },
+    {
+      id: "daily_noun_4",
+      example: (word) => `I saw the ${word} during my walk home.`,
+      example_cn: (meaning) => `我走路回家时看到了${meaning}。`,
+    },
+  ],
+  verb: [
+    {
+      id: "daily_verb_1",
+      example: (word) => `I usually ${word} before breakfast.`,
+      example_cn: (meaning) => `我通常在早餐前会${meaning}。`,
+    },
+    {
+      id: "daily_verb_2",
+      example: (word) => `Can you ${word} this while I answer the phone?`,
+      example_cn: (meaning) => `我接电话时你能先${meaning}这件事吗？`,
+    },
+    {
+      id: "daily_verb_3",
+      example: (word) => `We had to ${word} quickly before leaving home.`,
+      example_cn: (meaning) => `出门前我们得赶紧${meaning}。`,
+    },
+    {
+      id: "daily_verb_4",
+      example: (word) => `They ${word} together after dinner every day.`,
+      example_cn: (meaning) => `他们每天晚饭后都会一起${meaning}。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "daily_adj_1",
+      example: (word) => `This room feels ${word} after we open the window.`,
+      example_cn: (meaning) => `开窗后这个房间感觉更${meaning}了。`,
+    },
+    {
+      id: "daily_adj_2",
+      example: (word) => `The new route is much more ${word} for commuting.`,
+      example_cn: (meaning) => `这条新路线通勤时更${meaning}。`,
+    },
+    {
+      id: "daily_adj_3",
+      example: (word) => `Her idea sounds ${word} for a busy weekday.`,
+      example_cn: (meaning) => `她这个想法在工作日里听起来很${meaning}。`,
+    },
+    {
+      id: "daily_adj_4",
+      example: (word) => `That choice was ${word} and saved us time.`,
+      example_cn: (meaning) => `那个选择很${meaning}，还帮我们省了时间。`,
+    },
+  ],
+  other: [
+    {
+      id: "daily_other_1",
+      example: (word) => `We paused, and ${word} the room became quiet.`,
+      example_cn: (meaning) => `我们停顿了一下，${meaning}房间里安静了下来。`,
+    },
+    {
+      id: "daily_other_2",
+      example: (word) => `I looked around and ${word} noticed the sign.`,
+      example_cn: (meaning) => `我环顾四周，${meaning}注意到了那个标志。`,
+    },
+    {
+      id: "daily_other_3",
+      example: (word) => `She hesitated, ${word} gave her final answer.`,
+      example_cn: (meaning) => `她犹豫了一下，${meaning}给出了最终答案。`,
+    },
+    {
+      id: "daily_other_4",
+      example: (word) => `He took a breath and ${word} continued speaking.`,
+      example_cn: (meaning) => `他深吸一口气，${meaning}继续说下去。`,
+    },
+  ],
+};
+
+const workplaceTemplates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "work_noun_1",
+      example: (word) => `The team reviewed ${word} before the client call.`,
+      example_cn: (meaning) => `团队在客户电话前复盘了${meaning}。`,
+    },
+    {
+      id: "work_noun_2",
+      example: (word) => `Please add ${word} to today's meeting agenda.`,
+      example_cn: (meaning) => `请把${meaning}加到今天会议议程里。`,
+    },
+    {
+      id: "work_noun_3",
+      example: (word) => `Finance approved the ${word} for next quarter.`,
+      example_cn: (meaning) => `财务批准了下季度的${meaning}。`,
+    },
+    {
+      id: "work_noun_4",
+      example: (word) => `We tracked ${word} in the weekly report.`,
+      example_cn: (meaning) => `我们在周报中跟踪了${meaning}。`,
+    },
+  ],
+  verb: [
+    {
+      id: "work_verb_1",
+      example: (word) => `We need to ${word} the proposal before noon.`,
+      example_cn: (meaning) => `我们需要在中午前${meaning}这份提案。`,
+    },
+    {
+      id: "work_verb_2",
+      example: (word) => `Could you ${word} this draft and send feedback?`,
+      example_cn: (meaning) => `你可以先${meaning}这份草稿再给反馈吗？`,
+    },
+    {
+      id: "work_verb_3",
+      example: (word) => `Let's ${word} the timeline after the stand-up.`,
+      example_cn: (meaning) => `站会后我们来${meaning}时间线。`,
+    },
+    {
+      id: "work_verb_4",
+      example: (word) => `I will ${word} the numbers before sharing them.`,
+      example_cn: (meaning) => `我会先${meaning}数据再发出去。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "work_adj_1",
+      example: (word) => `We need a more ${word} process for onboarding.`,
+      example_cn: (meaning) => `我们需要一个更${meaning}的新员工入职流程。`,
+    },
+    {
+      id: "work_adj_2",
+      example: (word) => `The report is ${word} enough for leadership review.`,
+      example_cn: (meaning) => `这份报告已经足够${meaning}，可以交领导审阅。`,
+    },
+    {
+      id: "work_adj_3",
+      example: (word) => `This timeline looks ${word} for both teams.`,
+      example_cn: (meaning) => `这个时间安排对两边团队都比较${meaning}。`,
+    },
+    {
+      id: "work_adj_4",
+      example: (word) => `Their response stayed ${word} and factual.`,
+      example_cn: (meaning) => `他们的回复保持了${meaning}且基于事实。`,
+    },
+  ],
+  other: [
+    {
+      id: "work_other_1",
+      example: (word) => `In the update, ${word} we proposed a safer rollout.`,
+      example_cn: (meaning) => `在更新里，${meaning}我们提出了更稳妥的发布方案。`,
+    },
+    {
+      id: "work_other_2",
+      example: (word) => `The manager agreed, ${word} the team moved forward.`,
+      example_cn: (meaning) => `经理同意了，${meaning}团队继续推进。`,
+    },
+    {
+      id: "work_other_3",
+      example: (word) => `We adjusted the timeline, ${word} reduced delivery risk.`,
+      example_cn: (meaning) => `我们调整了时间线，${meaning}降低了交付风险。`,
+    },
+    {
+      id: "work_other_4",
+      example: (word) => `The report was clear, ${word} leadership approved it quickly.`,
+      example_cn: (meaning) => `报告很清晰，${meaning}管理层很快批准了它。`,
+    },
+  ],
+};
+
+const examTemplates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "exam_noun_1",
+      example: (word) => `Contemporary research suggests that ${word} shapes social outcomes.`,
+      example_cn: (meaning) => `当代研究表明，${meaning}会影响社会结果。`,
+    },
+    {
+      id: "exam_noun_2",
+      example: (word) => `A balanced essay should examine the limits of ${word}.`,
+      example_cn: (meaning) => `一篇平衡的文章应当讨论${meaning}的局限。`,
+    },
+    {
+      id: "exam_noun_3",
+      example: (word) => `Public debates increasingly focus on the impact of ${word}.`,
+      example_cn: (meaning) => `公共讨论越来越关注${meaning}的影响。`,
+    },
+    {
+      id: "exam_noun_4",
+      example: (word) => `Historical evidence shows that ${word} changes over time.`,
+      example_cn: (meaning) => `历史证据显示，${meaning}会随时间变化。`,
+    },
+  ],
+  verb: [
+    {
+      id: "exam_verb_1",
+      example: (word) => `Governments should ${word} policy goals with long-term equity in mind.`,
+      example_cn: (meaning) => `政府在制定政策目标时应当兼顾长期公平地${meaning}。`,
+    },
+    {
+      id: "exam_verb_2",
+      example: (word) => `Universities often ${word} evidence from multiple disciplines.`,
+      example_cn: (meaning) => `大学通常会从多学科证据中${meaning}。`,
+    },
+    {
+      id: "exam_verb_3",
+      example: (word) => `Scholars ${word} assumptions before drawing conclusions.`,
+      example_cn: (meaning) => `学者在下结论前会先${meaning}各种假设。`,
+    },
+    {
+      id: "exam_verb_4",
+      example: (word) => `A strong argument must ${word} both causes and consequences.`,
+      example_cn: (meaning) => `有力的论证必须同时${meaning}原因与后果。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "exam_adj_1",
+      example: (word) => `The policy appears ${word}, yet implementation remains uneven.`,
+      example_cn: (meaning) => `该政策看似${meaning}，但执行仍不均衡。`,
+    },
+    {
+      id: "exam_adj_2",
+      example: (word) => `This trend is increasingly ${word} across major cities.`,
+      example_cn: (meaning) => `这一趋势在主要城市中正变得越来越${meaning}。`,
+    },
+    {
+      id: "exam_adj_3",
+      example: (word) => `The data is ${word} enough to challenge earlier assumptions.`,
+      example_cn: (meaning) => `这组数据已足够${meaning}，能够挑战先前假设。`,
+    },
+    {
+      id: "exam_adj_4",
+      example: (word) => `Such reforms are politically ${word} but socially contested.`,
+      example_cn: (meaning) => `这类改革在政治上${meaning}，但在社会层面仍有争议。`,
+    },
+  ],
+  other: [
+    {
+      id: "exam_other_1",
+      example: (word) => `In academic writing, ${word} can mark a clear contrast.`,
+      example_cn: (meaning) => `在学术写作中，${meaning}可以明确标记对比关系。`,
+    },
+    {
+      id: "exam_other_2",
+      example: (word) => `The paragraph reads better when ${word} links two claims.`,
+      example_cn: (meaning) => `当${meaning}连接两个论点时，这段文字读起来更顺畅。`,
+    },
+    {
+      id: "exam_other_3",
+      example: (word) => `A high-band response uses ${word} with control and precision.`,
+      example_cn: (meaning) => `高分回答会更克制且精准地使用${meaning}。`,
+    },
+    {
+      id: "exam_other_4",
+      example: (word) => `The argument stays coherent because ${word} guides the transition.`,
+      example_cn: (meaning) => `论证保持连贯，是因为${meaning}引导了过渡关系。`,
+    },
+  ],
+};
+
+const computerScienceTemplates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "cs_noun_1",
+      example: (word) => `The engineer inspected ${word} before deployment.`,
+      example_cn: (meaning) => `工程师在部署前检查了${meaning}。`,
+    },
+    {
+      id: "cs_noun_2",
+      example: (word) => `Our logs captured ${word} during the outage.`,
+      example_cn: (meaning) => `系统日志在故障期间记录了${meaning}。`,
+    },
+    {
+      id: "cs_noun_3",
+      example: (word) => `The patch improved ${word} across all services.`,
+      example_cn: (meaning) => `这个补丁提升了所有服务的${meaning}。`,
+    },
+    {
+      id: "cs_noun_4",
+      example: (word) => `We tracked ${word} in yesterday's benchmark report.`,
+      example_cn: (meaning) => `我们在昨天的基准报告里跟踪了${meaning}。`,
+    },
+  ],
+  verb: [
+    {
+      id: "cs_verb_1",
+      example: (word) => `We need to ${word} the service before release.`,
+      example_cn: (meaning) => `发布前我们需要先${meaning}这个服务。`,
+    },
+    {
+      id: "cs_verb_2",
+      example: (word) => `The script can ${word} each file automatically.`,
+      example_cn: (meaning) => `这个脚本可以自动${meaning}每个文件。`,
+    },
+    {
+      id: "cs_verb_3",
+      example: (word) => `They ${word} requests in batches to reduce latency.`,
+      example_cn: (meaning) => `他们按批次${meaning}请求来降低延迟。`,
+    },
+    {
+      id: "cs_verb_4",
+      example: (word) => `Please ${word} the config and restart the worker.`,
+      example_cn: (meaning) => `请先${meaning}配置后重启worker。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "cs_adj_1",
+      example: (word) => `The new implementation is ${word} and easier to maintain.`,
+      example_cn: (meaning) => `新实现更${meaning}，也更容易维护。`,
+    },
+    {
+      id: "cs_adj_2",
+      example: (word) => `This endpoint stays ${word} under heavy traffic.`,
+      example_cn: (meaning) => `这个接口在高流量下依然保持${meaning}。`,
+    },
+    {
+      id: "cs_adj_3",
+      example: (word) => `The rollout plan looks ${word} for production.`,
+      example_cn: (meaning) => `这个发布计划用于生产环境看起来很${meaning}。`,
+    },
+    {
+      id: "cs_adj_4",
+      example: (word) => `Their fix is ${word}, but we still need regression tests.`,
+      example_cn: (meaning) => `他们的修复很${meaning}，但我们仍需回归测试。`,
+    },
+  ],
+  other: [
+    {
+      id: "cs_other_1",
+      example: (word) => `In the design doc, ${word} clarifies how modules interact.`,
+      example_cn: (meaning) => `在设计文档中，${meaning}阐明了模块如何交互。`,
+    },
+    {
+      id: "cs_other_2",
+      example: (word) => `The runbook became clearer once ${word} connected two steps.`,
+      example_cn: (meaning) => `当${meaning}连接了两个步骤后，运行手册更清晰了。`,
+    },
+    {
+      id: "cs_other_3",
+      example: (word) => `During incident review, ${word} explained the failure chain.`,
+      example_cn: (meaning) => `在故障复盘中，${meaning}解释了故障传播链路。`,
+    },
+    {
+      id: "cs_other_4",
+      example: (word) => `In the postmortem, ${word} made the root cause easier to follow.`,
+      example_cn: (meaning) => `在复盘中，${meaning}让根因更容易被理解。`,
+    },
+  ],
+};
+
+const cefrA2Templates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "a2_n_1",
+      example: (word) => `There is a ${word} near my home.`,
+      example_cn: (meaning) => `我家附近有一个${meaning}。`,
+    },
+    {
+      id: "a2_n_2",
+      example: (word) => `We went to the ${word} after class.`,
+      example_cn: (meaning) => `我们下课后去了${meaning}。`,
+    },
+  ],
+  verb: [
+    {
+      id: "a2_v_1",
+      example: (word) => `I ${word} the list before I leave.`,
+      example_cn: (meaning) => `我离开前会先${meaning}这个清单。`,
+    },
+    {
+      id: "a2_v_2",
+      example: (word) => `We ${word} together every evening.`,
+      example_cn: (meaning) => `我们每天傍晚会一起${meaning}。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "a2_a_1",
+      example: (word) => `This idea is very ${word}.`,
+      example_cn: (meaning) => `这个想法非常${meaning}。`,
+    },
+    {
+      id: "a2_a_2",
+      example: (word) => `The new plan feels ${word} now.`,
+      example_cn: (meaning) => `这个新计划现在看起来很${meaning}。`,
+    },
+  ],
+  other: [
+    {
+      id: "a2_o_1",
+      example: (word) => `He stopped, and ${word} smiled at me.`,
+      example_cn: (meaning) => `他停下来，${meaning}朝我笑了笑。`,
+    },
+    {
+      id: "a2_o_2",
+      example: (word) => `I turned around and ${word} saw my friend.`,
+      example_cn: (meaning) => `我转过身，${meaning}看见了我的朋友。`,
+    },
+  ],
+};
+
+const cefrB1Templates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "b1_n_1",
+      example: (word) => `In our discussion, the ${word} came up several times.`,
+      example_cn: (meaning) => `在讨论中，这个${meaning}被多次提到。`,
+    },
+    {
+      id: "b1_n_2",
+      example: (word) => `We chose the ${word} because it fit our needs.`,
+      example_cn: (meaning) => `我们选择这个${meaning}，因为它更符合需求。`,
+    },
+  ],
+  verb: [
+    {
+      id: "b1_v_1",
+      example: (word) => `I usually ${word} this part before asking for help.`,
+      example_cn: (meaning) => `我通常会先${meaning}这部分，再去求助。`,
+    },
+    {
+      id: "b1_v_2",
+      example: (word) => `They ${word} the issue quickly when time is limited.`,
+      example_cn: (meaning) => `在时间有限时，他们会快速${meaning}这个问题。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "b1_a_1",
+      example: (word) => `This method is more ${word} than our old one.`,
+      example_cn: (meaning) => `这个方法比我们旧的方法更${meaning}。`,
+    },
+    {
+      id: "b1_a_2",
+      example: (word) => `The new schedule looks ${word} for everyone.`,
+      example_cn: (meaning) => `新日程安排对大家来说看起来更${meaning}。`,
+    },
+  ],
+  other: [
+    {
+      id: "b1_o_1",
+      example: (word) => `The meeting slowed down, ${word} everyone became more focused.`,
+      example_cn: (meaning) => `会议节奏放缓了，${meaning}大家更专注了。`,
+    },
+    {
+      id: "b1_o_2",
+      example: (word) => `We revised the draft, ${word} the argument became clearer.`,
+      example_cn: (meaning) => `我们修改了草稿，${meaning}论点更清晰了。`,
+    },
+  ],
+};
+
+const cefrB2Templates: Record<SceneTemplatePos, SceneTemplate[]> = {
+  noun: [
+    {
+      id: "b2_n_1",
+      example: (word) => `Although views differ, the ${word} remains central to the debate.`,
+      example_cn: (meaning) => `尽管观点不同，这个${meaning}仍是讨论核心。`,
+    },
+    {
+      id: "b2_n_2",
+      example: (word) => `The report links the ${word} to wider social change.`,
+      example_cn: (meaning) => `报告将这个${meaning}与更广泛的社会变化联系起来。`,
+    },
+  ],
+  verb: [
+    {
+      id: "b2_v_1",
+      example: (word) => `Policy makers must ${word} competing priorities with clear evidence.`,
+      example_cn: (meaning) => `政策制定者必须基于清晰证据去${meaning}相互竞争的优先事项。`,
+    },
+    {
+      id: "b2_v_2",
+      example: (word) => `Researchers ${word} multiple variables before making claims.`,
+      example_cn: (meaning) => `研究者在提出结论前会${meaning}多个变量。`,
+    },
+  ],
+  adjective: [
+    {
+      id: "b2_a_1",
+      example: (word) => `The proposal appears ${word}, yet it still requires rigorous testing.`,
+      example_cn: (meaning) => `该提案看似${meaning}，但仍需要严格验证。`,
+    },
+    {
+      id: "b2_a_2",
+      example: (word) => `Such an approach is politically ${word} but socially sensitive.`,
+      example_cn: (meaning) => `这种方法在政治上${meaning}，但在社会层面较敏感。`,
+    },
+  ],
+  other: [
+    {
+      id: "b2_o_1",
+      example: (word) => `In formal writing, ${word} can strengthen logical cohesion.`,
+      example_cn: (meaning) => `在正式写作中，${meaning}可以增强逻辑连贯性。`,
+    },
+    {
+      id: "b2_o_2",
+      example: (word) => `A high-level response uses ${word} with precision and restraint.`,
+      example_cn: (meaning) => `高水平回答会精准且克制地使用${meaning}。`,
+    },
+  ],
+};
+
+function readSceneTemplateHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(SCENE_TEMPLATE_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map((x) => String(x)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSceneTemplateHistory(history: string[]) {
+  try {
+    localStorage.setItem(SCENE_TEMPLATE_HISTORY_KEY, JSON.stringify(history.slice(-SCENE_TEMPLATE_HISTORY_LIMIT)));
+  } catch {
+    // Template history only improves diversity; failures should not block lookup.
+  }
+}
+
+function templateHash(text: string): number {
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function rememberSceneTemplate(templateKey: string, history: string[]) {
+  const next = history.filter((item) => item !== templateKey);
+  next.push(templateKey);
+  writeSceneTemplateHistory(next);
+}
+
+function normalizeSceneTemplatePos(rawPos: string): SceneTemplatePos {
+  const lower = rawPos.toLowerCase();
+  if (/\bn\./.test(lower) || lower.includes("noun")) return "noun";
+  if (/\bv\./.test(lower) || lower.includes("verb")) return "verb";
+  if (/\badj\./.test(lower) || lower.includes("adjective")) return "adjective";
+  return "noun";
+}
+
+function sceneTemplatePool(bookId: string, pos: SceneTemplatePos): SceneTemplate[] {
+  if (bookId === "workplace") return workplaceTemplates[pos];
+  if (bookId === "computer_science") return computerScienceTemplates[pos];
+  if (bookId === "ielts_academic" || bookId === "toefl_academic") return examTemplates[pos];
+  return dailyTemplates[pos];
+}
+
+function pickSceneTemplate(word: string, bookId: string, templates: SceneTemplate[]): SceneTemplate {
+  if (!templates.length) {
+    return {
+      id: "default_template",
+      example: (w) => `I noticed ${w} in today's sentence.`,
+      example_cn: (meaning) => `我在今天的例句里注意到了${meaning}。`,
+    };
+  }
+  const history = readSceneTemplateHistory();
+  const recentSet = new Set(history.slice(-SCENE_TEMPLATE_HISTORY_LIMIT));
+  const start = templateHash(`${bookId}:${word}`) % templates.length;
+  for (let offset = 0; offset < templates.length; offset += 1) {
+    const idx = (start + offset) % templates.length;
+    const candidate = templates[idx];
+    const key = `${bookId}:${candidate.id}`;
+    if (!recentSet.has(key)) {
+      rememberSceneTemplate(key, history);
+      return candidate;
+    }
+  }
+  const fallback = templates[start];
+  rememberSceneTemplate(`${bookId}:${fallback.id}`, history);
+  return fallback;
+}
+
+function pickTemplateBySeed(templates: SceneTemplate[], seed: string): SceneTemplate {
+  if (!templates.length) {
+    return {
+      id: "default_explicit",
+      example: (word) => `I noticed ${word} in this sentence.`,
+      example_cn: (meaning) => `我在这个句子里注意到了${meaning}。`,
+    };
+  }
+  const start = templateHash(seed) % templates.length;
+  return templates[start];
+}
+
+function normalizeMeaningHead(meaning: string, word: string) {
+  const raw = (meaning || "")
+    .split(/[；;。]/)[0]
+    .replace(/\s+/g, "")
+    .trim();
+  const stripped = raw.replace(new RegExp(`^${word}[:：]`, "i"), "").trim();
+  return stripped || word;
+}
+
+function buildExplicitExampleVariants(result: LookupResult | null, book: EnglishWordBook): ExampleVariant[] {
+  if (!result) return [];
+  const word = cleanToken(result.word) || result.word.trim().toLowerCase();
+  if (!word) return [];
+  const pos = normalizeSceneTemplatePos(result.part_of_speech || getWordMetadata(book, word)?.partOfSpeech || "");
+  const meaning = normalizeMeaningHead(result.meaning_cn || definitionFor(word)?.meaning_cn || word, word);
+  const categories: Array<{ id: string; label: string; pool: SceneTemplate[] }> = [
+    { id: "daily", label: "日常口语", pool: dailyTemplates[pos] },
+    { id: "exam", label: "考试写作（高级）", pool: examTemplates[pos] },
+    { id: "work", label: "职场商务", pool: workplaceTemplates[pos] },
+    { id: "a2", label: "A2 基础", pool: cefrA2Templates[pos] },
+    { id: "b1", label: "B1 进阶", pool: cefrB1Templates[pos] },
+    { id: "b2", label: "B2 高阶", pool: cefrB2Templates[pos] },
+  ];
+  const used = new Set<string>();
+  return categories.map((category) => {
+    const seed = `${word}:${category.id}:${pos}`;
+    const selected = pickTemplateBySeed(category.pool, seed);
+    let chosen = selected;
+    const start = category.pool.length ? templateHash(seed) % category.pool.length : 0;
+    for (let offset = 0; offset < category.pool.length; offset += 1) {
+      const candidate = category.pool[(start + offset) % category.pool.length];
+      const candidateText = candidate.example(word);
+      if (!used.has(candidateText)) {
+        chosen = candidate;
+        break;
+      }
+    }
+    const example = chosen.example(word);
+    used.add(example);
+    return {
+      id: category.id,
+      label: category.label,
+      example,
+      example_cn: chosen.example_cn(meaning),
+    };
+  });
+}
+
+function shouldUseExplicitVariants(result: LookupResult) {
+  const source = (result.source || "").toLowerCase();
+  const model = (result.model || "").toLowerCase();
+  return source.includes("local_scene") || source.includes("local_fallback") || model.includes("local_scene");
+}
+
+function pickRandomVariantExcluding(variants: ExampleVariant[], excludedId?: string | null): ExampleVariant | null {
+  if (!variants.length) return null;
+  const start = Math.floor(Math.random() * variants.length);
+  for (let offset = 0; offset < variants.length; offset += 1) {
+    const candidate = variants[(start + offset) % variants.length];
+    if (!excludedId || candidate.id !== excludedId) return candidate;
+  }
+  return variants[start];
+}
+
 function makeExample(word: string, book: EnglishWordBook): ExamplePair {
-  const curated = curatedExamples[word.toLowerCase()];
+  const cleanWord = cleanToken(word) || word.trim().toLowerCase();
+  const curated = curatedExamples[cleanWord];
   if (curated) return curated;
-  return { example: "", example_cn: "" };
+  const meaningHead =
+    definitionFor(cleanWord)
+      ?.meaning_cn.split(/[；;，,]/)[0]
+      ?.replace(/\s+/g, "")
+      ?.trim() || cleanWord;
+  const pos =
+    getWordMetadata(book, cleanWord)?.partOfSpeech ??
+    definitionFor(cleanWord)?.part_of_speech ??
+    "";
+  const normalizedPos = normalizeSceneTemplatePos(pos);
+  const semanticPair = semanticExampleFor(cleanWord, book, meaningHead, normalizedPos);
+  if (semanticPair && !isSemanticallyBadExample(semanticPair.example, cleanWord, meaningHead)) {
+    return semanticPair;
+  }
+  const pool = sceneTemplatePool(book.id, normalizedPos);
+  const template = pickSceneTemplate(cleanWord, book.id, pool);
+  return {
+    example: template.example(cleanWord),
+    example_cn: template.example_cn(meaningHead),
+  };
 }
 
 function normalizeLookupResult(result: LookupResult, book: EnglishWordBook): LookupResult {
-  if (result.source === "local_ecdict_definition") return result;
-  if (!isPlaceholderExample(result.example)) return result;
-  const pair = makeExample(result.word || "", book);
+  if (hasDisplayableExample(result)) return result;
+  const word = cleanToken(result.word) || result.word.trim().toLowerCase();
+  const fallbackPair = word ? makeExample(word, book) : null;
+  if (
+    fallbackPair?.example &&
+    !isPlaceholderExample(fallbackPair.example) &&
+    !isSemanticallyBadExample(fallbackPair.example, word, result.meaning_cn)
+  ) {
+    const completed = {
+      ...result,
+      example: fallbackPair.example,
+      example_cn: fallbackPair.example_cn,
+      source: "local_fast_example",
+      model: "local_fast_template",
+    };
+    if (hasDisplayableExample(completed)) return completed;
+  }
   return {
     ...result,
-    example: pair.example,
-    example_cn: pair.example_cn,
+    example: "",
+    example_cn: "",
   };
 }
 
@@ -796,11 +1899,14 @@ function isWeakLookupResult(result?: LookupResult | null) {
   return (
     result.source === "local_fallback" ||
     result.source === "local_context_fallback" ||
-    result.source === "local_ecdict_definition" ||
+    isFallbackExampleSource(result) ||
     meaning.includes(UI.fallbackMeaning) ||
+    meaning.includes("\u6a21\u578b\u6b63\u5728\u8865\u5168") ||
+    meaning.includes("\u8865\u5168\u8be5\u8bcd\u91ca\u4e49") ||
     meaning.includes("\u53ef\u5148\u6309\u4f8b\u53e5\u8bed\u5883\u8bb0\u5fc6") ||
     meaning.includes("\u540e\u53f0\u4f1a\u81ea\u52a8\u8865\u5168") ||
     isPlaceholderExample(result.example) ||
+    isSemanticallyBadExample(result.example, result.word, result.meaning_cn) ||
     !result.example_cn?.trim()
   );
 }
@@ -853,14 +1959,13 @@ function localLookupResult(word: string, book: EnglishWordBook): LookupResult | 
 function fallbackLookupResult(word: string, book: EnglishWordBook): LookupResult {
   const key = cleanToken(word) || word.trim().toLowerCase();
   const metadata = getWordMetadata(book, key);
-  const pair = makeExample(key || word, book);
   return {
     word: key || word,
     phonetic: metadata?.phonetic ?? "-",
     part_of_speech: metadata?.partOfSpeech ?? "-",
     meaning_cn: `${key || word}\uff1a${UI.fallbackMeaning}`,
-    example: pair.example,
-    example_cn: pair.example_cn,
+    example: "",
+    example_cn: "",
     source: "local_fallback",
     model: "local",
   };
@@ -881,13 +1986,30 @@ export function EnglishVocabCoach() {
   const [selectedWord, setSelectedWord] = React.useState<LookupResult | null>(null);
   const [selectedLoading, setSelectedLoading] = React.useState<string | null>(null);
   const [selectedError, setSelectedError] = React.useState<string | null>(null);
+  const [selectedStatus, setSelectedStatus] = React.useState<string | null>(null);
+  const [activeExampleVariant, setActiveExampleVariant] = React.useState<ExampleVariant | null>(null);
   const lookupCacheRef = React.useRef<Record<string, LookupResult>>(readLookupCache());
   const bookIdRef = React.useRef(bookId);
   const currentWordRef = React.useRef(currentWord);
   const revealedRef = React.useRef(revealed);
   const detailRef = React.useRef<LookupResult | null>(detail);
+  const lastExampleVariantIdRef = React.useRef<string | null>(null);
+  const stateHydratedRef = React.useRef(false);
+  const userInteractedRef = React.useRef(false);
+  const exampleRetryRef = React.useRef<Record<string, number>>({});
   const activeBook = React.useMemo(() => getBookById(bookId), [bookId]);
   const currentMetadata = React.useMemo(() => getWordMetadata(activeBook, currentWord), [activeBook, currentWord]);
+  const displayDetail = React.useMemo(() => {
+    if (!detail) return null;
+    const normalized = normalizeLookupResult(detail, activeBook);
+    return hasDisplayableExample(normalized) ? normalized : null;
+  }, [activeBook, detail]);
+  const explicitExampleVariants = React.useMemo(
+    () => (displayDetail && shouldUseExplicitVariants(displayDetail) ? buildExplicitExampleVariants(displayDetail, activeBook) : []),
+    [activeBook, displayDetail],
+  );
+  const effectiveExample = activeExampleVariant?.example || displayDetail?.example || "";
+  const effectiveExampleCn = activeExampleVariant?.example_cn || displayDetail?.example_cn || "";
 
   React.useEffect(() => {
     bookIdRef.current = bookId;
@@ -905,18 +2027,42 @@ export function EnglishVocabCoach() {
     detailRef.current = detail;
   }, [detail]);
 
+  React.useEffect(() => {
+    const chosen = pickRandomVariantExcluding(explicitExampleVariants, lastExampleVariantIdRef.current);
+    setActiveExampleVariant(chosen);
+    lastExampleVariantIdRef.current = chosen?.id ?? null;
+  }, [explicitExampleVariants, activeBook.id, currentWord]);
+
+  React.useEffect(() => {
+    void invoke("english_vocab_warmup").catch((error) => {
+      console.warn("[EnglishVocab] warmup skipped:", error);
+    });
+  }, []);
+
   const applySharedState = React.useCallback((state: VocabState, preserveWord = true) => {
     const nextBook = getBookById(state.selected_book_id);
     const nextProgress = state.progress ?? {};
     const bookChanged = nextBook.id !== bookIdRef.current;
+    const currentStillValid = nextBook.words.includes(currentWordRef.current);
+    const firstHydration = !stateHydratedRef.current;
     setBookId(nextBook.id);
     setProgress(nextProgress);
-    if (!preserveWord || (bookChanged && !revealedRef.current)) {
-      setCurrentWord(chooseWord(nextBook.words, nextProgress, nextBook.id, currentWordRef.current));
+    stateHydratedRef.current = true;
+    if (
+      (firstHydration && !userInteractedRef.current) ||
+      (bookChanged && !revealedRef.current) ||
+      (!preserveWord && !currentStillValid)
+    ) {
+      const keepCurrent = !firstHydration && currentStillValid ? currentWordRef.current : undefined;
+      const nextWord = chooseWord(nextBook.words, nextProgress, nextBook.id, keepCurrent);
+      currentWordRef.current = nextWord;
+      setCurrentWord(nextWord);
       setRevealed(false);
+      revealedRef.current = false;
       setReviewed(false);
       setSelectedWord(null);
       setSelectedError(null);
+      setSelectedStatus(null);
       setFeedback(UI.readyHint);
     }
   }, []);
@@ -983,7 +2129,9 @@ export function EnglishVocabCoach() {
                 : result;
             const existing = lookupCacheRef.current[key] ?? currentDetail;
             const preferred = preferLookupResult(merged, existing, activeBook);
-            cacheLookup(lookupCacheRef, key, preferred);
+            if (!isWeakLookupResult(preferred)) {
+              cacheLookup(lookupCacheRef, key, preferred);
+            }
             if (!contextSentence && currentWordRef.current === word && bookIdRef.current === activeBook.id) {
               setDetail((prev) => preferLookupResult(preferred, prev, activeBook));
               setDetailError(null);
@@ -1020,7 +2168,9 @@ export function EnglishVocabCoach() {
         result = fallbackLookupResult(word, activeBook);
       }
       const preferred = preferLookupResult(result, cached, activeBook);
-      cacheLookup(lookupCacheRef, key, preferred);
+      if (!isWeakLookupResult(preferred)) {
+        cacheLookup(lookupCacheRef, key, preferred);
+      }
       return preferred;
     },
     [activeBook.id],
@@ -1057,6 +2207,30 @@ export function EnglishVocabCoach() {
     };
   }, [activeBook.id, currentWord, loadDetail]);
 
+  React.useEffect(() => {
+    const index = activeBook.words.indexOf(currentWord);
+    if (index < 0 || activeBook.words.length <= 1) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const upcoming = Array.from({ length: Math.min(5, activeBook.words.length - 1) }, (_, offset) => {
+        const nextIndex = (index + offset + 1) % activeBook.words.length;
+        return activeBook.words[nextIndex];
+      }).filter(Boolean);
+      upcoming.forEach((word, offset) => {
+        window.setTimeout(() => {
+          if (cancelled) return;
+          void loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS).catch((error) => {
+            console.warn("[EnglishVocab] upcoming word prefetch skipped:", word, error);
+          });
+        }, offset * 350);
+      });
+    }, 650);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeBook.id, activeBook.words, currentWord, loadDetail]);
+
   const retryCurrent = React.useCallback(() => {
     setDetail(null);
     setDetailError(null);
@@ -1067,29 +2241,60 @@ export function EnglishVocabCoach() {
       .finally(() => setDetailLoading(false));
   }, [currentWord, loadDetail]);
 
+  React.useEffect(() => {
+    if (effectiveExample || detailLoading) return;
+    if (!detail && !detailError) return;
+    const key = `${activeBook.id}:${currentWord}`;
+    const tried = exampleRetryRef.current[key] ?? 0;
+    if (tried >= 3) return;
+    exampleRetryRef.current[key] = tried + 1;
+    const timer = window.setTimeout(() => {
+      setDetailLoading(true);
+      void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS)
+        .then((result) => {
+          setDetail((prev) => preferLookupResult(result, prev, activeBook));
+          setDetailError(null);
+        })
+        .catch((error) => {
+          console.warn("[EnglishVocab] example auto-refresh skipped:", error);
+        })
+        .finally(() => setDetailLoading(false));
+    }, 2500 + tried * 1500);
+    return () => window.clearTimeout(timer);
+  }, [activeBook, currentWord, detail, detailError, detailLoading, effectiveExample, loadDetail]);
+
   const lookupExampleToken = React.useCallback(
     (token: string) => {
+      userInteractedRef.current = true;
       const word = cleanToken(token);
       if (!word) return;
       const local = localLookupResult(word, activeBook);
       setSelectedWord(null);
       setSelectedError(null);
+      setSelectedStatus(UI.lookupLocal);
+      setSelectedLoading(word);
       if (local && !isWeakLookupResult(local)) {
-        setSelectedLoading(null);
         setSelectedWord(normalizeLookupResult(local, activeBook));
+        setSelectedStatus(UI.lookupLocalHit);
+        setSelectedLoading(null);
         return;
       }
       const fallback = normalizeLookupResult(local ?? fallbackLookupResult(word, activeBook), activeBook);
       setSelectedWord(fallback);
-      setSelectedLoading(word);
+      setSelectedStatus(UI.lookupBackground);
       void loadDetail(word, detail?.example, TOKEN_LOOKUP_UI_TIMEOUT_MS)
         .then((result) => {
-          setSelectedWord((current) => preferLookupResult(result, current ?? fallback, activeBook));
+          const normalized = normalizeLookupResult(result, activeBook);
+          const preferred = preferLookupResult(normalized, fallback, activeBook);
+          setSelectedWord(preferred);
+          setSelectedStatus(lookupSourceLabel(preferred));
           setSelectedError(null);
         })
         .catch((error) => {
           console.warn("[EnglishVocab] token lookup failed:", error);
-          setSelectedError(errorText(error));
+          const message = errorText(error) || UI.lookupUnavailable;
+          setSelectedStatus(`${UI.lookupBackgroundFailed}：${message}`);
+          setSelectedError(message);
         })
         .finally(() => setSelectedLoading(null));
     },
@@ -1189,22 +2394,29 @@ export function EnglishVocabCoach() {
 
   const moveNext = React.useCallback(
     (nextProgress = progress) => {
+      userInteractedRef.current = true;
       const next = chooseWord(activeBook.words, nextProgress, activeBook.id, currentWord);
+      currentWordRef.current = next;
       setCurrentWord(next);
       setRevealed(false);
+      revealedRef.current = false;
       setReviewed(false);
       setSelectedWord(null);
       setSelectedError(null);
+      setSelectedStatus(null);
       setFeedback(UI.readyHint);
     },
     [activeBook.id, activeBook.words, currentWord, progress],
   );
 
   const answer = (rating: Rating) => {
+    userInteractedRef.current = true;
+    revealedRef.current = true;
     setRevealed(true);
     setReviewed(true);
     setSelectedWord(null);
     setSelectedError(null);
+    setSelectedStatus(null);
     setFeedback(feedbackFor(rating));
     void invoke<VocabState>("english_vocab_state_record_review", {
       input: {
@@ -1248,17 +2460,17 @@ export function EnglishVocabCoach() {
               <div className="mt-0.5 truncate text-2xl font-semibold tracking-normal text-white">{currentWord}</div>
               <div className="mt-1 flex min-h-5 items-center gap-1 text-sm text-cyan-100/80">
                 {detailLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{choosePhonetic(currentMetadata?.phonetic, detail?.phonetic)}</span>
-                <span className="text-slate-500">{currentMetadata?.partOfSpeech || detail?.part_of_speech || ""}</span>
+                <span>{choosePhonetic(currentMetadata?.phonetic, displayDetail?.phonetic || detail?.phonetic)}</span>
+                <span className="text-slate-500">{currentMetadata?.partOfSpeech || displayDetail?.part_of_speech || detail?.part_of_speech || ""}</span>
               </div>
               {revealed ? (
                 <div className="mt-2 min-h-8">
-                  {detailLoading && !detail ? (
+                  {detailLoading && !displayDetail ? (
                     <div className="flex items-center gap-2 text-xs text-slate-300">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
                       {UI.loading}
                     </div>
-                  ) : detailError && !detail ? (
+                  ) : detailError && !displayDetail ? (
                     <div className="space-y-2 text-xs text-rose-100">
                       <div>{UI.lookupUnavailable}</div>
                       <button
@@ -1268,10 +2480,12 @@ export function EnglishVocabCoach() {
                         {UI.retry}
                       </button>
                     </div>
-                  ) : detail ? (
+                  ) : displayDetail ? (
                     <div>
                       <div className="text-[11px] text-slate-500">{UI.meaningTitle}</div>
-                      <div className="mt-0.5 text-sm font-semibold leading-snug text-emerald-100">{detail.meaning_cn}</div>
+                      <div className="mt-0.5 text-sm font-semibold leading-snug text-emerald-100">
+                        {userFacingMeaning(displayDetail.meaning_cn)}
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -1279,36 +2493,46 @@ export function EnglishVocabCoach() {
             </div>
           </div>
 
-          <div className="relative mt-3 min-h-[128px] max-h-[164px] overflow-y-auto rounded-md border border-white/10 bg-white/[0.04] px-3 py-2">
+          <div className="relative mt-3 min-h-[156px] max-h-[320px] overflow-y-auto rounded-md border border-white/10 bg-white/[0.04] px-3 py-2">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-200/80">{UI.exampleTitle}</div>
                 <div className="mt-1 text-sm leading-relaxed text-slate-100">
-                  {detailLoading && !detail ? (
+                  {detailLoading && !effectiveExample ? (
                     <span className="inline-flex items-center gap-2 text-xs text-slate-400">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
                       {UI.exampleLoading}
                     </span>
-                  ) : detail ? (
-                    renderExample(detail.example)
-                  ) : detailError ? (
-                    <span className="text-rose-100">{UI.lookupUnavailable}</span>
-                  ) : null}
+                  ) : effectiveExample ? (
+                    renderExample(effectiveExample)
+                  ) : detailError || detail ? (
+                    <span className="inline-flex items-center gap-2 text-xs text-slate-400">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
+                      {UI.examplePending}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2 text-xs text-slate-400">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
+                      {UI.exampleLoading}
+                    </span>
+                  )}
                 </div>
-                {revealed && detail?.example_cn ? (
+                {revealed && effectiveExampleCn ? (
                   <div className="mt-2 rounded-md border border-white/10 bg-slate-950/35 px-2 py-1.5">
                     <div className="text-[11px] text-slate-500">{UI.sentenceMeaningTitle}</div>
-                    <div className="mt-0.5 text-xs leading-relaxed text-slate-300">{detail.example_cn}</div>
+                    <div className="mt-0.5 text-xs leading-relaxed text-slate-300">{effectiveExampleCn}</div>
                   </div>
                 ) : null}
               </div>
               <button
                 className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-cyan-300/25 px-2 text-xs font-medium text-cyan-100 transition hover:bg-cyan-400/10"
                 onClick={() => {
+                  userInteractedRef.current = true;
                   setRevealed(true);
                   setSelectedWord(null);
                   setSelectedError(null);
                   setSelectedLoading(null);
+                  setSelectedStatus(null);
                   setFeedback(UI.revealOnly);
                   if (detailError) retryCurrent();
                 }}
@@ -1323,7 +2547,10 @@ export function EnglishVocabCoach() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="truncate text-sm font-semibold text-cyan-100">
                     {selectedWord?.word || selectedLoading || UI.loading}
-                    <span className="ml-2 text-[11px] font-normal text-slate-400">{selectedWord?.part_of_speech || ""}</span>
+                    <span className="ml-2 text-[11px] font-normal text-slate-400">
+                      {choosePhonetic(selectedWord?.phonetic, getWordMetadata(activeBook, selectedWord?.word || selectedLoading || "")?.phonetic)}
+                      {selectedWord?.part_of_speech ? ` ${selectedWord.part_of_speech}` : ""}
+                    </span>
                   </div>
                   <button
                     className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 transition hover:bg-white/10 hover:text-white"
@@ -1331,14 +2558,20 @@ export function EnglishVocabCoach() {
                       setSelectedWord(null);
                       setSelectedError(null);
                       setSelectedLoading(null);
+                      setSelectedStatus(null);
                     }}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
                 <div className="mt-1 text-xs leading-relaxed text-slate-200">
-                  {selectedWord?.meaning_cn || (selectedLoading ? UI.loading : selectedError ? UI.lookupUnavailable : "")}
+                  {userFacingMeaning(selectedWord?.meaning_cn) || (selectedLoading ? UI.loading : selectedError ? UI.lookupUnavailable : "")}
                 </div>
+                {selectedStatus ? (
+                  <div className="mt-1 border-t border-white/10 pt-1 text-[11px] leading-relaxed text-slate-400">
+                    {selectedStatus}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

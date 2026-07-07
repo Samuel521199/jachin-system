@@ -98,13 +98,13 @@ impl Drop for JvsHandle {
     }
 }
 
-fn parse_bool_env(name: &str, default_value: bool) -> bool {
+fn env_flag_enabled(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) => {
             let t = v.trim().to_lowercase();
-            !(t == "1" || t == "true" || t == "yes")
+            matches!(t.as_str(), "1" | "true" | "yes" | "on")
         }
-        Err(_) => default_value,
+        Err(_) => false,
     }
 }
 
@@ -120,7 +120,7 @@ pub fn load_jvs_config() -> JvsConfig {
     let model_root = std::env::var("JACHIN_VOICE_MODEL_ROOT")
         .unwrap_or_else(|_| r"D:\project\jachin-system-main\data\models\voice".to_string());
     // JACHIN_SKIP_VOICE_SPAWN=1 means disable autospawn
-    let auto_spawn_enabled = parse_bool_env("JACHIN_SKIP_VOICE_SPAWN", true);
+    let auto_spawn_enabled = !env_flag_enabled("JACHIN_SKIP_VOICE_SPAWN");
 
     JvsConfig {
         host,
@@ -277,6 +277,15 @@ pub async fn start_jvs_process(app: &tauri::AppHandle) -> Result<(), String> {
     l3_spawn::write_jachin_shared_l3_debug("jvs", &err);
     l3_spawn::write_voice_companion_debug("rust", "jvs_spawn_timeout", &err, &cfg.base_url);
     Err(err)
+}
+
+pub fn start_jvs_process_sync(app: &tauri::AppHandle) -> Result<(), String> {
+    let app_clone = app.clone();
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(start_jvs_process(&app_clone)))
+    } else {
+        tauri::async_runtime::block_on(async move { start_jvs_process(&app_clone).await })
+    }
 }
 
 #[tauri::command]

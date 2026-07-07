@@ -136,10 +136,7 @@ fn ensure_jvs_blocking(app: &tauri::AppHandle) -> Result<String, String> {
     {
         return Ok(base_url);
     }
-    let app_clone = app.clone();
-    tauri::async_runtime::block_on(async move {
-        crate::jvs::process_manager::start_jvs_process(&app_clone).await
-    })?;
+    crate::jvs::process_manager::start_jvs_process_sync(app)?;
     Ok(app
         .try_state::<std::sync::Arc<crate::jvs::process_manager::JvsHandle>>()
         .map(|h| h.status().base_url.clone())

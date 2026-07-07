@@ -5,6 +5,7 @@ import {
   toeflAcademicWords,
   workplaceWords,
 } from "./wordBookData";
+import { generatedWordPhonetics } from "./wordBookPhonetics";
 
 export type EnglishWordBook = {
   id: string;
@@ -21,7 +22,17 @@ export type EnglishWordMetadata = {
 };
 
 export function getWordMetadata(book: EnglishWordBook, word: string): EnglishWordMetadata | null {
-  return book.metadata?.[word.toLowerCase()] ?? commonWordMetadata[word.toLowerCase()] ?? null;
+  const key = word.toLowerCase();
+  const direct = book.metadata?.[key] ?? commonWordMetadata[key] ?? null;
+  if (direct?.phonetic && direct.phonetic !== "-") return direct;
+  const generated = generatedWordPhonetics[key];
+  if (generated) {
+    return {
+      phonetic: generated,
+      partOfSpeech: direct?.partOfSpeech ?? "",
+    };
+  }
+  return direct;
 }
 
 const commonWordMetadata: Record<string, EnglishWordMetadata> = {

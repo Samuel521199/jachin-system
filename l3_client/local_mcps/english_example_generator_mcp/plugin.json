@@ -2,7 +2,7 @@
   "id": "com.jachin.mcp.english-example-generator",
   "name": "English Example Generator MCP",
   "description": "Local small-model MCP for generating scene-aware English example sentences.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "item_type": "MCP",
   "type": "MCP",
   "layer": "extension",

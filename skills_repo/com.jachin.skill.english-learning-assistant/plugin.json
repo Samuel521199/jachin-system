@@ -22,9 +22,15 @@
     "$JACHIN_HOME/data/english_vocab/state.json",
     "$JACHIN_HOME/data/english_vocab/cache.json",
     "$JACHIN_HOME/data/english_vocab/example_generator_cache.json",
+    "$JACHIN_HOME/data/english_vocab/completion_cache.json",
     "localStorage:jachin.english_vocab.lookup_cache.v1",
     "localStorage:jachin.english_vocab.lookup_cache.v2",
-    "localStorage:jachin.english_vocab.lookup_cache.v3"
+    "localStorage:jachin.english_vocab.lookup_cache.v3",
+    "localStorage:jachin.english_vocab.lookup_cache.v4",
+    "localStorage:jachin.english_vocab.lookup_cache.v5",
+    "localStorage:jachin.english_vocab.lookup_cache.v6",
+    "localStorage:jachin.english_vocab.lookup_cache.v7",
+    "localStorage:jachin.english_vocab.lookup_cache.v8"
   ],
   "required_mcps": [
     "com.jachin.mcp.english-tutor",
@@ -45,5 +51,5 @@
     "skill-test"
   ],
   "type": "SKILL",
-  "version": "1.0.2"
+  "version": "1.0.5"
 }

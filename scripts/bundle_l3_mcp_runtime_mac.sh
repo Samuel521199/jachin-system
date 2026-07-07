@@ -108,6 +108,14 @@ echo "[MCP Runtime] Upgrading pip..."
 echo "[MCP Runtime] pip install -r $(basename "$REQ_FILE")..."
 "$PYTHON_BIN" -m pip install -r "$REQ_FILE" --quiet
 
+echo "[MCP Runtime] pip install local vocabulary model runtime deps..."
+"$PYTHON_BIN" -m pip install ctranslate2==4.8.0 sentencepiece==0.2.0 --only-binary=:all: --quiet
+
+echo "[MCP Runtime] pip install optional GGUF example runtime (llama-cpp-python)..."
+if ! "$PYTHON_BIN" -m pip install 'llama-cpp-python>=0.3.9,<0.4' --only-binary=:all: --quiet; then
+  echo "[MCP Runtime][WARN] llama-cpp-python binary wheel unavailable. English examples will use dictionary/cache and remote fallback until installed."
+fi
+
 # ---------- 复制 runtime 文档/manifest ----------
 MCP_RT_DIR="$ROOT/tools/mcp-runtime"
 RUNTIME_OUT="$OUT_DIR/runtime"

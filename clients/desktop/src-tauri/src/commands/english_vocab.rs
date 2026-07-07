@@ -2,10 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -99,6 +102,7 @@ impl Default for EnglishVocabState {
 pub async fn english_vocab_lookup(
     input: EnglishVocabLookupInput,
 ) -> Result<EnglishVocabLookupResult, String> {
+    let lookup_started = Instant::now();
     let word = input.word.trim().to_string();
     if word.is_empty() {
         return Err("word is empty".to_string());
@@ -119,14 +123,43 @@ pub async fn english_vocab_lookup(
 
     let mut cache = read_english_vocab_lookup_cache();
     let scoped_key = english_vocab_lookup_cache_key(&book_id, &word, context_sentence.as_deref());
+    english_vocab_trace(
+        "lookup_start",
+        json!({
+            "word": word,
+            "book_id": book_id,
+            "has_context": context_sentence.is_some(),
+            "scoped_key": scoped_key,
+        }),
+    );
     if let Some(cached) = cache.get(&scoped_key).cloned() {
         if !lookup_result_needs_large_model_fallback(&cached) {
+            english_vocab_trace(
+                "lookup_cache_hit_scoped",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "source": cached.source.as_str(),
+                    "model": cached.model.as_str(),
+                    "elapsed_ms": lookup_started.elapsed().as_millis(),
+                }),
+            );
             return Ok(cached);
         }
     }
     let plain_key = english_vocab_lookup_cache_key(&book_id, &word, None);
     if let Some(cached) = cache.get(&plain_key).cloned() {
         if !lookup_result_needs_large_model_fallback(&cached) {
+            english_vocab_trace(
+                "lookup_cache_hit_plain",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "source": cached.source.as_str(),
+                    "model": cached.model.as_str(),
+                    "elapsed_ms": lookup_started.elapsed().as_millis(),
+                }),
+            );
             return Ok(cached);
         }
     }
@@ -148,6 +181,16 @@ pub async fn english_vocab_lookup(
                 result,
             );
             let _ = write_english_vocab_lookup_cache(&cache);
+            english_vocab_trace(
+                "lookup_local_success",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "source": result.source.as_str(),
+                    "model": result.model.as_str(),
+                    "elapsed_ms": lookup_started.elapsed().as_millis(),
+                }),
+            );
             return Ok(result.clone());
         }
     }
@@ -162,6 +205,16 @@ pub async fn english_vocab_lookup(
             &result,
         );
         let _ = write_english_vocab_lookup_cache(&cache);
+        english_vocab_trace(
+            "lookup_local_fallback_returned",
+            json!({
+                "word": word,
+                "book_id": book_id,
+                "source": result.source.as_str(),
+                "model": result.model.as_str(),
+                "elapsed_ms": lookup_started.elapsed().as_millis(),
+            }),
+        );
         return Ok(result);
     }
     let remote_input = normalized_input.clone();
@@ -184,7 +237,26 @@ pub async fn english_vocab_lookup(
         &result,
     );
     let _ = write_english_vocab_lookup_cache(&cache);
+    english_vocab_trace(
+        "lookup_remote_or_fallback_returned",
+        json!({
+            "word": word,
+            "book_id": book_id,
+            "source": result.source.as_str(),
+            "model": result.model.as_str(),
+            "elapsed_ms": lookup_started.elapsed().as_millis(),
+        }),
+    );
     Ok(result)
+}
+
+#[tauri::command]
+pub fn english_vocab_warmup() -> Result<Value, String> {
+    english_vocab_service_post(
+        "/warmup",
+        &json!({"direction": "en-zh"}),
+        Duration::from_secs(8),
+    )
 }
 
 fn fallback_lookup_result(input: &EnglishVocabLookupInput) -> EnglishVocabLookupResult {
@@ -200,18 +272,12 @@ fn fallback_lookup_result(input: &EnglishVocabLookupInput) -> EnglishVocabLookup
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
-        .unwrap_or_else(|| default_example(&clean_word));
-    let meaning = if input
-        .context_sentence
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some()
-    {
-        format!("本地词典暂未收录：{}", clean_word)
-    } else {
-        format!("{}：本地词典暂未收录", clean_word)
-    };
+        .unwrap_or_default();
+    let meaning = translate_with_local_model(&clean_word)
+        .ok()
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty() && contains_cjk(x))
+        .unwrap_or_else(|| format!("{}：词义正在准备，请稍后重试。", clean_word));
     EnglishVocabLookupResult {
         word: clean_word,
         phonetic: "-".to_string(),
@@ -289,54 +355,8 @@ pub fn english_vocab_prefetch_sentence(
             let sentence_cn = translate_with_local_model_output(&sentence_bg)
                 .map(|x| x.translation)
                 .unwrap_or_default();
-            let mut done = BTreeSet::new();
-
-            if let Ok(batch) = translate_with_local_model_batch_output(&pending_bg) {
-                for (idx, token) in pending_bg.iter().enumerate() {
-                    let scoped_key =
-                        english_vocab_lookup_cache_key(&book_id_bg, token, Some(&sentence_bg));
-                    if cache.contains_key(&scoped_key) {
-                        continue;
-                    }
-                    let meaning = batch
-                        .translations
-                        .get(idx)
-                        .map(String::as_str)
-                        .unwrap_or("")
-                        .trim();
-                    if meaning.is_empty() {
-                        continue;
-                    }
-                    let result = EnglishVocabLookupResult {
-                        word: token.clone(),
-                        phonetic: "-".to_string(),
-                        part_of_speech: "-".to_string(),
-                        meaning_cn: meaning.to_string(),
-                        example: sentence_bg.clone(),
-                        example_cn: sentence_cn.clone(),
-                        source: "local_translate_prefetch".to_string(),
-                        model: if batch.model_id.trim().is_empty() {
-                            "local_translate".to_string()
-                        } else {
-                            batch.model_id.clone()
-                        },
-                    };
-                    cache_insert_lookup_result(
-                        &mut cache,
-                        &book_id_bg,
-                        token,
-                        Some(&sentence_bg),
-                        &result,
-                    );
-                    done.insert(token.clone());
-                    changed = true;
-                }
-            }
 
             for token in pending_bg {
-                if done.contains(&token) {
-                    continue;
-                }
                 let scoped_key =
                     english_vocab_lookup_cache_key(&book_id_bg, &token, Some(&sentence_bg));
                 if cache.contains_key(&scoped_key) {
@@ -348,6 +368,14 @@ pub fn english_vocab_prefetch_sentence(
                     context_sentence: Some(sentence_bg.clone()),
                 };
                 if let Ok(result) = lookup_with_local_translate_or_example(&req) {
+                    let result = if result.example_cn.trim().is_empty() && !sentence_cn.is_empty() {
+                        EnglishVocabLookupResult {
+                            example_cn: sentence_cn.clone(),
+                            ..result
+                        }
+                    } else {
+                        result
+                    };
                     cache_insert_lookup_result(
                         &mut cache,
                         &book_id_bg,
@@ -374,16 +402,8 @@ pub fn english_vocab_prefetch_sentence(
 fn lookup_with_local_translate_or_example(
     input: &EnglishVocabLookupInput,
 ) -> Result<EnglishVocabLookupResult, String> {
-    if input
-        .context_sentence
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some()
-    {
-        if let Ok(result) = lookup_with_local_translate_fastpath(&input) {
-            return Ok(result);
-        }
+    if let Ok(result) = lookup_with_english_vocab_service(input) {
+        return Ok(result);
     }
     if let Ok(result) = lookup_with_local_example_model(&input) {
         return Ok(result);
@@ -612,8 +632,8 @@ fn lookup_with_dashscope(
         phonetic: value_string(&parsed, "phonetic").unwrap_or_else(|| "-".to_string()),
         part_of_speech: value_string(&parsed, "part_of_speech").unwrap_or_else(|| "-".to_string()),
         meaning_cn: value_string(&parsed, "meaning_cn")
-            .unwrap_or_else(|| "Model returned no meaning. Please retry.".to_string()),
-        example: value_string(&parsed, "example").unwrap_or_else(|| default_example(&input.word)),
+            .unwrap_or_else(|| "模型已响应，但释义生成不完整，请重试。".to_string()),
+        example: value_string(&parsed, "example").unwrap_or_default(),
         example_cn: value_string(&parsed, "example_cn").unwrap_or_else(|| "".to_string()),
         source: "dashscope".to_string(),
         model,
@@ -639,6 +659,334 @@ fn english_vocab_remote_lookup_enabled() -> bool {
     .is_some()
 }
 
+static ENGLISH_VOCAB_SERVICE_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+fn english_vocab_service_child() -> &'static Mutex<Option<Child>> {
+    ENGLISH_VOCAB_SERVICE_CHILD.get_or_init(|| Mutex::new(None))
+}
+
+pub fn shutdown_english_vocab_service() {
+    let Ok(mut guard) = english_vocab_service_child().lock() else {
+        return;
+    };
+    let Some(mut child) = guard.take() else {
+        return;
+    };
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let pid = child.id();
+            english_vocab_trace("service_shutdown_kill", json!({ "pid": pid }));
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Err(e) => {
+            english_vocab_trace("service_shutdown_wait_failed", json!({ "error": e.to_string() }));
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn english_vocab_service_port() -> u16 {
+    std::env::var("JACHIN_ENGLISH_VOCAB_SERVICE_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(18987)
+}
+
+fn english_vocab_service_url() -> String {
+    first_non_empty(&merged_env_values(), &["JACHIN_ENGLISH_VOCAB_SERVICE_URL"])
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", english_vocab_service_port()))
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn english_vocab_service_health(url: &str, timeout: Duration) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    client
+        .get(format!("{}/health", url.trim_end_matches('/')))
+        .send()
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false)
+}
+
+fn ensure_english_vocab_service() -> Result<String, String> {
+    let url = english_vocab_service_url();
+    if english_vocab_service_health(&url, Duration::from_millis(450)) {
+        english_vocab_trace("service_health_ok", json!({"url": url}));
+        return Ok(url);
+    }
+    if std::env::var("JACHIN_ENGLISH_VOCAB_SERVICE_URL")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Err(format!("English vocab service is not reachable: {url}"));
+    }
+
+    let mut guard = english_vocab_service_child()
+        .lock()
+        .map_err(|_| "English vocab service child lock poisoned".to_string())?;
+    if let Some(child) = guard.as_mut() {
+        match child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(_)) | Err(_) => {
+                *guard = None;
+            }
+        }
+    }
+    if english_vocab_service_health(&url, Duration::from_millis(450)) {
+        english_vocab_trace("service_health_ok_after_lock", json!({"url": url}));
+        return Ok(url);
+    }
+
+    let dir =
+        local_translate_dir().ok_or_else(|| "local translate MCP dir not found".to_string())?;
+    let service = dir.join("english_vocab_service.py");
+    if !service.is_file() {
+        return Err(format!(
+            "English vocab service script missing: {}",
+            service.display()
+        ));
+    }
+    let python = local_mcp_python_command();
+    let mut cmd = Command::new(python);
+    cmd.arg("-u")
+        .arg(&service)
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(english_vocab_service_port().to_string());
+    cmd.env("JACHIN_HOME", jachin_home_dir());
+    cmd.env("JACHIN_ENGLISH_VOCAB_SERVICE_LOG", english_vocab_service_log_path());
+    let mut python_paths = vec![dir.clone()];
+    if let Some(example_dir) = local_example_generator_dir() {
+        python_paths.push(example_dir);
+    }
+    if let Ok(joined) = std::env::join_paths(python_paths.iter()) {
+        cmd.env("PYTHONPATH", joined);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let stdout_log = service_stdio_log("stdout").ok();
+    let stderr_log = service_stdio_log("stderr").ok();
+    cmd.stdin(Stdio::null());
+    if let Some(file) = stdout_log {
+        cmd.stdout(Stdio::from(file));
+    } else {
+        cmd.stdout(Stdio::null());
+    }
+    if let Some(file) = stderr_log {
+        cmd.stderr(Stdio::from(file));
+    } else {
+        cmd.stderr(Stdio::null());
+    }
+    english_vocab_trace(
+        "service_spawn_start",
+        json!({
+            "url": url,
+            "script": service.display().to_string(),
+            "port": english_vocab_service_port(),
+            "log": english_vocab_service_log_path().display().to_string(),
+        }),
+    );
+    let child = cmd
+        .spawn()
+        .map_err(|e| {
+            english_vocab_trace("service_spawn_failed", json!({"error": e.to_string()}));
+            format!("spawn English vocab service failed: {e}")
+        })?;
+    *guard = Some(child);
+    drop(guard);
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(7) {
+        if english_vocab_service_health(&url, Duration::from_millis(500)) {
+            english_vocab_trace(
+                "service_ready",
+                json!({
+                    "url": url,
+                    "elapsed_ms": start.elapsed().as_millis(),
+                }),
+            );
+            return Ok(url);
+        }
+        thread::sleep(Duration::from_millis(120));
+    }
+    english_vocab_trace(
+        "service_ready_timeout",
+        json!({
+            "url": url,
+            "elapsed_ms": start.elapsed().as_millis(),
+            "log": english_vocab_service_log_path().display().to_string(),
+        }),
+    );
+    Err(format!("English vocab service did not become ready: {url}"))
+}
+
+fn english_vocab_service_post(
+    endpoint: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let url = ensure_english_vocab_service()?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("create English vocab service HTTP client failed: {e}"))?;
+    let resp = client
+        .post(format!("{}{}", url, endpoint))
+        .json(payload)
+        .send()
+        .map_err(|e| {
+            english_vocab_trace(
+                "service_request_failed",
+                json!({
+                    "endpoint": endpoint,
+                    "error": e.to_string(),
+                    "elapsed_ms": started.elapsed().as_millis(),
+                }),
+            );
+            format!("English vocab service request failed: {e}")
+        })?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .map_err(|e| format!("read English vocab service response failed: {e}"))?;
+    let value: Value = serde_json::from_str(&body).map_err(|e| {
+        format!(
+            "parse English vocab service response failed: {e}; body={}",
+            body.chars().take(300).collect::<String>()
+        )
+    })?;
+    if !status.is_success() || !value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        let error = value_string(&value, "error").unwrap_or_else(|| {
+            format!(
+                "English vocab service returned HTTP {}: {}",
+                status.as_u16(),
+                body.chars().take(300).collect::<String>()
+            )
+        });
+        english_vocab_trace(
+            "service_response_not_ok",
+            json!({
+                "endpoint": endpoint,
+                "status": status.as_u16(),
+                "error": error.as_str(),
+                "elapsed_ms": started.elapsed().as_millis(),
+            }),
+        );
+        return Err(error);
+    }
+    english_vocab_trace(
+        "service_response_ok",
+        json!({
+            "endpoint": endpoint,
+            "status": status.as_u16(),
+            "elapsed_ms": started.elapsed().as_millis(),
+        }),
+    );
+    Ok(value)
+}
+
+fn english_vocab_service_post_if_running(
+    endpoint: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let url = english_vocab_service_url();
+    if !english_vocab_service_health(&url, Duration::from_millis(120)) {
+        return Err("English vocab service is not running".to_string());
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("create English vocab service HTTP client failed: {e}"))?;
+    let resp = client
+        .post(format!("{}{}", url, endpoint))
+        .json(payload)
+        .send()
+        .map_err(|e| format!("English vocab service request failed: {e}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .map_err(|e| format!("read English vocab service response failed: {e}"))?;
+    let value: Value = serde_json::from_str(&body).map_err(|e| {
+        format!(
+            "parse English vocab service response failed: {e}; body={}",
+            body.chars().take(300).collect::<String>()
+        )
+    })?;
+    if !status.is_success() || !value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        return Err(value_string(&value, "error").unwrap_or_else(|| {
+            format!(
+                "English vocab service returned HTTP {}: {}",
+                status.as_u16(),
+                body.chars().take(300).collect::<String>()
+            )
+        }));
+    }
+    Ok(value)
+}
+
+fn lookup_with_english_vocab_service(
+    input: &EnglishVocabLookupInput,
+) -> Result<EnglishVocabLookupResult, String> {
+    let started = Instant::now();
+    let value = english_vocab_service_post(
+        "/lookup",
+        &json!({
+            "word": input.word.trim(),
+            "book_id": input.book_id.as_deref().unwrap_or("daily_life_ngsl"),
+            "context_sentence": input.context_sentence.as_deref().unwrap_or(""),
+        }),
+        Duration::from_secs(8),
+    )?;
+    let result = EnglishVocabLookupResult {
+        word: value_string(&value, "word").unwrap_or_else(|| input.word.trim().to_string()),
+        phonetic: value_string(&value, "phonetic").unwrap_or_else(|| "-".to_string()),
+        part_of_speech: value_string(&value, "part_of_speech").unwrap_or_else(|| "-".to_string()),
+        meaning_cn: value_string(&value, "meaning_cn").unwrap_or_default(),
+        example: value_string(&value, "example").unwrap_or_default(),
+        example_cn: value_string(&value, "example_cn").unwrap_or_default(),
+        source: value_string(&value, "source")
+            .unwrap_or_else(|| "english_vocab_service".to_string()),
+        model: value_string(&value, "model").unwrap_or_else(|| "english_vocab_service".to_string()),
+    };
+    if lookup_result_needs_large_model_fallback(&result) {
+        english_vocab_trace(
+            "service_lookup_incomplete",
+            json!({
+                "word": input.word.trim(),
+                "source": result.source.as_str(),
+                "model": result.model.as_str(),
+                "elapsed_ms": started.elapsed().as_millis(),
+            }),
+        );
+        return Err("English vocab service returned incomplete result".to_string());
+    }
+    english_vocab_trace(
+        "service_lookup_success",
+        json!({
+            "word": input.word.trim(),
+            "source": result.source.as_str(),
+            "model": result.model.as_str(),
+            "elapsed_ms": started.elapsed().as_millis(),
+        }),
+    );
+    Ok(result)
+}
+
 fn lookup_with_local_example_model(
     input: &EnglishVocabLookupInput,
 ) -> Result<EnglishVocabLookupResult, String> {
@@ -646,7 +994,7 @@ fn lookup_with_local_example_model(
         .ok_or_else(|| "local example generator cli not found".to_string())?;
     let python = local_mcp_python_command();
     let book_id = input.book_id.as_deref().unwrap_or("daily_life_ngsl");
-    let local_meaning = translate_with_local_model(input.word.trim()).unwrap_or_default();
+    let local_meaning = String::new();
     let mut cmd = Command::new(python);
     cmd.arg(cli)
         .arg("generate")
@@ -704,13 +1052,6 @@ fn lookup_with_local_example_model(
 #[derive(Debug, Clone)]
 struct LocalTranslateOutput {
     translation: String,
-    model_id: String,
-}
-
-#[derive(Debug, Clone)]
-struct LocalTranslateBatchOutput {
-    translations: Vec<String>,
-    model_id: String,
 }
 
 fn command_output_with_timeout(
@@ -751,52 +1092,17 @@ fn command_output_with_timeout(
     }
 }
 
-fn lookup_with_local_translate_fastpath(
-    input: &EnglishVocabLookupInput,
-) -> Result<EnglishVocabLookupResult, String> {
-    let word = input.word.trim();
-    let context = input
-        .context_sentence
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "context sentence is empty".to_string())?;
-    let batch = translate_with_local_model_batch_output(&[word.to_string(), context.to_string()])?;
-    let meaning = batch
-        .translations
-        .first()
-        .map(String::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if meaning.is_empty() {
-        return Err("local translate returned empty meaning".to_string());
-    }
-    let sentence_cn = batch
-        .translations
-        .get(1)
-        .map(String::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let model = batch.model_id.trim().to_string();
-    Ok(EnglishVocabLookupResult {
-        word: word.to_string(),
-        phonetic: "-".to_string(),
-        part_of_speech: "-".to_string(),
-        meaning_cn: meaning,
-        example: context.to_string(),
-        example_cn: sentence_cn,
-        source: "local_translate".to_string(),
-        model: if model.is_empty() {
-            "local_translate".to_string()
-        } else {
-            model
-        },
-    })
-}
-
 fn translate_with_local_model_output(text: &str) -> Result<LocalTranslateOutput, String> {
+    if let Ok(value) = english_vocab_service_post(
+        "/translate",
+        &json!({"text": text, "direction": "en-zh"}),
+        Duration::from_secs(5),
+    ) {
+        if let Some(translation) = value_string(&value, "translation") {
+            return Ok(LocalTranslateOutput { translation });
+        }
+    }
+
     let cli =
         local_translate_cli_path().ok_or_else(|| "local translate cli not found".to_string())?;
     let python = local_mcp_python_command();
@@ -837,78 +1143,7 @@ fn translate_with_local_model_output(text: &str) -> Result<LocalTranslateOutput,
     }
     let translation = value_string(&parsed, "translation")
         .ok_or_else(|| "local translate returned no translation".to_string())?;
-    let model_id = value_string(&parsed, "model_id").unwrap_or_default();
-    Ok(LocalTranslateOutput {
-        translation,
-        model_id,
-    })
-}
-
-fn translate_with_local_model_batch_output(
-    texts: &[String],
-) -> Result<LocalTranslateBatchOutput, String> {
-    if texts.is_empty() {
-        return Err("texts is empty".to_string());
-    }
-    let cli =
-        local_translate_cli_path().ok_or_else(|| "local translate cli not found".to_string())?;
-    let python = local_mcp_python_command();
-    let texts_json = serde_json::to_string(texts)
-        .map_err(|e| format!("serialize texts for local translate failed: {e}"))?;
-    let mut cmd = Command::new(python);
-    cmd.arg(cli)
-        .arg("translate-batch")
-        .arg("--texts-json")
-        .arg(texts_json)
-        .arg("--direction")
-        .arg("en-zh");
-    cmd.env("JACHIN_HOME", jachin_home_dir());
-    if let Some(parent) = local_translate_dir() {
-        cmd.env("PYTHONPATH", parent);
-    }
-    let output = command_output_with_timeout(cmd, Duration::from_secs(12), "local translate-batch")
-        .map_err(|e| format!("local translate-batch failed to start: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "local translate-batch exited {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .take(300)
-                .collect::<String>()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|e| {
-        format!(
-            "parse local translate-batch response failed: {e}; stdout={}",
-            stdout.chars().take(300).collect::<String>()
-        )
-    })?;
-    let ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
-    if !ok {
-        return Err(value_string(&parsed, "error")
-            .unwrap_or_else(|| "local translate-batch returned not ok".to_string()));
-    }
-    let translations = parsed
-        .get("translations")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "local translate-batch returned no translations".to_string())?
-        .iter()
-        .map(|x| x.as_str().unwrap_or("").trim().to_string())
-        .collect::<Vec<_>>();
-    if translations.len() != texts.len() {
-        return Err(format!(
-            "local translate-batch size mismatch: {} vs {}",
-            translations.len(),
-            texts.len()
-        ));
-    }
-    let model_id = value_string(&parsed, "model_id").unwrap_or_default();
-    Ok(LocalTranslateBatchOutput {
-        translations,
-        model_id,
-    })
+    Ok(LocalTranslateOutput { translation })
 }
 
 fn translate_with_local_model(text: &str) -> Result<String, String> {
@@ -1086,15 +1321,26 @@ fn english_vocab_lookup_cache_key(
 
 fn lookup_result_is_incomplete(result: &EnglishVocabLookupResult) -> bool {
     let meaning = result.meaning_cn.trim();
+    let source = result.source.trim().to_ascii_lowercase();
+    let model = result.model.trim().to_ascii_lowercase();
+    let example_cn = result.example_cn.trim();
     meaning.is_empty()
         || result.source == "local_fallback"
         || result.source == "local_context_fallback"
+        || source.contains("local_scene")
+        || source.contains("local_service_fallback")
+        || source.contains("example_not_ready")
+        || source.contains("example_translation_not_ready")
+        || model.contains("local_scene")
         || lookup_example_is_placeholder(&result.example)
+        || example_cn.is_empty()
+        || !contains_cjk(example_cn)
         || meaning.contains("暂未收录")
         || meaning.contains("可先按例句语境记忆")
         || meaning.contains("后台会自动补全")
         || meaning.contains("no meaning")
         || meaning.contains("Model returned no meaning")
+        || meaning.contains("释义生成不完整")
 }
 
 fn lookup_result_needs_large_model_fallback(result: &EnglishVocabLookupResult) -> bool {
@@ -1127,6 +1373,11 @@ fn lookup_example_is_placeholder(example: &str) -> bool {
         || text.contains("learn the word")
         || text.contains("remember the word")
         || text.contains("useful in everyday conversation")
+        || text.contains("while preparing dinner")
+        || text.contains("while preparing for the day")
+        || text.contains("while making a simple plan")
+        || text.contains("during their weekend errands")
+        || text.contains("at home last night")
         || text.contains("will be refreshed")
         || text.contains("clear example for")
 }
@@ -1145,6 +1396,28 @@ fn cache_insert_lookup_result(
     upsert_cache_entry(cache, scoped_key, result);
     let plain_key = english_vocab_lookup_cache_key(book_id, word, None);
     upsert_cache_entry(cache, plain_key, result);
+    if context_sentence.is_none() || result.source == "dashscope" {
+        remember_lookup_in_vocab_service(book_id, word, result);
+    }
+}
+
+fn remember_lookup_in_vocab_service(book_id: &str, word: &str, result: &EnglishVocabLookupResult) {
+    let payload = json!({
+        "book_id": book_id,
+        "word": word,
+        "phonetic": result.phonetic.as_str(),
+        "part_of_speech": result.part_of_speech.as_str(),
+        "meaning_cn": result.meaning_cn.as_str(),
+        "example": result.example.as_str(),
+        "example_cn": result.example_cn.as_str(),
+        "source": result.source.as_str(),
+        "model": result.model.as_str(),
+    });
+    let _ = english_vocab_service_post_if_running(
+        "/cache-card",
+        &payload,
+        Duration::from_millis(900),
+    );
 }
 
 fn upsert_cache_entry(
@@ -1187,7 +1460,7 @@ fn extract_sentence_tokens(sentence: &str, max_tokens: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let mut buf = String::new();
-    let mut flush = |buf: &mut String, out: &mut Vec<String>, seen: &mut BTreeSet<String>| {
+    let flush = |buf: &mut String, out: &mut Vec<String>, seen: &mut BTreeSet<String>| {
         if buf.is_empty() {
             return;
         }
@@ -1243,6 +1516,50 @@ fn write_english_vocab_state(state: &EnglishVocabState) -> Result<(), String> {
     fs::write(&path, content).map_err(|e| format!("write english vocab state failed: {e}"))
 }
 
+fn english_vocab_log_dir() -> PathBuf {
+    jachin_home_dir().join("logs")
+}
+
+fn english_vocab_lookup_log_path() -> PathBuf {
+    english_vocab_log_dir().join("english_vocab_lookup.log")
+}
+
+fn english_vocab_service_log_path() -> PathBuf {
+    english_vocab_log_dir().join("english_vocab_service.log")
+}
+
+fn service_stdio_log(kind: &str) -> Result<fs::File, String> {
+    let path = english_vocab_log_dir().join(format!("english_vocab_service_{kind}.log"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("create english vocab log dir failed: {e}"))?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("open english vocab service stdio log failed: {e}"))
+}
+
+fn english_vocab_trace(event: &str, detail: Value) {
+    let path = english_vocab_lookup_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let row = json!({
+        "ts_ms": ts_ms,
+        "event": event,
+        "detail": detail,
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}", row);
+    }
+}
+
 fn jachin_home_dir() -> PathBuf {
     if let Ok(raw) = std::env::var("JACHIN_HOME") {
         let p = PathBuf::from(raw);
@@ -1255,14 +1572,6 @@ fn jachin_home_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_default()
         .join(".jachin")
-}
-
-fn default_example(word: &str) -> String {
-    let word = word.trim();
-    if word.is_empty() {
-        return "This example will be refreshed by the local vocabulary engine.".to_string();
-    }
-    format!("A clear example for {word} will be refreshed locally.")
 }
 
 fn extract_json_object(content: &str) -> String {
@@ -1308,6 +1617,8 @@ fn merged_env_values() -> HashMap<String, String> {
         "JACHIN_ENGLISH_VOCAB_ALLOW_REMOTE",
         "JACHIN_ENGLISH_VOCAB_MODEL",
         "JACHIN_ENGLISH_VOCAB_API_BASE",
+        "JACHIN_ENGLISH_VOCAB_SERVICE_URL",
+        "JACHIN_ENGLISH_VOCAB_SERVICE_PORT",
         "LLM_MODEL",
     ] {
         if let Ok(v) = std::env::var(key) {

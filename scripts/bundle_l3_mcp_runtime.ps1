@@ -96,6 +96,12 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "pip install local vocabulary runtime deps failed with exit $LASTEXITCODE"
 }
 
+Write-Host "[MCP Runtime] pip install optional GGUF example runtime (llama-cpp-python) ..." -ForegroundColor Cyan
+& $py -m pip install "llama-cpp-python>=0.3.9,<0.4" --only-binary=:all: --quiet
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "llama-cpp-python binary wheel unavailable for this runtime. English examples will use dictionary/cache and remote fallback until the GGUF runtime is installed."
+}
+
 if (Test-Path $mcpRtReadme) {
     $null = New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "runtime") | Out-Null
     Copy-Item $mcpRtReadme -Destination (Join-Path $OutDir "runtime\README_MCP_RUNTIME.txt") -Force
