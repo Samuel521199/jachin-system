@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -18,7 +18,7 @@ from tkinter import ttk, messagebox
 
 LOG = logging.getLogger("jachin.voice_audition")
 MOSS_FRAME_MS = 80
-DEFAULT_TEXT = "你好，我是jachin、有什么可以帮您"
+DEFAULT_TEXT = "你好，我在。"
 
 
 def parse_args() -> argparse.Namespace:
@@ -454,8 +454,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
-

@@ -88,7 +88,7 @@ async def _l3_ws_run_async(
     ws_url: str,
     payload: dict[str, Any],
     timeout: float,
-) -> tuple[str, float]:
+) -> tuple[str, float, float, dict[str, Any]]:
     """Run one L3 turn through the same /sensory WebSocket path used by desktop companion."""
     try:
         import websockets
@@ -98,6 +98,7 @@ async def _l3_ws_run_async(
     open_timeout = max(0.5, min(5.0, timeout))
     sent_at = 0.0
     first_chunk_ms = 0.0
+    answer_ms = 0.0
     chunks: list[str] = []
     async with websockets.connect(
         ws_url,
@@ -142,19 +143,119 @@ async def _l3_ws_run_async(
                         first_chunk_ms = _perf_ms() - sent_at
                 continue
             if step == "answer":
+                answer_ms = _perf_ms() - sent_at
+                trace = msg.get("latency_trace") if isinstance(msg.get("latency_trace"), dict) else {}
                 answer = str(msg.get("content") or "").strip()
                 if answer:
-                    return answer, first_chunk_ms
+                    return answer, first_chunk_ms, answer_ms, trace
                 joined = "".join(chunks).strip()
                 if joined:
-                    return joined, first_chunk_ms
+                    return joined, first_chunk_ms, answer_ms, trace
                 raise RuntimeError("L3 WebSocket returned empty answer")
+            if step == "voice_template_post_answer_metrics":
+                continue
             if step == "error":
                 raise RuntimeError(str(msg.get("content") or msg.get("error") or "L3 WebSocket error"))
 
 
-def _l3_ws_run(ws_url: str, payload: dict[str, Any], timeout: float) -> tuple[str, float]:
+def _l3_ws_run(ws_url: str, payload: dict[str, Any], timeout: float) -> tuple[str, float, float, dict[str, Any]]:
     return asyncio.run(_l3_ws_run_async(ws_url, payload, timeout))
+
+
+class L3WsClient:
+    """Persistent /sensory WebSocket client, matching the desktop companion connection shape."""
+
+    def __init__(self, ws_url: str):
+        self.ws_url = ws_url
+        self._ws = None
+
+    def close(self) -> None:
+        ws = self._ws
+        self._ws = None
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def _connect(self, timeout: float):
+        if self._ws is not None:
+            return self._ws
+        try:
+            from websockets.sync.client import connect
+        except ImportError as e:
+            raise RuntimeError("websockets.sync client is required for persistent L3 WS") from e
+        self._ws = connect(
+            self.ws_url,
+            open_timeout=max(0.5, min(5.0, timeout)),
+            close_timeout=1,
+            ping_interval=None,
+            max_size=16 * 1024 * 1024,
+        )
+        self._ws.send(json.dumps({"type": "manifest", "caps": ["voice_latency_bench"]}, ensure_ascii=False))
+        return self._ws
+
+    def prepare_context(self, chat_id: str, timeout: float = 3.0) -> None:
+        cid = (chat_id or "").strip()
+        if not cid:
+            return
+        ws = self._connect(timeout)
+        ws.send(
+            json.dumps(
+                {
+                    "type": "prepare_context",
+                    "trigger": "companion_voice_start",
+                    "source": "desktop_voice",
+                    "chat_id": cid,
+                    "session_id": cid,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    def run(self, payload: dict[str, Any], timeout: float) -> tuple[str, float, float, dict[str, Any]]:
+        ws = self._connect(timeout)
+        sent_at = _perf_ms()
+        first_chunk_ms = 0.0
+        answer_ms = 0.0
+        chunks: list[str] = []
+        try:
+            ws.send(json.dumps(payload, ensure_ascii=False))
+            deadline = time.monotonic() + max(0.5, timeout)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("L3 WebSocket timed out waiting for answer")
+                raw = ws.recv(timeout=remaining)
+                try:
+                    msg = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+                except Exception:
+                    continue
+                step = str(msg.get("step_type") or msg.get("type") or "")
+                if step == "chunk":
+                    content = str(msg.get("content") or "")
+                    if content:
+                        chunks.append(content)
+                        if first_chunk_ms <= 0:
+                            first_chunk_ms = _perf_ms() - sent_at
+                    continue
+                if step == "answer":
+                    answer_ms = _perf_ms() - sent_at
+                    trace = msg.get("latency_trace") if isinstance(msg.get("latency_trace"), dict) else {}
+                    answer = str(msg.get("content") or "").strip()
+                    if answer:
+                        return answer, first_chunk_ms, answer_ms, trace
+                    joined = "".join(chunks).strip()
+                    if joined:
+                        return joined, first_chunk_ms, answer_ms, trace
+                    raise RuntimeError("L3 WebSocket returned empty answer")
+                if step == "voice_template_post_answer_metrics":
+                    continue
+                if step == "error":
+                    raise RuntimeError(str(msg.get("content") or msg.get("error") or "L3 WebSocket error"))
+        except Exception:
+            self.close()
+            raise
 
 
 def _http_post_multipart_stt(url: str, wav_bytes: bytes, timeout: float) -> dict[str, Any]:
@@ -352,6 +453,11 @@ class RunMetric:
     stt_ms: float
     l3_ms: float
     l3_first_chunk_ms: float
+    l3_answer_ms: float
+    l3_server_session_save_ms: float
+    l3_server_broadcast_ms: float
+    l3_server_append_final_ms: float
+    l3_latency_trace: str
     tts_ms: float
     total_ms: float
     recognized_text: str
@@ -376,6 +482,8 @@ def run_once(
     l3_base: str,
     l3_ws: str,
     l3_transport: str,
+    l3_ws_client: L3WsClient | None,
+    chat_id: str,
     wav_bytes: bytes | None,
     text_input: str | None,
     voice: str,
@@ -395,6 +503,12 @@ def run_once(
     stamp = _now_ms()
     stt_ms = l3_ms = tts_ms = 0.0
     l3_first_chunk_ms = 0.0
+    l3_answer_ms = 0.0
+    l3_server_session_save_ms = 0.0
+    l3_server_broadcast_ms = 0.0
+    l3_server_append_final_ms = 0.0
+    l3_latency_trace = ""
+    l3_trace: dict[str, Any] = {}
     recognized = ""
     answer = ""
     tts_input = ""
@@ -426,7 +540,6 @@ def run_once(
         if progress:
             progress("L3 推理中...")
         st = _perf_ms()
-        chat_id = f"{chat_prefix}-{uuid.uuid4().hex[:10]}"
         if companion_real_route:
             decision = dispatch_voice_intent(recognized, route_context)
             routed_text = (decision.get("normalized_text") or recognized).strip() or recognized
@@ -471,8 +584,12 @@ def run_once(
             transport = "auto"
         if transport in ("auto", "ws"):
             try:
-                answer, l3_first_chunk_ms = _l3_ws_run(l3_ws, l3_payload, timeout=t_l3)
-                l3_transport_used = "ws"
+                if l3_ws_client is not None:
+                    answer, l3_first_chunk_ms, l3_answer_ms, l3_trace = l3_ws_client.run(l3_payload, timeout=t_l3)
+                    l3_transport_used = "ws_reuse"
+                else:
+                    answer, l3_first_chunk_ms, l3_answer_ms, l3_trace = _l3_ws_run(l3_ws, l3_payload, timeout=t_l3)
+                    l3_transport_used = "ws"
             except Exception as ws_error:  # noqa: BLE001
                 l3_fallback_reason = str(ws_error)
                 if transport == "ws":
@@ -488,7 +605,18 @@ def run_once(
             if l3_json.get("error"):
                 raise RuntimeError(str(l3_json["error"]))
             answer = (l3_json.get("answer") or "").strip()
+            l3_answer_ms = _perf_ms() - st
         l3_ms = _perf_ms() - st
+        if isinstance(l3_trace, dict) and l3_trace:
+            def _trace_ms(name: str) -> float:
+                try:
+                    return float(l3_trace.get(name) or 0)
+                except Exception:
+                    return 0.0
+            l3_server_session_save_ms = _trace_ms("session_save_ms")
+            l3_server_broadcast_ms = _trace_ms("broadcast_ms")
+            l3_server_append_final_ms = _trace_ms("append_final_ms")
+            l3_latency_trace = json.dumps(l3_trace, ensure_ascii=False)[:800]
         if not answer:
             raise RuntimeError("L3 returned empty answer")
 
@@ -522,6 +650,11 @@ def run_once(
             stt_ms=stt_ms,
             l3_ms=l3_ms,
             l3_first_chunk_ms=l3_first_chunk_ms,
+            l3_answer_ms=l3_answer_ms,
+            l3_server_session_save_ms=l3_server_session_save_ms,
+            l3_server_broadcast_ms=l3_server_broadcast_ms,
+            l3_server_append_final_ms=l3_server_append_final_ms,
+            l3_latency_trace=l3_latency_trace,
             tts_ms=tts_ms,
             total_ms=_perf_ms() - started,
             recognized_text=recognized,
@@ -547,6 +680,11 @@ def run_once(
             stt_ms=stt_ms,
             l3_ms=l3_ms,
             l3_first_chunk_ms=l3_first_chunk_ms,
+            l3_answer_ms=l3_answer_ms,
+            l3_server_session_save_ms=l3_server_session_save_ms,
+            l3_server_broadcast_ms=l3_server_broadcast_ms,
+            l3_server_append_final_ms=l3_server_append_final_ms,
+            l3_latency_trace=l3_latency_trace,
             tts_ms=tts_ms,
             total_ms=_perf_ms() - started,
             recognized_text=recognized,
@@ -587,13 +725,14 @@ def print_live_summary(rows: list[RunMetric]) -> None:
         return
     stt = [r.stt_ms for r in ok_rows if r.stt_ms > 0]
     l3 = [r.l3_ms for r in ok_rows if r.l3_ms > 0]
+    ans = [r.l3_answer_ms for r in ok_rows if r.l3_answer_ms > 0]
     tts = [r.tts_ms for r in ok_rows if r.tts_ms > 0]
     total = [r.total_ms for r in ok_rows]
     def _s(name: str, arr: list[float]) -> str:
         if not arr:
             return f"{name}: -"
         return f"{name}: p50={_percentile(arr,0.5):.0f}ms p90={_percentile(arr,0.9):.0f}ms avg={statistics.mean(arr):.0f}ms"
-    print("  " + " | ".join([_s("STT", stt), _s("L3", l3), _s("TTS", tts), _s("TOTAL", total)]))
+    print("  " + " | ".join([_s("STT", stt), _s("L3", l3), _s("ANS", ans), _s("TTS", tts), _s("TOTAL", total)]))
 
 
 def parse_args() -> argparse.Namespace:
@@ -637,6 +776,14 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--timeout-tts", type=float, default=120.0)
     p.add_argument("--chat-prefix", default="voice-latency-bench")
+    p.add_argument(
+        "--chat-session-mode",
+        choices=("stable", "per-run"),
+        default="stable",
+        help="stable matches desktop companion; per-run isolates every benchmark turn",
+    )
+    p.add_argument("--no-ws-reuse", action="store_true", help="Do not keep a persistent L3 WebSocket connection")
+    p.add_argument("--no-ws-preflight", action="store_true", help="Do not send prepare_context before STT/turn")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     p.add_argument(
         "--companion-real-route",
@@ -663,13 +810,15 @@ def main() -> int:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     csv_path = args.out_dir / f"voice_latency_{stamp}.csv"
     jsonl_path = args.out_dir / f"voice_latency_{stamp}.jsonl"
-    print(f"[INFO] 输出 CSV: {csv_path}")
-    print(f"[INFO] 输出 JSONL: {jsonl_path}")
+    print(f"[INFO] CSV: {csv_path}")
+    print(f"[INFO] JSONL: {jsonl_path}")
     print(
         f"[INFO] JVS={args.jvs_base}  L3_HTTP={args.l3_base}  L3_WS={args.l3_ws}  "
         f"transport={args.l3_transport}  voice={args.voice}  tts_mode={args.tts_mode}  "
         f"max_speak_sentences={args.max_speak_sentences}  "
-        f"fast_lane_max_speak_sentences={args.fast_lane_max_speak_sentences}"
+        f"fast_lane_max_speak_sentences={args.fast_lane_max_speak_sentences}  "
+        f"chat_session_mode={args.chat_session_mode}  ws_reuse={not args.no_ws_reuse}  "
+        f"ws_preflight={not args.no_ws_preflight}"
     )
     if args.no_companion_real_route:
         args.companion_real_route = False
@@ -681,102 +830,133 @@ def main() -> int:
     fixed_wav: bytes | None = None
     if args.audio_file:
         if not args.audio_file.is_file():
-            print(f"[ERROR] audio-file 不存在: {args.audio_file}")
+            print(f"[ERROR] audio-file not found: {args.audio_file}")
             return 1
         fixed_wav = args.audio_file.read_bytes()
-        print(f"[INFO] 固定音频输入: {args.audio_file} ({len(fixed_wav)} bytes)")
+        print(f"[INFO] fixed audio input: {args.audio_file} ({len(fixed_wav)} bytes)")
+
+    stable_chat_id = f"{args.chat_prefix}-{uuid.uuid4().hex[:10]}"
+    ws_client: L3WsClient | None = None
+    if args.l3_transport in ("auto", "ws") and not args.no_ws_reuse:
+        ws_client = L3WsClient(args.l3_ws.rstrip("/"))
 
     rows: list[RunMetric] = []
-    for i in range(1, max(1, args.runs) + 1):
-        wav = fixed_wav
-        if args.text is None and wav is None:
-            if i == 1 or not args.reuse_audio:
-                print(f"\n[{i}/{args.runs}] 请开始说话（录音 {args.record_sec:.1f}s）...")
-                try:
-                    wav = _record_wav_bytes(args.record_sec)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[{i}/{args.runs}] 录音失败: {e}")
-                    rows.append(
-                        RunMetric(
-                            run_id=i,
-                            timestamp_ms=_now_ms(),
-                            ok=False,
-                            error=str(e),
-                            stt_ms=0,
-                            l3_ms=0,
-                            l3_first_chunk_ms=0,
-                            tts_ms=0,
-                            total_ms=0,
-                            recognized_text="",
-                            answer_preview="",
-                            tts_input="",
-                            tts_calls=0,
-                            tts_audio_ms=0,
-                            routed_text="",
-                            voice_dispatch_tier="",
-                            voice_intent_class="",
-                            voice_fast_lane=False,
-                            voice_interrupt_verdict="",
-                            voice_route_notes="",
-                            l3_transport="",
-                            l3_fallback_reason="",
-                        )
-                    )
-                    write_rows(csv_path, jsonl_path, [rows[-1]])
-                    continue
-                if args.reuse_audio:
-                    fixed_wav = wav
-                print(f"[{i}/{args.runs}] 录音完成，开始跑 STT/L3/TTS ...")
-            else:
-                wav = fixed_wav
-
-        metric = run_once(
-            i,
-            jvs_base=args.jvs_base.rstrip("/"),
-            l3_base=args.l3_base.rstrip("/"),
-            l3_ws=args.l3_ws.rstrip("/"),
-            l3_transport=args.l3_transport,
-            wav_bytes=wav,
-            text_input=args.text,
-            voice=args.voice,
-            t_stt=args.timeout_stt,
-            t_l3=args.timeout_l3,
-            t_tts=args.timeout_tts,
-            chat_prefix=args.chat_prefix,
-            play_audio=args.play,
-            tts_mode=args.tts_mode,
-            max_speak_sentences=max(1, int(args.max_speak_sentences)),
-            fast_lane_max_speak_sentences=max(1, int(args.fast_lane_max_speak_sentences)),
-            companion_real_route=bool(args.companion_real_route),
-            route_context=route_context,
-            progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
-        )
-        rows.append(metric)
-        write_rows(csv_path, jsonl_path, [metric])
-
-        if metric.ok:
-            print(
-                f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
-                f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
-                f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
-                f"VIA={metric.l3_transport or '-'} FC={metric.l3_first_chunk_ms:.0f}ms  "
-                f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
-                f"INT={metric.voice_interrupt_verdict or '-'}"
+    try:
+        for i in range(1, max(1, args.runs) + 1):
+            chat_id = (
+                stable_chat_id
+                if args.chat_session_mode == "stable"
+                else f"{args.chat_prefix}-{i}-{uuid.uuid4().hex[:8]}"
             )
-            if metric.voice_route_notes:
-                print(f"         route_notes={metric.voice_route_notes[:120]}")
-            if metric.l3_fallback_reason:
-                print(f"         l3_fallback={metric.l3_fallback_reason[:160]}")
-        else:
-            print(f"[{i}/{args.runs}] FAIL {metric.error}")
-        print_live_summary(rows)
+            if ws_client is not None and not args.no_ws_preflight:
+                try:
+                    ws_client.prepare_context(chat_id)
+                except Exception:
+                    # run_once will reconnect/fallback/report the concrete WS error.
+                    pass
 
-        if i < args.runs and args.interval_sec > 0:
-            time.sleep(args.interval_sec)
+            wav = fixed_wav
+            if args.text is None and wav is None:
+                if i == 1 or not args.reuse_audio:
+                    print(f"\n[{i}/{args.runs}] Please speak now (record {args.record_sec:.1f}s)...")
+                    try:
+                        wav = _record_wav_bytes(args.record_sec)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[{i}/{args.runs}] record failed: {e}")
+                        rows.append(
+                            RunMetric(
+                                run_id=i,
+                                timestamp_ms=_now_ms(),
+                                ok=False,
+                                error=str(e),
+                                stt_ms=0,
+                                l3_ms=0,
+                                l3_first_chunk_ms=0,
+                                l3_answer_ms=0,
+                                l3_server_session_save_ms=0,
+                                l3_server_broadcast_ms=0,
+                                l3_server_append_final_ms=0,
+                                l3_latency_trace="",
+                                tts_ms=0,
+                                total_ms=0,
+                                recognized_text="",
+                                answer_preview="",
+                                tts_input="",
+                                tts_calls=0,
+                                tts_audio_ms=0,
+                                routed_text="",
+                                voice_dispatch_tier="",
+                                voice_intent_class="",
+                                voice_fast_lane=False,
+                                voice_interrupt_verdict="",
+                                voice_route_notes="",
+                                l3_transport="",
+                                l3_fallback_reason="",
+                            )
+                        )
+                        write_rows(csv_path, jsonl_path, [rows[-1]])
+                        continue
+                    if args.reuse_audio:
+                        fixed_wav = wav
+                    print(f"[{i}/{args.runs}] recording done; running STT/L3/TTS...")
+                else:
+                    wav = fixed_wav
+
+            metric = run_once(
+                i,
+                jvs_base=args.jvs_base.rstrip("/"),
+                l3_base=args.l3_base.rstrip("/"),
+                l3_ws=args.l3_ws.rstrip("/"),
+                l3_transport=args.l3_transport,
+                l3_ws_client=ws_client,
+                chat_id=chat_id,
+                wav_bytes=wav,
+                text_input=args.text,
+                voice=args.voice,
+                t_stt=args.timeout_stt,
+                t_l3=args.timeout_l3,
+                t_tts=args.timeout_tts,
+                chat_prefix=args.chat_prefix,
+                play_audio=args.play,
+                tts_mode=args.tts_mode,
+                max_speak_sentences=max(1, int(args.max_speak_sentences)),
+                fast_lane_max_speak_sentences=max(1, int(args.fast_lane_max_speak_sentences)),
+                companion_real_route=bool(args.companion_real_route),
+                route_context=route_context,
+                progress=lambda msg, idx=i, total=args.runs: print(f"[{idx}/{total}] {msg}"),
+            )
+            rows.append(metric)
+            write_rows(csv_path, jsonl_path, [metric])
+
+            if metric.ok:
+                print(
+                    f"[{i}/{args.runs}] OK  STT={metric.stt_ms:.0f}ms  L3={metric.l3_ms:.0f}ms  "
+                    f"TTS={metric.tts_ms:.0f}ms  TOTAL={metric.total_ms:.0f}ms  "
+                    f"AUDIO={metric.tts_audio_ms}ms  CALLS={metric.tts_calls}  "
+                    f"VIA={metric.l3_transport or '-'} FC={metric.l3_first_chunk_ms:.0f}ms  "
+                    f"ANS={metric.l3_answer_ms:.0f}ms  "
+                    f"TIER={metric.voice_dispatch_tier or '-'} FAST={int(metric.voice_fast_lane)} "
+                    f"INT={metric.voice_interrupt_verdict or '-'}"
+                )
+                if metric.voice_route_notes:
+                    print(f"         route_notes={metric.voice_route_notes[:120]}")
+                if metric.l3_latency_trace:
+                    print(f"         l3_trace={metric.l3_latency_trace[:160]}")
+                if metric.l3_fallback_reason:
+                    print(f"         l3_fallback={metric.l3_fallback_reason[:160]}")
+            else:
+                print(f"[{i}/{args.runs}] FAIL {metric.error}")
+            print_live_summary(rows)
+
+            if i < args.runs and args.interval_sec > 0:
+                time.sleep(args.interval_sec)
+    finally:
+        if ws_client is not None:
+            ws_client.close()
 
     ok_count = len([r for r in rows if r.ok])
-    print("\n=== 完成 ===")
-    print(f"成功 {ok_count}/{len(rows)}，结果文件：")
+    print("\n=== Done ===")
+    print(f"Success {ok_count}/{len(rows)}. Result files:")
     print(f"- {csv_path}")
     print(f"- {jsonl_path}")
     return 0 if ok_count > 0 else 1

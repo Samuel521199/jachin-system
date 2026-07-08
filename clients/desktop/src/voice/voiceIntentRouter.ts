@@ -26,6 +26,17 @@ export type VoiceExecutionLane =
   | "control_local";
 
 export type VoiceRouteSource = "rule" | "lite_model" | "l3_gateway";
+export type VoiceFastLaneKind = "none" | "presence_template" | "chat_direct" | "light_query";
+
+export interface VoiceRouteEvidence {
+  text_len: number;
+  has_active_task: boolean;
+  has_question_signal: boolean;
+  has_presence_signal: boolean;
+  has_task_signal: boolean;
+  has_path_or_code_signal: boolean;
+  matched_rules: string[];
+}
 
 export interface VoiceTaskRef {
   id: string;
@@ -53,6 +64,7 @@ export interface VoiceDispatcherDecision {
   active_task_ids: string[];
   /** STT 容错后的路由文本；语音进入 L3 时优先发送它，原始 STT 仍放入 implicit_signals。 */
   normalized_text: string;
+  route_evidence: VoiceRouteEvidence;
   route_notes: string[];
   latency_masking: {
     play_task_ack: boolean;
@@ -67,6 +79,8 @@ export interface VoiceDispatcherDecision {
     inject_task_context: boolean;
     inject_light_task_context: boolean;
     fast_lane: boolean;
+    fast_lane_kind: VoiceFastLaneKind;
+    allow_template_reply: boolean;
     skip_context_sniffer: boolean;
     skip_experience_rag: boolean;
     skip_gateway_enrich: boolean;
@@ -148,6 +162,61 @@ function containsAny(text: string, words: string[]): boolean {
   return words.some((word) => text.includes(word));
 }
 
+const GENERIC_TASK_SIGNAL_WORDS = [
+  "\u6587\u4ef6", "\u76ee\u5f55", "\u9879\u76ee", "\u4ee3\u7801", "\u811a\u672c", "\u62a5\u544a",
+  "\u603b\u7ed3", "\u6458\u8981", "\u751f\u6210", "\u4fee\u6539", "\u5220\u9664", "\u8fd0\u884c",
+  "\u6267\u884c", "\u641c\u7d22", "\u67e5\u627e", "\u5206\u6790", "\u8868\u683c", "\u6570\u636e\u5e93",
+  "\u98de\u4e66", "\u540e\u53f0", "\u4efb\u52a1", "\u6587\u6863", "\u811a\u624b\u67b6",
+  "\u6253\u5f00", "\u5173\u95ed", "\u5199", "\u5e2e\u6211", "\u7ed9\u6211", "\u8bf7\u4f60",
+];
+
+const QUESTION_SIGNAL_WORDS = [
+  "\u4ec0\u4e48", "\u600e\u4e48", "\u4e3a\u4ec0\u4e48", "\u54ea\u4e2a", "\u54ea\u91cc", "\u591a\u5c11",
+  "\u51e0", "\u5417", "\u8981\u4e0d\u8981", "\u5e94\u8be5", "\u63a8\u8350", "\u5403\u4ec0\u4e48",
+  "\u559d\u4ec0\u4e48", "\u4f60\u89c9\u5f97", "\u597d\u4e0d\u597d", "\u53ef\u4ee5\u5417",
+];
+
+function hasQuestionSignal(text: string): boolean {
+  const t = text.trim();
+  return /[?\uff1f]/.test(t) || containsAny(t, QUESTION_SIGNAL_WORDS);
+}
+
+function hasPathOrCodeSignal(text: string): boolean {
+  return /[\\/]|\.\w{1,8}\b|`{3}|#|@|http/i.test(text);
+}
+
+function hasTaskSignal(text: string): boolean {
+  return containsAny(text, GENERIC_TASK_SIGNAL_WORDS) || LONG_TASK_RE.test(text) || SHORT_QUERY_RE.test(text);
+}
+
+function isPresenceTemplateText(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 24) return false;
+  if (hasQuestionSignal(t) && !/[\u5728\u5417\u542c\u5f97\u5230\u5417\u542c\u89c1\u5417]/.test(t)) return false;
+  return /^(\u4f60\u597d|\u4f60\u597d\u5440|hello|hi|\u54c8\u55bd|\u5728\u5417|\u5728\u561b|\u4f60\u5728\u5417|\u542c\u5f97\u5230\u5417|\u542c\u89c1\u5417|\u5582|\u55ef|\u8bf4\u8bdd|\u8bb2\u8bdd|\u8bf4\u70b9\u8bdd|\u8ddf\u6211\u8bf4|\u542c\u6211\u8bb2\u8bdd)[\u3002\uff01\uff1f!?]*$/i.test(t);
+}
+
+function isLightQueryFastLaneText(text: string, hasActiveTask: boolean): boolean {
+  const t = text.trim();
+  if (!t || hasActiveTask) return false;
+  if (t.length > 80) return false;
+  if (hasPathOrCodeSignal(t)) return false;
+  if (!hasQuestionSignal(t)) return false;
+  if (hasTaskSignal(t)) return false;
+  return !isPresenceTemplateText(t);
+}
+
+function buildRouteEvidence(text: string, hasActiveTask: boolean, matchedRules: string[] = []): VoiceRouteEvidence {
+  return {
+    text_len: text.trim().length,
+    has_active_task: hasActiveTask,
+    has_question_signal: hasQuestionSignal(text),
+    has_presence_signal: isPresenceTemplateText(text),
+    has_task_signal: hasTaskSignal(text),
+    has_path_or_code_signal: hasPathOrCodeSignal(text),
+    matched_rules: matchedRules,
+  };
+}
 function isCompanionFastLaneText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
@@ -185,15 +254,17 @@ function isSafeDefaultChitChatFastLaneText(text: string, hasActiveTask: boolean)
   ];
   return !containsAny(t, taskWords);
 }
-function markFastLane(decision: VoiceDispatcherDecision): void {
+function markFastLane(decision: VoiceDispatcherDecision, kind: Exclude<VoiceFastLaneKind, "none"> = "chat_direct"): void {
   decision.tier = "CHIT_CHAT";
-  decision.intent_class = "CHITCHAT";
+  decision.intent_class = kind === "light_query" ? "QUERY_LIGHT" : "CHITCHAT";
   decision.execution_lane = "direct_llm";
-  decision.confidence = Math.max(decision.confidence, 0.9);
+  decision.confidence = Math.max(decision.confidence, kind === "presence_template" ? 0.92 : 0.88);
   decision.router_hints.prefer_direct_llm = true;
   decision.router_hints.inject_task_context = false;
   decision.router_hints.inject_light_task_context = false;
   decision.router_hints.fast_lane = true;
+  decision.router_hints.fast_lane_kind = kind;
+  decision.router_hints.allow_template_reply = kind === "presence_template";
   decision.router_hints.skip_context_retrieval = true;
   decision.router_hints.skip_context_sniffer = true;
   decision.router_hints.skip_experience_rag = true;
@@ -269,6 +340,7 @@ export function dispatchVoiceIntent(rawText: string, ctx: VoiceDispatcherContext
     route_source: "rule",
     active_task_ids: activeTaskIds,
     normalized_text: text,
+    route_evidence: buildRouteEvidence(text, activeTaskIds.length > 0, normalized.notes),
     route_notes: normalized.notes,
     latency_masking: {
       play_task_ack: false,
@@ -283,6 +355,8 @@ export function dispatchVoiceIntent(rawText: string, ctx: VoiceDispatcherContext
       inject_task_context: activeTaskIds.length > 0,
       inject_light_task_context: false,
       fast_lane: false,
+      fast_lane_kind: "none",
+      allow_template_reply: false,
       skip_context_sniffer: false,
       skip_experience_rag: false,
       skip_gateway_enrich: false,
@@ -382,33 +456,51 @@ export function dispatchVoiceIntent(rawText: string, ctx: VoiceDispatcherContext
     return decision;
   }
 
+  if (isPresenceTemplateText(text)) {
+    markFastLane(decision, "presence_template");
+    decision.route_notes.push("presence-template-fast-lane");
+    decision.route_evidence = buildRouteEvidence(text, hasActiveTask, decision.route_notes);
+    return decision;
+  }
+
+  if (isLightQueryFastLaneText(text, hasActiveTask)) {
+    markFastLane(decision, "light_query");
+    decision.confidence = 0.88;
+    decision.route_notes.push("light-query-direct-llm");
+    decision.route_evidence = buildRouteEvidence(text, hasActiveTask, decision.route_notes);
+    return decision;
+  }
+
   if (CHITCHAT_RE.test(text)) {
-    markFastLane(decision);
+    markFastLane(decision, "chat_direct");
     decision.confidence = 0.9;
     if (hasActiveTask) {
       decision.router_hints.inject_light_task_context = true;
-      decision.route_notes.push("chitchat-fast-lane-active-task");
+      decision.route_notes.push("chitchat-direct-fast-lane-active-task");
     } else {
-      decision.route_notes.push("chitchat-fast-lane");
+      decision.route_notes.push("chitchat-direct-fast-lane");
     }
+    decision.route_evidence = buildRouteEvidence(text, hasActiveTask, decision.route_notes);
     return decision;
   }
 
   if (isCompanionFastLaneText(text)) {
-    markFastLane(decision);
+    markFastLane(decision, hasQuestionSignal(text) ? "light_query" : "chat_direct");
     if (hasActiveTask) {
       decision.router_hints.inject_light_task_context = true;
-      decision.route_notes.push("companion-fast-lane-active-task");
+      decision.route_notes.push("companion-direct-fast-lane-active-task");
     } else {
-      decision.route_notes.push("companion-fast-lane");
+      decision.route_notes.push("companion-direct-fast-lane");
     }
+    decision.route_evidence = buildRouteEvidence(text, hasActiveTask, decision.route_notes);
     return decision;
   }
 
   if (isSafeDefaultChitChatFastLaneText(text, hasActiveTask)) {
-    markFastLane(decision);
-    decision.confidence = 0.86;
-    decision.route_notes.push("default-chitchat-fast-lane");
+    markFastLane(decision, hasQuestionSignal(text) ? "light_query" : "chat_direct");
+    decision.confidence = hasQuestionSignal(text) ? 0.82 : 0.86;
+    decision.route_notes.push(hasQuestionSignal(text) ? "default-light-query-direct-llm" : "default-chitchat-direct-fast-lane");
+    decision.route_evidence = buildRouteEvidence(text, hasActiveTask, decision.route_notes);
     return decision;
   }
   if (hasActiveTask) {

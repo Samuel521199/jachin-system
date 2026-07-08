@@ -51,10 +51,12 @@ function CanvasToolCallHintCard({ toolName }: { toolName: string }) {
 
 function shouldShowMissionConfirmationControls(body: string): boolean {
   const text = body || "";
-  return (
-    /Task Preview:/i.test(text) &&
-    (/确认执行|取消|暂不执行|待确认|pending_confirmation|confirm|execute|cancel/i.test(text))
-  );
+  const hasConfirmationCue =
+    /确认后我再执行|确认执行|确认发送|继续修改|暂不执行|待确认|pending_confirmation|confirm|execute|cancel/i.test(
+      text
+    );
+  const hasMissionCue = /Task Preview:|Lark|发送|发给|任务|执行|打开|整理|计算/i.test(text);
+  return hasConfirmationCue && hasMissionCue;
 }
 
 function MissionConfirmationControls({ onQuickReply }: { onQuickReply: (text: string) => void }) {

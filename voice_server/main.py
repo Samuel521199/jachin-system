@@ -30,6 +30,7 @@ class TtsRequest(BaseModel):
     voice: Optional[str] = None
     session_id: Optional[str] = None
     speed: Optional[float] = None
+    kind: Optional[str] = None
 
 
 class CancelRequest(BaseModel):
@@ -68,7 +69,7 @@ _stt_tcp_thread: threading.Thread | None = None
 
 def _warmup_stt_engine() -> None:
     if stt_service.ready:
-        logger.info("Preloading SenseVoice STT engine…")
+        logger.info("Preloading %s STT engine...", stt_service.model_name)
         stt_service._load_engine()
 
 
@@ -130,12 +131,13 @@ def health() -> dict:
         "stt_ready": stt_service.ready,
         "tts_ready": tts_service.ready,
         "sv_ready": sv_service.ready,
-        "stt_model": "SenseVoiceSmall-onnx",
+        "stt_model": stt_service.model_name,
         "tts_model": "Kokoro-82M-v1.1-zh-ONNX",
         "sv_model": sv_service.backend,
         "sv_load_error": sv_service.load_error,
         "tts_voice": cfg.tts_voice,
         "tts_speed": cfg.tts_speed,
+        "tts_cue_style_index": getattr(tts_service, "_cue_style_index", None),
         "tts_voice_exists": tts_service.has_voice(cfg.tts_voice),
         "tts_voice_count": len(available_voices),
         "model_root": str(cfg.model_root),
@@ -183,6 +185,24 @@ def _pack_tcp_frame(msg_type: int, payload: bytes = b"") -> bytes:
     return struct.pack("<BI", int(msg_type) & 0xFF, len(payload)) + payload
 
 
+def _stt_result_payload(result: "SttResult") -> dict:
+    return {
+        "text": result.text,
+        "raw_text": result.raw_text,
+        "user_message": result.user_message,
+        "user_message_source": result.user_message_source,
+        "reply_plan": result.reply_plan,
+        "confidence": result.confidence,
+        "duration_ms": result.duration_ms,
+        "language": result.language,
+        "backend": result.backend,
+        "hotword_count": result.hotword_count,
+        "hotword_status": result.hotword_status,
+        "hotword_sources": list(result.hotword_sources),
+        "understanding": result.understanding,
+    }
+
+
 class _SttTcpHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         sock = self.request
@@ -219,17 +239,7 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                 partial_text = result.text
                 self._send_json(
                     _STT_TCP_PARTIAL,
-                    {
-                        "type": "partial",
-                        "session_id": session_id,
-                        "text": result.text,
-                        "confidence": result.confidence,
-                        "duration_ms": result.duration_ms,
-                        "language": result.language,
-        "hotword_count": result.hotword_count,
-        "hotword_status": result.hotword_status,
-        "hotword_sources": list(result.hotword_sources),
-                    },
+                    {"type": "partial", "session_id": session_id, **_stt_result_payload(result)},
                 )
 
         try:
@@ -275,13 +285,7 @@ class _SttTcpHandler(socketserver.BaseRequestHandler):
                         {
                             "type": "final",
                             "session_id": session_id,
-                            "text": final.text,
-                            "confidence": final.confidence,
-                            "duration_ms": final.duration_ms,
-                            "language": final.language,
-                    "hotword_count": final.hotword_count,
-                    "hotword_status": final.hotword_status,
-                    "hotword_sources": list(final.hotword_sources),
+                            **_stt_result_payload(final),
                             "bytes": len(pcm_buffer),
                         },
                     )
@@ -363,16 +367,7 @@ async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str
             status_code=503,
             detail=f"STT model not ready: {stt_service.model_path}",
         )
-    return {
-        "text": result.text,
-        "confidence": result.confidence,
-        "duration_ms": result.duration_ms,
-        "language": result.language,
-        "hotword_count": result.hotword_count,
-        "hotword_status": result.hotword_status,
-        "hotword_sources": list(result.hotword_sources),
-        "session_id": session_id,
-    }
+    return {**_stt_result_payload(result), "session_id": session_id}
 
 
 @app.websocket("/v1/stt/stream")
@@ -415,17 +410,7 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
         if result.text and result.text != partial_text:
             partial_text = result.text
             await websocket.send_json(
-                {
-                    "type": "partial",
-                    "session_id": session_id,
-                    "text": result.text,
-                    "confidence": result.confidence,
-                    "duration_ms": result.duration_ms,
-                    "language": result.language,
-        "hotword_count": result.hotword_count,
-        "hotword_status": result.hotword_status,
-        "hotword_sources": list(result.hotword_sources),
-                }
+                {"type": "partial", "session_id": session_id, **_stt_result_payload(result)}
             )
 
     try:
@@ -464,13 +449,7 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
                         {
                             "type": "final",
                             "session_id": session_id,
-                            "text": final.text,
-                            "confidence": final.confidence,
-                            "duration_ms": final.duration_ms,
-                            "language": final.language,
-                    "hotword_count": final.hotword_count,
-                    "hotword_status": final.hotword_status,
-                    "hotword_sources": list(final.hotword_sources),
+                            **_stt_result_payload(final),
                             "bytes": len(pcm_buffer),
                         }
                     )
@@ -508,7 +487,7 @@ def tts_synthesize(req: TtsRequest) -> Response:
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
     try:
-        result = tts_service.synthesize(req.text, voice=req.voice, session_id=req.session_id, speed=req.speed)
+        result = tts_service.synthesize(req.text, voice=req.voice, session_id=req.session_id, speed=req.speed, kind=req.kind)
     except TtsCancelledError:
         raise HTTPException(status_code=409, detail="tts cancelled")
     if not tts_service.ready:
@@ -526,6 +505,12 @@ def tts_synthesize(req: TtsRequest) -> Response:
             "X-Jachin-TTS-Attempts": str(getattr(result, "attempts", 1)),
             "X-Jachin-TTS-Max-New-Frames": str(getattr(result, "max_new_frames", 0)),
             "X-Jachin-TTS-Quality": str(getattr(result, "quality_status", "ok")),
+            "X-Jachin-TTS-Kind": str((result.trace or {}).get("tts_kind", "")),
+            "X-Jachin-TTS-Style-Index": str((result.trace or {}).get("style_index", "")),
+            "X-Jachin-TTS-Style-Mode": str((result.trace or {}).get("style_mode", "")),
+            "X-Jachin-TTS-Raw-Duration-Ms": str(((result.trace or {}).get("audio_trim") or {}).get("original_duration_ms", result.duration_ms)),
+            "X-Jachin-TTS-Trim-Leading-Ms": str(((result.trace or {}).get("audio_trim") or {}).get("leading_trim_ms", 0)),
+            "X-Jachin-TTS-Trim-Trailing-Ms": str(((result.trace or {}).get("audio_trim") or {}).get("trailing_trim_ms", 0)),
         },
     )
 
@@ -704,4 +689,3 @@ if __name__ == "__main__":
 
     logger.info("Starting voice_server at http://%s:%s", cfg.host, cfg.port)
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level=cfg.log_level)
-

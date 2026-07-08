@@ -1,11 +1,11 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Kokoro ONNX 音色试听 GUI（点选即播）。
 
 用途：
 - 扫描 voices 目录下所有 *.bin 音色
 - 鼠标点击某个音色后，立即调用 JVS TTS 播放：
-  “你好，主人，有什么可以帮您”
+  “你好，我在。”
 
 默认：
 - voices 目录：
@@ -32,7 +32,7 @@ DEFAULT_VOICES_DIR = Path(
     r"D:\project\jachin-system-main\data\models\voice\tts\Kokoro-82M-v1.1-zh-ONNX\voices"
 )
 DEFAULT_JVS_BASE = "http://127.0.0.1:18982"
-DEFAULT_TEXT = "你好，主人，有什么可以帮您"
+DEFAULT_TEXT = "你好，我在。"
 DEFAULT_MANDARIN_VOICE = "zm_053"
 DEFAULT_OUTPUT_DIR = Path(r"D:\project\jachin-system-main\data\voice_audition_out")
 MANDARIN_VOICE_CANDIDATES = [

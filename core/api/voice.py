@@ -540,7 +540,7 @@ async def voice_chat(
                 reply_text = await llm_provider.chat(messages)
 
         if not reply_text:
-            reply_text = "主人，我在呢。有什么可以帮你的吗？"
+            reply_text = "我在。"
         
         logger.info(f"Generated reply: {reply_text}")
         

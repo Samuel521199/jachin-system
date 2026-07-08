@@ -154,7 +154,7 @@ def _extract_project_name(text: str, project_path: str) -> str:
 
 
 def _extract_feature_query(text: str, project_name: str, project_path: str) -> str:
-    head = re.split(r"(?:发给|发送给|发到|发送到|发往|转给|鍙戠粰|鍙戦€佺粰|鍙戝埌|鍙戦€佸埌|杞粰)", text, maxsplit=1, flags=re.I)[0]
+    head = re.split(r"(?:发给|发送给|发到|发送到|发往|转给|发群里|发给群|发到群|发送给群|发送到群|鍙戠粰|鍙戦€佺粰|鍙戝埌|鍙戦€佸埌|杞粰)", text, maxsplit=1, flags=re.I)[0]
     feature = head
     if project_path:
         feature = feature.replace(project_path, "项目")
@@ -281,7 +281,13 @@ def _detect_output_format(text: str) -> str:
 
 
 def _looks_like_project_delivery(text: str, recipients: list[str], project_name: str, project_path: str) -> bool:
-    if not recipients:
+    has_delivery_intent = bool(re.search(
+        r"\u53d1\u7ed9|\u53d1\u9001\u7ed9|\u53d1\u5230|\u53d1\u9001\u5230|\u8f6c\u7ed9|"
+        r"\u53d1\u7fa4\u91cc|\u53d1\u7ed9\u7fa4|\u53d1\u5230\u7fa4|\u53d1\u9001\u7ed9\u7fa4|\u53d1\u9001\u5230\u7fa4",
+        text,
+        re.I,
+    ))
+    if not recipients and not has_delivery_intent:
         return False
     if re.search(r"(?:\u5185\u5bb9\u662f|\u6d88\u606f\u662f|\u6b63\u6587\u662f|message\s+is|content\s+is)", text, re.I):
         return False

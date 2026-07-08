@@ -899,6 +899,65 @@ export async function tryL3AgentForIntent(
   return null;
 }
 
+export interface VoiceReplyComposeRequest {
+  reply_plan: Record<string, unknown>;
+  user_text?: string;
+  fallback_text?: string;
+  timeout_sec?: number;
+  max_tokens?: number;
+}
+
+export interface VoiceReplyComposeResponse {
+  ok: boolean;
+  reply: string;
+  source?: string;
+  model?: string;
+  elapsed_ms?: number;
+  error?: string;
+}
+
+export async function composeVoiceReply(
+  payload: VoiceReplyComposeRequest,
+): Promise<VoiceReplyComposeResponse | null> {
+  const path = "/api/v3/voice/reply-compose";
+  const options: RequestInit = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  };
+  const envUrl = import.meta.env.VITE_L3_SKILLS_URL;
+  if (envUrl && envUrl.includes("://") && /\d{4,5}/.test(envUrl)) {
+    try {
+      const base = envUrl.replace(/\/$/, "");
+      const res = await fetch(`${base}${path}`, options);
+      const data = await res.json().catch(() => ({}));
+      return res.ok ? data : null;
+    } catch {
+      return null;
+    }
+  }
+  if (L3_DEV_PROXY) {
+    try {
+      const res = await fetch(`${L3_DEV_PROXY}${path}`, options);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return data;
+    } catch {
+      /* fall through */
+    }
+  }
+  for (const port of L3_SKILLS_PORTS) {
+    try {
+      const base = L3_SKILLS_BASE.replace(/:\d+$/, "").replace(/\/$/, "");
+      const url = `${base}:${port}${path}`;
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return data;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
 /** 回收站项 */
 export interface RecycleBinItem {
   recycle_id: string;

@@ -45,63 +45,49 @@ def test_stt_hotword_provider_merges_router_json_and_env(tmp_path, monkeypatch) 
     assert "env:JACHIN_STT_HOTWORDS" in snapshot.sources
 
 
-class NoHotwordEngine:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
+def test_stt_hotword_provider_loads_sherpa_text_hotwords(tmp_path) -> None:
+    hotwords = tmp_path / "sherpa_hotwords.txt"
+    hotwords.write_text("Lark :8.0\nNeil :7\n# comment\nEthan\n", encoding="utf-8")
 
-    def __call__(self, wav_content, **kwargs):
-        self.calls.append(kwargs)
-        return ["hello"]
+    snapshot = SttHotwordProvider(extra_paths=[hotwords]).snapshot()
 
-
-class HotwordEngine:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    def __call__(self, wav_content, hotword=None, **kwargs):
-        self.calls.append({**kwargs, "hotword": hotword})
-        return ["hello"]
+    assert snapshot.words["Lark"] >= 8
+    assert snapshot.words["Neil"] >= 7
+    assert snapshot.words["Ethan"] == 20
+    assert str(hotwords) in snapshot.sources
 
 
-class HotwordsOnlyEngine:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
+def test_stt_service_detects_zipformer_model_files(tmp_path) -> None:
+    for name in (
+        "encoder-epoch-34-avg-19.int8.onnx",
+        "decoder-epoch-34-avg-19.onnx",
+        "joiner-epoch-34-avg-19.int8.onnx",
+        "tokens.txt",
+        "bpe.vocab",
+    ):
+        (tmp_path / name).write_text("x", encoding="utf-8")
 
-    def __call__(self, wav_content, fs=None, language=None, use_itn=None, hotwords=None):
-        self.calls.append({"fs": fs, "language": language, "use_itn": use_itn, "hotwords": hotwords})
-        return ["hello"]
-
-
-def test_stt_service_marks_current_engine_shape_as_hotword_unsupported(tmp_path) -> None:
     svc = SttService(tmp_path)
-    engine = NoHotwordEngine()
 
-    out, status = svc._call_engine(engine, np.zeros(160, dtype=np.float32), hotwords={"Lark": 20})
+    assert svc.ready is True
+    assert svc._files is not None
+    assert svc._files.encoder.name == "encoder-epoch-34-avg-19.int8.onnx"
+    assert svc._files.decoder.name == "decoder-epoch-34-avg-19.onnx"
+    assert svc._files.joiner.name == "joiner-epoch-34-avg-19.int8.onnx"
+    assert svc._files.tokens.name == "tokens.txt"
+    assert svc._files.bpe_vocab is not None
 
-    assert out == ["hello"]
-    assert status == "unsupported"
-    assert "hotword" not in engine.calls[0]
-    assert "hotwords" not in engine.calls[0]
 
-
-def test_stt_service_passes_hotword_when_engine_supports_it(tmp_path) -> None:
+def test_stt_service_writes_sherpa_hotword_file(tmp_path) -> None:
     svc = SttService(tmp_path)
-    engine = HotwordEngine()
+    snapshot = type("Snapshot", (), {"words": {"Lark": 8, "Vivian": 12}})()
 
-    _, status = svc._call_engine(engine, np.zeros(160, dtype=np.float32), hotwords={"Lark": 20})
+    path = svc._prepare_hotword_file(snapshot)
 
-    assert status == "applied"
-    assert engine.calls[0]["hotword"] == {"Lark": 20}
-
-
-def test_stt_service_can_fall_back_to_hotwords_keyword(tmp_path) -> None:
-    svc = SttService(tmp_path)
-    engine = HotwordsOnlyEngine()
-
-    _, status = svc._call_engine(engine, np.zeros(160, dtype=np.float32), hotwords={"Lark": 20})
-
-    assert status == "applied"
-    assert engine.calls[0]["hotwords"] == {"Lark": 20}
+    assert path is not None
+    text = path.read_text(encoding="utf-8")
+    assert "Lark :8" in text
+    assert "Vivian :12" in text
 
 
 def test_stt_resample_to_16k_uses_quality_resampler_shape() -> None:

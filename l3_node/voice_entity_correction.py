@@ -67,6 +67,8 @@ _BUILTIN_ENTITIES: tuple[LexiconEntity, ...] = (
     LexiconEntity("app", "VS Code", ("vs code", "vscode", "visual studio code", "ws code", "w s code")),
     LexiconEntity("app", "Codex", ("codex", "code x", "\u6263\u5f97\u514b\u65af")),
     LexiconEntity("contact", "Vivian", ("vivian", "vivi", "viian", "vivan", "vivien", "\u8587\u8587\u5b89", "\u5fae\u5fae\u5b89", "v\u8587m", "v\u8587 m", "v \u8587 m", "V\u8587")),
+    LexiconEntity("contact", "Neil", ("neil", "neal", "niel")),
+    LexiconEntity("contact", "Ethan", ("ethan", "eason", "e than")),
     LexiconEntity("project", "Jachin", ("jachin", "jacking", "\u52a0\u52e4", "\u5609\u94a6")),
 )
 

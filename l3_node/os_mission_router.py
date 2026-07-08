@@ -33,7 +33,7 @@ from l3_node.mission_control_center import (
     should_hold_for_confirmation,
 )
 from l3_node.mission_memory_center import apply_memory_to_intent, record_successful_mission
-from l3_node.mission_preview import build_mission_preview, format_preview_for_chat
+from l3_node.mission_preview import build_mission_preview, format_preview_for_user
 from l3_node.mission_runtime import build_plan_preview, execute_with_retry
 from l3_node.mission_template_library import MissionTemplate, select_mission_template
 from l3_node.mission_user_feedback import (
@@ -452,18 +452,7 @@ def _format_mission_result(result_text: str, intent: MissionIntent, route: Capab
     else:
         head = "OS Mission 已执行。" if ok else f"OS Mission 未完成：{data.get('detail') or 'unknown'}。"
 
-    lines = [
-        head,
-        f"识别意图: {intent.task_type.value}",
-        f"使用 workflow: {route.workflow_id or route.tool_id}",
-        f"Router Evidence: {router_evidence}",
-    ]
-    if evidence_path:
-        lines.append(f"Tool Evidence: {evidence_path}")
-    if panel_path:
-        lines.append(f"Evidence Panel: {panel_path}")
-    if report_path:
-        lines.append(f"Report: {report_path}")
+    lines = [head]
     if not ok:
         lines.append("我没有把未通过校验的内容当作成功。")
     return "\n".join(lines)
@@ -703,7 +692,7 @@ async def maybe_run_codex_lark_mission(
                 },
                 plan_preview=plan.to_dict(),
             )
-            return f"已取消这次 OS 任务。\nRouter Evidence: {evidence_path}"
+            return "已取消这次 OS 任务。"
 
         if is_confirmation_command(user_input):
             intent = mission_intent_from_dict(pending.get("intent") or {})
@@ -995,13 +984,7 @@ async def maybe_run_codex_lark_mission(
                         },
                         plan_preview=plan.to_dict(),
                     )
-                    return "\n".join(
-                        [
-                            *format_preview_for_chat(preview),
-                            "\u4efb\u52a1\u4fe1\u606f\u5df2\u66f4\u65b0\u3002\u786e\u8ba4\u540e\u6211\u518d\u6267\u884c\uff1b\u4e5f\u53ef\u4ee5\u7ee7\u7eed\u4fee\u6539\u6216\u53d6\u6d88\u3002",
-                            f"Router Evidence: {evidence_path}",
-                        ]
-                    )
+                    return format_preview_for_user(preview, updated=True)
 
                 clear_pending_mission()
                 return await _execute_prepared_mission(
@@ -1135,13 +1118,7 @@ async def maybe_run_codex_lark_mission(
             },
             plan_preview=plan.to_dict(),
         )
-        return "\n".join(
-            [
-                *format_preview_for_chat(preview),
-                "我已经生成任务预览，暂不执行。你可以回复：确认执行、取消，或直接修改，例如“改发给 Vivian”“时间范围改成 7 天”。",
-                f"Router Evidence: {evidence_path}",
-            ]
-        )
+        return format_preview_for_user(preview)
 
     logger.info(
         "[OSMissionRouter] route=%s tool=%s confidence=%.2f slots=%s",

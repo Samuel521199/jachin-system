@@ -12,7 +12,7 @@ import ReactDOM from "react-dom/client";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { synthesizeSpeech, streamChatMessage, tryL3AgentForIntent, checkHealth } from "./lib/api";
+import { composeVoiceReply, synthesizeSpeech, streamChatMessage, tryL3AgentForIntent, checkHealth } from "./lib/api";
 import { useSpriteStore } from "./store/spriteStore";
 import { useSttAudioReady } from "./hooks/useSttAudioReady";
 import {
@@ -60,8 +60,9 @@ import { voiceOrchestrator } from "./voice/voiceOrchestrator";
 import { getJvsHealth, startJvsProcess, warmJvsAudioModels } from "./voice/voiceBridge";
 import {
   formatVoiceUserMessage,
-  transcribeWavBase64,
+  transcribeWavBase64Detailed,
   VoiceServiceError,
+  type VoiceTranscriptionResult,
   VOICE_UNAVAILABLE_HINT,
 } from "./voice/voiceCore";
 import { VOICE_PROFILES, resolveChatSpeakSentences } from "./voice/voiceProfiles";
@@ -78,7 +79,6 @@ import {
 import { voicePlaybackController } from "./voice/voicePlaybackController";
 import { voiceSessionStore } from "./voice/voiceSessionStore";
 import { initVoiceCompanionDebugLog, truncVoiceLog, voiceCompanionDebug } from "./voice/voiceCompanionDebugLog";
-import { previewWakeAckWav } from "./voice/voiceNativeBridge";
 import { DEFAULT_KOKORO_TTS_VOICE } from "./voice/voiceDefaults";
 import {
   dispatchVoiceIntent,
@@ -137,6 +137,29 @@ function stripDefaultSadEmojiSuffix(text: string): string {
   if (!t) return t;
   const cleaned = t.replace(/(?:\s*[😔😢😭☹️🙁😞])+$/u, "").trim();
   return cleaned || t;
+}
+
+function detectVoiceHotwordDomination(trace: Partial<VoiceTranscriptionResult>): { dominated: boolean; reasons: string[] } {
+  const text = stripDefaultSadEmojiSuffix(String(trace.text || trace.correctedText || "").trim());
+  const streamText = stripDefaultSadEmojiSuffix(String(trace.streamText || "").trim());
+  const compact = text.replace(/[\s🎤，。！？、,.!?;:：；"'`~*_#()（）\[\]{}<>《》-]+/g, "").toLowerCase();
+  const durationMs = Number(trace.durationMs || 0);
+  const hotwordCount = Number(trace.hotwordCount || 0);
+  const reasons: string[] = [];
+  if (!compact) return { dominated: false, reasons };
+
+  const hasHotwordEntity = /(chrome|lark|vivian|neil|ethan|vscode|vs code|cursor|飞书|拉克|谷歌|浏览器)/i.test(text);
+  const hasTaskVerb = /(打开|启动|找到|找|切到|进入|给|发|发送|消息|open|find|send)/i.test(text);
+  const hasMathEvidence = /(计算器|计算|算一下|多少|加|减|乘|除|[0-9]+|[零一二三四五六七八九十百千万]+\s*(乘|加|减|除))/i.test(text);
+  const streamConflict = Boolean(streamText && streamText !== text);
+  const shortHotwordTask = hasHotwordEntity && hasTaskVerb && compact.length <= 14;
+
+  if (durationMs >= 4500 && shortHotwordTask) reasons.push("short_hotword_task_from_long_audio");
+  if (hotwordCount >= 80 && shortHotwordTask && !hasMathEvidence) reasons.push("large_hotword_set_short_task");
+  if (streamConflict && shortHotwordTask && streamText.length > text.length + 4) reasons.push("stream_final_conflict_hotword_task");
+  if (trace.source === "jvs_stream_ws" || trace.provisional || trace.finalized === false) reasons.push("non_final_stt_source");
+
+  return { dominated: reasons.length > 0, reasons };
 }
 
 function resolveCompanionJvsVoice(_voice: string): string {
@@ -910,6 +933,8 @@ function ChatApp() {
     opts?: {
       extraImplicitSignals?: Record<string, unknown>;
       displayContent?: string;
+      assistantCueText?: string;
+      assistantCueReason?: string;
     },
   ) => {
     if (content.trim() === "/clear") {
@@ -1031,6 +1056,24 @@ function ChatApp() {
     const ttsQueue =
       !useJvsOrchestrator && ttsEnabled && audioEl ? createAudioQueue(audioEl, () => setState("idle")) : null;
     let accumulatedForTts = "";
+
+    const assistantCueText = opts?.assistantCueText?.trim() || "";
+    if (assistantCueText) {
+      if (useJvsOrchestrator) {
+        voiceCompanionDebug("chat.assistant_cue_speak", {
+          cue: truncVoiceLog(assistantCueText, 80),
+          reason: opts?.assistantCueReason ?? "",
+          companion: useJvsCompanionVoice,
+          chatVoice: useJvsChatVoice,
+        });
+        void voiceOrchestrator.speakCue(assistantCueText, opts?.assistantCueReason ?? "voice_latency_masking");
+      } else {
+        voiceCompanionDebug("chat.assistant_cue_skip", {
+          cue: truncVoiceLog(assistantCueText, 80),
+          reason: "voice_orchestrator_inactive",
+        });
+      }
+    }
 
     const shouldSpeakFinalAnswer = (text: string, meta?: SensoryAnswerMeta): boolean => {
       if (!text.trim()) return false;
@@ -1544,14 +1587,20 @@ function ChatApp() {
     }
   };
 
-  const playVoiceTaskAck = useCallback(() => {
-    const ackPool = ["im_here", "yes", "how_can_i_help", "please_say"];
-    const pick = ackPool[Math.floor(Math.random() * ackPool.length)];
-    void previewWakeAckWav(pick).catch(() => {});
+  const buildVoiceAssistantCue = useCallback((decision: VoiceDispatcherDecision): { text: string; reason: string } | null => {
+    if (!decision.latency_masking.play_task_ack) return null;
+    if (decision.tier === "LONG_TASK" || decision.execution_lane === "background_submit") {
+      return { text: "收到，我来处理。", reason: "voice_task_background_ack" };
+    }
+    return { text: "我想想。", reason: "voice_task_foreground_ack" };
   }, []);
 
   const dispatchVoiceUtterance = useCallback(
-    async (text: string, source: "sim" | "hud" | "ptt" | "companion_quick_send") => {
+    async (
+      text: string,
+      source: "sim" | "hud" | "ptt" | "companion_quick_send",
+      sttTrace?: Partial<VoiceTranscriptionResult> & { source?: string },
+    ) => {
       const t = stripDefaultSadEmojiSuffix(text.trim());
       if (!t) return;
       const activeTasks = Array.from(activeVoiceTasksRef.current.values());
@@ -1565,6 +1614,17 @@ function ChatApp() {
       voiceCompanionDebug("chat.voice_dispatch_decision", {
         source,
         text: truncVoiceLog(t, 100),
+        rawText: truncVoiceLog(sttTrace?.rawText || t, 100),
+        correctedText: truncVoiceLog(sttTrace?.correctedText || sttTrace?.text || t, 100),
+        finalText: truncVoiceLog(sttTrace?.text || t, 100),
+        streamText: truncVoiceLog(sttTrace?.streamText || "", 100),
+        sttSource: sttTrace?.source || "",
+        sttFinalized: sttTrace?.finalized,
+        sttProvisional: sttTrace?.provisional,
+        hotwordCount: sttTrace?.hotwordCount,
+        hotwordStatus: sttTrace?.hotwordStatus,
+        hotwordDominated: sttTrace?.hotwordDominated,
+        hotwordDominationReasons: (sttTrace as any)?.hotwordDominationReasons,
         routedText: truncVoiceLog(decision.normalized_text || t, 140),
         tier: decision.tier,
         intent: decision.intent_class,
@@ -1577,17 +1637,16 @@ function ChatApp() {
         activeTaskCount: decision.active_task_ids.length,
         routeNotes: decision.route_notes,
         fastLane: decision.router_hints.fast_lane,
+        fastLaneKind: decision.router_hints.fast_lane_kind,
+        allowTemplateReply: decision.router_hints.allow_template_reply,
+        routeEvidence: decision.route_evidence,
         injectLightTaskContext: decision.router_hints.inject_light_task_context,
         skipContextRetrieval: decision.router_hints.skip_context_retrieval,
         skipContextSniffer: decision.router_hints.skip_context_sniffer,
         skipExperienceRag: decision.router_hints.skip_experience_rag,
         skipGatewayEnrich: decision.router_hints.skip_gateway_enrich,
       });
-      if (decision.latency_masking.play_task_ack) {
-        playVoiceTaskAck();
-      } else if (decision.router_hints.fast_lane && (voiceCompanionActiveRef.current || companionModeRef.current)) {
-        void previewWakeAckWav("yes").catch(() => {});
-      }
+      const assistantCue = buildVoiceAssistantCue(decision);
       const leadTask = activeTasks.find((it) => it.id === (decision.target_task_id || "")) ?? activeTasks[0];
       const taskSummary = leadTask?.title
         ? `${leadTask.title}${activeTasks.length > 1 ? `（另有${activeTasks.length - 1}个任务）` : ""}`
@@ -1606,8 +1665,27 @@ function ChatApp() {
       const routedText = decision.normalized_text?.trim() || t;
       await doActualSend(routedText, [], {
         displayContent: t,
+        assistantCueText: assistantCue?.text,
+        assistantCueReason: assistantCue?.reason,
         extraImplicitSignals: {
           voice_raw_stt_text: t,
+          voice_asr_raw_text: sttTrace?.rawText || t,
+          voice_corrected_text: sttTrace?.correctedText || sttTrace?.text || t,
+          voice_final_text: sttTrace?.text || t,
+          voice_stt_user_message: sttTrace?.userMessage || "",
+          voice_stt_confidence: sttTrace?.confidence,
+          voice_stt_backend: sttTrace?.backend,
+          voice_stt_source: sttTrace?.source || "",
+          voice_stt_finalized: sttTrace?.finalized,
+          voice_stt_provisional: sttTrace?.provisional,
+          voice_stt_stream_text: sttTrace?.streamText || "",
+          voice_stt_duration_ms: sttTrace?.durationMs,
+          voice_stt_hotword_count: sttTrace?.hotwordCount,
+          voice_stt_hotword_status: sttTrace?.hotwordStatus,
+          voice_stt_hotword_sources: sttTrace?.hotwordSources,
+          voice_stt_hotword_dominated: sttTrace?.hotwordDominated,
+          voice_stt_hotword_domination_reasons: (sttTrace as any)?.hotwordDominationReasons,
+          voice_stt_understanding: sttTrace?.understanding,
           voice_routed_text: routedText,
           voice_dispatcher_decision: decision,
           voice_decision_id: decision.decision_id,
@@ -1621,6 +1699,9 @@ function ChatApp() {
           voice_task_title: decision.task_title,
           voice_active_task_ids: decision.active_task_ids,
           voice_fast_lane: decision.router_hints.fast_lane,
+          voice_fast_lane_kind: decision.router_hints.fast_lane_kind,
+          voice_allow_template_reply: decision.router_hints.allow_template_reply,
+          voice_route_evidence: decision.route_evidence,
           skip_context_retrieval: decision.router_hints.skip_context_retrieval,
           skip_context_sniffer: decision.router_hints.skip_context_sniffer,
           skip_experience_rag: decision.router_hints.skip_experience_rag,
@@ -1640,8 +1721,87 @@ function ChatApp() {
         },
       });
     },
-    [doActualSend, playVoiceTaskAck],
+    [buildVoiceAssistantCue, doActualSend],
   );
+
+  const buildVoiceReplyComposerPrompt = useCallback((payload: Record<string, unknown>, userText: string) => {
+    const replyPlan = payload.replyPlan && typeof payload.replyPlan === "object" ? payload.replyPlan : {};
+    return [
+      "【语音追问生成任务】",
+      "你不是在执行用户原始任务，而是在根据规则层给出的 ReplyPlan 生成一句自然追问/确认话术。",
+      "规则层只负责边界，最终对用户说的话由你来写。",
+      "禁止调用工具，禁止声称已经执行，禁止补全用户没说的信息。",
+      "请只输出最终要对用户说的一句话，不要 Markdown。",
+      "",
+      `用户原始语音文本：${userText}`,
+      "ReplyPlan JSON：",
+      JSON.stringify(replyPlan, null, 2),
+    ].join("\n");
+  }, []);
+  const deliverVoiceReplyComposerResult = useCallback(
+    async (args: {
+      userText: string;
+      reply: string;
+      companionUi: boolean;
+      source?: string;
+      model?: string;
+      elapsedMs?: number;
+    }) => {
+      const userText = stripDefaultSadEmojiSuffix((args.userText || "").trim());
+      const reply = stripDefaultSadEmojiSuffix((args.reply || "").trim());
+      if (!reply) return;
+      const turnSessionId = currentSessionIdRef.current;
+      updateSessionMessagesById(turnSessionId, (prev) => [
+        ...prev,
+        { role: "user", content: userText || "语音追问", timestamp: Date.now() },
+        { role: "assistant", content: reply, reasoning: "", timestamp: Date.now(), source: "L3" },
+      ]);
+      setInput("");
+      setPendingFiles([]);
+      setAttachmentHint(null);
+      setRecordingStatus("");
+      setIsLoading(false);
+      setIsTyping(false);
+      setLocalStreamChunkKind(null);
+      setRiskLevel("safe");
+      setState("thinking");
+
+      const companionVoice = resolveCompanionJvsVoice(ttsVoice);
+      if (args.companionUi) {
+        voiceCompanionActiveRef.current = true;
+        voiceOrchestrator.startSession(`companion-fast-reply-${turnSessionId}-${Date.now()}`, {
+          ttsVoice: companionVoice,
+        });
+        startCompanionJvsIfNeeded();
+        voiceCompanionDebug("chat.voice_reply_composer_fast", {
+          source: args.source || "",
+          model: args.model || "",
+          elapsedMs: args.elapsedMs ?? null,
+          reply: truncVoiceLog(reply, 120),
+        });
+        void emitCompanionL3ToHud({ kind: "answer", content: reply });
+        void voiceOrchestrator.onL3Chunk(reply);
+        void voiceOrchestrator.finishStream().finally(() => setState("idle"));
+      } else {
+        chatJvsVoiceActiveRef.current = true;
+        voiceOrchestrator.startSession(`chat-voice-fast-reply-${turnSessionId}-${Date.now()}`, {
+          maxSpeakSentences: VOICE_PROFILES.chat_ptt.maxSpeakSentences,
+          companionUi: false,
+          ttsVoice: DEFAULT_KOKORO_TTS_VOICE,
+        });
+        startCompanionJvsIfNeeded();
+        voiceChatTraceIfActive("tts.fast_reply_session_armed", {
+          source: args.source || "",
+          model: args.model || "",
+          elapsedMs: args.elapsedMs ?? null,
+        });
+        void voiceOrchestrator.onL3Chunk(reply);
+        void voiceOrchestrator.finishStream().finally(() => setState("idle"));
+      }
+    },
+    [startCompanionJvsIfNeeded, ttsVoice, updateSessionMessagesById, setState],
+  );
+
 
   // 语音陪伴：HUD / Orb / 模拟脚本注入用户文本 → chat 单一 L3 发送方
   useEffect(() => {
@@ -2013,13 +2173,77 @@ function ChatApp() {
         }
         const sttStarted = Date.now();
         const streamText = stripDefaultSadEmojiSuffix((preRecognizedText || "").trim());
-        const canUseStreamText = Boolean(streamText) && wavForStt === wavBase64;
-        const text = canUseStreamText ? streamText : await transcribeWavBase64(wavForStt, profile);
+        if (streamText) {
+          voiceChatTrace("stt.stream_preview_ignored_for_final", {
+            profile,
+            streamText,
+            reason: "ptt_final_stt_required",
+          });
+        }
+        const finalTrace = await transcribeWavBase64Detailed(wavForStt, profile);
+        const sttTrace: Partial<VoiceTranscriptionResult> & { source: string } = {
+          ...finalTrace,
+          source: "jvs_http_transcribe",
+          finalized: true,
+          provisional: false,
+          streamText,
+        };
+        const hotwordRisk = detectVoiceHotwordDomination(sttTrace);
+        sttTrace.hotwordDominated = hotwordRisk.dominated;
+        (sttTrace as Partial<VoiceTranscriptionResult> & { hotwordDominationReasons?: string[] }).hotwordDominationReasons = hotwordRisk.reasons;
+        const text = sttTrace.text || "";
+        if (hotwordRisk.dominated) {
+          const question = `我刚才听到的是“${text}”，但这段语音像是被热词影响了。你可以再说一遍，或者确认这就是你要做的吗？`;
+          voiceChatTrace("stt.hotword_dominated_blocked", {
+            profile,
+            text,
+            rawText: sttTrace.rawText || text,
+            correctedText: sttTrace.correctedText || text,
+            streamText,
+            durationMs: sttTrace.durationMs,
+            hotwordCount: sttTrace.hotwordCount,
+            hotwordStatus: sttTrace.hotwordStatus,
+            reasons: hotwordRisk.reasons,
+          });
+          throw new VoiceServiceError(question, "clarification", {
+            rawText: sttTrace.rawText || text,
+            correctedText: sttTrace.correctedText || text,
+            userMessage: question,
+            userMessageSource: "hotword_domination_gate",
+            replyPlan: {
+              reply_intent: "confirm_hotword_dominated_stt",
+              question,
+              candidate_text: text,
+              reasons: hotwordRisk.reasons,
+            },
+            understanding: sttTrace.understanding,
+            confidence: sttTrace.confidence,
+            durationMs: sttTrace.durationMs,
+            language: sttTrace.language,
+            backend: sttTrace.backend,
+            source: sttTrace.source,
+          });
+        }
         voiceChatTrace("stt.recognized", {
           profile,
           text,
+          rawText: sttTrace.rawText || text,
+          correctedText: sttTrace.correctedText || text,
+          userMessage: sttTrace.userMessage || "",
+          confidence: sttTrace.confidence,
+          backend: sttTrace.backend,
+          durationMs: sttTrace.durationMs,
+          hotwordCount: sttTrace.hotwordCount,
+          hotwordStatus: sttTrace.hotwordStatus,
+          hotwordSources: sttTrace.hotwordSources,
+          hotwordDominated: sttTrace.hotwordDominated,
+          hotwordDominationReasons: (sttTrace as any).hotwordDominationReasons,
           latencyMs: Date.now() - sttStarted,
-          source: canUseStreamText ? "jvs_stream_ws" : "jvs_http_transcribe",
+          source: "jvs_http_transcribe",
+          finalized: true,
+          provisional: false,
+          streamText,
+          streamFinalChanged: Boolean(streamText && streamText !== text),
         });
         chatJvsVoiceActiveRef.current = true;
         startCompanionJvsIfNeeded();
@@ -2045,9 +2269,104 @@ function ChatApp() {
           companionUi: useCompanionUi,
           ui: voiceTraceUiRef.current,
         });
-        await dispatchVoiceUtterance(sendText, "ptt");
+        await dispatchVoiceUtterance(sendText, "ptt", sttTrace);
       } catch (e) {
         const msg = e instanceof VoiceServiceError ? e.message : VOICE_UNAVAILABLE_HINT;
+        if (e instanceof VoiceServiceError && e.code === "clarification") {
+          const details = (e.details || {}) as Record<string, unknown>;
+          const rawText = String(details.rawText || details.correctedText || msg || "").trim();
+          const composerPrompt = buildVoiceReplyComposerPrompt(details, rawText);
+          voiceChatTrace("stt.clarification_required", {
+            profile,
+            question: msg,
+            replyPlan: details.replyPlan,
+            userMessageSource: details.userMessageSource,
+          });
+          const clarificationCompanionUi = companionModeRef.current || voiceCompanionActiveRef.current;
+          chatJvsVoiceActiveRef.current = true;
+          voiceCompanionActiveRef.current = clarificationCompanionUi || voiceCompanionActiveRef.current;
+          startCompanionJvsIfNeeded();
+          if (clarificationCompanionUi && rawText) {
+            void emitCompanionUserToHud(rawText);
+          }
+          setRecordingStatus("");
+          const replyPlan = details.replyPlan && typeof details.replyPlan === "object"
+            ? (details.replyPlan as Record<string, unknown>)
+            : {};
+          if (Object.keys(replyPlan).length > 0) {
+            const fastStarted = Date.now();
+            const fastComposer = await composeVoiceReply({
+              reply_plan: replyPlan,
+              user_text: rawText,
+              fallback_text: msg,
+              timeout_sec: 5,
+              max_tokens: 80,
+            }).catch((err) => {
+              voiceChatTrace("reply_composer.fast_error", {
+                error: err instanceof Error ? err.message : String(err),
+                latencyMs: Date.now() - fastStarted,
+              });
+              return null;
+            });
+            if (
+              fastComposer?.ok &&
+              fastComposer.source === "qwen_flash" &&
+              typeof fastComposer.reply === "string" &&
+              fastComposer.reply.trim()
+            ) {
+              voiceChatTrace("reply_composer.fast_ok", {
+                source: fastComposer.source,
+                model: fastComposer.model || "",
+                elapsedMs: fastComposer.elapsed_ms ?? null,
+                latencyMs: Date.now() - fastStarted,
+              });
+              await deliverVoiceReplyComposerResult({
+                userText: rawText || msg,
+                reply: fastComposer.reply,
+                companionUi: clarificationCompanionUi,
+                source: fastComposer.source,
+                model: fastComposer.model,
+                elapsedMs: fastComposer.elapsed_ms,
+              });
+              endVoiceChatTrace("clarification_required", {
+                question: fastComposer.reply,
+                source: "qwen_flash_reply_composer",
+                model: fastComposer.model || "",
+                elapsedMs: fastComposer.elapsed_ms ?? null,
+              });
+              return;
+            }
+            voiceChatTrace("reply_composer.fast_miss", {
+              source: fastComposer?.source || "none",
+              error: fastComposer?.error || "",
+              latencyMs: Date.now() - fastStarted,
+            });
+          }
+          await doActualSend(composerPrompt, [], {
+            displayContent: rawText || msg,
+            extraImplicitSignals: {
+              desktop_companion: true,
+              source: "desktop_voice_reply_composer",
+              voice_reply_composer: true,
+              voice_reply_plan: details.replyPlan || {},
+              voice_raw_stt_text: rawText,
+              voice_asr_raw_text: details.rawText || rawText,
+              voice_corrected_text: details.correctedText || rawText,
+              voice_final_text: rawText,
+              voice_stt_user_message: msg,
+              voice_stt_user_message_source: details.userMessageSource || "",
+              voice_stt_understanding: details.understanding,
+              prefer_direct_llm: true,
+              skip_context_retrieval: true,
+              skip_context_sniffer: true,
+              skip_experience_rag: true,
+              skip_gateway_enrich: true,
+              clarification_pending: true,
+            },
+          });
+          endVoiceChatTrace("clarification_required", { question: msg, source: "l3_reply_composer" });
+          return;
+        }
         voiceChatTrace("stt.pipeline_fail", {
           profile,
           error: msg,
@@ -2063,7 +2382,7 @@ function ChatApp() {
         chatJvsVoiceActiveRef.current = false;
       }
     },
-    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer],
+    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend],
   );
 
   useSttAudioReady({
@@ -2580,3 +2899,8 @@ if (rootEl) {
     </React.StrictMode>
   );
 }
+
+
+
+
+

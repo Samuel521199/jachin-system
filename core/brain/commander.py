@@ -355,7 +355,7 @@ class CommanderAgent:
                 return (getattr(r.choices[0].message, "content", None) or "").strip()
         except Exception as e:
             logger.warning("Commander 闲聊回退失败: %s", e)
-        return "主人，我在呢。有什么可以帮你的吗？"
+        return "我在。"
 
     def _maybe_trigger_dream(self, user_id: str) -> None:
         """

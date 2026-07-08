@@ -37,7 +37,7 @@ def synthesize_wav(jvs_base: str, text: str) -> bytes:
     import urllib.request
 
     url = f"{jvs_base.rstrip('/')}/v1/tts/synthesize"
-    body = json.dumps({"text": text, "speed": DEFAULT_TTS_SPEED}).encode("utf-8")
+    body = json.dumps({"text": text, "speed": DEFAULT_TTS_SPEED, "kind": "cue"}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,

@@ -17,6 +17,194 @@
     "Vivian": {
       "aliases": ["vivian", "vivi", "viian", "vivan", "vivien", "薇薇安", "微微安", "v薇m", "v 薇 m"],
       "active": true
+    },
+    "Neil": {
+      "aliases": ["neil", "neal", "niel"],
+      "active": true
+    },
+    "Ethan": {
+      "aliases": ["ethan", "eason", "e than"],
+      "active": true
+    },
+    "John": {
+      "aliases": ["john"],
+      "active": true
+    },
+    "Berlith": {
+      "aliases": ["berlith", "berlin"],
+      "active": true
+    },
+    "Gordon": {
+      "aliases": ["gordon"],
+      "active": true
+    },
+    "Nathan": {
+      "aliases": ["nathan"],
+      "active": true
+    },
+    "Gavin": {
+      "aliases": ["gavin"],
+      "active": true
+    },
+    "Daniel": {
+      "aliases": ["daniel"],
+      "active": true
+    },
+    "Jade": {
+      "aliases": ["jade"],
+      "active": true
+    },
+    "Hex": {
+      "aliases": ["hex"],
+      "active": true
+    },
+    "Root": {
+      "aliases": ["root"],
+      "active": true
+    },
+    "Seth": {
+      "aliases": ["seth"],
+      "active": true
+    },
+    "Buck": {
+      "aliases": ["buck"],
+      "active": true
+    },
+    "Cole": {
+      "aliases": ["cole"],
+      "active": true
+    },
+    "Jack Looi": {
+      "aliases": ["jack", "jack looi"],
+      "active": true
+    },
+    "Patrick": {
+      "aliases": ["patrick"],
+      "active": true
+    },
+    "Jin": {
+      "aliases": ["jin"],
+      "active": true
+    },
+    "Lin": {
+      "aliases": ["lin"],
+      "active": true
+    },
+    "Samuel": {
+      "aliases": ["samuel"],
+      "active": true
+    },
+    "Haku": {
+      "aliases": ["haku"],
+      "active": true
+    },
+    "Victor": {
+      "aliases": ["victor"],
+      "active": true
+    },
+    "Vigo": {
+      "aliases": ["vigo"],
+      "active": true
+    },
+    "Mark": {
+      "aliases": ["mark"],
+      "active": true
+    },
+    "Jay": {
+      "aliases": ["jay"],
+      "active": true
+    },
+    "Max": {
+      "aliases": ["max"],
+      "active": true
+    },
+    "Figo": {
+      "aliases": ["figo"],
+      "active": true
+    },
+    "Fincher": {
+      "aliases": ["fincher"],
+      "active": true
+    },
+    "Anna": {
+      "aliases": ["anna"],
+      "active": true
+    },
+    "AnnaAnna": {
+      "aliases": ["annaanna"],
+      "active": true
+    },
+    "Lucy": {
+      "aliases": ["lucy"],
+      "active": true
+    },
+    "Makoto": {
+      "aliases": ["makoto"],
+      "active": true
+    },
+    "Musk": {
+      "aliases": ["musk"],
+      "active": true
+    },
+    "Elara": {
+      "aliases": ["elara"],
+      "active": true
+    },
+    "Summer": {
+      "aliases": ["summer"],
+      "active": true
+    },
+    "Jovi": {
+      "aliases": ["jovi"],
+      "active": true
+    },
+    "Donnie": {
+      "aliases": ["donnie"],
+      "active": true
+    },
+    "David": {
+      "aliases": ["david"],
+      "active": true
+    },
+    "Rence": {
+      "aliases": ["rence"],
+      "active": true
+    },
+    "KK": {
+      "aliases": ["kk", "king kong"],
+      "active": true
+    },
+    "Mariz": {
+      "aliases": ["mariz"],
+      "active": true
+    },
+    "Tom": {
+      "aliases": ["tom"],
+      "active": true
+    },
+    "Reina": {
+      "aliases": ["reina"],
+      "active": true
+    },
+    "Mada": {
+      "aliases": ["mada"],
+      "active": true
+    },
+    "Stefan": {
+      "aliases": ["stefan"],
+      "active": true
+    },
+    "Leslie": {
+      "aliases": ["leslie"],
+      "active": true
+    },
+    "Hope": {
+      "aliases": ["hope"],
+      "active": true
+    },
+    "Germaine": {
+      "aliases": ["germaine"],
+      "active": true
     }
   },
   "projects": {

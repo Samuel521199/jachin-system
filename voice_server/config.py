@@ -51,7 +51,7 @@ def load_config() -> VoiceServerConfig:
             r"D:\project\jachin-system-main\data\models\voice",
         )
     )
-    stt_rel = os.getenv("JACHIN_VOICE_STT_DIR", r"stt\SenseVoiceSmall-onnx")
+    stt_rel = os.getenv("JACHIN_VOICE_STT_DIR", r"stt\sherpa-onnx-zipformer-zh-en-2023-11-22")
     tts_rel = os.getenv("JACHIN_VOICE_TTS_DIR", r"tts")
     sv_rel = os.getenv(
         "JACHIN_VOICE_SV_DIR",

@@ -11,12 +11,16 @@ import { DEFAULT_KOKORO_TTS_VOICE } from "./voiceDefaults";
 
 type ChunkConsumer = (text: string) => void;
 
+type SpeechJobKind = "content" | "cue";
+
 type SpeechJobContext = {
   generation: number;
   sessionId: string;
   ttsVoice?: string;
   companionUi: boolean;
   queuedAt: number;
+  kind: SpeechJobKind;
+  reason?: string;
 };
 
 export type VoiceOrchestratorSessionOpts = {
@@ -150,13 +154,27 @@ export class VoiceOrchestrator {
     return this.chunkChain;
   }
 
-  private scheduleSpeakSentence(sentence: string, onSentence?: ChunkConsumer): void {
+  speakCue(text: string, reason = "assistant_cue"): Promise<void> {
+    const cue = text.trim();
+    if (!cue) return Promise.resolve();
+    this.scheduleSpeakSentence(cue, undefined, "cue", reason);
+    return this.ttsChain;
+  }
+
+  private scheduleSpeakSentence(
+    sentence: string,
+    onSentence?: ChunkConsumer,
+    kind: SpeechJobKind = "content",
+    reason?: string,
+  ): void {
     const job: SpeechJobContext = {
       generation: this.generation,
       sessionId: this.sessionId,
       ttsVoice: this.ttsVoice,
       companionUi: this.companionUi,
       queuedAt: Date.now(),
+      kind,
+      reason,
     };
     this.ttsChain = this.ttsChain
       .then(() => this.speakSentence(sentence, onSentence, job))
@@ -184,9 +202,11 @@ export class VoiceOrchestrator {
       generation: job.generation,
       queueWaitMs,
       raw: truncVoiceLog(sentence, 120),
+      kind: job.kind,
+      reason: job.reason ?? "",
     });
-    if (this.maxSpeakSentences <= 0) return;
-    if (this.spokenSentenceCount >= this.maxSpeakSentences) {
+    if (job.kind === "content" && this.maxSpeakSentences <= 0) return;
+    if (job.kind === "content" && this.spokenSentenceCount >= this.maxSpeakSentences) {
       voiceCompanionDebug("orchestrator.tts_skip_cap", {
         cap: this.maxSpeakSentences,
         raw: truncVoiceLog(sentence, 60),
@@ -218,7 +238,7 @@ export class VoiceOrchestrator {
     const ttsVoice = (job.ttsVoice || DEFAULT_KOKORO_TTS_VOICE).trim() || DEFAULT_KOKORO_TTS_VOICE;
     const useMandarinNeuralVoice = false;
     onSentence?.(speakable);
-    if (this.isHardSentenceBoundary(speakable)) {
+    if (job.kind === "content" && this.isHardSentenceBoundary(speakable)) {
       this.spokenSentenceCount += 1;
     }
     voiceCompanionDebug("orchestrator.tts_request", {
@@ -226,18 +246,22 @@ export class VoiceOrchestrator {
       sessionId,
       generation: jobGeneration,
       spoken: this.spokenSentenceCount,
+      kind: job.kind,
+      reason: job.reason ?? "",
     });
     voiceChatTraceIfActive("tts.orchestrator.request", {
       sentence: truncVoiceLog(speakable, 200),
       spokenIndex: this.spokenSentenceCount + 1,
       sessionId,
       queueWaitMs,
+      kind: job.kind,
+      reason: job.reason ?? "",
     });
     try {
       const synthStartedAt = Date.now();
       const blob = useMandarinNeuralVoice
         ? await synthesizeSpeechL2Only(speakable, ttsVoice)
-        : await synthesizeByJvs(speakable, ttsVoice, sessionId);
+        : await synthesizeByJvs(speakable, ttsVoice, sessionId, job.kind);
       const synthMs = Date.now() - synthStartedAt;
       if (jobGeneration !== voicePlaybackController.getGeneration()) {
         voiceCompanionDebug("orchestrator.tts_skip_stale", {

@@ -559,6 +559,16 @@ def run_trace(
                     actual_trace.get("sequence_mapped", ""),
                 )
             )
+        trim_stats = actual_trace.get("audio_trim", {}) if actual_trace else {}
+        if trim_stats:
+            print(
+                "trim      : raw={}ms out={}ms lead={}ms trail={}ms".format(
+                    trim_stats.get("original_duration_ms", ""),
+                    trim_stats.get("duration_ms", ""),
+                    trim_stats.get("leading_trim_ms", ""),
+                    trim_stats.get("trailing_trim_ms", ""),
+                )
+            )
         print(
             f"synth     : duration={synth_info['duration_ms']}ms synth={synth_info['synth_ms']}ms quality={synth_info['quality']}"
         )

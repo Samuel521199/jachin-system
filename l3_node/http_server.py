@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 HTTP API - 技能列表与执行
 
 供 Skill Matrix 等前端调用。技能执行在 L3 本地进行（~/.jachin/l3_skill_cache/）。
@@ -2728,6 +2728,47 @@ async def _handle_agent_run(request) -> "aiohttp.web.Response":
         return _json_response({"error": str(e)}, status=500)
 
 
+async def _handle_voice_reply_compose(request) -> "aiohttp.web.Response":
+    """POST /api/v3/voice/reply-compose - fast Qwen flash composer for ReplyPlan follow-ups."""
+    try:
+        body = await request.json() if request.body_exists else {}
+    except Exception as e:
+        return _json_response({"ok": False, "error": f"请求体解析失败: {e}"}, status=400)
+    reply_plan = body.get("reply_plan") or body.get("replyPlan") or {}
+    if not isinstance(reply_plan, dict) or not reply_plan:
+        return _json_response({"ok": False, "error": "reply_plan 不能为空"}, status=400)
+    user_text = str(body.get("user_text") or body.get("userText") or "").strip()
+    fallback_text = str(body.get("fallback_text") or body.get("fallbackText") or "").strip()
+    try:
+        timeout_sec = float(body.get("timeout_sec") or body.get("timeoutSec") or 0) or None
+    except (TypeError, ValueError):
+        timeout_sec = None
+    try:
+        max_tokens = int(body.get("max_tokens") or body.get("maxTokens") or 0) or None
+    except (TypeError, ValueError):
+        max_tokens = None
+    try:
+        from l3_node.agent_ref import engine_ref
+
+        engine = engine_ref.get("engine")
+    except ImportError:
+        engine = None
+    try:
+        from l3_node.voice_reply_composer import compose_voice_reply_fast
+
+        result = await compose_voice_reply_fast(
+            engine=engine,
+            reply_plan=reply_plan,
+            user_text=user_text,
+            fallback_text=fallback_text,
+            timeout_sec=timeout_sec,
+            max_tokens=max_tokens,
+        )
+        status = 200 if result.get("ok") else 503
+        return _json_response(result, status=status)
+    except Exception as e:
+        logger.warning("[L3 HTTP] voice reply compose failed: %s", e, exc_info=True)
+        return _json_response({"ok": False, "reply": fallback_text, "error": str(e)}, status=500)
 async def _handle_l3_setup_page(request) -> "aiohttp.web.Response":
     """GET /l3/setup — 浏览器内选择 L1 工作区并写入 l2_gateway_config（需 edge token）。"""
     import aiohttp.web
@@ -3386,6 +3427,7 @@ async def run_http_server(port: int = L3_HTTP_PORT, host: str = "127.0.0.1") -> 
     app.router.add_post("/api/v3/skills/{skill_id}/execute/stream", _handle_skills_execute_stream)
     app.router.add_get("/api/v3/mcp/tools", _handle_mcp_tools_list)
     app.router.add_post("/api/v3/mcp/execute", _handle_mcp_execute)
+    app.router.add_post("/api/v3/voice/reply-compose", _handle_voice_reply_compose)
     app.router.add_post("/api/v3/agent/run", _handle_agent_run)
     app.router.add_get("/l3/setup", _handle_l3_setup_page)
     app.router.add_post("/api/v3/setup/workspaces", _handle_setup_workspaces)

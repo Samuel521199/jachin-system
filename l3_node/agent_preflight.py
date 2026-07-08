@@ -9,7 +9,72 @@ import logging
 import re
 from typing import Any, Optional
 
+from l3_node.mission_intent_schema import MissionTaskType
+
 logger = logging.getLogger(__name__)
+
+
+def _desktop_companion_active(implicit_attribution: Optional[dict[str, Any]], gateway_bundle: Any = None) -> bool:
+    if isinstance(implicit_attribution, dict):
+        channel = str(implicit_attribution.get("channel") or "").strip()
+        if channel.startswith("websocket_") or channel in {"desktop_voice", "http_agent_run"}:
+            return True
+    try:
+        extra = getattr(gateway_bundle, "extra", None) or {}
+        return bool(extra.get("desktop_companion") or extra.get("voice_companion"))
+    except Exception:
+        return False
+
+
+def _should_preempt_pending_with_new_os_task(decision: Any) -> bool:
+    try:
+        task_type = decision.intent.task_type
+        if task_type == MissionTaskType.UNKNOWN:
+            return False
+        if decision.intent_frame.route_policy != "execute":
+            return False
+        if not bool(decision.route.ok):
+            return False
+        if float(decision.intent.confidence or 0.0) < 0.72:
+            return False
+        return task_type in {
+            MissionTaskType.APP_CONTROL,
+            MissionTaskType.CALCULATOR_CALCULATE,
+            MissionTaskType.LARK_MESSAGE_SEND,
+            MissionTaskType.PROJECT_BRIEFING_DELIVERY,
+            MissionTaskType.CODEX_ASK_LARK_SEND,
+            MissionTaskType.FILE_TO_APP,
+            MissionTaskType.SYSTEM_STATUS_REPORT,
+            MissionTaskType.PROJECT_MEMORY_UPDATE,
+        }
+    except Exception:
+        return False
+
+
+async def _adapt_if_companion(
+    text: str,
+    *,
+    user_input: str,
+    engine: Any,
+    implicit_attribution: Optional[dict[str, Any]],
+    gateway_bundle: Any,
+    reason: str,
+) -> str:
+    if not _desktop_companion_active(implicit_attribution, gateway_bundle):
+        return text
+    try:
+        from l3_node.companion_reply_adapter import adapt_companion_reply_async, reply_needs_companion_adaptation
+
+        if not reply_needs_companion_adaptation(text):
+            return text
+        return await adapt_companion_reply_async(
+            base_msg=text,
+            user_input=user_input,
+            engine=engine,
+            reason=reason,
+        )
+    except Exception:
+        return text
 
 
 def _implicit_channel_skips_hr_keyword_preflight(implicit_attribution: Any) -> bool:
@@ -69,27 +134,7 @@ async def apply_inbound_preflight(
     惰性导入 agent_core 私有助手，避免模块循环依赖。
     gateway_bundle: 若提供，先走 Intent Registry（§4）插件化 preflight，再执行下列 HR/分支逻辑。
     """
-    try:
-        from l3_node.intent_gateway.bootstrap import ensure_default_intent_registry
-        from l3_node.intent_gateway.registry import run_registered_preflights
-
-        ensure_default_intent_registry()
-        if gateway_bundle is not None:
-            _ctx = {
-                "user_input": user_input,
-                "messages": messages,
-                "prior_messages": prior_messages,
-                "tools": tools,
-                "allowed": allowed,
-                "lark_cid": lark_cid,
-                "engine": engine,
-            }
-            _reg_early = await run_registered_preflights(gateway_bundle, _ctx)
-            if _reg_early is not None:
-                return _reg_early
-    except Exception as e:
-        logger.warning("[AgentPreflight] Intent Registry preflight 跳过: %s", e)
-
+    _io_decision = None
     try:
         from l3_node.intent_orchestrator import analyze_intent_async, write_router_evidence
 
@@ -120,6 +165,63 @@ async def apply_inbound_preflight(
     except Exception as e:
         logger.warning("[AgentPreflight] Intent Orchestrator 跳过: %s", e)
 
+    if _io_decision is not None and _should_preempt_pending_with_new_os_task(_io_decision):
+        try:
+            from l3_node.mission_control_center import clear_pending_mission, load_pending_mission
+            from l3_node.os_mission_router import maybe_run_codex_lark_mission
+
+            if load_pending_mission():
+                clear_pending_mission()
+                logger.info(
+                    "[AgentPreflight] clear stale pending mission for new task=%s",
+                    _io_decision.intent.task_type.value,
+                )
+            _os_mission = await maybe_run_codex_lark_mission(
+                user_input=user_input,
+                tools=tools,
+                allowed=allowed,
+                engine=engine,
+            )
+            if _os_mission is not None:
+                return await _adapt_if_companion(
+                    _os_mission,
+                    user_input=user_input,
+                    engine=engine,
+                    implicit_attribution=implicit_attribution,
+                    gateway_bundle=gateway_bundle,
+                    reason="new_os_task_preempted_pending",
+                )
+        except Exception as e:
+            logger.warning("[AgentPreflight] OS Mission preempt 跳过: %s", e)
+
+    try:
+        from l3_node.intent_gateway.bootstrap import ensure_default_intent_registry
+        from l3_node.intent_gateway.registry import run_registered_preflights
+
+        ensure_default_intent_registry()
+        if gateway_bundle is not None:
+            _ctx = {
+                "user_input": user_input,
+                "messages": messages,
+                "prior_messages": prior_messages,
+                "tools": tools,
+                "allowed": allowed,
+                "lark_cid": lark_cid,
+                "engine": engine,
+            }
+            _reg_early = await run_registered_preflights(gateway_bundle, _ctx)
+            if _reg_early is not None:
+                return await _adapt_if_companion(
+                    _reg_early,
+                    user_input=user_input,
+                    engine=engine,
+                    implicit_attribution=implicit_attribution,
+                    gateway_bundle=gateway_bundle,
+                    reason="intent_registry_preflight",
+                )
+    except Exception as e:
+        logger.warning("[AgentPreflight] Intent Registry preflight 跳过: %s", e)
+
     try:
         from l3_node.os_mission_router import maybe_run_codex_lark_mission
 
@@ -130,7 +232,14 @@ async def apply_inbound_preflight(
             engine=engine,
         )
         if _os_mission is not None:
-            return _os_mission
+            return await _adapt_if_companion(
+                _os_mission,
+                user_input=user_input,
+                engine=engine,
+                implicit_attribution=implicit_attribution,
+                gateway_bundle=gateway_bundle,
+                reason="os_mission_router",
+            )
     except Exception as e:
         logger.warning("[AgentPreflight] OS Mission Router 跳过: %s", e)
 

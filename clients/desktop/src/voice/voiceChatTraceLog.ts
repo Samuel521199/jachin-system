@@ -79,7 +79,15 @@ export function beginVoiceChatTrace(profile: VoiceUxProfile, ui?: VoiceChatUiSta
 
 /** 结束追踪（成功 / 失败 / 取消） */
 export function endVoiceChatTrace(
-  outcome: "ok" | "stt_fail" | "send_fail" | "l3_error" | "timeout" | "cancel" | "ptt_fail",
+  outcome:
+    | "ok"
+    | "stt_fail"
+    | "send_fail"
+    | "l3_error"
+    | "timeout"
+    | "cancel"
+    | "ptt_fail"
+    | "clarification_required",
   extra: Record<string, unknown> = {},
 ): void {
   if (!activeTrace) {

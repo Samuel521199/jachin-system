@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.100] - 2026-07-08
+
+### Added / Changed
+
+- 完成粗糙热词功能，待检查：Sherpa 热词/领域词典、语音理解候选解析、陪伴态快路径路由与回复编排增强。
+- 整合远端：英语助手本地词典与例句生成优化（v0.9.100 基线含 `038d6b1`）。
+- **Version**: Desktop **0.9.100**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.98] - 2026-07-06
 
 ### Added / Changed

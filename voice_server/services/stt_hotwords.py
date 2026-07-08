@@ -99,6 +99,30 @@ def _load_json_hotwords(path: Path) -> tuple[dict[str, int], str | None]:
     return out, str(path)
 
 
+def _load_text_hotwords(path: Path) -> tuple[dict[str, int], str | None]:
+    if not path.is_file():
+        return {}, None
+    out: dict[str, int] = {}
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except Exception:
+        return {}, None
+    for line in lines:
+        item = line.strip()
+        if not item or item.startswith("#"):
+            continue
+        if ":" in item:
+            word, weight = item.rsplit(":", 1)
+            try:
+                value = int(float(weight.strip()))
+            except ValueError:
+                value = 20
+        else:
+            word, value = item, 20
+        _add_word(out, word.strip(), value)
+    return out, str(path)
+
+
 def _load_env_hotwords() -> tuple[dict[str, int], str | None]:
     raw = os.getenv("JACHIN_STT_HOTWORDS", "").strip()
     if not raw:
@@ -124,6 +148,7 @@ class SttHotwordProvider:
     def __init__(self, extra_paths: list[Path] | None = None) -> None:
         root = _repo_root()
         default_paths = [
+            root / "data" / "voice" / "sherpa_hotwords.txt",
             root / "data" / "voice" / "domain_lexicon.json",
             root / "data" / "voice" / "stt_hotwords.json",
             root / "config" / "voice_domain_lexicon.json",
@@ -141,7 +166,10 @@ class SttHotwordProvider:
             sources.append(router_source)
 
         for path in self.paths:
-            path_words, source = _load_json_hotwords(path)
+            if path.suffix.lower() == ".txt":
+                path_words, source = _load_text_hotwords(path)
+            else:
+                path_words, source = _load_json_hotwords(path)
             for word, weight in path_words.items():
                 _add_word(words, word, weight)
             if source and path_words:
@@ -154,4 +182,3 @@ class SttHotwordProvider:
             sources.append(env_source)
 
         return HotwordSnapshot(words=words, sources=sources)
-

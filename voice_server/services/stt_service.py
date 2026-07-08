@@ -1,22 +1,32 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
-import inspect
-import math
 import logging
+import math
+import os
 import re
+import tempfile
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from services.stt_hotwords import SttHotwordProvider
+from services.stt_hotwords import HotwordSnapshot, SttHotwordProvider
+from services.voice_understanding import VoiceUnderstandingCorrector
 
 logger = logging.getLogger("jachin.voice_server.stt")
-_SENSEVOICE_INTERNAL_TAG_RE = re.compile(r"<\|.*?\|>")
 _MEANINGFUL_CHAR_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
+
+
+@dataclass
+class ZipformerFiles:
+    encoder: Path
+    decoder: Path
+    joiner: Path
+    tokens: Path
+    bpe_vocab: Path | None = None
 
 
 @dataclass
@@ -28,58 +38,106 @@ class SttResult:
     hotword_count: int = 0
     hotword_status: str = "not_configured"
     hotword_sources: tuple[str, ...] = ()
+    raw_text: str = ""
+    user_message: str = ""
+    user_message_source: str = ""
+    reply_plan: dict[str, Any] = field(default_factory=dict)
+    backend: str = "sherpa-onnx-zipformer"
+    understanding: dict[str, Any] = field(default_factory=dict)
 
 
 class SttService:
-    """SenseVoiceSmall ONNX（funasr-onnx）本地转写。"""
+    """Sherpa-ONNX Zipformer Transducer local STT with domain understanding."""
+
+    model_name = "sherpa-onnx-zipformer-zh-en-2023-11-22"
 
     def __init__(self, stt_dir: Path) -> None:
         self.stt_dir = stt_dir
-        self.model_path = stt_dir / "model_quant.onnx"
+        self.model_path = stt_dir / "encoder-epoch-34-avg-19.int8.onnx"
+        self._files = self._find_zipformer_files(stt_dir)
         self._engine: Any = None
         self._load_error: str | None = None
         self._hotwords = SttHotwordProvider()
-        self._hotword_support: bool | None = None
+        self._hotword_file: Path | None = None
+        self._hotword_signature: tuple[tuple[str, int], ...] = ()
+        self._understanding = VoiceUnderstandingCorrector()
 
     @property
     def ready(self) -> bool:
-        return self.model_path.is_file()
+        return self._files is not None
 
-    def _load_engine(self) -> Any | None:
+    @property
+    def load_error(self) -> str | None:
+        return self._load_error
+
+    @staticmethod
+    def _find_zipformer_files(stt_dir: Path) -> ZipformerFiles | None:
+        encoder = stt_dir / "encoder-epoch-34-avg-19.int8.onnx"
+        if not encoder.is_file():
+            candidates = sorted(stt_dir.glob("encoder-*.int8.onnx")) or sorted(stt_dir.glob("encoder-*.onnx"))
+            encoder = candidates[0] if candidates else encoder
+        decoder_candidates = sorted(stt_dir.glob("decoder-*.onnx"))
+        joiner_candidates = sorted(stt_dir.glob("joiner-*.int8.onnx")) or sorted(stt_dir.glob("joiner-*.onnx"))
+        tokens = stt_dir / "tokens.txt"
+        bpe_vocab = stt_dir / "bpe.vocab"
+        if not (encoder.is_file() and decoder_candidates and joiner_candidates and tokens.is_file()):
+            return None
+        return ZipformerFiles(
+            encoder=encoder,
+            decoder=decoder_candidates[0],
+            joiner=joiner_candidates[0],
+            tokens=tokens,
+            bpe_vocab=bpe_vocab if bpe_vocab.is_file() else None,
+        )
+
+    def _load_engine(self, hotword_snapshot: HotwordSnapshot | None = None) -> Any | None:
+        hotword_snapshot = hotword_snapshot or self._hotwords.snapshot()
+        hotword_signature = self._snapshot_signature(hotword_snapshot)
+        if self._engine is not None and hotword_signature != self._hotword_signature:
+            logger.info("Sherpa hotwords changed; reloading STT recognizer")
+            self._engine = None
         if self._engine is not None:
             return self._engine
         if self._load_error is not None:
             return None
-        if not self.ready:
-            self._load_error = f"model missing: {self.model_path}"
+        if not self.ready or self._files is None:
+            self._load_error = f"model missing: {self.stt_dir}"
             return None
         try:
-            from funasr_onnx import SenseVoiceSmall
+            import sherpa_onnx
 
-            logger.info("Loading SenseVoice ONNX from %s", self.stt_dir)
-            self._engine = SenseVoiceSmall(
-                str(self.stt_dir),
-                batch_size=1,
-                quantize=True,
+            hotwords_file = self._prepare_hotword_file(hotword_snapshot)
+            logger.info("Loading Sherpa-ONNX Zipformer from %s", self.stt_dir)
+            self._engine = sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=str(self._files.encoder),
+                decoder=str(self._files.decoder),
+                joiner=str(self._files.joiner),
+                tokens=str(self._files.tokens),
+                num_threads=int(os.getenv("JACHIN_STT_THREADS", "2")),
+                sample_rate=16000,
+                feature_dim=80,
+                decoding_method="modified_beam_search" if hotwords_file else "greedy_search",
+                max_active_paths=int(os.getenv("JACHIN_STT_MAX_ACTIVE_PATHS", "4")),
+                hotwords_file=str(hotwords_file) if hotwords_file else "",
+                hotwords_score=float(os.getenv("JACHIN_STT_HOTWORDS_SCORE", "4.0")),
+                modeling_unit="bpe" if self._files.bpe_vocab else "cjkchar",
+                bpe_vocab=str(self._files.bpe_vocab or ""),
+                provider=os.getenv("JACHIN_STT_PROVIDER", "cpu"),
             )
-            logger.info("SenseVoice ONNX loaded")
+            logger.info("Sherpa-ONNX Zipformer loaded")
             return self._engine
         except Exception as e:
             self._load_error = str(e)
-            logger.exception("SenseVoice load failed: %s", e)
+            logger.exception("Sherpa-ONNX Zipformer load failed: %s", e)
             return None
 
     def transcribe(self, audio_bytes: bytes) -> SttResult:
         duration_ms = self._estimate_duration_ms(audio_bytes)
         if not self.ready:
-            return SttResult(
-                text="",
-                confidence=0.0,
-                duration_ms=duration_ms,
-                language="zh",
-            )
+            return SttResult(text="", confidence=0.0, duration_ms=duration_ms, language="zh")
 
-        engine = self._load_engine()
+        hotword_snapshot = self._hotwords.snapshot()
+        engine = self._load_engine(hotword_snapshot)
         if engine is None:
             return SttResult(
                 text=f"【STT错误】模型未加载: {self._load_error or 'unknown'}",
@@ -90,89 +148,75 @@ class SttService:
 
         audio, sample_rate = self._decode_audio_bytes(audio_bytes)
         if audio is None or len(audio) == 0:
-            return SttResult(
-                text="【STT错误】无法解析音频或音频为空",
-                confidence=0.0,
-                duration_ms=duration_ms,
-                language="zh",
-            )
+            return SttResult(text="【STT错误】无法解析音频或音频为空", confidence=0.0, duration_ms=duration_ms, language="zh")
 
         audio = self._resample_to_16k(audio, sample_rate)
-        hotword_snapshot = self._hotwords.snapshot()
-        hotword_status = "not_configured" if not hotword_snapshot.words else "pending"
-
+        raw_text = ""
+        text = ""
+        correction: dict[str, Any] = {}
         try:
-            from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
-
-            raw_list, hotword_status = self._call_engine(
-                engine,
-                audio,
-                hotwords=hotword_snapshot.words,
-            )
-            raw = raw_list[0] if raw_list else ""
-            text = rich_transcription_postprocess(raw).strip()
-            if not text:
-                text = (raw or "").strip()
-            text = self._sanitize_transcript_text(text)
+            stream = engine.create_stream()
+            stream.accept_waveform(16000, audio.astype(np.float32))
+            engine.decode_stream(stream)
+            raw_text = self._sanitize_transcript_text(stream.result.text)
+            correction = self._understanding.correct(raw_text) if raw_text else {}
+            text = str(correction.get("corrected_text") or raw_text).strip()
         except Exception as e:
-            logger.exception("SenseVoice transcribe failed")
+            logger.exception("Sherpa-ONNX transcribe failed")
             text = f"【STT错误】{e}"
 
-        confidence = 0.9 if text and not text.startswith("【STT错误】") else 0.0
+        confidence = self._result_confidence(text, correction)
         return SttResult(
             text=text,
+            raw_text=raw_text,
+            user_message=str(correction.get("user_message") or "").strip(),
+            user_message_source=str(correction.get("user_message_source") or "").strip(),
+            reply_plan=correction.get("reply_plan", {}) if isinstance(correction.get("reply_plan"), dict) else {},
             confidence=confidence,
             duration_ms=duration_ms,
             language="zh",
             hotword_count=hotword_snapshot.count,
-            hotword_status=hotword_status,
+            hotword_status="applied" if hotword_snapshot.words else "not_configured",
             hotword_sources=tuple(hotword_snapshot.sources),
+            understanding=correction.get("understanding", {}),
         )
 
-    def _engine_supports_hotwords(self, engine: Any) -> bool:
-        if self._hotword_support is not None:
-            return self._hotword_support
-        try:
-            source = inspect.getsource(engine.__call__)
-        except Exception:
-            source = ""
-        # Some funasr-onnx builds accept **kwargs but ignore hotword. Treat that
-        # as unsupported so diagnostics do not imply the boost is active.
-        self._hotword_support = "hotword" in source or "hotwords" in source
-        return self._hotword_support
+    def _prepare_hotword_file(self, snapshot: HotwordSnapshot) -> Path | None:
+        signature = self._snapshot_signature(snapshot)
+        if not signature:
+            self._hotword_file = None
+            self._hotword_signature = ()
+            return None
+        if self._hotword_file and self._hotword_file.is_file() and signature == self._hotword_signature:
+            return self._hotword_file
+        path = Path(tempfile.gettempdir()) / "jachin_sherpa_hotwords.txt"
+        lines = [f"{word} :{self._format_hotword_weight(weight)}" for word, weight in sorted(snapshot.words.items())]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._hotword_file = path
+        self._hotword_signature = signature
+        return path
 
-    def _call_engine(
-        self,
-        engine: Any,
-        audio: np.ndarray,
-        *,
-        hotwords: dict[str, int],
-    ) -> tuple[list[str], str]:
-        base_kwargs = {"fs": 16000, "language": "auto", "use_itn": True}
-        if hotwords and self._engine_supports_hotwords(engine):
-            for key in ("hotword", "hotwords"):
-                try:
-                    return engine(audio, **base_kwargs, **{key: hotwords}), "applied"
-                except TypeError:
-                    continue
-                except Exception:
-                    logger.exception("SenseVoice hotword inference failed with %s; falling back without hotwords", key)
-                    break
-            self._hotword_support = False
-            logger.warning("SenseVoice engine rejected hotword kwargs; falling back without hotwords")
-        status = "unsupported" if hotwords else "not_configured"
-        return engine(audio, **base_kwargs), status
+    @staticmethod
+    def _snapshot_signature(snapshot: HotwordSnapshot) -> tuple[tuple[str, int], ...]:
+        return tuple(sorted(snapshot.words.items()))
+
+    @staticmethod
+    def _format_hotword_weight(weight: int) -> str:
+        return str(max(1, min(100, int(weight or 1))))
+
+    @staticmethod
+    def _result_confidence(text: str, correction: dict[str, Any]) -> float:
+        if not text or text.startswith("【STT错误】"):
+            return 0.0
+        if correction:
+            return round(max(0.01, min(0.99, float(correction.get("confidence") or 0.0))), 3)
+        return 0.9
 
     @staticmethod
     def _sanitize_transcript_text(text: str) -> str:
-        """
-        清理 SenseVoice 可能返回的内部标签（如 <|en|><|EMO_UNKNOWN|>）。
-        若清理后仅剩噪声标点/空白，返回空字符串，交由上游判定为无效识别。
-        """
         if not text:
             return ""
-        cleaned = _SENSEVOICE_INTERNAL_TAG_RE.sub("", text)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", str(text)).strip()
         if not cleaned:
             return ""
         if not _MEANINGFUL_CHAR_RE.search(cleaned):
@@ -206,7 +250,7 @@ class SttService:
     @staticmethod
     def _resample_to_16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
         if sample_rate == 16000 or sample_rate <= 0:
-            return audio
+            return audio.astype(np.float32)
         try:
             from scipy.signal import resample_poly
 

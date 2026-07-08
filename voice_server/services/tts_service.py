@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
-    from defaults import DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE
+    from defaults import DEFAULT_KOKORO_TTS_CUE_STYLE_INDEX, DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE
 except ModuleNotFoundError:
-    from voice_server.defaults import DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE
+    from voice_server.defaults import DEFAULT_KOKORO_TTS_CUE_STYLE_INDEX, DEFAULT_KOKORO_TTS_SPEED, DEFAULT_KOKORO_TTS_VOICE
 from typing import Any
 
 import numpy as np
@@ -28,6 +28,11 @@ DEFAULT_MODEL_DIRNAME = "Kokoro-82M-v1.1-zh-ONNX"
 DEFAULT_CPU_THREADS = 4
 AUTO_PAUSE_MIN_HAN_CHARS = 24
 AUTO_PAUSE_SYLLABLES = 18
+TRIM_WINDOW_MS = 10
+CUE_KEEP_LEADING_SILENCE_MS = 120
+CUE_KEEP_TRAILING_SILENCE_MS = 220
+CONTENT_KEEP_LEADING_SILENCE_MS = 180
+CONTENT_KEEP_TRAILING_SILENCE_MS = 320
 WEAK_BOUNDARY_AFTER_WORDS = {"记得", "请", "帮我", "然后", "但是", "不过", "所以", "另外", "还有", "顺便"}
 # Kokoro-zh 路径固定使用中文 G2P。
 KOKORO_LANGUAGE_CODE = "z"
@@ -131,6 +136,8 @@ class TtsService:
         self._misaki_zh = None
         self._style_mode = str(os.getenv("JACHIN_VOICE_TTS_STYLE_MODE", "token_len")).strip().lower() or "token_len"
         self._style_index_override = self._parse_optional_int_env("JACHIN_VOICE_TTS_STYLE_INDEX")
+        cue_style_index = self._parse_optional_int_env("JACHIN_VOICE_TTS_CUE_STYLE_INDEX")
+        self._cue_style_index = DEFAULT_KOKORO_TTS_CUE_STYLE_INDEX if cue_style_index is None else cue_style_index
         self._zh_frontend_mode = str(os.getenv("JACHIN_VOICE_TTS_ZH_FRONTEND_MODE", "auto")).strip().lower() or "auto"
         if self._zh_frontend_mode not in {"auto", "on", "off"}:
             logger.warning("Invalid JACHIN_VOICE_TTS_ZH_FRONTEND_MODE=%r, fallback to auto", self._zh_frontend_mode)
@@ -209,6 +216,16 @@ class TtsService:
         except ValueError:
             logger.warning("Invalid integer env %s=%r, ignoring", name, raw)
             return None
+
+    @staticmethod
+    def _resolve_tts_kind(kind: str | None, normalized_text: str) -> str:
+        requested = (kind or "").strip().lower()
+        if requested in {"cue", "content"}:
+            return requested
+        compact = re.sub(r"\s+", "", normalized_text or "")
+        if compact in {"我在。", "我想想。", "收到，我来处理。", "你好，我在。", "我在，怎么了？", "你好，有什么可以帮你。", "你好，有什么可以帮您。"}:
+            return "cue"
+        return "content"
 
     @staticmethod
     def _file_sha256_short(path: Path, limit_bytes: int | None = None) -> str:
@@ -460,13 +477,6 @@ class TtsService:
         except Exception:
             pass
 
-        short_replies = {
-            "\u6211\u5728": "\u6211\u5728\u5462\u3002",
-            "\u6211\u5728\u3002": "\u6211\u5728\u5462\u3002",
-        }
-        compact = re.sub(r"\s+", "", out)
-        if compact in short_replies:
-            out = short_replies[compact]
 
         if out and any("\u4e00" <= ch <= "\u9fff" for ch in out) and not re.search(r"[。！？!?；;.]$", out):
             out = out.rstrip("，,、；;:：") + "。"
@@ -635,8 +645,9 @@ class TtsService:
         if self._is_cancelled(session_id, snapshot):
             raise TtsCancelledError(f"tts_cancelled_at:{stage}")
 
-    def synthesize(self, text: str, voice: str | None = None, session_id: str | None = None, speed: float | None = None) -> TtsResult:
+    def synthesize(self, text: str, voice: str | None = None, session_id: str | None = None, speed: float | None = None, kind: str | None = None) -> TtsResult:
         normalized = self._normalize_text_for_zh_tts(text)
+        tts_kind = self._resolve_tts_kind(kind, normalized)
 
         if not self.ready:
             return self._fallback_sine(normalized, freq_hz=330.0, sample_rate=DEFAULT_SAMPLE_RATE)
@@ -657,7 +668,7 @@ class TtsService:
         started_at = time.perf_counter()
         self._ensure_not_cancelled(session_id, cancel_snapshot, "before_synthesize")
         try:
-            result = self._synthesize_once(normalized, voice_id, session_id, cancel_snapshot, speed_value)
+            result = self._synthesize_once(normalized, voice_id, session_id, cancel_snapshot, speed_value, tts_kind)
             result.synth_ms = int((time.perf_counter() - started_at) * 1000)
             return result
         except TtsCancelledError:
@@ -673,6 +684,7 @@ class TtsService:
         session_id: str | None,
         cancel_snapshot: tuple[int, int],
         speed: float,
+        tts_kind: str,
     ) -> TtsResult:
         self._ensure_not_cancelled(session_id, cancel_snapshot, "before_phonemize")
         token_ids: list[int] = []
@@ -772,7 +784,18 @@ class TtsService:
         if len(token_ids) > 510:
             raise RuntimeError(f"token sequence too long: {len(token_ids)} (max 510)")
 
-        style_vec, style_idx, style_count = self._select_style_vector(voice_id, len(token_ids), len(phonemes) if isinstance(phonemes, str) else 0)
+        style_index_override = self._style_index_override
+        style_mode = self._style_mode
+        if tts_kind == "cue" and style_index_override is None:
+            style_index_override = self._cue_style_index
+        style_mode_label = style_mode if style_index_override is None else f"fixed:{style_index_override}"
+        style_vec, style_idx, style_count = self._select_style_vector(
+            voice_id,
+            len(token_ids),
+            len(phonemes) if isinstance(phonemes, str) else 0,
+            style_mode=style_mode,
+            style_index_override=style_index_override,
+        )
         logger.info(
             "Kokoro TTS prepared voice=%s speed=%.2f g2p=%s token_source=%s token_len=%s phoneme_len=%s style=%s/%s style_mode=%s sample_rate=%s text=%r",
             voice_id,
@@ -783,7 +806,7 @@ class TtsService:
             len(phonemes) if isinstance(phonemes, str) else 0,
             style_idx,
             max(0, style_count - 1),
-            self._style_mode if self._style_index_override is None else f"fixed:{self._style_index_override}",
+            style_mode_label,
             DEFAULT_SAMPLE_RATE,
             text,
         )
@@ -806,6 +829,7 @@ class TtsService:
         if not outputs:
             raise RuntimeError("onnx returned empty outputs")
         samples = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+        samples, audio_trim = self._trim_silence(samples, DEFAULT_SAMPLE_RATE, tts_kind)
         wav_bytes = self._pcm_f32_to_wav(samples, DEFAULT_SAMPLE_RATE)
         duration_ms = self._wav_duration_ms(wav_bytes, sample_rate=DEFAULT_SAMPLE_RATE)
         phoneme_text = phonemes if isinstance(phonemes, str) else str(phonemes)
@@ -837,12 +861,22 @@ class TtsService:
                 "candidates": candidate_debug,
                 "style_index": style_idx,
                 "style_count": style_count,
-                "style_mode": self._style_mode if self._style_index_override is None else f"fixed:{self._style_index_override}",
+                "style_mode": style_mode_label,
+                "tts_kind": tts_kind,
+                "audio_trim": audio_trim,
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },
         )
 
-    def _select_style_vector(self, voice_id: str, token_len: int, phoneme_len: int = 0) -> tuple[np.ndarray, int, int]:
+    def _select_style_vector(
+        self,
+        voice_id: str,
+        token_len: int,
+        phoneme_len: int = 0,
+        *,
+        style_mode: str | None = None,
+        style_index_override: int | None = None,
+    ) -> tuple[np.ndarray, int, int]:
         style_path = self.voices_dir / f"{voice_id}.bin"
         if not style_path.is_file():
             raise RuntimeError(f"voice style file not found: {style_path}")
@@ -854,16 +888,83 @@ class TtsService:
             raise RuntimeError(f"invalid voice bin vector width (expect 256): {style_path}")
         vectors = floats.reshape(-1, 256)
         max_idx = max(0, vectors.shape[0] - 1)
-        if self._style_index_override is not None:
-            style_idx = int(np.clip(self._style_index_override, 0, max_idx))
-        elif self._style_mode == "zero":
+        selected_mode = (style_mode or self._style_mode).strip().lower() or "token_len"
+        if style_index_override is not None:
+            style_idx = int(np.clip(style_index_override, 0, max_idx))
+        elif selected_mode == "zero":
             style_idx = 0
-        elif self._style_mode == "phoneme_len":
+        elif selected_mode == "phoneme_len":
             style_idx = min(max(0, phoneme_len), max_idx)
         else:
             # Official Kokoro-style lookup: style vector row follows token length.
             style_idx = min(max(0, token_len), max_idx)
         return vectors[style_idx], style_idx, vectors.shape[0]
+
+    @staticmethod
+    def _trim_silence(samples: np.ndarray, sample_rate: int, tts_kind: str) -> tuple[np.ndarray, dict[str, Any]]:
+        original_len = int(samples.size)
+        original_ms = int(original_len / max(1, sample_rate) * 1000)
+        empty_stats: dict[str, Any] = {
+            "applied": False,
+            "original_duration_ms": original_ms,
+            "duration_ms": original_ms,
+            "leading_trim_ms": 0,
+            "trailing_trim_ms": 0,
+            "threshold": 0.0,
+            "peak": 0.0,
+        }
+        if original_len <= 0:
+            return samples, empty_stats
+
+        abs_samples = np.abs(samples.astype(np.float32, copy=False))
+        peak = float(np.max(abs_samples)) if abs_samples.size else 0.0
+        if peak <= 0.0:
+            empty_stats["peak"] = 0.0
+            return samples, empty_stats
+
+        threshold = max(0.004, peak * 0.02)
+        window = max(1, int(sample_rate * TRIM_WINDOW_MS / 1000))
+        active_windows: list[int] = []
+        for start in range(0, original_len, window):
+            chunk = abs_samples[start : min(original_len, start + window)]
+            if chunk.size == 0:
+                continue
+            rms = float(np.sqrt(np.mean(np.square(chunk))))
+            if rms >= threshold:
+                active_windows.append(start // window)
+
+        if not active_windows:
+            empty_stats.update({"threshold": round(threshold, 6), "peak": round(peak, 6)})
+            return samples, empty_stats
+
+        keep_lead_ms = CUE_KEEP_LEADING_SILENCE_MS if tts_kind == "cue" else CONTENT_KEEP_LEADING_SILENCE_MS
+        keep_tail_ms = CUE_KEEP_TRAILING_SILENCE_MS if tts_kind == "cue" else CONTENT_KEEP_TRAILING_SILENCE_MS
+        keep_lead = int(sample_rate * keep_lead_ms / 1000)
+        keep_tail = int(sample_rate * keep_tail_ms / 1000)
+        active_start = active_windows[0] * window
+        active_end = min(original_len, (active_windows[-1] + 1) * window)
+        trim_start = max(0, active_start - keep_lead)
+        trim_end = min(original_len, active_end + keep_tail)
+        if trim_start >= trim_end:
+            empty_stats.update({"threshold": round(threshold, 6), "peak": round(peak, 6)})
+            return samples, empty_stats
+
+        trimmed = samples[trim_start:trim_end].copy()
+        duration_ms = int(trimmed.size / max(1, sample_rate) * 1000)
+        leading_trim_ms = int(trim_start / max(1, sample_rate) * 1000)
+        trailing_trim_ms = int((original_len - trim_end) / max(1, sample_rate) * 1000)
+        stats = {
+            "applied": bool(leading_trim_ms > 0 or trailing_trim_ms > 0),
+            "original_duration_ms": original_ms,
+            "duration_ms": duration_ms,
+            "leading_trim_ms": leading_trim_ms,
+            "trailing_trim_ms": trailing_trim_ms,
+            "threshold": round(threshold, 6),
+            "peak": round(peak, 6),
+            "keep_leading_ms": keep_lead_ms,
+            "keep_trailing_ms": keep_tail_ms,
+        }
+        return trimmed, stats
 
     @staticmethod
     def _wav_duration_ms(wav_bytes: bytes, sample_rate: int) -> int:

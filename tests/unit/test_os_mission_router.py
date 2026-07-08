@@ -2,6 +2,13 @@ import json
 
 import pytest
 
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
 
 @pytest.fixture(autouse=True)
 def isolate_os_mission_control(tmp_path, monkeypatch) -> None:
@@ -79,8 +86,9 @@ async def test_maybe_run_codex_lark_mission_invokes_windows_workflow(monkeypatch
     )
 
     assert reply is not None
-    assert "已通过 Codex 总结 Jachin" in reply
-    assert "D:/evidence/run.evidence.json" in reply
+    assert "我已经完成 Jachin 的项目总结" in reply
+    assert "D:/evidence/run.evidence.json" not in reply
+    assert "Router Evidence:" not in reply
     assert calls[0]["project_name"] == "Jachin"
     assert calls[0]["recipients_json"] == '["Neil"]'
     assert calls[0]["since_days"] == 3
@@ -126,7 +134,9 @@ async def test_os_mission_router_executes_lark_message(monkeypatch) -> None:
     )
 
     assert reply is not None
-    assert "识别意图: lark_message_send" in reply
+    assert "我已经把消息发送给 Vivian" in reply
+    assert "识别意图:" not in reply
+    assert "Router Evidence:" not in reply
     assert calls == [('["Vivian"]', "你好，我已经在测试")]
 
 
@@ -148,8 +158,61 @@ async def test_os_mission_router_executes_app_control(monkeypatch) -> None:
     )
 
     assert reply is not None
-    assert "识别意图: app_control" in reply
+    assert "我已经打开或切换到 lark" in reply
+    assert "识别意图:" not in reply
+    assert "Router Evidence:" not in reply
     assert calls == ["lark"]
+
+
+async def test_agent_preflight_new_os_task_clears_stale_pending(monkeypatch) -> None:
+    from l3_client.local_mcps.windows_uia_mcp import server as windows_uia_server
+    from l3_node.agent_preflight import apply_inbound_preflight
+    from l3_node.mission_control_center import load_pending_mission, save_pending_mission
+
+    save_pending_mission(
+        {
+            "intent": {
+                "task_type": "lark_message_send",
+                "confidence": 0.62,
+                "slots": {"recipients": ["Vivian"], "message": ""},
+                "missing_slots": ["message"],
+                "risk_level": "low",
+                "reasoning": ["test stale pending"],
+                "raw_text": "给 Vivian 发消息",
+            },
+            "route": {
+                "ok": False,
+                "tool_id": "mcp:windows_lark_send_message",
+                "workflow_id": "windows_lark_message_send",
+                "reason": "missing_message",
+                "required_slots": ["recipients", "message"],
+                "missing_slots": ["message"],
+            },
+        }
+    )
+    calls: list[str] = []
+
+    def fake_open(app_name: str, args_json: str = "[]", out_dir: str = "") -> str:
+        calls.append(app_name)
+        return json.dumps({"task": "windows_open_app", "ok": True, "detail": "app_ready"}, ensure_ascii=False)
+
+    monkeypatch.setattr(windows_uia_server, "windows_open_app", fake_open)
+
+    reply = await apply_inbound_preflight(
+        user_input="打开 Lark",
+        messages=[{"role": "user", "content": "打开 Lark"}],
+        prior_messages=[],
+        tools=[{"id": "mcp:windows_open_app"}],
+        allowed=None,
+        lark_cid="voice-test",
+        implicit_attribution={"channel": "websocket_terminal"},
+    )
+
+    assert reply is not None
+    assert "没补全" not in reply
+    assert "缺少的内容" not in reply
+    assert calls == ["lark"]
+    assert load_pending_mission() is None
 
 
 async def test_os_mission_router_remembers_project_then_hydrates_path(tmp_path, monkeypatch) -> None:
@@ -172,7 +235,8 @@ async def test_os_mission_router_remembers_project_then_hydrates_path(tmp_path, 
         tools=[],
     )
     assert remembered is not None
-    assert "project_memory_update" in remembered
+    assert "我已经记住 Jachin 的本地路径" in remembered
+    assert "project_memory_update" not in remembered
 
     reply = await maybe_run_codex_lark_mission(
         user_input="总结 Jachin 最近进展发给 Vivian",
@@ -229,7 +293,7 @@ async def test_os_mission_router_asks_one_question_when_group_name_is_missing(tm
 
     assert reply is not None
     assert "要发送给谁" in reply
-    assert "Router Evidence:" in reply
+    assert "Router Evidence:" not in reply
 
 
 async def test_os_mission_router_preview_patch_confirm_flow(tmp_path, monkeypatch) -> None:
@@ -256,8 +320,10 @@ async def test_os_mission_router_preview_patch_confirm_flow(tmp_path, monkeypatc
     )
 
     assert preview is not None
-    assert "Task Preview" in preview
-    assert "暂不执行" in preview
+    assert "我先确认一下" in preview
+    assert "确认后我再执行" in preview
+    assert "Task Preview" not in preview
+    assert "Router Evidence:" not in preview
     assert calls == []
 
     patched = await maybe_run_codex_lark_mission(
@@ -266,7 +332,9 @@ async def test_os_mission_router_preview_patch_confirm_flow(tmp_path, monkeypatc
     )
 
     assert patched is not None
-    assert "已更新任务预览" in patched
+    assert "确认" in patched
+    assert "Task Preview" not in patched
+    assert "Router Evidence:" not in patched
     assert calls == []
 
     done = await maybe_run_codex_lark_mission(

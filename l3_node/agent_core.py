@@ -124,6 +124,15 @@ _VOICE_EXACT_TEMPLATE_ALIASES: dict[str, str] = {
     "\u6d63\u72b2\u30bd": "hello",
     "\u9366\u3125\u60a7": "available",
     "\u7481\u8336\u763d\u7481\u8336\u763d": "hello",
+    "\u6309\u8bb2\u8bdd": "available",
+    "\u6309\u4f4f\u8bb2\u8bdd": "available",
+    "\u6309\u7740\u8bb2\u8bdd": "available",
+    "\u4e0d\u8bb2\u8bdd": "available",
+    "\u4f60\u4e0d\u8bb2\u8bdd": "available",
+    "\u4f60\u600e\u4e48\u4e0d\u8bb2\u8bdd": "available",
+    "\u4f60\u600e\u4e48\u4e0d\u8bf4\u8bdd": "available",
+    "\u8bf4\u8bdd": "available",
+    "\u8bb2\u8bdd": "available",
 }
 
 _VOICE_EXACT_TEMPLATE_POOLS: dict[str, tuple[str, ...]] = {
@@ -136,7 +145,17 @@ _VOICE_EXACT_TEMPLATE_POOLS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _pick_voice_exact_template_reply(text: str) -> str | None:
+_VOICE_TASK_SIGNAL_RE = re.compile(
+    r"lark|feishu|flybook|飞书|打开|启动|切换|发消息|发送|发给|给.+发|"
+    r"vivian|ethan|neil|联系人|计算|总结|整理|项目|文件|删除|创建",
+    re.I,
+)
+
+
+def _pick_voice_exact_template_reply(text: str, *extra_texts: str) -> str | None:
+    joined = "\n".join([str(text or ""), *(str(x or "") for x in extra_texts)])
+    if _VOICE_TASK_SIGNAL_RE.search(joined):
+        return None
     t = re.sub(r"\s+", "", (text or "").strip())
     if not t:
         return None
@@ -3599,6 +3618,8 @@ Action: ...
         _voice_target = str(_desktop_companion_ctx.get("target_task_id") or "").strip()
         _voice_task_title = str(_desktop_companion_ctx.get("voice_task_title") or "").strip()
         _voice_task_context = str(_desktop_companion_ctx.get("task_context_summary") or "").strip()
+        _voice_reply_composer = bool(_desktop_companion_ctx.get("voice_reply_composer"))
+        _voice_reply_plan = _desktop_companion_ctx.get("voice_reply_plan")
         _voice_notes = _desktop_companion_ctx.get("voice_route_notes")
         _voice_notes_text = ""
         if isinstance(_voice_notes, (list, tuple)) and _voice_notes:
@@ -3633,6 +3654,35 @@ Action: ...
                 )
             elif _voice_tier == "CHIT_CHAT" and _voice_lane == "direct_llm":
                 _desktop_companion_block += "这是闲聊/陪伴快路径，直接短答，避免工具、摘要和长推理。\n"
+        if _voice_reply_composer:
+            _reply_plan_text = ""
+            try:
+                _reply_plan_text = json.dumps(_voice_reply_plan or {}, ensure_ascii=False)[:1600]
+            except Exception:
+                _reply_plan_text = str(_voice_reply_plan or "")[:1600]
+            _desktop_companion_block += (
+                "\n【语音追问话术生成模式】本轮不是执行用户原始任务，而是根据规则层 ReplyPlan 生成最终要说给用户听的一句话。"
+                "禁止调用工具；禁止声称已经执行；禁止补全用户没有提供的信息；禁止改变 ReplyPlan 的风险边界。"
+                "只输出自然、温和、适合 TTS 的一句追问或确认。\n"
+            )
+            if _reply_plan_text:
+                _desktop_companion_block += f"ReplyPlan：{_reply_plan_text}\n"
+        try:
+            from l3_node.voice_followup_policy import (
+                build_voice_followup_prompt_block,
+                decide_voice_followup_policy,
+            )
+
+            _followup_decision = decide_voice_followup_policy(
+                _surf_user,
+                _desktop_companion_ctx,
+            )
+            _desktop_companion_ctx["voice_followup_policy"] = _followup_decision.to_dict()
+            _followup_block = build_voice_followup_prompt_block(_followup_decision)
+            if _followup_block:
+                _desktop_companion_block += _followup_block
+        except Exception as e:
+            logger.debug("[VoiceFollowupPolicy] skipped: %s", e, exc_info=True)
     allowed = _get_allowed_skills()
     tools = sort_tools_by_id(tools or load_tools(allowed_skills=allowed))
     tools_desc = build_tools_description(tools)
@@ -7606,6 +7656,8 @@ async def _build_direct_system_prompt(
         lines.append("只输出用户要求的正文。")
     if _voice_fast_prompt and not json_mode:
         lines.append("本轮来自语音快路径：只回 1-2 个短句，优先 30 字内；禁止长安抚、解释、总结和 Markdown。")
+        if str(_dc_ctx.get("voice_fast_lane_kind") or "").strip().lower() == "light_query":
+            lines.append("\u8fd9\u4e00\u8f6e\u662f\u8bed\u97f3\u8f7b\u95ee\u7b54\uff0c\u5fc5\u987b\u56de\u7b54\u7528\u6237\u95ee\u7684\u5177\u4f53\u95ee\u9898\uff0c\u4e0d\u8981\u53ea\u8bf4\u2018\u6211\u5728\u2019\u3001\u2018\u542c\u7740\u5462\u2019\u6216\u5176\u4ed6 presence ack\u3002")
     lines.append(_MERMAID_SAFE_RULES_SYSTEM_BLOCK_SLIM.strip())
 
     if not _nexus_prompt_disabled:
@@ -7825,10 +7877,23 @@ async def run_agent(
             "voice_task_title",
             "voice_active_task_ids",
             "voice_raw_stt_text",
+            "voice_asr_raw_text",
+            "voice_corrected_text",
+            "voice_final_text",
             "voice_routed_text",
+            "voice_stt_source",
+            "voice_stt_confidence",
+            "voice_stt_backend",
+            "voice_stt_user_message",
+            "voice_stt_user_message_source",
+            "voice_reply_composer",
+            "voice_reply_plan",
             "target_task_id",
             "task_context_summary",
             "source",
+            "voice_fast_lane_kind",
+            "voice_allow_template_reply",
+            "voice_route_evidence",
             "force_background",
             "acceptance_round",
             "inject_task_context",
@@ -7944,6 +8009,17 @@ async def run_agent(
                 "max_iterations": max_iterations,
                 **(
                     {
+                        "voice_asr_raw_text": str(_desktop_companion_ctx.get("voice_asr_raw_text") or "")[:300],
+                        "voice_corrected_text": str(_desktop_companion_ctx.get("voice_corrected_text") or "")[:300],
+                        "voice_final_text": str(_desktop_companion_ctx.get("voice_final_text") or "")[:300],
+                        "voice_routed_text": str(_desktop_companion_ctx.get("voice_routed_text") or "")[:300],
+                        "voice_stt_source": str(_desktop_companion_ctx.get("voice_stt_source") or "")[:80],
+                    }
+                    if _desktop_companion_ctx
+                    else {}
+                ),
+                **(
+                    {
                         "lark_chat_id": _lark_cid,
                         "lark_reply_chat_id": _lark_cid,
                     }
@@ -8004,8 +8080,26 @@ async def run_agent(
     prior_messages = list(messages)
 
     if _voice_fast_lane and not attachments_metadata and _delegate_depth == 0:
-        _template_reply = _pick_voice_exact_template_reply(user_input or "")
+        _template_reply = _pick_voice_exact_template_reply(
+            user_input or "",
+            str(_desktop_companion_ctx.get("voice_raw_stt_text") or ""),
+            str(_desktop_companion_ctx.get("voice_asr_raw_text") or ""),
+            str(_desktop_companion_ctx.get("voice_corrected_text") or ""),
+            str(_desktop_companion_ctx.get("voice_routed_text") or ""),
+        )
         if _template_reply is not None:
+            if _desktop_companion_mode and engine is not None:
+                try:
+                    from l3_node.companion_reply_adapter import adapt_companion_reply_async
+
+                    _template_reply = await adapt_companion_reply_async(
+                        base_msg=_template_reply,
+                        user_input=user_input or "",
+                        engine=engine,
+                        reason="voice_exact_template",
+                    )
+                except Exception:
+                    pass
             if _session_messages is not None:
                 messages.append({"role": "user", "content": user_input or ""})
                 messages.append({"role": "assistant", "content": _template_reply})

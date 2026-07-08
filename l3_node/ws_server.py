@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 import zlib
 from pathlib import Path
@@ -63,6 +64,8 @@ def _is_ws_voice_fast_lane(intent: str, implicit_signals: dict | None, msg: dict
         return False
     if msg and msg.get("attachments_metadata"):
         return False
+    if bool(sig.get("voice_evidence_blocked")):
+        return False
     if bool(sig.get("voice_fast_lane")) or bool(sig.get("skip_context_retrieval")):
         return True
     tier = str(sig.get("voice_dispatch_tier") or "").upper()
@@ -72,11 +75,118 @@ def _is_ws_voice_fast_lane(intent: str, implicit_signals: dict | None, msg: dict
     return (
         tier == "CHIT_CHAT"
         and lane == "direct_llm"
-        and intent_class in ("", "CHITCHAT")
+        and intent_class in ("", "CHITCHAT", "QUERY_LIGHT")
         and verdict in ("", "NONE")
         and not sig.get("target_task_id")
     )
 
+
+def _voice_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _voice_evidence_gate_reply(intent: str, implicit_signals: dict | None) -> tuple[str | None, str]:
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    if not sig:
+        return None, ""
+    text = (intent or "").strip()
+    stt_source = str(sig.get("voice_stt_source") or "").strip()
+    finalized_value = sig.get("voice_stt_finalized")
+    finalized_known = finalized_value is not None and str(finalized_value).strip() != ""
+    finalized = _voice_bool(finalized_value)
+    provisional = _voice_bool(sig.get("voice_stt_provisional"))
+    hotword_dominated = _voice_bool(sig.get("voice_stt_hotword_dominated"))
+    lane = str(sig.get("voice_dispatch_lane") or "").strip().lower()
+    tier = str(sig.get("voice_dispatch_tier") or "").strip().upper()
+    intent_class = str(sig.get("voice_intent_class") or "").strip().upper()
+    executable_lane = lane in {"foreground", "background_submit"} or intent_class in {"TASK_SYNC", "TASK_ASYNC"}
+    taskish_text = bool(re.search(r"打开|启动|找到|查找|切到|进入|发送|发消息|给.+发|删除|创建|修改|导出|计算器|计算|chrome|lark|飞书|vivian|neil|ethan", text, re.I))
+
+    if hotword_dominated:
+        return (
+            f"我刚才听到的是“{text}”，但这段语音像是被热词影响了。你可以再说一遍，或者确认这就是你要做的吗？",
+            "hotword_dominated",
+        )
+    if stt_source == "jvs_stream_ws" or provisional or (finalized_known and not finalized):
+        if executable_lane or taskish_text or tier != "CHIT_CHAT":
+            return (
+                f"我刚才只拿到了临时识别结果“{text}”，还不能直接执行。你再说一遍，或者确认要执行这件事吗？",
+                "non_final_voice_stt",
+            )
+    return None, ""
+_WS_VOICE_TEMPLATE_TASK_WORDS = (
+    "\u6253\u5f00", "\u542f\u52a8", "\u5173\u95ed", "\u53d1\u9001", "\u53d1\u7ed9", "\u6d88\u606f",
+    "\u6587\u4ef6", "\u76ee\u5f55", "\u603b\u7ed3", "\u62a5\u544a", "\u626b\u63cf", "\u6e05\u7406",
+    "\u63d0\u9192", "\u95f9\u949f", "\u641c\u7d22", "\u67e5\u8be2", "\u5929\u6c14", "\u7535\u8111",
+    "\u9879\u76ee", "\u4ee3\u7801", "\u5220\u9664", "\u521b\u5efa", "\u4fee\u6539", "\u5bfc\u51fa",
+    "lark", "feishu", "chrome", "cursor", "code", "vivian",
+)
+_WS_VOICE_TEMPLATE_ALIASES: dict[str, tuple[str, ...]] = {
+    "\u4f60\u597d": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "\u4f60\u597d\u5440": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "\u54c8\u55bd": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "hello": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "hi": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "\u5728\u5417": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "\u5728\u561b": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "\u4f60\u5728\u5417": ("\u6211\u5728\u3002", "\u5728\u5462\u3002", "\u542c\u7740\u5462\u3002", "\u600e\u4e48\u5566\uff1f"),
+    "\u542c\u5f97\u5230\u5417": ("\u542c\u5230\u4e86\u3002", "\u542c\u5f97\u5f88\u6e05\u695a\u3002", "\u6211\u5728\u542c\u3002"),
+    "\u542c\u89c1\u5417": ("\u542c\u5230\u4e86\u3002", "\u542c\u5f97\u5f88\u6e05\u695a\u3002", "\u6211\u5728\u542c\u3002"),
+    "\u5582": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u55ef": ("\u55ef\uff0c\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u6309\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u6309\u4f4f\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u6309\u7740\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u4e0d\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u4f60\u4e0d\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u4f60\u600e\u4e48\u4e0d\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u521a\u521a\u5728\u542c\u3002"),
+    "\u4f60\u600e\u4e48\u4e0d\u8bf4\u8bdd": ("\u6211\u5728\u3002", "\u521a\u521a\u5728\u542c\u3002"),
+    "\u8bf4\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+    "\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
+}
+
+
+def _normalize_ws_voice_template_text(intent: str, implicit_signals: dict | None = None) -> str:
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    raw = str(sig.get("voice_raw_stt_text") or intent or "")
+    text = raw.strip().lower()
+    text = re.sub(r"<\|.*?\|>", "", text)
+    text = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", text)
+    text = re.sub(r"[\s\u3002\uff0c\uff01\uff1f\u3001\uff1b\uff1a,.!?;:'\"`~*_#()\[\]{}<>-]+", "", text)
+    return text
+
+
+def _pick_ws_voice_template_reply(intent: str, implicit_signals: dict | None = None) -> str | None:
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    raw = str(intent or "").strip()
+    if not raw or len(raw) > 24:
+        return None
+    kind = str(sig.get("voice_fast_lane_kind") or "").strip().lower()
+    allow_template = sig.get("voice_allow_template_reply")
+    if kind and kind != "presence_template":
+        return None
+    if allow_template is False or str(allow_template).strip().lower() in {"0", "false", "no"}:
+        return None
+    joined = raw + "\n" + str(sig.get("voice_raw_stt_text") or "")
+    joined_lower = joined.lower()
+    if any(word.lower() in joined_lower for word in _WS_VOICE_TEMPLATE_TASK_WORDS):
+        return None
+    key = _normalize_ws_voice_template_text(raw, implicit_signals)
+    if not key:
+        return None
+    pool = _WS_VOICE_TEMPLATE_ALIASES.get(key)
+    if not pool:
+        # Conservative fuzzy handling for STT repetition/noise around presence checks.
+        if len(key) <= 12 and ("\u4f60\u597d" in key or "\u5728\u5417" in key or "\u8bb2\u8bdd" in key or "\u8bf4\u8bdd" in key):
+            pool = ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002")
+    if not pool:
+        return None
+    idx = zlib.crc32(f"{key}|{time.time_ns()}|{uuid.uuid4().hex}".encode("utf-8")) % len(pool)
+    return pool[idx]
 
 def _is_ws_voice_presence_ack_intent(intent: str) -> bool:
     text = (intent or "").strip()
@@ -131,12 +241,20 @@ def _voice_light_task_context_prompt(implicit_signals: dict | None) -> str:
 
 
 def _voice_fast_lane_messages(intent: str, implicit_signals: dict | None = None) -> list[dict[str, str]]:
+    sig = implicit_signals if isinstance(implicit_signals, dict) else {}
+    fast_lane_kind = str(sig.get("voice_fast_lane_kind") or "chat_direct").strip().lower()
     task_context_prompt = _voice_light_task_context_prompt(implicit_signals)
+    kind_prompt = ""
+    if fast_lane_kind == "light_query":
+        kind_prompt = "\u5f53\u524d\u8def\u7531\u7c7b\u578b\u662f\u8f7b\u95ee\u7b54\uff0c\u4e0d\u662f presence ack\uff1b\u5fc5\u987b\u76f4\u63a5\u56de\u7b54\u7528\u6237\u95ee\u7684\u95ee\u9898\uff0c\u7edd\u5bf9\u4e0d\u8981\u53ea\u8bf4\u2018\u6211\u5728\u2019\u6216\u2018\u542c\u7740\u5462\u2019\u3002"
+    elif fast_lane_kind == "presence_template":
+        kind_prompt = "\u5f53\u524d\u8def\u7531\u7c7b\u578b\u662f presence ack\uff1b\u7528\u6237\u4e3b\u8981\u662f\u5728\u786e\u8ba4\u4f60\u662f\u5426\u5728\u7ebf\uff0c\u56de\u590d\u8981\u6781\u77ed\u3002"
     system_prompt = (
         "\u4f60\u662f Jachin \u7684\u966a\u4f34\u6001\u8bed\u97f3\u52a9\u624b\u3002\u5f53\u524d\u662f\u8bed\u97f3\u95f2\u804a\u5feb\u8def\u5f84\u3002"
         "\u76f4\u63a5\u3001\u81ea\u7136\u3001\u6e29\u67d4\u5730\u7528\u4e2d\u6587\u77ed\u7b54\uff0c1\u52302\u53e5\u3002\u7528\u6237\u5982\u679c\u95ee\u4e86\u5177\u4f53\u95ee\u9898\uff0c\u5fc5\u987b\u56de\u7b54\u95ee\u9898\u672c\u8eab\uff0c"
         "\u4e0d\u8981\u53ea\u8bf4\u6211\u5728\u3001\u597d\u5440\u3001\u542c\u7740\u5462\u3002\u53ea\u6709\u7528\u6237\u53ea\u662f\u53eb\u4f60\u966a\u4f34\u6216\u786e\u8ba4\u4f60\u5728\u65f6\uff0c\u624d\u53ef\u7528\u5f88\u77ed\u7684\u8fde\u63a5\u8bed\u3002"
         "\u4e0d\u8981\u5c55\u793a\u63a8\u7406\uff0c\u4e0d\u8981\u8c03\u7528\u5de5\u5177\u3002\u6ca1\u6709\u8f7b\u91cf\u4efb\u52a1\u72b6\u6001\u65f6\uff0c\u4e0d\u8981\u8bf4\u4f60\u6b63\u5728\u5904\u7406\u4efb\u52a1\u3002"
+        + kind_prompt
     )
     return [
         {"role": "system", "content": system_prompt + task_context_prompt},
@@ -321,6 +439,69 @@ async def _broadcast_to_mirror_subscribers(chat_id: str, payload: dict) -> None:
             await _send_safe(ws, payload)
         except Exception:
             pass
+
+
+async def _voice_template_post_answer_bookkeeping(
+    *,
+    websocket,
+    chat_id: str,
+    messages_snapshot: list | None,
+    final_content: str,
+    run_id: str,
+    broadcast: bool,
+    chunk_payload: dict | None,
+    answer_payload: dict | None,
+) -> None:
+    """Persist/log template replies after the client has already received answer."""
+    metrics: dict[str, Any] = {
+        "template": True,
+        "session_save_async": True,
+        "lark_push_skipped": True,
+    }
+    if chat_id and messages_snapshot is not None:
+        started = time.perf_counter()
+        try:
+            await asyncio.to_thread(_save_lark_session, chat_id, messages_snapshot)
+            metrics["session_save_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+        except Exception as e:
+            metrics["session_save_error"] = str(e)[:200]
+            logger.debug("[L3 WS] voice template async session save skipped: %s", e)
+
+    started = time.perf_counter()
+    try:
+        from l3_node.terminal_turn_debug_log import append_final
+
+        append_final(
+            "voice_fast_lane_template_final",
+            final_content,
+            extra={"run_id": run_id, "chat_id": chat_id or None, "post_answer": True},
+        )
+        metrics["append_final_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+    except Exception as e:
+        metrics["append_final_error"] = str(e)[:200]
+
+    if broadcast and chat_id:
+        started = time.perf_counter()
+        try:
+            if chunk_payload:
+                await _broadcast_to_mirror_subscribers(chat_id, chunk_payload)
+            if answer_payload:
+                await _broadcast_to_mirror_subscribers(chat_id, answer_payload)
+            metrics["broadcast_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
+        except Exception as e:
+            metrics["broadcast_error"] = str(e)[:200]
+
+    try:
+        await _send_safe(
+            websocket,
+            {
+                "step_type": "voice_template_post_answer_metrics",
+                "run_id": run_id,
+                "latency_trace": metrics,
+            },
+        )
+    except Exception:
+        pass
 
 
 def _mirror_push_url_effective() -> str:
@@ -605,6 +786,43 @@ async def _ws_execute_intent_turn(
     _imp_sig = msg.get("implicit_signals")
     _imp_sig = _imp_sig if isinstance(_imp_sig, dict) else None
 
+    _voice_gate_reply, _voice_gate_reason = _voice_evidence_gate_reply(intent, _imp_sig)
+    if _voice_gate_reply:
+        if isinstance(_imp_sig, dict):
+            _imp_sig["voice_evidence_blocked"] = True
+            _imp_sig["voice_evidence_block_reason"] = _voice_gate_reason
+        try:
+            from l3_node.terminal_turn_debug_log import append_final
+
+            append_final(
+                "voice_evidence_gate_final",
+                _voice_gate_reply,
+                extra={
+                    "run_id": run_id,
+                    "reason": _voice_gate_reason,
+                    "voice_stt_source": (_imp_sig or {}).get("voice_stt_source") if isinstance(_imp_sig, dict) else "",
+                    "voice_stt_finalized": (_imp_sig or {}).get("voice_stt_finalized") if isinstance(_imp_sig, dict) else None,
+                },
+            )
+        except Exception:
+            pass
+        from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
+
+        _gate_payload = {
+            "step_type": "answer",
+            "content": sanitize_final_answer_for_ui(_voice_gate_reply),
+            "run_id": run_id,
+            "latency_trace": {
+                "voice_evidence_gate": True,
+                "reason": _voice_gate_reason,
+                "tools_skipped": True,
+            },
+        }
+        await _send_safe(websocket, _gate_payload)
+        if broadcast and chat_id:
+            await _broadcast_to_mirror_subscribers(chat_id, _gate_payload)
+        return
+
     _early_yield = _pick_early_yield_token(intent, _imp_sig)
     if _early_yield:
         try:
@@ -642,7 +860,7 @@ async def _ws_execute_intent_turn(
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, _kick)
 
-    async def on_chunk(chunk: str) -> None:
+    async def on_chunk(chunk: str, *, mirror: bool = True) -> dict:
         try:
             from l3_node.terminal_turn_debug_log import append_stream_chunk
 
@@ -654,12 +872,55 @@ async def _ws_execute_intent_turn(
         safe_chunk = sanitize_stream_chunk_for_ui(chunk)
         p = {"step_type": "chunk", "content": safe_chunk, "run_id": run_id}
         await _send_safe(websocket, p)
-        if broadcast and chat_id:
+        if mirror and broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, p)
+        return p
     if _ws_voice_fast_lane:
         try:
             from l3_node.react_ui_sanitize import sanitize_final_answer_for_ui
             from l3_node.terminal_turn_debug_log import append_final
+
+            _template_reply = _pick_ws_voice_template_reply(intent, _imp_sig)
+            if _template_reply:
+                logger.info(
+                    "[L3 WS] voice fast lane template reply run_id=%s input_len=%d reply=%s",
+                    run_id,
+                    len(intent or ""),
+                    _template_reply,
+                )
+                chunk_payload = await on_chunk(_template_reply, mirror=False)
+                messages_snapshot = None
+                if chat_id and messages is not None:
+                    messages.append({"role": "user", "content": intent})
+                    messages.append({"role": "assistant", "content": _template_reply})
+                    messages_snapshot = list(messages)
+                _reply_ui = sanitize_final_answer_for_ui(_template_reply)
+                ans_payload = {
+                    "step_type": "answer",
+                    "content": _reply_ui,
+                    "run_id": run_id,
+                    "latency_trace": {
+                        "template": True,
+                        "answer_before_session_save": True,
+                        "session_save_async": bool(messages_snapshot is not None),
+                        "broadcast_async": bool(broadcast and chat_id),
+                        "lark_push_skipped": True,
+                    },
+                }
+                await _send_safe(websocket, ans_payload)
+                asyncio.create_task(
+                    _voice_template_post_answer_bookkeeping(
+                        websocket=websocket,
+                        chat_id=chat_id,
+                        messages_snapshot=messages_snapshot,
+                        final_content=_template_reply,
+                        run_id=run_id,
+                        broadcast=bool(broadcast and chat_id),
+                        chunk_payload=chunk_payload,
+                        answer_payload=ans_payload,
+                    )
+                )
+                return
 
             _fast_kw: dict[str, Any] = {
                 "temperature": 0.35,
@@ -1301,3 +1562,6 @@ async def run_ws_server(
     raise RuntimeError(
         f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
     ) from last_err
+
+
+
