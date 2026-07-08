@@ -1,11 +1,14 @@
-//! 唤醒词检测入口：ambient 下委托 wake_listener；否则仅占位。
+//! Wake-word detection entrypoint. In ambient builds this delegates to the
+//! wake listener; otherwise it keeps a lightweight placeholder state.
 
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
-/// 全局：是否正在运行唤醒监听（非 ambient 占位）
+#[cfg(feature = "ambient")]
+use tauri::Manager;
+
 static WAKE_LISTENER_RUNNING: AtomicBool = AtomicBool::new(false);
 static CURRENT_WAKE_WORD: RwLock<Option<String>> = RwLock::new(None);
 
@@ -14,7 +17,7 @@ pub struct WakeWordDetector;
 impl WakeWordDetector {
     pub const WAKE_UP_EVENT: &'static str = "WAKE_UP";
 
-    /// 桌面启动时是否自动拉起唤醒监听（`start-layer3.ps1` 默认设 `JACHIN_AUTO_WAKE_LISTENER=1`）。
+    #[allow(dead_code)]
     pub fn should_auto_start() -> bool {
         if std::env::var("JACHIN_SKIP_WAKE_LISTENER").ok().as_deref() == Some("1") {
             return false;
@@ -28,6 +31,7 @@ impl WakeWordDetector {
             == Some("wake_up")
     }
 
+    #[allow(dead_code)]
     pub fn auto_start_if_enabled(app: AppHandle) {
         if !Self::should_auto_start() {
             return;
@@ -45,6 +49,7 @@ impl WakeWordDetector {
     }
 
     pub fn start(app: AppHandle, wake_word: Option<String>) {
+        let _ = &app;
         let word = wake_word
             .filter(|s| !s.trim().is_empty())
             .or_else(|| {
@@ -78,10 +83,6 @@ impl WakeWordDetector {
     }
 
     pub fn stop() {
-        #[cfg(feature = "ambient")]
-        {
-            // 需要 AppHandle 才能 stop state — 由 stt_stop_wake_listener 直接调 state
-        }
         WAKE_LISTENER_RUNNING.store(false, Ordering::SeqCst);
     }
 

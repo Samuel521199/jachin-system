@@ -816,7 +816,7 @@ fn read_package_info(
     let mut name = id.clone();
     let mut description: Option<String> = None;
     let mut version = "0.0.0".to_string();
-    let mut kind = "skill".to_string();
+    let kind: String;
 
     if dir.join("plugin.json").exists() {
         manifest_path = Some(dir.join("plugin.json"));

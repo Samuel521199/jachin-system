@@ -5,6 +5,7 @@ use std::env;
 use std::path::PathBuf;
 
 const PORTABLE_DATA_DIR: &str = "_portable_data";
+#[allow(dead_code)]
 const DEFAULT_POOL: [&str; 3] = ["im_here", "yes", "how_can_i_help"];
 
 fn data_root() -> PathBuf {
@@ -55,6 +56,7 @@ fn resolve_wav_path(id: &str) -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)]
 fn custom_phrase_path(phrase: &str) -> PathBuf {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -67,6 +69,7 @@ fn custom_phrase_path(phrase: &str) -> PathBuf {
         .join(format!("custom_{}.wav", short))
 }
 
+#[allow(dead_code)]
 pub fn should_play_verbal_ack(settings: &UserSettings) -> bool {
     let mode = settings
         .wake_ack_mode
@@ -77,6 +80,7 @@ pub fn should_play_verbal_ack(settings: &UserSettings) -> bool {
     mode == "verbal" || mode == "both"
 }
 
+#[allow(dead_code)]
 pub fn pick_wake_ack_bytes(settings: &UserSettings) -> Option<Vec<u8>> {
     if !should_play_verbal_ack(settings) {
         return None;
@@ -122,14 +126,4 @@ pub fn pick_wake_ack_bytes(settings: &UserSettings) -> Option<Vec<u8>> {
 
 pub fn resolve_preview_path(id: &str) -> Option<PathBuf> {
     resolve_wav_path(id)
-}
-
-pub fn list_preset_ids() -> Vec<String> {
-    DEFAULT_POOL.iter().map(|s| s.to_string()).collect()
-}
-
-pub fn ensure_wake_ack_dir() -> PathBuf {
-    let dir = data_root().join("audio").join("wake_ack");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
 }

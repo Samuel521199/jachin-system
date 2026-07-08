@@ -2,6 +2,8 @@
 uvicorn[standard]>=0.29
 pydantic>=2.0
 python-multipart>=0.0.9
+requests>=2.31
+dashscope>=1.25.17
 onnxruntime>=1.18
 sherpa-onnx>=1.10.0
 torchaudio>=2.0

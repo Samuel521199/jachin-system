@@ -279,6 +279,7 @@ pub async fn start_jvs_process(app: &tauri::AppHandle) -> Result<(), String> {
     Err(err)
 }
 
+#[allow(dead_code)]
 pub fn start_jvs_process_sync(app: &tauri::AppHandle) -> Result<(), String> {
     let app_clone = app.clone();
     if let Ok(handle) = tokio::runtime::Handle::try_current() {

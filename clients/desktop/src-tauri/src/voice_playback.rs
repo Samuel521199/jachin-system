@@ -1,18 +1,17 @@
-/// 将 JVS / 预渲染 WAV 写入临时文件并通过系统 API 播放。
-/// Windows 使用 winmm PlaySoundW，避免每段音频 spawn PowerShell 的启动延迟。
-/// 支持 stop_playback_sync 急停，供 Barge-in 使用。
+//! Native WAV playback for the companion voice pipeline.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
 
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static PLAY_LOCK: Mutex<()> = Mutex::new(());
 
+#[allow(dead_code)]
 pub fn is_playing() -> bool {
     PLAYING.load(Ordering::Relaxed)
 }
 
-/// 立即停止当前播放（Barge-in 急停）。
+/// Stop current playback immediately. Used by barge-in.
 pub fn stop_playback_sync() {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -91,9 +90,4 @@ extern "system" {
         hmod: *mut std::ffi::c_void,
         fdw_sound: u32,
     ) -> i32;
-}
-
-/// 短冷却，避免止音后立即起播叠音。
-pub fn playback_cooldown_ms() -> Duration {
-    Duration::from_millis(50)
 }

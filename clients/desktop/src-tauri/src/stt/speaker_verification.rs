@@ -64,6 +64,7 @@ struct VerifyJson {
     is_match: Option<bool>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct SkippedSegmentJson {
     pub start_ms: Option<u32>,

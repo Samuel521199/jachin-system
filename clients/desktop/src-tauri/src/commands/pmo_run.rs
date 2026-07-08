@@ -27,7 +27,7 @@ struct PmoRunInner {
 }
 
 /// 持有 PMO 子进程 ``Child``，``try_wait`` 判断运行/结束
-pub struct PmoRunTracker(pub Mutex<PmoRunInner>);
+pub struct PmoRunTracker(Mutex<PmoRunInner>);
 
 impl PmoRunTracker {
     pub fn new() -> Self {

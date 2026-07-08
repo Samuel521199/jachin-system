@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, EventTarget, Manager};
 use crate::l3_spawn;
 
 /// 激活陪伴会话并向 chat webview 注入用户文本。
+#[allow(dead_code)]
 pub fn inject_companion_user(app: &AppHandle, content: &str) {
     let text = content.trim();
     if text.is_empty() {

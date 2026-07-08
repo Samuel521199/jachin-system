@@ -9,22 +9,16 @@ const MIN_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 const MIN_RMS: f32 = 0.003;
 
 pub struct SttAssistedKws {
-    wake_word: String,
     window: Vec<f32>,
     last_poll: Instant,
 }
 
 impl SttAssistedKws {
-    pub fn new(wake_word: String) -> Self {
+    pub fn new(_wake_word: String) -> Self {
         Self {
-            wake_word: wake_word.trim().to_string(),
             window: Vec::with_capacity(WINDOW_SAMPLES),
             last_poll: Instant::now() - MIN_POLL_INTERVAL,
         }
-    }
-
-    pub fn wake_word(&self) -> &str {
-        &self.wake_word
     }
 
     /// 喂入 512 样本。若应发起一次 STT 轮询，返回待 STT 的 PCM 窗口副本。

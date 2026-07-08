@@ -8,10 +8,12 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from english_example_pack import example_pack_status, lookup_example_pack
 from english_vocab_dictionary import dictionary_size, lookup_word, normalize_word
 from local_translate import (
     local_translate_batch_texts,
@@ -45,8 +47,12 @@ SERVICE_MODEL = "english_vocab_local_service_v1"
 _STARTED_AT = time.time()
 _WARMED: set[str] = set()
 _CACHE_LOCK = threading.RLock()
-_COMPLETION_CACHE_VERSION = 6
+_COMPLETION_CACHE_VERSION = 14
 _QUALITY_LOCK = threading.RLock()
+_EXAMPLE_GENERATE_LOCK = threading.Lock()
+_AI_REFRESH_LOCK = threading.Lock()
+_AI_REFRESH_INFLIGHT: set[str] = set()
+_EXAMPLE_WARMUP_STARTED = False
 _LOW_QUALITY_THRESHOLD = _env_float("JACHIN_ENGLISH_VOCAB_LOW_QUALITY_THRESHOLD", 0.9)
 _SERVICE_REGEN_MAX = max(0, _env_int("JACHIN_ENGLISH_VOCAB_SERVICE_REGEN_MAX", 1))
 _QUALITY_LOG_ENABLED = str(os.environ.get("JACHIN_ENGLISH_VOCAB_QUALITY_LOG") or "1").strip().lower() not in {
@@ -111,6 +117,68 @@ def _home() -> Path:
     return Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or ".") / ".jachin"
 
 
+_DOTENV_CACHE: dict[str, str] | None = None
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
+    except Exception:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+        value = value.strip().strip('"').strip("'")
+        if value:
+            values[key] = value
+    return values
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _merged_env_values() -> dict[str, str]:
+    global _DOTENV_CACHE
+    if _DOTENV_CACHE is not None:
+        return dict(_DOTENV_CACHE)
+    merged: dict[str, str] = {}
+    candidates: list[Path] = []
+    bundle_env = os.environ.get("JACHIN_DESKTOP_BUNDLE_ENV_FILE")
+    if bundle_env:
+        candidates.append(Path(bundle_env))
+    app_root = os.environ.get("JACHIN_APP_ROOT")
+    if app_root:
+        candidates.append(Path(app_root) / ".env")
+    candidates.append(_repo_root() / ".env")
+    for path in candidates:
+        merged.update(_read_env_file(path))
+    for key, value in os.environ.items():
+        if value:
+            merged[key] = value
+    _DOTENV_CACHE = dict(merged)
+    return merged
+
+
+def _first_env(keys: list[str], default: str = "") -> str:
+    env = _merged_env_values()
+    for key in keys:
+        value = str(env.get(key) or "").strip()
+        if value:
+            return value
+    return default
+
+
 def _json_response(ok: bool, payload: dict[str, Any] | None = None, **extra: Any) -> bytes:
     body = {"ok": ok}
     if payload:
@@ -129,6 +197,28 @@ def _service_log(event: str, **payload: Any) -> None:
     text = json.dumps(row, ensure_ascii=False)
     print("[EnglishVocabService] " + text, flush=True)
     path = Path(os.environ.get("JACHIN_ENGLISH_VOCAB_SERVICE_LOG") or _home() / "logs" / "english_vocab_service.log")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    except Exception:
+        pass
+    if event.startswith(("lookup_", "generate_", "background_ai_example_")):
+        _example_chain_log(event, layer="python_service", **payload)
+
+
+def _example_chain_log(stage: str, **payload: Any) -> None:
+    row = {
+        "stage": stage,
+        "service": SERVICE_MODEL,
+        "ts_ms": int(time.time() * 1000),
+        **payload,
+    }
+    text = json.dumps(row, ensure_ascii=False)
+    path = Path(
+        os.environ.get("JACHIN_ENGLISH_EXAMPLE_CHAIN_LOG")
+        or _home() / "logs" / "english_example_chain.jsonl"
+    )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
@@ -155,9 +245,46 @@ def _quality_total(payload: dict[str, Any] | None) -> float | None:
     return value
 
 
+def _clean_translated_meaning(text: str) -> str:
+    clean = re.sub(r"\s+", " ", str(text or "").strip())
+    if not clean:
+        return ""
+    if len(clean) % 2 == 0:
+        half = len(clean) // 2
+        if half >= 1 and clean[:half] == clean[half:]:
+            clean = clean[:half]
+    parts = re.split(r"([；;，,、\s]+)", clean)
+    if len(parts) > 1:
+        seen: set[str] = set()
+        out: list[str] = []
+        for part in parts:
+            key = part.strip()
+            if not key or re.fullmatch(r"[；;，,、\s]+", part):
+                out.append(part)
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(part)
+        clean = "".join(out).strip("；;，,、 ")
+    return clean
+
+
+def _clean_meaning_candidate(raw_word: str, text: str) -> str:
+    raw = (raw_word or "").strip().lower()
+    clean = str(text or "").strip()
+    if raw and clean.lower().startswith(raw):
+        rest = clean[len(raw) :].lstrip("：: -")
+        if rest:
+            return f"{raw}: {_clean_translated_meaning(rest)}"
+    return _clean_translated_meaning(clean)
+
+
 def _is_fallback_source(source: str) -> bool:
     text = str(source or "").strip().lower()
     if not text:
+        return False
+    if text.startswith("trusted_semantic_"):
         return False
     return "fallback" in text or text.startswith("local_scene")
 
@@ -312,6 +439,25 @@ _SEMANTIC_PLACE_WORDS = {
     "street",
     "village",
 }
+
+_SEMANTIC_ACTION_WORDS = {
+    "call",
+    "clean",
+    "cook",
+    "drive",
+    "learn",
+    "listen",
+    "read",
+    "run",
+    "shop",
+    "study",
+    "talk",
+    "travel",
+    "wait",
+    "walk",
+    "work",
+    "write",
+}
 _SEMANTIC_FOOD_WORDS = {
     "breakfast",
     "bread",
@@ -349,6 +495,8 @@ _SEMANTIC_OBJECT_WORDS = {
 
 def _semantic_category_for_quality(word: str) -> str:
     clean = normalize_word(word)
+    if clean in _SEMANTIC_ACTION_WORDS:
+        return "action"
     if clean in _SEMANTIC_PLACE_WORDS:
         return "place"
     if clean in _SEMANTIC_FOOD_WORDS:
@@ -382,6 +530,12 @@ def _looks_semantically_bad_example(example: str, word: str) -> bool:
         text,
     ):
         return True
+    if category in {"action", "abstract"} and (
+        re.search(rf"\b(saw|noticed|enjoyed)\b\s+the\s+{escaped}\b", text)
+        or re.search(rf"\btalked about\s+the\s+{escaped}\b", text)
+        or re.search(rf"\bthe\s+{escaped}\b\s+on my way home\b", text)
+    ):
+        return True
     return False
 
 
@@ -392,6 +546,7 @@ def _looks_like_placeholder_example(example: str, word: str = "") -> bool:
     if _looks_semantically_bad_example(text, word):
         return True
     bad_fragments = [
+        "the morning we",
         "came up in a normal conversation",
         "we met near the",
         "while walking home",
@@ -511,8 +666,63 @@ def _cache_get_card(book_id: str, word: str) -> dict[str, Any] | None:
     return item if isinstance(item, dict) else None
 
 
+def _cache_delete_card(book_id: str, word: str) -> None:
+    key = _completion_cache_key(book_id, word)
+    with _CACHE_LOCK:
+        cache = _read_completion_cache()
+        items = cache.setdefault("items", {})
+        if key in items:
+            items.pop(key, None)
+            _write_completion_cache(cache)
+
+
+def _card_is_remote_completion(card: dict[str, Any] | None) -> bool:
+    if not isinstance(card, dict):
+        return False
+    source = str(card.get("source") or "").strip().lower()
+    model = str(card.get("model") or card.get("model_id") or "").strip().lower()
+    return (
+        "dashscope" in source
+        or "qwen-turbo" in model
+        or "model_reviewed" in source
+        or "llm_reviewed" in source
+        or source in {"qwen_turbo", "remote_qwen_turbo"}
+    )
+
+
+def _is_complete_remote_card(card: dict[str, Any] | None) -> bool:
+    if not isinstance(card, dict):
+        return False
+    meaning = str(card.get("meaning_cn") or "").strip()
+    example = str(card.get("example") or "").strip()
+    example_cn = str(card.get("example_cn") or "").strip()
+    word = str(card.get("base_word") or card.get("word") or "").strip()
+    return (
+        _card_is_remote_completion(card)
+        and _is_good_meaning(meaning)
+        and bool(example)
+        and not _looks_like_placeholder_example(example, word)
+        and not _looks_like_low_diversity_example(example, word)
+        and bool(word)
+        and word.lower() in re_words(example)
+        and bool(example_cn)
+        and "??" not in example_cn
+        and "�" not in example_cn
+        and "锛" not in example_cn
+        and "鈥" not in example_cn
+        and "€" not in example_cn
+        and "鎴" not in example_cn
+        and "鍗" not in example_cn
+        and not re.search(rf"\b{re.escape(word.lower())}\b", example_cn.lower())
+        and _contains_cjk(example_cn)
+    )
+
+
 def _cache_put_card(book_id: str, word: str, card: dict[str, Any]) -> None:
-    if not _is_complete_card(card):
+    # The completion cache is what the foreground card trusts for instant
+    # display. Keep it final-grade only; local GGUF/template outputs may be used
+    # as background material, but must never pollute the user-facing cache.
+    if not _is_complete_remote_card(card):
         return
     key = _completion_cache_key(book_id, word)
     payload = {
@@ -562,6 +772,98 @@ def _translate_sentence(text: str) -> str:
     return ""
 
 
+def _pack_generator_is_ai_reviewed(generator: str) -> bool:
+    text = str(generator or "").strip().lower()
+    return any(marker in text for marker in ["dashscope_reviewed", "model_reviewed", "llm_reviewed"])
+
+
+def _schedule_ai_example_refresh(
+    word: str,
+    book_id: str,
+    meaning_cn: str,
+    base_word: str,
+    current_card: dict[str, Any],
+) -> None:
+    enabled = str(os.environ.get("JACHIN_ENGLISH_BACKGROUND_AI_EXAMPLES") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    if not enabled:
+        return
+    clean = normalize_word(base_word or word)
+    if not clean:
+        return
+    key = _completion_cache_key(book_id, clean)
+    with _AI_REFRESH_LOCK:
+        if key in _AI_REFRESH_INFLIGHT:
+            return
+        _AI_REFRESH_INFLIGHT.add(key)
+
+    def worker() -> None:
+        acquired = False
+        try:
+            acquired = _EXAMPLE_GENERATE_LOCK.acquire(blocking=False)
+            if not acquired:
+                _service_log("background_ai_example_refresh_skipped_busy", word=clean, book_id=book_id)
+                return
+            started = time.time()
+            generated = _generate_example_once(clean, book_id, meaning_cn)
+            if not _generated_example_is_acceptable(generated, clean):
+                _service_log(
+                    "background_ai_example_refresh_failed",
+                    word=clean,
+                    book_id=book_id,
+                    error=str(generated.get("error") or "not acceptable"),
+                    source=str(generated.get("source") or ""),
+                    elapsed_ms=int((time.time() - started) * 1000),
+                )
+                return
+            example = str(generated.get("example") or "").strip()
+            example_cn = str(generated.get("example_cn") or "").strip() or _translate_sentence(example)
+            if not example or not example_cn:
+                _service_log(
+                    "background_ai_example_refresh_failed",
+                    word=clean,
+                    book_id=book_id,
+                    error="missing example translation",
+                    elapsed_ms=int((time.time() - started) * 1000),
+                )
+                return
+            upgraded = {
+                **current_card,
+                "word": str(current_card.get("word") or clean),
+                "base_word": clean,
+                "example": example,
+                "example_cn": example_cn,
+                "source": str(generated.get("source") or "background_ai_example"),
+                "model": str(generated.get("model_id") or generated.get("model") or SERVICE_MODEL),
+                "quality": generated.get("quality") if isinstance(generated.get("quality"), dict) else current_card.get("quality"),
+            }
+            if _is_complete_card(upgraded):
+                _cache_put_card(book_id, clean, upgraded)
+                _service_log(
+                    "background_ai_example_refresh_done",
+                    word=clean,
+                    book_id=book_id,
+                    source=str(upgraded.get("source") or ""),
+                    elapsed_ms=int((time.time() - started) * 1000),
+                )
+        except Exception as exc:
+            _service_log("background_ai_example_refresh_exception", word=clean, book_id=book_id, error=str(exc))
+        finally:
+            if acquired:
+                try:
+                    _EXAMPLE_GENERATE_LOCK.release()
+                except RuntimeError:
+                    pass
+            with _AI_REFRESH_LOCK:
+                _AI_REFRESH_INFLIGHT.discard(key)
+
+    threading.Thread(target=worker, name=f"english-ai-example-refresh-{clean}", daemon=True).start()
+
+
 def _translate_sentences(texts: list[str]) -> list[str]:
     clean = [str(x).strip() for x in texts if str(x).strip()]
     if not clean:
@@ -585,15 +887,16 @@ def _fallback_meaning(
         str((cached_card or {}).get("meaning_cn") or "").strip(),
     ]
     for item in candidates:
-        if _is_good_meaning(item):
-            return item
+        cleaned = _clean_meaning_candidate(raw, item)
+        if _is_good_meaning(cleaned):
+            return cleaned
 
     for probe in [base, raw]:
         if not probe:
             continue
         translated = local_translate_text(probe, direction="en-zh")
         if translated.get("ok"):
-            text = str(translated.get("translation") or "").strip()
+            text = _clean_translated_meaning(str(translated.get("translation") or "").strip())
             if _is_good_meaning(text):
                 if raw:
                     return f"{raw}：{text}"
@@ -643,7 +946,15 @@ def _example_model_status() -> dict[str, Any]:
 
 def _generate_example_once(word: str, book_id: str, meaning_cn: str) -> dict[str, Any]:
     cli = _example_generator_cli_path()
-    if cli and cli.is_file():
+    # Keep the generator in-process by default so the GGUF model stays warm.
+    # Set JACHIN_ENGLISH_EXAMPLE_USE_CLI=1 only when debugging isolation issues.
+    use_cli = str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_USE_CLI") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if use_cli and cli and cli.is_file():
         env = os.environ.copy()
         py_path = env.get("PYTHONPATH", "").strip()
         addon = str(cli.parent)
@@ -665,7 +976,7 @@ def _generate_example_once(word: str, book_id: str, meaning_cn: str) -> dict[str
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=6,
+                timeout=max(2, _env_int("JACHIN_ENGLISH_EXAMPLE_CLI_TIMEOUT_SEC", 8)),
                 check=False,
             )
             if proc.returncode == 0:
@@ -690,6 +1001,36 @@ def _generate_example_once(word: str, book_id: str, meaning_cn: str) -> dict[str
         return {"ok": False, "error": str(result.get("error") or "example generator returned not ok")}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _trusted_example_fallback(word: str, book_id: str, meaning_cn: str) -> dict[str, Any]:
+    """Return only curated/semantic examples; never generic fill-in templates."""
+    _add_example_generator_path()
+    try:
+        from example_generator import _example_quality_score, _template_draft
+
+        example, example_cn, template_id = _template_draft(normalize_word(word) or word, book_id, meaning_cn)
+        template_id = str(template_id or "")
+        trusted = template_id.startswith(("specific_", "scene_", "semantic_"))
+        quality = _example_quality_score(example, normalize_word(word) or word, meaning_cn, book_id)
+        if (
+            trusted
+            and _generated_example_is_acceptable({"ok": True, "example": example}, normalize_word(word) or word)
+            and not _looks_like_low_diversity_example(example, normalize_word(word) or word)
+            and float(quality.get("total") or 0.0) >= 0.82
+        ):
+            return {
+                "ok": True,
+                "example": example,
+                "example_cn": example_cn,
+                "model_id": "trusted_semantic_example_bank_v1",
+                "source": "trusted_semantic_fallback",
+                "template_id": template_id,
+                "quality": quality,
+            }
+    except Exception as exc:
+        return {"ok": False, "error": f"trusted fallback failed: {exc}"}
+    return {"ok": False, "error": "no trusted semantic example"}
 
 
 def _pick_better_generate_result(current: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
@@ -719,7 +1060,43 @@ def _pick_better_generate_result(current: dict[str, Any], candidate: dict[str, A
 
 
 def _generate_example(word: str, book_id: str, meaning_cn: str) -> dict[str, Any]:
-    result = _generate_example_once(word, book_id, meaning_cn)
+    service_model_first = str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_SERVICE_MODEL_FIRST") or "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    packed = lookup_example_pack(word, book_id)
+    if packed and packed.get("ok") and not service_model_first:
+        _quality_log(
+            "generate_example_pack_hit",
+            word=normalize_word(word),
+            book_id=book_id,
+            source=str(packed.get("source") or ""),
+            quality_total=_quality_total(packed),
+        )
+        packed["service_regen_attempts"] = 0
+        return packed
+
+    if not service_model_first:
+        trusted_first = _trusted_example_fallback(word, book_id, meaning_cn)
+        if trusted_first.get("ok"):
+            _quality_log(
+                "generate_trusted_first",
+                word=normalize_word(word),
+                book_id=book_id,
+                source=str(trusted_first.get("source") or ""),
+                quality_total=_quality_total(trusted_first),
+            )
+            trusted_first["service_regen_attempts"] = 0
+            return trusted_first
+
+    if not _EXAMPLE_GENERATE_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "example generator is busy"}
+    try:
+        result = _generate_example_once(word, book_id, meaning_cn)
+    finally:
+        _EXAMPLE_GENERATE_LOCK.release()
     regen_count = 0
     low_score_detected = 0
     score = _quality_total(result)
@@ -763,6 +1140,29 @@ def _generate_example(word: str, book_id: str, meaning_cn: str) -> dict[str, Any
         enriched = dict(result)
         enriched["service_regen_attempts"] = regen_count
         return enriched
+    if packed and packed.get("ok"):
+        _quality_log(
+            "generate_example_pack_fallback_after_model",
+            word=normalize_word(word),
+            book_id=book_id,
+            source=str(packed.get("source") or ""),
+            quality_total=_quality_total(packed),
+            original_error=str(result.get("error") or ""),
+        )
+        packed["service_regen_attempts"] = regen_count
+        return packed
+    trusted = _trusted_example_fallback(word, book_id, meaning_cn)
+    if trusted.get("ok"):
+        _quality_log(
+            "generate_trusted_fallback",
+            word=normalize_word(word),
+            book_id=book_id,
+            source=str(trusted.get("source") or ""),
+            quality_total=_quality_total(trusted),
+            original_error=str(result.get("error") or ""),
+        )
+        trusted["service_regen_attempts"] = regen_count
+        return trusted
     return result
 
 
@@ -779,6 +1179,7 @@ def _status() -> dict[str, Any]:
             "cards": len(cache.get("items") or {}),
             "sentences": len(cache.get("sentences") or {}),
         },
+        "example_pack": example_pack_status(),
         "translate": local_translate_model_status(),
         "example": _example_model_status(),
         "quality_metrics": _quality_metrics_snapshot(),
@@ -791,8 +1192,65 @@ def _warmup(payload: dict[str, Any]) -> dict[str, Any]:
     if result.get("ok"):
         for item in result.get("warmed") or []:
             _WARMED.add(str(item))
-    # Keep this cheap: example status checks runtime/model availability but does not force a GGUF generation.
+    _schedule_example_model_warmup()
     return {"ok": True, "warmup": result, "status": _status()}
+
+
+def _schedule_example_model_warmup() -> None:
+    global _EXAMPLE_WARMUP_STARTED
+    enabled = str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_WARMUP") or "0").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    if not enabled or _EXAMPLE_WARMUP_STARTED:
+        return
+    _EXAMPLE_WARMUP_STARTED = True
+
+    def worker() -> None:
+        started = time.time()
+        try:
+            warmup_words = [
+                ("bedroom", "\u5367\u5ba4\uff1b\u7761\u623f"),
+                ("kitchen", "\u53a8\u623f"),
+                ("family", "\u5bb6\u5ead\uff1b\u5bb6\u4eba"),
+                ("school", "\u5b66\u6821"),
+                ("station", "\u8f66\u7ad9\uff1b\u7ad9\u70b9"),
+                ("airport", "\u673a\u573a"),
+                ("morning", "早晨；上午"),
+                ("child", "孩子；儿童"),
+                ("office", "办公室；办事处"),
+                ("hotel", "旅馆；酒店"),
+                ("bus", "公共汽车"),
+                ("walk", "走路；步行；散步"),
+            ]
+            generated = {"ok": False, "error": "no warmup words"}
+            ok_count = 0
+            for word, meaning in warmup_words:
+                generated = _generate_example_once(word, "daily_life_ngsl", meaning)
+                if generated.get("ok"):
+                    ok_count += 1
+            _service_log(
+                "example_model_warmup_done" if ok_count else "example_model_warmup_failed",
+                word=",".join(word for word, _meaning in warmup_words),
+                source=str(generated.get("source") or ""),
+                model=str(generated.get("model_id") or generated.get("model") or ""),
+                error=str(generated.get("error") or ""),
+                ok_count=ok_count,
+                elapsed_ms=int((time.time() - started) * 1000),
+            )
+            if ok_count:
+                _WARMED.add("example")
+        except Exception as exc:
+            _service_log(
+                "example_model_warmup_exception",
+                word="morning",
+                error=str(exc),
+                elapsed_ms=int((time.time() - started) * 1000),
+            )
+
+    threading.Thread(target=worker, name="english-example-model-warmup", daemon=True).start()
 
 
 def _translate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -829,6 +1287,158 @@ def _card_response(card: dict[str, Any], source: str | None = None, model: str |
     }
 
 
+def _extract_json_object(text: str) -> dict[str, Any]:
+    clean = (text or "").strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```(?:json)?", "", clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"```$", "", clean).strip()
+    try:
+        value = json.loads(clean)
+    except Exception:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        value = json.loads(clean[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("model returned non-object JSON")
+    return value
+
+
+def _scene_label(book_id: str) -> str:
+    return {
+        "daily_life_ngsl": "daily spoken life",
+        "workplace_business": "workplace communication",
+        "computer_science": "software engineering and computer usage",
+        "ielts_academic": "IELTS academic writing",
+        "toefl_academic": "TOEFL campus study",
+    }.get(book_id, "natural modern English")
+
+
+def _dashscope_final_card(word: str, book_id: str, definition: dict[str, Any] | None) -> dict[str, Any]:
+    started = time.time()
+    active_region = _first_env(["JACHIN_ACTIVE_REGION", "QWEN_REGION"], "CN").strip().upper()
+    if active_region == "SEA":
+        api_key = _first_env(["DASHSCOPE_API_KEY_SEA", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "QWEN_AI_API_KEY"])
+        api_base = _first_env(
+            ["JACHIN_ENGLISH_VOCAB_API_BASE", "DASHSCOPE_API_BASE_SEA", "DASHSCOPE_API_BASE"],
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+    else:
+        api_key = _first_env(["DASHSCOPE_API_KEY_CN", "DASHSCOPE_API_KEY", "QWEN_API_KEY", "QWEN_AI_API_KEY"])
+        api_base = _first_env(
+            ["JACHIN_ENGLISH_VOCAB_API_BASE", "DASHSCOPE_API_BASE_CN", "DASHSCOPE_API_BASE"],
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+    if not api_key:
+        return {"ok": False, "error": "DashScope API key not found", "source": "remote_qwen_turbo_missing_key", "model": SERVICE_MODEL}
+    model = _first_env(["JACHIN_ENGLISH_VOCAB_MODEL"], "qwen-turbo").removeprefix("dashscope/") or "qwen-turbo"
+    timeout_ms = max(1500, min(12000, _env_int("JACHIN_ENGLISH_VOCAB_REMOTE_TIMEOUT_MS", 4500)))
+    meaning_hint = str((definition or {}).get("meaning_cn") or "").strip()
+    part_hint = str((definition or {}).get("part_of_speech") or "").strip()
+    phonetic_hint = str((definition or {}).get("phonetic") or "").strip()
+    prompt = (
+        "Return strict compact JSON only with keys: word, phonetic, part_of_speech, meaning_cn, example, example_cn.\n"
+        f"Target word: {word}\n"
+        f"Chinese meaning hint: {meaning_hint}\n"
+        f"Part of speech hint: {part_hint}\n"
+        f"Phonetic hint: {phonetic_hint}\n"
+        f"Scene: {_scene_label(book_id)}\n"
+        "Generate one natural, scene-appropriate English sentence, 6-16 words, using the exact target word. "
+        "No memorization wording, no generic template wording, no strange collocation. "
+        "Translate the whole sentence to Simplified Chinese."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a precise English vocabulary tutor. Return JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.35,
+        "max_tokens": 180,
+    }
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    _service_log(
+        "remote_qwen_http_send",
+        word=word,
+        book_id=book_id,
+        model=model,
+        timeout_ms=timeout_ms,
+    )
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_ms / 1000) as resp:
+            status = int(getattr(resp, "status", 200))
+            raw = resp.read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        _service_log(
+            "remote_qwen_http_error",
+            word=word,
+            book_id=book_id,
+            model=model,
+            error=str(exc),
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+        return {"ok": False, "error": f"DashScope request failed: {exc}", "source": "remote_qwen_turbo_error", "model": model}
+    _service_log(
+        "remote_qwen_http_status",
+        word=word,
+        book_id=book_id,
+        model=model,
+        status=status,
+        elapsed_ms=int((time.time() - started) * 1000),
+    )
+    if status < 200 or status >= 300:
+        return {"ok": False, "error": f"DashScope HTTP {status}", "source": "remote_qwen_turbo_error", "model": model}
+    data = json.loads(raw)
+    content = str(data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    parsed = _extract_json_object(content)
+    base_word = normalize_word(word)
+    card = {
+        "ok": True,
+        "word": str(parsed.get("word") or base_word or word).strip().lower(),
+        "base_word": base_word or word.lower(),
+        "phonetic": str(parsed.get("phonetic") or phonetic_hint or "-").strip() or "-",
+        "part_of_speech": str(parsed.get("part_of_speech") or part_hint or "-").strip() or "-",
+        "meaning_cn": str(parsed.get("meaning_cn") or meaning_hint).strip(),
+        "example": str(parsed.get("example") or "").strip(),
+        "example_cn": str(parsed.get("example_cn") or "").strip(),
+        "source": "dashscope_qwen_turbo",
+        "model": model,
+    }
+    if not _is_complete_remote_card(card):
+        _service_log(
+            "remote_qwen_card_rejected",
+            word=word,
+            book_id=book_id,
+            model=model,
+            example=card["example"],
+            example_cn=card["example_cn"],
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+        return {"ok": False, "error": "qwen-turbo returned incomplete card", "source": "remote_qwen_turbo_rejected", "model": model}
+    _cache_put_card(book_id, base_word or word, card)
+    _service_log(
+        "remote_qwen_card_returned",
+        word=word,
+        book_id=book_id,
+        model=model,
+        example=card["example"],
+        example_cn=card["example_cn"],
+        elapsed_ms=int((time.time() - started) * 1000),
+    )
+    return _card_response(card, source="dashscope_qwen_turbo", model=model)
+
+
+def _card_is_foreground_quality_cache(card: dict[str, Any]) -> bool:
+    return _is_complete_remote_card(card)
+
+
 def _complete_example(word: str, book_id: str, meaning_cn: str, existing_example: str = "") -> tuple[str, str, str, str]:
     example = (existing_example or "").strip()
     model = SERVICE_MODEL
@@ -852,6 +1462,8 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "word is empty"}
     book_id = str(payload.get("book_id") or "daily_life_ngsl").strip() or "daily_life_ngsl"
     context = str(payload.get("context_sentence") or "").strip()
+    require_final_example = bool(payload.get("require_final_example")) and not context
+    cache_only = bool(payload.get("cache_only")) and not context
     base_word = normalize_word(raw_word)
     _service_log(
         "lookup_start",
@@ -859,32 +1471,51 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
         base_word=base_word,
         book_id=book_id,
         has_context=bool(context),
+        require_final_example=require_final_example,
+        cache_only=cache_only,
     )
 
     cached_card = _cache_get_card(book_id, base_word)
-    if cached_card and _is_complete_card(cached_card):
-        _service_log(
-            "lookup_cache_hit",
-            word=raw_word,
-            base_word=base_word,
-            book_id=book_id,
-            has_context=bool(context),
-            elapsed_ms=int((time.time() - started) * 1000),
-        )
-        if context:
-            scoped = {**cached_card, "example": context, "example_cn": _cache_get_sentence(context)}
-            if _is_complete_card(scoped):
+    if cached_card and (_is_complete_card(cached_card) or _card_is_foreground_quality_cache(cached_card)):
+        if require_final_example and not _card_is_foreground_quality_cache(cached_card):
+            _service_log(
+                "lookup_cache_rejected_not_foreground_quality",
+                word=raw_word,
+                base_word=base_word,
+                book_id=book_id,
+                source=str(cached_card.get("source") or ""),
+                model=str(cached_card.get("model") or ""),
+                example=str(cached_card.get("example") or ""),
+                elapsed_ms=int((time.time() - started) * 1000),
+            )
+            _cache_delete_card(book_id, base_word)
+        else:
+            _service_log(
+                "lookup_cache_hit",
+                word=raw_word,
+                base_word=base_word,
+                book_id=book_id,
+                has_context=bool(context),
+                source=str(cached_card.get("source") or ""),
+                model=str(cached_card.get("model") or ""),
+                example=str(cached_card.get("example") or ""),
+                example_cn=str(cached_card.get("example_cn") or ""),
+                elapsed_ms=int((time.time() - started) * 1000),
+            )
+            if context:
+                scoped = {**cached_card, "example": context, "example_cn": _cache_get_sentence(context) or _translate_sentence(context)}
+                if _is_complete_card(scoped):
+                    return _finalize_lookup(
+                        _card_response(scoped, source="english_vocab_completion_cache_context"),
+                        word=base_word,
+                        book_id=book_id,
+                    )
+            else:
                 return _finalize_lookup(
-                    _card_response(scoped, source="english_vocab_completion_cache_context"),
+                    _card_response(cached_card, source="english_vocab_completion_cache"),
                     word=base_word,
                     book_id=book_id,
                 )
-        else:
-            return _finalize_lookup(
-                _card_response(cached_card, source="english_vocab_completion_cache"),
-                word=base_word,
-                book_id=book_id,
-            )
     elif cached_card:
         _service_log(
             "lookup_cache_incomplete",
@@ -893,6 +1524,41 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
             book_id=book_id,
             elapsed_ms=int((time.time() - started) * 1000),
         )
+    if cache_only:
+        _service_log(
+            "lookup_cache_only_miss",
+            word=raw_word,
+            base_word=base_word,
+            book_id=book_id,
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+        return {
+            "ok": False,
+            "error": "final example cache miss",
+            "word": base_word or raw_word.lower(),
+            "source": "final_example_cache_miss",
+            "model": SERVICE_MODEL,
+        }
+    if require_final_example:
+        definition = lookup_word(raw_word)
+        result = _dashscope_final_card(base_word or raw_word.lower(), book_id, definition)
+        if result.get("ok"):
+            return _finalize_lookup(result, word=base_word, book_id=book_id)
+        _service_log(
+            "lookup_final_example_remote_failed",
+            word=raw_word,
+            base_word=base_word,
+            book_id=book_id,
+            error=str(result.get("error") or ""),
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+        return {
+            "ok": False,
+            "error": str(result.get("error") or "final example generation failed"),
+            "word": base_word or raw_word.lower(),
+            "source": str(result.get("source") or "remote_qwen_turbo_failed"),
+            "model": str(result.get("model") or SERVICE_MODEL),
+        }
 
     definition = lookup_word(raw_word)
 
@@ -905,9 +1571,30 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
             elapsed_ms=int((time.time() - started) * 1000),
         )
         meaning = _fallback_meaning(raw_word, base_word, definition, cached_card)
+        if context:
+            example_cn = _cache_get_sentence(context) or _translate_sentence(context)
+            result = {
+                "ok": True,
+                "word": base_word or raw_word.lower(),
+                "phonetic": str((definition or {}).get("phonetic") or "-").strip() or "-",
+                "part_of_speech": str((definition or {}).get("part_of_speech") or "-").strip() or "-",
+                "meaning_cn": meaning,
+                "example": context,
+                "example_cn": example_cn,
+                "source": "local_translate_context",
+                "model": SERVICE_MODEL,
+            }
+            _service_log(
+                "lookup_return_context_missing_definition",
+                word=raw_word,
+                base_word=base_word,
+                book_id=book_id,
+                elapsed_ms=int((time.time() - started) * 1000),
+            )
+            return _finalize_lookup(result, word=base_word, book_id=book_id)
         if cached_card and _is_complete_card(cached_card, require_example=False):
             if context:
-                example_cn = _cache_get_sentence(context)
+                example_cn = _cache_get_sentence(context) or _translate_sentence(context)
                 scoped = {**cached_card, "example": context, "example_cn": example_cn}
                 if _is_complete_card(scoped):
                     return _finalize_lookup(
@@ -994,10 +1681,46 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
         source=str(definition.get("source") or "local_dictionary"),
         elapsed_ms=int((time.time() - started) * 1000),
     )
-    example = context or str(definition.get("example") or "").strip()
     definition_word = str(definition.get("base_word") or base_word)
     meaning_for_generation = str(definition.get("meaning_cn") or "").strip()
-    if not context and (not example or _looks_like_low_diversity_example(example, definition_word)):
+    generated_example_cn = ""
+    generated_source = ""
+    generated_model = ""
+    pack_generator = ""
+    packed_example = None if context or require_final_example else lookup_example_pack(definition_word, book_id)
+    if packed_example and packed_example.get("ok"):
+        example = str(packed_example.get("example") or "").strip()
+        generated_example_cn = str(packed_example.get("example_cn") or "").strip()
+        generated_source = "english_example_pack"
+        generated_model = str(packed_example.get("model_id") or "english_example_pack_v1")
+        pack_generator = str(packed_example.get("pack_generator") or "")
+        _quality_log(
+            "lookup_example_pack_hit",
+            word=definition_word,
+            book_id=book_id,
+            scene=str(packed_example.get("scene") or ""),
+            pack_generator=pack_generator,
+            quality_total=packed_example.get("quality"),
+        )
+        _example_chain_log(
+            "example_pack_hit",
+            layer="python_service",
+            word=definition_word,
+            book_id=book_id,
+            source="english_example_pack",
+            model=generated_model,
+            pack_generator=pack_generator,
+            scene=str(packed_example.get("scene") or ""),
+            example=example,
+            example_cn=generated_example_cn,
+            require_final_example=require_final_example,
+        )
+    else:
+        example = context or str(definition.get("example") or "").strip()
+    if not context and (
+        require_final_example
+        or (not packed_example and (not example or _looks_like_low_diversity_example(example, definition_word)))
+    ):
         generated = _generate_example(
             definition_word,
             book_id,
@@ -1008,8 +1731,6 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
             generated_example_cn = str(generated.get("example_cn") or "").strip()
             generated_source = str(generated.get("source") or "local_fast_template")
             generated_model = str(generated.get("model_id") or SERVICE_MODEL)
-        else:
-            generated_example_cn = ""
     if not example:
         return {
             "ok": False,
@@ -1021,15 +1742,13 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
         }
     if context:
         # Token-click lookup must return the word meaning immediately. Translating
-        # the whole context sentence can take seconds on first run, so only reuse
-        # an existing sentence cache here and let the normal sentence flow fill it.
-        example_cn = _cache_get_sentence(context)
+        # the whole context sentence is optional, but the local OPUS model is fast
+        # after warmup and makes the token popover feel complete.
+        example_cn = _cache_get_sentence(context) or _translate_sentence(context)
         source = "local_dictionary_context"
     else:
-        example_cn = str(locals().get("generated_example_cn") or "").strip() or str(definition.get("example_cn") or "").strip()
-        source = str(locals().get("generated_source") or "local_dictionary")
-    if not example_cn and "generated_example_cn" in locals():
-        example_cn = generated_example_cn
+        example_cn = generated_example_cn or str(definition.get("example_cn") or "").strip()
+        source = generated_source or "local_dictionary"
     if example and not example_cn and not context:
         example_cn = _translate_sentence(example)
     if not example_cn and example and not context:
@@ -1051,13 +1770,73 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
         "example": example,
         "example_cn": example_cn,
         "source": source,
-        "model": str(locals().get("generated_model") or definition.get("model") or SERVICE_MODEL),
+        "model": str(generated_model or definition.get("model") or SERVICE_MODEL),
     }
     cache_card = {
         **result,
         "base_word": str(definition.get("base_word") or base_word),
     }
-    if not context and _is_complete_card(cache_card):
+    temporary_pack = bool(
+        not context
+        and source == "english_example_pack"
+        and pack_generator
+        and not _pack_generator_is_ai_reviewed(pack_generator)
+    )
+    if temporary_pack and require_final_example:
+        # Foreground card policy:
+        #   1. return high-quality completion cache immediately;
+        #   2. otherwise let Rust call qwen-turbo as the real-time fallback;
+        #   3. keep local GGUF only for background/batch enrichment.
+        # This avoids blocking the UI on 0.5B generation and prevents weak local
+        # examples from being shown as final answers.
+        _service_log(
+            "lookup_final_example_defer_to_qwen_turbo",
+            word=raw_word,
+            base_word=base_word,
+            book_id=book_id,
+            pack_example=example,
+            pack_generator=pack_generator,
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+
+    if temporary_pack:
+        result["refresh_hint"] = "background_ai_refresh"
+        if require_final_example:
+            _schedule_ai_example_refresh(
+                definition_word,
+                book_id,
+                meaning_for_generation,
+                str(definition.get("base_word") or base_word),
+                cache_card,
+            )
+            return {
+                "ok": False,
+                "error": "final example is still preparing",
+                "word": str(definition.get("word") or raw_word.lower()),
+                "phonetic": str(definition.get("phonetic") or "-"),
+                "part_of_speech": str(definition.get("part_of_speech") or "-"),
+                "meaning_cn": str(definition.get("meaning_cn") or "").strip(),
+                "source": "final_example_not_ready",
+                "model": SERVICE_MODEL,
+                "refresh_hint": "background_ai_refresh",
+            }
+    if temporary_pack:
+        _schedule_ai_example_refresh(
+            definition_word,
+            book_id,
+            meaning_for_generation,
+            str(definition.get("base_word") or base_word),
+            cache_card,
+        )
+        _service_log(
+            "lookup_temporary_pack_background_refresh_queued",
+            word=raw_word,
+            base_word=base_word,
+            book_id=book_id,
+            pack_generator=pack_generator,
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+    if not context and not temporary_pack and _is_complete_card(cache_card):
         _cache_put_card(book_id, base_word, cache_card)
     _service_log(
         "lookup_return_dictionary",
@@ -1065,6 +1844,10 @@ def _lookup(payload: dict[str, Any]) -> dict[str, Any]:
         base_word=base_word,
         book_id=book_id,
         source=source,
+        model=str(result.get("model") or ""),
+        example=str(result.get("example") or ""),
+        example_cn=str(result.get("example_cn") or ""),
+        refresh_hint=str(result.get("refresh_hint") or ""),
         elapsed_ms=int((time.time() - started) * 1000),
     )
     return _finalize_lookup(result, word=base_word, book_id=book_id)
@@ -1086,7 +1869,7 @@ def _cache_card(payload: dict[str, Any]) -> dict[str, Any]:
         "source": str(payload.get("source") or "external_completion").strip() or "external_completion",
         "model": str(payload.get("model") or SERVICE_MODEL).strip() or SERVICE_MODEL,
     }
-    if not _is_complete_card(card):
+    if not (_is_complete_card(card) or _is_complete_remote_card(card)):
         return {"ok": False, "error": "card is incomplete"}
     _cache_put_card(book_id, card["base_word"], card)
     return {

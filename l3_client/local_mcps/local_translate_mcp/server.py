@@ -10,6 +10,7 @@ from local_translate import (
     local_translate_text,
     local_translate_warmup,
 )
+from english_example_pack import example_pack_status
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -40,6 +41,12 @@ def tool_model_status() -> str:
 def tool_warmup(direction: str = "all") -> str:
     """Warm up local translation models."""
     return _json(local_translate_warmup(direction=direction))
+
+
+@mcp.tool(name="english_example_pack_status")
+def tool_example_pack_status() -> str:
+    """Check bundled English example pack availability and counts."""
+    return _json(example_pack_status())
 
 
 def main() -> None:

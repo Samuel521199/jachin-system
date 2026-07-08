@@ -25,14 +25,28 @@ type LookupResult = {
   example_cn: string;
   source: string;
   model: string;
+  refresh_hint?: string;
 };
 
 type ProgressStore = Record<string, WordProgress>;
 
-const LOOKUP_CACHE_KEY = "jachin.english_vocab.lookup_cache.v18";
-const REMOTE_LOOKUP_UI_TIMEOUT_MS = 10000;
+const LOOKUP_CACHE_KEY = "jachin.english_vocab.lookup_cache.v28";
+const REMOTE_LOOKUP_UI_TIMEOUT_MS = 8000;
 const TOKEN_LOOKUP_UI_TIMEOUT_MS = 6000;
+const UPCOMING_MODEL_PREFETCH_COUNT = 3;
+const CURRENT_CARD_RETRY_LIMIT = 20;
 const pendingLookups = new Map<string, Promise<LookupResult>>();
+
+function traceFrontend(stage: string, detail: Record<string, unknown> = {}) {
+  void invoke("english_vocab_frontend_trace", {
+    input: {
+      stage,
+      detail,
+    },
+  }).catch(() => {
+    // Frontend trace is diagnostic only; never block the learning card on logs.
+  });
+}
 
 type VocabState = {
   selected_book_id: string;
@@ -376,8 +390,9 @@ const UI = {
   lookupBackground: "正在补全释义和例句...",
   lookupBackgroundFailed: "补全失败，已显示可用释义",
   lookupDone: "查询完成",
-  exampleLoading: "\u6b63\u5728\u51c6\u5907\u4f8b\u53e5...",
-  examplePending: "\u4f8b\u53e5\u6b63\u5728\u751f\u6210\uff0c\u7a0d\u540e\u4f1a\u81ea\u52a8\u5237\u65b0\u3002",
+  exampleLoading: "\u6b63\u5728\u751f\u6210\u9ad8\u8d28\u91cf\u4f8b\u53e5...",
+  examplePending: "\u6b63\u5728\u51c6\u5907\u4f8b\u53e5...",
+  preparingCard: "正在准备下一张高质量单词卡...",
   retry: "\u91cd\u8bd5",
   lookupUnavailable: "\u91ca\u4e49\u67e5\u8be2\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u70b9\u51fb\u91cd\u8bd5\u3002",
   prefetching: "\u8bcd\u4e49\u9884\u53d6\u4e2d",
@@ -558,15 +573,29 @@ function isFallbackExampleSource(result?: Partial<Pick<LookupResult, "source" | 
   );
 }
 
-function hasDisplayableExample(result?: LookupResult | null) {
-  return Boolean(
-    result &&
-      !isFallbackExampleSource(result) &&
-      result.example?.trim() &&
-      !isPlaceholderExample(result.example) &&
-      !isSemanticallyBadExample(result.example, result.word, result.meaning_cn) &&
-      result.example_cn?.trim(),
+function isContextLookupSource(result?: Partial<Pick<LookupResult, "source">> | null) {
+  return (result?.source || "").trim().toLowerCase().includes("context");
+}
+
+function isTrustedModelSource(result?: Partial<Pick<LookupResult, "source" | "model">> | null) {
+  const source = (result?.source || "").trim().toLowerCase();
+  const model = (result?.model || "").trim().toLowerCase();
+  return (
+    source.includes("dashscope") ||
+    source.includes("qwen_turbo") ||
+    model.includes("qwen-turbo") ||
+    source.includes("model_reviewed") ||
+    source.includes("llm_reviewed") ||
+    (source.includes("completion_cache") && (model.includes("qwen-turbo") || model.includes("dashscope")))
   );
+}
+
+function hasDisplayableExample(result?: LookupResult | null) {
+  if (!result || isFallbackExampleSource(result)) return false;
+  if (!result.example?.trim() || isPlaceholderExample(result.example)) return false;
+  if (!result.example_cn?.trim()) return false;
+  if (isTrustedModelSource(result)) return true;
+  return !isSemanticallyBadExample(result.example, result.word, result.meaning_cn);
 }
 
 function choosePhonetic(...values: Array<string | undefined | null>) {
@@ -597,7 +626,8 @@ function readLookupCache(): Record<string, LookupResult> {
           !meaning.toLowerCase().includes("request failed") &&
           !meaning.includes("\u67e5\u8be2\u5931\u8d25") &&
           !isPlaceholderExample(item.example) &&
-          !isSemanticallyBadExample(item.example, item.word, item.meaning_cn) &&
+          (isTrustedModelSource(item as Partial<LookupResult>) ||
+            !isSemanticallyBadExample(item.example, item.word, item.meaning_cn)) &&
           !isFallbackExampleSource(item as Partial<LookupResult>) &&
           item.example_cn !== "\u5148\u7406\u89e3\u8fd9\u4e2a\u8bcd\u7684\u6838\u5fc3\u542b\u4e49\uff0c\u518d\u6839\u636e\u8bb0\u5fc6\u7a0b\u5ea6\u9009\u62e9\u3002" &&
           item.example_cn !== "\u8fd9\u4e2a\u8bcd\u53ef\u4ee5\u5148\u6309\u8bed\u5883\u8bb0\u5fc6\uff0c\u9047\u5230\u4f8b\u53e5\u65f6\u518d\u56de\u6765\u5de9\u56fa\u3002" &&
@@ -624,6 +654,9 @@ function cacheLookup(
   key: string,
   result: LookupResult,
 ) {
+  if (result.refresh_hint === "background_ai_refresh") {
+    return;
+  }
   const next = { ...cacheRef.current, [key]: result };
   cacheRef.current = next;
   writeLookupCache(next);
@@ -693,6 +726,14 @@ const curatedExamples: Record<string, ExamplePair> = {
   chicken: {
     example: "She cooked chicken for dinner.",
     example_cn: "\u5979\u665a\u9910\u505a\u4e86\u9e21\u8089\u3002",
+  },
+  child: {
+    example: "The child drew a picture for her teacher.",
+    example_cn: "\u8fd9\u4e2a\u5b69\u5b50\u7ed9\u5979\u7684\u8001\u5e08\u753b\u4e86\u4e00\u5e45\u753b\u3002",
+  },
+  children: {
+    example: "The children played quietly in the garden.",
+    example_cn: "\u5b69\u5b50\u4eec\u5728\u82b1\u56ed\u91cc\u5b89\u9759\u5730\u73a9\u3002",
   },
   receipt: {
     example: "Please keep the receipt after you pay.",
@@ -874,6 +915,7 @@ type SceneTemplatePos = "noun" | "verb" | "adjective" | "other";
 
 type SemanticCategory =
   | "transport"
+  | "action"
   | "place"
   | "food"
   | "portable_object"
@@ -887,6 +929,24 @@ type SemanticCategory =
 
 const SEMANTIC_WORDS: Record<SemanticCategory, Set<string>> = {
   transport: new Set(["airport", "bus", "car", "flight", "plane", "station", "subway", "taxi", "train"]),
+  action: new Set([
+    "call",
+    "clean",
+    "cook",
+    "drive",
+    "learn",
+    "listen",
+    "read",
+    "run",
+    "shop",
+    "study",
+    "talk",
+    "travel",
+    "wait",
+    "walk",
+    "work",
+    "write",
+  ]),
   place: new Set([
     "bank",
     "beach",
@@ -1053,6 +1113,15 @@ function isSemanticallyBadExample(example?: string | null, word?: string | null,
     return true;
   }
 
+  if (
+    (category === "action" || category === "abstract") &&
+    (new RegExp(`\\b(saw|noticed|enjoyed)\\b\\s+the\\s+${wordPattern}\\b`).test(text) ||
+      new RegExp(`\\btalked about\\s+the\\s+${wordPattern}\\b`).test(text) ||
+      new RegExp(`\\bthe\\s+${wordPattern}\\b\\s+on my way home\\b`).test(text))
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -1075,12 +1144,19 @@ function pickSemanticScene(clean: string, bookId: string, category: SemanticCate
 }
 
 function semanticExampleFor(word: string, book: EnglishWordBook, meaning: string, pos: SceneTemplatePos): ExamplePair | null {
-  if (pos !== "noun") return null;
+  if (pos === "adjective") return null;
   const clean = cleanToken(word) || word.trim().toLowerCase();
   const meaningHead = normalizeMeaningHead(meaning, clean);
-  const category = inferSemanticCategory(clean, meaningHead, book.id);
+  let category = inferSemanticCategory(clean, meaningHead, book.id);
+  if (pos === "verb" && category === "generic") category = "action";
 
   const specificScenes: Record<string, ExamplePair[]> = {
+    walk: [
+      { example: "I walk to the office when the weather is good.", example_cn: "天气好的时候，我走路去办公室。" },
+      { example: "After dinner, we walk slowly through the park.", example_cn: "晚饭后，我们在公园里慢慢散步。" },
+      { example: "She decided to walk home instead of taking a taxi.", example_cn: "她决定走路回家，而不是打车。" },
+      { example: "The doctor told him to walk more every day.", example_cn: "医生告诉他每天多走路。" },
+    ],
     airport: [
       { example: "We arrived at the airport before sunrise.", example_cn: "\u6211\u4eec\u5728\u65e5\u51fa\u524d\u5230\u8fbe\u4e86\u673a\u573a\u3002" },
       { example: "The airport security line moved faster than expected.", example_cn: "\u673a\u573a\u5b89\u68c0\u961f\u4f0d\u6bd4\u9884\u60f3\u4e2d\u524d\u8fdb\u5f97\u66f4\u5feb\u3002" },
@@ -1116,6 +1192,13 @@ function semanticExampleFor(word: string, book: EnglishWordBook, meaning: string
   }
 
   const categoryScenes: Partial<Record<SemanticCategory, ExamplePair[]>> = {
+    action: [
+      { example: `I usually ${clean} for ten minutes after dinner.`, example_cn: `我通常晚饭后${meaningHead}十分钟。` },
+      { example: `She likes to ${clean} when the weather is calm.`, example_cn: `天气平静的时候，她喜欢${meaningHead}。` },
+      { example: `We decided to ${clean} before the day became too busy.`, example_cn: `我们决定在今天变得太忙之前先${meaningHead}。` },
+      { example: `He stopped for a moment, then continued to ${clean}.`, example_cn: `他停了一会儿，然后继续${meaningHead}。` },
+      { example: `On quiet weekends, they often ${clean} together.`, example_cn: `安静的周末，他们经常一起${meaningHead}。` },
+    ],
     transport: [
       { example: `The ${clean} arrived earlier than the timetable showed.`, example_cn: `${meaningHead}\u6bd4\u65f6\u523b\u8868\u4e0a\u663e\u793a\u7684\u65f6\u95f4\u66f4\u65e9\u5230\u4e86\u3002` },
       { example: `She checked the ${clean} schedule before leaving home.`, example_cn: `\u5979\u51fa\u95e8\u524d\u67e5\u4e86${meaningHead}\u7684\u65f6\u523b\u8868\u3002` },
@@ -1181,13 +1264,13 @@ const dailyTemplates: Record<SceneTemplatePos, SceneTemplate[]> = {
   noun: [
     {
       id: "daily_noun_1",
-      example: (word) => `I saw the ${word} on my way home.`,
-      example_cn: (meaning) => `我回家路上看到了${meaning}。`,
+      example: (word) => `The ${word} was easy to notice in the room.`,
+      example_cn: (meaning) => `在房间里，${meaning}很容易被注意到。`,
     },
     {
       id: "daily_noun_2",
-      example: (word) => `We talked about the ${word} after lunch.`,
-      example_cn: (meaning) => `午饭后我们聊到了${meaning}。`,
+      example: (word) => `The ${word} became important later that day.`,
+      example_cn: (meaning) => `${meaning}在那天晚些时候变得很重要。`,
     },
     {
       id: "daily_noun_3",
@@ -1196,8 +1279,8 @@ const dailyTemplates: Record<SceneTemplatePos, SceneTemplate[]> = {
     },
     {
       id: "daily_noun_4",
-      example: (word) => `I saw the ${word} during my walk home.`,
-      example_cn: (meaning) => `我走路回家时看到了${meaning}。`,
+      example: (word) => `She explained the ${word} with a simple example.`,
+      example_cn: (meaning) => `她用一个简单的例子解释了${meaning}。`,
     },
   ],
   verb: [
@@ -1870,6 +1953,18 @@ function makeExample(word: string, book: EnglishWordBook): ExamplePair {
 
 function normalizeLookupResult(result: LookupResult, book: EnglishWordBook): LookupResult {
   if (hasDisplayableExample(result)) return result;
+  if (
+    result.refresh_hint === "background_ai_refresh" ||
+    result.source === "final_example_not_ready" ||
+    result.source === "local_fallback" ||
+    result.source === "local_context_fallback"
+  ) {
+    return {
+      ...result,
+      example: "",
+      example_cn: "",
+    };
+  }
   const word = cleanToken(result.word) || result.word.trim().toLowerCase();
   const fallbackPair = word ? makeExample(word, book) : null;
   if (
@@ -1896,6 +1991,8 @@ function normalizeLookupResult(result: LookupResult, book: EnglishWordBook): Loo
 function isWeakLookupResult(result?: LookupResult | null) {
   if (!result) return true;
   const meaning = (result.meaning_cn || "").trim();
+  const contextLookup = isContextLookupSource(result);
+  const trustedModel = isTrustedModelSource(result);
   return (
     result.source === "local_fallback" ||
     result.source === "local_context_fallback" ||
@@ -1905,10 +2002,20 @@ function isWeakLookupResult(result?: LookupResult | null) {
     meaning.includes("\u8865\u5168\u8be5\u8bcd\u91ca\u4e49") ||
     meaning.includes("\u53ef\u5148\u6309\u4f8b\u53e5\u8bed\u5883\u8bb0\u5fc6") ||
     meaning.includes("\u540e\u53f0\u4f1a\u81ea\u52a8\u8865\u5168") ||
-    isPlaceholderExample(result.example) ||
-    isSemanticallyBadExample(result.example, result.word, result.meaning_cn) ||
-    !result.example_cn?.trim()
+    (!contextLookup &&
+      (isPlaceholderExample(result.example) ||
+        (!trustedModel && isSemanticallyBadExample(result.example, result.word, result.meaning_cn)) ||
+        !result.example_cn?.trim()))
   );
+}
+
+function isForegroundQualityLookup(result?: LookupResult | null): boolean {
+  if (!result || !hasDisplayableExample(result) || isWeakLookupResult(result)) return false;
+  return isTrustedModelSource(result);
+}
+
+function canUseWithoutRemote(result?: LookupResult | null): boolean {
+  return isForegroundQualityLookup(result);
 }
 
 function preferLookupResult(incoming: LookupResult, existing: LookupResult | null | undefined, book: EnglishWordBook) {
@@ -1971,6 +2078,29 @@ function fallbackLookupResult(word: string, book: EnglishWordBook): LookupResult
   };
 }
 
+function isModelReadyCard(result?: LookupResult | null): boolean {
+  return canUseWithoutRemote(result);
+}
+
+function lookupTraceSummary(result?: LookupResult | null) {
+  return {
+    word: result?.word ?? "",
+    source: result?.source ?? "",
+    model: result?.model ?? "",
+    has_example: Boolean(result?.example?.trim()),
+    example: result?.example ?? "",
+    has_example_cn: Boolean(result?.example_cn?.trim()),
+    meaning_len: result?.meaning_cn?.length ?? 0,
+    trusted_model: isTrustedModelSource(result),
+    fallback_source: isFallbackExampleSource(result),
+    placeholder_example: isPlaceholderExample(result?.example),
+    semantic_bad: result ? isSemanticallyBadExample(result.example, result.word, result.meaning_cn) : false,
+    weak: isWeakLookupResult(result),
+    displayable: hasDisplayableExample(result),
+    model_ready: isModelReadyCard(result),
+  };
+}
+
 export function EnglishVocabCoach() {
   const initialBook = React.useMemo(() => englishWordBooks[0], []);
   const [bookId, setBookId] = React.useState(initialBook.id);
@@ -1982,6 +2112,8 @@ export function EnglishVocabCoach() {
   const [detail, setDetail] = React.useState<LookupResult | null>(null);
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [detailError, setDetailError] = React.useState<string | null>(null);
+  const [cardPreparing, setCardPreparing] = React.useState(false);
+  const [preparingWord, setPreparingWord] = React.useState<string | null>(null);
   const [prefetchState, setPrefetchState] = React.useState<PrefetchUiState>("idle");
   const [selectedWord, setSelectedWord] = React.useState<LookupResult | null>(null);
   const [selectedLoading, setSelectedLoading] = React.useState<string | null>(null);
@@ -1993,6 +2125,7 @@ export function EnglishVocabCoach() {
   const currentWordRef = React.useRef(currentWord);
   const revealedRef = React.useRef(revealed);
   const detailRef = React.useRef<LookupResult | null>(detail);
+  const cardTransitionRef = React.useRef(0);
   const lastExampleVariantIdRef = React.useRef<string | null>(null);
   const stateHydratedRef = React.useRef(false);
   const userInteractedRef = React.useRef(false);
@@ -2010,6 +2143,21 @@ export function EnglishVocabCoach() {
   );
   const effectiveExample = activeExampleVariant?.example || displayDetail?.example || "";
   const effectiveExampleCn = activeExampleVariant?.example_cn || displayDetail?.example_cn || "";
+  const currentCardReady = Boolean(currentWord && !detailLoading && !cardPreparing && effectiveExample);
+  const cardBootstrapping = Boolean(!effectiveExample && detailLoading);
+
+  React.useEffect(() => {
+    if (!detail) {
+      traceFrontend("detail_empty", { word: currentWord, book_id: activeBook.id, detail_loading: detailLoading });
+      return;
+    }
+    traceFrontend(displayDetail ? "detail_displayable" : "detail_rejected_by_frontend", {
+      book_id: activeBook.id,
+      current_word: currentWord,
+      detail_loading: detailLoading,
+      ...lookupTraceSummary(detail),
+    });
+  }, [activeBook.id, currentWord, detail, displayDetail, detailLoading]);
 
   React.useEffect(() => {
     bookIdRef.current = bookId;
@@ -2086,33 +2234,49 @@ export function EnglishVocabCoach() {
   }, [applySharedState]);
 
   const loadDetail = React.useCallback(
-    async (word: string, contextSentence?: string, timeoutMs = REMOTE_LOOKUP_UI_TIMEOUT_MS) => {
+    async (
+      word: string,
+      contextSentence?: string,
+      timeoutMs = REMOTE_LOOKUP_UI_TIMEOUT_MS,
+      forceRemote = false,
+      requireFinalExample = false,
+    ) => {
       const key = lookupCacheKey(activeBook.id, word, contextSentence);
+      const pendingKey = `${key}:${requireFinalExample ? "final" : "normal"}`;
       const cached = lookupCacheRef.current[key];
       const local = localLookupResult(word, activeBook);
-      if (cached) {
+      if (!forceRemote && cached) {
         const preferred = preferLookupResult(local ?? cached, cached, activeBook);
         if (preferred !== cached) cacheLookup(lookupCacheRef, key, preferred);
         if (!isWeakLookupResult(preferred)) return preferred;
       }
       const startRemoteLookup = () => {
-        const pending = pendingLookups.get(key);
+        const pending = pendingLookups.get(pendingKey);
         if (pending) return pending;
         const promise = invoke<LookupResult>("english_vocab_lookup", {
           input: {
             word,
             book_id: activeBook.id,
             context_sentence: contextSentence,
+            require_final_example: requireFinalExample,
           },
         }).finally(() => {
-          pendingLookups.delete(key);
+          pendingLookups.delete(pendingKey);
         });
-        pendingLookups.set(key, promise);
+        pendingLookups.set(pendingKey, promise);
         promise
           .then((result) => {
+            traceFrontend("lookup_result_received", {
+              book_id: activeBook.id,
+              current_word: currentWordRef.current,
+              requested_word: word,
+              context_sentence: Boolean(contextSentence),
+              require_final_example: requireFinalExample,
+              ...lookupTraceSummary(result),
+            });
             const currentDetail = detailRef.current;
             const merged =
-              (result.source === "local_gguf" || result.source === "local_translate") && currentDetail
+              !requireFinalExample && (result.source === "local_gguf" || result.source === "local_translate") && currentDetail
                 ? {
                     ...currentDetail,
                     meaning_cn:
@@ -2128,24 +2292,49 @@ export function EnglishVocabCoach() {
                   }
                 : result;
             const existing = lookupCacheRef.current[key] ?? currentDetail;
-            const preferred = preferLookupResult(merged, existing, activeBook);
+            const preferred = requireFinalExample ? merged : preferLookupResult(merged, existing, activeBook);
+            traceFrontend("lookup_result_preferred", {
+              book_id: activeBook.id,
+              current_word: currentWordRef.current,
+              requested_word: word,
+              context_sentence: Boolean(contextSentence),
+              require_final_example: requireFinalExample,
+              ...lookupTraceSummary(preferred),
+            });
             if (!isWeakLookupResult(preferred)) {
               cacheLookup(lookupCacheRef, key, preferred);
             }
             if (!contextSentence && currentWordRef.current === word && bookIdRef.current === activeBook.id) {
-              setDetail((prev) => preferLookupResult(preferred, prev, activeBook));
-              setDetailError(null);
-              setDetailLoading(false);
+              if (requireFinalExample && isWeakLookupResult(preferred)) {
+                traceFrontend("lookup_result_rejected_before_set", {
+                  book_id: activeBook.id,
+                  current_word: currentWordRef.current,
+                  requested_word: word,
+                  require_final_example: requireFinalExample,
+                  ...lookupTraceSummary(preferred),
+                });
+                setDetailError(null);
+              } else {
+                traceFrontend("lookup_result_set_detail", {
+                  book_id: activeBook.id,
+                  current_word: currentWordRef.current,
+                  requested_word: word,
+                  require_final_example: requireFinalExample,
+                  ...lookupTraceSummary(preferred),
+                });
+                setDetail((prev) => (requireFinalExample ? preferred : preferLookupResult(preferred, prev, activeBook)));
+                setDetailError(null);
+                setDetailLoading(false);
+              }
             }
           })
           .catch((error) => console.warn("[EnglishVocab] background lookup skipped:", error));
         return promise;
       };
-      if (local) {
+      if (!forceRemote && !requireFinalExample && local) {
         const preferred = preferLookupResult(local, cached, activeBook);
         if (!isWeakLookupResult(preferred)) {
           cacheLookup(lookupCacheRef, key, preferred);
-          void startRemoteLookup();
           return preferred;
         }
         try {
@@ -2157,6 +2346,7 @@ export function EnglishVocabCoach() {
           return remotePreferred;
         } catch (error) {
           console.warn("[EnglishVocab] remote lookup failed after local definition:", error);
+          if (requireFinalExample) throw error;
           return preferred;
         }
       }
@@ -2165,7 +2355,11 @@ export function EnglishVocabCoach() {
         result = await withTimeout(startRemoteLookup(), timeoutMs);
       } catch (error) {
         console.warn("[EnglishVocab] remote lookup failed, using local fallback:", error);
+        if (requireFinalExample) throw error;
         result = fallbackLookupResult(word, activeBook);
+      }
+      if (requireFinalExample && isWeakLookupResult(result)) {
+        throw new Error("final example is not ready");
       }
       const preferred = preferLookupResult(result, cached, activeBook);
       if (!isWeakLookupResult(preferred)) {
@@ -2179,10 +2373,8 @@ export function EnglishVocabCoach() {
   React.useEffect(() => {
     let cancelled = false;
     const cached = lookupCacheRef.current[lookupCacheKey(activeBook.id, currentWord)];
-    const local = localLookupResult(currentWord, activeBook);
-    const preferred = local ? preferLookupResult(local, cached, activeBook) : cached;
-    if (preferred && !isWeakLookupResult(preferred)) {
-      setDetail(preferLookupResult(preferred, cached, activeBook));
+    if (cached && isModelReadyCard(cached)) {
+      setDetail(cached);
       setDetailError(null);
       setDetailLoading(false);
       return () => {
@@ -2192,12 +2384,20 @@ export function EnglishVocabCoach() {
     setDetail(null);
     setDetailError(null);
     setDetailLoading(true);
-    void loadDetail(currentWord)
+    void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true)
       .then((result) => {
-        if (!cancelled) setDetail(result);
+        if (!cancelled) {
+          if (isModelReadyCard(result)) {
+            setDetail(result);
+            setDetailError(null);
+          } else {
+            setDetailError(null);
+          }
+        }
       })
       .catch((error) => {
-        if (!cancelled) setDetailError(errorText(error));
+        console.warn("[EnglishVocab] model example lookup failed:", error);
+        if (!cancelled) setDetailError(null);
       })
       .finally(() => {
         if (!cancelled) setDetailLoading(false);
@@ -2208,60 +2408,101 @@ export function EnglishVocabCoach() {
   }, [activeBook.id, currentWord, loadDetail]);
 
   React.useEffect(() => {
+    if (!effectiveExample || detailLoading) return;
     const index = activeBook.words.indexOf(currentWord);
     if (index < 0 || activeBook.words.length <= 1) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      const upcoming = Array.from({ length: Math.min(5, activeBook.words.length - 1) }, (_, offset) => {
+      const upcoming = Array.from({ length: Math.min(UPCOMING_MODEL_PREFETCH_COUNT, activeBook.words.length - 1) }, (_, offset) => {
         const nextIndex = (index + offset + 1) % activeBook.words.length;
         return activeBook.words[nextIndex];
       }).filter(Boolean);
       upcoming.forEach((word, offset) => {
         window.setTimeout(() => {
           if (cancelled) return;
-          void loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS).catch((error) => {
+          // Prepare model-grade examples before the word is shown. The card has
+          // only one real display chance, so upcoming words must be generated
+          // in advance instead of falling back to templates at display time.
+          void loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true).catch((error) => {
             console.warn("[EnglishVocab] upcoming word prefetch skipped:", word, error);
           });
-        }, offset * 350);
+        }, offset * 450);
       });
-    }, 650);
+    }, 350);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeBook.id, activeBook.words, currentWord, loadDetail]);
+  }, [activeBook.id, activeBook.words, currentWord, detailLoading, effectiveExample, loadDetail]);
 
   const retryCurrent = React.useCallback(() => {
     setDetail(null);
     setDetailError(null);
     setDetailLoading(true);
-    void loadDetail(currentWord)
-      .then(setDetail)
-      .catch((error) => setDetailError(errorText(error)))
+    void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true)
+      .then((result) => {
+        if (isModelReadyCard(result)) {
+          setDetail(result);
+          setDetailError(null);
+        } else {
+          setDetail(null);
+          setDetailError(null);
+        }
+      })
+      .catch((error) => {
+        console.warn("[EnglishVocab] retry lookup failed:", error);
+        setDetailError(null);
+      })
       .finally(() => setDetailLoading(false));
   }, [currentWord, loadDetail]);
 
   React.useEffect(() => {
-    if (effectiveExample || detailLoading) return;
-    if (!detail && !detailError) return;
+    if (effectiveExample || detailLoading || cardPreparing) return;
     const key = `${activeBook.id}:${currentWord}`;
     const tried = exampleRetryRef.current[key] ?? 0;
-    if (tried >= 3) return;
+    if (tried >= CURRENT_CARD_RETRY_LIMIT) return;
     exampleRetryRef.current[key] = tried + 1;
     const timer = window.setTimeout(() => {
+      setDetailError(null);
       setDetailLoading(true);
-      void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS)
+      void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true)
         .then((result) => {
-          setDetail((prev) => preferLookupResult(result, prev, activeBook));
-          setDetailError(null);
+          if (isModelReadyCard(result)) {
+            setDetail((prev) => preferLookupResult(result, prev, activeBook));
+            setDetailError(null);
+          }
         })
         .catch((error) => {
           console.warn("[EnglishVocab] example auto-refresh skipped:", error);
+          setDetailError(null);
         })
-        .finally(() => setDetailLoading(false));
-    }, 2500 + tried * 1500);
+        .finally(() => {
+          setDetailLoading(false);
+        });
+    }, Math.min(900 + tried * 350, 3200));
     return () => window.clearTimeout(timer);
-  }, [activeBook, currentWord, detail, detailError, detailLoading, effectiveExample, loadDetail]);
+  }, [activeBook, cardPreparing, currentWord, detailLoading, effectiveExample, loadDetail]);
+
+  React.useEffect(() => {
+    if (!detail || detail.refresh_hint !== "background_ai_refresh" || detailLoading) return;
+    const key = `${activeBook.id}:${currentWord}:ai-refresh`;
+    const tried = exampleRetryRef.current[key] ?? 0;
+    if (tried >= 1) return;
+    exampleRetryRef.current[key] = tried + 1;
+    const timer = window.setTimeout(() => {
+      void loadDetail(currentWord, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true)
+        .then((result) => {
+          if (isModelReadyCard(result)) {
+            setDetail((prev) => preferLookupResult(result, prev, activeBook));
+            setDetailError(null);
+          }
+        })
+        .catch((error) => {
+          console.warn("[EnglishVocab] AI example refresh skipped:", error);
+        });
+    }, 3200 + tried * 2500);
+    return () => window.clearTimeout(timer);
+  }, [activeBook, currentWord, detail, detailLoading, loadDetail]);
 
   const lookupExampleToken = React.useCallback(
     (token: string) => {
@@ -2392,21 +2633,57 @@ export function EnglishVocabCoach() {
     [lookupExampleToken],
   );
 
+  const prepareWordForDisplay = React.useCallback(
+    async (word: string) => {
+      const transitionId = cardTransitionRef.current + 1;
+      cardTransitionRef.current = transitionId;
+      setCardPreparing(true);
+      setPreparingWord(word);
+      setDetailError(null);
+      try {
+        const result = await loadDetail(word, undefined, REMOTE_LOOKUP_UI_TIMEOUT_MS, true, true);
+        if (cardTransitionRef.current !== transitionId) return false;
+        if (!isModelReadyCard(result)) {
+          throw new Error("model example is not ready");
+        }
+        currentWordRef.current = word;
+        setCurrentWord(word);
+        setDetail(result);
+        setDetailError(null);
+        setDetailLoading(false);
+        setRevealed(false);
+        revealedRef.current = false;
+        setReviewed(false);
+        setSelectedWord(null);
+        setSelectedError(null);
+        setSelectedStatus(null);
+        setFeedback(UI.readyHint);
+        return true;
+      } catch (error) {
+        if (cardTransitionRef.current === transitionId) {
+          console.warn("[EnglishVocab] next card preparation failed:", word, error);
+          setFeedback(`下一张 ${word} 暂未准备好，请重试。`);
+          setDetailError(null);
+        }
+        return false;
+      } finally {
+        if (cardTransitionRef.current === transitionId) {
+          setCardPreparing(false);
+          setPreparingWord(null);
+        }
+      }
+    },
+    [loadDetail],
+  );
+
   const moveNext = React.useCallback(
     (nextProgress = progress) => {
       userInteractedRef.current = true;
       const next = chooseWord(activeBook.words, nextProgress, activeBook.id, currentWord);
-      currentWordRef.current = next;
-      setCurrentWord(next);
-      setRevealed(false);
-      revealedRef.current = false;
-      setReviewed(false);
-      setSelectedWord(null);
-      setSelectedError(null);
-      setSelectedStatus(null);
-      setFeedback(UI.readyHint);
+      setFeedback(UI.preparingCard);
+      void prepareWordForDisplay(next);
     },
-    [activeBook.id, activeBook.words, currentWord, progress],
+    [activeBook.id, activeBook.words, currentWord, prepareWordForDisplay, progress],
   );
 
   const answer = (rating: Rating) => {
@@ -2457,17 +2734,23 @@ export function EnglishVocabCoach() {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-[0.16em] text-emerald-300/80">{UI.sectionTitle}</div>
-              <div className="mt-0.5 truncate text-2xl font-semibold tracking-normal text-white">{currentWord}</div>
+              <div className="mt-0.5 truncate text-2xl font-semibold tracking-normal text-white">
+                {cardBootstrapping ? "准备中" : currentWord}
+              </div>
               <div className="mt-1 flex min-h-5 items-center gap-1 text-sm text-cyan-100/80">
-                {detailLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{choosePhonetic(currentMetadata?.phonetic, displayDetail?.phonetic || detail?.phonetic)}</span>
-                <span className="text-slate-500">{currentMetadata?.partOfSpeech || displayDetail?.part_of_speech || detail?.part_of_speech || ""}</span>
+                {cardBootstrapping ? (
+                  <span className="text-xs text-slate-400">{UI.preparingCard}</span>
+                ) : (
+                  <>
+                    <span>{choosePhonetic(currentMetadata?.phonetic, displayDetail?.phonetic || detail?.phonetic)}</span>
+                    <span className="text-slate-500">{currentMetadata?.partOfSpeech || displayDetail?.part_of_speech || detail?.part_of_speech || ""}</span>
+                  </>
+                )}
               </div>
               {revealed ? (
                 <div className="mt-2 min-h-8">
                   {detailLoading && !displayDetail ? (
-                    <div className="flex items-center gap-2 text-xs text-slate-300">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
+                    <div className="text-xs text-slate-300">
                       {UI.loading}
                     </div>
                   ) : detailError && !displayDetail ? (
@@ -2498,21 +2781,22 @@ export function EnglishVocabCoach() {
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-200/80">{UI.exampleTitle}</div>
                 <div className="mt-1 text-sm leading-relaxed text-slate-100">
-                  {detailLoading && !effectiveExample ? (
-                    <span className="inline-flex items-center gap-2 text-xs text-slate-400">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
-                      {UI.exampleLoading}
+                  {cardBootstrapping ? (
+                    <span className="text-xs text-slate-400">
+                      {UI.preparingCard}
                     </span>
                   ) : effectiveExample ? (
                     renderExample(effectiveExample)
+                  ) : detailError ? (
+                    <span className="text-xs text-slate-400">
+                      {UI.examplePending}
+                    </span>
                   ) : detailError || detail ? (
-                    <span className="inline-flex items-center gap-2 text-xs text-slate-400">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
+                    <span className="text-xs text-slate-400">
                       {UI.examplePending}
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-2 text-xs text-slate-400">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-200" />
+                    <span className="text-xs text-slate-400">
                       {UI.exampleLoading}
                     </span>
                   )}
@@ -2525,7 +2809,8 @@ export function EnglishVocabCoach() {
                 ) : null}
               </div>
               <button
-                className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-cyan-300/25 px-2 text-xs font-medium text-cyan-100 transition hover:bg-cyan-400/10"
+                className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-cyan-300/25 px-2 text-xs font-medium text-cyan-100 transition hover:bg-cyan-400/10 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={cardPreparing || (!currentCardReady && !detailError)}
                 onClick={() => {
                   userInteractedRef.current = true;
                   setRevealed(true);
@@ -2581,19 +2866,22 @@ export function EnglishVocabCoach() {
           {!reviewed ? (
             <div className="mt-2 grid grid-cols-3 gap-2">
               <button
-                className="flex h-9 items-center justify-center rounded-md border border-rose-300/25 bg-rose-400/10 text-sm text-rose-100 transition hover:bg-rose-400/20"
+                className="flex h-9 items-center justify-center rounded-md border border-rose-300/25 bg-rose-400/10 text-sm text-rose-100 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!currentCardReady}
                 onClick={() => answer("unknown")}
               >
                 {UI.unknown}
               </button>
               <button
-                className="flex h-9 items-center justify-center rounded-md border border-amber-300/25 bg-amber-300/10 text-sm text-amber-100 transition hover:bg-amber-300/20"
+                className="flex h-9 items-center justify-center rounded-md border border-amber-300/25 bg-amber-300/10 text-sm text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!currentCardReady}
                 onClick={() => answer("fuzzy")}
               >
                 {UI.fuzzy}
               </button>
               <button
-                className="flex h-9 items-center justify-center gap-1 rounded-md bg-emerald-400 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
+                className="flex h-9 items-center justify-center gap-1 rounded-md bg-emerald-400 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!currentCardReady}
                 onClick={() => answer("known")}
               >
                 <Check className="h-4 w-4" />
@@ -2602,10 +2890,11 @@ export function EnglishVocabCoach() {
             </div>
           ) : (
             <button
-              className="mt-2 flex h-9 items-center justify-center gap-1 rounded-md bg-cyan-300 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+              className="mt-2 flex h-9 items-center justify-center gap-1 rounded-md bg-cyan-300 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={cardPreparing}
               onClick={() => moveNext()}
             >
-              {UI.next}
+              {cardPreparing ? (preparingWord ? `正在准备 ${preparingWord}` : UI.preparingCard) : UI.next}
               <ChevronRight className="h-4 w-4" />
             </button>
           )}

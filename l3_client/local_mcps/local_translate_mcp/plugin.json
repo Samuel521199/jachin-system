@@ -1,8 +1,8 @@
 {
   "id": "com.jachin.mcp.local-translate",
   "name": "Local Translate MCP",
-  "version": "1.0.4",
-  "description": "Local CTranslate2 translation MCP with 10k vocabulary, completion cache, and sentence/example cache.",
+  "version": "1.0.14",
+  "description": "Local CTranslate2 translation MCP with 10k vocabulary, reviewed example pack, completion cache, and sentence/example cache.",
   "item_type": "MCP",
   "type": "MCP",
   "runtime_tier": "L3_LOCAL",
@@ -47,6 +47,13 @@
       "params": [
         "direction"
       ]
+    },
+    {
+      "id": "english_example_pack_status",
+      "function": "english_example_pack_status",
+      "module": "english_example_pack",
+      "description": "Check bundled English example pack availability and counts.",
+      "params": []
     }
   ],
   "tags": [
@@ -56,6 +63,7 @@
     "opus-mt",
     "model-asset",
     "english-vocab-10k",
-    "completion-cache"
+    "completion-cache",
+    "example-pack"
   ]
 }

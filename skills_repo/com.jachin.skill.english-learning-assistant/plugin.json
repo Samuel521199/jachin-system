@@ -16,6 +16,10 @@
     {
       "from": "clients/desktop/src/components/EnglishVocab/wordBooks.ts",
       "to": "assets/english_vocab/wordBooks.ts"
+    },
+    {
+      "from": "l3_client/local_mcps/local_translate_mcp/english_example_pack.json",
+      "to": "assets/english_vocab/english_example_pack.json"
     }
   ],
   "preserve_user_data": [
@@ -30,7 +34,13 @@
     "localStorage:jachin.english_vocab.lookup_cache.v5",
     "localStorage:jachin.english_vocab.lookup_cache.v6",
     "localStorage:jachin.english_vocab.lookup_cache.v7",
-    "localStorage:jachin.english_vocab.lookup_cache.v8"
+    "localStorage:jachin.english_vocab.lookup_cache.v8",
+    "localStorage:jachin.english_vocab.lookup_cache.v19",
+    "localStorage:jachin.english_vocab.lookup_cache.v20",
+    "localStorage:jachin.english_vocab.lookup_cache.v21",
+    "localStorage:jachin.english_vocab.lookup_cache.v22",
+    "localStorage:jachin.english_vocab.lookup_cache.v23",
+    "localStorage:jachin.english_vocab.lookup_cache.v24"
   ],
   "required_mcps": [
     "com.jachin.mcp.english-tutor",
@@ -51,5 +61,5 @@
     "skill-test"
   ],
   "type": "SKILL",
-  "version": "1.0.5"
+  "version": "1.0.15"
 }

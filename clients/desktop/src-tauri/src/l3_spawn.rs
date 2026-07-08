@@ -640,7 +640,7 @@ pub fn spawn_l3_via_direct_exe(
         }
     }
     cmd = cmd.current_dir(&dir);
-    let (mut rx, child) = cmd
+    let (rx, child) = cmd
         .spawn()
         .map_err(|e| format!("直接启动 L3 exe 失败: {}", e))?;
     spawn_sidecar_output_forwarder(rx);
@@ -690,7 +690,7 @@ pub fn spawn_l3_via_python(
         }
     }
     cmd = cmd.current_dir(&root);
-    let (mut rx, child) = cmd
+    let (rx, child) = cmd
         .spawn()
         .map_err(|e| format!("Python L3 启动失败: {}", e))?;
     spawn_sidecar_output_forwarder(rx);

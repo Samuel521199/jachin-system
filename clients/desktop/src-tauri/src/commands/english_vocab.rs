@@ -18,6 +18,7 @@ pub struct EnglishVocabLookupInput {
     pub word: String,
     pub book_id: Option<String>,
     pub context_sentence: Option<String>,
+    pub require_final_example: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +31,7 @@ pub struct EnglishVocabLookupResult {
     pub example_cn: String,
     pub source: String,
     pub model: String,
+    pub refresh_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +73,12 @@ pub struct EnglishVocabPrefetchInput {
     pub max_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnglishVocabFrontendTraceInput {
+    pub stage: String,
+    pub detail: Option<Value>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EnglishVocabPrefetchResult {
     pub started: bool,
@@ -102,6 +110,24 @@ impl Default for EnglishVocabState {
 pub async fn english_vocab_lookup(
     input: EnglishVocabLookupInput,
 ) -> Result<EnglishVocabLookupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || english_vocab_lookup_sync(input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn english_vocab_frontend_trace(input: EnglishVocabFrontendTraceInput) -> Result<(), String> {
+    let stage = sanitize_trace_stage(&input.stage);
+    english_example_chain_trace(
+        &format!("frontend_{stage}"),
+        input.detail.unwrap_or_else(|| json!({})),
+    );
+    Ok(())
+}
+
+fn english_vocab_lookup_sync(
+    input: EnglishVocabLookupInput,
+) -> Result<EnglishVocabLookupResult, String> {
     let lookup_started = Instant::now();
     let word = input.word.trim().to_string();
     if word.is_empty() {
@@ -120,6 +146,8 @@ pub async fn english_vocab_lookup(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
+    let require_final_example =
+        input.require_final_example.unwrap_or(false) && context_sentence.is_none();
 
     let mut cache = read_english_vocab_lookup_cache();
     let scoped_key = english_vocab_lookup_cache_key(&book_id, &word, context_sentence.as_deref());
@@ -129,11 +157,23 @@ pub async fn english_vocab_lookup(
             "word": word,
             "book_id": book_id,
             "has_context": context_sentence.is_some(),
+            "require_final_example": require_final_example,
             "scoped_key": scoped_key,
         }),
     );
+    english_example_chain_trace(
+        "lookup_start",
+        json!({
+            "word": word,
+            "book_id": book_id,
+            "has_context": context_sentence.is_some(),
+            "require_final_example": require_final_example,
+        }),
+    );
     if let Some(cached) = cache.get(&scoped_key).cloned() {
-        if !lookup_result_needs_large_model_fallback(&cached) {
+        if !lookup_result_needs_large_model_fallback(&cached)
+            && (!require_final_example || lookup_result_is_final_grade(&cached))
+        {
             english_vocab_trace(
                 "lookup_cache_hit_scoped",
                 json!({
@@ -144,12 +184,26 @@ pub async fn english_vocab_lookup(
                     "elapsed_ms": lookup_started.elapsed().as_millis(),
                 }),
             );
+            english_example_chain_trace(
+                "cache_hit_scoped",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "source": cached.source.as_str(),
+                    "model": cached.model.as_str(),
+                    "example": cached.example.as_str(),
+                    "example_cn": cached.example_cn.as_str(),
+                    "final_grade": lookup_result_is_final_grade(&cached),
+                }),
+            );
             return Ok(cached);
         }
     }
     let plain_key = english_vocab_lookup_cache_key(&book_id, &word, None);
     if let Some(cached) = cache.get(&plain_key).cloned() {
-        if !lookup_result_needs_large_model_fallback(&cached) {
+        if !lookup_result_needs_large_model_fallback(&cached)
+            && (!require_final_example || lookup_result_is_final_grade(&cached))
+        {
             english_vocab_trace(
                 "lookup_cache_hit_plain",
                 json!({
@@ -160,6 +214,18 @@ pub async fn english_vocab_lookup(
                     "elapsed_ms": lookup_started.elapsed().as_millis(),
                 }),
             );
+            english_example_chain_trace(
+                "cache_hit_plain",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "source": cached.source.as_str(),
+                    "model": cached.model.as_str(),
+                    "example": cached.example.as_str(),
+                    "example_cn": cached.example_cn.as_str(),
+                    "final_grade": lookup_result_is_final_grade(&cached),
+                }),
+            );
             return Ok(cached);
         }
     }
@@ -168,11 +234,205 @@ pub async fn english_vocab_lookup(
         word: word.clone(),
         book_id: Some(book_id.clone()),
         context_sentence: context_sentence.clone(),
+        require_final_example: Some(require_final_example),
     };
+
+    if require_final_example {
+        match lookup_with_english_vocab_service_cache_only(&normalized_input) {
+            Ok(result) if lookup_result_is_final_grade(&result) => {
+                cache_insert_lookup_result(
+                    &mut cache,
+                    &book_id,
+                    &word,
+                    context_sentence.as_deref(),
+                    &result,
+                );
+                let _ = write_english_vocab_lookup_cache(&cache);
+                english_vocab_trace(
+                    "lookup_service_cache_only_hit",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                english_example_chain_trace(
+                    "service_cache_only_hit_before_remote",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "example": result.example.as_str(),
+                        "example_cn": result.example_cn.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                return Ok(result);
+            }
+            Ok(result) => {
+                english_example_chain_trace(
+                    "service_cache_only_rejected",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "example": result.example.as_str(),
+                        "example_cn": result.example_cn.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+            }
+            Err(err) => {
+                english_example_chain_trace(
+                    "service_cache_only_miss",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "error": err,
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+            }
+        }
+        match lookup_with_local_translate_or_example(&normalized_input) {
+            Ok(result) if lookup_result_is_final_grade(&result) => {
+                cache_insert_lookup_result(
+                    &mut cache,
+                    &book_id,
+                    &word,
+                    context_sentence.as_deref(),
+                    &result,
+                );
+                let _ = write_english_vocab_lookup_cache(&cache);
+                remember_lookup_in_vocab_service(&book_id, &word, &result);
+                english_example_chain_trace(
+                    "final_example_service_returned",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "example": result.example.as_str(),
+                        "example_cn": result.example_cn.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                english_vocab_trace(
+                    "lookup_final_example_service_returned",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                return Ok(result);
+            }
+            Ok(result) => {
+                english_example_chain_trace(
+                    "final_example_service_rejected",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "example": result.example.as_str(),
+                        "example_cn": result.example_cn.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+            }
+            Err(err) => {
+                english_example_chain_trace(
+                    "final_example_service_failed",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "error": err,
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+            }
+        }
+        return Err("final example service failed; qwen-turbo card was not returned".to_string());
+    }
+
+    if require_final_example
+        && english_vocab_rust_remote_fallback_enabled()
+        && english_vocab_remote_lookup_enabled()
+    {
+        let remote_input = normalized_input.clone();
+        english_example_chain_trace(
+            "remote_qwen_turbo_start",
+            json!({
+                "word": word,
+                "book_id": book_id,
+                "require_final_example": require_final_example,
+                "mode": "foreground_first",
+                "elapsed_ms": lookup_started.elapsed().as_millis(),
+            }),
+        );
+        match lookup_with_dashscope(remote_input) {
+            Ok(result) => {
+                cache_insert_lookup_result(
+                    &mut cache,
+                    &book_id,
+                    &word,
+                    context_sentence.as_deref(),
+                    &result,
+                );
+                let _ = write_english_vocab_lookup_cache(&cache);
+                remember_lookup_in_vocab_service(&book_id, &word, &result);
+                english_example_chain_trace(
+                    "remote_qwen_turbo_returned",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "example": result.example.as_str(),
+                        "example_cn": result.example_cn.as_str(),
+                        "mode": "foreground_first",
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                english_vocab_trace(
+                    "lookup_remote_first_returned",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "source": result.source.as_str(),
+                        "model": result.model.as_str(),
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                return Ok(result);
+            }
+            Err(remote_err) => {
+                english_example_chain_trace(
+                    "remote_final_example_failed",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "error": remote_err,
+                        "mode": "foreground_first",
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+            }
+        }
+    }
 
     let local_result = lookup_with_local_translate_or_example(&normalized_input).ok();
     if let Some(result) = local_result.as_ref() {
-        if !lookup_result_needs_large_model_fallback(result) {
+        if !lookup_result_needs_large_model_fallback(result)
+            && (!require_final_example || lookup_result_is_final_grade(result))
+        {
             cache_insert_lookup_result(
                 &mut cache,
                 &book_id,
@@ -191,11 +451,42 @@ pub async fn english_vocab_lookup(
                     "elapsed_ms": lookup_started.elapsed().as_millis(),
                 }),
             );
+            english_example_chain_trace(
+                "local_service_success",
+                json!({
+                    "word": word,
+                    "book_id": book_id,
+                    "source": result.source.as_str(),
+                    "model": result.model.as_str(),
+                    "example": result.example.as_str(),
+                    "example_cn": result.example_cn.as_str(),
+                    "require_final_example": require_final_example,
+                }),
+            );
             return Ok(result.clone());
         }
     }
 
+    if require_final_example && english_vocab_remote_lookup_enabled() {
+        return Err(
+            "qwen-turbo final example failed and local final example is not ready".to_string(),
+        );
+    }
+
     if !english_vocab_remote_lookup_enabled() {
+        english_example_chain_trace(
+            "remote_qwen_turbo_disabled",
+            json!({
+                "word": word,
+                "book_id": book_id,
+                "require_final_example": require_final_example,
+                "has_local_result": local_result.is_some(),
+                "elapsed_ms": lookup_started.elapsed().as_millis(),
+            }),
+        );
+        if require_final_example && local_result.is_none() {
+            return Err("final example is still preparing".to_string());
+        }
         let result = local_result.unwrap_or_else(|| fallback_lookup_result(&normalized_input));
         cache_insert_lookup_result(
             &mut cache,
@@ -215,13 +506,43 @@ pub async fn english_vocab_lookup(
                 "elapsed_ms": lookup_started.elapsed().as_millis(),
             }),
         );
+        english_example_chain_trace(
+            "local_fallback_returned",
+            json!({
+                "word": word,
+                "book_id": book_id,
+                "source": result.source.as_str(),
+                "model": result.model.as_str(),
+                "example": result.example.as_str(),
+                "example_cn": result.example_cn.as_str(),
+                "require_final_example": require_final_example,
+            }),
+        );
         return Ok(result);
     }
     let remote_input = normalized_input.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || lookup_with_dashscope(remote_input))
-        .await
-        .map_err(|e| e.to_string())?
-        .or_else(|_remote_err| {
+    english_example_chain_trace(
+        "remote_qwen_turbo_start",
+        json!({
+            "word": word,
+            "book_id": book_id,
+            "require_final_example": require_final_example,
+            "elapsed_ms": lookup_started.elapsed().as_millis(),
+        }),
+    );
+    let result = lookup_with_dashscope(remote_input).or_else(|remote_err| {
+            if require_final_example {
+                english_example_chain_trace(
+                    "remote_final_example_failed",
+                    json!({
+                        "word": word,
+                        "book_id": book_id,
+                        "error": remote_err,
+                        "elapsed_ms": lookup_started.elapsed().as_millis(),
+                    }),
+                );
+                return Err("final example model fallback failed".to_string());
+            }
             Ok::<EnglishVocabLookupResult, String>(
                 local_result
                     .clone()
@@ -237,6 +558,18 @@ pub async fn english_vocab_lookup(
         &result,
     );
     let _ = write_english_vocab_lookup_cache(&cache);
+    english_example_chain_trace(
+        "remote_qwen_turbo_returned",
+        json!({
+            "word": word,
+            "book_id": book_id,
+            "source": result.source.as_str(),
+            "model": result.model.as_str(),
+            "example": result.example.as_str(),
+            "example_cn": result.example_cn.as_str(),
+            "elapsed_ms": lookup_started.elapsed().as_millis(),
+        }),
+    );
     english_vocab_trace(
         "lookup_remote_or_fallback_returned",
         json!({
@@ -245,6 +578,18 @@ pub async fn english_vocab_lookup(
             "source": result.source.as_str(),
             "model": result.model.as_str(),
             "elapsed_ms": lookup_started.elapsed().as_millis(),
+        }),
+    );
+    english_example_chain_trace(
+        "remote_or_fallback_returned",
+        json!({
+            "word": word,
+            "book_id": book_id,
+            "source": result.source.as_str(),
+            "model": result.model.as_str(),
+            "example": result.example.as_str(),
+            "example_cn": result.example_cn.as_str(),
+            "require_final_example": require_final_example,
         }),
     );
     Ok(result)
@@ -291,6 +636,7 @@ fn fallback_lookup_result(input: &EnglishVocabLookupInput) -> EnglishVocabLookup
             .unwrap_or_default(),
         source: "local_context_fallback".to_string(),
         model: "local_fallback".to_string(),
+        refresh_hint: None,
     }
 }
 
@@ -366,6 +712,7 @@ pub fn english_vocab_prefetch_sentence(
                     word: token.clone(),
                     book_id: Some(book_id_bg.clone()),
                     context_sentence: Some(sentence_bg.clone()),
+                    require_final_example: Some(false),
                 };
                 if let Ok(result) = lookup_with_local_translate_or_example(&req) {
                     let result = if result.example_cn.trim().is_empty() && !sentence_cn.is_empty() {
@@ -402,8 +749,29 @@ pub fn english_vocab_prefetch_sentence(
 fn lookup_with_local_translate_or_example(
     input: &EnglishVocabLookupInput,
 ) -> Result<EnglishVocabLookupResult, String> {
-    if let Ok(result) = lookup_with_english_vocab_service(input) {
-        return Ok(result);
+    let require_final_example = input.require_final_example.unwrap_or(false)
+        && input
+            .context_sentence
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty();
+    match lookup_with_english_vocab_service(input) {
+        Ok(result) => return Ok(result),
+        Err(err) => {
+            english_example_chain_trace(
+                "local_service_not_ready",
+                json!({
+                    "word": input.word.trim(),
+                    "book_id": input.book_id.as_deref().unwrap_or("daily_life_ngsl"),
+                    "require_final_example": require_final_example,
+                    "error": err,
+                }),
+            );
+            if require_final_example {
+                return Err("final example is not ready from local service".to_string());
+            }
+        }
     }
     if let Ok(result) = lookup_with_local_example_model(&input) {
         return Ok(result);
@@ -571,17 +939,31 @@ fn lookup_with_dashscope(
         }
     });
     let model = first_non_empty(&env, &["JACHIN_ENGLISH_VOCAB_MODEL"])
-        .unwrap_or_else(|| "qwen3.5-flash".to_string())
+        .unwrap_or_else(|| "qwen-turbo".to_string())
         .trim_start_matches("dashscope/")
         .to_string();
+    let timeout_ms = first_non_empty(&env, &["JACHIN_ENGLISH_VOCAB_REMOTE_TIMEOUT_MS"])
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(4_500)
+        .clamp(1_500, 12_000);
 
     let prompt = build_prompt(&input);
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(12))
+        .timeout(Duration::from_millis(timeout_ms))
         .build()
         .map_err(|e| format!("create HTTP client failed: {e}"))?;
     let url = format!("{}/chat/completions", api_base.trim_end_matches('/'));
-    let resp = client
+    let request_started = Instant::now();
+    english_example_chain_trace(
+        "remote_qwen_http_send",
+        json!({
+            "word": input.word.trim(),
+            "model": model.as_str(),
+            "api_base": api_base.as_str(),
+            "timeout_ms": timeout_ms,
+        }),
+    );
+    let resp = match client
         .post(url)
         .bearer_auth(api_key)
         .json(&json!({
@@ -600,7 +982,32 @@ fn lookup_with_dashscope(
             "max_tokens": 180
         }))
         .send()
-        .map_err(|e| format!("DashScope request failed: {e}"))?;
+    {
+        Ok(resp) => {
+            english_example_chain_trace(
+                "remote_qwen_http_status",
+                json!({
+                    "word": input.word.trim(),
+                    "model": model.as_str(),
+                    "status": resp.status().as_u16(),
+                    "elapsed_ms": request_started.elapsed().as_millis(),
+                }),
+            );
+            resp
+        }
+        Err(e) => {
+            english_example_chain_trace(
+                "remote_qwen_http_error",
+                json!({
+                    "word": input.word.trim(),
+                    "model": model.as_str(),
+                    "error": e.to_string(),
+                    "elapsed_ms": request_started.elapsed().as_millis(),
+                }),
+            );
+            return Err(format!("DashScope request failed: {e}"));
+        }
+    };
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body = resp.text().unwrap_or_default();
@@ -627,7 +1034,7 @@ fn lookup_with_dashscope(
             content.chars().take(300).collect::<String>()
         )
     })?;
-    Ok(EnglishVocabLookupResult {
+    let result = EnglishVocabLookupResult {
         word: value_string(&parsed, "word").unwrap_or_else(|| input.word.trim().to_string()),
         phonetic: value_string(&parsed, "phonetic").unwrap_or_else(|| "-".to_string()),
         part_of_speech: value_string(&parsed, "part_of_speech").unwrap_or_else(|| "-".to_string()),
@@ -637,7 +1044,12 @@ fn lookup_with_dashscope(
         example_cn: value_string(&parsed, "example_cn").unwrap_or_else(|| "".to_string()),
         source: "dashscope".to_string(),
         model,
-    })
+        refresh_hint: None,
+    };
+    if lookup_result_needs_large_model_fallback(&result) {
+        return Err("DashScope returned incomplete English vocab card".to_string());
+    }
+    Ok(result)
 }
 
 fn english_vocab_remote_lookup_enabled() -> bool {
@@ -657,6 +1069,18 @@ fn english_vocab_remote_lookup_enabled() -> bool {
         ],
     )
     .is_some()
+}
+
+fn english_vocab_rust_remote_fallback_enabled() -> bool {
+    let env = merged_env_values();
+    let Some(value) = first_non_empty(&env, &["JACHIN_ENGLISH_VOCAB_RUST_REMOTE_FALLBACK"])
+    else {
+        return false;
+    };
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "enabled"
+    )
 }
 
 static ENGLISH_VOCAB_SERVICE_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
@@ -681,7 +1105,10 @@ pub fn shutdown_english_vocab_service() {
             let _ = child.wait();
         }
         Err(e) => {
-            english_vocab_trace("service_shutdown_wait_failed", json!({ "error": e.to_string() }));
+            english_vocab_trace(
+                "service_shutdown_wait_failed",
+                json!({ "error": e.to_string() }),
+            );
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -689,8 +1116,7 @@ pub fn shutdown_english_vocab_service() {
 }
 
 fn english_vocab_service_port() -> u16 {
-    std::env::var("JACHIN_ENGLISH_VOCAB_SERVICE_PORT")
-        .ok()
+    first_non_empty(&merged_env_values(), &["JACHIN_ENGLISH_VOCAB_SERVICE_PORT"])
         .and_then(|v| v.trim().parse::<u16>().ok())
         .unwrap_or(18987)
 }
@@ -764,7 +1190,10 @@ fn ensure_english_vocab_service() -> Result<String, String> {
         .arg("--port")
         .arg(english_vocab_service_port().to_string());
     cmd.env("JACHIN_HOME", jachin_home_dir());
-    cmd.env("JACHIN_ENGLISH_VOCAB_SERVICE_LOG", english_vocab_service_log_path());
+    cmd.env(
+        "JACHIN_ENGLISH_VOCAB_SERVICE_LOG",
+        english_vocab_service_log_path(),
+    );
     let mut python_paths = vec![dir.clone()];
     if let Some(example_dir) = local_example_generator_dir() {
         python_paths.push(example_dir);
@@ -799,12 +1228,10 @@ fn ensure_english_vocab_service() -> Result<String, String> {
             "log": english_vocab_service_log_path().display().to_string(),
         }),
     );
-    let child = cmd
-        .spawn()
-        .map_err(|e| {
-            english_vocab_trace("service_spawn_failed", json!({"error": e.to_string()}));
-            format!("spawn English vocab service failed: {e}")
-        })?;
+    let child = cmd.spawn().map_err(|e| {
+        english_vocab_trace("service_spawn_failed", json!({"error": e.to_string()}));
+        format!("spawn English vocab service failed: {e}")
+    })?;
     *guard = Some(child);
     drop(guard);
 
@@ -939,19 +1366,38 @@ fn english_vocab_service_post_if_running(
     Ok(value)
 }
 
+fn english_vocab_final_service_timeout() -> Duration {
+    let ms = std::env::var("JACHIN_ENGLISH_VOCAB_FINAL_SERVICE_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(2_800)
+        .clamp(900, 8_000);
+    Duration::from_millis(ms)
+}
+
 fn lookup_with_english_vocab_service(
     input: &EnglishVocabLookupInput,
 ) -> Result<EnglishVocabLookupResult, String> {
     let started = Instant::now();
-    let value = english_vocab_service_post(
-        "/lookup",
-        &json!({
-            "word": input.word.trim(),
-            "book_id": input.book_id.as_deref().unwrap_or("daily_life_ngsl"),
-            "context_sentence": input.context_sentence.as_deref().unwrap_or(""),
-        }),
-        Duration::from_secs(8),
-    )?;
+    let require_final_example = input.require_final_example.unwrap_or(false);
+    let payload = json!({
+        "word": input.word.trim(),
+        "book_id": input.book_id.as_deref().unwrap_or("daily_life_ngsl"),
+        "context_sentence": input.context_sentence.as_deref().unwrap_or(""),
+        "require_final_example": require_final_example,
+    });
+    let value = if require_final_example {
+        // Keep this below the UI timeout, but above the observed warm local
+        // model latency. A 900ms ceiling caused valid model cards to be
+        // discarded before the service could return them.
+        english_vocab_service_post_if_running(
+            "/lookup",
+            &payload,
+            english_vocab_final_service_timeout(),
+        )
+    } else {
+        english_vocab_service_post("/lookup", &payload, Duration::from_secs(8))
+    }?;
     let result = EnglishVocabLookupResult {
         word: value_string(&value, "word").unwrap_or_else(|| input.word.trim().to_string()),
         phonetic: value_string(&value, "phonetic").unwrap_or_else(|| "-".to_string()),
@@ -962,6 +1408,7 @@ fn lookup_with_english_vocab_service(
         source: value_string(&value, "source")
             .unwrap_or_else(|| "english_vocab_service".to_string()),
         model: value_string(&value, "model").unwrap_or_else(|| "english_vocab_service".to_string()),
+        refresh_hint: value_string(&value, "refresh_hint"),
     };
     if lookup_result_needs_large_model_fallback(&result) {
         english_vocab_trace(
@@ -977,6 +1424,56 @@ fn lookup_with_english_vocab_service(
     }
     english_vocab_trace(
         "service_lookup_success",
+        json!({
+            "word": input.word.trim(),
+            "source": result.source.as_str(),
+            "model": result.model.as_str(),
+            "elapsed_ms": started.elapsed().as_millis(),
+        }),
+    );
+    Ok(result)
+}
+
+fn lookup_with_english_vocab_service_cache_only(
+    input: &EnglishVocabLookupInput,
+) -> Result<EnglishVocabLookupResult, String> {
+    let started = Instant::now();
+    let payload = json!({
+        "word": input.word.trim(),
+        "book_id": input.book_id.as_deref().unwrap_or("daily_life_ngsl"),
+        "context_sentence": "",
+        "require_final_example": true,
+        "cache_only": true,
+    });
+    let value =
+        english_vocab_service_post_if_running("/lookup", &payload, Duration::from_millis(650))?;
+    let result = EnglishVocabLookupResult {
+        word: value_string(&value, "word").unwrap_or_else(|| input.word.trim().to_string()),
+        phonetic: value_string(&value, "phonetic").unwrap_or_else(|| "-".to_string()),
+        part_of_speech: value_string(&value, "part_of_speech").unwrap_or_else(|| "-".to_string()),
+        meaning_cn: value_string(&value, "meaning_cn").unwrap_or_default(),
+        example: value_string(&value, "example").unwrap_or_default(),
+        example_cn: value_string(&value, "example_cn").unwrap_or_default(),
+        source: value_string(&value, "source")
+            .unwrap_or_else(|| "english_vocab_service_cache".to_string()),
+        model: value_string(&value, "model")
+            .unwrap_or_else(|| "english_vocab_service_cache".to_string()),
+        refresh_hint: value_string(&value, "refresh_hint"),
+    };
+    if lookup_result_needs_large_model_fallback(&result) {
+        english_vocab_trace(
+            "service_cache_only_incomplete",
+            json!({
+                "word": input.word.trim(),
+                "source": result.source.as_str(),
+                "model": result.model.as_str(),
+                "elapsed_ms": started.elapsed().as_millis(),
+            }),
+        );
+        return Err("English vocab service cache returned incomplete result".to_string());
+    }
+    english_vocab_trace(
+        "service_cache_only_success",
         json!({
             "word": input.word.trim(),
             "source": result.source.as_str(),
@@ -1046,6 +1543,7 @@ fn lookup_with_local_example_model(
         example_cn,
         source: value_string(&parsed, "source").unwrap_or_else(|| "local_gguf".to_string()),
         model: value_string(&parsed, "model_id").unwrap_or_else(|| "local_gguf".to_string()),
+        refresh_hint: None,
     })
 }
 
@@ -1347,12 +1845,40 @@ fn lookup_result_needs_large_model_fallback(result: &EnglishVocabLookupResult) -
     if lookup_result_is_incomplete(result) {
         return true;
     }
+    if result.refresh_hint.as_deref() == Some("background_ai_refresh") {
+        return true;
+    }
     let source = result.source.trim();
     let meaning = result.meaning_cn.trim();
     if source.starts_with("local_translate") {
         return !contains_cjk(meaning) || meaning.chars().count() <= 1;
     }
     false
+}
+
+fn lookup_result_is_final_grade(result: &EnglishVocabLookupResult) -> bool {
+    if lookup_result_needs_large_model_fallback(result) {
+        return false;
+    }
+    let source = result.source.trim().to_ascii_lowercase();
+    let model = result.model.trim().to_ascii_lowercase();
+    if result.refresh_hint.as_deref() == Some("background_ai_refresh") {
+        return false;
+    }
+    if source.contains("local_fast")
+        || source.contains("local_ecdict")
+        || source.contains("english_example_pack")
+        || model == "local"
+        || model.contains("local_fast")
+        || model.contains("english_example_pack")
+    {
+        return false;
+    }
+    source.contains("dashscope")
+        || source.contains("model_reviewed")
+        || source.contains("llm_reviewed")
+        || model.contains("qwen-turbo")
+        || model.contains("dashscope")
 }
 
 fn contains_cjk(text: &str) -> bool {
@@ -1413,11 +1939,8 @@ fn remember_lookup_in_vocab_service(book_id: &str, word: &str, result: &EnglishV
         "source": result.source.as_str(),
         "model": result.model.as_str(),
     });
-    let _ = english_vocab_service_post_if_running(
-        "/cache-card",
-        &payload,
-        Duration::from_millis(900),
-    );
+    let _ =
+        english_vocab_service_post_if_running("/cache-card", &payload, Duration::from_millis(900));
 }
 
 fn upsert_cache_entry(
@@ -1524,8 +2047,36 @@ fn english_vocab_lookup_log_path() -> PathBuf {
     english_vocab_log_dir().join("english_vocab_lookup.log")
 }
 
+fn english_example_chain_log_path() -> PathBuf {
+    english_vocab_log_dir().join("english_example_chain.jsonl")
+}
+
+fn sanitize_trace_stage(stage: &str) -> String {
+    let cleaned: String = stage
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
 fn english_vocab_service_log_path() -> PathBuf {
     english_vocab_log_dir().join("english_vocab_service.log")
+}
+
+fn english_vocab_log_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn service_stdio_log(kind: &str) -> Result<fs::File, String> {
@@ -1542,6 +2093,7 @@ fn service_stdio_log(kind: &str) -> Result<fs::File, String> {
 }
 
 fn english_vocab_trace(event: &str, detail: Value) {
+    let _guard = english_vocab_log_lock().lock().ok();
     let path = english_vocab_lookup_log_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -1553,6 +2105,27 @@ fn english_vocab_trace(event: &str, detail: Value) {
     let row = json!({
         "ts_ms": ts_ms,
         "event": event,
+        "detail": detail,
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}", row);
+    }
+}
+
+fn english_example_chain_trace(stage: &str, detail: Value) {
+    let _guard = english_vocab_log_lock().lock().ok();
+    let path = english_example_chain_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let row = json!({
+        "ts_ms": ts_ms,
+        "layer": "tauri_command",
+        "stage": stage,
         "detail": detail,
     });
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {

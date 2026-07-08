@@ -20,8 +20,6 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from config import load_config
-from services.stt_service import SttService
-from services.tts_service import TtsCancelledError, TtsService
 from services.sv_service import SvService
 
 
@@ -47,8 +45,63 @@ cfg = load_config()
 logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
 logger = logging.getLogger("jachin.voice_server")
 
-stt_service = SttService(cfg.stt_dir)
-tts_service = TtsService(cfg.tts_dir, default_voice=cfg.tts_voice, default_speed=cfg.tts_speed)
+
+def _make_stt_service():
+    if cfg.stt_backend == "cloud":
+        from services.cloud_stt_service import CloudSttService
+
+        logger.info(
+            "JVS STT backend=cloud model=%s realtime=%s hotword=%s file=%s base=%s",
+            cfg.stt_model,
+            cfg.stt_realtime_model,
+            cfg.stt_hotword_model,
+            cfg.stt_file_model,
+            cfg.dashscope_api_base,
+        )
+        return CloudSttService(
+            api_key=cfg.dashscope_api_key,
+            api_base=cfg.dashscope_api_base,
+            model=cfg.stt_model,
+            realtime_model=cfg.stt_realtime_model,
+            hotword_model=cfg.stt_hotword_model,
+            file_model=cfg.stt_file_model,
+            language=cfg.stt_language,
+        )
+    from services.stt_service import SttService
+
+    logger.info("JVS STT backend=local model_dir=%s", cfg.stt_dir)
+    return SttService(cfg.stt_dir)
+
+
+def _make_tts_service():
+    if cfg.tts_backend == "cloud":
+        from services.cloud_tts_service import CloudTtsService
+
+        logger.info(
+            "JVS TTS backend=cloud model=%s fast=%s voice=%s base=%s",
+            cfg.tts_model,
+            cfg.tts_fast_model,
+            cfg.tts_cloud_voice,
+            cfg.dashscope_http_api_base,
+        )
+        return CloudTtsService(
+            api_key=cfg.dashscope_api_key,
+            http_api_base=cfg.dashscope_http_api_base,
+            model=cfg.tts_model,
+            fast_model=cfg.tts_fast_model,
+            default_voice=cfg.tts_cloud_voice,
+            default_speed=cfg.tts_speed,
+            audio_format=cfg.tts_format,
+            sample_rate=cfg.tts_sample_rate,
+        )
+    from services.tts_service import TtsService
+
+    logger.info("JVS TTS backend=local model_dir=%s", cfg.tts_dir)
+    return TtsService(cfg.tts_dir, default_voice=cfg.tts_voice, default_speed=cfg.tts_speed)
+
+
+stt_service = _make_stt_service()
+tts_service = _make_tts_service()
 sv_service = SvService(cfg.sv_dir)
 
 # Raw TCP STT IPC frame types (lower framing overhead vs HTTP/WebSocket).
@@ -69,23 +122,26 @@ _stt_tcp_thread: threading.Thread | None = None
 
 def _warmup_stt_engine() -> None:
     if stt_service.ready:
-        logger.info("Preloading %s STT engine...", stt_service.model_name)
+        logger.info("Preloading %s STT engine...", getattr(stt_service, "model_name", "unknown"))
         stt_service._load_engine()
+    else:
+        logger.warning("STT backend not ready: %s", getattr(stt_service, "model_path", "unknown"))
 
 
 def _warmup_tts_engine() -> None:
     if tts_service.ready:
-        logger.info("Preloading Kokoro ONNX TTS engine…")
-        if tts_service._load_engine():
-            # Run one tiny synthesis so the first user-facing sentence does not pay
-            # the ONNX/G2P cold path. The bytes are intentionally discarded.
+        logger.info("Preloading %s TTS engine...", getattr(tts_service, "model_name", "unknown"))
+        if tts_service._load_engine() and cfg.tts_backend != "cloud":
+            # Local fallback only: avoid spending cloud TTS quota during warmup.
             result = tts_service.synthesize("你好。", voice=cfg.tts_voice)
             logger.info(
-                "Kokoro ONNX TTS warmed (voice=%s, sample_rate=%s, duration_ms=%s)",
+                "Local TTS warmed (voice=%s, sample_rate=%s, duration_ms=%s)",
                 cfg.tts_voice,
                 result.sample_rate,
                 result.duration_ms,
             )
+    else:
+        logger.warning("TTS backend not ready: %s", getattr(tts_service, "model_path", "unknown"))
 
 
 def _warmup_sv_engine() -> None:
@@ -126,19 +182,26 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     available_voices = tts_service.list_voices()
+    current_tts_voice = cfg.tts_cloud_voice if cfg.tts_backend == "cloud" else cfg.tts_voice
     return {
         "ok": True,
         "stt_ready": stt_service.ready,
         "tts_ready": tts_service.ready,
         "sv_ready": sv_service.ready,
         "stt_model": stt_service.model_name,
-        "tts_model": "Kokoro-82M-v1.1-zh-ONNX",
+        "tts_model": getattr(tts_service, "model_name", "unknown"),
+        "stt_backend": cfg.stt_backend,
+        "tts_backend": cfg.tts_backend,
+        "stt_realtime_model": cfg.stt_realtime_model,
+        "stt_hotword_model": cfg.stt_hotword_model,
+        "stt_file_model": cfg.stt_file_model,
+        "tts_fast_model": cfg.tts_fast_model,
         "sv_model": sv_service.backend,
         "sv_load_error": sv_service.load_error,
-        "tts_voice": cfg.tts_voice,
+        "tts_voice": current_tts_voice,
         "tts_speed": cfg.tts_speed,
         "tts_cue_style_index": getattr(tts_service, "_cue_style_index", None),
-        "tts_voice_exists": tts_service.has_voice(cfg.tts_voice),
+        "tts_voice_exists": tts_service.has_voice(current_tts_voice),
         "tts_voice_count": len(available_voices),
         "model_root": str(cfg.model_root),
         "stt_tcp_port": cfg.stt_tcp_port,
@@ -361,12 +424,12 @@ async def stt_transcribe(audio: UploadFile = File(...), session_id: Optional[str
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio payload")
-    result = stt_service.transcribe(raw)
     if not stt_service.ready:
         raise HTTPException(
             status_code=503,
-            detail=f"STT model not ready: {stt_service.model_path}",
+            detail=f"STT backend not ready: {stt_service.model_path}",
         )
+    result = stt_service.transcribe(raw)
     return {**_stt_result_payload(result), "session_id": session_id}
 
 
@@ -378,7 +441,7 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
             {
                 "type": "error",
                 "session_id": session_id,
-                "message": f"STT model not ready: {stt_service.model_path}",
+                "message": f"STT backend not ready: {stt_service.model_path}",
             }
         )
         await websocket.close(code=1011)
@@ -486,15 +549,17 @@ async def stt_stream(websocket: WebSocket, session_id: Optional[str] = None):
 def tts_synthesize(req: TtsRequest) -> Response:
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
-    try:
-        result = tts_service.synthesize(req.text, voice=req.voice, session_id=req.session_id, speed=req.speed, kind=req.kind)
-    except TtsCancelledError:
-        raise HTTPException(status_code=409, detail="tts cancelled")
     if not tts_service.ready:
         raise HTTPException(
             status_code=503,
-            detail=f"TTS model not ready: {tts_service.model_path}",
+            detail=f"TTS backend not ready: {tts_service.model_path}",
         )
+    try:
+        result = tts_service.synthesize(req.text, voice=req.voice, session_id=req.session_id, speed=req.speed, kind=req.kind)
+    except Exception as e:
+        if e.__class__.__name__ == "TtsCancelledError":
+            raise HTTPException(status_code=409, detail="tts cancelled")
+        raise HTTPException(status_code=502, detail=f"tts synthesize failed: {e}")
     return Response(
         content=result.wav_bytes,
         media_type="audio/wav",

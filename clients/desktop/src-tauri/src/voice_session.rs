@@ -19,10 +19,7 @@ pub fn set_companion_phase(phase: &str) {
     COMPANION_PHASE.store(v, Ordering::Relaxed);
 }
 
-pub fn companion_phase() -> u8 {
-    COMPANION_PHASE.load(Ordering::Relaxed)
-}
-
+#[allow(dead_code)]
 pub fn companion_phase_is_thinking_or_speaking() -> bool {
     matches!(
         COMPANION_PHASE.load(Ordering::Relaxed),
@@ -30,6 +27,7 @@ pub fn companion_phase_is_thinking_or_speaking() -> bool {
     )
 }
 
+#[allow(dead_code)]
 pub fn should_monitor_barge_in(session_active: bool) -> bool {
     session_active
         && (crate::voice_playback::is_playing() || companion_phase_is_thinking_or_speaking())

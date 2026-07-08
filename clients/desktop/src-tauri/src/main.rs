@@ -144,22 +144,16 @@ fn tts_self_check() -> Result<serde_json::Value, String> {
 /// TTS 模型是否已存在
 #[tauri::command]
 fn tts_has_model() -> Result<bool, String> {
-    let mgr = tts::SpeechEngine::model_manager(Some("http://127.0.0.1:18982"), None);
-    Ok(mgr.has_model())
+    Ok(true)
 }
 
 /// TTS 语音合成（Local/Edge/Cloud 按 Fallback 顺序）
 /// 返回 WAV 音频的 base64 字符串，供前端解码播放
 #[tauri::command]
 async fn tts_speak(text: String) -> Result<String, String> {
-    let mgr = tts::SpeechEngine::model_manager(Some("http://127.0.0.1:18982"), None);
-    if !mgr.has_model() {
-        return Err("未找到 Kokoro ONNX 模型目录，请先放置到 data/models/voice/tts".to_string());
-    }
-    let model_dir = mgr.data_dir().clone();
     let engine = tts::SpeechEngine::new(
         "http://127.0.0.1:18982",
-        Some(model_dir),
+        None,
         None::<tts::AliyunTtsConfig>,
     );
     let wav_bytes = engine.speak(&text).await?;
@@ -172,8 +166,6 @@ async fn tts_speak(text: String) -> Result<String, String> {
 /// TTS 检查 Kokoro 就绪状态（通过 tts-download-progress 事件回传检查进度）
 #[tauri::command]
 async fn tts_ensure_model(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let mgr = tts::SpeechEngine::model_manager(Some("http://127.0.0.1:18982"), None);
-
     let app_handle = app.clone();
     let on_progress: Option<tts::ProgressCallback> = Some(Box::new(move |downloaded, total| {
         let _ = app_handle.emit(
@@ -184,12 +176,13 @@ async fn tts_ensure_model(app: tauri::AppHandle) -> Result<serde_json::Value, St
             }),
         );
     }));
-
-    let (tts_model_dir, voices_dir) = mgr.ensure_model(on_progress).await?;
+    if let Some(cb) = on_progress {
+        cb(1, 1);
+    }
     Ok(serde_json::json!({
-        "tts_model_dir": tts_model_dir.to_string_lossy(),
-        "voices_dir": voices_dir.to_string_lossy(),
-        "status": "KOKORO_READY",
+        "status": "CLOUD_TTS_READY",
+        "provider": "dashscope",
+        "model": "cosyvoice-v3.5-plus",
     }))
 }
 
@@ -691,6 +684,7 @@ fn set_chat_min_size_guarded(
         .map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 fn clamp_chat_window_to_current_monitor(chat: &tauri::WebviewWindow) -> Result<(), String> {
     let p = chat.outer_position().map_err(|e| e.to_string())?;
     let sz = chat.outer_size().map_err(|e| e.to_string())?;
@@ -830,7 +824,7 @@ fn companion_apply_valid_dock_or_default(app: &tauri::AppHandle) -> Result<(), S
     companion_clamp_to_work_area(&chat)
 }
 
-fn companion_ensure_dock(app: &tauri::AppHandle) -> Result<(i32, i32), String> {
+fn companion_ensure_dock(_app: &tauri::AppHandle) -> Result<(i32, i32), String> {
     COMPANION_DOCK_POSITION
         .lock()
         .ok()
@@ -1046,6 +1040,7 @@ fn restore_chat_full_omni(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 陪伴模式下再按 Esc：彻底 hide，并恢复最小尺寸约束供下次打开
+#[allow(dead_code)]
 fn hide_chat_fully_reset(app: &tauri::AppHandle) -> Result<(), String> {
     let Some(chat) = app.get_webview_window("chat") else {
         return Err("chat window missing".into());
@@ -1488,6 +1483,7 @@ fn main() {
             commands::capability_install::capability_install_set_enabled,
             commands::capability_install::capability_install_uninstall,
             commands::english_vocab::english_vocab_lookup,
+            commands::english_vocab::english_vocab_frontend_trace,
             commands::english_vocab::english_vocab_warmup,
             commands::english_vocab::english_vocab_prefetch_sentence,
             commands::english_vocab::english_vocab_state_get,
@@ -2029,6 +2025,8 @@ fn stt_stop_wake_listener(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(state) = app.try_state::<stt::WakeListenerState>() {
         state.stop();
     }
+    #[cfg(not(feature = "ambient"))]
+    let _ = &app;
     stt::WakeWordDetector::stop();
     Ok(())
 }
@@ -2040,6 +2038,8 @@ fn stt_wake_listener_running(app: tauri::AppHandle) -> Result<bool, String> {
     if let Some(state) = app.try_state::<stt::WakeListenerState>() {
         return Ok(state.is_running());
     }
+    #[cfg(not(feature = "ambient"))]
+    let _ = &app;
     Ok(stt::WakeWordDetector::is_running())
 }
 
@@ -2350,6 +2350,7 @@ async fn warmup_english_vocab_first_card() -> Result<(), String> {
             word: word.to_string(),
             book_id: Some("daily_life_ngsl".to_string()),
             context_sentence: None,
+            require_final_example: Some(true),
         };
         let result = commands::english_vocab::english_vocab_lookup(input).await?;
         if result.example.trim().is_empty()

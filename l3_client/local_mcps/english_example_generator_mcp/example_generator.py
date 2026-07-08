@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import site
+import sysconfig
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -10,8 +12,8 @@ from typing import Any
 
 MODEL_ID = "com.jachin.model.qwen2-5-0-5b-instruct-gguf-q4-k-m"
 MODEL_FILE = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
-TEMPLATE_ENGINE_ID = "local_scene_templates_v6"
-FAST_TEMPLATE_ENGINE_ID = "local_fast_examples_v5"
+TEMPLATE_ENGINE_ID = "local_scene_templates_v8"
+FAST_TEMPLATE_ENGINE_ID = "local_fast_examples_v7"
 MAX_HISTORY_ITEMS = 200
 MIN_WORDS = 5
 MAX_WORDS = 18
@@ -19,6 +21,8 @@ _WORD_RE = re.compile(r"[a-z]+(?:'[a-z]+)?")
 QUALITY_PASS_SCORE = 0.9
 QUALITY_REGEN_SCORE = 0.82
 MAX_LLM_ROUNDS = 2
+MODEL_FIRST_DEFAULT = "1"
+_CUDA_DLL_DIRS_ADDED = False
 
 
 def _home() -> Path:
@@ -26,6 +30,46 @@ def _home() -> Path:
     if raw:
         return Path(raw)
     return Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or ".") / ".jachin"
+
+
+def _add_cuda_dll_dirs() -> list[str]:
+    """Make pip-installed NVIDIA CUDA DLLs visible to llama-cpp on Windows."""
+    global _CUDA_DLL_DIRS_ADDED
+    added: list[str] = []
+    if os.name != "nt":
+        return added
+    candidates: list[Path] = []
+    for root in dict.fromkeys(
+        [
+            sysconfig.get_paths().get("purelib", ""),
+            sysconfig.get_paths().get("platlib", ""),
+            *site.getsitepackages(),
+        ]
+    ):
+        if not root:
+            continue
+        base = Path(root) / "nvidia"
+        candidates.extend(
+            [
+                base / "cuda_runtime" / "bin",
+                base / "cublas" / "bin",
+                base / "cuda_nvrtc" / "bin",
+            ]
+        )
+    for path in candidates:
+        if not path.is_dir():
+            continue
+        text = str(path)
+        if text not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = text + os.pathsep + os.environ.get("PATH", "")
+        if not _CUDA_DLL_DIRS_ADDED and hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(text)
+            except Exception:
+                pass
+        added.append(text)
+    _CUDA_DLL_DIRS_ADDED = True
+    return added
 
 
 def _model_path() -> Path:
@@ -181,6 +225,7 @@ def _naturalness_score(example: str, word: str) -> float:
         return 0.0
     score = 1.0
     weak_fragments = [
+        "the morning we",
         "in my daily life",
         "to remember",
         "in a short dialogue",
@@ -319,6 +364,8 @@ def _remember_example(example: str, word: str, template_id: str | None = None) -
 def _guess_pos(word: str, meaning_cn: str = "") -> str:
     clean = clean_word_token(word)
     hint = (meaning_cn or "").strip().lower()
+    if clean in SEMANTIC_WORDS.get("action", set()):
+        return "verb"
     if "v." in hint or "verb" in hint or "动词" in hint:
         return "verb"
     if "adj." in hint or "adjective" in hint or "形容词" in hint:
@@ -335,10 +382,10 @@ def _guess_pos(word: str, meaning_cn: str = "") -> str:
 def _template_pool(book_id: str | None, pos: str) -> list[dict[str, str]]:
     daily = {
         "noun": [
-            {"id": "daily_n_1", "text": "She noticed the {word} while walking home."},
-            {"id": "daily_n_2", "text": "She enjoyed the {word} after dinner."},
-            {"id": "daily_n_3", "text": "They saw the {word} near the station."},
-            {"id": "daily_n_4", "text": "We talked about the {word} on the way home."},
+            {"id": "daily_n_1", "text": "The {word} was easy to notice in the room."},
+            {"id": "daily_n_2", "text": "The {word} became important later that day."},
+            {"id": "daily_n_3", "text": "She asked a clear question about the {word}."},
+            {"id": "daily_n_4", "text": "She explained the {word} with a simple example."},
         ],
         "verb": [
             {"id": "daily_v_1", "text": "We should {word} the plan before tomorrow."},
@@ -496,6 +543,24 @@ def _meaning_head(meaning_cn: str, word: str) -> str:
 
 SEMANTIC_WORDS: dict[str, set[str]] = {
     "transport": {"airport", "bus", "car", "flight", "plane", "station", "subway", "taxi", "train"},
+    "action": {
+        "call",
+        "clean",
+        "cook",
+        "drive",
+        "learn",
+        "listen",
+        "read",
+        "run",
+        "shop",
+        "study",
+        "talk",
+        "travel",
+        "wait",
+        "walk",
+        "work",
+        "write",
+    },
     "place": {
         "bank",
         "beach",
@@ -642,6 +707,12 @@ def _semantic_example_pair(word: str, book_id: str | None, meaning_cn: str) -> t
     category = _semantic_category(clean, meaning, book_id)
 
     specific_scenes: dict[str, list[tuple[str, str, str]]] = {
+        "walk": [
+            ("I walk to the office when the weather is good.", "天气好的时候，我走路去办公室。", "scene_walk_office"),
+            ("After dinner, we walk slowly through the park.", "晚饭后，我们在公园里慢慢散步。", "scene_walk_park"),
+            ("She decided to walk home instead of taking a taxi.", "她决定走路回家，而不是打车。", "scene_walk_taxi"),
+            ("The doctor told him to walk more every day.", "医生告诉他每天多走路。", "scene_walk_doctor"),
+        ],
         "airport": [
             ("We arrived at the airport before sunrise.", "我们在日出前到达了机场。", "scene_airport_arrival"),
             ("The airport security line moved faster than expected.", "机场安检队伍比预想中前进得更快。", "scene_airport_security"),
@@ -675,6 +746,13 @@ def _semantic_example_pair(word: str, book_id: str | None, meaning_cn: str) -> t
         return _pick_semantic_scene(specific_scenes[clean], clean, book_id, category)
 
     category_scenes: dict[str, list[tuple[str, str, str]]] = {
+        "action": [
+            (f"I usually {clean} for ten minutes after dinner.", f"我通常晚饭后{meaning}十分钟。", "semantic_action_after_dinner"),
+            (f"She likes to {clean} when the weather is calm.", f"天气平静的时候，她喜欢{meaning}。", "semantic_action_weather"),
+            (f"We decided to {clean} before the day became too busy.", f"我们决定在今天变得太忙之前先{meaning}。", "semantic_action_before_busy"),
+            (f"He stopped for a moment, then continued to {clean}.", f"他停了一会儿，然后继续{meaning}。", "semantic_action_continue"),
+            (f"On quiet weekends, they often {clean} together.", f"安静的周末，他们经常一起{meaning}。", "semantic_action_weekend"),
+        ],
         "transport": [
             (f"The {clean} arrived earlier than the timetable showed.", f"{meaning}比时刻表上显示的时间更早到了。", "semantic_transport_timetable"),
             (f"She checked the {clean} schedule before leaving home.", f"她出门前查了{meaning}的时刻表。", "semantic_transport_schedule"),
@@ -762,16 +840,22 @@ def _is_semantically_bad_example(example: str, word: str, meaning_cn: str = "") 
         text,
     ):
         return True
+    if category in {"action", "abstract"} and (
+        re.search(rf"\b(saw|noticed|enjoyed)\b\s+the\s+{escaped}\b", text)
+        or re.search(rf"\btalked about\s+the\s+{escaped}\b", text)
+        or re.search(rf"\bthe\s+{escaped}\b\s+on my way home\b", text)
+    ):
+        return True
     return False
 
 
 def _template_translation(template_id: str, word: str, meaning_cn: str) -> str:
     meaning = _meaning_head(meaning_cn, word)
     templates = {
-        "daily_n_1": f"她走路回家时注意到了{meaning}。",
-        "daily_n_2": f"她晚饭后欣赏了{meaning}。",
+        "daily_n_1": f"在房间里，{meaning}很容易被注意到。",
+        "daily_n_2": f"{meaning}在那天晚些时候变得很重要。",
         "daily_n_3": f"他们在车站附近看到了{meaning}。",
-        "daily_n_4": f"我们在回家的路上聊到了{meaning}。",
+        "daily_n_4": f"她用一个简单的例子解释了{meaning}。",
         "daily_v_1": f"我们应该在明天之前处理好{meaning}这件事。",
         "daily_v_2": f"我离开前不得不很快完成{meaning}这个动作。",
         "daily_v_3": f"人们希望随着时间改善当前状况。",
@@ -957,14 +1041,20 @@ def _is_bad_example(example: str, word: str, history: dict[str, Any]) -> bool:
 
 def english_example_model_status() -> dict[str, Any]:
     model_path = _model_path()
+    cuda_dll_dirs = _add_cuda_dll_dirs()
     try:
         import llama_cpp  # noqa: F401
+        from llama_cpp import llama_cpp as llama_low
 
         runtime_ready = True
         runtime_error = None
+        gpu_offload_supported = bool(
+            getattr(llama_low, "llama_supports_gpu_offload", lambda: False)()
+        )
     except Exception as exc:
         runtime_ready = False
         runtime_error = str(exc)
+        gpu_offload_supported = False
     return {
         "ok": True,
         "model_id": MODEL_ID,
@@ -972,7 +1062,12 @@ def english_example_model_status() -> dict[str, Any]:
         "model_installed": model_path.is_file(),
         "runtime_ready": runtime_ready,
         "runtime_error": runtime_error,
-        "n_gpu_layers": _env_int("JACHIN_EXAMPLE_LLM_GPU_LAYERS", 0),
+        "gpu_offload_supported": gpu_offload_supported,
+        "cuda_dll_dirs": cuda_dll_dirs,
+        "n_gpu_layers": _env_int(
+            "JACHIN_EXAMPLE_LLM_GPU_LAYERS",
+            -1 if gpu_offload_supported else 0,
+        ),
         "fallback_available": True,
     }
 
@@ -989,18 +1084,82 @@ def _env_int(name: str, default: int) -> int:
 
 @lru_cache(maxsize=1)
 def _llm():
+    _add_cuda_dll_dirs()
     from llama_cpp import Llama
+    from llama_cpp import llama_cpp as llama_low
 
     model_path = _model_path()
     if not model_path.is_file():
         raise RuntimeError(f"Local example model is not installed: {model_path}")
+    gpu_offload_supported = bool(
+        getattr(llama_low, "llama_supports_gpu_offload", lambda: False)()
+    )
     return Llama(
         model_path=str(model_path),
         n_ctx=_env_int("JACHIN_EXAMPLE_LLM_CTX", 768),
         n_threads=_env_int("JACHIN_EXAMPLE_LLM_THREADS", max(2, min(8, os.cpu_count() or 4))),
-        n_gpu_layers=_env_int("JACHIN_EXAMPLE_LLM_GPU_LAYERS", 0),
+        n_gpu_layers=_env_int(
+            "JACHIN_EXAMPLE_LLM_GPU_LAYERS",
+            -1 if gpu_offload_supported else 0,
+        ),
         verbose=False,
     )
+
+
+def _template_draft(clean_word: str, book_id: str | None, meaning_cn: str) -> tuple[str, str, str]:
+    specific = _specific_example_pair(clean_word, book_id, meaning_cn)
+    if specific:
+        return specific
+    example, template_id = _scene_fallback_example(clean_word, book_id, meaning_cn)
+    example_cn = _template_translation(template_id, clean_word, meaning_cn)
+    return example, example_cn, template_id
+
+
+def _llm_review_or_rewrite_template(
+    draft: str,
+    clean_word: str,
+    book_id: str | None,
+    meaning_cn: str,
+    history: dict[str, Any],
+) -> tuple[str, dict[str, float]] | None:
+    if not draft:
+        return None
+    prompt = (
+        "<|im_start|>system\n"
+        "You are an English vocabulary example reviewer. Return strict JSON only.\n"
+        "<|im_end|>\n"
+        "<|im_start|>user\n"
+        f"Target word: {clean_word}\n"
+        f"Chinese meaning hint: {meaning_cn}\n"
+        f"Scene: {_scene(book_id)}\n"
+        f"Draft sentence: {draft}\n"
+        "Task: If the draft is natural and semantically correct, keep it. "
+        "If it is awkward, illogical, template-like, or uses the word incorrectly, rewrite it.\n"
+        "Rules: one natural English sentence, 6-18 words, include the exact target word, no meta wording.\n"
+        "Return JSON: {\"ok\":true,\"example\":\"...\",\"reason\":\"...\"}\n"
+        "<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    try:
+        result = _llm()(
+            prompt,
+            max_tokens=110,
+            temperature=0.28,
+            top_p=0.88,
+            repeat_penalty=1.1,
+            stop=["<|im_end|>", "\n\n"],
+        )
+        raw = result["choices"][0]["text"]
+        parsed = _extract_json(raw)
+        candidate = _clean_sentence(str(parsed.get("example") or draft), clean_word)
+    except Exception:
+        return None
+    if _is_bad_example(candidate, clean_word, history):
+        return None
+    quality = _example_quality_score(candidate, clean_word, meaning_cn, book_id)
+    if quality["total"] < QUALITY_REGEN_SCORE:
+        return None
+    return candidate, quality
 
 
 def english_generate_example_card(word: str, book_id: str = "daily_life_ngsl", meaning_cn: str = "") -> dict[str, Any]:
@@ -1009,6 +1168,8 @@ def english_generate_example_card(word: str, book_id: str = "daily_life_ngsl", m
         return {"ok": False, "error": "word is empty"}
     key = _cache_key(clean_word, book_id)
     cache = _read_cache()
+    status = english_example_model_status()
+    model_ready = bool(status.get("model_installed") and status.get("runtime_ready"))
     cached = cache.get(key)
     if isinstance(cached, dict) and cached.get("example"):
         cached_model = str(cached.get("model_id") or "")
@@ -1019,11 +1180,13 @@ def english_generate_example_card(word: str, book_id: str = "daily_life_ngsl", m
             cached_model.startswith("local_scene_templates_")
             or cached_model == TEMPLATE_ENGINE_ID
             or cached_source.startswith("local_scene")
+            or cached_model.startswith("local_fast_examples_")
+            or cached_source.startswith("local_fast")
         )
-        if cached_is_template:
+        if cached_is_template and model_ready:
             # Template fallback entries are not product-grade examples. Drop them
-            # even when the GGUF model is not ready so the UI keeps waiting
-            # instead of showing repeated placeholder sentences.
+            # once the GGUF reviewer/generator is available, so stale repeated
+            # placeholder sentences do not survive in cache.
             cache.pop(key, None)
             _write_cache(cache)
             cached = None
@@ -1068,18 +1231,20 @@ def english_generate_example_card(word: str, book_id: str = "daily_life_ngsl", m
             }
 
     history = _read_history()
-    if str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_FAST_FIRST") or "1").strip().lower() not in {
+    model_first = str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_MODEL_FIRST") or MODEL_FIRST_DEFAULT).strip().lower() not in {
         "0",
         "false",
         "off",
         "no",
-    }:
-        specific = _specific_example_pair(clean_word, book_id, meaning_cn)
-        if specific:
-            example, example_cn, template_id = specific
-        else:
-            example, template_id = _scene_fallback_example(clean_word, book_id, meaning_cn)
-            example_cn = _template_translation(template_id, clean_word, meaning_cn)
+    }
+    fast_first = str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_FAST_FIRST") or "0").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+    if fast_first and not model_first:
+        example, example_cn, template_id = _template_draft(clean_word, book_id, meaning_cn)
         quality = _example_quality_score(example, clean_word, meaning_cn, book_id)
         cache[key] = {
             "example": example,
@@ -1109,8 +1274,7 @@ def english_generate_example_card(word: str, book_id: str = "daily_life_ngsl", m
     model_id = MODEL_ID
     template_id = ""
     quality = {"grammar": 0.0, "naturalness": 0.0, "semantic": 0.0, "total": 0.0}
-    status = english_example_model_status()
-    if status.get("model_installed") and status.get("runtime_ready"):
+    if model_ready:
         avoid_starts = []
         for sentence in (history.get("recent_examples") or [])[-24:]:
             tokens = _WORD_RE.findall(str(sentence).lower())
@@ -1180,6 +1344,47 @@ def english_generate_example_card(word: str, book_id: str = "daily_life_ngsl", m
         if not example and best_llm_candidate and best_llm_score["total"] >= QUALITY_REGEN_SCORE:
             example = best_llm_candidate
             quality = best_llm_score
+    if not example:
+        draft, draft_cn, draft_template_id = _template_draft(clean_word, book_id, meaning_cn)
+        reviewed = _llm_review_or_rewrite_template(draft, clean_word, book_id, meaning_cn, history) if model_ready else None
+        if reviewed:
+            example, quality = reviewed
+            source = "local_gguf_reviewed_template"
+            model_id = MODEL_ID
+            template_id = draft_template_id
+        elif not model_ready and str(os.environ.get("JACHIN_ENGLISH_EXAMPLE_ALLOW_TEMPLATE_FALLBACK") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }:
+            example = draft
+            quality = _example_quality_score(example, clean_word, meaning_cn, book_id)
+            source = "local_template_fallback_model_unavailable"
+            model_id = FAST_TEMPLATE_ENGINE_ID
+            template_id = draft_template_id
+            cache[key] = {
+                "example": example,
+                "example_cn": draft_cn,
+                "model_id": model_id,
+                "source": source,
+                "template_id": template_id,
+                "quality": quality,
+            }
+            _write_cache(cache)
+            _remember_example(example, clean_word, template_id=template_id or None)
+            return {
+                "ok": True,
+                "word": clean_word,
+                "book_id": book_id,
+                "example": example,
+                "example_cn": draft_cn,
+                "model_id": model_id,
+                "source": source,
+                "template_id": template_id,
+                "runtime_ready": status.get("runtime_ready"),
+                "quality": quality,
+            }
     if not example:
         return {
             "ok": False,

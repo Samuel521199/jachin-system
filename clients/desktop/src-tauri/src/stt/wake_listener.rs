@@ -2,7 +2,7 @@
 
 #![cfg(feature = "ambient")]
 
-use super::wake_pipeline::{start_wake_pipeline, WakePipelineConfig, WakePipelineGuard};
+use super::wake_pipeline::{start_wake_pipeline, WakePipelineConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -34,8 +34,6 @@ impl WakeListenerState {
         let manual_wake_tx_holder = Arc::clone(&manual_wake_tx);
 
         thread::spawn(move || {
-            let mut guard: Option<WakePipelineGuard> = None;
-
             loop {
                 // 等待 start 或 stop
                 let req = match start_rx.recv() {
@@ -43,7 +41,6 @@ impl WakeListenerState {
                     Err(_) => break,
                 };
 
-                guard = None;
                 if let Ok(mut g) = manual_wake_tx_holder.lock() {
                     *g = None;
                 }
@@ -62,9 +59,8 @@ impl WakeListenerState {
                 let cfg = WakePipelineConfig {
                     wake_word: req.wake_word,
                 };
-                match start_wake_pipeline(req.app.clone(), cfg, manual_rx) {
+                let guard = match start_wake_pipeline(req.app.clone(), cfg, manual_rx) {
                     Ok(g) => {
-                        guard = Some(g);
                         crate::l3_spawn::write_voice_companion_debug(
                             "rust",
                             "wake.listener_started",
@@ -72,6 +68,7 @@ impl WakeListenerState {
                             "",
                         );
                         running_holder.store(true, Ordering::Relaxed);
+                        g
                     }
                     Err(e) => {
                         crate::l3_spawn::write_voice_companion_debug(
@@ -83,11 +80,11 @@ impl WakeListenerState {
                         eprintln!("[Wake] start failed: {}", e);
                         continue;
                     }
-                }
+                };
 
                 // 阻塞直到 stop
                 let _ = stop_recv.recv();
-                guard = None;
+                drop(guard);
                 if let Ok(mut g) = manual_wake_tx_holder.lock() {
                     *g = None;
                 }

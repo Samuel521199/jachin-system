@@ -135,6 +135,23 @@ _INFLECTIONS: dict[str, str] = {
 _ASSET_NAME = "english_vocab_10k.json"
 
 _EXTRA_ENTRIES: dict[str, WordEntry] = {
+    "commute": WordEntry("commute", "/kəˈmjuːt/", "v./n.", "通勤；上下班路程", "Her commute takes forty minutes by subway.", "她坐地铁通勤需要四十分钟。"),
+    "grocery": WordEntry("grocery", "/ˈɡroʊsəri/", "n./adj.", "食品杂货；杂货店的", "She wrote milk and bread on the grocery list.", "她把牛奶和面包写在购物清单上。"),
+    "receipt": WordEntry("receipt", "/rɪˈsiːt/", "n.", "收据；发票", "She kept the receipt in her wallet.", "她把收据放在钱包里。"),
+    "appointment": WordEntry("appointment", "/əˈpɔɪntmənt/", "n.", "预约；约定；任命", "She wrote the appointment in her calendar.", "她把预约写进日历里。"),
+    "comfortable": WordEntry("comfortable", "/ˈkʌmftəbl/", "adj.", "舒适的；自在的", "This chair is comfortable for reading.", "这把椅子读书时坐着很舒服。"),
+    "weather": WordEntry("weather", "/ˈweðər/", "n.", "天气；气象", "We checked the weather before leaving home.", "我们出门前查看了天气。"),
+    "medicine": WordEntry("medicine", "/ˈmedɪsɪn/", "n.", "药；药物；医学", "He takes the medicine after breakfast.", "他早餐后服药。"),
+    "exercise": WordEntry("exercise", "/ˈeksərsaɪz/", "n./v.", "运动；练习；锻炼", "Morning exercise gives her more energy.", "晨练让她更有精神。"),
+    "oil": WordEntry("oil", "/ɔɪl/", "n./v.", "油；石油；给...加油", "She used a little oil to cook the vegetables.", "她用了一点油来炒蔬菜。"),
+    "calm": WordEntry(
+        "calm",
+        "/kɑːm/",
+        "adj./v./n.",
+        "平静的；镇静的；使平静",
+        "The room became calm after the meeting ended.",
+        "会议结束后，房间变得安静下来。",
+    ),
     "use": WordEntry(
         "use",
         "/juːz/",
@@ -312,7 +329,7 @@ def _candidate_words(raw: str) -> list[str]:
 
 def lookup_word(raw: str) -> dict[str, Any] | None:
     normalized = normalize_word(raw)
-    entry = _ENTRIES.get(normalized) or _EXTRA_ENTRIES.get(normalized)
+    entry = _EXTRA_ENTRIES.get(normalized) or _ENTRIES.get(normalized)
     if not entry:
         return None
     payload = {
@@ -339,7 +356,7 @@ def lookup_word(raw: str) -> dict[str, Any] | None:
     asset_words, asset_definitions = _load_vocab_asset()
     candidates = _candidate_words(raw)
     for candidate in candidates:
-        entry = _ENTRIES.get(candidate) or _EXTRA_ENTRIES.get(candidate)
+        entry = _EXTRA_ENTRIES.get(candidate) or _ENTRIES.get(candidate)
         if entry:
             payload = {
                 "word": raw.strip().lower() or entry.word,
