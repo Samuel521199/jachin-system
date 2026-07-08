@@ -1,4 +1,4 @@
-﻿"""
+"""
 L3 本地 WebSocket 服务
 
 监听 127.0.0.1:18981（189xx 系列，与 L2 18888、Sensory 18881 互不冲突），
@@ -50,9 +50,42 @@ async def _ws_json_loads(raw: str | bytes) -> Any:
     return json.loads(s)
 
 
+def _ws_msg_is_local_voice(msg: dict) -> bool:
+    """本地桌面语音陪伴态：使用 session_id 记账，但不应被当成 Lark 镜像会话。"""
+    origin = str(msg.get("origin") or msg.get("source") or "").strip().lower()
+    sig = msg.get("implicit_signals")
+    sig = sig if isinstance(sig, dict) else {}
+    source = str(sig.get("source") or "").strip().lower()
+    return (
+        origin in {"desktop_voice_companion", "desktop_voice", "voice_latency_bench"}
+        or source in {"desktop_voice_companion", "desktop_voice", "voice_latency_bench"}
+        or bool(sig.get("desktop_companion"))
+        or bool(sig.get("local_voice_session"))
+    )
+
+
+def _looks_like_lark_chat_id(value: str) -> bool:
+    cid = (value or "").strip()
+    return cid.startswith(("oc_", "ou_", "on_", "om_"))
+
+
 def _ws_msg_session_key(msg: dict) -> str:
-    """桌面 Omni 多会话：`session_id` 与 `chat_id` 同义，分区键写入 l3_lark_sessions.json。"""
+    """桌面 Omni 多会话：本地语音优先 session_id；Lark 镜像优先 chat_id。"""
+    if _ws_msg_is_local_voice(msg):
+        return str(msg.get("session_id") or msg.get("chat_id") or "").strip()
     return str(msg.get("chat_id") or msg.get("session_id") or "").strip()
+
+
+def _ws_msg_lark_chat_id(msg: dict, session_key: str = "") -> str:
+    """只有明确的 Lark 会话才返回 chat_id；本地语音 session 永不触发镜像/push。"""
+    if _ws_msg_is_local_voice(msg):
+        return ""
+    raw = str(msg.get("chat_id") or "").strip()
+    if _looks_like_lark_chat_id(raw):
+        return raw
+    if _looks_like_lark_chat_id(session_key):
+        return session_key
+    return ""
 
 
 
@@ -149,6 +182,45 @@ _WS_VOICE_TEMPLATE_ALIASES: dict[str, tuple[str, ...]] = {
     "\u8bb2\u8bdd": ("\u6211\u5728\u3002", "\u542c\u7740\u5462\u3002"),
 }
 
+
+def _sanitize_ws_voice_fast_lane_intent(intent: str) -> str:
+    """修掉 STT 在中文句尾附带的单个英文字母噪声，如“今晚吃什么V”。"""
+    text = str(intent or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?<=[\u4e00-\u9fff])[A-Za-z]$", "", text).strip()
+    return text
+
+
+def _voice_fast_lane_model() -> str:
+    raw = (
+        os.environ.get("JACHIN_VOICE_FAST_LANE_MODEL")
+        or os.environ.get("VOICE_FAST_LANE_MODEL")
+        or "dashscope/qwen3.5-flash"
+    ).strip()
+    return raw if raw.startswith(("dashscope/", "qwen/", "openai/")) else f"dashscope/{raw}"
+
+
+def _clean_ws_voice_fast_reply(text: str) -> str:
+    value = str(text or "").strip()
+    value = re.sub(r"```[\s\S]*?```", " ", value).strip("` \t\r\n")
+    value = re.sub(r"\s+", " ", value).strip()
+    if not value:
+        return ""
+    parts = re.findall(r"[^。！？!?\n]+[。！？!?]?", value)
+    spoken = "".join(part.strip() for part in parts[:2]).strip() if parts else value
+    return spoken[:90].strip()
+
+
+def _fallback_ws_voice_fast_reply(intent: str, implicit_signals: dict | None = None) -> str:
+    text = _sanitize_ws_voice_fast_lane_intent(intent)
+    if _is_ws_voice_presence_ack_intent(text):
+        return "我在。"
+    if any(w in text for w in ("吃", "晚饭", "中饭", "午饭", "早饭", "喝")):
+        return "可以吃点热乎清淡的，比如面、粥或者简单盖饭。"
+    if any(w in text for w in ("累", "烦", "难受", "不开心", "压力")):
+        return "我在，先缓一口气，慢慢说。"
+    return "我听到了，刚刚有点卡；你再说一句，我马上接。"
 
 def _normalize_ws_voice_template_text(intent: str, implicit_signals: dict | None = None) -> str:
     sig = implicit_signals if isinstance(implicit_signals, dict) else {}
@@ -629,7 +701,9 @@ async def _ws_execute_intent_turn(
     """单轮 intent：与 WS 主循环解耦，便于 run_abort 时 asyncio.cancel。"""
     logger.debug("[L3 WS] 收到输入 intent_len=%d history=%d run_agent (task)", len(intent), len(messages))
     run_id = str(uuid.uuid4())[:8]
-    broadcast = bool(chat_id)
+    local_voice_session = _ws_msg_is_local_voice(msg)
+    lark_chat_id = _ws_msg_lark_chat_id(msg, chat_id)
+    broadcast = bool(lark_chat_id)
 
     _engine = _resolve_ws_engine(engine)
     if _engine is None:
@@ -664,14 +738,14 @@ async def _ws_execute_intent_turn(
         await _send_safe(websocket, ans_payload)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-        if origin_terminal and chat_id:
-            asyncio.create_task(_push_reply_to_lark(chat_id, reply_clear))
+        if origin_terminal and lark_chat_id:
+            asyncio.create_task(_push_reply_to_lark(lark_chat_id, reply_clear))
         return
 
     try:
         from l3_node.lark_workflow_command_interceptor import try_lark_workflow_command_intercept
 
-        cmd_reply = try_lark_workflow_command_intercept(intent, channel_id=chat_id or "")
+        cmd_reply = try_lark_workflow_command_intercept(intent, channel_id=lark_chat_id or "")
     except Exception:
         cmd_reply = None
     if cmd_reply:
@@ -684,8 +758,8 @@ async def _ws_execute_intent_turn(
         await _send_safe(websocket, ans_payload)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-        if origin_terminal and chat_id:
-            asyncio.create_task(_push_reply_to_lark(chat_id, cmd_reply))
+        if origin_terminal and lark_chat_id:
+            asyncio.create_task(_push_reply_to_lark(lark_chat_id, cmd_reply))
         return
 
     # 通用定时任务确定性拦截（可选；JACHIN_DISABLE_DEFERRED_TIMED_TASK_INTERCEPT=1 时关闭，改由 LLM 调 util:schedule_task）
@@ -700,7 +774,7 @@ async def _ws_execute_intent_turn(
         try:
             from l3_node.deferred_task_scheduler import try_generic_timed_task_intercept
 
-            _deferred_reply = try_generic_timed_task_intercept(intent, lark_chat_id=chat_id or None)
+            _deferred_reply = try_generic_timed_task_intercept(intent, lark_chat_id=lark_chat_id or None)
         except Exception:
             _deferred_reply = None
     if _deferred_reply is not None:
@@ -712,8 +786,8 @@ async def _ws_execute_intent_turn(
         await _send_safe(websocket, ans_payload)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-        if origin_terminal and chat_id:
-            asyncio.create_task(_push_reply_to_lark(chat_id, _deferred_reply))
+        if origin_terminal and lark_chat_id:
+            asyncio.create_task(_push_reply_to_lark(lark_chat_id, _deferred_reply))
         return
 
     # /test 与 L3 内定时：Lark 经 WS 镜像时不走 im_channels/dispatcher，此处对齐拦截
@@ -737,8 +811,8 @@ async def _ws_execute_intent_turn(
         await _send_safe(websocket, ans_payload)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-        if origin_terminal and chat_id:
-            asyncio.create_task(_push_reply_to_lark(chat_id, test_reply))
+        if origin_terminal and lark_chat_id:
+            asyncio.create_task(_push_reply_to_lark(lark_chat_id, test_reply))
         return
 
     try:
@@ -748,15 +822,17 @@ async def _ws_execute_intent_turn(
             intent,
             extra={
                 "run_id": run_id,
-                "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
+                "channel": "desktop_voice_companion" if local_voice_session else ("websocket_terminal" if origin_terminal else "websocket_lark"),
                 "origin_terminal": origin_terminal,
-                "has_chat_id": bool(chat_id),
+                "local_voice_session": local_voice_session,
+                "has_chat_id": bool(lark_chat_id),
+                "session_id": chat_id or "",
                 **(
                     {
-                        "lark_chat_id": str(chat_id).strip(),
-                        "lark_reply_chat_id": str(chat_id).strip(),
+                        "lark_chat_id": lark_chat_id,
+                        "lark_reply_chat_id": lark_chat_id,
                     }
-                    if chat_id
+                    if lark_chat_id
                     else {}
                 ),
                 "intent_chars": len(intent),
@@ -922,71 +998,167 @@ async def _ws_execute_intent_turn(
                 )
                 return
 
+            fast_intent = _sanitize_ws_voice_fast_lane_intent(intent)
+            if isinstance(_imp_sig, dict) and fast_intent != intent:
+                _imp_sig["voice_fast_lane_sanitized_text"] = fast_intent
+                _imp_sig["voice_fast_lane_sanitized"] = True
+            _fast_model = _voice_fast_lane_model()
+            try:
+                _fast_tokens = int(os.environ.get("JACHIN_VOICE_FAST_LANE_MAX_TOKENS", "64") or "64")
+            except (TypeError, ValueError):
+                _fast_tokens = 64
+            _fast_tokens = max(16, min(_fast_tokens, 128))
+            try:
+                _fast_temp = float(os.environ.get("JACHIN_VOICE_FAST_LANE_TEMPERATURE", "0.25") or "0.25")
+            except (TypeError, ValueError):
+                _fast_temp = 0.25
             _fast_kw: dict[str, Any] = {
-                "temperature": 0.35,
-                "max_tokens": 80,
+                "temperature": max(0.0, min(_fast_temp, 0.8)),
+                "max_tokens": _fast_tokens,
                 "l3_call_purpose": "voice_fast_lane_ws_direct_llm",
                 "l3_run_id": run_id,
+                "l3_override_model": _fast_model,
+                "extra_body": {"enable_thinking": False},
             }
-            _fast_model = os.environ.get("JACHIN_VOICE_FAST_LANE_MODEL", "").strip()
-            if _fast_model:
-                _fast_kw["l3_override_model"] = _fast_model
-            logger.info("[L3 WS] voice fast lane direct LLM run_id=%s input_len=%d", run_id, len(intent or ""))
+            logger.info(
+                "[L3 WS] voice fast lane direct LLM run_id=%s model=%s input_len=%d",
+                run_id,
+                _fast_model,
+                len(fast_intent or ""),
+            )
+            _fast_started = time.perf_counter()
+            _fast_first_chunk_at = 0.0
             _fast_first_chunk = asyncio.Event()
             _fast_chunks: list[str] = []
+            _fast_prompt_chars = sum(len(str(m.get("content") or "")) for m in _voice_fast_lane_messages(fast_intent, _imp_sig))
 
             async def _fast_on_chunk(chunk: str) -> None:
+                nonlocal _fast_first_chunk_at
                 _fast_chunks.append(chunk)
+                if _fast_first_chunk_at <= 0:
+                    _fast_first_chunk_at = (time.perf_counter() - _fast_started) * 1000.0
                 _fast_first_chunk.set()
                 await on_chunk(chunk)
 
-            _fast_timeout_s = float(os.environ.get("JACHIN_VOICE_FAST_LANE_TIMEOUT_SEC", "1.4") or "1.4")
+            try:
+                _fast_timeout_s = float(os.environ.get("JACHIN_VOICE_FAST_LANE_TIMEOUT_SEC", "2.5") or "2.5")
+            except (TypeError, ValueError):
+                _fast_timeout_s = 2.5
+            _fast_timeout_s = max(0.5, min(_fast_timeout_s, 8.0))
             _fast_task = asyncio.create_task(
                 _engine.generate_response_stream(
-                    _voice_fast_lane_messages(intent, _imp_sig),
+                    _voice_fast_lane_messages(fast_intent, _imp_sig),
                     chunk_callback=_fast_on_chunk,
                     tools=None,
                     **_fast_kw,
                 )
             )
+            _fast_source = "qwen_flash"
             try:
-                await asyncio.wait_for(asyncio.shield(_fast_first_chunk.wait()), timeout=max(0.4, _fast_timeout_s))
-                reply = await _fast_task
+                await asyncio.wait_for(asyncio.shield(_fast_first_chunk.wait()), timeout=_fast_timeout_s)
+                reply = await asyncio.wait_for(asyncio.shield(_fast_task), timeout=max(_fast_timeout_s, 1.0) + 2.0)
             except asyncio.TimeoutError:
-                _presence_ack = _is_ws_voice_presence_ack_intent(intent)
                 logger.warning(
-                    "[L3 WS] voice fast lane first-token timeout run_id=%s timeout=%.2fs presence_ack=%s",
+                    "[L3 WS] voice fast lane timeout run_id=%s model=%s timeout=%.2fs; no full-agent fallback",
                     run_id,
+                    _fast_model,
                     _fast_timeout_s,
-                    _presence_ack,
                 )
                 _fast_task.cancel()
                 try:
                     await _fast_task
                 except BaseException:
                     pass
-                if not _presence_ack:
-                    raise TimeoutError("voice_fast_lane_first_token_timeout_non_presence")
-                reply = "\u6211\u5728\u3002"
-                await on_chunk(reply)
-            reply = (reply or "".join(_fast_chunks) or "").strip()
+                if _fast_chunks:
+                    reply = "".join(_fast_chunks)
+                    _fast_source = "partial_after_fast_timeout"
+                else:
+                    reply = _fallback_ws_voice_fast_reply(fast_intent, _imp_sig)
+                    _fast_source = "fallback_after_fast_timeout"
+                    await on_chunk(reply)
+            except Exception as _fast_call_e:
+                logger.warning(
+                    "[L3 WS] voice fast lane direct failed run_id=%s model=%s err=%s; no full-agent fallback",
+                    run_id,
+                    _fast_model,
+                    type(_fast_call_e).__name__,
+                )
+                try:
+                    if not _fast_task.done():
+                        _fast_task.cancel()
+                        try:
+                            await _fast_task
+                        except BaseException:
+                            pass
+                except Exception:
+                    pass
+                if _fast_chunks:
+                    reply = "".join(_fast_chunks)
+                    _fast_source = f"partial_after_fast_error:{type(_fast_call_e).__name__}"
+                else:
+                    reply = _fallback_ws_voice_fast_reply(fast_intent, _imp_sig)
+                    _fast_source = f"fallback_after_fast_error:{type(_fast_call_e).__name__}"
+                    await on_chunk(reply)
+            reply = _clean_ws_voice_fast_reply(reply or "".join(_fast_chunks) or "")
             if not reply:
-                reply = "我在，慢慢说。"
+                reply = _fallback_ws_voice_fast_reply(fast_intent, _imp_sig)
+            _fast_elapsed_ms = round((time.perf_counter() - _fast_started) * 1000.0, 1)
+            messages_snapshot = None
             if chat_id and messages is not None:
-                messages.append({"role": "user", "content": intent})
+                messages.append({"role": "user", "content": fast_intent})
                 messages.append({"role": "assistant", "content": reply})
-                _save_lark_session(chat_id, messages)
+                messages_snapshot = list(messages)
             try:
-                append_final("voice_fast_lane_final", reply, extra={"run_id": run_id, "chat_id": chat_id or None})
+                append_final(
+                    "voice_fast_lane_final",
+                    reply,
+                    extra={
+                        "run_id": run_id,
+                        "session_id": chat_id or None,
+                        "model": _fast_model,
+                        "source": _fast_source,
+                        "first_chunk_ms": round(_fast_first_chunk_at, 1) if _fast_first_chunk_at else None,
+                        "elapsed_ms": _fast_elapsed_ms,
+                    },
+                )
             except Exception:
                 pass
             _reply_ui = sanitize_final_answer_for_ui(reply)
-            ans_payload = {"step_type": "answer", "content": _reply_ui, "run_id": run_id}
+            ans_payload = {
+                "step_type": "answer",
+                "content": _reply_ui,
+                "run_id": run_id,
+                "latency_trace": {
+                    "voice_fast_lane": True,
+                    "template": False,
+                    "source": _fast_source,
+                    "model": _fast_model,
+                    "prompt_style": "voice_fast_lane_short",
+                    "prompt_chars": _fast_prompt_chars,
+                    "max_tokens": _fast_tokens,
+                    "first_chunk_ms": round(_fast_first_chunk_at, 1) if _fast_first_chunk_at else 0,
+                    "model_elapsed_ms": _fast_elapsed_ms,
+                    "answer_before_session_save": True,
+                    "session_save_async": bool(messages_snapshot is not None),
+                    "broadcast_async": bool(broadcast and chat_id),
+                    "lark_push_skipped": not bool(origin_terminal and lark_chat_id),
+                },
+            }
             await _send_safe(websocket, ans_payload)
-            if broadcast and chat_id:
-                await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-            if origin_terminal and chat_id and reply:
-                asyncio.create_task(_push_reply_to_lark(chat_id, _reply_ui))
+            asyncio.create_task(
+                _voice_template_post_answer_bookkeeping(
+                    websocket=websocket,
+                    chat_id=chat_id,
+                    messages_snapshot=messages_snapshot,
+                    final_content=reply,
+                    run_id=run_id,
+                    broadcast=bool(broadcast and chat_id),
+                    chunk_payload=None,
+                    answer_payload=ans_payload,
+                )
+            )
+            if origin_terminal and lark_chat_id and reply:
+                asyncio.create_task(_push_reply_to_lark(lark_chat_id, _reply_ui))
             return
         except asyncio.CancelledError:
             try:
@@ -1012,11 +1184,13 @@ async def _ws_execute_intent_turn(
             logger.warning("[L3 WS] voice fast lane direct failed, fallback run_agent: %s", _fast_e)
 
     _imp_attr = {
-        "channel": "websocket_terminal" if origin_terminal else "websocket_lark",
-        "has_chat_id": bool(chat_id),
+        "channel": "desktop_voice_companion" if local_voice_session else ("websocket_terminal" if origin_terminal else "websocket_lark"),
+        "has_chat_id": bool(lark_chat_id),
+        "session_id": chat_id or "",
+        "local_voice_session": local_voice_session,
     }
-    if chat_id:
-        _imp_attr["lark_chat_id"] = str(chat_id).strip()
+    if lark_chat_id:
+        _imp_attr["lark_chat_id"] = lark_chat_id
     _att_meta = attachments_metadata
     if _att_meta is None:
         _raw = msg.get("attachments_metadata")
@@ -1046,7 +1220,7 @@ async def _ws_execute_intent_turn(
             from l3_node.deferred_task_scheduler import heal_schedule_reply_if_bogus
 
             _healed = heal_schedule_reply_if_bogus(
-                intent, reply or "", lark_chat_id=chat_id or None
+                intent, reply or "", lark_chat_id=lark_chat_id or None
             )
             if _healed:
                 reply = _healed
@@ -1070,8 +1244,8 @@ async def _ws_execute_intent_turn(
                 extra={
                     "run_id": run_id,
                     "session_msgs_saved": len(messages) if chat_id else None,
-                    "lark_chat_id": chat_id or None,
-                    "lark_reply_chat_id": chat_id or None,
+                    "lark_chat_id": lark_chat_id or None,
+                    "lark_reply_chat_id": lark_chat_id or None,
                     "chat_id_suffix": (chat_id[-12:] if chat_id and len(chat_id) >= 12 else chat_id) or "",
                 },
             )
@@ -1085,8 +1259,8 @@ async def _ws_execute_intent_turn(
         await _send_safe(websocket, ans_payload)
         if broadcast and chat_id:
             await _broadcast_to_mirror_subscribers(chat_id, ans_payload)
-        if origin_terminal and chat_id and reply:
-            asyncio.create_task(_push_reply_to_lark(chat_id, _reply_ui))
+        if origin_terminal and lark_chat_id and reply:
+            asyncio.create_task(_push_reply_to_lark(lark_chat_id, _reply_ui))
     except asyncio.CancelledError:
         logger.debug("[L3 WS] run_agent 已取消 run_id=%s", run_id)
         raise
@@ -1345,14 +1519,15 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                 intent = "请查看附件并回答。"
 
             chat_id = _ws_msg_session_key(msg)
+            lark_chat_id = _ws_msg_lark_chat_id(msg, chat_id)
             origin_terminal = str(msg.get("origin", "")).lower() == "terminal"
             if chat_id:
                 session_messages = await _resolve_session_messages(chat_id)
-                logger.debug("[L3 WS] chat_id=%s 加载历史 %d 条", chat_id[:20], len(session_messages))
+                logger.debug("[L3 WS] session_id=%s lark_chat=%s 加载历史 %d 条", chat_id[:20], bool(lark_chat_id), len(session_messages))
 
-            # 有 chat_id 时向镜像订阅者广播「用户输入」，终端可同步显示
-            if chat_id:
-                asyncio.create_task(_broadcast_to_mirror_subscribers(chat_id, {
+            # 只有真实 Lark 镜像会话才广播「用户输入」；本地语音陪伴态不要污染镜像流。
+            if lark_chat_id:
+                asyncio.create_task(_broadcast_to_mirror_subscribers(lark_chat_id, {
                     "step_type": "mirror_input",
                     "content": intent,
                     "run_id": "",
@@ -1404,9 +1579,9 @@ async def _handle_client(websocket, engine: "LiteLLMEngine", run_agent_fn):
                         websocket,
                         {"step_type": "system_status", "content": _ss_msg, "run_id": ""},
                     )
-                    if chat_id:
+                    if lark_chat_id:
                         await _broadcast_to_mirror_subscribers(
-                            chat_id,
+                            lark_chat_id,
                             {
                                 "step_type": "system_status",
                                 "content": json.dumps(
@@ -1562,6 +1737,10 @@ async def run_ws_server(
     raise RuntimeError(
         f"端口 {ports_to_try[0]}~{ports_to_try[-1]} 均被占用。请关闭其他 L3 实例: netstat -ano | findstr 18981"
     ) from last_err
+
+
+
+
 
 
 

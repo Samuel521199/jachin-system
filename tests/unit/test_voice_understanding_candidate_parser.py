@@ -42,7 +42,7 @@ def test_send_message_with_weak_contact_asks_clarification_instead_of_guessing_v
     result = VoiceUnderstandingCorrector().correct("打开LUCK 帮我给你发一条消息")
 
     selected = result["understanding"]["selected"]
-    assert result["corrected_text"] == "打开LUCK 帮我给你发一条消息"
+    assert result["corrected_text"] == "打开Lark帮我给你发一条消息"
     assert selected["type"] == "clarification_required"
     assert selected["intent"] == "send_message"
     assert selected["slots"] == {"app": "Lark"}
@@ -59,7 +59,7 @@ def test_send_message_with_company_name_like_noise_does_not_autofill_vivian() ->
     assert selected["intent"] == "send_message"
     assert selected["slots"] == {"app": "Lark"}
     assert "contact" in selected["missing_slots"]
-    assert result["corrected_text"] == "打开LARK 帮我给EASY 发一条消息"
+    assert result["corrected_text"] == "打开Lark帮我给EASY 发一条消息"
 
 
 def test_low_quality_send_message_audio_asks_clarification_without_rewriting_entities() -> None:
@@ -130,12 +130,32 @@ def test_candidate_parser_allows_weak_english_contact_with_find_action_but_requi
     assert result["needs_confirmation"] is True
 
 
-def test_candidate_parser_does_not_turn_weak_app_phonetics_into_app_task() -> None:
-    result = VoiceUnderstandingCorrector().correct("\u5e2e\u6211\u770b\u4e00\u4e0bCHARGE")
+def test_candidate_parser_maps_charge_to_jachin_project_context() -> None:
+    result = VoiceUnderstandingCorrector().correct("帮我看一下CHARGE")
 
     selected = result["understanding"]["selected"]
-    assert selected["intent"] == "no_task"
-    assert "Chrome" not in str(selected.get("slots") or {})
+    assert selected["intent"] == "open_project"
+    assert selected["slots"]["project"] == "Jachin"
+    assert result["corrected_text"] == "帮我看一下Jachin"
+
+
+def test_candidate_parser_maps_stt_hotword_aliases_before_reply_plan() -> None:
+    result = VoiceUnderstandingCorrector().correct("在背书给一分发消息内容是今天几点开会")
+
+    selected = result["understanding"]["selected"]
+    assert selected["type"] == "task_requires_confirmation"
+    assert selected["intent"] == "send_message"
+    assert selected["slots"] == {"app": "Lark", "contact": "Ethan"}
+    assert result["reply_plan"]["reply_intent"] == "confirm_external_action"
+
+
+def test_candidate_parser_maps_neil_stt_alias_without_leaving_tail_noise() -> None:
+    result = VoiceUnderstandingCorrector().correct("再LUCK 给你用法消息内容是同步一下")
+
+    selected = result["understanding"]["selected"]
+    assert selected["type"] == "task_requires_confirmation"
+    assert selected["slots"] == {"app": "Lark", "contact": "Neil"}
+    assert result["corrected_text"] == "再Lark给Neil消息内容是同步一下"
 
 
 def test_candidate_parser_does_not_match_short_initial_contact_inside_long_noise() -> None:

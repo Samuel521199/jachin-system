@@ -279,7 +279,9 @@ def global_entity_scan(text: str, entries: list[LexiconEntry]) -> list[EntityCan
                 )
                 key = (entry.kind, entry.canonical)
                 current = best_by_entity.get(key)
-                if current is None or candidate.score > current.score:
+                candidate_span_len = max(0, candidate.span[1] - candidate.span[0])
+                current_span_len = max(0, current.span[1] - current.span[0]) if current is not None else -1
+                if current is None or candidate.score > current.score or (candidate.score == current.score and candidate_span_len > current_span_len):
                     best_by_entity[key] = candidate
     return sorted(best_by_entity.values(), key=lambda item: item.score, reverse=True)[:10]
 
@@ -456,7 +458,7 @@ def make_clarification(
         type="clarification_required",
         intent=intent,
         slots={slot_key(entity.kind): entity.canonical for entity in known_entities if is_medium_or_strong_entity(entity)},
-        corrected_text=text,
+        corrected_text=replace_entity_spans(text, [entity for entity in known_entities if is_medium_or_strong_entity(entity)]),
         score=round(max(0.01, min(score, 0.99)), 3),
         needs_confirmation=False,
         reasons=[reason],

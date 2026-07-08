@@ -45,12 +45,9 @@ def _clean_spoken_reply(text: str) -> str:
     value = re.sub(r"\s+", " ", value).strip()
     if not value:
         return ""
-    for sep in ("。", "！", "？", "!", "?"):
-        idx = value.find(sep)
-        if idx >= 0:
-            return value[: idx + 1].strip()
-    return value[:80].strip()
-
+    parts = re.findall(r"[^。！？!?；;]+[。！？!?；;]?", value)
+    spoken = "".join(part.strip() for part in parts[:2]).strip() if parts else value
+    return spoken[:90].strip()
 
 def fallback_reply_from_payload(reply_plan: dict[str, Any], fallback_text: str = "") -> str:
     text = str(reply_plan.get("fallback_template") or fallback_text or "").strip()
@@ -69,14 +66,17 @@ def build_fast_composer_messages(reply_plan: dict[str, Any], user_text: str = ""
         "fallback_template": reply_plan.get("fallback_template") or "",
     }
     system = (
-        "你是实时语音追问话术生成器。只根据 ReplyPlan 写一句要对用户说的话。"
+        "你是 Jachin 的实时语音陪伴态追问话术生成器。"
+        "规则层已经决定边界，你只负责把 ReplyPlan 写成自然口语。"
         "禁止调用工具，禁止执行任务，禁止声称已经完成，禁止补全用户没说的信息。"
-        "输出必须是一句自然中文口语，适合 TTS，最多 35 个中文字符，不要 Markdown。"
+        "用朋友式的中文短句，默认称呼用户为“你”，不要默认用“您”，不要客服腔。"
+        "可以温和承接已听到的对象或应用，比如‘我听到是发给 Vivian’；但只能承接 ReplyPlan 已给出的信息。"
+        "输出 1 到 2 句，适合 TTS，总长度尽量不超过 70 个中文字符，不要 Markdown。"
     )
     user = (
         f"用户原始语音文本：{_clip_text(user_text, 300)}\n"
         f"ReplyPlan：{compact_plan}\n"
-        "请输出最终要说的一句话。"
+        "请输出最终要对用户说的话。"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 

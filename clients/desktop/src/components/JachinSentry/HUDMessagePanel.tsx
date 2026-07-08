@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -387,6 +387,9 @@ export function HUDMessagePanel() {
           if (disposed) return;
           const active = Boolean(ev.payload?.active);
           handlersRef.current.setVoiceSession(active);
+          if (active) {
+            handlersRef.current.revealPanel(true);
+          }
         });
         if (disposed) {
           uVoice();
@@ -646,3 +649,4 @@ export function HUDMessagePanel() {
 }
 
 export default HUDMessagePanel;
+

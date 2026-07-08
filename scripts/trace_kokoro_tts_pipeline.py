@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import difflib
 import html
@@ -16,6 +17,26 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_DIR = PROJECT_ROOT / "data" / "tts_trace_out"
 
+TTS_SCENARIO_SUITES: dict[str, list[dict[str, Any]]] = {
+    "assistant_cues": [
+        {"id": "wake_im_here", "category": "wake_ack", "text": "\u6211\u5728", "expected_kind": "cue", "max_duration_ms": 1500, "note": "short wake acknowledgment"},
+        {"id": "wake_natural_welcome", "category": "wake_ack", "text": "\u4f60\u597d\uff0c\u6211\u5728", "expected_kind": "cue", "max_duration_ms": 1800, "note": "recommended natural welcome"},
+        {"id": "thinking", "category": "latency_masking", "text": "\u6211\u60f3\u60f3", "expected_kind": "cue", "max_duration_ms": 1700, "note": "foreground thinking cue"},
+        {"id": "background_ack", "category": "latency_masking", "text": "\u6536\u5230\uff0c\u6211\u6765\u5904\u7406", "expected_kind": "cue", "max_duration_ms": 2400, "note": "background task acknowledgment"},
+        {"id": "done_short", "category": "task_done", "text": "\u5b8c\u6210\u4e86", "expected_kind": "cue", "max_duration_ms": 1500, "note": "short completion cue"},
+        {"id": "lark_done_viian", "category": "task_done", "text": "\u5df2\u7ecf\u5e2e\u4f60\u53d1\u7ed9 viian \u4e86", "expected_kind": "content", "max_duration_ms": 2600, "note": "Lark send completion with recipient"},
+        {"id": "lark_done_owner_sample", "category": "task_done", "text": "\u4f60\u597d\u4e3b\u4eba\uff0c\u6211\u5df2\u7ecf\u5e2e\u4f60\u5b8c\u6210\u4e86 Lark \u53d1\u9001", "expected_kind": "content", "max_duration_ms": 3600, "note": "owner-style Lark completion sample"},
+        {"id": "lark_done_generic", "category": "task_done", "text": "\u5df2\u7ecf\u5e2e\u4f60\u5b8c\u6210 Lark \u53d1\u9001", "expected_kind": "content", "max_duration_ms": 2800, "note": "generic Lark completion"},
+        {"id": "reminder_done", "category": "task_done", "text": "\u597d\uff0c\u6211\u4f1a\u63d0\u9192\u4f60", "expected_kind": "content", "max_duration_ms": 2300, "note": "reminder confirmation"},
+        {"id": "meeting_reminder_done", "category": "task_done", "text": "\u597d\uff0c\u4e0b\u5348\u5f00\u4f1a\u524d\u6211\u63d0\u9192\u4f60", "expected_kind": "content", "max_duration_ms": 3000, "note": "meeting reminder confirmation"},
+        {"id": "ask_recipient", "category": "clarify", "text": "\u4f60\u60f3\u53d1\u7ed9\u8c01", "expected_kind": "content", "max_duration_ms": 2200, "note": "missing recipient clarification"},
+        {"id": "ask_content", "category": "clarify", "text": "\u4f60\u60f3\u53d1\u9001\u4ec0\u4e48\u5185\u5bb9", "expected_kind": "content", "max_duration_ms": 2600, "note": "missing message clarification"},
+        {"id": "stt_unclear", "category": "repair", "text": "\u6211\u53ef\u80fd\u6ca1\u542c\u6e05\uff0c\u4f60\u518d\u8bf4\u4e00\u904d", "expected_kind": "content", "max_duration_ms": 3200, "note": "speech recognition repair"},
+        {"id": "app_not_found_luck", "category": "error", "text": "\u6211\u6ca1\u627e\u5230 luck\uff0c\u8981\u4e0d\u8981\u6362\u4e2a\u540d\u5b57\u518d\u8bd5\u4e00\u6b21", "expected_kind": "content", "max_duration_ms": 4200, "note": "app not found recovery"},
+        {"id": "permission_needed", "category": "safety", "text": "\u8fd9\u4e2a\u64cd\u4f5c\u9700\u8981\u4f60\u786e\u8ba4\u4e00\u4e0b", "expected_kind": "content", "max_duration_ms": 3000, "note": "confirmation required"},
+        {"id": "retry_short", "category": "error", "text": "\u521a\u624d\u6ca1\u6210\u529f\uff0c\u6211\u518d\u8bd5\u4e00\u6b21", "expected_kind": "content", "max_duration_ms": 3000, "note": "short retry recovery"},
+    ]
+}
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -33,11 +54,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--speed",
         type=float,
-        default=1.25,
-        help="TTS speed override (default: 1.25, matching system voice output).",
+        default=1.4,
+        help="TTS speed override (default: 1.4, matching system voice output).",
     )
     p.add_argument("--model-dir", type=Path, default=None, help="Override model dir.")
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for reports.")
+    p.add_argument(
+        "--suite",
+        choices=sorted(TTS_SCENARIO_SUITES),
+        default="",
+        help="Run a preset scenario suite and generate an aggregate listening report.",
+    )
     p.add_argument("--no-synthesize", action="store_true", help="Skip final wav synthesis.")
     p.add_argument("--no-play", action="store_true", help="Do not auto-play generated wav.")
     return p.parse_args()
@@ -580,6 +607,229 @@ def run_trace(
     return json_path
 
 
+
+
+def _suite_row_status(row: dict[str, Any]) -> tuple[str, str]:
+    reasons: list[str] = []
+    expected_kind = str(row.get("expected_kind") or "")
+    actual_kind = str(row.get("actual_kind") or "")
+    max_duration_ms = int(row.get("max_duration_ms") or 0)
+    duration_ms = int(row.get("duration_ms") or 0)
+    quality = str(row.get("quality") or "")
+    tone_loss_risk = str(row.get("tone_loss_risk") or "")
+
+    if not row.get("synthesized"):
+        reasons.append("synthesis skipped")
+    if expected_kind and actual_kind and actual_kind != expected_kind:
+        reasons.append(f"kind {actual_kind} != expected {expected_kind}")
+    if expected_kind and not actual_kind:
+        reasons.append(f"missing actual kind, expected {expected_kind}")
+    if max_duration_ms and duration_ms and duration_ms > max_duration_ms:
+        reasons.append(f"duration {duration_ms}ms > max {max_duration_ms}ms")
+    if quality and quality != "ok":
+        reasons.append(f"quality={quality}")
+    if tone_loss_risk in {"medium", "high"}:
+        reasons.append(f"tone_loss_risk={tone_loss_risk}")
+    return ("warn" if reasons else "pass", "; ".join(reasons))
+
+
+def build_suite_html_report(summary: dict[str, Any]) -> str:
+    rows = summary["rows"]
+    table_rows: list[str] = []
+    for row in rows:
+        wav_name = Path(str(row.get("wav_path") or "")).name
+        report_name = Path(str(row.get("report_path") or "")).name
+        html_name = Path(str(row.get("html_path") or "")).name
+        audio_html = f'<audio controls preload="none" src="{html_escape(wav_name)}"></audio>' if wav_name else ""
+        table_rows.append(
+            "<tr class='{status}'>"
+            "<td>{status}</td>"
+            "<td>{idx}</td>"
+            "<td>{case_id}<br><small>{category}</small></td>"
+            "<td class='text'>{text}</td>"
+            "<td>{audio}</td>"
+            "<td>{actual_kind}<br><small>expected {expected_kind}</small></td>"
+            "<td>{duration} / {max_duration}</td>"
+            "<td>{style_mode}<br><small>idx {style_index}</small></td>"
+            "<td>{raw_duration}<br><small>{lead}/{trail}</small></td>"
+            "<td>{tokens}<br><small>drop {total_drop}</small></td>"
+            "<td>{reasons}</td>"
+            "<td><a href='{html_name}'>html</a> / <a href='{report_name}'>json</a></td>"
+            "</tr>".format(
+                status=html_escape(row.get("status", "")),
+                idx=html_escape(row.get("idx", "")),
+                case_id=html_escape(row.get("id", "")),
+                category=html_escape(row.get("category", "")),
+                text=html_escape(row.get("text", "")),
+                audio=audio_html,
+                actual_kind=html_escape(row.get("actual_kind", "")),
+                expected_kind=html_escape(row.get("expected_kind", "")),
+                duration=html_escape(row.get("duration_ms", "")),
+                max_duration=html_escape(row.get("max_duration_ms", "")),
+                style_mode=html_escape(row.get("style_mode", "")),
+                style_index=html_escape(row.get("style_index", "")),
+                raw_duration=html_escape(row.get("raw_duration_ms", "")),
+                lead=html_escape(row.get("leading_trim_ms", "")),
+                trail=html_escape(row.get("trailing_trim_ms", "")),
+                tokens=html_escape(row.get("token_count", "")),
+                total_drop=html_escape(row.get("total_drop", "")),
+                reasons=html_escape(row.get("reasons", "")),
+                html_name=html_escape(html_name),
+                report_name=html_escape(report_name),
+            )
+        )
+
+    meta = summary["meta"]
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Kokoro TTS Scenario Suite</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 24px; color: #172026; background: #f6f7f9; }}
+    h1 {{ margin: 0 0 8px; font-size: 26px; }}
+    .meta {{ margin: 0 0 18px; color: #52616b; }}
+    table {{ width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
+    th, td {{ border-bottom: 1px solid #e5e8ec; padding: 10px; text-align: left; vertical-align: top; font-size: 13px; }}
+    th {{ position: sticky; top: 0; background: #eef2f5; z-index: 1; }}
+    tr.warn {{ background: #fff8e6; }}
+    tr.pass td:first-child {{ color: #167044; font-weight: 700; }}
+    tr.warn td:first-child {{ color: #9a5b00; font-weight: 700; }}
+    td.text {{ min-width: 210px; font-size: 15px; line-height: 1.45; }}
+    audio {{ width: 210px; }}
+    small {{ color: #697782; }}
+    a {{ color: #1f5aa6; }}
+  </style>
+</head>
+<body>
+  <h1>Kokoro TTS Scenario Suite: {html_escape(meta['suite'])}</h1>
+  <p class="meta">voice={html_escape(meta['voice'])} speed={html_escape(meta['speed'])} cases={html_escape(meta['case_count'])} pass={html_escape(meta['pass_count'])} warn={html_escape(meta['warn_count'])} time={html_escape(meta['time'])}</p>
+  <table>
+    <thead>
+      <tr><th>Status</th><th>#</th><th>Case</th><th>Text</th><th>Audio</th><th>Kind</th><th>Duration ms</th><th>Style</th><th>Trim raw<br><small>lead/trail</small></th><th>Tokens</th><th>Reasons</th><th>Trace</th></tr>
+    </thead>
+    <tbody>
+      {''.join(table_rows)}
+    </tbody>
+  </table>
+</body>
+</html>
+"""
+
+
+def run_suite(
+    *,
+    suite_name: str,
+    tts: Any,
+    voice: str,
+    speed: float,
+    out_dir: Path,
+    no_synthesize: bool,
+    no_play: bool,
+) -> None:
+    cases = TTS_SCENARIO_SUITES[suite_name]
+    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    suite_dir = out_dir / f"tts_suite_{suite_name}_{ts}"
+    suite_dir.mkdir(parents=True, exist_ok=True)
+
+    print("\n=== Kokoro TTS Scenario Suite ===")
+    print(f"suite    : {suite_name}")
+    print(f"voice    : {voice}")
+    print(f"speed    : {speed}")
+    print(f"cases    : {len(cases)}")
+    print(f"out_dir  : {suite_dir}")
+
+    rows: list[dict[str, Any]] = []
+    for idx, case in enumerate(cases, start=1):
+        case_id = str(case["id"])
+        text = str(case["text"])
+        print(f"\n[{idx}/{len(cases)}] {case_id}: {safe_console_text(text)}")
+        report_path = run_trace(
+            raw_text=text,
+            tts=tts,
+            voice=voice,
+            speed=speed,
+            out_dir=suite_dir,
+            no_synthesize=no_synthesize,
+            no_play=no_play,
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        synthesis = report.get("synthesis", {}) or {}
+        actual = (report.get("g2p", {}) or {}).get("actual", {}) or synthesis.get("actual_trace", {}) or {}
+        voice_style = report.get("voice_style", {}) or {}
+        analysis = report.get("analysis", {}) or {}
+        normalize = report.get("normalize", {}) or {}
+        trim = actual.get("audio_trim", {}) or {}
+
+        row: dict[str, Any] = {
+            "idx": idx,
+            "id": case_id,
+            "category": case.get("category", ""),
+            "text": text,
+            "normalized": normalize.get("normalized", ""),
+            "note": case.get("note", ""),
+            "expected_kind": case.get("expected_kind", ""),
+            "actual_kind": actual.get("tts_kind", ""),
+            "max_duration_ms": case.get("max_duration_ms", ""),
+            "duration_ms": synthesis.get("duration_ms", trim.get("duration_ms", "")),
+            "raw_duration_ms": trim.get("original_duration_ms", ""),
+            "leading_trim_ms": trim.get("leading_trim_ms", ""),
+            "trailing_trim_ms": trim.get("trailing_trim_ms", ""),
+            "quality": synthesis.get("quality", ""),
+            "synth_ms": synthesis.get("synth_ms", ""),
+            "synthesized": bool(synthesis.get("ran")),
+            "style_mode": actual.get("style_mode", voice_style.get("style_mode", "")),
+            "style_index": actual.get("style_index", voice_style.get("chosen_style_index", "")),
+            "actual_path": actual.get("actual_path", ""),
+            "token_count": actual.get("token_count", (report.get("g2p", {}) or {}).get("token_count", "")),
+            "tone_drop_count": actual.get("tone_drop_count", ""),
+            "total_drop": actual.get("total_drop", ""),
+            "tone_loss_risk": analysis.get("tone_loss_risk", ""),
+            "wav_path": synthesis.get("wav_path", ""),
+            "report_path": str(report_path),
+            "html_path": str(report_path.with_suffix(".html")),
+        }
+        row["status"], row["reasons"] = _suite_row_status(row)
+        rows.append(row)
+
+    pass_count = sum(1 for row in rows if row["status"] == "pass")
+    warn_count = len(rows) - pass_count
+    summary = {
+        "meta": {
+            "time": dt.datetime.now().isoformat(timespec="seconds"),
+            "suite": suite_name,
+            "voice": voice,
+            "speed": speed,
+            "case_count": len(rows),
+            "pass_count": pass_count,
+            "warn_count": warn_count,
+            "out_dir": str(suite_dir),
+        },
+        "rows": rows,
+    }
+
+    summary_base = suite_dir / f"suite_summary_{suite_name}_{ts}"
+    json_path = summary_base.with_suffix(".json")
+    csv_path = summary_base.with_suffix(".csv")
+    html_path = summary_base.with_suffix(".html")
+    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [])
+        if rows:
+            writer.writeheader()
+            writer.writerows(rows)
+    html_path.write_text(build_suite_html_report(summary), encoding="utf-8")
+
+    print("\n=== Kokoro TTS Suite Summary ===")
+    print(f"pass/warn : {pass_count}/{warn_count}")
+    for row in rows:
+        suffix = f" - {row['reasons']}" if row.get("reasons") else ""
+        print(f"{row['status'].upper():4} {row['id']} duration={row.get('duration_ms', '')}ms kind={row.get('actual_kind', '')}{suffix}")
+    print(f"summary   : {json_path}")
+    print(f"csv       : {csv_path}")
+    print(f"listen    : {html_path}")
+
+
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir
@@ -603,6 +853,18 @@ def main() -> None:
         raise RuntimeError(f"TTS engine load failed: {tts._load_error}")
     if not tts.has_voice(voice):
         raise RuntimeError(f"Voice '{voice}' not found under {tts.voices_dir}")
+
+    if args.suite:
+        run_suite(
+            suite_name=args.suite,
+            tts=tts,
+            voice=voice,
+            speed=speed,
+            out_dir=out_dir,
+            no_synthesize=args.no_synthesize,
+            no_play=args.no_play,
+        )
+        return
 
     if args.text.strip():
         run_trace(

@@ -173,7 +173,7 @@ async function synthesizeByEngine(engine: TtsEngine, text: string, voice: string
       text,
       voice,
       language: "zh-CN",
-      speed: 1.25,
+      speed: 1.4,
       pitch: 1.0,
     }),
   });

@@ -174,6 +174,522 @@ user_message
 
 其中 `reply_plan` 和 `user_message` 用于一种特殊情况：STT 层已经判断“这个语音不能直接执行，需要追问”。
 
+### STT 热词是什么
+
+热词可以理解成给 STT 的“助听名单”。
+
+普通语音识别模型不一定认识你的工作场景。比如你说：
+
+```text
+打开 Lark
+给 Vivian 发消息
+切到 VS Code
+打开 Codex
+看一下 Jachin 项目
+```
+
+如果没有热词，模型可能把这些词听成：
+
+```text
+Lark -> luck / lock / 拉克
+Vivian -> vivi / 微微安 / 薇薇安
+VS Code -> ws code / w s code
+Codex -> code x / 扣得克斯
+Jachin -> jacking / 加勤 / 嘉钦
+```
+
+热词的作用不是“强行改字”，而是在 STT 解码时告诉模型：
+
+```text
+这些词在当前系统里很常见。
+如果声音有点像它们，请优先考虑它们。
+```
+
+所以热词更像“听写时旁边放了一张常用人名、应用名、项目名清单”，不是后期把所有相似词都粗暴替换。
+
+### 当前有哪些热词
+
+当前热词不是写死在一个地方，而是由 `SttHotwordProvider` 汇总。
+
+服务端位置：
+
+```text
+voice_server/services/stt_hotwords.py
+```
+
+当前会从这些来源取词：
+
+```text
+l3_node.voice_entity_correction.export_hotwords()
+data/voice/sherpa_hotwords.txt
+data/voice/domain_lexicon.json
+data/voice/stt_hotwords.json
+config/voice_domain_lexicon.json
+环境变量 JACHIN_STT_HOTWORDS
+```
+
+按当前项目里的 snapshot，热词总数大约是：
+
+```text
+155 个
+```
+
+主要分成几类。
+
+#### 应用 / 工具名
+
+```text
+Lark
+飞书
+Chrome
+浏览器
+VS Code
+vscode
+Codex
+```
+
+它们还带有常见误听别名，例如：
+
+```text
+Lark: lark, feishu, flybook, luck, lock, 拉克, 拉
+Chrome: chrome, google chrome, clone, 浏览器
+VS Code: vs code, vscode, visual studio code, ws code, w s code
+Codex: codex, code x, 扣得克斯
+```
+
+#### 联系人名字
+
+当前联系人热词里包含：
+
+```text
+Vivian
+Neil
+Ethan
+John
+Berlith
+Gordon
+Nathan
+Gavin
+Daniel
+Jade
+Hex
+Root
+Seth
+Buck
+Cole
+Jack Looi
+Patrick
+Jin
+Lin
+Samuel
+Haku
+Victor
+Vigo
+Mark
+Jay
+Max
+Figo
+Fincher
+Anna
+AnnaAnna
+Lucy
+Makoto
+Musk
+Elara
+Summer
+Jovi
+Donnie
+David
+Rence
+KK
+Mariz
+Tom
+Reina
+Mada
+Stefan
+Leslie
+Hope
+Germaine
+```
+
+其中 Vivian、Neil、Ethan 这类常被语音任务用到的人名，会有更多别名。
+
+例如 Vivian：
+
+```text
+Vivian
+vivian
+vivi
+viian
+vivan
+vivien
+薇薇安
+微微安
+V薇
+```
+
+#### 项目 / 系统名
+
+```text
+Jachin
+jachin
+jacking
+加勤
+嘉钦
+```
+
+这类热词主要帮助识别项目名、系统名，避免把 Jachin 听成别的普通英文词。
+
+#### 权重
+
+热词都有权重。权重可以理解成“提醒力度”。
+
+例如当前比较重要的词：
+
+```text
+Lark    25
+Vivian  25
+Jachin  20
+飞书    20
+薇薇安  18
+```
+
+普通联系人和常见别名一般是 10 或 20；一些兼容大小写的实验词可能是 4、5、6、8。
+
+权重不是越高越好。太高会让模型过度相信热词，把不相关的声音也听成热词。
+
+### 热词如何辅佐 STT
+
+完整流程大概是：
+
+```text
+录音音频
+  -> STT 服务收到音频
+  -> SttHotwordProvider 汇总热词
+  -> 生成临时 hotwords 文件
+  -> Sherpa-ONNX Zipformer 用 modified_beam_search 解码
+  -> 得到 raw_text
+  -> VoiceUnderstandingCorrector 做实体纠错和理解
+  -> 返回 text / raw_text / hotword metadata
+```
+
+更人话一点：
+
+1. 每次识别前，JVS 会拿一份最新热词清单。
+2. 如果热词清单变了，STT recognizer 会重新加载。
+3. 有热词时，Sherpa 会从普通 `greedy_search` 改成 `modified_beam_search`。
+4. 它会在“多个可能听法”之间，给热词那条路径加一点倾向。
+5. 最后输出识别文本。
+6. 输出后再进实体纠错层，把上下文里的别名规整成标准名字。
+
+#### “多个可能听法”是怎么来的
+
+STT 模型听声音时，不是像人一样一次性听出一句确定的话。更接近下面这个过程：
+
+```text
+声音特征进模型
+  -> 每一小段音频都可能对应多个字 / 拼音 / token
+  -> 解码器边听边保留几条候选路径
+  -> 每条路径都有一个分数
+  -> 分数最高的路径成为最终识别文本
+```
+
+比如用户说“打开 Lark”，声音比较糊的时候，模型内部可能同时觉得这些都说得通：
+
+```text
+打开 Lark
+打开 luck
+打开 lock
+打开拉克
+打开那个
+```
+
+如果不用热词，系统可能只走最贪心的一条路：当前哪一个 token 分最高，就一路选下去。这就是 `greedy_search`，优点是快，缺点是容易早早选错。
+
+有热词时，当前配置会让 Sherpa-ONNX Zipformer 使用：
+
+```text
+modified_beam_search
+```
+
+它的意思不是“把所有可能句子都列出来给我们看”，而是模型解码时内部同时保留几条还不错的候选路径。当前代码里这个数量由下面参数控制：
+
+```text
+JACHIN_STT_MAX_ACTIVE_PATHS，默认 4
+```
+
+所以可以粗略理解成：
+
+```text
+不用热词 / greedy_search：一路往前猜，猜错了不太回头
+使用热词 / modified_beam_search：同时保留几条可能听法，最后再选总分最高的一条
+```
+
+注意：这些候选路径是 Sherpa 解码器内部状态，当前 JVS 没有把“候选 1 / 候选 2 / 候选 3”都返回给前端。前端拿到的仍然只有最终胜出的 `raw_text`。
+
+#### 热词权重到底怎么影响选择
+
+JVS 会先把热词写成 Sherpa 能读的临时文件：
+
+```text
+Lark :25
+Vivian :25
+Jachin :20
+...
+```
+
+文件位置通常是系统临时目录里的：
+
+```text
+jachin_sherpa_hotwords.txt
+```
+
+然后 Sherpa 初始化 recognizer 时会拿到：
+
+```text
+hotwords_file = 临时热词文件
+hotwords_score = JACHIN_STT_HOTWORDS_SCORE，默认 4.0
+```
+
+这里有两个“力度”：
+
+```text
+词自己的 weight：例如 Lark=25，Vivian=25
+全局 hotwords_score：默认 4.0
+```
+
+人话解释就是：
+
+```text
+如果某条候选路径里出现了热词，Sherpa 会给这条路径一点额外加分。
+热词权重越高、全局 hotwords_score 越高，这个加分倾向越明显。
+```
+
+但它不是无条件替换。它不会看到“有点像 Lark”就一定输出 Lark。最终还是要看声音本身、语言模型分数、候选路径总分。
+
+所以它的效果更像：
+
+```text
+原本：打开 luck  51 分，打开 Lark  49 分 -> 输出 luck
+加热词后：打开 luck 51 分，打开 Lark  49 分 + 热词加成 -> 可能输出 Lark
+```
+
+这就是“在多个可能听法之间，给热词那条路径加一点倾向”的具体含义。
+
+#### 最后输出识别文本是怎么做的
+
+Sherpa 解码结束后，JVS 不是拿到一堆候选，而是拿到一个最终文本：
+
+```text
+stream.result.text
+```
+
+然后 JVS 会做一个轻清洗：
+
+```text
+去掉多余空白
+去掉没有意义的空结果
+得到 raw_text
+```
+
+接着进入：
+
+```text
+VoiceUnderstandingCorrector.correct(raw_text)
+```
+
+它会输出：
+
+```text
+corrected_text
+confidence
+understanding
+reply_plan
+user_message
+```
+
+最终前端通常看到的是：
+
+```text
+raw_text       原始 STT 文本
+corrected_text 经过语音理解层规整后的文本
+text           最终用于后续路由的文本
+```
+
+#### 实体纠错层具体按什么规则改名
+
+当前 JVS 后处理用的是：
+
+```text
+voice_server/services/voice_understanding.py
+VoiceUnderstandingCorrector
+```
+
+它做的不是简单的全局替换，而是“实体识别 + 任务理解”。大概分四步。
+
+第一步，加载实体库。
+
+实体库包含应用、联系人、项目：
+
+```text
+apps: Lark, Chrome, VS Code, Codex
+contacts: Vivian, Neil, Ethan, ...
+projects: Jachin
+```
+
+每个标准名都有别名，例如：
+
+```text
+Lark: lark, feishu, flybook, luck, lock, 拉克
+Vivian: vivian, vivi, 薇薇安, 微微安
+VS Code: vs code, vscode, visual studio code, ws code
+Jachin: jachin, jacking, 加勤, 嘉钦
+```
+
+第二步，在整句里扫描可能的实体。
+
+它会用几种相似方式找候选：
+
+```text
+完全相同：vivian == Vivian
+子串包含：google chrome 里包含 chrome
+字符相似：vivien 和 Vivian 很像
+拼音相似：薇薇安 和 Vivian 对应同一个联系人
+发音折叠：一些 v/w、ph/f、ck/k 之类的近似会放宽
+```
+
+每个候选会有分数和强度：
+
+```text
+strong  很确定
+medium  有点像，可以在有上下文时使用
+weak    太弱，不能直接执行
+```
+
+第三步，看这句话有没有动作意图。
+
+系统会检查动作词，例如：
+
+```text
+打开 / 启动 / 切到 / open
+找到 / 搜索 / 查找 / find
+发送 / 发消息 / message / send
+```
+
+然后把动作和实体组合起来。
+
+比如：
+
+```text
+打开 + Lark     -> open_app
+给 + Vivian + 发消息 -> send_message
+找到 + Neil     -> find_contact
+Jachin + 项目   -> open_project 或相关项目意图
+```
+
+第四步，决定能不能直接规整成标准名字。
+
+规则大概是：
+
+```text
+如果实体很强，而且动作也明确 -> 可以把别名换成标准名
+如果实体有点像，但不够确定 -> 需要确认或追问
+如果是发消息，但缺联系人或消息正文 -> 不直接执行，生成追问
+如果整句话不像任务 -> 不强行改，尽量保留原文本
+```
+
+举例：
+
+```text
+原始 STT: 打开拉克
+实体候选: 拉克 -> Lark，强匹配
+动作: 打开
+结果: corrected_text = 打开 Lark
+```
+
+```text
+原始 STT: 给薇薇安发消息
+实体候选: 薇薇安 -> Vivian，强匹配
+动作: 发消息
+缺失: 消息正文
+结果: 不直接执行，进入追问：要发的内容是什么？
+```
+
+```text
+原始 STT: 找一下 vivien
+实体候选: vivien -> Vivian，中高相似
+动作: 找一下
+结果: 可能规整成 Vivian；如果分数不够，会要求确认
+```
+
+```text
+原始 STT: 我觉得 lark 这个词挺怪
+虽然出现 Lark，但不像任务动作
+结果: 不应该直接变成“打开 Lark”或执行任务
+```
+
+这就是为什么文档里说“输出后再进实体纠错层，把上下文里的别名规整成标准名字”。它不是无脑替换，而是先看：
+
+```text
+像不像实体
+像不像任务
+动作是否明确
+槽位是否完整
+风险是否需要确认
+```
+
+这里有两层不要混在一起：
+
+```text
+热词层：帮助 STT 更容易听出 Lark / Vivian / Jachin
+纠错层：在“打开/发送/切到”等上下文里，把别名改成标准实体
+```
+
+举例：
+
+```text
+用户说：帮我打开拉克
+STT 有热词后更容易听出：拉克
+实体纠错看到“打开 + 拉克”
+最终可能规整成：帮我打开 Lark
+```
+
+再比如：
+
+```text
+用户说：给薇薇安发消息
+STT 有热词后更容易听出：薇薇安 / Vivian
+实体纠错看到“给 + 人名 + 发消息”
+最终规整成：给 Vivian 发消息
+```
+
+### 热词不会做什么
+
+热词不是万能的。
+
+它不会保证：
+
+```text
+只要说了就一定识别正确
+任何相似声音都安全替换
+长句里所有英文都读准
+任务槽位一定完整
+```
+
+它只是提高某些词被选中的概率。
+
+所以热词既能救识别，也可能带来副作用。
+
+典型副作用是：用户说了一大段话，但模型因为热词太强，把最后结果压成一个很短的任务句，比如：
+
+```text
+打开 Lark
+给 Vivian 发消息
+切到 Chrome
+```
+
+这时系统就要判断：这到底是真实指令，还是被热词“吸过去”了。
+
 ## 3. STT 后的安全检查
 
 前端拿到 STT 结果后，不会马上发给 L3。
@@ -188,12 +704,172 @@ user_message
 
 如果 STT 明显被热词带偏，例如识别结果过度贴近某些热词，前端会拦截。
 
+这一步在前端：
+
+```text
+clients/desktop/src/chat.tsx
+detectVoiceHotwordDomination(...)
+```
+
+它主要看几个信号。
+
+#### 1. 结果是不是短热词任务
+
+例如识别结果里出现：
+
+```text
+chrome
+lark
+vivian
+neil
+ethan
+vscode
+cursor
+飞书
+拉克
+谷歌
+浏览器
+```
+
+同时又有任务动作词：
+
+```text
+打开
+启动
+找到
+切到
+进入
+给
+发
+发送
+消息
+open
+find
+send
+```
+
+并且整句话很短，就会被标记成“可能是热词任务”。
+
+比如：
+
+```text
+打开 Lark
+给 Vivian 发消息
+切到 Chrome
+```
+
+这些都属于高风险形态。它们不是一定错，但如果音频很长、结果却这么短，就要警惕。
+
+#### 2. 录音很长，但识别结果很短
+
+如果用户录了 4.5 秒以上，最后却只识别成一个很短的热词任务，系统会认为可疑。
+
+原因很简单：
+
+```text
+用户讲了很久，结果只剩“打开 Lark”
+这可能不是用户真实完整意思，而是热词把识别结果吸偏了。
+```
+
+对应原因名：
+
+```text
+short_hotword_task_from_long_audio
+```
+
+#### 3. 热词数量很大，且结果正好是短任务
+
+当前热词集合大约 155 个，已经属于比较大的上下文偏置集合。
+
+如果热词数量超过阈值，并且识别结果又是很短的热词任务，系统会更谨慎。
+
+对应原因名：
+
+```text
+large_hotword_set_short_task
+```
+
+但有一个例外：如果文本明显是数学或计算请求，比如：
+
+```text
+打开计算器
+一加一等于多少
+算一下
+```
+
+系统会降低热词污染判断，避免把正常计算类请求误拦。
+
+#### 4. 流式预览和最终 STT 冲突
+
+如果前面流式预览听到的是一段较长文本，但最终 STT 突然变成很短的热词任务，也会可疑。
+
+对应原因名：
+
+```text
+stream_final_conflict_hotword_task
+```
+
+#### 5. STT 不是最终结果
+
+如果来源是临时流式识别，或者 `finalized=false`，任务类请求也会更谨慎。
+
+对应原因名：
+
+```text
+non_final_stt_source
+```
+
 这种情况不会直接执行任务，而是生成一句确认：
 
 ```text
 我刚才听到的是“xxx”，但这段语音像是被热词影响了。
 你可以再说一遍，或者确认这就是你要做的吗？
 ```
+
+最终用户看到的效果就是：
+
+```text
+不会马上打开软件 / 发消息 / 执行任务
+而是先问你确认
+```
+
+这是一种安全刹车。
+
+### 热词最终会带来什么效果
+
+理想效果：
+
+```text
+“打开拉克”      -> 更容易识别并规整成 “打开 Lark”
+“给薇薇安发消息” -> 更容易识别并规整成 “给 Vivian 发消息”
+“切到 vs code”  -> 更容易识别并规整成 “切到 VS Code”
+“jachin 项目”   -> 更容易保留 Jachin
+```
+
+遇到不确定情况时：
+
+```text
+系统不会直接执行
+系统会把听到的候选句说出来让你确认
+```
+
+日志里能看到：
+
+```text
+hotword_count
+hotword_status
+hotword_sources
+hotwordDominated
+hotwordDominationReasons
+```
+
+如果一轮语音被拦截，`voice_chat.log` 里会出现：
+
+```text
+stt.hotword_dominated_blocked
+```
+
+这说明系统不是“没听懂就乱执行”，而是发现识别结果可能被热词带偏，所以停下来问你。
 
 ### 追问生成
 

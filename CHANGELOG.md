@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.9.101] - 2026-07-08
+
+### Added / Changed
+
+- 检查：陪伴态管线文档补全、语音理解/快路径 ws_server 调整、热词词典与 Kokoro trace benchmark 更新。
+- **Version**: Desktop **0.9.101**（`clients/desktop/VERSION` 与 Tauri/npm 对齐）。
+
+---
+
 ## [v0.9.100] - 2026-07-08
 
 ### Added / Changed

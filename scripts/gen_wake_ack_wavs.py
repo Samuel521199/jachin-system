@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / "clients" / "desktop" / "public" / "audio" / "wake_ack"
-DEFAULT_TTS_SPEED = 1.25
+DEFAULT_TTS_SPEED = 1.4
 
 def localappdata_out() -> Path | None:
     base = os.environ.get("LOCALAPPDATA", "").strip()

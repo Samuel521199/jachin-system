@@ -2085,6 +2085,12 @@ function ChatApp() {
         setState("thinking");
         clearPttAudioWaitTimer();
         const useCompanionUi = companionModeRef.current || voiceCompanionActiveRef.current;
+        if (useCompanionUi) {
+          voiceCompanionActiveRef.current = true;
+          void armCompanionVoiceSession();
+          void ensureCompanionSurfaceVisible();
+          voiceCompanionDebug("chat.companion_ptt_surface_arm", { profile, stage: "before_final_stt" });
+        }
         let wavForStt = wavBase64;
         let shouldRunPttOwnerTrack = false;
         if (useCompanionUi && profile === "chat_ptt") {
@@ -2382,7 +2388,7 @@ function ChatApp() {
         chatJvsVoiceActiveRef.current = false;
       }
     },
-    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend],
+    [dispatchVoiceUtterance, setMessages, startCompanionJvsIfNeeded, setState, ttsEnabled, clearPttAudioWaitTimer, buildVoiceReplyComposerPrompt, deliverVoiceReplyComposerResult, doActualSend, ensureCompanionSurfaceVisible],
   );
 
   useSttAudioReady({
@@ -2899,6 +2905,8 @@ if (rootEl) {
     </React.StrictMode>
   );
 }
+
+
 
 
 

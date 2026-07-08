@@ -107,21 +107,26 @@ async def _l3_ws_run_async(
         ping_interval=None,
         max_size=16 * 1024 * 1024,
     ) as ws:
-        chat_id = str(payload.get("chat_id") or payload.get("session_id") or "").strip()
+        session_id = str(payload.get("session_id") or payload.get("chat_id") or "").strip()
+        lark_chat_id = str(payload.get("chat_id") or "").strip()
         await ws.send(json.dumps({"type": "manifest", "caps": ["voice_latency_bench"]}, ensure_ascii=False))
-        if chat_id:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "prepare_context",
-                        "trigger": "companion_voice_start",
-                        "source": "desktop_voice",
-                        "chat_id": chat_id,
-                        "session_id": chat_id,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+        if session_id:
+            prep = {
+                "type": "prepare_context",
+                "trigger": "companion_voice_start",
+                "source": "desktop_voice_companion",
+                "origin": "desktop_voice_companion",
+                "session_id": session_id,
+                "implicit_signals": {
+                    "desktop_companion": True,
+                    "source": "desktop_voice_companion",
+                    "local_voice_session": not bool(lark_chat_id),
+                    "voice_benchmark": True,
+                },
+            }
+            if lark_chat_id:
+                prep["chat_id"] = lark_chat_id
+            await ws.send(json.dumps(prep, ensure_ascii=False))
         sent_at = _perf_ms()
         await ws.send(json.dumps(payload, ensure_ascii=False))
         deadline = time.monotonic() + max(0.5, timeout)
@@ -195,23 +200,28 @@ class L3WsClient:
         self._ws.send(json.dumps({"type": "manifest", "caps": ["voice_latency_bench"]}, ensure_ascii=False))
         return self._ws
 
-    def prepare_context(self, chat_id: str, timeout: float = 3.0) -> None:
-        cid = (chat_id or "").strip()
-        if not cid:
+    def prepare_context(self, session_id: str, *, lark_chat_id: str = "", timeout: float = 3.0) -> None:
+        sid = (session_id or "").strip()
+        if not sid:
             return
+        lark_cid = (lark_chat_id or "").strip()
         ws = self._connect(timeout)
-        ws.send(
-            json.dumps(
-                {
-                    "type": "prepare_context",
-                    "trigger": "companion_voice_start",
-                    "source": "desktop_voice",
-                    "chat_id": cid,
-                    "session_id": cid,
-                },
-                ensure_ascii=False,
-            )
-        )
+        prep = {
+            "type": "prepare_context",
+            "trigger": "companion_voice_start",
+            "source": "desktop_voice_companion",
+            "origin": "desktop_voice_companion",
+            "session_id": sid,
+            "implicit_signals": {
+                "desktop_companion": True,
+                "source": "desktop_voice_companion",
+                "local_voice_session": not bool(lark_cid),
+                "voice_benchmark": True,
+            },
+        }
+        if lark_cid:
+            prep["chat_id"] = lark_cid
+        ws.send(json.dumps(prep, ensure_ascii=False))
 
     def run(self, payload: dict[str, Any], timeout: float) -> tuple[str, float, float, dict[str, Any]]:
         ws = self._connect(timeout)
@@ -303,6 +313,7 @@ def _sanitize_stt_text(text: str) -> str:
         return ""
     t = SENSEVOICE_TAG_RE.sub("", t)
     t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"(?<=[\u4e00-\u9fff])[A-Za-z]$", "", t).strip()
     if not t:
         return ""
     if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", t):
@@ -484,6 +495,7 @@ def run_once(
     l3_transport: str,
     l3_ws_client: L3WsClient | None,
     chat_id: str,
+    lark_chat_id: str,
     wav_bytes: bytes | None,
     text_input: str | None,
     voice: str,
@@ -558,6 +570,12 @@ def run_once(
                 "voice_routed_text": routed_text,
             }
             decision = {}
+        implicit_signals["desktop_companion"] = True
+        implicit_signals["source"] = "desktop_voice_companion"
+        implicit_signals["benchmark_source"] = "voice_latency_bench"
+        implicit_signals["voice_benchmark"] = True
+        implicit_signals["voice_channel"] = "desktop_companion"
+        implicit_signals["local_voice_session"] = not bool(lark_chat_id)
         voice_dispatch_tier = str(decision.get("tier") or "")
         voice_intent_class = str(decision.get("intent_class") or "")
         hints = decision.get("router_hints") or {}
@@ -567,17 +585,23 @@ def run_once(
         voice_route_notes = "|".join(notes) if isinstance(notes, list) else str(notes)
         l3_payload = {
             "intent": routed_text,
-            "chat_id": chat_id,
             "session_id": chat_id,
-            "origin": "terminal",
+            "origin": "terminal" if lark_chat_id else "desktop_voice_companion",
             "implicit_signals": implicit_signals,
         }
+        if lark_chat_id:
+            l3_payload["chat_id"] = lark_chat_id
         http_payload = {
             "user_input": routed_text,
-            "chat_id": chat_id,
+            "chat_id": lark_chat_id or chat_id,
+            "session_id": chat_id,
             "max_iterations": 8,
             "implicit_signals": implicit_signals,
-            "implicit_attribution": {"channel": "websocket_terminal"},
+            "implicit_attribution": {
+                "channel": "websocket_terminal" if lark_chat_id else "desktop_voice_companion",
+                "session_id": chat_id,
+                "local_voice_session": not bool(lark_chat_id),
+            },
         }
         transport = (l3_transport or "auto").strip().lower()
         if transport not in ("auto", "ws", "http"):
@@ -771,11 +795,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--l3-transport",
         choices=("auto", "ws", "http"),
-        default="auto",
-        help="L3 transport: auto uses WebSocket first then HTTP fallback",
+        default="ws",
+        help="L3 transport: ws matches desktop companion; auto uses WebSocket first then HTTP fallback",
     )
     p.add_argument("--timeout-tts", type=float, default=120.0)
     p.add_argument("--chat-prefix", default="voice-latency-bench")
+    p.add_argument(
+        "--lark-chat-id",
+        default="",
+        help="Optional real Lark chat_id (oc_...). Omit to benchmark local desktop voice companion mode.",
+    )
     p.add_argument(
         "--chat-session-mode",
         choices=("stable", "per-run"),
@@ -818,7 +847,8 @@ def main() -> int:
         f"max_speak_sentences={args.max_speak_sentences}  "
         f"fast_lane_max_speak_sentences={args.fast_lane_max_speak_sentences}  "
         f"chat_session_mode={args.chat_session_mode}  ws_reuse={not args.no_ws_reuse}  "
-        f"ws_preflight={not args.no_ws_preflight}"
+        f"ws_preflight={not args.no_ws_preflight}  "
+        f"local_voice_session={not bool((args.lark_chat_id or '').strip())}"
     )
     if args.no_companion_real_route:
         args.companion_real_route = False
@@ -850,7 +880,7 @@ def main() -> int:
             )
             if ws_client is not None and not args.no_ws_preflight:
                 try:
-                    ws_client.prepare_context(chat_id)
+                    ws_client.prepare_context(chat_id, lark_chat_id=args.lark_chat_id)
                 except Exception:
                     # run_once will reconnect/fallback/report the concrete WS error.
                     pass
@@ -910,6 +940,7 @@ def main() -> int:
                 l3_transport=args.l3_transport,
                 l3_ws_client=ws_client,
                 chat_id=chat_id,
+                lark_chat_id=args.lark_chat_id.strip(),
                 wav_bytes=wav,
                 text_input=args.text,
                 voice=args.voice,
@@ -964,4 +995,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
 

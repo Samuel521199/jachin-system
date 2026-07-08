@@ -1,7 +1,7 @@
 {
   "apps": {
     "Lark": {
-      "aliases": ["lark", "feishu", "flybook", "飞书", "luck", "lock", "拉克", "拉"],
+      "aliases": ["lark", "feishu", "flybook", "飞书", "luck", "lock", "拉克", "拉", "背书", "序数"],
       "active": true
     },
     "Chrome": {
@@ -19,11 +19,11 @@
       "active": true
     },
     "Neil": {
-      "aliases": ["neil", "neal", "niel"],
+      "aliases": ["你用法", "你用", "neil", "neal", "niel", "尼尔"],
       "active": true
     },
     "Ethan": {
-      "aliases": ["ethan", "eason", "e than"],
+      "aliases": ["ethan", "eason", "e than", "一分", "一份", "一芬"],
       "active": true
     },
     "John": {
@@ -209,7 +209,7 @@
   },
   "projects": {
     "Jachin": {
-      "aliases": ["jachin", "jacking", "加勤", "嘉钦"],
+      "aliases": ["jachin", "jacking", "加勤", "嘉钦", "charge"],
       "active": true
     }
   }
