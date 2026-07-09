@@ -4628,8 +4628,13 @@ async def _invoke_work_order_tool_transport(
         import traceback
 
         _tb = traceback.format_exc()
+        from l3_node.cognitive_kernel.compat_transport_errors import (
+            format_tool_transport_error,
+            transport_exception_section_title,
+        )
+
         logger.exception(
-            "[L3 Agent] 工具调度未捕获异常 trace=%s tool=%s err=%s",
+            "[L3 Agent] tool dispatch exception trace=%s tool=%s err=%s",
             _rtrace,
             (tool or "")[:160],
             _react_tool_ex,
@@ -4638,15 +4643,12 @@ async def _invoke_work_order_tool_transport(
             from l3_node.terminal_turn_debug_log import append_section
 
             append_section(
-                "[L3 Agent] 工具调度异常（已转为 Observation，避免进程退出）",
+                transport_exception_section_title(),
                 f"tool={tool}\n{type(_react_tool_ex).__name__}: {_react_tool_ex}\n\n{_tb}",
             )
         except Exception:
             pass
-        _out = (
-            f"[工具执行失败] {type(_react_tool_ex).__name__}: {_react_tool_ex}\n"
-            "若访问的是境内网页，海外网络可能被拒绝、超时或重置连接；请换网络或稍后重试。"
-        )
+        _out = format_tool_transport_error(str(tool or ""), _react_tool_ex)
         return _out
     finally:
         if _lark_cv_tok is not None:
@@ -4704,7 +4706,7 @@ def _p2_record_skill_outcome(ctx: PipelineContext, skill_id: str, observation: s
         pass
 
 
-async def _run_compat_text_core(
+async def _run_text_transport_core(
     ctx: PipelineContext,
     engine: LiteLLMEngine,
     on_step: Optional[Callable[[str, str, str], None]] = None,
@@ -9173,7 +9175,7 @@ async def run_agent(
                 await next_fn()
 
         async def react_mw(c: PipelineContext, next_fn) -> None:
-            await _run_compat_text_core(c, engine, on_step=on_step)
+            await _run_text_transport_core(c, engine, on_step=on_step)
             if not c.aborted:
                 await next_fn()
 

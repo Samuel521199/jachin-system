@@ -1330,6 +1330,34 @@ def test_open_app_finds_lark_start_menu_shortcut(monkeypatch, tmp_path) -> None:
     assert source == "candidate_path"
 
 
+def test_open_app_finds_nested_start_menu_shortcut(monkeypatch, tmp_path) -> None:
+    from l3_client.local_mcps.windows_uia_mcp.os_tasks import _find_app_executable
+
+    appdata = tmp_path / "roaming"
+    programdata = tmp_path / "programdata"
+    shortcut = programdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "\u5fae\u4fe1" / "\u5fae\u4fe1.lnk"
+    shortcut.parent.mkdir(parents=True)
+    shortcut.write_text("fake shortcut", encoding="utf-8")
+    (shortcut.parent / "\u5378\u8f7d\u5fae\u4fe1.lnk").write_text("fake uninstall shortcut", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("PROGRAMDATA", str(programdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path / "programs"))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(tmp_path / "programs_x86"))
+
+    found, source = _find_app_executable(
+        {
+            "aliases": ("wechat", "weixin", "\u5fae\u4fe1"),
+            "keywords": ("wechat", "weixin", "\u5fae\u4fe1"),
+            "candidate_paths": (r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\WeChat.lnk",),
+            "exe_names": ("WeChat.exe", "Weixin.exe"),
+        }
+    )
+
+    assert found == str(shortcut)
+    assert source == "start_menu_shortcut"
+
+
 def test_find_app_executable_does_not_return_missing_bare_exe(monkeypatch, tmp_path) -> None:
     from l3_client.local_mcps.windows_uia_mcp import os_tasks
 

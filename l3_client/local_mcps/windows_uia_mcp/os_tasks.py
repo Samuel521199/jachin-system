@@ -69,6 +69,85 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
             r"%PROGRAMFILES(X86)%\Feishu\Feishu.exe",
         ),
     },
+    "wechat": {
+        "aliases": ("wechat", "weixin", "微信"),
+        "keywords": ("wechat", "weixin", "微信"),
+        "env": "JACHIN_APP_WECHAT_EXE",
+        "exe_names": ("WeChat.exe", "Weixin.exe"),
+        "candidate_paths": (
+            r"%PROGRAMFILES%\Tencent\WeChat\WeChat.exe",
+            r"%PROGRAMFILES(X86)%\Tencent\WeChat\WeChat.exe",
+            r"%LOCALAPPDATA%\Tencent\WeChat\WeChat.exe",
+            r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\微信.lnk",
+            r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\微信.lnk",
+            r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\WeChat.lnk",
+            r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\WeChat.lnk",
+            "WeChat.exe",
+            "Weixin.exe",
+        ),
+    },
+    'wecom': {
+        "aliases": ('wecom', 'wxwork', 'enterprise wechat', '企业微信'),
+        "keywords": ('wecom', 'wxwork', '企业微信'),
+        "env": 'JACHIN_APP_WECOM_EXE',
+        "exe_names": ('WXWork.exe', 'WeCom.exe'),
+        "candidate_paths": (
+            r'%PROGRAMFILES%\\WXWork\\WXWork.exe',
+            r'%PROGRAMFILES(X86)%\\WXWork\\WXWork.exe',
+            r'%LOCALAPPDATA%\\WXWork\\WXWork.exe',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\企业微信.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\企业微信.lnk',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\WeCom.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\WeCom.lnk',
+            'WXWork.exe',
+            'WeCom.exe',
+        ),
+    },
+    'dingtalk': {
+        "aliases": ('dingtalk', 'dingding', '钉钉'),
+        "keywords": ('dingtalk', 'dingding', '钉钉'),
+        "env": 'JACHIN_APP_DINGTALK_EXE',
+        "exe_names": ('DingTalk.exe', 'DingtalkLauncher.exe'),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\DingTalk\\DingTalk.exe',
+            r'%LOCALAPPDATA%\\Programs\\DingTalk\\DingTalk.exe',
+            r'%PROGRAMFILES%\\DingDing\\DingtalkLauncher.exe',
+            r'%PROGRAMFILES(X86)%\\DingDing\\DingtalkLauncher.exe',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\钉钉.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\钉钉.lnk',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\DingTalk.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\DingTalk.lnk',
+            'DingTalk.exe',
+            'DingtalkLauncher.exe',
+        ),
+    },
+    'qq': {
+        "aliases": ('qq', '腾讯QQ'),
+        "keywords": ('qq', '腾讯QQ'),
+        "env": 'JACHIN_APP_QQ_EXE',
+        "exe_names": ('QQ.exe',),
+        "candidate_paths": (
+            r'%PROGRAMFILES%\\Tencent\\QQNT\\QQ.exe',
+            r'%PROGRAMFILES(X86)%\\Tencent\\QQNT\\QQ.exe',
+            r'%LOCALAPPDATA%\\Tencent\\QQNT\\QQ.exe',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\QQ.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\QQ.lnk',
+            'QQ.exe',
+        ),
+    },
+    'tim': {
+        "aliases": ('tim', 'qq tim'),
+        "keywords": ('tim', 'qq tim'),
+        "env": 'JACHIN_APP_TIM_EXE',
+        "exe_names": ('TIM.exe',),
+        "candidate_paths": (
+            r'%PROGRAMFILES%\\Tencent\\TIM\\Bin\\TIM.exe',
+            r'%PROGRAMFILES(X86)%\\Tencent\\TIM\\Bin\\TIM.exe',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\TIM.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\TIM.lnk',
+            'TIM.exe',
+        ),
+    },
     "notepad": {
         "aliases": ("notepad", "\u8bb0\u4e8b\u672c"),
         "keywords": ("notepad", "\u8bb0\u4e8b\u672c"),
@@ -87,9 +166,43 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
         "exe_names": ("explorer.exe",),
         "candidate_paths": ("explorer.exe",),
     },
+    'chrome': {
+        "aliases": ('chrome', 'google chrome', '谷歌'),
+        "keywords": ('chrome', 'google chrome', '谷歌'),
+        "env": 'JACHIN_APP_CHROME_EXE',
+        "exe_names": ('chrome.exe',),
+        "candidate_paths": (
+            r'%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe',
+            r'%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe',
+            r'%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe',
+            'chrome.exe',
+        ),
+    },
+    'edge': {
+        "aliases": ('edge', 'microsoft edge'),
+        "keywords": ('edge', 'microsoft edge'),
+        "env": 'JACHIN_APP_EDGE_EXE',
+        "exe_names": ('msedge.exe',),
+        "candidate_paths": (
+            r'%PROGRAMFILES(X86)%\\Microsoft\\Edge\\Application\\msedge.exe',
+            r'%PROGRAMFILES%\\Microsoft\\Edge\\Application\\msedge.exe',
+            'msedge.exe',
+        ),
+    },
+    'firefox': {
+        "aliases": ('firefox', 'mozilla firefox', '火狐'),
+        "keywords": ('firefox', 'mozilla firefox', '火狐'),
+        "env": 'JACHIN_APP_FIREFOX_EXE',
+        "exe_names": ('firefox.exe',),
+        "candidate_paths": (
+            r'%PROGRAMFILES%\\Mozilla Firefox\\firefox.exe',
+            r'%PROGRAMFILES(X86)%\\Mozilla Firefox\\firefox.exe',
+            'firefox.exe',
+        ),
+    },
     "browser": {
-        "aliases": ("browser", "edge", "chrome", "web"),
-        "keywords": ("edge", "chrome", "browser"),
+        "aliases": ("browser", "web", "\u6d4f\u89c8\u5668"),
+        "keywords": ("browser", "web", "\u6d4f\u89c8\u5668"),
         "exe_names": ("msedge.exe", "chrome.exe"),
         "candidate_paths": ("msedge.exe", "chrome.exe"),
     },
@@ -104,6 +217,165 @@ APP_PROFILES: dict[str, dict[str, Any]] = {
         "keywords": ("wps", "word", "excel", "powerpoint"),
         "exe_names": ("wps.exe", "et.exe", "wpp.exe", "winword.exe", "excel.exe", "powerpnt.exe"),
         "candidate_paths": ("wps.exe", "winword.exe", "excel.exe", "powerpnt.exe"),
+    },
+    'tencent_meeting': {
+        "aliases": ('tencent meeting', 'voov', 'wemeet', '腾讯会议'),
+        "keywords": ('tencent meeting', 'voov', 'wemeet', '腾讯会议'),
+        "env": 'JACHIN_APP_TENCENT_MEETING_EXE',
+        "exe_names": ('wemeetapp.exe', 'TencentMeeting.exe', 'WeMeet.exe'),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Tencent\\WeMeet\\wemeetapp.exe',
+            r'%PROGRAMFILES%\\Tencent\\WeMeet\\wemeetapp.exe',
+            r'%PROGRAMFILES(X86)%\\Tencent\\WeMeet\\wemeetapp.exe',
+            r'%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\腾讯会议.lnk',
+            r'%PROGRAMDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\腾讯会议.lnk',
+            'wemeetapp.exe',
+            'TencentMeeting.exe',
+            'WeMeet.exe',
+        ),
+    },
+    'zoom': {
+        "aliases": ('zoom', 'zoom meeting'),
+        "keywords": ('zoom', 'zoom meeting'),
+        "env": 'JACHIN_APP_ZOOM_EXE',
+        "exe_names": ('Zoom.exe',),
+        "candidate_paths": (
+            r'%APPDATA%\\Zoom\\bin\\Zoom.exe',
+            r'%LOCALAPPDATA%\\Zoom\\bin\\Zoom.exe',
+            'Zoom.exe',
+        ),
+    },
+    'teams': {
+        "aliases": ('teams', 'microsoft teams'),
+        "keywords": ('teams', 'microsoft teams'),
+        "env": 'JACHIN_APP_TEAMS_EXE',
+        "exe_names": ('Teams.exe', 'ms-teams.exe'),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Microsoft\\Teams\\current\\Teams.exe',
+            r'%LOCALAPPDATA%\\Microsoft\\WindowsApps\\ms-teams.exe',
+            'Teams.exe',
+            'ms-teams.exe',
+        ),
+    },
+    'slack': {
+        "aliases": ('slack',),
+        "keywords": ('slack',),
+        "env": 'JACHIN_APP_SLACK_EXE',
+        "exe_names": ('slack.exe',),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\slack\\slack.exe',
+            'slack.exe',
+        ),
+    },
+    'discord': {
+        "aliases": ('discord',),
+        "keywords": ('discord',),
+        "env": 'JACHIN_APP_DISCORD_EXE',
+        "exe_names": ('Discord.exe',),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Discord\\Discord.exe',
+            'Discord.exe',
+        ),
+    },
+    'vscode': {
+        "aliases": ('vscode', 'vs code', 'visual studio code', 'code'),
+        "keywords": ('vscode', 'vs code', 'visual studio code', 'code'),
+        "env": 'JACHIN_APP_VSCODE_EXE',
+        "exe_names": ('Code.exe',),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe',
+            r'%PROGRAMFILES%\\Microsoft VS Code\\Code.exe',
+            'Code.exe',
+        ),
+    },
+    'cursor': {
+        "aliases": ('cursor',),
+        "keywords": ('cursor',),
+        "env": 'JACHIN_APP_CURSOR_EXE',
+        "exe_names": ('Cursor.exe',),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Programs\\Cursor\\Cursor.exe',
+            r'%LOCALAPPDATA%\\Cursor\\Cursor.exe',
+            'Cursor.exe',
+        ),
+    },
+    'pycharm': {
+        "aliases": ('pycharm', 'jetbrains pycharm'),
+        "keywords": ('pycharm', 'jetbrains pycharm'),
+        "env": 'JACHIN_APP_PYCHARM_EXE',
+        "exe_names": ('pycharm64.exe', 'pycharm.exe'),
+        "candidate_paths": (
+            r'%PROGRAMFILES%\\JetBrains\\PyCharm\\bin\\pycharm64.exe',
+            'pycharm64.exe',
+            'pycharm.exe',
+        ),
+    },
+    'notion': {
+        "aliases": ('notion', '知识库'),
+        "keywords": ('notion', '知识库'),
+        "env": 'JACHIN_APP_NOTION_EXE',
+        "exe_names": ('Notion.exe',),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Programs\\Notion\\Notion.exe',
+            r'%LOCALAPPDATA%\\Notion\\Notion.exe',
+            'Notion.exe',
+        ),
+    },
+    'obsidian': {
+        "aliases": ('obsidian', '双链笔记'),
+        "keywords": ('obsidian', '双链笔记'),
+        "env": 'JACHIN_APP_OBSIDIAN_EXE',
+        "exe_names": ('Obsidian.exe',),
+        "candidate_paths": (
+            r'%LOCALAPPDATA%\\Programs\\Obsidian\\Obsidian.exe',
+            r'%LOCALAPPDATA%\\Obsidian\\Obsidian.exe',
+            'Obsidian.exe',
+        ),
+    },
+    'word': {
+        "aliases": ('word', 'microsoft word', 'winword', '文档'),
+        "keywords": ('word', 'microsoft word', 'winword', '文档'),
+        "env": 'JACHIN_APP_WORD_EXE',
+        "exe_names": ('WINWORD.EXE', 'winword.exe'),
+        "candidate_paths": (
+            'winword.exe',
+        ),
+    },
+    'excel': {
+        "aliases": ('excel', 'microsoft excel', '表格'),
+        "keywords": ('excel', 'microsoft excel', '表格'),
+        "env": 'JACHIN_APP_EXCEL_EXE',
+        "exe_names": ('EXCEL.EXE', 'excel.exe'),
+        "candidate_paths": (
+            'excel.exe',
+        ),
+    },
+    'powerpoint': {
+        "aliases": ('powerpoint', 'ppt', 'microsoft powerpoint', 'PPT'),
+        "keywords": ('powerpoint', 'ppt', 'microsoft powerpoint', 'PPT'),
+        "env": 'JACHIN_APP_POWERPOINT_EXE',
+        "exe_names": ('POWERPNT.EXE', 'powerpnt.exe'),
+        "candidate_paths": (
+            'powerpnt.exe',
+        ),
+    },
+    'outlook': {
+        "aliases": ('outlook', 'microsoft outlook', '邮箱'),
+        "keywords": ('outlook', 'microsoft outlook', '邮箱'),
+        "env": 'JACHIN_APP_OUTLOOK_EXE',
+        "exe_names": ('OUTLOOK.EXE', 'outlook.exe'),
+        "candidate_paths": (
+            'outlook.exe',
+        ),
+    },
+    'onenote': {
+        "aliases": ('onenote', 'one note', 'microsoft onenote', '笔记'),
+        "keywords": ('onenote', 'one note', 'microsoft onenote', '笔记'),
+        "env": 'JACHIN_APP_ONENOTE_EXE',
+        "exe_names": ('ONENOTE.EXE', 'onenote.exe'),
+        "candidate_paths": (
+            'onenote.exe',
+        ),
     },
     "codex": {
         "aliases": ("codex", "openai codex"),
@@ -234,6 +506,78 @@ def _expand_candidate_path(raw: str) -> str:
     return s
 
 
+def _app_path_from_registry(exe_names: set[str]) -> tuple[str, str]:
+    if os.name != "nt" or not exe_names:
+        return "", "not_found"
+    try:
+        import winreg  # type: ignore
+    except Exception:
+        return "", "registry_unavailable"
+    roots = (
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths"),
+    )
+    for hive, base in roots:
+        for exe_name in exe_names:
+            try:
+                with winreg.OpenKey(hive, f"{base}\\{exe_name}") as key:
+                    value, _ = winreg.QueryValueEx(key, "")
+            except Exception:
+                continue
+            candidate = _expand_candidate_path(str(value or ""))
+            if candidate and Path(candidate).is_file():
+                return candidate, "registry_app_paths"
+    return "", "not_found"
+
+
+def _start_menu_roots() -> list[Path]:
+    roots: list[Path] = []
+    for env_name, suffix in (
+        ("APPDATA", r"Microsoft\Windows\Start Menu\Programs"),
+        ("PROGRAMDATA", r"Microsoft\Windows\Start Menu\Programs"),
+    ):
+        base = os.environ.get(env_name) or ""
+        if base:
+            roots.append(Path(base) / suffix)
+    userprofile = os.environ.get("USERPROFILE") or ""
+    public = os.environ.get("PUBLIC") or ""
+    if userprofile:
+        roots.append(Path(userprofile) / "Desktop")
+    if public:
+        roots.append(Path(public) / "Desktop")
+    return roots
+
+
+def _find_app_shortcut(profile: dict[str, Any]) -> tuple[str, str]:
+    needles = {
+        str(x).strip().lower()
+        for field in ("aliases", "keywords", "exe_names")
+        for x in profile.get(field, ())
+        if str(x).strip()
+    }
+    if not needles:
+        return "", "not_found"
+    negative = ("uninstall", "卸载")
+    for root in _start_menu_roots():
+        if not root.exists():
+            continue
+        try:
+            shortcuts = root.rglob("*.lnk")
+        except Exception:
+            continue
+        for shortcut in shortcuts:
+            try:
+                haystack = f"{shortcut.stem} {shortcut.parent.name} {shortcut.name}".lower()
+            except Exception:
+                continue
+            if any(term in haystack for term in negative):
+                continue
+            if any(needle in haystack for needle in needles):
+                return str(shortcut), "start_menu_shortcut"
+    return "", "not_found"
+
+
 def _find_app_executable(profile: dict[str, Any]) -> tuple[str, str]:
     env_name = str(profile.get("env") or "")
     if env_name:
@@ -253,12 +597,20 @@ def _find_app_executable(profile: dict[str, Any]) -> tuple[str, str]:
             if resolved:
                 return resolved, "path_lookup"
 
+    exe_names = {str(x).strip().lower() for x in profile.get("exe_names", ()) if str(x).strip()}
+    registry_path, registry_source = _app_path_from_registry(exe_names)
+    if registry_path:
+        return registry_path, registry_source
+
+    shortcut, shortcut_source = _find_app_shortcut(profile)
+    if shortcut:
+        return shortcut, shortcut_source
+
     search_roots = [
         Path(os.environ.get("LOCALAPPDATA") or ""),
         Path(os.environ.get("PROGRAMFILES") or ""),
         Path(os.environ.get("PROGRAMFILES(X86)") or ""),
     ]
-    exe_names = {str(x).lower() for x in profile.get("exe_names", ()) if str(x).strip()}
     for root in search_roots:
         if not root or not root.exists():
             continue

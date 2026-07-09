@@ -266,8 +266,8 @@ def default_role_agents() -> list[RoleAgentSpec]:
         ),
         RoleAgentSpec(
             role_id="ToolExecutionAgent",
-            description="Compatibility executor for tools that do not yet have a specialized role.",
-            capabilities=["compat_tool_execution"],
+            description="Generic tool transport for tools that do not yet have a specialized role.",
+            capabilities=["generic_tool_transport"],
             tool_allow_patterns=["core:*", "mcp:*", "util:*", "delegate", "coordinate", "jpp:*"],
             max_risk=RiskLevel.CRITICAL,
             can_execute_external_world=True,

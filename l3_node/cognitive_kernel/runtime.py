@@ -117,7 +117,7 @@ def build_decision_contract(
         turn_id=turn_id,
         task_type="tool_execution",
         goal=(goal or "").strip()[:1000],
-        selected_workflow="react_compatibility_executor",
+        selected_workflow="work_order_role_dispatcher",
         selected_roles=[role_agent, "VerificationAgent", "RecoveryAgent", "TurnClosureAgent"],
         risk_level=risk,
         tool_policy=policy,
@@ -129,7 +129,7 @@ def build_decision_contract(
             "side-effect tools must provide observable evidence when available",
         ],
         rationale=[
-            "Existing ReAct tool call was converted into a Cognitive Kernel DecisionContract.",
+            "Parsed tool intent was converted into a Cognitive Kernel DecisionContract.",
             f"Risk classified as {risk.value} from tool id and action input.",
         ],
     )

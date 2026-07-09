@@ -73,6 +73,55 @@ def test_mainline_open_app_review_to_work_order(tmp_path, monkeypatch):
     assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
 
 
+def test_mainline_open_wechat_review_to_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    result = plan_cognitive_turn(_ctx("\u6253\u5f00\u5fae\u4fe1", turn_id="ck-arch-open-wechat"))
+
+    assert result.review_summary.top_intent == "open_app"
+    assert result.review_summary.target["name"] == "WeChat"
+    assert result.decision_contract.task_type == "app_control"
+    assert result.decision_contract.execution_allowed is True
+    assert result.work_orders
+    assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+    assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
+
+
+def test_mainline_open_common_apps_review_to_work_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
+
+    from l3_node.cognitive_kernel.kernel_loop import plan_cognitive_turn
+
+    cases = [
+        ("\u6253\u5f00\u5fae\u4fe1", "WeChat"),
+        ("\u6253\u5f00\u9489\u9489", "DingTalk"),
+        ("\u6253\u5f00\u4f01\u4e1a\u5fae\u4fe1", "WeCom"),
+        ("\u6253\u5f00\u817e\u8baf\u4f1a\u8bae", "TencentMeeting"),
+        ("\u6253\u5f00\u6d4f\u89c8\u5668", "Browser"),
+        ("open Chrome", "Chrome"),
+        ("open Edge", "Edge"),
+        ("open Firefox", "Firefox"),
+        ("open Cursor", "Cursor"),
+        ("open VS Code", "VSCode"),
+        ("open WPS", "WPS"),
+        ("open Word", "Word"),
+        ("open Excel", "Excel"),
+        ("open PowerPoint", "PowerPoint"),
+        ("open Notion", "Notion"),
+        ("open Obsidian", "Obsidian"),
+    ]
+    for text, expected in cases:
+        result = plan_cognitive_turn(_ctx(text, turn_id=f"ck-arch-open-{expected.lower()}"))
+        assert result.review_summary.top_intent == "open_app"
+        assert result.review_summary.target["name"] == expected
+        assert result.decision_contract.task_type == "app_control"
+        assert result.work_orders
+        assert result.work_orders[0].role_agent == "AppControlExecutorAgent"
+        assert result.work_orders[0].inputs["tool"] == "mcp:windows_open_app"
+
+
 def test_mainline_short_close_resolves_active_window(tmp_path, monkeypatch):
     monkeypatch.setenv("JACHIN_COGNITIVE_KERNEL_HOME", str(tmp_path))
 
@@ -163,13 +212,13 @@ def test_mainline_appcontrol_existing_work_order_executes_direct_adapter(tmp_pat
     plan = plan_cognitive_turn(_ctx("open calculator", turn_id="ck-arch-direct-open"), emit_non_execution_closure=False)
 
     async def _run():
-        async def legacy_should_not_run(_work_order):
+        async def transport_should_not_run(_work_order):
             raise AssertionError("AppControlExecutor should use direct Windows UIA channel")
 
         result = await dispatch_existing_work_order(
             contract=plan.decision_contract,
             work_order=plan.work_orders[0],
-            executor=legacy_should_not_run,
+            executor=transport_should_not_run,
         )
         assert result.verification.ok is True
         assert calls["open"] == 1
@@ -220,7 +269,7 @@ def test_mainline_file_direct_entry_uses_file_executor(tmp_path, monkeypatch):
         assert path == "README.md"
         return "readme content from FileExecutor"
 
-    def legacy_should_not_run(*_args, **_kwargs):
+    def transport_should_not_run(*_args, **_kwargs):
         raise AssertionError("FileExecutorAgent should not call run_tool for direct core:fs_read")
 
     monkeypatch.setattr(native_tools, "core_fs_read", fake_fs_read)
@@ -230,7 +279,7 @@ def test_mainline_file_direct_entry_uses_file_executor(tmp_path, monkeypatch):
             plan=plan,
             tools=[{"id": "core:fs_read"}],
             allowed_skills=None,
-            run_tool_func=legacy_should_not_run,
+            run_tool_func=transport_should_not_run,
         )
         assert reply == "已完成文件操作：README.md。"
 
@@ -287,13 +336,13 @@ def test_run_agent_message_direct_mainline_bypasses_legacy_react(tmp_path, monke
         assert payload["message"] == "hello from run_agent"
         return json.dumps({"ok": True, "send_ok": True, "message_id": "run-agent-1"}, ensure_ascii=False)
 
-    async def legacy_react_should_not_run(*_args, **_kwargs):
-        raise AssertionError("run_agent should return from Cognitive Kernel direct mainline before old ReAct")
+    async def text_transport_core_should_not_run(*_args, **_kwargs):
+        raise AssertionError("run_agent should return from Cognitive Kernel direct mainline before text transport core")
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
     monkeypatch.setattr(agent_core, "run_tool", fake_run_tool)
-    monkeypatch.setattr(agent_core, "_run_compat_text_core", legacy_react_should_not_run)
+    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
 
     reply = asyncio.run(
         agent_core.run_agent(
@@ -319,8 +368,8 @@ def test_run_agent_appcontrol_direct_mainline_open_switch_close(tmp_path, monkey
             {"id": "mcp:windows_window_close", "name": "windows_window_close"},
         ]
 
-    async def legacy_react_should_not_run(*_args, **_kwargs):
-        raise AssertionError("AppControl direct mainline should bypass old ReAct")
+    async def text_transport_core_should_not_run(*_args, **_kwargs):
+        raise AssertionError("AppControl direct mainline should bypass text transport core")
 
     def fake_open_app(app_name: str, args_json: str = "[]", out_dir: str = "") -> str:
         return json.dumps({"ok": True, "active_window": app_name, "screenshot": "C:/tmp/open.png"}, ensure_ascii=False)
@@ -332,7 +381,7 @@ def test_run_agent_appcontrol_direct_mainline_open_switch_close(tmp_path, monkey
         return json.dumps({"ok": True, "window_closed": keywords, "still_exists": False}, ensure_ascii=False)
 
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
-    monkeypatch.setattr(agent_core, "_run_compat_text_core", legacy_react_should_not_run)
+    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
     monkeypatch.setattr(windows_uia_server, "windows_open_app", fake_open_app)
     monkeypatch.setattr(windows_uia_server, "windows_window_switch", fake_switch_window)
     monkeypatch.setattr(windows_uia_server, "windows_window_close", fake_close_window)
@@ -375,8 +424,8 @@ def test_run_agent_appcontrol_confirmation_pending_then_resume(tmp_path, monkeyp
     async def fake_assemble_tool_pool(*_args, **_kwargs):
         return [{"id": "mcp:windows_window_close", "name": "windows_window_close"}]
 
-    async def legacy_react_should_not_run(*_args, **_kwargs):
-        raise AssertionError("confirmation direct mainline should not enter old ReAct")
+    async def text_transport_core_should_not_run(*_args, **_kwargs):
+        raise AssertionError("confirmation direct mainline should not enter text transport core")
 
     def fake_close_window(keywords: str, exclude_keywords: str = "", timeout: float = 5.0, out_dir: str = "") -> str:
         calls["close"] += 1
@@ -397,7 +446,7 @@ def test_run_agent_appcontrol_confirmation_pending_then_resume(tmp_path, monkeyp
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
-    monkeypatch.setattr(agent_core, "_run_compat_text_core", legacy_react_should_not_run)
+    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
     monkeypatch.setattr(windows_uia_server, "windows_window_close", fake_close_window)
 
     first_reply = asyncio.run(
@@ -444,11 +493,11 @@ def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):
             {"id": "mcp:windows_file_reveal_in_explorer", "name": "windows_file_reveal_in_explorer"},
         ]
 
-    def legacy_run_tool_should_not_run(*_args, **_kwargs):
+    def transport_run_tool_should_not_run(*_args, **_kwargs):
         raise AssertionError("File direct mainline should use FileExecutorAgent, not legacy run_tool")
 
-    async def legacy_react_should_not_run(*_args, **_kwargs):
-        raise AssertionError("File direct mainline should bypass old ReAct")
+    async def text_transport_core_should_not_run(*_args, **_kwargs):
+        raise AssertionError("File direct mainline should bypass text transport core")
 
     def fake_fs_read(path: str) -> str:
         assert path == "README.md"
@@ -464,8 +513,8 @@ def test_run_agent_file_direct_mainline_read_open_reveal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(agent_core, "build_cognitive_turn_context", fake_build_context)
     monkeypatch.setattr(agent_core, "assemble_tool_pool", fake_assemble_tool_pool)
-    monkeypatch.setattr(agent_core, "run_tool", legacy_run_tool_should_not_run)
-    monkeypatch.setattr(agent_core, "_run_compat_text_core", legacy_react_should_not_run)
+    monkeypatch.setattr(agent_core, "run_tool", transport_run_tool_should_not_run)
+    monkeypatch.setattr(agent_core, "_run_text_transport_core", text_transport_core_should_not_run)
     monkeypatch.setattr(native_tools, "core_fs_read", fake_fs_read)
     monkeypatch.setattr(windows_uia_server, "windows_file_open", fake_file_open)
     monkeypatch.setattr(windows_uia_server, "windows_file_reveal_in_explorer", fake_file_reveal)
