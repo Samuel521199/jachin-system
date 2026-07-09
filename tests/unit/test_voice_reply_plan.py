@@ -36,16 +36,18 @@ def test_reply_plan_from_missing_message_content_selection() -> None:
     assert "\u5177\u4f53\u5185\u5bb9" in plan.fallback_template
 
 
-def test_voice_understanding_exposes_reply_plan_instead_of_only_question_text() -> None:
+def test_voice_understanding_does_not_expose_reply_plan_from_stt_layer() -> None:
     result = VoiceUnderstandingCorrector().correct("\u5728 LARK \u7ed9Neil\u53d1\u6d88\u606f")
 
     selected = result["understanding"]["selected"]
     reply_plan = result["reply_plan"]
 
-    assert selected["type"] == "clarification_required"
-    assert reply_plan["reply_intent"] == "ask_missing_slot"
-    assert reply_plan["missing_slots"] == ["message_content"]
-    assert result["user_message_source"] == "fallback_template"
+    assert result["corrected_text"] == "\u5728 Lark\u7ed9Neil\u53d1\u6d88\u606f"
+    assert result["understanding"]["voice_layer_scope"] == "stt_only"
+    assert selected == {}
+    assert reply_plan == {}
+    assert result["user_message"] == ""
+    assert result["user_message_source"] == ""
 
 
 def test_reply_composer_prompt_contains_plan_and_no_execution_boundary() -> None:
